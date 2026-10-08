@@ -201,6 +201,15 @@
           <label title="绝对到达率 req/s；填了就覆盖上面的负载比例">到达率 req/s<input type="number" id="pd-rate_rps" min="0" step="0.5"></label>
           <label title="合并模式分块 prefill（Sarathi / vLLM chunked prefill）每次迭代的 prefill token 预算">分块 token<input type="number" id="pd-chunk_tokens" min="16" step="128"></label>
         </div>
+        <div class="small muted">请求长度与前缀缓存（0.52）<span class="tag assume">假设</span> 默认长度固定、无前缀缓存</div>
+        <div class="row3">
+          <label title="prompt 长度的变异系数（对数正态，均值 = 上面的 prompt 长度，离散成 8 档等概率）；0 = 长度固定">prompt CV<input type="number" id="pd-prompt_cv" min="0" max="4" step="0.25"></label>
+          <label title="输出长度的变异系数（对数正态，均值 = 输出长度，8 档）；0 = 长度固定">输出 CV<input type="number" id="pd-out_cv" min="0" max="4" step="0.25"></label>
+          <label title="每个 prompt 中已在前缀缓存里的比例：这部分不再做 prefill（只读其 KV），KV 交接也只传未缓存部分（见下方勾选）">前缀命中率<input type="number" id="pd-prefix_hit" min="0" max="0.99" step="0.1"></label>
+        </div>
+        <label title="离散长度分布：权重:prompt:输出, …（例 0.7:1024:256, 0.3:11264:1109）；填了就替代上面的 CV 与 prompt / 输出长度">长度分布（离散）<input type="text" id="pd-length_mix" placeholder="权重:prompt:输出, …"></label>
+        <label class="inline" title="decode 池也持有同一前缀（共享系统提示词 / 会话粘性路由）→ 只传未缓存部分的 KV；不勾 = 传全部 KV"><input type="checkbox" id="pd-prefix_on_decode"> decode 池也有该前缀</label>
+        <label class="inline" title="把两池的布局也当设计变量：每副本 1/2/4/…/64 卡的所有布局 × 同总卡数切分（较慢）"><input type="checkbox" id="pd-search_layouts"> 搜索池布局</label>
       </div>
     </div>
   </section>
@@ -269,6 +278,11 @@
       <h4>排队与尾延迟 <span class="small muted" id="pdq-basis"></span></h4>
       <div class="scroll"><table class="tbl" id="pdq-tbl"></table></div>
       <div class="small muted" id="pdq-note"></div>
+      <div id="pdls-box" hidden>
+        <h4>池布局搜索 <span class="small muted" id="pdls-basis"></span></h4>
+        <div class="scroll"><table class="tbl" id="pdls-tbl"></table></div>
+        <div class="small muted" id="pdls-note"></div>
+      </div>
     </div>
     <div id="budget-box" hidden>
       <h4>资源 / 面积预算 <span class="small muted">余量 = 1 − 用量 / 限额；「?」= 无法判定（缺输入或只有下界）</span></h4>

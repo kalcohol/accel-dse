@@ -11,6 +11,11 @@ M/D/c slot wait (decode slots) — Erlang C of M/M/c with the Allen–Cunneen fa
 deterministic service: P(wait) ≈ C(c, a), W̄ ≈ ½·C(c, a) / (cμ − λ); conditional wait ~ exponential with that
 mean 「假设」.
 Poisson occupancy: in-service count of an M/G/∞ (continuous-batching slots far from full) ~ Poisson(n̄).
+M/G/1 with a discrete service distribution {τ_i, w_i} (0.52, variable request lengths)
+  mean wait            W̄ = λ·E[τ²] / (2(1 − ρ))                     (Pollaczek–Khinchine, exact)
+  tail                 P(W > t) ≈ C·e^(−θt),  θ > 0 root of λ(E[e^(θτ)] − 1) = θ,  C = (1 − ρ) / (λ·E[τ e^(θτ)] − 1)
+                       (same Cramér–Lundberg asymptote; one point → M/D/1 exactly — delegated to ``md1``)
+M/G/c slot wait: Allen–Cunneen factor (1 + c_s²) / 2 with c_s² of the slot holding time.
 """
 
 from __future__ import annotations
@@ -53,6 +58,55 @@ def md1(lam: float, tau: float, qs: tuple = (0.5, 0.9, 0.99)) -> dict:
     return out
 
 
+def mg1(lam: float, taus, weights, qs: tuple = (0.5, 0.9, 0.99)) -> dict:
+    """Waiting time of an M/G/1 queue whose service time takes value taus[i] with probability weights[i]."""
+    pts = [(w, t) for w, t in zip(weights, taus) if w > 0]
+    tot = sum(w for w, _ in pts)
+    pts = [(w / tot, t) for w, t in pts]
+    if len({t for _, t in pts}) == 1:
+        return md1(lam, pts[0][1], qs)
+    m1 = sum(w * t for w, t in pts)
+    rho = lam * m1
+    if lam <= 0 or m1 <= 0:
+        return {"rho": max(rho, 0.0), "stable": True, "mean": 0.0, "p_wait": 0.0, **{f"p{_pct(q)}": 0.0 for q in qs}}
+    if rho >= 1:
+        return {"rho": rho, "stable": False, "mean": math.inf, "p_wait": 1.0, **{f"p{_pct(q)}": math.inf for q in qs}}
+    m2 = sum(w * t * t for w, t in pts)
+    tmax = max(t for _, t in pts)
+
+    def f(th: float) -> float:
+        return lam * (sum(w * math.exp(th * t) for w, t in pts) - 1) - th
+    lo, hi = 0.0, 1.0 / tmax
+    while f(hi) <= 0:
+        lo, hi = hi, hi * 2
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if f(mid) > 0:
+            hi = mid
+        else:
+            lo = mid
+        if hi - lo < 1e-13 * hi:
+            break
+    th = 0.5 * (lo + hi)
+    c = (1 - rho) / (lam * sum(w * t * math.exp(th * t) for w, t in pts) - 1)
+    out = {"rho": rho, "stable": True, "mean": lam * m2 / (2 * (1 - rho)), "p_wait": rho}
+    for q in qs:
+        out[f"p{_pct(q)}"] = 0.0 if rho <= 1 - q else max(0.0, math.log(c / (1 - q)) / th)
+    return out
+
+
+def dquantile(pts, q: float) -> float:
+    """q-quantile of a discrete distribution [(weight, value)] (weights need not be normalised)."""
+    pts = sorted(((w, v) for w, v in pts if w > 0), key=lambda x: x[1])
+    tot = sum(w for w, _ in pts)
+    acc = 0.0
+    for w, v in pts:
+        acc += w / tot
+        if acc >= q - 1e-12:
+            return v
+    return pts[-1][1]
+
+
 def _pct(q: float) -> str:
     s = f"{q * 100:g}"
     return s.replace(".", "_")
@@ -70,15 +124,16 @@ def erlang_c(c: int, a: float) -> float:
     return c * b / (c - a * (1 - b))
 
 
-def mdc_wait(lam: float, service: float, c: int, qs: tuple = (0.5, 0.9, 0.99)) -> dict:
-    """Slot wait of c deterministic servers (Allen–Cunneen ½ × Erlang C); quantiles from an exponential tail."""
+def mdc_wait(lam: float, service: float, c: int, qs: tuple = (0.5, 0.9, 0.99), cs2: float = 0.0) -> dict:
+    """Slot wait of c servers with mean holding time ``service`` (Allen–Cunneen (1 + c_s²)/2 × Erlang C; c_s² = 0
+    deterministic); quantiles from an exponential tail."""
     a = lam * service
     if lam <= 0:
         return {"rho": 0.0, "stable": True, "mean": 0.0, "p_wait": 0.0, **{f"p{_pct(q)}": 0.0 for q in qs}}
     if a >= c:
         return {"rho": a / c, "stable": False, "mean": math.inf, "p_wait": 1.0, **{f"p{_pct(q)}": math.inf for q in qs}}
     pw = erlang_c(c, a)
-    cond = 0.5 / (c / service - lam)          # mean conditional wait (M/M/c: 1/(cμ − λ)) × ½
+    cond = 0.5 * (1 + cs2) / (c / service - lam)   # mean conditional wait (M/M/c: 1/(cμ − λ)) × (1 + c_s²)/2
     out = {"rho": a / c, "stable": True, "mean": pw * cond, "p_wait": pw}
     for q in qs:
         out[f"p{_pct(q)}"] = 0.0 if pw <= 1 - q else cond * math.log(pw / (1 - q))

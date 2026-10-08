@@ -3,6 +3,26 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.52.0] - 2026-10-09
+
+PD 报告的三项补充：请求长度分布、前缀缓存命中率、池布局搜索。全部「假设」、默认关；默认结果（1356 项指纹）与 0.51.0 逐字节一致。
+
+### Added
+- 请求长度分布 `core/lengths.py`：`pd.prompt_cv` / `pd.out_cv`（对数正态，8 档等概率条件均值）或 `pd.length_mix`（离散联合分布 [权重, prompt, 输出]，≤ 16 行）。排队改为 M/G/1（`queueing.mg1`，离散服务分布的 P-K 均值 + Cramér–Lundberg 尾，单点即 M/D/1），每个 prompt 值单独求值；TTFT 分位用「自身 prefill + KV」的离散分位；decode 用 E[out]、长度偏置的上下文（`serving.ctx × ctx_ratio`）与 Allen–Cunneen (1 + c_s²)/2；流体容量（prefill / decode / KV 与合并对照）也按分布计算。`queueing.dquantile`、`mdc_wait(cs2=…)`。
+- 前缀缓存：`serving.prefix_cached`（prefill 的 Phase(q = S − p, ctx = p)：只算新 token、读前缀 KV；吞吐仍按整个 prompt）与 `pd.prefix_hit`（每个 prompt 的命中比例），`pd.prefix_on_decode`（默认 true：KV 交接只传未缓存部分）。分块 prefill 块数与前缀重读随之变化。
+- 池布局搜索 `pd.search_layouts`（opt-in）：两池每副本 1 / 2 / 4 / … / 64 卡的全部布局 × 同总卡数切分，流体 goodput 排序，部分布局对另算 SLO goodput（`layout_search`）。
+- 每个模式的 `stable_rate_rps`；分块的 `chunk_share`；`pd.lengths` 摘要。
+- CLI `--pd-prompt-cv --pd-out-cv --pd-mix --pd-prefix-hit --pd-prefix-not-on-decode --pd-search-layouts --prefix-cached`；Web PD 输入组「请求长度与前缀缓存」、单点页「池布局搜索」表；建模说明 §18.2；测试 `tests/test_core_052.py`。
+
+### Fixed
+- 合并 · 分块 prefill 的 decode 平均步时：0.51 用时间平均 ρ·T₁ + (1 − ρ)·T₀（偏向长迭代），改为每次迭代平均 T₀ / (1 − ρ + νT₀)，带块迭代占比 x = ν × 该值；块数用 ⌈S/C⌉。§18.1 例子里分块 TPOT 均值 9.4 → 5.4 ms、SLO goodput 433 → 511 tok/s/卡。PD 与 prefill 优先不变。
+
+### Changed
+- `Serving` 新增 `prefix_cached`，`PDConfig` 新增 6 个字段（场景哈希随之变化）；默认值下 PD 报告与 0.51 相同（分块修正除外）。
+
+### 不做 / 待定
+- 长度感知调度、缓存容量 / 淘汰 / 路由、decode 端共享前缀 KV 读合并、两池 batch 搜索、异构池、PD prefill 池内分块；离散事件仿真对拍。
+
 ## [0.51.0] - 2026-10-09
 
 PD 报告从稳态流体模型往下深入一层：排队与尾延迟、连续批处理、分块 prefill、KV 与池内集合通信争用、PD 能耗。全部是解析近似「假设」，只在 `pd.enabled` 时计算，默认结果与 0.50.0 逐字节一致。

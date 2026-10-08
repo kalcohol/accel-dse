@@ -47,6 +47,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--tpot-slo", type=float, default=None, help="TPOT SLO ms")
     p.add_argument("--ttft-slo", type=float, default=None, help="TTFT SLO ms")
     p.add_argument("--out-len", dest="out_len", type=int, default=None, help="output tokens per request (goodput / PD)")
+    p.add_argument("--prefix-cached", dest="prefix_cached", type=int, default=None,
+                   help="prefill: prompt tokens already in the KV cache (prefix-cache hit, 0.52)")
     for k, hlp in (("frames", "video frames"), ("height", "video height px"), ("width", "video width px"),
                    ("steps", "denoise steps (structure models: diffusion steps)"), ("cfg", "forwards per step (2 = CFG)"),
                    ("seq-len", "protein residues"), ("msa", "MSA rows (structure models)"),
@@ -132,15 +134,40 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="PD queueing: absolute offered load, requests/s (overrides --pd-load)")
     p.add_argument("--pd-chunk", dest="pd_chunk", type=int, default=None,
                    help="colocated chunked-prefill token budget per iteration (comparison; default 512 「假设」)")
+    p.add_argument("--pd-prompt-cv", dest="pd_prompt_cv", type=float, default=None,
+                   help="PD: prompt-length coefficient of variation (lognormal, 8 bins; 0.52 「假设」)")
+    p.add_argument("--pd-out-cv", dest="pd_out_cv", type=float, default=None,
+                   help="PD: output-length coefficient of variation (lognormal, 8 bins)")
+    p.add_argument("--pd-mix", dest="pd_mix", default=None,
+                   help="PD: discrete length mix 'weight:prompt:out,…' (e.g. 0.7:1024:256,0.3:11264:1109)")
+    p.add_argument("--pd-prefix-hit", dest="pd_prefix_hit", type=float, default=None,
+                   help="PD: prefix-cache hit fraction of each prompt (0–0.99; skips that prefill, shrinks KV hand-off)")
+    p.add_argument("--pd-prefix-not-on-decode", dest="pd_prefix_not_on_decode", action="store_true",
+                   help="PD: the decode pool does not hold the cached prefix (transfer the full KV)")
+    p.add_argument("--pd-search-layouts", dest="pd_search_layouts", action="store_true",
+                   help="PD: also search the pools' layouts (not only the card split)")
     for flag, dest, hlp in _BUDGET_FLAGS:
         p.add_argument(flag, dest=dest, type=float, default=None, help=f"budget (0.49, user-supplied): {hlp}")
     p.add_argument("--json", action="store_true", help="print raw JSON")
 
 
+def _parse_mix(text: str) -> list:
+    rows = []
+    for part in text.split(","):
+        bits = part.strip().split(":")
+        if len(bits) != 3:
+            raise SystemExit(f"--pd-mix: expected weight:prompt:out, got {part!r}")
+        try:
+            rows.append([float(bits[0]), int(bits[1]), int(bits[2])])
+        except ValueError:
+            raise SystemExit(f"--pd-mix: bad number in {part!r}") from None
+    return rows
+
+
 def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     sv = {"phase": a.phase, "batch": a.batch, "spec_k": a.spec_k}
     for k, attr in (("ctx", "ctx"), ("prompt", "prompt"), ("spec_accept", "spec_accept"), ("tpot_slo_ms", "tpot_slo"),
-                    ("ttft_slo_ms", "ttft_slo"), ("out_len", "out_len")):
+                    ("ttft_slo_ms", "ttft_slo"), ("out_len", "out_len"), ("prefix_cached", "prefix_cached")):
         if getattr(a, attr) is not None:
             sv[k] = getattr(a, attr)
     if getattr(a, "moe_skew", None) is not None:
@@ -195,9 +222,16 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["pd"] = {"enabled": True, "prefill_layout": {k: getattr(a, f"pd_prefill_{k}") for k in ("pp", "tp", "dp", "ep", "etp")},
                     "prefill_cards": a.pd_prefill_cards, "decode_cards": a.pd_decode_cards,
                     "kv_GBps": a.pd_kv_GBps, "kv_layerwise": a.pd_layerwise}
-        for k, dest in (("load", "pd_load"), ("rate_rps", "pd_rate"), ("chunk_tokens", "pd_chunk")):
+        for k, dest in (("load", "pd_load"), ("rate_rps", "pd_rate"), ("chunk_tokens", "pd_chunk"),
+                        ("prompt_cv", "pd_prompt_cv"), ("out_cv", "pd_out_cv"), ("prefix_hit", "pd_prefix_hit")):
             if getattr(a, dest, None) is not None:
                 sc["pd"][k] = getattr(a, dest)
+        if getattr(a, "pd_mix", None):
+            sc["pd"]["length_mix"] = _parse_mix(a.pd_mix)
+        if getattr(a, "pd_prefix_not_on_decode", False):
+            sc["pd"]["prefix_on_decode"] = False
+        if getattr(a, "pd_search_layouts", False):
+            sc["pd"]["search_layouts"] = True
     body = {"chip_preset": a.chip, "scenario": sc}
     en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
                                      "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net")
@@ -327,9 +361,15 @@ def cmd_eval(a) -> dict:
               f"(effective {c_['tpot_eff_ms']:.2f})  goodput {c_['goodput_per_card']:.1f} tok/s/card")
         for w in pd["warnings"]:
             print("    ! " + w)
+        if (L := pd.get("lengths")) and not L["plain"]:
+            print(f"  lengths 「假设」 ({L['source']}): mean prompt {L['mean_prompt']:.0f} (cv {L['prompt_cv_eff']:.2f})  "
+                  f"mean out {L['mean_out']:.0f} (cv {L['out_cv_eff']:.2f})  decode ctx {L['decode_ctx']}"
+                  + (f"  prefix hit {L['prefix_hit']:.0%}" + ("" if L["prefix_on_decode"] else " (full KV hand-off)")
+                     if L["prefix_hit"] else ""))
         if (q := pd.get("queue")) and "modes" in q:
             print(f"  queueing at {q['lambda_rps']:.3g} req/s"
-                  + (f" ({q['load']:.0%} of PD capacity)" if q.get("load") else "") + "  「假设」 Poisson, M/D/1, Erlang C")
+                  + (f" ({q['load']:.0%} of PD capacity)" if q.get("load") else "") + "  「假设」 Poisson, " + ("M/D/1" if (pd.get("lengths") or {}).get("source", "fixed") == "fixed" else "M/G/1")
+                  + ", Erlang C")
             names = {"pd": "PD", "coloc_prefill_first": "colocated prefill-first", "coloc_chunked":
                      f"colocated chunked ({q['chunk_tokens']} tok)"}
             for k, x in q["modes"].items():
@@ -339,12 +379,23 @@ def cmd_eval(a) -> dict:
                 t = x["ttft_ms"]
                 print(f"    {names[k]:<28} TTFT p50/p90/p99 {t['p50']:.0f}/{t['p90']:.0f}/{t['p99']:.0f} ms  "
                       f"TPOT mean/p90/p99 {x['tpot_mean_ms']:.1f}/{x['tpot_p90_ms']:.1f}/{x['tpot_p99_ms']:.1f} ms  "
-                      f"max gap {x['itl_max_ms']:.0f} ms  SLO goodput {x['slo_goodput_per_card']:.1f} tok/s/card")
+                      f"max gap {x['itl_max_ms']:.0f} ms  SLO goodput {x['slo_goodput_per_card']:.1f} tok/s/card  "
+                      f"stable ≤ {x['stable_rate_rps']:.3g} req/s")
             if b := q.get("pd_slo_best_split"):
                 print(f"    PD best split under SLO: {b['prefill_cards']}P+{b['decode_cards']}D "
                       f"{b['slo_goodput_per_card']:.1f} tok/s/card")
         elif q and q.get("error"):
             print("  queueing: " + q["error"])
+        if ls := pd.get("layout_search"):
+            print(f"  layout search 「假设」: {ls['candidates']} layouts{' (truncated)' if ls['truncated'] else ''}, "
+                  f"{ls['pairs']} pairs on {ls['cards']} cards")
+            for r in ls["rows"][:8]:
+                slo = f"  SLO {r['slo_goodput_per_card']:.1f}" if "slo_goodput_per_card" in r else ""
+                print(f"    P {r['prefill_layout']} ×{r['prefill_cards']}  D {r['decode_layout']} ×{r['decode_cards']}  "
+                      f"fluid {r['goodput_per_card']:.1f} tok/s/card ({r['bottleneck']}){slo}")
+            if b := ls.get("best_slo"):
+                print(f"    best under SLO: P {b['prefill_layout']} ×{b['prefill_cards']}  D {b['decode_layout']} "
+                      f"×{b['decode_cards']}  {b['slo_goodput_per_card']:.1f} tok/s/card")
     elif pd:
         print("PD: " + pd["error"])
     for w in s["warnings"]:

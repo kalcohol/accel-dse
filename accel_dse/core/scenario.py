@@ -35,6 +35,7 @@ class Serving:
     ttft_slo_ms: float = 2000.0
     moe_skew: float = 1.0          # MoE: busiest EP rank's token-expert pairs / mean (0.49; 1 = uniform) 「假设」
     moe_expert_load: tuple[float, ...] = ()   # MoE: relative tokens per expert (measured) → skew per EP layout
+    prefix_cached: int = 0         # prefill: prompt tokens already in the KV cache (prefix-cache hit, 0.52) 「假设」
 
     def __post_init__(self):
         if self.phase not in ("decode", "prefill"):
@@ -47,6 +48,9 @@ class Serving:
                 raise ValueError(f"serving.{k} must be an integer ≥ 0")
         if self.spec_k > 8:
             raise ValueError("serving.spec_k must be ≤ 8")
+        if isinstance(self.prefix_cached, bool) or not isinstance(self.prefix_cached, int) \
+                or not 0 <= self.prefix_cached < self.prompt:
+            raise ValueError("serving.prefix_cached must be an integer in [0, prompt)")
         if not (0.0 <= self.spec_accept <= 1.0):
             raise ValueError("serving.spec_accept must be in [0, 1]")
         for k in ("tpot_slo_ms", "ttft_slo_ms"):
@@ -139,6 +143,13 @@ class PDConfig:
     load: float = 0.8               # offered load for the queueing estimate, × the PD fluid capacity (0.51) 「假设」
     rate_rps: float | None = None   # absolute offered load, requests/s (overrides load)
     chunk_tokens: int = 512         # colocated chunked-prefill token budget per iteration (comparison only) 「假设」
+    # 0.52 — request-length spread and prefix caching (queueing + capacity; all 「假设」; defaults = 0.51 behaviour)
+    prompt_cv: float = 0.0          # prompt-length coefficient of variation (lognormal, mean = serving.prompt)
+    out_cv: float = 0.0             # output-length coefficient of variation (lognormal, mean = serving.out_len)
+    length_mix: tuple[tuple[float, int, int], ...] = ()   # discrete (weight, prompt, out_len) mix; overrides the above
+    prefix_hit: float = 0.0         # fraction of each prompt already in the prefix cache (skips its prefill)
+    prefix_on_decode: bool = True   # the decode pool holds the same prefix → only the uncached KV is transferred
+    search_layouts: bool = False    # also search the pools' layouts (not only the card split)
 
     def __post_init__(self):
         for k in ("prefill_cards", "decode_cards"):
@@ -160,6 +171,29 @@ class PDConfig:
             raise ValueError("pd.chunk_tokens must be an integer in [16, 1048576]")
         if not isinstance(self.enabled, bool) or not isinstance(self.kv_layerwise, bool):
             raise ValueError("pd.enabled / pd.kv_layerwise must be booleans")
+        for k in ("prompt_cv", "out_cv"):
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 4:
+                raise ValueError(f"pd.{k} must be in [0, 4]")
+        if isinstance(self.prefix_hit, bool) or not isinstance(self.prefix_hit, (int, float)) \
+                or not 0 <= self.prefix_hit <= 0.99:
+            raise ValueError("pd.prefix_hit must be in [0, 0.99]")
+        if not isinstance(self.prefix_on_decode, bool) or not isinstance(self.search_layouts, bool):
+            raise ValueError("pd.prefix_on_decode / pd.search_layouts must be booleans")
+        mix = self.length_mix
+        if not isinstance(mix, tuple) or len(mix) > 16:
+            raise ValueError("pd.length_mix: at most 16 [weight, prompt, out_len] rows")
+        for row in mix:
+            if not isinstance(row, tuple) or len(row) != 3:
+                raise ValueError("pd.length_mix rows must be [weight, prompt, out_len]")
+            w, sp, so = row
+            if isinstance(w, bool) or not isinstance(w, (int, float)) or not 0 < w < 1e9 or not math.isfinite(w):
+                raise ValueError("pd.length_mix: weight must be a finite number > 0")
+            for v in (sp, so):
+                if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 1 << 21:
+                    raise ValueError("pd.length_mix: prompt / out_len must be integers in [1, 2097152]")
+        if mix and (self.prompt_cv or self.out_cv):
+            raise ValueError("pd.length_mix and pd.prompt_cv / pd.out_cv are alternatives — set one")
 
 
 @dataclass(frozen=True)
@@ -274,6 +308,11 @@ def _to_plain(o):
     return o
 
 
+def _num_canon_w(i, v):
+    """length_mix rows: the weight is a float (canonical), prompt / out_len stay integers."""
+    return float(v) if i == 0 and isinstance(v, int) and not isinstance(v, bool) else v
+
+
 def _check_num(v, where):
     if isinstance(v, bool):
         return v
@@ -297,6 +336,10 @@ def _from_plain(cls, d):
             kw[k] = _from_plain(hints[k], v)
         elif k in ("formats_override", "rates") and isinstance(v, list):
             kw[k] = tuple(tuple(x) for x in v)
+        elif k == "length_mix" and isinstance(v, list):
+            if not all(isinstance(x, list) for x in v):
+                raise ValueError("PDConfig.length_mix: expected a list of [weight, prompt, out_len]")
+            kw[k] = tuple(tuple(_num_canon_w(i, _check_num(y, "PDConfig.length_mix")) for i, y in enumerate(x)) for x in v)
         elif k == "moe_expert_load" and isinstance(v, list):
             kw[k] = tuple(_check_num(x, "Serving.moe_expert_load") for x in v)
         else:

@@ -320,7 +320,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     else:
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
-        ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt, 0, skew=skew)
+        ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=skew)
         ctx_cap = sv.prompt
     sh = lay.shard
     stages = []
