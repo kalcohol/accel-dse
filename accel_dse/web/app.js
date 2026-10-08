@@ -30,7 +30,6 @@ function put(e, ...kids) {
 const pct = (x) => (x === null || x === undefined || !isFinite(x)) ? '—' : (x * 100).toFixed(x < 0.1 ? 1 : 0) + '%';
 
 const COVER_ZH = { full: '完整', partial: '部分', proxy: '架构代理' };
-const DOMAIN_SHORT = { llm: 'LLM', vlm: 'VLM', gen: '生成' };
 const COVER_LEGEND = '覆盖度表示本工具对该模型结构的建模覆盖程度，与模型好坏无关：完整 = 全部算子按发布结构逐项建模；部分 = 主干逐项建模，个别机制近似；架构代理 = 有未建模的结构，结果只作量级参考。';
 function coverTip(m) {
   const r = m.coverage_reasons || [];
@@ -145,17 +144,27 @@ function seg(id, items, get, set) {
 function paintSeg(id, v) { $(id).querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); }
 
 /* ------------------------------------------------------------------ model */
-function fillModels() {
-  const sel = $('model');
+function catalogRows() {
+  // full catalog in API order: vendor (厂商) → evaluable families → catalog-only families (video generation / protein)
+  const off = Object.fromEntries(S.offline.map((o) => [o.id, o]));
+  return S.catalog.map((id) => S.byId[id] || off[id]).filter(Boolean);
+}
+function vendorGroups(rows) {
   const groups = [];
-  for (const m of S.models) {
-    const key = m.domain + '/' + m.provider;
-    let g = groups.find((x) => x.key === key);
-    if (!g) groups.push((g = { key, label: `${DOMAIN_SHORT[m.domain]} · ${m.provider_label}`, items: [] }));
+  for (const m of rows) {
+    let g = groups[groups.length - 1];
+    if (!g || g.key !== m.provider) groups.push((g = { key: m.provider, label: m.provider_label, items: [] }));
     g.items.push(m);
   }
-  put(sel, ...groups.map((g) => h('optgroup', { label: g.label }, g.items.map((m) =>
-    h('option', { value: m.id, title: coverTip(m) }, `${m.label}　· ${COVER_ZH[m.coverage]}`)))));
+  return groups;
+}
+const OFF_DOMAIN = { gen: '视频生成', protein: '蛋白质' };
+const offBadge = (o) => h('span', { class: 'badge off', title: (OFF_DOMAIN[o.domain] || o.domain_label) + '模型在 core v2 中暂未接入，只列在目录中，不能评估' }, o.status);
+function fillModels() {
+  const sel = $('model');
+  put(sel, ...vendorGroups(catalogRows()).map((g) => h('optgroup', { label: g.label }, g.items.map((m) => m.evaluable
+    ? h('option', { value: m.id, title: coverTip(m) }, `${m.label}${m.domain === 'vlm' ? '（VLM）' : ''}　· ${COVER_ZH[m.coverage]}`)
+    : h('option', { value: m.id, disabled: true, title: '暂未接入 v2，不能评估' }, `${m.label}　· ${OFF_DOMAIN[m.domain]} · ${m.status}`)))));
   sel.value = S.sc.model;
   sel.addEventListener('change', () => { S.sc.model = sel.value; onModel(); schedule(); });
 }
@@ -689,32 +698,41 @@ function renderModels() {
     h('th', {}, '参数 B'), h('th', {}, '激活 B'), h('th', {}, 'vs 发布'), h('th', { class: 'l' }, '结构'));
   const NC = 10;
   const rows = [];
-  let dom = null, prov = null;
-  const groupRows = (d, dl, p, pl) => {
-    if (d !== dom) { rows.push(h('tr', { class: 'grp dom' }, h('td', { class: 'l', colspan: NC }, dl))); dom = d; prov = null; }
-    if (p !== prov) { rows.push(h('tr', { class: 'grp' }, h('td', { class: 'l', colspan: NC }, pl))); prov = p; }
-  };
-  for (const m of S.models) {
-    groupRows(m.domain, m.domain_label, m.provider, m.provider_label);
-    const approx = [...(m.coverage_reasons || []), ...(m.vision_params_B ? [`视觉编码器（${num(m.vision_params_B)}B）未建模`] : [])];
-    rows.push(h('tr', { class: 'click', onclick: () => { S.sc.model = m.id; $('model').value = m.id; onModel(); activate('eval'); schedule(); } },
-      h('td', { class: 'l' }, m.label, h('div', { class: 'small muted mono' }, m.hf_id),
-        m.same_as.length ? h('div', { class: 'small muted' }, '同结构：' + m.same_as.map((x) => x.label).join('、')) : null),
-      h('td', { class: 'l' }, m.family),
-      h('td', { class: 'l' }, h('span', { class: 'badge ' + m.provenance }, PROV_ZH[m.provenance])),
-      h('td', { class: 'l' }, coverBadge(m)),
-      h('td', { class: 'wrap small' }, approx.length ? approx.join('；') : h('span', { class: 'muted' }, '—')),
-      h('td', { class: 'l' }, m.dtype), h('td', {}, num(m.params_B)), h('td', {}, num(m.active_B)),
-      h('td', {}, (m.param_err * 100).toFixed(2) + '%'), h('td', { class: 'l' }, m.arch)));
+  const all = catalogRows();
+  for (const g of vendorGroups(all)) {
+    const ne = g.items.filter((m) => m.evaluable).length, no = g.items.length - ne;
+    rows.push(h('tr', { class: 'grp dom', 'data-vendor': g.key }, h('td', { class: 'l', colspan: NC }, g.label,
+      h('span', { class: 'cnt' }, [ne ? `${ne} 个可评估` : null, no ? `${no} 个暂未接入 v2` : null].filter(Boolean).join(' · ')))));
+    let fam = null;
+    for (const m of g.items) {
+      const famCell = h('td', { class: 'l' + (m.family === fam ? ' muted' : '') }, m.family);
+      fam = m.family;
+      if (!m.evaluable) {
+        rows.push(h('tr', { class: 'off', 'data-id': m.id, 'data-domain': m.domain },
+          h('td', { class: 'l' }, m.label.replace(/_/g, '_\u200b'), h('div', {}, h('span', { class: 'badge dom' }, OFF_DOMAIN[m.domain])),
+            h('div', { class: 'small muted mono' }, m.hf_id || 'github: ' + m.source.replace(/^https:\/\/github\.com\//, '').split('/').slice(0, 2).join('/'))),
+          famCell, h('td', { class: 'l' }, '—'), h('td', { class: 'l' }, offBadge(m)),
+          h('td', { class: 'wrap small muted' }, `${m.arch_detail}；${OFF_DOMAIN[m.domain]}模型在 core v2 中暂未接入，不能评估`),
+          h('td', { class: 'l' }, '—'), h('td', {}, '—'), h('td', {}, '—'), h('td', {}, '—'), h('td', { class: 'l' }, m.arch)));
+        continue;
+      }
+      const approx = [...(m.coverage_reasons || []), ...(m.vision_params_B ? [`视觉编码器（${num(m.vision_params_B)}B）未建模`] : [])];
+      rows.push(h('tr', { class: 'click', 'data-id': m.id, 'data-domain': m.domain, onclick: () => { S.sc.model = m.id; $('model').value = m.id; onModel(); activate('eval'); schedule(); } },
+        h('td', { class: 'l' }, m.label, m.domain === 'vlm' ? h('div', {}, h('span', { class: 'badge vlm', title: coverTip(m) }, 'VLM · 视觉编码器未建模')) : null,
+          h('div', { class: 'small muted mono' }, m.hf_id),
+          m.same_as.length ? h('div', { class: 'small muted' }, '同结构：' + m.same_as.map((x) => x.label).join('、')) : null),
+        famCell,
+        h('td', { class: 'l' }, h('span', { class: 'badge ' + m.provenance }, PROV_ZH[m.provenance])),
+        h('td', { class: 'l' }, coverBadge(m)),
+        h('td', { class: 'wrap small' }, approx.length ? approx.join('；') : h('span', { class: 'muted' }, '—')),
+        h('td', { class: 'l' }, m.dtype), h('td', {}, num(m.params_B)), h('td', {}, num(m.active_B)),
+        h('td', {}, (m.param_err * 100).toFixed(2) + '%'), h('td', { class: 'l' }, m.arch)));
+    }
   }
-  for (const o of S.offline) {
-    groupRows(o.domain, o.domain_label + ' · 暂未接入 v2', o.provider, o.provider_label);
-    rows.push(h('tr', { class: 'off' },
-      h('td', { class: 'l' }, o.label, h('div', { class: 'small muted mono' }, o.hf_id)), h('td', { class: 'l' }, o.family),
-      h('td', { class: 'l' }, '—'), h('td', { class: 'l' }, h('span', { class: 'badge off' }, o.status)),
-      h('td', { class: 'wrap small muted' }, '图像 / 视频生成在 core v2 中暂未接入，不能评估'),
-      h('td', { class: 'l' }, '—'), h('td', {}, '—'), h('td', {}, '—'), h('td', {}, '—'), h('td', { class: 'l' }, o.arch)));
-  }
+  const cnt = (f) => all.filter(f).length;
+  put($('models-summary'), `共 ${all.length} 个：可评估 ${cnt((m) => m.evaluable)} 个（LLM ${cnt((m) => m.domain === 'llm')} · VLM ${cnt((m) => m.domain === 'vlm')}）；`,
+    `暂未接入 v2（灰色行，不能评估）${cnt((m) => !m.evaluable)} 个（视频生成 ${cnt((m) => m.domain === 'gen')} · 蛋白质 ${cnt((m) => m.domain === 'protein')}）。`,
+    '分子动力学 / 机器学习力场（MLFF）目录中暂无条目。');
   put($('models-tbl'), h('thead', {}, head), h('tbody', {}, rows));
   put($('models-unlisted'), ...S.unlisted.map((u) => h('li', {}, h('b', {}, u.label), '：', u.reason)));
 }
@@ -733,6 +751,7 @@ async function init() {
     S.cat = cat;
     S.models = models.models;
     S.offline = models.offline;
+    S.catalog = models.catalog;
     S.unlisted = models.unlisted;
     for (const m of S.models) S.byId[m.id] = m;
     $('ver').textContent = 'v' + health.version;

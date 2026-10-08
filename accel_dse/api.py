@@ -14,7 +14,7 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Any
 
 from . import __version__, mem_catalog
-from .core.catalog import DOMAINS, get_model, labels, list_models, offline_entries, unlisted_models
+from .core.catalog import DOMAINS, catalog_listing, get_model, labels, list_models, offline_entries, unlisted_models
 from .core.evaluate import Result, evaluate
 from .core.hardware import CHIPS, Chip
 from .core.mapping import ORG_LABEL, ORGS
@@ -191,8 +191,9 @@ def api_health() -> dict:
 
 
 def api_models() -> dict:
-    return {"models": list_models(), "offline": offline_entries(), "unlisted": unlisted_models(), "domains": DOMAINS,
-            "note": "图像 / 视频生成（DiT）暂未接入 v2，只列在目录中；蛋白质领域暂时下线；见 docs/MODEL.md §10"}
+    return {"models": list_models(), "offline": offline_entries(), "catalog": [m["id"] for m in catalog_listing()],
+            "unlisted": unlisted_models(), "domains": DOMAINS,
+            "note": "按厂商 → 系列排列；视频生成（DiT）与蛋白质模型列在目录中，暂未接入 v2（不能评估）；见 docs/MODEL.md §10"}
 
 
 def api_catalog() -> dict:

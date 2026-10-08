@@ -171,8 +171,9 @@
   </section>
 
   <section class="tab" id="tab-models" hidden>
-    <p class="small muted">按领域 → 厂商 → 系列排列；系列内按尺寸从大到小，官方量化版（FP8 / AWQ）紧跟原版。三轴标签：来源（官方 / 镜像）× 覆盖 × 按发布的 dtype；参数量由发布的 safetensors 头统计，并与按 config 推导的值核对。</p>
+    <p class="small muted">按厂商 → 系列排列，同一厂商的 LLM 与 VLM 放在一起（VLM 行带标记）；系列内按尺寸从大到小，官方量化版（FP8 / AWQ）紧跟原版；视频生成与蛋白质模型列在各自厂商之下，标「暂未接入 v2」。三轴标签：来源（官方 / 镜像）× 覆盖 × 按发布的 dtype；参数量由发布的 safetensors 头统计，并与按 config 推导的值核对。</p>
     <p class="small"><b>覆盖度</b>指本工具对该模型结构的建模覆盖程度，与模型好坏无关：<span class="badge cov full">完整</span> 全部算子按发布结构逐项建模；<span class="badge cov partial">部分</span> 主干逐项建模，个别机制近似（见「近似之处」）；<span class="badge cov proxy">架构代理</span> 含未建模的结构，结果只作量级参考。VLM 只评估语言主干，视觉编码器未建模。</p>
+    <p class="small" id="models-summary"></p>
     <div class="scroll"><table class="tbl" id="models-tbl"></table></div>
     <details class="notes"><summary>未单列的发布（仍可按 id 评估，也都参与参数核对）</summary><ul id="models-unlisted"></ul></details>
   </section>
@@ -184,7 +185,7 @@
     <p id="honesty-text"></p>
     <h4>范围</h4>
     <ul>
-      <li>只覆盖 LLM 推理（decode / prefill / goodput）。视频与蛋白质领域在 0.40 暂时下线：v2 校验流水线目前只覆盖 LLM，待对应模型按发布接入并通过校验后再开放。</li>
+      <li>只覆盖 LLM 推理（decode / prefill / goodput；VLM 只算语言主干）。视频生成（DiT）与蛋白质模型列在模型目录中，标「暂未接入 v2」，不能评估：v2 校验流水线目前只覆盖 LLM，待对应模型按发布接入并通过校验后再开放。分子动力学 / 力场不在范围内。</li>
       <li>「架构代理」：模型含有尚未逐项建模的结构（如超连接、n-gram 查找表、压缩稀疏注意力），参数按发布计入，部分计算按近似处理。</li>
       <li>dtype 按发布；芯片不支持的格式按反量化 / 上转换计入向量单元开销。自由覆盖只作为标注的 what-if。</li>
       <li>不做功耗 / 面积 / 成本估计。</li>

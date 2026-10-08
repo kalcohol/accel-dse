@@ -120,6 +120,9 @@ def cmd_models(a) -> dict:
     _table([[m["id"], m["provenance"], m["coverage"] + (" 「架构代理」" if m["proxy_badge"] else ""), m["dtype"],
              m["params_B"], m["active_B"]] for m in out["models"]],
            ["id", "provenance", "coverage", "dtype", "params B", "active B"])
+    print("\n暂未接入 v2（只列在目录中，不能评估）:")
+    _table([[o["id"], o["domain_label"], o["provider_label"], o["arch"]] for o in out["offline"]],
+           ["id", "domain", "vendor", "arch"])
     return {}
 
 

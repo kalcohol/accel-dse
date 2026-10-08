@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from accel_dse import __version__, api, cli
-from accel_dse.core.catalog import list_models
+from accel_dse.core.catalog import UNLISTED, list_models
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIP_1P
 from accel_dse.core.mapping import ORGS
@@ -104,7 +104,10 @@ def test_models_three_axis_labels_llm_only():
     models = list_models()
     raw = json.loads((ROOT / "accel_dse" / "data" / "series_catalog.json").read_text())
     non_llm = {e["id"] for e in raw["entries"] if e.get("domain") != "llm"}
-    assert non_llm and not non_llm & {m["id"] for m in models}  # AF / video / protein entries hidden
+    assert non_llm and not non_llm & {m["id"] for m in models}  # video / protein entries are not evaluable
+    out = api.api_models()                                      # … but listed as catalog-only rows
+    assert non_llm - set(UNLISTED) == {o["id"] for o in out["offline"]}
+    assert sorted(out["catalog"]) == sorted([m["id"] for m in models] + [o["id"] for o in out["offline"]])
     for m in models:
         assert m["provenance"] in ("official", "mirror") and m["coverage"] in ("full", "partial", "proxy")
         assert m["proxy_badge"] == (m["coverage"] == "proxy") and m["dtype"].startswith("W ")

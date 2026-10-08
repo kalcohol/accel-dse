@@ -108,29 +108,53 @@ def test_lookup_tables_stored_not_active():
 
 
 def test_catalog_listing_grouping_coverage_and_merges():
-    """Listing: every model carries a coverage level, non-full ⇔ concrete reasons; grouped domain → provider →
-    family with sizes non-increasing; merged entries really have the same structure and dtype."""
-    from accel_dse.core.catalog import MERGED, dtype_label, list_models, offline_entries
+    """Listing: every model carries a coverage level, non-full ⇔ concrete reasons; grouped vendor → family (LLM and
+    VLM of one vendor together, domain only a badge) with sizes non-increasing; catalog-only video / protein rows sit
+    under their vendor after its evaluable rows; merged entries really have the same structure and dtype."""
+    from accel_dse.core.catalog import MERGED, catalog_listing, dtype_label, list_models, offline_entries
     ms = list_models()
     seen, prev = [], None
     for m in ms:
         assert m["coverage"] in ("full", "partial", "proxy")
         assert (m["coverage"] == "full") == (not m["coverage_reasons"]), m["id"]
         assert (m["domain"] == "vlm") == (m["vision_params_B"] > 0), m["id"]
-        g = (m["domain"], m["provider"])
-        if g != (prev and (prev["domain"], prev["provider"])):
-            assert g not in seen, g                      # each group is contiguous
-            seen.append(g)
+        if m["provider"] != (prev and prev["provider"]):
+            assert m["provider"] not in seen, m["provider"]      # each vendor group is contiguous
+            seen.append(m["provider"])
         elif prev["family"] == m["family"]:
             assert m["params_B"] <= prev["params_B"] + 1e-9, (prev["id"], m["id"])
         prev = m
     assert {"llm", "vlm"} == {m["domain"] for m in ms}
+    for v in ("alibaba", "deepseek", "kimi", "zhipu"):                # text + VLM releases share one vendor group
+        assert {"llm", "vlm"} == {m["domain"] for m in ms if m["provider"] == v}, v
     listed = {m["id"] for m in ms}
     for a, b in MERGED.items():
         assert a not in listed and b in listed
         sa, sb = get_model(a), get_model(b)
         assert sa.params() == sb.params() and dtype_label(sa) == dtype_label(sb), (a, b)
     off = offline_entries()
-    assert off and all(o["domain"] == "gen" for o in off) and not ({o["id"] for o in off} & listed)
+    ids = {o["id"] for o in off}
+    assert {"gen", "protein"} == {o["domain"] for o in off} and not (ids & listed)
+    assert {"wan2.1-14b", "cogvideox-5b", "minimax-h3", "esm2-3b", "esm2-650m", "esmfold", "alphafold3", "protenix"} <= ids
+    assert all(o["provider"] != "other" and not o["evaluable"] for o in off)
+    for o in off:                                                     # catalog-only rows are not resolvable
+        try:
+            get_model(o["id"])
+            raise AssertionError(o["id"])
+        except KeyError:
+            pass
+    cat = catalog_listing()
+    assert [c["id"] for c in cat if c["evaluable"]] == [m["id"] for m in ms] and len(cat) == len(ms) + len(off)
+    seen, prev = [], None
+    for c in cat:
+        if c["provider"] != (prev and prev["provider"]):
+            assert c["provider"] not in seen, c["provider"]
+            seen.append(c["provider"])
+        else:
+            assert c["evaluable"] <= prev["evaluable"], (prev["id"], c["id"])   # evaluable rows first in a vendor
+        prev = c
+    vend = {c["id"]: c["provider"] for c in cat}
+    assert vend["wan2.1-14b"] == vend["qwen3-8b"] and vend["esm2-3b"] == vend["llama-3.1-8b"]
+    assert vend["cogvideox-5b"] == vend["glm-4.6"] and vend["protenix"] == vend["seed-oss-36b"]
     assert labels(get_model("kimi-k3"))["coverage"] == "partial"
     assert labels(get_model("qwen3-next-80b-a3b"))["coverage_reasons"][0].startswith("线性注意力 Gated DeltaNet")

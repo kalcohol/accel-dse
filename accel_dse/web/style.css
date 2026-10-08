@@ -85,6 +85,10 @@ input.bad { border-color: var(--danger); }
 .tbl tr.grp td { background: var(--panel); color: var(--muted); font-weight: 600; font-size: 12px; padding-top: 8px; }
 .tbl tr.grp.dom td { color: var(--text); font-size: 13px; border-bottom: 1px solid var(--accent); }
 .tbl tr.off td { color: var(--muted); }
+.tbl tr.grp .cnt { margin-left: 10px; color: var(--muted); font-weight: 400; font-size: 11px; }
+#models-tbl td .badge.vlm, #models-tbl td .badge.dom { display: inline-block; margin: 2px 0 1px; font-size: 10.5px; white-space: normal; }
+.badge.dom { color: var(--muted); }
+#models-tbl td.wrap { overflow-wrap: anywhere; }
 
 /* segmented */
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; flex-wrap: nowrap; max-width: 100%; }
@@ -189,3 +193,4 @@ input.bad { border-color: var(--danger); }
   .kpi .v { font-size: 18px; }
   .toolbar label, .toolbar label:has(select), .toolbar label:has(input[type=text]) { width: calc(50% - 6px); }
 }
+#models-tbl td:first-child { min-width: 9em; overflow-wrap: anywhere; }

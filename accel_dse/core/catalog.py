@@ -3,7 +3,8 @@
 Sources: LLM entries of ``data/series_catalog.json`` (labels / aliases) plus
 official quantised releases as *separate* entries (as-released dtype) and a
 few small references.  Gated repos (meta-llama) use public byte-identical
-mirrors (unsloth/*), labelled as mirror provenance.
+mirrors (unsloth/*), labelled as mirror provenance.  Video generation and protein entries of the same file are
+listed as catalog-only rows (not yet on core v2).  Listing order: vendor (厂商) → family → size.
 """
 
 from __future__ import annotations
@@ -34,33 +35,41 @@ EXTRA = [
 ]
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors"}
 
-# ---------------------------------------------------------------- listing: domain → provider → family
-DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态，评估语言主干）", "gen": "图像 / 视频生成（DiT）"}
-PROVIDERS = [   # key, label, HF orgs — listing order
-    ("qwen", "Qwen（阿里）", ("Qwen/",)), ("deepseek", "DeepSeek（深度求索）", ("deepseek-ai/",)),
-    ("kimi", "Kimi（月之暗面）", ("moonshotai/",)), ("glm", "GLM（智谱）", ("zai-org/",)),
-    ("minimax", "MiniMax（稀宇）", ("MiniMaxAI/",)), ("llama", "Llama（Meta）", ("unsloth/", "meta-llama/")),
-    ("gpt-oss", "gpt-oss（OpenAI）", ("openai/",)), ("mistral", "Mistral", ("mistralai/",)),
-    ("phi", "Phi（微软）", ("microsoft/",)), ("seed", "Seed（字节跳动）", ("ByteDance-Seed/",)),
-    ("yi", "Yi（零一万物）", ("01-ai/",)), ("internlm", "InternLM（上海 AI 实验室）", ("internlm/",)),
-    ("wan", "Wan（阿里）", ("Wan-AI/",)), ("cogvideo", "CogVideoX（智谱）", ("THUDM/",)),
-    ("hunyuan", "HunyuanVideo（腾讯）", ("hunyuanvideo-community/",)), ("ltx", "LTX-Video（Lightricks）", ("Lightricks/",)),
-    ("mochi", "Mochi（Genmo）", ("genmo/",)), ("opensora", "Open-Sora（HPC-AI Tech）", ("hpcai-tech/",)),
+# ---------------------------------------------------------------- listing: vendor (厂商) → family; domain is only a badge
+DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态，评估语言主干）", "gen": "视频生成（DiT）", "protein": "蛋白质"}
+OFFLINE_DOMAINS = {"video": "gen", "protein": "protein"}     # series_catalog domain → listing domain (not on core v2)
+PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only releases) — listing order
+    ("alibaba", "阿里（Qwen · Wan）", ("Qwen/", "Wan-AI/")), ("deepseek", "DeepSeek（深度求索）", ("deepseek-ai/",)),
+    ("kimi", "Kimi（月之暗面）", ("moonshotai/",)), ("zhipu", "智谱（GLM · CogVideoX）", ("zai-org/", "THUDM/")),
+    ("minimax", "MiniMax（稀宇）", ("MiniMaxAI/",)),
+    ("meta", "Meta（Llama · ESM）", ("unsloth/", "meta-llama/", "facebook/")),
+    ("openai", "OpenAI（gpt-oss）", ("openai/",)), ("mistral", "Mistral AI", ("mistralai/",)),
+    ("microsoft", "微软（Phi）", ("microsoft/",)),
+    ("bytedance", "字节跳动（Seed · Protenix）", ("ByteDance-Seed/", "gh:bytedance/")),
+    ("yi", "零一万物（Yi）", ("01-ai/",)), ("internlm", "上海 AI 实验室（InternLM）", ("internlm/",)),
+    # vendors with catalog-only (not yet on core v2) releases
+    ("tencent", "腾讯（HunyuanVideo）", ("hunyuanvideo-community/",)), ("lightricks", "Lightricks（LTX-Video）", ("Lightricks/",)),
+    ("genmo", "Genmo（Mochi）", ("genmo/",)), ("hpcai", "HPC-AI Tech（Open-Sora）", ("hpcai-tech/",)),
+    ("deepmind", "Google DeepMind（AlphaFold）", ("gh:google-deepmind/",)), ("boltz", "Boltz（MIT）", ("gh:jwohlwend/",)),
+    ("openfold", "OpenFold（aqlaboratory）", ("gh:aqlaboratory/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
-    ("qwen", "Qwen3.8", ("qwen3.8",)), ("qwen", "Qwen3.5", ("qwen3.5",)), ("qwen", "Qwen3-Next", ("qwen3-next",)),
-    ("qwen", "Qwen3 MoE", ("qwen3-235b", "qwen3-30b")), ("qwen", "Qwen3 稠密", ("qwen3-",)), ("qwen", "Qwen2.5", ("qwen2.5",)),
+    ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
+    ("alibaba", "Qwen3 MoE", ("qwen3-235b", "qwen3-30b")), ("alibaba", "Qwen3 稠密", ("qwen3-",)),
+    ("alibaba", "Qwen2.5", ("qwen2.5",)), ("alibaba", "Wan2.2", ("wan2.2",)), ("alibaba", "Wan2.1", ("wan2.1",)),
     ("deepseek", "DeepSeek-V4", ("deepseek-v4",)), ("deepseek", "DeepSeek-V3", ("deepseek-v3", "deepseek-r1")),
     ("kimi", "Kimi-K3", ("kimi-k3",)), ("kimi", "Kimi-K2", ("kimi-k2",)),
-    ("glm", "GLM-5", ("glm-5",)), ("glm", "GLM-4.5 / 4.6", ("glm-4",)),
+    ("zhipu", "GLM-5", ("glm-5",)), ("zhipu", "GLM-4.5 / 4.6", ("glm-4",)), ("zhipu", "CogVideoX", ("cogvideox",)),
     ("minimax", "MiniMax-M1 / Text-01", ("minimax-m1", "minimax-text")), ("minimax", "MiniMax-H", ("minimax-h",)),
-    ("llama", "Llama 3", ("llama-3",)), ("gpt-oss", "gpt-oss", ("gpt-oss",)),
+    ("meta", "Llama 3", ("llama-3",)), ("meta", "ESM-2", ("esm2",)), ("meta", "ESMFold", ("esmfold",)),
+    ("openai", "gpt-oss", ("gpt-oss",)),
     ("mistral", "Mistral Large", ("mistral-large",)), ("mistral", "Mixtral", ("mixtral",)), ("mistral", "Magistral", ("magistral",)),
-    ("phi", "Phi-4", ("phi-4",)), ("seed", "Seed-OSS", ("seed-oss",)),
-    ("wan", "Wan2.2", ("wan2.2",)), ("wan", "Wan2.1", ("wan2.1",)), ("cogvideo", "CogVideoX", ("cogvideox",)),
-    ("hunyuan", "HunyuanVideo", ("hunyuanvideo",)), ("ltx", "LTX-Video", ("ltx-video",)), ("mochi", "Mochi 1", ("mochi",)),
-    ("opensora", "Open-Sora", ("opensora",)),
+    ("microsoft", "Phi-4", ("phi-4",)), ("bytedance", "Seed-OSS", ("seed-oss",)), ("bytedance", "Protenix", ("protenix",)),
+    ("tencent", "HunyuanVideo", ("hunyuanvideo",)), ("lightricks", "LTX-Video", ("ltx-video",)),
+    ("genmo", "Mochi 1", ("mochi",)), ("hpcai", "Open-Sora", ("opensora",)),
+    ("deepmind", "AlphaFold", ("alphafold",)), ("boltz", "Boltz", ("boltz",)), ("openfold", "OpenFold", ("openfold",)),
 ]
+_PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.
 MERGED = {"deepseek-v3.1": "deepseek-v3", "deepseek-r1": "deepseek-v3", "kimi-k2.7-code": "kimi-k2.5",
           "glm-5": "glm-5.2", "glm-4.5": "glm-4.6", "minimax-text-01": "minimax-m1-80k"}
@@ -117,24 +126,50 @@ def entries() -> list[dict]:
     return out
 
 
+def _meta(e: dict) -> dict[str, str]:
+    """``metadata`` string of series_catalog.json ('k:v | k:v | …') → dict."""
+    out = {}
+    for part in (e.get("metadata") or "").split(" | "):
+        k, _, v = part.partition(":")
+        if v:
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _org_key(e: dict, meta: dict) -> str:
+    """HF id, or ``gh:<owner>/<repo>`` for releases published on GitHub only (AlphaFold, Boltz, …)."""
+    if e.get("hf_id"):
+        return e["hf_id"]
+    src = meta.get("source", "")
+    if src.startswith("https://github.com/"):
+        return "gh:" + "/".join(src[len("https://github.com/"):].split("/")[:2])
+    return ""
+
+
 @lru_cache(maxsize=1)
 def offline_entries() -> list[dict]:
-    """Image / video generation (DiT) entries kept in the catalog but not yet on core v2."""
+    """Video generation (DiT) and protein entries of series_catalog.json: listed in the catalog under their vendor,
+    but not yet on core v2 (not evaluable).  Dims are the historical catalog's (public configs / papers)."""
     raw = json.loads((DATA / "series_catalog.json").read_text())
     out = []
     for e in raw["entries"]:
-        if e.get("domain") != "video" or not e.get("hf_id") or e["id"] in UNLISTED:
+        dom = OFFLINE_DOMAINS.get(e.get("domain"))
+        if dom is None or e["id"] in UNLISTED:
             continue
-        sh = e.get("shape") or {}
-        prov, plab = provider_of(e["hf_id"])
+        meta, sh = _meta(e), e.get("shape") or {}
+        org = _org_key(e, meta)
+        prov, plab = provider_of(org)
         rank, fam = family_of(prov, e["id"])
-        out.append({"id": e["id"], "hf_id": e["hf_id"], "label": _repo_name(e["hf_id"]), "domain": "gen",
-                    "domain_label": DOMAINS["gen"], "provider": prov, "provider_label": plab, "family": fam or plab,
-                    "family_rank": rank, "status": "暂未接入 v2",
-                    "arch": f"DiT · {sh.get('n_layers', '?')} 层 · hidden {sh.get('hidden', '?')}",
+        dims = f"{sh.get('n_layers', '?')} 层 · hidden {sh.get('hidden', '?')}"
+        if sh.get("pair_dim"):
+            dims += f" · pair {sh['pair_dim']}"
+        out.append({"id": e["id"], "hf_id": e.get("hf_id"), "source": meta.get("source", ""),
+                    "label": _repo_name(e["hf_id"]) if e.get("hf_id") else e.get("user_label") or e["id"],
+                    "domain": dom, "domain_label": DOMAINS[dom], "provider": prov, "provider_label": plab,
+                    "family": fam or plab, "family_rank": rank, "status": "暂未接入 v2", "evaluable": False,
+                    "arch": ("DiT · " if dom == "gen" else "") + dims, "arch_detail": meta.get("arch", ""),
                     "_size": (sh.get("n_layers") or 0) * (sh.get("hidden") or 0) ** 2})
-    order = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
-    out.sort(key=lambda d: (order.get(d["provider"], 99), d["family_rank"], -d["_size"]))
+    out.sort(key=lambda d: (_PROV_RANK.get(d["provider"], 99), d["family_rank"], -d["_size"]))
     for d in out:
         del d["_size"]
     return out
@@ -205,7 +240,8 @@ def labels(spec: ModelSpec) -> dict:
 
 
 def list_models() -> list[dict]:
-    """Listed (evaluable) models, ordered domain → provider → family → size ↓ → base / FP8 / AWQ."""
+    """Listed (evaluable) models, ordered vendor → family → size ↓ → base / FP8 / AWQ.  LLM and VLM releases of
+    one vendor (even of one family) sit together; ``domain`` is only a badge."""
     es = entries()
     by_id = {e["id"]: e for e in es}
     merged: dict[str, list[str]] = {}
@@ -224,13 +260,25 @@ def list_models() -> list[dict]:
                          "identical": o.params() == s.params() and dtype_label(o) == dtype_label(s)})
         out.append({"id": e["id"], "hf_id": e["hf_id"], "label": e["label"], "domain": e["domain"],
                     "domain_label": DOMAINS[e["domain"]], "provider": e["provider"],
-                    "provider_label": e["provider_label"], "family": e["family"], "same_as": same, **labels(s),
-                    "_key": (list(DOMAINS).index(e["domain"]), [k for k, _, _ in PROVIDERS].index(e["provider"])
-                             if e["provider"] != "other" else 99, e["family_rank"], -s.params(), _variant(e["id"]))})
+                    "provider_label": e["provider_label"], "family": e["family"], "same_as": same, "evaluable": True,
+                    **labels(s), "_key": (_PROV_RANK.get(e["provider"], 99), e["family_rank"], -s.params(),
+                                          _variant(e["id"]))})
     out.sort(key=lambda d: d["_key"])
     for d in out:
         del d["_key"]
     return out
+
+
+def catalog_listing() -> list[dict]:
+    """The full catalog in display order: vendor → (evaluable families, then catalog-only families) → size ↓.
+    Evaluable rows are ``list_models()`` items; catalog-only rows (video generation / protein, not yet on core v2)
+    are ``offline_entries()`` items with ``evaluable: False``."""
+    ms, off = list_models(), offline_entries()
+    pos = {m["id"]: i for i, m in enumerate(ms)}
+    opos = {o["id"]: i for i, o in enumerate(off)}
+    rows = [(_PROV_RANK.get(m["provider"], 99), 0, pos[m["id"]], m) for m in ms]
+    rows += [(_PROV_RANK.get(o["provider"], 99), 1, opos[o["id"]], o) for o in off]
+    return [r[-1] for r in sorted(rows, key=lambda r: r[:3])]
 
 
 def unlisted_models() -> list[dict]:
