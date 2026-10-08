@@ -34,6 +34,8 @@ def test_ws_edge_equals_os_at_m1_plus_fill():
     g = gemm_cost(C, "ws_edge", 1, 5120, 25600)
     tiles = math.ceil(5120 / 56) * math.ceil(25600 / 896)          # 92·29
     assert g.mac_cycles == tiles * 56 + (56 + 896)
+    g10 = gemm_cost(C, "ws_edge", 1, 5120, 25600, count=10)
+    assert g10.mac_cycles == 10 * tiles * 56 + (56 + 896)          # fill once per op
     o = gemm_cost(C, "os", 1, 5120, 25600)
     assert abs(g.mac_cycles - o.mac_cycles) / o.mac_cycles < 0.02
 

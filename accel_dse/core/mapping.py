@@ -16,7 +16,7 @@ Per GEMM (M,K,N, count instances, bf16-equivalent rate multiplier r):
   OS     mac  = ceil(M/R)·ceil(N/Ce)·K / r
          feed = [ceil(M/R)·K·N·wb + ceil(N/Ce)·M·K·ab + M·N·ob] / port
   WS     tiles = ceil(K/R)·ceil(N/Ce);  load = R·Ce / (w_load·r)   (16-bit lanes; fp8 packs 2)
-         mac  = tiles·max(ceil(M/r), load) + (R + Ce)            (one-off fill)
+         mac  = tiles·max(ceil(M/r), load)   (+ R + Ce pipeline fill once per op)
          feed = [K·N·wb + ceil(N/Ce)·M·K·ab + 2·(ceil(K/R)−1)·M'·N·4 + M·N·ob] / port
                 M' = max(0, M − acc_rows): rows whose fp32 partial sums overflow the
                 accumulator (acc_kib 「假设」) and round-trip through SRAM
@@ -79,7 +79,7 @@ def _ws(ch: Chip, m, k, n, r, wb, ab, ob, broad: bool):
     w_load = (R * Ce if broad else Ce) * r      # lanes are 16-bit: narrow formats pack r per lane
     load = R * Ce / w_load
     tiles = _cd(k, R) * _cd(n, Ce)
-    mac = tiles * max(math.ceil(m / r), load) + (R + Ce)
+    mac = tiles * max(math.ceil(m / r), load)
     spill_rows = max(0, m - ch.acc_rows)        # rows whose fp32 partial sums leave the accumulator
     byt = k * n * wb + _cd(n, Ce) * m * k * ab + 2 * (_cd(k, R) - 1) * spill_rows * n * 4 + m * n * ob
     return mac, byt / ch.port_Bpc
@@ -115,16 +115,19 @@ def gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, *, count: int = 1, w_f
             mac, feed = _gemv(ch, m, k, n, rate, wb, ab, ob)
         else:
             mac, feed = _ws(ch, m, k, n, rate, wb, ab, ob, broad=(df == "ws_broad"))
-        cyc = max(mac, feed)
+        fill_c = (ch.rows + ch.c_eff) / count if df.startswith("ws") else 0.0
+        cyc = max(mac + fill_c, feed)
         if best is None or cyc < best[0]:
             best = (cyc, mac, feed, df)
     cyc, mac, feed, df = best
+    fill = (ch.rows + ch.c_eff) if df.startswith("ws") else 0.0   # pipeline fill once per op (instances stream back-to-back)
     conv_elems = 0.0
     if flag & 1:
         conv_elems += k * n
     if flag & 2:
         conv_elems += m * k
-    return GemmCost(cyc * count, mac * count, feed * count, df, ex, conv, conv_elems * count)
+    return GemmCost(max(mac * count + fill, feed * count), mac * count + fill, feed * count, df, ex, conv,
+                    conv_elems * count)
 
 
 def gemm_seconds(ch: Chip, org: str, m, k, n, **kw) -> float:
