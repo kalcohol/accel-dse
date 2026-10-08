@@ -1,0 +1,1364 @@
+{
+  "meta": {
+    "title": "External memory spec catalog for npu_dse (research only, no code change)",
+    "date": "2026-10-08",
+    "bandwidth_formula": "raw_GBps = width_bits * MTps / 8 / 1000 ; payload_GBps = raw * payload_factor ; effective = payload * efficiency(assumed knob)",
+    "tags": {
+      "jedec": "Defined in a published JEDEC standard / JEDEC press release",
+      "jedec_likely": "Very likely in JEDEC spec (vendor states 'JEDEC compliant' or JEDEC deck cites it) but not verified from spec text",
+      "vendor_shipping": "Vendor product in mass production / shipping",
+      "vendor_sampling": "Vendor samples shipped, not yet volume",
+      "vendor_announced": "Vendor announced / paper (ISSCC) / product page max, not confirmed shipping at this grade",
+      "speculative": "Roadmap, in-development standard, or our extrapolation"
+    },
+    "units": {
+      "data_rate": "MT/s per pin (= Mb/s/pin)",
+      "bandwidth": "GB/s (1e9 B/s)",
+      "capacity": "GB (vendor marketing GB = 2^30 B in practice; treat as GiB-ish)",
+      "density": "Gb per die"
+    }
+  },
+  "lpddr": {
+    "LPDDR5": {
+      "jedec_doc": "JESD209-5 (2019) / -5A / -5B / -5C (Jul 2023, covers LPDDR5 and LPDDR5X)",
+      "die_interface": "x16 one-channel device (also x8 byte-mode); 2 DMI pins per x16 not counted in data width",
+      "die_density_Gb_jedec": [
+        2,
+        4,
+        6,
+        8,
+        12,
+        16,
+        24,
+        32
+      ],
+      "die_density_range_src": [
+        "jedec_lp5c"
+      ],
+      "package_widths": [
+        {
+          "width_bits": 32,
+          "channels": "2 x16",
+          "tag": "vendor_shipping",
+          "note": "Samsung lists x32 org; 315-ball class",
+          "src": [
+            "samsung_lpddr_page"
+          ]
+        },
+        {
+          "width_bits": 64,
+          "channels": "4 x16",
+          "tag": "vendor_shipping",
+          "default": true,
+          "note": "Samsung lists x64 org; 441-ball",
+          "src": [
+            "samsung_lpddr_page"
+          ]
+        }
+      ],
+      "speed_grades": [
+        {
+          "tag": "jedec",
+          "note": "LPDDR5 (JESD209-5) bin",
+          "src": [
+            "wiki_lpddr"
+          ],
+          "data_rate_MTps": 5500,
+          "wck_MHz": 2750.0,
+          "ck_MHz_approx": 687.5,
+          "bw_raw_GBps_per_pkg": 44.0,
+          "bw_payload_GBps_per_pkg": 44.0
+        },
+        {
+          "tag": "jedec",
+          "note": "LPDDR5 max (JESD209-5, 2019)",
+          "src": [
+            "wiki_lpddr",
+            "samsung_lpddr_page"
+          ],
+          "data_rate_MTps": 6400,
+          "wck_MHz": 3200.0,
+          "ck_MHz_approx": 800.0,
+          "bw_raw_GBps_per_pkg": 51.2,
+          "bw_payload_GBps_per_pkg": 51.2
+        }
+      ],
+      "package_capacity_GB_examples": [
+        3,
+        6,
+        8,
+        12
+      ],
+      "package_capacity_src": [
+        "samsung_lpddr_page"
+      ],
+      "notes": "Samsung LPDDR5 package density 24Gb~96Gb (3-12 GB). WCK:CK = 4:1 at high speed, data DDR on WCK => CK = rate/8, WCK = rate/2."
+    },
+    "LPDDR5X": {
+      "jedec_doc": "JESD209-5B (Jun/Jul 2021, adds LPDDR5X up to 8533) ; JESD209-5C (Jul 2023, current; device x16/x8; density 2-32 Gb)",
+      "die_interface": "x16 one-channel device (x8 byte-mode for high-capacity stacks)",
+      "die_density_Gb_jedec": [
+        2,
+        4,
+        6,
+        8,
+        12,
+        16,
+        24,
+        32
+      ],
+      "die_density_vendor": [
+        {
+          "Gb": 16,
+          "tag": "vendor_shipping",
+          "who": "Micron 1γ 16Gb high-volume ramp (FQ3'26)",
+          "src": [
+            "micron_fq3_2026"
+          ]
+        },
+        {
+          "Gb": 24,
+          "tag": "vendor_sampling",
+          "who": "Micron 1γ 24Gb sampling to phone OEMs; SK hynix 1c 24Gb (reported)",
+          "src": [
+            "micron_fq3_2026"
+          ]
+        },
+        {
+          "Gb": 32,
+          "tag": "vendor_shipping",
+          "who": "Micron monolithic 32Gb 1γ (used in 256GB SOCAMM2)",
+          "src": [
+            "micron_socamm2"
+          ]
+        }
+      ],
+      "package_widths": [
+        {
+          "width_bits": 32,
+          "channels": "2 x16",
+          "tag": "vendor_shipping",
+          "note": "x32 packages used in SOCAMM2 (JEDEC RCA annex: x32 DRAM, up to 4 rank)",
+          "src": [
+            "samsung_lpddr_page",
+            "jedec_socamm2_rca"
+          ]
+        },
+        {
+          "width_bits": 64,
+          "channels": "4 x16",
+          "tag": "vendor_shipping",
+          "default": true,
+          "note": "mobile PoP 496-ball / discrete 441/315/245/563-ball; LPDDR5X-PIM 561-ball 16GB @9600 = 76.8 GB/s confirms x64",
+          "src": [
+            "samsung_lpddr_page",
+            "micron_lp5x_nonbinary",
+            "samsung_lp5x_pim_techtimes"
+          ]
+        },
+        {
+          "width_bits": 96,
+          "channels": "6 x16",
+          "tag": "vendor_shipping",
+          "note": "Micron FQ4'26: 'shipping 6-channel 1γ LPDDR5X for flagship mobile' (secondary reports; ball-out not public) -> vendor-extended",
+          "src": [
+            "micron_fq4_2026_unite"
+          ]
+        }
+      ],
+      "speed_grades": [
+        {
+          "tag": "jedec_likely",
+          "note": "common LPDDR5X bin; Micron 1β shipped 7.5 Gbps",
+          "src": [
+            "micron_lp5x_page"
+          ],
+          "data_rate_MTps": 7500,
+          "wck_MHz": 3750.0,
+          "ck_MHz_approx": 937.5,
+          "bw_raw_GBps_per_pkg": 60.0,
+          "bw_payload_GBps_per_pkg": 60.0
+        },
+        {
+          "tag": "jedec",
+          "note": "JESD209-5B (2021) LPDDR5X max",
+          "src": [
+            "wiki_lpddr",
+            "synopsys_lp5x_blog"
+          ],
+          "data_rate_MTps": 8533,
+          "wck_MHz": 4266.5,
+          "ck_MHz_approx": 1066.6,
+          "bw_raw_GBps_per_pkg": 68.26,
+          "bw_payload_GBps_per_pkg": 68.26
+        },
+        {
+          "tag": "jedec_likely",
+          "note": "ex-'LPDDR5T' (SK hynix), folded into LPDDR5X; SOCAMM2/Vera run 9600",
+          "src": [
+            "wiki_lpddr",
+            "toms_vera",
+            "samsung_socamm2"
+          ],
+          "data_rate_MTps": 9600,
+          "wck_MHz": 4800.0,
+          "ck_MHz_approx": 1200.0,
+          "bw_raw_GBps_per_pkg": 76.8,
+          "bw_payload_GBps_per_pkg": 76.8
+        },
+        {
+          "tag": "jedec_likely",
+          "note": "vendors market '10.7 Gbps'; Micron footnote: 'compliant with JEDEC standards'; Wikipedia lists 5X max 10667",
+          "src": [
+            "micron_lp5x_page",
+            "samsung_lpddr_page",
+            "wiki_lpddr"
+          ],
+          "data_rate_MTps": 10667,
+          "wck_MHz": 5333.5,
+          "ck_MHz_approx": 1333.4,
+          "bw_raw_GBps_per_pkg": 85.34,
+          "bw_payload_GBps_per_pkg": 85.34
+        }
+      ],
+      "package_capacity_GB": [
+        {
+          "GB": 4,
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 6,
+          "tag": "vendor_shipping",
+          "who": "Micron non-binary"
+        },
+        {
+          "GB": 8,
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 12,
+          "tag": "vendor_shipping",
+          "who": "Micron non-binary"
+        },
+        {
+          "GB": 16,
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 24,
+          "tag": "vendor_shipping",
+          "who": "Micron non-binary; Samsung max 192Gb"
+        },
+        {
+          "GB": 32,
+          "tag": "vendor_announced",
+          "who": "Samsung 10.7Gbps LPDDR5X 'up to 32GB' (2024)"
+        },
+        {
+          "GB": 64,
+          "tag": "vendor_shipping",
+          "who": "x32 server package: 16 x 32Gb dies (Micron 256GB SOCAMM2 = 64 dies / 4 pkgs) - derived"
+        }
+      ],
+      "package_capacity_src": [
+        "micron_lp5x_nonbinary",
+        "samsung_lpddr_page",
+        "wiki_lpddr",
+        "techradar_socamm2_256"
+      ],
+      "notes": "No in-band metadata overhead (DMI on separate pins): payload factor 1.0. WCK = rate/2, CK = rate/8 (WCK:CK 4:1). Vendor marketing '10.7 Gbps' == 10667 MT/s."
+    },
+    "LPDDR6": {
+      "jedec_doc": "JESD209-6 (published Jul 9 2025): 'JEDEC compliant x24 one channel SDRAM device', density 4-64 Gb. Next revision previewed Apr 2026 (x6 sub-channel mode, flexible metadata carve-out, 512 GB densities, LPDDR6 SOCAMM2, LPDDR6-PIM in progress).",
+      "die_interface": "x24 one-channel device = 2 independent x12 sub-channels; 4 CA per sub-channel; BL24 (32B) / BL48 (64B)",
+      "burst": {
+        "bits_per_subch_BL24": 288,
+        "data_bits": 256,
+        "metadata_stored_bits": 16,
+        "dbi_or_link_ecc_bits": 16,
+        "payload_factor": 0.888889,
+        "note": "8/9 applies to BL48 too (576 = 512 + 64). Effective per-x24-channel BW: 28.4 GB/s @10667, 38.4 GB/s @14400 (JEDEC/Synopsys deck, SK hynix ISSCC).",
+        "src": [
+          "jedec_lp6_moon",
+          "jedec_lp6_synopsys_deck",
+          "isscc26_lp6_mtm"
+        ]
+      },
+      "die_density_Gb_jedec": [
+        4,
+        8,
+        12,
+        16,
+        24,
+        32,
+        48,
+        64
+      ],
+      "die_density_src": [
+        "jedec_lp6",
+        "jedec_lp6_takahashi"
+      ],
+      "die_density_vendor": [
+        {
+          "Gb": 16,
+          "tag": "vendor_shipping",
+          "who": "Samsung, SK hynix (1c), Micron (1γ, sampling), CXMT (mass prod.)",
+          "src": [
+            "skh_lp6",
+            "isscc26_lp6_mtm",
+            "cxmt_lp6",
+            "micron_fq4_2026_unite"
+          ]
+        }
+      ],
+      "package_widths": [
+        {
+          "width_bits": 96,
+          "channels": "4 x24 (8 x12 sub-ch)",
+          "tag": "vendor_shipping",
+          "default": true,
+          "note": "Mobile PoP. CXMT 16GB 1295-ball FBGA PoP in Xiaomi 18 Fold; XRING O3 = 4 x 24-bit @10.667 -> 113.8 GB/s (= 96*10.667/8*8/9). Samsung '16GB LPDDR6 ... up to 114 GB/s' also = one x96 package. Samsung part PDBEREAGY0B1 128Gbit 1295-ball.",
+          "src": [
+            "cxmt_lp6",
+            "xring_o3",
+            "samsung_lp6_qcom",
+            "puris_samsung_lp6_part"
+          ]
+        },
+        {
+          "width_bits": 48,
+          "channels": "2 x24",
+          "tag": "speculative",
+          "note": "Samsung lists 357/518-ball FBGA LPDDR6 packages; their channel counts are NOT public - x48 is an inference only",
+          "src": [
+            "samsung_lpddr_page"
+          ]
+        }
+      ],
+      "speed_grades": [
+        {
+          "tag": "jedec",
+          "note": "JEDEC introductory rate; Samsung/SK hynix/CXMT products validated at 10.667-10.7 on SoC (Snapdragon 8 Elite Extreme Gen 6, XRING O3)",
+          "src": [
+            "jedec_lp6_synopsys_deck",
+            "samsung_lp6_qcom",
+            "skh_lp6",
+            "cxmt_lp6",
+            "xring_o3"
+          ],
+          "data_rate_MTps": 10667,
+          "wck_MHz": 5333.5,
+          "ck_MHz_approx": 2666.8,
+          "bw_raw_GBps_per_pkg": 128.0,
+          "bw_payload_GBps_per_pkg": 113.78
+        },
+        {
+          "tag": "jedec_likely",
+          "note": "Samsung ISSCC'26 16Gb @12.8 (paper calls it JEDEC min-voltage point); CXMT product max 12800",
+          "src": [
+            "isscc26_lp6_mtm",
+            "cxmt_lp6"
+          ],
+          "data_rate_MTps": 12800,
+          "wck_MHz": 6400.0,
+          "ck_MHz_approx": 3200.0,
+          "bw_raw_GBps_per_pkg": 153.6,
+          "bw_payload_GBps_per_pkg": 136.53
+        },
+        {
+          "tag": "jedec",
+          "note": "JEDEC highest defined rate; SK hynix ISSCC'26 16Gb 1c silicon passes @1.025V (paper, not product)",
+          "src": [
+            "jedec_lp6_synopsys_deck",
+            "isscc26_lp6_mtm",
+            "samsung_lpddr_page"
+          ],
+          "data_rate_MTps": 14400,
+          "wck_MHz": 7200.0,
+          "ck_MHz_approx": 3600.0,
+          "bw_raw_GBps_per_pkg": 172.8,
+          "bw_payload_GBps_per_pkg": 153.6
+        }
+      ],
+      "package_capacity_GB": [
+        {
+          "GB": 8,
+          "tag": "speculative",
+          "note": "4 x 16Gb (1 die per channel) - plausible, not seen announced"
+        },
+        {
+          "GB": 12,
+          "tag": "vendor_announced",
+          "note": "Samsung density range 16Gb~128Gb; 12GB = 96Gb (assumed SKU)"
+        },
+        {
+          "GB": 16,
+          "tag": "vendor_shipping",
+          "note": "CXMT 16GB; Samsung 16GB (validated on Snapdragon); Samsung page max 128Gb"
+        },
+        {
+          "GB": 24,
+          "tag": "speculative",
+          "note": "needs 24Gb dies (JEDEC allows) - not announced"
+        },
+        {
+          "GB": 32,
+          "tag": "speculative",
+          "note": "16 x 16Gb or 8 x 32Gb - not announced"
+        }
+      ],
+      "package_capacity_src": [
+        "samsung_lpddr_page",
+        "cxmt_lp6",
+        "samsung_lp6_ces"
+      ],
+      "clocking": "JEDEC slide: constant CK:WCK ratio across rates; SK hynix ISSCC: CA/CK 1.6-3.6 GHz => CK ~= rate/4, WCK = rate/2 (uncertain detail)",
+      "lpddr6x": "No JEDEC 'LPDDR6X' standard or vendor product found as of 2026-10-08.",
+      "pim": "LPDDR6-PIM: JEDEC 'nearing completion' (Apr 2026); Samsung hopes initial spec by end-2026. Samsung LPDDR5X-PIM silicon (Hot Chips 2026): 561-ball, 16GB, 76.8 GB/s ext., 614 GB/s internal PIM BW, 2.4 TOPS SINT4/pkg.",
+      "pim_src": [
+        "jedec_lp6_roadmap_2026",
+        "samsung_lp5x_pim_techtimes"
+      ]
+    }
+  },
+  "lpddr_modules": {
+    "SOCAMM2_LPDDR5X": {
+      "jedec_doc": "JESD328 v1.00 (Jun 2026) + JESD328-J0-RCA (May 2026: x32 LP5/5X DRAM, up to 4 rank)",
+      "width_bits": 128,
+      "packages_per_module": "4 x x32 (derived from 128-bit and x32 annex)",
+      "speed_MTps": [
+        {
+          "mts": 8533,
+          "tag": "vendor_shipping",
+          "note": "SOCAMM gen1 (Micron 128GB)"
+        },
+        {
+          "mts": 9600,
+          "tag": "vendor_shipping",
+          "note": "SOCAMM2 / Vera"
+        }
+      ],
+      "bw_GBps_per_module": {
+        "8533": 136.53,
+        "9600": 153.6
+      },
+      "capacity_GB": [
+        {
+          "GB": 48,
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 64,
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 96,
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 128,
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 192,
+          "tag": "vendor_shipping",
+          "who": "SK hynix (1c), Micron"
+        },
+        {
+          "GB": 256,
+          "tag": "vendor_shipping",
+          "who": "Micron 64x32Gb; Samsung 'up to 256GB'"
+        }
+      ],
+      "systems": [
+        {
+          "name": "NVIDIA Vera CPU",
+          "modules": 8,
+          "bus_bits": 1024,
+          "MTps": 9600,
+          "bw_TBps": 1.2,
+          "capacity": "256 GB - 1.5 TB (2 TB with 256GB modules per Micron)",
+          "src": [
+            "toms_vera",
+            "micron_gtc26_pr"
+          ]
+        }
+      ],
+      "src": [
+        "jedec_socamm2",
+        "jedec_socamm2_rca",
+        "samsung_socamm2",
+        "skh_socamm2_192",
+        "micron_socamm2",
+        "micron_socamm1_pr",
+        "techradar_socamm2_256"
+      ]
+    },
+    "LPCAMM2_LPDDR5X": {
+      "jedec_doc": "JESD318 CAMM2 (LPDDR5/5X variant)",
+      "width_bits": 128,
+      "structure": "2 x 64-bit channels (8 x16 sub-channels)",
+      "speed_MTps": [
+        {
+          "mts": 7500,
+          "tag": "vendor_shipping"
+        },
+        {
+          "mts": 8533,
+          "tag": "vendor_shipping",
+          "who": "Samsung up to 8533"
+        },
+        {
+          "mts": 9600,
+          "tag": "speculative"
+        }
+      ],
+      "capacity_GB": [
+        16,
+        32,
+        64,
+        {
+          "GB": 96,
+          "tag": "vendor_announced",
+          "note": "with 24Gb dies (Micron brief)"
+        }
+      ],
+      "src": [
+        "samsung_lpddr_page",
+        "micron_lpcamm2_brief",
+        "jedec_camm2_deck"
+      ]
+    },
+    "LPDDR6_CAMM2": {
+      "status": "speculative (JEDEC 2024 deck: 192-bit module, 48-bit channels, up to 14.4 GT/s)",
+      "width_bits": 192,
+      "src": [
+        "tpu_lp6_camm2"
+      ]
+    },
+    "SOCAMM2_LPDDR6": {
+      "status": "in development at JEDEC (Apr 2026); width/capacity not public",
+      "src": [
+        "jedec_lp6_roadmap_2026"
+      ]
+    },
+    "reference_systems": [
+      {
+        "name": "NVIDIA Grace (C1 / Superchip)",
+        "lpddr": "LPDDR5X w/ ECC, on-module",
+        "capacity": "120/240/480 GB per CPU",
+        "bw": "512 GB/s (120/240GB), 384 GB/s (480GB)",
+        "bus_note": "Chips&Cheese: 480-bit LPDDR5X-6400 for 480GB SKU (384 GB/s)",
+        "src": [
+          "grace_datasheet",
+          "cnc_grace"
+        ]
+      },
+      {
+        "name": "Intel Crescent Island (inference PCIe card)",
+        "lpddr": "LPDDR5X",
+        "capacity": "160 GB ref, up to 480 GB partner",
+        "bw": "not officially published (estimates 0.68-1.5 TB/s)",
+        "src": [
+          "crescent_island_toms"
+        ]
+      }
+    ]
+  },
+  "hbm": {
+    "HBM3": {
+      "jedec_doc": "JESD238 (Jan 2022); current JESD238B.01 (Apr 2025)",
+      "width_bits": 1024,
+      "channels": "16 ch x 64-bit (32 pseudo-ch)",
+      "speed_grades": [
+        {
+          "data_rate_MTps": 6400,
+          "tag": "jedec",
+          "bw_GBps_per_stack": 819.2,
+          "src": [
+            "jedec_hbm3_pr"
+          ]
+        }
+      ],
+      "stack_heights": [
+        4,
+        8,
+        12,
+        16
+      ],
+      "stack_heights_note": "16-high was 'future extension' in JESD238",
+      "die_density_Gb_jedec": [
+        8,
+        16,
+        24,
+        32
+      ],
+      "capacity_GB": [
+        {
+          "GB": 16,
+          "cfg": "8H x 16Gb",
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 24,
+          "cfg": "12H x 16Gb",
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 64,
+          "cfg": "16H x 32Gb",
+          "tag": "jedec"
+        }
+      ],
+      "src": [
+        "jedec_hbm3_pr",
+        "jedec_hbm3_b01",
+        "samsung_hbm_page"
+      ]
+    },
+    "HBM3E": {
+      "jedec_doc": "No separate 'HBM3E' JEDEC doc; vendor extension of HBM3 (JESD238x). Whether JESD238A/B add >6.4 bins is not verifiable publicly.",
+      "width_bits": 1024,
+      "channels": "16 ch x 64-bit (32 pseudo-ch)",
+      "speed_grades": [
+        {
+          "data_rate_MTps": 8000,
+          "tag": "vendor_shipping",
+          "note": "B200/MI355X-class effective ~7.8",
+          "bw_GBps_per_stack": 1024.0
+        },
+        {
+          "data_rate_MTps": 9200,
+          "tag": "vendor_shipping",
+          "note": "Micron >9.2, Samsung 'up to 9.2 / 1,180 GB/s'",
+          "bw_GBps_per_stack": 1177.6,
+          "src": [
+            "micron_hbm3e",
+            "samsung_hbm_page"
+          ]
+        },
+        {
+          "data_rate_MTps": 9600,
+          "tag": "vendor_shipping",
+          "note": "SK hynix 12H 36GB @9.6 (Sep 2024)",
+          "bw_GBps_per_stack": 1228.8,
+          "src": [
+            "skh_hbm3e_12h"
+          ]
+        },
+        {
+          "data_rate_MTps": 9800,
+          "tag": "vendor_announced",
+          "note": "Samsung Shinebolt 9.8 (announced; product page now 9.2)",
+          "bw_GBps_per_stack": 1254.4,
+          "src": [
+            "samsung_hbm3e_12h"
+          ]
+        }
+      ],
+      "stack_heights": [
+        8,
+        12,
+        16
+      ],
+      "die_density_Gb": [
+        16,
+        24
+      ],
+      "capacity_GB": [
+        {
+          "GB": 24,
+          "cfg": "8H x 24Gb",
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 36,
+          "cfg": "12H x 24Gb",
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 48,
+          "cfg": "16H x 24Gb",
+          "tag": "vendor_announced",
+          "who": "SK hynix 16H"
+        }
+      ],
+      "src": [
+        "micron_hbm3e",
+        "samsung_hbm_page",
+        "skh_hbm3e_12h",
+        "skh_hbm3e_16h"
+      ]
+    },
+    "HBM4": {
+      "jedec_doc": "JESD270-4 (Apr 16 2025); JESD270-4A v1.1 (Dec 2025, content change not public)",
+      "width_bits": 2048,
+      "channels": "32 ch x 64-bit (64 pseudo-ch)",
+      "speed_grades": [
+        {
+          "data_rate_MTps": 8000,
+          "tag": "jedec",
+          "bw_GBps_per_stack": 2048.0,
+          "src": [
+            "jedec_hbm4_pr"
+          ]
+        },
+        {
+          "data_rate_MTps": 10000,
+          "tag": "vendor_shipping",
+          "note": "SK hynix '>10 Gbps' (12H in mass production)",
+          "bw_GBps_per_stack": 2560.0,
+          "src": [
+            "skh_hbm4"
+          ]
+        },
+        {
+          "data_rate_MTps": 11000,
+          "tag": "vendor_shipping",
+          "note": "Micron '>11 Gb/s, >2.8 TB/s' 36GB 12H volume (Q1'26)",
+          "bw_GBps_per_stack": 2816.0,
+          "src": [
+            "micron_gtc26_pr"
+          ]
+        },
+        {
+          "data_rate_MTps": 11700,
+          "tag": "vendor_shipping",
+          "note": "Samsung HBM4 11.7 Gbps in SiP tests, mass production Feb 2026",
+          "bw_GBps_per_stack": 2995.2,
+          "src": [
+            "samsung_hbm4e"
+          ]
+        },
+        {
+          "data_rate_MTps": 13000,
+          "tag": "vendor_announced",
+          "note": "Samsung product page 'up to 13.0 Gbps / 3,300 GB/s'",
+          "bw_GBps_per_stack": 3328.0,
+          "src": [
+            "samsung_hbm_page"
+          ]
+        }
+      ],
+      "stack_heights": [
+        4,
+        8,
+        12,
+        16
+      ],
+      "die_density_Gb_jedec": [
+        24,
+        32
+      ],
+      "capacity_GB": [
+        {
+          "GB": 24,
+          "cfg": "8H x 24Gb",
+          "tag": "jedec"
+        },
+        {
+          "GB": 32,
+          "cfg": "8H x 32Gb",
+          "tag": "jedec"
+        },
+        {
+          "GB": 36,
+          "cfg": "12H x 24Gb",
+          "tag": "vendor_shipping"
+        },
+        {
+          "GB": 48,
+          "cfg": "16H x 24Gb (Micron sample) or 12H x 32Gb",
+          "tag": "vendor_sampling"
+        },
+        {
+          "GB": 64,
+          "cfg": "16H x 32Gb",
+          "tag": "jedec"
+        }
+      ],
+      "base_die": "Logic-process base die: Samsung 4nm; SK hynix TSMC 12nm-class for HBM4; custom (customer-logic) base dies emerging",
+      "src": [
+        "jedec_hbm4_pr",
+        "jedec_hbm4a",
+        "skh_hbm4",
+        "micron_gtc26_pr",
+        "samsung_hbm_page",
+        "samsung_hbm4e"
+      ]
+    },
+    "HBM4E": {
+      "jedec_doc": "No published JEDEC HBM4E standard as of 2026-10-08 (vendor-defined)",
+      "width_bits": 2048,
+      "channels": "same as HBM4 (assumed)",
+      "speed_grades": [
+        {
+          "data_rate_MTps": 12800,
+          "tag": "speculative",
+          "note": "TSMC/GUC C-HBM4E target by 2027",
+          "bw_GBps_per_stack": 3276.8,
+          "src": [
+            "toms_guc_hbm4e"
+          ]
+        },
+        {
+          "data_rate_MTps": 14000,
+          "tag": "vendor_sampling",
+          "note": "Samsung 'stable 14 Gbps' 12H 48GB samples May 2026, 3.6 TB/s",
+          "bw_GBps_per_stack": 3584.0,
+          "src": [
+            "samsung_hbm4e"
+          ]
+        },
+        {
+          "data_rate_MTps": 16000,
+          "tag": "vendor_sampling",
+          "note": "Samsung 'scalable to 16'; SK hynix 12H samples Jun 2026 up to 16 Gbps, ~4 TB/s",
+          "bw_GBps_per_stack": 4096.0,
+          "src": [
+            "samsung_hbm4e",
+            "thelec_skh_hbm4e"
+          ]
+        }
+      ],
+      "stack_heights": [
+        8,
+        12,
+        16
+      ],
+      "die_density_Gb": [
+        32
+      ],
+      "capacity_GB": [
+        {
+          "GB": 32,
+          "cfg": "8H x 32Gb",
+          "tag": "vendor_announced"
+        },
+        {
+          "GB": 48,
+          "cfg": "12H x 32Gb",
+          "tag": "vendor_sampling"
+        },
+        {
+          "GB": 64,
+          "cfg": "16H x 32Gb",
+          "tag": "vendor_announced"
+        }
+      ],
+      "base_die": "Samsung 4nm own foundry; SK hynix reportedly TSMC 3nm-class; Micron HBM4E (1γ) volume 2027 with TSMC base die; custom base dies per customer",
+      "src": [
+        "samsung_hbm4e",
+        "thelec_skh_hbm4e",
+        "micron_fq3_2026",
+        "toms_guc_hbm4e"
+      ]
+    },
+    "SPHBM4": {
+      "jedec_doc": "JESD330-4 (published Jul 2026)",
+      "width_bits": 512,
+      "note": "same HBM4 DRAM core dies, new base die, 512 data signals with 4:1 serialization to match HBM4 aggregate BW on organic substrate",
+      "src": [
+        "jedec_sphbm4_pr"
+      ]
+    }
+  },
+  "accelerator_reference": [
+    {
+      "name": "H100 SXM",
+      "hbm": "HBM3",
+      "stacks": 5,
+      "GB": 80,
+      "TBps": 3.35,
+      "derived_Gbps": 5.23,
+      "note": "5 active stacks (6 sites) - stack count from secondary",
+      "src": [
+        "nv_h200"
+      ]
+    },
+    {
+      "name": "H200",
+      "hbm": "HBM3E",
+      "stacks": 6,
+      "GB": 141,
+      "TBps": 4.8,
+      "derived_Gbps": 6.25,
+      "src": [
+        "nv_h200"
+      ]
+    },
+    {
+      "name": "B200 (HGX)",
+      "hbm": "HBM3E",
+      "stacks": 8,
+      "GB": 180,
+      "TBps": 7.7,
+      "derived_Gbps": 7.52,
+      "note": "HGX B200 1.4TB/8 GPUs; AMD comparison lists 180GB / 7.7 TB/s; 192GB / 8 TB/s also published",
+      "src": [
+        "nv_hgx",
+        "amd_mi355x"
+      ]
+    },
+    {
+      "name": "B300 (HGX)",
+      "hbm": "HBM3E 12H",
+      "stacks": 8,
+      "GB": 288,
+      "TBps": 8.0,
+      "note": "HGX B300 2.1 TB total",
+      "src": [
+        "nv_hgx"
+      ]
+    },
+    {
+      "name": "AMD MI355X",
+      "hbm": "HBM3E 12H",
+      "stacks": 8,
+      "GB": 288,
+      "TBps": 8.0,
+      "derived_Gbps": 7.81,
+      "src": [
+        "amd_mi355x"
+      ]
+    },
+    {
+      "name": "NVIDIA Rubin",
+      "hbm": "HBM4 12H",
+      "stacks": 8,
+      "GB": 288,
+      "TBps": "19.2 (NVL72 page) / 22 (HGX page); HGX Rubin NVL8 130 TB/s total",
+      "derived_Gbps": "9.4-10.7",
+      "note": "NVIDIA's own pages disagree; TechPowerUp reports 22 TB/s target lowered",
+      "src": [
+        "nv_vr_nvl72",
+        "nv_hgx",
+        "tpu_rubin_lowered"
+      ]
+    },
+    {
+      "name": "AMD MI455X",
+      "hbm": "HBM4",
+      "stacks": 12,
+      "GB": 432,
+      "TBps": 23.3,
+      "derived_Gbps": 7.58,
+      "src": [
+        "amd_mi455x"
+      ]
+    },
+    {
+      "name": "Google TPU7x Ironwood",
+      "hbm": "HBM3E",
+      "stacks": 8,
+      "GB": 192,
+      "TBps": 7.37,
+      "derived_Gbps": 7.2,
+      "src": [
+        "google_tpu7x"
+      ]
+    },
+    {
+      "name": "Google TPU 8t / 8i",
+      "hbm": "HBM3E",
+      "stacks": "6 / 8",
+      "GB": "216 / 288",
+      "TBps": "6.528 / 8.601",
+      "note": "secondary (Tom's Hardware, Hot Chips 2026)",
+      "src": [
+        "toms_tpu8"
+      ]
+    }
+  ],
+  "power_reported": [
+    {
+      "item": "HBM4 vs HBM3E efficiency",
+      "value": "SK hynix >40% better; Micron >20% (vs its HBM3E 12H @9.2); Samsung HBM4E +16% vs HBM4",
+      "tag": "vendor_announced",
+      "src": [
+        "skh_hbm4",
+        "micron_gtc26_pr",
+        "samsung_hbm4e"
+      ]
+    },
+    {
+      "item": "Grace LPDDR5X subsystem",
+      "value": "~500 GB/s in ~16 W  => ~4 pJ/bit system-level (derived, includes background)",
+      "tag": "vendor_announced",
+      "src": [
+        "grace_datasheet"
+      ]
+    },
+    {
+      "item": "Vera SOCAMM2 subsystem",
+      "value": "1.2 TB/s, fully populated 30-40 W => ~3-4 pJ/bit at full BW (derived)",
+      "tag": "vendor_announced",
+      "src": [
+        "toms_vera"
+      ]
+    },
+    {
+      "item": "LPDDR6 vs LPDDR5X",
+      "value": "Samsung ~21% better efficiency; read power 73%/write 78% of LP5X (ISSCC); SK hynix >20%",
+      "tag": "vendor_announced",
+      "src": [
+        "samsung_lp6_qcom",
+        "isscc26_lp6_mtm",
+        "skh_lp6"
+      ]
+    },
+    {
+      "item": "absolute HBM pJ/bit",
+      "value": "no authoritative vendor primary figure found; secondary sources cite ~4 pJ/bit for HBM3E (unverified)",
+      "tag": "speculative"
+    }
+  ],
+  "sources": {
+    "jedec_lp6": "https://www.jedec.org/standards-documents/docs/jesd209-6",
+    "jedec_lp6_pr": "https://www.jedec.org/news/pressreleases/jedec%C2%AE-releases-new-lpddr6-standard-enhance-mobile-and-ai-memory-performance",
+    "jedec_lp6_moon": "https://www.jedec.org/sites/default/files/Seunghyun%20Moon_03_29_25_Final.pdf",
+    "jedec_lp6_synopsys_deck": "https://www.jedec.org/sites/default/files/Brett%20Murdock_FINAL_Mobile_2024.pdf",
+    "jedec_lp6_takahashi": "https://www.jedec.org/sites/default/files/JEDEC-PPT-16-9_LPDDR6_2025_hitakahashi.pdf",
+    "jedec_lp6_roadmap_2026": "https://www.jedec.org/news/pressreleases/jedec%C2%AE-previews-lpddr6-roadmap-expanding-lpddr-data-centers-and-processing-memory",
+    "jedec_lp5c": "https://www.jedec.org/standards-documents/docs/jesd209-5c",
+    "wiki_lpddr": "https://en.wikipedia.org/wiki/LPDDR",
+    "synopsys_lp5x_blog": "https://www.synopsys.com/blogs/chip-design/lpddr5x-specification-memory-design.html",
+    "samsung_lpddr_page": "https://semiconductor.samsung.com/dram/lpddr/",
+    "samsung_lp6_qcom": "https://semiconductor.samsung.com/news-events/tech-blog/samsung-lpddr6-advancing-low-power-memory-for-ai-with-industry-first-validation-on-qualcomm-technologies-new-snapdragon-platform/",
+    "samsung_lp6_ces": "https://news.samsungsemiconductor.com/global/ces-innovation-awards-2026-honoree-lpddr6-worlds-first-next-gen-lpddr-optimized-for-high-performing-on-device-ai/",
+    "skh_lp6": "https://news.skhynix.com/en/1c-lpddr6-development-2026/",
+    "isscc26_lp6_mtm": "https://morethanmoore.substack.com/p/lpddr6-samsungsk-hynix-at-isscc-2026",
+    "cxmt_lp6": "https://www.cxmt.com/en/news/info_21.html",
+    "xring_o3": "https://xenospectrum.com/en/xiaomi-xring-o3-lpddr6-performance/",
+    "puris_samsung_lp6_part": "https://www.puris.net/archives/12646",
+    "micron_lp5x_page": "https://www.micron.com/products/memory/lpddr-components/lpddr5x",
+    "micron_lp5x_nonbinary": "https://www.micron.com/about/blog/memory/dram/micron-broadens-lpddr5x-options-for-next-generation-edge-designs",
+    "micron_fq3_2026": "https://investors.micron.com/news/press-release/2026/Micron-Technology-Inc--Reports-Record-Results-for-the-Third-Quarter-of-Fiscal-2026/default.aspx",
+    "micron_fq4_2026_unite": "https://www.unite.ai/micron-posts-record-revenue-and-earnings-for-fiscal-2026/",
+    "samsung_lp5x_pim_techtimes": "https://www.techtimes.com/articles/325678/20260826/samsung-moves-ai-compute-dram-drop-memory-chip-triples-inference-speed.htm",
+    "jedec_socamm2": "https://www.jedec.org/standards-documents/docs/jesd328",
+    "jedec_socamm2_rca": "https://www.jedec.org/standards-documents/docs/jesd328-j0-rca",
+    "samsung_socamm2": "https://semiconductor.samsung.com/dram/module/socamm2/",
+    "skh_socamm2_192": "https://news.skhynix.com/en/mass-production-socamm2-192gb/",
+    "micron_socamm2": "https://www.micron.com/products/memory/lpddr-modules/socamm",
+    "micron_gtc26_pr": "https://investors.micron.com/news/press-release/2026/Micron-in-High-Volume-Production-of-HBM4-Designed-for-NVIDIA-Vera-Rubin-PCIe-Gen6-SSD-and-SOCAMM2-03-16-2026/default.aspx",
+    "techradar_socamm2_256": "https://www.techradar.com/pro/micron-launched-a-256gb-socamm2-memory-module-using-64-32gb-lpddr5x-chips-and-yes-hyperscalers-can-shove-8-in-an-ai-server-to-reach-2tb-capacity-mere-mortals-need-not-apply",
+    "micron_socamm1_pr": "https://investors.micron.com/news/press-release/2025/Micron-Innovates-From-the-Data-Center-to-the-Edge-With-NVIDIA-03-18-2025/default.aspx",
+    "toms_vera": "https://www.tomshardware.com/pc-components/cpus/nvidia-spills-the-beans-on-vera-cpu-spec-benchmarks-revealed-olympus-architecture-detailed-and-more/2",
+    "grace_datasheet": "https://dam-cdn.nvd.orangelogic.com/AssetLink/nf681l40ormkgaopeqq4e0l4nj25qv5d.pdf",
+    "cnc_grace": "https://chipsandcheese.com/p/grace-hopper-nvidias-halfway-apu",
+    "jedec_camm2_deck": "https://www.jedec.org/sites/default/files/Tom_Schnell_FINAL_%202024-05-03.pdf",
+    "micron_lpcamm2_brief": "https://assets.micron.com/adobe/assets/urn:aaid:aem:4e076108-df95-4c2d-8785-06c30049afb5/original/as/lpddr5x-camm2-technical-brief.pdf",
+    "tpu_lp6_camm2": "https://www.techpowerup.com/322754/lpddr6-lpcamm2-pictured-and-detailed-courtesy-of-jedec",
+    "crescent_island_toms": "https://www.tomshardware.com/pc-components/gpus/hot-chips-2026-intel-dives-deep-on-crescent-island-ai-accelerator-larger-caches-and-deeper-xmx-engines-target-maximum-ai-flops-per-watt",
+    "jedec_hbm3_pr": "https://www.jedec.org/news/pressreleases/jedec-publishes-hbm3-update-high-bandwidth-memory-hbm-standard",
+    "jedec_hbm3_b01": "https://www.jedec.org/standards-documents/docs/jesd238b01",
+    "jedec_hbm4_pr": "https://www.jedec.org/news/pressreleases/jedec%C2%AE-and-industry-leaders-collaborate-release-jesd270-4-hbm4-standard-advancing",
+    "jedec_hbm4a": "https://www.jedec.org/standards-documents/docs/jesd270-4a",
+    "jedec_sphbm4_pr": "https://www.jedec.org/news/pressreleases/new-jedec%C2%AE-sphbm4-standard-enables-hbm4-class-bandwidth-organic-substrates",
+    "samsung_hbm_page": "https://semiconductor.samsung.com/dram/hbm/",
+    "samsung_hbm3e_12h": "https://news.samsung.com/global/samsung-develops-industry-first-36gb-hbm3e-12h-dram",
+    "micron_hbm3e": "https://www.micron.com/products/memory/hbm/hbm3e",
+    "skh_hbm3e_12h": "https://news.skhynix.com/en/sk-hynix-begins-volume-production-of-the-world-first-12-layer-hbm3e/",
+    "skh_hbm3e_16h": "https://www.storagenewsletter.com/2024/11/13/sk-ai-summit-sk-hynix-introduces-1st-16-high-hbm3e/",
+    "skh_hbm4": "https://news.skhynix.com/en/sk-hynix-completes-worlds-first-hbm4-development-and-readies-mass-production/",
+    "samsung_hbm4e": "https://news.samsungsemiconductor.com/global/samsung-electronics-begins-shipment-of-industry-first-hbm4e-samples/",
+    "thelec_skh_hbm4e": "https://www.thelec.net/news/articleView.html?idxno=11457",
+    "toms_guc_hbm4e": "https://www.tomshardware.com/pc-components/dram/hbm-undergoes-major-architectural-shakeup-as-tsmc-and-guc-detail-hbm4-hbm4e-and-c-hbm4e-3nm-base-dies-to-enable-2-5x-performance-boost-with-speeds-of-up-to-12-8gt-s-by-2027",
+    "nv_vr_nvl72": "https://www.nvidia.com/en-us/data-center/vera-rubin-nvl72/",
+    "nv_hgx": "https://www.nvidia.com/en-us/data-center/hgx/",
+    "tpu_rubin_lowered": "https://www.techpowerup.com/346983/nvidia-lowers-hbm4-specs-for-vera-rubin-vr200-as-memory-suppliers-miss-22-tb-s-target",
+    "nv_h200": "https://www.nvidia.com/en-us/data-center/h200/",
+    "amd_mi355x": "https://www.amd.com/en/products/accelerators/instinct/mi350/mi355x.html",
+    "amd_mi455x": "https://www.amd.com/en/products/accelerators/instinct/mi400/mi455x.html",
+    "google_tpu7x": "https://docs.cloud.google.com/tpu/docs/tpu7x",
+    "toms_tpu8": "https://www.tomshardware.com/tech-industry/semiconductors/google-splits-its-tpu-into-two-chips-for-the-first-time-with-training-and-inference-variants"
+  },
+  "proposed_selectors": {
+    "derived": {
+      "bus_width_bits": "n_packages * package_width_bits  (HBM: n_stacks * stack_width_bits; module: n_modules * module_width_bits)",
+      "raw_peak_GBps": "bus_width_bits * MTps / 8 / 1000",
+      "payload_peak_GBps": "raw_peak * payload_factor   (LPDDR6: 256/288 = 0.8889; others 1.0)",
+      "effective_GBps": "payload_peak * efficiency (assumed knob, default 0.70)",
+      "capacity_GB": "n_packages * package_capacity_GB  (HBM: n_stacks * stack_height * die_Gb / 8)"
+    },
+    "selectors": [
+      {
+        "id": "mem_type",
+        "values": [
+          "LPDDR5",
+          "LPDDR5X",
+          "LPDDR6",
+          "HBM3",
+          "HBM3E",
+          "HBM4",
+          "HBM4E"
+        ],
+        "default": "LPDDR5X"
+      },
+      {
+        "id": "form_factor",
+        "applies": "LPDDR*",
+        "values": {
+          "LPDDR5": [
+            "discrete"
+          ],
+          "LPDDR5X": [
+            "discrete",
+            "SOCAMM2",
+            "LPCAMM2"
+          ],
+          "LPDDR6": [
+            "discrete",
+            "CAMM2(speculative)",
+            "SOCAMM2(speculative)"
+          ]
+        },
+        "default": "discrete"
+      },
+      {
+        "id": "package_width_bits",
+        "values": {
+          "LPDDR5": [
+            32,
+            64
+          ],
+          "LPDDR5X": {
+            "32": "vendor",
+            "64": "default",
+            "96": "vendor-extended"
+          },
+          "LPDDR6": {
+            "96": "default",
+            "48": "speculative"
+          },
+          "SOCAMM2": [
+            128
+          ],
+          "LPCAMM2": [
+            128
+          ],
+          "LPDDR6_CAMM2": [
+            192
+          ],
+          "HBM3/HBM3E": [
+            1024
+          ],
+          "HBM4/HBM4E": [
+            2048
+          ]
+        }
+      },
+      {
+        "id": "speed_MTps",
+        "values": {
+          "LPDDR5": [
+            5500,
+            6400
+          ],
+          "LPDDR5X": [
+            7500,
+            8533,
+            9600,
+            10667
+          ],
+          "LPDDR6": [
+            10667,
+            12800,
+            14400
+          ],
+          "HBM3": [
+            6400
+          ],
+          "HBM3E": [
+            8000,
+            9200,
+            9600,
+            9800
+          ],
+          "HBM4": [
+            8000,
+            10000,
+            11000,
+            11700,
+            13000
+          ],
+          "HBM4E": [
+            12800,
+            14000,
+            16000
+          ]
+        },
+        "default": {
+          "LPDDR5": 6400,
+          "LPDDR5X": 8533,
+          "LPDDR6": 10667,
+          "HBM3": 6400,
+          "HBM3E": 9200,
+          "HBM4": 8000,
+          "HBM4E": 14000
+        }
+      },
+      {
+        "id": "n_packages",
+        "applies": "LPDDR discrete",
+        "values": [
+          1,
+          2,
+          3,
+          4,
+          6,
+          8,
+          10,
+          12,
+          16
+        ],
+        "default": {
+          "LPDDR5X": 8,
+          "LPDDR6": 4
+        },
+        "note": "flag >8 x64 or >6 x96 as 'beyond typical SoC beachfront' (Grace ~480-bit, Vera 1024-bit via modules, Crescent Island est. 640-1280 bit)"
+      },
+      {
+        "id": "n_modules",
+        "applies": "SOCAMM2/LPCAMM2",
+        "values": [
+          1,
+          2,
+          4,
+          6,
+          8
+        ],
+        "default": 8
+      },
+      {
+        "id": "package_capacity_GB",
+        "values": {
+          "LPDDR5": [
+            3,
+            6,
+            8,
+            12
+          ],
+          "LPDDR5X_x32": [
+            8,
+            16,
+            32,
+            64
+          ],
+          "LPDDR5X_x64": [
+            4,
+            6,
+            8,
+            12,
+            16,
+            24,
+            32
+          ],
+          "LPDDR5X_x96": [
+            12,
+            16,
+            24
+          ],
+          "LPDDR6_x96": [
+            8,
+            12,
+            16,
+            24,
+            32
+          ],
+          "SOCAMM2": [
+            48,
+            64,
+            96,
+            128,
+            192,
+            256
+          ],
+          "LPCAMM2": [
+            16,
+            32,
+            64,
+            96
+          ]
+        },
+        "default": {
+          "LPDDR5X_x64": 16,
+          "LPDDR6_x96": 16,
+          "SOCAMM2": 192
+        }
+      },
+      {
+        "id": "hbm_stack_height",
+        "values": {
+          "HBM3": [
+            8,
+            12
+          ],
+          "HBM3E": [
+            8,
+            12,
+            16
+          ],
+          "HBM4": [
+            8,
+            12,
+            16
+          ],
+          "HBM4E": [
+            8,
+            12,
+            16
+          ]
+        },
+        "default": 12
+      },
+      {
+        "id": "hbm_die_density_Gb",
+        "values": {
+          "HBM3": [
+            16,
+            24
+          ],
+          "HBM3E": [
+            24
+          ],
+          "HBM4": [
+            24,
+            32
+          ],
+          "HBM4E": [
+            32
+          ]
+        },
+        "default": {
+          "HBM3": 16,
+          "HBM3E": 24,
+          "HBM4": 24,
+          "HBM4E": 32
+        }
+      },
+      {
+        "id": "n_stacks",
+        "values": [
+          1,
+          2,
+          4,
+          5,
+          6,
+          8,
+          12,
+          16
+        ],
+        "default": 8
+      },
+      {
+        "id": "efficiency",
+        "values": "float 0.5-0.95",
+        "default": 0.7,
+        "note": "kept separate from payload_factor"
+      }
+    ],
+    "tag_rule": "combo tag = weakest tag among (speed grade, package width, capacity, stack height x density). Show badge JEDEC / vendor / vendor-extended / speculative in UI."
+  }
+}

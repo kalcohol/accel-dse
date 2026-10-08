@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>npu_dse 工作台</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body data-tab="overview">
+  <div class="head" id="head">
+  <!-- ============ 顶栏 ============ -->
+  <header class="topbar" id="topbar">
+    <h1>npu_dse 工作台</h1>
+    <span class="ver" id="ver">…</span>
+    <span class="status" id="status">空闲</span>
+    <span class="spacer"></span>
+    <button type="button" class="chip-warn" id="btn-honesty" title="所有带宽 / 效率 / 频率均为假设、未标定 —— 点击查看完整说明">⚠ 假设值 · 未标定</button>
+    <button type="button" class="btn ghost sm" id="btn-eval" title="参数变更后会自动评估（防抖）；此按钮仅强制重算">⟳ 重新评估</button>
+    <button type="button" class="btn ghost sm" id="btn-share" title="复制包含当前配置（?c=）的链接">🔗 复制链接</button>
+  </header>
+
+  <!-- ============ 场景栏（核心参数，吸顶） ============ -->
+  <section class="scenebar" id="scenebar" aria-label="场景参数">
+    <div class="mobile-sum" id="mobile-sum">
+      <span class="scene-summary" id="scene-summary">—</span>
+      <button type="button" class="btn ghost sm" id="btn-scene-toggle" aria-expanded="false">编辑场景 ▾</button>
+      <button type="button" class="btn ghost sm" id="btn-advanced-m" aria-controls="advanced-drawer" title="高级参数">⚙</button>
+    </div>
+    <div class="scene-row r1">
+      <div class="fld">
+        <label>领域</label>
+        <div class="seg" id="domain-seg">
+          <button type="button" data-domain="llm" class="active">LLM</button>
+          <button type="button" data-domain="video">视频</button>
+          <button type="button" data-domain="protein">蛋白质</button>
+        </div>
+      </div>
+      <div class="fld fld-series">
+        <label for="series">系列</label>
+        <select id="series"></select>
+        <label class="check mini-check" title="只列出有 HF config 的产品系列"><input type="checkbox" id="product-only" /> 仅 HF</label>
+      </div>
+      <span class="vsep"></span>
+      <div class="fld fld-pkg" id="fld-mem">
+        <label for="mem-type">存储</label>
+        <select id="mem-type" title="存储类型（代际）">
+          <optgroup label="LPDDR">
+            <option value="LPDDR5">LPDDR5</option>
+            <option value="LPDDR5X">LPDDR5X</option>
+            <option value="LPDDR6">LPDDR6</option>
+          </optgroup>
+          <optgroup label="HBM">
+            <option value="HBM3">HBM3</option>
+            <option value="HBM3E" selected>HBM3E</option>
+            <option value="HBM4">HBM4</option>
+            <option value="HBM4E">HBM4E</option>
+          </optgroup>
+        </select>
+        <button type="button" class="mem-chip" id="mem-chip" aria-haspopup="dialog" aria-expanded="false" aria-controls="mem-pop" title="存储配置：点击展开 形态 / 位宽 / 速率 / 数量 / 容量">
+          <span class="mem-sum" id="mem-sum">—</span><span class="ptag" id="mem-tag">—</span><span class="caret">▾</span>
+        </button>
+        <div class="mem-pop-backdrop" id="mem-pop-backdrop" hidden></div>
+        <div class="mem-pop" id="mem-pop" role="dialog" aria-label="存储配置" hidden>
+          <div class="mp-head">
+            <strong id="mp-title">存储配置</strong>
+            <span class="hint" id="mp-doc"></span>
+            <span class="spacer"></span>
+            <button type="button" class="btn ghost sm" id="mp-close">完成 ✓</button>
+          </div>
+          <div class="mp-grid">
+            <div class="mp-row" id="mp-form-row"><label>LPDDR 形态</label><div class="seg" id="mp-form"></div></div>
+            <div class="mp-row" id="mp-width-row"><label>封装位宽</label><div class="seg" id="mp-width"></div></div>
+            <div class="mp-row" id="mp-height-row"><label>堆叠高度</label><div class="seg" id="mp-height"></div></div>
+            <div class="mp-row" id="mp-die-row"><label>die 密度</label><div class="seg" id="mp-die"></div></div>
+            <div class="mp-row"><label for="mp-rate">速率档</label><select id="mp-rate"></select></div>
+            <div class="mp-row"><label for="mp-count" id="mp-count-label">颗数</label><select id="mp-count"></select></div>
+            <div class="mp-row" id="mp-cap-row"><label for="mp-cap" id="mp-cap-label">单颗容量</label><select id="mp-cap"></select></div>
+          </div>
+          <div class="mp-derived" id="mp-derived">—</div>
+          <div class="mp-tags" id="mp-tags"></div>
+          <ul class="mp-warn" id="mp-warn"></ul>
+          <div class="mp-foot hint">来源：research/memory_specs_2026-10 · 标签取各项中<strong>最弱</strong>者（JEDEC &gt; 疑似 JEDEC &gt; 厂商量产 &gt; 送样 &gt; 已发布 &gt; 推测）；允许推测组合但会标注。效率为假设值。
+            <button type="button" class="link" id="mp-manual">手动几何（高级）→</button></div>
+        </div>
+      </div>
+      <div class="fld fld-compute">
+        <label for="compute">算力</label>
+        <select id="compute"></select>
+      </div>
+      <div class="fld">
+        <label for="chip_count">芯片数</label>
+        <span class="stepper">
+          <button type="button" id="chip-dec" aria-label="减少芯片数">−</button>
+          <input type="number" id="chip_count" min="1" max="64" value="2" />
+          <button type="button" id="chip-inc" aria-label="增加芯片数">+</button>
+        </span>
+      </div>
+    </div>
+    <div class="scene-row r2">
+      <div class="fld">
+        <label for="batch">批大小</label>
+        <input type="number" id="batch" min="1" value="1" />
+      </div>
+      <div class="fld-group" id="wl-llm">
+        <div class="fld"><label for="prompt">提示长度</label><input type="number" id="prompt" min="1" value="512" /></div>
+        <div class="fld"><label for="ctx">上下文长度</label><input type="number" id="ctx" min="1" value="512" /></div>
+      </div>
+      <div class="fld-group" id="wl-video" style="display:none">
+        <div class="fld"><label for="n_denoise">去噪步数</label><input type="number" id="n_denoise" min="1" value="50" /></div>
+        <div class="fld"><label for="n_frames">帧数</label><input type="number" id="n_frames" min="1" value="16" /></div>
+      </div>
+      <div class="fld-group" id="wl-protein" style="display:none">
+        <div class="fld"><label for="seq_len">序列长度</label><input type="number" id="seq_len" min="1" value="512" /></div>
+      </div>
+      <div class="fld">
+        <label for="dtype">dtype</label>
+        <select id="dtype">
+          <option value="">（模型默认）</option>
+          <option value="fp16">fp16</option>
+          <option value="fp8">fp8</option>
+          <option value="int8">int8</option>
+          <option value="int4">int4</option>
+        </select>
+      </div>
+      <div class="fld">
+        <label for="quant">量化</label>
+        <select id="quant">
+          <option value="">（无）</option>
+          <option value="w16k16">w16k16</option>
+          <option value="w8k16">w8k16</option>
+          <option value="w4k16">w4k16</option>
+          <option value="w8k8">w8k8</option>
+          <option value="w4k8">w4k8</option>
+        </select>
+      </div>
+      <span class="spacer"></span>
+      <div class="fld">
+        <label for="par-summary">并行</label>
+        <button type="button" class="par" id="par-summary" title="并行映射（点击在 ⚙ 高级参数 › 并行 中锁定 / 修改）">TP 2 · PP 1 · EP 1</button>
+      </div>
+      <div class="fld">
+        <label for="preset-select">场景预设</label>
+        <select id="preset-select" title="预设仅组合目录 id（假设的 DSE 取值范围）—— 不含功耗 / 价格">
+          <option value="">（自定义）</option>
+          <option value="edge-lpddr-4x64" data-preset="edge-lpddr-4x64" title="edge-lpddr-4x64：边缘 · LPDDR5X 4×x64 @8533 + 64T 集群 · 1 芯片">边缘 · LPDDR5X 4×64</option>
+          <option value="edge-lpddr6-4x96" data-preset="edge-lpddr6-4x96" title="edge-lpddr6-4x96：边缘 · LPDDR6 4×x96 @10667 + 128T 集群 · 1 芯片">边缘 · LPDDR6 4×96</option>
+          <option value="card-hbm-4stack" data-preset="card-hbm-4stack" title="card-hbm-4stack：加速卡 · HBM3E 4×12H + 256T 集群 · 1 芯片">加速卡 · HBM3E×4</option>
+          <option value="card-hbm3e-8x12h" data-preset="card-hbm3e-8x12h" title="card-hbm3e-8x12h：加速卡 · HBM3E 8×12H（288 GB）+ 256T 集群 · 1 芯片">加速卡 · HBM3E×8</option>
+          <option value="server-socamm2-8" data-preset="server-socamm2-8" title="server-socamm2-8：服务器 · SOCAMM2 8×128b @9600（1.5 TB）+ 256T · 1 芯片">服务器 · SOCAMM2×8</option>
+          <option value="scaleup-8chip" data-preset="scaleup-8chip" title="scaleup-8chip：8 × (HBM3E 4×12H + 256T) · TP=8">8 卡扩展 · HBM3E×4</option>
+        </select>
+      </div>
+      <button type="button" class="btn ghost adv-btn" id="btn-advanced" aria-controls="advanced-drawer">⚙ 高级参数 <span class="n" id="adv-count" hidden>0</span></button>
+    </div>
+  </section>
+  </div>
+
+  <!-- ============ 单行诚信说明 ============ -->
+  <div class="honesty" id="banner">
+    <span>⚠ 所有带宽、效率、频率均为<strong>假设 / 未标定</strong>的 DSE 标签，非硅片实测；能耗 / 成本为用户参数的假设估算。</span>
+    <button type="button" class="link" id="btn-banner-more">完整说明与本次假设 →</button>
+  </div>
+
+  <main id="main">
+    <div class="error-box" id="error-box" role="alert"></div>
+
+    <!-- ============ KPI 条（MetricsCard 关键指标） ============ -->
+    <section class="kpis" id="metrics-grid" aria-label="MetricsCard 关键指标">
+      <div class="metric kpi primary" id="kpi-1">
+        <div class="k" id="m-primary-k">TTFT（首 token 时延）</div>
+        <div class="v" id="m-ttft">—</div>
+        <div class="s"><span class="delta" id="kpi-delta-1"></span><span id="kpi-sub-1"></span></div>
+      </div>
+      <div class="metric kpi primary" id="kpi-2">
+        <div class="k" id="m-secondary-k">TPOT（每 token 时延）</div>
+        <div class="v" id="m-tpot">—</div>
+        <div class="s"><span class="delta" id="kpi-delta-2"></span><span id="kpi-sub-2"></span></div>
+      </div>
+      <div class="metric kpi" id="m-wall-card">
+        <div class="k">瓶颈（wall）</div>
+        <div class="v sm" id="m-wall">—</div>
+        <div class="s" id="m-wall-sub"></div>
+      </div>
+      <div class="metric kpi" id="m-oom-card">
+        <div class="k">容量 / OOM</div>
+        <div class="v sm" id="m-oom">—</div>
+        <div class="s"><span class="oom-badge" id="m-oom-badge" title="CAPACITY OOM：所需容量超过封装容量" hidden>容量不足</span><span id="m-cap-sub"></span></div>
+      </div>
+      <div class="metric kpi" id="m-scale-card">
+        <div class="k">扩展效率 · 加速比</div>
+        <div class="v sm"><span id="m-scale-eff">—</span> · <span id="m-speedup-card"><span id="m-speedup">—</span></span></div>
+        <div class="s" id="m-scale-sub"></div>
+      </div>
+      <div class="metric kpi assumed" id="kpi-goodput" title="当前并行布局下满足 SLO 的最优吞吐（点击查看全部布局的帕累托）">
+        <div class="k"><span id="m-goodput-k">SLO 吞吐 / 芯片</span> <span class="tag" title="稳态解析假设（DECISIONS §19）">假设</span></div>
+        <div class="v sm" id="m-goodput">—</div>
+        <div class="s" id="m-goodput-sub">—</div>
+      </div>
+      <div class="metric kpi assumed" id="kpi-energy">
+        <div class="k"><span id="m-est-energy-k">能效 J / token</span> <span class="tag" title="ASSUMED stub：基于用户参数的假设估算">假设</span></div>
+        <div class="v sm" id="m-est-energy">—</div>
+        <div class="s" id="m-est-power">—</div>
+      </div>
+      <div class="metric kpi assumed" id="kpi-cost">
+        <div class="k"><span id="m-est-cost-k">成本 $ / MTok</span> <span class="tag" title="ASSUMED stub：基于用户参数的假设估算">假设</span></div>
+        <div class="v sm" id="m-est-mtok">—</div>
+        <div class="s" id="m-est-cost">—</div>
+      </div>
+    </section>
+
+    <!-- ============ 标签栏 + 固定操作 ============ -->
+    <div class="resbar">
+      <nav class="tabs" id="tabs" role="tablist">
+        <button type="button" data-tab="overview" class="active">概览</button>
+        <button type="button" data-tab="sweep">对比 / 扫描</button>
+        <button type="button" data-tab="pareto" title="吞吐–交互性帕累托 + SLO goodput（v0.30）">吞吐 / 交互</button>
+        <button type="button" data-tab="ab">A|B 对比 <span class="cnt" id="tab-ab-state"></span></button>
+        <button type="button" data-tab="assump">假设与说明 <span class="cnt" id="tab-assump-count"></span></button>
+      </nav>
+      <div class="ctx">
+        <span class="base-chip" id="baseline-hint">未固定基线</span>
+        <button type="button" class="btn ghost sm" id="btn-pin-baseline" title="将当前 MetricsCard 固定为基线（KPI 与扫描表显示 Δ%）">📌 固定基线</button>
+        <button type="button" class="btn ghost sm" id="btn-pin-a" title="将当前结果固定为 A|B 对比的 A">固定为 A</button>
+        <button type="button" class="btn ghost sm" id="btn-pin-b" title="将当前结果固定为 A|B 对比的 B">固定为 B</button>
+      </div>
+    </div>
+
+    <div class="panes" id="panes">
+      <!-- 概览 -->
+      <section class="tabpanel" id="tab-overview" data-panel="overview">
+        <div class="grid2">
+          <div class="card" id="breakdown-card">
+            <h3><span id="breakdown-title">Decode 阶段时间分解</span> <span class="hint" id="breakdown-hint"></span></h3>
+            <div class="stack" id="bd-stack" aria-hidden="true"></div>
+            <div class="bars" id="bd-bars">
+              <span class="lab" data-c="compute">计算</span><div class="track"><div class="fill c-compute" id="bf-compute"></div></div><span class="num" id="b-compute">—</span>
+              <span class="lab" data-c="dram">访存 DRAM</span><div class="track"><div class="fill c-dram" id="bf-dram"></div></div><span class="num" id="b-dram">—</span>
+              <span class="lab" data-c="c2c">C2C / 集合通信</span><div class="track"><div class="fill c-c2c" id="bf-c2c"></div></div><span class="num" id="b-c2c">—</span>
+              <span class="lab" data-c="sync" title="每次集合通信的固定时延 α × 次数 ×（1 − 重叠），叠加在 max(计算, 访存, C2C) 之外「假设」">通信同步（暴露）</span><div class="track"><div class="fill c-sync" id="bf-sync"></div></div><span class="num" id="b-sync">—</span>
+              <span class="lab" data-c="fabric">Fabric 互连</span><div class="track"><div class="fill c-fabric" id="bf-fabric"></div></div><span class="num" id="b-fabric">—</span>
+              <span class="lab" data-c="bubble" title="TPOT 中本用户在其他 PP 级上的时间：遍历（微批填满流水线时）或空闲气泡（微批 &lt; pp）">PP 遍历 / 气泡</span><div class="track"><div class="fill c-bubble" id="bf-bubble"></div></div><span class="num" id="b-bubble">—</span>
+              <span class="lab" data-c="draft" title="投机解码草稿成本（每个流水 tick）：MTP 头 = 每个草稿 token 一层权重 + LM 头「假设」">投机草稿</span><div class="track"><div class="fill c-draft" id="bf-draft"></div></div><span class="num" id="b-draft">—</span>
+            </div>
+            <div class="legend" id="bd-legend">高亮项 = 瓶颈；单位自动缩放（µs / ms / s）。</div>
+          </div>
+          <div class="card">
+            <h3>硬件与资源 <span class="hint" id="metrics-domain-label">（LLM）</span></h3>
+            <table class="kvt">
+              <tbody>
+                <tr><td>峰值 TOPS</td><td class="num" id="m-peak">—</td></tr>
+                <tr><td>有效带宽</td><td class="num" id="m-bw">—</td></tr>
+                <tr><td>利用率</td><td class="num" id="m-util">—</td></tr>
+                <tr><td>芯片数</td><td class="num" id="m-chips">—</td></tr>
+                <tr><td>TP / PP / EP</td><td class="num" id="i-parallel">—</td></tr>
+                <tr><td>存储</td><td class="num" id="i-mem">—</td></tr>
+                <tr><td>核数 × T/核</td><td class="num" id="i-cores">—</td></tr>
+                <tr><td>PE</td><td class="num" id="i-pe">—</td></tr>
+                <tr><td>字节 W / KV / 集合通信</td><td class="num" id="i-bytes">—</td></tr>
+                <tr><td>KV 切分</td><td class="num" id="i-kv">—</td></tr>
+                <tr><td>通信同步</td><td class="num" id="i-sync">—</td></tr>
+                <tr><td id="i-wl-label">提示 / 上下文 / 批大小</td><td class="num" id="i-wl">—</td></tr>
+                <tr id="m-extra-card" style="display:none"><td id="m-extra-k">附加</td><td class="num" id="m-extra">—</td></tr>
+                <tr id="m-cap-card" style="display:none"><td>容量（需求 / 可用）</td><td class="num" id="m-cap">—</td></tr>
+                <tr id="i-pair-row" style="display:none"><td>pair 字节</td><td class="num" id="i-pair">—</td></tr>
+                <tr><td>模型</td><td class="num" id="i-model">—</td></tr>
+              </tbody>
+            </table>
+            <div class="hint" id="econ-basis"></div>
+          </div>
+        </div>
+        <div class="card top-assump">
+          <h3>本次评估的假设 <span class="hint" id="assumptions-top-meta"></span>
+            <button type="button" class="link push" id="btn-assump-all">查看全部 →</button></h3>
+          <ul class="assump-list" id="assumptions-top"><li class="muted">评估后显示。</li></ul>
+        </div>
+      </section>
+
+      <!-- 对比 / 扫描 -->
+      <section class="tabpanel" id="tab-sweep" data-panel="sweep">
+        <div class="card compare-panel" id="compare-panel" data-legacy-title="Compare / Sweep">
+          <h3>对比 / 扫描 <span class="hint" id="sweep-meta">选择扫描维度 · ≤32 行</span></h3>
+          <div class="compare-controls">
+            <div class="sweep-ctl">
+              <div class="fld">
+                <label>扫描维度</label>
+                <div class="seg" id="sweep-axis-seg">
+                  <button type="button" data-axis="chips" class="active">芯片数</button>
+                  <button type="button" data-axis="package">封装</button>
+                  <button type="button" data-axis="compute">算力</button>
+                  <button type="button" data-axis="parallel">TP / PP</button>
+                  <button type="button" data-axis="series">系列</button>
+                </div>
+              </div>
+              <div class="fld" id="opt-package-kind" style="display:none">
+                <label for="sweep-pkg-kind">存储维度</label>
+                <select id="sweep-pkg-kind" title="围绕当前存储配置，仅改变一个结构化维度">
+                  <option value="axis:count">数量（颗 / 条 / 堆）</option>
+                  <option value="axis:rate">速率档（本代际）</option>
+                  <option value="axis:type">类型（7 种默认配置）</option>
+                  <option value="HBM">目录 · HBM 精选</option>
+                  <option value="LPDDR">目录 · LPDDR 精选</option>
+                </select>
+              </div>
+              <div class="fld" id="opt-compute-level" style="display:none">
+                <label for="sweep-compute-level">算力层级</label>
+                <select id="sweep-compute-level">
+                  <option value="all">单核 + 集群</option>
+                  <option value="core">仅单核</option>
+                  <option value="cluster">仅集群</option>
+                </select>
+              </div>
+              <div class="fld" id="opt-parallel-chips" style="display:none">
+                <label>并行芯片数</label>
+                <div class="seg" id="sweep-par-chips-seg">
+                  <button type="button" data-chips="4" class="active">4</button>
+                  <button type="button" data-chips="8">8</button>
+                </div>
+              </div>
+              <button type="button" class="btn" id="btn-sweep">▶ 运行扫描</button>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="btn ghost sm" id="btn-par4" title="芯片数=4 时的 TP×PP×EP 矩阵">并行矩阵 ×4</button>
+              <button type="button" class="btn ghost sm" id="btn-par8" title="芯片数=8 时的 TP×PP×EP 矩阵">并行矩阵 ×8</button>
+              <span class="spacer"></span>
+              <button type="button" class="btn ghost sm" id="btn-export-csv" title="将最近一次扫描下载为 CSV" disabled>导出 CSV</button>
+              <button type="button" class="btn ghost sm" id="btn-export-json" title="将最近一次扫描下载为 JSON" disabled>导出 JSON</button>
+              <button type="button" class="btn ghost sm" id="btn-sweep-clear">清空</button>
+            </div>
+            <div class="hint" id="sweep-hint">以当前参数为固定基准，仅改变所选维度。</div>
+            <div class="error-box" id="sweep-error"></div>
+          </div>
+          <div class="empty" id="sweep-empty">首次打开本面板时会按当前维度自动运行一次；之后修改参数请点击「运行扫描」刷新。固定基线后表格显示 Δ%。</div>
+          <div class="compare-chart-wrap" id="compare-chart-wrap" hidden>
+            <h4 class="chart-title" id="chart-title">主指标</h4>
+            <div class="bar-chart" id="bar-chart" aria-label="扫描柱状图"></div>
+          </div>
+          <div class="compare-table-wrap" id="compare-table-wrap" hidden>
+            <table class="compare-table" id="compare-table">
+              <thead id="compare-thead"></thead>
+              <tbody id="compare-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- v0.30 吞吐 / 交互 -->
+      <section class="tabpanel" id="tab-pareto" data-panel="pareto">
+        <div class="card pareto-panel" id="pareto-panel">
+          <h3>吞吐–交互性 帕累托 <span class="tag" title="稳态解析假设，见下方「假设」与 DECISIONS §19">假设</span>
+            <span class="hint" id="pareto-meta">当前场景 · 批量 1 → KV 容量上限 × 全部有效并行布局</span></h3>
+          <div class="pareto-controls">
+            <div class="fld slo-llm"><label for="slo-ttft">TTFT ≤（ms）</label><input type="number" id="slo-ttft" min="1" step="100" value="2000" /></div>
+            <div class="fld slo-llm"><label for="slo-tpot">TPOT ≤（ms）</label><input type="number" id="slo-tpot" min="0.1" step="5" value="50" /></div>
+            <div class="fld slo-aux" hidden><label for="slo-lat" id="slo-lat-label">TTFC ≤（ms）</label><input type="number" id="slo-lat" min="1" step="100" value="30000" /></div>
+            <div class="fld"><label for="pareto-layouts">并行布局</label>
+              <select id="pareto-layouts">
+                <option value="all">全部有效布局（TP×PP×EP · 注意力 TP|DP）</option>
+                <option value="current">仅当前布局</option>
+              </select></div>
+            <div class="fld slo-llm"><label for="goodput-mode" title="摊销：每个请求 prompt P、输出 N 个 token，稳态扣除 prefill 占用「假设」；上界：仅 decode（≤0.30 口径）">吞吐口径</label>
+              <select id="goodput-mode">
+                <option value="amortized">摊销 prefill（稳态）</option>
+                <option value="upper">上界（仅 decode）</option>
+              </select></div>
+            <div class="fld slo-llm amort-only"><label for="prefill-mode">prefill 方式</label>
+              <select id="prefill-mode">
+                <option value="chunked">分块混合</option>
+                <option value="exclusive">独占</option>
+              </select></div>
+            <div class="fld slo-llm amort-only"><label for="out-len">输出长度 N</label><input type="number" id="out-len" min="1" step="64" value="256" /></div>
+            <button type="button" class="btn" id="btn-pareto">▶ 计算</button>
+            <span class="spacer"></span>
+            <button type="button" class="btn ghost sm" id="btn-pareto-csv" disabled title="下载全部点（含前沿 / SLO 标记）为 CSV">导出 CSV</button>
+            <button type="button" class="btn ghost sm" id="btn-pareto-json" disabled>导出 JSON</button>
+          </div>
+          <div class="hint" id="pareto-domain-note"></div>
+          <div class="error-box" id="pareto-error"></div>
+          <div class="goodput-grid" id="pareto-goodput">
+            <div class="gp"><div class="k" id="gp-y-k">SLO 最优吞吐</div><div class="v" id="gp-y">—</div><div class="s" id="gp-y-sub"></div></div>
+            <div class="gp"><div class="k">达成配置</div><div class="v sm" id="gp-config">—</div><div class="s" id="gp-config-sub"></div></div>
+            <div class="gp"><div class="k">最大并发用户</div><div class="v" id="gp-users">—</div><div class="s" id="gp-users-sub"></div></div>
+            <div class="gp"><div class="k">约束（binding）</div><div class="v sm" id="gp-binding">—</div><div class="s" id="gp-binding-sub"></div></div>
+          </div>
+          <div class="pareto-chart-wrap" id="pareto-chart-wrap">
+            <svg id="pareto-svg" viewBox="0 0 760 400" preserveAspectRatio="xMidYMid meet" role="img" aria-label="吞吐–交互性散点图"></svg>
+            <div class="pareto-tip" id="pareto-tip" hidden></div>
+            <div class="pareto-empty" id="pareto-empty">打开本标签时自动计算；修改参数后自动刷新。</div>
+          </div>
+          <div class="pareto-legend" id="pareto-legend"></div>
+          <details class="pareto-layouts-box" id="pareto-layouts-box">
+            <summary>各并行布局：容量上限 / SLO 结果</summary>
+            <div class="compare-table-wrap"><table class="compare-table" id="pareto-layout-table"><thead></thead><tbody></tbody></table></div>
+          </details>
+          <ul class="assump-list" id="pareto-assump"></ul>
+        </div>
+      </section>
+
+      <!-- A|B -->
+      <section class="tabpanel" id="tab-ab" data-panel="ab">
+        <div class="card dual-panel" id="dual-panel">
+          <h3>A|B 双卡对比 <span class="hint" id="dual-meta">固定两次评估（或最近一次 + 基线）· 逐字段 Δ</span></h3>
+          <div class="btn-row">
+            <button type="button" class="btn ghost sm" id="btn-dual-from-baseline" title="以已固定的基线为 A、最近一次评估为 B">最近 vs 基线</button>
+            <button type="button" class="btn ghost sm" id="btn-dual-swap" title="交换 A 与 B">交换 A↔B</button>
+            <button type="button" class="btn ghost sm" id="btn-dual-clear">清空 A|B</button>
+            <span class="spacer"></span>
+            <label class="check mini-check"><input type="checkbox" id="dual-show-all" /> 显示全部字段</label>
+          </div>
+          <div class="dual-grid" id="dual-grid">
+            <div class="dual-card" id="dual-a">
+              <h4>A <span class="hint" id="dual-a-label">—</span></h4>
+              <div class="dual-body" id="dual-a-body"><em>点击「固定为 A」</em></div>
+            </div>
+            <div class="dual-card" id="dual-b">
+              <h4>B <span class="hint" id="dual-b-label">—</span></h4>
+              <div class="dual-body" id="dual-b-body"><em>点击「固定为 B」</em></div>
+            </div>
+          </div>
+          <div class="dual-delta-wrap" id="dual-delta-wrap" hidden>
+            <div class="table-scroll">
+              <table class="compare-table dual-delta-table" id="dual-delta-table">
+                <thead><tr><th>字段</th><th class="num">A</th><th class="num">B</th><th class="num">Δ</th><th class="num">Δ%</th></tr></thead>
+                <tbody id="dual-delta-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 假设与说明 -->
+      <section class="tabpanel" id="tab-assump" data-panel="assump">
+        <div class="card">
+          <h3>诚信说明（假设 / 未标定）</h3>
+          <div class="banner-full" id="banner-full">正在加载说明…</div>
+          <div class="domain-note" id="domain-note"></div>
+        </div>
+        <div class="card">
+          <h3>本次评估的假设与备注</h3>
+          <div class="assumptions" id="assumptions"><em>评估后显示假设说明。</em></div>
+        </div>
+        <div class="card">
+          <h3>当前选择</h3>
+          <table class="kvt">
+            <tbody>
+              <tr><td>系列元数据</td><td class="wrap-anywhere" id="series-meta">—</td></tr>
+              <tr><td>存储</td><td class="wrap-anywhere" id="package-meta">—</td></tr>
+              <tr><td>算力</td><td class="wrap-anywhere" id="compute-meta">—</td></tr>
+              <tr><td>场景预设</td><td class="wrap-anywhere" id="preset-hint">预设仅组合目录 id（假设的 DSE 取值范围）—— 不含功耗 / 价格。</td></tr>
+            </tbody>
+          </table>
+          <p class="footer-note">
+            本地工具 —— 无 CDN、无外部资源。引擎：<code>evaluate_workbench(WorkbenchConfig)</code>
+            覆盖 LLM / 视频 / 蛋白质；存储目录走 <code>GET /api/memory</code>；对比网格走 <code>POST /api/sweep</code>；支持 CSV/JSON 导出、基线 Δ%、A|B 双卡对比、calib 覆盖、场景预设、假设能耗/成本估算、配置深链 <code>?c=</code>。
+            静态 HTML 报告：<code>python3 -m npu_dse report</code>。
+          </p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- ============ ⚙ 高级参数抽屉 ============ -->
+  <div class="drawer-mask" id="drawer-mask"></div>
+  <aside class="drawer" id="advanced-drawer" aria-label="高级参数" aria-hidden="true">
+    <header class="drawer-head">
+      <h2>⚙ 高级参数</h2>
+      <span class="hint">修改后自动重新评估</span>
+      <span class="spacer"></span>
+      <button type="button" class="btn ghost sm" id="btn-drawer-close">关闭 ✕</button>
+    </header>
+    <div class="drawer-body">
+      <details class="acc" id="acc-parallel">
+        <summary>并行 TP / PP / EP <span class="st" id="st-parallel">默认映射</span></summary>
+        <div class="inner">
+          <div class="row"><label for="tp">TP</label><input type="number" id="tp" min="1" max="64" value="2" /></div>
+          <div class="row"><label for="pp">PP</label><input type="number" id="pp" min="1" max="64" value="1" /></div>
+          <div class="row"><label for="ep">EP</label><input type="number" id="ep" min="1" max="64" value="1" /></div>
+          <div class="hint" id="parallel-hint">TP × PP × EP 必须等于芯片数（未锁定时 TP 自动跟随芯片数）</div>
+          <div class="row"><label class="check"><input type="checkbox" id="lock-parallel" /> 锁定显式 TP / PP / EP</label></div>
+        </div>
+      </details>
+
+      <details class="acc" id="acc-sync">
+        <summary>通信同步 / KV 切分 <span class="badge assumed" title="v0.29 修正两处乐观假设；α 为假设值">假设</span><span class="st" id="st-sync">α 3 µs · 暴露</span></summary>
+        <div class="inner">
+          <div class="hint">每次集合通信的固定时延 α（启动 + 同步 + 跳数），按次数累加并<strong>叠加在</strong> max(计算, 访存, C2C) 之外：TP 每层 2 次 all-reduce、EP 每层 2 次 all-to-all、PP 每级 1 次收发。α = 0 即 ≤0.28 的纯带宽模型。</div>
+          <div class="slider-row">
+            <label for="c2c_latency_us">α µs / 次</label>
+            <input type="range" id="c2c_latency_us" min="0" max="10" step="0.5" value="3" />
+            <span class="val" id="c2c_latency_us-val">3.0</span>
+          </div>
+          <div class="slider-row">
+            <label for="sync_overlap">同步重叠</label>
+            <input type="range" id="sync_overlap" min="0" max="1" step="0.05" value="0" />
+            <span class="val" id="sync_overlap-val">0.00</span>
+          </div>
+          <div class="hint">重叠 = 被计算隐藏的比例；默认 0 = 完全暴露。</div>
+          <div class="row">
+            <label>注意力并行</label>
+            <div class="seg" id="attn-parallel-seg">
+              <button type="button" data-attn="tp" class="active">TP（按头）</button>
+              <button type="button" data-attn="dp">DP（按 batch）</button>
+            </div>
+          </div>
+          <div class="hint">TP：每卡 KV = KV × ceil(n_kv/tp)/n_kv —— tp &gt; n_kv 时 KV 头复制；MLA latent 不可按 TP 切分（每卡全量）。DP：KV 按 batch 切分，注意力权重每卡复制。</div>
+        </div>
+      </details>
+
+      <details class="acc" id="acc-spec">
+        <summary>投机解码 / MoE 切分 / PP 微批 <span class="badge assumed" title="v0.31：接受率、草稿成本为假设值">假设</span><span class="st" id="st-spec">关闭</span></summary>
+        <div class="inner">
+          <div class="row"><label for="spec_k">投机 token 数 k</label><input type="number" id="spec_k" min="0" max="8" step="1" value="0" /></div>
+          <div class="slider-row">
+            <label for="spec_accept">接受率 a</label>
+            <input type="range" id="spec_accept" min="0" max="1" step="0.05" value="0.7" />
+            <span class="val" id="spec_accept-val">0.70</span>
+          </div>
+          <div class="row">
+            <label>草稿来源</label>
+            <div class="seg" id="spec-draft-seg">
+              <button type="button" data-draft="mtp" class="active">MTP 头</button>
+              <button type="button" data-draft="model">草稿模型</button>
+            </div>
+          </div>
+          <div class="row" id="spec-frac-row" hidden><label for="spec_draft_frac">草稿步 / 目标步</label><input type="number" id="spec_draft_frac" min="0" max="1" step="0.05" value="0.1" /></div>
+          <div class="hint">k = 0 关闭。验证步一次处理 k+1 个 token（M = B·(k+1)）；每步期望产出 (1−a^(k+1))/(1−a) 个 token，TPOT = 步时延 / 期望 token 数。MTP 头：每个草稿 token 读一层权重 + LM 头，并计入 MTP 层权重容量（DeepSeek-V3 等配置自带 1 层）。</div>
+          <div class="row">
+            <label>MoE 专家切分</label>
+            <div class="seg" id="moe-shard-seg">
+              <button type="button" data-moe="tp_ep" class="active">TP×EP 组内切分</button>
+              <button type="button" data-moe="ep_all">EP 全卡</button>
+            </div>
+          </div>
+          <div class="hint">TP×EP：专家分到 ep 组、组内每个专家再按 tp 切分；注意力在 ep 组间数据并行（KV 按 batch 切）。EP 全卡：专家分到全部 tp·ep 张卡、不切分。仅 MoE 模型生效。</div>
+          <div class="row"><label for="decode_mb">PP decode 微批数</label><input type="number" id="decode_mb" min="0" max="64" step="1" value="0" /></div>
+          <div class="hint">0 = 自动 min(B, pp)：批量 &gt; 1 时用微批填满流水线；单用户 TPOT 仍含 pp 级遍历；B = 1 不变。</div>
+        </div>
+      </details>
+
+      <details class="acc" id="acc-mem">
+        <summary>存储几何（手动） <span class="st" id="st-mem">使用目录</span></summary>
+        <div class="inner">
+          <div class="row"><label class="check"><input type="checkbox" id="manual-mem" /> 手动设置几何参数（覆盖存储目录配置）</label></div>
+          <div id="manual-mem-fields" style="display:none">
+            <div class="hint">自由几何，标为「推测」；类型（HBM / LPDDR）沿用场景栏选择。数量 = 封装 / 堆数，位宽为单个封装 / 堆的位宽。</div>
+            <div class="row"><label for="n_channels">数量（封装 / 堆）</label><input type="number" id="n_channels" min="1" value="8" /></div>
+            <div class="row"><label for="width_bits">单元位宽（bit）</label><input type="number" id="width_bits" min="8" step="8" value="1024" /></div>
+            <div class="row"><label for="data_rate_GTs">速率 GT/s</label><input type="number" id="data_rate_GTs" min="0.1" step="0.1" value="9.2" /></div>
+            <div class="row"><label for="capacity_GB" title="厂商标称 GB = 2³⁰ B（与芯片目录一致）">容量 GB / 卡</label><input type="number" id="capacity_GB" min="1" step="1" value="288" /></div>
+          </div>
+        </div>
+      </details>
+
+      <details class="acc" id="acc-compute">
+        <summary>算力（手动 核数 × T/核） <span class="st" id="st-compute">使用预设</span></summary>
+        <div class="inner">
+          <div class="row"><label class="check"><input type="checkbox" id="manual-compute" /> 手动设置 核数 × T/核（覆盖算力预设）</label></div>
+          <div id="manual-compute-fields" style="display:none">
+            <div class="row"><label for="n_cores">核数</label><input type="number" id="n_cores" min="1" value="16" /></div>
+            <div class="row"><label for="tops_per_core">TOPS / 核</label><input type="number" id="tops_per_core" min="0.1" step="0.25" value="6.25" /></div>
+          </div>
+        </div>
+      </details>
+
+      <details class="acc section" id="override-section">
+        <summary>校准 / 覆盖 <span class="badge" id="override-badge" hidden>已覆盖</span><span class="st" id="st-override">默认（假设）</span></summary>
+        <div class="inner">
+          <div class="hint">可选：注入实测效率。默认值均为假设 / 未标定 —— 非硅片实测。</div>
+          <div class="slider-row">
+            <label for="efficiency">访存效率</label>
+            <input type="range" id="efficiency" min="0.3" max="1.0" step="0.01" value="0.70" />
+            <span class="val" id="efficiency-val">0.70</span>
+          </div>
+          <div class="slider-row">
+            <label for="mac_eff">MAC / 重叠隐藏</label>
+            <input type="range" id="mac_eff" min="0" max="0.9" step="0.05" value="0" />
+            <span class="val" id="mac_eff-val">0.00</span>
+          </div>
+          <div class="hint">mac_efficiency 是 weight_hide_factor 的别名（假设的计算/访存重叠）</div>
+          <div class="slider-row">
+            <label for="freq_ghz">频率 GHz</label>
+            <input type="range" id="freq_ghz" min="0.5" max="2.0" step="0.05" value="1.00" />
+            <span class="val" id="freq_ghz-val">1.00</span>
+          </div>
+          <div class="hint">也可通过 API <code>calib:{…}</code> / CLI <code>--calib</code> 注入。</div>
+        </div>
+      </details>
+
+      <details class="acc section" id="assumed-compute-section">
+        <summary>算力附加项（非 GEMM / dtype MAC） <span class="badge assumed" id="assumed-compute-badge">可选启用</span><span class="st" id="st-assumed">关闭</span></summary>
+        <div class="inner">
+          <div class="hint">粗粒度 Softmax / RoPE / LN 开销 + 可选的 dtype MAC 峰值系数。<strong>默认关闭 / 1.0</strong> —— 非周期精确，非硅片实测；保持默认时手算校验结果不变。</div>
+          <div class="slider-row">
+            <label for="non_gemm_overhead">非 GEMM 开销</label>
+            <input type="range" id="non_gemm_overhead" min="0" max="1" step="0.01" value="0" />
+            <span class="val" id="non_gemm_overhead-val">0.00</span>
+          </div>
+          <div class="hint">t_compute′ = t_compute × (1 + 开销)，单一粗调参数。</div>
+          <details id="non-gemm-finer">
+            <summary>细分 Softmax / RoPE / LN 占比（可选）</summary>
+            <div class="slider-row">
+              <label for="softmax_frac">Softmax 占比</label>
+              <input type="range" id="softmax_frac" min="0" max="0.5" step="0.01" value="0" />
+              <span class="val" id="softmax_frac-val">0.00</span>
+            </div>
+            <div class="slider-row">
+              <label for="rope_frac">RoPE 占比</label>
+              <input type="range" id="rope_frac" min="0" max="0.5" step="0.01" value="0" />
+              <span class="val" id="rope_frac-val">0.00</span>
+            </div>
+            <div class="slider-row">
+              <label for="norm_frac">Norm 占比</label>
+              <input type="range" id="norm_frac" min="0" max="0.5" step="0.01" value="0" />
+              <span class="val" id="norm_frac-val">0.00</span>
+            </div>
+            <div class="hint">任一细分项 &gt; 0 时，以其总和替代粗粒度开销。</div>
+            <div class="row"><label class="check"><input type="checkbox" id="use_finer_non_gemm" /> 使用细分占比</label></div>
+          </details>
+          <div class="row stack-row">
+            <label for="dtype_mac_factors">dtype MAC 系数 JSON</label>
+            <input type="text" id="dtype_mac_factors" placeholder='{"fp16":1,"fp8":1,"int8":1,"int4":1}' />
+          </div>
+          <div class="hint">可选映射：peak_TOPS × 权重 dtype 对应系数。留空 / 全为 1.0 = 仅按字节计。用户假设值，非硅片实测。</div>
+          <div class="btn-row">
+            <button type="button" class="btn ghost sm" id="btn-mac-example" title="示例：假设低精度 MAC 更密（非硅片实测）">载入 EXAMPLE 系数</button>
+            <button type="button" class="btn ghost sm" id="btn-mac-clear">清除（1.0）</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="acc section" id="econ-section">
+        <summary>能耗 / 成本 <span class="badge assumed" id="econ-badge" title="ASSUMED stub：基于用户参数的假设估算，非硅片实测">假设估算</span><span class="st" id="st-econ">关闭</span></summary>
+        <div class="inner">
+          <div class="hint">仅为用户输入参数 —— <strong>非</strong>硅片 / PDK / JEDEC 功耗。留空 = 关闭。功耗 = 芯片数 × (tdp_w <em>或</em> W/TOPS × 峰值) × 利用率；仅计算卡（不含主机 / 散热 / PUE）。</div>
+          <div class="row"><label for="tdp_w">TDP（W / 卡）</label><input type="number" id="tdp_w" min="0" step="1" placeholder="关闭" /></div>
+          <div class="slider-row">
+            <label for="power_util">功耗利用率</label>
+            <input type="range" id="power_util" min="0.1" max="1.0" step="0.05" value="1.0" />
+            <span class="val" id="power_util-val">1.00</span>
+          </div>
+          <div class="row"><label for="cost_per_card_usd">$ / 卡</label><input type="number" id="cost_per_card_usd" min="0" step="100" placeholder="关闭" /></div>
+          <div class="row"><label for="usd_per_kwh">$ / kWh（LLM）</label><input type="number" id="usd_per_kwh" min="0" step="0.01" placeholder="关闭" /></div>
+          <div class="row"><label for="amortize_years">摊销年限（LLM）</label><input type="number" id="amortize_years" min="0" step="0.5" placeholder="关闭" /></div>
+          <div class="slider-row">
+            <label for="duty_cycle">占空比</label>
+            <input type="range" id="duty_cycle" min="0.05" max="1.0" step="0.05" value="1.0" />
+            <span class="val" id="duty_cycle-val">1.00</span>
+          </div>
+          <details>
+            <summary>更多（W / TOPS、存储附加 $）</summary>
+            <div class="row"><label for="watts_per_tops">W / TOPS</label><input type="number" id="watts_per_tops" min="0" step="0.05" placeholder="关闭（tdp_w 优先）" /></div>
+            <div class="row"><label for="mem_addon_usd">存储附加 $ / 卡</label><input type="number" id="mem_addon_usd" min="0" step="50" placeholder="关闭" /></div>
+          </details>
+          <div class="btn-row">
+            <button type="button" class="btn ghost sm" id="btn-econ-example" title="填入明显虚构的 EXAMPLE 占位值（examples/energy_cost.example.json）">载入 EXAMPLE 占位值</button>
+            <button type="button" class="btn ghost sm" id="btn-econ-clear">清除（关闭）</button>
+          </div>
+          <div class="hint">API：扁平字段 <code>tdp_w</code> / <code>cost_per_card_usd</code> / … 或 <code>econ:{…}</code> · CLI <code>--tdp-w</code> / <code>--econ</code>。</div>
+        </div>
+      </details>
+    </div>
+    <footer class="drawer-foot">
+      <button type="button" class="btn ghost sm" id="btn-reset" title="恢复全部参数默认值，并清除基线与 A|B">全部恢复默认</button>
+    </footer>
+  </aside>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>npu_dse report v0.31.0</title>
+<style>
+:root {
+  --bg: #0f1419; --panel: #1a2332; --text: #e7ecf3; --muted: #9aa7b8;
+  --accent: #5b9fd4; --border: #2a3a4e; --warn: #e6a23c;
+  --compute: #3d9a6a; --memory: #c45c26; --balanced: #8a7a3a;
+  --c2c: #6b7fd7; --fabric: #a855c8; --bubble: #b45309;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI,
+    Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.45;
+  font-size: 14px;
+}
+header {
+  padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, #1c2838, var(--bg));
+}
+header h1 { margin: 0 0 0.35rem; font-size: 1.45rem; }
+header .meta { color: var(--muted); font-size: 0.9rem; }
+.banner {
+  margin: 1rem 1.5rem 0; padding: 0.85rem 1rem;
+  background: #3a2a12; border: 1px solid var(--warn); border-radius: 8px;
+  color: #f5d9a8;
+}
+.banner strong { color: #ffd27a; }
+nav {
+  display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+nav a {
+  color: var(--accent); text-decoration: none; font-size: 0.85rem;
+  padding: 0.2rem 0.5rem; border: 1px solid var(--border); border-radius: 4px;
+}
+nav a:hover { background: var(--panel); }
+main { padding: 0.5rem 1.5rem 2.5rem; max-width: 1200px; }
+section {
+  margin-top: 1.5rem; padding: 1rem 1.1rem;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+}
+section h2 {
+  margin: 0 0 0.75rem; font-size: 1.15rem;
+  border-bottom: 1px solid var(--border); padding-bottom: 0.4rem;
+}
+section h3 { margin: 1rem 0 0.5rem; font-size: 1rem; color: var(--muted); }
+p, li { color: var(--text); }
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+}
+code { background: #0c1118; padding: 0.1em 0.35em; border-radius: 3px; }
+pre.plain {
+  background: #0c1118; padding: 0.75rem; border-radius: 6px;
+  overflow-x: auto; white-space: pre; color: #c8d4e0;
+  border: 1px solid var(--border);
+}
+.table-wrap { overflow-x: auto; }
+table {
+  border-collapse: collapse; width: 100%; font-size: 0.82rem;
+  margin: 0.4rem 0 0.8rem;
+}
+th, td {
+  border: 1px solid var(--border); padding: 0.35rem 0.5rem;
+  text-align: left; vertical-align: top;
+}
+th { background: #121a26; color: var(--muted); font-weight: 600; }
+tr:nth-child(even) td { background: rgba(0,0,0,0.15); }
+.tag {
+  display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px;
+  font-size: 0.75rem; font-weight: 600; color: #fff;
+}
+.tag.compute { background: var(--compute); }
+.tag.memory { background: var(--memory); }
+.tag.balanced { background: var(--balanced); }
+.tag.c2c { background: var(--c2c); }
+.tag.fabric { background: var(--fabric); }
+.tag.bubble { background: var(--bubble); }
+.tag.sync { background: #0e7490; }
+.tag.other { background: #555; }
+.note { color: var(--muted); font-size: 0.9rem; }
+footer {
+  padding: 1rem 1.5rem 2rem; color: var(--muted); font-size: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+</style>
+</head>
+<body>
+<header>
+<h1>npu_dse Metrics / wall report <small>v0.31.0</small></h1>
+<div class="meta">Generated 2026-10-08 16:56:56 · offline self-contained HTML (inline CSS, no external deps)</div>
+</header>
+<div class="banner" id="assumptions">
+<strong>ASSUMPTIONS / UNCALIBRATED:</strong> Absolute TOPS, GB/s, frequency, C2C/fabric BW are assumed/uncalibrated; LLM/video/protein dims come from public HF configs where registered, else illustrative. Do not treat ms/GB as silicon-backed. See DECISIONS.md / REQUIREMENTS_GAP.md.
+</div>
+<nav>
+<a href="#walls">How to read walls</a>
+<a href="#series">Model series</a>
+<a href="#packages">Package ranges</a>
+<a href="#compute">Compute ranges</a>
+<a href="#chips">Chips sweep</a>
+<a href="#parallel">Parallel matrix</a>
+<a href="#mem">Mem geometry</a>
+<a href="#compare">Cross-domain</a>
+<a href="#scale">Scale efficiency</a>
+<a href="#assumed-compute">Assumed compute extras</a>
+<a href="#econ">Presets × energy/cost (assumed)</a>
+<a href="#assumptions">Assumptions</a>
+</nav>
+<main>
+<section id="walls">
+<h2>How to read walls</h2>
+
+<p><strong>Wall</strong> = which time component dominates the roofline
+<code>max(compute, dram, c2c, fabric) + sync</code> (then ÷(1−bubble)) for that
+phase. v0.29: per-collective latency α (default 3 µs, assumed) is added
+<em>outside</em> the max as exposed sync.</p>
+<ul>
+  <li><span class="tag compute">compute</span> — GEMM / attention cycles win
+      (often HBM + decode M=1 util≈1/R, or DiT T² attn).</li>
+  <li><span class="tag memory">memory</span> — external DRAM bytes / eff BW win
+      (classic 27B decode weight-stream on LPDDR).</li>
+  <li><span class="tag balanced">balanced</span> — compute ≈ memory (within ~5%).</li>
+  <li><span class="tag c2c">c2c</span> — chip-to-chip collectives (TP all-reduce / EP A2A).</li>
+  <li><span class="tag fabric">fabric</span> — remote KV IB/RoCE path.</li>
+  <li><span class="tag sync">sync</span> — exposed collective latency
+      (n_collectives × α × (1−overlap); TP 2 all-reduce/layer, EP 2 A2A/layer,
+      PP 1 send/stage) — v0.29.</li>
+  <li><span class="tag bubble">bubble</span> — pipeline-parallel idle
+      (decode mb=1 → bubble=(pp−1)/pp).</li>
+</ul>
+<p>Read <em>breakdown</em> columns (t_compute / t_dram / t_c2c / …) alongside the
+wall label. Staging SRAM (R=0) does <strong>not</strong> cut weight DRAM bytes;
+only resident layers (R≥1) do. All absolute ms/GB/s are
+<strong>assumed/uncalibrated</strong> unless noted derived.</p>
+
+</section>
+<section id="series">
+<h2>Model series list</h2>
+<p class="note">Real packs cite <code>hf:&lt;id&gt;</code> from public HF config.json / model cards; illustrative packs remain for handcheck. FLOPs/BW uncalibrated. CLI: <code>python3 -m npu_dse list-series</code> / <code>--product</code></p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>id</th><th>family</th><th>domain</th><th>shape</th><th>metadata</th></tr></thead>
+<tbody>
+<tr><td>internlm2-5-20b</td><td>dense</td><td>llm</td><td>internlm2-5-20b</td><td>hf:internlm/internlm2_5-20b | source:https://huggingface.co/internlm/internlm2_5-20b/raw/main/config.json | status:found | arch:Dense (InternLM2) | claimed:20B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>internlm3-8b</td><td>dense</td><td>llm</td><td>internlm3-8b</td><td>hf:internlm/internlm3-8b-instruct | source:https://huggingface.co/internlm/internlm3-8b-instruct/raw/main/config.json | status:found | arch:Dense (InternLM3) | claimed:8B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>magistral-small</td><td>dense</td><td>llm</td><td>magistral-small</td><td>hf:mistralai/Magistral-Small-2506 | source:https://huggingface.co/mistralai/Magistral-Small-2506/raw/main/config.json | status:found | arch:Dense (Mistral) | claimed:~24B dense | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>mistral-large</td><td>dense</td><td>llm</td><td>mistral-large</td><td>hf:mistralai/Mistral-Large-Instruct-2411 | source:https://huggingface.co/mistralai/Mistral-Large-Instruct-2411/raw/main/config.json | status:found | arch:Dense (Mistral) | claimed:~123B dense | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>phi-4</td><td>dense</td><td>llm</td><td>phi-4</td><td>hf:microsoft/phi-4 | source:https://huggingface.co/microsoft/phi-4/raw/main/config.json | status:found | arch:Dense (Phi3) | claimed:14B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>qwen3-32b</td><td>dense</td><td>llm</td><td>qwen3-32b</td><td>hf:Qwen/Qwen3-32B | source:https://huggingface.co/Qwen/Qwen3-32B/raw/main/config.json | status:found | arch:Dense (Qwen3) | claimed:32B dense | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>qwen3-8b</td><td>dense</td><td>llm</td><td>qwen3-8b</td><td>hf:Qwen/Qwen3-8B | source:https://huggingface.co/Qwen/Qwen3-8B/raw/main/config.json | status:found | arch:Dense (Qwen3) | claimed:8B dense | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>qwen3.8-27b</td><td>dense</td><td>llm</td><td>qwen3.8-27b</td><td>hf:Qwen/Qwen3.8-27B | source:https://huggingface.co/Qwen/Qwen3.8-27B/raw/main/config.json | status:found | arch:Dense VLM (Qwen3_5) | claimed:~27–28B | extras:hybrid_linear_attn | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>seed-oss-36b</td><td>dense</td><td>llm</td><td>seed-oss-36b</td><td>hf:ByteDance-Seed/Seed-OSS-36B-Instruct | source:https://huggingface.co/ByteDance-Seed/Seed-OSS-36B-Instruct/raw/main/config.json | status:found | arch:Dense (SeedOss) | claimed:36B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>yi-1.5-34b</td><td>dense</td><td>llm</td><td>yi-1.5-34b</td><td>hf:01-ai/Yi-1.5-34B | source:https://huggingface.co/01-ai/Yi-1.5-34B/raw/main/config.json | status:found | arch:Dense (Llama-like) | claimed:34B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>deepseek-r1</td><td>moe</td><td>llm</td><td>deepseek-r1</td><td>hf:deepseek-ai/DeepSeek-R1 | source:https://huggingface.co/deepseek-ai/DeepSeek-R1/raw/main/config.json | status:found | arch:MoE+MLA (same family as V3) | claimed:~671B-A37B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>deepseek-v3</td><td>moe</td><td>llm</td><td>deepseek-v3</td><td>hf:deepseek-ai/DeepSeek-V3 | source:https://huggingface.co/deepseek-ai/DeepSeek-V3/raw/main/config.json | status:found | arch:MoE+MLA (DeepseekV3) | claimed:671B-A37B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>deepseek-v3.1</td><td>moe</td><td>llm</td><td>deepseek-v3.1</td><td>hf:deepseek-ai/DeepSeek-V3.1 | source:https://huggingface.co/deepseek-ai/DeepSeek-V3.1/raw/main/config.json | status:found | arch:MoE+MLA (DeepseekV3) | claimed:~671B-class MoE | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>deepseek-v3.2</td><td>moe</td><td>llm</td><td>deepseek-v3.2</td><td>hf:deepseek-ai/DeepSeek-V3.2 | source:https://huggingface.co/deepseek-ai/DeepSeek-V3.2/raw/main/config.json | status:found | arch:MoE+MLA (DeepseekV32) | claimed:~671B-class MoE | extras:DSA/indexer | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>deepseek-v4-flash</td><td>moe</td><td>llm</td><td>deepseek-v4-flash</td><td>hf:deepseek-ai/DeepSeek-V4-Flash | source:https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/raw/main/config.json | status:found | arch:MoE+MLA (DeepseekV4) | claimed:284B-A13B | extras:DSA/indexer | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>deepseek-v4-pro</td><td>moe</td><td>llm</td><td>deepseek-v4-pro</td><td>hf:deepseek-ai/DeepSeek-V4-Pro | source:https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/raw/main/config.json | status:found | arch:MoE+MLA (DeepseekV4) | claimed:1.6T total / 49B active | extras:DSA/indexer | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>deepseek-v4.1-flash</td><td>moe</td><td>llm</td><td>deepseek-v4.1-flash</td><td>hf:deepseek-ai/DeepSeek-V4.1-Flash | source:https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/raw/main/config.json | status:found | arch:MoE+MLA multimodal (DeepseekV41) | claimed:552B backbone; 8B prefill / 16B decode active | extras:engram+DSA/indexer | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>glm-4.5</td><td>moe</td><td>llm</td><td>glm-4.5</td><td>hf:zai-org/GLM-4.5 | source:https://huggingface.co/zai-org/GLM-4.5/raw/main/config.json | status:found | arch:MoE (Glm4Moe) | claimed:MoE | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>glm-4.5-air</td><td>moe</td><td>llm</td><td>glm-4.5-air</td><td>hf:zai-org/GLM-4.5-Air | source:https://huggingface.co/zai-org/GLM-4.5-Air/raw/main/config.json | status:found | arch:MoE (Glm4Moe) | claimed:MoE smaller | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>glm-4.6</td><td>moe</td><td>llm</td><td>glm-4.6</td><td>hf:zai-org/GLM-4.6 | source:https://huggingface.co/zai-org/GLM-4.6/raw/main/config.json | status:found | arch:MoE sibling | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>glm-5</td><td>moe</td><td>llm</td><td>glm-5</td><td>hf:zai-org/GLM-5 | source:https://huggingface.co/zai-org/GLM-5/raw/main/config.json | status:found | arch:MoE+MLA/DSA | claimed:744B-A40B | extras:DSA/indexer | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>glm-5.2</td><td>moe</td><td>llm</td><td>glm-5.2</td><td>hf:zai-org/GLM-5.2 | source:https://huggingface.co/zai-org/GLM-5.2/raw/main/config.json | status:found | arch:MoE+MLA/DSA | claimed:744B-A40B | extras:DSA/indexer | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>glm-5.3</td><td>moe</td><td>llm</td><td>glm-5.3</td><td>hf:zai-org/GLM-5.3 | source:https://huggingface.co/zai-org/GLM-5.3/raw/main/config.json | status:found | arch:MoE+MLA/DSA (GlmMoeDsa) | claimed:744B-A40B | extras:DSA/indexer | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>glm-5.3-flash</td><td>moe</td><td>llm</td><td>glm-5.3-flash</td><td>hf:zai-org/GLM-5.3-Flash | source:https://huggingface.co/zai-org/GLM-5.3-Flash/raw/main/config.json | status:found | arch:MoE+MLA + hybrid linear attn (Glm5Next) | claimed:320B-A18B | extras:hybrid_linear_attn+DSA/indexer | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>gpt-oss-120b</td><td>moe</td><td>llm</td><td>gpt-oss-120b</td><td>hf:openai/gpt-oss-120b | source:https://huggingface.co/openai/gpt-oss-120b/raw/main/config.json | status:found | arch:MoE (GptOss) | claimed:~120B MoE class | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>gpt-oss-20b</td><td>moe</td><td>llm</td><td>gpt-oss-20b</td><td>hf:openai/gpt-oss-20b | source:https://huggingface.co/openai/gpt-oss-20b/raw/main/config.json | status:found | arch:MoE (GptOss) | claimed:~20B MoE class | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>kimi-k2</td><td>moe</td><td>llm</td><td>kimi-k2</td><td>hf:moonshotai/Kimi-K2-Instruct | source:https://huggingface.co/moonshotai/Kimi-K2-Instruct/raw/main/config.json | status:found | arch:MoE+MLA | claimed:1T-A32B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>kimi-k2.5</td><td>moe</td><td>llm</td><td>kimi-k2.5</td><td>hf:moonshotai/Kimi-K2.5 | source:https://huggingface.co/moonshotai/Kimi-K2.5/raw/main/config.json | status:found | arch:MoE+MLA multimodal | claimed:1T-A32B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>kimi-k2.7-code</td><td>moe</td><td>llm</td><td>kimi-k2.7-code</td><td>hf:moonshotai/Kimi-K2.7-Code | source:https://huggingface.co/moonshotai/Kimi-K2.7-Code/raw/main/config.json | status:nearest | arch:MoE+MLA (KimiK25 / same as K2.5/K2.6) | claimed:1T total / 32B active | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>kimi-k3</td><td>moe</td><td>llm</td><td>kimi-k3</td><td>hf:moonshotai/Kimi-K3 | source:https://huggingface.co/moonshotai/Kimi-K3/raw/main/config.json | status:found | arch:MoE + KDA/Gated MLA (KimiK3) | claimed:2.8T total / 104B active | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>minimax-m1-80k</td><td>moe</td><td>llm</td><td>minimax-m1-80k</td><td>hf:MiniMaxAI/MiniMax-M1-80k | source:https://huggingface.co/MiniMaxAI/MiniMax-M1-80k/raw/main/config.json | status:found | arch:MoE + Lightning/Softmax hybrid attn | claimed:456B-A45.9B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>minimax-text-01</td><td>moe</td><td>llm</td><td>minimax-text-01</td><td>hf:MiniMaxAI/MiniMax-Text-01 | source:https://huggingface.co/MiniMaxAI/MiniMax-Text-01/raw/main/config.json | status:found | arch:MoE + Lightning/Softmax hybrid attn | claimed:456B-A45.9B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>mixtral-8x22b</td><td>moe</td><td>llm</td><td>mixtral-8x22b</td><td>hf:mistralai/Mixtral-8x22B-v0.1 | source:https://huggingface.co/mistralai/Mixtral-8x22B-v0.1/raw/main/config.json | status:found | arch:MoE (Mixtral) | claimed:~141B MoE | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>qwen3-235b-a22b</td><td>moe</td><td>llm</td><td>qwen3-235b-a22b</td><td>hf:Qwen/Qwen3-235B-A22B | source:https://huggingface.co/Qwen/Qwen3-235B-A22B/raw/main/config.json | status:found | arch:MoE (Qwen3Moe) | claimed:235B-A22B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>qwen3-30b-a3b</td><td>moe</td><td>llm</td><td>qwen3-30b-a3b</td><td>hf:Qwen/Qwen3-30B-A3B | source:https://huggingface.co/Qwen/Qwen3-30B-A3B/raw/main/config.json | status:found | arch:MoE (Qwen3Moe) | claimed:30B-A3B | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>qwen3-next-80b-a3b</td><td>moe</td><td>llm</td><td>qwen3-next-80b-a3b</td><td>hf:Qwen/Qwen3-Next-80B-A3B-Instruct | source:https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct/raw/main/config.json | status:found | arch:MoE Next (Qwen3Next) | claimed:80B-A3B | extras:hybrid_linear_attn | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>qwen3.5-397b-a17b</td><td>moe</td><td>llm</td><td>qwen3.5-397b-a17b</td><td>hf:Qwen/Qwen3.5-397B-A17B | source:https://huggingface.co/Qwen/Qwen3.5-397B-A17B/raw/main/config.json | status:found | arch:MoE hybrid (Qwen3_5Moe) | claimed:397B-A17B | extras:hybrid_linear_attn | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>qwen3.8-2.4t</td><td>moe</td><td>llm</td><td>qwen3.8-2.4t</td><td>hf:Qwen/Qwen3.8-2.4T-A95B | source:https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B/raw/main/config.json | status:found | arch:MoE hybrid attn (Qwen3_5Moe) | claimed:2.4T-A95B | extras:hybrid_linear_attn | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>qwen3.8-flash-next</td><td>moe</td><td>llm</td><td>qwen3.8-flash-next</td><td>hf:Qwen/Qwen3.8-Flash-Next | source:https://huggingface.co/Qwen/Qwen3.8-Flash-Next/raw/main/config.json | status:found | arch:MoE + ngram/PLE (Qwen4Exp) | claimed:~180B MoE (card) | extras:hybrid_linear_attn | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>alphafold2</td><td>protein</td><td>protein</td><td>alphafold2</td><td>hf:— | source:https://github.com/google-deepmind/alphafold/blob/main/alphafold/model/config.py | status:found | arch:AF2 Evoformer + Structure Module | extras:protein_pair_approx+ffn_proxy_4xH+heads_from_af2_schema | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>alphafold3</td><td>protein</td><td>protein</td><td>alphafold3</td><td>hf:— | source:https://github.com/google-deepmind/alphafold3/blob/main/docs/model_parameters.md | status:found | arch:AF3 Pairformer + diffusion | extras:protein_pair_approx+ffn_proxy_4xH+heads_from_af2_schema | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>boltz-1</td><td>protein</td><td>protein</td><td>boltz-1</td><td>hf:— | source:https://github.com/jwohlwend/boltz/blob/main/scripts/train/configs/full.yaml | status:found | arch:AF3-like MSA+Pairformer+diffusion | extras:protein_pair_approx+ffn_proxy_4xH | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>esm2-3b</td><td>protein</td><td>protein</td><td>esm2-3b</td><td>hf:facebook/esm2_t36_3B_UR50D | source:https://huggingface.co/facebook/esm2_t36_3B_UR50D/raw/main/config.json | status:found | arch:ESM-2 transformer LM | claimed:~3B | extras:protein_pair_approx | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>esm2-650m</td><td>protein</td><td>protein</td><td>esm2-650m</td><td>hf:facebook/esm2_t33_650M_UR50D | source:https://huggingface.co/facebook/esm2_t33_650M_UR50D/raw/main/config.json | status:found | arch:ESM-2 transformer LM | claimed:~650M | extras:protein_pair_approx | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>esmfold</td><td>protein</td><td>protein</td><td>esmfold</td><td>hf:facebook/esmfold_v1 | source:https://huggingface.co/facebook/esmfold_v1/raw/main/config.json | status:found | arch:ESM-2 + folding trunk | extras:protein_pair_approx | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>openfold</td><td>protein</td><td>protein</td><td>openfold</td><td>hf:— | source:https://github.com/aqlaboratory/openfold | status:nearest | arch:AF2 Evoformer (OpenFold) | extras:protein_pair_approx+ffn_proxy_4xH+heads_from_af2_schema | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>protenix</td><td>protein</td><td>protein</td><td>protenix</td><td>hf:— | source:https://github.com/bytedance/Protenix/blob/main/configs/configs_base.py | status:found | arch:AF3-like Pairformer+diffusion | extras:protein_pair_approx+ffn_proxy_4xH+heads_from_af2_schema | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>cogvideox-2b</td><td>dit_video</td><td>video</td><td>cogvideox-2b</td><td>hf:THUDM/CogVideoX-2b | source:https://huggingface.co/THUDM/CogVideoX-2b/raw/main/transformer/config.json | status:found | arch:DiT (CogVideoX) | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>cogvideox-5b</td><td>dit_video</td><td>video</td><td>cogvideox-5b</td><td>hf:THUDM/CogVideoX-5b | source:https://huggingface.co/THUDM/CogVideoX-5b/raw/main/transformer/config.json | status:found | arch:DiT (CogVideoX) | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>hunyuanvideo</td><td>dit_video</td><td>video</td><td>hunyuanvideo</td><td>hf:hunyuanvideo-community/HunyuanVideo | source:https://huggingface.co/hunyuanvideo-community/HunyuanVideo/raw/main/transformer/config.json | status:found | arch:DiT dual+single stream (HunyuanVideo) | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>ltx-video</td><td>dit_video</td><td>video</td><td>ltx-video</td><td>hf:Lightricks/LTX-Video | source:https://huggingface.co/Lightricks/LTX-Video/raw/main/transformer/config.json | status:found | arch:DiT (LTX) | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>minimax-h3</td><td>dit_video</td><td>video</td><td>minimax-h3</td><td>hf:MiniMaxAI/MiniMax-H3 | source:https://huggingface.co/MiniMaxAI/MiniMax-H3/raw/main/transformer/config.json | status:found | arch:DiT joint video+audio (MiniMaxH3Transformer3D) | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>mochi-1</td><td>dit_video</td><td>video</td><td>mochi-1</td><td>hf:genmo/mochi-1-preview | source:https://huggingface.co/genmo/mochi-1-preview/raw/main/transformer/config.json | status:found | arch:DiT (Mochi) | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>opensora-stdit2</td><td>dit_video</td><td>video</td><td>opensora-stdit2</td><td>hf:hpcai-tech/OpenSora-STDiT-v2-stage3 | source:https://huggingface.co/hpcai-tech/OpenSora-STDiT-v2-stage3/raw/main/config.json | status:found | arch:STDiT2 | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>opensora-stdit3</td><td>dit_video</td><td>video</td><td>opensora-stdit3</td><td>hf:hpcai-tech/OpenSora-STDiT-v3 | source:https://huggingface.co/hpcai-tech/OpenSora-STDiT-v3/raw/main/config.json | status:found | arch:STDiT3 | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>wan2.1-1.3b</td><td>dit_video</td><td>video</td><td>wan2.1-1.3b</td><td>hf:Wan-AI/Wan2.1-T2V-1.3B | source:https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B/raw/main/config.json | status:found | arch:DiT (Wan) | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>wan2.1-14b</td><td>dit_video</td><td>video</td><td>wan2.1-14b</td><td>hf:Wan-AI/Wan2.1-T2V-14B | source:https://huggingface.co/Wan-AI/Wan2.1-T2V-14B/raw/main/config.json | status:found | arch:DiT (Wan) | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>wan2.2-a14b</td><td>dit_video</td><td>video</td><td>wan2.2-a14b</td><td>hf:Wan-AI/Wan2.2-T2V-A14B | source:https://huggingface.co/Wan-AI/Wan2.2-T2V-A14B/raw/main/high_noise_model/config.json | status:found | arch:DiT (Wan2.2 high_noise) | extras:video_clip_workload_defaults | FLOPs/BW uncalibrated (DSE accounting only)</td></tr>
+<tr><td>illustrative_27B</td><td>dense</td><td>llm</td><td>illustrative_27B</td><td>illustrative/placeholder dense ~27B-class GQA (NOT a vendor checkpoint)</td></tr>
+<tr><td>series/dense-27b</td><td>dense</td><td>llm</td><td>illustrative_27B</td><td>product series alias → illustrative_27B (illustrative/placeholder; NOT a vendor checkpoint)</td></tr>
+<tr><td>illustrative_mla</td><td>mla</td><td>llm</td><td>illustrative_mla</td><td>illustrative/placeholder MLA-style compressed KV on 27B-class body; NOT a DeepSeek checkpoint claim</td></tr>
+<tr><td>series/mla-27b</td><td>mla</td><td>llm</td><td>illustrative_mla</td><td>product series alias → illustrative_mla (illustrative/placeholder; NOT a DeepSeek checkpoint)</td></tr>
+<tr><td>illustrative_moe</td><td>moe</td><td>llm</td><td>illustrative_moe</td><td>illustrative/placeholder MoE (~45B total / ~13B active); NOT Mixtral/DeepSeek claim</td></tr>
+<tr><td>series/moe-active13b</td><td>moe</td><td>llm</td><td>illustrative_moe</td><td>product series alias → illustrative_moe (illustrative/placeholder active~13B; NOT Mixtral/DeepSeek)</td></tr>
+<tr><td>toy</td><td>toy</td><td>llm</td><td>toy</td><td>toy hand-check shape (illustrative placeholder)</td></tr>
+<tr><td>illustrative_protein_pair</td><td>protein</td><td>protein</td><td>illustrative_protein_pair</td><td>illustrative/placeholder protein+pair (NOT AF2/ESM claim)</td></tr>
+<tr><td>series/protein-pair</td><td>protein</td><td>protein</td><td>illustrative_protein_pair</td><td>product series alias → illustrative_protein_pair (illustrative/placeholder; NOT AF2/ESM)</td></tr>
+<tr><td>toy_protein</td><td>protein</td><td>protein</td><td>toy_protein</td><td>toy protein shape (illustrative placeholder)</td></tr>
+<tr><td>illustrative_dit_video</td><td>dit_video</td><td>video</td><td>illustrative_dit_video</td><td>illustrative/placeholder DiT-video (NOT Sora/CogVideo claim)</td></tr>
+<tr><td>illustrative_large_dit</td><td>dit_video</td><td>video</td><td>illustrative_large_dit</td><td>illustrative/placeholder large DiT (minute-scale TTFC narrative); NOT MiniMax-H3 claim — use minimax-h3 for real HF dims</td></tr>
+<tr><td>series/dit-large</td><td>dit_video</td><td>video</td><td>illustrative_large_dit</td><td>product series alias → illustrative_large_dit (illustrative/placeholder; NOT MiniMax-H3 — use minimax-h3)</td></tr>
+<tr><td>series/dit-video</td><td>dit_video</td><td>video</td><td>illustrative_dit_video</td><td>product series alias → illustrative_dit_video (illustrative/placeholder; NOT Sora/CogVideo)</td></tr>
+<tr><td>toy_video</td><td>dit_video</td><td>video</td><td>toy_video</td><td>toy video shape (illustrative placeholder)</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="packages">
+<h2>Memory catalog (LPDDR5/5X/6 · HBM3/3E/4/4E) — v0.29 structured</h2>
+<p class="note">Rebuilt from <code>research/memory_specs_2026-10</code>; every rate / width / capacity carries a provenance tag and each config shows the <strong>weakest</strong> one (JEDEC &gt; 疑似 JEDEC &gt; 厂商量产 &gt; 送样 &gt; 已发布 &gt; 推测). LPDDR5/5X: <strong>x64 package = 4×16-bit channels</strong> (x32 / vendor x96 also), 5500–10667 MT/s per generation. LPDDR6: <strong>x96 package = 4×24-bit channels (8×12-bit sub-ch)</strong>, 10667/12800/14400 MT/s, usable BW = raw × <strong>8/9</strong> (BL24 metadata), kept separate from efficiency. SOCAMM2 / LPCAMM2: 128-bit LPDDR5X modules. HBM: stacks × height × die density (HBM3/3E 1024-bit, HBM4/4E 2048-bit). Capacity GB = 2<sup>30</sup> B. BW = units × (width/8) × rate × payload × efficiency (efficiency <strong>assumed</strong> 0.70). CLI: <code>python3 -m npu_dse list-packages</code> · <code>workbench-scan --package-axis type|count|rate</code></p>
+<p><strong>FLIP: wall memory → compute at hbm3_4s_12h16g_6400 (TPOT 20.818 ms, eff≈2294 GB/s)</strong></p>
+<p class="note">Catalog counts: {&#x27;lpddr&#x27;: 36, &#x27;lpddr5&#x27;: 6, &#x27;lpddr5x&#x27;: 18, &#x27;lpddr6&#x27;: 12, &#x27;hbm&#x27;: 25, &#x27;hbm3&#x27;: 4, &#x27;hbm3e&#x27;: 7, &#x27;hbm4&#x27;: 8, &#x27;hbm4e&#x27;: 6, &#x27;total&#x27;: 61, &#x27;compute_core&#x27;: 4, &#x27;compute_cluster_primary&#x27;: 4, &#x27;compute_total&#x27;: 21}</p>
+<h3>Catalog (peak GB/s derived)</h3>
+<pre class="plain">id                                  type     form        n      w     bus    MT/s   raw_GBps   pay_GBps   eff_GBps   cap_GB  tag
+--------------------------------------------------------------------------------------------------------------------------------
+lpddr5_2x64_5500_12g                LPDDR5   discrete    2     64     128    5500       88.0       88.0       61.6       24  vendor-shipping
+lpddr5_2x64_6400_12g                LPDDR5   discrete    2     64     128    6400      102.4      102.4       71.7       24  vendor-shipping
+lpddr5_4x64_5500_12g                LPDDR5   discrete    4     64     256    5500      176.0      176.0      123.2       48  vendor-shipping
+lpddr5_4x64_6400_12g                LPDDR5   discrete    4     64     256    6400      204.8      204.8      143.4       48  vendor-shipping
+lpddr5_8x64_5500_12g                LPDDR5   discrete    8     64     512    5500      352.0      352.0      246.4       96  vendor-shipping
+lpddr5_8x64_6400_12g                LPDDR5   discrete    8     64     512    6400      409.6      409.6      286.7       96  vendor-shipping
+lpddr5x_2x64_7500_16g               LPDDR5X  discrete    2     64     128    7500      120.0      120.0       84.0       32  vendor-shipping
+lpddr5x_2x64_8533_16g               LPDDR5X  discrete    2     64     128    8533      136.5      136.5       95.6       32  vendor-shipping
+lpddr5x_2x64_9600_16g               LPDDR5X  discrete    2     64     128    9600      153.6      153.6      107.5       32  vendor-shipping
+lpddr5x_2x64_10667_16g              LPDDR5X  discrete    2     64     128   10667      170.7      170.7      119.5       32  vendor-shipping
+lpddr5x_4x64_7500_16g               LPDDR5X  discrete    4     64     256    7500      240.0      240.0      168.0       64  vendor-shipping
+lpddr5x_4x64_8533_16g               LPDDR5X  discrete    4     64     256    8533      273.1      273.1      191.1       64  vendor-shipping
+lpddr5x_4x64_9600_16g               LPDDR5X  discrete    4     64     256    9600      307.2      307.2      215.0       64  vendor-shipping
+lpddr5x_4x64_10667_16g              LPDDR5X  discrete    4     64     256   10667      341.3      341.3      238.9       64  vendor-shipping
+lpddr5x_8x64_7500_16g               LPDDR5X  discrete    8     64     512    7500      480.0      480.0      336.0      128  vendor-shipping
+lpddr5x_8x64_8533_16g               LPDDR5X  discrete    8     64     512    8533      546.1      546.1      382.3      128  vendor-shipping
+lpddr5x_8x64_9600_16g               LPDDR5X  discrete    8     64     512    9600      614.4      614.4      430.1      128  vendor-shipping
+lpddr5x_8x64_10667_16g              LPDDR5X  discrete    8     64     512   10667      682.7      682.7      477.9      128  vendor-shipping
+lpddr6_1x96_10667_16g               LPDDR6   discrete    1     96      96   10667      128.0      113.8       79.6       16  vendor-shipping
+lpddr6_1x96_12800_16g               LPDDR6   discrete    1     96      96   12800      153.6      136.5       95.6       16  vendor-shipping
+lpddr6_1x96_14400_16g               LPDDR6   discrete    1     96      96   14400      172.8      153.6      107.5       16  vendor-announced
+lpddr6_2x96_10667_16g               LPDDR6   discrete    2     96     192   10667      256.0      227.6      159.3       32  vendor-shipping
+lpddr6_2x96_12800_16g               LPDDR6   discrete    2     96     192   12800      307.2      273.1      191.1       32  vendor-shipping
+lpddr6_2x96_14400_16g               LPDDR6   discrete    2     96     192   14400      345.6      307.2      215.0       32  vendor-announced
+lpddr6_4x96_10667_16g               LPDDR6   discrete    4     96     384   10667      512.0      455.1      318.6       64  vendor-shipping
+lpddr6_4x96_12800_16g               LPDDR6   discrete    4     96     384   12800      614.4      546.1      382.3       64  vendor-shipping
+lpddr6_4x96_14400_16g               LPDDR6   discrete    4     96     384   14400      691.2      614.4      430.1       64  vendor-announced
+lpddr6_6x96_10667_16g               LPDDR6   discrete    6     96     576   10667      768.0      682.7      477.9       96  vendor-shipping
+lpddr6_6x96_12800_16g               LPDDR6   discrete    6     96     576   12800      921.6      819.2      573.4       96  vendor-shipping
+lpddr6_6x96_14400_16g               LPDDR6   discrete    6     96     576   14400     1036.8      921.6      645.1       96  vendor-announced
+lpddr5x_socamm2_4x128_8533_192g     LPDDR5X  SOCAMM2     4    128     512    8533      546.1      546.1      382.3      768  vendor-shipping
+lpddr5x_socamm2_4x128_9600_192g     LPDDR5X  SOCAMM2     4    128     512    9600      614.4      614.4      430.1      768  vendor-shipping
+lpddr5x_socamm2_8x128_8533_192g     LPDDR5X  SOCAMM2     8    128    1024    8533     1092.2     1092.2      764.6     1536  vendor-shipping
+lpddr5x_socamm2_8x128_9600_192g     LPDDR5X  SOCAMM2     8    128    1024    9600     1228.8     1228.8      860.2     1536  vendor-shipping
+lpddr5x_lpcamm2_1x128_8533_32g      LPDDR5X  LPCAMM2     1    128     128    8533      136.5      136.5       95.6       32  vendor-shipping
+lpddr5x_lpcamm2_2x128_8533_32g      LPDDR5X  LPCAMM2     2    128     256    8533      273.1      273.1      191.1       64  vendor-shipping
+hbm3_2s_12h16g_6400                 HBM3     stack       2   1024    2048    6400     1638.4     1638.4     1146.9       48  vendor-shipping
+hbm3_4s_12h16g_6400                 HBM3     stack       4   1024    4096    6400     3276.8     3276.8     2293.8       96  vendor-shipping
+hbm3_6s_12h16g_6400                 HBM3     stack       6   1024    6144    6400     4915.2     4915.2     3440.6      144  vendor-shipping
+hbm3_8s_12h16g_6400                 HBM3     stack       8   1024    8192    6400     6553.6     6553.6     4587.5      192  vendor-shipping
+hbm3e_2s_12h24g_9200                HBM3E    stack       2   1024    2048    9200     2355.2     2355.2     1648.6       72  vendor-shipping
+hbm3e_4s_12h24g_9200                HBM3E    stack       4   1024    4096    9200     4710.4     4710.4     3297.3      144  vendor-shipping
+hbm3e_6s_12h24g_9200                HBM3E    stack       6   1024    6144    9200     7065.6     7065.6     4945.9      216  vendor-shipping
+hbm3e_8s_12h24g_9200                HBM3E    stack       8   1024    8192    9200     9420.8     9420.8     6594.6      288  vendor-shipping
+hbm3e_8s_12h24g_8000                HBM3E    stack       8   1024    8192    8000     8192.0     8192.0     5734.4      288  vendor-shipping
+hbm3e_8s_12h24g_9600                HBM3E    stack       8   1024    8192    9600     9830.4     9830.4     6881.3      288  vendor-shipping
+hbm3e_8s_12h24g_9800                HBM3E    stack       8   1024    8192    9800    10035.2    10035.2     7024.6      288  vendor-announced
+hbm4_2s_12h24g_8000                 HBM4     stack       2   2048    4096    8000     4096.0     4096.0     2867.2       72  vendor-shipping
+hbm4_4s_12h24g_8000                 HBM4     stack       4   2048    8192    8000     8192.0     8192.0     5734.4      144  vendor-shipping
+hbm4_6s_12h24g_8000                 HBM4     stack       6   2048   12288    8000    12288.0    12288.0     8601.6      216  vendor-shipping
+hbm4_8s_12h24g_8000                 HBM4     stack       8   2048   16384    8000    16384.0    16384.0    11468.8      288  vendor-shipping
+hbm4_8s_12h24g_10000                HBM4     stack       8   2048   16384   10000    20480.0    20480.0    14336.0      288  vendor-shipping
+hbm4_8s_12h24g_11000                HBM4     stack       8   2048   16384   11000    22528.0    22528.0    15769.6      288  vendor-shipping
+hbm4_8s_12h24g_11700                HBM4     stack       8   2048   16384   11700    23961.6    23961.6    16773.1      288  vendor-shipping
+hbm4_8s_12h24g_13000                HBM4     stack       8   2048   16384   13000    26624.0    26624.0    18636.8      288  vendor-announced
+hbm4e_2s_12h32g_14000               HBM4E    stack       2   2048    4096   14000     7168.0     7168.0     5017.6       96  vendor-sampling
+hbm4e_4s_12h32g_14000               HBM4E    stack       4   2048    8192   14000    14336.0    14336.0    10035.2      192  vendor-sampling
+hbm4e_6s_12h32g_14000               HBM4E    stack       6   2048   12288   14000    21504.0    21504.0    15052.8      288  vendor-sampling
+hbm4e_8s_12h32g_14000               HBM4E    stack       8   2048   16384   14000    28672.0    28672.0    20070.4      384  vendor-sampling
+hbm4e_8s_12h32g_12800               HBM4E    stack       8   2048   16384   12800    26214.4    26214.4    18350.1      384  speculative
+hbm4e_8s_12h32g_16000               HBM4E    stack       8   2048   16384   16000    32768.0    32768.0    22937.6      384  vendor-sampling
+
+(units: LPDDR5/5X x64 packages, LPDDR6 x96 packages (payload 8/9), SOCAMM2/LPCAMM2 128-bit modules, HBM stacks; GB = 2^30 B; efficiency assumed — not silicon calib. peak_GBps = raw_GBps)
+(61 packages)</pre>
+<h3>LPDDR sweep (LPDDR5X 2×x64 &amp; 8×x64 rate band + LPDDR6 2/4/6 × x96)</h3>
+<pre class="plain">package                             kind     n     w    GT/s   peak_GBps    eff_GBps     TTFT_ms     TPOT_ms      wall    flip  tag
+-----------------------------------------------------------------------------------------------------------------------------------
+lpddr5x_2x64_8533_16g               LPDDR    2    64   8.533       136.5        95.6    332.6722    332.4258    memory          厂商量产
+lpddr5x_8x64_8533_16g               LPDDR    8    64   8.533       546.1       382.3    205.5000     83.1065    memory          厂商量产
+lpddr5x_8x64_7500_16g               LPDDR    8    64   7.500       480.0       336.0    205.5000     94.5530    memory          厂商量产
+lpddr5x_8x64_9600_16g               LPDDR    8    64   9.600       614.4       430.1    205.5000     73.8695    memory          厂商量产
+lpddr5x_8x64_10667_16g              LPDDR    8    64  10.667       682.7       477.9    205.5000     66.4805    memory          厂商量产
+lpddr6_2x96_10667_16g               LPDDR    2    96  10.667       256.0       159.3    205.5000    199.4415    memory          厂商量产
+lpddr6_4x96_10667_16g               LPDDR    4    96  10.667       512.0       318.6    205.5000     99.7207    memory          厂商量产
+lpddr6_6x96_10667_16g               LPDDR    6    96  10.667       768.0       477.9    205.5000     66.4805    memory          厂商量产
+lpddr5x_socamm2_8x128_9600_192g     LPDDR    8   128   9.600      1228.8       860.2    205.5000     36.9348    memory          厂商量产</pre>
+<h3>HBM sweep (stacks 2/4/8 × HBM3 / HBM3E / HBM4, 12-high)</h3>
+<pre class="plain">package                             kind     n     w    GT/s   peak_GBps    eff_GBps     TTFT_ms     TPOT_ms      wall    flip  tag
+-----------------------------------------------------------------------------------------------------------------------------------
+hbm3_2s_12h16g_6400                 HBM      2  1024   6.400      1638.4      1146.9    205.5000     27.7011    memory          厂商量产
+hbm3_4s_12h16g_6400                 HBM      4  1024   6.400      3276.8      2293.8    205.5000     20.8176   compute    FLIP  厂商量产
+hbm3_8s_12h16g_6400                 HBM      8  1024   6.400      6553.6      4587.5    205.5000     20.8176   compute          厂商量产
+hbm3e_2s_12h24g_9200                HBM      2  1024   9.200      2355.2      1648.6    205.5000     20.8176   compute          厂商量产
+hbm3e_4s_12h24g_9200                HBM      4  1024   9.200      4710.4      3297.3    205.5000     20.8176   compute          厂商量产
+hbm3e_8s_12h24g_9200                HBM      8  1024   9.200      9420.8      6594.6    205.5000     20.8176   compute          厂商量产
+hbm4_2s_12h24g_8000                 HBM      2  2048   8.000      4096.0      2867.2    205.5000     20.8176   compute          厂商量产
+hbm4_4s_12h24g_8000                 HBM      4  2048   8.000      8192.0      5734.4    205.5000     20.8176   compute          厂商量产
+hbm4_8s_12h24g_8000                 HBM      8  2048   8.000     16384.0     11468.8    205.5000     20.8176   compute          厂商量产</pre>
+</section>
+<section id="compute">
+<h2>Compute hierarchy ranges — assumed DSE</h2>
+<p class="note">Single-core peak options 4 / 8 / 12 / 16 TOPS; cluster peaks 64 / 128 / 192 / 256 TOPS via n_cores × tops_per_core at assumed 1 GHz. Efficiency knobs (mac_efficiency / mem efficiency) remain adjustable placeholders. CLI: <code>python3 -m npu_dse list-compute</code> · <code>workbench-scan --sweep-compute</code></p>
+<p><strong>No wall FLIP across compute sweep; walls seen: compute.</strong></p>
+<h3>Catalog primaries</h3>
+<pre class="plain">id                            level       peak_T  n_cores    T/core    GHz
+--------------------------------------------------------------------------
+core_4t                       core           4.0        1      4.00   1.00
+core_8t                       core           8.0        1      8.00   1.00
+core_12t                      core          12.0        1     12.00   1.00
+core_16t                      core          16.0        1     16.00   1.00
+cluster_64t                   cluster       64.0       16      4.00   1.00
+cluster_128t                  cluster      128.0       16      8.00   1.00
+cluster_192t                  cluster      192.0       16     12.00   1.00
+cluster_256t                  cluster      256.0       16     16.00   1.00
+
+(8 compute options; peak math at assumed 1 GHz — uncalibrated)</pre>
+<h3>Core tops sweep (4T–16T) @ LPDDR</h3>
+<pre class="plain">compute                       level       peak_T  cores   T/core     TTFT_ms     TPOT_ms      wall     util    flip
+-------------------------------------------------------------------------------------------------------------------
+core_4t                       core           4.0      1     4.00   3615.9831    333.4436   compute   0.0207        
+core_8t                       core           8.0      1     8.00   1963.4094    248.3855   compute   0.0156        
+core_12t                      core          12.0      1    12.00   1391.9239    201.4471   compute   0.0123        
+core_16t                      core          16.0      1    16.00    997.1886    168.2939   compute   0.0102        </pre>
+<h3>Cluster tops sweep (64T–256T) @ HBM</h3>
+<pre class="plain">compute                       level       peak_T  cores   T/core     TTFT_ms     TPOT_ms      wall     util    flip
+-------------------------------------------------------------------------------------------------------------------
+cluster_64t                   cluster       64.0     16     4.00    248.4772     22.8849   compute   0.0186        
+cluster_128t                  cluster      128.0     16     8.00    124.1907     15.7115   compute   0.0152        
+cluster_192t                  cluster      192.0     16    12.00    105.1614     15.1856   compute   0.0099        
+cluster_256t                  cluster      256.0     16    16.00     77.7472     13.0893   compute   0.0080        </pre>
+</section>
+<section id="chips">
+<h2>Chips sweep table</h2>
+<p class="note">Default mapping chip_count→tp (pp=ep=1), HBM, cores=16×6.25 T/core ≈ sku_100t. CLI: <code>python3 -m npu_dse workbench-scan --model series/dense-27b --chips-list 1 2 4 8</code></p>
+<h3>series/dense-27b</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>chips</th><th>tp</th><th>TTFT_ms</th><th>TPOT_ms</th><th>wall</th><th>util</th><th>peak_T</th><th>mem_GBps</th><th>scale_eff</th><th>speedup</th><th>oom</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>1</td><td>333.4388</td><td>34.2411</td><td><span class="tag compute">compute</span></td><td>0.0149</td><td>100.35</td><td>6594.6</td><td>1.0000</td><td>1.0000</td><td>False</td></tr>
+<tr><td>2</td><td>2</td><td>166.9594</td><td>17.3605</td><td><span class="tag compute">compute</span></td><td>0.0149</td><td>100.35</td><td>6594.6</td><td>0.9862</td><td>1.9724</td><td>False</td></tr>
+<tr><td>4</td><td>4</td><td>83.5997</td><td>8.8003</td><td><span class="tag compute">compute</span></td><td>0.0149</td><td>100.35</td><td>6594.6</td><td>0.9727</td><td>3.8909</td><td>False</td></tr>
+<tr><td>8</td><td>8</td><td>41.9199</td><td>4.5201</td><td><span class="tag compute">compute</span></td><td>0.0149</td><td>100.35</td><td>6594.6</td><td>0.9469</td><td>7.5752</td><td>False</td></tr>
+</tbody>
+</table>
+</div>
+<pre class="plain">chips   tp       TTFT_ms       TPOT_ms      wall      util    peak_T   mem_GBps  oom  scale_eff   speedup       W_bytes      KV_bytes
+-------------------------------------------------------------------------------------------------------------------------------------
+    1    1      333.4388       34.2411   compute    0.0149    100.35     6594.6  False     1.0000    1.0000   57466159104      84049920
+    2    2      166.9594       17.3605   compute    0.0149    100.35     6594.6  False     0.9862    1.9724   28733079552      42024960
+    4    4       83.5997        8.8003   compute    0.0149    100.35     6594.6  False     0.9727    3.8909   14366539776      21012480
+    8    8       41.9199        4.5201   compute    0.0149    100.35     6594.6  False     0.9469    7.5752    7183269888      10506240</pre>
+<h3>series/moe-active13b</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>chips</th><th>tp</th><th>TTFT_ms</th><th>TPOT_ms</th><th>wall</th><th>util</th><th>peak_T</th><th>mem_GBps</th><th>scale_eff</th><th>speedup</th><th>oom</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>1</td><td>153.6122</td><td>15.8098</td><td><span class="tag compute">compute</span></td><td>0.0153</td><td>100.35</td><td>6594.6</td><td>1.0000</td><td>1.0000</td><td>False</td></tr>
+<tr><td>2</td><td>2</td><td>77.0461</td><td>8.1449</td><td><span class="tag compute">compute</span></td><td>0.0153</td><td>100.35</td><td>6594.6</td><td>0.9705</td><td>1.9411</td><td>False</td></tr>
+<tr><td>4</td><td>4</td><td>38.6431</td><td>4.1925</td><td><span class="tag compute">compute</span></td><td>0.0153</td><td>100.35</td><td>6594.6</td><td>0.9428</td><td>3.7710</td><td>False</td></tr>
+<tr><td>8</td><td>8</td><td>19.4415</td><td>2.2162</td><td><span class="tag compute">compute</span></td><td>0.0153</td><td>100.35</td><td>6594.6</td><td>0.8917</td><td>7.1337</td><td>False</td></tr>
+</tbody>
+</table>
+</div>
+<pre class="plain">chips   tp       TTFT_ms       TPOT_ms      wall      util    peak_T   mem_GBps  oom  scale_eff   speedup       W_bytes      KV_bytes
+-------------------------------------------------------------------------------------------------------------------------------------
+    1    1      153.6122       15.8098   compute    0.0153    100.35     6594.6  False     1.0000    1.0000   26048724992      84049920
+    2    2       77.0461        8.1449   compute    0.0153    100.35     6594.6  False     0.9705    1.9411   13024362496      42024960
+    4    4       38.6431        4.1925   compute    0.0153    100.35     6594.6  False     0.9428    3.7710    6512181248      21012480
+    8    8       19.4415        2.2162   compute    0.0153    100.35     6594.6  False     0.8917    7.1337    3256090624      10506240</pre>
+</section>
+<section id="parallel">
+<h2>Parallel matrix — chips=8 dense + MoE</h2>
+<p class="note">Enumerate tp×pp×ep=8 sorted by TPOT. Dense forces ep=1; MoE allows EP. CLI: <code>python3 -m npu_dse workbench-parallel --chips 8 --model series/dense-27b</code> (and series/moe-active13b).</p>
+<h3>Dense (series/dense-27b)</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>rank</th><th>chips</th><th>tp</th><th>pp</th><th>ep</th><th>TTFT_ms</th><th>TPOT_ms</th><th>wall</th><th>t_c2c_ms</th><th>t_sync_ms</th><th>t_bubble_ms</th><th>util</th><th>oom</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>8</td><td>8</td><td>1</td><td>1</td><td>41.9199</td><td>4.5201</td><td><span class="tag compute">compute</span></td><td>0.0057</td><td>0.2400</td><td>0.0000</td><td>0.0149</td><td>False</td></tr>
+<tr><td>2</td><td>8</td><td>4</td><td>2</td><td>1</td><td>83.6057</td><td>8.8063</td><td><span class="tag bubble">bubble</span></td><td>0.0025</td><td>0.1230</td><td>4.4031</td><td>0.0149</td><td>False</td></tr>
+<tr><td>3</td><td>8</td><td>2</td><td>4</td><td>1</td><td>166.9714</td><td>17.3725</td><td><span class="tag bubble">bubble</span></td><td>0.0009</td><td>0.0630</td><td>13.0294</td><td>0.0149</td><td>False</td></tr>
+<tr><td>4</td><td>8</td><td>1</td><td>8</td><td>1</td><td>333.4628</td><td>34.2651</td><td><span class="tag bubble">bubble</span></td><td>0.0003</td><td>0.0030</td><td>29.9819</td><td>0.0149</td><td>False</td></tr>
+</tbody>
+</table>
+</div>
+<pre class="plain">rank  chips   tp   pp   ep       TTFT_ms       TPOT_ms      wall    t_c2c_ms    t_bub_ms      util  oom
+-------------------------------------------------------------------------------------------------------
+   1      8    8    1    1       41.9199        4.5201   compute      0.0057      0.0000    0.0149  False
+   2      8    4    2    1       83.6057        8.8063    bubble      0.0025      4.4031    0.0149  False
+   3      8    2    4    1      166.9714       17.3725    bubble      0.0009     13.0294    0.0149  False
+   4      8    1    8    1      333.4628       34.2651    bubble      0.0003     29.9819    0.0149  False</pre>
+<h3>MoE (series/moe-active13b)</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>rank</th><th>chips</th><th>tp</th><th>pp</th><th>ep</th><th>TTFT_ms</th><th>TPOT_ms</th><th>wall</th><th>t_c2c_ms</th><th>t_sync_ms</th><th>t_bubble_ms</th><th>util</th><th>oom</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>8</td><td>1</td><td>1</td><td>8</td><td>19.4415</td><td>2.2162</td><td><span class="tag compute">compute</span></td><td>0.0004</td><td>0.2400</td><td>0.0000</td><td>0.0153</td><td>False</td></tr>
+<tr><td>2</td><td>8</td><td>8</td><td>1</td><td>1</td><td>19.4415</td><td>2.2162</td><td><span class="tag compute">compute</span></td><td>0.0029</td><td>0.2400</td><td>0.0000</td><td>0.0153</td><td>False</td></tr>
+<tr><td>3</td><td>8</td><td>2</td><td>1</td><td>4</td><td>19.6815</td><td>2.4562</td><td><span class="tag compute">compute</span></td><td>0.0023</td><td>0.4800</td><td>0.0000</td><td>0.0153</td><td>False</td></tr>
+<tr><td>4</td><td>8</td><td>4</td><td>1</td><td>2</td><td>19.6815</td><td>2.4562</td><td><span class="tag compute">compute</span></td><td>0.0033</td><td>0.4800</td><td>0.0000</td><td>0.0153</td><td>False</td></tr>
+<tr><td>5</td><td>8</td><td>1</td><td>2</td><td>4</td><td>38.6491</td><td>4.1985</td><td><span class="tag bubble">bubble</span></td><td>0.0003</td><td>0.1230</td><td>2.0992</td><td>0.0153</td><td>False</td></tr>
+<tr><td>6</td><td>8</td><td>4</td><td>2</td><td>1</td><td>38.6491</td><td>4.1985</td><td><span class="tag bubble">bubble</span></td><td>0.0012</td><td>0.1230</td><td>2.0992</td><td>0.0153</td><td>False</td></tr>
+<tr><td>7</td><td>8</td><td>2</td><td>2</td><td>2</td><td>38.8891</td><td>4.4385</td><td><span class="tag bubble">bubble</span></td><td>0.0012</td><td>0.2430</td><td>2.2192</td><td>0.0153</td><td>False</td></tr>
+<tr><td>8</td><td>8</td><td>1</td><td>4</td><td>2</td><td>77.0581</td><td>8.1569</td><td><span class="tag bubble">bubble</span></td><td>0.0003</td><td>0.0630</td><td>6.1177</td><td>0.0153</td><td>False</td></tr>
+<tr><td>9</td><td>8</td><td>2</td><td>4</td><td>1</td><td>77.0581</td><td>8.1569</td><td><span class="tag bubble">bubble</span></td><td>0.0005</td><td>0.0630</td><td>6.1177</td><td>0.0153</td><td>False</td></tr>
+<tr><td>10</td><td>8</td><td>1</td><td>8</td><td>1</td><td>153.6362</td><td>15.8338</td><td><span class="tag bubble">bubble</span></td><td>0.0001</td><td>0.0030</td><td>13.8546</td><td>0.0153</td><td>False</td></tr>
+</tbody>
+</table>
+</div>
+<pre class="plain">rank  chips   tp   pp   ep       TTFT_ms       TPOT_ms      wall    t_c2c_ms    t_bub_ms      util  oom
+-------------------------------------------------------------------------------------------------------
+   1      8    1    1    8       19.4415        2.2162   compute      0.0004      0.0000    0.0153  False
+   2      8    8    1    1       19.4415        2.2162   compute      0.0029      0.0000    0.0153  False
+   3      8    2    1    4       19.6815        2.4562   compute      0.0023      0.0000    0.0153  False
+   4      8    4    1    2       19.6815        2.4562   compute      0.0033      0.0000    0.0153  False
+   5      8    1    2    4       38.6491        4.1985    bubble      0.0003      2.0992    0.0153  False
+   6      8    4    2    1       38.6491        4.1985    bubble      0.0012      2.0992    0.0153  False
+   7      8    2    2    2       38.8891        4.4385    bubble      0.0012      2.2192    0.0153  False
+   8      8    1    4    2       77.0581        8.1569    bubble      0.0003      6.1177    0.0153  False
+   9      8    2    4    1       77.0581        8.1569    bubble      0.0005      6.1177    0.0153  False
+  10      8    1    8    1      153.6362       15.8338    bubble      0.0001     13.8546    0.0153  False</pre>
+</section>
+<section id="mem">
+<h2>Mem geometry flip note</h2>
+<p><strong>FLIP: wall memory → balanced near eff≈1649 GB/s (TPOT 34.908 ms); wall balanced → compute near eff≈3297 GB/s (TPOT 34.241 ms).</strong></p>
+<p class="note">HBM n_channels sweep {1,2,4,8} @ illustrative_27B chips=1. CLI: <code>python3 -m npu_dse workbench-scan --sweep-mem --mem hbm --mem-vary channels --chips 1</code></p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>mem</th><th>eff_GBps</th><th>TTFT_ms</th><th>TPOT_ms</th><th>wall</th><th>t_comp_ms</th><th>t_dram_ms</th><th>flip</th><th>chips</th></tr></thead>
+<tbody>
+<tr><td>HBM</td><td>824.3</td><td>333.4388</td><td>69.8154</td><td><span class="tag memory">memory</span></td><td>34.2411</td><td>69.8154</td><td></td><td>1</td></tr>
+<tr><td>HBM</td><td>1648.6</td><td>333.4388</td><td>34.9077</td><td><span class="tag balanced">balanced</span></td><td>34.2411</td><td>34.9077</td><td>FLIP</td><td>1</td></tr>
+<tr><td>HBM</td><td>3297.3</td><td>333.4388</td><td>34.2411</td><td><span class="tag compute">compute</span></td><td>34.2411</td><td>17.4538</td><td>FLIP</td><td>1</td></tr>
+<tr><td>HBM</td><td>6594.6</td><td>333.4388</td><td>34.2411</td><td><span class="tag compute">compute</span></td><td>34.2411</td><td>8.7269</td><td></td><td>1</td></tr>
+</tbody>
+</table>
+</div>
+<pre class="plain">    mem    eff_GBps       TTFT_ms       TPOT_ms      wall   t_comp_ms   t_dram_ms    flip  chips
+------------------------------------------------------------------------------------------------
+    HBM       824.3      333.4388       69.8154    memory     34.2411     69.8154              1
+    HBM      1648.6      333.4388       34.9077  balanced     34.2411     34.9077    FLIP      1
+    HBM      3297.3      333.4388       34.2411   compute     34.2411     17.4538    FLIP      1
+    HBM      6594.6      333.4388       34.2411   compute     34.2411      8.7269              1</pre>
+</section>
+<section id="compare">
+<h2>Cross-domain compare snapshot</h2>
+<p class="note">sku_100t × HBM/LPDDR: LLM TPOT / video TTFC / protein t/seq. CLI: <code>python3 -m npu_dse compare-domains</code></p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>domain</th><th>mem</th><th>shape</th><th>metric</th><th>metric_ms</th><th>wall</th><th>dominant_cost</th><th>notes</th></tr></thead>
+<tbody>
+<tr><td>llm</td><td>HBM</td><td>illustrative_27B</td><td>TPOT</td><td>33.0614</td><td><span class="tag compute">compute</span></td><td>compute_gemm</td><td>shape=illustrative_27B fp16 ctx=512 batch=1; W_dram=55.36GB KV=0.0840GB</td></tr>
+<tr><td>llm</td><td>HBM</td><td>illustrative_mla</td><td>TPOT</td><td>33.0614</td><td><span class="tag compute">compute</span></td><td>compute_gemm</td><td>shape=illustrative_mla fp16 ctx=512 batch=1; kv_lora_rank=512; W_dram=55.36GB KV=0.0000GB</td></tr>
+<tr><td>video</td><td>HBM</td><td>illustrative_dit_video</td><td>TTFC</td><td>3716.9445</td><td><span class="tag compute">compute</span></td><td>denoise_attn</td><td>shape=illustrative_dit_video N_denoise=50 T=4096; fps=4.3046; fwd_ms=74.339</td></tr>
+<tr><td>protein</td><td>HBM</td><td>illustrative_protein_pair</td><td>t_seq</td><td>21.0457</td><td><span class="tag compute">compute</span></td><td>pair_L2</td><td>shape=illustrative_protein_pair L=512 pair_dim=128; pair_GB=0.0671; oom=False</td></tr>
+<tr><td>llm</td><td>LPDDR</td><td>illustrative_27B</td><td>TPOT</td><td>145.0484</td><td><span class="tag memory">memory</span></td><td>weight_stream</td><td>shape=illustrative_27B fp16 ctx=512 batch=1; W_dram=55.36GB KV=0.0840GB</td></tr>
+<tr><td>llm</td><td>LPDDR</td><td>illustrative_mla</td><td>TPOT</td><td>144.8286</td><td><span class="tag memory">memory</span></td><td>weight_stream</td><td>shape=illustrative_mla fp16 ctx=512 batch=1; kv_lora_rank=512; W_dram=55.36GB KV=0.0000GB</td></tr>
+<tr><td>video</td><td>LPDDR</td><td>illustrative_dit_video</td><td>TTFC</td><td>3716.9445</td><td><span class="tag compute">compute</span></td><td>denoise_attn</td><td>shape=illustrative_dit_video N_denoise=50 T=4096; fps=4.3046; fwd_ms=74.339</td></tr>
+<tr><td>protein</td><td>LPDDR</td><td>illustrative_protein_pair</td><td>t_seq</td><td>21.0457</td><td><span class="tag compute">compute</span></td><td>pair_L2</td><td>shape=illustrative_protein_pair L=512 pair_dim=128; pair_GB=0.0671; oom=False</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="scale">
+<h2>Scale efficiency vs chips</h2>
+<p class="note"><strong>Definition:</strong> <code>speedup = t_single / t_multi</code>; <code>scale_efficiency = speedup / chip_count</code> (ideal <strong>1.0</strong>). Domain primary: LLM→TPOT, video→TTFC, protein→time_per_seq. Baseline = same WorkbenchConfig with <code>chips=tp=pp=ep=1</code>. <strong>Honesty:</strong> ignores host/NIC non-ideal; C2C / PP bubble / EP collectives are already inside <code>t_multi</code>. Default HBM + 400 GB/s C2C often stays near 1.0 (compute-bound); PP↑ or weak C2C drops efficiency (comm / bubble bound).</p>
+<h3>series/dense-27b — scale_efficiency vs chips</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>chips</th><th>tp</th><th>pp</th><th>ep</th><th>metric</th><th>primary_ms</th><th>t_single_ms</th><th>speedup</th><th>scale_eff</th><th>wall</th><th>oom</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>1</td><td>1</td><td>1</td><td>TPOT</td><td>34.2411</td><td>34.2411</td><td>1.0000</td><td>1.0000</td><td><span class="tag compute">compute</span></td><td>False</td></tr>
+<tr><td>2</td><td>2</td><td>1</td><td>1</td><td>TPOT</td><td>17.3605</td><td>34.2411</td><td>1.9724</td><td>0.9862</td><td><span class="tag compute">compute</span></td><td>False</td></tr>
+<tr><td>4</td><td>4</td><td>1</td><td>1</td><td>TPOT</td><td>8.8003</td><td>34.2411</td><td>3.8909</td><td>0.9727</td><td><span class="tag compute">compute</span></td><td>False</td></tr>
+<tr><td>8</td><td>8</td><td>1</td><td>1</td><td>TPOT</td><td>4.5201</td><td>34.2411</td><td>7.5752</td><td>0.9469</td><td><span class="tag compute">compute</span></td><td>False</td></tr>
+</tbody>
+</table>
+</div>
+<h3>series/moe-active13b — scale_efficiency vs chips</h3>
+<div class="table-wrap">
+<table>
+<thead><tr><th>chips</th><th>tp</th><th>pp</th><th>ep</th><th>metric</th><th>primary_ms</th><th>t_single_ms</th><th>speedup</th><th>scale_eff</th><th>wall</th><th>oom</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>1</td><td>1</td><td>1</td><td>TPOT</td><td>15.8098</td><td>15.8098</td><td>1.0000</td><td>1.0000</td><td><span class="tag compute">compute</span></td><td>False</td></tr>
+<tr><td>2</td><td>2</td><td>1</td><td>1</td><td>TPOT</td><td>8.1449</td><td>15.8098</td><td>1.9411</td><td>0.9705</td><td><span class="tag compute">compute</span></td><td>False</td></tr>
+<tr><td>4</td><td>4</td><td>1</td><td>1</td><td>TPOT</td><td>4.1925</td><td>15.8098</td><td>3.7710</td><td>0.9428</td><td><span class="tag compute">compute</span></td><td>False</td></tr>
+<tr><td>8</td><td>8</td><td>1</td><td>1</td><td>TPOT</td><td>2.2162</td><td>15.8098</td><td>7.1337</td><td>0.8917</td><td><span class="tag compute">compute</span></td><td>False</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="assumed-compute">
+<h2>Assumed compute extras (v0.26) — Softmax/RoPE/LN + dtype MAC</h2>
+<p class="note"><strong>Opt-in; defaults preserve handcheck.</strong> Coarse non-GEMM overhead <code>non_gemm_overhead</code> (default <strong>0</strong>) adds a fraction of GEMM compute time for Softmax/RoPE/LN/misc: <code>t_compute' = t_compute × (1 + overhead)</code>. Optional finer <code>softmax_frac</code> / <code>rope_frac</code> / <code>norm_frac</code> sum into overhead when provided. <strong>Not cycle-accurate.</strong></p>
+<p class="note">Optional <code>dtype_mac_factors</code> map (fp16/fp8/int8/int4; default all <strong>1.0</strong>) multiplies peak TOPS and divides GEMM compute time for the weight dtype. <strong>User/assumed — not silicon.</strong> Default bytes-only behavior unchanged. CLI: <code>--non-gemm-overhead</code> · <code>--dtype-mac-factor</code> JSON map. Web: Assumed compute extras. See DECISIONS §17.</p>
+</section>
+<section id="econ">
+<h2>Scenario presets × energy / cost — ASSUMED stub (not silicon)</h2>
+<p class="note"><strong>Honesty:</strong> power is a single user knob (<code>tdp_w</code> per card, or <code>watts_per_tops × peak_tops</code>) × assumed <code>power_util</code> × chips — <strong>no PDK / JEDEC / vendor power model</strong>, cards only (no host / cooling / PUE). Cost = chips × (<code>cost_per_card_usd</code> + <code>mem_addon_usd</code>). LLM <code>$/MTok</code> = energy (<code>usd_per_kwh</code>) + capex amortized over <code>amortize_years × duty_cycle</code> of decode-only tokens. Engine defaults are <strong>OFF</strong>; the numbers below use the clearly-fake <strong>EXAMPLE placeholders</strong> from <code>examples/energy_cost.example.json</code>.</p>
+<p class="note">EXAMPLE knobs: <code>tdp_w=400, power_util=0.6, cost_per_card_usd=10000, mem_addon_usd=0, usd_per_kwh=0.1, amortize_years=3, duty_cycle=0.5</code></p>
+<p class="note">Presets (package + compute + chips; no power/price inside): <code>edge-lpddr-4x64</code>, <code>card-hbm-4stack</code>, <code>scaleup-8chip</code>. CLI: <code>python3 -m npu_dse list-presets</code> · <code>python3 -m npu_dse eval-presets --model illustrative_27B --econ examples/energy_cost.example.json</code> · <code>workbench --preset card-hbm-4stack --tdp-w … --cost-per-card …</code>. OOM rows: energy/cost not meaningful.</p>
+<p class="note"><strong>Caveat:</strong> one flat EXAMPLE <code>tdp_w</code> is applied to every preset, so the edge row at 400 W/card is deliberately unrealistic — for cross-class comparison set <code>watts_per_tops</code> or per-preset <code>--tdp-w</code> yourself. Scale-up rows multiply power and cost by chips.</p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>workload</th><th>preset</th><th>package</th><th>compute</th><th>chips</th><th>primary</th><th>ms</th><th>wall</th><th>oom</th><th>est_power_W</th><th>est_energy / unit (J)</th><th>est_system_cost_usd</th><th>est_usd_per_Mtok</th></tr></thead>
+<tbody>
+<tr><td>llm illustrative_27B int8</td><td>edge-lpddr-4x64</td><td>lpddr5x_4x64_8533_16g</td><td>cluster_64t</td><td>1</td><td>TPOT</td><td>150.5453</td><td><span class="tag memory">memory</span></td><td>no</td><td>240.0</td><td>36.13 /token</td><td>10,000</td><td>32.83</td></tr>
+<tr><td>llm illustrative_27B int8</td><td>edge-lpddr6-4x96</td><td>lpddr6_4x96_10667_16g</td><td>cluster_128t</td><td>1</td><td>TPOT</td><td>90.3208</td><td><span class="tag memory">memory</span></td><td>no</td><td>240.0</td><td>21.68 /token</td><td>10,000</td><td>19.7</td></tr>
+<tr><td>llm illustrative_27B int8</td><td>card-hbm-4stack</td><td>hbm3e_4s_12h24g_9200</td><td>cluster_256t</td><td>1</td><td>TPOT</td><td>20.3922</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>4.894 /token</td><td>10,000</td><td>4.447</td></tr>
+<tr><td>llm illustrative_27B int8</td><td>card-hbm3e-8x12h</td><td>hbm3e_8s_12h24g_9200</td><td>cluster_256t</td><td>1</td><td>TPOT</td><td>20.3922</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>4.894 /token</td><td>10,000</td><td>4.447</td></tr>
+<tr><td>llm illustrative_27B int8</td><td>server-socamm2-8</td><td>lpddr5x_socamm2_8x128_9600_192g</td><td>cluster_256t</td><td>1</td><td>TPOT</td><td>33.4532</td><td><span class="tag memory">memory</span></td><td>no</td><td>240.0</td><td>8.029 /token</td><td>10,000</td><td>7.295</td></tr>
+<tr><td>llm illustrative_27B int8</td><td>scaleup-8chip</td><td>hbm3e_4s_12h24g_9200</td><td>cluster_256t</td><td>8</td><td>TPOT</td><td>2.7890</td><td><span class="tag compute">compute</span></td><td>no</td><td>1920.0</td><td>5.355 /token</td><td>80,000</td><td>4.866</td></tr>
+<tr><td>video illustrative_dit_video</td><td>edge-lpddr-4x64</td><td>lpddr5x_4x64_8533_16g</td><td>cluster_64t</td><td>1</td><td>TTFC</td><td>4757.0034</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>71.36 /frame</td><td>10,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>video illustrative_dit_video</td><td>edge-lpddr6-4x96</td><td>lpddr6_4x96_10667_16g</td><td>cluster_128t</td><td>1</td><td>TTFC</td><td>2202.0096</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>33.03 /frame</td><td>10,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>video illustrative_dit_video</td><td>card-hbm-4stack</td><td>hbm3e_4s_12h24g_9200</td><td>cluster_256t</td><td>1</td><td>TTFC</td><td>1189.2508</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>17.84 /frame</td><td>10,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>video illustrative_dit_video</td><td>card-hbm3e-8x12h</td><td>hbm3e_8s_12h24g_9200</td><td>cluster_256t</td><td>1</td><td>TTFC</td><td>1189.2508</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>17.84 /frame</td><td>10,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>video illustrative_dit_video</td><td>server-socamm2-8</td><td>lpddr5x_socamm2_8x128_9600_192g</td><td>cluster_256t</td><td>1</td><td>TTFC</td><td>1189.2508</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>17.84 /frame</td><td>10,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>video illustrative_dit_video</td><td>scaleup-8chip</td><td>hbm3e_4s_12h24g_9200</td><td>cluster_256t</td><td>8</td><td>TTFC</td><td>157.0564</td><td><span class="tag compute">compute</span></td><td>no</td><td>1920.0</td><td>18.85 /frame</td><td>80,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>protein illustrative_protein_pair</td><td>edge-lpddr-4x64</td><td>lpddr5x_4x64_8533_16g</td><td>cluster_64t</td><td>1</td><td>t/seq</td><td>24.7200</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>5.933 /seq</td><td>10,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>protein illustrative_protein_pair</td><td>edge-lpddr6-4x96</td><td>lpddr6_4x96_10667_16g</td><td>cluster_128t</td><td>1</td><td>t/seq</td><td>15.9375</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>3.825 /seq</td><td>10,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>protein illustrative_protein_pair</td><td>card-hbm-4stack</td><td>hbm3e_4s_12h24g_9200</td><td>cluster_256t</td><td>1</td><td>t/seq</td><td>10.5469</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>2.531 /seq</td><td>10,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>protein illustrative_protein_pair</td><td>card-hbm3e-8x12h</td><td>hbm3e_8s_12h24g_9200</td><td>cluster_256t</td><td>1</td><td>t/seq</td><td>10.5469</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>2.531 /seq</td><td>10,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>protein illustrative_protein_pair</td><td>server-socamm2-8</td><td>lpddr5x_socamm2_8x128_9600_192g</td><td>cluster_256t</td><td>1</td><td>t/seq</td><td>10.5469</td><td><span class="tag compute">compute</span></td><td>no</td><td>240.0</td><td>2.531 /seq</td><td>10,000</td><td>n/a (LLM only)</td></tr>
+<tr><td>protein illustrative_protein_pair</td><td>scaleup-8chip</td><td>hbm3e_4s_12h24g_9200</td><td>cluster_256t</td><td>8</td><td>t/seq</td><td>1.4624</td><td><span class="tag compute">compute</span></td><td>no</td><td>1920.0</td><td>2.808 /seq</td><td>80,000</td><td>n/a (LLM only)</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+</main>
+<footer>
+npu_dse v0.31.0 · MetricsCard / wall report · Regenerate: <code>python3 -m npu_dse report --out out/report.html</code>
+</footer>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local artifacts
+*.zip
+serve.log
+*.log
+
+# Generated outputs (regenerate via CLI). Keep only files referenced by
+# README / docs / scripts so links and the series-catalog bake input work.
+out/*
+!out/.gitkeep
+!out/report.html
+!out/card.json
+!out/card.md
+!out/workbench_scan.csv
+!out/parallel_moe_8.csv
+!out/pareto_qwen3-32b_8.csv
+!out/hf_series_lookup.json
