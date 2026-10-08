@@ -3,6 +3,24 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.51.0] - 2026-10-09
+
+PD 报告从稳态流体模型往下深入一层：排队与尾延迟、连续批处理、分块 prefill、KV 与池内集合通信争用、PD 能耗。全部是解析近似「假设」，只在 `pd.enabled` 时计算，默认结果与 0.50.0 逐字节一致。
+
+### Added
+- `core/queueing.py`：M/D/1（P-K 均值、P(W>0) = ρ、Cramér–Lundberg 尾分位）、Erlang C（Allen–Cunneen ½）槽位等待、Poisson 分位；测试用 Lindley 仿真核对 p90 / p99。
+- `core/pdqueue.py` → eval 响应 `pd.queue`：同一泊松到达率（`pd.load` × PD 流体容量，默认 0.8，或 `pd.rate_rps`）下比较 PD 分离、合并 · prefill 优先、合并 · 分块 prefill（`pd.chunk_tokens`，默认 512）的 TTFT p50 / p90 / p99、TPOT 均值 / p90 / p99（请求平均）、最长 token 间隔、端到端均值、SLO goodput（p90 TTFT 与 p90 TPOT 都满足的最大到达率 × out / 卡）。PD 的 prefill 池为带 batch 上限的 M/D/1（取平均 TTFT 最小的上限），decode 池连续批处理按 Little 不动点求运行 batch；prefill 优先模式计 decode 停顿；分块模式按级融合迭代（prefill 权重读与 decode 共用、前缀 KV 重读计入）。
+- KV 与池内集合通信争用（没设 `pd.kv_GBps` 时）：KV 可用带宽扣除两池在该层的集合通信占用，KV 流量反过来拉长池的链路时间；`pd.kv_GBps` 视为专用通道。
+- PD 的 SLO goodput 切分搜索（`pd_slo_splits`、`pd_slo_best_split`）。
+- PD / 合并两种模式每输出 token 的动作计数与卡·秒（`pd.queue.energy`），给了能耗表时出 J / token。
+- CLI `--pd-load --pd-rate --pd-chunk`、`--out-len`、`--ttft-slo`，`eval --pd` 输出排队表；Web PD 输入组加「负载 / 到达率 / 分块 token」，单点页加「排队与尾延迟」表；建模说明 §18.1；测试 `tests/test_core_051.py`。
+
+### Changed
+- 默认结果不变：1356 项指纹与 0.50.0 逐字节一致。`PDConfig` 新增 `load`、`rate_rps`、`chunk_tokens`（场景哈希随之变化）。`disagg_report` 新增可选 `energy`、`queue` 参数。
+
+### 不做 / 待定
+- 请求长度分布、抢占 / 换出 / KV 容量排队、前缀缓存、调度器开销、PD prefill 池内分块、异构池、池布局搜索；分位数逐项相加（偏保守），不做卷积或仿真。
+
 ## [0.50.0] - 2026-10-09
 
 prefill / decode 分离（PD）作为可选服务模式；互连拆成三层（可选封装内 D2D、节点内 scale-up、跨节点网络）。全部默认关，默认结果与 0.49.0 逐字节一致。

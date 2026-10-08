@@ -41,6 +41,8 @@ from .evaluate import Result, evaluate
 from .ir import Shard
 from .memplan import stage_storage
 from .scenario import Scenario
+from .energy import EnergyTable
+from .pdqueue import _Pool, queue_report
 from .serving import best_prefill, goodput
 
 
@@ -55,7 +57,8 @@ def _pool(cards: int, per: int) -> tuple[int, int]:
     return n, n // per
 
 
-def disagg_report(scn: Scenario, decode: Result | None = None) -> dict:
+def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTable | None = None,
+                  queue: bool = True) -> dict:
     """PD metrics for an LLM scenario with ``scn.pd.enabled`` (decode pool = scn.layout at scn.serving.batch)."""
     m = get_model(scn.model)
     if not m.kv_cache:
@@ -135,7 +138,17 @@ def disagg_report(scn: Scenario, decode: Result | None = None) -> dict:
                         f"{sv.ttft_slo_ms:g} ms")
     if co["idle_cards"]:
         warnings.append(f"合并对照：{total} 卡不是解码布局 {c_d} 卡的整数倍，{co['idle_cards']} 张卡闲置")
+    q = None
+    if queue:
+        ctx = {"ppool": _Pool(pscn), "dpool": _Pool(dscn), "cpool": _Pool(dscn), "r_p": r_p, "r_d": r_d, "n_p": n_p,
+               "n_d": n_d, "r_c": reps, "S": S, "out": out, "B": sv.batch, "kv": kv, "tier": kv_tier, "beta": beta,
+               "alpha": alpha, "pair": min(c_p, c_d), "layerwise": pd.kv_layerwise, "L": L, "C": pd.chunk_tokens,
+               "shared": pd.kv_GBps is None}
+        ctx["dpool"].memo[("decode", sv.batch)] = dec
+        ctx["cpool"].memo = ctx["dpool"].memo             # same layout → same evaluations
+        q = queue_report(ctx, main["req_s"], pd, sv, energy)
     return {
+        "queue": q,
         "prefill": {"cards": n_p, "replicas": r_p, "layout": pd.prefill_layout.label, "batch": pb,
                     "ttft_ms": pr.ttft * 1e3, "tok_s_replica": rp, "fits": pr.fits, "ttft_ok": p_ok, "bound": pr.bound},
         "decode": {"cards": n_d, "replicas": r_d, "layout": scn.layout.label, "batch": sv.batch,

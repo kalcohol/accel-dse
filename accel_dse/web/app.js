@@ -138,11 +138,11 @@ function readNum(inp, int) {
   if (!isFinite(x) || x < lo || x > hi || (int && !Number.isInteger(x))) return undefined;
   return x;
 }
-function bindNumber(id, get, set, { int = false, nullable = false } = {}) {
+function bindNumber(id, get, set, { int = false, nullable = false, check = null } = {}) {
   const inp = $(id);
   inp.addEventListener('input', () => {
     const x = readNum(inp, int);
-    const ok = x !== undefined && (x !== null || nullable);
+    const ok = x !== undefined && (x !== null || nullable) && (x === null || !check || check(x));
     inp.classList.toggle('bad', !ok);
     if (!ok) return;
     set(x);
@@ -655,6 +655,40 @@ function renderPD(r) {
   $('pd-note').textContent = `KV 每请求 ${num(K.bytes_per_req / 2 ** 20)} MiB，${num(K.GBps_req)} GB/s（${K.source}，min(c_p, c_d) 卡并行），传输 ${num(K.t_ms)} ms，暴露 ${num(K.exposed_ms)} ms${K.layerwise ? '（逐层流式）' : ''}。`
     + (bs ? ` 同 ${pd.cards} 卡最佳切分：prefill ${bs.prefill_cards} + decode ${bs.decode_cards} → ${num(bs.goodput_per_card)} tok/s/卡（瓶颈 ${bs.bottleneck}）。` : '')
     + (pd.warnings.length ? ' ⚠ ' + pd.warnings.join('；') : '');
+  renderPDQueue(pd.queue, pd.cards);
+}
+function renderPDQueue(q, cards) {
+  if (!q || q.error || !q.modes) { put($('pdq-tbl')); $('pdq-basis').textContent = ''; $('pdq-note').textContent = q && q.error ? q.error : ''; return; }
+  $('pdq-basis').textContent = `到达率 ${num(q.lambda_rps)} req/s${q.load ? `（PD 容量的 ${pct(q.load)}）` : ''}；${q.basis}`;
+  const sci = (x) => (x === 0 ? '0' : x.toExponential(3));
+  const names = { pd: 'PD 分离', coloc_prefill_first: '合并 · prefill 优先', coloc_chunked: `合并 · 分块 prefill（${q.chunk_tokens} tok）` };
+  const ok = (b) => b === false ? 'color:var(--danger)' : '';
+  const E = q.energy || {};
+  const hasJ = Object.values(E).some((e) => e.J_per_token !== undefined);
+  const head = h('tr', {}, h('th', { class: 'l' }, '模式'), h('th', {}, 'TTFT ms', h('br'), 'p50/p90/p99'), h('th', {}, 'TPOT ms', h('br'), '均值/p90/p99'),
+    h('th', {}, '最长停顿', h('br'), 'ms'), h('th', {}, 'SLO 到达率', h('br'), 'req/s'), h('th', {}, 'SLO goodput', h('br'), 'tok/s/卡'),
+    h('th', {}, hasJ ? 'J /' : 'DRAM B /', h('br'), '输出 token'), h('th', { class: 'l' }, '说明'));
+  const best = Math.max(...Object.values(q.modes).map((x) => x.slo_goodput_per_card || 0));
+  const rows = Object.entries(q.modes).map(([k, x]) => {
+    const e = E[k] || {};
+    const en = hasJ ? (e.J_per_token !== undefined ? sci(e.J_per_token) : '—') : (e.counts_per_token ? sci(e.counts_per_token.dram) : '—');
+    let note = '';
+    if (!x.stable) note = '不稳定：' + (x.why || '');
+    else if (k === 'pd') note = `prefill batch 上限 ${x.prefill.batch_cap}，排队均值 ${num(x.prefill.wait_ms.mean)} ms；decode 运行 batch ≈ ${num(x.decode.occupancy)}（p90 ${x.decode.running_p90}）/ ${x.decode.slots} 槽；KV 链路被集合通信占用 ${pct(x.kv.u_coll)}`;
+    else if (k === 'coloc_prefill_first') note = `decode 时间占比 ${pct(x.decode.share)}，运行 batch ≈ ${num(x.decode.occupancy)}；新请求 prefill 时整批 decode 停顿`;
+    else note = `每请求 ${x.prefill.chunks} 块，融合迭代 ${num(x.prefill.iter_ms)} ms（无分块 ${num(x.decode.iter_ms_no_chunk)} ms），prefill 占用 ${pct(x.prefill.rho)}`;
+    const t = x.ttft_ms;
+    return h('tr', { class: x.slo_goodput_per_card > 0 && x.slo_goodput_per_card >= best ? 'best' : '' }, h('td', { class: 'l' }, k === 'pd' ? h('b', {}, names[k]) : names[k]),
+      h('td', { style: ok(x.ttft_p90_ok) }, x.stable ? `${num(t.p50)}/${num(t.p90)}/${num(t.p99)}` : '—'),
+      h('td', { style: ok(x.tpot_p90_ok) }, x.stable ? `${num(x.tpot_mean_ms)}/${num(x.tpot_p90_ms)}/${num(x.tpot_p99_ms)}` : '—'),
+      h('td', {}, x.stable ? num(x.itl_max_ms) : '—'), h('td', {}, num(x.slo_rate_rps)), h('td', {}, h('b', {}, num(x.slo_goodput_per_card))),
+      h('td', {}, en), h('td', { class: 'l small', style: 'white-space:normal;min-width:180px' }, note));
+  });
+  put($('pdq-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
+  const b = q.pd_slo_best_split;
+  $('pdq-note').textContent = '「SLO 到达率」= p90 TTFT 与 p90 TPOT 都满足 SLO（未设 SLO 时即稳定上限）的最大泊松到达率；SLO goodput = 该到达率 × 输出长度 / 卡数（DistServe 口径）。'
+    + (b ? ` 同 ${cards} 卡 PD 在 SLO 下的最佳切分：prefill ${b.prefill_cards} + decode ${b.decode_cards} → ${num(b.slo_goodput_per_card)} tok/s/卡。` : '')
+    + ' 分位数逐项相加（偏保守）；未建模：请求长度分布、抢占 / 换出、prefix cache、调度器开销。';
 }
 function budgetMark(x) {
   if (x.budget_ok === false) return h('span', { class: 'tag danger', title: '超出预算：' + (x.budget_violations || []).join(', ') }, '超预算');
@@ -1143,6 +1177,9 @@ async function init() {
   for (const k of ['prefill_cards', 'decode_cards'])
     bindNumber('pd-' + k, () => S.sc.pd[k] || null, (x) => (S.sc.pd[k] = x === null ? 0 : x), { int: true, nullable: true });
   bindNumber('pd-kv_GBps', () => S.sc.pd.kv_GBps, (x) => (S.sc.pd.kv_GBps = x), { nullable: true });
+  bindNumber('pd-load', () => S.sc.pd.load ?? 0.8, (x) => (S.sc.pd.load = x), { check: (x) => x > 0 && x < 1 });
+  bindNumber('pd-rate_rps', () => S.sc.pd.rate_rps ?? null, (x) => (S.sc.pd.rate_rps = x), { nullable: true, check: (x) => x > 0 });
+  bindNumber('pd-chunk_tokens', () => S.sc.pd.chunk_tokens ?? 512, (x) => (S.sc.pd.chunk_tokens = x), { int: true, check: (x) => x >= 16 });
   $('pd-enabled').addEventListener('change', (e) => { S.sc.pd.enabled = e.target.checked; $('pd-inputs').hidden = !e.target.checked; schedule(); });
   $('pd-kv_layerwise').addEventListener('change', (e) => { S.sc.pd.kv_layerwise = e.target.checked; schedule(); });
   bindNumber('mem_eff', () => S.sc.mem_eff, (x) => (S.sc.mem_eff = x), { nullable: true });

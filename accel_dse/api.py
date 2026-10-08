@@ -314,7 +314,7 @@ def api_eval(body: dict) -> dict:
         out["budget"] = budget_report(r, bud, out["energy"])
     if scn.pd.enabled:      # 0.50: prefill / decode disaggregation next to the colocated numbers
         try:
-            out["pd"] = disagg_report(scn, r)
+            out["pd"] = disagg_report(scn, r, _energy_table(body))
         except ValueError as e:
             out["pd"] = {"error": str(e)}
     return out

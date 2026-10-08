@@ -179,7 +179,7 @@
     </div>
     <label class="inline"><input type="checkbox" id="best-batch"> <span id="best-batch-label">自动取满足 TPOT SLO 的最大 batch</span></label>
     <div class="llm-only" id="pd-grp">
-      <label class="inline" title="prefill / decode 分离（PD）：prefill 池与 decode 池用不同的卡（布局可不同），每个请求的 KV 从 prefill 池传到 decode 池（设了每节点卡数则走跨节点网络，否则走节点内 scale-up）。上面的布局 = decode 池布局。稳态流体模型「假设」：无排队、无连续批处理动态"><input type="checkbox" id="pd-enabled"> PD 分离（prefill / decode 分池）</label>
+      <label class="inline" title="prefill / decode 分离（PD）：prefill 池与 decode 池用不同的卡（布局可不同），每个请求的 KV 从 prefill 池传到 decode 池（设了每节点卡数则走跨节点网络，否则走节点内 scale-up）。上面的布局 = decode 池布局。稳态流体模型「假设」；排队 / 尾延迟 / 连续批处理 / 分块 prefill 见结果里的「排队与尾延迟」表（解析近似「假设」）"><input type="checkbox" id="pd-enabled"> PD 分离（prefill / decode 分池）</label>
       <div id="pd-inputs" hidden>
         <div class="small muted">prefill 池布局（decode 池用上面的布局与 batch）</div>
         <div class="row5">
@@ -195,6 +195,12 @@
           <label title="池间 KV 传输每卡带宽；空 = 设了每节点卡数时用跨节点 GB/s，否则用节点内 GB/s">KV GB/s / 卡 <span class="tag assume">假设</span><input type="number" id="pd-kv_GBps" min="0" step="25"></label>
         </div>
         <label class="inline" title="prefill 时逐层把 KV 发出去（Mooncake / DistServe 式），只有最后一层的传输暴露在 TTFT 里"><input type="checkbox" id="pd-kv_layerwise"> KV 逐层流式传输</label>
+        <div class="small muted">排队与连续批处理（0.51）<span class="tag assume">假设</span> 泊松到达、请求长度固定</div>
+        <div class="row3">
+          <label title="到达率 = 该比例 × PD 流体模型的请求容量；三种模式（PD、合并 prefill 优先、合并分块 prefill）在同一到达率下比较">负载（占 PD 容量）<input type="number" id="pd-load" min="0.05" max="0.99" step="0.05"></label>
+          <label title="绝对到达率 req/s；填了就覆盖上面的负载比例">到达率 req/s<input type="number" id="pd-rate_rps" min="0" step="0.5"></label>
+          <label title="合并模式分块 prefill（Sarathi / vLLM chunked prefill）每次迭代的 prefill token 预算">分块 token<input type="number" id="pd-chunk_tokens" min="16" step="128"></label>
+        </div>
       </div>
     </div>
   </section>
@@ -260,6 +266,9 @@
       <h4>PD 分离 vs 合并 <span class="small muted">稳态流体模型「假设」：goodput = min(prefill, decode, KV 传输) 请求率 × 输出长度；合并的有效 TPOT = TPOT / decode 时间占比</span></h4>
       <div class="scroll"><table class="tbl" id="pd-tbl"></table></div>
       <div class="small muted" id="pd-note"></div>
+      <h4>排队与尾延迟 <span class="small muted" id="pdq-basis"></span></h4>
+      <div class="scroll"><table class="tbl" id="pdq-tbl"></table></div>
+      <div class="small muted" id="pdq-note"></div>
     </div>
     <div id="budget-box" hidden>
       <h4>资源 / 面积预算 <span class="small muted">余量 = 1 − 用量 / 限额；「?」= 无法判定（缺输入或只有下界）</span></h4>

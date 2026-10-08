@@ -45,6 +45,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--spec-k", type=int, default=0)
     p.add_argument("--spec-accept", type=float, default=None)
     p.add_argument("--tpot-slo", type=float, default=None, help="TPOT SLO ms")
+    p.add_argument("--ttft-slo", type=float, default=None, help="TTFT SLO ms")
+    p.add_argument("--out-len", dest="out_len", type=int, default=None, help="output tokens per request (goodput / PD)")
     for k, hlp in (("frames", "video frames"), ("height", "video height px"), ("width", "video width px"),
                    ("steps", "denoise steps (structure models: diffusion steps)"), ("cfg", "forwards per step (2 = CFG)"),
                    ("seq-len", "protein residues"), ("msa", "MSA rows (structure models)"),
@@ -124,6 +126,12 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--pd-kv-GBps", dest="pd_kv_GBps", type=float, default=None,
                    help="PD KV transfer GB/s per card (default: network link) 「假设」")
     p.add_argument("--pd-layerwise", action="store_true", help="PD: stream KV layer by layer during prefill")
+    p.add_argument("--pd-load", dest="pd_load", type=float, default=None,
+                   help="PD queueing: offered load as a fraction of the PD fluid capacity (0.51; default 0.8 「假设」)")
+    p.add_argument("--pd-rate", dest="pd_rate", type=float, default=None,
+                   help="PD queueing: absolute offered load, requests/s (overrides --pd-load)")
+    p.add_argument("--pd-chunk", dest="pd_chunk", type=int, default=None,
+                   help="colocated chunked-prefill token budget per iteration (comparison; default 512 「假设」)")
     for flag, dest, hlp in _BUDGET_FLAGS:
         p.add_argument(flag, dest=dest, type=float, default=None, help=f"budget (0.49, user-supplied): {hlp}")
     p.add_argument("--json", action="store_true", help="print raw JSON")
@@ -131,7 +139,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
 
 def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     sv = {"phase": a.phase, "batch": a.batch, "spec_k": a.spec_k}
-    for k, attr in (("ctx", "ctx"), ("prompt", "prompt"), ("spec_accept", "spec_accept"), ("tpot_slo_ms", "tpot_slo")):
+    for k, attr in (("ctx", "ctx"), ("prompt", "prompt"), ("spec_accept", "spec_accept"), ("tpot_slo_ms", "tpot_slo"),
+                    ("ttft_slo_ms", "ttft_slo"), ("out_len", "out_len")):
         if getattr(a, attr) is not None:
             sv[k] = getattr(a, attr)
     if getattr(a, "moe_skew", None) is not None:
@@ -186,6 +195,9 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["pd"] = {"enabled": True, "prefill_layout": {k: getattr(a, f"pd_prefill_{k}") for k in ("pp", "tp", "dp", "ep", "etp")},
                     "prefill_cards": a.pd_prefill_cards, "decode_cards": a.pd_decode_cards,
                     "kv_GBps": a.pd_kv_GBps, "kv_layerwise": a.pd_layerwise}
+        for k, dest in (("load", "pd_load"), ("rate_rps", "pd_rate"), ("chunk_tokens", "pd_chunk")):
+            if getattr(a, dest, None) is not None:
+                sc["pd"][k] = getattr(a, dest)
     body = {"chip_preset": a.chip, "scenario": sc}
     en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
                                      "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net")
@@ -315,6 +327,24 @@ def cmd_eval(a) -> dict:
               f"(effective {c_['tpot_eff_ms']:.2f})  goodput {c_['goodput_per_card']:.1f} tok/s/card")
         for w in pd["warnings"]:
             print("    ! " + w)
+        if (q := pd.get("queue")) and "modes" in q:
+            print(f"  queueing at {q['lambda_rps']:.3g} req/s"
+                  + (f" ({q['load']:.0%} of PD capacity)" if q.get("load") else "") + "  「假设」 Poisson, M/D/1, Erlang C")
+            names = {"pd": "PD", "coloc_prefill_first": "colocated prefill-first", "coloc_chunked":
+                     f"colocated chunked ({q['chunk_tokens']} tok)"}
+            for k, x in q["modes"].items():
+                if not x["stable"]:
+                    print(f"    {names[k]:<28} unstable: {x.get('why', '')}   SLO rate {x['slo_rate_rps']:.3g} req/s")
+                    continue
+                t = x["ttft_ms"]
+                print(f"    {names[k]:<28} TTFT p50/p90/p99 {t['p50']:.0f}/{t['p90']:.0f}/{t['p99']:.0f} ms  "
+                      f"TPOT mean/p90/p99 {x['tpot_mean_ms']:.1f}/{x['tpot_p90_ms']:.1f}/{x['tpot_p99_ms']:.1f} ms  "
+                      f"max gap {x['itl_max_ms']:.0f} ms  SLO goodput {x['slo_goodput_per_card']:.1f} tok/s/card")
+            if b := q.get("pd_slo_best_split"):
+                print(f"    PD best split under SLO: {b['prefill_cards']}P+{b['decode_cards']}D "
+                      f"{b['slo_goodput_per_card']:.1f} tok/s/card")
+        elif q and q.get("error"):
+            print("  queueing: " + q["error"])
     elif pd:
         print("PD: " + pd["error"])
     for w in s["warnings"]:

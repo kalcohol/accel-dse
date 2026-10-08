@@ -136,6 +136,9 @@ class PDConfig:
     decode_cards: int = 0
     kv_GBps: float | None = None    # per-card KV transfer bandwidth between the pools; None = network link 「假设」
     kv_layerwise: bool = False      # stream KV layer by layer during prefill (only the last layer's chunk exposed)
+    load: float = 0.8               # offered load for the queueing estimate, × the PD fluid capacity (0.51) 「假设」
+    rate_rps: float | None = None   # absolute offered load, requests/s (overrides load)
+    chunk_tokens: int = 512         # colocated chunked-prefill token budget per iteration (comparison only) 「假设」
 
     def __post_init__(self):
         for k in ("prefill_cards", "decode_cards"):
@@ -147,6 +150,14 @@ class PDConfig:
         if self.kv_GBps is not None and (isinstance(self.kv_GBps, bool) or not isinstance(self.kv_GBps, (int, float))
                                          or not 0 < self.kv_GBps < 1e7):
             raise ValueError("pd.kv_GBps must be > 0 or null")
+        if isinstance(self.load, bool) or not isinstance(self.load, (int, float)) or not 0 < self.load < 1:
+            raise ValueError("pd.load must be in (0, 1)")
+        if self.rate_rps is not None and (isinstance(self.rate_rps, bool) or not isinstance(self.rate_rps, (int, float))
+                                          or not 0 < self.rate_rps < 1e7):
+            raise ValueError("pd.rate_rps must be > 0 or null")
+        if isinstance(self.chunk_tokens, bool) or not isinstance(self.chunk_tokens, int) \
+                or not 16 <= self.chunk_tokens <= 1 << 20:
+            raise ValueError("pd.chunk_tokens must be an integer in [16, 1048576]")
         if not isinstance(self.enabled, bool) or not isinstance(self.kv_layerwise, bool):
             raise ValueError("pd.enabled / pd.kv_layerwise must be booleans")
 
