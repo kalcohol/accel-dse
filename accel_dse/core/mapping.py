@@ -15,7 +15,7 @@ Per GEMM (M,K,N, count instances, bf16-equivalent rate multiplier r):
 
   OS     mac  = ceil(M/R)·ceil(N/Ce)·K / r
          feed = [ceil(M/R)·K·N·wb + ceil(N/Ce)·M·K·ab + M·N·ob] / port
-  WS     tiles = ceil(K/R)·ceil(N/Ce);  load = R·Ce / w_load
+  WS     tiles = ceil(K/R)·ceil(N/Ce);  load = R·Ce / (w_load·r)   (16-bit lanes; fp8 packs 2)
          mac  = tiles·max(ceil(M/r), load) + (R + Ce)            (one-off fill)
          feed = [K·N·wb + ceil(N/Ce)·M·K·ab + 2·(ceil(K/R)−1)·M'·N·4 + M·N·ob] / port
                 M' = max(0, M − acc_rows): rows whose fp32 partial sums overflow the
@@ -76,7 +76,7 @@ def _os(ch: Chip, m, k, n, r, wb, ab, ob):
 
 def _ws(ch: Chip, m, k, n, r, wb, ab, ob, broad: bool):
     R, Ce = ch.rows, ch.c_eff
-    w_load = R * Ce if broad else Ce
+    w_load = (R * Ce if broad else Ce) * r      # lanes are 16-bit: narrow formats pack r per lane
     load = R * Ce / w_load
     tiles = _cd(k, R) * _cd(n, Ce)
     mac = tiles * max(math.ceil(m / r), load) + (R + Ce)

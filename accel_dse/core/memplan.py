@@ -137,19 +137,28 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
                    p_hot, p_exp, kv_s, res)
 
 
-def step_dram_bytes(mp: MemPlan, store: StageStorage, ops: list[Op]) -> dict:
-    """DRAM bytes moved in one stage step given the plan."""
-    hot_touched = sum(o.w_bytes for o in ops if o.kind == "gemm" and o.role != "expert")
-    exp_touched = sum(o.w_bytes for o in ops if o.kind == "gemm" and o.role == "expert")
+def touched(ops: list[Op]) -> dict:
+    """Per-step byte sums of an op list (independent of the plan)."""
+    d = {"hot": 0.0, "exp": 0.0, "kv_read": 0.0, "kv_write": 0.0, "state": 0.0, "lookup": 0.0}
+    for o in ops:
+        if o.kind == "gemm":
+            d["exp" if o.role == "expert" else "hot"] += o.w_bytes
+        if o.kind == "lookup":
+            d["lookup"] += o.kv_read
+        else:
+            d["kv_read"] += o.kv_read
+        d["kv_write"] += o.kv_write
+        d["state"] += o.state_rw
+    return d
+
+
+def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict) -> dict:
+    """DRAM bytes moved in one stage step given the plan and touched-byte sums."""
     miss_hot = 0.0 if store.hot_w <= 0 else (1.0 - mp.pinned_hot / store.hot_w)
-    exp_stored = store.expert_w
-    miss_exp = 0.0 if exp_stored <= 0 else (1.0 - mp.pinned_expert / exp_stored)
-    w = hot_touched * miss_hot + exp_touched * miss_exp
+    miss_exp = 0.0 if store.expert_w <= 0 else (1.0 - mp.pinned_expert / store.expert_w)
+    w = t["hot"] * miss_hot + t["exp"] * miss_exp
     kvst_total = mp.kv_total + mp.state_total
     kv_miss = 0.0 if kvst_total <= 0 else 1.0 - mp.kv_sram / kvst_total
-    kv_r = sum(o.kv_read for o in ops if o.kind != "lookup") * kv_miss
-    kv_w = sum(o.kv_write for o in ops) * kv_miss
-    st = sum(o.state_rw for o in ops) * kv_miss
-    look = sum(o.kv_read for o in ops if o.kind == "lookup")
-    return {"weights": w, "kv_read": kv_r, "kv_write": kv_w, "state": st, "lookup": look,
-            "total": w + kv_r + kv_w + st + look, "w_touched": hot_touched + exp_touched}
+    kv_r, kv_w, st = t["kv_read"] * kv_miss, t["kv_write"] * kv_miss, t["state"] * kv_miss
+    return {"weights": w, "kv_read": kv_r, "kv_write": kv_w, "state": st, "lookup": t["lookup"],
+            "total": w + kv_r + kv_w + st + t["lookup"], "w_touched": t["hot"] + t["exp"]}

@@ -13,7 +13,7 @@ from .dtypes import fmt as _fmt
 from .hardware import System
 from .ir import Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, head_ops, mtp_ops
 from .mapping import gemm_cost, vector_seconds
-from .memplan import MemPlan, plan, stage_storage, step_dram_bytes
+from .memplan import MemPlan, plan, stage_storage, step_dram_bytes, touched
 from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages
 from .scenario import Scenario
@@ -80,11 +80,18 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple[float,
 
 def stage_ops(model: ModelSpec, first: int, last: int, has_embed: bool, has_head: bool, ph: Phase, sh: Shard,
               spec_k: int) -> list[Op]:
+    """Full op list of one rank of a stage (debug / tests / UI drill-down)."""
     ops: list[Op] = []
     if has_embed:
         ops += embed_ops(model, ph, sh)
     for li in range(first, last):
         ops += build_rank_ops(model, li, ph, sh)
+    ops += _tail_ops(model, has_head, ph, sh, spec_k)
+    return ops
+
+
+def _tail_ops(model, has_head, ph, sh, spec_k):
+    ops: list[Op] = []
     if has_head:
         ops += head_ops(model, ph, sh)
         if spec_k and model.mtp_layers and ph.kind == "decode":
@@ -92,6 +99,34 @@ def stage_ops(model: ModelSpec, first: int, last: int, has_embed: bool, has_head
             for d in range(spec_k):
                 ops += mtp_ops(model, dph, sh, depth=d)
     return ops
+
+
+_SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "flops", "link_bw", "sync", "link_bytes",
+             "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act")
+
+
+def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
+    d = dict.fromkeys(_SUM_KEYS, 0.0)
+    for o in ops:
+        if o.kind == "comm":
+            bw, a = collective_seconds(o.comm_kind, o.comm_bytes, o.comm_group, sys.link)
+            d["link_bw"] += bw; d["sync"] += a; d["link_bytes"] += o.comm_bytes
+            continue
+        a_, ma, fe, v, ce = _op_seconds(o, sys, org, model)
+        d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
+        d["flops"] += o.flops
+        d["max_act"] = max(d["max_act"], o.act_bytes / max(o.count, 1))
+    for k, v in touched(ops).items():
+        d[k] += v
+    return d
+
+
+def _acc(a: dict, b: dict, n: int = 1) -> None:
+    for k in _SUM_KEYS:
+        if k == "max_act":
+            a[k] = max(a[k], b[k])
+        else:
+            a[k] += b[k] * n
 
 
 def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
@@ -125,31 +160,32 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     stages = []
     n_mtp = min(spec_k, len(m.mtp_layers)) if spec_k else 0
     b_rank = _cdiv(sv.batch, lay.dp)          # sequences whose KV lives on one rank (all micro-batches)
+    cache: dict = {}
     for st in plan_stages(m.n_layers, pp):
-        ops = stage_ops(m, st.first, st.last, st.has_embed, st.has_head, ph, sh, spec_k)
+        agg = dict.fromkeys(_SUM_KEYS, 0.0)
+        if st.has_embed:
+            _acc(agg, _sum_ops(embed_ops(m, ph, sh), sys, scn.mapping, m))
+        counts: dict = {}
+        for li in range(st.first, st.last):
+            L = m.layers[li]
+            counts[L] = counts.get(L, (li, 0))[0], counts.get(L, (li, 0))[1] + 1
+        for L, (li, n) in counts.items():
+            if L not in cache:
+                cache[L] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
+            _acc(agg, cache[L], n)
+        _acc(agg, _sum_ops(_tail_ops(m, st.has_head, ph, sh, spec_k), sys, scn.mapping, m))
         store = stage_storage(m, st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap, n_mtp)
-        max_act = max((o.act_bytes / max(o.count, 1) for o in ops), default=0.0)
-        mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, max_act)
-        # with mb micro-batches only 1/mb of the batch's KV is touched per tick
-        dram = step_dram_bytes(mp, store, ops)
-        t_arr = t_mac = t_feed = t_vec = conv = 0.0
-        flops = 0.0
-        link_bw = sync = link_bytes = 0.0
-        for o in ops:
-            if o.kind == "comm":
-                bw, a = collective_seconds(o.comm_kind, o.comm_bytes, o.comm_group, sys.link)
-                link_bw += bw; sync += a; link_bytes += o.comm_bytes
-                continue
-            a_, ma, fe, v, ce = _op_seconds(o, sys, scn.mapping, m)
-            t_arr += a_; t_mac += ma; t_feed += fe; t_vec += v; conv += ce
-            flops += o.flops
+        mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"])
+        dram = step_dram_bytes(mp, store, agg)
+        link_bw, sync, link_bytes = agg["link_bw"], agg["sync"], agg["link_bytes"]
         if pp > 1 and not st.has_head:
             act = ph.batch * ph.q * m.hidden * _fmt(m.act_fmt).bytes / lay.dp
             bw, a = collective_seconds("p2p", act, 2, sys.link)
             link_bw += bw; sync += a; link_bytes += act
         t_dram = dram["total"] / (sys.dram_GBps * 1e9)
-        stt = StageTime(t_arr, t_mac, t_feed, t_vec, t_dram, link_bw, sync, dram["total"], link_bytes, flops)
-        stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, conv, ops))
+        stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
+                        dram["total"], link_bytes, agg["flops"])
+        stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"]))
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
     cap_heavy = max(range(len(stages)), key=lambda i: stages[i].mem.dram_need)

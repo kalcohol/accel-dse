@@ -52,7 +52,7 @@ class Layout:
             s += f"·DP{self.dp}"
         if self.ep > 1:
             s += f"·EP{self.ep}"
-        if self.etp > 1 and self.ep > 1:
+        if self.etp > 1:
             s += f"·ETP{self.etp}"
         return s
 
