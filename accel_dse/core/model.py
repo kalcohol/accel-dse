@@ -46,6 +46,10 @@ class Linear:
     seq  – one row per sequence (timestep embedding / AdaLN modulation)
     txt  – the joint text rows of the sequence (dual-stream MMDiT text weights, text refiners)
     aud  – the joint audio rows of the sequence (MiniMax-H3 audio io)
+    structure models (0.43; Phase.pair gives the grid sizes):
+    res  – one row per residue / token (single representation)
+    pair – N² rows (pair representation)        msa / xmsa – S·N rows (MSA / extra-MSA stack)
+    tmpl – T·N² rows (template pair stack)      atom – A rows (atoms);  apair – A·window rows (local atom pairs)
     """
     name: str
     k: int
@@ -126,6 +130,31 @@ class AttnCore:
 
 
 @dataclass(frozen=True)
+class PairCore:
+    """Activation × activation work of one structure-model module (0.43; AlphaFold-family trunks).  The weight GEMMs
+    of the module are ordinary ``Linear``s in ``Layer.pair_linears``; this records only the work without weights.
+
+    kind
+      trimul    – triangle multiplicative update: ``dim`` channels of an [N×N]·[N×N] product (outgoing / incoming)
+      tri_att   – triangle attention (starting / ending node): N groups of N keys, ``heads`` × ``dim``, pair bias
+      row_att   – attention along the residue axis of each row of ``over`` (msa / xmsa: S groups; tmpl: T·N groups)
+      col_att   – MSA column attention: N groups of S keys (``glob``: one averaged query per column, AF2 extra MSA)
+      opm       – outer-product mean: [N·dim × S]·[S × N·dim2] (then a Linear from dim·dim2 to the pair width)
+      pwa       – pair-weighted averaging (AF3 MSA module): ``heads`` × [N×N]·[N × S·dim]
+      seq_att   – attention over the N tokens with a pair bias (single track, diffusion transformer, IPA)
+      local_att – atom attention in windows of ``win[0]`` queries × ``win[1]`` keys
+    ``v_dim`` – value width when it differs from ``dim`` (IPA: scalar + point + pair values)."""
+    kind: str
+    heads: int = 1
+    dim: int = 0
+    dim2: int = 0
+    over: str = "pair"
+    v_dim: int = 0
+    glob: bool = False
+    win: tuple[int, int] = (0, 0)
+
+
+@dataclass(frozen=True)
 class Ffn:
     kind: str                    # dense | moe | none
     d_ff: int = 0                # dense intermediate
@@ -156,6 +185,15 @@ class Layer:
     cross: AttnCore | None = None
     fused_out: bool = False                  # parallel attention + MLP block with one fused output GEMM
                                              # (HunyuanVideo single-stream): one TP all-reduce per block
+    # structure models (0.43): a block of the AlphaFold-family trunk / diffusion module
+    pair_linears: tuple[Linear, ...] = ()    # every weight GEMM of the block (rows tag = the grid it runs on)
+    pair_cores: tuple[PairCore, ...] = ()
+    repeat: str = ""                         # "" once | recycle (× trunk passes) | diff (× diffusion steps)
+    iters: int = 1                           # fixed repetitions per pass with shared weights (structure module: 8)
+    samples: str = ""                        # rows × diffusion samples: "" no | tok (token / atom grids; diffusion
+                                             # module, pair conditioning shared) | all (every grid; confidence head)
+    misc_role: str = ""                      # format role of misc_params ("" = attn; structure trunks: pair)
+    stack: str = ""                          # display label of the stack (esm / trunk / msa / pairformer / diffusion …)
 
     def expert_params(self, hidden: int) -> int:
         f = self.ffn
@@ -165,7 +203,8 @@ class Layer:
 
     def params(self, hidden: int) -> int:
         return (sum(l.params for l in self.attn_linears) + sum(l.params for l in self.ffn_linears)
-                + sum(l.params for l in self.cross_linears) + self.expert_params(hidden) + self.misc_params)
+                + sum(l.params for l in self.cross_linears) + sum(l.params for l in self.pair_linears)
+                + self.expert_params(hidden) + self.misc_params)
 
 
 @dataclass(frozen=True)
@@ -195,6 +234,14 @@ class NativeWorkload:
     audio_per_s: int = 0           # joint audio rows per second of video (MiniMax-H3: 40 latents/s × channels)
     audio_channels: int = 0
     seq_len: int = 0               # protein residues
+    msa: int = 0                   # structure models (0.43): MSA rows / extra-MSA rows / templates
+    xmsa: int = 0
+    templates: int = 0
+    atoms_per_res: float = 0.0     # all-atom models: heavy atoms per residue
+    recycles: int = 0              # trunk passes (incl. the first)
+    diff_steps: int = 0            # diffusion sampler steps
+    samples: int = 0               # diffusion samples per request (batched)
+    pair_dim: int = 0              # pair-representation width c_z (residual-stream / p2p accounting)
     max_seq: int = 0               # longest trained sequence (residues)
     special_tokens: int = 0        # protein: <cls> + <eos>
     source: str = ""
@@ -260,6 +307,11 @@ class ModelSpec:
     @property
     def head_params(self) -> int:
         return 0 if self.tie_embeddings else self.vocab * self.hidden
+
+    @property
+    def is_pair(self) -> bool:
+        """Structure model (AlphaFold-family / ESMFold trunk): has pair-representation blocks."""
+        return any(L.pair_linears or L.pair_cores for L in self.layers)
 
     def params(self, include_mtp: bool = False) -> int:
         p = sum(l.params(self.hidden) for l in self.layers) + self.embed_params + self.head_params + self.lookup_params
@@ -668,7 +720,7 @@ def _act_fmt(rel: dict) -> str:
 
 # ---------------------------------------------------------------- public API
 def release_path(hf_id: str) -> Path:
-    return RELEASES / (hf_id.replace("/", "__") + ".json")
+    return RELEASES / (hf_id.replace(":", "_").replace("/", "__") + ".json")
 
 
 @lru_cache(maxsize=None)

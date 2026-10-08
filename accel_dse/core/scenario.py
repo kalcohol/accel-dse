@@ -62,11 +62,15 @@ class Workload:
     steps: int = 0                 # denoise steps (0 → reference sampler default)
     cfg: int = 0                   # forward passes per denoise step: 2 = classifier-free guidance, 1 = off
     seq_len: int = 0               # protein residues
+    msa: int = 0                   # structure models: MSA rows (0 → release default cap)
+    recycles: int = 0              # structure models: trunk passes incl. the first (0 → release default)
+    samples: int = 0               # structure models: diffusion samples per request (0 → release default)
     clip_slo_s: float = 1800.0     # video: per-clip latency SLO (「假设」)
-    seq_slo_ms: float = 1000.0     # protein: per-batch latency SLO (「假设」)
+    seq_slo_ms: float = 1000.0     # protein encoders: per-batch latency SLO (「假设」)
+    fold_slo_s: float = 120.0      # protein structure models: per-batch latency SLO (「假设」)
 
     def __post_init__(self):
-        for k in ("frames", "height", "width", "steps", "cfg", "seq_len"):
+        for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles", "samples"):
             v = getattr(self, k)
             if not isinstance(v, int) or isinstance(v, bool) or v < 0:
                 raise ValueError(f"workload.{k} must be an integer ≥ 0")
@@ -74,7 +78,9 @@ class Workload:
             raise ValueError("workload.cfg must be 0 (default), 1 or 2")
         if self.frames > 1024 or self.height > 4096 or self.width > 4096 or self.steps > 1000 or self.seq_len > 65536:
             raise ValueError("workload: frames ≤ 1024, height/width ≤ 4096, steps ≤ 1000, seq_len ≤ 65536")
-        for k in ("clip_slo_s", "seq_slo_ms"):
+        if self.msa > 65536 or self.recycles > 64 or self.samples > 64:
+            raise ValueError("workload: msa ≤ 65536, recycles ≤ 64, samples ≤ 64")
+        for k in ("clip_slo_s", "seq_slo_ms", "fold_slo_s"):
             v = getattr(self, k)
             if not (v > 0 and math.isfinite(v)):
                 raise ValueError(f"workload.{k} must be finite > 0")

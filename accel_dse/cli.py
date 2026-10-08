@@ -23,7 +23,10 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--spec-accept", type=float, default=None)
     p.add_argument("--tpot-slo", type=float, default=None, help="TPOT SLO ms")
     for k, hlp in (("frames", "video frames"), ("height", "video height px"), ("width", "video width px"),
-                   ("steps", "denoise steps"), ("cfg", "forwards per step (2 = CFG)"), ("seq-len", "protein residues")):
+                   ("steps", "denoise steps (structure models: diffusion steps)"), ("cfg", "forwards per step (2 = CFG)"),
+                   ("seq-len", "protein residues"), ("msa", "MSA rows (structure models)"),
+                   ("recycles", "trunk passes incl. the first (structure models)"),
+                   ("samples", "diffusion samples per sequence (structure models)")):
         p.add_argument(f"--{k}", type=int, default=0, help=f"{hlp} (0 = release default; video / protein models)")
     if layout:
         for k in ("pp", "tp", "dp", "ep", "etp", "sp"):
@@ -37,7 +40,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         if getattr(a, attr) is not None:
             sv[k] = getattr(a, attr)
     sc = {"model": a.model, "mapping": a.mapping, "serving": sv}
-    wl = {k: getattr(a, k) for k in ("frames", "height", "width", "steps", "cfg", "seq_len") if getattr(a, k)}
+    wl = {k: getattr(a, k) for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles",
+                                     "samples") if getattr(a, k)}
     if wl:
         sc["workload"] = wl
     if a.mem:
@@ -79,7 +83,11 @@ def cmd_eval(a) -> dict:
             print(f"clip {g['clip_s']:.1f} s   {g['s_per_frame']:.2f} s/frame   step {g['step_ms']:.0f} ms   "
                   f"{g['frames_per_s_card']:.3g} frames/s/card   SLO {'OK' if s['slo_ok'] else 'over'}")
         else:
-            print(f"protein {w['seq_len']} residues   batch {g['batch_ms']:.1f} ms   {g['seq_per_s_card']:.1f} seq/s/card"
+            if w.get("recycles"):
+                print(f"structure: MSA {w.get('msa') or w.get('xmsa') or 0} rows, {w['recycles']} trunk passes"
+                      + (f", diffusion {w['diff_steps']} steps x {w['samples']} samples" if w.get("diff_steps") else "")
+                      + f", {g['tflop_per_request']:.1f} TFLOP/sequence")
+            print(f"protein {w['seq_len']} residues   batch {g['batch_ms']:.1f} ms   {g['seq_per_s_card']:.3g} seq/s/card"
                   f"   {g['residues_per_s_card']:.0f} residues/s/card   SLO {'OK' if s['slo_ok'] else 'over'}")
     elif s["phase"] == "decode":
         print(f"TPOT {s['tpot_ms']:.2f} ms   {s['tok_s']:.1f} tok/s   {s['tok_s_card']:.1f} tok/s/card")

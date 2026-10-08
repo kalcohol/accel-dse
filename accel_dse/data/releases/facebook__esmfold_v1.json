@@ -1,0 +1,1103 @@
+{
+ "bytes_llm": 8440519560,
+ "config": {
+  "architectures": [
+   "EsmForProteinFolding"
+  ],
+  "attention_probs_dropout_prob": 0.0,
+  "classifier_dropout": null,
+  "emb_layer_norm_before": false,
+  "esmfold_config": {
+   "bypass_lm": false,
+   "embed_aa": true,
+   "esm_ablate_pairwise": false,
+   "esm_ablate_sequence": false,
+   "esm_input_dropout": 0,
+   "esm_type": "esm2_3B",
+   "fp16_esm": false,
+   "lddt_head_hid_dim": 128,
+   "trunk": {
+    "chunk_size": null,
+    "cpu_grad_checkpoint": false,
+    "dropout": 0,
+    "layer_drop": 0,
+    "max_recycles": 4,
+    "num_blocks": 48,
+    "pairwise_head_width": 32,
+    "pairwise_state_dim": 128,
+    "position_bins": 32,
+    "sequence_head_width": 32,
+    "sequence_state_dim": 1024,
+    "structure_module": {
+     "dropout_rate": 0.1,
+     "epsilon": 1e-08,
+     "inf": 100000.0,
+     "ipa_dim": 16,
+     "num_angles": 7,
+     "num_blocks": 8,
+     "num_heads_ipa": 12,
+     "num_qk_points": 4,
+     "num_resnet_blocks": 2,
+     "num_transition_layers": 1,
+     "num_v_points": 8,
+     "pairwise_dim": 128,
+     "resnet_dim": 128,
+     "sequence_dim": 384,
+     "trans_scale_factor": 10
+    }
+   },
+   "use_esm_attn_map": false
+  },
+  "hidden_act": "gelu",
+  "hidden_dropout_prob": 0.0,
+  "hidden_size": 2560,
+  "initializer_range": 0.02,
+  "intermediate_size": 10240,
+  "is_folding_model": true,
+  "layer_norm_eps": 1e-05,
+  "mask_token_id": 32,
+  "max_position_embeddings": 1026,
+  "model_type": "esm",
+  "num_attention_heads": 40,
+  "num_hidden_layers": 36,
+  "pad_token_id": 1,
+  "position_embedding_type": "rotary",
+  "token_dropout": true,
+  "torch_dtype": "float32",
+  "transformers_version": "4.25.0.dev0",
+  "use_cache": true,
+  "vocab_list": [
+   "<cls>",
+   "<pad>",
+   "<eos>",
+   "<unk>",
+   "L",
+   "A",
+   "G",
+   "V",
+   "S",
+   "E",
+   "R",
+   "T",
+   "I",
+   "D",
+   "P",
+   "K",
+   "Q",
+   "N",
+   "F",
+   "Y",
+   "M",
+   "H",
+   "W",
+   "C",
+   "X",
+   "B",
+   "U",
+   "Z",
+   "O",
+   ".",
+   "-",
+   "<null_1>",
+   "<mask>"
+  ],
+  "vocab_size": 33
+ },
+ "domain": "protein",
+ "fetched": "2026-10-09",
+ "n_tensors": 4535,
+ "params_llm": 3527665186,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "repo": "facebook/esmfold_v1",
+ "roles": {
+  "attn": {
+   "fp16": {
+    "bytes": 1888545024,
+    "params": 944272512
+   }
+  },
+  "buffer": {
+   "i64": {
+    "bytes": 8384,
+    "params": 0
+   }
+  },
+  "embed": {
+   "fp16": {
+    "bytes": 5800960,
+    "params": 2900480
+   }
+  },
+  "mlp": {
+   "fp16": {
+    "bytes": 3775795200,
+    "params": 1887897600
+   }
+  },
+  "pair": {
+   "fp32": {
+    "bytes": 2770378376,
+    "params": 692594594
+   }
+  }
+ },
+ "shapes": {
+  "af2_to_esm": [
+   22
+  ],
+  "distogram_head.bias": [
+   64
+  ],
+  "distogram_head.weight": [
+   64,
+   128
+  ],
+  "embedding.weight": [
+   23,
+   1024
+  ],
+  "esm.embeddings.position_embeddings.weight": [
+   1026,
+   2560
+  ],
+  "esm.embeddings.position_ids": [
+   1,
+   1026
+  ],
+  "esm.embeddings.word_embeddings.weight": [
+   33,
+   2560
+  ],
+  "esm.encoder.emb_layer_norm_after.bias": [
+   2560
+  ],
+  "esm.encoder.emb_layer_norm_after.weight": [
+   2560
+  ],
+  "esm.encoder.layer.0.LayerNorm.bias": [
+   2560
+  ],
+  "esm.encoder.layer.0.LayerNorm.weight": [
+   2560
+  ],
+  "esm.encoder.layer.0.attention.LayerNorm.bias": [
+   2560
+  ],
+  "esm.encoder.layer.0.attention.LayerNorm.weight": [
+   2560
+  ],
+  "esm.encoder.layer.0.attention.output.dense.bias": [
+   2560
+  ],
+  "esm.encoder.layer.0.attention.output.dense.weight": [
+   2560,
+   2560
+  ],
+  "esm.encoder.layer.0.attention.self.key.bias": [
+   2560
+  ],
+  "esm.encoder.layer.0.attention.self.key.weight": [
+   2560,
+   2560
+  ],
+  "esm.encoder.layer.0.attention.self.query.bias": [
+   2560
+  ],
+  "esm.encoder.layer.0.attention.self.query.weight": [
+   2560,
+   2560
+  ],
+  "esm.encoder.layer.0.attention.self.rotary_embeddings.inv_freq": [
+   32
+  ],
+  "esm.encoder.layer.0.attention.self.value.bias": [
+   2560
+  ],
+  "esm.encoder.layer.0.attention.self.value.weight": [
+   2560,
+   2560
+  ],
+  "esm.encoder.layer.0.intermediate.dense.bias": [
+   10240
+  ],
+  "esm.encoder.layer.0.intermediate.dense.weight": [
+   10240,
+   2560
+  ],
+  "esm.encoder.layer.0.output.dense.bias": [
+   2560
+  ],
+  "esm.encoder.layer.0.output.dense.weight": [
+   2560,
+   10240
+  ],
+  "esm.encoder.layer.35.LayerNorm.bias": [
+   2560
+  ],
+  "esm.encoder.layer.35.LayerNorm.weight": [
+   2560
+  ],
+  "esm.encoder.layer.35.attention.LayerNorm.bias": [
+   2560
+  ],
+  "esm.encoder.layer.35.attention.LayerNorm.weight": [
+   2560
+  ],
+  "esm.encoder.layer.35.attention.output.dense.bias": [
+   2560
+  ],
+  "esm.encoder.layer.35.attention.output.dense.weight": [
+   2560,
+   2560
+  ],
+  "esm.encoder.layer.35.attention.self.key.bias": [
+   2560
+  ],
+  "esm.encoder.layer.35.attention.self.key.weight": [
+   2560,
+   2560
+  ],
+  "esm.encoder.layer.35.attention.self.query.bias": [
+   2560
+  ],
+  "esm.encoder.layer.35.attention.self.query.weight": [
+   2560,
+   2560
+  ],
+  "esm.encoder.layer.35.attention.self.rotary_embeddings.inv_freq": [
+   32
+  ],
+  "esm.encoder.layer.35.attention.self.value.bias": [
+   2560
+  ],
+  "esm.encoder.layer.35.attention.self.value.weight": [
+   2560,
+   2560
+  ],
+  "esm.encoder.layer.35.intermediate.dense.bias": [
+   10240
+  ],
+  "esm.encoder.layer.35.intermediate.dense.weight": [
+   10240,
+   2560
+  ],
+  "esm.encoder.layer.35.output.dense.bias": [
+   2560
+  ],
+  "esm.encoder.layer.35.output.dense.weight": [
+   2560,
+   10240
+  ],
+  "esm_s_combine": [
+   37
+  ],
+  "esm_s_mlp.0.bias": [
+   2560
+  ],
+  "esm_s_mlp.0.weight": [
+   2560
+  ],
+  "esm_s_mlp.1.bias": [
+   1024
+  ],
+  "esm_s_mlp.1.weight": [
+   1024,
+   2560
+  ],
+  "esm_s_mlp.3.bias": [
+   1024
+  ],
+  "esm_s_mlp.3.weight": [
+   1024,
+   1024
+  ],
+  "lddt_head.0.bias": [
+   384
+  ],
+  "lddt_head.0.weight": [
+   384
+  ],
+  "lddt_head.1.bias": [
+   128
+  ],
+  "lddt_head.1.weight": [
+   128,
+   384
+  ],
+  "lddt_head.2.bias": [
+   128
+  ],
+  "lddt_head.2.weight": [
+   128,
+   128
+  ],
+  "lddt_head.3.bias": [
+   1850
+  ],
+  "lddt_head.3.weight": [
+   1850,
+   128
+  ],
+  "lm_head.bias": [
+   23
+  ],
+  "lm_head.weight": [
+   23,
+   1024
+  ],
+  "ptm_head.bias": [
+   64
+  ],
+  "ptm_head.weight": [
+   64,
+   128
+  ],
+  "trunk.blocks.0.layernorm_1.bias": [
+   1024
+  ],
+  "trunk.blocks.0.layernorm_1.weight": [
+   1024
+  ],
+  "trunk.blocks.0.mlp_pair.mlp.0.bias": [
+   128
+  ],
+  "trunk.blocks.0.mlp_pair.mlp.0.weight": [
+   128
+  ],
+  "trunk.blocks.0.mlp_pair.mlp.1.bias": [
+   512
+  ],
+  "trunk.blocks.0.mlp_pair.mlp.1.weight": [
+   512,
+   128
+  ],
+  "trunk.blocks.0.mlp_pair.mlp.3.bias": [
+   128
+  ],
+  "trunk.blocks.0.mlp_pair.mlp.3.weight": [
+   128,
+   512
+  ],
+  "trunk.blocks.0.mlp_seq.mlp.0.bias": [
+   1024
+  ],
+  "trunk.blocks.0.mlp_seq.mlp.0.weight": [
+   1024
+  ],
+  "trunk.blocks.0.mlp_seq.mlp.1.bias": [
+   4096
+  ],
+  "trunk.blocks.0.mlp_seq.mlp.1.weight": [
+   4096,
+   1024
+  ],
+  "trunk.blocks.0.mlp_seq.mlp.3.bias": [
+   1024
+  ],
+  "trunk.blocks.0.mlp_seq.mlp.3.weight": [
+   1024,
+   4096
+  ],
+  "trunk.blocks.0.pair_to_sequence.layernorm.bias": [
+   128
+  ],
+  "trunk.blocks.0.pair_to_sequence.layernorm.weight": [
+   128
+  ],
+  "trunk.blocks.0.pair_to_sequence.linear.weight": [
+   32,
+   128
+  ],
+  "trunk.blocks.0.seq_attention.g_proj.bias": [
+   1024
+  ],
+  "trunk.blocks.0.seq_attention.g_proj.weight": [
+   1024,
+   1024
+  ],
+  "trunk.blocks.0.seq_attention.o_proj.bias": [
+   1024
+  ],
+  "trunk.blocks.0.seq_attention.o_proj.weight": [
+   1024,
+   1024
+  ],
+  "trunk.blocks.0.seq_attention.proj.weight": [
+   3072,
+   1024
+  ],
+  "trunk.blocks.0.sequence_to_pair.layernorm.bias": [
+   1024
+  ],
+  "trunk.blocks.0.sequence_to_pair.layernorm.weight": [
+   1024
+  ],
+  "trunk.blocks.0.sequence_to_pair.o_proj.bias": [
+   128
+  ],
+  "trunk.blocks.0.sequence_to_pair.o_proj.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.sequence_to_pair.proj.bias": [
+   128
+  ],
+  "trunk.blocks.0.sequence_to_pair.proj.weight": [
+   128,
+   1024
+  ],
+  "trunk.blocks.0.tri_att_end.layer_norm.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_att_end.layer_norm.weight": [
+   128
+  ],
+  "trunk.blocks.0.tri_att_end.linear.weight": [
+   4,
+   128
+  ],
+  "trunk.blocks.0.tri_att_end.mha.linear_g.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_att_end.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_att_end.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_att_end.mha.linear_o.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_att_end.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_att_end.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_att_end.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_att_start.layer_norm.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_att_start.layer_norm.weight": [
+   128
+  ],
+  "trunk.blocks.0.tri_att_start.linear.weight": [
+   4,
+   128
+  ],
+  "trunk.blocks.0.tri_att_start.mha.linear_g.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_att_start.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_att_start.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_att_start.mha.linear_o.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_att_start.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_att_start.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_att_start.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.layer_norm_in.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.layer_norm_in.weight": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.layer_norm_out.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.layer_norm_out.weight": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_a_g.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_a_p.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_b_g.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_b_p.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_g.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_z.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_in.linear_z.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.layer_norm_in.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.layer_norm_in.weight": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.layer_norm_out.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.layer_norm_out.weight": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_a_g.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_a_p.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_b_g.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_b_p.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_g.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_z.bias": [
+   128
+  ],
+  "trunk.blocks.0.tri_mul_out.linear_z.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.layernorm_1.bias": [
+   1024
+  ],
+  "trunk.blocks.47.layernorm_1.weight": [
+   1024
+  ],
+  "trunk.blocks.47.mlp_pair.mlp.0.bias": [
+   128
+  ],
+  "trunk.blocks.47.mlp_pair.mlp.0.weight": [
+   128
+  ],
+  "trunk.blocks.47.mlp_pair.mlp.1.bias": [
+   512
+  ],
+  "trunk.blocks.47.mlp_pair.mlp.1.weight": [
+   512,
+   128
+  ],
+  "trunk.blocks.47.mlp_pair.mlp.3.bias": [
+   128
+  ],
+  "trunk.blocks.47.mlp_pair.mlp.3.weight": [
+   128,
+   512
+  ],
+  "trunk.blocks.47.mlp_seq.mlp.0.bias": [
+   1024
+  ],
+  "trunk.blocks.47.mlp_seq.mlp.0.weight": [
+   1024
+  ],
+  "trunk.blocks.47.mlp_seq.mlp.1.bias": [
+   4096
+  ],
+  "trunk.blocks.47.mlp_seq.mlp.1.weight": [
+   4096,
+   1024
+  ],
+  "trunk.blocks.47.mlp_seq.mlp.3.bias": [
+   1024
+  ],
+  "trunk.blocks.47.mlp_seq.mlp.3.weight": [
+   1024,
+   4096
+  ],
+  "trunk.blocks.47.pair_to_sequence.layernorm.bias": [
+   128
+  ],
+  "trunk.blocks.47.pair_to_sequence.layernorm.weight": [
+   128
+  ],
+  "trunk.blocks.47.pair_to_sequence.linear.weight": [
+   32,
+   128
+  ],
+  "trunk.blocks.47.seq_attention.g_proj.bias": [
+   1024
+  ],
+  "trunk.blocks.47.seq_attention.g_proj.weight": [
+   1024,
+   1024
+  ],
+  "trunk.blocks.47.seq_attention.o_proj.bias": [
+   1024
+  ],
+  "trunk.blocks.47.seq_attention.o_proj.weight": [
+   1024,
+   1024
+  ],
+  "trunk.blocks.47.seq_attention.proj.weight": [
+   3072,
+   1024
+  ],
+  "trunk.blocks.47.sequence_to_pair.layernorm.bias": [
+   1024
+  ],
+  "trunk.blocks.47.sequence_to_pair.layernorm.weight": [
+   1024
+  ],
+  "trunk.blocks.47.sequence_to_pair.o_proj.bias": [
+   128
+  ],
+  "trunk.blocks.47.sequence_to_pair.o_proj.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.sequence_to_pair.proj.bias": [
+   128
+  ],
+  "trunk.blocks.47.sequence_to_pair.proj.weight": [
+   128,
+   1024
+  ],
+  "trunk.blocks.47.tri_att_end.layer_norm.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_att_end.layer_norm.weight": [
+   128
+  ],
+  "trunk.blocks.47.tri_att_end.linear.weight": [
+   4,
+   128
+  ],
+  "trunk.blocks.47.tri_att_end.mha.linear_g.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_att_end.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_att_end.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_att_end.mha.linear_o.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_att_end.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_att_end.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_att_end.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_att_start.layer_norm.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_att_start.layer_norm.weight": [
+   128
+  ],
+  "trunk.blocks.47.tri_att_start.linear.weight": [
+   4,
+   128
+  ],
+  "trunk.blocks.47.tri_att_start.mha.linear_g.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_att_start.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_att_start.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_att_start.mha.linear_o.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_att_start.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_att_start.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_att_start.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.layer_norm_in.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.layer_norm_in.weight": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.layer_norm_out.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.layer_norm_out.weight": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_a_g.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_a_p.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_b_g.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_b_p.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_g.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_z.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_in.linear_z.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.layer_norm_in.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.layer_norm_in.weight": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.layer_norm_out.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.layer_norm_out.weight": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_a_g.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_a_p.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_b_g.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_b_p.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_g.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_g.weight": [
+   128,
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_z.bias": [
+   128
+  ],
+  "trunk.blocks.47.tri_mul_out.linear_z.weight": [
+   128,
+   128
+  ],
+  "trunk.pairwise_positional_embedding.embedding.weight": [
+   66,
+   128
+  ],
+  "trunk.recycle_disto.weight": [
+   15,
+   128
+  ],
+  "trunk.recycle_s_norm.bias": [
+   1024
+  ],
+  "trunk.recycle_s_norm.weight": [
+   1024
+  ],
+  "trunk.recycle_z_norm.bias": [
+   128
+  ],
+  "trunk.recycle_z_norm.weight": [
+   128
+  ],
+  "trunk.structure_module.angle_resnet.layers.0.linear_1.bias": [
+   128
+  ],
+  "trunk.structure_module.angle_resnet.layers.0.linear_1.weight": [
+   128,
+   128
+  ],
+  "trunk.structure_module.angle_resnet.layers.0.linear_2.bias": [
+   128
+  ],
+  "trunk.structure_module.angle_resnet.layers.0.linear_2.weight": [
+   128,
+   128
+  ],
+  "trunk.structure_module.angle_resnet.layers.1.linear_1.bias": [
+   128
+  ],
+  "trunk.structure_module.angle_resnet.layers.1.linear_1.weight": [
+   128,
+   128
+  ],
+  "trunk.structure_module.angle_resnet.layers.1.linear_2.bias": [
+   128
+  ],
+  "trunk.structure_module.angle_resnet.layers.1.linear_2.weight": [
+   128,
+   128
+  ],
+  "trunk.structure_module.angle_resnet.linear_in.bias": [
+   128
+  ],
+  "trunk.structure_module.angle_resnet.linear_in.weight": [
+   128,
+   384
+  ],
+  "trunk.structure_module.angle_resnet.linear_initial.bias": [
+   128
+  ],
+  "trunk.structure_module.angle_resnet.linear_initial.weight": [
+   128,
+   384
+  ],
+  "trunk.structure_module.angle_resnet.linear_out.bias": [
+   14
+  ],
+  "trunk.structure_module.angle_resnet.linear_out.weight": [
+   14,
+   128
+  ],
+  "trunk.structure_module.bb_update.linear.bias": [
+   6
+  ],
+  "trunk.structure_module.bb_update.linear.weight": [
+   6,
+   384
+  ],
+  "trunk.structure_module.ipa.head_weights": [
+   12
+  ],
+  "trunk.structure_module.ipa.linear_b.bias": [
+   12
+  ],
+  "trunk.structure_module.ipa.linear_b.weight": [
+   12,
+   128
+  ],
+  "trunk.structure_module.ipa.linear_kv.bias": [
+   384
+  ],
+  "trunk.structure_module.ipa.linear_kv.weight": [
+   384,
+   384
+  ],
+  "trunk.structure_module.ipa.linear_kv_points.bias": [
+   432
+  ],
+  "trunk.structure_module.ipa.linear_kv_points.weight": [
+   432,
+   384
+  ],
+  "trunk.structure_module.ipa.linear_out.bias": [
+   384
+  ],
+  "trunk.structure_module.ipa.linear_out.weight": [
+   384,
+   2112
+  ],
+  "trunk.structure_module.ipa.linear_q.bias": [
+   192
+  ],
+  "trunk.structure_module.ipa.linear_q.weight": [
+   192,
+   384
+  ],
+  "trunk.structure_module.ipa.linear_q_points.bias": [
+   144
+  ],
+  "trunk.structure_module.ipa.linear_q_points.weight": [
+   144,
+   384
+  ],
+  "trunk.structure_module.layer_norm_ipa.bias": [
+   384
+  ],
+  "trunk.structure_module.layer_norm_ipa.weight": [
+   384
+  ],
+  "trunk.structure_module.layer_norm_s.bias": [
+   384
+  ],
+  "trunk.structure_module.layer_norm_s.weight": [
+   384
+  ],
+  "trunk.structure_module.layer_norm_z.bias": [
+   128
+  ],
+  "trunk.structure_module.layer_norm_z.weight": [
+   128
+  ],
+  "trunk.structure_module.linear_in.bias": [
+   384
+  ],
+  "trunk.structure_module.linear_in.weight": [
+   384,
+   384
+  ],
+  "trunk.structure_module.transition.layer_norm.bias": [
+   384
+  ],
+  "trunk.structure_module.transition.layer_norm.weight": [
+   384
+  ],
+  "trunk.structure_module.transition.layers.0.linear_1.bias": [
+   384
+  ],
+  "trunk.structure_module.transition.layers.0.linear_1.weight": [
+   384,
+   384
+  ],
+  "trunk.structure_module.transition.layers.0.linear_2.bias": [
+   384
+  ],
+  "trunk.structure_module.transition.layers.0.linear_2.weight": [
+   384,
+   384
+  ],
+  "trunk.structure_module.transition.layers.0.linear_3.bias": [
+   384
+  ],
+  "trunk.structure_module.transition.layers.0.linear_3.weight": [
+   384,
+   384
+  ],
+  "trunk.trunk2sm_s.bias": [
+   384
+  ],
+  "trunk.trunk2sm_s.weight": [
+   384,
+   1024
+  ],
+  "trunk.trunk2sm_z.bias": [
+   128
+  ],
+  "trunk.trunk2sm_z.weight": [
+   128,
+   128
+  ]
+ },
+ "source": {
+  "file_bytes": 8442062570,
+  "format": "pytorch zip checkpoint (data.pkl only, read with HTTP range requests; no weights downloaded)",
+  "url": "https://huggingface.co/facebook/esmfold_v1/resolve/main/pytorch_model.bin"
+ },
+ "stacks": {
+  "esm.encoder.layer": 36,
+  "trunk.blocks": 48,
+  "trunk.structure_module.angle_resnet.layers": 2,
+  "trunk.structure_module.transition.layers": 1
+ }
+}

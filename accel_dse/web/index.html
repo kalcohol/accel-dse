@@ -79,14 +79,14 @@
     </div>
     <div class="row5" id="layout-row">
       <label>PP<input type="number" id="l-pp" min="1" step="1"></label>
-      <label>TP<input type="number" id="l-tp" min="1" step="1"></label>
+      <label class="tp-in">TP<input type="number" id="l-tp" min="1" step="1"></label>
       <label class="dp-in">DP<input type="number" id="l-dp" min="1" step="1"></label>
       <label class="moe-only">EP<input type="number" id="l-ep" min="1" step="1"></label>
       <label class="moe-only">ETP<input type="number" id="l-etp" min="1" step="1"></label>
-      <label class="full-only" title="Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all（每 rank 算 heads/SP 个头的完整序列）">SP<input type="number" id="l-sp" min="1" step="1"></label>
+      <label class="full-only sp-in" title="Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all（每 rank 算 heads/SP 个头的完整序列）">SP<input type="number" id="l-sp" min="1" step="1"></label>
     </div>
     <div class="small muted moe-only">MoE 约束 EP·ETP = TP·DP（注意力按 TP、DP 切分，专家按 EP、ETP 切分）；修改时自动补齐 ETP。</div>
-    <div class="small muted full-only">视频 / 蛋白质：卡数 = PP·TP·DP·SP。DP 切分前向 batch（视频含 CFG 的 cond / uncond 两路 = CFG 并行）；SP = Ulysses 序列并行，权重在 SP 组内复制。</div>
+    <div class="small muted full-only">视频 / 蛋白质：卡数 = PP·TP·DP·SP。DP 切分前向 batch（视频含 CFG 的 cond / uncond 两路 = CFG 并行）；SP = Ulysses 序列并行，权重在 SP 组内复制。蛋白质结构模型只取 PP × DP（pair 表示的 DAP 切分未建模）。</div>
     <button class="btn ghost sm" id="best-layout">搜索当前卡数的最优布局并应用</button>
     <div class="row2">
       <label>链路 GB/s <span class="tag assume">假设</span><input type="number" id="k-GBps" step="50" min="1"></label>
@@ -106,7 +106,14 @@
     </div>
     <div class="row3 protein-only">
       <label>序列长度（残基）<input type="number" id="w-seq_len" min="1" max="65536" step="64"></label>
-      <label>批延迟 SLO ms <span class="tag assume">假设</span><input type="number" id="w-seq_slo_ms" min="1" step="50"></label>
+      <label class="seq-slo">批延迟 SLO ms <span class="tag assume">假设</span><input type="number" id="w-seq_slo_ms" min="1" step="50"></label>
+      <label class="pair-only">批延迟 SLO s <span class="tag assume">假设</span><input type="number" id="w-fold_slo_s" min="1" step="10"></label>
+    </div>
+    <div class="row3 pair-only">
+      <label title="MSA 行数（AF2 / OpenFold 为 MSA 聚类行；无聚类 MSA 的模型为 extra MSA 行）；单序列模型无此项">MSA 行数<input type="number" id="w-msa" min="1" max="65536" step="64"></label>
+      <label title="主干（trunk）前向遍数，含第一遍：recycle 次数 + 1">主干遍数<input type="number" id="w-recycles" min="1" max="64" step="1"></label>
+      <label class="diff-only" title="扩散模块去噪步数（每步扩散 transformer 一次前向）">扩散步数<input type="number" id="w-psteps" min="1" max="1000" step="10"></label>
+      <label class="diff-only" title="每条序列采样的结构数（扩散 + 置信度头按样本数成倍；pair 条件共享）">扩散样本数<input type="number" id="w-samples" min="1" max="64" step="1"></label>
     </div>
     <div class="small muted" id="wl-note"></div>
   </section>

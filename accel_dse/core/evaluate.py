@@ -12,7 +12,8 @@ from .catalog import get_model
 from .dtypes import fmt as _fmt
 from .hardware import System
 from .domain import ResolvedWorkload, resolve_workload
-from .ir import Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, full_io_ops, head_ops, mtp_ops
+from .ir import (Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, full_io_ops, head_ops, layer_repeat,
+                 mtp_ops)
 from .mapping import gemm_cost, vector_seconds
 from .memo import layer_groups, model_cache
 from .memplan import MemPlan, act_stream, plan, stage_storage, step_dram_bytes, touched
@@ -64,8 +65,13 @@ class Result:
         if self.model.domain == "gen":
             return self.latency <= w.clip_slo_s
         if self.model.domain == "protein":
-            return self.latency * 1e3 <= w.seq_slo_ms
+            return self.latency * 1e3 <= self._seq_slo_ms
         return self.tpot * 1e3 <= sv.tpot_slo_ms
+
+    @property
+    def _seq_slo_ms(self) -> float:
+        w = self.scenario.workload
+        return w.fold_slo_s * 1e3 if self.model.is_pair else w.seq_slo_ms
 
     def domain_summary(self) -> dict:
         """Domain KPIs of a non-autoregressive model (empty for LLMs)."""
@@ -87,7 +93,7 @@ class Result:
                      slo_s=self.scenario.workload.clip_slo_s)
         else:
             d.update(batch_ms=self.latency * 1e3, seq_per_s_card=self.per_card,
-                     residues_per_s_card=self.per_card * w.info["seq_len"], slo_ms=self.scenario.workload.seq_slo_ms)
+                     residues_per_s_card=self.per_card * w.info["seq_len"], slo_ms=self._seq_slo_ms)
         return d
 
     def summary(self) -> dict:
@@ -174,7 +180,8 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
             a, wx = act_stream(o, _fmt(model.act_fmt).bytes, sys.chip.sram_bytes)
             d["act"] += a; d["w_extra"] += wx
             ab = _fmt(model.act_fmt).bytes
-            tot = (o.m * o.k + o.m * o.n) * o.count * ab if o.kind == "gemm" else 2.0 * o.count * (o.m + o.n) * o.k * ab
+            tot = ((o.m * o.k + o.m * o.n) * o.count * ab if o.kind == "gemm" else o.act_bytes if o.bmm
+                   else 2.0 * o.count * (o.m + o.n) * o.k * ab)
             d["max_act_tot"] = max(d["max_act_tot"], tot)
     for k, v in touched(ops).items():
         d[k] += v
@@ -199,9 +206,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         m = wi[key]
     sv, lay = scn.serving, scn.layout
     warnings: list[str] = []
-    if not lay.valid_for(m.is_moe, full=not m.kv_cache):
+    if not lay.valid_for(m.is_moe, full=not m.kv_cache, pair=m.is_pair):
         raise ValueError(f"layout {lay.label} invalid for {'MoE' if m.is_moe else 'dense'} model "
-                         + ("(video / protein models: ep = etp = 1)" if not m.kv_cache else
+                         + ("(structure models: tp = sp = 1, pair-stack DAP not modelled; use DP / PP)" if m.is_pair else
+                            "(video / protein models: ep = etp = 1)" if not m.kv_cache else
                             "(MoE needs ep·etp = tp·dp; dense needs dp=ep=etp=1; sp only for video / protein models)"))
     if lay.pp > m.n_layers:
         raise ValueError("pp exceeds layer count")
@@ -309,7 +317,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     seqs = sv.batch * wl.seqs_per_request
     pp = lay.pp
     mb = max(1, min(sv.microbatches or min(pp, seqs), seqs))
-    ph = Phase("full", _cdiv(seqs, mb), wl.tokens, wl.ctx, frames=wl.frames, aux=wl.aux)
+    ph = Phase("full", _cdiv(seqs, mb), wl.tokens, wl.ctx, frames=wl.frames, aux=wl.aux, pair=wl.pair)
     sh = lay.shard
     ab = _fmt(m.act_fmt).bytes
     groups = layer_groups(m)
@@ -319,6 +327,10 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         ops_memo.clear()
     stages = []
     resid = _cdiv(seqs, lay.dp) * _cdiv(wl.tokens, lay.sp) * m.hidden * ab   # residual streams of in-flight sequences
+    pair_act = 0.0
+    if wl.pair is not None:      # structure models: the pair representation N²·c_z rides along with the single track
+        pair_act = wl.pair.n ** 2 * m.workload.pair_dim * ab
+        resid += _cdiv(seqs, lay.dp) * pair_act
     for st in plan_stages(m.n_layers, pp):
         agg = dict.fromkeys(_SUM_KEYS, 0.0)
         if st.has_embed:
@@ -333,7 +345,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             hit = ops_memo.get(okey)
             if hit is None:
                 hit = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
-            _acc(agg, hit, n)
+            _acc(agg, hit, n * layer_repeat(m.layers[li], ph))
         if st.has_head:
             _acc(agg, _sum_ops(full_io_ops(m, ph, sh, "post"), sys, scn.mapping, m))
         skey = (st.first, st.last, st.has_embed, st.has_head, sh, 0, 0)
@@ -345,7 +357,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         dram = step_dram_bytes(mp, store, agg)
         link_bw, sync, link_bytes = agg["link_bw"], agg["sync"], agg["link_bytes"]
         if pp > 1 and not st.has_head:
-            act = ph.batch * _cdiv(ph.q, lay.sp) * m.hidden * ab / lay.dp
+            act = ph.batch * (_cdiv(ph.q, lay.sp) * m.hidden * ab + pair_act) / lay.dp
             bw, a = collective_seconds("p2p", act, 2, sys.link)
             link_bw += bw; sync += a; link_bytes += act
         t_dram = dram["total"] / (sys.dram_GBps * 1e9)

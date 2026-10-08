@@ -21,7 +21,7 @@ from pathlib import Path
 from .evaluate import evaluate
 from .hardware import CHIP_100T, CHIP_H100_LIKE, Link
 from .parallel import Layout
-from .scenario import Scenario, Serving
+from .scenario import Scenario, Serving, Workload
 
 H100_MEM = "hbm3_5s_8h16g_5200"
 LPDDR_191 = "lpddr5x_4x64_8533_16g"
@@ -83,7 +83,21 @@ def v2_domain() -> list[dict]:
     return [{"check": "Wan2.1-1.3B 480P DiT FLOP/clip ÷ 240 s ÷ RTX 4090 165 TFLOPS", "value": eff, "lo": 0.4,
              "hi": 1.0, "unit": "×", "ok": 0.4 <= eff <= 1.0,
              "note": f"{flops / 1e15:.1f} PFLOP per clip (50 steps × CFG 2 × 32,760 tokens); README: ~4 min on a 4090"},
-            _opensora_row()]
+            _opensora_row(), _esmfold_row()]
+
+
+def _esmfold_row() -> dict:
+    """0.43: ESMFold paper (Lin et al., Science 2023 / bioRxiv 2022.07.20.500902): "On a single NVIDIA V100 GPU, ESMFold
+    makes a prediction on a protein with 384 residues in 14.2 seconds".  The folding trunk (≈96 % of the FLOPs) runs
+    in fp32 in the reference implementation (ESM-2 in fp16), so the denominator is the V100 SXM2 fp32 peak 15.7
+    TFLOPS.  Guards the pair-representation op model (triangle multiplication / attention N³ terms, recycles)."""
+    r = evaluate(Scenario(model="esmfold", mem_id=HBM_6600, workload=Workload(seq_len=384)))
+    flops = r.domain_summary()["tflop_per_request"] * 1e12
+    eff = flops / 14.2 / 15.7e12
+    return {"check": "ESMFold 384 残基 FLOP/request ÷ 14.2 s ÷ V100 fp32 15.7 TFLOPS", "value": eff, "lo": 0.05,
+            "hi": 0.8, "unit": "×", "ok": 0.05 <= eff <= 0.8,
+            "note": f"{flops / 1e12:.1f} TFLOP per request (ESM-2 3B + 48 折叠块 × 5 次主干前向 + 结构模块); "
+                    "论文：单 V100 14.2 s（主干 fp32）"}
 
 
 def _opensora_row() -> dict:

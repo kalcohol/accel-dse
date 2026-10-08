@@ -175,12 +175,12 @@ function vendorGroups(rows) {
   return groups;
 }
 const OFF_DOMAIN = { gen: '视频生成', protein: '蛋白质' };
-const offBadge = (o) => h('span', { class: 'badge off', title: (OFF_DOMAIN[o.domain] || o.domain_label) + '模型在 core v2 中暂未接入，只列在目录中，不能评估' }, o.status);
+const offBadge = (o) => h('span', { class: 'badge off', title: (OFF_DOMAIN[o.domain] || o.domain_label) + '模型在 core v2 中暂未接入，只列在目录中，不能评估' + (o.reason ? '：' + o.reason : '') }, o.status);
 function fillModels() {
   const sel = $('model');
   put(sel, ...vendorGroups(catalogRows()).map((g) => h('optgroup', { label: g.label }, g.items.map((m) => m.evaluable
     ? h('option', { value: m.id, title: coverTip(m) }, `${m.label}${m.domain === 'vlm' ? '（VLM）' : DOMAIN_ZH[m.domain] ? `（${DOMAIN_ZH[m.domain]}）` : ''}　· ${COVER_ZH[m.coverage]}`)
-    : h('option', { value: m.id, disabled: true, title: '暂未接入 v2，不能评估' }, `${m.label}　· ${OFF_DOMAIN[m.domain]} · ${m.status}`)))));
+    : h('option', { value: m.id, disabled: true, title: '暂未接入 v2，不能评估' + (m.reason ? '：' + m.reason : '') }, `${m.label}　· ${OFF_DOMAIN[m.domain]} · ${m.status}`)))));
   sel.value = S.sc.model;
   sel.addEventListener('change', () => { setModel(sel.value); schedule(); });
 }
@@ -203,7 +203,7 @@ function setModel(id) {
     const k = S.kindMem[kn] || (kn === 'full' ? { batch: 1, best: false } : { batch: 1, best: true });
     S.sc.serving.batch = k.batch; S.best = k.best; $('best-batch').checked = S.best;
   }
-  if (!was || !next || was.id !== next.id) S.sc.workload = { ...S.cat.defaults.workload, clip_slo_s: S.sc.workload.clip_slo_s, seq_slo_ms: S.sc.workload.seq_slo_ms };
+  if (!was || !next || was.id !== next.id) S.sc.workload = { ...S.cat.defaults.workload, clip_slo_s: S.sc.workload.clip_slo_s, seq_slo_ms: S.sc.workload.seq_slo_ms, fold_slo_s: S.sc.workload.fold_slo_s };
   S.sc.model = id;
   $('model').value = id;
   onModel();
@@ -215,6 +215,11 @@ function paintDomain(m) {
   document.querySelectorAll('.gen-only').forEach((e) => (e.hidden = m.domain !== 'gen'));
   document.querySelectorAll('.protein-only').forEach((e) => (e.hidden = m.domain !== 'protein'));
   document.querySelectorAll('.dp-in').forEach((e) => (e.hidden = !(m.is_moe || full)));
+  document.querySelectorAll('.pair-only').forEach((e) => (e.hidden = !m.is_pair));
+  document.querySelectorAll('.seq-slo').forEach((e) => (e.hidden = !!m.is_pair));
+  document.querySelectorAll('.diff-only').forEach((e) => (e.hidden = !(m.is_pair && m.workload && m.workload.diff_steps)));
+  document.querySelectorAll('.tp-in').forEach((e) => (e.hidden = !!m.is_pair));   // structure models: PP × DP only
+  document.querySelectorAll('.sp-in').forEach((e) => (e.hidden = !full || !!m.is_pair));
   if (full) {
     if (S.cmpObj === 'goodput') { S.cmpObj = 'decode'; paintSeg('cmp-obj', 'decode'); }
     if (S.layObj === 'goodput') { S.layObj = 'decode'; paintSeg('lay-obj', 'decode'); }
@@ -226,15 +231,24 @@ function paintDomain(m) {
     : m.domain === 'protein' ? '自动取满足批延迟 SLO 的最大 batch（最大化序列/s/卡）' : '自动取满足 TPOT SLO 的最大 batch';
   const w = m.workload;
   if (w) {
-    $('wl-kind').textContent = m.domain === 'gen' ? `视频 · 默认 ${w.width}×${w.height} · ${w.frames} 帧 · ${w.fps} fps · ${w.steps} 步 · CFG ${w.cfg}` : `蛋白质 · 默认 ${w.seq_len} 残基（训练上限 ${w.max_seq}）`;
-    for (const [k, v] of Object.entries({ frames: w.frames, height: w.height, width: w.width, steps: w.steps, cfg: w.cfg, seq_len: w.seq_len }))
+    $('wl-kind').textContent = m.domain === 'gen' ? `视频 · 默认 ${w.width}×${w.height} · ${w.frames} 帧 · ${w.fps} fps · ${w.steps} 步 · CFG ${w.cfg}`
+      : w.structure ? `蛋白质结构 · 默认 ${w.seq_len} 残基 · ${w.msa ? `MSA ${w.msa} 行` : w.xmsa ? `MSA ${w.xmsa} 行` : '单序列'} · 主干 ${w.recycles} 遍${w.diff_steps ? ` · 扩散 ${w.diff_steps} 步 × ${w.samples} 样本` : ''}`
+      : `蛋白质 · 默认 ${w.seq_len} 残基（训练上限 ${w.max_seq}）`;
+    for (const [k, v] of Object.entries({ frames: w.frames, height: w.height, width: w.width, steps: w.steps, cfg: w.cfg, seq_len: w.seq_len,
+      msa: w.msa || w.xmsa, recycles: w.recycles, psteps: w.diff_steps, samples: w.samples }))
       if ($('w-' + k)) $('w-' + k).placeholder = v ? `默认 ${v}` : '';
-    const fr = w.vae_frames === 'chunk17' ? `帧每 17 帧一块 → ${(16 / w.vae[0] | 0) + 1} 潜帧`
+    if ($('w-msa')) $('w-msa').disabled = !!w.structure && !w.msa && !w.xmsa;
+    const fr = m.domain !== 'gen' ? '' : w.vae_frames === 'chunk17' ? `帧每 17 帧一块 → ${(16 / w.vae[0] | 0) + 1} 潜帧`
       : w.vae_frames === 'h3' ? '帧补齐到 17n+5 → 5n+2 潜帧' : `帧 (F−1)/${w.vae[0]}+1`;
     $('wl-note').textContent = '留空 = 按发布默认（' + w.source + '）。' + (m.domain === 'gen'
       ? `token 数 = 潜空间网格（${fr}，像素 /${w.vae[1]}，patch ${w.patch.join('×')}）${w.joint_text ? ` + ${w.text_tokens} 个文本 token（联合注意力）` : `；文本 ${w.text_tokens} token 走跨注意力`}`
         + (w.audio_per_s ? ` + 音频 ${w.audio_per_s}/s × ${w.audio_channels} 声道 token（同一序列）` : '')
         + (w.attention === 'factorized' ? '；注意力按发布结构分解：空间块在潜帧内、时间块沿时间轴' : '；全 3D 注意力') + '。'
+      : w.structure ? `N 残基 → pair 表示 N² × ${w.pair_dim} 维（三角乘法 / 三角注意力 ∝ N³）`
+        + (w.msa || w.xmsa ? '；MSA 表示 行数 × N（行 / 列注意力、外积均值 ∝ 行数 · N²）' : '')
+        + (w.templates ? `；模板 ${w.templates} 个 × N² 网格` : '')
+        + (w.atoms_per_res ? `；原子 ≈ ${w.atoms_per_res} / 残基「假设」，局部窗口注意力` : '')
+        + '。只评估网络推理（MSA / 模板检索与特征化不在范围内）；布局只取 PP × DP（pair 的 DAP 切分未建模）。'
       : 'token 数 = 残基 + <cls>/<eos>。');
   }
 }
@@ -245,7 +259,7 @@ function onModel() {
   put($('model-badges'), ...badges(m, S.wiW || S.wiKV));
   put($('model-facts'), 
     h('span', {}, '参数 ', h('b', {}, num(m.params_B) + 'B')),
-    isFull(m) ? h('span', {}, '头 ', h('b', {}, m.heads)) : h('span', {}, '激活 ', h('b', {}, num(m.active_B) + 'B')),
+    m.is_pair ? h('span', {}, 'pair ', h('b', {}, m.workload.pair_dim + ' 维')) : isFull(m) ? h('span', {}, '头 ', h('b', {}, m.heads)) : h('span', {}, '激活 ', h('b', {}, num(m.active_B) + 'B')),
     h('span', {}, '层 ', h('b', {}, m.n_layers)),
     h('span', {}, m.arch),
     m.mtp_layers ? h('span', {}, `MTP ×${m.mtp_layers}`) : null,
@@ -257,7 +271,7 @@ function onModel() {
   $('model-notes-wrap').hidden = !m.notes.length;
   document.querySelectorAll('.moe-only').forEach((e) => (e.hidden = !m.is_moe));
   const L = S.sc.layout;
-  if (isFull(m)) { L.ep = 1; L.etp = 1; L.sp = L.sp || 1; }
+  if (isFull(m)) { L.ep = 1; L.etp = 1; L.sp = L.sp || 1; if (m.is_pair) { L.tp = 1; L.sp = 1; } }
   else { L.sp = 1; if (!m.is_moe) { L.dp = 1; L.ep = 1; L.etp = 1; } else fixMoe('tp'); }
   if (L.pp > m.n_layers) L.pp = 1;
   syncInputs();
@@ -275,11 +289,14 @@ function setCards(n) {
   // default fill for a new card count: all TP (MoE: experts spread with EP = TP); 「布局搜索」finds the best
   const L = S.sc.layout;
   L.pp = 1; L.tp = n; L.dp = 1; L.sp = 1;
+  if (model().is_pair) { L.tp = 1; L.dp = n; }   // structure models: PP × DP only (pair DAP not modelled)
   if (model().is_moe) { L.ep = n; L.etp = 1; } else { L.ep = 1; L.etp = 1; }
 }
 function cardsNote() {
   const L = S.sc.layout;
-  $('cards-note').textContent = `PP${L.pp} × TP${L.tp} × DP${L.dp}${isFull(model()) ? ` × SP${L.sp || 1}` : ''} = ${cards()} 卡；改卡数会按 TP 重新填充布局`;
+  const m = model();
+  $('cards-note').textContent = m.is_pair ? `PP${L.pp} × DP${L.dp} = ${cards()} 卡；结构模型只取 PP × DP（改卡数按 DP 填充）`
+    : `PP${L.pp} × TP${L.tp} × DP${L.dp}${isFull(m) ? ` × SP${L.sp || 1}` : ''} = ${cards()} 卡；改卡数会按 TP 重新填充布局`;
   const c = $('l-cards');
   if (c._sync && document.activeElement !== c) c._sync();
 }
@@ -477,7 +494,9 @@ function domainKpis(s, cap, auto) {
       `batch ${s.batch}${auto} × ${w.seq_len} 残基 · SLO ${num(g.slo_ms)} ms${over ? ' · 超出' : ''}`, over ? 'warn' : ''));
     k.push(kpi('吞吐 / 卡', num(g.seq_per_s_card) + ' 序列/s',
       `${num(g.residues_per_s_card)} 残基/s/卡 · ${s.cards} 卡 · ${s.layout}`));
-    k.push(kpi('每序列计算', num(g.tflop_per_request * 1e3) + ' GFLOP', `${w.tokens} token（含 <cls>/<eos>）· 单次编码器前向`));
+    k.push(w.recycles
+      ? kpi('每序列计算', num(g.tflop_per_request) + ' TFLOP', `${w.seq_len} 残基${w.msa ? ` · MSA ${num(w.msa)} 行` : ''}${w.xmsa ? ` · extra MSA ${num(w.xmsa)} 行` : ''} · 主干 ${w.recycles} 遍${w.diff_steps ? ` · 扩散 ${w.diff_steps} 步 × ${w.samples} 样本` : ''}`)
+      : kpi('每序列计算', num(g.tflop_per_request * 1e3) + ' GFLOP', `${w.tokens} token（含 <cls>/<eos>）· 单次编码器前向`));
   }
   k.push(boundKpi(s));
   k.push(memKpi(s, cap));
@@ -596,7 +615,7 @@ function scopeText() {
   const mi = S.memInfo;
   const w = S.sc.workload, mw = m.workload;
   const tail = m.domain === 'gen' ? `${w.width || mw.width}×${w.height || mw.height} · ${w.frames || mw.frames} 帧 · ${w.steps || mw.steps} 步 · 单段 SLO ${fmtDur(w.clip_slo_s)}`
-    : m.domain === 'protein' ? `${w.seq_len || mw.seq_len} 残基 · 批延迟 SLO ${w.seq_slo_ms} ms` : `ctx ${sv.ctx} · TPOT SLO ${sv.tpot_slo_ms} ms`;
+    : m.domain === 'protein' ? `${w.seq_len || mw.seq_len} 残基 · 批延迟 SLO ${m.is_pair ? w.fold_slo_s + ' s' : w.seq_slo_ms + ' ms'}` : `ctx ${sv.ctx} · TPOT SLO ${sv.tpot_slo_ms} ms`;
   return `场景：${m.label} · ${cards()} 卡 · 芯片 ${S.preset} · 存储器 ${mi ? `${mi.kind} ${num(mi.raw_GBps)} GB/s ${num(mi.capacity_GiB)} GiB` : S.sc.mem_id} · ${tail}（在左侧面板修改）`;
 }
 function paintScope() { $('cmp-scope').textContent = scopeText(); $('lay-scope').textContent = scopeText(); }
@@ -734,14 +753,19 @@ const SWEEP_ZH = {
   'chip.sram_mib': 'SRAM MiB', 'chip.sram_port_Bpc': 'SRAM 端口 B/cycle', 'chip.freq_ghz': '频率 GHz', 'chip.mac_eff': 'MAC 效率',
   'chip.gemv_macs': 'GEMV MAC/cycle', mem_eff: 'DRAM 效率', 'link.GBps': '链路 GB/s', 'link.alpha_us': '同步 α µs',
   'workload.frames': '帧数', 'workload.steps': '去噪步数', 'workload.height': '高 px', 'workload.width': '宽 px',
-  'workload.seq_len': '序列长度（残基）',
+  'workload.seq_len': '序列长度（残基）', 'workload.msa': 'MSA 行数', 'workload.recycles': '主干遍数',
+  'workload.samples': '扩散样本数',
 };
 const SWEEP_DOMAIN = { 'serving.ctx': 'llm', 'serving.prompt': 'llm', 'serving.spec_k': 'llm', 'workload.frames': 'gen',
-  'workload.steps': 'gen', 'workload.height': 'gen', 'workload.width': 'gen', 'workload.seq_len': 'protein' };
+  'workload.steps': 'gen', 'workload.height': 'gen', 'workload.width': 'gen', 'workload.seq_len': 'protein',
+  'workload.msa': 'pair', 'workload.recycles': 'pair', 'workload.samples': 'pair' };
 function fillSweepPaths() {
   const m = model(), d = isFull(m) ? m.domain : 'llm';
   const cur = $('sw-path').value;
-  const list = S.cat.sweep_paths.filter((p) => !SWEEP_DOMAIN[p] || SWEEP_DOMAIN[p] === d);
+  const list = S.cat.sweep_paths.filter((p) => !SWEEP_DOMAIN[p] || SWEEP_DOMAIN[p] === d
+    || (SWEEP_DOMAIN[p] === 'pair' && m.is_pair && (p !== 'workload.msa' || m.workload.msa || m.workload.xmsa)
+        && (p !== 'workload.samples' || m.workload.diff_steps))
+    || (p === 'workload.steps' && m.is_pair && m.workload.diff_steps));
   opts($('sw-path'), list.map((p) => [p, SWEEP_ZH[p] || p]), list.includes(cur) ? cur : 'serving.batch');
   if (!list.includes(cur)) $('sw-values').value = SWEEP_DEFAULT[$('sw-path').value] || '';
 }
@@ -752,6 +776,7 @@ const SWEEP_DEFAULT = {
   mem_eff: '0.5,0.6,0.7,0.8,0.9', 'link.GBps': '50,100,200,400,900', 'link.alpha_us': '0,1,3,5,10',
   'workload.frames': '17,33,49,81,121', 'workload.steps': '10,20,30,50', 'workload.height': '240,480,720',
   'workload.width': '416,832,1280', 'workload.seq_len': '128,256,512,1022,2048',
+  'workload.msa': '64,256,512,1024,4096', 'workload.recycles': '1,2,3,4,6', 'workload.samples': '1,5,10,25',
 };
 function line(points, { xl, yl, y2l, log }) {
   if (!points.length) return h('div', { class: 'empty' }, '无数据');
@@ -851,7 +876,7 @@ function renderModels() {
           h('td', { class: 'l' }, m.label.replace(/_/g, '_\u200b'), h('div', {}, h('span', { class: 'badge dom' }, OFF_DOMAIN[m.domain])),
             h('div', { class: 'small muted mono' }, m.hf_id || 'github: ' + m.source.replace(/^https:\/\/github\.com\//, '').split('/').slice(0, 2).join('/'))),
           famCell, h('td', { class: 'l' }, '—'), h('td', { class: 'l' }, offBadge(m)),
-          h('td', { class: 'wrap small muted' }, `${m.arch_detail}；${OFF_DOMAIN[m.domain]}模型在 core v2 中暂未接入，不能评估`),
+          h('td', { class: 'wrap small muted' }, `${m.arch_detail}；${OFF_DOMAIN[m.domain]}模型在 core v2 中暂未接入，不能评估${m.reason ? '：' + m.reason : ''}`),
           h('td', { class: 'l' }, '—'), h('td', {}, '—'), h('td', {}, '—'), h('td', {}, '—'), h('td', { class: 'l' }, m.arch)));
         continue;
       }
@@ -922,9 +947,10 @@ async function init() {
     bindNumber('l-' + k, () => S.sc.layout[k], (x) => { S.sc.layout[k] = x; AFTER.lastLayout = k; }, { int: true });
   }
   bindNumber('l-cards', cards, (x) => { setCards(x); for (const k of ['pp', 'tp', 'dp', 'ep', 'etp', 'sp']) $('l-' + k)._sync(); cardsNote(); }, { int: true });
-  for (const k of ['frames', 'height', 'width', 'steps', 'cfg', 'seq_len'])   // empty = release default (0)
+  for (const k of ['frames', 'height', 'width', 'steps', 'cfg', 'seq_len', 'msa', 'recycles', 'samples'])   // empty = release default (0)
     bindNumber('w-' + k, () => S.sc.workload[k] || null, (x) => (S.sc.workload[k] = x === null ? 0 : x), { int: true, nullable: true });
-  for (const k of ['clip_slo_s', 'seq_slo_ms']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
+  bindNumber('w-psteps', () => S.sc.workload.steps || null, (x) => (S.sc.workload.steps = x === null ? 0 : x), { int: true, nullable: true });
+  for (const k of ['clip_slo_s', 'seq_slo_ms', 'fold_slo_s']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
   $('best-layout').addEventListener('click', bestLayout);
   $('best-batch').checked = S.best;
   AFTER.layout = () => {

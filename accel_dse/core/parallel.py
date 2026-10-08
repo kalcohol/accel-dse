@@ -43,11 +43,12 @@ class Layout:
     def shard(self) -> Shard:
         return Shard(self.tp, self.dp, self.ep, self.etp, self.sp)
 
-    def valid_for(self, moe: bool, full: bool = False) -> bool:
+    def valid_for(self, moe: bool, full: bool = False, pair: bool = False) -> bool:
         """MoE LLM: ep·etp = tp·dp; dense LLM: dp = ep = etp = 1; both sp = 1.
-        Non-autoregressive (``full``, dense): ep = etp = 1, any dp / sp."""
+        Non-autoregressive (``full``, dense): ep = etp = 1, any dp / sp.
+        Structure models (``pair``, 0.43): tp = sp = 1 (pair-stack DAP not modelled), any dp / pp."""
         if full:
-            return self.ep == 1 and self.etp == 1
+            return self.ep == 1 and self.etp == 1 and (not pair or (self.tp == 1 and self.sp == 1))
         if self.sp != 1:
             return False
         if moe:
@@ -102,13 +103,16 @@ def _divisors(n: int) -> list[int]:
 
 
 def enumerate_layouts(cards: int, n_layers: int, moe: bool, *, max_tp: int | None = None,
-                      full: bool = False) -> list[Layout]:
+                      full: bool = False, pair: bool = False) -> list[Layout]:
     """All layouts that use exactly ``cards`` cards for one replica (``full``: PP·TP·DP·SP of a dense
-    non-autoregressive model)."""
+    non-autoregressive model; ``pair``: structure models, PP·DP only)."""
     out = []
     if full:
         for pp in _divisors(cards):
             if pp > n_layers:
+                continue
+            if pair:
+                out.append(Layout(pp, 1, cards // pp, 1, 1, 1))
                 continue
             for tp in _divisors(cards // pp):
                 if max_tp and tp > max_tp:

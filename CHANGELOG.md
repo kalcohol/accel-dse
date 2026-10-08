@@ -3,6 +3,25 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.43.0] - 2026-10-09
+
+蛋白质结构预测接入 core v2：ESMFold、AlphaFold 2、OpenFold、Boltz-1、Protenix 可选择、可评估。
+
+### Added
+- 可评估的结构模型：ESMFold（facebook/esmfold_v1）、AlphaFold 2（官方 JAX 参数 `params_model_1_ptm`，CC BY 4.0）、OpenFold（`finetuning_ptm_2`）、Boltz-1（`boltz1_conf.ckpt`）、Protenix v0.5.0。参数取自检查点张量头（PyTorch zip 检查点只读 `data.pkl`；AF2 的 `.npz` 在发布 `.tar` 内按 tar / zip / `.npy` 头读取；HTTP range 请求，不下载权重），与发布逐项一致。dtype 按发布（fp32；ESMFold 的 ESM-2 为 fp16）。覆盖：ESMFold「完整」，其余「部分」（MSA / 模板检索与特征化、松弛未建模）。
+- 结构模型算子：按模块名检测的三角乘法、三角注意力、MSA 行 / 列（含全局）注意力、外积均值、pair 加权平均、带 pair 偏置的注意力、IPA、模板点注意力、原子局部窗口注意力；每个权重 GEMM 按名字归到单一 / pair / MSA / 模板 / 原子网格，行数随残基数、MSA 行数、模板数、原子数变化。主干每遍重跑（recycle + 1 遍），扩散模块每步一次、样本成批，置信度头每样本一次。定义见 docs/MODEL.md §12。
+- 工作负载新增 `msa`、`recycles`、`samples`（扩散步数沿用 `steps`）与结构模型的批延迟 SLO `fold_slo_s`（默认 120 s「假设」）；命令行 `eval --msa --recycles --samples`；扫描路径 `workload.msa / recycles / samples`。
+- Web：结构模型的工作负载输入（MSA 行数、主干遍数、扩散步数 / 样本数、SLO s）、说明与指标卡（每序列 TFLOP、MSA / 遍数 / 扩散）；布局只显示 PP × DP。目录中离线条目显示原因。
+- 校验：`validate` 增加 ESMFold 行（论文：V100 上 384 残基 14.2 s → 折算 V100 fp32 峰值的 28%）；新增 `tests/test_core_structure.py`（参数、AF2 JAX 参数与 OpenFold 逐层 GEMM 一致、核检测、闭式 FLOPs、recycle / 步数 / 样本线性缩放、PP × DP 布局、API）。
+
+### Changed
+- 结构模型只允许 PP × DP 布局（pair 表示的 DAP 切分未建模），TP / SP 报错并说明原因。
+- 仍为「暂未接入 v2」：AlphaFold 3（权重需向 Google DeepMind 申请、条款禁止再分发，没有可公开核对的发布文件），目录中写明原因并指向 Protenix / Boltz-1。
+- LLM、0.41 与 0.42 模型的结果不变（1296 项指纹逐字节一致）。
+
+### Fixed
+- Web：选择蛋白质模型（ESM-2）时工作负载说明的脚本错误（读取了视频专用字段）。
+
 ## [0.42.0] - 2026-10-09
 
 其余 6 个视频生成（DiT）发布接入 core v2，可选择、可评估。

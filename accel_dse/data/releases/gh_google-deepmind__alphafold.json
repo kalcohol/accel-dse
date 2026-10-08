@@ -1,0 +1,2073 @@
+{
+ "bytes_llm": 372949352,
+ "config": {
+  "c_e": 64,
+  "c_hidden_msa_att": 32,
+  "c_m": 256,
+  "c_s": 384,
+  "c_t": 64,
+  "c_z": 128,
+  "extra_msa_blocks": 4,
+  "max_extra_msa": 5120,
+  "max_msa_clusters": 512,
+  "max_recycling_iters": 3,
+  "max_templates": 4,
+  "no_blocks": 48,
+  "no_ipa_blocks": 8,
+  "source": "alphafold/model/config.py (model_1_ptm: CONFIG + CONFIG_DIFFS['model_1_ptm']) + run_alphafold.py (monomer_ptm preset)",
+  "template_blocks": 2
+ },
+ "domain": "protein",
+ "fetched": "2026-10-09",
+ "n_tensors": 5046,
+ "params_llm": 93237338,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "repo": "gh:google-deepmind/alphafold",
+ "roles": {
+  "pair": {
+   "fp32": {
+    "bytes": 372949352,
+    "params": 93237338
+   }
+  }
+ },
+ "shapes": {
+  "aux_heads.distogram.linear.bias": [
+   64
+  ],
+  "aux_heads.distogram.linear.weight": [
+   64,
+   128
+  ],
+  "aux_heads.experimentally_resolved.linear.bias": [
+   37
+  ],
+  "aux_heads.experimentally_resolved.linear.weight": [
+   37,
+   384
+  ],
+  "aux_heads.masked_msa.linear.bias": [
+   23
+  ],
+  "aux_heads.masked_msa.linear.weight": [
+   23,
+   256
+  ],
+  "aux_heads.plddt.act_0.bias": [
+   128
+  ],
+  "aux_heads.plddt.act_0.weight": [
+   128,
+   384
+  ],
+  "aux_heads.plddt.act_1.bias": [
+   128
+  ],
+  "aux_heads.plddt.act_1.weight": [
+   128,
+   128
+  ],
+  "aux_heads.plddt.input_layer_norm.offset": [
+   384
+  ],
+  "aux_heads.plddt.input_layer_norm.scale": [
+   384
+  ],
+  "aux_heads.plddt.logits.bias": [
+   50
+  ],
+  "aux_heads.plddt.logits.weight": [
+   50,
+   128
+  ],
+  "aux_heads.tm.linear.bias": [
+   64
+  ],
+  "aux_heads.tm.linear.weight": [
+   64,
+   128
+  ],
+  "evoformer.blocks.0.msa_att_col._msa_att.mha.linear_g.bias": [
+   8,
+   32
+  ],
+  "evoformer.blocks.0.msa_att_col._msa_att.mha.linear_g.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.0.msa_att_col._msa_att.mha.linear_k.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.0.msa_att_col._msa_att.mha.linear_o.bias": [
+   256
+  ],
+  "evoformer.blocks.0.msa_att_col._msa_att.mha.linear_o.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.0.msa_att_col._msa_att.mha.linear_q.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.0.msa_att_col._msa_att.mha.linear_v.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.0.msa_att_col._msa_att.query_norm.offset": [
+   256
+  ],
+  "evoformer.blocks.0.msa_att_col._msa_att.query_norm.scale": [
+   256
+  ],
+  "evoformer.blocks.0.msa_att_row.feat_2d_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.0.msa_att_row.feat_2d_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.0.msa_att_row.linear_z.weight": [
+   8,
+   128
+  ],
+  "evoformer.blocks.0.msa_att_row.mha.linear_g.bias": [
+   8,
+   32
+  ],
+  "evoformer.blocks.0.msa_att_row.mha.linear_g.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.0.msa_att_row.mha.linear_k.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.0.msa_att_row.mha.linear_o.bias": [
+   256
+  ],
+  "evoformer.blocks.0.msa_att_row.mha.linear_o.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.0.msa_att_row.mha.linear_q.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.0.msa_att_row.mha.linear_v.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.0.msa_att_row.query_norm.offset": [
+   256
+  ],
+  "evoformer.blocks.0.msa_att_row.query_norm.scale": [
+   256
+  ],
+  "evoformer.blocks.0.msa_transition.input_layer_norm.offset": [
+   256
+  ],
+  "evoformer.blocks.0.msa_transition.input_layer_norm.scale": [
+   256
+  ],
+  "evoformer.blocks.0.msa_transition.linear_1.bias": [
+   1024
+  ],
+  "evoformer.blocks.0.msa_transition.linear_1.weight": [
+   1024,
+   256
+  ],
+  "evoformer.blocks.0.msa_transition.linear_2.bias": [
+   256
+  ],
+  "evoformer.blocks.0.msa_transition.linear_2.weight": [
+   256,
+   1024
+  ],
+  "evoformer.blocks.0.outer_product_mean.layer_norm_input.offset": [
+   256
+  ],
+  "evoformer.blocks.0.outer_product_mean.layer_norm_input.scale": [
+   256
+  ],
+  "evoformer.blocks.0.outer_product_mean.linear_1.bias": [
+   32
+  ],
+  "evoformer.blocks.0.outer_product_mean.linear_1.weight": [
+   32,
+   256
+  ],
+  "evoformer.blocks.0.outer_product_mean.linear_2.bias": [
+   32
+  ],
+  "evoformer.blocks.0.outer_product_mean.linear_2.weight": [
+   32,
+   256
+  ],
+  "evoformer.blocks.0.outer_product_mean.linear_out.bias": [
+   128
+  ],
+  "evoformer.blocks.0.outer_product_mean.linear_out.weight": [
+   128,
+   1024
+  ],
+  "evoformer.blocks.0.pair_transition.input_layer_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.0.pair_transition.input_layer_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.0.pair_transition.linear_1.bias": [
+   512
+  ],
+  "evoformer.blocks.0.pair_transition.linear_1.weight": [
+   512,
+   128
+  ],
+  "evoformer.blocks.0.pair_transition.linear_2.bias": [
+   128
+  ],
+  "evoformer.blocks.0.pair_transition.linear_2.weight": [
+   128,
+   512
+  ],
+  "evoformer.blocks.0.tri_att_end.linear.weight": [
+   4,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_end.mha.linear_g.bias": [
+   4,
+   32
+  ],
+  "evoformer.blocks.0.tri_att_end.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_end.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_end.mha.linear_o.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_att_end.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_end.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_end.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_end.query_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.0.tri_att_end.query_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.0.tri_att_start.linear.weight": [
+   4,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_start.mha.linear_g.bias": [
+   4,
+   32
+  ],
+  "evoformer.blocks.0.tri_att_start.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_start.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_start.mha.linear_o.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_att_start.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_start.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_start.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_att_start.query_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.0.tri_att_start.query_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.center_layer_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.center_layer_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.layer_norm_input.offset": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.layer_norm_input.scale": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_a_g.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_a_p.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_b_g.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_b_p.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_g.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_z.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_in.linear_z.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.center_layer_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.center_layer_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.layer_norm_input.offset": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.layer_norm_input.scale": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_a_g.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_a_p.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_b_g.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_b_p.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_g.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_z.bias": [
+   128
+  ],
+  "evoformer.blocks.0.tri_mul_out.linear_z.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.msa_att_col._msa_att.mha.linear_g.bias": [
+   8,
+   32
+  ],
+  "evoformer.blocks.47.msa_att_col._msa_att.mha.linear_g.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.47.msa_att_col._msa_att.mha.linear_k.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.47.msa_att_col._msa_att.mha.linear_o.bias": [
+   256
+  ],
+  "evoformer.blocks.47.msa_att_col._msa_att.mha.linear_o.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.47.msa_att_col._msa_att.mha.linear_q.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.47.msa_att_col._msa_att.mha.linear_v.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.47.msa_att_col._msa_att.query_norm.offset": [
+   256
+  ],
+  "evoformer.blocks.47.msa_att_col._msa_att.query_norm.scale": [
+   256
+  ],
+  "evoformer.blocks.47.msa_att_row.feat_2d_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.47.msa_att_row.feat_2d_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.47.msa_att_row.linear_z.weight": [
+   8,
+   128
+  ],
+  "evoformer.blocks.47.msa_att_row.mha.linear_g.bias": [
+   8,
+   32
+  ],
+  "evoformer.blocks.47.msa_att_row.mha.linear_g.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.47.msa_att_row.mha.linear_k.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.47.msa_att_row.mha.linear_o.bias": [
+   256
+  ],
+  "evoformer.blocks.47.msa_att_row.mha.linear_o.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.47.msa_att_row.mha.linear_q.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.47.msa_att_row.mha.linear_v.weight": [
+   256,
+   256
+  ],
+  "evoformer.blocks.47.msa_att_row.query_norm.offset": [
+   256
+  ],
+  "evoformer.blocks.47.msa_att_row.query_norm.scale": [
+   256
+  ],
+  "evoformer.blocks.47.msa_transition.input_layer_norm.offset": [
+   256
+  ],
+  "evoformer.blocks.47.msa_transition.input_layer_norm.scale": [
+   256
+  ],
+  "evoformer.blocks.47.msa_transition.linear_1.bias": [
+   1024
+  ],
+  "evoformer.blocks.47.msa_transition.linear_1.weight": [
+   1024,
+   256
+  ],
+  "evoformer.blocks.47.msa_transition.linear_2.bias": [
+   256
+  ],
+  "evoformer.blocks.47.msa_transition.linear_2.weight": [
+   256,
+   1024
+  ],
+  "evoformer.blocks.47.outer_product_mean.layer_norm_input.offset": [
+   256
+  ],
+  "evoformer.blocks.47.outer_product_mean.layer_norm_input.scale": [
+   256
+  ],
+  "evoformer.blocks.47.outer_product_mean.linear_1.bias": [
+   32
+  ],
+  "evoformer.blocks.47.outer_product_mean.linear_1.weight": [
+   32,
+   256
+  ],
+  "evoformer.blocks.47.outer_product_mean.linear_2.bias": [
+   32
+  ],
+  "evoformer.blocks.47.outer_product_mean.linear_2.weight": [
+   32,
+   256
+  ],
+  "evoformer.blocks.47.outer_product_mean.linear_out.bias": [
+   128
+  ],
+  "evoformer.blocks.47.outer_product_mean.linear_out.weight": [
+   128,
+   1024
+  ],
+  "evoformer.blocks.47.pair_transition.input_layer_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.47.pair_transition.input_layer_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.47.pair_transition.linear_1.bias": [
+   512
+  ],
+  "evoformer.blocks.47.pair_transition.linear_1.weight": [
+   512,
+   128
+  ],
+  "evoformer.blocks.47.pair_transition.linear_2.bias": [
+   128
+  ],
+  "evoformer.blocks.47.pair_transition.linear_2.weight": [
+   128,
+   512
+  ],
+  "evoformer.blocks.47.tri_att_end.linear.weight": [
+   4,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_end.mha.linear_g.bias": [
+   4,
+   32
+  ],
+  "evoformer.blocks.47.tri_att_end.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_end.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_end.mha.linear_o.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_att_end.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_end.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_end.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_end.query_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.47.tri_att_end.query_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.47.tri_att_start.linear.weight": [
+   4,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_start.mha.linear_g.bias": [
+   4,
+   32
+  ],
+  "evoformer.blocks.47.tri_att_start.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_start.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_start.mha.linear_o.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_att_start.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_start.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_start.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_att_start.query_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.47.tri_att_start.query_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.center_layer_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.center_layer_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.layer_norm_input.offset": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.layer_norm_input.scale": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_a_g.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_a_p.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_b_g.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_b_p.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_g.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_z.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_in.linear_z.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.center_layer_norm.offset": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.center_layer_norm.scale": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.layer_norm_input.offset": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.layer_norm_input.scale": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_a_g.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_a_p.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_b_g.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_b_p.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_g.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_g.weight": [
+   128,
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_z.bias": [
+   128
+  ],
+  "evoformer.blocks.47.tri_mul_out.linear_z.weight": [
+   128,
+   128
+  ],
+  "evoformer.linear.bias": [
+   384
+  ],
+  "evoformer.linear.weight": [
+   384,
+   256
+  ],
+  "extra_msa_embedder.linear.bias": [
+   64
+  ],
+  "extra_msa_embedder.linear.weight": [
+   64,
+   25
+  ],
+  "extra_msa_stack.blocks.0.msa_att_col.global_attention.linear_g.bias": [
+   8,
+   8
+  ],
+  "extra_msa_stack.blocks.0.msa_att_col.global_attention.linear_g.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_col.global_attention.linear_k.weight": [
+   8,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_col.global_attention.linear_o.bias": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_col.global_attention.linear_o.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_col.global_attention.linear_q.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_col.global_attention.linear_v.weight": [
+   8,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_col.query_norm.offset": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_col.query_norm.scale": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.feat_2d_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.feat_2d_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.linear_z.weight": [
+   8,
+   128
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.mha.linear_g.bias": [
+   8,
+   8
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.mha.linear_g.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.mha.linear_k.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.mha.linear_o.bias": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.mha.linear_o.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.mha.linear_q.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.mha.linear_v.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.query_norm.offset": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_att_row.query_norm.scale": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_transition.input_layer_norm.offset": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_transition.input_layer_norm.scale": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_transition.linear_1.bias": [
+   256
+  ],
+  "extra_msa_stack.blocks.0.msa_transition.linear_1.weight": [
+   256,
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_transition.linear_2.bias": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.msa_transition.linear_2.weight": [
+   64,
+   256
+  ],
+  "extra_msa_stack.blocks.0.outer_product_mean.layer_norm_input.offset": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.outer_product_mean.layer_norm_input.scale": [
+   64
+  ],
+  "extra_msa_stack.blocks.0.outer_product_mean.linear_1.bias": [
+   32
+  ],
+  "extra_msa_stack.blocks.0.outer_product_mean.linear_1.weight": [
+   32,
+   64
+  ],
+  "extra_msa_stack.blocks.0.outer_product_mean.linear_2.bias": [
+   32
+  ],
+  "extra_msa_stack.blocks.0.outer_product_mean.linear_2.weight": [
+   32,
+   64
+  ],
+  "extra_msa_stack.blocks.0.outer_product_mean.linear_out.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.outer_product_mean.linear_out.weight": [
+   128,
+   1024
+  ],
+  "extra_msa_stack.blocks.0.pair_transition.input_layer_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.pair_transition.input_layer_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.pair_transition.linear_1.bias": [
+   512
+  ],
+  "extra_msa_stack.blocks.0.pair_transition.linear_1.weight": [
+   512,
+   128
+  ],
+  "extra_msa_stack.blocks.0.pair_transition.linear_2.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.pair_transition.linear_2.weight": [
+   128,
+   512
+  ],
+  "extra_msa_stack.blocks.0.tri_att_end.linear.weight": [
+   4,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_end.mha.linear_g.bias": [
+   4,
+   32
+  ],
+  "extra_msa_stack.blocks.0.tri_att_end.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_end.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_end.mha.linear_o.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_end.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_end.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_end.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_end.query_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_end.query_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_start.linear.weight": [
+   4,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_start.mha.linear_g.bias": [
+   4,
+   32
+  ],
+  "extra_msa_stack.blocks.0.tri_att_start.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_start.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_start.mha.linear_o.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_start.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_start.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_start.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_start.query_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_att_start.query_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.center_layer_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.center_layer_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.layer_norm_input.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.layer_norm_input.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_a_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_a_p.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_b_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_b_p.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_z.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_in.linear_z.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.center_layer_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.center_layer_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.layer_norm_input.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.layer_norm_input.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_a_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_a_p.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_b_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_b_p.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_z.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.0.tri_mul_out.linear_z.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.msa_att_col.global_attention.linear_g.bias": [
+   8,
+   8
+  ],
+  "extra_msa_stack.blocks.3.msa_att_col.global_attention.linear_g.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_col.global_attention.linear_k.weight": [
+   8,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_col.global_attention.linear_o.bias": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_col.global_attention.linear_o.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_col.global_attention.linear_q.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_col.global_attention.linear_v.weight": [
+   8,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_col.query_norm.offset": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_col.query_norm.scale": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.feat_2d_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.feat_2d_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.linear_z.weight": [
+   8,
+   128
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.mha.linear_g.bias": [
+   8,
+   8
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.mha.linear_g.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.mha.linear_k.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.mha.linear_o.bias": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.mha.linear_o.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.mha.linear_q.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.mha.linear_v.weight": [
+   64,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.query_norm.offset": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_att_row.query_norm.scale": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_transition.input_layer_norm.offset": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_transition.input_layer_norm.scale": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_transition.linear_1.bias": [
+   256
+  ],
+  "extra_msa_stack.blocks.3.msa_transition.linear_1.weight": [
+   256,
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_transition.linear_2.bias": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.msa_transition.linear_2.weight": [
+   64,
+   256
+  ],
+  "extra_msa_stack.blocks.3.outer_product_mean.layer_norm_input.offset": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.outer_product_mean.layer_norm_input.scale": [
+   64
+  ],
+  "extra_msa_stack.blocks.3.outer_product_mean.linear_1.bias": [
+   32
+  ],
+  "extra_msa_stack.blocks.3.outer_product_mean.linear_1.weight": [
+   32,
+   64
+  ],
+  "extra_msa_stack.blocks.3.outer_product_mean.linear_2.bias": [
+   32
+  ],
+  "extra_msa_stack.blocks.3.outer_product_mean.linear_2.weight": [
+   32,
+   64
+  ],
+  "extra_msa_stack.blocks.3.outer_product_mean.linear_out.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.outer_product_mean.linear_out.weight": [
+   128,
+   1024
+  ],
+  "extra_msa_stack.blocks.3.pair_transition.input_layer_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.pair_transition.input_layer_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.pair_transition.linear_1.bias": [
+   512
+  ],
+  "extra_msa_stack.blocks.3.pair_transition.linear_1.weight": [
+   512,
+   128
+  ],
+  "extra_msa_stack.blocks.3.pair_transition.linear_2.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.pair_transition.linear_2.weight": [
+   128,
+   512
+  ],
+  "extra_msa_stack.blocks.3.tri_att_end.linear.weight": [
+   4,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_end.mha.linear_g.bias": [
+   4,
+   32
+  ],
+  "extra_msa_stack.blocks.3.tri_att_end.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_end.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_end.mha.linear_o.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_end.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_end.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_end.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_end.query_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_end.query_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_start.linear.weight": [
+   4,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_start.mha.linear_g.bias": [
+   4,
+   32
+  ],
+  "extra_msa_stack.blocks.3.tri_att_start.mha.linear_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_start.mha.linear_k.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_start.mha.linear_o.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_start.mha.linear_o.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_start.mha.linear_q.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_start.mha.linear_v.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_start.query_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_att_start.query_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.center_layer_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.center_layer_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.layer_norm_input.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.layer_norm_input.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_a_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_a_p.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_b_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_b_p.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_z.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_in.linear_z.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.center_layer_norm.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.center_layer_norm.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.layer_norm_input.offset": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.layer_norm_input.scale": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_a_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_a_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_a_p.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_a_p.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_b_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_b_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_b_p.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_b_p.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_g.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_g.weight": [
+   128,
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_z.bias": [
+   128
+  ],
+  "extra_msa_stack.blocks.3.tri_mul_out.linear_z.weight": [
+   128,
+   128
+  ],
+  "input_embedder.linear_msa_m.bias": [
+   256
+  ],
+  "input_embedder.linear_msa_m.weight": [
+   256,
+   49
+  ],
+  "input_embedder.linear_relpos.bias": [
+   128
+  ],
+  "input_embedder.linear_relpos.weight": [
+   128,
+   65
+  ],
+  "input_embedder.linear_tf_m.bias": [
+   256
+  ],
+  "input_embedder.linear_tf_m.weight": [
+   256,
+   22
+  ],
+  "input_embedder.linear_tf_z_i.bias": [
+   128
+  ],
+  "input_embedder.linear_tf_z_i.weight": [
+   128,
+   22
+  ],
+  "input_embedder.linear_tf_z_j.bias": [
+   128
+  ],
+  "input_embedder.linear_tf_z_j.weight": [
+   128,
+   22
+  ],
+  "recycling_embedder.layer_norm_m.offset": [
+   256
+  ],
+  "recycling_embedder.layer_norm_m.scale": [
+   256
+  ],
+  "recycling_embedder.layer_norm_z.offset": [
+   128
+  ],
+  "recycling_embedder.layer_norm_z.scale": [
+   128
+  ],
+  "recycling_embedder.linear.bias": [
+   128
+  ],
+  "recycling_embedder.linear.weight": [
+   128,
+   15
+  ],
+  "structure_module.affine_update.bias": [
+   6
+  ],
+  "structure_module.affine_update.weight": [
+   6,
+   384
+  ],
+  "structure_module.attention_layer_norm.offset": [
+   384
+  ],
+  "structure_module.attention_layer_norm.scale": [
+   384
+  ],
+  "structure_module.initial_projection.bias": [
+   384
+  ],
+  "structure_module.initial_projection.weight": [
+   384,
+   384
+  ],
+  "structure_module.ipa.linear_b.bias": [
+   12
+  ],
+  "structure_module.ipa.linear_b.weight": [
+   12,
+   128
+  ],
+  "structure_module.ipa.linear_kv.bias": [
+   384
+  ],
+  "structure_module.ipa.linear_kv.weight": [
+   384,
+   384
+  ],
+  "structure_module.ipa.linear_kv_points.bias": [
+   432
+  ],
+  "structure_module.ipa.linear_kv_points.weight": [
+   432,
+   384
+  ],
+  "structure_module.ipa.linear_out.bias": [
+   384
+  ],
+  "structure_module.ipa.linear_out.weight": [
+   384,
+   2112
+  ],
+  "structure_module.ipa.linear_q.bias": [
+   192
+  ],
+  "structure_module.ipa.linear_q.weight": [
+   192,
+   384
+  ],
+  "structure_module.ipa.linear_q_points.bias": [
+   144
+  ],
+  "structure_module.ipa.linear_q_points.weight": [
+   144,
+   384
+  ],
+  "structure_module.ipa.trainable_point_weights": [
+   12
+  ],
+  "structure_module.pair_layer_norm.offset": [
+   128
+  ],
+  "structure_module.pair_layer_norm.scale": [
+   128
+  ],
+  "structure_module.rigid_sidechain.input_projection.bias": [
+   128
+  ],
+  "structure_module.rigid_sidechain.input_projection.weight": [
+   128,
+   384
+  ],
+  "structure_module.rigid_sidechain.input_projection_1.bias": [
+   128
+  ],
+  "structure_module.rigid_sidechain.input_projection_1.weight": [
+   128,
+   384
+  ],
+  "structure_module.rigid_sidechain.resblock1.bias": [
+   128
+  ],
+  "structure_module.rigid_sidechain.resblock1.weight": [
+   128,
+   128
+  ],
+  "structure_module.rigid_sidechain.resblock1_1.bias": [
+   128
+  ],
+  "structure_module.rigid_sidechain.resblock1_1.weight": [
+   128,
+   128
+  ],
+  "structure_module.rigid_sidechain.resblock2.bias": [
+   128
+  ],
+  "structure_module.rigid_sidechain.resblock2.weight": [
+   128,
+   128
+  ],
+  "structure_module.rigid_sidechain.resblock2_1.bias": [
+   128
+  ],
+  "structure_module.rigid_sidechain.resblock2_1.weight": [
+   128,
+   128
+  ],
+  "structure_module.rigid_sidechain.unnormalized_angles.bias": [
+   14
+  ],
+  "structure_module.rigid_sidechain.unnormalized_angles.weight": [
+   14,
+   128
+  ],
+  "structure_module.single_layer_norm.offset": [
+   384
+  ],
+  "structure_module.single_layer_norm.scale": [
+   384
+  ],
+  "structure_module.transition.bias": [
+   384
+  ],
+  "structure_module.transition.weight": [
+   384,
+   384
+  ],
+  "structure_module.transition_1.bias": [
+   384
+  ],
+  "structure_module.transition_1.weight": [
+   384,
+   384
+  ],
+  "structure_module.transition_2.bias": [
+   384
+  ],
+  "structure_module.transition_2.weight": [
+   384,
+   384
+  ],
+  "structure_module.transition_layer_norm.offset": [
+   384
+  ],
+  "structure_module.transition_layer_norm.scale": [
+   384
+  ],
+  "template_angle_embedder.linear_1.bias": [
+   256
+  ],
+  "template_angle_embedder.linear_1.weight": [
+   256,
+   57
+  ],
+  "template_angle_embedder.linear_2.bias": [
+   256
+  ],
+  "template_angle_embedder.linear_2.weight": [
+   256,
+   256
+  ],
+  "template_pair_embedder.linear.bias": [
+   64
+  ],
+  "template_pair_embedder.linear.weight": [
+   64,
+   88
+  ],
+  "template_pair_stack.blocks.0.pair_transition.input_layer_norm.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.0.pair_transition.input_layer_norm.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.0.pair_transition.linear_1.bias": [
+   128
+  ],
+  "template_pair_stack.blocks.0.pair_transition.linear_1.weight": [
+   128,
+   64
+  ],
+  "template_pair_stack.blocks.0.pair_transition.linear_2.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.pair_transition.linear_2.weight": [
+   64,
+   128
+  ],
+  "template_pair_stack.blocks.0.tri_att_end.linear.weight": [
+   4,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_end.mha.linear_g.bias": [
+   4,
+   16
+  ],
+  "template_pair_stack.blocks.0.tri_att_end.mha.linear_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_end.mha.linear_k.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_end.mha.linear_o.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_end.mha.linear_o.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_end.mha.linear_q.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_end.mha.linear_v.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_end.query_norm.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_end.query_norm.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_start.linear.weight": [
+   4,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_start.mha.linear_g.bias": [
+   4,
+   16
+  ],
+  "template_pair_stack.blocks.0.tri_att_start.mha.linear_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_start.mha.linear_k.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_start.mha.linear_o.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_start.mha.linear_o.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_start.mha.linear_q.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_start.mha.linear_v.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_start.query_norm.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_att_start.query_norm.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.center_layer_norm.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.center_layer_norm.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.layer_norm_input.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.layer_norm_input.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_a_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_a_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_a_p.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_a_p.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_b_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_b_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_b_p.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_b_p.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_z.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_in.linear_z.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.center_layer_norm.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.center_layer_norm.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.layer_norm_input.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.layer_norm_input.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_a_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_a_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_a_p.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_a_p.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_b_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_b_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_b_p.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_b_p.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_z.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.0.tri_mul_out.linear_z.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.pair_transition.input_layer_norm.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.1.pair_transition.input_layer_norm.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.1.pair_transition.linear_1.bias": [
+   128
+  ],
+  "template_pair_stack.blocks.1.pair_transition.linear_1.weight": [
+   128,
+   64
+  ],
+  "template_pair_stack.blocks.1.pair_transition.linear_2.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.pair_transition.linear_2.weight": [
+   64,
+   128
+  ],
+  "template_pair_stack.blocks.1.tri_att_end.linear.weight": [
+   4,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_end.mha.linear_g.bias": [
+   4,
+   16
+  ],
+  "template_pair_stack.blocks.1.tri_att_end.mha.linear_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_end.mha.linear_k.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_end.mha.linear_o.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_end.mha.linear_o.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_end.mha.linear_q.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_end.mha.linear_v.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_end.query_norm.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_end.query_norm.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_start.linear.weight": [
+   4,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_start.mha.linear_g.bias": [
+   4,
+   16
+  ],
+  "template_pair_stack.blocks.1.tri_att_start.mha.linear_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_start.mha.linear_k.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_start.mha.linear_o.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_start.mha.linear_o.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_start.mha.linear_q.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_start.mha.linear_v.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_start.query_norm.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_att_start.query_norm.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.center_layer_norm.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.center_layer_norm.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.layer_norm_input.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.layer_norm_input.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_a_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_a_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_a_p.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_a_p.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_b_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_b_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_b_p.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_b_p.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_z.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_in.linear_z.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.center_layer_norm.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.center_layer_norm.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.layer_norm_input.offset": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.layer_norm_input.scale": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_a_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_a_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_a_p.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_a_p.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_b_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_b_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_b_p.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_b_p.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_g.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_g.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_z.bias": [
+   64
+  ],
+  "template_pair_stack.blocks.1.tri_mul_out.linear_z.weight": [
+   64,
+   64
+  ],
+  "template_pair_stack.layer_norm.offset": [
+   64
+  ],
+  "template_pair_stack.layer_norm.scale": [
+   64
+  ],
+  "template_pointwise_att.mha.linear_k.weight": [
+   64,
+   64
+  ],
+  "template_pointwise_att.mha.linear_o.bias": [
+   128
+  ],
+  "template_pointwise_att.mha.linear_o.weight": [
+   128,
+   64
+  ],
+  "template_pointwise_att.mha.linear_q.weight": [
+   64,
+   128
+  ],
+  "template_pointwise_att.mha.linear_v.weight": [
+   64,
+   64
+  ]
+ },
+ "source": {
+  "file_bytes": 373103340,
+  "format": "JAX/haiku .npz inside the release .tar (tar headers + zip central directory + .npy headers read with HTTP range requests; no weights downloaded); haiku names mapped to OpenFold-style names, [in, out] \u2192 [out, in], layer stacks unrolled",
+  "url": "https://storage.googleapis.com/alphafold/alphafold_params_2022-12-06.tar#params_model_1_ptm.npz"
+ },
+ "stacks": {
+  "evoformer.blocks": 48,
+  "extra_msa_stack.blocks": 4,
+  "template_pair_stack.blocks": 2
+ }
+}

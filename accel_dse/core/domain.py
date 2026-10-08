@@ -508,6 +508,8 @@ def _finish(model_id, hf_id, rel, arch, d, L, layer, io_pre, io_post, io_misc, v
 
 BUILDERS = {"wan": build_wan, "wan22": build_wan22, "cogvideox": build_cogvideox, "hunyuan": build_hunyuan,
             "ltx": build_ltx, "mochi": build_mochi, "stdit": build_stdit, "h3": build_h3, "esm": build_esm}
+from .structure import BUILDERS as _STRUCTURE_BUILDERS  # noqa: E402  (0.43 protein structure models)
+BUILDERS.update(_STRUCTURE_BUILDERS)
 
 
 def from_domain_release(model_id: str, hf_id: str, builder: str, wl: NativeWorkload) -> ModelSpec:
@@ -531,6 +533,7 @@ class ResolvedWorkload:
     warnings: tuple[str, ...]
     frames: int = 0          # latent frames of the video grid (factorized attention)
     aux: int = 0             # joint audio rows in the sequence
+    pair: object = None      # structure models: ir.PairDims (grids, recycles, diffusion steps, samples)
 
 
 def _latent_frames(d: NativeWorkload, F: int, warns: list[str]) -> int:
@@ -583,7 +586,24 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
                                 steps, float(F), "frame", info, tuple(warns), frames=gt, aux=aud)
     L = w.seq_len or d.seq_len
     if d.max_seq and L > d.max_seq:
-        warns.append(f"序列长度 {L} 超过训练长度 {d.max_seq} 残基（RoPE 可外推，精度不在本工具范围）")
+        warns.append(f"序列长度 {L} 超过训练长度 {d.max_seq} 残基" + ("（RoPE 可外推，精度不在本工具范围）"
+                     if not spec.is_pair else "（裁剪长度；更长序列推理可行，精度不在本工具范围）"))
     info = {"seq_len": L, "tokens": L + d.special_tokens, "max_seq": d.max_seq,
             "default": {"seq_len": d.seq_len}, "source": d.source}
-    return ResolvedWorkload("protein", L + d.special_tokens, 0, 1, 1, 1.0, "seq", info, tuple(warns))
+    pd = None
+    if spec.is_pair:
+        from .ir import PairDims
+        msa = w.msa or d.msa
+        rec = w.recycles or d.recycles
+        steps = (w.steps or d.diff_steps) if d.diff_steps else 0
+        smp = (w.samples or d.samples) if d.diff_steps else 1
+        xmsa = d.xmsa
+        if w.msa and d.xmsa and not d.msa:
+            xmsa, msa = w.msa, 0
+        atoms = math.ceil(L * d.atoms_per_res) if d.atoms_per_res else 0
+        pd = PairDims(L, msa, xmsa, d.templates, atoms, rec, steps, smp)
+        info.update({"msa": msa, "xmsa": xmsa, "templates": d.templates, "atoms": atoms, "recycles": rec,
+                     "diff_steps": steps, "samples": smp, "pair_dim": d.pair_dim,
+                     "default": {"seq_len": d.seq_len, "msa": d.msa or d.xmsa, "recycles": d.recycles,
+                                 "steps": d.diff_steps, "samples": d.samples}})
+    return ResolvedWorkload("protein", L + d.special_tokens, 0, 1, 1, 1.0, "seq", info, tuple(warns), pair=pd)

@@ -32,7 +32,7 @@ SWEEP_PATHS = {
     "chip.sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
     "workload.frames": int, "workload.steps": int, "workload.height": int, "workload.width": int,
-    "workload.seq_len": int,
+    "workload.seq_len": int, "workload.msa": int, "workload.recycles": int, "workload.samples": int,
 }
 
 
@@ -201,8 +201,9 @@ def api_health() -> dict:
 def api_models() -> dict:
     return {"models": list_models(), "offline": offline_entries(), "catalog": [m["id"] for m in catalog_listing()],
             "unlisted": unlisted_models(), "domains": DOMAINS,
-            "note": "按厂商 → 系列排列；视频生成（DiT：Wan2.1 / CogVideoX）与蛋白质（ESM-2）已接入 v2 可评估，"
-                    "其余视频 / 蛋白质模型仍为离线条目；见 docs/MODEL.md §10–§11"}
+            "note": "按厂商 → 系列排列；视频生成（DiT）与蛋白质（ESM-2 编码器、ESMFold / AlphaFold 2 / OpenFold / "
+                    "Boltz-1 / Protenix 结构预测）已接入 v2 可评估；AlphaFold 3 权重需申请，仍为离线条目；"
+                    "见 docs/MODEL.md §10–§12"}
 
 
 def api_catalog() -> dict:
@@ -340,7 +341,7 @@ def api_fit(body: dict) -> dict:
     for n in (2, 4, 8, 16, 32, 64):
         if n <= cards:
             continue
-        fit = [lay for lay in enumerate_layouts(n, m.n_layers, m.is_moe, full=not m.kv_cache)
+        fit = [lay for lay in enumerate_layouts(n, m.n_layers, m.is_moe, full=not m.kv_cache, pair=m.is_pair)
                if evaluate(scn.replace("layout", lay).replace("serving.batch", 1)).fits]
         if not fit:
             continue

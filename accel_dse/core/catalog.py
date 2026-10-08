@@ -56,6 +56,16 @@ _H3_SRC = ("diffusers MiniMax-H3 文档 / pipeline：画布 1344×768（短边 7
            "SGLang 默认 num_inference_steps 50（49 次前向）、CFG 蒸馏；VisualVAE f16t4d24 + patch (1, 2, 2)、"
            "音频 40 latent/s × 立体声；文本 512 token「假设」")
 _ESM_SRC = "config.json：max_position_embeddings 1026（1022 残基 + <cls>/<eos>）；默认 512 残基为工作负载「假设」"
+_ESMFOLD_SRC = ("esmfold_v1 config.json（esmfold_config.trunk：48 块、max_recycles 4、结构模块 8 次迭代）；"
+                "默认 512 残基为工作负载「假设」")
+_OF_SRC = ("openfold/config.py：data.predict max_msa_clusters 512、max_extra_msa 1024、max_templates 4；"
+           "max_recycling_iters 3（主干 4 遍）；默认 512 残基「假设」")
+_AF2_SRC = ("alphafold/model/config.py：model_1_ptm max_extra_msa 5120、reduce_msa_clusters_by_max_templates（512 − 4 = "
+            "508 行 MSA 聚类）、max_templates 4、num_recycle 3（主干 4 遍）、num_ensemble 1；默认 512 残基「假设」")
+_BOLTZ_SRC = ("boltz v0.4.1 main.py predict：recycling_steps 3、sampling_steps 200、diffusion_samples 1、"
+              "max_msa_seqs 4096；默认 512 残基、每残基 8 个重原子「假设」")
+_PX_SRC = ("Protenix v0.5.0 configs_base.py：N_cycle 4、sample_diffusion N_step 200 / N_sample 5；configs_data.py："
+           "MSA sample_cutoff 2048、模板关闭；默认 512 残基、每残基 8 个重原子「假设」")
 DOMAIN_RELEASES = [
     ("wan2.1-14b", "Wan-AI/Wan2.1-T2V-14B", "wan",
      NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, source=_WAN_SRC.format(res="720P（1280×720）"))),
@@ -83,8 +93,26 @@ DOMAIN_RELEASES = [
                     audio_per_s=40, audio_channels=2, steps=49, cfg=1, text_tokens=512, source=_H3_SRC)),
     ("esm2-3b", "facebook/esm2_t36_3B_UR50D", "esm", NativeWorkload("protein", seq_len=512, steps=1, cfg=1, source=_ESM_SRC)),
     ("esm2-650m", "facebook/esm2_t33_650M_UR50D", "esm", NativeWorkload("protein", seq_len=512, steps=1, cfg=1, source=_ESM_SRC)),
+    # 0.43 structure models (checkpoint headers read over HTTP; see scripts/fetch_torch_ckpt.py)
+    ("esmfold", "facebook/esmfold_v1", "esmfold", NativeWorkload("protein", seq_len=512, steps=1, cfg=1, source=_ESMFOLD_SRC)),
+    ("openfold", "gh:aqlaboratory/openfold", "openfold",
+     NativeWorkload("protein", seq_len=512, steps=1, cfg=1, source=_OF_SRC)),
+    ("alphafold2", "gh:google-deepmind/alphafold", "alphafold2",
+     NativeWorkload("protein", seq_len=512, steps=1, cfg=1, source=_AF2_SRC)),
+    ("boltz-1", "boltz-community/boltz-1", "boltz1",
+     NativeWorkload("protein", seq_len=512, steps=1, cfg=1, atoms_per_res=8.0, source=_BOLTZ_SRC)),
+    ("protenix", "gh:bytedance/Protenix", "protenix",
+     NativeWorkload("protein", seq_len=512, steps=1, cfg=1, atoms_per_res=8.0, source=_PX_SRC)),
 ]
 _DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
+# GitHub-only releases: the repo name alone does not say which checkpoint is evaluated
+DOMAIN_LABELS = {"alphafold2": "AlphaFold 2 · model_1_ptm", "openfold": "OpenFold · finetuning_ptm_2",
+                 "protenix": "Protenix v0.5.0"}
+# catalog-only rows that stay off core v2, with the reason shown in the listing
+OFFLINE_REASONS = {
+    "alphafold3": "权重需向 Google DeepMind 申请（表单审批、条款禁止再分发），没有可公开读取的发布文件来核对张量形状 → "
+                  "不按论文尺寸臆造；同类架构可用 Protenix / Boltz-1（AF3 复现，公开权重）评估",
+}
 
 # ---------------------------------------------------------------- listing: vendor (厂商) → family; domain is only a badge
 DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态，评估语言主干）", "gen": "视频生成（DiT）", "protein": "蛋白质"}
@@ -101,7 +129,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     # vendors with catalog-only (not yet on core v2) releases
     ("tencent", "腾讯（HunyuanVideo）", ("hunyuanvideo-community/",)), ("lightricks", "Lightricks（LTX-Video）", ("Lightricks/",)),
     ("genmo", "Genmo（Mochi）", ("genmo/",)), ("hpcai", "HPC-AI Tech（Open-Sora）", ("hpcai-tech/",)),
-    ("deepmind", "Google DeepMind（AlphaFold）", ("gh:google-deepmind/",)), ("boltz", "Boltz（MIT）", ("gh:jwohlwend/",)),
+    ("deepmind", "Google DeepMind（AlphaFold）", ("gh:google-deepmind/",)), ("boltz", "Boltz（MIT）", ("gh:jwohlwend/", "boltz-community/")),
     ("openfold", "OpenFold（aqlaboratory）", ("gh:aqlaboratory/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
@@ -171,7 +199,7 @@ def entries() -> list[dict]:
         out.append({"id": i, "hf_id": h, "aliases": al, "builder": b, "workload": wl})
     out = [e for e in out if load_release(e["hf_id"]) is not None]
     for e in out:
-        e["label"] = _repo_name(e["hf_id"])
+        e["label"] = DOMAIN_LABELS.get(e["id"]) or _repo_name(e["hf_id"])
         e["provider"], e["provider_label"] = provider_of(e["hf_id"])
         e["family_rank"], e["family"] = family_of(e["provider"], e["id"])
         if e.get("builder"):
@@ -225,6 +253,7 @@ def offline_entries() -> list[dict]:
                     "label": _repo_name(e["hf_id"]) if e.get("hf_id") else e.get("user_label") or e["id"],
                     "domain": dom, "domain_label": DOMAINS[dom], "provider": prov, "provider_label": plab,
                     "family": fam or plab, "family_rank": rank, "status": "暂未接入 v2", "evaluable": False,
+                    "reason": OFFLINE_REASONS.get(e["id"], "尚无可核对的发布权重 / 配置接入 core v2"),
                     "arch": ("DiT · " if dom == "gen" else "") + dims, "arch_detail": meta.get("arch", ""),
                     "_size": (sh.get("n_layers") or 0) * (sh.get("hidden") or 0) ** 2})
     out.sort(key=lambda d: (_PROV_RANK.get(d["provider"], 99), d["family_rank"], -d["_size"]))
@@ -295,6 +324,7 @@ def labels(spec: ModelSpec) -> dict:
         "what_if": spec.what_if,
         "roles": {r: f.fmt for r, f in spec.formats},
         "is_moe": spec.is_moe,
+        "is_pair": spec.is_pair,
         "mtp_layers": len(spec.mtp_layers),
         "n_layers": spec.n_layers,
         "model_domain": spec.domain,
@@ -315,7 +345,12 @@ def _workload_dict(spec: ModelSpec) -> dict | None:
                 "vae_frames": w.vae_frames, "audio_per_s": w.audio_per_s, "audio_channels": w.audio_channels,
                 "attention": "factorized" if any(l.core.span != "full" for l in spec.layers) else "full",
                 "cfg_distilled": w.cfg == 1}
-    return {"kind": "protein", "seq_len": w.seq_len, "max_seq": w.max_seq, "source": w.source}
+    d = {"kind": "protein", "seq_len": w.seq_len, "max_seq": w.max_seq, "source": w.source, "structure": spec.is_pair}
+    if spec.is_pair:
+        d.update({"msa": w.msa, "xmsa": w.xmsa, "templates": w.templates, "recycles": w.recycles,
+                  "diff_steps": w.diff_steps, "samples": w.samples, "atoms_per_res": w.atoms_per_res,
+                  "pair_dim": w.pair_dim})
+    return d
 
 
 def list_models() -> list[dict]:

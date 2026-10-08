@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # video / protein catalog ids on core v2 (0.41: Wan2.1, CogVideoX, ESM-2; 0.42: the remaining video DiTs)
 LIVE_DOMAIN = {"wan2.1-14b", "wan2.1-1.3b", "cogvideox-5b", "cogvideox-2b", "esm2-3b", "esm2-650m",
-               "wan2.2-a14b", "hunyuanvideo", "ltx-video", "mochi-1", "opensora-stdit3", "minimax-h3"}
+               "wan2.2-a14b", "hunyuanvideo", "ltx-video", "mochi-1", "opensora-stdit3", "minimax-h3",
+               "esmfold", "alphafold2", "openfold", "boltz-1", "protenix"}
 
 
 def _post(path, body):

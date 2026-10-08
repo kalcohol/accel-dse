@@ -67,7 +67,10 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
             "shared_expert" if l.name.startswith("shared") else "mlp")
         hot += k * n * model.fmt(role).bits / 8
     # norms / gates / conv / hc vectors (bf16 「假设」; non-LLM releases: as released)
-    hot += L.misc_params * (2.0 if model.domain == "llm" else a)
+    for l in L.pair_linears:        # structure-model blocks (single rank)
+        hot += l.params * model.fmt(l.role or "pair").bits / 8
+    mb = model.fmt(L.misc_role).bits / 8 if L.misc_role else a
+    hot += L.misc_params * (2.0 if model.domain == "llm" else mb)
     exp = 0.0
     if f.kind == "moe":
         n_loc = _cdiv(f.n_experts, sh.ep)
@@ -181,6 +184,9 @@ def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
         if act_chunked <= w_chunked:
             return a_in + a_out, w * (math.ceil((a_in + a_out) / budget) - 1)
         return a_in * math.ceil(w / budget) + a_out, 0.0
+    if op.bmm:                  # operands and result are whole activations; each channel slice fits the budget,
+        tot = (op.m * op.k + op.k * op.n + op.m * op.n) * op.count * ab     # so A, B are read and C written once
+        return (tot, 0.0) if tot > budget else (0.0, 0.0)
     if op.kind == "attn":       # qk op of a flash-style attention (v_dim == qk_dim for these models)
         qo = 2.0 * op.count * op.m * op.k * ab
         kv = 2.0 * op.count * op.n * op.k * ab

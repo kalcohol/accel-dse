@@ -135,10 +135,11 @@ def test_catalog_listing_grouping_coverage_and_merges():
     off = offline_entries()
     ids = {o["id"] for o in off}
     assert {o["domain"] for o in off} <= {"gen", "protein"} and not (ids & listed)
-    assert {"esmfold", "alphafold3", "protenix"} <= ids
+    assert ids == {"alphafold3"}                                      # 0.43: weights gated → the only catalog-only row
     live = {"wan2.1-14b", "wan2.1-1.3b", "cogvideox-5b", "cogvideox-2b", "esm2-3b", "esm2-650m",
-            "minimax-h3", "hunyuanvideo", "wan2.2-a14b", "ltx-video", "mochi-1", "opensora-stdit3"}
-    assert live <= listed and not (live & ids)                       # 0.41 / 0.42: release-backed video / protein models
+            "minimax-h3", "hunyuanvideo", "wan2.2-a14b", "ltx-video", "mochi-1", "opensora-stdit3",
+            "esmfold", "alphafold2", "openfold", "boltz-1", "protenix"}
+    assert live <= listed and not (live & ids)              # 0.41–0.43: release-backed video / protein models
     for i in live:
         assert get_model(i).domain in ("gen", "protein") and not get_model(i).kv_cache
     assert all(o["provider"] != "other" and not o["evaluable"] for o in off)

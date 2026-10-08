@@ -23,7 +23,7 @@ import math
 from dataclasses import dataclass, field
 
 from .dtypes import fmt as _fmt
-from .model import AttnCore, Layer, Linear, ModelSpec
+from .model import AttnCore, Layer, Linear, ModelSpec, PairCore
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,20 @@ class Shard:
 
 
 @dataclass(frozen=True)
+class PairDims:
+    """Grid sizes of a structure-model forward (0.43): residues / tokens n, MSA rows, extra-MSA rows, templates,
+    atoms, trunk passes (recycles incl. the first), diffusion steps and batched diffusion samples."""
+    n: int
+    msa: int = 0
+    xmsa: int = 0
+    tmpl: int = 0
+    atoms: int = 0
+    recycles: int = 1
+    diff_steps: int = 0
+    samples: int = 1
+
+
+@dataclass(frozen=True)
 class Phase:
     """One forward step of a pipeline stage (one micro-batch).
 
@@ -79,6 +93,7 @@ class Phase:
     ctx: int = 0
     frames: int = 0      # full: latent frames of the video grid (factorized spatial / temporal attention)
     aux: int = 0         # full: joint audio rows in the sequence (MiniMax-H3)
+    pair: PairDims | None = None   # full: structure-model grids (AlphaFold-family / ESMFold trunks)
 
     def __post_init__(self):
         if self.kind not in ("decode", "prefill", "full"):
@@ -117,6 +132,8 @@ class Op:
     replicated: int = 1       # how many ranks of the stage compute this identical op
     stream: bool = False      # full phase: activations may exceed SRAM → DRAM streaming accounted (memplan.act_stream)
     orient: bool = False      # full-phase attention: mapping may take either GEMM orientation (O = P·V or Oᵀ = Vᵀ·Pᵀ)
+    bmm: bool = False         # activation×activation batched GEMM whose operands are plain tensors (triangle update,
+                              # outer-product mean, pair-weighted averaging): streamed as A, B in and C out
 
     @property
     def flops(self) -> float:
@@ -428,7 +445,95 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
     return ops
 
 
+def layer_repeat(L: Layer, ph: Phase) -> int:
+    """Sequential executions of layer ``L`` per forward request (structure models: trunk recycles, diffusion steps,
+    shared-weight iterations).  The evaluator accumulates the layer's op sums this many times; ops are per execution."""
+    pd = ph.pair
+    if pd is None or not (L.repeat or L.iters > 1):
+        return 1
+    r = pd.recycles if L.repeat == "recycle" else pd.diff_steps if L.repeat == "diff" else 1
+    return max(0, r) * L.iters
+
+
+def _pair_rows(tag: str, pd: PairDims, b: int, s: int, sp: int) -> int:
+    """Rows of a structure-model GEMM; ``s`` multiplies token / atom grids, ``sp`` the pair / MSA grids."""
+    n = pd.n
+    return {"res": b * s * n, "tok": b * s * n, "seq": b * s, "pair": b * sp * n * n, "msa": b * sp * pd.msa * n,
+            "xmsa": b * sp * pd.xmsa * n, "tmpl": b * pd.tmpl * n * n, "atom": b * s * pd.atoms,
+            "apair": b * s * _cdiv(pd.atoms, 32) * 32 * 128}[tag]
+
+
+def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int, s: int, sp: int,
+                   tag: str) -> list[Op]:
+    ab = _fmt(model.act_fmt).bytes
+    n = pd.n
+    bt = b * pd.tmpl if c.over == "tmpl" else b * sp      # pair-grid batch: templates or per-sample pair copies
+
+    def att(groups: int, nq: int, nk: int, d: int, vd: int, bias: bool) -> list[Op]:
+        cnt = groups * c.heads
+        return [Op(tag + ".qk", "attn", li, m=nq, k=d, n=nk, count=cnt, act_bytes=cnt * nq * d * ab, stream=True,
+                   orient=True),
+                Op(tag + ".pv", "attn", li, m=nq, k=nk, n=vd, count=cnt, act_bytes=cnt * nq * vd * ab, orient=True),
+                Op(tag + ".softmax", "vector", li, vec=cnt * nq * nk * (5 + (1 if bias else 0)))]
+
+    def bmm(m: int, k: int, nn: int, cnt: int) -> Op:
+        return Op(tag, "attn", li, m=m, k=k, n=nn, count=cnt, act_bytes=cnt * (m * k + k * nn + m * nn) * ab,
+                  stream=True, bmm=True)
+
+    d, vd = c.dim, c.v_dim or c.dim
+    if c.kind == "trimul":
+        return [bmm(n, n, n, bt * c.dim)]
+    if c.kind == "tri_att":
+        return att(bt * n, n, n, d, vd, True)
+    if c.kind == "row_att":
+        g = pd.xmsa if c.over == "xmsa" else pd.msa
+        return att(b * sp * g, n, n, d, vd, True)
+    if c.kind == "col_att":
+        S = pd.xmsa if c.over == "xmsa" else pd.msa
+        return att(b * sp * n, 1 if c.glob else S, S, d, vd, False)
+    if c.kind == "pt_att":          # template point-wise attention: each pair position attends over the T templates
+        return att(b * n * n, 1, max(1, pd.tmpl), d, vd, False)
+    if c.kind == "opm":
+        S = pd.xmsa if c.over == "xmsa" else pd.msa
+        return [bmm(n * c.dim, S, n * c.dim2, b * sp)]
+    if c.kind == "pwa":
+        return [bmm(n, n, pd.msa * c.dim, b * sp * c.heads),
+                Op(tag + ".softmax", "vector", li, vec=b * sp * c.heads * n * n * 5)]
+    if c.kind == "seq_att":
+        return att(b * s, n, n, d, vd, True)
+    if c.kind == "local_att":
+        wq, wk = c.win
+        return att(b * s * _cdiv(pd.atoms, wq), wq, wk, d, vd, True)
+    raise ValueError(f"unknown pair core {c.kind}")
+
+
+def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:
+    """One execution of a structure-model block (single rank: TP / SP of pair stacks, i.e. DAP, not modelled).
+    Every weight GEMM runs on the rows of its grid; each linear also carries its layer-norm / gating / bias work
+    (「假设」 4 element-ops per input element + 4 per output element)."""
+    pd = ph.pair
+    if pd is None:
+        raise ValueError("structure-model layer needs Phase.pair")
+    if sh.tp > 1 or sh.sp > 1:
+        raise ValueError("structure models: TP / SP of the pair stack (DAP) is not modelled; use DP / PP")
+    b = _cdiv(ph.batch, sh.dp)
+    s = pd.samples if L.samples in ("tok", "all") else 1
+    sp = pd.samples if L.samples == "all" else 1
+    ops: list[Op] = []
+    for l in L.pair_linears:
+        m = _pair_rows(l.rows, pd, b, s, sp)
+        if m <= 0:
+            continue
+        ops.append(gemm(model, f"{L.stack}.{l.name}", li, m, l.k, l.n, l.role or "pair", stream=True))
+        ops.append(Op(f"{L.stack}.{l.name}.ew", "vector", li, vec=m * (l.k + l.n) * 4))
+    for i, c in enumerate(L.pair_cores):
+        ops += _pair_core_ops(model, li, c, pd, b, s, sp, f"{L.stack}.{c.kind}{i}")
+    return ops
+
+
 def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:
+    if L.pair_linears or L.pair_cores:
+        return _pair_layer_ops(model, li, L, ph, sh)
     h = model.hidden
     ab = _fmt(model.act_fmt).bytes
     tp, sp = sh.tp, sh.sp

@@ -208,7 +208,8 @@ def search_layouts(base: Scenario, cards: int, mappings: tuple[str, ...] | None 
         raise ValueError("goodput 目标仅适用于 LLM / VLM（视频 / 蛋白质模型用 decode 目标：单位/s/卡）")
     cands = []
     for org in (mappings or (base.mapping,)):
-        for lay in enumerate_layouts(cards, m.n_layers, m.is_moe, max_tp=max_tp, full=not m.kv_cache):
+        for lay in enumerate_layouts(cards, m.n_layers, m.is_moe, max_tp=max_tp, full=not m.kv_cache,
+                                     pair=m.is_pair):
             cands.append((lay, org, _BatchSearch(base.replace("layout", lay).replace("mapping", org))))
     rows: list[LayoutRow] = []
 
