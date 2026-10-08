@@ -97,9 +97,16 @@ def _replace_path(obj, parts, value):
     return dataclasses.replace(obj, **{name: new})
 
 
+def _num_canon(f, v):
+    """int given for a float-typed field → float, so equal scenarios serialise / hash identically."""
+    if isinstance(v, int) and not isinstance(v, bool) and "float" in str(f.type):
+        return float(v)
+    return v
+
+
 def _to_plain(o):
     if is_dataclass(o):
-        return {f.name: _to_plain(getattr(o, f.name)) for f in fields(o)}
+        return {f.name: _to_plain(_num_canon(f, getattr(o, f.name))) for f in fields(o)}
     if isinstance(o, tuple):
         return [_to_plain(x) for x in o]
     if isinstance(o, float) and not math.isfinite(o):
@@ -132,5 +139,5 @@ def _from_plain(cls, d):
         else:
             if isinstance(v, (list, dict)):
                 raise ValueError(f"{cls.__name__}.{k}: unexpected structure")
-            kw[k] = _check_num(v, f"{cls.__name__}.{k}")
+            kw[k] = _num_canon(known[k], _check_num(v, f"{cls.__name__}.{k}"))
     return cls(**kw)

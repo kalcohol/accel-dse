@@ -134,3 +134,10 @@ def test_goodput_flags_unmet_ttft_instead_of_zero():
                    serving=Serving(batch=64, ctx=4096, prompt=4096, ttft_slo_ms=500.0))
     g = goodput(evaluate(scn))
     assert not g.ttft_ok and g.goodput_tok_s > 0 and g.ttft_ms > 500
+
+
+def test_hash_ignores_int_vs_float_spelling():
+    s = Scenario(model="qwen3-8b")
+    t = s.replace("chip.sram_mib", 64).replace("link.GBps", 400)
+    assert t == s and t.hash() == s.hash()
+    assert Scenario.from_dict(json.loads(json.dumps(t.to_dict()))).hash() == s.hash()

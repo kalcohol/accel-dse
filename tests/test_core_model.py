@@ -96,3 +96,12 @@ def test_mla_decode_flops_absorbed_form():
     assert abs(att - ref) / ref < 1e-9
     lin = sum(o.flops for o in ops if o.kind == "gemm" and not o.name.startswith("expert"))
     assert lin > 0
+
+
+def test_lookup_tables_stored_not_active():
+    """n-gram / engram lookup tables count toward stored params but not toward params touched per token."""
+    from accel_dse.core.catalog import get_model
+    s = get_model("deepseek-v4.1-flash")
+    assert s.lookup_params > 1e11
+    assert s.params() - s.active_params() > s.lookup_params
+    assert s.active_params() < 0.05 * s.params()

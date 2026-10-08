@@ -101,6 +101,10 @@ def labels(spec: ModelSpec) -> dict:
         "notes": list(spec.notes),
         "arch": spec.arch,
         "what_if": spec.what_if,
+        "roles": {r: f.fmt for r, f in spec.formats},
+        "is_moe": spec.is_moe,
+        "mtp_layers": len(spec.mtp_layers),
+        "n_layers": spec.n_layers,
     }
 
 

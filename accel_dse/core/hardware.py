@@ -115,7 +115,7 @@ class System:
 # Presets (geometry from the 0.3x SKU templates; all 「假设」)
 CHIP_100T = Chip("100T", 1.0, 56, 56, 16)            # 100.35 TFLOPS bf16
 CHIP_1P = Chip("1P", 1.0, 128, 128, 32, sram_mib=256.0)   # 1048.6 TFLOPS bf16
-CHIP_H100_LIKE = Chip("H100-like", 1.83, 128, 128, 16,      # ≈ 989 TFLOPS dense bf16
+CHIP_H100_LIKE = Chip("H100-like", 1.83, 128, 128, 16,      # ≈ 959 TFLOPS dense bf16
                       formats=FormatSupport(rates=(("bf16", 1.0), ("fp16", 1.0), ("fp8", 2.0), ("int8", 2.0))),
                       sram_mib=50.0, vector_lanes=16384, sram_port_Bpc=None)
 CHIPS = {c.name: c for c in (CHIP_100T, CHIP_1P, CHIP_H100_LIKE)}

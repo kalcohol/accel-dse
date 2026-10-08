@@ -215,8 +215,8 @@ class ModelSpec:
         return sum(l.params(self.hidden) for l in self.mtp_layers) + self.mtp_extra_params * len(self.mtp_layers)
 
     def active_params(self) -> int:
-        """Params touched per token (routed experts: top_k of n)."""
-        p = self.params()
+        """Params touched per token (routed experts: top_k of n; lookup tables excluded — a few rows/token)."""
+        p = self.params() - self.lookup_params
         for l in self.layers:
             if l.ffn.kind == "moe":
                 f = l.ffn
