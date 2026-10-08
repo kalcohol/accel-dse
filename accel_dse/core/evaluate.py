@@ -59,6 +59,7 @@ class Result:
             "tok_s": self.throughput, "tok_s_card": self.per_card, "fits": self.fits, "bound": self.bound,
             "heaviest_stage": self.heaviest_stage, "dram_need_GiB": heavy.mem.dram_need / 2**30,
             "residency": heavy.mem.residency, "microbatches": self.microbatches, "warnings": self.warnings,
+            "array_util": heavy.time.array_util,
         }
 
 
@@ -71,11 +72,13 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple[float,
     elif op.kind == "attn":
         c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=model.kv_fmt, a_fmt="bf16")
     else:
-        return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0
+        return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0, 0.0
     t = c.cycles * op.causal / f
     vec = vector_seconds(ch, op.vec + c.convert_elems * 2.0)   # 2 element-ops per converted element 「假设」
     mac_share = t if c.bound == "mac" else 0.0
-    return t, mac_share, t - mac_share, vec, c.convert_elems
+    rate = ch.formats.rate(c.exec_fmt) or 1.0
+    ideal = op.flops / 2.0 / (ch.macs * rate * ch.freq_ghz * 1e9)   # 100 % array utilisation
+    return t, mac_share, t - mac_share, vec, c.convert_elems, ideal
 
 
 def stage_ops(model: ModelSpec, first: int, last: int, has_embed: bool, has_head: bool, ph: Phase, sh: Shard,
@@ -101,7 +104,7 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
     return ops
 
 
-_SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "flops", "link_bw", "sync", "link_bytes",
+_SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act")
 
 
@@ -112,8 +115,9 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
             bw, a = collective_seconds(o.comm_kind, o.comm_bytes, o.comm_group, sys.link)
             d["link_bw"] += bw; d["sync"] += a; d["link_bytes"] += o.comm_bytes
             continue
-        a_, ma, fe, v, ce = _op_seconds(o, sys, org, model)
+        a_, ma, fe, v, ce, idl = _op_seconds(o, sys, org, model)
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
+        d["t_ideal"] += idl
         d["flops"] += o.flops
         d["max_act"] = max(d["max_act"], o.act_bytes / max(o.count, 1))
     for k, v in touched(ops).items():
@@ -184,7 +188,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             link_bw += bw; sync += a; link_bytes += act
         t_dram = dram["total"] / (sys.dram_GBps * 1e9)
         stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
-                        dram["total"], link_bytes, agg["flops"])
+                        dram["total"], link_bytes, agg["flops"], agg["t_ideal"])
         stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"]))
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total

@@ -62,6 +62,12 @@ class StageTime:
     dram_bytes: float
     link_bytes: float
     flops: float
+    t_ideal: float = 0.0    # array time at 100 % MAC utilisation (same work)
+
+    @property
+    def array_util(self) -> float:
+        """Useful MAC fraction while the array is busy (tile padding / small-M waste shows here)."""
+        return self.t_ideal / self.t_array if self.t_array > 0 else 0.0
 
     @property
     def t_compute(self) -> float:
@@ -87,5 +93,5 @@ class StageTime:
 
     def to_dict(self) -> dict:
         d = {k: getattr(self, k) for k in self.__dataclass_fields__}
-        d.update(t_compute=self.t_compute, total=self.total, bound=self.bound)
+        d.update(t_compute=self.t_compute, total=self.total, bound=self.bound, array_util=self.array_util)
         return d
