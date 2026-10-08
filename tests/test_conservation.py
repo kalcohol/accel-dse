@@ -1900,7 +1900,7 @@ def test_package_catalog_membership_and_bw_monotonicity():
     packages (4×24 ch), SOCAMM2/LPCAMM2 128-bit modules, HBM stacks with
     gen-tied rates; legacy ≤0.28 ids still resolve.
 
-    Changed in 0.29 because the old catalog was wrong (research/memory_specs
+    Changed in 0.29 because the old catalog was wrong (docs/research/memory_specs
     §5): LPDDR6 was modelled as x24 *dies* (no x96 package), counts/ids were
     old (lpddr6_20x24_14400 / hbm_hbm3_8s as catalog keys), HBM rates were
     not tied to generation and HBM capacities were invented.
@@ -3037,20 +3037,27 @@ def test_ui_calib_override_dual_card_markers():
     assert "cdn." not in html.lower() or "charset" in html.lower()
 
 
-def test_decisions_and_gap_synced_v023():
-    """v0.23: DECISIONS/GAP no longer claim UI or video/protein out_of_scope."""
+def test_model_doc_synced_v023():
+    """Public docs (README + docs/MODEL.md) stay honest and in sync with the code:
+    no stale out_of_scope claims for UI / video-protein multi-card, calibration
+    and the not-measured-silicon disclaimer documented, relative links resolve."""
+    import re
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    decisions = (root / "DECISIONS.md").read_text(encoding="utf-8")
-    gap = (root / "REQUIREMENTS_GAP.md").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    model = (root / "docs" / "MODEL.md").read_text(encoding="utf-8")
 
-    assert "workbench video/protein | out_of_scope" not in decisions
-    assert "UI 产品化 | out_of_scope" not in decisions
-    assert "CalibrationOverrides" in decisions or "calib" in decisions.lower()
-    assert "已齐（MVP+）" in gap
-    assert "非完整 BI" in gap
-    assert "0.26" in gap
+    assert "out_of_scope" not in model
+    assert "CalibrationOverrides" in model
+    assert "视频" in model and "蛋白" in model and "多卡" in model
+    assert "不是实测硅片" in readme and "not measured silicon" in readme
+    assert "docs/MODEL.md" in readme
+    for doc, text in ((root / "README.md", readme), (root / "docs" / "MODEL.md", model)):
+        for target in re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", text):
+            if target.startswith(("http://", "https://", "mailto:")):
+                continue
+            assert (doc.parent / target).exists(), f"{doc.name}: broken link {target}"
 
 
 def test_llm_handcheck_path_unchanged_v023():
@@ -3292,12 +3299,12 @@ def test_report_has_econ_section_v024():
     assert "scaleup-8chip" in html
 
 
-def test_gap_marks_energy_cost_half_v024():
+def test_model_doc_marks_energy_cost_stub_v024():
     from pathlib import Path
 
-    gap = (Path(__file__).resolve().parents[1] / "REQUIREMENTS_GAP.md").read_text(encoding="utf-8")
-    assert "半齐（assumed stub）" in gap
-    assert "energy" in gap.lower() and "cost" in gap.lower()
+    model = (Path(__file__).resolve().parents[1] / "docs" / "MODEL.md").read_text(encoding="utf-8")
+    assert "assumed stub" in model
+    assert "能耗" in model and "成本" in model and "默认关闭" in model
 
 
 def test_llm_handcheck_path_unchanged_v024():

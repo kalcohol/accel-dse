@@ -93,7 +93,7 @@ class ScenarioPreset:
         )
 
 
-# v0.29: presets use real catalog configs (research/memory_specs_2026-10 §6.3).
+# v0.29: presets use real catalog configs (docs/research/memory_specs_2026-10 §6.3).
 # Ids of the three ≤0.28 presets are kept (deep links / tests); their memory
 # moved from invented geometry to shipping configurations.
 SCENARIO_PRESETS: dict[str, ScenarioPreset] = {

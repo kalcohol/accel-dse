@@ -1,6 +1,6 @@
 """Structured external-memory catalog (v0.29) — LPDDR5/5X/6 + HBM3/3E/4/4E.
 
-Source of truth: ``research/memory_specs_2026-10.{md,json}`` (verified 2026-10-08,
+Source of truth: ``docs/research/memory_specs_2026-10.{md,json}`` (verified 2026-10-08,
 §6 "proposed_selectors"). This module keeps a compact, data-driven copy of the
 selector table so the engine has no file-system dependency at import time.
 
@@ -93,7 +93,7 @@ def weakest(*tags: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Catalog data (compact copy of research/memory_specs_2026-10.json §6)
+# Catalog data (compact copy of docs/research/memory_specs_2026-10.json §6)
 # ---------------------------------------------------------------------------
 # Each LPDDR form: unit, widths{bits: tag}, rates{MTps: tag}, counts, caps{width:{GB:tag}}
 # Defaults chosen per research §6.2 (bold values).
@@ -759,7 +759,7 @@ def catalog_dict() -> dict[str, Any]:
             "bus = 数量×位宽；raw = bus×MT/s/8000 GB/s；可用 = raw×payload（LPDDR6 = 8/9）；"
             "有效 = 可用×efficiency（假设）；容量 = 数量×单颗（HBM：堆数×层数×die Gb/8），GB = 2^30 B"
         ),
-        "source": "research/memory_specs_2026-10.md §6 (2026-10-08)",
+        "source": "docs/research/memory_specs_2026-10.md §6 (2026-10-08)",
     }
 
 

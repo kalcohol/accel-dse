@@ -93,10 +93,10 @@ footer {
 <body>
 <header>
 <h1>accel_dse Metrics / wall report <small>v0.31.1</small></h1>
-<div class="meta">Generated 2026-10-08 18:13:56 · offline self-contained HTML (inline CSS, no external deps)</div>
+<div class="meta">Generated 2026-10-08 18:25:13 · offline self-contained HTML (inline CSS, no external deps)</div>
 </header>
 <div class="banner" id="assumptions">
-<strong>ASSUMPTIONS / UNCALIBRATED:</strong> Absolute TOPS, GB/s, frequency, C2C/fabric BW are assumed/uncalibrated; LLM/video/protein dims come from public HF configs where registered, else illustrative. Do not treat ms/GB as silicon-backed. See DECISIONS.md / REQUIREMENTS_GAP.md.
+<strong>ASSUMPTIONS / UNCALIBRATED:</strong> Absolute TOPS, GB/s, frequency, C2C/fabric BW are assumed/uncalibrated; LLM/video/protein dims come from public HF configs where registered, else illustrative. Do not treat ms/GB as silicon-backed. See docs/MODEL.md.
 </div>
 <nav>
 <a href="#walls">How to read walls</a>
@@ -226,7 +226,7 @@ only resident layers (R≥1) do. All absolute ms/GB/s are
 </section>
 <section id="packages">
 <h2>Memory catalog (LPDDR5/5X/6 · HBM3/3E/4/4E) — v0.29 structured</h2>
-<p class="note">Rebuilt from <code>research/memory_specs_2026-10</code>; every rate / width / capacity carries a provenance tag and each config shows the <strong>weakest</strong> one (JEDEC &gt; 疑似 JEDEC &gt; 厂商量产 &gt; 送样 &gt; 已发布 &gt; 推测). LPDDR5/5X: <strong>x64 package = 4×16-bit channels</strong> (x32 / vendor x96 also), 5500–10667 MT/s per generation. LPDDR6: <strong>x96 package = 4×24-bit channels (8×12-bit sub-ch)</strong>, 10667/12800/14400 MT/s, usable BW = raw × <strong>8/9</strong> (BL24 metadata), kept separate from efficiency. SOCAMM2 / LPCAMM2: 128-bit LPDDR5X modules. HBM: stacks × height × die density (HBM3/3E 1024-bit, HBM4/4E 2048-bit). Capacity GB = 2<sup>30</sup> B. BW = units × (width/8) × rate × payload × efficiency (efficiency <strong>assumed</strong> 0.70). CLI: <code>python3 -m accel_dse list-packages</code> · <code>workbench-scan --package-axis type|count|rate</code></p>
+<p class="note">Rebuilt from <code>docs/research/memory_specs_2026-10</code>; every rate / width / capacity carries a provenance tag and each config shows the <strong>weakest</strong> one (JEDEC &gt; 疑似 JEDEC &gt; 厂商量产 &gt; 送样 &gt; 已发布 &gt; 推测). LPDDR5/5X: <strong>x64 package = 4×16-bit channels</strong> (x32 / vendor x96 also), 5500–10667 MT/s per generation. LPDDR6: <strong>x96 package = 4×24-bit channels (8×12-bit sub-ch)</strong>, 10667/12800/14400 MT/s, usable BW = raw × <strong>8/9</strong> (BL24 metadata), kept separate from efficiency. SOCAMM2 / LPCAMM2: 128-bit LPDDR5X modules. HBM: stacks × height × die density (HBM3/3E 1024-bit, HBM4/4E 2048-bit). Capacity GB = 2<sup>30</sup> B. BW = units × (width/8) × rate × payload × efficiency (efficiency <strong>assumed</strong> 0.70). CLI: <code>python3 -m accel_dse list-packages</code> · <code>workbench-scan --package-axis type|count|rate</code></p>
 <p><strong>FLIP: wall memory → compute at hbm3_4s_12h16g_6400 (TPOT 20.818 ms, eff≈2294 GB/s)</strong></p>
 <p class="note">Catalog counts: {&#x27;lpddr&#x27;: 36, &#x27;lpddr5&#x27;: 6, &#x27;lpddr5x&#x27;: 18, &#x27;lpddr6&#x27;: 12, &#x27;hbm&#x27;: 25, &#x27;hbm3&#x27;: 4, &#x27;hbm3e&#x27;: 7, &#x27;hbm4&#x27;: 8, &#x27;hbm4e&#x27;: 6, &#x27;total&#x27;: 61, &#x27;compute_core&#x27;: 4, &#x27;compute_cluster_primary&#x27;: 4, &#x27;compute_total&#x27;: 21}</p>
 <h3>Catalog (peak GB/s derived)</h3>
@@ -517,7 +517,7 @@ cluster_256t                  cluster      256.0     16    16.00     77.7472    
 <section id="assumed-compute">
 <h2>Assumed compute extras (v0.26) — Softmax/RoPE/LN + dtype MAC</h2>
 <p class="note"><strong>Opt-in; defaults preserve handcheck.</strong> Coarse non-GEMM overhead <code>non_gemm_overhead</code> (default <strong>0</strong>) adds a fraction of GEMM compute time for Softmax/RoPE/LN/misc: <code>t_compute' = t_compute × (1 + overhead)</code>. Optional finer <code>softmax_frac</code> / <code>rope_frac</code> / <code>norm_frac</code> sum into overhead when provided. <strong>Not cycle-accurate.</strong></p>
-<p class="note">Optional <code>dtype_mac_factors</code> map (fp16/fp8/int8/int4; default all <strong>1.0</strong>) multiplies peak TOPS and divides GEMM compute time for the weight dtype. <strong>User/assumed — not silicon.</strong> Default bytes-only behavior unchanged. CLI: <code>--non-gemm-overhead</code> · <code>--dtype-mac-factor</code> JSON map. Web: Assumed compute extras. See DECISIONS §17.</p>
+<p class="note">Optional <code>dtype_mac_factors</code> map (fp16/fp8/int8/int4; default all <strong>1.0</strong>) multiplies peak TOPS and divides GEMM compute time for the weight dtype. <strong>User/assumed — not silicon.</strong> Default bytes-only behavior unchanged. CLI: <code>--non-gemm-overhead</code> · <code>--dtype-mac-factor</code> JSON map. Web: Assumed compute extras. See docs/MODEL.md §4.</p>
 </section>
 <section id="econ">
 <h2>Scenario presets × energy / cost — ASSUMED stub (not silicon)</h2>

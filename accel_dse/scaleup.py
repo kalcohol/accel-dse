@@ -88,7 +88,7 @@ COLLECTIVES_PER_LAYER = 2
 
 # v0.29 — per-collective fixed latency α (launch + sync + hop), ASSUMED.
 # Pure-bandwidth collectives were optimistic for decode (tiny messages):
-# research/related_tools_2026-10 §bug-1. Default 3 µs (range 2–5 µs typical
+# see docs/MODEL.md §5. Default 3 µs (range 2–5 µs typical
 # for NVLink/C2C all-reduce at small sizes). α=0 reproduces ≤0.28 exactly.
 DEFAULT_C2C_LATENCY_US = 3.0
 DEFAULT_SYNC_OVERLAP = 0.0  # fraction of α hidden behind compute; 0 = fully exposed

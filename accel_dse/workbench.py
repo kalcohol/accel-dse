@@ -282,7 +282,7 @@ class WorkbenchConfig:
     norm_frac: float | None = None
     # map e.g. {"fp16":1.0,"fp8":2.0,"int8":2.0,"int4":4.0}; None/all-1.0 = bytes-only
     dtype_mac_factors: dict | None = None
-    # v0.29 optimism fixes (ASSUMED knobs; see DECISIONS D-0.29-2/3)
+    # v0.29 optimism fixes (ASSUMED knobs; see docs/MODEL.md §5)
     c2c_latency_us: float = DEFAULT_C2C_LATENCY_US  # per-collective α (µs)
     sync_overlap: float = DEFAULT_SYNC_OVERLAP  # 0 = fully exposed
     attn_parallel: str = "tp"  # tp | dp (attention data-parallel)

@@ -1,6 +1,6 @@
 # 外部存储规格调研（用于重建 accel_dse 外存目录）— 2026-10-08
 
-> 仅调研 + 报告，未改任何代码。机器可读版：`research/memory_specs_2026-10.json`（含全部来源 URL key → URL 映射、选择器定义）。
+> 仅调研 + 报告，未改任何代码。机器可读版：`docs/research/memory_specs_2026-10.json`（含全部来源 URL key → URL 映射、选择器定义）。
 >
 > 标签约定：**JEDEC** = 已发布 JEDEC 标准/新闻稿明文；**JEDEC?** = 很可能在 JEDEC 规范内（厂商声明“JEDEC compliant”或 JEDEC 讲稿引用）但未从规范原文核实；**厂商量产** / **厂商送样** / **厂商公布**（论文/产品页上限，未确认量产档）；**推测** = 路线图、在研标准或本文推导。
 >
@@ -205,7 +205,7 @@
 | 13 | `LPDDR_PRESET` | 8 × 64b × 8.5 GT/s，64 GB | 8.5 不是档位（应 8.533）；64 GB = 8×8 GB 可行但偏小 | 8 × x64 @8533，8 × 16 GB = 128 GB |
 | 14 | `DEFAULT_MEM_RATE_SWEEP_HBM_V16=(6.4,9.2,8.0,10.0)` | 速率与代际脱钩 | 扫参会产生如 “HBM3 @10.0” 这类无效组合 | 速率必须依附代际选择 |
 | 15 | `MemGeometry.n_packages` 乘通道、`PackageOption` 强制 n_packages=1 | 概念混用 | “channel”在代码里实为 封装/stack，易误导 | 显式字段：`n_units`、`unit_width_bits`、`unit_kind ∈ {package, module, stack}` |
-| 16 | 文档 | `REQUIREMENTS_GAP.md:52,77`、`package_ranges.py` 顶部 docstring | 写有“LPDDR6 = x24 die（非用户猜的 48-bit）” | 同步更正为 x96 封装 + payload 8/9 |
+| 16 | 文档 | 当时的需求对照文档、`package_ranges.py` 顶部 docstring | 写有“LPDDR6 = x24 die（非用户猜的 48-bit）” | 同步更正为 x96 封装 + payload 8/9 |
 | 17 | `web/app.js` | 预设 id `lpddr_8x64_8533`、`hbm_hbm3e_4s` 等；单一下拉 | id 将随重构变化；单下拉无法表达维度 | 改为多选择器（见 §6），保留旧 id 映射 |
 
 ---
@@ -277,7 +277,7 @@ HBM 分支：
 
 ### 6.4 实现提示（供后续改代码时参考，本次未改）
 
-- 用数据表驱动（直接读 `research/memory_specs_2026-10.json` 或其精简版放进 `accel_dse/data/`），不要在 Python 里再硬编码元组。
+- 用数据表驱动（直接读 `docs/research/memory_specs_2026-10.json` 或其精简版放进 `accel_dse/data/`），不要在 Python 里再硬编码元组。
 - `ExternalMemory` 增加 `payload_factor`、`unit_kind`、`n_units`、`unit_width_bits`、`spec_tag` 字段；`peak_bandwidth_Bps` 返回 raw，另给 `payload_bandwidth_Bps`。
 - Web UI：一个下拉拆成 5–6 个级联下拉，非法组合（如 HBM3 @10000、LPDDR6 x64）直接不出现；每个组合显示标签徽章。
 - 旧 `package_id`（如 `lpddr_8x64_8533`、`hbm_hbm3e_8s`）做兼容映射，`lpddr6_*x24_*` 旧 id 映射到最近的 x96 组合并给出弃用提示。

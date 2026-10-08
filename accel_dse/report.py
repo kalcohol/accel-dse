@@ -560,7 +560,7 @@ def render_html(bundle: ReportBundle) -> str:
         "<strong>ASSUMPTIONS / UNCALIBRATED:</strong> Absolute TOPS, GB/s, "
         "frequency, C2C/fabric BW are assumed/uncalibrated; LLM/video/protein dims "
         "come from public HF configs where registered, else illustrative. Do not treat ms/GB as "
-        "silicon-backed. See DECISIONS.md / REQUIREMENTS_GAP.md.",
+        "silicon-backed. See docs/MODEL.md.",
         "</div>",
         "<nav>",
         '<a href="#walls">How to read walls</a>',
@@ -594,7 +594,7 @@ def render_html(bundle: ReportBundle) -> str:
         "</section>",
         '<section id="packages">',
         "<h2>Memory catalog (LPDDR5/5X/6 · HBM3/3E/4/4E) — v0.29 structured</h2>",
-        '<p class="note">Rebuilt from <code>research/memory_specs_2026-10</code>; '
+        '<p class="note">Rebuilt from <code>docs/research/memory_specs_2026-10</code>; '
         "every rate / width / capacity carries a provenance tag and each config "
         "shows the <strong>weakest</strong> one (JEDEC &gt; 疑似 JEDEC &gt; 厂商量产 &gt; "
         "送样 &gt; 已发布 &gt; 推测). LPDDR5/5X: <strong>x64 package = 4×16-bit "
@@ -735,7 +735,7 @@ def render_html(bundle: ReportBundle) -> str:
             "<strong>User/assumed — not silicon.</strong> Default bytes-only behavior "
             "unchanged. CLI: <code>--non-gemm-overhead</code> · "
             "<code>--dtype-mac-factor</code> JSON map. "
-            "Web: Assumed compute extras. See DECISIONS §17.</p>"
+            "Web: Assumed compute extras. See docs/MODEL.md §4.</p>"
         ),
         "</section>",
         '<section id="econ">',

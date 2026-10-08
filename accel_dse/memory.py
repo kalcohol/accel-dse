@@ -409,7 +409,7 @@ class ExternalMemory:
 # Assumed presets (uncalibrated — geometry-derived BW, efficiency assumed)
 # ---------------------------------------------------------------------------
 
-# v0.29: presets are real catalog configs (research/memory_specs_2026-10 §6.3).
+# v0.29: presets are real catalog configs (docs/research/memory_specs_2026-10 §6.3).
 # ≤0.28 used HBM 8×1024b @5.2 GT/s / 96 GB (no such grade; 12 GB/stack does not
 # exist) and LPDDR 8×64b @8.5 GT/s / 64 GB (8.5 is not a grade).
 #

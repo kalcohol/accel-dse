@@ -14,7 +14,7 @@ plus the Pareto frontier (non-dominated points) and the **SLO goodput**: the
 best y meeting the latency SLO, the config achieving it, max concurrent users
 and which constraint binds (TTFT / TPOT / capacity).
 
-LLM serving model (「假设」, DECISIONS §19 D-0.30-3 / §20 D-0.31-3):
+LLM serving model (「假设」, docs/MODEL.md §6):
   * decode runs at batch B continuously; TPOT_step(B) is the engine's per-user
     step interval (PP: max(mb, pp) × tick; spec decode: verify + draft).
     TPOT_decode = TPOT_step / E[tokens/step] (spec decode; E = 1 when off).

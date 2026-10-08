@@ -1,7 +1,7 @@
 """Design-space memory package catalog + compute hierarchy ranges (NOT silicon calib).
 
 v0.29 — memory side is now built from the structured, provenance-tagged catalog
-in ``mem_catalog.py`` (source: ``research/memory_specs_2026-10.{md,json}``).
+in ``mem_catalog.py`` (source: ``docs/research/memory_specs_2026-10.{md,json}``).
 All efficiencies remain **assumed / uncalibrated**; rates / widths / capacities
 carry provenance tags (JEDEC / 疑似 JEDEC / 厂商量产 / 送样 / 已发布 / 推测).
 

@@ -13,8 +13,8 @@ dist/
 serve.log
 *.log
 
-# Generated outputs (regenerate via CLI). Keep only files referenced by
-# README / docs / scripts so links and the series-catalog bake input work.
+# Generated outputs (regenerate via CLI). Keep a few example outputs and
+# out/hf_series_lookup.json (input of scripts/bake_series_catalog.py).
 out/*
 !out/.gitkeep
 !out/report.html
@@ -24,3 +24,7 @@ out/*
 !out/parallel_moe_8.csv
 !out/pareto_qwen3-32b_8.csv
 !out/hf_series_lookup.json
+
+# Local-only notes (not published)
+AGENTS.md
+local/
