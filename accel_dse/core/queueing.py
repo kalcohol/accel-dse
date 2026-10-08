@@ -130,10 +130,11 @@ def mdc_wait(lam: float, service: float, c: int, qs: tuple = (0.5, 0.9, 0.99), c
     a = lam * service
     if lam <= 0:
         return {"rho": 0.0, "stable": True, "mean": 0.0, "p_wait": 0.0, **{f"p{_pct(q)}": 0.0 for q in qs}}
-    if a >= c:
+    den = c / service - lam          # 0.53 fix: a hair below c can round to den = 0 (λ at exactly the fluid capacity)
+    if a >= c or den <= 0:
         return {"rho": a / c, "stable": False, "mean": math.inf, "p_wait": 1.0, **{f"p{_pct(q)}": math.inf for q in qs}}
     pw = erlang_c(c, a)
-    cond = 0.5 * (1 + cs2) / (c / service - lam)   # mean conditional wait (M/M/c: 1/(cμ − λ)) × (1 + c_s²)/2
+    cond = 0.5 * (1 + cs2) / den   # mean conditional wait (M/M/c: 1/(cμ − λ)) × (1 + c_s²)/2
     out = {"rho": a / c, "stable": True, "mean": pw * cond, "p_wait": pw}
     for q in qs:
         out[f"p{_pct(q)}"] = 0.0 if pw <= 1 - q else cond * math.log(pw / (1 - q))

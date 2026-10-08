@@ -451,4 +451,22 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
   - 前缀命中 0.5：prefill 池容量 13.0 → 20.8 req/s（同一 TTFT SLO 下 batch 4 → 8），KV 每请求 576 → 288 MiB；PD 仍是 decode 瓶颈，流体不变；合并 625 → 672 tok/s/卡；TTFT p90 PD 216 → 94、prefill 优先 114 → 53、分块 177 → 92 ms；SLO goodput prefill 优先 541、分块 552、PD 474。
   - 布局搜索（定长）：流体最佳是 decode 改 TP1（583 tok/s/卡），但 TPOT 变长，SLO goodput 只有 412；SLO 最佳仍是 decode TP2（474）。长度分布 + 前缀 0.3 时，SLO 最佳是 prefill TP4 × 4 + decode TP1 × 4（132 tok/s/卡），只搜切分时为 117。
 - **入口**：scenario `pd.prompt_cv / out_cv / length_mix / prefix_hit / prefix_on_decode / search_layouts`、`serving.prefix_cached`；响应 `pd.lengths`（来源、离散点、均值、有效 CV、`ctx_ratio`、`decode_ctx`、前缀）、`pd.layout_search`、每个模式的 `stable_rate_rps`、分块的 `chunk_share`；CLI `--pd-prompt-cv --pd-out-cv --pd-mix w:S:out,… --pd-prefix-hit --pd-prefix-not-on-decode --pd-search-layouts --prefix-cached`；Web PD 输入组「请求长度与前缀缓存」与「池布局搜索」表。
-- **不做**：长度感知调度（全部 FCFS）、prompt 与输出长度之外的请求异质性、缓存容量 / 淘汰 / 命中路由、decode 端共享前缀的 KV 读合并、两池的 batch 搜索（decode batch 是输入）、异构池（不同芯片 / 存储器）。
+- **不做**（0.53 补了缓存容量 / LRU 淘汰、异构池、布局搜索里的 decode batch，见 §18.3）：长度感知调度（全部 FCFS）、prompt 与输出长度之外的请求异质性、decode 端共享前缀的 KV 读合并、PD prefill 池内分块、部分前缀匹配（radix tree）。
+
+### 18.3 前缀缓存容量 / LRU 淘汰、异构池（0.53，默认关）
+
+默认（`prefix_len` = 0、两池同一芯片 / 存储器）走 0.52 代码路径，数值不变；显式 `pd.prefix_hit` > 0 时覆盖容量模型（与 0.52 相同）。
+
+- **前缀缓存容量**（`core/prefixcache.py`，「假设」）：工作集是 N = `pd.prefix_count`（默认 1000）个共享前缀（系统提示词 / few-shot 模板 / 多轮历史），每个长 `pd.prefix_len` tokens，按 Zipf(α = `pd.prefix_zipf`，默认 1；0 = 均匀) 流行度被独立请求（IRM）。缓存是整前缀 LRU，容量 K = 能放几个前缀；命中率用 **Che 近似**（Che / Tung / Wang 2002；Fricker / Robert / Roberts 2012）：特征时间 T 满足 Σ_i (1 − e^{−p_i T}) = K，条目 i 驻留概率 h_i = 1 − e^{−p_i T}，请求命中率 H = Σ_i p_i h_i。K ≥ N → H = 1（稳态，忽略冷启动）；K = 0 → H = 0。N ≤ 4096 精确求和；更大 N 前 1024 名精确、尾部按几何 rank 分箱（比 1.01，中点积分质量）——相对精确解误差 ≪ 10⁻⁵，与离散 LRU 仿真（IRM，热身后）误差 < 1 %。
+  - **容量**：每前缀足迹 = 该长度下的 KV + indexer + 循环状态（与 memplan 一致，计 TP 分片与 DP 组）；每副本 K = floor(容量 / 足迹)。容量默认 = 权重 + 活跃 batch KV + 运行时预留之后剩余的 DRAM（各流水级取 min 再 × DP），或 `pd.prefix_cache_GB`。prefill 池与 decode / 合并副本各自算一遍（batch 不同 → 剩余不同）。
+  - **路由**：随机（默认）→ 每个副本各自缓存全体前缀（H 用每副本 K）；`pd.prefix_affinity` → 前缀感知路由，副本分摊前缀（H 用总容量 K·replicas）。decode 池在 prefill 命中时也持有该前缀的概率 = Σ_i p_i h_i^P h_i^D / H_P（IRM 下独立 LRU）；KV 交接只传未缓存部分的期望比例。
+  - **队列 / 流体**：命中 / 未命中两类请求按权重混合进 pts（PD prefill 用 H_P，合并用 H_C），其余与 0.52 的 `prefix_hit` 相同。显式 `pd.prefix_hit` > 0 时关掉容量模型并告警。
+- **异构池**：`pd.prefill_chip`（芯片预设名或对象）与 `pd.prefill_mem_id`；None = 与 decode 池（scenario）相同。合并对照始终用 decode 池的芯片 / 存储器。闲置功率按卡计，两池同 `idle_W`（未按芯片区分）。
+- **布局搜索 · decode batch**（`pd.search_decode_batch`，与 `search_layouts` 联用）：每种 decode 布局在 {B/2, B, 2B, 4B} ∩ [1, 4096] 中取满足 TPOT SLO（满批流体 TPOT）的最高吞吐；SLO goodput 用该 batch。异构内存时更有用。
+- **量级**（同 §18.1：Qwen3-8B 1P + HBM3E TP2 batch 64，prompt 4096 / out 512，PD 2 + 6，SLO 400 / 10，load 0.8；前缀长 2048）：
+  - N = 1000（剩余 DRAM ≈ 600 GB / 副本，足迹 302 MB → K ≈ 1900）：H = 100 %，与显式 `prefix_hit` ≈ 0.5（p = 2048）同量级——合并 672 tok/s/卡、TTFT p90 PD 94 / 优先 53 / 分块 92 ms、SLO 474 / 541 / 552。
+  - N = 10⁵、α = 1：H_P = 57 %、H_D = 57 %（随机路由）；合并 651、p90 157 / 104 / 157、SLO 474 / 528 / 528。亲和路由 → H_D 68 %、H_C 71 %、合并 658。α = 0.6（更平）→ H ≈ 9 %，收益几乎消失。
+  - 给定容量：10 / 50 / 200 GB → H = 19 / 34 / 47 %，合并 goodput 634 / 640 / 646；命中率随容量单调升。
+  - 异构：prefill 改 100T → 流体 577 → 154 tok/s/卡（prefill 瓶颈），PD SLO goodput 0；prefill 只换 LPDDR5X（同 1P）→ 本例仍够 TTFT，与 baseline 相同。布局搜索 + decode batch：LPDDR5X decode、TPOT SLO 50 ms 时，SLO 最佳由 batch 64 改为 32（同 91 tok/s/卡）。
+- **入口**：`pd.prefix_len / prefix_count / prefix_zipf / prefix_cache_GB / prefix_affinity / prefill_chip / prefill_mem_id / search_decode_batch`；响应 `pd.prefix_cache`（策略、容量、足迹、K、命中率、来源）、`pd.lengths.prefix_hit_source`（`capacity` / `explicit` / `off`）、`pd.prefill.{chip,mem_id,hetero}`；CLI `--pd-prefix-len --pd-prefix-count --pd-prefix-zipf --pd-prefix-cache-GB --pd-prefix-affinity --pd-prefill-chip --pd-prefill-mem --pd-search-decode-batch`；Web「前缀缓存容量」「异构池」输入与「前缀缓存容量」表。
+- **不做**：部分前缀匹配（radix / 块粒度）、缓存预热与淘汰代价、队列模型更大 batch 对剩余 DRAM 的反馈、按芯片区分的闲置功率、PD prefill 池内分块、decode 端共享前缀的 KV 读合并、长度感知调度。

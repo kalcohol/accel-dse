@@ -3,6 +3,25 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.53.0] - 2026-10-09
+
+前缀缓存容量 + LRU（Che）淘汰模型、异构 PD 池、布局搜索里的 decode batch。全部「假设」、默认关；默认结果（1356 项指纹）与 0.52.0 逐字节一致。
+
+### Added
+- `core/prefixcache.py`：Zipf 工作集 + 整前缀 LRU 的 Che 近似命中率（N ≤ 4096 精确，更大 N 对数分箱）；容量 = 剩余 DRAM（或 `pd.prefix_cache_GB`）/ 前缀足迹；随机路由 vs `pd.prefix_affinity`；PD prefill / decode / 合并各自独立命中率，decode 在 prefill 命中时也持有该前缀的条件概率进入 KV 交接。显式 `pd.prefix_hit` > 0 覆盖容量模型。
+- 异构池：`pd.prefill_chip` / `pd.prefill_mem_id`（None = 与 decode 相同）；合并对照用 decode 池芯片 / 存储器。
+- 布局搜索 `pd.search_decode_batch`：每种 decode 布局在 {B/2, B, 2B, 4B} 中取满足 TPOT SLO 的最高吞吐。
+- CLI / Web 对应输入；响应 `pd.prefix_cache`、`pd.lengths.prefix_hit_source`、`pd.prefill.{chip,mem_id,hetero}`；建模说明 §18.3；测试 `tests/test_core_053.py`。
+
+### Fixed
+- `mdc_wait`：到达率贴着流体容量时 `c/service − λ` 舍入为 0 不再 ZeroDivisionError（标不稳定）。
+
+### Changed
+- `PDConfig` 新增 8 个字段（场景哈希随之变化）；默认值下 PD 报告与 0.52 相同。
+
+### 不做 / 待定
+- 部分前缀匹配、缓存预热 / 淘汰代价、队列 batch 对剩余 DRAM 的反馈、按芯片的闲置功率、PD prefill 池内分块、decode 端共享前缀 KV 读合并、长度感知调度；离散事件仿真对拍。
+
 ## [0.52.0] - 2026-10-09
 
 PD 报告的三项补充：请求长度分布、前缀缓存命中率、池布局搜索。全部「假设」、默认关；默认结果（1356 项指纹）与 0.51.0 逐字节一致。
@@ -21,7 +40,7 @@ PD 报告的三项补充：请求长度分布、前缀缓存命中率、池布�
 - `Serving` 新增 `prefix_cached`，`PDConfig` 新增 6 个字段（场景哈希随之变化）；默认值下 PD 报告与 0.51 相同（分块修正除外）。
 
 ### 不做 / 待定
-- 长度感知调度、缓存容量 / 淘汰 / 路由、decode 端共享前缀 KV 读合并、两池 batch 搜索、异构池、PD prefill 池内分块；离散事件仿真对拍。
+- 长度感知调度、缓存容量 / 淘汰 / 路由、decode 端共享前缀 KV 读合并、两池 batch 搜索、异构池、PD prefill 池内分块；离散事件仿真对拍。（0.53 已补容量 / LRU、异构池、布局搜索 decode batch）
 
 ## [0.51.0] - 2026-10-09
 

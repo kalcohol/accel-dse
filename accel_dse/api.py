@@ -130,6 +130,8 @@ def scenario_from_body(body: dict) -> Scenario:
         scn = Scenario.from_dict(d)
         get_model(scn.model)
         mem_catalog.parse_mem_id(scn.mem_id)
+        if scn.pd.prefill_mem_id is not None:
+            mem_catalog.parse_mem_id(scn.pd.prefill_mem_id)
     except ApiError:
         raise
     except (ValueError, TypeError, KeyError) as e:

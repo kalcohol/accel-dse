@@ -172,7 +172,14 @@ function syncInputs() {
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
   if ($('d2d-enabled') && S.sc) { $('d2d-enabled').checked = !!S.sc.d2d_enabled; if (S.cat) $('d2d-std').value = S.sc.d2d_std; d2dPaint(); }
   if ($('pd-enabled') && S.sc) { $('pd-enabled').checked = !!S.sc.pd.enabled; $('pd-inputs').hidden = !S.sc.pd.enabled; $('pd-kv_layerwise').checked = !!S.sc.pd.kv_layerwise;
-    $('pd-prefix_on_decode').checked = S.sc.pd.prefix_on_decode !== false; $('pd-search_layouts').checked = !!S.sc.pd.search_layouts; }
+    $('pd-prefix_on_decode').checked = S.sc.pd.prefix_on_decode !== false; $('pd-search_layouts').checked = !!S.sc.pd.search_layouts; $('pd-search_decode_batch').checked = !!S.sc.pd.search_decode_batch;
+    $('pd-prefix_affinity').checked = !!S.sc.pd.prefix_affinity;
+    if (S.cat) {
+      const sel = $('pd-prefill_chip'), pc = S.sc.pd.prefill_chip;
+      if (!sel.options.length) put(sel, h('option', { value: '' }, '同 decode'), ...Object.keys(S.cat.chips).map((k) => h('option', { value: k }, k)));
+      sel.value = typeof pc === 'string' ? pc : (pc && pc.name && S.cat.chips[pc.name] ? pc.name : '');
+    }
+    $('pd-prefill_mem_id').value = S.sc.pd.prefill_mem_id || ''; }
 }
 
 function seg(id, items, get, set) {
@@ -636,7 +643,7 @@ function renderPD(r) {
   const pd = r.pd;
   $('pd-box').hidden = !pd;
   if (!pd) return;
-  if (pd.error) { put($('pd-tbl')); $('pd-note').textContent = pd.error; return; }
+  if (pd.error) { put($('pd-tbl')); $('pd-note').textContent = pd.error; $('pdpc-box').hidden = true; return; }
   const c = pd.coloc, P = pd.prefill, D = pd.decode, K = pd.kv;
   const ok = (b) => b ? '' : 'color:var(--danger)';
   const head = h('tr', {}, h('th', { class: 'l' }, '模式'), h('th', { class: 'l' }, '卡'), h('th', {}, 'TTFT ms'), h('th', {}, 'TPOT ms'),
@@ -659,13 +666,32 @@ function renderPD(r) {
     + (pd.warnings.length ? ' ⚠ ' + pd.warnings.join('；') : '');
   renderPDQueue(pd.queue, pd.cards, pd.lengths);
   renderPDLayouts(pd.layout_search);
+  renderPDCache(pd.prefix_cache);
+  if (P.hetero) $('pd-note').textContent = `异构池：prefill ${P.chip} / ${P.mem_id}，decode ${D.chip} / ${D.mem_id}（合并对照用 decode 池的芯片与存储器）。` + $('pd-note').textContent;
+}
+function renderPDCache(pc) {
+  $('pdpc-box').hidden = !pc;
+  if (!pc) return;
+  $('pdpc-basis').textContent = `${pc.prefix_count} 个前缀 × ${pc.prefix_len} tok，Zipf α ${pc.zipf}，${pc.policy}；${pc.basis}`;
+  const head = h('tr', {}, h('th', { class: 'l' }, '缓存'), h('th', {}, '副本'), h('th', {}, '容量 GB', h('br'), '/ 副本'),
+    h('th', {}, '每前缀', h('br'), 'MB'), h('th', {}, '可存前缀', h('br'), '/ 副本'), h('th', {}, '命中率'), h('th', { class: 'l' }, '说明'));
+  const src = (x) => x.source === 'pd.prefix_cache_GB' ? '给定容量' : '剩余 DRAM（权重 + 活跃 KV 之后）';
+  const rows = [['prefill', 'PD · prefill 池'], ['decode', 'PD · decode 池'], ['coloc', '合并副本']].map(([k, nm]) => {
+    const x = pc[k];
+    const note = src(x) + (k === 'decode' ? `；prefill 命中时 decode 池也持有该前缀的概率 ${pct(x.holds_given_prefill_hit)}（只传未缓存部分 KV）` : '');
+    return h('tr', {}, h('td', { class: 'l' }, nm), h('td', {}, String(x.replicas)), h('td', {}, num(x.capacity_GB)), h('td', {}, num(x.footprint_MB)),
+      h('td', {}, String(x.K)), h('td', {}, h('b', {}, pct(x.hit))), h('td', { class: 'l small', style: 'white-space:normal;min-width:180px' }, note));
+  });
+  put($('pdpc-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
 }
 function renderPDLayouts(ls) {
   $('pdls-box').hidden = !ls;
   if (!ls) return;
   $('pdls-basis').textContent = `${ls.cards} 卡，${ls.candidates} 种布局${ls.truncated ? '（已截断）' : ''}，${ls.pairs} 对；${ls.basis}`;
+  const showB = ls.decode_batch_searched;
   const head = h('tr', {}, h('th', { class: 'l' }, 'prefill 布局 × 卡'), h('th', { class: 'l' }, 'decode 布局 × 卡'),
-    h('th', {}, 'prefill', h('br'), 'TTFT ms'), h('th', {}, 'decode', h('br'), 'TPOT ms'), h('th', {}, '流体 goodput', h('br'), 'tok/s/卡'),
+    h('th', {}, 'prefill', h('br'), 'TTFT ms'), h('th', {}, 'decode', h('br'), 'TPOT ms'),
+    ...(showB ? [h('th', {}, 'decode', h('br'), 'batch')] : []), h('th', {}, '流体 goodput', h('br'), 'tok/s/卡'),
     h('th', { class: 'l' }, '瓶颈'), h('th', {}, 'SLO goodput', h('br'), 'tok/s/卡'));
   const bs = ls.best_slo, cur = ls.current_layouts;
   const same = (a, b) => a && b && a.prefill_layout === b.prefill_layout && a.decode_layout === b.decode_layout && a.prefill_cards === b.prefill_cards;
@@ -674,7 +700,7 @@ function renderPDLayouts(ls) {
   const body = rows.map((r) => h('tr', { class: same(r, bs) ? 'best' : '' },
     h('td', { class: 'l' }, `${r.prefill_layout} × ${r.prefill_cards}`, same(r, cur) ? h('span', { class: 'tag', style: 'margin-left:6px' }, '当前布局') : null),
     h('td', { class: 'l' }, `${r.decode_layout} × ${r.decode_cards}`), h('td', {}, num(r.prefill_ttft_ms)), h('td', {}, num(r.decode_tpot_ms)),
-    h('td', {}, num(r.goodput_per_card)), h('td', { class: 'l' }, { prefill: 'prefill 池', decode: 'decode 池', kv: 'KV 传输' }[r.bottleneck]),
+    ...(showB ? [h('td', {}, String(r.decode_batch))] : []), h('td', {}, num(r.goodput_per_card)), h('td', { class: 'l' }, { prefill: 'prefill 池', decode: 'decode 池', kv: 'KV 传输' }[r.bottleneck]),
     h('td', {}, r.slo_goodput_per_card === undefined ? h('span', { class: 'muted' }, '未算') : h('b', {}, num(r.slo_goodput_per_card)))));
   put($('pdls-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
   $('pdls-note').textContent = bs ? `SLO 下最佳：prefill ${bs.prefill_layout} × ${bs.prefill_cards} + decode ${bs.decode_layout} × ${bs.decode_cards} → ${num(bs.slo_goodput_per_card)} tok/s/卡（流体 ${num(bs.goodput_per_card)}）。流体排名与 SLO 排名可以不同：流体只看容量，SLO 还看 TTFT / TPOT 尾部。` : '';
@@ -698,7 +724,7 @@ function renderPDQueue(q, cards, L) {
     if (!x.stable) note = '不稳定：' + (x.why || '');
     else if (k === 'pd') note = `prefill batch 上限 ${x.prefill.batch_cap}，排队均值 ${num(x.prefill.wait_ms.mean)} ms；decode 运行 batch ≈ ${num(x.decode.occupancy)}（p90 ${x.decode.running_p90}）/ ${x.decode.slots} 槽；KV 链路被集合通信占用 ${pct(x.kv.u_coll)}`;
     else if (k === 'coloc_prefill_first') note = `decode 时间占比 ${pct(x.decode.share)}，运行 batch ≈ ${num(x.decode.occupancy)}；新请求 prefill 时整批 decode 停顿`;
-    else note = `每请求 ${x.prefill.chunks} 块，融合迭代 ${num(x.prefill.iter_ms)} ms（无分块 ${num(x.decode.iter_ms_no_chunk)} ms），prefill 占用 ${pct(x.prefill.rho)}`;
+    else note = `每请求 ${Number.isInteger(x.prefill.chunks) ? x.prefill.chunks : num(x.prefill.chunks)} 块，融合迭代 ${num(x.prefill.iter_ms)} ms（无分块 ${num(x.decode.iter_ms_no_chunk)} ms），prefill 占用 ${pct(x.prefill.rho)}`;
     const t = x.ttft_ms;
     return h('tr', { class: x.slo_goodput_per_card > 0 && x.slo_goodput_per_card >= best ? 'best' : '' }, h('td', { class: 'l' }, k === 'pd' ? h('b', {}, names[k]) : names[k]),
       h('td', { style: ok(x.ttft_p90_ok) }, x.stable ? `${num(t.p50)}/${num(t.p90)}/${num(t.p99)}` : '—'),
@@ -710,9 +736,9 @@ function renderPDQueue(q, cards, L) {
   const b = q.pd_slo_best_split;
   $('pdq-note').textContent = '「SLO 到达率」= p90 TTFT 与 p90 TPOT 都满足 SLO（未设 SLO 时即稳定上限）的最大泊松到达率；SLO goodput = 该到达率 × 输出长度 / 卡数（DistServe 口径）。'
     + (b ? ` 同 ${cards} 卡 PD 在 SLO 下的最佳切分：prefill ${b.prefill_cards} + decode ${b.decode_cards} → ${num(b.slo_goodput_per_card)} tok/s/卡。` : '')
-    + (L && !L.plain ? ` 长度「假设」（${{ fixed: '固定', cv: '对数正态 8 档', mix: '离散分布' }[L.source]}）：prompt 均值 ${num(L.mean_prompt)}（CV ${num(L.prompt_cv_eff)}），输出均值 ${num(L.mean_out)}（CV ${num(L.out_cv_eff)}），decode 上下文按长度偏置取 ${L.decode_ctx}${L.prefix_hit ? `；前缀命中 ${pct(L.prefix_hit)}${L.prefix_on_decode ? '（KV 只传未缓存部分）' : '（KV 全量交接）'}` : ''}。` : '')
+    + (L && !L.plain ? ` 长度「假设」（${{ fixed: '固定', cv: '对数正态 8 档', mix: '离散分布' }[L.source]}）：prompt 均值 ${num(L.mean_prompt)}（CV ${num(L.prompt_cv_eff)}），输出均值 ${num(L.mean_out)}（CV ${num(L.out_cv_eff)}），decode 上下文按长度偏置取 ${L.decode_ctx}${L.prefix_hit ? `；前缀命中 ${pct(L.prefix_hit)}${L.prefix_hit_source === 'capacity' ? '（容量模型，PD prefill 池）' : ''}${L.prefix_on_decode ? '（KV 只传未缓存部分）' : '（KV 全量交接）'}` : ''}。` : '')
     + ' 稳定上限：' + Object.entries(q.modes).map(([k, x]) => `${names[k]} ${num(x.stable_rate_rps)}`).join('，') + ' req/s。'
-    + ' 分位数逐项相加（偏保守）；未建模：抢占 / 换出、前缀缓存容量与淘汰、调度器开销。';
+    + ' 分位数逐项相加（偏保守）；未建模：抢占 / 换出、调度器开销（前缀缓存容量与 LRU 淘汰只在设了「前缀长度」时按 Che 近似计入，见上表）。';
 }
 function budgetMark(x) {
   if (x.budget_ok === false) return h('span', { class: 'tag danger', title: '超出预算：' + (x.budget_violations || []).join(', ') }, '超预算');
@@ -1222,8 +1248,14 @@ async function init() {
     schedule();
   });
   mixInp._sync = () => { mixInp.value = (S.sc.pd.length_mix || []).map((r) => r.join(':')).join(', '); mixInp.classList.remove('bad'); };
-  for (const k of ['prefix_on_decode', 'search_layouts'])
+  for (const k of ['prefix_on_decode', 'search_layouts', 'prefix_affinity', 'search_decode_batch'])
     $('pd-' + k).addEventListener('change', (e) => { S.sc.pd[k] = e.target.checked; schedule(); });
+  bindNumber('pd-prefix_len', () => S.sc.pd.prefix_len || null, (x) => (S.sc.pd.prefix_len = x === null ? 0 : x), { int: true, nullable: true, check: (x) => x >= 0 });
+  bindNumber('pd-prefix_count', () => S.sc.pd.prefix_count ?? 1000, (x) => (S.sc.pd.prefix_count = x), { int: true, check: (x) => x >= 1 && x <= 1e9 });
+  bindNumber('pd-prefix_zipf', () => S.sc.pd.prefix_zipf ?? 1, (x) => (S.sc.pd.prefix_zipf = x), { check: (x) => x >= 0 && x <= 3 });
+  bindNumber('pd-prefix_cache_GB', () => S.sc.pd.prefix_cache_GB ?? null, (x) => (S.sc.pd.prefix_cache_GB = x), { nullable: true, check: (x) => x >= 0 });
+  $('pd-prefill_chip').addEventListener('change', (e) => { S.sc.pd.prefill_chip = e.target.value || null; schedule(); });
+  $('pd-prefill_mem_id').addEventListener('change', (e) => { S.sc.pd.prefill_mem_id = e.target.value.trim() || null; schedule(); });
   $('pd-enabled').addEventListener('change', (e) => { S.sc.pd.enabled = e.target.checked; $('pd-inputs').hidden = !e.target.checked; schedule(); });
   $('pd-kv_layerwise').addEventListener('change', (e) => { S.sc.pd.kv_layerwise = e.target.checked; schedule(); });
   bindNumber('mem_eff', () => S.sc.mem_eff, (x) => (S.sc.mem_eff = x), { nullable: true });

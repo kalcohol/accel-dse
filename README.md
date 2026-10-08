@@ -20,6 +20,7 @@
 - **0.50**：prefill / decode 分离（`--pd`，prefill 池与 decode 池可用不同卡数与布局，KV 交接按互连层计时，给出 TTFT / TPOT / goodput 并与同卡数合并服务对照；稳态流体模型，第一版）；三层互连——可选的封装内 D2D（默认关 = 单片大 die；打开默认 UCIe-A 48 GT/s，可选 UCIe-A 64G / UCIe-S 32G / BoW / NVLink-C2C，`--d2d --d2d-std`）、节点内 scale-up、跨节点网络（`--node-cards --net-GBps`）。默认结果不变。
 - **0.51**：PD 排队与尾延迟（解析近似「假设」）：同一泊松到达率下比较 PD 分离、合并 prefill 优先、合并分块 prefill 的 TTFT p50 / p90 / p99、TPOT 分位、最长 token 间隔与 SLO goodput；decode 连续批处理按 Little 不动点、KV 与池内集合通信争用、PD 能耗（`--pd-load --pd-rate --pd-chunk`）。默认结果不变。
 - **0.52**：PD 请求长度分布（`--pd-prompt-cv / --pd-out-cv` 或离散 `--pd-mix`，M/G/1 排队、长度偏置的 decode 上下文、按分布的容量）、前缀缓存命中率（`--pd-prefix-hit`，只 prefill 未缓存部分、KV 交接相应缩小）、池布局搜索（`--pd-search-layouts`）；修正合并分块 prefill 的平均迭代时间。全部「假设」，默认结果不变。
+- **0.53**：PD 前缀缓存容量 + LRU 淘汰（`--pd-prefix-len / --pd-prefix-count / --pd-prefix-zipf`：Zipf 工作集、Che 近似，命中率由剩余 DRAM 或 `--pd-prefix-cache-GB` 推出，`--pd-prefix-affinity` 前缀感知路由；显式 `--pd-prefix-hit` 仍可覆盖）、异构池（`--pd-prefill-chip / --pd-prefill-mem`，prefill 池可用不同芯片 / 存储器）、布局搜索里的 decode batch（`--pd-search-decode-batch`）。全部「假设」、默认关，默认结果不变。
 - **映射是设计变量**：输出驻留（OS）、权重驻留（边缘加载 / 宽面广播）、OS + GEMV 单元、可重构，逐算子计算 MAC 界与 SRAM 供数界；芯片不原生支持的格式计入反量化开销。
 - **逐 rank 算子图**：TP / PP / 注意力 DP / EP / ETP，单卡就是全 1 布局，没有第二条路径。
 - **存储规划与调度**：权重 / KV 的 SRAM 驻留、staging、逐 stage 容量；每级 `max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC`，绑定瓶颈与有效 MAC 比例直接给出。

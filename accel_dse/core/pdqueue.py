@@ -237,7 +237,7 @@ def _pd_mode(ctx: dict, lam: float) -> dict:
 
 
 def _coloc_prefill_first(ctx: dict, lam: float) -> dict:
-    cp, r_c, pts, out, B = ctx["cpool"], ctx["r_c"], ctx["pts"], ctx["out"], ctx["B"]
+    cp, r_c, pts, out, B = ctx["cpool"], ctx["r_c"], ctx.get("pts_c", ctx["pts"]), ctx["out"], ctx["B"]
     lam_c = lam / r_c
     pre = _prefill_server(cp, lam_c, pts)
     res = {"lambda_rps": lam, "stable": pre is not None}
@@ -299,7 +299,7 @@ def _chunk_plan(S: int, p: int, C: int) -> tuple[int, float, float]:
 
 
 def _coloc_chunked(ctx: dict, lam: float) -> dict:
-    cp, r_c, pts, out, B, C = ctx["cpool"], ctx["r_c"], ctx["pts"], ctx["out"], ctx["B"], ctx["C"]
+    cp, r_c, pts, out, B, C = ctx["cpool"], ctx["r_c"], ctx.get("pts_c", ctx["pts"]), ctx["out"], ctx["B"], ctx["C"]
     lam_c = lam / r_c
     ws = [w for w, _, _ in pts]
     res = {"lambda_rps": lam, "stable": False, "chunk_tokens": C}
@@ -438,6 +438,8 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
     out = {"lambda_rps": lam, "load": None if pd.rate_rps else pd.load, "chunk_tokens": pd.chunk_tokens,
            "basis": "排队与连续批处理的解析近似「假设」：泊松到达、" + ("请求长度固定" if ctx["len"].trivial else
                     "请求长度按离散分布（M/G/1）") + ("、前缀缓存命中率 " + f"{pd.prefix_hit:.0%}" if pd.prefix_hit else "")
+                    + ("、前缀缓存容量模型（LRU / Che：PD prefill 命中 {:.0%}、合并 {:.0%}；命中 / 未命中两类请求按 M/G/1）"
+                       .format(*ctx["prefix_hits"]) if ctx.get("prefix_hits") else "")
                     + "、M/D/1 / Erlang C、阶段级融合的分块 prefill；分位数逐项相加（偏保守）"}
     if lam <= 0:
         out["error"] = "PD 稳态容量为 0（放不下或 SLO 下无可行 prefill），不做排队估计"
@@ -483,6 +485,8 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
         kv = _wsum(ws, [ctx["kv_xfer"][(S, p)] for _, S, p in pts])
         en["pd"] = _energy(_mix(x["_pre"]["rs"], pts, x["_dec"]["r"], o, {ctx["tier"] if ctx["tier"] == "net" else "link": kv}),
                            cards / lam / o, table)
+    pts = ctx.get("pts_c", pts)                 # colocated replicas: their own prefix-cache hit mix (0.53)
+    ws = [w for w, _, _ in pts]
     y = modes.get("coloc_prefill_first")
     if y and y["stable"]:
         en["coloc_prefill_first"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["r"], o, {}), cards / lam / o, table)

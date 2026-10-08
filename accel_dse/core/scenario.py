@@ -150,6 +150,17 @@ class PDConfig:
     prefix_hit: float = 0.0         # fraction of each prompt already in the prefix cache (skips its prefill)
     prefix_on_decode: bool = True   # the decode pool holds the same prefix → only the uncached KV is transferred
     search_layouts: bool = False    # also search the pools' layouts (not only the card split)
+    # 0.53 — heterogeneous pools: the prefill pool may use another chip profile and/or memory (None = same as decode)
+    prefill_chip: Chip | None = None
+    prefill_mem_id: str | None = None
+    # 0.53 — prefix-cache capacity + LRU eviction (Che approximation; all 「假设」).  prefix_len = 0 → off.
+    # An explicit prefix_hit > 0 overrides the emergent hit rate.
+    prefix_len: int = 0             # shared-prefix length, tokens (system prompt / few-shot / multi-turn history)
+    prefix_count: int = 1000        # distinct prefixes in the working set (N)
+    prefix_zipf: float = 1.0        # Zipf popularity exponent (0 = uniform)
+    prefix_cache_GB: float | None = None   # cache capacity per replica; None = DRAM left after weights + active KV
+    prefix_affinity: bool = False   # prefix-aware routing: replicas partition the prefixes (aggregate capacity)
+    search_decode_batch: bool = False   # layout search (0.53): also pick each decode layout's batch (B/2 … 4B, TPOT SLO)
 
     def __post_init__(self):
         for k in ("prefill_cards", "decode_cards"):
@@ -194,6 +205,25 @@ class PDConfig:
                     raise ValueError("pd.length_mix: prompt / out_len must be integers in [1, 2097152]")
         if mix and (self.prompt_cv or self.out_cv):
             raise ValueError("pd.length_mix and pd.prompt_cv / pd.out_cv are alternatives — set one")
+        if self.prefill_chip is not None and not isinstance(self.prefill_chip, Chip):
+            raise ValueError("pd.prefill_chip must be a chip preset name, a chip object or null")
+        if self.prefill_mem_id is not None and (not isinstance(self.prefill_mem_id, str) or not self.prefill_mem_id
+                                                or len(self.prefill_mem_id) > 64):
+            raise ValueError("pd.prefill_mem_id must be a memory id or null")
+        if isinstance(self.prefix_len, bool) or not isinstance(self.prefix_len, int) or not 0 <= self.prefix_len <= 1 << 21:
+            raise ValueError("pd.prefix_len must be an integer in [0, 2097152]")
+        if isinstance(self.prefix_count, bool) or not isinstance(self.prefix_count, int) \
+                or not 1 <= self.prefix_count <= 10 ** 9:
+            raise ValueError("pd.prefix_count must be an integer in [1, 1e9]")
+        if isinstance(self.prefix_zipf, bool) or not isinstance(self.prefix_zipf, (int, float)) \
+                or not 0 <= self.prefix_zipf <= 3:
+            raise ValueError("pd.prefix_zipf must be in [0, 3]")
+        if self.prefix_cache_GB is not None and (isinstance(self.prefix_cache_GB, bool)
+                                                 or not isinstance(self.prefix_cache_GB, (int, float))
+                                                 or not 0 <= self.prefix_cache_GB < 1e7):
+            raise ValueError("pd.prefix_cache_GB must be ≥ 0 or null")
+        if not isinstance(self.prefix_affinity, bool) or not isinstance(self.search_decode_batch, bool):
+            raise ValueError("pd.prefix_affinity / pd.search_decode_batch must be booleans")
 
 
 @dataclass(frozen=True)
@@ -329,10 +359,14 @@ def _from_plain(cls, d):
     if unknown:
         raise ValueError(f"{cls.__name__}: unknown keys {sorted(unknown)}")
     kw = {}
-    hints = {"chip": Chip, "link": Link, "d2d": Link, "net": Link, "pd": PDConfig, "prefill_layout": Layout, "layout": Layout, "serving": Serving, "formats": FormatSupport,
+    hints = {"chip": Chip, "prefill_chip": Chip, "link": Link, "d2d": Link, "net": Link, "pd": PDConfig, "prefill_layout": Layout, "layout": Layout, "serving": Serving, "formats": FormatSupport,
              "workload": Workload}
     for k, v in d.items():
-        if k in hints and isinstance(v, dict):
+        if k == "prefill_chip" and isinstance(v, str):
+            if v not in CHIPS:
+                raise ValueError(f"PDConfig.prefill_chip: unknown chip preset {v!r} (one of {', '.join(CHIPS)})")
+            kw[k] = CHIPS[v]
+        elif k in hints and isinstance(v, dict):
             kw[k] = _from_plain(hints[k], v)
         elif k in ("formats_override", "rates") and isinstance(v, list):
             kw[k] = tuple(tuple(x) for x in v)

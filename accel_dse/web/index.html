@@ -210,6 +210,22 @@
         <label title="离散长度分布：权重:prompt:输出, …（例 0.7:1024:256, 0.3:11264:1109）；填了就替代上面的 CV 与 prompt / 输出长度">长度分布（离散）<input type="text" id="pd-length_mix" placeholder="权重:prompt:输出, …"></label>
         <label class="inline" title="decode 池也持有同一前缀（共享系统提示词 / 会话粘性路由）→ 只传未缓存部分的 KV；不勾 = 传全部 KV"><input type="checkbox" id="pd-prefix_on_decode"> decode 池也有该前缀</label>
         <label class="inline" title="把两池的布局也当设计变量：每副本 1/2/4/…/64 卡的所有布局 × 同总卡数切分（较慢）"><input type="checkbox" id="pd-search_layouts"> 搜索池布局</label>
+        <label class="inline" title="与「搜索池布局」一起用：每种 decode 布局再在 B/2、B、2B、4B 中选满足 TPOT SLO（满批流体 TPOT）的最高吞吐 batch（异构内存时更有用）"><input type="checkbox" id="pd-search_decode_batch"> 搜索 decode batch</label>
+        <div class="small muted">前缀缓存容量（0.53）<span class="tag assume">假设</span> 命中率由容量 / 工作集推出（LRU，Che 近似）；上面「前缀命中率」非 0 时以它为准</div>
+        <div class="row3">
+          <label title="共享前缀长度（系统提示词 / few-shot 模板 / 多轮历史），token；0 / 空 = 不用容量模型">前缀长度 tok<input type="number" id="pd-prefix_len" min="0" step="512"></label>
+          <label title="工作集里不同前缀的个数 N（每个请求带其中一个）">前缀种数<input type="number" id="pd-prefix_count" min="1" step="100"></label>
+          <label title="前缀流行度 Zipf 指数 α（p_i ∝ i^−α；0 = 均匀）">Zipf α<input type="number" id="pd-prefix_zipf" min="0" max="3" step="0.1"></label>
+        </div>
+        <div class="row3">
+          <label title="每个副本的前缀缓存容量 GB；空 = 权重 + 活跃 batch 的 KV 之后剩余的 DRAM">缓存 GB / 副本<input type="number" id="pd-prefix_cache_GB" min="0" step="10"></label>
+        </div>
+        <label class="inline" title="前缀感知路由（如按前缀哈希）：各副本分摊不同前缀 → 按总容量算命中率；不勾 = 随机路由，每个副本各自缓存全体前缀"><input type="checkbox" id="pd-prefix_affinity"> 前缀感知路由</label>
+        <div class="small muted">异构池（0.53）：prefill 池可用不同芯片 / 存储器（默认与 decode 池相同）；合并对照用 decode 池的芯片与存储器</div>
+        <div class="row3">
+          <label title="prefill 池芯片预设；「同 decode」= 左侧当前芯片（含自定义修改）">prefill 芯片<select id="pd-prefill_chip"></select></label>
+          <label title="prefill 池存储器 id（例 lpddr5x_4x64_8533_16g / hbm3e_8s_12h24g_9200）；空 = 与 decode 池相同">prefill 存储器 id<input type="text" id="pd-prefill_mem_id" placeholder="同 decode"></label>
+        </div>
       </div>
     </div>
   </section>
@@ -275,6 +291,10 @@
       <h4>PD 分离 vs 合并 <span class="small muted">稳态流体模型「假设」：goodput = min(prefill, decode, KV 传输) 请求率 × 输出长度；合并的有效 TPOT = TPOT / decode 时间占比</span></h4>
       <div class="scroll"><table class="tbl" id="pd-tbl"></table></div>
       <div class="small muted" id="pd-note"></div>
+      <div id="pdpc-box" hidden>
+        <h4>前缀缓存容量 <span class="small muted" id="pdpc-basis"></span></h4>
+        <div class="scroll"><table class="tbl" id="pdpc-tbl"></table></div>
+      </div>
       <h4>排队与尾延迟 <span class="small muted" id="pdq-basis"></span></h4>
       <div class="scroll"><table class="tbl" id="pdq-tbl"></table></div>
       <div class="small muted" id="pdq-note"></div>

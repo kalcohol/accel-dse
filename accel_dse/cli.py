@@ -146,6 +146,22 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="PD: the decode pool does not hold the cached prefix (transfer the full KV)")
     p.add_argument("--pd-search-layouts", dest="pd_search_layouts", action="store_true",
                    help="PD: also search the pools' layouts (not only the card split)")
+    p.add_argument("--pd-prefill-chip", dest="pd_prefill_chip", default=None,
+                   help="PD (0.53): chip preset of the prefill pool, 100T | 1P | H100-like (default: same as decode)")
+    p.add_argument("--pd-prefill-mem", dest="pd_prefill_mem", default=None,
+                   help="PD (0.53): memory id of the prefill pool (default: same as decode)")
+    p.add_argument("--pd-prefix-len", dest="pd_prefix_len", type=int, default=None,
+                   help="PD (0.53): shared-prefix length, tokens → prefix-cache capacity + LRU model (0 = off)")
+    p.add_argument("--pd-prefix-count", dest="pd_prefix_count", type=int, default=None,
+                   help="PD (0.53): distinct prefixes in the working set (default 1000)")
+    p.add_argument("--pd-prefix-zipf", dest="pd_prefix_zipf", type=float, default=None,
+                   help="PD (0.53): Zipf popularity exponent of the prefixes (default 1.0; 0 = uniform)")
+    p.add_argument("--pd-prefix-cache-GB", dest="pd_prefix_cache_GB", type=float, default=None,
+                   help="PD (0.53): prefix-cache capacity per replica, GB (default: DRAM left after weights + active KV)")
+    p.add_argument("--pd-prefix-affinity", dest="pd_prefix_affinity", action="store_true",
+                   help="PD (0.53): prefix-aware routing (replicas partition the prefixes)")
+    p.add_argument("--pd-search-decode-batch", dest="pd_search_decode_batch", action="store_true",
+                   help="PD (0.53, with --pd-search-layouts): also search each decode layout's batch (B/2…4B, TPOT SLO)")
     for flag, dest, hlp in _BUDGET_FLAGS:
         p.add_argument(flag, dest=dest, type=float, default=None, help=f"budget (0.49, user-supplied): {hlp}")
     p.add_argument("--json", action="store_true", help="print raw JSON")
@@ -223,7 +239,10 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                     "prefill_cards": a.pd_prefill_cards, "decode_cards": a.pd_decode_cards,
                     "kv_GBps": a.pd_kv_GBps, "kv_layerwise": a.pd_layerwise}
         for k, dest in (("load", "pd_load"), ("rate_rps", "pd_rate"), ("chunk_tokens", "pd_chunk"),
-                        ("prompt_cv", "pd_prompt_cv"), ("out_cv", "pd_out_cv"), ("prefix_hit", "pd_prefix_hit")):
+                        ("prompt_cv", "pd_prompt_cv"), ("out_cv", "pd_out_cv"), ("prefix_hit", "pd_prefix_hit"),
+                        ("prefill_chip", "pd_prefill_chip"), ("prefill_mem_id", "pd_prefill_mem"),
+                        ("prefix_len", "pd_prefix_len"), ("prefix_count", "pd_prefix_count"),
+                        ("prefix_zipf", "pd_prefix_zipf"), ("prefix_cache_GB", "pd_prefix_cache_GB")):
             if getattr(a, dest, None) is not None:
                 sc["pd"][k] = getattr(a, dest)
         if getattr(a, "pd_mix", None):
@@ -232,6 +251,10 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
             sc["pd"]["prefix_on_decode"] = False
         if getattr(a, "pd_search_layouts", False):
             sc["pd"]["search_layouts"] = True
+        if getattr(a, "pd_prefix_affinity", False):
+            sc["pd"]["prefix_affinity"] = True
+        if getattr(a, "pd_search_decode_batch", False):
+            sc["pd"]["search_decode_batch"] = True
     body = {"chip_preset": a.chip, "scenario": sc}
     en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
                                      "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net")
@@ -353,6 +376,8 @@ def cmd_eval(a) -> dict:
         print(f"PD: prefill {p_['cards']} cards ({p_['replicas']} × {p_['layout']}, batch {p_['batch']}, {p_['ttft_ms']:.0f} ms)  "
               f"decode {d_['cards']} cards ({d_['replicas']} × {d_['layout']}, batch {d_['batch']})  "
               f"KV {k_['bytes_per_req'] / 2**20:.1f} MiB/req, {k_['t_ms']:.2f} ms (exposed {k_['exposed_ms']:.2f})")
+        if p_.get("hetero"):
+            print(f"    heterogeneous pools: prefill {p_['chip']} / {p_['mem_id']}  decode {d_['chip']} / {d_['mem_id']}")
         print(f"    TTFT {pd['ttft_ms']:.0f} ms  TPOT {pd['tpot_ms']:.2f} ms  goodput {pd['goodput_per_card']:.1f} tok/s/card  "
               f"bottleneck {pd['bottleneck']}"
               + (f"  best split {pd['best_split']['prefill_cards']}P+{pd['best_split']['decode_cards']}D "
@@ -366,9 +391,17 @@ def cmd_eval(a) -> dict:
                   f"mean out {L['mean_out']:.0f} (cv {L['out_cv_eff']:.2f})  decode ctx {L['decode_ctx']}"
                   + (f"  prefix hit {L['prefix_hit']:.0%}" + ("" if L["prefix_on_decode"] else " (full KV hand-off)")
                      if L["prefix_hit"] else ""))
+        if pc := pd.get("prefix_cache"):
+            print(f"  prefix cache 「假设」 {pc['policy']}: {pc['prefix_count']} prefixes × {pc['prefix_len']} tok, "
+                  f"Zipf {pc['zipf']:g}, {'affinity routing' if pc['affinity'] else 'random routing'}")
+            for k, nm in (("prefill", "PD prefill"), ("decode", "PD decode"), ("coloc", "colocated")):
+                x = pc[k]
+                print(f"    {nm:10s} {x['replicas']} replicas × {x['K']} prefixes ({x['capacity_GB']:.1f} GB / "
+                      f"{x['footprint_MB']:.1f} MB each, {x['source']})  hit {x['hit']:.1%}"
+                      + (f"  holds | prefill hit {x['holds_given_prefill_hit']:.1%}" if k == "decode" else ""))
         if (q := pd.get("queue")) and "modes" in q:
             print(f"  queueing at {q['lambda_rps']:.3g} req/s"
-                  + (f" ({q['load']:.0%} of PD capacity)" if q.get("load") else "") + "  「假设」 Poisson, " + ("M/D/1" if (pd.get("lengths") or {}).get("source", "fixed") == "fixed" else "M/G/1")
+                  + (f" ({q['load']:.0%} of PD capacity)" if q.get("load") else "") + "  「假设」 Poisson, " + ("M/D/1" if (pd.get("lengths") or {}).get("source", "fixed") == "fixed" and not pd.get("prefix_cache") else "M/G/1")
                   + ", Erlang C")
             names = {"pd": "PD", "coloc_prefill_first": "colocated prefill-first", "coloc_chunked":
                      f"colocated chunked ({q['chunk_tokens']} tok)"}
@@ -392,7 +425,7 @@ def cmd_eval(a) -> dict:
             for r in ls["rows"][:8]:
                 slo = f"  SLO {r['slo_goodput_per_card']:.1f}" if "slo_goodput_per_card" in r else ""
                 print(f"    P {r['prefill_layout']} ×{r['prefill_cards']}  D {r['decode_layout']} ×{r['decode_cards']}  "
-                      f"fluid {r['goodput_per_card']:.1f} tok/s/card ({r['bottleneck']}){slo}")
+                      f"{'batch '+str(r['decode_batch'])+'  ' if ls.get('decode_batch_searched') else ''}fluid {r['goodput_per_card']:.1f} tok/s/card ({r['bottleneck']}){slo}")
             if b := ls.get("best_slo"):
                 print(f"    best under SLO: P {b['prefill_layout']} ×{b['prefill_cards']}  D {b['decode_layout']} "
                       f"×{b['decode_cards']}  {b['slo_goodput_per_card']:.1f} tok/s/card")
