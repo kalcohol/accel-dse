@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """V3 cross-tool reference: run GenZ-LLM (pip genz-llm) on the same abstract
-systems and store its decode latencies in tests/data/genz_reference.json.
+systems and store its decode latencies in accel_dse/data/genz_reference.json.
 
 Run inside a venv with GenZ installed, e.g.  /tmp/genzvenv/bin/python scripts/genz_reference.py
 GenZ has no mapping / SRAM-port model (ideal compute at the stated FLOPS), so
@@ -15,7 +15,7 @@ from pathlib import Path
 warnings.filterwarnings("ignore")
 from GenZ import decode_moddeling  # noqa: E402
 
-OUT = Path(__file__).resolve().parents[1] / "tests" / "data" / "genz_reference.json"
+OUT = Path(__file__).resolve().parents[1] / "accel_dse" / "data" / "genz_reference.json"
 rows = []
 for bw in (191, 6600):
     for ctx in (1024, 4096):

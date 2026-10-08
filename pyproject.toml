@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "accel-dse"
-version = "0.31.1"
-description = "Analytical design-space exploration (DSE) workbench for inference-only NPU/ASIC: LLM / video DiT / protein, HBM/LPDDR, multi-chip TP/PP/EP"
+version = "0.40.0"
+description = "Analytical design-space exploration for LLM inference accelerators: models as released, mapping as a design variable, exact layout/batch search"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -14,7 +14,6 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
-web = ["fastapi>=0.110", "uvicorn>=0.27"]
 
 [project.scripts]
 accel-dse = "accel_dse.cli:main"
@@ -27,4 +26,4 @@ include = ["accel_dse*"]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-accel_dse = ["data/*.json", "web/*"]
+accel_dse = ["data/*.json", "data/releases/*.json", "web/*"]

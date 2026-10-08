@@ -3,13 +3,24 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
-## [Unreleased]
+## [0.40.0] - 2026-10-08
+
+核心重写（core v2）。旧引擎、旧 Web 与旧命令行已移除，API 与 CLI 不向后兼容。
 
 ### Added
-- 英文版 README（`README.en.md`）；中文 README 顶部导航精简为 English · 建模说明 · 更新日志 · MIT，移除内嵌英文摘要。
+- 模型按发布建模：从 HF config 与 safetensors 头读取逐角色参数与存储 dtype（fp8 block、MXFP4、NVFP4、int4 AWQ 等），55 个发布与总量偏差 ≤0.5%；官方量化版为独立条目；三轴标签（来源 × 覆盖 × dtype），未逐项建模的结构标「架构代理」。
+- 逐 rank 算子图：TP / PP / 注意力 DP / EP / ETP，单卡与多卡同一路径。
+- 映射作为设计变量：OS、WS 边缘加载、WS 宽面广播、OS + GEMV、可重构；逐算子 MAC 界与 SRAM 供数界；芯片原生格式矩阵与反量化开销。
+- 存储规划（SRAM 驻留、staging、逐 stage 容量）与调度（绑定瓶颈、有效 MAC 比例、α-β 集合通信、投机解码 / MTP）。
+- 精确 batch 搜索（分支定界）、布局排名、TPOT–吞吐 Pareto、含 prefill 的 goodput 与 DP prefill TTFT 标记、排名稳定性。
+- 校验套件：变形关系、参数对照、H100 类趋势区间、GenZ 对照（`accel-dse validate`）。
+- Web 工作台重写：单点评估、映射对比（每种映射的最佳布局、瓶颈、有效 MAC、TTFT、稳定性）、布局搜索、扫描与 Pareto、模型目录；请求按序号丢弃过期响应。
+- JSON API：严格解析（拒绝未知字段与 NaN / Infinity），扫描为受控替换。
+- 命令行：`serve` / `models` / `eval` / `search` / `compare` / `stability` / `validate`。
 
-### Changed
-- 文档结构：精简 README；新增 `docs/MODEL.md`（建模方法、假设与局限）；存储规格调研移到 `docs/research/`；CHANGELOG 改为 Keep a Changelog 格式。
+### Removed
+- 旧解析引擎及其命令（workbench、pareto、report 等）、示例输出与能耗 / 成本 stub。
+- 视频与蛋白质领域暂时下线（见 docs/MODEL.md §10）。
 
 ## [0.31.1] - 2026-10-08
 

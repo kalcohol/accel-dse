@@ -26,7 +26,7 @@ from .scenario import Scenario, Serving
 H100_MEM = "hbm3_5s_8h16g_5200"
 LPDDR_191 = "lpddr5x_4x64_8533_16g"
 HBM_6600 = "hbm3e_8s_12h24g_9200"
-REF = Path(__file__).resolve().parents[2] / "tests" / "data" / "genz_reference.json"
+REF = Path(__file__).resolve().parents[1] / "data" / "genz_reference.json"
 
 
 def _h100(model: str, **sv) -> Scenario:

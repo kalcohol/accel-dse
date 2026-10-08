@@ -476,43 +476,6 @@ class MemSpec:
             f"cap {self.capacity_GB:g} GB; tag={TAG_EN[self.tag]}"
         )
 
-    def to_external_memory(self):  # -> ExternalMemory (lazy import: avoid cycle)
-        from .memory import ExternalMemory
-
-        return ExternalMemory(
-            kind=self.kind,  # type: ignore[arg-type]
-            n_channels=int(self.n_units),
-            width_bits=int(self.unit_width_bits),
-            data_rate_gt_s=float(self.rate_MTps) / 1000.0,
-            efficiency=float(self.efficiency),
-            capacity_bytes=self.capacity_bytes,
-            payload_factor=float(self.payload_factor),
-            mem_type=self.mem_type,
-            unit_kind=self.unit_kind,
-            spec_tag=self.tag,
-            capacity_nominal_GB=self.capacity_GB,
-        )
-
-    def workbench_kwargs(self) -> dict[str, Any]:
-        return {
-            "mem_kind": self.kind,
-            "mem_type": self.mem_type,
-            "mem_form": self.form,
-            "mem_width_bits": self.unit_width_bits,
-            "mem_rate_MTps": self.rate_MTps,
-            "mem_count": self.n_units,
-            "mem_cap_GB": self.cap_per_unit_GB if self.kind == "LPDDR" else None,
-            "hbm_height": self.hbm_height if self.kind == "HBM" else None,
-            "hbm_die_Gb": self.hbm_die_Gb if self.kind == "HBM" else None,
-            "efficiency": self.efficiency,
-            # legacy geometry knobs must stay unset so the structured path wins
-            "n_channels": None,
-            "width_bits": None,
-            "data_rate_GTs": None,
-            "capacity_GB": None,
-            "n_packages": None,
-        }
-
 
 _COMP_ZH = {"rate": "速率档", "width": "位宽", "capacity": "容量", "count": "数量"}
 

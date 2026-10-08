@@ -1,7 +1,0 @@
-{
-  "mem_efficiency": 0.65,
-  "mac_efficiency": 0.0,
-  "weight_hide": 0.0,
-  "frequency_hz": 1000000000,
-  "notes": "Example assumed / measured-efficiency injection. Optional and non-blocking. mem_efficiency → DRAM sustained/peak; mac_efficiency (or weight_hide) → overlap hide factor; frequency_hz (or freq_ghz) → NPU clock. Replace with silicon-measured values when available."
-}
