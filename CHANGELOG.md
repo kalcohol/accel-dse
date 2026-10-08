@@ -3,6 +3,25 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.50.0] - 2026-10-09
+
+prefill / decode 分离（PD）作为可选服务模式；互连拆成三层（可选封装内 D2D、节点内 scale-up、跨节点网络）。全部默认关，默认结果与 0.49.0 逐字节一致。
+
+### Added
+- PD 分离 `core/disagg.py`（`scenario.pd`，默认关 = 合并服务）：decode 池用场景布局，prefill 池用 `pd.prefill_layout`，两池卡数 `pd.prefill_cards` / `pd.decode_cards`；prefill 池取满足 TTFT SLO 的最大 batch。请求率 = min(prefill 池、decode 池、KV 传输)，给出瓶颈与各池利用率、TTFT（prefill + 暴露的 KV 传输）、TPOT（纯 decode 步）、goodput / 卡，同总卡数的全部切分与最优切分，以及同卡数合并服务的对照（含有效 TPOT = TPOT / decode 占比）。KV 每请求 = 整模型 S token 的 KV + 索引键 + 状态；走跨节点网络（设了 `node_cards`）或节点内链路，`pd.kv_GBps` 可覆盖，`pd.kv_layerwise` 逐层流式只暴露掩盖不了的部分。Qwen3-8B 1P + HBM3E batch 32 prompt 8192：PD 2 + 6 卡 TPOT 42.2 ms（满足 50 ms SLO）569 tok/s/卡；合并 574 tok/s/卡但有效 TPOT 55.8 ms。只对 LLM / VLM。API `pd`，CLI `--pd --pd-prefill-* --pd-prefill-cards --pd-decode-cards --pd-kv-GBps --pd-layerwise`，Web 服务组「PD 分离」与单点页对照表。
+- 三层互连：`d2d_enabled`（默认关 = 单片大 die）+ `package_cards` + D2D 档位 `d2d_std` / `d2d_units`；`link` 改称节点内 scale-up；新增跨节点 `net`（默认 50 GB/s、5 µs「假设」）与 `node_cards`（默认 0 = 单节点）。集合通信按组在封装 / 节点内的成员数逐级分层（all-reduce / all-gather 逐级、all-to-all 各层同时），PP 交接按边界选层；两层时与 0.48 公式逐位相同。能耗新增 `net`（`pJ_bit_net`），D2D + 节点内 + 跨节点 = 单层链路字节。每级 `link_GB` 增加 `scaleup`，`net` 改为跨节点字节。
+- D2D 档位目录 `core/d2d_catalog.py`（公开数据，原始速率每方向每单元）：UCIe-A x64 @ 48 GT/s（384 GB/s，常用，D2D 开时默认 × 4 模块 = 1536 GB/s）、UCIe-A @ 64 GT/s（512）、UCIe-S x16 @ 32 GT/s（64）、BoW-256 / BoW-512（32 / 64 每 16 线 slice）、NVIDIA NVLink-C2C（450，厂商专有，参照）与自定义。48 / 64 GT/s 每 transfer 1 bit 与每 die 单元数标「假设」。API `/api/catalog` `d2d_standards`，CLI `accel-dse d2d`、`--d2d --d2d-std --d2d-units --node-cards --net-GBps --net-alpha-us --pJ-bit-net`，Web「三层互连」组（D2D 开关、档位选择、单元数、跨节点三项）；扫描新增 `d2d_units`、`node_cards`、`net.GBps`、`net.alpha_us`。
+- 建模说明 §15 重写为三层互连并加 D2D 档位表（§15.1），新增 §18（PD）；测试 `tests/test_core_050.py`。
+
+### Changed
+- 默认结果不变：1356 项指纹与 0.49.0 逐字节一致。场景新增字段（`d2d_enabled`、`d2d_std`、`d2d_units`、`net`、`node_cards`、`pd`），场景哈希随之变化。
+- D2D 默认带宽 2000 → 1536 GB/s（UCIe-A 48G × 4，只在 D2D 开时使用）。D2D 关时 `package_cards` 不生效并警告；0.48 / 0.49 的场景 JSON 中 `package_cards > 1` 自动视为 D2D 开，给了 `d2d.GBps` 视为自定义档位，照旧求值。
+- Web「网络层」改称「节点内」；能耗表的链路项按三层拆分显示。
+
+### 不做 / 待定
+- PD：排队与到达波动、连续批处理动态与 chunked prefill、KV 与池内集合通信争用、前缀缓存、异构池、PD 能耗、池布局搜索。
+- 互连：拓扑、拥塞 / 超额订阅、SHARP、NIC 的 PCIe 瓶颈、D2D flit / 协议效率（用自定义档位填有效带宽）。
+
 ## [0.49.0] - 2026-10-09
 
 两个可选项：MoE 专家负载倾斜（工作负载旋钮）与资源 / 面积预算（设计约束，只报告余量）。默认关，默认结果与 0.48.0 逐字节一致。

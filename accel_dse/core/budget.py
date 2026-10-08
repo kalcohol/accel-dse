@@ -124,7 +124,7 @@ def budget_report(r, b: Budget, energy: dict | None = None) -> dict:
             w = e["avg_W_per_card"]
             cnt = e.get("counts_per_unit", {})
             key = {"pJ_mac": "mac", "pJ_vec": "vec", "pJ_bit_sram": "sram", "pJ_bit_dram": "dram", "pJ_bit_link": "link",
-                   "pJ_bit_slc": "slc", "pJ_bit_d2d": "d2d", "idle_W": "idle_card_s"}
+                   "pJ_bit_slc": "slc", "pJ_bit_d2d": "d2d", "pJ_bit_net": "net", "idle_W": "idle_card_s"}
             e = {**e, "missing": [m for m in e.get("missing", []) if cnt.get(key.get(m, ""), 1) > 0]}  # zero-count entries don't matter
             if e["missing"]:
                 ok = False if w > b.power_W_card else None

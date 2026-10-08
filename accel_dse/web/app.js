@@ -119,6 +119,9 @@ function body(extra = {}) {
   const sc = JSON.parse(JSON.stringify(S.sc));
   sc.chip = { ...S.chipOver };
   sc.formats_override = overrides();
+  if (sc.pd && !model().is_moe) Object.assign(sc.pd.prefill_layout, { dp: 1, ep: 1, etp: 1 });
+  if (sc.pd && isFull(model())) sc.pd.enabled = false;
+  if (!sc.d2d_enabled) sc.package_cards = 1;            // D2D off = monolithic die: one die per package
   if (S.memInfo) sc.mem_id = S.memInfo.id;
   const en = Object.fromEntries(Object.entries(S.energy || {}).filter(([, v]) => v !== null && v !== undefined));
   const bu = Object.fromEntries(Object.entries(S.budget || {}).filter(([, v]) => v !== null && v !== undefined));
@@ -149,6 +152,15 @@ function bindNumber(id, get, set, { int = false, nullable = false } = {}) {
   inp._sync = () => { const v = get(); inp.value = v === null || v === undefined ? '' : v; inp.classList.remove('bad'); };
 }
 const AFTER = {};
+/* three-tier interconnect (0.50): D2D off = monolithic die; on = catalog grade × units, or a custom figure */
+function d2dStd() { return ((S.cat && S.cat.d2d_standards) || []).find((d) => d.id === S.sc.d2d_std); }
+function d2dGBps() { const d = d2dStd(); return d ? d.per_unit_GBps * S.sc.d2d_units : S.sc.d2d.GBps; }
+function d2dNote() {
+  const d = d2dStd();
+  $('d2d-note').textContent = d ? `${num(d.per_unit_GBps)} GB/s / ${d.unit} × ${S.sc.d2d_units} = ${num(d2dGBps())} GB/s；参考 ${d.pJ_bit} pJ/bit${d.open ? '' : '（厂商专有）'}。${d.note}` : '自定义 D2D 带宽「假设」';
+  $('d2d-units').disabled = !d;
+}
+function d2dPaint() { $('d2d-inputs').hidden = !S.sc.d2d_enabled; d2dNote(); }
 function syncInputs() {
   document.querySelectorAll('input[type=number]').forEach((i) => i._sync && i._sync());
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
@@ -157,6 +169,8 @@ function syncInputs() {
   for (const k of ['dit_fsdp', 'te_cpu', 'vae_parallel', 'overlap']) if ($('w-' + k)) $('w-' + k).checked = !!S.sc.workload[k];
   if ($('w-sample_split')) $('w-sample_split').checked = S.sc.workload.sample_split !== false;
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
+  if ($('d2d-enabled') && S.sc) { $('d2d-enabled').checked = !!S.sc.d2d_enabled; if (S.cat) $('d2d-std').value = S.sc.d2d_std; d2dPaint(); }
+  if ($('pd-enabled') && S.sc) { $('pd-enabled').checked = !!S.sc.pd.enabled; $('pd-inputs').hidden = !S.sc.pd.enabled; $('pd-kv_layerwise').checked = !!S.sc.pd.kv_layerwise; }
 }
 
 function seg(id, items, get, set) {
@@ -454,9 +468,13 @@ function renderEval(r) {
   renderStages(r);
   renderEnergy(r);
   renderBudget(r);
-  { const P = r.scenario.package_cards || 1, tot = r.stages.reduce((x, st) => x + (st.link_GB ? st.link_GB.total : 0), 0),
-      d = r.stages.reduce((x, st) => x + (st.link_GB ? st.link_GB.d2d : 0), 0);
-    $('tier-note').textContent = P > 1 ? `每封装 ${P} 卡：DiT / 流水级通信字节中 ${tot > 0 ? pct(d / tot) : '—'} 走 D2D，其余走网络层` : ''; }
+  renderPD(r);
+  { const sc = r.scenario, P = sc.d2d_enabled ? (sc.package_cards || 1) : 1, N = sc.node_cards || 0,
+      sum = (k) => r.stages.reduce((x, st) => x + (st.link_GB ? st.link_GB[k] || 0 : 0), 0), tot = sum('total');
+    const parts = [];
+    if (P > 1) parts.push(`D2D ${tot > 0 ? pct(sum('d2d') / tot) : '—'}`);
+    if (N > 0) parts.push(`跨节点 ${tot > 0 ? pct(sum('net') / tot) : '—'}`);
+    $('tier-note').textContent = parts.length ? `通信字节分层（每封装 ${P} die${N ? `，每节点 ${N} 卡` : ''}）：${parts.join('，')}，其余走节点内 scale-up` : ''; }
   renderAssumptions(r);
   if (!s.fits) { $('kpis').hidden = true; runFit(); return; }
   $('fit').hidden = true;
@@ -603,13 +621,40 @@ function renderEnergy(r) {
     ...(c.slc ? [['SLC 命中', c.slc, ' B', 'slc', 'pJ_bit_slc']] : []),
     [c.slc ? 'DRAM 读写（SLC 未命中）' : 'DRAM 读写', c.dram, ' B', 'dram', 'pJ_bit_dram'],
     ...(c.d2d ? [['D2D 发送（封装内）', c.d2d, ' B', 'd2d', 'pJ_bit_d2d']] : []),
-    [c.d2d ? '网络层发送（跨封装）' : '链路发送', c.link, ' B', 'link', 'pJ_bit_link'], ['卡·秒（静态）', c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
+    [c.d2d || c.net ? '节点内 scale-up 发送' : '链路发送', c.link, ' B', 'link', 'pJ_bit_link'],
+    ...(c.net ? [['跨节点网络发送', c.net, ' B', 'net', 'pJ_bit_net']] : []), ['卡·秒（静态）', c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
   const head = h('tr', {}, h('th', {}, '动作'), h('th', {}, `次数 / ${u}`), h('th', {}, `能耗 J / ${u}`));
   const body = rows.map(([lab, n, sfx, k, key]) => h('tr', {}, h('td', {}, lab), h('td', { class: 'num' }, sci(n) + sfx),
     h('td', { class: 'num' }, e.provided.includes(key) ? sci(j[k] || 0) : h('span', { class: 'muted' }, '未提供'))));
   if (e.J_per_unit !== undefined) body.push(h('tr', {}, h('td', {}, h('b', {}, '合计')), h('td', { class: 'num' }, ''),
     h('td', { class: 'num' }, h('b', {}, sci(e.J_per_unit)), ` · 平均 ${num(e.avg_W_per_card)} W/卡`)));
   put($('energy-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
+}
+function renderPD(r) {
+  const pd = r.pd;
+  $('pd-box').hidden = !pd;
+  if (!pd) return;
+  if (pd.error) { put($('pd-tbl')); $('pd-note').textContent = pd.error; return; }
+  const c = pd.coloc, P = pd.prefill, D = pd.decode, K = pd.kv;
+  const ok = (b) => b ? '' : 'color:var(--danger)';
+  const head = h('tr', {}, h('th', { class: 'l' }, '模式'), h('th', { class: 'l' }, '卡'), h('th', {}, 'TTFT ms'), h('th', {}, 'TPOT ms'),
+    h('th', {}, '有效 TPOT ms'), h('th', {}, 'goodput tok/s/卡'), h('th', { class: 'l' }, '瓶颈 / 说明'));
+  const rows = [
+    h('tr', { class: pd.goodput_per_card >= c.goodput_per_card ? 'best' : '' }, h('td', { class: 'l' }, h('b', {}, 'PD 分离')),
+      h('td', { class: 'l small', style: 'white-space:normal;min-width:150px' }, `prefill ${P.cards}（${P.replicas} × ${P.layout}，batch ${P.batch}）+ decode ${D.cards}（${D.replicas} × ${D.layout}，batch ${D.batch}）`),
+      h('td', { style: ok(pd.ttft_ok) }, num(pd.ttft_ms)), h('td', { style: ok(pd.tpot_ok) }, num(pd.tpot_ms)), h('td', { style: ok(pd.tpot_ok) }, num(pd.tpot_ms)),
+      h('td', {}, h('b', {}, num(pd.goodput_per_card))),
+      h('td', { class: 'l small', style: 'white-space:normal;min-width:150px' }, `${{ prefill: 'prefill 池', decode: 'decode 池', kv: 'KV 传输' }[pd.bottleneck]}；利用率 P ${pct(pd.util.prefill)} · D ${pct(pd.util.decode)} · KV ${pct(pd.util.kv)}`)),
+    h('tr', { class: c.goodput_per_card > pd.goodput_per_card ? 'best' : '' }, h('td', { class: 'l' }, '合并（同卡数）'),
+      h('td', { class: 'l small', style: 'white-space:normal;min-width:150px' }, `${c.cards}（${c.replicas} × ${c.layout}${c.idle_cards ? `，${c.idle_cards} 卡闲置` : ''}）`),
+      h('td', { style: ok(c.ttft_ok) }, num(c.ttft_ms)), h('td', {}, num(c.tpot_ms)), h('td', { style: ok(c.tpot_eff_ok) }, num(c.tpot_eff_ms)),
+      h('td', {}, h('b', {}, num(c.goodput_per_card))), h('td', { class: 'l small', style: 'white-space:normal;min-width:150px' }, `decode 时间占比 ${pct(c.decode_share)}（prefill 期间 decode 暂停）`)),
+  ];
+  put($('pd-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
+  const bs = pd.best_split;
+  $('pd-note').textContent = `KV 每请求 ${num(K.bytes_per_req / 2 ** 20)} MiB，${num(K.GBps_req)} GB/s（${K.source}，min(c_p, c_d) 卡并行），传输 ${num(K.t_ms)} ms，暴露 ${num(K.exposed_ms)} ms${K.layerwise ? '（逐层流式）' : ''}。`
+    + (bs ? ` 同 ${pd.cards} 卡最佳切分：prefill ${bs.prefill_cards} + decode ${bs.decode_cards} → ${num(bs.goodput_per_card)} tok/s/卡（瓶颈 ${bs.bottleneck}）。` : '')
+    + (pd.warnings.length ? ' ⚠ ' + pd.warnings.join('；') : '');
 }
 function budgetMark(x) {
   if (x.budget_ok === false) return h('span', { class: 'tag danger', title: '超出预算：' + (x.budget_violations || []).join(', ') }, '超预算');
@@ -669,9 +714,7 @@ function renderAssumptions(r) {
     `GEMV 单元 ${c.gemv_macs || cc.gemv} MAC/cycle${c.gemv_macs ? '' : '（默认 = 阵列 MAC / 8）'}；向量通道 ${c.vector_lanes || cc.lanes}`,
     `累加器 ${c.acc_kib} KiB（超出的部分和行溢出到 SRAM）`,
     `DRAM 效率 ${sc.mem_eff ?? (S.memInfo ? S.memInfo.efficiency : 0.7)}；预留 1 GiB；暂存区 = max(2 MiB, 2·最大激活)`,
-    (sc.package_cards || 1) > 1
-      ? `两层互连：每封装 ${sc.package_cards} 卡走 D2D ${sc.d2d.GBps} GB/s、α ${sc.d2d.alpha_us} µs；封装之间走网络层 ${sc.link.GBps} GB/s、α ${sc.link.alpha_us} µs。卡按 TP → SP → DP → PP 编号，通信组按落在同一封装内的成员数 k 分层（allreduce / allgather 两级、all-to-all 按比例分摊；PP 交接是否跨封装按流水级边界）`
-      : `链路 ${sc.link.GBps} GB/s，每次集合通信同步 α = ${sc.link.alpha_us} µs（${sc.link.topology === 'ring' ? '环形' : '交换'}拓扑；每封装 1 卡 = 无 D2D 层）`,
+    `三层互连：${sc.d2d_enabled && (sc.package_cards || 1) > 1 ? `封装内 ${sc.package_cards} die 走 D2D ${num(sc.d2d_std === 'custom' ? sc.d2d.GBps : ((S.cat.d2d_standards || []).find((d) => d.id === sc.d2d_std) || {}).per_unit_GBps * sc.d2d_units)} GB/s（${sc.d2d_std === 'custom' ? '自定义' : sc.d2d_std + ' × ' + sc.d2d_units}）、α ${sc.d2d.alpha_us} µs` : 'D2D 关（单片大 die，每卡一个封装）'}；节点内 scale-up ${sc.link.GBps} GB/s、α ${sc.link.alpha_us} µs（${sc.link.topology === 'ring' ? '环形' : '交换'}）；${sc.node_cards ? `每节点 ${sc.node_cards} 卡，跨节点网络 ${sc.net.GBps} GB/s、α ${sc.net.alpha_us} µs` : '单节点（跨节点层未用）'}。卡按 TP → SP → DP → PP 编号，通信组按落在同一封装 / 节点内的成员数分层（allreduce / allgather 逐级、all-to-all 各层同时按目的地分摊；PP 交接按流水级边界判断所走层级）`,
     c.slc_mib > 0
       ? `系统级缓存 SLC ${c.slc_mib} MiB @ ${c.slc_GBps} GB/s，策略 ${c.slc_policy === 'lru' ? 'lru（循环访问：片外工作集放得下全部读命中，否则 0 命中——上界 / 下界之间）' : 'pin（SRAM 之后按热权重 → 专家 → KV / 状态钉住，流式激活与 KV 写入绕过）'}；不增加容量；文本编码器 / VAE 不用 SLC`
       : '无系统级缓存（SLC MiB = 0）',
@@ -851,8 +894,9 @@ async function runStability() {
 const SWEEP_ZH = {
   'serving.batch': 'batch', 'serving.ctx': '上下文 ctx', 'serving.prompt': 'prompt 长度', 'serving.spec_k': '投机 k',
   'chip.sram_mib': 'SRAM MiB', 'chip.sram_port_Bpc': 'SRAM 端口 B/cycle', 'chip.freq_ghz': '频率 GHz', 'chip.mac_eff': 'MAC 效率',
-  'chip.gemv_macs': 'GEMV MAC/cycle', mem_eff: 'DRAM 效率', 'link.GBps': '网络层 GB/s', 'link.alpha_us': '网络 α µs',
-  'serving.moe_skew': 'MoE 倾斜', 'chip.slc_mib': 'SLC MiB', 'chip.slc_GBps': 'SLC GB/s', 'd2d.GBps': 'D2D GB/s', 'd2d.alpha_us': 'D2D α µs', package_cards: '每封装卡数',
+  'chip.gemv_macs': 'GEMV MAC/cycle', mem_eff: 'DRAM 效率', 'link.GBps': '节点内 GB/s', 'link.alpha_us': '节点内 α µs',
+  'serving.moe_skew': 'MoE 倾斜', 'chip.slc_mib': 'SLC MiB', 'chip.slc_GBps': 'SLC GB/s', 'd2d.GBps': 'D2D GB/s（自定义）', 'd2d.alpha_us': 'D2D α µs', package_cards: '每封装 die 数（开 D2D）',
+  d2d_units: 'D2D 单元数', 'net.GBps': '跨节点 GB/s', 'net.alpha_us': '跨节点 α µs', node_cards: '每节点卡数',
   'workload.frames': '帧数', 'workload.steps': '去噪步数', 'workload.height': '高 px', 'workload.width': '宽 px',
   'workload.seq_len': '序列长度（残基）', 'workload.msa': 'MSA 行数', 'workload.recycles': '主干遍数',
   'workload.samples': '扩散样本数',
@@ -877,6 +921,7 @@ const SWEEP_DEFAULT = {
   mem_eff: '0.5,0.6,0.7,0.8,0.9', 'link.GBps': '50,100,200,400,900', 'link.alpha_us': '0,1,3,5,10',
   'serving.moe_skew': '1,1.25,1.5,2,3,4', 'chip.slc_mib': '0,64,256,1024,4096', 'chip.slc_GBps': '500,1000,2000,4000', 'd2d.GBps': '500,1000,2000,4000',
   'd2d.alpha_us': '0,0.5,1,2', package_cards: '1,2,4,8',
+  d2d_units: '1,2,4,8', 'net.GBps': '12.5,25,50,100,200', 'net.alpha_us': '2,5,10,20', node_cards: '0,2,4,8',
   'workload.frames': '17,33,49,81,121', 'workload.steps': '10,20,30,50', 'workload.height': '240,480,720',
   'workload.width': '416,832,1280', 'workload.seq_len': '128,256,512,1022,2048',
   'workload.msa': '64,256,512,1024,4096', 'workload.recycles': '1,2,3,4,6', 'workload.samples': '1,5,10,25',
@@ -1060,7 +1105,7 @@ async function init() {
     'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2'])
     bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
       { nullable: true, int: k === 'cards' });
-  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d'])
+  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   $('best-layout').addEventListener('click', bestLayout);
   $('best-batch').checked = S.best;
@@ -1072,13 +1117,34 @@ async function init() {
     cardsNote();
   };
   for (const k of ['GBps', 'alpha_us']) bindNumber('k-' + k, () => S.sc.link[k], (x) => (S.sc.link[k] = x));
-  for (const k of ['GBps', 'alpha_us']) bindNumber('d-' + k, () => S.sc.d2d[k], (x) => (S.sc.d2d[k] = x));
+  bindNumber('d-GBps', () => d2dGBps(), (x) => { S.sc.d2d.GBps = x; S.sc.d2d_std = 'custom'; $('d2d-std').value = 'custom'; d2dNote(); });
+  bindNumber('d-alpha_us', () => S.sc.d2d.alpha_us, (x) => (S.sc.d2d.alpha_us = x));
   bindNumber('p-package_cards', () => S.sc.package_cards || 1, (x) => (S.sc.package_cards = x), { int: true });
+  bindNumber('d2d-units', () => S.sc.d2d_units, (x) => { S.sc.d2d_units = x; $('d-GBps')._sync(); d2dNote(); }, { int: true });
+  for (const k of ['GBps', 'alpha_us']) bindNumber('n-' + k, () => S.sc.net[k], (x) => (S.sc.net[k] = x));
+  bindNumber('n-node_cards', () => S.sc.node_cards || 0, (x) => (S.sc.node_cards = x), { int: true });
+  opts($('d2d-std'), [...S.cat.d2d_standards.map((d) => [d.id, d.label]), ['custom', '自定义（直接填 GB/s）']], S.sc.d2d_std);
+  $('d2d-std').addEventListener('change', (e) => {
+    if (e.target.value === 'custom') S.sc.d2d.GBps = d2dGBps();      // keep the current figure as the custom start
+    S.sc.d2d_std = e.target.value; $('d-GBps')._sync(); d2dNote(); schedule();
+  });
+  $('d2d-enabled').addEventListener('change', (e) => {
+    S.sc.d2d_enabled = e.target.checked;
+    if (e.target.checked && (S.sc.package_cards || 1) < 2) S.sc.package_cards = 2;
+    $('p-package_cards')._sync(); d2dPaint(); schedule();
+  });
   $('c-slc_policy').addEventListener('change', (e) => { S.chipOver.slc_policy = e.target.value; schedule(); });
   for (const k of ['batch', 'ctx', 'prompt', 'out_len', 'spec_k', 'microbatches'])
     bindNumber('s-' + k, () => S.sc.serving[k], (x) => (S.sc.serving[k] = x), { int: true });
   for (const k of ['spec_accept', 'tpot_slo_ms', 'ttft_slo_ms']) bindNumber('s-' + k, () => S.sc.serving[k], (x) => (S.sc.serving[k] = x));
   bindNumber('s-moe_skew', () => S.sc.serving.moe_skew ?? 1, (x) => (S.sc.serving.moe_skew = x));
+  for (const k of ['pp', 'tp', 'dp', 'ep', 'etp'])
+    bindNumber('pd-' + k, () => S.sc.pd.prefill_layout[k], (x) => (S.sc.pd.prefill_layout[k] = x), { int: true });
+  for (const k of ['prefill_cards', 'decode_cards'])
+    bindNumber('pd-' + k, () => S.sc.pd[k] || null, (x) => (S.sc.pd[k] = x === null ? 0 : x), { int: true, nullable: true });
+  bindNumber('pd-kv_GBps', () => S.sc.pd.kv_GBps, (x) => (S.sc.pd.kv_GBps = x), { nullable: true });
+  $('pd-enabled').addEventListener('change', (e) => { S.sc.pd.enabled = e.target.checked; $('pd-inputs').hidden = !e.target.checked; schedule(); });
+  $('pd-kv_layerwise').addEventListener('change', (e) => { S.sc.pd.kv_layerwise = e.target.checked; schedule(); });
   bindNumber('mem_eff', () => S.sc.mem_eff, (x) => (S.sc.mem_eff = x), { nullable: true });
   seg('phase', null, () => S.sc.serving.phase, (v) => { S.sc.serving.phase = v; schedule(); });
   $('best-batch').addEventListener('change', (e) => { S.best = e.target.checked; schedule(); });

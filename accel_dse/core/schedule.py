@@ -7,19 +7,21 @@ Collectives (α-β, per rank payload B, group g, link β, latency α):
   p2p (PP send)      B/β                 + α
 α is *exposed* synchronisation: added after the overlapped max (「假设」 3 µs).
 
-Two-tier interconnect (0.48, ``tiered_collective``): cards are numbered TP-fastest, then SP, DP, PP; the
-``package_cards`` consecutive cards of a package talk over the die-to-die link (β_d, α_d), packages over the
-scale-up / network link (β_n, α_n).  A group of g ranks with stride s keeps k = clamp(P // s, 1, g) members in one
-package and spans m = g / k packages:
-  k = g        all on D2D (the formulas above with β_d, α_d)
-  k = 1        all on the network (the formulas above — exactly the single-tier result)
-  otherwise    hierarchical (NCCL-style two-level):
-    allreduce  intra reduce-scatter + inter allreduce of B/k + intra all-gather:
-               2(k−1)/k·B/β_d + 2(m−1)/m·(B/k)/β_n,      α = 2α_d + α_n
-    allgather  inter all-gather among packages, then intra:  (m−1)·B/β_n + (k−1)·m·B/β_d,   α = α_n + α_d
-    alltoall   the (k−1)/g share over D2D and the (g−k)/g share over the network at once:
-               max((k−1)/g·B/β_d, (g−k)/g·B/β_n),        α = max(α_d, α_n)
-The share of the bytes each rank sends that stays on D2D is returned for the energy counts.
+Three-tier interconnect (0.50, ``fabric_collective``; 0.48 two-tier = its special case ``tiered_collective``):
+cards are numbered TP-fastest, then SP, DP, PP; the ``package`` consecutive dies of a package talk over the
+die-to-die tier (β_d, α_d — only with D2D on), the ``node`` consecutive cards of a node over the in-node scale-up
+link (β_n, α_n), nodes over the cross-node network (β_x, α_x; node = 0 → one node, tier unused).  A group of g ranks
+with stride s keeps k₁ = gcd(clamp(P // s, 1, g), g) members in one package and k₂ (same rule with N, a multiple of
+k₁) in one node → level sizes n₀ = k₁ (D2D), n₁ = k₂ / k₁ (scale-up), n₂ = g / k₂ (network); size-1 levels drop out
+and a single remaining level is exactly the flat formula on that tier.  Hierarchical (NCCL-style) with
+B₍ᵢ₎ = B / Π_{j<i} n_j:
+    allreduce  reduce-scatter up the levels, allreduce on the top one, all-gather back down:
+               Σᵢ 2(nᵢ−1)/nᵢ · B₍ᵢ₎ / βᵢ,                     α = Σ_{i<top} 2αᵢ + α_top
+    allgather  outermost level first, then inwards:  Σᵢ (nᵢ−1) · B · Π_{j>i} n_j / βᵢ,   α = Σᵢ αᵢ
+    alltoall   every tier at once, each carrying the destinations it owns ((nᵢ−1)·Π_{j<i} n_j / g of B):
+               maxᵢ share_i · B / βᵢ,                         α = maxᵢ αᵢ
+With two levels (D2D + scale-up) these are the 0.48 formulas, bit for bit.  The share of the bytes each rank sends
+on the D2D and on the network tier is returned for the energy counts (the rest is scale-up link).
 
 Stage step:  t_stage = max(t_compute, t_dram, t_slc, t_link) + t_sync   (t_slc: 0.48 SLC port, 0 without one)
   t_compute = max(Σ array-op time, Σ vector time)      (array ‖ vector, 「假设」)
@@ -55,30 +57,84 @@ def collective_seconds(kind: str, payload: float, group: int, link: Link) -> tup
     return bw, a
 
 
+def _members(cap: int, group: int, stride: int) -> int:
+    if cap <= 1:
+        return 1
+    return math.gcd(max(1, min(group, cap // max(1, stride))), group)
+
+
+def fabric_collective(kind: str, payload: float, group: int, link: Link, d2d: Link | None = None, package: int = 1,
+                      net: Link | None = None, node: int = 0, stride: int = 1, k_pkg: int | None = None,
+                      k_node: int | None = None) -> tuple[float, float, float, float]:
+    """(bandwidth s, exposed-latency s, D2D share, network share of the sent bytes) on the three-tier fabric.
+    ``k_pkg`` / ``k_node``: members of the group inside one package / node when the group is not a uniform stride."""
+    if group <= 1 or payload <= 0:
+        return 0.0, 0.0, 0.0, 0.0
+    k1 = k_pkg if k_pkg is not None else (1 if d2d is None else _members(package, group, stride))
+    k1 = math.gcd(max(1, k1), group)
+    if net is None or node <= 0:
+        k2 = group
+    else:
+        k2 = math.gcd(max(1, k_node if k_node is not None else _members(node, group, stride)), group)
+        if k2 % k1:
+            k2 = k1
+    levels = [(n, ln, t) for n, ln, t in ((k1, d2d, "d2d"), (k2 // k1, link, "link"), (group // k2, net, "net"))
+              if n > 1]
+    if len(levels) == 1:
+        n, ln, t = levels[0]
+        bw, a = collective_seconds(kind, payload, group, ln)
+        return bw, a, float(t == "d2d"), float(t == "net")
+    if kind not in ("allreduce", "allgather", "alltoall"):         # p2p-like: over the outermost tier
+        n, ln, t = levels[-1]
+        bw, a = collective_seconds(kind, payload, group, ln)
+        return bw, a, float(t == "d2d"), float(t == "net")
+    sizes = [n for n, _, _ in levels]
+    vol = []
+    for i, (n, ln, t) in enumerate(levels):
+        pre, post = math.prod(sizes[:i]), math.prod(sizes[i + 1:])
+        if kind == "allreduce":
+            v = 2 * (n - 1) / n * payload if pre == 1 else 2 * (n - 1) / n * payload / pre
+        elif kind == "allgather":
+            v = (n - 1) * post * payload
+        else:
+            v = (n - 1) / group * payload if pre == 1 else (n - 1) * pre / group * payload
+        vol.append(v)
+    secs = [v / (ln.GBps * 1e9) for v, (_, ln, _) in zip(vol, levels)]
+    alphas = [ln.alpha_us * 1e-6 for _, ln, _ in levels]
+    if kind == "alltoall":
+        bw, a = max(secs), max(alphas)
+    else:
+        bw = secs[0]
+        for x in secs[1:]:
+            bw += x
+        if kind == "allreduce":
+            a = 2 * alphas[0]
+            for x in alphas[1:-1]:
+                a += 2 * x
+            a += alphas[-1]
+        else:
+            a = alphas[0]
+            for x in alphas[1:]:
+                a += x
+    tot = sum(vol)
+    share = {t: v / tot for v, (_, _, t) in zip(vol, levels)}
+    return bw, a, share.get("d2d", 0.0), share.get("net", 0.0)
+
+
 def tiered_collective(kind: str, payload: float, group: int, link: Link, d2d: Link, package: int,
                       stride: int = 1) -> tuple[float, float, float]:
-    """(bandwidth s, exposed-latency s, D2D share of the sent bytes) of one collective on the two-tier fabric."""
-    if group <= 1 or payload <= 0:
-        return 0.0, 0.0, 0.0
-    k = 1 if package <= 1 else max(1, min(group, package // max(1, stride)))
-    k = math.gcd(k, group)
-    if k == 1:
-        return (*collective_seconds(kind, payload, group, link), 0.0)
-    if k == group:
-        return (*collective_seconds(kind, payload, group, d2d), 1.0)
-    m = group // k
-    bd, bn = d2d.GBps * 1e9, link.GBps * 1e9
-    ad, an = d2d.alpha_us * 1e-6, link.alpha_us * 1e-6
-    if kind == "allreduce":
-        intra, inter = 2 * (k - 1) / k * payload, 2 * (m - 1) / m * payload / k
-        return intra / bd + inter / bn, 2 * ad + an, intra / (intra + inter)
-    if kind == "allgather":
-        intra, inter = (k - 1) * m * payload, (m - 1) * payload
-        return intra / bd + inter / bn, ad + an, intra / (intra + inter)
-    if kind == "alltoall":
-        intra, inter = (k - 1) / group * payload, (group - k) / group * payload
-        return max(intra / bd, inter / bn), max(ad, an), intra / (intra + inter)
-    return (*collective_seconds(kind, payload, group, link), 0.0)
+    """(bandwidth s, exposed-latency s, D2D share of the sent bytes) on the 0.48 two-tier fabric (one node)."""
+    bw, a, fd, _ = fabric_collective(kind, payload, group, link, d2d if package > 1 else None, package, stride=stride)
+    return bw, a, fd
+
+
+def p2p_tier(stage: int, stage_cards: int, package: int, node: int) -> str:
+    """Tier of the PP hand-off ``stage`` → next: "d2d" (same package), "link" (same node) or "net"."""
+    if not p2p_crosses(stage, stage_cards, package):
+        return "d2d"
+    if node <= 0 or not p2p_crosses(stage, stage_cards, node):
+        return "link"
+    return "net"
 
 
 def p2p_crosses(stage: int, stage_cards: int, package: int) -> bool:
@@ -114,6 +170,7 @@ class StageTime:
     t_slc: float = 0.0      # system-level-cache time (0.48): SLC hits / slc_GBps, a port parallel to DRAM 「假设」
     slc_bytes: float = 0.0  # bytes served by the SLC
     d2d_bytes: float = 0.0  # share of link_bytes carried by the die-to-die tier
+    net_bytes: float = 0.0  # share of link_bytes carried by the cross-node network tier (0.50)
 
     @property
     def array_util(self) -> float:

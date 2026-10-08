@@ -40,7 +40,7 @@ def test_defaults_reproduce_single_tier_and_no_slc():
         _same(r, evaluate(s.replace("chip", replace(s.chip, slc_GBps=1.0, slc_policy="lru"))))
         assert all(st.time.t_slc == 0 and st.time.slc_bytes == 0 and st.time.d2d_bytes == 0 for st in r.stages)
         # every card in one package with D2D = network link → the single-tier result again
-        one = evaluate(replace(s, package_cards=64, d2d=s.link))
+        one = evaluate(replace(s, package_cards=64, d2d=s.link, d2d_enabled=True, d2d_std="custom"))
         assert _close(one.latency or one.tick, r.latency or r.tick, 1e-9)
         assert all(st.time.d2d_bytes == st.time.link_bytes for st in one.stages)
 
@@ -77,26 +77,26 @@ def test_collectives_map_to_tiers_in_evaluate():
         return r, t.d2d_bytes / t.link_bytes
     pre = Serving(batch=8, phase="prefill", prompt=4096)
     r1, f1 = share(Scenario(model="qwen3-8b", layout=Layout(tp=8), serving=pre))
-    r4, f4 = share(Scenario(model="qwen3-8b", layout=Layout(tp=8), serving=pre, package_cards=4))
-    r8, f8 = share(Scenario(model="qwen3-8b", layout=Layout(tp=8), serving=pre, package_cards=8))
+    r4, f4 = share(Scenario(model="qwen3-8b", layout=Layout(tp=8), serving=pre, package_cards=4, d2d_enabled=True))
+    r8, f8 = share(Scenario(model="qwen3-8b", layout=Layout(tp=8), serving=pre, package_cards=8, d2d_enabled=True))
     assert f1 == 0 and 0 < f4 < 1 and f8 == 1
     lt = [r.stages[0].time.t_link for r in (r1, r4, r8)]
     assert lt[0] > lt[1] > lt[2]                 # TP allreduce: flat network > hierarchical > all on D2D
-    assert _close(lt[2], lt[0] * 400 / 2000)
+    assert _close(lt[2], lt[0] * 400 / 1536)
     # PP2·TP4 in packages of 4: TP inside the package, the PP hand-off crosses packages
-    r, f = share(Scenario(model="qwen3-8b", layout=Layout(pp=2, tp=4), serving=Serving(batch=8), package_cards=4))
+    r, f = share(Scenario(model="qwen3-8b", layout=Layout(pp=2, tp=4), serving=Serving(batch=8), package_cards=4, d2d_enabled=True))
     st0 = r.stages[0].time
     assert 0 < st0.d2d_bytes < st0.link_bytes and r.stages[1].time.d2d_bytes == r.stages[1].time.link_bytes
-    r, f = share(Scenario(model="qwen3-8b", layout=Layout(pp=2, tp=4), serving=Serving(batch=8), package_cards=8))
+    r, f = share(Scenario(model="qwen3-8b", layout=Layout(pp=2, tp=4), serving=Serving(batch=8), package_cards=8, d2d_enabled=True))
     assert r.stages[0].time.d2d_bytes == r.stages[0].time.link_bytes
     # MoE EP spanning two packages: dispatch / combine split between tiers
     _, f = share(Scenario(model="qwen3-30b-a3b", mem_id=HBM, layout=Layout(tp=2, dp=4, ep=8),
-                          serving=Serving(batch=64), package_cards=4))
+                          serving=Serving(batch=64), package_cards=4, d2d_enabled=True))
     assert 0 < f < 1
     # video: Ulysses SP (stride TP) + FSDP gathers (stride TP) + VAE tile gathers
     w = dict(model="wan2.1-14b", mem_id=HBM, layout=Layout(sp=8),
              workload=Workload(dit_fsdp=True, vae_parallel=True, vae_tiling=True))
-    a, b = evaluate(Scenario(**w)), evaluate(Scenario(**w, package_cards=8))
+    a, b = evaluate(Scenario(**w)), evaluate(Scenario(**w, package_cards=8, d2d_enabled=True))
     assert b.stages[0].time.d2d_bytes == b.stages[0].time.link_bytes
     assert b.stages[0].time.t_link < a.stages[0].time.t_link
     va = next(p for p in a.pipeline["parts"] if p["role"] == "vae")
@@ -104,7 +104,7 @@ def test_collectives_map_to_tiers_in_evaluate():
     assert vb["gather_s"] < va["gather_s"] and vb["acts"]["link"] == 0 and vb["acts"]["d2d"] == va["acts"]["link"]
     # protein DAP (stride 1)
     p1 = evaluate(Scenario(model="protenix", mem_id=HBM, layout=Layout(sp=4)))
-    p4 = evaluate(Scenario(model="protenix", mem_id=HBM, layout=Layout(sp=4), package_cards=4))
+    p4 = evaluate(Scenario(model="protenix", mem_id=HBM, layout=Layout(sp=4), package_cards=4, d2d_enabled=True))
     assert p4.stages[0].time.t_link < p1.stages[0].time.t_link and p4.stages[0].time.d2d_bytes > 0
 
 
@@ -149,7 +149,7 @@ def test_slc_pin_and_lru():
 def test_energy_counts_split_slc_and_d2d():
     s0 = Scenario(model="qwen3-8b", layout=Layout(tp=8), serving=Serving(batch=8), mem_id=HBM)
     c0 = action_counts(evaluate(s0))["counts"]
-    s1 = replace(s0.replace("chip", replace(s0.chip, slc_mib=2048.0)), package_cards=4)
+    s1 = replace(s0.replace("chip", replace(s0.chip, slc_mib=2048.0)), package_cards=4, d2d_enabled=True)
     r1 = evaluate(s1)
     c1 = action_counts(r1)["counts"]
     assert c0["slc"] == 0 and c0["d2d"] == 0
@@ -160,7 +160,7 @@ def test_energy_counts_split_slc_and_d2d():
     u = action_counts(r1)["units"]
     for k, pj in (("slc", 1.0), ("dram", 6.0), ("d2d", 0.5), ("link", 5.0)):
         assert _close(e["J_by_action"][k], c1[k] / u * pj * 8e-12)
-    assert set(e["missing"]) == {"pJ_mac", "pJ_vec", "pJ_bit_sram", "idle_W"}
+    assert set(e["missing"]) == {"pJ_mac", "pJ_vec", "pJ_bit_sram", "idle_W", "pJ_bit_net"}
 
 
 def test_validation_api_cli():

@@ -16,12 +16,14 @@ from typing import Any
 from . import __version__, mem_catalog
 from .core.catalog import DOMAINS, catalog_listing, get_model, labels, list_models, offline_entries, unlisted_models
 from .core.budget import Budget, budget_report
-from .core.energy import EnergyTable, energy_report
+from .core.disagg import disagg_report
+from .core.energy import EnergyTable, energy_report, scaleup_bytes
 from .core.evaluate import Result, evaluate
 from .core.hardware import CHIPS, Chip
 from .core.mapping import ORG_LABEL, ORGS
 from .core.parallel import Layout, enumerate_layouts
-from .core.scenario import Scenario
+from .core.d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS
+from .core.scenario import Scenario, upgrade_legacy
 from .core.search import best_batch, search_layouts, tpot_throughput_front
 from .core.serving import goodput
 from .core.stability import ranking_stability
@@ -34,6 +36,7 @@ SWEEP_PATHS = {
     "chip.sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
     "serving.moe_skew": float, "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
+    "d2d_units": int, "net.GBps": float, "net.alpha_us": float, "node_cards": int,
     "workload.frames": int, "workload.steps": int, "workload.height": int, "workload.width": int,
     "workload.seq_len": int, "workload.msa": int, "workload.recycles": int, "workload.samples": int,
 }
@@ -123,7 +126,7 @@ def scenario_from_body(body: dict) -> Scenario:
         raise ApiError(f"chip_preset must be one of {sorted(CHIPS)}")
     base = Scenario(chip=CHIPS[preset]).to_dict()
     try:
-        d = _merge(base, sc)
+        d = _merge(base, upgrade_legacy(sc))
         scn = Scenario.from_dict(d)
         get_model(scn.model)
         mem_catalog.parse_mem_id(scn.mem_id)
@@ -131,7 +134,7 @@ def scenario_from_body(body: dict) -> Scenario:
         raise
     except (ValueError, TypeError, KeyError) as e:
         raise ApiError(str(e).strip("'\"")) from None
-    if scn.layout.cards > MAX_CARDS:
+    if scn.layout.cards > MAX_CARDS or scn.pd.prefill_layout.cards > MAX_CARDS:
         raise ApiError(f"at most {MAX_CARDS} cards per replica")
     return scn
 
@@ -163,7 +166,8 @@ def _stage_dict(s) -> dict:
                      "sync": t.t_sync * 1e3, "total": t.total * 1e3, "slc": t.t_slc * 1e3},
             "dram_GB": {k: v / 1e9 for k, v in s.dram.items() if k != "slc_parts"},
             "slc_GB": {k: v / 1e9 for k, v in s.dram.get("slc_parts", {}).items()},
-            "link_GB": {"total": t.link_bytes / 1e9, "d2d": t.d2d_bytes / 1e9, "net": (t.link_bytes - t.d2d_bytes) / 1e9},
+            "link_GB": {"total": t.link_bytes / 1e9, "d2d": t.d2d_bytes / 1e9, "net": t.net_bytes / 1e9,
+                        "scaleup": scaleup_bytes(t) / 1e9},
             "mem": {"stored_w_GiB": s.mem.stored_w / 2**30, "kv_GiB": s.mem.kv_total / 2**30,
                     "state_GiB": s.mem.state_total / 2**30, "need_GiB": s.mem.dram_need / 2**30,
                     "cap_GiB": s.mem.dram_cap / 2**30, "fits": s.mem.fits, "residency": s.mem.residency,
@@ -220,7 +224,9 @@ def api_catalog() -> dict:
              for k, c in CHIPS.items()}
     return {"chips": chips, "mappings": [{"id": o, "label": ORG_LABEL[o]} for o in ORGS],
             "memory": mem_catalog.catalog_dict(), "defaults": Scenario().to_dict(), "honesty": HONESTY,
-            "sweep_paths": sorted(SWEEP_PATHS), "max_cards": MAX_CARDS}
+            "sweep_paths": sorted(SWEEP_PATHS), "max_cards": MAX_CARDS,
+            "d2d_standards": [{"id": k, **v} for k, v in D2D_STANDARDS.items()], "d2d_default_std": D2D_DEFAULT_STD,
+            "d2d_default_units": D2D_DEFAULT_UNITS}
 
 
 def api_memory(body: dict) -> dict:
@@ -306,6 +312,11 @@ def api_eval(body: dict) -> dict:
     out["energy"] = energy_report(r, table)      # 0.47.1: action counts always; J only for user-supplied entries
     if bud is not None:
         out["budget"] = budget_report(r, bud, out["energy"])
+    if scn.pd.enabled:      # 0.50: prefill / decode disaggregation next to the colocated numbers
+        try:
+            out["pd"] = disagg_report(scn, r)
+        except ValueError as e:
+            out["pd"] = {"error": str(e)}
     return out
 
 
@@ -466,7 +477,14 @@ def api_sweep(body: dict) -> dict:
         if typ is int and float(v) != int(v):
             raise ApiError(f"{path} takes integers")
         try:
-            r = evaluate(scn.replace(path, typ(v)))
+            s_v = scn.replace(path, typ(v))
+            if path == "package_cards" and v > 1 and not s_v.d2d_enabled:
+                s_v = s_v.replace("d2d_enabled", True)       # sweeping the package size = chiplets with D2D
+            elif path == "d2d.GBps" and s_v.d2d_std != "custom":
+                s_v = s_v.replace("d2d_std", "custom")       # a swept D2D figure replaces the catalog grade
+            elif path == "d2d_units" and not s_v.d2d_enabled:
+                raise ApiError("d2d_units sweep needs d2d_enabled = true and package_cards > 1")
+            r = evaluate(s_v)
         except (ValueError, TypeError) as e:
             raise ApiError(f"{path}={v}: {e}") from None
         dec = r.scenario.serving.phase == "decode" and r.workload is None

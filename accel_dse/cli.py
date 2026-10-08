@@ -7,6 +7,7 @@ import json
 import sys
 
 from . import __version__, api
+from .core.d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS
 
 
 _BUDGET_FLAGS = (
@@ -79,9 +80,10 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     for flag, dest, hlp in (("--pJ-mac", "pJ_mac", "per bf16-equivalent MAC"), ("--pJ-vec", "pJ_vec", "per vector op"),
                             ("--pJ-bit-sram", "pJ_bit_sram", "per SRAM-port bit"),
                             ("--pJ-bit-dram", "pJ_bit_dram", "per DRAM bit"),
-                            ("--pJ-bit-link", "pJ_bit_link", "per link (network tier) bit"),
+                            ("--pJ-bit-link", "pJ_bit_link", "per in-node scale-up link bit"),
                             ("--idle-W", "idle_W", "W per card"),
-                            ("--pJ-bit-slc", "pJ_bit_slc", "per SLC bit"), ("--pJ-bit-d2d", "pJ_bit_d2d", "per D2D bit")):
+                            ("--pJ-bit-slc", "pJ_bit_slc", "per SLC bit"), ("--pJ-bit-d2d", "pJ_bit_d2d", "per D2D bit"),
+                            ("--pJ-bit-net", "pJ_bit_net", "per cross-node network bit")):
         p.add_argument(flag, dest=dest, type=float, default=None,
                        help=f"energy table (user-supplied, no default): {hlp}")
     p.add_argument("--slc-mib", dest="slc_mib", type=float, default=None,
@@ -90,17 +92,38 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--slc-policy", dest="slc_policy", default=None, choices=["pin", "lru"],
                    help="SLC policy: pin (software-pinned like SRAM) | lru (all-or-nothing cyclic bound)")
     p.add_argument("--link-GBps", dest="link_GBps", type=float, default=None,
-                   help="scale-up / network tier bandwidth per rank (default 400 「假设」)")
-    p.add_argument("--link-alpha-us", dest="link_alpha_us", type=float, default=None, help="network tier α (default 3)")
+                   help="in-node scale-up tier bandwidth per rank (default 400 「假设」)")
+    p.add_argument("--link-alpha-us", dest="link_alpha_us", type=float, default=None, help="scale-up tier α (default 3)")
+    p.add_argument("--d2d", dest="d2d_enabled", action="store_true", default=None,
+                   help="chiplet stacking with a die-to-die tier (0.50; default off = monolithic die)")
     p.add_argument("--package-cards", dest="package_cards", type=int, default=None,
-                   help="cards per package on the die-to-die tier (0.48; default 1 = no D2D tier)")
-    p.add_argument("--d2d-GBps", dest="d2d_GBps", type=float, default=None, help="D2D bandwidth (default 2000 「假设」)")
+                   help="dies per package on the D2D tier (> 1 implies --d2d; default 1)")
+    p.add_argument("--d2d-std", dest="d2d_std", default=None, choices=[*D2D_STANDARDS, "custom"],
+                   help=f"D2D grade (default {D2D_DEFAULT_STD}; custom = --d2d-GBps)")
+    p.add_argument("--d2d-units", dest="d2d_units", type=int, default=None,
+                   help=f"D2D units per die (UCIe modules / BoW slices / links; default {D2D_DEFAULT_UNITS} 「假设」)")
+    p.add_argument("--d2d-GBps", dest="d2d_GBps", type=float, default=None,
+                   help="custom D2D bandwidth per die (implies --d2d-std custom)")
     p.add_argument("--d2d-alpha-us", dest="d2d_alpha_us", type=float, default=None, help="D2D α (default 0.5 「假设」)")
+    p.add_argument("--node-cards", dest="node_cards", type=int, default=None,
+                   help="cards per node for the cross-node tier (0.50; default 0 = one node, tier unused)")
+    p.add_argument("--net-GBps", dest="net_GBps", type=float, default=None,
+                   help="cross-node (IB / RoCE) bandwidth per card (default 50 = one 400 Gb/s NIC 「假设」)")
+    p.add_argument("--net-alpha-us", dest="net_alpha_us", type=float, default=None, help="cross-node α (default 5 「假设」)")
     p.add_argument("--moe-skew", dest="moe_skew", type=float, default=None,
                    help="MoE: busiest EP rank's token load / mean (0.49; default 1 = uniform routing) 「假设」")
     p.add_argument("--moe-expert-load", dest="moe_expert_load", default=None,
                    help="MoE: measured tokens per routed expert — JSON file with a list, or comma-separated numbers "
                         "(skew derived per EP layout, contiguous expert placement)")
+    p.add_argument("--pd", action="store_true", help="LLM: prefill / decode disaggregation report (0.50; decode pool = "
+                   "the layout flags, prefill pool = --pd-prefill-*)")
+    for k in ("pp", "tp", "dp", "ep", "etp"):
+        p.add_argument(f"--pd-prefill-{k}", dest=f"pd_prefill_{k}", type=int, default=1, help=f"PD prefill layout {k}")
+    p.add_argument("--pd-prefill-cards", dest="pd_prefill_cards", type=int, default=0, help="PD prefill pool cards (0 = one replica)")
+    p.add_argument("--pd-decode-cards", dest="pd_decode_cards", type=int, default=0, help="PD decode pool cards (0 = one replica)")
+    p.add_argument("--pd-kv-GBps", dest="pd_kv_GBps", type=float, default=None,
+                   help="PD KV transfer GB/s per card (default: network link) 「假设」")
+    p.add_argument("--pd-layerwise", action="store_true", help="PD: stream KV layer by layer during prefill")
     for flag, dest, hlp in _BUDGET_FLAGS:
         p.add_argument(flag, dest=dest, type=float, default=None, help=f"budget (0.49, user-supplied): {hlp}")
     p.add_argument("--json", action="store_true", help="print raw JSON")
@@ -150,15 +173,22 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy") if getattr(a, k, None) is not None}
     if chip:
         sc["chip"] = chip
-    for tier, pre in (("link", "link"), ("d2d", "d2d")):
+    for tier, pre in (("link", "link"), ("d2d", "d2d"), ("net", "net")):
         lk = {k: getattr(a, f"{pre}_{k}") for k in ("GBps", "alpha_us") if getattr(a, f"{pre}_{k}", None) is not None}
         if lk:
             sc[tier] = lk
-    if getattr(a, "package_cards", None) is not None:
-        sc["package_cards"] = a.package_cards
+    for k in ("package_cards", "d2d_enabled", "d2d_std", "d2d_units", "node_cards"):
+        if getattr(a, k, None) is not None:
+            sc[k] = getattr(a, k)
+    if sc.get("package_cards", 1) > 1 and "d2d_enabled" not in sc:
+        sc["d2d_enabled"] = True
+    if getattr(a, "pd", False):
+        sc["pd"] = {"enabled": True, "prefill_layout": {k: getattr(a, f"pd_prefill_{k}") for k in ("pp", "tp", "dp", "ep", "etp")},
+                    "prefill_cards": a.pd_prefill_cards, "decode_cards": a.pd_decode_cards,
+                    "kv_GBps": a.pd_kv_GBps, "kv_layerwise": a.pd_layerwise}
     body = {"chip_preset": a.chip, "scenario": sc}
     en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
-                                     "pJ_bit_slc", "pJ_bit_d2d")
+                                     "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net")
           if getattr(a, k, None) is not None}
     if en:
         body["energy"] = en
@@ -178,6 +208,25 @@ def _table(rows: list[list], head: list[str]) -> None:
             print("  ".join("-" * x for x in w))
 
 
+def _d2d_GBps(sc: dict) -> float:
+    if sc["d2d_std"] == "custom":
+        return sc["d2d"]["GBps"]
+    return D2D_STANDARDS[sc["d2d_std"]]["per_unit_GBps"] * sc["d2d_units"]
+
+
+def cmd_d2d(a) -> dict:
+    out = {"standards": [{"id": k, **v} for k, v in D2D_STANDARDS.items()], "default_std": D2D_DEFAULT_STD,
+           "default_units": D2D_DEFAULT_UNITS, "default_enabled": False}
+    if a.json:
+        return out
+    print("D2D tier: off by default (monolithic die). --d2d turns it on; default grade "
+          f"{D2D_DEFAULT_STD} x{D2D_DEFAULT_UNITS} units/die 「假设」")
+    for k, v in D2D_STANDARDS.items():
+        print(f"  {k:<11} {v['per_unit_GBps']:>6.0f} GB/s per {v['unit']:<14} {v['pJ_bit']:.2g} pJ/bit  "
+              f"{'open' if v['open'] else 'vendor'}  {v['label']}")
+    return {}
+
+
 def cmd_eval(a) -> dict:
     body = _body(a)
     body["best_batch"] = a.best_batch
@@ -190,6 +239,14 @@ def cmd_eval(a) -> dict:
           f"{'  「架构代理」' if m['proxy_badge'] else ''}")
     print(f"layout {s['layout']}  mapping {s['mapping']}  batch {s['batch']}  bound {s['bound']}  "
           f"array_util {s['array_util']:.1%}")
+    sc = out["scenario"]
+    if sc.get("d2d_enabled") or sc.get("node_cards"):
+        d2d = (f"D2D {sc['package_cards']} dies/pkg @ {_d2d_GBps(sc):.0f} GB/s ({sc['d2d_std']}"
+               + (f" x{sc['d2d_units']}" if sc["d2d_std"] != "custom" else "") + ")") if sc.get("d2d_enabled") \
+            else "D2D off (monolithic)"
+        net = (f"net {sc['net']['GBps']:.0f} GB/s across nodes of {sc['node_cards']} cards" if sc.get("node_cards")
+               else "one node")
+        print(f"interconnect: {d2d} | scale-up {sc['link']['GBps']:.0f} GB/s | {net}")
     if g := s.get("gen"):
         w = g["workload"]
         if g["unit"] == "frame":
@@ -230,7 +287,8 @@ def cmd_eval(a) -> dict:
         c = e["counts_per_unit"]
         print(f"actions / {e['unit']}: MAC {c['mac']:.3g}  vec {c['vec']:.3g}  SRAM {c['sram']:.3g} B  "
               f"DRAM {c['dram']:.3g} B  link {c['link']:.3g} B  card·s {c['idle_card_s']:.3g}"
-              + (f"  SLC {c['slc']:.3g} B" if c.get("slc") else "") + (f"  D2D {c['d2d']:.3g} B" if c.get("d2d") else ""))
+              + (f"  SLC {c['slc']:.3g} B" if c.get("slc") else "") + (f"  D2D {c['d2d']:.3g} B" if c.get("d2d") else "")
+              + (f"  net {c['net']:.3g} B" if c.get("net") else ""))
         if "J_per_unit" in e:
             print(f"energy {e['J_per_unit']:.4g} J / {e['unit']}  (avg {e['avg_W_per_card']:.0f} W/card; user-supplied "
                   f"table: {', '.join(e['provided'])}; missing: {', '.join(e['missing']) or '-'})  "
@@ -244,6 +302,21 @@ def cmd_eval(a) -> dict:
         for i in b["items"]:
             if i["note"]:
                 print(f"  {i['label']}: {i['note']}")
+    if (pd := out.get("pd")) and "error" not in pd:
+        p_, d_, k_, c_ = pd["prefill"], pd["decode"], pd["kv"], pd["coloc"]
+        print(f"PD: prefill {p_['cards']} cards ({p_['replicas']} × {p_['layout']}, batch {p_['batch']}, {p_['ttft_ms']:.0f} ms)  "
+              f"decode {d_['cards']} cards ({d_['replicas']} × {d_['layout']}, batch {d_['batch']})  "
+              f"KV {k_['bytes_per_req'] / 2**20:.1f} MiB/req, {k_['t_ms']:.2f} ms (exposed {k_['exposed_ms']:.2f})")
+        print(f"    TTFT {pd['ttft_ms']:.0f} ms  TPOT {pd['tpot_ms']:.2f} ms  goodput {pd['goodput_per_card']:.1f} tok/s/card  "
+              f"bottleneck {pd['bottleneck']}"
+              + (f"  best split {pd['best_split']['prefill_cards']}P+{pd['best_split']['decode_cards']}D "
+                 f"{pd['best_split']['goodput_per_card']:.1f}" if pd.get("best_split") else ""))
+        print(f"    colocated {c_['cards']} cards: TTFT {c_['ttft_ms']:.0f} ms  TPOT {c_['tpot_ms']:.2f} ms "
+              f"(effective {c_['tpot_eff_ms']:.2f})  goodput {c_['goodput_per_card']:.1f} tok/s/card")
+        for w in pd["warnings"]:
+            print("    ! " + w)
+    elif pd:
+        print("PD: " + pd["error"])
     for w in s["warnings"]:
         print("  ! " + w)
     return {}
@@ -345,6 +418,8 @@ def main(argv: list[str] | None = None) -> int:
         x.add_argument("--objective", default="decode", choices=["decode", "goodput"])
         if name == "stability":
             x.add_argument("--include-mapping", action="store_true")
+    d = sub.add_parser("d2d", help="list the selectable die-to-die (D2D) grades (0.50)")
+    d.add_argument("--json", action="store_true")
     v = sub.add_parser("validate", help="V2 trend bands + V3 GenZ comparison")
     v.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
@@ -353,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
         run_server(a.host, a.port)
         return 0
     fn = {"models": cmd_models, "eval": cmd_eval, "search": cmd_search, "compare": cmd_compare,
-          "stability": cmd_stability, "validate": cmd_validate}[a.cmd]
+          "stability": cmd_stability, "validate": cmd_validate, "d2d": cmd_d2d}[a.cmd]
     try:
         out = fn(a)
     except api.ApiError as err:

@@ -95,14 +95,28 @@
     <div class="small muted moe-only">MoE 约束 EP·ETP = TP·DP（注意力按 TP、DP 切分，专家按 EP、ETP 切分）；修改时自动补齐 ETP。</div>
     <div class="small muted full-only">视频 / 蛋白质：卡数 = PP·TP·DP·SP。DP 切分前向 batch（视频含 CFG 的 cond / uncond 两路 = CFG 并行）；SP = Ulysses 序列并行，权重在 SP 组内复制。蛋白质结构模型：SP 位置为 DAP（pair / MSA 网格按残基轴切分，FastFold 动态轴并行），无 TP。</div>
     <button class="btn ghost sm" id="best-layout">搜索当前卡数的最优布局并应用</button>
+    <div class="small muted tier-h">三层互连（0.50）：封装内 D2D（可选）→ 节点内 scale-up → 跨节点网络</div>
+    <label class="inline" title="关（默认）= 单片大 die：每卡一个封装，没有 D2D 层。开 = 芯粒（chiplet）堆叠：每封装若干 die 经 die-to-die 互连"><input type="checkbox" id="d2d-enabled"> D2D 芯粒堆叠（关 = 单片大 die）</label>
+    <div id="d2d-inputs" hidden>
+      <label title="D2D 标准 / 档位（公开数据，见 docs/MODEL.md §9.6）。UCIe-A 48G 为常用默认；NVLink-C2C 为厂商专有接口，仅作参照">D2D 档位<select id="d2d-std"></select></label>
+      <div class="row3">
+        <label title="每个封装内的 die 数；封装内走 D2D，封装之间走节点内 scale-up。卡按 TP → SP → DP → PP 顺序编号">每封装 die 数<input type="number" id="p-package_cards" step="1" min="1"></label>
+        <label title="每个 die 面向封装一侧的 D2D 单元数（UCIe 模块 / BoW slice / 链路）——布图选择">单元数 <span class="tag assume">假设</span><input type="number" id="d2d-units" step="1" min="1" max="64"></label>
+        <label title="D2D 带宽（每 die 单向，原始速率，未扣 flit / 协议开销）= 档位 × 单元数；选「自定义」时可直接输入">D2D GB/s <span class="tag assume">假设</span><input type="number" id="d-GBps" step="64" min="1"></label>
+      </div>
+      <div class="row2">
+        <label title="封装内每次集合通信的同步延迟">D2D α µs <span class="tag assume">假设</span><input type="number" id="d-alpha_us" step="0.1" min="0"></label>
+        <span class="small muted" id="d2d-note"></span>
+      </div>
+    </div>
     <div class="row2">
-      <label title="跨封装 / 跨节点的 scale-up 网络层（IB / RoCEv2 级），每 rank 单向带宽">网络层 GB/s <span class="tag assume">假设</span><input type="number" id="k-GBps" step="50" min="1"></label>
-      <label title="网络层每次集合通信的同步 + 启动延迟">网络 α µs <span class="tag assume">假设</span><input type="number" id="k-alpha_us" step="0.5" min="0"></label>
+      <label title="节点内 scale-up（封装之间），每 rank 单向带宽">节点内 GB/s <span class="tag assume">假设</span><input type="number" id="k-GBps" step="50" min="1"></label>
+      <label title="节点内每次集合通信的同步 + 启动延迟">节点内 α µs <span class="tag assume">假设</span><input type="number" id="k-alpha_us" step="0.5" min="0"></label>
     </div>
     <div class="row3">
-      <label title="每个封装（package，chiplet 同封装）内的卡 / die 数；封装内走 die-to-die（D2D）层，封装之间走网络层。1 = 无 D2D 层（默认，与 0.47 相同）。卡按 TP → SP → DP → PP 顺序编号">每封装卡数<input type="number" id="p-package_cards" step="1" min="1"></label>
-      <label title="封装内 die-to-die 带宽（每 rank 单向）">D2D GB/s <span class="tag assume">假设</span><input type="number" id="d-GBps" step="250" min="1"></label>
-      <label title="封装内每次集合通信的同步延迟">D2D α µs <span class="tag assume">假设</span><input type="number" id="d-alpha_us" step="0.1" min="0"></label>
+      <label title="每个节点的卡数；节点之间走跨节点网络（IB / RoCEv2）。0 = 整个系统一个节点（默认，跨节点层不用）">每节点卡数<input type="number" id="n-node_cards" step="1" min="0"></label>
+      <label title="跨节点网络每卡单向带宽（默认 50 GB/s = 一张 400 Gb/s NIC）">跨节点 GB/s <span class="tag assume">假设</span><input type="number" id="n-GBps" step="25" min="1"></label>
+      <label title="跨节点每次集合通信的同步延迟">跨节点 α µs <span class="tag assume">假设</span><input type="number" id="n-alpha_us" step="1" min="0"></label>
     </div>
     <div class="small muted" id="tier-note"></div>
   </section>
@@ -164,6 +178,25 @@
       <label class="moe-only" title="MoE 负载倾斜：最忙的 EP rank 收到的 token-专家对 / 平均值。1 = 均匀路由（默认）。最忙 rank 决定级时间；all-to-all 按最忙 rank 的载荷计；能耗计数不变（倾斜只在 rank 间搬工作）。实测每专家 token 分布可经 API / CLI 的 moe_expert_load 给出">MoE 倾斜 <span class="tag assume">假设</span><input type="number" id="s-moe_skew" min="1" max="64" step="0.05"></label>
     </div>
     <label class="inline"><input type="checkbox" id="best-batch"> <span id="best-batch-label">自动取满足 TPOT SLO 的最大 batch</span></label>
+    <div class="llm-only" id="pd-grp">
+      <label class="inline" title="prefill / decode 分离（PD）：prefill 池与 decode 池用不同的卡（布局可不同），每个请求的 KV 从 prefill 池传到 decode 池（设了每节点卡数则走跨节点网络，否则走节点内 scale-up）。上面的布局 = decode 池布局。稳态流体模型「假设」：无排队、无连续批处理动态"><input type="checkbox" id="pd-enabled"> PD 分离（prefill / decode 分池）</label>
+      <div id="pd-inputs" hidden>
+        <div class="small muted">prefill 池布局（decode 池用上面的布局与 batch）</div>
+        <div class="row5">
+          <label>PP<input type="number" id="pd-pp" min="1" step="1"></label>
+          <label>TP<input type="number" id="pd-tp" min="1" step="1"></label>
+          <label class="moe-only">DP<input type="number" id="pd-dp" min="1" step="1"></label>
+          <label class="moe-only">EP<input type="number" id="pd-ep" min="1" step="1"></label>
+          <label class="moe-only">ETP<input type="number" id="pd-etp" min="1" step="1"></label>
+        </div>
+        <div class="row3">
+          <label title="prefill 池卡数（prefill 布局卡数的整数倍；空 = 一个副本）">prefill 池卡数<input type="number" id="pd-prefill_cards" min="0" step="1"></label>
+          <label title="decode 池卡数（decode 布局卡数的整数倍；空 = 一个副本）">decode 池卡数<input type="number" id="pd-decode_cards" min="0" step="1"></label>
+          <label title="池间 KV 传输每卡带宽；空 = 设了每节点卡数时用跨节点 GB/s，否则用节点内 GB/s">KV GB/s / 卡 <span class="tag assume">假设</span><input type="number" id="pd-kv_GBps" min="0" step="25"></label>
+        </div>
+        <label class="inline" title="prefill 时逐层把 KV 发出去（Mooncake / DistServe 式），只有最后一层的传输暴露在 TTFT 里"><input type="checkbox" id="pd-kv_layerwise"> KV 逐层流式传输</label>
+      </div>
+    </div>
   </section>
 
   <section class="grp">
@@ -193,8 +226,9 @@
       <label title="每个向量元素操作（范数、softmax、激活、反量化）的能耗，pJ">pJ / 向量操作<input type="number" id="e-pJ_vec" min="0" step="0.1"></label>
       <label title="经 SRAM ↔ 数据通路端口每 bit 的能耗，pJ">pJ / bit SRAM<input type="number" id="e-pJ_bit_sram" min="0" step="0.05"></label>
       <label title="外部存储读写每 bit 的能耗（含接口），pJ">pJ / bit DRAM<input type="number" id="e-pJ_bit_dram" min="0" step="0.5"></label>
-      <label title="网络层（跨封装 / 节点）每发送 bit 的能耗，pJ">pJ / bit 网络<input type="number" id="e-pJ_bit_link" min="0" step="0.5"></label>
-      <label title="封装内 die-to-die 层每发送 bit 的能耗，pJ（每封装卡数 > 1 时才有流量）">pJ / bit D2D<input type="number" id="e-pJ_bit_d2d" min="0" step="0.1"></label>
+      <label title="节点内 scale-up 层（封装之间）每发送 bit 的能耗，pJ">pJ / bit 节点内<input type="number" id="e-pJ_bit_link" min="0" step="0.5"></label>
+      <label title="封装内 die-to-die 层每发送 bit 的能耗，pJ（D2D 开且每封装 die 数 > 1 时才有流量）">pJ / bit D2D<input type="number" id="e-pJ_bit_d2d" min="0" step="0.1"></label>
+      <label title="跨节点网络每发送 bit 的能耗，pJ（每节点卡数 > 0 且通信组跨节点时才有流量）">pJ / bit 跨节点<input type="number" id="e-pJ_bit_net" min="0" step="0.1"></label>
       <label title="系统级缓存命中每 bit 的能耗，pJ（SLC MiB > 0 时才有流量；DRAM 只计未命中）">pJ / bit SLC<input type="number" id="e-pJ_bit_slc" min="0" step="0.1"></label>
       <label title="每卡静态 / 空闲功耗，W（× 卡数 × 时间窗）">静态 W / 卡<input type="number" id="e-idle_W" min="0" step="5"></label>
     </div>
@@ -222,6 +256,11 @@
     <div class="scroll"><table class="tbl" id="mem-tbl"></table></div>
     <h4>动作计数与能耗 <span class="small muted">每输出单位；能耗只按左侧「能耗」里填写的项计算</span></h4>
     <div class="scroll"><table class="tbl" id="energy-tbl"></table></div>
+    <div id="pd-box" hidden>
+      <h4>PD 分离 vs 合并 <span class="small muted">稳态流体模型「假设」：goodput = min(prefill, decode, KV 传输) 请求率 × 输出长度；合并的有效 TPOT = TPOT / decode 时间占比</span></h4>
+      <div class="scroll"><table class="tbl" id="pd-tbl"></table></div>
+      <div class="small muted" id="pd-note"></div>
+    </div>
     <div id="budget-box" hidden>
       <h4>资源 / 面积预算 <span class="small muted">余量 = 1 − 用量 / 限额；「?」= 无法判定（缺输入或只有下界）</span></h4>
       <div class="scroll"><table class="tbl" id="budget-tbl"></table></div>

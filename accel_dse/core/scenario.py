@@ -15,7 +15,8 @@ import math
 from dataclasses import dataclass, field, fields, is_dataclass
 
 from .dtypes import FormatSupport
-from .hardware import CHIPS, D2D_DEFAULT, Chip, Link
+from .d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS, d2d_GBps
+from .hardware import CHIPS, D2D_DEFAULT, NET_DEFAULT, Chip, Link
 from .mapping import ORGS
 from .parallel import Layout
 
@@ -125,19 +126,51 @@ class Workload:
 
 
 @dataclass(frozen=True)
+class PDConfig:
+    """Prefill / decode disaggregation (0.50; core/disagg.py).  Off by default = colocated serving (unchanged).
+    The decode pool uses the scenario's ``layout``; the prefill pool its own ``prefill_layout``.  Pool sizes are card
+    counts (multiples of each layout's cards; 0 = one replica)."""
+    enabled: bool = False
+    prefill_layout: Layout = Layout()
+    prefill_cards: int = 0
+    decode_cards: int = 0
+    kv_GBps: float | None = None    # per-card KV transfer bandwidth between the pools; None = network link 「假设」
+    kv_layerwise: bool = False      # stream KV layer by layer during prefill (only the last layer's chunk exposed)
+
+    def __post_init__(self):
+        for k in ("prefill_cards", "decode_cards"):
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 4096:
+                raise ValueError(f"pd.{k} must be an integer in [0, 4096]")
+        if self.prefill_cards and self.prefill_cards % self.prefill_layout.cards:
+            raise ValueError(f"pd.prefill_cards must be a multiple of the prefill layout's {self.prefill_layout.cards} cards")
+        if self.kv_GBps is not None and (isinstance(self.kv_GBps, bool) or not isinstance(self.kv_GBps, (int, float))
+                                         or not 0 < self.kv_GBps < 1e7):
+            raise ValueError("pd.kv_GBps must be > 0 or null")
+        if not isinstance(self.enabled, bool) or not isinstance(self.kv_layerwise, bool):
+            raise ValueError("pd.enabled / pd.kv_layerwise must be booleans")
+
+
+@dataclass(frozen=True)
 class Scenario:
     model: str = "qwen3-8b"
     chip: Chip = CHIPS["100T"]
     mem_id: str = "lpddr5x_4x64_8533_16g"
     mem_eff: float | None = None
-    link: Link = Link()                                  # between packages: scale-up / network tier
+    link: Link = Link()                                  # in-node scale-up between packages (0.50 three tiers)
     mapping: str = "os"
     layout: Layout = Layout()
     serving: Serving = Serving()
     formats_override: tuple[tuple[str, str], ...] = ()   # what-if (labelled)
     workload: Workload = Workload()                      # video / protein models only
     d2d: Link = D2D_DEFAULT                              # die-to-die tier inside a package (0.48) 「假设」
-    package_cards: int = 1                               # cards per package (1 = no D2D tier; 0.48)
+    package_cards: int = 1                               # dies per package (0.48); inert while d2d_enabled is off
+    d2d_enabled: bool = False                            # chiplet stacking with a D2D tier; off = monolithic die (0.50)
+    d2d_std: str = D2D_DEFAULT_STD                       # D2D grade (core/d2d_catalog.py) or "custom" (= d2d.GBps)
+    d2d_units: int = D2D_DEFAULT_UNITS                   # D2D units (UCIe modules / BoW slices / links) per die 「假设」
+    net: Link = NET_DEFAULT                              # cross-node scale-out (IB / RoCEv2 class) 「假设」
+    node_cards: int = 0                                  # cards per node; 0 = one node (cross-node tier unused)
+    pd: PDConfig = PDConfig()                            # prefill / decode disaggregation (0.50; off = colocated)
 
     def __post_init__(self):
         if self.mapping not in ORGS:
@@ -145,8 +178,31 @@ class Scenario:
         if isinstance(self.package_cards, bool) or not isinstance(self.package_cards, int) \
                 or not 1 <= self.package_cards <= 1024:
             raise ValueError("package_cards must be an integer in [1, 1024]")
+        if not isinstance(self.d2d_enabled, bool):
+            raise ValueError("d2d_enabled must be a boolean")
+        if self.d2d_std != "custom" and self.d2d_std not in D2D_STANDARDS:
+            raise ValueError(f"d2d_std must be 'custom' or one of {sorted(D2D_STANDARDS)}")
+        for k, lo, hi in (("d2d_units", 1, 64), ("node_cards", 0, 4096)):
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                raise ValueError(f"{k} must be an integer in [{lo}, {hi}]")
+        if self.node_cards and self.d2d_enabled and self.node_cards % self.package_cards:
+            raise ValueError("node_cards must be a multiple of package_cards")
+        if self.pd.decode_cards and self.pd.decode_cards % self.layout.cards:
+            raise ValueError(f"pd.decode_cards must be a multiple of the (decode) layout's {self.layout.cards} cards")
         if self.mem_eff is not None and not (0 < self.mem_eff <= 1):
             raise ValueError("mem_eff must be in (0,1]")
+
+    @property
+    def d2d_link(self) -> Link:
+        """Effective D2D link: the catalog grade × units (raw, per direction), or ``d2d`` when ``d2d_std`` = custom."""
+        if self.d2d_std == "custom":
+            return self.d2d
+        return Link(d2d_GBps(self.d2d_std, self.d2d_units), self.d2d.alpha_us, self.d2d.topology)
+
+    @property
+    def package_eff(self) -> int:
+        return self.package_cards if self.d2d_enabled else 1
 
     # ---- controlled replacement
     def replace(self, path: str, value) -> "Scenario":
@@ -158,10 +214,25 @@ class Scenario:
 
     @staticmethod
     def from_dict(d: dict) -> "Scenario":
-        return _from_plain(Scenario, d)
+        return _from_plain(Scenario, upgrade_legacy(d))
 
     def hash(self) -> str:
         return hashlib.sha256(json.dumps(self.to_dict(), sort_keys=True, allow_nan=False).encode()).hexdigest()[:16]
+
+
+def upgrade_legacy(d: dict) -> dict:
+    """Pre-0.50 scenario JSON → 0.50 (the user's partial dict, before merging with defaults):
+    ``package_cards`` > 1 without ``d2d_enabled`` meant chiplets with a D2D tier → d2d_enabled = true; a ``d2d.GBps``
+    without ``d2d_std`` is a custom D2D figure → d2d_std = "custom" (so 0.48 / 0.49 scenarios evaluate as before)."""
+    if not isinstance(d, dict):
+        return d
+    out = dict(d)
+    pc = out.get("package_cards")
+    if "d2d_enabled" not in out and isinstance(pc, int) and not isinstance(pc, bool) and pc > 1:
+        out["d2d_enabled"] = True
+    if "d2d_std" not in out and isinstance(out.get("d2d"), dict) and "GBps" in out["d2d"]:
+        out["d2d_std"] = "custom"
+    return out
 
 
 def _replace_path(obj, parts, value):
@@ -208,7 +279,7 @@ def _from_plain(cls, d):
     if unknown:
         raise ValueError(f"{cls.__name__}: unknown keys {sorted(unknown)}")
     kw = {}
-    hints = {"chip": Chip, "link": Link, "d2d": Link, "layout": Layout, "serving": Serving, "formats": FormatSupport,
+    hints = {"chip": Chip, "link": Link, "d2d": Link, "net": Link, "pd": PDConfig, "prefill_layout": Layout, "layout": Layout, "serving": Serving, "formats": FormatSupport,
              "workload": Workload}
     for k, v in d.items():
         if k in hints and isinstance(v, dict):

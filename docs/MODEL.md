@@ -72,7 +72,7 @@
 ## 6. 调度
 
 - 每个 stage：`t = max(t_compute, t_dram, t_slc, t_link) + t_sync`，其中 `t_compute = Σ max(MAC, FEED) + VECTOR`，`t_slc` 只在有 SLC 时非零（§14）；绑定项标为 MAC / FEED / VECTOR / DRAM / SLC / LINK / SYNC。
-- 集合通信 α-β 模型：带宽项按环形算法（all-reduce `2(g−1)/g`、all-to-all `(g−1)/g`、all-gather `(g−1)` 倍负载）/ 链路带宽（默认 400 GB/s，「假设」），同步 α（默认 3 µs，「假设」）每次集合通信计入，作为暴露时间单独累计。0.48 起可把卡分成封装：封装内走 die-to-die 层、封装间走网络层，集合通信按组跨越的层分级计（§15）；每封装 1 卡（默认）即上面的单层模型。
+- 集合通信 α-β 模型：带宽项按环形算法（all-reduce `2(g−1)/g`、all-to-all `(g−1)/g`、all-gather `(g−1)` 倍负载）/ 链路带宽（默认 400 GB/s，「假设」），同步 α（默认 3 µs，「假设」）每次集合通信计入，作为暴露时间单独累计。0.50 起为三层互连：可选的封装内 die-to-die（D2D，默认关 = 单片大 die）、节点内 scale-up、跨节点网络（默认单节点 = 不用），集合通信按组跨越的层逐级计（§15）；默认即上面的单层模型。
 - decode 一步 = `max(microbatch, PP) × 最慢 stage`；prefill = `(microbatch + PP − 1) × 最慢 stage`。
 - 投机解码 / MTP：每步期望 token `E = (1 − a^(k+1)) / (1 − a)`，草稿在最后一个 stage 上运行。
 - 有效 MAC 比例（array_util）= 理想 MAC 时间 / 阵列时间，直接反映映射与小 M 的浪费。
@@ -80,7 +80,7 @@
 ## 7. 服务、goodput 与搜索
 
 - decode 目标：在 TPOT ≤ SLO 下每卡 tok/s 最大。
-- goodput 目标（聚合服务、副本分时，「假设」）：每个请求 S 个 prompt token + out_len 个输出 token，`goodput = 1 / (1/R_d + (S/out_len)/R_p)`，`R_p` 取满足 TTFT SLO 的最大 prefill batch。若单请求 prefill 也超过 TTFT SLO（典型：DP 布局下一个请求只占一个 DP 组），标记 `ttft_ok = false` 而不是把 goodput 记为 0。
+- goodput 目标（合并服务、副本分时，「假设」；prefill / decode 分池见 §18）：每个请求 S 个 prompt token + out_len 个输出 token，`goodput = 1 / (1/R_d + (S/out_len)/R_p)`，`R_p` 取满足 TTFT SLO 的最大 prefill batch。若单请求 prefill 也超过 TTFT SLO（典型：DP 布局下一个请求只占一个 DP 组），标记 `ttft_ok = false` 而不是把 goodput 记为 0。
 - 精确 batch 搜索：指数 + 二分求可行上限 b_max，再分支定界。上界只依赖 step(B) 随 B 不减（P1）：对已评估的可行点 p₀ < p₁ < …，`thr(B) ≤ (p_{i+1} − 1)·E / step(p_i)`，B ∈ [p_i, p_{i+1})。测试中与暴力枚举逐一核对。
 - 布局枚举：卡数的全部 PP·TP·DP·EP·ETP 分解（满足第 3 节约束）；另给出 TPOT–吞吐 Pareto 前沿。
 - 跨布局分支定界（只要前 k 名时）：先用指数阶段的分段上界给布局排序，再以第 k 名的精确得分为门槛逐个求解；二分只在上界仍可能超过门槛时继续，否则直接剪枝。goodput 目标把门槛换算为所需 decode 速率 `1 / (1/门槛 − (S/out_len)/R_p)`。测试核对 top-k 与完整排名一致。
@@ -306,15 +306,16 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 | SRAM | 经 SRAM ↔ 数据通路端口的字节（各 GEMM / 注意力分块的供数流量，即 FEED 界的分子） | `pJ_bit_sram` |
 | SLC | 系统级缓存命中的字节（0.48，§14；无 SLC 时为 0） | `pJ_bit_slc` |
 | DRAM | 外部存储读写字节（权重、KV、激活流式、FSDP gather 写入）；有 SLC 时只计未命中 | `pJ_bit_dram` |
-| D2D | 封装内 die-to-die 层发送的字节（0.48，§15；每封装 1 卡时为 0） | `pJ_bit_d2d` |
-| 链路 / 网络 | 每 rank 在网络层（跨封装）发送的字节（集合通信载荷、PP 交接、VAE tile all-gather；有 D2D 层时扣除 D2D 份额） | `pJ_bit_link` |
+| D2D | 封装内 die-to-die 层发送的字节（0.48，§15；D2D 关或每封装 1 die 时为 0） | `pJ_bit_d2d` |
+| 节点内链路 | 每 rank 在节点内 scale-up 层发送的字节（集合通信载荷、PP 交接、VAE tile all-gather；扣除 D2D 与跨节点份额） | `pJ_bit_link` |
+| 跨节点网络 | 跨节点发送的字节（0.50，§15；单节点时为 0） | `pJ_bit_net` |
 | 静态 | 卡数 × 时间窗 | `idle_W`（W / 卡） |
 
 **时间窗与单位**：LLM decode 一个步（全部微批与副本）→ token；prefill 一次（TTFT）→ prompt token；视频一次请求批：步数 × DiT 各级 + 卡上的文本编码器 + VAE 解码，时间窗 = 单段延迟（开跨请求重叠时为稳态周期）→ 帧（主机 CPU 编码器的能耗不计）；蛋白质一次前向 → 序列。每级每遍执行「微批数」个 tick，tick 的计数是单 rank 的，乘 TP·SP·DP。PP 下每个微批都重新流式读取本级权重（与级时间一致），所以 PP2 的 DRAM / token 约为 PP1 的 2 倍——这是映射的真实代价，不是重复计数。
 
-**入口**：API `POST /api/eval` 的 body 顶层 `"energy": {"pJ_mac": …, "idle_W": …}`（不放进 scenario，不影响场景哈希与结果缓存），响应 `energy` 字段（`counts_per_unit`、`J_per_unit`、`J_by_action`、`avg_W_per_card`、`provided` / `missing`）；CLI `--pJ-mac --pJ-vec --pJ-bit-sram --pJ-bit-dram --pJ-bit-link --idle-W`（0.48 加 `--pJ-bit-slc --pJ-bit-d2d`）；Web 左侧「能耗」组，单点评估页的「动作计数与能耗」表。
+**入口**：API `POST /api/eval` 的 body 顶层 `"energy": {"pJ_mac": …, "idle_W": …}`（不放进 scenario，不影响场景哈希与结果缓存），响应 `energy` 字段（`counts_per_unit`、`J_per_unit`、`J_by_action`、`avg_W_per_card`、`provided` / `missing`）；CLI `--pJ-mac --pJ-vec --pJ-bit-sram --pJ-bit-dram --pJ-bit-link --idle-W`（0.48 加 `--pJ-bit-slc --pJ-bit-d2d`，0.50 加 `--pJ-bit-net`）；Web 左侧「能耗」组，单点评估页的「动作计数与能耗」表。
 
-**不做**：动态 / 静态功耗的工艺推导、DVFS、SRAM 容量相关的单次访问能耗（一项一个数）、DRAM 行激活 / 刷新、主机与 PUE、面积与成本。SLC 与两级互连已在 0.48 接入（§14、§15）；新的流量守恒：SLC + DRAM = 无 SLC 时的 DRAM 字节，D2D + 网络 = 单层时的链路字节（载荷口径不变，只是按层拆分）。
+**不做**：动态 / 静态功耗的工艺推导、DVFS、SRAM 容量相关的单次访问能耗（一项一个数）、DRAM 行激活 / 刷新、主机与 PUE、面积与成本。SLC 与两级互连已在 0.48 接入（§14、§15）；新的流量守恒：SLC + DRAM = 无 SLC 时的 DRAM 字节，D2D + 节点内 + 跨节点 = 单层时的链路字节（载荷口径不变，只是按层拆分）。
 
 ## 14. 系统级缓存 SLC（0.48，默认关）
 
@@ -329,25 +330,46 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - **结果字段**：`StageTime.t_slc / slc_bytes`，`MemPlan.slc / slc_policy / slc_hot / slc_expert / slc_kv / slc_all / slc_residency`，`dram` 字典增加 `slc` 与 `slc_parts`；API 每级 `t_ms.slc`、`slc_GB`、`mem.slc_*`。CLI `--slc-mib --slc-GBps --slc-policy`；Web 芯片组「SLC MiB / GB/s / 策略」，级表与存储表在有 SLC 时多出 SLC 列；扫描可选 `chip.slc_mib`、`chip.slc_GBps`。
 - **量级**（100T + LPDDR5X 4×64 8533，Qwen3-8B decode batch 8，存储 ≈ 16 GB 权重 + KV）：TPOT 104.2 ms → pin 1 / 4 / 8 / 16 GiB 98.5 / 81.7 / 59.2 / 20.8 ms；lru 16 GiB 放不下 → 104.2 ms（不变），32 GiB 放得下 → 20.0 ms。
 
-## 15. 两级互连：封装内 D2D 与跨封装网络（0.48）
+## 15. 三层互连：封装内 D2D（可选）、节点内 scale-up、跨节点网络（0.48 两级；0.50 三级）
 
-场景字段 `link`（**网络层**：跨封装 / 跨节点的 scale-up 网络，IB / RoCEv2 一类；默认 400 GB/s、α 3 µs，与 0.47 相同）、`d2d`（**die-to-die 层**：同封装 chiplet 之间；默认 2000 GB/s、α 0.5 µs，「假设」）、`package_cards`（每封装卡数，默认 1 = 没有 D2D 层，结果与 0.47 逐字节一致）。
+| 层 | 场景字段 | 默认 | 何时有流量 |
+|----|----|----|----|
+| 封装内 die-to-die（D2D） | `d2d_enabled`、`package_cards`（每封装 die 数）、`d2d_std`（档位，见下表）、`d2d_units`（每 die 的 D2D 单元数）、`d2d.alpha_us`；`d2d_std = "custom"` 时用 `d2d.GBps` | **关**（单片大 die：每卡一个封装）；打开后默认 UCIe-A x64 @ 48 GT/s × 4 模块 = 1536 GB/s、α 0.5 µs「假设」 | `d2d_enabled` 且 `package_cards > 1` |
+| 节点内 scale-up（封装之间） | `link` | 400 GB/s、α 3 µs「假设」（与 0.47 相同） | 组跨封装、不跨节点 |
+| 跨节点 scale-out（IB / RoCEv2 一类） | `node_cards`（每节点卡数）、`net` | `node_cards = 0` = 整个系统一个节点（不用）；`net` 50 GB/s（每卡一张 400 Gb/s NIC）、α 5 µs「假设」 | `node_cards > 0` 且组跨节点 |
 
-- **卡的编号**：TP 最内层，其次 SP、DP，PP 最外层；连续 `package_cards` 张卡为一个封装。于是 TP / ETP 组步长 1，SP（Ulysses all-to-all）与 DAP 组步长 TP，EP 组步长 ETP，DiT FSDP 组（SP·DP）步长 TP，PP 交接跨越 TP·SP·DP 张卡。IR 的通信算子带 `comm_stride`。
-- **组如何落到两层**：g 个 rank、步长 s 的组在一个封装内有 k = clamp(P // s, 1, g) 个成员（P = 每封装卡数，k 取与 g 的公约数），跨 m = g / k 个封装。
-  - k = g：全在封装内，用原公式 + D2D 的 β、α。
-  - k = 1：每个成员各在一个封装，用原公式 + 网络层（= 单层结果）。
-  - 其余为两级（NCCL 式分层）：
-    - all-reduce = 封装内 reduce-scatter + 封装间对 B/k 做 all-reduce + 封装内 all-gather：`2(k−1)/k·B/β_d + 2(m−1)/m·(B/k)/β_n`，α = 2α_d + α_n；
-    - all-gather = 先封装间再封装内：`(m−1)·B/β_n + (k−1)·m·B/β_d`，α = α_n + α_d；
-    - all-to-all：(k−1)/g 的数据走 D2D、(g−k)/g 走网络，两路并行取 max，α = max(α_d, α_n)。
-  - PP 交接：两级在同一封装内走 D2D，否则走网络。
-  - 不在同一步长下的组（DP > 1 且 PP > 1 时一个副本的卡不连续）按副本里连续的 TP·SP 块计封装内成员数：VAE 多卡解码的 tile all-gather、文本编码器 FSDP 分片的 all-gather 都按此分层。
-- **代价也如实计**：分层 all-reduce 的 α 是 2α_d + α_n（默认 4 µs > 单层 3 µs），所以小载荷的 decode 在部分跨封装时可能略慢（Qwen3-8B TP8 decode TPOT 12.94 → P2 / P4 13.01 → P8 12.76 ms）；大载荷时网络层字节减少到 1/k，收益明显。
-- **量级**：1P + HBM3E，Qwen3-8B prefill TP8 4096 tokens × 8，网络层 50 GB/s、α 5 µs（≈ 400 Gb/s IB 端口）：TTFT 676.8 ms（LINK 瓶颈）→ 每封装 4 卡 248.2 ms（MAC）→ 8 卡 247.8 ms。100T + HBM3E、默认链路：同一 prefill 每级链路时间 84.6 → 26.6 → 16.9 ms（MAC 瓶颈，TTFT 不变）；Wan2.1-14B SP8 + DiT FSDP 每级链路时间 193 → 78（P4）→ 38.6 ms（P8）。
-- **能耗**：链路字节仍按载荷口径，按每次集合通信两层实际发送字节之比拆成 `d2d`（`pJ_bit_d2d`）与网络 `link`（`pJ_bit_link`），D2D + 网络 = 单层时的链路字节。
-- **入口**：API scenario `package_cards`、`d2d: {GBps, alpha_us}`；CLI `--package-cards --d2d-GBps --d2d-alpha-us --link-GBps --link-alpha-us`；Web 并行组「每封装卡数 / D2D GB/s / D2D α」与网络层两项；扫描可选 `package_cards`、`d2d.GBps`、`d2d.alpha_us`。
-- **不做 / 待定**：第三层（封装内 D2D、节点内 scale-up、跨节点 scale-out 三级）未建模——目前「网络层」一项同时代表节点内与跨节点；拓扑（胖树 / torus / 轨道优化）、拥塞、in-network reduction（SHARP）、多路径与链路聚合都不建模；`Link.topology` 仍只是标签。
+默认（D2D 关、单节点）就是 0.47 起的单层模型，LLM / 视频 / 蛋白质结果逐字节不变（1356 项指纹）。D2D 关时 `package_cards` 不生效（警告）；Web 关掉 D2D 时把每封装 die 数复位为 1。`node_cards` 须是 `package_cards` 的整数倍（D2D 开时）。0.48 / 0.49 的场景 JSON：`package_cards > 1` 且没有 `d2d_enabled` → 视为 D2D 开；给了 `d2d.GBps` 而没有 `d2d_std` → 视为自定义档位（照旧求值）。
+
+- **卡的编号**：TP 最内层，其次 SP、DP，PP 最外层；连续 `package_cards` 张卡为一个封装，连续 `node_cards` 张卡为一个节点。于是 TP / ETP 组步长 1，SP（Ulysses all-to-all）与 DAP 组步长 TP，EP 组步长 ETP，DiT FSDP 组（SP·DP）步长 TP，PP 交接跨越 TP·SP·DP 张卡。IR 的通信算子带 `comm_stride`。
+- **组如何落到三层**：g 个 rank、步长 s 的组在一个封装内有 k₁ = gcd(clamp(P // s, 1, g), g) 个成员，在一个节点内有 k₂（同样规则用 N，取 k₁ 的倍数）个成员 → 每层规模 n₀ = k₁（D2D）、n₁ = k₂ / k₁（节点内）、n₂ = g / k₂（跨节点）；规模 1 的层略去，只剩一层时就是该层上的单层公式。多层时按 NCCL 式分层，记 B₍ᵢ₎ = B / Π_{j<i} n_j：
+  - all-reduce = 逐层 reduce-scatter、最外层 all-reduce、逐层 all-gather：`Σᵢ 2(nᵢ−1)/nᵢ · B₍ᵢ₎ / βᵢ`，α = 内层各 2αᵢ + 最外层 α；
+  - all-gather = 先最外层再向内：`Σᵢ (nᵢ−1) · B · Π_{j>i} n_j / βᵢ`，α = Σαᵢ；
+  - all-to-all：各层同时发送各自负责的目的地（第 i 层占 (nᵢ−1)·Π_{j<i} n_j / g 的数据），取各层时间的 max，α = max αᵢ；
+  - PP 交接：同封装走 D2D，同节点走节点内，否则走跨节点；
+  - 两层（D2D + 节点内）时与 0.48 的公式逐位相同（测试核对）。
+  - 不在同一步长下的组（DP > 1 且 PP > 1 时一个副本的卡不连续）按副本里连续的 TP·SP 块计封装 / 节点内成员数：VAE 多卡解码的 tile all-gather、文本编码器 FSDP 分片的 all-gather 都按此分层。
+- **代价也如实计**：分层的 α 逐层累加（D2D + 节点内 all-reduce 4 µs > 单层 3 µs），小载荷的 decode 在部分跨层时可能略慢；大载荷时外层字节减少到 1/k。
+
+### 15.1 D2D 档位（选择器，用户确认的列表）
+
+带宽为**原始速率、每方向、每单元**（未扣 flit / 协议开销），D2D 层带宽 = 每单元 × `d2d_units`（每个 die 面向封装一侧放几个单元是布图选择，「假设」）。pJ/bit 只作参考显示——能耗表仍由用户填（§13）。
+
+| id | 标准 | 单元 | GB/s / 单元 | 参考 pJ/bit | 封装 / 距离 | 来源与「假设」 |
+|----|----|----|----|----|----|----|
+| `ucie-a-48`（常用，D2D 开时默认） | UCIe 3.0 Advanced（2.5D） | x64 模块 | 384 | 0.25 | 25–55 µm 凸点，≤ 2 mm | 48 GT/s × 64 lane ÷ 8；每 transfer 1 bit「假设」；pJ/bit 为 UCIe 2.0 目标（3.0 未公开） |
+| `ucie-a-64` | UCIe 3.0 Advanced（2.5D） | x64 模块 | 512 | 0.25 | 同上 | 同上；64 GT/s 的 BER 目标 1e-12（48 GT/s 为 1e-15） |
+| `ucie-s-32` | UCIe Standard（2D 有机基板） | x16 模块 | 64 | 0.5 | 100–130 µm，≤ 25 mm | UCIe 联盟教程原值（32 GT/s 每模块每方向 64 GB/s） |
+| `bow-256` | OCP Bunch of Wires 2.0 | 16 线 slice | 32 | 0.5 | 有机基板 | 16 Gb/s/线；pJ/bit 双端端接 < 0.5–1、非端接 < 0.25–0.5（列 0.5） |
+| `bow-512` | OCP Bunch of Wires 2.0 | 16 线 slice | 64 | 0.5 | 有机基板 | 32 Gb/s/线 |
+| `nvlink-c2c`（厂商专有，参照） | NVIDIA NVLink-C2C | 整条链路 | 450 | 1.3 | — | Grace Hopper 白皮书：900 GB/s 双向合计 = 450 GB/s 每方向 |
+| `custom` | 自定义 | — | `d2d.GBps` | — | — | 用户填写 |
+
+调研过但不在选择器里：NVIDIA NV-HBI（Blackwell 双 die，「10 TB/s」未注明方向）、AMD Infinity Fabric AP（MI300X IOD 之间每方向 2.4 / 3.0 TB/s）、TSMC LIPINCON（2019 VLSI 测试芯片，8 Gb/s/pin、320 GB/s、0.56 pJ/bit）；CCIX 等旧接口不列。不虚构厂商 SKU。
+
+- **量级**（1P + HBM3E，Qwen3-8B prefill TP8 4096 tokens × 8，节点内链路 50 GB/s、α 5 µs）：单片 TTFT 676.8 ms（LINK 瓶颈）→ 每封装 8 die：UCIe-A 48G × 4 / 64G × 4 / UCIe-S 32G × 4 / BoW-512 × 4 / NVLink-C2C × 1 均为 247.8 ms（MAC 瓶颈；每级链路时间 22.0 / 16.5 / 132.1 / 132.1 / 75.2 ms），BoW-256 × 4（128 GB/s）264.3 ms（LINK）。三层（1P + HBM3E、默认链路，同一 prefill TP16）：单节点 199.6 ms（MAC）→ 每节点 8 卡、跨节点 50 GB/s 200.2 ms（链路时间 90.6 → 132.9 ms，仍被计算掩盖）→ 每节点 4 卡 218.2 ms（LINK）。Qwen3-30B-A3B decode TP2·DP8·EP16 batch 64：TPOT 5.39 → 每节点 8 卡 5.58 ms（+ D2D 每封装 2 die 5.46 ms）。
+- **能耗**：链路字节仍按载荷口径，按每次集合通信各层实际发送字节之比拆成 `d2d`（`pJ_bit_d2d`）、节点内 `link`（`pJ_bit_link`）、跨节点 `net`（`pJ_bit_net`），三者之和 = 单层时的链路字节（测试守恒）。
+- **入口**：API scenario `d2d_enabled`、`package_cards`、`d2d_std`、`d2d_units`、`d2d`、`link`、`node_cards`、`net`；每级 `link_GB`（total / d2d / scaleup / net）；`/api/catalog` 给出 `d2d_standards`。CLI `--d2d --package-cards（> 1 隐含 --d2d） --d2d-std --d2d-units --d2d-GBps（隐含 custom） --d2d-alpha-us --link-GBps --link-alpha-us --node-cards --net-GBps --net-alpha-us --pJ-bit-net`，`accel-dse d2d` 列出档位。Web 并行组「三层互连」：D2D 芯粒堆叠开关（关 = 单片大 die）→ 档位 / 每封装 die 数 / 单元数 / GB/s / α；节点内两项；每节点卡数与跨节点两项。扫描可选 `package_cards`（> 1 时自动开 D2D）、`d2d_units`、`d2d.GBps`（自动切到自定义）、`d2d.alpha_us`、`node_cards`、`net.GBps`、`net.alpha_us`。
+- **不做 / 待定**：拓扑（胖树 / torus / 轨道优化）、拥塞与超额订阅、in-network reduction（SHARP）、多路径 / 链路聚合、NIC 与 scale-up 之间的 PCIe 瓶颈都不建模；`Link.topology` 仍只是标签；D2D 的协议效率（flit 开销）不扣——需要时用自定义档位填有效带宽。
 
 ## 16. MoE 负载倾斜（0.49，默认关）
 
@@ -382,3 +404,16 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 **入口**：API `budget`（eval 响应 `budget`：`ok`、`items`、`area`、`violations`）；CLI `--budget-sram-mib --budget-slc-mib --budget-macs --budget-tflops --budget-dram-GiB --budget-cards --budget-power-W --budget-die-mm2 --budget-system-mm2 --mm2-per-mib-sram --mm2-per-mib-slc --mm2-per-kmac --mm2-fixed`（search / compare 表多一列 budget）；Web 左侧「资源 / 面积预算」组、单点页「资源 / 面积预算」表，布局表与映射对比表的「超预算」标记。
 
 **不做**：工艺库 / 标准单元面积模型、布线与良率、成本（$ / mm²、封装、HBM 价格）、面积与频率 / 功耗的耦合——需要可信数据源，留给用户的密度「假设」。
+
+## 18. prefill / decode 分离（PD，0.50，默认关）
+
+默认是合并服务（§7：每个副本分时做 prefill 与 decode）。`scenario.pd.enabled = true` 时另算一份 **PD 分离**报告（DistServe / Splitwise / Mooncake 式），与同卡数的合并服务对照；单点评估本身（级表、TPOT 等）不变。**稳态流体模型「假设」，第一版**。
+
+- **两个池**：decode 池用场景的 `layout` 与 `serving.batch`，卡数 `pd.decode_cards`（布局卡数的整数倍；0 = 一个副本）；prefill 池用 `pd.prefill_layout`，卡数 `pd.prefill_cards`，每个副本取满足 TTFT SLO 的最大 prefill batch（2 的幂 ≤ 64，与合并 goodput 同一选择）。两池同芯片、同存储器、同互连设定（不同芯片 / 存储器的异构池未做）。
+- **容量**：prefill 池 λ_p = r_p · R_p / S（请求 / s，R_p 每副本 prompt tok/s，S prompt 长度）；decode 池 λ_d = r_d · R_d / out_len；KV 传输 λ_kv = min(N_p, N_d) · β / KV。PD 的请求率 λ = min(λ_p, λ_d, λ_kv)，最小者为瓶颈，其余池的利用率 = λ / 各自容量；goodput = λ · out_len / (N_p + N_d)（tok/s/卡）。
+- **KV 交接**：每请求 KV = 整个模型 S 个 token 的逻辑 KV + 索引键 + 循环状态（按发布 dtype；decode 池内的 TP 复制扇出不计，「假设」）。走哪一层（「假设」）：设了 `node_cards`（> 0）时两池在不同节点 → 跨节点 `net`；否则同一 scale-up 域 → 节点内 `link`；`pd.kv_GBps` 可直接给每卡带宽。每请求带宽 β_req = min(c_p, c_d) · β（按卡成对并行），时间 t_kv = α + KV / β_req。`pd.kv_layerwise`：prefill 时逐层流式发送，α 每层一次，只暴露 prefill 掩盖不了的部分 max(α + KV/β_req/L, t_kv − TTFT_p·(L−1)/L)。
+- **指标**：TTFT = prefill 池 TTFT + 暴露的 KV 传输；TPOT = decode 池的纯 decode 步（没有 prefill 打断）。合并对照：同卡数按场景布局 ⌊N / c_d⌋ 个副本 × 合并 goodput；其 TTFT 为合并 prefill 延迟，**有效 TPOT = TPOT / decode 时间占比**（prefill 期间 decode 暂停，流体平均的 token 间隔），并标出是否满足 TPOT SLO。
+- **切分搜索**：同总卡数下枚举所有 N_p（c_p 的倍数）与 N_d = N − N_p（c_d 的倍数），给出 goodput / 卡最优的切分（`best_split`）与全部切分（`splits`）。池的布局本身不搜索（都是输入）。
+- **量级**（Qwen3-8B）：100T + LPDDR5X，batch 16、prompt 4096：KV 576 MiB / 请求，节点内 400 GB/s 传输 1.5 ms（跨节点 50 GB/s 12.1 ms）；PD prefill 2 卡 + decode 2 卡：TTFT 1637 ms、TPOT 129.5 ms、61.8 tok/s/卡（decode 瓶颈），最佳切分 1 + 3 → 92.7；合并 4 卡 112.5 tok/s/卡，但有效 TPOT 142.3 ms（decode 占比 91%）。1P + HBM3E，batch 32、prompt 8192、TPOT SLO 50 ms：PD 2 + 6 TPOT 42.2 ms（满足）、568.9 tok/s/卡；合并 573.9 tok/s/卡但有效 TPOT 55.8 ms（超 SLO）。即：流体模型下 PD 的收益主要是 TPOT 不被 prefill 打断，而不是总吞吐——这些例子里 goodput / 卡不高于合并（按卡整数切分时非瓶颈池有闲置；合并服务的分时没有这个损失）。
+- **入口**：API scenario `pd: {enabled, prefill_layout, prefill_cards, decode_cards, kv_GBps, kv_layerwise}`，eval 响应 `pd`（prefill / decode / kv / ttft_ms / tpot_ms / req_s / goodput_per_card / bottleneck / util / splits / best_split / coloc / warnings；只对 LLM / VLM）；CLI `--pd --pd-prefill-pp/tp/dp/ep/etp --pd-prefill-cards --pd-decode-cards --pd-kv-GBps --pd-layerwise`；Web 服务组「PD 分离」与单点页「PD 分离 vs 合并」表。
+- **不做（第一版）**：排队与到达波动（TTFT 尾延迟）、连续批处理动态与分块 prefill（chunked prefill）、KV 传输与池内集合通信争用链路、前缀缓存、异构池（不同芯片 / 存储器）、PD 系统的能耗、池布局搜索。

@@ -17,6 +17,7 @@
 - **0.47.1**：能耗动作计数（MAC / 向量 / SRAM / DRAM / 链路 / 卡·秒，每 token / 帧 / 序列）× 用户提供的每动作能耗（`--pJ-mac … --idle-W`，API `energy`）；工具不内置任何能耗数值。
 - **0.48**：系统级缓存 SLC（`--slc-mib`，pin / lru 两种策略，默认关）与两级互连（封装内 D2D `--package-cards --d2d-GBps` 与跨封装网络层，集合通信按组跨越的层分级计）；能耗新增 SLC / D2D 两项。默认结果与 0.47.1 一致。
 - **0.49**：MoE 专家负载倾斜（`--moe-skew` 或实测每专家分布 `--moe-expert-load`，最忙 EP rank 决定时间，能耗计数守恒）；资源 / 面积预算（SRAM / MAC / 卡数 / 功耗 / 面积代理限额，密度由用户填写，报告余量并标出超预算布局）。默认结果不变。
+- **0.50**：prefill / decode 分离（`--pd`，prefill 池与 decode 池可用不同卡数与布局，KV 交接按互连层计时，给出 TTFT / TPOT / goodput 并与同卡数合并服务对照；稳态流体模型，第一版）；三层互连——可选的封装内 D2D（默认关 = 单片大 die；打开默认 UCIe-A 48 GT/s，可选 UCIe-A 64G / UCIe-S 32G / BoW / NVLink-C2C，`--d2d --d2d-std`）、节点内 scale-up、跨节点网络（`--node-cards --net-GBps`）。默认结果不变。
 - **映射是设计变量**：输出驻留（OS）、权重驻留（边缘加载 / 宽面广播）、OS + GEMV 单元、可重构，逐算子计算 MAC 界与 SRAM 供数界；芯片不原生支持的格式计入反量化开销。
 - **逐 rank 算子图**：TP / PP / 注意力 DP / EP / ETP，单卡就是全 1 布局，没有第二条路径。
 - **存储规划与调度**：权重 / KV 的 SRAM 驻留、staging、逐 stage 容量；每级 `max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC`，绑定瓶颈与有效 MAC 比例直接给出。

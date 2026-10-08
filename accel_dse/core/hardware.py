@@ -15,8 +15,13 @@ Chip
                          (hot weights → routed experts → KV / state), served at slc_GBps; streamed activations bypass
                          "lru": hardware cache under the per-step cyclic sweep of an inference step — everything hits if
                          the step's DRAM working set fits, otherwise nothing does (LRU thrash bound)
-System = Chip + external memory (mem_catalog.MemSpec) + interconnect: scale-up / network link between packages and an
-optional die-to-die (D2D) tier between the ``package_cards`` cards of one package (0.48).
+System = Chip + external memory (mem_catalog.MemSpec) + a three-tier interconnect (0.50):
+  d2d    optional die-to-die tier between the ``package_cards`` dies of one package (chiplet stacking); off (the
+         default) = monolithic die, every card its own package.  Default grade when on: UCIe-A x64 @ 48 GT/s × 4
+         modules = 1536 GB/s per direction (core/d2d_catalog.py)
+  link   in-node scale-up between packages (the pre-0.50 single link: 400 GB/s, 3 µs 「假设」)
+  net    cross-node scale-out (IB / RoCEv2 class) between nodes of ``node_cards`` cards; 0 = the whole system is one
+         node (the default → the tier is unused).  Default 50 GB/s per card (one 400 Gb/s NIC), 5 µs 「假设」
 """
 
 from __future__ import annotations
@@ -115,7 +120,8 @@ class Link:
             raise ValueError("link GBps must be finite > 0, alpha_us ≥ 0")
 
 
-D2D_DEFAULT = Link(2000.0, 0.5)   # die-to-die tier 「假设」 (used only when package_cards > 1)
+D2D_DEFAULT = Link(1536.0, 0.5)   # UCIe-A x64 @ 48 GT/s × 4 modules (raw, per direction); α = collective sync 「假设」
+NET_DEFAULT = Link(50.0, 5.0)     # cross-node: one 400 Gb/s IB NDR / 400GbE RoCEv2 NIC per card; α 「假设」
 
 
 @dataclass(frozen=True)
@@ -123,9 +129,11 @@ class System:
     chip: Chip
     mem_id: str = "lpddr5x_4x64_8533_16g"
     mem_eff: float | None = None
-    link: Link = Link()                 # between packages (scale-up / network)
-    d2d: Link = D2D_DEFAULT             # between the cards of one package
-    package_cards: int = 1              # cards (dies) per package sharing the D2D tier; 1 = every card its own package
+    link: Link = Link()                 # in-node scale-up between packages
+    d2d: Link = D2D_DEFAULT             # between the dies of one package (effective only with package_cards > 1)
+    package_cards: int = 1              # dies per package on the D2D tier; 1 = monolithic (D2D off)
+    net: Link = NET_DEFAULT             # cross-node scale-out
+    node_cards: int = 0                 # cards per node; 0 = one node (cross-node tier unused)
 
     @property
     def mem(self) -> mem_catalog.MemSpec:

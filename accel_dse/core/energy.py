@@ -13,10 +13,11 @@ Actions (whole system: every rank of every stage and replica)
   dram   bytes read + written in external memory (weights, KV, activation streaming, FSDP gathers); with a
          system-level cache only the misses
   slc    bytes served by the system-level cache (0.48, chip.slc_mib > 0)
-  link   bytes a rank sends on the scale-up / network tier (collectives' payload per rank, PP hand-offs, VAE tile
-         gathers)
-  d2d    the share of those bytes that stays on the die-to-die tier of a package (0.48, package_cards > 1; split
-         by the ratio of bytes sent per tier of each collective, see core/schedule.py)
+  link   bytes a rank sends on the in-node scale-up tier (collectives' payload per rank, PP hand-offs, VAE tile
+         gathers — minus the shares below)
+  d2d    the share of the sent bytes that stays on the die-to-die tier of a package (0.48; D2D on, package_cards > 1;
+         split by the ratio of bytes sent per tier of each collective, see core/schedule.py)
+  net    the share that crosses nodes on the scale-out network (0.50; node_cards > 0)
   idle   static / idle power × cards × the time window (``idle_W`` per card)
 
 Window and units
@@ -28,7 +29,7 @@ Window and units
 Each stage executes ``microbatches`` ticks per pass; a tick's counts are per rank, × TP·SP·DP ranks.
 
 MoE load skew (0.49, ``serving.moe_skew`` / ``moe_expert_load``): the stage time follows the busiest EP rank, but
-skew only moves work between ranks — the work counts (MAC, vector, SRAM, DRAM, SLC, link, D2D) are taken per output
+skew only moves work between ranks — the work counts (MAC, vector, SRAM, DRAM, SLC, link, D2D, net) are taken per output
 unit from the uniform-routing evaluation of the same scenario, while the window (and so card·s) is the skewed one.
 """
 
@@ -37,10 +38,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, fields
 
-ACTIONS = ("mac", "vec", "sram", "slc", "dram", "d2d", "link", "idle")
+ACTIONS = ("mac", "vec", "sram", "slc", "dram", "d2d", "link", "net", "idle")
 _UNIT_PJ = {"mac": "pJ_mac", "vec": "pJ_vec", "sram": "pJ_bit_sram", "slc": "pJ_bit_slc", "dram": "pJ_bit_dram",
-            "d2d": "pJ_bit_d2d", "link": "pJ_bit_link"}
-_BITS = ("sram", "slc", "dram", "d2d", "link")
+            "d2d": "pJ_bit_d2d", "link": "pJ_bit_link", "net": "pJ_bit_net"}
+_BITS = ("sram", "slc", "dram", "d2d", "link", "net")
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class EnergyTable:
     idle_W: float | None = None        # static / idle power per card (W)
     pJ_bit_slc: float | None = None    # per bit served by the system-level cache (0.48)
     pJ_bit_d2d: float | None = None    # per bit on the die-to-die tier (0.48)
+    pJ_bit_net: float | None = None    # per bit on the cross-node network tier (0.50)
 
     def __post_init__(self):
         for f in fields(self):
@@ -78,6 +80,12 @@ class EnergyTable:
         if bad:
             raise ValueError(f"energy: unknown keys {sorted(bad)}")
         return EnergyTable(**d)
+
+
+def scaleup_bytes(t) -> float:
+    """Bytes on the in-node scale-up tier = sent − D2D − network share (float residue of a fully tiered group → 0)."""
+    x = t.link_bytes - t.d2d_bytes - t.net_bytes
+    return 0.0 if x <= 1e-9 * t.link_bytes else x
 
 
 def action_counts(r) -> dict:
@@ -110,7 +118,8 @@ def _counts(r) -> dict:
         c["dram"] += t.dram_bytes * n
         c["slc"] += t.slc_bytes * n
         c["d2d"] += t.d2d_bytes * n
-        c["link"] += (t.link_bytes - t.d2d_bytes) * n
+        c["net"] += t.net_bytes * n
+        c["link"] += scaleup_bytes(t) * n
     if w is None:
         window = r.step
         unit = "token" if r.scenario.serving.phase == "decode" else "prompt token"
