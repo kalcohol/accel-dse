@@ -24,9 +24,11 @@ class Goodput:
     goodput_tok_s: float
     goodput_per_card: float
     decode_share: float      # fraction of replica time spent decoding
+    ttft_ok: bool = True     # False → even a single-request prefill misses the TTFT SLO (goodput still shown)
 
 
 def best_prefill(scn: Scenario, b_cap: int = 64) -> tuple[int, Result | None]:
+    """Largest-throughput prefill batch (powers of two) meeting the TTFT SLO; (0, None) if none."""
     base = scn.replace("serving.phase", "prefill")
     best_b, best_r = 0, None
     b = 1
@@ -44,10 +46,13 @@ def goodput(decode: Result) -> Goodput:
     scn = decode.scenario
     pb, pr = best_prefill(scn)
     rd = decode.throughput
-    if pr is None or rd <= 0:
-        return Goodput(rd, 0.0, 0, float("inf"), 0.0, 0.0, 0.0)
+    ok = pr is not None
+    if pr is None:
+        pb, pr = 1, evaluate(scn.replace("serving.phase", "prefill").replace("serving.batch", 1))
+    if rd <= 0 or not pr.fits:
+        return Goodput(rd, 0.0, 0, float("inf"), 0.0, 0.0, 0.0, False)
     rp = pr.throughput
     S, out = scn.serving.prompt, scn.serving.out_len
     g = 1.0 / (1.0 / rd + (S / out) / rp)
     share = (1.0 / rd) / (1.0 / rd + (S / out) / rp)
-    return Goodput(rd, rp, pb, pr.ttft * 1e3, g, g / scn.layout.cards, share)
+    return Goodput(rd, rp, pb, pr.ttft * 1e3, g, g / scn.layout.cards, share, ok)

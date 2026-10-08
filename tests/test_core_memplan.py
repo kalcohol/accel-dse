@@ -82,3 +82,23 @@ def test_linear_attention_state_counted():
     lin = [l for l in s.layers if l.core.kind == "linear"]
     exp = sum(l.core.n_state_heads * l.core.state_dk * l.core.state_dv * 4 + l.core.conv_channels * 3 * 4 for l in lin)
     assert abs(st.state_per_seq - exp) < 1
+
+
+def test_reviewer_oracle_deepseek_pp8_bf16_what_if_171_44_gib():
+    """Reviewer oracle (0.32 review): DeepSeek-V3 PP8 heaviest stage = 171.44 GiB of weights when
+    every weight is bf16.  As released (fp8) it is ~half; the bf16 number is reproduced as a what-if."""
+    from accel_dse.core.model import with_formats
+    s = with_formats(get_model("deepseek-v3"), {r: "bf16" for r in ("attn", "mlp", "expert", "shared_expert",
+                                                                    "router", "embed", "lm_head", "mtp")})
+    st = stage_storage(s, 8, 16, False, False, Shard(), 4096)
+    assert abs(st.weights / GiB - 171.44) < 0.05, st.weights / GiB
+    rel = stage_storage(get_model("deepseek-v3"), 8, 16, False, False, Shard(), 4096)
+    assert abs(rel.weights / st.weights - 8.0 / 16.0) < 0.01
+
+
+def test_spec_k_sweep_identity():
+    base = Scenario(model="deepseek-v3", mem_id="hbm3e_8s_12h24g_9200", layout=Layout(tp=8, ep=8),
+                    serving=Serving(batch=32, ctx=2048, spec_k=2))
+    a = evaluate(base)
+    b = evaluate(base.replace("serving.spec_k", 2))
+    assert a.tpot == b.tpot and a.throughput == b.throughput

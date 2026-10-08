@@ -37,6 +37,7 @@ for mid in ("qwen3-32b", "deepseek-v3"):
                       "tpot_ms": r.result.tpot * 1e3 if r.result else None,
                       "bound": r.result.bound if r.result else None} for r in rows[:3]],
             "goodput_card": g.goodput_per_card if g else 0.0,
+            "ttft_ok": g.ttft_ok if g else False, "ttft_ms": g.ttft_ms if g else None,
             "stability": {"stable": st.stable, "agree": st.agree,
                           "flips": [c for c in st.cases if not (c["same"] or c["within5"])]},
         }

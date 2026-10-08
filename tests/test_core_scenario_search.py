@@ -127,3 +127,10 @@ def test_goodput_includes_prefill_amortisation():
     assert abs(g.goodput_tok_s - exp) < 1e-9 * exp
     g2 = goodput(evaluate(scn.replace("serving.out_len", 4096)))
     assert g2.goodput_tok_s > g.goodput_tok_s          # longer outputs amortise prefill better
+
+
+def test_goodput_flags_unmet_ttft_instead_of_zero():
+    scn = Scenario(model="deepseek-v3", mem_id=HBM, layout=Layout(tp=1, dp=8, ep=8), mapping="reconf",
+                   serving=Serving(batch=64, ctx=4096, prompt=4096, ttft_slo_ms=500.0))
+    g = goodput(evaluate(scn))
+    assert not g.ttft_ok and g.goodput_tok_s > 0 and g.ttft_ms > 500
