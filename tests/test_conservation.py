@@ -3038,7 +3038,7 @@ def test_ui_calib_override_dual_card_markers():
 
 
 def test_model_doc_synced_v023():
-    """Public docs (README + docs/MODEL.md) stay honest and in sync with the code:
+    """Public docs (README / README.en + docs/MODEL.md) stay honest and in sync with the code:
     no stale out_of_scope claims for UI / video-protein multi-card, calibration
     and the not-measured-silicon disclaimer documented, relative links resolve."""
     import re
@@ -3046,14 +3046,20 @@ def test_model_doc_synced_v023():
 
     root = Path(__file__).resolve().parents[1]
     readme = (root / "README.md").read_text(encoding="utf-8")
+    readme_en = (root / "README.en.md").read_text(encoding="utf-8")
     model = (root / "docs" / "MODEL.md").read_text(encoding="utf-8")
 
     assert "out_of_scope" not in model
     assert "CalibrationOverrides" in model
     assert "视频" in model and "蛋白" in model and "多卡" in model
-    assert "不是实测硅片" in readme and "not measured silicon" in readme
-    assert "docs/MODEL.md" in readme
-    for doc, text in ((root / "README.md", readme), (root / "docs" / "MODEL.md", model)):
+    assert "不是实测硅片" in readme and "not measured silicon" in readme_en
+    assert "](docs/MODEL.md)" in readme and "](docs/MODEL.md)" in readme_en
+    assert "](README.en.md)" in readme and "](README.md)" in readme_en
+    for doc, text in (
+        (root / "README.md", readme),
+        (root / "README.en.md", readme_en),
+        (root / "docs" / "MODEL.md", model),
+    ):
         for target in re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", text):
             if target.startswith(("http://", "https://", "mailto:")):
                 continue

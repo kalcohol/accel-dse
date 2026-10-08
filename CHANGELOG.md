@@ -5,6 +5,9 @@
 
 ## [Unreleased]
 
+### Added
+- 英文版 README（`README.en.md`）；中文 README 顶部导航精简为 English · 建模说明 · 更新日志 · MIT，移除内嵌英文摘要。
+
 ### Changed
 - 文档结构：精简 README；新增 `docs/MODEL.md`（建模方法、假设与局限）；存储规格调研移到 `docs/research/`；CHANGELOG 改为 Keep a Changelog 格式。
 

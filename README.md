@@ -2,7 +2,7 @@
 
 > 推理加速器设计空间探索工作台 · Analytical DSE workbench for inference-only NPU / ASIC
 
-[English summary](#english-summary) · [建模说明 docs/MODEL.md](docs/MODEL.md) · [CHANGELOG](CHANGELOG.md) · MIT License
+[English](README.en.md) · [建模说明](docs/MODEL.md) · [更新日志](CHANGELOG.md) · [MIT](LICENSE)
 
 **accel-dse** 是一个**可手算核对**的解析模型 + 本地 Web 工作台，用于推理专用 NPU / ASIC 的 **DSE（Design Space Exploration，设计空间探索）**：在流片前，把「算力 × 片上 SRAM × HBM/LPDDR × 多芯片并行 × 工作负载」放在同一张 MetricsCard 上比较，看清时延、吞吐、容量与带宽墙之间的取舍。所有中间量（FLOPs、DRAM 字节、利用率、集合通信字节）都可导出、可复算。零第三方依赖，Python ≥ 3.10。
 
@@ -13,7 +13,7 @@
 - **多芯片**：TP / PP / EP（含 TP×EP 专家切分、注意力 DP）、C2C（chip-to-chip）集合通信 + 暴露同步时延、IB/RoCE KV fabric、PP decode 微批、投机解码 / MTP。
 - **指标**：TTFT / TPOT（视频 TTFC、蛋白 time/seq）、compute vs memory 带宽墙分解、容量 / OOM、scale efficiency、吞吐–交互性 **Pareto** 前沿与 **SLO goodput**；可选的能耗 / 成本 stub（用户输入假设值）。
 
-方法、公式与全部关键假设见 **[docs/MODEL.md](docs/MODEL.md)**，欢迎逐条挑错。
+方法、公式与全部关键假设见 **[建模说明](docs/MODEL.md)**，欢迎逐条挑错。
 
 ## 快速开始
 
@@ -76,9 +76,3 @@ accel-dse/
 ## License
 
 [MIT](LICENSE) © 2026 accel-dse Project
-
----
-
-## English summary
-
-**accel-dse** is a hand-checkable analytical model and local web workbench for design-space exploration of inference-only NPUs / ASICs. It covers LLM (dense / MoE / MLA), video DiT and protein workloads on configurable compute, on-chip SRAM and HBM / LPDDR, scaled out with TP / PP / EP over chip-to-chip links, and reports TTFT / TPOT, bandwidth walls, capacity, throughput–interactivity Pareto fronts and SLO goodput. Zero dependencies: `python3 tests/run_tests.py`, then `python3 -m accel_dse serve` and open http://127.0.0.1:8765. Modelling method and assumptions: [docs/MODEL.md](docs/MODEL.md). **All numbers are analytical estimates or explicit assumptions — not measured silicon.** Feedback via [GitHub Issues](https://github.com/kalcohol/accel-dse/issues). MIT licensed.
