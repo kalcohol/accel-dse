@@ -660,6 +660,14 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             n_eff = max(1, min(len(spec.mtp_layers), round(rmtp / max(per, 1))))
             extra = max(0, (rmtp - n_eff * per) // n_eff)
             spec = replace(spec, mtp_layers=spec.mtp_layers[:n_eff], mtp_extra_params=extra)
+        exotic = [k for k in ("hc_mult", "hc_count", "mhc") if c.get(k)]
+        if exotic or spec.lookup_params:
+            why = []
+            if exotic:
+                why.append("hyper-connections (multi-stream residual) — params counted, mixing compute ignored")
+            if spec.lookup_params:
+                why.append("n-gram/engram lookup tables — memory only")
+            spec = replace(spec, coverage="proxy", notes=spec.notes + ("「架构代理」: " + "; ".join(why),))
         if head_copy:
             spec = replace(spec, release_params=spec.release_params - head_copy,
                            notes=spec.notes + (f"release also stores the tied lm_head ({head_copy / 1e9:.3f}B), "
