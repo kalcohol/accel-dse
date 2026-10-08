@@ -46,20 +46,20 @@ class Stability:
     cases: list[dict]
 
 
-def ranking_stability(base: Scenario, cards: int, include_mapping: bool = True, max_tp: int | None = None) -> Stability:
-    rows = search_layouts(base, cards, max_tp=max_tp)
+def ranking_stability(base: Scenario, cards: int, include_mapping: bool = True, max_tp: int | None = None,
+                      objective: str = "decode") -> Stability:
+    rows = search_layouts(base, cards, max_tp=max_tp, objective=objective)
     top = rows[0]
-    key = lambda r: (r.layout, )
     cases, ok = [], 0
     for name, scn in perturbations(base, include_mapping):
-        pr = search_layouts(scn, cards, max_tp=max_tp)
+        pr = search_layouts(scn, cards, max_tp=max_tp, objective=objective)
         best = pr[0]
         mine = next((r for r in pr if r.layout == top.layout), None)
-        mine_v = mine.per_card if mine else 0.0
+        mine_v = mine.score(objective) if mine else 0.0
         same = best.layout == top.layout
-        close = best.per_card > 0 and mine_v >= 0.95 * best.per_card
+        close = best.score(objective) > 0 and mine_v >= 0.95 * best.score(objective)
         ok += same or close
-        cases.append({"case": name, "top": best.layout.label, "top_tok_s_card": best.per_card,
+        cases.append({"case": name, "top": best.layout.label, "top_tok_s_card": best.score(objective),
                       "base_top_tok_s_card": mine_v, "same": same, "within5": close})
     agree = ok / len(cases) if cases else 1.0
     return Stability(top.layout.label, agree >= 0.9, agree, cases)

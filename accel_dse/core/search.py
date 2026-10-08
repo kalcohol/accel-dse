@@ -95,22 +95,41 @@ class LayoutRow:
     mapping: str
     batch: int
     result: Result | None
+    goodput: object = None      # serving.Goodput when objective == "goodput"
 
     @property
     def per_card(self) -> float:
         return self.result.per_card if (self.result is not None and self.batch) else 0.0
 
+    @property
+    def goodput_card(self) -> float:
+        return self.goodput.goodput_per_card if self.goodput is not None else 0.0
+
+    def score(self, objective: str) -> float:
+        return self.goodput_card if objective == "goodput" else self.per_card
+
 
 def search_layouts(base: Scenario, cards: int, mappings: tuple[str, ...] | None = None,
-                   max_tp: int | None = None) -> list[LayoutRow]:
+                   max_tp: int | None = None, objective: str = "decode") -> list[LayoutRow]:
+    """Rank all layouts on ``cards`` cards.  objective:
+    decode  – decode tokens/s/card at the best batch meeting the TPOT SLO
+    goodput – output tokens/s/card incl. prefill amortisation (serving.goodput); the
+              decode-best batch also maximises goodput for a layout (goodput is monotone in R_d)
+    """
+    if objective not in ("decode", "goodput"):
+        raise ValueError("objective must be decode|goodput")
+    from .serving import goodput as _goodput
     m = get_model(base.model)
     rows = []
     for org in (mappings or (base.mapping,)):
         for lay in enumerate_layouts(cards, m.n_layers, m.is_moe, max_tp=max_tp):
             scn = base.replace("layout", lay).replace("mapping", org)
             bb = best_batch(scn)
-            rows.append(LayoutRow(lay, org, bb.batch, bb.result if bb.batch else None))
-    rows.sort(key=lambda r: -r.per_card)
+            row = LayoutRow(lay, org, bb.batch, bb.result if bb.batch else None)
+            if objective == "goodput" and row.result is not None:
+                row.goodput = _goodput(row.result)
+            rows.append(row)
+    rows.sort(key=lambda r: -r.score(objective))
     return rows
 
 

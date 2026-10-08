@@ -16,7 +16,6 @@ from accel_dse.core.evaluate import evaluate  # noqa: E402
 from accel_dse.core.mapping import ORGS  # noqa: E402
 from accel_dse.core.scenario import Scenario, Serving  # noqa: E402
 from accel_dse.core.search import best_batch, search_layouts  # noqa: E402
-from accel_dse.core.serving import goodput  # noqa: E402
 from accel_dse.core.stability import ranking_stability  # noqa: E402
 
 HBM = "hbm3e_8s_12h24g_9200"
@@ -28,20 +27,25 @@ for mid in ("qwen3-32b", "deepseek-v3"):
     for org in ORGS:
         base = Scenario(model=mid, mem_id=HBM, mapping=org, serving=Serving(ctx=4096, prompt=4096, out_len=1024,
                                                                            tpot_slo_ms=50.0))
-        rows = search_layouts(base, 8)
-        top = rows[0]
-        g = goodput(top.result) if top.batch else None
-        st = ranking_stability(base, 8, include_mapping=False)
-        per[org] = {
-            "top3": [{"layout": r.layout.label, "batch": r.batch, "tok_s_card": r.per_card,
-                      "tpot_ms": r.result.tpot * 1e3 if r.result else None,
-                      "bound": r.result.bound if r.result else None} for r in rows[:3]],
-            "goodput_card": g.goodput_per_card if g else 0.0,
-            "ttft_ok": g.ttft_ok if g else False, "ttft_ms": g.ttft_ms if g else None,
-            "stability": {"stable": st.stable, "agree": st.agree,
-                          "flips": [c for c in st.cases if not (c["same"] or c["within5"])]},
-        }
-        print(mid, org, per[org]["top3"][0], f"stable={st.stable} agree={st.agree:.2f}", flush=True)
+        res = {}
+        for obj in ("decode", "goodput"):
+            rows = search_layouts(base, 8, objective=obj)
+            st = ranking_stability(base, 8, include_mapping=False, objective=obj)
+            res[obj] = {
+                "top3": [{"layout": r.layout.label, "batch": r.batch, "tok_s_card": r.per_card,
+                          "goodput_card": r.goodput_card,
+                          "ttft_ok": (r.goodput.ttft_ok if r.goodput else None),
+                          "tpot_ms": r.result.tpot * 1e3 if r.result else None,
+                          "bound": r.result.bound if r.result else None,
+                          "array_util": r.result.stages[r.result.heaviest_stage].time.array_util if r.result else None}
+                         for r in rows[:3]],
+                "stability": {"stable": st.stable, "agree": st.agree,
+                              "flips": [c for c in st.cases if not (c["same"] or c["within5"])]},
+            }
+            print(mid, org, obj, res[obj]["top3"][0], f"stable={st.stable} agree={st.agree:.2f}", flush=True)
+        per[org] = res
+    st = ranking_stability(base.replace("mapping", "os"), 8, include_mapping=True)
+    per["_mapping_included_from_os"] = {"stable": st.stable, "agree": st.agree, "cases": st.cases}
     out["layouts"][mid] = per
 
 for ctx in (1024, 4096):
