@@ -151,7 +151,7 @@ function syncInputs() {
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
   if ($('w-placement')) $('w-placement').value = S.sc.workload.placement || 'auto';
   if ($('w-vae_tiling')) $('w-vae_tiling').checked = !!S.sc.workload.vae_tiling;
-  for (const k of ['dit_fsdp', 'te_cpu']) if ($('w-' + k)) $('w-' + k).checked = !!S.sc.workload[k];
+  for (const k of ['dit_fsdp', 'te_cpu', 'vae_parallel', 'overlap']) if ($('w-' + k)) $('w-' + k).checked = !!S.sc.workload[k];
   if ($('w-sample_split')) $('w-sample_split').checked = S.sc.workload.sample_split !== false;
 }
 
@@ -522,11 +522,13 @@ function placeText(pl, sc) {
   const gb = (x) => num(x / 1e9) + ' GB';
   const cpu = pl.te_cpu ? `文本编码器在主机 CPU 上运行（Wan --t5_cpu；${fmtDur(pl.te_s)} = ${num(pl.parts.filter((p) => p.role === 'text_encoder').reduce((a, p) => a + p.tflop, 0))} TFLOP ÷ ${num(pl.host_TFLOPS)} TFLOPS「假设」，卡上不放编码器）；` : '';
   const fsdp = sc && sc.workload.dit_fsdp && (sc.layout.sp || 1) * sc.layout.dp > 1 ? `DiT 权重 FSDP 切到每级 ${(sc.layout.sp || 1) * sc.layout.dp} 张卡（Wan --dit_fsdp，逐层 all-gather 与计算重叠）；` : '';
+  const vp = pl.vae_par > 1;
+  const vae = vp ? `VAE 每卡一份（分块解码拆到 ${pl.vae_par} 张卡）` : 'VAE 在末级卡';
   const all = (pl.te_cpu ? 0 : pl.te_w) + pl.vae_w;
-  if (pl.place === 'resident') return `${cpu}${fsdp}常驻——${pl.te_cpu ? '' : '文本编码器在首级卡、'}VAE 在末级卡，与 DiT 同时占用显存（共 ${gb(all)}）`;
+  if (pl.place === 'resident') return `${cpu}${fsdp}常驻——${pl.te_cpu ? '' : '文本编码器在首级卡、'}${vae}，与 DiT 同时占用显存（共 ${gb(all)}）`;
   const sh = pl.te_cards > 1 ? `文本编码器权重按 FSDP 切到 ${pl.te_cards} 张卡（每卡 ${gb(pl.te_card_w)}，含 2 层预取；逐层 all-gather ${fmtDur(pl.gather_s)}，与编码计算重叠）` : '';
   const off = pl.load_s ? `组件与 DiT 分时占用显存（需求取三者最大值），每请求从主机重载文本编码器 + DiT + VAE 权重 ${fmtDur(pl.load_s)}（${num(pl.host_GBps)} GB/s「假设」，主机保留副本）` : '';
-  return cpu + fsdp + [sh, off].filter(Boolean).join('；') + '；VAE 在末级卡';
+  return cpu + fsdp + [sh, off].filter(Boolean).join('；') + '；' + vae;
 }
 async function runFit() {
   const box = $('fit');
@@ -624,7 +626,7 @@ function renderAssumptions(r) {
     if (g.unit === 'frame') items.push(
       `每个去噪步 ${g.workload.cfg} 次前向（CFG 的 cond / uncond 作为 batch，DP 可切分 = CFG 并行），${g.workload.steps} 步；单段延迟 = ${g.pipeline ? '文本编码 + ' : ''}步数 × max(微批, PP) × 最重流水级时间${g.pipeline ? ' + VAE 解码' : ''}${g.pipeline && g.pipeline.load_s ? ' + 主机重载' : ''}`,
       g.pipeline
-        ? `文本编码器与 VAE 解码：按发布检查点头的算子图与去噪串行执行「假设」（${g.pipeline.parts.map((p) => `${p.label} ${fmtDur(p.s)} · ${p.bound}${p.tiles ? ` · ${p.tiles} 个 tile（重叠 ×${num(p.overlap)}${p.tiling ? '，enable_tiling' : ''}）` : ''}`).join('；')}）；吞吐按单请求串行计（与其他请求的去噪重叠未建模）`
+        ? `文本编码器与 VAE 解码：按发布检查点头的算子图与去噪串行执行「假设」（${g.pipeline.parts.map((p) => `${p.label} ${fmtDur(p.s)} · ${p.bound}${p.tiles ? ` · ${p.tiles} 个 tile（重叠 ×${num(p.overlap)}${p.tiling ? '，分块解码' : ''}）` : ''}${p.par ? ` · 拆到 ${p.par} 卡（最慢卡 ${p.rank_tiles} 个 tile，all-gather ${fmtDur(p.gather_s)}；单卡 ${fmtDur(p.single_s)}）` : ''}`).join('；')}）；${g.pipeline.overlap ? `跨请求重叠：主机编码下一请求与卡上去噪并行，稳态周期 ${fmtDur(g.period_s)}（单段延迟不变）` : '吞吐按单请求串行计（跨请求重叠仅在文本编码器放主机 CPU 时可选）'}`
           + `；组件放置${g.pipeline.placement === 'auto' ? '（自动）' : ''}：${placeText(g.pipeline, sc)}`
         : '文本编码器与 VAE 解码未计时、未计存储（工作负载里已取消勾选「计入文本编码器与 VAE 解码」）',
       '时间步嵌入与 AdaLN 调制按每序列一次计入',
@@ -1015,7 +1017,7 @@ async function init() {
   $('wi-act').addEventListener('change', (e) => { S.wiAct = e.target.value; schedule(); });
   $('w-placement').addEventListener('change', (e) => { S.sc.workload.placement = e.target.value; schedule(); });
   $('w-vae_tiling').addEventListener('change', (e) => { S.sc.workload.vae_tiling = e.target.checked; schedule(); });
-  for (const k of ['dit_fsdp', 'te_cpu', 'sample_split']) $('w-' + k).addEventListener('change', (e) => { S.sc.workload[k] = e.target.checked; schedule(); });
+  for (const k of ['dit_fsdp', 'te_cpu', 'sample_split', 'vae_parallel', 'overlap']) $('w-' + k).addEventListener('change', (e) => { S.sc.workload[k] = e.target.checked; schedule(); });
   $('w-pipeline').addEventListener('change', (e) => { S.sc.workload.pipeline = e.target.checked; put($('model-badges'), ...badges(model(), S.wiW || S.wiKV || (S.wiAct && isFull(model())))); schedule(); });
   bindMem();
   fillMem();

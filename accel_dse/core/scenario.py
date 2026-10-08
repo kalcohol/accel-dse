@@ -74,11 +74,13 @@ class Workload:
     pipeline: bool = True          # video: also evaluate the text encoder(s) + VAE decode (time and storage); False = DiT only
     placement: str = "auto"        # video components (0.45): auto | resident | shard | offload | shard+offload
     host_GBps: float = 50.0        # video offload: host → card bandwidth per card (「假设」 PCIe 5.0 x16 effective)
-    vae_tiling: bool = False       # video: diffusers enable_tiling() for the VAEs that offer it (CogVideoX / Mochi)
+    vae_tiling: bool = False       # video: diffusers enable_tiling() for the VAEs that offer it (CogVideoX / Mochi / Wan / LTX)
     sample_split: bool = True      # structure models, DAP > 1: diffusion samples split over the DAP ranks (0.46)
     dit_fsdp: bool = False         # video: DiT weights FSDP-sharded over each stage's SP·DP ranks (Wan --dit_fsdp, 0.46)
     te_cpu: bool = False           # video: text encoder runs on the host CPU (Wan --t5_cpu, 0.46)
     host_TFLOPS: float = 2.0       # te_cpu: effective host CPU throughput for the encoder (「假设」 — set from a measurement)
+    vae_parallel: bool = False     # video: tiled VAE decode split over the replica's cards (H3 parallel_tiling, 0.47)
+    overlap: bool = False          # video: host-CPU encode of the next request overlaps this one's denoise (0.47)
 
     def __post_init__(self):
         for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles", "samples"):
@@ -93,7 +95,7 @@ class Workload:
             raise ValueError("workload: msa ≤ 65536, recycles ≤ 64, samples ≤ 64")
         if not isinstance(self.pipeline, bool):
             raise ValueError("workload.pipeline must be true or false")
-        for k in ("vae_tiling", "sample_split", "dit_fsdp", "te_cpu"):
+        for k in ("vae_tiling", "sample_split", "dit_fsdp", "te_cpu", "vae_parallel", "overlap"):
             if not isinstance(getattr(self, k), bool):
                 raise ValueError(f"workload.{k} must be true or false")
         if not (isinstance(self.host_TFLOPS, (int, float)) and not isinstance(self.host_TFLOPS, bool)

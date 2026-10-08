@@ -3,6 +3,26 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.47.0] - 2026-10-09
+
+视频 pipeline 收尾：VAE 多卡分块并行解码、LTX 分块、MiniMax-H3 解码按发布（总是分块）、跨请求重叠（主机编码器）。
+
+### Added
+- VAE 多卡分块并行解码 `workload.vae_parallel`（默认关；Web「VAE 多卡分块并行解码」，CLI `--vae-parallel`）：依据 MiniMax-H3 发布的 `vae_parallel_tiling`——每个分块调用内 rank r 解第 r、r + N、… 个 tile，再 all-gather 解码后的像素 tile；N = 副本的 PP·TP·SP 卡，算术不变，时间 = 最慢卡 + 每轮 all-gather，VAE 权重每卡一份。需分块解码（H3 / HunyuanVideo 总是分块，其余开 `vae_tiling`），否则忽略并警告。100T + HBM3E：H3 SP 2 / 4 / 8 解码 24.4 → 12.2 / 6.11 / 3.49 s；SP8 HunyuanVideo 221 → 34.0 s、Wan 分块 67.8 → 10.4 s。H3 以外为设计选项（xDiT DistVAE 只用于图像 VAE）。
+- LTX-Video VAE 可选分块（diffusers `AutoencoderKLLTXVideo`：512 px tile / stride 448 → 潜空间 16 / 14）：默认 704 × 512 → 4 tile，×1.23，解码 0.72 → 0.89 s。
+- 跨请求重叠 `workload.overlap`（默认关；CLI `--overlap`）：只在 `te_cpu` 时生效，主机编码下一请求与卡上去噪并行，稳态周期 = max(T_clip − T_text, T_text)，延迟不变、吞吐按周期计（结果新增 `period_s`）；组件同卡时按串行计并警告。
+- 测试 `tests/test_core_047.py`。
+
+### Changed
+- MiniMax-H3 视频解码按发布更正：发布配置 `vae_decoder_tiling = 1`（tile 256 px、最小重叠 64 px；diffusers 文档写明默认分块、关掉会改变输出），时间上 5n + 2 潜帧 → n 段 × (5 + 2) 潜帧（原按 ⌈(T + 3)/5⌉ 段 × 5 潜帧、不分块）。默认 1344 × 768 124 帧：7 段 × 28 tile，解码 1741 → 1893 TFLOP、22.6 → 24.4 s，整段 1936 → 1937 s。1356 项指纹只有 minimax-h3 的 20 项变化（其余逐字节一致，LLM 不变）。
+- 分块循环与 diffusers 一致：任一轴超过 tile 时两轴都按 stride 从 0 走（短轴多一条窄 tile）；默认分辨率下与 0.46 相同。
+- `vae_tiling` 对没有参考分块的 VAE（Open-Sora）的警告改为「参考实现没有空间分块」。
+
+### 不做 / 仍未建模
+- Open-Sora VAE 分块：发布实现没有空间分块（只有逐帧 / 17 帧微批，已计），diffusers 未收录——不做。
+- 结构模型 pair 的 TP：参考实现里没有，DAP + 样本分卡已覆盖多卡——维持不做。
+- 不分块 VAE 的 patch 并行（halo 交换）；组件同卡时的跨请求重叠；AlphaFold 3 仍未接入。
+
 ## [0.46.0] - 2026-10-09
 
 扩散样本分卡、DiT 权重 FSDP、文本编码器放主机 CPU、Wan VAE 分块。

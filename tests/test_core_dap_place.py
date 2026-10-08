@@ -125,14 +125,14 @@ def test_placement_auto_resident_shard_offload():
 def test_vae_tiling_option():
     # CogVideoX 480×720 → 60×90 latent: tiles 30×45 every 25 / 36 → 3 × 3 tiles, overlap (70·108)/(60·90) = 1.4
     t = _spatial_tiles((13, 60, 90), TILING["cog"])
-    assert sum(n for _, n in t) == 9 and abs(sum(a * b * c * n for (a, b, c), n in t) / (13 * 60 * 90) - 1.4) < 1e-9
+    assert sum(len(rd) for rd in t) == 9 and abs(sum(a * b * c for rd in t for a, b, c in rd) / (13 * 60 * 90) - 1.4) < 1e-9
     for mid, tiles in (("cogvideox-5b", 9), ("mochi-1", 15)):
         a = evaluate(Scenario(model=mid, mem_id=HBM)).pipeline
         b = evaluate(Scenario(model=mid, mem_id=HBM, workload=Workload(vae_tiling=True))).pipeline
         va, vb = ([p for p in x["parts"] if p["role"] == "vae"][0] for x in (a, b))
         assert vb["tiles"] == tiles and vb["tiling"] and 1.2 < vb["tflop"] / va["tflop"] < vb["overlap"] + 0.05
         assert b["vae_act"] < a["vae_act"] and b["decode_s"] > a["decode_s"]
-    w = evaluate(Scenario(model="ltx-video", mem_id=HBM, workload=Workload(vae_tiling=True)))   # 0.46: Wan tiles
+    w = evaluate(Scenario(model="opensora-stdit3", mem_id=HBM, workload=Workload(vae_tiling=True)))  # 0.47: LTX tiles
     assert any("vae_tiling" in x for x in w.warnings)
     out = api.api_eval({"scenario": {"model": "mochi-1", "mem_id": HBM,
                                      "workload": {"vae_tiling": True, "placement": "offload"}}})

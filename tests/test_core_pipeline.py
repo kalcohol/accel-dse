@@ -60,8 +60,10 @@ def test_vae_resolution_schedules():
     assert out("mochi-1", (28, 60, 106))["out"] == (163, 480, 848)             # temporal ×3, ×2, ×1 (t·e − (e−1))
     hy = out("hunyuanvideo", (33, 90, 160))
     assert hy["tiles"] == 11 * 4 * 7 and 2.5 < hy["overlap"] < 2.8              # diffusers tiling, overlap recomputed
-    assert sum(n for _, n in _hunyuan_tiles((33, 90, 160))) == 308
-    assert out("minimax-h3", (37, 48, 84))["chunks"] == 8                      # (37 + token_drop 3) / 5
+    assert sum(len(rd) for rd in _hunyuan_tiles((33, 90, 160))) == 308      # 11 temporal rounds × 28
+    h3 = out("minimax-h3", (37, 48, 84))                                       # 0.47: as released
+    assert h3["chunks"] == 7 and h3["tiles"] == 7 * 4 * 7                      # 5·7+2 latent → 7 clips; 768/1344 px
+    assert h3["chunk_tokens"] == 7 * 16 * 16 + 5                               # 5+2 frames × 256-px tile + regs
 
 
 def test_wan_vae_flops_hand_count():

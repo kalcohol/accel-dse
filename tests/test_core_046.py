@@ -99,7 +99,7 @@ def test_te_cpu_placement():
 def test_wan_tiling_and_validation_cli():
     # Wan 720P: 90 × 160 latent, tiles 32 every 24 → 4 × 7 = 28 tiles
     t = _spatial_tiles((21, 90, 160), TILING["wan"])
-    assert sum(n for _, n in t) == 28
+    assert sum(len(rd) for rd in t) == 28
     r = evaluate(Scenario(model="wan2.1-14b", mem_id=HBM, workload=Workload(vae_tiling=True)))
     v = [p for p in r.pipeline["parts"] if p["role"] == "vae"][0]
     assert v["tiles"] == 28 and v["tiling"] and not any("vae_tiling" in w for w in r.warnings)

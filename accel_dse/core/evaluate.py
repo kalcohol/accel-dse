@@ -93,7 +93,8 @@ class Result:
         cards = self.scenario.layout.cards
         b = self.scenario.serving.batch
         heavy = self.stages[self.heaviest_stage]
-        d = {"unit": w.unit, "latency_s": self.latency, "requests_per_s": b / self.latency,
+        period = (self.pipeline or {}).get("period_s", self.latency)   # 0.47 overlap: steady-state request period
+        d = {"unit": w.unit, "latency_s": self.latency, "requests_per_s": b / period, "period_s": period,
              "units_per_s": self.throughput, "units_per_s_card": self.per_card, "workload": w.info,
              "forward_ms": self.tick * max(self.microbatches, self.scenario.layout.pp) * 1e3,
              "seqs_per_forward": b * w.seqs_per_request, "act_GiB": heavy.mem.act_total / 2**30,
@@ -106,7 +107,7 @@ class Result:
                 d["dit_tflop_per_request"] = d["tflop_per_request"] - pl["tflop"] / b
             d.update(pipeline=pl, denoise_s=denoise)
             d.update(clip_s=self.latency, s_per_frame=self.latency / w.units, step_ms=denoise / w.steps * 1e3,
-                     frames_per_s_card=self.per_card, clips_per_hour_card=3600 * b / self.latency / cards,
+                     frames_per_s_card=self.per_card, clips_per_hour_card=3600 * b / period / cards,
                      realtime_x=(w.info["video_s"] * b / self.latency) if w.info.get("video_s") else None,
                      slo_s=self.scenario.workload.clip_slo_s)
         else:
@@ -429,7 +430,18 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             pipe = {**pipe, "denoise_s": denoise, "tflop": pipe["tflop_replica"] * lay.dp}
     else:
         latency = (mb + pp - 1) * tick
-    thr = sv.batch * wl.units / latency
+    period = latency
+    if wl.kind == "gen" and scn.workload.overlap:
+        # cross-request overlap (0.47): with the text encoder on the host CPU (te_cpu) the host encodes request
+        # n+1 while the cards denoise / decode request n — two independent resources, a saturated queue →
+        # steady-state period = max(card busy, host busy); clip latency unchanged.  Anything that shares the cards
+        # (encoder / VAE on a card, offload reloads) stays serial: nothing else is overlapped.
+        if pipe and pipe.get("te_cpu"):
+            period = max(latency - pipe["te_s"], pipe["te_s"])
+            pipe = {**pipe, "period_s": period, "overlap": True}
+        else:
+            warnings.append("workload.overlap：文本编码器与 DiT 同在卡上（未开 te_cpu），没有独立资源可跨请求重叠——按串行计")
+    thr = sv.batch * wl.units / period
     return Result(scn, m, stages, tick, latency, wl.units, 0.0, 0.0, thr, thr / lay.cards, fits,
                   stages[heavy].time.bound, heavy, warnings, mb, latency, wl, pipe)
 
@@ -460,10 +472,14 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
     b = _cdiv(scn.serving.batch, scn.layout.dp)
     info = wl.info
     tiling = scn.workload.vae_tiling
-    if tiling and pl.vae.family not in (*TILING, "hunyuan"):
-        warnings.append(f"workload.vae_tiling：{pl.vae.label} 的分块解码未建模（按参考默认不分块计）")
+    if tiling and pl.vae.family not in (*TILING, "hunyuan", "h3"):
+        warnings.append(f"workload.vae_tiling：{pl.vae.label} 的参考实现没有空间分块解码（按参考默认不分块计）")
+    lay = scn.layout
+    par = lay.pp * lay.tp * lay.sp if scn.workload.vae_parallel else 1
+    if scn.workload.vae_parallel and par == 1:
+        warnings.append("workload.vae_parallel：每副本只有 1 张卡，VAE 解码不拆分")
     key = (b, tuple(info["latent"]), info["frames"], info["cfg"], wl.aux, scn.mapping, scn.chip, scn.mem_id,
-           scn.mem_eff, tiling)
+           scn.mem_eff, tiling, par, sys.link)
     memo = model_cache(m).setdefault("pipeline", {})
     if key in memo:
         return memo[key]
@@ -481,25 +497,75 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
         parts.append({"role": "text_encoder", "label": te.label, "key": te.key, "prompts": prompts,
                       "tokens": te.tokens, "stored_GB": w / 1e9, "note": te.note, **c})
     dec_s = vae_w = vae_act = 0.0
+    vae_par = 1
     lat = tuple(info["latent"])
     for v, rows in ((pl.vae, 0), (pl.audio, wl.aux)):
         if v is None:
             continue
         ops, peak, vi = vae_ops(v, lat, info["frames"], b, m.act_fmt, audio_rows=rows, tiling=tiling)
         c = _component_time(vi.pop("groups", None) or [(ops, 1)], sys, scn.mapping, vi["act"])
+        extra = {}
+        if par > 1 and v is pl.vae:
+            if "rounds" in vi:
+                cp = {**_parallel_decode(vi, par, b, lat, info, sys, scn.mapping), "tflop": c["tflop"]}
+                extra = {"par": par, "single_s": c["s"], "gather_s": cp.pop("gather_s"), "rank_tiles": cp.pop("tiles")}
+                c = cp
+                vae_par = par
+            else:
+                warnings.append(f"workload.vae_parallel：{pl.vae.label} 未分块解码，不拆分（需 vae_tiling，"
+                                "HunyuanVideo / MiniMax-H3 总是分块）")
         w = stored_bytes(v.key)
         dec_s += c["s"]; vae_w += w; vae_act = max(vae_act, peak)
         parts.append({"role": "audio_vae" if v is pl.audio else "vae", "label": v.label, "key": v.key,
                       "stored_GB": w / 1e9, "note": v.note, "act": vi["act"],
-                      **{k: vi[k] for k in ("tiles", "overlap", "chunks", "tiling") if k in vi}, **c})
+                      **{k: vi[k] for k in ("tiles", "overlap", "chunks", "tiling") if k in vi}, **extra, **c})
     out = {"te_s": te_s, "decode_s": dec_s, "tflop_replica": sum(p["tflop"] for p in parts),
            "te_w": te_w, "vae_w": vae_w, "te_act": te_act, "vae_act": vae_act, "parts": parts,
-           "te_layers": te_nl, "te_layer_w": te_lw,
+           "te_layers": te_nl, "te_layer_w": te_lw, "vae_par": vae_par,
            "batch_per_replica": b, "note": pl.note}
     if len(memo) > 4096:
         memo.clear()
     memo[key] = out
     return out
+
+
+def _parallel_decode(vi: dict, par: int, b: int, lat: tuple, info: dict, sys: System, org: str) -> dict:
+    """Tile-parallel VAE decode over the ``par`` = PP·TP·SP cards of a replica (0.47, ``workload.vae_parallel``).
+
+    The scheme of the MiniMax-H3 release (``FL2VA/video_vae`` ``vae_parallel_tiling = 1``, ``klvae.tiled_decode``):
+    within each independent tiled call (a decode "round": an H3 temporal clip, a HunyuanVideo temporal tile, the
+    single spatial pass of a diffusers ``enable_tiling()`` decode) rank r decodes tiles r, r + par, … then the decoded
+    pixel tiles are all-gathered so every rank can blend.  Tiles are independent → arithmetic unchanged; time = the
+    slowest rank's tiles + one all-gather per round (payload = its largest share of decoded pixels in the decode
+    dtype, α each).  VAE weights are replicated on every card of the replica (``_place_components``).  For decoders
+    other than H3 this is a design option (xDiT's DistVAE patch-parallel decode is image-VAE-only; its CogVideoX
+    example asserts parallel VAE off)."""
+    ops = vi["tile_ops"]
+    ab = _fmt(vi["act"]).bytes
+    px = info["frames"] * info["height"] * info["width"] * 3 / math.prod(lat)   # output elements per latent voxel
+    loads: dict = {}
+    gather = 0.0
+    for rd in vi["rounds"]:
+        share = [rd[r::par] for r in range(par)]
+        for r, tl in enumerate(share):
+            for t in tl:
+                loads.setdefault(r, {}).setdefault(t, 0)
+                loads[r][t] += 1
+        top = max(sum(math.prod(t) for t in tl) for tl in share) * px * ab * b
+        bw, a_ = collective_seconds("allgather", top, par, sys.link)
+        gather += bw + a_
+    memo: dict = {}
+    best = None
+    for r, cnt in loads.items():
+        k = tuple(sorted(cnt.items()))
+        if k not in memo:
+            memo[k] = _component_time([(ops[t], n * b) for t, n in k], sys, org, vi["act"])
+        if best is None or memo[k]["s"] > best[0]["s"]:
+            best = (memo[k], sum(cnt.values()))
+    c = dict(best[0])                # time / DRAM of the slowest rank (the caller restores the replica FLOPs)
+    c["s"] += gather
+    c.update(gather_s=gather, tiles=best[1])
+    return c
 
 
 _PLACE_LABEL = {"resident": "常驻", "shard": "文本编码器分片（FSDP）", "offload": "顺序卸载（CPU offload）",
@@ -553,7 +619,7 @@ def _place_components(scn: Scenario, m: ModelSpec, pipe: dict, stages: list, sys
         mems = []
         for i, mp in enumerate(base):
             te_here = shard or i == 0
-            vae_here = i == last
+            vae_here = i == last or pipe.get("vae_par", 1) > 1
             w_te = te_card if te_here else 0.0
             w_vae = pipe["vae_w"] if vae_here else 0.0
             if off:

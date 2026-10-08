@@ -39,12 +39,17 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--host-GBps", dest="host_GBps", type=float, default=None,
                    help="video offload: host → card bandwidth per card (default 50 GB/s 「假设」)")
     p.add_argument("--vae-tiling", action="store_true",
-                   help="video: diffusers enable_tiling() decode (CogVideoX / Mochi; HunyuanVideo always tiles)")
+                   help="video: diffusers enable_tiling() decode (CogVideoX / Mochi / Wan / LTX; HunyuanVideo and "
+                        "MiniMax-H3 always tile)")
     p.add_argument("--dit-fsdp", action="store_true",
                    help="video: DiT weights FSDP-sharded over each stage's SP·DP cards (Wan --dit_fsdp)")
     p.add_argument("--te-cpu", action="store_true", help="video: text encoder on the host CPU (Wan --t5_cpu)")
     p.add_argument("--host-TFLOPS", dest="host_TFLOPS", type=float, default=None,
                    help="--te-cpu: effective host CPU TFLOPS for the encoder (default 2 「假设」)")
+    p.add_argument("--vae-parallel", action="store_true",
+                   help="video: tiled VAE decode split over the replica's cards (MiniMax-H3 parallel_tiling)")
+    p.add_argument("--overlap", action="store_true",
+                   help="video, with --te-cpu: host encodes the next request while the cards denoise this one")
     p.add_argument("--no-sample-split", action="store_true",
                    help="structure models under DAP: replicate the diffusion samples on every DAP card (default: split)")
     p.add_argument("--act", default=None, choices=["fp32", "bf16"],
@@ -74,6 +79,9 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         wl["te_cpu"] = True
     if getattr(a, "host_TFLOPS", None):
         wl["host_TFLOPS"] = a.host_TFLOPS
+    for k in ("vae_parallel", "overlap"):
+        if getattr(a, k, False):
+            wl[k] = True
     if getattr(a, "no_sample_split", False):
         wl["sample_split"] = False
     if wl:
@@ -124,7 +132,9 @@ def cmd_eval(a) -> dict:
                       + (f" + host reload {pl['load_s']:.2f} s" if pl.get("load_s") else "")
                       + f"  [placement {pl.get('place', 'resident')}"
                       + (f", TE sharded over {pl['te_cards']} cards" if pl.get("te_cards", 1) > 1 else "")
-                      + (f", TE on host CPU @ {pl['host_TFLOPS']:g} TFLOPS" if pl.get("te_cpu") else "") + "];  "
+                      + (f", TE on host CPU @ {pl['host_TFLOPS']:g} TFLOPS" if pl.get("te_cpu") else "")
+                      + (f", VAE decode over {pl['vae_par']} cards" if pl.get("vae_par", 1) > 1 else "")
+                      + (f", overlapped period {pl['period_s']:.1f} s" if pl.get("overlap") else "") + "];  "
                       + ";  ".join(f"{p['label']} {p['s']:.2f} s {p['tflop']:.1f} TFLOP {p['stored_GB']:.2f} GB "
                                    f"{p['bound']}" for p in pl["parts"]))
             else:

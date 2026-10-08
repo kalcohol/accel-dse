@@ -14,13 +14,14 @@ the same mapping / memplan / schedule path as the denoiser (``evaluate._pipeline
                 transposed convs at their input / output rate).  Resolution levels follow each family's
                 up-block schedule (causal temporal upsampling t → e·t − (e−1)); mid-block attention as
                 attention ops (per frame for Wan / SD-VAE, full causal 3-D within a tile for HunyuanVideo);
-                the MiniMax-H3 decoder is a ViT over 5-latent-frame chunks.  Norm / activation / residual:
+                the MiniMax-H3 decoder is a ViT over 5 + 2-latent-frame clips, spatially tiled as released (0.47).  Norm / activation / residual:
                 8 vector element-ops per output element 「假设」(BigVGAN anti-aliased activations: 60).
   storage       the whole loaded checkpoint of each component at its released dtype (a VAE's encoder and the
                 H3 text encoder's vision tower / LM head are loaded with the pipeline though not run).
 
 Placement 「假设」: the components run on one card, serially with the denoise loop (clip latency =
-text + denoise + decode; xDiT-style parallel VAE decode not modelled); text-encoder weights live on the
+text + denoise + decode); optional multi-card tile-parallel decode (0.47, ``workload.vae_parallel``, the MiniMax-H3
+release's ``parallel_tiling``) in ``evaluate._pipeline_cost``; text-encoder weights live on the
 first pipeline stage's card, VAE weights on the last stage's card.  Activation peak of a decode = the largest
 op of one decode chunk (one latent frame for the causal-cache decoders, a tile / chunk where the reference
 tiles), not additive to the denoiser's (it runs after the loop).
@@ -111,7 +112,8 @@ PIPELINES: dict[str, Pipeline] = {
         (TextEnc("qwen3-vl-32b", "Qwen3-VL 文本塔", 512, 64, 128, causal=True,
                  note="参考实现读取 hidden_states[50]（64 层中第 50 层），HF 前向仍跑满 64 层：按 64 层计"),),
         Vae("h3-vae", "h3", "MiniMax-H3 ViT 视频解码器",
-            note="ViT 解码器按 5 潜帧一块（clip_length 17 / token_drop 3）、块内全注意力 + 5 个 register token 计"),
+            note="ViT 解码器按发布配置：时间上 5n+2 潜帧 → n 段、每段 5+2 潜帧（clip_length 17 / token_drop 3）；"
+                 "空间总是分块（vae_decoder_tiling = 1，tile 256 px、最小重叠 64 px），块内全注意力 + 5 个 register token"),
         audio=Vae("h3-audio-vae", "audio", "MiniMax-H3 音频 VAE（BigVGAN 型）",
                   note="按声道数逐路解码 40 Hz 潜变量 → 32 kHz 波形「假设」"),
         neg_prompt=False),
@@ -274,20 +276,16 @@ def _conv_walk(tensors: dict, prefix: str, fam: _Fam, lat: tuple[int, int, int],
     return ops, peak, final
 
 
-def _hunyuan_tiles(lat: tuple[int, int, int]) -> list[tuple[tuple[int, int, int], int]]:
+def _hunyuan_tiles(lat: tuple[int, int, int]) -> list[list[tuple[int, int, int]]]:
     """diffusers AutoencoderKLHunyuanVideo tiled decode: temporal tiles of 4+1 latent frames every 3, spatial tiles of
-    32×32 latent every 24 (tile_sample_min 256 px / stride 192 px, 16 / 12 frames) → [(tile latent size, count)]."""
+    32×32 latent every 24 (tile_sample_min 256 px / stride 192 px, 16 / 12 frames) → decode rounds (one spatial
+    ``tiled_decode`` call per temporal tile), each the row-major list of tile latent sizes."""
     T, H, W = lat
     ts = [len(range(T)[i:i + 5]) for i in range(0, T, 3)] if T > 4 else [T]
     tiled = H > 32 or W > 32
     hs = [len(range(H)[i:i + 32]) for i in range(0, H, 24)] if tiled else [H]
     ws = [len(range(W)[j:j + 32]) for j in range(0, W, 24)] if tiled else [W]
-    out: dict = {}
-    for a in ts:
-        for b in hs:
-            for c in ws:
-                out[(a, b, c)] = out.get((a, b, c), 0) + 1
-    return sorted(out.items())
+    return [[(a, b, c) for b in hs for c in ws] for a in ts]
 
 
 # optional spatial tiling of diffusers ``enable_tiling()`` (0.45), latent units: (tile, stride) per axis (H, W)
@@ -296,39 +294,88 @@ def _hunyuan_tiles(lat: tuple[int, int, int]) -> list[tuple[tuple[int, int, int]
 #   Mochi      tile_sample_min 256 px, stride 192 px → 32 / 24 latent                (AutoencoderKLMochi)
 #   Wan        tile_sample_min 256 px, stride 192 px → 32 / 24 latent (0.46)         (AutoencoderKLWan; the official
 #              Wan repo decodes untiled — the option models the diffusers path)
-TILING = {"cog": ((30, 25), (45, 36)), "mochi": ((32, 24), (32, 24)), "wan": ((32, 24), (32, 24))}
+#   LTX-Video  tile_sample_min 512 px, stride 448 px, spatial compression 32 → 16 / 14 latent (0.47)
+#              (AutoencoderKLLTXVideo; framewise decoding stays off, as enable_tiling() leaves it)
+# Open-Sora VAE v1.2 has no spatial tiling in its release (it micro-batches frames: 2-D VAE 4 frames, temporal VAE
+# 17-frame micro-chunks — already how it is costed) and is not in diffusers.  MiniMax-H3 always tiles (below).
+TILING = {"cog": ((30, 25), (45, 36)), "mochi": ((32, 24), (32, 24)), "wan": ((32, 24), (32, 24)),
+          "ltx": ((16, 14), (16, 14))}
 
 
-def _spatial_tiles(lat: tuple[int, int, int], spec: tuple) -> list[tuple[tuple[int, int, int], int]]:
+def _spatial_tiles(lat: tuple[int, int, int], spec: tuple) -> list[list[tuple[int, int, int]]]:
+    """diffusers ``tiled_decode``: once either axis exceeds the tile, both axes step by the stride from 0 (a short
+    axis then yields a full tile plus a sliver, as the reference loops do).  One decode round."""
     T, H, W = lat
     (th, sh), (tw, sw) = spec
-    hs = [len(range(H)[i:i + th]) for i in range(0, H, sh)] if H > th else [H]
-    ws = [len(range(W)[j:j + tw]) for j in range(0, W, sw)] if W > tw else [W]
-    out: dict = {}
-    for b in hs:
-        for c in ws:
-            out[(T, b, c)] = out.get((T, b, c), 0) + 1
-    return sorted(out.items())
+    if H <= th and W <= tw:
+        return [[(T, H, W)]]
+    hs = [len(range(H)[i:i + th]) for i in range(0, H, sh)]
+    ws = [len(range(W)[j:j + tw]) for j in range(0, W, sw)]
+    return [[(T, b, c) for b in hs for c in ws]]
 
 
-def _tiled(ten: dict, fam: str, tiles: list, wf: str, af: str, batch: int, lat: tuple, info: dict) -> tuple:
-    groups, peak = [], 0.0
-    for tl, c in tiles:     # one op list per distinct tile size, executed c · batch times (weights re-read per tile)
+# MiniMax-H3 visual VAE decode (0.47), as released: ``FL2VA/video_vae/config.json`` vae_decoder_tiling = 1,
+# vae_tile_size 256 px, vae_tile_overlap_min 64 px (diffusers AutoencoderKLMiniMaxH3: "spatial tiling is on by
+# default … disabling tiling changes the output"); temporal clips of tokens_chunk_size + token_overlap latent frames
+H3_TILE_PX, H3_OVERLAP_PX = 256, 64
+
+
+def _h3_split(px: int, ratio: int) -> list[int]:
+    """AutoencoderKLMiniMaxH3._split_tiles: the fewest full-size tiles whose overlaps stay ≥ the minimum → latent
+    lengths of the tiles along one axis."""
+    if H3_TILE_PX >= px:
+        return [px // ratio]
+    n = math.ceil(px / H3_TILE_PX)
+    while H3_TILE_PX * n - H3_OVERLAP_PX * (n - 1) - px < 0:
+        n += 1
+    return [H3_TILE_PX // ratio] * n
+
+
+def h3_geometry(lat: tuple[int, int, int], config: dict) -> dict:
+    """Temporal clips and spatial tiles of one H3 decode (diffusers ``_decode``: 5n+2 latent frames → n clips of
+    5 + 2 latent frames; each clip spatially tiled)."""
+    T, H, W = lat
+    ratio = math.prod(config.get("spatial_downsample_factors", [2, 2, 2, 2]))
+    rt = math.prod(config.get("temporal_downsample_factors", [1, 2, 2]))
+    chunk = math.ceil(config.get("clip_length", 17) / rt)
+    drop = config.get("token_drop", 3)
+    over = (-drop) % chunk
+    pad = (-(T + drop)) % chunk
+    clips = max(1, (T + drop + pad) // chunk - int(drop > 0))
+    hs, ws = _h3_split(H * ratio, ratio), _h3_split(W * ratio, ratio)
+    return {"clips": clips, "clip_t": chunk + over, "hs": hs, "ws": ws}
+
+
+def _tiled(ten: dict, fam: str, rounds: list, wf: str, af: str, batch: int, lat: tuple, info: dict) -> tuple:
+    count: dict = {}
+    for rd in rounds:
+        for tl in rd:
+            count[tl] = count.get(tl, 0) + 1
+    groups, peak, by = [], 0.0, {}
+    for tl, c in sorted(count.items()):  # one op list per distinct tile size, executed c · batch times (weights re-read)
         o, p, _ = _conv_walk(ten, "", FAMILIES[fam], tl, wf, af, 1, 1, f"vae[{tl[0]}x{tl[1]}x{tl[2]}]")
         groups.append((o, c * batch))
+        by[tl] = o
         peak = max(peak, p)
-    vol = sum(a * b * cc * n for (a, b, cc), n in tiles)
-    info["tiles"] = sum(n for _, n in tiles)
+    return [], peak, _tile_info(info, rounds, groups, by, lat)
+
+
+def _tile_info(info: dict, rounds: list, groups: list, by: dict, lat: tuple) -> dict:
+    vol = sum(math.prod(tl) for rd in rounds for tl in rd)
+    info["tiles"] = sum(len(rd) for rd in rounds)
     info["overlap"] = vol / math.prod(lat)
     info["groups"] = groups
-    return [], peak, info
+    info["rounds"] = rounds          # decode order: [[tile latent size, …] per independent tiled call]
+    info["tile_ops"] = by            # tile latent size → op list of one execution (batch 1)
+    return info
 
 
 def vae_ops(v: Vae, lat: tuple[int, int, int], frames: int, batch: int, af: str,
             audio_rows: int = 0, tiling: bool = False) -> tuple[list[Op], float, dict]:
     """Decode ops of one request batch; (ops, activation peak bytes, info).  A tiled decode returns its ops as
-    ``info["groups"]`` = [(op list of one tile size, executions)] instead.  ``tiling``: diffusers ``enable_tiling()``
-    for the families in ``TILING`` (HunyuanVideo always tiles)."""
+    ``info["groups"]`` = [(op list of one tile size, executions)] instead, plus ``info["rounds"]`` (decode order of
+    the tiles, for the multi-card split) and ``info["tile_ops"]``.  ``tiling``: diffusers ``enable_tiling()`` for the
+    families in ``TILING``; HunyuanVideo and MiniMax-H3 always tile, as their references do."""
     d = component_data(v.key)
     wf, ten = d["dtype"], d["tensors"]
     af = v.act or af
@@ -347,32 +394,33 @@ def vae_ops(v: Vae, lat: tuple[int, int, int], frames: int, batch: int, af: str,
     if v.family == "h3":
         c = d["config"]
         heads, dh = c.get("decoder_num_attention_heads", 32), c.get("decoder_attention_head_dim", 64)
-        chunk = math.ceil(c.get("clip_length", 17) / 4)
-        drop = c.get("token_drop", 3)
-        n_chunks = math.ceil((lat[0] + drop) / chunk)
-        L = chunk * lat[1] * lat[2] + c.get("decoder_num_register_tokens", 4) + 1
-        rows = n_chunks * L * batch
+        regs = c.get("decoder_num_register_tokens", 4) + 1          # register tokens + cls token
+        g = h3_geometry(lat, c)
         wb, ab = _fmt(wf).bits, _fmt(af).bytes
-        ops = []
-        layers = set()
-        for name, sh in sorted(ten.items()):
-            mm = re.search(r"transformer_blocks\.(\d+)\.", name)
-            if mm:
-                layers.add(int(mm.group(1)))
-            if len(sh) < 2 or not name.endswith("weight"):
-                continue
-            n, k = sh[0], math.prod(sh[1:])
-            ops.append(Op("vae." + name, "gemm", 0, m=rows, k=k, n=n, role="vae", w_params=k * n, w_bits=wb, w_fmt=wf,
-                          a_fmt=af, act_bytes=rows * (k + n) * ab, stream=True, vec=rows * n * 3.0))
-        cnt = n_chunks * batch * heads
-        for li in sorted(layers):
-            ops += [Op(f"vae.{li}.qk", "attn", li, m=L, k=dh, n=L, count=cnt, act_bytes=cnt * L * dh * ab,
-                       stream=True, orient=True),
-                    Op(f"vae.{li}.pv", "attn", li, m=L, k=L, n=dh, count=cnt, act_bytes=cnt * L * dh * ab, orient=True),
-                    Op(f"vae.{li}.softmax", "vector", li, vec=cnt * L * L * 5)]
         ff = max(sh[0] for nm, sh in ten.items() if "ff.net.0" in nm and len(sh) == 2)
-        info.update(chunks=n_chunks, chunk_tokens=L)
-        return ops, L * (2048 + ff) * ab * batch, info
+        layers = sorted({int(mm.group(1)) for nm in ten for mm in [re.search(r"transformer_blocks\.(\d+)\.", nm)] if mm})
+        rounds = [[(g["clip_t"], a_, b_) for a_ in g["hs"] for b_ in g["ws"]] for _ in range(g["clips"])]
+        by, groups, peak = {}, [], 0.0
+        for tl in sorted(set(rounds[0])):
+            L = math.prod(tl) + regs
+            ops = []
+            for name, sh in sorted(ten.items()):
+                if len(sh) < 2 or not name.endswith("weight"):
+                    continue
+                n, k = sh[0], math.prod(sh[1:])
+                ops.append(Op(f"vae[{tl[1]}x{tl[2]}]." + name, "gemm", 0, m=L, k=k, n=n, role="vae", w_params=k * n,
+                              w_bits=wb, w_fmt=wf, a_fmt=af, act_bytes=L * (k + n) * ab, stream=True, vec=L * n * 3.0))
+            for li in layers:
+                ops += [Op(f"vae.{li}.qk", "attn", li, m=L, k=dh, n=L, count=heads, act_bytes=heads * L * dh * ab,
+                           stream=True, orient=True),
+                        Op(f"vae.{li}.pv", "attn", li, m=L, k=L, n=dh, count=heads, act_bytes=heads * L * dh * ab,
+                           orient=True),
+                        Op(f"vae.{li}.softmax", "vector", li, vec=heads * L * L * 5)]
+            by[tl] = ops
+            groups.append((ops, sum(rd.count(tl) for rd in rounds) * batch))
+            peak = max(peak, L * (heads * dh + ff) * ab * batch)
+        info.update(chunks=g["clips"], chunk_tokens=math.prod(rounds[0][0]) + regs, tiling=True)
+        return [], peak, _tile_info(info, rounds, groups, by, lat)
     if v.family == "audio":
         c = d["config"]
         rates = c.get("decoder_rates", [])

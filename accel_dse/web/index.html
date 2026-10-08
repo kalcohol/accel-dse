@@ -111,12 +111,16 @@
       <label title="文本编码器 / VAE 放在哪里：常驻 = 编码器在首级卡、VAE 在末级卡，与 DiT 同时常驻；分片 = 文本编码器权重按 FSDP 切到本副本全部卡（Wan --t5_fsdp），逐层 all-gather；卸载 = 组件与 DiT 分时占用显存（diffusers enable_model_cpu_offload / Wan --offload_model），每请求从主机重载权重；自动 = 依次取第一个放得下的">组件放置 <span class="tag assume">假设</span>
         <select id="w-placement"><option value="auto">自动</option><option value="resident">常驻</option><option value="shard">文本编码器分片</option><option value="offload">顺序卸载</option><option value="shard+offload">分片 + 卸载</option></select></label>
       <label title="卸载时每卡主机 → 卡带宽（「假设」PCIe 5.0 x16 有效约 50 GB/s）">主机带宽 GB/s <span class="tag assume">假设</span><input type="number" id="w-host_GBps" min="1" step="8"></label>
-      <label class="inline" title="diffusers enable_tiling()：CogVideoX（240×360 px tile，重叠 1/6、1/5）与 Mochi（256 px tile，stride 192）与 Wan（diffusers AutoencoderKLWan，256 px tile，stride 192；官方仓库不分块）空间分块解码，重叠区重复计算、激活峰值按 tile；HunyuanVideo 总是分块；其余 VAE 的分块未建模"><input type="checkbox" id="w-vae_tiling"> VAE 分块解码</label>
+      <label class="inline" title="diffusers enable_tiling()：CogVideoX（240×360 px tile，重叠 1/6、1/5）与 Mochi（256 px tile，stride 192）与 Wan（diffusers AutoencoderKLWan，256 px tile，stride 192；官方仓库不分块）与 LTX-Video（512 px tile，stride 448）空间分块解码，重叠区重复计算、激活峰值按 tile；HunyuanVideo 与 MiniMax-H3 按发布总是分块；Open-Sora 发布版没有空间分块"><input type="checkbox" id="w-vae_tiling"> VAE 分块解码</label>
     </div>
     <div class="row3 gen-only">
       <label class="inline" title="DiT 权重按 FSDP 在同一流水级的 SP·DP 卡之间分片（Wan --dit_fsdp）：每卡存 1/(SP·DP) + 2 层预取缓冲，每次前向逐层 all-gather（与计算重叠，每层一次 α），gather 结果写入 DRAM 再读；需要 SP·DP > 1"><input type="checkbox" id="w-dit_fsdp"> DiT 权重 FSDP 分片</label>
       <label class="inline" title="文本编码器在主机 CPU 上运行（Wan --t5_cpu）：卡上不放编码器权重与激活；编码时间 = 编码器 FLOPs / 主机有效算力（「假设」，请按实测填写）"><input type="checkbox" id="w-te_cpu"> 文本编码器放主机 CPU</label>
       <label title="--t5_cpu 时主机 CPU 跑文本编码器的有效算力（「假设」，默认 2 TFLOPS；请按实测填写）">主机 TFLOPS <span class="tag assume">假设</span><input type="number" id="w-host_TFLOPS" min="0.1" step="0.5"></label>
+    </div>
+    <div class="row3 gen-only">
+      <label class="inline" title="分块 VAE 解码拆到本副本全部 PP·TP·SP 卡（MiniMax-H3 发布配置 vae_parallel_tiling：每个分块调用内 rank r 解 r、r+N、… 号 tile，再 all-gather 解码后的像素 tile）：tile 互相独立、算术不变；时间 = 最慢卡的 tile + 每轮一次 all-gather；VAE 权重每卡一份。需分块解码（HunyuanVideo / H3 总是分块，其余开「VAE 分块解码」）；H3 以外为设计选项"><input type="checkbox" id="w-vae_parallel"> VAE 多卡分块并行解码</label>
+      <label class="inline" title="跨请求重叠：文本编码器在主机 CPU（需同时勾选「文本编码器放主机 CPU」）时，主机编码下一请求与卡上去噪 / 解码当前请求并行；稳态周期 = max(卡忙, 主机忙)，单段延迟不变、吞吐按周期计。组件同卡时没有独立资源，按串行计"><input type="checkbox" id="w-overlap"> 跨请求重叠（主机编码 ∥ 去噪）</label>
     </div>
     <div class="row3 protein-only">
       <label>序列长度（残基）<input type="number" id="w-seq_len" min="1" max="65536" step="64"></label>
