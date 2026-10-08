@@ -120,7 +120,8 @@ function body(extra = {}) {
   sc.chip = { ...S.chipOver };
   sc.formats_override = overrides();
   if (S.memInfo) sc.mem_id = S.memInfo.id;
-  return { chip_preset: S.preset, scenario: sc, ...extra };
+  const en = Object.fromEntries(Object.entries(S.energy || {}).filter(([, v]) => v !== null && v !== undefined));
+  return { chip_preset: S.preset, scenario: sc, ...(Object.keys(en).length ? { energy: en } : {}), ...extra };
 }
 
 /* ------------------------------------------------------------------ inputs */
@@ -448,6 +449,7 @@ function renderEval(r) {
   put($('warns'), ...s.warnings.filter((w) => !w.startsWith('容量不足')).map((w) => h('div', {}, w)),
     ...(r.model.what_if ? [h('div', {}, 'what-if：dtype 已偏离官方发布，结果仅供推演。')] : []));
   renderStages(r);
+  renderEnergy(r);
   renderAssumptions(r);
   if (!s.fits) { $('kpis').hidden = true; runFit(); return; }
   $('fit').hidden = true;
@@ -581,6 +583,23 @@ async function applyMem(id) {
     S.memInfo = r; S.mem = { ...r.fields };
     fillMem(); paintMem(); schedule();
   } catch (e) { showErr('存储器：' + e.message); }
+}
+const E_UNIT = { token: 'token', 'prompt token': 'prompt token', frame: '帧', seq: '序列' };
+function renderEnergy(r) {
+  const e = r.energy;
+  if (!e) { put($('energy-tbl')); return; }
+  const c = e.counts_per_unit, j = e.J_by_action || {};
+  const u = E_UNIT[e.unit] || e.unit;
+  const sci = (x) => (x === 0 ? '0' : x.toExponential(3));
+  const rows = [['MAC（bf16 等效）', c.mac, '', 'mac', 'pJ_mac'], ['向量操作', c.vec, '', 'vec', 'pJ_vec'],
+    ['SRAM 端口', c.sram, ' B', 'sram', 'pJ_bit_sram'], ['DRAM 读写', c.dram, ' B', 'dram', 'pJ_bit_dram'],
+    ['链路发送', c.link, ' B', 'link', 'pJ_bit_link'], ['卡·秒（静态）', c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
+  const head = h('tr', {}, h('th', {}, '动作'), h('th', {}, `次数 / ${u}`), h('th', {}, `能耗 J / ${u}`));
+  const body = rows.map(([lab, n, sfx, k, key]) => h('tr', {}, h('td', {}, lab), h('td', { class: 'num' }, sci(n) + sfx),
+    h('td', { class: 'num' }, e.provided.includes(key) ? sci(j[k] || 0) : h('span', { class: 'muted' }, '未提供'))));
+  if (e.J_per_unit !== undefined) body.push(h('tr', {}, h('td', {}, h('b', {}, '合计')), h('td', { class: 'num' }, ''),
+    h('td', { class: 'num' }, h('b', {}, sci(e.J_per_unit)), ` · 平均 ${num(e.avg_W_per_card)} W/卡`)));
+  put($('energy-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
 }
 function renderStages(r) {
   const head = h('tr', {}, h('th', { class: 'l' }, '流水级'), h('th', { class: 'l' }, '层'), h('th', {}, '瓶颈'),
@@ -996,6 +1015,8 @@ async function init() {
   for (const k of ['clip_slo_s', 'seq_slo_ms', 'fold_slo_s']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
   bindNumber('w-host_GBps', () => S.sc.workload.host_GBps, (x) => (S.sc.workload.host_GBps = x));
   bindNumber('w-host_TFLOPS', () => S.sc.workload.host_TFLOPS, (x) => (S.sc.workload.host_TFLOPS = x));
+  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W'])
+    bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   $('best-layout').addEventListener('click', bestLayout);
   $('best-batch').checked = S.best;
   AFTER.layout = () => {

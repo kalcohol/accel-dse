@@ -54,6 +54,12 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="structure models under DAP: replicate the diffusion samples on every DAP card (default: split)")
     p.add_argument("--act", default=None, choices=["fp32", "bf16"],
                    help="what-if activation dtype (video / protein models; labelled what-if)")
+    for flag, dest, hlp in (("--pJ-mac", "pJ_mac", "per bf16-equivalent MAC"), ("--pJ-vec", "pJ_vec", "per vector op"),
+                            ("--pJ-bit-sram", "pJ_bit_sram", "per SRAM-port bit"),
+                            ("--pJ-bit-dram", "pJ_bit_dram", "per DRAM bit"),
+                            ("--pJ-bit-link", "pJ_bit_link", "per link bit"), ("--idle-W", "idle_W", "W per card")):
+        p.add_argument(flag, dest=dest, type=float, default=None,
+                       help=f"energy table (user-supplied, no default): {hlp}")
     p.add_argument("--json", action="store_true", help="print raw JSON")
 
 
@@ -94,7 +100,12 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["mem_eff"] = a.mem_eff
     if layout:
         sc["layout"] = {k: getattr(a, k) for k in ("pp", "tp", "dp", "ep", "etp", "sp")}
-    return {"chip_preset": a.chip, "scenario": sc}
+    body = {"chip_preset": a.chip, "scenario": sc}
+    en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W")
+          if getattr(a, k, None) is not None}
+    if en:
+        body["energy"] = en
+    return body
 
 
 def _table(rows: list[list], head: list[str]) -> None:
@@ -154,6 +165,14 @@ def cmd_eval(a) -> dict:
     else:
         print(f"TTFT {s['ttft_ms']:.1f} ms   {s['tok_s']:.0f} prompt tok/s")
     print(f"DRAM need {s['dram_need_GiB']:.1f} GiB / card   fits {s['fits']}")
+    if e := out.get("energy"):
+        c = e["counts_per_unit"]
+        print(f"actions / {e['unit']}: MAC {c['mac']:.3g}  vec {c['vec']:.3g}  SRAM {c['sram']:.3g} B  "
+              f"DRAM {c['dram']:.3g} B  link {c['link']:.3g} B  card·s {c['idle_card_s']:.3g}")
+        if "J_per_unit" in e:
+            print(f"energy {e['J_per_unit']:.4g} J / {e['unit']}  (avg {e['avg_W_per_card']:.0f} W/card; user-supplied "
+                  f"table: {', '.join(e['provided'])}; missing: {', '.join(e['missing']) or '-'})  "
+                  + "  ".join(f"{k} {v:.3g}" for k, v in e["J_by_action"].items()))
     for w in s["warnings"]:
         print("  ! " + w)
     return {}

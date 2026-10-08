@@ -153,6 +153,19 @@
     </div>
     <label class="inline"><input type="checkbox" id="best-batch"> <span id="best-batch-label">自动取满足 TPOT SLO 的最大 batch</span></label>
   </section>
+
+  <section class="grp">
+    <h3>能耗 <span class="tag assume">用户提供</span></h3>
+    <div class="small muted">动作计数 × 每动作能耗（Accelergy 式能耗表）。工具不内置任何能耗数值：留空 = 不计该项；全部留空时只给动作计数。</div>
+    <div class="row3">
+      <label title="每个 bf16 等效 MAC（低精度格式按速率倍数折算：fp8 2× 速率 = ½ 个）的能耗，pJ">pJ / MAC<input type="number" id="e-pJ_mac" min="0" step="0.05"></label>
+      <label title="每个向量元素操作（范数、softmax、激活、反量化）的能耗，pJ">pJ / 向量操作<input type="number" id="e-pJ_vec" min="0" step="0.1"></label>
+      <label title="经 SRAM ↔ 数据通路端口每 bit 的能耗，pJ">pJ / bit SRAM<input type="number" id="e-pJ_bit_sram" min="0" step="0.05"></label>
+      <label title="外部存储读写每 bit 的能耗（含接口），pJ">pJ / bit DRAM<input type="number" id="e-pJ_bit_dram" min="0" step="0.5"></label>
+      <label title="scale-up 链路每发送 bit 的能耗，pJ">pJ / bit 链路<input type="number" id="e-pJ_bit_link" min="0" step="0.5"></label>
+      <label title="每卡静态 / 空闲功耗，W（× 卡数 × 时间窗）">静态 W / 卡<input type="number" id="e-idle_W" min="0" step="5"></label>
+    </div>
+  </section>
 </aside>
 
 <main class="main">
@@ -174,6 +187,8 @@
     <div class="legend" id="legend"></div>
     <h4>存储规划</h4>
     <div class="scroll"><table class="tbl" id="mem-tbl"></table></div>
+    <h4>动作计数与能耗 <span class="small muted">每输出单位；能耗只按左侧「能耗」里填写的项计算</span></h4>
+    <div class="scroll"><table class="tbl" id="energy-tbl"></table></div>
     <h4>本次评估的「假设」</h4>
     <ul class="assume-list" id="assume-list"></ul>
   </section>

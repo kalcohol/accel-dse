@@ -15,6 +15,7 @@ from typing import Any
 
 from . import __version__, mem_catalog
 from .core.catalog import DOMAINS, catalog_listing, get_model, labels, list_models, offline_entries, unlisted_models
+from .core.energy import EnergyTable, energy_report
 from .core.evaluate import Result, evaluate
 from .core.hardware import CHIPS, Chip
 from .core.mapping import ORG_LABEL, ORGS
@@ -254,10 +255,16 @@ def api_eval(body: dict) -> dict:
         if bb.batch:
             scn = scn.replace("serving.batch", bb.batch)
     try:
+        table = EnergyTable.from_dict(body.get("energy"))
+    except (ValueError, TypeError) as e:
+        raise ApiError(str(e)) from None
+    try:
         r = evaluate(scn)
     except ValueError as e:
         raise ApiError(str(e)) from None
-    return result_dict(r, with_goodput=bool(body.get("goodput", True)))
+    out = result_dict(r, with_goodput=bool(body.get("goodput", True)))
+    out["energy"] = energy_report(r, table)      # 0.47.1: action counts always; J only for user-supplied entries
+    return out
 
 
 def api_layouts(body: dict) -> dict:

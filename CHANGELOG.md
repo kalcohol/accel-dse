@@ -3,6 +3,20 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.47.1] - 2026-10-09
+
+硬件侧第一小步：能耗动作计数（每动作能耗由用户提供，工具不内置数值）。
+
+### Added
+- `core/energy.py`：每输出单位（token / prompt token / 帧 / 序列）的动作计数——bf16 等效 MAC、向量操作、SRAM 端口字节、DRAM 字节、链路字节、卡·秒——全系统累计；视频含卡上的文本编码器与 VAE 解码（主机 CPU 编码器不计），VAE 多卡解码含 tile all-gather。能耗 = 计数 × 用户能耗表（`pJ_mac`、`pJ_vec`、`pJ_bit_sram`、`pJ_bit_dram`、`pJ_bit_link`、`idle_W`），空项不计并列出。API body 顶层 `energy`（不进 scenario、不改哈希），响应 `energy`；CLI `--pJ-mac … --idle-W`；Web「能耗」输入组与「动作计数与能耗」表。测试 `tests/test_core_energy.py`（计数守恒与闭式、线性、校验、API / CLI）。
+- 计数器：`StageResult.sram_bytes`（SRAM 端口字节 = 供数周期 × 端口宽度），组件的 `acts`。
+
+### Changed
+- 无结果变化：1356 项指纹与 0.47.0 逐字节一致。
+
+### 仍未建模
+- 工艺推导的功耗、DVFS、SRAM 容量相关的访问能耗、DRAM 行激活 / 刷新、主机 / PUE、面积 / 成本。SLC、D2D 与网络两级互连尚未开始。
+
 ## [0.47.0] - 2026-10-09
 
 视频 pipeline 收尾：VAE 多卡分块并行解码、LTX 分块、MiniMax-H3 解码按发布（总是分块）、跨请求重叠（主机编码器）。

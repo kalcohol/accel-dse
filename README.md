@@ -14,6 +14,7 @@
 - **多卡结构模型与组件放置（0.45）**：结构模型支持 DAP（FastFold 动态轴并行，占用布局的 SP 维）：pair / MSA / 模板网格按残基轴切分，三角乘法 / 偏置 / 外积均值的 all-gather 与行 ↔ 列 all-to-all 逐核计入（AF2 8 卡 7.8×，扩散为主的 Protenix 1.8×）。视频组件放置 `workload.placement`：常驻 / 文本编码器 FSDP 分片（Wan `--t5_fsdp`）/ 顺序卸载（diffusers `enable_model_cpu_offload`、Wan `--offload_model`），默认 auto 取第一个放得下的——64 GiB LPDDR 上 Wan2.1-14B、Wan2.2-A14B、MiniMax-H3 可放下（每请求 1–2.5 s 主机重载）。可选 VAE 分块解码（`--vae-tiling`，CogVideoX / Mochi 按 diffusers 默认 tile）。请求 TFLOP 改为整个副本的有用 FLOPs（此前多卡布局按单 rank 计）。
 - **0.46**：DAP 时扩散样本分到各卡（Protenix 5 样本，8 卡 1.8× → 6.0×；精确、无额外通信）；DiT 权重 FSDP（Wan `--dit_fsdp`，`workload.dit_fsdp` / CLI `--dit-fsdp`）；文本编码器放主机 CPU（Wan `--t5_cpu`，`--te-cpu --host-TFLOPS`，主机算力为「假设」）；Wan VAE 可选分块（diffusers 参数）。
 - **0.47**：VAE 多卡分块并行解码（按 MiniMax-H3 发布的 `parallel_tiling`，`--vae-parallel`；H3 SP8 解码 24.4 → 3.5 s）；LTX VAE 可选分块；MiniMax-H3 视频解码按发布更正为总是分块（256 px tile）；跨请求重叠（主机编码器 ∥ 去噪，`--overlap`）。Open-Sora 分块与结构模型 pair TP 经核实无参考实现，不做。
+- **0.47.1**：能耗动作计数（MAC / 向量 / SRAM / DRAM / 链路 / 卡·秒，每 token / 帧 / 序列）× 用户提供的每动作能耗（`--pJ-mac … --idle-W`，API `energy`）；工具不内置任何能耗数值。
 - **映射是设计变量**：输出驻留（OS）、权重驻留（边缘加载 / 宽面广播）、OS + GEMV 单元、可重构，逐算子计算 MAC 界与 SRAM 供数界；芯片不原生支持的格式计入反量化开销。
 - **逐 rank 算子图**：TP / PP / 注意力 DP / EP / ETP，单卡就是全 1 布局，没有第二条路径。
 - **存储规划与调度**：权重 / KV 的 SRAM 驻留、staging、逐 stage 容量；每级 `max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC`，绑定瓶颈与有效 MAC 比例直接给出。

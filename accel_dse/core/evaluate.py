@@ -35,6 +35,7 @@ class StageResult:
     convert_elems: float
     ops: list[Op] = field(default_factory=list, repr=False)
     flops_u: float = 0.0    # useful FLOPs of one rank (ops replicated on r ranks count 1/r) — request-FLOP KPI
+    sram_bytes: float = 0.0  # bytes through the SRAM ↔ datapath port of one rank per tick (0.47.1 action counts)
 
 
 @dataclass
@@ -130,8 +131,8 @@ class Result:
         }
 
 
-def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple[float, float, float, float, float]:
-    """(array s, mac-bound share s, feed-bound share s, vector s, convert elems)."""
+def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
+    """(array s, mac-bound share s, feed-bound share s, vector s, convert elems, ideal s, SRAM-port bytes)."""
     ch = sys.chip
     f = ch.freq_ghz * 1e9 * ch.mac_eff
     if op.kind == "gemm":
@@ -146,13 +147,13 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple[float,
     elif op.kind == "attn":
         c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=model.kv_fmt, a_fmt="bf16")
     else:
-        return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0, 0.0
+        return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0, 0.0, 0.0
     t = c.cycles * op.causal / f
     vec = vector_seconds(ch, op.vec + c.convert_elems * 2.0)   # 2 element-ops per converted element 「假设」
     mac_share = t if c.bound == "mac" else 0.0
     rate = ch.formats.rate(c.exec_fmt) or 1.0
     ideal = op.flops / 2.0 / (ch.macs * rate * ch.freq_ghz * 1e9)   # 100 % array utilisation
-    return t, mac_share, t - mac_share, vec, c.convert_elems, ideal
+    return t, mac_share, t - mac_share, vec, c.convert_elems, ideal, c.feed_cycles * op.causal * ch.port_Bpc
 
 
 def stage_ops(model: ModelSpec, first: int, last: int, has_embed: bool, has_head: bool, ph: Phase, sh: Shard,
@@ -180,7 +181,7 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
 
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
-             "flops_u")
+             "flops_u", "sram")
 _MAX_KEYS = ("max_act", "max_act_tot")
 
 
@@ -191,9 +192,9 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
             bw, a = collective_seconds(o.comm_kind, o.comm_bytes, o.comm_group, sys.link)
             d["link_bw"] += bw; d["sync"] += a; d["link_bytes"] += o.comm_bytes
             continue
-        a_, ma, fe, v, ce, idl = _op_seconds(o, sys, org, model)
+        a_, ma, fe, v, ce, idl, sb = _op_seconds(o, sys, org, model)
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
-        d["t_ideal"] += idl
+        d["t_ideal"] += idl; d["sram"] += sb
         d["flops"] += o.flops
         d["flops_u"] += o.flops / max(1, o.replicated)
         d["max_act"] = max(d["max_act"], o.act_bytes / max(o.count, 1))
@@ -296,7 +297,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         t_dram = dram["total"] / (sys.dram_GBps * 1e9)
         stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                         dram["total"], link_bytes, agg["flops"], agg["t_ideal"])
-        stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"]))
+        stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], sram_bytes=agg["sram"]))
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
     cap_heavy = max(range(len(stages)), key=lambda i: stages[i].mem.dram_need)
@@ -408,7 +409,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         t_dram = dram["total"] / (sys.dram_GBps * 1e9)
         stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                         dram["total"], link_bytes, agg["flops"], agg["t_ideal"])
-        stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"]))
+        stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
+                                  sram_bytes=agg["sram"]))
     pipe = None
     if wl.kind == "gen":
         pipe = _pipeline_cost(scn, m, wl, sys, warnings)
@@ -457,7 +459,11 @@ def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, a
     dram = d["hot"] + d["exp"] + d["w_extra"] + d["act"]
     stt = StageTime(d["t_arr"], d["t_mac"], d["t_feed"], d["t_vec"], dram / (sys.dram_GBps * 1e9), 0.0, 0.0, dram,
                     0.0, d["flops"], d["t_ideal"])
-    return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound}
+    ch = sys.chip
+    return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound,
+            # action counts (0.47.1, core/energy.py): bf16-equivalent MAC slots, vector element-ops, SRAM-port bytes
+            "acts": {"mac": d["t_ideal"] * ch.macs * ch.freq_ghz * 1e9, "vec": d["t_vec"] * ch.lanes * ch.freq_ghz * 1e9,
+                     "sram": d["sram"], "dram": dram, "link": 0.0}}
 
 
 def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: System, warnings: list[str]) -> dict | None:
@@ -508,6 +514,7 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
         if par > 1 and v is pl.vae:
             if "rounds" in vi:
                 cp = {**_parallel_decode(vi, par, b, lat, info, sys, scn.mapping), "tflop": c["tflop"]}
+                cp["acts"] = {**c["acts"], "link": cp.pop("gather_B")}      # replica totals: same arithmetic
                 extra = {"par": par, "single_s": c["s"], "gather_s": cp.pop("gather_s"), "rank_tiles": cp.pop("tiles")}
                 c = cp
                 vae_par = par
@@ -544,7 +551,7 @@ def _parallel_decode(vi: dict, par: int, b: int, lat: tuple, info: dict, sys: Sy
     ab = _fmt(vi["act"]).bytes
     px = info["frames"] * info["height"] * info["width"] * 3 / math.prod(lat)   # output elements per latent voxel
     loads: dict = {}
-    gather = 0.0
+    gather = sent = 0.0
     for rd in vi["rounds"]:
         share = [rd[r::par] for r in range(par)]
         for r, tl in enumerate(share):
@@ -554,6 +561,7 @@ def _parallel_decode(vi: dict, par: int, b: int, lat: tuple, info: dict, sys: Sy
         top = max(sum(math.prod(t) for t in tl) for tl in share) * px * ab * b
         bw, a_ = collective_seconds("allgather", top, par, sys.link)
         gather += bw + a_
+        sent += par * (par - 1) * top            # every rank's share to every other rank (upper bound)
     memo: dict = {}
     best = None
     for r, cnt in loads.items():
@@ -564,7 +572,7 @@ def _parallel_decode(vi: dict, par: int, b: int, lat: tuple, info: dict, sys: Sy
             best = (memo[k], sum(cnt.values()))
     c = dict(best[0])                # time / DRAM of the slowest rank (the caller restores the replica FLOPs)
     c["s"] += gather
-    c.update(gather_s=gather, tiles=best[1])
+    c.update(gather_s=gather, tiles=best[1], gather_B=sent)
     return c
 
 
