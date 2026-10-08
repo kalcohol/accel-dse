@@ -1,11 +1,13 @@
-# RELEASE 0.31.0 — npu_dse 冻结说明
+# RELEASE 0.31.1 — accel_dse 冻结说明
+
+> 0.31.1：仓库化（https://github.com/kalcohol/accel-dse），包名 `npu_dse` → `accel_dse`；引擎与数值同 0.31.0。
 
 **版本**：0.31.0（引擎：TP×EP 专家切分 / EP 全卡；PP decode 微批填满流水；prefill 摊销 goodput（分块混合 | 独占，上界可选）；投机解码 / MTP；decode 计入 LM head；帕累托 batch 上限 65536）  
 **日期**：2026-10-08（Asia/Shanghai）
 
 ## 这是什么
 
-`npu_dse` 是给 **首硅 / 单卡 DSE** 用的 **手算可核对** 解析模型：Inference-only、NPU-like（固定 dataflow / MAC 阵列）+ 片上 SRAM 三分区 + 纯 HBM 或纯 LPDDR；覆盖 **LLM / Video DiT / Protein** 多域。  
+`accel_dse` 是给 **首硅 / 单卡 DSE** 用的 **手算可核对** 解析模型：Inference-only、NPU-like（固定 dataflow / MAC 阵列）+ 片上 SRAM 三分区 + 纯 HBM 或纯 LPDDR；覆盖 **LLM / Video DiT / Protein** 多域。  
 透出 TTFT/TPOT（或 TTFC、time/seq）、compute vs mem 墙、scale_efficiency；默认路径 **不要求** 用户填 cache hit-rate。
 
 **不是**：cycle-accurate RTL、GPGPU 模拟器、伪 PDK 功耗/面积、硅后标定声称。
@@ -13,19 +15,19 @@
 ## 怎么跑
 
 ```bash
-cd npu-inference-dse   # 或解压后的同名目录
-python3 -m npu_dse serve                  # Web：http://127.0.0.1:8765/
-python3 -m npu_dse workbench --help       # CLI MetricsCard
-python3 -m npu_dse list-series --product
-python3 -m npu_dse list-packages
-python3 -m npu_dse list-compute
-python3 -m npu_dse list-presets
-python3 -m npu_dse report --out out/report.html
-python3 -m npu_dse pareto --model qwen3-32b --chips 8   # v0.30 吞吐–交互帕累托 + SLO goodput
+git clone https://github.com/kalcohol/accel-dse.git && cd accel-dse
+python3 -m accel_dse serve                  # Web：http://127.0.0.1:8765/
+python3 -m accel_dse workbench --help       # CLI MetricsCard
+python3 -m accel_dse list-series --product
+python3 -m accel_dse list-packages
+python3 -m accel_dse list-compute
+python3 -m accel_dse list-presets
+python3 -m accel_dse report --out out/report.html
+python3 -m accel_dse pareto --model qwen3-32b --chips 8   # v0.30 吞吐–交互帕累托 + SLO goodput
 python3 tests/run_tests.py
 ```
 
-可选：`pip install 'npu-dse[web]'` 启用 FastAPI；默认也可用 stdlib HTTP。
+可选：`pip install 'accel-dse[web]'` 启用 FastAPI；默认也可用 stdlib HTTP。
 
 ## Honesty banner（摘要）
 
@@ -34,7 +36,7 @@ python3 tests/run_tests.py
 > Energy/cost（`est_*`）是用户 knob 的 **ASSUMED stub**（`tdp_w` / `watts_per_tops` / `cost_per_card_usd`），**不是** 硅功耗。  
 > Video/protein 多卡：`tp*pp*ep==chips`；EP 无 MoE 时为 no-op。
 
-完整英文文案见 `npu_dse/serve.py` → `HONESTY_BANNER`；Web 顶栏与 API 响应均带 banner。
+完整英文文案见 `accel_dse/serve.py` → `HONESTY_BANNER`；Web 顶栏与 API 响应均带 banner。
 
 ## Catalogs（设计空间档，非硅后）
 
@@ -85,7 +87,7 @@ python3 tests/run_tests.py
 
 ## 0.30.0 要点
 
-- **吞吐–交互性帕累托**（`npu_dse/pareto.py`；CLI `pareto`；API `POST /api/pareto` / `/api/pareto.csv`；Web 标签页「吞吐 / 交互」）：
+- **吞吐–交互性帕累托**（`accel_dse/pareto.py`；CLI `pareto`；API `POST /api/pareto` / `/api/pareto.csv`；Web 标签页「吞吐 / 交互」）：
   batch 1 → KV 容量上限 × 全部有效并行布局（TP×PP×EP，注意力 TP | DP），tokens/s/芯片 vs tokens/s/用户，前沿高亮、被支配点变暗、悬停看配置；导出 CSV / JSON
 - **SLO goodput**：TTFT ≤ X、TPOT ≤ Y（默认 2000 / 50 ms，可改）→ 最优吞吐、配置、最大并发、起作用约束（TTFT / TPOT / 容量）；
   KPI「SLO 吞吐 / 芯片」（当前布局）。稳态假设「假设」：TTFT_eff = 单条 prefill + 一个 decode 步，prefill 不与 decode 交织（DECISIONS D-0.30-3）
@@ -100,7 +102,7 @@ python3 tests/run_tests.py
 
 ## 0.29.0 要点
 
-- **存储目录重建**（`npu_dse/mem_catalog.py`）：类型 / 形态 / 位宽 / 速率（WCK·CK）/ 数量 / 容量（HBM：层数 × die 密度 × 堆数）结构化选择；
+- **存储目录重建**（`accel_dse/mem_catalog.py`）：类型 / 形态 / 位宽 / 速率（WCK·CK）/ 数量 / 容量（HBM：层数 × die 密度 × 堆数）结构化选择；
   派生 总线 / 原始 / 可用（LPDDR6 ×8/9）/ 有效 / 容量（GB = 2³⁰ B）；来源标签取最弱项（JEDEC … 推测），UI 徽标显示；
   `research/memory_specs_2026-10.md` §5 列出的问题全部修正；旧 id（`?c=` / API / 预设）自动映射到最近新配置并附说明
 - **修正 1 —— 暴露的通信同步**：`t_sync = 次数 × α × (1 − overlap)` 叠加在 max(…) 之外；α 默认 3 µs（假设），overlap 默认 0；LLM 与视频 / 蛋白质多卡
@@ -123,7 +125,7 @@ python3 tests/run_tests.py
 - Web 工作台布局重构：吸顶两行场景栏（核心参数）+ 自动评估；7 项领域相关 KPI 条（含基线 Δ）；结果标签页（概览 / 对比·扫描 / A|B / 假设与说明）
 - ⚙ 高级参数右侧抽屉（≥1280 非模态、KPI 保持可见）；≥1680 分屏；移动端场景摘要 + 编辑场景
 - 🔗 复制链接（`?c=` 深链，含当前标签；旧链接兼容）；默认场景不 OOM；`balanced` → 均衡
-- 测试版本断言改为读取 `npu_dse.__version__`；无新建模功能；API / JSON 字段 / CLI 输出不变
+- 测试版本断言改为读取 `accel_dse.__version__`；无新建模功能；API / JSON 字段 / CLI 输出不变
 
 ## 0.27.0 要点
 

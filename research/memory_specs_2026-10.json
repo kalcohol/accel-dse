@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "External memory spec catalog for npu_dse (research only, no code change)",
+    "title": "External memory spec catalog for accel_dse (research only, no code change)",
     "date": "2026-10-08",
     "bandwidth_formula": "raw_GBps = width_bits * MTps / 8 / 1000 ; payload_GBps = raw * payload_factor ; effective = payload * efficiency(assumed knob)",
     "tags": {

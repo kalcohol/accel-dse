@@ -3,12 +3,11 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "npu-dse"
-version = "0.31.0"
-description = "Analytical NPU + SRAM + HBM/LPDDR multi-domain (LLM + video DiT + protein) inference DSE"
+name = "accel-dse"
+version = "0.31.1"
+description = "Analytical design-space exploration (DSE) workbench for inference-only NPU/ASIC: LLM / video DiT / protein, HBM/LPDDR, multi-chip TP/PP/EP"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
 authors = [{ name = "tx wang" }]
 dependencies = []
 
@@ -17,14 +16,14 @@ dev = ["pytest>=7"]
 web = ["fastapi>=0.110", "uvicorn>=0.27"]
 
 [project.scripts]
-npu-dse = "npu_dse.cli:main"
+accel-dse = "accel_dse.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["npu_dse*"]
+include = ["accel_dse*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-npu_dse = ["data/*.json", "web/*"]
+accel_dse = ["data/*.json", "web/*"]

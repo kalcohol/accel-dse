@@ -1,4 +1,4 @@
-# npu_dse 工作台布局改版提案（基于 0.27.0 · 仅提案，未改动 `npu_dse/web`）
+# accel_dse 工作台布局改版提案（基于 0.27.0 · 仅提案，未改动 `accel_dse/web`）
 
 对照图：`before-1440.png` / `before-1920.png` / `before-mobile-390.png`（现状首屏）↔ `mockup-*.png`（提案）；可交互静态稿 `mockup.html`（零依赖，数值取自真实 `/api/eval` 与 `/api/sweep`：qwen3-32b · hbm_hbm3e_4s · cluster_256t · 2 芯片 · EXAMPLE 能耗占位值）。
 
@@ -24,7 +24,7 @@
 ## 2. 新布局结构
 
 ```
-┌ 顶栏（吸顶）  npu_dse 工作台 v · ●已自动更新 · ⚠假设值·未标定 · ⟳重新评估 · 🔗复制链接 ┐
+┌ 顶栏（吸顶）  accel_dse 工作台 v · ●已自动更新 · ⚠假设值·未标定 · ⟳重新评估 · 🔗复制链接 ┐
 ├ 场景栏（吸顶，2 行）                                                                 │
 │  行1 领域[LLM|视频|蛋白质] 系列[▾] │ 存储[HBM|LPDDR][封装▾] 算力[▾] 芯片数[−2+] TP2·PP1·EP1 │
 │  行2 批大小 提示长度 上下文长度（随领域切换） dtype 量化 │ 场景预设[▾]  [⚙ 高级参数 · N 项已修改] │
@@ -91,7 +91,7 @@
 
 - **元素 id**（移入抽屉或标签页但仍在 DOM 中即可）：`btn-sweep`、`btn-export-csv/json`、`btn-pin-baseline`、`btn-pin-a/b`、`override-section`、`override-badge`、`freq_ghz`、`dual-panel`、`econ-section`、`tdp_w`、`watts_per_tops`、`power_util`、`cost_per_card_usd`、`usd_per_kwh`、`btn-econ-example`、`m-scale-eff`、`m-speedup`、`m-oom-badge`、`assumed-compute-section`、`non_gemm_overhead`、`dtype_mac_factors`、`compare-panel`、`btn-eval`
 - **预设属性**：`data-preset="edge-lpddr-4x64 | card-hbm-4stack | scaleup-8chip"`。改用下拉时写在 `<option data-preset=…>` 上。
-- **文本**：`Compare / Sweep`（可放 title）、`MetricsCard`、`npu_dse`、`ASSUMED stub`、`EXAMPLE`、`CAPACITY OOM`
+- **文本**：`Compare / Sweep`（可放 title）、`MetricsCard`、`accel_dse`、`ASSUMED stub`、`EXAMPLE`、`CAPACITY OOM`
 - **样式类名**：style.css 里保留 `bar-chart`、`compare-table`、`delta`、`badge`、`oom-badge`、`scale-low`
 - **JS 函数名**：`renderSweep`、`exportSweepCsv/Json`、`pinBaselineFromCard`、`b64urlEncode`、`restoreConfigFromUrl`、`pushConfigToUrl`、`updateOverrideBadge`、`pinDual`、`renderDualDelta`、`applyPreset`、`renderEcon`、`wireAssumedCompute`、`EXAMPLE_DTYPE_MAC`、`/api/sweep`、`/api/presets`
 - **无 CDN**；HTML 引用 `href="/style.css"` 和 `src="/app.js"`。

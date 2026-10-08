@@ -1,6 +1,6 @@
 """HF / model-card series catalog loader.
 
-Loads ``npu_dse/data/series_catalog.json`` (baked from public HF configs /
+Loads ``accel_dse/data/series_catalog.json`` (baked from public HF configs /
 model cards / cited schema — see ``scripts/bake_series_catalog.py``) and
 constructs ``ModelShape`` / ``VideoShape`` / ``ProteinShape`` instances.
 
@@ -30,7 +30,7 @@ _CATALOG_NAME = "series_catalog.json"
 def _catalog_path() -> Path:
     """Resolve packaged data file (editable install or source tree)."""
     try:
-        ref = resources.files("npu_dse").joinpath("data", _CATALOG_NAME)
+        ref = resources.files("accel_dse").joinpath("data", _CATALOG_NAME)
         with resources.as_file(ref) as p:
             if p.is_file():
                 return Path(p)
@@ -40,7 +40,7 @@ def _catalog_path() -> Path:
     if here.is_file():
         return here
     raise FileNotFoundError(
-        f"series catalog not found (expected npu_dse/data/{_CATALOG_NAME})"
+        f"series catalog not found (expected accel_dse/data/{_CATALOG_NAME})"
     )
 
 

@@ -116,7 +116,7 @@ Weight-only 量化把 W 字节压下去后，长 ctx 的 KV 读成为新的带�
 
 Prefill 时 C2C 更重（S=512）：tp=8 @HBM 时 c2c≈2.94 ms，仍常低于 compute。Decode 集合通信体积小（S=1），400 GB/s 下几乎不挡 TPOT——**墙仍在卡内算力或外存**。更慢的 assumed C2C（100 GB/s）或更大 batch 才会让 c2c 抬头。
 
-CLI：`python -m npu_dse sweep-tp` / `scan-scaleup`。OOM：每卡 weight+KV > `mem.capacity` 则 flag。
+CLI：`python -m accel_dse sweep-tp` / `scan-scaleup`。OOM：每卡 weight+KV > `mem.capacity` 则 flag。
 
 **非声称**：非真实 C2C PHY。IB/RoCE / EP 为 assumed 解析模型（见 §9 / §11）。
 
@@ -148,7 +148,7 @@ CLI：`python -m npu_dse sweep-tp` / `scan-scaleup`。OOM：每卡 weight+KV > `
 @128k GQA fp16 全远程读 ≈21 GB → roce_200g 上 **t_fab≈1049 ms** vs 卡内 compute≈35 ms（**~30×**）。
 **disagg decode 必须盯网络 BW**；latency（µs）在 GB 级传输上几乎淹没。`none` 与本地路径字节/时间一致。
 
-CLI：`python -m npu_dse sweep-kv-fabric`。
+CLI：`python -m accel_dse sweep-kv-fabric`。
 
 ---
 
@@ -223,7 +223,7 @@ MLA 把 fabric 墙压到 ~1/4，但仍远高于卡内 compute——长 ctx disag
 
 ## 13. CSV 导出
 
-`python3 -m npu_dse export-csv --out …` 写出：`sweep_{sku,dtype,ctx,sram,tp,kv_fabric,moe,mla,video,protein}.csv` + `compare_domains.csv`。
+`python3 -m accel_dse export-csv --out …` 写出：`sweep_{sku,dtype,ctx,sram,tp,kv_fabric,moe,mla,video,protein}.csv` + `compare_domains.csv`。
 
 ---
 
@@ -358,6 +358,6 @@ video notes：fps≈4.3 @ N=50。LLM 短 ctx 下 MLA≈GQA（权重流主导）�
 
 ## 19. HTML report / requirements gap（v0.14）
 
-`python3 -m npu_dse report --out out/report.html`：离线自包含页（inline CSS），汇总 walls 解读、series、chips sweep、chips=8 parallel dense+MoE、mem geometry FLIP、`compare-domains` 快照与 uncalibrated banner。对照清单见 `REQUIREMENTS_GAP.md`（真缺口：真实系列维数、标定 BW/freq、UI 产品化）。
+`python3 -m accel_dse report --out out/report.html`：离线自包含页（inline CSS），汇总 walls 解读、series、chips sweep、chips=8 parallel dense+MoE、mem geometry FLIP、`compare-domains` 快照与 uncalibrated banner。对照清单见 `REQUIREMENTS_GAP.md`（真缺口：真实系列维数、标定 BW/freq、UI 产品化）。
 
 *版本：0.14.0 — 与 README / DECISIONS / CHANGELOG 同步；数字随 assumed 旋钮可扫。*

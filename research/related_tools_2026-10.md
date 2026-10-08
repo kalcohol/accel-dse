@@ -1,6 +1,6 @@
 # 同类开源工具调研与可吸收实践（2026-10）
 
-> 范围：只做调研和报告，**未改动** `npu_dse` 代码。
+> 范围：只做调研和报告，**未改动** `accel_dse` 代码。
 > 数据快照：GitHub ★ 和最近 push 日期取自 GitHub REST API，时间 2026-10-08 ~15:50 JST；push 日期按 API 返回的 UTC 日期记。论文数字引自原文或摘要。
 > 判断口径：站在「芯片架构师评估 NPU SKU」的角度（单卡 → scale-up，HBM/LPDDR 二选一，推理专用，要能手算核对），评估各工具哪些东西**值得搬进解析模型和 Web 工作台**。
 
@@ -87,7 +87,7 @@
 
 | 工具 | 粒度 | 片上 SRAM / 层级 | DRAM 几何 | 多芯片 / 网络 | MoE | MLA | KV 容量 → 批 | 连续批 / chunked | 投机 / MTP | PD 分离 | DiT / 视频 | TP / PP / EP / SP·CP | SLO / goodput | Pareto | 能耗 | 面积 / 成本 | 实测验证 | UI |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **npu_dse（我们）** | 解析式，可手算 | ✅ 三分区 + resident / staging | ✅ 通道×位宽×速率 | ✅ C2C ring/tree，IB/RoCE | ✅ 均衡 | ✅ | △ 只有 OOM 标志 | ✗ | ✗ | △ 只有 `t_kv_xfer` | ✅（示意） | ✅ / ✅ / ✅ / ✗ | ✗ | ✗ | △ TDP stub | △ 只有 $ stub | ✗（只有 handcheck） | Web 工作台 + A\|B |
+| **accel_dse（我们）** | 解析式，可手算 | ✅ 三分区 + resident / staging | ✅ 通道×位宽×速率 | ✅ C2C ring/tree，IB/RoCE | ✅ 均衡 | ✅ | △ 只有 OOM 标志 | ✗ | ✗ | △ 只有 `t_kv_xfer` | ✅（示意） | ✅ / ✅ / ✅ / ✗ | ✗ | ✗ | △ TDP stub | △ 只有 $ stub | ✗（只有 handcheck） | Web 工作台 + A\|B |
 | LLMCompass | 映射器 + 解析式 | ✅ 寄存器 / 本地 / 全局缓冲 | ✅ 通道×pin×速率 | ✅ FC / ring | ✗ | ✗ | △ | ✗ | ✗ | ✗ | ✗ | ✅ TP（PP 粗） | ✗ | ✗ | ✗ | ✅ 面积 + 晶圆 / 内存成本 | ✅ A100 / MI210 / TPUv3 | CLI + 图 |
 | GenZ | 算子 roofline | △ 片上容量 / 带宽 | △ 只填带宽 | ✅ | ✅ | ? | ✅ 平台规模估算 | ✅ chunked | ✅ | △ | ✗ | ✅ / ✅ / ✅ / △ | △ | △ | △ 按利用率分摊功耗 | ✗ | △ | Streamlit |
 | AIConfigurator / AISimulate | 实测算子插值 | ✗ | ✗ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ MTP | ✅ xPyD | ✗ | ✅ / ✅ / ✅ + Attn-DP | ✅ TTFT / TPOT | ✅ tok/s/gpu vs tok/s/user | ✗ | ✗ | ✅ | CLI + ASCII 图 + CSV |

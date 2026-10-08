@@ -546,12 +546,12 @@ def render_html(bundle: ReportBundle) -> str:
         "<head>",
         '<meta charset="utf-8"/>',
         '<meta name="viewport" content="width=device-width, initial-scale=1"/>',
-        f"<title>npu_dse report v{_esc(bundle.version)}</title>",
+        f"<title>accel_dse report v{_esc(bundle.version)}</title>",
         f"<style>{_CSS}</style>",
         "</head>",
         "<body>",
         "<header>",
-        f"<h1>npu_dse Metrics / wall report "
+        f"<h1>accel_dse Metrics / wall report "
         f"<small>v{_esc(bundle.version)}</small></h1>",
         f'<div class="meta">Generated {_esc(bundle.generated_at)} · '
         f"offline self-contained HTML (inline CSS, no external deps)</div>",
@@ -586,7 +586,7 @@ def render_html(bundle: ReportBundle) -> str:
         '<p class="note">Real packs cite <code>hf:&lt;id&gt;</code> from public '
         "HF config.json / model cards; illustrative packs remain for handcheck. "
         "FLOPs/BW uncalibrated. CLI: "
-        "<code>python3 -m npu_dse list-series</code> / "
+        "<code>python3 -m accel_dse list-series</code> / "
         "<code>--product</code></p>",
         '<div class="table-wrap">',
         _series_table_html(bundle.series_rows),
@@ -606,7 +606,7 @@ def render_html(bundle: ReportBundle) -> str:
         "(HBM3/3E 1024-bit, HBM4/4E 2048-bit). Capacity GB = 2<sup>30</sup> B. "
         "BW = units × (width/8) × rate × payload × efficiency (efficiency "
         "<strong>assumed</strong> 0.70). CLI: "
-        "<code>python3 -m npu_dse list-packages</code> · "
+        "<code>python3 -m accel_dse list-packages</code> · "
         "<code>workbench-scan --package-axis type|count|rate</code></p>",
         f"<p><strong>{_esc(bundle.package_flip_note or '')}</strong></p>",
         f"<p class=\"note\">Catalog counts: "
@@ -628,7 +628,7 @@ def render_html(bundle: ReportBundle) -> str:
         "cluster peaks 64 / 128 / 192 / 256 TOPS via n_cores × tops_per_core "
         "at assumed 1 GHz. Efficiency knobs (mac_efficiency / mem efficiency) "
         "remain adjustable placeholders. CLI: "
-        "<code>python3 -m npu_dse list-compute</code> · "
+        "<code>python3 -m accel_dse list-compute</code> · "
         "<code>workbench-scan --sweep-compute</code></p>",
         f"<p><strong>{_esc(bundle.compute_flip_note or '')}</strong></p>",
         "<h3>Catalog primaries</h3>",
@@ -646,7 +646,7 @@ def render_html(bundle: ReportBundle) -> str:
         "<h2>Chips sweep table</h2>",
         "<p class=\"note\">Default mapping chip_count→tp (pp=ep=1), HBM, "
         "cores=16×6.25 T/core ≈ sku_100t. CLI: "
-        "<code>python3 -m npu_dse workbench-scan --model series/dense-27b "
+        "<code>python3 -m accel_dse workbench-scan --model series/dense-27b "
         "--chips-list 1 2 4 8</code></p>",
         "<h3>series/dense-27b</h3>",
         '<div class="table-wrap">',
@@ -663,7 +663,7 @@ def render_html(bundle: ReportBundle) -> str:
         "<h2>Parallel matrix — chips=8 dense + MoE</h2>",
         "<p class=\"note\">Enumerate tp×pp×ep=8 sorted by TPOT. Dense forces "
         "ep=1; MoE allows EP. CLI: "
-        "<code>python3 -m npu_dse workbench-parallel --chips 8 "
+        "<code>python3 -m accel_dse workbench-parallel --chips 8 "
         "--model series/dense-27b</code> (and series/moe-active13b).</p>",
         "<h3>Dense (series/dense-27b)</h3>",
         '<div class="table-wrap">',
@@ -680,7 +680,7 @@ def render_html(bundle: ReportBundle) -> str:
         "<h2>Mem geometry flip note</h2>",
         f"<p><strong>{_esc(bundle.mem_flip_note)}</strong></p>",
         "<p class=\"note\">HBM n_channels sweep {1,2,4,8} @ illustrative_27B "
-        "chips=1. CLI: <code>python3 -m npu_dse workbench-scan --sweep-mem "
+        "chips=1. CLI: <code>python3 -m accel_dse workbench-scan --sweep-mem "
         "--mem hbm --mem-vary channels --chips 1</code></p>",
         '<div class="table-wrap">',
         _mem_table_html(bundle.mem_sweep),
@@ -691,7 +691,7 @@ def render_html(bundle: ReportBundle) -> str:
         "<h2>Cross-domain compare snapshot</h2>",
         "<p class=\"note\">sku_100t × HBM/LPDDR: LLM TPOT / video TTFC / "
         "protein t/seq. CLI: "
-        "<code>python3 -m npu_dse compare-domains</code></p>",
+        "<code>python3 -m accel_dse compare-domains</code></p>",
         '<div class="table-wrap">',
         _compare_table_html(bundle.compare_rows),
         "</div>",
@@ -756,8 +756,8 @@ def render_html(bundle: ReportBundle) -> str:
         + "</code></p>",
         "<p class=\"note\">Presets (package + compute + chips; no power/price inside): "
         "<code>edge-lpddr-4x64</code>, <code>card-hbm-4stack</code>, "
-        "<code>scaleup-8chip</code>. CLI: <code>python3 -m npu_dse list-presets</code> · "
-        "<code>python3 -m npu_dse eval-presets --model illustrative_27B --econ "
+        "<code>scaleup-8chip</code>. CLI: <code>python3 -m accel_dse list-presets</code> · "
+        "<code>python3 -m accel_dse eval-presets --model illustrative_27B --econ "
         "examples/energy_cost.example.json</code> · "
         "<code>workbench --preset card-hbm-4stack --tdp-w … --cost-per-card …</code>. "
         "OOM rows: energy/cost not meaningful.</p>",
@@ -771,8 +771,8 @@ def render_html(bundle: ReportBundle) -> str:
         "</section>",
         "</main>",
         "<footer>",
-        f"npu_dse v{_esc(bundle.version)} · MetricsCard / wall report · "
-        "Regenerate: <code>python3 -m npu_dse report --out out/report.html</code>",
+        f"accel_dse v{_esc(bundle.version)} · MetricsCard / wall report · "
+        "Regenerate: <code>python3 -m accel_dse report --out out/report.html</code>",
         "</footer>",
         "</body>",
         "</html>",

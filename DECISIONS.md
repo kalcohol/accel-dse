@@ -188,7 +188,7 @@
 
 | 项 | 状态 | 当前默认 | 说明 |
 |----|------|----------|------|
-| `python3 -m npu_dse serve` | derived | localhost knobs UI | llm/video/protein MetricsCard；零 CDN |
+| `python3 -m accel_dse serve` | derived | localhost knobs UI | llm/video/protein MetricsCard；零 CDN |
 | Compare/Sweep | derived | `POST /api/sweep` ≤32 | CSS bar + CSV/JSON export + baseline Δ% |
 | Dual card A\|B | derived | Pin A / Pin B | 字段级 Δ / Δ%；可 last vs baseline |
 | Assumed / override sliders | assumed | mem_eff=0.70 · mac_hide=0 · freq=1 GHz | ≠默认显示 **override active**；写入 `?c=` |

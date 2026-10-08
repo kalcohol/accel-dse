@@ -10,7 +10,7 @@ Honesty contract
   or price is baked into the engine.
 * Example placeholder values (e.g. 400 W/card) live **only** in
   ``examples/energy_cost.example.json`` (mirrored at
-  ``npu_dse/data/energy_cost.example.json`` for the web UI button) and are
+  ``accel_dse/data/energy_cost.example.json`` for the web UI button) and are
   labeled EXAMPLE / placeholder.
 
 Formulas (all ``est_*`` fields are assumed)::

@@ -1,4 +1,29 @@
-# npu_dse — NPU + SRAM + HBM/LPDDR 多域推理解析模型（LLM / Video DiT / Protein）
+# accel-dse
+
+> **加速器推理设计空间探索工作台** · Analytical DSE workbench for inference-only NPU / ASIC
+
+**DSE = Design Space Exploration（设计空间探索）**：在流片前，用可手算核对的解析模型，在「算力 × 片上 SRAM × HBM/LPDDR × 多芯片并行（TP/PP/EP）× 工作负载（LLM / 视频 DiT / 蛋白质）」的组合空间里快速比较方案，看清 TTFT / TPOT、带宽墙、容量与扩展效率的取舍。
+
+*An analytical, hand-checkable model for exploring inference-accelerator design points (compute, on-chip SRAM, HBM/LPDDR, multi-chip TP/PP/EP) across LLM, video-DiT and protein workloads. Zero third-party dependencies; local web UI + CLI.*
+
+### 快速开始 / Quick start
+
+```bash
+git clone https://github.com/kalcohol/accel-dse.git
+cd accel-dse
+python3 tests/run_tests.py        # 自检（零依赖，Python ≥ 3.10）
+python3 -m accel_dse serve        # 启动本地 Web 工作台
+# 浏览器打开 / open http://127.0.0.1:8765
+```
+
+> ⚠️ **免责声明 / Disclaimer**：本工具中的所有数值均为**解析模型推算或假设值**（标注「假设 / assumed」），**不是**实测硅片数据，未经硅后标定；仅用于方案比较与趋势判断。
+> *All numbers are analytical estimates or explicitly assumed parameters — **not measured silicon**. Use for relative comparison and trend analysis only.*
+
+欢迎通过 [GitHub Issues](https://github.com/kalcohol/accel-dse/issues) 反馈问题与建议。 / Feedback welcome via [GitHub Issues](https://github.com/kalcohol/accel-dse/issues).
+
+---
+
+## accel_dse — NPU + SRAM + HBM/LPDDR 多域推理解析模型（LLM / Video DiT / Protein）
 
 ## 章程（Charter）
 
@@ -21,10 +46,10 @@
 - **MoE 示意形状**（`illustrative_moe`）：总专家 E、top_k；流量按激活专家计（均衡路由 assumed）。
 - **Batch 扫参**：decode `batch∈{1…32}`，OS util 随 M 上升；墙可能翻转。
 - **FINDINGS.md**：硅侧中文备忘（权重流 / staging≠resident / SKU 墙 / KV 反超 / IP 含义）。
-- **多域模板（v0.10–0.11）**：`illustrative_dit_video`（N_denoise×T² compute）、`illustrative_large_dit`（更大 T / 分钟级 TTFC 示意，**非** MiniMax-H3）、`illustrative_protein_pair`（L² pair 内存）；CLI `sweep-video` / `sweep-protein` / `compare-domains` / `list-shapes`。 **未标定**（BW/freq 仍未硅后标定；当前版本 **0.31.0**）。
+- **多域模板（v0.10–0.11）**：`illustrative_dit_video`（N_denoise×T² compute）、`illustrative_large_dit`（更大 T / 分钟级 TTFC 示意，**非** MiniMax-H3）、`illustrative_protein_pair`（L² pair 内存）；CLI `sweep-video` / `sweep-protein` / `compare-domains` / `list-shapes`。 **未标定**（BW/freq 仍未硅后标定；当前版本 **0.31.1**）。
 - **Workbench 产品层（v0.12–0.14）**：`WorkbenchConfig` → `MetricsCard`；`chip_count`→tp（或显式 tp/pp/ep）；DRAM geometry knobs；`n_cores×tops_per_core`；CLI `workbench` / `workbench-scan` / `workbench-parallel`。
 - **Package / compute 设计空间档位（v0.16）**：`list-packages` / `list-compute`；`--sweep-package` / `--sweep-compute`。
-- **存储目录（v0.29 重建，`npu_dse/mem_catalog.py`）**：结构化选择 —— 类型 LPDDR5 / LPDDR5X / LPDDR6 / HBM3 / HBM3E / HBM4 / HBM4E；LPDDR 形态 板载封装 / SOCAMM2 / LPCAMM2；
+- **存储目录（v0.29 重建，`accel_dse/mem_catalog.py`）**：结构化选择 —— 类型 LPDDR5 / LPDDR5X / LPDDR6 / HBM3 / HBM3E / HBM4 / HBM4E；LPDDR 形态 板载封装 / SOCAMM2 / LPCAMM2；
   封装位宽（LPDDR5/5X **x64 = 4×16-bit 通道**；LPDDR6 **x96 = 4×24-bit 通道 = 8×12-bit 子通道**）；速率档（依附代际，UI 显示 WCK / CK MHz）；颗数 / 模组数；单颗容量；
   HBM 堆叠高度 8/12/16 × die 密度 × 堆数 1–12。派生：总线 = 数量 × 位宽；原始 = 总线 × MT/s / 8000；**LPDDR6 可用 = 原始 × 8/9**；有效 = 可用 × 效率（假设 0.70）；
   容量为厂商标称 GB（2³⁰ B）。每个组件带来源标签（JEDEC > 疑似 JEDEC > 厂商量产 > 送样 > 已发布 > 推测），组合取**最弱项**；允许推测组合但必标注。
@@ -32,9 +57,9 @@
   CLI：`workbench --mem-type LPDDR6 --mem-count 4 --mem-rate 10667`、`--hbm-height 12 --hbm-die-gb 24`、`workbench-scan --package-axis type|count|rate`；API 结构化字段 `mem_type` / `mem_form` / `mem_width_bits` / `mem_rate_MTps` / `mem_count` / `mem_cap_GB` / `hbm_height` / `hbm_die_Gb`。
 - **乐观假设修正（v0.29）**：① **暴露的通信同步** `t_sync = 次数 × α × (1 − overlap)` 叠加在 max(计算, 访存, C2C …) 之外（TP 每层 2 次 all-reduce、EP 每层 2 次 all-to-all、PP 每级 1 次；α 默认 3 µs「假设」，overlap 默认 0；`--c2c-latency-us` / `--sync-overlap`）；
   ② **KV 切分**：GQA 每卡 KV = KV × ceil(n_kv/tp)/n_kv；MLA latent 每个 TP rank 全量；`--attn-parallel dp` 改为按 batch 切 KV（注意力权重每卡复制）。α = 0 与 0.28 逐位一致。
-- **吞吐–交互性帕累托 + SLO goodput（v0.30，`npu_dse/pareto.py`）**：对当前场景把 batch 从 1 扫到 **KV 容量上限**（每卡 权重 + KV ≤ 容量，KV 切分同评估器），覆盖芯片数允许的全部并行布局（TP×PP×EP，LLM 另含注意力 TP | DP），  得到 tokens/s/芯片（decode 吞吐）vs tokens/s/用户（1/TPOT）与帕累托前沿；SLO（TTFT ≤ 2000 ms、TPOT ≤ 50 ms 默认，可改）下报告最优吞吐、配置、最大并发与**起作用的约束**（TTFT / TPOT / 容量）。
+- **吞吐–交互性帕累托 + SLO goodput（v0.30，`accel_dse/pareto.py`）**：对当前场景把 batch 从 1 扫到 **KV 容量上限**（每卡 权重 + KV ≤ 容量，KV 切分同评估器），覆盖芯片数允许的全部并行布局（TP×PP×EP，LLM 另含注意力 TP | DP），  得到 tokens/s/芯片（decode 吞吐）vs tokens/s/用户（1/TPOT）与帕累托前沿；SLO（TTFT ≤ 2000 ms、TPOT ≤ 50 ms 默认，可改）下报告最优吞吐、配置、最大并发与**起作用的约束**（TTFT / TPOT / 容量）。
   稳态假设「假设」：TTFT_eff = 单条 prefill + 一个 decode 步，prefill 不与 decode 交织，吞吐只计 decode（见 DECISIONS D-0.30-3）。视频 / 蛋白给出等效曲线（帧/s/芯片 vs TTFC；序列/s/芯片 vs 单批时间）。
-  CLI `python3 -m npu_dse pareto --model qwen3-32b --chips 8 --csv out/pareto_qwen3-32b_8.csv`；API `POST /api/pareto`（`/api/pareto.csv`）；Web 标签页「吞吐 / 交互」（手写 SVG）+ KPI「SLO 吞吐 / 芯片」。
+  CLI `python3 -m accel_dse pareto --model qwen3-32b --chips 8 --csv out/pareto_qwen3-32b_8.csv`；API `POST /api/pareto`（`/api/pareto.csv`）；Web 标签页「吞吐 / 交互」（手写 SVG）+ KPI「SLO 吞吐 / 芯片」。
 - **v0.31 引擎（`scaleup.py` / `pareto.py`，DECISIONS §20）**：
   - **TP×EP 专家切分**：`moe_shard = tp_ep`（专家按 ep 组划分、组内按 tp 切分；默认）或 `ep_all`（专家分布到全部 tp·ep 个 rank）。MoE ep>1 时注意力在 ep 组间按 DP 运行，KV 按 batch 切分；all-to-all 按每 rank 的 token 份额计；decode 只读期望命中的专家（「假设」均匀路由）。deepseek-v3 ×8 HBM3E 的 28 个布局全部放得下。
   - **PP decode 微批**：`decode_mb`（0 = min(B, pp)）让流水填满。TPOT_step = max(mb, pp) · t_stage(微批)，B = 1 时仍为 pp 级遍历时延。
@@ -45,9 +70,9 @@
   `capacity_GB` / `capacity_needed_GB` 统一为厂商标称 GB（2³⁰ B），十进制见 `*_decimal`。
 - **Scaling efficiency（v0.25）**：MetricsCard `scale_efficiency` / `speedup` / `t_single_primary_ms`；primary=LLM TPOT / video TTFC / protein time_per_seq；`eff=(t_single/t_multi)/chips`（理想 1.0）；chips=1 → 1.0 + note `single-card`；诚实：不计 host/NIC；C2C 已在 t_multi。Web 卡片 / A|B Δ / sweep CSV / report `#scale`。
 - **能效 / 成本 stub + 场景预设（v0.24，assumed）**：MetricsCard `est_power_W` / `est_energy_per_token_J`（llm）/ `est_energy_per_frame_J`（video）/ `est_energy_per_seq_J`（protein）/ `est_system_cost_usd` / LLM `est_usd_per_Mtok`；knobs `tdp_w` 或 `watts_per_tops`、`power_util`、`cost_per_card_usd`、`mem_addon_usd`、`usd_per_kwh`、`amortize_years`；**引擎默认关闭**，示例假数仅在 `examples/energy_cost.example.json`。预设 `edge-lpddr-4x64` / `edge-lpddr6-4x96` / `card-hbm-4stack` / `card-hbm3e-8x12h` / `server-socamm2-8` / `scaleup-8chip`（CLI `--preset` / `list-presets` / `eval-presets`；API `preset:`；Web 一键按钮）。**不是** PDK / JEDEC 功耗。
-- **交互 Web 工作台（v0.17–0.28）**：`python3 -m npu_dse serve` — 本地 knobs 面板（series / chips / package / compute）→ live MetricsCard；**Compare/Sweep** + **dual card A|B**；**Assumed/override**（mem eff / mac-overlap / freq；override badge）；**calib**（CLI `--calib` / API `calib`；`examples/calibration.example.json`）；CSV/JSON export；baseline Δ%；`?c=` deep-link；Parallel×4/×8；零 CDN；**llm + video + protein**；v0.27 起界面为**简体中文**（专有名词 / 技术术语保留英文）；v0.28 布局：吸顶场景栏 + KPI 条 + 结果标签页 + ⚙ 高级参数抽屉 + 🔗 复制链接；v0.28.1：下拉框短标签不截断、时间 / 字节单位自动缩放；v0.29：存储类型 + 摘要按钮 + 存储配置弹层（来源徽标、原始 / 可用 / 有效带宽）、「通信同步（暴露）」分解行、⚙「通信同步 / KV 切分」；v0.30：「吞吐 / 交互」标签页（帕累托 SVG + SLO goodput）、KPI「SLO 吞吐 / 芯片」、扫描行短标签、移动端存储底部抽屉；v0.31：⚙「投机解码 / MoE 切分 / PP 微批」、分解「草稿」条与「PP 遍历 / 气泡」、帕累托「吞吐口径 / prefill 方式 / 输出长度」。
+- **交互 Web 工作台（v0.17–0.28）**：`python3 -m accel_dse serve` — 本地 knobs 面板（series / chips / package / compute）→ live MetricsCard；**Compare/Sweep** + **dual card A|B**；**Assumed/override**（mem eff / mac-overlap / freq；override badge）；**calib**（CLI `--calib` / API `calib`；`examples/calibration.example.json`）；CSV/JSON export；baseline Δ%；`?c=` deep-link；Parallel×4/×8；零 CDN；**llm + video + protein**；v0.27 起界面为**简体中文**（专有名词 / 技术术语保留英文）；v0.28 布局：吸顶场景栏 + KPI 条 + 结果标签页 + ⚙ 高级参数抽屉 + 🔗 复制链接；v0.28.1：下拉框短标签不截断、时间 / 字节单位自动缩放；v0.29：存储类型 + 摘要按钮 + 存储配置弹层（来源徽标、原始 / 可用 / 有效带宽）、「通信同步（暴露）」分解行、⚙「通信同步 / KV 切分」；v0.30：「吞吐 / 交互」标签页（帕累托 SVG + SLO goodput）、KPI「SLO 吞吐 / 芯片」、扫描行短标签、移动端存储底部抽屉；v0.31：⚙「投机解码 / MoE 切分 / PP 微批」、分解「草稿」条与「PP 遍历 / 气泡」、帕累托「吞吐口径 / prefill 方式 / 输出长度」。
 - **Video/protein multi-card（v0.19–0.20）**：`tp/pp/ep`（`tp*pp*ep==chips`）；TP ring/tree act collectives；PP bubble（denoise pipelines poorly）；EP no-op without MoE；assumptions banner。
-- **真实公开 HF 系列维数（v0.15）**：`npu_dse/data/series_catalog.json` + `catalog.py`；`list-series --product` 列出数十个 HF-backed packs（GLM-5.3 / Kimi-K3 / Qwen3.8 / MiniMax-H3 / AF2…）；illustrative/toy 仍保留手算。Gated（Llama-4/Gemma/ESM-3）跳过。FLOPs/BW 仍 uncalibrated。
+- **真实公开 HF 系列维数（v0.15）**：`accel_dse/data/series_catalog.json` + `catalog.py`；`list-series --product` 列出数十个 HF-backed packs（GLM-5.3 / Kimi-K3 / Qwen3.8 / MiniMax-H3 / AF2…）；illustrative/toy 仍保留手算。Gated（Llama-4/Gemma/ESM-3）跳过。FLOPs/BW 仍 uncalibrated。
 
 **它不是什么**
 
@@ -194,7 +219,7 @@ peak_TOPS = R * C * n_engines * freq_Hz * 2 / 1e12
 ## 目录
 
 ```
-npu-inference-dse/
+accel-dse/
 ├── README.md
 ├── FINDINGS.md                # 硅侧中文备忘（assumed/uncalibrated）
 ├── DECISIONS.md               # 假设 vs 需拍板（均非阻塞）
@@ -202,7 +227,7 @@ npu-inference-dse/
 ├── CHANGELOG.md
 ├── pyproject.toml
 ├── examples/handcheck.md      # 全数字手算
-├── npu_dse/
+├── accel_dse/
 │   ├── model_shape.py         # dense + MoE shapes
 │   ├── npu.py
 │   ├── sku.py                 # 100T / 1P 峰值模板
@@ -227,83 +252,83 @@ npu-inference-dse/
 
 ## 如何运行
 
-需要 Python ≥ 3.10，**零第三方依赖**（测试可选 pytest；Web UI 可选 `pip install 'npu-dse[web]'` 启用 FastAPI）。
+需要 Python ≥ 3.10，**零第三方依赖**（测试可选 pytest；Web UI 可选 `pip install 'accel-dse[web]'` 启用 FastAPI）。
 
 ```bash
-cd /workspace/npu-inference-dse
+cd accel-dse
 
 # 默认扫描：toy + illustrative_27B × HBM/LPDDR，含 SRAM / PE / SKU
-python3 -m npu_dse
+python3 -m accel_dse
 # 或
-python3 -m npu_dse.cli scan
+python3 -m accel_dse.cli scan
 
 # 100T / 1P SKU 扫描 + LPDDR 带宽墙 crossover 表
-python3 -m npu_dse scan-sku
+python3 -m accel_dse scan-sku
 
 # Dtype / ctx / SRAM knee / independent quant 扫参
-python3 -m npu_dse sweep-dtype
-python3 -m npu_dse sweep-ctx
-python3 -m npu_dse sweep-sram
-python3 -m npu_dse sweep-sram --sram-policy kv_first
-python3 -m npu_dse sweep-quant
-python3 -m npu_dse sweep-batch
-python3 -m npu_dse sweep-moe
-# 或: python3 -m npu_dse sweep --what dtype|ctx|sram|quant|batch|moe
-# SRAM + assumed hide (staging dbl-buf only): python3 -m npu_dse sweep-sram --weight-hide 0.5
+python3 -m accel_dse sweep-dtype
+python3 -m accel_dse sweep-ctx
+python3 -m accel_dse sweep-sram
+python3 -m accel_dse sweep-sram --sram-policy kv_first
+python3 -m accel_dse sweep-quant
+python3 -m accel_dse sweep-batch
+python3 -m accel_dse sweep-moe
+# 或: python3 -m accel_dse sweep --what dtype|ctx|sram|quant|batch|moe
+# SRAM + assumed hide (staging dbl-buf only): python3 -m accel_dse sweep-sram --weight-hide 0.5
 
 # 列出 SKU / dtype / quant / series 预设
-python3 -m npu_dse list-sku
-python3 -m npu_dse list-dtype
-python3 -m npu_dse list-quant
-python3 -m npu_dse list-series --product
+python3 -m accel_dse list-sku
+python3 -m accel_dse list-dtype
+python3 -m accel_dse list-quant
+python3 -m accel_dse list-series --product
 
 # 离线 HTML 报告（inline CSS，含 Metrics/wall）
-python3 -m npu_dse report --out out/report.html
+python3 -m accel_dse report --out out/report.html
 
 # 交互 Web 工作台 MVP（浏览器 knobs → live MetricsCard）
-python3 -m npu_dse serve                  # http://127.0.0.1:8765/
-python3 -m npu_dse serve --host 0.0.0.0 --port 8765
-python3 -m npu_dse serve --stdlib         # force stdlib http.server
+python3 -m accel_dse serve                  # http://127.0.0.1:8765/
+python3 -m accel_dse serve --host 0.0.0.0 --port 8765
+python3 -m accel_dse serve --stdlib         # force stdlib http.server
 # UI: knobs → MetricsCard; Compare/Sweep → POST /api/sweep (chips|package|compute|parallel|series)
 # v0.30 吞吐 / 交互 → POST /api/pareto (+ /api/pareto.csv)
 # Parallel ×4 / ×8 presets = workbench-parallel matrix in-browser (≤32 rows)
 # Export CSV/JSON from last sweep; Pin baseline → Δ% column; shareable ?c= deep-link restores knobs
-# optional: pip install 'npu-dse[web]'  → FastAPI + uvicorn
+# optional: pip install 'accel-dse[web]'  → FastAPI + uvicorn
 
 # Workbench（统一配置 → MetricsCard）
-python3 -m npu_dse workbench --model illustrative_27B --chips 4 --mem hbm --cores 16 --tops-per-core 6.25
-python3 -m npu_dse workbench --model illustrative_27B --chips 1 --json out/card.json --md out/card.md
-python3 -m npu_dse workbench --help
-python3 -m npu_dse workbench-scan --model series/dense-27b --chips-list 1 2 4 8
-python3 -m npu_dse workbench-scan --model illustrative_27B --csv out/workbench_scan.csv
-python3 -m npu_dse workbench-parallel --model illustrative_27B --chips 8
-python3 -m npu_dse workbench-parallel --model series/moe-active13b --chips 8 --csv out/parallel_moe_8.csv
+python3 -m accel_dse workbench --model illustrative_27B --chips 4 --mem hbm --cores 16 --tops-per-core 6.25
+python3 -m accel_dse workbench --model illustrative_27B --chips 1 --json out/card.json --md out/card.md
+python3 -m accel_dse workbench --help
+python3 -m accel_dse workbench-scan --model series/dense-27b --chips-list 1 2 4 8
+python3 -m accel_dse workbench-scan --model illustrative_27B --csv out/workbench_scan.csv
+python3 -m accel_dse workbench-parallel --model illustrative_27B --chips 8
+python3 -m accel_dse workbench-parallel --model series/moe-active13b --chips 8 --csv out/parallel_moe_8.csv
 # v0.30 吞吐–交互帕累托 + SLO goodput（全部布局 × batch 至 KV 容量上限）
-python3 -m npu_dse pareto --model qwen3-32b --chips 8 --mem-type HBM3E --mem-count 8 --slo-ttft-ms 2000 --slo-tpot-ms 50 --csv out/pareto_qwen3-32b_8.csv
+python3 -m accel_dse pareto --model qwen3-32b --chips 8 --mem-type HBM3E --mem-count 8 --slo-ttft-ms 2000 --slo-tpot-ms 50 --csv out/pareto_qwen3-32b_8.csv
 # v0.31 prefill 摊销口径（默认）/ 上界；投机解码 MTP k=1；MoE 切分
-python3 -m npu_dse pareto --model deepseek-v3 --chips 8 --mem-type HBM3E --mem-count 8 --goodput-mode amortized --prefill-mode chunked --out-len 256
-python3 -m npu_dse pareto --model deepseek-v3 --chips 8 --mem-type HBM3E --mem-count 8 --goodput-mode upper --spec-k 1 --spec-accept 0.7
-python3 -m npu_dse workbench --model deepseek-v3 --chips 8 --mem-type HBM3E --mem-count 8 --spec-k 1 --moe-shard ep_all --pp-decode-mb 0
-python3 -m npu_dse workbench-scan --mode parallel --chips 8 --model series/dense-27b
-python3 -m npu_dse workbench-scan --sweep-mem --mem hbm --chips 1 --mem-vary channels
-python3 -m npu_dse list-packages
-python3 -m npu_dse list-compute
-python3 -m npu_dse workbench-scan --sweep-package --model glm-5.3-flash --chips 1
-python3 -m npu_dse workbench-scan --sweep-compute --compute-level core --mem lpddr --chips 1
-python3 -m npu_dse list-series --product
+python3 -m accel_dse pareto --model deepseek-v3 --chips 8 --mem-type HBM3E --mem-count 8 --goodput-mode amortized --prefill-mode chunked --out-len 256
+python3 -m accel_dse pareto --model deepseek-v3 --chips 8 --mem-type HBM3E --mem-count 8 --goodput-mode upper --spec-k 1 --spec-accept 0.7
+python3 -m accel_dse workbench --model deepseek-v3 --chips 8 --mem-type HBM3E --mem-count 8 --spec-k 1 --moe-shard ep_all --pp-decode-mb 0
+python3 -m accel_dse workbench-scan --mode parallel --chips 8 --model series/dense-27b
+python3 -m accel_dse workbench-scan --sweep-mem --mem hbm --chips 1 --mem-vary channels
+python3 -m accel_dse list-packages
+python3 -m accel_dse list-compute
+python3 -m accel_dse workbench-scan --sweep-package --model glm-5.3-flash --chips 1
+python3 -m accel_dse workbench-scan --sweep-compute --compute-level core --mem lpddr --chips 1
+python3 -m accel_dse list-series --product
 
 # 单点评估（可用 --sku / --dtype / --weight-bits）
-python3 -m npu_dse eval --shape 27b --mem lpddr --sku sku_100t --prompt 512 --ctx 512
-python3 -m npu_dse eval --shape 27b --mem lpddr --sku sku_100t --dtype int4 --ctx 32768
-python3 -m npu_dse eval --shape 27b --mem lpddr --sku sku_100t --quant w4k16 --ctx 128000 --sram-mib 2048
-python3 -m npu_dse eval --shape moe --mem lpddr --sku sku_100t --ctx 512
-python3 -m npu_dse eval --shape 27b --mem lpddr --pe 64 64 --engines 16 --sram-mib 64
+python3 -m accel_dse eval --shape 27b --mem lpddr --sku sku_100t --prompt 512 --ctx 512
+python3 -m accel_dse eval --shape 27b --mem lpddr --sku sku_100t --dtype int4 --ctx 32768
+python3 -m accel_dse eval --shape 27b --mem lpddr --sku sku_100t --quant w4k16 --ctx 128000 --sram-mib 2048
+python3 -m accel_dse eval --shape moe --mem lpddr --sku sku_100t --ctx 512
+python3 -m accel_dse eval --shape 27b --mem lpddr --pe 64 64 --engines 16 --sram-mib 64
 
 # M=1 利用率曲线
-python3 -m npu_dse util-curve --pe 64 64 --engines 1 --k 512 --n 512
+python3 -m accel_dse util-curve --pe 64 64 --engines 1 --k 512 --n 512
 
 # 与 examples/handcheck.md 对齐的玩具配置
-python3 -m npu_dse handcheck
+python3 -m accel_dse handcheck
 
 # 测试（零依赖 runner；也可 pip install pytest）
 python3 tests/run_tests.py
@@ -338,7 +363,7 @@ t_phase ≈ max(t_compute_card, t_dram_card, t_c2c, t_pp_act, t_fabric)
 OOM if (W_body/(tp*pp) + embed_(full|/tp) + KV/(tp*pp)) > mem.capacity
 ```
 
-CLI: `python -m npu_dse sweep-tp` / `scan-scaleup`。
+CLI: `python -m accel_dse sweep-tp` / `scan-scaleup`。
 
 ### KV fabric IB/RoCE（v0.8 MVP，assumed）
 
@@ -358,7 +383,7 @@ PD disagg one-shot:
   t_kv_xfer = latency + full_KV_bytes / BW   # separate metric (optional +TTFT)
 ```
 
-CLI: `python -m npu_dse sweep-kv-fabric`（sku_100t dense × ctx × fabric presets）。
+CLI: `python -m accel_dse sweep-kv-fabric`（sku_100t dense × ctx × fabric presets）。
 
 ### Pipeline parallel（v0.8 light，assumed）
 
@@ -375,7 +400,7 @@ wall = stage_time / (1 - bubble)
 tp=1,pp=1 matches single-card
 ```
 
-CLI: `python -m npu_dse sweep-parallel --tp-list … --pp-list …` / `sweep-pp`。
+CLI: `python -m accel_dse sweep-parallel --tp-list … --pp-list …` / `sweep-pp`。
 
 ---
 
@@ -394,7 +419,7 @@ t_a2a = a2a_bytes / C2C_BW * (1 - c2c_hide)
 wall = max(compute, dram, c2c, pp_act, a2a, fabric)
 ```
 
-CLI: `python -m npu_dse sweep-moe --ep 1 2 4 8`。
+CLI: `python -m accel_dse sweep-moe --ep 1 2 4 8`。
 
 ### MLA 压缩 KV（v0.9，assumed）
 
@@ -404,12 +429,12 @@ kv_bytes/token = L * kv_lora_rank * kv_bits/8     # vs GQA 2*L*n_kv*d*bytes
 → ~0.25× KV vs GQA at same L/bits (40 KiB vs 160 KiB / token)
 ```
 
-CLI: `python -m npu_dse sweep-mla`（含 @128k 远程 fabric 对比）。
+CLI: `python -m accel_dse sweep-mla`（含 @128k 远程 fabric 对比）。
 
 ### CSV 导出
 
 ```
-python3 -m npu_dse export-csv --out /workspace/npu-inference-dse/out/
+python3 -m accel_dse export-csv --out out/
 # → sweep_{sku,dtype,ctx,sram,tp,kv_fabric,moe,mla}.csv
 ```
 
@@ -448,7 +473,7 @@ python3 -m npu_dse export-csv --out /workspace/npu-inference-dse/out/
 物理仍走 `evaluate_scaleup` / traffic — **不 fork**。chips=1 与既有单卡卡对齐（容差内）。
 
 **CalibrationOverrides（可选、非阻塞）**：`examples/calibration.example.json` 可注入 `mem_efficiency` / `mac_efficiency`（或 `weight_hide`）/ `frequency_hz`（或 `freq_ghz`）。
-CLI：`python3 -m npu_dse workbench --calib examples/calibration.example.json`；
+CLI：`python3 -m accel_dse workbench --calib examples/calibration.example.json`；
 API：`POST /api/eval` body 含 `calib: {…}`（亦接受顶层 `efficiency` / `freq_ghz` / `mac_efficiency`）。
 Web：Assumed / override 滑条；≠默认显示 **override active**；写入 `?c=`。
 
@@ -469,10 +494,10 @@ LLM `est_usd_per_Mtok = E_tok·1e6/3.6e6·$/kWh + cost / (tok/s · years · 365�
 不设 knob → 所有 `est_*` 为 0、`econ_configured=false`。
 
 ```bash
-python3 -m npu_dse workbench --preset card-hbm-4stack --dtype int8 --tdp-w 400 --power-util 0.6 --cost-per-card 10000
-python3 -m npu_dse workbench --model illustrative_27B --econ examples/energy_cost.example.json   # EXAMPLE 假数
-python3 -m npu_dse list-presets
-python3 -m npu_dse eval-presets --model illustrative_27B --econ examples/energy_cost.example.json
+python3 -m accel_dse workbench --preset card-hbm-4stack --dtype int8 --tdp-w 400 --power-util 0.6 --cost-per-card 10000
+python3 -m accel_dse workbench --model illustrative_27B --econ examples/energy_cost.example.json   # EXAMPLE 假数
+python3 -m accel_dse list-presets
+python3 -m accel_dse eval-presets --model illustrative_27B --econ examples/energy_cost.example.json
 curl -s localhost:8765/api/presets
 curl -s -XPOST localhost:8765/api/eval -d '{"model_id":"illustrative_27B","preset":"scaleup-8chip","econ":{"tdp_w":400,"cost_per_card_usd":10000}}'
 ```
@@ -484,7 +509,7 @@ curl -s -XPOST localhost:8765/api/eval -d '{"model_id":"illustrative_27B","prese
 
 Series packs：
 
-- **HF-backed（v0.15）**：`python3 -m npu_dse list-series --product` — 如 `glm-5.3`、`kimi-k3`、`qwen3.8-2.4t`、`minimax-h3`、`alphafold2`…；metadata 引用 `hf:<org/model>` + source URL。
+- **HF-backed（v0.15）**：`python3 -m accel_dse list-series --product` — 如 `glm-5.3`、`kimi-k3`、`qwen3.8-2.4t`、`minimax-h3`、`alphafold2`…；metadata 引用 `hf:<org/model>` + source URL。
 - **Illustrative（手算/回归）**：`series/dense-27b` → `illustrative_27B`；`series/moe-active13b`；`series/mla-27b`；`series/dit-video` / `series/dit-large` / `series/protein-pair`。
 
 ## 开放假设 / 后续（需用户拍板的点）
@@ -501,4 +526,4 @@ Series packs：
 - `sku_1p` 暂作更大单 die；TP/C2C 为独立 scale-up 旋钮（assumed）。
 - 功耗/面积：刻意不做伪 PDK；v0.24 只有用户 knob 的 energy/cost **assumed stub**（REQUIREMENTS_GAP #19/#20 = 半齐）。
 
-**版本**：0.31.0（TP×EP 专家切分 + EP 全卡；PP decode 微批；prefill 摊销 goodput；投机解码 / MTP；decode 计入 LM head；0.30：吞吐–交互性帕累托 + SLO goodput；MLA 注意力按投影建模（DeepSeek-V3 ≈ 671B）；容量统一 2³⁰ B；存储目录按 JEDEC / 厂商资料重建：结构化选择器 + 来源标签 + LPDDR6 payload 8/9；暴露的通信同步 α；KV 按 TP 切分 / MLA 复制 / 注意力 DP；0.28.1 Web 工作台打磨：下拉框短标签 + 单位自动缩放；Web 工作台布局重构：场景栏 / KPI 条 / 标签页 / 高级参数抽屉；Web UI 简体中文化 + 布局拥挤修复；opt-in `non_gemm_overhead` + `dtype_mac_factors` assumed；scale_efficiency/speedup；energy/cost assumed stub + scenario presets；calib + dual A|B；Compare/Sweep；multi-domain MetricsCard + HF packs + Workbench / `report`；MoE EP / MLA / scale-up；无 PDK；BW/freq 未硅后标定）。
+**版本**：0.31.1（仓库化，包名改为 `accel_dse`，引擎同 0.31.0；TP×EP 专家切分 + EP 全卡；PP decode 微批；prefill 摊销 goodput；投机解码 / MTP；decode 计入 LM head；0.30：吞吐–交互性帕累托 + SLO goodput；MLA 注意力按投影建模（DeepSeek-V3 ≈ 671B）；容量统一 2³⁰ B；存储目录按 JEDEC / 厂商资料重建：结构化选择器 + 来源标签 + LPDDR6 payload 8/9；暴露的通信同步 α；KV 按 TP 切分 / MLA 复制 / 注意力 DP；0.28.1 Web 工作台打磨：下拉框短标签 + 单位自动缩放；Web 工作台布局重构：场景栏 / KPI 条 / 标签页 / 高级参数抽屉；Web UI 简体中文化 + 布局拥挤修复；opt-in `non_gemm_overhead` + `dtype_mac_factors` assumed；scale_efficiency/speedup；energy/cost assumed stub + scenario presets；calib + dual A|B；Compare/Sweep；multi-domain MetricsCard + HF packs + Workbench / `report`；MoE EP / MLA / scale-up；无 PDK；BW/freq 未硅后标定）。

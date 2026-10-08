@@ -2,7 +2,7 @@
 
 Illustrative / toy entries remain for regression and handcheck.
 
-Real packs are loaded from ``npu_dse/data/series_catalog.json`` (public HF
+Real packs are loaded from ``accel_dse/data/series_catalog.json`` (public HF
 config.json / model cards / cited schema). Metadata cites ``hf:<id>`` + source.
 FLOPs/BW remain uncalibrated; hybrid linear-attn / Engram / DSA extras are
 metadata-only (core DSE still uses ModelShape GQA/MoE/MLA accounting).

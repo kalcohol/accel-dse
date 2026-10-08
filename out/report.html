@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>npu_dse report v0.31.0</title>
+<title>accel_dse report v0.31.1</title>
 <style>
 :root {
   --bg: #0f1419; --panel: #1a2332; --text: #e7ecf3; --muted: #9aa7b8;
@@ -92,8 +92,8 @@ footer {
 </head>
 <body>
 <header>
-<h1>npu_dse Metrics / wall report <small>v0.31.0</small></h1>
-<div class="meta">Generated 2026-10-08 16:56:56 · offline self-contained HTML (inline CSS, no external deps)</div>
+<h1>accel_dse Metrics / wall report <small>v0.31.1</small></h1>
+<div class="meta">Generated 2026-10-08 18:13:56 · offline self-contained HTML (inline CSS, no external deps)</div>
 </header>
 <div class="banner" id="assumptions">
 <strong>ASSUMPTIONS / UNCALIBRATED:</strong> Absolute TOPS, GB/s, frequency, C2C/fabric BW are assumed/uncalibrated; LLM/video/protein dims come from public HF configs where registered, else illustrative. Do not treat ms/GB as silicon-backed. See DECISIONS.md / REQUIREMENTS_GAP.md.
@@ -142,7 +142,7 @@ only resident layers (R≥1) do. All absolute ms/GB/s are
 </section>
 <section id="series">
 <h2>Model series list</h2>
-<p class="note">Real packs cite <code>hf:&lt;id&gt;</code> from public HF config.json / model cards; illustrative packs remain for handcheck. FLOPs/BW uncalibrated. CLI: <code>python3 -m npu_dse list-series</code> / <code>--product</code></p>
+<p class="note">Real packs cite <code>hf:&lt;id&gt;</code> from public HF config.json / model cards; illustrative packs remain for handcheck. FLOPs/BW uncalibrated. CLI: <code>python3 -m accel_dse list-series</code> / <code>--product</code></p>
 <div class="table-wrap">
 <table>
 <thead><tr><th>id</th><th>family</th><th>domain</th><th>shape</th><th>metadata</th></tr></thead>
@@ -226,7 +226,7 @@ only resident layers (R≥1) do. All absolute ms/GB/s are
 </section>
 <section id="packages">
 <h2>Memory catalog (LPDDR5/5X/6 · HBM3/3E/4/4E) — v0.29 structured</h2>
-<p class="note">Rebuilt from <code>research/memory_specs_2026-10</code>; every rate / width / capacity carries a provenance tag and each config shows the <strong>weakest</strong> one (JEDEC &gt; 疑似 JEDEC &gt; 厂商量产 &gt; 送样 &gt; 已发布 &gt; 推测). LPDDR5/5X: <strong>x64 package = 4×16-bit channels</strong> (x32 / vendor x96 also), 5500–10667 MT/s per generation. LPDDR6: <strong>x96 package = 4×24-bit channels (8×12-bit sub-ch)</strong>, 10667/12800/14400 MT/s, usable BW = raw × <strong>8/9</strong> (BL24 metadata), kept separate from efficiency. SOCAMM2 / LPCAMM2: 128-bit LPDDR5X modules. HBM: stacks × height × die density (HBM3/3E 1024-bit, HBM4/4E 2048-bit). Capacity GB = 2<sup>30</sup> B. BW = units × (width/8) × rate × payload × efficiency (efficiency <strong>assumed</strong> 0.70). CLI: <code>python3 -m npu_dse list-packages</code> · <code>workbench-scan --package-axis type|count|rate</code></p>
+<p class="note">Rebuilt from <code>research/memory_specs_2026-10</code>; every rate / width / capacity carries a provenance tag and each config shows the <strong>weakest</strong> one (JEDEC &gt; 疑似 JEDEC &gt; 厂商量产 &gt; 送样 &gt; 已发布 &gt; 推测). LPDDR5/5X: <strong>x64 package = 4×16-bit channels</strong> (x32 / vendor x96 also), 5500–10667 MT/s per generation. LPDDR6: <strong>x96 package = 4×24-bit channels (8×12-bit sub-ch)</strong>, 10667/12800/14400 MT/s, usable BW = raw × <strong>8/9</strong> (BL24 metadata), kept separate from efficiency. SOCAMM2 / LPCAMM2: 128-bit LPDDR5X modules. HBM: stacks × height × die density (HBM3/3E 1024-bit, HBM4/4E 2048-bit). Capacity GB = 2<sup>30</sup> B. BW = units × (width/8) × rate × payload × efficiency (efficiency <strong>assumed</strong> 0.70). CLI: <code>python3 -m accel_dse list-packages</code> · <code>workbench-scan --package-axis type|count|rate</code></p>
 <p><strong>FLIP: wall memory → compute at hbm3_4s_12h16g_6400 (TPOT 20.818 ms, eff≈2294 GB/s)</strong></p>
 <p class="note">Catalog counts: {&#x27;lpddr&#x27;: 36, &#x27;lpddr5&#x27;: 6, &#x27;lpddr5x&#x27;: 18, &#x27;lpddr6&#x27;: 12, &#x27;hbm&#x27;: 25, &#x27;hbm3&#x27;: 4, &#x27;hbm3e&#x27;: 7, &#x27;hbm4&#x27;: 8, &#x27;hbm4e&#x27;: 6, &#x27;total&#x27;: 61, &#x27;compute_core&#x27;: 4, &#x27;compute_cluster_primary&#x27;: 4, &#x27;compute_total&#x27;: 21}</p>
 <h3>Catalog (peak GB/s derived)</h3>
@@ -323,7 +323,7 @@ hbm4_8s_12h24g_8000                 HBM      8  2048   8.000     16384.0     114
 </section>
 <section id="compute">
 <h2>Compute hierarchy ranges — assumed DSE</h2>
-<p class="note">Single-core peak options 4 / 8 / 12 / 16 TOPS; cluster peaks 64 / 128 / 192 / 256 TOPS via n_cores × tops_per_core at assumed 1 GHz. Efficiency knobs (mac_efficiency / mem efficiency) remain adjustable placeholders. CLI: <code>python3 -m npu_dse list-compute</code> · <code>workbench-scan --sweep-compute</code></p>
+<p class="note">Single-core peak options 4 / 8 / 12 / 16 TOPS; cluster peaks 64 / 128 / 192 / 256 TOPS via n_cores × tops_per_core at assumed 1 GHz. Efficiency knobs (mac_efficiency / mem efficiency) remain adjustable placeholders. CLI: <code>python3 -m accel_dse list-compute</code> · <code>workbench-scan --sweep-compute</code></p>
 <p><strong>No wall FLIP across compute sweep; walls seen: compute.</strong></p>
 <h3>Catalog primaries</h3>
 <pre class="plain">id                            level       peak_T  n_cores    T/core    GHz
@@ -355,7 +355,7 @@ cluster_256t                  cluster      256.0     16    16.00     77.7472    
 </section>
 <section id="chips">
 <h2>Chips sweep table</h2>
-<p class="note">Default mapping chip_count→tp (pp=ep=1), HBM, cores=16×6.25 T/core ≈ sku_100t. CLI: <code>python3 -m npu_dse workbench-scan --model series/dense-27b --chips-list 1 2 4 8</code></p>
+<p class="note">Default mapping chip_count→tp (pp=ep=1), HBM, cores=16×6.25 T/core ≈ sku_100t. CLI: <code>python3 -m accel_dse workbench-scan --model series/dense-27b --chips-list 1 2 4 8</code></p>
 <h3>series/dense-27b</h3>
 <div class="table-wrap">
 <table>
@@ -395,7 +395,7 @@ cluster_256t                  cluster      256.0     16    16.00     77.7472    
 </section>
 <section id="parallel">
 <h2>Parallel matrix — chips=8 dense + MoE</h2>
-<p class="note">Enumerate tp×pp×ep=8 sorted by TPOT. Dense forces ep=1; MoE allows EP. CLI: <code>python3 -m npu_dse workbench-parallel --chips 8 --model series/dense-27b</code> (and series/moe-active13b).</p>
+<p class="note">Enumerate tp×pp×ep=8 sorted by TPOT. Dense forces ep=1; MoE allows EP. CLI: <code>python3 -m accel_dse workbench-parallel --chips 8 --model series/dense-27b</code> (and series/moe-active13b).</p>
 <h3>Dense (series/dense-27b)</h3>
 <div class="table-wrap">
 <table>
@@ -448,7 +448,7 @@ cluster_256t                  cluster      256.0     16    16.00     77.7472    
 <section id="mem">
 <h2>Mem geometry flip note</h2>
 <p><strong>FLIP: wall memory → balanced near eff≈1649 GB/s (TPOT 34.908 ms); wall balanced → compute near eff≈3297 GB/s (TPOT 34.241 ms).</strong></p>
-<p class="note">HBM n_channels sweep {1,2,4,8} @ illustrative_27B chips=1. CLI: <code>python3 -m npu_dse workbench-scan --sweep-mem --mem hbm --mem-vary channels --chips 1</code></p>
+<p class="note">HBM n_channels sweep {1,2,4,8} @ illustrative_27B chips=1. CLI: <code>python3 -m accel_dse workbench-scan --sweep-mem --mem hbm --mem-vary channels --chips 1</code></p>
 <div class="table-wrap">
 <table>
 <thead><tr><th>mem</th><th>eff_GBps</th><th>TTFT_ms</th><th>TPOT_ms</th><th>wall</th><th>t_comp_ms</th><th>t_dram_ms</th><th>flip</th><th>chips</th></tr></thead>
@@ -469,7 +469,7 @@ cluster_256t                  cluster      256.0     16    16.00     77.7472    
 </section>
 <section id="compare">
 <h2>Cross-domain compare snapshot</h2>
-<p class="note">sku_100t × HBM/LPDDR: LLM TPOT / video TTFC / protein t/seq. CLI: <code>python3 -m npu_dse compare-domains</code></p>
+<p class="note">sku_100t × HBM/LPDDR: LLM TPOT / video TTFC / protein t/seq. CLI: <code>python3 -m accel_dse compare-domains</code></p>
 <div class="table-wrap">
 <table>
 <thead><tr><th>domain</th><th>mem</th><th>shape</th><th>metric</th><th>metric_ms</th><th>wall</th><th>dominant_cost</th><th>notes</th></tr></thead>
@@ -523,7 +523,7 @@ cluster_256t                  cluster      256.0     16    16.00     77.7472    
 <h2>Scenario presets × energy / cost — ASSUMED stub (not silicon)</h2>
 <p class="note"><strong>Honesty:</strong> power is a single user knob (<code>tdp_w</code> per card, or <code>watts_per_tops × peak_tops</code>) × assumed <code>power_util</code> × chips — <strong>no PDK / JEDEC / vendor power model</strong>, cards only (no host / cooling / PUE). Cost = chips × (<code>cost_per_card_usd</code> + <code>mem_addon_usd</code>). LLM <code>$/MTok</code> = energy (<code>usd_per_kwh</code>) + capex amortized over <code>amortize_years × duty_cycle</code> of decode-only tokens. Engine defaults are <strong>OFF</strong>; the numbers below use the clearly-fake <strong>EXAMPLE placeholders</strong> from <code>examples/energy_cost.example.json</code>.</p>
 <p class="note">EXAMPLE knobs: <code>tdp_w=400, power_util=0.6, cost_per_card_usd=10000, mem_addon_usd=0, usd_per_kwh=0.1, amortize_years=3, duty_cycle=0.5</code></p>
-<p class="note">Presets (package + compute + chips; no power/price inside): <code>edge-lpddr-4x64</code>, <code>card-hbm-4stack</code>, <code>scaleup-8chip</code>. CLI: <code>python3 -m npu_dse list-presets</code> · <code>python3 -m npu_dse eval-presets --model illustrative_27B --econ examples/energy_cost.example.json</code> · <code>workbench --preset card-hbm-4stack --tdp-w … --cost-per-card …</code>. OOM rows: energy/cost not meaningful.</p>
+<p class="note">Presets (package + compute + chips; no power/price inside): <code>edge-lpddr-4x64</code>, <code>card-hbm-4stack</code>, <code>scaleup-8chip</code>. CLI: <code>python3 -m accel_dse list-presets</code> · <code>python3 -m accel_dse eval-presets --model illustrative_27B --econ examples/energy_cost.example.json</code> · <code>workbench --preset card-hbm-4stack --tdp-w … --cost-per-card …</code>. OOM rows: energy/cost not meaningful.</p>
 <p class="note"><strong>Caveat:</strong> one flat EXAMPLE <code>tdp_w</code> is applied to every preset, so the edge row at 400 W/card is deliberately unrealistic — for cross-class comparison set <code>watts_per_tops</code> or per-preset <code>--tdp-w</code> yourself. Scale-up rows multiply power and cost by chips.</p>
 <div class="table-wrap">
 <table>
@@ -553,7 +553,7 @@ cluster_256t                  cluster      256.0     16    16.00     77.7472    
 </section>
 </main>
 <footer>
-npu_dse v0.31.0 · MetricsCard / wall report · Regenerate: <code>python3 -m npu_dse report --out out/report.html</code>
+accel_dse v0.31.1 · MetricsCard / wall report · Regenerate: <code>python3 -m accel_dse report --out out/report.html</code>
 </footer>
 </body>
 </html>

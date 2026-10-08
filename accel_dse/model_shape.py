@@ -1,7 +1,7 @@
 """GQA dense / MoE transformer shape descriptors.
 
 Built-in ``ILLUSTRATIVE_*`` / ``TOY_SHAPE`` are placeholders for handcheck.
-Real public HF dims are registered via ``npu_dse.catalog`` / ``series``
+Real public HF dims are registered via ``accel_dse.catalog`` / ``series``
 (``hf:<id>`` in metadata). FLOPs/BW remain uncalibrated either way.
 """
 

@@ -26,10 +26,10 @@
 | 12 | MoE 激活流 + MLA 压缩 KV | **已齐** | `sweep-moe` / `sweep-mla`；series packs |
 | 13 | 多域：video DiT / protein pair 示意 | **已齐（示意）** | `sweep-video` / `sweep-protein` / `compare-domains`；workbench `/api/eval` MetricsCard；video/protein **tp/pp/ep** + ring/tree collectives + PP bubble |
 | 14 | 产品层 Workbench：chips → parallel、geometry、MetricsCard | **已齐** | `workbench` / `workbench-scan` / `workbench-parallel`；`--json`/`--md` |
-| 15 | 离线可读一页报告（Metrics/wall） | **已齐** | `python3 -m npu_dse report --out out/report.html` |
-| 16 | **真实**系列维数（公开 HF / model-card dims） | **已齐（公开 HF）** | `list-series --product`；`npu_dse/data/series_catalog.json`；gated 仍缺（Llama-4/Gemma/ESM-3） |
+| 15 | 离线可读一页报告（Metrics/wall） | **已齐** | `python3 -m accel_dse report --out out/report.html` |
+| 16 | **真实**系列维数（公开 HF / model-card dims） | **已齐（公开 HF）** | `list-series --product`；`accel_dse/data/series_catalog.json`；gated 仍缺（Llama-4/Gemma/ESM-3） |
 | 17 | **Package / compute 设计空间档位（原「标定」）** | **已齐（假设档）** | `list-packages` / `list-compute`；`--sweep-package` / `--sweep-compute`；`package_ranges.py`。硅后实测 efficiency **可选**，非阻塞 |
-| 18 | UI 产品化（浏览器工作台 / 图表） | **已齐（MVP+）** | `python3 -m npu_dse serve`；knobs + MetricsCard + **Compare/Sweep** + **dual card A\|B** + **Assumed/override**（mem/mac/freq；override badge；`?c=`）+ **calib inject**（CLI `--calib` / API `calib`）；CSV/JSON export；baseline Δ%；Parallel×4/×8；无 CDN；**非完整 BI** |
+| 18 | UI 产品化（浏览器工作台 / 图表） | **已齐（MVP+）** | `python3 -m accel_dse serve`；knobs + MetricsCard + **Compare/Sweep** + **dual card A\|B** + **Assumed/override**（mem/mac/freq；override badge；`?c=`）+ **calib inject**（CLI `--calib` / API `calib`）；CSV/JSON export；baseline Δ%；Parallel×4/×8；无 CDN；**非完整 BI** |
 | 19 | **能效 energy efficiency**（早期用户指标：J/token · J/frame · J/seq） | **半齐（assumed stub）** | `tdp_w` **或** `watts_per_tops × peak_tops` × `power_util`(默认 1.0=TDP 上界) × chips → `est_power_W`；`est_energy_per_token_J`(llm) / `est_energy_per_frame_J`(video) / `est_energy_per_seq_J`(protein)。CLI `--tdp-w` / `--watts-per-tops` / `--econ`；API flat 或 `econ:{}`；UI Energy/cost 区。**引擎默认 OFF**（不设 knob 不出数）；示例占位 400 W/card 仅在 `examples/energy_cost.example.json`。缺：真实功耗模型（动态/静态、DRAM pJ/bit、SRAM、NoC、host/PUE）— 刻意不伪造 |
 | 20 | **成本 cost**（系统 $ / $ per MTok） | **半齐（assumed stub）** | `est_system_cost_usd = chips × (cost_per_card_usd + mem_addon_usd)`；LLM `est_usd_per_Mtok` = 电费(`usd_per_kwh`) + capex 摊销(`amortize_years × duty_cycle`)，decode-only tokens。CLI `--cost-per-card` / `--usd-per-kwh` / `--amortize-years`。缺：BOM 拆分、良率、网络/机柜/冷却、售价模型；0.5¢/token 仅为示例 JSON 中的占位比较价 |
 | 21 | 场景预设（edge / card / scale-up 一键） | **已齐（assumed 档）** | `list-presets` / `eval-presets` / `workbench --preset`；API `preset:` + `GET /api/presets`；Web 一键按钮：`edge-lpddr-4x64` · `card-hbm-4stack` · `scaleup-8chip`（只捆 package+compute+chips，不含功耗/价格） |
@@ -90,7 +90,7 @@
 | Softmax/RoPE/LN 粗开销 | **半齐（assumed opt-in）** | `--non-gemm-overhead` / finer fracs；默认 0；非 cycle-accurate |
 | 低精度 MAC peak factor | **半齐（assumed opt-in）** | `--dtype-mac-factor` JSON；默认全 1.0（bytes-only）；用户/assumed 非硅 |
 
-*版本：0.31.0 — 与 CHANGELOG / README 同步。*
+*版本：0.31.1 — 与 CHANGELOG / README 同步。*
 
 ### v0.29 存储目录 + 乐观假设修正
 

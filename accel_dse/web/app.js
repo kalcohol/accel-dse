@@ -1,4 +1,4 @@
-/* npu_dse workbench UI — zero CDN, debounce eval on knob change */
+/* accel_dse workbench UI — zero CDN, debounce eval on knob change */
 (function () {
   "use strict";
 
@@ -1790,7 +1790,7 @@
     }
     const axis = lastSweepResult.axis || "sweep";
     downloadBlob(
-      `npu_dse_sweep_${axis}.csv`,
+      `accel_dse_sweep_${axis}.csv`,
       sweepToCsvClient(lastSweepResult),
       "text/csv;charset=utf-8"
     );
@@ -1809,7 +1809,7 @@
     }
     const axis = lastSweepResult.axis || "sweep";
     downloadBlob(
-      `npu_dse_sweep_${axis}.json`,
+      `accel_dse_sweep_${axis}.json`,
       JSON.stringify(payload, null, 2),
       "application/json;charset=utf-8"
     );

@@ -1,4 +1,4 @@
-"""CLI: python -m npu_dse.cli  or  python -m npu_dse"""
+"""CLI: python -m accel_dse.cli  or  python -m accel_dse"""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ from .package_ranges import (
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="npu_dse",
+        prog="accel_dse",
         description="Analytical NPU+SRAM+HBM/LPDDR multi-domain (LLM/video/protein) inference DSE",
     )
     sub = p.add_subparsers(dest="cmd")

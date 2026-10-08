@@ -188,8 +188,8 @@ M=1 → `ceil(1/4)=1`，各投影 cycles 恰为 M=8 时的一半行块：层投�
 ## 5. 一键复现
 
 ```bash
-cd /workspace/npu-inference-dse
-python3 -m npu_dse handcheck
+cd accel-dse
+python3 -m accel_dse handcheck
 # 或跑 pytest 中的 test_toy_handcheck_numbers
 python3 tests/run_tests.py
 ```

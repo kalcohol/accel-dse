@@ -1234,7 +1234,7 @@ def _serve_static(handler: BaseHTTPRequestHandler, rel: str) -> None:
 class WorkbenchHandler(BaseHTTPRequestHandler):
     """ThreadingHTTPServer handler for workbench API + static UI."""
 
-    server_version = f"npu_dse/{__version__}"
+    server_version = f"accel_dse/{__version__}"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         # Quieter default; still useful on stderr
@@ -1355,7 +1355,7 @@ def create_fastapi_app():
     from fastapi.staticfiles import StaticFiles
 
     app = FastAPI(
-        title="npu_dse workbench",
+        title="accel_dse workbench",
         version=__version__,
         description=HONESTY_BANNER,
     )
@@ -1460,7 +1460,7 @@ def run_server(
 
             app = create_fastapi_app()
             print(
-                f"npu_dse workbench v{__version__} (FastAPI) "
+                f"accel_dse workbench v{__version__} (FastAPI) "
                 f"http://{host}:{port}/",
                 flush=True,
             )
@@ -1472,7 +1472,7 @@ def run_server(
 
     httpd = ThreadingHTTPServer((host, port), WorkbenchHandler)
     print(
-        f"npu_dse workbench v{__version__} (stdlib http.server) "
+        f"accel_dse workbench v{__version__} (stdlib http.server) "
         f"http://{host}:{port}/",
         flush=True,
     )

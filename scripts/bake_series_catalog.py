@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bake npu_dse/data/series_catalog.json from out/hf_series_lookup.json.
+"""Bake accel_dse/data/series_catalog.json from out/hf_series_lookup.json.
 
 Rule: no invented architecture dims — only lookup JSON / raw_configs / cited schema.
 Workload clip geometry (video frames/latent) and protein seq_len use documented
@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LOOKUP = ROOT / "out" / "hf_series_lookup.json"
-OUT = ROOT / "npu_dse" / "data" / "series_catalog.json"
+OUT = ROOT / "accel_dse" / "data" / "series_catalog.json"
 
 # Gated / skip list (require HF token or dims not public)
 SKIP_HF_IDS = {

@@ -1,4 +1,4 @@
-"""npu_dse: analytical NPU + SRAM + HBM/LPDDR multi-domain inference DSE.
+"""accel_dse: analytical NPU + SRAM + HBM/LPDDR multi-domain inference DSE.
 
 Domains: LLM (GQA/MoE/MLA) + video (DiT-like) + protein (encoder + optional pair).
 Inference-only, fixed-dataflow NPU (not GPGPU). No fake PDK power/area
@@ -10,7 +10,7 @@ All absolute hardware numbers are *assumed/uncalibrated* unless derived from
 shape + tiling + capacities.
 """
 
-__version__ = "0.31.0"
+__version__ = "0.31.1"
 
 from .model_shape import ModelShape, TOY_SHAPE, ILLUSTRATIVE_27B, ILLUSTRATIVE_MOE, ILLUSTRATIVE_MLA
 from .npu import NPUConfig, gemm_cycles, gemm_utilization

@@ -69,7 +69,7 @@ def run_default_scan(
 
     results: list[InferenceResult] = []
     if verbose:
-        print("npu_dse default scan (assumed/uncalibrated HW knobs)")
+        print("accel_dse default scan (assumed/uncalibrated HW knobs)")
         print(f"Eval: prompt={cfg.prompt_len} decode_ctx={cfg.decode_seq_len} "
               f"batch={cfg.batch} freq={cfg.frequency_hz/1e9:.2f}GHz "
               f"contention={cfg.contention_mode}")
@@ -163,7 +163,7 @@ def run_sku_scan(
     results: list[InferenceResult] = []
 
     if verbose:
-        print("npu_dse SKU scan — single-card peak templates")
+        print("accel_dse SKU scan — single-card peak templates")
         print("Honesty: process_nm is a label; TOPS from PE×engines×freq×2flop/MAC.")
         print("1P is a bigger single-die peak for sensitivity (multi-chip stub later).")
         for s in skus:
@@ -346,7 +346,7 @@ def run_dtype_sweep(
     results: list[InferenceResult] = []
 
     if verbose:
-        print("npu_dse dtype sweep — storage/traffic bits only (MAC rate unchanged)")
+        print("accel_dse dtype sweep — storage/traffic bits only (MAC rate unchanged)")
         print(
             f"SKU={sku.name} ({sku.achieved_tops():.1f} TOPS) shape={shape.name} "
             f"ctx={ecfg.decode_seq_len} SRAM={DEFAULT_SRAM.capacity_bytes/2**20:.0f}MiB"
@@ -420,7 +420,7 @@ def run_ctx_sweep(
     results: list[InferenceResult] = []
 
     if verbose:
-        print("npu_dse context-length sweep — when KV rivals weight stream")
+        print("accel_dse context-length sweep — when KV rivals weight stream")
         print(
             f"SKU={sku.name} shape={shape.name} "
             f"W={shape.weight_bits}b KV={shape.kv_bits}b "
@@ -588,7 +588,7 @@ def run_sram_sweep(
     knee_r_full = L * w_layer / 2**20 if L > 0 else 0
 
     if verbose:
-        print("npu_dse SRAM sweep — resident knees (R≥1 / R≥L/2 / R≥L)")
+        print("accel_dse SRAM sweep — resident knees (R≥1 / R≥L/2 / R≥L)")
         print(
             f"SKU={sku.name} shape={shape.name} "
             f"W={shape.weight_bits}b KV={shape.kv_bits}b "
@@ -713,7 +713,7 @@ def run_quant_sweep(
     results: list[InferenceResult] = []
 
     if verbose:
-        print("npu_dse quant sweep — weight-only vs full quant (bytes-only)")
+        print("accel_dse quant sweep — weight-only vs full quant (bytes-only)")
         print(
             f"SKU={sku.name} base_shape={shape.name} "
             f"SRAM={DEFAULT_SRAM.capacity_bytes/2**20:.0f}MiB "
@@ -827,7 +827,7 @@ def run_batch_sweep(
     results: list[InferenceResult] = []
 
     if verbose:
-        print("npu_dse batch sweep — OS util vs M=batch @ decode")
+        print("accel_dse batch sweep — OS util vs M=batch @ decode")
         print(
             f"SKU={sku.name} shape={shape.name} "
             f"ctx={base.decode_seq_len} "
@@ -947,7 +947,7 @@ def run_moe_sweep(
     results: list = []
 
     if verbose:
-        print("npu_dse MoE sweep — active W stream vs dense 27B (+ optional EP)")
+        print("accel_dse MoE sweep — active W stream vs dense 27B (+ optional EP)")
         print(
             f"SKU={sku.name} ctx={ecfg.decode_seq_len} "
             f"SRAM={DEFAULT_SRAM.capacity_bytes/2**20:.0f}MiB ep_list={ep_list}"
@@ -1127,7 +1127,7 @@ def run_tp_sweep(
     results: list[ScaleupResult] = []
 
     if verbose:
-        print("npu_dse TP / scale-up sweep (assumed C2C BW; kv_fabric=none)")
+        print("accel_dse TP / scale-up sweep (assumed C2C BW; kv_fabric=none)")
         print(
             f"shape={shape.name} SKU={sku.name} "
             f"prompt={ecfg.prompt_len} ctx={ecfg.decode_seq_len} "
@@ -1262,7 +1262,7 @@ def run_kv_fabric_sweep(
     results: list[ScaleupResult] = []
 
     if verbose:
-        print("npu_dse KV fabric sweep — IB/RoCE assumed BW+latency (analytical MVP)")
+        print("accel_dse KV fabric sweep — IB/RoCE assumed BW+latency (analytical MVP)")
         print(
             f"shape={shape.name} SKU={sku.name} tp={tp} "
             f"remote_kv_frac={remote_kv_frac} pd_kv_xfer={pd_kv_xfer} "
@@ -1422,7 +1422,7 @@ def run_parallel_sweep(
     results: list[ScaleupResult] = []
 
     if verbose:
-        print("npu_dse parallel sweep — TP × PP (assumed C2C; bubble model crude)")
+        print("accel_dse parallel sweep — TP × PP (assumed C2C; bubble model crude)")
         print(
             f"shape={shape.name} SKU={sku.name} "
             f"prompt={ecfg.prompt_len} ctx={ecfg.decode_seq_len} "
@@ -1595,7 +1595,7 @@ def run_mla_sweep(
     results: list = []
 
     if verbose:
-        print("npu_dse MLA sweep — compressed KV vs GQA 27B @ long ctx")
+        print("accel_dse MLA sweep — compressed KV vs GQA 27B @ long ctx")
         print(
             f"SKU={sku.name} fabric={fabric_preset} "
             f"remote_kv_frac={remote_kv_frac}"
@@ -1713,7 +1713,7 @@ def export_csv_bundle(
         return path
 
     if verbose:
-        print(f"npu_dse export-csv → {out}")
+        print(f"accel_dse export-csv → {out}")
 
     # sku
     rows = []
@@ -1978,7 +1978,7 @@ def run_video_sweep(
     results = []
     if verbose:
         print(
-            f"npu_dse sweep-video (assumed/uncalibrated)  "
+            f"accel_dse sweep-video (assumed/uncalibrated)  "
             f"sku={sku.name}  shape={shape.name}  "
             f"T={shape.n_tokens} F={shape.n_frames}"
         )
@@ -2038,7 +2038,7 @@ def run_protein_sweep(
     results = []
     if verbose:
         print(
-            f"npu_dse sweep-protein (assumed/uncalibrated)  "
+            f"accel_dse sweep-protein (assumed/uncalibrated)  "
             f"sku={sku.name}  shape={shape.name}  "
             f"pair_dim={shape.pair_dim} layers={shape.n_layers}"
         )
@@ -2214,7 +2214,7 @@ def run_compare_domains(
 
     if verbose:
         print(
-            f"npu_dse compare-domains (assumed/uncalibrated)  "
+            f"accel_dse compare-domains (assumed/uncalibrated)  "
             f"sku={sku.name}  SRAM={sram.capacity_bytes/2**20:.0f}MiB  "
             f"fp16 ctx=512 batch=1"
         )

@@ -1,4 +1,4 @@
-"""Conservation / sanity tests for npu_dse."""
+"""Conservation / sanity tests for accel_dse."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pathlib import Path
 # Allow running without install
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from npu_dse.evaluate import EvalConfig, evaluate_inference
-from npu_dse.memory import (
+from accel_dse.evaluate import EvalConfig, evaluate_inference
+from accel_dse.memory import (
     HANDCHECK_MEM,
     HBM_PRESET,
     LPDDR_PRESET,
@@ -18,22 +18,22 @@ from npu_dse.memory import (
     SRAMPartitions,
     derive_sram_partitions,
 )
-from npu_dse.model_shape import ILLUSTRATIVE_27B, ILLUSTRATIVE_MOE, TOY_SHAPE
-from npu_dse.npu import NPUConfig, gemm_cycles, gemm_flops, gemm_macs, gemm_utilization
-from npu_dse.scan import find_mem_bound_crossover
-from npu_dse.sku import SKU_100T, SKU_1P, SKU_BASELINE, macs_needed_for_tops
-from npu_dse.traffic import contend, decode_traffic, prefill_traffic, weight_dram_bytes_for_layer
+from accel_dse.model_shape import ILLUSTRATIVE_27B, ILLUSTRATIVE_MOE, TOY_SHAPE
+from accel_dse.npu import NPUConfig, gemm_cycles, gemm_flops, gemm_macs, gemm_utilization
+from accel_dse.scan import find_mem_bound_crossover
+from accel_dse.sku import SKU_100T, SKU_1P, SKU_BASELINE, macs_needed_for_tops
+from accel_dse.traffic import contend, decode_traffic, prefill_traffic, weight_dram_bytes_for_layer
 
 
 # v0.28: version checks read the package version (no per-release test edits).
 def _pkg_version() -> str:
-    import npu_dse
+    import accel_dse
 
-    return npu_dse.__version__
+    return accel_dse.__version__
 
 
 def _assert_version(v: str) -> None:
-    """``v`` must equal ``npu_dse.__version__`` and agree with pyproject.toml."""
+    """``v`` must equal ``accel_dse.__version__`` and agree with pyproject.toml."""
     import re as _re
 
     exp = _pkg_version()
@@ -268,7 +268,7 @@ def test_mem_bound_crossover_synthetic():
 
 def test_dtype_bytes_scaling():
     """Weight/KV DRAM bytes scale with bit width; FLOPs stay constant (bytes-only)."""
-    from npu_dse.dtype import DTYPE_FP16, DTYPE_FP8, DTYPE_INT4, DTYPE_INT8
+    from accel_dse.dtype import DTYPE_FP16, DTYPE_FP8, DTYPE_INT4, DTYPE_INT8
 
     npu = SKU_100T.npu()
     sram = SRAMConfig(64 * 1024 * 1024)
@@ -325,7 +325,7 @@ def test_dtype_bytes_scaling():
 
 def test_ctx_monotonic_kv_bytes():
     """Longer decode ctx → non-decreasing KV DRAM bytes; no overflow/crash."""
-    from npu_dse.scan import DEFAULT_CTX_SWEEP, run_ctx_sweep
+    from accel_dse.scan import DEFAULT_CTX_SWEEP, run_ctx_sweep
 
     npu = SKU_100T.npu()
     sram = SRAMConfig(64 * 1024 * 1024)
@@ -365,7 +365,7 @@ def test_ctx_monotonic_kv_bytes():
 
 
 def test_dtype_sweep_runs():
-    from npu_dse.scan import run_dtype_sweep
+    from accel_dse.scan import run_dtype_sweep
 
     results = run_dtype_sweep(verbose=False, sku=SKU_100T)
     # 4 presets × 2 mems
@@ -490,7 +490,7 @@ def test_sram_resident_byte_knees_constructed():
 
 def test_sram_knee_illustrative_27b_resident():
     """illustrative_27B @ fp16: resident knees at R≥1 / R≥L/2 / R≥L drop W DRAM."""
-    from npu_dse.scan import run_sram_sweep
+    from accel_dse.scan import run_sram_sweep
 
     shape = ILLUSTRATIVE_27B
     w_layer = shape.weight_bytes_per_layer()
@@ -593,8 +593,8 @@ def test_weight_hide_double_buffer():
 
 def test_quant_independent_bits():
     """w4k16 shrinks weights only; KV stays 16-bit → long-ctx KV can overtake."""
-    from npu_dse.dtype import QUANT_W4K16, QUANT_W4K8, QUANT_W16K16, get_quant
-    from npu_dse.scan import run_quant_sweep
+    from accel_dse.dtype import QUANT_W4K16, QUANT_W4K8, QUANT_W16K16, get_quant
+    from accel_dse.scan import run_quant_sweep
 
     base = ILLUSTRATIVE_27B
     w4k16 = QUANT_W4K16.apply(base)
@@ -695,8 +695,8 @@ def test_moe_active_vs_total_and_traffic():
 
 def test_batch_util_increases_os_formula():
     """sweep-batch: mean GEMM util rises with batch (=M) under OS formula."""
-    from npu_dse.npu import gemm_utilization
-    from npu_dse.scan import run_batch_sweep
+    from accel_dse.npu import gemm_utilization
+    from accel_dse.scan import run_batch_sweep
 
     npu = SKU_100T.npu()
     # Pure OS: util(M) monotone in M for fixed K,N when N % effC == 0
@@ -731,7 +731,7 @@ def test_batch_util_increases_os_formula():
 
 
 def test_moe_sweep_runs():
-    from npu_dse.scan import run_moe_sweep
+    from accel_dse.scan import run_moe_sweep
 
     results = run_moe_sweep(verbose=False, sku=SKU_100T)
     # 2 shapes × 2 mems
@@ -750,7 +750,7 @@ def test_moe_sweep_runs():
 
 def test_tp1_matches_single_card():
     """tp=1: collectives=0; TPOT/TTFT match single-card within tolerance."""
-    from npu_dse.scaleup import TPConfig, evaluate_scaleup, C2C_400
+    from accel_dse.scaleup import TPConfig, evaluate_scaleup, C2C_400
 
     npu = SKU_100T.npu()
     sram = SRAMConfig(64 * 1024 * 1024)
@@ -773,7 +773,7 @@ def test_tp1_matches_single_card():
 
 def test_collective_bytes_tp_formula():
     """Collective bytes 0 at tp=1; ring formula; increases then per-rank volume."""
-    from npu_dse.scaleup import (
+    from accel_dse.scaleup import (
         TPConfig,
         activation_volume_bytes,
         collectives_bytes_per_phase,
@@ -830,14 +830,14 @@ def test_collective_bytes_tp_formula():
 
 def test_tp_oom_flag():
     """OOM when per-card weight+KV exceeds mem.capacity."""
-    from npu_dse.scaleup import (
+    from accel_dse.scaleup import (
         TPConfig,
         capacity_check,
         evaluate_scaleup,
         per_card_weight_bytes,
         C2C_400,
     )
-    from npu_dse.memory import ExternalMemory
+    from accel_dse.memory import ExternalMemory
 
     shape = ILLUSTRATIVE_27B
     # Tiny capacity → OOM even at tp=8
@@ -874,7 +874,7 @@ def test_tp_oom_flag():
 
 
 def test_tp_sweep_runs():
-    from npu_dse.scan import run_tp_sweep
+    from accel_dse.scan import run_tp_sweep
 
     results = run_tp_sweep(
         verbose=False,
@@ -897,7 +897,7 @@ def test_tp_sweep_runs():
 
 def test_kv_fabric_none_identical():
     """kv_fabric=none ⇒ same TPOT/TTFT as default TPConfig (no fabric)."""
-    from npu_dse.scaleup import TPConfig, evaluate_scaleup, C2C_400
+    from accel_dse.scaleup import TPConfig, evaluate_scaleup, C2C_400
 
     npu = SKU_100T.npu()
     sram = SRAMConfig(64 * 1024 * 1024)
@@ -926,7 +926,7 @@ def test_kv_fabric_none_identical():
 
 def test_kv_fabric_remote_time_ge_bytes_over_bw():
     """remote_kv_frac=1 ⇒ fabric time ≥ bytes/BW; latency adds."""
-    from npu_dse.scaleup import (
+    from accel_dse.scaleup import (
         TPConfig,
         evaluate_scaleup,
         C2C_400,
@@ -968,7 +968,7 @@ def test_kv_fabric_remote_time_ge_bytes_over_bw():
 
 
 def test_kv_fabric_sweep_runs():
-    from npu_dse.scan import run_kv_fabric_sweep
+    from accel_dse.scan import run_kv_fabric_sweep
 
     results = run_kv_fabric_sweep(
         verbose=False,
@@ -989,7 +989,7 @@ def test_kv_fabric_sweep_runs():
 
 def test_pp1_tp1_matches_single_card():
     """tp=1, pp=1 matches single-card (and tp=1 only path)."""
-    from npu_dse.scaleup import TPConfig, evaluate_scaleup, C2C_400
+    from accel_dse.scaleup import TPConfig, evaluate_scaleup, C2C_400
 
     npu = SKU_100T.npu()
     sram = SRAMConfig(64 * 1024 * 1024)
@@ -1014,7 +1014,7 @@ def test_pp1_tp1_matches_single_card():
 
 def test_pp_bubble_and_activation_bytes():
     """Decode mb=1 bubble=(pp-1)/pp; act sends=(pp-1)*volume; wall inflated."""
-    from npu_dse.scaleup import (
+    from accel_dse.scaleup import (
         TPConfig,
         activation_volume_bytes,
         evaluate_scaleup,
@@ -1059,7 +1059,7 @@ def test_pp_bubble_and_activation_bytes():
 
 
 def test_parallel_sweep_runs():
-    from npu_dse.scan import run_parallel_sweep
+    from accel_dse.scan import run_parallel_sweep
 
     results = run_parallel_sweep(
         verbose=False,
@@ -1084,7 +1084,7 @@ def test_parallel_sweep_runs():
 
 def test_moe_alltoall_formula():
     """Megatron-MoE style: 2*(ep-1)/ep * V * (top_k / E_local_adjust)."""
-    from npu_dse.scaleup import activation_volume_bytes, moe_alltoall_bytes
+    from accel_dse.scaleup import activation_volume_bytes, moe_alltoall_bytes
 
     shape = ILLUSTRATIVE_MOE
     B, S = 2, 8
@@ -1114,7 +1114,7 @@ def test_moe_alltoall_formula():
 
 def test_ep_shards_experts_and_active_stream():
     """EP: E/ep stored; active stream top_k/ep FFN; cards=tp*pp*ep."""
-    from npu_dse.scaleup import (
+    from accel_dse.scaleup import (
         C2C_400,
         TPConfig,
         evaluate_scaleup,
@@ -1158,8 +1158,8 @@ def test_ep_shards_experts_and_active_stream():
 
 
 def test_moe_sweep_with_ep():
-    from npu_dse.scan import run_moe_sweep
-    from npu_dse.scaleup import ScaleupResult
+    from accel_dse.scan import run_moe_sweep
+    from accel_dse.scaleup import ScaleupResult
 
     results = run_moe_sweep(verbose=False, sku=SKU_100T, ep_list=[1, 2, 4])
     # 4 single-card InferenceResult + 3 ep × 2 mem ScaleupResult = 4+6=10
@@ -1171,9 +1171,9 @@ def test_moe_sweep_with_ep():
 
 def test_mla_kv_smaller_than_gqa():
     """illustrative_mla kv_lora_rank → much smaller KV than GQA 27B."""
-    from npu_dse.model_shape import ILLUSTRATIVE_MLA
-    from npu_dse.scan import run_mla_sweep
-    from npu_dse.scaleup import ScaleupResult
+    from accel_dse.model_shape import ILLUSTRATIVE_MLA
+    from accel_dse.scan import run_mla_sweep
+    from accel_dse.scaleup import ScaleupResult
 
     mla = ILLUSTRATIVE_MLA
     gqa = ILLUSTRATIVE_27B
@@ -1212,7 +1212,7 @@ def test_mla_kv_smaller_than_gqa():
 
 def test_export_csv_bundle():
     from pathlib import Path
-    from npu_dse.scan import export_csv_bundle
+    from accel_dse.scan import export_csv_bundle
 
     out = Path(__file__).resolve().parents[1] / "out"
     paths = export_csv_bundle(out, verbose=False)
@@ -1240,7 +1240,7 @@ def test_export_csv_bundle():
 
 
 def test_video_shape_params_and_tokens():
-    from npu_dse.workloads import ILLUSTRATIVE_DIT_VIDEO, TOY_VIDEO
+    from accel_dse.workloads import ILLUSTRATIVE_DIT_VIDEO, TOY_VIDEO
 
     v = ILLUSTRATIVE_DIT_VIDEO
     assert v.n_tokens == 16 * (32 // 2) * (32 // 2) == 4096
@@ -1252,8 +1252,8 @@ def test_video_shape_params_and_tokens():
 
 
 def test_video_time_scales_with_ndenose():
-    from npu_dse.workloads import ILLUSTRATIVE_DIT_VIDEO, evaluate_video
-    from npu_dse.memory import DEFAULT_SRAM
+    from accel_dse.workloads import ILLUSTRATIVE_DIT_VIDEO, evaluate_video
+    from accel_dse.memory import DEFAULT_SRAM
 
     npu = SKU_100T.npu()
     cfg = EvalConfig(frequency_hz=SKU_100T.frequency_hz)
@@ -1271,8 +1271,8 @@ def test_video_time_scales_with_ndenose():
 
 
 def test_protein_pair_bytes_scale_l2():
-    from npu_dse.workloads import ILLUSTRATIVE_PROTEIN_PAIR, evaluate_protein
-    from npu_dse.memory import DEFAULT_SRAM
+    from accel_dse.workloads import ILLUSTRATIVE_PROTEIN_PAIR, evaluate_protein
+    from accel_dse.memory import DEFAULT_SRAM
 
     base = ILLUSTRATIVE_PROTEIN_PAIR
     b512 = base.with_seq_len(512).pair_activation_bytes()
@@ -1293,8 +1293,8 @@ def test_protein_pair_bytes_scale_l2():
 
 
 def test_protein_oom_flag():
-    from npu_dse.workloads import ILLUSTRATIVE_PROTEIN_PAIR, evaluate_protein
-    from npu_dse.memory import DEFAULT_SRAM
+    from accel_dse.workloads import ILLUSTRATIVE_PROTEIN_PAIR, evaluate_protein
+    from accel_dse.memory import DEFAULT_SRAM
 
     npu = SKU_100T.npu()
     cfg = EvalConfig(frequency_hz=SKU_100T.frequency_hz)
@@ -1309,7 +1309,7 @@ def test_protein_oom_flag():
 
 
 def test_video_protein_sweeps_run():
-    from npu_dse.scan import run_video_sweep, run_protein_sweep
+    from accel_dse.scan import run_video_sweep, run_protein_sweep
 
     vr = run_video_sweep(verbose=False, denoise_list=[20, 50])
     assert len(vr) == 4  # 2 denoise × 2 mem
@@ -1320,7 +1320,7 @@ def test_video_protein_sweeps_run():
 
 
 def test_list_shapes_includes_domains():
-    from npu_dse.workloads import list_shapes
+    from accel_dse.workloads import list_shapes
 
     rows = list_shapes()
     domains = {d for d, _, _ in rows}
@@ -1343,7 +1343,7 @@ def test_llm_handcheck_path_unchanged_v010():
 
 
 def test_compare_domains_rows_and_dominant_cost():
-    from npu_dse.scan import run_compare_domains, DOMINANT_COST_VALUES
+    from accel_dse.scan import run_compare_domains, DOMINANT_COST_VALUES
 
     rows = run_compare_domains(verbose=False)
     # 4 metrics × 2 mem
@@ -1373,7 +1373,7 @@ def test_compare_domains_rows_and_dominant_cost():
 def test_compare_domains_csv_export():
     import tempfile
     from pathlib import Path as P
-    from npu_dse.scan import export_compare_domains_csv
+    from accel_dse.scan import export_compare_domains_csv
 
     with tempfile.TemporaryDirectory() as td:
         written = export_compare_domains_csv(td, verbose=False)
@@ -1391,12 +1391,12 @@ def test_compare_domains_csv_export():
 
 
 def test_large_dit_slower_than_dit_video():
-    from npu_dse.workloads import (
+    from accel_dse.workloads import (
         ILLUSTRATIVE_DIT_VIDEO,
         ILLUSTRATIVE_LARGE_DIT,
         evaluate_video,
     )
-    from npu_dse.memory import DEFAULT_SRAM
+    from accel_dse.memory import DEFAULT_SRAM
 
     npu = SKU_100T.npu()
     cfg = EvalConfig(frequency_hz=SKU_100T.frequency_hz)
@@ -1419,8 +1419,8 @@ def test_large_dit_slower_than_dit_video():
 
 
 def test_sweep_video_shape_large():
-    from npu_dse.scan import run_video_sweep
-    from npu_dse.workloads import ILLUSTRATIVE_LARGE_DIT
+    from accel_dse.scan import run_video_sweep
+    from accel_dse.workloads import ILLUSTRATIVE_LARGE_DIT
 
     vr = run_video_sweep(
         verbose=False,
@@ -1444,7 +1444,7 @@ def test_llm_handcheck_path_unchanged_v011():
 
 def test_workbench_chips1_matches_single_card():
     """chips=1 MetricsCard matches prior single-card evaluate within tolerance."""
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench, single_card_reference
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench, single_card_reference
 
     card, raw = single_card_reference(
         "illustrative_27B",
@@ -1474,7 +1474,7 @@ def test_workbench_chips1_matches_single_card():
 
 
 def test_geometry_bw_formula():
-    from npu_dse.memory import (
+    from accel_dse.memory import (
         HBM_PRESET,
         MemGeometry,
         memory_from_geometry,
@@ -1517,8 +1517,8 @@ def test_geometry_bw_formula():
 
 
 def test_cores_tops_per_core_peak():
-    from npu_dse.npu import cores_from_npu, npu_from_cores
-    from npu_dse.sku import SKU_100T
+    from accel_dse.npu import cores_from_npu, npu_from_cores
+    from accel_dse.sku import SKU_100T
 
     npu = npu_from_cores(16, 6.25, frequency_hz=1e9)
     # Near-square → 56x56×16 like sku_100t
@@ -1534,14 +1534,14 @@ def test_cores_tops_per_core_peak():
 
 
 def test_series_registry_lists():
-    from npu_dse.series import (
+    from accel_dse.series import (
         ILLUSTRATIVE_SERIES_IDS,
         PRODUCT_SERIES_IDS,
         get_series,
         list_series,
         resolve_llm_shape,
     )
-    from npu_dse.model_shape import ILLUSTRATIVE_27B, ILLUSTRATIVE_MOE, ILLUSTRATIVE_MLA
+    from accel_dse.model_shape import ILLUSTRATIVE_27B, ILLUSTRATIVE_MOE, ILLUSTRATIVE_MLA
 
     product = list_series(product_only=True)
     ids = [e.id for e in product]
@@ -1567,7 +1567,7 @@ def test_series_registry_lists():
 
 
 def test_workbench_scan_runs():
-    from npu_dse.workbench import (
+    from accel_dse.workbench import (
         export_scan_csv,
         format_scan_table,
         workbench_scan,
@@ -1597,7 +1597,7 @@ def test_workbench_scan_runs():
 
 
 def test_workbench_parallel_product_constraint():
-    from npu_dse.workbench import ParallelOverride, WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import ParallelOverride, WorkbenchConfig, evaluate_workbench
 
     # Explicit tp*pp*ep must equal chips
     cfg = WorkbenchConfig(
@@ -1633,7 +1633,7 @@ def test_llm_handcheck_path_unchanged_v012():
 
 
 def test_enumerate_parallel_combos_pow2():
-    from npu_dse.workbench import enumerate_parallel_combos
+    from accel_dse.workbench import enumerate_parallel_combos
 
     combos = enumerate_parallel_combos(8)
     assert (8, 1, 1) in combos
@@ -1648,7 +1648,7 @@ def test_enumerate_parallel_combos_pow2():
 
 
 def test_workbench_parallel_matrix_dense_and_moe():
-    from npu_dse.workbench import (
+    from accel_dse.workbench import (
         format_parallel_table,
         workbench_parallel_matrix,
         export_scan_csv,
@@ -1694,7 +1694,7 @@ def test_workbench_parallel_matrix_dense_and_moe():
 
 
 def test_workbench_mem_sweep_wall_flip():
-    from npu_dse.workbench import format_mem_sweep_table, workbench_mem_sweep
+    from accel_dse.workbench import format_mem_sweep_table, workbench_mem_sweep
 
     # LPDDR + low channel count → memory wall; boost channels/rate may flip
     cards = workbench_mem_sweep(
@@ -1734,7 +1734,7 @@ def test_metrics_card_json_md_export():
     import tempfile
     from pathlib import Path
 
-    from npu_dse.workbench import (
+    from accel_dse.workbench import (
         WorkbenchConfig,
         evaluate_workbench,
         export_metrics_card_json,
@@ -1762,7 +1762,7 @@ def test_metrics_card_json_md_export():
 
 
 def test_series_video_protein_aliases():
-    from npu_dse.series import get_series, list_series
+    from accel_dse.series import get_series, list_series
 
     for alias, domain in (
         ("series/video", "video"),
@@ -1794,8 +1794,8 @@ def test_report_html_exists_and_contains_metrics_wall():
     import tempfile
     from pathlib import Path
 
-    from npu_dse.report import collect_report_data, render_html, write_report
-    from npu_dse import __version__
+    from accel_dse.report import collect_report_data, render_html, write_report
+    from accel_dse import __version__
 
     _assert_version(__version__)
     with tempfile.TemporaryDirectory() as td:
@@ -1823,7 +1823,7 @@ def test_report_html_exists_and_contains_metrics_wall():
 
 
 def test_report_cli_subcommand():
-    from npu_dse.cli import main
+    from accel_dse.cli import main
     import tempfile
     from pathlib import Path
 
@@ -1843,9 +1843,9 @@ def test_llm_handcheck_path_unchanged_v014():
 
 def test_hf_series_key_dims():
     """v0.15: real public HF dims for user-named packs."""
-    from npu_dse.series import get_series
-    from npu_dse.model_shape import ModelShape
-    from npu_dse.workloads import VideoShape
+    from accel_dse.series import get_series
+    from accel_dse.model_shape import ModelShape
+    from accel_dse.workloads import VideoShape
 
     glm = get_series("glm-5.3")
     assert isinstance(glm.shape, ModelShape)
@@ -1885,7 +1885,7 @@ def test_hf_series_key_dims():
 
 
 def test_hf_series_no_gated_in_registry():
-    from npu_dse.series import SERIES_REGISTRY, list_series
+    from accel_dse.series import SERIES_REGISTRY, list_series
     blob = " ".join(SERIES_REGISTRY.keys()).lower()
     assert "llama-4-scout" not in blob
     assert "llama-4-maverick" not in blob
@@ -1905,7 +1905,7 @@ def test_package_catalog_membership_and_bw_monotonicity():
     old (lpddr6_20x24_14400 / hbm_hbm3_8s as catalog keys), HBM rates were
     not tied to generation and HBM capacities were invented.
     """
-    from npu_dse.package_ranges import (
+    from accel_dse.package_ranges import (
         CLUSTER_TOPS_GRID,
         CORE_TOPS_GRID,
         HBM_GEN_LABELS,
@@ -1979,7 +1979,7 @@ def test_package_catalog_membership_and_bw_monotonicity():
         assert [p.n_stacks for p in rows] == [2, 4, 6, 8]
         for a_, b_ in zip(rows, rows[1:]):
             assert b_.peak_bandwidth_GBps() > a_.peak_bandwidth_GBps()
-    from npu_dse.mem_catalog import HBM_CATALOG
+    from accel_dse.mem_catalog import HBM_CATALOG
 
     for p in list_packages(kind="HBM"):
         assert p.mem_spec.rate_MTps in HBM_CATALOG[p.generation]["rates"], p.id
@@ -1994,11 +1994,11 @@ def test_package_catalog_membership_and_bw_monotonicity():
 
 def test_compute_catalog_and_sweep():
     """v0.16: core/cluster grids + workbench compute sweep."""
-    from npu_dse.package_ranges import (
+    from accel_dse.package_ranges import (
         get_compute,
         list_compute_primaries,
     )
-    from npu_dse.workbench import (
+    from accel_dse.workbench import (
         format_compute_sweep_table,
         workbench_compute_sweep,
     )
@@ -2045,8 +2045,8 @@ def test_compute_catalog_and_sweep():
 
 def test_package_sweep_and_cli_list():
     """v0.16: package sweep + list-packages / list-compute CLI."""
-    from npu_dse.cli import main
-    from npu_dse.workbench import (
+    from accel_dse.cli import main
+    from accel_dse.workbench import (
         format_package_sweep_table,
         workbench_package_sweep,
     )
@@ -2106,8 +2106,8 @@ def test_llm_handcheck_path_unchanged_v016():
 
 def test_serve_module_import_and_api_smoke():
     """v0.18: serve module imports; API eval returns MetricsCard for glm-5.3 / illustrative."""
-    from npu_dse import __version__
-    from npu_dse.serve import (
+    from accel_dse import __version__
+    from accel_dse.serve import (
         HONESTY_BANNER,
         WEB_DIR,
         api_compute,
@@ -2169,7 +2169,7 @@ def test_serve_module_import_and_api_smoke():
 
 def test_serve_api_eval_manual_geometry_and_parallel():
     """v0.18: manual mem geometry + explicit parallel product check."""
-    from npu_dse.serve import api_eval
+    from accel_dse.serve import api_eval
 
     card = api_eval(
         {
@@ -2217,8 +2217,8 @@ def test_serve_cli_help_and_handler_stdlib_bind():
     import urllib.request
     from http.server import ThreadingHTTPServer
 
-    from npu_dse.cli import main
-    from npu_dse.serve import WorkbenchHandler
+    from accel_dse.cli import main
+    from accel_dse.serve import WorkbenchHandler
 
     # --help raises SystemExit(0)
     try:
@@ -2239,7 +2239,7 @@ def test_serve_cli_help_and_handler_stdlib_bind():
         assert health["ok"] is True
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as r:
             html = r.read().decode()
-        assert "MetricsCard" in html and "npu_dse" in html
+        assert "MetricsCard" in html and "accel_dse" in html
         # POST eval
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/eval",
@@ -2269,7 +2269,7 @@ def test_llm_handcheck_path_unchanged_v017():
 
 def test_api_eval_video_minimax_and_illustrative():
     """v0.18: POST /api/eval video → TTFC / frames/s / wall / capacity."""
-    from npu_dse.serve import api_eval, api_series
+    from accel_dse.serve import api_eval, api_series
 
     series = api_series(domain="video")
     ids = {s["id"] for s in series["series"]}
@@ -2310,7 +2310,7 @@ def test_api_eval_video_minimax_and_illustrative():
 
 def test_api_eval_protein_esmfold_and_illustrative():
     """v0.18: POST /api/eval protein → time/seq + pair memory flags."""
-    from npu_dse.serve import api_eval, api_series
+    from accel_dse.serve import api_eval, api_series
 
     series = api_series(domain="protein")
     ids = {s["id"] for s in series["series"]}
@@ -2347,7 +2347,7 @@ def test_api_eval_protein_esmfold_and_illustrative():
 
 def test_workbench_video_protein_direct():
     """v0.18: evaluate_workbench dispatches video/protein without NotImplementedError."""
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     v = evaluate_workbench(
         WorkbenchConfig(
@@ -2386,7 +2386,7 @@ def test_llm_handcheck_path_unchanged_v018():
 
 def test_video_protein_multicard_tp_scales():
     """v0.19: chip_count>1 scales video TTFC / protein t/seq + adds collectives."""
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     v1 = evaluate_workbench(
         WorkbenchConfig(
@@ -2440,7 +2440,7 @@ def test_video_protein_multicard_tp_scales():
 
 def test_api_eval_video_protein_chip_count():
     """v0.19: /api/eval video+protein with chip_count>1 returns scaled metrics."""
-    from npu_dse.serve import api_eval
+    from accel_dse.serve import api_eval
 
     v = api_eval(
         {
@@ -2478,7 +2478,7 @@ def test_llm_handcheck_path_unchanged_v019():
 
 def test_video_protein_pp_ep_communication():
     """v0.20: chip_count=8 with tp=4,pp=2,ep=1 vs tp=8; bubble/c2c fields present."""
-    from npu_dse.workbench import WorkbenchConfig, ParallelOverride, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, ParallelOverride, evaluate_workbench
 
     base = dict(n_cores=16, tops_per_core=6.25, c2c_gbps=400.0)
 
@@ -2554,7 +2554,7 @@ def test_video_protein_pp_ep_communication():
 
 def test_api_eval_video_pp_ep():
     """v0.20: /api/eval accepts tp/pp/ep for video/protein."""
-    from npu_dse.serve import api_eval
+    from accel_dse.serve import api_eval
 
     v = api_eval(
         {
@@ -2595,7 +2595,7 @@ def test_api_eval_video_pp_ep():
 
 def test_domain_collective_ring_vs_tree():
     """Ring vs tree collective byte formulas differ for tp>2."""
-    from npu_dse.scaleup import ring_allreduce_bytes, tree_allreduce_bytes
+    from accel_dse.scaleup import ring_allreduce_bytes, tree_allreduce_bytes
 
     V = 1_000_000
     assert ring_allreduce_bytes(V, 1) == 0
@@ -2619,7 +2619,7 @@ def test_llm_handcheck_path_unchanged_v020():
 
 def test_api_sweep_chips_and_cap():
     """v0.21: POST /api/sweep chips axis returns MetricsCards; cap ≤32."""
-    from npu_dse.serve import SWEEP_MAX_ROWS, api_sweep
+    from accel_dse.serve import SWEEP_MAX_ROWS, api_sweep
 
     assert SWEEP_MAX_ROWS == 32
     out = api_sweep(
@@ -2664,7 +2664,7 @@ def test_api_sweep_chips_and_cap():
 
 def test_api_sweep_package_compute_parallel_series():
     """v0.21: package / compute / parallel / series axes."""
-    from npu_dse.serve import api_sweep
+    from accel_dse.serve import api_sweep
 
     pkg = api_sweep(
         {
@@ -2730,7 +2730,7 @@ def test_api_sweep_package_compute_parallel_series():
 
 def test_api_sweep_video_protein_metric_keys():
     """v0.21: sweep metric_key follows domain (TTFC / time_per_seq)."""
-    from npu_dse.serve import api_sweep
+    from accel_dse.serve import api_sweep
 
     v = api_sweep(
         {
@@ -2771,7 +2771,7 @@ def test_api_sweep_invalid_axis_and_http():
     import urllib.request
     from http.server import ThreadingHTTPServer
 
-    from npu_dse.serve import WEB_DIR, WorkbenchHandler, api_sweep
+    from accel_dse.serve import WEB_DIR, WorkbenchHandler, api_sweep
 
     raised = False
     try:
@@ -2838,7 +2838,7 @@ def test_llm_handcheck_path_unchanged_v021():
 
 def test_sweep_export_helpers_csv_json_and_delta():
     """v0.22: sweep_result_to_csv / to_json + delta_pct_vs_baseline."""
-    from npu_dse.serve import (
+    from accel_dse.serve import (
         api_sweep,
         delta_pct_vs_baseline,
         sweep_result_to_csv,
@@ -2884,8 +2884,8 @@ def test_sweep_export_helpers_csv_json_and_delta():
 
 def test_ui_export_baseline_deeplink_markers():
     """v0.22: UI assets expose export buttons, pin baseline, ?c= deep-link."""
-    from npu_dse.serve import WEB_DIR
-    from npu_dse import __version__
+    from accel_dse.serve import WEB_DIR
+    from accel_dse import __version__
 
     _assert_version(__version__)
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
@@ -2920,8 +2920,8 @@ def test_calibration_overrides_load_and_apply():
     """v0.23: CalibrationOverrides JSON → WorkbenchConfig knobs."""
     from pathlib import Path
 
-    from npu_dse import __version__
-    from npu_dse.workbench import (
+    from accel_dse import __version__
+    from accel_dse.workbench import (
         CalibrationOverrides,
         WorkbenchConfig,
         evaluate_workbench,
@@ -2955,7 +2955,7 @@ def test_calibration_overrides_load_and_apply():
 
 def test_api_eval_accepts_calib_body():
     """v0.23: POST /api/eval body.calib and mem_efficiency alias."""
-    from npu_dse.serve import api_eval, _build_workbench_from_body
+    from accel_dse.serve import api_eval, _build_workbench_from_body
 
     out = api_eval(
         {
@@ -2990,7 +2990,7 @@ def test_cli_workbench_calib_flag():
     import tempfile
     from pathlib import Path
 
-    from npu_dse.cli import main
+    from accel_dse.cli import main
 
     example = Path(__file__).resolve().parents[1] / "examples" / "calibration.example.json"
     with tempfile.TemporaryDirectory() as td:
@@ -3015,8 +3015,8 @@ def test_cli_workbench_calib_flag():
 
 def test_ui_calib_override_dual_card_markers():
     """v0.23: UI exposes Assumed/override + dual A|B + freq; no CDN."""
-    from npu_dse import __version__
-    from npu_dse.serve import WEB_DIR
+    from accel_dse import __version__
+    from accel_dse.serve import WEB_DIR
 
     _assert_version(__version__)
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
@@ -3065,7 +3065,7 @@ def test_llm_handcheck_path_unchanged_v023():
 
 def test_econ_stub_off_by_default_v024():
     """No econ knobs → est_* fields zero, econ_configured False (no hidden watts)."""
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     for mid in ("illustrative_27B", "illustrative_dit_video", "illustrative_protein_pair"):
         c = evaluate_workbench(WorkbenchConfig(model_id=mid))
@@ -3078,8 +3078,8 @@ def test_econ_stub_off_by_default_v024():
 
 def test_econ_llm_energy_cost_math_v024():
     """LLM: P = chips × tdp × util; E/token = P × TPOT / B; cost; $/MTok parts."""
-    from npu_dse.econ import J_PER_KWH, SECONDS_PER_YEAR
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.econ import J_PER_KWH, SECONDS_PER_YEAR
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     cfg = WorkbenchConfig(
         model_id="illustrative_27B", chip_count=2, batch=4,
@@ -3107,7 +3107,7 @@ def test_econ_llm_energy_cost_math_v024():
 
 
 def test_econ_watts_per_tops_and_tdp_precedence_v024():
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     c = evaluate_workbench(WorkbenchConfig(model_id="illustrative_27B", watts_per_tops=2.0))
     assert abs(c.est_power_W - 2.0 * c.peak_tops) < 1e-9  # default util 1.0
@@ -3122,7 +3122,7 @@ def test_econ_watts_per_tops_and_tdp_precedence_v024():
 
 
 def test_econ_video_protein_energy_units_v024():
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     v = evaluate_workbench(
         WorkbenchConfig(model_id="illustrative_dit_video", tdp_w=100.0, batch=2, usd_per_kwh=0.1)
@@ -3146,7 +3146,7 @@ def test_econ_knobs_json_example_is_placeholder_v024():
     import json
     from pathlib import Path
 
-    from npu_dse.econ import EXAMPLE_JSON_PATH, EnergyCostKnobs, load_example_econ
+    from accel_dse.econ import EXAMPLE_JSON_PATH, EnergyCostKnobs, load_example_econ
 
     root = Path(__file__).resolve().parents[1]
     ex = root / "examples" / "energy_cost.example.json"
@@ -3159,13 +3159,13 @@ def test_econ_knobs_json_example_is_placeholder_v024():
     assert k.tdp_w == 400.0  # clearly-fake round example number
     assert "_note" not in k.to_dict()
     # engine code carries no baked wattage default
-    src = (root / "npu_dse" / "econ.py").read_text()
+    src = (root / "accel_dse" / "econ.py").read_text()
     assert "tdp_w: float | None = None" in src
 
 
 def test_scenario_presets_catalog_v024():
-    from npu_dse.package_ranges import get_compute, get_package
-    from npu_dse.scenarios import evaluate_presets, get_preset, list_presets
+    from accel_dse.package_ranges import get_compute, get_package
+    from accel_dse.scenarios import evaluate_presets, get_preset, list_presets
 
     ids = [p.id for p in list_presets()]
     for want in ("edge-lpddr-4x64", "card-hbm-4stack", "scaleup-8chip"):
@@ -3193,7 +3193,7 @@ def test_scenario_presets_catalog_v024():
 
 
 def test_api_presets_and_econ_body_v024():
-    from npu_dse.serve import api_eval, api_presets, api_sweep, sweep_result_to_csv
+    from accel_dse.serve import api_eval, api_presets, api_sweep, sweep_result_to_csv
 
     pr = api_presets()
     assert pr["count"] >= 3 and pr["econ_example"].get("tdp_w") == 400
@@ -3231,7 +3231,7 @@ def test_cli_econ_presets_v024(capsys=None):
     import tempfile
     from pathlib import Path
 
-    from npu_dse.cli import main
+    from accel_dse.cli import main
 
     root = Path(__file__).resolve().parents[1]
     ex = root / "examples" / "energy_cost.example.json"
@@ -3262,7 +3262,7 @@ def test_cli_econ_presets_v024(capsys=None):
 
 
 def test_ui_presets_econ_markers_v024():
-    from npu_dse.serve import WEB_DIR
+    from accel_dse.serve import WEB_DIR
 
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
     js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
@@ -3278,9 +3278,9 @@ def test_ui_presets_econ_markers_v024():
 
 
 def test_report_has_econ_section_v024():
-    from npu_dse.report import collect_report_data, render_html
+    from accel_dse.report import collect_report_data, render_html
 
-    from npu_dse.scenarios import list_presets
+    from accel_dse.scenarios import list_presets
 
     b = collect_report_data(chips_list=(1, 2))
     # v0.29: 3 domains × every preset (was hard-coded 9 = 3 × 3 presets; 0.29
@@ -3312,7 +3312,7 @@ def test_llm_handcheck_path_unchanged_v024():
 
 def test_scale_efficiency_chips1_is_one_v025():
     """chips=1 → scale_efficiency=1.0, speedup=1.0, note single-card."""
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     for mid in ("illustrative_27B", "illustrative_dit_video", "illustrative_protein_pair"):
         c = evaluate_workbench(WorkbenchConfig(model_id=mid, chip_count=1))
@@ -3332,7 +3332,7 @@ def test_scale_efficiency_chips1_is_one_v025():
 
 def test_scale_efficiency_perfect_tp_near_one_v025():
     """Default HBM + strong C2C TP scale-up stays near ideal efficiency."""
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     c1 = evaluate_workbench(WorkbenchConfig(model_id="illustrative_27B", chip_count=1))
     # v0.29: the ≤0.28 ">0.99" held only because collectives were pure-BW
@@ -3353,7 +3353,7 @@ def test_scale_efficiency_perfect_tp_near_one_v025():
 
 def test_scale_efficiency_comm_bound_chips8_lt_one_v025():
     """chips=8 efficiency < 1 when comm/bubble-bound (PP or weak C2C)."""
-    from npu_dse.workbench import ParallelOverride, WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import ParallelOverride, WorkbenchConfig, evaluate_workbench
 
     # PP=8 → bubble wall; speedup≈1 → eff≈1/8
     c_pp = evaluate_workbench(
@@ -3379,7 +3379,7 @@ def test_scale_efficiency_comm_bound_chips8_lt_one_v025():
 
 
 def test_scale_efficiency_video_protein_v025():
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     v = evaluate_workbench(WorkbenchConfig(model_id="illustrative_dit_video", chip_count=4))
     assert v.scale_metric == "TTFC"
@@ -3390,7 +3390,7 @@ def test_scale_efficiency_video_protein_v025():
 
 
 def test_api_sweep_csv_has_scale_efficiency_v025():
-    from npu_dse.serve import api_eval, api_sweep, sweep_result_to_csv
+    from accel_dse.serve import api_eval, api_sweep, sweep_result_to_csv
 
     out = api_eval({"model_id": "illustrative_27B", "chips": 4})
     assert "scale_efficiency" in out and out["scale_efficiency"] > 0.9
@@ -3403,7 +3403,7 @@ def test_api_sweep_csv_has_scale_efficiency_v025():
 
 
 def test_ui_scale_oom_markers_v025():
-    from npu_dse.serve import WEB_DIR
+    from accel_dse.serve import WEB_DIR
 
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
     js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
@@ -3416,7 +3416,7 @@ def test_ui_scale_oom_markers_v025():
 
 
 def test_report_has_scale_section_v025():
-    from npu_dse.report import collect_report_data, render_html
+    from accel_dse.report import collect_report_data, render_html
 
     b = collect_report_data(chips_list=(1, 2, 4, 8))
     assert b.chips_dense[0].scale_efficiency == 1.0
@@ -3428,7 +3428,7 @@ def test_report_has_scale_section_v025():
 
 
 def test_version_025():
-    from npu_dse import __version__
+    from accel_dse import __version__
 
     _assert_version(__version__)
 
@@ -3445,10 +3445,10 @@ def test_llm_handcheck_path_unchanged_v025():
 
 def test_non_gemm_overhead_default_off_bit_identical_v026():
     """Defaults (overhead=0, factor=1) must match bare EvalConfig path."""
-    from npu_dse.evaluate import EvalConfig, evaluate_inference, effective_compute_time_s
-    from npu_dse.memory import HANDCHECK_MEM, SRAMConfig
-    from npu_dse.model_shape import TOY_SHAPE
-    from npu_dse.npu import NPUConfig
+    from accel_dse.evaluate import EvalConfig, evaluate_inference, effective_compute_time_s
+    from accel_dse.memory import HANDCHECK_MEM, SRAMConfig
+    from accel_dse.model_shape import TOY_SHAPE
+    from accel_dse.npu import NPUConfig
 
     npu = NPUConfig(rows=4, cols=4, mac_efficiency=1.0)
     sram = SRAMConfig(128 * 1024)
@@ -3473,7 +3473,7 @@ def test_non_gemm_overhead_default_off_bit_identical_v026():
 
 
 def test_non_gemm_overhead_increases_latency_v026():
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     c0 = evaluate_workbench(WorkbenchConfig(model_id="illustrative_27B"))
     c1 = evaluate_workbench(
@@ -3487,7 +3487,7 @@ def test_non_gemm_overhead_increases_latency_v026():
 
 
 def test_finer_non_gemm_fracs_sum_v026():
-    from npu_dse.evaluate import EvalConfig, resolved_non_gemm_overhead
+    from accel_dse.evaluate import EvalConfig, resolved_non_gemm_overhead
 
     cfg = EvalConfig(non_gemm_overhead=0.9, softmax_frac=0.05, rope_frac=0.02, norm_frac=0.03)
     assert abs(resolved_non_gemm_overhead(cfg) - 0.10) < 1e-15
@@ -3496,7 +3496,7 @@ def test_finer_non_gemm_fracs_sum_v026():
 
 
 def test_dtype_mac_factor_peak_and_compute_v026():
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     base = evaluate_workbench(
         WorkbenchConfig(model_id="illustrative_27B", dtype="int4")
@@ -3516,7 +3516,7 @@ def test_dtype_mac_factor_peak_and_compute_v026():
 
 def test_dtype_mac_factor_may_flip_wall_v026():
     """int4 + large MAC factor can move balanced/compute toward memory wall."""
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     kw = dict(
         model_id="illustrative_27B",
@@ -3538,8 +3538,8 @@ def test_dtype_mac_factor_may_flip_wall_v026():
 
 
 def test_api_and_cli_assumed_compute_v026(capsys=None):
-    from npu_dse.cli import main
-    from npu_dse.serve import api_eval
+    from accel_dse.cli import main
+    from accel_dse.serve import api_eval
 
     out = api_eval(
         {
@@ -3580,7 +3580,7 @@ def test_api_and_cli_assumed_compute_v026(capsys=None):
 
 
 def test_ui_assumed_compute_markers_v026():
-    from npu_dse.serve import WEB_DIR
+    from accel_dse.serve import WEB_DIR
 
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
     js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
@@ -3593,7 +3593,7 @@ def test_ui_assumed_compute_markers_v026():
 
 
 def test_report_has_assumed_compute_section_v026():
-    from npu_dse.report import collect_report_data, render_html
+    from accel_dse.report import collect_report_data, render_html
 
     html = render_html(collect_report_data(chips_list=(1, 2)))
     assert 'id="assumed-compute"' in html
@@ -3602,7 +3602,7 @@ def test_report_has_assumed_compute_section_v026():
 
 
 def test_dtype_mac_resolve_helpers_v026():
-    from npu_dse.dtype import (
+    from accel_dse.dtype import (
         DEFAULT_DTYPE_MAC_FACTORS,
         dtype_mac_factors_active,
         resolve_dtype_mac_factor,
@@ -3618,7 +3618,7 @@ def test_dtype_mac_resolve_helpers_v026():
 
 
 def test_version_026():
-    from npu_dse import __version__
+    from accel_dse import __version__
 
     _assert_version(__version__)
 
@@ -3636,7 +3636,7 @@ def test_llm_handcheck_path_unchanged_v026():
 
 def test_mem_handcheck_lpddr6_4x96_10667_v029():
     """LPDDR6 4 × x96 @10667: bus 384 b, raw 512.0 GB/s, usable (8/9) 455.1."""
-    from npu_dse.mem_catalog import make_spec
+    from accel_dse.mem_catalog import make_spec
 
     s = make_spec("LPDDR6", count=4, rate=10667)
     assert s.unit_width_bits == 96 and s.bus_bits == 384 and s.form == "discrete"
@@ -3653,8 +3653,8 @@ def test_mem_handcheck_lpddr6_4x96_10667_v029():
 
 
 def test_mem_handcheck_hbm3e_8x12h_and_lpddr5x_v029():
-    from npu_dse.mem_catalog import make_spec
-    from npu_dse.memory import HBM_PRESET, LPDDR_PRESET
+    from accel_dse.mem_catalog import make_spec
+    from accel_dse.memory import HBM_PRESET, LPDDR_PRESET
 
     h = make_spec("HBM3E", count=8, height=12, die_Gb=24, rate=9200)
     assert h.capacity_GB == 288 and h.capacity_bytes == 288 * 2**30
@@ -3674,7 +3674,7 @@ def test_mem_handcheck_hbm3e_8x12h_and_lpddr5x_v029():
 
 
 def test_mem_provenance_weakest_tag_v029():
-    from npu_dse.mem_catalog import TAG_ORDER, TAG_ZH, make_spec, weakest
+    from accel_dse.mem_catalog import TAG_ORDER, TAG_ZH, make_spec, weakest
 
     assert TAG_ORDER[0] == "jedec" and TAG_ORDER[-1] == "speculative"
     assert weakest(["jedec", "vendor_sampling", "vendor_shipping"]) == "vendor_sampling"
@@ -3693,8 +3693,8 @@ def test_mem_provenance_weakest_tag_v029():
 
 def test_mem_legacy_ids_resolve_v029():
     """≤0.28 package ids in links / API / presets still resolve (+ note)."""
-    from npu_dse.mem_catalog import parse_mem_id
-    from npu_dse.serve import api_eval, api_memory
+    from accel_dse.mem_catalog import parse_mem_id
+    from accel_dse.serve import api_eval, api_memory
 
     s = parse_mem_id("lpddr_4x64_8533")
     assert s.id == "lpddr5x_4x64_8533_16g" and s.legacy_id == "lpddr_4x64_8533"
@@ -3717,7 +3717,7 @@ def test_mem_legacy_ids_resolve_v029():
 
 def test_sync_alpha_additive_and_zero_identity_v029():
     """Exposed sync: t_stage += n_coll × α × (1−overlap); α=0 → ≤0.28 numbers."""
-    from npu_dse.workbench import ParallelOverride, WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import ParallelOverride, WorkbenchConfig, evaluate_workbench
 
     m = "illustrative_27B"  # 40 layers, dense
     base = evaluate_workbench(WorkbenchConfig(model_id=m, chip_count=8, c2c_latency_us=0.0))
@@ -3756,7 +3756,7 @@ def test_sync_alpha_additive_and_zero_identity_v029():
 
 
 def test_sync_video_protein_multicard_v029():
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     for m in ("illustrative_dit_video", "illustrative_protein"):
         try:
@@ -3777,8 +3777,8 @@ def test_kv_sharding_gqa_replication_v029():
     """per-card KV = KV · ceil(n_kv/tp)/n_kv / pp (duplication when tp > n_kv)."""
     from dataclasses import replace
 
-    from npu_dse.model_shape import ILLUSTRATIVE_27B
-    from npu_dse.scaleup import kv_card_fraction, per_card_kv_bytes
+    from accel_dse.model_shape import ILLUSTRATIVE_27B
+    from accel_dse.scaleup import kv_card_fraction, per_card_kv_bytes
 
     full = ILLUSTRATIVE_27B.kv_cache_bytes(4096, 1)
     # n_kv=8: tp ≤ 8 is a clean shard (unchanged vs ≤0.28)
@@ -3794,9 +3794,9 @@ def test_kv_sharding_gqa_replication_v029():
 
 def test_kv_mla_replicated_and_attn_dp_v029():
     """MLA latent is replicated per TP rank; attn-DP partitions KV by batch."""
-    from npu_dse.memory import HBM_PRESET
-    from npu_dse.model_shape import ILLUSTRATIVE_MLA
-    from npu_dse.scaleup import (
+    from accel_dse.memory import HBM_PRESET
+    from accel_dse.model_shape import ILLUSTRATIVE_MLA
+    from accel_dse.scaleup import (
         TPConfig,
         capacity_check,
         per_card_kv_bytes,
@@ -3830,7 +3830,7 @@ def test_kv_mla_replicated_and_attn_dp_v029():
 
 
 def test_kv_fix_workbench_card_fields_v029():
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     t = evaluate_workbench(WorkbenchConfig(model_id="illustrative_mla", chip_count=8, batch=8))
     d = evaluate_workbench(
@@ -3843,8 +3843,8 @@ def test_kv_fix_workbench_card_fields_v029():
 
 
 def test_package_axis_sweep_structured_v029():
-    from npu_dse.serve import api_sweep
-    from npu_dse.workbench import WorkbenchConfig, workbench_package_sweep
+    from accel_dse.serve import api_sweep
+    from accel_dse.workbench import WorkbenchConfig, workbench_package_sweep
 
     r = api_sweep({"model_id": "illustrative_27B", "axis": "package",
                    "package_axis": "rate", "mem_type": "LPDDR6"})
@@ -3863,8 +3863,8 @@ def test_package_axis_sweep_structured_v029():
 
 def test_default_scenario_no_oom_v029():
     """Default workbench config and every preset fit for the default model."""
-    from npu_dse.scenarios import evaluate_presets
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.scenarios import evaluate_presets
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     assert not evaluate_workbench(WorkbenchConfig()).oom
     for _p, c in evaluate_presets("illustrative_27B"):
@@ -3872,7 +3872,7 @@ def test_default_scenario_no_oom_v029():
 
 
 def test_version_029():
-    from npu_dse import __version__
+    from accel_dse import __version__
 
     _assert_version(__version__)
     assert tuple(int(x) for x in __version__.split(".")[:2]) >= (0, 29)
@@ -3881,7 +3881,7 @@ def test_version_029():
 def test_ui_memory_selectors_v029():
     """v0.29 UI: structured memory selectors (type + popover), provenance badge,
     exposed-sync breakdown row and drawer knobs; catalog served by GET /api/memory."""
-    from npu_dse.serve import WEB_DIR, api_memory
+    from accel_dse.serve import WEB_DIR, api_memory
 
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
     js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
@@ -3922,7 +3922,7 @@ _HBM3E_8 = dict(mem_type="HBM3E", mem_count=8, hbm_height=12, hbm_die_Gb=24, mem
 
 
 def test_version_030():
-    from npu_dse import __version__
+    from accel_dse import __version__
 
     _assert_version(__version__)
     assert tuple(int(x) for x in __version__.split(".")[:2]) >= (0, 30)
@@ -3936,7 +3936,7 @@ def test_mla_param_count_deepseek_v3_v030():
     formula gave ≈ 704.6M). Plus 3 dense-prefix layers (first_k_dense_replace,
     18432 FFN) and an untied LM head. MTP (nextn) layer not counted.
     """
-    from npu_dse.series import resolve_llm_shape
+    from accel_dse.series import resolve_llm_shape
 
     s = resolve_llm_shape("deepseek-v3")
     assert s.attn_kind == "mla"
@@ -3953,7 +3953,7 @@ def test_mla_param_count_deepseek_v3_v030():
     # MLA KV per token per layer = kv_lora + qk_rope = 576 elements
     assert s.kv_bytes_per_token() == s.n_layers * 576 * s.kv_bits // 8
     # stored per card at tp=8 ≈ total/8 (bf16) — was 183.6 GB in 0.29
-    from npu_dse.scaleup import per_card_weight_bytes
+    from accel_dse.scaleup import per_card_weight_bytes
 
     w8 = per_card_weight_bytes(s, 8, "shard")
     assert 160e9 < w8 < 172e9, w8
@@ -3962,7 +3962,7 @@ def test_mla_param_count_deepseek_v3_v030():
 def test_mla_v4_lowrank_fallback_v030():
     """DeepSeek-V4 configs lack kv_lora_rank → 'lowrank' fallback (low-rank Q,
     K/V = H→n_kv·head_dim, grouped low-rank O); far below the 0.29 dense value."""
-    from npu_dse.series import resolve_llm_shape
+    from accel_dse.series import resolve_llm_shape
 
     s = resolve_llm_shape("deepseek-v4-flash")
     assert s.attn_kind == "lowrank"
@@ -3977,8 +3977,8 @@ def test_mla_v4_lowrank_fallback_v030():
 def test_capacity_units_gib_v030():
     """capacity_GB (API/CSV) = vendor GB (2^30 B), consistent with the UI and
     the memory catalog; decimal values in *_decimal."""
-    from npu_dse.serve import api_eval
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.serve import api_eval
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     c = evaluate_workbench(WorkbenchConfig(model_id="qwen3-32b", chip_count=8, **_HBM3E_8))
     assert c.capacity_GB == 288.0  # 8 × 12H × 24Gb / 8
@@ -3999,7 +3999,7 @@ def test_capacity_units_gib_v030():
 
 
 def test_sweep_short_labels_raw_id_v030():
-    from npu_dse.serve import api_sweep, sweep_result_to_csv
+    from accel_dse.serve import api_sweep, sweep_result_to_csv
 
     r = api_sweep({"model_id": "illustrative_27B", "chip_count": 1, "axis": "package",
                    "package_kind": "HBM", "max_rows": 4})
@@ -4017,7 +4017,7 @@ def test_sweep_short_labels_raw_id_v030():
 def test_legacy_lp6_bus_width_preserved_v030():
     """lpddr6_{n}x24 → x96 packages when n×24 % 96 == 0, else speculative x48
     (≡ x96s + one x48); bus width (→ bandwidth) and capacity per bit preserved."""
-    from npu_dse.mem_catalog import parse_mem_id
+    from accel_dse.mem_catalog import parse_mem_id
 
     for n in (4, 6, 8, 12, 16, 20):
         for r in (10667, 14400):
@@ -4033,8 +4033,8 @@ def test_legacy_lp6_bus_width_preserved_v030():
 
 
 def _pareto(**kw):
-    from npu_dse.pareto import pareto_analysis
-    from npu_dse.workbench import WorkbenchConfig
+    from accel_dse.pareto import pareto_analysis
+    from accel_dse.workbench import WorkbenchConfig
 
     slo = kw.pop("slo", None)
     layouts = kw.pop("layouts", "all")
@@ -4050,7 +4050,7 @@ def _pareto(**kw):
 def test_pareto_frontier_synthetic_v030():
     import random
 
-    from npu_dse.pareto import pareto_frontier
+    from accel_dse.pareto import pareto_frontier
 
     rnd = random.Random(7)
     for better in ("higher", "lower"):
@@ -4079,8 +4079,8 @@ def test_pareto_frontier_synthetic_v030():
 def test_pareto_real_monotone_and_capacity_v030():
     from dataclasses import replace
 
-    from npu_dse.pareto import batch_grid, llm_max_batch
-    from npu_dse.workbench import ParallelOverride, WorkbenchConfig, evaluate_workbench
+    from accel_dse.pareto import batch_grid, llm_max_batch
+    from accel_dse.workbench import ParallelOverride, WorkbenchConfig, evaluate_workbench
 
     r = _pareto()
     assert r["domain"] == "llm" and r["axes"]["x_key"] == "tok_s_user"
@@ -4136,7 +4136,7 @@ def test_goodput_binding_v030():
     # one more user in that layout breaks TPOT
     from dataclasses import replace
 
-    from npu_dse.workbench import ParallelOverride, WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import ParallelOverride, WorkbenchConfig, evaluate_workbench
 
     cfg = WorkbenchConfig(model_id="qwen3-32b", chip_count=8, **_HBM3E_8)
     nxt = evaluate_workbench(replace(cfg, batch=g["max_users"] + 1,
@@ -4161,8 +4161,8 @@ def test_goodput_binding_v030():
 
 
 def test_pareto_video_protein_and_api_v030():
-    from npu_dse.pareto import pareto_to_csv
-    from npu_dse.serve import api_pareto, pareto_result_to_csv
+    from accel_dse.pareto import pareto_to_csv
+    from accel_dse.serve import api_pareto, pareto_result_to_csv
 
     for mid, yk in (("cogvideox-2b", "frames_s_chip"), ("alphafold2", "seq_s_chip")):
         r = _pareto(model_id=mid, layouts="current")
@@ -4195,12 +4195,12 @@ def test_pareto_cli_and_http_v030():
     import urllib.request
     from http.server import ThreadingHTTPServer
 
-    from npu_dse.serve import WorkbenchHandler
+    from accel_dse.serve import WorkbenchHandler
 
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory() as td:
         out = subprocess.run(
-            [sys.executable, "-m", "npu_dse", "pareto", "--model", "qwen3-32b", "--chips", "4",
+            [sys.executable, "-m", "accel_dse", "pareto", "--model", "qwen3-32b", "--chips", "4",
              "--layouts", "current", "--csv", f"{td}/p.csv", "--json", f"{td}/p.json"],
             cwd=root, capture_output=True, text=True, timeout=120,
         )
@@ -4229,7 +4229,7 @@ def test_pareto_cli_and_http_v030():
 
 
 def test_ui_pareto_tab_and_mobile_sheet_v030():
-    web = Path(__file__).resolve().parents[1] / "npu_dse" / "web"
+    web = Path(__file__).resolve().parents[1] / "accel_dse" / "web"
     html = (web / "index.html").read_text(encoding="utf-8")
     js = (web / "app.js").read_text(encoding="utf-8")
     css = (web / "style.css").read_text(encoding="utf-8")
@@ -4255,14 +4255,14 @@ def test_ui_pareto_tab_and_mobile_sheet_v030():
 
 
 def test_version_031():
-    from npu_dse import __version__
+    from accel_dse import __version__
 
     _assert_version(__version__)
-    assert __version__ == "0.31.0"
+    assert tuple(int(x) for x in __version__.split(".")[:2]) >= (0, 31)
 
 
 def _ds():
-    from npu_dse.workbench import resolve_llm_shape
+    from accel_dse.workbench import resolve_llm_shape
 
     return resolve_llm_shape("deepseek-v3")
 
@@ -4270,7 +4270,7 @@ def _ds():
 def test_moe_tp_ep_capacity_handcheck_v031():
     """TP×EP: routed experts stored once across the 8 cards (E·P/8 per card) for
     both tp_ep and ep_all; shared / attention / dense-prefix TP-split by tp."""
-    from npu_dse.scaleup import moe_expert_degree, per_card_weight_bytes
+    from accel_dse.scaleup import moe_expert_degree, per_card_weight_bytes
 
     s = _ds()
     assert (s.n_experts, s.top_k, s.n_layers, s.n_dense_layers) == (256, 8, 61, 3)
@@ -4302,7 +4302,7 @@ def test_moe_tp_ep_capacity_handcheck_v031():
 
 
 def test_moe_kv_split_over_ep_and_a2a_v031():
-    from npu_dse.scaleup import attn_dp_degree, moe_a2a_bytes_per_rank, per_card_kv_bytes
+    from accel_dse.scaleup import attn_dp_degree, moe_a2a_bytes_per_rank, per_card_kv_bytes
 
     s = _ds()
     kv = s.kv_cache_bytes(4096, 64)
@@ -4323,7 +4323,7 @@ def test_moe_kv_split_over_ep_and_a2a_v031():
 
 
 def _q32():
-    from npu_dse.workbench import resolve_llm_shape
+    from accel_dse.workbench import resolve_llm_shape
 
     return resolve_llm_shape("qwen3-32b")
 
@@ -4338,7 +4338,7 @@ def test_moe_experts_touched_v031():
 
 
 def _wb(**kw):
-    from npu_dse.workbench import WorkbenchConfig, evaluate_workbench
+    from accel_dse.workbench import WorkbenchConfig, evaluate_workbench
 
     base = dict(model_id="qwen3-32b", chip_count=8, **_HBM3E_8)
     base.update(kw)
@@ -4346,7 +4346,7 @@ def _wb(**kw):
 
 
 def test_pp_decode_microbatches_v031():
-    from npu_dse.workbench import ParallelOverride
+    from accel_dse.workbench import ParallelOverride
 
     pp8 = ParallelOverride(1, 8, 1)
     c1 = _wb(parallel=pp8, batch=1)
@@ -4374,7 +4374,7 @@ def test_pp_decode_microbatches_v031():
 
 
 def test_spec_decode_formula_and_step_v031():
-    from npu_dse.scaleup import TPConfig, spec_expected_tokens, spec_mtp_layers
+    from accel_dse.scaleup import TPConfig, spec_expected_tokens, spec_mtp_layers
 
     assert spec_expected_tokens(0, 0.7) == 1.0
     assert abs(spec_expected_tokens(1, 0.7) - 1.7) < 1e-12
@@ -4403,7 +4403,7 @@ def test_spec_decode_formula_and_step_v031():
     assert abs(ds1.spec_tokens_per_step - 1.7) < 1e-12
     assert ds1.t_draft_ms > 0 and ds1.TPOT_ms < ds0.TPOT_ms
     # compute-bound large batch: speculation costs more than it saves
-    from npu_dse.workbench import ParallelOverride
+    from accel_dse.workbench import ParallelOverride
 
     big0 = _wb(model_id="deepseek-v3", batch=256, parallel=ParallelOverride(1, 1, 8))
     big1 = _wb(model_id="deepseek-v3", batch=256, parallel=ParallelOverride(1, 1, 8), spec_k=1)
@@ -4411,7 +4411,7 @@ def test_spec_decode_formula_and_step_v031():
 
 
 def test_spec_mtp_capacity_and_verify_tokens_v031():
-    from npu_dse.scaleup import mtp_card_bytes, per_card_weight_bytes
+    from accel_dse.scaleup import mtp_card_bytes, per_card_weight_bytes
 
     s = _ds()
     w0 = per_card_weight_bytes(s, 8, "replicate")
@@ -4423,7 +4423,7 @@ def test_spec_mtp_capacity_and_verify_tokens_v031():
             + 2 * s.hidden * s.hidden / 8) * 2
     assert abs(m - hand) / hand < 1e-6
     # the verify step runs k+1 tokens per sequence: M = B·(k+1), weights read once
-    from npu_dse.scaleup import C2C_400, TPConfig, evaluate_scaleup
+    from accel_dse.scaleup import C2C_400, TPConfig, evaluate_scaleup
 
     npu = SKU_100T.npu()
     sram = SRAMConfig(64 * 1024 * 1024)
@@ -4444,7 +4444,7 @@ def spec_expected_tokens_(k, a):
 
 
 def test_lm_head_counted_in_workbench_only_v031():
-    from npu_dse.evaluate import EvalConfig as _EC
+    from accel_dse.evaluate import EvalConfig as _EC
 
     assert _EC().count_lm_head is False  # raw engine (handcheck tests) unchanged
     q = _q32()
@@ -4462,8 +4462,8 @@ def test_lm_head_counted_in_workbench_only_v031():
     off = _wb(batch=1, model_id="qwen3-32b")
     assert off.bytes_head > 0
     # raw engine with count_lm_head: head GEMM (B, H, V) + V·H bytes on top
-    from npu_dse.traffic import decode_traffic
-    from npu_dse.npu import gemm_flops
+    from accel_dse.traffic import decode_traffic
+    from accel_dse.npu import gemm_flops
 
     npu = SKU_100T.npu()
     sram = SRAMConfig(64 * 1024 * 1024)
@@ -4476,7 +4476,7 @@ def test_lm_head_counted_in_workbench_only_v031():
 
 
 def test_serving_metrics_amortized_handcheck_v031():
-    from npu_dse.pareto import serving_metrics
+    from accel_dse.pareto import serving_metrics
 
     b1 = _wb(batch=1)
     c = _wb(batch=32)
@@ -4506,8 +4506,8 @@ def test_serving_metrics_amortized_handcheck_v031():
 def test_pareto_modes_runtime_and_cap_v031():
     import time as _t
 
-    from npu_dse.pareto import LLM_BATCH_LIMIT, llm_max_batch
-    from npu_dse.workbench import WorkbenchConfig
+    from accel_dse.pareto import LLM_BATCH_LIMIT, llm_max_batch
+    from accel_dse.workbench import WorkbenchConfig
 
     assert LLM_BATCH_LIMIT > 4096
     q = WorkbenchConfig(model_id="qwen3-32b", chip_count=8, **_HBM3E_8)
@@ -4538,7 +4538,7 @@ def test_api_cli_v031_knobs():
     import subprocess
     import sys
 
-    from npu_dse.serve import api_eval, api_pareto
+    from accel_dse.serve import api_eval, api_pareto
 
     a = api_pareto({"model_id": "qwen3-32b", "chip_count": 8, **_HBM3E_8, "layouts": "current",
                     "goodput_mode": "amortized", "prefill_mode": "exclusive", "out_len": 512})
@@ -4550,7 +4550,7 @@ def test_api_cli_v031_knobs():
     assert abs(e["TPOT_ms"] * e["spec_tokens_per_step"] - e["TPOT_step_ms"]) < 1e-9
     root = Path(__file__).resolve().parents[1]
     out = subprocess.run(
-        [sys.executable, "-m", "npu_dse", "pareto", "--model", "qwen3-32b", "--chips", "8",
+        [sys.executable, "-m", "accel_dse", "pareto", "--model", "qwen3-32b", "--chips", "8",
          "--layouts", "current", "--goodput-mode", "upper", "--spec-k", "1"],
         cwd=root, capture_output=True, text=True, timeout=120,
     )
@@ -4559,7 +4559,7 @@ def test_api_cli_v031_knobs():
 
 
 def test_ui_markers_v031():
-    root = Path(__file__).resolve().parents[1] / "npu_dse" / "web"
+    root = Path(__file__).resolve().parents[1] / "accel_dse" / "web"
     html = (root / "index.html").read_text(encoding="utf-8")
     js = (root / "app.js").read_text(encoding="utf-8")
     for i in ("goodput-mode", "prefill-mode", "out-len", "spec_k", "spec_accept",

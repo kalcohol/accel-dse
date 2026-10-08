@@ -1,4 +1,4 @@
-# 外部存储规格调研（用于重建 npu_dse 外存目录）— 2026-10-08
+# 外部存储规格调研（用于重建 accel_dse 外存目录）— 2026-10-08
 
 > 仅调研 + 报告，未改任何代码。机器可读版：`research/memory_specs_2026-10.json`（含全部来源 URL key → URL 映射、选择器定义）。
 >
@@ -186,7 +186,7 @@
 
 ---
 
-## 5. 当前目录（`npu_dse/package_ranges.py` / `memory.py`）的问题清单
+## 5. 当前目录（`accel_dse/package_ranges.py` / `memory.py`）的问题清单
 
 | # | 位置 | 现状 | 问题 | 应改为 |
 |---|---|---|---|---|
@@ -277,7 +277,7 @@ HBM 分支：
 
 ### 6.4 实现提示（供后续改代码时参考，本次未改）
 
-- 用数据表驱动（直接读 `research/memory_specs_2026-10.json` 或其精简版放进 `npu_dse/data/`），不要在 Python 里再硬编码元组。
+- 用数据表驱动（直接读 `research/memory_specs_2026-10.json` 或其精简版放进 `accel_dse/data/`），不要在 Python 里再硬编码元组。
 - `ExternalMemory` 增加 `payload_factor`、`unit_kind`、`n_units`、`unit_width_bits`、`spec_tag` 字段；`peak_bandwidth_Bps` 返回 raw，另给 `payload_bandwidth_Bps`。
 - Web UI：一个下拉拆成 5–6 个级联下拉，非法组合（如 HBM3 @10000、LPDDR6 x64）直接不出现；每个组合显示标签徽章。
 - 旧 `package_id`（如 `lpddr_8x64_8533`、`hbm_hbm3e_8s`）做兼容映射，`lpddr6_*x24_*` 旧 id 映射到最近的 x96 组合并给出弃用提示。
