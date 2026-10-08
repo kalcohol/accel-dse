@@ -32,6 +32,7 @@ SWEEP_PATHS = {
     "serving.batch": int, "serving.ctx": int, "serving.prompt": int, "serving.spec_k": int,
     "chip.sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
+    "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
     "workload.frames": int, "workload.steps": int, "workload.height": int, "workload.width": int,
     "workload.seq_len": int, "workload.msa": int, "workload.recycles": int, "workload.samples": int,
 }
@@ -158,13 +159,17 @@ def _stage_dict(s) -> dict:
     return {"index": s.index, "layers": list(s.layers), "bound": t.bound, "array_util": t.array_util,
             "t_ms": {"array": t.t_array * 1e3, "mac": t.t_mac * 1e3, "feed": t.t_feed * 1e3,
                      "vector": t.t_vector * 1e3, "dram": t.t_dram * 1e3, "link": t.t_link * 1e3,
-                     "sync": t.t_sync * 1e3, "total": t.total * 1e3},
-            "dram_GB": {k: v / 1e9 for k, v in s.dram.items()},
+                     "sync": t.t_sync * 1e3, "total": t.total * 1e3, "slc": t.t_slc * 1e3},
+            "dram_GB": {k: v / 1e9 for k, v in s.dram.items() if k != "slc_parts"},
+            "slc_GB": {k: v / 1e9 for k, v in s.dram.get("slc_parts", {}).items()},
+            "link_GB": {"total": t.link_bytes / 1e9, "d2d": t.d2d_bytes / 1e9, "net": (t.link_bytes - t.d2d_bytes) / 1e9},
             "mem": {"stored_w_GiB": s.mem.stored_w / 2**30, "kv_GiB": s.mem.kv_total / 2**30,
                     "state_GiB": s.mem.state_total / 2**30, "need_GiB": s.mem.dram_need / 2**30,
                     "cap_GiB": s.mem.dram_cap / 2**30, "fits": s.mem.fits, "residency": s.mem.residency,
                     "kv_sram_MiB": s.mem.kv_sram / 2**20, "staging_MiB": s.mem.staging / 2**20,
-                    "pipe_w_GiB": s.mem.pipe_w / 2**30},
+                    "pipe_w_GiB": s.mem.pipe_w / 2**30, "slc_MiB": s.mem.slc / 2**20,
+                    "slc_policy": s.mem.slc_policy, "slc_residency": s.mem.slc_residency, "slc_all": s.mem.slc_all,
+                    "slc_w_MiB": (s.mem.slc_hot + s.mem.slc_expert) / 2**20, "slc_kv_MiB": s.mem.slc_kv / 2**20},
             "convert_Melems": s.convert_elems / 1e6, "tflops": t.flops / 1e12}
 
 

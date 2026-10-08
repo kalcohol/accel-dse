@@ -129,6 +129,7 @@ class Op:
     comm_kind: str = ""       # allreduce | alltoall | allgather | p2p
     comm_group: int = 1
     comm_bytes: float = 0.0   # payload per rank
+    comm_stride: int = 1      # card-index stride between group members (cards numbered TP, SP, DP, PP; 0.48 tiers)
     act_bytes: float = 0.0    # activation in+out bytes (for SRAM-port / spill accounting)
     replicated: float = 1     # how many ranks of the stage compute this identical op (fractional: idle sample slots)
     stream: bool = False      # full phase: activations may exceed SRAM → DRAM streaming accounted (memplan.act_stream)
@@ -336,8 +337,10 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
             ops.append(Op("expert_act", "vector", li, vec=r.pairs_local * d_loc * 4))
         if sh.ep > 1:
             pay = r.pairs_local * ein * ab
-            ops.append(Op("moe_dispatch", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay))
-            ops.append(Op("moe_combine", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay))
+            ops.append(Op("moe_dispatch", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay,
+                          comm_stride=sh.etp))
+            ops.append(Op("moe_combine", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay,
+                          comm_stride=sh.etp))
         if sh.etp > 1:
             ops.append(Op("expert_allreduce", "comm", li, comm_kind="allreduce", comm_group=sh.etp,
                           comm_bytes=r.pairs_local * ein * ab))
@@ -442,9 +445,9 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
         ops.append(Op("qk_norm_rope", "vector", li, vec=t_loc * heads_tp * (core.qk_dim * 2 * 3 + core.rope_dim * 2 * 3)))
         if sh.sp > 1:
             ops.append(Op("sp_a2a_qkv", "comm", li, comm_kind="alltoall", comm_group=sh.sp,
-                          comm_bytes=t_loc * heads_tp * (2 * core.qk_dim + core.v_dim) * ab))
+                          comm_bytes=t_loc * heads_tp * (2 * core.qk_dim + core.v_dim) * ab, comm_stride=sh.tp))
             ops.append(Op("sp_a2a_o", "comm", li, comm_kind="alltoall", comm_group=sh.sp,
-                          comm_bytes=t_loc * heads_tp * core.v_dim * ab))
+                          comm_bytes=t_loc * heads_tp * core.v_dim * ab, comm_stride=sh.tp))
     return ops
 
 

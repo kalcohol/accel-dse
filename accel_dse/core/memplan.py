@@ -27,12 +27,24 @@ Full-sequence forward (video DiT denoise step / protein encoder; ``Op.stream``):
   attention    flash-style: Q tile (bf16) + O accumulator (fp32) of Br = budget / (d·(a+4)) rows;
                K, V re-read ceil(Nq / Br) times; Q, O once.  Nothing if Q, K, V, O all fit.
 Activation working set in DRAM = largest op (in+out) + the residual stream of every in-flight sequence.
+
+System-level cache (0.48, chip.slc_mib > 0; every number and rule 「假设」): a cache between the chip and DRAM that
+serves hits at chip.slc_GBps instead of the DRAM bandwidth.  It adds no capacity (inclusive: everything still has a
+DRAM home) and is per card.  Policies:
+  pin   software-managed, like the SRAM plan: what SRAM did not pin goes to the SLC in the same order (hot weights,
+        routed experts, KV / recurrent state).  Reads of a pinned byte hit; streamed activations, FSDP-gathered
+        weights, embedding-row lookups and KV writes go to DRAM (write-through / bypass).
+  lru   hardware-managed.  Accesses of a decode / denoise step repeat cyclically, so LRU either holds the whole
+        working set or thrashes: if everything that is not in SRAM (weights + KV / state + the activation working
+        set) fits, every read hits (KV writes still go to DRAM); otherwise nothing hits (the cyclic-thrash bound —
+        real replacement sits between this and pin).
+Video pipeline components (text encoder, VAE) do not use the SLC.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .dtypes import fmt as _fmt
 from .ir import Op, Phase, Shard, _cdiv, _lin_local
@@ -149,13 +161,20 @@ class MemPlan:
     residency: float        # pinned / stored weights
     act_total: float = 0.0  # activation working set kept in DRAM (full-sequence forward)
     pipe_w: float = 0.0     # video pipeline components stored on this card (text encoder / VAE weights, 0.44)
+    slc: float = 0.0        # SLC capacity per card (0.48; 0 = none)
+    slc_policy: str = ""    # pin | lru ("" without an SLC)
+    slc_hot: float = 0.0    # pin: hot-weight bytes held in the SLC
+    slc_expert: float = 0.0
+    slc_kv: float = 0.0
+    slc_all: bool = False   # lru: the whole off-SRAM working set fits → every read hits
+    slc_residency: float = 0.0  # weights on chip incl. SLC / stored weights (= residency without an SLC)
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
 
 
 def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: float, max_act: float,
-         act_need: float = 0.0, stream: bool = False) -> MemPlan:
+         act_need: float = 0.0, stream: bool = False, slc_bytes: float = 0.0, slc_policy: str = "pin") -> MemPlan:
     kv_t = (store.kv_per_seq + store.idx_per_seq) * batch_local
     st_t = store.state_per_seq * batch_local
     need = store.weights + kv_t + st_t + RUNTIME_RESERVE + act_need
@@ -167,8 +186,21 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     p_exp = min(store.expert_w, free); free -= p_exp
     kv_s = min(kv_t + st_t, free)
     res = (p_hot + p_exp) / store.weights if store.weights else 1.0
-    return MemPlan(store.weights, kv_t, st_t, need, dram_cap, need <= dram_cap, sram_bytes, staging,
-                   p_hot, p_exp, kv_s, res, act_need)
+    mp = MemPlan(store.weights, kv_t, st_t, need, dram_cap, need <= dram_cap, sram_bytes, staging,
+                 p_hot, p_exp, kv_s, res, act_need, slc_residency=res)
+    if slc_bytes <= 0:
+        return mp
+    r_hot, r_exp, r_kv = store.hot_w - p_hot, store.expert_w - p_exp, kv_t + st_t - kv_s
+    if slc_policy == "lru":
+        fits = r_hot + r_exp + r_kv + act_need <= slc_bytes
+        return replace(mp, slc=slc_bytes, slc_policy="lru", slc_all=fits, slc_residency=1.0 if fits else res)
+    free = slc_bytes
+    s_hot = min(r_hot, free); free -= s_hot
+    s_exp = min(r_exp, free); free -= s_exp
+    s_kv = min(r_kv, free)
+    sres = (p_hot + p_exp + s_hot + s_exp) / store.weights if store.weights else 1.0
+    return replace(mp, slc=slc_bytes, slc_policy="pin", slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv,
+                   slc_residency=sres)
 
 
 def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
@@ -214,7 +246,8 @@ def touched(ops: list[Op]) -> dict:
 
 
 def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict) -> dict:
-    """DRAM bytes moved in one stage step given the plan and touched-byte sums."""
+    """DRAM bytes moved in one stage step given the plan and touched-byte sums.  With an SLC the entries are the
+    DRAM (miss) bytes and ``slc`` holds the bytes served by the SLC (split in ``slc_parts``)."""
     miss_hot = 0.0 if store.hot_w <= 0 else (1.0 - mp.pinned_hot / store.hot_w)
     miss_exp = 0.0 if store.expert_w <= 0 else (1.0 - mp.pinned_expert / store.expert_w)
     w = t["hot"] * miss_hot + t["exp"] * miss_exp
@@ -222,6 +255,24 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict) -> dict:
     kv_miss = 0.0 if kvst_total <= 0 else 1.0 - mp.kv_sram / kvst_total
     kv_r, kv_w, st = t["kv_read"] * kv_miss, t["kv_write"] * kv_miss, t["state"] * kv_miss
     act, wx = t.get("act", 0.0), t.get("w_extra", 0.0)
-    w += wx
-    return {"weights": w, "kv_read": kv_r, "kv_write": kv_w, "state": st, "lookup": t["lookup"], "act": act,
-            "total": w + kv_r + kv_w + st + t["lookup"] + act, "w_touched": t["hot"] + t["exp"]}
+    out = {"weights": w + wx, "kv_read": kv_r, "kv_write": kv_w, "state": st, "lookup": t["lookup"], "act": act,
+           "total": w + wx + kv_r + kv_w + st + t["lookup"] + act, "w_touched": t["hot"] + t["exp"]}
+    if mp.slc <= 0:
+        return out
+    if mp.slc_policy == "lru":
+        hit = {"weights": w + wx, "kv_read": kv_r, "state": st, "act": act} if mp.slc_all else {}
+    else:
+        f_hot = 0.0 if store.hot_w <= 0 else mp.slc_hot / store.hot_w
+        f_exp = 0.0 if store.expert_w <= 0 else mp.slc_expert / store.expert_w
+        r_kv = kvst_total - mp.kv_sram
+        f_kv = 0.0 if r_kv <= 0 else min(1.0, mp.slc_kv / r_kv)
+        w_hit = t["hot"] * f_hot + t["exp"] * f_exp
+        wx_hit = wx * (w_hit / w) if w > 0 else 0.0     # streamed weight re-reads follow the weights' SLC share
+        hit = {"weights": w_hit + wx_hit, "kv_read": kv_r * f_kv, "state": st * f_kv}
+    for k, v in hit.items():
+        out[k] -= v
+    s = sum(hit.values())
+    out["total"] -= s
+    out["slc"] = s
+    out["slc_parts"] = hit
+    return out

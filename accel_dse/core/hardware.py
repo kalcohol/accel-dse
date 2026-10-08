@@ -10,7 +10,13 @@ Chip
   sram_port_Bpc          SRAM ↔ datapath port bandwidth (bytes / cycle) — the *feed* bound
   ws_load_width          weight-stationary load width (elements / cycle):
                          "edge" = C·E (shift in from one edge), "broadside" = R·C·E
-System = Chip + external memory (mem_catalog.MemSpec) + scale-up link.
+  slc_mib / slc_GBps     optional system-level cache between SRAM and DRAM (0.48; 0 = none, the default)
+  slc_policy             "pin": software-managed partition — after SRAM, the hottest stage data are pinned in the SLC
+                         (hot weights → routed experts → KV / state), served at slc_GBps; streamed activations bypass
+                         "lru": hardware cache under the per-step cyclic sweep of an inference step — everything hits if
+                         the step's DRAM working set fits, otherwise nothing does (LRU thrash bound)
+System = Chip + external memory (mem_catalog.MemSpec) + interconnect: scale-up / network link between packages and an
+optional die-to-die (D2D) tier between the ``package_cards`` cards of one package (0.48).
 """
 
 from __future__ import annotations
@@ -20,6 +26,9 @@ from functools import lru_cache
 
 from .. import mem_catalog
 from .dtypes import FormatSupport
+
+
+SLC_POLICIES = ("pin", "lru")
 
 
 @dataclass(frozen=True)
@@ -36,12 +45,25 @@ class Chip:
     sram_port_Bpc: float | None = None    # 「假设」 None → 4·(R + C·E)·2 B/cycle
     mac_eff: float = 1.0                  # sustained / peak MAC utilisation inside a tile 「假设」
     acc_kib: float = 1024.0               # WS partial-sum accumulator (fp32) 「假设」; overflow spills to SRAM
+    slc_mib: float = 0.0                  # system-level cache (0.48) 「假设」; 0 = none
+    slc_GBps: float = 2000.0              # SLC bandwidth 「假设」 (used only when slc_mib > 0)
+    slc_policy: str = "pin"               # pin | lru (see module doc) 「假设」
 
     def __post_init__(self):
         for k in ("freq_ghz", "rows", "cols", "engines", "sram_mib", "mac_eff"):
             v = getattr(self, k)
             if not (v == v) or v <= 0 or v == float("inf"):
                 raise ValueError(f"chip.{k} must be finite and > 0 (got {v})")
+        for k, lo in (("slc_mib", 0.0), ("slc_GBps", 1e-9)):
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not (lo <= v < 1e7):
+                raise ValueError(f"chip.{k} must be finite and ≥ {lo:g}")
+        if self.slc_policy not in SLC_POLICIES:
+            raise ValueError(f"chip.slc_policy must be one of {', '.join(SLC_POLICIES)}")
+
+    @property
+    def slc_bytes(self) -> float:
+        return self.slc_mib * 2**20
 
     @property
     def c_eff(self) -> int:
@@ -93,12 +115,17 @@ class Link:
             raise ValueError("link GBps must be finite > 0, alpha_us ≥ 0")
 
 
+D2D_DEFAULT = Link(2000.0, 0.5)   # die-to-die tier 「假设」 (used only when package_cards > 1)
+
+
 @dataclass(frozen=True)
 class System:
     chip: Chip
     mem_id: str = "lpddr5x_4x64_8533_16g"
     mem_eff: float | None = None
-    link: Link = Link()
+    link: Link = Link()                 # between packages (scale-up / network)
+    d2d: Link = D2D_DEFAULT             # between the cards of one package
+    package_cards: int = 1              # cards (dies) per package sharing the D2D tier; 1 = every card its own package
 
     @property
     def mem(self) -> mem_catalog.MemSpec:

@@ -22,7 +22,7 @@ from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages
 from .pipeline import TILING, pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
 from .scenario import Scenario
-from .schedule import StageTime, collective_seconds, spec_expected_tokens
+from .schedule import StageTime, collective_seconds, p2p_crosses, spec_expected_tokens, tiered_collective
 
 
 @dataclass
@@ -181,7 +181,7 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
 
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
-             "flops_u", "sram")
+             "flops_u", "sram", "d2d_bytes")
 _MAX_KEYS = ("max_act", "max_act_tot")
 
 
@@ -189,8 +189,8 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
     d = dict.fromkeys(_SUM_KEYS, 0.0)
     for o in ops:
         if o.kind == "comm":
-            bw, a = collective_seconds(o.comm_kind, o.comm_bytes, o.comm_group, sys.link)
-            d["link_bw"] += bw; d["sync"] += a; d["link_bytes"] += o.comm_bytes
+            bw, a, fd = _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)
+            d["link_bw"] += bw; d["sync"] += a; d["link_bytes"] += o.comm_bytes; d["d2d_bytes"] += o.comm_bytes * fd
             continue
         a_, ma, fe, v, ce, idl, sb = _op_seconds(o, sys, org, model)
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
@@ -209,6 +209,33 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
     for k, v in touched(ops).items():
         d[k] += v
     return d
+
+
+def _comm(sys: System, kind: str, payload: float, group: int, stride: int = 1,
+          members: int | None = None) -> tuple[float, float, float]:
+    """One collective on the system's two-tier fabric (0.48): (bandwidth s, α s, D2D share of the bytes).
+    ``members``: ranks of the group inside one package when the group is not a uniform stride."""
+    if sys.package_cards <= 1:
+        return (*collective_seconds(kind, payload, group, sys.link), 0.0)
+    if members is not None:
+        stride = max(1, sys.package_cards // max(1, members))
+    return tiered_collective(kind, payload, group, sys.link, sys.d2d, sys.package_cards, stride)
+
+
+def _p2p(sys: System, payload: float, stage: int, stage_cards: int) -> tuple[float, float, float]:
+    """PP hand-off of ``stage`` → next: D2D when both stages sit in one package, else the network link."""
+    if sys.package_cards > 1 and not p2p_crosses(stage, stage_cards, sys.package_cards):
+        return (*collective_seconds("p2p", payload, 2, sys.d2d), 1.0)
+    return (*collective_seconds("p2p", payload, 2, sys.link), 0.0)
+
+
+def _slc_time(sys: System, dram: dict) -> float:
+    s = dram.get("slc", 0.0)
+    return s / (sys.chip.slc_GBps * 1e9) if s > 0 else 0.0
+
+
+def _links(scn: Scenario) -> tuple:
+    return (scn.link, scn.d2d, scn.package_cards) if scn.package_cards > 1 else scn.link
 
 
 def _acc(a: dict, b: dict, n: int = 1) -> None:
@@ -237,7 +264,12 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             "(MoE needs ep·etp = tp·dp; dense needs dp=ep=etp=1; sp only for video / protein models)"))
     if lay.pp > m.n_layers:
         raise ValueError("pp exceeds layer count")
-    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link)
+    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d, scn.package_cards)
+    if scn.chip.slc_bytes and scn.chip.slc_bytes >= sys.dram_bytes:
+        warnings.append("SLC 容量不小于每卡 DRAM 容量——不现实的设计点（SLC 不增加容量，按包含式缓存计）")
+    if scn.package_cards > 1 and lay.cards > scn.package_cards and lay.cards % scn.package_cards:
+        warnings.append(f"package_cards = {scn.package_cards} 不整除总卡数 {lay.cards}：末尾封装未满，"
+                        "按每个通信组的整除部分近似分层")
     if not m.kv_cache:
         return _evaluate_full(scn, m, sys, warnings)
     spec_k = sv.spec_k if (sv.phase == "decode" and m.mtp_layers) else 0
@@ -276,7 +308,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             counts[g] = (first_li, n + 1)
         for g, (li, n) in counts.items():
             if g not in cache:
-                okey = (g, ph, sh, scn.mapping, scn.chip, scn.link)
+                okey = (g, ph, sh, scn.mapping, scn.chip, _links(scn))
                 cache[g] = ops_memo.get(okey)
                 if cache[g] is None:
                     cache[g] = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
@@ -287,16 +319,18 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         if store is None:
             store = store_memo[skey] = stage_storage(m, st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap,
                                                      n_mtp)
-        mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"])
+        mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
+                  slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy)
         dram = step_dram_bytes(mp, store, agg)
-        link_bw, sync, link_bytes = agg["link_bw"], agg["sync"], agg["link_bytes"]
+        link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
         if pp > 1 and not st.has_head:
             act = ph.batch * ph.q * m.hidden * _fmt(m.act_fmt).bytes / lay.dp
-            bw, a = collective_seconds("p2p", act, 2, sys.link)
-            link_bw += bw; sync += a; link_bytes += act
+            bw, a, fd = _p2p(sys, act, st.index, lay.cards // pp)
+            link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd
         t_dram = dram["total"] / (sys.dram_GBps * 1e9)
         stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
-                        dram["total"], link_bytes, agg["flops"], agg["t_ideal"])
+                        dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
+                        dram.get("slc", 0.0), d2d_b)
         stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], sram_bytes=agg["sram"]))
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
@@ -372,7 +406,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             first_li, n = counts.get(g, (li, 0))
             counts[g] = (first_li, n + 1)
         for g, (li, n) in counts.items():
-            okey = (g, ph, sh, scn.mapping, scn.chip, scn.link)
+            okey = (g, ph, sh, scn.mapping, scn.chip, _links(scn))
             hit = ops_memo.get(okey)
             if hit is None:
                 hit = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
@@ -384,9 +418,10 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         if store is None:
             store = store_memo[skey] = stage_storage(m, st.first, st.last, st.has_embed, st.has_head, sh, 0, 0)
         mp = plan(store, 0, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
-                  act_need=agg["max_act_tot"] + resid, stream=True)
+                  act_need=agg["max_act_tot"] + resid, stream=True,
+                  slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy)
         dram = step_dram_bytes(mp, store, agg)
-        link_bw, sync, link_bytes = agg["link_bw"], agg["sync"], agg["link_bytes"]
+        link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
         if fsdp:
             # DiT weights FSDP-sharded over the stage's g = SP·DP ranks (Wan --dit_fsdp): each card keeps w / g plus
             # two gathered layers (prefetch); every stage forward all-gathers the active weights layer by layer
@@ -398,17 +433,18 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             keep = w / fsdp + min(act_w * (fsdp - 1) / fsdp, 2 * act_w / nl)
             need = mp.dram_need - w + keep
             mp = replace(mp, stored_w=w / fsdp, dram_need=need, fits=need <= mp.dram_cap)
-            bw, a_ = collective_seconds("allgather", act_w / fsdp, fsdp, sys.link)
-            link_bw += bw; sync += a_ * nl; link_bytes += act_w / fsdp
+            bw, a_, fd = _comm(sys, "allgather", act_w / fsdp, fsdp, stride=lay.tp)    # SP·DP ranks, stride TP
+            link_bw += bw; sync += a_ * nl; link_bytes += act_w / fsdp; d2d_b += act_w / fsdp * fd
             gw = act_w * (fsdp - 1) / fsdp
             dram = {**dram, "weights": dram["weights"] + gw, "total": dram["total"] + gw, "fsdp_gather": gw}
         if pp > 1 and not st.has_head:
             act = ph.batch * (_cdiv(ph.q, lay.sp) * m.hidden * ab + pair_act) / lay.dp
-            bw, a = collective_seconds("p2p", act, 2, sys.link)
-            link_bw += bw; sync += a; link_bytes += act
+            bw, a, fd = _p2p(sys, act, st.index, lay.cards // pp)
+            link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd
         t_dram = dram["total"] / (sys.dram_GBps * 1e9)
         stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
-                        dram["total"], link_bytes, agg["flops"], agg["t_ideal"])
+                        dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
+                        dram.get("slc", 0.0), d2d_b)
         stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                   sram_bytes=agg["sram"]))
     pipe = None
@@ -463,7 +499,7 @@ def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, a
     return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound,
             # action counts (0.47.1, core/energy.py): bf16-equivalent MAC slots, vector element-ops, SRAM-port bytes
             "acts": {"mac": d["t_ideal"] * ch.macs * ch.freq_ghz * 1e9, "vec": d["t_vec"] * ch.lanes * ch.freq_ghz * 1e9,
-                     "sram": d["sram"], "dram": dram, "link": 0.0}}
+                     "sram": d["sram"], "dram": dram, "link": 0.0, "d2d": 0.0}}
 
 
 def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: System, warnings: list[str]) -> dict | None:
@@ -485,7 +521,7 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
     if scn.workload.vae_parallel and par == 1:
         warnings.append("workload.vae_parallel：每副本只有 1 张卡，VAE 解码不拆分")
     key = (b, tuple(info["latent"]), info["frames"], info["cfg"], wl.aux, scn.mapping, scn.chip, scn.mem_id,
-           scn.mem_eff, tiling, par, sys.link)
+           scn.mem_eff, tiling, par, _links(scn), lay.dp if par > 1 else 1)
     memo = model_cache(m).setdefault("pipeline", {})
     if key in memo:
         return memo[key]
@@ -513,8 +549,10 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
         extra = {}
         if par > 1 and v is pl.vae:
             if "rounds" in vi:
-                cp = {**_parallel_decode(vi, par, b, lat, info, sys, scn.mapping), "tflop": c["tflop"]}
-                cp["acts"] = {**c["acts"], "link": cp.pop("gather_B")}      # replica totals: same arithmetic
+                cp = {**_parallel_decode(vi, par, b, lat, info, sys, scn.mapping, _replica_members(sys, lay)),
+                      "tflop": c["tflop"]}
+                gb, gd = cp.pop("gather_B"), cp.pop("gather_d2d")
+                cp["acts"] = {**c["acts"], "link": gb - gd, "d2d": gd}      # replica totals: same arithmetic
                 extra = {"par": par, "single_s": c["s"], "gather_s": cp.pop("gather_s"), "rank_tiles": cp.pop("tiles")}
                 c = cp
                 vae_par = par
@@ -536,7 +574,18 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
     return out
 
 
-def _parallel_decode(vi: dict, par: int, b: int, lat: tuple, info: dict, sys: System, org: str) -> dict:
+def _replica_members(sys: System, lay: Layout) -> int | None:
+    """Cards of one data-parallel replica (PP·TP·SP) inside one package (cards numbered TP, SP, DP, PP: with DP > 1
+    and PP > 1 the replica is not contiguous — only its TP·SP block is)."""
+    if sys.package_cards <= 1:
+        return None
+    par = lay.pp * lay.tp * lay.sp
+    blk = par if (lay.dp == 1 or lay.pp == 1) else lay.tp * lay.sp
+    return math.gcd(min(sys.package_cards, blk), par)
+
+
+def _parallel_decode(vi: dict, par: int, b: int, lat: tuple, info: dict, sys: System, org: str,
+                     members: int | None = None) -> dict:
     """Tile-parallel VAE decode over the ``par`` = PP·TP·SP cards of a replica (0.47, ``workload.vae_parallel``).
 
     The scheme of the MiniMax-H3 release (``FL2VA/video_vae`` ``vae_parallel_tiling = 1``, ``klvae.tiled_decode``):
@@ -551,7 +600,7 @@ def _parallel_decode(vi: dict, par: int, b: int, lat: tuple, info: dict, sys: Sy
     ab = _fmt(vi["act"]).bytes
     px = info["frames"] * info["height"] * info["width"] * 3 / math.prod(lat)   # output elements per latent voxel
     loads: dict = {}
-    gather = sent = 0.0
+    gather = sent = sent_d = 0.0
     for rd in vi["rounds"]:
         share = [rd[r::par] for r in range(par)]
         for r, tl in enumerate(share):
@@ -559,9 +608,10 @@ def _parallel_decode(vi: dict, par: int, b: int, lat: tuple, info: dict, sys: Sy
                 loads.setdefault(r, {}).setdefault(t, 0)
                 loads[r][t] += 1
         top = max(sum(math.prod(t) for t in tl) for tl in share) * px * ab * b
-        bw, a_ = collective_seconds("allgather", top, par, sys.link)
+        bw, a_, fd = _comm(sys, "allgather", top, par, members=members)
         gather += bw + a_
         sent += par * (par - 1) * top            # every rank's share to every other rank (upper bound)
+        sent_d += par * (par - 1) * top * fd
     memo: dict = {}
     best = None
     for r, cnt in loads.items():
@@ -572,7 +622,7 @@ def _parallel_decode(vi: dict, par: int, b: int, lat: tuple, info: dict, sys: Sy
             best = (memo[k], sum(cnt.values()))
     c = dict(best[0])                # time / DRAM of the slowest rank (the caller restores the replica FLOPs)
     c["s"] += gather
-    c.update(gather_s=gather, tiles=best[1], gather_B=sent)
+    c.update(gather_s=gather, tiles=best[1], gather_B=sent, gather_d2d=sent_d)
     return c
 
 
@@ -638,7 +688,13 @@ def _place_components(scn: Scenario, m: ModelSpec, pipe: dict, stages: list, sys
                 act = max(te_act if te_here else 0.0, pipe["vae_act"] if vae_here else 0.0)
                 need = mp.dram_need + w_te + w_vae + max(0.0, act - mp.act_total)
             mems.append(replace(mp, dram_need=need, fits=need <= mp.dram_cap, pipe_w=w_te + w_vae))
-        gather = (pipe["te_w"] * (c - 1) / c / (sys.link.GBps * 1e9) + alpha * pipe["te_layers"]) if shard else 0.0
+        if not shard:
+            gather = 0.0
+        elif sys.package_cards <= 1:
+            gather = pipe["te_w"] * (c - 1) / c / (sys.link.GBps * 1e9) + alpha * pipe["te_layers"]
+        else:       # 0.48: the same all-gather volume on the two-tier fabric, α per encoder layer
+            bw_, a_, _ = _comm(sys, "allgather", pipe["te_w"] / c, c, members=_replica_members(sys, lay))
+            gather = bw_ + a_ * pipe["te_layers"]
         te_s = (te_tflop / w.host_TFLOPS if cpu else max(pipe["te_s"], gather) if shard else pipe["te_s"])
         host = w.host_GBps * 1e9
         load = ((te_card + max(mp.stored_w for mp in base) + pipe["vae_w"]) / host) if off else 0.0

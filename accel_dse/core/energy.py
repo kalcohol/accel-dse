@@ -10,8 +10,13 @@ Actions (whole system: every rank of every stage and replica)
          — array cycles × MACs at 100 % utilisation; padding / idle slots of a partly filled tile are not charged
   vec    vector element-ops (norm, softmax, activation, dequant / convert)
   sram   bytes through the SRAM ↔ datapath port (the feed traffic of every GEMM / attention tile)
-  dram   bytes read + written in external memory (weights, KV, activation streaming, FSDP gathers)
-  link   bytes a rank sends on the scale-up link (collectives' payload per rank, PP hand-offs, VAE tile gathers)
+  dram   bytes read + written in external memory (weights, KV, activation streaming, FSDP gathers); with a
+         system-level cache only the misses
+  slc    bytes served by the system-level cache (0.48, chip.slc_mib > 0)
+  link   bytes a rank sends on the scale-up / network tier (collectives' payload per rank, PP hand-offs, VAE tile
+         gathers)
+  d2d    the share of those bytes that stays on the die-to-die tier of a package (0.48, package_cards > 1; split
+         by the ratio of bytes sent per tier of each collective, see core/schedule.py)
   idle   static / idle power × cards × the time window (``idle_W`` per card)
 
 Window and units
@@ -28,8 +33,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, fields
 
-ACTIONS = ("mac", "vec", "sram", "dram", "link", "idle")
-_UNIT_PJ = {"mac": "pJ_mac", "vec": "pJ_vec", "sram": "pJ_bit_sram", "dram": "pJ_bit_dram", "link": "pJ_bit_link"}
+ACTIONS = ("mac", "vec", "sram", "slc", "dram", "d2d", "link", "idle")
+_UNIT_PJ = {"mac": "pJ_mac", "vec": "pJ_vec", "sram": "pJ_bit_sram", "slc": "pJ_bit_slc", "dram": "pJ_bit_dram",
+            "d2d": "pJ_bit_d2d", "link": "pJ_bit_link"}
+_BITS = ("sram", "slc", "dram", "d2d", "link")
 
 
 @dataclass(frozen=True)
@@ -39,8 +46,10 @@ class EnergyTable:
     pJ_vec: float | None = None        # per vector element-op
     pJ_bit_sram: float | None = None   # per bit through the SRAM port
     pJ_bit_dram: float | None = None   # per bit of DRAM traffic
-    pJ_bit_link: float | None = None   # per bit sent on the scale-up link
+    pJ_bit_link: float | None = None   # per bit sent on the scale-up / network tier
     idle_W: float | None = None        # static / idle power per card (W)
+    pJ_bit_slc: float | None = None    # per bit served by the system-level cache (0.48)
+    pJ_bit_d2d: float | None = None    # per bit on the die-to-die tier (0.48)
 
     def __post_init__(self):
         for f in fields(self):
@@ -82,7 +91,9 @@ def action_counts(r) -> dict:
         c["vec"] += t.t_vector * ch.lanes * f * n
         c["sram"] += st.sram_bytes * n
         c["dram"] += t.dram_bytes * n
-        c["link"] += t.link_bytes * n
+        c["slc"] += t.slc_bytes * n
+        c["d2d"] += t.d2d_bytes * n
+        c["link"] += (t.link_bytes - t.d2d_bytes) * n
     if w is None:
         window = r.step
         unit = "token" if r.scenario.serving.phase == "decode" else "prompt token"
@@ -119,7 +130,7 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
     for k, attr in _UNIT_PJ.items():
         e = getattr(table, attr)
         if e is not None:
-            j[k] = per[k] * e * 1e-12 * (8 if k in ("sram", "dram", "link") else 1)
+            j[k] = per[k] * e * 1e-12 * (8 if k in _BITS else 1)
     if table.idle_W is not None:
         j["idle"] = table.idle_W * per["idle_card_s"]
     tot = sum(j.values())

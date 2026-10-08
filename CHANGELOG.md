@@ -3,6 +3,25 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.48.0] - 2026-10-09
+
+硬件侧：系统级缓存（SLC）作为 SRAM 与 DRAM 之间的设计变量；两级互连（封装内 die-to-die 与跨封装网络）。两者默认关，默认结果与 0.47.1 逐字节一致。
+
+### Added
+- SLC（`chip.slc_mib`，默认 0 = 无；`slc_GBps` 默认 2000、`slc_policy` = `pin` | `lru`，全部「假设」）：命中字节 / `slc_GBps` 作为与 DRAM 并行的 `t_slc` 进入级时间，瓶颈可标 SLC；DRAM 只计未命中；不增加容量。`pin` 按 SRAM 同序钉住剩余热权重 → 专家 → KV / 状态，流式激活、FSDP gather、查表行、KV 写绕过；`lru` 按循环访问取全有或全无（SRAM 之外的工作集放得下才全部读命中）。视频 pipeline 组件不用 SLC。100T + LPDDR5X，Qwen3-8B decode batch 8：TPOT 104.2 → pin 4 / 8 / 16 GiB 81.7 / 59.2 / 20.8 ms；lru 16 GiB 放不下 → 不变，32 GiB → 20.0 ms。
+- 两级互连：`link` 为跨封装 / 节点的网络层（默认不变 400 GB/s、3 µs），新增 `d2d`（同封装 die-to-die，默认 2000 GB/s、0.5 µs「假设」）与 `package_cards`（每封装卡数，默认 1 = 无 D2D 层）。卡按 TP → SP → DP → PP 编号，通信算子带步长 `comm_stride`（TP / ETP 1，SP / DAP 为 TP，EP 为 ETP，FSDP 为 TP），组在封装内的成员数 k 决定分层：all-reduce / all-gather 两级（NCCL 式）、all-to-all 按比例两路并行、PP 交接按流水级边界是否跨封装；k = 1 时与单层公式相同。VAE tile all-gather 与文本编码器分片 gather 同样分层。1P + HBM3E、网络 50 GB/s：Qwen3-8B prefill TP8 TTFT 676.8 ms（LINK）→ 每封装 4 卡 248.2 ms（MAC）。分层 all-reduce 的 α = 2α_d + α_n，小载荷 decode 部分跨封装时略慢（如实计）。
+- 能耗：动作 `slc`（`pJ_bit_slc`）与 `d2d`（`pJ_bit_d2d`）；DRAM 只计 SLC 未命中，`link` 只计网络层份额（按每次集合通信两层发送字节之比拆分）。守恒：SLC + DRAM = 无 SLC 的 DRAM 字节，D2D + 网络 = 单层链路字节。
+- 入口：API scenario `package_cards`、`d2d`、`chip.slc_*`，每级 `t_ms.slc`、`slc_GB`、`link_GB`（total / d2d / net）、`mem.slc_*`；扫描路径 `chip.slc_mib`、`chip.slc_GBps`、`package_cards`、`d2d.GBps`、`d2d.alpha_us`。CLI `--slc-mib --slc-GBps --slc-policy --package-cards --d2d-GBps --d2d-alpha-us --link-GBps --link-alpha-us --pJ-bit-slc --pJ-bit-d2d`。Web：芯片组 SLC 三项、并行组「每封装卡数 / D2D」、能耗组两项，级表 / 存储表 / 能耗表在启用时多出 SLC / D2D 列。
+- 建模说明 §14（SLC）、§15（两级互连）；测试 `tests/test_core_048.py`（默认不变、闭式、映射到层、pin / lru、能耗拆分、校验 / API / CLI）。
+
+### Changed
+- 默认结果不变：1356 项指纹与 0.47.1 逐字节一致。场景新增字段（`d2d`、`package_cards`、芯片 `slc_*`），场景哈希随之变化。
+- Web「链路 GB/s / 同步 α」改称「网络层 GB/s / 网络 α」。
+
+### 不做 / 待定
+- 第三层互连（封装内 D2D、节点内 scale-up、跨节点 scale-out）未分开——网络层一项代表封装以外的全部；拓扑、拥塞、SHARP 不建模。
+- SLC 多卡共享、一致性、写回差异、bank 冲突不建模；默认 D2D / SLC 数值为占位「假设」。
+
 ## [0.47.1] - 2026-10-09
 
 硬件侧第一小步：能耗动作计数（每动作能耗由用户提供，工具不内置数值）。

@@ -48,6 +48,11 @@
       <label>MAC 效率<input type="number" id="c-mac_eff" step="0.05" min="0.05" max="1"></label>
       <label>累加器 KiB<input type="number" id="c-acc_kib" step="128" min="0"></label>
     </div>
+    <div class="row3" id="slc-row">
+      <label title="系统级缓存（SLC, system-level cache）：位于 SRAM 与 DRAM 之间，每卡容量；0 = 无（默认）。不增加容量（包含式）">SLC MiB <span class="tag assume">假设</span><input type="number" id="c-slc_mib" step="64" min="0"></label>
+      <label title="SLC 命中时的带宽（与 DRAM 并行的端口）">SLC GB/s <span class="tag assume">假设</span><input type="number" id="c-slc_GBps" step="250" min="1"></label>
+      <label title="pin：软件按 SRAM 同样顺序把剩余热权重 / 专家 / KV 钉在 SLC，流式激活绕过；lru：硬件替换，按循环访问的全有或全无上界（工作集放得下才全部命中，否则 0 命中）">SLC 策略<select id="c-slc_policy"><option value="pin">pin 软件钉住</option><option value="lru">lru 硬件替换</option></select></label>
+    </div>
     <div class="small muted" id="chip-formats"></div>
   </section>
 
@@ -91,9 +96,15 @@
     <div class="small muted full-only">视频 / 蛋白质：卡数 = PP·TP·DP·SP。DP 切分前向 batch（视频含 CFG 的 cond / uncond 两路 = CFG 并行）；SP = Ulysses 序列并行，权重在 SP 组内复制。蛋白质结构模型：SP 位置为 DAP（pair / MSA 网格按残基轴切分，FastFold 动态轴并行），无 TP。</div>
     <button class="btn ghost sm" id="best-layout">搜索当前卡数的最优布局并应用</button>
     <div class="row2">
-      <label>链路 GB/s <span class="tag assume">假设</span><input type="number" id="k-GBps" step="50" min="1"></label>
-      <label>同步 α µs <span class="tag assume">假设</span><input type="number" id="k-alpha_us" step="0.5" min="0"></label>
+      <label title="跨封装 / 跨节点的 scale-up 网络层（IB / RoCEv2 级），每 rank 单向带宽">网络层 GB/s <span class="tag assume">假设</span><input type="number" id="k-GBps" step="50" min="1"></label>
+      <label title="网络层每次集合通信的同步 + 启动延迟">网络 α µs <span class="tag assume">假设</span><input type="number" id="k-alpha_us" step="0.5" min="0"></label>
     </div>
+    <div class="row3">
+      <label title="每个封装（package，chiplet 同封装）内的卡 / die 数；封装内走 die-to-die（D2D）层，封装之间走网络层。1 = 无 D2D 层（默认，与 0.47 相同）。卡按 TP → SP → DP → PP 顺序编号">每封装卡数<input type="number" id="p-package_cards" step="1" min="1"></label>
+      <label title="封装内 die-to-die 带宽（每 rank 单向）">D2D GB/s <span class="tag assume">假设</span><input type="number" id="d-GBps" step="250" min="1"></label>
+      <label title="封装内每次集合通信的同步延迟">D2D α µs <span class="tag assume">假设</span><input type="number" id="d-alpha_us" step="0.1" min="0"></label>
+    </div>
+    <div class="small muted" id="tier-note"></div>
   </section>
 
   <section class="grp full-only" id="wl-grp">
@@ -162,7 +173,9 @@
       <label title="每个向量元素操作（范数、softmax、激活、反量化）的能耗，pJ">pJ / 向量操作<input type="number" id="e-pJ_vec" min="0" step="0.1"></label>
       <label title="经 SRAM ↔ 数据通路端口每 bit 的能耗，pJ">pJ / bit SRAM<input type="number" id="e-pJ_bit_sram" min="0" step="0.05"></label>
       <label title="外部存储读写每 bit 的能耗（含接口），pJ">pJ / bit DRAM<input type="number" id="e-pJ_bit_dram" min="0" step="0.5"></label>
-      <label title="scale-up 链路每发送 bit 的能耗，pJ">pJ / bit 链路<input type="number" id="e-pJ_bit_link" min="0" step="0.5"></label>
+      <label title="网络层（跨封装 / 节点）每发送 bit 的能耗，pJ">pJ / bit 网络<input type="number" id="e-pJ_bit_link" min="0" step="0.5"></label>
+      <label title="封装内 die-to-die 层每发送 bit 的能耗，pJ（每封装卡数 > 1 时才有流量）">pJ / bit D2D<input type="number" id="e-pJ_bit_d2d" min="0" step="0.1"></label>
+      <label title="系统级缓存命中每 bit 的能耗，pJ（SLC MiB > 0 时才有流量；DRAM 只计未命中）">pJ / bit SLC<input type="number" id="e-pJ_bit_slc" min="0" step="0.1"></label>
       <label title="每卡静态 / 空闲功耗，W（× 卡数 × 时间窗）">静态 W / 卡<input type="number" id="e-idle_W" min="0" step="5"></label>
     </div>
   </section>

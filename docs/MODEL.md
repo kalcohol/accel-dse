@@ -66,12 +66,13 @@
 - staging = `max(2 MiB, 2 × 最大激活)`；其余 SRAM 依次驻留热权重（每步都读）、专家与冷 embedding 表，剩余容量放 KV / 线性注意力状态。
 - 每步 DRAM 流量 = 未驻留的被触及权重 + KV 读（未驻留部分）+ KV 写 + 状态 + 查表行。
 - DRAM 需求 = 存储权重 + KV + 状态 + 1 GiB 预留；按最重 stage 与存储器容量比较，超出给出警告。
+- 可选系统级缓存（SLC，0.48，默认无）位于 SRAM 与 DRAM 之间，见 §14。
 - 存储器：`mem_catalog.py` 按 JEDEC / 厂商资料给出类型 × 形态 × 位宽 × 速率 × 数量 × 容量。每个选项带**双轴标签**：规范状态（JEDEC / 疑似 JEDEC / 超规格定制 / 无规范）× 产品状态（量产 / 送样 / 已发布 / 无产品），组合各轴分别取最弱项；颗数 / 堆数是 SoC 设计选择，不打规范标签。带宽 = 总线位宽 × 速率 × payload（LPDDR6 为 256/288 = 8/9，与 Samsung/JEDEC 讲稿 114 GB/s 交叉验证）× 效率（默认 0.7，「假设」）。LPDDR6 可选「meta 模式」（默认关）：按假设把阵列的 1/16 划作 metadata 持久区，从可用容量扣除；Meta RD/WR 吞吐损失未建模。LPDDR5T 作为 LPDDR5X-9600 的别名。**LPDDR5X x96（6×16）仅为 Apple 定制件，不提供。** 调研与来源见 [docs/research](research/memory_specs_2026-10.md)。
 
 ## 6. 调度
 
-- 每个 stage：`t = max(t_compute, t_dram, t_link) + t_sync`，其中 `t_compute = Σ max(MAC, FEED) + VECTOR`；绑定项标为 MAC / FEED / VECTOR / DRAM / LINK / SYNC。
-- 集合通信 α-β 模型：带宽项按环形算法（all-reduce `2(g−1)/g`、all-to-all `(g−1)/g`、all-gather `(g−1)` 倍负载）/ 链路带宽（默认 400 GB/s，「假设」），同步 α（默认 3 µs，「假设」）每次集合通信计入，作为暴露时间单独累计。
+- 每个 stage：`t = max(t_compute, t_dram, t_slc, t_link) + t_sync`，其中 `t_compute = Σ max(MAC, FEED) + VECTOR`，`t_slc` 只在有 SLC 时非零（§14）；绑定项标为 MAC / FEED / VECTOR / DRAM / SLC / LINK / SYNC。
+- 集合通信 α-β 模型：带宽项按环形算法（all-reduce `2(g−1)/g`、all-to-all `(g−1)/g`、all-gather `(g−1)` 倍负载）/ 链路带宽（默认 400 GB/s，「假设」），同步 α（默认 3 µs，「假设」）每次集合通信计入，作为暴露时间单独累计。0.48 起可把卡分成封装：封装内走 die-to-die 层、封装间走网络层，集合通信按组跨越的层分级计（§15）；每封装 1 卡（默认）即上面的单层模型。
 - decode 一步 = `max(microbatch, PP) × 最慢 stage`；prefill = `(microbatch + PP − 1) × 最慢 stage`。
 - 投机解码 / MTP：每步期望 token `E = (1 − a^(k+1)) / (1 − a)`，草稿在最后一个 stage 上运行。
 - 有效 MAC 比例（array_util）= 理想 MAC 时间 / 阵列时间，直接反映映射与小 M 的浪费。
@@ -303,12 +304,47 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 | MAC | bf16 等效 MAC 槽 = 有效 FLOPs / 2 / 该格式的速率倍数（fp8 在 2× 速率下记 ½）；分块填不满的空闲槽不计 | `pJ_mac` |
 | 向量 | 向量元素操作（范数、softmax、激活、格式转换 / 反量化） | `pJ_vec` |
 | SRAM | 经 SRAM ↔ 数据通路端口的字节（各 GEMM / 注意力分块的供数流量，即 FEED 界的分子） | `pJ_bit_sram` |
-| DRAM | 外部存储读写字节（权重、KV、激活流式、FSDP gather 写入） | `pJ_bit_dram` |
-| 链路 | 每 rank 在 scale-up 链路上发送的字节（集合通信载荷、PP 交接、VAE tile all-gather） | `pJ_bit_link` |
+| SLC | 系统级缓存命中的字节（0.48，§14；无 SLC 时为 0） | `pJ_bit_slc` |
+| DRAM | 外部存储读写字节（权重、KV、激活流式、FSDP gather 写入）；有 SLC 时只计未命中 | `pJ_bit_dram` |
+| D2D | 封装内 die-to-die 层发送的字节（0.48，§15；每封装 1 卡时为 0） | `pJ_bit_d2d` |
+| 链路 / 网络 | 每 rank 在网络层（跨封装）发送的字节（集合通信载荷、PP 交接、VAE tile all-gather；有 D2D 层时扣除 D2D 份额） | `pJ_bit_link` |
 | 静态 | 卡数 × 时间窗 | `idle_W`（W / 卡） |
 
 **时间窗与单位**：LLM decode 一个步（全部微批与副本）→ token；prefill 一次（TTFT）→ prompt token；视频一次请求批：步数 × DiT 各级 + 卡上的文本编码器 + VAE 解码，时间窗 = 单段延迟（开跨请求重叠时为稳态周期）→ 帧（主机 CPU 编码器的能耗不计）；蛋白质一次前向 → 序列。每级每遍执行「微批数」个 tick，tick 的计数是单 rank 的，乘 TP·SP·DP。PP 下每个微批都重新流式读取本级权重（与级时间一致），所以 PP2 的 DRAM / token 约为 PP1 的 2 倍——这是映射的真实代价，不是重复计数。
 
-**入口**：API `POST /api/eval` 的 body 顶层 `"energy": {"pJ_mac": …, "idle_W": …}`（不放进 scenario，不影响场景哈希与结果缓存），响应 `energy` 字段（`counts_per_unit`、`J_per_unit`、`J_by_action`、`avg_W_per_card`、`provided` / `missing`）；CLI `--pJ-mac --pJ-vec --pJ-bit-sram --pJ-bit-dram --pJ-bit-link --idle-W`；Web 左侧「能耗」组，单点评估页的「动作计数与能耗」表。
+**入口**：API `POST /api/eval` 的 body 顶层 `"energy": {"pJ_mac": …, "idle_W": …}`（不放进 scenario，不影响场景哈希与结果缓存），响应 `energy` 字段（`counts_per_unit`、`J_per_unit`、`J_by_action`、`avg_W_per_card`、`provided` / `missing`）；CLI `--pJ-mac --pJ-vec --pJ-bit-sram --pJ-bit-dram --pJ-bit-link --idle-W`（0.48 加 `--pJ-bit-slc --pJ-bit-d2d`）；Web 左侧「能耗」组，单点评估页的「动作计数与能耗」表。
 
-**不做**：动态 / 静态功耗的工艺推导、DVFS、SRAM 容量相关的单次访问能耗（一项一个数）、DRAM 行激活 / 刷新、主机与 PUE、面积与成本。后续硬件侧候选（未开始）：系统级缓存（SLC）一层、D2D（同封装）与网络（跨节点）两级互连。
+**不做**：动态 / 静态功耗的工艺推导、DVFS、SRAM 容量相关的单次访问能耗（一项一个数）、DRAM 行激活 / 刷新、主机与 PUE、面积与成本。SLC 与两级互连已在 0.48 接入（§14、§15）；新的流量守恒：SLC + DRAM = 无 SLC 时的 DRAM 字节，D2D + 网络 = 单层时的链路字节（载荷口径不变，只是按层拆分）。
+
+## 14. 系统级缓存 SLC（0.48，默认关）
+
+芯片字段 `slc_mib`（每卡容量，0 = 无，默认）、`slc_GBps`（命中带宽，默认 2000 GB/s）、`slc_policy`（`pin` | `lru`，默认 `pin`）。**全部数值与规则都是「假设」**，用于看「在 SRAM 与 DRAM 之间加一层缓存」这个设计选择的量级，不是某款芯片的标定。
+
+- **位置与容量**：每卡一份，位于片上 SRAM 与 DRAM 之间；包含式（所有数据仍有 DRAM 副本），**不增加容量**，DRAM 需求与容量检查不变。SLC 不小于 DRAM 容量时给出警告。
+- **时间**：命中字节 / `slc_GBps` 作为与 DRAM 端口并行的一项 `t_slc` 进入级时间 `max(t_compute, t_dram, t_slc, t_link) + t_sync`；DRAM 只计未命中字节。SLC 带宽太低时瓶颈标为 SLC。
+- **pin（软件钉住，默认）**：与 SRAM 规划同一顺序——SRAM 放不下的热权重 → 路由专家 → KV / 线性注意力状态依次钉在 SLC；每步读到钉住部分即命中（命中比例 = 钉住字节 / 该类存储字节，路由专家按存储比例）。流式激活、FSDP gather 写入、embedding 查表行、KV 写入都绕过 SLC（write-through）。全序列前向里的权重分块重读按权重的 SLC 份额命中。
+- **lru（硬件替换）**：一步 decode / 去噪的访问是循环重复的，LRU 要么装下整个工作集、要么反复抖动。规则：SRAM 之外的全部数据（权重 + KV / 状态 + DRAM 中的激活工作集）放得下 → 所有读命中（KV 写仍进 DRAM）；放不下 → 0 命中（循环访问的抖动下界）。真实替换策略介于 lru 与 pin 之间。
+- **不覆盖**：视频 pipeline 组件（文本编码器、VAE）不用 SLC；多卡共享 SLC、一致性流量、写回策略差异、SLC 分 bank / 冲突、标签开销都不建模。
+- **能耗**：动作 `slc`（命中字节，`pJ_bit_slc`），DRAM 只计未命中；SLC + DRAM = 无 SLC 时的 DRAM 字节（测试守恒）。
+- **结果字段**：`StageTime.t_slc / slc_bytes`，`MemPlan.slc / slc_policy / slc_hot / slc_expert / slc_kv / slc_all / slc_residency`，`dram` 字典增加 `slc` 与 `slc_parts`；API 每级 `t_ms.slc`、`slc_GB`、`mem.slc_*`。CLI `--slc-mib --slc-GBps --slc-policy`；Web 芯片组「SLC MiB / GB/s / 策略」，级表与存储表在有 SLC 时多出 SLC 列；扫描可选 `chip.slc_mib`、`chip.slc_GBps`。
+- **量级**（100T + LPDDR5X 4×64 8533，Qwen3-8B decode batch 8，存储 ≈ 16 GB 权重 + KV）：TPOT 104.2 ms → pin 1 / 4 / 8 / 16 GiB 98.5 / 81.7 / 59.2 / 20.8 ms；lru 16 GiB 放不下 → 104.2 ms（不变），32 GiB 放得下 → 20.0 ms。
+
+## 15. 两级互连：封装内 D2D 与跨封装网络（0.48）
+
+场景字段 `link`（**网络层**：跨封装 / 跨节点的 scale-up 网络，IB / RoCEv2 一类；默认 400 GB/s、α 3 µs，与 0.47 相同）、`d2d`（**die-to-die 层**：同封装 chiplet 之间；默认 2000 GB/s、α 0.5 µs，「假设」）、`package_cards`（每封装卡数，默认 1 = 没有 D2D 层，结果与 0.47 逐字节一致）。
+
+- **卡的编号**：TP 最内层，其次 SP、DP，PP 最外层；连续 `package_cards` 张卡为一个封装。于是 TP / ETP 组步长 1，SP（Ulysses all-to-all）与 DAP 组步长 TP，EP 组步长 ETP，DiT FSDP 组（SP·DP）步长 TP，PP 交接跨越 TP·SP·DP 张卡。IR 的通信算子带 `comm_stride`。
+- **组如何落到两层**：g 个 rank、步长 s 的组在一个封装内有 k = clamp(P // s, 1, g) 个成员（P = 每封装卡数，k 取与 g 的公约数），跨 m = g / k 个封装。
+  - k = g：全在封装内，用原公式 + D2D 的 β、α。
+  - k = 1：每个成员各在一个封装，用原公式 + 网络层（= 单层结果）。
+  - 其余为两级（NCCL 式分层）：
+    - all-reduce = 封装内 reduce-scatter + 封装间对 B/k 做 all-reduce + 封装内 all-gather：`2(k−1)/k·B/β_d + 2(m−1)/m·(B/k)/β_n`，α = 2α_d + α_n；
+    - all-gather = 先封装间再封装内：`(m−1)·B/β_n + (k−1)·m·B/β_d`，α = α_n + α_d；
+    - all-to-all：(k−1)/g 的数据走 D2D、(g−k)/g 走网络，两路并行取 max，α = max(α_d, α_n)。
+  - PP 交接：两级在同一封装内走 D2D，否则走网络。
+  - 不在同一步长下的组（DP > 1 且 PP > 1 时一个副本的卡不连续）按副本里连续的 TP·SP 块计封装内成员数：VAE 多卡解码的 tile all-gather、文本编码器 FSDP 分片的 all-gather 都按此分层。
+- **代价也如实计**：分层 all-reduce 的 α 是 2α_d + α_n（默认 4 µs > 单层 3 µs），所以小载荷的 decode 在部分跨封装时可能略慢（Qwen3-8B TP8 decode TPOT 12.94 → P2 / P4 13.01 → P8 12.76 ms）；大载荷时网络层字节减少到 1/k，收益明显。
+- **量级**：1P + HBM3E，Qwen3-8B prefill TP8 4096 tokens × 8，网络层 50 GB/s、α 5 µs（≈ 400 Gb/s IB 端口）：TTFT 676.8 ms（LINK 瓶颈）→ 每封装 4 卡 248.2 ms（MAC）→ 8 卡 247.8 ms。100T + HBM3E、默认链路：同一 prefill 每级链路时间 84.6 → 26.6 → 16.9 ms（MAC 瓶颈，TTFT 不变）；Wan2.1-14B SP8 + DiT FSDP 每级链路时间 193 → 78（P4）→ 38.6 ms（P8）。
+- **能耗**：链路字节仍按载荷口径，按每次集合通信两层实际发送字节之比拆成 `d2d`（`pJ_bit_d2d`）与网络 `link`（`pJ_bit_link`），D2D + 网络 = 单层时的链路字节。
+- **入口**：API scenario `package_cards`、`d2d: {GBps, alpha_us}`；CLI `--package-cards --d2d-GBps --d2d-alpha-us --link-GBps --link-alpha-us`；Web 并行组「每封装卡数 / D2D GB/s / D2D α」与网络层两项；扫描可选 `package_cards`、`d2d.GBps`、`d2d.alpha_us`。
+- **不做 / 待定**：第三层（封装内 D2D、节点内 scale-up、跨节点 scale-out 三级）未建模——目前「网络层」一项同时代表节点内与跨节点；拓扑（胖树 / torus / 轨道优化）、拥塞、in-network reduction（SHARP）、多路径与链路聚合都不建模；`Link.topology` 仍只是标签。

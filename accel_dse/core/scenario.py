@@ -15,7 +15,7 @@ import math
 from dataclasses import dataclass, field, fields, is_dataclass
 
 from .dtypes import FormatSupport
-from .hardware import CHIPS, Chip, Link
+from .hardware import CHIPS, D2D_DEFAULT, Chip, Link
 from .mapping import ORGS
 from .parallel import Layout
 
@@ -118,16 +118,21 @@ class Scenario:
     chip: Chip = CHIPS["100T"]
     mem_id: str = "lpddr5x_4x64_8533_16g"
     mem_eff: float | None = None
-    link: Link = Link()
+    link: Link = Link()                                  # between packages: scale-up / network tier
     mapping: str = "os"
     layout: Layout = Layout()
     serving: Serving = Serving()
     formats_override: tuple[tuple[str, str], ...] = ()   # what-if (labelled)
     workload: Workload = Workload()                      # video / protein models only
+    d2d: Link = D2D_DEFAULT                              # die-to-die tier inside a package (0.48) 「假设」
+    package_cards: int = 1                               # cards per package (1 = no D2D tier; 0.48)
 
     def __post_init__(self):
         if self.mapping not in ORGS:
             raise ValueError(f"mapping must be one of {ORGS}")
+        if isinstance(self.package_cards, bool) or not isinstance(self.package_cards, int) \
+                or not 1 <= self.package_cards <= 1024:
+            raise ValueError("package_cards must be an integer in [1, 1024]")
         if self.mem_eff is not None and not (0 < self.mem_eff <= 1):
             raise ValueError("mem_eff must be in (0,1]")
 
@@ -191,7 +196,7 @@ def _from_plain(cls, d):
     if unknown:
         raise ValueError(f"{cls.__name__}: unknown keys {sorted(unknown)}")
     kw = {}
-    hints = {"chip": Chip, "link": Link, "layout": Layout, "serving": Serving, "formats": FormatSupport,
+    hints = {"chip": Chip, "link": Link, "d2d": Link, "layout": Layout, "serving": Serving, "formats": FormatSupport,
              "workload": Workload}
     for k, v in d.items():
         if k in hints and isinstance(v, dict):

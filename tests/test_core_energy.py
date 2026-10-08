@@ -26,7 +26,7 @@ def test_llm_counts_conserved_and_closed_form():
         assert abs(c["mac"] - fl / 2 / tok) / c["mac"] < 1e-9 and abs(tok - 8) < 1e-9
         assert abs(c["idle_card_s"] - lay.cards * r.step / tok) < 1e-15
         reps[lay.label] = c
-        assert "J_per_unit" not in e and e["provided"] == [] and len(e["missing"]) == 6
+        assert "J_per_unit" not in e and e["provided"] == [] and len(e["missing"]) == 8   # 0.48: + slc, d2d
     base = reps["PP1·TP1"]
     for k, c in reps.items():
         assert abs(c["mac"] / base["mac"] - 1) < 0.01, k                 # work is conserved across layouts

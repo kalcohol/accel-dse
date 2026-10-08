@@ -56,7 +56,7 @@ function domainBadge(m) {
   if (m.domain === 'protein') return h('span', { class: 'badge vlm', title: coverTip(m) }, m.is_pair ? '蛋白质 · 结构预测' : '蛋白质 · 编码器前向');
   return null;
 }
-const BOUND_ZH = { MAC: 'MAC 算力', FEED: 'FEED 供数', VECTOR: 'VECTOR 向量', DRAM: 'DRAM 带宽', LINK: 'LINK 互连', SYNC: 'SYNC 同步' };
+const BOUND_ZH = { MAC: 'MAC 算力', FEED: 'FEED 供数', VECTOR: 'VECTOR 向量', DRAM: 'DRAM 带宽', SLC: 'SLC 系统级缓存', LINK: 'LINK 互连', SYNC: 'SYNC 同步' };
 const COMPONENTS = ['mac', 'feed', 'vector', 'dram', 'link', 'sync'];
 const MAP_DESC = {
   os: '输出驻留：权重与激活都从 SRAM 流入，供数端口常是小 M 时的瓶颈。',
@@ -154,6 +154,7 @@ function syncInputs() {
   if ($('w-vae_tiling')) $('w-vae_tiling').checked = !!S.sc.workload.vae_tiling;
   for (const k of ['dit_fsdp', 'te_cpu', 'vae_parallel', 'overlap']) if ($('w-' + k)) $('w-' + k).checked = !!S.sc.workload[k];
   if ($('w-sample_split')) $('w-sample_split').checked = S.sc.workload.sample_split !== false;
+  if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
 }
 
 function seg(id, items, get, set) {
@@ -450,6 +451,9 @@ function renderEval(r) {
     ...(r.model.what_if ? [h('div', {}, 'what-if：dtype 已偏离官方发布，结果仅供推演。')] : []));
   renderStages(r);
   renderEnergy(r);
+  { const P = r.scenario.package_cards || 1, tot = r.stages.reduce((x, st) => x + (st.link_GB ? st.link_GB.total : 0), 0),
+      d = r.stages.reduce((x, st) => x + (st.link_GB ? st.link_GB.d2d : 0), 0);
+    $('tier-note').textContent = P > 1 ? `每封装 ${P} 卡：DiT / 流水级通信字节中 ${tot > 0 ? pct(d / tot) : '—'} 走 D2D，其余走网络层` : ''; }
   renderAssumptions(r);
   if (!s.fits) { $('kpis').hidden = true; runFit(); return; }
   $('fit').hidden = true;
@@ -592,8 +596,11 @@ function renderEnergy(r) {
   const u = E_UNIT[e.unit] || e.unit;
   const sci = (x) => (x === 0 ? '0' : x.toExponential(3));
   const rows = [['MAC（bf16 等效）', c.mac, '', 'mac', 'pJ_mac'], ['向量操作', c.vec, '', 'vec', 'pJ_vec'],
-    ['SRAM 端口', c.sram, ' B', 'sram', 'pJ_bit_sram'], ['DRAM 读写', c.dram, ' B', 'dram', 'pJ_bit_dram'],
-    ['链路发送', c.link, ' B', 'link', 'pJ_bit_link'], ['卡·秒（静态）', c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
+    ['SRAM 端口', c.sram, ' B', 'sram', 'pJ_bit_sram'],
+    ...(c.slc ? [['SLC 命中', c.slc, ' B', 'slc', 'pJ_bit_slc']] : []),
+    [c.slc ? 'DRAM 读写（SLC 未命中）' : 'DRAM 读写', c.dram, ' B', 'dram', 'pJ_bit_dram'],
+    ...(c.d2d ? [['D2D 发送（封装内）', c.d2d, ' B', 'd2d', 'pJ_bit_d2d']] : []),
+    [c.d2d ? '网络层发送（跨封装）' : '链路发送', c.link, ' B', 'link', 'pJ_bit_link'], ['卡·秒（静态）', c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
   const head = h('tr', {}, h('th', {}, '动作'), h('th', {}, `次数 / ${u}`), h('th', {}, `能耗 J / ${u}`));
   const body = rows.map(([lab, n, sfx, k, key]) => h('tr', {}, h('td', {}, lab), h('td', { class: 'num' }, sci(n) + sfx),
     h('td', { class: 'num' }, e.provided.includes(key) ? sci(j[k] || 0) : h('span', { class: 'muted' }, '未提供'))));
@@ -602,29 +609,34 @@ function renderEnergy(r) {
   put($('energy-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
 }
 function renderStages(r) {
+  const hasSlc = r.stages.some((st) => st.mem.slc_MiB > 0);
+  const COMPS = hasSlc ? ['mac', 'feed', 'vector', 'dram', 'slc', 'link', 'sync'] : COMPONENTS;
   const head = h('tr', {}, h('th', { class: 'l' }, '流水级'), h('th', { class: 'l' }, '层'), h('th', {}, '瓶颈'),
-    ...COMPONENTS.map((c) => h('th', {}, c.toUpperCase() + ' ms')), h('th', {}, '合计 ms'), h('th', { class: 'l' }, '有效 MAC'),
+    ...COMPS.map((c) => h('th', {}, c.toUpperCase() + ' ms')), h('th', {}, '合计 ms'), h('th', { class: 'l' }, '有效 MAC'),
     h('th', {}, 'TFLOP / 步'));
   const rows = r.stages.map((st) => {
-    const comp = { mac: st.t_ms.mac, feed: st.t_ms.feed, vector: st.t_ms.vector, dram: st.t_ms.dram, link: st.t_ms.link, sync: st.t_ms.sync };
+    const comp = { mac: st.t_ms.mac, feed: st.t_ms.feed, vector: st.t_ms.vector, dram: st.t_ms.dram, slc: st.t_ms.slc || 0, link: st.t_ms.link, sync: st.t_ms.sync };
     return h('tr', { class: st.index === r.summary.heaviest_stage ? 'best' : '' },
       h('td', { class: 'l' }, st.index), h('td', { class: 'l' }, `${st.layers[0]}–${st.layers[1] - 1}`), h('td', {}, boundTag(st.bound)),
-      ...COMPONENTS.map((c) => h('td', { style: c.toUpperCase() === st.bound ? 'color:var(--b-' + c + ');font-weight:700' : '' }, num(comp[c]))),
+      ...COMPS.map((c) => h('td', { style: c.toUpperCase() === st.bound ? 'color:var(--b-' + c + ');font-weight:700' : '' }, num(comp[c]))),
       h('td', {}, num(st.t_ms.total)),
       h('td', { class: 'l' }, h('span', { class: 'ubar' }, h('i', { style: `width:${Math.min(100, st.array_util * 100)}%` })), pct(st.array_util)),
       h('td', {}, num(st.tflops)));
   });
   put($('stage-tbl'), h('thead', {}, head), h('tbody', {}, rows));
-  put($('legend'), ...COMPONENTS.map((c) => h('span', { style: `--c:var(--b-${c})` }, BOUND_ZH[c.toUpperCase()])),
+  put($('legend'), ...COMPS.map((c) => h('span', { style: `--c:var(--b-${c})` }, BOUND_ZH[c.toUpperCase()])),
     h('span', { style: '--c:transparent' }, 'MAC / FEED 为逐算子取 max 之前的分项和'));
   const mh = h('tr', {}, h('th', { class: 'l' }, '流水级'), h('th', {}, '权重 GiB'), h('th', {}, r.summary.gen ? 'KV GiB（无 KV 缓存）' : 'KV GiB'), h('th', {}, '状态 GiB'),
     h('th', {}, '需求 / 容量 GiB'), h('th', {}, 'SRAM 驻留'), h('th', {}, 'SRAM 中 KV MiB'), h('th', {}, '暂存区 MiB'),
-    h('th', {}, r.summary.gen ? 'DRAM 流量 / 前向 GB（含激活流式）' : 'DRAM 流量 / 步 GB'), h('th', {}, '反量化 百万元素'));
+    h('th', {}, r.summary.gen ? 'DRAM 流量 / 前向 GB（含激活流式）' : 'DRAM 流量 / 步 GB'),
+    ...(hasSlc ? [h('th', {}, '含 SLC 驻留'), h('th', {}, 'SLC 命中 GB')] : []), h('th', {}, '反量化 百万元素'));
   const mr = r.stages.map((st) => h('tr', {}, h('td', { class: 'l' }, st.index), h('td', {}, num(st.mem.stored_w_GiB)),
     h('td', {}, num(st.mem.kv_GiB)), h('td', {}, num(st.mem.state_GiB)),
     h('td', { style: st.mem.fits ? '' : 'color:var(--danger)' }, `${num(st.mem.need_GiB)} / ${num(st.mem.cap_GiB)}`),
     h('td', {}, pct(st.mem.residency)), h('td', {}, num(st.mem.kv_sram_MiB)), h('td', {}, num(st.mem.staging_MiB)),
-    h('td', {}, num(st.dram_GB.total)), h('td', {}, num(st.convert_Melems))));
+    h('td', {}, num(st.dram_GB.total)),
+    ...(hasSlc ? [h('td', { title: st.mem.slc_policy === 'lru' ? (st.mem.slc_all ? 'lru：片外工作集放得下 → 全部读命中' : 'lru：放不下 → 循环访问全部未命中') : `pin：SLC 中权重 ${num(st.mem.slc_w_MiB)} MiB，KV / 状态 ${num(st.mem.slc_kv_MiB)} MiB` }, pct(st.mem.slc_residency)),
+      h('td', {}, num(st.dram_GB.slc || 0))] : []), h('td', {}, num(st.convert_Melems))));
   put($('mem-tbl'), h('thead', {}, mh), h('tbody', {}, mr));
 }
 function renderAssumptions(r) {
@@ -636,7 +648,12 @@ function renderAssumptions(r) {
     `GEMV 单元 ${c.gemv_macs || cc.gemv} MAC/cycle${c.gemv_macs ? '' : '（默认 = 阵列 MAC / 8）'}；向量通道 ${c.vector_lanes || cc.lanes}`,
     `累加器 ${c.acc_kib} KiB（超出的部分和行溢出到 SRAM）`,
     `DRAM 效率 ${sc.mem_eff ?? (S.memInfo ? S.memInfo.efficiency : 0.7)}；预留 1 GiB；暂存区 = max(2 MiB, 2·最大激活)`,
-    `链路 ${sc.link.GBps} GB/s，每次集合通信同步 α = ${sc.link.alpha_us} µs（${sc.link.topology === 'ring' ? '环形' : '交换'}拓扑）`,
+    (sc.package_cards || 1) > 1
+      ? `两层互连：每封装 ${sc.package_cards} 卡走 D2D ${sc.d2d.GBps} GB/s、α ${sc.d2d.alpha_us} µs；封装之间走网络层 ${sc.link.GBps} GB/s、α ${sc.link.alpha_us} µs。卡按 TP → SP → DP → PP 编号，通信组按落在同一封装内的成员数 k 分层（allreduce / allgather 两级、all-to-all 按比例分摊；PP 交接是否跨封装按流水级边界）`
+      : `链路 ${sc.link.GBps} GB/s，每次集合通信同步 α = ${sc.link.alpha_us} µs（${sc.link.topology === 'ring' ? '环形' : '交换'}拓扑；每封装 1 卡 = 无 D2D 层）`,
+    c.slc_mib > 0
+      ? `系统级缓存 SLC ${c.slc_mib} MiB @ ${c.slc_GBps} GB/s，策略 ${c.slc_policy === 'lru' ? 'lru（循环访问：片外工作集放得下全部读命中，否则 0 命中——上界 / 下界之间）' : 'pin（SRAM 之后按热权重 → 专家 → KV / 状态钉住，流式激活与 KV 写入绕过）'}；不增加容量；文本编码器 / VAE 不用 SLC`
+      : '无系统级缓存（SLC MiB = 0）',
     '芯片不支持的权重格式：反量化每元素 2 次向量操作',
   ];
   if (r.summary.gen) {
@@ -813,7 +830,8 @@ async function runStability() {
 const SWEEP_ZH = {
   'serving.batch': 'batch', 'serving.ctx': '上下文 ctx', 'serving.prompt': 'prompt 长度', 'serving.spec_k': '投机 k',
   'chip.sram_mib': 'SRAM MiB', 'chip.sram_port_Bpc': 'SRAM 端口 B/cycle', 'chip.freq_ghz': '频率 GHz', 'chip.mac_eff': 'MAC 效率',
-  'chip.gemv_macs': 'GEMV MAC/cycle', mem_eff: 'DRAM 效率', 'link.GBps': '链路 GB/s', 'link.alpha_us': '同步 α µs',
+  'chip.gemv_macs': 'GEMV MAC/cycle', mem_eff: 'DRAM 效率', 'link.GBps': '网络层 GB/s', 'link.alpha_us': '网络 α µs',
+  'chip.slc_mib': 'SLC MiB', 'chip.slc_GBps': 'SLC GB/s', 'd2d.GBps': 'D2D GB/s', 'd2d.alpha_us': 'D2D α µs', package_cards: '每封装卡数',
   'workload.frames': '帧数', 'workload.steps': '去噪步数', 'workload.height': '高 px', 'workload.width': '宽 px',
   'workload.seq_len': '序列长度（残基）', 'workload.msa': 'MSA 行数', 'workload.recycles': '主干遍数',
   'workload.samples': '扩散样本数',
@@ -836,6 +854,8 @@ const SWEEP_DEFAULT = {
   'serving.spec_k': '0,1,2,3,4,6,8', 'chip.sram_mib': '16,32,64,128,256,512', 'chip.sram_port_Bpc': '2048,4096,7616,16384,32768',
   'chip.freq_ghz': '0.6,0.8,1,1.2,1.5', 'chip.mac_eff': '0.5,0.6,0.7,0.8,0.9,1', 'chip.gemv_macs': '1024,4096,12544,50176',
   mem_eff: '0.5,0.6,0.7,0.8,0.9', 'link.GBps': '50,100,200,400,900', 'link.alpha_us': '0,1,3,5,10',
+  'chip.slc_mib': '0,64,256,1024,4096', 'chip.slc_GBps': '500,1000,2000,4000', 'd2d.GBps': '500,1000,2000,4000',
+  'd2d.alpha_us': '0,0.5,1,2', package_cards: '1,2,4,8',
   'workload.frames': '17,33,49,81,121', 'workload.steps': '10,20,30,50', 'workload.height': '240,480,720',
   'workload.width': '416,832,1280', 'workload.seq_len': '128,256,512,1022,2048',
   'workload.msa': '64,256,512,1024,4096', 'workload.recycles': '1,2,3,4,6', 'workload.samples': '1,5,10,25',
@@ -997,7 +1017,7 @@ async function init() {
 
   fillModels();
   seg('chip-preset', Object.keys(S.cat.chips).map((k) => [k, k]), () => S.preset, (v) => { S.preset = v; S.chipOver = {}; onPreset(); syncInputs(); schedule(); });
-  for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'gemv_macs', 'mac_eff', 'acc_kib']) {
+  for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps']) {
     const nullable = k === 'sram_port_Bpc' || k === 'gemv_macs';
     bindNumber('c-' + k, () => chipVal(k), (x) => { if (x === null) delete S.chipOver[k]; else S.chipOver[k] = x; if (k === 'freq_ghz') onPreset(); },
       { int: k === 'gemv_macs', nullable });
@@ -1015,7 +1035,7 @@ async function init() {
   for (const k of ['clip_slo_s', 'seq_slo_ms', 'fold_slo_s']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
   bindNumber('w-host_GBps', () => S.sc.workload.host_GBps, (x) => (S.sc.workload.host_GBps = x));
   bindNumber('w-host_TFLOPS', () => S.sc.workload.host_TFLOPS, (x) => (S.sc.workload.host_TFLOPS = x));
-  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W'])
+  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   $('best-layout').addEventListener('click', bestLayout);
   $('best-batch').checked = S.best;
@@ -1027,6 +1047,9 @@ async function init() {
     cardsNote();
   };
   for (const k of ['GBps', 'alpha_us']) bindNumber('k-' + k, () => S.sc.link[k], (x) => (S.sc.link[k] = x));
+  for (const k of ['GBps', 'alpha_us']) bindNumber('d-' + k, () => S.sc.d2d[k], (x) => (S.sc.d2d[k] = x));
+  bindNumber('p-package_cards', () => S.sc.package_cards || 1, (x) => (S.sc.package_cards = x), { int: true });
+  $('c-slc_policy').addEventListener('change', (e) => { S.chipOver.slc_policy = e.target.value; schedule(); });
   for (const k of ['batch', 'ctx', 'prompt', 'out_len', 'spec_k', 'microbatches'])
     bindNumber('s-' + k, () => S.sc.serving[k], (x) => (S.sc.serving[k] = x), { int: true });
   for (const k of ['spec_accept', 'tpot_slo_ms', 'ttft_slo_ms']) bindNumber('s-' + k, () => S.sc.serving[k], (x) => (S.sc.serving[k] = x));

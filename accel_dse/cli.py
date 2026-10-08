@@ -57,9 +57,23 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     for flag, dest, hlp in (("--pJ-mac", "pJ_mac", "per bf16-equivalent MAC"), ("--pJ-vec", "pJ_vec", "per vector op"),
                             ("--pJ-bit-sram", "pJ_bit_sram", "per SRAM-port bit"),
                             ("--pJ-bit-dram", "pJ_bit_dram", "per DRAM bit"),
-                            ("--pJ-bit-link", "pJ_bit_link", "per link bit"), ("--idle-W", "idle_W", "W per card")):
+                            ("--pJ-bit-link", "pJ_bit_link", "per link (network tier) bit"),
+                            ("--idle-W", "idle_W", "W per card"),
+                            ("--pJ-bit-slc", "pJ_bit_slc", "per SLC bit"), ("--pJ-bit-d2d", "pJ_bit_d2d", "per D2D bit")):
         p.add_argument(flag, dest=dest, type=float, default=None,
                        help=f"energy table (user-supplied, no default): {hlp}")
+    p.add_argument("--slc-mib", dest="slc_mib", type=float, default=None,
+                   help="system-level cache per card, MiB (0.48; default 0 = none) 「假设」")
+    p.add_argument("--slc-GBps", dest="slc_GBps", type=float, default=None, help="SLC bandwidth (default 2000 「假设」)")
+    p.add_argument("--slc-policy", dest="slc_policy", default=None, choices=["pin", "lru"],
+                   help="SLC policy: pin (software-pinned like SRAM) | lru (all-or-nothing cyclic bound)")
+    p.add_argument("--link-GBps", dest="link_GBps", type=float, default=None,
+                   help="scale-up / network tier bandwidth per rank (default 400 「假设」)")
+    p.add_argument("--link-alpha-us", dest="link_alpha_us", type=float, default=None, help="network tier α (default 3)")
+    p.add_argument("--package-cards", dest="package_cards", type=int, default=None,
+                   help="cards per package on the die-to-die tier (0.48; default 1 = no D2D tier)")
+    p.add_argument("--d2d-GBps", dest="d2d_GBps", type=float, default=None, help="D2D bandwidth (default 2000 「假设」)")
+    p.add_argument("--d2d-alpha-us", dest="d2d_alpha_us", type=float, default=None, help="D2D α (default 0.5 「假设」)")
     p.add_argument("--json", action="store_true", help="print raw JSON")
 
 
@@ -100,8 +114,18 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["mem_eff"] = a.mem_eff
     if layout:
         sc["layout"] = {k: getattr(a, k) for k in ("pp", "tp", "dp", "ep", "etp", "sp")}
+    chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy") if getattr(a, k, None) is not None}
+    if chip:
+        sc["chip"] = chip
+    for tier, pre in (("link", "link"), ("d2d", "d2d")):
+        lk = {k: getattr(a, f"{pre}_{k}") for k in ("GBps", "alpha_us") if getattr(a, f"{pre}_{k}", None) is not None}
+        if lk:
+            sc[tier] = lk
+    if getattr(a, "package_cards", None) is not None:
+        sc["package_cards"] = a.package_cards
     body = {"chip_preset": a.chip, "scenario": sc}
-    en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W")
+    en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
+                                     "pJ_bit_slc", "pJ_bit_d2d")
           if getattr(a, k, None) is not None}
     if en:
         body["energy"] = en
@@ -168,7 +192,8 @@ def cmd_eval(a) -> dict:
     if e := out.get("energy"):
         c = e["counts_per_unit"]
         print(f"actions / {e['unit']}: MAC {c['mac']:.3g}  vec {c['vec']:.3g}  SRAM {c['sram']:.3g} B  "
-              f"DRAM {c['dram']:.3g} B  link {c['link']:.3g} B  card·s {c['idle_card_s']:.3g}")
+              f"DRAM {c['dram']:.3g} B  link {c['link']:.3g} B  card·s {c['idle_card_s']:.3g}"
+              + (f"  SLC {c['slc']:.3g} B" if c.get("slc") else "") + (f"  D2D {c['d2d']:.3g} B" if c.get("d2d") else ""))
         if "J_per_unit" in e:
             print(f"energy {e['J_per_unit']:.4g} J / {e['unit']}  (avg {e['avg_W_per_card']:.0f} W/card; user-supplied "
                   f"table: {', '.join(e['provided'])}; missing: {', '.join(e['missing']) or '-'})  "
