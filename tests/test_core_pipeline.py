@@ -109,7 +109,7 @@ def test_batch_dp_and_capacity():
     assert c.pipeline["batch_per_replica"] == 1 and abs(c.pipeline["decode_s"] / a.pipeline["decode_s"] - 1) < 1e-9
     assert abs(c.pipeline["tflop"] / b.pipeline["tflop"] - 1) < 1e-9             # same total work, two replicas
     # Wan2.1-14B fp32 DiT (57 GB) + umT5 (11.4 GB) no longer fits 64 GB LPDDR; DiT-only still does
-    r = evaluate(Scenario(model="wan2.1-14b", mem_id=LP))
+    r = evaluate(Scenario(model="wan2.1-14b", mem_id=LP, workload=Workload(placement="resident")))
     assert not r.fits and any("文本编码器 / VAE" in w for w in r.warnings)
     assert evaluate(Scenario(model="wan2.1-14b", mem_id=LP, workload=Workload(pipeline=False))).fits
 

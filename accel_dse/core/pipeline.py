@@ -164,6 +164,19 @@ def text_ops(te: TextEnc, prompts: int, af: str) -> tuple[list[Op], float]:
     return ops, peak
 
 
+def te_layers(te: TextEnc) -> tuple[int, float]:
+    """(transformer layers, bytes of the largest layer) of a text encoder — the unit an FSDP-sharded encoder
+    all-gathers (Wan ``--t5_fsdp``)."""
+    d = component_data(te.key)
+    wb = _fmt(d["dtype"]).bytes
+    per: dict = {}
+    for name, sh in d["tensors"].items():
+        mm = _TE_LAYER.search(name)
+        if mm:
+            per[int(mm.group(1))] = per.get(int(mm.group(1)), 0) + math.prod(sh) * wb
+    return len(per), max(per.values(), default=0.0)
+
+
 # ---------------------------------------------------------------- VAE decoders
 @dataclass(frozen=True)
 class _Fam:
@@ -277,26 +290,52 @@ def _hunyuan_tiles(lat: tuple[int, int, int]) -> list[tuple[tuple[int, int, int]
     return sorted(out.items())
 
 
+# optional spatial tiling of diffusers ``enable_tiling()`` (0.45), latent units: (tile, stride) per axis (H, W)
+#   CogVideoX  tile_sample_min = sample size / 2 = 240 × 360 px → 30 × 45 latent; overlap factors 1/6, 1/5 →
+#              stride int(30·5/6) = 25, int(45·4/5) = 36   (AutoencoderKLCogVideoX)
+#   Mochi      tile_sample_min 256 px, stride 192 px → 32 / 24 latent                (AutoencoderKLMochi)
+TILING = {"cog": ((30, 25), (45, 36)), "mochi": ((32, 24), (32, 24))}
+
+
+def _spatial_tiles(lat: tuple[int, int, int], spec: tuple) -> list[tuple[tuple[int, int, int], int]]:
+    T, H, W = lat
+    (th, sh), (tw, sw) = spec
+    hs = [len(range(H)[i:i + th]) for i in range(0, H, sh)] if H > th else [H]
+    ws = [len(range(W)[j:j + tw]) for j in range(0, W, sw)] if W > tw else [W]
+    out: dict = {}
+    for b in hs:
+        for c in ws:
+            out[(T, b, c)] = out.get((T, b, c), 0) + 1
+    return sorted(out.items())
+
+
+def _tiled(ten: dict, fam: str, tiles: list, wf: str, af: str, batch: int, lat: tuple, info: dict) -> tuple:
+    groups, peak = [], 0.0
+    for tl, c in tiles:     # one op list per distinct tile size, executed c · batch times (weights re-read per tile)
+        o, p, _ = _conv_walk(ten, "", FAMILIES[fam], tl, wf, af, 1, 1, f"vae[{tl[0]}x{tl[1]}x{tl[2]}]")
+        groups.append((o, c * batch))
+        peak = max(peak, p)
+    vol = sum(a * b * cc * n for (a, b, cc), n in tiles)
+    info["tiles"] = sum(n for _, n in tiles)
+    info["overlap"] = vol / math.prod(lat)
+    info["groups"] = groups
+    return [], peak, info
+
+
 def vae_ops(v: Vae, lat: tuple[int, int, int], frames: int, batch: int, af: str,
-            audio_rows: int = 0) -> tuple[list[Op], float, dict]:
+            audio_rows: int = 0, tiling: bool = False) -> tuple[list[Op], float, dict]:
     """Decode ops of one request batch; (ops, activation peak bytes, info).  A tiled decode returns its ops as
-    ``info["groups"]`` = [(op list of one tile size, executions)] instead."""
+    ``info["groups"]`` = [(op list of one tile size, executions)] instead.  ``tiling``: diffusers ``enable_tiling()``
+    for the families in ``TILING`` (HunyuanVideo always tiles)."""
     d = component_data(v.key)
     wf, ten = d["dtype"], d["tensors"]
     af = v.act or af
     info: dict = {"act": af}
     if v.family == "hunyuan":
-        groups, peak = [], 0.0
-        tiles = _hunyuan_tiles(lat)
-        for tl, c in tiles:     # one op list per distinct tile size, executed c · batch times (weights re-read per tile)
-            o, p, _ = _conv_walk(ten, "", FAMILIES["hunyuan"], tl, wf, af, 1, 1, f"vae[{tl[0]}x{tl[1]}x{tl[2]}]")
-            groups.append((o, c * batch))
-            peak = max(peak, p)
-        vol = sum(a * b * cc * n for (a, b, cc), n in tiles)
-        info["tiles"] = sum(n for _, n in tiles)
-        info["overlap"] = vol / math.prod(lat)
-        info["groups"] = groups
-        return [], peak, info
+        return _tiled(ten, "hunyuan", _hunyuan_tiles(lat), wf, af, batch, lat, info)
+    if tiling and v.family in TILING:
+        info["tiling"] = True
+        return _tiled(ten, v.family, _spatial_tiles(lat, TILING[v.family]), wf, af, batch, lat, info)
     if v.family == "os":
         t0, h0, w0 = lat
         o1, p1, tfin = _conv_walk(ten, "temporal_vae.", FAMILIES["os_t"], (t0, h0, w0), wf, af, 1, batch, "vae.t")

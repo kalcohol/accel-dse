@@ -85,10 +85,10 @@
       <label class="dp-in">DP<input type="number" id="l-dp" min="1" step="1"></label>
       <label class="moe-only">EP<input type="number" id="l-ep" min="1" step="1"></label>
       <label class="moe-only">ETP<input type="number" id="l-etp" min="1" step="1"></label>
-      <label class="full-only sp-in" title="Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all（每 rank 算 heads/SP 个头的完整序列）">SP<input type="number" id="l-sp" min="1" step="1"></label>
+      <label class="full-only sp-in" id="l-sp-lab" title="Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all（每 rank 算 heads/SP 个头的完整序列）"><span id="l-sp-name">SP</span><input type="number" id="l-sp" min="1" step="1"></label>
     </div>
     <div class="small muted moe-only">MoE 约束 EP·ETP = TP·DP（注意力按 TP、DP 切分，专家按 EP、ETP 切分）；修改时自动补齐 ETP。</div>
-    <div class="small muted full-only">视频 / 蛋白质：卡数 = PP·TP·DP·SP。DP 切分前向 batch（视频含 CFG 的 cond / uncond 两路 = CFG 并行）；SP = Ulysses 序列并行，权重在 SP 组内复制。蛋白质结构模型只取 PP × DP（pair 表示的 DAP 切分未建模）。</div>
+    <div class="small muted full-only">视频 / 蛋白质：卡数 = PP·TP·DP·SP。DP 切分前向 batch（视频含 CFG 的 cond / uncond 两路 = CFG 并行）；SP = Ulysses 序列并行，权重在 SP 组内复制。蛋白质结构模型：SP 位置为 DAP（pair / MSA 网格按残基轴切分，FastFold 动态轴并行），无 TP。</div>
     <button class="btn ghost sm" id="best-layout">搜索当前卡数的最优布局并应用</button>
     <div class="row2">
       <label>链路 GB/s <span class="tag assume">假设</span><input type="number" id="k-GBps" step="50" min="1"></label>
@@ -107,6 +107,12 @@
       <label>单段 SLO s <span class="tag assume">假设</span><input type="number" id="w-clip_slo_s" min="1" step="60"></label>
     </div>
     <label class="inline gen-only" title="默认计入：文本编码器（每请求一次）与 VAE 解码（每段一次）的时间串行加在去噪前后，权重计入首 / 末流水级卡的存储。取消 = 只看 DiT 去噪主干（相当于把它们卸载到别处）"><input type="checkbox" id="w-pipeline" checked> 计入文本编码器与 VAE 解码（时间 + 存储）</label>
+    <div class="row3 gen-only">
+      <label title="文本编码器 / VAE 放在哪里：常驻 = 编码器在首级卡、VAE 在末级卡，与 DiT 同时常驻；分片 = 文本编码器权重按 FSDP 切到本副本全部卡（Wan --t5_fsdp），逐层 all-gather；卸载 = 组件与 DiT 分时占用显存（diffusers enable_model_cpu_offload / Wan --offload_model），每请求从主机重载权重；自动 = 依次取第一个放得下的">组件放置 <span class="tag assume">假设</span>
+        <select id="w-placement"><option value="auto">自动</option><option value="resident">常驻</option><option value="shard">文本编码器分片</option><option value="offload">顺序卸载</option><option value="shard+offload">分片 + 卸载</option></select></label>
+      <label title="卸载时每卡主机 → 卡带宽（「假设」PCIe 5.0 x16 有效约 50 GB/s）">主机带宽 GB/s <span class="tag assume">假设</span><input type="number" id="w-host_GBps" min="1" step="8"></label>
+      <label class="inline" title="diffusers enable_tiling()：CogVideoX（240×360 px tile，重叠 1/6、1/5）与 Mochi（256 px tile，stride 192）空间分块解码，重叠区重复计算、激活峰值按 tile；HunyuanVideo 总是分块；其余 VAE 的分块未建模"><input type="checkbox" id="w-vae_tiling"> VAE 分块解码</label>
+    </div>
     <div class="row3 protein-only">
       <label>序列长度（残基）<input type="number" id="w-seq_len" min="1" max="65536" step="64"></label>
       <label class="seq-slo">批延迟 SLO ms <span class="tag assume">假设</span><input type="number" id="w-seq_slo_ms" min="1" step="50"></label>
@@ -201,7 +207,7 @@
 
   <section class="tab" id="tab-models" hidden>
     <p class="small muted">按厂商 → 系列排列，同一厂商的 LLM、VLM、视频生成与蛋白质模型放在一起（带领域标记）；系列内按尺寸从大到小，官方量化版（FP8 / AWQ）紧跟原版；已按发布接入 v2 的视频（Wan2.1、CogVideoX）与蛋白质（ESM-2）模型可评估，其余标「暂未接入 v2」。三轴标签：来源（官方 / 镜像）× 覆盖 × 按发布的 dtype；参数量由发布的 safetensors 头统计，并与按 config 推导的值核对。</p>
-    <p class="small"><b>覆盖度</b>指本工具对该模型结构的建模覆盖程度，与模型好坏无关：<span class="badge cov full">完整</span> 全部算子按发布结构逐项建模；<span class="badge cov partial">部分</span> 主干逐项建模，个别机制近似（见「近似之处」）；<span class="badge cov proxy">架构代理</span> 含未建模的结构，结果只作量级参考。VLM 只评估语言主干，视觉编码器未建模；视频生成默认整条 pipeline：DiT 去噪主干 + 文本编码器 + VAE 解码（按发布检查点头建模，串行在一张卡上「假设」；工作负载里取消勾选即只看 DiT）。</p>
+    <p class="small"><b>覆盖度</b>指本工具对该模型结构的建模覆盖程度，与模型好坏无关：<span class="badge cov full">完整</span> 全部算子按发布结构逐项建模；<span class="badge cov partial">部分</span> 主干逐项建模，个别机制近似（见「近似之处」）；<span class="badge cov proxy">架构代理</span> 含未建模的结构，结果只作量级参考。VLM 只评估语言主干，视觉编码器未建模；视频生成默认整条 pipeline：DiT 去噪主干 + 文本编码器 + VAE 解码（按发布检查点头建模，与去噪串行「假设」；组件放置可选常驻 / 文本编码器分片 / 顺序卸载，默认自动取第一个放得下的；工作负载里取消勾选即只看 DiT）。</p>
     <p class="small" id="models-summary"></p>
     <div class="scroll"><table class="tbl" id="models-tbl"></table></div>
     <details class="notes"><summary>未单列的发布（仍可按 id 评估，也都参与参数核对）</summary><ul id="models-unlisted"></ul></details>

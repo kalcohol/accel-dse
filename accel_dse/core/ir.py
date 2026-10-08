@@ -20,7 +20,7 @@ Op kinds
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .dtypes import fmt as _fmt
 from .model import AttnCore, Layer, Linear, ModelSpec, PairCore
@@ -457,19 +457,44 @@ def layer_repeat(L: Layer, ph: Phase) -> int:
     return max(0, r) * L.iters
 
 
-def _pair_rows(tag: str, pd: PairDims, b: int, s: int, sp: int) -> int:
-    """Rows of a structure-model GEMM; ``s`` multiplies token / atom grids, ``sp`` the pair / MSA grids."""
+def _pair_rows(tag: str, pd: PairDims, b: int, s: int, ps: int, dap: int = 1) -> int:
+    """Rows of a structure-model GEMM on one rank; ``s`` multiplies token / atom grids, ``ps`` the pair / MSA grids
+    (per-sample pair copies).  DAP (0.45): the pair / template grids are split along their first residue axis and
+    the MSA grids along one axis over ``dap`` ranks; token / atom grids are replicated."""
     n = pd.n
-    return {"res": b * s * n, "tok": b * s * n, "seq": b * s, "pair": b * sp * n * n, "msa": b * sp * pd.msa * n,
-            "xmsa": b * sp * pd.xmsa * n, "tmpl": b * pd.tmpl * n * n, "atom": b * s * pd.atoms,
+    nd = _cdiv(n, dap)
+    return {"res": b * s * n, "tok": b * s * n, "seq": b * s, "pair": b * ps * nd * n,
+            "msa": b * ps * _cdiv(pd.msa, dap) * n, "xmsa": b * ps * _cdiv(pd.xmsa, dap) * n,
+            "tmpl": b * pd.tmpl * nd * n, "atom": b * s * pd.atoms,
             "apair": b * s * _cdiv(pd.atoms, 32) * 32 * 128}[tag]
 
 
-def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int, s: int, sp: int,
-                   tag: str) -> list[Op]:
+_DAP_SPLIT = frozenset({"pair", "msa", "xmsa", "tmpl"})
+
+
+def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int, s: int, ps: int,
+                   tag: str, dap: int = 1, transposed_msa: bool = True) -> list[Op]:
+    """Activation × activation work of one module on one rank.  ``dap`` > 1: dynamic axial parallelism (FastFold,
+    Cheng et al. 2022) — the module runs on its local slice of the residue / MSA axis and the communication of the
+    FastFold DAP kernels is added (payload per rank; like every collective it overlaps compute per the stage rule
+    max(compute, DRAM, link) and adds α per collective):
+      trimul   all-gather of one projected operand (N × N × c)
+      tri_att  all-gather of the pair bias (N × N × H) + one all-to-all transpose of the pair rep (start ↔ end node)
+      row_att  all-gather of the pair bias (MSA split along its rows → attention local)
+      col_att  two all-to-all transposes of the MSA rep (row ↔ column split)
+      opm      all-gather of the right projection (S × N × c2); AF3-style MSA modules without column attention keep
+               the MSA row-split, so an all-to-all transpose of the MSA is added first
+      pwa      all-gather of the pair-derived weights (N × N × H)
+      seq_att  all-gather of the pair bias (single track itself replicated on every DAP rank)"""
     ab = _fmt(model.act_fmt).bytes
     n = pd.n
-    bt = b * pd.tmpl if c.over == "tmpl" else b * sp      # pair-grid batch: templates or per-sample pair copies
+    nd = _cdiv(n, dap)
+    bt = b * pd.tmpl if c.over == "tmpl" else b * ps      # pair-grid batch: templates or per-sample pair copies
+    comm: list[Op] = []
+
+    def cm(kind: str, payload: float, what: str) -> None:
+        if dap > 1 and payload > 0:
+            comm.append(Op(f"{tag}.dap_{what}", "comm", li, comm_kind=kind, comm_group=dap, comm_bytes=payload * ab))
 
     def att(groups: int, nq: int, nk: int, d: int, vd: int, bias: bool) -> list[Op]:
         cnt = groups * c.heads
@@ -484,25 +509,35 @@ def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int,
 
     d, vd = c.dim, c.v_dim or c.dim
     if c.kind == "trimul":
-        return [bmm(n, n, n, bt * c.dim)]
+        cm("allgather", bt * nd * n * c.dim, "gather")
+        return [bmm(nd, n, n, bt * c.dim)] + comm
     if c.kind == "tri_att":
-        return att(bt * n, n, n, d, vd, True)
+        cm("allgather", bt * nd * n * c.heads, "bias")
+        cm("alltoall", bt * nd * n * (c.width or model.workload.pair_dim), "transpose")
+        return att(bt * nd, n, n, d, vd, True) + comm
     if c.kind == "row_att":
         g = pd.xmsa if c.over == "xmsa" else pd.msa
-        return att(b * sp * g, n, n, d, vd, True)
+        cm("allgather", b * ps * nd * n * c.heads, "bias")
+        return att(b * ps * _cdiv(g, dap), n, n, d, vd, True) + comm
     if c.kind == "col_att":
         S = pd.xmsa if c.over == "xmsa" else pd.msa
-        return att(b * sp * n, 1 if c.glob else S, S, d, vd, False)
+        cm("alltoall", 2 * b * ps * _cdiv(S, dap) * n * c.width, "transpose")
+        return att(b * ps * nd, 1 if c.glob else S, S, d, vd, False) + comm
     if c.kind == "pt_att":          # template point-wise attention: each pair position attends over the T templates
-        return att(b * n * n, 1, max(1, pd.tmpl), d, vd, False)
+        return att(b * nd * n, 1, max(1, pd.tmpl), d, vd, False)
     if c.kind == "opm":
         S = pd.xmsa if c.over == "xmsa" else pd.msa
-        return [bmm(n * c.dim, S, n * c.dim2, b * sp)]
+        if not transposed_msa:
+            cm("alltoall", b * ps * _cdiv(S, dap) * n * c.width, "transpose")
+        cm("allgather", b * ps * S * nd * c.dim2, "gather")
+        return [bmm(nd * c.dim, S, n * c.dim2, b * ps)] + comm
     if c.kind == "pwa":
-        return [bmm(n, n, pd.msa * c.dim, b * sp * c.heads),
-                Op(tag + ".softmax", "vector", li, vec=b * sp * c.heads * n * n * 5)]
+        cm("allgather", b * ps * nd * n * c.heads, "weights")
+        return [bmm(nd, n, pd.msa * c.dim, b * ps * c.heads),
+                Op(tag + ".softmax", "vector", li, vec=b * ps * c.heads * nd * n * 5)] + comm
     if c.kind == "seq_att":
-        return att(b * s, n, n, d, vd, True)
+        cm("allgather", b * nd * n * c.heads, "bias")
+        return att(b * s, n, n, d, vd, True) + comm
     if c.kind == "local_att":
         wq, wk = c.win
         return att(b * s * _cdiv(pd.atoms, wq), wq, wk, d, vd, True)
@@ -510,27 +545,40 @@ def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int,
 
 
 def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:
-    """One execution of a structure-model block (single rank: TP / SP of pair stacks, i.e. DAP, not modelled).
-    Every weight GEMM runs on the rows of its grid; each linear also carries its layer-norm / gating / bias work
-    (「假设」 4 element-ops per input element + 4 per output element)."""
+    """One execution of a structure-model block on one rank.  Every weight GEMM runs on the rows of its grid; each
+    linear also carries its layer-norm / gating / bias work (「假设」 4 element-ops per input element + 4 per output
+    element).  ``sh.sp`` > 1 = DAP degree (0.45): pair / MSA / template grids split over the ranks, token / atom
+    grids replicated (``replicated`` = DAP degree); TP of the pair stack is not modelled (c_z = 128 channels)."""
     pd = ph.pair
     if pd is None:
         raise ValueError("structure-model layer needs Phase.pair")
-    if sh.tp > 1 or sh.sp > 1:
-        raise ValueError("structure models: TP / SP of the pair stack (DAP) is not modelled; use DP / PP")
+    if sh.tp > 1:
+        raise ValueError("structure models: TP of the pair stack is not modelled; use DAP (sp) / DP / PP")
+    dap = sh.sp
     b = _cdiv(ph.batch, sh.dp)
     s = pd.samples if L.samples in ("tok", "all") else 1
-    sp = pd.samples if L.samples == "all" else 1
+    ps = pd.samples if L.samples == "all" else 1
     ops: list[Op] = []
     for l in L.pair_linears:
-        m = _pair_rows(l.rows, pd, b, s, sp)
+        m = _pair_rows(l.rows, pd, b, s, ps, dap)
         if m <= 0:
             continue
-        ops.append(gemm(model, f"{L.stack}.{l.name}", li, m, l.k, l.n, l.role or "pair", stream=True))
-        ops.append(Op(f"{L.stack}.{l.name}.ew", "vector", li, vec=m * (l.k + l.n) * 4))
+        rep = 1 if l.rows in _DAP_SPLIT else dap
+        o = gemm(model, f"{L.stack}.{l.name}", li, m, l.k, l.n, l.role or "pair", stream=True, replicated=rep)
+        ops.append(o)
+        ops.append(Op(f"{L.stack}.{l.name}.ew", "vector", li, vec=m * (l.k + l.n) * 4, replicated=rep))
+    has_col = any(c.kind == "col_att" for c in L.pair_cores)
     for i, c in enumerate(L.pair_cores):
-        ops += _pair_core_ops(model, li, c, pd, b, s, sp, f"{L.stack}.{c.kind}{i}")
+        cops = _pair_core_ops(model, li, c, pd, b, s, ps, f"{L.stack}.{c.kind}{i}", dap, has_col)
+        if dap > 1 and c.kind in ("seq_att", "local_att"):
+            cops = [replace(o, replicated=dap) if o.kind != "comm" else o for o in cops]
+        ops += cops
     return ops
+
+
+def _repl_full(l: Linear, tp: int, sp: int) -> int:
+    """Ranks computing the same rows of a full-forward linear: per-sequence / conditioning rows are not split by SP."""
+    return _repl(l, tp) * (sp if l.rows in ("ctx", "seq") else 1)
 
 
 def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:
@@ -546,7 +594,8 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
 
     def lin(prefix: str, l: Linear, role: str) -> Op:
         k, n = _lin_local(l, tp)
-        return gemm(model, f"{prefix}.{l.name}", li, _rows(model, l, ph, b, sp), k, n, role, stream=True)
+        return gemm(model, f"{prefix}.{l.name}", li, _rows(model, l, ph, b, sp), k, n, role, stream=True,
+                    replicated=_repl_full(l, tp, sp))
 
     ops += [lin("attn", l, "attn") for l in L.attn_linears]
     ops += _full_attn(model, li, L.core, ph, sh, b, cross=False)
@@ -584,7 +633,8 @@ def full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
     for l in (model.io_pre if side == "pre" else model.io_post):
         k, n = _lin_local(l, sh.tp)
         m = _rows(model, l, ph, b, sh.sp)
-        ops.append(gemm(model, "io." + l.name, li, m, k, n, l.role or "io", stream=True))
+        ops.append(gemm(model, "io." + l.name, li, m, k, n, l.role or "io", stream=True,
+                        replicated=_repl_full(l, sh.tp, sh.sp)))
         if sh.tp > 1:
             ops.append(Op("io_allgather", "comm", li, comm_kind="allgather", comm_group=sh.tp, comm_bytes=m * n * ab))
     if side == "post" and model.vocab:     # MLM logits for every token (tied decoder)

@@ -33,6 +33,13 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
             p.add_argument(f"--{k}", type=int, default=1)
     p.add_argument("--dit-only", action="store_true",
                    help="video: evaluate the DiT denoiser only (text encoder + VAE decode not counted; default counts them)")
+    p.add_argument("--placement", default=None, choices=["auto", "resident", "shard", "offload", "shard+offload"],
+                   help="video: where text encoder / VAE live (default auto: first that fits of resident → shard → "
+                        "offload → shard+offload)")
+    p.add_argument("--host-GBps", dest="host_GBps", type=float, default=None,
+                   help="video offload: host → card bandwidth per card (default 50 GB/s 「假设」)")
+    p.add_argument("--vae-tiling", action="store_true",
+                   help="video: diffusers enable_tiling() decode (CogVideoX / Mochi; HunyuanVideo always tiles)")
     p.add_argument("--act", default=None, choices=["fp32", "bf16"],
                    help="what-if activation dtype (video / protein models; labelled what-if)")
     p.add_argument("--json", action="store_true", help="print raw JSON")
@@ -48,6 +55,12 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                                      "samples") if getattr(a, k)}
     if getattr(a, "dit_only", False):
         wl["pipeline"] = False
+    if getattr(a, "placement", None):
+        wl["placement"] = a.placement
+    if getattr(a, "host_GBps", None):
+        wl["host_GBps"] = a.host_GBps
+    if getattr(a, "vae_tiling", False):
+        wl["vae_tiling"] = True
     if wl:
         sc["workload"] = wl
     if getattr(a, "act", None):
@@ -92,7 +105,10 @@ def cmd_eval(a) -> dict:
             print(f"clip {g['clip_s']:.1f} s   {g['s_per_frame']:.2f} s/frame   step {g['step_ms']:.0f} ms   "
                   f"{g['frames_per_s_card']:.3g} frames/s/card   SLO {'OK' if s['slo_ok'] else 'over'}")
             if pl := g.get("pipeline"):
-                print(f"pipeline: text {pl['te_s']:.2f} s + denoise {g['denoise_s']:.1f} s + decode {pl['decode_s']:.1f} s;  "
+                print(f"pipeline: text {pl['te_s']:.2f} s + denoise {g['denoise_s']:.1f} s + decode {pl['decode_s']:.1f} s"
+                      + (f" + host reload {pl['load_s']:.2f} s" if pl.get("load_s") else "")
+                      + f"  [placement {pl.get('place', 'resident')}"
+                      + (f", TE sharded over {pl['te_cards']} cards" if pl.get("te_cards", 1) > 1 else "") + "];  "
                       + ";  ".join(f"{p['label']} {p['s']:.2f} s {p['tflop']:.1f} TFLOP {p['stored_GB']:.2f} GB "
                                    f"{p['bound']}" for p in pl["parts"]))
             else:

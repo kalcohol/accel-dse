@@ -166,7 +166,7 @@ ESM-2 3B 的 main 分支只有 `pytorch_model.bin`；参数取自同仓库 `refs
 - LTX-Video 13B（0.9.7 / 0.9.8）为单文件原始格式，未单列；`ltx-video` 指 diffusers 版 2B v0.9。
 - AF 类结构预测见 §12（0.43）。
 
-### 11.4 pipeline 组件：文本编码器与 VAE 解码（0.44）
+### 11.4 pipeline 组件：文本编码器与 VAE 解码（0.44；放置与分块 0.45）
 
 一次文生视频请求 = 文本编码器 → 步数 × DiT 前向 → VAE 解码（H3 另有音频 VAE 解码）。0.43 及以前只评估 DiT；0.44 起其余组件同样是算子图，取自各自发布检查点的张量头（`accel_dse/data/pipeline/*.json`，由 `scripts/build_pipeline_data.py` 从 HTTP range 读取的 safetensors / `.pth` 头生成，不下载权重），走与 DiT 相同的映射 → 流式 → 调度路径，**默认计入**时间与存储；场景 `workload.pipeline = false`（Web 取消勾选「计入文本编码器与 VAE 解码」、CLI `--dit-only`）只看 DiT，结果与 0.43 逐字节一致（1356 项指纹核对）。
 
@@ -191,11 +191,36 @@ ESM-2 3B 的 main 分支只有 `pytorch_model.bin`；参数取自同仓库 `refs
 - 范数 / 激活 / 残差：每个卷积输出元素 8 次向量操作「假设」。
 - 激活 dtype：Wan 参考实现以 fp32 运行 VAE（WanVAE 默认 float32，diffusers 示例亦然）→ 按 fp32；其余按 DiT 的激活 dtype。
 
-**放置与调度「假设」**：组件在一张卡上与去噪循环串行执行（`T_clip = T_text + T_denoise + T_decode`；xDiT 类并行 VAE 解码、跨请求的组件 / 去噪重叠未建模——吞吐按单请求串行计）；DP 时每个副本处理自己的 batch 份额。文本编码器权重放在首流水级的卡上，VAE（与音频 VAE）权重放在末流水级的卡上（PP = 1 时同一张卡），按加载的整个检查点计（含 VAE 编码器）。激活峰值 = 一个解码块内最大算子的输入 + 输出（causal 缓存逐潜帧解码：Wan / Mochi 逐潜帧「假设」、CogVideoX 每 2 潜帧、HunyuanVideo 每 tile、H3 每块；LTX 整段），解码在去噪之后运行，所以只在超过 DiT 激活时增加容量需求。
+**调度「假设」**：组件与去噪循环串行执行（`T_clip = T_text + T_denoise + T_decode (+ T_reload)`；xDiT 类并行 VAE 解码、跨请求的组件 / 去噪重叠未建模——吞吐按单请求串行计）；DP 时每个副本处理自己的 batch 份额。权重按加载的整个检查点计（含 VAE 编码器）。激活峰值 = 一个解码块内最大算子的输入 + 输出（causal 缓存逐潜帧解码：Wan / Mochi 逐潜帧「假设」、CogVideoX 每 2 潜帧、HunyuanVideo 每 tile、H3 每块；LTX 整段），解码在去噪之后运行，所以只在超过 DiT 激活时增加容量需求。
 
-**对结论的影响**：长视频 / 高分辨率下解码占整段时间 0.6–16%（Open-Sora 720p 的逐帧 SD-VAE 最重），文本编码 < 0.5 s；但存储影响大——64 GiB LPDDR 上 Wan2.1-14B（fp32 DiT 57 GB + umT5 11.4 GB）与 MiniMax-H3（Qwen3-VL 66.7 GB）放不下（「放不下」面板给出加卡 / 加容量 / 只评估 DiT 三种修正）。H3 的文本编码器单独超过 64 GiB，PP 无法切分组件（组件不跨卡切分「假设」）。
+**组件放置（0.45，`workload.placement`，Web「组件放置」，CLI `--placement`）**——都是参考实现提供的运行方式：
 
-**仍未建模**：调度器逐元素更新与 CFG 组合；提示词改写（如 H3-Context-IR）；默认不开的 VAE tiling（CogVideoX、Mochi、H3 文档示例开启以省显存：重叠 +10–30% 计算未计）；VAE 解码与下一请求去噪的重叠；组件的多卡切分。
+| 放置 | 每卡存储 | 额外时间 | 依据 |
+|------|------|------|------|
+| `resident` 常驻 | 文本编码器在首流水级卡、VAE（+ 音频 VAE）在末流水级卡，与 DiT 同时常驻：需求 = DiT + 组件 + max(0, 组件激活 − DiT 激活) | — | 0.44 行为 |
+| `shard` 文本编码器分片 | 文本编码器权重切到本副本全部 c = PP·TP·SP 张卡：te_w / c + 2 层（预取）；VAE 仍在末级卡 | 每卡逐层 all-gather：`max(编码计算, te_w·(c−1)/c / 链路) + α × 层数` | Wan `--t5_fsdp`（FSDP 包装 T5，每 rank 编码同一提示） |
+| `offload` 顺序卸载 | 组件与 DiT 分时占用：需求 = max(DiT, 预留 + 文本编码器 + 其激活, 预留 + VAE + 其激活)；Wan2.2 的空闲专家也停在主机 | 每请求主机 → 卡重载 文本编码器 + DiT 级权重 + VAE：`Σ / host_GBps`（默认 50 GB/s「假设」= PCIe 5.0 x16 有效；只计 H2D，主机保留副本「假设」） | diffusers `enable_model_cpu_offload`、Wan `--offload_model`（Wan2.2 在噪声边界换专家） |
+| `shard+offload` | 两者 | 两者 | — |
+| `auto`（默认） | 依次取 resident → shard（c > 1）→ offload → shard+offload 中第一个放得下的；都放不下取需求最小者 | — | 结果与警告中写明所选放置 |
+
+64 GiB LPDDR5X（100T）上的效果：
+
+| 模型 · 布局 | 常驻需求 | auto 选择 | 需求 | 延迟增加 |
+|------|------|------|------|------|
+| `wan2.1-14b` 单卡 | 72.5 GiB ✗ | offload | 61.4 GiB ✓ | +1.38 s（7403 s 中） |
+| `wan2.2-a14b` 单卡 | 125.7 GiB ✗ | offload（空闲专家停在主机） | 61.4 GiB ✓ | +2.52 s |
+| `wan2.2-a14b` PP2 | 69.6 GiB ✗ | offload | 32.4 GiB ✓ | +1.39 s |
+| `minimax-h3` 单卡 | 113.7 GiB ✗ | offload | 63.2 GiB ✓（Qwen3-VL 62.1 GiB 单独占满，余量很小） | +2.36 s |
+| `minimax-h3` PP2·TP2 | 74.7 GiB ✗ | shard（每卡 te_w / 4 + 2 层） | 39.4 GiB ✓ | +0（all-gather 被编码计算覆盖） |
+| `hunyuanvideo` 单卡 | 44.8 GiB ✓ | resident | 44.8 GiB ✓ | 0 |
+
+DiT 自身的权重不做 FSDP（Wan `--dit_fsdp` 未建模）；组件激活按单卡计。
+
+**VAE 分块解码（0.45，`workload.vae_tiling`，默认关）**：按 diffusers `enable_tiling()` 的默认参数做空间分块，重叠区重复计算、每 tile 重读权重、激活峰值按 tile——CogVideoX：tile 240 × 360 px（= 采样尺寸 / 2），重叠因子 1/6、1/5 → 潜空间 30 × 45、stride 25 / 36（480 × 720：9 个 tile，重叠 ×1.40，解码 315 → 441 TFLOP，激活峰值 2.31 → 0.58 GiB）；Mochi：tile 256 px、stride 192 px → 潜空间 32 / 24（480 × 848：15 个 tile，×1.65，1053 → 1737 TFLOP）。HunyuanVideo 总是分块（见上）。其余 VAE（Wan、LTX、Open-Sora、H3）的分块未建模，开启时给出警告并按不分块计。
+
+**对结论的影响**：长视频 / 高分辨率下解码占整段时间 0.6–16%（Open-Sora 720p 的逐帧 SD-VAE 最重），文本编码 < 0.5 s；存储影响大——常驻时 64 GiB LPDDR 上 Wan2.1-14B（fp32 DiT 57 GB + umT5 11.4 GB）、Wan2.2 PP2 / TP2 与 MiniMax-H3 放不下；0.45 的 auto 放置按参考实现的卸载 / FSDP 方式把它们放下，代价是每请求 1–2.5 s 的主机重载（相对 30 min 级的整段可忽略）。更正 0.44 文档：Qwen3-VL 文本塔 66.7 GB = 62.1 GiB，单独并未超过 64 GiB，只是与 DiT 同时常驻放不下。
+
+**仍未建模**：调度器逐元素更新与 CFG 组合；提示词改写（如 H3-Context-IR）；Wan / LTX / Open-Sora / H3 VAE 的可选分块；VAE 解码与下一请求去噪的重叠；VAE 的多卡并行解码（xDiT patch 并行）；文本编码器在主机 CPU 上运行（Wan `--t5_cpu`）——其时间取决于主机，不在本工具范围内。
 
 ## 12. 蛋白质结构预测（0.43）
 
@@ -227,7 +252,29 @@ ESM-2 3B 的 main 分支只有 `pytorch_model.bin`；参数取自同仓库 `refs
 
 **工作负载**（`workload` 块，0 = 发布默认）：`seq_len` 残基、`msa` MSA 行（AF2 / OpenFold 为聚类行；extra MSA 保持默认）、`recycles` 主干遍数（含首遍）、`steps` 扩散步数、`samples` 扩散样本数；MSA 行数默认按上限计「假设」（浅 MSA 更快）。批延迟 SLO 单列为 `fold_slo_s`（默认 120 s「假设」；ESM-2 编码器仍用 `seq_slo_ms`）。
 
-**并行**：pair 表示的 DAP（动态轴并行）未建模，结构模型的布局只取 PP × DP（DP = 多条序列并行）；TP / SP 被拒绝并说明原因。延迟 `T = (mb + PP − 1) × t_stage`，与 ESM-2 相同；跨 stage 传输含 pair 表示（N² × c_z），残差 / 在途激活含 pair 表示。
+**并行（0.45：DAP）**：布局为 PP × DP × DAP，DAP 占用布局的 SP 维（`layout.sp`，Web 显示为「DAP」）；pair 的 TP 未建模（c_z = 128 通道太窄，FastFold 也不切通道），TP 被拒绝并说明原因。DAP 按 FastFold 的动态轴并行（Cheng et al., *FastFold*, 2022）：pair / 模板网格沿第一个残基轴、MSA 网格沿行（行注意力）或列（列注意力）切到 D 张卡，权重每卡完整复制；单一 / token / 原子轨道（结构模块 IPA、扩散 transformer、原子窗口注意力、置信度单一轨道）每卡重复计算（`Op.replicated = D`，请求 FLOPs 不重复计）。每个核的通信（每卡载荷，与其他集合通信一样按 `max(计算, DRAM, 链路) + α` 与计算重叠）：
+
+| 核 | 通信 |
+|------|------|
+| 三角乘法（出 / 入） | all-gather 一个投影操作数 N × N × c |
+| 三角注意力（起 / 止） | all-gather pair 偏置 N × N × H + 一次 pair 表示 all-to-all 转置（N² × c_z，起点 ↔ 终点） |
+| MSA 行注意力 | all-gather pair 偏置（MSA 按行切，注意力本地） |
+| MSA 列注意力 | 两次 MSA all-to-all 转置（S × N × c_m，行切 ↔ 列切） |
+| 外积均值 | all-gather 右投影 S × N × c2；AF3 类 MSA 模块（无列注意力，MSA 保持行切）先加一次 MSA all-to-all |
+| pair 加权平均 | all-gather pair 导出的权重 N × N × H |
+| 带 pair 偏置的单一轨道注意力 | all-gather 偏置 N × N × H（单一轨道本身重复） |
+
+pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T + HBM3E、默认工作负载、batch 1，DAP 1 / 2 / 4 / 8：
+
+| 模型 | 批延迟 | 8 卡加速 | 激活常驻（DAP 1 → 8） | 每卡链路字节（DAP 8） |
+|------|------|------|------|------|
+| `esmfold` | 5.72 / 2.90 / 1.50 / 0.80 s | 7.1× | 0.38 → 0.09 GiB | 8.8 GB |
+| `alphafold2` | 14.17 / 7.10 / 3.57 / 1.81 s | 7.8× | 1.63 → 0.25 GiB | 16.3 GB |
+| `openfold` | 12.62 / 6.32 / 3.18 / 1.61 s | 7.8× | 0.69 → 0.16 GiB | 15.0 GB |
+| `boltz-1` | 13.05 / 7.64 / 4.94 / 3.59 s | 3.6× | 2.07 → 1.13 GiB | 15.2 GB |
+| `protenix` | 19.33 / 14.37 / 11.89 / 10.65 s | 1.8× | 1.63 → 0.71 GiB | 13.4 GB |
+
+主干主导的 AF2 / OpenFold / ESMFold 接近线性；Boltz-1 / Protenix 的 200 步扩散 transformer 在单一 / 原子轨道上、每卡重复，DAP 帮不上（扩散样本的 DP 切分未建模）。ESMFold 的 ESM-2 语言模型层在 SP 维上按 Ulysses 切分（与 ESM-2 相同）。批延迟 `T = (mb + PP − 1) × t_stage`，与 ESM-2 相同。「假设」：400 GB/s 链路下通信基本被计算覆盖（链路变慢时会成为瓶颈，可在链路参数里试）；没有可逐项核对的公开 DAP 推理时延，故不加校验行。
 
 **dtype**：发布权重 fp32（ESMFold 的 ESM-2 为 fp16）；激活按 bf16「假设」（参考实现：ESMFold / OpenFold / AF2 单体 / Boltz-1 为 fp32，Protenix 默认 bf16）。0.44：fp32 激活用激活 dtype what-if 评估（Web「激活 dtype」/ CLI `--act fp32` / 场景 `formats_override: [["act", "fp32"]]`，标注 what-if）——激活存储、DRAM 流式、SRAM 端口读写（含输出）按 4 B；计算仍在 bf16 阵列上，激活逐 GEMM 转换的开销计入向量单元，所以它是「fp32 数据搬运 + bf16 计算」的代价，数值上不等价于 fp32 矩阵乘。例：ESMFold 512 残基、100T + LPDDR5X（DRAM 受限）6.3 s → 12.5 s；HBM3E 上 MAC 受限，延迟不变、容量 +0.4 GiB。芯片无 fp32 MAC：逐 GEMM 转换为 bf16，开销计入向量单元（与 LLM 反量化同一规则）。
 

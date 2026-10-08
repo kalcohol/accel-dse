@@ -17,10 +17,10 @@ from .ir import (Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, full_io_ops
                  mtp_ops)
 from .mapping import gemm_cost, vector_seconds
 from .memo import layer_groups, model_cache
-from .memplan import MemPlan, act_stream, plan, stage_storage, step_dram_bytes, touched
+from .memplan import RUNTIME_RESERVE, MemPlan, act_stream, plan, stage_storage, step_dram_bytes, touched
 from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages
-from .pipeline import pipeline_for, stored_bytes, text_ops, vae_ops
+from .pipeline import pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
 from .scenario import Scenario
 from .schedule import StageTime, collective_seconds, spec_expected_tokens
 
@@ -34,6 +34,7 @@ class StageResult:
     dram: dict
     convert_elems: float
     ops: list[Op] = field(default_factory=list, repr=False)
+    flops_u: float = 0.0    # useful FLOPs of one rank (ops replicated on r ranks count 1/r) — request-FLOP KPI
 
 
 @dataclass
@@ -76,6 +77,14 @@ class Result:
         w = self.scenario.workload
         return w.fold_slo_s * 1e3 if self.model.is_pair else w.seq_slo_ms
 
+    def _tflop_per_request(self) -> float:
+        """Useful FLOPs of one request over the whole replica: per-rank useful FLOPs × the TP·SP ranks of a stage,
+        per sequence of the rank's micro-batch, × forward sequences per request × steps (0.45: was per rank)."""
+        w, lay = self.workload, self.scenario.layout
+        b_rank = _cdiv(_cdiv(self.scenario.serving.batch * w.seqs_per_request, self.microbatches), lay.dp)
+        per_seq = sum(st.flops_u for st in self.stages) * lay.tp * lay.sp / b_rank
+        return per_seq * w.seqs_per_request * w.steps / 1e12
+
     def domain_summary(self) -> dict:
         """Domain KPIs of a non-autoregressive model (empty for LLMs)."""
         w = self.workload
@@ -88,7 +97,7 @@ class Result:
              "units_per_s": self.throughput, "units_per_s_card": self.per_card, "workload": w.info,
              "forward_ms": self.tick * max(self.microbatches, self.scenario.layout.pp) * 1e3,
              "seqs_per_forward": b * w.seqs_per_request, "act_GiB": heavy.mem.act_total / 2**30,
-             "tflop_per_request": sum(st.time.flops for st in self.stages) * self.microbatches * w.steps / b / 1e12}
+             "tflop_per_request": self._tflop_per_request()}
         if w.kind == "gen":
             pl = self.pipeline
             denoise = pl["denoise_s"] if pl else self.latency
@@ -169,7 +178,8 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
 
 
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
-             "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot")
+             "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
+             "flops_u")
 _MAX_KEYS = ("max_act", "max_act_tot")
 
 
@@ -184,6 +194,7 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl
         d["flops"] += o.flops
+        d["flops_u"] += o.flops / max(1, o.replicated)
         d["max_act"] = max(d["max_act"], o.act_bytes / max(o.count, 1))
         if o.stream:
             a, wx = act_stream(o, _fmt(model.act_fmt).bytes, sys.chip.sram_bytes)
@@ -218,7 +229,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     warnings: list[str] = []
     if not lay.valid_for(m.is_moe, full=not m.kv_cache, pair=m.is_pair):
         raise ValueError(f"layout {lay.label} invalid for {'MoE' if m.is_moe else 'dense'} model "
-                         + ("(structure models: tp = sp = 1, pair-stack DAP not modelled; use DP / PP)" if m.is_pair else
+                         + ("(structure models: tp = 1 — TP of the pair stack not modelled; use DAP (sp) / DP / PP)"
+                            if m.is_pair else
                             "(video / protein models: ep = etp = 1)" if not m.kv_cache else
                             "(MoE needs ep·etp = tp·dp; dense needs dp=ep=etp=1; sp only for video / protein models)"))
     if lay.pp > m.n_layers:
@@ -339,7 +351,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     resid = _cdiv(seqs, lay.dp) * _cdiv(wl.tokens, lay.sp) * m.hidden * ab   # residual streams of in-flight sequences
     pair_act = 0.0
     if wl.pair is not None:      # structure models: the pair representation N²·c_z rides along with the single track
-        pair_act = wl.pair.n ** 2 * m.workload.pair_dim * ab
+        pair_act = _cdiv(wl.pair.n, lay.sp) * wl.pair.n * m.workload.pair_dim * ab   # DAP: residue-axis slice
         resid += _cdiv(seqs, lay.dp) * pair_act
     for st in plan_stages(m.n_layers, pp):
         agg = dict.fromkeys(_SUM_KEYS, 0.0)
@@ -373,15 +385,12 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         t_dram = dram["total"] / (sys.dram_GBps * 1e9)
         stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                         dram["total"], link_bytes, agg["flops"], agg["t_ideal"])
-        stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"]))
+        stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"]))
     pipe = None
     if wl.kind == "gen":
         pipe = _pipeline_cost(scn, m, wl, sys, warnings)
-        if pipe:   # text-encoder weights on the first stage's card, VAE weights on the last stage's card
-            for i, w_add, act in ((0, pipe["te_w"], pipe["te_act"]), (len(stages) - 1, pipe["vae_w"], pipe["vae_act"])):
-                mp = stages[i].mem
-                need = mp.dram_need + w_add + max(0.0, act - mp.act_total)
-                stages[i].mem = replace(mp, dram_need=need, fits=need <= mp.dram_cap, pipe_w=mp.pipe_w + w_add)
+        if pipe:
+            pipe = _place_components(scn, m, pipe, stages, sys, warnings)
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
     cap_heavy = max(range(len(stages)), key=lambda i: stages[i].mem.dram_need)
@@ -393,7 +402,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                            if stages[cap_heavy].mem.pipe_w else ""))
     if wl.kind == "gen":
         denoise = wl.steps * max(mb, pp) * tick
-        latency = denoise + (pipe["te_s"] + pipe["decode_s"] if pipe else 0.0)
+        latency = denoise + (pipe["te_s"] + pipe["decode_s"] + pipe["load_s"] if pipe else 0.0)
         if pipe:
             pipe = {**pipe, "denoise_s": denoise, "tflop": pipe["tflop_replica"] * lay.dp}
     else:
@@ -428,15 +437,21 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
         return None
     b = _cdiv(scn.serving.batch, scn.layout.dp)
     info = wl.info
+    tiling = scn.workload.vae_tiling
+    if tiling and pl.vae.family not in ("cog", "mochi", "hunyuan"):
+        warnings.append(f"workload.vae_tiling：{pl.vae.label} 的分块解码未建模（按参考默认不分块计）")
     key = (b, tuple(info["latent"]), info["frames"], info["cfg"], wl.aux, scn.mapping, scn.chip, scn.mem_id,
-           scn.mem_eff)
+           scn.mem_eff, tiling)
     memo = model_cache(m).setdefault("pipeline", {})
     if key in memo:
         return memo[key]
     prompts = b * (info["cfg"] if pl.neg_prompt else 1)
     parts = []
-    te_s = te_w = te_act = 0.0
+    te_s = te_w = te_act = te_lw = 0.0
+    te_nl = 0
     for te in pl.text:
+        nl, lw = te_layers(te)
+        te_nl += nl; te_lw = max(te_lw, lw)
         ops, peak = text_ops(te, prompts, m.act_fmt)
         c = _component_time([(ops, 1)], sys, scn.mapping, m.act_fmt)
         w = stored_bytes(te.key)
@@ -448,17 +463,95 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
     for v, rows in ((pl.vae, 0), (pl.audio, wl.aux)):
         if v is None:
             continue
-        ops, peak, vi = vae_ops(v, lat, info["frames"], b, m.act_fmt, audio_rows=rows)
+        ops, peak, vi = vae_ops(v, lat, info["frames"], b, m.act_fmt, audio_rows=rows, tiling=tiling)
         c = _component_time(vi.pop("groups", None) or [(ops, 1)], sys, scn.mapping, vi["act"])
         w = stored_bytes(v.key)
         dec_s += c["s"]; vae_w += w; vae_act = max(vae_act, peak)
         parts.append({"role": "audio_vae" if v is pl.audio else "vae", "label": v.label, "key": v.key,
                       "stored_GB": w / 1e9, "note": v.note, "act": vi["act"],
-                      **{k: vi[k] for k in ("tiles", "overlap", "chunks") if k in vi}, **c})
+                      **{k: vi[k] for k in ("tiles", "overlap", "chunks", "tiling") if k in vi}, **c})
     out = {"te_s": te_s, "decode_s": dec_s, "tflop_replica": sum(p["tflop"] for p in parts),
            "te_w": te_w, "vae_w": vae_w, "te_act": te_act, "vae_act": vae_act, "parts": parts,
+           "te_layers": te_nl, "te_layer_w": te_lw,
            "batch_per_replica": b, "note": pl.note}
     if len(memo) > 4096:
         memo.clear()
     memo[key] = out
     return out
+
+
+_PLACE_LABEL = {"resident": "常驻", "shard": "文本编码器分片（FSDP）", "offload": "顺序卸载（CPU offload）",
+                "shard+offload": "分片 + 卸载"}
+
+
+def _place_components(scn: Scenario, m: ModelSpec, pipe: dict, stages: list, sys: System,
+                      warnings: list[str]) -> dict:
+    """Where the pipeline components live on the cards of one data-parallel replica (0.45; docs/MODEL.md §11.4).
+
+      resident       text encoder on the first stage's card, VAE (+ audio VAE) on the last stage's card, both
+                     resident next to the DiT (0.44 behaviour)
+      shard          text-encoder weights sharded over all c = PP·TP·SP cards of the replica (Wan ``--t5_fsdp``):
+                     te_w / c per card + 2 gathered layers (prefetch); each card all-gathers the layers while it
+                     encodes — time max(compute, te_w·(c−1)/c / link) + α per layer
+      offload        components and DiT time-share the card (diffusers ``enable_model_cpu_offload`` / Wan
+                     ``--offload_model``): capacity = max(DiT, text encoder, VAE) instead of the sum; every request
+                     re-loads TE, DiT stage and VAE weights host → card at ``workload.host_GBps`` (H2D only, the host
+                     keeps its copy 「假设」); a multi-expert DiT (Wan2.2 A14B) also parks its idle expert on the host
+                     (Wan2.2 ``--offload_model`` swaps the experts at the noise boundary) → standby not resident,
+                     both experts still loaded once per request
+      shard+offload  both
+      auto           the first of resident → shard → offload → shard+offload that fits (else the smallest need)
+    The DiT's own weights are never sharded beyond its layout (Wan ``--dit_fsdp`` not modelled)."""
+    lay, w = scn.layout, scn.workload
+    c = lay.pp * lay.tp * lay.sp
+    last = len(stages) - 1
+    base = [s.mem for s in stages]
+    alpha = sys.link.alpha_us * 1e-6
+    sb_bytes = m.fmt("attn").bits / 8 / lay.tp
+    standby = [m.standby_params * (s.layers[1] - s.layers[0]) / m.n_layers * sb_bytes for s in stages]
+
+    def option(place: str) -> tuple[list[MemPlan], dict]:
+        shard = "shard" in place and c > 1
+        off = "offload" in place
+        te_card = (pipe["te_w"] / c + 2 * pipe["te_layer_w"]) if shard else pipe["te_w"]
+        te_card = min(te_card, pipe["te_w"])
+        mems = []
+        for i, mp in enumerate(base):
+            te_here = shard or i == 0
+            vae_here = i == last
+            w_te = te_card if te_here else 0.0
+            w_vae = pipe["vae_w"] if vae_here else 0.0
+            if off:
+                need = max(mp.dram_need - standby[i],
+                           RUNTIME_RESERVE + w_te + pipe["te_act"] if te_here else 0.0,
+                           RUNTIME_RESERVE + w_vae + pipe["vae_act"] if vae_here else 0.0)
+            else:
+                act = max(pipe["te_act"] if te_here else 0.0, pipe["vae_act"] if vae_here else 0.0)
+                need = mp.dram_need + w_te + w_vae + max(0.0, act - mp.act_total)
+            mems.append(replace(mp, dram_need=need, fits=need <= mp.dram_cap, pipe_w=w_te + w_vae))
+        gather = (pipe["te_w"] * (c - 1) / c / (sys.link.GBps * 1e9) + alpha * pipe["te_layers"]) if shard else 0.0
+        te_s = max(pipe["te_s"], gather) if shard else pipe["te_s"]
+        host = w.host_GBps * 1e9
+        load = ((te_card + max(mp.stored_w for mp in base) + pipe["vae_w"]) / host) if off else 0.0
+        return mems, {"place": "shard" if place == "shard+offload" and not shard else
+                      ("resident" if place == "shard" and not shard else place),
+                      "te_card_w": te_card, "gather_s": gather, "te_s": te_s, "te_compute_s": pipe["te_s"],
+                      "load_s": load, "te_cards": c if shard else 1}
+
+    if w.placement == "auto":
+        cands = ["resident"] + (["shard"] if c > 1 else []) + ["offload"] + (["shard+offload"] if c > 1 else [])
+        opts = [(p, *option(p)) for p in cands]
+        pick = next((o for o in opts if all(mp.fits for mp in o[1])), None)
+        if pick is None:
+            pick = min(opts, key=lambda o: max(mp.dram_need for mp in o[1]))
+    else:
+        pick = (w.placement, *option(w.placement))
+    req, mems, info = pick
+    for s_, mp in zip(stages, mems):
+        s_.mem = mp
+    if w.placement == "auto" and info["place"] != "resident":
+        warnings.append(f"组件放置 auto → {_PLACE_LABEL[info['place']]}：常驻放不下"
+                        + (f"；每请求从主机重载权重 {info['load_s']:.2f} s（{w.host_GBps:g} GB/s「假设」）" if info["load_s"] else ""))
+    return {**pipe, **info, "placement": w.placement, "place_label": _PLACE_LABEL[info["place"]],
+            "host_GBps": w.host_GBps}
+

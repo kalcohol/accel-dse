@@ -3,6 +3,30 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.45.0] - 2026-10-09
+
+结构模型多卡（DAP）、视频组件放置（分片 / 卸载）、可选 VAE 分块解码。
+
+### Added
+- 结构模型 DAP（FastFold 动态轴并行，`layout.sp` 即 DAP 度，Web 显示为「DAP」）：pair / 模板网格沿残基轴、MSA 网格沿行或列切到 D 张卡，权重复制；单一 / token / 原子轨道每卡重复（不重复计入请求 FLOPs）。逐核通信：三角乘法 all-gather 投影操作数，三角注意力 all-gather 偏置 + pair all-to-all 转置，MSA 行注意力 all-gather 偏置，列注意力两次 MSA all-to-all，外积均值 all-gather 右投影（AF3 类 MSA 模块先加一次 all-to-all），pair 加权平均 all-gather 权重，单一轨道注意力 all-gather 偏置。转置载荷用检查点里各模块输入宽度（`PairCore.width`：c_z / c_m / c_t）。pair 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T + HBM3E、DAP 8：AF2 14.2 → 1.81 s（7.8×）、OpenFold 7.8×、ESMFold 7.1×、Boltz-1 3.6×、Protenix 1.8×（扩散 transformer 在重复的单一轨道上）。布局枚举 / 搜索 / 「放不下」修正都包含 DAP。
+- 视频组件放置 `workload.placement`（Web「组件放置」、CLI `--placement`）：`resident`（0.44）、`shard`（文本编码器权重 FSDP 切到本副本全部卡，每卡 te_w / c + 2 层，逐层 all-gather 与编码计算重叠——Wan `--t5_fsdp`）、`offload`（组件与 DiT 分时占用显存，需求取最大值，每请求按 `workload.host_GBps`（默认 50 GB/s「假设」）重载权重——diffusers `enable_model_cpu_offload` / Wan `--offload_model`；Wan2.2 的空闲专家也停在主机）、`shard+offload`、`auto`（默认：第一个放得下的）。结果、警告、KPI 与假设列表写明所选放置与重载时间。
+- 可选 VAE 分块解码 `workload.vae_tiling`（Web 复选框、CLI `--vae-tiling`，默认关）：CogVideoX（tile 240 × 360 px，重叠 1/6、1/5 → 480p 9 tile ×1.40）与 Mochi（256 px / stride 192 → 15 tile ×1.65）按 diffusers 默认参数；重叠重复计算与每 tile 权重重读计入，激活峰值按 tile。其余 VAE 开启时给出警告。
+- 测试 `tests/test_core_dap_place.py`：DAP 有用 FLOPs 守恒与通信闭式、布局 / 延迟 / 显存、请求 FLOPs 与布局无关、放置（auto / 分片 / 卸载 / 重载闭式 / Wan2.2 空闲专家）、分块 tile 数与重叠。
+
+### Changed
+- 64 GiB LPDDR5X 上（默认 auto 放置）：Wan2.1-14B 单卡 / DP2 / SP2、Wan2.2-A14B PP2 / TP2、MiniMax-H3 全部布局从「放不下」变为「放得下」（卸载 +1.4–2.5 s / 请求，或 H3 PP2·TP2 分片 +0 s）。显式 `placement: resident` 与 0.44 完全一致；其余 1330 项结果（全部 LLM、蛋白质、能常驻的视频场景）逐字节不变。
+- 请求 TFLOP（`tflop_per_request` / `dit_tflop_per_request`）改为整个副本的有用 FLOPs（每 rank 有用 FLOPs × TP·SP ÷ 每 rank 序列数），此前多卡布局只计一个 rank（例：Wan2.1-1.3B SP2 显示 14.2 PFLOP，实为 28.3）；按 SP 不切分的条件行（跨注意力 K/V、每序列行）记为重复。
+- 结构模型的说明与 Web 工作负载说明改为「PP × DP × DAP」。
+
+### Fixed
+- 0.44 文档误称 Qwen3-VL 文本塔（66.7 GB = 62.1 GiB）单独超过 64 GiB；实际是与 DiT 同时常驻放不下。
+- 两个组件在同一张卡时，激活超出量按两者最大值计（此前分别相加；现有场景中数值未变）。
+
+### 仍未建模
+- pair 的 TP；扩散样本的 DP 切分；DAP 无公开推理时延可逐项校验。
+- DiT 权重 FSDP（Wan `--dit_fsdp`）、文本编码器在主机 CPU 上运行（`--t5_cpu`）、VAE 多卡并行解码、跨请求的组件 / 去噪重叠；Wan / LTX / Open-Sora / H3 的可选 VAE 分块。
+- AlphaFold 3 仍为「暂未接入 v2」（无公开权重）。
+
 ## [0.44.0] - 2026-10-09
 
 视频整条 pipeline：文本编码器与 VAE 解码的时间与存储计入评估；激活 dtype what-if。

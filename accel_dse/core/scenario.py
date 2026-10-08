@@ -52,6 +52,9 @@ class Serving:
                 raise ValueError(f"serving.{k} must be finite > 0")
 
 
+PLACEMENTS = ("auto", "resident", "shard", "offload", "shard+offload")
+
+
 @dataclass(frozen=True)
 class Workload:
     """Non-autoregressive workloads (video-generation DiT, protein encoders); ignored for LLMs.
@@ -69,6 +72,9 @@ class Workload:
     seq_slo_ms: float = 1000.0     # protein encoders: per-batch latency SLO (「假设」)
     fold_slo_s: float = 120.0      # protein structure models: per-batch latency SLO (「假设」)
     pipeline: bool = True          # video: also evaluate the text encoder(s) + VAE decode (time and storage); False = DiT only
+    placement: str = "auto"        # video components (0.45): auto | resident | shard | offload | shard+offload
+    host_GBps: float = 50.0        # video offload: host → card bandwidth per card (「假设」 PCIe 5.0 x16 effective)
+    vae_tiling: bool = False       # video: diffusers enable_tiling() for the VAEs that offer it (CogVideoX / Mochi)
 
     def __post_init__(self):
         for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles", "samples"):
@@ -83,6 +89,13 @@ class Workload:
             raise ValueError("workload: msa ≤ 65536, recycles ≤ 64, samples ≤ 64")
         if not isinstance(self.pipeline, bool):
             raise ValueError("workload.pipeline must be true or false")
+        if not isinstance(self.vae_tiling, bool):
+            raise ValueError("workload.vae_tiling must be true or false")
+        if self.placement not in PLACEMENTS:
+            raise ValueError(f"workload.placement must be one of {', '.join(PLACEMENTS)}")
+        if not (isinstance(self.host_GBps, (int, float)) and not isinstance(self.host_GBps, bool)
+                and 0 < self.host_GBps < 1e5):
+            raise ValueError("workload.host_GBps must be in (0, 1e5)")
         for k in ("clip_slo_s", "seq_slo_ms", "fold_slo_s"):
             v = getattr(self, k)
             if not (v > 0 and math.isfinite(v)):

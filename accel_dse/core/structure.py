@@ -62,6 +62,13 @@ def _out(sh: dict, *names: str) -> int:
     return 0
 
 
+def _in(sh: dict, *names: str) -> int:
+    for n in names:
+        if n in sh and len(sh[n]) >= 2:
+            return math.prod(sh[n][1:])
+    return 0
+
+
 def cores_of(sh: dict, prefix: str, ctx: dict) -> tuple[PairCore, ...]:
     """Module cores of the block whose tensors start with ``prefix`` (detected from the module names)."""
     keys = [k[len(prefix):] for k in sh if k.startswith(prefix)]
@@ -76,31 +83,36 @@ def cores_of(sh: dict, prefix: str, ctx: dict) -> tuple[PairCore, ...]:
         leaf = mod.rsplit(".", 1)[-1]
         if leaf.startswith("tri_mul"):
             c = _out(sh, p + "linear_a_p.weight") or _out(sh, p + "p_in.weight") // 2
-            out.append(PairCore("trimul", dim=c, over=ctx.get("grid", "pair")))
+            out.append(PairCore("trimul", dim=c, over=ctx.get("grid", "pair"),
+                                width=_in(sh, p + "linear_a_p.weight", p + "p_in.weight")))
         elif leaf.startswith("tri_att"):
             h = _out(sh, p + "linear.weight")
             out.append(PairCore("tri_att", heads=h, dim=_out(sh, p + "mha.linear_q.weight") // h,
-                                over=ctx.get("grid", "pair")))
+                                over=ctx.get("grid", "pair"), width=_in(sh, p + "mha.linear_q.weight")))
         elif leaf == "msa_att_row":
             h = _out(sh, p + "linear_z.weight")
             out.append(PairCore("row_att", heads=h, dim=_out(sh, p + "mha.linear_q.weight") // h,
-                                over="xmsa" if xm else "msa"))
+                                over="xmsa" if xm else "msa", width=_in(sh, p + "mha.linear_q.weight")))
         elif leaf == "msa_att_col":
             if p + "global_attention.linear_q.weight" in sh:
                 c = _out(sh, p + "global_attention.linear_k.weight")
                 out.append(PairCore("col_att", heads=_out(sh, p + "global_attention.linear_q.weight") // c, dim=c,
-                                    over="xmsa" if xm else "msa", glob=True))
+                                    over="xmsa" if xm else "msa", glob=True,
+                                    width=_in(sh, p + "global_attention.linear_q.weight")))
             else:
                 q = _out(sh, p + "_msa_att.mha.linear_q.weight", p + "mha.linear_q.weight")
                 c = ctx.get("c_hidden_msa_att", 32)
-                out.append(PairCore("col_att", heads=q // c, dim=c, over="xmsa" if xm else "msa"))
+                out.append(PairCore("col_att", heads=q // c, dim=c, over="xmsa" if xm else "msa",
+                                    width=_in(sh, p + "_msa_att.mha.linear_q.weight", p + "mha.linear_q.weight")))
         elif leaf in ("outer_product_mean", "outer_product_mean_msa"):
             out.append(PairCore("opm", dim=_out(sh, p + "linear_1.weight", p + "proj_a.weight"),
-                                dim2=_out(sh, p + "linear_2.weight", p + "proj_b.weight"), over="xmsa" if xm else "msa"))
+                                dim2=_out(sh, p + "linear_2.weight", p + "proj_b.weight"), over="xmsa" if xm else "msa",
+                                width=_in(sh, p + "linear_1.weight", p + "proj_a.weight")))
         elif leaf in ("pair_weighted_averaging", "msa_pair_weighted_averaging"):
             h = _out(sh, p + "linear_no_bias_z.weight", p + "proj_z.weight")
             out.append(PairCore("pwa", heads=h,
-                                dim=_out(sh, p + "linear_no_bias_mv.weight", p + "proj_m.weight") // h))
+                                dim=_out(sh, p + "linear_no_bias_mv.weight", p + "proj_m.weight") // h,
+                                width=_in(sh, p + "linear_no_bias_mv.weight", p + "proj_m.weight")))
         elif leaf in ("attention_pair_bias", "pair_bias_attn", "attention"):
             h = _out(sh, p + "linear_nobias_z.weight", p + "proj_z.1.weight", p + "proj_z.weight")
             q = _out(sh, p + "attention.linear_q.weight", p + "proj_q.weight")
@@ -217,7 +229,10 @@ def _spec(model_id, hf_id, rel, arch, hidden, layers, wl, notes, reasons, key, e
         "发布权重为 fp32（4 B / 参数）" + ("，ESM-2 语言模型部分为 fp16" if key == "esmfold" else "") +
         f"；激活按 bf16「假设」（{_PREC[key]}）——fp32 激活可用激活 dtype what-if（UI「激活 dtype」/ CLI --act fp32）评估："
         "激活存储、DRAM 流式与 SRAM 端口流量按 4 B，计算仍在 bf16 阵列上并计转换开销；芯片无 fp32 MAC → 逐 GEMM 转换为 bf16，开销计入向量单元",
-        "TP / SP（pair 表示的 DAP 切分）未建模：布局只取 PP × DP（DP = 多条序列并行）"]
+        "多卡：DAP（FastFold 动态轴并行，布局的 SP 维）把 pair / MSA / 模板网格沿一个残基轴切到 DAP 张卡，"
+        "单一 / 原子轨道（结构模块、扩散 transformer、原子注意力）每卡重复计算；通信按 FastFold DAP 内核（三角乘法 / "
+        "外积均值的 all-gather、pair 偏置 all-gather、行 ↔ 列 all-to-all）计，见 docs/MODEL.md §12；"
+        "pair 的 TP 未建模（布局 PP × DP × DAP，DP = 多条序列并行）"]
     pc = (spec.release_params - spec.params()) / spec.release_params
     if abs(pc) > 0.001:
         reasons = list(reasons) + [f"参数与发布相差 {pc:+.2%}"]

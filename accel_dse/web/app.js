@@ -149,6 +149,8 @@ const AFTER = {};
 function syncInputs() {
   document.querySelectorAll('input[type=number]').forEach((i) => i._sync && i._sync());
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
+  if ($('w-placement')) $('w-placement').value = S.sc.workload.placement || 'auto';
+  if ($('w-vae_tiling')) $('w-vae_tiling').checked = !!S.sc.workload.vae_tiling;
 }
 
 function seg(id, items, get, set) {
@@ -223,8 +225,12 @@ function paintDomain(m) {
   document.querySelectorAll('.pair-only').forEach((e) => (e.hidden = !m.is_pair));
   document.querySelectorAll('.seq-slo').forEach((e) => (e.hidden = !!m.is_pair));
   document.querySelectorAll('.diff-only').forEach((e) => (e.hidden = !(m.is_pair && m.workload && m.workload.diff_steps)));
-  document.querySelectorAll('.tp-in').forEach((e) => (e.hidden = !!m.is_pair));   // structure models: PP × DP only
-  document.querySelectorAll('.sp-in').forEach((e) => (e.hidden = !full || !!m.is_pair));
+  document.querySelectorAll('.tp-in').forEach((e) => (e.hidden = !!m.is_pair));   // structure models: PP × DP × DAP, no TP
+  document.querySelectorAll('.sp-in').forEach((e) => (e.hidden = !full));
+  $('l-sp-name').textContent = m.is_pair ? 'DAP' : 'SP';
+  $('l-sp-lab').title = m.is_pair
+    ? 'DAP（动态轴并行，FastFold）：pair / MSA / 模板网格沿一个残基轴切到 DAP 张卡，单一 / 原子轨道每卡重复；三角乘法、偏置、外积均值 all-gather，轴切换 all-to-all'
+    : 'Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all（每 rank 算 heads/SP 个头的完整序列）';
   if (full) {
     if (S.cmpObj === 'goodput') { S.cmpObj = 'decode'; paintSeg('cmp-obj', 'decode'); }
     if (S.layObj === 'goodput') { S.layObj = 'decode'; paintSeg('lay-obj', 'decode'); }
@@ -254,7 +260,7 @@ function paintDomain(m) {
         + (w.msa || w.xmsa ? '；MSA 表示 行数 × N（行 / 列注意力、外积均值 ∝ 行数 · N²）' : '')
         + (w.templates ? `；模板 ${w.templates} 个 × N² 网格` : '')
         + (w.atoms_per_res ? `；原子 ≈ ${w.atoms_per_res} / 残基「假设」，局部窗口注意力` : '')
-        + '。只评估网络推理（MSA / 模板检索与特征化不在范围内）；布局只取 PP × DP（pair 的 DAP 切分未建模）。'
+        + '。只评估网络推理（MSA / 模板检索与特征化不在范围内）；布局取 PP × DP × DAP（DAP = pair / MSA 网格按残基轴切分，FastFold 动态轴并行；pair 的 TP 未建模）。'
       : 'token 数 = 残基 + <cls>/<eos>。');
   }
 }
@@ -277,7 +283,7 @@ function onModel() {
   $('model-notes-wrap').hidden = !m.notes.length;
   document.querySelectorAll('.moe-only').forEach((e) => (e.hidden = !m.is_moe));
   const L = S.sc.layout;
-  if (isFull(m)) { L.ep = 1; L.etp = 1; L.sp = L.sp || 1; if (m.is_pair) { L.tp = 1; L.sp = 1; } }
+  if (isFull(m)) { L.ep = 1; L.etp = 1; L.sp = L.sp || 1; if (m.is_pair) L.tp = 1; }
   else { L.sp = 1; if (!m.is_moe) { L.dp = 1; L.ep = 1; L.etp = 1; } else fixMoe('tp'); }
   if (L.pp > m.n_layers) L.pp = 1;
   syncInputs();
@@ -295,13 +301,13 @@ function setCards(n) {
   // default fill for a new card count: all TP (MoE: experts spread with EP = TP); 「布局搜索」finds the best
   const L = S.sc.layout;
   L.pp = 1; L.tp = n; L.dp = 1; L.sp = 1;
-  if (model().is_pair) { L.tp = 1; L.dp = n; }   // structure models: PP × DP only (pair DAP not modelled)
+  if (model().is_pair) { L.tp = 1; L.sp = n; }   // structure models: no TP — fill with DAP (pair grid split)
   if (model().is_moe) { L.ep = n; L.etp = 1; } else { L.ep = 1; L.etp = 1; }
 }
 function cardsNote() {
   const L = S.sc.layout;
   const m = model();
-  $('cards-note').textContent = m.is_pair ? `PP${L.pp} × DP${L.dp} = ${cards()} 卡；结构模型只取 PP × DP（改卡数按 DP 填充）`
+  $('cards-note').textContent = m.is_pair ? `PP${L.pp} × DP${L.dp} × DAP${L.sp || 1} = ${cards()} 卡；结构模型无 TP（改卡数按 DAP 填充）`
     : `PP${L.pp} × TP${L.tp} × DP${L.dp}${isFull(m) ? ` × SP${L.sp || 1}` : ''} = ${cards()} 卡；改卡数会按 TP 重新填充布局`;
   const c = $('l-cards');
   if (c._sync && document.activeElement !== c) c._sync();
@@ -491,7 +497,7 @@ function domainKpis(s, cap, auto) {
     const pl = g.pipeline;
     k.push(kpi('单段延迟（clip）', fmtDur(g.clip_s),
       `${w.width}×${w.height} · ${w.frames} 帧 · ${w.steps} 步 × CFG ${w.cfg} · batch ${s.batch}${auto} · SLO ${fmtDur(g.slo_s)}${over ? ' · 超出' : ''}`
-      + (pl ? ` · 文本编码 ${fmtDur(pl.te_s)} + 去噪 ${fmtDur(g.denoise_s)} + 解码 ${fmtDur(pl.decode_s)}` : ' · 只计 DiT 去噪（文本编码器 / VAE 未计）'), over ? 'warn' : ''));
+      + (pl ? ` · 文本编码 ${fmtDur(pl.te_s)} + 去噪 ${fmtDur(g.denoise_s)} + 解码 ${fmtDur(pl.decode_s)}${pl.load_s ? ` + 主机重载 ${fmtDur(pl.load_s)}` : ''} · 组件${pl.placement === 'auto' ? '（自动）' : ''}${pl.place_label}` : ' · 只计 DiT 去噪（文本编码器 / VAE 未计）'), over ? 'warn' : ''));
     k.push(kpi('每帧延迟', fmtDur(g.s_per_frame),
       `每去噪步 ${fmtDur(g.step_ms / 1e3)} · ${num(w.seq_tokens)} token / 前向${w.audio_tokens ? `（含音频 ${num(w.audio_tokens)}）` : ''}${w.attention === 'factorized' ? ' · 分解注意力' : ''} · 视频 ${num(w.video_s)} s${g.realtime_x ? ` · 实时倍率 ${num(g.realtime_x)}×` : ''}`));
     k.push(kpi('吞吐 / 卡', num(g.frames_per_s_card) + ' 帧/s',
@@ -501,7 +507,7 @@ function domainKpis(s, cap, auto) {
     k.push(kpi('批延迟', fmtDur(g.batch_ms / 1e3),
       `batch ${s.batch}${auto} × ${w.seq_len} 残基 · SLO ${w.recycles ? num(g.slo_ms / 1e3) + ' s' : num(g.slo_ms) + ' ms'}${over ? ' · 超出' : ''}`, over ? 'warn' : ''));
     k.push(kpi('吞吐 / 卡', num(g.seq_per_s_card) + ' 序列/s',
-      `${num(g.residues_per_s_card)} 残基/s/卡 · ${s.cards} 卡 · ${s.layout}`));
+      `${num(g.residues_per_s_card)} 残基/s/卡 · ${s.cards} 卡 · ${model().is_pair ? s.layout.replace('SP', 'DAP') : s.layout}`));
     k.push(w.recycles
       ? kpi('每序列计算', num(g.tflop_per_request) + ' TFLOP', `${w.seq_len} 残基${w.msa ? ` · MSA ${num(w.msa)} 行` : ''}${w.xmsa ? ` · extra MSA ${num(w.xmsa)} 行` : ''} · 主干 ${w.recycles} 遍${w.diff_steps ? ` · 扩散 ${w.diff_steps} 步 × ${w.samples} 样本` : ''}`)
       : kpi('每序列计算', num(g.tflop_per_request * 1e3) + ' GFLOP', `${w.tokens} token（含 <cls>/<eos>）· 单次编码器前向`));
@@ -509,6 +515,14 @@ function domainKpis(s, cap, auto) {
   k.push(boundKpi(s));
   k.push(memKpi(s, cap));
   return k;
+}
+function placeText(pl) {
+  const gb = (x) => num(x / 1e9) + ' GB';
+  const all = pl.te_w + pl.vae_w;
+  if (pl.place === 'resident') return `常驻——文本编码器在首级卡、VAE 在末级卡，与 DiT 同时占用显存（共 ${gb(all)}）`;
+  const sh = pl.te_cards > 1 ? `文本编码器权重按 FSDP 切到 ${pl.te_cards} 张卡（每卡 ${gb(pl.te_card_w)}，含 2 层预取；逐层 all-gather ${fmtDur(pl.gather_s)}，与编码计算重叠）` : '';
+  const off = pl.load_s ? `组件与 DiT 分时占用显存（需求取三者最大值），每请求从主机重载文本编码器 + DiT + VAE 权重 ${fmtDur(pl.load_s)}（${num(pl.host_GBps)} GB/s「假设」，主机保留副本）` : '';
+  return [sh, off].filter(Boolean).join('；') + '；VAE 在末级卡';
 }
 async function runFit() {
   const box = $('fit');
@@ -531,6 +545,8 @@ async function runFit() {
       acts.push(h('button', { class: 'btn', onclick: () => applyLayout(c.layout_obj, c.batch) },
         `改为 ${c.cards} 卡 · ${c.layout} · batch ${c.batch}（每卡 ${num(c.need_GiB)} GiB${c.meets_slo ? '' : isFull(m) ? '，延迟 SLO 未满足' : '，TPOT SLO 未满足'}）`));
     }
+    if (m.domain === 'gen' && S.sc.workload.pipeline !== false && (S.sc.workload.placement || 'auto') !== 'auto') acts.push(h('button', { class: 'btn', onclick: () => { S.sc.workload.placement = 'auto'; syncInputs(); schedule(); } },
+      '组件放置改为「自动」（常驻 → 文本编码器分片 → 顺序卸载，取第一个放得下的）'));
     if (m.domain === 'gen' && S.sc.workload.pipeline !== false) acts.push(h('button', { class: 'btn ghost', onclick: () => { S.sc.workload.pipeline = false; syncInputs(); schedule(); } },
       '只评估 DiT（文本编码器 / VAE 权重不计，相当于卸载到主机）'));
     if (f.min_mem) {
@@ -598,14 +614,16 @@ function renderAssumptions(r) {
     const g = r.summary.gen;
     items.splice(4, 1, `DRAM 效率 ${sc.mem_eff ?? (S.memInfo ? S.memInfo.efficiency : 0.7)}；预留 1 GiB；激活超出 SRAM/2 时分块流式进出 DRAM（GEMM 取激活分块 / 权重分块中较省者；注意力按 flash 式 K/V 重读）`);
     if (g.unit === 'frame') items.push(
-      `每个去噪步 ${g.workload.cfg} 次前向（CFG 的 cond / uncond 作为 batch，DP 可切分 = CFG 并行），${g.workload.steps} 步；单段延迟 = ${g.pipeline ? '文本编码 + ' : ''}步数 × max(微批, PP) × 最重流水级时间${g.pipeline ? ' + VAE 解码' : ''}`,
+      `每个去噪步 ${g.workload.cfg} 次前向（CFG 的 cond / uncond 作为 batch，DP 可切分 = CFG 并行），${g.workload.steps} 步；单段延迟 = ${g.pipeline ? '文本编码 + ' : ''}步数 × max(微批, PP) × 最重流水级时间${g.pipeline ? ' + VAE 解码' : ''}${g.pipeline && g.pipeline.load_s ? ' + 主机重载' : ''}`,
       g.pipeline
-        ? `文本编码器与 VAE 解码：按发布检查点头的算子图在一张卡上串行执行「假设」（${g.pipeline.parts.map((p) => `${p.label} ${fmtDur(p.s)} · ${p.bound}${p.tiles ? ` · ${p.tiles} 个 tile（重叠 ×${num(p.overlap)}）` : ''}`).join('；')}）；权重计入首 / 末流水级卡（${num(g.pipeline.parts.reduce((a, p) => a + p.stored_GB, 0))} GB）；吞吐按单请求串行计（与其他请求的去噪重叠未建模）`
+        ? `文本编码器与 VAE 解码：按发布检查点头的算子图与去噪串行执行「假设」（${g.pipeline.parts.map((p) => `${p.label} ${fmtDur(p.s)} · ${p.bound}${p.tiles ? ` · ${p.tiles} 个 tile（重叠 ×${num(p.overlap)}${p.tiling ? '，enable_tiling' : ''}）` : ''}`).join('；')}）；吞吐按单请求串行计（与其他请求的去噪重叠未建模）`
+          + `；组件放置${g.pipeline.placement === 'auto' ? '（自动）' : ''}：${placeText(g.pipeline)}`
         : '文本编码器与 VAE 解码未计时、未计存储（工作负载里已取消勾选「计入文本编码器与 VAE 解码」）',
       '时间步嵌入与 AdaLN 调制按每序列一次计入',
       `单段延迟 SLO ${fmtDur(g.slo_s)}（「假设」，可在左侧修改）`);
     else items.push(r.model.is_pair
         ? `结构预测：主干（pair / MSA 表示）${g.workload.recycles} 遍${g.workload.diff_steps ? ` + 扩散 ${g.workload.diff_steps} 步 × ${g.workload.samples} 样本` : ' + 结构模块'}，无 KV 缓存；批延迟 = (微批 + PP − 1) × 最重流水级时间`
+          + ((sc.layout.sp || 1) > 1 ? `；DAP ${sc.layout.sp}：pair / MSA / 模板网格按残基轴切到 ${sc.layout.sp} 卡，单一 / 原子轨道每卡重复，通信按 FastFold DAP（all-gather / all-to-all，与计算重叠取 max，每次集合通信 α）` : '')
         : '单次编码器前向（双向注意力，无 KV 缓存）；批延迟 = (微批 + PP − 1) × 最重流水级时间',
       `批延迟 SLO ${r.model.is_pair ? num(g.slo_ms / 1e3) + ' s' : num(g.slo_ms) + ' ms'}（「假设」）；激活 dtype ${r.model.act_fmt || 'bf16'}${r.model.what_if ? '（what-if）' : `（「假设」${/^W fp32/.test(r.model.dtype) ? '，发布权重 fp32' : ''}；可用激活 dtype what-if 看 fp32 激活）`}`);
   } else items.splice(6, 0, `投机解码：k = ${sc.serving.spec_k}，接受率 ${sc.serving.spec_accept}（期望 token = (1−a^(k+1))/(1−a)）`,
@@ -966,6 +984,7 @@ async function init() {
     bindNumber('w-' + k, () => S.sc.workload[k] || null, (x) => (S.sc.workload[k] = x === null ? 0 : x), { int: true, nullable: true });
   bindNumber('w-psteps', () => S.sc.workload.steps || null, (x) => (S.sc.workload.steps = x === null ? 0 : x), { int: true, nullable: true });
   for (const k of ['clip_slo_s', 'seq_slo_ms', 'fold_slo_s']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
+  bindNumber('w-host_GBps', () => S.sc.workload.host_GBps, (x) => (S.sc.workload.host_GBps = x));
   $('best-layout').addEventListener('click', bestLayout);
   $('best-batch').checked = S.best;
   AFTER.layout = () => {
@@ -985,6 +1004,8 @@ async function init() {
   $('wi-w').addEventListener('change', (e) => { S.wiW = e.target.value; schedule(); });
   $('wi-kv').addEventListener('change', (e) => { S.wiKV = e.target.value; schedule(); });
   $('wi-act').addEventListener('change', (e) => { S.wiAct = e.target.value; schedule(); });
+  $('w-placement').addEventListener('change', (e) => { S.sc.workload.placement = e.target.value; schedule(); });
+  $('w-vae_tiling').addEventListener('change', (e) => { S.sc.workload.vae_tiling = e.target.checked; schedule(); });
   $('w-pipeline').addEventListener('change', (e) => { S.sc.workload.pipeline = e.target.checked; put($('model-badges'), ...badges(model(), S.wiW || S.wiKV || (S.wiAct && isFull(model())))); schedule(); });
   bindMem();
   fillMem();

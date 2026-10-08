@@ -115,12 +115,12 @@ def test_recycle_step_and_sample_scaling_linear():
     assert m2 > m1 and _tf("esmfold", msa=128) == _tf("esmfold")                # single-sequence: MSA ignored
 
 
-def test_layouts_pp_dp_only_and_errors():
+def test_layouts_no_tp_and_errors():
     for mid in STRUCT:
         m = get_model(mid)
         lays = enumerate_layouts(4, len(m.layers), m.is_moe, full=True, pair=True)
-        assert lays and all(l.tp == 1 and l.sp == 1 for l in lays), mid
-    for bad in (Layout(tp=2), Layout(sp=2)):
+        assert lays and all(l.tp == 1 for l in lays) and any(l.sp > 1 for l in lays), mid     # 0.45: SP = DAP
+    for bad in (Layout(tp=2), Layout(tp=2, sp=2)):
         try:
             evaluate(Scenario(model="openfold", mem_id=HBM, layout=bad))
             raise AssertionError(bad)

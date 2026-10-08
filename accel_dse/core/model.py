@@ -143,7 +143,9 @@ class PairCore:
       pwa       – pair-weighted averaging (AF3 MSA module): ``heads`` × [N×N]·[N × S·dim]
       seq_att   – attention over the N tokens with a pair bias (single track, diffusion transformer, IPA)
       local_att – atom attention in windows of ``win[0]`` queries × ``win[1]`` keys
-    ``v_dim`` – value width when it differs from ``dim`` (IPA: scalar + point + pair values)."""
+    ``v_dim`` – value width when it differs from ``dim`` (IPA: scalar + point + pair values).
+    ``width`` – channel width of the representation the module reads (c_z / c_m / c_t, from the input dim of its
+                query / projection weight): the payload of a DAP transpose (0.45)."""
     kind: str
     heads: int = 1
     dim: int = 0
@@ -152,6 +154,7 @@ class PairCore:
     v_dim: int = 0
     glob: bool = False
     win: tuple[int, int] = (0, 0)
+    width: int = 0
 
 
 @dataclass(frozen=True)
