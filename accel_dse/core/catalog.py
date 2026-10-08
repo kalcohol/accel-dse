@@ -314,6 +314,7 @@ def labels(spec: ModelSpec) -> dict:
         "coverage_reasons": list(spec.coverage_reasons),
         "proxy_badge": spec.coverage == "proxy",
         "dtype": dtype_label(spec),
+        "act_fmt": spec.act_fmt,
         "params_B": pc["ours"] / 1e9,
         "active_B": spec.active_params() / 1e9,
         "release_params_B": (pc["release"] or 0) / 1e9,
@@ -334,6 +335,18 @@ def labels(spec: ModelSpec) -> dict:
     }
 
 
+def _pipeline_dict(model_id: str) -> list[dict] | None:
+    from .pipeline import component_data, pipeline_for, stored_bytes
+    pl = pipeline_for(model_id)
+    if pl is None:
+        return None
+    out = [{"role": "text_encoder", "label": t.label, "GB": stored_bytes(t.key) / 1e9,
+            "dtype": component_data(t.key)["dtype"], "tokens": t.tokens} for t in pl.text]
+    out += [{"role": r, "label": v.label, "GB": stored_bytes(v.key) / 1e9, "dtype": component_data(v.key)["dtype"]}
+            for r, v in (("vae", pl.vae), ("audio_vae", pl.audio)) if v]
+    return out
+
+
 def _workload_dict(spec: ModelSpec) -> dict | None:
     w = spec.workload
     if w is None:
@@ -344,7 +357,7 @@ def _workload_dict(spec: ModelSpec) -> dict | None:
                 "text_tokens": w.text_tokens, "joint_text": bool(w.prefix_tokens), "source": w.source,
                 "vae_frames": w.vae_frames, "audio_per_s": w.audio_per_s, "audio_channels": w.audio_channels,
                 "attention": "factorized" if any(l.core.span != "full" for l in spec.layers) else "full",
-                "cfg_distilled": w.cfg == 1}
+                "cfg_distilled": w.cfg == 1, "pipeline": _pipeline_dict(spec.id)}
     d = {"kind": "protein", "seq_len": w.seq_len, "max_seq": w.max_seq, "source": w.source, "structure": spec.is_pair}
     if spec.is_pair:
         d.update({"msa": w.msa, "xmsa": w.xmsa, "templates": w.templates, "recycles": w.recycles,

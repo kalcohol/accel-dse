@@ -1,0 +1,366 @@
+"""Video pipeline components outside the denoiser (0.44): text encoders and VAE decoders.
+
+A text-to-video request runs   text encoder(s) → steps × DiT forward(s) → VAE decode (→ audio VAE decode).
+Up to 0.43 only the DiT was evaluated.  From 0.44 the other components are op graphs too, built from their
+released checkpoint headers (``accel_dse/data/pipeline/*.json``, see scripts/build_pipeline_data.py) and run on
+the same mapping / memplan / schedule path as the denoiser (``evaluate._pipeline_cost``):
+
+  text encoder  every header GEMM of the text transformer at M = prompts · padded text tokens, plus the
+                attention score / value products (bidirectional for T5 / umT5, causal for the Llama / Qwen /
+                CLIP text towers).  prompts = batch · cfg when the reference encodes a negative prompt for the
+                uncond branch, else batch (Open-Sora: learned null embedding; guidance-distilled models).
+  VAE decoder   every decoder conv as an implicit GEMM: M = output voxels at the conv's resolution level,
+                K = C_in · kernel volume, N = C_out (2-D per-frame convs: kernel kh·kw; depth-to-space /
+                transposed convs at their input / output rate).  Resolution levels follow each family's
+                up-block schedule (causal temporal upsampling t → e·t − (e−1)); mid-block attention as
+                attention ops (per frame for Wan / SD-VAE, full causal 3-D within a tile for HunyuanVideo);
+                the MiniMax-H3 decoder is a ViT over 5-latent-frame chunks.  Norm / activation / residual:
+                8 vector element-ops per output element 「假设」(BigVGAN anti-aliased activations: 60).
+  storage       the whole loaded checkpoint of each component at its released dtype (a VAE's encoder and the
+                H3 text encoder's vision tower / LM head are loaded with the pipeline though not run).
+
+Placement 「假设」: the components run on one card, serially with the denoise loop (clip latency =
+text + denoise + decode; xDiT-style parallel VAE decode not modelled); text-encoder weights live on the
+first pipeline stage's card, VAE weights on the last stage's card.  Activation peak of a decode = the largest
+op of one decode chunk (one latent frame for the causal-cache decoders, a tile / chunk where the reference
+tiles), not additive to the denoiser's (it runs after the loop).
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import re
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+
+from .dtypes import fmt as _fmt
+from .ir import Op
+
+DATA = Path(__file__).resolve().parent.parent / "data" / "pipeline"
+VEC_PER_OUT = 8.0          # norm + activation + residual element-ops per conv / linear output element 「假设」
+
+
+@lru_cache(maxsize=None)
+def component_data(key: str) -> dict:
+    return json.loads((DATA / f"{key}.json").read_text())
+
+
+@dataclass(frozen=True)
+class TextEnc:
+    key: str
+    label: str
+    tokens: int              # padded tokens per prompt
+    heads: int
+    head_dim: int
+    causal: bool = False
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class Vae:
+    key: str
+    family: str
+    label: str
+    act: str = ""            # activation dtype of the reference decode ("" → the denoiser's)
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class Pipeline:
+    text: tuple[TextEnc, ...]
+    vae: Vae
+    audio: Vae | None = None
+    neg_prompt: bool = True  # reference encodes a negative / empty prompt for the CFG uncond branch
+    note: str = ""
+
+
+_UMT5 = TextEnc("umt5-xxl", "umT5-XXL 编码器", 512, 64, 64,
+                note="Wan 参考实现 text_len = 512（padding 到 512）")
+_WAN_VAE = Vae("wan-vae", "wan", "Wan-VAE", act="fp32",
+               note="参考实现 WanVAE 以 float32 运行（diffusers 示例亦 torch_dtype=float32）：激活按 fp32")
+_COG_NOTE = "CogVideoX 默认不开 VAE tiling（文档示例开启以省显存）：按整段 causal 解码（frame_batch_size = 2 潜帧）计"
+
+PIPELINES: dict[str, Pipeline] = {
+    "wan2.1-14b": Pipeline((_UMT5,), _WAN_VAE),
+    "wan2.1-1.3b": Pipeline((_UMT5,), _WAN_VAE),
+    "wan2.2-a14b": Pipeline((_UMT5,), _WAN_VAE),
+    "cogvideox-5b": Pipeline((TextEnc("t5-v1_1-xxl.bf16", "T5 v1.1 XXL 编码器", 226, 64, 64),),
+                             Vae("cogvideox-vae.5b", "cog", "CogVideoX VAE", note=_COG_NOTE)),
+    "cogvideox-2b": Pipeline((TextEnc("t5-v1_1-xxl.fp16", "T5 v1.1 XXL 编码器", 226, 64, 64),),
+                             Vae("cogvideox-vae.2b", "cog", "CogVideoX VAE", note=_COG_NOTE)),
+    "hunyuanvideo": Pipeline(
+        (TextEnc("llava-llama3-8b", "LLaVA-Llama-3-8B 文本塔", 351, 32, 128, causal=True,
+                 note="提示模板 crop_start 95 + 256 token = 351 token 输入；取倒数第 3 层隐状态，参考实现仍跑满 32 层"),
+         TextEnc("clip-vit-l-text", "CLIP ViT-L 文本塔", 77, 12, 64, causal=True)),
+        Vae("hunyuan-vae", "hunyuan", "HunyuanVideo 3D VAE",
+            note="中间块为整段 causal 3D 注意力，参考实现必须分块解码：按 diffusers 默认 tiling（空间 tile 256 px / "
+                 "stride 192，时间 tile 16+1 帧 / stride 12）计，重叠区重复计算计入"),
+        neg_prompt=False),
+    "ltx-video": Pipeline((TextEnc("t5-v1_1-xxl.fp32", "T5 v1.1 XXL 编码器", 128, 64, 64),),
+                          Vae("ltx-vae", "ltx", "LTX-Video VAE")),
+    "mochi-1": Pipeline((TextEnc("t5-v1_1-xxl.mochi", "T5 v1.1 XXL 编码器", 256, 64, 64),),
+                        Vae("mochi-vae", "mochi", "Mochi AsymmVAE",
+                            note="激活峰值按逐潜帧解码（framewise decoding）计「假设」；diffusers 默认整段解码时峰值更高")),
+    "opensora-stdit3": Pipeline((TextEnc("t5-v1_1-xxl.deepfloyd", "T5 v1.1 XXL 编码器（DeepFloyd）", 300, 64, 64),),
+                                Vae("opensora-vae", "os", "Open-Sora VAE v1.2（SD-VAE 2D + 时间 VAE）"),
+                                neg_prompt=False,
+                                note="uncond 分支用学习到的 null 文本嵌入：每请求只编码 1 条提示"),
+    "minimax-h3": Pipeline(
+        (TextEnc("qwen3-vl-32b", "Qwen3-VL 文本塔", 512, 64, 128, causal=True,
+                 note="参考实现读取 hidden_states[50]（64 层中第 50 层），HF 前向仍跑满 64 层：按 64 层计"),),
+        Vae("h3-vae", "h3", "MiniMax-H3 ViT 视频解码器",
+            note="ViT 解码器按 5 潜帧一块（clip_length 17 / token_drop 3）、块内全注意力 + 5 个 register token 计"),
+        audio=Vae("h3-audio-vae", "audio", "MiniMax-H3 音频 VAE（BigVGAN 型）",
+                  note="按声道数逐路解码 40 Hz 潜变量 → 32 kHz 波形「假设」"),
+        neg_prompt=False),
+}
+
+
+def pipeline_for(model_id: str) -> Pipeline | None:
+    return PIPELINES.get(model_id)
+
+
+def stored_bytes(key: str) -> float:
+    d = component_data(key)
+    return d["params_stored"] * _fmt(d["dtype"]).bytes
+
+
+# ---------------------------------------------------------------- text encoders
+_TE_LAYER = re.compile(r"(?:^|\.)(?:block|blocks|layers)\.(\d+)\.")
+_TE_SKIP = re.compile(r"embed|shared\.|lm_head|relative_attention_bias|position|visual|norm|text_projection")
+
+
+def text_ops(te: TextEnc, prompts: int, af: str) -> tuple[list[Op], float]:
+    """Op list of one text-encoder pass over ``prompts`` padded prompts; (ops, activation peak bytes)."""
+    d = component_data(te.key)
+    wf = d["dtype"]
+    wb = _fmt(wf).bits
+    ab = _fmt(af).bytes
+    rows = prompts * te.tokens
+    ops: list[Op] = []
+    layers = set()
+    peak = 0.0
+    for name, sh in sorted(d["tensors"].items()):
+        mm = _TE_LAYER.search(name)
+        if mm:
+            layers.add(int(mm.group(1)))
+        if len(sh) != 2 or _TE_SKIP.search(name):
+            continue
+        n, k = sh
+        ops.append(Op("te." + name, "gemm", 0, m=rows, k=k, n=n, role="text_encoder", w_params=k * n, w_bits=wb,
+                      w_fmt=wf, a_fmt=af, act_bytes=rows * (k + n) * ab, stream=True, vec=rows * n * 3.0))
+        peak = max(peak, rows * (k + n) * ab)
+    causal = 0.5 if te.causal else 1.0
+    cnt = prompts * te.heads
+    T, dh = te.tokens, te.head_dim
+    for li in sorted(layers):
+        ops += [Op(f"te.{li}.qk", "attn", li, m=T, k=dh, n=T, count=cnt, causal=causal,
+                   act_bytes=cnt * T * dh * ab, stream=True, orient=True),
+                Op(f"te.{li}.pv", "attn", li, m=T, k=T, n=dh, count=cnt, causal=causal,
+                   act_bytes=cnt * T * dh * ab, orient=True),
+                Op(f"te.{li}.softmax", "vector", li, vec=cnt * T * T * causal * 5)]
+    return ops, peak
+
+
+# ---------------------------------------------------------------- VAE decoders
+@dataclass(frozen=True)
+class _Fam:
+    block_re: str                       # regex capturing the up-block index
+    order: tuple[int, ...]              # execution order of up blocks
+    ups: dict                           # block → (temporal factor, spatial factor)
+    pre: tuple[str, ...] = ()           # upsampler tensors that run at the block's input resolution
+    trule: str = "causal"               # causal: t → e·t − (e−1);  double: t → e·t
+    attn: str = ""                      # frame | 3d | ""
+    attn_dim: int = 0
+    chunk: str = "frame"                # activation-peak chunk: frame (latent frame) | cog2 | whole | tile
+
+
+_TAIL = ("conv_out", "norm_out", "block_out", "proj_out", "conv_post", "conv_norm_out")
+_UPS = ("upsamplers", "conv_blocks", ".proj.")
+
+FAMILIES = {
+    "wan": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (2, 2), 1: (2, 2), 2: (1, 2)}, pre=("time_conv",),
+                attn="frame", attn_dim=384),
+    "cog": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (2, 2), 1: (2, 2), 2: (1, 2)}, chunk="cog2"),
+    "hunyuan": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (1, 2), 1: (2, 2), 2: (2, 2)}, attn="3d",
+                    attn_dim=512, chunk="tile"),
+    "ltx": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {1: (2, 2), 2: (2, 2), 3: (2, 2)}, pre=("upsamplers",),
+                chunk="whole"),
+    "mochi": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2), {0: (3, 2), 1: (2, 2), 2: (1, 2)}, pre=(".proj.",)),
+    # Open-Sora VAE v1.2: temporal VAE (MAGVIT-v2 style, at latent spatial size) then the SD-VAE 2-D decoder per frame
+    "os_t": _Fam(r"(?:block_res_blocks|conv_blocks)\.(\d+)\.", (3, 2, 1, 0), {3: (2, 1), 2: (2, 1)},
+                 pre=("conv_blocks",), trule="double", chunk="whole"),
+    "os_s": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (1, 2), 1: (1, 2), 2: (1, 2)}, attn="frame",
+                 attn_dim=512),
+}
+
+
+def _up(res: tuple[int, int, int], f: tuple[int, int] | None, rule: str) -> tuple[int, int, int]:
+    if not f:
+        return res
+    t, h, w = res
+    et, es = f
+    t2 = t * et if rule == "double" else t * et - (et - 1)
+    return t2, h * es, w * es
+
+
+def _conv_walk(tensors: dict, prefix: str, fam: _Fam, lat: tuple[int, int, int], wf: str, af: str, count: int,
+               batch: int, tag: str) -> tuple[list[Op], float, tuple[int, int, int]]:
+    """Implicit-GEMM ops of one conv decoder (``count`` identical tiles of latent size ``lat``, ``batch`` clips)."""
+    wb = _fmt(wf).bits
+    ab = _fmt(af).bytes
+    pre_res, post_res, res = {}, {}, lat
+    for i in fam.order:
+        pre_res[i] = res
+        res = _up(res, fam.ups.get(i), fam.trule)
+        post_res[i] = res
+    final = res
+    bre = re.compile(fam.block_re)
+    chunks = {"frame": lat[0], "cog2": math.ceil(lat[0] / 2), "whole": 1, "tile": 1}[fam.chunk]
+    ops: list[Op] = []
+    peak = 0.0
+    for name, sh in sorted(tensors.items()):
+        if not name.startswith(prefix) or len(sh) < 2 or not name.endswith(("weight", "weight_v")):
+            continue
+        if "norm" in name and "conv" not in name:
+            continue
+        mm = bre.search(name)
+        if mm and int(mm.group(1)) in pre_res:
+            i = int(mm.group(1))
+            up = any(u in name for u in _UPS)
+            r = post_res[i] if up and not any(p in name for p in fam.pre) else pre_res[i]
+        elif any(t in name for t in _TAIL):
+            r = final
+        else:
+            r = lat
+        t, h, w = r
+        vox = t * h * w * batch
+        n, k = sh[0], math.prod(sh[1:])
+        cin = sh[1]
+        # input tensor at the conv's input resolution: = output voxels, except a depth-to-space conv (same res)
+        # and the 2-D conv after an upsample (input at the pre-upsample res → ≤ output voxels; take output, 「假设」)
+        ops.append(Op(f"{tag}.{name}", "gemm", 0, m=vox, k=k, n=n, count=count, role="vae", w_params=k * n * count,
+                      w_bits=wb, w_fmt=wf, a_fmt=af, act_bytes=vox * (cin + n) * count * ab, stream=True,
+                      vec=vox * n * count * VEC_PER_OUT, in_elems=vox * cin * count))
+        peak = max(peak, vox / chunks * (cin + n) * ab)
+    if fam.attn:
+        t, h, w = lat
+        dd = fam.attn_dim
+        if fam.attn == "frame":
+            groups, L, causal = t * batch * count, h * w, 1.0
+        else:                              # full 3-D attention, causal by latent frame
+            groups, L, causal = batch * count, t * h * w, (1 + 1 / t) / 2
+        ops += [Op(f"{tag}.mid.qk", "attn", 0, m=L, k=dd, n=L, count=groups, causal=causal,
+                   act_bytes=groups * L * dd * ab, stream=True, orient=True),
+                Op(f"{tag}.mid.pv", "attn", 0, m=L, k=L, n=dd, count=groups, causal=causal,
+                   act_bytes=groups * L * dd * ab, orient=True),
+                Op(f"{tag}.mid.softmax", "vector", 0, vec=groups * L * L * causal * 5)]
+        peak = max(peak, 4 * L * dd * ab)
+    return ops, peak, final
+
+
+def _hunyuan_tiles(lat: tuple[int, int, int]) -> list[tuple[tuple[int, int, int], int]]:
+    """diffusers AutoencoderKLHunyuanVideo tiled decode: temporal tiles of 4+1 latent frames every 3, spatial tiles of
+    32×32 latent every 24 (tile_sample_min 256 px / stride 192 px, 16 / 12 frames) → [(tile latent size, count)]."""
+    T, H, W = lat
+    ts = [len(range(T)[i:i + 5]) for i in range(0, T, 3)] if T > 4 else [T]
+    tiled = H > 32 or W > 32
+    hs = [len(range(H)[i:i + 32]) for i in range(0, H, 24)] if tiled else [H]
+    ws = [len(range(W)[j:j + 32]) for j in range(0, W, 24)] if tiled else [W]
+    out: dict = {}
+    for a in ts:
+        for b in hs:
+            for c in ws:
+                out[(a, b, c)] = out.get((a, b, c), 0) + 1
+    return sorted(out.items())
+
+
+def vae_ops(v: Vae, lat: tuple[int, int, int], frames: int, batch: int, af: str,
+            audio_rows: int = 0) -> tuple[list[Op], float, dict]:
+    """Decode ops of one request batch; (ops, activation peak bytes, info).  A tiled decode returns its ops as
+    ``info["groups"]`` = [(op list of one tile size, executions)] instead."""
+    d = component_data(v.key)
+    wf, ten = d["dtype"], d["tensors"]
+    af = v.act or af
+    info: dict = {"act": af}
+    if v.family == "hunyuan":
+        groups, peak = [], 0.0
+        tiles = _hunyuan_tiles(lat)
+        for tl, c in tiles:     # one op list per distinct tile size, executed c · batch times (weights re-read per tile)
+            o, p, _ = _conv_walk(ten, "", FAMILIES["hunyuan"], tl, wf, af, 1, 1, f"vae[{tl[0]}x{tl[1]}x{tl[2]}]")
+            groups.append((o, c * batch))
+            peak = max(peak, p)
+        vol = sum(a * b * cc * n for (a, b, cc), n in tiles)
+        info["tiles"] = sum(n for _, n in tiles)
+        info["overlap"] = vol / math.prod(lat)
+        info["groups"] = groups
+        return [], peak, info
+    if v.family == "os":
+        t0, h0, w0 = lat
+        o1, p1, tfin = _conv_walk(ten, "temporal_vae.", FAMILIES["os_t"], (t0, h0, w0), wf, af, 1, batch, "vae.t")
+        o2, p2, _ = _conv_walk(ten, "spatial_vae.", FAMILIES["os_s"], (frames, h0, w0), wf, af, 1, batch, "vae.s")
+        p1 = p1 / max(1, math.ceil(t0 / 5))         # temporal VAE decodes 5-latent micro-chunks
+        return o1 + o2, max(p1, p2), info
+    if v.family == "h3":
+        c = d["config"]
+        heads, dh = c.get("decoder_num_attention_heads", 32), c.get("decoder_attention_head_dim", 64)
+        chunk = math.ceil(c.get("clip_length", 17) / 4)
+        drop = c.get("token_drop", 3)
+        n_chunks = math.ceil((lat[0] + drop) / chunk)
+        L = chunk * lat[1] * lat[2] + c.get("decoder_num_register_tokens", 4) + 1
+        rows = n_chunks * L * batch
+        wb, ab = _fmt(wf).bits, _fmt(af).bytes
+        ops = []
+        layers = set()
+        for name, sh in sorted(ten.items()):
+            mm = re.search(r"transformer_blocks\.(\d+)\.", name)
+            if mm:
+                layers.add(int(mm.group(1)))
+            if len(sh) < 2 or not name.endswith("weight"):
+                continue
+            n, k = sh[0], math.prod(sh[1:])
+            ops.append(Op("vae." + name, "gemm", 0, m=rows, k=k, n=n, role="vae", w_params=k * n, w_bits=wb, w_fmt=wf,
+                          a_fmt=af, act_bytes=rows * (k + n) * ab, stream=True, vec=rows * n * 3.0))
+        cnt = n_chunks * batch * heads
+        for li in sorted(layers):
+            ops += [Op(f"vae.{li}.qk", "attn", li, m=L, k=dh, n=L, count=cnt, act_bytes=cnt * L * dh * ab,
+                       stream=True, orient=True),
+                    Op(f"vae.{li}.pv", "attn", li, m=L, k=L, n=dh, count=cnt, act_bytes=cnt * L * dh * ab, orient=True),
+                    Op(f"vae.{li}.softmax", "vector", li, vec=cnt * L * L * 5)]
+        ff = max(sh[0] for nm, sh in ten.items() if "ff.net.0" in nm and len(sh) == 2)
+        info.update(chunks=n_chunks, chunk_tokens=L)
+        return ops, L * (2048 + ff) * ab * batch, info
+    if v.family == "audio":
+        c = d["config"]
+        rates = c.get("decoder_rates", [])
+        wb, ab = _fmt(wf).bits, _fmt(af).bytes
+        n_res = len(c.get("resblock_kernel_sizes", [3, 7, 11]))
+        lens = [audio_rows]
+        for r in rates:
+            lens.append(lens[-1] * r)
+        ops, peak = [], 0.0
+        for name, sh in sorted(ten.items()):
+            if not name.endswith("weight_v") or len(sh) < 3:
+                continue
+            m_up = re.search(r"ups\.(\d+)\.", name)
+            m_rb = re.search(r"resblocks\.(\d+)\.", name)
+            if m_up:            # ConvTranspose1d [C_in, C_out, k] with stride = rate: MACs = L_in · C_in · C_out · k
+                i = int(m_up.group(1))
+                cin, n, kk = sh
+                m, k = lens[i + 1], max(1, cin * kk // rates[i])
+            else:
+                lvl = (int(m_rb.group(1)) // n_res + 1) if m_rb else (len(rates) if "conv_post" in name else 0)
+                n, cin, kk = sh
+                m, k = lens[lvl], cin * kk
+            ops.append(Op("avae." + name, "gemm", 0, m=m * batch, k=k, n=n, role="vae", w_params=math.prod(sh),
+                          w_bits=wb, w_fmt=wf, a_fmt=af, act_bytes=m * batch * (cin + n) * ab, stream=True,
+                          vec=m * batch * n * 60.0, in_elems=m * batch * cin))
+            peak = max(peak, m * batch * (cin + n) * ab)
+        info["samples"] = lens[-1]
+        return ops, peak, info
+    fam = FAMILIES[v.family]
+    ops, peak, fin = _conv_walk(ten, "", fam, lat, wf, af, 1, batch, "vae")
+    info["out"] = fin
+    return ops, peak, info

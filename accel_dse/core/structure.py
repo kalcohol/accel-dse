@@ -215,7 +215,8 @@ def _spec(model_id, hf_id, rel, arch, hidden, layers, wl, notes, reasons, key, e
                      final_norm_params=0, adaln=False, workload=wl)
     notes = list(notes) + [
         "发布权重为 fp32（4 B / 参数）" + ("，ESM-2 语言模型部分为 fp16" if key == "esmfold" else "") +
-        f"；激活按 bf16「假设」（{_PREC[key]}；fp32 激活的双倍流量未建模）；芯片无 fp32 MAC → 逐 GEMM 转换为 bf16，开销计入向量单元",
+        f"；激活按 bf16「假设」（{_PREC[key]}）——fp32 激活可用激活 dtype what-if（UI「激活 dtype」/ CLI --act fp32）评估："
+        "激活存储、DRAM 流式与 SRAM 端口流量按 4 B，计算仍在 bf16 阵列上并计转换开销；芯片无 fp32 MAC → 逐 GEMM 转换为 bf16，开销计入向量单元",
         "TP / SP（pair 表示的 DAP 切分）未建模：布局只取 PP × DP（DP = 多条序列并行）"]
     pc = (spec.release_params - spec.params()) / spec.release_params
     if abs(pc) > 0.001:

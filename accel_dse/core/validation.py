@@ -76,13 +76,16 @@ def v3_genz(path: Path = REF) -> list[dict]:
 def v2_domain() -> list[dict]:
     """Video / protein sanity rows (0.41).  Only the workload / FLOP model is checked against a public number; no
     hardware calibration.  Wan2.1 README: T2V-1.3B makes a 5 s 480P clip on one RTX 4090 in about 4 minutes
-    (T5 + VAE + CPU offload included); a 4090 has ≈ 165 TFLOPS dense bf16 with fp32 accumulate."""
+    (T5 + VAE + CPU offload included); a 4090 has ≈ 165 TFLOPS dense bf16 with fp32 accumulate.  0.44: the FLOP count
+    includes the umT5 encoder and the Wan-VAE decode (the README time does too)."""
     r = evaluate(Scenario(model="wan2.1-1.3b", mem_id=HBM_6600))
     flops = r.domain_summary()["tflop_per_request"] * 1e12
     eff = flops / 240.0 / 165e12
-    return [{"check": "Wan2.1-1.3B 480P DiT FLOP/clip ÷ 240 s ÷ RTX 4090 165 TFLOPS", "value": eff, "lo": 0.4,
+    p = r.pipeline or {}
+    return [{"check": "Wan2.1-1.3B 480P pipeline FLOP/clip ÷ 240 s ÷ RTX 4090 165 TFLOPS", "value": eff, "lo": 0.4,
              "hi": 1.0, "unit": "×", "ok": 0.4 <= eff <= 1.0,
-             "note": f"{flops / 1e15:.1f} PFLOP per clip (50 steps × CFG 2 × 32,760 tokens); README: ~4 min on a 4090"},
+             "note": f"{flops / 1e15:.1f} PFLOP per clip (DiT 50 steps × CFG 2 × 32,760 tokens + umT5 + Wan-VAE decode "
+                     f"{p.get('tflop', 0) / 1e3:.2f} PFLOP); README: ~4 min on a 4090 incl. T5 + VAE"},
             _opensora_row(), _esmfold_row()]
 
 
@@ -107,8 +110,9 @@ def _opensora_row() -> dict:
     r = evaluate(Scenario(model="opensora-stdit3", mem_id=HBM_6600))
     flops = r.domain_summary()["tflop_per_request"] * 1e12
     eff = flops / 130.0 / 989e12
-    return {"check": "Open-Sora STDiT3 720p 4s DiT FLOP/clip ÷ 130 s ÷ H100 989 TFLOPS", "value": eff, "lo": 0.05,
+    p = r.pipeline or {}
+    return {"check": "Open-Sora STDiT3 720p 4s pipeline FLOP/clip ÷ 130 s ÷ H100 989 TFLOPS", "value": eff, "lo": 0.05,
             "hi": 0.6, "unit": "×", "ok": 0.05 <= eff <= 0.6,
-            "note": f"{flops / 1e15:.1f} PFLOP per clip (30 steps × CFG 2 × 108,000 tokens, factorized S/T attention); "
-                    "README: 130 s on one H100 incl. T5 + VAE"}
+            "note": f"{flops / 1e15:.1f} PFLOP per clip (30 steps × CFG 2 × 108,000 tokens, factorized S/T attention; "
+                    f"T5 + VAE decode {p.get('tflop', 0) / 1e3:.2f} PFLOP); README: 130 s on one H100 incl. T5 + VAE"}
 

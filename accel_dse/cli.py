@@ -31,6 +31,10 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     if layout:
         for k in ("pp", "tp", "dp", "ep", "etp", "sp"):
             p.add_argument(f"--{k}", type=int, default=1)
+    p.add_argument("--dit-only", action="store_true",
+                   help="video: evaluate the DiT denoiser only (text encoder + VAE decode not counted; default counts them)")
+    p.add_argument("--act", default=None, choices=["fp32", "bf16"],
+                   help="what-if activation dtype (video / protein models; labelled what-if)")
     p.add_argument("--json", action="store_true", help="print raw JSON")
 
 
@@ -42,8 +46,12 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     sc = {"model": a.model, "mapping": a.mapping, "serving": sv}
     wl = {k: getattr(a, k) for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles",
                                      "samples") if getattr(a, k)}
+    if getattr(a, "dit_only", False):
+        wl["pipeline"] = False
     if wl:
         sc["workload"] = wl
+    if getattr(a, "act", None):
+        sc["formats_override"] = [["act", a.act]]
     if a.mem:
         sc["mem_id"] = a.mem
     if a.mem_eff is not None:
@@ -70,7 +78,8 @@ def cmd_eval(a) -> dict:
         return out
     s = out["summary"]
     m = out["model"]
-    print(f"{m['id']}  [{m['provenance']} · {m['coverage']} · {m['dtype']}]{'  「架构代理」' if m['proxy_badge'] else ''}")
+    print(f"{m['id']}  [{m['provenance']} · {m['coverage']} · {m['dtype']}{' · what-if' if m.get('what_if') else ''}]"
+          f"{'  「架构代理」' if m['proxy_badge'] else ''}")
     print(f"layout {s['layout']}  mapping {s['mapping']}  batch {s['batch']}  bound {s['bound']}  "
           f"array_util {s['array_util']:.1%}")
     if g := s.get("gen"):
@@ -82,6 +91,12 @@ def cmd_eval(a) -> dict:
                   + (" [factorized S/T attention]" if w.get("attention") == "factorized" else ""))
             print(f"clip {g['clip_s']:.1f} s   {g['s_per_frame']:.2f} s/frame   step {g['step_ms']:.0f} ms   "
                   f"{g['frames_per_s_card']:.3g} frames/s/card   SLO {'OK' if s['slo_ok'] else 'over'}")
+            if pl := g.get("pipeline"):
+                print(f"pipeline: text {pl['te_s']:.2f} s + denoise {g['denoise_s']:.1f} s + decode {pl['decode_s']:.1f} s;  "
+                      + ";  ".join(f"{p['label']} {p['s']:.2f} s {p['tflop']:.1f} TFLOP {p['stored_GB']:.2f} GB "
+                                   f"{p['bound']}" for p in pl["parts"]))
+            else:
+                print("DiT only (text encoder / VAE decode not counted)")
         else:
             if w.get("recycles"):
                 print(f"structure: MSA {w.get('msa') or w.get('xmsa') or 0} rows, {w['recycles']} trunk passes"

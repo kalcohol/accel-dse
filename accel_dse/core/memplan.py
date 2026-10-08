@@ -148,6 +148,7 @@ class MemPlan:
     kv_sram: float          # bytes of KV+state kept on chip
     residency: float        # pinned / stored weights
     act_total: float = 0.0  # activation working set kept in DRAM (full-sequence forward)
+    pipe_w: float = 0.0     # video pipeline components stored on this card (text encoder / VAE weights, 0.44)
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
@@ -174,7 +175,7 @@ def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
     """(activation DRAM bytes, extra weight re-read bytes) of one streamed op of a full-sequence forward."""
     budget = sram_bytes / 2.0
     if op.kind == "gemm":
-        a_in = op.m * op.k * op.count * ab
+        a_in = (op.in_elems or op.m * op.k * op.count) * ab
         a_out = op.m * op.n * op.count * ab
         if a_in + a_out <= budget:
             return 0.0, 0.0

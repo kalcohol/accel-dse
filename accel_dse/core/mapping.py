@@ -113,7 +113,7 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
     ex, rate, conv, flag = gemm_exec(w_fmt, a_fmt, ch.formats)
     wb = (w_bits if w_bits is not None else _fmt(w_fmt).bits) / 8.0
     ab = _fmt(a_fmt).bytes
-    ob = 2.0
+    ob = max(2.0, ab)       # outputs leave in bf16 (fp32 when the activations are fp32)
     best = None
     for df in _candidates(org):
         if df == "os":

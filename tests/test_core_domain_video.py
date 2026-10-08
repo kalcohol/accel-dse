@@ -21,17 +21,18 @@ LP = "lpddr5x_4x64_8533_16g"
 NEW = ("wan2.2-a14b", "hunyuanvideo", "ltx-video", "mochi-1", "opensora-stdit3", "minimax-h3")
 
 
-def _flops(mid: str, **wl) -> float:
-    r = evaluate(Scenario(model=mid, mem_id=HBM, workload=Workload(**wl)))
-    return r.domain_summary()["tflop_per_request"] * 1e12
+def _flops(mid: str, key: str = "dit_tflop_per_request", **wl) -> float:
+    """DiT FLOPs per request; ``key="tflop_per_request"`` = whole pipeline (0.44: + text encoder + VAE decode)."""
+    s = evaluate(Scenario(model=mid, mem_id=HBM, workload=Workload(**wl))).domain_summary()
+    return s.get(key, s["tflop_per_request"]) * 1e12
 
 
 def test_params_exact_dtype_and_coverage():
     for mid in NEW:
         lb = labels(get_model(mid))
         assert abs(lb["param_err"]) < 2e-5, (mid, lb["param_err"])             # every header tensor accounted
-        assert lb["coverage"] == "partial" and lb["model_domain"] == "gen" and not lb["kv_cache"]
-        assert any("VAE" in r for r in lb["coverage_reasons"]), mid
+        assert lb["coverage"] == "full" and lb["model_domain"] == "gen" and not lb["kv_cache"]   # 0.44
+        assert any("整条 pipeline" in n and "VAE" in n for n in lb["notes"]), mid
     assert labels(get_model("wan2.2-a14b"))["dtype"] == "W fp32 · A bf16"
     assert labels(get_model("hunyuanvideo"))["dtype"] == "W bf16 · A bf16"
     assert labels(get_model("minimax-h3"))["dtype"] == "W bf16 · A bf16"
@@ -89,7 +90,7 @@ def test_flops_vs_closed_forms():
 def test_v2_opensora_readme_h100():
     """Open-Sora 1.2 README: 720p 4 s on one H100 takes 130 s end to end (T5 + VAE included).  Our DiT FLOPs over
     130 s must imply a plausible H100 utilisation (5–60 % of 989 TFLOPS); full 3D attention would imply > 100 %."""
-    eff = _flops("opensora-stdit3") / 130.0 / 989e12
+    eff = _flops("opensora-stdit3", "tflop_per_request") / 130.0 / 989e12
     assert 0.05 <= eff <= 0.6, eff
 
 

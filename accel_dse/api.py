@@ -162,7 +162,8 @@ def _stage_dict(s) -> dict:
             "mem": {"stored_w_GiB": s.mem.stored_w / 2**30, "kv_GiB": s.mem.kv_total / 2**30,
                     "state_GiB": s.mem.state_total / 2**30, "need_GiB": s.mem.dram_need / 2**30,
                     "cap_GiB": s.mem.dram_cap / 2**30, "fits": s.mem.fits, "residency": s.mem.residency,
-                    "kv_sram_MiB": s.mem.kv_sram / 2**20, "staging_MiB": s.mem.staging / 2**20},
+                    "kv_sram_MiB": s.mem.kv_sram / 2**20, "staging_MiB": s.mem.staging / 2**20,
+                    "pipe_w_GiB": s.mem.pipe_w / 2**30},
             "convert_Melems": s.convert_elems / 1e6, "tflops": t.flops / 1e12}
 
 
@@ -327,7 +328,8 @@ def api_fit(body: dict) -> dict:
     r1 = r if scn.serving.batch == 1 else evaluate(scn.replace("serving.batch", 1))
     heavy = r1.stages[max(range(len(r1.stages)), key=lambda i: r1.stages[i].mem.dram_need)]
     out = {"fits": r.fits, "fits_batch1": r1.fits, "need_GiB": heavy.mem.dram_need / 2**30,
-           "cap_GiB": heavy.mem.dram_cap / 2**30, "cards": scn.layout.cards, "weights_GiB": heavy.mem.stored_w / 2**30}
+           "cap_GiB": heavy.mem.dram_cap / 2**30, "cards": scn.layout.cards, "weights_GiB": (heavy.mem.stored_w + heavy.mem.pipe_w) / 2**30,
+           "pipe_w_GiB": heavy.mem.pipe_w / 2**30}
     if r.fits:
         return out
     if r1.fits:   # KV of a large batch overflows: largest batch that fits (capacity is monotone in batch)

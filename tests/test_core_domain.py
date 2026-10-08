@@ -33,8 +33,9 @@ def test_domain_params_exact_and_coverage_reasons():
         lb = labels(get_model(mid))
         assert abs(lb["param_err"]) < 1e-9, (mid, lb["param_err"])      # safetensors headers, every tensor
         if mid in VIDEO:
-            assert lb["coverage"] == "partial" and lb["model_domain"] == "gen"
-            assert any("VAE" in r and "GB" in r for r in lb["coverage_reasons"]), mid   # unmodelled parts sized
+            assert lb["coverage"] == "full" and lb["model_domain"] == "gen"           # 0.44: T5 + VAE modelled
+            assert not any("只评估" in r for r in lb["coverage_reasons"]), mid
+            assert any("整条 pipeline" in n and "VAE" in n and "GB" in n for n in lb["notes"]), mid   # components sized
             assert not lb["kv_cache"] and "KV" not in lb["dtype"]
         else:
             assert lb["coverage"] == "full" and lb["model_domain"] == "protein"
@@ -62,9 +63,11 @@ def test_workload_token_counts():
             pass
 
 
-def _flops_per_request(mid: str) -> float:
+def _flops_per_request(mid: str, key: str = "dit_tflop_per_request") -> float:
+    """DiT FLOPs per request (closed forms); ``key="tflop_per_request"`` = whole pipeline (0.44: + T5 + VAE)."""
     r = evaluate(Scenario(model=mid, mem_id=HBM))
-    return r.domain_summary()["tflop_per_request"] * 1e12
+    s = r.domain_summary()
+    return s.get(key, s["tflop_per_request"]) * 1e12
 
 
 def test_flops_vs_independent_count():
@@ -93,7 +96,7 @@ def test_v2_video_trend_wan_readme():
     """Wan2.1 README: T2V-1.3B makes a 5 s 480P clip on one RTX 4090 in ~4 min (T5 + VAE + offload included).
     Our per-clip DiT FLOPs over 240 s must imply a plausible fraction (40–100 %) of the 4090's ~165 TFLOPS
     dense bf16 (fp32 accumulate) — a sanity check of the workload / FLOP model, not a hardware calibration."""
-    eff = _flops_per_request("wan2.1-1.3b") / 240.0 / 165e12
+    eff = _flops_per_request("wan2.1-1.3b", "tflop_per_request") / 240.0 / 165e12
     assert 0.4 <= eff <= 1.0, eff
 
 
@@ -113,9 +116,12 @@ def test_v0_invariants_domain():
         assert "tpot_ms" in r.summary() and r.summary()["gen"]["unit"] == s["unit"]
     v = Scenario(model="wan2.1-1.3b", mem_id=LP)
     a, b = evaluate(v), evaluate(v.replace("workload", Workload(steps=25)))
-    assert abs(b.latency / a.latency - 0.5) < 1e-9                             # latency ∝ denoise steps
+    da, db = a.domain_summary()["denoise_s"], b.domain_summary()["denoise_s"]
+    assert abs(db / da - 0.5) < 1e-9                                           # denoise time ∝ denoise steps
+    assert abs((a.latency - da) - (b.latency - db)) < 1e-9                     # T5 + VAE do not depend on steps
     c = evaluate(v.replace("workload", Workload(cfg=1)))
-    assert 0.45 < c.latency / a.latency < 0.55                                 # one forward per step instead of two
+    assert 0.45 < c.domain_summary()["denoise_s"] / da < 0.55                  # one forward per step instead of two
+    assert c.pipeline["parts"][0]["prompts"] == 1 and a.pipeline["parts"][0]["prompts"] == 2   # no negative prompt
     assert evaluate(Scenario(model="wan2.1-14b", mem_id=HBM)).stages[0].convert_elems > 0   # fp32 → bf16 per GEMM
 
 

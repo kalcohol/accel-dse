@@ -31,6 +31,8 @@
         <select id="wi-w"><option value="">按发布</option><option>bf16</option><option>fp8</option><option>int8</option><option>mxfp4</option><option>nvfp4</option><option>int4</option></select></label>
       <label class="llm-only">KV dtype <span class="tag whatif">what-if</span>
         <select id="wi-kv"><option value="">按发布</option><option>bf16</option><option>fp8</option></select></label>
+      <label class="full-only" title="激活 dtype：fp32 时激活的存储 / DRAM 流式 / SRAM 端口流量按 4 B 计；芯片无 fp32 MAC，计算仍在 bf16 阵列上并计转换开销（数值上不等价于 fp32 矩阵乘）">激活 dtype <span class="tag whatif">what-if</span>
+        <select id="wi-act"><option value="">按发布</option><option>fp32</option><option>bf16</option></select></label>
     </div>
   </section>
 
@@ -104,6 +106,7 @@
       <label title="每个去噪步的前向次数：2 = classifier-free guidance（cond + uncond），1 = 关闭 CFG / 蒸馏">CFG 前向 / 步<input type="number" id="w-cfg" min="1" max="2" step="1"></label>
       <label>单段 SLO s <span class="tag assume">假设</span><input type="number" id="w-clip_slo_s" min="1" step="60"></label>
     </div>
+    <label class="inline gen-only" title="默认计入：文本编码器（每请求一次）与 VAE 解码（每段一次）的时间串行加在去噪前后，权重计入首 / 末流水级卡的存储。取消 = 只看 DiT 去噪主干（相当于把它们卸载到别处）"><input type="checkbox" id="w-pipeline" checked> 计入文本编码器与 VAE 解码（时间 + 存储）</label>
     <div class="row3 protein-only">
       <label>序列长度（残基）<input type="number" id="w-seq_len" min="1" max="65536" step="64"></label>
       <label class="seq-slo">批延迟 SLO ms <span class="tag assume">假设</span><input type="number" id="w-seq_slo_ms" min="1" step="50"></label>
@@ -198,7 +201,7 @@
 
   <section class="tab" id="tab-models" hidden>
     <p class="small muted">按厂商 → 系列排列，同一厂商的 LLM、VLM、视频生成与蛋白质模型放在一起（带领域标记）；系列内按尺寸从大到小，官方量化版（FP8 / AWQ）紧跟原版；已按发布接入 v2 的视频（Wan2.1、CogVideoX）与蛋白质（ESM-2）模型可评估，其余标「暂未接入 v2」。三轴标签：来源（官方 / 镜像）× 覆盖 × 按发布的 dtype；参数量由发布的 safetensors 头统计，并与按 config 推导的值核对。</p>
-    <p class="small"><b>覆盖度</b>指本工具对该模型结构的建模覆盖程度，与模型好坏无关：<span class="badge cov full">完整</span> 全部算子按发布结构逐项建模；<span class="badge cov partial">部分</span> 主干逐项建模，个别机制近似（见「近似之处」）；<span class="badge cov proxy">架构代理</span> 含未建模的结构，结果只作量级参考。VLM 只评估语言主干，视觉编码器未建模；视频生成只评估 DiT 去噪主干，文本编码器与 VAE 未建模。</p>
+    <p class="small"><b>覆盖度</b>指本工具对该模型结构的建模覆盖程度，与模型好坏无关：<span class="badge cov full">完整</span> 全部算子按发布结构逐项建模；<span class="badge cov partial">部分</span> 主干逐项建模，个别机制近似（见「近似之处」）；<span class="badge cov proxy">架构代理</span> 含未建模的结构，结果只作量级参考。VLM 只评估语言主干，视觉编码器未建模；视频生成默认整条 pipeline：DiT 去噪主干 + 文本编码器 + VAE 解码（按发布检查点头建模，串行在一张卡上「假设」；工作负载里取消勾选即只看 DiT）。</p>
     <p class="small" id="models-summary"></p>
     <div class="scroll"><table class="tbl" id="models-tbl"></table></div>
     <details class="notes"><summary>未单列的发布（仍可按 id 评估，也都参与参数核对）</summary><ul id="models-unlisted"></ul></details>

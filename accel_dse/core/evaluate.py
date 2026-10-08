@@ -6,7 +6,8 @@ Everything goes through the per-rank IR; a single card is Layout().
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from types import SimpleNamespace
 
 from .catalog import get_model
 from .dtypes import fmt as _fmt
@@ -19,6 +20,7 @@ from .memo import layer_groups, model_cache
 from .memplan import MemPlan, act_stream, plan, stage_storage, step_dram_bytes, touched
 from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages
+from .pipeline import pipeline_for, stored_bytes, text_ops, vae_ops
 from .scenario import Scenario
 from .schedule import StageTime, collective_seconds, spec_expected_tokens
 
@@ -53,6 +55,7 @@ class Result:
     microbatches: int
     latency: float = 0.0      # s per request: decode TPOT, prefill TTFT; video: one clip; protein: one batch
     workload: ResolvedWorkload | None = None
+    pipeline: dict | None = None   # video (0.44): text-encoder / VAE-decode time, FLOP, storage (None = DiT only)
 
     @property
     def domain(self) -> str:
@@ -87,7 +90,13 @@ class Result:
              "seqs_per_forward": b * w.seqs_per_request, "act_GiB": heavy.mem.act_total / 2**30,
              "tflop_per_request": sum(st.time.flops for st in self.stages) * self.microbatches * w.steps / b / 1e12}
         if w.kind == "gen":
-            d.update(clip_s=self.latency, s_per_frame=self.latency / w.units, step_ms=self.latency / w.steps * 1e3,
+            pl = self.pipeline
+            denoise = pl["denoise_s"] if pl else self.latency
+            if pl:
+                d["tflop_per_request"] += pl["tflop"] / b
+                d["dit_tflop_per_request"] = d["tflop_per_request"] - pl["tflop"] / b
+            d.update(pipeline=pl, denoise_s=denoise)
+            d.update(clip_s=self.latency, s_per_frame=self.latency / w.units, step_ms=denoise / w.steps * 1e3,
                      frames_per_s_card=self.per_card, clips_per_hour_card=3600 * b / self.latency / cards,
                      realtime_x=(w.info["video_s"] * b / self.latency) if w.info.get("video_s") else None,
                      slo_s=self.scenario.workload.clip_slo_s)
@@ -180,7 +189,8 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
             a, wx = act_stream(o, _fmt(model.act_fmt).bytes, sys.chip.sram_bytes)
             d["act"] += a; d["w_extra"] += wx
             ab = _fmt(model.act_fmt).bytes
-            tot = ((o.m * o.k + o.m * o.n) * o.count * ab if o.kind == "gemm" else o.act_bytes if o.bmm
+            tot = (((o.in_elems or o.m * o.k * o.count) + o.m * o.n * o.count) * ab if o.kind == "gemm"
+                   else o.act_bytes if o.bmm
                    else 2.0 * o.count * (o.m + o.n) * o.k * ab)
             d["max_act_tot"] = max(d["max_act_tot"], tot)
     for k, v in touched(ops).items():
@@ -364,17 +374,91 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                         dram["total"], link_bytes, agg["flops"], agg["t_ideal"])
         stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"]))
+    pipe = None
+    if wl.kind == "gen":
+        pipe = _pipeline_cost(scn, m, wl, sys, warnings)
+        if pipe:   # text-encoder weights on the first stage's card, VAE weights on the last stage's card
+            for i, w_add, act in ((0, pipe["te_w"], pipe["te_act"]), (len(stages) - 1, pipe["vae_w"], pipe["vae_act"])):
+                mp = stages[i].mem
+                need = mp.dram_need + w_add + max(0.0, act - mp.act_total)
+                stages[i].mem = replace(mp, dram_need=need, fits=need <= mp.dram_cap, pipe_w=mp.pipe_w + w_add)
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
     cap_heavy = max(range(len(stages)), key=lambda i: stages[i].mem.dram_need)
     fits = all(s.mem.fits for s in stages)
     if not fits:
         warnings.append(f"容量不足：流水级 {cap_heavy} 每卡需要 {stages[cap_heavy].mem.dram_need / 2**30:.1f} GiB，"
-                        f"超过每卡 {sys.dram_bytes / 2**30:.0f} GiB")
+                        f"超过每卡 {sys.dram_bytes / 2**30:.0f} GiB"
+                        + (f"（含文本编码器 / VAE 权重 {stages[cap_heavy].mem.pipe_w / 2**30:.1f} GiB）"
+                           if stages[cap_heavy].mem.pipe_w else ""))
     if wl.kind == "gen":
-        latency = wl.steps * max(mb, pp) * tick
+        denoise = wl.steps * max(mb, pp) * tick
+        latency = denoise + (pipe["te_s"] + pipe["decode_s"] if pipe else 0.0)
+        if pipe:
+            pipe = {**pipe, "denoise_s": denoise, "tflop": pipe["tflop_replica"] * lay.dp}
     else:
         latency = (mb + pp - 1) * tick
     thr = sv.batch * wl.units / latency
     return Result(scn, m, stages, tick, latency, wl.units, 0.0, 0.0, thr, thr / lay.cards, fits,
-                  stages[heavy].time.bound, heavy, warnings, mb, latency, wl)
+                  stages[heavy].time.bound, heavy, warnings, mb, latency, wl, pipe)
+
+
+def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, af: str) -> dict:
+    """One pipeline component on one card: same op → mapping → streaming path as a stage; its weights are larger
+    than SRAM, so every weight is read from DRAM once per op execution (tiles / chunks re-read).
+    ``groups``: [(ops, executions)] (a tiled VAE decode runs one op list per tile)."""
+    d = dict.fromkeys(_SUM_KEYS, 0.0)
+    shim = SimpleNamespace(act_fmt=af, kv_fmt=af)
+    for ops, n in groups:
+        _acc(d, _sum_ops(ops, sys, org, shim), n)
+    dram = d["hot"] + d["exp"] + d["w_extra"] + d["act"]
+    stt = StageTime(d["t_arr"], d["t_mac"], d["t_feed"], d["t_vec"], dram / (sys.dram_GBps * 1e9), 0.0, 0.0, dram,
+                    0.0, d["flops"], d["t_ideal"])
+    return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound}
+
+
+def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: System, warnings: list[str]) -> dict | None:
+    """Text encoder(s) + VAE decode of one request batch (0.44; ``core/pipeline.py``).  Runs on one card of each data-
+    parallel replica (its share of the batch), serially with the denoise loop 「假设」."""
+    pl = pipeline_for(m.id)
+    if pl is None:
+        return None
+    if not scn.workload.pipeline:
+        warnings.append("workload.pipeline = false：只评估 DiT 去噪主干——文本编码器与 VAE 解码不计时间与存储")
+        return None
+    b = _cdiv(scn.serving.batch, scn.layout.dp)
+    info = wl.info
+    key = (b, tuple(info["latent"]), info["frames"], info["cfg"], wl.aux, scn.mapping, scn.chip, scn.mem_id,
+           scn.mem_eff)
+    memo = model_cache(m).setdefault("pipeline", {})
+    if key in memo:
+        return memo[key]
+    prompts = b * (info["cfg"] if pl.neg_prompt else 1)
+    parts = []
+    te_s = te_w = te_act = 0.0
+    for te in pl.text:
+        ops, peak = text_ops(te, prompts, m.act_fmt)
+        c = _component_time([(ops, 1)], sys, scn.mapping, m.act_fmt)
+        w = stored_bytes(te.key)
+        te_s += c["s"]; te_w += w; te_act = max(te_act, peak)
+        parts.append({"role": "text_encoder", "label": te.label, "key": te.key, "prompts": prompts,
+                      "tokens": te.tokens, "stored_GB": w / 1e9, "note": te.note, **c})
+    dec_s = vae_w = vae_act = 0.0
+    lat = tuple(info["latent"])
+    for v, rows in ((pl.vae, 0), (pl.audio, wl.aux)):
+        if v is None:
+            continue
+        ops, peak, vi = vae_ops(v, lat, info["frames"], b, m.act_fmt, audio_rows=rows)
+        c = _component_time(vi.pop("groups", None) or [(ops, 1)], sys, scn.mapping, vi["act"])
+        w = stored_bytes(v.key)
+        dec_s += c["s"]; vae_w += w; vae_act = max(vae_act, peak)
+        parts.append({"role": "audio_vae" if v is pl.audio else "vae", "label": v.label, "key": v.key,
+                      "stored_GB": w / 1e9, "note": v.note, "act": vi["act"],
+                      **{k: vi[k] for k in ("tiles", "overlap", "chunks") if k in vi}, **c})
+    out = {"te_s": te_s, "decode_s": dec_s, "tflop_replica": sum(p["tflop"] for p in parts),
+           "te_w": te_w, "vae_w": vae_w, "te_act": te_act, "vae_act": vae_act, "parts": parts,
+           "batch_per_replica": b, "note": pl.note}
+    if len(memo) > 4096:
+        memo.clear()
+    memo[key] = out
+    return out

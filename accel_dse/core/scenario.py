@@ -68,6 +68,7 @@ class Workload:
     clip_slo_s: float = 1800.0     # video: per-clip latency SLO (「假设」)
     seq_slo_ms: float = 1000.0     # protein encoders: per-batch latency SLO (「假设」)
     fold_slo_s: float = 120.0      # protein structure models: per-batch latency SLO (「假设」)
+    pipeline: bool = True          # video: also evaluate the text encoder(s) + VAE decode (time and storage); False = DiT only
 
     def __post_init__(self):
         for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles", "samples"):
@@ -80,6 +81,8 @@ class Workload:
             raise ValueError("workload: frames ≤ 1024, height/width ≤ 4096, steps ≤ 1000, seq_len ≤ 65536")
         if self.msa > 65536 or self.recycles > 64 or self.samples > 64:
             raise ValueError("workload: msa ≤ 65536, recycles ≤ 64, samples ≤ 64")
+        if not isinstance(self.pipeline, bool):
+            raise ValueError("workload.pipeline must be true or false")
         for k in ("clip_slo_s", "seq_slo_ms", "fold_slo_s"):
             v = getattr(self, k)
             if not (v > 0 and math.isfinite(v)):

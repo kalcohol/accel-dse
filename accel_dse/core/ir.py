@@ -134,6 +134,8 @@ class Op:
     orient: bool = False      # full-phase attention: mapping may take either GEMM orientation (O = P·V or Oᵀ = Vᵀ·Pᵀ)
     bmm: bool = False         # activation×activation batched GEMM whose operands are plain tensors (triangle update,
                               # outer-product mean, pair-weighted averaging): streamed as A, B in and C out
+    in_elems: float = 0.0     # conv as implicit GEMM: elements of the real input tensor (the M×K im2col matrix is
+                              # virtual — DRAM streaming moves the input once, 0 = M·K·count)
 
     @property
     def flops(self) -> float:

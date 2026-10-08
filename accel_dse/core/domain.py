@@ -72,6 +72,11 @@ def _gb(n: float) -> str:
     return f"{n / 1e9:.1f} GB"
 
 
+def _c_dtype(key: str) -> str:
+    from .pipeline import component_data
+    return component_data(key)["dtype"]
+
+
 def _unmodelled(rel: dict, subfolder: str, skip: tuple[str, ...] = ()) -> dict[str, int]:
     """Weight bytes of the pipeline components outside the modelled denoiser (text encoder, VAE …).
     ``skip``: repo folders that are other checkpoints of the same model (original-format copies, other tasks).
@@ -478,7 +483,7 @@ def _finish(model_id, hf_id, rel, arch, d, L, layer, io_pre, io_post, io_misc, v
     if w and w.fmt == "fp32":
         notes.append(f"发布权重为 fp32（4 B / 参数，存储与读流量按 fp32）；激活按 {spec.act_fmt}"
                      + ("（参考实现 autocast）" if dom == "gen" else "「假设」") + "；芯片无 fp32 原生 MAC → 逐 GEMM 把权重转换为 bf16，"
-                     "转换开销计入向量单元；可用 dtype what-if 看 bf16 发布")
+                     "转换开销计入向量单元；可用 dtype what-if 看 bf16 发布" + ("、用激活 dtype what-if 看 fp32 激活" if dom == "protein" else ""))
     if dom == "gen":
         sub = (rel.get("source") or {}).get("subfolder", "")
         um = _unmodelled(rel, sub, skip)
@@ -489,8 +494,19 @@ def _finish(model_id, hf_id, rel, arch, d, L, layer, io_pre, io_post, io_misc, v
             parts.append(f"VAE（{_gb(um['vae'])}）")
         if um.get("audio_vae"):
             parts.append(f"音频 VAE（{_gb(um['audio_vae'])}）")
-        reasons.append("只评估 DiT 去噪主干：" + "、".join(parts or list(ext_parts) or ["文本编码器与 VAE"]) +
-                       "未建模——不计其权重存储与时间（文本编码每请求一次、VAE 解码每段一次）")
+        from .pipeline import pipeline_for, stored_bytes
+        pl = pipeline_for(model_id)
+        if pl is None:
+            reasons.append("只评估 DiT 去噪主干：" + "、".join(parts or list(ext_parts) or ["文本编码器与 VAE"]) +
+                           "未建模——不计其权重存储与时间（文本编码每请求一次、VAE 解码每段一次）")
+        else:
+            comps = [f"{t.label}（{_gb(stored_bytes(t.key))} {_c_dtype(t.key)}，{t.tokens} token/提示）" for t in pl.text]
+            comps += [f"{v.label}（{_gb(stored_bytes(v.key))} {_c_dtype(v.key)}）" for v in (pl.vae, pl.audio) if v]
+            notes.append("整条 pipeline 计入（默认，workload.pipeline=false 只看 DiT）：" + "、".join(comps) +
+                         "——按发布检查点头的算子图建模，时间串行加在去噪前后（单卡执行「假设」），"
+                         "权重按加载的整个检查点计入首 / 末流水级卡的存储；见 docs/MODEL.md §11.4")
+            notes.extend(n for n in [t.note for t in pl.text] + [v.note for v in (pl.vae, pl.audio) if v] + [pl.note]
+                         if n)
         if wl.cfg > 1:
             notes.append(f"每个去噪步 {wl.cfg} 次前向（classifier-free guidance：cond + uncond，batch ×{wl.cfg}）；"
                          f"默认 {wl.steps} 步")

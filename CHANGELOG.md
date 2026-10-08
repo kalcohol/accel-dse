@@ -3,6 +3,31 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.44.0] - 2026-10-09
+
+视频整条 pipeline：文本编码器与 VAE 解码的时间与存储计入评估；激活 dtype what-if。
+
+### Added
+- 视频 pipeline 组件（`accel_dse/core/pipeline.py`，数据 `accel_dse/data/pipeline/*.json` 由 `scripts/build_pipeline_data.py` 从发布检查点张量头生成，不下载权重）：文本编码器 umT5-XXL（Wan）、T5 v1.1 XXL（CogVideoX / LTX / Mochi / Open-Sora 的 DeepFloyd 版）、LLaVA-Llama-3-8B + CLIP-L 文本塔（HunyuanVideo）、Qwen3-VL 文本塔（H3）；VAE 解码器 Wan-VAE、CogVideoX、HunyuanVideo（diffusers 默认 tiling，720P 308 tile、重叠 ×2.64）、LTX、Mochi、Open-Sora v1.2（时间 VAE + 逐帧 SD-VAE）、H3 ViT 视频解码器与音频 VAE。卷积按隐式 GEMM（输入流量按真实张量），文本塔按补齐 token 数，提示数随 batch × CFG。定义与假设见 docs/MODEL.md §11.4。
+- 默认计入：`T_clip = 文本编码 + 去噪 + 解码`，组件 FLOPs 计入每请求 TFLOP，组件权重（加载的整个检查点，dtype 按发布）计入首 / 末流水级卡的容量。`workload.pipeline = false`（Web 复选框、CLI `eval --dit-only`）只看 DiT，结果与 0.43 逐字节一致。
+- 激活 dtype what-if：Web「激活 dtype」、CLI `eval --act fp32|bf16`（即 `formats_override [["act", …]]`），用于评估结构模型参考实现的 fp32 激活流量（例：ESMFold 100T + LPDDR5X 6.3 s → 12.5 s）。
+- Web：单段延迟卡拆分「文本编码 + 去噪 + 解码」，吞吐卡显示组件 TFLOP，假设列表随模型 / pipeline / 激活 dtype 动态生成，容量面板显示组件权重并提供「只评估 DiT」修正；API 的级存储与 fit 返回 `pipe_w_GiB`。
+- 测试：`tests/test_core_pipeline.py`（检查点大小、umT5 闭式 FLOPs、Qwen GQA / causal、各家 VAE 分辨率表与发布输出形状、Wan-VAE 手算、pipeline 开关等价与延迟加和、batch / DP / 容量、场景 / API / CLI、fp32 激活 what-if）。
+
+### Changed
+- 视频模型覆盖全部为「完整」（说明中列出组件与假设）。`validate` 的 Wan2.1 / Open-Sora 行改为整条 pipeline FLOPs（0.72 / 0.14，仍在带内）。
+- 容量结论变化（64 GB LPDDR5X）：Wan2.1-14B（+umT5 11.4 GB，所有单卡 / DP / SP 布局）、Wan2.2-A14B 的 PP2 / TP2、MiniMax-H3（Qwen3-VL 66.7 GB 单独超过容量，组件不跨卡切分）从「放得下」变为「放不下」。HBM 上全部仍放得下。
+- 延迟（100T + HBM3E、batch 1）：整段增加 0.6%（Wan2.1-14B）至 16.4%（Open-Sora 720p，逐帧 SD-VAE 1158 TFLOP）；HunyuanVideo 解码 221 s。LLM 与蛋白质结果不变。
+- 隐式 GEMM 的 DRAM 流量按算子真实输入张量（`Op.in_elems`），映射的输出字节按 max(2, 激活字节)。
+
+### Fixed
+- Web：切换模型时 badge 停留在「只评估 DiT 主干」；pipeline 偏好跨模型保留（现随模型重置为默认，只保留 SLO）；结构模型的 badge 与假设文本（原显示编码器前向）；pair 模型 SLO 单位。
+
+### 仍未建模
+- 组件的多卡切分与并行 VAE 解码、文本编码器卸载、跨请求的组件 / 去噪重叠；CogVideoX / Mochi / H3 可选 VAE tiling 的重叠开销。
+- 结构模型 pair 表示的 DAP 切分；fp32 激活 what-if 只计数据搬运，计算仍在 bf16 阵列。
+- AlphaFold 3 仍为「暂未接入 v2」（无公开权重）。
+
 ## [0.43.0] - 2026-10-09
 
 蛋白质结构预测接入 core v2：ESMFold、AlphaFold 2、OpenFold、Boltz-1、Protenix 可选择、可评估。
