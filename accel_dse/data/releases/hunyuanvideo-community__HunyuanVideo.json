@@ -1,0 +1,632 @@
+{
+ "bytes_llm": 25642025088,
+ "bytes_mtp": 0,
+ "bytes_total": 25642025088,
+ "config": {
+  "_class_name": "HunyuanVideoTransformer3DModel",
+  "_diffusers_version": "0.32.0.dev0",
+  "attention_head_dim": 128,
+  "guidance_embeds": true,
+  "in_channels": 16,
+  "mlp_ratio": 4.0,
+  "num_attention_heads": 24,
+  "num_layers": 20,
+  "num_refiner_layers": 2,
+  "num_single_layers": 40,
+  "out_channels": 16,
+  "patch_size": 2,
+  "patch_size_t": 1,
+  "pooled_projection_dim": 768,
+  "qk_norm": "rms_norm",
+  "rope_axes_dim": [
+   16,
+   56,
+   56
+  ],
+  "rope_theta": 256.0,
+  "text_embed_dim": 4096
+ },
+ "domain": "video",
+ "fetched": "2026-10-09",
+ "n_tensors": 1264,
+ "params_llm": 12821012544,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "hunyuanvideo-community/HunyuanVideo",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 5286543360,
+    "params": 2643271680
+   }
+  },
+  "cond": {
+   "bf16": {
+    "bytes": 7517620224,
+    "params": 3758810112
+   }
+  },
+  "io": {
+   "bf16": {
+    "bytes": 792704,
+    "params": 396352
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 12837027840,
+    "params": 6418513920
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 40960,
+    "params": 20480
+   }
+  }
+ },
+ "shapes": {
+  "context_embedder.proj_in.bias": [
+   3072
+  ],
+  "context_embedder.proj_in.weight": [
+   3072,
+   4096
+  ],
+  "context_embedder.time_text_embed.text_embedder.linear_1.bias": [
+   3072
+  ],
+  "context_embedder.time_text_embed.text_embedder.linear_1.weight": [
+   3072,
+   4096
+  ],
+  "context_embedder.time_text_embed.text_embedder.linear_2.bias": [
+   3072
+  ],
+  "context_embedder.time_text_embed.text_embedder.linear_2.weight": [
+   3072,
+   3072
+  ],
+  "context_embedder.time_text_embed.timestep_embedder.linear_1.bias": [
+   3072
+  ],
+  "context_embedder.time_text_embed.timestep_embedder.linear_1.weight": [
+   3072,
+   256
+  ],
+  "context_embedder.time_text_embed.timestep_embedder.linear_2.bias": [
+   3072
+  ],
+  "context_embedder.time_text_embed.timestep_embedder.linear_2.weight": [
+   3072,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.attn.to_k.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.attn.to_out.0.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.attn.to_q.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.attn.to_v.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.ff.net.0.proj.bias": [
+   12288
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.ff.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.ff.net.2.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.ff.net.2.weight": [
+   3072,
+   12288
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.norm1.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.norm1.weight": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.norm2.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.norm2.weight": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.norm_out.linear.bias": [
+   6144
+  ],
+  "context_embedder.token_refiner.refiner_blocks.0.norm_out.linear.weight": [
+   6144,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.attn.to_k.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.attn.to_out.0.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.attn.to_q.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.attn.to_v.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.ff.net.0.proj.bias": [
+   12288
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.ff.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.ff.net.2.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.ff.net.2.weight": [
+   3072,
+   12288
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.norm1.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.norm1.weight": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.norm2.bias": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.norm2.weight": [
+   3072
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.norm_out.linear.bias": [
+   6144
+  ],
+  "context_embedder.token_refiner.refiner_blocks.1.norm_out.linear.weight": [
+   6144,
+   3072
+  ],
+  "norm_out.linear.bias": [
+   6144
+  ],
+  "norm_out.linear.weight": [
+   6144,
+   3072
+  ],
+  "proj_out.bias": [
+   64
+  ],
+  "proj_out.weight": [
+   64,
+   3072
+  ],
+  "single_transformer_blocks.0.attn.norm_k.weight": [
+   128
+  ],
+  "single_transformer_blocks.0.attn.norm_q.weight": [
+   128
+  ],
+  "single_transformer_blocks.0.attn.to_k.bias": [
+   3072
+  ],
+  "single_transformer_blocks.0.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.0.attn.to_q.bias": [
+   3072
+  ],
+  "single_transformer_blocks.0.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.0.attn.to_v.bias": [
+   3072
+  ],
+  "single_transformer_blocks.0.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.0.norm.linear.bias": [
+   9216
+  ],
+  "single_transformer_blocks.0.norm.linear.weight": [
+   9216,
+   3072
+  ],
+  "single_transformer_blocks.0.proj_mlp.bias": [
+   12288
+  ],
+  "single_transformer_blocks.0.proj_mlp.weight": [
+   12288,
+   3072
+  ],
+  "single_transformer_blocks.0.proj_out.bias": [
+   3072
+  ],
+  "single_transformer_blocks.0.proj_out.weight": [
+   3072,
+   15360
+  ],
+  "single_transformer_blocks.39.attn.norm_k.weight": [
+   128
+  ],
+  "single_transformer_blocks.39.attn.norm_q.weight": [
+   128
+  ],
+  "single_transformer_blocks.39.attn.to_k.bias": [
+   3072
+  ],
+  "single_transformer_blocks.39.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.39.attn.to_q.bias": [
+   3072
+  ],
+  "single_transformer_blocks.39.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.39.attn.to_v.bias": [
+   3072
+  ],
+  "single_transformer_blocks.39.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.39.norm.linear.bias": [
+   9216
+  ],
+  "single_transformer_blocks.39.norm.linear.weight": [
+   9216,
+   3072
+  ],
+  "single_transformer_blocks.39.proj_mlp.bias": [
+   12288
+  ],
+  "single_transformer_blocks.39.proj_mlp.weight": [
+   12288,
+   3072
+  ],
+  "single_transformer_blocks.39.proj_out.bias": [
+   3072
+  ],
+  "single_transformer_blocks.39.proj_out.weight": [
+   3072,
+   15360
+  ],
+  "time_text_embed.guidance_embedder.linear_1.bias": [
+   3072
+  ],
+  "time_text_embed.guidance_embedder.linear_1.weight": [
+   3072,
+   256
+  ],
+  "time_text_embed.guidance_embedder.linear_2.bias": [
+   3072
+  ],
+  "time_text_embed.guidance_embedder.linear_2.weight": [
+   3072,
+   3072
+  ],
+  "time_text_embed.text_embedder.linear_1.bias": [
+   3072
+  ],
+  "time_text_embed.text_embedder.linear_1.weight": [
+   3072,
+   768
+  ],
+  "time_text_embed.text_embedder.linear_2.bias": [
+   3072
+  ],
+  "time_text_embed.text_embedder.linear_2.weight": [
+   3072,
+   3072
+  ],
+  "time_text_embed.timestep_embedder.linear_1.bias": [
+   3072
+  ],
+  "time_text_embed.timestep_embedder.linear_1.weight": [
+   3072,
+   256
+  ],
+  "time_text_embed.timestep_embedder.linear_2.bias": [
+   3072
+  ],
+  "time_text_embed.timestep_embedder.linear_2.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.add_k_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.add_k_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.add_q_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.add_q_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.add_v_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.add_v_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.norm_added_k.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.norm_added_q.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.norm_k.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.norm_q.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.to_add_out.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.to_add_out.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.to_k.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.to_out.0.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.to_q.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.to_v.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.ff.net.0.proj.bias": [
+   12288
+  ],
+  "transformer_blocks.0.ff.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.0.ff.net.2.bias": [
+   3072
+  ],
+  "transformer_blocks.0.ff.net.2.weight": [
+   3072,
+   12288
+  ],
+  "transformer_blocks.0.ff_context.net.0.proj.bias": [
+   12288
+  ],
+  "transformer_blocks.0.ff_context.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.0.ff_context.net.2.bias": [
+   3072
+  ],
+  "transformer_blocks.0.ff_context.net.2.weight": [
+   3072,
+   12288
+  ],
+  "transformer_blocks.0.norm1.linear.bias": [
+   18432
+  ],
+  "transformer_blocks.0.norm1.linear.weight": [
+   18432,
+   3072
+  ],
+  "transformer_blocks.0.norm1_context.linear.bias": [
+   18432
+  ],
+  "transformer_blocks.0.norm1_context.linear.weight": [
+   18432,
+   3072
+  ],
+  "transformer_blocks.19.attn.add_k_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.19.attn.add_k_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.19.attn.add_q_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.19.attn.add_q_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.19.attn.add_v_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.19.attn.add_v_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.19.attn.norm_added_k.weight": [
+   128
+  ],
+  "transformer_blocks.19.attn.norm_added_q.weight": [
+   128
+  ],
+  "transformer_blocks.19.attn.norm_k.weight": [
+   128
+  ],
+  "transformer_blocks.19.attn.norm_q.weight": [
+   128
+  ],
+  "transformer_blocks.19.attn.to_add_out.bias": [
+   3072
+  ],
+  "transformer_blocks.19.attn.to_add_out.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.19.attn.to_k.bias": [
+   3072
+  ],
+  "transformer_blocks.19.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.19.attn.to_out.0.bias": [
+   3072
+  ],
+  "transformer_blocks.19.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.19.attn.to_q.bias": [
+   3072
+  ],
+  "transformer_blocks.19.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.19.attn.to_v.bias": [
+   3072
+  ],
+  "transformer_blocks.19.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.19.ff.net.0.proj.bias": [
+   12288
+  ],
+  "transformer_blocks.19.ff.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.19.ff.net.2.bias": [
+   3072
+  ],
+  "transformer_blocks.19.ff.net.2.weight": [
+   3072,
+   12288
+  ],
+  "transformer_blocks.19.ff_context.net.0.proj.bias": [
+   12288
+  ],
+  "transformer_blocks.19.ff_context.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.19.ff_context.net.2.bias": [
+   3072
+  ],
+  "transformer_blocks.19.ff_context.net.2.weight": [
+   3072,
+   12288
+  ],
+  "transformer_blocks.19.norm1.linear.bias": [
+   18432
+  ],
+  "transformer_blocks.19.norm1.linear.weight": [
+   18432,
+   3072
+  ],
+  "transformer_blocks.19.norm1_context.linear.bias": [
+   18432
+  ],
+  "transformer_blocks.19.norm1_context.linear.weight": [
+   18432,
+   3072
+  ],
+  "x_embedder.proj.bias": [
+   3072
+  ],
+  "x_embedder.proj.weight": [
+   3072,
+   16,
+   1,
+   2,
+   2
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "text_encoder/model-00001-of-00004.safetensors": 4977222384,
+   "text_encoder/model-00002-of-00004.safetensors": 4999801992,
+   "text_encoder/model-00003-of-00004.safetensors": 4915915480,
+   "text_encoder/model-00004-of-00004.safetensors": 117465520,
+   "text_encoder_2/model.safetensors": 246144152,
+   "transformer/diffusion_pytorch_model-00001-of-00006.safetensors": 4987847512,
+   "transformer/diffusion_pytorch_model-00002-of-00006.safetensors": 4984233368,
+   "transformer/diffusion_pytorch_model-00003-of-00006.safetensors": 4870899440,
+   "transformer/diffusion_pytorch_model-00004-of-00006.safetensors": 4946314504,
+   "transformer/diffusion_pytorch_model-00005-of-00006.safetensors": 4965170872,
+   "transformer/diffusion_pytorch_model-00006-of-00006.safetensors": 887709824,
+   "vae/diffusion_pytorch_model.safetensors": 985943868
+  },
+  "revision": "main",
+  "spec": "hunyuanvideo-community/HunyuanVideo:transformer",
+  "subfolder": "transformer",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}

@@ -229,8 +229,12 @@ function paintDomain(m) {
     $('wl-kind').textContent = m.domain === 'gen' ? `视频 · 默认 ${w.width}×${w.height} · ${w.frames} 帧 · ${w.fps} fps · ${w.steps} 步 · CFG ${w.cfg}` : `蛋白质 · 默认 ${w.seq_len} 残基（训练上限 ${w.max_seq}）`;
     for (const [k, v] of Object.entries({ frames: w.frames, height: w.height, width: w.width, steps: w.steps, cfg: w.cfg, seq_len: w.seq_len }))
       if ($('w-' + k)) $('w-' + k).placeholder = v ? `默认 ${v}` : '';
+    const fr = w.vae_frames === 'chunk17' ? `帧每 17 帧一块 → ${(16 / w.vae[0] | 0) + 1} 潜帧`
+      : w.vae_frames === 'h3' ? '帧补齐到 17n+5 → 5n+2 潜帧' : `帧 (F−1)/${w.vae[0]}+1`;
     $('wl-note').textContent = '留空 = 按发布默认（' + w.source + '）。' + (m.domain === 'gen'
-      ? `token 数 = 潜空间网格（帧 (F−1)/${w.vae[0]}+1，像素 /${w.vae[1]}，patch ${w.patch.join('×')}）${w.joint_text ? ` + ${w.text_tokens} 个文本 token（联合注意力）` : `；文本 ${w.text_tokens} token 走跨注意力`}。`
+      ? `token 数 = 潜空间网格（${fr}，像素 /${w.vae[1]}，patch ${w.patch.join('×')}）${w.joint_text ? ` + ${w.text_tokens} 个文本 token（联合注意力）` : `；文本 ${w.text_tokens} token 走跨注意力`}`
+        + (w.audio_per_s ? ` + 音频 ${w.audio_per_s}/s × ${w.audio_channels} 声道 token（同一序列）` : '')
+        + (w.attention === 'factorized' ? '；注意力按发布结构分解：空间块在潜帧内、时间块沿时间轴' : '；全 3D 注意力') + '。'
       : 'token 数 = 残基 + <cls>/<eos>。');
   }
 }
@@ -464,7 +468,7 @@ function domainKpis(s, cap, auto) {
     k.push(kpi('单段延迟（clip）', fmtDur(g.clip_s),
       `${w.width}×${w.height} · ${w.frames} 帧 · ${w.steps} 步 × CFG ${w.cfg} · batch ${s.batch}${auto} · SLO ${fmtDur(g.slo_s)}${over ? ' · 超出' : ''}`, over ? 'warn' : ''));
     k.push(kpi('每帧延迟', fmtDur(g.s_per_frame),
-      `每去噪步 ${fmtDur(g.step_ms / 1e3)} · ${num(w.seq_tokens)} token / 前向 · 视频 ${num(w.video_s)} s${g.realtime_x ? ` · 实时倍率 ${num(g.realtime_x)}×` : ''}`));
+      `每去噪步 ${fmtDur(g.step_ms / 1e3)} · ${num(w.seq_tokens)} token / 前向${w.audio_tokens ? `（含音频 ${num(w.audio_tokens)}）` : ''}${w.attention === 'factorized' ? ' · 分解注意力' : ''} · 视频 ${num(w.video_s)} s${g.realtime_x ? ` · 实时倍率 ${num(g.realtime_x)}×` : ''}`));
     k.push(kpi('吞吐 / 卡', num(g.frames_per_s_card) + ' 帧/s',
       `${num(g.clips_per_hour_card)} 段/小时/卡 · ${s.cards} 卡 · ${s.layout} · ${num(g.tflop_per_request)} TFLOP/段`));
   } else {
@@ -506,7 +510,7 @@ async function runFit() {
         `存储器改为 ${mm.count} ${S.memInfo && S.memInfo.kind === 'HBM' ? '堆栈' : '颗'} × ${+(mm.capacity_GiB / mm.count).toFixed(1)} GiB = ${num(mm.capacity_GiB)} GiB / 卡（${mm.tag_zh}）`));
     }
     if (!acts.length) lines.push(h('div', {}, '在 64 卡以内、当前存储器类型的任何容量下都放不下；请换容量更大的存储器类型或更小的模型。'));
-    else lines.push(h('div', { class: 'small muted' }, '一键修正（最少卡数的布局按 decode 吞吐取最优；存储器只在当前类型、速率内加大容量）：'));
+    else lines.push(h('div', { class: 'small muted' }, `一键修正（最少卡数的布局按${m.domain === 'gen' ? '帧/s/卡' : m.domain === 'protein' ? '序列/s/卡' : ' decode 吞吐'}取最优；存储器只在当前类型、速率内加大容量）：`));
     put(box, ...lines, h('div', { class: 'fit-acts' }, acts));
   } catch (e) { put(box, h('div', { class: 'err' }, '容量检查失败：' + e.message)); }
 }

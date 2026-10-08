@@ -44,6 +44,8 @@ class Linear:
     img  – the video tokens only (sequence minus the text prefix of joint-attention DiTs)
     ctx  – the conditioning tokens (text-encoder output feeding cross-attention K/V)
     seq  – one row per sequence (timestep embedding / AdaLN modulation)
+    txt  – the joint text rows of the sequence (dual-stream MMDiT text weights, text refiners)
+    aud  – the joint audio rows of the sequence (MiniMax-H3 audio io)
     """
     name: str
     k: int
@@ -52,6 +54,7 @@ class Linear:
     unit: int = 0          # for split == "head": columns per head
     groups: int = 1        # block-diagonal (grouped) linear: params = k*n (k,n are totals)
     rows: str = "tok"
+    role: str = ""         # weight-format role override (non-LLM io GEMMs stored in another dtype); "" = default
 
     @property
     def params(self) -> int:
@@ -90,6 +93,8 @@ class AttnCore:
     conv_kernel: int = 0
     causal: bool = True        # False: bidirectional (DiT / protein encoders)
     cross: bool = False        # cross-attention: keys are the conditioning tokens (``full`` phase ``ctx``)
+    span: str = "full"         # full-phase self-attention extent: full (3D) | spatial (per latent frame) |
+                               # temporal (per spatial position) — factorized ST-DiT (Open-Sora STDiT3)
 
     def kv_elems_per_token(self) -> float:
         """KV-cache elements stored per token (one layer, whole model width)."""
@@ -149,6 +154,8 @@ class Layer:
     misc_params: int = 0                     # norms, gates, conv, hc — not GEMMs
     cross_linears: tuple[Linear, ...] = ()   # cross-attention projections (video DiT: q from tokens, k/v from text)
     cross: AttnCore | None = None
+    fused_out: bool = False                  # parallel attention + MLP block with one fused output GEMM
+                                             # (HunyuanVideo single-stream): one TP all-reduce per block
 
     def expert_params(self, hidden: int) -> int:
         f = self.ffn
@@ -183,6 +190,10 @@ class NativeWorkload:
     prefix_tokens: int = 0         # text tokens concatenated into the attention sequence (joint attention)
     steps: int = 50                # denoise steps (reference sampler default)
     cfg: int = 2                   # forward passes per step (classifier-free guidance cond + uncond)
+    vae_frames: str = "causal"     # latent-frame rule: causal (F−1)/t+1 | chunk17 (Open-Sora 1.2: 17 → 5 per chunk) |
+                                   # h3 (MiniMax-H3: F snapped to 17n+5 → 5n+2)
+    audio_per_s: int = 0           # joint audio rows per second of video (MiniMax-H3: 40 latents/s × channels)
+    audio_channels: int = 0
     seq_len: int = 0               # protein residues
     max_seq: int = 0               # longest trained sequence (residues)
     special_tokens: int = 0        # protein: <cls> + <eos>
@@ -223,6 +234,9 @@ class ModelSpec:
     final_norm_params: int | None = None     # None → hidden (LLM RMSNorm)
     adaln: bool = False                      # AdaLN modulation (shift/scale/gate) around each norm
     workload: NativeWorkload | None = None
+    standby_params: int = 0                  # stored but idle per forward (Wan2.2 A14B: the other noise-level expert)
+    cached_params: int = 0                   # in the release but not loaded for inference (MiniMax-H3 AdaLN branches:
+                                             # modulation outputs precomputed per timestep, README)
 
     # ----- derived
     @property
@@ -251,6 +265,7 @@ class ModelSpec:
         p = sum(l.params(self.hidden) for l in self.layers) + self.embed_params + self.head_params + self.lookup_params
         p += self.hidden if self.final_norm_params is None else self.final_norm_params
         p += sum(l.params for l in self.io_pre + self.io_post) + self.io_misc_params
+        p += self.standby_params + self.cached_params
         if include_mtp:
             p += self.mtp_params()
         return p
@@ -260,7 +275,7 @@ class ModelSpec:
 
     def active_params(self) -> int:
         """Params touched per token (routed experts: top_k of n; lookup tables excluded — a few rows/token)."""
-        p = self.params() - self.lookup_params
+        p = self.params() - self.lookup_params - self.standby_params - self.cached_params
         for l in self.layers:
             if l.ffn.kind == "moe":
                 f = l.ffn

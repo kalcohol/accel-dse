@@ -1,0 +1,313 @@
+{
+ "bytes_llm": 40110710976,
+ "bytes_mtp": 0,
+ "bytes_total": 40110710976,
+ "config": {
+  "_class_name": "MochiTransformer3DModel",
+  "_diffusers_version": "0.32.0.dev0",
+  "activation_fn": "swiglu",
+  "attention_head_dim": 128,
+  "in_channels": 12,
+  "max_sequence_length": 256,
+  "num_attention_heads": 24,
+  "num_layers": 48,
+  "out_channels": null,
+  "patch_size": 2,
+  "pooled_projection_dim": 1536,
+  "qk_norm": "rms_norm",
+  "text_embed_dim": 4096,
+  "time_embed_dim": 256
+ },
+ "domain": "video",
+ "fetched": "2026-10-09",
+ "n_tensors": 1071,
+ "params_llm": 10027677744,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "genmo/mochi-1-preview",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 10853640192,
+    "params": 2713410048
+   }
+  },
+  "cond": {
+   "fp32": {
+    "bytes": 11211866112,
+    "params": 2802966528
+   }
+  },
+  "io": {
+   "fp32": {
+    "bytes": 1192128,
+    "params": 298032
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 18043895808,
+    "params": 4510973952
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 98304,
+    "params": 24576
+   }
+  },
+  "other": {
+   "fp32": {
+    "bytes": 18432,
+    "params": 4608
+   }
+  }
+ },
+ "shapes": {
+  "norm_out.linear.bias": [
+   6144
+  ],
+  "norm_out.linear.weight": [
+   6144,
+   3072
+  ],
+  "patch_embed.proj.bias": [
+   3072
+  ],
+  "patch_embed.proj.weight": [
+   3072,
+   12,
+   2,
+   2
+  ],
+  "pos_frequencies": [
+   3,
+   24,
+   64
+  ],
+  "proj_out.bias": [
+   48
+  ],
+  "proj_out.weight": [
+   48,
+   3072
+  ],
+  "time_embed.caption_proj.bias": [
+   1536
+  ],
+  "time_embed.caption_proj.weight": [
+   1536,
+   4096
+  ],
+  "time_embed.pooler.to_kv.bias": [
+   8192
+  ],
+  "time_embed.pooler.to_kv.weight": [
+   8192,
+   4096
+  ],
+  "time_embed.pooler.to_out.bias": [
+   3072
+  ],
+  "time_embed.pooler.to_out.weight": [
+   3072,
+   4096
+  ],
+  "time_embed.pooler.to_q.bias": [
+   4096
+  ],
+  "time_embed.pooler.to_q.weight": [
+   4096,
+   4096
+  ],
+  "time_embed.timestep_embedder.linear_1.bias": [
+   3072
+  ],
+  "time_embed.timestep_embedder.linear_1.weight": [
+   3072,
+   256
+  ],
+  "time_embed.timestep_embedder.linear_2.bias": [
+   3072
+  ],
+  "time_embed.timestep_embedder.linear_2.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn1.add_k_proj.weight": [
+   3072,
+   1536
+  ],
+  "transformer_blocks.0.attn1.add_q_proj.weight": [
+   3072,
+   1536
+  ],
+  "transformer_blocks.0.attn1.add_v_proj.weight": [
+   3072,
+   1536
+  ],
+  "transformer_blocks.0.attn1.norm_added_k.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn1.norm_added_q.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn1.norm_k.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn1.norm_q.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn1.to_add_out.bias": [
+   1536
+  ],
+  "transformer_blocks.0.attn1.to_add_out.weight": [
+   1536,
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_k.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_out.0.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_q.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_v.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.ff.net.0.proj.weight": [
+   16384,
+   3072
+  ],
+  "transformer_blocks.0.ff.net.2.weight": [
+   3072,
+   8192
+  ],
+  "transformer_blocks.0.ff_context.net.0.proj.weight": [
+   8192,
+   1536
+  ],
+  "transformer_blocks.0.ff_context.net.2.weight": [
+   1536,
+   4096
+  ],
+  "transformer_blocks.0.norm1.linear.bias": [
+   12288
+  ],
+  "transformer_blocks.0.norm1.linear.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.0.norm1_context.linear.bias": [
+   6144
+  ],
+  "transformer_blocks.0.norm1_context.linear.weight": [
+   6144,
+   3072
+  ],
+  "transformer_blocks.47.attn1.add_k_proj.weight": [
+   3072,
+   1536
+  ],
+  "transformer_blocks.47.attn1.add_q_proj.weight": [
+   3072,
+   1536
+  ],
+  "transformer_blocks.47.attn1.add_v_proj.weight": [
+   3072,
+   1536
+  ],
+  "transformer_blocks.47.attn1.norm_added_k.weight": [
+   128
+  ],
+  "transformer_blocks.47.attn1.norm_added_q.weight": [
+   128
+  ],
+  "transformer_blocks.47.attn1.norm_k.weight": [
+   128
+  ],
+  "transformer_blocks.47.attn1.norm_q.weight": [
+   128
+  ],
+  "transformer_blocks.47.attn1.to_k.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.47.attn1.to_out.0.bias": [
+   3072
+  ],
+  "transformer_blocks.47.attn1.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.47.attn1.to_q.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.47.attn1.to_v.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.47.ff.net.0.proj.weight": [
+   16384,
+   3072
+  ],
+  "transformer_blocks.47.ff.net.2.weight": [
+   3072,
+   8192
+  ],
+  "transformer_blocks.47.norm1.linear.bias": [
+   12288
+  ],
+  "transformer_blocks.47.norm1.linear.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.47.norm1_context.linear_1.bias": [
+   1536
+  ],
+  "transformer_blocks.47.norm1_context.linear_1.weight": [
+   1536,
+   3072
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "decoder.safetensors": 1450122828,
+   "dit.safetensors": 40110801256,
+   "encoder.safetensors": 388912864,
+   "text_encoder/model-00001-of-00002.safetensors": 4994582224,
+   "text_encoder/model-00001-of-00004.safetensors": 4989319680,
+   "text_encoder/model-00002-of-00002.safetensors": 4530066360,
+   "text_encoder/model-00002-of-00004.safetensors": 4999830656,
+   "text_encoder/model-00003-of-00004.safetensors": 4865612720,
+   "text_encoder/model-00004-of-00004.safetensors": 4194506688,
+   "transformer/diffusion_pytorch_model-00001-of-00005.safetensors": 9907773000,
+   "transformer/diffusion_pytorch_model-00002-of-00005.safetensors": 9966828288,
+   "transformer/diffusion_pytorch_model-00003-of-00005.safetensors": 9966828288,
+   "transformer/diffusion_pytorch_model-00004-of-00005.safetensors": 9891306008,
+   "transformer/diffusion_pytorch_model-00005-of-00005.safetensors": 378102568,
+   "transformer/diffusion_pytorch_model.bf16-00001-of-00003.safetensors": 9937333040,
+   "transformer/diffusion_pytorch_model.bf16-00002-of-00003.safetensors": 9929099008,
+   "transformer/diffusion_pytorch_model.bf16-00003-of-00003.safetensors": 189051592,
+   "vae/diffusion_pytorch_model.bf16.safetensors": 919549966,
+   "vae/diffusion_pytorch_model.safetensors": 1839047460
+  },
+  "revision": "main",
+  "spec": "genmo/mochi-1-preview:transformer",
+  "subfolder": "transformer",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}

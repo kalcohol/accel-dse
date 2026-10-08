@@ -9,7 +9,7 @@
 ## 它做什么
 
 - **模型按发布建模**：从 HF `config.json` 与 safetensors 头（不下载权重）得到逐角色的参数量与存储 dtype（bf16 / fp8 block / MXFP4 / int4 AWQ 等），与发布总量偏差 ≤0.5%；官方量化版是独立条目。每个模型带三轴标签：来源（官方 / 镜像）× 覆盖（完整 / 部分 / 架构代理，附逐项的近似之处）× dtype；目录按厂商 → 系列排列（同一厂商的 LLM、VLM、视频与蛋白质模型在一起）。
-- **视频生成与蛋白质（0.41）**：Wan2.1-T2V（1.3B / 14B）、CogVideoX（2b / 5b）的 DiT 去噪主干（全 3D 注意力，每步按 CFG 前向 1–2 次）与 ESM-2（650M / 3B）编码器可评估：单段延迟、每帧延迟、帧/s/卡，或批延迟、序列/s/卡、残基/s/卡；Ulysses 序列并行（SP）与 CFG 并行（DP）是布局维度；文本编码器与 VAE 未建模（覆盖「部分」）。其余视频 / 蛋白质条目（HunyuanVideo、Wan2.2、AlphaFold 等）仍标「暂未接入 v2」。
+- **视频生成与蛋白质（0.41 / 0.42）**：Wan2.1-T2V（1.3B / 14B）、CogVideoX（2b / 5b）的 DiT 去噪主干（全 3D 注意力，每步按 CFG 前向 1–2 次）与 ESM-2（650M / 3B）编码器可评估：单段延迟、每帧延迟、帧/s/卡，或批延迟、序列/s/卡、残基/s/卡；Ulysses 序列并行（SP）与 CFG 并行（DP）是布局维度；文本编码器与 VAE 未建模（覆盖「部分」）。0.42 增加 Wan2.2-T2V-A14B（双专家，每步激活一个）、HunyuanVideo（双流 / 单流，全 3D 注意力）、LTX-Video 2B、Mochi 1、Open-Sora STDiT3（发布即为分解时空注意力）与 MiniMax-H3（视频 + 音频 + 文本联合序列）。蛋白质结构预测（ESMFold、AlphaFold2 / 3、OpenFold、Protenix、Boltz-1）仍标「暂未接入 v2」。
 - **映射是设计变量**：输出驻留（OS）、权重驻留（边缘加载 / 宽面广播）、OS + GEMV 单元、可重构，逐算子计算 MAC 界与 SRAM 供数界；芯片不原生支持的格式计入反量化开销。
 - **逐 rank 算子图**：TP / PP / 注意力 DP / EP / ETP，单卡就是全 1 布局，没有第二条路径。
 - **存储规划与调度**：权重 / KV 的 SRAM 驻留、staging、逐 stage 容量；每级 `max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC`，绑定瓶颈与有效 MAC 比例直接给出。

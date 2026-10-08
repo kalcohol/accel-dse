@@ -80,13 +80,7 @@ def _tree_sizes(repo: str) -> dict[str, int]:
             if x.get("type") == "file" and x["path"].endswith((".safetensors", ".pth", ".bin", ".pt", ".ckpt"))}
 
 
-def fetch(spec: str) -> dict:
-    repo, sub, rev = parse_spec(spec)
-    d = CACHE / repo.replace("/", "__")
-    d.mkdir(parents=True, exist_ok=True)
-    base = f"{HF}/{repo}/resolve/{rev.replace('/', '%2F')}/" + (sub + "/" if sub else "")
-    cfg = _json(base + "config.json")
-    (d / "config.json").write_text(json.dumps(cfg, indent=1))
+def _files_of(base: str) -> tuple[dict | None, list[str] | None]:
     idx, files = None, None
     for name in ("model.safetensors.index.json", "diffusion_pytorch_model.safetensors.index.json"):
         try:
@@ -103,8 +97,34 @@ def fetch(spec: str) -> dict:
                 break
             except urllib.error.HTTPError:
                 continue
-    if files is None:
-        raise RuntimeError("no safetensors in " + spec)
+    return idx, files
+
+
+def fetch(spec: str) -> dict:
+    """``repo:sub1+sub2`` fetches several denoisers of one release (Wan2.2 A14B: high- and low-noise experts);
+    their headers are keyed ``sub/file`` and the first subfolder's config is the release config."""
+    repo, sub, rev = parse_spec(spec)
+    subs = sub.split("+") if sub else [""]
+    d = CACHE / repo.replace("/", "__")
+    d.mkdir(parents=True, exist_ok=True)
+    root = f"{HF}/{repo}/resolve/{rev.replace('/', '%2F')}/"
+    cfg = _json(root + (subs[0] + "/" if subs[0] else "") + "config.json")
+    (d / "config.json").write_text(json.dumps(cfg, indent=1))
+    hdr_path = d / "headers.json"
+    headers = json.loads(hdr_path.read_text()) if hdr_path.exists() else {}
+    idx_total, first_files = 0, None
+    for s_ in subs:
+        base = root + (s_ + "/" if s_ else "")
+        idx, files = _files_of(base)
+        if files is None:
+            raise RuntimeError("no safetensors in " + spec)
+        first_files = first_files or files
+        idx_total += (idx or {}).get("metadata", {}).get("total_size") or 0
+        key = (lambda f: f"{s_}/{f}") if len(subs) > 1 else (lambda f: f)
+        todo = [f for f in files if key(f) not in headers]
+        with cf.ThreadPoolExecutor(8) as ex:
+            for f, h in zip(todo, ex.map(lambda f: st_header_url(base + f), todo)):
+                headers[key(f)] = h
     bin_total = None
     if rev != "main":   # cross-check against the official main-branch checkpoint index
         try:
@@ -112,15 +132,10 @@ def fetch(spec: str) -> dict:
                               "pytorch_model.bin.index.json")["metadata"]["total_size"]
         except Exception:
             pass
-    hdr_path = d / "headers.json"
-    headers = json.loads(hdr_path.read_text()) if hdr_path.exists() else {}
-    todo = [f for f in files if f not in headers]
-    with cf.ThreadPoolExecutor(8) as ex:
-        for f, h in zip(todo, ex.map(lambda f: st_header_url(base + f), todo)):
-            headers[f] = h
     hdr_path.write_text(json.dumps(headers))
-    meta = {"spec": spec, "subfolder": sub, "revision": rev, "main_bin_total_size": bin_total,
-            "repo_files": _tree_sizes(repo) if (sub or rev != "main" or "diffusion" in files[0]) else {}}
+    meta = {"spec": spec, "subfolder": sub, "subfolders": subs if len(subs) > 1 else None, "revision": rev,
+            "main_bin_total_size": bin_total,
+            "repo_files": _tree_sizes(repo) if (sub or rev != "main" or "diffusion" in first_files[0]) else {}}
     (d / "source.json").write_text(json.dumps(meta, indent=1))
     tensors = {}
     for f, h in headers.items():
@@ -128,8 +143,7 @@ def fetch(spec: str) -> dict:
             if name == "__metadata__":
                 continue
             tensors[name] = (m["dtype"], m["shape"], m["data_offsets"][1] - m["data_offsets"][0])
-    return {"repo": repo, "config": cfg, "index_total_size": (idx or {}).get("metadata", {}).get("total_size"),
-            "tensors": tensors}
+    return {"repo": repo, "config": cfg, "index_total_size": idx_total or None, "tensors": tensors}
 
 
 def summarize(raw: dict) -> dict:

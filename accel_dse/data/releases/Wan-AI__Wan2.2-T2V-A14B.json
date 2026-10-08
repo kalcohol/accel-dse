@@ -1,0 +1,341 @@
+{
+ "bytes_llm": 114307932672,
+ "bytes_mtp": 0,
+ "bytes_total": 114307932672,
+ "config": {
+  "_class_name": "WanModel",
+  "_diffusers_version": "0.33.1",
+  "dim": 5120,
+  "eps": 1e-06,
+  "ffn_dim": 13824,
+  "freq_dim": 256,
+  "in_dim": 16,
+  "model_type": "t2v",
+  "num_heads": 40,
+  "num_layers": 40,
+  "out_dim": 16,
+  "text_len": 512
+ },
+ "domain": "video",
+ "experts": {
+  "high_noise_model": 14288491584,
+  "low_noise_model": 14288491584
+ },
+ "fetched": "2026-10-09",
+ "n_tensors": 2190,
+ "params_llm": 28576983168,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "Wan-AI/Wan2.2-T2V-A14B",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 67121971200,
+    "params": 16780492800
+   }
+  },
+  "cond": {
+   "fp32": {
+    "bytes": 1866301440,
+    "params": 466575360
+   }
+  },
+  "io": {
+   "fp32": {
+    "bytes": 3973376,
+    "params": 993344
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 45304545280,
+    "params": 11326136320
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 9830400,
+    "params": 2457600
+   }
+  },
+  "other": {
+   "fp32": {
+    "bytes": 1310976,
+    "params": 327744
+   }
+  }
+ },
+ "shapes": {
+  "blocks.0.cross_attn.k.bias": [
+   5120
+  ],
+  "blocks.0.cross_attn.k.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.cross_attn.norm_k.weight": [
+   5120
+  ],
+  "blocks.0.cross_attn.norm_q.weight": [
+   5120
+  ],
+  "blocks.0.cross_attn.o.bias": [
+   5120
+  ],
+  "blocks.0.cross_attn.o.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.cross_attn.q.bias": [
+   5120
+  ],
+  "blocks.0.cross_attn.q.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.cross_attn.v.bias": [
+   5120
+  ],
+  "blocks.0.cross_attn.v.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.ffn.0.bias": [
+   13824
+  ],
+  "blocks.0.ffn.0.weight": [
+   13824,
+   5120
+  ],
+  "blocks.0.ffn.2.bias": [
+   5120
+  ],
+  "blocks.0.ffn.2.weight": [
+   5120,
+   13824
+  ],
+  "blocks.0.modulation": [
+   1,
+   6,
+   5120
+  ],
+  "blocks.0.norm3.bias": [
+   5120
+  ],
+  "blocks.0.norm3.weight": [
+   5120
+  ],
+  "blocks.0.self_attn.k.bias": [
+   5120
+  ],
+  "blocks.0.self_attn.k.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.self_attn.norm_k.weight": [
+   5120
+  ],
+  "blocks.0.self_attn.norm_q.weight": [
+   5120
+  ],
+  "blocks.0.self_attn.o.bias": [
+   5120
+  ],
+  "blocks.0.self_attn.o.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.self_attn.q.bias": [
+   5120
+  ],
+  "blocks.0.self_attn.q.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.self_attn.v.bias": [
+   5120
+  ],
+  "blocks.0.self_attn.v.weight": [
+   5120,
+   5120
+  ],
+  "blocks.39.cross_attn.k.bias": [
+   5120
+  ],
+  "blocks.39.cross_attn.k.weight": [
+   5120,
+   5120
+  ],
+  "blocks.39.cross_attn.norm_k.weight": [
+   5120
+  ],
+  "blocks.39.cross_attn.norm_q.weight": [
+   5120
+  ],
+  "blocks.39.cross_attn.o.bias": [
+   5120
+  ],
+  "blocks.39.cross_attn.o.weight": [
+   5120,
+   5120
+  ],
+  "blocks.39.cross_attn.q.bias": [
+   5120
+  ],
+  "blocks.39.cross_attn.q.weight": [
+   5120,
+   5120
+  ],
+  "blocks.39.cross_attn.v.bias": [
+   5120
+  ],
+  "blocks.39.cross_attn.v.weight": [
+   5120,
+   5120
+  ],
+  "blocks.39.ffn.0.bias": [
+   13824
+  ],
+  "blocks.39.ffn.0.weight": [
+   13824,
+   5120
+  ],
+  "blocks.39.ffn.2.bias": [
+   5120
+  ],
+  "blocks.39.ffn.2.weight": [
+   5120,
+   13824
+  ],
+  "blocks.39.modulation": [
+   1,
+   6,
+   5120
+  ],
+  "blocks.39.norm3.bias": [
+   5120
+  ],
+  "blocks.39.norm3.weight": [
+   5120
+  ],
+  "blocks.39.self_attn.k.bias": [
+   5120
+  ],
+  "blocks.39.self_attn.k.weight": [
+   5120,
+   5120
+  ],
+  "blocks.39.self_attn.norm_k.weight": [
+   5120
+  ],
+  "blocks.39.self_attn.norm_q.weight": [
+   5120
+  ],
+  "blocks.39.self_attn.o.bias": [
+   5120
+  ],
+  "blocks.39.self_attn.o.weight": [
+   5120,
+   5120
+  ],
+  "blocks.39.self_attn.q.bias": [
+   5120
+  ],
+  "blocks.39.self_attn.q.weight": [
+   5120,
+   5120
+  ],
+  "blocks.39.self_attn.v.bias": [
+   5120
+  ],
+  "blocks.39.self_attn.v.weight": [
+   5120,
+   5120
+  ],
+  "head.head.bias": [
+   64
+  ],
+  "head.head.weight": [
+   64,
+   5120
+  ],
+  "head.modulation": [
+   1,
+   2,
+   5120
+  ],
+  "patch_embedding.bias": [
+   5120
+  ],
+  "patch_embedding.weight": [
+   5120,
+   16,
+   1,
+   2,
+   2
+  ],
+  "text_embedding.0.bias": [
+   5120
+  ],
+  "text_embedding.0.weight": [
+   5120,
+   4096
+  ],
+  "text_embedding.2.bias": [
+   5120
+  ],
+  "text_embedding.2.weight": [
+   5120,
+   5120
+  ],
+  "time_embedding.0.bias": [
+   5120
+  ],
+  "time_embedding.0.weight": [
+   5120,
+   256
+  ],
+  "time_embedding.2.bias": [
+   5120
+  ],
+  "time_embedding.2.weight": [
+   5120,
+   5120
+  ],
+  "time_projection.1.bias": [
+   30720
+  ],
+  "time_projection.1.weight": [
+   30720,
+   5120
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "Wan2.1_VAE.pth": 507609880,
+   "high_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors": 9992481544,
+   "high_noise_model/diffusion_pytorch_model-00002-of-00006.safetensors": 9943937936,
+   "high_noise_model/diffusion_pytorch_model-00003-of-00006.safetensors": 9943979184,
+   "high_noise_model/diffusion_pytorch_model-00004-of-00006.safetensors": 9839059744,
+   "high_noise_model/diffusion_pytorch_model-00005-of-00006.safetensors": 9839059744,
+   "high_noise_model/diffusion_pytorch_model-00006-of-00006.safetensors": 7595559224,
+   "low_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors": 9992481544,
+   "low_noise_model/diffusion_pytorch_model-00002-of-00006.safetensors": 9943937936,
+   "low_noise_model/diffusion_pytorch_model-00003-of-00006.safetensors": 9943979184,
+   "low_noise_model/diffusion_pytorch_model-00004-of-00006.safetensors": 9839059744,
+   "low_noise_model/diffusion_pytorch_model-00005-of-00006.safetensors": 9839059744,
+   "low_noise_model/diffusion_pytorch_model-00006-of-00006.safetensors": 7595559224,
+   "models_t5_umt5-xxl-enc-bf16.pth": 11361920418
+  },
+  "revision": "main",
+  "spec": "Wan-AI/Wan2.2-T2V-A14B:high_noise_model+low_noise_model",
+  "subfolder": "high_noise_model+low_noise_model",
+  "subfolders": [
+   "high_noise_model",
+   "low_noise_model"
+  ]
+ },
+ "torch_dtype": null
+}

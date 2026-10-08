@@ -134,10 +134,11 @@ def test_catalog_listing_grouping_coverage_and_merges():
         assert sa.params() == sb.params() and dtype_label(sa) == dtype_label(sb), (a, b)
     off = offline_entries()
     ids = {o["id"] for o in off}
-    assert {"gen", "protein"} == {o["domain"] for o in off} and not (ids & listed)
-    assert {"minimax-h3", "hunyuanvideo", "wan2.2-a14b", "esmfold", "alphafold3", "protenix"} <= ids
-    live = {"wan2.1-14b", "wan2.1-1.3b", "cogvideox-5b", "cogvideox-2b", "esm2-3b", "esm2-650m"}
-    assert live <= listed and not (live & ids)                       # 0.41: release-backed video / protein models
+    assert {o["domain"] for o in off} <= {"gen", "protein"} and not (ids & listed)
+    assert {"esmfold", "alphafold3", "protenix"} <= ids
+    live = {"wan2.1-14b", "wan2.1-1.3b", "cogvideox-5b", "cogvideox-2b", "esm2-3b", "esm2-650m",
+            "minimax-h3", "hunyuanvideo", "wan2.2-a14b", "ltx-video", "mochi-1", "opensora-stdit3"}
+    assert live <= listed and not (live & ids)                       # 0.41 / 0.42: release-backed video / protein models
     for i in live:
         assert get_model(i).domain in ("gen", "protein") and not get_model(i).kv_cache
     assert all(o["provider"] != "other" and not o["evaluable"] for o in off)

@@ -6,6 +6,7 @@ Storage (per rank, as released):
   KV cache        = Σ layers ctx·kv_elems_per_token (per-rank share; MLA latent
                     replicated on every attention-TP rank)
   recurrent state = linear-attention state per sequence (fp32 「假设」)
+  standby weights = idle expert of a multi-expert denoiser (Wan2.2 A14B), split over stages by layer share
 DRAM capacity check uses the *heaviest* stage.
 
 SRAM policy (「假设」, design variable via chip.sram_mib):
@@ -98,13 +99,16 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         if c.idx_heads:
             idx += math.ceil(ctx / c.compress) * c.idx_dim * kvb
     store_extra = 0.0
+    if model.standby_params:        # idle expert of a multi-expert denoiser (Wan2.2 A14B): stored, not read this step
+        store_extra += model.standby_params * (last - first) / model.n_layers / sh.tp * model.fmt("attn").bits / 8
     if model.domain != "llm":       # io GEMM weights are read every forward; io biases / unused tables only stored
         io_b = model.fmt("io").bits / 8
+        lb = lambda l: _lin_local(l, sh.tp)[0] * _lin_local(l, sh.tp)[1] * model.fmt(l.role or "io").bits / 8
         if has_embed:
-            hot += sum(_lin_local(l, sh.tp)[0] * _lin_local(l, sh.tp)[1] for l in model.io_pre) * io_b
+            hot += sum(lb(l) for l in model.io_pre)
             store_extra += model.io_misc_params * io_b
         if has_head:
-            hot += sum(_lin_local(l, sh.tp)[0] * _lin_local(l, sh.tp)[1] for l in model.io_post) * io_b
+            hot += sum(lb(l) for l in model.io_post)
             hot += (model.final_norm_params or 0) * io_b
     emb_b = model.fmt("embed").bits / 8
     table = _cdiv(model.vocab, sh.tp) * model.hidden * emb_b

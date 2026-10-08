@@ -1,0 +1,411 @@
+{
+ "bytes_llm": 66280430080,
+ "bytes_mtp": 0,
+ "bytes_total": 66280430080,
+ "config": {
+  "_class_name": "MiniMaxH3Transformer3DModel",
+  "_diffusers_version": "0.36.0.dev0",
+  "attention_head_dim": 128,
+  "audio_in_channels": 32,
+  "ffn_dim": 14336,
+  "final_norm_eps": 1e-05,
+  "freq_dim": 256,
+  "hidden_size": 5376,
+  "in_channels": 24,
+  "norm_eps": 1e-05,
+  "num_attention_heads": 56,
+  "num_layers": 50,
+  "num_refiner_layers": 2,
+  "patch_size": [
+   1,
+   2,
+   2
+  ],
+  "qk_norm_eps": 1e-05,
+  "rope_freq_dim": 16,
+  "rope_theta": 10000.0,
+  "text_dim": 5120,
+  "time_embed_dim": 2688,
+  "time_embed_hidden_dim": 5376
+ },
+ "domain": "video",
+ "fetched": "2026-10-09",
+ "n_tensors": 638,
+ "params_llm": 33122992896,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "MiniMaxAI/MiniMax-H3",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 15414067200,
+    "params": 7707033600
+   }
+  },
+  "cond": {
+   "bf16": {
+    "bytes": 27675261952,
+    "params": 13837630976
+   },
+   "fp32": {
+    "bytes": 63340032,
+    "params": 15835008
+   }
+  },
+  "io": {
+   "fp32": {
+    "bytes": 5548544,
+    "params": 1387136
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 23121100800,
+    "params": 11560550400
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 1111552,
+    "params": 555776
+   }
+  }
+ },
+ "shapes": {
+  "audio_proj_in.bias": [
+   5376
+  ],
+  "audio_proj_in.weight": [
+   5376,
+   32
+  ],
+  "audio_proj_out.bias": [
+   32
+  ],
+  "audio_proj_out.weight": [
+   32,
+   5376
+  ],
+  "context_embedder.bias": [
+   5376
+  ],
+  "context_embedder.weight": [
+   5376,
+   5120
+  ],
+  "norm_out.linear.bias": [
+   10752
+  ],
+  "norm_out.linear.weight": [
+   10752,
+   2688
+  ],
+  "norm_out.norm.weight": [
+   5376
+  ],
+  "proj_in.bias": [
+   5376
+  ],
+  "proj_in.weight": [
+   5376,
+   96
+  ],
+  "proj_out.bias": [
+   96
+  ],
+  "proj_out.weight": [
+   96,
+   5376
+  ],
+  "time_embedder.linear_1.bias": [
+   5376
+  ],
+  "time_embedder.linear_1.weight": [
+   5376,
+   256
+  ],
+  "time_embedder.linear_2.bias": [
+   2688
+  ],
+  "time_embedder.linear_2.weight": [
+   2688,
+   5376
+  ],
+  "token_refiner.final_norm.weight": [
+   5376
+  ],
+  "token_refiner.refiner_blocks.0.attn.norm_k.weight": [
+   128
+  ],
+  "token_refiner.refiner_blocks.0.attn.norm_q.weight": [
+   128
+  ],
+  "token_refiner.refiner_blocks.0.attn.to_k.weight": [
+   7168,
+   5376
+  ],
+  "token_refiner.refiner_blocks.0.attn.to_out.0.weight": [
+   5376,
+   7168
+  ],
+  "token_refiner.refiner_blocks.0.attn.to_q.weight": [
+   7168,
+   5376
+  ],
+  "token_refiner.refiner_blocks.0.attn.to_v.weight": [
+   7168,
+   5376
+  ],
+  "token_refiner.refiner_blocks.0.ff.net.0.proj.weight": [
+   28672,
+   5376
+  ],
+  "token_refiner.refiner_blocks.0.ff.net.2.weight": [
+   5376,
+   14336
+  ],
+  "token_refiner.refiner_blocks.0.norm1.weight": [
+   5376
+  ],
+  "token_refiner.refiner_blocks.0.norm2.weight": [
+   5376
+  ],
+  "token_refiner.refiner_blocks.1.attn.norm_k.weight": [
+   128
+  ],
+  "token_refiner.refiner_blocks.1.attn.norm_q.weight": [
+   128
+  ],
+  "token_refiner.refiner_blocks.1.attn.to_k.weight": [
+   7168,
+   5376
+  ],
+  "token_refiner.refiner_blocks.1.attn.to_out.0.weight": [
+   5376,
+   7168
+  ],
+  "token_refiner.refiner_blocks.1.attn.to_q.weight": [
+   7168,
+   5376
+  ],
+  "token_refiner.refiner_blocks.1.attn.to_v.weight": [
+   7168,
+   5376
+  ],
+  "token_refiner.refiner_blocks.1.ff.net.0.proj.weight": [
+   28672,
+   5376
+  ],
+  "token_refiner.refiner_blocks.1.ff.net.2.weight": [
+   5376,
+   14336
+  ],
+  "token_refiner.refiner_blocks.1.norm1.weight": [
+   5376
+  ],
+  "token_refiner.refiner_blocks.1.norm2.weight": [
+   5376
+  ],
+  "transformer_blocks.0.adaln_proj.linear.bias": [
+   96768
+  ],
+  "transformer_blocks.0.adaln_proj.linear.weight": [
+   96768,
+   2688
+  ],
+  "transformer_blocks.0.attn.norm_k.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.norm_q.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.to_k.weight": [
+   7168,
+   5376
+  ],
+  "transformer_blocks.0.attn.to_out.0.weight": [
+   5376,
+   7168
+  ],
+  "transformer_blocks.0.attn.to_q.weight": [
+   7168,
+   5376
+  ],
+  "transformer_blocks.0.attn.to_v.weight": [
+   7168,
+   5376
+  ],
+  "transformer_blocks.0.ff.net.0.proj.weight": [
+   28672,
+   5376
+  ],
+  "transformer_blocks.0.ff.net.2.weight": [
+   5376,
+   14336
+  ],
+  "transformer_blocks.0.norm1.weight": [
+   5376
+  ],
+  "transformer_blocks.0.norm2.weight": [
+   5376
+  ],
+  "transformer_blocks.49.adaln_proj.linear.bias": [
+   96768
+  ],
+  "transformer_blocks.49.adaln_proj.linear.weight": [
+   96768,
+   2688
+  ],
+  "transformer_blocks.49.attn.norm_k.weight": [
+   128
+  ],
+  "transformer_blocks.49.attn.norm_q.weight": [
+   128
+  ],
+  "transformer_blocks.49.attn.to_k.weight": [
+   7168,
+   5376
+  ],
+  "transformer_blocks.49.attn.to_out.0.weight": [
+   5376,
+   7168
+  ],
+  "transformer_blocks.49.attn.to_q.weight": [
+   7168,
+   5376
+  ],
+  "transformer_blocks.49.attn.to_v.weight": [
+   7168,
+   5376
+  ],
+  "transformer_blocks.49.ff.net.0.proj.weight": [
+   28672,
+   5376
+  ],
+  "transformer_blocks.49.ff.net.2.weight": [
+   5376,
+   14336
+  ],
+  "transformer_blocks.49.norm1.weight": [
+   5376
+  ],
+  "transformer_blocks.49.norm2.weight": [
+   5376
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "FL2VA/audio_vae/model.safetensors": 605429308,
+   "FL2VA/text_encoder/model-00001-of-00014.safetensors": 4932328944,
+   "FL2VA/text_encoder/model-00002-of-00014.safetensors": 4875990528,
+   "FL2VA/text_encoder/model-00003-of-00014.safetensors": 4875990552,
+   "FL2VA/text_encoder/model-00004-of-00014.safetensors": 4875990584,
+   "FL2VA/text_encoder/model-00005-of-00014.safetensors": 4875990584,
+   "FL2VA/text_encoder/model-00006-of-00014.safetensors": 4875990584,
+   "FL2VA/text_encoder/model-00007-of-00014.safetensors": 4875990584,
+   "FL2VA/text_encoder/model-00008-of-00014.safetensors": 4875990584,
+   "FL2VA/text_encoder/model-00009-of-00014.safetensors": 4875990584,
+   "FL2VA/text_encoder/model-00010-of-00014.safetensors": 4875990584,
+   "FL2VA/text_encoder/model-00011-of-00014.safetensors": 4875990584,
+   "FL2VA/text_encoder/model-00012-of-00014.safetensors": 4875990584,
+   "FL2VA/text_encoder/model-00013-of-00014.safetensors": 4875990584,
+   "FL2VA/text_encoder/model-00014-of-00014.safetensors": 3270697008,
+   "FL2VA/transformer/model-00001-of-00013.safetensors": 5227812968,
+   "FL2VA/transformer/model-00002-of-00013.safetensors": 5164578856,
+   "FL2VA/transformer/model-00003-of-00013.safetensors": 5164578872,
+   "FL2VA/transformer/model-00004-of-00013.safetensors": 5164578896,
+   "FL2VA/transformer/model-00005-of-00013.safetensors": 5164578896,
+   "FL2VA/transformer/model-00006-of-00013.safetensors": 5164578896,
+   "FL2VA/transformer/model-00007-of-00013.safetensors": 5164578896,
+   "FL2VA/transformer/model-00008-of-00013.safetensors": 5164578896,
+   "FL2VA/transformer/model-00009-of-00013.safetensors": 5164578896,
+   "FL2VA/transformer/model-00010-of-00013.safetensors": 5164578896,
+   "FL2VA/transformer/model-00011-of-00013.safetensors": 5164578896,
+   "FL2VA/transformer/model-00012-of-00013.safetensors": 5164578896,
+   "FL2VA/transformer/model-00013-of-00013.safetensors": 4242305176,
+   "FL2VA/video_vae/source/model.safetensors": 10415548320,
+   "Ref2VA/audio_vae/model.safetensors": 605429308,
+   "Ref2VA/text_encoder/model-00001-of-00014.safetensors": 4932328944,
+   "Ref2VA/text_encoder/model-00002-of-00014.safetensors": 4875990528,
+   "Ref2VA/text_encoder/model-00003-of-00014.safetensors": 4875990552,
+   "Ref2VA/text_encoder/model-00004-of-00014.safetensors": 4875990584,
+   "Ref2VA/text_encoder/model-00005-of-00014.safetensors": 4875990584,
+   "Ref2VA/text_encoder/model-00006-of-00014.safetensors": 4875990584,
+   "Ref2VA/text_encoder/model-00007-of-00014.safetensors": 4875990584,
+   "Ref2VA/text_encoder/model-00008-of-00014.safetensors": 4875990584,
+   "Ref2VA/text_encoder/model-00009-of-00014.safetensors": 4875990584,
+   "Ref2VA/text_encoder/model-00010-of-00014.safetensors": 4875990584,
+   "Ref2VA/text_encoder/model-00011-of-00014.safetensors": 4875990584,
+   "Ref2VA/text_encoder/model-00012-of-00014.safetensors": 4875990584,
+   "Ref2VA/text_encoder/model-00013-of-00014.safetensors": 4875990584,
+   "Ref2VA/text_encoder/model-00014-of-00014.safetensors": 3270697008,
+   "Ref2VA/transformer/model-00001-of-00013.safetensors": 5227812968,
+   "Ref2VA/transformer/model-00002-of-00013.safetensors": 5164578856,
+   "Ref2VA/transformer/model-00003-of-00013.safetensors": 5164578872,
+   "Ref2VA/transformer/model-00004-of-00013.safetensors": 5164578896,
+   "Ref2VA/transformer/model-00005-of-00013.safetensors": 5164578896,
+   "Ref2VA/transformer/model-00006-of-00013.safetensors": 5164578896,
+   "Ref2VA/transformer/model-00007-of-00013.safetensors": 5164578896,
+   "Ref2VA/transformer/model-00008-of-00013.safetensors": 5164578896,
+   "Ref2VA/transformer/model-00009-of-00013.safetensors": 5164578896,
+   "Ref2VA/transformer/model-00010-of-00013.safetensors": 5164578896,
+   "Ref2VA/transformer/model-00011-of-00013.safetensors": 5164578896,
+   "Ref2VA/transformer/model-00012-of-00013.safetensors": 5164578896,
+   "Ref2VA/transformer/model-00013-of-00013.safetensors": 4242305176,
+   "Ref2VA/video_vae/source/model.safetensors": 10415548320,
+   "audio_vae/diffusion_pytorch_model.safetensors": 605429340,
+   "text_encoder/model-00001-of-00014.safetensors": 4932328944,
+   "text_encoder/model-00002-of-00014.safetensors": 4875990528,
+   "text_encoder/model-00003-of-00014.safetensors": 4875990552,
+   "text_encoder/model-00004-of-00014.safetensors": 4875990584,
+   "text_encoder/model-00005-of-00014.safetensors": 4875990584,
+   "text_encoder/model-00006-of-00014.safetensors": 4875990584,
+   "text_encoder/model-00007-of-00014.safetensors": 4875990584,
+   "text_encoder/model-00008-of-00014.safetensors": 4875990584,
+   "text_encoder/model-00009-of-00014.safetensors": 4875990584,
+   "text_encoder/model-00010-of-00014.safetensors": 4875990584,
+   "text_encoder/model-00011-of-00014.safetensors": 4875990584,
+   "text_encoder/model-00012-of-00014.safetensors": 4875990584,
+   "text_encoder/model-00013-of-00014.safetensors": 4875990584,
+   "text_encoder/model-00014-of-00014.safetensors": 3270697008,
+   "transformer/diffusion_pytorch_model-00001-of-00014.safetensors": 4825958704,
+   "transformer/diffusion_pytorch_model-00002-of-00014.safetensors": 4702158032,
+   "transformer/diffusion_pytorch_model-00003-of-00014.safetensors": 4933368192,
+   "transformer/diffusion_pytorch_model-00004-of-00014.safetensors": 4567069608,
+   "transformer/diffusion_pytorch_model-00005-of-00014.safetensors": 4702158080,
+   "transformer/diffusion_pytorch_model-00006-of-00014.safetensors": 4933368232,
+   "transformer/diffusion_pytorch_model-00007-of-00014.safetensors": 4567069608,
+   "transformer/diffusion_pytorch_model-00008-of-00014.safetensors": 4702158080,
+   "transformer/diffusion_pytorch_model-00009-of-00014.safetensors": 4933368232,
+   "transformer/diffusion_pytorch_model-00010-of-00014.safetensors": 4567069608,
+   "transformer/diffusion_pytorch_model-00011-of-00014.safetensors": 4702158080,
+   "transformer/diffusion_pytorch_model-00012-of-00014.safetensors": 4933368232,
+   "transformer/diffusion_pytorch_model-00013-of-00014.safetensors": 4567069608,
+   "transformer/diffusion_pytorch_model-00014-of-00014.safetensors": 4644161920,
+   "transformer_ref/diffusion_pytorch_model-00001-of-00014.safetensors": 4825958704,
+   "transformer_ref/diffusion_pytorch_model-00002-of-00014.safetensors": 4702158032,
+   "transformer_ref/diffusion_pytorch_model-00003-of-00014.safetensors": 4933368192,
+   "transformer_ref/diffusion_pytorch_model-00004-of-00014.safetensors": 4567069608,
+   "transformer_ref/diffusion_pytorch_model-00005-of-00014.safetensors": 4702158080,
+   "transformer_ref/diffusion_pytorch_model-00006-of-00014.safetensors": 4933368232,
+   "transformer_ref/diffusion_pytorch_model-00007-of-00014.safetensors": 4567069608,
+   "transformer_ref/diffusion_pytorch_model-00008-of-00014.safetensors": 4702158080,
+   "transformer_ref/diffusion_pytorch_model-00009-of-00014.safetensors": 4933368232,
+   "transformer_ref/diffusion_pytorch_model-00010-of-00014.safetensors": 4567069608,
+   "transformer_ref/diffusion_pytorch_model-00011-of-00014.safetensors": 4702158080,
+   "transformer_ref/diffusion_pytorch_model-00012-of-00014.safetensors": 4933368232,
+   "transformer_ref/diffusion_pytorch_model-00013-of-00014.safetensors": 4567069608,
+   "transformer_ref/diffusion_pytorch_model-00014-of-00014.safetensors": 4644161920,
+   "vae/diffusion_pytorch_model-00001-of-00003.safetensors": 5061033024,
+   "vae/diffusion_pytorch_model-00002-of-00003.safetensors": 4955986528,
+   "vae/diffusion_pytorch_model-00003-of-00003.safetensors": 398539336
+  },
+  "revision": "main",
+  "spec": "MiniMaxAI/MiniMax-H3:transformer",
+  "subfolder": "transformer",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}

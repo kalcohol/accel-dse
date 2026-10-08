@@ -36,12 +36,25 @@ EXTRA = [
 ]
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors"}
 
-# Non-autoregressive releases on core v2 (0.41): id, hf_id, builder, native workload (official config / README).
-# The remaining video / protein entries of series_catalog.json stay catalog-only until modelled.
+# Non-autoregressive releases on core v2 (0.41 / 0.42): id, hf_id, builder, native workload (official config / README).
+# The remaining protein entries of series_catalog.json stay catalog-only until modelled.
 _WAN_SRC = ("Wan2.1 官方 README / generate.py：t2v {res}、81 帧、16 fps、sample_steps 50、guide_scale 5.0（CFG）、"
             "VAE stride (4, 8, 8)、patch (1, 2, 2)、text_len 512")
 _COG_SRC = ("transformer/config.json：sample_frames 49、潜空间 60×90（×8 = 480×720）、temporal_compression_ratio 4；"
             "diffusers CogVideoXPipeline 默认 50 步、guidance_scale 6（CFG）、8 fps")
+_WAN22_SRC = ("Wan2.2 官方 README / generate.py（t2v-A14B）：1280×720、81 帧、16 fps、sample_steps 40、guide_scale (3.0, 4.0)"
+              "（CFG）、boundary 0.875（高/低噪声专家切换）、Wan2.1 VAE stride (4, 8, 8)、patch (1, 2, 2)")
+_HY_SRC = ("HunyuanVideo 官方 sample_video.py：--video-size 720 1280、--video-length 129、--infer-steps 50、"
+           "--embedded-cfg-scale 6.0（guidance 蒸馏，无 CFG）、text_len 256、24 fps；VAE 4×8×8、patch 1×2×2")
+_LTX_SRC = ("diffusers LTXPipeline 默认：704×512、161 帧、frame_rate 25、50 步、guidance_scale 3（CFG）、"
+            "max_sequence_length 128；VAE 32×32 空间 × 8 时间、patch 1")
+_MOCHI_SRC = ("genmo/mochi demos/cli.py 默认：848×480、163 帧、num_steps 64、cfg_scale 6.0（CFG）；30 fps；"
+              "VAE 6× 时间 × 8× 空间、patch 2×2、T5 256 token")
+_OS_SRC = ("Open-Sora 1.2 README 推理示例：--num-frames 4s（102 帧）--resolution 720p --aspect-ratio 9:16（720×1280）；"
+           "rflow 30 步、cfg_scale 7.0（CFG）、24 fps；VAE 17 帧 → 5 潜帧、8× 空间、patch (1, 2, 2)、T5 300 token")
+_H3_SRC = ("diffusers MiniMax-H3 文档 / pipeline：画布 1344×768（短边 768）、num_frames 124（17n+5）、24 fps、"
+           "SGLang 默认 num_inference_steps 50（49 次前向）、CFG 蒸馏；VisualVAE f16t4d24 + patch (1, 2, 2)、"
+           "音频 40 latent/s × 立体声；文本 512 token「假设」")
 _ESM_SRC = "config.json：max_position_embeddings 1026（1022 残基 + <cls>/<eos>）；默认 512 残基为工作负载「假设」"
 DOMAIN_RELEASES = [
     ("wan2.1-14b", "Wan-AI/Wan2.1-T2V-14B", "wan",
@@ -52,6 +65,22 @@ DOMAIN_RELEASES = [
      NativeWorkload("gen", frames=49, height=480, width=720, fps=8, source=_COG_SRC)),
     ("cogvideox-2b", "zai-org/CogVideoX-2b", "cogvideox",
      NativeWorkload("gen", frames=49, height=480, width=720, fps=8, source=_COG_SRC)),
+    ("wan2.2-a14b", "Wan-AI/Wan2.2-T2V-A14B", "wan22",
+     NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, steps=40, source=_WAN22_SRC)),
+    ("hunyuanvideo", "hunyuanvideo-community/HunyuanVideo", "hunyuan",
+     NativeWorkload("gen", frames=129, height=720, width=1280, fps=24, steps=50, cfg=1, text_tokens=256, source=_HY_SRC)),
+    ("ltx-video", "Lightricks/LTX-Video", "ltx",
+     NativeWorkload("gen", frames=161, height=512, width=704, fps=25, vae_t=8, vae_s=32, steps=50, cfg=2,
+                    text_tokens=128, source=_LTX_SRC)),
+    ("mochi-1", "genmo/mochi-1-preview", "mochi",
+     NativeWorkload("gen", frames=163, height=480, width=848, fps=30, vae_t=6, vae_s=8, steps=64, cfg=2,
+                    source=_MOCHI_SRC)),
+    ("opensora-stdit3", "hpcai-tech/OpenSora-STDiT-v3", "stdit",
+     NativeWorkload("gen", frames=102, height=1280, width=720, fps=24, vae_t=4, vae_s=8, vae_frames="chunk17",
+                    steps=30, cfg=2, source=_OS_SRC)),
+    ("minimax-h3", "MiniMaxAI/MiniMax-H3", "h3",
+     NativeWorkload("gen", frames=124, height=768, width=1344, fps=24, vae_t=4, vae_s=16, vae_frames="h3",
+                    audio_per_s=40, audio_channels=2, steps=49, cfg=1, text_tokens=512, source=_H3_SRC)),
     ("esm2-3b", "facebook/esm2_t36_3B_UR50D", "esm", NativeWorkload("protein", seq_len=512, steps=1, cfg=1, source=_ESM_SRC)),
     ("esm2-650m", "facebook/esm2_t33_650M_UR50D", "esm", NativeWorkload("protein", seq_len=512, steps=1, cfg=1, source=_ESM_SRC)),
 ]
@@ -282,7 +311,10 @@ def _workload_dict(spec: ModelSpec) -> dict | None:
     if w.kind == "gen":
         return {"kind": "gen", "frames": w.frames, "height": w.height, "width": w.width, "fps": w.fps,
                 "steps": w.steps, "cfg": w.cfg, "patch": list(w.patch), "vae": [w.vae_t, w.vae_s, w.vae_s],
-                "text_tokens": w.text_tokens, "joint_text": bool(w.prefix_tokens), "source": w.source}
+                "text_tokens": w.text_tokens, "joint_text": bool(w.prefix_tokens), "source": w.source,
+                "vae_frames": w.vae_frames, "audio_per_s": w.audio_per_s, "audio_channels": w.audio_channels,
+                "attention": "factorized" if any(l.core.span != "full" for l in spec.layers) else "full",
+                "cfg_distilled": w.cfg == 1}
     return {"kind": "protein", "seq_len": w.seq_len, "max_seq": w.max_seq, "source": w.source}
 
 

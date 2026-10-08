@@ -309,7 +309,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     seqs = sv.batch * wl.seqs_per_request
     pp = lay.pp
     mb = max(1, min(sv.microbatches or min(pp, seqs), seqs))
-    ph = Phase("full", _cdiv(seqs, mb), wl.tokens, wl.ctx)
+    ph = Phase("full", _cdiv(seqs, mb), wl.tokens, wl.ctx, frames=wl.frames, aux=wl.aux)
     sh = lay.shard
     ab = _fmt(m.act_fmt).bytes
     groups = layer_groups(m)

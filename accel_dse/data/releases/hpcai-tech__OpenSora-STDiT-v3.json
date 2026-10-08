@@ -1,0 +1,411 @@
+{
+ "bytes_llm": 4835491088,
+ "bytes_mtp": 0,
+ "bytes_total": 4835491088,
+ "config": {
+  "architectures": [
+   "STDiT3"
+  ],
+  "caption_channels": 4096,
+  "class_dropout_prob": 0.1,
+  "depth": 28,
+  "drop_path": 0.0,
+  "enable_flash_attn": false,
+  "enable_layernorm_kernel": false,
+  "enable_sequence_parallelism": false,
+  "freeze_y_embedder": true,
+  "hidden_size": 1152,
+  "in_channels": 4,
+  "input_size": [
+   null,
+   null,
+   null
+  ],
+  "input_sq_size": 512,
+  "mlp_ratio": 4.0,
+  "model_max_length": 300,
+  "model_type": "STDiT3",
+  "num_heads": 16,
+  "only_train_temporal": false,
+  "patch_size": [
+   1,
+   2,
+   2
+  ],
+  "pred_sigma": true,
+  "qk_norm": true,
+  "skip_y_embedder": false,
+  "torch_dtype": "float32",
+  "transformers_version": "4.36.2"
+ },
+ "domain": "video",
+ "fetched": "2026-10-09",
+ "n_tensors": 973,
+ "params_llm": 1208872772,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "hpcai-tech/OpenSora-STDiT-v3",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 2380234752,
+    "params": 595058688
+   }
+  },
+  "cond": {
+   "fp32": {
+    "bytes": 75537408,
+    "params": 18884352
+   }
+  },
+  "io": {
+   "fp32": {
+    "bytes": 225920,
+    "params": 56480
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 2379460608,
+    "params": 594865152
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 32256,
+    "params": 8064
+   }
+  },
+  "other": {
+   "fp32": {
+    "bytes": 144,
+    "params": 36
+   }
+  }
+ },
+ "shapes": {
+  "final_layer.linear.bias": [
+   32
+  ],
+  "final_layer.linear.weight": [
+   32,
+   1152
+  ],
+  "final_layer.scale_shift_table": [
+   2,
+   1152
+  ],
+  "fps_embedder.mlp.0.bias": [
+   1152
+  ],
+  "fps_embedder.mlp.0.weight": [
+   1152,
+   256
+  ],
+  "fps_embedder.mlp.2.bias": [
+   1152
+  ],
+  "fps_embedder.mlp.2.weight": [
+   1152,
+   1152
+  ],
+  "rope.freqs": [
+   36
+  ],
+  "spatial_blocks.0.attn.k_norm.weight": [
+   72
+  ],
+  "spatial_blocks.0.attn.proj.bias": [
+   1152
+  ],
+  "spatial_blocks.0.attn.proj.weight": [
+   1152,
+   1152
+  ],
+  "spatial_blocks.0.attn.q_norm.weight": [
+   72
+  ],
+  "spatial_blocks.0.attn.qkv.bias": [
+   3456
+  ],
+  "spatial_blocks.0.attn.qkv.weight": [
+   3456,
+   1152
+  ],
+  "spatial_blocks.0.cross_attn.kv_linear.bias": [
+   2304
+  ],
+  "spatial_blocks.0.cross_attn.kv_linear.weight": [
+   2304,
+   1152
+  ],
+  "spatial_blocks.0.cross_attn.proj.bias": [
+   1152
+  ],
+  "spatial_blocks.0.cross_attn.proj.weight": [
+   1152,
+   1152
+  ],
+  "spatial_blocks.0.cross_attn.q_linear.bias": [
+   1152
+  ],
+  "spatial_blocks.0.cross_attn.q_linear.weight": [
+   1152,
+   1152
+  ],
+  "spatial_blocks.0.mlp.fc1.bias": [
+   4608
+  ],
+  "spatial_blocks.0.mlp.fc1.weight": [
+   4608,
+   1152
+  ],
+  "spatial_blocks.0.mlp.fc2.bias": [
+   1152
+  ],
+  "spatial_blocks.0.mlp.fc2.weight": [
+   1152,
+   4608
+  ],
+  "spatial_blocks.0.scale_shift_table": [
+   6,
+   1152
+  ],
+  "spatial_blocks.27.attn.k_norm.weight": [
+   72
+  ],
+  "spatial_blocks.27.attn.proj.bias": [
+   1152
+  ],
+  "spatial_blocks.27.attn.proj.weight": [
+   1152,
+   1152
+  ],
+  "spatial_blocks.27.attn.q_norm.weight": [
+   72
+  ],
+  "spatial_blocks.27.attn.qkv.bias": [
+   3456
+  ],
+  "spatial_blocks.27.attn.qkv.weight": [
+   3456,
+   1152
+  ],
+  "spatial_blocks.27.cross_attn.kv_linear.bias": [
+   2304
+  ],
+  "spatial_blocks.27.cross_attn.kv_linear.weight": [
+   2304,
+   1152
+  ],
+  "spatial_blocks.27.cross_attn.proj.bias": [
+   1152
+  ],
+  "spatial_blocks.27.cross_attn.proj.weight": [
+   1152,
+   1152
+  ],
+  "spatial_blocks.27.cross_attn.q_linear.bias": [
+   1152
+  ],
+  "spatial_blocks.27.cross_attn.q_linear.weight": [
+   1152,
+   1152
+  ],
+  "spatial_blocks.27.mlp.fc1.bias": [
+   4608
+  ],
+  "spatial_blocks.27.mlp.fc1.weight": [
+   4608,
+   1152
+  ],
+  "spatial_blocks.27.mlp.fc2.bias": [
+   1152
+  ],
+  "spatial_blocks.27.mlp.fc2.weight": [
+   1152,
+   4608
+  ],
+  "spatial_blocks.27.scale_shift_table": [
+   6,
+   1152
+  ],
+  "t_block.1.bias": [
+   6912
+  ],
+  "t_block.1.weight": [
+   6912,
+   1152
+  ],
+  "t_embedder.mlp.0.bias": [
+   1152
+  ],
+  "t_embedder.mlp.0.weight": [
+   1152,
+   256
+  ],
+  "t_embedder.mlp.2.bias": [
+   1152
+  ],
+  "t_embedder.mlp.2.weight": [
+   1152,
+   1152
+  ],
+  "temporal_blocks.0.attn.k_norm.weight": [
+   72
+  ],
+  "temporal_blocks.0.attn.proj.bias": [
+   1152
+  ],
+  "temporal_blocks.0.attn.proj.weight": [
+   1152,
+   1152
+  ],
+  "temporal_blocks.0.attn.q_norm.weight": [
+   72
+  ],
+  "temporal_blocks.0.attn.qkv.bias": [
+   3456
+  ],
+  "temporal_blocks.0.attn.qkv.weight": [
+   3456,
+   1152
+  ],
+  "temporal_blocks.0.cross_attn.kv_linear.bias": [
+   2304
+  ],
+  "temporal_blocks.0.cross_attn.kv_linear.weight": [
+   2304,
+   1152
+  ],
+  "temporal_blocks.0.cross_attn.proj.bias": [
+   1152
+  ],
+  "temporal_blocks.0.cross_attn.proj.weight": [
+   1152,
+   1152
+  ],
+  "temporal_blocks.0.cross_attn.q_linear.bias": [
+   1152
+  ],
+  "temporal_blocks.0.cross_attn.q_linear.weight": [
+   1152,
+   1152
+  ],
+  "temporal_blocks.0.mlp.fc1.bias": [
+   4608
+  ],
+  "temporal_blocks.0.mlp.fc1.weight": [
+   4608,
+   1152
+  ],
+  "temporal_blocks.0.mlp.fc2.bias": [
+   1152
+  ],
+  "temporal_blocks.0.mlp.fc2.weight": [
+   1152,
+   4608
+  ],
+  "temporal_blocks.0.scale_shift_table": [
+   6,
+   1152
+  ],
+  "temporal_blocks.27.attn.k_norm.weight": [
+   72
+  ],
+  "temporal_blocks.27.attn.proj.bias": [
+   1152
+  ],
+  "temporal_blocks.27.attn.proj.weight": [
+   1152,
+   1152
+  ],
+  "temporal_blocks.27.attn.q_norm.weight": [
+   72
+  ],
+  "temporal_blocks.27.attn.qkv.bias": [
+   3456
+  ],
+  "temporal_blocks.27.attn.qkv.weight": [
+   3456,
+   1152
+  ],
+  "temporal_blocks.27.cross_attn.kv_linear.bias": [
+   2304
+  ],
+  "temporal_blocks.27.cross_attn.kv_linear.weight": [
+   2304,
+   1152
+  ],
+  "temporal_blocks.27.cross_attn.proj.bias": [
+   1152
+  ],
+  "temporal_blocks.27.cross_attn.proj.weight": [
+   1152,
+   1152
+  ],
+  "temporal_blocks.27.cross_attn.q_linear.bias": [
+   1152
+  ],
+  "temporal_blocks.27.cross_attn.q_linear.weight": [
+   1152,
+   1152
+  ],
+  "temporal_blocks.27.mlp.fc1.bias": [
+   4608
+  ],
+  "temporal_blocks.27.mlp.fc1.weight": [
+   4608,
+   1152
+  ],
+  "temporal_blocks.27.mlp.fc2.bias": [
+   1152
+  ],
+  "temporal_blocks.27.mlp.fc2.weight": [
+   1152,
+   4608
+  ],
+  "temporal_blocks.27.scale_shift_table": [
+   6,
+   1152
+  ],
+  "x_embedder.proj.bias": [
+   1152
+  ],
+  "x_embedder.proj.weight": [
+   1152,
+   4,
+   1,
+   2,
+   2
+  ],
+  "y_embedder.y_embedding": [
+   300,
+   4096
+  ],
+  "y_embedder.y_proj.fc1.bias": [
+   1152
+  ],
+  "y_embedder.y_proj.fc1.weight": [
+   1152,
+   4096
+  ],
+  "y_embedder.y_proj.fc2.bias": [
+   1152
+  ],
+  "y_embedder.y_proj.fc2.weight": [
+   1152,
+   1152
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {},
+  "revision": "main",
+  "spec": "hpcai-tech/OpenSora-STDiT-v3",
+  "subfolder": "",
+  "subfolders": null
+ },
+ "torch_dtype": "float32"
+}

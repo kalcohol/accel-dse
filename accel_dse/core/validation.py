@@ -82,5 +82,19 @@ def v2_domain() -> list[dict]:
     eff = flops / 240.0 / 165e12
     return [{"check": "Wan2.1-1.3B 480P DiT FLOP/clip ÷ 240 s ÷ RTX 4090 165 TFLOPS", "value": eff, "lo": 0.4,
              "hi": 1.0, "unit": "×", "ok": 0.4 <= eff <= 1.0,
-             "note": f"{flops / 1e15:.1f} PFLOP per clip (50 steps × CFG 2 × 32,760 tokens); README: ~4 min on a 4090"}]
+             "note": f"{flops / 1e15:.1f} PFLOP per clip (50 steps × CFG 2 × 32,760 tokens); README: ~4 min on a 4090"},
+            _opensora_row()]
+
+
+def _opensora_row() -> dict:
+    """0.42: Open-Sora 1.2 README (Gradio section, 80 GB H100): 720p 4 s takes 130 s end to end (T5 + VAE included).
+    The H100 has 989 TFLOPS dense bf16.  STDiT3 uses factorized spatial / temporal attention as released; if we had
+    modelled full 3D attention the implied utilisation would exceed 100 %, so this row also guards the span model."""
+    r = evaluate(Scenario(model="opensora-stdit3", mem_id=HBM_6600))
+    flops = r.domain_summary()["tflop_per_request"] * 1e12
+    eff = flops / 130.0 / 989e12
+    return {"check": "Open-Sora STDiT3 720p 4s DiT FLOP/clip ÷ 130 s ÷ H100 989 TFLOPS", "value": eff, "lo": 0.05,
+            "hi": 0.6, "unit": "×", "ok": 0.05 <= eff <= 0.6,
+            "note": f"{flops / 1e15:.1f} PFLOP per clip (30 steps × CFG 2 × 108,000 tokens, factorized S/T attention); "
+                    "README: 130 s on one H100 incl. T5 + VAE"}
 

@@ -69,6 +69,7 @@ class Phase:
             prefill: prompt length S; full: every token of the sequence)
     ctx   – context already in the cache per sequence (decode: current length);
             full: conditioning tokens per sequence (cross-attention K/V source)
+    frames, aux – full only: latent frames of the video grid; audio rows packed into the sequence
     ``full`` = one non-autoregressive forward over the whole sequence (DiT denoise step,
     protein encoder): no KV cache, bidirectional attention.
     """
@@ -76,6 +77,8 @@ class Phase:
     batch: int
     q: int = 1
     ctx: int = 0
+    frames: int = 0      # full: latent frames of the video grid (factorized spatial / temporal attention)
+    aux: int = 0         # full: joint audio rows in the sequence (MiniMax-H3)
 
     def __post_init__(self):
         if self.kind not in ("decode", "prefill", "full"):
@@ -363,14 +366,30 @@ def mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) ->
 
 
 # ------------------------------------------------------------------ full (non-autoregressive) forward
+def _prefix(model: ModelSpec) -> int:
+    return model.workload.prefix_tokens if model.workload else 0
+
+
+def _video_rows(model: ModelSpec, ph: Phase) -> int:
+    """Video tokens of the sequence (minus the joint text prefix and the joint audio rows)."""
+    return ph.q - _prefix(model) - ph.aux
+
+
 def _rows(model: ModelSpec, l: Linear, ph: Phase, b: int, sp: int) -> int:
-    """GEMM rows of one rank: tokens are split over sp (Ulysses); conditioning / per-sequence rows are replicated."""
+    """GEMM rows of one rank: tokens are split over sp (Ulysses); conditioning / per-sequence rows are replicated.
+    Stream-specific weights (dual-stream MMDiT, modality io) see only their rows: img = video tokens,
+    txt = the joint text prefix, aud = the joint audio rows."""
     if l.rows == "ctx":
         return b * ph.ctx
     if l.rows == "seq":
         return b
-    pre = model.workload.prefix_tokens if (l.rows == "img" and model.workload) else 0
-    return b * _cdiv(ph.q - pre, sp)
+    if l.rows == "img":
+        return b * _cdiv(_video_rows(model, ph), sp)
+    if l.rows == "txt":
+        return b * _cdiv(_prefix(model), sp)
+    if l.rows == "aud":
+        return b * _cdiv(ph.aux, sp)
+    return b * _cdiv(ph.q, sp)
 
 
 def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, b: int, cross: bool) -> list[Op]:
@@ -379,12 +398,20 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
     cross-attention: local queries over all ``ctx`` keys for every TP-local head (no all-to-all)."""
     ab = _fmt(model.act_fmt).bytes
     heads_tp = _cdiv(core.n_q, sh.tp)
+    groups = 1
     if cross:
         h_loc, nq, nk, tag = heads_tp, _cdiv(ph.q, sh.sp), ph.ctx, "x"
     else:
         h_loc, nq, nk, tag = _cdiv(heads_tp, sh.sp), ph.q, ph.q, ""
+        if core.span != "full" and ph.frames:
+            # factorized ST attention over the video grid: spatial = one group per latent frame (H·W tokens),
+            # temporal = one group per spatial position (T tokens)
+            vid, T = _video_rows(model, ph), ph.frames
+            hw = _cdiv(vid, T)
+            groups, nq = (T, hw) if core.span == "spatial" else (hw, T)
+            nk = nq
     causal = 0.5 if core.causal else 1.0
-    cnt = b * h_loc
+    cnt = b * h_loc * groups
     ops = [Op(tag + "qk", "attn", li, m=nq, k=core.qk_dim, n=nk, count=cnt, causal=causal,
               act_bytes=cnt * nq * core.qk_dim * ab, stream=True, orient=True),
            Op(tag + "pv", "attn", li, m=nq, k=nk, n=core.v_dim, count=cnt, causal=causal,
@@ -416,7 +443,7 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
 
     ops += [lin("attn", l, "attn") for l in L.attn_linears]
     ops += _full_attn(model, li, L.core, ph, sh, b, cross=False)
-    if tp > 1:
+    if tp > 1 and not L.fused_out:
         ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
     if L.cross is not None:
         ops.append(Op("cross_norm", "vector", li, vec=t * h * 4))
@@ -426,7 +453,7 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
             ops.append(Op("cross_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
     ops.append(Op("ffn_norm", "vector", li, vec=t * h * (4 + mod)))
     ops += [lin("mlp", l, "mlp") for l in L.ffn_linears]
-    ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))     # GELU (tanh) 「假设」 8 ops / element
+    ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))     # GELU (tanh) / SwiGLU 「假设」 8 ops / element
     if tp > 1:
         ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
     ops.append(Op("residual", "vector", li, vec=t * h * (2 + (2 if model.adaln else 0))))
@@ -450,7 +477,7 @@ def full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
     for l in (model.io_pre if side == "pre" else model.io_post):
         k, n = _lin_local(l, sh.tp)
         m = _rows(model, l, ph, b, sh.sp)
-        ops.append(gemm(model, "io." + l.name, li, m, k, n, "io", stream=True))
+        ops.append(gemm(model, "io." + l.name, li, m, k, n, l.role or "io", stream=True))
         if sh.tp > 1:
             ops.append(Op("io_allgather", "comm", li, comm_kind="allgather", comm_group=sh.tp, comm_bytes=m * n * ab))
     if side == "post" and model.vocab:     # MLM logits for every token (tied decoder)

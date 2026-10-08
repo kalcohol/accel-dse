@@ -73,7 +73,9 @@ def cmd_eval(a) -> dict:
         w = g["workload"]
         if g["unit"] == "frame":
             print(f"video {w['width']}x{w['height']} {w['frames']} frames, {w['steps']} steps x CFG {w['cfg']}, "
-                  f"{w['seq_tokens']} tokens/forward")
+                  f"{w['seq_tokens']} tokens/forward"
+                  + (f" (incl. {w['audio_tokens']} audio)" if w.get("audio_tokens") else "")
+                  + (" [factorized S/T attention]" if w.get("attention") == "factorized" else ""))
             print(f"clip {g['clip_s']:.1f} s   {g['s_per_frame']:.2f} s/frame   step {g['step_ms']:.0f} ms   "
                   f"{g['frames_per_s_card']:.3g} frames/s/card   SLO {'OK' if s['slo_ok'] else 'over'}")
         else:

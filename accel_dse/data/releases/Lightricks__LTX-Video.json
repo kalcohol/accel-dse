@@ -1,0 +1,328 @@
+{
+ "bytes_llm": 7693541888,
+ "bytes_mtp": 0,
+ "bytes_total": 7693541888,
+ "config": {
+  "_class_name": "LTXVideoTransformer3DModel",
+  "_diffusers_version": "0.32.0.dev0",
+  "activation_fn": "gelu-approximate",
+  "attention_bias": true,
+  "attention_head_dim": 64,
+  "attention_out_bias": true,
+  "caption_channels": 4096,
+  "cross_attention_dim": 2048,
+  "in_channels": 128,
+  "norm_elementwise_affine": false,
+  "norm_eps": 1e-06,
+  "num_attention_heads": 32,
+  "num_layers": 28,
+  "out_channels": 128,
+  "patch_size": 1,
+  "patch_size_t": 1,
+  "qk_norm": "rms_norm_across_heads"
+ },
+ "domain": "video",
+ "fetched": "2026-10-09",
+ "n_tensors": 715,
+ "params_llm": 1923385472,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "Lightricks/LTX-Video",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 3759931392,
+    "params": 939982848
+   }
+  },
+  "cond": {
+   "fp32": {
+    "bytes": 171343872,
+    "params": 42835968
+   }
+  },
+  "io": {
+   "fp32": {
+    "bytes": 2105856,
+    "params": 526464
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 3759243264,
+    "params": 939810816
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 917504,
+    "params": 229376
+   }
+  }
+ },
+ "shapes": {
+  "caption_projection.linear_1.bias": [
+   2048
+  ],
+  "caption_projection.linear_1.weight": [
+   2048,
+   4096
+  ],
+  "caption_projection.linear_2.bias": [
+   2048
+  ],
+  "caption_projection.linear_2.weight": [
+   2048,
+   2048
+  ],
+  "proj_in.bias": [
+   2048
+  ],
+  "proj_in.weight": [
+   2048,
+   128
+  ],
+  "proj_out.bias": [
+   128
+  ],
+  "proj_out.weight": [
+   128,
+   2048
+  ],
+  "scale_shift_table": [
+   2,
+   2048
+  ],
+  "time_embed.emb.timestep_embedder.linear_1.bias": [
+   2048
+  ],
+  "time_embed.emb.timestep_embedder.linear_1.weight": [
+   2048,
+   256
+  ],
+  "time_embed.emb.timestep_embedder.linear_2.bias": [
+   2048
+  ],
+  "time_embed.emb.timestep_embedder.linear_2.weight": [
+   2048,
+   2048
+  ],
+  "time_embed.linear.bias": [
+   12288
+  ],
+  "time_embed.linear.weight": [
+   12288,
+   2048
+  ],
+  "transformer_blocks.0.attn1.norm_k.weight": [
+   2048
+  ],
+  "transformer_blocks.0.attn1.norm_q.weight": [
+   2048
+  ],
+  "transformer_blocks.0.attn1.to_k.bias": [
+   2048
+  ],
+  "transformer_blocks.0.attn1.to_k.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.0.attn1.to_out.0.bias": [
+   2048
+  ],
+  "transformer_blocks.0.attn1.to_out.0.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.0.attn1.to_q.bias": [
+   2048
+  ],
+  "transformer_blocks.0.attn1.to_q.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.0.attn1.to_v.bias": [
+   2048
+  ],
+  "transformer_blocks.0.attn1.to_v.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.0.attn2.norm_k.weight": [
+   2048
+  ],
+  "transformer_blocks.0.attn2.norm_q.weight": [
+   2048
+  ],
+  "transformer_blocks.0.attn2.to_k.bias": [
+   2048
+  ],
+  "transformer_blocks.0.attn2.to_k.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.0.attn2.to_out.0.bias": [
+   2048
+  ],
+  "transformer_blocks.0.attn2.to_out.0.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.0.attn2.to_q.bias": [
+   2048
+  ],
+  "transformer_blocks.0.attn2.to_q.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.0.attn2.to_v.bias": [
+   2048
+  ],
+  "transformer_blocks.0.attn2.to_v.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.0.ff.net.0.proj.bias": [
+   8192
+  ],
+  "transformer_blocks.0.ff.net.0.proj.weight": [
+   8192,
+   2048
+  ],
+  "transformer_blocks.0.ff.net.2.bias": [
+   2048
+  ],
+  "transformer_blocks.0.ff.net.2.weight": [
+   2048,
+   8192
+  ],
+  "transformer_blocks.0.scale_shift_table": [
+   6,
+   2048
+  ],
+  "transformer_blocks.27.attn1.norm_k.weight": [
+   2048
+  ],
+  "transformer_blocks.27.attn1.norm_q.weight": [
+   2048
+  ],
+  "transformer_blocks.27.attn1.to_k.bias": [
+   2048
+  ],
+  "transformer_blocks.27.attn1.to_k.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.27.attn1.to_out.0.bias": [
+   2048
+  ],
+  "transformer_blocks.27.attn1.to_out.0.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.27.attn1.to_q.bias": [
+   2048
+  ],
+  "transformer_blocks.27.attn1.to_q.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.27.attn1.to_v.bias": [
+   2048
+  ],
+  "transformer_blocks.27.attn1.to_v.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.27.attn2.norm_k.weight": [
+   2048
+  ],
+  "transformer_blocks.27.attn2.norm_q.weight": [
+   2048
+  ],
+  "transformer_blocks.27.attn2.to_k.bias": [
+   2048
+  ],
+  "transformer_blocks.27.attn2.to_k.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.27.attn2.to_out.0.bias": [
+   2048
+  ],
+  "transformer_blocks.27.attn2.to_out.0.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.27.attn2.to_q.bias": [
+   2048
+  ],
+  "transformer_blocks.27.attn2.to_q.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.27.attn2.to_v.bias": [
+   2048
+  ],
+  "transformer_blocks.27.attn2.to_v.weight": [
+   2048,
+   2048
+  ],
+  "transformer_blocks.27.ff.net.0.proj.bias": [
+   8192
+  ],
+  "transformer_blocks.27.ff.net.0.proj.weight": [
+   8192,
+   2048
+  ],
+  "transformer_blocks.27.ff.net.2.bias": [
+   2048
+  ],
+  "transformer_blocks.27.ff.net.2.weight": [
+   2048,
+   8192
+  ],
+  "transformer_blocks.27.scale_shift_table": [
+   6,
+   2048
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "ltx-video-2b-v0.9.1.safetensors": 5716863844,
+   "ltx-video-2b-v0.9.5.safetensors": 6340729500,
+   "ltx-video-2b-v0.9.safetensors": 9370442108,
+   "ltxv-13b-0.9.7-dev-fp8.safetensors": 15694279916,
+   "ltxv-13b-0.9.7-dev.safetensors": 28579183340,
+   "ltxv-13b-0.9.7-distilled-fp8.safetensors": 15694280020,
+   "ltxv-13b-0.9.7-distilled-lora128.safetensors": 1325666536,
+   "ltxv-13b-0.9.7-distilled.safetensors": 28579183444,
+   "ltxv-13b-0.9.8-dev-fp8.safetensors": 15694279916,
+   "ltxv-13b-0.9.8-dev.safetensors": 28579183340,
+   "ltxv-13b-0.9.8-distilled-fp8.safetensors": 15694280140,
+   "ltxv-13b-0.9.8-distilled.safetensors": 28579183564,
+   "ltxv-2b-0.9.6-dev-04-25.safetensors": 6340743924,
+   "ltxv-2b-0.9.6-distilled-04-25.safetensors": 6340744028,
+   "ltxv-2b-0.9.8-distilled-fp8.safetensors": 4461695684,
+   "ltxv-2b-0.9.8-distilled.safetensors": 6340744492,
+   "ltxv-spatial-upscaler-0.9.7.safetensors": 505024432,
+   "ltxv-spatial-upscaler-0.9.8.safetensors": 505024432,
+   "ltxv-temporal-upscaler-0.9.7.safetensors": 523894768,
+   "ltxv-temporal-upscaler-0.9.8.safetensors": 523894768,
+   "text_encoder/model-00001-of-00004.safetensors": 4989319680,
+   "text_encoder/model-00002-of-00004.safetensors": 4999830656,
+   "text_encoder/model-00003-of-00004.safetensors": 4865612720,
+   "text_encoder/model-00004-of-00004.safetensors": 4194506688,
+   "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": 4939189200,
+   "transformer/diffusion_pytorch_model-00002-of-00002.safetensors": 2754433648,
+   "vae/diffusion_pytorch_model.safetensors": 1676798532
+  },
+  "revision": "main",
+  "spec": "Lightricks/LTX-Video:transformer",
+  "subfolder": "transformer",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}

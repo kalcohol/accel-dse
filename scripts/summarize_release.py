@@ -49,11 +49,14 @@ ROLE = [
 # Non-LLM releases (video DiT denoisers, protein language models): domain role tables.  Order matters.
 ROLE_DOMAIN = {
     "video": [
-        ("cond", r"(modulation|time_embedding|time_projection|norm\d\.linear|norm_out\.linear|text_embedding|text_proj)"),
-        ("norm", r"(norm_[qk]\.|norm\d?\.(weight|bias)$|norm_final|norm_out\.norm|\.norm\.(weight|bias)$)"),
-        ("attn", r"(self_attn|cross_attn|attn1|attn2)"),
-        ("mlp", r"(\.ffn\.|\.ff\.)"),
-        ("io", r"(patch_embed|proj_out|^head\.)"),
+        ("cond", r"(modulation|time_embedding|time_projection|norm\d\.linear|norm_out\.linear|text_embedding|text_proj|"
+                 r"time_text_embed|time_embed|context_embedder|caption_proj|t_block|t_embedder|fps_embedder|y_embedder|"
+                 r"adaln_proj|norm1_context\.linear|\.norm\.linear|scale_shift_table|token_refiner)"),
+        ("norm", r"(norm_[qk]\.|norm_added_[qk]|[qk]_norm\.|norm\d?\.(weight|bias)$|norm_final|norm_out\.norm|"
+                 r"\.norm\.(weight|bias)$)"),
+        ("attn", r"(self_attn|cross_attn|attn1|attn2|\.attn\.)"),
+        ("mlp", r"(\.ffn\.|\.ff\.|ff_context|\.mlp\.|proj_mlp|single_transformer_blocks\.\d+\.proj_out)"),
+        ("io", r"(patch_embed|^proj_out|^head\.|x_embedder|^proj_in|audio_proj|final_layer\.linear)"),
     ],
     "protein": [
         ("buffer", r"(inv_freq$|position_ids$)"),
@@ -71,7 +74,9 @@ BLOCK_RE = re.compile(r"(blocks|layers|layer|transformer_blocks)\.(\d+)\.")
 
 def domain_of(cfg: dict) -> str:
     cls = cfg.get("_class_name") or ""
-    if cls in ("WanModel", "WanTransformer3DModel", "CogVideoXTransformer3DModel"):
+    if cls in ("WanModel", "WanTransformer3DModel", "CogVideoXTransformer3DModel", "HunyuanVideoTransformer3DModel",
+               "LTXVideoTransformer3DModel", "MochiTransformer3DModel", "MiniMaxH3Transformer3DModel") \
+            or cfg.get("model_type") == "STDiT3":
         return "video"
     if cfg.get("model_type") == "esm":
         return "protein"
@@ -115,8 +120,13 @@ def summarize(repo: str) -> dict:
     qc = cfg.get("quantization_config") or tc.get("quantization_config")
     fp4 = _fp4_hint(qc) or "fp4" in json.dumps(cfg.get("expert_dtype") or tc.get("expert_dtype") or "")
     tensors = {}
-    for h in headers.values():
+    subs = sorted({k.split("/", 1)[0] for k in headers if "/" in k})
+    for key, h in headers.items():
+        pre = ""
+        if subs and key.split("/", 1)[0] != subs[0] and "/" in key:
+            pre = key.split("/", 1)[0] + "::"       # 2nd+ denoiser of a multi-expert release (Wan2.2 A14B)
         for name, m in h.items():
+            name = pre + name if name != "__metadata__" else name
             if name != "__metadata__":
                 n = 1
                 for s in m["shape"]:
@@ -177,8 +187,18 @@ def summarize(repo: str) -> dict:
     if domain != "llm":
         # tensor shapes outside the repeated blocks + of block 0 (io / conditioning dims come from the header)
         extra["domain"] = domain
-        extra["shapes"] = {n: t[1] for n, t in sorted(tensors.items())
-                           if not BLOCK_RE.search(n) or BLOCK_RE.search(n).group(2) == "0"}
+        last: dict[str, int] = {}
+        for n in tensors:
+            m_ = BLOCK_RE.search(n)
+            if m_ and "::" not in n:
+                last[n[:m_.start(2)]] = max(last.get(n[:m_.start(2)], 0), int(m_.group(2)))
+        # block 0 and the last block of every stack (the last block may differ: Mochi context_pre_only)
+        extra["shapes"] = {n: t[1] for n, t in sorted(tensors.items()) if "::" not in n and
+                           (not BLOCK_RE.search(n) or int(BLOCK_RE.search(n).group(2)) in
+                            (0, last.get(n[:BLOCK_RE.search(n).start(2)], 0)))}
+        if subs:
+            extra["experts"] = {s_: sum(t[2] for n, t in tensors.items() if (n.startswith(s_ + "::") if i else "::" not in n))
+                                for i, s_ in enumerate(subs)}
         src = d / "source.json"
         if src.exists():
             extra["source"] = json.loads(src.read_text())

@@ -66,3 +66,10 @@ zai-org/CogVideoX-2b:transformer
 zai-org/CogVideoX-5b:transformer
 facebook/esm2_t33_650M_UR50D
 facebook/esm2_t36_3B_UR50D@refs/pr/2
+# 0.42: remaining video DiT denoisers
+Wan-AI/Wan2.2-T2V-A14B:high_noise_model+low_noise_model
+hunyuanvideo-community/HunyuanVideo:transformer
+Lightricks/LTX-Video:transformer
+genmo/mochi-1-preview:transformer
+hpcai-tech/OpenSora-STDiT-v3
+MiniMaxAI/MiniMax-H3:transformer
