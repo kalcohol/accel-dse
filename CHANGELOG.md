@@ -3,6 +3,35 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.55.0] - 2026-10-09
+
+收敛 0.54 V4 找出的合并模式尾部误差，加 decode KV 容量策略（可选），把 V4 扩到 MoE 和多卡 TP。默认（合并、非 PD）结果（1356 项指纹）与 0.54.0 逐字节一致；PD 报告里的排队数值有变化，见下。
+
+### 新增
+- **KV 容量排队 / 抢占**（默认关）：`pd.kv_policy` = `wait`（为 prompt + 全部输出预留 KV，准入等待）/ `recompute`（只按当前上下文准入，超出时抢占最年轻的请求并重新 prefill），`pd.kv_capacity_GB`（不给则取剩余 DRAM）。只有 KV 槽位 < batch 时才生效。闭式（批链换槽位数、Little + Lee–Longton 准入等待、Rice 抢占率 + 重算停顿）与 DES 都实现了。每个模式输出 `kv_cap`；CLI `--pd-kv-policy --pd-kv-capacity-GB`；Web「KV 策略」「KV 容量 GB」。准入等待单独报告，不计入 TTFT / TPOT / SLO goodput。
+- **V4 场景族**：`moe30b`（Qwen3-30B-A3B，TP2 · EP2）、`tp4_32b`（Qwen3-32B，每副本 TP4 跨 4 卡），各 6 点，与 dense8b（18 点）合计 30 点。`v4_scenario(..., family=)`、`V4_FAMILIES`。
+- **多 seed 验证**：`pdsim.compare(seeds=…, slo_tol=…)` 对 DES 指标和 SLO 速率取平均，并报告 `noise`（seed 间标准差 / 均值）。网格默认 3 seed × 3000 请求，`scripts/v4_serving.py --seeds --jobs --families`（多进程）。摘要按场景族和全部给出，附 `noise_median`；`V4_BANDS` 加 TPOT 均值 ±10 %。
+- `queueing.md1_cdf`（Erlang 精确 M/D/1 等待 CDF）、`queueing.mg1_mix_sum_quantile`（准静态混合 M/G/1 + 休假）；建模说明 §18.5；测试 `tests/test_core_055.py`。
+
+### 修正（只影响 PD 报告，含其中的合并对照）
+- **合并 prefill 优先**：prefill 忙期结束时一批请求同时进入 decode。birth–death 换成批到达链，并按配对系数 κ = 2∫P(O > t)²dt / E[O] 整形批分布，修正同批请求生命周期的相关（运行 batch 方差：链 6.99，DES 7.08；0.54 为 6.30）。
+- **合并分块**：用更新—报酬过程算忙期内的有效成批程度（decode 在忙期内照常推进）；最后一个不满的块按实际比例计（0.54 按整块）。
+- **TPOT p90 窗口因子**：常数 √(2/e) 改为按占用积分自相关时间 τ_int 的 OU 平均因子。
+- **分块 TTFT 尾**：按运行 batch 环境做准静态混合 M/G/1，加纯 decode 迭代的休假。
+- **最长间隔**（PD、分块）：从「看到的 batch 的 0.99 点」改为一生中最大 batch 的分位数（上穿率）。
+- **M/D/1 等待分位数**：6 个服务时间以内用精确 CDF（原渐近式在 ρ ≈ 1 − q 附近偏保守 20–30 %）。
+- 数值变化（§18.1 例子，load 0.8）：
+  - PD：TTFT p50 102 → 94 ms，TPOT p90 14.06 → 14.70 ms，最长间隔 22.8 → 26.5 ms，SLO goodput 410 → 403 tok/s/卡（最佳切分仍为 2 + 6）。
+  - prefill 优先：TPOT 7.45 / 11.14 → 8.22 / 13.35 ms，SLO goodput 442 → 411。
+  - 分块：TTFT p99 330 → 377 ms，TPOT 7.43 / 11.09 → 8.20 / 13.38 ms，最长间隔 23.0 → 30.5 ms，SLO goodput 443 → 411。
+  - CV 0.5 时 prefill 优先最长间隔 528 → 666 ms。
+
+### 误差（30 点 × 3 seed，(闭式 − DES)/DES）
+- TPOT p90 中位：PD 0 %，prefill 优先 −4 %，分块 −4 %（0.54：−5 / −18 / −14 %）；最差 −11 %（0.54：−43 %）。TPOT 均值全部在 ±6 % 内。
+- SLO goodput：−5 % … +3 %。
+- 最长间隔中位 −2 … +5 %，TTFT p90 全部在 ±10 % 内，前缀命中率绝对差 < 0.01。
+- 没做：PD prefill 池内分块（FCFS 下没有 TTFT 收益，评估器也缺独立的块代价）、swap 抢占。剩余缺口（CV 下 TTFT p50 落在长度分档边界、CV 1 高负载 PD TTFT p99 +30 %、recompute 抢占次数低估、准入等待不进 SLO）见 MODEL.md §18.5。
+
 ## [0.54.0] - 2026-10-09
 
 验证版本，不加新功能：新增请求级离散事件仿真（DES），用它量化 PD 闭式排队模型的误差（V4 服务验证），并修正 DES 揭示的几处闭式问题。默认（合并、非 PD）结果（1356 项指纹）与 0.53.0 逐字节一致。PD 报告里的排队数值有变化，见下。

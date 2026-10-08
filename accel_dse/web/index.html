@@ -212,6 +212,11 @@
         <label class="inline" title="把两池的布局也当设计变量：每副本 1/2/4/…/64 卡的所有布局 × 同总卡数切分（较慢）"><input type="checkbox" id="pd-search_layouts"> 搜索池布局</label>
         <label class="inline" title="与「搜索池布局」一起用：每种 decode 布局再在 B/2、B、2B、4B 中选满足 TPOT SLO（满批流体 TPOT）的最高吞吐 batch（异构内存时更有用）"><input type="checkbox" id="pd-search_decode_batch"> 搜索 decode batch</label>
         <label class="inline" title="0.54：在闭式排队模型之外再跑请求级离散事件仿真（DES，慢几秒），用同一套逐步代价给出模拟的尾部分位数并与闭式对照；默认关"><input type="checkbox" id="pd-simulate"> DES 仿真尾部</label>
+        <div class="small muted">decode KV 容量（0.55）<span class="tag assume">假设</span> 默认关 = KV 不限；容量能放下整批时不生效</div>
+        <div class="row3">
+          <label title="KV 放不下时的准入策略：wait = 按 prompt + 输出 预留，放不下就排队等待准入；recompute = 按当前占用乐观准入，增长溢出时抢占最年轻的序列，之后重算其 prompt + 已生成部分（vLLM recompute）">KV 策略<select id="pd-kv_policy"><option value="off">关</option><option value="wait">wait（预留等待）</option><option value="recompute">recompute（抢占重算）</option></select></label>
+          <label title="每个 decode 副本（及合并副本）的 KV 容量 GB；空 = 权重与运行时预留之后剩余的 DRAM">KV GB / 副本<input type="number" id="pd-kv_capacity_GB" min="0" step="10"></label>
+        </div>
         <div class="small muted">前缀缓存容量（0.53）<span class="tag assume">假设</span> 命中率由容量 / 工作集推出（LRU，Che 近似）；上面「前缀命中率」非 0 时以它为准</div>
         <div class="row3">
           <label title="共享前缀长度（系统提示词 / few-shot 模板 / 多轮历史），token；0 / 空 = 不用容量模型">前缀长度 tok<input type="number" id="pd-prefix_len" min="0" step="512"></label>

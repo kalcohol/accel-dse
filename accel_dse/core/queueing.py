@@ -54,8 +54,37 @@ def md1(lam: float, tau: float, qs: tuple = (0.5, 0.9, 0.99)) -> dict:
     c = (1 - rho) / (rho * math.exp(x) - 1)
     out = {"rho": rho, "stable": True, "mean": rho * tau / (2 * (1 - rho)), "p_wait": rho}
     for q in qs:
-        out[f"p{_pct(q)}"] = 0.0 if rho <= 1 - q else max(0.0, math.log(c / (1 - q)) / theta)
+        if rho <= 1 - q:
+            out[f"p{_pct(q)}"] = 0.0
+        elif md1_cdf(lam, tau, MD1_EXACT_SPAN * tau) >= q:
+            # 0.55: near the wait atom the asymptotic c·e^{−θx} is poor (V4: +20 … +30 % TTFT p90 at ρ ≈ 1 − q);
+            # use Erlang's exact CDF there
+            lo, hi = 0.0, MD1_EXACT_SPAN * tau
+            for _ in range(60):
+                mid = 0.5 * (lo + hi)
+                if md1_cdf(lam, tau, mid) >= q:
+                    hi = mid
+                else:
+                    lo = mid
+            out[f"p{_pct(q)}"] = hi
+        else:
+            out[f"p{_pct(q)}"] = max(0.0, math.log(c / (1 - q)) / theta)
     return out
+
+
+MD1_EXACT_SPAN = 6      # exact CDF used for waits ≤ 6 service times (alternating sum stays well-conditioned)
+
+
+def md1_cdf(lam: float, tau: float, x: float) -> float:
+    """Erlang's exact M/D/1 waiting-time CDF: P(W ≤ x) = (1 − ρ)·Σ_{k=0}^{⌊x/τ⌋} [λ(kτ − x)]^k / k! · e^{−λ(kτ − x)}."""
+    rho = lam * tau
+    if x < 0:
+        return 0.0
+    acc = 0.0
+    for k in range(int(x // tau) + 1):
+        u = lam * (k * tau - x)
+        acc += (u ** k) / math.factorial(k) * math.exp(-u)
+    return min(1.0, max(0.0, (1 - rho) * acc))
 
 
 def mg1(lam: float, taus, weights, qs: tuple = (0.5, 0.9, 0.99)) -> dict:
@@ -148,6 +177,90 @@ def mg1_sum_quantile(lam: float, taus, weights, lats, q: float) -> float | None:
         if b - a < 1e-12 * max(b, 1e-12):
             break
     return b
+
+def _cl_params(lam: float, pts) -> tuple[float, float, float] | None:
+    """(ρ, θ, c) of the M/G/1 Cramér–Lundberg wait tail P(W > x) ≈ c·e^{−θx} for service law [(w, τ)]."""
+    m1 = sum(w * t for w, t in pts)
+    rho = lam * m1
+    if rho >= 1 or m1 <= 0:
+        return None
+    tmax = max(t for _, t in pts)
+
+    def f(th: float) -> float:
+        return lam * (sum(w * math.exp(th * t) for w, t in pts) - 1) - th
+    lo, hi = 0.0, 1.0 / tmax
+    while f(hi) <= 0:
+        lo, hi = hi, hi * 2
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if f(mid) > 0:
+            hi = mid
+        else:
+            lo = mid
+        if hi - lo < 1e-13 * hi:
+            break
+    th = 0.5 * (lo + hi)
+    return rho, th, (1 - rho) / (lam * sum(w * t * math.exp(th * t) for w, t in pts) - 1)
+
+
+def mg1_mix_sum_quantile(lam: float, bins, q: float) -> float | None:
+    """q-quantile of TTFT = W + L under a slowly drifting server speed (0.55, colocated chunked prefill).
+
+    ``bins = [(w_b, [(w_i, τ_bi, l_bi)])]`` or ``(w_b, pts, v_b)`` with a vacation length v_b (multiple vacations of
+    fixed length: the server runs a decode-only iteration whenever the prompt queue is empty, so by Fuhrmann–Cooper
+    W = W_M/G/1 ⊕ Uniform(0, v_b)).  In environment b (the running decode batch, which drifts on a time scale
+    much longer than a prefill busy period) the queue is M/G/1 with service law τ_b·; quasi-static mixture
+    P(T > t) = Σ_b w_b Σ_i w_i·P(W_b > t − l_bi).  Per environment: exact M/D/1 (Erlang) for one service value
+    within 6τ, else the Cramér–Lundberg tail.  None if some environment is unstable."""
+    envs = []
+    for bn in bins:
+        wb, pts = bn[0], bn[1]
+        vac = bn[2] if len(bn) > 2 else 0.0
+        if wb <= 0:
+            continue
+        tot = sum(w for w, _, _ in pts)
+        pts = [(w / tot, t, l) for w, t, l in pts if w > 0]
+        cl = _cl_params(lam, [(w, t) for w, t, _ in pts])
+        if cl is None:
+            return None
+        single = pts[0][1] if len({t for _, t, _ in pts}) == 1 else None
+        envs.append((wb, pts, cl, single, vac))
+    if not envs:
+        return None
+    wtot = sum(e[0] for e in envs)
+    U = 8                                             # midpoints of the uniform vacation residual
+
+    def sw(x: float, cl, single) -> float:
+        if x < 0:
+            return 1.0
+        rho, th, c = cl
+        if single is not None and x <= MD1_EXACT_SPAN * single:
+            return 1.0 - md1_cdf(lam, single, x)
+        return min(rho, c * math.exp(-th * x))
+
+    def surv(t: float) -> float:
+        acc = 0.0
+        for wb, pts, cl, sg, v in envs:
+            if v > 0:
+                acc += wb * sum(w * sw(t - l - v * (j + 0.5) / U, cl, sg) for w, _, l in pts for j in range(U)) / U
+            else:
+                acc += wb * sum(w * sw(t - l, cl, sg) for w, _, l in pts)
+        return acc / wtot
+    a = min(l for _, pts, _, _, _ in envs for _, _, l in pts)
+    b = max(l for _, pts, _, _, _ in envs for _, _, l in pts) + max(e[4] for e in envs) + max(
+        max(0.0, math.log(max(cl[2], 1e-300) / (1 - q)) / cl[1]) for _, _, cl, _, _ in envs) + 1e-9
+    if surv(a) <= 1 - q:
+        return a
+    for _ in range(200):
+        mid = 0.5 * (a + b)
+        if surv(mid) > 1 - q:
+            a = mid
+        else:
+            b = mid
+        if b - a < 1e-12 * max(b, 1e-12):
+            break
+    return b
+
 
 def dquantile(pts, q: float) -> float:
     """q-quantile of a discrete distribution [(weight, value)] (weights need not be normalised)."""

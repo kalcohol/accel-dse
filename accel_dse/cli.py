@@ -164,6 +164,11 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="PD (0.53, with --pd-search-layouts): also search each decode layout's batch (B/2…4B, TPOT SLO)")
     p.add_argument("--pd-sim", dest="pd_sim", action="store_true",
                    help="PD (0.54): also run the request-level DES and print simulated tails vs the closed form (slower)")
+    p.add_argument("--pd-kv-policy", dest="pd_kv_policy", choices=("off", "wait", "recompute"), default=None,
+                   help="PD (0.55): decode KV capacity — wait (reserve prompt+output, admission waits) | recompute "
+                        "(optimistic admission, preempt youngest + re-prefill); default off")
+    p.add_argument("--pd-kv-capacity-GB", dest="pd_kv_capacity_GB", type=float, default=None,
+                   help="PD (0.55): KV capacity per decode replica, GB (default: DRAM left after weights)")
     for flag, dest, hlp in _BUDGET_FLAGS:
         p.add_argument(flag, dest=dest, type=float, default=None, help=f"budget (0.49, user-supplied): {hlp}")
     p.add_argument("--json", action="store_true", help="print raw JSON")
@@ -244,7 +249,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                         ("prompt_cv", "pd_prompt_cv"), ("out_cv", "pd_out_cv"), ("prefix_hit", "pd_prefix_hit"),
                         ("prefill_chip", "pd_prefill_chip"), ("prefill_mem_id", "pd_prefill_mem"),
                         ("prefix_len", "pd_prefix_len"), ("prefix_count", "pd_prefix_count"),
-                        ("prefix_zipf", "pd_prefix_zipf"), ("prefix_cache_GB", "pd_prefix_cache_GB")):
+                        ("prefix_zipf", "pd_prefix_zipf"), ("prefix_cache_GB", "pd_prefix_cache_GB"),
+                        ("kv_policy", "pd_kv_policy"), ("kv_capacity_GB", "pd_kv_capacity_GB")):
             if getattr(a, dest, None) is not None:
                 sc["pd"][k] = getattr(a, dest)
         if getattr(a, "pd_mix", None):
@@ -418,6 +424,18 @@ def cmd_eval(a) -> dict:
                       f"TPOT mean/p90/p99 {x['tpot_mean_ms']:.1f}/{x['tpot_p90_ms']:.1f}/{x['tpot_p99_ms']:.1f} ms  "
                       f"max gap {x['itl_max_ms']:.0f} ms  SLO goodput {x['slo_goodput_per_card']:.1f} tok/s/card  "
                       f"stable ≤ {x['stable_rate_rps']:.3g} req/s")
+            kvs = [(k, x["kv_cap"]) for k, x in q["modes"].items() if x.get("kv_cap")]
+            if kvs:
+                c0 = kvs[0][1]
+                print(f"  decode KV capacity 「假设」 {c0['policy']}: {c0['capacity_tokens']} tok/replica "
+                      f"({c0['source']}), mean running footprint {c0['footprint_tokens']:.0f} tok → "
+                      f"{c0['slots_kv']} slots" + (" (binds; admission wait is reported here, not added to TTFT / TPOT / "
+                                                "SLO goodput)" if c0["binds"] else " (does not bind)"))
+                for k, c in kvs:
+                    if c["binds"] and q["modes"][k].get("stable"):
+                        print(f"    {names[k]:<28} admission wait {c.get('slot_wait_mean_ms', 0):.0f} ms"
+                              + (f"  preemptions/req {c.get('preempt_per_req', 0):.3f}  re-prefill "
+                                 f"{c.get('recompute_ms', 0):.0f} ms" if c["policy"] == "recompute" else ""))
             if b := q.get("pd_slo_best_split"):
                 print(f"    PD best split under SLO: {b['prefill_cards']}P+{b['decode_cards']}D "
                       f"{b['slo_goodput_per_card']:.1f} tok/s/card")

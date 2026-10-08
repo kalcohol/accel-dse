@@ -162,6 +162,13 @@ class PDConfig:
     prefix_affinity: bool = False   # prefix-aware routing: replicas partition the prefixes (aggregate capacity)
     search_decode_batch: bool = False   # layout search (0.53): also pick each decode layout's batch (B/2 … 4B, TPOT SLO)
     simulate: bool = False          # 0.54: also run the request-level DES (core/pdsim) and attach per-mode tails 「假设」
+    # 0.55 — decode KV capacity (all 「假设」; default off = KV never binds, the 0.54 behaviour).  Admission into the
+    # running decode batch: "wait" reserves prompt + output tokens and waits FCFS when they don't fit; "recompute" admits
+    # when the current footprint fits and, when growth overflows, preempts the youngest sequence (vLLM recompute: it
+    # re-prefills its prompt + generated tokens on that replica later).  Applies to the PD decode pool and to both
+    # colocated modes; inactive when the capacity holds the full batch anyway.
+    kv_policy: str = "off"
+    kv_capacity_GB: float | None = None    # KV capacity per decode replica; None = DRAM left after weights + runtime
 
     def __post_init__(self):
         for k in ("prefill_cards", "decode_cards"):
@@ -226,6 +233,12 @@ class PDConfig:
         if not isinstance(self.prefix_affinity, bool) or not isinstance(self.search_decode_batch, bool) \
                 or not isinstance(self.simulate, bool):
             raise ValueError("pd.prefix_affinity / pd.search_decode_batch / pd.simulate must be booleans")
+        if self.kv_policy not in ("off", "wait", "recompute"):
+            raise ValueError("pd.kv_policy must be off | wait | recompute")
+        if self.kv_capacity_GB is not None and (isinstance(self.kv_capacity_GB, bool)
+                                                or not isinstance(self.kv_capacity_GB, (int, float))
+                                                or not 0 < self.kv_capacity_GB < 1e7):
+            raise ValueError("pd.kv_capacity_GB must be > 0 or null")
 
 
 @dataclass(frozen=True)

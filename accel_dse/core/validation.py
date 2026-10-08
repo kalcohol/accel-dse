@@ -128,55 +128,106 @@ V4_LOADS = (0.3, 0.6, 0.85)
 V4_CVS = (0.0, 0.5, 1.0)
 V4_MODES = ("pd", "coloc_prefill_first", "coloc_chunked")
 # tolerance bands per metric (|err| ≤ band counts as within band); documented in MODEL.md §18.4
-V4_BANDS = {"ttft_p50": 0.15, "ttft_p90": 0.20, "ttft_p99": 0.30, "tpot_p90": 0.20, "itl_max": 0.30,
+V4_BANDS = {"ttft_p50": 0.15, "ttft_p90": 0.20, "ttft_p99": 0.30, "tpot_mean": 0.10, "tpot_p90": 0.20, "itl_max": 0.30,
             "slo_goodput": 0.20, "prefix_hit": 0.03}
 
 
-def v4_scenario(load: float, cv: float = 0.0, prefix: bool = False) -> Scenario:
+# 0.55 — scenario families (model, layout, prefill cards, decode cards, TTFT / TPOT SLO ms).  dense8b = the 0.54 grid;
+# moe30b = a live MoE (Qwen3-30B-A3B, TP2 × EP2: expert all-to-all on the card link); tp4_32b = a 4-card TP replica
+# (Qwen3-32B, TP4: heavier per-layer all-reduce, 3 colocated / 1 + 2 PD replicas).  All on 1P + HBM3E 6.6 Gbps.
+V4_FAMILIES = {
+    "dense8b": ("qwen3-8b", dict(tp=2), 2, 6, 400, 10),
+    "moe30b": ("qwen3-30b-a3b", dict(tp=2, ep=2), 2, 6, 400, 15),
+    "tp4_32b": ("qwen3-32b", dict(tp=4), 4, 8, 600, 15),
+}
+
+
+def v4_scenario(load: float, cv: float = 0.0, prefix: bool = False, family: str = "dense8b") -> Scenario:
     from .hardware import CHIPS
     from .scenario import PDConfig
-    pd = dict(enabled=True, prefill_layout=Layout(tp=2), prefill_cards=2, decode_cards=6, load=load,
+    model, lay, pc, dc, ttft_slo, tpot_slo = V4_FAMILIES[family]
+    pd = dict(enabled=True, prefill_layout=Layout(**lay), prefill_cards=pc, decode_cards=dc, load=load,
               prompt_cv=cv, out_cv=cv)
     if prefix:
         pd.update(prefix_len=2048, prefix_count=20000)
-    return Scenario(model="qwen3-8b", chip=CHIPS["1P"], mem_id=HBM_6600, layout=Layout(tp=2),
-                    serving=Serving(batch=64, prompt=4096, out_len=512, ttft_slo_ms=400, tpot_slo_ms=10),
+    return Scenario(model=model, chip=CHIPS["1P"], mem_id=HBM_6600, layout=Layout(**lay),
+                    serving=Serving(batch=64, prompt=4096, out_len=512, ttft_slo_ms=ttft_slo, tpot_slo_ms=tpot_slo),
                     pd=PDConfig(**pd))
 
 
 def _summ(rows: list[dict]) -> list[dict]:
     import math
     out = []
-    for mode in V4_MODES:
-        for metric, band in V4_BANDS.items():
-            errs = [r["modes"][mode]["err"].get(metric) for r in rows if mode in r.get("modes", {})]
-            errs = [e for e in errs if e is not None and math.isfinite(e)]
-            if not errs:
-                continue
-            errs.sort()
-            out.append({"mode": mode, "metric": metric, "n": len(errs), "min": errs[0], "median": errs[len(errs) // 2],
-                        "max": errs[-1], "mean_abs": sum(abs(e) for e in errs) / len(errs),
-                        "within_band": sum(abs(e) <= band for e in errs) / len(errs), "band": band})
+    fams = sorted({r.get("family", "dense8b") for r in rows}, key=lambda f: list(V4_FAMILIES).index(f))
+    for fam in [None] + (fams if len(fams) > 1 else []):
+        sel = [r for r in rows if fam is None or r.get("family", "dense8b") == fam]
+        for mode in V4_MODES:
+            for metric, band in V4_BANDS.items():
+                pairs = [(r["modes"][mode]["err"].get(metric), r["modes"][mode].get("noise", {}).get(metric))
+                         for r in sel if mode in r.get("modes", {})]
+                pairs = [(e, nz) for e, nz in pairs if e is not None and math.isfinite(e)]
+                if not pairs:
+                    continue
+                errs = sorted(e for e, _ in pairs)
+                nzs = sorted(nz for _, nz in pairs if nz is not None and math.isfinite(nz))
+                row = {"family": fam or "all", "mode": mode, "metric": metric, "n": len(errs), "min": errs[0],
+                       "median": errs[len(errs) // 2], "max": errs[-1],
+                       "mean_abs": sum(abs(e) for e in errs) / len(errs),
+                       "within_band": sum(abs(e) <= band for e in errs) / len(errs), "band": band}
+                if nzs:
+                    # DES seed-to-seed spread of one run (sd / mean), median over the points
+                    row["noise_median"] = nzs[len(nzs) // 2]
+                out.append(row)
     return out
 
 
-def v4_grid(n_req: int = 1500, slo: bool = False, loads=V4_LOADS, cvs=V4_CVS, prefixes=(False, True),
-            seed: int = 11, progress: bool = False) -> dict:
-    """Full V4 grid (scripts/v4_serving.py; ≈ 2–3 min without --slo)."""
+def _grid_point(args):
+    load, cv, prefix, family, n_req, slo, seeds = args
     from .pdsim import compare
+    r = compare(v4_scenario(load, cv, prefix, family), n_req=n_req, warmup=n_req // 4, seeds=seeds, slo=slo,
+                slo_n=max(600, n_req // 2), slo_tol=0.01)
+    r.update(load=load, cv=cv, prefix=prefix, family=family)
+    return r
+
+
+# 0.55: the two extra families run a reduced grid (load × CV 0 / 1, prefix off)
+V4_EXTRA_GRID = dict(loads=V4_LOADS, cvs=(0.0, 1.0), prefixes=(False,))
+
+
+def v4_grid(n_req: int = 3000, slo: bool = False, loads=V4_LOADS, cvs=V4_CVS, prefixes=(False, True),
+            seed: int = 11, progress: bool = False, seeds: int = 3, families=tuple(V4_FAMILIES),
+            jobs: int = 1) -> dict:
+    """Full V4 grid (scripts/v4_serving.py).  0.55: ``seeds`` independent DES runs per point (metrics averaged,
+    spread reported as ``noise``), the dense8b family on the full grid and the others on V4_EXTRA_GRID; ``jobs``
+    worker processes."""
+    seed_t = tuple(seed + i for i in range(max(1, seeds)))
+    pts = []
+    for fam in families:
+        g = dict(loads=loads, cvs=cvs, prefixes=prefixes) if fam == "dense8b" else V4_EXTRA_GRID
+        for load in g["loads"]:
+            for cv in g["cvs"]:
+                for prefix in g["prefixes"]:
+                    pts.append((load, cv, prefix, fam, n_req, slo, seed_t))
     rows = []
-    for load in loads:
-        for cv in cvs:
-            for prefix in prefixes:
-                r = compare(v4_scenario(load, cv, prefix), n_req=n_req, warmup=n_req // 4, seed=seed, slo=slo,
-                            slo_n=max(600, n_req // 2))
-                r.update(load=load, cv=cv, prefix=prefix)
+
+    def show(r):
+        if progress:
+            print(f"{r['family']} load {r['load']} cv {r['cv']} prefix {int(r['prefix'])}: " + " | ".join(
+                f"{m}: " + " ".join(f"{k} {v:+.2f}" for k, v in x["err"].items())
+                for m, x in r.get("modes", {}).items()), flush=True)
+    if jobs > 1:
+        import multiprocessing as mp
+        with mp.get_context("fork").Pool(jobs) as pool:
+            for r in pool.imap(_grid_point, pts):
                 rows.append(r)
-                if progress:
-                    print(f"load {load} cv {cv} prefix {int(prefix)}: " + " | ".join(
-                        f"{m}: " + " ".join(f"{k} {v:+.2f}" for k, v in x["err"].items())
-                        for m, x in r.get("modes", {}).items()), flush=True)
-    return {"rows": rows, "summary": _summ(rows), "n_req": n_req, "seed": seed, "bands": V4_BANDS}
+                show(r)
+    else:
+        for a in pts:
+            r = _grid_point(a)
+            rows.append(r)
+            show(r)
+    return {"rows": rows, "summary": _summ(rows), "n_req": n_req, "seed": seed, "seeds": list(seed_t),
+            "families": {f: V4_FAMILIES[f][0] for f in families}, "bands": V4_BANDS}
 
 
 def v4_serving(n_req: int = 1000) -> list[dict]:

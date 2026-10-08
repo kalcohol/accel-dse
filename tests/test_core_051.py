@@ -138,7 +138,10 @@ def test_chunked_prefill_fused_iteration():
     assert _fused_step(dec, pre1, 0.125, 0.4) >= a                   # prefix KV re-read only adds traffic
     c = _rep()["queue"]["modes"]["coloc_chunked"]
     assert c["stable"] and c["prefill"]["chunks"] == 8 and c["prefill"]["iter_ms"] >= c["decode"]["iter_ms_no_chunk"]
-    assert c["ttft_ms"]["p50"] >= c["prefill"]["chunks"] * c["prefill"]["iter_ms"] - 1e-9
+    # 0.55: TTFT mixes the batch environments (quasi-static) → bounded by the fastest environment's chunk iterations
+    lo, hi = c["prefill"]["iter_ms_env"]
+    assert 0 < lo <= hi
+    assert c["ttft_ms"]["p50"] >= c["prefill"]["chunks"] * lo - 1e-9
     # chunking bounds the worst inter-token gap far below the prefill-first stall
     pf = _rep()["queue"]["modes"]["coloc_prefill_first"]
     assert c["itl_max_ms"] < pf["itl_max_ms"] and pf["itl_max_ms"] >= pf["stall_ms"]

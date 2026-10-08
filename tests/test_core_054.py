@@ -132,18 +132,22 @@ def test_compare_small_grid_within_bands():
 
 
 def test_v4_stored_grid_summary():
-    """Stored full grid (scripts/v4_serving.py, 54 points): documented error envelope (MODEL.md §18.4)."""
+    """Stored full grid (scripts/v4_serving.py, 0.55: 30 points × 3 seeds, three model families): documented error
+    envelope (MODEL.md §18.5)."""
     d = json.loads(DATA.read_text())
-    S = {(s["mode"], s["metric"]): s for s in d["summary"]}
-    assert len(d["rows"]) == 18
+    assert len(d["rows"]) == 30 and len(d["seeds"]) == 3 and set(d["families"]) == {"dense8b", "moe30b", "tp4_32b"}
+    S = {(s["family"], s["mode"], s["metric"]): s for s in d["summary"]}
+    for fam in ("dense8b", "moe30b", "tp4_32b"):
+        assert (fam, "pd", "tpot_mean") in S
     for mode in ("pd", "coloc_prefill_first", "coloc_chunked"):
-        assert abs(S[(mode, "slo_goodput")]["max"]) <= 0.10 and abs(S[(mode, "slo_goodput")]["min"]) <= 0.10
-        assert S[(mode, "prefix_hit")]["mean_abs"] < 0.01
-        assert S[(mode, "ttft_p90")]["within_band"] >= 0.75
-    assert S[("pd", "ttft_p90")]["within_band"] == 1.0 and S[("pd", "tpot_p90")]["within_band"] >= 0.9
-    # known direction: colocated TPOT p90 is optimistic (closed form < DES) everywhere, by < 45 %
-    for mode in ("coloc_prefill_first", "coloc_chunked"):
-        assert S[(mode, "tpot_p90")]["max"] < 0 and S[(mode, "tpot_p90")]["min"] > -0.45
+        A = lambda m: S[("all", mode, m)]
+        assert abs(A("tpot_mean")["median"]) <= 0.05 and A("tpot_mean")["within_band"] == 1.0
+        # 0.54 colocated TPOT p90 median −14 … −18 %, worst −43 % → now within ±10 % median and ±25 % worst
+        assert abs(A("tpot_p90")["median"]) <= 0.10 and abs(A("tpot_p90")["min"]) <= 0.25 and A("tpot_p90")["max"] <= 0.25
+        assert abs(A("itl_max")["median"]) <= 0.10 and A("itl_max")["within_band"] >= 0.9
+        assert abs(A("ttft_p99")["median"]) <= 0.10 and A("ttft_p90")["within_band"] >= 0.95
+        assert abs(A("slo_goodput")["median"]) <= 0.10
+        assert A("prefix_hit")["mean_abs"] < 0.01
 
 
 def test_simulate_flag_is_opt_in_and_additive():

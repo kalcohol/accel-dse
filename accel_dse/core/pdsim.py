@@ -58,6 +58,7 @@ class Req:
     last_tok: float = 0.0
     dec: int = 0
     dec_holds: bool = False
+    preempts: int = 0
 
 
 # --------------------------------------------------------------------------- length / prefix sampling
@@ -246,6 +247,12 @@ class _Replica:
         self.on_finish = None
         self.iters = 0
         self.busy_time = 0.0
+        # 0.55 decode KV capacity (pd.kv_policy): tokens per replica (None = unbounded, the 0.54 behaviour)
+        self.kv_cap: int | None = None
+        self.kv_policy = "off"
+        self.kv_res = 0                    # wait: reserved S + out of the running set
+        self.reprefq: deque[Req] = deque()  # recompute: preempted, waiting to re-prefill
+        self.n_preempt = 0
 
     def offer_decode(self, r: Req):
         r.tokens_left = r.out
@@ -253,12 +260,60 @@ class _Replica:
         if not self.in_flight:
             self.boundary()
 
+    @staticmethod
+    def _foot(r: Req) -> int:
+        return r.S + r.tokens_done
+
+    def _kv_used(self) -> int:
+        return sum(r.S + r.tokens_done for r in self.running)
+
     def _admit(self):
+        cap = self.kv_cap if self.kv_policy != "off" else None
         while self.joinq and len(self.running) < self.slots:
-            r = self.joinq.popleft()
+            r = self.joinq[0]
+            if cap is not None and self.running:     # one sequence always runs (no deadlock on an oversize request)
+                if self.kv_policy == "wait":
+                    if self.kv_res + r.S + r.out > cap:
+                        break
+                elif self.reprefq or self._kv_used() + r.S > cap:
+                    break
+            self.joinq.popleft()
+            if cap is not None and self.kv_policy == "wait":
+                self.kv_res += r.S + r.out
             r.decode_start = self.eng.t
             r.last_tok = self.eng.t
             self.running.append(r)
+
+    def _preempt(self):
+        """recompute: before an iteration that grows every running sequence by e tokens, evict the youngest until
+        the KV fits (vLLM's recompute preemption: its KV is dropped; it re-prefills prompt + generated later)."""
+        if self.kv_policy != "recompute" or self.kv_cap is None:
+            return
+        e = max(1, int(round(self.costs.decode_step(max(1, len(self.running)))[1])))
+        used = self._kv_used()
+        while len(self.running) > 1 and used + e * len(self.running) > self.kv_cap:
+            v = self.running.pop()
+            used -= self._foot(v)
+            v.preempts += 1
+            self.n_preempt += 1
+            self.reprefq.appendleft(v)
+
+    def _try_recompute(self) -> bool:
+        """recompute: re-prefill the head preempted sequence (stalls the replica) when it fits again."""
+        if self.kv_policy != "recompute" or not self.reprefq or len(self.running) >= self.slots:
+            return False
+        r = self.reprefq[0]
+        if self.running and self._kv_used() + self._foot(r) > self.kv_cap:
+            return False
+        self.reprefq.popleft()
+        S_re = max(256, int(math.ceil(self._foot(r) / 256)) * 256)   # memo granularity 256 tokens 「假设」
+        self._start(self.costs.prefill(1, S_re, 0), "rep_recompute_done", r)
+        return True
+
+    def recompute_done(self, r: Req):
+        self.in_flight = False
+        self.running.append(r)               # last_tok untouched → its gap spans the preemption
+        self.boundary()
 
     def _credit(self, members: list[Req], e: int):
         t = self.eng.t
@@ -275,6 +330,8 @@ class _Replica:
         if done:
             ds = set(id(r) for r in done)
             self.running = [r for r in self.running if id(r) not in ds]
+            if self.kv_policy == "wait" and self.kv_cap is not None:
+                self.kv_res -= sum(r.S + r.out for r in done)
             for r in done:
                 r.decode_done = t
                 if self.on_finish:
@@ -287,6 +344,7 @@ class _Replica:
         self.eng.schedule(self.eng.t + dur, kind, (self, payload))
 
     def _decode_iter(self):
+        self._preempt()
         k = len(self.running)
         step, e = self.costs.decode_step(k)
         self._start(step, "rep_dec_done", (list(self.running), max(1, int(round(e)))))
@@ -303,6 +361,8 @@ class DecodeReplica(_Replica):
 
     def boundary(self):
         if self.in_flight:
+            return
+        if self._try_recompute():
             return
         self._admit()
         if self.running:
@@ -325,6 +385,8 @@ class ColocPrefillFirst(_Replica):
 
     def boundary(self):
         if self.in_flight:
+            return
+        if self._try_recompute():
             return
         self._admit()
         if self.pq:
@@ -372,6 +434,8 @@ class ColocChunked(_Replica):
     def boundary(self):
         if self.in_flight:
             return
+        if self._try_recompute():
+            return
         self._admit()
         if self.cur is None and self.pq:
             self.cur = self.pq.popleft()
@@ -381,6 +445,7 @@ class ColocChunked(_Replica):
             if self.running:
                 self._decode_iter()
             return
+        self._preempt()
         new = max(1, self.cur.S - self.cur.p)
         take = min(self.C, self.cur_left)
         _, _, rr = _chunk_plan(self.cur.S, self.cur.p, self.C)
@@ -406,6 +471,16 @@ class ColocChunked(_Replica):
 
 
 # --------------------------------------------------------------------------- top-level simulate
+
+
+def _kv_setup(reps: list, ctx: dict) -> None:
+    """pd.kv_policy (0.55): the same per-replica KV token capacity the closed form uses."""
+    pol = ctx.get("kv_policy", "off")
+    cap = (ctx.get("kv_cap") or {}).get("tokens")
+    if pol == "off" or cap is None:
+        return
+    for rp in reps:
+        rp.kv_policy, rp.kv_cap = pol, int(cap)
 
 
 def _cap_of(pool: _Pool, x: dict | None) -> int:
@@ -498,6 +573,7 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
         cap = _cap_of(ctx["ppool"], x)
         prefs = [PrefillReplica(eng, pp, cap, f"p{i}") for i in range(r_p)]
         decs = [DecodeReplica(eng, dp, B) for _ in range(r_d)]
+        _kv_setup(decs, ctx)
         kvs = [KVServer(eng, beta_req, ctx["alpha"]) for _ in range(r_p)]
         L, layerwise = ctx["L"], ctx["layerwise"]
         if layerwise:
@@ -569,6 +645,9 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
             elif k == "rep_dec_done":
                 rep, payload = ev.payload
                 rep.dec_done(payload)
+            elif k == "rep_recompute_done":
+                rep, payload = ev.payload
+                rep.recompute_done(payload)
         # Hit rates over the measurement window only (Che is steady-state; cold misses excluded).
         hit = (sum(1 for r in done if r.hit) / len(done)) if (lru and done) else None
         hit_d = (sum(1 for r in done if r.dec_holds) / len(done)) if (lru and done) else None
@@ -582,13 +661,15 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
             x = _coloc_prefill_first(ctx, lam)
             cap = _cap_of(ctx["cpool"], x)
             reps = [ColocPrefillFirst(eng, costs, cap, B) for _ in range(r_c)]
-            done_kinds = {"rep_dec_done": "dec_done", "rep_pf_done": "pf_done"}
+            done_kinds = {"rep_dec_done": "dec_done", "rep_pf_done": "pf_done", "rep_recompute_done": "recompute_done"}
         elif mode == "coloc_chunked":
             cap = None
             reps = [ColocChunked(eng, costs, B, C) for _ in range(r_c)]
-            done_kinds = {"rep_dec_done": "dec_done", "rep_chunk_done": "chunk_done"}
+            done_kinds = {"rep_dec_done": "dec_done", "rep_chunk_done": "chunk_done",
+                          "rep_recompute_done": "recompute_done"}
         else:
             raise ValueError(f"unknown mode {mode!r}")
+        _kv_setup(reps, ctx)
         if lru:
             caches_p = [LRUCache(prefix_K) for _ in range(r_c)]
             _warm_caches(caches_p, prefix_n, prefix_alpha, rng)
@@ -620,6 +701,9 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
     itls = [r.itl_max for r in done]
     st = {"mode": mode, "lambda_rps": lam, "n": len(done), "complete": len(done) >= n_req,
           "ttft": _stats(ttfts), "tpot": _stats(tpots), "itl_max": _stats(itls), "prefix_hit": hit, **extra}
+    if ctx.get("kv_policy", "off") != "off":       # 0.55: decode-admission wait and preemptions
+        st["slot_wait"] = _stats([r.decode_start - r.kv_done for r in done])
+        st["preempt_per_req"] = sum(r.preempts for r in done) / max(1, len(done))
     for k in ("ttft", "tpot", "itl_max"):
         st[k + "_ms"] = {q: v * 1e3 for q, v in st[k].items()}
     return st
@@ -698,8 +782,14 @@ def _ana_value(ana: dict, key: str) -> float:
 
 
 def compare(scn, n_req: int = 2000, warmup: int = 400, seed: int = 1,
-            modes=("pd", "coloc_prefill_first", "coloc_chunked"), slo: bool = False, slo_n: int = 1000) -> dict:
-    """Closed form (pdqueue) vs DES for every mode at the scenario's offered load (and optionally SLO goodput)."""
+            modes=("pd", "coloc_prefill_first", "coloc_chunked"), slo: bool = False, slo_n: int = 1000,
+            seeds: tuple | None = None, slo_tol: float = 0.03) -> dict:
+    """Closed form (pdqueue) vs DES for every mode at the scenario's offered load (and optionally SLO goodput).
+    ``seeds`` (0.55): average the DES metrics over several independent runs and report their spread
+    (``noise`` = sd / mean across seeds) — near saturation the decode occupancy relaxes over tens of seconds, so one
+    short run carries ±10–20 % on TPOT / gap tails (V4 0.55).  The DES SLO rate is also averaged over ``seeds``
+    (one 1500-request bisection scatters ±7 % at the SLO operating point); ``slo_tol`` = bisection tolerance."""
+    seeds = tuple(seeds) if seeds else (seed,)
     rep, ctx = capture_ctx(scn)
     q = rep.get("queue") or {}
     if ctx is None or "modes" not in q:
@@ -720,27 +810,38 @@ def compare(scn, n_req: int = 2000, warmup: int = 400, seed: int = 1,
             kw["prefix_K"] = pc["prefill"]["K"] if mode == "pd" else pc["coloc"]["K"]
             if mode == "pd":
                 kw["prefix_K_dec"] = pc["decode"]["K"]
-        sim = simulate(ctx, lam, mode, n_req=n_req, warmup=warmup, seed=seed, **kw)
-        row = {"stable_analytic": bool(ana.get("stable")), "complete": sim["complete"], "sim": {}, "ana": {}, "err": {}}
+        sims = [simulate(ctx, lam, mode, n_req=n_req, warmup=warmup, seed=sd, **kw) for sd in seeds]
+        row = {"stable_analytic": bool(ana.get("stable")), "complete": all(x["complete"] for x in sims),
+               "sim": {}, "ana": {}, "err": {}}
+        if len(sims) > 1:
+            row["noise"] = {}
         for name, k, qk in METRICS:
-            sv_ = sim[k][qk]
+            vals = [x[k][qk] for x in sims]
+            sv_ = sum(vals) / len(vals)
             row["sim"][name] = sv_ * 1e3
+            if len(vals) > 1 and sv_ > 0 and math.isfinite(sv_):
+                row["noise"][name] = math.sqrt(sum((v - sv_) ** 2 for v in vals) / (len(vals) - 1)) / sv_
             if ana.get("stable"):
                 av = _ana_value(ana, name)
                 row["ana"][name] = av * 1e3
                 row["err"][name] = rel_err(sv_, av)
-        if pc and sim["prefix_hit"] is not None:
+        hits = [x["prefix_hit"] for x in sims if x["prefix_hit"] is not None]
+        if pc and hits:
             key = "prefill" if mode == "pd" else "coloc"
-            row["sim"]["prefix_hit"] = sim["prefix_hit"]
+            row["sim"]["prefix_hit"] = sum(hits) / len(hits)
             row["ana"]["prefix_hit"] = pc[key]["hit"]
-            row["err"]["prefix_hit"] = pc[key]["hit"] - sim["prefix_hit"]          # absolute
+            row["err"]["prefix_hit"] = pc[key]["hit"] - row["sim"]["prefix_hit"]          # absolute
             if mode == "pd":
-                row["sim"]["prefix_hit_decode"] = sim["prefix_hit_decode"]
+                hd = [x["prefix_hit_decode"] for x in sims if x["prefix_hit_decode"] is not None]
+                row["sim"]["prefix_hit_decode"] = sum(hd) / len(hd) if hd else None
                 row["ana"]["prefix_hit_decode"] = pc["decode"]["hit"]
         if slo:
             start = max(ana.get("slo_rate_rps", 0.0), lam)
-            r_sim = slo_rate(ctx, mode, sv.ttft_slo_ms / 1e3, sv.tpot_slo_ms / 1e3, start, n_req=slo_n,
-                             warmup=max(200, slo_n // 5), seed=seed, **kw)
+            rs = [slo_rate(ctx, mode, sv.ttft_slo_ms / 1e3, sv.tpot_slo_ms / 1e3, start, n_req=slo_n,
+                           warmup=max(200, slo_n // 5), seed=s_, rel_tol=slo_tol, **kw) for s_ in seeds]
+            r_sim = sum(rs) / len(rs)
+            if len(rs) > 1 and r_sim > 0:
+                row["noise"]["slo_goodput"] = math.sqrt(sum((v - r_sim) ** 2 for v in rs) / (len(rs) - 1)) / r_sim
             g_sim = r_sim * ctx["out"] / cards
             g_ana = ana.get("slo_goodput_per_card", 0.0)
             row["sim"]["slo_goodput"] = g_sim

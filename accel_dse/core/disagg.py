@@ -54,7 +54,7 @@ from .scenario import PDConfig, Scenario
 from .energy import EnergyTable
 from .lengths import lengths_of
 from .pdqueue import _Pool, _pd_mode, _slo_rate, prefix_tokens, queue_report
-from .prefixcache import both_hit, capacity, hit_of, pool_hits, zipf_groups
+from .prefixcache import both_hit, capacity, hit_of, per_card_bytes, pool_hits, zipf_groups
 from .serving import Goodput, best_prefill, goodput
 
 
@@ -62,6 +62,29 @@ def kv_bytes_per_request(model, prompt: int) -> float:
     """Logical KV + indexer keys + recurrent state of the whole model after a ``prompt``-token prefill."""
     st = stage_storage(model, 0, model.n_layers, True, True, Shard(), prompt, 0)
     return st.kv_per_seq + st.idx_per_seq + st.state_per_seq
+
+
+def kv_token_capacity(model, result, cap_GB: float | None) -> dict:
+    """KV tokens one replica can hold (0.55, pd.kv_policy): ``pd.kv_capacity_GB`` per replica, else the DRAM left after
+    weights + runtime reserve (the evaluation's own active-batch KV is given back), per pipeline stage, ÷ the per-token
+    KV slope of that stage (KV + indexer; recurrent state is per sequence, not per token, and is ignored 「假设」)."""
+    lay = result.scenario.layout
+    t1, t2 = 1024, 2048
+    b1, b2 = per_card_bytes(model, lay, t1), per_card_bytes(model, lay, t2)
+    slope = [(y - x) / (t2 - t1) for x, y in zip(b1, b2)]
+    cps = lay.cards // lay.pp
+    per_rep = sum(sl * cps / lay.dp for sl in slope)          # bytes per token over one replica
+    if per_rep <= 0:
+        return {"tokens": None, "source": "no_kv", "bytes_per_token": 0.0}
+    if cap_GB is not None:
+        return {"tokens": int(cap_GB * 1e9 // per_rep), "source": "pd.kv_capacity_GB", "capacity_GB": cap_GB,
+                "bytes_per_token": per_rep}
+    free = [max(0.0, st.mem.dram_cap - (st.mem.dram_need - st.mem.kv_total - st.mem.state_total))
+            for st in result.stages]
+    toks = [math.floor(f / sl) for f, sl in zip(free, slope) if sl > 0]
+    K = min(toks) * lay.dp if toks else 0
+    return {"tokens": int(K), "source": "derived_free_dram", "capacity_GB": K * per_rep / 1e9,
+            "bytes_per_token": per_rep}
 
 
 def _pool(cards: int, per: int) -> tuple[int, int]:
@@ -253,6 +276,9 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
                "shared": pd.kv_GBps is None, "len": lens, "pts": pts, "rep": (S_rep, p_rep), "kv_xfer": kv_xfer,
                "kv_new": kv_new, "kv_full": kv_full, "out_cs2": lens.out_cs2, "pts_c": pts_c,
                **({"prefix_hits": (H_p, H_c)} if cap_mode else {})}
+        if pd.kv_policy != "off":       # 0.55: decode KV capacity (decode pool and colocated replicas share the layout)
+            ctx["kv_policy"] = pd.kv_policy
+            ctx["kv_cap"] = kv_token_capacity(m, dec, pd.kv_capacity_GB)
         dpool.memo[("decode", sv.batch, None, 0)] = dec
         cpool.memo = dpool.memo                           # same layout → same evaluations
     if queue:
