@@ -6,6 +6,7 @@
 - Python 包 `npu_dse` → `accel_dse`（`python3 -m accel_dse …`）；发行名 / 命令行入口 `npu-dse` → `accel-dse`；不保留旧包名兼容层。
 - README 顶部新增中英简介、快速开始、「数值均为解析 / 假设、非实测硅片」免责声明与 Issues 反馈入口；文档中的绝对路径改为相对路径。
 - 新增 `.gitignore`：生成物 `out/*` 默认忽略，仅保留文档引用的示例输出与 `out/hf_series_lookup.json`（`scripts/bake_series_catalog.py` 的输入）。
+- 许可证：MIT（`LICENSE`，Copyright (c) 2026 accel-dse Project）；`pyproject.toml` `license = { text = "MIT" }`。
 - 以下历史条目保留原文（其中的 `npu_dse` / `npu-inference-dse` 指旧名）。
 
 ## 0.31.0 — 2026-10-08

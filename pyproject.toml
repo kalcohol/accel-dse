@@ -8,6 +8,7 @@ version = "0.31.1"
 description = "Analytical design-space exploration (DSE) workbench for inference-only NPU/ASIC: LLM / video DiT / protein, HBM/LPDDR, multi-chip TP/PP/EP"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
 authors = [{ name = "tx wang" }]
 dependencies = []
 

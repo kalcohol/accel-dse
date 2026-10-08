@@ -21,6 +21,8 @@ python3 -m accel_dse serve        # 启动本地 Web 工作台
 
 欢迎通过 [GitHub Issues](https://github.com/kalcohol/accel-dse/issues) 反馈问题与建议。 / Feedback welcome via [GitHub Issues](https://github.com/kalcohol/accel-dse/issues).
 
+**许可证 / License**：MIT，见 [LICENSE](LICENSE)。 / MIT License — see [LICENSE](LICENSE).
+
 ---
 
 ## accel_dse — NPU + SRAM + HBM/LPDDR 多域推理解析模型（LLM / Video DiT / Protein）
@@ -527,3 +529,9 @@ Series packs：
 - 功耗/面积：刻意不做伪 PDK；v0.24 只有用户 knob 的 energy/cost **assumed stub**（REQUIREMENTS_GAP #19/#20 = 半齐）。
 
 **版本**：0.31.1（仓库化，包名改为 `accel_dse`，引擎同 0.31.0；TP×EP 专家切分 + EP 全卡；PP decode 微批；prefill 摊销 goodput；投机解码 / MTP；decode 计入 LM head；0.30：吞吐–交互性帕累托 + SLO goodput；MLA 注意力按投影建模（DeepSeek-V3 ≈ 671B）；容量统一 2³⁰ B；存储目录按 JEDEC / 厂商资料重建：结构化选择器 + 来源标签 + LPDDR6 payload 8/9；暴露的通信同步 α；KV 按 TP 切分 / MLA 复制 / 注意力 DP；0.28.1 Web 工作台打磨：下拉框短标签 + 单位自动缩放；Web 工作台布局重构：场景栏 / KPI 条 / 标签页 / 高级参数抽屉；Web UI 简体中文化 + 布局拥挤修复；opt-in `non_gemm_overhead` + `dtype_mac_factors` assumed；scale_efficiency/speedup；energy/cost assumed stub + scenario presets；calib + dual A|B；Compare/Sweep；multi-domain MetricsCard + HF packs + Workbench / `report`；MoE EP / MLA / scale-up；无 PDK；BW/freq 未硅后标定）。
+
+---
+
+## 许可证 / License
+
+MIT License。见 [LICENSE](LICENSE)。 / MIT License. See [LICENSE](LICENSE).
