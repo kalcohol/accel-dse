@@ -9,6 +9,28 @@ import sys
 from . import __version__, api
 
 
+_BUDGET_FLAGS = (
+    ("--budget-sram-mib", "b_sram_mib", "max SRAM MiB per card"), ("--budget-slc-mib", "b_slc_mib", "max SLC MiB per card"),
+    ("--budget-macs", "b_macs", "max MAC units per card"), ("--budget-tflops", "b_tflops", "max peak bf16 TFLOPS per card"),
+    ("--budget-dram-GiB", "b_dram_GiB", "max DRAM GiB per card"), ("--budget-cards", "b_cards", "max cards per replica"),
+    ("--budget-power-W", "b_power_W_card", "max average W per card (needs the energy table)"),
+    ("--budget-die-mm2", "b_die_mm2", "max die-area proxy per card, mm²"),
+    ("--budget-system-mm2", "b_system_mm2", "max silicon-area proxy per replica, mm²"),
+    ("--mm2-per-mib-sram", "b_mm2_per_mib_sram", "area density 「假设」"), ("--mm2-per-mib-slc", "b_mm2_per_mib_slc", "area density 「假设」"),
+    ("--mm2-per-kmac", "b_mm2_per_kmac", "mm² per 1024 MACs 「假设」"), ("--mm2-fixed", "b_mm2_fixed", "fixed mm² per card 「假设」"))
+
+
+def _load_list(v: str) -> list[float]:
+    import os
+    if os.path.exists(v):
+        with open(v) as f:
+            x = json.load(f)
+        if not isinstance(x, list):
+            raise SystemExit("--moe-expert-load file must hold a JSON list")
+        return x
+    return [float(t) for t in v.split(",") if t.strip()]
+
+
 def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--model", default="qwen3-8b", help="model id (see `models`)")
     p.add_argument("--chip", default="100T", help="chip preset: 100T | 1P | H100-like")
@@ -74,6 +96,13 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="cards per package on the die-to-die tier (0.48; default 1 = no D2D tier)")
     p.add_argument("--d2d-GBps", dest="d2d_GBps", type=float, default=None, help="D2D bandwidth (default 2000 「假设」)")
     p.add_argument("--d2d-alpha-us", dest="d2d_alpha_us", type=float, default=None, help="D2D α (default 0.5 「假设」)")
+    p.add_argument("--moe-skew", dest="moe_skew", type=float, default=None,
+                   help="MoE: busiest EP rank's token load / mean (0.49; default 1 = uniform routing) 「假设」")
+    p.add_argument("--moe-expert-load", dest="moe_expert_load", default=None,
+                   help="MoE: measured tokens per routed expert — JSON file with a list, or comma-separated numbers "
+                        "(skew derived per EP layout, contiguous expert placement)")
+    for flag, dest, hlp in _BUDGET_FLAGS:
+        p.add_argument(flag, dest=dest, type=float, default=None, help=f"budget (0.49, user-supplied): {hlp}")
     p.add_argument("--json", action="store_true", help="print raw JSON")
 
 
@@ -82,6 +111,10 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     for k, attr in (("ctx", "ctx"), ("prompt", "prompt"), ("spec_accept", "spec_accept"), ("tpot_slo_ms", "tpot_slo")):
         if getattr(a, attr) is not None:
             sv[k] = getattr(a, attr)
+    if getattr(a, "moe_skew", None) is not None:
+        sv["moe_skew"] = a.moe_skew
+    if getattr(a, "moe_expert_load", None):
+        sv["moe_expert_load"] = _load_list(a.moe_expert_load)
     sc = {"model": a.model, "mapping": a.mapping, "serving": sv}
     wl = {k: getattr(a, k) for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles",
                                      "samples") if getattr(a, k)}
@@ -129,6 +162,10 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
           if getattr(a, k, None) is not None}
     if en:
         body["energy"] = en
+    bud = {d[2:]: (int(getattr(a, d)) if d == "b_cards" else getattr(a, d))
+           for _, d, _ in _BUDGET_FLAGS if getattr(a, d, None) is not None}
+    if bud:
+        body["budget"] = bud
     return body
 
 
@@ -198,9 +235,23 @@ def cmd_eval(a) -> dict:
             print(f"energy {e['J_per_unit']:.4g} J / {e['unit']}  (avg {e['avg_W_per_card']:.0f} W/card; user-supplied "
                   f"table: {', '.join(e['provided'])}; missing: {', '.join(e['missing']) or '-'})  "
                   + "  ".join(f"{k} {v:.3g}" for k, v in e["J_by_action"].items()))
+    if b := out.get("budget"):
+        mark = {True: "OK", False: "OVER", None: "?"}
+        def val(i):
+            return "—" if i["value"] is None else f"{i['value']:.4g}"
+        print(f"budget {mark[b['ok']]}: " + "  ".join(
+            f"{i['label']} {val(i)} / {i['limit']:g} {i['unit']} [{mark[i['ok']]}]" for i in b["items"]))
+        for i in b["items"]:
+            if i["note"]:
+                print(f"  {i['label']}: {i['note']}")
     for w in s["warnings"]:
         print("  ! " + w)
     return {}
+
+
+def _bmark(r: dict) -> str:
+    ok = r.get("budget_ok")
+    return "OK" if ok is True else "?" if ok is None else "OVER " + ",".join(r.get("budget_violations", []))
 
 
 def cmd_search(a) -> dict:
@@ -209,9 +260,11 @@ def cmd_search(a) -> dict:
     out = api.api_layouts(body)
     if a.json:
         return out
+    bud = "budget" in body
     _table([[r["layout"], r["batch"], r["tok_s_card"], r.get("goodput_card"), r["tpot_ms"], r["bound"],
-             r["array_util"], r.get("ttft_ok")] for r in out["rows"]],
-           ["layout", "batch", "tok/s/card", "goodput/card", "TPOT ms", "bound", "util", "TTFT ok"])
+             r["array_util"], r.get("ttft_ok")] + ([_bmark(r)] if bud else []) for r in out["rows"]],
+           ["layout", "batch", "tok/s/card", "goodput/card", "TPOT ms", "bound", "util", "TTFT ok"]
+           + (["budget"] if bud else []))
     return {}
 
 
@@ -221,9 +274,11 @@ def cmd_compare(a) -> dict:
     out = api.api_compare(body)
     if a.json:
         return out
+    bud = "budget" in body
     _table([[r["mapping"], r["layout"], r["batch"], r["tok_s_card"], r.get("goodput_card"), r["bound"],
-             r["array_util"], r.get("ttft_ok")] for r in out["rows"]],
-           ["mapping", "best layout", "batch", "tok/s/card", "goodput/card", "bound", "util", "TTFT ok"])
+             r["array_util"], r.get("ttft_ok")] + ([_bmark(r)] if bud else []) for r in out["rows"]],
+           ["mapping", "best layout", "batch", "tok/s/card", "goodput/card", "bound", "util", "TTFT ok"]
+           + (["budget"] if bud else []))
     return {}
 
 

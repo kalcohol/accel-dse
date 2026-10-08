@@ -26,6 +26,10 @@ Window and units
                  (the overlapped period with ``workload.overlap``) → frames; a host-CPU encoder's energy is not counted
   protein        one forward → sequences
 Each stage executes ``microbatches`` ticks per pass; a tick's counts are per rank, × TP·SP·DP ranks.
+
+MoE load skew (0.49, ``serving.moe_skew`` / ``moe_expert_load``): the stage time follows the busiest EP rank, but
+skew only moves work between ranks — the work counts (MAC, vector, SRAM, DRAM, SLC, link, D2D) are taken per output
+unit from the uniform-routing evaluation of the same scenario, while the window (and so card·s) is the skewed one.
 """
 
 from __future__ import annotations
@@ -78,6 +82,19 @@ class EnergyTable:
 
 def action_counts(r) -> dict:
     """(counts per window, window s, output units per window, unit label) for one evaluated result."""
+    sv = r.scenario.serving
+    if sv.moe_skew != 1.0 or sv.moe_expert_load:
+        from dataclasses import replace
+        from .evaluate import evaluate
+        bal = action_counts(evaluate(replace(r.scenario, serving=replace(sv, moe_skew=1.0, moe_expert_load=()))))
+        out = _counts(r)
+        k = out["units"] / bal["units"] if bal["units"] else 0.0
+        out["counts"] = {a: bal["counts"][a] * k for a in ACTIONS}
+        return out
+    return _counts(r)
+
+
+def _counts(r) -> dict:
     lay, ch = r.scenario.layout, r.scenario.chip
     f = ch.freq_ghz * 1e9
     ranks = lay.tp * lay.sp * lay.dp

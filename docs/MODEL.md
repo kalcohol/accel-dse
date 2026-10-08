@@ -40,7 +40,7 @@
 
 - 布局 `PP·TP·DP·EP·ETP`：dense 模型 DP = EP = ETP = 1（数据并行副本是独立服务实例）；MoE 要求 `EP·ETP = TP·DP`——注意力按 TP 切分、在 DP 组间复制，专家按 EP 分组、组内按 ETP 切分。
 - 每个 rank 生成算子：投影 GEMM、注意力核心（GQA / MLA 吸收 / 线性状态更新）、MoE 路由与专家 GEMM、embedding / 词表并行 lm_head、MTP。
-- MoE 命中专家数：`hit = max(ceil(局部期望命中), ceil(全局期望命中 / EP))`，限定在 [1, 本地专家数]；每专家 token 数 `m_e = ceil(本地 token·top_k / hit)`。token 均匀路由（「假设」）。
+- MoE 命中专家数：`hit = max(ceil(局部期望命中), ceil(全局期望命中 / EP))`，限定在 [1, 本地专家数]；每专家 token 数 `m_e = ceil(本地 token·top_k / hit)`。默认 token 均匀路由（「假设」）；0.49 起可选 EP 负载倾斜（§16）。
 - stage 划分按层的整数切分（如 61 层 / 8 → 8,8,8,8,8,7,7,7），容量检查取最重的 stage。
 - 视频 / 蛋白质（无 KV 缓存的全序列前向）：布局 `PP·TP·DP·SP`，EP = ETP = 1。DP 切分一次前向的序列（视频含 CFG 的 cond / uncond 两路，即 CFG 并行）；SP 为 Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all，每 rank 对完整序列计算 `ceil(ceil(H/TP)/SP)` 个头，权重在 SP 组内复制。LLM 布局保持 SP = 1。
 
@@ -104,8 +104,8 @@
 
 - LLM 推理（VLM 只算语言主干）；视频生成覆盖 DiT 去噪主干（§11），蛋白质覆盖 ESM-2 编码器（§11）与结构预测的神经网络推理（ESMFold、AlphaFold 2、OpenFold、Boltz-1、Protenix，§12）。AlphaFold 3 权重需申请、无可核对的公开发布文件，标「暂未接入 v2」（§2）。不覆盖分子动力学 / 力场（目录中也无此类条目）。
 - 「架构代理」模型：超连接多流残差只计参数不计混合计算；查表只计存储与每 token 行读取；压缩稀疏注意力按有效上下文 `ctx/ratio`（+ 窗口，索引层 ≤ top-k）近似；哈希路由层按 top-k MoE 处理。
-- 解析模型不模拟周期级行为：无 bank 冲突、无 DRAM 刷新 / 页冲突细节（统一由效率「假设」吸收），集合通信用 α-β 近似，MoE token 均匀路由。
-- 不内置功耗、面积、成本估计。0.47.1 起给出每输出单位的动作计数，能耗只在用户提供每动作能耗时计算（§13）。
+- 解析模型不模拟周期级行为：无 bank 冲突、无 DRAM 刷新 / 页冲突细节（统一由效率「假设」吸收），集合通信用 α-β 近似，MoE 默认 token 均匀路由（可选倾斜系数，§16）。
+- 不内置功耗、面积、成本估计。0.47.1 起给出每输出单位的动作计数，能耗只在用户提供每动作能耗时计算（§13）；0.49 起可填资源 / 面积预算，面积按用户给的密度估算，只报告余量（§17）。
 
 ## 11. 视频生成（DiT）与蛋白质模型
 
@@ -348,3 +348,37 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - **能耗**：链路字节仍按载荷口径，按每次集合通信两层实际发送字节之比拆成 `d2d`（`pJ_bit_d2d`）与网络 `link`（`pJ_bit_link`），D2D + 网络 = 单层时的链路字节。
 - **入口**：API scenario `package_cards`、`d2d: {GBps, alpha_us}`；CLI `--package-cards --d2d-GBps --d2d-alpha-us --link-GBps --link-alpha-us`；Web 并行组「每封装卡数 / D2D GB/s / D2D α」与网络层两项；扫描可选 `package_cards`、`d2d.GBps`、`d2d.alpha_us`。
 - **不做 / 待定**：第三层（封装内 D2D、节点内 scale-up、跨节点 scale-out 三级）未建模——目前「网络层」一项同时代表节点内与跨节点；拓扑（胖树 / torus / 轨道优化）、拥塞、in-network reduction（SHARP）、多路径与链路聚合都不建模；`Link.topology` 仍只是标签。
+
+## 16. MoE 负载倾斜（0.49，默认关）
+
+默认按均匀路由计（§3）。真实服务里热门专家会让某些 EP rank 收到更多 token；所有 rank 在 combine all-to-all 处同步，**最忙的 rank 决定级时间**。两种输入（二选一）：
+
+- `serving.moe_skew`（默认 1，范围 [1, 64]，「假设」）：最忙 EP rank 的 token-专家对 = skew × 平均值 `T·k / EP`，上限为 `T·k`（全部落在一个 rank）与 `本地专家数 × T`（每个专家每步最多 T 个 token）。
+- `serving.moe_expert_load`：实测的每个路由专家 token 数（长度 = 专家数，相对值即可）。按连续放置（专家 e 在 rank `e // ceil(E/EP)`，vLLM / SGLang 无 EPLB 时的默认线性放置）算每个 EP 宽度的倾斜 = 最忙 rank 的负载 / 平均负载——于是布局搜索里不同 EP 看到不同倾斜。例：16 个热门专家各 4 倍负载（Qwen3-30B-A3B 128 专家）→ EP 2 / 4 / 8 / 16 倾斜 1.27 / 1.82 / 2.91 / 2.91。
+
+建模（「假设」）：最忙 rank 的专家 GEMM 行数 `m_e = ceil(pairs_hot / hit)`，命中专家数保持均匀路由的期望（多出的负载落在热门专家上），只有 T 行装不下时才增加；dispatch / combine all-to-all 与 ETP all-reduce 的载荷按最忙 rank 计。EP = 1 或非 MoE 模型时忽略并警告。存储不变；EPLB / 冗余专家不建模（填 EPLB 之后的倾斜即可）。
+
+**能耗**：倾斜只在 rank 之间搬工作，不产生新工作——每输出单位的 MAC / 向量 / SRAM / DRAM / SLC / 链路 / D2D 计数取同一场景均匀路由下的值，时间窗（卡·秒、静态能耗）取倾斜后的值。
+
+**量级**（100T + HBM3E，Qwen3-30B-A3B，TP2·DP4·EP8）：prefill batch 64 × 4096 TTFT 4608 → 倾斜 1.25 / 1.5 / 2 / 4：4967 / 5326 / 6048 / 8924 ms。decode batch 64 不变（13.69 ms：最忙 rank 的专家 GEMM 仍在同一个行分块里，时间由权重读取决定）；batch 512：66.7 → 2 / 4：71.7 / 76.6 ms；batch 2048：258.6 → 4：293.0 ms。
+
+**入口**：API / scenario `serving.moe_skew`、`serving.moe_expert_load`（结果 summary 有 `moe_skew` = 实际使用的倾斜）；CLI `--moe-skew`、`--moe-expert-load 文件.json|逗号列表`；Web 服务组「MoE 倾斜」（每专家分布只在 API / CLI）；扫描 `serving.moe_skew`。
+
+## 17. 资源 / 面积预算（0.49，可选设计约束）
+
+请求体顶层 `budget`（与 `energy` 一样不进 scenario，不改哈希），**工具不内置任何工艺库或密度**，每项默认空。`core/budget.py` 只报告余量 `1 − 用量 / 限额` 并标出超限：
+
+| 项 | 用量来自 | 键 |
+|------|------|------|
+| SRAM / SLC / MAC 单元 / 峰值 bf16 TFLOPS / DRAM 容量（每卡） | 芯片与存储器配置（精确） | `sram_mib`、`slc_mib`、`macs`、`tflops`、`dram_GiB` |
+| 卡数（每副本） | 布局 | `cards` |
+| 平均功耗（每卡） | 用户能耗表（§13）：能耗 / 时间窗 / 卡数 | `power_W_card` |
+| 面积代理（每卡 / 每副本） | `SRAM MiB · mm²/MiB + SLC MiB · mm²/MiB + MAC/1024 · mm²/kMAC + 固定 mm²`，密度全由用户填「假设」 | `die_mm2`、`system_mm2`；密度 `mm2_per_mib_sram`、`mm2_per_mib_slc`、`mm2_per_kmac`、`mm2_fixed` |
+
+**判定**：未超 / 超出 / 无法判定。无法判定 = 缺面积密度、或只有下界且下界未超：能耗表不全时功耗是下界（计数为 0 的项不算缺），未填 `mm2_fixed` 时面积是下界（密度已含固定部分时填 0）。下界已超出则判定为超出。
+
+**与搜索的关系**：batch / 布局搜索仍按 SLO 与容量精确求解，不把预算放进搜索；API 在布局 / 映射对比 / 扫描的每行加 `budget_ok`、`budget_violations`，超预算的布局排在其余之后（「应用最佳布局」因而取预算内的最优），映射对比在前 8 个布局里取预算内最优；容量检查给出的「最少卡数」不超过卡数预算（超出时返回 `budget_cards_limit`）。功耗随 batch 变化，搜索给出的 batch 超功耗时不会自动降 batch——只标出。
+
+**入口**：API `budget`（eval 响应 `budget`：`ok`、`items`、`area`、`violations`）；CLI `--budget-sram-mib --budget-slc-mib --budget-macs --budget-tflops --budget-dram-GiB --budget-cards --budget-power-W --budget-die-mm2 --budget-system-mm2 --mm2-per-mib-sram --mm2-per-mib-slc --mm2-per-kmac --mm2-fixed`（search / compare 表多一列 budget）；Web 左侧「资源 / 面积预算」组、单点页「资源 / 面积预算」表，布局表与映射对比表的「超预算」标记。
+
+**不做**：工艺库 / 标准单元面积模型、布线与良率、成本（$ / mm²、封装、HBM 价格）、面积与频率 / 功耗的耦合——需要可信数据源，留给用户的密度「假设」。

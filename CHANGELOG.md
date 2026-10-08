@@ -3,6 +3,22 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.49.0] - 2026-10-09
+
+两个可选项：MoE 专家负载倾斜（工作负载旋钮）与资源 / 面积预算（设计约束，只报告余量）。默认关，默认结果与 0.48.0 逐字节一致。
+
+### Added
+- MoE 负载倾斜：`serving.moe_skew`（默认 1 = 均匀路由，[1, 64]，「假设」）或实测的每专家 token 分布 `serving.moe_expert_load`（按连续放置求每个 EP 宽度的倾斜，搜索中不同 EP 看到不同倾斜）。最忙 EP rank 决定级时间：其专家 GEMM 行数与 dispatch / combine / ETP 载荷按 skew × 平均计（上限 T·k 与每专家 T 行），命中专家数保持均匀期望。EP = 1 / 非 MoE 时忽略并警告。能耗计数取均匀路由下的每单位值（倾斜只搬工作），卡·秒按倾斜后的时间窗。100T + HBM3E，Qwen3-30B-A3B TP2·DP4·EP8：prefill 64 × 4096 TTFT 4608 → 倾斜 2 / 4：6048 / 8924 ms；decode batch 64 不变（行分块吸收），batch 2048：258.6 → 293.0 ms（倾斜 4）。summary 新增 `moe_skew`；CLI `--moe-skew --moe-expert-load`；Web「MoE 倾斜」；扫描 `serving.moe_skew`。
+- 资源 / 面积预算 `core/budget.py`：请求体顶层 `budget`（不进 scenario）。限额：每卡 SRAM / SLC / MAC 单元 / 峰值 TFLOPS / DRAM 容量、每副本卡数、每卡平均功耗（用用户能耗表）、面积代理（每卡 / 每副本；SRAM、SLC、MAC 与固定面积的密度全部由用户填写，工具不内置工艺库）。报告余量与「未超 / 超出 / 无法判定」（缺密度，或功耗 / 面积只是下界且未超）。布局、映射对比、扫描每行加 `budget_ok`；超预算的布局排在后面，映射对比取预算内最优，容量检查的最少卡数受卡数预算限制。CLI `--budget-* --mm2-*`（search / compare 多一列）；Web「资源 / 面积预算」组与单点页预算表、布局表「超预算」标记。
+- 建模说明 §16（MoE 倾斜）、§17（预算）；测试 `tests/test_core_049.py`。
+
+### Changed
+- 默认结果不变：1356 项指纹与 0.48.0（= 0.47.1）逐字节一致。Serving 新增字段，场景哈希随之变化。
+
+### 不做 / 待定
+- EPLB / 冗余专家、专家放置优化；工艺库、成本、面积与频率 / 功耗耦合。
+- 三级互连与 SLC / D2D 默认数值仍待用户答复（0.48 的两个问题），本版未改动。
+
 ## [0.48.0] - 2026-10-09
 
 硬件侧：系统级缓存（SLC）作为 SRAM 与 DRAM 之间的设计变量；两级互连（封装内 die-to-die 与跨封装网络）。两者默认关，默认结果与 0.47.1 逐字节一致。

@@ -22,6 +22,7 @@ from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages
 from .pipeline import TILING, pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
 from .scenario import Scenario
+from .ir import skew_from_load
 from .schedule import StageTime, collective_seconds, p2p_crosses, spec_expected_tokens, tiered_collective
 
 
@@ -58,6 +59,7 @@ class Result:
     latency: float = 0.0      # s per request: decode TPOT, prefill TTFT; video: one clip; protein: one batch
     workload: ResolvedWorkload | None = None
     pipeline: dict | None = None   # video (0.44): text-encoder / VAE-decode time, FLOP, storage (None = DiT only)
+    moe_skew: float = 1.0          # effective EP load skew used (0.49)
 
     @property
     def domain(self) -> str:
@@ -128,6 +130,7 @@ class Result:
             "residency": heavy.mem.residency, "microbatches": self.microbatches, "warnings": self.warnings,
             "array_util": heavy.time.array_util, "domain": self.model.domain, "slo_ok": self.slo_ok,
             "latency_ms": self.latency * 1e3, **({"gen": self.domain_summary()} if self.workload else {}),
+            **({"moe_skew": self.moe_skew} if self.moe_skew != 1.0 else {}),
         }
 
 
@@ -173,7 +176,7 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
     if has_head:
         ops += head_ops(model, ph, sh)
         if spec_k and model.mtp_layers and ph.kind == "decode":
-            dph = Phase("decode", ph.batch, 1, ph.ctx)
+            dph = Phase("decode", ph.batch, 1, ph.ctx, skew=ph.skew)
             for d in range(spec_k):
                 ops += mtp_ops(model, dph, sh, depth=d)
     return ops
@@ -209,6 +212,22 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
     for k, v in touched(ops).items():
         d[k] += v
     return d
+
+
+def _moe_skew(m: ModelSpec, sv, lay: Layout, warnings: list[str]) -> float:
+    """Effective EP load skew of the scenario (0.49): ``serving.moe_skew`` or derived from ``moe_expert_load``."""
+    if sv.moe_skew == 1.0 and not sv.moe_expert_load:
+        return 1.0
+    if not m.is_moe or lay.ep <= 1:
+        warnings.append("MoE 负载倾斜已忽略：" + ("非 MoE 模型" if not m.is_moe else "EP = 1（专家全在每个 rank 上，无跨 rank 不均衡）"))
+        return 1.0
+    if sv.moe_expert_load:
+        n = next(L.ffn.n_experts for L in m.layers if L.ffn.kind == "moe")
+        if len(sv.moe_expert_load) != n:
+            raise ValueError(f"serving.moe_expert_load needs {n} entries (one per routed expert), got "
+                             f"{len(sv.moe_expert_load)}")
+        return skew_from_load(sv.moe_expert_load, lay.ep)
+    return float(sv.moe_skew)
 
 
 def _comm(sys: System, kind: str, payload: float, group: int, stride: int = 1,
@@ -276,16 +295,17 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if sv.spec_k and not m.mtp_layers and sv.phase == "decode":
         warnings.append("spec_k 已忽略：该模型没有 MTP 模块（独立草稿模型的投机解码未建模）")
     pp = lay.pp
+    skew = _moe_skew(m, sv, lay, warnings)
     if sv.phase == "decode":
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
         q = 1 + spec_k
-        ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx)
+        ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=skew)
         ctx_cap = sv.ctx + q
     else:
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
-        ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt, 0)
+        ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt, 0, skew=skew)
         ctx_cap = sv.prompt
     sh = lay.shard
     stages = []
@@ -354,7 +374,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         ttft = step
         thr = sv.batch * sv.prompt / step
     return Result(scn, m, stages, tick, step, e_tok, tpot, ttft, thr, thr / lay.cards, fits,
-                  stages[heavy].time.bound, heavy, warnings, mb)
+                  stages[heavy].time.bound, heavy, warnings, mb, moe_skew=skew)
 
 
 def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]) -> Result:

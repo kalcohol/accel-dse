@@ -95,6 +95,7 @@ class Phase:
     frames: int = 0      # full: latent frames of the video grid (factorized spatial / temporal attention)
     aux: int = 0         # full: joint audio rows in the sequence (MiniMax-H3)
     pair: PairDims | None = None   # full: structure-model grids (AlphaFold-family / ESMFold trunks)
+    skew: float = 1.0    # MoE: token-expert pairs on the busiest EP rank / the mean (0.49; 1 = uniform routing)
 
     def __post_init__(self):
         if self.kind not in ("decode", "prefill", "full"):
@@ -192,10 +193,16 @@ class Routing:
     hit: int             # distinct local experts touched
     m_e: int             # rows per hit expert GEMM
     n_local: int         # experts stored on this rank
+    pairs_mean: float = 0.0  # mean pairs per rank (= pairs_local without skew)
 
 
-def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int) -> Routing:
-    """Uniform-routing expectation (「假设」: no skew).  E_hit = n·(1−(1−k/E)^T)."""
+def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int, skew: float = 1.0) -> Routing:
+    """Uniform-routing expectation (「假设」).  E_hit = n·(1−(1−k/E)^T).
+
+    ``skew`` (0.49, default 1 = uniform): the busiest EP rank receives skew × the mean T·k/EP token-expert pairs
+    (capped at T·k and at T per local expert).  Its distinct-expert count stays the uniform expectation (the extra
+    load lands on popular experts) unless T rows per expert cannot hold it.  The busiest rank sets the stage time
+    (all ranks wait for it at the combine all-to-all)."""
     n_local = _cdiv(n_experts, ep)
     if tokens <= 0:
         return Routing(0, 0.0, 0, 0, n_local)
@@ -204,9 +211,24 @@ def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int) -> Routing:
     e_hit_glob = n_experts * (1.0 - p_miss)
     hit = max(math.ceil(e_hit_local - 1e-9), math.ceil(e_hit_glob / ep - 1e-9), 1)
     hit = min(hit, n_local)
-    pairs_local = tokens * top_k / ep
+    pairs_mean = tokens * top_k / ep
+    pairs_local = pairs_mean
+    if skew > 1.0 and ep > 1:
+        pairs_local = min(pairs_mean * skew, float(tokens * top_k), float(n_local * tokens))
+        hit = min(n_local, max(hit, math.ceil(pairs_local / tokens - 1e-9)))
     m_e = max(1, math.ceil(pairs_local / hit))
-    return Routing(tokens, pairs_local, hit, m_e, n_local)
+    return Routing(tokens, pairs_local, hit, m_e, n_local, pairs_mean)
+
+
+def skew_from_load(load: tuple[float, ...], ep: int) -> float:
+    """Busiest-rank / mean load of a measured per-expert token distribution under contiguous expert placement
+    (expert e on EP rank e // ceil(E / EP), the default linear placement of vLLM / SGLang without EPLB)."""
+    if ep <= 1 or not load:
+        return 1.0
+    n_local = _cdiv(len(load), ep)
+    ranks = [sum(load[r * n_local:(r + 1) * n_local]) for r in range(ep)]
+    mean = sum(load) / ep
+    return max(1.0, max(ranks) / mean) if mean > 0 else 1.0
 
 
 # ------------------------------------------------------------------ attention core
@@ -327,7 +349,7 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
             role = "router" if l.name.startswith(("router", "shared_expert_gate")) else (
                 "shared_expert" if l.name.startswith("shared") else "mlp")
             ops.append(gemm(model, f"moe.{l.name}", li, t, k, n, role, replicated=_repl(l, tp)))
-        r = moe_routing(f.n_experts, f.top_k, T, sh.ep)
+        r = moe_routing(f.n_experts, f.top_k, T, sh.ep, ph.skew)
         d_loc = _cdiv(f.d_expert, sh.etp)
         ein = f.expert_in(h)
         if r.hit:

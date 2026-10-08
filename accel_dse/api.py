@@ -15,6 +15,7 @@ from typing import Any
 
 from . import __version__, mem_catalog
 from .core.catalog import DOMAINS, catalog_listing, get_model, labels, list_models, offline_entries, unlisted_models
+from .core.budget import Budget, budget_report
 from .core.energy import EnergyTable, energy_report
 from .core.evaluate import Result, evaluate
 from .core.hardware import CHIPS, Chip
@@ -32,7 +33,7 @@ SWEEP_PATHS = {
     "serving.batch": int, "serving.ctx": int, "serving.prompt": int, "serving.spec_k": int,
     "chip.sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
-    "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
+    "serving.moe_skew": float, "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
     "workload.frames": int, "workload.steps": int, "workload.height": int, "workload.width": int,
     "workload.seq_len": int, "workload.msa": int, "workload.recycles": int, "workload.samples": int,
 }
@@ -253,22 +254,58 @@ def api_memory(body: dict) -> dict:
                        "meta_mode": s.meta_mode}}
 
 
+def _energy_table(body: dict) -> EnergyTable:
+    try:
+        return EnergyTable.from_dict(body.get("energy"))
+    except (ValueError, TypeError) as e:
+        raise ApiError(str(e)) from None
+
+
+def _budget(body: dict) -> Budget | None:
+    """Optional resource / area budget (0.49): body top-level ``budget`` (not part of the scenario)."""
+    if body.get("budget") is None:
+        return None
+    try:
+        return Budget.from_dict(body["budget"])
+    except (ValueError, TypeError) as e:
+        raise ApiError(str(e)) from None
+
+
+def _budget_of(res, b: Budget | None, table: EnergyTable) -> dict | None:
+    if b is None or res is None:
+        return None
+    return budget_report(res, b, energy_report(res, table) if b.power_W_card is not None else None)
+
+
+def _flag_rows(dicts: list[dict], results: list, body: dict) -> list[dict]:
+    """Budget flags on search / sweep rows; rows that break the budget are ranked after the rest (stable)."""
+    b = _budget(body)
+    if b is None:
+        return dicts
+    table = _energy_table(body)
+    for d, res in zip(dicts, results):
+        rep = _budget_of(res, b, table)
+        d["budget_ok"] = rep["ok"] if rep else None
+        d["budget_violations"] = rep["violations"] if rep else []
+    return sorted(dicts, key=lambda d: d.get("budget_ok") is False)
+
+
 def api_eval(body: dict) -> dict:
     scn = scenario_from_body(body)
+    bud = _budget(body)
     if body.get("best_batch"):
         bb = best_batch(scn)
         if bb.batch:
             scn = scn.replace("serving.batch", bb.batch)
-    try:
-        table = EnergyTable.from_dict(body.get("energy"))
-    except (ValueError, TypeError) as e:
-        raise ApiError(str(e)) from None
+    table = _energy_table(body)
     try:
         r = evaluate(scn)
     except ValueError as e:
         raise ApiError(str(e)) from None
     out = result_dict(r, with_goodput=bool(body.get("goodput", True)))
     out["energy"] = energy_report(r, table)      # 0.47.1: action counts always; J only for user-supplied entries
+    if bud is not None:
+        out["budget"] = budget_report(r, bud, out["energy"])
     return out
 
 
@@ -277,18 +314,28 @@ def api_layouts(body: dict) -> dict:
     obj = _objective(body)
     stats: dict = {}
     rows = search_layouts(scn, _cards(body), objective=obj, top=16, stats=stats)
-    return {"objective": obj, "mapping": scn.mapping, "rows": [_row(r, obj) for r in rows],
+    return {"objective": obj, "mapping": scn.mapping,
+            "rows": _flag_rows([_row(r, obj) for r in rows], [r.result for r in rows], body),
             "n_layouts": stats["layouts"], "stats": stats}
 
 
 def _compare_row(body: dict, org: str) -> dict:
     scn = scenario_from_body(body).replace("mapping", org)
     obj = _objective(body)
-    rows = search_layouts(scn, _cards(body), objective=obj, top=2)
+    bud = _budget(body)
+    rows = search_layouts(scn, _cards(body), objective=obj, top=2 if bud is None else 8)
+    if bud is not None:     # best layout within the budget (searched without it; flagged rows ranked last)
+        table = _energy_table(body)
+        ok = [r for r in rows if (_budget_of(r.result, bud, table) or {}).get("ok") is not False]
+        rows = ok + [r for r in rows if r not in ok]
     top = rows[0]
     d = _row(top, obj)
     d["label"] = ORG_LABEL[org]
     d["runner_up"] = _row(rows[1], obj) if len(rows) > 1 else None
+    if bud is not None:
+        _flag_rows([d], [top.result], body)
+        if d["runner_up"]:
+            _flag_rows([d["runner_up"]], [rows[1].result], body)
     if obj == "decode" and top.result is not None and scn.serving.phase == "decode" and top.result.workload is None:
         g = goodput(top.result)
         d.update(goodput_card=g.goodput_per_card, ttft_ms=g.ttft_ms, ttft_ok=g.ttft_ok)
@@ -352,9 +399,13 @@ def api_fit(body: dict) -> dict:
         out["max_batch"] = lo
         return out
     cards = scn.layout.cards
+    bud = _budget(body)
     for n in (2, 4, 8, 16, 32, 64):
         if n <= cards:
             continue
+        if bud is not None and bud.cards is not None and n > bud.cards:
+            out["budget_cards_limit"] = int(bud.cards)      # more cards would break the card budget
+            break
         fit = [lay for lay in enumerate_layouts(n, m.n_layers, m.is_moe, full=not m.kv_cache, pair=m.is_pair)
                if evaluate(scn.replace("layout", lay).replace("serving.batch", 1)).fits]
         if not fit:
@@ -408,7 +459,7 @@ def api_sweep(body: dict) -> dict:
     if not isinstance(vals, list) or not (1 <= len(vals) <= 32):
         raise ApiError("values must be a list of 1..32 numbers")
     typ = SWEEP_PATHS[path]
-    rows = []
+    rows, results = [], []
     for v in vals:
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             raise ApiError("values must be numbers")
@@ -425,4 +476,8 @@ def api_sweep(body: dict) -> dict:
                      "latency_ms": None if llm else r.latency * 1e3, "tok_s": r.throughput,
                      "tok_s_card": r.per_card, "bound": r.bound, "fits": r.fits,
                      "array_util": r.stages[r.heaviest_stage].time.array_util})
+        results.append(r)
+    if _budget(body) is not None:       # flag only — sweep rows keep their order
+        order = {id(d): i for i, d in enumerate(rows)}
+        rows = sorted(_flag_rows(rows, results, body), key=lambda d: order[id(d)])
     return {"path": path, "rows": rows, "base_hash": scn.hash()}

@@ -161,8 +161,28 @@
       <label class="llm-only">TPOT SLO ms<input type="number" id="s-tpot_slo_ms" min="1" step="5"></label>
       <label class="llm-only">TTFT SLO ms<input type="number" id="s-ttft_slo_ms" min="1" step="100"></label>
       <label>微批数<input type="number" id="s-microbatches" min="0" step="1" title="0 = 自动（= PP）"></label>
+      <label class="moe-only" title="MoE 负载倾斜：最忙的 EP rank 收到的 token-专家对 / 平均值。1 = 均匀路由（默认）。最忙 rank 决定级时间；all-to-all 按最忙 rank 的载荷计；能耗计数不变（倾斜只在 rank 间搬工作）。实测每专家 token 分布可经 API / CLI 的 moe_expert_load 给出">MoE 倾斜 <span class="tag assume">假设</span><input type="number" id="s-moe_skew" min="1" max="64" step="0.05"></label>
     </div>
     <label class="inline"><input type="checkbox" id="best-batch"> <span id="best-batch-label">自动取满足 TPOT SLO 的最大 batch</span></label>
+  </section>
+
+  <section class="grp">
+    <h3>资源 / 面积预算 <span class="tag assume">用户提供</span></h3>
+    <div class="small muted">可选设计约束：只报告余量、标出超限；搜索本身不受影响，超预算的布局排在后面。工具不内置工艺库——面积按你填的密度「假设」估算，缺密度或缺固定面积时只给下界。</div>
+    <div class="row3">
+      <label title="每卡片上 SRAM 上限">SRAM MiB / 卡<input type="number" id="b-sram_mib" min="0" step="16"></label>
+      <label title="每卡 MAC 单元上限（rows·cols·engines）">MAC / 卡<input type="number" id="b-macs" min="0" step="1024"></label>
+      <label title="每卡峰值 bf16 TFLOPS 上限">TFLOPS / 卡<input type="number" id="b-tflops" min="0" step="10"></label>
+      <label title="每副本卡数上限（容量检查给出的最少卡数也受此限）">卡数上限<input type="number" id="b-cards" min="1" step="1"></label>
+      <label title="每卡平均功耗上限（需要左侧能耗表；表不全时只是下界）">功耗 W / 卡<input type="number" id="b-power_W_card" min="0" step="10"></label>
+      <label title="每卡 DRAM 容量上限">DRAM GiB / 卡<input type="number" id="b-dram_GiB" min="0" step="8"></label>
+      <label title="每卡面积代理上限，mm²">面积 mm² / 卡<input type="number" id="b-die_mm2" min="0" step="50"></label>
+      <label title="每 MiB SRAM（含外围）的面积，mm²「假设」">mm² / MiB SRAM<input type="number" id="b-mm2_per_mib_sram" min="0" step="0.05"></label>
+      <label title="每 1024 个 MAC 单元的面积，mm²「假设」">mm² / kMAC<input type="number" id="b-mm2_per_kmac" min="0" step="0.05"></label>
+      <label title="每 MiB SLC 的面积，mm²「假设」（有 SLC 时需要）">mm² / MiB SLC<input type="number" id="b-mm2_per_mib_slc" min="0" step="0.05"></label>
+      <label title="I/O、PHY、向量单元、NoC 等固定面积，mm²「假设」；已计入密度时填 0">固定 mm²<input type="number" id="b-mm2_fixed" min="0" step="10"></label>
+      <label title="每副本硅面积代理上限（卡数 × 每卡面积），mm²">面积 mm² / 副本<input type="number" id="b-system_mm2" min="0" step="100"></label>
+    </div>
   </section>
 
   <section class="grp">
@@ -202,6 +222,10 @@
     <div class="scroll"><table class="tbl" id="mem-tbl"></table></div>
     <h4>动作计数与能耗 <span class="small muted">每输出单位；能耗只按左侧「能耗」里填写的项计算</span></h4>
     <div class="scroll"><table class="tbl" id="energy-tbl"></table></div>
+    <div id="budget-box" hidden>
+      <h4>资源 / 面积预算 <span class="small muted">余量 = 1 − 用量 / 限额；「?」= 无法判定（缺输入或只有下界）</span></h4>
+      <div class="scroll"><table class="tbl" id="budget-tbl"></table></div>
+    </div>
     <h4>本次评估的「假设」</h4>
     <ul class="assume-list" id="assume-list"></ul>
   </section>

@@ -121,7 +121,9 @@ function body(extra = {}) {
   sc.formats_override = overrides();
   if (S.memInfo) sc.mem_id = S.memInfo.id;
   const en = Object.fromEntries(Object.entries(S.energy || {}).filter(([, v]) => v !== null && v !== undefined));
-  return { chip_preset: S.preset, scenario: sc, ...(Object.keys(en).length ? { energy: en } : {}), ...extra };
+  const bu = Object.fromEntries(Object.entries(S.budget || {}).filter(([, v]) => v !== null && v !== undefined));
+  return { chip_preset: S.preset, scenario: sc, ...(Object.keys(en).length ? { energy: en } : {}),
+    ...(Object.keys(bu).length ? { budget: bu } : {}), ...extra };
 }
 
 /* ------------------------------------------------------------------ inputs */
@@ -451,6 +453,7 @@ function renderEval(r) {
     ...(r.model.what_if ? [h('div', {}, 'what-if：dtype 已偏离官方发布，结果仅供推演。')] : []));
   renderStages(r);
   renderEnergy(r);
+  renderBudget(r);
   { const P = r.scenario.package_cards || 1, tot = r.stages.reduce((x, st) => x + (st.link_GB ? st.link_GB.total : 0), 0),
       d = r.stages.reduce((x, st) => x + (st.link_GB ? st.link_GB.d2d : 0), 0);
     $('tier-note').textContent = P > 1 ? `每封装 ${P} 卡：DiT / 流水级通信字节中 ${tot > 0 ? pct(d / tot) : '—'} 走 D2D，其余走网络层` : ''; }
@@ -608,6 +611,24 @@ function renderEnergy(r) {
     h('td', { class: 'num' }, h('b', {}, sci(e.J_per_unit)), ` · 平均 ${num(e.avg_W_per_card)} W/卡`)));
   put($('energy-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
 }
+function budgetMark(x) {
+  if (x.budget_ok === false) return h('span', { class: 'tag danger', title: '超出预算：' + (x.budget_violations || []).join(', ') }, '超预算');
+  if (x.budget_ok === null) return h('span', { class: 'tag', title: '预算无法判定（缺输入或只有下界）' }, '预算?');
+  return null;
+}
+function renderBudget(r) {
+  const b = r.budget;
+  $('budget-box').hidden = !b;
+  if (!b) return;
+  const mark = (ok) => ok === true ? h('span', { style: 'color:var(--ok)' }, '✓ 未超') : ok === false ? h('span', { style: 'color:var(--danger);font-weight:700' }, '✗ 超出') : h('span', { class: 'muted' }, '? 无法判定');
+  const head = h('tr', {}, h('th', { class: 'l' }, '项目'), h('th', {}, '用量'), h('th', {}, '限额'), h('th', {}, '余量'), h('th', { class: 'l' }, '判定'), h('th', { class: 'l' }, '说明'));
+  const rows = b.items.map((i) => h('tr', {}, h('td', { class: 'l' }, i.label), h('td', {}, i.value === null ? '—' : num(i.value) + ' ' + i.unit),
+    h('td', {}, num(i.limit) + ' ' + i.unit), h('td', {}, i.headroom === null ? '—' : pct(i.headroom)), h('td', { class: 'l' }, mark(i.ok)),
+    h('td', { class: 'l small' }, i.note || '')));
+  if (b.area && b.area.mm2 !== null) rows.push(h('tr', {}, h('td', { class: 'l' }, '面积代理分项'), h('td', { colspan: 5, class: 'l small' },
+    Object.entries(b.area.terms).map(([k, v]) => `${{ sram: 'SRAM', slc: 'SLC', mac: 'MAC 阵列', fixed: '固定' }[k] || k} ${num(v)} mm²`).join(' + ') + ` = ${num(b.area.mm2)} mm² / 卡「假设」`)));
+  put($('budget-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
+}
 function renderStages(r) {
   const hasSlc = r.stages.some((st) => st.mem.slc_MiB > 0);
   const COMPS = hasSlc ? ['mac', 'feed', 'vector', 'dram', 'slc', 'link', 'sync'] : COMPONENTS;
@@ -752,7 +773,7 @@ function paintCompare(r, stab) {
     return h('tr', { class: (ok ? 'click ' : '') + (x.mapping === r.best_mapping && ok ? 'best' : ''), title: ok ? '点击把映射、布局（含卡数）和 batch 应用到场景' : '',
       onclick: ok ? () => applyRow(x) : null },
       h('td', { class: 'l' }, x.label),
-      h('td', { class: 'l mono' }, ok ? x.layout : '放不下',
+      h('td', { class: 'l mono' }, ok ? x.layout : '放不下', ' ', budgetMark(x),
         x.runner_up ? h('div', { class: 'small muted' }, `次优 ${x.runner_up.layout}（${num(x.runner_up.score)}）`) : null),
       h('td', {}, ok ? x.batch : '—'),
       h('td', { style: gp ? '' : 'font-weight:700' }, ok ? num(x.tok_s_card) : '—'),
@@ -805,7 +826,7 @@ async function runLayouts() {
       hasG ? h('th', {}, 'goodput/卡') : null, h('th', {}, full ? (model().domain === 'gen' ? '单段延迟' : '批延迟') : 'TPOT ms'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '有效 MAC'),
       hasG ? h('th', {}, 'prefill TTFT') : null);
     const rows = r.rows.map((x, i) => h('tr', { class: (x.batch ? 'click ' : '') + (i === 0 && x.batch ? 'best' : ''), onclick: x.batch ? () => applyRow(x) : null },
-      h('td', {}, i + 1), h('td', { class: 'l mono' }, x.layout), h('td', {}, x.batch || '放不下'), h('td', {}, num(x.tok_s_card)),
+      h('td', {}, i + 1), h('td', { class: 'l mono' }, x.layout, ' ', budgetMark(x)), h('td', {}, x.batch || '放不下'), h('td', {}, num(x.tok_s_card)),
       hasG ? h('td', {}, num(x.goodput_card)) : null, h('td', {}, x.batch ? latCell(x) : '—'), h('td', {}, boundTag(x.bound)),
       h('td', { class: 'l' }, h('span', { class: 'ubar' }, h('i', { style: `width:${Math.min(100, (x.array_util || 0) * 100)}%` })), pct(x.array_util)),
       hasG ? h('td', {}, x.ttft_ok === undefined ? '—' : ttftFlag(x.ttft_ok, x.ttft_ms)) : null));
@@ -831,12 +852,12 @@ const SWEEP_ZH = {
   'serving.batch': 'batch', 'serving.ctx': '上下文 ctx', 'serving.prompt': 'prompt 长度', 'serving.spec_k': '投机 k',
   'chip.sram_mib': 'SRAM MiB', 'chip.sram_port_Bpc': 'SRAM 端口 B/cycle', 'chip.freq_ghz': '频率 GHz', 'chip.mac_eff': 'MAC 效率',
   'chip.gemv_macs': 'GEMV MAC/cycle', mem_eff: 'DRAM 效率', 'link.GBps': '网络层 GB/s', 'link.alpha_us': '网络 α µs',
-  'chip.slc_mib': 'SLC MiB', 'chip.slc_GBps': 'SLC GB/s', 'd2d.GBps': 'D2D GB/s', 'd2d.alpha_us': 'D2D α µs', package_cards: '每封装卡数',
+  'serving.moe_skew': 'MoE 倾斜', 'chip.slc_mib': 'SLC MiB', 'chip.slc_GBps': 'SLC GB/s', 'd2d.GBps': 'D2D GB/s', 'd2d.alpha_us': 'D2D α µs', package_cards: '每封装卡数',
   'workload.frames': '帧数', 'workload.steps': '去噪步数', 'workload.height': '高 px', 'workload.width': '宽 px',
   'workload.seq_len': '序列长度（残基）', 'workload.msa': 'MSA 行数', 'workload.recycles': '主干遍数',
   'workload.samples': '扩散样本数',
 };
-const SWEEP_DOMAIN = { 'serving.ctx': 'llm', 'serving.prompt': 'llm', 'serving.spec_k': 'llm', 'workload.frames': 'gen',
+const SWEEP_DOMAIN = { 'serving.moe_skew': 'llm', 'serving.ctx': 'llm', 'serving.prompt': 'llm', 'serving.spec_k': 'llm', 'workload.frames': 'gen',
   'workload.steps': 'gen', 'workload.height': 'gen', 'workload.width': 'gen', 'workload.seq_len': 'protein',
   'workload.msa': 'pair', 'workload.recycles': 'pair', 'workload.samples': 'pair' };
 function fillSweepPaths() {
@@ -854,7 +875,7 @@ const SWEEP_DEFAULT = {
   'serving.spec_k': '0,1,2,3,4,6,8', 'chip.sram_mib': '16,32,64,128,256,512', 'chip.sram_port_Bpc': '2048,4096,7616,16384,32768',
   'chip.freq_ghz': '0.6,0.8,1,1.2,1.5', 'chip.mac_eff': '0.5,0.6,0.7,0.8,0.9,1', 'chip.gemv_macs': '1024,4096,12544,50176',
   mem_eff: '0.5,0.6,0.7,0.8,0.9', 'link.GBps': '50,100,200,400,900', 'link.alpha_us': '0,1,3,5,10',
-  'chip.slc_mib': '0,64,256,1024,4096', 'chip.slc_GBps': '500,1000,2000,4000', 'd2d.GBps': '500,1000,2000,4000',
+  'serving.moe_skew': '1,1.25,1.5,2,3,4', 'chip.slc_mib': '0,64,256,1024,4096', 'chip.slc_GBps': '500,1000,2000,4000', 'd2d.GBps': '500,1000,2000,4000',
   'd2d.alpha_us': '0,0.5,1,2', package_cards: '1,2,4,8',
   'workload.frames': '17,33,49,81,121', 'workload.steps': '10,20,30,50', 'workload.height': '240,480,720',
   'workload.width': '416,832,1280', 'workload.seq_len': '128,256,512,1022,2048',
@@ -1035,6 +1056,10 @@ async function init() {
   for (const k of ['clip_slo_s', 'seq_slo_ms', 'fold_slo_s']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
   bindNumber('w-host_GBps', () => S.sc.workload.host_GBps, (x) => (S.sc.workload.host_GBps = x));
   bindNumber('w-host_TFLOPS', () => S.sc.workload.host_TFLOPS, (x) => (S.sc.workload.host_TFLOPS = x));
+  for (const k of ['sram_mib', 'macs', 'tflops', 'cards', 'power_W_card', 'dram_GiB', 'die_mm2', 'mm2_per_mib_sram', 'mm2_per_kmac',
+    'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2'])
+    bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
+      { nullable: true, int: k === 'cards' });
   for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   $('best-layout').addEventListener('click', bestLayout);
@@ -1053,6 +1078,7 @@ async function init() {
   for (const k of ['batch', 'ctx', 'prompt', 'out_len', 'spec_k', 'microbatches'])
     bindNumber('s-' + k, () => S.sc.serving[k], (x) => (S.sc.serving[k] = x), { int: true });
   for (const k of ['spec_accept', 'tpot_slo_ms', 'ttft_slo_ms']) bindNumber('s-' + k, () => S.sc.serving[k], (x) => (S.sc.serving[k] = x));
+  bindNumber('s-moe_skew', () => S.sc.serving.moe_skew ?? 1, (x) => (S.sc.serving.moe_skew = x));
   bindNumber('mem_eff', () => S.sc.mem_eff, (x) => (S.sc.mem_eff = x), { nullable: true });
   seg('phase', null, () => S.sc.serving.phase, (v) => { S.sc.serving.phase = v; schedule(); });
   $('best-batch').addEventListener('change', (e) => { S.best = e.target.checked; schedule(); });

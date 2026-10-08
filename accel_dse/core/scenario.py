@@ -32,6 +32,8 @@ class Serving:
     spec_accept: float = 0.7       # per-draft acceptance (「假设」)
     tpot_slo_ms: float = 50.0
     ttft_slo_ms: float = 2000.0
+    moe_skew: float = 1.0          # MoE: busiest EP rank's token-expert pairs / mean (0.49; 1 = uniform) 「假设」
+    moe_expert_load: tuple[float, ...] = ()   # MoE: relative tokens per expert (measured) → skew per EP layout
 
     def __post_init__(self):
         if self.phase not in ("decode", "prefill"):
@@ -50,6 +52,16 @@ class Serving:
             v = getattr(self, k)
             if not (v > 0 and math.isfinite(v)):
                 raise ValueError(f"serving.{k} must be finite > 0")
+        if isinstance(self.moe_skew, bool) or not isinstance(self.moe_skew, (int, float)) \
+                or not (1.0 <= self.moe_skew <= 64.0):
+            raise ValueError("serving.moe_skew must be in [1, 64]")
+        ld = self.moe_expert_load
+        if ld:
+            if len(ld) > 4096 or any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x)
+                                     or x < 0 for x in ld) or sum(ld) <= 0:
+                raise ValueError("serving.moe_expert_load: ≤ 4096 finite numbers ≥ 0 with a positive sum")
+            if self.moe_skew != 1.0:
+                raise ValueError("serving.moe_skew and serving.moe_expert_load are alternatives — set one")
 
 
 PLACEMENTS = ("auto", "resident", "shard", "offload", "shard+offload")
@@ -203,6 +215,8 @@ def _from_plain(cls, d):
             kw[k] = _from_plain(hints[k], v)
         elif k in ("formats_override", "rates") and isinstance(v, list):
             kw[k] = tuple(tuple(x) for x in v)
+        elif k == "moe_expert_load" and isinstance(v, list):
+            kw[k] = tuple(_check_num(x, "Serving.moe_expert_load") for x in v)
         else:
             if isinstance(v, (list, dict)):
                 raise ValueError(f"{cls.__name__}.{k}: unexpected structure")
