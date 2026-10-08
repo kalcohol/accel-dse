@@ -1,0 +1,225 @@
+{
+ "bytes_llm": 11140566144,
+ "bytes_mtp": 0,
+ "bytes_total": 11140566144,
+ "config": {
+  "_class_name": "CogVideoXTransformer3DModel",
+  "_diffusers_version": "0.31.0.dev0",
+  "activation_fn": "gelu-approximate",
+  "attention_bias": true,
+  "attention_head_dim": 64,
+  "dropout": 0.0,
+  "flip_sin_to_cos": true,
+  "freq_shift": 0,
+  "in_channels": 16,
+  "max_text_seq_length": 226,
+  "norm_elementwise_affine": true,
+  "norm_eps": 1e-05,
+  "num_attention_heads": 48,
+  "num_layers": 42,
+  "out_channels": 16,
+  "patch_size": 2,
+  "sample_frames": 49,
+  "sample_height": 60,
+  "sample_width": 90,
+  "spatial_interpolation_scale": 1.875,
+  "temporal_compression_ratio": 4,
+  "temporal_interpolation_scale": 1.0,
+  "text_embed_dim": 4096,
+  "time_embed_dim": 512,
+  "timestep_activation_fn": "silu",
+  "use_rotary_positional_embeddings": true
+ },
+ "domain": "video",
+ "fetched": "2026-10-08",
+ "n_tensors": 1024,
+ "params_llm": 5570283072,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "zai-org/CogVideoX-5b",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 3171926016,
+    "params": 1585963008
+   }
+  },
+  "cond": {
+   "bf16": {
+    "bytes": 1623691264,
+    "params": 811845632
+   }
+  },
+  "io": {
+   "bf16": {
+    "bytes": 792704,
+    "params": 396352
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 6343077888,
+    "params": 3171538944
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 1078272,
+    "params": 539136
+   }
+  }
+ },
+ "shapes": {
+  "norm_final.bias": [
+   3072
+  ],
+  "norm_final.weight": [
+   3072
+  ],
+  "norm_out.linear.bias": [
+   6144
+  ],
+  "norm_out.linear.weight": [
+   6144,
+   512
+  ],
+  "norm_out.norm.bias": [
+   3072
+  ],
+  "norm_out.norm.weight": [
+   3072
+  ],
+  "patch_embed.proj.bias": [
+   3072
+  ],
+  "patch_embed.proj.weight": [
+   3072,
+   16,
+   2,
+   2
+  ],
+  "patch_embed.text_proj.bias": [
+   3072
+  ],
+  "patch_embed.text_proj.weight": [
+   3072,
+   4096
+  ],
+  "proj_out.bias": [
+   64
+  ],
+  "proj_out.weight": [
+   64,
+   3072
+  ],
+  "time_embedding.linear_1.bias": [
+   512
+  ],
+  "time_embedding.linear_1.weight": [
+   512,
+   3072
+  ],
+  "time_embedding.linear_2.bias": [
+   512
+  ],
+  "time_embedding.linear_2.weight": [
+   512,
+   512
+  ],
+  "transformer_blocks.0.attn1.norm_k.bias": [
+   64
+  ],
+  "transformer_blocks.0.attn1.norm_k.weight": [
+   64
+  ],
+  "transformer_blocks.0.attn1.norm_q.bias": [
+   64
+  ],
+  "transformer_blocks.0.attn1.norm_q.weight": [
+   64
+  ],
+  "transformer_blocks.0.attn1.to_k.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_k.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_out.0.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_q.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_q.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_v.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn1.to_v.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.ff.net.0.proj.bias": [
+   12288
+  ],
+  "transformer_blocks.0.ff.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.0.ff.net.2.bias": [
+   3072
+  ],
+  "transformer_blocks.0.ff.net.2.weight": [
+   3072,
+   12288
+  ],
+  "transformer_blocks.0.norm1.linear.bias": [
+   18432
+  ],
+  "transformer_blocks.0.norm1.linear.weight": [
+   18432,
+   512
+  ],
+  "transformer_blocks.0.norm1.norm.bias": [
+   3072
+  ],
+  "transformer_blocks.0.norm1.norm.weight": [
+   3072
+  ],
+  "transformer_blocks.0.norm2.linear.bias": [
+   18432
+  ],
+  "transformer_blocks.0.norm2.linear.weight": [
+   18432,
+   512
+  ],
+  "transformer_blocks.0.norm2.norm.bias": [
+   3072
+  ],
+  "transformer_blocks.0.norm2.norm.weight": [
+   3072
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "text_encoder/model-00001-of-00002.safetensors": 4994582224,
+   "text_encoder/model-00002-of-00002.safetensors": 4530066360,
+   "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": 9925342208,
+   "transformer/diffusion_pytorch_model-00002-of-00002.safetensors": 1215340384,
+   "vae/diffusion_pytorch_model.safetensors": 862388596
+  },
+  "revision": "main",
+  "spec": "zai-org/CogVideoX-5b:transformer",
+  "subfolder": "transformer"
+ },
+ "torch_dtype": null
+}

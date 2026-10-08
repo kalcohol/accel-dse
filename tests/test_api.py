@@ -101,12 +101,17 @@ def test_memory_endpoint_resolves_ids_and_fields():
 
 
 def test_models_three_axis_labels_llm_only():
+    """(0.41: name kept) every evaluable model carries the three labels; video / protein entries are evaluable only
+    for the release-backed builders (Wan2.1 / CogVideoX / ESM-2), every other one is a catalog-only row."""
     models = list_models()
     raw = json.loads((ROOT / "accel_dse" / "data" / "series_catalog.json").read_text())
     non_llm = {e["id"] for e in raw["entries"] if e.get("domain") != "llm"}
-    assert non_llm and not non_llm & {m["id"] for m in models}  # video / protein entries are not evaluable
-    out = api.api_models()                                      # … but listed as catalog-only rows
-    assert non_llm - set(UNLISTED) == {o["id"] for o in out["offline"]}
+    live = {"wan2.1-14b", "wan2.1-1.3b", "cogvideox-5b", "cogvideox-2b", "esm2-3b", "esm2-650m"}
+    ids = {m["id"] for m in models}
+    assert live <= non_llm and non_llm & ids == live
+    assert {m["domain"] for m in models if m["id"] in live} == {"gen", "protein"}
+    out = api.api_models()                                      # … the rest listed as catalog-only rows
+    assert non_llm - set(UNLISTED) - live == {o["id"] for o in out["offline"]}
     assert sorted(out["catalog"]) == sorted([m["id"] for m in models] + [o["id"] for o in out["offline"]])
     for m in models:
         assert m["provenance"] in ("official", "mirror") and m["coverage"] in ("full", "partial", "proxy")

@@ -1,7 +1,7 @@
 """L7 — exact search over batch × layout × mapping, Pareto front.
 
 Batch search (per layout): maximise throughput B·E/step(B) subject to
-TPOT ≤ SLO and capacity.  Exactness relies on two properties that the test
+the latency SLO (LLM: TPOT; video: clip latency; protein: batch latency) and capacity.  Exactness relies on two properties that the test
 suite certifies by brute force on every catalog family:
   (P1) step(B) is non-decreasing in B;
   (P2) feasibility (fits ∧ TPOT ≤ SLO) is monotone (true ⇒ true for smaller B).
@@ -30,7 +30,7 @@ class BatchBest:
 
 
 def _feasible(r: Result) -> bool:
-    return r.fits and r.tpot * 1e3 <= r.scenario.serving.tpot_slo_ms
+    return r.fits and r.slo_ok
 
 
 class _BatchSearch:
@@ -204,9 +204,11 @@ def search_layouts(base: Scenario, cards: int, mappings: tuple[str, ...] | None 
         raise ValueError("objective must be decode|goodput")
     from .serving import goodput as _goodput, prefill_rate as _prefill_rate
     m = get_model(base.model)
+    if objective == "goodput" and not m.kv_cache:
+        raise ValueError("goodput 目标仅适用于 LLM / VLM（视频 / 蛋白质模型用 decode 目标：单位/s/卡）")
     cands = []
     for org in (mappings or (base.mapping,)):
-        for lay in enumerate_layouts(cards, m.n_layers, m.is_moe, max_tp=max_tp):
+        for lay in enumerate_layouts(cards, m.n_layers, m.is_moe, max_tp=max_tp, full=not m.kv_cache):
             cands.append((lay, org, _BatchSearch(base.replace("layout", lay).replace("mapping", org))))
     rows: list[LayoutRow] = []
 
@@ -269,10 +271,15 @@ def pareto(points: list[tuple[float, float, object]]) -> list[tuple[float, float
 
 
 def tpot_throughput_front(base: Scenario, batches: list[int] | None = None) -> list[dict]:
+    """Latency–throughput Pareto front over batch (LLM: TPOT vs tok/s/card; video / protein: request
+    latency vs units/s/card, keys latency_ms / units_s_card)."""
     batches = batches or [1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192, 256, 384, 512]
+    full = not get_model(base.model).kv_cache
     pts = []
     for b in batches:
         r = evaluate(base.replace("serving.batch", b))
         if r.fits:
-            pts.append((r.tpot * 1e3, r.per_card, b))
+            pts.append(((r.latency if full else r.tpot) * 1e3, r.per_card, b))
+    if full:
+        return [{"latency_ms": x, "units_s_card": y, "batch": b} for x, y, b in pareto(pts)]
     return [{"tpot_ms": x, "tok_s_card": y, "batch": b} for x, y, b in pareto(pts)]

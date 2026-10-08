@@ -7,7 +7,7 @@ model.safetensors.index.json, and every safetensors **header** via HTTP Range
 accel_dse.core (dtype per tensor role) and by the V1 validation (param counts).
 
 Raw files are cached under local/hf_cache/ (gitignored).
-Usage: python3 scripts/fetch_hf_release.py [repo_id ...]   (default: all in models.toml list)
+Usage: python3 scripts/fetch_hf_release.py [repo[:subfolder][@revision] ...]   (default: scripts/release_repos.txt)
 """
 from __future__ import annotations
 
@@ -17,10 +17,12 @@ import re
 import struct
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 CACHE = ROOT / "local" / "hf_cache"
 OUT = ROOT / "accel_dse" / "data" / "releases"
 HF = "https://huggingface.co"
@@ -49,35 +51,83 @@ def _json(url: str):
 
 
 def st_header(repo: str, fname: str) -> dict:
-    url = f"{HF}/{repo}/resolve/main/{fname}"
+    return st_header_url(f"{HF}/{repo}/resolve/main/{fname}")
+
+
+def st_header_url(url: str) -> dict:
     n = struct.unpack("<Q", _get(url, (0, 7)))[0]
     return json.loads(_get(url, (8, 8 + n - 1)).decode())
 
 
-def fetch(repo: str) -> dict:
+def parse_spec(spec: str) -> tuple[str, str, str]:
+    """``repo[:subfolder][@revision]`` → (repo, subfolder, revision).  Diffusers releases keep the denoiser in
+    ``transformer/``; a few official repos ship safetensors only on the HF safetensors-conversion PR
+    (e.g. ``facebook/esm2_t36_3B_UR50D@refs/pr/2``)."""
+    rev = "main"
+    if "@" in spec:
+        spec, rev = spec.split("@", 1)
+    repo, _, sub = spec.partition(":")
+    return repo, sub, rev
+
+
+def _tree_sizes(repo: str) -> dict[str, int]:
+    """Sizes of every weight file in the repo (main), for the components we do not model (text encoder, VAE …)."""
+    try:
+        items = _json(f"{HF}/api/models/{repo}/tree/main?recursive=1")
+    except Exception:
+        return {}
+    return {x["path"]: x.get("size", 0) for x in items
+            if x.get("type") == "file" and x["path"].endswith((".safetensors", ".pth", ".bin", ".pt", ".ckpt"))}
+
+
+def fetch(spec: str) -> dict:
+    repo, sub, rev = parse_spec(spec)
     d = CACHE / repo.replace("/", "__")
     d.mkdir(parents=True, exist_ok=True)
-    cfg = _json(f"{HF}/{repo}/resolve/main/config.json")
+    base = f"{HF}/{repo}/resolve/{rev.replace('/', '%2F')}/" + (sub + "/" if sub else "")
+    cfg = _json(base + "config.json")
     (d / "config.json").write_text(json.dumps(cfg, indent=1))
-    try:
-        idx = _json(f"{HF}/{repo}/resolve/main/model.safetensors.index.json")
-        files = sorted(set(idx["weight_map"].values()))
-    except urllib.error.HTTPError:
-        idx = None
-        files = ["model.safetensors"]
+    idx, files = None, None
+    for name in ("model.safetensors.index.json", "diffusion_pytorch_model.safetensors.index.json"):
+        try:
+            idx = _json(base + name)
+            files = sorted(set(idx["weight_map"].values()))
+            break
+        except urllib.error.HTTPError:
+            continue
+    if files is None:
+        for name in ("model.safetensors", "diffusion_pytorch_model.safetensors"):
+            try:
+                _get(base + name, (0, 7))
+                files = [name]
+                break
+            except urllib.error.HTTPError:
+                continue
+    if files is None:
+        raise RuntimeError("no safetensors in " + spec)
+    bin_total = None
+    if rev != "main":   # cross-check against the official main-branch checkpoint index
+        try:
+            bin_total = _json(f"{HF}/{repo}/resolve/main/" + (sub + "/" if sub else "") +
+                              "pytorch_model.bin.index.json")["metadata"]["total_size"]
+        except Exception:
+            pass
     hdr_path = d / "headers.json"
     headers = json.loads(hdr_path.read_text()) if hdr_path.exists() else {}
     todo = [f for f in files if f not in headers]
     with cf.ThreadPoolExecutor(8) as ex:
-        for f, h in zip(todo, ex.map(lambda f: st_header(repo, f), todo)):
+        for f, h in zip(todo, ex.map(lambda f: st_header_url(base + f), todo)):
             headers[f] = h
     hdr_path.write_text(json.dumps(headers))
+    meta = {"spec": spec, "subfolder": sub, "revision": rev, "main_bin_total_size": bin_total,
+            "repo_files": _tree_sizes(repo) if (sub or rev != "main" or "diffusion" in files[0]) else {}}
+    (d / "source.json").write_text(json.dumps(meta, indent=1))
     tensors = {}
     for f, h in headers.items():
-        for name, meta in h.items():
+        for name, m in h.items():
             if name == "__metadata__":
                 continue
-            tensors[name] = (meta["dtype"], meta["shape"], meta["data_offsets"][1] - meta["data_offsets"][0])
+            tensors[name] = (m["dtype"], m["shape"], m["data_offsets"][1] - m["data_offsets"][0])
     return {"repo": repo, "config": cfg, "index_total_size": (idx or {}).get("metadata", {}).get("total_size"),
             "tensors": tensors}
 
@@ -139,11 +189,13 @@ def main(argv: list[str]) -> int:
     for repo in repos:
         try:
             t0 = time.time()
-            s = summarize(fetch(repo))
-            (OUT / (repo.replace("/", "__") + ".json")).write_text(json.dumps(s, indent=1, sort_keys=True))
-            tot = sum(v["elements"] for v in s["by_dtype"].values())
-            print(f"OK   {repo:55s} tensors={s['n_tensors']:6d} elems={tot/1e9:9.3f}B "
-                  f"dtypes={list(s['by_dtype'])} q={bool(s['quantization_config'])} {time.time()-t0:.1f}s", flush=True)
+            fetch(repo)
+            # the release summary proper (logical params, packed formats, domain roles) is summarize_release.py's
+            import summarize_release
+            s = summarize_release.summarize(parse_spec(repo)[0])
+            (OUT / (parse_spec(repo)[0].replace("/", "__") + ".json")).write_text(json.dumps(s, indent=1, sort_keys=True))
+            print(f"OK   {repo:55s} tensors={s['n_tensors']:6d} params={s['params_llm']/1e9:9.3f}B "
+                  f"q={bool(s['quantization_config'])} {time.time()-t0:.1f}s", flush=True)
             ok += 1
         except Exception as e:  # gated / missing
             print(f"SKIP {repo:55s} {type(e).__name__}: {str(e)[:120]}", flush=True)

@@ -59,3 +59,10 @@ unsloth/Llama-3.3-70B-Instruct
 unsloth/Llama-3.2-1B-Instruct
 unsloth/Llama-3.2-3B-Instruct
 unsloth/Meta-Llama-3.1-405B-Instruct
+# video generation (DiT denoiser only; diffusers repos keep it in transformer/) and protein language models (core v2 0.41)
+Wan-AI/Wan2.1-T2V-1.3B
+Wan-AI/Wan2.1-T2V-14B
+zai-org/CogVideoX-2b:transformer
+zai-org/CogVideoX-5b:transformer
+facebook/esm2_t33_650M_UR50D
+facebook/esm2_t36_3B_UR50D@refs/pr/2

@@ -1,0 +1,228 @@
+{
+ "bytes_llm": 57153966336,
+ "bytes_mtp": 0,
+ "bytes_total": 57153966336,
+ "config": {
+  "_class_name": "WanModel",
+  "_diffusers_version": "0.30.0",
+  "dim": 5120,
+  "eps": 1e-06,
+  "ffn_dim": 13824,
+  "freq_dim": 256,
+  "in_dim": 16,
+  "model_type": "t2v",
+  "num_heads": 40,
+  "num_layers": 40,
+  "out_dim": 16,
+  "text_len": 512
+ },
+ "domain": "video",
+ "fetched": "2026-10-08",
+ "n_tensors": 1095,
+ "params_llm": 14288491584,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "Wan-AI/Wan2.1-T2V-14B",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 33560985600,
+    "params": 8390246400
+   }
+  },
+  "cond": {
+   "fp32": {
+    "bytes": 933150720,
+    "params": 233287680
+   }
+  },
+  "io": {
+   "fp32": {
+    "bytes": 2642176,
+    "params": 660544
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 22652272640,
+    "params": 5663068160
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 4915200,
+    "params": 1228800
+   }
+  }
+ },
+ "shapes": {
+  "blocks.0.cross_attn.k.bias": [
+   5120
+  ],
+  "blocks.0.cross_attn.k.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.cross_attn.norm_k.weight": [
+   5120
+  ],
+  "blocks.0.cross_attn.norm_q.weight": [
+   5120
+  ],
+  "blocks.0.cross_attn.o.bias": [
+   5120
+  ],
+  "blocks.0.cross_attn.o.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.cross_attn.q.bias": [
+   5120
+  ],
+  "blocks.0.cross_attn.q.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.cross_attn.v.bias": [
+   5120
+  ],
+  "blocks.0.cross_attn.v.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.ffn.0.bias": [
+   13824
+  ],
+  "blocks.0.ffn.0.weight": [
+   13824,
+   5120
+  ],
+  "blocks.0.ffn.2.bias": [
+   5120
+  ],
+  "blocks.0.ffn.2.weight": [
+   5120,
+   13824
+  ],
+  "blocks.0.modulation": [
+   1,
+   6,
+   5120
+  ],
+  "blocks.0.norm3.bias": [
+   5120
+  ],
+  "blocks.0.norm3.weight": [
+   5120
+  ],
+  "blocks.0.self_attn.k.bias": [
+   5120
+  ],
+  "blocks.0.self_attn.k.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.self_attn.norm_k.weight": [
+   5120
+  ],
+  "blocks.0.self_attn.norm_q.weight": [
+   5120
+  ],
+  "blocks.0.self_attn.o.bias": [
+   5120
+  ],
+  "blocks.0.self_attn.o.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.self_attn.q.bias": [
+   5120
+  ],
+  "blocks.0.self_attn.q.weight": [
+   5120,
+   5120
+  ],
+  "blocks.0.self_attn.v.bias": [
+   5120
+  ],
+  "blocks.0.self_attn.v.weight": [
+   5120,
+   5120
+  ],
+  "head.head.bias": [
+   64
+  ],
+  "head.head.weight": [
+   64,
+   5120
+  ],
+  "head.modulation": [
+   1,
+   2,
+   5120
+  ],
+  "patch_embedding.bias": [
+   5120
+  ],
+  "patch_embedding.weight": [
+   5120,
+   16,
+   1,
+   2,
+   2
+  ],
+  "text_embedding.0.bias": [
+   5120
+  ],
+  "text_embedding.0.weight": [
+   5120,
+   4096
+  ],
+  "text_embedding.2.bias": [
+   5120
+  ],
+  "text_embedding.2.weight": [
+   5120,
+   5120
+  ],
+  "time_embedding.0.bias": [
+   5120
+  ],
+  "time_embedding.0.weight": [
+   5120,
+   256
+  ],
+  "time_embedding.2.bias": [
+   5120
+  ],
+  "time_embedding.2.weight": [
+   5120,
+   5120
+  ],
+  "time_projection.1.bias": [
+   30720
+  ],
+  "time_projection.1.weight": [
+   30720,
+   5120
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "Wan2.1_VAE.pth": 507609880,
+   "diffusion_pytorch_model-00001-of-00006.safetensors": 9887603256,
+   "diffusion_pytorch_model-00002-of-00006.safetensors": 9839059648,
+   "diffusion_pytorch_model-00003-of-00006.safetensors": 9839059744,
+   "diffusion_pytorch_model-00004-of-00006.safetensors": 9839059744,
+   "diffusion_pytorch_model-00005-of-00006.safetensors": 9839059744,
+   "diffusion_pytorch_model-00006-of-00006.safetensors": 7910235256,
+   "models_t5_umt5-xxl-enc-bf16.pth": 11361920418
+  },
+  "revision": "main",
+  "spec": "Wan-AI/Wan2.1-T2V-14B",
+  "subfolder": ""
+ },
+ "torch_dtype": null
+}

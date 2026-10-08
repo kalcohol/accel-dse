@@ -15,6 +15,17 @@ SRAM policy (「假设」, design variable via chip.sram_mib):
   3. leftover    holds KV / recurrent state (partial hit: the cached fraction)
 Per-step DRAM traffic = unpinned touched weights + uncached KV/state reads +
 KV writes to DRAM-resident cache.
+
+Full-sequence forward (video DiT denoise step / protein encoder; ``Op.stream``): token counts of
+10⁴–10⁵ make activations far larger than SRAM, so they are streamed (``act_stream``):
+  budget       = SRAM / 2 for activation tiles, SRAM / 2 for weight tiles 「假设」
+  GEMM         activations in+out ≤ budget → stay on chip (no traffic); otherwise the cheaper of
+               (a) activation-chunked: A_in + A_out + W·ceil((A_in+A_out)/budget)
+               (b) weight-chunked:     W + A_in·ceil(W/budget) + A_out
+               minus the one weight read already counted as touched.
+  attention    flash-style: Q tile (bf16) + O accumulator (fp32) of Br = budget / (d·(a+4)) rows;
+               K, V re-read ceil(Nq / Br) times; Q, O once.  Nothing if Q, K, V, O all fit.
+Activation working set in DRAM = largest op (in+out) + the residual stream of every in-flight sequence.
 """
 
 from __future__ import annotations
@@ -45,7 +56,7 @@ class StageStorage:
 def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]:
     hot = 0.0
     a = model.fmt("attn").bits / 8
-    for l in L.attn_linears:
+    for l in L.attn_linears + L.cross_linears:
         k, n = _lin_local(l, sh.tp)
         hot += k * n * l.groups * a
     f = L.ffn
@@ -54,7 +65,8 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
         role = "router" if l.name.startswith(("router", "shared_expert_gate")) else (
             "shared_expert" if l.name.startswith("shared") else "mlp")
         hot += k * n * model.fmt(role).bits / 8
-    hot += L.misc_params * 2.0  # norms / gates / conv / hc vectors (bf16 「假设」)
+    # norms / gates / conv / hc vectors (bf16 「假设」; non-LLM releases: as released)
+    hot += L.misc_params * (2.0 if model.domain == "llm" else a)
     exp = 0.0
     if f.kind == "moe":
         n_loc = _cdiv(f.n_experts, sh.ep)
@@ -75,6 +87,8 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         hot += h_; exp += e_
         c = L.core
         ce = min(ctx, c.window) if (c.window and c.compress == 1) else ctx
+        if not model.kv_cache:
+            continue
         if c.kind == "gqa":
             kv += ce * _cdiv(c.n_kv, sh.tp) * (c.qk_dim + c.v_dim) / c.compress * kvb
         elif c.kind == "mla":
@@ -84,6 +98,14 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         if c.idx_heads:
             idx += math.ceil(ctx / c.compress) * c.idx_dim * kvb
     store_extra = 0.0
+    if model.domain != "llm":       # io GEMM weights are read every forward; io biases / unused tables only stored
+        io_b = model.fmt("io").bits / 8
+        if has_embed:
+            hot += sum(_lin_local(l, sh.tp)[0] * _lin_local(l, sh.tp)[1] for l in model.io_pre) * io_b
+            store_extra += model.io_misc_params * io_b
+        if has_head:
+            hot += sum(_lin_local(l, sh.tp)[0] * _lin_local(l, sh.tp)[1] for l in model.io_post) * io_b
+            hot += (model.final_norm_params or 0) * io_b
     emb_b = model.fmt("embed").bits / 8
     table = _cdiv(model.vocab, sh.tp) * model.hidden * emb_b
     if has_embed:
@@ -118,23 +140,51 @@ class MemPlan:
     pinned_expert: float
     kv_sram: float          # bytes of KV+state kept on chip
     residency: float        # pinned / stored weights
+    act_total: float = 0.0  # activation working set kept in DRAM (full-sequence forward)
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
 
 
-def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: float, max_act: float) -> MemPlan:
+def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: float, max_act: float,
+         act_need: float = 0.0, stream: bool = False) -> MemPlan:
     kv_t = (store.kv_per_seq + store.idx_per_seq) * batch_local
     st_t = store.state_per_seq * batch_local
-    need = store.weights + kv_t + st_t + RUNTIME_RESERVE
+    need = store.weights + kv_t + st_t + RUNTIME_RESERVE + act_need
     staging = max(2 * 2**20, 2 * max_act)
+    if stream:      # streamed activations use at most the activation half of SRAM (act_stream)
+        staging = min(staging, max(2 * 2**20, sram_bytes / 2))
     free = max(0.0, sram_bytes - staging)
     p_hot = min(store.hot_w, free); free -= p_hot
     p_exp = min(store.expert_w, free); free -= p_exp
     kv_s = min(kv_t + st_t, free)
     res = (p_hot + p_exp) / store.weights if store.weights else 1.0
     return MemPlan(store.weights, kv_t, st_t, need, dram_cap, need <= dram_cap, sram_bytes, staging,
-                   p_hot, p_exp, kv_s, res)
+                   p_hot, p_exp, kv_s, res, act_need)
+
+
+def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
+    """(activation DRAM bytes, extra weight re-read bytes) of one streamed op of a full-sequence forward."""
+    budget = sram_bytes / 2.0
+    if op.kind == "gemm":
+        a_in = op.m * op.k * op.count * ab
+        a_out = op.m * op.n * op.count * ab
+        if a_in + a_out <= budget:
+            return 0.0, 0.0
+        w = op.w_bytes
+        act_chunked = a_in + a_out + w * math.ceil((a_in + a_out) / budget)
+        w_chunked = w + a_in * math.ceil(w / budget) + a_out
+        if act_chunked <= w_chunked:
+            return a_in + a_out, w * (math.ceil((a_in + a_out) / budget) - 1)
+        return a_in * math.ceil(w / budget) + a_out, 0.0
+    if op.kind == "attn":       # qk op of a flash-style attention (v_dim == qk_dim for these models)
+        qo = 2.0 * op.count * op.m * op.k * ab
+        kv = 2.0 * op.count * op.n * op.k * ab
+        if qo + kv <= budget:
+            return 0.0, 0.0
+        br = max(1, int(budget // (op.k * (ab + 4))))
+        return qo + kv * math.ceil(op.m / br), 0.0
+    return 0.0, 0.0
 
 
 def touched(ops: list[Op]) -> dict:
@@ -160,5 +210,7 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict) -> dict:
     kvst_total = mp.kv_total + mp.state_total
     kv_miss = 0.0 if kvst_total <= 0 else 1.0 - mp.kv_sram / kvst_total
     kv_r, kv_w, st = t["kv_read"] * kv_miss, t["kv_write"] * kv_miss, t["state"] * kv_miss
-    return {"weights": w, "kv_read": kv_r, "kv_write": kv_w, "state": st, "lookup": t["lookup"],
-            "total": w + kv_r + kv_w + st + t["lookup"], "w_touched": t["hot"] + t["exp"]}
+    act, wx = t.get("act", 0.0), t.get("w_extra", 0.0)
+    w += wx
+    return {"weights": w, "kv_read": kv_r, "kv_write": kv_w, "state": st, "lookup": t["lookup"], "act": act,
+            "total": w + kv_r + kv_w + st + t["lookup"] + act, "w_touched": t["hot"] + t["exp"]}

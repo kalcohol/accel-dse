@@ -53,6 +53,34 @@ class Serving:
 
 
 @dataclass(frozen=True)
+class Workload:
+    """Non-autoregressive workloads (video-generation DiT, protein encoders); ignored for LLMs.
+    0 = the release's native default (resolution / frames / sequence length from the official config / README)."""
+    frames: int = 0                # output video frames
+    height: int = 0                # output pixels
+    width: int = 0
+    steps: int = 0                 # denoise steps (0 → reference sampler default)
+    cfg: int = 0                   # forward passes per denoise step: 2 = classifier-free guidance, 1 = off
+    seq_len: int = 0               # protein residues
+    clip_slo_s: float = 1800.0     # video: per-clip latency SLO (「假设」)
+    seq_slo_ms: float = 1000.0     # protein: per-batch latency SLO (「假设」)
+
+    def __post_init__(self):
+        for k in ("frames", "height", "width", "steps", "cfg", "seq_len"):
+            v = getattr(self, k)
+            if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                raise ValueError(f"workload.{k} must be an integer ≥ 0")
+        if self.cfg > 2:
+            raise ValueError("workload.cfg must be 0 (default), 1 or 2")
+        if self.frames > 1024 or self.height > 4096 or self.width > 4096 or self.steps > 1000 or self.seq_len > 65536:
+            raise ValueError("workload: frames ≤ 1024, height/width ≤ 4096, steps ≤ 1000, seq_len ≤ 65536")
+        for k in ("clip_slo_s", "seq_slo_ms"):
+            v = getattr(self, k)
+            if not (v > 0 and math.isfinite(v)):
+                raise ValueError(f"workload.{k} must be finite > 0")
+
+
+@dataclass(frozen=True)
 class Scenario:
     model: str = "qwen3-8b"
     chip: Chip = CHIPS["100T"]
@@ -63,6 +91,7 @@ class Scenario:
     layout: Layout = Layout()
     serving: Serving = Serving()
     formats_override: tuple[tuple[str, str], ...] = ()   # what-if (labelled)
+    workload: Workload = Workload()                      # video / protein models only
 
     def __post_init__(self):
         if self.mapping not in ORGS:
@@ -130,7 +159,8 @@ def _from_plain(cls, d):
     if unknown:
         raise ValueError(f"{cls.__name__}: unknown keys {sorted(unknown)}")
     kw = {}
-    hints = {"chip": Chip, "link": Link, "layout": Layout, "serving": Serving, "formats": FormatSupport}
+    hints = {"chip": Chip, "link": Link, "layout": Layout, "serving": Serving, "formats": FormatSupport,
+             "workload": Workload}
     for k, v in d.items():
         if k in hints and isinstance(v, dict):
             kw[k] = _from_plain(hints[k], v)

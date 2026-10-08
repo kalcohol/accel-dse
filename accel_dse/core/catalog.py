@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 
-from .model import DATA, ModelSpec, from_release, load_release
+from .domain import from_domain_release
+from .model import DATA, ModelSpec, NativeWorkload, from_release, load_release
 
 EXTRA = [
     # id, hf_id  (listing label = official repo name)
@@ -34,6 +35,27 @@ EXTRA = [
     ("llama-3.2-1b", "unsloth/Llama-3.2-1B-Instruct"),
 ]
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors"}
+
+# Non-autoregressive releases on core v2 (0.41): id, hf_id, builder, native workload (official config / README).
+# The remaining video / protein entries of series_catalog.json stay catalog-only until modelled.
+_WAN_SRC = ("Wan2.1 官方 README / generate.py：t2v {res}、81 帧、16 fps、sample_steps 50、guide_scale 5.0（CFG）、"
+            "VAE stride (4, 8, 8)、patch (1, 2, 2)、text_len 512")
+_COG_SRC = ("transformer/config.json：sample_frames 49、潜空间 60×90（×8 = 480×720）、temporal_compression_ratio 4；"
+            "diffusers CogVideoXPipeline 默认 50 步、guidance_scale 6（CFG）、8 fps")
+_ESM_SRC = "config.json：max_position_embeddings 1026（1022 残基 + <cls>/<eos>）；默认 512 残基为工作负载「假设」"
+DOMAIN_RELEASES = [
+    ("wan2.1-14b", "Wan-AI/Wan2.1-T2V-14B", "wan",
+     NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, source=_WAN_SRC.format(res="720P（1280×720）"))),
+    ("wan2.1-1.3b", "Wan-AI/Wan2.1-T2V-1.3B", "wan",
+     NativeWorkload("gen", frames=81, height=480, width=832, fps=16, source=_WAN_SRC.format(res="480P（832×480）"))),
+    ("cogvideox-5b", "zai-org/CogVideoX-5b", "cogvideox",
+     NativeWorkload("gen", frames=49, height=480, width=720, fps=8, source=_COG_SRC)),
+    ("cogvideox-2b", "zai-org/CogVideoX-2b", "cogvideox",
+     NativeWorkload("gen", frames=49, height=480, width=720, fps=8, source=_COG_SRC)),
+    ("esm2-3b", "facebook/esm2_t36_3B_UR50D", "esm", NativeWorkload("protein", seq_len=512, steps=1, cfg=1, source=_ESM_SRC)),
+    ("esm2-650m", "facebook/esm2_t33_650M_UR50D", "esm", NativeWorkload("protein", seq_len=512, steps=1, cfg=1, source=_ESM_SRC)),
+]
+_DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
 
 # ---------------------------------------------------------------- listing: vendor (厂商) → family; domain is only a badge
 DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态，评估语言主干）", "gen": "视频生成（DiT）", "protein": "蛋白质"}
@@ -114,12 +136,19 @@ def entries() -> list[dict]:
         out.append({"id": e["id"], "hf_id": e["hf_id"], "aliases": tuple(e.get("aliases") or ())})
     for i, h in EXTRA:
         out.append({"id": i, "hf_id": h, "aliases": (h,)})
+    old = {e["id"]: e for e in raw["entries"]}
+    for i, h, b, wl in DOMAIN_RELEASES:
+        al = tuple(old.get(i, {}).get("aliases") or ()) + (h,)
+        out.append({"id": i, "hf_id": h, "aliases": al, "builder": b, "workload": wl})
     out = [e for e in out if load_release(e["hf_id"]) is not None]
     for e in out:
         e["label"] = _repo_name(e["hf_id"])
         e["provider"], e["provider_label"] = provider_of(e["hf_id"])
         e["family_rank"], e["family"] = family_of(e["provider"], e["id"])
-        e["domain"] = "vlm" if (load_release(e["hf_id"]).get("params_vision") or 0) > 0 else "llm"
+        if e.get("builder"):
+            e["domain"] = e["workload"].kind
+        else:
+            e["domain"] = "vlm" if (load_release(e["hf_id"]).get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])
         e["unlisted"] = UNLISTED.get(e["id"])
         e["listed"] = not e["merged_into"] and not e["unlisted"]
@@ -154,7 +183,7 @@ def offline_entries() -> list[dict]:
     out = []
     for e in raw["entries"]:
         dom = OFFLINE_DOMAINS.get(e.get("domain"))
-        if dom is None or e["id"] in UNLISTED:
+        if dom is None or e["id"] in UNLISTED or e["id"] in _DOMAIN_IDS:
             continue
         meta, sh = _meta(e), e.get("shape") or {}
         org = _org_key(e, meta)
@@ -189,6 +218,8 @@ def get_model(model_id: str) -> ModelSpec:
     e = _index().get(model_id) or _index().get(model_id.lower())
     if e is None:
         raise KeyError(f"unknown model {model_id!r}")
+    if e.get("builder"):
+        return from_domain_release(e["id"], e["hf_id"], e["builder"], e["workload"])
     return from_release(e["id"], e["hf_id"])
 
 
@@ -208,7 +239,8 @@ def dtype_label(spec: ModelSpec) -> str:
     elif w:
         parts.append(f"W {w.fmt}")
     parts.append(f"A {spec.act_fmt}")
-    parts.append(f"KV {spec.kv_fmt}")
+    if spec.kv_cache:
+        parts.append(f"KV {spec.kv_fmt}")
     return " · ".join(parts)
 
 
@@ -236,7 +268,22 @@ def labels(spec: ModelSpec) -> dict:
         "is_moe": spec.is_moe,
         "mtp_layers": len(spec.mtp_layers),
         "n_layers": spec.n_layers,
+        "model_domain": spec.domain,
+        "kv_cache": spec.kv_cache,
+        "workload": _workload_dict(spec),
+        "heads": spec.layers[0].core.n_q if spec.layers else 0,
     }
+
+
+def _workload_dict(spec: ModelSpec) -> dict | None:
+    w = spec.workload
+    if w is None:
+        return None
+    if w.kind == "gen":
+        return {"kind": "gen", "frames": w.frames, "height": w.height, "width": w.width, "fps": w.fps,
+                "steps": w.steps, "cfg": w.cfg, "patch": list(w.patch), "vae": [w.vae_t, w.vae_s, w.vae_s],
+                "text_tokens": w.text_tokens, "joint_text": bool(w.prefix_tokens), "source": w.source}
+    return {"kind": "protein", "seq_len": w.seq_len, "max_seq": w.max_seq, "source": w.source}
 
 
 def list_models() -> list[dict]:

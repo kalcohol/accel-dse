@@ -39,6 +39,11 @@ class Linear:
     row  – K split (partial sums → all-reduce / reduce-scatter)
     rep  – replicated on every TP rank (small low-rank projections, routers)
     head – N split in units of ``unit`` (KV heads: ceil(n_kv/tp) per rank)
+    ``rows`` = which rows feed the GEMM in a non-autoregressive (``full``) forward:
+    tok  – every token of the sequence (default; the only kind LLM layers use)
+    img  – the video tokens only (sequence minus the text prefix of joint-attention DiTs)
+    ctx  – the conditioning tokens (text-encoder output feeding cross-attention K/V)
+    seq  – one row per sequence (timestep embedding / AdaLN modulation)
     """
     name: str
     k: int
@@ -46,6 +51,7 @@ class Linear:
     split: str = "col"
     unit: int = 0          # for split == "head": columns per head
     groups: int = 1        # block-diagonal (grouped) linear: params = k*n (k,n are totals)
+    rows: str = "tok"
 
     @property
     def params(self) -> int:
@@ -82,6 +88,8 @@ class AttnCore:
     state_dv: int = 0
     conv_channels: int = 0
     conv_kernel: int = 0
+    causal: bool = True        # False: bidirectional (DiT / protein encoders)
+    cross: bool = False        # cross-attention: keys are the conditioning tokens (``full`` phase ``ctx``)
 
     def kv_elems_per_token(self) -> float:
         """KV-cache elements stored per token (one layer, whole model width)."""
@@ -139,6 +147,8 @@ class Layer:
     ffn: Ffn
     ffn_linears: tuple[Linear, ...] = ()     # dense / shared / router / latent projections
     misc_params: int = 0                     # norms, gates, conv, hc — not GEMMs
+    cross_linears: tuple[Linear, ...] = ()   # cross-attention projections (video DiT: q from tokens, k/v from text)
+    cross: AttnCore | None = None
 
     def expert_params(self, hidden: int) -> int:
         f = self.ffn
@@ -148,13 +158,35 @@ class Layer:
 
     def params(self, hidden: int) -> int:
         return (sum(l.params for l in self.attn_linears) + sum(l.params for l in self.ffn_linears)
-                + self.expert_params(hidden) + self.misc_params)
+                + sum(l.params for l in self.cross_linears) + self.expert_params(hidden) + self.misc_params)
 
 
 @dataclass(frozen=True)
 class RoleFormat:
     fmt: str            # format name in core.dtypes.FORMATS (or what-if override)
     bits: float         # effective stored bits / param incl. scales (from release bytes)
+
+
+@dataclass(frozen=True)
+class NativeWorkload:
+    """Native workload of a non-autoregressive release (video DiT clip / protein sequence).  Defaults come from the
+    official config / README (cited in the catalog); the scenario's ``workload`` block overrides them."""
+    kind: str = ""                 # gen | protein
+    frames: int = 0                # output video frames
+    height: int = 0                # output pixels
+    width: int = 0
+    fps: int = 0
+    vae_t: int = 4                 # VAE temporal / spatial compression
+    vae_s: int = 8
+    patch: tuple[int, int, int] = (1, 2, 2)   # (t, h, w) latent patch
+    text_tokens: int = 0           # conditioning tokens (padded text length)
+    prefix_tokens: int = 0         # text tokens concatenated into the attention sequence (joint attention)
+    steps: int = 50                # denoise steps (reference sampler default)
+    cfg: int = 2                   # forward passes per step (classifier-free guidance cond + uncond)
+    seq_len: int = 0               # protein residues
+    max_seq: int = 0               # longest trained sequence (residues)
+    special_tokens: int = 0        # protein: <cls> + <eos>
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -182,6 +214,15 @@ class ModelSpec:
     what_if: bool = False                    # formats overridden by the user
     coverage_reasons: tuple[str, ...] = ()   # what is approximated (empty ⇔ coverage == full)
     vision_params: int = 0                   # VLM vision encoder in the release (not modelled)
+    # ---- non-autoregressive domains (video generation DiT / protein encoders); defaults = LLM
+    domain: str = "llm"                      # llm | gen | protein
+    kv_cache: bool = True                    # autoregressive KV cache (False: one full-sequence forward)
+    io_pre: tuple[Linear, ...] = ()          # input-side GEMMs on the first stage (patch / text / timestep embedders)
+    io_post: tuple[Linear, ...] = ()         # output-side GEMMs on the last stage (un-patchify head, LM-head dense)
+    io_misc_params: int = 0                  # io biases / unused stored tables (counted in storage, no GEMM)
+    final_norm_params: int | None = None     # None → hidden (LLM RMSNorm)
+    adaln: bool = False                      # AdaLN modulation (shift/scale/gate) around each norm
+    workload: NativeWorkload | None = None
 
     # ----- derived
     @property
@@ -208,7 +249,8 @@ class ModelSpec:
 
     def params(self, include_mtp: bool = False) -> int:
         p = sum(l.params(self.hidden) for l in self.layers) + self.embed_params + self.head_params + self.lookup_params
-        p += self.hidden  # final norm
+        p += self.hidden if self.final_norm_params is None else self.final_norm_params
+        p += sum(l.params for l in self.io_pre + self.io_post) + self.io_misc_params
         if include_mtp:
             p += self.mtp_params()
         return p

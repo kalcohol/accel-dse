@@ -35,14 +35,18 @@ class Shard:
     ep   – expert parallel degree;  etp – expert tensor parallel
            (MoE layers span all tp·dp ranks of the stage: ep·etp == tp·dp)
     Dense FFN / shared experts are split by ``tp`` and replicated over ``dp``.
+    sp   – sequence parallel (Ulysses) for non-autoregressive models: each rank holds 1/sp of the
+           tokens for every GEMM; all-to-all before / after self-attention so that each rank attends
+           over the whole sequence for 1/sp of the (TP-local) heads.  LLMs: sp = 1.
     """
     tp: int = 1
     dp: int = 1
     ep: int = 1
     etp: int = 1
+    sp: int = 1
 
     def __post_init__(self):
-        for k in ("tp", "dp", "ep", "etp"):
+        for k in ("tp", "dp", "ep", "etp", "sp"):
             if getattr(self, k) < 1:
                 raise ValueError(f"{k} must be ≥ 1")
 
@@ -59,11 +63,14 @@ class Shard:
 class Phase:
     """One forward step of a pipeline stage (one micro-batch).
 
-    kind  – decode | prefill
+    kind  – decode | prefill | full
     batch – sequences in this step (global over attention-DP replicas)
     q     – new tokens per sequence (decode: 1, or 1+k when verifying k drafts;
-            prefill: prompt length S)
-    ctx   – context already in the cache per sequence (decode: current length)
+            prefill: prompt length S; full: every token of the sequence)
+    ctx   – context already in the cache per sequence (decode: current length);
+            full: conditioning tokens per sequence (cross-attention K/V source)
+    ``full`` = one non-autoregressive forward over the whole sequence (DiT denoise step,
+    protein encoder): no KV cache, bidirectional attention.
     """
     kind: str
     batch: int
@@ -71,8 +78,8 @@ class Phase:
     ctx: int = 0
 
     def __post_init__(self):
-        if self.kind not in ("decode", "prefill"):
-            raise ValueError("phase kind must be decode|prefill")
+        if self.kind not in ("decode", "prefill", "full"):
+            raise ValueError("phase kind must be decode|prefill|full")
         if self.batch < 1 or self.q < 1 or self.ctx < 0:
             raise ValueError("batch,q ≥ 1 and ctx ≥ 0 required")
 
@@ -105,6 +112,8 @@ class Op:
     comm_bytes: float = 0.0   # payload per rank
     act_bytes: float = 0.0    # activation in+out bytes (for SRAM-port / spill accounting)
     replicated: int = 1       # how many ranks of the stage compute this identical op
+    stream: bool = False      # full phase: activations may exceed SRAM → DRAM streaming accounted (memplan.act_stream)
+    orient: bool = False      # full-phase attention: mapping may take either GEMM orientation (O = P·V or Oᵀ = Vᵀ·Pᵀ)
 
     @property
     def flops(self) -> float:
@@ -142,12 +151,13 @@ def _repl(l: Linear, tp: int) -> int:
 
 
 def gemm(model: ModelSpec, name: str, layer: int, m: int, k: int, n: int, role: str, *, count: int = 1,
-         params: int | None = None, replicated: int = 1) -> Op:
+         params: int | None = None, replicated: int = 1, stream: bool = False) -> Op:
     rf = model.fmt(role)
     p = k * n * count if params is None else params
     ab = _fmt(model.act_fmt).bytes
     return Op(name, "gemm", layer, m=m, k=k, n=n, count=count, role=role, w_params=p, w_bits=rf.bits,
-              w_fmt=rf.fmt, a_fmt=model.act_fmt, act_bytes=(m * k + m * n) * count * ab, replicated=replicated)
+              w_fmt=rf.fmt, a_fmt=model.act_fmt, act_bytes=(m * k + m * n) * count * ab, replicated=replicated,
+              stream=stream)
 
 
 # ------------------------------------------------------------------ MoE routing
@@ -254,6 +264,8 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
 def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None) -> list[Op]:
     """Ops of one rank for transformer layer ``li`` (or an explicit MTP ``layer``)."""
     L = layer if layer is not None else model.layers[li]
+    if ph.kind == "full":
+        return _full_layer_ops(model, li, L, ph, sh)
     h = model.hidden
     ab = _fmt(model.act_fmt).bytes
     tp, dp = sh.tp, sh.dp
@@ -347,6 +359,104 @@ def mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) ->
     ops = [gemm(model, "mtp.eh_proj", li, t, 2 * h, h, "mtp", replicated=sh.tp)]
     ops += build_rank_ops(model, li, ph, sh, layer=L)
     ops += [gemm(model, "mtp.head", li, t, h, _cdiv(model.vocab, sh.tp), "lm_head")]
+    return ops
+
+
+# ------------------------------------------------------------------ full (non-autoregressive) forward
+def _rows(model: ModelSpec, l: Linear, ph: Phase, b: int, sp: int) -> int:
+    """GEMM rows of one rank: tokens are split over sp (Ulysses); conditioning / per-sequence rows are replicated."""
+    if l.rows == "ctx":
+        return b * ph.ctx
+    if l.rows == "seq":
+        return b
+    pre = model.workload.prefix_tokens if (l.rows == "img" and model.workload) else 0
+    return b * _cdiv(ph.q - pre, sp)
+
+
+def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, b: int, cross: bool) -> list[Op]:
+    """Bidirectional attention of a full-sequence forward (flash-style: the N×N scores are never stored).
+    Self-attention under SP: each rank attends over the whole sequence for ceil(heads_tp / sp) heads;
+    cross-attention: local queries over all ``ctx`` keys for every TP-local head (no all-to-all)."""
+    ab = _fmt(model.act_fmt).bytes
+    heads_tp = _cdiv(core.n_q, sh.tp)
+    if cross:
+        h_loc, nq, nk, tag = heads_tp, _cdiv(ph.q, sh.sp), ph.ctx, "x"
+    else:
+        h_loc, nq, nk, tag = _cdiv(heads_tp, sh.sp), ph.q, ph.q, ""
+    causal = 0.5 if core.causal else 1.0
+    cnt = b * h_loc
+    ops = [Op(tag + "qk", "attn", li, m=nq, k=core.qk_dim, n=nk, count=cnt, causal=causal,
+              act_bytes=cnt * nq * core.qk_dim * ab, stream=True, orient=True),
+           Op(tag + "pv", "attn", li, m=nq, k=nk, n=core.v_dim, count=cnt, causal=causal,
+              act_bytes=cnt * nq * core.v_dim * ab, orient=True),
+           Op(tag + "softmax", "vector", li, vec=cnt * nq * nk * causal * 5)]
+    t_loc = b * _cdiv(ph.q, sh.sp)
+    if not cross:
+        ops.append(Op("qk_norm_rope", "vector", li, vec=t_loc * heads_tp * (core.qk_dim * 2 * 3 + core.rope_dim * 2 * 3)))
+        if sh.sp > 1:
+            ops.append(Op("sp_a2a_qkv", "comm", li, comm_kind="alltoall", comm_group=sh.sp,
+                          comm_bytes=t_loc * heads_tp * (2 * core.qk_dim + core.v_dim) * ab))
+            ops.append(Op("sp_a2a_o", "comm", li, comm_kind="alltoall", comm_group=sh.sp,
+                          comm_bytes=t_loc * heads_tp * core.v_dim * ab))
+    return ops
+
+
+def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:
+    h = model.hidden
+    ab = _fmt(model.act_fmt).bytes
+    tp, sp = sh.tp, sh.sp
+    b = _cdiv(ph.batch, sh.dp)
+    t = b * _cdiv(ph.q, sp)                    # tokens through this rank's GEMMs
+    mod = 4 if model.adaln else 0              # AdaLN: x·(1+scale)+shift, gate (element-ops per element)
+    ops: list[Op] = [Op("attn_norm", "vector", li, vec=t * h * (4 + mod))]
+
+    def lin(prefix: str, l: Linear, role: str) -> Op:
+        k, n = _lin_local(l, tp)
+        return gemm(model, f"{prefix}.{l.name}", li, _rows(model, l, ph, b, sp), k, n, role, stream=True)
+
+    ops += [lin("attn", l, "attn") for l in L.attn_linears]
+    ops += _full_attn(model, li, L.core, ph, sh, b, cross=False)
+    if tp > 1:
+        ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
+    if L.cross is not None:
+        ops.append(Op("cross_norm", "vector", li, vec=t * h * 4))
+        ops += [lin("cross", l, "attn") for l in L.cross_linears]
+        ops += _full_attn(model, li, L.cross, ph, sh, b, cross=True)
+        if tp > 1:
+            ops.append(Op("cross_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
+    ops.append(Op("ffn_norm", "vector", li, vec=t * h * (4 + mod)))
+    ops += [lin("mlp", l, "mlp") for l in L.ffn_linears]
+    ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))     # GELU (tanh) 「假设」 8 ops / element
+    if tp > 1:
+        ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
+    ops.append(Op("residual", "vector", li, vec=t * h * (2 + (2 if model.adaln else 0))))
+    return ops
+
+
+def full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
+    """Input side (first stage): token lookup / patch, text and timestep embedders.
+    Output side (last stage): final norm, un-patchify head / MLM head.  io GEMMs are column-split over TP
+    with an all-gather of their (small) outputs."""
+    b = _cdiv(ph.batch, sh.dp)
+    t = b * _cdiv(ph.q, sh.sp)
+    ab = _fmt(model.act_fmt).bytes
+    li = -1 if side == "pre" else model.n_layers
+    ops: list[Op] = []
+    if side == "pre" and model.vocab:
+        ops.append(Op("embed_lookup", "lookup", li, kv_read=t * model.hidden * model.fmt("embed").bits / 8,
+                      vec=t * model.hidden * 2))
+    if side == "post":
+        ops.append(Op("final_norm", "vector", li, vec=t * model.hidden * (4 + (4 if model.adaln else 0))))
+    for l in (model.io_pre if side == "pre" else model.io_post):
+        k, n = _lin_local(l, sh.tp)
+        m = _rows(model, l, ph, b, sh.sp)
+        ops.append(gemm(model, "io." + l.name, li, m, k, n, "io", stream=True))
+        if sh.tp > 1:
+            ops.append(Op("io_allgather", "comm", li, comm_kind="allgather", comm_group=sh.tp, comm_bytes=m * n * ab))
+    if side == "post" and model.vocab:     # MLM logits for every token (tied decoder)
+        n = _cdiv(model.vocab, sh.tp)
+        ops.append(gemm(model, "mlm_decoder", li, t, model.hidden, n, "embed", stream=True))
+        ops.append(Op("act", "vector", li, vec=t * model.hidden * 8 + t * n * 3))
     return ops
 
 

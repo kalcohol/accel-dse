@@ -46,6 +46,45 @@ ROLE = [
 ]
 
 
+# Non-LLM releases (video DiT denoisers, protein language models): domain role tables.  Order matters.
+ROLE_DOMAIN = {
+    "video": [
+        ("cond", r"(modulation|time_embedding|time_projection|norm\d\.linear|norm_out\.linear|text_embedding|text_proj)"),
+        ("norm", r"(norm_[qk]\.|norm\d?\.(weight|bias)$|norm_final|norm_out\.norm|\.norm\.(weight|bias)$)"),
+        ("attn", r"(self_attn|cross_attn|attn1|attn2)"),
+        ("mlp", r"(\.ffn\.|\.ff\.)"),
+        ("io", r"(patch_embed|proj_out|^head\.)"),
+    ],
+    "protein": [
+        ("buffer", r"(inv_freq$|position_ids$)"),
+        ("pos_embed", r"position_embeddings"),
+        ("embed", r"word_embeddings"),
+        ("head_misc", r"contact_head"),
+        ("lm_head", r"^lm_head\."),
+        ("norm", r"(LayerNorm|layer_norm|emb_layer_norm)"),
+        ("attn", r"\.attention\."),
+        ("mlp", r"(\.intermediate\.|\.output\.dense)"),
+    ],
+}
+BLOCK_RE = re.compile(r"(blocks|layers|layer|transformer_blocks)\.(\d+)\.")
+
+
+def domain_of(cfg: dict) -> str:
+    cls = cfg.get("_class_name") or ""
+    if cls in ("WanModel", "WanTransformer3DModel", "CogVideoXTransformer3DModel"):
+        return "video"
+    if cfg.get("model_type") == "esm":
+        return "protein"
+    return "llm"
+
+
+def classify_domain(name: str, domain: str) -> str:
+    for role, pat in ROLE_DOMAIN[domain]:
+        if re.search(pat, name):
+            return role
+    return "other"
+
+
 def classify(name: str, n_layers: int | None = None) -> str:
     m = re.search(r"layers\.(\d+)\.", name)
     if n_layers and m and int(m.group(1)) >= n_layers and not re.search(ROLE[0][1], name):
@@ -84,6 +123,7 @@ def summarize(repo: str) -> dict:
                     n *= int(s)
                 tensors[name] = (m["dtype"], m["shape"], n, m["data_offsets"][1] - m["data_offsets"][0])
     nl = tc.get("num_hidden_layers") or cfg.get("num_hidden_layers") or cfg.get("num_layers")
+    domain = domain_of(cfg)
     weights: dict[str, dict] = {}   # base name -> {role, fmt, params, bytes}
     scale_bytes: dict[str, int] = {}
     buffers = 0
@@ -109,7 +149,11 @@ def summarize(repo: str) -> dict:
         else:
             fmt, params = {"BF16": "bf16", "F16": "fp16", "F32": "fp32", "U8": "uint8", "I32": "int32"}.get(dt, dt.lower()), n
         b = _base(name) if is_blocks else re.sub(r"\.(weight_packed|qweight)$", ".weight", name)
-        weights[b] = {"role": classify(name, nl), "fmt": fmt, "params": params, "bytes": nb}
+        role = classify(name, nl) if domain == "llm" else classify_domain(name, domain)
+        if role == "buffer":
+            buffers += nb
+            continue
+        weights[b] = {"role": role, "fmt": fmt, "params": params, "bytes": nb}
     for b, sb in scale_bytes.items():
         key = b if b in weights else (b + ".weight" if b + ".weight" in weights else None)
         if key is None:
@@ -129,7 +173,17 @@ def summarize(repo: str) -> dict:
         roles["buffer"] = {"int64": {"params": 0, "bytes": buffers}}
     llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale")]
     tot = lambda rs, k: sum(v[k] for r in rs for v in roles.get(r, {}).values())
+    extra = {}
+    if domain != "llm":
+        # tensor shapes outside the repeated blocks + of block 0 (io / conditioning dims come from the header)
+        extra["domain"] = domain
+        extra["shapes"] = {n: t[1] for n, t in sorted(tensors.items())
+                           if not BLOCK_RE.search(n) or BLOCK_RE.search(n).group(2) == "0"}
+        src = d / "source.json"
+        if src.exists():
+            extra["source"] = json.loads(src.read_text())
     return {
+        **extra,
         "repo": repo,
         "fetched": time.strftime("%Y-%m-%d"),
         "torch_dtype": cfg.get("torch_dtype") or cfg.get("dtype") or tc.get("torch_dtype") or tc.get("dtype"),

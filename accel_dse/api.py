@@ -31,6 +31,8 @@ SWEEP_PATHS = {
     "serving.batch": int, "serving.ctx": int, "serving.prompt": int, "serving.spec_k": int,
     "chip.sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
+    "workload.frames": int, "workload.steps": int, "workload.height": int, "workload.width": int,
+    "workload.seq_len": int,
 }
 
 
@@ -142,6 +144,10 @@ def _objective(body: dict) -> str:
     o = body.get("objective", "decode")
     if o not in ("decode", "goodput"):
         raise ApiError("objective must be decode|goodput")
+    if o == "goodput":
+        mid = (body.get("scenario") or {}).get("model") if isinstance(body.get("scenario"), dict) else None
+        if mid and not get_model(mid).kv_cache:
+            raise ApiError("goodput 目标仅适用于 LLM / VLM；视频 / 蛋白质模型请用 decode 目标（单位/s/卡）")
     return o
 
 
@@ -165,7 +171,7 @@ def result_dict(r: Result, *, with_goodput: bool = False) -> dict:
     out = {"summary": r.summary(), "stages": [_stage_dict(x) for x in r.stages],
            "model": {"id": r.model.id, "hf_id": r.model.hf_id, **labels(r.model)},
            "hash": s.hash(), "scenario": s.to_dict()}
-    if with_goodput and s.serving.phase == "decode":
+    if with_goodput and s.serving.phase == "decode" and r.workload is None:
         g = goodput(r)
         out["goodput"] = {"tok_s": g.goodput_tok_s, "tok_s_card": g.goodput_per_card, "ttft_ms": g.ttft_ms,
                           "ttft_ok": g.ttft_ok, "prefill_batch": g.prefill_batch, "decode_share": g.decode_share,
@@ -178,7 +184,9 @@ def _row(r, objective: str) -> dict:
     st = res.stages[res.heaviest_stage] if res else None
     d = {"layout": r.layout.label, "layout_obj": r.layout.__dict__, "mapping": r.mapping, "batch": r.batch,
          "tok_s_card": r.per_card, "score": r.score(objective),
-         "tpot_ms": res.tpot * 1e3 if res else None, "bound": res.bound if res else None,
+         "tpot_ms": res.tpot * 1e3 if (res and res.workload is None) else None,
+         "latency_ms": res.latency * 1e3 if res else None, "unit": res.workload.unit if (res and res.workload) else "token",
+         "bound": res.bound if res else None,
          "array_util": st.time.array_util if st else None, "fits": res.fits if res else False}
     if r.goodput is not None:
         d.update(goodput_card=r.goodput.goodput_per_card, ttft_ms=r.goodput.ttft_ms, ttft_ok=r.goodput.ttft_ok)
@@ -187,13 +195,14 @@ def _row(r, objective: str) -> dict:
 
 # ------------------------------------------------------------------ endpoints
 def api_health() -> dict:
-    return {"ok": True, "version": __version__, "core": "v2", "domains": ["llm", "vlm"]}
+    return {"ok": True, "version": __version__, "core": "v2", "domains": ["llm", "vlm", "gen", "protein"]}
 
 
 def api_models() -> dict:
     return {"models": list_models(), "offline": offline_entries(), "catalog": [m["id"] for m in catalog_listing()],
             "unlisted": unlisted_models(), "domains": DOMAINS,
-            "note": "按厂商 → 系列排列；视频生成（DiT）与蛋白质模型列在目录中，暂未接入 v2（不能评估）；见 docs/MODEL.md §10"}
+            "note": "按厂商 → 系列排列；视频生成（DiT：Wan2.1 / CogVideoX）与蛋白质（ESM-2）已接入 v2 可评估，"
+                    "其余视频 / 蛋白质模型仍为离线条目；见 docs/MODEL.md §10–§11"}
 
 
 def api_catalog() -> dict:
@@ -266,7 +275,7 @@ def _compare_row(body: dict, org: str) -> dict:
     d = _row(top, obj)
     d["label"] = ORG_LABEL[org]
     d["runner_up"] = _row(rows[1], obj) if len(rows) > 1 else None
-    if obj == "decode" and top.result is not None and scn.serving.phase == "decode":
+    if obj == "decode" and top.result is not None and scn.serving.phase == "decode" and top.result.workload is None:
         g = goodput(top.result)
         d.update(goodput_card=g.goodput_per_card, ttft_ms=g.ttft_ms, ttft_ok=g.ttft_ok)
     return d
@@ -331,7 +340,7 @@ def api_fit(body: dict) -> dict:
     for n in (2, 4, 8, 16, 32, 64):
         if n <= cards:
             continue
-        fit = [lay for lay in enumerate_layouts(n, m.n_layers, m.is_moe)
+        fit = [lay for lay in enumerate_layouts(n, m.n_layers, m.is_moe, full=not m.kv_cache)
                if evaluate(scn.replace("layout", lay).replace("serving.batch", 1)).fits]
         if not fit:
             continue
@@ -394,8 +403,11 @@ def api_sweep(body: dict) -> dict:
             r = evaluate(scn.replace(path, typ(v)))
         except (ValueError, TypeError) as e:
             raise ApiError(f"{path}={v}: {e}") from None
-        dec = r.scenario.serving.phase == "decode"
-        rows.append({"value": v, "tpot_ms": r.tpot * 1e3 if dec else None, "ttft_ms": None if dec else r.ttft * 1e3, "tok_s": r.throughput,
+        dec = r.scenario.serving.phase == "decode" and r.workload is None
+        llm = r.workload is None
+        rows.append({"value": v, "tpot_ms": r.tpot * 1e3 if dec else None,
+                     "ttft_ms": r.ttft * 1e3 if (llm and not dec) else None,
+                     "latency_ms": None if llm else r.latency * 1e3, "tok_s": r.throughput,
                      "tok_s_card": r.per_card, "bound": r.bound, "fits": r.fits,
                      "array_util": r.stages[r.heaviest_stage].time.array_util})
     return {"path": path, "rows": rows, "base_hash": scn.hash()}
