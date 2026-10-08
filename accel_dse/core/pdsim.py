@@ -11,6 +11,7 @@ Used to quantify the closed-form (pdqueue) error (V4 serving) and, opt-in, as ``
 from __future__ import annotations
 
 import heapq
+import bisect
 import math
 import random
 from collections import OrderedDict, deque
@@ -35,7 +36,7 @@ def _stats(xs: list[float]) -> dict:
     return {"mean": sum(xs) / len(xs), "p50": _pct(xs, 0.5), "p90": _pct(xs, 0.9), "p99": _pct(xs, 0.99)}
 
 
-@dataclass
+@dataclass(eq=False)          # identity: requests are compared / removed by object
 class Req:
     rid: int
     arrive: float
@@ -59,6 +60,8 @@ class Req:
     dec: int = 0
     dec_holds: bool = False
     preempts: int = 0
+    ready_t: float = 0.0     # 0.56: started waiting for KV admission
+    admit_t: float = 0.0     # 0.56: admitted (slot + KV)
 
 
 # --------------------------------------------------------------------------- length / prefix sampling
@@ -251,63 +254,115 @@ class _Replica:
         self.kv_cap: int | None = None
         self.kv_policy = "off"
         self.kv_res = 0                    # wait: reserved S + out of the running set
-        self.reprefq: deque[Req] = deque()  # recompute: preempted, waiting to re-prefill
+        self.reprefq: deque[Req] = deque()  # recompute / swap: preempted, waiting to be restored
         self.n_preempt = 0
+        # 0.56: admission order — after_prefill (0.55: prefilled requests wait in joinq) | before_prefill (vLLM: slot
+        # and KV are taken first; ``pending`` holds admitted requests still prefilling / pulling their KV)
+        self.kv_admit = "after_prefill"
+        self.pending: list[Req] = []
+        self.admitq: deque[Req] = deque()  # PD before_prefill: prefilled, waiting for decode admission
+        self.on_admit = None
+        self.swap_Bps = 0.0                # swap: host link per replica (B/s)
+        self.kv_bpt = 0.0                  # swap: KV bytes per token per replica
+
+    @property
+    def before(self) -> bool:
+        return self.kv_admit == "before_prefill" and self.kv_policy != "off" and self.kv_cap is not None
 
     def offer_decode(self, r: Req):
         r.tokens_left = r.out
-        self.joinq.append(r)
+        if self.before and r in self.pending:     # PD before_prefill: admitted earlier, KV has arrived
+            self.pending.remove(r)
+            self._start_decoding(r)
+        else:
+            r.ready_t = self.eng.t
+            self.joinq.append(r)
         if not self.in_flight:
             self.boundary()
+
+    def request_admit(self, r: Req):
+        """PD before_prefill: a prefilled request asks this decode replica for a slot + KV before its KV moves."""
+        r.ready_t = self.eng.t
+        self.admitq.append(r)
+        self._admit_pd()
+
+    def _admit_pd(self):
+        while self.admitq and self._can_admit(self.admitq[0]):
+            r = self.admitq.popleft()
+            self._reserve(r)
+            self.pending.append(r)
+            if self.on_admit:
+                self.on_admit(r)
 
     @staticmethod
     def _foot(r: Req) -> int:
         return r.S + r.tokens_done
 
     def _kv_used(self) -> int:
-        return sum(r.S + r.tokens_done for r in self.running)
+        return sum(r.S + r.tokens_done for r in self.running) + sum(r.S for r in self.pending)
+
+    def _can_admit(self, r: Req) -> bool:
+        if len(self.running) + len(self.pending) >= self.slots:
+            return False
+        cap = self.kv_cap if self.kv_policy != "off" else None
+        if cap is None or not (self.running or self.pending):   # one sequence always runs (no deadlock)
+            return True
+        if self.kv_policy == "wait":
+            return self.kv_res + r.S + r.out <= cap
+        return not self.reprefq and self._kv_used() + r.S <= cap
+
+    def _reserve(self, r: Req):
+        if self.kv_policy == "wait" and self.kv_cap is not None:
+            self.kv_res += r.S + r.out
+        r.admit_t = self.eng.t
+
+    def _start_decoding(self, r: Req):
+        r.decode_start = self.eng.t
+        r.last_tok = self.eng.t
+        self.running.append(r)
 
     def _admit(self):
-        cap = self.kv_cap if self.kv_policy != "off" else None
-        while self.joinq and len(self.running) < self.slots:
-            r = self.joinq[0]
-            if cap is not None and self.running:     # one sequence always runs (no deadlock on an oversize request)
-                if self.kv_policy == "wait":
-                    if self.kv_res + r.S + r.out > cap:
-                        break
-                elif self.reprefq or self._kv_used() + r.S > cap:
-                    break
-            self.joinq.popleft()
-            if cap is not None and self.kv_policy == "wait":
-                self.kv_res += r.S + r.out
-            r.decode_start = self.eng.t
-            r.last_tok = self.eng.t
-            self.running.append(r)
+        self._admit_pd()
+        while self.joinq and self._can_admit(self.joinq[0]):
+            r = self.joinq.popleft()
+            self._reserve(r)
+            self._start_decoding(r)
 
-    def _preempt(self):
-        """recompute: before an iteration that grows every running sequence by e tokens, evict the youngest until
-        the KV fits (vLLM's recompute preemption: its KV is dropped; it re-prefills prompt + generated later)."""
-        if self.kv_policy != "recompute" or self.kv_cap is None:
-            return
+    def _preempt(self) -> float:
+        """recompute / swap: before an iteration that grows every running sequence by e tokens, evict the youngest
+        until the KV fits (vLLM preemption: recompute drops its KV and re-prefills prompt + generated later; swap
+        copies the KV to host memory first, which stalls the replica — returned as extra seconds 「假设」)."""
+        if self.kv_policy not in ("recompute", "swap") or self.kv_cap is None:
+            return 0.0
         e = max(1, int(round(self.costs.decode_step(max(1, len(self.running)))[1])))
         used = self._kv_used()
+        stall = 0.0
         while len(self.running) > 1 and used + e * len(self.running) > self.kv_cap:
             v = self.running.pop()
             used -= self._foot(v)
             v.preempts += 1
             self.n_preempt += 1
+            if self.kv_policy == "swap":
+                stall += self._foot(v) * self.kv_bpt / self.swap_Bps if self.swap_Bps > 0 else 0.0
             self.reprefq.appendleft(v)
+        return stall
 
     def _try_recompute(self) -> bool:
-        """recompute: re-prefill the head preempted sequence (stalls the replica) when it fits again."""
-        if self.kv_policy != "recompute" or not self.reprefq or len(self.running) >= self.slots:
+        """recompute / swap: restore the head preempted sequence (re-prefill, or swap its KV back in; stalls the
+        replica) when it fits again."""
+        if self.kv_policy not in ("recompute", "swap") or not self.reprefq \
+                or len(self.running) + len(self.pending) >= self.slots:
             return False
         r = self.reprefq[0]
-        if self.running and self._kv_used() + self._foot(r) > self.kv_cap:
+        if (self.running or self.pending) and self._kv_used() + self._foot(r) > self.kv_cap:
             return False
         self.reprefq.popleft()
-        S_re = max(256, int(math.ceil(self._foot(r) / 256)) * 256)   # memo granularity 256 tokens 「假设」
-        self._start(self.costs.prefill(1, S_re, 0), "rep_recompute_done", r)
+        if self.kv_policy == "swap":
+            dur = self._foot(r) * self.kv_bpt / self.swap_Bps if self.swap_Bps > 0 else 0.0
+        else:
+            S_re = max(256, int(math.ceil(self._foot(r) / 256)) * 256)   # memo granularity 256 tokens 「假设」
+            dur = self.costs.prefill(1, S_re, 0)
+        self._start(dur, "rep_recompute_done", r)
         return True
 
     def recompute_done(self, r: Req):
@@ -344,10 +399,10 @@ class _Replica:
         self.eng.schedule(self.eng.t + dur, kind, (self, payload))
 
     def _decode_iter(self):
-        self._preempt()
+        stall = self._preempt()
         k = len(self.running)
         step, e = self.costs.decode_step(k)
-        self._start(step, "rep_dec_done", (list(self.running), max(1, int(round(e)))))
+        self._start(step + stall, "rep_dec_done", (list(self.running), max(1, int(round(e)))))
 
     def dec_done(self, payload):
         members, e = payload
@@ -379,6 +434,7 @@ class ColocPrefillFirst(_Replica):
         self.pq: deque[Req] = deque()
 
     def offer_prefill(self, r: Req):
+        r.ready_t = self.eng.t                # before_prefill: the admission wait includes prompt queueing
         self.pq.append(r)
         if not self.in_flight:
             self.boundary()
@@ -389,10 +445,18 @@ class ColocPrefillFirst(_Replica):
         if self._try_recompute():
             return
         self._admit()
-        if self.pq:
-            batch = []
-            while self.pq and len(batch) < self.cap:
+        batch = []
+        while self.pq and len(batch) < self.cap:
+            if self.before:                       # vLLM: only requests that get a slot + KV start prefilling
+                if not self._can_admit(self.pq[0]):
+                    break
+                r = self.pq.popleft()
+                self._reserve(r)
+                self.pending.append(r)
+                batch.append(r)
+            else:
                 batch.append(self.pq.popleft())
+        if batch:
             for r in batch:
                 r.prefill_start = self.eng.t
             self._start(self.costs.batch_prefill_wall(batch), "rep_pf_done", batch)
@@ -404,7 +468,12 @@ class ColocPrefillFirst(_Replica):
         for r in batch:
             r.prefill_done = r.kv_done = self.eng.t
             r.tokens_left = r.out
-            self.joinq.append(r)
+            if self.before:
+                self.pending.remove(r)
+                self._start_decoding(r)
+            else:
+                r.ready_t = self.eng.t
+                self.joinq.append(r)
         self.boundary()
 
 
@@ -427,6 +496,7 @@ class ColocChunked(_Replica):
         return self._pre1[k]
 
     def offer_prefill(self, r: Req):
+        r.ready_t = self.eng.t                # before_prefill: the admission wait includes prompt queueing
         self.pq.append(r)
         if not self.in_flight:
             self.boundary()
@@ -437,15 +507,18 @@ class ColocChunked(_Replica):
         if self._try_recompute():
             return
         self._admit()
-        if self.cur is None and self.pq:
+        if self.cur is None and self.pq and (not self.before or self._can_admit(self.pq[0])):
             self.cur = self.pq.popleft()
+            if self.before:
+                self._reserve(self.cur)
+                self.pending.append(self.cur)
             self.cur.prefill_start = self.eng.t
             self.cur_left = self.cur.S - self.cur.p
         if self.cur is None:
             if self.running:
                 self._decode_iter()
             return
-        self._preempt()
+        stall = self._preempt()
         new = max(1, self.cur.S - self.cur.p)
         take = min(self.C, self.cur_left)
         _, _, rr = _chunk_plan(self.cur.S, self.cur.p, self.C)
@@ -457,7 +530,7 @@ class ColocChunked(_Replica):
         fin = self.cur if self.cur_left <= 0 else None
         if fin is not None:
             self.cur = None
-        self._start(step, "rep_chunk_done", (list(self.running), e, fin))
+        self._start(step + stall, "rep_chunk_done", (list(self.running), e, fin))
 
     def chunk_done(self, payload):
         members, e, fin = payload
@@ -466,7 +539,12 @@ class ColocChunked(_Replica):
         if fin is not None:
             fin.prefill_done = fin.kv_done = self.eng.t
             fin.tokens_left = fin.out
-            self.joinq.append(fin)
+            if self.before:
+                self.pending.remove(fin)
+                self._start_decoding(fin)
+            else:
+                fin.ready_t = self.eng.t
+                self.joinq.append(fin)
         self.boundary()
 
 
@@ -481,6 +559,10 @@ def _kv_setup(reps: list, ctx: dict) -> None:
         return
     for rp in reps:
         rp.kv_policy, rp.kv_cap = pol, int(cap)
+        rp.kv_admit = ctx.get("kv_admit", "after_prefill")
+        if pol == "swap":
+            rp.swap_Bps = (ctx.get("swap") or {}).get("Bps_replica", 0.0)
+            rp.kv_bpt = (ctx.get("kv_cap") or {}).get("bytes_per_token", 0.0)
 
 
 def _cap_of(pool: _Pool, x: dict | None) -> int:
@@ -521,7 +603,7 @@ def _requests(rng: random.Random, ctx: dict, mode: str, lam: float, n_tot: int, 
     for i in range(n_tot):
         t += rng.expovariate(lam)
         u = rng.random() * acc
-        j = next((k for k, c in enumerate(cum) if u <= c), len(cum) - 1)
+        j = min(bisect.bisect_left(cum, u), len(cum) - 1)
         _, S, o = joint[j]
         reqs.append(Req(i, t, S, max(1, int(o)), 0 if lru else p_of.get(S, 0), pids[i]))
     return reqs
@@ -598,7 +680,13 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
                 r.dec = (r.prefix_id % r_d) if (affinity and lru) else rng.randrange(r_d)
                 if lru:
                     r.dec_holds = caches_d[r.dec].access(r.prefix_id)
-                kvs[r.replica].offer(r, nbytes(r))
+                if decs[r.dec].before:            # vLLM: the decode side allocates KV, then pulls it
+                    decs[r.dec].request_admit(r)
+                else:
+                    kvs[r.replica].offer(r, nbytes(r))
+
+        for d in decs:
+            d.on_admit = lambda r: kvs[r.replica].offer(r, nbytes(r))
 
         def kv_start(kv, r, nb):
             t_bw = nb / kv.beta if kv.beta > 0 else 0.0
@@ -702,8 +790,9 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
     st = {"mode": mode, "lambda_rps": lam, "n": len(done), "complete": len(done) >= n_req,
           "ttft": _stats(ttfts), "tpot": _stats(tpots), "itl_max": _stats(itls), "prefix_hit": hit, **extra}
     if ctx.get("kv_policy", "off") != "off":       # 0.55: decode-admission wait and preemptions
-        st["slot_wait"] = _stats([r.decode_start - r.kv_done for r in done])
+        st["slot_wait"] = _stats([r.admit_t - r.ready_t for r in done])
         st["preempt_per_req"] = sum(r.preempts for r in done) / max(1, len(done))
+        st["preempted_frac"] = sum(1 for r in done if r.preempts) / max(1, len(done))
     for k in ("ttft", "tpot", "itl_max"):
         st[k + "_ms"] = {q: v * 1e3 for q, v in st[k].items()}
     return st

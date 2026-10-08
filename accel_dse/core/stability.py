@@ -60,6 +60,7 @@ def _score_of(scn: Scenario, objective: str) -> float:
 def ranking_stability(base: Scenario, cards: int, include_mapping: bool = True, max_tp: int | None = None,
                       objective: str = "decode", progress=None) -> Stability:
     """Top-1 layout under each perturbation (exact top-1 search) vs the base top-1."""
+    base = base.colocated()
     rows = search_layouts(base, cards, max_tp=max_tp, objective=objective, top=1)
     top = rows[0]
     cases, ok = [], 0

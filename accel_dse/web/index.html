@@ -214,7 +214,9 @@
         <label class="inline" title="0.54：在闭式排队模型之外再跑请求级离散事件仿真（DES，慢几秒），用同一套逐步代价给出模拟的尾部分位数并与闭式对照；默认关"><input type="checkbox" id="pd-simulate"> DES 仿真尾部</label>
         <div class="small muted">decode KV 容量（0.55）<span class="tag assume">假设</span> 默认关 = KV 不限；容量能放下整批时不生效</div>
         <div class="row3">
-          <label title="KV 放不下时的准入策略：wait = 按 prompt + 输出 预留，放不下就排队等待准入；recompute = 按当前占用乐观准入，增长溢出时抢占最年轻的序列，之后重算其 prompt + 已生成部分（vLLM recompute）">KV 策略<select id="pd-kv_policy"><option value="off">关</option><option value="wait">wait（预留等待）</option><option value="recompute">recompute（抢占重算）</option></select></label>
+          <label title="KV 放不下时的准入策略：wait = 按 prompt + 输出 预留，放不下就排队等待准入；recompute = 按当前占用乐观准入，增长溢出时抢占最年轻的序列，之后重算其 prompt + 已生成部分（vLLM recompute）">KV 策略<select id="pd-kv_policy"><option value="off">关</option><option value="wait">wait（预留等待）</option><option value="recompute">recompute（抢占重算）</option><option value="swap">swap（抢占换出到主机）</option></select></label>
+          <label title="准入顺序：vLLM（默认）= 先占 KV 槽与显存再 prefill（PD：再拉取 KV），准入等待计入 TTFT 与 SLO goodput；0.55 = prefill 之后才准入，等待单列不计入">KV 准入<select id="pd-kv_admit"><option value="before_prefill">先准入后 prefill（vLLM）</option><option value="after_prefill">prefill 后准入（0.55，单列）</option></select></label>
+          <label title="swap：主机链路 GB/s / 卡（换出 + 换入 KV）；空 = 工作负载的主机带宽「假设」（PCIe 5.0 x16 有效 50 GB/s）">换出 GB/s / 卡<input type="number" id="pd-swap_GBps" min="0" step="5"></label>
           <label title="每个 decode 副本（及合并副本）的 KV 容量 GB；空 = 权重与运行时预留之后剩余的 DRAM">KV GB / 副本<input type="number" id="pd-kv_capacity_GB" min="0" step="10"></label>
         </div>
         <div class="small muted">前缀缓存容量（0.53）<span class="tag assume">假设</span> 命中率由容量 / 工作集推出（LRU，Che 近似）；上面「前缀命中率」非 0 时以它为准</div>
@@ -268,6 +270,7 @@
       <label title="跨节点网络每发送 bit 的能耗，pJ（每节点卡数 > 0 且通信组跨节点时才有流量）">pJ / bit 跨节点<input type="number" id="e-pJ_bit_net" min="0" step="0.1"></label>
       <label title="系统级缓存命中每 bit 的能耗，pJ（SLC MiB > 0 时才有流量；DRAM 只计未命中）">pJ / bit SLC<input type="number" id="e-pJ_bit_slc" min="0" step="0.1"></label>
       <label title="每卡静态 / 空闲功耗，W（× 卡数 × 时间窗）">静态 W / 卡<input type="number" id="e-idle_W" min="0" step="5"></label>
+      <label title="PD 报告：prefill 池芯片每卡静态功耗，W（prefill 芯片与 decode 不同时填；空 = 同上）">静态 W / 卡 · PD prefill<input type="number" id="e-idle_W_prefill" min="0" step="5"></label>
     </div>
   </section>
 </aside>

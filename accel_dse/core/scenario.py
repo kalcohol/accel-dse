@@ -12,6 +12,7 @@ import dataclasses
 import hashlib
 import json
 import math
+import typing
 from dataclasses import dataclass, field, fields, is_dataclass
 
 from .dtypes import FormatSupport
@@ -169,6 +170,9 @@ class PDConfig:
     # colocated modes; inactive when the capacity holds the full batch anyway.
     kv_policy: str = "off"
     kv_capacity_GB: float | None = None    # KV capacity per decode replica; None = DRAM left after weights + runtime
+    kv_admit: str = "before_prefill"       # 0.56: before_prefill (vLLM: KV allocated, then prefill / KV pull — the
+    #                                        admission wait is part of TTFT) | after_prefill (0.55 order, wait apart)
+    swap_GBps: float | None = None         # 0.56 kv_policy=swap: host link per card; None = workload.host_GBps 「假设」
 
     def __post_init__(self):
         for k in ("prefill_cards", "decode_cards"):
@@ -233,8 +237,14 @@ class PDConfig:
         if not isinstance(self.prefix_affinity, bool) or not isinstance(self.search_decode_batch, bool) \
                 or not isinstance(self.simulate, bool):
             raise ValueError("pd.prefix_affinity / pd.search_decode_batch / pd.simulate must be booleans")
-        if self.kv_policy not in ("off", "wait", "recompute"):
-            raise ValueError("pd.kv_policy must be off | wait | recompute")
+        if self.kv_policy not in ("off", "wait", "recompute", "swap"):
+            raise ValueError("pd.kv_policy must be off | wait | recompute | swap")
+        if self.kv_admit not in ("before_prefill", "after_prefill"):
+            raise ValueError("pd.kv_admit must be before_prefill | after_prefill")
+        if self.swap_GBps is not None and (isinstance(self.swap_GBps, bool)
+                                           or not isinstance(self.swap_GBps, (int, float))
+                                           or not 0 < self.swap_GBps < 1e5):
+            raise ValueError("pd.swap_GBps must be in (0, 1e5) or null")
         if self.kv_capacity_GB is not None and (isinstance(self.kv_capacity_GB, bool)
                                                 or not isinstance(self.kv_capacity_GB, (int, float))
                                                 or not 0 < self.kv_capacity_GB < 1e7):
@@ -298,6 +308,11 @@ class Scenario:
     def replace(self, path: str, value) -> "Scenario":
         parts = path.split(".")
         return _replace_path(self, parts, value)
+
+    def colocated(self) -> "Scenario":
+        """The scenario without its PD block (0.56): colocated searches (layouts, stability, fit) swap the layout,
+        and pd.decode_cards is validated against the layout — irrelevant to a colocated evaluation."""
+        return self if self.pd == PDConfig() else dataclasses.replace(self, pd=PDConfig())
 
     def to_dict(self) -> dict:
         return _to_plain(self)
@@ -366,33 +381,113 @@ def _check_num(v, where):
     return v
 
 
+_HINTS: dict = {}
+_INT_MAX = 2 ** 53
+
+
+def _hints(cls) -> dict:
+    if cls not in _HINTS:
+        _HINTS[cls] = typing.get_type_hints(cls)
+    return _HINTS[cls]
+
+
+def _tname(t) -> str:
+    args = typing.get_args(t)
+    if args and type(None) in args:
+        return " | ".join(_tname(a) for a in args if a is not type(None)) + " | null"
+    if t is float:
+        return "number"
+    if t is int:
+        return "integer"
+    if t is bool:
+        return "boolean"
+    if t is str:
+        return "string"
+    if is_dataclass(t):
+        return "object"
+    if typing.get_origin(t) is tuple:
+        return "list"
+    return str(t)
+
+
+def _jtype(v) -> str:
+    return {bool: "boolean", int: "integer", float: "number", str: "string", list: "list", dict: "object",
+            type(None): "null"}.get(type(v), type(v).__name__)
+
+
+def _coerce(v, t, where):
+    """Strict JSON → field type check (0.56): wrong types raise ValueError (API → HTTP 400) instead of failing deep
+    inside the evaluator.  int fields accept integral floats (2.0 → 2); float fields accept integers."""
+    args = typing.get_args(t)
+    if args and type(None) in args and typing.get_origin(t) is not tuple:
+        if v is None:
+            return None
+        inner = [a for a in args if a is not type(None)]
+        return _coerce(v, inner[0], where) if len(inner) == 1 else v
+    if typing.get_origin(t) is tuple:
+        if not isinstance(v, (list, tuple)):
+            raise ValueError(f"{where}: expected a list, got {_jtype(v)}")
+        if len(args) == 2 and args[1] is Ellipsis:
+            return tuple(_coerce(x, args[0], f"{where}[{n}]") for n, x in enumerate(v))
+        if len(v) != len(args):
+            raise ValueError(f"{where}: expected a list of {len(args)} items, got {len(v)}")
+        return tuple(_coerce(x, a, f"{where}[{n}]") for n, (x, a) in enumerate(zip(v, args)))
+    if t is bool:
+        if not isinstance(v, bool):
+            raise ValueError(f"{where}: expected boolean, got {_jtype(v)}")
+        return v
+    if t is int:
+        if isinstance(v, float) and math.isfinite(v) and v == int(v):
+            v = int(v)
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise ValueError(f"{where}: expected integer, got {_jtype(v)}" + (f" {v!r}" if isinstance(v, float) else ""))
+        if abs(v) > _INT_MAX:
+            raise ValueError(f"{where}: integer out of range (|x| ≤ 2^53)")
+        return v
+    if t is float:
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            raise ValueError(f"{where}: expected number, got {_jtype(v)}")
+        return _check_num(v, where)
+    if t is str:
+        if not isinstance(v, str):
+            raise ValueError(f"{where}: expected string, got {_jtype(v)}")
+        return v
+    return v
+
+
 def _from_plain(cls, d):
     if not isinstance(d, dict):
-        raise ValueError(f"{cls.__name__}: expected object")
+        raise ValueError(f"{cls.__name__}: expected object, got {_jtype(d)}")
     known = {f.name: f for f in fields(cls)}
     unknown = set(d) - set(known)
     if unknown:
         raise ValueError(f"{cls.__name__}: unknown keys {sorted(unknown)}")
     kw = {}
-    hints = {"chip": Chip, "prefill_chip": Chip, "link": Link, "d2d": Link, "net": Link, "pd": PDConfig, "prefill_layout": Layout, "layout": Layout, "serving": Serving, "formats": FormatSupport,
-             "workload": Workload}
+    hints = _hints(cls)
     for k, v in d.items():
-        if k == "prefill_chip" and isinstance(v, str):
+        where = f"{cls.__name__}.{k}"
+        t = hints[k]
+        targs = [a for a in (typing.get_args(t) or (t,)) if a is not type(None)]
+        dc = next((a for a in targs if is_dataclass(a)), None)
+        if k in ("chip", "prefill_chip") and isinstance(v, str):
+            # 0.56: a chip preset name is accepted wherever a chip object is (was: HTTP 500 for scenario.chip)
             if v not in CHIPS:
-                raise ValueError(f"PDConfig.prefill_chip: unknown chip preset {v!r} (one of {', '.join(CHIPS)})")
+                raise ValueError(f"{where}: unknown chip preset {v!r} (one of {', '.join(CHIPS)})")
             kw[k] = CHIPS[v]
-        elif k in hints and isinstance(v, dict):
-            kw[k] = _from_plain(hints[k], v)
-        elif k in ("formats_override", "rates") and isinstance(v, list):
-            kw[k] = tuple(tuple(x) for x in v)
-        elif k == "length_mix" and isinstance(v, list):
-            if not all(isinstance(x, list) for x in v):
+        elif dc is not None:
+            if v is None and type(None) in typing.get_args(t):
+                kw[k] = None
+            elif isinstance(v, dict):
+                kw[k] = _from_plain(dc, v)
+            else:
+                raise ValueError(f"{where}: expected {_tname(t)}, got {_jtype(v)}")
+        elif k == "length_mix":
+            if not isinstance(v, list) or not all(isinstance(x, list) and len(x) == 3 for x in v):
                 raise ValueError("PDConfig.length_mix: expected a list of [weight, prompt, out_len]")
-            kw[k] = tuple(tuple(_num_canon_w(i, _check_num(y, "PDConfig.length_mix")) for i, y in enumerate(x)) for x in v)
-        elif k == "moe_expert_load" and isinstance(v, list):
-            kw[k] = tuple(_check_num(x, "Serving.moe_expert_load") for x in v)
+            kw[k] = tuple(tuple(_num_canon_w(i, _coerce(y, ty, f"PDConfig.length_mix[{n}][{i}]"))
+                                for i, (y, ty) in enumerate(zip(x, (float, int, int)))) for n, x in enumerate(v))
         else:
-            if isinstance(v, (list, dict)):
-                raise ValueError(f"{cls.__name__}.{k}: unexpected structure")
-            kw[k] = _num_canon(known[k], _check_num(v, f"{cls.__name__}.{k}"))
+            if isinstance(v, dict):
+                raise ValueError(f"{where}: unexpected structure (expected {_tname(t)}, got object)")
+            kw[k] = _num_canon(known[k], _coerce(v, t, where))
     return cls(**kw)

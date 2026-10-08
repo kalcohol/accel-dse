@@ -117,55 +117,127 @@ def mg1(lam: float, taus, weights, qs: tuple = (0.5, 0.9, 0.99)) -> dict:
         if hi - lo < 1e-13 * hi:
             break
     th = 0.5 * (lo + hi)
-    c = (1 - rho) / (lam * sum(w * t * math.exp(th * t) for w, t in pts) - 1)
     out = {"rho": rho, "stable": True, "mean": lam * m2 / (2 * (1 - rho)), "p_wait": rho}
+    sw, x_end, _ = _pk_surv(lam, pts)       # 0.56: exact law (was the Cramér–Lundberg tail c·e^{−θx})
     for q in qs:
-        out[f"p{_pct(q)}"] = 0.0 if rho <= 1 - q else max(0.0, math.log(c / (1 - q)) / th)
+        out[f"p{_pct(q)}"] = 0.0 if rho <= 1 - q else _surv_inv(sw, x_end, th, 1 - q)
     return out
 
 
+def _surv_inv(sw, x_end: float, th: float, p: float) -> float:
+    """x with P(W > x) = p for a survival from ``_pk_surv`` (decreasing; exponential beyond x_end)."""
+    tail = sw(x_end)
+    if tail <= p:
+        a, b = 0.0, x_end
+        for _ in range(100):
+            mid = 0.5 * (a + b)
+            if sw(mid) > p:
+                a = mid
+            else:
+                b = mid
+            if b - a < 1e-12 * max(b, 1e-12):
+                break
+        return b
+    return x_end + math.log(tail / p) / th
+
+
+
+_PK_CACHE: dict = {}
+PK_GRID = 800             # grid points over [0, 4·τ_max] for the exact M/G/1 wait law (0.56)
+
+
+def _pk_surv(lam: float, pts):
+    """Exact M/G/1 waiting-time survival P(W > x) for a discrete service law [(w, τ)] (0.56, Pollaczek–Khinchine).
+
+    W = sum of a Geometric(ρ) number of equilibrium residuals, density P(S > x)/E[S] — a step function for a discrete
+    law — so its density solves the renewal equation g(x) = λ·Σ_i w_i·[G(x) − G(x − τ_i)] (G with the atom 1 − ρ at
+    0), marched on a grid of ``PK_GRID`` points up to 4·τ_max (trapezoid, implicit in G(x); G(x − τ_i) interpolated).
+    Beyond the grid the Cramér–Lundberg decay e^{−θx} continues from the grid's last value.  The 0.54 / 0.55 law
+    min(ρ, c·e^{−θx}) is exact only in the tail; when the service times spread over ~100× (CV 1 lengths) it puts too
+    little mass at short waits (behind short jobs), which biased TTFT p50 up by 15–30 % (V4 0.56 with 15 bins).
+    Returns (surv, x_end, θ) or None when unstable.  Cached per (λ, law)."""
+    key = (lam, tuple(pts))
+    hit = _PK_CACHE.get(key)
+    if hit is not None:
+        return hit
+    cl = _cl_params(lam, pts)
+    if cl is None:
+        return None
+    rho, th, _ = cl
+    tmax = max(t for _, t in pts)
+    m1 = sum(w * t for w, t in pts)
+    x_end = 4.0 * tmax
+    n = PK_GRID
+    h = x_end / n
+    lh = lam * h
+    if lh >= 0.5:                          # keep the implicit step well conditioned (never for real service laws)
+        n = int(math.ceil(2 * lam * x_end)) + 1
+        h = x_end / n
+        lh = lam * h
+    G = [0.0] * (n + 1)
+    G[0] = 1.0 - rho
+    # G = (1 − ρ)·1[x ≥ 0] + H(x), H continuous with H(0) = 0.  Over [x_{k−1}, x_k]:
+    #   ∫g = λ·[trap(G) − trap(Σ_i w_i H(x − τ_i)) − (1 − ρ)·Σ_i w_i·|[x_{k−1}, x_k] ∩ [τ_i, ∞)|]
+    # (the atom's step is integrated exactly, so the trapezoid only sees continuous integrands → 2nd order).
+    # x_k − τ_i = (k − c_i + f_i)·h with c_i = ⌈τ_i/h⌉, f_i = c_i − τ_i/h.
+    a0 = 1.0 - rho
+    sh = []
+    for w, t in pts:
+        c = max(1, math.ceil(t / h - 1e-12))
+        sh.append((w, c, min(1.0, max(0.0, c - t / h)), t))
+    den = 1.0 - 0.5 * lh
+    hs_prev = 0.0                          # Σ_i w_i H(x_{k−1} − τ_i)
+    for k in range(1, n + 1):
+        hs = 0.0
+        step = 0.0
+        xk = k * h
+        for w, c, f, t in sh:
+            j = k - c
+            if j >= 0:
+                g0 = G[j] - a0 if j > 0 else 0.0
+                g1 = (G[j + 1] if j + 1 < k else G[k - 1]) - a0
+                hs += w * (g0 + (g1 - g0) * f)
+            step += w * min(h, max(0.0, xk - t))
+        G[k] = (G[k - 1] * (1.0 + 0.5 * lh) - 0.5 * lh * (hs_prev + hs) - lam * a0 * step) / den
+        hs_prev = hs
+    tail = max(0.0, 1.0 - G[n])
+
+    def surv(x: float) -> float:
+        if x < 0:
+            return 1.0
+        if x >= x_end:
+            return tail * math.exp(-th * (x - x_end))
+        y = x / h
+        j = int(y)
+        return max(0.0, 1.0 - (G[j] + (G[j + 1] - G[j]) * (y - j))) if x > 0 else rho
+    out = (surv, x_end, th)
+    if len(_PK_CACHE) > 4096:
+        _PK_CACHE.clear()
+    _PK_CACHE[key] = out
+    return out
+
 
 def mg1_sum_quantile(lam: float, taus, weights, lats, q: float) -> float | None:
-    """q-quantile of W + L_i (0.54): W = M/G/1 wait over service mix ``taus`` (Cramér–Lundberg tail
-    P(W > x) ≈ min(ρ, c·e^{−θx})), L_i = the request's own latency, drawn with the SAME index i as its service (one
-    prompt length → its service and its latency).  W is independent of the arriving request's own i, so
-    P(T > t) = Σ w_i·P(W > t − L_i).  Returns None when the service mix is a single value (caller keeps the exact
-    wait-quantile + latency sum) or the queue is unstable."""
+    """q-quantile of W + L_i (0.54): W = M/G/1 wait over service mix ``taus`` (0.56: exact Pollaczek–Khinchine law,
+    ``_pk_surv``; 0.54 / 0.55 used the Cramér–Lundberg tail min(ρ, c·e^{−θx})), L_i = the request's own latency,
+    drawn with the SAME index i as its service (one prompt length → its service and its latency).  W is independent
+    of the arriving request's own i, so P(T > t) = Σ w_i·P(W > t − L_i).  Returns None when the service mix is a
+    single value (caller keeps the exact wait-quantile + latency sum) or the queue is unstable."""
     pts = [(w, t, l) for w, t, l in zip(weights, taus, lats) if w > 0]
     if len({t for _, t, _ in pts}) <= 1 or lam <= 0:
         return None
     tot = sum(w for w, _, _ in pts)
     pts = [(w / tot, t, l) for w, t, l in pts]
-    m1 = sum(w * t for w, t, _ in pts)
-    rho = lam * m1
-    if rho >= 1:
+    pk = _pk_surv(lam, [(w, t) for w, t, _ in pts])
+    if pk is None:
         return None
-    tmax = max(t for _, t, _ in pts)
-
-    def f(th: float) -> float:
-        return lam * (sum(w * math.exp(th * t) for w, t, _ in pts) - 1) - th
-    lo, hi = 0.0, 1.0 / tmax
-    while f(hi) <= 0:
-        lo, hi = hi, hi * 2
-    for _ in range(200):
-        mid = 0.5 * (lo + hi)
-        if f(mid) > 0:
-            hi = mid
-        else:
-            lo = mid
-        if hi - lo < 1e-13 * hi:
-            break
-    th = 0.5 * (lo + hi)
-    c = (1 - rho) / (lam * sum(w * t * math.exp(th * t) for w, t, _ in pts) - 1)
+    sw, x_end, th = pk
 
     def surv(t: float) -> float:
-        acc = 0.0
-        for w, _, l in pts:
-            x = t - l
-            acc += w * (1.0 if x < 0 else min(rho, c * math.exp(-th * x)))
-        return acc
+        return sum(w * sw(t - l) for w, _, l in pts)
     a = min(l for _, _, l in pts)
-    b = max(l for _, _, l in pts) + max(0.0, math.log(max(c, 1e-300) / (1 - q)) / th) + 1e-9
+    tail = sw(x_end)
+    b = max(l for _, _, l in pts) + x_end + (max(0.0, math.log(tail / (1 - q)) / th) if tail > 0 else 0.0) + 1e-9
     if surv(a) <= 1 - q:
         return a
     for _ in range(200):
@@ -177,6 +249,7 @@ def mg1_sum_quantile(lam: float, taus, weights, lats, q: float) -> float | None:
         if b - a < 1e-12 * max(b, 1e-12):
             break
     return b
+
 
 def _cl_params(lam: float, pts) -> tuple[float, float, float] | None:
     """(ρ, θ, c) of the M/G/1 Cramér–Lundberg wait tail P(W > x) ≈ c·e^{−θx} for service law [(w, τ)]."""
@@ -211,7 +284,8 @@ def mg1_mix_sum_quantile(lam: float, bins, q: float) -> float | None:
     W = W_M/G/1 ⊕ Uniform(0, v_b)).  In environment b (the running decode batch, which drifts on a time scale
     much longer than a prefill busy period) the queue is M/G/1 with service law τ_b·; quasi-static mixture
     P(T > t) = Σ_b w_b Σ_i w_i·P(W_b > t − l_bi).  Per environment: exact M/D/1 (Erlang) for one service value
-    within 6τ, else the Cramér–Lundberg tail.  None if some environment is unstable."""
+    within 6τ, else the Cramér–Lundberg tail; a service mix uses the exact Pollaczek–Khinchine law (0.56,
+    ``_pk_surv``).  None if some environment is unstable."""
     envs = []
     for bn in bins:
         wb, pts = bn[0], bn[1]
@@ -224,19 +298,29 @@ def mg1_mix_sum_quantile(lam: float, bins, q: float) -> float | None:
         if cl is None:
             return None
         single = pts[0][1] if len({t for _, t, _ in pts}) == 1 else None
-        envs.append((wb, pts, cl, single, vac))
+        pk = None if single is not None else _pk_surv(lam, [(w, t) for w, t, _ in pts])     # 0.56: exact law
+        envs.append((wb, pts, (cl, pk), single, vac))
     if not envs:
         return None
     wtot = sum(e[0] for e in envs)
     U = 8                                             # midpoints of the uniform vacation residual
 
-    def sw(x: float, cl, single) -> float:
+    def sw(x: float, clpk, single) -> float:
         if x < 0:
             return 1.0
-        rho, th, c = cl
+        (rho, th, c), pk = clpk
+        if pk is not None:
+            return pk[0](x)
         if single is not None and x <= MD1_EXACT_SPAN * single:
             return 1.0 - md1_cdf(lam, single, x)
         return min(rho, c * math.exp(-th * x))
+
+    def w_hi(clpk) -> float:              # a wait beyond the q-quantile in this environment
+        (rho, th, c), pk = clpk
+        if pk is None:
+            return max(0.0, math.log(max(c, 1e-300) / (1 - q)) / th)
+        tail = pk[0](pk[1])
+        return pk[1] + (max(0.0, math.log(tail / (1 - q)) / th) if tail > 0 else 0.0)
 
     def surv(t: float) -> float:
         acc = 0.0
@@ -248,7 +332,7 @@ def mg1_mix_sum_quantile(lam: float, bins, q: float) -> float | None:
         return acc / wtot
     a = min(l for _, pts, _, _, _ in envs for _, _, l in pts)
     b = max(l for _, pts, _, _, _ in envs for _, _, l in pts) + max(e[4] for e in envs) + max(
-        max(0.0, math.log(max(cl[2], 1e-300) / (1 - q)) / cl[1]) for _, _, cl, _, _ in envs) + 1e-9
+        w_hi(cl) for _, _, cl, _, _ in envs) + 1e-9
     if surv(a) <= 1 - q:
         return a
     for _ in range(200):

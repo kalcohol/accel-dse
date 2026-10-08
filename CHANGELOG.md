@@ -3,6 +3,52 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.56.0] - 2026-10-09
+
+API 输入校验收紧（400 而不是 500），KV 容量策略按 vLLM 的准入顺序计入 TTFT / SLO goodput，抢占进入 TPOT / 最长间隔尾部，新增 swap 抢占，长度档 8 → 15，PD 能耗可按池给静态功耗。默认（合并、非 PD）结果（1356 项指纹）与 0.55.0 逐字节一致；PD 报告里只有长度有 CV 时数值变化（见下），KV 策略默认仍关。
+
+### 修正
+- **`/api/eval` 等接口的 500**（AGENTS §25）：scenario 按 dataclass 类型注解严格校验，类型不符返回 400，并写明字段，例如 `Serving.batch: expected integer, got number 2.5`。整数字段接受整值浮点数（|x| ≤ 2⁵³，1e300 不再 OverflowError）。`scenario.chip` / `pd.prefill_chip` 可以直接写预置名（"1P"），未知名返回 400 并列出预置。`chip_preset`、sweep `path` 必须是字符串。模糊测试（每个字段换成错误类型 / 极值，7 个接口）全部 400。
+- **PD 场景进布局搜索 / 稳定性 / fit 时的 500**：`search_layouts`、`ranking_stability`、`api_fit` 改布局时先回到合并部署（`Scenario.colocated()`），不再因 `pd.decode_cards` 与新布局不整除抛 ValueError。
+- **长度档 8 → 15**（`lengths.BINS`）：8 个等概率档时 P(S ≥ s₅) 正好 = 0.5，TTFT p50 落在分布的跳变上，0.03 的概率差就让 p50 变几十 %。15 档时 0.5·N、0.9·N、0.99·N 都不是整数，三个分位数都不在档边界上。闭式和 DES 用同一套档，所以对拍仍然自洽。
+
+- **M/G/1 等待分布改为精确的 Pollaczek–Khinchine 律**（`queueing._pk_surv`，用于 PD / prefill 优先的 TTFT 卷积、分块的准静态混合，以及报告里的 prefill 等待分位数）。等待 = 几何（ρ）个均衡剩余服务时间之和；离散服务律下剩余密度是阶梯函数，所以更新方程 g(x) = λ·Σ wᵢ[G(x) − G(x − τᵢ)] 可以在 800 点网格上推进：等待原子（1 − ρ）造成的台阶精确积分，其余部分用梯形格式；4·τ_max 以外接 Cramér–Lundberg 指数尾。均值与 P-K 公式差 < 1e-6（相对），M/D/1 与 Erlang 精确式一致，生存函数与 300 万样本的 Lindley 仿真差 ≤ 0.002。0.54 / 0.55 的 min(ρ, c·e^{−θx}) 只有尾部准确：服务时间跨 100×（CV 1）时，它给短等待（排在短请求后面）的概率太少，15 档后 PD TTFT p50 偏高 15–30 %。单一服务时间（定长）仍走精确 M/D/1，数值不变。
+- `_mg1_busy` 改用平铺数组（结果相同，只是求和顺序不同），抵消 15 档带来的开销：CV 1 的 PD 报告 10.3 → 6.1 s（0.55：3.1 s）。
+
+### 新增（默认关，或只在 KV 策略开时生效）
+- **KV 准入顺序** `pd.kv_admit`：`before_prefill`（vLLM，默认）先占 KV 槽与显存再 prefill（PD：再拉取 KV），容量受限时准入等待计入 TTFT 与 SLO goodput。TTFT 分布由其 p50 / p90 / p99 重建，再卷积等待（原子 1 − p，Exp(W/p)）。`after_prefill` 保留 0.55 的顺序：等待单列，不计入。`kv_cap` 新增 `admit`、`in_ttft`、`p_wait`。DES 两种顺序都实现了：合并模式在 prefill 前准入，PD 在 KV 传输前准入，decode 侧保留到传输完成。
+- **抢占进入尾部**（recompute / swap）：抢占率 = Rice 上穿 + 满副本准入时的饱和项 ν_sat = p·λ_r·E[(E[o]/S)(1 − e^{−S/E[o]})]「假设」。0.55 只有 Rice，比 DES 低约 10×，现在在 2× 以内。被抢占者的间隔 = 恢复时间 + Exp(1/λ_r)，按每请求抢占次数 p_v 混合进 TPOT 均值 / p90 / p99 与最长间隔。恢复占副本时间的比例 ≥ 1 时判不稳定。`kv_cap` 新增 `preempt_rice`、`preempt_sat`、`victim_gap_mean_ms`、`restore_share`。
+- **swap 抢占** `pd.kv_policy = "swap"`，`pd.swap_GBps`（主机链路 GB/s / 卡）。不给时取 `workload.host_GBps` = 50 GB/s「假设」（PCIe 5.0 x16 有效带宽，0.46 起的已有假设）。换出 + 换入 = 2 ×（S̄ + ḡ）× KV 字节/token ÷（GB/s × 每副本卡数）。闭式和 DES 都实现了。`kv_cap` 新增 `swap_ms`、`swap_GBps_card`、`swap_source`。
+- **PD 能耗按池给静态功耗**：`energy.idle_W_prefill`（PD prefill 池芯片每卡 W，不给 = `idle_W`，无默认值），用于异构 prefill 芯片。PD 模式的能耗新增 `tok_per_J`、`static_share`。只给 `idle_W_prefill` 时会写明另一池的静态能耗未计入。单芯片能耗报告不使用这个字段（也不把它列为缺项）。
+- CLI：`--pd-kv-policy swap`、`--pd-kv-admit`、`--pd-swap-GBps`、`--idle-W-prefill`；PD 排队输出加能耗行（J/token、tok/J、静态占比）。Web：「KV 策略」加 swap，新增「KV 准入」「换出 GB/s / 卡」「静态 W / 卡 · PD prefill」；排队表的能耗列显示 tok/J。
+- 建模说明 §18.6；测试 `tests/test_core_056.py`。
+
+### 误差（V4 网格 30 点 × 3 seed × 3000 请求，(闭式 − DES)/DES；SLO goodput 符号相反，> 0 仍为保守）
+- **TTFT p50**：prefill 优先最差 +47 % → −12 %，分块 +22 % → ±4 %，落在容差内的比例 87 % → 100 %（两种合并模式）。PD 最差 +18 % → −18 %（tp4 L0.85 CV1，该点 DES seed 噪声 28 %），中位 +1 % → 0 %。
+- **TTFT p99**：prefill 优先最差 +19 % → +5 %，分块 +14 % → −15 %（dense8b L0.85 CV0.5 前缀）；PD 最差 +30 % 不变（moe30b L0.85 CV1，见下面「剩余缺口」）。
+- **SLO goodput**：CV 1 的 12 个点 0.55 时闭式和 DES 都是 0（TTFT p90 落在最长档上，超过 SLO），现在为正值，所以统计点数 18 → 30。新加入的点上，零负载 TTFT p90 恰好略低于 SLO，速率对 TTFT 很敏感：PD 最差 +16 %（moe30b / tp4 CV1：闭式 52 / 19，DES 62 / 22 tok/s/卡，绝对值都很小），合并 −11 … +5 %。
+- TPOT 均值 / p90、最长间隔与 0.55 基本相同（TPOT p90 中位 PD 0 %，合并 −4 / −5 %，最差 −11 %）。
+- **KV 策略**（不在网格里，dense8b 12 GB → B_kv 17，6 seed × 3000）：load 0.6 时都接近。load 0.85：
+  - `wait`：PD 折叠后 TTFT p90 偏保守（CV0 +29 %，CV1 +31 %，p99 最多 2×），准入等待 +34 … +44 %，TPOT ±1 %。
+  - 抢占次数（recompute / swap）：0.55 低估约 10×，现在在 2× 以内（PD CV1 recompute 0.105 vs 0.100 次/请求）。
+  - `recompute` CV1 L0.85：DES 出现连锁抢占（TTFT p90 17.6 s），闭式 7.9 s，明显偏乐观。
+
+### 数值变化（§18.1 例子，load 0.8；0.55 → 0.56）
+- 定长：不变。前缀（N = 20000，命中 / 未命中两类服务时间）：PD TTFT p90 129 → 128 ms；分块 TTFT 85 / 150 / 241 → 83 / 146 / 242 ms；其余不变。
+- CV 0.5（15 档 + 精确 P-K）：
+  - PD：TTFT 144 / 409 / 778 → 141 / 439 / 848 ms。
+  - prefill 优先：TTFT 77 / 237 / 336 → 77 / 214 / 359 ms，TPOT 8.65 / 14.11 → 8.70 / 14.22 ms，最长间隔 666 → 722 ms，SLO goodput 399 → 398。
+  - 分块：TTFT 145 / 358 / 624 → 138 / 370 / 674 ms，TPOT 8.63 / 14.14 → 8.68 / 14.24 ms，最长间隔 36.2 → 37.7 ms，SLO goodput 399 → 398。
+- KV 12 GB（`kv_policy` 非默认）：
+  - `wait`（默认 before_prefill）：PD TTFT 94 / 216 / 380 → 121 / 1410 / 4872 ms（准入等待 354 ms，P(等待) 24 %，现在计入 TTFT）；SLO goodput 413 不变（在 SLO 到达率处 TTFT 仍满足，TPOT 才是约束）。`after_prefill` 与 0.55 逐位相同。
+  - `recompute`：PD TTFT → 114 / 1095 / 4374 ms，最长间隔 12.8 → 462 ms（被抢占者：重算 86 ms + 回队等待，每请求 0.025 次），TPOT 8.67 / 12.59 → 8.73 / 12.68 ms，SLO goodput 410 不变。
+  - `swap`（新，50 GB/s/卡「假设」）：PD 最长间隔 389 ms（换出 + 换入 2 × 6.4 ms），TPOT 8.69 / 12.63 ms。
+
+### 剩余缺口
+- PD TTFT p99 在 CV1 L0.85 时 +27 … +30 %（tp4 / moe30b）。这不是闭式的偏差，是 DES 运行太短：n = 30000 时 tp4 DES 9161 ± 485 vs 闭式 9197（+0.4 %），moe30b 5939 ± 304 vs 6178（+4 %）；n = 3000 时，长尾在 τ_int 窗口里取样不足。网格仍按 3000 跑（30000 要多约 10× 时间）。
+- KV：`wait` 折叠后 TTFT 偏保守；`recompute` 在高负载、CV1 下的连锁抢占没有建模；合并模式的 swap / recompute 抢占次数偏高（2–3×）。
+- 档内展宽（连续长度）没做，用 15 档 + 精确 M/G/1 代替；CV 1 的 PD 报告 3.1 → 6.1 s。
+
 ## [0.55.0] - 2026-10-09
 
 收敛 0.54 V4 找出的合并模式尾部误差，加 decode KV 容量策略（可选），把 V4 扩到 MoE 和多卡 TP。默认（合并、非 PD）结果（1356 项指纹）与 0.54.0 逐字节一致；PD 报告里的排队数值有变化，见下。

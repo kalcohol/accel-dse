@@ -203,6 +203,7 @@ def search_layouts(base: Scenario, cards: int, mappings: tuple[str, ...] | None 
     if objective not in ("decode", "goodput"):
         raise ValueError("objective must be decode|goodput")
     from .serving import goodput as _goodput, prefill_rate as _prefill_rate
+    base = base.colocated()        # 0.56: candidate layouts need not divide pd.decode_cards (was a ValueError)
     m = get_model(base.model)
     if objective == "goodput" and not m.kv_cache:
         raise ValueError("goodput 目标仅适用于 LLM / VLM（视频 / 蛋白质模型用 decode 目标：单位/s/卡）")

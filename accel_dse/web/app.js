@@ -175,6 +175,7 @@ function syncInputs() {
     $('pd-prefix_on_decode').checked = S.sc.pd.prefix_on_decode !== false; $('pd-search_layouts').checked = !!S.sc.pd.search_layouts; $('pd-search_decode_batch').checked = !!S.sc.pd.search_decode_batch; $('pd-simulate').checked = !!S.sc.pd.simulate;
     $('pd-prefix_affinity').checked = !!S.sc.pd.prefix_affinity;
     $('pd-kv_policy').value = S.sc.pd.kv_policy || 'off';
+    $('pd-kv_admit').value = S.sc.pd.kv_admit || 'before_prefill';
     if (S.cat) {
       const sel = $('pd-prefill_chip'), pc = S.sc.pd.prefill_chip;
       if (!sel.options.length) put(sel, h('option', { value: '' }, '同 decode'), ...Object.keys(S.cat.chips).map((k) => h('option', { value: k }, k)));
@@ -720,7 +721,7 @@ function renderPDQueue(q, cards, L) {
   const best = Math.max(...Object.values(q.modes).map((x) => x.slo_goodput_per_card || 0));
   const rows = Object.entries(q.modes).map(([k, x]) => {
     const e = E[k] || {};
-    const en = hasJ ? (e.J_per_token !== undefined ? sci(e.J_per_token) : '—') : (e.counts_per_token ? sci(e.counts_per_token.dram) : '—');
+    const en = hasJ ? (e.J_per_token !== undefined ? `${sci(e.J_per_token)}${e.tok_per_J ? ` (${num(e.tok_per_J)} tok/J${e.static_share ? `，静态 ${pct(e.static_share)}` : ''})` : ''}` : '—') : (e.counts_per_token ? sci(e.counts_per_token.dram) : '—');
     let note = '';
     if (!x.stable) note = '不稳定：' + (x.why || '');
     else if (k === 'pd') note = `prefill batch 上限 ${x.prefill.batch_cap}，排队均值 ${num(x.prefill.wait_ms.mean)} ms；decode 运行 batch ≈ ${num(x.decode.occupancy)}（p90 ${x.decode.running_p90}）/ ${x.decode.slots} 槽；KV 链路被集合通信占用 ${pct(x.kv.u_coll)}`;
@@ -728,8 +729,12 @@ function renderPDQueue(q, cards, L) {
     else note = `每请求 ${Number.isInteger(x.prefill.chunks) ? x.prefill.chunks : num(x.prefill.chunks)} 块，融合迭代 ${num(x.prefill.iter_ms)} ms（无分块 ${num(x.decode.iter_ms_no_chunk)} ms），prefill 占用 ${pct(x.prefill.rho)}`;
     if (x.stable && x.kv_cap) {
       const c = x.kv_cap;
-      note += `；KV ${c.policy}：${c.capacity_tokens} tok / 副本 → ${c.slots_kv} 槽` + (c.binds ? `（生效，准入等待均值 ${num(c.slot_wait_mean_ms)} ms，单列、不计入 TTFT / TPOT / SLO goodput` + (c.policy === 'recompute' ? `，抢占 ${num(c.preempt_per_req)} 次/请求` : '') + '）' : '（不生效）');
+      const pre = c.policy === 'recompute' ? `，抢占 ${num(c.preempt_per_req)} 次/请求（重算 ${num(c.recompute_ms)} ms）`
+        : c.policy === 'swap' ? `，抢占 ${num(c.preempt_per_req)} 次/请求（换出 + 换入 ${num(2 * c.swap_ms)} ms，${num(c.swap_GBps_card)} GB/s/卡${c.swap_source === 'pd.swap_GBps' ? '' : '「假设」'}）` : '';
+      note += `；KV ${c.policy}：${c.capacity_tokens} tok / 副本 → ${c.slots_kv} 槽` + (c.binds ? `（生效，准入等待均值 ${num(c.slot_wait_mean_ms)} ms（P ${pct(c.p_wait || 0)}），`
+        + (c.in_ttft ? '先准入后 prefill（vLLM）：已计入 TTFT 与 SLO goodput' : 'prefill 后准入：单列、不计入 TTFT / TPOT / SLO goodput') + pre + '）' : '（不生效）');
     }
+    if (e.static_note) note += '；' + e.static_note;
     const t = x.ttft_ms;
     return h('tr', { class: x.slo_goodput_per_card > 0 && x.slo_goodput_per_card >= best ? 'best' : '' }, h('td', { class: 'l' }, k === 'pd' ? h('b', {}, names[k]) : names[k]),
       h('td', { style: ok(x.ttft_p90_ok) }, x.stable ? `${num(t.p50)}/${num(t.p90)}/${num(t.p99)}` : '—'),
@@ -754,7 +759,7 @@ function renderPDQueue(q, cards, L) {
     + (L && !L.plain ? ` 长度「假设」（${{ fixed: '固定', cv: '对数正态 8 档', mix: '离散分布' }[L.source]}）：prompt 均值 ${num(L.mean_prompt)}（CV ${num(L.prompt_cv_eff)}），输出均值 ${num(L.mean_out)}（CV ${num(L.out_cv_eff)}），decode 上下文按长度偏置取 ${L.decode_ctx}${L.prefix_hit ? `；前缀命中 ${pct(L.prefix_hit)}${L.prefix_hit_source === 'capacity' ? '（容量模型，PD prefill 池）' : ''}${L.prefix_on_decode ? '（KV 只传未缓存部分）' : '（KV 全量交接）'}` : ''}。` : '')
     + ' 稳定上限：' + Object.entries(q.modes).map(([k, x]) => `${names[k]} ${num(x.stable_rate_rps)}`).join('，') + ' req/s。'
     + (q.sim ? ' DES 行「假设」：请求级离散事件仿真（FCFS、泊松、同一套逐步代价，n = ' + q.sim.n_req + '），括号内为（闭式 − DES）/ DES，> 0 = 闭式偏保守。' : '')
-    + ' TTFT 分位数：服务时间混合时等待与自身时延按独立和计算（0.54），单一服务时间时逐项相加（精确）；KV 容量排队 / recompute 抢占只在「KV 策略」非 off 且容量受限时计入（0.55）；未建模：换出（swap）、调度器开销（前缀缓存容量与 LRU 淘汰只在设了「前缀长度」时按 Che 近似计入，见上表）。';
+    + ' TTFT 分位数：服务时间混合时等待与自身时延按独立和计算（0.54），单一服务时间时逐项相加（精确）；KV 容量排队 / recompute / swap 抢占只在「KV 策略」非 off 且容量受限时计入（0.55 / 0.56；默认先准入后 prefill = vLLM，等待计入 TTFT 与 SLO goodput；抢占者的停顿按混合计入 TPOT 尾部与最长停顿）；未建模：调度器开销（前缀缓存容量与 LRU 淘汰只在设了「前缀长度」时按 Che 近似计入，见上表）。';
 }
 function budgetMark(x) {
   if (x.budget_ok === false) return h('span', { class: 'tag danger', title: '超出预算：' + (x.budget_violations || []).join(', ') }, '超预算');
@@ -1205,7 +1210,7 @@ async function init() {
     'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2'])
     bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
       { nullable: true, int: k === 'cards' });
-  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net'])
+  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   $('best-layout').addEventListener('click', bestLayout);
   $('best-batch').checked = S.best;
@@ -1272,6 +1277,8 @@ async function init() {
   bindNumber('pd-prefix_cache_GB', () => S.sc.pd.prefix_cache_GB ?? null, (x) => (S.sc.pd.prefix_cache_GB = x), { nullable: true, check: (x) => x >= 0 });
   $('pd-kv_policy').addEventListener('change', (e) => { S.sc.pd.kv_policy = e.target.value || 'off'; schedule(); });
   bindNumber('pd-kv_capacity_GB', () => S.sc.pd.kv_capacity_GB ?? null, (x) => (S.sc.pd.kv_capacity_GB = x), { nullable: true, check: (x) => x > 0 });
+  $('pd-kv_admit').addEventListener('change', (e) => { S.sc.pd.kv_admit = e.target.value || 'before_prefill'; schedule(); });
+  bindNumber('pd-swap_GBps', () => S.sc.pd.swap_GBps ?? null, (x) => (S.sc.pd.swap_GBps = x), { nullable: true, check: (x) => x > 0 && x < 1e5 });
   $('pd-prefill_chip').addEventListener('change', (e) => { S.sc.pd.prefill_chip = e.target.value || null; schedule(); });
   $('pd-prefill_mem_id').addEventListener('change', (e) => { S.sc.pd.prefill_mem_id = e.target.value.trim() || null; schedule(); });
   $('pd-enabled').addEventListener('change', (e) => { S.sc.pd.enabled = e.target.checked; $('pd-inputs').hidden = !e.target.checked; schedule(); });

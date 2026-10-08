@@ -2,7 +2,8 @@
 0.52: request-length spread, prefix cache, corrected chunked-iteration mean; 0.54: birth–death decode, TTFT
 convolution, prefill-first worst gap — all checked against the request-level DES in core/pdsim, V4 serving;
 0.55: colocated decode burstiness (reduced-clock batch chain), occupancy autocorrelation window, quasi-static
-chunked TTFT, worst gap from up-crossings, decode KV capacity admission / preemption).
+chunked TTFT, worst gap from up-crossings, decode KV capacity admission / preemption; 0.56: vLLM admission order
+with the wait in TTFT, preemption mixture in the TPOT / gap tails, swap preemption).
 
 Everything here is analytic on top of evaluated steps; all of it is 「假设」 and labelled so.  core/pdsim simulates
 the same system event by event with the same step costs (validation, and opt-in ``pd.simulate``).
@@ -76,13 +77,21 @@ Chunked mean iteration (0.52 fix): ν = λ·Σ w_i n_i chunk iterations/s occupy
   per-iteration mean is T₀ / (1 − ρ + ν T₀) and a share x = ν·that of iterations carry a chunk (0.51 used the
   time-average ρ·T₁ + (1 − ρ)·T₀ and share ρ, which is length-biased upward).
 Decode KV capacity (0.55, ``pd.kv_policy``, default off): B_kv = ⌊K / mean running footprint⌋ (wait: S + out
-  reserved, out size-biased E[o²]/E[o]; recompute: S + generated, E[o²]/(2E[o])); the mode runs with min(B, B_kv)
-  slots; admission wait = the chain's queue behind the slots (Little) × (1 + c_s²)/2 (Lee–Longton).  Recompute adds
-  re-prefill stalls at the Rice up-crossing rate of K by the running footprint (Normal per batch size) 「假设」.
-Not modelled: arrival burstiness beyond Poisson, swap preemption, central-queue load balancing (random split is
-pessimistic), length-aware scheduling (FCFS everywhere), chunked prefill inside the PD prefill pool.  Known bias (V4
-0.55, MODEL.md §18.5): TPOT / tails within the DES seed noise at ≤ 0.85 load (see there); recompute preemption counts
-are underestimated (optimistic admission lets the running batch exceed B_kv).
+  reserved, out size-biased E[o²]/E[o]; recompute / swap: S + generated, E[o²]/(2E[o])); the mode runs with
+  min(B, B_kv) slots; admission wait = the chain's queue behind the slots (Little) × (1 + c_s²)/2 (Lee–Longton).
+  0.56 — admission order ``pd.kv_admit``: before_prefill (vLLM, default) reserves the slot + KV before the prefill
+  (PD: before the KV pull), so when the capacity binds the wait W (P(wait) = p) is in TTFT: the TTFT law (rebuilt
+  from its p50 / p90 / p99) ⊕ (atom 1 − p, Exp(W/p)) — and so in the SLO goodput; after_prefill = 0.55 (reported apart).
+  Preemption (recompute / swap): ν = ν_Rice (up-crossings of K by the running footprint, Normal per batch size) +
+  ν_sat (an admission at a full replica fills to a headroom ~U(0, S): rate p·λ_r·E[(E[o]/S)(1 − e^{−S/E[o]})])
+  「假设」; a victim's gap = T_fix + Exp(1/λ_r) (stall + re-queue at the head), mixed into the TPOT and worst-gap
+  quantiles with weight p_v = preemptions / request; the stalls take a share f = ν·T_stall of the replica (≥ 1 →
+  unstable).  Recompute: T_stall = re-prefill of S̄ + ḡ; swap: 2·(S̄ + ḡ)·bytes/token ÷ (host GB/s per card × cards
+  per replica) (``pd.swap_GBps``, default workload.host_GBps 「假设」).
+Not modelled: arrival burstiness beyond Poisson, central-queue load balancing (random split is pessimistic),
+length-aware scheduling (FCFS everywhere), chunked prefill inside the PD prefill pool.  Known bias (V4 0.56, MODEL.md
+§18.6): TPOT / tails within the DES seed noise at ≤ 0.85 load without a KV cap; with a binding KV cap the folded TTFT
+is conservative (p90 +20…40 %) and recompute at high load / CV 1 misses the DES's preemption churn (optimistic).
 """
 
 
@@ -386,7 +395,8 @@ def _mg1_busy(lam: float, svc_w, want_dur: bool = False, tol: float = 1e-9, n_ca
     else:
         dt = m1 / 8.0
         idx = [(w, s_, int(round(s_ / dt))) for w, s_ in pts]
-        cur = {0: (1.0, 0.0)}                     # bin → (mass, mass-weighted exact time)
+        imax = max(i for _, _, i in idx)
+        cm, ct, lo, hi = [1.0], [0.0], 0, 1       # bin k → mass, mass-weighted exact time (flat lists, 0.56)
         F = 0.0
         m2 = sum(w * s_ * s_ for w, s_ in pts)
         var = max(0.0, m2 - m1 * m1)
@@ -396,19 +406,30 @@ def _mg1_busy(lam: float, svc_w, want_dur: bool = False, tol: float = 1e-9, n_ca
               for j, z in enumerate(zs)]
         for n in range(1, n_cap + 1):
             if n <= 60:
-                nxt: dict = {}
-                for k, (pk, tk) in cur.items():
-                    for w, s_, i in idx:
-                        a, b = nxt.get(k + i, (0.0, 0.0))
-                        nxt[k + i] = (a + pk * w, b + w * (tk + pk * s_))
-                cur = {k: v for k, v in nxt.items() if v[0] > 1e-13}
+                nm = [0.0] * (hi + imax)
+                nt = [0.0] * (hi + imax)
+                rng_k = [k for k in range(lo, hi) if cm[k] > 0.0]
+                for w, s_, i in idx:
+                    for k in rng_k:
+                        pk = cm[k]
+                        nm[k + i] += pk * w
+                        nt[k + i] += w * (ct[k] + pk * s_)
+                cm, ct = nm, nt
                 p = 0.0
-                for k, (v, tv) in cur.items():
-                    t_ = tv / v
+                lo, hi = len(cm), 0
+                for k in range(len(cm)):
+                    v = cm[k]
+                    if v <= 1e-13:
+                        cm[k] = 0.0
+                        continue
+                    lo, hi = min(lo, k), k + 1
+                    t_ = ct[k] / v
                     q_ = v * ker(t_, n)
                     p += q_
                     if want_dur and q_ > 0:
                         dur[t_] = dur.get(t_, 0.0) + q_
+                if hi == 0:
+                    lo = 0
             else:
                 mu_n, sd_n = n * m1, math.sqrt(n * var)
                 p = sum(wt * ker(max(1e-12, mu_n + sd_n * z), n) for z, wt in zip(zs, zw))
@@ -963,11 +984,66 @@ def _kv_slots(ctx: dict, B: int) -> tuple[int, dict | None]:
                          "ES": ES, "Eg": Eg, "var_f": var_f}
 
 
+def _wait_mix_sum_q(tq: dict, p: float, m_cond: float) -> dict:
+    """TTFT ⊕ admission wait (0.56) 「假设」: W = 0 w.p. 1 − p, else Exp(mean m_cond) (M/M/c-like queue behind the KV
+    slots).  The TTFT law is rebuilt from its quantiles (log-survival interpolated between p50 / p90 / p99 and
+    extrapolated past p99 with the p90→p99 slope; linear from 0.6·p50 below the median) on a 64-point grid, then
+    P(T + W > t) = S_T(t) + p·E[e^{−(t−T)/m}; T ≤ t] is solved for each quantile."""
+    if p <= 0 or m_cond <= 0:
+        return dict(tq)
+    p50, p90, p99 = tq["p50"], tq["p90"], tq["p99"]
+    lo = 0.6 * p50
+
+    def Q(u: float) -> float:
+        if u <= 0.5:
+            return lo + (p50 - lo) * u / 0.5
+        ls = -math.log(1 - u)
+        a, b = math.log(2), math.log(10)
+        if ls <= b:
+            return p50 + (p90 - p50) * (ls - a) / (b - a)
+        return p90 + (p99 - p90) * (ls - b) / (math.log(100) - b)
+    n = 64
+    us = [(k + 0.5) / n for k in range(n - 1)]
+    pts = [(1.0 / n, Q(u)) for u in us]
+    tail = [(1.0 / n / 8, Q(1 - (1.0 / n) * (k + 0.5) / 8)) for k in range(8)]   # finer in the last cell
+    pts += tail
+
+    def surv(t: float) -> float:
+        acc = 0.0
+        for w, x in pts:
+            acc += w * (1.0 if x > t else p * math.exp(-(t - x) / m_cond))
+        return acc
+    out = {"mean": tq["mean"] + p * m_cond}
+    for q in QS:
+        k = f"p{q * 100:g}"
+        a, b = 0.0, max(x for _, x in pts) + m_cond * max(1.0, math.log(max(p, 1e-12) / (1 - q))) + 1e-9
+        while surv(b) > 1 - q:
+            b *= 2
+        for _ in range(100):
+            mid = 0.5 * (a + b)
+            if surv(mid) > 1 - q:
+                a = mid
+            else:
+                b = mid
+        out[k] = b
+    return out
+
+
 def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
-    """Run a mode with the KV-limited slot count; recompute adds its preemption overhead 「假设」: each preemption re-prefills
-    S̄ + ḡ tokens on the replica (stall share f_r = ν_p·T_re like prefill-first → TPOT × 1/(1 − f_r)); the victim's own
-    TPOT carries its re-prefill spread over its output; its worst gap ≥ the re-prefill.  Preemption rate from Rice's
-    formula for the footprint process (below); the admission wait itself is the chain's queue behind B_kv."""
+    """Run a mode with the KV-limited slot count (0.55; 0.56 adds the admission order, swap, the saturation preemption
+    rate and the victims' tail) 「假设」.
+
+    * Admission wait: the chain's queue behind B_kv (Little × Lee–Longton).  ``kv_admit`` = before_prefill (vLLM:
+      KV is allocated before the prefill / the KV pull, so the wait is part of TTFT and of SLO goodput — folded in
+      when the capacity binds) | after_prefill (0.55: reported apart).
+    * recompute / swap preemptions: ν = ν_Rice (footprint up-crossings of K, 0.55) + ν_sat.  ν_sat: while requests
+      queue for KV the scheduler refills greedily, leaving headroom h ~ U(0, S_next) for growth; growth at
+      G = λ_r·E[o] tokens/s exhausts it before the next departure (rate λ_r) with probability e^{−h/E[o]} →
+      ν_sat = p_wait·λ_r·E_S[(E[o]/S)(1 − e^{−S/E[o]})].
+    * Each preemption stalls the replica for T_stall (recompute: re-prefill S̄ + ḡ; swap: KV out + in over the host
+      link) → TPOT × 1/(1 − ν·T_stall).  A victim's gap = T_fix + Exp(1/λ_r) (waits for a departure to free room;
+      T_fix = re-prefill, or swap-out + swap-in); per-request probability p_v = ν/λ_r enters the worst-gap and TPOT
+      tails as a mixture: q-quantile ≥ T_fix + ln(p_v/(1 − q))/λ_r when p_v > 1 − q."""
     B0 = ctx["B"]
     B, kvi = _kv_slots(ctx, B0)
     if kvi is None:
@@ -982,40 +1058,67 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
     lam_r = lam / ctx[reps_key]
     W = (dec.get("occupancy", 0.0) - (dec.get("tpot", 0.0) * lam_r * ctx["out"])) / lam_r if lam_r > 0 else 0.0
     # the chain's queue behind the slots is M/M/c-like (memoryless lives); Lee–Longton: W_M/G/c ≈ (1 + c_s²)/2 · W_M/M/c
-    W *= (1 + ctx.get("out_cs2", 1.0)) / 2
-    kvi.update(p_wait=p_wait, slot_wait_mean_ms=max(0.0, W) * 1e3)
-    if kvi["policy"] != "recompute":
+    W = max(0.0, W * (1 + ctx.get("out_cs2", 1.0)) / 2)
+    admit = ctx.get("kv_admit", "before_prefill")
+    kvi.update(p_wait=p_wait, slot_wait_mean_ms=W * 1e3, admit=admit,
+               in_ttft=bool(kvi["binds"] and admit == "before_prefill"))
+    pol = kvi["policy"]
+    if pol in ("recompute", "swap"):
+        pool = ctx[pool_key]
+        S_re = max(1, int(round(kvi["ES"] + kvi["Eg"])))
+        if pol == "swap":
+            sw = ctx.get("swap") or {}
+            bps = sw.get("Bps_replica", 0.0)
+            t_io = S_re * (ctx.get("kv_cap") or {}).get("bytes_per_token", 0.0) / bps if bps > 0 else math.inf
+            t_stall, t_fix = 2 * t_io, 2 * t_io
+            kvi.update(swap_GBps_card=sw.get("GBps_card"), swap_source=sw.get("source"), swap_ms=t_io * 1e3)
+        else:
+            t_stall = t_fix = pool.run("prefill", 1, S_re).ttft
+            kvi.update(recompute_ms=t_stall * 1e3)
+        K, m_f, v_f = kvi["capacity_tokens"], kvi["ES"] + kvi["Eg"], kvi["var_f"]
+        nu_rice = 0.0
+        for k_, pk in enumerate(dec.get("run_w") or ()):
+            if k_ < 1 or pk <= 0:
+                continue
+            sd = math.sqrt(k_ * v_f) if v_f > 0 else 0.0
+            if sd <= 0:
+                continue
+            z = (K - k_ * m_f) / sd
+            if z > 12:
+                continue
+            nu_rice += pk * math.exp(-0.5 * z * z) / (sd * math.sqrt(2 * math.pi)) * k_ * dec["e"] / dec["step_of"](k_)[0]
+        pts = ctx["len"].points
+        tot = sum(w for w, _, _ in pts)
+        Eo = sum(w * o for w, _, o in pts) / tot
+        p_ev = sum(w * (Eo / S) * (1 - math.exp(-S / Eo)) for w, S, _ in pts) / tot if Eo > 0 else 0.0
+        nu_sat = p_wait * lam_r * p_ev if kvi["binds"] else 0.0
+        nu = nu_rice + nu_sat
+        p_v = min(1.0, nu / lam_r) if lam_r > 0 else 0.0                 # preemptions per request
+        f_r = nu * t_stall
+        if f_r >= 1:
+            return {**x, "stable": False, "why": f"KV 容量不足：{pol} 抢占的恢复（重算 / 换入换出）占满副本"}
+        st = 1 / (1 - f_r)
+        g_mean = t_fix + (1 / lam_r if lam_r > 0 else 0.0)
+        tp_mean0 = x["tpot_mean"] * st
+        x["tpot_mean"] = tp_mean0 + p_v * g_mean / ctx["out"]
+        for k_, q in (("tpot_p90", 0.9), ("tpot_p99", 0.99)):
+            v = x[k_] * st + p_v * g_mean / ctx["out"]
+            if p_v > 1 - q and lam_r > 0:
+                v = max(v, tp_mean0 + (t_fix + math.log(p_v / (1 - q)) / lam_r) / ctx["out"])
+            x[k_] = v
+        if p_v > 0.01 and lam_r > 0:
+            x["itl_max"] = max(x["itl_max"], t_fix + math.log(p_v / 0.01) / lam_r)
+        x["e2e_mean"] = x.get("e2e_mean", 0.0) + ctx["out"] * (x["tpot_mean"] - x["tpot_mean"] / st)
+        kvi.update(preempt_per_req=p_v, preempt_rice=nu_rice / lam_r if lam_r > 0 else 0.0,
+                   preempt_sat=nu_sat / lam_r if lam_r > 0 else 0.0, restore_share=f_r,
+                   victim_gap_mean_ms=g_mean * 1e3)
+        if pol == "recompute":
+            kvi["recompute_share"] = f_r
+    else:
         kvi["preempt_per_req"] = 0.0
-        return x
-    pool = ctx[pool_key]
-    S_re = max(1, int(round(kvi["ES"] + kvi["Eg"])))
-    T_re = pool.run("prefill", 1, S_re).ttft
-    # preemptions = up-crossings of K by the running footprint F (grows k·e tokens per step, drops at departures):
-    # Rice — rate = f_F(K)·dF/dt, F | k ≈ Normal(k·m_f, k·v_f), mixed over the chain's running-batch law
-    K, m_f, v_f = kvi["capacity_tokens"], kvi["ES"] + kvi["Eg"], kvi["var_f"]
-    nu = 0.0
-    for k_, pk in enumerate(dec.get("run_w") or ()):
-        if k_ < 1 or pk <= 0:
-            continue
-        sd = math.sqrt(k_ * v_f) if v_f > 0 else 0.0
-        if sd <= 0:
-            continue
-        z = (K - k_ * m_f) / sd
-        if z > 12:
-            continue
-        nu += pk * math.exp(-0.5 * z * z) / (sd * math.sqrt(2 * math.pi)) * k_ * dec["e"] / dec["step_of"](k_)[0]
-    p_wait = min(1.0, nu / lam_r) if lam_r > 0 else 0.0          # preemptions per request
-    f_r = nu * T_re
-    if f_r >= 1:
-        return {**x, "stable": False, "why": "KV 容量不足：recompute 抢占的重算 prefill 占满副本"}
-    st = 1 / (1 - f_r)
-    own = p_wait * T_re / ctx["out"]                                  # victim: its re-prefill over its output
-    for k_ in ("tpot_mean", "tpot_p90", "tpot_p99"):
-        x[k_] = x[k_] * st + own
-    x["itl_max"] = max(x["itl_max"], T_re + dec.get("step", 0.0) / max(dec.get("e", 1.0), 1e-12)) \
-        if nu * ctx["out"] * x["tpot_mean"] > 0.01 else x["itl_max"]
-    x["e2e_mean"] = x.get("e2e_mean", 0.0) + ctx["out"] * (x["tpot_mean"] - x["tpot_mean"] / st)
-    kvi.update(preempt_per_req=p_wait, recompute_ms=T_re * 1e3, recompute_share=f_r)
+    if kvi["in_ttft"] and p_wait > 0 and W > 0:
+        x["ttft"] = _wait_mix_sum_q(x["ttft"], min(1.0, p_wait), W / min(1.0, p_wait))
+        x["e2e_mean"] = x.get("e2e_mean", 0.0) + W
     return x
 
 
@@ -1072,7 +1175,10 @@ def _per_unit(r: Result) -> dict:
     return {k: a["counts"][k] / u for k in ACTIONS if k != "idle"}
 
 
-def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None) -> dict:
+def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, prefill_card_s_tok: float = 0.0) -> dict:
+    """Dynamic energy = action counts × the table; static energy = W × card-seconds per output token at this load
+    (wall-clock, busy or idle — the cards are provisioned either way).  ``prefill_card_s_tok``: the PD prefill pool's
+    share of ``card_s_tok``, charged at ``idle_W_prefill`` when given (its chip may differ, 0.56); nothing defaulted."""
     out = {"counts_per_token": counts_tok, "card_s_per_token": card_s_tok}
     if table is None or not table.provided:
         return out
@@ -1081,9 +1187,20 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None) -> d
         e = getattr(table, attr)
         if e is not None:
             j[k] = counts_tok.get(k, 0.0) * e * 1e-12 * (8 if k in _BITS else 1)
+    split = prefill_card_s_tok > 0 and table.idle_W_prefill is not None     # else one rate for every card (0.51)
+    if split:
+        j["idle_prefill"] = table.idle_W_prefill * prefill_card_s_tok
     if table.idle_W is not None:
-        j["idle"] = table.idle_W * card_s_tok
-    out.update(J_per_token=sum(j.values()), J_by_action=j)
+        j["idle"] = table.idle_W * (card_s_tok - (prefill_card_s_tok if split else 0.0))
+    if table.idle_W is None and table.idle_W_prefill is not None:
+        out["static_note"] = ("只计 PD prefill 池的静态能耗：未给 idle_W，decode 池未计" if prefill_card_s_tok > 0 else
+                              "未给 idle_W（idle_W_prefill 只用于 PD prefill 池），静态能耗未计")
+    if not j:
+        return out
+    tot = sum(j.values())
+    idle = j.get("idle", 0.0) + j.get("idle_prefill", 0.0)
+    out.update(J_per_token=tot, J_by_action=j, tok_per_J=1 / tot if tot > 0 else None,
+               static_share=idle / tot if tot > 0 else None)
     return out
 
 
@@ -1158,7 +1275,7 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
     if x["stable"]:
         kv = _wsum(ws, [ctx["kv_xfer"][(S, p)] for _, S, p in pts])
         en["pd"] = _energy(_mix(x["_pre"]["rs"], pts, x["_dec"]["r"], o, {ctx["tier"] if ctx["tier"] == "net" else "link": kv}),
-                           cards / lam / o, table)
+                           cards / lam / o, table, ctx["n_p"] / lam / o)
     pts = ctx.get("pts_c", pts)                 # colocated replicas: their own prefix-cache hit mix (0.53)
     ws = [w for w, _, _ in pts]
     y = modes.get("coloc_prefill_first")

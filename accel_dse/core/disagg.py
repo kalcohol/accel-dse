@@ -279,6 +279,11 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         if pd.kv_policy != "off":       # 0.55: decode KV capacity (decode pool and colocated replicas share the layout)
             ctx["kv_policy"] = pd.kv_policy
             ctx["kv_cap"] = kv_token_capacity(m, dec, pd.kv_capacity_GB)
+            ctx["kv_admit"] = pd.kv_admit
+            if pd.kv_policy == "swap":      # host link per replica = per card × cards per replica 「假设」 (one link each)
+                gbps = pd.swap_GBps if pd.swap_GBps is not None else scn.workload.host_GBps
+                ctx["swap"] = {"GBps_card": gbps, "source": "pd.swap_GBps" if pd.swap_GBps is not None
+                               else "workload.host_GBps", "Bps_replica": gbps * 1e9 * scn.layout.cards}
         dpool.memo[("decode", sv.batch, None, 0)] = dec
         cpool.memo = dpool.memo                           # same layout → same evaluations
     if queue:

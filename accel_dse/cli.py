@@ -86,6 +86,7 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                             ("--pJ-bit-dram", "pJ_bit_dram", "per DRAM bit"),
                             ("--pJ-bit-link", "pJ_bit_link", "per in-node scale-up link bit"),
                             ("--idle-W", "idle_W", "W per card"),
+                            ("--idle-W-prefill", "idle_W_prefill", "W per card of the PD prefill pool (default --idle-W)"),
                             ("--pJ-bit-slc", "pJ_bit_slc", "per SLC bit"), ("--pJ-bit-d2d", "pJ_bit_d2d", "per D2D bit"),
                             ("--pJ-bit-net", "pJ_bit_net", "per cross-node network bit")):
         p.add_argument(flag, dest=dest, type=float, default=None,
@@ -164,9 +165,15 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="PD (0.53, with --pd-search-layouts): also search each decode layout's batch (B/2…4B, TPOT SLO)")
     p.add_argument("--pd-sim", dest="pd_sim", action="store_true",
                    help="PD (0.54): also run the request-level DES and print simulated tails vs the closed form (slower)")
-    p.add_argument("--pd-kv-policy", dest="pd_kv_policy", choices=("off", "wait", "recompute"), default=None,
-                   help="PD (0.55): decode KV capacity — wait (reserve prompt+output, admission waits) | recompute "
-                        "(optimistic admission, preempt youngest + re-prefill); default off")
+    p.add_argument("--pd-kv-policy", dest="pd_kv_policy", choices=("off", "wait", "recompute", "swap"), default=None,
+                   help="PD (0.55/0.56): decode KV capacity — wait (reserve prompt+output, admission waits) | recompute "
+                        "(optimistic admission, preempt youngest + re-prefill) | swap (preempt youngest, KV out/in "
+                        "over the host link); default off")
+    p.add_argument("--pd-kv-admit", dest="pd_kv_admit", choices=("before_prefill", "after_prefill"), default=None,
+                   help="PD (0.56): KV admission order — before_prefill (vLLM: slot + KV reserved before prefill / KV "
+                        "pull, the wait is in TTFT and SLO goodput; default) | after_prefill (0.55: wait reported apart)")
+    p.add_argument("--pd-swap-GBps", dest="pd_swap_GBps", type=float, default=None,
+                   help="PD (0.56, --pd-kv-policy swap): host-link GB/s per card (default workload host_GBps 「假设」)")
     p.add_argument("--pd-kv-capacity-GB", dest="pd_kv_capacity_GB", type=float, default=None,
                    help="PD (0.55): KV capacity per decode replica, GB (default: DRAM left after weights)")
     for flag, dest, hlp in _BUDGET_FLAGS:
@@ -250,7 +257,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                         ("prefill_chip", "pd_prefill_chip"), ("prefill_mem_id", "pd_prefill_mem"),
                         ("prefix_len", "pd_prefix_len"), ("prefix_count", "pd_prefix_count"),
                         ("prefix_zipf", "pd_prefix_zipf"), ("prefix_cache_GB", "pd_prefix_cache_GB"),
-                        ("kv_policy", "pd_kv_policy"), ("kv_capacity_GB", "pd_kv_capacity_GB")):
+                        ("kv_policy", "pd_kv_policy"), ("kv_capacity_GB", "pd_kv_capacity_GB"),
+                        ("kv_admit", "pd_kv_admit"), ("swap_GBps", "pd_swap_GBps")):
             if getattr(a, dest, None) is not None:
                 sc["pd"][k] = getattr(a, dest)
         if getattr(a, "pd_mix", None):
@@ -267,7 +275,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
             sc["pd"]["simulate"] = True
     body = {"chip_preset": a.chip, "scenario": sc}
     en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
-                                     "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net")
+                                     "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net", "idle_W_prefill")
           if getattr(a, k, None) is not None}
     if en:
         body["energy"] = en
@@ -429,13 +437,25 @@ def cmd_eval(a) -> dict:
                 c0 = kvs[0][1]
                 print(f"  decode KV capacity 「假设」 {c0['policy']}: {c0['capacity_tokens']} tok/replica "
                       f"({c0['source']}), mean running footprint {c0['footprint_tokens']:.0f} tok → "
-                      f"{c0['slots_kv']} slots" + (" (binds; admission wait is reported here, not added to TTFT / TPOT / "
-                                                "SLO goodput)" if c0["binds"] else " (does not bind)"))
+                      f"{c0['slots_kv']} slots, admission {c0.get('admit', 'after_prefill')}"
+                      + ((" (binds; admission wait included in TTFT and SLO goodput)" if c0.get("in_ttft") else
+                          " (binds; admission wait reported here, not added to TTFT / TPOT / SLO goodput)")
+                         if c0["binds"] else " (does not bind)"))
                 for k, c in kvs:
                     if c["binds"] and q["modes"][k].get("stable"):
-                        print(f"    {names[k]:<28} admission wait {c.get('slot_wait_mean_ms', 0):.0f} ms"
+                        pol = c["policy"]
+                        print(f"    {names[k]:<28} admission wait {c.get('slot_wait_mean_ms', 0):.0f} ms "
+                              f"(P(wait) {c.get('p_wait', 0):.1%})"
                               + (f"  preemptions/req {c.get('preempt_per_req', 0):.3f}  re-prefill "
-                                 f"{c.get('recompute_ms', 0):.0f} ms" if c["policy"] == "recompute" else ""))
+                                 f"{c.get('recompute_ms', 0):.0f} ms" if pol == "recompute" else "")
+                              + (f"  preemptions/req {c.get('preempt_per_req', 0):.3f}  swap out+in "
+                                 f"{2 * c.get('swap_ms', 0):.0f} ms @ {c.get('swap_GBps_card', 0):.0f} GB/s/card "
+                                 f"({c.get('swap_source', '')})" if pol == "swap" else ""))
+            for k, e in (q.get("energy") or {}).items():
+                if e.get("J_per_token") is not None:
+                    print(f"    {names[k]:<28} energy {e['J_per_token']:.4g} J/token  {e['tok_per_J'] or 0:.3g} tok/J"
+                          + (f"  static {e['static_share']:.0%}" if e.get("static_share") else "")
+                          + (f"  ({e['static_note']})" if e.get("static_note") else ""))
             if b := q.get("pd_slo_best_split"):
                 print(f"    PD best split under SLO: {b['prefill_cards']}P+{b['decode_cards']}D "
                       f"{b['slo_goodput_per_card']:.1f} tok/s/card")

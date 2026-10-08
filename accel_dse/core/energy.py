@@ -18,7 +18,8 @@ Actions (whole system: every rank of every stage and replica)
   d2d    the share of the sent bytes that stays on the die-to-die tier of a package (0.48; D2D on, package_cards > 1;
          split by the ratio of bytes sent per tier of each collective, see core/schedule.py)
   net    the share that crosses nodes on the scale-out network (0.50; node_cards > 0)
-  idle   static / idle power × cards × the time window (``idle_W`` per card)
+  idle   static / idle power × cards × the time window (``idle_W`` per card; the PD report charges the prefill pool
+         at ``idle_W_prefill`` when given, 0.56 — its chip may differ; ignored by the single-chip report)
 
 Window and units
   LLM decode     one decode step → tokens = throughput × step (all micro-batches, all replicas)
@@ -56,6 +57,7 @@ class EnergyTable:
     pJ_bit_slc: float | None = None    # per bit served by the system-level cache (0.48)
     pJ_bit_d2d: float | None = None    # per bit on the die-to-die tier (0.48)
     pJ_bit_net: float | None = None    # per bit on the cross-node network tier (0.50)
+    idle_W_prefill: float | None = None  # PD report: static power per card of the prefill pool's chip (0.56; null = idle_W)
 
     def __post_init__(self):
         for f in fields(self):
@@ -148,7 +150,7 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
     per["idle_card_s"] = r.scenario.layout.cards * a["window_s"] / u
     out = {"unit": a["unit"], "window_s": a["window_s"], "units_per_window": a["units"],
            "counts_per_unit": per, "provided": table.provided,
-           "missing": [f.name for f in fields(EnergyTable) if getattr(table, f.name) is None],
+           "missing": [f.name for f in fields(EnergyTable) if getattr(table, f.name) is None and f.name != "idle_W_prefill"],
            "basis": "动作计数 × 用户提供的每动作能耗（Accelergy 式 ERT）；工具不内置任何能耗数值"}
     if not table.provided:
         return out

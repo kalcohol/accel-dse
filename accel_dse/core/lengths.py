@@ -2,9 +2,12 @@
 
 Default: every request has prompt S = ``serving.prompt`` and output ``serving.out_len`` (fixed lengths, as in 0.51).
 ``pd.prompt_cv`` / ``pd.out_cv`` (coefficient of variation > 0): independent lognormal prompt / output lengths with
-those means, discretised into N = 8 equal-probability bins, each represented by its conditional mean
+those means, discretised into N = 15 equal-probability bins (0.56; was 8), each represented by its conditional mean
   E[X | bin k] = N · mean · (Φ(z_{k+1} − σ) − Φ(z_k − σ)),  z_k = Φ⁻¹(k / N),  σ² = ln(1 + cv²)
 (exact for the lognormal; the mean is kept, the within-bin spread is dropped, so the variance is slightly low).
+N = 15 puts no bin boundary at the reported quantiles (0.5·N, 0.9·N, 0.99·N are not integers): with N = 8,
+P(S ≥ s₅) = 0.5 exactly, so TTFT p50 sat on a jump of the distribution and moved by tens of percent for a 0.03
+change in probability (V4 0.55).
 ``pd.length_mix``: an explicit discrete joint mix of (weight, prompt, out_len) rows (may correlate S and out).
 Each prompt value is evaluated separately (prefill time is not linear in S: attention), so nothing assumes linearity
 in the prompt length; output lengths enter through their moments (Little's law, Erlang C / Allen–Cunneen c_s²).
@@ -19,7 +22,7 @@ import math
 from dataclasses import dataclass
 from statistics import NormalDist
 
-BINS = 8
+BINS = 15
 _N = NormalDist()
 
 

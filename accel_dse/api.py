@@ -122,7 +122,7 @@ def scenario_from_body(body: dict) -> Scenario:
     if not isinstance(sc, dict):
         raise ApiError("scenario must be an object")
     preset = body.get("chip_preset", "100T")
-    if preset not in CHIPS:
+    if not isinstance(preset, str) or preset not in CHIPS:
         raise ApiError(f"chip_preset must be one of {sorted(CHIPS)}")
     base = Scenario(chip=CHIPS[preset]).to_dict()
     try:
@@ -413,6 +413,7 @@ def api_fit(body: dict) -> dict:
         return out
     cards = scn.layout.cards
     bud = _budget(body)
+    scn = scn.colocated()                 # 0.56: other layouts need not divide pd.decode_cards
     for n in (2, 4, 8, 16, 32, 64):
         if n <= cards:
             continue
@@ -466,7 +467,7 @@ def api_pareto(body: dict) -> dict:
 def api_sweep(body: dict) -> dict:
     scn = scenario_from_body(body)
     path = body.get("path")
-    if path not in SWEEP_PATHS:
+    if not isinstance(path, str) or path not in SWEEP_PATHS:
         raise ApiError(f"path must be one of {sorted(SWEEP_PATHS)}")
     vals = body.get("values")
     if not isinstance(vals, list) or not (1 <= len(vals) <= 32):

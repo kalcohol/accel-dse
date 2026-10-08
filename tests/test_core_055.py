@@ -148,7 +148,7 @@ def test_kv_policy_off_is_identity_and_binds():
     d = disagg_report(_kv(base, "wait", None))["queue"]["modes"]["pd"]["kv_cap"]
     assert d["source"] == "derived_free_dram" and d["capacity_tokens"] > 64 * 4608 and not d["binds"]
     try:
-        PDConfig(kv_policy="swap")
+        PDConfig(kv_policy="bogus")
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
