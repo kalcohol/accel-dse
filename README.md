@@ -1,19 +1,19 @@
 # accel-dse
 
-> 推理加速器设计空间探索工作台 · Analytical DSE workbench for inference-only NPU / ASIC
+> LLM 推理加速器设计空间探索 · Analytical design-space exploration for LLM inference accelerators
 
 [English](README.en.md) · [建模说明](docs/MODEL.md) · [更新日志](CHANGELOG.md) · [MIT](LICENSE)
 
-**accel-dse** 是一个**可手算核对**的解析模型 + 本地 Web 工作台，用于推理专用 NPU / ASIC 的 **DSE（Design Space Exploration，设计空间探索）**：在流片前，把「算力 × 片上 SRAM × HBM/LPDDR × 多芯片并行 × 工作负载」放在同一张 MetricsCard 上比较，看清时延、吞吐、容量与带宽墙之间的取舍。所有中间量（FLOPs、DRAM 字节、利用率、集合通信字节）都可导出、可复算。零第三方依赖，Python ≥ 3.10。
+**accel-dse** 用可核对的解析模型回答流片前的问题：给定一个 LLM（按官方发布的权重与 dtype）、一种数据通路映射、片上 SRAM、存储器（HBM / LPDDR）和卡数，最好的并行布局与 batch 是什么，瓶颈在哪里，结论对假设有多敏感。零第三方依赖，Python ≥ 3.10。
 
-## 建模范围
+## 它做什么
 
-- **工作负载**：LLM（dense / MoE / MLA / GQA，内置数十个公开 HF config 维数）、视频 DiT（N_denoise × T² attention）、蛋白质（encoder + L² pair）。
-- **单卡**：output-stationary PE 阵列（显式 M=1 decode 利用率）、SRAM 三分区（外部流量由 tiling + 容量推导，不需要手填 hit-rate）、HBM3/3E/4/4E 或 LPDDR5/5X/6（含 SOCAMM2 / LPCAMM2；带来源标签的结构化存储目录）。
-- **多芯片**：TP / PP / EP（含 TP×EP 专家切分、注意力 DP）、C2C（chip-to-chip）集合通信 + 暴露同步时延、IB/RoCE KV fabric、PP decode 微批、投机解码 / MTP。
-- **指标**：TTFT / TPOT（视频 TTFC、蛋白 time/seq）、compute vs memory 带宽墙分解、容量 / OOM、scale efficiency、吞吐–交互性 **Pareto** 前沿与 **SLO goodput**；可选的能耗 / 成本 stub（用户输入假设值）。
-
-方法、公式与全部关键假设见 **[建模说明](docs/MODEL.md)**，欢迎逐条挑错。
+- **模型按发布建模**：从 HF `config.json` 与 safetensors 头（不下载权重）得到逐角色的参数量与存储 dtype（bf16 / fp8 block / MXFP4 / int4 AWQ 等），与发布总量偏差 ≤0.5%；官方量化版是独立条目。每个模型带三轴标签：来源（官方 / 镜像）× 覆盖（完整 / 部分 /「架构代理」）× dtype。
+- **映射是设计变量**：输出驻留（OS）、权重驻留（边缘加载 / 宽面广播）、OS + GEMV 单元、可重构，逐算子计算 MAC 界与 SRAM 供数界；芯片不原生支持的格式计入反量化开销。
+- **逐 rank 算子图**：TP / PP / 注意力 DP / EP / ETP，单卡就是全 1 布局，没有第二条路径。
+- **存储规划与调度**：权重 / KV 的 SRAM 驻留、staging、逐 stage 容量；每级 `max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC`，绑定瓶颈与有效 MAC 比例直接给出。
+- **精确搜索**：每个布局在 TPOT SLO 下的最大 batch（分支定界，已用暴力枚举核对），decode 或含 prefill 的 goodput 目标，DP prefill 的 TTFT 标记，排名在「假设」扰动下是否稳定。
+- **校验**：参数对照发布、H100 类配置的趋势区间、与 GenZ 的对照，见 [建模说明](docs/MODEL.md)。
 
 ## 快速开始
 
@@ -21,57 +21,47 @@
 git clone https://github.com/kalcohol/accel-dse.git
 cd accel-dse
 python3 tests/run_tests.py          # 自检（零依赖；也可 python3 -m pytest tests/ -q）
-python3 -m accel_dse serve          # 本地 Web 工作台
-# 浏览器打开 http://127.0.0.1:8765
+python3 -m accel_dse serve          # Web 工作台 → http://127.0.0.1:8765
 ```
 
-常用 CLI：
+命令行：
 
 ```bash
-# 单个配置 → MetricsCard（8 芯片、每卡 HBM3E ×8 堆）
-python3 -m accel_dse workbench --model deepseek-v3 --chips 8 --mem-type HBM3E --mem-count 8
-
-# 吞吐–交互性 Pareto + SLO goodput（全部 TP×PP×EP 布局 × batch 至 KV 容量上限）
-python3 -m accel_dse pareto --model qwen3-32b --chips 8 --mem-type HBM3E --mem-count 8 \
-    --slo-ttft-ms 2000 --slo-tpot-ms 50 --csv out/pareto_qwen3-32b_8.csv
-
-# 并行布局矩阵 / 目录 / 离线报告
-python3 -m accel_dse workbench-parallel --model series/moe-active13b --chips 8
-python3 -m accel_dse list-series --product      # 公开 HF 模型维数
-python3 -m accel_dse list-packages              # 存储目录（HBM / LPDDR）
-python3 -m accel_dse report --out out/report.html
-python3 -m accel_dse --help                     # 全部子命令
+python3 -m accel_dse models                                   # 模型目录与三轴标签
+python3 -m accel_dse eval --model qwen3-8b --best-batch       # 单点评估（默认 100T 芯片 + LPDDR5X）
+python3 -m accel_dse compare --model deepseek-v3 --cards 8 \
+    --mem hbm3e_8s_12h24g_9200 --ctx 4096                     # 每种映射的最佳布局
+python3 -m accel_dse search --model qwen3-32b --cards 8 --objective goodput --mem hbm3e_8s_12h24g_9200
+python3 -m accel_dse stability --model qwen3-32b --cards 8 --mem hbm3e_8s_12h24g_9200
+python3 -m accel_dse validate                                 # 趋势区间 + GenZ 对照
 ```
 
-可选：`pip install 'accel-dse[web]'` 使用 FastAPI + uvicorn 作为后端（默认 stdlib `http.server`）。
+所有子命令都支持 `--json`。HTTP API（`/api/eval`、`/api/compare`、`/api/layouts`、`/api/stability`、`/api/sweep`、`/api/pareto`、`/api/memory`）接受与命令行相同的场景描述，严格解析（拒绝未知字段与 NaN / Infinity）。
 
 ## 目录结构
 
 ```
 accel-dse/
-├── accel_dse/            # Python 包
-│   ├── npu.py memory.py traffic.py evaluate.py   # 单卡引擎（PE / SRAM / DRAM / 流量）
-│   ├── scaleup.py workloads.py                    # 多芯片 TP/PP/EP、视频 / 蛋白负载
-│   ├── workbench.py pareto.py econ.py             # 产品层 MetricsCard、Pareto/goodput、能耗成本 stub
-│   ├── mem_catalog.py package_ranges.py catalog.py series.py   # 存储 / 算力 / 模型目录
-│   ├── serve.py web/                              # 本地 Web 工作台（API + 静态 UI）
-│   ├── cli.py report.py                           # CLI、离线 HTML 报告
-│   └── data/                                      # 模型维数目录（公开 HF config 烘焙）
-├── docs/MODEL.md         # 建模方法、公式、假设与局限
-├── docs/research/        # 存储规格调研与来源（JEDEC / 厂商资料）
-├── examples/             # 手算核对（handcheck.md）、校准 / 能耗示例 JSON
-├── scripts/              # 模型目录烘焙脚本
-├── tests/                # 零依赖测试（run_tests.py）
-└── out/                  # 示例输出（报告、CSV）
+├── accel_dse/
+│   ├── core/          # 场景、模型规格、算子图、映射、存储规划、调度、搜索、稳定性、校验
+│   ├── api.py         # JSON API（Web 与 CLI 共用）
+│   ├── serve.py web/  # 本地 Web 工作台
+│   ├── cli.py
+│   ├── mem_catalog.py # HBM / LPDDR 结构化目录（带来源标签）
+│   └── data/          # 发布摘要（releases/）、模型目录、GenZ 参考值
+├── docs/MODEL.md      # 建模方法、公式、校验与范围
+├── docs/research/     # 存储规格调研与来源
+├── scripts/           # 发布摘要抓取、GenZ 参考值生成
+└── tests/
 ```
 
 ## 免责声明
 
-本工具的所有数值均为**解析模型推算或明确标注的假设值**（UI / CSV 中标「假设 / assumed」），**不是实测硅片数据**，也未经硅后标定；频率、带宽效率、C2C / fabric 带宽、功耗与价格均为可调假设。请用于方案间的相对比较与趋势判断，不要当作产品规格引用。模型维数来自公开配置文件，不代表任何厂商对性能的声明。
+硬件参数（频率、阵列几何、SRAM 端口、DRAM 效率、链路带宽与同步时延、MAC 效率）都是标注为「假设」的可调输入，未经硅片标定；结果用于方案之间的相对比较与趋势判断，不是性能承诺。模型参数来自公开发布，不代表任何厂商的性能声明。
 
 ## 反馈
 
-欢迎通过 [GitHub Issues](https://github.com/kalcohol/accel-dse/issues) 报告问题、指出建模错误或提出需求。附上 `?c=` 分享链接（Web 顶栏「复制链接」）或 CLI 命令能帮助复现。
+欢迎通过 [GitHub Issues](https://github.com/kalcohol/accel-dse/issues) 报告问题或指出建模错误，附上命令行或 API 请求体便于复现。
 
 ## License
 

@@ -1,153 +1,99 @@
-# 建模说明（Modelling method & assumptions）
+# 建模说明（Modelling method）
 
-本文说明 accel-dse 的解析模型怎么算、假设了什么、哪些没建模，方便审阅者逐条挑错。
-状态标签：**derived** = 由形状 / 几何 / 公式推出；**assumed** = 可调默认值、未标定（UI / CSV 中标「假设」）。
-**所有绝对数都依赖 assumed 旋钮，不是实测硅片数据。**
+本文说明 accel-dse 0.40（core v2）怎么算、假设了什么、用什么校验，方便逐条挑错。
+「假设」= 可调输入、未经硅片标定；其余量由模型发布、几何与公式推出。**所有绝对数都依赖「假设」，不是实测数据。**
 
-目录：[1 章程](#1-章程) · [2 单卡](#2-单卡引擎) · [3 存储目录](#3-存储目录) · [4 数值格式](#4-数值格式dtype) · [5 多芯片](#5-多芯片scale-up) · [6 服务模型](#6-服务模型pareto--slo-goodput) · [7 多域](#7-视频-dit--蛋白质) · [8 产品层](#8-产品层metricscard校准能耗成本) · [9 局限](#9-未建模--已知局限) · [10 典型结论](#10-典型定性结论)
+目录：[1 分层](#1-分层) · [2 模型](#2-模型按发布建模) · [3 算子图与并行](#3-逐-rank-算子图与并行) · [4 映射](#4-映射数据通路组织) · [5 存储](#5-存储规划) · [6 调度](#6-调度) · [7 服务与搜索](#7-服务goodput-与搜索) · [8 稳定性](#8-排名稳定性) · [9 校验](#9-校验) · [10 范围](#10-范围与近似)
 
 ---
 
-## 1. 章程
+## 1. 分层
 
-- Inference-only、NPU-like（固定 dataflow / 专用 MAC 阵列），**不是** GPGPU 模拟器，也不是 cycle-accurate RTL / 时序仿真。
-- 每个中间量可手算：toy 配置的全部数字见 [`examples/handcheck.md`](../examples/handcheck.md)，并由测试 `test_toy_handcheck_numbers` 守护。
-- 默认路径**不要求用户填 cache hit-rate**：外部流量由 tiling + SRAM 分区容量推导。
-- **不做伪 PDK**：`process_nm` 仅为标签，不推导面积 / 功耗。
+| 层 | 模块 | 内容 |
+|----|------|------|
+| L0 | `core/scenario.py` | 不可变场景：模型、芯片、存储器 id、链路、映射、布局、服务参数、dtype what-if；`replace(path, value)` 受控替换；规范化哈希；严格解析（未知字段 / 非有限数拒绝） |
+| L1 | `core/model.py` `core/catalog.py` | HF config + safetensors 头 → `ModelSpec`（逐层注意力 / FFN、逐角色 dtype） |
+| L2 | `core/ir.py` `core/parallel.py` | 逐 rank 算子图；布局 PP·TP·DP·EP·ETP 与 stage 划分 |
+| L3 | `core/mapping.py` | 每个 GEMM 在映射组织下的 MAC 与供数周期 |
+| L4 | `core/memplan.py` | SRAM 驻留、staging、逐 stage DRAM 容量与每步流量 |
+| L5 | `core/schedule.py` `core/evaluate.py` | 每级时间、集合通信、流水、投机解码 |
+| L6 | `core/serving.py` | 含 prefill 的 goodput 与 TTFT 标记 |
+| L7 | `core/search.py` `core/stability.py` | 精确 batch 搜索、布局排名、Pareto、稳定性 |
 
-## 2. 单卡引擎
+单卡就是 `Layout()`（全 1），与多卡走同一条路径。
 
-### 2.1 PE 阵列（output-stationary）
+## 2. 模型：按发布建模
 
-```
-cycles         = ceil(M/R) · ceil(N/(C·n_engines)) · K
-util           = (M·N) / (R·C·n_engines · ceil(M/R) · ceil(N/(C·n_engines)))
-peak_TOPS      = R · C · n_engines · freq_Hz · 2 / 1e12          # 2 flop/MAC
-t_compute      = cycles / freq_Hz / mac_efficiency
-```
+- 来源：`scripts/fetch_hf_release.py` 读取 `config.json` 与 safetensors 头（HTTP Range，不下载权重），`scripts/summarize_release.py` 汇总为 `accel_dse/data/releases/*.json`：逐角色（attn / mlp / expert / shared_expert / router / embed / lm_head / mtp）的参数量、存储格式与实际字节。
+- dtype 按发布：fp8 block-128（W8A8）、fp8 per-tensor、MXFP4（4.25 bit）、NVFP4（4.5 bit）、AWQ / compressed-tensors int4（含 scale / zero 开销）。有效位数取自实际字节，包含 scale。官方量化版（如 Qwen3-*-FP8 / AWQ）是独立目录条目。
+- 自由改 dtype 只作为 what-if，结果与模型标签都标注。
+- 结构：GQA、MLA、线性注意力（Gated DeltaNet / KDA / lightning）、滑窗、稀疏索引注意力、dense / MoE / latent MoE、共享专家、MTP。
+- 修正项：MTP 层按层号 ≥ `num_hidden_layers` 归类；tied lm_head 的重复拷贝不重复计数；配置缺失 MTP 时从发布权重推断；n-gram / engram 查表按发布 embed 角色的大小计入存储，不计入激活参数。
+- 三轴标签：来源（official 官方 / mirror 镜像，如 meta-llama 的 unsloth 公开镜像）× 覆盖（full / partial /「架构代理」proxy）× dtype。「架构代理」= 含尚未逐项建模的结构（超连接多流残差、查表、压缩稀疏注意力），参数按发布计入，相应计算近似处理；说明见每个模型的建模注释。
+- 参数核对：与发布 safetensors 总量偏差 > 2% 时附注；当前 55 个发布全部在 ±0.5% 内。
 
-- 当 `N % (C·n_engines) == 0` 时 `util(M=1) = 1/R`：decode（M = batch，常为 1）利用率远低于 prefill。
-- 产品层用 `n_cores × tops_per_core` 描述算力：assumed `n_engines = n_cores`，每核近方形 PE（16 × 6.25 T → 56×56×16，≈100.35 T）。
-- assumed：PE 几何、`freq`（默认 1 GHz）、`mac_efficiency`（默认 1.0）。
+## 3. 逐 rank 算子图与并行
 
-### 2.2 外部存储带宽
+- 布局 `PP·TP·DP·EP·ETP`：dense 模型 DP = EP = ETP = 1（数据并行副本是独立服务实例）；MoE 要求 `EP·ETP = TP·DP`——注意力按 TP 切分、在 DP 组间复制，专家按 EP 分组、组内按 ETP 切分。
+- 每个 rank 生成算子：投影 GEMM、注意力核心（GQA / MLA 吸收 / 线性状态更新）、MoE 路由与专家 GEMM、embedding / 词表并行 lm_head、MTP。
+- MoE 命中专家数：`hit = max(ceil(局部期望命中), ceil(全局期望命中 / EP))`，限定在 [1, 本地专家数]；每专家 token 数 `m_e = ceil(本地 token·top_k / hit)`。token 均匀路由（「假设」）。
+- stage 划分按层的整数切分（如 61 层 / 8 → 8,8,8,8,8,7,7,7），容量检查取最重的 stage。
 
-```
-raw_Bps = 总线位宽 / 8 · MT/s · 1e6       # 总线 = 数量 × 单元位宽
-usable  = raw · payload                   # LPDDR6 payload = 8/9，其余 1
-eff_Bps = usable · efficiency             # efficiency 默认 0.70（assumed）
-```
+## 4. 映射：数据通路组织
 
-### 2.3 SRAM 三分区与权重路径
+阵列 R × C × E（100T = 56 × 56 × 16 @ 1 GHz，`Ce = C·E = 896`）。SRAM 端口默认 `4·(R + Ce)·2` B/cycle（「假设」，100T 为 7616）。格式速率 `r`：bf16 / fp16 ×1，fp8 / int8 ×2（按芯片的原生格式矩阵）。
 
-```
-weight_partition + kv_scratch + act ≤ SRAM 容量
-R = floor(weight_partition / W_layer)     # 跨 token 常驻片上的层数
-策略 --sram-policy: weight_resident（默认，最大化 R）| kv_first | balanced
-```
+| 组织 | MAC 周期 | 供数字节（÷ 端口 B/cycle） |
+|------|----------|---------------------------|
+| `os` 输出驻留 | `ceil(M/R)·ceil(N/Ce)·K / r` | `ceil(M/R)·K·N·wb + ceil(N/Ce)·M·K·ab + M·N·ob` |
+| `ws_edge` 权重驻留·边缘加载 | `ceil(K/R)·ceil(N/Ce)·max(ceil(M/r), R·Ce/(Ce·r))` + 填充 `R+Ce`（每算子一次） | `K·N·wb + ceil(N/Ce)·M·K·ab + 部分和溢出 + M·N·ob` |
+| `ws_broad` 权重驻留·宽面广播 | 同上，装载 `R·Ce/(R·Ce·r)` | 同上 |
+| `os_vec` | 逐算子 min(os, GEMV) | |
+| `reconf` 可重构 | 逐算子 min(os, ws_edge, ws_broad, GEMV) | |
 
-- **staging ≠ resident**：R = 0 时即使装得下 1×/2× W_layer 做 staging，decode 每 token 仍要读满 L 层（`W_DRAM ≈ L·W_layer`）；2× staging 只使 double-buffer 可用，`weight_hide_factor`（assumed）只折时间不折字节。
-- R ≥ 1：稳态 decode `W_DRAM ≈ (L−R)·W_layer`；R ≥ L 时为 0。prefill / 冷启动仍装载整模一次。
-- KV：prefill 写穿到外存；decode 若 `kv_scratch ≥ 本步 KV 工作集` 则片上命中，否则全量外读（**全有或全无**，无部分命中）。新 token KV 始终写穿。
-- 激活：工作集超出 act 分区时按每层 2× spill（保守）。
+- GEMV 单元默认 `R·Ce/8` MAC/cycle（「假设」）：`M·K·N / (gemv·r)`。
+- 部分和溢出：只有超过累加器行数（默认 1024 KiB → 292 行）的行把 fp32 部分和写出 / 读回 SRAM。
+- 算子时间 `max(MAC, FEED) / (f · mac_eff)`。
+- 格式执行：W 与 A 同为原生格式 → 原生速率；仅权重量化 → 反量化到激活格式；都不原生 → 上转换到 bf16。被转换的元素在向量单元按每元素 2 次操作计时（向量 lanes 默认 `4·C·E`，「假设」）。
 
-### 2.4 带宽争用与时间墙
+## 5. 存储规划
 
-```
-serialize   = (B_w + B_kv + B_act) / BW                     # 默认
-share_fair  = max(2·B_w, 2·B_kv)/BW + B_act/BW
-lower_bound = max(B_w, B_kv)/BW + B_act/BW
-t_phase     = max(t_compute, t_memory)                     # roofline 重叠上界
-TTFT = t_prefill，TPOT = t_decode_step
-```
+- staging = `max(2 MiB, 2 × 最大激活)`；其余 SRAM 依次驻留热权重（每步都读）、专家与冷 embedding 表，剩余容量放 KV / 线性注意力状态。
+- 每步 DRAM 流量 = 未驻留的被触及权重 + KV 读（未驻留部分）+ KV 写 + 状态 + 查表行。
+- DRAM 需求 = 存储权重 + KV + 状态 + 1 GiB 预留；按最重 stage 与存储器容量比较，超出给出警告。
+- 存储器：`mem_catalog.py` 按 JEDEC / 厂商资料给出类型 × 形态 × 位宽 × 速率 × 数量 × 容量，每个选项带来源标签（JEDEC / 疑似 JEDEC / 厂商量产 / 送样 / 已发布 / 推测），组合取最弱标签。带宽 = 总线位宽 × 速率 × payload（LPDDR6 为 256/288）× 效率（默认 0.7，「假设」）。调研与来源见 [docs/research](research/memory_specs_2026-10.md)。
 
-- 权重读与 KV 读**争用同一外存端口**；报告中给出 compute / memory / C2C / … 各分量与瓶颈（wall）。
-- prefill 因果注意力近似为「矩形 × 1/2」。Softmax / RoPE / LayerNorm 默认忽略；可选 `non_gemm_overhead`（`t_compute' = t_compute · (1 + oh)`，assumed，默认 0）。
-- 工作台每个 decode 步计入 LM head（读 V·H + GEMM (B·q, H, V)）；原始引擎 `EvalConfig.count_lm_head` 默认关闭以保持手算用例不变。
+## 6. 调度
 
-## 3. 存储目录
+- 每个 stage：`t = max(t_compute, t_dram, t_link) + t_sync`，其中 `t_compute = Σ max(MAC, FEED) + VECTOR`；绑定项标为 MAC / FEED / VECTOR / DRAM / LINK / SYNC。
+- 集合通信 α-β 模型：带宽项按环形算法（all-reduce `2(g−1)/g`、all-to-all `(g−1)/g`、all-gather `(g−1)` 倍负载）/ 链路带宽（默认 400 GB/s，「假设」），同步 α（默认 3 µs，「假设」）每次集合通信计入，作为暴露时间单独累计。
+- decode 一步 = `max(microbatch, PP) × 最慢 stage`；prefill = `(microbatch + PP − 1) × 最慢 stage`。
+- 投机解码 / MTP：每步期望 token `E = (1 − a^(k+1)) / (1 − a)`，草稿在最后一个 stage 上运行。
+- 有效 MAC 比例（array_util）= 理想 MAC 时间 / 阵列时间，直接反映映射与小 M 的浪费。
 
-- 选择单位为**封装 / 模组 / 堆**（`n_units × unit_width_bits`），不是 die。
-  - LPDDR5 / 5X 板载封装 x64 = 4×16-bit 通道（另有 x32；LPDDR5X x96 为已发布）。
-  - LPDDR6 封装 x96 = 4×24-bit 通道 = 8×12-bit 子通道；payload 8/9 单独计，与 efficiency 分开。
-  - SOCAMM2 / LPCAMM2：128-bit 模组（LPDDR5X）。
-  - HBM：堆宽 1024（HBM3/3E）或 2048（HBM4/4E）；容量 = 层数 × die 密度 / 8；堆数 1–12（16 为推测）。
-- 速率档依附代际；容量按厂商标称 GB（= 2³⁰ B），`*_decimal` 字段给出 10⁹ B 值。
-- **来源标签**：每个组件（速率 / 位宽 / 容量 / 数量）各带标签 JEDEC > 疑似 JEDEC > 厂商量产 > 送样 > 已发布 > 推测，组合取**最弱项**；允许推测组合但必定标注。资料与来源 URL 见 [`docs/research/memory_specs_2026-10.md`](research/memory_specs_2026-10.md)（截至 2026-10，新产品发布后需人工更新）。
+## 7. 服务、goodput 与搜索
 
-## 4. 数值格式（dtype）
+- decode 目标：在 TPOT ≤ SLO 下每卡 tok/s 最大。
+- goodput 目标（聚合服务、副本分时，「假设」）：每个请求 S 个 prompt token + out_len 个输出 token，`goodput = 1 / (1/R_d + (S/out_len)/R_p)`，`R_p` 取满足 TTFT SLO 的最大 prefill batch。若单请求 prefill 也超过 TTFT SLO（典型：DP 布局下一个请求只占一个 DP 组），标记 `ttft_ok = false` 而不是把 goodput 记为 0。
+- 精确 batch 搜索：指数 + 二分求容量上限，再以 `hi·E / step(lo)` 为上界分支定界；测试中与暴力枚举逐一核对。
+- 布局枚举：卡数的全部 PP·TP·DP·EP·ETP 分解（满足第 3 节约束），每个布局求最佳 batch 后排名；另给出 TPOT–吞吐 Pareto 前沿。
 
-- 均匀预设 fp16 / fp8 / int8 / int4，独立 W/KV 量化 `w16k16 / w8k16 / w4k16 / w8k8 / w4k8`。
-- 默认**只缩放存储 / 流量字节**，MAC 峰值与 FLOPs 不变 → 对低精度是保守的（算力侧偏慢）。
-- 可选 `dtype_mac_factors`（assumed，用户表，非硅）：`peak_TOPS ×= factor`、`t_compute ÷= factor`；默认全 1.0。
+## 8. 排名稳定性
 
-## 5. 多芯片（scale-up）
+对基准场景做单因素扰动：映射（可选）、DRAM 效率 0.6 / 0.7 / 0.85、α 1 / 3 / 5 µs、MAC 效率 0.7，以及两个角点。每个扰动重新搜索全部布局；若 ≥ 90% 的扰动下 top-1 不变，或原 top-1 与新 top-1 相差 ≤ 5%，判为稳定。UI 的映射对比中每种映射单独给出该标记。
 
-芯片数 = tp · pp · ep（DP = 1）。所有链路带宽 / 时延均为 assumed 预设，非 PHY / NIC 标定。
+## 9. 校验
 
-| 机制 | 模型 |
-|------|------|
-| TP | Megatron 式：Q/K/V/gate/up 列并行，O/down 行并行；每层 2 次 all-reduce，ring 每 rank 字节 `2·(tp−1)/tp·V`，`V = B·S·H·act_bytes`（视频 / 蛋白可选 tree `2·ceil(log2 tp)·V`） |
-| C2C | 有效带宽预设 100 / 200 / 400（默认）/ 800 GB/s；`t_c2c = bytes / BW · (1 − c2c_hide)`，hide 默认 0 |
-| 暴露同步 | `t_sync = n_sync · α · (1 − overlap)` **叠加在** max(…) 之外；TP 每层 2 次、EP 每层 2 次、PP 每级 1 次；α 默认 3 µs，overlap 默认 0 |
-| 每级时间 | `t_stage = max(compute, dram, c2c, pp_act, a2a, fabric) + t_sync` |
-| KV 切分 | GQA 每卡 KV = KV · ceil(n_kv/tp)/n_kv / pp（tp > n_kv 时复制）；MLA latent 每个 TP rank 全量；`attn_parallel = dp` 时按 batch 切 KV、注意力权重每卡复制 |
-| PP | 每级 L/pp 层；激活经 C2C 发送；decode 用 mb = min(B, pp) 个微批（`decode_mb`），`TPOT_step = max(mb, pp) · t_stage(微批)`，B = 1 时为 pp 级遍历时延；prefill 气泡 `(pp−1)/(mb+pp−1)` |
-| MoE / EP | `moe_shard = tp_ep`（默认，专家按 ep 组划分、组内按 tp 切分）或 `ep_all`（专家分布到全部 tp·ep 个 rank）；ep > 1 时注意力在 ep 组间按 DP 运行；all-to-all 每 rank 字节 `2·(D−1)/D·(tokens/D)·top_k·H·act`；decode 读到的本地专家数取期望 `n_local·(1−(1−k/E)^T)`（均匀独立路由） |
-| MLA | 注意力权重按 q_lora / kv_lora / qk_nope / qk_rope / v_head 投影逐个建模（DeepSeek-V3 ≈ 670.9B，公开 ≈ 671B）；KV 每层每 token = kv_lora + qk_rope 元素 |
-| KV fabric | `none` / `roce_v2` / `ib`，有效带宽 = Gbps/8 × 0.80，每消息时延 5 µs（RoCE）/ 2 µs（IB）；`remote_kv_frac` 份 KV 读走 fabric；PD 分离一次性传输 `t_kv_xfer = lat + KV/BW` |
-| 投机解码 / MTP | 验证步 M = B·(k+1)；每步期望 token `E = (1−a^(k+1))/(1−a)`，`TPOT = 步时延 / E`；接受率 a 默认 0.7（assumed）；草稿 = k × (1 层 + LM head)（MTP）或 k · frac · t_stage（独立模型）；开启 MTP 时容量计入 MTP 模块 |
-| 容量 / OOM | 每卡 权重 + KV（+ 嵌入，默认复制）> 容量则标记 OOM |
+`python3 -m accel_dse validate` 复现以下结果；测试守护 V0–V3。
 
-**scale efficiency**：`speedup = t_single / t_multi`，`scale_efficiency = speedup / chips`（理想 1.0）；主指标 LLM = TPOT、视频 = TTFC、蛋白 = time/seq；不计 host / NIC 非理想。
+- **V0 变形关系**：受控替换同值不变；更多 DRAM 带宽 / SRAM / 更宽端口 / 更快链路不会更慢；更长上下文不会更快；`reconf` 不慢于任一单一组织；去掉原生 fp8 不会让 fp8 发布更快。另有 TP / EP 分片守恒测试（FLOPs、权重、KV、专家存储、stage 存储）。
+- **V1 参数**：55 个发布与 safetensors 总量偏差全部 ≤ 0.5%；8 个模型卡的激活参数 ≤ 5%；FLOPs 与独立计数对照。
+- **V2 趋势区间**（H100 类配置：128 × 128 × 16 @ 1.83 GHz ≈ 959 TFLOPS bf16、SRAM 50 MiB、HBM3 5 堆 3.33 TB/s、DRAM 效率 0.8、可重构映射，均为「假设」）：Llama-3.1-8B bf16 B1 TPOT 5.7 ms（区间 4.5–9）；B16/B1 = 1.13；Qwen3-8B FP8/BF16 = 0.54；4K prompt TTFT 83 ms；Qwen3-32B TP2 加速 1.94；B256 吞吐 1.4 万 tok/s。
+- **V3 GenZ 对照**（Llama-3.1-8B decode，参考值由 `scripts/genz_reference.py` 生成）：LPDDR 191 GB/s 各点比值 1.07（DRAM 效率口径差异）；HBM 6.6 TB/s 下 `reconf` 映射比值 1.07–1.22，长上下文 / 大 batch 点偏高来自注意力小 M 分块，而 GenZ 按理想 FLOPS 计；`os` 映射在 HBM 下比值 3.6–6.8，因为小 M decode 被 SRAM 供数端口限制——这正是映射作为设计变量要暴露的差别，不视为误差。容差：访存受限点 15%，其余 60%。
 
-## 6. 服务模型（Pareto / SLO goodput）
+## 10. 范围与近似
 
-- 对当前场景枚举芯片数允许的全部布局（TP×PP×EP；EP 仅 MoE 且整除专家数；LLM 另含注意力 TP | DP），batch 从 1 扫到 **KV 容量上限**（与 OOM 检查同口径），稀疏网格 + 二分。
-- LLM：tokens/s/用户 = 1000 / TPOT，tokens/s/芯片 = B · 1000 / TPOT / 芯片数；前沿为非支配点。
-- **吞吐口径**（assumed 稳态）：
-  - 摊销 prefill（默认）：每请求输出 N 个 token（默认 256）。「分块混合」把 r = b·E/N 个 prompt 折入每个 decode tick（权重只读一次，其余分量相加后取 max）；「独占」时 `TPOT = step/E + B · t_prefill/N`。
-  - 上界（仅 decode）：不扣 prefill 占用。
-- **SLO goodput**：TTFT ≤ X、TPOT ≤ Y（默认 2000 / 50 ms）下每布局求最大可行 B（假设可行性随 B 单调），报告最优吞吐、配置、最大并发与起作用的约束（TTFT / TPOT / 容量）。
-- 未建模：排队 / 到达过程、PD 分离调度、prompt 跨多个 tick 分块（分块混合的 TTFT 偏乐观）。
-- 视频 / 蛋白：B 个请求成批，时延 = 批 wall，吞吐 = B / 时延 / 芯片数，SLO 为单一时延上限。
-
-## 7. 视频 DiT / 蛋白质
-
-- **视频**（DiT-like）：patchify → transformer × N_denoise 次前向，每步全量重算 T×T 注意力，**无**去噪步间 KV cache；`TTFC ≈ N_denoise · t_forward`，frames/s = F / TTFC。
-- **蛋白**：ESM 式 L-token encoder + 可选 L×L pair（每层 outer-product 式 `2·L²·C_z` + (L², C_z)×(C_z, C_z) GEMM）；pair 激活 `L²·C_z·act_bytes` 随 L² 增长。**不是** AF2 Evoformer（无 triangle / MSA column attention）。
-- 多卡：同样 tp/pp/ep；EP 对非 MoE 形状为 no-op；去噪串行使 PP 流水效果差。
-
-## 8. 产品层（MetricsCard、校准、能耗成本）
-
-- `WorkbenchConfig → evaluate_workbench → MetricsCard`，物理复用上面的引擎；chips = 1 与单卡结果一致。
-- **CalibrationOverrides**（可选）：`mem_efficiency` / `weight_hide`（历史别名 `mac_efficiency`）/ `npu_mac_efficiency` / `frequency_hz`，见 [`examples/calibration.example.json`](../examples/calibration.example.json)；CLI `--calib`、API `calib: {…}`、Web「校准覆盖」。用于将来接入实测值，不影响默认路径。
-- **能耗 / 成本 = assumed stub**（引擎默认关闭，不设 knob 时 `est_*` 全为 0）：
-  `est_power_W = chips × P_card × power_util`（P_card 来自 `tdp_w` 或 `watts_per_tops × peak_TOPS`）；
-  J/token = P × TPOT / B，J/frame = P × TTFC / (F × B)，J/seq = P × t_seq / B；
-  `est_system_cost_usd = chips × (cost_per_card + mem_addon)`；LLM `$ / MTok` = 电费 + capex 摊销（decode-only tokens）。
-  不含 host / 冷却 / PUE / DRAM pJ/bit / SRAM / NoC 能耗 / BOM / 良率——**不伪造**这些数。示例假数只在 `examples/energy_cost.example.json`。
-- 场景预设（`list-presets`）只捆绑 存储 + 算力 + 芯片数，不含功耗 / 价格。
-
-## 9. 未建模 / 已知局限
-
-- 频率、带宽效率、SRAM 容量、PE / engine 数均未标定（可扫参）；C2C / fabric 带宽与时延为预设。
-- 原生低精度 MAC 吞吐（默认只缩字节）；cycle-accurate Softmax / RoPE / LN / NoC。
-- MoE 路由不均、热点专家、容量因子 / token drop；MLA 以外的稀疏注意力（DSA、DeepSeek-V4 compress_ratios）、hybrid linear attention 仅元数据。DeepSeek-V4 无 kv_lora 的低秩注意力按字段名推断（assumed）。
-- 通信同步 α 不区分拓扑（ring / tree / switch）与消息大小；注意力 DP↔TP 重分片为近似。
-- PP 假设 stage 负载均衡、无微批调度开销；投机解码按逐位置 i.i.d. 接受，未计 MTP 层 KV、树形草稿与回滚开销。
-- 视频无去噪步间 KV cache / temporal causal；蛋白无 Evoformer triangle / MSA。
-- host / NIC 非理想、排队论、PD 分离调度。
-- 内置 `illustrative_*` / toy 形状是手算用占位维数，不代表任何真实 checkpoint；公开 HF 维数来自 config.json / model card，gated 模型未收录。
-
-## 10. 典型定性结论
-
-以下结论对 assumed 旋钮稳健（具体数值请在工作台中复现）：
-
-1. **27B 级 decode 的外存字节由权重流主导**；除非权重大规模常驻片上（R → L）或激进量化，KV 在短上下文下可忽略。
-2. **小 SRAM 只做 staging 不省权重字节**；R = 1 几乎无用，收益出现在 W_layer 的整数倍膝点（R ≥ L/2、R ≥ L）。
-3. **同一算力在 LPDDR 上常为 memory-bound、在 HBM 上常为 compute-bound**（受 M=1 利用率限制）：LPDDR SKU 优先降权重字节，HBM SKU 优先提高 decode 的 M 维利用率（batch、投机解码、多序列）。
-4. **长上下文 + weight-only 量化时 KV 读反超权重流**，SRAM 策略应转向 KV scratch。
-5. **decode 集合通信体积小**，C2C 带宽通常不是墙，但每次集合通信的固定时延（α）会使 TP 扩展效率明显低于 1。
-6. **全远程 KV（disaggregated decode）时 fabric 带宽是最硬的墙之一**；MLA 可把 KV 字节压到 GQA 的约 1/4，但仍远高于卡内时间。
-7. **视频 DiT 受 N_denoise × T² 算力限制，蛋白质受 L² pair 内存限制**，与 LLM decode 的带宽墙性质不同。
+- 只覆盖 LLM 推理。视频（DiT）与蛋白质结构预测暂未接入 v2 流水线，待模型按发布接入并通过同样的校验后开放；蛋白质只计划覆盖 ESM 类序列编码器。不覆盖分子动力学 / 力场。
+- 「架构代理」模型：超连接多流残差只计参数不计混合计算；查表只计存储与每 token 行读取；压缩稀疏注意力按有效上下文 `ctx/ratio`（+ 窗口，索引层 ≤ top-k）近似；哈希路由层按 top-k MoE 处理。
+- 解析模型不模拟周期级行为：无 bank 冲突、无 DRAM 刷新 / 页冲突细节（统一由效率「假设」吸收），集合通信用 α-β 近似，MoE token 均匀路由。
+- 不做功耗、面积、成本估计。
