@@ -8,7 +8,7 @@
 
 ## What it does
 
-- **Models as released**: per-role parameter counts and storage dtypes (bf16 / block fp8 / MXFP4 / AWQ int4 …) from the HF `config.json` and safetensors headers (no weight download), within 0.5% of the released totals; official quantised releases are separate entries. Every model carries a three-axis label: provenance (official / mirror) × coverage (full / partial / architecture proxy) × dtype.
+- **Models as released**: per-role parameter counts and storage dtypes (bf16 / block fp8 / MXFP4 / AWQ int4 …) from the HF `config.json` and safetensors headers (no weight download), within 0.5% of the released totals; official quantised releases are separate entries. Every model carries a three-axis label: provenance (official / mirror) × coverage (full / partial / architecture proxy, with a per-model list of what is approximated) × dtype; the catalogue is grouped domain → provider → family.
 - **Mapping is a design variable**: output-stationary, weight-stationary (edge load / broadside load), OS + GEMV unit, reconfigurable; each op gets a MAC bound and an SRAM-feed bound; formats the chip does not support natively pay dequantisation on the vector unit.
 - **Per-rank op graph**: TP / PP / attention DP / EP / ETP; a single card is the all-ones layout, there is no second code path.
 - **Memory plan and schedule**: SRAM residency of weights / KV, staging, per-stage capacity; each stage is `max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC`, with the binding term and the useful-MAC fraction reported.

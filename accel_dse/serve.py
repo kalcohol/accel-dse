@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import threading
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +14,7 @@ from . import __version__, api
 WEB_DIR = Path(__file__).resolve().parent / "web"
 MAX_BODY = 64 * 1024
 GET_ROUTES = {"/api/health": api.api_health, "/api/models": api.api_models, "/api/catalog": api.api_catalog}
-POST_ROUTES = {"/api/memory": api.api_memory, "/api/eval": api.api_eval, "/api/layouts": api.api_layouts,
+POST_ROUTES = {"/api/memory": api.api_memory, "/api/fit": api.api_fit, "/api/eval": api.api_eval, "/api/layouts": api.api_layouts,
                "/api/compare": api.api_compare, "/api/stability": api.api_stability,
                "/api/pareto": api.api_pareto, "/api/sweep": api.api_sweep}
 CACHED = {"/api/compare", "/api/stability", "/api/layouts"}
@@ -121,12 +122,19 @@ class Handler(BaseHTTPRequestHandler):
         self._api("POST", self.rfile.read(n))
 
 
+def _on_sigterm(signum, frame):
+    raise KeyboardInterrupt
+
+
 def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
     httpd = ThreadingHTTPServer((host, port), Handler)
-    print(f"accel_dse v{__version__} http://{host}:{port}/", flush=True)
+    workers = api.enable_pool()
+    print(f"accel_dse v{__version__} http://{host}:{port}/ ({workers} search workers)", flush=True)
+    signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         httpd.server_close()
+        api.shutdown_pool()

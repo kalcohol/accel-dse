@@ -180,6 +180,8 @@ class ModelSpec:
     release_bytes: int | None = None
     quantized_release: bool = False
     what_if: bool = False                    # formats overridden by the user
+    coverage_reasons: tuple[str, ...] = ()   # what is approximated (empty ⇔ coverage == full)
+    vision_params: int = 0                   # VLM vision encoder in the release (not modelled)
 
     # ----- derived
     @property
@@ -361,9 +363,9 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             misc += E * (2 * de + h)  # expert biases
         layers.append(Layer(alin, core, ffn, flin, misc))
     if mt == "gpt_oss":
-        cov = "partial"; notes.append("attention sinks modelled as params only; alternating 128-token sliding window modelled")
+        cov = "partial"; notes.append("attention sink 只计参数；128-token 交替滑窗已建模")
     if any(l.core.window for l in layers) and mt != "gpt_oss":
-        notes.append(f"sliding window {window} modelled")
+        notes.append(f"滑窗 {window} 已建模")
     mtp = []
     n_mtp = c.get("num_nextn_predict_layers") or 0
     for _ in range(n_mtp):
@@ -383,8 +385,8 @@ def _build_mla(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     ilin, ih, idim, topk = _indexer(c, h, c.get("q_lora_rank"))
     if ih:
         cov = "partial"
-        notes.append(f"DSA lightning indexer ({ih}×{idim}) modelled as GEMM + O(ctx) scoring; "
-                     f"sparse attention attends top-{topk} tokens")
+        notes.append(f"DSA lightning indexer（{ih}×{idim}）按 GEMM + O(ctx) 打分建模；"
+                     f"稀疏注意力只看 top-{topk} 个 token")
 
     def layer(i: int) -> Layer:
         alin, core, misc = _mla(c, h)
@@ -504,8 +506,8 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             misc += E
         layers.append(Layer(alin, core, ffn, flin, misc + 2 * h))
     n_lin = sum(1 for l in layers if l.core.kind == "linear")
-    notes.append(f"hybrid: {n_lin}/{L} linear-attention layers (recurrent state, fp32 「假设」), "
-                 f"{L - n_lin} full-attention layers")
+    notes.append(f"混合注意力：{n_lin}/{L} 层线性注意力（递归状态 fp32「假设」），"
+                 f"{L - n_lin} 层全注意力")
     n_mtp = c.get("mtp_num_hidden_layers") or c.get("num_nextn_predict_layers") or 0
     mtp = []
     for _ in range(n_mtp):
@@ -529,9 +531,8 @@ def _build_dsv4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     ih, idim, topk = c.get("index_n_heads") or 0, c.get("index_head_dim") or 0, c.get("index_topk")
     hc = c.get("hc_mult") or 1
     E, k, de = c["n_routed_experts"], c["num_experts_per_tok"], c["moe_intermediate_size"]
-    notes = ["「架构代理」DeepSeek-V4: compressed sparse attention approximated by "
-             "ctx_eff = ctx/ratio (+window, ≤ top-k for indexed layers); hyper-connections (×%d residual) "
-             "counted as params, compute ignored; hash-routed layers treated as top-k MoE" % hc]
+    notes = ["「架构代理」DeepSeek-V4：压缩稀疏注意力按有效上下文 ctx/ratio 近似（+ 窗口，索引层 ≤ top-k）；"
+             "超连接（×%d 残差流）只计参数、不计混合计算；哈希路由层按 top-k MoE 处理" % hc]
     layers = []
     for i in range(L):
         r = ratios[i] if i < len(ratios) else 1
@@ -562,10 +563,10 @@ def _builder(c: dict):
         return _build_dsv4, "DeepSeek-V4 (CSA/MQA-512)"
     if mt in ("kimi_linear", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
               "qwen4_exp", "qwen4_exp_text", "minimax_text_01", "minimax_m1", "minimax") or mt.startswith("glm5_next"):
-        return _build_hybrid, "hybrid linear/full attention"
+        return _build_hybrid, "混合注意力（linear + full）"
     if c.get("kv_lora_rank"):
         return _build_mla, "MLA" + (" + DSA" if c.get("index_n_heads") else "") + (" MoE" if c.get("n_routed_experts") else "")
-    return _build_std, "GQA" + (" MoE" if _g(c, "num_local_experts", "num_experts", "n_routed_experts") else " dense")
+    return _build_std, "GQA" + (" MoE" if _g(c, "num_local_experts", "num_experts", "n_routed_experts") else " 稠密")
 
 
 # ---------------------------------------------------------------- release formats
@@ -619,6 +620,39 @@ def load_release(hf_id: str) -> dict | None:
     return json.loads(p.read_text()) if p.exists() else None
 
 
+def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
+    """Concrete per-model list of approximated mechanisms (shown with the coverage label)."""
+    mt = c.get("model_type", "")
+    L = len(spec.layers)
+    r = []
+    lin = sum(1 for l in spec.layers if l.core.kind == "linear")
+    if lin:
+        mech = ("Lightning Attention" if mt.startswith("minimax") else
+                "KDA" if mt == "kimi_linear" or mt.startswith("glm5_next") else "Gated DeltaNet")
+        r.append(f"线性注意力 {mech}（{lin}/{L} 层）：递归状态更新按向量运算计、不上阵列；"
+                 "状态 fp32 与 prefill 分块长度 64 为「假设」")
+    cmp = sum(1 for l in spec.layers if l.core.compress > 1)
+    idx = [l.core for l in spec.layers if l.core.idx_heads]
+    if cmp:
+        r.append(f"压缩稀疏注意力 CSA（{cmp}/{L} 层）：按有效上下文 ctx/压缩比 + 滑窗近似"
+                 + (f"，索引层只读 top-{idx[0].topk} 个 token" if idx else ""))
+    elif idx:
+        r.append(f"DSA 稀疏注意力（{len(idx)}/{L} 层）：lightning indexer 按 GEMM + O(ctx) 打分近似，"
+                 f"注意力只读 top-{idx[0].topk} 个 token")
+    if c.get("num_hash_layers"):
+        r.append(f"哈希路由（前 {c['num_hash_layers']} 层）：按 top-k MoE 计")
+    if mt == "gpt_oss":
+        r.append("attention sink：只计参数，不计其 softmax 修正开销（128-token 交替滑窗已建模）")
+    hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
+    if hc:
+        r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
+    if spec.lookup_params:
+        r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
+    if abs(gap) > 0.02:
+        r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
+    return tuple(r)
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -643,15 +677,15 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         emb_rel = sum(v["params"] for v in rel.get("roles", {}).get("embed", {}).values())
         if emb_rel > 1.05 * spec.embed_params:
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params,
-                           notes=spec.notes + (f"lookup tables {(emb_rel - spec.embed_params) / 1e9:.1f}B params "
-                                               "(n-gram/engram) sized from release headers; memory only",))
+                           notes=spec.notes + (f"查表 {(emb_rel - spec.embed_params) / 1e9:.1f}B 参数（n-gram / engram），"
+                                               "按发布 safetensors 头计入存储；每 token 只读少量行",))
         # MTP modules: stored size as released (incl. embed/head copies some releases store)
         rmtp = rel.get("params_mtp") or 0
         if rmtp and not spec.mtp_layers:
             # weights ship an MTP module the config does not declare (e.g. Qwen3-Next) → infer one
             last = spec.layers[-1]
             spec = replace(spec, mtp_layers=(replace(last, misc_params=last.misc_params + 2 * h),),
-                           notes=spec.notes + ("MTP module inferred from release weights (config has no MTP key)",))
+                           notes=spec.notes + ("MTP 模块由发布权重推断（config 中没有 MTP 字段）",))
         head_copy = 0
         if tie and "lm_head" in rel.get("roles", {}):
             head_copy = sum(v["params"] for v in rel["roles"]["lm_head"].values())
@@ -664,21 +698,26 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         if exotic or spec.lookup_params:
             why = []
             if exotic:
-                why.append("hyper-connections (multi-stream residual) — params counted, mixing compute ignored")
+                why.append("超连接（多流残差）：参数计入，混合计算未计")
             if spec.lookup_params:
-                why.append("n-gram/engram lookup tables — memory only")
-            spec = replace(spec, coverage="proxy", notes=spec.notes + ("「架构代理」: " + "; ".join(why),))
+                why.append("n-gram / engram 查表：只计存储")
+            spec = replace(spec, coverage="proxy", notes=spec.notes + ("「架构代理」：" + "；".join(why),))
         if head_copy:
             spec = replace(spec, release_params=spec.release_params - head_copy,
-                           notes=spec.notes + (f"release also stores the tied lm_head ({head_copy / 1e9:.3f}B), "
-                                               "deduplicated at load time",))
+                           notes=spec.notes + (f"发布另存了一份 tied lm_head（{head_copy / 1e9:.3f}B），"
+                                               "已去重",))
         if spec.release_params:
             gap = spec.release_params - spec.params()
             if abs(gap) / spec.release_params > 0.02:
                 # parameters present in the release that the template does not reproduce
                 spec = replace(spec, coverage="proxy" if cov != "full" or abs(gap) / spec.release_params > 0.05 else cov,
-                               notes=spec.notes + (f"params differ from release by {gap / 1e9:+.2f}B "
-                                                   f"({gap / spec.release_params:+.1%}): see docs/MODEL.md §coverage",))
+                               notes=spec.notes + (f"参数与发布相差 {gap / 1e9:+.2f}B "
+                                                   f"（{gap / spec.release_params:+.1%}），见 docs/MODEL.md",))
+        rel_gap = (spec.release_params - spec.params()) / spec.release_params if spec.release_params else 0.0
+        spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap),
+                       vision_params=rel.get("params_vision") or 0)
+        if spec.coverage == "full" and spec.coverage_reasons:
+            spec = replace(spec, coverage="partial")
     return spec
 
 

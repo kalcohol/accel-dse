@@ -29,9 +29,18 @@ function put(e, ...kids) {
 }
 const pct = (x) => (x === null || x === undefined || !isFinite(x)) ? '—' : (x * 100).toFixed(x < 0.1 ? 1 : 0) + '%';
 
-const SECTION_ZH = { user_requested: '用户指定', recommended_extra: '推荐补充', official_quant: '官方量化版', reference: '参考模型' };
-const COVER_ZH = { full: '完整 full', partial: '部分 partial', proxy: '「架构代理」' };
-const PROV_ZH = { official: '官方 official', mirror: '镜像 mirror' };
+const COVER_ZH = { full: '完整', partial: '部分', proxy: '架构代理' };
+const DOMAIN_SHORT = { llm: 'LLM', vlm: 'VLM', gen: '生成' };
+const COVER_LEGEND = '覆盖度表示本工具对该模型结构的建模覆盖程度，与模型好坏无关：完整 = 全部算子按发布结构逐项建模；部分 = 主干逐项建模，个别机制近似；架构代理 = 有未建模的结构，结果只作量级参考。';
+function coverTip(m) {
+  const r = m.coverage_reasons || [];
+  return (r.length ? '近似之处：\n· ' + r.join('\n· ') : '全部算子按发布结构逐项建模') +
+    (m.vision_params_B ? `\n· 视觉编码器（${num(m.vision_params_B)}B 参数）未建模：只评估语言主干` : '');
+}
+function coverBadge(m) {
+  return h('span', { class: 'badge cov ' + m.coverage, title: coverTip(m) }, h('span', { class: 'ax' }, '覆盖'), COVER_ZH[m.coverage]);
+}
+const PROV_ZH = { official: '官方', mirror: '镜像' };
 const BOUND_ZH = { MAC: 'MAC 算力', FEED: 'FEED 供数', VECTOR: 'VECTOR 向量', DRAM: 'DRAM 带宽', LINK: 'LINK 互连', SYNC: 'SYNC 同步' };
 const COMPONENTS = ['mac', 'feed', 'vector', 'dram', 'link', 'sync'];
 const MAP_DESC = {
@@ -138,18 +147,24 @@ function paintSeg(id, v) { $(id).querySelectorAll('button').forEach((b) => b.cla
 /* ------------------------------------------------------------------ model */
 function fillModels() {
   const sel = $('model');
-  const groups = {};
-  for (const m of S.models) (groups[m.section] = groups[m.section] || []).push(m);
-  put(sel, ...Object.keys(SECTION_ZH).filter((k) => groups[k]).map((k) =>
-    h('optgroup', { label: SECTION_ZH[k] }, groups[k].map((m) =>
-      h('option', { value: m.id }, `${m.label}${m.proxy_badge ? ' 「架构代理」' : m.coverage === 'partial' ? ' (部分)' : ''}`)))));
+  const groups = [];
+  for (const m of S.models) {
+    const key = m.domain + '/' + m.provider;
+    let g = groups.find((x) => x.key === key);
+    if (!g) groups.push((g = { key, label: `${DOMAIN_SHORT[m.domain]} · ${m.provider_label}`, items: [] }));
+    g.items.push(m);
+  }
+  put(sel, ...groups.map((g) => h('optgroup', { label: g.label }, g.items.map((m) =>
+    h('option', { value: m.id, title: coverTip(m) }, `${m.label}　· ${COVER_ZH[m.coverage]}`)))));
   sel.value = S.sc.model;
   sel.addEventListener('change', () => { S.sc.model = sel.value; onModel(); schedule(); });
 }
 function badges(m, whatIf) {
   return [
-    h('span', { class: 'badge ' + m.provenance }, h('span', { class: 'ax' }, '来源'), PROV_ZH[m.provenance] || m.provenance),
-    h('span', { class: 'badge ' + m.coverage }, h('span', { class: 'ax' }, '覆盖'), COVER_ZH[m.coverage] || m.coverage),
+    h('span', { class: 'badge ' + m.provenance, title: m.provenance === 'mirror' ? '官方仓库需授权，使用字节相同的公开镜像' : '官方发布' },
+      h('span', { class: 'ax' }, '来源'), PROV_ZH[m.provenance] || m.provenance),
+    coverBadge(m),
+    m.domain === 'vlm' ? h('span', { class: 'badge vlm', title: coverTip(m) }, 'VLM · 视觉编码器未建模') : null,
     h('span', { class: 'badge' }, h('span', { class: 'ax' }, 'dtype'), m.dtype),
     whatIf ? h('span', { class: 'badge wi' }, 'what-if dtype') : null,
   ].filter(Boolean);
@@ -164,6 +179,9 @@ function onModel() {
     h('span', {}, m.arch),
     m.mtp_layers ? h('span', {}, `MTP ×${m.mtp_layers}`) : null,
     h('span', { class: 'muted', title: '与发布 safetensors 头统计值的偏差' }, `vs 发布 ${(m.param_err * 100).toFixed(2)}%`));
+  put($('model-approx'), ...(m.coverage_reasons || []).map((r) => h('li', {}, r)),
+    ...(m.vision_params_B ? [h('li', {}, `视觉编码器（${num(m.vision_params_B)}B 参数）未建模：不计其权重存储与图像 prefill，只评估语言主干`)] : []));
+  $('model-approx-wrap').hidden = !(m.coverage_reasons || []).length && !m.vision_params_B;
   put($('model-notes'), ...m.notes.map((n) => h('li', {}, n)));
   $('model-notes-wrap').hidden = !m.notes.length;
   document.querySelectorAll('.moe-only').forEach((e) => (e.hidden = !m.is_moe));
@@ -180,9 +198,18 @@ function fixMoe(changed) {
   if (changed === 'etp') { if (want % L.etp === 0) { L.ep = want / L.etp; return; } }
   if (want % L.ep === 0) L.etp = want / L.ep; else { L.ep = want; L.etp = 1; }
 }
+const cards = () => S.sc.layout.pp * S.sc.layout.tp * S.sc.layout.dp;
+function setCards(n) {
+  // default fill for a new card count: all TP (MoE: experts spread with EP = TP); 「布局搜索」finds the best
+  const L = S.sc.layout;
+  L.pp = 1; L.tp = n; L.dp = 1;
+  if (model().is_moe) { L.ep = n; L.etp = 1; } else { L.ep = 1; L.etp = 1; }
+}
 function cardsNote() {
   const L = S.sc.layout;
-  $('cards-note').textContent = `${L.pp * L.tp * L.dp} 卡 / 副本`;
+  $('cards-note').textContent = `PP${L.pp} × TP${L.tp} × DP${L.dp} = ${cards()} 卡；改卡数会按 TP 重新填充布局`;
+  const c = $('l-cards');
+  if (c._sync && document.activeElement !== c) c._sync();
 }
 
 /* ------------------------------------------------------------------ chip */
@@ -202,7 +229,15 @@ function onPreset() {
 /* ------------------------------------------------------------------ memory */
 const memType = () => S.cat.memory.types.find((t) => t.id === S.mem.type);
 const memForm = () => memType().forms.find((f) => f.id === S.mem.form) || memType().forms[0];
-function tagSuffix(tag) { return tag && tag !== 'jedec' && tag !== 'vendor_shipping' ? ` (${S.cat.memory.tag_zh[tag] || tag})` : ''; }
+function tagSuffix(o) {
+  // Prefer dual-axis 「规范 · 产品」; fall back to legacy single tag.
+  if (o && typeof o === 'object') {
+    const zh = o.status_zh || '';
+    if (!zh || zh === 'SoC 设计选择' || (o.product === 'shipping' && (o.spec === 'jedec' || o.spec === 'jedec_likely'))) return '';
+    return ` (${zh})`;
+  }
+  return o && o !== 'jedec' && o !== 'vendor_shipping' ? ` (${S.cat.memory.tag_zh[o] || o})` : '';
+}
 function opts(sel, list, value) {
   put(sel, ...list.map(([v, l]) => h('option', { value: v }, l)));
   sel.value = String(value);
@@ -212,14 +247,17 @@ function fillMem() {
   const t = memType(), f = memForm();
   opts($('m-type'), S.cat.memory.types.map((x) => [x.id, x.id]), S.mem.type);
   opts($('m-form'), t.forms.map((x) => [x.id, x.label]), f.id);
-  opts($('m-width'), f.widths.map((w) => [w.bits, w.bits + ' bit' + tagSuffix(w.tag)]), S.mem.width);
-  opts($('m-rate'), f.rates.map((r) => [r.MTps, r.MTps + tagSuffix(r.tag)]), S.mem.rate);
-  opts($('m-count'), f.counts.map((c) => [c.n, `${c.n} × ${f.unit === 'stack' ? '堆栈' : '颗'}` + tagSuffix(c.tag)]), S.mem.count);
+  opts($('m-width'), f.widths.map((w) => [w.bits, w.bits + ' bit' + tagSuffix(w)]), S.mem.width);
+  opts($('m-rate'), f.rates.map((r) => [r.MTps, r.MTps + tagSuffix(r)]), S.mem.rate);
+  opts($('m-count'), f.counts.map((c) => [c.n, `${c.n} × ${f.unit === 'stack' ? '堆栈' : '颗'}` + tagSuffix(c)]), S.mem.count);
   const hbm = t.kind === 'HBM';
   $('m-cap-wrap').hidden = hbm;
   $('m-height-wrap').hidden = !hbm;
-  if (hbm) opts($('m-height'), f.cap_tags.map((c) => [`${c.height}:${c.die_Gb}`, `${c.height}-Hi ${c.die_Gb}Gb · ${c.GB} GB` + tagSuffix(c.tag)]), `${S.mem.height}:${S.mem.die}`);
-  else opts($('m-cap'), (f.caps[String(S.mem.width)] || []).map((c) => [c.GB, c.GB + ' GB' + tagSuffix(c.tag)]), S.mem.cap);
+  if (hbm) opts($('m-height'), f.cap_tags.map((c) => [`${c.height}:${c.die_Gb}`, `${c.height}-Hi ${c.die_Gb}Gb · ${c.GB} GB` + tagSuffix(c)]), `${S.mem.height}:${S.mem.die}`);
+  else opts($('m-cap'), (f.caps[String(S.mem.width)] || []).map((c) => [c.GB, c.GB + ' GB' + tagSuffix(c)]), S.mem.cap);
+  $('m-meta-wrap').hidden = t.id !== 'LPDDR6';
+  if (t.id !== 'LPDDR6') S.mem.meta_mode = false;
+  $('m-meta').checked = !!S.mem.meta_mode;
   // read back the (possibly clamped) selection
   S.mem.form = $('m-form').value; S.mem.width = +$('m-width').value; S.mem.rate = +$('m-rate').value; S.mem.count = +$('m-count').value;
   if (hbm) [S.mem.height, S.mem.die] = $('m-height').value.split(':').map(Number); else S.mem.cap = +$('m-cap').value;
@@ -237,7 +275,7 @@ function memDefaults(level) {
 async function resolveMem() {
   const t = memType();
   const b = { type: S.mem.type, form: S.mem.form, width: S.mem.width, rate: S.mem.rate, count: S.mem.count };
-  if (t.kind === 'HBM') { b.height = S.mem.height; b.die = S.mem.die; } else b.cap = S.mem.cap;
+  if (t.kind === 'HBM') { b.height = S.mem.height; b.die = S.mem.die; } else { b.cap = S.mem.cap; if (t.id === 'LPDDR6') b.meta_mode = !!S.mem.meta_mode; }
   try {
     const r = await req('mem', '/api/memory', b);
     if (!r) return;
@@ -252,7 +290,8 @@ function paintMem() {
     h('span', {}, '带宽 ', h('b', {}, num(r.raw_GBps) + ' GB/s'), ' 原始'),
     h('span', {}, '容量 ', h('b', {}, num(r.capacity_GiB) + ' GiB')),
     h('span', { class: 'mono muted' }, r.id),
-    h('span', {}, r.tag_zh),
+    h('span', { title: (S.cat.memory.spec_hint || {})[r.spec_status] || '' }, '规范 ', h('b', {}, r.spec_zh || r.tag_zh), ' · 产品 ', h('b', {}, r.product_zh || '')),
+    ...(r.meta_mode ? [h('span', { class: 'tag assume' }, 'meta')] : []),
     ...r.warnings.map((w) => h('span', { style: 'color:var(--warn)' }, w)));
   $('mem_eff').placeholder = String(r.efficiency);
 }
@@ -265,12 +304,14 @@ function bindMem() {
   on('m-count', (v) => { S.mem.count = +v; });
   on('m-cap', (v) => { S.mem.cap = +v; });
   on('m-height', (v) => { [S.mem.height, S.mem.die] = v.split(':').map(Number); });
+  $('m-meta').addEventListener('change', () => { S.mem.meta_mode = $('m-meta').checked; resolveMem(); });
 }
 
 /* ------------------------------------------------------------------ evaluation */
 let timer = null;
 function schedule() { clearTimeout(timer); timer = setTimeout(runEval, 120); invalidate(); }
 function invalidate() {
+  if (S.cat) paintScope();
   for (const id of ['cmp-status', 'lay-status', 'sw-status'])
     if ($(id).dataset.done) $(id).textContent = '场景已改变，需重新运行';
 }
@@ -293,7 +334,7 @@ function kpi(label, value, sub, cls = '') {
 }
 function boundTag(b) { return b ? h('span', { class: 'bound ' + b, title: BOUND_ZH[b] }, b) : '—'; }
 function ttftFlag(ok, ms) {
-  if (ok === null || ok === undefined) return h('span', { class: 'flag pend' }, 'n/a');
+  if (ok === null || ok === undefined) return h('span', { class: 'flag pend' }, '—');
   return h('span', { class: 'flag ' + (ok ? 'ok' : 'no'), title: 'DP 组内 prefill 的 TTFT 与 SLO 比较' },
     (ok ? '✓ ' : '✗ ') + (ms === undefined ? '' : ms === null ? '不可行' : num(ms) + ' ms'));
 }
@@ -301,32 +342,86 @@ function renderEval(r) {
   const s = r.summary, sv = r.scenario.serving, g = r.goodput;
   const m = model();
   put($('model-badges'), ...badges(m, r.model.what_if));
-  const k = [];
-  if (s.phase === 'decode') {
-    k.push(kpi('TPOT', num(s.tpot_ms) + ' ms', `SLO ${sv.tpot_slo_ms} ms`, s.tpot_ms > sv.tpot_slo_ms ? 'bad' : ''));
-    k.push(kpi('吞吐 / 卡', num(s.tok_s_card) + ' tok/s', `共 ${num(s.tok_s)} tok/s · ${s.cards} 卡`));
-  } else {
-    k.push(kpi('TTFT', num(s.ttft_ms) + ' ms', `SLO ${sv.ttft_slo_ms} ms · prompt ${sv.prompt}`, s.ttft_ms > sv.ttft_slo_ms ? 'bad' : ''));
-    k.push(kpi('Prefill 吞吐 / 卡', num(s.tok_s_card) + ' tok/s', `共 ${num(s.tok_s)} tok/s`));
-  }
-  k.push(kpi('batch' + (S.best ? '（自动）' : ''), String(s.batch), `${s.layout} · ${s.mapping}`));
-  k.push(h('div', { class: 'kpi' }, h('div', { class: 'l' }, '绑定瓶颈'), h('div', { class: 'v' }, boundTag(s.bound)),
-    h('div', { class: 's' }, `${BOUND_ZH[s.bound] || ''} · 最重 stage ${s.heaviest_stage}`)));
-  k.push(kpi('有效 MAC 比例', pct(s.array_util), '理想 MAC 时间 / 阵列时间（array_util）'));
-  if (g) k.push(h('div', { class: 'kpi ' + (g.ttft_ok ? '' : 'bad') }, h('div', { class: 'l' }, 'Goodput / 卡（含 prefill）'),
-    h('div', { class: 'v' }, num(g.tok_s_card) + ' tok/s'),
-    h('div', { class: 's' }, 'DP prefill TTFT ', ttftFlag(g.ttft_ok, g.ttft_ms), ` · prefill batch ${g.prefill_batch}`)));
-  k.push(kpi('DRAM 需求 / 卡', num(s.dram_need_GiB) + ' GiB', s.fits ? `容量 ${num(S.memInfo ? S.memInfo.capacity_GiB : NaN)} GiB · 可放下` : '超出容量', s.fits ? '' : 'bad'));
-  put($('kpis'), ...k);
-  put($('warns'), ...s.warnings.map((w) => h('div', {}, w)),
-    ...(r.model.what_if ? [h('div', {}, 'what-if：dtype 已偏离官方发布，结果仅供假设分析。')] : []));
+  put($('warns'), ...s.warnings.filter((w) => !w.startsWith('容量不足')).map((w) => h('div', {}, w)),
+    ...(r.model.what_if ? [h('div', {}, 'what-if：dtype 已偏离官方发布，结果仅供推演。')] : []));
   renderStages(r);
   renderAssumptions(r);
+  if (!s.fits) { $('kpis').hidden = true; runFit(); return; }
+  $('fit').hidden = true;
+  $('kpis').hidden = false;
+  const cap = S.memInfo ? S.memInfo.capacity_GiB : NaN;
+  const k = [];
+  const auto = S.best ? '（自动）' : '';
+  if (s.phase === 'decode') {
+    const over = s.tpot_ms > sv.tpot_slo_ms;
+    k.push(kpi('TPOT', num(s.tpot_ms) + ' ms', `batch ${s.batch}${auto} · SLO ${sv.tpot_slo_ms} ms${over ? ' · 超出' : ''}`, over ? 'warn' : ''));
+    k.push(kpi('吞吐 / 卡', num(s.tok_s_card) + ' tok/s', `共 ${num(s.tok_s)} tok/s · ${s.cards} 卡 · ${s.layout}`));
+  } else {
+    const over = s.ttft_ms > sv.ttft_slo_ms;
+    k.push(kpi('TTFT', num(s.ttft_ms) + ' ms', `batch ${s.batch} · prompt ${sv.prompt} · SLO ${sv.ttft_slo_ms} ms`, over ? 'warn' : ''));
+    k.push(kpi('prefill 吞吐 / 卡', num(s.tok_s_card) + ' tok/s', `共 ${num(s.tok_s)} tok/s · ${s.cards} 卡 · ${s.layout}`));
+  }
+  k.push(h('div', { class: 'kpi' }, h('div', { class: 'l' }, '绑定瓶颈 · 有效 MAC'),
+    h('div', { class: 'v' }, boundTag(s.bound), ' ', pct(s.array_util)),
+    h('div', { class: 's' }, `${BOUND_ZH[s.bound] || ''} · 最重流水级 ${s.heaviest_stage}`)));
+  if (g) k.push(h('div', { class: 'kpi ' + (g.ttft_ok ? '' : 'warn') }, h('div', { class: 'l' }, 'goodput / 卡（含 prefill）'),
+    h('div', { class: 'v' }, num(g.tok_s_card) + ' tok/s'),
+    h('div', { class: 's' }, 'DP prefill TTFT ', ttftFlag(g.ttft_ok, g.ttft_ms), g.prefill_batch ? ` · prefill batch ${g.prefill_batch}` : '')));
+  else k.push(kpi('映射组织', (S.cat.mappings.find((x) => x.id === s.mapping) || {}).label || s.mapping, MAP_DESC[s.mapping] || ''));
+  const frac = isFinite(cap) && cap > 0 ? Math.min(1, s.dram_need_GiB / cap) : 0;
+  k.push(h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'DRAM 需求 / 容量（每卡）'),
+    h('div', { class: 'v' }, `${num(s.dram_need_GiB)} / ${num(cap)} GiB`),
+    h('div', { class: 's' }, h('span', { class: 'ubar wide' }, h('i', { style: `width:${frac * 100}%` })), `SRAM 驻留 ${pct(s.residency)}`)));
+  put($('kpis'), ...k);
+}
+async function runFit() {
+  const box = $('fit');
+  box.hidden = false;
+  put(box, h('div', { class: 'muted' }, '容量不足，正在计算可行的修正方案…'));
+  try {
+    const f = await track(req('fit', '/api/fit', body()));
+    if (!f) return;
+    const m = model();
+    const lines = [h('div', { class: 'fit-title' }, h('b', {}, '放不下：'),
+      `${m.label} 在当前 ${f.cards} 卡上，最重流水级每卡需要 ${num(f.need_GiB)} GiB（其中权重 ${num(f.weights_GiB)} GiB），每卡容量 ${num(f.cap_GiB)} GiB。`)];
+    const acts = [];
+    if (f.max_batch) {
+      acts.push(h('button', { class: 'btn', onclick: () => { S.sc.serving.batch = f.max_batch; syncInputs(); schedule(); } },
+        `batch 改为 ${f.max_batch}（能放下的最大值）`));
+      if (!S.best) acts.push(h('button', { class: 'btn ghost', onclick: () => { S.best = true; $('best-batch').checked = true; schedule(); } }, '开启自动 batch'));
+    }
+    if (f.min_cards) {
+      const c = f.min_cards;
+      acts.push(h('button', { class: 'btn', onclick: () => applyLayout(c.layout_obj, c.batch) },
+        `改为 ${c.cards} 卡 · ${c.layout} · batch ${c.batch}（每卡 ${num(c.need_GiB)} GiB${c.meets_slo ? '' : '，TPOT SLO 未满足'}）`));
+    }
+    if (f.min_mem) {
+      const mm = f.min_mem;
+      acts.push(h('button', { class: 'btn ghost', onclick: () => applyMem(mm.id) },
+        `存储器改为 ${mm.count} ${S.memInfo && S.memInfo.kind === 'HBM' ? '堆栈' : '颗'} × ${+(mm.capacity_GiB / mm.count).toFixed(1)} GiB = ${num(mm.capacity_GiB)} GiB / 卡（${mm.tag_zh}）`));
+    }
+    if (!acts.length) lines.push(h('div', {}, '在 64 卡以内、当前存储器类型的任何容量下都放不下；请换容量更大的存储器类型或更小的模型。'));
+    else lines.push(h('div', { class: 'small muted' }, '一键修正（最少卡数的布局按 decode 吞吐取最优；存储器只在当前类型、速率内加大容量）：'));
+    put(box, ...lines, h('div', { class: 'fit-acts' }, acts));
+  } catch (e) { put(box, h('div', { class: 'err' }, '容量检查失败：' + e.message)); }
+}
+function applyLayout(lay, batch) {
+  Object.assign(S.sc.layout, lay);
+  if (batch) S.sc.serving.batch = batch;
+  syncInputs(); cardsNote(); schedule();
+}
+async function applyMem(id) {
+  try {
+    const r = await req('mem', '/api/memory', { id });
+    if (!r) return;
+    S.memInfo = r; S.mem = { ...r.fields };
+    fillMem(); paintMem(); schedule();
+  } catch (e) { showErr('存储器：' + e.message); }
 }
 function renderStages(r) {
-  const head = h('tr', {}, h('th', { class: 'l' }, 'stage'), h('th', { class: 'l' }, '层'), h('th', {}, '瓶颈'),
+  const head = h('tr', {}, h('th', { class: 'l' }, '流水级'), h('th', { class: 'l' }, '层'), h('th', {}, '瓶颈'),
     ...COMPONENTS.map((c) => h('th', {}, c.toUpperCase() + ' ms')), h('th', {}, '合计 ms'), h('th', { class: 'l' }, '有效 MAC'),
-    h('th', {}, 'TFLOP'));
+    h('th', {}, 'TFLOP / 步'));
   const rows = r.stages.map((st) => {
     const comp = { mac: st.t_ms.mac, feed: st.t_ms.feed, vector: st.t_ms.vector, dram: st.t_ms.dram, link: st.t_ms.link, sync: st.t_ms.sync };
     return h('tr', { class: st.index === r.summary.heaviest_stage ? 'best' : '' },
@@ -338,10 +433,10 @@ function renderStages(r) {
   });
   put($('stage-tbl'), h('thead', {}, head), h('tbody', {}, rows));
   put($('legend'), ...COMPONENTS.map((c) => h('span', { style: `--c:var(--b-${c})` }, BOUND_ZH[c.toUpperCase()])),
-    h('span', { style: '--c:transparent' }, 'MAC / FEED 为逐算子 max(MAC, FEED) 前的分项和'));
-  const mh = h('tr', {}, h('th', { class: 'l' }, 'stage'), h('th', {}, '权重 GiB'), h('th', {}, 'KV GiB'), h('th', {}, '状态 GiB'),
-    h('th', {}, '需求 / 容量 GiB'), h('th', {}, 'SRAM 驻留'), h('th', {}, 'KV in SRAM MiB'), h('th', {}, 'staging MiB'),
-    h('th', {}, 'DRAM 流量 / step GB'), h('th', {}, '反量化 M elem'));
+    h('span', { style: '--c:transparent' }, 'MAC / FEED 为逐算子取 max 之前的分项和'));
+  const mh = h('tr', {}, h('th', { class: 'l' }, '流水级'), h('th', {}, '权重 GiB'), h('th', {}, 'KV GiB'), h('th', {}, '状态 GiB'),
+    h('th', {}, '需求 / 容量 GiB'), h('th', {}, 'SRAM 驻留'), h('th', {}, 'SRAM 中 KV MiB'), h('th', {}, '暂存区 MiB'),
+    h('th', {}, 'DRAM 流量 / 步 GB'), h('th', {}, '反量化 百万元素'));
   const mr = r.stages.map((st) => h('tr', {}, h('td', { class: 'l' }, st.index), h('td', {}, num(st.mem.stored_w_GiB)),
     h('td', {}, num(st.mem.kv_GiB)), h('td', {}, num(st.mem.state_GiB)),
     h('td', { style: st.mem.fits ? '' : 'color:var(--danger)' }, `${num(st.mem.need_GiB)} / ${num(st.mem.cap_GiB)}`),
@@ -355,10 +450,10 @@ function renderAssumptions(r) {
   const items = [
     `芯片 ${c.name}：${c.rows}×${c.cols}×${c.engines} @ ${c.freq_ghz} GHz，MAC 效率 ${c.mac_eff}`,
     `SRAM ${c.sram_mib} MiB，端口 ${num(port)} B/cycle${c.sram_port_Bpc ? '' : '（默认 4·(R+C·E)·2）'}`,
-    `GEMV 单元 ${c.gemv_macs || cc.gemv} MAC/cycle${c.gemv_macs ? '' : '（默认 = 阵列 MAC / 8）'}；向量 lanes ${c.vector_lanes || cc.lanes}`,
+    `GEMV 单元 ${c.gemv_macs || cc.gemv} MAC/cycle${c.gemv_macs ? '' : '（默认 = 阵列 MAC / 8）'}；向量通道 ${c.vector_lanes || cc.lanes}`,
     `累加器 ${c.acc_kib} KiB（超出的部分和行溢出到 SRAM）`,
-    `DRAM 效率 ${sc.mem_eff ?? (S.memInfo ? S.memInfo.efficiency : 0.7)}；预留 1 GiB；staging = max(2 MiB, 2·最大激活)`,
-    `链路 ${sc.link.GBps} GB/s，每次集合通信同步 α = ${sc.link.alpha_us} µs（${sc.link.topology}）`,
+    `DRAM 效率 ${sc.mem_eff ?? (S.memInfo ? S.memInfo.efficiency : 0.7)}；预留 1 GiB；暂存区 = max(2 MiB, 2·最大激活)`,
+    `链路 ${sc.link.GBps} GB/s，每次集合通信同步 α = ${sc.link.alpha_us} µs（${sc.link.topology === 'ring' ? '环形' : '交换'}拓扑）`,
     `投机解码：k = ${sc.serving.spec_k}，接受率 ${sc.serving.spec_accept}（期望 token = (1−a^(k+1))/(1−a)）`,
     'MoE：每 rank 命中专家数取 max(局部期望, 全局期望/EP)；token 均匀路由',
     '芯片不支持的权重格式：反量化每元素 2 次向量操作',
@@ -378,93 +473,128 @@ function stabFlag(st) {
   return h('span', { class: 'flag ' + (st.stable ? 'ok' : 'no'), title: st.rule + '\n' + st.cases.map(caseText).join('\n') },
     (st.stable ? '✓ 稳定 ' : '⚠ 不稳定 ') + `${Math.round(st.agree * n)}/${n}`);
 }
+function scopeText() {
+  const sv = S.sc.serving, m = model();
+  const mi = S.memInfo;
+  return `场景：${m.label} · ${cards()} 卡 · 芯片 ${S.preset} · 存储器 ${mi ? `${mi.kind} ${num(mi.raw_GBps)} GB/s ${num(mi.capacity_GiB)} GiB` : S.sc.mem_id} · ctx ${sv.ctx} · TPOT SLO ${sv.tpot_slo_ms} ms（在左侧面板修改）`;
+}
+function paintScope() { $('cmp-scope').textContent = scopeText(); $('lay-scope').textContent = scopeText(); }
 async function runCompare() {
-  const cards = readNum($('cmp-cards'), true);
-  if (!cards) { $('cmp-cards').classList.add('bad'); return; }
+  paintScope();
   const btn = $('cmp-run');
   btn.disabled = true;
   $('cmp-status').textContent = '搜索中（5 种映射 × 全部布局）…';
   delete $('cmp-status').dataset.done;
   const t0 = performance.now();
   try {
-    const b = body({ cards, objective: S.cmpObj });
+    const b = body({ cards: cards(), objective: S.cmpObj });
     const r = await track(req('compare', '/api/compare', b));
     if (!r) return;
     const mySeq = seq.compare;
     const stab = {};
     paintCompare(r, stab);
-    $('cmp-status').textContent = `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s · 稳定性计算中…`;
+    const none = r.rows.every((x) => !x.batch);
+    $('cmp-status').textContent = none ? `${cards()} 卡下任何布局都放不下或不满足 SLO —— 先在「单点评估」按提示修正卡数` :
+      `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s · 稳定性计算中（0/${r.rows.length}）…`;
+    if (none) return;
+    let done = 0;
     $('cmp-status').dataset.done = '1';
-    for (const row of r.rows) {
+    // the server runs these in parallel worker processes; each row fills in as its result arrives
+    const one = async (row) => {
       const bb = JSON.parse(JSON.stringify(b));
       bb.scenario.mapping = row.mapping;
       try {
         const st = await track(req('stab-' + row.mapping, '/api/stability', bb));
-        if (st === null || seq.compare !== mySeq) return;
+        if (st === null || seq.compare !== mySeq) return false;
         stab[row.mapping] = st;
       } catch (e) { stab[row.mapping] = { error: e.message }; }
-      if (seq.compare !== mySeq) return;
+      if (seq.compare !== mySeq) return false;
+      done++;
+      $('cmp-status').textContent = `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s · 稳定性计算中（${done}/${r.rows.filter((x) => x.batch).length}）…`;
       paintCompare(r, stab);
-    }
+      return true;
+    };
+    const res = await Promise.all(r.rows.filter((x) => x.batch).map(one));
+    if (res.some((x) => !x)) return;
     $('cmp-status').textContent = `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s`;
   } catch (e) { $('cmp-status').textContent = '错误：' + e.message; }
   finally { btn.disabled = false; }
 }
 function paintCompare(r, stab) {
   const gp = r.objective === 'goodput';
-  const head = h('tr', {}, h('th', { class: 'l' }, '映射组织'), h('th', { class: 'l' }, '最佳布局'), h('th', {}, 'batch'),
-    h('th', {}, 'tok/s/卡'), h('th', {}, 'goodput/卡'), h('th', {}, 'TPOT ms'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '有效 MAC'),
-    h('th', {}, 'DP prefill TTFT'), h('th', {}, '排名稳定性'), h('th', { class: 'l' }, '次优布局'));
-  const rows = r.rows.map((x) => h('tr', { class: 'click ' + (x.mapping === r.best_mapping ? 'best' : ''), title: '点击应用到场景',
-    onclick: () => applyRow(x) },
-    h('td', { class: 'l' }, x.label), h('td', { class: 'l mono' }, x.layout), h('td', {}, x.batch),
-    h('td', { style: gp ? '' : 'font-weight:700' }, num(x.tok_s_card)),
-    h('td', { style: gp ? 'font-weight:700' : '' }, num(x.goodput_card)), h('td', {}, num(x.tpot_ms)), h('td', {}, boundTag(x.bound)),
-    h('td', { class: 'l' }, h('span', { class: 'ubar' }, h('i', { style: `width:${Math.min(100, (x.array_util || 0) * 100)}%` })), pct(x.array_util)),
-    h('td', {}, ttftFlag(x.ttft_ok, x.ttft_ms)), h('td', {}, stabFlag(stab[x.mapping])),
-    h('td', { class: 'l mono muted' }, x.runner_up ? `${x.runner_up.layout} (${num(x.runner_up.score)})` : '—')));
+  const head = h('tr', {}, h('th', { class: 'l' }, '映射组织'), h('th', { class: 'l' }, '最佳布局 / 次优'), h('th', {}, 'batch'),
+    h('th', {}, 'tok/s/卡'), h('th', {}, 'goodput/卡'), h('th', {}, 'TPOT ms'), h('th', { class: 'l' }, '瓶颈 · 有效 MAC'),
+    h('th', {}, 'prefill TTFT'), h('th', {}, '排名稳定性'));
+  const rows = r.rows.map((x) => {
+    const ok = !!x.batch;
+    return h('tr', { class: (ok ? 'click ' : '') + (x.mapping === r.best_mapping && ok ? 'best' : ''), title: ok ? '点击把映射、布局（含卡数）和 batch 应用到场景' : '',
+      onclick: ok ? () => applyRow(x) : null },
+      h('td', { class: 'l' }, x.label),
+      h('td', { class: 'l mono' }, ok ? x.layout : '放不下',
+        x.runner_up ? h('div', { class: 'small muted' }, `次优 ${x.runner_up.layout}（${num(x.runner_up.score)}）`) : null),
+      h('td', {}, ok ? x.batch : '—'),
+      h('td', { style: gp ? '' : 'font-weight:700' }, ok ? num(x.tok_s_card) : '—'),
+      h('td', { style: gp ? 'font-weight:700' : '' }, ok ? num(x.goodput_card) : '—'), h('td', {}, ok ? num(x.tpot_ms) : '—'),
+      h('td', { class: 'l nowrap' }, ok ? boundTag(x.bound) : '—', ' ',
+        ok ? h('span', { class: 'ubar sm' }, h('i', { style: `width:${Math.min(100, (x.array_util || 0) * 100)}%` })) : null, ok ? pct(x.array_util) : ''),
+      h('td', {}, ok ? ttftFlag(x.ttft_ok, x.ttft_ms) : '—'), h('td', {}, ok ? stabFlag(stab[x.mapping]) : '—'));
+  });
   put($('cmp-tbl'), h('thead', {}, head), h('tbody', {}, rows));
 }
 function applyRow(x) {
+  // mapping + full layout (card count follows from PP·TP·DP) + the batch the search found
   S.sc.mapping = x.mapping;
   paintSeg('mapping', x.mapping);
   $('mapping-desc').textContent = MAP_DESC[x.mapping];
   Object.assign(S.sc.layout, x.layout_obj);
   S.sc.serving.batch = x.batch;
-  S.best = false; $('best-batch').checked = false;
   syncInputs(); cardsNote();
   activate('eval');
   schedule();
 }
+async function bestLayout() {
+  const btn = $('best-layout');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '搜索中…';
+  try {
+    const r = await track(req('best-layout', '/api/layouts', body({ cards: cards(), objective: 'decode' })));
+    if (!r) return;
+    const top = r.rows[0];
+    if (!top || !top.batch) { showErr(`${cards()} 卡下没有满足容量和 SLO 的布局`); return; }
+    applyLayout(top.layout_obj, top.batch);
+  } catch (e) { showErr('布局搜索：' + e.message); }
+  finally { btn.disabled = false; btn.textContent = old; }
+}
 
 /* ------------------------------------------------------------------ layouts + stability */
 async function runLayouts() {
-  const cards = readNum($('lay-cards'), true);
-  if (!cards) { $('lay-cards').classList.add('bad'); return; }
+  paintScope();
   $('lay-status').textContent = '搜索中…';
   delete $('lay-status').dataset.done;
   const t0 = performance.now();
   try {
-    const r = await track(req('layouts', '/api/layouts', body({ cards, objective: S.layObj })));
+    const r = await track(req('layouts', '/api/layouts', body({ cards: cards(), objective: S.layObj })));
     if (!r) return;
+    const hasG = r.rows.some((x) => x.goodput_card !== null && x.goodput_card !== undefined);
     const head = h('tr', {}, h('th', {}, '#'), h('th', { class: 'l' }, '布局'), h('th', {}, 'batch'), h('th', {}, 'tok/s/卡'),
-      h('th', {}, 'goodput/卡'), h('th', {}, 'TPOT ms'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '有效 MAC'), h('th', {}, 'TTFT'));
-    const rows = r.rows.map((x, i) => h('tr', { class: 'click ' + (i === 0 ? 'best' : ''), onclick: () => applyRow(x) },
-      h('td', {}, i + 1), h('td', { class: 'l mono' }, x.layout), h('td', {}, x.batch), h('td', {}, num(x.tok_s_card)),
-      h('td', {}, num(x.goodput_card)), h('td', {}, num(x.tpot_ms)), h('td', {}, boundTag(x.bound)),
+      hasG ? h('th', {}, 'goodput/卡') : null, h('th', {}, 'TPOT ms'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '有效 MAC'),
+      hasG ? h('th', {}, 'prefill TTFT') : null);
+    const rows = r.rows.map((x, i) => h('tr', { class: (x.batch ? 'click ' : '') + (i === 0 && x.batch ? 'best' : ''), onclick: x.batch ? () => applyRow(x) : null },
+      h('td', {}, i + 1), h('td', { class: 'l mono' }, x.layout), h('td', {}, x.batch || '放不下'), h('td', {}, num(x.tok_s_card)),
+      hasG ? h('td', {}, num(x.goodput_card)) : null, h('td', {}, num(x.tpot_ms)), h('td', {}, boundTag(x.bound)),
       h('td', { class: 'l' }, h('span', { class: 'ubar' }, h('i', { style: `width:${Math.min(100, (x.array_util || 0) * 100)}%` })), pct(x.array_util)),
-      h('td', {}, x.ttft_ok === undefined ? '—' : ttftFlag(x.ttft_ok, x.ttft_ms))));
+      hasG ? h('td', {}, x.ttft_ok === undefined ? '—' : ttftFlag(x.ttft_ok, x.ttft_ms)) : null));
     put($('lay-tbl'), h('thead', {}, head), h('tbody', {}, rows));
-    $('lay-status').textContent = `${r.n_layouts} 个布局 · 显示前 ${r.rows.length} · ${((performance.now() - t0) / 1000).toFixed(1)} s`;
+    $('lay-status').textContent = `${r.n_layouts} 个布局 · 精确前 ${r.rows.length} 名 · ${((performance.now() - t0) / 1000).toFixed(1)} s`;
     $('lay-status').dataset.done = '1';
   } catch (e) { $('lay-status').textContent = '错误：' + e.message; }
 }
 async function runStability() {
-  const cards = readNum($('lay-cards'), true);
-  if (!cards) return;
-  put($('stab-box'), h('div', { class: 'stab muted' }, '稳定性计算中（每个扰动重新搜索全部布局）…'));
+  paintScope();
+  put($('stab-box'), h('div', { class: 'stab muted' }, '稳定性计算中（每个扰动重新精确搜索 top-1 布局）…'));
   try {
-    const r = await track(req('stab', '/api/stability', body({ cards, objective: S.layObj, include_mapping: false })));
+    const r = await track(req('stab', '/api/stability', body({ cards: cards(), objective: S.layObj, include_mapping: false })));
     if (!r) return;
     put($('stab-box'), h('div', { class: 'stab' },
       h('div', {}, '基准 top-1：', h('b', { class: 'mono' }, r.base_top), '  ', stabFlag(r), '  ', h('span', { class: 'muted' }, r.rule)),
@@ -503,7 +633,7 @@ function line(points, { xl, yl, y2l, log }) {
     svg.append(s('text', { x: P.l - 6, y: Y(yv, y1) + 4, 'text-anchor': 'end', fill: '#34d399', 'font-size': 11 }, num(yv)));
     if (y2l) svg.append(s('text', { x: W - P.r + 6, y: Y((y21 * i) / 4, y21) + 4, fill: '#f59e0b', 'font-size': 11 }, num((y21 * i) / 4)));
   }
-  for (const p of points) svg.append(s('text', { x: X(p.x), y: H - P.b + 16, 'text-anchor': 'middle', fill: '#8fa3b8', 'font-size': 11 }, p.xlabel ?? num(p.x)));
+  for (const p of points) svg.append(s('text', { x: X(p.x), y: H - P.b + 16, 'text-anchor': 'middle', fill: '#8fa3b8', 'font-size': 11 }, p.xlabel ?? (Number.isInteger(p.x) ? p.x.toLocaleString('en-US') : num(p.x))));
   svg.append(s('text', { x: (W) / 2, y: H - 4, 'text-anchor': 'middle', fill: '#8fa3b8', 'font-size': 11 }, xl));
   svg.append(s('text', { x: 4, y: 11, fill: '#34d399', 'font-size': 11 }, yl));
   if (y2l) svg.append(s('text', { x: W - 4, y: 11, 'text-anchor': 'end', fill: '#f59e0b', 'font-size': 11 }, y2l));
@@ -527,10 +657,10 @@ async function runSweep() {
     const decode = S.sc.serving.phase === 'decode';
     put($('sw-chart'), line(r.rows.map((x) => ({ x: x.value, y: x.tok_s_card, y2: decode ? x.tpot_ms : x.ttft_ms })),
       { xl: SWEEP_ZH[path] || path, yl: 'tok/s/卡', y2l: decode ? 'TPOT ms' : 'TTFT ms', log: vals.every((v) => v > 0) && Math.max(...vals) / Math.min(...vals) >= 16 }));
-    const head = h('tr', {}, h('th', { class: 'l' }, SWEEP_ZH[path] || path), h('th', {}, 'TPOT ms'), h('th', {}, decode ? 'TTFT ms (n/a)' : 'TTFT ms'),
+    const head = h('tr', {}, h('th', { class: 'l' }, SWEEP_ZH[path] || path), h('th', {}, decode ? 'TPOT ms' : 'TTFT ms'),
       h('th', {}, 'tok/s'), h('th', {}, 'tok/s/卡'), h('th', {}, '瓶颈'), h('th', {}, '有效 MAC'), h('th', {}, '放得下'));
     put($('sw-tbl'), h('thead', {}, head), h('tbody', {}, r.rows.map((x) => h('tr', {},
-      h('td', { class: 'l' }, x.value), h('td', {}, num(x.tpot_ms)), h('td', {}, num(x.ttft_ms)), h('td', {}, num(x.tok_s)),
+      h('td', { class: 'l' }, x.value), h('td', {}, num(decode ? x.tpot_ms : x.ttft_ms)), h('td', {}, num(x.tok_s)),
       h('td', {}, num(x.tok_s_card)), h('td', {}, boundTag(x.bound)), h('td', {}, pct(x.array_util)),
       h('td', {}, x.fits ? '✓' : h('span', { style: 'color:var(--danger)' }, '✗'))))));
     $('sw-status').textContent = `${r.rows.length} 点`;
@@ -554,16 +684,39 @@ async function runPareto() {
 
 /* ------------------------------------------------------------------ models table */
 function renderModels() {
-  const head = h('tr', {}, h('th', { class: 'l' }, '模型'), h('th', { class: 'l' }, '分组'), h('th', { class: 'l' }, '来源'),
-    h('th', { class: 'l' }, '覆盖'), h('th', { class: 'l' }, 'dtype（按发布）'), h('th', {}, '参数 B'), h('th', {}, '激活 B'),
-    h('th', {}, 'vs 发布'), h('th', { class: 'l' }, '结构'));
-  const rows = S.models.map((m) => h('tr', { class: 'click', onclick: () => { S.sc.model = m.id; $('model').value = m.id; onModel(); activate('eval'); schedule(); } },
-    h('td', { class: 'l' }, m.label, h('div', { class: 'small muted mono' }, m.hf_id)), h('td', { class: 'l' }, SECTION_ZH[m.section] || m.section),
-    h('td', { class: 'l' }, h('span', { class: 'badge ' + m.provenance }, PROV_ZH[m.provenance])),
-    h('td', { class: 'l' }, h('span', { class: 'badge ' + m.coverage }, COVER_ZH[m.coverage])),
-    h('td', { class: 'l' }, m.dtype), h('td', {}, num(m.params_B)), h('td', {}, num(m.active_B)),
-    h('td', {}, (m.param_err * 100).toFixed(2) + '%'), h('td', { class: 'l' }, m.arch)));
+  const head = h('tr', {}, h('th', { class: 'l' }, '模型'), h('th', { class: 'l' }, '系列'), h('th', { class: 'l' }, '来源'),
+    h('th', { class: 'l' }, '覆盖'), h('th', { class: 'l' }, '近似之处'), h('th', { class: 'l' }, 'dtype（按发布）'),
+    h('th', {}, '参数 B'), h('th', {}, '激活 B'), h('th', {}, 'vs 发布'), h('th', { class: 'l' }, '结构'));
+  const NC = 10;
+  const rows = [];
+  let dom = null, prov = null;
+  const groupRows = (d, dl, p, pl) => {
+    if (d !== dom) { rows.push(h('tr', { class: 'grp dom' }, h('td', { class: 'l', colspan: NC }, dl))); dom = d; prov = null; }
+    if (p !== prov) { rows.push(h('tr', { class: 'grp' }, h('td', { class: 'l', colspan: NC }, pl))); prov = p; }
+  };
+  for (const m of S.models) {
+    groupRows(m.domain, m.domain_label, m.provider, m.provider_label);
+    const approx = [...(m.coverage_reasons || []), ...(m.vision_params_B ? [`视觉编码器（${num(m.vision_params_B)}B）未建模`] : [])];
+    rows.push(h('tr', { class: 'click', onclick: () => { S.sc.model = m.id; $('model').value = m.id; onModel(); activate('eval'); schedule(); } },
+      h('td', { class: 'l' }, m.label, h('div', { class: 'small muted mono' }, m.hf_id),
+        m.same_as.length ? h('div', { class: 'small muted' }, '同结构：' + m.same_as.map((x) => x.label).join('、')) : null),
+      h('td', { class: 'l' }, m.family),
+      h('td', { class: 'l' }, h('span', { class: 'badge ' + m.provenance }, PROV_ZH[m.provenance])),
+      h('td', { class: 'l' }, coverBadge(m)),
+      h('td', { class: 'wrap small' }, approx.length ? approx.join('；') : h('span', { class: 'muted' }, '—')),
+      h('td', { class: 'l' }, m.dtype), h('td', {}, num(m.params_B)), h('td', {}, num(m.active_B)),
+      h('td', {}, (m.param_err * 100).toFixed(2) + '%'), h('td', { class: 'l' }, m.arch)));
+  }
+  for (const o of S.offline) {
+    groupRows(o.domain, o.domain_label + ' · 暂未接入 v2', o.provider, o.provider_label);
+    rows.push(h('tr', { class: 'off' },
+      h('td', { class: 'l' }, o.label, h('div', { class: 'small muted mono' }, o.hf_id)), h('td', { class: 'l' }, o.family),
+      h('td', { class: 'l' }, '—'), h('td', { class: 'l' }, h('span', { class: 'badge off' }, o.status)),
+      h('td', { class: 'wrap small muted' }, '图像 / 视频生成在 core v2 中暂未接入，不能评估'),
+      h('td', { class: 'l' }, '—'), h('td', {}, '—'), h('td', {}, '—'), h('td', {}, '—'), h('td', { class: 'l' }, o.arch)));
+  }
   put($('models-tbl'), h('thead', {}, head), h('tbody', {}, rows));
+  put($('models-unlisted'), ...S.unlisted.map((u) => h('li', {}, h('b', {}, u.label), '：', u.reason)));
 }
 
 /* ------------------------------------------------------------------ tabs */
@@ -579,12 +732,17 @@ async function init() {
     const [health, cat, models] = await Promise.all([req('h', '/api/health'), req('c', '/api/catalog'), req('m', '/api/models')]);
     S.cat = cat;
     S.models = models.models;
+    S.offline = models.offline;
+    S.unlisted = models.unlisted;
     for (const m of S.models) S.byId[m.id] = m;
     $('ver').textContent = 'v' + health.version;
     $('honesty-chip').title = cat.honesty;
     $('honesty-text').textContent = cat.honesty;
     S.sc = JSON.parse(JSON.stringify(cat.defaults));
     delete S.sc.chip;
+    // UI default: LPDDR-class memory → 100 ms TPOT SLO and auto batch, so the opening scenario is feasible and meets its SLO
+    S.sc.serving.tpot_slo_ms = 100;
+    S.best = true;
     const mi = await req('mi', '/api/memory', { id: S.sc.mem_id });
     S.memInfo = mi;
     S.mem = { ...mi.fields };
@@ -603,6 +761,9 @@ async function init() {
     $('l-' + k).dataset.after = 'layout';
     bindNumber('l-' + k, () => S.sc.layout[k], (x) => { S.sc.layout[k] = x; AFTER.lastLayout = k; }, { int: true });
   }
+  bindNumber('l-cards', cards, (x) => { setCards(x); for (const k of ['pp', 'tp', 'dp', 'ep', 'etp']) $('l-' + k)._sync(); cardsNote(); }, { int: true });
+  $('best-layout').addEventListener('click', bestLayout);
+  $('best-batch').checked = S.best;
   AFTER.layout = () => {
     const k = AFTER.lastLayout;
     if (k !== 'pp') fixMoe(k);
@@ -638,6 +799,7 @@ async function init() {
   $('sw-run').addEventListener('click', runSweep);
   $('pf-run').addEventListener('click', runPareto);
   renderModels();
+  paintScope();
   window.__accel = { S, req, seq };
   runEval();
 }

@@ -49,7 +49,7 @@ def test_mtp_draft_runs_on_last_stage_only():
 
 def test_spec_k_ignored_without_mtp():
     r = evaluate(Scenario(model="qwen3-8b", serving=Serving(batch=1, spec_k=2)))
-    assert r.tokens_per_step == 1.0 and any("spec_k ignored" in w for w in r.warnings)
+    assert r.tokens_per_step == 1.0 and any("spec_k 已忽略" in w for w in r.warnings)
 
 
 def test_sync_exposed_and_link_bound():

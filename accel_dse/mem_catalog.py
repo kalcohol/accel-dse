@@ -1,15 +1,17 @@
-"""Structured external-memory catalog (v0.29) — LPDDR5/5X/6 + HBM3/3E/4/4E.
+"""Structured external-memory catalog — LPDDR5/5X/6 + HBM3/3E/4/4E.
 
-Source of truth: ``docs/research/memory_specs_2026-10.{md,json}`` (verified 2026-10-08,
-§6 "proposed_selectors"). This module keeps a compact, data-driven copy of the
-selector table so the engine has no file-system dependency at import time.
+Source of truth: ``docs/research/memory_specs_2026-10.{md,json}`` (verified 2026-10-08)
+plus the 2026-10-08 audit (``MEMORY_AUDIT``; corrections folded into 0.40.1).
+This module keeps a compact, data-driven copy of the selector table so the engine
+has no file-system dependency at import time.
 
 Modelling unit (granule) — *not* the JEDEC die channel:
-  - LPDDR5 / LPDDR5X discrete: **package** (x32 = 2×16, **x64 = 4×16 default**,
-    x96 = 6×16 vendor-extended LPDDR5X)
+  - LPDDR5 / LPDDR5X discrete: **package** (x32 = 2×16, **x64 = 4×16 default**).
+    LPDDR5X x96 (6×16) exists only as an Apple-custom part and is intentionally
+    not offered.
   - LPDDR6 discrete: **package x96 = 4 × x24 channels = 8 × x12 sub-channels**
-    (JESD209-6 defines the x24 *die*; shipping PoP packages are x96). x48 is
-    speculative only.
+    (JESD209-6 defines the x24 *die*; shipping PoP packages are x96). x48 has no
+    public part number (Samsung 357/518-ball widths unpublished) → 推测.
   - SOCAMM2 / LPCAMM2: **module** (128-bit; LPDDR6 CAMM2 192-bit speculative)
   - HBM: **stack** (1024-bit HBM3/3E; 2048-bit HBM4/4E)
 
@@ -17,17 +19,26 @@ Derived (no hidden constants)::
 
     bus_bits      = n_units × unit_width_bits
     raw_GBps      = bus_bits × MT/s / 8 / 1000
-    payload_GBps  = raw_GBps × payload_factor      # LPDDR6 = 256/288 = 8/9
+    payload_GBps  = raw_GBps × payload_factor      # LPDDR6 = 256/288 = 8/9 (fixed BL24 format)
     effective     = payload_GBps × efficiency      # efficiency: assumed knob
     capacity      = n_units × GB/unit              # HBM: stacks × height × die_Gb / 8
                     (vendor "GB" = 2^30 B, JEDEC binary)
+                    × (1 − 1/16) if LPDDR6 meta mode (optional, 「假设」)
 
-Provenance tag of a combo = the **weakest** of its component tags
-(speed grade, unit width, capacity / stack-height×density, unit count):
+Provenance is two independent axes per component (speed grade, unit width,
+capacity / stack-height×density):
 
-    JEDEC > 疑似 JEDEC > 厂商量产 > 送样 > 已发布 > 推测
+    spec status    : JEDEC > 疑似 JEDEC > 超规格定制 (beyond-spec custom) > 无规范
+    product status : 量产 (shipping) > 送样 (sampling) > 已发布 (announced) > 无产品
 
-Values outside the catalog lists are accepted (DSE what-ifs) but tagged 推测.
+A combo takes the weakest value on each axis independently. Package / stack
+*counts* are SoC design choices: they carry no spec status; a count outside the
+known-product list only sets product status to 无产品.
+
+The legacy single tag (``tag``; JEDEC > 疑似 JEDEC > 厂商量产 > 送样 > 已发布 > 推测)
+is derived from the two axes for backward compatibility.
+
+Values outside the catalog lists are accepted (DSE what-ifs) but tagged 无规范 · 无产品.
 """
 
 from __future__ import annotations
@@ -39,6 +50,7 @@ from typing import Any
 
 GIB = 2**30
 
+# --- legacy single-axis tag (derived) ---------------------------------------
 TAG_ORDER: tuple[str, ...] = (
     "jedec",
     "jedec_likely",
@@ -64,11 +76,37 @@ TAG_EN: dict[str, str] = {
     "speculative": "speculative",
 }
 
-LPDDR6_PAYLOAD = 256.0 / 288.0  # BL24: 288 bit = 256 data + 16 meta + 16 DBI/ECC
+# --- dual axes (0.40.1, memory audit M-2) -----------------------------------
+SPEC_ORDER: tuple[str, ...] = ("jedec", "jedec_likely", "custom", "unspecified")
+SPEC_ZH: dict[str, str] = {
+    "jedec": "JEDEC", "jedec_likely": "疑似 JEDEC", "custom": "超规格定制", "unspecified": "无规范",
+}
+SPEC_EN: dict[str, str] = {
+    "jedec": "JEDEC", "jedec_likely": "JEDEC?", "custom": "beyond-spec custom", "unspecified": "unspecified",
+}
+SPEC_HINT: dict[str, str] = {
+    "jedec": "JEDEC 文档或讲稿明文定义",
+    "jedec_likely": "间接证据指向 JEDEC 定义（规范原文未读或付费）",
+    "custom": "厂商超出 JEDEC 定义（如 HBM3E/HBM4 高速档）",
+    "unspecified": "没有找到规范依据（含规范在研）",
+}
+PRODUCT_ORDER: tuple[str, ...] = ("shipping", "sampling", "announced", "none")
+PRODUCT_ZH: dict[str, str] = {"shipping": "量产", "sampling": "送样", "announced": "已发布", "none": "无产品"}
+PRODUCT_EN: dict[str, str] = {
+    "shipping": "shipping", "sampling": "sampling", "announced": "announced", "none": "no product",
+}
+
+LPDDR6_PAYLOAD = 256.0 / 288.0  # BL24: 288 bit = 256 data + 16 meta + 16 DBI/Link-ECC (fixed format)
+# LPDDR6 System / carve-out meta mode (optional, default off). Capacity reserve
+# not published → 「假设」: metadata persisted at the wire ratio 16 bit / 256 bit.
+LPDDR6_META_CARVEOUT = 16.0 / 256.0
 
 MEM_TYPES: tuple[str, ...] = (
     "LPDDR5", "LPDDR5X", "LPDDR6", "HBM3", "HBM3E", "HBM4", "HBM4E",
 )
+# Brand / marketing aliases → (type, default rate). LPDDR5T = SK hynix 2023 name
+# for 9.6 Gbps LPDDR5X (later merged into LPDDR5X-9600).
+TYPE_ALIASES: dict[str, tuple[str, int]] = {"LPDDR5T": ("LPDDR5X", 9600)}
 FORM_ZH: dict[str, str] = {
     "discrete": "板载封装",
     "SOCAMM2": "SOCAMM2 模组",
@@ -79,7 +117,7 @@ UNIT_ZH: dict[str, str] = {"package": "颗", "module": "条", "stack": "堆"}
 
 
 def weakest(*tags: Any) -> str:
-    """Weakest provenance tag among ``tags`` (unknown → speculative).
+    """Weakest legacy provenance tag among ``tags`` (unknown → speculative).
 
     Accepts ``weakest("jedec", "vendor_shipping")`` or one iterable of tags.
     """
@@ -92,13 +130,61 @@ def weakest(*tags: Any) -> str:
     return TAG_ORDER[worst]
 
 
-# ---------------------------------------------------------------------------
-# Catalog data (compact copy of docs/research/memory_specs_2026-10.json §6)
-# ---------------------------------------------------------------------------
-# Each LPDDR form: unit, widths{bits: tag}, rates{MTps: tag}, counts, caps{width:{GB:tag}}
-# Defaults chosen per research §6.2 (bold values).
+def _weakest_on(order: tuple[str, ...], vals: Any) -> str:
+    worst = 0
+    for v in vals:
+        worst = max(worst, order.index(v) if v in order else len(order) - 1)
+    return order[worst]
 
-_LP5_CAPS = {3: "vendor_shipping", 6: "vendor_shipping", 8: "vendor_shipping", 12: "vendor_shipping"}
+
+def weakest_spec(*vals: str) -> str:
+    return _weakest_on(SPEC_ORDER, vals)
+
+
+def weakest_product(*vals: str) -> str:
+    return _weakest_on(PRODUCT_ORDER, vals)
+
+
+def legacy_tag(spec: str, product: str) -> str:
+    """Two axes → legacy single tag (compat): no product ⇒ JEDEC-allowed or 推测."""
+    if product == "none":
+        return "jedec" if spec == "jedec" else "speculative"
+    if product == "shipping":
+        return {"jedec": "jedec", "jedec_likely": "jedec_likely"}.get(spec, "vendor_shipping")
+    return f"vendor_{product}"
+
+
+def status_zh(spec: str, product: str) -> str:
+    """Concise dual label, e.g. 「JEDEC · 量产」, 「JEDEC 允许 · 无产品」."""
+    s = "JEDEC 允许" if (spec == "jedec" and product == "none") else SPEC_ZH.get(spec, spec)
+    return f"{s} · {PRODUCT_ZH.get(product, product)}"
+
+
+def status_en(spec: str, product: str) -> str:
+    return f"{SPEC_EN.get(spec, spec)} / {PRODUCT_EN.get(product, product)}"
+
+
+# ---------------------------------------------------------------------------
+# Catalog data (compact copy of docs/research/memory_specs_2026-10.json §6,
+# corrected per the 2026-10-08 audit). Every entry = (spec status, product status).
+# ---------------------------------------------------------------------------
+_JS = ("jedec", "shipping")
+_JM = ("jedec", "sampling")
+_JA = ("jedec", "announced")
+_JN = ("jedec", "none")            # JEDEC-allowed, no product
+_LS = ("jedec_likely", "shipping")
+_LM = ("jedec_likely", "sampling")
+_LA = ("jedec_likely", "announced")
+_LN = ("jedec_likely", "none")
+_CS = ("custom", "shipping")
+_CA = ("custom", "announced")
+_UM = ("unspecified", "sampling")
+_UA = ("unspecified", "announced")
+_UN = ("unspecified", "none")      # = legacy 推测
+
+# Each LPDDR form: unit, widths{bits: st}, rates{MTps: st}, counts, caps{width:{GB: st}}
+# st = (spec, product). Package widths: JESD209 defines dies + package ballouts
+# (paid chapters, unread) → 疑似 JEDEC. Capacities within JEDEC die densities → JEDEC.
 
 LPDDR_CATALOG: dict[str, dict[str, Any]] = {
     "LPDDR5": {
@@ -108,62 +194,61 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
         "forms": {
             "discrete": {
                 "unit": "package",
-                "widths": {32: "vendor_shipping", 64: "vendor_shipping"},
+                "widths": {32: _LS, 64: _LS},
                 "default_width": 64,
-                "rates": {5500: "jedec", 6400: "jedec"},
+                "rates": {5500: _JS, 6400: _JS},
                 "default_rate": 6400,
                 "counts": (1, 2, 4, 6, 8),
                 "default_count": 4,
-                "caps": {32: dict(_LP5_CAPS), 64: dict(_LP5_CAPS)},
+                # x32 12 GB not verified (audit L5-3) → JEDEC 允许 · 无产品
+                "caps": {32: {3: _JS, 6: _JS, 8: _JS, 12: _JN}, 64: {3: _JS, 6: _JS, 8: _JS, 12: _JS}},
                 "default_cap": {32: 6, 64: 12},
             },
         },
     },
     "LPDDR5X": {
-        "jedec_doc": "JESD209-5B/5C (≤8533 明文；9600/10667 疑似)",
+        "jedec_doc": "JESD209-5C (≤8533 明文；9600/10667 疑似)；LPDDR5T = LPDDR5X-9600",
         "payload_factor": 1.0,
         "clock": "lp5",
         "forms": {
             "discrete": {
                 "unit": "package",
-                # x96 (6×16) = Micron "6-channel" (secondary report) → 已发布
-                "widths": {32: "vendor_shipping", 64: "vendor_shipping", 96: "vendor_announced"},
+                # x96 (6×16): Apple-custom only (Micron "6-channel"), intentionally not offered.
+                "widths": {32: _LS, 64: _LS},
                 "default_width": 64,
-                "rates": {7500: "jedec_likely", 8533: "jedec", 9600: "jedec_likely", 10667: "jedec_likely"},
+                "rates": {7500: _LS, 8533: _JS, 9600: _LS, 10667: _LS},
                 "default_rate": 8533,
                 "counts": (1, 2, 3, 4, 6, 8, 10, 12, 16),
                 "default_count": 8,
                 "caps": {
-                    32: {8: "vendor_shipping", 16: "vendor_shipping", 32: "vendor_shipping", 64: "vendor_shipping"},
-                    64: {4: "vendor_shipping", 6: "vendor_shipping", 8: "vendor_shipping",
-                         12: "vendor_shipping", 16: "vendor_shipping", 24: "vendor_shipping",
-                         32: "vendor_announced"},
-                    96: {12: "vendor_announced", 16: "vendor_announced", 24: "vendor_announced"},
+                    # 64 GB x32 = 256 GB SOCAMM2 component, sampling since 2026-03 (audit L5X-9)
+                    32: {8: _JS, 16: _JS, 32: _JS, 64: _JM},
+                    64: {4: _JS, 6: _JS, 8: _JS, 12: _JS, 16: _JS, 24: _JS, 32: _JA},
                 },
-                "default_cap": {32: 16, 64: 16, 96: 16},
+                "default_cap": {32: 16, 64: 16},
             },
             "SOCAMM2": {
                 "unit": "module",
-                "widths": {128: "jedec"},  # JESD328 (2026-06)
+                "widths": {128: _JS},  # JESD328 (2026-06)
                 "default_width": 128,
-                "rates": {8533: "vendor_shipping", 9600: "vendor_shipping"},
+                "rates": {8533: _JS, 9600: _LS},
                 "default_rate": 9600,
                 "counts": (1, 2, 4, 6, 8),
                 "default_count": 8,
-                "caps": {128: {48: "vendor_shipping", 64: "vendor_shipping", 96: "vendor_shipping",
-                               128: "vendor_shipping", 192: "vendor_shipping", 256: "vendor_shipping"}},
+                # 256 GB: Micron sampling 2026-03; mass production unconfirmed (audit S-4)
+                "caps": {128: {48: _JS, 64: _JS, 96: _JS, 128: _JS, 192: _JS, 256: _JM}},
                 "default_cap": {128: 192},
             },
             "LPCAMM2": {
                 "unit": "module",
-                "widths": {128: "jedec"},  # JESD318 CAMM2
+                "widths": {128: _JS},  # JESD318 CAMM2
                 "default_width": 128,
-                "rates": {7500: "vendor_shipping", 8533: "vendor_shipping", 9600: "speculative"},
+                # 9600: Micron product page + Samsung 96 GB 9600 module (audit C-3)
+                "rates": {7500: _LS, 8533: _JS, 9600: _LS},
                 "default_rate": 8533,
                 "counts": (1, 2),
                 "default_count": 2,
-                "caps": {128: {16: "vendor_shipping", 32: "vendor_shipping", 64: "vendor_shipping",
-                               96: "vendor_announced"}},
+                "caps": {128: {16: _JS, 32: _JS, 64: _JS, 96: _JA}},
                 "default_cap": {128: 32},
             },
         },
@@ -175,29 +260,34 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
         "forms": {
             "discrete": {
                 "unit": "package",
-                "widths": {96: "vendor_shipping", 48: "speculative"},
+                # x96: CXMT 1295-ball PoP, Samsung PDBEREAGY0B1, Synopsys "up to 96 bits per package".
+                # x48: no public PN; Samsung lists 357/518-FBGA with width unpublished →
+                # 推测, upgradable once a datasheet / PN is supplied.
+                "widths": {96: _LS, 48: _UN},
                 "default_width": 96,
-                # 14400 = JEDEC 最高定义档，但仅论文硅 / 产品页上限 → 已发布（未量产）
-                "rates": {10667: "jedec", 12800: "jedec_likely", 14400: "vendor_announced"},
+                # 10667 / 11733 / 12800 / 14400 = WCK 5333/5866/6400/7200 MHz (JEDEC Takahashi).
+                # 12800: CXMT mass production. 14400: JEDEC highest grade, no product.
+                "rates": {10667: _JS, 11733: _LN, 12800: _JS, 14400: _JA},
                 "default_rate": 10667,
                 "counts": (1, 2, 3, 4, 6, 8),
                 "default_count": 4,
                 "caps": {
-                    96: {8: "speculative", 12: "vendor_announced", 16: "vendor_shipping",
-                         24: "speculative", 32: "speculative"},
-                    48: {4: "speculative", 8: "speculative"},
+                    # 8 / 12 GB: inside Samsung's 16–128 Gb range, no SKU → unified (audit P-9)
+                    # 24 / 32 GB: need 24/32 Gb dies or the next-rev x6 sub-channel mode
+                    96: {8: _LN, 12: _LN, 16: _JS, 24: _UN, 32: _UN},
+                    48: {4: _UN, 8: _UN},
                 },
                 "default_cap": {96: 16, 48: 8},
             },
-            "LPCAMM2": {  # LPDDR6 CAMM2: JEDEC in development → speculative
+            "LPCAMM2": {  # LPDDR6 CAMM2: JEDEC in development (2026-04 focus = LPDDR6 SOCAMM2)
                 "unit": "module",
-                "widths": {192: "speculative"},
+                "widths": {192: _UN},
                 "default_width": 192,
-                "rates": {10667: "speculative", 12800: "speculative", 14400: "speculative"},
+                "rates": {10667: _UN, 12800: _UN, 14400: _UN},
                 "default_rate": 10667,
                 "counts": (1, 2),
                 "default_count": 1,
-                "caps": {192: {32: "speculative", 64: "speculative", 128: "speculative"}},
+                "caps": {192: {32: _UN, 64: _UN, 128: _UN}},
                 "default_cap": {192: 64},
             },
         },
@@ -205,62 +295,64 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
 }
 
 HBM_STACK_COUNTS: tuple[int, ...] = (1, 2, 4, 5, 6, 8, 12, 16)
+HBM_MAX_KNOWN_STACKS = 12  # MI455X
 
 HBM_CATALOG: dict[str, dict[str, Any]] = {
     "HBM3": {
         "jedec_doc": "JESD238 / JESD238B.01",
         "stack_width": 1024,
-        "rates": {6400: "jedec"},
+        "width_status": _JS,
+        "rates": {6400: _JS},
         "default_rate": 6400,
         "heights": (8, 12),
         "default_height": 12,
         "densities": (16, 24),
         "default_density": 16,
-        # (height, die_Gb) → tag; other in-range combos → JEDEC-allowed
-        "cap_tags": {(8, 16): "vendor_shipping", (12, 16): "vendor_shipping"},
-        "cap_default_tag": "jedec",
+        # (height, die_Gb) → status; other in-range combos → cap_default
+        "cap_tags": {(8, 16): _JS, (12, 16): _JS},
+        "cap_default": _JN,
     },
     "HBM3E": {
         "jedec_doc": "无独立 JEDEC 文档（HBM3 厂商扩展）",
         "stack_width": 1024,
-        "rates": {8000: "vendor_shipping", 9200: "vendor_shipping", 9600: "vendor_shipping",
-                  9800: "vendor_announced"},
+        "width_status": _JS,
+        # speeds beyond JESD238's 6.4 Gb/s → 超规格定制; 8000 = system-level run rate
+        "rates": {8000: _CS, 9200: _CS, 9600: _CS, 9800: _CA},
         "default_rate": 9200,
         "heights": (8, 12, 16),
         "default_height": 12,
         "densities": (24,),
         "default_density": 24,
-        "cap_tags": {(8, 24): "vendor_shipping", (12, 24): "vendor_shipping",
-                     (16, 24): "vendor_announced"},
-        "cap_default_tag": "speculative",
+        "cap_tags": {(8, 24): _JS, (12, 24): _JS, (16, 24): _JA},
+        "cap_default": _UN,
     },
     "HBM4": {
-        "jedec_doc": "JESD270-4 (2025-04)",
+        "jedec_doc": "JESD270-4 (2025-04) / 270-4A",
         "stack_width": 2048,
-        "rates": {8000: "jedec", 10000: "vendor_shipping", 11000: "vendor_shipping",
-                  11700: "vendor_shipping", 13000: "vendor_announced"},
+        "width_status": _JS,
+        "rates": {8000: _JS, 10000: _CS, 11000: _CS, 11700: _CS, 13000: _CA},
         "default_rate": 8000,
         "heights": (8, 12, 16),
         "default_height": 12,
         "densities": (24, 32),
         "default_density": 24,
-        "cap_tags": {(8, 24): "jedec", (8, 32): "jedec", (12, 24): "vendor_shipping",
-                     (12, 32): "vendor_sampling", (16, 24): "vendor_sampling",
-                     (16, 32): "jedec"},
-        "cap_default_tag": "jedec",
+        # 48 GB samples are 16-high × 24 Gb; 12-high × 32 Gb is JEDEC-allowed only (audit H4-5)
+        "cap_tags": {(8, 24): _JN, (8, 32): _JN, (12, 24): _JS,
+                     (12, 32): _JN, (16, 24): _JM, (16, 32): _JN},
+        "cap_default": _JN,
     },
     "HBM4E": {
         "jedec_doc": "无 JEDEC 标准（厂商定义）",
         "stack_width": 2048,
-        "rates": {12800: "speculative", 14000: "vendor_sampling", 16000: "vendor_sampling"},
+        "width_status": _UM,
+        "rates": {12800: _UN, 14000: _UM, 16000: _UM},
         "default_rate": 14000,
         "heights": (8, 12, 16),
         "default_height": 12,
         "densities": (32,),
         "default_density": 32,
-        "cap_tags": {(8, 32): "vendor_announced", (12, 32): "vendor_sampling",
-                     (16, 32): "vendor_announced"},
-        "cap_default_tag": "speculative",
+        "cap_tags": {(8, 32): _UA, (12, 32): _UM, (16, 32): _UA},
+        "cap_default": _UN,
     },
 }
 HBM_DEFAULT_STACKS = 8
@@ -276,10 +368,11 @@ def mem_kind_of(mem_type: str) -> str:
 
 def normalize_type(mem_type: str) -> str:
     t = str(mem_type).strip().upper().replace("-", "").replace("_", "")
+    if t in TYPE_ALIASES:
+        return TYPE_ALIASES[t][0]
     if t not in MEM_TYPES:
-        raise ValueError(f"unknown mem_type {mem_type!r}; choose from {MEM_TYPES}")
+        raise ValueError(f"unknown mem_type {mem_type!r}; choose from {MEM_TYPES} (alias: LPDDR5T)")
     return t
-
 
 def normalize_form(mem_type: str, form: str | None) -> str:
     if mem_kind_of(mem_type) == "HBM":
@@ -330,6 +423,7 @@ class MemSpec:
     hbm_die_Gb: int = 0
     efficiency: float = 0.70
     payload_factor: float = 1.0
+    meta_mode: bool = False  # LPDDR6 System / carve-out meta mode (optional, default off)
     legacy_id: str = ""
     legacy_note: str = ""
 
@@ -361,9 +455,18 @@ class MemSpec:
         return self.payload_GBps * self.efficiency
 
     @property
-    def capacity_GB(self) -> float:
+    def nominal_capacity_GB(self) -> float:
         """Nominal vendor GB (= GiB, JEDEC binary)."""
         return float(self.n_units) * float(self.cap_per_unit_GB)
+
+    @property
+    def meta_reserve_frac(self) -> float:
+        return LPDDR6_META_CARVEOUT if (self.meta_mode and self.mem_type == "LPDDR6") else 0.0
+
+    @property
+    def capacity_GB(self) -> float:
+        """Usable GB: nominal minus the LPDDR6 meta carve-out when meta mode is on (「假设」)."""
+        return self.nominal_capacity_GB * (1.0 - self.meta_reserve_frac)
 
     @property
     def capacity_bytes(self) -> int:
@@ -372,49 +475,67 @@ class MemSpec:
     @property
     def id(self) -> str:
         t = self.mem_type.lower()
-        cap = f"{self.cap_per_unit_GB:g}g"
+        cap = f"{self.cap_per_unit_GB:g}g" + ("_meta" if self.meta_mode else "")
         if self.kind == "HBM":
             return f"{t}_{self.n_units}s_{self.hbm_height}h{self.hbm_die_Gb}g_{self.rate_MTps}"
         if self.form == "discrete":
             return f"{t}_{self.n_units}x{self.unit_width_bits}_{self.rate_MTps}_{cap}"
         return f"{t}_{self.form.lower()}_{self.n_units}x{self.unit_width_bits}_{self.rate_MTps}_{cap}"
 
-    # --- provenance --------------------------------------------------------
-    def component_tags(self) -> dict[str, str]:
+    # --- provenance (dual axes) ---------------------------------------------
+    def component_status(self) -> dict[str, dict[str, str]]:
+        """Per component {spec, product}. ``count`` is an SoC choice: spec = soc_choice."""
         t = self.mem_type
+        un = _UN
         if self.kind == "HBM":
             cat = HBM_CATALOG[t]
-            rate_tag = cat["rates"].get(self.rate_MTps, "speculative")
-            in_range = (
-                self.hbm_height in cat["heights"] and self.hbm_die_Gb in cat["densities"]
-            )
-            cap_tag = (
-                cat["cap_tags"].get((self.hbm_height, self.hbm_die_Gb), cat["cap_default_tag"])
-                if in_range
-                else "speculative"
-            )
-            width_tag = "jedec" if self.unit_width_bits == cat["stack_width"] else "speculative"
-            if self.n_units in HBM_STACK_COUNTS and self.n_units <= 12:
-                count_tag = "jedec"  # SoC choice, not a memory-spec claim
+            rate = cat["rates"].get(self.rate_MTps, un)
+            in_range = self.hbm_height in cat["heights"] and self.hbm_die_Gb in cat["densities"]
+            cap = cat["cap_tags"].get((self.hbm_height, self.hbm_die_Gb), cat["cap_default"]) if in_range else un
+            width = cat["width_status"] if self.unit_width_bits == cat["stack_width"] else un
+            known = self.n_units in HBM_STACK_COUNTS and self.n_units <= HBM_MAX_KNOWN_STACKS
+        else:
+            form = LPDDR_CATALOG[t]["forms"][self.form]
+            rate = form["rates"].get(self.rate_MTps, un)
+            width = form["widths"].get(self.unit_width_bits, un)
+            caps = form["caps"].get(self.unit_width_bits, {})
+            ck = int(self.cap_per_unit_GB) if float(self.cap_per_unit_GB).is_integer() else self.cap_per_unit_GB
+            cap = caps.get(ck, un)
+            known = self.n_units in form["counts"]
+        out = {k: {"spec": v[0], "product": v[1]} for k, v in (("rate", rate), ("width", width), ("capacity", cap))}
+        out["count"] = {"spec": "soc_choice", "product": "shipping" if known else "none"}
+        return out
+
+    @property
+    def spec_status(self) -> str:
+        return weakest_spec(*(v["spec"] for k, v in self.component_status().items() if k != "count"))
+
+    @property
+    def product_status(self) -> str:
+        return weakest_product(*(v["product"] for v in self.component_status().values()))
+
+    @property
+    def status_zh(self) -> str:
+        return status_zh(self.spec_status, self.product_status)
+
+    def component_tags(self) -> dict[str, str]:
+        """Legacy single-axis tag per component (derived from the dual axes)."""
+        out = {}
+        for k, v in self.component_status().items():
+            if k == "count":
+                out[k] = "jedec" if v["product"] != "none" else "speculative"  # neutral unless unknown
             else:
-                count_tag = "speculative"
-            return {"rate": rate_tag, "width": width_tag, "capacity": cap_tag, "count": count_tag}
-        form = LPDDR_CATALOG[t]["forms"][self.form]
-        rate_tag = form["rates"].get(self.rate_MTps, "speculative")
-        width_tag = form["widths"].get(self.unit_width_bits, "speculative")
-        caps = form["caps"].get(self.unit_width_bits, {})
-        cap_key = int(self.cap_per_unit_GB) if float(self.cap_per_unit_GB).is_integer() else self.cap_per_unit_GB
-        cap_tag = caps.get(cap_key, "speculative")
-        count_tag = "jedec" if self.n_units in form["counts"] else "speculative"
-        return {"rate": rate_tag, "width": width_tag, "capacity": cap_tag, "count": count_tag}
+                out[k] = legacy_tag(v["spec"], v["product"])
+        return out
 
     @property
     def tag(self) -> str:
-        return weakest(*self.component_tags().values())
+        return legacy_tag(self.spec_status, self.product_status)
 
     @property
     def tag_zh(self) -> str:
-        return TAG_ZH[self.tag]
+        """Concise dual label shown in the UI, e.g. 「疑似 JEDEC · 量产」."""
+        return self.status_zh
 
     def warnings(self) -> list[str]:
         w: list[str] = []
@@ -425,9 +546,15 @@ class MemSpec:
             )
         if self.kind == "HBM" and self.n_units > 12:
             w.append(f"{self.n_units} 堆 HBM 超出已知产品（MI455X = 12 堆）— 推测")
-        for comp, tg in self.component_tags().items():
-            if tg == "speculative":
-                w.append(f"{_COMP_ZH[comp]}为推测值")
+        for comp, st in self.component_status().items():
+            if comp == "count":
+                if st["product"] == "none" and self.kind != "HBM":
+                    w.append(f"{self.n_units} {UNIT_ZH[self.unit_kind]}超出已知产品配置")
+            elif st["product"] == "none" and st["spec"] != "jedec":
+                w.append(f"{_COMP_ZH[comp]}为推测值（{status_zh(st['spec'], st['product'])}）")
+        if self.meta_reserve_frac:
+            w.append(f"LPDDR6 meta 模式：容量预留 {self.meta_reserve_frac:.2%}（假设，规范未公开）；"
+                     f"Meta RD/WR 吞吐损失未建模")
         if self.legacy_note:
             w.append(self.legacy_note)
         return w
@@ -444,6 +571,7 @@ class MemSpec:
         return (
             f"{self.mem_type} {geo} @{self.rate_MTps} · "
             f"{_fmt_bw(self.payload_GBps)} 可用 · {self.capacity_GB:g} GB · {self.tag_zh}"
+            + (" · meta" if self.meta_mode else "")
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -457,10 +585,16 @@ class MemSpec:
             payload_GBps=self.payload_GBps,
             effective_GBps=self.effective_GBps,
             capacity_GB=self.capacity_GB,
+            nominal_capacity_GB=self.nominal_capacity_GB,
             capacity_bytes=self.capacity_bytes,
             tag=self.tag,
             tag_zh=self.tag_zh,
+            spec_status=self.spec_status,
+            product_status=self.product_status,
+            spec_zh=SPEC_ZH[self.spec_status],
+            product_zh=PRODUCT_ZH[self.product_status],
             component_tags=self.component_tags(),
+            component_status=self.component_status(),
             clocks=clocks_MHz(self.mem_type, self.rate_MTps),
             warnings=self.warnings(),
             summary=self.short_label(),
@@ -473,7 +607,8 @@ class MemSpec:
             f"(bus {self.bus_bits}b) @{self.rate_MTps} MT/s → raw {self.raw_GBps:.1f} GB/s, "
             f"payload×{self.payload_factor:.4f} = {self.payload_GBps:.1f}, "
             f"×eff {self.efficiency:g} = {self.effective_GBps:.1f} GB/s; "
-            f"cap {self.capacity_GB:g} GB; tag={TAG_EN[self.tag]}"
+            f"cap {self.capacity_GB:g} GB; spec={SPEC_EN[self.spec_status]}, "
+            f"product={PRODUCT_EN[self.product_status]}"
         )
 
 
@@ -509,11 +644,23 @@ def make_spec(
     die_Gb: int | None = None,
     efficiency: float | None = None,
     payload_factor: float | None = None,
+    meta_mode: bool = False,
     legacy_id: str = "",
     legacy_note: str = "",
 ) -> MemSpec:
-    """Build a MemSpec; missing fields ← per-type/form catalog defaults."""
+    """Build a MemSpec; missing fields ← per-type/form catalog defaults.
+
+    ``LPDDR5T`` is accepted as an alias of LPDDR5X (default rate 9600).
+    ``meta_mode`` (LPDDR6 only) reserves the meta carve-out from capacity.
+    """
+    raw_t = str(mem_type).strip().upper().replace("-", "").replace("_", "")
     t = normalize_type(mem_type)
+    if raw_t in TYPE_ALIASES:
+        if rate is None:
+            rate = TYPE_ALIASES[raw_t][1]
+        legacy_note = legacy_note or f"{raw_t} = SK hynix 对 LPDDR5X-9600 的品牌名，按 LPDDR5X 建模"
+    if meta_mode and t != "LPDDR6":
+        raise ValueError("meta_mode applies to LPDDR6 only")
     eff = 0.70 if efficiency is None else float(efficiency)
     if not (0.0 < eff <= 1.0):
         raise ValueError(f"efficiency must be in (0, 1], got {eff}")
@@ -538,6 +685,16 @@ def make_spec(
     w = int(width_bits) if width_bits is not None else f["default_width"]
     rr = _snap_rate(rate, tuple(f["rates"])) if rate is not None else f["default_rate"]
     n = int(count) if count is not None else f["default_count"]
+    if t == "LPDDR5X" and fm == "discrete" and w == 96:
+        # LPDDR5X x96 = Apple-custom only, not offered → same bus width in x64 packages
+        n96 = n
+        n = _nearest_count(n96 * 96 / 64, f["counts"])
+        w = 64
+        if cap_GB is not None and int(float(cap_GB)) not in f["caps"][64]:
+            cap_GB = None
+        legacy_note = legacy_note or (
+            f"LPDDR5X x96 仅为 Apple 定制件，不提供；{n96}×x96 改为 {n}×x64（{n * 64}-bit）"
+        )
     if cap_GB is not None:
         c = float(cap_GB)
     else:
@@ -549,7 +706,7 @@ def make_spec(
         raise ValueError("payload_factor must be in (0, 1]")
     return MemSpec(
         mem_type=t, form=fm, unit_width_bits=w, rate_MTps=rr, n_units=n,
-        cap_per_unit_GB=c, efficiency=eff, payload_factor=pf,
+        cap_per_unit_GB=c, efficiency=eff, payload_factor=pf, meta_mode=bool(meta_mode),
         legacy_id=legacy_id, legacy_note=legacy_note,
     )
 
@@ -564,7 +721,7 @@ def default_spec(mem_type: str, form: str | None = None) -> MemSpec:
 
 _RE_HBM = re.compile(r"^(hbm3|hbm3e|hbm4|hbm4e)_(\d+)s_(\d+)h(\d+)g_(\d+)$")
 _RE_LP = re.compile(
-    r"^(lpddr5|lpddr5x|lpddr6)_(?:(socamm2|lpcamm2)_)?(\d+)x(\d+)_(\d+)_([\d.]+)g$"
+    r"^(lpddr5|lpddr5x|lpddr5t|lpddr6)_(?:(socamm2|lpcamm2)_)?(\d+)x(\d+)_(\d+)_([\d.]+)g(_meta)?$"
 )
 _RE_OLD_LP5X = re.compile(r"^lpddr_(\d+)x64_(\d+)$")
 _RE_OLD_LP6 = re.compile(r"^lpddr6_(\d+)x24_(\d+)$")
@@ -622,9 +779,9 @@ def parse_mem_id(mem_id: str, *, efficiency: float | None = None) -> MemSpec:
                          efficiency=efficiency)
     m = _RE_LP.match(key)
     if m:
-        t, form, n, w, r, c = m.groups()
+        t, form, n, w, r, c, meta = m.groups()
         return make_spec(t.upper(), form=form or "discrete", count=int(n), width_bits=int(w),
-                         rate=int(r), cap_GB=float(c), efficiency=efficiency)
+                         rate=int(r), cap_GB=float(c), efficiency=efficiency, meta_mode=bool(meta))
     m = _RE_OLD_LP5X.match(key)
     if m:
         n, r = int(m.group(1)), int(m.group(2))
@@ -678,17 +835,16 @@ def catalog_dict() -> dict[str, Any]:
                 "id": t, "kind": "HBM", "jedec_doc": c["jedec_doc"], "payload_factor": 1.0,
                 "forms": [{
                     "id": "stack", "label": FORM_ZH["stack"], "unit": "stack",
-                    "widths": [{"bits": c["stack_width"], "tag": "jedec"}],
+                    "widths": [_opt({"bits": c["stack_width"]}, c["width_status"])],
                     "default_width": c["stack_width"],
-                    "rates": [{"MTps": r, "tag": tg, "clocks": clocks_MHz(t, r)} for r, tg in c["rates"].items()],
+                    "rates": [_opt({"MTps": r, "clocks": clocks_MHz(t, r)}, st) for r, st in c["rates"].items()],
                     "default_rate": c["default_rate"],
-                    "counts": [{"n": n, "tag": "jedec" if n <= 12 else "speculative"} for n in HBM_STACK_COUNTS],
+                    "counts": [_count_opt(n, n <= HBM_MAX_KNOWN_STACKS) for n in HBM_STACK_COUNTS],
                     "default_count": HBM_DEFAULT_STACKS,
                     "heights": list(c["heights"]), "default_height": c["default_height"],
                     "densities": list(c["densities"]), "default_density": c["default_density"],
                     "cap_tags": [
-                        {"height": h, "die_Gb": d, "GB": h * d / 8,
-                         "tag": c["cap_tags"].get((h, d), c["cap_default_tag"])}
+                        _opt({"height": h, "die_Gb": d, "GB": h * d / 8}, c["cap_tags"].get((h, d), c["cap_default"]))
                         for h in c["heights"] for d in c["densities"]
                     ],
                 }],
@@ -700,30 +856,56 @@ def catalog_dict() -> dict[str, Any]:
         for fid, f in c["forms"].items():
             forms.append({
                 "id": fid, "label": FORM_ZH[fid], "unit": f["unit"],
-                "widths": [{"bits": w, "tag": tg} for w, tg in f["widths"].items()],
+                "widths": [_opt({"bits": w}, st) for w, st in f["widths"].items()],
                 "default_width": f["default_width"],
-                "rates": [{"MTps": r, "tag": tg, "clocks": clocks_MHz(t, r)} for r, tg in f["rates"].items()],
+                "rates": [_opt({"MTps": r, "clocks": clocks_MHz(t, r)}, st) for r, st in f["rates"].items()],
                 "default_rate": f["default_rate"],
-                "counts": [{"n": n, "tag": "jedec"} for n in f["counts"]],
+                "counts": [_count_opt(n, True) for n in f["counts"]],
                 "default_count": f["default_count"],
-                "caps": {str(w): [{"GB": g, "tag": tg} for g, tg in caps.items()] for w, caps in f["caps"].items()},
+                "caps": {str(w): [_opt({"GB": g}, st) for g, st in caps.items()] for w, caps in f["caps"].items()},
                 "default_cap": {str(w): g for w, g in f["default_cap"].items()},
             })
-        types.append({
+        entry = {
             "id": t, "kind": "LPDDR", "jedec_doc": c["jedec_doc"],
             "payload_factor": c["payload_factor"], "forms": forms, "default_form": "discrete",
-        })
+        }
+        if t == "LPDDR6":
+            entry["meta_mode"] = {
+                "default": False, "carveout_frac": LPDDR6_META_CARVEOUT,
+                "note": "System / carve-out meta 模式：从阵列划出 meta 区持久保存每 32B 的 16 bit metadata；"
+                        "容量预留 1/16（假设，规范与厂商未公开），Meta RD/WR 吞吐损失未建模。"
+                        "8/9 payload 是 BL24 格式固定开销，与此开关无关。",
+            }
+        types.append(entry)
     return {
         "types": types,
         "tag_order": list(TAG_ORDER),
         "tag_zh": TAG_ZH,
+        "spec_order": list(SPEC_ORDER), "spec_zh": SPEC_ZH, "spec_en": SPEC_EN, "spec_hint": SPEC_HINT,
+        "product_order": list(PRODUCT_ORDER), "product_zh": PRODUCT_ZH, "product_en": PRODUCT_EN,
+        "aliases": {k: {"type": v[0], "rate": v[1]} for k, v in TYPE_ALIASES.items()},
+        "not_offered": ["LPDDR5X x96（6×16）：仅 Apple 定制件，其他客户无法采购，故不提供"],
+        "status_note": "两个标签：规范状态（JEDEC / 疑似 JEDEC / 超规格定制 / 无规范）× 产品状态"
+                       "（量产 / 送样 / 已发布 / 无产品）；组合各轴分别取最弱项。颗数 / 堆数是 SoC 设计选择，不打规范标签。",
         "beachfront_warn_bits": LPDDR_BEACHFRONT_WARN_BITS,
         "formula": (
             "bus = 数量×位宽；raw = bus×MT/s/8000 GB/s；可用 = raw×payload（LPDDR6 = 8/9）；"
             "有效 = 可用×efficiency（假设）；容量 = 数量×单颗（HBM：堆数×层数×die Gb/8），GB = 2^30 B"
         ),
-        "source": "docs/research/memory_specs_2026-10.md §6 (2026-10-08)",
+        "source": "docs/research/memory_specs_2026-10.md §6 + MEMORY_AUDIT (2026-10-08)",
     }
+
+
+def _opt(d: dict[str, Any], st: tuple[str, str]) -> dict[str, Any]:
+    sp, pr = st
+    d.update(spec=sp, product=pr, tag=legacy_tag(sp, pr), status_zh=status_zh(sp, pr))
+    return d
+
+
+def _count_opt(n: int, known: bool) -> dict[str, Any]:
+    pr = "shipping" if known else "none"
+    return {"n": n, "spec": "soc_choice", "product": pr, "tag": "jedec" if known else "speculative",
+            "status_zh": "SoC 设计选择" if known else "超出已知产品"}
 
 
 # Rates per type (for sweeps tied to generation — fixes "HBM3 @10.0" combos)

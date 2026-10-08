@@ -42,13 +42,34 @@ def best_prefill(scn: Scenario, b_cap: int = 64) -> tuple[int, Result | None]:
     return best_b, best_r
 
 
+_PREFILL_MEMO: dict = {}
+
+
+def _prefill(scn: Scenario) -> tuple[int, Result, bool]:
+    """(prefill batch, result, ttft_ok) used by goodput; memoised per scenario (batch-independent)."""
+    key = scn.replace("serving.batch", 1).replace("serving.phase", "decode")
+    hit = _PREFILL_MEMO.get(key)
+    if hit is None:
+        pb, pr = best_prefill(scn)
+        ok = pr is not None
+        if pr is None:
+            pb, pr = 1, evaluate(scn.replace("serving.phase", "prefill").replace("serving.batch", 1))
+        if len(_PREFILL_MEMO) > 4096:
+            _PREFILL_MEMO.clear()
+        hit = _PREFILL_MEMO[key] = (pb, pr, ok)
+    return hit
+
+
+def prefill_rate(scn: Scenario) -> tuple[float, bool]:
+    """Prompt tokens/s per replica entering the goodput formula (0 if prefill does not fit)."""
+    pb, pr, ok = _prefill(scn)
+    return (pr.throughput if pr.fits else 0.0), ok
+
+
 def goodput(decode: Result) -> Goodput:
     scn = decode.scenario
-    pb, pr = best_prefill(scn)
+    pb, pr, ok = _prefill(scn)
     rd = decode.throughput
-    ok = pr is not None
-    if pr is None:
-        pb, pr = 1, evaluate(scn.replace("serving.phase", "prefill").replace("serving.batch", 1))
     if rd <= 0 or not pr.fits:
         return Goodput(rd, 0.0, 0, float("inf"), 0.0, 0.0, 0.0, False)
     rp = pr.throughput

@@ -51,7 +51,7 @@
 |---|---|---|---|
 | x32 | 2×16 | 三星 LPDDR5X “Organization x64, x32”；SOCAMM2 Raw Card A 附录 “x32 LP5/5X DRAM up to 4 Rank” | 厂商量产 / JEDEC 模组附录 |
 | **x64（默认）** | 4×16 | 手机 PoP 496-ball、分立 441/315/245/563-ball；三星 LPDDR5X-PIM 561-ball 16GB @9600 = 76.8 GB/s 正好是 x64 | 厂商量产 |
-| x96 | 6×16 | Micron FY26 Q4：“now shipping 6-channel 1-gamma LPDDR5X for flagship mobile devices”（二手报道转述财报；球位未公开） | 厂商扩展 |
+| x96 | 6×16 | Micron 8-K 2026-09-30：“now shipping 6-channel 1-gamma LPDDR5X”（一手；96-bit 由 6×16 推断；定制、无公开料号）。**目录不提供 x96**（Apple 定制件） | 厂商扩展 |
 
 ### 1.4 die / 封装容量
 
@@ -115,7 +115,7 @@
 
 ### 2.5 LPDDR6X / PIM / 模组
 
-- **LPDDR6X**：未发现 JEDEC 标准或厂商产品（截至 2026-10-08）。
+- **LPDDR6X**：没有 JEDEC 规范；仅一篇韩媒（TheBell 2026-02-10）称三星向高通送了工程样品，目标 2027 年下半年，规格未定——**不进目录**。
 - **LPDDR6-PIM**：JEDEC 2026-04 称“接近完成”；三星希望 2026 年底前拿到初版规范。三星 **LPDDR5X-PIM** 已有硅片（Hot Chips 2026）：561-ball、16GB、外部 76.8 GB/s、内部 PIM 带宽 614 GB/s、SINT4 2.4 TOPS/封装（techtimes 转述 STH/Tom's）。SK hynix LPDDR6 PIM 约 2028（二手）。
 - **LPDDR6 CAMM2**：JEDEC 2024 讲稿 → 192-bit/模组、48-bit 通道、至 14.4 GT/s（推测/在研，TechPowerUp）。
 - **LPDDR6 SOCAMM2**：JEDEC 在研（2026-04），宽度/容量未公开。

@@ -13,6 +13,7 @@ from .dtypes import fmt as _fmt
 from .hardware import System
 from .ir import Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, head_ops, mtp_ops
 from .mapping import gemm_cost, vector_seconds
+from .memo import layer_groups, model_cache
 from .memplan import MemPlan, plan, stage_storage, step_dram_bytes, touched
 from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages
@@ -136,7 +137,11 @@ def _acc(a: dict, b: dict, n: int = 1) -> None:
 def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     m = model or get_model(scn.model)
     if scn.formats_override:
-        m = with_formats(m, dict(scn.formats_override))
+        wi = model_cache(m).setdefault("what_if", {})
+        key = tuple(scn.formats_override)
+        if key not in wi:
+            wi[key] = with_formats(m, dict(scn.formats_override))
+        m = wi[key]
     sv, lay = scn.serving, scn.layout
     warnings: list[str] = []
     if not lay.valid_for(m.is_moe):
@@ -147,7 +152,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link)
     spec_k = sv.spec_k if (sv.phase == "decode" and m.mtp_layers) else 0
     if sv.spec_k and not m.mtp_layers and sv.phase == "decode":
-        warnings.append("spec_k ignored: model has no MTP module (draft-model speculation not modelled)")
+        warnings.append("spec_k 已忽略：该模型没有 MTP 模块（独立草稿模型的投机解码未建模）")
     pp = lay.pp
     if sv.phase == "decode":
         mb = sv.microbatches or min(pp, sv.batch)
@@ -165,20 +170,33 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     n_mtp = min(spec_k, len(m.mtp_layers)) if spec_k else 0
     b_rank = _cdiv(sv.batch, lay.dp)          # sequences whose KV lives on one rank (all micro-batches)
     cache: dict = {}
+    groups = layer_groups(m)
+    store_memo = model_cache(m).setdefault("stage_storage", {})
+    ops_memo = model_cache(m).setdefault("layer_sums", {})
+    if len(ops_memo) > 200_000:
+        ops_memo.clear()
     for st in plan_stages(m.n_layers, pp):
         agg = dict.fromkeys(_SUM_KEYS, 0.0)
         if st.has_embed:
             _acc(agg, _sum_ops(embed_ops(m, ph, sh), sys, scn.mapping, m))
         counts: dict = {}
         for li in range(st.first, st.last):
-            L = m.layers[li]
-            counts[L] = counts.get(L, (li, 0))[0], counts.get(L, (li, 0))[1] + 1
-        for L, (li, n) in counts.items():
-            if L not in cache:
-                cache[L] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
-            _acc(agg, cache[L], n)
+            g = groups[li]
+            first_li, n = counts.get(g, (li, 0))
+            counts[g] = (first_li, n + 1)
+        for g, (li, n) in counts.items():
+            if g not in cache:
+                okey = (g, ph, sh, scn.mapping, scn.chip, scn.link)
+                cache[g] = ops_memo.get(okey)
+                if cache[g] is None:
+                    cache[g] = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
+            _acc(agg, cache[g], n)
         _acc(agg, _sum_ops(_tail_ops(m, st.has_head, ph, sh, spec_k), sys, scn.mapping, m))
-        store = stage_storage(m, st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap, n_mtp)
+        skey = (st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap, n_mtp)
+        store = store_memo.get(skey)
+        if store is None:
+            store = store_memo[skey] = stage_storage(m, st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap,
+                                                     n_mtp)
         mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"])
         dram = step_dram_bytes(mp, store, agg)
         link_bw, sync, link_bytes = agg["link_bw"], agg["sync"], agg["link_bytes"]
@@ -195,10 +213,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     cap_heavy = max(range(len(stages)), key=lambda i: stages[i].mem.dram_need)
     fits = all(s.mem.fits for s in stages)
     if not fits:
-        warnings.append(f"capacity: stage {cap_heavy} needs {stages[cap_heavy].mem.dram_need / 2**30:.1f} GiB "
-                        f"> {sys.dram_bytes / 2**30:.0f} GiB per card")
+        warnings.append(f"容量不足：流水级 {cap_heavy} 每卡需要 {stages[cap_heavy].mem.dram_need / 2**30:.1f} GiB，"
+                        f"超过每卡 {sys.dram_bytes / 2**30:.0f} GiB")
     if m.coverage == "proxy":
-        warnings.append("「架构代理」model: results approximate (see model notes)")
+        warnings.append("「架构代理」模型：结果为近似值（见建模说明）")
     if sv.phase == "decode":
         step = max(mb, pp) * tick
         e_tok = spec_expected_tokens(spec_k, sv.spec_accept) if spec_k else 1.0

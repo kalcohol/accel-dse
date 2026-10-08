@@ -105,3 +105,32 @@ def test_lookup_tables_stored_not_active():
     assert s.lookup_params > 1e11
     assert s.params() - s.active_params() > s.lookup_params
     assert s.active_params() < 0.05 * s.params()
+
+
+def test_catalog_listing_grouping_coverage_and_merges():
+    """Listing: every model carries a coverage level, non-full ⇔ concrete reasons; grouped domain → provider →
+    family with sizes non-increasing; merged entries really have the same structure and dtype."""
+    from accel_dse.core.catalog import MERGED, dtype_label, list_models, offline_entries
+    ms = list_models()
+    seen, prev = [], None
+    for m in ms:
+        assert m["coverage"] in ("full", "partial", "proxy")
+        assert (m["coverage"] == "full") == (not m["coverage_reasons"]), m["id"]
+        assert (m["domain"] == "vlm") == (m["vision_params_B"] > 0), m["id"]
+        g = (m["domain"], m["provider"])
+        if g != (prev and (prev["domain"], prev["provider"])):
+            assert g not in seen, g                      # each group is contiguous
+            seen.append(g)
+        elif prev["family"] == m["family"]:
+            assert m["params_B"] <= prev["params_B"] + 1e-9, (prev["id"], m["id"])
+        prev = m
+    assert {"llm", "vlm"} == {m["domain"] for m in ms}
+    listed = {m["id"] for m in ms}
+    for a, b in MERGED.items():
+        assert a not in listed and b in listed
+        sa, sb = get_model(a), get_model(b)
+        assert sa.params() == sb.params() and dtype_label(sa) == dtype_label(sb), (a, b)
+    off = offline_entries()
+    assert off and all(o["domain"] == "gen" for o in off) and not ({o["id"] for o in off} & listed)
+    assert labels(get_model("kimi-k3"))["coverage"] == "partial"
+    assert labels(get_model("qwen3-next-80b-a3b"))["coverage_reasons"][0].startswith("线性注意力 Gated DeltaNet")

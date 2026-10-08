@@ -8,14 +8,17 @@ numbers rejected).  All sweeps are controlled replacements of that scenario.
 from __future__ import annotations
 
 import math
+import multiprocessing
+import os
+from concurrent.futures import ProcessPoolExecutor
 from typing import Any
 
 from . import __version__, mem_catalog
-from .core.catalog import get_model, labels, list_models
+from .core.catalog import DOMAINS, get_model, labels, list_models, offline_entries, unlisted_models
 from .core.evaluate import Result, evaluate
 from .core.hardware import CHIPS, Chip
 from .core.mapping import ORG_LABEL, ORGS
-from .core.parallel import Layout
+from .core.parallel import Layout, enumerate_layouts
 from .core.scenario import Scenario
 from .core.search import best_batch, search_layouts, tpot_throughput_front
 from .core.serving import goodput
@@ -33,6 +36,39 @@ SWEEP_PATHS = {
 
 class ApiError(ValueError):
     pass
+
+
+_POOL: ProcessPoolExecutor | None = None
+
+
+def _worker_init(parent: int) -> None:
+    """Worker processes exit when the server dies (even on SIGKILL, which skips pool shutdown)."""
+    import threading
+    import time
+
+    def watch():
+        while os.getppid() == parent:
+            time.sleep(1.0)
+        os._exit(0)
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def enable_pool(workers: int | None = None) -> int:
+    """Run the heavy searches (compare: one job per mapping; stability: one job per request) in
+    worker processes.  Enabled by the HTTP server only; library / test calls stay in-process."""
+    global _POOL
+    n = workers if workers is not None else min(5, os.cpu_count() or 1)
+    if n > 1 and _POOL is None:
+        _POOL = ProcessPoolExecutor(max_workers=n, mp_context=multiprocessing.get_context("spawn"),
+                                    initializer=_worker_init, initargs=(os.getpid(),))
+    return n if _POOL is not None else 1
+
+
+def shutdown_pool() -> None:
+    global _POOL
+    if _POOL is not None:
+        _POOL.shutdown(wait=False, cancel_futures=True)
+        _POOL = None
 
 
 def clean(x: Any) -> Any:
@@ -151,12 +187,12 @@ def _row(r, objective: str) -> dict:
 
 # ------------------------------------------------------------------ endpoints
 def api_health() -> dict:
-    return {"ok": True, "version": __version__, "core": "v2", "domains": ["llm"]}
+    return {"ok": True, "version": __version__, "core": "v2", "domains": ["llm", "vlm"]}
 
 
 def api_models() -> dict:
-    return {"models": list_models(),
-            "note": "视频 / 蛋白质领域在 0.40 暂时下线（v2 校验流水线目前只覆盖 LLM）；见 docs/MODEL.md §范围"}
+    return {"models": list_models(), "offline": offline_entries(), "unlisted": unlisted_models(), "domains": DOMAINS,
+            "note": "图像 / 视频生成（DiT）暂未接入 v2，只列在目录中；蛋白质领域暂时下线；见 docs/MODEL.md §10"}
 
 
 def api_catalog() -> dict:
@@ -171,7 +207,7 @@ def api_catalog() -> dict:
 def api_memory(body: dict) -> dict:
     """Resolve a memory configuration (structured fields or an ``id``) to a spec."""
     _finite(body)
-    allowed = {"id", "type", "form", "width", "rate", "count", "cap", "height", "die"}
+    allowed = {"id", "type", "form", "width", "rate", "count", "cap", "height", "die", "meta_mode"}
     bad = set(body) - allowed
     if bad:
         raise ApiError(f"memory: unknown keys {sorted(bad)}")
@@ -181,14 +217,22 @@ def api_memory(body: dict) -> dict:
         else:
             s = mem_catalog.make_spec(body.get("type", "LPDDR5X"), form=body.get("form"), width_bits=body.get("width"),
                                       rate=body.get("rate"), count=body.get("count"), cap_GB=body.get("cap"),
-                                      height=body.get("height"), die_Gb=body.get("die"))
+                                      height=body.get("height"), die_Gb=body.get("die"),
+                                      meta_mode=bool(body.get("meta_mode", False)))
     except (ValueError, KeyError, TypeError) as e:
         raise ApiError(str(e).strip("'\"")) from None
     return {"id": s.id, "kind": s.kind, "raw_GBps": s.raw_GBps, "eff_GBps": s.effective_GBps,
-            "efficiency": s.efficiency, "capacity_GiB": s.capacity_GB, "tag": s.tag, "tag_zh": s.tag_zh,
+            "efficiency": s.efficiency, "capacity_GiB": s.capacity_GB,
+            "nominal_capacity_GiB": s.nominal_capacity_GB,
+            "tag": s.tag, "tag_zh": s.tag_zh,
+            "spec_status": s.spec_status, "product_status": s.product_status,
+            "spec_zh": mem_catalog.SPEC_ZH[s.spec_status],
+            "product_zh": mem_catalog.PRODUCT_ZH[s.product_status],
+            "meta_mode": s.meta_mode, "meta_reserve_frac": s.meta_reserve_frac,
             "warnings": s.warnings(),
             "fields": {"type": s.mem_type, "form": s.form, "width": s.unit_width_bits, "rate": s.rate_MTps,
-                       "count": s.n_units, "cap": s.cap_per_unit_GB, "height": s.hbm_height, "die": s.hbm_die_Gb}}
+                       "count": s.n_units, "cap": s.cap_per_unit_GB, "height": s.hbm_height, "die": s.hbm_die_Gb,
+                       "meta_mode": s.meta_mode}}
 
 
 def api_eval(body: dict) -> dict:
@@ -207,32 +251,117 @@ def api_eval(body: dict) -> dict:
 def api_layouts(body: dict) -> dict:
     scn = scenario_from_body(body)
     obj = _objective(body)
-    rows = search_layouts(scn, _cards(body), objective=obj)
-    return {"objective": obj, "mapping": scn.mapping, "rows": [_row(r, obj) for r in rows[:16]],
-            "n_layouts": len(rows)}
+    stats: dict = {}
+    rows = search_layouts(scn, _cards(body), objective=obj, top=16, stats=stats)
+    return {"objective": obj, "mapping": scn.mapping, "rows": [_row(r, obj) for r in rows],
+            "n_layouts": stats["layouts"], "stats": stats}
+
+
+def _compare_row(body: dict, org: str) -> dict:
+    scn = scenario_from_body(body).replace("mapping", org)
+    obj = _objective(body)
+    rows = search_layouts(scn, _cards(body), objective=obj, top=2)
+    top = rows[0]
+    d = _row(top, obj)
+    d["label"] = ORG_LABEL[org]
+    d["runner_up"] = _row(rows[1], obj) if len(rows) > 1 else None
+    if obj == "decode" and top.result is not None and scn.serving.phase == "decode":
+        g = goodput(top.result)
+        d.update(goodput_card=g.goodput_per_card, ttft_ms=g.ttft_ms, ttft_ok=g.ttft_ok)
+    return d
 
 
 def api_compare(body: dict) -> dict:
     """Best layout per mapping organisation (the mapping comparison view)."""
-    scn = scenario_from_body(body)
-    obj = _objective(body)
-    cards = _cards(body)
-    out = []
-    for org in ORGS:
-        rows = search_layouts(scn.replace("mapping", org), cards, objective=obj)
-        top = rows[0]
-        d = _row(top, obj)
-        d["label"] = ORG_LABEL[org]
-        d["runner_up"] = _row(rows[1], obj) if len(rows) > 1 else None
-        if obj == "decode" and top.result is not None and scn.serving.phase == "decode":
-            g = goodput(top.result)
-            d.update(goodput_card=g.goodput_per_card, ttft_ms=g.ttft_ms, ttft_ok=g.ttft_ok)
-        out.append(d)
+    scenario_from_body(body)                    # validate in-process (ApiError → 400)
+    obj, cards = _objective(body), _cards(body)
+    if _POOL is not None:
+        out = list(_POOL.map(_compare_row, [body] * len(ORGS), ORGS))
+    else:
+        out = [_compare_row(body, org) for org in ORGS]
     best = max(out, key=lambda d: d["score"])
     return {"objective": obj, "cards": cards, "rows": out, "best_mapping": best["mapping"]}
 
 
+def _mem_candidates(mem_id: str) -> list:
+    """Same memory type / form / rate, more or larger units, ordered by capacity (then fewer units)."""
+    cur = mem_catalog.parse_mem_id(mem_id)
+    t = next(x for x in mem_catalog.catalog_dict()["types"] if x["id"] == cur.mem_type)
+    f = next(x for x in t["forms"] if x["id"] == cur.form)
+    out = []
+    for c in f["counts"]:
+        if c["n"] < cur.n_units:
+            continue
+        if t["kind"] == "HBM":
+            sizes = [dict(height=x["height"], die_Gb=x["die_Gb"]) for x in f["cap_tags"]]
+        else:
+            sizes = [dict(cap_GB=x["GB"]) for x in f["caps"].get(str(cur.unit_width_bits), [])]
+        for sz in sizes:
+            try:
+                sp = mem_catalog.make_spec(cur.mem_type, form=cur.form, width_bits=cur.unit_width_bits,
+                                           rate=cur.rate_MTps, count=c["n"], meta_mode=cur.meta_mode, **sz)
+            except (ValueError, KeyError):
+                continue
+            if sp.capacity_GB > cur.capacity_GB:
+                out.append(sp)
+    out.sort(key=lambda sp: (sp.capacity_GB, sp.n_units))
+    return out
+
+
+def api_fit(body: dict) -> dict:
+    """Capacity check with concrete fixes: fewest cards that hold the model, or the smallest larger memory."""
+    scn = scenario_from_body(body)
+    m = get_model(scn.model)
+    r = evaluate(scn)
+    r1 = r if scn.serving.batch == 1 else evaluate(scn.replace("serving.batch", 1))
+    heavy = r1.stages[max(range(len(r1.stages)), key=lambda i: r1.stages[i].mem.dram_need)]
+    out = {"fits": r.fits, "fits_batch1": r1.fits, "need_GiB": heavy.mem.dram_need / 2**30,
+           "cap_GiB": heavy.mem.dram_cap / 2**30, "cards": scn.layout.cards, "weights_GiB": heavy.mem.stored_w / 2**30}
+    if r.fits:
+        return out
+    if r1.fits:   # KV of a large batch overflows: largest batch that fits (capacity is monotone in batch)
+        lo, hi = 1, scn.serving.batch
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            lo, hi = (mid, hi) if evaluate(scn.replace("serving.batch", mid)).fits else (lo, mid)
+        out["max_batch"] = lo
+        return out
+    cards = scn.layout.cards
+    for n in (2, 4, 8, 16, 32, 64):
+        if n <= cards:
+            continue
+        fit = [lay for lay in enumerate_layouts(n, m.n_layers, m.is_moe)
+               if evaluate(scn.replace("layout", lay).replace("serving.batch", 1)).fits]
+        if not fit:
+            continue
+        rows = search_layouts(scn, n, top=1)
+        if rows and rows[0].batch:
+            lay, batch = rows[0].layout, rows[0].batch
+        else:   # fits but misses the TPOT SLO everywhere: smallest footprint layout at batch 1
+            lay = min(fit, key=lambda l: max(s.mem.dram_need for s in
+                                             evaluate(scn.replace("layout", l).replace("serving.batch", 1)).stages))
+            batch = 1
+        rr = evaluate(scn.replace("layout", lay).replace("serving.batch", batch))
+        out["min_cards"] = {"cards": n, "layout": lay.label, "layout_obj": lay.__dict__, "batch": batch,
+                            "need_GiB": max(s.mem.dram_need for s in rr.stages) / 2**30,
+                            "meets_slo": bool(rows and rows[0].batch)}
+        break
+    for sp in _mem_candidates(scn.mem_id):
+        if evaluate(scn.replace("mem_id", sp.id).replace("serving.batch", 1)).fits:
+            out["min_mem"] = {"id": sp.id, "count": sp.n_units, "capacity_GiB": sp.capacity_GB,
+                              "raw_GBps": sp.raw_GBps, "tag_zh": sp.tag_zh, "label": sp.short_label()}
+            break
+    return out
+
+
 def api_stability(body: dict) -> dict:
+    scenario_from_body(body), _cards(body), _objective(body)     # validate in-process
+    if _POOL is not None:
+        return _POOL.submit(_stability, body).result()
+    return _stability(body)
+
+
+def _stability(body: dict) -> dict:
     scn = scenario_from_body(body)
     st = ranking_stability(scn, _cards(body), include_mapping=bool(body.get("include_mapping", False)),
                            objective=_objective(body))

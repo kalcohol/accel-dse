@@ -16,6 +16,7 @@ System = Chip + external memory (mem_catalog.MemSpec) + scale-up link.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 
 from .. import mem_catalog
 from .dtypes import FormatSupport
@@ -101,7 +102,7 @@ class System:
 
     @property
     def mem(self) -> mem_catalog.MemSpec:
-        return mem_catalog.parse_mem_id(self.mem_id, efficiency=self.mem_eff)
+        return _mem_spec(self.mem_id, self.mem_eff)
 
     @property
     def dram_GBps(self) -> float:
@@ -110,6 +111,11 @@ class System:
     @property
     def dram_bytes(self) -> float:
         return float(self.mem.capacity_bytes)
+
+
+@lru_cache(maxsize=4096)
+def _mem_spec(mem_id: str, eff: float | None) -> mem_catalog.MemSpec:
+    return mem_catalog.parse_mem_id(mem_id, efficiency=eff)
 
 
 # Presets (geometry from the 0.3x SKU templates; all 「假设」)

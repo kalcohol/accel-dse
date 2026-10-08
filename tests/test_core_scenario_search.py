@@ -141,3 +141,35 @@ def test_hash_ignores_int_vs_float_spelling():
     t = s.replace("chip.sram_mib", 64).replace("link.GBps", 400)
     assert t == s and t.hash() == s.hash()
     assert Scenario.from_dict(json.loads(json.dumps(t.to_dict()))).hash() == s.hash()
+
+
+def test_topk_search_equals_full_ranking():
+    """Cross-layout branch and bound (top=k) returns exactly the head of the full ranking."""
+    cases = [("qwen3-32b", "decode", "os"), ("qwen3-32b", "goodput", "reconf"),
+             ("qwen3-30b-a3b", "decode", "ws_broad"), ("qwen3-30b-a3b", "goodput", "os_vec")]
+    for model, obj, org in cases:
+        base = Scenario(model=model, mem_id=HBM, mapping=org, serving=Serving(ctx=4096))
+        full = search_layouts(base, 8, objective=obj)
+        stats: dict = {}
+        top = search_layouts(base, 8, objective=obj, top=3, stats=stats)
+        assert [round(r.score(obj), 9) for r in top] == [round(r.score(obj), 9) for r in full[:3]], (model, obj)
+        assert top[0].layout == full[0].layout and top[0].batch == full[0].batch
+        assert stats["layouts"] == len(full)
+        if len(full) >= 10:                     # a 4-layout dense case may legitimately prune nothing
+            assert stats["pruned"] > 0
+
+
+def test_stability_incumbent_search_matches_full_search():
+    """Stability seeds each perturbed search with the base top-1's exact score; the reported
+    top-1 score must equal an unseeded full ranking under the same perturbation."""
+    from accel_dse.core.stability import perturbations, ranking_stability
+    base = Scenario(model="qwen3-30b-a3b", mem_id=HBM, mapping="ws_edge", serving=Serving(ctx=4096))
+    st = ranking_stability(base, 8, include_mapping=False)
+    perts = perturbations(base, False)
+    assert len(st.cases) == len(perts)
+    for (name, scn), c in zip(perts, st.cases):
+        full = search_layouts(scn, 8)
+        best = full[0].per_card
+        assert abs(c["top_tok_s_card"] - best) <= 1e-9 * best, name
+        if c["same"]:
+            assert c["base_top_tok_s_card"] >= best * (1 - 1e-9), name

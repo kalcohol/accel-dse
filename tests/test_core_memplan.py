@@ -73,7 +73,7 @@ def test_deepseek_pp8_heaviest_stage_capacity_hand_count():
 
 def test_capacity_failure_reported():
     r = evaluate(Scenario(model="deepseek-v3", serving=Serving(batch=1, ctx=1024)))   # 64 GiB LPDDR, 1 card
-    assert not r.fits and any("capacity" in w for w in r.warnings)
+    assert not r.fits and any("容量不足" in w for w in r.warnings)
 
 
 def test_linear_attention_state_counted():

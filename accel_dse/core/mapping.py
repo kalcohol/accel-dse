@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 from .dtypes import FormatSupport, fmt as _fmt, gemm_exec
 from .hardware import Chip
@@ -98,7 +99,13 @@ def _candidates(org: str) -> tuple[str, ...]:
 
 def gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, *, count: int = 1, w_fmt: str = "bf16",
               a_fmt: str = "bf16", w_bits: float | None = None) -> GemmCost:
-    """Cycles for ``count`` identical GEMMs [m,k]×[k,n] under organisation ``org``."""
+    """Cycles for ``count`` identical GEMMs [m,k]×[k,n] under organisation ``org`` (memoised: pure function)."""
+    return _gemm_cost(ch, org, m, k, n, count, w_fmt, a_fmt, w_bits)
+
+
+@lru_cache(maxsize=1 << 18)
+def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: str, a_fmt: str,
+               w_bits: float | None) -> GemmCost:
     if org not in ORGS:
         raise ValueError(f"unknown mapping {org!r}; one of {ORGS}")
     if m <= 0 or k <= 0 or n <= 0 or count <= 0:

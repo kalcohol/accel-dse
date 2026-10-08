@@ -19,21 +19,23 @@
 <div class="shell">
 <aside class="panel" id="panel">
   <section class="grp">
-    <h3>模型 Model</h3>
+    <h3>模型</h3>
     <select id="model" aria-label="模型"></select>
     <div class="badges" id="model-badges"></div>
     <div class="kv small" id="model-facts"></div>
+    <div class="approx" id="model-approx-wrap" hidden><div class="small">近似之处</div><ul id="model-approx"></ul></div>
     <details class="notes" id="model-notes-wrap"><summary>建模说明</summary><ul id="model-notes"></ul></details>
+    <p class="small muted legend" id="cover-legend">覆盖度（完整 / 部分 / 架构代理）指建模覆盖程度，不代表模型好坏；悬停徽标看具体近似之处。</p>
     <div class="row2">
       <label>权重 dtype <span class="tag whatif">what-if</span>
-        <select id="wi-w"><option value="">按发布 as released</option><option>bf16</option><option>fp8</option><option>int8</option><option>mxfp4</option><option>nvfp4</option><option>int4</option></select></label>
+        <select id="wi-w"><option value="">按发布</option><option>bf16</option><option>fp8</option><option>int8</option><option>mxfp4</option><option>nvfp4</option><option>int4</option></select></label>
       <label>KV dtype <span class="tag whatif">what-if</span>
         <select id="wi-kv"><option value="">按发布</option><option>bf16</option><option>fp8</option></select></label>
     </div>
   </section>
 
   <section class="grp">
-    <h3>芯片 Chip <span class="tag assume">假设</span></h3>
+    <h3>芯片 <span class="tag assume">假设</span></h3>
     <div class="seg" id="chip-preset"></div>
     <div class="kv small" id="chip-facts"></div>
     <div class="row2">
@@ -48,13 +50,13 @@
   </section>
 
   <section class="grp">
-    <h3>映射 Mapping <span class="tag dv">设计变量</span></h3>
+    <h3>映射 <span class="tag dv">设计变量</span></h3>
     <div class="seg wrap" id="mapping"></div>
     <div class="small muted" id="mapping-desc"></div>
   </section>
 
   <section class="grp">
-    <h3>存储器 DRAM</h3>
+    <h3>存储器</h3>
     <div class="row3">
       <label>类型<select id="m-type"></select></label>
       <label>形态<select id="m-form"></select></label>
@@ -66,10 +68,15 @@
     </div>
     <div class="kv small" id="mem-facts"></div>
     <label class="inline">DRAM 效率 <span class="tag assume">假设</span><input type="number" id="mem_eff" step="0.05" min="0.05" max="1" placeholder="0.7"></label>
+    <label class="inline" id="m-meta-wrap" hidden>LPDDR6 meta 模式 <span class="tag assume">假设</span><input type="checkbox" id="m-meta"></label>
   </section>
 
   <section class="grp">
-    <h3>并行 Layout <span class="small muted" id="cards-note"></span></h3>
+    <h3>卡数与并行布局</h3>
+    <div class="row3">
+      <label>卡数（每副本）<input type="number" id="l-cards" min="1" max="64" step="1"></label>
+      <div class="span2 small muted" id="cards-note"></div>
+    </div>
     <div class="row5" id="layout-row">
       <label>PP<input type="number" id="l-pp" min="1" step="1"></label>
       <label>TP<input type="number" id="l-tp" min="1" step="1"></label>
@@ -77,7 +84,8 @@
       <label class="moe-only">EP<input type="number" id="l-ep" min="1" step="1"></label>
       <label class="moe-only">ETP<input type="number" id="l-etp" min="1" step="1"></label>
     </div>
-    <div class="small muted moe-only">MoE 约束 EP·ETP = TP·DP（attention DP，专家 EP/ETP）；修改时自动补齐 ETP。</div>
+    <div class="small muted moe-only">MoE 约束 EP·ETP = TP·DP（注意力按 TP、DP 切分，专家按 EP、ETP 切分）；修改时自动补齐 ETP。</div>
+    <button class="btn ghost sm" id="best-layout">搜索当前卡数的最优布局并应用</button>
     <div class="row2">
       <label>链路 GB/s <span class="tag assume">假设</span><input type="number" id="k-GBps" step="50" min="1"></label>
       <label>同步 α µs <span class="tag assume">假设</span><input type="number" id="k-alpha_us" step="0.5" min="0"></label>
@@ -85,24 +93,25 @@
   </section>
 
   <section class="grp">
-    <h3>服务 Serving</h3>
-    <div class="seg" id="phase"><button data-v="decode">Decode</button><button data-v="prefill">Prefill</button></div>
+    <h3>服务</h3>
+    <div class="seg" id="phase"><button data-v="decode">decode</button><button data-v="prefill">prefill</button></div>
     <div class="row3">
       <label>batch<input type="number" id="s-batch" min="1" step="1"></label>
-      <label>ctx<input type="number" id="s-ctx" min="1" step="512"></label>
-      <label>prompt<input type="number" id="s-prompt" min="1" step="512"></label>
+      <label>上下文<input type="number" id="s-ctx" min="1" step="512"></label>
+      <label>prompt 长度<input type="number" id="s-prompt" min="1" step="512"></label>
       <label>输出长度<input type="number" id="s-out_len" min="1" step="128"></label>
-      <label>spec k<input type="number" id="s-spec_k" min="0" max="8" step="1"></label>
+      <label>投机 k<input type="number" id="s-spec_k" min="0" max="8" step="1"></label>
       <label>接受率<input type="number" id="s-spec_accept" min="0" max="1" step="0.05"></label>
       <label>TPOT SLO ms<input type="number" id="s-tpot_slo_ms" min="1" step="5"></label>
       <label>TTFT SLO ms<input type="number" id="s-ttft_slo_ms" min="1" step="100"></label>
-      <label>microbatch<input type="number" id="s-microbatches" min="0" step="1" title="0 = 自动 (=PP)"></label>
+      <label>微批数<input type="number" id="s-microbatches" min="0" step="1" title="0 = 自动（= PP）"></label>
     </div>
     <label class="inline"><input type="checkbox" id="best-batch"> 自动取满足 TPOT SLO 的最大 batch</label>
   </section>
 </aside>
 
 <main class="main">
+  <div class="fit" id="fit" hidden></div>
   <div class="kpis" id="kpis"></div>
   <div class="warns" id="warns"></div>
   <nav class="tabs" id="tabs">
@@ -115,10 +124,10 @@
   </nav>
 
   <section class="tab" id="tab-eval">
-    <h4>流水级 Stage 时间分解 <span class="small muted">每级 t = max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC；绑定项高亮</span></h4>
+    <h4>流水级时间分解 <span class="small muted">每级 t = max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC；绑定项高亮</span></h4>
     <div class="scroll"><table class="tbl" id="stage-tbl"></table></div>
     <div class="legend" id="legend"></div>
-    <h4>存储规划 Memory plan</h4>
+    <h4>存储规划</h4>
     <div class="scroll"><table class="tbl" id="mem-tbl"></table></div>
     <h4>本次评估的「假设」</h4>
     <ul class="assume-list" id="assume-list"></ul>
@@ -126,25 +135,25 @@
 
   <section class="tab" id="tab-compare" hidden>
     <div class="toolbar">
-      <label>卡数<input type="number" id="cmp-cards" min="1" max="64" value="8"></label>
-      <div class="seg" id="cmp-obj"><button data-v="decode" class="on">decode tok/s/card</button><button data-v="goodput">goodput (含 prefill)</button></div>
+      <div class="seg" id="cmp-obj"><button data-v="decode" class="on">目标：decode 吞吐</button><button data-v="goodput">目标：goodput（含 prefill）</button></div>
       <button class="btn" id="cmp-run">运行映射对比</button>
       <span class="small muted" id="cmp-status"></span>
     </div>
-    <p class="small muted">每种映射组织下独立搜索最佳布局与 batch（满足 TPOT SLO），显示绑定瓶颈、有效 MAC 比例（array_util）、DP prefill 的 TTFT 是否达标，以及在「假设」扰动下的排名稳定性。</p>
-    <div class="scroll"><table class="tbl" id="cmp-tbl"></table></div>
+    <p class="small muted" id="cmp-scope"></p>
+    <p class="small muted">每种映射组织下独立搜索最佳布局与 batch（满足 TPOT SLO），显示绑定瓶颈、有效 MAC 比例、DP prefill 的 TTFT 是否达标，以及在「假设」扰动下的排名稳定性。点击行把映射、布局、batch 一起应用到场景。</p>
+    <div class="scroll"><table class="tbl tight" id="cmp-tbl"></table></div>
   </section>
 
   <section class="tab" id="tab-layouts" hidden>
     <div class="toolbar">
-      <label>卡数<input type="number" id="lay-cards" min="1" max="64" value="8"></label>
-      <div class="seg" id="lay-obj"><button data-v="decode" class="on">decode</button><button data-v="goodput">goodput</button></div>
+      <div class="seg" id="lay-obj"><button data-v="decode" class="on">目标：decode 吞吐</button><button data-v="goodput">目标：goodput</button></div>
       <button class="btn" id="lay-run">搜索布局</button>
       <button class="btn ghost" id="lay-stab">排名稳定性</button>
       <span class="small muted" id="lay-status"></span>
     </div>
-    <p class="small muted">当前映射下的布局排名（精确搜索：每个布局的最大 batch 经分支定界求得）。点击行可应用到左侧场景。</p>
-    <div class="scroll"><table class="tbl" id="lay-tbl"></table></div>
+    <p class="small muted" id="lay-scope"></p>
+    <p class="small muted">当前映射下的布局排名（精确搜索：先求每个布局的吞吐上界，再按上界从高到低分支定界，只精算可能进入前 16 的布局）。点击行应用到场景。</p>
+    <div class="scroll"><table class="tbl tight" id="lay-tbl"></table></div>
     <div id="stab-box"></div>
   </section>
 
@@ -162,8 +171,10 @@
   </section>
 
   <section class="tab" id="tab-models" hidden>
-    <p class="small muted">三轴标签：来源（official 官方 / mirror 镜像）× 覆盖（full 完整 / partial 部分 / proxy「架构代理」）× 按发布 dtype。参数量由发布的 safetensors 头统计并与配置推导值核对。</p>
+    <p class="small muted">按领域 → 厂商 → 系列排列；系列内按尺寸从大到小，官方量化版（FP8 / AWQ）紧跟原版。三轴标签：来源（官方 / 镜像）× 覆盖 × 按发布的 dtype；参数量由发布的 safetensors 头统计，并与按 config 推导的值核对。</p>
+    <p class="small"><b>覆盖度</b>指本工具对该模型结构的建模覆盖程度，与模型好坏无关：<span class="badge cov full">完整</span> 全部算子按发布结构逐项建模；<span class="badge cov partial">部分</span> 主干逐项建模，个别机制近似（见「近似之处」）；<span class="badge cov proxy">架构代理</span> 含未建模的结构，结果只作量级参考。VLM 只评估语言主干，视觉编码器未建模。</p>
     <div class="scroll"><table class="tbl" id="models-tbl"></table></div>
+    <details class="notes"><summary>未单列的发布（仍可按 id 评估，也都参与参数核对）</summary><ul id="models-unlisted"></ul></details>
   </section>
 
   <section class="tab prose" id="tab-about" hidden>

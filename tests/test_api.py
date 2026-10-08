@@ -166,3 +166,31 @@ def test_version_and_doc_links():
         for link in re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", p.read_text()):
             if not link.startswith(("http://", "https://", "mailto:")):
                 assert (p.parent / link).exists(), f"{doc}: broken link {link}"
+
+
+def test_fit_hint_gives_feasible_one_click_fixes():
+    """/api/fit: an OOM scenario gets a min-card layout and a larger memory that both really fit."""
+    hbm = "hbm3e_8s_12h24g_9200"
+    st, f = _post("/api/fit", {"scenario": {"model": "deepseek-v3", "mem_id": hbm}})
+    assert st == 200 and not f["fits"] and f["need_GiB"] > f["cap_GiB"] and f["cards"] == 1
+    mc = f["min_cards"]
+    lay = Layout(**mc["layout_obj"])
+    assert lay.cards == mc["cards"] > 1
+    r = evaluate(Scenario(model="deepseek-v3", mem_id=hbm, layout=lay, serving=Serving(batch=mc["batch"])))
+    assert r.fits and abs(max(s.mem.dram_need for s in r.stages) / 2**30 - mc["need_GiB"]) < 1e-6
+    for n in (2, 4, 8, 16, 32, 64):           # minimal: no smaller power-of-two card count holds it at batch 1
+        if n >= mc["cards"]:
+            break
+        assert not search_layouts(Scenario(model="deepseek-v3", mem_id=hbm), n, top=1)[0].batch  # batch-0 row = infeasible
+    mm = f["min_mem"]
+    assert mm["capacity_GiB"] > f["cap_GiB"]
+    assert evaluate(Scenario(model="deepseek-v3", mem_id=mm["id"])).fits
+    # batch overflow only: the largest batch that fits, and it is maximal
+    st, f = _post("/api/fit", {"scenario": {"model": "qwen3-32b", "mem_id": hbm, "serving": {"batch": 4096, "ctx": 32768}}})
+    assert st == 200 and not f["fits"] and f["fits_batch1"] and "min_cards" not in f
+    b = f["max_batch"]
+    base = Scenario(model="qwen3-32b", mem_id=hbm, serving=Serving(ctx=32768))
+    assert evaluate(base.replace("serving.batch", b)).fits and not evaluate(base.replace("serving.batch", b + 1)).fits
+    # a feasible scenario returns no fixes
+    st, f = _post("/api/fit", {"scenario": {"model": "qwen3-8b"}})
+    assert st == 200 and f["fits"] and not ({"min_cards", "min_mem", "max_batch"} & f.keys())
