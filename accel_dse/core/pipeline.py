@@ -294,7 +294,9 @@ def _hunyuan_tiles(lat: tuple[int, int, int]) -> list[tuple[tuple[int, int, int]
 #   CogVideoX  tile_sample_min = sample size / 2 = 240 × 360 px → 30 × 45 latent; overlap factors 1/6, 1/5 →
 #              stride int(30·5/6) = 25, int(45·4/5) = 36   (AutoencoderKLCogVideoX)
 #   Mochi      tile_sample_min 256 px, stride 192 px → 32 / 24 latent                (AutoencoderKLMochi)
-TILING = {"cog": ((30, 25), (45, 36)), "mochi": ((32, 24), (32, 24))}
+#   Wan        tile_sample_min 256 px, stride 192 px → 32 / 24 latent (0.46)         (AutoencoderKLWan; the official
+#              Wan repo decodes untiled — the option models the diffusers path)
+TILING = {"cog": ((30, 25), (45, 36)), "mochi": ((32, 24), (32, 24)), "wan": ((32, 24), (32, 24))}
 
 
 def _spatial_tiles(lat: tuple[int, int, int], spec: tuple) -> list[tuple[tuple[int, int, int], int]]:

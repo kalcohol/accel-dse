@@ -3,6 +3,25 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.46.0] - 2026-10-09
+
+扩散样本分卡、DiT 权重 FSDP、文本编码器放主机 CPU、Wan VAE 分块。
+
+### Added
+- 结构模型扩散样本分卡 `workload.sample_split`（默认开；Web「DAP 时扩散样本分卡」，CLI `--no-sample-split` 关闭）：DAP > 1 且样本数 > 1 时，扩散模块（原子编码器 / 扩散 transformer / 原子解码器）的样本分到 DAP 各卡，每卡 ⌈S / D⌉ 条轨迹——样本独立、条件已在每卡，精确且无额外通信；块内 pair 网格工作仍按 DAP 切分。100T + HBM3E：Protenix（5 样本）DAP 8 10.65 → 3.22 s（相对单卡 1.8× → 6.0×）；Boltz-1 默认 1 个样本不变，5 个样本时 DAP 8 12.6 → 4.3 s。置信度头不分样本。参考实现无现成的多卡样本并行：作为布局设计选项给出。
+- DiT 权重 FSDP `workload.dit_fsdp`（默认关；Web 复选框，CLI `--dit-fsdp`）：按 Wan `--dit_fsdp`，每级权重在 SP·DP 卡之间分片（w / g + 2 层预取），每次前向逐层 all-gather 活动权重（与计算重叠，每层 α）并把 gather 结果写入 DRAM；Wan2.2 空闲专家分片存储、不 gather；SP·DP = 1 或非视频模型时忽略并警告。例：Wan2.1-14B SP2 64 GiB LPDDR 每卡需求 57.8 GiB（auto 卸载）→ 45.1 GiB（常驻），延迟变化 < 0.1%。
+- 文本编码器放主机 CPU `workload.te_cpu`（默认关；CLI `--te-cpu`）：按 Wan `--t5_cpu`，卡上不放编码器；编码时间 = 编码器 FLOPs / `workload.host_TFLOPS`（默认 2 TFLOPS「假设」，CLI `--host-TFLOPS`，请按实测填写）。例：Wan2.1-14B 单卡 64 GiB 常驻放得下（61.9 GiB，不再需要每请求重载），编码 4.8 s。
+- Wan VAE 可选分块（`vae_tiling`，diffusers `AutoencoderKLWan` 的 256 px tile / stride 192；官方仓库不分块）：720P 28 tile，重叠 ×1.65，解码 41.3 → 67.8 s，激活峰值 3.81 → 0.27 GiB。
+- Web：「放不下」面板增加「DiT 权重 FSDP」与「文本编码器放主机 CPU」修正；假设列表写明 FSDP / 主机 CPU / 样本分卡。测试 `tests/test_core_046.py`。
+
+### Changed
+- `Op.replicated` 可为分数（D > S 时空闲的样本槽）。默认场景（单卡、PP、DP、无 DAP）的 1356 项结果与 0.45 逐字节一致；变化只在 DAP > 1 且样本数 > 1 的结构模型，以及新的可选项。
+
+### 仍未建模
+- 置信度头的样本分卡；单个样本的扩散 transformer 的 token 维切分（Boltz-1 默认 1 个样本时 DAP 帮不上扩散部分）；pair 的 TP。
+- 主机 CPU 编码器只有一个算力旋钮；VAE 多卡并行解码；跨请求的组件 / 去噪重叠；LTX / Open-Sora / H3 的可选 VAE 分块。
+- AlphaFold 3 仍为「暂未接入 v2」（无公开权重）。
+
 ## [0.45.0] - 2026-10-09
 
 结构模型多卡（DAP）、视频组件放置（分片 / 卸载）、可选 VAE 分块解码。

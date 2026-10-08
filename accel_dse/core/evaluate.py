@@ -20,7 +20,7 @@ from .memo import layer_groups, model_cache
 from .memplan import RUNTIME_RESERVE, MemPlan, act_stream, plan, stage_storage, step_dram_bytes, touched
 from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages
-from .pipeline import pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
+from .pipeline import TILING, pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
 from .scenario import Scenario
 from .schedule import StageTime, collective_seconds, spec_expected_tokens
 
@@ -339,7 +339,10 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     seqs = sv.batch * wl.seqs_per_request
     pp = lay.pp
     mb = max(1, min(sv.microbatches or min(pp, seqs), seqs))
-    ph = Phase("full", _cdiv(seqs, mb), wl.tokens, wl.ctx, frames=wl.frames, aux=wl.aux, pair=wl.pair)
+    pd = wl.pair
+    if pd is not None and lay.sp > 1 and scn.workload.sample_split and pd.samples > 1:
+        pd = replace(pd, split=True)
+    ph = Phase("full", _cdiv(seqs, mb), wl.tokens, wl.ctx, frames=wl.frames, aux=wl.aux, pair=pd)
     sh = lay.shard
     ab = _fmt(m.act_fmt).bytes
     groups = layer_groups(m)
@@ -353,6 +356,10 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     if wl.pair is not None:      # structure models: the pair representation N²·c_z rides along with the single track
         pair_act = _cdiv(wl.pair.n, lay.sp) * wl.pair.n * m.workload.pair_dim * ab   # DAP: residue-axis slice
         resid += _cdiv(seqs, lay.dp) * pair_act
+    fsdp = lay.sp * lay.dp if scn.workload.dit_fsdp and wl.kind == "gen" and lay.sp * lay.dp > 1 else 0
+    if scn.workload.dit_fsdp and not fsdp:
+        warnings.append("workload.dit_fsdp 已忽略：" + ("只用于视频 DiT" if wl.kind != "gen" else
+                                                       "需要 SP · DP > 1（FSDP 在同一流水级的数据 / 序列并行卡之间分片）"))
     for st in plan_stages(m.n_layers, pp):
         agg = dict.fromkeys(_SUM_KEYS, 0.0)
         if st.has_embed:
@@ -378,6 +385,21 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                   act_need=agg["max_act_tot"] + resid, stream=True)
         dram = step_dram_bytes(mp, store, agg)
         link_bw, sync, link_bytes = agg["link_bw"], agg["sync"], agg["link_bytes"]
+        if fsdp:
+            # DiT weights FSDP-sharded over the stage's g = SP·DP ranks (Wan --dit_fsdp): each card keeps w / g plus
+            # two gathered layers (prefetch); every stage forward all-gathers the active weights layer by layer
+            # (overlapping compute through the stage max rule, α per layer) and writes the gathered copy to DRAM
+            # before the usual weight streaming reads it.  An idle expert (Wan2.2) is sharded but not gathered.
+            w, nl = mp.stored_w, max(1, st.last - st.first)
+            sb = _standby_bytes(m, lay, st.first, st.last)
+            act_w = w - sb
+            keep = w / fsdp + min(act_w * (fsdp - 1) / fsdp, 2 * act_w / nl)
+            need = mp.dram_need - w + keep
+            mp = replace(mp, stored_w=w / fsdp, dram_need=need, fits=need <= mp.dram_cap)
+            bw, a_ = collective_seconds("allgather", act_w / fsdp, fsdp, sys.link)
+            link_bw += bw; sync += a_ * nl; link_bytes += act_w / fsdp
+            gw = act_w * (fsdp - 1) / fsdp
+            dram = {**dram, "weights": dram["weights"] + gw, "total": dram["total"] + gw, "fsdp_gather": gw}
         if pp > 1 and not st.has_head:
             act = ph.batch * (_cdiv(ph.q, lay.sp) * m.hidden * ab + pair_act) / lay.dp
             bw, a = collective_seconds("p2p", act, 2, sys.link)
@@ -438,7 +460,7 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
     b = _cdiv(scn.serving.batch, scn.layout.dp)
     info = wl.info
     tiling = scn.workload.vae_tiling
-    if tiling and pl.vae.family not in ("cog", "mochi", "hunyuan"):
+    if tiling and pl.vae.family not in (*TILING, "hunyuan"):
         warnings.append(f"workload.vae_tiling：{pl.vae.label} 的分块解码未建模（按参考默认不分块计）")
     key = (b, tuple(info["latent"]), info["frames"], info["cfg"], wl.aux, scn.mapping, scn.chip, scn.mem_id,
            scn.mem_eff, tiling)
@@ -484,6 +506,11 @@ _PLACE_LABEL = {"resident": "常驻", "shard": "文本编码器分片（FSDP）"
                 "shard+offload": "分片 + 卸载"}
 
 
+def _standby_bytes(m: ModelSpec, lay: Layout, first: int, last: int) -> float:
+    """Idle-expert weights of a stage per card (Wan2.2 A14B: the second 14B expert, resident but not run)."""
+    return m.standby_params * (last - first) / m.n_layers * m.fmt("attn").bits / 8 / lay.tp
+
+
 def _place_components(scn: Scenario, m: ModelSpec, pipe: dict, stages: list, sys: System,
                       warnings: list[str]) -> dict:
     """Where the pipeline components live on the cards of one data-parallel replica (0.45; docs/MODEL.md §11.4).
@@ -501,20 +528,28 @@ def _place_components(scn: Scenario, m: ModelSpec, pipe: dict, stages: list, sys
                      both experts still loaded once per request
       shard+offload  both
       auto           the first of resident → shard → offload → shard+offload that fits (else the smallest need)
-    The DiT's own weights are never sharded beyond its layout (Wan ``--dit_fsdp`` not modelled)."""
+    ``workload.te_cpu`` (0.46, Wan ``--t5_cpu``): the text encoder runs on the host CPU — no encoder weights or
+    activations on any card, encode time = encoder FLOPs / ``workload.host_TFLOPS`` (「假设」, set from a measurement),
+    the embeddings' copy to the card is negligible; then shard is moot and auto tries resident → offload.
+    ``workload.dit_fsdp`` (0.46): the DiT stage weights are already sharded over SP·DP in the stage plan (see
+    ``_evaluate_full``); an offloaded card then re-loads only its shard."""
     lay, w = scn.layout, scn.workload
     c = lay.pp * lay.tp * lay.sp
     last = len(stages) - 1
     base = [s.mem for s in stages]
     alpha = sys.link.alpha_us * 1e-6
-    sb_bytes = m.fmt("attn").bits / 8 / lay.tp
-    standby = [m.standby_params * (s.layers[1] - s.layers[0]) / m.n_layers * sb_bytes for s in stages]
+    g = lay.sp * lay.dp if w.dit_fsdp and lay.sp * lay.dp > 1 else 1
+    standby = [_standby_bytes(m, lay, *s.layers) / g for s in stages]
+
+    cpu = w.te_cpu
+    te_tflop = sum(p["tflop"] for p in pipe["parts"] if p["role"] == "text_encoder")
+    te_act = 0.0 if cpu else pipe["te_act"]
 
     def option(place: str) -> tuple[list[MemPlan], dict]:
-        shard = "shard" in place and c > 1
+        shard = "shard" in place and c > 1 and not cpu
         off = "offload" in place
         te_card = (pipe["te_w"] / c + 2 * pipe["te_layer_w"]) if shard else pipe["te_w"]
-        te_card = min(te_card, pipe["te_w"])
+        te_card = 0.0 if cpu else min(te_card, pipe["te_w"])
         mems = []
         for i, mp in enumerate(base):
             te_here = shard or i == 0
@@ -523,23 +558,25 @@ def _place_components(scn: Scenario, m: ModelSpec, pipe: dict, stages: list, sys
             w_vae = pipe["vae_w"] if vae_here else 0.0
             if off:
                 need = max(mp.dram_need - standby[i],
-                           RUNTIME_RESERVE + w_te + pipe["te_act"] if te_here else 0.0,
+                           RUNTIME_RESERVE + w_te + te_act if te_here and not cpu else 0.0,
                            RUNTIME_RESERVE + w_vae + pipe["vae_act"] if vae_here else 0.0)
             else:
-                act = max(pipe["te_act"] if te_here else 0.0, pipe["vae_act"] if vae_here else 0.0)
+                act = max(te_act if te_here else 0.0, pipe["vae_act"] if vae_here else 0.0)
                 need = mp.dram_need + w_te + w_vae + max(0.0, act - mp.act_total)
             mems.append(replace(mp, dram_need=need, fits=need <= mp.dram_cap, pipe_w=w_te + w_vae))
         gather = (pipe["te_w"] * (c - 1) / c / (sys.link.GBps * 1e9) + alpha * pipe["te_layers"]) if shard else 0.0
-        te_s = max(pipe["te_s"], gather) if shard else pipe["te_s"]
+        te_s = (te_tflop / w.host_TFLOPS if cpu else max(pipe["te_s"], gather) if shard else pipe["te_s"])
         host = w.host_GBps * 1e9
         load = ((te_card + max(mp.stored_w for mp in base) + pipe["vae_w"]) / host) if off else 0.0
         return mems, {"place": "shard" if place == "shard+offload" and not shard else
                       ("resident" if place == "shard" and not shard else place),
                       "te_card_w": te_card, "gather_s": gather, "te_s": te_s, "te_compute_s": pipe["te_s"],
-                      "load_s": load, "te_cards": c if shard else 1}
+                      "load_s": load, "te_cards": c if shard else 1, "te_cpu": cpu,
+                      "host_TFLOPS": w.host_TFLOPS if cpu else None}
 
     if w.placement == "auto":
-        cands = ["resident"] + (["shard"] if c > 1 else []) + ["offload"] + (["shard+offload"] if c > 1 else [])
+        multi = c > 1 and not cpu
+        cands = ["resident"] + (["shard"] if multi else []) + ["offload"] + (["shard+offload"] if multi else [])
         opts = [(p, *option(p)) for p in cands]
         pick = next((o for o in opts if all(mp.fits for mp in o[1])), None)
         if pick is None:
@@ -552,6 +589,11 @@ def _place_components(scn: Scenario, m: ModelSpec, pipe: dict, stages: list, sys
     if w.placement == "auto" and info["place"] != "resident":
         warnings.append(f"组件放置 auto → {_PLACE_LABEL[info['place']]}：常驻放不下"
                         + (f"；每请求从主机重载权重 {info['load_s']:.2f} s（{w.host_GBps:g} GB/s「假设」）" if info["load_s"] else ""))
-    return {**pipe, **info, "placement": w.placement, "place_label": _PLACE_LABEL[info["place"]],
+    parts = pipe["parts"]
+    if cpu:     # encoder parts report their host time (the card-side numbers stay in te_compute_s)
+        parts = [{**p, "s": p["tflop"] / w.host_TFLOPS, "bound": "host CPU", "dram_GB": 0.0, "on_host": True}
+                 if p["role"] == "text_encoder" else p for p in parts]
+    return {**pipe, **info, "parts": parts, "placement": w.placement,
+            "place_label": _PLACE_LABEL[info["place"]] + ("，文本编码器在主机 CPU" if cpu else ""),
             "host_GBps": w.host_GBps}
 

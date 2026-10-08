@@ -71,6 +71,7 @@ class PairDims:
     recycles: int = 1
     diff_steps: int = 0
     samples: int = 1
+    split: bool = False      # DAP > 1: diffusion samples split over the DAP ranks instead of replicated (0.46)
 
 
 @dataclass(frozen=True)
@@ -129,7 +130,7 @@ class Op:
     comm_group: int = 1
     comm_bytes: float = 0.0   # payload per rank
     act_bytes: float = 0.0    # activation in+out bytes (for SRAM-port / spill accounting)
-    replicated: int = 1       # how many ranks of the stage compute this identical op
+    replicated: float = 1     # how many ranks of the stage compute this identical op (fractional: idle sample slots)
     stream: bool = False      # full phase: activations may exceed SRAM → DRAM streaming accounted (memplan.act_stream)
     orient: bool = False      # full-phase attention: mapping may take either GEMM orientation (O = P·V or Oᵀ = Vᵀ·Pᵀ)
     bmm: bool = False         # activation×activation batched GEMM whose operands are plain tensors (triangle update,
@@ -558,12 +559,20 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
     b = _cdiv(ph.batch, sh.dp)
     s = pd.samples if L.samples in ("tok", "all") else 1
     ps = pd.samples if L.samples == "all" else 1
+    rep_tok = dap              # token / atom grids: replicated on every DAP rank
+    if dap > 1 and pd.split and L.samples == "tok" and s > 1:
+        # 0.46: the diffusion module's samples are independent trajectories given the trunk output (single + pair
+        # conditioning, already on every rank): each DAP rank runs ⌈S / D⌉ of them — exact, no extra communication;
+        # the pair-grid work of the block (pair-bias projections) stays DAP-split as before
+        s_loc = _cdiv(s, dap)
+        rep_tok = dap * s_loc / s
+        s = s_loc
     ops: list[Op] = []
     for l in L.pair_linears:
         m = _pair_rows(l.rows, pd, b, s, ps, dap)
         if m <= 0:
             continue
-        rep = 1 if l.rows in _DAP_SPLIT else dap
+        rep = 1 if l.rows in _DAP_SPLIT else rep_tok
         o = gemm(model, f"{L.stack}.{l.name}", li, m, l.k, l.n, l.role or "pair", stream=True, replicated=rep)
         ops.append(o)
         ops.append(Op(f"{L.stack}.{l.name}.ew", "vector", li, vec=m * (l.k + l.n) * 4, replicated=rep))
@@ -571,7 +580,7 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
     for i, c in enumerate(L.pair_cores):
         cops = _pair_core_ops(model, li, c, pd, b, s, ps, f"{L.stack}.{c.kind}{i}", dap, has_col)
         if dap > 1 and c.kind in ("seq_att", "local_att"):
-            cops = [replace(o, replicated=dap) if o.kind != "comm" else o for o in cops]
+            cops = [replace(o, replicated=rep_tok) if o.kind != "comm" else o for o in cops]
         ops += cops
     return ops
 

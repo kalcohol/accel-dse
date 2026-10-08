@@ -111,7 +111,12 @@
       <label title="文本编码器 / VAE 放在哪里：常驻 = 编码器在首级卡、VAE 在末级卡，与 DiT 同时常驻；分片 = 文本编码器权重按 FSDP 切到本副本全部卡（Wan --t5_fsdp），逐层 all-gather；卸载 = 组件与 DiT 分时占用显存（diffusers enable_model_cpu_offload / Wan --offload_model），每请求从主机重载权重；自动 = 依次取第一个放得下的">组件放置 <span class="tag assume">假设</span>
         <select id="w-placement"><option value="auto">自动</option><option value="resident">常驻</option><option value="shard">文本编码器分片</option><option value="offload">顺序卸载</option><option value="shard+offload">分片 + 卸载</option></select></label>
       <label title="卸载时每卡主机 → 卡带宽（「假设」PCIe 5.0 x16 有效约 50 GB/s）">主机带宽 GB/s <span class="tag assume">假设</span><input type="number" id="w-host_GBps" min="1" step="8"></label>
-      <label class="inline" title="diffusers enable_tiling()：CogVideoX（240×360 px tile，重叠 1/6、1/5）与 Mochi（256 px tile，stride 192）空间分块解码，重叠区重复计算、激活峰值按 tile；HunyuanVideo 总是分块；其余 VAE 的分块未建模"><input type="checkbox" id="w-vae_tiling"> VAE 分块解码</label>
+      <label class="inline" title="diffusers enable_tiling()：CogVideoX（240×360 px tile，重叠 1/6、1/5）与 Mochi（256 px tile，stride 192）与 Wan（diffusers AutoencoderKLWan，256 px tile，stride 192；官方仓库不分块）空间分块解码，重叠区重复计算、激活峰值按 tile；HunyuanVideo 总是分块；其余 VAE 的分块未建模"><input type="checkbox" id="w-vae_tiling"> VAE 分块解码</label>
+    </div>
+    <div class="row3 gen-only">
+      <label class="inline" title="DiT 权重按 FSDP 在同一流水级的 SP·DP 卡之间分片（Wan --dit_fsdp）：每卡存 1/(SP·DP) + 2 层预取缓冲，每次前向逐层 all-gather（与计算重叠，每层一次 α），gather 结果写入 DRAM 再读；需要 SP·DP > 1"><input type="checkbox" id="w-dit_fsdp"> DiT 权重 FSDP 分片</label>
+      <label class="inline" title="文本编码器在主机 CPU 上运行（Wan --t5_cpu）：卡上不放编码器权重与激活；编码时间 = 编码器 FLOPs / 主机有效算力（「假设」，请按实测填写）"><input type="checkbox" id="w-te_cpu"> 文本编码器放主机 CPU</label>
+      <label title="--t5_cpu 时主机 CPU 跑文本编码器的有效算力（「假设」，默认 2 TFLOPS；请按实测填写）">主机 TFLOPS <span class="tag assume">假设</span><input type="number" id="w-host_TFLOPS" min="0.1" step="0.5"></label>
     </div>
     <div class="row3 protein-only">
       <label>序列长度（残基）<input type="number" id="w-seq_len" min="1" max="65536" step="64"></label>
@@ -123,6 +128,7 @@
       <label title="主干（trunk）前向遍数，含第一遍：recycle 次数 + 1">主干遍数<input type="number" id="w-recycles" min="1" max="64" step="1"></label>
       <label class="diff-only" title="扩散模块去噪步数（每步扩散 transformer 一次前向）">扩散步数<input type="number" id="w-psteps" min="1" max="1000" step="10"></label>
       <label class="diff-only" title="每条序列采样的结构数（扩散 + 置信度头按样本数成倍；pair 条件共享）">扩散样本数<input type="number" id="w-samples" min="1" max="64" step="1"></label>
+      <label class="inline diff-only" title="DAP > 1 时把扩散样本分到 DAP 各卡（每卡 ⌈样本 / DAP⌉ 条轨迹；样本间独立、条件已在每卡上 → 精确、无额外通信）；取消 = 每卡重复全部样本"><input type="checkbox" id="w-sample_split" checked> DAP 时扩散样本分卡</label>
     </div>
     <div class="small muted" id="wl-note"></div>
   </section>

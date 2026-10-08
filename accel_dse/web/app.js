@@ -151,6 +151,8 @@ function syncInputs() {
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
   if ($('w-placement')) $('w-placement').value = S.sc.workload.placement || 'auto';
   if ($('w-vae_tiling')) $('w-vae_tiling').checked = !!S.sc.workload.vae_tiling;
+  for (const k of ['dit_fsdp', 'te_cpu']) if ($('w-' + k)) $('w-' + k).checked = !!S.sc.workload[k];
+  if ($('w-sample_split')) $('w-sample_split').checked = S.sc.workload.sample_split !== false;
 }
 
 function seg(id, items, get, set) {
@@ -516,13 +518,15 @@ function domainKpis(s, cap, auto) {
   k.push(memKpi(s, cap));
   return k;
 }
-function placeText(pl) {
+function placeText(pl, sc) {
   const gb = (x) => num(x / 1e9) + ' GB';
-  const all = pl.te_w + pl.vae_w;
-  if (pl.place === 'resident') return `常驻——文本编码器在首级卡、VAE 在末级卡，与 DiT 同时占用显存（共 ${gb(all)}）`;
+  const cpu = pl.te_cpu ? `文本编码器在主机 CPU 上运行（Wan --t5_cpu；${fmtDur(pl.te_s)} = ${num(pl.parts.filter((p) => p.role === 'text_encoder').reduce((a, p) => a + p.tflop, 0))} TFLOP ÷ ${num(pl.host_TFLOPS)} TFLOPS「假设」，卡上不放编码器）；` : '';
+  const fsdp = sc && sc.workload.dit_fsdp && (sc.layout.sp || 1) * sc.layout.dp > 1 ? `DiT 权重 FSDP 切到每级 ${(sc.layout.sp || 1) * sc.layout.dp} 张卡（Wan --dit_fsdp，逐层 all-gather 与计算重叠）；` : '';
+  const all = (pl.te_cpu ? 0 : pl.te_w) + pl.vae_w;
+  if (pl.place === 'resident') return `${cpu}${fsdp}常驻——${pl.te_cpu ? '' : '文本编码器在首级卡、'}VAE 在末级卡，与 DiT 同时占用显存（共 ${gb(all)}）`;
   const sh = pl.te_cards > 1 ? `文本编码器权重按 FSDP 切到 ${pl.te_cards} 张卡（每卡 ${gb(pl.te_card_w)}，含 2 层预取；逐层 all-gather ${fmtDur(pl.gather_s)}，与编码计算重叠）` : '';
   const off = pl.load_s ? `组件与 DiT 分时占用显存（需求取三者最大值），每请求从主机重载文本编码器 + DiT + VAE 权重 ${fmtDur(pl.load_s)}（${num(pl.host_GBps)} GB/s「假设」，主机保留副本）` : '';
-  return [sh, off].filter(Boolean).join('；') + '；VAE 在末级卡';
+  return cpu + fsdp + [sh, off].filter(Boolean).join('；') + '；VAE 在末级卡';
 }
 async function runFit() {
   const box = $('fit');
@@ -547,6 +551,10 @@ async function runFit() {
     }
     if (m.domain === 'gen' && S.sc.workload.pipeline !== false && (S.sc.workload.placement || 'auto') !== 'auto') acts.push(h('button', { class: 'btn', onclick: () => { S.sc.workload.placement = 'auto'; syncInputs(); schedule(); } },
       '组件放置改为「自动」（常驻 → 文本编码器分片 → 顺序卸载，取第一个放得下的）'));
+    if (m.domain === 'gen' && !S.sc.workload.dit_fsdp && (S.sc.layout.sp || 1) * S.sc.layout.dp > 1) acts.push(h('button', { class: 'btn', onclick: () => { S.sc.workload.dit_fsdp = true; syncInputs(); schedule(); } },
+      `DiT 权重 FSDP 分片到 ${(S.sc.layout.sp || 1) * S.sc.layout.dp} 张卡（Wan --dit_fsdp）`));
+    if (m.domain === 'gen' && !S.sc.workload.te_cpu && S.sc.workload.pipeline !== false) acts.push(h('button', { class: 'btn ghost', onclick: () => { S.sc.workload.te_cpu = true; syncInputs(); schedule(); } },
+      '文本编码器放主机 CPU（Wan --t5_cpu；编码时间按主机 TFLOPS「假设」）'));
     if (m.domain === 'gen' && S.sc.workload.pipeline !== false) acts.push(h('button', { class: 'btn ghost', onclick: () => { S.sc.workload.pipeline = false; syncInputs(); schedule(); } },
       '只评估 DiT（文本编码器 / VAE 权重不计，相当于卸载到主机）'));
     if (f.min_mem) {
@@ -617,13 +625,13 @@ function renderAssumptions(r) {
       `每个去噪步 ${g.workload.cfg} 次前向（CFG 的 cond / uncond 作为 batch，DP 可切分 = CFG 并行），${g.workload.steps} 步；单段延迟 = ${g.pipeline ? '文本编码 + ' : ''}步数 × max(微批, PP) × 最重流水级时间${g.pipeline ? ' + VAE 解码' : ''}${g.pipeline && g.pipeline.load_s ? ' + 主机重载' : ''}`,
       g.pipeline
         ? `文本编码器与 VAE 解码：按发布检查点头的算子图与去噪串行执行「假设」（${g.pipeline.parts.map((p) => `${p.label} ${fmtDur(p.s)} · ${p.bound}${p.tiles ? ` · ${p.tiles} 个 tile（重叠 ×${num(p.overlap)}${p.tiling ? '，enable_tiling' : ''}）` : ''}`).join('；')}）；吞吐按单请求串行计（与其他请求的去噪重叠未建模）`
-          + `；组件放置${g.pipeline.placement === 'auto' ? '（自动）' : ''}：${placeText(g.pipeline)}`
+          + `；组件放置${g.pipeline.placement === 'auto' ? '（自动）' : ''}：${placeText(g.pipeline, sc)}`
         : '文本编码器与 VAE 解码未计时、未计存储（工作负载里已取消勾选「计入文本编码器与 VAE 解码」）',
       '时间步嵌入与 AdaLN 调制按每序列一次计入',
       `单段延迟 SLO ${fmtDur(g.slo_s)}（「假设」，可在左侧修改）`);
     else items.push(r.model.is_pair
         ? `结构预测：主干（pair / MSA 表示）${g.workload.recycles} 遍${g.workload.diff_steps ? ` + 扩散 ${g.workload.diff_steps} 步 × ${g.workload.samples} 样本` : ' + 结构模块'}，无 KV 缓存；批延迟 = (微批 + PP − 1) × 最重流水级时间`
-          + ((sc.layout.sp || 1) > 1 ? `；DAP ${sc.layout.sp}：pair / MSA / 模板网格按残基轴切到 ${sc.layout.sp} 卡，单一 / 原子轨道每卡重复，通信按 FastFold DAP（all-gather / all-to-all，与计算重叠取 max，每次集合通信 α）` : '')
+          + ((sc.layout.sp || 1) > 1 ? `；DAP ${sc.layout.sp}：pair / MSA / 模板网格按残基轴切到 ${sc.layout.sp} 卡，单一 / 原子轨道每卡重复，通信按 FastFold DAP（all-gather / all-to-all，与计算重叠取 max，每次集合通信 α）${g.workload.samples > 1 ? (sc.workload.sample_split !== false ? `；扩散 ${g.workload.samples} 个样本分到各卡（每卡 ${Math.ceil(g.workload.samples / sc.layout.sp)} 条）` : '；扩散样本每卡重复') : ''}` : '')
         : '单次编码器前向（双向注意力，无 KV 缓存）；批延迟 = (微批 + PP − 1) × 最重流水级时间',
       `批延迟 SLO ${r.model.is_pair ? num(g.slo_ms / 1e3) + ' s' : num(g.slo_ms) + ' ms'}（「假设」）；激活 dtype ${r.model.act_fmt || 'bf16'}${r.model.what_if ? '（what-if）' : `（「假设」${/^W fp32/.test(r.model.dtype) ? '，发布权重 fp32' : ''}；可用激活 dtype what-if 看 fp32 激活）`}`);
   } else items.splice(6, 0, `投机解码：k = ${sc.serving.spec_k}，接受率 ${sc.serving.spec_accept}（期望 token = (1−a^(k+1))/(1−a)）`,
@@ -985,6 +993,7 @@ async function init() {
   bindNumber('w-psteps', () => S.sc.workload.steps || null, (x) => (S.sc.workload.steps = x === null ? 0 : x), { int: true, nullable: true });
   for (const k of ['clip_slo_s', 'seq_slo_ms', 'fold_slo_s']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
   bindNumber('w-host_GBps', () => S.sc.workload.host_GBps, (x) => (S.sc.workload.host_GBps = x));
+  bindNumber('w-host_TFLOPS', () => S.sc.workload.host_TFLOPS, (x) => (S.sc.workload.host_TFLOPS = x));
   $('best-layout').addEventListener('click', bestLayout);
   $('best-batch').checked = S.best;
   AFTER.layout = () => {
@@ -1006,6 +1015,7 @@ async function init() {
   $('wi-act').addEventListener('change', (e) => { S.wiAct = e.target.value; schedule(); });
   $('w-placement').addEventListener('change', (e) => { S.sc.workload.placement = e.target.value; schedule(); });
   $('w-vae_tiling').addEventListener('change', (e) => { S.sc.workload.vae_tiling = e.target.checked; schedule(); });
+  for (const k of ['dit_fsdp', 'te_cpu', 'sample_split']) $('w-' + k).addEventListener('change', (e) => { S.sc.workload[k] = e.target.checked; schedule(); });
   $('w-pipeline').addEventListener('change', (e) => { S.sc.workload.pipeline = e.target.checked; put($('model-badges'), ...badges(model(), S.wiW || S.wiKV || (S.wiAct && isFull(model())))); schedule(); });
   bindMem();
   fillMem();

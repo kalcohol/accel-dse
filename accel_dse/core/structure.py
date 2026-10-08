@@ -232,6 +232,7 @@ def _spec(model_id, hf_id, rel, arch, hidden, layers, wl, notes, reasons, key, e
         "多卡：DAP（FastFold 动态轴并行，布局的 SP 维）把 pair / MSA / 模板网格沿一个残基轴切到 DAP 张卡，"
         "单一 / 原子轨道（结构模块、扩散 transformer、原子注意力）每卡重复计算；通信按 FastFold DAP 内核（三角乘法 / "
         "外积均值的 all-gather、pair 偏置 all-gather、行 ↔ 列 all-to-all）计，见 docs/MODEL.md §12；"
+        "DAP > 1 时扩散样本默认分到各卡（每卡 ⌈样本 / DAP⌉ 条，精确、无额外通信；workload.sample_split = false 时每卡重复）；"
         "pair 的 TP 未建模（布局 PP × DP × DAP，DP = 多条序列并行）"]
     pc = (spec.release_params - spec.params()) / spec.release_params
     if abs(pc) > 0.001:

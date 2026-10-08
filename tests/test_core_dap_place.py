@@ -64,9 +64,11 @@ def test_dap_layouts_latency_and_memory():
         # request FLOPs are a property of the request, not of the layout
         t1, t4 = (r.domain_summary()["tflop_per_request"] for r in (r1, r4))
         assert abs(t4 / t1 - 1) < 0.01, (mid, t1, t4)
-    # trunk-dominated AF2 scales near-linearly; Protenix (replicated 200-step diffusion) much less
+    # trunk-dominated AF2 scales near-linearly; Protenix with its 200-step diffusion replicated much less
+    # (0.46: the default splits the 5 samples over the DAP ranks — see test_core_046)
     af = [evaluate(Scenario(model="alphafold2", mem_id=HBM, layout=Layout(sp=d))).latency for d in (1, 8)]
-    px = [evaluate(Scenario(model="protenix", mem_id=HBM, layout=Layout(sp=d))).latency for d in (1, 8)]
+    px = [evaluate(Scenario(model="protenix", mem_id=HBM, layout=Layout(sp=d),
+                            workload=Workload(sample_split=False))).latency for d in (1, 8)]
     assert af[0] / af[1] > 6 and px[0] / px[1] < 3
     try:
         evaluate(Scenario(model="alphafold2", mem_id=HBM, layout=Layout(tp=2)))
@@ -130,7 +132,7 @@ def test_vae_tiling_option():
         va, vb = ([p for p in x["parts"] if p["role"] == "vae"][0] for x in (a, b))
         assert vb["tiles"] == tiles and vb["tiling"] and 1.2 < vb["tflop"] / va["tflop"] < vb["overlap"] + 0.05
         assert b["vae_act"] < a["vae_act"] and b["decode_s"] > a["decode_s"]
-    w = evaluate(Scenario(model="wan2.1-1.3b", mem_id=HBM, workload=Workload(vae_tiling=True)))
+    w = evaluate(Scenario(model="ltx-video", mem_id=HBM, workload=Workload(vae_tiling=True)))   # 0.46: Wan tiles
     assert any("vae_tiling" in x for x in w.warnings)
     out = api.api_eval({"scenario": {"model": "mochi-1", "mem_id": HBM,
                                      "workload": {"vae_tiling": True, "placement": "offload"}}})
