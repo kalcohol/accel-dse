@@ -146,7 +146,8 @@ def build_esm(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Model
     contact = math.prod(sh.get("esm.contact_head.regression.weight", [0])) + 1
     io_misc = pos + contact + d + 2 * d + V                  # unused abs-position table, contact head, lm biases + LN
     max_pos = c.get("max_position_embeddings", 1026)
-    wl = replace(wl, max_seq=max_pos - 2, special_tokens=2)
+    # 1026 learned positions = 2 (padding_idx offset) + 1024 tokens incl. <cls>/<eos> → 1022 residues
+    wl = replace(wl, max_seq=max_pos - 4, special_tokens=2)
     spec = _finish(model_id, hf_id, rel, "ESM-2 编码器（双向注意力 + RoPE）", d, L, layer, (), io_post, io_misc,
                    V, wl, "")
     head_copy = math.prod(sh.get("lm_head.decoder.weight", [0]))   # tied decoder stored again by the safetensors PR

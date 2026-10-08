@@ -1,4 +1,4 @@
-/* accel-dse 0.40 workbench (core v2). Zero dependencies. */
+/* accel-dse 0.41 workbench (core v2: LLM / VLM / video DiT / protein). Zero dependencies. */
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -40,6 +40,21 @@ function coverBadge(m) {
   return h('span', { class: 'badge cov ' + m.coverage, title: coverTip(m) }, h('span', { class: 'ax' }, '覆盖'), COVER_ZH[m.coverage]);
 }
 const PROV_ZH = { official: '官方', mirror: '镜像' };
+const DOMAIN_ZH = { gen: '视频生成', protein: '蛋白质' };
+const isFull = (m) => !!m && (m.domain === 'gen' || m.domain === 'protein');   // non-autoregressive full-sequence forward
+const UNIT_ZH = { frame: '帧', seq: '序列', token: 'tok' };
+function fmtDur(sec) {
+  if (sec === null || sec === undefined || !isFinite(sec)) return '—';
+  if (sec >= 7200) return num(sec / 3600) + ' h';
+  if (sec >= 120) return num(sec / 60) + ' min';
+  if (sec >= 1) return num(sec) + ' s';
+  return num(sec * 1e3) + ' ms';
+}
+function domainBadge(m) {
+  if (m.domain === 'gen') return h('span', { class: 'badge vlm', title: coverTip(m) }, '视频生成 · 只评估 DiT 主干');
+  if (m.domain === 'protein') return h('span', { class: 'badge vlm', title: coverTip(m) }, '蛋白质 · 编码器前向');
+  return null;
+}
 const BOUND_ZH = { MAC: 'MAC 算力', FEED: 'FEED 供数', VECTOR: 'VECTOR 向量', DRAM: 'DRAM 带宽', LINK: 'LINK 互连', SYNC: 'SYNC 同步' };
 const COMPONENTS = ['mac', 'feed', 'vector', 'dram', 'link', 'sync'];
 const MAP_DESC = {
@@ -55,6 +70,7 @@ const S = {
   cat: null, models: [], byId: {}, preset: '100T', chipOver: {}, sc: null,
   mem: {}, memInfo: null, wiW: '', wiKV: '', best: false, last: null,
   cmpObj: 'decode', layObj: 'decode', tab: 'eval',
+  kindMem: {},   // per model kind (llm / full): batch + auto-batch, restored when switching between kinds
 };
 
 /* ------------------------------------------------------------------ requests (sequenced: stale responses dropped) */
@@ -94,7 +110,7 @@ const model = () => S.byId[S.sc.model];
 function overrides() {
   const fo = [];
   if (S.wiW) for (const r of Object.keys(model().roles)) if (!['embed', 'lm_head', 'router'].includes(r)) fo.push([r, S.wiW]);
-  if (S.wiKV) fo.push(['kv', S.wiKV]);
+  if (S.wiKV && !isFull(model())) fo.push(['kv', S.wiKV]);
   return fo;
 }
 function body(extra = {}) {
@@ -163,27 +179,69 @@ const offBadge = (o) => h('span', { class: 'badge off', title: (OFF_DOMAIN[o.dom
 function fillModels() {
   const sel = $('model');
   put(sel, ...vendorGroups(catalogRows()).map((g) => h('optgroup', { label: g.label }, g.items.map((m) => m.evaluable
-    ? h('option', { value: m.id, title: coverTip(m) }, `${m.label}${m.domain === 'vlm' ? '（VLM）' : ''}　· ${COVER_ZH[m.coverage]}`)
+    ? h('option', { value: m.id, title: coverTip(m) }, `${m.label}${m.domain === 'vlm' ? '（VLM）' : DOMAIN_ZH[m.domain] ? `（${DOMAIN_ZH[m.domain]}）` : ''}　· ${COVER_ZH[m.coverage]}`)
     : h('option', { value: m.id, disabled: true, title: '暂未接入 v2，不能评估' }, `${m.label}　· ${OFF_DOMAIN[m.domain]} · ${m.status}`)))));
   sel.value = S.sc.model;
-  sel.addEventListener('change', () => { S.sc.model = sel.value; onModel(); schedule(); });
+  sel.addEventListener('change', () => { setModel(sel.value); schedule(); });
 }
 function badges(m, whatIf) {
   return [
     h('span', { class: 'badge ' + m.provenance, title: m.provenance === 'mirror' ? '官方仓库需授权，使用字节相同的公开镜像' : '官方发布' },
       h('span', { class: 'ax' }, '来源'), PROV_ZH[m.provenance] || m.provenance),
     coverBadge(m),
-    m.domain === 'vlm' ? h('span', { class: 'badge vlm', title: coverTip(m) }, 'VLM · 视觉编码器未建模') : null,
+    m.domain === 'vlm' ? h('span', { class: 'badge vlm', title: coverTip(m) }, 'VLM · 视觉编码器未建模') : domainBadge(m),
     h('span', { class: 'badge' }, h('span', { class: 'ax' }, 'dtype'), m.dtype),
     whatIf ? h('span', { class: 'badge wi' }, 'what-if dtype') : null,
   ].filter(Boolean);
 }
+function setModel(id) {
+  // switching between LLM and video / protein models keeps a separate batch + auto-batch per kind
+  const was = model(), next = S.byId[id];
+  const kw = isFull(was) ? 'full' : 'llm', kn = isFull(next) ? 'full' : 'llm';
+  if (kw !== kn) {
+    S.kindMem[kw] = { batch: S.sc.serving.batch, best: S.best };
+    const k = S.kindMem[kn] || (kn === 'full' ? { batch: 1, best: false } : { batch: 1, best: true });
+    S.sc.serving.batch = k.batch; S.best = k.best; $('best-batch').checked = S.best;
+  }
+  if (!was || !next || was.id !== next.id) S.sc.workload = { ...S.cat.defaults.workload, clip_slo_s: S.sc.workload.clip_slo_s, seq_slo_ms: S.sc.workload.seq_slo_ms };
+  S.sc.model = id;
+  $('model').value = id;
+  onModel();
+}
+function paintDomain(m) {
+  const full = isFull(m);
+  document.querySelectorAll('.llm-only').forEach((e) => (e.hidden = full));
+  document.querySelectorAll('.full-only').forEach((e) => (e.hidden = !full));
+  document.querySelectorAll('.gen-only').forEach((e) => (e.hidden = m.domain !== 'gen'));
+  document.querySelectorAll('.protein-only').forEach((e) => (e.hidden = m.domain !== 'protein'));
+  document.querySelectorAll('.dp-in').forEach((e) => (e.hidden = !(m.is_moe || full)));
+  if (full) {
+    if (S.cmpObj === 'goodput') { S.cmpObj = 'decode'; paintSeg('cmp-obj', 'decode'); }
+    if (S.layObj === 'goodput') { S.layObj = 'decode'; paintSeg('lay-obj', 'decode'); }
+  }
+  const unit = m.domain === 'gen' ? '帧/s/卡' : m.domain === 'protein' ? '序列/s/卡' : null;
+  for (const id of ['cmp-obj', 'lay-obj']) $(id).querySelector('[data-v=decode]').textContent = unit ? `目标：吞吐（${unit}）` : '目标：decode 吞吐';
+  $('batch-label').textContent = m.domain === 'gen' ? 'batch（视频段数）' : m.domain === 'protein' ? 'batch（序列数）' : 'batch';
+  $('best-batch-label').textContent = m.domain === 'gen' ? '自动取满足单段延迟 SLO 的最大 batch（最大化帧/s/卡）'
+    : m.domain === 'protein' ? '自动取满足批延迟 SLO 的最大 batch（最大化序列/s/卡）' : '自动取满足 TPOT SLO 的最大 batch';
+  const w = m.workload;
+  if (w) {
+    $('wl-kind').textContent = m.domain === 'gen' ? `视频 · 默认 ${w.width}×${w.height} · ${w.frames} 帧 · ${w.fps} fps · ${w.steps} 步 · CFG ${w.cfg}` : `蛋白质 · 默认 ${w.seq_len} 残基（训练上限 ${w.max_seq}）`;
+    for (const [k, v] of Object.entries({ frames: w.frames, height: w.height, width: w.width, steps: w.steps, cfg: w.cfg, seq_len: w.seq_len }))
+      if ($('w-' + k)) $('w-' + k).placeholder = v ? `默认 ${v}` : '';
+    $('wl-note').textContent = '留空 = 按发布默认（' + w.source + '）。' + (m.domain === 'gen'
+      ? `token 数 = 潜空间网格（帧 (F−1)/${w.vae[0]}+1，像素 /${w.vae[1]}，patch ${w.patch.join('×')}）${w.joint_text ? ` + ${w.text_tokens} 个文本 token（联合注意力）` : `；文本 ${w.text_tokens} token 走跨注意力`}。`
+      : 'token 数 = 残基 + <cls>/<eos>。');
+  }
+}
 function onModel() {
   const m = model();
+  paintDomain(m);
+  if ($('sw-path').options.length) fillSweepPaths();
   put($('model-badges'), ...badges(m, S.wiW || S.wiKV));
   put($('model-facts'), 
     h('span', {}, '参数 ', h('b', {}, num(m.params_B) + 'B')),
-    h('span', {}, '激活 ', h('b', {}, num(m.active_B) + 'B')),
+    isFull(m) ? h('span', {}, '头 ', h('b', {}, m.heads)) : h('span', {}, '激活 ', h('b', {}, num(m.active_B) + 'B')),
     h('span', {}, '层 ', h('b', {}, m.n_layers)),
     h('span', {}, m.arch),
     m.mtp_layers ? h('span', {}, `MTP ×${m.mtp_layers}`) : null,
@@ -195,7 +253,8 @@ function onModel() {
   $('model-notes-wrap').hidden = !m.notes.length;
   document.querySelectorAll('.moe-only').forEach((e) => (e.hidden = !m.is_moe));
   const L = S.sc.layout;
-  if (!m.is_moe) { L.dp = 1; L.ep = 1; L.etp = 1; } else fixMoe('tp');
+  if (isFull(m)) { L.ep = 1; L.etp = 1; L.sp = L.sp || 1; }
+  else { L.sp = 1; if (!m.is_moe) { L.dp = 1; L.ep = 1; L.etp = 1; } else fixMoe('tp'); }
   if (L.pp > m.n_layers) L.pp = 1;
   syncInputs();
   cardsNote();
@@ -207,16 +266,16 @@ function fixMoe(changed) {
   if (changed === 'etp') { if (want % L.etp === 0) { L.ep = want / L.etp; return; } }
   if (want % L.ep === 0) L.etp = want / L.ep; else { L.ep = want; L.etp = 1; }
 }
-const cards = () => S.sc.layout.pp * S.sc.layout.tp * S.sc.layout.dp;
+const cards = () => S.sc.layout.pp * S.sc.layout.tp * S.sc.layout.dp * (S.sc.layout.sp || 1);
 function setCards(n) {
   // default fill for a new card count: all TP (MoE: experts spread with EP = TP); 「布局搜索」finds the best
   const L = S.sc.layout;
-  L.pp = 1; L.tp = n; L.dp = 1;
+  L.pp = 1; L.tp = n; L.dp = 1; L.sp = 1;
   if (model().is_moe) { L.ep = n; L.etp = 1; } else { L.ep = 1; L.etp = 1; }
 }
 function cardsNote() {
   const L = S.sc.layout;
-  $('cards-note').textContent = `PP${L.pp} × TP${L.tp} × DP${L.dp} = ${cards()} 卡；改卡数会按 TP 重新填充布局`;
+  $('cards-note').textContent = `PP${L.pp} × TP${L.tp} × DP${L.dp}${isFull(model()) ? ` × SP${L.sp || 1}` : ''} = ${cards()} 卡；改卡数会按 TP 重新填充布局`;
   const c = $('l-cards');
   if (c._sync && document.activeElement !== c) c._sync();
 }
@@ -361,6 +420,7 @@ function renderEval(r) {
   const cap = S.memInfo ? S.memInfo.capacity_GiB : NaN;
   const k = [];
   const auto = S.best ? '（自动）' : '';
+  if (s.gen) { put($('kpis'), ...domainKpis(s, cap, auto)); return; }
   if (s.phase === 'decode') {
     const over = s.tpot_ms > sv.tpot_slo_ms;
     k.push(kpi('TPOT', num(s.tpot_ms) + ' ms', `batch ${s.batch}${auto} · SLO ${sv.tpot_slo_ms} ms${over ? ' · 超出' : ''}`, over ? 'warn' : ''));
@@ -383,6 +443,42 @@ function renderEval(r) {
     h('div', { class: 's' }, h('span', { class: 'ubar wide' }, h('i', { style: `width:${frac * 100}%` })), `SRAM 驻留 ${pct(s.residency)}`)));
   put($('kpis'), ...k);
 }
+function memKpi(s, cap) {
+  const frac = isFinite(cap) && cap > 0 ? Math.min(1, s.dram_need_GiB / cap) : 0;
+  return h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'DRAM 需求 / 容量（每卡）'),
+    h('div', { class: 'v' }, `${num(s.dram_need_GiB)} / ${num(cap)} GiB`),
+    h('div', { class: 's' }, h('span', { class: 'ubar wide' }, h('i', { style: `width:${frac * 100}%` })),
+      s.gen && s.gen.act_GiB !== undefined ? `激活常驻 ${num(s.gen.act_GiB)} GiB · SRAM 驻留 ${pct(s.residency)}` : `SRAM 驻留 ${pct(s.residency)}`));
+}
+function boundKpi(s) {
+  return h('div', { class: 'kpi' }, h('div', { class: 'l' }, '绑定瓶颈 · 有效 MAC'),
+    h('div', { class: 'v' }, boundTag(s.bound), ' ', pct(s.array_util)),
+    h('div', { class: 's' }, `${BOUND_ZH[s.bound] || ''} · 最重流水级 ${s.heaviest_stage}`));
+}
+function domainKpis(s, cap, auto) {
+  // video: clip latency, per-frame latency, frames/s/card; protein: batch latency, sequences/s/card, residues/s/card
+  const g = s.gen, w = g.workload;
+  const k = [];
+  if (g.unit === 'frame') {
+    const over = !s.slo_ok;
+    k.push(kpi('单段延迟（clip）', fmtDur(g.clip_s),
+      `${w.width}×${w.height} · ${w.frames} 帧 · ${w.steps} 步 × CFG ${w.cfg} · batch ${s.batch}${auto} · SLO ${fmtDur(g.slo_s)}${over ? ' · 超出' : ''}`, over ? 'warn' : ''));
+    k.push(kpi('每帧延迟', fmtDur(g.s_per_frame),
+      `每去噪步 ${fmtDur(g.step_ms / 1e3)} · ${num(w.seq_tokens)} token / 前向 · 视频 ${num(w.video_s)} s${g.realtime_x ? ` · 实时倍率 ${num(g.realtime_x)}×` : ''}`));
+    k.push(kpi('吞吐 / 卡', num(g.frames_per_s_card) + ' 帧/s',
+      `${num(g.clips_per_hour_card)} 段/小时/卡 · ${s.cards} 卡 · ${s.layout} · ${num(g.tflop_per_request)} TFLOP/段`));
+  } else {
+    const over = !s.slo_ok;
+    k.push(kpi('批延迟', fmtDur(g.batch_ms / 1e3),
+      `batch ${s.batch}${auto} × ${w.seq_len} 残基 · SLO ${num(g.slo_ms)} ms${over ? ' · 超出' : ''}`, over ? 'warn' : ''));
+    k.push(kpi('吞吐 / 卡', num(g.seq_per_s_card) + ' 序列/s',
+      `${num(g.residues_per_s_card)} 残基/s/卡 · ${s.cards} 卡 · ${s.layout}`));
+    k.push(kpi('每序列计算', num(g.tflop_per_request * 1e3) + ' GFLOP', `${w.tokens} token（含 <cls>/<eos>）· 单次编码器前向`));
+  }
+  k.push(boundKpi(s));
+  k.push(memKpi(s, cap));
+  return k;
+}
 async function runFit() {
   const box = $('fit');
   box.hidden = false;
@@ -402,7 +498,7 @@ async function runFit() {
     if (f.min_cards) {
       const c = f.min_cards;
       acts.push(h('button', { class: 'btn', onclick: () => applyLayout(c.layout_obj, c.batch) },
-        `改为 ${c.cards} 卡 · ${c.layout} · batch ${c.batch}（每卡 ${num(c.need_GiB)} GiB${c.meets_slo ? '' : '，TPOT SLO 未满足'}）`));
+        `改为 ${c.cards} 卡 · ${c.layout} · batch ${c.batch}（每卡 ${num(c.need_GiB)} GiB${c.meets_slo ? '' : isFull(m) ? '，延迟 SLO 未满足' : '，TPOT SLO 未满足'}）`));
     }
     if (f.min_mem) {
       const mm = f.min_mem;
@@ -443,9 +539,9 @@ function renderStages(r) {
   put($('stage-tbl'), h('thead', {}, head), h('tbody', {}, rows));
   put($('legend'), ...COMPONENTS.map((c) => h('span', { style: `--c:var(--b-${c})` }, BOUND_ZH[c.toUpperCase()])),
     h('span', { style: '--c:transparent' }, 'MAC / FEED 为逐算子取 max 之前的分项和'));
-  const mh = h('tr', {}, h('th', { class: 'l' }, '流水级'), h('th', {}, '权重 GiB'), h('th', {}, 'KV GiB'), h('th', {}, '状态 GiB'),
+  const mh = h('tr', {}, h('th', { class: 'l' }, '流水级'), h('th', {}, '权重 GiB'), h('th', {}, r.summary.gen ? 'KV GiB（无 KV 缓存）' : 'KV GiB'), h('th', {}, '状态 GiB'),
     h('th', {}, '需求 / 容量 GiB'), h('th', {}, 'SRAM 驻留'), h('th', {}, 'SRAM 中 KV MiB'), h('th', {}, '暂存区 MiB'),
-    h('th', {}, 'DRAM 流量 / 步 GB'), h('th', {}, '反量化 百万元素'));
+    h('th', {}, r.summary.gen ? 'DRAM 流量 / 前向 GB（含激活流式）' : 'DRAM 流量 / 步 GB'), h('th', {}, '反量化 百万元素'));
   const mr = r.stages.map((st) => h('tr', {}, h('td', { class: 'l' }, st.index), h('td', {}, num(st.mem.stored_w_GiB)),
     h('td', {}, num(st.mem.kv_GiB)), h('td', {}, num(st.mem.state_GiB)),
     h('td', { style: st.mem.fits ? '' : 'color:var(--danger)' }, `${num(st.mem.need_GiB)} / ${num(st.mem.cap_GiB)}`),
@@ -463,10 +559,19 @@ function renderAssumptions(r) {
     `累加器 ${c.acc_kib} KiB（超出的部分和行溢出到 SRAM）`,
     `DRAM 效率 ${sc.mem_eff ?? (S.memInfo ? S.memInfo.efficiency : 0.7)}；预留 1 GiB；暂存区 = max(2 MiB, 2·最大激活)`,
     `链路 ${sc.link.GBps} GB/s，每次集合通信同步 α = ${sc.link.alpha_us} µs（${sc.link.topology === 'ring' ? '环形' : '交换'}拓扑）`,
-    `投机解码：k = ${sc.serving.spec_k}，接受率 ${sc.serving.spec_accept}（期望 token = (1−a^(k+1))/(1−a)）`,
-    'MoE：每 rank 命中专家数取 max(局部期望, 全局期望/EP)；token 均匀路由',
     '芯片不支持的权重格式：反量化每元素 2 次向量操作',
   ];
+  if (r.summary.gen) {
+    const g = r.summary.gen;
+    items.splice(4, 1, `DRAM 效率 ${sc.mem_eff ?? (S.memInfo ? S.memInfo.efficiency : 0.7)}；预留 1 GiB；激活超出 SRAM/2 时分块流式进出 DRAM（GEMM 取激活分块 / 权重分块中较省者；注意力按 flash 式 K/V 重读）`);
+    if (g.unit === 'frame') items.push(
+      `每个去噪步 ${g.workload.cfg} 次前向（CFG 的 cond / uncond 作为 batch，DP 可切分 = CFG 并行），${g.workload.steps} 步；单段延迟 = 步数 × max(微批, PP) × 最重流水级时间`,
+      '文本编码器与 VAE 解码未计时、未计存储（见模型「近似之处」）；时间步嵌入与 AdaLN 调制按每序列一次计入',
+      `单段延迟 SLO ${fmtDur(g.slo_s)}（「假设」，可在左侧修改）`);
+    else items.push('单次编码器前向（双向注意力，无 KV 缓存）；批延迟 = (微批 + PP − 1) × 最重流水级时间',
+      `批延迟 SLO ${num(g.slo_ms)} ms（「假设」）；激活 dtype bf16（「假设」，发布权重 fp32）`);
+  } else items.splice(6, 0, `投机解码：k = ${sc.serving.spec_k}，接受率 ${sc.serving.spec_accept}（期望 token = (1−a^(k+1))/(1−a)）`,
+    'MoE：每 rank 命中专家数取 max(局部期望, 全局期望/EP)；token 均匀路由');
   put($('assume-list'), ...items.map((t) => h('li', {}, t)));
 }
 
@@ -485,7 +590,10 @@ function stabFlag(st) {
 function scopeText() {
   const sv = S.sc.serving, m = model();
   const mi = S.memInfo;
-  return `场景：${m.label} · ${cards()} 卡 · 芯片 ${S.preset} · 存储器 ${mi ? `${mi.kind} ${num(mi.raw_GBps)} GB/s ${num(mi.capacity_GiB)} GiB` : S.sc.mem_id} · ctx ${sv.ctx} · TPOT SLO ${sv.tpot_slo_ms} ms（在左侧面板修改）`;
+  const w = S.sc.workload, mw = m.workload;
+  const tail = m.domain === 'gen' ? `${w.width || mw.width}×${w.height || mw.height} · ${w.frames || mw.frames} 帧 · ${w.steps || mw.steps} 步 · 单段 SLO ${fmtDur(w.clip_slo_s)}`
+    : m.domain === 'protein' ? `${w.seq_len || mw.seq_len} 残基 · 批延迟 SLO ${w.seq_slo_ms} ms` : `ctx ${sv.ctx} · TPOT SLO ${sv.tpot_slo_ms} ms`;
+  return `场景：${m.label} · ${cards()} 卡 · 芯片 ${S.preset} · 存储器 ${mi ? `${mi.kind} ${num(mi.raw_GBps)} GB/s ${num(mi.capacity_GiB)} GiB` : S.sc.mem_id} · ${tail}（在左侧面板修改）`;
 }
 function paintScope() { $('cmp-scope').textContent = scopeText(); $('lay-scope').textContent = scopeText(); }
 async function runCompare() {
@@ -529,11 +637,14 @@ async function runCompare() {
   } catch (e) { $('cmp-status').textContent = '错误：' + e.message; }
   finally { btn.disabled = false; }
 }
+function latCell(x) { return x.unit === 'token' || !x.unit ? num(x.tpot_ms) : fmtDur(x.latency_ms / 1e3); }
 function paintCompare(r, stab) {
   const gp = r.objective === 'goodput';
+  const full = isFull(model());
+  const ux = full ? `${UNIT_ZH[model().domain === 'gen' ? 'frame' : 'seq']}/s/卡` : 'tok/s/卡';
   const head = h('tr', {}, h('th', { class: 'l' }, '映射组织'), h('th', { class: 'l' }, '最佳布局 / 次优'), h('th', {}, 'batch'),
-    h('th', {}, 'tok/s/卡'), h('th', {}, 'goodput/卡'), h('th', {}, 'TPOT ms'), h('th', { class: 'l' }, '瓶颈 · 有效 MAC'),
-    h('th', {}, 'prefill TTFT'), h('th', {}, '排名稳定性'));
+    h('th', {}, ux), full ? null : h('th', {}, 'goodput/卡'), h('th', {}, full ? (model().domain === 'gen' ? '单段延迟' : '批延迟') : 'TPOT ms'),
+    h('th', { class: 'l' }, '瓶颈 · 有效 MAC'), full ? null : h('th', {}, 'prefill TTFT'), h('th', {}, '排名稳定性'));
   const rows = r.rows.map((x) => {
     const ok = !!x.batch;
     return h('tr', { class: (ok ? 'click ' : '') + (x.mapping === r.best_mapping && ok ? 'best' : ''), title: ok ? '点击把映射、布局（含卡数）和 batch 应用到场景' : '',
@@ -543,10 +654,10 @@ function paintCompare(r, stab) {
         x.runner_up ? h('div', { class: 'small muted' }, `次优 ${x.runner_up.layout}（${num(x.runner_up.score)}）`) : null),
       h('td', {}, ok ? x.batch : '—'),
       h('td', { style: gp ? '' : 'font-weight:700' }, ok ? num(x.tok_s_card) : '—'),
-      h('td', { style: gp ? 'font-weight:700' : '' }, ok ? num(x.goodput_card) : '—'), h('td', {}, ok ? num(x.tpot_ms) : '—'),
+      full ? null : h('td', { style: gp ? 'font-weight:700' : '' }, ok ? num(x.goodput_card) : '—'), h('td', {}, ok ? latCell(x) : '—'),
       h('td', { class: 'l nowrap' }, ok ? boundTag(x.bound) : '—', ' ',
         ok ? h('span', { class: 'ubar sm' }, h('i', { style: `width:${Math.min(100, (x.array_util || 0) * 100)}%` })) : null, ok ? pct(x.array_util) : ''),
-      h('td', {}, ok ? ttftFlag(x.ttft_ok, x.ttft_ms) : '—'), h('td', {}, ok ? stabFlag(stab[x.mapping]) : '—'));
+      full ? null : h('td', {}, ok ? ttftFlag(x.ttft_ok, x.ttft_ms) : '—'), h('td', {}, ok ? stabFlag(stab[x.mapping]) : '—'));
   });
   put($('cmp-tbl'), h('thead', {}, head), h('tbody', {}, rows));
 }
@@ -586,12 +697,14 @@ async function runLayouts() {
     const r = await track(req('layouts', '/api/layouts', body({ cards: cards(), objective: S.layObj })));
     if (!r) return;
     const hasG = r.rows.some((x) => x.goodput_card !== null && x.goodput_card !== undefined);
-    const head = h('tr', {}, h('th', {}, '#'), h('th', { class: 'l' }, '布局'), h('th', {}, 'batch'), h('th', {}, 'tok/s/卡'),
-      hasG ? h('th', {}, 'goodput/卡') : null, h('th', {}, 'TPOT ms'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '有效 MAC'),
+    const full = isFull(model());
+    const head = h('tr', {}, h('th', {}, '#'), h('th', { class: 'l' }, '布局'), h('th', {}, 'batch'),
+      h('th', {}, full ? `${UNIT_ZH[model().domain === 'gen' ? 'frame' : 'seq']}/s/卡` : 'tok/s/卡'),
+      hasG ? h('th', {}, 'goodput/卡') : null, h('th', {}, full ? (model().domain === 'gen' ? '单段延迟' : '批延迟') : 'TPOT ms'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '有效 MAC'),
       hasG ? h('th', {}, 'prefill TTFT') : null);
     const rows = r.rows.map((x, i) => h('tr', { class: (x.batch ? 'click ' : '') + (i === 0 && x.batch ? 'best' : ''), onclick: x.batch ? () => applyRow(x) : null },
       h('td', {}, i + 1), h('td', { class: 'l mono' }, x.layout), h('td', {}, x.batch || '放不下'), h('td', {}, num(x.tok_s_card)),
-      hasG ? h('td', {}, num(x.goodput_card)) : null, h('td', {}, num(x.tpot_ms)), h('td', {}, boundTag(x.bound)),
+      hasG ? h('td', {}, num(x.goodput_card)) : null, h('td', {}, x.batch ? latCell(x) : '—'), h('td', {}, boundTag(x.bound)),
       h('td', { class: 'l' }, h('span', { class: 'ubar' }, h('i', { style: `width:${Math.min(100, (x.array_util || 0) * 100)}%` })), pct(x.array_util)),
       hasG ? h('td', {}, x.ttft_ok === undefined ? '—' : ttftFlag(x.ttft_ok, x.ttft_ms)) : null));
     put($('lay-tbl'), h('thead', {}, head), h('tbody', {}, rows));
@@ -616,12 +729,25 @@ const SWEEP_ZH = {
   'serving.batch': 'batch', 'serving.ctx': '上下文 ctx', 'serving.prompt': 'prompt 长度', 'serving.spec_k': '投机 k',
   'chip.sram_mib': 'SRAM MiB', 'chip.sram_port_Bpc': 'SRAM 端口 B/cycle', 'chip.freq_ghz': '频率 GHz', 'chip.mac_eff': 'MAC 效率',
   'chip.gemv_macs': 'GEMV MAC/cycle', mem_eff: 'DRAM 效率', 'link.GBps': '链路 GB/s', 'link.alpha_us': '同步 α µs',
+  'workload.frames': '帧数', 'workload.steps': '去噪步数', 'workload.height': '高 px', 'workload.width': '宽 px',
+  'workload.seq_len': '序列长度（残基）',
 };
+const SWEEP_DOMAIN = { 'serving.ctx': 'llm', 'serving.prompt': 'llm', 'serving.spec_k': 'llm', 'workload.frames': 'gen',
+  'workload.steps': 'gen', 'workload.height': 'gen', 'workload.width': 'gen', 'workload.seq_len': 'protein' };
+function fillSweepPaths() {
+  const m = model(), d = isFull(m) ? m.domain : 'llm';
+  const cur = $('sw-path').value;
+  const list = S.cat.sweep_paths.filter((p) => !SWEEP_DOMAIN[p] || SWEEP_DOMAIN[p] === d);
+  opts($('sw-path'), list.map((p) => [p, SWEEP_ZH[p] || p]), list.includes(cur) ? cur : 'serving.batch');
+  if (!list.includes(cur)) $('sw-values').value = SWEEP_DEFAULT[$('sw-path').value] || '';
+}
 const SWEEP_DEFAULT = {
   'serving.batch': '1,2,4,8,16,32,64', 'serving.ctx': '1024,4096,16384,32768,131072', 'serving.prompt': '512,2048,8192,32768',
   'serving.spec_k': '0,1,2,3,4,6,8', 'chip.sram_mib': '16,32,64,128,256,512', 'chip.sram_port_Bpc': '2048,4096,7616,16384,32768',
   'chip.freq_ghz': '0.6,0.8,1,1.2,1.5', 'chip.mac_eff': '0.5,0.6,0.7,0.8,0.9,1', 'chip.gemv_macs': '1024,4096,12544,50176',
   mem_eff: '0.5,0.6,0.7,0.8,0.9', 'link.GBps': '50,100,200,400,900', 'link.alpha_us': '0,1,3,5,10',
+  'workload.frames': '17,33,49,81,121', 'workload.steps': '10,20,30,50', 'workload.height': '240,480,720',
+  'workload.width': '416,832,1280', 'workload.seq_len': '128,256,512,1022,2048',
 };
 function line(points, { xl, yl, y2l, log }) {
   if (!points.length) return h('div', { class: 'empty' }, '无数据');
@@ -663,13 +789,17 @@ async function runSweep() {
   try {
     const r = await track(req('sweep', '/api/sweep', body({ path, values: vals })));
     if (!r) return;
+    const m = model(), full = isFull(m), gen = m.domain === 'gen';
     const decode = S.sc.serving.phase === 'decode';
-    put($('sw-chart'), line(r.rows.map((x) => ({ x: x.value, y: x.tok_s_card, y2: decode ? x.tpot_ms : x.ttft_ms })),
-      { xl: SWEEP_ZH[path] || path, yl: 'tok/s/卡', y2l: decode ? 'TPOT ms' : 'TTFT ms', log: vals.every((v) => v > 0) && Math.max(...vals) / Math.min(...vals) >= 16 }));
-    const head = h('tr', {}, h('th', { class: 'l' }, SWEEP_ZH[path] || path), h('th', {}, decode ? 'TPOT ms' : 'TTFT ms'),
-      h('th', {}, 'tok/s'), h('th', {}, 'tok/s/卡'), h('th', {}, '瓶颈'), h('th', {}, '有效 MAC'), h('th', {}, '放得下'));
+    const u = full ? UNIT_ZH[gen ? 'frame' : 'seq'] : 'tok';
+    const latL = full ? (gen ? '单段延迟 s' : '批延迟 ms') : decode ? 'TPOT ms' : 'TTFT ms';
+    const lat = (x) => full ? (gen ? x.latency_ms / 1e3 : x.latency_ms) : decode ? x.tpot_ms : x.ttft_ms;
+    put($('sw-chart'), line(r.rows.map((x) => ({ x: x.value, y: x.tok_s_card, y2: lat(x) })),
+      { xl: SWEEP_ZH[path] || path, yl: `${u}/s/卡`, y2l: latL, log: vals.every((v) => v > 0) && Math.max(...vals) / Math.min(...vals) >= 16 }));
+    const head = h('tr', {}, h('th', { class: 'l' }, SWEEP_ZH[path] || path), h('th', {}, latL),
+      h('th', {}, `${u}/s`), h('th', {}, `${u}/s/卡`), h('th', {}, '瓶颈'), h('th', {}, '有效 MAC'), h('th', {}, '放得下'));
     put($('sw-tbl'), h('thead', {}, head), h('tbody', {}, r.rows.map((x) => h('tr', {},
-      h('td', { class: 'l' }, x.value), h('td', {}, num(decode ? x.tpot_ms : x.ttft_ms)), h('td', {}, num(x.tok_s)),
+      h('td', { class: 'l' }, x.value), h('td', {}, num(lat(x))), h('td', {}, num(x.tok_s)),
       h('td', {}, num(x.tok_s_card)), h('td', {}, boundTag(x.bound)), h('td', {}, pct(x.array_util)),
       h('td', {}, x.fits ? '✓' : h('span', { style: 'color:var(--danger)' }, '✗'))))));
     $('sw-status').textContent = `${r.rows.length} 点`;
@@ -681,11 +811,16 @@ async function runPareto() {
   try {
     const r = await track(req('sweep', '/api/pareto', body()));
     if (!r) return;
-    const pts = r.front.map((p) => ({ x: p.batch, xlabel: 'B' + p.batch, y: p.tok_s_card, y2: p.tpot_ms }));
-    put($('sw-chart'), line(pts, { xl: `batch（布局 ${r.layout}，Pareto 前沿：TPOT ↑ 换吞吐 ↑）`, yl: 'tok/s/卡', y2l: 'TPOT ms', log: true }));
-    const head = h('tr', {}, h('th', { class: 'l' }, 'batch'), h('th', {}, 'TPOT ms'), h('th', {}, 'tok/s/卡'));
+    const m = model(), full = isFull(m), gen = m.domain === 'gen';
+    const u = full ? UNIT_ZH[gen ? 'frame' : 'seq'] : 'tok';
+    const latL = full ? (gen ? '单段延迟 s' : '批延迟 ms') : 'TPOT ms';
+    const lat = (p) => full ? (gen ? p.latency_ms / 1e3 : p.latency_ms) : p.tpot_ms;
+    const thr = (p) => full ? p.units_s_card : p.tok_s_card;
+    const pts = r.front.map((p) => ({ x: p.batch, xlabel: 'B' + p.batch, y: thr(p), y2: lat(p) }));
+    put($('sw-chart'), line(pts, { xl: `batch（布局 ${r.layout}，Pareto 前沿：延迟 ↑ 换吞吐 ↑）`, yl: `${u}/s/卡`, y2l: latL, log: true }));
+    const head = h('tr', {}, h('th', { class: 'l' }, 'batch'), h('th', {}, latL), h('th', {}, `${u}/s/卡`));
     put($('sw-tbl'), h('thead', {}, head), h('tbody', {}, r.front.map((p) => h('tr', {},
-      h('td', { class: 'l' }, p.batch), h('td', {}, num(p.tpot_ms)), h('td', {}, num(p.tok_s_card))))));
+      h('td', { class: 'l' }, p.batch), h('td', {}, num(lat(p))), h('td', {}, num(thr(p)))))));
     $('sw-status').textContent = `Pareto ${r.front.length} 点`;
     $('sw-status').dataset.done = '1';
   } catch (e) { $('sw-status').textContent = '错误：' + e.message; }
@@ -717,8 +852,9 @@ function renderModels() {
         continue;
       }
       const approx = [...(m.coverage_reasons || []), ...(m.vision_params_B ? [`视觉编码器（${num(m.vision_params_B)}B）未建模`] : [])];
-      rows.push(h('tr', { class: 'click', 'data-id': m.id, 'data-domain': m.domain, onclick: () => { S.sc.model = m.id; $('model').value = m.id; onModel(); activate('eval'); schedule(); } },
-        h('td', { class: 'l' }, m.label, m.domain === 'vlm' ? h('div', {}, h('span', { class: 'badge vlm', title: coverTip(m) }, 'VLM · 视觉编码器未建模')) : null,
+      rows.push(h('tr', { class: 'click', 'data-id': m.id, 'data-domain': m.domain, onclick: () => { setModel(m.id); activate('eval'); schedule(); } },
+        h('td', { class: 'l' }, m.label, m.domain === 'vlm' ? h('div', {}, h('span', { class: 'badge vlm', title: coverTip(m) }, 'VLM · 视觉编码器未建模'))
+          : DOMAIN_ZH[m.domain] ? h('div', {}, h('span', { class: 'badge dom' }, DOMAIN_ZH[m.domain] + ' · 可评估')) : null,
           h('div', { class: 'small muted mono' }, m.hf_id),
           m.same_as.length ? h('div', { class: 'small muted' }, '同结构：' + m.same_as.map((x) => x.label).join('、')) : null),
         famCell,
@@ -730,8 +866,9 @@ function renderModels() {
     }
   }
   const cnt = (f) => all.filter(f).length;
-  put($('models-summary'), `共 ${all.length} 个：可评估 ${cnt((m) => m.evaluable)} 个（LLM ${cnt((m) => m.domain === 'llm')} · VLM ${cnt((m) => m.domain === 'vlm')}）；`,
-    `暂未接入 v2（灰色行，不能评估）${cnt((m) => !m.evaluable)} 个（视频生成 ${cnt((m) => m.domain === 'gen')} · 蛋白质 ${cnt((m) => m.domain === 'protein')}）。`,
+  put($('models-summary'), `共 ${all.length} 个：可评估 ${cnt((m) => m.evaluable)} 个（LLM ${cnt((m) => m.domain === 'llm')} · VLM ${cnt((m) => m.domain === 'vlm')}`
+    + ` · 视频生成 ${cnt((m) => m.evaluable && m.domain === 'gen')} · 蛋白质 ${cnt((m) => m.evaluable && m.domain === 'protein')}）；`,
+    `暂未接入 v2（灰色行，不能评估）${cnt((m) => !m.evaluable)} 个（视频生成 ${cnt((m) => !m.evaluable && m.domain === 'gen')} · 蛋白质 ${cnt((m) => !m.evaluable && m.domain === 'protein')}）。`,
     '分子动力学 / 机器学习力场（MLFF）目录中暂无条目。');
   put($('models-tbl'), h('thead', {}, head), h('tbody', {}, rows));
   put($('models-unlisted'), ...S.unlisted.map((u) => h('li', {}, h('b', {}, u.label), '：', u.reason)));
@@ -776,11 +913,14 @@ async function init() {
   }
   seg('mapping', S.cat.mappings.map((m) => [m.id, m.label]), () => S.sc.mapping, (v) => { S.sc.mapping = v; $('mapping-desc').textContent = MAP_DESC[v]; schedule(); });
   $('mapping-desc').textContent = MAP_DESC[S.sc.mapping];
-  for (const k of ['pp', 'tp', 'dp', 'ep', 'etp']) {
+  for (const k of ['pp', 'tp', 'dp', 'ep', 'etp', 'sp']) {
     $('l-' + k).dataset.after = 'layout';
     bindNumber('l-' + k, () => S.sc.layout[k], (x) => { S.sc.layout[k] = x; AFTER.lastLayout = k; }, { int: true });
   }
-  bindNumber('l-cards', cards, (x) => { setCards(x); for (const k of ['pp', 'tp', 'dp', 'ep', 'etp']) $('l-' + k)._sync(); cardsNote(); }, { int: true });
+  bindNumber('l-cards', cards, (x) => { setCards(x); for (const k of ['pp', 'tp', 'dp', 'ep', 'etp', 'sp']) $('l-' + k)._sync(); cardsNote(); }, { int: true });
+  for (const k of ['frames', 'height', 'width', 'steps', 'cfg', 'seq_len'])   // empty = release default (0)
+    bindNumber('w-' + k, () => S.sc.workload[k] || null, (x) => (S.sc.workload[k] = x === null ? 0 : x), { int: true, nullable: true });
+  for (const k of ['clip_slo_s', 'seq_slo_ms']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
   $('best-layout').addEventListener('click', bestLayout);
   $('best-batch').checked = S.best;
   AFTER.layout = () => {
@@ -817,6 +957,7 @@ async function init() {
   $('sw-path').addEventListener('change', () => { $('sw-values').value = SWEEP_DEFAULT[$('sw-path').value] || ''; });
   $('sw-run').addEventListener('click', runSweep);
   $('pf-run').addEventListener('click', runPareto);
+  fillSweepPaths();
   renderModels();
   paintScope();
   window.__accel = { S, req, seq };
