@@ -1,14 +1,15 @@
 # accel-dse
 
-> LLM 推理加速器设计空间探索 · Analytical design-space exploration for LLM inference accelerators
+> 推理加速器设计空间探索（LLM · 视频生成 DiT · 蛋白质）· Analytical design-space exploration for inference accelerators
 
 [English](README.en.md) · [建模说明](docs/MODEL.md) · [更新日志](CHANGELOG.md) · [MIT](LICENSE)
 
-**accel-dse** 用可核对的解析模型回答流片前的问题：给定一个 LLM（按官方发布的权重与 dtype）、一种数据通路映射、片上 SRAM、存储器（HBM / LPDDR）和卡数，最好的并行布局与 batch 是什么，瓶颈在哪里，结论对假设有多敏感。零第三方依赖，Python ≥ 3.10。
+**accel-dse** 用可核对的解析模型回答流片前的问题：给定一个模型（LLM / VLM，或视频生成 DiT、蛋白质语言模型；按官方发布的权重与 dtype）、一种数据通路映射、片上 SRAM、存储器（HBM / LPDDR）和卡数，最好的并行布局与 batch 是什么，瓶颈在哪里，结论对假设有多敏感。零第三方依赖，Python ≥ 3.10。
 
 ## 它做什么
 
-- **模型按发布建模**：从 HF `config.json` 与 safetensors 头（不下载权重）得到逐角色的参数量与存储 dtype（bf16 / fp8 block / MXFP4 / int4 AWQ 等），与发布总量偏差 ≤0.5%；官方量化版是独立条目。每个模型带三轴标签：来源（官方 / 镜像）× 覆盖（完整 / 部分 / 架构代理，附逐项的近似之处）× dtype；目录按厂商 → 系列排列（同一厂商的 LLM 与 VLM 在一起）；视频生成与蛋白质模型也列在目录中，标「暂未接入 v2」。
+- **模型按发布建模**：从 HF `config.json` 与 safetensors 头（不下载权重）得到逐角色的参数量与存储 dtype（bf16 / fp8 block / MXFP4 / int4 AWQ 等），与发布总量偏差 ≤0.5%；官方量化版是独立条目。每个模型带三轴标签：来源（官方 / 镜像）× 覆盖（完整 / 部分 / 架构代理，附逐项的近似之处）× dtype；目录按厂商 → 系列排列（同一厂商的 LLM、VLM、视频与蛋白质模型在一起）。
+- **视频生成与蛋白质（0.41）**：Wan2.1-T2V（1.3B / 14B）、CogVideoX（2b / 5b）的 DiT 去噪主干（全 3D 注意力，每步按 CFG 前向 1–2 次）与 ESM-2（650M / 3B）编码器可评估：单段延迟、每帧延迟、帧/s/卡，或批延迟、序列/s/卡、残基/s/卡；Ulysses 序列并行（SP）与 CFG 并行（DP）是布局维度；文本编码器与 VAE 未建模（覆盖「部分」）。其余视频 / 蛋白质条目（HunyuanVideo、Wan2.2、AlphaFold 等）仍标「暂未接入 v2」。
 - **映射是设计变量**：输出驻留（OS）、权重驻留（边缘加载 / 宽面广播）、OS + GEMV 单元、可重构，逐算子计算 MAC 界与 SRAM 供数界；芯片不原生支持的格式计入反量化开销。
 - **逐 rank 算子图**：TP / PP / 注意力 DP / EP / ETP，单卡就是全 1 布局，没有第二条路径。
 - **存储规划与调度**：权重 / KV 的 SRAM 驻留、staging、逐 stage 容量；每级 `max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC`，绑定瓶颈与有效 MAC 比例直接给出。
@@ -33,6 +34,8 @@ python3 -m accel_dse compare --model deepseek-v3 --cards 8 \
     --mem hbm3e_8s_12h24g_9200 --ctx 4096                     # 每种映射的最佳布局
 python3 -m accel_dse search --model qwen3-32b --cards 8 --objective goodput --mem hbm3e_8s_12h24g_9200
 python3 -m accel_dse stability --model qwen3-32b --cards 8 --mem hbm3e_8s_12h24g_9200
+python3 -m accel_dse eval --model wan2.1-1.3b --steps 20 --sp 2   # 视频：单段 / 每帧延迟（480P、81 帧）
+python3 -m accel_dse eval --model esm2-650m --seq-len 1022    # 蛋白质：批延迟、序列/s
 python3 -m accel_dse validate                                 # 趋势区间 + GenZ 对照
 ```
 

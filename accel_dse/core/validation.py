@@ -71,3 +71,16 @@ def v3_genz(path: Path = REF) -> list[dict]:
             comparable = mem == LPDDR_191 or org == "reconf"
             out.append({**r, "mapping": org, "ours_ms": ours, "ratio": ours / r["tpot_ms"], "comparable": comparable})
     return out
+
+
+def v2_domain() -> list[dict]:
+    """Video / protein sanity rows (0.41).  Only the workload / FLOP model is checked against a public number; no
+    hardware calibration.  Wan2.1 README: T2V-1.3B makes a 5 s 480P clip on one RTX 4090 in about 4 minutes
+    (T5 + VAE + CPU offload included); a 4090 has ≈ 165 TFLOPS dense bf16 with fp32 accumulate."""
+    r = evaluate(Scenario(model="wan2.1-1.3b", mem_id=HBM_6600))
+    flops = r.domain_summary()["tflop_per_request"] * 1e12
+    eff = flops / 240.0 / 165e12
+    return [{"check": "Wan2.1-1.3B 480P DiT FLOP/clip ÷ 240 s ÷ RTX 4090 165 TFLOPS", "value": eff, "lo": 0.4,
+             "hi": 1.0, "unit": "×", "ok": 0.4 <= eff <= 1.0,
+             "note": f"{flops / 1e15:.1f} PFLOP per clip (50 steps × CFG 2 × 32,760 tokens); README: ~4 min on a 4090"}]
+

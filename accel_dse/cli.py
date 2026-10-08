@@ -22,8 +22,11 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--spec-k", type=int, default=0)
     p.add_argument("--spec-accept", type=float, default=None)
     p.add_argument("--tpot-slo", type=float, default=None, help="TPOT SLO ms")
+    for k, hlp in (("frames", "video frames"), ("height", "video height px"), ("width", "video width px"),
+                   ("steps", "denoise steps"), ("cfg", "forwards per step (2 = CFG)"), ("seq-len", "protein residues")):
+        p.add_argument(f"--{k}", type=int, default=0, help=f"{hlp} (0 = release default; video / protein models)")
     if layout:
-        for k in ("pp", "tp", "dp", "ep", "etp"):
+        for k in ("pp", "tp", "dp", "ep", "etp", "sp"):
             p.add_argument(f"--{k}", type=int, default=1)
     p.add_argument("--json", action="store_true", help="print raw JSON")
 
@@ -34,12 +37,15 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         if getattr(a, attr) is not None:
             sv[k] = getattr(a, attr)
     sc = {"model": a.model, "mapping": a.mapping, "serving": sv}
+    wl = {k: getattr(a, k) for k in ("frames", "height", "width", "steps", "cfg", "seq_len") if getattr(a, k)}
+    if wl:
+        sc["workload"] = wl
     if a.mem:
         sc["mem_id"] = a.mem
     if a.mem_eff is not None:
         sc["mem_eff"] = a.mem_eff
     if layout:
-        sc["layout"] = {k: getattr(a, k) for k in ("pp", "tp", "dp", "ep", "etp")}
+        sc["layout"] = {k: getattr(a, k) for k in ("pp", "tp", "dp", "ep", "etp", "sp")}
     return {"chip_preset": a.chip, "scenario": sc}
 
 
@@ -63,7 +69,17 @@ def cmd_eval(a) -> dict:
     print(f"{m['id']}  [{m['provenance']} · {m['coverage']} · {m['dtype']}]{'  「架构代理」' if m['proxy_badge'] else ''}")
     print(f"layout {s['layout']}  mapping {s['mapping']}  batch {s['batch']}  bound {s['bound']}  "
           f"array_util {s['array_util']:.1%}")
-    if s["phase"] == "decode":
+    if g := s.get("gen"):
+        w = g["workload"]
+        if g["unit"] == "frame":
+            print(f"video {w['width']}x{w['height']} {w['frames']} frames, {w['steps']} steps x CFG {w['cfg']}, "
+                  f"{w['seq_tokens']} tokens/forward")
+            print(f"clip {g['clip_s']:.1f} s   {g['s_per_frame']:.2f} s/frame   step {g['step_ms']:.0f} ms   "
+                  f"{g['frames_per_s_card']:.3g} frames/s/card   SLO {'OK' if s['slo_ok'] else 'over'}")
+        else:
+            print(f"protein {w['seq_len']} residues   batch {g['batch_ms']:.1f} ms   {g['seq_per_s_card']:.1f} seq/s/card"
+                  f"   {g['residues_per_s_card']:.0f} residues/s/card   SLO {'OK' if s['slo_ok'] else 'over'}")
+    elif s["phase"] == "decode":
         print(f"TPOT {s['tpot_ms']:.2f} ms   {s['tok_s']:.1f} tok/s   {s['tok_s_card']:.1f} tok/s/card")
         if g := out.get("goodput"):
             print(f"goodput {g['tok_s_card']:.1f} tok/s/card   TTFT {g['ttft_ms']:.0f} ms "
@@ -120,19 +136,22 @@ def cmd_models(a) -> dict:
     _table([[m["id"], m["provenance"], m["coverage"] + (" 「架构代理」" if m["proxy_badge"] else ""), m["dtype"],
              m["params_B"], m["active_B"]] for m in out["models"]],
            ["id", "provenance", "coverage", "dtype", "params B", "active B"])
-    print("\n暂未接入 v2（只列在目录中，不能评估）:")
+    print("\n暂未接入 v2（只列在目录中，不能评估；视频 Wan2.1 / CogVideoX 与蛋白质 ESM-2 已在上表中）:")
     _table([[o["id"], o["domain_label"], o["provider_label"], o["arch"]] for o in out["offline"]],
            ["id", "domain", "vendor", "arch"])
     return {}
 
 
 def cmd_validate(a) -> dict:
-    from .core.validation import v2_trends, v3_genz
-    v2, v3 = v2_trends(), v3_genz()
+    from .core.validation import v2_domain, v2_trends, v3_genz
+    v2, v3, vd = v2_trends(), v3_genz(), v2_domain()
     if a.json:
-        return {"v2": v2, "v3": v3}
+        return {"v2": v2, "v3": v3, "v2_domain": vd}
     print("V2 trend bands (H100-like 「假设」)")
     _table([[r["check"], r["value"], f"[{r['lo']}, {r['hi']}]", r["ok"]] for r in v2], ["check", "value", "band", "ok"])
+    print("\nV2 video / protein (workload + FLOP sanity, no hardware calibration)")
+    _table([[r["check"], r["value"], f"[{r['lo']}, {r['hi']}]", r["ok"], r["note"]] for r in vd],
+           ["check", "value", "band", "ok", "note"])
     print("\nV3 GenZ reference (Llama-3.1-8B decode)")
     _table([[r["mem_GBps"], r["batch"], r["ctx"], r["mapping"], r["tpot_ms"], r["ours_ms"], r["ratio"],
              r["comparable"]] for r in v3], ["mem GB/s", "batch", "ctx", "mapping", "GenZ ms", "ours ms", "ratio",
