@@ -1,0 +1,90 @@
+{
+ "bytes_llm": 19325298688,
+ "bytes_mtp": 0,
+ "bytes_total": 19325298688,
+ "config": {
+  "architectures": [
+   "Qwen3ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": 151643,
+  "eos_token_id": 151645,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 5120,
+  "initializer_range": 0.02,
+  "intermediate_size": 25600,
+  "max_position_embeddings": 40960,
+  "max_window_layers": 64,
+  "model_type": "qwen3",
+  "num_attention_heads": 64,
+  "num_hidden_layers": 64,
+  "num_key_value_heads": 8,
+  "quantization_config": {
+   "bits": 4,
+   "group_size": 128,
+   "modules_to_not_convert": null,
+   "quant_method": "awq",
+   "version": "gemm",
+   "zero_point": true
+  },
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": null,
+  "rope_theta": 1000000,
+  "sliding_window": null,
+  "tie_word_embeddings": false,
+  "torch_dtype": "float16",
+  "transformers_version": "4.51.3",
+  "use_cache": true,
+  "use_sliding_window": false,
+  "vocab_size": 151936
+ },
+ "fetched": "2026-10-08",
+ "n_tensors": 1603,
+ "params_llm": 32762123264,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": {
+  "bits": 4,
+  "group_size": 128,
+  "modules_to_not_convert": null,
+  "quant_method": "awq",
+  "version": "gemm",
+  "zero_point": true
+ },
+ "repo": "Qwen/Qwen3-32B-AWQ",
+ "roles": {
+  "attn": {
+   "int4": {
+    "bytes": 3137863680,
+    "params": 6039797760
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1555824640,
+    "params": 777912320
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 1555824640,
+    "params": 777912320
+   }
+  },
+  "mlp": {
+   "int4": {
+    "bytes": 13074432000,
+    "params": 25165824000
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 1353728,
+    "params": 676864
+   }
+  }
+ },
+ "torch_dtype": "float16"
+}

@@ -1,0 +1,78 @@
+{
+ "bytes_llm": 72302209024,
+ "bytes_mtp": 0,
+ "bytes_total": 72302209024,
+ "config": {
+  "architectures": [
+   "SeedOssForCausalLM"
+  ],
+  "attention_bias": true,
+  "attention_dropout": 0.1,
+  "attention_out_bias": false,
+  "bos_token_id": 0,
+  "eos_token_id": 2,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 5120,
+  "initializer_range": 0.02,
+  "intermediate_size": 27648,
+  "max_position_embeddings": 524288,
+  "mlp_bias": false,
+  "model_type": "seed_oss",
+  "num_attention_heads": 80,
+  "num_hidden_layers": 64,
+  "num_key_value_heads": 8,
+  "pad_token_id": 1,
+  "residual_dropout": 0.1,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": {
+   "rope_type": "default"
+  },
+  "rope_theta": 10000000.0,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.55.0",
+  "use_cache": true,
+  "vocab_size": 155136
+ },
+ "fetched": "2026-10-08",
+ "n_tensors": 771,
+ "params_llm": 36151104512,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "ByteDance-Seed/Seed-OSS-36B-Instruct",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 14765522944,
+    "params": 7382761472
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1588592640,
+    "params": 794296320
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 1588592640,
+    "params": 794296320
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 54358179840,
+    "params": 27179089920
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 1320960,
+    "params": 660480
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

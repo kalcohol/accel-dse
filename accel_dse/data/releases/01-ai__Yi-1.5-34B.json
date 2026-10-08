@@ -1,0 +1,73 @@
+{
+ "bytes_llm": 68777834496,
+ "bytes_mtp": 0,
+ "bytes_total": 68777834496,
+ "config": {
+  "architectures": [
+   "LlamaForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": 1,
+  "eos_token_id": 2,
+  "hidden_act": "silu",
+  "hidden_size": 7168,
+  "initializer_range": 0.02,
+  "intermediate_size": 20480,
+  "max_position_embeddings": 4096,
+  "model_type": "llama",
+  "num_attention_heads": 56,
+  "num_hidden_layers": 60,
+  "num_key_value_heads": 8,
+  "pad_token_id": 0,
+  "pretraining_tp": 1,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": null,
+  "rope_theta": 5000000.0,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.37.2",
+  "use_cache": true,
+  "vocab_size": 64000
+ },
+ "fetched": "2026-10-08",
+ "n_tensors": 543,
+ "params_llm": 34388917248,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "01-ai/Yi-1.5-34B",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 14092861440,
+    "params": 7046430720
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 917504000,
+    "params": 458752000
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 917504000,
+    "params": 458752000
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 52848230400,
+    "params": 26424115200
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 1734656,
+    "params": 867328
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

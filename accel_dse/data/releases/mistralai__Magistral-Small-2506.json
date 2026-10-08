@@ -1,0 +1,71 @@
+{
+ "bytes_llm": 47144806400,
+ "bytes_mtp": 0,
+ "bytes_total": 47144806400,
+ "config": {
+  "architectures": [
+   "MistralForCausalLM"
+  ],
+  "attention_dropout": 0.0,
+  "bos_token_id": 1,
+  "eos_token_id": 2,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 5120,
+  "initializer_range": 0.02,
+  "intermediate_size": 32768,
+  "max_position_embeddings": 40960,
+  "model_type": "mistral",
+  "num_attention_heads": 32,
+  "num_hidden_layers": 40,
+  "num_key_value_heads": 8,
+  "rms_norm_eps": 1e-05,
+  "rope_theta": 1000000000.0,
+  "sliding_window": null,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.52.4",
+  "use_cache": true,
+  "vocab_size": 131072
+ },
+ "fetched": "2026-10-08",
+ "n_tensors": 363,
+ "params_llm": 23572403200,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "mistralai/Magistral-Small-2506",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 4194304000,
+    "params": 2097152000
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1342177280,
+    "params": 671088640
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 1342177280,
+    "params": 671088640
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 40265318400,
+    "params": 20132659200
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 829440,
+    "params": 414720
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

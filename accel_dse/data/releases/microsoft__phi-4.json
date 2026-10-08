@@ -1,0 +1,77 @@
+{
+ "bytes_llm": 29319014400,
+ "bytes_mtp": 0,
+ "bytes_total": 29319014400,
+ "config": {
+  "_name_or_path": "microsoft/phi-4",
+  "architectures": [
+   "Phi3ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": 100257,
+  "embd_pdrop": 0.0,
+  "eos_token_id": 100265,
+  "hidden_act": "silu",
+  "hidden_size": 5120,
+  "initializer_range": 0.02,
+  "intermediate_size": 17920,
+  "max_position_embeddings": 16384,
+  "model_type": "phi3",
+  "num_attention_heads": 40,
+  "num_hidden_layers": 40,
+  "num_key_value_heads": 10,
+  "original_max_position_embeddings": 16384,
+  "pad_token_id": 100349,
+  "resid_pdrop": 0.0,
+  "rms_norm_eps": 1e-05,
+  "rope_scaling": null,
+  "rope_theta": 250000,
+  "sliding_window": null,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.47.0",
+  "use_cache": true,
+  "vocab_size": 100352
+ },
+ "fetched": "2026-10-08",
+ "n_tensors": 243,
+ "params_llm": 14659507200,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "microsoft/phi-4",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 5242880000,
+    "params": 2621440000
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1027604480,
+    "params": 513802240
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 1027604480,
+    "params": 513802240
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 22020096000,
+    "params": 11010048000
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 829440,
+    "params": 414720
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}
