@@ -162,6 +162,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="PD (0.53): prefix-aware routing (replicas partition the prefixes)")
     p.add_argument("--pd-search-decode-batch", dest="pd_search_decode_batch", action="store_true",
                    help="PD (0.53, with --pd-search-layouts): also search each decode layout's batch (B/2…4B, TPOT SLO)")
+    p.add_argument("--pd-sim", dest="pd_sim", action="store_true",
+                   help="PD (0.54): also run the request-level DES and print simulated tails vs the closed form (slower)")
     for flag, dest, hlp in _BUDGET_FLAGS:
         p.add_argument(flag, dest=dest, type=float, default=None, help=f"budget (0.49, user-supplied): {hlp}")
     p.add_argument("--json", action="store_true", help="print raw JSON")
@@ -255,6 +257,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
             sc["pd"]["prefix_affinity"] = True
         if getattr(a, "pd_search_decode_batch", False):
             sc["pd"]["search_decode_batch"] = True
+        if getattr(a, "pd_sim", False):
+            sc["pd"]["simulate"] = True
     body = {"chip_preset": a.chip, "scenario": sc}
     en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
                                      "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net")
@@ -417,6 +421,15 @@ def cmd_eval(a) -> dict:
             if b := q.get("pd_slo_best_split"):
                 print(f"    PD best split under SLO: {b['prefill_cards']}P+{b['decode_cards']}D "
                       f"{b['slo_goodput_per_card']:.1f} tok/s/card")
+            if sim := q.get("sim"):
+                print(f"  DES 「假设」 ({q.get('sim_basis', '')})")
+                for k, sx in sim["modes"].items():
+                    t, tp, it = sx["ttft_ms"], sx["tpot_ms"], sx["itl_max_ms"]
+                    e = {kk: (v if v is not None else float("nan")) for kk, v in sx["err"].items()}
+                    print(f"    DES {names[k]:<24} TTFT p50/p90/p99 {t['p50']:.0f}/{t['p90']:.0f}/{t['p99']:.0f} ms  "
+                          f"TPOT mean/p90 {tp['mean']:.1f}/{tp['p90']:.1f} ms  max gap {it['p99']:.0f} ms"
+                          f"  (err p90 TTFT {e.get('ttft_p90', float('nan')):+.0%}  TPOT {e.get('tpot_p90', float('nan')):+.0%}"
+                          f"  gap {e.get('itl_max', float('nan')):+.0%})")
         elif q and q.get("error"):
             print("  queueing: " + q["error"])
         if ls := pd.get("layout_search"):
@@ -496,10 +509,11 @@ def cmd_models(a) -> dict:
 
 
 def cmd_validate(a) -> dict:
-    from .core.validation import v2_domain, v2_trends, v3_genz
+    from .core.validation import v2_domain, v2_trends, v3_genz, v4_serving
     v2, v3, vd = v2_trends(), v3_genz(), v2_domain()
+    v4 = None if getattr(a, "no_v4", False) else v4_serving()
     if a.json:
-        return {"v2": v2, "v3": v3, "v2_domain": vd}
+        return {"v2": v2, "v3": v3, "v2_domain": vd, "v4": v4}
     print("V2 trend bands (H100-like 「假设」)")
     _table([[r["check"], r["value"], f"[{r['lo']}, {r['hi']}]", r["ok"]] for r in v2], ["check", "value", "band", "ok"])
     print("\nV2 video / protein (workload + FLOP sanity, no hardware calibration)")
@@ -509,6 +523,14 @@ def cmd_validate(a) -> dict:
     _table([[r["mem_GBps"], r["batch"], r["ctx"], r["mapping"], r["tpot_ms"], r["ours_ms"], r["ratio"],
              r["comparable"]] for r in v3], ["mem GB/s", "batch", "ctx", "mapping", "GenZ ms", "ours ms", "ratio",
                                               "comparable"])
+    if v4 is not None:
+        print("\nV4 serving: closed-form queueing vs request-level DES (Qwen3-8B 1P HBM3E TP2, PD 2+6; "
+              "err = (closed − DES)/DES, > 0 = closed form pessimistic; full grid: scripts/v4_serving.py, "
+              "accel_dse/data/v4_serving.json)")
+        _table([[r["scenario"], r["mode"], r["metric"], r["sim"], r["ana"], f"{r['err']:+.0%}" if r["err"] == r["err"] else "n/a",
+                 f"±{r['band']:.0%}", r["ok"]] for r in v4],
+               ["scenario", "mode", "metric", "DES", "closed", "err", "band", "ok"])
+    print("\nV5 silicon: n/a (no NPU exists — design guidance only)")
     return {}
 
 
@@ -534,7 +556,8 @@ def main(argv: list[str] | None = None) -> int:
             x.add_argument("--include-mapping", action="store_true")
     d = sub.add_parser("d2d", help="list the selectable die-to-die (D2D) grades (0.50)")
     d.add_argument("--json", action="store_true")
-    v = sub.add_parser("validate", help="V2 trend bands + V3 GenZ comparison")
+    v = sub.add_parser("validate", help="V2 trend bands + V3 GenZ comparison + V4 serving (closed form vs DES)")
+    v.add_argument("--no-v4", dest="no_v4", action="store_true", help="skip the V4 serving DES subset (≈ 15 s)")
     v.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
     if a.cmd == "serve":

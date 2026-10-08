@@ -4,7 +4,12 @@ V0  invariants / metamorphic relations            (tests/test_core_metamorphic.p
 V1  params / active params / FLOPs vs releases     (tests/test_core_model.py)
 V2  GPU-like trend sanity (caveated)               v2_trends()
 V3  cross-tool: GenZ-LLM on identical abstract systems   v3_genz()
-V4  silicon measurements                           n/a (no NPU exists — design guidance only)
+V4  serving: closed-form queueing (pdqueue) vs request-level DES (pdsim)   v4_serving() / v4_grid()   (0.54)
+V5  silicon measurements                           n/a (no NPU exists — design guidance only)
+
+V4 is model-vs-model: both sides share the per-step costs (prefill time, decode step vs batch, KV transfer), so it
+measures the queueing / batching approximations only, not the cost model.  The DES has its own 「假设」 (FCFS, Poisson,
+static prefill batching, whole-prefix LRU, no preemption).
 
 V2 caveat: "H100-like" is OUR abstraction (128×128×16 MACs @1.83 GHz ≈ 989 dense
 bf16 TFLOPS, HBM3 5 stacks @5.2 Gbps = 3.33 TB/s raw, mem_eff 0.8 「假设」).
@@ -116,3 +121,76 @@ def _opensora_row() -> dict:
             "note": f"{flops / 1e15:.1f} PFLOP per clip (30 steps × CFG 2 × 108,000 tokens, factorized S/T attention; "
                     f"T5 + VAE decode {p.get('tflop', 0) / 1e3:.2f} PFLOP); README: 130 s on one H100 incl. T5 + VAE"}
 
+
+
+# ---------------------------------------------------------------- V4 serving (0.54)
+V4_LOADS = (0.3, 0.6, 0.85)
+V4_CVS = (0.0, 0.5, 1.0)
+V4_MODES = ("pd", "coloc_prefill_first", "coloc_chunked")
+# tolerance bands per metric (|err| ≤ band counts as within band); documented in MODEL.md §18.4
+V4_BANDS = {"ttft_p50": 0.15, "ttft_p90": 0.20, "ttft_p99": 0.30, "tpot_p90": 0.20, "itl_max": 0.30,
+            "slo_goodput": 0.20, "prefix_hit": 0.03}
+
+
+def v4_scenario(load: float, cv: float = 0.0, prefix: bool = False) -> Scenario:
+    from .hardware import CHIPS
+    from .scenario import PDConfig
+    pd = dict(enabled=True, prefill_layout=Layout(tp=2), prefill_cards=2, decode_cards=6, load=load,
+              prompt_cv=cv, out_cv=cv)
+    if prefix:
+        pd.update(prefix_len=2048, prefix_count=20000)
+    return Scenario(model="qwen3-8b", chip=CHIPS["1P"], mem_id=HBM_6600, layout=Layout(tp=2),
+                    serving=Serving(batch=64, prompt=4096, out_len=512, ttft_slo_ms=400, tpot_slo_ms=10),
+                    pd=PDConfig(**pd))
+
+
+def _summ(rows: list[dict]) -> list[dict]:
+    import math
+    out = []
+    for mode in V4_MODES:
+        for metric, band in V4_BANDS.items():
+            errs = [r["modes"][mode]["err"].get(metric) for r in rows if mode in r.get("modes", {})]
+            errs = [e for e in errs if e is not None and math.isfinite(e)]
+            if not errs:
+                continue
+            errs.sort()
+            out.append({"mode": mode, "metric": metric, "n": len(errs), "min": errs[0], "median": errs[len(errs) // 2],
+                        "max": errs[-1], "mean_abs": sum(abs(e) for e in errs) / len(errs),
+                        "within_band": sum(abs(e) <= band for e in errs) / len(errs), "band": band})
+    return out
+
+
+def v4_grid(n_req: int = 1500, slo: bool = False, loads=V4_LOADS, cvs=V4_CVS, prefixes=(False, True),
+            seed: int = 11, progress: bool = False) -> dict:
+    """Full V4 grid (scripts/v4_serving.py; ≈ 2–3 min without --slo)."""
+    from .pdsim import compare
+    rows = []
+    for load in loads:
+        for cv in cvs:
+            for prefix in prefixes:
+                r = compare(v4_scenario(load, cv, prefix), n_req=n_req, warmup=n_req // 4, seed=seed, slo=slo,
+                            slo_n=max(600, n_req // 2))
+                r.update(load=load, cv=cv, prefix=prefix)
+                rows.append(r)
+                if progress:
+                    print(f"load {load} cv {cv} prefix {int(prefix)}: " + " | ".join(
+                        f"{m}: " + " ".join(f"{k} {v:+.2f}" for k, v in x["err"].items())
+                        for m, x in r.get("modes", {}).items()), flush=True)
+    return {"rows": rows, "summary": _summ(rows), "n_req": n_req, "seed": seed, "bands": V4_BANDS}
+
+
+def v4_serving(n_req: int = 1000) -> list[dict]:
+    """Live V4 subset for ``accel-dse validate`` (≈ 10–20 s): medium load, CV 0 and 1, prefix on, three modes."""
+    from .pdsim import compare
+    rows = []
+    for load, cv, prefix in ((0.6, 0.0, False), (0.6, 1.0, False), (0.6, 0.0, True)):
+        r = compare(v4_scenario(load, cv, prefix), n_req=n_req, warmup=n_req // 4, seed=11)
+        for mode, x in r.get("modes", {}).items():
+            for metric, e in x["err"].items():
+                band = V4_BANDS.get(metric)
+                if band is None:
+                    continue
+                rows.append({"scenario": f"load {load} CV {cv} prefix {'on' if prefix else 'off'}", "mode": mode,
+                             "metric": metric, "sim": x["sim"].get(metric), "ana": x["ana"].get(metric), "err": e,
+                             "band": band, "ok": e == e and abs(e) <= band})
+    return rows

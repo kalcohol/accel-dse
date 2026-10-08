@@ -95,6 +95,60 @@ def mg1(lam: float, taus, weights, qs: tuple = (0.5, 0.9, 0.99)) -> dict:
     return out
 
 
+
+def mg1_sum_quantile(lam: float, taus, weights, lats, q: float) -> float | None:
+    """q-quantile of W + L_i (0.54): W = M/G/1 wait over service mix ``taus`` (Cramér–Lundberg tail
+    P(W > x) ≈ min(ρ, c·e^{−θx})), L_i = the request's own latency, drawn with the SAME index i as its service (one
+    prompt length → its service and its latency).  W is independent of the arriving request's own i, so
+    P(T > t) = Σ w_i·P(W > t − L_i).  Returns None when the service mix is a single value (caller keeps the exact
+    wait-quantile + latency sum) or the queue is unstable."""
+    pts = [(w, t, l) for w, t, l in zip(weights, taus, lats) if w > 0]
+    if len({t for _, t, _ in pts}) <= 1 or lam <= 0:
+        return None
+    tot = sum(w for w, _, _ in pts)
+    pts = [(w / tot, t, l) for w, t, l in pts]
+    m1 = sum(w * t for w, t, _ in pts)
+    rho = lam * m1
+    if rho >= 1:
+        return None
+    tmax = max(t for _, t, _ in pts)
+
+    def f(th: float) -> float:
+        return lam * (sum(w * math.exp(th * t) for w, t, _ in pts) - 1) - th
+    lo, hi = 0.0, 1.0 / tmax
+    while f(hi) <= 0:
+        lo, hi = hi, hi * 2
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if f(mid) > 0:
+            hi = mid
+        else:
+            lo = mid
+        if hi - lo < 1e-13 * hi:
+            break
+    th = 0.5 * (lo + hi)
+    c = (1 - rho) / (lam * sum(w * t * math.exp(th * t) for w, t, _ in pts) - 1)
+
+    def surv(t: float) -> float:
+        acc = 0.0
+        for w, _, l in pts:
+            x = t - l
+            acc += w * (1.0 if x < 0 else min(rho, c * math.exp(-th * x)))
+        return acc
+    a = min(l for _, _, l in pts)
+    b = max(l for _, _, l in pts) + max(0.0, math.log(max(c, 1e-300) / (1 - q)) / th) + 1e-9
+    if surv(a) <= 1 - q:
+        return a
+    for _ in range(200):
+        mid = 0.5 * (a + b)
+        if surv(mid) > 1 - q:
+            a = mid
+        else:
+            b = mid
+        if b - a < 1e-12 * max(b, 1e-12):
+            break
+    return b
+
 def dquantile(pts, q: float) -> float:
     """q-quantile of a discrete distribution [(weight, value)] (weights need not be normalised)."""
     pts = sorted(((w, v) for w, v in pts if w > 0), key=lambda x: x[1])

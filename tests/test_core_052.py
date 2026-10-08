@@ -165,11 +165,13 @@ def test_chunked_iteration_mean_fix():
     lam_c = c["lambda_rps"] / r["coloc"]["replicas"]
     nu = lam_c * c["prefill"]["chunks"]
     t0, rho = c["decode"]["iter_ms_no_chunk"] / 1e3, c["prefill"]["rho"]
-    tbar = t0 / (1 - rho + nu * t0)
-    assert _close(c["tpot_mean_ms"] / 1e3, tbar, 1e-9)                    # MTP off → e = 1
-    assert _close(c["prefill"]["chunk_share"], nu * tbar, 1e-9) and c["prefill"]["chunk_share"] < rho
     t1 = c["prefill"]["iter_ms"] / 1e3
+    # 0.54: tbar = T₀/(1−ν(T₁−T₀)), x = ν·tbar; ρ_prefill = ν·T₁.  Mean TPOT is birth–death E[k]/(λ out), not tbar.
+    tbar = t0 / (1 - nu * (t1 - t0))
+    assert _close(c["prefill"]["chunk_share"], nu * tbar, 1e-9) and c["prefill"]["chunk_share"] < rho
+    assert _close(rho, nu * t1, 1e-9)
     assert tbar < rho * t1 + (1 - rho) * t0                                  # below the 0.51 time-average
+    assert c["tpot_mean_ms"] / 1e3 >= t0                                      # occupancy ≥ 1 step at least
 
 
 def test_layout_search():

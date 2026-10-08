@@ -1,7 +1,9 @@
 """Queueing, continuous batching, chunked prefill, KV-link contention and energy for the PD report (0.51;
-0.52: request-length spread, prefix cache, corrected chunked-iteration mean).
+0.52: request-length spread, prefix cache, corrected chunked-iteration mean; 0.54: birth–death decode, TTFT
+convolution, prefill-first worst gap — all checked against the request-level DES in core/pdsim, V4 serving).
 
-Everything here is analytic on top of evaluated steps (no event simulator); all of it is 「假设」 and labelled so.
+Everything here is analytic on top of evaluated steps; all of it is 「假设」 and labelled so.  core/pdsim simulates
+the same system event by event with the same step costs (validation, and opt-in ``pd.simulate``).
 Offered load λ (requests/s, Poisson) = ``pd.rate_rps`` or ``pd.load`` × the PD fluid capacity; the colocated
 system on the same cards sees the same λ.
 
@@ -11,24 +13,33 @@ PD (prefill pool r_p replicas, decode pool r_d replicas; random split → Poisso
             mean TTFT among stable ones is used (b > 1 is the batch-server approximation of a dynamic batcher).
   KV        one transfer stream per prefill replica, M/D/1 with service KV / β_req'; β' = β·(1 − u_coll), u_coll =
             the busiest pool's own collective traffic on the KV tier (bytes / β / tick)
-  decode    continuous batching with B = serving.batch slots per replica: the mean occupancy is the fixed point
-            n̄ = λ_d · out_len · TPOT(⌈n̄⌉) (Little's law) — the batch actually running at this load, faster than the
-            full-batch TPOT; occupancy spread ~ Poisson(n̄) → TPOT p90 / p99 = TPOT(Poisson⁻¹(q)); a free slot
-            = M/D/c (c = B slots, each held out_len·TPOT(n̄)) via Erlang C × ½.  KV arriving at λ·KV / N_d per decode card
+  decode    continuous batching with B = serving.batch slots per replica (0.54: birth–death over step(k)):
+            μ(n) = min(n,B)·e/(out·step(min(n,B))); π from detailed balance; E[TPOT] = E[k]/(λ·out) (Little on the
+            running set).  Replaces the 0.51–0.53 fixed point n̄ = λ·out·TPOT(⌈n̄⌉), which ignored occupancy
+            fluctuations (≈ 30 % optimistic mean TPOT at 80 % load in the §18.1 example).  The step a running request
+            sees is weighted π(k)·k/step(k) (its mean equals the Little mean); request-average TPOT_q = (seen mean +
+            z_q·0.858·seen sd)/e (OU window 「假设」); itl_max = the 0.99 point of the seen step law (discrete).
+            A free slot = M/D/c via Erlang C × ½.  KV arriving at λ·KV / N_d per decode card
             stretches the decode step's KV-tier time by 1 / (1 − u_kv) (and the prefill pool's by λ·KV / N_p).
-  TTFT_q    = w_prefill,q + TTFT(b) + w_kv,q + exposed KV transfer (quantiles added: an upper-side estimate)
+  TTFT_q    = (w_prefill ⊕ own latency)_q + w_kv,q + exposed KV transfer.  One service value: quantiles add exactly;
+            a service mix (0.54): the q-point of W + L_i with W the M/G/1 Cramér–Lundberg tail and L_i the
+            request's own latency (queueing.mg1_sum_quantile).  The KV-queue quantile is still added (small).
 Colocated, same cards (⌊N / c_d⌋ replicas of the scenario layout)
   prefill-first   vLLM's default without chunking: prefills (M/D/1, same batch-cap rule on the decode layout)
-                  pre-empt decode iterations; decode gets 1 − ρ_p of the time → occupancy n̄ = λ_c·out·TPOT/(1 − ρ_p),
-                  mean TPOT_eff = TPOT(n̄)/(1 − ρ_p); a token interval that meets a prefill stalls for TTFT(b)
-                  ("generation stall", share ≈ (λ_c / b)·TPOT_eff); request-average TPOT quantile = TPOT(n̄_q) +
-                  Poisson⁻¹_q((λ_c / b)·out·TPOT_eff)·TTFT(b) / out; TTFT adds the residual decode step
+                  pre-empt decode iterations; decode gets 1 − ρ_p of the time → birth–death with step(k)/(1 − ρ_p);
+                  request-average TPOT_q = mean + √(decode-occupancy spread² + (z_q·√m·TTFT(b)/out)²), m = prefill
+                  batches met in a lifetime (0.54: root-sum-square; 0.51–0.53 added the stall quantile on top of a
+                  stretched TPOT — double count).  itl_max = one decode step + the 0.99 point over the request's
+                  lifetime of the longest prefill busy period (busy periods start at λ(1 − ρ); batches per period
+                  Borel(λ·lat) for cap 1 / geometric for cap > 1, durations from the latency mix 「假设」).
+                  TTFT adds the residual decode step
   chunked         Sarathi-Serve style: every iteration carries the running decodes plus up to C = ``pd.chunk_tokens``
                   prompt tokens.  Iteration time per stage = max(compute_d + f·compute_p, DRAM_d + f·(prefill DRAM
                   except weights) + prefix-KV re-read, SLC_d, link_d + f·link_p) + max(sync) with f = C / S
                   (weights read once for both — the point of piggybacking); prefill is FCFS at C tokens / iteration →
-                  M/D/1 with τ = ⌈S / C⌉·T_iter, TTFT = w + ⌈S / C⌉·T_iter; mean TPOT = the per-iteration mean (0.52 fix below);
-                  request-average quantile: j ~ Poisson(x · out) of its iterations carry a chunk
+                  M/D/1 with τ = ⌈S / C⌉·T_iter at the seen running batch, TTFT = w ⊕ ⌈S / C⌉·T_iter; decode =
+                  birth–death over the per-iteration mean tbar(k) = T₀(k) / (1 − ν(T₁(k) − T₀(k))) (0.54; 0.52 fixed
+                  the share); itl_max = the fused iteration at the seen batch's 0.99 point
 TPOT quantiles are request-average TPOT (DistServe's SLO metric); ``itl_max`` = the longest single token gap.
 SLO capacity: the largest λ whose p90 TTFT ≤ TTFT SLO and p90 TPOT ≤ TPOT SLO (DistServe-style SLO goodput), by
 bisection, per mode; ÷ cards → requests/s/card and output tokens/s/card.  For PD the same is searched over every
@@ -41,18 +52,20 @@ the prefix KV (+ KV·(S − C)/(2C) DRAM bytes per request).  J only for the ene
   every M/D/1 above becomes M/G/1 over the per-request service times of the S_i (queueing.mg1; one value → M/D/1);
   a batch of b mixed requests takes τ_i + (b − 1)·τ̄ for a request of length S_i; TTFT quantiles = wait quantile +
   the discrete quantile of (own latency + exposed KV), which are comonotone in S_i (exact sum) + KV-queue quantile;
-  decode uses E[out] in Little's law (the Poisson occupancy is insensitive to the output-length law), the length-
+  decode uses E[out] in Little's law (the PS birth–death occupancy is insensitive to the output-length law), the length-
   biased context (serving.ctx × ctx_ratio) and Allen–Cunneen (1 + c_s²)/2 for the slot wait.
   Prefix cache (``pd.prefix_hit`` = h): each request's first ⌊h·S_i⌋ tokens are already cached → the prefill runs
   only the rest, attending to the cached prefix (serving.prefix_cached → Phase(prefill, q = S − p, ctx = p): fewer
   GEMM rows, prefix KV read); the KV hand-off moves the uncached fraction (1 − p/S) when ``pd.prefix_on_decode``
-  (the decode side holds the same prefix, e.g. a shared system prompt), else all of it.  Hit rate is an input — no
-  cache capacity / eviction model; decode is unchanged (each request still attends its full context).
+  (the decode side holds the same prefix, e.g. a shared system prompt), else all of it.  Hit rate is an input (or,
+  0.53, from the Che LRU capacity model); decode is unchanged (each request still attends its full context).
 Chunked mean iteration (0.52 fix): ν = λ·Σ w_i n_i chunk iterations/s occupy ρ = λ·Σ w_i n_i T₁,i of the time, so the
   per-iteration mean is T₀ / (1 − ρ + ν T₀) and a share x = ν·that of iterations carry a chunk (0.51 used the
   time-average ρ·T₁ + (1 − ρ)·T₀ and share ρ, which is length-biased upward).
-Not modelled: arrival burstiness beyond Poisson, pre-emption and KV-cache eviction, prefix-cache capacity / eviction,
-central-queue load balancing (random split is pessimistic), length-aware scheduling (FCFS everywhere).
+Not modelled: arrival burstiness beyond Poisson, pre-emption and KV-cache eviction, central-queue load balancing
+(random split is pessimistic), length-aware scheduling (FCFS everywhere).  Known bias (V4, MODEL.md §18.4): colocated
+TPOT tails are optimistic (median −14 … −18 % at p90, up to −43 % at load 0.85 with CV 1) because prefill stalls make
+decode arrivals bursty, which a Poisson-fed birth–death does not see.
 """
 
 
@@ -63,7 +76,7 @@ import math
 
 from .energy import ACTIONS, EnergyTable, _BITS, _UNIT_PJ, action_counts, scaleup_bytes
 from .evaluate import Result, evaluate
-from .queueing import dquantile, mdc_wait, mg1, poisson_quantile
+from .queueing import dquantile, mdc_wait, mg1, mg1_sum_quantile
 from .scenario import Scenario
 
 QS = (0.5, 0.9, 0.99)
@@ -143,30 +156,179 @@ def _prefill_server(pool: _Pool, lam: float, pts, scale: float = 1.0) -> dict | 
         lats = [t + (b - 1) * tbar for t in taus] if len(taus) > 1 else [rs[0].ttft * scale]
         lat = _wsum(ws, lats)
         if best is None or w["mean"] + lat < best["wait"]["mean"] + best["lat"]:
-            best = {"b": b, "lat": lat, "lats": lats, "wait": w, "rs": rs, "ws": ws, "scale": scale}
+            best = {"b": b, "lat": lat, "lats": lats, "wait": w, "rs": rs, "ws": ws, "scale": scale, "taus": taus,
+                    "lam": lam}
     return best
+
+
+_Z = {0.5: 0.0, 0.9: 1.2815515655446004, 0.99: 2.3263478740408408}
+_WIN = math.sqrt(2.0 * math.exp(-1.0))   # OU time-average over one correlation time: σ factor ≈ 0.858
+
+
+def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: float = 1.0,
+                        scale=lambda r: 1.0, n_max: int = 4096, step_fn=None) -> dict | None:
+    """Continuous-batching decode as a birth–death process (0.54; validated against core/pdsim).
+
+    State n = requests at the replica (running + waiting for a slot).  Every running sequence advances one engine
+    step per iteration, so the replica is a processor-sharing server with state-dependent capacity: departure rate
+    μ(n) = k·e / (out · step(k)), k = min(n, B).  Stationary π_n ∝ Π λ/μ(j) (exact for PS, insensitive to the
+    output-length law); E[TPOT] = E[k] / (λ·out) by Little on the running set.  The 0.51–0.53 Little fixed point
+    n̄ = λ·out·TPOT(⌈n̄⌉) ignored occupancy fluctuations and is optimistic when step(k) grows with k (KV reads) —
+    e.g. −30 % mean TPOT at 80 % load in the §18.1 example.
+    Request-average TPOT quantiles: a running request sees the size-biased batch (mean m_s, sd σ_s); over its
+    lifetime (≈ one correlation time of the occupancy) the average batch has sd ≈ 0.86·σ_s (OU window) 「假设」.
+    ``step_fn(k) → (step, Result)`` overrides the pool step (chunked prefill uses its mean iteration)."""
+    steps: dict = {}
+
+    def step_of(k: int):
+        if k not in steps:
+            if step_fn is not None:
+                steps[k] = step_fn(k)
+            else:
+                r = pool.run("decode", k)
+                steps[k] = (r.step * scale(r) / share, r)
+        return steps[k]
+
+    stB, rB = step_of(B)
+    if not rB.fits or not math.isfinite(stB):
+        return None
+    e = rB.tokens_per_step
+    if lam <= 0 or out <= 0:
+        st1, r1 = step_of(1)
+        return {"k": 1, "occupancy": 0.0, "r": r1, "tpot": st1 / e, "step": st1, "running_mean": 1.0,
+                "pi_run": (1.0,), "seen_mean": 1.0, "seen_sd": 0.0, "step_of": step_of, "e": e}
+    if lam >= B * e / (out * stB):       # even a full batch cannot keep up
+        return None
+    logp = [0.0]
+    for n in range(1, n_max + 1):
+        k = min(n, B)
+        st, _ = step_of(k)
+        if not math.isfinite(st):
+            return None
+        logp.append(logp[-1] + math.log(lam * out * st / (k * e)))
+        if n > B + 8 and logp[-1] < max(logp) - 40:
+            break
+    m = max(logp)
+    w = [math.exp(x - m) for x in logp]
+    Z = sum(w)
+    pi = [x / Z for x in w]
+    EN = sum(n * p for n, p in enumerate(pi))
+    run_w = [0.0] * (B + 1)
+    for n, p in enumerate(pi):
+        run_w[min(n, B)] += p
+    Ek = sum(k * p for k, p in enumerate(run_w))               # unconditional mean running batch
+    busy = 1.0 - run_w[0]
+    pi_run = tuple(x / busy for x in run_w[1:]) if busy > 0 else (1.0,)
+    k_mean = Ek / busy if busy > 0 else 1.0
+    # what a running request sees per iteration: weight ∝ π(k)·k / step(k) (iterations at k occur at rate 1/step;
+    # the request is in k of them).  Its mean step = E[k] / E[k/step] = the Little mean exactly.
+    wsee = [run_w[k] * k / step_of(k)[0] if k else 0.0 for k in range(B + 1)]
+    ws_tot = sum(wsee) or 1.0
+    wsee = [x / ws_tot for x in wsee]
+    seen_mean = sum(k * x for k, x in enumerate(wsee))
+    seen_sd = math.sqrt(max(0.0, sum(k * k * x for k, x in enumerate(wsee)) - seen_mean ** 2))
+    st_mean = sum(step_of(k)[0] * x for k, x in enumerate(wsee) if x)
+    st_sd = math.sqrt(max(0.0, sum(step_of(k)[0] ** 2 * x for k, x in enumerate(wsee) if x) - st_mean ** 2))
+    k_hat = max(1, min(B, int(round(seen_mean))))
+    st, r = step_of(k_hat)
+    return {"k": k_hat, "occupancy": EN, "r": r, "tpot": Ek / (lam * out), "step": st, "running_mean": k_mean,
+            "pi_run": pi_run, "seen_mean": seen_mean, "seen_sd": seen_sd, "w_seen": tuple(wsee), "step_seen_mean": st_mean,
+            "step_seen_sd": st_sd, "step_of": step_of, "e": e}
+
+
+
+
+def _tpot_req_q(dec: dict, q: float) -> float:
+    """Request-average TPOT quantile: mean seen step + z·0.86·sd (lifetime ≈ one occupancy correlation time)."""
+    return (dec["step_seen_mean"] + _Z[q] * _WIN * dec["step_seen_sd"]) / dec["e"]
+
+
+def _gap_q(dec: dict, q: float) -> float:
+    """Single-iteration token gap at the q-quantile of the batch a running request sees (discrete, no averaging)."""
+    acc = 0.0
+    for k, x in enumerate(dec["w_seen"]):
+        acc += x
+        if x and acc >= q:
+            return dec["step_of"](k)[0] / dec["e"]
+    return dec["step_of"](len(dec["w_seen"]) - 1)[0] / dec["e"]
+
+
+def _busy_max_q(lam: float, lat: float, cap: int, life: float, rho: float, q: float) -> int:
+    """q-quantile of the longest run of back-to-back prefill batches a request meets during ``life`` (prefill-first:
+    decode stalls for the whole prefill busy period).  Busy periods start at λ(1 − ρ); batches per busy period:
+    Borel(λ·lat) for cap 1 (every arrival needs its own service), geometric with continuation 1 − e^{−λ·lat} for
+    cap > 1 (one batch absorbs the arrivals) 「假设」."""
+    a = lam * lat
+    m = max(0.0, lam * (1 - rho) * life)
+    if a <= 0 or m <= 0:
+        return 1
+    F = 0.0
+    for n in range(1, 400):
+        if cap <= 1:
+            if a >= 1:
+                return 400
+            pn = math.exp(-a * n + (n - 1) * math.log(a * n) - math.lgamma(n + 1))
+        else:
+            c = -math.expm1(-a)
+            pn = (1 - c) * c ** (n - 1)
+        F += pn
+        if F >= 1 or F ** m >= q:
+            return n
+    return 400
+
+
+def _busy_dur_max_q(lam: float, lats_w, cap: int, life: float, rho: float, q: float) -> float:
+    """Duration version of _busy_max_q for a mixed prompt law (0.54): busy period = Σ_{j≤N} L_j with N as in
+    _busy_max_q (count from the mean latency) and L_j iid from the discrete latency mix (independence of N and the
+    L_j 「假设」).  Returns d with P(D ≤ d)^m = q.  A single latency value reduces exactly to n_q · lat."""
+    pts = [(w, l) for w, l in lats_w if w > 0]
+    tot = sum(w for w, _ in pts)
+    pts = [(w / tot, l) for w, l in pts]
+    lat = sum(w * l for w, l in pts)
+    if len({l for _, l in pts}) <= 1:
+        return _busy_max_q(lam, lat, cap, life, rho, q) * lat
+    a = lam * lat
+    m = max(0.0, lam * (1 - rho) * life)
+    if a <= 0 or m <= 0:
+        return max(l for _, l in pts)
+    if cap <= 1 and a >= 1:
+        return math.inf
+    target = q ** (1.0 / m)                       # per-busy-period CDF level
+    dt = min(l for _, l in pts) / 8.0
+    idx = [(w, max(1, int(round(l / dt)))) for w, l in pts]
+    cur = {0: 1.0}                                # pmf of Σ_{j≤n} L_j on the grid
+    dist: dict = {}
+    F_n = 0.0
+    for n in range(1, 400):
+        nxt: dict = {}
+        for k, pk in cur.items():
+            for w, i in idx:
+                nxt[k + i] = nxt.get(k + i, 0.0) + pk * w
+        cur = {k: v for k, v in nxt.items() if v > 1e-14}
+        if cap <= 1:
+            pn = math.exp(-a * n + (n - 1) * math.log(a * n) - math.lgamma(n + 1))
+        else:
+            c = -math.expm1(-a)
+            pn = (1 - c) * c ** (n - 1)
+        for k, v in cur.items():
+            dist[k] = dist.get(k, 0.0) + pn * v
+        F_n += pn
+        if 1 - F_n < (1 - target) * 1e-3:
+            break
+    acc = 0.0
+    for k in sorted(dist):
+        acc += dist[k]
+        if acc >= target:
+            return k * dt
+    return max(dist) * dt
 
 
 def _decode_fixed_point(pool: _Pool, lam: float, out: float, B: int, share: float = 1.0,
                         scale=lambda r: 1.0) -> dict | None:
-    """Continuous batching: smallest k ≤ B with λ·(out / e)·step(k)/share ≤ k; None if even k = B does not keep up."""
-    def need(k: int) -> tuple[float, Result, float]:
-        r = pool.run("decode", k)
-        st = r.step * scale(r) / share
-        return lam * out / r.tokens_per_step * st, r, st
+    """Continuous batching (0.54 = birth–death; name kept for call sites)."""
+    return _decode_birth_death(pool, lam, out, B, share, scale)
 
-    nB, rB, _ = need(B)
-    if not rB.fits or nB > B:
-        return None
-    lo, hi = 1, B
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if need(mid)[0] <= mid:
-            hi = mid
-        else:
-            lo = mid + 1
-    n, r, st = need(lo)
-    return {"k": lo, "occupancy": n, "r": r, "tpot": st / r.tokens_per_step, "step": st}
+
 
 
 def _tpot_at(pool: _Pool, k: int, share: float = 1.0, scale=lambda r: 1.0) -> float:
@@ -174,13 +336,20 @@ def _tpot_at(pool: _Pool, k: int, share: float = 1.0, scale=lambda r: 1.0) -> fl
     return r.step * scale(r) / share / r.tokens_per_step
 
 
-def _ttft(wait: dict, lats_w, extra: dict | None = None, add: float = 0.0) -> dict:
-    """TTFT moments: queue wait + discrete own-latency (+ another queue's wait) + a constant."""
+def _ttft(wait: dict, lats_w, extra: dict | None = None, add: float = 0.0, conv: tuple | None = None) -> dict:
+    """TTFT quantiles = prefill-wait ⊕ own latency (+ ``extra`` queue quantile + ``add``).  ``conv`` = (λ, taus)
+    of the prefill M/G/1: with a mixed service law the wait and the request's own latency are combined as a proper
+    sum of independent variables (0.54, mg1_sum_quantile); otherwise (one service value) the quantiles add exactly."""
     ws = [w for w, _ in lats_w]
     out = {"mean": wait["mean"] + _wsum(ws, [x for _, x in lats_w]) + add + (extra["mean"] if extra else 0.0)}
     for q in QS:
         k = f"p{q * 100:g}"
-        out[k] = wait[k] + dquantile(lats_w, q) + add + (extra[k] if extra else 0.0)
+        core = None
+        if conv is not None:
+            core = mg1_sum_quantile(conv[0], conv[1], ws, [x for _, x in lats_w], q)
+        if core is None:
+            core = wait[k] + dquantile(lats_w, q)
+        out[k] = core + add + (extra[k] if extra else 0.0)
     return out
 
 
@@ -218,13 +387,12 @@ def _pd_mode(ctx: dict, lam: float) -> dict:
         exposed = [max(alpha + t / L, L * alpha + t - lat * (L - 1) / L) for t, lat in zip(t_bw, pre["lats"])]
     else:
         exposed = [alpha + t for t in t_bw]
-    ttft = _ttft(pre["wait"], [(w, lat + e) for w, lat, e in zip(ws, pre["lats"], exposed)], kvq)
-    k90 = min(B, poisson_quantile(dec["occupancy"], 0.9))
-    k99 = min(B, poisson_quantile(dec["occupancy"], 0.99))
+    ttft = _ttft(pre["wait"], [(w, lat + e) for w, lat, e in zip(ws, pre["lats"], exposed)], kvq,
+                 conv=(pre["lam"], pre["taus"]))
     slot = mdc_wait(lam_d, out * dec["tpot"], B, QS, cs2=ctx["out_cs2"])
-    tp99 = _tpot_at(dp, max(dec["k"], k99), scale=sc_d)
-    return {**res, "ttft": ttft, "tpot_mean": dec["tpot"], "tpot_p90": _tpot_at(dp, max(dec["k"], k90), scale=sc_d),
-            "tpot_p99": tp99, "itl_max": tp99,
+    tp90, tp99 = _tpot_req_q(dec, 0.9), _tpot_req_q(dec, 0.99)
+    return {**res, "ttft": ttft, "tpot_mean": dec["tpot"], "tpot_p90": tp90,
+            "tpot_p99": tp99, "itl_max": _gap_q(dec, 0.99),
             "e2e_mean": ttft["mean"] + slot["mean"] + out * dec["tpot"],
             "prefill": {"batch_cap": pre["b"], "ttft_b_ms": pre["lat"] * 1e3, "wait_ms": _ms(pre["wait"]),
                         "kv_slowdown": pre["scale"]},
@@ -232,7 +400,8 @@ def _pd_mode(ctx: dict, lam: float) -> dict:
                    "shared_tier": shared, "u_coll": u_coll, "GBps_req_avail": b_req / 1e9,
                    "u_kv_decode": u_kv_d, "u_kv_prefill": u_kv_p},
             "decode": {"running_batch": dec["k"], "occupancy": dec["occupancy"], "slots": B,
-                       "kv_slowdown": sc_d(dec["r"]), "slot_wait_ms": _ms(slot), "running_p90": max(dec["k"], k90)},
+                       "kv_slowdown": sc_d(dec["r"]), "slot_wait_ms": _ms(slot),
+                       "running_p90": max(1, int(round(dec["seen_mean"] + _Z[0.9] * dec["seen_sd"])))},
             "_pre": pre, "_dec": dec}
 
 
@@ -250,7 +419,7 @@ def _coloc_prefill_first(ctx: dict, lam: float) -> dict:
     tp = dec["r"].step / dec["r"].tokens_per_step
     resid = dec["r"].step
     lats_w = list(zip(pre["ws"], pre["lats"]))
-    ttft = _ttft(pre["wait"], lats_w)
+    ttft = _ttft(pre["wait"], lats_w, conv=(pre["lam"], pre["taus"]))
     ttft["mean"] += resid / 2
     ttft["p50"] += resid / 2
     ttft["p90"] += resid
@@ -260,12 +429,18 @@ def _coloc_prefill_first(ctx: dict, lam: float) -> dict:
     # (prefill batches start at λ_c / b, Poisson → count ~ Poisson((λ_c / b) · lifetime)), each of mean length
     life = out * dec["tpot"]
     m_st = lam_c / pre["b"] * life
-    k90 = min(B, poisson_quantile(dec["occupancy"], 0.9))
-    tp90 = _tpot_at(cp, max(dec["k"], k90))
-    req_q = {q: tp90 + poisson_quantile(m_st, q) * pre["lat"] / out for q in (0.9, 0.99)}
+    # request-average TPOT: the birth–death mean already contains the stalls (steps ÷ share); the spread combines the
+    # decode-occupancy deviation and the Poisson count of stalls met (independent, root-sum-square) — 0.54; the
+    # 0.51–0.53 form added the stall quantile on top of a stretched TPOT (double count).
+    pure = {q: (_tpot_req_q(dec, q) - _tpot_req_q(dec, 0.5)) for q in (0.9, 0.99)}
+    req_q = {q: dec["tpot"] + math.sqrt(pure[q] ** 2 + (_Z[q] * math.sqrt(m_st) * pre["lat"] / out) ** 2)
+             for q in (0.9, 0.99)}
     slot = mdc_wait(lam_c, out * dec["tpot"], B, QS, cs2=ctx["out_cs2"])
+    # longest token gap (p99 over requests of each request's worst gap): one decode step + the longest prefill busy
+    # period met in its lifetime (prefill-first stalls decode for the whole busy period)
+    d99 = _busy_dur_max_q(lam_c, lats_w, pre["b"], life, pre["wait"]["rho"], 0.99)
     return {**res, "ttft": ttft, "tpot_mean": dec["tpot"], "tpot_p90": req_q[0.9], "tpot_p99": req_q[0.99],
-            "itl_max": tp90 + dquantile(lats_w, 0.99),
+            "itl_max": dec["step_seen_mean"] * share / dec["e"] + d99,
             "e2e_mean": ttft["mean"] + slot["mean"] + out * dec["tpot"],
             "prefill": {"batch_cap": pre["b"], "ttft_b_ms": pre["lat"] * 1e3, "wait_ms": _ms(pre["wait"])},
             "decode": {"running_batch": dec["k"], "occupancy": dec["occupancy"], "slots": B, "share": share,
@@ -310,51 +485,44 @@ def _coloc_chunked(ctx: dict, lam: float) -> dict:
     ns = [n for n, _, _ in plans]
     nu = lam_c * _wsum(ws, ns)                  # chunk iterations / s
 
-    def at(k: int):
-        r = cp.run("decode", k)
-        t1 = [_fused_step(r, p1, f, rr) for p1, (_, f, rr) in zip(pre1, plans)]
-        rho = lam_c * _wsum(ws, [n * t for n, t in zip(ns, t1)])
-        tbar = r.step / (1 - rho + nu * r.step) if rho < 1 else math.inf
-        return r, t1, rho, tbar, lam_c * out / r.tokens_per_step * tbar
+    # Mean iteration at running batch k: a share x of iterations carries a chunk (ν chunk iterations / s) →
+    # tbar = T₀ / (1 − ν·(T₁ − T₀)), x = ν·tbar (0.52 per-iteration mean); birth–death uses tbar as step(k).
+    memo: dict = {}
 
-    rB, t1B, rhoB, _, nB = at(B)
-    if not rB.fits or rhoB >= 1 or nB > B:
+    def mean_step(k: int):
+        if k not in memo:
+            r = cp.run("decode", k)
+            t1 = [_fused_step(r, p1, f, rr) for p1, (_, f, rr) in zip(pre1, plans)]
+            t1m = _wsum(ws, [m * t for m, t in zip(ns, t1)]) / _wsum(ws, ns)
+            den = 1 - nu * (t1m - r.step)
+            tbar = r.step / den if den > 0 else math.inf
+            memo[k] = (tbar, r, t1, min(1.0, nu * tbar), t1m)
+        return memo[k]
+
+    tB, rB, _, xB, _ = mean_step(B)
+    if not rB.fits or not math.isfinite(tB) or xB >= 1:
         return {**res, "why": "分块 prefill + decode 在此负载下不稳定"}
-    lo, hi = 1, B
-    while lo < hi:
-        mid = (lo + hi) // 2
-        r, t1, rho, tbar, n = at(mid)
-        if rho < 1 and n <= mid:
-            hi = mid
-        else:
-            lo = mid + 1
-    r, t1, rho, tbar, n = at(lo)
-    serv = [m * t for m, t in zip(ns, t1)]
+    dec = _decode_birth_death(cp, lam_c, out, B, step_fn=lambda k: mean_step(k)[:2])
+    if dec is None:
+        return {**res, "why": "分块 prefill + decode 在此负载下不稳定"}
+    k_s = max(1, min(B, int(round(dec["seen_mean"]))))
+    _, r, t1, x, t1m = mean_step(k_s)
+    serv = [m * t for m, t in zip(ns, t1)]          # prefill service = chunks × fused iteration at the seen batch
     w = mg1(lam_c, serv, ws, QS)
     if not w["stable"]:
         return {**res, "why": "分块 prefill 队列不稳定"}
-    ttft = _ttft(w, list(zip(ws, serv)))
-    k90 = min(B, poisson_quantile(n, 0.9))
-    r90, _, _, tbar90, _ = at(max(lo, k90))
-    t1_90 = [_fused_step(r90, p1, f, rr) for p1, (_, f, rr) in zip(pre1, plans)]
-    t1_90m = _wsum(ws, [m * t for m, t in zip(ns, t1_90)]) / _wsum(ws, ns)
-    t0_90 = r90.step
-    e = r.tokens_per_step
-    x = min(1.0, nu * tbar)                    # share of iterations that carry a chunk
-    iters = max(1, round(out / e))
-
-    def req_tpot(q: float) -> float:      # request-average: j of its iterations carry a chunk, j ~ Poisson(x·iters)
-        j = min(iters, poisson_quantile(x * iters, q))
-        return (t1_90m * j + t0_90 * (iters - j)) / iters / e
-    slot = mdc_wait(lam_c, out / e * tbar, B, QS, cs2=ctx["out_cs2"])
-    return {**res, "stable": True, "ttft": ttft, "tpot_mean": tbar / e,
-            "tpot_p90": req_tpot(0.9), "tpot_p99": req_tpot(0.99), "itl_max": max(t1_90) / e,
-            "e2e_mean": ttft["mean"] + slot["mean"] + out * tbar / e,
-            "prefill": {"chunk_tokens": C, "chunks": _wsum(ws, ns),
-                        "iter_ms": _wsum(ws, [m * t for m, t in zip(ns, t1)]) / _wsum(ws, ns) * 1e3,
-                        "rho": rho, "chunk_share": x, "wait_ms": _ms(w)},
-            "decode": {"running_batch": lo, "occupancy": n, "slots": B, "iter_ms_no_chunk": r.step * 1e3,
-                       "slot_wait_ms": _ms(slot)},
+    ttft = _ttft(w, list(zip(ws, serv)), conv=(lam_c, serv))
+    k99 = max(1, min(B, int(math.ceil(dec["seen_mean"] + _Z[0.99] * dec["seen_sd"]))))
+    t1_99 = mean_step(k99)[2]
+    slot = mdc_wait(lam_c, out * dec["tpot"], B, QS, cs2=ctx["out_cs2"])
+    return {**res, "stable": True, "ttft": ttft, "tpot_mean": dec["tpot"],
+            "tpot_p90": _tpot_req_q(dec, 0.9), "tpot_p99": _tpot_req_q(dec, 0.99),
+            "itl_max": max(t1_99) / dec["e"],
+            "e2e_mean": ttft["mean"] + slot["mean"] + out * dec["tpot"],
+            "prefill": {"chunk_tokens": C, "chunks": _wsum(ws, ns), "iter_ms": t1m * 1e3,
+                        "rho": lam_c * _wsum(ws, serv), "chunk_share": x, "wait_ms": _ms(w)},
+            "decode": {"running_batch": dec["k"], "occupancy": dec["occupancy"], "slots": B,
+                       "iter_ms_no_chunk": r.step * 1e3, "slot_wait_ms": _ms(slot)},
             "_dec_r": r, "_pre1": pre1, "_plans": plans}
 
 
@@ -440,7 +608,8 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
                     "请求长度按离散分布（M/G/1）") + ("、前缀缓存命中率 " + f"{pd.prefix_hit:.0%}" if pd.prefix_hit else "")
                     + ("、前缀缓存容量模型（LRU / Che：PD prefill 命中 {:.0%}、合并 {:.0%}；命中 / 未命中两类请求按 M/G/1）"
                        .format(*ctx["prefix_hits"]) if ctx.get("prefix_hits") else "")
-                    + "、M/D/1 / Erlang C、阶段级融合的分块 prefill；分位数逐项相加（偏保守）"}
+                    + "、M/D/1 / Erlang C、decode 连续批处理按 birth–death（0.54）、阶段级融合的分块 prefill；"
+                    "服务时间混合时 TTFT = 等待 ⊕ 自身时延（卷积）；经请求级 DES 对照（V4，见建模说明 §18.4）"}
     if lam <= 0:
         out["error"] = "PD 稳态容量为 0（放不下或 SLO 下无可行 prefill），不做排队估计"
         return out

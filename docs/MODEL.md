@@ -99,6 +99,8 @@
 - **V1 参数**：55 个 LLM / VLM 发布与 safetensors 总量偏差全部 ≤ 0.5%，6 个视频 / 蛋白质发布逐项一致；8 个模型卡的激活参数 ≤ 5%；FLOPs 与独立计数对照（视频 / 蛋白质：按 config 的闭式计数，偏差 < 1%）。
 - **V2 趋势区间**（H100 类配置：128 × 128 × 16 @ 1.83 GHz ≈ 959 TFLOPS bf16、SRAM 50 MiB、HBM3 5 堆 3.33 TB/s、DRAM 效率 0.8、可重构映射，均为「假设」）：Llama-3.1-8B bf16 B1 TPOT 5.7 ms（区间 4.5–9）；B16/B1 = 1.13；Qwen3-8B FP8/BF16 = 0.54；4K prompt TTFT 83 ms；Qwen3-32B TP2 加速 1.94；B256 吞吐 1.4 万 tok/s。视频只做工作负载 / FLOP 的合理性核对（不是硬件标定）：Wan2.1 README 称 T2V-1.3B 在单张 RTX 4090 上约 4 分钟生成 5 s 480P（含 T5、VAE 与 offload）；本工具每段 28.6 PFLOP（0.44 起含 umT5 与 Wan-VAE 解码 0.29 PFLOP），折合 4090 约 165 TFLOPS（bf16、fp32 累加）的 0.72（区间 0.4–1.0）。
 - **V3 GenZ 对照**（Llama-3.1-8B decode，参考值由 `scripts/genz_reference.py` 生成）：LPDDR 191 GB/s 各点比值 1.07（DRAM 效率口径差异）；HBM 6.6 TB/s 下 `reconf` 映射比值 1.07–1.22，长上下文 / 大 batch 点偏高来自注意力小 M 分块，而 GenZ 按理想 FLOPS 计；`os` 映射在 HBM 下比值 3.6–6.8，因为小 M decode 被 SRAM 供数端口限制——这正是映射作为设计变量要暴露的差别，不视为误差。容差：访存受限点 15%，其余 60%。
+- **V4 服务验证**（0.54）：闭式排队模型对照请求级 DES（同一套逐步代价），54 点网格与误差表见 §18.4。
+- **V5 硅片实测**：无（没有可测的 NPU，结果只作设计指导）。
 
 ## 10. 范围与近似
 
@@ -470,3 +472,53 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
   - 异构：prefill 改 100T → 流体 577 → 154 tok/s/卡（prefill 瓶颈），PD SLO goodput 0；prefill 只换 LPDDR5X（同 1P）→ 本例仍够 TTFT，与 baseline 相同。布局搜索 + decode batch：LPDDR5X decode、TPOT SLO 50 ms 时，SLO 最佳由 batch 64 改为 32（同 91 tok/s/卡）。
 - **入口**：`pd.prefix_len / prefix_count / prefix_zipf / prefix_cache_GB / prefix_affinity / prefill_chip / prefill_mem_id / search_decode_batch`；响应 `pd.prefix_cache`（策略、容量、足迹、K、命中率、来源）、`pd.lengths.prefix_hit_source`（`capacity` / `explicit` / `off`）、`pd.prefill.{chip,mem_id,hetero}`；CLI `--pd-prefix-len --pd-prefix-count --pd-prefix-zipf --pd-prefix-cache-GB --pd-prefix-affinity --pd-prefill-chip --pd-prefill-mem --pd-search-decode-batch`；Web「前缀缓存容量」「异构池」输入与「前缀缓存容量」表。
 - **不做**：部分前缀匹配（radix / 块粒度）、缓存预热与淘汰代价、队列模型更大 batch 对剩余 DRAM 的反馈、按芯片区分的闲置功率、PD prefill 池内分块、decode 端共享前缀的 KV 读合并、长度感知调度。
+
+### 18.4 V4 服务验证：请求级 DES 对照闭式排队模型（0.54）
+
+目的是验证，不加新功能。`core/pdsim.py` 是一个轻量的请求级离散事件仿真（DES，「假设」）。它复用闭式模型的**同一套逐步代价**：prefill TTFT(b, S, p)、decode step(k)、分块融合迭代、KV 传输，含 KV 与集合通信争用后的缩放；按事件推进泊松到达、FCFS、PD 两池（prefill 静态 batch 上限、每个 prefill 副本一条 KV 传输流、decode 连续批处理 B 槽）、合并 prefill 优先（每个迭代边界先跑等待中的 prefill 批）与分块 prefill（运行中的 decode + 队首 prompt 的 ≤ C token）、离散长度分布，以及前缀缓存（整前缀精确 LRU，Zipf id，缓存预热到稳态后只在测量窗内计命中率）。每个副本同一时刻只有一个迭代在跑，token 在迭代结束时计入，token 间隔从上一个 token 起算。因此 V4 衡量的是**排队 / 批处理近似**的误差，不是逐步代价模型的误差（后者见 V2 / V3）。
+
+- **网格**（`scripts/v4_serving.py`，结果存 `accel_dse/data/v4_serving.json`）：Qwen3-8B 1P + HBM3E TP2 batch 64，prompt 4096 / out 512，SLO 400 / 10 ms，PD prefill 2 + decode 6；load 0.3 / 0.6 / 0.85 × 长度 CV 0 / 0.5 / 1（prompt 与输出同 CV）× 前缀缓存 关 / 开（容量模式：20000 个前缀 × 2048 token，Zipf 1）× 模式 PD / 合并 prefill 优先 / 合并分块 512，共 54 点。每点 DES 1500 个请求（前后各 375 个热身 / 排空）；SLO goodput 用同一组随机数对 DES 二分（分辨率 3 %）。误差 = (闭式 − DES) / DES：**> 0 表示闭式偏保守**（延迟更大）。SLO goodput 的符号反过来，> 0 仍表示保守（容量更小）。前缀命中率给的是绝对差。
+
+| 模式 | 指标 | 最小 | 中位 | 最大 | 平均 \|误差\| | 落在容差内 |
+|---|---|---|---|---|---|---|
+| PD | TTFT p50 / p90 / p99 | −12 / −10 / −6 % | +3 / 0 / +4 % | +27 / +15 / +50 % | 8 / 3 / 8 % | 78 / 100 / 94 % |
+| PD | TPOT p90 | −26 % | −5 % | +2 % | 6 % | 94 % |
+| PD | 最长 token 间隔（每请求最长间隔的 p99） | −18 % | −10 % | +27 % | 12 % | 100 % |
+| PD | SLO goodput | −8 % | −5 % | −1 % | 5 % | 100 % |
+| 合并 prefill 优先 | TTFT p50 / p90 / p99 | −4 / −1 / −6 % | +2 / +1 / +5 % | +48 / +28 / +21 % | 8 / 3 / 8 % | 83 / 94 / 100 % |
+| 合并 prefill 优先 | TPOT p90 | −43 % | −18 % | −8 % | 20 % | 61 % |
+| 合并 prefill 优先 | 最长 token 间隔 | −39 % | −17 % | +1 % | 16 % | 89 % |
+| 合并 prefill 优先 | SLO goodput | −6 % | −3 % | 0 % | 3 % | 100 % |
+| 合并分块 | TTFT p50 / p90 / p99 | −22 / −24 / −48 % | +9 / +2 / −3 % | +57 / +7 / +23 % | 14 / 9 / 15 % | 72 / 78 / 89 % |
+| 合并分块 | TPOT p90 | −37 % | −14 % | −8 % | 19 % | 67 % |
+| 合并分块 | 最长 token 间隔 | −33 % | −12 % | +4 % | 13 % | 89 % |
+| 合并分块 | SLO goodput | −5 % | −3 % | 0 % | 3 % | 100 % |
+| 三种模式 | 前缀命中率（绝对差） | −0.006 | −0.004 | −0.001 | 0.004 | 100 % |
+
+  容差（`validation.V4_BANDS`）：TTFT p50 ±15 %、p90 ±20 %、p99 ±30 %，TPOT p90 ±20 %，最长间隔 ±30 %，SLO goodput ±20 %，命中率 ±0.03。CV = 1 时 p90 prompt 单独就超过 400 ms TTFT SLO，两边 SLO goodput 都是 0，记为 n/a（每种模式 12 个有效点）。
+
+- **闭式在哪里偏乐观 / 偏保守**
+  - **SLO goodput（设计决策用的主指标）**：三种模式全部在 −8 % … 0 % 之间，即闭式略偏乐观，最多高估 8 %。12 个有效场景里，「PD 低于两种合并模式」的结论与 DES 全部一致；完整三模式排名 10 / 12 一致，另外 2 个是两种合并模式相差 < 1 tok/s/卡（DES 二分分辨率内）的并列。
+  - **TTFT**：PD 与 prefill 优先的 p90 中位误差 ≈ 0。偏保守的地方有两处：一是 p90 恰好落在 M/D/1 等待原子边缘（ρ ≈ 1 − q，例如 load 0.6 时 prefill 优先 ρ_p ≈ 0.1），此时分位数是病态的，最多 +30 %；二是 CV = 1 时 PD 的 p99（+50 %），Cramér–Lundberg 指数尾在混合服务时偏重。分块 prefill 在 load 0.85 时 TTFT 偏乐观（p90 −24 %、p99 −48 %）：闭式按「平均运行 batch」的融合迭代计 prefill 服务时间，而高负载时运行 batch 涨落大、块迭代变慢。
+  - **TPOT（合并模式系统性偏乐观）**：prefill 优先与分块的 TPOT p90 在所有 36 点上都偏乐观，中位 −14 … −18 %，最差 −43 %（load 0.85、CV 1）。原因：prefill 停顿让进入 decode 的到达变成成批的，而泊松输入的 birth–death 看不到这种突发；运行 batch 涨落更大，step(k) 又随 k 线性变陡。PD 的 decode 输入是 prefill 池的输出（比泊松更平滑），中位只有 −5 %。
+  - **最长 token 间隔**：PD 用运行 batch 0.99 点的单步时间，中位 −10 %。prefill 优先 = 一个 decode 步 + 一生中遇到的最长 prefill 忙期，固定长度时在 ±2 % 内；CV 越大越偏乐观（CV 1、load 0.6 为 −38 %），因为忙期内批数与各批长度假设独立，而长 prompt 本身会拉长忙期、引来更多到达。
+  - **前缀命中率**：Che 与精确 LRU（热身后）相差 < 0.01。
+
+- **DES 发现并修正的问题**（只影响 PD 报告与其中的合并对照；默认合并评估的 1356 项指纹不变）
+  1. **decode 连续批处理**（真实建模问题）：0.51–0.53 用 Little 不动点 n̄ = λ·out·TPOT(⌈n̄⌉)，忽略了占用涨落。step(k) 随 k 明显增大时（本例 step(k) ≈ 1.48 + 0.63·k ms）它偏乐观：load 0.8 时平均 TPOT 6.5 ms，DES 9.05 ms。改为 **birth–death 处理器共享模型**：μ(n) = min(n,B)·e/(out·step(min(n,B)))，π 由细致平衡给出，E[TPOT] = E[k]/(λ·out)，得 9.21 ms。运行中的请求看到的 batch 按 π(k)·k/step(k) 加权；请求平均 TPOT 分位数 = (看到的均值 + z·0.858·标准差)/e（OU 窗口因子「假设」）；最长间隔取看到的 batch 分布的 0.99 点（离散）。
+  2. **prefill 优先的 TPOT 分位数重复计入停顿**：旧式在已经 ÷ share 拉长的 TPOT 上再加停顿分位数。改为均值 + √(decode 占用离差² + (z·√m·lat/out)²)。
+  3. **prefill 优先的最长间隔偏乐观**：旧式「TPOT + 一次 prefill」≈ 87 ms，DES p99 为 322 ms。改为一个 decode 步 + 一生中最长 prefill 忙期的 0.99 点：忙期以 λ(1 − ρ) 起始；每忙期批数 cap 1 时为 Borel(λ·lat)，cap > 1 时为几何分布；时长按长度混合卷积「假设」。得 314 ms。
+  4. **服务时间混合时 TTFT 分位数逐项相加**（偏保守，CV = 1 时 p90 +50 % 量级）：改为 W ⊕ L_i 的正确分位数：P(T > t) = Σ w_i·P(W > t − L_i)，W 取 M/G/1 Cramér–Lundberg 尾（`queueing.mg1_sum_quantile`）。服务时间只有一个取值时与旧式完全相同。KV 队列分位数仍相加（量小）。
+  5. 分块 prefill 的 decode 也走 birth–death（平均迭代 tbar(k) = T₀(k)/(1 − ν(T₁(k) − T₀(k)))），prefill 服务按「看到的 batch」的融合迭代计。
+
+- **数值变化**（§18.1 例子，load 0.8；0.53 → 0.54）：
+  - PD：TTFT 102 / 216 / 380 ms 不变；TPOT 均值 / p90 6.49 / 9.00 → 9.21 / 14.06 ms；最长间隔 10.9 → 22.8 ms；SLO goodput 474 → 410 tok/s/卡（最佳切分仍为 2 + 6）。
+  - 合并 prefill 优先：TTFT 79 / 114 / 169 → 80 / 115 / 171 ms；TPOT 5.35 / 7.69 → 7.45 / 11.14 ms；最长间隔 83.5 → 314 ms；SLO goodput 506 → 442。
+  - 合并分块：TTFT 114 / 177 / 277 → 129 / 209 / 330 ms；TPOT 5.35 / 7.39 → 7.43 / 11.09 ms；最长间隔 16.1 → 23.0 ms；SLO goodput 511 → 443。
+  - CV 0.5：PD TTFT p90 539 → 409 ms，SLO goodput 316 → 404（卷积修正去掉了逐项相加的保守量）。
+  - 前缀容量（N = 20000）：PD TTFT p50 49 → 77 ms（命中 / 未命中两类服务时间卷积），p90 147 → 129 ms。
+
+  定性结论不变：SLO goodput 合并模式略高，prefill 优先的单次停顿远大于 PD。量级上停顿差距更大（314 vs 23 ms，0.53 为 83 vs 11 ms）。§18.1–18.3 里写的排队数值是 0.51–0.53 当时的值。
+
+- **入口**：`accel-dse validate` 打印 V4 实时子集（load 0.6 × {CV 0、CV 1、前缀开} × 3 种模式，≈ 15 s；`--no-v4` 跳过）；完整网格 `PYTHONPATH=. python3 scripts/v4_serving.py [--slo]`（SLO 二分约 12 min）。**可选** `pd.simulate` / CLI `--pd-sim` / Web「DES 仿真尾部」：在 PD 报告里给每个稳定模式附 `pd.queue.sim.modes.{mode}`，包括 DES 的 TTFT / TPOT / 最长间隔分位数、命中率，以及相对闭式的误差（n = 1500，单点慢约 3–5 s；默认关，闭式数值不受影响）。
+- **剩余缺口**：合并模式 TPOT 尾偏乐观（见上，需要一个调制到达的 QBD 才能修，没做）；CV 大时 prefill 优先的最长停顿偏乐观；分块 prefill 在高负载时 TTFT 尾偏乐观；DES 自身的「假设」：泊松、FCFS、静态 prefill 批、随机路由、无抢占 / 换出 / KV 容量排队、调度开销为 0，单一场景族（8B 稠密模型，单一芯片）。

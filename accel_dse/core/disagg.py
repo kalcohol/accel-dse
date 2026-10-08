@@ -251,12 +251,35 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
                "n_d": n_d, "r_c": reps, "out": out, "B": sv.batch, "tier": kv_tier, "beta": beta,
                "alpha": alpha, "pair": min(c_p, c_d), "layerwise": pd.kv_layerwise, "L": L, "C": pd.chunk_tokens,
                "shared": pd.kv_GBps is None, "len": lens, "pts": pts, "rep": (S_rep, p_rep), "kv_xfer": kv_xfer,
-               "kv_new": kv_new, "out_cs2": lens.out_cs2, "pts_c": pts_c,
+               "kv_new": kv_new, "kv_full": kv_full, "out_cs2": lens.out_cs2, "pts_c": pts_c,
                **({"prefix_hits": (H_p, H_c)} if cap_mode else {})}
         dpool.memo[("decode", sv.batch, None, 0)] = dec
         cpool.memo = dpool.memo                           # same layout → same evaluations
     if queue:
         q = queue_report(ctx, main["req_s"], pd, sv, energy)
+        if q and "modes" in q and pd.simulate:
+            from . import pdsim as _ps
+            sim_modes = {}
+            pc = pcache
+            lru = dict(prefix_len=pd.prefix_len, prefix_n=pd.prefix_count, prefix_alpha=pd.prefix_zipf,
+                       affinity=pd.prefix_affinity) if pc else {}
+            for mode, ana in q["modes"].items():
+                if not ana.get("stable"):
+                    continue
+                kw = dict(lru)
+                if pc:
+                    kw["prefix_K"] = pc["prefill"]["K"] if mode == "pd" else pc["coloc"]["K"]
+                    if mode == "pd":
+                        kw["prefix_K_dec"] = pc["decode"]["K"]
+                s = _ps.simulate(ctx, q["lambda_rps"], mode, n_req=1500, warmup=400, seed=1, **kw)
+                err = {name: _ps.rel_err(s[k][qk], _ps._ana_value(ana, name)) for name, k, qk in _ps.METRICS}
+                err = {kk: (v if math.isfinite(v) else None) for kk, v in err.items()}
+                sim_modes[mode] = {"ttft_ms": s["ttft_ms"], "tpot_ms": s["tpot_ms"], "itl_max_ms": s["itl_max_ms"],
+                                   "prefix_hit": s.get("prefix_hit"), "prefix_hit_decode": s.get("prefix_hit_decode"),
+                                   "n": s["n"], "complete": s["complete"], "err": err}
+            q = {**q, "sim": {"modes": sim_modes, "n_req": 1500, "warmup": 400, "seed": 1},
+                 "sim_basis": "request-level DES (core/pdsim) 「假设」; n=1500 after 400 warmup; "
+                 "same per-step costs as the closed form; err = (analytic − DES) / DES"}
     ls = None
     if pd.search_layouts:
         ls = _search_layouts(m, scn, pscn, dscn, total, (c_p, c_d), pts, plain, S, out, kv, beta, ctx,

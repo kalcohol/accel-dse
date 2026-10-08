@@ -211,6 +211,7 @@
         <label class="inline" title="decode 池也持有同一前缀（共享系统提示词 / 会话粘性路由）→ 只传未缓存部分的 KV；不勾 = 传全部 KV"><input type="checkbox" id="pd-prefix_on_decode"> decode 池也有该前缀</label>
         <label class="inline" title="把两池的布局也当设计变量：每副本 1/2/4/…/64 卡的所有布局 × 同总卡数切分（较慢）"><input type="checkbox" id="pd-search_layouts"> 搜索池布局</label>
         <label class="inline" title="与「搜索池布局」一起用：每种 decode 布局再在 B/2、B、2B、4B 中选满足 TPOT SLO（满批流体 TPOT）的最高吞吐 batch（异构内存时更有用）"><input type="checkbox" id="pd-search_decode_batch"> 搜索 decode batch</label>
+        <label class="inline" title="0.54：在闭式排队模型之外再跑请求级离散事件仿真（DES，慢几秒），用同一套逐步代价给出模拟的尾部分位数并与闭式对照；默认关"><input type="checkbox" id="pd-simulate"> DES 仿真尾部</label>
         <div class="small muted">前缀缓存容量（0.53）<span class="tag assume">假设</span> 命中率由容量 / 工作集推出（LRU，Che 近似）；上面「前缀命中率」非 0 时以它为准</div>
         <div class="row3">
           <label title="共享前缀长度（系统提示词 / few-shot 模板 / 多轮历史），token；0 / 空 = 不用容量模型">前缀长度 tok<input type="number" id="pd-prefix_len" min="0" step="512"></label>

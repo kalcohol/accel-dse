@@ -161,6 +161,7 @@ class PDConfig:
     prefix_cache_GB: float | None = None   # cache capacity per replica; None = DRAM left after weights + active KV
     prefix_affinity: bool = False   # prefix-aware routing: replicas partition the prefixes (aggregate capacity)
     search_decode_batch: bool = False   # layout search (0.53): also pick each decode layout's batch (B/2 … 4B, TPOT SLO)
+    simulate: bool = False          # 0.54: also run the request-level DES (core/pdsim) and attach per-mode tails 「假设」
 
     def __post_init__(self):
         for k in ("prefill_cards", "decode_cards"):
@@ -222,8 +223,9 @@ class PDConfig:
                                                  or not isinstance(self.prefix_cache_GB, (int, float))
                                                  or not 0 <= self.prefix_cache_GB < 1e7):
             raise ValueError("pd.prefix_cache_GB must be ≥ 0 or null")
-        if not isinstance(self.prefix_affinity, bool) or not isinstance(self.search_decode_batch, bool):
-            raise ValueError("pd.prefix_affinity / pd.search_decode_batch must be booleans")
+        if not isinstance(self.prefix_affinity, bool) or not isinstance(self.search_decode_batch, bool) \
+                or not isinstance(self.simulate, bool):
+            raise ValueError("pd.prefix_affinity / pd.search_decode_batch / pd.simulate must be booleans")
 
 
 @dataclass(frozen=True)

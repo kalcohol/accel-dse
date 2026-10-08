@@ -91,7 +91,7 @@ def test_pd_mode_consistency():
     assert t["p50"] <= t["p90"] <= t["p99"] and t["mean"] >= x["prefill"]["ttft_b_ms"]
     d = x["decode"]
     lam_d = x["lambda_rps"] / r["decode"]["replicas"]
-    assert _close(d["occupancy"], lam_d * 512 * x["tpot_mean_ms"] / 1e3, 1e-6)         # Little's law fixed point
+    assert _close(d["occupancy"], lam_d * 512 * x["tpot_mean_ms"] / 1e3, 1e-4)         # Little's law (birth–death)
     assert d["occupancy"] <= d["running_batch"] <= d["slots"] and d["running_p90"] >= d["running_batch"]
     assert x["tpot_mean_ms"] <= x["tpot_p90_ms"] <= x["tpot_p99_ms"]
     # at partial load the running batch is below the configured batch → TPOT below the fluid (full-batch) TPOT

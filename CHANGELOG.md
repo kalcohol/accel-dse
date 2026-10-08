@@ -3,6 +3,36 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.54.0] - 2026-10-09
+
+验证版本，不加新功能：新增请求级离散事件仿真（DES），用它量化 PD 闭式排队模型的误差（V4 服务验证），并修正 DES 揭示的几处闭式问题。默认（合并、非 PD）结果（1356 项指纹）与 0.53.0 逐字节一致。PD 报告里的排队数值有变化，见下。
+
+### 新增
+- `core/pdsim.py`：请求级 DES（「假设」）。复用闭式的逐步代价（prefill TTFT(b, S, p)、decode step(k)、分块融合迭代、KV 传输与争用缩放）；模拟泊松到达、FCFS、PD 两池（prefill 静态 batch 上限、每个 prefill 副本一条 KV 流、decode 连续批处理）、合并 prefill 优先与分块 prefill、离散长度分布、整前缀精确 LRU + Zipf（缓存预热，只在测量窗内计命中率）。提供 `simulate`、`slo_rate`（同一组随机数二分）、`compare`。
+- V4 服务验证：`validation.v4_serving()`（实时子集，`accel-dse validate` 打印，约 15 s，`--no-v4` 跳过）、`validation.v4_grid()` 与 `scripts/v4_serving.py`（54 点网格：load 0.3 / 0.6 / 0.85 × CV 0 / 0.5 / 1 × 前缀 关 / 开 × PD / prefill 优先 / 分块）。结果存 `accel_dse/data/v4_serving.json`。原 V4（硅片，n/a）改名为 V5。
+- 可选 `pd.simulate` / CLI `--pd-sim` / Web「DES 仿真尾部」（默认关）：PD 报告附 `pd.queue.sim.modes.{mode}`，包括 DES 的 TTFT / TPOT / 最长间隔分位数、命中率和相对闭式的误差；闭式数值不变。
+- `queueing.mg1_sum_quantile`；建模说明 §18.4（误差表、偏乐观 / 偏保守的地方、数值变化）；测试 `tests/test_core_054.py`。
+
+### 修正（只影响 PD 报告，含其中的合并对照）
+- **decode 连续批处理**：Little 不动点 n̄ = λ·out·TPOT(⌈n̄⌉) 忽略了占用涨落，step(k) 随 k 变陡时偏乐观（§18.1 例子 load 0.8：平均 TPOT 6.49 ms，DES 9.05 ms）。改为 birth–death 处理器共享模型（9.21 ms）；TPOT 分位数与最长间隔按运行中的请求看到的 batch 分布计算。
+- **prefill 优先 TPOT 分位数**原先重复计入停顿，改为平方和开根。
+- **prefill 优先最长间隔**原先「TPOT + 一次 prefill」偏乐观（87 ms，DES 322 ms），改为一生中最长 prefill 忙期的 0.99 点（314 ms）；长度混合时按忙期时长卷积。
+- **TTFT 分位数**：服务时间混合（长度 CV > 0、前缀命中 / 未命中）时，由等待分位数 + 时延分位数逐项相加（偏保守）改为 W ⊕ L_i 的正确分位数；只有一个服务时间取值时不变。
+- 分块 prefill 的 decode 也走 birth–death，prefill 服务按看到的 batch 计。
+- 数值变化（§18.1 例子，load 0.8）：
+  - PD：TPOT 均值 / p90 6.49 / 9.00 → 9.21 / 14.06 ms，最长间隔 10.9 → 22.8 ms，SLO goodput 474 → 410 tok/s/卡（TTFT 不变）。
+  - prefill 优先：TPOT 5.35 / 7.69 → 7.45 / 11.14 ms，最长间隔 83.5 → 314 ms，SLO goodput 506 → 442。
+  - 分块：TTFT p90 177 → 209 ms，TPOT 5.35 / 7.39 → 7.43 / 11.09 ms，最长间隔 16.1 → 23.0 ms，SLO goodput 511 → 443。
+  - CV 0.5 时 PD TTFT p90 539 → 409 ms，SLO goodput 316 → 404。
+
+### 误差（54 点，(闭式 − DES)/DES）
+- SLO goodput：三种模式均在 −8 % … 0 % 之间。
+- TTFT p90：PD 全部在 ±20 % 内（中位 0）。
+- TPOT p90：PD 中位 −5 %；合并模式系统性偏乐观（中位 −14 … −18 %，最差 −43 %）。
+- 最长间隔：中位 −10 … −17 %。
+- 前缀命中率：绝对差 < 0.01。
+- 剩余缺口见 MODEL.md §18.4。
+
 ## [0.53.0] - 2026-10-09
 
 前缀缓存容量 + LRU（Che）淘汰模型、异构 PD 池、布局搜索里的 decode batch。全部「假设」、默认关；默认结果（1356 项指纹）与 0.52.0 逐字节一致。

@@ -172,7 +172,7 @@ function syncInputs() {
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
   if ($('d2d-enabled') && S.sc) { $('d2d-enabled').checked = !!S.sc.d2d_enabled; if (S.cat) $('d2d-std').value = S.sc.d2d_std; d2dPaint(); }
   if ($('pd-enabled') && S.sc) { $('pd-enabled').checked = !!S.sc.pd.enabled; $('pd-inputs').hidden = !S.sc.pd.enabled; $('pd-kv_layerwise').checked = !!S.sc.pd.kv_layerwise;
-    $('pd-prefix_on_decode').checked = S.sc.pd.prefix_on_decode !== false; $('pd-search_layouts').checked = !!S.sc.pd.search_layouts; $('pd-search_decode_batch').checked = !!S.sc.pd.search_decode_batch;
+    $('pd-prefix_on_decode').checked = S.sc.pd.prefix_on_decode !== false; $('pd-search_layouts').checked = !!S.sc.pd.search_layouts; $('pd-search_decode_batch').checked = !!S.sc.pd.search_decode_batch; $('pd-simulate').checked = !!S.sc.pd.simulate;
     $('pd-prefix_affinity').checked = !!S.sc.pd.prefix_affinity;
     if (S.cat) {
       const sel = $('pd-prefill_chip'), pc = S.sc.pd.prefill_chip;
@@ -732,13 +732,24 @@ function renderPDQueue(q, cards, L) {
       h('td', {}, x.stable ? num(x.itl_max_ms) : '—'), h('td', {}, num(x.slo_rate_rps)), h('td', {}, h('b', {}, num(x.slo_goodput_per_card))),
       h('td', {}, en), h('td', { class: 'l small', style: 'white-space:normal;min-width:180px' }, note));
   });
+  const sm = (q.sim && q.sim.modes) || {};
+  const ep = (e) => { if (e === undefined || e === null || !isFinite(e)) return ''; const r = Math.round(e * 100) || 0; return ` (${r > 0 ? '+' : ''}${r}%)`; };
+  for (const [k, x] of Object.entries(sm)) {
+    const t = x.ttft_ms, tp = x.tpot_ms, e = x.err || {};
+    rows.push(h('tr', { class: 'muted' }, h('td', { class: 'l' }, `DES · ${names[k]}`),
+      h('td', {}, `${num(t.p50)}/${num(t.p90)}/${num(t.p99)}`), h('td', {}, `${num(tp.mean)}/${num(tp.p90)}/${num(tp.p99)}`),
+      h('td', {}, num(x.itl_max_ms.p99)), h('td', {}, '—'), h('td', {}, '—'), h('td', {}, '—'),
+      h('td', { class: 'l small', style: 'white-space:normal;min-width:180px' },
+        `闭式相对 DES：TTFT p90${ep(e.ttft_p90)}，TPOT p90${ep(e.tpot_p90)}，最长停顿${ep(e.itl_max)}` + (x.prefix_hit != null ? `；DES 前缀命中 ${pct(x.prefix_hit)}` : ''))));
+  }
   put($('pdq-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
   const b = q.pd_slo_best_split;
   $('pdq-note').textContent = '「SLO 到达率」= p90 TTFT 与 p90 TPOT 都满足 SLO（未设 SLO 时即稳定上限）的最大泊松到达率；SLO goodput = 该到达率 × 输出长度 / 卡数（DistServe 口径）。'
     + (b ? ` 同 ${cards} 卡 PD 在 SLO 下的最佳切分：prefill ${b.prefill_cards} + decode ${b.decode_cards} → ${num(b.slo_goodput_per_card)} tok/s/卡。` : '')
     + (L && !L.plain ? ` 长度「假设」（${{ fixed: '固定', cv: '对数正态 8 档', mix: '离散分布' }[L.source]}）：prompt 均值 ${num(L.mean_prompt)}（CV ${num(L.prompt_cv_eff)}），输出均值 ${num(L.mean_out)}（CV ${num(L.out_cv_eff)}），decode 上下文按长度偏置取 ${L.decode_ctx}${L.prefix_hit ? `；前缀命中 ${pct(L.prefix_hit)}${L.prefix_hit_source === 'capacity' ? '（容量模型，PD prefill 池）' : ''}${L.prefix_on_decode ? '（KV 只传未缓存部分）' : '（KV 全量交接）'}` : ''}。` : '')
     + ' 稳定上限：' + Object.entries(q.modes).map(([k, x]) => `${names[k]} ${num(x.stable_rate_rps)}`).join('，') + ' req/s。'
-    + ' 分位数逐项相加（偏保守）；未建模：抢占 / 换出、调度器开销（前缀缓存容量与 LRU 淘汰只在设了「前缀长度」时按 Che 近似计入，见上表）。';
+    + (q.sim ? ' DES 行「假设」：请求级离散事件仿真（FCFS、泊松、同一套逐步代价，n = ' + q.sim.n_req + '），括号内为（闭式 − DES）/ DES，> 0 = 闭式偏保守。' : '')
+    + ' TTFT 分位数：服务时间混合时等待与自身时延按独立和计算（0.54），单一服务时间时逐项相加（精确）；未建模：抢占 / 换出、调度器开销（前缀缓存容量与 LRU 淘汰只在设了「前缀长度」时按 Che 近似计入，见上表）。';
 }
 function budgetMark(x) {
   if (x.budget_ok === false) return h('span', { class: 'tag danger', title: '超出预算：' + (x.budget_violations || []).join(', ') }, '超预算');
@@ -1248,7 +1259,7 @@ async function init() {
     schedule();
   });
   mixInp._sync = () => { mixInp.value = (S.sc.pd.length_mix || []).map((r) => r.join(':')).join(', '); mixInp.classList.remove('bad'); };
-  for (const k of ['prefix_on_decode', 'search_layouts', 'prefix_affinity', 'search_decode_batch'])
+  for (const k of ['prefix_on_decode', 'search_layouts', 'prefix_affinity', 'search_decode_batch', 'simulate'])
     $('pd-' + k).addEventListener('change', (e) => { S.sc.pd[k] = e.target.checked; schedule(); });
   bindNumber('pd-prefix_len', () => S.sc.pd.prefix_len || null, (x) => (S.sc.pd.prefix_len = x === null ? 0 : x), { int: true, nullable: true, check: (x) => x >= 0 });
   bindNumber('pd-prefix_count', () => S.sc.pd.prefix_count ?? 1000, (x) => (S.sc.pd.prefix_count = x), { int: true, check: (x) => x >= 1 && x <= 1e9 });
