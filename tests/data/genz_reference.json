@@ -1,0 +1,103 @@
+{
+ "tool": "GenZ-LLM",
+ "generated": "2026-10-08",
+ "settings": "decode_moddeling(Bb=1, bits=bf16, output_tokens=1), real_values=True",
+ "rows": [
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 191,
+   "ctx": 1024,
+   "batch": 1,
+   "tpot_ms": 73.84282781635348
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 191,
+   "ctx": 1024,
+   "batch": 8,
+   "tpot_ms": 78.44100276643
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 191,
+   "ctx": 1024,
+   "batch": 64,
+   "tpot_ms": 115.22640236704207
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 191,
+   "ctx": 4096,
+   "batch": 1,
+   "tpot_ms": 75.80682964336047
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 191,
+   "ctx": 4096,
+   "batch": 8,
+   "tpot_ms": 94.15301738248586
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 191,
+   "ctx": 4096,
+   "batch": 64,
+   "tpot_ms": 240.92251929548883
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 6600,
+   "ctx": 1024,
+   "batch": 1,
+   "tpot_ms": 2.1374542111098163
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 6600,
+   "ctx": 1024,
+   "batch": 8,
+   "tpot_ms": 2.2739352987270163
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 6600,
+   "ctx": 1024,
+   "batch": 64,
+   "tpot_ms": 10.836642391681591
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 6600,
+   "ctx": 4096,
+   "batch": 1,
+   "tpot_ms": 2.194923434594665
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 6600,
+   "ctx": 4096,
+   "batch": 8,
+   "tpot_ms": 2.7336890866058043
+  },
+  {
+   "model": "llama-3.1-8b",
+   "tflops": 100,
+   "mem_GBps": 6600,
+   "ctx": 4096,
+   "batch": 64,
+   "tpot_ms": 14.514672694711894
+  }
+ ]
+}
