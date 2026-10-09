@@ -3,6 +3,45 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.63.0] - 2026-10-09
+
+外部评审（external review）对 0.62.1 提出 9 条问题和 1 个覆盖缺口，本版全部修正。每条都先复现，再加永久的性质测试（work conservation、调度依赖合法性、容量硬约束、搜索结果不低于已知可行点）。详见建模说明 §22。
+
+### 修正
+- **[P1] MLA decode 吸收路径**：kv_b 原来建成一个宽 GEMM（DS-V3 (1, 512, 32768)），现按官方 model.py 改为逐头的 W_UK / W_UV 两组 GEMM（`attn.kv_b.uk` / `attn.kv_b.uv`）。参数、FLOPs、格式不变。100T kv_b 周期：OS 9472 → 40960，ws_broad 2215 → 3568。MLA 模型 decode 步时 +0.2 % ~ +11 %。
+- **[P1] 视频 CFG 依赖**：同一请求的 cond / uncond 必须在同一去噪步内都完成。被同一请求连在一起的微批组 k > 1 时，每步按 max(mb, k + PP − 1) 个 tick 计。Wan2.1-1.3B B1 PP2 CFG2 1 步 3.255 → 4.883 s；PP > 1 的视频延迟 +30 % ~ +49 %，PP1 不变。
+- **[P1] SLO 最大吞吐搜索不再假设单调**：先二分求稳定上限，再在 (0, λ_s] 上自上而下扫 24 点并二分细化，结果不低于任何已知可行点（含工作点）。Qwen3-Next-80B-A3B 复现例：1.724 → 2.892 req/s（2.834 可行）。
+- **[P1] radix 前缀树容量依赖**：路径累计大小放得下才可缓存，子节点命中 ≤ 父节点。DES 的 RadixLRU 用同样的截断。两层 × 60 token、容量 100：[0.833, 0.833] → [1, 0]。
+- **[P2] 不整除的 TP 不再丢头**：GQA 在「组完整」与「按头分」两种头完整的切分中取较便宜者；q / o / k / v 投影按头对齐。Qwen3-8B TP3 decode b8 35.89 → 36.42 ms（原来只覆盖 27 / 32 个头）；Phi-4 TP8 prefill +7.0 %。
+- **[P2] PP 级间路由逐对评估**：每一对对应 rank 按各自跨越的层级计，取最慢的一对。PP2·TP64、8 卡 / 节点、4:1 收敛：1 → 4 ms。
+- **[P2] 有效工作与最忙 rank 时间分开**：新增 `Op.share`，能耗 MAC / 向量计数与每请求 TFLOP 按有效工作计。以下几项只占时间，不计工作：不整除切分、专家补齐行、最后一个微批补齐、视觉编码器补齐。复制计算与每遍的权重反量化照常计。EP > 1 时没有序列的 DP rank 仍运行专家。例：ESM-2 650M B3 PP2 MAC / 序列 4.756e11 → 3.567e11（= PP1）；视觉 3 图 TP2 不再按 4 张计；Mixtral B3 decode 的 PP1 / PP2 / DP2·EP2 MAC / token 都是 40.4 G。
+- **[P2] DES 投机解码**：每序列每步抽截断几何分布的接受数，均值等于闭式期望（原来四舍五入 1.7 → 2）。DS-V3 spec_k 1、a 0.7：DES / 闭式 TPOT 3.957 / 5.727 → 5.809 / 5.943 ms。
+- **[P2] 线程安全**：fabric 的 `_LOG` / `_MULT` 与 pdsim.capture_ctx 的猴子补丁改为 contextvars（`fabric.log() / set_log() / set_mult()`，`disagg.CTX_SINK`）。
+
+### 新增
+- **LLM 激活流式 / 溢出**（覆盖缺口）：LLM 的 GEMM、lm_head、MTP 与 prefill 注意力使用全序列前向的流式模型：
+  - staging ≤ SRAM/2；
+  - GEMM 的分块按实例决定；
+  - 注意力的前缀 KV 只读一次；
+  - DRAM 容量加上超过 1 GiB 预留的激活工作集。
+
+  Qwen3-8B B4 4K prefill 在 16 / 64 / 256 / 1024 MiB SRAM 下激活 DRAM 398.6 / 149.8 / 101.5 / 33.8 GB（原为 0）。近似：两端分块，不是最优二维分块。
+
+### 指纹变化（0.62.1 → 0.63.0）
+- 单节点 470 / 1356 项：MLA decode +0.23 % ~ +3.29 %（34）；视频 PP2 +37.4 % ~ +49.5 %（32）；prefill DRAM 需求 +0 % ~ +9.0 %（404），其中 fits 由是变否 2 项（gpt-oss-120b LPDDR5X 64 GiB B8 prefill，62.98 → 64.09 GiB）。prefill 步时不变。
+- 多节点 34 / 985 项：视频 PP2·TP2 +30 % ~ +49 %；Phi-4 prefill TP8 +6.97 %、PP2·TP4 +5.55 %；PD 能耗计数，以及 Qwen3-8B 合并分块 decode 迭代 67.9 → 74.3 ms。
+- fabric 2 / 3150 项：DeepSeek-V3 PD 中放不下的单卡 prefill 池 TTFT 3520 → 3871 ms。集合通信全部不变。
+- 新指纹（能耗 / TFLOP / radix / PD 速率，840 项）：653 项变化，逐类原因见建模说明 §22.11。
+
+### 未做（已写入文档）
+- 让 prefill batch 上限的选择考虑 SLO（会改变全部 TTFT）。
+- DES slo_rate 仍是二分（只用于校验）。
+- 闭式 k̂ 取整。
+- 最优二维 GEMM 分块。
+
+### 测试
+- `tests/test_core_063.py`（16 项）：MLA 算子与周期、CFG 依赖链与调度合法性性质、SLO ≥ 可行点、radix 容量性质、GQA 头完整、有效工作守恒性质（LLM / MoE / MLA / 混合 / 视频 / 蛋白质）、专家补齐、能耗随切分与补齐不变（含 MoE）、视觉补齐、PP 逐对路由、DES 抽样均值、fabric 线程安全、LLM 溢出随 SRAM 变化。
+
 ## [0.62.1] - 2026-10-09
 
 第六轮收敛审计：0.62 改动回归复查、可选功能组合模糊测试、文档数值逐条复现。**代码与计算结果不变**（无新代码缺陷），只修正过时的文档数值并补测试。
