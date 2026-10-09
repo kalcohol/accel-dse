@@ -148,7 +148,7 @@ ESM-2 3B 的 main 分支只有 `pytorch_model.bin`；参数取自同仓库 `refs
 
 **dtype（按发布）**：Wan2.1 与 ESM-2 发布为 fp32——存储与读流量按 4 B / 参数；激活按 bf16（Wan 参考实现 autocast；ESM 为「假设」）。芯片没有 fp32 MAC，每个 GEMM 把权重上转换为 bf16 执行，转换在向量单元计时（与 LLM 的反量化规则相同）。CogVideoX-2b 为 fp16 / fp16、5b 为 bf16 / bf16。dtype what-if（如 bf16 发布）照常可用并标注。
 
-**激活流式（只用于全序列前向）**：视频的激活远超 SRAM（Wan2.1-14B 720P 一层的 FFN 输入约 1.5 GB）。每个算子的激活按 SRAM/2 的预算分块流进 / 流出 DRAM：GEMM 取「激活分块、权重重复读」与「权重分块、激活重复读」两者中流量较小者；注意力按 flash 式计算，N×N 分数不落 DRAM，Q / O 读写一次，K / V 每个 Q 块重读一次（块行数 `Br = 预算 / (d·(ab + 4))`）。DRAM 容量另计在途序列的残差流与单个算子的最大激活。LLM 的 prefill / decode 自 0.63 起同样使用此模型（§22.10；decode 的激活通常装得下 SRAM/2，流量≈0）。0.63 起 GEMM 的分块按实例（专家 / 头 / 组各自的权重与激活切片）决定。
+**激活流式（只用于全序列前向）**：视频的激活远超 SRAM（Wan2.1-14B 720P 一层的 FFN 输入约 1.5 GB）。每个算子的激活按 SRAM/2 的预算分块流进 / 流出 DRAM：GEMM 取「激活分块、权重重复读」与「权重分块、激活重复读」两者中流量较小者；注意力按 flash 式计算，N×N 分数不落 DRAM，Q / O 读写一次，K / V 每个 Q 块重读一次（块行数 `Br = 预算 / (d·(ab + 4))`）。DRAM 容量另计在途序列的残差流与单个算子的最大激活。LLM 的 prefill / decode 自 0.63 起同样使用此模型（§22.10；decode 的激活通常装得下 SRAM/2，流量≈0）。0.63 起 GEMM 的分块按实例（专家 / 头 / 组各自的权重与激活切片）决定；0.64 起改为二维分块（权重驻留 / 激活驻留 / 输出驻留三种循环嵌套取流量最小者，§23.2）。
 
 **映射**：OS / WS（K-split）/ GEMV / 可重构照常是设计变量。全序列注意力的两个 GEMM 两侧都是激活，映射可以取任一方向（`O = P·V` 或 `Oᵀ = Vᵀ·Pᵀ`）：`P·V` 的 N = head_dim = 128，会让 896 列宽的阵列大部分空闲，换向后有效 MAC 从约 30% 升到 85–98%。LLM 注意力仍按 0.40 的固定方向（不改变 LLM 结果）。
 
@@ -425,11 +425,11 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 上面的流体模型只回答「容量多大」。0.51 在 `pd.queue` 里加一层**解析排队近似「假设」**（不是仿真器）：在同一个泊松到达率 λ 下比较三种服务方式——PD 分离、合并 · prefill 优先（vLLM 不开分块时的默认调度）、合并 · 分块 prefill（Sarathi / vLLM chunked prefill）。λ = `pd.load` × PD 流体容量（默认 0.8），或直接给 `pd.rate_rps`。共同假设：泊松到达、每请求 prompt / 输出长度固定（= `serving.prompt` / `serving.out_len`）、副本间均分到达、分位数**逐项相加**（偏保守）。每个模式的单步时间都来自现有评估器（同一个 `evaluate`，只是换 batch / phase），没有新的硬件参数。
 
 - **M/D/1**（`core/queueing.py`）：平均等待 W̄ = ρτ / (2(1 − ρ))（P-K，精确）；P(W > 0) = ρ；尾 P(W > t) ≈ C·e^(−θt)，θτ = x 为 ρ(e^x − 1) = x 的正根，C = (1 − ρ) / (ρe^x − 1)（Cramér–Lundberg 渐近）；分位数 w_q = 0（ρ ≤ 1 − q）否则 ln(C / (1 − q)) / θ。测试用 Lindley 递推仿真核对 ρ = 0.5 / 0.8 / 0.9 的均值、p90、p99（误差 < 8%，实测约 2–5%）。decode 槽位等待用 Erlang C × ½（Allen–Cunneen，确定服务）；运行 batch 的波动按 Poisson（M/G/∞）取分位。
-- **PD 分离**：prefill 池每副本是一个带静态 batch 上限 b ∈ {1, 2, …, 64} 的 M/D/1（DistServe 式）：服务时间 τ_b = TTFT(b) / b，延迟下限 TTFT(b)，取使平均 TTFT 最小的 b。（b 按平均值选，所以平均 TTFT 随负载单调不降，但 p90 可能在 b 换挡时下降：例 Qwen3-Next-80B-A3B，decode TP2·EP2、prefill TP1，b16，prompt 1024，命中率 0.4，负载 0.8 → 0.9 时 b 1 → 2，p90 97.2 → 73.8 ms。0.62.1 审计 114 组 × 5 档负载平均值无反例。）TTFT 分位 = 排队等待分位 + TTFT(b) + KV 队列等待分位 + 暴露的 KV 传输。decode 池是**连续批处理**：运行 batch n̄ 由 Little 定律的不动点 n̄ = λ_d · out / e · step(⌈n̄⌉) 决定（e = 每步 token 数，含投机解码），TPOT 均值 = step(⌈n̄⌉) / e；p90 / p99 TPOT 用运行 batch 的 Poisson 分位处的步时。部分负载下运行 batch 小于配置 batch，所以排队模型里的 TPOT 低于流体模型（流体按满 batch）。
+- **PD 分离**：prefill 池每副本是一个带静态 batch 上限 b ∈ {1, 2, …, 64} 的 M/D/1（DistServe 式）：服务时间 τ_b = TTFT(b) / b，延迟下限 TTFT(b)，取使平均 TTFT 最小的 b；0.64 起若该 b 不满足 SLO 而另有 b 满足，则在满足 SLO 的 b 中取平均 TTFT 最小者（§23.1）。（b 按平均值选，所以平均 TTFT 随负载单调不降，但 p90 可能在 b 换挡时下降：例 Qwen3-Next-80B-A3B，decode TP2·EP2、prefill TP1，b16，prompt 1024，命中率 0.4，负载 0.8 → 0.9 时 b 1 → 2，p90 97.2 → 73.8 ms。0.62.1 审计 114 组 × 5 档负载平均值无反例。）TTFT 分位 = 排队等待分位 + TTFT(b) + KV 队列等待分位 + 暴露的 KV 传输。decode 池是**连续批处理**：运行 batch n̄ 由 Little 定律的不动点 n̄ = λ_d · out / e · step(⌈n̄⌉) 决定（e = 每步 token 数，含投机解码），TPOT 均值 = step(⌈n̄⌉) / e（0.54 起改为生灭过程；0.64 起所见运行 batch 取 ⌊n̄⌋ / ⌊n̄⌋+1 两点混合而非取整，§23.3）；p90 / p99 TPOT 用运行 batch 的 Poisson 分位处的步时。部分负载下运行 batch 小于配置 batch，所以排队模型里的 TPOT 低于流体模型（流体按满 batch）。
 - **KV 与池内集合通信争用**：没设 `pd.kv_GBps` 时 KV 与两池的 TP / EP 集合通信共用同一层（节点内 link 或跨节点 net）。KV 能用的带宽 = β · (1 − u_coll)，u_coll = 两池最忙级在该层的字节 / β / tick；反过来 KV 占该层 u_kv = λ · KV / (N · β)，各池在该层的时间乘 1 / (1 − u_kv) 后重算级时间（只在该层是瓶颈时才变慢）。KV 传输本身也是 M/D/1（每 prefill 副本一个出口）。给了 `pd.kv_GBps` 视为专用 KV 通道，不争用。
 - **合并 · prefill 优先**：prefill 同样是带 b 上限的 M/D/1，占用 ρ_p；decode 只在剩余 1 − ρ_p 的时间里跑，不动点里步时除以 (1 − ρ_p)。新 prefill 到来时整批 decode 停顿 TTFT(b)：最长 token 间隔 = TPOT + TTFT(b)；一个请求生命周期内碰到的停顿数 ~ Poisson((λ/b) · 生命周期)，请求平均 TPOT 的分位 = TPOT(运行 batch 分位) + 停顿数分位 · TTFT(b) / out。TTFT 再加半个（p90 / p99 用一个）decode 步的残余。
 - **合并 · 分块 prefill**：每次迭代带 C = `pd.chunk_tokens`（默认 512）个 prompt token。融合迭代在**级层面**合并：max(算力_d + f·算力_p, DRAM_d + f·(prefill 非权重字节) + 前缀 KV 重读, SLC_d, 链路_d + f·链路_p) + 同步，f = C / S（prefill 的权重读由 decode 迭代顺带完成；第 i 块要重读前面 i − 1 块的 KV，平均 KV · (S − C) / (2S) 每块）。prefill 是服务时间 ⌈S/C⌉ · T₁ 的 M/D/1，占用 ρ = λ · S · T₁ / C；decode 平均步时 = ρ · T₁ + (1 − ρ) · T₀，不动点同上。最长 token 间隔 = T₁ / e（停顿被块大小封顶），请求平均 TPOT 分位按「带块迭代数 ~ Poisson(ρ · 迭代数)」。
-- **SLO goodput**（DistServe 口径）：满足 p90 TTFT ≤ `ttft_slo_ms` 且 p90 TPOT ≤ `tpot_slo_ms` 的最大 λ（稳定上限仍用倍增 + 二分；SLO 可行性随 λ 不单调——prefill batch 上限会换挡——0.63 起在 (0, 稳定上限] 上自上而下扫 24 个点、在第一个可行点与其上方的不可行点之间二分，并保证结果不低于任何已知可行点（含当前工作点），§22.3；没满足的设置则是稳定上限），× out / 卡数。PD 还在同总卡数的所有切分上搜 SLO goodput 最优的切分（`pd_slo_best_split`、`pd_slo_splits`）。
+- **SLO goodput**（DistServe 口径）：满足 p90 TTFT ≤ `ttft_slo_ms` 且 p90 TPOT ≤ `tpot_slo_ms` 的最大 λ（稳定上限仍用倍增 + 二分；SLO 可行性随 λ 不单调——prefill batch 上限会换挡——0.63 起在 (0, 稳定上限] 上自上而下扫 24 个点、在第一个可行点与其上方的不可行点之间二分，并保证结果不低于任何已知可行点（含当前工作点），§22.3；0.64 起 batch 上限按 SLO 选择，可行集为各上限可行集之并，§23.1；没满足的设置则是稳定上限），× out / 卡数。PD 还在同总卡数的所有切分上搜 SLO goodput 最优的切分（`pd_slo_best_split`、`pd_slo_splits`）。
 - **能耗**：用现有的动作计数（§13），每输出 token = (prefill 每 token 计数 × S + decode 每 token 计数 × out) / out，取各模式在该负载下的实际运行点（PD：prefill batch 上限、decode 运行 batch；合并：同上；分块：不重复读权重、加前缀 KV 重读），PD 再加 KV 传输字节（link 或 net）；卡·秒 / token = 卡数 / λ / out（含闲置）。给了能耗表才出 J / token。
 - **量级**（Qwen3-8B，1P + HBM3E，TP2，batch 64，prompt 4096，out 512，PD prefill 2 + decode 6，load 0.8 → 7.21 req/s，SLO TTFT 400 / TPOT 10 ms）：PD TTFT p50 / p90 / p99 = 102 / 216 / 380 ms，TPOT 均值 / p90 = 6.5 / 9.0 ms，最长间隔 11 ms，SLO goodput 474 tok/s/卡（切分 2 + 6 最优；4 + 4 为 316）；合并 prefill 优先 79 / 114 / 169 ms、TPOT 5.4 / 7.7 ms 但最长间隔 83 ms，506 tok/s/卡；合并分块（512）134 / 220 / 349 ms、TPOT 9.4 / 12.2 ms、最长间隔 19 ms，433 tok/s/卡（0.51 数值；0.52 修正分块平均迭代后为 114 / 177 / 277 ms、TPOT 5.4 / 7.4 ms、16 ms、511 tok/s/卡，见 §18.2）。每输出 token DRAM：PD 2.46 GB、prefill 优先 3.56 GB（运行 batch 更小）、分块 2.23 GB。即这个例子里 p90 口径的 SLO goodput 合并 prefill 优先最高，但它的单次停顿（83 ms）是 PD（11 ms）的 7 倍多；PD 的价值体现在 token 间隔的最坏情况，分块 prefill 介于两者之间。prompt 更长 / TPOT SLO 更紧时结论会变（如 prompt 8192 out 256，PD 4 + 4 时 prefill 池先饱和，分块 512 在同到达率下不稳定）。
 - **入口**：scenario `pd.load`（0–1，默认 0.8）、`pd.rate_rps`（覆盖 load）、`pd.chunk_tokens`（≥ 16，默认 512）；eval 响应 `pd.queue`（`lambda_rps`、`modes.{pd, coloc_prefill_first, coloc_chunked}` 各含 `ttft_ms.{mean,p50,p90,p99}`、`tpot_mean_ms / tpot_p90_ms / tpot_p99_ms`、`itl_max_ms`、`slo_rate_rps`、`slo_goodput_per_card` 与各自明细，`pd_slo_best_split`、`energy`）；CLI `--pd-load --pd-rate --pd-chunk`（另加 `--out-len --ttft-slo`）；Web PD 输入组三项与单点页「排队与尾延迟」表。
@@ -1143,7 +1143,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - 结果不低于任何已知可行点（含当前工作点）。
 
 该例结果 1.724 → 2.892 req/s（= 稳定上限，可行）。
-未做：评审建议让 prefill batch 上限的选择考虑 SLO。b 仍按平均 TTFT 选，因为改动会改变全部 TTFT 数值，单独评估。DES 侧的 `pdsim.slo_rate`（只用于校验）仍是二分。
+未做（0.63）：评审建议让 prefill batch 上限的选择考虑 SLO；DES 侧的 `pdsim.slo_rate` 仍是二分。0.64 两项都已完成，见 §23.1。
 
 ### 22.4 radix 前缀树的容量依赖（P1）
 `prefixcache` 的 Che 近似原来只检查节点自身大小，不检查与祖先路径的累计大小。结果是路径放不下时也给出了整条路径命中。例：两层各 60 token，容量 100：命中 [0.833, 0.833] → [1, 0]，与 RadixLRU（DES）一致。现在只有累计路径放得下的层才可缓存，子节点命中 ≤ 父节点（尾部单调截断）；DES 的 RadixLRU 用同样的累计截断。性质测试：随机树与容量下，子 ≤ 父，且被缓存的路径总长 ≤ 容量。
@@ -1173,7 +1173,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - 复制的计算（MLA 潜变量投影在每个 TP rank 上执行）。
 - 权重反量化：每遍、每个忙碌 rank 一次。
 
-另外，EP > 1 时没有序列的 DP rank 仍运行其专家。字节计数仍按忙碌 rank。
+另外，EP > 1 时没有序列的 DP rank 仍运行其专家。字节计数仍按忙碌 rank（0.64：空闲 rank 只计其专家权重字节，§23.5；权重反量化按平均 rank 的权重量计，§23.4）。
 
 例：
 - ESM-2 650M，batch 3，PP2 的 MAC / 序列 4.756e11 → 3.567e11（= PP1）。
@@ -1184,7 +1184,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 
 ### 22.8 DES 投机解码（P2）
 `pdsim` 原来把每步期望接受 token 数四舍五入（1.7 → 2），DES 偏乐观约 15 %。现在每个序列每步抽一个截断几何分布的接受数，均值为 (1 − a^{k+1}) / (1 − a)，与闭式一致；使用独立随机流，不扰动到达 / 长度。例：DeepSeek-V3 spec_k 1、a 0.7，DES / 闭式 TPOT 由 3.957 / 5.727 ms 变为 5.809 / 5.943 ms（λ 13.868；闭式变化来自 22.1）。
-未改：闭式排队里运行 batch 的 k̂ 取整（Result 需要整数 batch；均值指标用精确分布）。
+未改（0.63）：闭式排队里运行 batch 的 k̂ 取整。0.64 改为两点混合，见 §23.3。
 
 ### 22.9 线程安全（P2）
 `fabric` 的模块级 `_LOG` / `_MULT` 在多线程 HTTP 服务下会串号。现在改为 `contextvars`，接口为 `fabric.log() / set_log() / set_mult()`；`pdsim.capture_ctx` 原来猴子补丁 `disagg`，现在改用 `disagg.CTX_SINK`（ContextVar）。测试：6 个线程并发 fabric_report + evaluate，各自的集合通信记录不混。其余模块级状态都是纯函数的记忆缓存。
@@ -1198,7 +1198,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 
 Qwen3-8B B4 4K prefill，SRAM 16 / 64 / 256 / 1024 MiB 时激活 DRAM 分别为 398.6 / 149.8 / 101.5 / 33.8 GB（原为 0）。步时不变（MAC 受限，3262.6 ms），带宽受限的芯片上会显现。decode 的激活通常装得下（16 MiB 时 0.098 GB）。
 
-**近似**：两端分块不是最优的二维分块（真实 kernel 同时分 M / N 块，流量更小），所以小 SRAM 下偏保守。视频 / 蛋白质沿用同一规则，便于横向比较。
+**近似**（0.63）：两端分块不是最优的二维分块，小 SRAM 下偏保守。0.64 已改为二维分块，见 §23.2。视频 / 蛋白质沿用同一规则，便于横向比较。
 
 ### 22.11 数值变化（0.62.1 → 0.63.0 指纹）
 所有变化都能归到上面某一条，没有无法解释的变化。
@@ -1224,8 +1224,8 @@ Qwen3-8B B4 4K prefill，SRAM 16 / 64 / 256 / 1024 MiB 时激活 DRAM 分别为 
 ### 22.12 同类模式排查
 - 代表端点：只有 PP 路由（已修）。
 - 全局状态：fabric 已修，capture_ctx 已修；其余为纯缓存。
-- 舍入：DES 投机已修；k̂ 取整保留。
+- 舍入：DES 投机已修；k̂ 取整保留（0.64 已改为两点混合）。
 - 单调二分：
   - api 最大可放 batch 的二分，容量随 batch 单调，仍成立；
   - 精确 batch 搜索依赖 P1（step 随 B 不减），已有测试；
-  - DES slo_rate 仍是二分，只用于校验。
+  - DES slo_rate 仍是二分，只用于校验（0.64 已改为扫描 + 细化）。

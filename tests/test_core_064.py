@@ -187,3 +187,17 @@ def test_idle_ep_ranks_move_only_expert_bytes():
     a = energy_report(evaluate(Scenario(model="qwen3-30b-a3b", mem_id=HBM, layout=Layout(dp=4, ep=4),
                                         serving=Serving(batch=8))))["counts_per_unit"]["dram"]
     assert a < per_tok[0]
+
+
+def test_prefill_first_stable_cap_fallback():
+    """0.63 chose the prefill-first cap on the prefill queue alone: at load 0.95 the min-mean cap left the decode
+    share unstable (mode reported unstable) while cap 4 is stable and meets the SLOs.  Stability = some cap is
+    stable; the SLO rate is then ≥ the operating point."""
+    body = dict(_QN, pd=dict(_QN["pd"], load=0.95))
+    rep, ctx = _ctx(body)
+    q = rep["queue"]
+    x = q["modes"]["coloc_prefill_first"]
+    assert x["stable"] and x["prefill"]["batch_cap"] == 4 and x["prefill"].get("cap_rule") == "slo"
+    assert x["slo_rate_rps"] >= q["lambda_rps"] * (1 - 1e-9) and x["stable_rate_rps"] >= q["lambda_rps"]
+    y = pq._coloc_prefill_first({**ctx, "slo": None}, q["lambda_rps"])        # no SLOs: the stable fallback
+    assert y["stable"] and y["prefill"].get("cap_rule") == "stable" and y["prefill"]["batch_cap"] > 1

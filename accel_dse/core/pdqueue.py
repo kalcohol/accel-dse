@@ -1403,25 +1403,37 @@ def _slo_select(fn, ctx: dict, lam: float, try_unstable: bool = False) -> dict:
     the one meeting both SLOs with the smallest mean TTFT is used; if none meets them the default stays.  So a
     feasible operating point is never reported infeasible because of the cap rule, and SLO feasibility at λ = "some
     cap meets the SLOs" — a union of per-cap feasible sets, each monotone in λ for a fixed cap.  Without SLOs (or
-    when the default meets them) the result is the 0.63 one."""
+    when the default meets them) the result is the 0.63 one — except (prefill-first, ``try_unstable``) when the
+    default cap leaves the system unstable and another cap is stable: then the stable cap with the smallest mean TTFT
+    (``cap_rule: "stable"``; stability is then the union of per-cap stable sets, still monotone in λ)."""
     x0 = fn(ctx, lam)
     slo = ctx.get("slo")
-    if not slo or (math.isinf(slo[0]) and math.isinf(slo[1])) or _meets(x0, slo):
+    has_slo = bool(slo) and not (math.isinf(slo[0]) and math.isinf(slo[1]))
+    if x0["stable"] and (not has_slo or _meets(x0, slo)):
         return x0
     if not x0["stable"] and not try_unstable:   # PD: decode / KV stability does not depend on the prefill cap
         return x0
     c0 = x0.get("_pre", {}).get("b") if x0.get("_pre") else None
-    best = None
+    best = best_st = None
     for b in B_CAPS:
         if b == c0:
             continue
         x = fn({**ctx, "_cap": b}, lam)
-        if _meets(x, slo) and (best is None or x["ttft"]["mean"] < best["ttft"]["mean"]):
+        if not x["stable"]:
+            continue
+        if has_slo and _meets(x, slo) and (best is None or x["ttft"]["mean"] < best["ttft"]["mean"]):
             best = x
-    if best is None:
-        return x0
-    best["prefill"] = {**best["prefill"], "cap_rule": "slo"}
-    return best
+        if best_st is None or x["ttft"]["mean"] < best_st["ttft"]["mean"]:
+            best_st = x
+    if best is not None:
+        best["prefill"] = {**best["prefill"], "cap_rule": "slo"}
+        return best
+    if not x0["stable"] and best_st is not None:
+        # prefill-first: the min-mean cap is chosen on the prefill queue alone; its occupancy can leave the decode
+        # share unstable while a larger (more efficient) cap is stable — stability = "some cap is stable" (0.64)
+        best_st["prefill"] = {**best_st["prefill"], "cap_rule": "stable"}
+        return best_st
+    return x0
 
 
 def _pd_mode(ctx: dict, lam: float) -> dict:
