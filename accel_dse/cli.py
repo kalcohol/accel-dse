@@ -115,6 +115,22 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--net-GBps", dest="net_GBps", type=float, default=None,
                    help="cross-node (IB / RoCE) bandwidth per card (default 50 = one 400 Gb/s NIC 「假设」)")
     p.add_argument("--net-alpha-us", dest="net_alpha_us", type=float, default=None, help="cross-node α (default 5 「假设」)")
+    p.add_argument("--fabric", action="store_true",
+                   help="0.59 topology-aware collectives (ring / tree / hier α-β + per-step latency, fat-tree oversub, "
+                        "rail, scale-up topology, in-network reduction, KV contention) 「假设」; off = 0.50 model")
+    p.add_argument("--fabric-algo", dest="fabric_algo", default=None, choices=["auto", "ring", "tree", "hier"])
+    p.add_argument("--net-topology", dest="net_topology", default=None, choices=["fat_tree", "rail"],
+                   help="cross-node topology with --fabric (default fat_tree)")
+    p.add_argument("--oversub", dest="oversub", type=float, default=None,
+                   help="leaf uplink oversubscription r (down:up, default 1 = non-blocking) with --fabric 「假设」")
+    p.add_argument("--leaf-nodes", dest="leaf_nodes", type=int, default=None,
+                   help="nodes per leaf (fat_tree) / per rail switch (rail); default 0 = from --switch-radix")
+    p.add_argument("--switch-radix", dest="switch_radix", type=int, default=None, help="leaf / rail switch ports (64)")
+    p.add_argument("--link-topology", dest="link_topology", default=None, choices=["switch", "ring", "full_mesh", "torus2d"],
+                   help="in-node scale-up topology with --fabric (default switch)")
+    p.add_argument("--torus-x", dest="torus_x", type=int, default=None, help="X extent of a torus2d scale-up domain")
+    p.add_argument("--innet-reduce", dest="innet_reduce", default=None, choices=["off", "net", "net+link"],
+                   help="in-network reduction (SHARP / NVLS-class vendor option 「假设」) with --fabric")
     p.add_argument("--moe-skew", dest="moe_skew", type=float, default=None,
                    help="MoE: busiest EP rank's token load / mean (0.49; default 1 = uniform routing) 「假设」")
     p.add_argument("--moe-expert-load", dest="moe_expert_load", default=None,
@@ -262,6 +278,14 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     for k in ("package_cards", "d2d_enabled", "d2d_std", "d2d_units", "node_cards"):
         if getattr(a, k, None) is not None:
             sc[k] = getattr(a, k)
+    fab = {k: getattr(a, dest) for k, dest in (("algo", "fabric_algo"), ("net_topology", "net_topology"),
+                                                ("oversub", "oversub"), ("leaf_nodes", "leaf_nodes"),
+                                                ("switch_radix", "switch_radix"), ("torus_x", "torus_x"),
+                                                ("innet_reduce", "innet_reduce")) if getattr(a, dest, None) is not None}
+    if getattr(a, "fabric", False) or fab:
+        sc["fabric"] = {"enabled": True, **fab}
+    if getattr(a, "link_topology", None):
+        sc.setdefault("link", {})["topology"] = a.link_topology
     if sc.get("package_cards", 1) > 1 and "d2d_enabled" not in sc:
         sc["d2d_enabled"] = True
     if getattr(a, "pd", False):
@@ -352,6 +376,17 @@ def cmd_eval(a) -> dict:
         net = (f"net {sc['net']['GBps']:.0f} GB/s across nodes of {sc['node_cards']} cards" if sc.get("node_cards")
                else "one node")
         print(f"interconnect: {d2d} | scale-up {sc['link']['GBps']:.0f} GB/s | {net}")
+    if fb := out.get("fabric"):
+        off = fb["step_ms_off"]
+        print(f"fabric 「假设」: step {fb['step_ms']:.3f} ms" + (f" (model off {off:.3f} ms, {fb['step_ms'] / off - 1:+.1%})" if off else ""))
+        print("  " + fb["basis"])
+        tz = {"d2d": "D2D", "link": "scale-up", "net": "net"}
+        for x in fb["rows"][:12]:
+            lv = " · ".join(f"{tz[t]}×{n}" for t, n in x["levels"])
+            alt = ", ".join(f"{k} {v['bw_us'] + v['alpha_us']:.2f}" for k, v in x["cands"].items() if k != x["algo"])
+            print(f"  {x['kind']:<9} g={x['group']:<3} [{lv}] {x['bytes'] / 1024:9.1f} KiB ×{x['count']:<4} "
+                  f"{x['algo'] + ('/' + x['top'] if x['top'] else ''):<10} bw {x['bw_us']:9.2f} µs  α {x['alpha_us']:7.2f} µs"
+                  + (f"   (others: {alt})" if alt else ""))
     if g := s.get("gen"):
         w = g["workload"]
         if g["unit"] == "frame":

@@ -119,6 +119,28 @@
       <label title="跨节点每次集合通信的同步延迟">跨节点 α µs <span class="tag assume">假设</span><input type="number" id="n-alpha_us" step="1" min="0"></label>
     </div>
     <div class="small muted" id="tier-note"></div>
+    <label class="inline" title="0.59：按拓扑与算法计算集合通信（ring / tree / 分层，α-β + 每步时延）、跨节点 fat-tree 收敛比 / rail-optimized、节点内 scale-up 拓扑、网内归约、PD KV 传输与集合通信争用。关（默认）= 0.50 三层 α-β 模型，结果逐位不变"><input type="checkbox" id="fab-enabled"> 拓扑感知集合通信（0.59） <span class="tag assume">假设</span></label>
+    <div id="fab-inputs" hidden>
+      <div class="row3">
+        <label title="节点内 scale-up 物理拓扑：switch = 非阻塞交换；full_mesh = 全互连（每卡 n−1 条直连，k 个成员只能用其间的 k−1 条）；ring = 双向环（每卡 2 端口，组不绕满环时退化为链）；torus2d = 二维环面（每卡 4 端口）">节点内拓扑<select id="fab-link_topology"></select></label>
+        <label title="跨节点拓扑：fat-tree / leaf-spine（每个 leaf 下若干整节点，上行收敛）或 rail-optimized（每节点第 j 张 NIC 接第 j 个 rail 交换机，跨 rail 流量先走节点内 scale-up，即 PXN）">跨节点拓扑<select id="fab-net_topology"></select></label>
+        <label title="leaf 上行收敛比（下行 : 上行）；1 = 非阻塞。离开 leaf 的流量份额 f 按 max(1, r·f) 变慢">收敛比 r:1 <span class="tag assume">假设</span><input type="number" id="fab-oversub" step="1" min="1" max="64"></label>
+      </div>
+      <div class="row3">
+        <label title="auto = 每次集合通信取 ring / tree / hier 中最快者（按 带宽时间 + 时延）；也可强制某一种（all-to-all 固定为直接交换，allgather 无 tree）">集合通信算法<select id="fab-algo"></select></label>
+        <label title="每个 leaf（fat-tree）/ 每个 rail 交换机（rail）下的节点数；0 = 由交换机端口数与收敛比推出（下行端口 = 端口数·r/(1+r)）">每 leaf 节点数 <span class="tag assume">假设</span><input type="number" id="fab-leaf_nodes" step="1" min="0"></label>
+        <label title="leaf / rail 交换机端口数（只在每 leaf 节点数 = 0 时用）">交换机端口数 <span class="tag assume">假设</span><input type="number" id="fab-switch_radix" step="8" min="4"></label>
+      </div>
+      <div class="row3">
+        <label title="网内归约（厂商选项）：net = 跨节点交换机内聚合（SHARP / CollNet 类），net+link 另含节点内交换式 scale-up（NVLS 类）；每 rank 只收发一次数据">网内归约 <span class="tag assume">假设</span><select id="fab-innet_reduce"></select></label>
+        <label title="torus2d 的 X 维长度；0 = 取最接近 √n 的因数">torus X<input type="number" id="fab-torus_x" step="1" min="0"></label>
+        <label class="inline" title="PD KV 传输与两池自身的跨节点集合通信共用 NIC：KV 可用带宽 × (1 − 集合通信占用率)"><input type="checkbox" id="fab-contention"> KV 与集合通信争用 <span class="tag assume">假设</span></label>
+      </div>
+      <div class="row2">
+        <label title="每步时延 µs：D2D / 节点内（ring、tree 每一步）；默认节点内 0.6 µs 取 NCCL tuner 的 NVLink LL 默认值作数量级参考">每步时延 D2D / 节点内 µs <span class="tag assume">假设</span><span class="row2"><input type="number" id="fab-hop_d2d_us" step="0.1" min="0"><input type="number" id="fab-hop_link_us" step="0.1" min="0"></span></label>
+        <label title="跨节点每步时延 µs：ring 步 / tree 步；默认 2.7 / 5.0 µs 取 NCCL tuner 的 NET LL 默认值作数量级参考">每步时延 网络 ring / tree µs <span class="tag assume">假设</span><span class="row2"><input type="number" id="fab-hop_net_us" step="0.5" min="0"><input type="number" id="fab-hop_net_tree_us" step="0.5" min="0"></span></label>
+      </div>
+    </div>
   </section>
 
   <section class="grp full-only" id="wl-grp">
@@ -297,6 +319,11 @@
     <div class="scroll"><table class="tbl" id="mem-tbl"></table></div>
     <h4>动作计数与能耗 <span class="small muted">每输出单位；能耗只按左侧「能耗」里填写的项计算</span></h4>
     <div class="scroll"><table class="tbl" id="energy-tbl"></table></div>
+    <div id="fab-box" hidden>
+      <h4>集合通信（拓扑感知，0.59） <span class="small muted">每种集合通信所选算法与 α-β 时间；「假设」</span></h4>
+      <div class="small muted" id="fab-basis"></div>
+      <div class="scroll"><table class="tbl" id="fab-tbl"></table></div>
+    </div>
     <div id="pd-box" hidden>
       <h4>PD 分离 vs 合并 <span class="small muted">稳态流体模型「假设」：goodput = min(prefill, decode, KV 传输) 请求率 × 输出长度；合并的有效 TPOT = TPOT / decode 时间占比</span></h4>
       <div class="scroll"><table class="tbl" id="pd-tbl"></table></div>

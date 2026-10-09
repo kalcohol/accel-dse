@@ -3,6 +3,40 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.59.0] - 2026-10-09
+
+硬件侧：三层互连的跨节点网络拓扑与集合通信算法（`scenario.fabric`，「假设」，默认关）。默认结果（1356 项指纹）与 0.58.0 逐字节一致，另有 985 项多节点 / D2D / PD 指纹也一致。
+
+### 新增
+- **拓扑感知集合通信**（`core/fabric.py`，`fabric.enabled`）：每次 allreduce 在 ring（扁平多通道环）、tree（NCCL 式：节点内 chain，跨节点双二叉树）、hier（逐层 reduce-scatter → 顶层 allreduce → 逐层 all-gather）之间取最快（`fabric.algo = auto`，按 带宽时间 + α），也可指定。allgather 用 ring / hier，all-to-all 用直接交换。α = 每次集合通信的启动 α + 步数 × 每步时延，每步时延默认取 NCCL tuner 的 LL 协议默认值作数量级参考：节点内 0.6 µs、网络 ring 2.7 / tree 5.0 µs，D2D 0.1 µs「假设」。
+- **跨节点拓扑**（`fabric.net_topology`）：fat-tree / leaf-spine（每 leaf m 个整节点，上行收敛比 `oversub`）或 rail-optimized（每 rail 交换机 m 个节点，跨 rail 流量走 PXN，计入节点内 scale-up 字节）。m 可指定（`leaf_nodes`），或由交换机端口数推出（`switch_radix` 64，下行端口 = radix·r/(1+r)）。离开 leaf 的流量份额 f 以 max(1, r·f) 变慢：
+  - ring f = 1/m；
+  - tree 按 NCCL `ncclGetBtree` 的跨 leaf 边计；
+  - all-to-all f = (n − m)/(n − 1)；
+  - PP 交接跨 leaf 为 r；
+  - PD KV 为 r·(1 − m/n)。
+- **节点内 scale-up 拓扑**：`link.topology` 原有字段（switch / ring）此前不参与计算，现在扩展为 switch / full_mesh / ring / torus2d（`fabric.torus_x`），只在 fabric 开时生效：
+  - full_mesh：(n−1)/(k−1)；
+  - ring：未绕满时为链 2×，× stride；
+  - torus2d：按可用端口数；
+  - all-to-all：按最短路径 / 维序路由的最大链路负载计（ring 8 卡 16/7，torus 4×4 为 32/15）。
+- **网内归约**（`fabric.innet_reduce`，厂商选项「假设」）：net（SHARP / CollNet 类）、net+link（另含 NVLS 类，需交换式 scale-up），用于 allreduce 的 hier 顶层，每 rank 只收发一次。
+- **争用**（「假设」）：并发组共享收敛上行（上述 f）。PD KV 传输与两池自身的集合通信共用 NIC，KV 可用带宽 × (1 − u_c)（`fabric.contention`），并报告集合通信被 KV 拖慢的倍数（不回灌）。PD 报告的 `kv.fabric` 给出 leaf 因子、u_coll、原始 / 有效 GB/s。
+- 适用于 TP / EP / SP（DAP）/ DP / FSDP 集合通信、PP 交接、视频 VAE 并行与文本编码器分片的 all-gather，以及 PD KV 传输。
+- **报告**：API `fabric`（每种集合通信的分层、所选算法、带宽 / 时延、其他候选，以及拓扑模型关时的步时间）；Web「拓扑感知集合通信」开关、各项输入和「集合通信」表；CLI `--fabric --oversub --leaf-nodes --net-topology --link-topology --fabric-algo --innet-reduce --switch-radix --torus-x`；扫描参数 `fabric.oversub`。
+- `link.topology` 现在校验取值（非法值返回 400）。建模说明 §19；测试 `tests/test_core_059.py`（9 项）。
+
+### 数值例子（fabric 开；1P + HBM3e，8 卡 / 节点，网络 50 GB/s / 卡）
+- **DeepSeek-V3 DP64·EP64，8 节点，prefill b64**（关：707.7 ms，MAC 绑定）：
+  - 每 leaf 2 节点：1:1 / 2:1 / 4:1 → 708.0 / 818.5 / 1636.1 ms（2:1 起 LINK 绑定）；
+  - 每 leaf 1 节点：708.0 / 954.7 / 1908.6 ms；
+  - 默认推导的 leaf（4 / 5 / 6 节点）：708.0 / 708.0 / 708.0 ms（link 476.9 → 545.1 ms）。
+  - decode b512 一直是 7.73 ms（link 0.93 → 最多 3.73 ms，被计算掩盖）。
+- **qwen3-32b TP16，2 节点，decode b64**：关 20.84 ms；ring / tree / hier = 22.92 / 22.43 / 21.85 ms，auto 选 hier。
+- **单节点 TP2·PP4 prefill 的 link 时间**：switch 6.7 / ring 13.4 / torus 4×2 26.8 / full mesh 47.0 ms。
+- **TP16 跨 2 节点 prefill，每 leaf 1 节点、4:1**：link 617 → 295 ms（开网内归约）。
+- **PD KV**（qwen3-30b-a3b，4 节点 × 16 卡，每 leaf 1 节点）：2:1 / 4:1 → KV 传输 4.0 → 6.0 / 12.1 ms。
+
 ## [0.58.0] - 2026-10-09
 
 修正 0.57 合并模式 KV 准入的 CV1 过保守，新增 radix / 部分前缀匹配（前缀树，「假设」，默认关）。默认（合并、非 PD）结果（1356 项指纹）与 0.57.0 逐字节一致；KV 策略和前缀树默认都关。

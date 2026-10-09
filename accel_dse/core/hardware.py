@@ -108,16 +108,76 @@ class Chip:
         return self.sram_mib * 2**20
 
 
+LINK_TOPOLOGIES = ("switch", "ring", "full_mesh", "torus2d")
+
+
 @dataclass(frozen=True)
 class Link:
     """Scale-up link per rank.  α-β: t = α + bytes/β (per collective step)."""
     GBps: float = 400.0       # 「假设」 per-rank uni-directional bandwidth
     alpha_us: float = 3.0     # 「假设」 per-collective latency (sync + launch)
-    topology: str = "switch"  # switch | ring
+    topology: str = "switch"  # switch | ring | full_mesh | torus2d — used only with fabric.enabled (0.59)
 
     def __post_init__(self):
         if not (self.GBps > 0 and self.GBps != float("inf")) or not (self.alpha_us >= 0):
             raise ValueError("link GBps must be finite > 0, alpha_us ≥ 0")
+        if self.topology not in LINK_TOPOLOGIES:
+            raise ValueError(f"link topology must be one of {', '.join(LINK_TOPOLOGIES)}")
+
+
+NET_TOPOLOGIES = ("fat_tree", "rail")
+FABRIC_ALGOS = ("auto", "ring", "tree", "hier")
+INNET_MODES = ("off", "net", "net+link")
+
+
+@dataclass(frozen=True)
+class Fabric:
+    """Topology-aware collectives (0.59, 「假设」; off = the 0.50 three-tier α-β model, bit for bit).  See core/fabric.py.
+
+    net_topology  cross-node tier: "fat_tree" (two-level leaf-spine; ``leaf_nodes`` whole nodes under one leaf, leaf
+                  uplinks oversubscribed ``oversub``:1, spine non-blocking) or "rail" (rail-optimised: NIC j of every
+                  node on rail switch j, ``leaf_nodes`` nodes per rail switch, cross-rail traffic first hops over the
+                  in-node scale-up (PXN)).  leaf_nodes = 0 → derived from ``switch_radix``: down ports
+                  = radix·r/(1 + r); fat_tree: down ports // node_cards nodes, rail: down ports nodes.
+    algo          auto (cheapest of ring / tree / hier per collective) | ring (flat ring) | tree (NCCL double binary
+                  tree across nodes, chains inside) | hier (reduce-scatter inside, allreduce on top, all-gather back).
+    hop_*_us      per-step latency of each tier (ring / tree steps); defaults = NCCL tuner defaults for the LL protocol
+                  (NVLink ring 0.6 µs, NET ring 2.7 µs, NET tree 5.0 µs; D2D 0.1 µs 「假设」) — reference order of
+                  magnitude, not a measurement of any system.
+    innet_reduce  in-network reduction, vendor option 「假设」: "net" = switch aggregation on the cross-node tier (SHARP /
+                  CollNet class), "net+link" also on a switched scale-up tier (NVLS class).
+    contention    PD KV hand-off shares the NICs with the pools' collectives 「假设」.
+    torus_x       X extent of a ``link.topology = torus2d`` scale-up domain (0 = the divisor nearest √n)."""
+    enabled: bool = False
+    algo: str = "auto"
+    net_topology: str = "fat_tree"
+    oversub: float = 1.0
+    leaf_nodes: int = 0
+    switch_radix: int = 64
+    torus_x: int = 0
+    hop_d2d_us: float = 0.1
+    hop_link_us: float = 0.6
+    hop_net_us: float = 2.7
+    hop_net_tree_us: float = 5.0
+    innet_reduce: str = "off"
+    contention: bool = True
+
+    def __post_init__(self):
+        if not isinstance(self.enabled, bool) or not isinstance(self.contention, bool):
+            raise ValueError("fabric.enabled / fabric.contention must be booleans")
+        for k, opts in (("algo", FABRIC_ALGOS), ("net_topology", NET_TOPOLOGIES), ("innet_reduce", INNET_MODES)):
+            if getattr(self, k) not in opts:
+                raise ValueError(f"fabric.{k} must be one of {', '.join(opts)}")
+        if isinstance(self.oversub, bool) or not isinstance(self.oversub, (int, float)) or not 1.0 <= self.oversub <= 64:
+            raise ValueError("fabric.oversub must be in [1, 64] (down:up ratio of the leaf uplinks)")
+        for k, lo, hi in (("leaf_nodes", 0, 4096), ("switch_radix", 4, 1024), ("torus_x", 0, 1024)):
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                raise ValueError(f"fabric.{k} must be an integer in [{lo}, {hi}]")
+        for k in ("hop_d2d_us", "hop_link_us", "hop_net_us", "hop_net_tree_us"):
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 1e4:
+                raise ValueError(f"fabric.{k} must be in [0, 1e4] µs")
 
 
 D2D_DEFAULT = Link(1536.0, 0.5)   # UCIe-A x64 @ 48 GT/s × 4 modules (raw, per direction); α = collective sync 「假设」
@@ -134,6 +194,8 @@ class System:
     package_cards: int = 1              # dies per package on the D2D tier; 1 = monolithic (D2D off)
     net: Link = NET_DEFAULT             # cross-node scale-out
     node_cards: int = 0                 # cards per node; 0 = one node (cross-node tier unused)
+    fabric: Fabric = Fabric()           # 0.59 topology-aware collectives (off = 0.50 model)
+    cards: int = 0                      # cards of the evaluated replica (scale-up domain when node_cards = 0; 0.59)
 
     @property
     def mem(self) -> mem_catalog.MemSpec:

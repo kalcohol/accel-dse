@@ -161,6 +161,33 @@ function d2dNote() {
   $('d2d-units').disabled = !d;
 }
 function d2dPaint() { $('d2d-inputs').hidden = !S.sc.d2d_enabled; d2dNote(); }
+/* 0.59 topology-aware collectives */
+function fab() { if (!S.sc.fabric) S.sc.fabric = JSON.parse(JSON.stringify(S.cat.defaults.fabric)); return S.sc.fabric; }
+function fabPaint() {
+  $('fab-enabled').checked = !!fab().enabled; $('fab-inputs').hidden = !fab().enabled;
+  for (const k of ['algo', 'net_topology', 'innet_reduce']) $('fab-' + k).value = fab()[k];
+  $('fab-link_topology').value = S.sc.link.topology || 'switch';
+  $('fab-contention').checked = !!fab().contention;
+}
+const FAB_ALGO_ZH = { ring: 'ring（扁平环）', tree: 'tree（双二叉树）', hier: 'hier（分层）', direct: 'direct（直接）', p2p: 'p2p' };
+const FAB_TOP_ZH = { ring: '顶层 ring', tree: '顶层 tree', innet: '顶层网内归约' };
+function renderFabric(r) {
+  const f = r.fabric;
+  $('fab-box').hidden = !f;
+  if (!f) return;
+  const off = f.step_ms_off;
+  $('fab-basis').textContent = `${f.basis} 步时间 ${num(f.step_ms)} ms` + (off ? `（拓扑模型关时 ${num(off)} ms，${f.step_ms >= off ? '+' : ''}${pct(f.step_ms / off - 1)}）` : '');
+  const tier = { d2d: 'D2D', link: '节点内', net: '网络' };
+  const head = h('tr', {}, h('th', { class: 'l' }, '集合通信'), h('th', {}, '组大小'), h('th', { class: 'l' }, '分层'), h('th', {}, '每 rank 数据'),
+    h('th', {}, '次数 / 步'), h('th', { class: 'l' }, '所选算法'), h('th', {}, '带宽时间 µs'), h('th', {}, '时延 µs'), h('th', { class: 'l' }, '其他候选（带宽 + 时延 µs）'));
+  const rows = f.rows.slice(0, 24).map((x) => h('tr', {}, h('td', { class: 'l' }, x.kind === 'alltoall' ? 'all-to-all' : x.kind),
+    h('td', {}, String(x.group)), h('td', { class: 'l' }, x.levels.map(([t, n]) => `${tier[t] || t} × ${n}`).join(' · ')),
+    h('td', {}, num(x.bytes / 1024) + ' KiB'), h('td', {}, String(x.count)),
+    h('td', { class: 'l' }, (FAB_ALGO_ZH[x.algo] || x.algo) + (x.top ? `，${FAB_TOP_ZH[x.top] || x.top}` : '')),
+    h('td', {}, num(x.bw_us)), h('td', {}, num(x.alpha_us)),
+    h('td', { class: 'l small' }, Object.entries(x.cands).filter(([k]) => k !== x.algo).map(([k, v]) => `${k} ${num(v.bw_us + v.alpha_us)}`).join(' · ') || '—')));
+  put($('fab-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
+}
 function syncInputs() {
   document.querySelectorAll('input[type=number]').forEach((i) => i._sync && i._sync());
   if ($('pd-length_mix') && $('pd-length_mix')._sync) $('pd-length_mix')._sync();
@@ -171,6 +198,7 @@ function syncInputs() {
   for (const k of ['dit_fsdp', 'te_cpu', 'vae_parallel', 'overlap']) if ($('w-' + k)) $('w-' + k).checked = !!S.sc.workload[k];
   if ($('w-sample_split')) $('w-sample_split').checked = S.sc.workload.sample_split !== false;
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
+  if ($('fab-enabled') && S.sc && S.cat) fabPaint();
   if ($('d2d-enabled') && S.sc) { $('d2d-enabled').checked = !!S.sc.d2d_enabled; if (S.cat) $('d2d-std').value = S.sc.d2d_std; d2dPaint(); }
   if ($('pd-enabled') && S.sc) { $('pd-enabled').checked = !!S.sc.pd.enabled; $('pd-inputs').hidden = !S.sc.pd.enabled; $('pd-kv_layerwise').checked = !!S.sc.pd.kv_layerwise;
     $('pd-prefix_on_decode').checked = S.sc.pd.prefix_on_decode !== false; $('pd-search_layouts').checked = !!S.sc.pd.search_layouts; $('pd-search_decode_batch').checked = !!S.sc.pd.search_decode_batch; $('pd-simulate').checked = !!S.sc.pd.simulate;
@@ -479,6 +507,7 @@ function renderEval(r) {
     ...(r.model.what_if ? [h('div', {}, 'what-if：dtype 已偏离官方发布，结果仅供推演。')] : []));
   renderStages(r);
   renderEnergy(r);
+  renderFabric(r);
   renderBudget(r);
   renderPD(r);
   { const sc = r.scenario, P = sc.d2d_enabled ? (sc.package_cards || 1) : 1, N = sc.node_cards || 0,
@@ -837,7 +866,7 @@ function renderAssumptions(r) {
     `GEMV 单元 ${c.gemv_macs || cc.gemv} MAC/cycle${c.gemv_macs ? '' : '（默认 = 阵列 MAC / 8）'}；向量通道 ${c.vector_lanes || cc.lanes}`,
     `累加器 ${c.acc_kib} KiB（超出的部分和行溢出到 SRAM）`,
     `DRAM 效率 ${sc.mem_eff ?? (S.memInfo ? S.memInfo.efficiency : 0.7)}；预留 1 GiB；暂存区 = max(2 MiB, 2·最大激活)`,
-    `三层互连：${sc.d2d_enabled && (sc.package_cards || 1) > 1 ? `封装内 ${sc.package_cards} die 走 D2D ${num(sc.d2d_std === 'custom' ? sc.d2d.GBps : ((S.cat.d2d_standards || []).find((d) => d.id === sc.d2d_std) || {}).per_unit_GBps * sc.d2d_units)} GB/s（${sc.d2d_std === 'custom' ? '自定义' : sc.d2d_std + ' × ' + sc.d2d_units}）、α ${sc.d2d.alpha_us} µs` : 'D2D 关（单片大 die，每卡一个封装）'}；节点内 scale-up ${sc.link.GBps} GB/s、α ${sc.link.alpha_us} µs（${sc.link.topology === 'ring' ? '环形' : '交换'}）；${sc.node_cards ? `每节点 ${sc.node_cards} 卡，跨节点网络 ${sc.net.GBps} GB/s、α ${sc.net.alpha_us} µs` : '单节点（跨节点层未用）'}。卡按 TP → SP → DP → PP 编号，通信组按落在同一封装 / 节点内的成员数分层（allreduce / allgather 逐级、all-to-all 各层同时按目的地分摊；PP 交接按流水级边界判断所走层级）`,
+    `三层互连：${sc.d2d_enabled && (sc.package_cards || 1) > 1 ? `封装内 ${sc.package_cards} die 走 D2D ${num(sc.d2d_std === 'custom' ? sc.d2d.GBps : ((S.cat.d2d_standards || []).find((d) => d.id === sc.d2d_std) || {}).per_unit_GBps * sc.d2d_units)} GB/s（${sc.d2d_std === 'custom' ? '自定义' : sc.d2d_std + ' × ' + sc.d2d_units}）、α ${sc.d2d.alpha_us} µs` : 'D2D 关（单片大 die，每卡一个封装）'}；节点内 scale-up ${sc.link.GBps} GB/s、α ${sc.link.alpha_us} µs（${sc.fabric && sc.fabric.enabled ? ({ switch: '交换', ring: '环形', full_mesh: '全互连', torus2d: '2D torus' }[sc.link.topology] || sc.link.topology) : '交换；拓扑只在拓扑感知集合通信开启时生效'}）；${sc.node_cards ? `每节点 ${sc.node_cards} 卡，跨节点网络 ${sc.net.GBps} GB/s、α ${sc.net.alpha_us} µs` : '单节点（跨节点层未用）'}。卡按 TP → SP → DP → PP 编号，通信组按落在同一封装 / 节点内的成员数分层（allreduce / allgather 逐级、all-to-all 各层同时按目的地分摊；PP 交接按流水级边界判断所走层级）`,
     c.slc_mib > 0
       ? `系统级缓存 SLC ${c.slc_mib} MiB @ ${c.slc_GBps} GB/s，策略 ${c.slc_policy === 'lru' ? 'lru（循环访问：片外工作集放得下全部读命中，否则 0 命中——上界 / 下界之间）' : 'pin（SRAM 之后按热权重 → 专家 → KV / 状态钉住，流式激活与 KV 写入绕过）'}；不增加容量；文本编码器 / VAE 不用 SLC`
       : '无系统级缓存（SLC MiB = 0）',
@@ -1019,7 +1048,7 @@ const SWEEP_ZH = {
   'chip.sram_mib': 'SRAM MiB', 'chip.sram_port_Bpc': 'SRAM 端口 B/cycle', 'chip.freq_ghz': '频率 GHz', 'chip.mac_eff': 'MAC 效率',
   'chip.gemv_macs': 'GEMV MAC/cycle', mem_eff: 'DRAM 效率', 'link.GBps': '节点内 GB/s', 'link.alpha_us': '节点内 α µs',
   'serving.moe_skew': 'MoE 倾斜', 'chip.slc_mib': 'SLC MiB', 'chip.slc_GBps': 'SLC GB/s', 'd2d.GBps': 'D2D GB/s（自定义）', 'd2d.alpha_us': 'D2D α µs', package_cards: '每封装 die 数（开 D2D）',
-  d2d_units: 'D2D 单元数', 'net.GBps': '跨节点 GB/s', 'net.alpha_us': '跨节点 α µs', node_cards: '每节点卡数',
+  d2d_units: 'D2D 单元数', 'net.GBps': '跨节点 GB/s', 'net.alpha_us': '跨节点 α µs', node_cards: '每节点卡数', 'fabric.oversub': '收敛比 r（需开拓扑感知）',
   'workload.frames': '帧数', 'workload.steps': '去噪步数', 'workload.height': '高 px', 'workload.width': '宽 px',
   'workload.seq_len': '序列长度（残基）', 'workload.msa': 'MSA 行数', 'workload.recycles': '主干遍数',
   'workload.samples': '扩散样本数',
@@ -1044,7 +1073,7 @@ const SWEEP_DEFAULT = {
   mem_eff: '0.5,0.6,0.7,0.8,0.9', 'link.GBps': '50,100,200,400,900', 'link.alpha_us': '0,1,3,5,10',
   'serving.moe_skew': '1,1.25,1.5,2,3,4', 'chip.slc_mib': '0,64,256,1024,4096', 'chip.slc_GBps': '500,1000,2000,4000', 'd2d.GBps': '500,1000,2000,4000',
   'd2d.alpha_us': '0,0.5,1,2', package_cards: '1,2,4,8',
-  d2d_units: '1,2,4,8', 'net.GBps': '12.5,25,50,100,200', 'net.alpha_us': '2,5,10,20', node_cards: '0,2,4,8',
+  d2d_units: '1,2,4,8', 'net.GBps': '12.5,25,50,100,200', 'net.alpha_us': '2,5,10,20', node_cards: '0,2,4,8', 'fabric.oversub': '1,2,4,8',
   'workload.frames': '17,33,49,81,121', 'workload.steps': '10,20,30,50', 'workload.height': '240,480,720',
   'workload.width': '416,832,1280', 'workload.seq_len': '128,256,512,1022,2048',
   'workload.msa': '64,256,512,1024,4096', 'workload.recycles': '1,2,3,4,6', 'workload.samples': '1,5,10,25',
@@ -1246,6 +1275,18 @@ async function init() {
   bindNumber('d2d-units', () => S.sc.d2d_units, (x) => { S.sc.d2d_units = x; $('d-GBps')._sync(); d2dNote(); }, { int: true });
   for (const k of ['GBps', 'alpha_us']) bindNumber('n-' + k, () => S.sc.net[k], (x) => (S.sc.net[k] = x));
   bindNumber('n-node_cards', () => S.sc.node_cards || 0, (x) => (S.sc.node_cards = x), { int: true });
+  for (const [k, o] of [['oversub', {}], ['leaf_nodes', { int: true }], ['switch_radix', { int: true }], ['torus_x', { int: true }],
+    ['hop_d2d_us', {}], ['hop_link_us', {}], ['hop_net_us', {}], ['hop_net_tree_us', {}]])
+    bindNumber('fab-' + k, () => fab()[k], (x) => (fab()[k] = x), o);
+  opts($('fab-link_topology'), [['switch', 'switch（非阻塞交换）'], ['full_mesh', 'full mesh（全互连）'], ['ring', 'ring（双向环）'], ['torus2d', '2D torus']], S.sc.link.topology || 'switch');
+  opts($('fab-net_topology'), [['fat_tree', 'fat-tree / leaf-spine'], ['rail', 'rail-optimized']], fab().net_topology);
+  opts($('fab-algo'), [['auto', 'auto（取最快）'], ['ring', 'ring'], ['tree', 'tree（双二叉树）'], ['hier', 'hier（分层）']], fab().algo);
+  opts($('fab-innet_reduce'), [['off', '关'], ['net', '跨节点（SHARP 类）'], ['net+link', '跨节点 + 节点内（NVLS 类）']], fab().innet_reduce);
+  $('fab-enabled').addEventListener('change', (e) => { fab().enabled = e.target.checked; fabPaint(); schedule(); });
+  $('fab-contention').addEventListener('change', (e) => { fab().contention = e.target.checked; schedule(); });
+  $('fab-link_topology').addEventListener('change', (e) => { S.sc.link.topology = e.target.value; schedule(); });
+  for (const k of ['algo', 'net_topology', 'innet_reduce']) $('fab-' + k).addEventListener('change', (e) => { fab()[k] = e.target.value; schedule(); });
+  fabPaint();
   opts($('d2d-std'), [...S.cat.d2d_standards.map((d) => [d.id, d.label]), ['custom', '自定义（直接填 GB/s）']], S.sc.d2d_std);
   $('d2d-std').addEventListener('change', (e) => {
     if (e.target.value === 'custom') S.sc.d2d.GBps = d2dGBps();      // keep the current figure as the custom start

@@ -264,6 +264,20 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
     kv_tier = "net" if scn.node_cards > 0 else "link"
     beta = (pd.kv_GBps or kv_link.GBps) * 1e9
     alpha = kv_link.alpha_us * 1e-6
+    kv_fab = None
+    if scn.fabric.enabled:      # 0.59 「假设」: oversubscribed leaf uplinks + NICs shared with the pools' collectives
+        from .fabric import _hop, kv_factor
+        fac = kv_factor(scn.fabric, scn.node_cards, total) if kv_tier == "net" else 1.0
+        bn = kv_link.GBps * 1e9
+
+        def _u(r) -> float:      # busy share of the pool's own collectives on this tier (heaviest stage)
+            return max(((st.time.net_bytes if kv_tier == "net" else st.time.link_bytes - st.time.d2d_bytes
+                         - st.time.net_bytes) / bn / st.time.total if st.time.total > 0 else 0.0) for st in r.stages)
+        u_c = min(0.95, max(_u(pr), _u(dec))) if scn.fabric.contention else 0.0
+        beta_raw = beta
+        beta = beta / fac * (1.0 - u_c)
+        alpha += _hop(scn.fabric, kv_tier)
+        kv_fab = {"leaf_factor": fac, "u_coll": u_c, "GBps_raw": beta_raw / 1e9, "GBps_eff": beta / 1e9}
     L = m.n_layers
     b_req = min(c_p, c_d) * beta
 
@@ -397,6 +411,9 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
                    "tpot_ms": dec.tpot * 1e3, "tok_s_replica": rd, "fits": dec.fits, "bound": dec.bound},
         "kv": {"bytes_per_req": kv, "GBps_req": b_req / 1e9, "t_ms": t_kv * 1e3, "exposed_ms": exposed * 1e3,
                "layerwise": pd.kv_layerwise, "tier": kv_tier,
+               **({"fabric": {**kv_fab, "coll_slowdown": 1.0 / max(0.05, 1.0 - main["req_s"] * kv
+                                                                 / (min(n_p, n_d) * kv_fab["GBps_raw"] * 1e9))}}
+                  if kv_fab else {}),
                "source": "pd.kv_GBps" if pd.kv_GBps else ("net.GBps（跨节点层）" if kv_tier == "net" else "link.GBps（节点内互联层）")},
         "ttft_ms": ttft * 1e3, "tpot_ms": dec.tpot * 1e3,
         "ttft_ok": ttft * 1e3 <= sv.ttft_slo_ms and p_ok, "tpot_ok": dec.tpot * 1e3 <= sv.tpot_slo_ms,

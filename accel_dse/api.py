@@ -23,6 +23,7 @@ from .core.hardware import CHIPS, Chip
 from .core.mapping import ORG_LABEL, ORGS
 from .core.parallel import Layout, enumerate_layouts
 from .core.d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS
+from .core.fabric import fabric_report
 from .core.scenario import Scenario, upgrade_legacy
 from .core.search import best_batch, search_layouts, tpot_throughput_front
 from .core.serving import goodput
@@ -36,7 +37,7 @@ SWEEP_PATHS = {
     "chip.sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
     "serving.moe_skew": float, "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
-    "d2d_units": int, "net.GBps": float, "net.alpha_us": float, "node_cards": int,
+    "d2d_units": int, "net.GBps": float, "net.alpha_us": float, "node_cards": int, "fabric.oversub": float,
     "workload.frames": int, "workload.steps": int, "workload.height": int, "workload.width": int,
     "workload.seq_len": int, "workload.msa": int, "workload.recycles": int, "workload.samples": int,
 }
@@ -314,6 +315,8 @@ def api_eval(body: dict) -> dict:
     out["energy"] = energy_report(r, table)      # 0.47.1: action counts always; J only for user-supplied entries
     if bud is not None:
         out["budget"] = budget_report(r, bud, out["energy"])
+    if scn.fabric.enabled:  # 0.59: per-collective algorithm / topology breakdown
+        out["fabric"] = fabric_report(scn, r)
     if scn.pd.enabled:      # 0.50: prefill / decode disaggregation next to the colocated numbers
         try:
             out["pd"] = disagg_report(scn, r, _energy_table(body))

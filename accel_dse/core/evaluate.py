@@ -23,6 +23,7 @@ from .parallel import Layout, plan_stages
 from .pipeline import TILING, pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
 from .scenario import Scenario
 from .ir import skew_from_load
+from . import fabric
 from .schedule import StageTime, collective_seconds, fabric_collective, p2p_tier, spec_expected_tokens
 
 
@@ -236,9 +237,11 @@ def _comm(sys: System, kind: str, payload: float, group: int, stride: int = 1,
     """One collective on the system's three-tier fabric (0.50; 0.48 two-tier when node_cards = 0):
     (bandwidth s, α s, D2D share, network share of the bytes).  ``members``: (ranks inside one package, inside one
     node) when the group is not a uniform stride (None entries = derive from the stride)."""
+    kp, kn = members if members is not None else (None, None)
+    if sys.fabric.enabled:      # 0.59 topology-aware collectives 「假设」
+        return fabric.collective(kind, payload, group, sys, stride, k_pkg=kp, k_node=kn)
     if sys.package_cards <= 1 and sys.node_cards <= 0:
         return (*collective_seconds(kind, payload, group, sys.link), 0.0, 0.0)
-    kp, kn = members if members is not None else (None, None)
     return fabric_collective(kind, payload, group, sys.link, sys.d2d if sys.package_cards > 1 else None,
                              sys.package_cards, sys.net if sys.node_cards > 0 else None, sys.node_cards, stride,
                              k_pkg=kp, k_node=kn)
@@ -249,6 +252,16 @@ def _p2p(sys: System, payload: float, stage: int, stage_cards: int) -> tuple[flo
     else the cross-node network."""
     t = p2p_tier(stage, stage_cards, sys.package_cards, sys.node_cards)
     ln = {"d2d": sys.d2d, "link": sys.link, "net": sys.net}[t]
+    if sys.fabric.enabled and payload > 0:      # 0.59: oversubscribed leaf uplinks + per-step hop latency
+        src = (stage + 1) * stage_cards - 1
+        bw = fabric.p2p(payload, t, ln, sys, src, src + 1)
+        a = ln.alpha_us * 1e-6 + fabric._hop(sys.fabric, t)
+        if fabric._LOG is not None:
+            e = fabric._LOG.setdefault(("p2p", stage, round(payload)), {
+                "kind": "p2p", "group": 2, "bytes": payload, "count": 0, "levels": [[t, 2]], "algo": "p2p",
+                "top": "", "cands": {"p2p": [bw, a]}, "stage": stage})
+            e["count"] += 1
+        return bw, a, float(t == "d2d"), float(t == "net")
     return (*collective_seconds("p2p", payload, 2, ln), float(t == "d2d"), float(t == "net"))
 
 
@@ -258,6 +271,9 @@ def _slc_time(sys: System, dram: dict) -> float:
 
 
 def _links(scn: Scenario) -> tuple:
+    if scn.fabric.enabled:      # 0.59: topology factors depend on the replica's cards (scale-up domain on one node)
+        return (scn.link, scn.d2d_link if scn.package_eff > 1 else None, scn.package_eff,
+                scn.net if scn.node_cards > 0 else None, scn.node_cards, scn.fabric, scn.layout.cards)
     if scn.package_eff <= 1 and scn.node_cards <= 0:
         return scn.link
     return (scn.link, scn.d2d_link if scn.package_eff > 1 else None, scn.package_eff,
@@ -290,7 +306,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             "(MoE needs ep·etp = tp·dp; dense needs dp=ep=etp=1; sp only for video / protein models)"))
     if lay.pp > m.n_layers:
         raise ValueError("pp exceeds layer count")
-    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards)
+    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
+                 scn.fabric, lay.cards)
     if scn.chip.slc_bytes and scn.chip.slc_bytes >= sys.dram_bytes:
         warnings.append("SLC 容量不小于每卡 DRAM 容量——不现实的设计点（SLC 不增加容量，按包含式缓存计）")
     if sys.package_cards > 1 and lay.cards > sys.package_cards and lay.cards % sys.package_cards:
@@ -332,6 +349,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     ops_memo = model_cache(m).setdefault("layer_sums", {})
     if len(ops_memo) > 200_000:
         ops_memo.clear()
+    if fabric._LOG is not None:     # fabric_report: run every collective (no layer memo)
+        ops_memo = {}
     for st in plan_stages(m.n_layers, pp):
         agg = dict.fromkeys(_SUM_KEYS, 0.0)
         if st.has_embed:
@@ -341,12 +360,17 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             g = groups[li]
             first_li, n = counts.get(g, (li, 0))
             counts[g] = (first_li, n + 1)
+        if fabric._LOG is not None:     # count every stage's collectives (ops_memo is a private dict here)
+            cache.clear()
+            ops_memo.clear()
         for g, (li, n) in counts.items():
             if g not in cache:
                 okey = (g, ph, sh, scn.mapping, scn.chip, _links(scn))
                 cache[g] = ops_memo.get(okey)
                 if cache[g] is None:
+                    fabric._MULT = n
                     cache[g] = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
+                    fabric._MULT = 1
             _acc(agg, cache[g], n)
         _acc(agg, _sum_ops(_tail_ops(m, st.has_head, ph, sh, spec_k), sys, scn.mapping, m))
         skey = (st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap, n_mtp)
@@ -422,6 +446,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     store_memo = model_cache(m).setdefault("stage_storage", {})
     if len(ops_memo) > 200_000:
         ops_memo.clear()
+    if fabric._LOG is not None:     # fabric_report: run every collective (no layer memo)
+        ops_memo = {}
     stages = []
     resid = _cdiv(seqs, lay.dp) * _cdiv(wl.tokens, lay.sp) * m.hidden * ab   # residual streams of in-flight sequences
     pair_act = 0.0
@@ -434,6 +460,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                                                        "需要 SP · DP > 1（FSDP 在同一流水级的数据 / 序列并行卡之间分片）"))
     for st in plan_stages(m.n_layers, pp):
         agg = dict.fromkeys(_SUM_KEYS, 0.0)
+        if fabric._LOG is not None:
+            ops_memo.clear()
         if st.has_embed:
             _acc(agg, _sum_ops(full_io_ops(m, ph, sh, "pre"), sys, scn.mapping, m))
         counts: dict = {}
@@ -445,7 +473,9 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             okey = (g, ph, sh, scn.mapping, scn.chip, _links(scn))
             hit = ops_memo.get(okey)
             if hit is None:
+                fabric._MULT = n * layer_repeat(m.layers[li], ph)
                 hit = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
+                fabric._MULT = 1
             _acc(agg, hit, n * layer_repeat(m.layers[li], ph))
         if st.has_head:
             _acc(agg, _sum_ops(full_io_ops(m, ph, sh, "post"), sys, scn.mapping, m))
@@ -733,7 +763,7 @@ def _place_components(scn: Scenario, m: ModelSpec, pipe: dict, stages: list, sys
             mems.append(replace(mp, dram_need=need, fits=need <= mp.dram_cap, pipe_w=w_te + w_vae))
         if not shard:
             gather = 0.0
-        elif sys.package_cards <= 1 and sys.node_cards <= 0:
+        elif sys.package_cards <= 1 and sys.node_cards <= 0 and not sys.fabric.enabled:
             gather = pipe["te_w"] * (c - 1) / c / (sys.link.GBps * 1e9) + alpha * pipe["te_layers"]
         else:       # 0.48 / 0.50: the same all-gather volume on the tiered fabric, α per encoder layer
             bw_, a_, _, _ = _comm(sys, "allgather", pipe["te_w"] / c, c, members=_replica_members(sys, lay))

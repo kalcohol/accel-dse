@@ -781,3 +781,83 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
   - 合并 CV1 TTFT p50 +60 … +92 %（P(等待) 低约 15 %、条件均值高约 15 %，两者在 W 上抵消）；
   - 合并 TPOT p90 在 tp4 L0.85 CV1 −15 %（未做）；
   - 前缀树不跨层相关（各层独立选子节点），也不建模 decode 生成的 token 回写进树（多轮对话把上一轮输出作为下一轮前缀）。
+
+## 19. 拓扑感知集合通信（0.59，默认关）
+
+`scenario.fabric.enabled = true` 时，每次集合通信按拓扑与算法计算（`core/fabric.py`），所有参数都是「假设」。关闭时走 §15 的 0.50 三层 α-β 模型，结果逐位不变：1356 项默认指纹，另有 985 项多节点 / D2D / PD 指纹，都与 0.58 相同。
+
+**分层**（同 §15）：组内 g 个 rank 分成 D2D n₀ · scale-up n₁ · 网络 n₂ 三层。K_i = Π_{j<i} n_j 是一个第 i 层单元（封装 / 节点）内的组成员数，每个成员在第 i 层有一个端口。
+
+**算法**（allreduce，每 rank 数据 B；与 NCCL tuner 的 ring / tree 模型一致：ring 算法带宽 = busBw·n/(2(n−1))，tree = busBw/2）：
+
+| 算法 | 带宽时间 | 步数（× 每步时延） |
+|---|---|---|
+| ring（扁平，多通道） | 2(g−1)/g · B · maxᵢ 1/(K_i·β_i) | 2(g−1)；其中跨第 i 层的步数 2(U_i − 1) − Σ_{j>i}，U_i = Π_{j≥i} n_j |
+| tree（NCCL：节点内 chain，跨节点双二叉树） | 2B · max(max_{i<top} 1/β_i, 1/(K_top·β_top)) | 节点内 2(K_top − 1) 步，跨节点 2⌈log₂ n₂⌉ 步（tree 每步时延） |
+| tree（单节点 = chain） | 2B · maxᵢ 1/β_i | 2(g−1) |
+| hier（逐层 reduce-scatter → 顶层 allreduce → 逐层 all-gather） | Σ_{i<top} 2(n_i−1)/n_i · B/K_i/β_i + 顶层 | Σ_{i<top} 2(n_i − 1) + 顶层 |
+
+- **hier 的顶层**（数据 b = B/K_top）有三种选法：ring 2(n−1)/n·b/β；tree 2b/β（仅网络层）；网内归约 b/β（每 rank 只收发一次，时延按 2 × 交换机层数步）。
+- **allgather**：ring (g−1)·B·maxᵢ 1/(K_i β_i)，g−1 步；hier 同 §15，步数 Σ(n_i − 1)；没有 tree。
+- **all-to-all**：直接交换，各层同时按目的地分摊（§15 的份额），时延一步。
+- **PP 交接**：所走层的 β，加一步时延。
+- **α 与算法选择**：α = α_launch（所涉各层每次集合通信 α 的最大值）+ Σ 步数 × 每步时延。`algo = auto` 按「带宽时间 + α」取最小，即 NCCL 式的单次通信最优。它不考虑与计算的重叠：在 MAC 绑定的阶段，α 更小的 hier 可能实际更快（例子 B）。
+- **每步时延默认值**：节点内 0.6 µs、网络 ring 2.7 µs、网络 tree 5.0 µs，取 NCCL tuner 默认 hwLatencies（LL 协议：NVLink ring / tree 0.6，NET ring 2.7、tree 5.0）作数量级参考；D2D 0.1 µs 为「假设」。它们不是任何系统的实测值。
+
+**节点内 scale-up 拓扑**（`link.topology`）：β 是每卡注入带宽，按端口平分。domain = 每节点封装数（单节点时为整个副本）。
+
+| 拓扑 | ring / chain / tree 类 | all-to-all |
+|---|---|---|
+| switch | 1 | 1 |
+| full_mesh（每卡 n−1 条直连） | (n−1)/(k−1)：k 个成员之间只有 k−1 条可用 | (n−1)/(k−1) |
+| ring（双向，2 端口） | 组绕满环 1，否则 2（链），× stride（并发组共享链路） | 最短路径下并发组的最大有向链路负载；k = n = 8 时为 16/7 |
+| torus2d（X×Y，4 端口） | 4 / 可用端口数（成员绕满的维 2 个，只跨部分的维 1 个）× 沿该维的 stride | 维序路由的最大链路负载；4×4 为 32/15 |
+
+**跨节点拓扑**（`fabric.net_topology`，上行收敛比 r = 下行 : 上行，spine 非阻塞）：
+- **fat_tree**：一个 leaf 下 m 个整节点。
+- **rail**：每节点第 j 张 NIC 接第 j 个 rail 交换机，每个 rail 交换机下 m 个节点。跨 rail 的流量先走节点内 scale-up（PXN）：all-to-all 网络字节中的 (k₂ − 1)/k₂ 也计入 scale-up 层。
+- **默认 m**：由交换机端口数推出，下行端口 = radix·r/(1+r)；fat_tree 为 下行 // node_cards，rail 为 下行。radix 64 时 fat_tree 每 leaf 4 / 5 / 6 节点（r = 1 / 2 / 4，每节点 8 卡），rail 每交换机 32 节点。
+- **收敛惩罚**：SPMD 下 leaf 内所有卡同时通信，所以每卡离开 leaf 的流量份额 f 以 β/r 走上行，网络层 β 除以 max(1, r·f)：
+  - ring：f = 1/m（每个 leaf 只有一条环边出 leaf）；
+  - tree：f = NCCL 二叉树（`ncclGetBtree`）里跨 leaf 的边 / (n₂ − 1)；
+  - all-to-all：f = (n₂ − m)/(n₂ − 1)；
+  - 网内归约：f = 0（在 leaf 内先聚合）；
+  - PP 交接跨 leaf：r；
+  - PD KV（随机配对，共 n 节点）：r·(1 − m/n)。
+
+  这一项就是「EP all-to-all 走收敛网络」的争用因子。ring / 分层算法几乎不受收敛影响（r ≤ m 时无影响）；all-to-all 受全额影响。
+
+**争用**：
+- 同一流水级内的 TP / EP / PP 流量在 t_link 中逐项相加（0.50 起就是如此，相当于完全争用、不重叠）。
+- 并发的组（DP 副本、EP 组）共享上行，按上面的 f 计。
+- PD KV 传输与两池自身的集合通信共用 NIC：KV 可用 β × (1 − u_c)，u_c 为两池最忙流水级上该层的占用率（字节 / β / 级时间，上限 0.95）。另外报告集合通信被 KV 流量拖慢的倍数 1/(1 − u_kv)，但不回灌进 TPOT。
+
+**网内归约**（`fabric.innet_reduce`，厂商选项「假设」）：
+- net：跨节点交换机聚合（SHARP / CollNet 类）；
+- net+link：另含交换式 scale-up 上的聚合（NVLS 类，只在 topology = switch 时生效）。
+- 只用于 allreduce 的 hier 顶层。
+
+**手算对照**（`tests/test_core_059.py`）：单节点 8 卡 ring = 2·7/8·B/β、14 步；2 节点 × 8 的 ring、tree、hier 三种公式；NCCL `ncclGetBtree` 的父节点表（n = 8：−1, 2, 4, 2, 0, 6, 4, 6）；EP all-to-all 4 节点、每 leaf 1 节点时网络时间 × r；rail PXN；full mesh 上 TP2 为 7×；SHARP 的 b/β。
+
+**例子**（1P + HBM3e，8 卡 / 节点，网络 50 GB/s / 卡）：
+- **A. DeepSeek-V3 DP64·EP64（8 节点）**：
+  - prefill b64：拓扑模型关时步 707.7 ms（MAC 绑定，link 476.9 ms）。
+  - 默认推导的 leaf（radix 64，r = 1 / 2 / 4 → 每 leaf 4 / 5 / 6 节点）下，r = 4 时 link 545 ms，步不变。
+  - 每 leaf 2 节点：r = 2 → 818 ms，r = 4 → 1636 ms（变为 LINK 绑定，2.3×）。每 leaf 1 节点：955 / 1909 ms。
+  - rail 用默认推导的规模（每交换机 32+ 节点）时 8 节点全在一个 rail 域内，不受收敛影响。
+  - decode b512（7.7 ms，MAC 绑定）：link 0.93 → 3.73 ms（每 leaf 1 节点、r = 4），仍被计算掩盖。
+- **B. qwen3-32b TP16（2 节点）decode b64**：拓扑模型关 20.84 ms；ring 22.92、tree 22.43、hier 21.85 ms，auto 取 hier。增加的部分来自每步时延（ring 30 步）。
+- **C. 单节点 8 卡 TP2·PP4 prefill 的 link 时间**：switch 6.7 ms；ring 13.4（链，2×）；torus 4×2 26.8（行内部分跨度，4×）；full mesh 47.0（7×）。都被计算掩盖。TP8：torus 4×2 为 4/3×，其余为 1×。
+- **D. TP16 跨 2 节点 prefill，每 leaf 1 节点、r = 4**：link 617 ms；开网内归约（hier + SHARP 顶层）295 ms。r = 1 时 ring（201 ms）比 hier + SHARP 好。
+- **E. PD KV（qwen3-30b-a3b，32 + 32 卡，4 节点 × 16 卡）**：每 leaf 1 节点时，r = 2 / 4 → KV 4.0 → 6.0 / 12.1 ms（β 50 → 33 / 17 GB/s）。KV 不是瓶颈，goodput 不变。
+
+**剩余缺口**：
+- auto 不考虑与计算重叠；
+- 不同层（D2D / scale-up / 网络）的流量在 t_link 中相加，而不是按物理端口并行取最大；
+- ring / torus 上的 PP 交接不计多跳；
+- 树的切边只用第一棵树；
+- 不建模协议（LL / LL128 / Simple）、通道数上限和小消息带宽折损（NCCL 的 treeCorrectionFactor / 平台期）；
+- KV 对集合通信的拖慢只报告、不回灌；
+- spine 视为非阻塞（三层 fat-tree、spine 收敛未建模）；
+- 拥塞控制、ECMP 哈希冲突、incast 未建模；
+- 网内归约只用于 allreduce（reduce-scatter / allgather 的 NVLS 未建模）。

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 
 from .dtypes import FormatSupport
 from .d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS, d2d_GBps
-from .hardware import CHIPS, D2D_DEFAULT, NET_DEFAULT, Chip, Link
+from .hardware import CHIPS, D2D_DEFAULT, NET_DEFAULT, Chip, Fabric, Link
 from .mapping import ORGS
 from .parallel import Layout
 
@@ -295,6 +295,7 @@ class Scenario:
     net: Link = NET_DEFAULT                              # cross-node scale-out (IB / RoCEv2 class) 「假设」
     node_cards: int = 0                                  # cards per node; 0 = one node (cross-node tier unused)
     pd: PDConfig = PDConfig()                            # prefill / decode disaggregation (0.50; off = colocated)
+    fabric: Fabric = Fabric()                            # topology-aware collectives (0.59; off = 0.50 α-β tiers) 「假设」
 
     def __post_init__(self):
         if self.mapping not in ORGS:
