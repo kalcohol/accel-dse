@@ -69,7 +69,8 @@ def test_dap_layouts_latency_and_memory():
     af = [evaluate(Scenario(model="alphafold2", mem_id=HBM, layout=Layout(sp=d))).latency for d in (1, 8)]
     px = [evaluate(Scenario(model="protenix", mem_id=HBM, layout=Layout(sp=d),
                             workload=Workload(sample_split=False))).latency for d in (1, 8)]
-    assert af[0] / af[1] > 6 and px[0] / px[1] < 3
+    # 0.61.3: Protenix 3.2× (was < 3) — the per-sample pair-bias projections it adds are DAP-split pair work
+    assert af[0] / af[1] > 6 and px[0] / px[1] < 4
     try:
         evaluate(Scenario(model="alphafold2", mem_id=HBM, layout=Layout(tp=2)))
         raise AssertionError("TP accepted")

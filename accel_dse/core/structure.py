@@ -24,8 +24,14 @@ from dataclasses import dataclass, replace
 from .model import AttnCore, Ffn, Layer, Linear, ModelSpec, PairCore, RoleFormat
 
 # ------------------------------------------------------------------ rows of a weight GEMM (first match wins)
-_ATOM_PAIR = re.compile(r"(pair_bias_attn\.proj_z|attention_pair_bias\.linear_nobias_z|embed_atompair|c_to_p_trans|"
-                        r"p_mlp|small_mlp|z_to_p_trans|linear_no_bias_(d|invd|v|cl|cm|z)\b)")
+_ATOM_PAIR = re.compile(r"(pair_bias_attn\.proj_z|attention_pair_bias\.linear_nobias_z|embed_atompair|"
+                        r"p_mlp|small_mlp|linear_no_bias_(d|invd|v)\b)")
+# 0.61.3: projections that feed the atom-pair blocks but run on a coarser grid before the broadcast — the atom
+# conditioning c → pair (Boltz c_to_p_trans_q/k, Protenix linear_no_bias_cl/cm: one row per atom) and the token pair
+# z → atom pair (Boltz z_to_p_trans, Protenix linear_no_bias_z: one row per token pair); 0.43–0.61.2 ran them on the
+# 32 × 128 atom-pair windows (up to 128× too many rows)
+_ATOM_FROM_C = re.compile(r"(c_to_p_trans|linear_no_bias_(cl|cm)\b)")
+_ATOM_FROM_Z = re.compile(r"(z_to_p_trans|linear_no_bias_z\b)")
 _PAIR = re.compile(r"(tri_mul|tri_att|pair_transition|transition_z|z_transition|outer_product_mean(_msa)?\.(linear_out|proj_o)|"
                    r"relpe|rel_pos|relative_position|linear_relpos|recycling_embedder\.linear|z_recycle|z_cycle|"
                    r"zinit|z_init|token_bond|distogram|linear_no_bias_pae|linear_no_bias_pde|aux_heads\.tm|"
@@ -44,7 +50,15 @@ _MSA = re.compile(r"(msa_att_row|msa_att_col|msa_transition|transition_m\b|outer
 def rows_of(name: str, stack: str) -> str:
     atom = "atom_attention_" in name or "atom_encoder" in name
     if atom:
+        if _ATOM_FROM_Z.search(name):
+            return "pair"
+        if _ATOM_FROM_C.search(name):
+            return "atom"
         return "apair" if _ATOM_PAIR.search(name) else "atom"
+    if "global_attention.linear_q" in name:     # 0.61.3: global column attention — q from the row-mean (N rows)
+        return "res"
+    if "template_angle_embedder" in name:      # 0.61.3: one row per template residue (T × N)
+        return "tres"
     if _TMPL.search(name):
         return "tmpl"
     if _PAIR.search(name):
@@ -296,7 +310,7 @@ def build_alphafold2(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
     c = rel["config"]
     pl, _ = layers_from(rel, _af2_groups(c), {"c_hidden_msa_att": c["c_hidden_msa_att"]})
     msa = c["max_msa_clusters"] - c["max_templates"]
-    wl = _apply_defaults(wl, msa=msa, xmsa=c["max_extra_msa"], templates=c["max_templates"],
+    wl = _apply_defaults(wl, msa=msa, xmsa=c["max_extra_msa"], templates=c["max_templates"], tmpl_msa=True,
                          recycles=c["max_recycling_iters"] + 1, pair_dim=c["c_z"])
     notes = [f"官方 JAX 参数 params_model_1_ptm（alphafold_params_2022-12-06.tar，CC BY 4.0）：Evoformer "
              f"{rel['stacks']['evoformer.blocks']} 块（MSA {c['c_m']} 维 / pair {c['c_z']} 维）+ extra MSA 栈 "
@@ -307,7 +321,7 @@ def build_alphafold2(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
              "MSA 行数按上限计「假设」（浅 MSA 更快）",
              "monomer 预设跑 5 个模型（model_1…5_ptm）各一次：这里评估单个模型的一次预测；5 模型 ≈ 5 倍（model_3–5 "
              "无模板，略少）",
-             "模板扭转角嵌入按每残基一行计（实际 T × N 行，量很小）；IPA 几何运算同 ESMFold 的近似；subbatch / "
+             "模板扭转角嵌入每个模板残基一行（T × N 行），其输出拼接到 MSA 表示上、随 MSA 跑完 Evoformer 全部块（MSA 网格 = 聚类行 + T）；IPA 几何运算同 ESMFold 的近似；subbatch / "
              "全局分块只降低峰值显存"]
     reasons = ["只评估神经网络推理：MSA / 模板检索（jackhmmer / HHblits 数据库搜索，CPU）与特征化未建模；AMBER 松弛未建模"]
     return _spec(model_id, hf_id, rel, "AlphaFold 2（Evoformer + 结构模块，官方 JAX 参数）", c["c_s"], pl, wl, notes,
@@ -323,7 +337,7 @@ def build_openfold(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
               Group("aux_heads.", "heads"),
               Group("", "embed", "recycle")]
     pl, _ = layers_from(rel, groups, {"c_hidden_msa_att": c["c_hidden_msa_att"]})
-    wl = _apply_defaults(wl, msa=c["max_msa_clusters"], xmsa=c["max_extra_msa"], templates=c["max_templates"],
+    wl = _apply_defaults(wl, msa=c["max_msa_clusters"], xmsa=c["max_extra_msa"], templates=c["max_templates"], tmpl_msa=True,
                          recycles=c["max_recycling_iters"] + 1, pair_dim=c["c_z"])
     notes = [f"AF2 架构（OpenFold 复现权重 finetuning_ptm_2）：Evoformer {rel['stacks']['evoformer.blocks']} 块（MSA {c['c_m']} 维 / "
              f"pair {c['c_z']} 维）+ extra MSA 栈 {rel['stacks']['extra_msa_stack.blocks']} 块（全局列注意力）+ 模板 pair 栈 "
@@ -331,7 +345,7 @@ def build_openfold(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
              f"默认：MSA 聚类 {c['max_msa_clusters']} 行、extra MSA {c['max_extra_msa']} 行、模板 {c['max_templates']} 个"
              f"（data.predict）；recycle {c['max_recycling_iters']} 次 → 主干 {c['max_recycling_iters'] + 1} 遍（嵌入、模板、"
              "extra MSA、Evoformer、结构模块每遍都重跑）；MSA 行数按上限计「假设」（浅 MSA 更快）",
-             "模板扭转角嵌入按每残基一行计（实际 T × N 行，量很小）；IPA 几何运算同 ESMFold 的近似"]
+             "模板扭转角嵌入每个模板残基一行（T × N 行），其输出拼接到 MSA 表示上、随 MSA 跑完 Evoformer 全部块（MSA 网格 = 聚类行 + T）；IPA 几何运算同 ESMFold 的近似"]
     reasons = ["只评估神经网络推理：MSA / 模板检索（jackhmmer / HHblits 数据库搜索，CPU）与特征化未建模；AMBER 松弛未建模"]
     return _spec(model_id, hf_id, rel, "AF2 架构（Evoformer + 结构模块，OpenFold 权重）", c["c_s"], pl, wl, notes, reasons,
                  "openfold")
@@ -346,6 +360,31 @@ def _af3_groups(pfx: dict) -> list[Group]:
     for prefix, stack, rep, smp, skip in pfx["rest"]:
         out.append(Group(prefix, stack, rep, samples=smp, skip=skip))
     return out
+
+
+_BOLTZ_CACHED = re.compile(r"(pairwise_conditioner|pair_bias_attn\.proj_z|atom_attention_encoder\.(embed_atom_features|"
+                           r"embed_atompair_|s_to_c_trans|z_to_p_trans|c_to_p_trans_[qk]|p_mlp))")
+
+
+def _hoist_step_cache(layers: list[Layer], cached: re.Pattern) -> list[Layer]:
+    """0.61.3: the diffusion module's step-invariant work (Boltz-1 ``use_inference_model_cache``, on by default in
+    ``boltz predict``: pair conditioning, every layer's pair-bias projection, the atom encoder's pair / conditioning
+    features) runs on the first sampler step only and is reused afterwards.  Those weight GEMMs move out of the
+    per-step diffusion layers into one ``diff_cache`` layer that runs once per request (independent of the
+    samples, which only enter after the cache).  Parameters are unchanged (the linears move, nothing is added)."""
+    once, out, first = [], [], None
+    for L in layers:
+        moved = [l for l in L.pair_linears if L.repeat == "diff" and cached.search(l.name)]
+        if not moved:
+            out.append(L)
+            continue
+        first = len(out) if first is None else first
+        once += [replace(l, name=f"{L.stack}.{l.name}") for l in moved]
+        out.append(replace(L, pair_linears=tuple(l for l in L.pair_linears if l not in moved)))
+    if first is None:
+        return layers
+    return out[:first] + [Layer((), AttnCore("none"), Ffn("none"), (), 0, pair_linears=tuple(once), misc_role="pair",
+                                stack="diff_cache")] + out[first:]
 
 
 def build_boltz1(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
@@ -373,6 +412,7 @@ def build_boltz1(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
                     ("distogram_module.", "heads", "", "", False),
                     ("", "embed", "", "", False)]}
     pl, _ = layers_from(rel, _af3_groups(pfx), {"win": win})
+    pl = _hoist_step_cache(pl, _BOLTZ_CACHED)
     wl = _apply_defaults(wl, msa=c["max_msa_seqs"], recycles=c["recycling_steps"] + 1, diff_steps=c["sampling_steps"],
                          samples=c["diffusion_samples"], pair_dim=hp["token_z"])
     notes = [f"AF3 类架构：MSA 模块 {rel['stacks']['msa_module.layers']} 块（pair 加权平均）+ Pairformer "
@@ -383,7 +423,9 @@ def build_boltz1(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
              "（按上限计「假设」）",
              f"置信度模块模仿主干（confidence_imitate_trunk：自带 MSA 模块 + {rel['stacks']['confidence_module.pairformer_module.layers']} "
              "块 Pairformer），每个样本跑一遍",
-             "扩散模块按参考算法每步计算 pair 条件与每层 pair 偏置（与样本无关、可跨步缓存，未作为优化建模）；原子数 = 残基 × "
+             "boltz predict 默认开启推理缓存（use_inference_model_cache）：pair 条件、每层 pair 偏置投影与原子编码器的原子对 / "
+             "条件特征只在第一步计算、之后各步复用（diff_cache，每请求一次）；参考实现的 k / v 投影在重叠的 128 原子键窗口上算"
+             "（4 倍行）、键窗口用稠密索引矩阵收集（各约占每步 1.4 %），这里按每原子一行计、收集不计（每步比参考计数少约 3 %）；原子数 = 残基 × "
              f"{wl.atoms_per_res:g}「假设」（仅蛋白质重原子）；原子级输入 / 输出投影按原子行计（部分实为 token 行，量很小）"]
     reasons = ["只评估神经网络推理：MSA 检索（MMseqs2 服务器）与特征化 / 分子预处理未建模"]
     return _spec(model_id, hf_id, rel, "Boltz-1（AF3 类：MSA 模块 + Pairformer + 扩散）", hp["token_s"], pl, wl, notes,
@@ -415,6 +457,12 @@ def build_protenix(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
                     ("distogram_head.", "heads", "", "", False),
                     ("", "embed", "", "", False)]}
     pl, _ = layers_from(rel, _af3_groups(pfx), {"win": win})
+    # 0.61.3: Protenix expands the pair conditioning over the N_sample axis before the diffusion transformer
+    # (DiffusionModule.f_forward: expand_at_dim(z_pair, dim=-4, n=N_sample)), so each block's pair-bias projection and
+    # the atom encoder's z → atom-pair projection run once per sample (Boltz-1 projects first and repeats after)
+    pl = [replace(L, pair_linears=tuple(replace(l, rows="spair") if l.rows == "pair" and l.name.endswith(
+              ("attention_pair_bias.linear_nobias_z", "atom_attention_encoder.linear_no_bias_z")) else l
+              for l in L.pair_linears)) if L.repeat == "diff" else L for L in pl]
     wl = _apply_defaults(wl, msa=c["msa_sample_cutoff_test"], recycles=c["N_cycle"], diff_steps=c["N_step"],
                          samples=c["N_sample"], pair_dim=c["c_z"])
     notes = [f"AF3 复现（v0.5.0）：MSA 模块 {c['msa_blocks']} 块 + Pairformer {c['pairformer_blocks']} 块（每个 cycle 重跑）+ "
@@ -423,8 +471,9 @@ def build_protenix(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
              f"默认（configs_base / configs_data）：N_cycle {c['N_cycle']}、N_step {c['N_step']}、N_sample {c['N_sample']}"
              f"（样本批量并行）、MSA 采样 {c['msa_sample_cutoff_test']} 行（按上限计「假设」）；模板关闭（template_embedder "
              "权重只计存储）",
-             "扩散模块按参考算法每步计算 pair 条件与每层 pair 偏置（与样本无关、可跨步缓存，未作为优化建模）；原子数 = 残基 × "
-             f"{wl.atoms_per_res:g}「假设」（仅蛋白质重原子）；原子级输入 / 输出投影按原子行计（部分实为 token 行，量很小）"]
+             "扩散模块按参考实现每步重算 pair 条件（v0.5.0 无跨步缓存），并把 pair 条件沿样本轴展开：每层 pair 偏置投影与原子编码器的 "
+             "z → 原子对投影每个样本各算一次；原子数 = 残基 × "
+             f"{wl.atoms_per_res:g}「假设」（仅蛋白质重原子）；原子级输入 / 输出投影按原子行计（部分实为 token 行；每步比参考计数多约 0.6 %）"]
     reasons = ["只评估神经网络推理：MSA 检索与特征化 / 分子预处理未建模"]
     return _spec(model_id, hf_id, rel, "Protenix（AF3 复现：MSA 模块 + Pairformer + 扩散）", c["c_s"], pl, wl, notes,
                  reasons, "protenix")

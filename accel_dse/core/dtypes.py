@@ -62,6 +62,17 @@ class FormatSupport:
     rates: tuple[tuple[str, float], ...] = (("bf16", 1.0), ("fp16", 1.0), ("fp8", 2.0), ("int8", 2.0))
     dequant_elems_per_cycle: float | None = None
 
+    def __post_init__(self):
+        # 0.61.3: rates as (str, float) so equal chips serialise / hash identically (["fp8", 2] vs ["fp8", 2.0])
+        try:
+            rs = tuple((str(n), float(r)) for n, r in self.rates)
+        except (TypeError, ValueError):
+            return          # left for the scenario validation to report
+        object.__setattr__(self, "rates", rs)
+        d = self.dequant_elems_per_cycle
+        if isinstance(d, int) and not isinstance(d, bool):
+            object.__setattr__(self, "dequant_elems_per_cycle", float(d))
+
     def rate(self, name: str) -> float | None:
         base = "fp8" if name.startswith("fp8") else name
         for n, r in self.rates:

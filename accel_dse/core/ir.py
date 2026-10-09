@@ -509,16 +509,18 @@ def layer_repeat(L: Layer, ph: Phase) -> int:
 def _pair_rows(tag: str, pd: PairDims, b: int, s: int, ps: int, dap: int = 1) -> int:
     """Rows of a structure-model GEMM on one rank; ``s`` multiplies token / atom grids, ``ps`` the pair / MSA grids
     (per-sample pair copies).  DAP (0.45): the pair / template grids are split along their first residue axis and
-    the MSA grids along one axis over ``dap`` ranks; token / atom grids are replicated."""
+    the MSA grids along one axis over ``dap`` ranks; token / atom grids are replicated.  ``spair`` (0.61.3, Protenix
+    diffusion: the pair conditioning expanded over the samples) = one pair grid per diffusion sample, DAP-split along
+    residues for all samples (the samples a rank owns under ``sample_split`` still need every sample's slice)."""
     n = pd.n
     nd = _cdiv(n, dap)
     return {"res": b * s * n, "tok": b * s * n, "seq": b * s, "pair": b * ps * nd * n,
             "msa": b * ps * _cdiv(pd.msa, dap) * n, "xmsa": b * ps * _cdiv(pd.xmsa, dap) * n,
-            "tmpl": b * pd.tmpl * nd * n, "atom": b * s * pd.atoms,
+            "tmpl": b * pd.tmpl * nd * n, "tres": b * pd.tmpl * n, "spair": b * pd.samples * nd * n, "atom": b * s * pd.atoms,
             "apair": b * s * _cdiv(pd.atoms, 32) * 32 * 128}[tag]
 
 
-_DAP_SPLIT = frozenset({"pair", "msa", "xmsa", "tmpl"})
+_DAP_SPLIT = frozenset({"pair", "spair", "msa", "xmsa", "tmpl"})
 
 
 def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int, s: int, ps: int,

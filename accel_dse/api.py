@@ -303,6 +303,7 @@ def _flag_rows(dicts: list[dict], results: list, body: dict) -> list[dict]:
 def api_eval(body: dict) -> dict:
     scn = scenario_from_body(body)
     bud = _budget(body)
+    bb = None
     if body.get("best_batch"):
         bb = best_batch(scn)
         if bb.batch:
@@ -313,6 +314,8 @@ def api_eval(body: dict) -> dict:
     except ValueError as e:
         raise ApiError(str(e)) from None
     out = result_dict(r, with_goodput=bool(body.get("goodput", True)))
+    if bb is not None and not bb.batch:     # 0.61.3: say so instead of silently evaluating the entered batch
+        out["summary"]["warnings"].append(f"最佳 batch：没有既放得下又满足 SLO 的 batch，按输入的 batch {scn.serving.batch} 评估")
     out["energy"] = energy_report(r, table)      # 0.47.1: action counts always; J only for user-supplied entries
     if bud is not None:
         out["budget"] = budget_report(r, bud, out["energy"])
@@ -323,6 +326,12 @@ def api_eval(body: dict) -> dict:
             out["pd"] = disagg_report(scn, r, _energy_table(body))
         except ValueError as e:
             out["pd"] = {"error": str(e)}
+        if bud is not None and bud.provided:
+            # 0.61.3: the budget rows check the colocated (decode) configuration above; the PD prefill pool's chip /
+            # layout is not re-checked — say so instead of implying the whole PD deployment is within budget
+            out["budget"]["scope_note"] = ("预算只核对合并部署这一配置（芯片 " + scn.chip.name + "、" + scn.layout.label
+                                           + "）；PD prefill 池" + ("（异构芯片）" if scn.pd.prefill_chip is not None else "")
+                                           + "的芯片 / 布局未核对")
     return out
 
 

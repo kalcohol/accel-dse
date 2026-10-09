@@ -77,7 +77,8 @@ class Inert:
 
 
 class Tensor:
-    def __init__(self, dtype, shape): self.dtype, self.shape = dtype, list(shape)
+    def __init__(self, dtype, shape, key=None, offset=0):
+        self.dtype, self.shape, self.key, self.offset = dtype, list(shape), key, offset
 
 
 class DType:
@@ -85,7 +86,18 @@ class DType:
 
 
 def _rebuild(storage, offset, size, stride, *rest):
-    return Tensor(storage[0], size)
+    return Tensor(storage[0], size, storage[1], offset)
+
+
+def dedup_aliases(tensors: dict) -> tuple[dict, list]:
+    """0.61.3: one storage view saved under several names (a module registered twice, e.g. Boltz-1's
+    ``output_projection_linear`` that is also ``output_projection[0]``) is one tensor: keep the lexicographically
+    first name of each (storage, offset, shape) group, report the dropped aliases."""
+    groups: dict = {}
+    for k, t in tensors.items():
+        groups.setdefault((t.key, t.offset, tuple(t.shape), t.dtype), []).append(k)
+    dropped = sorted(k for v in groups.values() if len(v) > 1 for k in sorted(v)[1:])
+    return {k: t for k, t in tensors.items() if k not in set(dropped)}, dropped
 
 
 def _rebuild_param(t, *rest):
@@ -159,10 +171,11 @@ def read(url: str):
 def main():
     url, out = sys.argv[1], sys.argv[2]
     obj, f = read(url)
-    tensors = _walk_state(obj)
+    tensors, dropped = dedup_aliases(_walk_state(obj))
     hdr = {k: {"dtype": t.dtype, "shape": t.shape} for k, t in tensors.items()}
-    json.dump({"url": url, "size": f.size, "tensors": hdr}, open(out, "w"), indent=0)
-    print(f"{len(hdr)} tensors, file {f.size / 1e9:.2f} GB, fetched {f.fetched / 1e6:.1f} MB")
+    json.dump({"url": url, "size": f.size, "tensors": hdr, "aliases_dropped": dropped}, open(out, "w"), indent=0)
+    print(f"{len(hdr)} tensors ({len(dropped)} aliases dropped), file {f.size / 1e9:.2f} GB, "
+          f"fetched {f.fetched / 1e6:.1f} MB")
     if "--hparams" in sys.argv:
         hp = obj.get("hyper_parameters") if isinstance(obj, dict) else None
         json.dump(_plain(hp), open(sys.argv[sys.argv.index("--hparams") + 1], "w"), indent=1, default=str)

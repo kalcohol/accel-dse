@@ -191,6 +191,7 @@ class _Fam:
     attn: str = ""                      # frame | 3d | ""
     attn_dim: int = 0
     chunk: str = "frame"                # activation-peak chunk: frame (latent frame) | cog2 | whole | tile
+    shift: tuple = ()                   # (tensor substring, k): those tensors' captured index + k is their block
 
 
 _TAIL = ("conv_out", "norm_out", "block_out", "proj_out", "conv_post", "conv_norm_out")
@@ -208,8 +209,11 @@ FAMILIES = {
                 post=("resnets",), chunk="whole"),
     "mochi": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2), {0: (3, 2), 1: (2, 2), 2: (1, 2)}, pre=(".proj.",)),
     # Open-Sora VAE v1.2: temporal VAE (MAGVIT-v2 style, at latent spatial size) then the SD-VAE 2-D decoder per frame
+    # 0.61.3: Decoder.forward runs conv_blocks[i − 1] at the end of block i (before its depth-to-space), so
+    # conv_blocks.k belongs to block k + 1 at that block's input resolution (0.44–0.61.2 keyed it to block k:
+    # conv_blocks.2 / .1 at twice their frame count, temporal decode +8.9 %)
     "os_t": _Fam(r"(?:block_res_blocks|conv_blocks)\.(\d+)\.", (3, 2, 1, 0), {3: (2, 1), 2: (2, 1)},
-                 pre=("conv_blocks",), trule="double", chunk="whole"),
+                 pre=("conv_blocks",), trule="double", chunk="whole", shift=("conv_blocks", 1)),
     "os_s": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (1, 2), 1: (1, 2), 2: (1, 2)}, attn="frame",
                  attn_dim=512),
 }
@@ -245,8 +249,9 @@ def _conv_walk(tensors: dict, prefix: str, fam: _Fam, lat: tuple[int, int, int],
         if "norm" in name and "conv" not in name:
             continue
         mm = bre.search(name)
-        if mm and int(mm.group(1)) in pre_res:
-            i = int(mm.group(1))
+        bi = int(mm.group(1)) + (fam.shift[1] if fam.shift and fam.shift[0] in name else 0) if mm else -1
+        if mm and bi in pre_res:
+            i = bi
             up = any(u in name for u in _UPS)
             r = post_res[i] if (up and not any(p in name for p in fam.pre)) or any(p in name for p in fam.post) \
                 else pre_res[i]

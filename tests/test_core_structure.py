@@ -43,7 +43,8 @@ def test_params_exact_coverage_and_dtype():
         assert lb["coverage"] == "partial" and any("MSA" in r for r in lb["coverage_reasons"]), mid
         assert lb["dtype"] == "W fp32 · A bf16", mid
     assert get_model("alphafold2").release_params == 93_237_338 == get_model("openfold").release_params
-    assert round(get_model("boltz-1").release_params / 1e6, 3) == 606.382
+    # 0.61.3: 72 aliased tensors (output_projection_linear ≡ output_projection.0) and 9 callback scalars dropped
+    assert round(get_model("boltz-1").release_params / 1e6, 3) == 592.009
     assert round(get_model("protenix").release_params / 1e6, 3) == 368.088
 
 

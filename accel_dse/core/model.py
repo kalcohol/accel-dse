@@ -275,6 +275,8 @@ class NativeWorkload:
     msa: int = 0                   # structure models (0.43): MSA rows / extra-MSA rows / templates
     xmsa: int = 0
     templates: int = 0
+    tmpl_msa: bool = False         # AF2 / OpenFold (0.61.3): the T template torsion-angle rows are concatenated to the
+                                   # MSA representation and run through every Evoformer block (MSA grid = msa + T)
     atoms_per_res: float = 0.0     # all-atom models: heavy atoms per residue
     recycles: int = 0              # trunk passes (incl. the first)
     diff_steps: int = 0            # diffusion sampler steps

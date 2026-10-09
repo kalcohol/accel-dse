@@ -43,7 +43,9 @@ def test_sample_split_rows_flops_and_latency():
     # end-to-end: Protenix (5 samples) DAP 8 3.3× faster than replicated; Boltz-1 default 1 sample unchanged
     a = evaluate(Scenario(model="protenix", mem_id=HBM, layout=Layout(sp=8), workload=Workload(sample_split=False)))
     b = evaluate(Scenario(model="protenix", mem_id=HBM, layout=Layout(sp=8)))
-    assert b.latency < 0.4 * a.latency
+    # 0.61.3: Protenix's per-sample pair-bias projections are pair-grid work (DAP-split in both modes), so the
+    # split / replicated gap narrowed from < 0.4 to 0.47
+    assert b.latency < 0.5 * a.latency
     assert abs(a.domain_summary()["tflop_per_request"] - b.domain_summary()["tflop_per_request"]) < 1e-6
     c = evaluate(Scenario(model="boltz-1", mem_id=HBM, layout=Layout(sp=8), workload=Workload(sample_split=False)))
     d = evaluate(Scenario(model="boltz-1", mem_id=HBM, layout=Layout(sp=8)))

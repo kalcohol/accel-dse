@@ -3,6 +3,19 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.61.3] - 2026-10-09
+
+第三轮审计：结构模型端到端 FLOPs 对独立计数（OpenFold / AF2 / Boltz-1 / Protenix 发布实现的 FlopCounterMode 计数）、Open-Sora VAE、DES 新场景不变量、PD 能耗与预算、前两轮修正的回归，以及芯片预设、SLC、dtype、场景哈希、CLI 与 README 示例。
+
+### 修正（见建模说明 §19.12）
+- **AF2 / OpenFold**：模板扭转角行并入 MSA 网格（参考实现拼接 T 行），扭转角嵌入按 T × N 行，OpenFold 全局列注意力 q 按行均值。默认 396 → 398 / 354 → 355 TFLOP，与参考计数相差 ≤ 0.02 %。
+- **Boltz-1**：推理缓存（pair 条件、每层 pair 偏置投影、原子编码器特征只算一次），检查点别名张量去重。默认 296 → 262 TFLOP，批延迟 13.05 → 7.94 s；参数 606.38 M → 592.01 M。
+- **Protenix**：扩散 transformer 的 pair 偏置按样本计（参考实现沿样本展开 z），原子编码器投影按原子 / pair 行。默认 419 → 434 TFLOP，批延迟 19.33 → 27.86 s。
+- **Open-Sora VAE**：时间解码器 conv_blocks 按上采样前的分辨率。1158 → 1140 TFLOP。
+- **冷存储**（查表 embedding、待机专家）不再占 SRAM / SLC 驻留；SLC pin 例 20.8 → 20.0 ms。
+- **PD 能耗**计入 recompute 的重算 prefill 与 swap 的 DRAM 读写。
+- PD 开启时预算报告注明范围；最佳 batch 无解时警告，CLI 显示 TPOT SLO；格式速率 int / float 哈希一致。
+
 ## [0.61.2] - 2026-10-09
 
 第二轮对抗式审计：PD 排队 / DES 数学（小规模精确算例、Lindley 模拟、不变量），VAE 解码与结构模型端到端 FLOPs 对独立计数（torch FlopCounterMode 跑 diffusers / transformers 模块），能耗与预算，radix 前缀缓存，HBM 几何，非默认映射，MoE 倾斜与 Wan2.2 待机专家，视频 / 蛋白非默认布局，界面竞态（脚本化浏览器），HF 发布 config 现网复核。

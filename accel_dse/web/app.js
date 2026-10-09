@@ -853,6 +853,7 @@ function renderBudget(r) {
     h('td', { class: 'l small' }, i.note || '')));
   if (b.area && b.area.mm2 !== null) rows.push(h('tr', {}, h('td', { class: 'l' }, '面积代理分项'), h('td', { colspan: 5, class: 'l small' },
     Object.entries(b.area.terms).map(([k, v]) => `${{ sram: 'SRAM', slc: 'SLC', mac: 'MAC 阵列', fixed: '固定' }[k] || k} ${num(v)} mm²`).join(' + ') + ` = ${num(b.area.mm2)} mm² / 卡「假设」`)));
+  if (b.scope_note) rows.push(h('tr', {}, h('td', { class: 'l' }, '范围'), h('td', { colspan: 5, class: 'l small' }, b.scope_note)));
   put($('budget-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
 }
 function renderStages(r) {

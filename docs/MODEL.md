@@ -63,7 +63,7 @@
 
 ## 5. 存储规划
 
-- staging = `max(2 MiB, 2 × 最大激活)`；其余 SRAM 依次驻留热权重（每步都读）、专家与冷 embedding 表，剩余容量放 KV / 线性注意力状态。
+- staging = `max(2 MiB, 2 × 最大激活)`；其余 SRAM 依次驻留热权重（每步都读）、专家，剩余容量放 KV / 线性注意力状态；冷存储（按行查表的 embedding 表、Wan2.2 待机专家、不用的 io 表）不驻留（0.61.3 前与专家一起驻留，白占 SRAM / SLC）。
 - 每步 DRAM 流量 = 未驻留的被触及权重 + KV 读（未驻留部分）+ KV 写 + 状态 + 查表行。
 - DRAM 需求 = 存储权重 + KV + 状态 + 1 GiB 预留；按最重 stage 与存储器容量比较，超出给出警告。
 - 可选系统级缓存（SLC，0.48，默认无）位于 SRAM 与 DRAM 之间，见 §14。
@@ -182,7 +182,7 @@ ESM-2 3B 的 main 分支只有 `pytorch_model.bin`；参数取自同仓库 `refs
 | `hunyuanvideo` | LLaVA-Llama-3-8B 文本塔 15.01 GB + CLIP-L 文本塔 0.25 GB fp16 | 4.9 TFLOP / 0.06 s | 3D VAE 0.99 GB fp32（tiling） | 4766 TFLOP / 221 s | 6928 s → 7149 s（+3.2%） |
 | `ltx-video` | T5 v1.1 XXL 19.05 GB fp32 | 2.4 TFLOP / 0.03 s | LTX VAE 1.68 GB fp32 | 50.5 TFLOP / 2.7 s（0.61.2 更正，原 15.4 / 0.7 s） | 49.5 s → 52.2 s（+5.4%） |
 | `mochi-1` | T5 v1.1 XXL 19.05 GB fp32 | 4.8 TFLOP / 0.06 s | AsymmVAE 1.84 GB fp32 | 1053 TFLOP / 42.5 s | 2433 s → 2475 s（+1.7%） |
-| `opensora-stdit3` | DeepFloyd T5 v1.1 XXL 19.05 GB fp32 | 2.8 TFLOP / 0.03 s | Open-Sora VAE v1.2 1.57 GB fp32 | 1158 TFLOP / 39.9 s | 244 s → 284 s（+16.4%） |
+| `opensora-stdit3` | DeepFloyd T5 v1.1 XXL 19.05 GB fp32 | 2.8 TFLOP / 0.03 s | Open-Sora VAE v1.2 1.57 GB fp32 | 1140 TFLOP / 39.6 s（0.61.3 更正，原 1158 / 39.9 s） | 244 s → 284 s（+16.2%） |
 | `minimax-h3` | Qwen3-VL 文本塔 66.71 GB bf16 | 32.2 TFLOP / 0.37 s | ViT 视频解码器 10.42 GB + 音频 VAE 0.61 GB fp32（按发布分块） | 1893 TFLOP / 24.4 s | 1913 s → 1937 s（+1.3%） |
 
 **文本编码器**：文本 transformer 的每个头部 GEMM 按 `M = 提示数 × 补齐后的 token 数`；注意力核 T5 / umT5 为双向，Llama / Qwen / CLIP 文本塔为 causal。token 数按参考实现的补齐长度：Wan 512、CogVideoX 226、HunyuanVideo Llama 351（模板 95 + 256）与 CLIP 77、LTX 128、Mochi 256、Open-Sora 300、H3 512「假设」。提示数 = batch × CFG（参考实现为 uncond 分支编码负向 / 空提示），Open-Sora（学习到的 null 嵌入）与 guidance 蒸馏模型（HunyuanVideo、H3）为 batch。HunyuanVideo 取倒数第 3 层、H3 取第 50 层隐状态，但参考前向跑满全部层：按全部层计。H3 的 text_encoder 带视觉塔（0.60B）与 lm_head（0.78B），随 pipeline 加载计入存储、不计算。DeepFloyd T5 只有 `.bin`：形状用同构的 T5 v1.1 XXL（CogVideoX 头），dtype 由文件总大小判定为 fp32。
@@ -242,7 +242,7 @@ ESM-2 3B 的 main 分支只有 `pytorch_model.bin`；参数取自同仓库 `refs
 | `esmfold` | facebook/esmfold_v1（`pytorch_model.bin`） | 3.528B（ESM-2 3B 2.84B + 折叠部分 0.69B） | ESM-2 fp16、折叠部分 fp32 | 512 残基，单序列，主干 4 遍（num_recycles=None → 循环 max_recycles = 4 次，含首遍；0.61.2 更正，原 5 遍） | 完整 |
 | `alphafold2` | google-deepmind/alphafold（`alphafold_params_2022-12-06.tar` → `params_model_1_ptm.npz`，CC BY 4.0） | 93.24M | fp32 | 512 残基；MSA 聚类 508 行（512 − 4 模板）、extra MSA 5120 行、模板 4；主干 4 遍 | 部分 |
 | `openfold` | aqlaboratory/openfold（`finetuning_ptm_2.pt`） | 93.24M | fp32 | 512 残基；MSA 512 行、extra MSA 1024 行、模板 4；主干 4 遍 | 部分 |
-| `boltz-1` | boltz-community/boltz-1（`boltz1_conf.ckpt`） | 606.38M | fp32 | 512 残基、每残基 8 原子「假设」；MSA 4096 行；主干 4 遍；扩散 200 步 × 1 样本 | 部分 |
+| `boltz-1` | boltz-community/boltz-1（`boltz1_conf.ckpt`） | 592.01M（0.61.3 去掉别名张量与回调标量；原 606.38M） | fp32 | 512 残基、每残基 8 原子「假设」；MSA 4096 行；主干 4 遍；扩散 200 步 × 1 样本 | 部分 |
 | `protenix` | bytedance/Protenix（`model_v0.5.0.pt`） | 368.09M | fp32 | 512 残基、8 原子 / 残基「假设」；MSA 2048 行；主干 4 遍；扩散 200 步 × 5 样本 | 部分 |
 
 覆盖「部分」的原因：只评估神经网络推理——MSA / 模板检索（jackhmmer / HHblits / MMseqs2，CPU 或检索服务）与特征化、AMBER 松弛不在范围内。ESMFold 是单序列模型，没有这些步骤（「完整」）。AlphaFold 2 monomer 预设跑 5 个模型：这里评估一个模型的一次预测。
@@ -280,22 +280,22 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 | 模型 | 批延迟 | 8 卡加速 | 激活常驻（DAP 1 → 8） | 每卡链路字节（DAP 8） |
 |------|------|------|------|------|
 | `esmfold` | 4.58 / 2.32 / 1.20 / 0.64 s | 7.1× | 0.38 → 0.09 GiB | 7.0 GB |
-| `alphafold2` | 14.17 / 7.10 / 3.57 / 1.81 s | 7.8× | 1.63 → 0.25 GiB | 16.3 GB |
-| `openfold` | 12.62 / 6.32 / 3.18 / 1.61 s | 7.8× | 0.69 → 0.16 GiB | 15.0 GB |
-| `boltz-1` | 13.05 / 7.64 / 4.94 / 3.59 s | 3.6× | 2.07 → 1.13 GiB | 15.2 GB |
-| `protenix` | 19.33 / 10.65 / 6.32 / 3.22 s（0.46 样本分卡；0.45 不分卡 14.37 / 11.89 / 10.65 s） | 6.0×（不分卡 1.8×） | 1.63 → 0.40 GiB | 13.4 GB |
+| `alphafold2` | 14.17 / 7.09 / 3.57 / 1.80 s | 7.9× | 1.63 → 0.25 GiB | 16.3 GB |
+| `openfold` | 12.65 / 6.33 / 3.19 / 1.62 s | 7.8× | 0.69 → 0.16 GiB | 15.1 GB |
+| `boltz-1` | 7.94 / 4.55 / 2.87 / 2.03 s（0.61.3 起扩散步缓存；原 13.05 / 7.64 / 4.94 / 3.59 s） | 3.9× | 2.07 → 1.13 GiB | 15.2 GB |
+| `protenix` | 27.86 / 14.55 / 7.91 / 4.02 s（0.61.3 起 pair 偏置按样本算；原 19.33 / 10.65 / 6.32 / 3.22 s；不分样本 16.84 / 11.34 / 8.59 s） | 6.9×（不分样本 3.2×） | 1.63 → 0.40 GiB | 13.4 GB |
 
 主干主导的 AF2 / OpenFold / ESMFold 接近线性；Boltz-1 / Protenix 的 200 步扩散 transformer 在单一 / 原子轨道上，DAP 不切分它。
 
-**扩散样本分卡（0.46，`workload.sample_split`，默认开；Web「DAP 时扩散样本分卡」，CLI `--no-sample-split` 关闭）**：DAP > 1 且样本数 S > 1 时，扩散模块（`samples = "tok"` 的块：原子编码器、扩散 transformer、原子解码器）的 S 条轨迹分到 D 张 DAP 卡，每卡 ⌈S / D⌉ 条——样本之间相互独立，条件（单一表示与 pair 条件）在 DAP 下已在每张卡上，所以这是精确的并行、不增加通信；块内 pair 网格的工作（pair 偏置投影）仍按 DAP 切分，偏置 all-gather 不变；D > S 时多出的卡空闲（`Op.replicated = D·⌈S/D⌉ / S`，请求 FLOPs 不变）。置信度头（`samples = "all"`，每样本一份 pair 副本）仍按 DAP 切 pair、不分样本。参考实现（Boltz、Protenix）没有现成的多卡样本并行，这里作为布局设计选项给出。100T + HBM3E，DAP 1 / 2 / 4 / 8：Protenix（5 样本）19.33 / 10.65 / 6.32 / 3.22 s（6.0×；不分卡为 1.8×）；Boltz-1 默认 1 个样本（`--diffusion_samples` 默认 1）不变（3.6×），取 5 个样本时 DAP 8 为 26.8 → 4.3 s（不分卡 12.6 s）。ESMFold 的 ESM-2 语言模型层在 SP 维上按 Ulysses 切分（与 ESM-2 相同）。批延迟 `T = (mb + PP − 1) × t_stage`，与 ESM-2 相同。「假设」：400 GB/s 链路下通信基本被计算覆盖（链路变慢时会成为瓶颈，可在链路参数里试）；没有可逐项核对的公开 DAP 推理时延，故不加校验行。
+**扩散样本分卡（0.46，`workload.sample_split`，默认开；Web「DAP 时扩散样本分卡」，CLI `--no-sample-split` 关闭）**：DAP > 1 且样本数 S > 1 时，扩散模块（`samples = "tok"` 的块：原子编码器、扩散 transformer、原子解码器）的 S 条轨迹分到 D 张 DAP 卡，每卡 ⌈S / D⌉ 条——样本之间相互独立，条件（单一表示与 pair 条件）在 DAP 下已在每张卡上，所以这是精确的并行、不增加通信；块内 pair 网格的工作（pair 偏置投影）仍按 DAP 切分，偏置 all-gather 不变；D > S 时多出的卡空闲（`Op.replicated = D·⌈S/D⌉ / S`，请求 FLOPs 不变）。置信度头（`samples = "all"`，每样本一份 pair 副本）仍按 DAP 切 pair、不分样本。参考实现（Boltz、Protenix）没有现成的多卡样本并行，这里作为布局设计选项给出。100T + HBM3E，DAP 1 / 2 / 4 / 8：Protenix（5 样本）27.86 / 14.55 / 7.91 / 4.02 s（6.9×；不分卡为 3.2×）；Boltz-1 默认 1 个样本（`--diffusion_samples` 默认 1）不变（3.9×），取 5 个样本时 DAP 8 为 17.5 → 2.8 s（不分卡 6.9 s）（0.61.3 数值）。ESMFold 的 ESM-2 语言模型层在 SP 维上按 Ulysses 切分（与 ESM-2 相同）。批延迟 `T = (mb + PP − 1) × t_stage`，与 ESM-2 相同。「假设」：400 GB/s 链路下通信基本被计算覆盖（链路变慢时会成为瓶颈，可在链路参数里试）；没有可逐项核对的公开 DAP 推理时延，故不加校验行。
 
 **dtype**：发布权重 fp32（ESMFold 的 ESM-2 为 fp16）；激活按 bf16「假设」（参考实现：ESMFold / OpenFold / AF2 单体 / Boltz-1 为 fp32，Protenix 默认 bf16）。0.44：fp32 激活用激活 dtype what-if 评估（Web「激活 dtype」/ CLI `--act fp32` / 场景 `formats_override: [["act", "fp32"]]`，标注 what-if）——激活存储、DRAM 流式、SRAM 端口读写（含输出）按 4 B；计算仍在 bf16 阵列上，激活逐 GEMM 转换的开销计入向量单元，所以它是「fp32 数据搬运 + bf16 计算」的代价，数值上不等价于 fp32 矩阵乘。例：ESMFold 512 残基、100T + LPDDR5X（DRAM 受限）6.3 s → 12.5 s；HBM3E 上 MAC 受限，延迟不变、容量 +0.4 GiB。芯片无 fp32 MAC：逐 GEMM 转换为 bf16，开销计入向量单元（与 LLM 反量化同一规则）。
 
 **校验**：`validate` 增加 ESMFold 行——论文（Lin et al., Science 2023）：单 V100 上 384 残基 14.2 s；按本模型的 FLOPs（50.2 TFLOP，4 遍主干；0.61.2 前按 5 遍计为 62.2 TFLOP）折算为 V100 fp32 峰值（15.7 TFLOPS，主干为 fp32）的 23%，落在 [0.05, 0.8] 带内。测试核对：参数逐项一致；AF2 官方 JAX 参数映射后的逐层 GEMM 与 OpenFold 检查点完全相同；每块检测到的核（Evoformer：三角乘法 ×2、三角注意力 ×2、行 / 列注意力、外积均值；AF3 类 MSA 模块：pair 加权平均代替行注意力）；核 FLOPs 与闭式一致；recycle / 扩散步数 / 样本数的线性缩放；ESMFold 中 ESM-2 每请求只算一次。
 
-**100T 芯片（默认 1 GHz、64 MiB SRAM）单卡 batch 1 的默认工作负载**：ESMFold 97.3 TFLOP / 4.1–5.1 s（0.61.2 起主干 4 遍；原 121 TFLOP）；AlphaFold 2 396 TFLOP / 11.7–14.2 s；OpenFold 354 TFLOP / 11.0–12.6 s；Boltz-1 296 TFLOP / 8.8–13.1 s；Protenix 419 TFLOP / 11.5–19.3 s（范围 = os / 可重构映射 × LPDDR5X 273 GB/s / HBM3E）。有效 MAC 21–36%：pair 网格上的 GEMM 是 K = N = 128 的窄矩阵，三角注意力 head_dim 只有 32。
+**100T 芯片（默认 1 GHz、64 MiB SRAM）单卡 batch 1 的默认工作负载**：ESMFold 97.3 TFLOP / 4.1–5.0 s（0.61.2 起主干 4 遍；原 121 TFLOP）；AlphaFold 2 398 TFLOP / 11.7–14.2 s；OpenFold 355 TFLOP / 11.0–12.7 s；Boltz-1 262 TFLOP / 7.0–9.1 s；Protenix 434 TFLOP / 12.7–27.9 s（0.61.3：模板行并入 MSA、Boltz 扩散步缓存与别名去重、Protenix 按样本的 pair 偏置；原 396 / 354 / 296 / 419 TFLOP）（范围 = os / 可重构映射 × LPDDR5X 273 GB/s / HBM3E）。有效 MAC 21–36%：pair 网格上的 GEMM 是 K = N = 128 的窄矩阵，三角注意力 head_dim 只有 32。
 
-**未建模 / 近似**：MSA / 模板检索与特征化、松弛；IPA 与扩散的几何 / 噪声调度向量运算；分块（chunk / subbatch）只降低峰值显存、不改计算量，峰值激活按单个算子计；AF2 的模板扭转角嵌入按每残基一行（实际 T × N 行，量很小）；原子数按每残基 8 个重原子「假设」；Boltz-1 / Protenix 的多链 / 配体 token 化按纯蛋白质计。
+**未建模 / 近似**：MSA / 模板检索与特征化、松弛；IPA 与扩散的几何 / 噪声调度向量运算；分块（chunk / subbatch）只降低峰值显存、不改计算量，峰值激活按单个算子计；AF2 / OpenFold 的模板扭转角嵌入按 T × N 行（0.61.3；原每残基一行），扭转角行并入 MSA 网格；原子数按每残基 8 个重原子「假设」；Boltz-1 / Protenix 的多链 / 配体 token 化按纯蛋白质计。
 
 ## 13. 能耗：动作计数 × 用户能耗表（0.47.1）
 
@@ -330,7 +330,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - **不覆盖**：视频 pipeline 组件（文本编码器、VAE）不用 SLC；多卡共享 SLC、一致性流量、写回策略差异、SLC 分 bank / 冲突、标签开销都不建模。
 - **能耗**：动作 `slc`（命中字节，`pJ_bit_slc`），DRAM 只计未命中；SLC + DRAM = 无 SLC 时的 DRAM 字节（测试守恒）。
 - **结果字段**：`StageTime.t_slc / slc_bytes`，`MemPlan.slc / slc_policy / slc_hot / slc_expert / slc_kv / slc_all / slc_residency`，`dram` 字典增加 `slc` 与 `slc_parts`；API 每级 `t_ms.slc`、`slc_GB`、`mem.slc_*`。CLI `--slc-mib --slc-GBps --slc-policy`；Web 芯片组「SLC MiB / GB/s / 策略」，级表与存储表在有 SLC 时多出 SLC 列；扫描可选 `chip.slc_mib`、`chip.slc_GBps`。
-- **量级**（100T + LPDDR5X 4×64 8533，Qwen3-8B decode batch 8，存储 ≈ 16 GB 权重 + KV）：TPOT 104.2 ms → pin 1 / 4 / 8 / 16 GiB 98.5 / 81.7 / 59.2 / 20.8 ms；lru 16 GiB 放不下 → 104.2 ms（不变），32 GiB 放得下 → 20.0 ms。
+- **量级**（100T + LPDDR5X 4×64 8533，Qwen3-8B decode batch 8，存储 ≈ 16 GB 权重 + KV）：TPOT 104.2 ms → pin 1 / 4 / 8 / 16 GiB 98.5 / 81.7 / 59.2 / 20.0 ms（0.61.3：embedding 表不再占 SLC；原 16 GiB 20.8 ms）；lru 16 GiB 放不下 → 104.2 ms（不变），32 GiB 放得下 → 20.0 ms。
 
 ## 15. 三层互连：封装内 D2D（可选）、节点内 scale-up、跨节点网络（0.48 两级；0.50 三级）
 
@@ -1042,3 +1042,24 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
   - 非默认映射（OS / WS 边 / 宽边加载、GEMV、可重构）的周期公式手推一致。
   - 视频 / 蛋白 PP × SP × batch × 微批 625 点：每请求 FLOPs 不变（SP 补齐 ≤ 0.02 %）。
   - HF 现网可达的发布 config（61 个根 config 及 diffusers transformer / VAE、Wan2.2 高低噪声子 config）逐项一致。
+
+### 19.12 第三轮审计修正（0.61.3）
+
+结构模型端到端 FLOPs 对独立计数（torch `FlopCounterMode`，meta 张量；OpenFold main、AF2 = OpenFold model_1 预设、boltz 0.4.1、protenix 0.5.0 的 PyPI 包、Open-Sora v1.2.0 源码 + SDXL VAE config），工具只计 GEMM / 注意力 MAC：
+- **AF2 / OpenFold 模板扭转角行**：参考实现把 T 条模板扭转角行拼到 MSA 上，所有 Evoformer 块的 MSA 网格是 聚类行 + T（`workload.tmpl_msa`，AF2 / OpenFold 默认开）；扭转角嵌入按 T × N 行；OpenFold extra-MSA 全局列注意力的 q 来自行均值（N 行）。384 残基：AF2 245.69（参考 245.74）、OpenFold 221.41（参考 221.44）TFLOP；默认 512 残基 396 → 398 / 354 → 355 TFLOP。
+- **Boltz-1 推理缓存**：`boltz predict` 用 `use_inference_model_cache=True`，pair 条件、每层 pair 偏置投影与原子编码器的 c / p 特征只在第一步算，现在放进一个 `diff_cache` 层（每请求一次）。扩散每步约少 28 %；384 残基每请求 173.0 → 153.1 TFLOP；默认 296 → 262 TFLOP，批延迟（100T + HBM3E）13.05 → 7.94 s。剩余差异：每步约 −3 %（k / v 按键窗口、稠密 gather），第一步的 z_to_p einsum 约 19 GFLOP 未计。
+- **Boltz-1 检查点别名**：`output_projection_linear` 与 `output_projection.0` 是同一张量（按存储键 + 偏移识别），原来参数与 GEMM 都算两次（14.37 M 参数、每层每步 10.87 GFLOP）；另有 9 个 Lightning 回调标量。参数 606.38 M → 592.01 M。
+- **Protenix 按样本的 pair 偏置**：v0.5.0 把 z_pair 沿 N_sample 展开，扩散 transformer 的 pair 偏置投影每个样本算一次（`spair` 行）；原子编码器的 cl / cm / z 投影按原子 / pair 行（原来按原子 pair 窗口，多计）。扩散 transformer 与参考逐项一致（5 样本 384 残基每步 887.85 GFLOP）。默认 419 → 434 TFLOP；这些投影输出只有 16 列（头数），在 os 映射上利用率很低，批延迟 19.33 → 27.86 s（把投影缓存起来的实现约 15.9 s——参考实现没有缓存，按参考计）。
+- **Open-Sora 时间 VAE**：`conv_blocks[i-1]` 在第 i 块上采样前的分辨率上跑（原来按上采样后），时间解码每块 37.5 → 34.47 TFLOP；VAE 1158 → 1140 TFLOP，39.9 → 39.6 s。SD-VAE 空间部分（9.144 / 帧）原本一致。
+
+其他修正：
+- **冷存储不驻留**：按行查表的 embedding 表、Wan2.2 待机专家、不用的 io 表原来与路由专家一起排进 SRAM / SLC 驻留，白占容量（查表行本来就走 DRAM）。现在单独记为冷存储，只计容量。默认芯片（SRAM 小于热权重）结果不变；SLC 例（§14）pin 16 GiB 20.8 → 20.0 ms。驻留率（SRAM 驻留、SLC 驻留）的分母改为每步读取的权重（热 + 专家），不含冷存储，所以显示值略升（例 Qwen3-8B 100T：分母去掉 1.24 GB embedding 表）。
+- **PD 能耗计入抢占恢复**：`kv_policy` recompute 每次抢占重算 S̄ + ḡ 的 prefill，swap 换出 / 换入各一次 KV 的 DRAM 读写；原来能耗里没有。主机链路（PCIe）没有对应的能耗项，未计「假设」。
+- **预算范围**：PD 开启时预算只核对合并部署这一配置，响应 `budget.scope_note` 写明 PD prefill 池未核对。
+- **最佳 batch 无解**：没有既放得下又满足 SLO 的 batch 时给出警告（原来静默按输入 batch 评估）；CLI decode 行显示 TPOT SLO 是否满足。
+- **场景哈希**：芯片格式速率 `["fp8", 2]` 与 `["fp8", 2.0]` 现在哈希相同。
+
+复核无误（不改数值）：
+- **DES 不变量**（新场景）：MoE TP2 / TP4·EP4 异构池、整前缀 LRU（亲和开 / 关）、radix 树、kv_policy wait / recompute / swap × 准入 before / after（紧 KV 容量）、gpt-oss 长度混合、投机解码、load 0.97，三种模式各 1500 请求：顺序、token 数、重复、槽位、KV 预留与占用均无违反。
+- **回归**：0.61.1 / 0.61.2 的修正在 sweep / search / PD 路径与其他共用代码的模型上一致；指纹 0.61.2 → 0.61.3 默认 68 / 1356 变化（只有 alphafold2、openfold、boltz-1、protenix、opensora-stdit3），多节点 48 / 985，fabric 0 / 3150。
+- **其他**：芯片预设峰值（100T 100.35、1P 1048.6、H100-like 959.4 TFLOPS）与文档一致；SLC pin / lru 公式；dtype 执行格式与反量化规则；场景哈希的往返与 int / float 稳定性；CLI 参数与文档；README 示例全部可运行。

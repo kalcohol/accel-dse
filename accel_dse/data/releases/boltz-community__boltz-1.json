@@ -1,5 +1,5 @@
 {
- "bytes_llm": 2425526820,
+ "bytes_llm": 2368037364,
  "config": {
   "diffusion_samples": 1,
   "hyper_parameters": {
@@ -18,32 +18,20 @@
  },
  "domain": "protein",
  "fetched": "2026-10-09",
- "n_tensors": 6623,
- "params_llm": 606381705,
+ "n_tensors": 6539,
+ "params_llm": 592009341,
  "params_mtp": 0,
  "params_vision": 0,
  "repo": "boltz-community/boltz-1",
  "roles": {
   "pair": {
    "fp32": {
-    "bytes": 2425526820,
-    "params": 606381705
+    "bytes": 2368037364,
+    "params": 592009341
    }
   }
  },
  "shapes": {
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.best_k_models./tmp/wandb-wim4_2_z/boltz-confidence/boltz-20241115-234825-11872c0c/checkpoints/epoch=10-step=8602.ckpt": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.best_k_models./tmp/wandb-wim4_2_z/boltz-confidence/boltz-20241115-234825-11872c0c/checkpoints/epoch=11-step=9384.ckpt": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.best_k_models./tmp/wandb-wim4_2_z/boltz-confidence/boltz-20241115-234825-11872c0c/checkpoints/epoch=12-step=10166.ckpt": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.best_k_models./tmp/wandb-wim4_2_z/boltz-confidence/boltz-20241115-234825-11872c0c/checkpoints/epoch=13-step=10948.ckpt": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.best_k_models./tmp/wandb-wim4_2_z/boltz-confidence/boltz-20241115-234825-11872c0c/checkpoints/epoch=14-step=11730.ckpt": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.best_k_models./tmp/wandb-wim4_2_z/boltz-confidence/boltz-20241115-234825-11872c0c/checkpoints/epoch=15-step=12512.ckpt": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.best_k_models./tmp/wandb-wim4_2_z/boltz-confidence/boltz-20241115-234825-11872c0c/checkpoints/epoch=16-step=13294.ckpt": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.best_k_models./tmp/wandb-wim4_2_z/boltz-confidence/boltz-20241115-234825-11872c0c/checkpoints/epoch=8-step=7038.ckpt": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.best_k_models./tmp/wandb-wim4_2_z/boltz-confidence/boltz-20241115-234825-11872c0c/checkpoints/epoch=9-step=7820.ckpt": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.best_model_score": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.current_score": [],
-  "callbacks.ModelCheckpoint{'monitor': 'val/lddt', 'mode': 'max', 'every_n_train_steps': 0, 'every_n_epochs': 1, 'train_time_interval': None}.kth_value": [],
   "confidence_module.boundaries": [
    63
   ],
@@ -97,13 +85,6 @@
    128
   ],
   "confidence_module.input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.0.output_projection.0.weight": [
-   128,
-   128
-  ],
-  "confidence_module.input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.0.output_projection_linear.bias": [
-   128
-  ],
-  "confidence_module.input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.0.output_projection_linear.weight": [
    128,
    128
   ],
@@ -191,13 +172,6 @@
    128
   ],
   "confidence_module.input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.2.output_projection.0.weight": [
-   128,
-   128
-  ],
-  "confidence_module.input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.2.output_projection_linear.bias": [
-   128
-  ],
-  "confidence_module.input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.2.output_projection_linear.weight": [
    128,
    128
   ],
@@ -1197,13 +1171,6 @@
    128,
    128
   ],
-  "input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.0.output_projection_linear.bias": [
-   128
-  ],
-  "input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.0.output_projection_linear.weight": [
-   128,
-   128
-  ],
   "input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.0.pair_bias_attn.proj_g.weight": [
    128,
    128
@@ -1288,13 +1255,6 @@
    128
   ],
   "input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.2.output_projection.0.weight": [
-   128,
-   128
-  ],
-  "input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.2.output_projection_linear.bias": [
-   128
-  ],
-  "input_embedder.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.2.output_projection_linear.weight": [
    128,
    128
   ],
@@ -2297,13 +2257,6 @@
    128,
    128
   ],
-  "structure_module.score_model.atom_attention_decoder.atom_decoder.diffusion_transformer.layers.0.output_projection_linear.bias": [
-   128
-  ],
-  "structure_module.score_model.atom_attention_decoder.atom_decoder.diffusion_transformer.layers.0.output_projection_linear.weight": [
-   128,
-   128
-  ],
   "structure_module.score_model.atom_attention_decoder.atom_decoder.diffusion_transformer.layers.0.pair_bias_attn.proj_g.weight": [
    128,
    128
@@ -2388,13 +2341,6 @@
    128
   ],
   "structure_module.score_model.atom_attention_decoder.atom_decoder.diffusion_transformer.layers.2.output_projection.0.weight": [
-   128,
-   128
-  ],
-  "structure_module.score_model.atom_attention_decoder.atom_decoder.diffusion_transformer.layers.2.output_projection_linear.bias": [
-   128
-  ],
-  "structure_module.score_model.atom_attention_decoder.atom_decoder.diffusion_transformer.layers.2.output_projection_linear.weight": [
    128,
    128
   ],
@@ -2495,13 +2441,6 @@
    128,
    128
   ],
-  "structure_module.score_model.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.0.output_projection_linear.bias": [
-   128
-  ],
-  "structure_module.score_model.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.0.output_projection_linear.weight": [
-   128,
-   128
-  ],
   "structure_module.score_model.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.0.pair_bias_attn.proj_g.weight": [
    128,
    128
@@ -2586,13 +2525,6 @@
    128
   ],
   "structure_module.score_model.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.2.output_projection.0.weight": [
-   128,
-   128
-  ],
-  "structure_module.score_model.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.2.output_projection_linear.bias": [
-   128
-  ],
-  "structure_module.score_model.atom_attention_encoder.atom_encoder.diffusion_transformer.layers.2.output_projection_linear.weight": [
    128,
    128
   ],
@@ -2869,13 +2801,6 @@
    768,
    768
   ],
-  "structure_module.score_model.token_transformer.layers.0.output_projection_linear.bias": [
-   768
-  ],
-  "structure_module.score_model.token_transformer.layers.0.output_projection_linear.weight": [
-   768,
-   768
-  ],
   "structure_module.score_model.token_transformer.layers.0.pair_bias_attn.proj_g.weight": [
    768,
    768
@@ -2960,13 +2885,6 @@
    768
   ],
   "structure_module.score_model.token_transformer.layers.23.output_projection.0.weight": [
-   768,
-   768
-  ],
-  "structure_module.score_model.token_transformer.layers.23.output_projection_linear.bias": [
-   768
-  ],
-  "structure_module.score_model.token_transformer.layers.23.output_projection_linear.weight": [
    768,
    768
   ],

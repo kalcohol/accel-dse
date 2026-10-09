@@ -192,7 +192,10 @@ def main():
         raw["size"] = raw["member_bytes"]
     else:
         raw = json.loads((CACHE / f"{r['cache']}.json").read_text())
-        ten = {k[len(r["strip"]):] if k.startswith(r["strip"]) else k: v for k, v in raw["tensors"].items()}
+        # 0.61.3: with a strip prefix (Lightning "state_dict."), only the model state counts — callback / loop scalars
+        # stored beside it are not parameters
+        ten = {k[len(r["strip"]):]: v for k, v in raw["tensors"].items() if k.startswith(r["strip"])} if r["strip"] \
+            else dict(raw["tensors"])
     stacks: dict[str, int] = {}
     for k in ten:
         m = STACK.match(k)

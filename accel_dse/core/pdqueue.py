@@ -1267,11 +1267,14 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
             t_io = S_re * (ctx.get("kv_cap") or {}).get("bytes_per_token", 0.0) / bps if bps > 0 else math.inf
             t_stall, t_fix = 2 * t_io, 2 * t_io
             kvi.update(swap_GBps_card=sw.get("GBps_card"), swap_source=sw.get("source"), swap_ms=t_io * 1e3)
+            restore = ("swap", S_re * (ctx.get("kv_cap") or {}).get("bytes_per_token", 0.0))
         else:
             # re-prefill of the mean footprint S̄ + ḡ (0.57 check: the DES's victims are young — mean footprint ≈ 0.8 of
             # S̄ + ḡ — which offsets the convexity of prefill in length; restore 92 ms DES vs 92 ms here, dense8b CV 1)
-            t_stall = t_fix = pool.run("prefill", 1, S_re).ttft
+            r_re = pool.run("prefill", 1, S_re)
+            t_stall = t_fix = r_re.ttft
             kvi.update(recompute_ms=t_stall * 1e3)
+            restore = ("recompute", r_re, S_re)
         K, m_f, v_f = kvi["capacity_tokens"], kvi["ES"] + kvi["Eg"], kvi["var_f"]
         nu_rice = 0.0
         for k_, pk in enumerate(dec.get("run_w") or ()):
@@ -1336,6 +1339,7 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
                    victim_gap_mean_ms=g_mean * 1e3, refill_offset_factor=e_od, slot_slowdown=st)
         if pol == "recompute":
             kvi["recompute_share"] = f_r
+        x["_restore"] = (p_v,) + restore         # 0.61.3: the restores' own energy (re-prefill / swap DRAM bytes)
     else:
         kvi["preempt_per_req"] = 0.0
     kvi.update(p_wait=p_wait, slot_wait_mean_ms=W * 1e3, admit=admit,
@@ -1452,6 +1456,25 @@ def _mix(pres, pts, dec: Result, out: float, extra: dict, shared_weights: bool =
     return c
 
 
+def _restore_extra(x: dict, extra: dict) -> dict:
+    """0.61.3: counts of the KV-preemption restores (``pd.kv_policy`` recompute / swap), added per request (p_v
+    restores each): recompute = one re-prefill of S̄ + ḡ tokens (its own action counts); swap = the KV read out of and
+    written back into DRAM, 2·(S̄ + ḡ)·bytes/token.  The host-link (PCIe) transfer of a swap has no action in the
+    energy table and is not counted 「假设」."""
+    rs = x.get("_restore")
+    if not rs or rs[0] <= 0:
+        return extra
+    extra = dict(extra)
+    p_v = rs[0]
+    if rs[1] == "recompute":
+        u = _per_unit(rs[2])
+        for k, v in u.items():
+            extra[k] = extra.get(k, 0.0) + p_v * v * rs[3]
+    else:
+        extra["dram"] = extra.get("dram", 0.0) + p_v * 2 * rs[2]
+    return extra
+
+
 def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None = None) -> dict:
     lam = pd.rate_rps if pd.rate_rps else pd.load * lam_fluid
     out = {"lambda_rps": lam, "load": None if pd.rate_rps else pd.load, "chunk_tokens": pd.chunk_tokens,
@@ -1521,17 +1544,20 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
     x = modes["pd"]
     if x["stable"]:
         kv = _wsum(ws, [ctx["kv_xfer"][(S, p)] for _, S, p in pts])
-        en["pd"] = _energy(_mix(x["_pre"]["rs"], pts, x["_dec"]["r"], o, {ctx["tier"] if ctx["tier"] == "net" else "link": kv}),
+        en["pd"] = _energy(_mix(x["_pre"]["rs"], pts, x["_dec"]["r"], o,
+                                _restore_extra(x, {ctx["tier"] if ctx["tier"] == "net" else "link": kv})),
                            cards / lam / o, table, ctx["n_p"] / lam / o)
     pts = ctx.get("pts_c", pts)                 # colocated replicas: their own prefix-cache hit mix (0.53)
     ws = [w for w, _, _ in pts]
     y = modes.get("coloc_prefill_first")
     if y and y["stable"]:
-        en["coloc_prefill_first"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["r"], o, {}), cards / lam / o, table)
+        en["coloc_prefill_first"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["r"], o, _restore_extra(y, {})),
+                                            cards / lam / o, table)
     y = modes.get("coloc_chunked")
     if y and y["stable"]:
         reread = _wsum(ws, [n * rr * ctx["kv_new"][(S, p)] for (n, _, rr), (_, S, p) in zip(y["_plans"], pts)])
-        en["coloc_chunked"] = _energy(_mix(y["_pre1"], pts, y["_dec_r"], o, {"dram": reread}, shared_weights=True),
+        en["coloc_chunked"] = _energy(_mix(y["_pre1"], pts, y["_dec_r"], o, _restore_extra(y, {"dram": reread}),
+                                           shared_weights=True),
                                       cards / lam / o, table)
     out["modes"] = {k: _public(v) for k, v in modes.items()}
     out["energy"] = en

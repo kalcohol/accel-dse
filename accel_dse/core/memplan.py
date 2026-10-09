@@ -12,7 +12,8 @@ DRAM capacity check uses the *heaviest* stage.
 SRAM policy (「假设」, design variable via chip.sram_mib):
   1. staging     = 2 × (largest per-op activation footprint), ≥ 2 MiB
   2. weights     pinned hottest-first: always-touched weights (attention, dense,
-                 shared experts, router, head) then routed experts
+                 shared experts, router, head) then routed experts; cold bytes (looked-up embedding table, standby
+                 expert, unused io tables) are never pinned (0.61.3: they used to ride with the experts)
   3. leftover    holds KV / recurrent state (partial hit: the cached fraction)
 Per-step DRAM traffic = unpinned touched weights + uncached KV/state reads +
 KV writes to DRAM-resident cache.
@@ -60,10 +61,12 @@ class StageStorage:
     kv_per_seq: float     # KV bytes per sequence at the planned context (per rank)
     idx_per_seq: float    # indexer-key bytes per sequence
     state_per_seq: float  # recurrent state bytes per sequence (per rank)
+    cold_w: float = 0.0   # stored, never streamed (looked-up embedding rows, standby expert, unused io tables) —
+    #                       0.61.3: kept apart so the SRAM / SLC plans do not pin bytes no step reads in bulk
 
     @property
     def weights(self) -> float:
-        return self.hot_w + self.expert_w
+        return self.hot_w + self.expert_w + self.cold_w
 
 
 def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]:
@@ -143,7 +146,7 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             hot += table          # tied head on a different stage keeps its own copy
         if n_mtp:
             hot += n_mtp * model.mtp_extra_params * model.fmt("mtp").bits / 8 / sh.tp
-    return StageStorage(hot, exp + store_extra, kv, idx, st)
+    return StageStorage(hot, exp, kv, idx, st, store_extra)
 
 
 @dataclass(frozen=True)
@@ -159,7 +162,7 @@ class MemPlan:
     pinned_hot: float
     pinned_expert: float
     kv_sram: float          # bytes of KV+state kept on chip
-    residency: float        # pinned / stored weights
+    residency: float        # pinned / streamed (hot + expert) weights — cold storage excluded (0.61.3)
     act_total: float = 0.0  # activation working set kept in DRAM (full-sequence forward)
     pipe_w: float = 0.0     # video pipeline components stored on this card (text encoder / VAE weights, 0.44)
     slc: float = 0.0        # SLC capacity per card (0.48; 0 = none)
@@ -168,7 +171,7 @@ class MemPlan:
     slc_expert: float = 0.0
     slc_kv: float = 0.0
     slc_all: bool = False   # lru: the whole off-SRAM working set fits → every read hits
-    slc_residency: float = 0.0  # weights on chip incl. SLC / stored weights (= residency without an SLC)
+    slc_residency: float = 0.0  # weights on chip incl. SLC / streamed weights (= residency without an SLC)
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
@@ -186,7 +189,8 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     p_hot = min(store.hot_w, free); free -= p_hot
     p_exp = min(store.expert_w, free); free -= p_exp
     kv_s = min(kv_t + st_t, free)
-    res = (p_hot + p_exp) / store.weights if store.weights else 1.0
+    strm = store.hot_w + store.expert_w            # 0.61.3: residency of the weights a step reads (cold bytes excluded)
+    res = (p_hot + p_exp) / strm if strm else 1.0
     mp = MemPlan(store.weights, kv_t, st_t, need, dram_cap, need <= dram_cap, sram_bytes, staging,
                  p_hot, p_exp, kv_s, res, act_need, slc_residency=res)
     if slc_bytes <= 0:
@@ -199,7 +203,7 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     s_hot = min(r_hot, free); free -= s_hot
     s_exp = min(r_exp, free); free -= s_exp
     s_kv = min(r_kv, free)
-    sres = (p_hot + p_exp + s_hot + s_exp) / store.weights if store.weights else 1.0
+    sres = (p_hot + p_exp + s_hot + s_exp) / strm if strm else 1.0
     return replace(mp, slc=slc_bytes, slc_policy="pin", slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv,
                    slc_residency=sres)
 

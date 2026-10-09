@@ -445,7 +445,8 @@ def cmd_eval(a) -> dict:
             print(f"protein {w['seq_len']} residues   batch {g['batch_ms']:.1f} ms   {g['seq_per_s_card']:.3g} seq/s/card"
                   f"   {g['residues_per_s_card']:.0f} residues/s/card   SLO {'OK' if s['slo_ok'] else 'over'}")
     elif s["phase"] == "decode":
-        print(f"TPOT {s['tpot_ms']:.2f} ms   {s['tok_s']:.1f} tok/s   {s['tok_s_card']:.1f} tok/s/card")
+        print(f"TPOT {s['tpot_ms']:.2f} ms   {s['tok_s']:.1f} tok/s   {s['tok_s_card']:.1f} tok/s/card   "
+              f"TPOT SLO {sc['serving']['tpot_slo_ms']:g} ms {'OK' if s['slo_ok'] else 'over'}")
         if g := out.get("goodput"):
             print(f"goodput {g['tok_s_card']:.1f} tok/s/card   TTFT {g['ttft_ms']:.0f} ms "
                   f"{'OK' if g['ttft_ok'] else 'over SLO'}")

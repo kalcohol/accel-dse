@@ -617,8 +617,11 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
         if w.msa and d.xmsa and not d.msa:
             xmsa, msa = w.msa, 0
         atoms = math.ceil(L * d.atoms_per_res) if d.atoms_per_res else 0
-        pd = PairDims(L, msa, xmsa, d.templates, atoms, rec, steps, smp)
-        info.update({"msa": msa, "xmsa": xmsa, "templates": d.templates, "atoms": atoms, "recycles": rec,
+        # 0.61.3: AF2 / OpenFold concatenate the template torsion-angle embeddings (T rows) to the MSA representation
+        # (alphafold/model/modules.py EmbeddingsAndEvoformer; openfold model.py embed_templates → torch.cat([m, a]))
+        msa_rows = msa + d.templates if d.tmpl_msa and msa else msa
+        pd = PairDims(L, msa_rows, xmsa, d.templates, atoms, rec, steps, smp)
+        info.update({"msa": msa, "msa_rows": msa_rows, "xmsa": xmsa, "templates": d.templates, "atoms": atoms, "recycles": rec,
                      "diff_steps": steps, "samples": smp, "pair_dim": d.pair_dim,
                      "default": {"seq_len": d.seq_len, "msa": d.msa or d.xmsa, "recycles": d.recycles,
                                  "steps": d.diff_steps, "samples": d.samples}})
