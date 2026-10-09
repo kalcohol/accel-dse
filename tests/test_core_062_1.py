@@ -46,7 +46,8 @@ def test_fabric_examples_after_bf16_combine():
     r = run("deepseek-v3", Layout(dp=64, ep=64), "prefill", 64, Fabric(enabled=True, oversub=4.0, leaf_nodes=2))
     assert round(r.step * 1e3) == 2453
     r = run("kimi-k2", Layout(dp=1024, ep=1024), "decode", 8192, Fabric(enabled=True, oversub=4.0))
-    assert round(r.step * 1e3, 2) == 7.22 and r.bound == "LINK"
+    # 0.63: per-head MLA absorption (W_UK / W_UV) makes decode compute 7.26 ms > link 6.30 ms (0.62.1: 7.22, LINK)
+    assert round(r.step * 1e3, 2) == 7.26 and r.bound == "MAC"
 
 
 def test_neutral_values_are_identities():

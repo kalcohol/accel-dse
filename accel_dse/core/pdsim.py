@@ -311,7 +311,7 @@ class _Replica:
     def __init__(self, eng: Engine, costs: Costs, slots: int):
         self.eng = eng
         self.costs = costs
-        self._spec = costs.spec
+        self._spec = costs.spec if costs is not None else None
         self.slots = slots
         self.running: list[Req] = []
         self.joinq: deque[Req] = deque()   # prefilled, waiting for a decode slot
