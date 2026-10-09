@@ -183,7 +183,14 @@ def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
     # 0.61.2: a node longer than the whole cache can never be resident, and neither can anything below it (a radix
     # child needs its parent).  Che over all levels gave such nodes h > 0 and charged their tokens against the
     # capacity — e.g. levels [100×10, 5000×10] in 3000 tokens: H_1 = 0.10 instead of 1.
-    m = next((k for k, (L, _, _) in enumerate(levels) if L > C_tokens), len(levels))
+    # 0.63 (external review): the test is the cumulative path Σ_{j≤k} L_j, not the node alone — a level-k node is only
+    # reachable with all its ancestors resident (levels [60, 60] in 100 tokens: H_2 was 83 %, LRU gives 0)
+    m, acc = len(levels), 0.0
+    for k, (L, _, _) in enumerate(levels):
+        acc += L
+        if acc > C_tokens:
+            m = k
+            break
     lv, gs_fit = levels[:m], gs[:m]
     zero = [[0.0] * len(g) for g in gs[m:]]
     tot = sum(L * c for (L, _, _), g in zip(lv, gs_fit) for c, _ in g)
@@ -209,7 +216,11 @@ def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
 
 def tree_depth_tail(groups, h) -> list[float]:
     """[H_1 … H_m]: P(match depth ≥ k)."""
-    return [sum(c * q * x for (c, q), x in zip(g, hk)) for g, hk in zip(groups, h)]
+    out, prev = [], 1.0
+    for g, hk in zip(groups, h):
+        prev = min(prev, sum(c * q * x for (c, q), x in zip(g, hk)))    # a match at depth k implies depth k − 1
+        out.append(prev)
+    return out
 
 
 def tree_both_tail(groups, h1, h2) -> list[float]:

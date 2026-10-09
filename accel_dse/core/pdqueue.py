@@ -1367,29 +1367,63 @@ def _coloc_chunked(ctx: dict, lam: float) -> dict:
     return _kv_wrap(_coloc_chunked_base, ctx, lam, "cpool", "r_c")
 
 
-def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float) -> float:
-    """Largest λ meeting p90 TTFT and p90 TPOT SLOs (bisection; feasibility is taken as monotone in λ)."""
+SLO_SCAN = 96       # 0.63: grid points of the SLO-rate scan below the stability limit
+
+
+def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float, known: tuple = ()) -> float:
+    """Largest λ meeting p90 TTFT and p90 TPOT SLOs.
+
+    Stability is monotone in λ (a load threshold): its limit λ_s is found by doubling + bisection.  SLO feasibility is
+    not (0.63, external review): the prefill batch cap is re-chosen per λ (min mean TTFT), so p90 can drop when the cap
+    steps up and a feasible window can open above an infeasible one.  So λ_s is scanned top-down on a grid of
+    ``SLO_SCAN`` points, the largest feasible grid point is refined by bisection towards the next one, and the result
+    is never below a ``known`` feasible point (e.g. the operating point).  Was a plain bisection from 0."""
     def ok(lam: float) -> bool:
         x = fn(ctx, lam)
         return x["stable"] and x["ttft"]["p90"] <= ttft_slo and x["tpot_p90"] <= tpot_slo
+
+    def stable(lam: float) -> bool:
+        return fn(ctx, lam)["stable"]
+
+    def bisect(lo: float, hi: float, pred) -> float:
+        for _ in range(40):
+            mid = 0.5 * (lo + hi)
+            if pred(mid):
+                lo = mid
+            else:
+                hi = mid
+            if hi - lo < 1e-4 * hi:
+                break
+        return lo
     if start <= 0:
         return 0.0
     lo, hi = 0.0, start
     for _ in range(40):
-        if not ok(hi):
+        if not stable(hi):
             break
         lo, hi = hi, hi * 2
     else:
         return lo
-    for _ in range(40):
-        mid = 0.5 * (lo + hi)
-        if ok(mid):
-            lo = mid
+    lam_s = bisect(lo, hi, stable)
+    if lam_s <= 0:
+        return 0.0
+    if math.isinf(ttft_slo) and math.isinf(tpot_slo):
+        return lam_s
+    if ok(lam_s):
+        best = lam_s
+    else:
+        best = 0.0
+        step = lam_s / SLO_SCAN
+        for i in range(SLO_SCAN - 1, 0, -1):
+            if ok(i * step):
+                best = bisect(i * step, (i + 1) * step, ok)
+                break
         else:
-            hi = mid
-        if hi - lo < 1e-4 * hi:
-            break
-    return lo
+            best = bisect(0.0, step, ok)
+    for k in known:
+        if k and k > best and k <= lam_s and ok(k):
+            best = k
+    return best
 
 
 def _public(x: dict) -> dict:
@@ -1502,7 +1536,7 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
     ttft_slo, tpot_slo = sv.ttft_slo_ms / 1e3, sv.tpot_slo_ms / 1e3
     fns = {"pd": _pd_mode, "coloc_prefill_first": _coloc_prefill_first, "coloc_chunked": _coloc_chunked}
     for name, x in modes.items():
-        rate = _slo_rate(fns[name], ctx, max(lam_fluid, lam), ttft_slo, tpot_slo)
+        rate = _slo_rate(fns[name], ctx, max(lam_fluid, lam), ttft_slo, tpot_slo, known=(lam,))
         x["slo_rate_rps"] = rate
         x["slo_goodput_per_card"] = rate * o / cards
         x["stable_rate_rps"] = _slo_rate(fns[name], ctx, max(lam_fluid, lam), math.inf, math.inf)

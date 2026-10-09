@@ -122,7 +122,13 @@ class RadixLRU:
             return 0
         # 0.61.2: a node that cannot fit truncates the path — its descendants are not stored either (a radix child
         # needs its parent; storing them only wasted capacity on nodes no lookup could reach)
-        m_fit = next((k for k, L in enumerate(self.lens) if L > self.cap), m)
+        # 0.63: … and so does a path whose cumulative length exceeds the capacity (the node needs all its ancestors)
+        m_fit, acc = m, 0
+        for k, L in enumerate(self.lens):
+            acc += L
+            if acc > self.cap:
+                m_fit = k
+                break
         for k in range(m_fit, 0, -1):             # leaf first, root last → root most recent
             key = path[:k]
             if key in self.od:

@@ -286,7 +286,7 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         hq_loc = _cdiv(core.n_q, tp)
         lat = core.kv_lora + core.rope_dim
         if ph.kind == "decode":
-            # absorbed: scores over the latent, output in latent space (W_UK/W_UV absorbed into kv_b op)
+            # absorbed: scores over the latent, output in latent space (W_UK / W_UV as per-head kv_b.uk / kv_b.uv GEMMs)
             ops.append(Op("qk_latent", "attn", li, m=q * hq_loc, k=lat, n=ce, count=b_loc, causal=causal,
                           act_bytes=b_loc * q * hq_loc * lat * ab))
             ops.append(Op("pv_latent", "attn", li, m=q * hq_loc, k=ce, n=core.kv_lora, count=b_loc, causal=causal,
@@ -347,6 +347,18 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
         m = t
         if l.name == "kv_b" and ph.kind == "prefill":
             m = b_loc * (ph.ctx + ph.q)      # decompress cached prefix + new tokens
+        elif l.name == "kv_b" and ph.kind == "decode" and L.core.kind == "mla":
+            # 0.63 (external review): absorbed decode applies kv_b per head as two batched GEMMs — query absorb
+            # q_nope·W_UK[h] → latent and output o_lat·W_UV[h] → v_dim (DeepSeek-V3 inference/model.py, absorb path:
+            # einsum "bshd,hdc->bshc" / "bshc,hdc->bshd"); same params / FLOPs as the wide [kv_lora, H·(nope+v)] GEMM
+            c = L.core
+            nope = c.qk_dim - c.rope_dim
+            hq = _cdiv(c.n_q, tp)
+            ops.append(gemm(model, "attn.kv_b.uk", li, t, nope, c.kv_lora, "attn", count=hq,
+                            params=hq * nope * c.kv_lora, replicated=_repl(l, tp)))
+            ops.append(gemm(model, "attn.kv_b.uv", li, t, c.kv_lora, c.v_dim, "attn", count=hq,
+                            params=hq * c.kv_lora * c.v_dim, replicated=_repl(l, tp)))
+            continue
         ops.append(gemm(model, f"attn.{l.name}", li, m, k, n, "attn", count=l.groups if l.groups > 1 else 1,
                         params=k * n * (l.groups if l.groups > 1 else 1), replicated=_repl(l, tp)))
     ops.extend(_attn_core_ops(model, li, L.core, ph, sh, b_loc))

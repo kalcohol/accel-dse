@@ -728,13 +728,38 @@ def _vision_cost(scn: Scenario, m: ModelSpec, sys: System, stages: list) -> dict
     stages[0].mem = replace(mp, dram_need=need, fits=need <= mp.dram_cap, pipe_w=mp.pipe_w + w)
     return out
 
+def _cfg_chain(seqs: int, mb: int, per_req: int) -> int:
+    """Largest set of microbatches linked by a shared request (sequences request-major, microbatches of ⌈S/mb⌉
+    consecutive sequences): the microbatches of one connected group depend on each other at every denoise step."""
+    if per_req <= 1 or mb <= 1:
+        return 1
+    msz = _cdiv(seqs, mb)
+    nmb = _cdiv(seqs, msz)
+    parent = list(range(nmb))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for r in range(_cdiv(seqs, per_req)):
+        a, b = (r * per_req) // msz, (min(seqs, (r + 1) * per_req) - 1) // msz
+        for j in range(a + 1, b + 1):
+            parent[find(j)] = find(a)
+    sizes: dict = {}
+    for i in range(nmb):
+        sizes[find(i)] = sizes.get(find(i), 0) + 1
+    return max(sizes.values())
+
+
 def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]) -> Result:
     """Non-autoregressive request: video clip (steps × CFG forwards over every latent token) or protein batch
     (one encoder forward).  Same op-graph → mapping → memplan → schedule path as the LLM phases.
 
       forward sequences  S = batch · cfg (video) or batch (protein); microbatches mb = min(pp, S) unless set
-      video clip latency = steps · max(mb, pp) · t_stage        (each denoise step like a decode step: the
-                           pipeline is kept full across steps by independent micro-batches)
+      video clip latency = steps · max(mb, k + pp − 1) · t_stage  (k = microbatches holding the CFG forwards of one
+                           request, which must all finish a step before the next; k = 1 → max(mb, pp): the pipeline
+                           is kept full across steps by independent micro-batches)
       protein latency    = (mb + pp − 1) · t_stage              (one pass, like an LLM prefill)
       throughput         = batch · units / latency               (frames/s or sequences/s per replica)
     """
@@ -859,7 +884,14 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                         + (f"（含文本编码器 / VAE 权重 {stages[cap_heavy].mem.pipe_w / 2**30:.1f} GiB）"
                            if stages[cap_heavy].mem.pipe_w else ""))
     if wl.kind == "gen":
-        denoise = wl.steps * max(mb, pp) * tick
+        # 0.63 (external review): the CFG forwards of one request (cond / uncond, + image guidance) must all finish a
+        # denoise step before its latent update starts the next one.  Microbatches that share a request form a
+        # dependent chain of k microbatches: one step of the chain takes ≥ k + pp − 1 stage ticks, and the stages
+        # serve mb microbatches per step → per step max(mb, k_max + pp − 1) ticks (= max(mb, pp) when every request
+        # sits in one microbatch).  Was max(mb, pp): cond / uncond in different microbatches ran as independent.
+        k_chain = _cfg_chain(seqs, mb, wl.seqs_per_request)
+        per_step = max(mb, k_chain + pp - 1) if k_chain > 1 else max(mb, pp)
+        denoise = wl.steps * per_step * tick
         latency = denoise + (pipe["te_s"] + pipe["decode_s"] + pipe["load_s"] if pipe else 0.0)
         if pipe:
             # 0.61.4: tflop_replica is one DP rank's share ⌈B/dp⌉ of the requests → × B / share (was × dp, which
