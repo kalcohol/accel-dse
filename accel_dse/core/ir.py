@@ -419,8 +419,11 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         ein = f.expert_in(h)
         if r.hit:
             mats_up = 2 if f.gated else 1
-            ops.append(gemm(model, "expert.gate_up", li, r.m_e, ein, mats_up * d_loc, "expert", count=r.hit))
-            ops.append(gemm(model, "expert.down", li, r.m_e, d_loc, ein, "expert", count=r.hit))
+            # padded rows (hit · m_e ≥ token-expert pairs) cost time but are not work: share = useful fraction (0.63)
+            u = min(1.0, r.pairs_local / (r.hit * r.m_e))
+            ops.append(replace(gemm(model, "expert.gate_up", li, r.m_e, ein, mats_up * d_loc, "expert", count=r.hit),
+                               share=u))
+            ops.append(replace(gemm(model, "expert.down", li, r.m_e, d_loc, ein, "expert", count=r.hit), share=u))
             ops.append(Op("expert_act", "vector", li, vec=r.pairs_local * d_loc * 4))
         if sh.ep > 1:
             pay = r.pairs_local * ein * ab
@@ -792,14 +795,15 @@ def rank_shares(ops: list[Op], sh: Shard, global_ops) -> list[Op]:
     g_f: dict = {}; g_v: dict = {}
     for o in global_ops():
         if o.kind != "comm":
-            g_f[o.name] = g_f.get(o.name, 0.0) + o.flops
-            g_v[o.name] = g_v.get(o.name, 0.0) + o.vec
+            g_f[o.name] = g_f.get(o.name, 0.0) + o.flops * o.share     # an op's own share = its useful fraction
+            g_v[o.name] = g_v.get(o.name, 0.0) + o.vec * o.share       # (padded expert rows), 1 otherwise
     u_f: dict = {}; u_v: dict = {}
     for o in ops:
         if o.kind != "comm":
             r = max(o.replicated, 1e-12)
-            u_f[o.name] = u_f.get(o.name, 0.0) + o.flops / r
-            u_v[o.name] = u_v.get(o.name, 0.0) + o.vec / r
+            u_f[o.name] = u_f.get(o.name, 0.0) + o.flops * o.share / r
+            u_v[o.name] = u_v.get(o.name, 0.0) + o.vec * o.share   # vector-only ops: ``replicated`` marks the
+            # replicated latent-cache bytes (MLA softmax), the score work itself is split by heads
     out = []
     for o in ops:
         x = 1.0
@@ -808,7 +812,7 @@ def rank_shares(ops: list[Op], sh: Shard, global_ops) -> list[Op]:
                 x = g_f[o.name] / (n * u_f[o.name])
             elif o.vec > 0 and u_v[o.name] > 0:
                 x = g_v[o.name] / (n * u_v[o.name])
-        out.append(o if abs(x - 1.0) < 1e-12 else replace(o, share=x))
+        out.append(o if abs(x - 1.0) < 1e-12 else replace(o, share=o.share * x))
     return out
 
 

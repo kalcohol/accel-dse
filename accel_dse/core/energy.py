@@ -128,7 +128,7 @@ def _counts(r) -> dict:
         n = passes * ranks
         nw = passes * lay.tp * lay.sp * lay.dp * mb_fill
         c["mac"] += st.ideal_w * ch.macs * f * nw
-        c["vec"] += st.vec_w * ch.lanes * f * nw
+        c["vec"] += st.vec_w * ch.lanes * f * nw + st.conv_w * ch.lanes * f * n   # weight dequant: per pass
         c["sram"] += st.sram_bytes * n
         c["dram"] += t.dram_bytes * n
         c["slc"] += t.slc_bytes * n

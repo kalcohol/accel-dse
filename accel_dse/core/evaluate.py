@@ -42,7 +42,8 @@ class StageResult:
     flops_u: float = 0.0    # useful FLOPs of one rank (ops replicated on r ranks count 1/r) — request-FLOP KPI
     sram_bytes: float = 0.0  # bytes through the SRAM ↔ datapath port of one rank per tick (0.47.1 action counts)
     ideal_w: float = 0.0     # 0.63: array s at 100 % of the mean rank's useful work (Op.share) — energy MAC count
-    vec_w: float = 0.0       # 0.63: vector s of the mean rank's work
+    vec_w: float = 0.0       # 0.63: vector s of the mean rank's token work (excl. weight conversion)
+    conv_w: float = 0.0      # 0.63: vector s of weight conversion (once per pass on every busy rank)
 
 
 @dataclass
@@ -144,7 +145,8 @@ class Result:
 
 
 def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
-    """(array s, mac-bound share s, feed-bound share s, vector s, convert elems, ideal s, SRAM-port bytes)."""
+    """(array s, mac-bound share s, feed-bound share s, vector s, convert elems, ideal s, SRAM-port bytes,
+    vector s of per-pass weight conversion)."""
     ch = sys.chip
     f = ch.freq_ghz * 1e9 * ch.mac_eff
     if op.kind == "gemm":
@@ -159,13 +161,14 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     elif op.kind == "attn":
         c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=model.kv_fmt, a_fmt="bf16")
     else:
-        return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0, 0.0, 0.0, 0.0
     t = c.cycles * op.causal / f
     vec = vector_seconds(ch, op.vec + c.convert_elems * 2.0)   # 2 element-ops per converted element 「假设」
     mac_share = t if c.bound == "mac" else 0.0
     rate = ch.formats.rate(c.exec_fmt) or 1.0
     ideal = op.flops / 2.0 / (ch.macs * rate * ch.freq_ghz * 1e9)   # 100 % array utilisation
-    return t, mac_share, t - mac_share, vec, c.convert_elems, ideal, c.feed_cycles * op.causal * ch.port_Bpc
+    vw = vector_seconds(ch, c.convert_w * 2.0) if op.kind == "gemm" else 0.0   # weight dequant: per pass, not per token
+    return t, mac_share, t - mac_share, vec, c.convert_elems, ideal, c.feed_cycles * op.causal * ch.port_Bpc, vw
 
 
 def stage_ops(model: ModelSpec, first: int, last: int, has_embed: bool, has_head: bool, ph: Phase, sh: Shard,
@@ -194,7 +197,7 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
              "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
-             "t_ideal_w", "t_vec_w")
+             "t_ideal_w", "t_vec_w", "t_conv_w")
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _TIERS = ("d2d", "link", "net")
 
@@ -257,10 +260,11 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         r_ = om.get(o)
         if r_ is None:
             r_ = om[o] = _op_seconds(o, sys, org, model)
-        a_, ma, fe, v, ce, idl, sb = r_
+        a_, ma, fe, v, ce, idl, sb, vw = r_
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
-        d["t_ideal_w"] += idl * o.share; d["t_vec_w"] += v * o.share     # 0.63: mean-rank work (energy, KPIs)
+        d["t_ideal_w"] += idl * o.share; d["t_vec_w"] += (v - vw) * o.share   # 0.63: mean-rank work (energy, KPIs)
+        d["t_conv_w"] += vw
         d["flops"] += o.flops
         d["flops_u"] += o.flops * o.share / max(1, o.replicated)
         d["max_act"] = max(d["max_act"], o.act_bytes / max(o.count, 1))
@@ -693,7 +697,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
-                                      sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"]))
+                                      sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
+                                      conv_w=agg["t_conv_w"]))
         return stages
 
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx_cap, n_mtp, b_rank,
@@ -905,7 +910,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
-                                      sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"]))
+                                      sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
+                                      conv_w=agg["t_conv_w"]))
         return stages
 
     p2p_pay = ph.batch * (_cdiv(ph.q, lay.sp) * m.hidden * ab + pair_act) / lay.dp

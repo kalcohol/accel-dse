@@ -58,6 +58,7 @@ class GemmCost:
     exec_fmt: str
     conversion: str        # none | dequant_w | upcast_both
     convert_elems: float   # elements converted on the vector path
+    convert_w: float = 0.0  # of which second-operand (weight) elements: once per pass, independent of tokens (0.63)
 
     @property
     def bound(self) -> str:
@@ -134,7 +135,7 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
     if flag & 2:
         conv_elems += m * k
     return GemmCost(max(mac * count + fill, feed * count), mac * count + fill, feed * count, df, ex, conv,
-                    conv_elems * count)
+                    conv_elems * count, (k * n * count) if flag & 1 else 0.0)
 
 
 def gemm_seconds(ch: Chip, org: str, m, k, n, **kw) -> float:

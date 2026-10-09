@@ -154,9 +154,10 @@ def _conserved(m, ph, sh, ops_fn):
     loc, glob = ops_fn(sh), ops_fn(Shard())
     n = sh.tp * sh.dp * sh.sp
     f_loc = sum(o.flops * o.share / max(o.replicated, 1e-12) for o in loc if o.kind != "comm") * n
-    f_glob = sum(o.flops for o in glob if o.kind != "comm")
-    v_loc = sum((o.vec * o.share / max(o.replicated, 1e-12)) for o in loc if o.kind == "vector") * n
-    v_glob = sum(o.vec for o in glob if o.kind == "vector")
+    # useful work: an op's own share < 1 only for padded expert rows (hit · m_e > token-expert pairs)
+    f_glob = sum(o.flops * o.share for o in glob if o.kind != "comm")
+    v_loc = sum(o.vec * o.share for o in loc if o.kind == "vector") * n
+    v_glob = sum(o.vec * o.share for o in glob if o.kind == "vector")
     return f_loc, f_glob, v_loc, v_glob
 
 
@@ -284,3 +285,27 @@ def test_llm_prefill_activations_spill_with_small_sram():
     d = evaluate(Scenario(model="qwen3-8b", chip=dataclasses.replace(CHIPS["100T"], sram_mib=64),
                           serving=Serving(phase="decode", batch=8, ctx=4096)))
     assert d.stages[0].dram.get("act", 0.0) == 0.0            # decode activations stay on chip
+
+
+def test_expert_padding_is_not_work():
+    """Useful expert FLOPs = token-expert pairs × per-pair FLOPs, independent of the padded rows (hit · m_e)."""
+    for mid in ("qwen3-30b-a3b", "mixtral-8x22b", "deepseek-v3"):
+        m = get_model(mid)
+        li = m.n_layers - 1
+        f = m.layers[li].ffn
+        for b in (1, 2, 3, 7):
+            ph = Phase("decode", b, 1, 1024)
+            ex = [o for o in build_rank_ops(m, li, ph) if o.name.startswith("expert.") and o.kind == "gemm"]
+            useful = sum(o.flops * o.share for o in ex)
+            per_pair = sum(o.flops / (o.count * o.m) for o in ex)
+            assert abs(useful / (b * f.top_k * per_pair) - 1) < 1e-9, (mid, b)
+
+
+def test_moe_energy_mac_invariant_to_split():
+    """MoE MAC count per token does not depend on PP micro-batching / DP·EP (no replicated expert work)."""
+    ref = None
+    for lay in (Layout(), Layout(pp=2), Layout(dp=2, ep=2), Layout(pp=3)):
+        r = evaluate(Scenario(model="mixtral-8x22b", mem_id=HBM, layout=lay, serving=Serving(batch=3)))
+        mac = energy_report(r)["counts_per_unit"]["mac"]
+        ref = ref or mac
+        assert abs(mac / ref - 1) < 1e-9, (lay.label, mac, ref)
