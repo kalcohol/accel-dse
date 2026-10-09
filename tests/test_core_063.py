@@ -102,7 +102,8 @@ def _feasible_scan(scn_body, n=120):
 def test_slo_rate_not_below_feasible_points():
     res = _feasible_scan(_PD)
     rate, feas = res["pd"]
-    assert feas >= 2.834 and rate >= feas * (1 - 1e-9), res          # was 1.724 with 2.834 feasible
+    # 0.63: was 1.724 with 2.834 feasible; 0.65 exact bulk queue: feasible ~1.735 (DES ~1.60, fluid 2.834 was optimistic)
+    assert feas >= 1.7 and rate >= feas * (1 - 1e-9), res
     for body in (dict(_PD, model="qwen3-8b", layout={"tp": 2}), dict(_PD, serving=dict(_PD["serving"], ttft_slo_ms=300))):
         for name, (rate, feas) in _feasible_scan(body, 60).items():
             assert rate >= feas * (1 - 1e-9), (body["model"], name, rate, feas)
