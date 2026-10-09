@@ -180,9 +180,15 @@ def test_pd_energy_from_action_counts():
     pool_p, pool_d = _Pool(s), _Pool(s)
     mp = q["modes"]["pd"]
     pre = pool_p.run("prefill", mp["prefill"]["batch_cap"])
-    dec = pool_d.run("decode", mp["decode"]["running_batch"])
-    ap, ad = action_counts(pre), action_counts(dec)
-    mac = (ap["counts"]["mac"] / ap["units"] * 4096 + ad["counts"]["mac"] / ad["units"] * 512) / 512
+    kf = mp["decode"]["running_batch"]           # 0.64: fractional → the ⌊k⌋ / ⌊k⌋ + 1 mixture
+    k0 = int(kf)
+    ap = action_counts(pre)
+    dmac = 0.0
+    for kk, wk in ((k0, 1 - (kf - k0)), (k0 + 1, kf - k0)):
+        if wk > 0:
+            ad = action_counts(pool_d.run("decode", kk))
+            dmac += wk * ad["counts"]["mac"] / ad["units"]
+    mac = (ap["counts"]["mac"] / ap["units"] * 4096 + dmac * 512) / 512
     assert _close(x["counts_per_token"]["mac"], mac, 1e-9)
     assert _close(x["card_s_per_token"], 8 / q["lambda_rps"] / 512)
     assert "J_per_token" not in x

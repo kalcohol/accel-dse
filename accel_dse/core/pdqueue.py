@@ -13,7 +13,8 @@ system on the same cards sees the same λ.
 PD (prefill pool r_p replicas, decode pool r_d replicas; random split → Poisson λ/r per replica)
   prefill   M/D/1 per replica (DistServe's model for a prefill instance).  Static batch cap b ∈ {1, 2, 4, …, 64}:
             per-request service τ_b = TTFT(b) / b (the fluid rate at b), latency floor TTFT(b); the cap minimising
-            mean TTFT among stable ones is used (b > 1 is the batch-server approximation of a dynamic batcher).
+            mean TTFT among stable ones is used (b > 1 is the batch-server approximation of a dynamic batcher) —
+            0.64: unless it misses the SLOs and another cap meets them (SLO-aware cap, ``_slo_select``).
   KV        one transfer stream per prefill replica, M/D/1 with service KV / β_req'; β' = β·(1 − u_coll), u_coll =
             the busiest pool's own collective traffic on the KV tier (bytes / β / tick)
   decode    continuous batching with B = serving.batch slots per replica (0.54: birth–death over step(k)):
@@ -56,10 +57,10 @@ Colocated, same cards (⌊N / c_d⌋ replicas of the scenario layout)
                   life (0.99 point)
 TPOT quantiles are request-average TPOT (DistServe's SLO metric); ``itl_max`` = the longest single token gap.
 SLO capacity: the largest λ whose p90 TTFT ≤ TTFT SLO and p90 TPOT ≤ TPOT SLO (DistServe-style SLO goodput), by
-bisection, per mode; ÷ cards → requests/s/card and output tokens/s/card.  For PD the same is searched over every
+stability bisection + a top-down scan and refinement (0.63; the predicate need not be monotone), per mode; ÷ cards → requests/s/card and output tokens/s/card.  For PD the same is searched over every
 prefill / decode card split of the same total (``pd_slo_best_split``; layouts stay the inputs).
 Energy per output token at this load: prefill counts / prompt token × S + decode counts / token (at the running
-batch n̄) × out, + KV bytes on its tier (PD), ÷ out; card·s = cards / λ / out (every provisioned card, busy or not).
+batch n̄; 0.64: the ⌊n̄⌋ / ⌊n̄⌋+1 mixture) × out, + KV bytes on its tier (PD), ÷ out; card·s = cards / λ / out (every provisioned card, busy or not).
 Chunked prefill: the prompt's weight reads are shared with the decode iteration (dropped) and each chunk re-reads
 the prefix KV (+ KV·(S − C)/(2C) DRAM bytes per request).  J only for the energy-table entries the user gave.
 0.52 — variable lengths (core/lengths.py: fixed by default, else a discrete mix of prompt values S_i with weights w_i):
@@ -1443,8 +1444,9 @@ def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float, kno
     """Largest λ meeting p90 TTFT and p90 TPOT SLOs.
 
     Stability is monotone in λ (a load threshold): its limit λ_s is found by doubling + bisection.  SLO feasibility is
-    not (0.63, external review): the prefill batch cap is re-chosen per λ (min mean TTFT), so p90 can drop when the cap
-    steps up and a feasible window can open above an infeasible one.  So λ_s is scanned top-down on a grid of
+    not (0.63, external review): the prefill batch cap is re-chosen per λ (min mean TTFT; 0.64: SLO-aware — a union
+    of per-cap monotone sets), so p90 can drop when the cap steps up and a feasible window can open above an
+    infeasible one.  So λ_s is scanned top-down on a grid of
     ``SLO_SCAN`` points, the largest feasible grid point is refined by bisection towards the next one, and the result
     is never below a ``known`` feasible point (e.g. the operating point).  Was a plain bisection from 0."""
     slo = (ttft_slo, tpot_slo)
