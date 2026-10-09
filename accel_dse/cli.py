@@ -434,7 +434,7 @@ def cmd_eval(a) -> dict:
                       f"stable ≤ {x['stable_rate_rps']:.3g} req/s")
             kvs = [(k, x["kv_cap"]) for k, x in q["modes"].items() if x.get("kv_cap")]
             if kvs:
-                c0 = kvs[0][1]
+                c0 = next((c for _, c in kvs if "admit" in c), kvs[0][1])   # an unstable mode carries no admit
                 print(f"  decode KV capacity 「假设」 {c0['policy']}: {c0['capacity_tokens']} tok/replica "
                       f"({c0['source']}), mean running footprint {c0['footprint_tokens']:.0f} tok → "
                       f"{c0['slots_kv']} slots, admission {c0.get('admit', 'after_prefill')}"
@@ -450,7 +450,11 @@ def cmd_eval(a) -> dict:
                                  f"{c.get('recompute_ms', 0):.0f} ms" if pol == "recompute" else "")
                               + (f"  preemptions/req {c.get('preempt_per_req', 0):.3f}  swap out+in "
                                  f"{2 * c.get('swap_ms', 0):.0f} ms @ {c.get('swap_GBps_card', 0):.0f} GB/s/card "
-                                 f"({c.get('swap_source', '')})" if pol == "swap" else ""))
+                                 f"({c.get('swap_source', '')})" if pol == "swap" else "")
+                              + (f"  restore share {c['restore_share']:.1%} (slot hold x{c.get('slot_slowdown', 1):.3f})"
+                                 if c.get("restore_share") else "")
+                              + (f"  slot held through prefill {c['slot_hold_prefill_ms']:.0f} ms"
+                                 if c.get("slot_hold_prefill_ms") else ""))
             for k, e in (q.get("energy") or {}).items():
                 if e.get("J_per_token") is not None:
                     print(f"    {names[k]:<28} energy {e['J_per_token']:.4g} J/token  {e['tok_per_J'] or 0:.3g} tok/J"

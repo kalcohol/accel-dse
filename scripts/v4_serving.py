@@ -1,6 +1,6 @@
 """V4 serving validation grid (0.54): closed-form queueing model (core/pdqueue) vs the request-level DES (core/pdsim).
 
-    PYTHONPATH=. python3 scripts/v4_serving.py [--n 3000] [--seeds 3] [--jobs 8] [--slo] [--families dense8b,moe30b,tp4_32b]
+    PYTHONPATH=. python3 scripts/v4_serving.py [--n 3000] [--n-high 20000] [--seeds 3] [--jobs 8] [--slo] [--families dense8b,moe30b,tp4_32b]
                                                [--out accel_dse/data/v4_serving.json]
 
 Grid: Qwen3-8B on 1P + HBM3E (TP2, batch 64, prompt 4096, out 512, SLO TTFT 400 / TPOT 10 ms, PD prefill 2 + decode 6),
@@ -43,11 +43,13 @@ def main() -> None:
     ap.add_argument("--jobs", type=int, default=1, help="worker processes (0.55)")
     ap.add_argument("--families", default=",".join(V4_FAMILIES), help="comma list of V4_FAMILIES (0.55)")
     ap.add_argument("--slo", action="store_true", help="also bisect the DES SLO rate (slower)")
+    ap.add_argument("--n-high", type=int, default=None, help="requests per DES run at load ≥ --high-load (0.57)")
+    ap.add_argument("--high-load", type=float, default=0.85)
     ap.add_argument("--out", default=str(Path(__file__).resolve().parents[1] / "accel_dse" / "data" / "v4_serving.json"))
     a = ap.parse_args()
     t0 = time.time()
     res = v4_grid(n_req=a.n, slo=a.slo, progress=True, seeds=a.seeds, jobs=a.jobs,
-                  families=tuple(f for f in a.families.split(",") if f))
+                  families=tuple(f for f in a.families.split(",") if f), n_high=a.n_high, high_load=a.high_load)
     res["elapsed_s"] = round(time.time() - t0, 1)
     Path(a.out).write_text(json.dumps(_clean(res), indent=1, ensure_ascii=False, allow_nan=False))
     print("wrote", a.out, res["elapsed_s"], "s")

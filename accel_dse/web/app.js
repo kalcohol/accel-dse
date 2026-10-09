@@ -731,8 +731,10 @@ function renderPDQueue(q, cards, L) {
       const c = x.kv_cap;
       const pre = c.policy === 'recompute' ? `，抢占 ${num(c.preempt_per_req)} 次/请求（重算 ${num(c.recompute_ms)} ms）`
         : c.policy === 'swap' ? `，抢占 ${num(c.preempt_per_req)} 次/请求（换出 + 换入 ${num(2 * c.swap_ms)} ms，${num(c.swap_GBps_card)} GB/s/卡${c.swap_source === 'pd.swap_GBps' ? '' : '「假设」'}）` : '';
-      note += `；KV ${c.policy}：${c.capacity_tokens} tok / 副本 → ${c.slots_kv} 槽` + (c.binds ? `（生效，准入等待均值 ${num(c.slot_wait_mean_ms)} ms（P ${pct(c.p_wait || 0)}），`
-        + (c.in_ttft ? '先准入后 prefill（vLLM）：已计入 TTFT 与 SLO goodput' : 'prefill 后准入：单列、不计入 TTFT / TPOT / SLO goodput') + pre + '）' : '（不生效）');
+      const rs = (c.restore_share || 0) > 0 ? `，恢复停顿占副本 ${pct(c.restore_share)} → 槽位占用 ×${num(c.slot_slowdown)}「假设」` : '';
+      const hold = c.slot_hold_prefill_ms ? `，prefill 期间占槽 ${num(c.slot_hold_prefill_ms)} ms` : '';
+      note += `；KV ${c.policy}：${c.capacity_tokens} tok / 副本 → ${c.slots_kv} 槽` + (c.binds ? `（生效，准入等待均值 ${num(c.slot_wait_mean_ms)} ms（P ${pct(c.p_wait || 0)}，M/G/c 槽位队列${hold}），`
+        + (c.in_ttft ? '先准入后 prefill（vLLM）：已计入 TTFT 与 SLO goodput' : 'prefill 后准入：单列、不计入 TTFT / TPOT / SLO goodput') + pre + rs + '）' : '（不生效）');
     }
     if (e.static_note) note += '；' + e.static_note;
     const t = x.ttft_ms;

@@ -182,11 +182,12 @@ def _summ(rows: list[dict]) -> list[dict]:
 
 
 def _grid_point(args):
-    load, cv, prefix, family, n_req, slo, seeds = args
+    load, cv, prefix, family, n_req, slo, seeds = args[:7]
+    slo_n = args[7] if len(args) > 7 else max(600, n_req // 2)
     from .pdsim import compare
     r = compare(v4_scenario(load, cv, prefix, family), n_req=n_req, warmup=n_req // 4, seeds=seeds, slo=slo,
-                slo_n=max(600, n_req // 2), slo_tol=0.01)
-    r.update(load=load, cv=cv, prefix=prefix, family=family)
+                slo_n=slo_n, slo_tol=0.01)
+    r.update(load=load, cv=cv, prefix=prefix, family=family, n_req=n_req)
     return r
 
 
@@ -196,10 +197,11 @@ V4_EXTRA_GRID = dict(loads=V4_LOADS, cvs=(0.0, 1.0), prefixes=(False,))
 
 def v4_grid(n_req: int = 3000, slo: bool = False, loads=V4_LOADS, cvs=V4_CVS, prefixes=(False, True),
             seed: int = 11, progress: bool = False, seeds: int = 3, families=tuple(V4_FAMILIES),
-            jobs: int = 1) -> dict:
+            jobs: int = 1, n_high: int | None = None, high_load: float = 0.85) -> dict:
     """Full V4 grid (scripts/v4_serving.py).  0.55: ``seeds`` independent DES runs per point (metrics averaged,
     spread reported as ``noise``), the dense8b family on the full grid and the others on V4_EXTRA_GRID; ``jobs``
-    worker processes."""
+    worker processes.  0.57: ``n_high`` requests per DES run at load ≥ ``high_load`` (the slot / prompt queues relax
+    slowly there; the SLO bisection keeps ``n_req // 2``)."""
     seed_t = tuple(seed + i for i in range(max(1, seeds)))
     pts = []
     for fam in families:
@@ -207,7 +209,8 @@ def v4_grid(n_req: int = 3000, slo: bool = False, loads=V4_LOADS, cvs=V4_CVS, pr
         for load in g["loads"]:
             for cv in g["cvs"]:
                 for prefix in g["prefixes"]:
-                    pts.append((load, cv, prefix, fam, n_req, slo, seed_t))
+                    n_pt = n_high if (n_high and load >= high_load) else n_req
+                    pts.append((load, cv, prefix, fam, n_pt, slo, seed_t, max(600, n_req // 2)))
     rows = []
 
     def show(r):
@@ -217,16 +220,20 @@ def v4_grid(n_req: int = 3000, slo: bool = False, loads=V4_LOADS, cvs=V4_CVS, pr
                 for m, x in r.get("modes", {}).items()), flush=True)
     if jobs > 1:
         import multiprocessing as mp
+        order = sorted(range(len(pts)), key=lambda i: -pts[i][4])      # longest runs first (load balance)
+        got = {}
         with mp.get_context("fork").Pool(jobs) as pool:
-            for r in pool.imap(_grid_point, pts):
-                rows.append(r)
+            for i, r in zip(order, pool.imap(_grid_point, [pts[i] for i in order])):
+                got[i] = r
                 show(r)
+        rows = [got[i] for i in range(len(pts))]
     else:
         for a in pts:
             r = _grid_point(a)
             rows.append(r)
             show(r)
-    return {"rows": rows, "summary": _summ(rows), "n_req": n_req, "seed": seed, "seeds": list(seed_t),
+    return {"rows": rows, "summary": _summ(rows), "n_req": n_req, "n_high": n_high, "high_load": high_load,
+            "seed": seed, "seeds": list(seed_t),
             "families": {f: V4_FAMILIES[f][0] for f in families}, "bands": V4_BANDS}
 
 

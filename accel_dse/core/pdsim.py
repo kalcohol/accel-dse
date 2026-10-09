@@ -255,6 +255,8 @@ class _Replica:
         self.kv_policy = "off"
         self.kv_res = 0                    # wait: reserved S + out of the running set
         self.reprefq: deque[Req] = deque()  # recompute / swap: preempted, waiting to be restored
+        self.restoring: Req | None = None    # 0.57: the sequence being restored holds its KV + slot (vLLM allocates
+                                             # the blocks when it schedules the recompute / swap-in)
         self.n_preempt = 0
         # 0.56: admission order — after_prefill (0.55: prefilled requests wait in joinq) | before_prefill (vLLM: slot
         # and KV are taken first; ``pending`` holds admitted requests still prefilling / pulling their KV)
@@ -299,13 +301,17 @@ class _Replica:
         return r.S + r.tokens_done
 
     def _kv_used(self) -> int:
-        return sum(r.S + r.tokens_done for r in self.running) + sum(r.S for r in self.pending)
+        u = sum(r.S + r.tokens_done for r in self.running) + sum(r.S for r in self.pending)
+        return u + (self._foot(self.restoring) if self.restoring is not None else 0)
+
+    def _n_held(self) -> int:
+        return len(self.running) + len(self.pending) + (self.restoring is not None)
 
     def _can_admit(self, r: Req) -> bool:
-        if len(self.running) + len(self.pending) >= self.slots:
+        if self._n_held() >= self.slots:
             return False
         cap = self.kv_cap if self.kv_policy != "off" else None
-        if cap is None or not (self.running or self.pending):   # one sequence always runs (no deadlock)
+        if cap is None or not (self.running or self.pending or self.restoring is not None):   # one sequence always runs (no deadlock)
             return True
         if self.kv_policy == "wait":
             return self.kv_res + r.S + r.out <= cap
@@ -357,6 +363,7 @@ class _Replica:
         if (self.running or self.pending) and self._kv_used() + self._foot(r) > self.kv_cap:
             return False
         self.reprefq.popleft()
+        self.restoring = r
         if self.kv_policy == "swap":
             dur = self._foot(r) * self.kv_bpt / self.swap_Bps if self.swap_Bps > 0 else 0.0
         else:
@@ -367,6 +374,7 @@ class _Replica:
 
     def recompute_done(self, r: Req):
         self.in_flight = False
+        self.restoring = None
         self.running.append(r)               # last_tok untouched → its gap spans the preemption
         self.boundary()
 

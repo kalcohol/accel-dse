@@ -102,7 +102,7 @@ import math
 
 from .energy import ACTIONS, EnergyTable, _BITS, _UNIT_PJ, action_counts, scaleup_bytes
 from .evaluate import Result, evaluate
-from .queueing import mg1_mix_sum_quantile, dquantile, mdc_wait, mg1, mg1_sum_quantile
+from .queueing import mg1_mix_sum_quantile, dquantile, erlang_c, mdc_wait, mg1, mg1_sum_quantile
 from .scenario import Scenario
 
 QS = (0.5, 0.9, 0.99)
@@ -229,25 +229,29 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
         st1, r1 = step_of(1)
         return {"k": 1, "occupancy": 0.0, "r": r1, "tpot": st1 / e, "step": st1, "running_mean": 1.0,
                 "pi_run": (1.0,), "seen_mean": 1.0, "seen_sd": 0.0, "step_of": step_of, "e": e}
-    stretch = 1.0
-    if batch is None:
-        if lam >= B * e / (out * stB):       # even a full batch cannot keep up
-            return None
-        logp = [0.0]
-        for n in range(1, n_max + 1):
-            k = min(n, B)
-            st, _ = step_of(k)
-            if not math.isfinite(st):
+    stretch = 1.0 if batch is None else batch[2]
+
+    def _pi(slow: float = 1.0):
+        """Stationary π_n with every service rate divided by ``slow`` (0.57: restore stalls) — None if unstable."""
+        if batch is None:
+            lam_s = lam * slow
+            if lam_s >= B * e / (out * stB):       # even a full batch cannot keep up
                 return None
-            logp.append(logp[-1] + math.log(lam * out * st / (k * e)))
-            if n > B + 8 and logp[-1] < max(logp) - 40:
-                break
-        m = max(logp)
-        w = [math.exp(x - m) for x in logp]
-        Z = sum(w)
-        pi = [x / Z for x in w]
-    else:
-        lam_b, X, stretch = batch
+            logp = [0.0]
+            for n in range(1, n_max + 1):
+                k = min(n, B)
+                st, _ = step_of(k)
+                if not math.isfinite(st):
+                    return None
+                logp.append(logp[-1] + math.log(lam_s * out * st / (k * e)))
+                if n > B + 8 and logp[-1] < max(logp) - 40:
+                    break
+            m = max(logp)
+            w = [math.exp(x - m) for x in logp]
+            Z = sum(w)
+            return [x / Z for x in w]
+        lam_b, X, _ = batch
+        lam_b = lam_b * slow
         EX = sum((i + 1) * x for i, x in enumerate(X))
         if lam_b * EX >= B * e / (out * stB):
             return None
@@ -276,7 +280,10 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
             if n > B + L + 8 and w[-1] < peak * 1e-17:
                 break
         Z = sum(w)
-        pi = [x / Z for x in w]
+        return [x / Z for x in w]
+    pi = _pi(1.0)
+    if pi is None:
+        return None
     EN = sum(n * p for n, p in enumerate(pi))
     run_w = [0.0] * (B + 1)
     for n, p in enumerate(pi):
@@ -308,6 +315,7 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
             "tau_int": tau, "win": win, "pi_n": tuple(pi), "life": life,
             "mu": lambda n: min(n, B) * e / (out * step_of(min(n, B))[0]),
             "pi_run": pi_run, "seen_mean": seen_mean, "seen_sd": seen_sd, "w_seen": tuple(wsee), "step_seen_mean": st_mean,
+            "pi_at": _pi,
             "step_seen_sd": st_sd, "step_of": step_of, "e": e, "stretch": stretch, "run_w": tuple(run_w)}
 
 
@@ -985,12 +993,16 @@ def _kv_slots(ctx: dict, B: int) -> tuple[int, dict | None]:
 
 
 def _wait_mix_sum_q(tq: dict, p: float, m_cond: float) -> dict:
-    """TTFT ⊕ admission wait (0.56) 「假设」: W = 0 w.p. 1 − p, else Exp(mean m_cond) (M/M/c-like queue behind the KV
-    slots).  The TTFT law is rebuilt from its quantiles (log-survival interpolated between p50 / p90 / p99 and
-    extrapolated past p99 with the p90→p99 slope; linear from 0.6·p50 below the median) on a 64-point grid, then
+    """TTFT ⊕ admission wait (0.56) 「假设」: W = 0 w.p. 1 − p, else Exp(mean m_cond) (queue behind the KV slots; the
+    DES's conditional wait has c² ≈ 0.6 in PD and 1.6–2 colocated, so the exponential sits between, 0.57).  The TTFT
+    law is rebuilt from its quantiles (log-survival interpolated between p50 / p90 / p99 and extrapolated past p99
+    with the p90→p99 slope; linear from 0.6·p50 below the median) on a 64-point grid, then
     P(T + W > t) = S_T(t) + p·E[e^{−(t−T)/m}; T ≤ t] is solved for each quantile."""
     if p <= 0 or m_cond <= 0:
         return dict(tq)
+
+    def sw(y: float) -> float:
+        return math.exp(-y / m_cond)
     p50, p90, p99 = tq["p50"], tq["p90"], tq["p99"]
     lo = 0.6 * p50
 
@@ -1011,7 +1023,7 @@ def _wait_mix_sum_q(tq: dict, p: float, m_cond: float) -> dict:
     def surv(t: float) -> float:
         acc = 0.0
         for w, x in pts:
-            acc += w * (1.0 if x > t else p * math.exp(-(t - x) / m_cond))
+            acc += w * (1.0 if x > t else p * sw(t - x))
         return acc
     out = {"mean": tq["mean"] + p * m_cond}
     for q in QS:
@@ -1053,15 +1065,55 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
     if not x.get("stable"):
         return x
     dec = x.get("_dec") or {}
-    pi = dec.get("pi_n") or ()
-    p_wait = sum(pi[B:]) if len(pi) > B else 0.0
+    pi0 = dec.get("pi_n") or ()
     lam_r = lam / ctx[reps_key]
-    W = (dec.get("occupancy", 0.0) - (dec.get("tpot", 0.0) * lam_r * ctx["out"])) / lam_r if lam_r > 0 else 0.0
-    # the chain's queue behind the slots is M/M/c-like (memoryless lives); Lee–Longton: W_M/G/c ≈ (1 + c_s²)/2 · W_M/M/c
-    W = max(0.0, W * (1 + ctx.get("out_cs2", 1.0)) / 2)
+    run0 = dec.get("tpot", 0.0) * lam_r * ctx["out"]                   # E[running] (Little)
+    ek0 = sum(min(n, B) * q for n, q in enumerate(pi0))
+    rs = run0 / ek0 if ek0 > 0 else 1.0                                 # chain clock → wall (1 for the PD chain)
+    cs2 = ctx.get("out_cs2", 1.0)
     admit = ctx.get("kv_admit", "before_prefill")
-    kvi.update(p_wait=p_wait, slot_wait_mean_ms=W * 1e3, admit=admit,
-               in_ttft=bool(kvi["binds"] and admit == "before_prefill"))
+    hold = kvi["binds"] and admit == "before_prefill" and pool_key == "cpool" and lam_r > 0 and run0 > 0
+    t_pre = x["ttft"].get("mean", 0.0) if hold else 0.0
+
+    def slot_stats(slow: float):
+        """(P(wait), mean wait W, E[running]) with the decode service slowed by ``slow`` (restore stalls, 0.57);
+        a str = the reason it is unstable."""
+        pi = pi0 if slow == 1.0 else (dec["pi_at"](slow) if dec.get("pi_at") else None)
+        if not pi:
+            return "KV 容量不足：恢复停顿（重算 / 换入换出）拖慢 decode 后槽位队列不稳定" if slow != 1.0 else (0.0, 0.0, 0.0)
+        pw = sum(pi[B:]) if len(pi) > B else 0.0
+        occ = sum(n * q for n, q in enumerate(pi))
+        ek = sum(min(n, B) * q for n, q in enumerate(pi))
+        run = run0 if slow == 1.0 else ek * rs
+        w = (occ - (run0 if slow == 1.0 else ek)) / lam_r if lam_r > 0 else 0.0
+        # The chain's queue behind the slots is M/M/c-like (memoryless lives).  0.55 / 0.56: Lee–Longton (1 + c_s²)/2.
+        # 0.57: two-moment M/G/c — W ≈ c_s²·W_M/M/c + (1 − c_s²)·W_M/D/c for c_s² ≤ 1, with Cosmetatos' M/D/c
+        # W_M/D/c ≈ ½·W_M/M/c / (1 + (1 − ρ)(c − 1)(√(4 + 5c) − 2)/(16ρc)) (many slots drain a queue of near-equal
+        # lives faster than one server would); Lee–Longton above c_s² = 1.  ρ = E[running]/B.  c_s² = the output
+        # length's (the slot is held ∝ out) 「假设」.
+        rho_s = min(0.999, max(1e-6, run / B)) if B > 0 else 0.999
+        cosm = 1.0 + (1 - rho_s) * (B - 1) * (math.sqrt(4 + 5 * B) - 2) / (16 * rho_s * B)
+        w = max(0.0, cs2 * w + (1 - cs2) * 0.5 * w / cosm if cs2 <= 1 else w * (1 + cs2) / 2)
+        if hold:
+            # 0.57: a colocated request holds its slot from admission through its prefill queueing + prefill, not
+            # just its decode life → slot load a′ = a + λ_r·T_pre (T_pre = this mode's mean TTFT without the slot
+            # wait).  The chain (decode only) sees a; scale P(wait) and W by the M/M/c (Erlang C) ratios 「假设」.
+            # (PD: the slot is taken just before the KV pull, a few ms — negligible.)
+            a2 = run + lam_r * t_pre
+            if a2 >= B:
+                return "KV 槽位不足：先准入后 prefill 时，prefill 期间也占着 KV 槽"
+            c1, c2 = erlang_c(B, run), erlang_c(B, a2)
+            if c1 > 0:
+                pw = min(1.0, pw * c2 / c1)
+                w *= (c2 / c1) * (B - run) / (B - a2) * (run + lam_r * t_pre) / run
+        return pw, w, run
+
+    ss = slot_stats(1.0)
+    if isinstance(ss, str):
+        return {**x, "stable": False, "why": ss}
+    p_wait, W, run = ss
+    if hold:
+        kvi["slot_hold_prefill_ms"] = t_pre * 1e3
     pol = kvi["policy"]
     if pol in ("recompute", "swap"):
         pool = ctx[pool_key]
@@ -1073,6 +1125,8 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
             t_stall, t_fix = 2 * t_io, 2 * t_io
             kvi.update(swap_GBps_card=sw.get("GBps_card"), swap_source=sw.get("source"), swap_ms=t_io * 1e3)
         else:
+            # re-prefill of the mean footprint S̄ + ḡ (0.57 check: the DES's victims are young — mean footprint ≈ 0.8 of
+            # S̄ + ḡ — which offsets the convexity of prefill in length; restore 92 ms DES vs 92 ms here, dense8b CV 1)
             t_stall = t_fix = pool.run("prefill", 1, S_re).ttft
             kvi.update(recompute_ms=t_stall * 1e3)
         K, m_f, v_f = kvi["capacity_tokens"], kvi["ES"] + kvi["Eg"], kvi["var_f"]
@@ -1091,12 +1145,30 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
         tot = sum(w for w, _, _ in pts)
         Eo = sum(w * o for w, _, o in pts) / tot
         p_ev = sum(w * (Eo / S) * (1 - math.exp(-S / Eo)) for w, S, _ in pts) / tot if Eo > 0 else 0.0
-        nu_sat = p_wait * lam_r * p_ev if kvi["binds"] else 0.0
+        # 0.57: the departure that refills also frees its own grown output o_d, so the headroom walks
+        # h → h + o_d − G (not a fresh U(0, S) draw against G): P(G − o_d > h) = the 0.56 term × E_o[e^{−o/E[o]}]
+        # (G ~ Exp(E[o]), memoryless) — ≈ 0.37 at fixed outputs, ≈ 0.5 for exponential ones.
+        e_od = sum(w * math.exp(-o / Eo) for w, _, o in pts) / tot if Eo > 0 else 1.0
+        p_ev *= e_od
+        # 0.57 recompute cascade: restores take a share f of the replica, every slot is held 1/(1 − f) longer → more
+        # queueing for KV → more saturation preemptions → larger f.  Iterate f ← ν(f)·T_stall on the chain slowed by
+        # 1/(1 − f) (smallest fixed point; diverges → unstable).
+        f_r, nu_sat = 0.0, 0.0
+        for _ in range(400):
+            ss = slot_stats(1.0 / (1.0 - f_r))
+            if isinstance(ss, str):
+                return {**x, "stable": False, "why": ss}
+            p_wait, W, run = ss
+            nu_sat = p_wait * lam_r * p_ev if kvi["binds"] else 0.0
+            f_new = (nu_rice + nu_sat) * t_stall
+            if f_new >= 0.995:
+                return {**x, "stable": False, "why": f"KV 容量不足：{pol} 抢占的恢复（重算 / 换入换出）占满副本"}
+            if abs(f_new - f_r) < 1e-6:
+                f_r = f_new
+                break
+            f_r = f_new
         nu = nu_rice + nu_sat
         p_v = min(1.0, nu / lam_r) if lam_r > 0 else 0.0                 # preemptions per request
-        f_r = nu * t_stall
-        if f_r >= 1:
-            return {**x, "stable": False, "why": f"KV 容量不足：{pol} 抢占的恢复（重算 / 换入换出）占满副本"}
         st = 1 / (1 - f_r)
         g_mean = t_fix + (1 / lam_r if lam_r > 0 else 0.0)
         tp_mean0 = x["tpot_mean"] * st
@@ -1111,11 +1183,13 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
         x["e2e_mean"] = x.get("e2e_mean", 0.0) + ctx["out"] * (x["tpot_mean"] - x["tpot_mean"] / st)
         kvi.update(preempt_per_req=p_v, preempt_rice=nu_rice / lam_r if lam_r > 0 else 0.0,
                    preempt_sat=nu_sat / lam_r if lam_r > 0 else 0.0, restore_share=f_r,
-                   victim_gap_mean_ms=g_mean * 1e3)
+                   victim_gap_mean_ms=g_mean * 1e3, refill_offset_factor=e_od, slot_slowdown=st)
         if pol == "recompute":
             kvi["recompute_share"] = f_r
     else:
         kvi["preempt_per_req"] = 0.0
+    kvi.update(p_wait=p_wait, slot_wait_mean_ms=W * 1e3, admit=admit,
+               in_ttft=bool(kvi["binds"] and admit == "before_prefill"))
     if kvi["in_ttft"] and p_wait > 0 and W > 0:
         x["ttft"] = _wait_mix_sum_q(x["ttft"], min(1.0, p_wait), W / min(1.0, p_wait))
         x["e2e_mean"] = x.get("e2e_mean", 0.0) + W
