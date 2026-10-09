@@ -132,7 +132,7 @@
         <label title="leaf / rail 交换机端口数（只在每 leaf 节点数 = 0 时用）">交换机端口数 <span class="tag assume">假设</span><input type="number" id="fab-switch_radix" step="8" min="4"></label>
       </div>
       <div class="row3">
-        <label title="网内归约（厂商选项）：net = 跨节点交换机内聚合（SHARP / CollNet 类），net+link 另含节点内交换式 scale-up（NVLS 类）；每 rank 只收发一次数据">网内归约 <span class="tag assume">假设</span><select id="fab-innet_reduce"></select></label>
+        <label title="网内归约（厂商选项）：net = 跨节点交换机内聚合（SHARP / CollNet 类，allreduce），net+link 另含节点内交换式 scale-up（NVLS 类）：allreduce 每 rank 只收发一次数据；0.61 起 allgather / reduce-scatter 在该层也可走交换机多播 / 归约（字节不变，一次交换机往返代替 n − 1 步）">网内归约 <span class="tag assume">假设</span><select id="fab-innet_reduce"></select></label>
         <label title="torus2d 的 X 维长度；0 = 取最接近 √n 的因数">torus X<input type="number" id="fab-torus_x" step="1" min="0"></label>
         <label class="inline" title="PD KV 传输与两池自身的跨节点集合通信共用 NIC：KV 可用带宽 × (1 − 集合通信占用率)"><input type="checkbox" id="fab-contention"> KV 与集合通信争用 <span class="tag assume">假设</span></label>
       </div>
@@ -148,6 +148,11 @@
       <div class="row3">
         <label title="0.60：同一流水级内各集合通信的链路时间如何合成。sum = 相加（0.59）；ports = D2D PHY、scale-up 端口、NIC 是不同物理端口可同时工作，同端口串行：级链路时间 = 最忙端口的忙时之和（不低于最长的单次集合通信）">层间重叠 <span class="tag assume">假设</span><select id="fab-overlap"></select></label>
         <label class="inline" title="0.60（PD）：KV 流占 decode 池 NIC 的份额 u_kv 反馈到 decode 池的跨节点集合通信（网络带宽 × (1 − u_kv)），decode TPOT 重算（不动点迭代）"><input type="checkbox" id="fab-kv_feedback"> KV 争用回馈 decode TPOT <span class="tag assume">假设</span></label>
+      </div>
+      <div class="row3">
+        <label title="0.61：跨节点每一步若离开 leaf（leaf → spine → leaf，多经过两级交换）额外增加的时延 µs，叠加在网络 ring / tree 每步时延上；tree 只有跨 leaf 的层（相距 2^j ≥ 每 leaf 组内节点数）计入；0 = 不计（0.60）">跨 leaf 每步附加 µs <span class="tag assume">假设</span><input type="number" id="fab-hop_spine_us" step="0.1" min="0"></label>
+        <label title="0.61（三层）：每一步若离开 pod（spine → core → spine）再额外增加的时延 µs；0 = 不计">跨 pod 每步附加 µs <span class="tag assume">假设</span><input type="number" id="fab-hop_core_us" step="0.1" min="0"></label>
+        <label title="0.61：NCCL 类传输协议。off = 0.60（LL 时延 + 满带宽，偏乐观）；auto = 每次集合通信取最快：LL 带宽效率 ½（每 8 B 含 4 B 标志）、LL128 120/128、Simple 1；每步时延按 NCCL tuner 的协议比例放大（每步时延输入视为 LL 值）——小消息选 LL，大消息选 Simple / LL128">传输协议 <span class="tag assume">假设</span><select id="fab-protocol"></select></label>
       </div>
     </div>
   </section>

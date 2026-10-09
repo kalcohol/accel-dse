@@ -166,6 +166,7 @@ function fab() { if (!S.sc.fabric) S.sc.fabric = JSON.parse(JSON.stringify(S.cat
 function fabPaint() {
   $('fab-enabled').checked = !!fab().enabled; $('fab-inputs').hidden = !fab().enabled;
   for (const k of ['algo', 'net_topology', 'innet_reduce', 'overlap']) $('fab-' + k).value = fab()[k];
+  $('fab-protocol').value = fab().protocol || 'off';
   $('fab-net_tiers').value = String(fab().net_tiers || 2);
   $('fab-link_topology').value = S.sc.link.topology || 'switch';
   $('fab-contention').checked = !!fab().contention;
@@ -173,7 +174,8 @@ function fabPaint() {
   const three = (fab().net_tiers || 2) === 3;
   $('fab-pod_nodes').disabled = !three; $('fab-oversub_spine').disabled = !three;
 }
-const FAB_ALGO_ZH = { ring: 'ring（扁平环）', tree: 'tree（双二叉树）', hier: 'hier（分层）', direct: 'direct（直接）', p2p: 'p2p' };
+const FAB_ALGO_ZH = { ring: 'ring（扁平环）', tree: 'tree（双二叉树）', hier: 'hier（分层）', direct: 'direct（直接）', p2p: 'p2p', innet: 'innet（交换机内，NVLS 类）' };
+function fabAlgoZh(a) { const [b, p] = String(a).split('/'); return (FAB_ALGO_ZH[b] || b) + (p ? ` · ${p}` : ''); }
 const FAB_TOP_ZH = { ring: '顶层 ring', tree: '顶层 tree', innet: '顶层网内归约' };
 function renderFabric(r) {
   const f = r.fabric;
@@ -190,7 +192,7 @@ function renderFabric(r) {
   const rows = f.rows.slice(0, 24).map((x) => h('tr', {}, h('td', { class: 'l' }, x.kind === 'alltoall' ? 'all-to-all' : x.kind),
     h('td', {}, String(x.group)), h('td', { class: 'l' }, x.levels.map(([t, n]) => `${tier[t] || t} × ${n}`).join(' · ')),
     h('td', {}, num(x.bytes / 1024) + ' KiB'), h('td', {}, String(x.count)),
-    h('td', { class: 'l' }, (FAB_ALGO_ZH[x.algo] || x.algo) + (x.top ? `，${FAB_TOP_ZH[x.top] || x.top}` : '')),
+    h('td', { class: 'l' }, fabAlgoZh(x.algo) + (x.top ? `，${FAB_TOP_ZH[x.top] || x.top}` : '')),
     h('td', {}, num(x.bw_us)), h('td', {}, num(x.alpha_us)),
     h('td', {}, x.net_leaf_share === undefined ? '—' : `${pct(x.net_leaf_share)}${f.pod_nodes ? ' / ' + pct(x.net_pod_share) : ''}`),
     h('td', { class: 'l small' }, Object.entries(x.cands).filter(([k]) => k !== x.algo).map(([k, v]) => `${k} ${num(v.bw_us + v.alpha_us)}`).join(' · ') || '—')));
@@ -1069,7 +1071,7 @@ const SWEEP_ZH = {
   'chip.sram_mib': 'SRAM MiB', 'chip.sram_port_Bpc': 'SRAM 端口 B/cycle', 'chip.freq_ghz': '频率 GHz', 'chip.mac_eff': 'MAC 效率',
   'chip.gemv_macs': 'GEMV MAC/cycle', mem_eff: 'DRAM 效率', 'link.GBps': '节点内 GB/s', 'link.alpha_us': '节点内 α µs',
   'serving.moe_skew': 'MoE 倾斜', 'chip.slc_mib': 'SLC MiB', 'chip.slc_GBps': 'SLC GB/s', 'd2d.GBps': 'D2D GB/s（自定义）', 'd2d.alpha_us': 'D2D α µs', package_cards: '每封装 die 数（开 D2D）',
-  d2d_units: 'D2D 单元数', 'net.GBps': '跨节点 GB/s', 'net.alpha_us': '跨节点 α µs', node_cards: '每节点卡数', 'fabric.oversub': '收敛比 r（需开拓扑感知）', 'fabric.oversub_spine': 'spine 收敛比 r₂（需三层）', 'fabric.pod_nodes': '每 pod 节点数（需三层）',
+  d2d_units: 'D2D 单元数', 'net.GBps': '跨节点 GB/s', 'net.alpha_us': '跨节点 α µs', node_cards: '每节点卡数', 'fabric.oversub': '收敛比 r（需开拓扑感知）', 'fabric.oversub_spine': 'spine 收敛比 r₂（需三层）', 'fabric.pod_nodes': '每 pod 节点数（需三层）', 'fabric.hop_spine_us': '跨 leaf 每步附加 µs（需拓扑感知）', 'fabric.hop_core_us': '跨 pod 每步附加 µs（需三层）',
   'workload.frames': '帧数', 'workload.steps': '去噪步数', 'workload.height': '高 px', 'workload.width': '宽 px',
   'workload.seq_len': '序列长度（残基）', 'workload.msa': 'MSA 行数', 'workload.recycles': '主干遍数',
   'workload.samples': '扩散样本数',
@@ -1094,7 +1096,7 @@ const SWEEP_DEFAULT = {
   mem_eff: '0.5,0.6,0.7,0.8,0.9', 'link.GBps': '50,100,200,400,900', 'link.alpha_us': '0,1,3,5,10',
   'serving.moe_skew': '1,1.25,1.5,2,3,4', 'chip.slc_mib': '0,64,256,1024,4096', 'chip.slc_GBps': '500,1000,2000,4000', 'd2d.GBps': '500,1000,2000,4000',
   'd2d.alpha_us': '0,0.5,1,2', package_cards: '1,2,4,8',
-  d2d_units: '1,2,4,8', 'net.GBps': '12.5,25,50,100,200', 'net.alpha_us': '2,5,10,20', node_cards: '0,2,4,8', 'fabric.oversub': '1,2,4,8', 'fabric.oversub_spine': '1,2,4,8', 'fabric.pod_nodes': '8,16,32,64',
+  d2d_units: '1,2,4,8', 'net.GBps': '12.5,25,50,100,200', 'net.alpha_us': '2,5,10,20', node_cards: '0,2,4,8', 'fabric.oversub': '1,2,4,8', 'fabric.oversub_spine': '1,2,4,8', 'fabric.pod_nodes': '8,16,32,64', 'fabric.hop_spine_us': '0,0.5,1,2', 'fabric.hop_core_us': '0,0.5,1,2',
   'workload.frames': '17,33,49,81,121', 'workload.steps': '10,20,30,50', 'workload.height': '240,480,720',
   'workload.width': '416,832,1280', 'workload.seq_len': '128,256,512,1022,2048',
   'workload.msa': '64,256,512,1024,4096', 'workload.recycles': '1,2,3,4,6', 'workload.samples': '1,5,10,25',
@@ -1297,7 +1299,7 @@ async function init() {
   for (const k of ['GBps', 'alpha_us']) bindNumber('n-' + k, () => S.sc.net[k], (x) => (S.sc.net[k] = x));
   bindNumber('n-node_cards', () => S.sc.node_cards || 0, (x) => (S.sc.node_cards = x), { int: true });
   for (const [k, o] of [['oversub', {}], ['oversub_spine', {}], ['pod_nodes', { int: true }], ['leaf_nodes', { int: true }], ['switch_radix', { int: true }], ['torus_x', { int: true }],
-    ['hop_d2d_us', {}], ['hop_link_us', {}], ['hop_net_us', {}], ['hop_net_tree_us', {}]])
+    ['hop_d2d_us', {}], ['hop_link_us', {}], ['hop_net_us', {}], ['hop_net_tree_us', {}], ['hop_spine_us', {}], ['hop_core_us', {}]])
     bindNumber('fab-' + k, () => fab()[k], (x) => (fab()[k] = x), o);
   opts($('fab-link_topology'), [['switch', 'switch（非阻塞交换）'], ['full_mesh', 'full mesh（全互连）'], ['ring', 'ring（双向环）'], ['torus2d', '2D torus']], S.sc.link.topology || 'switch');
   opts($('fab-net_topology'), [['fat_tree', 'fat-tree / leaf-spine'], ['rail', 'rail-optimized']], fab().net_topology);
@@ -1309,6 +1311,8 @@ async function init() {
   opts($('fab-overlap'), [['sum', 'sum（相加，0.59）'], ['ports', 'ports（不同端口并发）']], fab().overlap || 'sum');
   $('fab-net_tiers').addEventListener('change', (e) => { fab().net_tiers = Number(e.target.value); fabPaint(); schedule(); });
   $('fab-overlap').addEventListener('change', (e) => { fab().overlap = e.target.value; schedule(); });
+  opts($('fab-protocol'), [['off', 'off（0.60：LL 时延 + 满带宽）'], ['auto', 'auto（每次取最快）'], ['LL', 'LL'], ['LL128', 'LL128'], ['Simple', 'Simple']], fab().protocol || 'off');
+  $('fab-protocol').addEventListener('change', (e) => { fab().protocol = e.target.value; schedule(); });
   $('fab-kv_feedback').addEventListener('change', (e) => { fab().kv_feedback = e.target.checked; schedule(); });
   $('fab-link_topology').addEventListener('change', (e) => { S.sc.link.topology = e.target.value; schedule(); });
   for (const k of ['algo', 'net_topology', 'innet_reduce']) $('fab-' + k).addEventListener('change', (e) => { fab()[k] = e.target.value; schedule(); });

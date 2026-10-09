@@ -128,6 +128,12 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="spine → core oversubscription r2 (3-tier, default 1) 「假设」")
     p.add_argument("--fabric-overlap", dest="fabric_overlap", default=None, choices=["sum", "ports"],
                    help="0.60: ports = different tiers' ports run concurrently (stage link = busiest port), sum = 0.59")
+    p.add_argument("--hop-spine-us", dest="hop_spine_us", type=float, default=None,
+                   help="0.61: extra per-step latency of a network step leaving the leaf (default 0) 「假设」")
+    p.add_argument("--hop-core-us", dest="hop_core_us", type=float, default=None,
+                   help="0.61: extra per-step latency of a network step leaving the pod (3-tier, default 0) 「假设」")
+    p.add_argument("--fabric-protocol", dest="fabric_protocol", default=None, choices=["off", "auto", "LL", "LL128", "Simple"],
+                   help="0.61: NCCL-like protocol (bandwidth efficiency vs per-step latency); auto = fastest per collective 「假设」")
     p.add_argument("--kv-feedback", dest="kv_feedback", action="store_true", default=None,
                    help="0.60 PD: KV stream's NIC share slows the decode pool's network collectives 「假设」")
     p.add_argument("--net-topology", dest="net_topology", default=None, choices=["fat_tree", "rail"],
@@ -294,7 +300,9 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                                                 ("switch_radix", "switch_radix"), ("torus_x", "torus_x"),
                                                 ("innet_reduce", "innet_reduce"), ("net_tiers", "net_tiers"),
                                                 ("pod_nodes", "pod_nodes"), ("oversub_spine", "oversub_spine"),
-                                                ("overlap", "fabric_overlap"), ("kv_feedback", "kv_feedback"))
+                                                ("overlap", "fabric_overlap"), ("kv_feedback", "kv_feedback"),
+                                                ("hop_spine_us", "hop_spine_us"), ("hop_core_us", "hop_core_us"),
+                                                ("protocol", "fabric_protocol"))
            if getattr(a, dest, None) is not None}
     if getattr(a, "fabric", False) or fab:
         sc["fabric"] = {"enabled": True, **fab}

@@ -130,6 +130,7 @@ FABRIC_ALGOS = ("auto", "auto_overlap", "ring", "tree", "hier")
 OVERLAP_MODES = ("sum", "ports")
 NET_TIERS = (2, 3)
 INNET_MODES = ("off", "net", "net+link")
+PROTOCOLS = ("off", "auto", "LL", "LL128", "Simple")    # 0.61 NCCL-like wire protocols (off = the 0.60 model)
 
 
 @dataclass(frozen=True)
@@ -160,7 +161,17 @@ class Fabric:
     algo          + "auto_overlap": per stage, the algorithm combination minimising the stage time
                   max(compute / DRAM window, link) + Σα (exposed time) instead of each collective's bw + α alone.
     kv_feedback   PD: the KV stream's share of the decode pool's NIC slows the decode pool's network collectives
-                  (u_kv; decode TPOT recomputed) — 0.59 only reported the collectives' slowdown on the KV stream."""
+                  (u_kv; decode TPOT recomputed) — 0.59 only reported the collectives' slowdown on the KV stream.
+    0.61 「假设」 (defaults = the 0.60 behaviour):
+    hop_spine_us  extra per-step latency of a network step that leaves the leaf (leaf → spine → leaf: two more switch
+                  traversals); hop_net_us / hop_net_tree_us stay the same-leaf step.
+    hop_core_us   extra again for a step that leaves the pod (three-tier fat-tree: spine → core → spine).
+    protocol      "off" (0.60: hop_* latency at full link bandwidth) | "auto" (per collective the fastest of LL / LL128 /
+                  Simple) | one of them: bandwidth efficiency LL ½ (4 B flag per 8 B), LL128 120/128, Simple 1;
+                  per-step latency × the NCCL tuner's protocol ratios (hop_* are the LL values).
+    innet_reduce  "net+link" also covers all-gather / reduce-scatter on the switched scale-up tier (NVLS-class
+                  multicast / in-switch reduction): same bytes per port (reduce-scatter sends n shards instead of n − 1),
+                  one switch round trip instead of n − 1 steps; SHARP-class "net" stays allreduce-only."""
     enabled: bool = False
     algo: str = "auto"
     net_topology: str = "fat_tree"
@@ -179,6 +190,9 @@ class Fabric:
     oversub_spine: float = 1.0
     overlap: str = "sum"
     kv_feedback: bool = False
+    hop_spine_us: float = 0.0
+    hop_core_us: float = 0.0
+    protocol: str = "off"
 
     def __post_init__(self):
         if not all(isinstance(getattr(self, k), bool) for k in ("enabled", "contention", "kv_feedback")):
@@ -193,7 +207,7 @@ class Fabric:
         if self.pod_nodes and self.leaf_nodes and self.pod_nodes % self.leaf_nodes:
             raise ValueError("fabric.pod_nodes must be a multiple of fabric.leaf_nodes (whole leaves per pod)")
         for k, opts in (("algo", FABRIC_ALGOS), ("net_topology", NET_TOPOLOGIES), ("innet_reduce", INNET_MODES),
-                        ("overlap", OVERLAP_MODES)):
+                        ("overlap", OVERLAP_MODES), ("protocol", PROTOCOLS)):
             if getattr(self, k) not in opts:
                 raise ValueError(f"fabric.{k} must be one of {', '.join(opts)}")
         if isinstance(self.oversub, bool) or not isinstance(self.oversub, (int, float)) or not 1.0 <= self.oversub <= 64:
@@ -202,7 +216,7 @@ class Fabric:
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                 raise ValueError(f"fabric.{k} must be an integer in [{lo}, {hi}]")
-        for k in ("hop_d2d_us", "hop_link_us", "hop_net_us", "hop_net_tree_us"):
+        for k in ("hop_d2d_us", "hop_link_us", "hop_net_us", "hop_net_tree_us", "hop_spine_us", "hop_core_us"):
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 1e4:
                 raise ValueError(f"fabric.{k} must be in [0, 1e4] µs")

@@ -191,13 +191,50 @@ _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _TIERS = ("d2d", "link", "net")
 
 
-def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
+_COLL_MEMO: dict = {}       # 0.61: System → {(kind, bytes, group, stride): collective_full(...)} (pure function)
+_MEMO_CAP = 200_000
+
+
+def _memos(sys: System, org: str, model: ModelSpec) -> tuple:
+    """0.61: per-op cost memo — the same per-rank op shapes recur across layouts / batches of a search (e.g. B/dp
+    equal at the doubling points): ~29× hits on _op_seconds, ~9× on the fabric collectives at 1024 cards.  Pure
+    functions of (op, chip, mapping, model formats) / (collective, System); the collective memo is off while
+    fabric_report logs collectives.  Looked up once per evaluate."""
+    try:
+        om = model_cache(model).setdefault("op_secs", {})
+    except TypeError:           # a shim namespace (no weak reference): no memo across calls
+        return {}, None
+    if len(om) > 64:
+        om.clear()
+    om = om.setdefault((sys.chip, org), {})
+    if len(om) > _MEMO_CAP:
+        om.clear()
+    cm = None
+    if sys.fabric.enabled and fabric._LOG is None:
+        if len(_COLL_MEMO) > 256:
+            _COLL_MEMO.clear()
+        cm = _COLL_MEMO.setdefault(sys, {})
+        if len(cm) > _MEMO_CAP:
+            cm.clear()
+    return om, cm
+
+
+def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tuple | None = None) -> dict:
     d = dict.fromkeys(_SUM_KEYS, 0.0)
+    om, cm = memos if memos is not None else _memos(sys, org, model)
     for o in ops:
         if o.kind == "comm":
             if sys.fabric.enabled:      # 0.60: per-tier busy seconds (overlap = ports) + candidates (auto_overlap)
-                bw, a, fd, fn, busy, full = fabric.collective_full(o.comm_kind, o.comm_bytes, o.comm_group, sys,
-                                                                   o.comm_stride)
+                if cm is not None:
+                    ck = (o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)
+                    cr = cm.get(ck)
+                    if cr is None:
+                        cr = cm[ck] = fabric.collective_full(o.comm_kind, o.comm_bytes, o.comm_group, sys,
+                                                             o.comm_stride)
+                    bw, a, fd, fn, busy, full = cr
+                else:
+                    bw, a, fd, fn, busy, full = fabric.collective_full(o.comm_kind, o.comm_bytes, o.comm_group, sys,
+                                                                       o.comm_stride)
                 for t, x in busy.items():
                     d["busy_" + t] += x
                 d["bw_max"] = max(d["bw_max"], bw)
@@ -209,7 +246,10 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec) -> dict:
             d["link_bw"] += bw; d["sync"] += a; d["link_bytes"] += o.comm_bytes; d["d2d_bytes"] += o.comm_bytes * fd
             d["net_bytes"] += o.comm_bytes * fn
             continue
-        a_, ma, fe, v, ce, idl, sb = _op_seconds(o, sys, org, model)
+        r_ = om.get(o)
+        if r_ is None:
+            r_ = om[o] = _op_seconds(o, sys, org, model)
+        a_, ma, fe, v, ce, idl, sb = r_
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
         d["flops"] += o.flops
@@ -266,12 +306,13 @@ def _p2p(sys: System, payload: float, stage: int, stage_cards: int) -> tuple[flo
     ln = {"d2d": sys.d2d, "link": sys.link, "net": sys.net}[t]
     if sys.fabric.enabled and payload > 0:      # 0.59: oversubscribed leaf uplinks + per-step hop latency
         src = (stage + 1) * stage_cards - 1
-        bw = fabric.p2p(payload, t, ln, sys, src, src + 1, stage_cards)
-        a = ln.alpha_us * 1e-6 + fabric._hop(sys.fabric, t)
+        bw, a, pr = fabric.p2p_alpha(fabric.p2p(payload, t, ln, sys, src, src + 1, stage_cards), t, ln, sys, src,
+                                     src + 1, with_proto=True)
         if fabric._LOG is not None:
+            nm = "p2p" if pr is None else f"p2p/{pr}"
             e = fabric._LOG.setdefault(("p2p", stage, round(payload)), {
-                "kind": "p2p", "group": 2, "bytes": payload, "count": 0, "levels": [[t, 2]], "algo": "p2p",
-                "top": "", "cands": {"p2p": [bw, a]}, "stage": stage})
+                "kind": "p2p", "group": 2, "bytes": payload, "count": 0, "levels": [[t, 2]], "algo": nm,
+                "top": "", "cands": {nm: [bw, a]}, "stage": stage})
             e["count"] += 1
         return bw, a, float(t == "d2d"), float(t == "net")
     return (*collective_seconds("p2p", payload, 2, ln), float(t == "d2d"), float(t == "net"))
@@ -440,10 +481,11 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         ops_memo.clear()
     if fabric._LOG is not None:     # fabric_report: run every collective (no layer memo)
         ops_memo = {}
+    mm = _memos(sys, scn.mapping, m)
     for st in plan_stages(m.n_layers, pp):
         agg = dict.fromkeys(_SUM_KEYS, 0.0)
         if st.has_embed:
-            _acc(agg, _sum_ops(embed_ops(m, ph, sh), sys, scn.mapping, m))
+            _acc(agg, _sum_ops(embed_ops(m, ph, sh), sys, scn.mapping, m, mm))
         counts: dict = {}
         for li in range(st.first, st.last):
             g = groups[li]
@@ -458,10 +500,12 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 cache[g] = ops_memo.get(okey)
                 if cache[g] is None:
                     fabric._MULT = n
-                    cache[g] = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
+                    cache[g] = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m, mm)
                     fabric._MULT = 1
             _acc(agg, cache[g], n)
-        _acc(agg, _sum_ops(_tail_ops(m, st.has_head, ph, sh, spec_k), sys, scn.mapping, m))
+        tail = _tail_ops(m, st.has_head, ph, sh, spec_k)
+        if tail:                        # 0.61: non-head stages have no tail ops (summing zeros is a no-op)
+            _acc(agg, _sum_ops(tail, sys, scn.mapping, m, mm))
         skey = (st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap, n_mtp)
         store = store_memo.get(skey)
         if store is None:

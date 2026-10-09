@@ -860,7 +860,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - ✓ KV 对集合通信的拖慢只报告、不回灌（0.60 `kv_feedback`，只回灌 decode 池）；
 - ✓ spine 视为非阻塞（0.60 三层 fat-tree）；
 - 拥塞控制、ECMP 哈希冲突、incast 未建模；
-- 网内归约只用于 allreduce（reduce-scatter / allgather 的 NVLS 未建模）。
+- ✓ 网内归约只用于 allreduce（0.61：节点内交换式 scale-up 上的 allgather / reduce-scatter 走 NVLS 类，§19.7）。
 
 ### 19.1 大规模卡数（0.60）
 
@@ -891,7 +891,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
   - 网内归约 0（时延按 3 层交换机计 2·3 步）。
 - r₂ = 1 时与两层逐位相同（f_pod ≤ f_leaf）。PP 交接跨 pod 为 r₁·r₂、跨 leaf 为 r₁。PD KV 为 max(r₁(1 − m/n), r₁r₂(1 − P/n))。
 - **流量分层**：报告 `fabric.net_traffic` 给出每步跨节点 MB，以及离开 leaf / 离开 pod 的字节份额；每行集合通信给出自己的 f_leaf / f_pod。
-- 每步时延不随交换机层数增加（`hop_net_us` 一个值）——缺口。
+- 每步时延不随交换机层数增加（`hop_net_us` 一个值）——0.61 起可加 `hop_spine_us` / `hop_core_us`（§19.6）。
 
 ### 19.3 端口并发与暴露时间最小的算法选择（0.60）
 
@@ -949,3 +949,47 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - 4096 卡以上的布局搜索与稳定性分析为数十秒级（未并行化）；
 - PD 排队模型在 B > 1024 时用插值（误差 < 0.5%）；
 - 大规模下 PD 排队报告仍可达 15–25 s。
+
+### 19.6 性能（0.61）
+
+全部为纯 Python、零依赖；除特别注明外与 0.60 逐位一致（1356 + 985 + 3150 项指纹 0 diff，PD 报告全 JSON 对照 0 diff）。
+- **PD 排队链**（`core/pdqueue.py`）：
+  - `_pi`（泊松到达）的截断判据原为每步 `max(logp)`，O(N²)；改为滚动最大值（逐位相同）。
+  - `_occ_tau`：泊松到达（L = 1）时耦合和为空，直接 d = G/(π·μ)（逐位相同）；批到达且 B ≥ 256、N·L > 2·10⁴ 时，两个 O(L) 内积改为对切片的 `math.sumprod`（C 级、手工向量化；舍入差 ~1e-16），`_pi` 的批到达卷积同。
+  - B ≥ 256 时，链越过众数且低于峰值 1e-20（泊松：e^−46）就停止，不再必走到 n > B (+ L)：丢弃的质量 < 1e-17（与原 e^−40 截断同一量级）。B ≤ 1024 时每个状态 k 都要一次评估，此项把轻载链从 ~B 个评估降到众数附近。
+  - 返回前的 4 次逐 k 扫描改为一次步长表。
+  - B < 256 的链保持 0.60 的循环（指纹的 PD 场景 B = 32 逐位相同）。
+- **评估**（`core/evaluate.py`）：每个算子的代价（键 = 算子、芯片、映射、模型格式）与每次 fabric 集合通信（键 = System、kind、字节、组、stride）做记忆化。搜索中同样的每 rank 形状反复出现（例如倍增点上 B/dp 相同）：1024 卡布局排名中 `_op_seconds` 命中 29×、集合通信 9×。fabric_report 记录集合通信时不用集合通信缓存。非 head 级的空尾部算子不再求和。
+- **布局搜索**（`core/search.py`）：给出 `pool` 时（HTTP 服务的 spawn 进程池，默认 min(8, CPU) 个 worker），各候选布局的指数 b_max 区间（排序上界，约 2/3 的评估）在 worker 中计算，只回传 (fits, slo_ok, tokens/step, step, throughput)；行的 Result 在主进程重算。排名、剪枝计数、评估数与串行完全相同（测试）。
+- **稳定性**：扰动用例分发到进程池（原来整个请求占一个 worker）。
+- 剪枝支配候选未做（布局间没有可证明的支配关系；分支定界已按精确上界剪掉 ~96% 的候选）。
+
+### 19.7 交换机层数与每步时延（0.61，「假设」，默认 0）
+
+- `fabric.hop_spine_us`：一步网络通信若离开 leaf（leaf → spine → leaf，多两级交换），在 `hop_net_us` / `hop_net_tree_us` 上额外增加的时延；`hop_core_us`：再离开 pod（三层）时的额外时延。
+- 设组内 n 个节点、每 leaf m 个、每 pod p 个（与 §19.2 同，按 stride 折算）：
+  - ring / 平铺步（ring 的网络步、hier 顶层 ring、allgather、all-to-all 的一跳、p2p 类）：每步 + hop_spine·[n > m] + hop_core·[n > p]（锁步，任一对跨 leaf 即整步跨 leaf）；
+  - 二叉树：第 j 层连接相距 2^j 的 rank，2^j ≥ m 时离开 leaf → max(0, ⌈log₂n⌉ − ⌈log₂m⌉) 层付 hop_spine，pod 同理；一次 allreduce 上下各一遍；
+  - 网内归约：层级 2 / 3 时往返各加一次 hop_spine / hop_core；
+  - PP 交接：两张卡的节点不在同一 leaf / pod 时加；
+  - PD KV：随机配对，期望 (1 − m/n)·hop_spine + (1 − P/n)·hop_core。
+- 手算：32 节点、每 leaf 2、每 pod 8、hop_spine 1 µs、hop_core 2 µs：ring allreduce 62 个网络步 → +186 µs；tree 5 层中 4 层出 leaf、2 层出 pod → 2 × 8 = +16 µs；all-to-all +3 µs。默认 0 = 0.60。
+
+### 19.8 NVLS 类 allgather / reduce-scatter 与 NCCL 第二棵树（0.61）
+
+- `innet_reduce = net+link` 且 scale-up 为 switch 时，allgather / reduce-scatter 多一个候选 `innet`（厂商选项「假设」）：
+  - 该层一次交换机往返（2 步）代替 n − 1 个 ring 步；
+  - 字节不变：allgather 多播后每 rank 仍收 (n − 1) 份；reduce-scatter 交换机内归约时每 rank 发 n 份（ring 为 n − 1 份）；
+  - 其他层（D2D、网络）保持分层 ring。SHARP 类的网络层归约仍只用于 allreduce。
+  - 当前推理图里只有 TP 的 logits allgather 会用到（reduce-scatter 只在 `fabric.collective("reducescatter", …)` 中提供）。例：DeepSeek-V3 TP8·DP128·EP1024 decode，logits allgather 7.2 → 4.2 µs/步，约 −0.05%（NVLS allreduce 是 0.59 起就有的，那部分 −13%）。
+- **第二棵树**：NCCL 双二叉树的带宽 2B/β（每棵树一半数据）0.59 起就是这样计的；0.61 修正的是跨 leaf 切边份额：原来只数第一棵树，现在两棵（第二棵 = n 偶数时镜像、n 奇数时平移一位，即 ncclGetDtree）各一半。m | n 且 n 为偶数时镜像把 leaf 映到 leaf，值不变（3150 项 fabric 指纹因此 0 diff）；例 n = 5、m = 2：3/4 → (3 + 2)/2/4 = 0.625。
+
+### 19.9 传输协议（0.61，「假设」，默认 off）
+
+- `fabric.protocol`：off（0.60：LL 的每步时延 + 满带宽，偏乐观）| auto（每次集合通信取最快）| LL | LL128 | Simple。
+- 带宽效率：LL ½（每 8 B 含 4 B 标志），LL128 120/128，Simple 1；bw 与各层忙时 ÷ 效率。
+- 每步时延 × NCCL tuner hwLat 表的协议比例（hop_* 视为 LL 值）：scale-up / D2D 1 : 1.9/0.6 : 3.4/0.6，网络 ring 1 : 4.0/2.7 : 14/2.7，网络 tree 1 : 8.5/5.0 : 14/5.0。这些是开源 NCCL 的默认表，不是任何系统的实测。
+- 候选名带协议后缀（`ring/LL128`）；强制算法时取该算法下最快的协议；PP p2p 同样取最快协议。
+- auto 只会让结果变慢或不变（off 是两者最好的组合）。例：DeepSeek-V3 1024 卡 decode +2–3%（all-to-all 选 LL128），prefill +0.02–3%（大消息 Simple）。
+
+**0.61 剩余缺口**：ECMP / 拥塞 / incast；协议通道数（nChannels）与每通道带宽上限、LL 的 llMaxBw 未建模；reduce-scatter 未出现在推理算子图中；KV 回馈只回灌 decode 池；PD + 布局搜索在 B ≤ 1024 时每个状态仍是一次精确评估（256 卡约 16 s）；映射对比在服务中按映射并行，单个映射内部串行。

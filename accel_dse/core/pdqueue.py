@@ -110,6 +110,17 @@ QS = (0.5, 0.9, 0.99)
 B_CAPS = (1, 2, 4, 8, 16, 32, 64)
 SPLIT_EXACT = 32    # 0.60: PD SLO split search evaluates every split up to this many candidates, else coarse → fine
 INTERP_B = 1024     # 0.60: decode batch above which the birth–death chain interpolates step(k) (see _decode_birth_death)
+FAST_B, FAST_NL = 256, 20000   # 0.61: chains with B ≥ FAST_B and N·L > FAST_NL use C-level dot products
+                    # (math.sumprod) for the batch-arrival convolutions in _pi / _occ_tau (same sums, rounding differs
+                    # ~1e-16 rel); other chains keep the 0.60 loops bit-for-bit
+
+try:
+    _dot = math.sumprod                       # Python ≥ 3.12
+except AttributeError:                        # pragma: no cover
+    import operator as _op
+
+    def _dot(a, b):
+        return math.fsum(map(_op.mul, a, b))
 _QK = ("mean", "p50", "p90", "p99")
 
 
@@ -255,6 +266,10 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
         return {"k": 1, "occupancy": 0.0, "r": r1, "tpot": st1 / e, "step": st1, "running_mean": 1.0,
                 "pi_run": (1.0,), "seen_mean": 1.0, "seen_sd": 0.0, "step_of": step_of, "e": e}
     stretch = 1.0 if batch is None else batch[2]
+    # 0.61 (B ≥ FAST_B): stop the chain once it is past its mode and below ~1e-20 of the peak instead of always
+    # running to n > B (+ L): the dropped mass is < 1e-17 relative — at B = 4096 a lightly loaded chain went 4.9k
+    # states deep for a mode in the hundreds, and every state k ≤ B cost an evaluate() when B ≤ INTERP_B
+    trunc = B >= FAST_B
 
     def _pi(slow: float = 1.0):
         """Stationary π_n with every service rate divided by ``slow`` (0.57: restore stalls) — None if unstable."""
@@ -263,15 +278,20 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
             if lam_s >= B * e / (out * stB):       # even a full batch cannot keep up
                 return None
             logp = [0.0]
+            m = 0.0                               # 0.61: running max (was max(logp) per step — O(N²))
             for n in range(1, n_max + 1):
                 k = min(n, B)
                 st, _ = step_of(k)
                 if not math.isfinite(st):
                     return None
-                logp.append(logp[-1] + math.log(lam_s * out * st / (k * e)))
-                if n > B + 8 and logp[-1] < max(logp) - 40:
+                x = logp[-1] + math.log(lam_s * out * st / (k * e))
+                logp.append(x)
+                if x > m:
+                    m = x
+                if n > B + 8 and x < m - 40:
                     break
-            m = max(logp)
+                if trunc and x < m - 46 and x < logp[-2]:   # 0.61: past the mode and < e^-46 of it (large B only)
+                    break
             w = [math.exp(x - m) for x in logp]
             Z = sum(w)
             return [x / Z for x in w]
@@ -288,14 +308,21 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
         L = len(X)
         w = [1.0]
         peak = 1.0
+        fast = B >= FAST_B and L * (B + L) > FAST_NL
+        below = 0
+        rt = tail[::-1]                       # rt[j] = tail[L − j]: Σ_i w[i]·tail[n − i] = dot(w[lo:n], rt[L − n + lo:L])
         for n in range(1, n_max + 1):
             k = min(n, B)
             st, _ = step_of(k)
             if not math.isfinite(st):
                 return None
-            up = 0.0
-            for i in range(max(0, n - L), n):
-                up += w[i] * tail[n - i]
+            if fast:
+                lo = max(0, n - L)
+                up = _dot(w[lo:n], rt[L - n + lo:L])
+            else:
+                up = 0.0
+                for i in range(max(0, n - L), n):
+                    up += w[i] * tail[n - i]
             w.append(lam_b * up * out * st / (k * e))
             if w[-1] > peak:
                 peak = w[-1]
@@ -304,6 +331,10 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
                 peak = 1.0
             if n > B + L + 8 and w[-1] < peak * 1e-17:
                 break
+            if trunc:                         # 0.61: L straight weights < 1e-20 of the peak → every later up-sum is too
+                below = below + 1 if w[-1] < peak * 1e-20 else 0
+                if below > L:
+                    break
         Z = sum(w)
         return [x / Z for x in w]
     pi = _pi(1.0)
@@ -319,18 +350,20 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
     k_mean = Ek / busy if busy > 0 else 1.0
     # what a running request sees per iteration: weight ∝ π(k)·k / step(k) (iterations at k occur at rate 1/step;
     # the request is in k of them).  Its mean step = E[k] / E[k/step] = the Little mean exactly.
-    wsee = [run_w[k] * k / step_of(k)[0] if k else 0.0 for k in range(B + 1)]
+    kmax = min(B, len(pi) - 1)                  # 0.61: step list once (was step_of() per k per pass, 4 passes)
+    sv = [0.0] + [step_of(k)[0] for k in range(1, kmax + 1)]
+    wsee = [run_w[k] * k / sv[k] if k else 0.0 for k in range(kmax + 1)] + [0.0] * (B - kmax)
     ws_tot = sum(wsee) or 1.0
     wsee = [x / ws_tot for x in wsee]
     seen_mean = sum(k * x for k, x in enumerate(wsee))
     seen_sd = math.sqrt(max(0.0, sum(k * k * x for k, x in enumerate(wsee)) - seen_mean ** 2))
-    st_mean = sum(step_of(k)[0] * x for k, x in enumerate(wsee) if x)
-    st_sd = math.sqrt(max(0.0, sum(step_of(k)[0] ** 2 * x for k, x in enumerate(wsee) if x) - st_mean ** 2))
+    st_mean = sum(sv[k] * x for k, x in enumerate(wsee) if x)
+    st_sd = math.sqrt(max(0.0, sum(sv[k] ** 2 * x for k, x in enumerate(wsee) if x) - st_mean ** 2))
     k_hat = max(1, min(B, int(round(seen_mean))))
     st, r = step_of(k_hat)
     # 0.55: lifetime-averaging factor from the occupancy's integrated autocorrelation time (exact for this chain)
     tau = _occ_tau(pi, B, (lam, [1.0]) if batch is None else batch[:2],
-                   lambda k: k * e / (out * step_of(k)[0]))
+                   lambda k: k * e / (out * sv[k]))
     life = out * st_mean / e
     win = _WIN
     if tau and tau > 0 and life > 0:
@@ -376,6 +409,28 @@ def _occ_tau(pi: list, B: int, arr, mu_of) -> float | None:
     d = [0.0] * (N + 1)
     T = 0.0                      # T(n) = Σ_{m>n} d(m) Σ_{i<n} π_i tail(m − i)
     sig = 0.0
+    if L == 1:                   # 0.61: Poisson arrivals — the coupling sums are empty (T ≡ 0), same arithmetic as below
+        for n in range(N - 1, 0, -1):
+            mu = mu_of(min(n, B))
+            if pi[n] > 1e-280 and mu > 0:
+                d[n] = G[n] / (pi[n] * mu)
+            sig += d[n] * G[n]
+        return sig / var if sig > 0 else None
+    if B >= FAST_B and N * L > FAST_NL:     # 0.61: the two O(L) sums as C-level dot products on slices (hand-vectorized)
+        rt = tail[L + 1::-1]     # rt[j] = tail[L + 1 − j]
+        for n in range(N - 1, 0, -1):
+            if n < N - 1:
+                hi = min(N, n + L + 1)
+                if hi > n + 2:
+                    T -= pi[n] * _dot(d[n + 2:hi], tail[2:hi - n])
+                lo = max(0, n + 1 - L)
+                if n > lo:
+                    T += d[n + 1] * _dot(pi[lo:n], rt[L - n + lo:L])
+            mu = mu_of(min(n, B))
+            if pi[n] > 1e-280 and mu > 0:
+                d[n] = (G[n] - lam_b * T) / (pi[n] * mu)
+            sig += d[n] * G[n]
+        return sig / var if sig > 0 else None
     for n in range(N - 1, 0, -1):
         if n < N - 1:            # T(n) from T(n+1)
             T -= pi[n] * sum(d[m] * tail[m - n] for m in range(n + 2, min(N, n + L + 1)))

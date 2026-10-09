@@ -57,23 +57,30 @@ def _score_of(scn: Scenario, objective: str) -> float:
     return bb.result.per_card
 
 
+def _case(args) -> tuple:
+    """One perturbation: (top label, its score, the base top-1 layout's score, same?) — a top-level function so a
+    process pool can run it (0.61)."""
+    scn, cards, max_tp, objective, top_layout = args
+    # the base top-1 layout's exact score is the incumbent: only layouts that strictly beat it are solved
+    mine_v = _score_of(scn.replace("layout", top_layout), objective)
+    better = [r for r in search_layouts(scn, cards, max_tp=max_tp, objective=objective, top=1, floor=mine_v) if r.batch]
+    if better:
+        return better[0].layout.label, better[0].score(objective), mine_v, False
+    return top_layout.label, mine_v, mine_v, True
+
+
 def ranking_stability(base: Scenario, cards: int, include_mapping: bool = True, max_tp: int | None = None,
-                      objective: str = "decode", progress=None) -> Stability:
-    """Top-1 layout under each perturbation (exact top-1 search) vs the base top-1."""
+                      objective: str = "decode", progress=None, pool=None) -> Stability:
+    """Top-1 layout under each perturbation (exact top-1 search) vs the base top-1.  ``pool`` (0.61): the base
+    search's brackets and the perturbation cases run in its worker processes (same cases, same order)."""
     base = base.colocated()
-    rows = search_layouts(base, cards, max_tp=max_tp, objective=objective, top=1)
+    rows = search_layouts(base, cards, max_tp=max_tp, objective=objective, top=1, pool=pool)
     top = rows[0]
     cases, ok = [], 0
     perts = perturbations(base, include_mapping)
-    for i, (name, scn) in enumerate(perts):
-        # the base top-1 layout's exact score is the incumbent: only layouts that strictly beat it are solved
-        mine_v = _score_of(scn.replace("layout", top.layout), objective)
-        better = [r for r in search_layouts(scn, cards, max_tp=max_tp, objective=objective, top=1, floor=mine_v) if r.batch]
-        if better:
-            best_lab, best_v = better[0].layout.label, better[0].score(objective)
-        else:
-            best_lab, best_v = top.layout.label, mine_v
-        same = not better
+    jobs = [(scn, cards, max_tp, objective, top.layout) for _, scn in perts]
+    res = pool.map(_case, jobs) if pool is not None else map(_case, jobs)
+    for i, ((name, scn), (best_lab, best_v, mine_v, same)) in enumerate(zip(perts, res)):
         close = best_v > 0 and mine_v >= 0.95 * best_v
         ok += same or close
         cases.append({"case": name, "top": best_lab, "top_tok_s_card": best_v,

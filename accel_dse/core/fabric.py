@@ -135,13 +135,25 @@ def _btree_parent(rank: int, n: int) -> int:
     return up
 
 
+def _dtree_parent2(rank: int, n: int) -> int:
+    """Parent in NCCL's second tree (ncclGetDtree): the mirror (n even) / one-shift (n odd) of the first."""
+    if n % 2:
+        u = _btree_parent((rank - 1) % n, n)
+        return -1 if u == -1 else (u + 1) % n
+    u = _btree_parent(n - 1 - rank, n)
+    return -1 if u == -1 else n - 1 - u
+
+
 @lru_cache(maxsize=4096)
 def tree_cut_share(n: int, m: int) -> float:
-    """Share of the NCCL binary-tree edges over n nodes (m consecutive nodes per leaf) that leave a leaf."""
+    """Share of the NCCL double-binary-tree edges over n nodes (m consecutive nodes per leaf) that leave a leaf.
+    0.61: both trees, each carrying half of the bytes (0.59 / 0.60 counted the first tree only; same value whenever
+    the mirror maps leaves onto leaves, i.e. m | n with n even)."""
     if n <= 1 or m >= n:
         return 0.0
-    cut = sum(1 for r in range(1, n) if r // m != _btree_parent(r, n) // m)
-    return cut / (n - 1)
+    cut1 = sum(1 for r in range(1, n) if r // m != _btree_parent(r, n) // m)
+    cut2 = sum(1 for r in range(n) if (q := _dtree_parent2(r, n)) != -1 and r // m != q // m)
+    return 0.5 * (cut1 + cut2) / (n - 1)
 
 
 def pod_nodes(fab: Fabric, node_cards: int) -> int | None:
@@ -231,11 +243,58 @@ def _steps_split(levels, total_steps_of):
     return out
 
 
+PROTOS = ("LL", "LL128", "Simple")
+_PROTO_EFF = {"LL": 0.5, "LL128": 120.0 / 128.0, "Simple": 1.0}
+# 0.61 「假设」: per-step latency ratios LL : LL128 : Simple from the NCCL tuner's hwLat table (tuning.cc, open-source
+# defaults; NVLink ring .6 / 1.9 / 3.4 µs, NET ring 2.7 / 4.0 / 14 µs, NET tree 5.0 / 8.5 / 14 µs) applied to the
+# user's hop_* (= the LL values); the D2D tier takes the scale-up ratios
+_PROTO_LAT = {"link": (1.0, 1.9 / 0.6, 3.4 / 0.6), "net": (1.0, 4.0 / 2.7, 14.0 / 2.7),
+              "tree": (1.0, 8.5 / 5.0, 14.0 / 5.0)}
+
+
+def base_algo(name: str) -> str:
+    """Algorithm of a candidate name ("ring/LL128" → "ring"; 0.61 protocol suffix)."""
+    return name.split("/", 1)[0]
+
+
+def _protos(fab: Fabric) -> tuple:
+    p = getattr(fab, "protocol", "off")
+    return (None,) if p == "off" else PROTOS if p == "auto" else (p,)
+
+
+def _hop_p(fab: Fabric, tier: str, proto, tree: bool = False) -> float:
+    h = _hop(fab, tier, tree)
+    if proto is None:
+        return h
+    return h * _PROTO_LAT["tree" if tree else ("net" if tier == "net" else "link")][PROTOS.index(proto)]
+
+
+def switch_extra(fab: Fabric, n_net: int, s_net: int, node_cards: int) -> tuple[float, float, int]:
+    """0.61 「假设」: extra seconds per network step from the switch tiers it crosses, for a pattern over n_net group
+    nodes (consecutive s_net nodes apart).  Returns (ring / flat step: + hop_spine if the group spans leaves,
+    + hop_core if it spans pods;  binary tree: Σ over the ⌈log₂ n⌉ levels — level j joins ranks 2^j apart, so it
+    leaves the leaf once 2^j ≥ m (m group nodes per leaf): max(0, ⌈log₂ n⌉ − ⌈log₂ m⌉) levels pay hop_spine, likewise
+    pods;  in-network reduction levels (1 leaf, 2 spine, 3 core))."""
+    if n_net <= 1 or node_cards <= 0 or (not fab.hop_spine_us and not fab.hop_core_us):
+        return 0.0, 0.0, 0
+    m = _block(n_net, leaf_nodes(fab, node_cards), s_net)
+    P = pod_nodes(fab, node_cards)
+    p = _block(n_net, P, s_net) if P else n_net
+    ring = 1e-6 * (fab.hop_spine_us * (n_net > m) + fab.hop_core_us * (n_net > p))
+    L = math.ceil(math.log2(n_net))
+    tree = 1e-6 * (fab.hop_spine_us * max(0, L - math.ceil(math.log2(m))) +
+                   fab.hop_core_us * max(0, L - math.ceil(math.log2(p))))
+    return ring, tree, (3 if n_net > p else 2 if n_net > m else 1)
+
+
 def candidates(kind: str, payload: float, group: int, sys, stride: int = 1, k_pkg: int | None = None,
                k_node: int | None = None) -> tuple[dict, dict, list]:
     """Every algorithm of one collective (0.60): {name: (bw s, α s, {tier: busy s})}, {name: {tier: byte share}},
     and the levels.  bw = the collective's own bandwidth time (max over tiers for single-phase ring / tree /
-    all-to-all, sum of the phases for hier); busy = the seconds each tier's ports are occupied."""
+    all-to-all, sum of the phases for hier); busy = the seconds each tier's ports are occupied.
+    0.61: ``fabric.protocol`` ≠ off → one candidate per algorithm × protocol ("ring/LL128"): bw and busy ÷ the
+    protocol's efficiency, per-step latency × its ratio; hop_spine / hop_core added to the network steps that leave
+    the leaf / pod; NVLS / SHARP-class all-gather / reduce-scatter ("innet") with ``innet_reduce``."""
     fab: Fabric = sys.fabric
     lv, k1, k2 = _levels(group, sys, stride, k_pkg, k_node)
     if not lv:
@@ -266,63 +325,98 @@ def candidates(kind: str, payload: float, group: int, sys, stride: int = 1, k_pk
 
     top = len(lv) - 1
     nt, _, tt = lv[top]
+    x_ring, x_tree, x_lvl = switch_extra(fab, nt, s_net, sys.node_cards) if tt == "net" else (0.0, 0.0, 0)
+    # 0.61 NVLS class (all-gather / reduce-scatter): the switched scale-up tier with innet_reduce = net+link
+    # (SHARP-class network aggregation stays allreduce-only, as in 0.59)
+    inn = [t == "link" and fab.innet_reduce == "net+link" and topo == "switch" for _, _, t in lv]
     cands: dict = {}
     tops_pick = ""
-    if kind == "allreduce":
-        _, busy = single([2 * (group - 1) / group * payload / (K[i] * beta(i, "ring")) for i in range(len(lv))])
-        bw = 2 * (group - 1) / group * payload * max(1.0 / (K[i] * beta(i, "ring")) for i in range(len(lv)))
-        st = _steps_split(lv, lambda U: 2 * (U - 1))
-        cands["ring"] = (bw, a_launch + sum(st[t] * _hop(fab, t) for t in st), busy)
-        if tt == "net":     # NCCL tree: chains inside the node, double binary tree across nodes
-            _, busy = single([2 * payload / beta(i, "ring") for i in range(top)]
-                             + [2 * payload / (K[top] * beta(top, "tree"))])
-            bw = 2 * payload * max([1.0 / beta(i, "ring") for i in range(top)] + [1.0 / (K[top] * beta(top, "tree"))])
-            stl = _steps_split(lv[:top], lambda U: 2 * (U - 1)) if top else {}
-            lat = sum(stl[t] * _hop(fab, t) for t in stl) + 2 * math.ceil(math.log2(nt)) * _hop(fab, tt, tree=True)
-        else:               # one node (nNodes = 1): the NCCL tree is a chain through all ranks
-            _, busy = single([2 * payload / beta(i, "ring") for i in range(len(lv))])
-            bw = 2 * payload * max(1.0 / beta(i, "ring") for i in range(len(lv)))
-            stl = _steps_split(lv, lambda U: 2 * (U - 1))
-            lat = sum(stl[t] * _hop(fab, t) for t in stl)
-        cands["tree"] = (bw, a_launch + lat, busy)
-        lo = [2 * (lv[i][0] - 1) / lv[i][0] * payload / K[i] / beta(i, "ring") for i in range(top)]
-        lo_lat = sum(2 * (lv[i][0] - 1) * _hop(fab, lv[i][2]) for i in range(top))
-        b_top = payload / K[top]
-        tops = {"ring": (2 * (nt - 1) / nt * b_top / beta(top, "ring"), 2 * (nt - 1) * _hop(fab, tt))}
-        if tt == "net":
-            tops["tree"] = (2 * b_top / beta(top, "tree"), 2 * math.ceil(math.log2(nt)) * _hop(fab, tt, tree=True))
-        if (tt == "net" and fab.innet_reduce != "off") or \
-                (tt == "link" and fab.innet_reduce == "net+link" and topo == "switch"):
-            P = pod_nodes(fab, sys.node_cards) if tt == "net" else None
-            lvl = (3 if P and nt > P else 2 if nt > leaf_nodes(fab, sys.node_cards) else 1) if tt == "net" else 1
-            tops["innet"] = (b_top / beta(top, "innet"), 2 * lvl * _hop(fab, tt))
-        tn = min(tops, key=lambda x: sum(tops[x]))
-        lo_bw = sum(lo)
-        cands["hier"] = (lo_bw + tops[tn][0], a_launch + lo_lat + tops[tn][1], dict(zip(T, lo + [tops[tn][0]])))
-        tops_pick = tn
-    elif kind == "allgather":
-        _, busy = single([(group - 1) * payload / (K[i] * beta(i, "ring")) for i in range(len(lv))])
-        bw = (group - 1) * payload * max(1.0 / (K[i] * beta(i, "ring")) for i in range(len(lv)))
-        st = _steps_split(lv, lambda U: U - 1)
-        cands["ring"] = (bw, a_launch + sum(st[t] * _hop(fab, t) for t in st), busy)
-        ph = [(n - 1) * math.prod(m for m, _, _ in lv[i + 1:]) * payload / beta(i, "ring") for i, (n, _, _) in enumerate(lv)]
-        cands["hier"] = (sum(ph), a_launch + sum((n - 1) * _hop(fab, t) for n, _, t in lv), dict(zip(T, ph)))
-        tops_pick = "ring"
-    elif kind == "alltoall":
-        vols = [(n - 1) * K[i] / group * payload for i, (n, ln, t) in enumerate(lv)]
-        if fab.net_topology == "rail" and tt == "net" and k2 > 1:
-            for i, (_, _, t) in enumerate(lv):
-                if t == "link":             # PXN: cross-rail network bytes first hop over the scale-up tier
-                    vols[i] += vols[top] * (k2 - 1) / k2
-        bw, busy = single([v / beta(i, "alltoall") for i, v in enumerate(vols)])
-        cands["direct"] = (bw, a_launch + max(_hop(fab, t) for _, _, t in lv), busy)
-    else:                                   # p2p-like: the outermost tier
-        x = payload / beta(top, "ring")
-        cands["p2p"] = (x, a_launch + _hop(fab, tt), {tt: x})
+    for pr in _protos(fab):
+        def H(t: str, tree: bool = False) -> float:     # per-step latency of tier t (switch tiers on the network)
+            h = _hop_p(fab, t, pr, tree)
+            if t == "net" and (x_ring or x_tree):
+                h += x_tree if tree else x_ring
+            return h
+        c: dict = {}
+        if kind == "allreduce":
+            _, busy = single([2 * (group - 1) / group * payload / (K[i] * beta(i, "ring")) for i in range(len(lv))])
+            bw = 2 * (group - 1) / group * payload * max(1.0 / (K[i] * beta(i, "ring")) for i in range(len(lv)))
+            st = _steps_split(lv, lambda U: 2 * (U - 1))
+            c["ring"] = (bw, a_launch + sum(st[t] * H(t) for t in st), busy)
+            if tt == "net":     # NCCL tree: chains inside the node, double binary tree across nodes
+                _, busy = single([2 * payload / beta(i, "ring") for i in range(top)]
+                                 + [2 * payload / (K[top] * beta(top, "tree"))])
+                bw = 2 * payload * max([1.0 / beta(i, "ring") for i in range(top)] + [1.0 / (K[top] * beta(top, "tree"))])
+                stl = _steps_split(lv[:top], lambda U: 2 * (U - 1)) if top else {}
+                lat = sum(stl[t] * H(t) for t in stl) + 2 * math.ceil(math.log2(nt)) * _hop_p(fab, tt, pr, tree=True) \
+                    + (2 * x_tree if x_tree else 0.0)
+            else:               # one node (nNodes = 1): the NCCL tree is a chain through all ranks
+                _, busy = single([2 * payload / beta(i, "ring") for i in range(len(lv))])
+                bw = 2 * payload * max(1.0 / beta(i, "ring") for i in range(len(lv)))
+                stl = _steps_split(lv, lambda U: 2 * (U - 1))
+                lat = sum(stl[t] * H(t) for t in stl)
+            c["tree"] = (bw, a_launch + lat, busy)
+            lo = [2 * (lv[i][0] - 1) / lv[i][0] * payload / K[i] / beta(i, "ring") for i in range(top)]
+            lo_lat = sum(2 * (lv[i][0] - 1) * H(lv[i][2]) for i in range(top))
+            b_top = payload / K[top]
+            tops = {"ring": (2 * (nt - 1) / nt * b_top / beta(top, "ring"), 2 * (nt - 1) * H(tt))}
+            if tt == "net":
+                tops["tree"] = (2 * b_top / beta(top, "tree"), 2 * math.ceil(math.log2(nt)) * _hop_p(fab, tt, pr, tree=True)
+                                + (2 * x_tree if x_tree else 0.0))
+            if (tt == "net" and fab.innet_reduce != "off") or \
+                    (tt == "link" and fab.innet_reduce == "net+link" and topo == "switch"):
+                P = pod_nodes(fab, sys.node_cards) if tt == "net" else None
+                lvl = (3 if P and nt > P else 2 if nt > leaf_nodes(fab, sys.node_cards) else 1) if tt == "net" else 1
+                xi = 0.0
+                if tt == "net" and (fab.hop_spine_us or fab.hop_core_us):
+                    xi = 2e-6 * (fab.hop_spine_us * (x_lvl >= 2) + fab.hop_core_us * (x_lvl >= 3))
+                tops["innet"] = (b_top / beta(top, "innet"), 2 * lvl * _hop_p(fab, tt, pr) + xi)
+            tn = min(tops, key=lambda x: sum(tops[x]))
+            lo_bw = sum(lo)
+            c["hier"] = (lo_bw + tops[tn][0], a_launch + lo_lat + tops[tn][1], dict(zip(T, lo + [tops[tn][0]])))
+            tops_pick = tn
+        elif kind in ("allgather", "reducescatter"):
+            # payload = one rank's shard (all-gather input / reduce-scatter output): every rank moves (g − 1) shards
+            _, busy = single([(group - 1) * payload / (K[i] * beta(i, "ring")) for i in range(len(lv))])
+            bw = (group - 1) * payload * max(1.0 / (K[i] * beta(i, "ring")) for i in range(len(lv)))
+            st = _steps_split(lv, lambda U: U - 1)
+            c["ring"] = (bw, a_launch + sum(st[t] * H(t) for t in st), busy)
+            ph = [(n - 1) * math.prod(m for m, _, _ in lv[i + 1:]) * payload / beta(i, "ring") for i, (n, _, _) in enumerate(lv)]
+            c["hier"] = (sum(ph), a_launch + sum((n - 1) * H(t) for n, _, t in lv), dict(zip(T, ph)))
+            if any(inn):        # 0.61 NVLS class: the switched scale-up level is one switch round trip
+                rs = kind == "reducescatter"   # in-switch reduction: each rank sends its n shards once (n vs n − 1)
+                phi, lat = [], 0.0             # all-gather multicast: each rank still receives n − 1 shards
+                for i, (n, _, t) in enumerate(lv):
+                    M = math.prod(m for m, _, _ in lv[i + 1:])
+                    if inn[i]:
+                        phi.append((n if rs else n - 1) * M * payload / beta(i, "innet"))
+                        lat += 2 * _hop_p(fab, t, pr)
+                    else:
+                        phi.append(ph[i])
+                        lat += (n - 1) * H(t)
+                c["innet"] = (sum(phi), a_launch + lat, dict(zip(T, phi)))
+            tops_pick = "ring"
+        elif kind == "alltoall":
+            vols = [(n - 1) * K[i] / group * payload for i, (n, ln, t) in enumerate(lv)]
+            if fab.net_topology == "rail" and tt == "net" and k2 > 1:
+                for i, (_, _, t) in enumerate(lv):
+                    if t == "link":             # PXN: cross-rail network bytes first hop over the scale-up tier
+                        vols[i] += vols[top] * (k2 - 1) / k2
+            bw, busy = single([v / beta(i, "alltoall") for i, v in enumerate(vols)])
+            c["direct"] = (bw, a_launch + max(H(t) for _, _, t in lv), busy)
+        else:                                   # p2p-like: the outermost tier
+            x = payload / beta(top, "ring")
+            c["p2p"] = (x, a_launch + H(tt), {tt: x})
+        for name, (bw, a, busy) in c.items():
+            if pr is None:
+                cands[name] = (bw, a, busy)
+            else:
+                e = _PROTO_EFF[pr]
+                cands[f"{name}/{pr}"] = (bw / e, a, {t: x / e for t, x in busy.items()})
     # byte shares for the energy counts: hierarchical volumes (alltoall: per-tier destinations; ring: link mix)
     if kind == "alltoall":
         vol = [(n - 1) * K[i] / group for i, (n, _, _) in enumerate(lv)]
-    elif kind == "allgather":
+    elif kind in ("allgather", "reducescatter"):
         vol = [(n - 1) * math.prod(m for m, _, _ in lv[i + 1:]) for i, (n, _, _) in enumerate(lv)]
     else:
         vol = [2 * (n - 1) / n / K[i] for i, (n, _, _) in enumerate(lv)]
@@ -330,7 +424,7 @@ def candidates(kind: str, payload: float, group: int, sys, stride: int = 1, k_pk
     hshare = {t: v / tot for v, (_, _, t) in zip(vol, lv)}
     shares = {}
     for name in cands:
-        if kind in ("allreduce", "allgather") and name == "ring":
+        if kind in ("allreduce", "allgather", "reducescatter") and base_algo(name) == "ring":
             U = [math.prod(n for n, _, _ in lv[i:]) for i in range(len(lv))] + [1]
             hops = [U[i] - U[i + 1] for i in range(top)] + [nt]         # ring hops per tier (sum = g)
             shares[name] = {t: h / group for h, (_, _, t) in zip(hops, lv)}
@@ -340,12 +434,16 @@ def candidates(kind: str, payload: float, group: int, sys, stride: int = 1, k_pk
     return cands, shares, meta
 
 
-_PATTERN = {"ring": "ring", "tree": "tree", "direct": "alltoall", "p2p": "ring"}
+_PATTERN = {"ring": "ring", "tree": "tree", "direct": "alltoall", "p2p": "ring", "innet": "innet"}
 
 
 def pick(cands: dict, fab: Fabric) -> str:
-    if fab.algo not in ("auto", "auto_overlap") and fab.algo in cands:
-        return fab.algo
+    if fab.algo not in ("auto", "auto_overlap"):
+        if fab.algo in cands:
+            return fab.algo
+        sub = [k for k in cands if base_algo(k) == fab.algo]     # 0.61: the user's algorithm, fastest protocol
+        if sub:
+            return min(sub, key=lambda x: cands[x][0] + cands[x][1])
     return min(cands, key=lambda x: cands[x][0] + cands[x][1])
 
 
@@ -367,14 +465,14 @@ def collective_full(kind: str, payload: float, group: int, sys, stride: int = 1,
         lv = meta["levels"]
         e = _LOG.setdefault(key, {"kind": kind, "group": group, "bytes": payload, "count": 0,
                                   "levels": [[t, n] for n, _, t in lv], "algo": name,
-                                  "top": meta["top"] if name == "hier" else "",
+                                  "top": meta["top"] if base_algo(name) == "hier" else "",
                                   "cands": {k: [v[0], v[1]] for k, v in cands.items()},
                                   "busy": {k: dict(v[2]) for k, v in cands.items()},
                                   "net_frac": {k: v.get("net", 0.0) for k, v in shares.items()}, "hier_top": meta["top"]})
         if meta["tt"] == "net":
-            e["net_tiers"] = {k: net_shares(fab, "tree" if (k == "hier" and meta["top"] == "tree") else
-                                            "innet" if (k == "hier" and meta["top"] == "innet") else
-                                            _PATTERN.get(k, "ring"), meta["nt"], meta["s_net"], sys.node_cards)
+            e["net_tiers"] = {k: net_shares(fab, "tree" if (base_algo(k) == "hier" and meta["top"] == "tree") else
+                                            "innet" if (base_algo(k) == "hier" and meta["top"] == "innet") else
+                                            _PATTERN.get(base_algo(k), "ring"), meta["nt"], meta["s_net"], sys.node_cards)
                               for k in cands}
         e["count"] += _MULT
     full = None
@@ -435,6 +533,38 @@ def p2p(payload: float, tier: str, ln: Link, sys, src_card: int, dst_card: int, 
     return payload / b
 
 
+def p2p_alpha(payload_s: float, tier: str, ln: Link, sys, src_card: int, dst_card: int,
+              with_proto: bool = False) -> tuple:
+    """(bw s, α s) of a PP hand-off whose bandwidth seconds are ``payload_s`` (0.61): α = launch + one step of the
+    tier, + hop_spine / hop_core when the two cards' nodes sit under different leaves / pods; with
+    ``fabric.protocol`` the fastest (or the chosen) protocol: bw ÷ efficiency, step × its latency ratio."""
+    fab = sys.fabric
+    x = 0.0
+    if tier == "net" and sys.node_cards > 0 and (fab.hop_spine_us or fab.hop_core_us):
+        ns, nd = src_card // sys.node_cards, dst_card // sys.node_cards
+        L = leaf_nodes(fab, sys.node_cards)
+        P = pod_nodes(fab, sys.node_cards)
+        x = 1e-6 * (fab.hop_spine_us * (ns // L != nd // L) + fab.hop_core_us * bool(P and ns // P != nd // P))
+    best = None
+    for pr in _protos(fab):
+        bw = payload_s if pr is None else payload_s / _PROTO_EFF[pr]
+        a = ln.alpha_us * 1e-6 + _hop_p(fab, tier, pr) + (x if x else 0.0)
+        if best is None or bw + a < best[0] + best[1]:
+            best = (bw, a, pr)
+    return best if with_proto else best[:2]
+
+
+def kv_hop_extra(fab: Fabric, node_cards: int, total_cards: int) -> float:
+    """0.61 「假设」: mean switch-tier latency of a PD KV transfer — random prefill → decode pairs leave the leaf with
+    share 1 − m/n (hop_spine) and the pod with 1 − P/n (hop_core), n nodes."""
+    if node_cards <= 0 or (not fab.hop_spine_us and not fab.hop_core_us):
+        return 0.0
+    n = max(1, -(-total_cards // node_cards))
+    m = leaf_nodes(fab, node_cards)
+    P = pod_nodes(fab, node_cards)
+    return 1e-6 * (fab.hop_spine_us * max(0.0, 1.0 - m / n) + fab.hop_core_us * (max(0.0, 1.0 - P / n) if P else 0.0))
+
+
 def kv_factor(fab: Fabric, node_cards: int, total_cards: int) -> float:
     """β divisor of the PD KV hand-off over the network: random prefill → decode card pairs across n nodes; the share
     1 − m/n of pairs leaves the leaf (m nodes per leaf / rail switch), all cards streaming at once.  0.60 three tiers:
@@ -454,8 +584,9 @@ def kv_factor(fab: Fabric, node_cards: int, total_cards: int) -> float:
 
 
 _ALGO_ZH = {"ring": "ring（扁平环）", "tree": "tree（双二叉树）", "hier": "hier（分层）", "direct": "direct（直接 all-to-all）",
+            "p2p": "p2p", "innet": "innet（交换机内归约 / 多播，NVLS 类）"}
+_KIND_ZH = {"allreduce": "allreduce", "allgather": "allgather", "reducescatter": "reduce-scatter", "alltoall": "all-to-all",
             "p2p": "p2p"}
-_KIND_ZH = {"allreduce": "allreduce", "allgather": "allgather", "alltoall": "all-to-all", "p2p": "p2p"}
 
 
 def fabric_report(scn, res=None) -> dict | None:
@@ -485,7 +616,7 @@ def fabric_report(scn, res=None) -> dict | None:
     for e in sorted(log.values(), key=lambda x: -x["count"] * sum(x["cands"][x["algo"]])):
         bw, a = e["cands"][e["algo"]]
         row = {"kind": e["kind"], "group": e["group"], "bytes": e["bytes"], "count": e["count"],
-               "levels": e["levels"], "algo": e["algo"], "top": e["hier_top"] if e["algo"] == "hier" and "hier_top" in e
+               "levels": e["levels"], "algo": e["algo"], "top": e["hier_top"] if base_algo(e["algo"]) == "hier" and "hier_top" in e
                else e["top"], "bw_us": bw * 1e6, "alpha_us": a * 1e6,
                "cands": {k: {"bw_us": v[0] * 1e6, "alpha_us": v[1] * 1e6} for k, v in e["cands"].items()}}
         if "busy" in e:

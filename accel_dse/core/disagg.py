@@ -266,7 +266,7 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
     alpha = kv_link.alpha_us * 1e-6
     kv_fab = None
     if scn.fabric.enabled:      # 0.59 「假设」: oversubscribed leaf uplinks + NICs shared with the pools' collectives
-        from .fabric import _hop, kv_factor
+        from .fabric import _hop, kv_factor, kv_hop_extra
         fac = kv_factor(scn.fabric, scn.node_cards, total) if kv_tier == "net" else 1.0
         bn = kv_link.GBps * 1e9
 
@@ -277,6 +277,8 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         beta_raw = beta
         beta = beta / fac * (1.0 - u_c)
         alpha += _hop(scn.fabric, kv_tier)
+        if kv_tier == "net":    # 0.61: hop_spine / hop_core of the pairs that leave the leaf / pod
+            alpha += kv_hop_extra(scn.fabric, scn.node_cards, total)
         kv_fab = {"leaf_factor": fac, "u_coll": u_c, "GBps_raw": beta_raw / 1e9, "GBps_eff": beta / 1e9}
     L = m.n_layers
     b_req = min(c_p, c_d) * beta

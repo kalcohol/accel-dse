@@ -3,6 +3,45 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.61.0] - 2026-10-09
+
+性能（纯 Python、零依赖），以及交换机层数时延、NVLS 类 allgather / reduce-scatter、NCCL 第二棵树、传输协议（「假设」，默认关）。默认结果（1356 项指纹）与 0.60.0 逐字节一致（与旧 fp471 基线的 26 项 MiniMax-H3 / LPDDR 差异在 0.60.0 中已存在），985 项多节点 / D2D / PD 指纹与 3150 项 fabric 开的指纹均 0 diff；大规模 PD 报告全 JSON 与 0.60 对照 0 diff（B ≤ 1024 的个别值有 ≤ 3e-16 的舍入差）。
+
+### 性能
+- PD 排队链：泊松链截断判据的 O(N²) `max(logp)` 改为滚动最大值；`_occ_tau` 泊松闭式、批到达内积用 `math.sumprod`；B ≥ 256 时链越过众数并低于峰值 1e-20 即停（丢弃质量 < 1e-17）；步长表只建一次。
+- 评估：算子代价与 fabric 集合通信记忆化（1024 卡布局排名中命中 29× / 9×），空尾部算子跳过。
+- 布局搜索：HTTP 服务下各候选的 b_max 区间在进程池中计算（排名、剪枝、评估数与串行相同）；稳定性的扰动用例分发到进程池；默认 worker 数 5 → min(8, CPU)。
+
+| 操作（box 8 核；1P + HBM3e，8 卡 / 节点） | 0.60 | 0.61 单进程 | 0.61 服务（8 worker） |
+|---|---|---|---|
+| PD 排队报告 DeepSeek-V3 256 副本 B4096 | 21.2 s | 3.5 s | — |
+| PD 排队报告 Kimi-K2 B8192 | 48.4 s | 3.5 s | — |
+| PD 排队报告 8 副本 B256 | 16.3 s | 2.4 s | — |
+| PD 排队报告 B2048 / B1024 | 18.1 / 6.4 s | 3.8 / 2.3 s | — |
+| 布局排名 top-16，DeepSeek-V3 1024 卡 | 7.5 s | 6.2 s | 2.7 s |
+| 映射对比 1024 卡（DeepSeek-V3 / Kimi-K2） | 27.6 / 28.4 s | 20.3 / 21.8 s | 7.2 / 5.3 s |
+| 映射对比 DeepSeek-V3 4096 卡 | 43.1 s | 35.6 s | 8.3 s |
+| 排名稳定性 1024 卡 | 30.9 s | 25.0 s | 5.5 s |
+| PD + 排队 + 布局搜索 256 / 1024 卡 | 22.5 / 14.6 s | 16.5 / 8.6 s | — |
+
+### 新增（「假设」，默认关）
+- `fabric.hop_spine_us` / `hop_core_us`：网络步离开 leaf / pod 时的额外每步时延（ring 每步、tree 按出 leaf / pod 的层数、网内归约、all-to-all、PP、PD KV 的期望值）。
+- `innet_reduce = net+link`：交换式 scale-up 上 allgather / reduce-scatter 的 NVLS 类候选 `innet`（字节不变，一次交换机往返代替 n − 1 步）；`fabric.collective` 支持 `reducescatter`。
+- NCCL 第二棵树：跨 leaf 切边份额按两棵树各一半（m | n 且 n 偶数时不变）。
+- `fabric.protocol` = off | auto | LL | LL128 | Simple：带宽效率 ½ / 120/128 / 1，每步时延按 NCCL tuner 协议比例；候选名带后缀（`ring/LL128`）。
+- CLI：`--hop-spine-us --hop-core-us --fabric-protocol`；Web：跨 leaf / 跨 pod 每步附加、传输协议输入，算法列显示协议；扫描参数 `fabric.hop_spine_us`、`fabric.hop_core_us`。
+- 建模说明 §19.6–19.9；测试 `tests/test_core_061.py`（14 项手算 / 等价性）。
+
+### 数值例子（1P + HBM3e，三层：每 leaf 4、每 pod 32 节点，r₁ = r₂ = 2）
+- DeepSeek-V3 PP4·DP256·EP256（1024 卡）decode b1024：5.075 ms；hop_spine/core 1/2 µs → +2.4%；protocol auto → +3.1%（all-to-all 选 LL128）；全开 +5.4%。prefill +0.02–0.04%。Kimi-K2 同布局 decode +2.4 / +3.2 / +5.6%。
+- DeepSeek-V3 TP8·DP128·EP1024 decode：hop 1/2 µs → +5.4%；NVLS 类 allgather 把 logits allgather 7.2 → 4.2 µs（−0.05%）。
+
+### 剩余缺口
+- ECMP / 拥塞 / incast；协议的通道数与每通道带宽上限未建模；
+- reduce-scatter 不在推理算子图中；KV 回馈只回灌 decode 池；
+- PD + 布局搜索在 B ≤ 1024 时每个状态仍需一次精确评估（256 卡约 16 s）；
+- 映射对比在服务中按映射并行，单个映射内部串行；未做支配候选剪枝（没有可证明的支配关系）。
+
 ## [0.60.0] - 2026-10-09
 
 大规模卡数，以及三层 fat-tree、端口并发、按暴露时间选算法（「假设」，默认关）。默认结果（1356 项指纹）与 0.59.0 逐字节一致，985 项多节点 / D2D / PD 指纹也一致。另有 3150 项 fabric 开、默认参数的指纹，只在 PP > 1 且 scale-up 拓扑 ≠ switch 的 144 项上不同（新增的 PP 多跳，见下）。

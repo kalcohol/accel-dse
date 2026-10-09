@@ -38,6 +38,21 @@ def _feasible(r: Result) -> bool:
     return r.fits and r.slo_ok
 
 
+@dataclass(frozen=True)
+class _Lite:
+    """What the batch search reads from a Result (0.61: shipped back from worker processes instead of the ~50 kB
+    Result; the rows' Results are re-evaluated in the parent — same deterministic code, same numbers)."""
+    fits: bool
+    slo_ok: bool
+    tokens_per_step: float
+    step: float
+    throughput: float
+
+    @staticmethod
+    def of(r: Result) -> "_Lite":
+        return _Lite(r.fits, r.slo_ok, r.tokens_per_step, r.step, r.throughput)
+
+
 class _BatchSearch:
     """Batch search state for one scenario (evaluations memoised across the two phases)."""
 
@@ -48,10 +63,26 @@ class _BatchSearch:
         self._lo = self._hi = None          # b_max ∈ [_lo, _hi) while the bracket is open
 
     def ev(self, b: int) -> Result:
+        """Result (or its _Lite from a worker) at batch b — enough for feasibility / throughput."""
         r = self.memo.get(b)
         if r is None:
             r = self.memo[b] = evaluate(self.base.replace("serving.batch", b))
         return r
+
+    def full(self, b: int) -> Result:
+        r = self.memo.get(b)
+        if r is None or isinstance(r, _Lite):
+            r = self.memo[b] = evaluate(self.base.replace("serving.batch", b))
+        return r
+
+    def state(self) -> tuple:
+        return {b: (r if isinstance(r, _Lite) else _Lite.of(r)) for b, r in self.memo.items()}, \
+            self._lo, self._hi, self.b_max
+
+    def load(self, st: tuple) -> None:
+        memo, self._lo, self._hi, self.b_max = st
+        for b, r in memo.items():
+            self.memo.setdefault(b, r)
 
     def thr(self, b: int) -> float:
         return self.ev(b).throughput
@@ -156,7 +187,7 @@ def best_batch(base: Scenario, b_cap: int | None = None) -> BatchBest:
     if not b_max:
         return BatchBest(0, s.ev(1), len(s.memo), 0)
     b = s.solve()
-    return BatchBest(b, s.ev(b), len(s.memo), b_max)
+    return BatchBest(b, s.full(b), len(s.memo), b_max)
 
 
 def brute_force_batch(base: Scenario, b_cap: int) -> tuple[int, float]:
@@ -192,7 +223,7 @@ class LayoutRow:
 
 def search_layouts(base: Scenario, cards: int, mappings: tuple[str, ...] | None = None,
                    max_tp: int | None = None, objective: str = "decode", top: int | None = None,
-                   stats: dict | None = None, floor: float = 0.0) -> list[LayoutRow]:
+                   stats: dict | None = None, floor: float = 0.0, pool=None) -> list[LayoutRow]:
     """Rank layouts on ``cards`` cards.  objective:
     decode  – decode tokens/s/card at the best batch meeting the TPOT SLO
     goodput – output tokens/s/card incl. prefill amortisation (serving.goodput); the
@@ -205,6 +236,8 @@ def search_layouts(base: Scenario, cards: int, mappings: tuple[str, ...] | None 
     ranking in the tests).  ``floor`` (score per card, with ``top``) seeds the bound:
     only layouts that strictly beat it are returned (used by the stability check with
     the base top-1 layout's exact score as the incumbent).
+    ``pool`` (0.61, a concurrent.futures executor, ≥ PAR_MIN candidates): the per-candidate exponential b_max
+    bracket — the ordering bound, ~2/3 of the evaluations — runs in the worker processes; the ranking is the same.
     """
     if objective not in ("decode", "goodput"):
         raise ValueError("objective must be decode|goodput")
@@ -228,6 +261,8 @@ def search_layouts(base: Scenario, cards: int, mappings: tuple[str, ...] | None 
         return max(floor, sorted((r.score(objective) for r in rows), reverse=True)[top - 1])
 
     if top is not None:
+        if pool is not None and len(cands) >= PAR_MIN:
+            _prefetch(pool, base, cands)
         cands.sort(key=lambda c: -c[2].bound(float("inf")))
     pruned = 0
     for lay, org, bs in cands:
@@ -253,7 +288,7 @@ def search_layouts(base: Scenario, cards: int, mappings: tuple[str, ...] | None 
             else:                       # infeasible at batch 1 (capacity / SLO)
                 rows.append(LayoutRow(lay, org, 0, None))
             continue
-        row = LayoutRow(lay, org, b, bs.ev(b))
+        row = LayoutRow(lay, org, b, bs.full(b))
         if objective == "goodput" and row.result is not None:
             row.goodput = _goodput(row.result)
         if top is not None and row.score(objective) <= floor * (1 + 1e-12):
@@ -265,6 +300,34 @@ def search_layouts(base: Scenario, cards: int, mappings: tuple[str, ...] | None 
         stats.update(layouts=len(cands), solved=len(rows), pruned=pruned,
                      evals=sum(len(c[2].memo) for c in cands))
     return rows[:top] if top is not None else rows
+
+
+PAR_MIN = 64        # 0.61: candidates below this run serially (process round-trips cost more than they save)
+
+
+def _bracket_job(args) -> list:
+    """Worker: exponential b_max bracket (bound(inf)) of each (index, layout, mapping) on ``base``."""
+    base, items = args
+    out = []
+    for i, lay, org in items:
+        bs = _BatchSearch(base.replace("layout", lay).replace("mapping", org))
+        bs.bound(float("inf"))
+        out.append((i, bs.state()))
+    return out
+
+
+def _prefetch(pool, base: Scenario, cands: list) -> None:
+    """Run the candidates' ordering brackets on ``pool`` (round-robin chunks, so the cheap and the dear layouts mix)
+    and load the results into each _BatchSearch; any pool failure leaves the serial path to do the work."""
+    n = max(1, getattr(pool, "_max_workers", 4)) * 4
+    items = [(i, lay, org) for i, (lay, org, _) in enumerate(cands)]
+    chunks = [items[k::n] for k in range(n) if items[k::n]]
+    try:
+        for res in pool.map(_bracket_job, [(base, c) for c in chunks]):
+            for i, st in res:
+                cands[i][2].load(st)
+    except Exception:           # broken / shut-down pool: fall back to in-process evaluation
+        pass
 
 
 def pareto(points: list[tuple[float, float, object]]) -> list[tuple[float, float, object]]:

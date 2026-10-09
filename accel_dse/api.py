@@ -38,7 +38,7 @@ SWEEP_PATHS = {
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
     "serving.moe_skew": float, "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
     "d2d_units": int, "net.GBps": float, "net.alpha_us": float, "node_cards": int, "fabric.oversub": float,
-    "fabric.oversub_spine": float, "fabric.pod_nodes": int,
+    "fabric.oversub_spine": float, "fabric.pod_nodes": int, "fabric.hop_spine_us": float, "fabric.hop_core_us": float,
     "workload.frames": int, "workload.steps": int, "workload.height": int, "workload.width": int,
     "workload.seq_len": int, "workload.msa": int, "workload.recycles": int, "workload.samples": int,
 }
@@ -67,7 +67,7 @@ def enable_pool(workers: int | None = None) -> int:
     """Run the heavy searches (compare: one job per mapping; stability: one job per request) in
     worker processes.  Enabled by the HTTP server only; library / test calls stay in-process."""
     global _POOL
-    n = workers if workers is not None else min(5, os.cpu_count() or 1)
+    n = workers if workers is not None else min(8, os.cpu_count() or 1)    # 0.61: 8 (was 5)
     if n > 1 and _POOL is None:
         _POOL = ProcessPoolExecutor(max_workers=n, mp_context=multiprocessing.get_context("spawn"),
                                     initializer=_worker_init, initargs=(os.getpid(),))
@@ -330,7 +330,7 @@ def api_layouts(body: dict) -> dict:
     scn = scenario_from_body(body)
     obj = _objective(body)
     stats: dict = {}
-    rows = search_layouts(scn, _cards(body), objective=obj, top=16, stats=stats)
+    rows = search_layouts(scn, _cards(body), objective=obj, top=16, stats=stats, pool=_POOL)
     return {"objective": obj, "mapping": scn.mapping,
             "rows": _flag_rows([_row(r, obj) for r in rows], [r.result for r in rows], body),
             "n_layouts": stats["layouts"], "stats": stats}
@@ -340,7 +340,7 @@ def _compare_row(body: dict, org: str) -> dict:
     scn = scenario_from_body(body).replace("mapping", org)
     obj = _objective(body)
     bud = _budget(body)
-    rows = search_layouts(scn, _cards(body), objective=obj, top=2 if bud is None else 8)
+    rows = search_layouts(scn, _cards(body), objective=obj, top=2 if bud is None else 8, pool=_POOL)
     if bud is not None:     # best layout within the budget (searched without it; flagged rows ranked last)
         table = _energy_table(body)
         ok = [r for r in rows if (_budget_of(r.result, bud, table) or {}).get("ok") is not False]
@@ -428,7 +428,7 @@ def api_fit(body: dict) -> dict:
                if evaluate(scn.replace("layout", lay).replace("serving.batch", 1)).fits]
         if not fit:
             continue
-        rows = search_layouts(scn, n, top=1)
+        rows = search_layouts(scn, n, top=1, pool=_POOL)
         if rows and rows[0].batch:
             lay, batch = rows[0].layout, rows[0].batch
         else:   # fits but misses the TPOT SLO everywhere: smallest footprint layout at batch 1
@@ -450,15 +450,14 @@ def api_fit(body: dict) -> dict:
 
 def api_stability(body: dict) -> dict:
     scenario_from_body(body), _cards(body), _objective(body)     # validate in-process
-    if _POOL is not None:
-        return _POOL.submit(_stability, body).result()
     return _stability(body)
 
 
 def _stability(body: dict) -> dict:
     scn = scenario_from_body(body)
+    # 0.61: the perturbation cases (and the base search's brackets) fan out over the pool (was one job per request)
     st = ranking_stability(scn, _cards(body), include_mapping=bool(body.get("include_mapping", False)),
-                           objective=_objective(body))
+                           objective=_objective(body), pool=_POOL)
     return {"base_top": st.base_top, "stable": st.stable, "agree": st.agree, "cases": st.cases,
             "rule": "≥90% 扰动下 top-1 不变或与新 top-1 相差 ≤5%"}
 
