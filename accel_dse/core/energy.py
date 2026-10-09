@@ -119,6 +119,8 @@ def _counts(r) -> dict:
     b_mb = -(-seqs // max(1, r.microbatches))
     b_rank = -(-b_mb // lay.dp)
     dp_act = min(lay.dp, -(-b_mb // b_rank)) if b_rank else lay.dp
+    if lay.ep > 1:      # 0.63: with expert parallelism a DP rank without sequences still runs its experts
+        dp_act = lay.dp
     ranks = lay.tp * lay.sp * dp_act
     mb_fill = seqs / (max(1, r.microbatches) * b_mb) if b_mb else 1.0
     passes = r.microbatches * (w.steps if w is not None and w.kind == "gen" else 1)
