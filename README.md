@@ -23,6 +23,12 @@
 - **0.53**：PD 前缀缓存容量 + LRU 淘汰（`--pd-prefix-len / --pd-prefix-count / --pd-prefix-zipf`：Zipf 工作集、Che 近似，命中率由剩余 DRAM 或 `--pd-prefix-cache-GB` 推出，`--pd-prefix-affinity` 前缀感知路由；显式 `--pd-prefix-hit` 仍可覆盖）、异构池（`--pd-prefill-chip / --pd-prefill-mem`，prefill 池可用不同芯片 / 存储器）、布局搜索里的 decode batch（`--pd-search-decode-batch`）。全部「假设」、默认关，默认结果不变。
 - **0.54**：验证版本。新增请求级离散事件仿真（DES），用同一套逐步代价对照 PD 闭式排队模型（V4 服务验证：54 点网格，`accel-dse validate` / `scripts/v4_serving.py`；SLO goodput 误差 −8 % … 0 %，合并模式 TPOT 尾偏乐观，见 MODEL.md §18.4）。修正 decode 连续批处理（birth–death 替代 Little 不动点）、prefill 优先的 TPOT 分位数与最长停顿、混合服务时间的 TTFT 分位数（卷积），PD 报告数值随之变化。可选 `--pd-sim` 附上模拟尾部。默认结果不变。
 - **0.55**：合并模式尾部与覆盖面。V4 改为多 seed（30 点 × 3 seed，含 MoE Qwen3-30B-A3B 与 TP4 Qwen3-32B 两个新场景族）；prefill 停顿造成的 decode 成批到达（批到达链 + 配对系数）、TPOT 窗口因子按相关时间、分块 TTFT 尾（准静态混合 + 休假）、最长间隔按一生最大 batch，合并模式 TPOT p90 中位误差由 −14 … −18 % 收敛到 −4 % 左右（MODEL.md §18.5）。可选 decode KV 容量策略 `--pd-kv-policy wait|recompute`（默认关）。默认结果不变。
+- **0.60**：大规模卡数与网络细化（「假设」，默认结果不变）。
+  - 每副本卡数上限 64 → 8192（API / UI / CLI），可评估数百到数千卡、多节点的 1P–10P 多芯片 SKU；batch 上限随卡数放大，PD 搜索 / 排队模型做了剪枝与插值，1024 卡布局排名约 8 s。
+  - 三层 fat-tree（leaf / spine / core，逐层收敛比，每 pod 节点数，流量离开 leaf / pod 的份额）。
+  - 不同层的物理端口并发（`overlap = ports`），以及按暴露时间（计入与计算重叠）选算法的 `auto_overlap`。
+  - PP 交接在 ring / torus / full mesh 上计多跳；PD 的 KV 争用可回灌 decode TPOT。
+  - 见 MODEL.md §19.1–19.5。
 - **0.59**：硬件侧的跨节点网络拓扑与集合通信算法（`fabric`，「假设」，默认关）。跨节点支持 fat-tree / leaf-spine（上行收敛比）与 rail-optimized（PXN），节点内 scale-up 支持 switch / full mesh / ring / 2D torus。每次集合通信按 α-β + 每步时延在 ring / tree（NCCL 双二叉树）/ 分层中取最快，可选网内归约（SHARP / NVLS 类厂商选项）；收敛网络上的 EP all-to-all、跨 leaf 的 PP 交接、PD KV 传输与集合通信争用都按份额计。用 NCCL ring / tree 公式手算对照（MODEL.md §19）。默认结果不变。
 - **0.58**：修正 0.57 合并模式 KV 准入在 CV1 下过保守：占槽时间只计 prefill 服务，合并模式条件等待取 Gamma（c² 随服务 CV），分块模式抢占乘 (1 − ρ_pre)。合并 CV1 TTFT p90 +23 / +40 % → +14 / +21 %，分块抢占次数 +30 … +60 % → −10 … +4 %。新增 radix / 部分前缀匹配（`pd.prefix_tree`，「假设」，默认关）：多层共享前缀树，token 容量的 LRU，按节点做 Che 近似，部分命中省掉已匹配的 token；DES 用 RadixLRU 对拍，token 命中率差 ≤ 0.004（MODEL.md §18.8）。默认结果不变。
 - **0.57**：KV 容量策略的模型修正。准入等待按 M/G/c 槽位队列（Cosmetatos M/D/c 混合；合并模式 prefill 期间也占槽）；饱和抢占加「回填偏移」，恢复占用在减速后的槽位链上迭代不动点。修正 DES 中恢复期间不记 KV 占用的错误：0.56 记录的 recompute「连锁抢占」主要来自这个错误。抢占次数误差 +39 … +190 % → −23 … +60 %，PD recompute CV1 TTFT p90 −40 % → −21 %（MODEL.md §18.7）。V4 网格高负载点改用 20000 请求的 DES（`--n-high`）。默认结果不变。

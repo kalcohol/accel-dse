@@ -98,6 +98,7 @@ is conservative (p90 +20…40 %) and recompute at high load / CV 1 misses the DE
 
 from __future__ import annotations
 
+import bisect
 import math
 
 from .energy import ACTIONS, EnergyTable, _BITS, _UNIT_PJ, action_counts, scaleup_bytes
@@ -107,6 +108,8 @@ from .scenario import Scenario
 
 QS = (0.5, 0.9, 0.99)
 B_CAPS = (1, 2, 4, 8, 16, 32, 64)
+SPLIT_EXACT = 32    # 0.60: PD SLO split search evaluates every split up to this many candidates, else coarse → fine
+INTERP_B = 1024     # 0.60: decode batch above which the birth–death chain interpolates step(k) (see _decode_birth_death)
 _QK = ("mean", "p50", "p90", "p99")
 
 
@@ -192,7 +195,7 @@ _WIN = math.sqrt(2.0 * math.exp(-1.0))   # OU time-average over one correlation 
 
 
 def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: float = 1.0,
-                        scale=lambda r: 1.0, n_max: int = 4096, step_fn=None, batch=None) -> dict | None:
+                        scale=lambda r: 1.0, n_max: int | None = None, step_fn=None, batch=None) -> dict | None:
     """Continuous-batching decode as a birth–death process (0.54; validated against core/pdsim).
 
     State n = requests at the replica (running + waiting for a slot).  Every running sequence advances one engine
@@ -211,8 +214,10 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
     π(n)·μ(n) = λ_b·Σ_{i<n} π(i)·P(X ≥ n − i).  Wall TPOT = E[k]/(λ·out) with λ the wall arrival rate; a seen step
     is stretched by ``stretch`` = 1/(1 − excess share) on average."""
     steps: dict = {}
+    if n_max is None:
+        n_max = max(4096, B + 4096)     # 0.60: was a fixed 4096 (truncated the chain for B ≥ 4096 at large card counts)
 
-    def step_of(k: int):
+    def exact(k: int):
         if k not in steps:
             if step_fn is not None:
                 steps[k] = step_fn(k)
@@ -220,6 +225,26 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
                 r = pool.run("decode", k)
                 steps[k] = (r.step * scale(r) / share, r)
         return steps[k]
+
+    if B <= INTERP_B:
+        step_of = exact
+    else:   # 0.60 「假设」: B > 1024 (large replicas) — step(k) exact for k ≤ 64, linear between geometric grid points
+        grid = sorted({k for k in range(1, 65)} | {min(B, int(round(64 * 2 ** (j / 8)))) for j in range(1, 200)
+                                                   if 64 * 2 ** ((j - 1) / 8) < B} | {B})
+        interp: dict = {}
+
+        def step_of(k: int):
+            if k in interp:
+                return interp[k]
+            if k <= 64 or k >= B or k in grid:
+                v = exact(min(k, B)) if k <= B else exact(B)
+            else:
+                i = bisect.bisect_left(grid, k)
+                a, b = grid[i - 1], grid[i]
+                (sa, _), (sb, rb) = exact(a), exact(b)
+                v = (sa + (sb - sa) * (k - a) / (b - a), rb)
+            interp[k] = v
+            return v
 
     stB, rB = step_of(B)
     if not rB.fits or not math.isfinite(stB):
@@ -789,6 +814,8 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
         ev2 = _excess_var(lam_c, lats_w, 1.0, rho)
     else:
         c = -math.expm1(-lam_c * pre["lat"])
+        if 1 - c < 1e-12:     # 0.60: c rounds to 1 at extreme λ (stable-rate bisection at large card counts) → was 1/0
+            return {**res, "stable": False, "why": "prefill 批几乎从不空闲（到达间隔 ≪ prefill 延迟）"}
         ev2 = pre["lat"] ** 2 * (1 + c) / (1 - c) ** 2
     n_bp = lam_c * share * life
     pure = {q: (_tpot_req_q(dec, q) - _tpot_req_q(dec, 0.5)) for q in (0.9, 0.99)}
@@ -1393,16 +1420,34 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
     best = None
     c_p, c_d = ctx["n_p"] // ctx["r_p"], ctx["n_d"] // ctx["r_d"]
     splits = []
-    for k in range(1, cards // c_p + 1):
+    ks = [k for k in range(1, cards // c_p + 1) if cards - k * c_p >= c_d and not (cards - k * c_p) % c_d]
+    done: dict = {}
+
+    def run(k: int):
+        nonlocal best
+        if k in done:
+            return done[k]
         np_, nd_ = k * c_p, cards - k * c_p
-        if nd_ < c_d or nd_ % c_d:
-            continue
         cx = {**ctx, "n_p": np_, "n_d": nd_, "r_p": np_ // c_p, "r_d": nd_ // c_d}
         rate = _slo_rate(_pd_mode, cx, max(lam_fluid, lam), ttft_slo, tpot_slo)
-        row = {"prefill_cards": np_, "decode_cards": nd_, "slo_rate_rps": rate, "slo_goodput_per_card": rate * o / cards}
-        splits.append(row)
-        if best is None or rate > best["slo_rate_rps"]:
+        row = done[k] = {"prefill_cards": np_, "decode_cards": nd_, "slo_rate_rps": rate, "slo_goodput_per_card": rate * o / cards}
+        if best is None or rate > best["slo_rate_rps"] or (rate == best["slo_rate_rps"] and np_ < best["prefill_cards"]):
             best = row
+        return row
+
+    if len(ks) <= SPLIT_EXACT:
+        for k in ks:
+            splits.append(run(k))
+    else:   # 0.60 (large pools, many small replicas): 16 evenly spaced splits, then every split between the best
+        idx = sorted({round(i * (len(ks) - 1) / 15) for i in range(16)})     # one's neighbours 「假设」 unimodal
+        for i in idx:
+            run(ks[i])
+        j = ks.index(best["prefill_cards"] // c_p)
+        lo_, hi_ = max(0, j - (len(ks) - 1) // 15 - 1), min(len(ks) - 1, j + (len(ks) - 1) // 15 + 1)
+        for i in range(lo_, hi_ + 1):
+            run(ks[i])
+        splits = [done[k] for k in sorted(done)]
+        out["pd_slo_splits_sampled"] = {"evaluated": len(done), "candidates": len(ks)}
     out["pd_slo_splits"] = splits
     out["pd_slo_best_split"] = best
     # energy per output token at this load (the evaluated action counts of the operating points)

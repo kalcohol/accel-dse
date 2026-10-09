@@ -851,13 +851,101 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - **D. TP16 跨 2 节点 prefill，每 leaf 1 节点、r = 4**：link 617 ms；开网内归约（hier + SHARP 顶层）295 ms。r = 1 时 ring（201 ms）比 hier + SHARP 好。
 - **E. PD KV（qwen3-30b-a3b，32 + 32 卡，4 节点 × 16 卡）**：每 leaf 1 节点时，r = 2 / 4 → KV 4.0 → 6.0 / 12.1 ms（β 50 → 33 / 17 GB/s）。KV 不是瓶颈，goodput 不变。
 
-**剩余缺口**：
-- auto 不考虑与计算重叠；
-- 不同层（D2D / scale-up / 网络）的流量在 t_link 中相加，而不是按物理端口并行取最大；
-- ring / torus 上的 PP 交接不计多跳；
+**剩余缺口**（0.59 时；标 ✓ 的在 0.60 补上，见 §19.2–19.4）：
+- ✓ auto 不考虑与计算重叠（0.60 `auto_overlap`）；
+- ✓ 不同层的流量在 t_link 中相加（0.60 `overlap = ports`）；
+- ✓ ring / torus 上的 PP 交接不计多跳（0.60）；
 - 树的切边只用第一棵树；
 - 不建模协议（LL / LL128 / Simple）、通道数上限和小消息带宽折损（NCCL 的 treeCorrectionFactor / 平台期）；
-- KV 对集合通信的拖慢只报告、不回灌；
-- spine 视为非阻塞（三层 fat-tree、spine 收敛未建模）；
+- ✓ KV 对集合通信的拖慢只报告、不回灌（0.60 `kv_feedback`，只回灌 decode 池）；
+- ✓ spine 视为非阻塞（0.60 三层 fat-tree）；
 - 拥塞控制、ECMP 哈希冲突、incast 未建模；
 - 网内归约只用于 allreduce（reduce-scatter / allgather 的 NVLS 未建模）。
+
+### 19.1 大规模卡数（0.60）
+
+- **上限**：每副本卡数上限 64 → 8192（API / UI / CLI；`core.parallel.MAX_REPLICA_CARDS`），PD 池卡数上限 4096 → 65536。`node_cards` ≤ 4096、`fabric.pod_nodes` ≤ 65536（须为 `leaf_nodes` 的整数倍），非法输入返回 400。
+- **batch 上限随卡数放大**：布局搜索 / 最佳 batch 的每副本 batch 上限 = max(4096, 64 × 卡数)。原来固定 4096 = 64 × 64；DP1024 时只够每个 DP rank 4 条序列，会截断最优点。≤ 64 卡的结果不变。
+- **布局搜索**：分支定界照旧（`search_layouts(top=k)`：先算每个布局的上界排序，再以第 k 名精确分数剪枝）。MoE 布局数 64 / 256 / 1024 / 4096 卡为 139 / 271 / 451 / ~700，dense ≤ 7（PP·TP = 卡数，PP ≤ 层数）。单次评估约 1–2 ms（层级结果有缓存，与卡数基本无关）。
+- **EP > 专家数**（如 DeepSeek-V3 256 专家、EP1024）：每 rank 1 个专家，token-专家对按 EP 均分，相当于冗余专家副本均匀分担「假设」（权重存储按 ⌈E/EP⌉ 计）。
+- **PD 布局搜索**（`pd.search_layouts`）：总卡数 > 64 时副本尺寸加入 128、256、… ≤ 总卡数，每种尺寸配额相同（同尺寸内 PP / TP 小者优先），上限仍为 64 个候选。≤ 64 卡时完全同 0.52。
+- **PD 排队模型**：
+  - decode 生灭链状态上限 4096 → max(4096, B + 4096)，原来 B ≥ 4096 时会截断；
+  - B > 1024 时 step(k) 在 k ≤ 64 精确，之上按几何网格（每倍频 8 点）线性插值「假设」，相对精确链的平均 TPOT 误差 < 0.5%（测试）；
+  - SLO 切分搜索在候选 > 32 个时先取 16 个均匀切分，再在最优点两侧逐个计算（单峰「假设」）。测试中与穷举结果一致；1024 + 1024 卡、8 卡副本时 80 s → 15 s。
+  - 修正：λ 极大时 c = 1 − e^{−λ·lat} 舍入为 1 导致除零（大卡数的稳定速率二分会触发），现判为不稳定。
+- **运行时间**（本机单进程，1P + HBM3e，8 卡 / 节点，fabric 开）：见 CHANGELOG [0.60.0] 表。单点评估 / 扫描在 4096 卡下仍为毫秒级；布局排名 1024 卡约 8 s，4096 卡约 15 s；稳定性分析（约 10 个扰动）1024 卡约 40 s。
+
+### 19.2 三层 fat-tree（leaf / spine / core，0.60）
+
+`fabric.net_tiers = 3`（只用于 fat_tree；rail 保持两层）：
+- 每个 pod `pod_nodes` 个节点。0 = 每 leaf 节点数 × spine 下行端口数，下行端口 = radix·r₂/(1 + r₂)（radix 64、r₂ = 1 → 32 个 leaf / pod）。
+- leaf 上行收敛 r₁（`oversub`），spine → core 上行再收敛 r₂（`oversub_spine`）：一张卡在 core 层只分到 β/(r₁·r₂)。
+- 一个模式的每卡流量中，离开 leaf 的份额 f_leaf、离开 pod 的份额 f_pod（同 §19 的定义，m 换成组内同 pod 的节点数 p）：
+
+  **网络层 β 除数 = max(1, r₁·f_leaf, r₁·r₂·f_pod)**
+
+  - ring：f = 1/m、1/p；
+  - tree：按 NCCL btree 在 leaf / pod 边界的切边；
+  - all-to-all：(n − m)/(n − 1)、(n − p)/(n − 1)；
+  - 网内归约 0（时延按 3 层交换机计 2·3 步）。
+- r₂ = 1 时与两层逐位相同（f_pod ≤ f_leaf）。PP 交接跨 pod 为 r₁·r₂、跨 leaf 为 r₁。PD KV 为 max(r₁(1 − m/n), r₁r₂(1 − P/n))。
+- **流量分层**：报告 `fabric.net_traffic` 给出每步跨节点 MB，以及离开 leaf / 离开 pod 的字节份额；每行集合通信给出自己的 f_leaf / f_pod。
+- 每步时延不随交换机层数增加（`hop_net_us` 一个值）——缺口。
+
+### 19.3 端口并发与暴露时间最小的算法选择（0.60）
+
+**`fabric.overlap = ports`**：
+- 一张卡的 D2D PHY、scale-up 端口、NIC 是不同的物理端口，可同时工作；同一端口上的流量串行。
+- 每次集合通信给出各层的忙时：
+  - ring / tree / all-to-all 是单阶段，各层同时工作，带宽时间 = 最慢层；
+  - hier 是逐层阶段，带宽时间 = 各阶段之和，各层忙时 = 本阶段时间；
+  - PP / FSDP 计入其所在层。
+- 级链路时间 = max(maxₜ Σ 忙时ₜ, 最长的单次集合通信带宽时间)，不超过 sum 模式（0.59 的 Σ 带宽时间），也不低于最忙端口。
+- 这是稳态资源模型，与级时间 max(计算, DRAM, SLC, 链路) + α 的重叠假设一致：跨层 / 跨微批流水，依赖关系不显式建模「假设」。
+
+**`fabric.algo = auto_overlap`**：
+- `auto` 对每次集合通信单独取 min(带宽 + α)。auto_overlap 则在每个流水级上，对该级各类集合通信（kind, 组, stride, 数据量）的算法组合直接最小化级时间：
+
+  max(窗口, 链路(组合)) + Σ α(组合)，窗口 = max(计算, DRAM, SLC)
+
+  带宽时间被计算掩盖时，偏向 α 小的算法。
+- 组合数 ≤ 729 时穷举，否则从 auto 的选择出发做 3 轮坐标下降。按构造不劣于 auto 或任何强制算法（测试覆盖两种 overlap 模式）。
+- 报告中「所选算法」为级选择的结果，`fabric.stages` 给出每级的 sum / ports 链路时间、各层忙时、窗口、α。
+
+### 19.4 PP 多跳与 KV 回馈（0.60）
+
+- **PP 交接在 ring / torus / full-mesh scale-up 上**：fabric 开且交接走节点内层时，一个流水级的每个封装 a 同时发给 a + S（S = 每级封装数；不绕回，偏保守「假设」）：
+  - ring：最短路径路由，β/2 端口；
+  - torus2d：维序路由，β/4 端口；
+  - β 除数 = 最大链路负载 × 端口数（ring 8 封装、S = 2 → 4；torus 4×2、S = 4 → 4）；
+  - full mesh 每对一条 β/(n − 1) 的直连 → n − 1（不做多路径转发「假设」）；
+  - switch 不变。
+  - 这是 0.59 → 0.60 在 fabric 开时唯一的默认数值变化（只影响 PP > 1 且 `link.topology` ≠ switch 的场景）。
+- **KV 回馈**（`fabric.kv_feedback`，PD，默认关）：
+  - u_kv = λ·kv / (min(n_p, n_d)·β)，与 0.59 的 `coll_slowdown` 同一定义，是 KV 流占 NIC 的份额。decode 池的网络带宽 × (1 − u_kv)，重算 decode，λ 随之下降；不动点迭代 ≤ 6 次（|Δu| < 1e-4 停止）。
+  - prefill 池的发送侧不回灌（缺口）。
+  - 报告 `kv.fabric.feedback`：u_kv、回馈前后 TPOT、decode 池有效网络 GB/s。
+  - 例：DeepSeek-V3 PD 960P + 64D，网络 12.5 GB/s，每 leaf 1 节点、r = 4：u_kv 4.5%，TPOT 15.80 → 16.50 ms；decode 被计算绑定时 TPOT 不变。
+
+### 19.5 例子与剩余缺口（0.60）
+
+**例子**（1P + HBM3e，8 卡 / 节点，网络 50 GB/s / 卡，leaf 由 radix 64 推导）：
+- **Kimi-K2 DP1024·EP1024（1024 卡，128 节点）**：
+  - decode b8192：关 5.74 ms；两层 r = 1 / 2 / 4 均为 6.07 ms（link 1.09 / 2.12 / 4.20 ms 被计算 5.14 ms 掩盖）；三层 pod 32 节点：r₁/r₂ = 2/2 仍为 6.07（link 3.30），2/4 → 7.53 ms（LINK 绑定，−19% tok/s/卡）。
+  - prefill b1024：关 560 ms；两层 r = 2 / 4 → 1085 / 2151 ms；三层 2/2 → 1693 ms，2/4 → 3384 ms。76% 的跨节点字节离开 pod。
+- **DeepSeek-V3 DP256·EP256（256 卡，32 节点）**：
+  - 三层 pod 32 = 一个 pod，与两层相同。pod 16 节点、r₁/r₂ = 2/4：prefill b256 921 → 2181 ms，decode b2048 link 1.80 → 4.26 ms，仍被计算 5.85 ms 掩盖。
+  - PP4·DP256（1024 卡）：每级 256 卡，pod 32 时 a2a 不出 pod。
+- **端口并发**：DeepSeek-V3 TP8·DP32·EP256 decode 链路 2.04 → 1.80 ms（ports）。TP16 跨节点 prefill（pod 16，2/4）：ports + auto_overlap 616.5 → 584.1 ms，allreduce 由 ring 改选 hier。
+- **auto_overlap**：TP32·DP8 decode 时 allreduce 由 tree（bw + α 最小）改为 hier（α 4.99 → 4.52 ms），TPOT 89.64 → 89.17 ms。
+
+**剩余缺口**：
+- 每步时延不随交换机层数变化；
+- ECMP 冲突 / 拥塞控制 / incast 未建模；
+- 端口模型是稳态资源模型（不模拟集合通信间的依赖与时序）；
+- auto_overlap 的窗口按级整体计（不按层内算子时序）；
+- KV 回馈不回灌 prefill 池；
+- 4096 卡以上的布局搜索与稳定性分析为数十秒级（未并行化）；
+- PD 排队模型在 B > 1024 时用插值（误差 < 0.5%）；
+- 大规模下 PD 排队报告仍可达 15–25 s。

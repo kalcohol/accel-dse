@@ -3,6 +3,64 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.60.0] - 2026-10-09
+
+大规模卡数，以及三层 fat-tree、端口并发、按暴露时间选算法（「假设」，默认关）。默认结果（1356 项指纹）与 0.59.0 逐字节一致，985 项多节点 / D2D / PD 指纹也一致。另有 3150 项 fabric 开、默认参数的指纹，只在 PP > 1 且 scale-up 拓扑 ≠ switch 的 144 项上不同（新增的 PP 多跳，见下）。
+
+### 新增
+- **大规模卡数**：
+  - 每副本卡数上限 64 → 8192（API / UI / CLI；`catalog.max_cards`），PD 池卡数上限 4096 → 65536。
+  - 布局搜索 / 最佳 batch 的每副本 batch 上限 = max(4096, 64 × 卡数)（原来固定 4096，DP1024 时截断最优点）。
+  - 容量修复建议（`/api/fit`）的候选卡数延伸到 8192。
+  - PD 布局搜索：总卡数 > 64 时加入 128、256、… 的副本尺寸，各尺寸配额相同。
+  - PD 排队：decode 生灭链在 B > 1024 时对 step(k) 做几何网格插值（误差 < 0.5%）；链长不再截断于 4096；SLO 切分在候选 > 32 时先粗后细（与穷举一致，1024 + 1024 卡 80 s → 15 s）。
+  - Web：卡数输入上限 8192，大于 64 卡时默认布局为 TP ≤ 每节点卡数，其余 DP（MoE）/ PP（dense）。
+- **三层 fat-tree**（`fabric.net_tiers = 3`，`pod_nodes`，`oversub_spine`）：
+  - leaf / spine / core，网络层 β 除数 = max(1, r₁·f_leaf, r₁·r₂·f_pod)；r₂ = 1 时与两层逐位相同。
+  - PP 交接跨 pod 为 r₁·r₂；PD KV 为 max(r₁(1 − m/n), r₁r₂(1 − P/n))。
+  - 每 pod 节点数默认 = 每 leaf 节点数 × spine 下行端口数（radix·r₂/(1+r₂)）。
+  - 报告每步跨节点流量，以及离开 leaf / pod 的份额（`fabric.net_traffic`，每行 `net_leaf_share` / `net_pod_share`）。
+- **端口并发**（`fabric.overlap = ports`）：D2D / scale-up / NIC 是不同端口，可同时工作；同端口串行。级链路时间 = max(最忙端口的忙时之和, 最长的单次集合通信)，在 sum（0.59）与最忙端口之间。报告 `fabric.stages`（每级 sum / ports、各层忙时、窗口、α）。
+- **按暴露时间选算法**（`fabric.algo = auto_overlap`）：每个流水级对各类集合通信的算法组合最小化 max(计算 / DRAM 窗口, 链路) + Σα（≤ 729 种穷举，否则坐标下降），不劣于 auto 或任何强制算法。
+- **PP 多跳**：fabric 开时，节点内 ring / torus2d / full-mesh 上的 PP 交接按链路负载计（ring 8 封装、S = 2 → 4×；torus 4×2、S = 4 → 4×；full mesh n − 1）。
+- **KV 回馈**（`fabric.kv_feedback`）：KV 流占 decode 池 NIC 的份额 u_kv 回灌 decode 池的网络集合通信（不动点），报告 `kv.fabric.feedback`（u_kv、回馈前后 TPOT）。
+- CLI：`--net-tiers --pod-nodes --oversub-spine --fabric-overlap --kv-feedback`，`--fabric-algo auto_overlap`；输出流量分层、端口并发和 KV 回馈。Web：网络层数、每 pod 节点数、spine 收敛比、层间重叠、KV 回馈的输入，集合通信表新增「离开 leaf / pod」列。扫描参数 `fabric.oversub_spine`、`fabric.pod_nodes`。
+- 建模说明 §19.1–19.5；测试 `tests/test_core_060.py`（13 项手算 / 性质）。
+
+### 修正
+- PD 排队：λ 极大时 1 − e^{−λ·lat} 舍入为 1 导致除零（大卡数的稳定速率二分会触发），现判为不稳定。
+
+### 运行时间（box 单进程，测试套件同时在跑；1P + HBM3e，8 卡 / 节点，fabric 开）
+
+| 操作 | DeepSeek-V3 256 卡 | DeepSeek-V3 1024 卡 | Kimi-K2 1024 卡 | DeepSeek-V3 4096 卡 |
+|---|---|---|---|---|
+| 单点评估（含 fabric 报告） | 0.02 s | 0.01 s | 0.01 s | 0.01 s |
+| 评估 + 最佳 batch | 0.02 s | 0.03 s | 0.03 s | 0.05 s |
+| 布局排名 top-16（271 / 451 / 451 / ~700 个布局） | 3.8 s | 8.6 s | 7.0 s | 13.6 s |
+| 映射 × 布局对比 | 14.9 s | 29.2 s | 27.3 s | 46.8 s |
+| 扫描（4 点） | < 0.01 s | < 0.01 s | < 0.01 s | < 0.01 s |
+| 排名稳定性 | 15.0 s | 33.5 s | 31.5 s | — |
+| PD + 排队 + 布局搜索 | 23.8 s | 21.0 s | 22.1 s | — |
+
+### 数值例子（1P + HBM3e，8 卡 / 节点，网络 50 GB/s / 卡，leaf 由 radix 64 推导）
+- **Kimi-K2 DP1024·EP1024（128 节点）**：
+  - decode b8192：关 5.74 ms，两层 r = 1 / 2 / 4 都是 6.07 ms（link 被计算掩盖）；三层 pod 32、r₁/r₂ = 2/4 → 7.53 ms（LINK 绑定，−19% tok/s/卡）。
+  - prefill b1024：关 560 ms，两层 r = 2 → 1085 ms，三层 2/2 → 1693 ms、2/4 → 3384 ms。76% 的跨节点字节离开 pod。
+- **DeepSeek-V3 DP256·EP256（32 节点）**：pod 32 时与两层相同；pod 16、2/4 时 prefill b256 921 → 2181 ms，decode link 1.80 → 4.26 ms（仍被计算 5.85 ms 掩盖）。
+- **端口并发 + auto_overlap**：
+  - TP16 跨节点 prefill（pod 16，2/4）：616.5 → 584.1 ms（allreduce ring → hier）；
+  - TP32 decode：tree → hier，89.64 → 89.17 ms；
+  - TP8·DP32 decode：link 2.04 → 1.80 ms。
+- **KV 回馈**：DeepSeek-V3 PD 960P + 64D，网络 12.5 GB/s，每 leaf 1 节点、r = 4：u_kv 4.5%，decode TPOT 15.80 → 16.50 ms。
+
+### 剩余缺口
+- 每步时延不随交换机层数增加；
+- ECMP / 拥塞控制 / incast 未建模；
+- 端口模型是稳态资源模型；
+- KV 回馈只回灌 decode 池；
+- 4096 卡以上的布局对比 / 稳定性为数十秒（未并行化）；
+- PD 排队报告在大规模下仍需约 20 s。
+
 ## [0.59.0] - 2026-10-09
 
 硬件侧：三层互连的跨节点网络拓扑与集合通信算法（`scenario.fabric`，「假设」，默认关）。默认结果（1356 项指纹）与 0.58.0 逐字节一致，另有 985 项多节点 / D2D / PD 指纹也一致。

@@ -19,6 +19,11 @@ from .parallel import Layout, enumerate_layouts
 from .scenario import Scenario
 
 B_CAP = 4096
+B_CAP_PER_CARD = 64      # 0.60: batch cap per replica = max(B_CAP, 64 × cards) — 4096 = 64 × 64 at the old 64-card limit
+
+
+def b_cap_for(cards: int) -> int:
+    return max(B_CAP, B_CAP_PER_CARD * cards)
 
 
 @dataclass
@@ -36,8 +41,9 @@ def _feasible(r: Result) -> bool:
 class _BatchSearch:
     """Batch search state for one scenario (evaluations memoised across the two phases)."""
 
-    def __init__(self, base: Scenario, b_cap: int = B_CAP):
-        self.base, self.b_cap, self.memo = base, b_cap, {}
+    def __init__(self, base: Scenario, b_cap: int | None = None):
+        self.base, self.memo = base, {}
+        self.b_cap = b_cap if b_cap is not None else b_cap_for(base.layout.cards)
         self.b_max = None
         self._lo = self._hi = None          # b_max ∈ [_lo, _hi) while the bracket is open
 
@@ -144,7 +150,7 @@ class _BatchSearch:
         return best_b
 
 
-def best_batch(base: Scenario, b_cap: int = B_CAP) -> BatchBest:
+def best_batch(base: Scenario, b_cap: int | None = None) -> BatchBest:
     s = _BatchSearch(base, b_cap)
     b_max = s.find_bmax()
     if not b_max:

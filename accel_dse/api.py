@@ -31,13 +31,14 @@ from .core.stability import ranking_stability
 
 HONESTY = ("所有硬件参数（频率、阵列几何、SRAM 端口、DRAM 效率、链路 α/β、MAC 效率）均为「假设」，未经硅片标定；"
            "本工具用于设计指导与相对比较，不是性能承诺。")
-MAX_CARDS = 64
+MAX_CARDS = 8192          # 0.60: was 64 (= core.parallel.MAX_REPLICA_CARDS)
 SWEEP_PATHS = {
     "serving.batch": int, "serving.ctx": int, "serving.prompt": int, "serving.spec_k": int,
     "chip.sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
     "serving.moe_skew": float, "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
     "d2d_units": int, "net.GBps": float, "net.alpha_us": float, "node_cards": int, "fabric.oversub": float,
+    "fabric.oversub_spine": float, "fabric.pod_nodes": int,
     "workload.frames": int, "workload.steps": int, "workload.height": int, "workload.width": int,
     "workload.seq_len": int, "workload.msa": int, "workload.recycles": int, "workload.samples": int,
 }
@@ -417,7 +418,7 @@ def api_fit(body: dict) -> dict:
     cards = scn.layout.cards
     bud = _budget(body)
     scn = scn.colocated()                 # 0.56: other layouts need not divide pd.decode_cards
-    for n in (2, 4, 8, 16, 32, 64):
+    for n in [2 ** i for i in range(1, MAX_CARDS.bit_length())]:    # 0.60: up to MAX_CARDS (was ≤ 64)
         if n <= cards:
             continue
         if bud is not None and bud.cards is not None and n > bud.cards:

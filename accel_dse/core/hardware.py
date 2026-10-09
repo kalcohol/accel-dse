@@ -126,7 +126,9 @@ class Link:
 
 
 NET_TOPOLOGIES = ("fat_tree", "rail")
-FABRIC_ALGOS = ("auto", "ring", "tree", "hier")
+FABRIC_ALGOS = ("auto", "auto_overlap", "ring", "tree", "hier")
+OVERLAP_MODES = ("sum", "ports")
+NET_TIERS = (2, 3)
 INNET_MODES = ("off", "net", "net+link")
 
 
@@ -147,7 +149,18 @@ class Fabric:
     innet_reduce  in-network reduction, vendor option 「假设」: "net" = switch aggregation on the cross-node tier (SHARP /
                   CollNet class), "net+link" also on a switched scale-up tier (NVLS class).
     contention    PD KV hand-off shares the NICs with the pools' collectives 「假设」.
-    torus_x       X extent of a ``link.topology = torus2d`` scale-up domain (0 = the divisor nearest √n)."""
+    torus_x       X extent of a ``link.topology = torus2d`` scale-up domain (0 = the divisor nearest √n).
+    0.60 「假设」 (all default to the 0.59 behaviour):
+    net_tiers     2 = leaf-spine (0.59) | 3 = leaf / spine / core fat-tree: ``pod_nodes`` nodes per pod (0 = leaf_nodes ×
+                  spine down ports, spine down ports = radix·r₂/(1 + r₂)), spine → core uplinks oversubscribed
+                  ``oversub_spine``:1 on top of the leaf's ``oversub`` (fat_tree only; rail keeps two levels).
+    overlap       "sum" (0.59: a stage's collectives' bandwidth seconds add up) | "ports": the D2D PHY, scale-up ports
+                  and NIC of a card are separate ports — a stage's link time is the busiest port's Σ busy seconds (each
+                  collective contributes its per-tier busy time), floored at the longest single collective.
+    algo          + "auto_overlap": per stage, the algorithm combination minimising the stage time
+                  max(compute / DRAM window, link) + Σα (exposed time) instead of each collective's bw + α alone.
+    kv_feedback   PD: the KV stream's share of the decode pool's NIC slows the decode pool's network collectives
+                  (u_kv; decode TPOT recomputed) — 0.59 only reported the collectives' slowdown on the KV stream."""
     enabled: bool = False
     algo: str = "auto"
     net_topology: str = "fat_tree"
@@ -161,11 +174,26 @@ class Fabric:
     hop_net_tree_us: float = 5.0
     innet_reduce: str = "off"
     contention: bool = True
+    net_tiers: int = 2
+    pod_nodes: int = 0
+    oversub_spine: float = 1.0
+    overlap: str = "sum"
+    kv_feedback: bool = False
 
     def __post_init__(self):
-        if not isinstance(self.enabled, bool) or not isinstance(self.contention, bool):
-            raise ValueError("fabric.enabled / fabric.contention must be booleans")
-        for k, opts in (("algo", FABRIC_ALGOS), ("net_topology", NET_TOPOLOGIES), ("innet_reduce", INNET_MODES)):
+        if not all(isinstance(getattr(self, k), bool) for k in ("enabled", "contention", "kv_feedback")):
+            raise ValueError("fabric.enabled / fabric.contention / fabric.kv_feedback must be booleans")
+        if self.net_tiers not in NET_TIERS or isinstance(self.net_tiers, bool):
+            raise ValueError("fabric.net_tiers must be 2 (leaf-spine) or 3 (leaf / spine / core)")
+        if isinstance(self.oversub_spine, bool) or not isinstance(self.oversub_spine, (int, float)) \
+                or not 1.0 <= self.oversub_spine <= 64:
+            raise ValueError("fabric.oversub_spine must be in [1, 64] (down:up ratio of the spine → core uplinks)")
+        if isinstance(self.pod_nodes, bool) or not isinstance(self.pod_nodes, int) or not 0 <= self.pod_nodes <= 65536:
+            raise ValueError("fabric.pod_nodes must be an integer in [0, 65536]")
+        if self.pod_nodes and self.leaf_nodes and self.pod_nodes % self.leaf_nodes:
+            raise ValueError("fabric.pod_nodes must be a multiple of fabric.leaf_nodes (whole leaves per pod)")
+        for k, opts in (("algo", FABRIC_ALGOS), ("net_topology", NET_TOPOLOGIES), ("innet_reduce", INNET_MODES),
+                        ("overlap", OVERLAP_MODES)):
             if getattr(self, k) not in opts:
                 raise ValueError(f"fabric.{k} must be one of {', '.join(opts)}")
         if isinstance(self.oversub, bool) or not isinstance(self.oversub, (int, float)) or not 1.0 <= self.oversub <= 64:

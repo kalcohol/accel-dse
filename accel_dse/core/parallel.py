@@ -99,6 +99,10 @@ def plan_stages(n_layers: int, pp: int) -> list[Stage]:
     return out
 
 
+MAX_REPLICA_CARDS = 8192   # 0.60: cards per replica accepted by API / UI / CLI (was 64); search stays interactive (see MODEL §19.1)
+MAX_POOL_CARDS = 65536     # 0.60: PD pool cards (many replicas)
+
+
 def _divisors(n: int) -> list[int]:
     return [d for d in range(1, n + 1) if n % d == 0]
 

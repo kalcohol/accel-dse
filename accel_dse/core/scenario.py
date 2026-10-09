@@ -181,8 +181,8 @@ class PDConfig:
     def __post_init__(self):
         for k in ("prefill_cards", "decode_cards"):
             v = getattr(self, k)
-            if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 4096:
-                raise ValueError(f"pd.{k} must be an integer in [0, 4096]")
+            if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 65536:
+                raise ValueError(f"pd.{k} must be an integer in [0, 65536]")
         if self.prefill_cards and self.prefill_cards % self.prefill_layout.cards:
             raise ValueError(f"pd.prefill_cards must be a multiple of the prefill layout's {self.prefill_layout.cards} cards")
         if self.kv_GBps is not None and (isinstance(self.kv_GBps, bool) or not isinstance(self.kv_GBps, (int, float))

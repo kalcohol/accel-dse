@@ -118,7 +118,18 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--fabric", action="store_true",
                    help="0.59 topology-aware collectives (ring / tree / hier α-β + per-step latency, fat-tree oversub, "
                         "rail, scale-up topology, in-network reduction, KV contention) 「假设」; off = 0.50 model")
-    p.add_argument("--fabric-algo", dest="fabric_algo", default=None, choices=["auto", "ring", "tree", "hier"])
+    p.add_argument("--fabric-algo", dest="fabric_algo", default=None, choices=["auto", "auto_overlap", "ring", "tree", "hier"],
+                   help="auto_overlap (0.60): per stage the algorithms minimising exposed time (compute / DRAM overlap)")
+    p.add_argument("--net-tiers", dest="net_tiers", type=int, default=None, choices=[2, 3],
+                   help="0.60: 3 = leaf / spine / core fat-tree with --pod-nodes / --oversub-spine 「假设」")
+    p.add_argument("--pod-nodes", dest="pod_nodes", type=int, default=None,
+                   help="nodes per pod (3-tier; default 0 = leaf nodes × spine down ports from --switch-radix)")
+    p.add_argument("--oversub-spine", dest="oversub_spine", type=float, default=None,
+                   help="spine → core oversubscription r2 (3-tier, default 1) 「假设」")
+    p.add_argument("--fabric-overlap", dest="fabric_overlap", default=None, choices=["sum", "ports"],
+                   help="0.60: ports = different tiers' ports run concurrently (stage link = busiest port), sum = 0.59")
+    p.add_argument("--kv-feedback", dest="kv_feedback", action="store_true", default=None,
+                   help="0.60 PD: KV stream's NIC share slows the decode pool's network collectives 「假设」")
     p.add_argument("--net-topology", dest="net_topology", default=None, choices=["fat_tree", "rail"],
                    help="cross-node topology with --fabric (default fat_tree)")
     p.add_argument("--oversub", dest="oversub", type=float, default=None,
@@ -281,7 +292,10 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     fab = {k: getattr(a, dest) for k, dest in (("algo", "fabric_algo"), ("net_topology", "net_topology"),
                                                 ("oversub", "oversub"), ("leaf_nodes", "leaf_nodes"),
                                                 ("switch_radix", "switch_radix"), ("torus_x", "torus_x"),
-                                                ("innet_reduce", "innet_reduce")) if getattr(a, dest, None) is not None}
+                                                ("innet_reduce", "innet_reduce"), ("net_tiers", "net_tiers"),
+                                                ("pod_nodes", "pod_nodes"), ("oversub_spine", "oversub_spine"),
+                                                ("overlap", "fabric_overlap"), ("kv_feedback", "kv_feedback"))
+           if getattr(a, dest, None) is not None}
     if getattr(a, "fabric", False) or fab:
         sc["fabric"] = {"enabled": True, **fab}
     if getattr(a, "link_topology", None):
@@ -380,6 +394,13 @@ def cmd_eval(a) -> dict:
         off = fb["step_ms_off"]
         print(f"fabric 「假设」: step {fb['step_ms']:.3f} ms" + (f" (model off {off:.3f} ms, {fb['step_ms'] / off - 1:+.1%})" if off else ""))
         print("  " + fb["basis"])
+        if nt := fb.get("net_traffic"):
+            print(f"  network traffic {nt['net_MB']:.1f} MB/step: {nt['leaf_up_share']:.0%} leaves the leaf"
+                  + (f", {nt['pod_up_share']:.0%} leaves the pod" if fb.get("pod_nodes") else ""))
+        if fb.get("overlap") == "ports" and fb.get("stages"):
+            x = max(fb["stages"], key=lambda z: z["link_us"])
+            print(f"  ports overlap (stage {x['stage']}): link {x['link_us'] / 1e3:.3f} ms vs sum {x['link_sum_us'] / 1e3:.3f} ms; "
+                  "busy " + " / ".join(f"{t} {v / 1e3:.3f}" for t, v in x["busy_us"].items() if v) + " ms")
         tz = {"d2d": "D2D", "link": "scale-up", "net": "net"}
         for x in fb["rows"][:12]:
             lv = " · ".join(f"{tz[t]}×{n}" for t, n in x["levels"])
@@ -449,6 +470,12 @@ def cmd_eval(a) -> dict:
               f"KV {k_['bytes_per_req'] / 2**20:.1f} MiB/req, {k_['t_ms']:.2f} ms (exposed {k_['exposed_ms']:.2f})")
         if p_.get("hetero"):
             print(f"    heterogeneous pools: prefill {p_['chip']} / {p_['mem_id']}  decode {d_['chip']} / {d_['mem_id']}")
+        if kf := k_.get("fabric"):
+            print(f"    KV fabric 「假设」: uplink factor {kf['leaf_factor']:.2f}, NIC busy with collectives {kf['u_coll']:.0%}, "
+                  f"{kf['GBps_raw']:.1f} → {kf['GBps_eff']:.2f} GB/s per card"
+                  + (f"; feedback: KV takes {kf['feedback']['u_kv']:.1%} of decode NICs → TPOT "
+                     f"{kf['feedback']['tpot_ms_before']:.2f} → {kf['feedback']['tpot_ms_after']:.2f} ms"
+                     if kf.get("feedback") else ""))
         print(f"    TTFT {pd['ttft_ms']:.0f} ms  TPOT {pd['tpot_ms']:.2f} ms  goodput {pd['goodput_per_card']:.1f} tok/s/card  "
               f"bottleneck {pd['bottleneck']}"
               + (f"  best split {pd['best_split']['prefill_cards']}P+{pd['best_split']['decode_cards']}D "

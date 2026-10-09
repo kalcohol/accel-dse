@@ -48,7 +48,7 @@ from dataclasses import replace
 from .catalog import get_model
 from .evaluate import Result, evaluate
 from .ir import Shard
-from .parallel import enumerate_layouts
+from .parallel import MAX_REPLICA_CARDS, enumerate_layouts
 from .memplan import stage_storage
 from .scenario import PDConfig, Scenario
 from .energy import EnergyTable
@@ -305,6 +305,23 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         return {"req_s": lam, "goodput_tok_s": lam * out, "goodput_per_card": lam * out / (np_ + nd_),
                 "bottleneck": bott, "cap_req_s": {"prefill": lp, "decode": ld, "kv": lk}, "util": util}
 
+    kv_fb = None
+    if kv_fab is not None and scn.fabric.kv_feedback and kv_tier == "net" and kv > 0 and dec.fits:
+        # 0.60 「假设」: the KV stream takes u_kv = λ·kv / (min(n_p, n_d)·β) of the decode pool's NICs, so the decode
+        # pool's network collectives run on (1 − u_kv)·net.GBps; λ falls with the slower decode → fixed point
+        tpot0, u, net0 = dec.tpot, 0.0, dscn.net.GBps
+        for _ in range(6):
+            lam_ = rates(n_p, n_d)["req_s"]
+            u_new = min(0.95, lam_ * kv / (min(n_p, n_d) * kv_fab["GBps_raw"] * 1e9))
+            if abs(u_new - u) < 1e-4:
+                break
+            u = u_new
+            dscn = dscn.replace("net.GBps", net0 * (1.0 - u))
+            dec = evaluate(dscn)
+            rd = dec.throughput if dec.fits else 0.0
+        dpool = _Pool(dscn)
+        kv_fb = {"u_kv": u, "tpot_ms_before": tpot0 * 1e3, "tpot_ms_after": dec.tpot * 1e3,
+                 "net_GBps_decode": net0 * (1.0 - u)}
     main = rates(n_p, n_d)
     ttft = pr.ttft + exposed
     splits = []
@@ -412,7 +429,8 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         "kv": {"bytes_per_req": kv, "GBps_req": b_req / 1e9, "t_ms": t_kv * 1e3, "exposed_ms": exposed * 1e3,
                "layerwise": pd.kv_layerwise, "tier": kv_tier,
                **({"fabric": {**kv_fab, "coll_slowdown": 1.0 / max(0.05, 1.0 - main["req_s"] * kv
-                                                                 / (min(n_p, n_d) * kv_fab["GBps_raw"] * 1e9))}}
+                                                                 / (min(n_p, n_d) * kv_fab["GBps_raw"] * 1e9)),
+                              **({"feedback": kv_fb} if kv_fb else {})}}
                   if kv_fab else {}),
                "source": "pd.kv_GBps" if pd.kv_GBps else ("net.GBps（跨节点层）" if kv_tier == "net" else "link.GBps（节点内互联层）")},
         "ttft_ms": ttft * 1e3, "tpot_ms": dec.tpot * 1e3,
@@ -436,10 +454,15 @@ def _search_layouts(m, scn, pscn, dscn, total, cur, pts, plain, S, out, kv, beta
     card for all; the SLO goodput (queueing model, p90 TTFT / TPOT) for the best fluid pairs.  The decode batch per
     replica stays ``serving.batch``; the prefill batch is best_prefill per layout (TTFT SLO)."""
     pscn, dscn = pscn.replace("pd", PDConfig()), dscn.replace("pd", PDConfig())   # pool card checks off
-    sizes = sorted({c for c in SEARCH_SIZES if c <= total} | set(cur))
+    big = total > SEARCH_SIZES[-1]          # 0.60: totals above 64 cards also try replicas of 128, 256, … ≤ total
+    sizes = sorted({c for c in SEARCH_SIZES if c <= total} | set(cur)
+                   | ({1 << i for i in range(7, MAX_REPLICA_CARDS.bit_length()) if (1 << i) <= total} if big else set()))
     lays = [lay for c in sizes for lay in enumerate_layouts(c, m.n_layers, m.is_moe)]
     lays.sort(key=lambda l: (l.pp, l.cards, l.tp))
     truncated = len(lays) > SEARCH_CAP
+    if big and truncated:     # 0.60: equal quota per replica size (smallest PP / TP first within a size) so large
+        q = -(-SEARCH_CAP // len(sizes))    # replicas are not crowded out by the many small ones
+        lays = [l for c in sizes for l in [x for x in lays if x.cards == c][:q]][:SEARCH_CAP]
     lays = lays[:SEARCH_CAP] + [l for l in (pscn.layout, dscn.layout) if l not in lays[:SEARCH_CAP]]
     P, D = [], []
     B0, tpot_slo = scn.serving.batch, scn.serving.tpot_slo_ms
@@ -460,7 +483,7 @@ def _search_layouts(m, scn, pscn, dscn, total, cur, pts, plain, S, out, kv, beta
         if search_b:          # 0.53: largest-throughput batch in {B/2, B, 2B, 4B} meeting the TPOT SLO (fluid TPOT)
             for b_ in DECODE_BATCH_MULT:
                 b_ = max(1, int(B0 * b_))
-                if b_ == bd or b_ > 4096:
+                if b_ == bd or b_ > max(4096, 64 * lay.cards):     # 0.60: cap scales with replica cards
                     continue
                 x = rd_ if b_ == B0 else evaluate(ds.replace("serving.batch", b_))
                 ok_x = x.fits and x.tpot * 1e3 <= tpot_slo

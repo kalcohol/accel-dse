@@ -165,9 +165,13 @@ function d2dPaint() { $('d2d-inputs').hidden = !S.sc.d2d_enabled; d2dNote(); }
 function fab() { if (!S.sc.fabric) S.sc.fabric = JSON.parse(JSON.stringify(S.cat.defaults.fabric)); return S.sc.fabric; }
 function fabPaint() {
   $('fab-enabled').checked = !!fab().enabled; $('fab-inputs').hidden = !fab().enabled;
-  for (const k of ['algo', 'net_topology', 'innet_reduce']) $('fab-' + k).value = fab()[k];
+  for (const k of ['algo', 'net_topology', 'innet_reduce', 'overlap']) $('fab-' + k).value = fab()[k];
+  $('fab-net_tiers').value = String(fab().net_tiers || 2);
   $('fab-link_topology').value = S.sc.link.topology || 'switch';
   $('fab-contention').checked = !!fab().contention;
+  $('fab-kv_feedback').checked = !!fab().kv_feedback;
+  const three = (fab().net_tiers || 2) === 3;
+  $('fab-pod_nodes').disabled = !three; $('fab-oversub_spine').disabled = !three;
 }
 const FAB_ALGO_ZH = { ring: 'ring（扁平环）', tree: 'tree（双二叉树）', hier: 'hier（分层）', direct: 'direct（直接）', p2p: 'p2p' };
 const FAB_TOP_ZH = { ring: '顶层 ring', tree: '顶层 tree', innet: '顶层网内归约' };
@@ -176,15 +180,19 @@ function renderFabric(r) {
   $('fab-box').hidden = !f;
   if (!f) return;
   const off = f.step_ms_off;
-  $('fab-basis').textContent = `${f.basis} 步时间 ${num(f.step_ms)} ms` + (off ? `（拓扑模型关时 ${num(off)} ms，${f.step_ms >= off ? '+' : ''}${pct(f.step_ms / off - 1)}）` : '');
+  const nt = f.net_traffic, stg = (f.stages || []).reduce((a, b) => (!a || b.link_us > a.link_us ? b : a), null);
+  $('fab-basis').textContent = `${f.basis} 步时间 ${num(f.step_ms)} ms` + (off ? `（拓扑模型关时 ${num(off)} ms，${f.step_ms >= off ? '+' : ''}${pct(f.step_ms / off - 1)}）` : '')
+    + (nt ? `。跨节点流量 ${num(nt.net_MB)} MB/步，其中 ${pct(nt.leaf_up_share)} 离开 leaf${f.pod_nodes ? `、${pct(nt.pod_up_share)} 离开 pod（每 pod ${f.pod_nodes} 节点）` : ''}` : '')
+    + (f.overlap === 'ports' && stg ? `。端口并发：最重级链路 ${num(stg.link_us / 1e3)} ms（相加为 ${num(stg.link_sum_us / 1e3)} ms；忙时 ${Object.entries(stg.busy_us).filter(([, v]) => v > 0).map(([t, v]) => `${{ d2d: 'D2D', link: '节点内', net: '网络' }[t]} ${num(v / 1e3)}`).join(' · ')} ms）` : '');
   const tier = { d2d: 'D2D', link: '节点内', net: '网络' };
   const head = h('tr', {}, h('th', { class: 'l' }, '集合通信'), h('th', {}, '组大小'), h('th', { class: 'l' }, '分层'), h('th', {}, '每 rank 数据'),
-    h('th', {}, '次数 / 步'), h('th', { class: 'l' }, '所选算法'), h('th', {}, '带宽时间 µs'), h('th', {}, '时延 µs'), h('th', { class: 'l' }, '其他候选（带宽 + 时延 µs）'));
+    h('th', {}, '次数 / 步'), h('th', { class: 'l' }, '所选算法'), h('th', {}, '带宽时间 µs'), h('th', {}, '时延 µs'), h('th', {}, '离开 leaf / pod'), h('th', { class: 'l' }, '其他候选（带宽 + 时延 µs）'));
   const rows = f.rows.slice(0, 24).map((x) => h('tr', {}, h('td', { class: 'l' }, x.kind === 'alltoall' ? 'all-to-all' : x.kind),
     h('td', {}, String(x.group)), h('td', { class: 'l' }, x.levels.map(([t, n]) => `${tier[t] || t} × ${n}`).join(' · ')),
     h('td', {}, num(x.bytes / 1024) + ' KiB'), h('td', {}, String(x.count)),
     h('td', { class: 'l' }, (FAB_ALGO_ZH[x.algo] || x.algo) + (x.top ? `，${FAB_TOP_ZH[x.top] || x.top}` : '')),
     h('td', {}, num(x.bw_us)), h('td', {}, num(x.alpha_us)),
+    h('td', {}, x.net_leaf_share === undefined ? '—' : `${pct(x.net_leaf_share)}${f.pod_nodes ? ' / ' + pct(x.net_pod_share) : ''}`),
     h('td', { class: 'l small' }, Object.entries(x.cands).filter(([k]) => k !== x.algo).map(([k, v]) => `${k} ${num(v.bw_us + v.alpha_us)}`).join(' · ') || '—')));
   put($('fab-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
 }
@@ -363,12 +371,23 @@ function setCards(n) {
   L.pp = 1; L.tp = n; L.dp = 1; L.sp = 1;
   if (model().is_pair) { L.tp = 1; L.sp = n; }   // structure models: no TP — fill with DAP (pair grid split)
   if (model().is_moe) { L.ep = n; L.etp = 1; } else { L.ep = 1; L.etp = 1; }
+  if (n > 64 && !model().is_pair) {   // 0.60: large replicas — TP inside a node, the rest DP (MoE) / PP (dense)
+    const divs = [...Array(n).keys()].map((i) => i + 1).filter((d) => n % d === 0);
+    const tpMax = Math.max(1, S.sc.node_cards || 8);
+    let tp = Math.max(...divs.filter((d) => d <= tpMax));
+    if (model().is_moe) { L.tp = tp; L.dp = n / tp; }
+    else if (!isFull(model())) {
+      const nl = model().n_layers || 64;
+      while (n / tp > nl) tp = divs.find((d) => d > tp) || n;
+      L.tp = tp; L.pp = n / tp;
+    }
+  }
 }
 function cardsNote() {
   const L = S.sc.layout;
   const m = model();
   $('cards-note').textContent = m.is_pair ? `PP${L.pp} × DP${L.dp} × DAP${L.sp || 1} = ${cards()} 卡；结构模型无 TP（改卡数按 DAP 填充）`
-    : `PP${L.pp} × TP${L.tp} × DP${L.dp}${isFull(m) ? ` × SP${L.sp || 1}` : ''} = ${cards()} 卡；改卡数会按 TP 重新填充布局`;
+    : `PP${L.pp} × TP${L.tp} × DP${L.dp}${isFull(m) ? ` × SP${L.sp || 1}` : ''} = ${cards()} 卡；改卡数会重新填充布局（≤ 64 卡全 TP；更大时 TP ≤ 每节点卡数，其余 MoE 用 DP、dense 用 PP）`;
   const c = $('l-cards');
   if (c._sync && document.activeElement !== c) c._sync();
 }
@@ -632,7 +651,7 @@ async function runFit() {
       acts.push(h('button', { class: 'btn ghost', onclick: () => applyMem(mm.id) },
         `存储器改为 ${mm.count} ${S.memInfo && S.memInfo.kind === 'HBM' ? '堆栈' : '颗'} × ${+(mm.capacity_GiB / mm.count).toFixed(1)} GiB = ${num(mm.capacity_GiB)} GiB / 卡（${mm.tag_zh}）`));
     }
-    if (!acts.length) lines.push(h('div', {}, '在 64 卡以内、当前存储器类型的任何容量下都放不下；请换容量更大的存储器类型或更小的模型。'));
+    if (!acts.length) lines.push(h('div', {}, `在 ${S.cat.max_cards || 8192} 卡以内、当前存储器类型的任何容量下都放不下；请换容量更大的存储器类型或更小的模型。`));
     else lines.push(h('div', { class: 'small muted' }, `一键修正（最少卡数的布局按${m.domain === 'gen' ? '帧/s/卡' : m.domain === 'protein' ? '序列/s/卡' : ' decode 吞吐'}取最优；存储器只在当前类型、速率内加大容量）：`));
     put(box, ...lines, h('div', { class: 'fit-acts' }, acts));
   } catch (e) { put(box, h('div', { class: 'err' }, '容量检查失败：' + e.message)); }
@@ -694,6 +713,8 @@ function renderPD(r) {
   put($('pd-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
   const bs = pd.best_split;
   $('pd-note').textContent = `KV 每请求 ${num(K.bytes_per_req / 2 ** 20)} MiB，${num(K.GBps_req)} GB/s（${K.source}，min(c_p, c_d) 卡并行），传输 ${num(K.t_ms)} ms，暴露 ${num(K.exposed_ms)} ms${K.layerwise ? '（逐层流式）' : ''}。`
+    + (K.fabric ? ` 拓扑「假设」：上行系数 ${num(K.fabric.leaf_factor)}，NIC 被集合通信占用 ${pct(K.fabric.u_coll)}，${num(K.fabric.GBps_raw)} → ${num(K.fabric.GBps_eff)} GB/s/卡`
+      + (K.fabric.feedback ? `；回馈：KV 占 decode 池 NIC ${pct(K.fabric.feedback.u_kv)} → decode TPOT ${num(K.fabric.feedback.tpot_ms_before)} → ${num(K.fabric.feedback.tpot_ms_after)} ms` : '') + '。' : '')
     + (bs ? ` 同 ${pd.cards} 卡最佳切分：prefill ${bs.prefill_cards} + decode ${bs.decode_cards} → ${num(bs.goodput_per_card)} tok/s/卡（瓶颈 ${bs.bottleneck}）。` : '')
     + (pd.warnings.length ? ' ⚠ ' + pd.warnings.join('；') : '');
   renderPDQueue(pd.queue, pd.cards, pd.lengths);
@@ -1048,7 +1069,7 @@ const SWEEP_ZH = {
   'chip.sram_mib': 'SRAM MiB', 'chip.sram_port_Bpc': 'SRAM 端口 B/cycle', 'chip.freq_ghz': '频率 GHz', 'chip.mac_eff': 'MAC 效率',
   'chip.gemv_macs': 'GEMV MAC/cycle', mem_eff: 'DRAM 效率', 'link.GBps': '节点内 GB/s', 'link.alpha_us': '节点内 α µs',
   'serving.moe_skew': 'MoE 倾斜', 'chip.slc_mib': 'SLC MiB', 'chip.slc_GBps': 'SLC GB/s', 'd2d.GBps': 'D2D GB/s（自定义）', 'd2d.alpha_us': 'D2D α µs', package_cards: '每封装 die 数（开 D2D）',
-  d2d_units: 'D2D 单元数', 'net.GBps': '跨节点 GB/s', 'net.alpha_us': '跨节点 α µs', node_cards: '每节点卡数', 'fabric.oversub': '收敛比 r（需开拓扑感知）',
+  d2d_units: 'D2D 单元数', 'net.GBps': '跨节点 GB/s', 'net.alpha_us': '跨节点 α µs', node_cards: '每节点卡数', 'fabric.oversub': '收敛比 r（需开拓扑感知）', 'fabric.oversub_spine': 'spine 收敛比 r₂（需三层）', 'fabric.pod_nodes': '每 pod 节点数（需三层）',
   'workload.frames': '帧数', 'workload.steps': '去噪步数', 'workload.height': '高 px', 'workload.width': '宽 px',
   'workload.seq_len': '序列长度（残基）', 'workload.msa': 'MSA 行数', 'workload.recycles': '主干遍数',
   'workload.samples': '扩散样本数',
@@ -1073,7 +1094,7 @@ const SWEEP_DEFAULT = {
   mem_eff: '0.5,0.6,0.7,0.8,0.9', 'link.GBps': '50,100,200,400,900', 'link.alpha_us': '0,1,3,5,10',
   'serving.moe_skew': '1,1.25,1.5,2,3,4', 'chip.slc_mib': '0,64,256,1024,4096', 'chip.slc_GBps': '500,1000,2000,4000', 'd2d.GBps': '500,1000,2000,4000',
   'd2d.alpha_us': '0,0.5,1,2', package_cards: '1,2,4,8',
-  d2d_units: '1,2,4,8', 'net.GBps': '12.5,25,50,100,200', 'net.alpha_us': '2,5,10,20', node_cards: '0,2,4,8', 'fabric.oversub': '1,2,4,8',
+  d2d_units: '1,2,4,8', 'net.GBps': '12.5,25,50,100,200', 'net.alpha_us': '2,5,10,20', node_cards: '0,2,4,8', 'fabric.oversub': '1,2,4,8', 'fabric.oversub_spine': '1,2,4,8', 'fabric.pod_nodes': '8,16,32,64',
   'workload.frames': '17,33,49,81,121', 'workload.steps': '10,20,30,50', 'workload.height': '240,480,720',
   'workload.width': '416,832,1280', 'workload.seq_len': '128,256,512,1022,2048',
   'workload.msa': '64,256,512,1024,4096', 'workload.recycles': '1,2,3,4,6', 'workload.samples': '1,5,10,25',
@@ -1275,15 +1296,20 @@ async function init() {
   bindNumber('d2d-units', () => S.sc.d2d_units, (x) => { S.sc.d2d_units = x; $('d-GBps')._sync(); d2dNote(); }, { int: true });
   for (const k of ['GBps', 'alpha_us']) bindNumber('n-' + k, () => S.sc.net[k], (x) => (S.sc.net[k] = x));
   bindNumber('n-node_cards', () => S.sc.node_cards || 0, (x) => (S.sc.node_cards = x), { int: true });
-  for (const [k, o] of [['oversub', {}], ['leaf_nodes', { int: true }], ['switch_radix', { int: true }], ['torus_x', { int: true }],
+  for (const [k, o] of [['oversub', {}], ['oversub_spine', {}], ['pod_nodes', { int: true }], ['leaf_nodes', { int: true }], ['switch_radix', { int: true }], ['torus_x', { int: true }],
     ['hop_d2d_us', {}], ['hop_link_us', {}], ['hop_net_us', {}], ['hop_net_tree_us', {}]])
     bindNumber('fab-' + k, () => fab()[k], (x) => (fab()[k] = x), o);
   opts($('fab-link_topology'), [['switch', 'switch（非阻塞交换）'], ['full_mesh', 'full mesh（全互连）'], ['ring', 'ring（双向环）'], ['torus2d', '2D torus']], S.sc.link.topology || 'switch');
   opts($('fab-net_topology'), [['fat_tree', 'fat-tree / leaf-spine'], ['rail', 'rail-optimized']], fab().net_topology);
-  opts($('fab-algo'), [['auto', 'auto（取最快）'], ['ring', 'ring'], ['tree', 'tree（双二叉树）'], ['hier', 'hier（分层）']], fab().algo);
+  opts($('fab-algo'), [['auto', 'auto（取最快）'], ['auto_overlap', 'auto_overlap（按暴露时间，计入与计算重叠）'], ['ring', 'ring'], ['tree', 'tree（双二叉树）'], ['hier', 'hier（分层）']], fab().algo);
   opts($('fab-innet_reduce'), [['off', '关'], ['net', '跨节点（SHARP 类）'], ['net+link', '跨节点 + 节点内（NVLS 类）']], fab().innet_reduce);
   $('fab-enabled').addEventListener('change', (e) => { fab().enabled = e.target.checked; fabPaint(); schedule(); });
   $('fab-contention').addEventListener('change', (e) => { fab().contention = e.target.checked; schedule(); });
+  opts($('fab-net_tiers'), [['2', '2 层（leaf-spine）'], ['3', '3 层（leaf / spine / core）']], String(fab().net_tiers || 2));
+  opts($('fab-overlap'), [['sum', 'sum（相加，0.59）'], ['ports', 'ports（不同端口并发）']], fab().overlap || 'sum');
+  $('fab-net_tiers').addEventListener('change', (e) => { fab().net_tiers = Number(e.target.value); fabPaint(); schedule(); });
+  $('fab-overlap').addEventListener('change', (e) => { fab().overlap = e.target.value; schedule(); });
+  $('fab-kv_feedback').addEventListener('change', (e) => { fab().kv_feedback = e.target.checked; schedule(); });
   $('fab-link_topology').addEventListener('change', (e) => { S.sc.link.topology = e.target.value; schedule(); });
   for (const k of ['algo', 'net_topology', 'innet_reduce']) $('fab-' + k).addEventListener('change', (e) => { fab()[k] = e.target.value; schedule(); });
   fabPaint();

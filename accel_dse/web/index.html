@@ -81,7 +81,7 @@
   <section class="grp">
     <h3>卡数与并行布局</h3>
     <div class="row3">
-      <label>卡数（每副本）<input type="number" id="l-cards" min="1" max="64" step="1"></label>
+      <label>卡数（每副本）<input type="number" id="l-cards" min="1" max="8192" step="1"></label>
       <div class="span2 small muted" id="cards-note"></div>
     </div>
     <div class="row5" id="layout-row">
@@ -139,6 +139,15 @@
       <div class="row2">
         <label title="每步时延 µs：D2D / 节点内（ring、tree 每一步）；默认节点内 0.6 µs 取 NCCL tuner 的 NVLink LL 默认值作数量级参考">每步时延 D2D / 节点内 µs <span class="tag assume">假设</span><span class="row2"><input type="number" id="fab-hop_d2d_us" step="0.1" min="0"><input type="number" id="fab-hop_link_us" step="0.1" min="0"></span></label>
         <label title="跨节点每步时延 µs：ring 步 / tree 步；默认 2.7 / 5.0 µs 取 NCCL tuner 的 NET LL 默认值作数量级参考">每步时延 网络 ring / tree µs <span class="tag assume">假设</span><span class="row2"><input type="number" id="fab-hop_net_us" step="0.5" min="0"><input type="number" id="fab-hop_net_tree_us" step="0.5" min="0"></span></label>
+      </div>
+      <div class="row3">
+        <label title="0.60：跨节点 fat-tree 层数。2 = leaf-spine（0.59）；3 = leaf / spine / core：每个 pod 若干 leaf，spine → core 上行再收敛 r₂。离开 pod 的流量份额 f_pod 按 r·r₂·f_pod 变慢（rail 拓扑保持两层）">网络层数 <span class="tag assume">假设</span><select id="fab-net_tiers"></select></label>
+        <label title="0.60（三层）：每个 pod 的节点数；0 = 每 leaf 节点数 × spine 下行端口数（端口数·r₂/(1+r₂)）。须为每 leaf 节点数的整数倍">每 pod 节点数 <span class="tag assume">假设</span><input type="number" id="fab-pod_nodes" step="1" min="0"></label>
+        <label title="0.60（三层）：spine → core 上行收敛比 r₂（下行 : 上行），叠加在 leaf 收敛比 r 之上；1 = 非阻塞">spine 收敛比 r₂:1 <span class="tag assume">假设</span><input type="number" id="fab-oversub_spine" step="1" min="1" max="64"></label>
+      </div>
+      <div class="row3">
+        <label title="0.60：同一流水级内各集合通信的链路时间如何合成。sum = 相加（0.59）；ports = D2D PHY、scale-up 端口、NIC 是不同物理端口可同时工作，同端口串行：级链路时间 = 最忙端口的忙时之和（不低于最长的单次集合通信）">层间重叠 <span class="tag assume">假设</span><select id="fab-overlap"></select></label>
+        <label class="inline" title="0.60（PD）：KV 流占 decode 池 NIC 的份额 u_kv 反馈到 decode 池的跨节点集合通信（网络带宽 × (1 − u_kv)），decode TPOT 重算（不动点迭代）"><input type="checkbox" id="fab-kv_feedback"> KV 争用回馈 decode TPOT <span class="tag assume">假设</span></label>
       </div>
     </div>
   </section>
