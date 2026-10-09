@@ -166,24 +166,42 @@ def _cdiv(a: int, b: int) -> int:
 
 
 def gqa_local(n_q: int, n_kv: int, tp: int) -> tuple[int, int]:
-    """0.63 (external review): (KV heads, query heads) on the busiest TP rank of a GQA layer, GQA groups kept whole.
-    TP ≤ KV heads: ⌈KV / TP⌉ KV heads with all their G = Q / KV query heads; TP > KV: one KV head (replicated over the
-    ranks of its group), its G query heads split over ⌊TP / KV⌋ ranks at least.  Divisible TP: KV / TP, Q / TP as before;
-    non-divisible TP no longer drops heads (Qwen3-8B TP3 covered 27 of 32 query heads: ⌈8/3⌉·(⌈32/3⌉ // ⌈8/3⌉))."""
-    if n_kv <= 0 or n_q % n_kv:
-        return _cdiv(n_kv, tp), _cdiv(n_q, tp)
+    """0.63 (external review): (KV heads, query heads) on the busiest TP rank of a GQA layer; uneven TP covers every
+    head (0.62: ⌈KV/TP⌉ KV heads × ⌊⌈Q/TP⌉ / ⌈KV/TP⌉⌋ query heads — Qwen3-8B TP3 covered 27 of 32 query heads).
+    Two head-complete shardings, the cheaper one is used (fewest KV heads — KV cache bytes / reads — then fewest
+    query rows per rank):
+      groups whole: TP ≤ KV → ⌈KV/TP⌉ KV heads with their G = Q/KV query heads; TP > KV → 1 KV head, its G query
+        heads over ⌊TP/KV⌋ ranks;
+      heads dealt: contiguous blocks of ⌈Q/TP⌉ / ⌊Q/TP⌋ query heads; a rank holds the KV head of every group its
+        block touches (a straddling group is replicated on both ranks).
+    The attention kernel tiles per KV head with ⌈Q_loc / KV_loc⌉ query rows (padded rows cost time only).
+    Divisible TP: KV/TP (or 1) and Q/TP as before."""
+    hq = _cdiv(n_q, tp)
+    if n_kv <= 0 or n_q % n_kv or tp <= 1:
+        return _cdiv(n_kv, tp), hq
     g = n_q // n_kv
+    base, rem = divmod(n_q, tp)
+    kv_b, start = 1, 0
+    for r in range(tp):
+        size = base + (1 if r < rem else 0)
+        if size:
+            kv_b = max(kv_b, (start + size - 1) // g - start // g + 1)
+        start += size
     if tp <= n_kv:
-        kv = _cdiv(n_kv, tp)
-        return kv, kv * g
-    return 1, _cdiv(g, tp // n_kv)
+        kv_a = _cdiv(n_kv, tp); hq_a = kv_a * g
+    else:
+        kv_a, hq_a = 1, _cdiv(g, tp // n_kv)
+    key = lambda kv, q: (kv, kv * _cdiv(q, kv), q)
+    return min((kv_a, hq_a), (kv_b, hq), key=lambda c: key(*c))
 
 
 def _lin_local(l: Linear, tp: int, core: AttnCore | None = None) -> tuple[int, int]:
     """(K, N) of the per-rank slice of a linear (GEMM dims; grouped → per-group K).  ``core`` (a GQA layer's attention
     core, 0.63): the query / output projections follow the busiest rank's query heads (head-aligned, gqa_local)."""
     if core is not None and core.kind == "gqa" and tp > 1 and l.groups == 1 and core.n_q:
-        hq = gqa_local(core.n_q, core.n_kv, tp)[1]
+        kv, hq = gqa_local(core.n_q, core.n_kv, tp)
+        if l.split == "head" and l.name in ("k", "v") and core.n_kv and l.n == core.n_kv * max(l.unit, 1):
+            return l.k, kv * l.unit
         if l.split == "col" and l.name in ("q", "o_gate") and l.n % core.n_q == 0:
             return l.k, hq * (l.n // core.n_q)
         if l.split == "row" and l.name == "o" and l.k % core.n_q == 0:
@@ -299,7 +317,7 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
             causal = core.keys_mean(ph.ctx, q) / ce
     if core.kind == "gqa":
         kv_loc, hq_loc = gqa_local(core.n_q, core.n_kv, tp)
-        g = max(1, hq_loc // kv_loc)
+        g = max(1, _cdiv(hq_loc, kv_loc))     # 0.63: query rows per KV-head tile (uneven TP pads, never drops)
         cnt = b_loc * kv_loc
         ops.append(Op("qk", "attn", li, m=q * g, k=core.qk_dim, n=ce, count=cnt, causal=causal,
                       act_bytes=cnt * (q * g * core.qk_dim) * ab))

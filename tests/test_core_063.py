@@ -143,11 +143,19 @@ def test_capacity_constraints_radix_property():
 # ------------------------------------------------------------------ 5. uneven TP heads + work conservation
 def test_uneven_tp_keeps_every_head():
     assert gqa_local(32, 8, 3) == (3, 12) and gqa_local(32, 8, 4) == (2, 8) and gqa_local(32, 8, 16) == (1, 2)
-    assert gqa_local(64, 8, 12) == (1, 8) and gqa_local(28, 4, 3) == (2, 14)
+    assert gqa_local(64, 8, 12) == (1, 8) and gqa_local(28, 4, 3) == (2, 10) and gqa_local(40, 10, 8) == (2, 5)
+    assert gqa_local(40, 10, 4) == (3, 10)
+    for q, kv in ((32, 8), (40, 10), (64, 8), (28, 4), (64, 4), (48, 8)):     # every head on some rank
+        for tp in range(1, 17):
+            k_, h_ = gqa_local(q, kv, tp)
+            assert h_ * tp >= q and k_ * tp >= kv and h_ >= -(-q // tp), (q, kv, tp)
     m = get_model("qwen3-8b")
     ph = Phase("decode", 8, 1, 2048)
     qk = next(o for o in build_rank_ops(m, 0, ph, Shard(tp=3)) if o.name == "qk")
-    assert qk.count * qk.m >= 8 * 12 and qk.count == 8 * 3            # 12 query heads / 3 KV heads on the busiest rank
+    # busiest rank: groups whole (3 KV heads × 4) beats heads dealt (11 query heads touching 4 KV groups)
+    assert qk.count == 8 * 3 and qk.m == 4
+    k = next(o for o in build_rank_ops(m, 0, ph, Shard(tp=3)) if o.name == "attn.k")
+    assert k.n == 3 * 128
 
 
 def _conserved(m, ph, sh, ops_fn):
