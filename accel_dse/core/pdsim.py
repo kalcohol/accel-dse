@@ -946,41 +946,62 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
     return st
 
 
+DES_SLO_SCAN = 8     # 0.64: grid points of the DES SLO-rate scan below its completion limit
+
+
 def slo_rate(ctx: dict, mode: str, ttft_slo: float, tpot_slo: float, start: float, n_req: int = 1200,
              warmup: int = 250, seed: int = 1, rel_tol: float = 0.03, **kw) -> float:
-    """Largest λ whose simulated p90 TTFT and p90 request-average TPOT meet the SLOs (bisection, common random
-    numbers across λ).  Same definition as pdqueue._slo_rate."""
+    """Largest λ whose simulated p90 TTFT and p90 request-average TPOT meet the SLOs (common random numbers across
+    λ).  Same definition as pdqueue._slo_rate, and (0.64) the same monotone-safe search: the completion limit λ_c
+    (every request finished — the DES's stability) is found by growth + bisection, then (0, λ_c] is scanned top-down
+    on ``DES_SLO_SCAN`` points and the largest feasible one refined towards the next grid point.  0.63 bisected the
+    SLO predicate itself, which assumes it is monotone (the prefill batch cap changes with λ)."""
+    memo: dict = {}
+
+    def sim(lam: float) -> dict:
+        if lam not in memo:
+            memo[lam] = simulate(ctx, lam, mode, n_req=n_req, warmup=warmup, seed=seed, **kw)
+        return memo[lam]
+
     def ok(lam: float) -> bool:
         if lam <= 0:
             return True
-        x = simulate(ctx, lam, mode, n_req=n_req, warmup=warmup, seed=seed, **kw)
+        x = sim(lam)
         return x["complete"] and x["ttft"]["p90"] <= ttft_slo and x["tpot"]["p90"] <= tpot_slo
+
+    def complete(lam: float) -> bool:
+        return lam <= 0 or sim(lam)["complete"]
+
+    def bisect(lo: float, hi: float, pred) -> float:
+        while hi - lo > rel_tol * hi:
+            mid = 0.5 * (lo + hi)
+            if pred(mid):
+                lo = mid
+            else:
+                hi = mid
+        return lo
     if start <= 0:
         return 0.0
     lo, hi = 0.0, start
     for _ in range(12):
-        if not ok(hi):
+        if not complete(hi):
             break
         lo, hi = hi, hi * 1.5
-    else:
-        return lo
-    if lo == 0.0:
-        lo_try = hi
-        for _ in range(12):
-            lo_try *= 0.6
-            if ok(lo_try):
-                lo = lo_try
-                break
-            hi = lo_try
-        else:
-            return 0.0
-    while hi - lo > rel_tol * hi:
-        mid = 0.5 * (lo + hi)
-        if ok(mid):
-            lo = mid
-        else:
-            hi = mid
-    return lo
+    lam_c = bisect(lo, hi, complete) if not complete(hi) else hi
+    if lam_c <= 0:
+        return 0.0
+    if ok(lam_c):
+        return lam_c
+    step = lam_c / DES_SLO_SCAN
+    for i in range(DES_SLO_SCAN - 1, 0, -1):
+        if ok(i * step):
+            return bisect(i * step, (i + 1) * step, ok)
+    lo_try = step
+    for _ in range(12):           # nothing feasible on the grid: look below the first point
+        lo_try *= 0.5
+        if ok(lo_try):
+            return bisect(lo_try, 2 * lo_try, ok)
+    return 0.0
 
 
 def capture_ctx(scn, energy=None):

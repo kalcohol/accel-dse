@@ -180,14 +180,19 @@ def prefix_tokens(S: int, h: float) -> int:
     return min(S - 1, int(h * S)) if h > 0 else 0
 
 
-def _prefill_server(pool: _Pool, lam: float, pts, scale: float = 1.0) -> dict | None:
-    """Batch cap minimising mean TTFT (M/G/1 over the prompt mix, τ_i = TTFT(b, S_i)/b); None if none is stable."""
+def _prefill_server(pool: _Pool, lam: float, pts, scale: float = 1.0, cap: int | None = None) -> dict | None:
+    """Batch cap minimising mean TTFT (M/G/1 over the prompt mix, τ_i = TTFT(b, S_i)/b); None if none is stable.
+    ``cap`` (0.64): evaluate only that cap (the SLO-aware selection in ``_slo_select`` tries the others)."""
     best = None
     ws = [w for w, _, _ in pts]
     for b in B_CAPS:
+        if cap is not None and b > cap:
+            break
         rs = [pool.run("prefill", b, S, p) for _, S, p in pts]
         if not all(r.fits for r in rs):
             break
+        if cap is not None and b != cap:
+            continue
         taus = [r.ttft * scale / b for r in rs]
         w = mg1(lam, taus, ws, QS)
         if not w["stable"]:
@@ -789,8 +794,15 @@ def _pd_mode_base(ctx: dict, lam: float) -> dict:
     u_kv_p = lam * kv / (n_p * beta) if kv > 0 and shared else 0.0
     sc_d = lambda r: _contended(r, tier, beta, u_kv_d)
     rep = pp.run("prefill", 1, *ctx["rep"])
-    pre = _prefill_server(pp, lam_p, pts, _contended(rep, tier, beta, u_kv_p))
-    dec = _decode_fixed_point(dp, lam_d, out, B, scale=sc_d)
+    pre = _prefill_server(pp, lam_p, pts, _contended(rep, tier, beta, u_kv_p), ctx.get("_cap"))
+    dm = ctx.get("_dec_memo")                   # 0.64: decode does not depend on the prefill cap (SLO-aware retries)
+    dk = (id(dp), lam_d, out, B, u_kv_d, tier, beta)
+    if dm is not None and dk in dm:
+        dec = dm[dk]
+    else:
+        dec = _decode_fixed_point(dp, lam_d, out, B, scale=sc_d)
+        if dm is not None:
+            dm[dk] = dec
     res = {"lambda_rps": lam, "stable": pre is not None and dec is not None and u_kv_d < 1 and u_kv_p < 1}
     if not res["stable"]:
         res["why"] = ("prefill 池" if pre is None else "decode 池" if dec is None else "KV 链路") + "在此负载下不稳定" \
@@ -841,7 +853,7 @@ def _busy_q_from(dur, m: float, q: float) -> float:
 def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     cp, r_c, pts, out, B = ctx["cpool"], ctx["r_c"], ctx.get("pts_c", ctx["pts"]), ctx["out"], ctx["B"]
     lam_c = lam / r_c
-    pre = _prefill_server(cp, lam_c, pts)
+    pre = _prefill_server(cp, lam_c, pts, cap=ctx.get("_cap"))
     res = {"lambda_rps": lam, "stable": pre is not None}
     if pre is None:
         return {**res, "why": "prefill 在此负载下不稳定"}
@@ -1355,12 +1367,44 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
     return x
 
 
+def _meets(x: dict, slo) -> bool:
+    return x["stable"] and x["ttft"]["p90"] <= slo[0] and x["tpot_p90"] <= slo[1]
+
+
+def _slo_select(fn, ctx: dict, lam: float, try_unstable: bool = False) -> dict:
+    """0.64 — SLO-aware prefill batch cap.  The default cap minimises mean TTFT (DistServe's rule).  With SLOs in the
+    ctx (``ctx["slo"]`` = (TTFT p90, TPOT p90) in s) and the default cap missing them, every other cap is tried and
+    the one meeting both SLOs with the smallest mean TTFT is used; if none meets them the default stays.  So a
+    feasible operating point is never reported infeasible because of the cap rule, and SLO feasibility at λ = "some
+    cap meets the SLOs" — a union of per-cap feasible sets, each monotone in λ for a fixed cap.  Without SLOs (or
+    when the default meets them) the result is the 0.63 one."""
+    x0 = fn(ctx, lam)
+    slo = ctx.get("slo")
+    if not slo or (math.isinf(slo[0]) and math.isinf(slo[1])) or _meets(x0, slo):
+        return x0
+    if not x0["stable"] and not try_unstable:   # PD: decode / KV stability does not depend on the prefill cap
+        return x0
+    c0 = x0.get("_pre", {}).get("b") if x0.get("_pre") else None
+    best = None
+    for b in B_CAPS:
+        if b == c0:
+            continue
+        x = fn({**ctx, "_cap": b}, lam)
+        if _meets(x, slo) and (best is None or x["ttft"]["mean"] < best["ttft"]["mean"]):
+            best = x
+    if best is None:
+        return x0
+    best["prefill"] = {**best["prefill"], "cap_rule": "slo"}
+    return best
+
+
 def _pd_mode(ctx: dict, lam: float) -> dict:
-    return _kv_wrap(_pd_mode_base, ctx, lam, "dpool", "r_d")
+    return _slo_select(lambda c, l: _kv_wrap(_pd_mode_base, c, l, "dpool", "r_d"), ctx, lam)
 
 
 def _coloc_prefill_first(ctx: dict, lam: float) -> dict:
-    return _kv_wrap(_coloc_prefill_first_base, ctx, lam, "cpool", "r_c")
+    return _slo_select(lambda c, l: _kv_wrap(_coloc_prefill_first_base, c, l, "cpool", "r_c"), ctx, lam,
+                       try_unstable=True)      # prefill-first: the cap sets the decode share too
 
 
 def _coloc_chunked(ctx: dict, lam: float) -> dict:
@@ -1378,12 +1422,16 @@ def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float, kno
     steps up and a feasible window can open above an infeasible one.  So λ_s is scanned top-down on a grid of
     ``SLO_SCAN`` points, the largest feasible grid point is refined by bisection towards the next one, and the result
     is never below a ``known`` feasible point (e.g. the operating point).  Was a plain bisection from 0."""
+    slo = (ttft_slo, tpot_slo)
+    cs = ctx if ctx.get("slo") == slo else {**ctx, "slo": slo}     # the cap selection follows the searched SLOs
+
     def ok(lam: float) -> bool:
-        x = fn(ctx, lam)
-        return x["stable"] and x["ttft"]["p90"] <= ttft_slo and x["tpot_p90"] <= tpot_slo
+        return _meets(fn(cs, lam), slo)
+
+    cu = {**ctx, "slo": None}                   # stability does not depend on the SLO-aware cap choice
 
     def stable(lam: float) -> bool:
-        return fn(ctx, lam)["stable"]
+        return fn(cu, lam)["stable"]
 
     def bisect(lo: float, hi: float, pred) -> float:
         for _ in range(40):
@@ -1536,6 +1584,8 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
     if lam <= 0:
         out["error"] = "PD 稳态容量为 0（放不下或 SLO 下无可行 prefill），不做排队估计"
         return out
+    ctx["slo"] = (sv.ttft_slo_ms / 1e3, sv.tpot_slo_ms / 1e3)     # 0.64: SLO-aware prefill batch cap
+    ctx.setdefault("_dec_memo", {})
     modes = {"pd": _pd_mode(ctx, lam)}
     if ctx["r_c"] > 0:
         modes["coloc_prefill_first"] = _coloc_prefill_first(ctx, lam)
