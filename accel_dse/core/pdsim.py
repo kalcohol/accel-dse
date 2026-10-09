@@ -120,11 +120,14 @@ class RadixLRU:
         self.depth_n[d] += 1
         if self.cap <= 0:
             return 0
-        for k in range(m, 0, -1):                 # leaf first, root last → root most recent
+        # 0.61.2: a node that cannot fit truncates the path — its descendants are not stored either (a radix child
+        # needs its parent; storing them only wasted capacity on nodes no lookup could reach)
+        m_fit = next((k for k, L in enumerate(self.lens) if L > self.cap), m)
+        for k in range(m_fit, 0, -1):             # leaf first, root last → root most recent
             key = path[:k]
             if key in self.od:
                 self.od.move_to_end(key)
-            elif self.lens[k - 1] <= self.cap:
+            else:
                 self.od[key] = self.lens[k - 1]
                 self.used += self.lens[k - 1]
         while self.used > self.cap and self.od:

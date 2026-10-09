@@ -406,6 +406,15 @@ def _occ_tau(pi: list, B: int, arr, mu_of) -> float | None:
     for n in range(N - 1, -1, -1):
         acc += pi[n] * (kv[n] - Ek)
         G[n] = acc
+    # 0.61.2: below the mean the top-down sum cancels to rounding noise (~1e-17), which d = G/(π·μ) then
+    # divides by a left-tail π (e^-256 at a mean occupancy of 256) → τ_int ~1e80.  Σ_n π_n (k_n − E k) = 0, so
+    # G(n) = −Σ_{i<n} π_i (k_i − E k) exactly — every term of that sum has one sign below the mean
+    acc = 0.0
+    for n in range(1, N):
+        acc -= pi[n - 1] * (kv[n - 1] - Ek)
+        if kv[n] >= Ek:
+            break
+        G[n] = acc
     d = [0.0] * (N + 1)
     T = 0.0                      # T(n) = Σ_{m>n} d(m) Σ_{i<n} π_i tail(m − i)
     sig = 0.0

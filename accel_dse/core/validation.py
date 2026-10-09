@@ -104,7 +104,7 @@ def _esmfold_row() -> dict:
     eff = flops / 14.2 / 15.7e12
     return {"check": "ESMFold 384 残基 FLOP/request ÷ 14.2 s ÷ V100 fp32 15.7 TFLOPS", "value": eff, "lo": 0.05,
             "hi": 0.8, "unit": "×", "ok": 0.05 <= eff <= 0.8,
-            "note": f"{flops / 1e12:.1f} TFLOP per request (ESM-2 3B + 48 折叠块 × 5 次主干前向 + 结构模块); "
+            "note": f"{flops / 1e12:.1f} TFLOP per request (ESM-2 3B + 48 折叠块 × 4 次主干前向 + 结构模块); "
                     "论文：单 V100 14.2 s（主干 fp32）"}
 
 

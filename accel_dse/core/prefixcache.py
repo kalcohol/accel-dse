@@ -174,14 +174,20 @@ def tree_groups(levels) -> list[list[tuple[float, float]]]:
 def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
     """Per level, per group: Che residency under one token-capacity LRU shared by all levels."""
     gs = groups or tree_groups(levels)
-    tot = sum(L * c for (L, _, _), g in zip(levels, gs) for c, _ in g)
     if C_tokens <= 0:
         return [[0.0] * len(g) for g in gs]
+    # 0.61.2: a node longer than the whole cache can never be resident, and neither can anything below it (a radix
+    # child needs its parent).  Che over all levels gave such nodes h > 0 and charged their tokens against the
+    # capacity — e.g. levels [100×10, 5000×10] in 3000 tokens: H_1 = 0.10 instead of 1.
+    m = next((k for k, (L, _, _) in enumerate(levels) if L > C_tokens), len(levels))
+    lv, gs_fit = levels[:m], gs[:m]
+    zero = [[0.0] * len(g) for g in gs[m:]]
+    tot = sum(L * c for (L, _, _), g in zip(lv, gs_fit) for c, _ in g)
     if C_tokens >= tot:
-        return [[1.0] * len(g) for g in gs]
+        return [[1.0] * len(g) for g in gs_fit] + zero
 
     def occ(T):
-        return sum(L * c * -math.expm1(-q * T) for (L, _, _), g in zip(levels, gs) for c, q in g)
+        return sum(L * c * -math.expm1(-q * T) for (L, _, _), g in zip(lv, gs_fit) for c, q in g)
     lo, hi = 0.0, 1.0
     while occ(hi) < C_tokens and hi < 1e300:
         hi *= 2.0
@@ -194,7 +200,7 @@ def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
         if hi - lo <= 1e-12 * hi:
             break
     T = 0.5 * (lo + hi)
-    return [[-math.expm1(-q * T) for _, q in g] for g in gs]
+    return [[-math.expm1(-q * T) for _, q in g] for g in gs_fit] + zero
 
 
 def tree_depth_tail(groups, h) -> list[float]:

@@ -180,7 +180,7 @@ ESM-2 3B 的 main 分支只有 `pytorch_model.bin`；参数取自同仓库 `refs
 | `wan2.2-a14b` | 同上 | 9.7 TFLOP / 0.11 s | 同上（720P） | 639 TFLOP / 41.3 s | 5889 s → 5931 s（+0.7%） |
 | `cogvideox-5b` / `-2b` | T5 v1.1 XXL 9.52 GB（5b bf16 / 2b fp16） | 4.2 TFLOP / 0.05 s | CogVideoX VAE 0.86 GB fp32 | 315 TFLOP / 16.5 s | 414 → 431 s（+4.0%）/ 161 → 178 s（+10.3%） |
 | `hunyuanvideo` | LLaVA-Llama-3-8B 文本塔 15.01 GB + CLIP-L 文本塔 0.25 GB fp16 | 4.9 TFLOP / 0.06 s | 3D VAE 0.99 GB fp32（tiling） | 4766 TFLOP / 221 s | 6928 s → 7149 s（+3.2%） |
-| `ltx-video` | T5 v1.1 XXL 19.05 GB fp32 | 2.4 TFLOP / 0.03 s | LTX VAE 1.68 GB fp32 | 15 TFLOP / 0.7 s | 49 s → 50 s（+1.5%） |
+| `ltx-video` | T5 v1.1 XXL 19.05 GB fp32 | 2.4 TFLOP / 0.03 s | LTX VAE 1.68 GB fp32 | 50.5 TFLOP / 2.7 s（0.61.2 更正，原 15.4 / 0.7 s） | 49.5 s → 52.2 s（+5.4%） |
 | `mochi-1` | T5 v1.1 XXL 19.05 GB fp32 | 4.8 TFLOP / 0.06 s | AsymmVAE 1.84 GB fp32 | 1053 TFLOP / 42.5 s | 2433 s → 2475 s（+1.7%） |
 | `opensora-stdit3` | DeepFloyd T5 v1.1 XXL 19.05 GB fp32 | 2.8 TFLOP / 0.03 s | Open-Sora VAE v1.2 1.57 GB fp32 | 1158 TFLOP / 39.9 s | 244 s → 284 s（+16.4%） |
 | `minimax-h3` | Qwen3-VL 文本塔 66.71 GB bf16 | 32.2 TFLOP / 0.37 s | ViT 视频解码器 10.42 GB + 音频 VAE 0.61 GB fp32（按发布分块） | 1893 TFLOP / 24.4 s | 1913 s → 1937 s（+1.3%） |
@@ -223,7 +223,7 @@ ESM-2 3B 的 main 分支只有 `pytorch_model.bin`；参数取自同仓库 `refs
 
 **文本编码器放主机 CPU（0.46，`workload.te_cpu`，Web「文本编码器放主机 CPU」，CLI `--te-cpu`，默认关）**——Wan `--t5_cpu`：卡上不放编码器权重与激活；编码时间 = 编码器 FLOPs / `workload.host_TFLOPS`（默认 2 TFLOPS，「假设」——主机 CPU 的有效算力差别很大，请按实测填写；CLI `--host-TFLOPS`）；嵌入拷到卡上可忽略。此时 shard 无意义，auto 只在 resident → offload 之间选。例：Wan2.1-14B 单卡 64 GiB 常驻放得下（61.9 GiB，Wan README 的单卡方案 `--offload_model True --t5_cpu`），umT5 9.7 TFLOP → 4.8 s（2 TFLOPS），不需要每请求重载。
 
-**VAE 分块解码（0.45，`workload.vae_tiling`，默认关）**：按 diffusers `enable_tiling()` 的默认参数做空间分块，重叠区重复计算、每 tile 重读权重、激活峰值按 tile——CogVideoX：tile 240 × 360 px（= 采样尺寸 / 2），重叠因子 1/6、1/5 → 潜空间 30 × 45、stride 25 / 36（480 × 720：9 个 tile，重叠 ×1.40，解码 315 → 441 TFLOP，激活峰值 2.31 → 0.58 GiB）；Mochi：tile 256 px、stride 192 px → 潜空间 32 / 24（480 × 848：15 个 tile，×1.65，1053 → 1737 TFLOP）；Wan（0.46，diffusers `AutoencoderKLWan`：tile 256 px、stride 192 px → 32 / 24；官方 Wan 仓库不分块）：720P 28 个 tile，×1.65，639 → 1042 TFLOP，解码 41.3 → 67.8 s，激活峰值 3.81 → 0.27 GiB。LTX-Video（0.47，diffusers `AutoencoderKLLTXVideo`：tile 512 px、stride 448 px，空间压缩 32 → 潜空间 16 / 14；`enable_tiling()` 不开逐帧解码）：704 × 512 → 4 个 tile（16 + 2 行 × 16 + 8 列），×1.23，15.3 → 18.8 TFLOP，0.72 → 0.89 s，激活峰值 1.19 → 0.86 GiB。0.47 起分块循环与 diffusers 逐字一致：任一轴超过 tile 即两轴都按 stride 从 0 走，短轴会多出一条窄 tile（上例的 2 行）；0.45–0.46 在短轴不切，默认分辨率下两者相同。HunyuanVideo 与 MiniMax-H3 按发布总是分块（见上）。Open-Sora VAE v1.2 的发布实现没有空间分块（2D VAE 每次 4 帧、时间 VAE 17 帧一块，已按此计），diffusers 也未收录：开启时给出警告并按不分块计。
+**VAE 分块解码（0.45，`workload.vae_tiling`，默认关）**：按 diffusers `enable_tiling()` 的默认参数做空间分块，重叠区重复计算、每 tile 重读权重、激活峰值按 tile——CogVideoX：tile 240 × 360 px（= 采样尺寸 / 2），重叠因子 1/6、1/5 → 潜空间 30 × 45、stride 25 / 36（480 × 720：9 个 tile，重叠 ×1.40，解码 315 → 441 TFLOP，激活峰值 2.31 → 0.58 GiB）；Mochi：tile 256 px、stride 192 px → 潜空间 32 / 24（480 × 848：15 个 tile，×1.65，1053 → 1737 TFLOP）；Wan（0.46，diffusers `AutoencoderKLWan`：tile 256 px、stride 192 px → 32 / 24；官方 Wan 仓库不分块）：720P 28 个 tile，×1.65，639 → 1042 TFLOP，解码 41.3 → 67.8 s，激活峰值 3.81 → 0.27 GiB。LTX-Video（0.47，diffusers `AutoencoderKLLTXVideo`：tile 512 px、stride 448 px，空间压缩 32 → 潜空间 16 / 14；`enable_tiling()` 不开逐帧解码）：704 × 512 → 4 个 tile（16 + 2 行 × 16 + 8 列），×1.23，50.5 → 62.0 TFLOP，2.66 → 3.26 s，激活峰值 1.73 → 1.26 GiB（0.61.2 起上采样块的 resnet 按块输出分辨率计；0.61.1 及以前为 15.3 → 18.8 TFLOP）。0.47 起分块循环与 diffusers 逐字一致：任一轴超过 tile 即两轴都按 stride 从 0 走，短轴会多出一条窄 tile（上例的 2 行）；0.45–0.46 在短轴不切，默认分辨率下两者相同。HunyuanVideo 与 MiniMax-H3 按发布总是分块（见上）。Open-Sora VAE v1.2 的发布实现没有空间分块（2D VAE 每次 4 帧、时间 VAE 17 帧一块，已按此计），diffusers 也未收录：开启时给出警告并按不分块计。
 
 **对结论的影响**：长视频 / 高分辨率下解码占整段时间 0.6–16%（Open-Sora 720p 的逐帧 SD-VAE 最重），文本编码 < 0.5 s；存储影响大——常驻时 64 GiB LPDDR 上 Wan2.1-14B（fp32 DiT 57 GB + umT5 11.4 GB）、Wan2.2 PP2 / TP2 与 MiniMax-H3 放不下；0.45 的 auto 放置按参考实现的卸载 / FSDP 方式把它们放下，代价是每请求 1–2.5 s 的主机重载（相对 30 min 级的整段可忽略）。更正 0.44 文档：Qwen3-VL 文本塔 66.7 GB = 62.1 GiB，单独并未超过 64 GiB，只是与 DiT 同时常驻放不下。
 
@@ -239,7 +239,7 @@ ESM-2 3B 的 main 分支只有 `pytorch_model.bin`；参数取自同仓库 `refs
 
 | id | 发布（检查点） | 参数 | 发布 dtype | 默认工作负载 | 覆盖 |
 |----|------|------|-----------|------|------|
-| `esmfold` | facebook/esmfold_v1（`pytorch_model.bin`） | 3.528B（ESM-2 3B 2.84B + 折叠部分 0.69B） | ESM-2 fp16、折叠部分 fp32 | 512 残基，单序列，主干 5 遍（max_recycles 4 + 首遍） | 完整 |
+| `esmfold` | facebook/esmfold_v1（`pytorch_model.bin`） | 3.528B（ESM-2 3B 2.84B + 折叠部分 0.69B） | ESM-2 fp16、折叠部分 fp32 | 512 残基，单序列，主干 4 遍（num_recycles=None → 循环 max_recycles = 4 次，含首遍；0.61.2 更正，原 5 遍） | 完整 |
 | `alphafold2` | google-deepmind/alphafold（`alphafold_params_2022-12-06.tar` → `params_model_1_ptm.npz`，CC BY 4.0） | 93.24M | fp32 | 512 残基；MSA 聚类 508 行（512 − 4 模板）、extra MSA 5120 行、模板 4；主干 4 遍 | 部分 |
 | `openfold` | aqlaboratory/openfold（`finetuning_ptm_2.pt`） | 93.24M | fp32 | 512 残基；MSA 512 行、extra MSA 1024 行、模板 4；主干 4 遍 | 部分 |
 | `boltz-1` | boltz-community/boltz-1（`boltz1_conf.ckpt`） | 606.38M | fp32 | 512 残基、每残基 8 原子「假设」；MSA 4096 行；主干 4 遍；扩散 200 步 × 1 样本 | 部分 |
@@ -279,7 +279,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 
 | 模型 | 批延迟 | 8 卡加速 | 激活常驻（DAP 1 → 8） | 每卡链路字节（DAP 8） |
 |------|------|------|------|------|
-| `esmfold` | 5.72 / 2.90 / 1.50 / 0.80 s | 7.1× | 0.38 → 0.09 GiB | 8.8 GB |
+| `esmfold` | 4.58 / 2.32 / 1.20 / 0.64 s | 7.1× | 0.38 → 0.09 GiB | 7.0 GB |
 | `alphafold2` | 14.17 / 7.10 / 3.57 / 1.81 s | 7.8× | 1.63 → 0.25 GiB | 16.3 GB |
 | `openfold` | 12.62 / 6.32 / 3.18 / 1.61 s | 7.8× | 0.69 → 0.16 GiB | 15.0 GB |
 | `boltz-1` | 13.05 / 7.64 / 4.94 / 3.59 s | 3.6× | 2.07 → 1.13 GiB | 15.2 GB |
@@ -291,9 +291,9 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 
 **dtype**：发布权重 fp32（ESMFold 的 ESM-2 为 fp16）；激活按 bf16「假设」（参考实现：ESMFold / OpenFold / AF2 单体 / Boltz-1 为 fp32，Protenix 默认 bf16）。0.44：fp32 激活用激活 dtype what-if 评估（Web「激活 dtype」/ CLI `--act fp32` / 场景 `formats_override: [["act", "fp32"]]`，标注 what-if）——激活存储、DRAM 流式、SRAM 端口读写（含输出）按 4 B；计算仍在 bf16 阵列上，激活逐 GEMM 转换的开销计入向量单元，所以它是「fp32 数据搬运 + bf16 计算」的代价，数值上不等价于 fp32 矩阵乘。例：ESMFold 512 残基、100T + LPDDR5X（DRAM 受限）6.3 s → 12.5 s；HBM3E 上 MAC 受限，延迟不变、容量 +0.4 GiB。芯片无 fp32 MAC：逐 GEMM 转换为 bf16，开销计入向量单元（与 LLM 反量化同一规则）。
 
-**校验**：`validate` 增加 ESMFold 行——论文（Lin et al., Science 2023）：单 V100 上 384 残基 14.2 s；按本模型的 FLOPs（62.2 TFLOP，5 遍主干）折算为 V100 fp32 峰值（15.7 TFLOPS，主干为 fp32）的 28%，落在 [0.05, 0.8] 带内。测试核对：参数逐项一致；AF2 官方 JAX 参数映射后的逐层 GEMM 与 OpenFold 检查点完全相同；每块检测到的核（Evoformer：三角乘法 ×2、三角注意力 ×2、行 / 列注意力、外积均值；AF3 类 MSA 模块：pair 加权平均代替行注意力）；核 FLOPs 与闭式一致；recycle / 扩散步数 / 样本数的线性缩放；ESMFold 中 ESM-2 每请求只算一次。
+**校验**：`validate` 增加 ESMFold 行——论文（Lin et al., Science 2023）：单 V100 上 384 残基 14.2 s；按本模型的 FLOPs（50.2 TFLOP，4 遍主干；0.61.2 前按 5 遍计为 62.2 TFLOP）折算为 V100 fp32 峰值（15.7 TFLOPS，主干为 fp32）的 23%，落在 [0.05, 0.8] 带内。测试核对：参数逐项一致；AF2 官方 JAX 参数映射后的逐层 GEMM 与 OpenFold 检查点完全相同；每块检测到的核（Evoformer：三角乘法 ×2、三角注意力 ×2、行 / 列注意力、外积均值；AF3 类 MSA 模块：pair 加权平均代替行注意力）；核 FLOPs 与闭式一致；recycle / 扩散步数 / 样本数的线性缩放；ESMFold 中 ESM-2 每请求只算一次。
 
-**100T 芯片（默认 1 GHz、64 MiB SRAM）单卡 batch 1 的默认工作负载**：ESMFold 121 TFLOP / 5.1–6.3 s；AlphaFold 2 396 TFLOP / 11.7–14.2 s；OpenFold 354 TFLOP / 11.0–12.6 s；Boltz-1 296 TFLOP / 8.8–13.1 s；Protenix 419 TFLOP / 11.5–19.3 s（范围 = os / 可重构映射 × LPDDR5X 273 GB/s / HBM3E）。有效 MAC 21–36%：pair 网格上的 GEMM 是 K = N = 128 的窄矩阵，三角注意力 head_dim 只有 32。
+**100T 芯片（默认 1 GHz、64 MiB SRAM）单卡 batch 1 的默认工作负载**：ESMFold 97.3 TFLOP / 4.1–5.1 s（0.61.2 起主干 4 遍；原 121 TFLOP）；AlphaFold 2 396 TFLOP / 11.7–14.2 s；OpenFold 354 TFLOP / 11.0–12.6 s；Boltz-1 296 TFLOP / 8.8–13.1 s；Protenix 419 TFLOP / 11.5–19.3 s（范围 = os / 可重构映射 × LPDDR5X 273 GB/s / HBM3E）。有效 MAC 21–36%：pair 网格上的 GEMM 是 K = N = 128 的窄矩阵，三角注意力 head_dim 只有 32。
 
 **未建模 / 近似**：MSA / 模板检索与特征化、松弛；IPA 与扩散的几何 / 噪声调度向量运算；分块（chunk / subbatch）只降低峰值显存、不改计算量，峰值激活按单个算子计；AF2 的模板扭转角嵌入按每残基一行（实际 T × N 行，量很小）；原子数按每残基 8 个重原子「假设」；Boltz-1 / Protenix 的多链 / 配体 token 化按纯蛋白质计。
 
@@ -1009,3 +1009,36 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
   - fp8 激活的发布（DeepSeek-V3/V3.2/V4、Kimi-K2、GLM-5.3、Qwen3-FP8 …）的 TP / ETP / 共享专家 all-reduce、MoE combine、PP 交接，原来按 1 B / 元素计，现在按 2 B；dispatch 仍按 fp8。
   - 链路被计算 / DRAM 隐藏时步时不变，只有链路受限的点变慢（fabric 指纹 1430 项中 20 项：多节点 prefill +2.3 … +26.9 %）。
 - **输入校验**：serving.batch / prompt / ctx / out_len / microbatches 上限 2²⁴，并拒绝布尔值（原来 2⁶² 也能通过，true 被当作 1）。
+
+### 19.11 第二轮审计修正（0.61.2）
+
+独立计数对照（torch `FlopCounterMode`，meta 张量，按发布 config 构造的 diffusers / transformers 模块，不下载权重）与小规模精确算例：
+- **LTX-Video VAE 解码**：diffusers `LTXVideoUpBlock3d` 的顺序是 conv_in → 上采样 → resnet，resnet 在块的输出分辨率上跑；原来按输入分辨率计，解码少 2.5–3.3×。
+  - 默认 161 帧 × 512 × 704：15.4 → 50.5 TFLOP（diffusers 计数 50.52），0.72 → 2.66 s，激活峰值 1.19 → 1.73 GiB；分块 18.8 → 62.0 TFLOP（diffusers 62.01）。
+  - 整段（100T + HBM3E，batch 1）50.3 → 52.2 s。
+- **ESMFold 主干遍数**：esm / transformers 参考实现在 `num_recycles=None` 时循环 `max_recycles` = 4 次（含首遍；只有显式传 k 时才是 k + 1 次），原来按 5 遍计。
+  - 384 残基 62.2 → 50.2 TFLOP（transformers 计数 50.24），512 残基 120.9 → 97.3 TFLOP（97.32）；批延迟 −20 %；`validate` 的 ESMFold 行 0.28 → 0.23（仍在带内）。
+- **decode 占用相关时间 τ_int**（TPOT 分位数的窗口因子）：Poisson 方程的 G(n) 从上往下求和，在均值以下抵消成舍入噪声，再除以左尾 π（平均占用 256 时 ≈ e⁻²⁵⁶），τ 可到 1e80。
+  - 现在均值以下用 Σπ(k − Ek) = 0 改为从下往上累加（同号求和）。M/M/∞ 的 τ = 1/μ 在任意负载下都精确；B = 300、256 Erlang 与有理数精确值 25.712311352 一致。
+  - 平均占用 ≳ 40 时才有影响：PD 默认例 TPOT p90 / p99 变化 ≤ 0.7 %。
+- **radix 前缀缓存**：比整个缓存还长的节点不可能驻留，它的子树也不可能（radix 子节点需要父节点）。
+  - Che 原来给这些节点 h > 0 并占用容量：例如 [100 tok × 10, 5000 tok × 10] 放进 3000 tok 时 H₁ 算成 0.10，实际为 1。
+  - DES 的 radix LRU 原来也会存下够不到的子节点，白占容量。现在两者都在第一个放不下的层截断，Che 与 DES 一致。
+- **面积预算**：缺某项密度时，已知项之和已经超过上限就判为超限（与功耗下界、缺固定面积时的规则一致），原来一律记为「无法判断」。
+- **界面**：搜索 / 扫描 / Pareto / 对比在途时改了场景，结果到达后标「场景已改变，需重新运行」。表头和单位按发出请求时的模型渲染；原来按当前模型渲染，切到视频模型后，LLM 扫描显示成 帧/s、延迟 0 s。
+
+复核无误（不改数值）：
+- **排队公式**：M/D/1（Lindley 模拟）、两点 M/G/1、Erlang C 小例，birth–death 的 E[N] 与 M/M/B 精确值一致。
+- **DES 不变量**：顺序、token 数、Little 律，prefill 利用率与 λ·E[S] 相符。
+- **Che**：整前缀 LRU 与 radix 树对 LRU 模拟误差 ≤ 0.5 %。节点只有容量 1–2 倍大时，Che 本身的近似误差可达 30–80 %（大对象），属于模型局限。
+- **VAE 解码 FLOPs 对 diffusers 计数**：Wan 639.22（分块 1042.27）、CogVideoX 315.03（分块 441.04）、HunyuanVideo 4770 vs 4766（因果掩码按一半计）、MiniMax-H3 视频 1892.96，均吻合。
+  - MiniMax-H3 音频 −2.9 %：BigVGAN 的反走样滤波卷积按向量计。
+  - Mochi：按 genmo 参考实现逐块裁帧（1053）；diffusers 末尾一次裁帧为 1081（+2.6 %）。
+- **其他**：
+  - 能耗动作计数：MAC × 2 = 每请求 FLOPs，跨 TP / PP 不变。
+  - Wan2.2 待机专家：+14.29 B fp32，PP 均分，SP 复制。
+  - MoE 倾斜边界（tokens = 1、EP > 专家数）。
+  - HBM 几何（堆数 × 层数 × die Gb / 8；1024 / 2048 bit × 速率）对 JESD238 / JESD270-4。
+  - 非默认映射（OS / WS 边 / 宽边加载、GEMV、可重构）的周期公式手推一致。
+  - 视频 / 蛋白 PP × SP × batch × 微批 625 点：每请求 FLOPs 不变（SP 补齐 ≤ 0.02 %）。
+  - HF 现网可达的发布 config（61 个根 config 及 diffusers transformer / VAE、Wan2.2 高低噪声子 config）逐项一致。

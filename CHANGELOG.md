@@ -3,6 +3,23 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.61.2] - 2026-10-09
+
+第二轮对抗式审计：PD 排队 / DES 数学（小规模精确算例、Lindley 模拟、不变量），VAE 解码与结构模型端到端 FLOPs 对独立计数（torch FlopCounterMode 跑 diffusers / transformers 模块），能耗与预算，radix 前缀缓存，HBM 几何，非默认映射，MoE 倾斜与 Wan2.2 待机专家，视频 / 蛋白非默认布局，界面竞态（脚本化浏览器），HF 发布 config 现网复核。
+
+### 修正（见建模说明 §19.11）
+- **LTX-Video VAE 解码**：上采样块的 resnet 按块输出分辨率计（diffusers 先上采样再跑 resnet），原来少 2.5–3.3×。默认 15.4 → 50.5 TFLOP，与 diffusers 计数一致。
+- **ESMFold 主干遍数** 5 → 4（参考实现 `num_recycles=None` 时循环 `max_recycles` 次）。512 残基 120.9 → 97.3 TFLOP，与 transformers 计数一致。
+- **decode 占用相关时间 τ_int**：平均占用较大时 Poisson 方程求和抵消，τ 可到 1e80；改为均值以下从下往上累加。
+- **radix 前缀缓存**：比缓存还长的节点及其子树不驻留、不占容量（Che 与 DES 两侧）。
+- **面积预算**：缺密度时，已知项已超限就判为超限。
+- **界面**：在途的搜索 / 扫描 / 对比 / Pareto 结果在场景改变后标为过期，并按发出请求时的模型渲染。
+
+### 数值变化（默认指纹 1356 项中 116 项、多节点 985 项中 63 项、fabric 3150 项中 0 项；fits / 瓶颈无翻转）
+- LTX-Video 整段延迟：单节点指纹 +3.9 … +8.5 %（单卡 +3.9 … +4.3 %；多卡时 VAE 不并行，占比更大），多节点 +7.6 … +14.6 %；DRAM 需求 +0.54 GiB（解码激活峰值 1.19 → 1.73 GiB）。
+- ESMFold 批延迟 −19.9 … −20.0 %，每请求 FLOPs −19.2 %（384 残基 62.2 → 50.2 TFLOP）/ −19.5 %（512 残基 120.9 → 97.3）。
+- PD 报告：TPOT p90 / p99 −0.0 … −0.7 %（平均占用大的 decode 池），其余不变。
+
 ## [0.61.1] - 2026-10-09
 
 第一轮对抗式审计：手算复核稠密 / MoE / MLA / DSA / CSA / 线性注意力 / 视频 DiT / 结构模型 / PD 的 FLOPs、字节、KV、权重驻留与通信，跨模块（eval / sweep / layouts / CLI / API）一致性，默认关闭项等价，API 模糊测试（约 1.3 万个用例），以及 1440 / 1280 / 1024 / 820 px 宽度下的界面。

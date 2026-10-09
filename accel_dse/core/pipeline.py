@@ -186,6 +186,7 @@ class _Fam:
     order: tuple[int, ...]              # execution order of up blocks
     ups: dict                           # block → (temporal factor, spatial factor)
     pre: tuple[str, ...] = ()           # upsampler tensors that run at the block's input resolution
+    post: tuple[str, ...] = ()          # non-upsampler tensors that run after the block's upsample (output resolution)
     trule: str = "causal"               # causal: t → e·t − (e−1);  double: t → e·t
     attn: str = ""                      # frame | 3d | ""
     attn_dim: int = 0
@@ -201,8 +202,10 @@ FAMILIES = {
     "cog": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (2, 2), 1: (2, 2), 2: (1, 2)}, chunk="cog2"),
     "hunyuan": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (1, 2), 1: (2, 2), 2: (2, 2)}, attn="3d",
                     attn_dim=512, chunk="tile"),
+    # 0.61.2: diffusers LTXVideoUpBlock3d runs conv_in → upsamplers → resnets, so the resnets are at the block's
+    # output resolution (0.44–0.61.1 put them at the input resolution: decode 2.5–3.3× low)
     "ltx": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {1: (2, 2), 2: (2, 2), 3: (2, 2)}, pre=("upsamplers",),
-                chunk="whole"),
+                post=("resnets",), chunk="whole"),
     "mochi": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2), {0: (3, 2), 1: (2, 2), 2: (1, 2)}, pre=(".proj.",)),
     # Open-Sora VAE v1.2: temporal VAE (MAGVIT-v2 style, at latent spatial size) then the SD-VAE 2-D decoder per frame
     "os_t": _Fam(r"(?:block_res_blocks|conv_blocks)\.(\d+)\.", (3, 2, 1, 0), {3: (2, 1), 2: (2, 1)},
@@ -245,7 +248,8 @@ def _conv_walk(tensors: dict, prefix: str, fam: _Fam, lat: tuple[int, int, int],
         if mm and int(mm.group(1)) in pre_res:
             i = int(mm.group(1))
             up = any(u in name for u in _UPS)
-            r = post_res[i] if up and not any(p in name for p in fam.pre) else pre_res[i]
+            r = post_res[i] if (up and not any(p in name for p in fam.pre)) or any(p in name for p in fam.post) \
+                else pre_res[i]
         elif any(t in name for t in _TAIL):
             r = final
         else:

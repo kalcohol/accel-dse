@@ -138,7 +138,14 @@ def budget_report(r, b: Budget, energy: dict | None = None) -> dict:
         if lim is None:
             continue
         if area["mm2"] is None:
-            items.append(_item(k, None, lim, None, f"面积代理缺密度 {', '.join(area['missing'])}「假设」"))
+            # 0.61.2: the terms that are known already bound the area from below — above the limit is a definite
+            # violation (as for the power lower bound and the missing fixed area); otherwise undecidable
+            lb = sum(area["terms"].values()) * mult
+            if lb > lim:
+                items.append(_item(k, lb, lim, False, f"面积代理缺密度 {', '.join(area['missing'])}「假设」："
+                                                      f"已知项 {lb:.4g} mm² 只是下界，已超限"))
+            else:
+                items.append(_item(k, None, lim, None, f"面积代理缺密度 {', '.join(area['missing'])}「假设」"))
         else:
             v = area["mm2"] * mult
             if area["fixed_given"]:

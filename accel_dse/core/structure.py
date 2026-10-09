@@ -265,13 +265,15 @@ def build_esmfold(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
            and not k.endswith("position_ids")}
     pl, _ = layers_from({**rel, "shapes": sh2}, groups, {})
     max_pos = c.get("max_position_embeddings", 1026)
-    wl = _apply_defaults(wl, recycles=t["max_recycles"] + 1, pair_dim=t["pairwise_state_dim"], max_seq=max_pos - 4,
+    # 0.61.2: num_recycles=None runs the loop max_recycles times in total (the +1 for the first pass applies only to an
+    # explicit num_recycles; esm/esmfold/v1/trunk.py and transformers EsmFoldingTrunk) — 0.43–0.61.1 ran 5 passes
+    wl = _apply_defaults(wl, recycles=t["max_recycles"], pair_dim=t["pairwise_state_dim"], max_seq=max_pos - 4,
                          special_tokens=2)
     notes = [f"ESM-2 3B 语言模型（{L} 层，fp16 发布）每请求一次前向（序列 + <cls>/<eos>），其 37 层隐状态加权求和后进入折叠主干",
              f"折叠主干 {rel['stacks']['trunk.blocks']} 块（序列 1024 维 + pair {t['pairwise_state_dim']} 维；三角乘法 ×2、三角注意力 ×2、"
              "带 pair 偏置的序列注意力），每次 recycle 全部重跑；默认主干前向 "
-             f"{t['max_recycles'] + 1} 次（HF / esm 参考实现 num_recycles=None → max_recycles={t['max_recycles']}，"
-             "首次前向不计入 recycle）",
+             f"{t['max_recycles']} 次（esm / HF 参考实现 num_recycles=None → 循环 max_recycles = {t['max_recycles']} 次，"
+             "含首次前向；显式传 num_recycles = k 时才是 k + 1 次）",
              f"结构模块（IPA，{t['structure_module']['num_blocks']} 次迭代共享权重）每次 recycle 后运行；IPA 按 qk = 标量 + 点坐标、"
              "v = 标量 + 点 + pair 值的注意力计，刚体帧更新 / 扭转角 / 原子坐标重建的向量运算未计",
              "无 MSA、无模板（单序列）；chunk_size 128 只降低峰值显存，不改变计算量"]

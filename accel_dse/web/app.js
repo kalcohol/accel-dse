@@ -492,10 +492,16 @@ function bindMem() {
 /* ------------------------------------------------------------------ evaluation */
 let timer = null;
 function schedule() { clearTimeout(timer); timer = setTimeout(runEval, 120); invalidate(); }
+// 0.61.2: every scenario change bumps S.ver; a search / sweep that lands after an edit is labelled stale and is
+// rendered with the model / phase it was computed for (it used to read the current ones: an LLM sweep that finished
+// after switching to a video model showed 帧/s and a 0 s latency column)
+const STALE = '场景已改变，需重新运行';
+function staleTag(v0) { return S.ver !== v0 ? ` · ${STALE}` : ''; }
 function invalidate() {
+  S.ver = (S.ver || 0) + 1;
   if (S.cat) paintScope();
   for (const id of ['cmp-status', 'lay-status', 'sw-status'])
-    if ($(id).dataset.done) $(id).textContent = '场景已改变，需重新运行';
+    if ($(id).dataset.done) $(id).textContent = STALE;
 }
 function showErr(msg) {
   put($('warns'), h('div', { class: 'err' }, msg));
@@ -944,16 +950,17 @@ async function runCompare() {
   $('cmp-status').textContent = '搜索中（5 种映射 × 全部布局）…';
   delete $('cmp-status').dataset.done;
   const t0 = performance.now();
+  const v0 = S.ver, m0 = model();
   try {
     const b = body({ cards: cards(), objective: S.cmpObj });
     const r = await track(req('compare', '/api/compare', b));
     if (!r) return;
     const mySeq = seq.compare;
     const stab = {};
-    paintCompare(r, stab);
+    paintCompare(r, stab, m0);
     const none = r.rows.every((x) => !x.batch);
     $('cmp-status').textContent = none ? `${cards()} 卡下任何布局都放不下或不满足 SLO —— 先在「单点评估」按提示修正卡数` :
-      `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s · 稳定性计算中（0/${r.rows.length}）…`;
+      `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s · 稳定性计算中（0/${r.rows.length}）…${staleTag(v0)}`;
     if (none) return;
     let done = 0;
     $('cmp-status').dataset.done = '1';
@@ -968,23 +975,23 @@ async function runCompare() {
       } catch (e) { stab[row.mapping] = { error: e.message }; }
       if (seq.compare !== mySeq) return false;
       done++;
-      $('cmp-status').textContent = `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s · 稳定性计算中（${done}/${r.rows.filter((x) => x.batch).length}）…`;
-      paintCompare(r, stab);
+      $('cmp-status').textContent = `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s · 稳定性计算中（${done}/${r.rows.filter((x) => x.batch).length}）…${staleTag(v0)}`;
+      paintCompare(r, stab, m0);
       return true;
     };
     const res = await Promise.all(r.rows.filter((x) => x.batch).map(one));
     if (res.some((x) => !x)) return;
-    $('cmp-status').textContent = `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s`;
+    $('cmp-status').textContent = `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s${staleTag(v0)}`;
   } catch (e) { $('cmp-status').textContent = '错误：' + e.message; }
   finally { btn.disabled = false; }
 }
 function latCell(x) { return x.unit === 'token' || !x.unit ? num(x.tpot_ms) : fmtDur(x.latency_ms / 1e3); }
-function paintCompare(r, stab) {
+function paintCompare(r, stab, m = model()) {
   const gp = r.objective === 'goodput';
-  const full = isFull(model());
-  const ux = full ? `${UNIT_ZH[model().domain === 'gen' ? 'frame' : 'seq']}/s/卡` : 'tok/s/卡';
+  const full = isFull(m);
+  const ux = full ? `${UNIT_ZH[m.domain === 'gen' ? 'frame' : 'seq']}/s/卡` : 'tok/s/卡';
   const head = h('tr', {}, h('th', { class: 'l' }, '映射组织'), h('th', { class: 'l' }, '最佳布局 / 次优'), h('th', {}, 'batch'),
-    h('th', {}, ux), full ? null : h('th', {}, 'goodput/卡'), h('th', {}, full ? (model().domain === 'gen' ? '单段延迟' : '批延迟') : 'TPOT ms'),
+    h('th', {}, ux), full ? null : h('th', {}, 'goodput/卡'), h('th', {}, full ? (m.domain === 'gen' ? '单段延迟' : '批延迟') : 'TPOT ms'),
     h('th', { class: 'l' }, '瓶颈 · 有效 MAC'), full ? null : h('th', {}, 'prefill TTFT'), h('th', {}, '排名稳定性'));
   const rows = r.rows.map((x) => {
     const ok = !!x.batch;
@@ -1034,14 +1041,15 @@ async function runLayouts() {
   $('lay-status').textContent = '搜索中…';
   delete $('lay-status').dataset.done;
   const t0 = performance.now();
+  const v0 = S.ver, m0 = model();
   try {
     const r = await track(req('layouts', '/api/layouts', body({ cards: cards(), objective: S.layObj })));
     if (!r) return;
     const hasG = r.rows.some((x) => x.goodput_card !== null && x.goodput_card !== undefined);
-    const full = isFull(model());
+    const full = isFull(m0);
     const head = h('tr', {}, h('th', {}, '#'), h('th', { class: 'l' }, '布局'), h('th', {}, 'batch'),
-      h('th', {}, full ? `${UNIT_ZH[model().domain === 'gen' ? 'frame' : 'seq']}/s/卡` : 'tok/s/卡'),
-      hasG ? h('th', {}, 'goodput/卡') : null, h('th', {}, full ? (model().domain === 'gen' ? '单段延迟' : '批延迟') : 'TPOT ms'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '有效 MAC'),
+      h('th', {}, full ? `${UNIT_ZH[m0.domain === 'gen' ? 'frame' : 'seq']}/s/卡` : 'tok/s/卡'),
+      hasG ? h('th', {}, 'goodput/卡') : null, h('th', {}, full ? (m0.domain === 'gen' ? '单段延迟' : '批延迟') : 'TPOT ms'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '有效 MAC'),
       hasG ? h('th', {}, 'prefill TTFT') : null);
     const rows = r.rows.map((x, i) => h('tr', { class: (x.batch ? 'click ' : '') + (i === 0 && x.batch ? 'best' : ''), onclick: x.batch ? () => applyRow(x) : null },
       h('td', {}, i + 1), h('td', { class: 'l mono' }, x.layout, ' ', budgetMark(x)), h('td', {}, x.batch || '放不下'), h('td', {}, num(x.tok_s_card)),
@@ -1049,18 +1057,19 @@ async function runLayouts() {
       h('td', { class: 'l' }, h('span', { class: 'ubar' }, h('i', { style: `width:${Math.min(100, (x.array_util || 0) * 100)}%` })), pct(x.array_util)),
       hasG ? h('td', {}, x.ttft_ok === undefined ? '—' : ttftFlag(x.ttft_ok, x.ttft_ms)) : null));
     put($('lay-tbl'), h('thead', {}, head), h('tbody', {}, rows));
-    $('lay-status').textContent = `${r.n_layouts} 个布局 · 精确前 ${r.rows.length} 名 · ${((performance.now() - t0) / 1000).toFixed(1)} s`;
+    $('lay-status').textContent = `${r.n_layouts} 个布局 · 精确前 ${r.rows.length} 名 · ${((performance.now() - t0) / 1000).toFixed(1)} s${staleTag(v0)}`;
     $('lay-status').dataset.done = '1';
   } catch (e) { $('lay-status').textContent = '错误：' + e.message; }
 }
 async function runStability() {
   paintScope();
   put($('stab-box'), h('div', { class: 'stab muted' }, '稳定性计算中（每个扰动重新精确搜索 top-1 布局）…'));
+  const v0 = S.ver;
   try {
     const r = await track(req('stab', '/api/stability', body({ cards: cards(), objective: S.layObj, include_mapping: false })));
     if (!r) return;
     put($('stab-box'), h('div', { class: 'stab' },
-      h('div', {}, '基准 top-1：', h('b', { class: 'mono' }, r.base_top), '  ', stabFlag(r), '  ', h('span', { class: 'muted' }, r.rule)),
+      h('div', {}, '基准 top-1：', h('b', { class: 'mono' }, r.base_top), '  ', stabFlag(r), '  ', h('span', { class: 'muted' }, r.rule + staleTag(v0))),
       h('ul', {}, r.cases.map((c) => h('li', { style: c.same || c.within5 ? '' : 'color:var(--warn)' }, caseText(c))))));
   } catch (e) { put($('stab-box'), h('div', { class: 'stab' }, '错误：' + e.message)); }
 }
@@ -1138,11 +1147,12 @@ async function runSweep() {
   if (!vals.length || vals.some((v) => !isFinite(v)) || vals.length > 32) { $('sw-values').classList.add('bad'); return; }
   $('sw-values').classList.remove('bad');
   $('sw-status').textContent = '计算中…';
+  delete $('sw-status').dataset.done;
+  const v0 = S.ver, m = model(), decode = S.sc.serving.phase === 'decode';
   try {
     const r = await track(req('sweep', '/api/sweep', body({ path, values: vals })));
     if (!r) return;
-    const m = model(), full = isFull(m), gen = m.domain === 'gen';
-    const decode = S.sc.serving.phase === 'decode';
+    const full = isFull(m), gen = m.domain === 'gen';
     const u = full ? UNIT_ZH[gen ? 'frame' : 'seq'] : 'tok';
     const latL = full ? (gen ? '单段延迟 s' : '批延迟 ms') : decode ? 'TPOT ms' : 'TTFT ms';
     const lat = (x) => full ? (gen ? x.latency_ms / 1e3 : x.latency_ms) : decode ? x.tpot_ms : x.ttft_ms;
@@ -1154,16 +1164,18 @@ async function runSweep() {
       h('td', { class: 'l' }, x.value), h('td', {}, num(lat(x))), h('td', {}, num(x.tok_s)),
       h('td', {}, num(x.tok_s_card)), h('td', {}, boundTag(x.bound)), h('td', {}, pct(x.array_util)),
       h('td', {}, x.fits ? '✓' : h('span', { style: 'color:var(--danger)' }, '✗'))))));
-    $('sw-status').textContent = `${r.rows.length} 点`;
+    $('sw-status').textContent = `${r.rows.length} 点${staleTag(v0)}`;
     $('sw-status').dataset.done = '1';
   } catch (e) { $('sw-status').textContent = '错误：' + e.message; }
 }
 async function runPareto() {
   $('sw-status').textContent = '计算 Pareto…';
+  delete $('sw-status').dataset.done;
+  const v0 = S.ver, m = model();
   try {
     const r = await track(req('sweep', '/api/pareto', body()));
     if (!r) return;
-    const m = model(), full = isFull(m), gen = m.domain === 'gen';
+    const full = isFull(m), gen = m.domain === 'gen';
     const u = full ? UNIT_ZH[gen ? 'frame' : 'seq'] : 'tok';
     const latL = full ? (gen ? '单段延迟 s' : '批延迟 ms') : 'TPOT ms';
     const lat = (p) => full ? (gen ? p.latency_ms / 1e3 : p.latency_ms) : p.tpot_ms;
@@ -1173,7 +1185,7 @@ async function runPareto() {
     const head = h('tr', {}, h('th', { class: 'l' }, 'batch'), h('th', {}, latL), h('th', {}, `${u}/s/卡`));
     put($('sw-tbl'), h('thead', {}, head), h('tbody', {}, r.front.map((p) => h('tr', {},
       h('td', { class: 'l' }, p.batch), h('td', {}, num(lat(p))), h('td', {}, num(thr(p)))))));
-    $('sw-status').textContent = `Pareto ${r.front.length} 点`;
+    $('sw-status').textContent = `Pareto ${r.front.length} 点${staleTag(v0)}`;
     $('sw-status').dataset.done = '1';
   } catch (e) { $('sw-status').textContent = '错误：' + e.message; }
 }
