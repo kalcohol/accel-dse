@@ -85,18 +85,24 @@ def test_des_slo_rate_scan_refine():
 
 # ------------------------------------------------------------------ 2. 2-D blocking
 def test_gemm_blocking_hand_calc():
-    # 16384×4096 · 4096×12288 bf16, 32 MiB: weight-stationary bn = ⌊(32 Mi − 4096·2) / (4096·2 + 4)⌋ = 4093 → A read
-    # ⌈12288 / 4093⌉ = 4×, W once: 4·128 + 96 = 608 MiB (activation-stationary ties at 128 + 5·96; output-stationary
-    # bm 2048 → bn 3909: 4·128 + 8·96 = 1280 MiB)
+    # 16384×4096 · 4096×12288 bf16, 32 MiB: weight-stationary bn = 32 Mi / (4096·2) = 4096 → A read ⌈12288/4096⌉ =
+    # 3×, W once: 3·128 + 96 = 480 MiB (activation-stationary bm 4096: 128 + 4·96 = 512; output-stationary bm 2048,
+    # bn 4096: 3·128 + 8·96 = 1152).  0.63: min(A + C + W·⌈512/32⌉, W + A·⌈96/32⌉ + C) → A ×3 as well.
     m, k, n = 16384, 4096, 12288
-    assert gemm_blocking(m, k, n, m * k * 2.0, k * n * 2.0, 32 * MiB) == (4, 1)
-    # square 8192³ bf16, 4 MiB: output-stationary bm 1024 → bn = ⌊(4 Mi − 128·1024·2) / (1024·4 + 128·2)⌋ = 903 →
-    # (⌈8192/903⌉, 8192/1024) = (10, 8): 10·128 + 8·128 = 2304 MiB, vs weight-stationary 33·128 + 128 = 4352 MiB
+    assert gemm_blocking(m, k, n, m * k * 2.0, k * n * 2.0, 32 * MiB) == (3, 1)
+    # square 8192³ bf16, 4 MiB: output-stationary bm 1024 → bn = 4 Mi / (1024·4) = 1024 → (8, 8): 2048 MiB, vs
+    # weight-stationary bn 256 → 32·128 + 128 = 4224 MiB (0.63's best one-sided choice)
     s = 8192
-    assert gemm_blocking(s, s, s, s * s * 2.0, s * s * 2.0, 4 * MiB) == (10, 8)
+    assert gemm_blocking(s, s, s, s * s * 2.0, s * s * 2.0, 4 * MiB) == (8, 8)
     op = Op("ffn.up", "gemm", 0, m=m, k=k, n=n, w_params=k * n, w_bits=16, w_fmt="bf16", stream=True)
     a, wx = act_stream(op, 2.0, 64 * MiB)                 # budget = SRAM / 2
-    assert abs(a - (4 * 128 + 384) * MiB) < 1 and wx == 0.0   # A ×4 + C once = 896 MiB
+    assert abs(a - (3 * 128 + 384) * MiB) < 1 and wx == 0.0   # A ×3 + C once = 768 MiB
+
+
+def _one_sided_063(ai, ao, w, budget):
+    act_chunked = ai + ao + w * math.ceil((ai + ao) / budget)
+    w_chunked = w + ai * math.ceil(w / budget) + ao
+    return min(act_chunked, w_chunked)
 
 
 def test_gemm_blocking_monotone_and_bounded_property():
@@ -111,6 +117,8 @@ def test_gemm_blocking_monotone_and_bounded_property():
             t = A * ra + W * rw
             assert ra >= 1 and rw >= 1 and t >= A + W - 1e-6
             assert t <= prev * (1 + 1e-12), (m, k, n, mib, t, prev)
+            C = m * n * ea
+            assert t + C <= _one_sided_063(A, C, W, mib * MiB) * (1 + 1e-12)     # never above 0.63's choice
             prev = t
 
 

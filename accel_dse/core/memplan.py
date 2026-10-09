@@ -240,27 +240,26 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
 
 
 ACC_BYTES = 4.0     # 0.64: output-tile partial sums held on chip in fp32 「假设」
-K_TILE = 128        # 0.64: K slice streamed per step of an output-stationary tile 「假设」
 
 
 @lru_cache(maxsize=1 << 16)
 def gemm_blocking(m: int, k: int, n: int, a_bytes: float, w_bytes: float, budget: float) -> tuple[int, int]:
     """0.64 — 2-D blocking of C[m,n] = A[m,k]·W[k,n] under an on-chip budget (bytes): (times A is read, times W is
-    read) of the cheapest of three loop nests (DRAM bytes = A·r_A + W·r_W + C, C written once):
-      output-stationary  bm×bn partial sums (fp32) resident, A / W streamed in K slices of ``K_TILE``:
-                         bm·bn·4 + kt·(bm·a + bn·w) ≤ budget → r_A = ⌈n/bn⌉, r_W = ⌈m/bm⌉ (best bn per bm, bm over
-                         powers of two and m — the classic I/O-lower-bound tiling, traffic ~ 2·m·n·k/√budget);
-      weight-stationary  a k×bn weight block resident, A rows streamed: k·bn·w + k·a + 4·bn ≤ budget
-                         → r_A = ⌈n/bn⌉, r_W = 1;
-      activation-stationary  a bm×k activation block resident, W columns streamed: bm·k·a + k·w + 4·bm ≤ budget
-                         → r_A = 1, r_W = ⌈m/bm⌉.
-    a, w = bytes per element of A / W (A from ``a_bytes`` so implicit-GEMM inputs count their real size).  Every
-    feasible set grows with the budget, so the traffic never increases with SRAM.  0.63 chose between the two
-    one-sided extremes (activation chunks with full weight re-reads, or weight chunks with full activation re-reads).
-    A nest that does not fit even at 1×1 is skipped; if none fits (budget below one K slice) r = (n, m)."""
+    read) of the cheapest of three loop nests (DRAM bytes = A·r_A + W·r_W + C, C written once).  The budget holds
+    the *resident* block; the streamed operand (a row / column / K slice) is double-buffered outside it, as in 0.63
+    「假设」:
+      weight-stationary      a k×bn weight block resident (k·bn·w ≤ budget), A rows streamed → r_A = ⌈n/bn⌉, r_W = 1;
+      activation-stationary  a bm×k activation block resident (bm·k·a ≤ budget), W streamed → r_A = 1, r_W = ⌈m/bm⌉;
+      output-stationary      bm×bn fp32 partial sums resident (bm·bn·4 ≤ budget), A / W streamed in K slices
+                             → r_A = ⌈n/bn⌉, r_W = ⌈m/bm⌉, bm over powers of two and m (the classic I/O-lower-bound
+                             tiling, traffic ~ 2·m·n·k·e/√(budget/4)).
+    a, w = bytes per element of A / W (A from ``a_bytes`` so implicit-GEMM inputs count their real size).  0.63 chose
+    between the two one-sided extremes with whole-budget chunks (activation chunks with full weight re-reads,
+    ⌈(A + C)/budget⌉, or weight chunks with full activation re-reads, ⌈W/budget⌉); both are (weakly) dominated by the
+    first two nests, so 0.64 traffic ≤ 0.63's.  Every feasible set grows with the budget → never increases with SRAM.
+    If nothing fits (budget < one k-row) r = (n, m)."""
     ea = a_bytes / max(1, m * k)          # A bytes per element
     ew = w_bytes / max(1, k * n)
-    kt = min(k, K_TILE)
     cost = lambda ra, rw: a_bytes * ra + w_bytes * rw
     best = None
 
@@ -268,20 +267,16 @@ def gemm_blocking(m: int, k: int, n: int, a_bytes: float, w_bytes: float, budget
         nonlocal best
         if best is None or cost(ra, rw) < cost(*best) - 1e-9:
             best = (ra, rw)
-    bn = int((budget - k * ea) // (k * ew + ACC_BYTES)) if k * ew + ACC_BYTES > 0 else n
+    bn = int(budget // (k * ew)) if k * ew > 0 else n
     if bn >= 1:
         take(math.ceil(n / min(bn, n)), 1)
-    bm = int((budget - k * ew) // (k * ea + ACC_BYTES)) if k * ea + ACC_BYTES > 0 else m
+    bm = int(budget // (k * ea)) if k * ea > 0 else m
     if bm >= 1:
         take(1, math.ceil(m / min(bm, m)))
-    cands = sorted({min(m, 1 << i) for i in range(0, max(1, m).bit_length() + 1)} | {m})
-    for bm in cands:
-        room = budget - kt * bm * ea
-        if room <= 0:
-            break
-        bn = int(room // (bm * ACC_BYTES + kt * ew))
+    for bm in sorted({min(m, 1 << i) for i in range(0, max(1, m).bit_length() + 1)} | {m}):
+        bn = int(budget // (bm * ACC_BYTES))
         if bn < 1:
-            continue
+            break
         take(math.ceil(n / min(bn, n)), math.ceil(m / bm))
     return best if best is not None else (n, m)
 
