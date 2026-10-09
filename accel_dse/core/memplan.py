@@ -246,12 +246,17 @@ def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
         a_out = op.m * op.n * op.count * ab
         if a_in + a_out <= budget:
             return 0.0, 0.0
-        w = op.w_bytes
-        act_chunked = a_in + a_out + w * math.ceil((a_in + a_out) / budget)
-        w_chunked = w + a_in * math.ceil(w / budget) + a_out
+        # 0.63: each of the ``count`` instances (experts, heads, groups) has its own weight and activation slice,
+        # so the chunking is decided per instance (whole-op chunking re-read every expert's input per weight chunk)
+        c = max(1, op.count)
+        ai, ao, w = a_in / c, a_out / c, op.w_bytes / c
+        if ai + ao <= budget:
+            return 0.0, 0.0
+        act_chunked = ai + ao + w * math.ceil((ai + ao) / budget)
+        w_chunked = w + ai * math.ceil(w / budget) + ao
         if act_chunked <= w_chunked:
-            return a_in + a_out, w * (math.ceil((a_in + a_out) / budget) - 1)
-        return a_in * math.ceil(w / budget) + a_out, 0.0
+            return c * (ai + ao), c * w * (math.ceil((ai + ao) / budget) - 1)
+        return c * (ai * math.ceil(w / budget) + ao), 0.0
     if op.bmm:                  # operands and result are whole activations; each channel slice fits the budget,
         tot = (op.m * op.k + op.k * op.n + op.m * op.n) * op.count * ab     # so A, B are read and C written once
         return (tot, 0.0) if tot > budget else (0.0, 0.0)
