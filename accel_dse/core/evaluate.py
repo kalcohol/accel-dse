@@ -41,6 +41,8 @@ class StageResult:
     ops: list[Op] = field(default_factory=list, repr=False)
     flops_u: float = 0.0    # useful FLOPs of one rank (ops replicated on r ranks count 1/r) — request-FLOP KPI
     sram_bytes: float = 0.0  # bytes through the SRAM ↔ datapath port of one rank per tick (0.47.1 action counts)
+    ideal_w: float = 0.0     # 0.63: array s at 100 % of the mean rank's useful work (Op.share) — energy MAC count
+    vec_w: float = 0.0       # 0.63: vector s of the mean rank's work
 
 
 @dataclass
@@ -89,8 +91,9 @@ class Result:
         """Useful FLOPs of one request over the whole replica: per-rank useful FLOPs × the TP·SP ranks of a stage,
         per sequence of the rank's micro-batch, × forward sequences per request × steps (0.45: was per rank)."""
         w, lay = self.workload, self.scenario.layout
-        b_rank = _cdiv(_cdiv(self.scenario.serving.batch * w.seqs_per_request, self.microbatches), lay.dp)
-        per_seq = sum(st.flops_u for st in self.stages) * lay.tp * lay.sp / b_rank
+        # 0.63: flops_u is the mean rank's useful work (Op.share) → × all TP·SP·DP ranks / sequences of the micro-batch
+        b_mb = _cdiv(self.scenario.serving.batch * w.seqs_per_request, self.microbatches)
+        per_seq = sum(st.flops_u for st in self.stages) * lay.tp * lay.sp * lay.dp / b_mb
         return per_seq * w.seqs_per_request * w.steps / 1e12
 
     def domain_summary(self) -> dict:
@@ -190,7 +193,8 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
 
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
-             "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max")
+             "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
+             "t_ideal_w", "t_vec_w")
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _TIERS = ("d2d", "link", "net")
 
@@ -214,7 +218,7 @@ def _memos(sys: System, org: str, model: ModelSpec) -> tuple:
     if len(om) > _MEMO_CAP:
         om.clear()
     cm = None
-    if sys.fabric.enabled and fabric._LOG is None:
+    if sys.fabric.enabled and fabric.log() is None:
         if len(_COLL_MEMO) > 256:
             _COLL_MEMO.clear()
         cm = _COLL_MEMO.setdefault(sys, {})
@@ -256,8 +260,9 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         a_, ma, fe, v, ce, idl, sb = r_
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
+        d["t_ideal_w"] += idl * o.share; d["t_vec_w"] += v * o.share     # 0.63: mean-rank work (energy, KPIs)
         d["flops"] += o.flops
-        d["flops_u"] += o.flops / max(1, o.replicated)
+        d["flops_u"] += o.flops * o.share / max(1, o.replicated)
         d["max_act"] = max(d["max_act"], o.act_bytes / max(o.count, 1))
         if o.stream:
             a, wx = act_stream(o, _fmt(model.act_fmt).bytes, sys.chip.sram_bytes)
@@ -304,22 +309,54 @@ def _comm(sys: System, kind: str, payload: float, group: int, stride: int = 1,
 
 
 def _p2p(sys: System, payload: float, stage: int, stage_cards: int) -> tuple[float, float, float, float]:
-    """PP hand-off of ``stage`` → next: D2D when both stages sit in one package, the scale-up link inside a node,
-    else the cross-node network."""
-    t = p2p_tier(stage, stage_cards, sys.package_cards, sys.node_cards)
-    ln = {"d2d": sys.d2d, "link": sys.link, "net": sys.net}[t]
-    if sys.fabric.enabled and payload > 0:      # 0.59: oversubscribed leaf uplinks + per-step hop latency
-        src = (stage + 1) * stage_cards - 1
-        bw, a, pr = fabric.p2p_alpha(fabric.p2p(payload, t, ln, sys, src, src + 1, stage_cards), t, ln, sys, src,
-                                     src + 1, with_proto=True)
-        if fabric._LOG is not None:
-            nm = "p2p" if pr is None else f"p2p/{pr}"
-            e = fabric._LOG.setdefault(("p2p", stage, round(payload)), {
-                "kind": "p2p", "group": 2, "bytes": payload, "count": 0, "levels": [[t, 2]], "algo": nm,
-                "top": "", "cands": {nm: [bw, a]}, "stage": stage})
-            e["count"] += 1
-        return bw, a, float(t == "d2d"), float(t == "net")
-    return (*collective_seconds("p2p", payload, 2, ln), float(t == "d2d"), float(t == "net"))
+    return _p2p_full(sys, payload, stage, stage_cards)[:4]
+
+
+def _p2p_full(sys: System, payload: float, stage: int, stage_cards: int) -> tuple[float, float, float, float, str]:
+    """PP hand-off of ``stage`` → next: (bw s, α s, D2D share, network share of the bytes, tier of the slowest pair).
+    0.63 (external review): every rank j of the stage sends its slice to rank j of the next stage at once (cards
+    numbered TP, SP, DP, PP) — each pair on its own tier (same package → D2D, same node → scale-up link, else the
+    network, oversubscribed when the two nodes sit under different leaves / pods); the hand-off ends with the slowest
+    pair.  Was one representative pair (the stage's last card → the next stage's first): PP2·TP64 on 8-card nodes,
+    4:1 leaves — 1 ms instead of 4 ms (rank 63 → 64 share a leaf, rank 0 → 64 do not)."""
+    pk, nd = sys.package_cards, sys.node_cards
+    keys: dict = {}
+    for j in range(max(1, stage_cards)):
+        a = stage * stage_cards + j
+        b = a + stage_cards
+        if pk > 1 and a // pk == b // pk:
+            t = "d2d"
+        elif nd <= 0 or a // nd == b // nd:
+            t = "link"
+        else:
+            t = "net"
+        # pairs with the same tier and (node, node) positions cost the same; keep one representative per class
+        k = (t, a // nd if (t == "net" and nd > 0) else 0, b // nd if (t == "net" and nd > 0) else 0)
+        if k not in keys:
+            keys[k] = [a, b, 0]
+        keys[k][2] += 1
+    n_pairs = sum(v[2] for v in keys.values())
+    fd = sum(v[2] for k, v in keys.items() if k[0] == "d2d") / n_pairs
+    fn = sum(v[2] for k, v in keys.items() if k[0] == "net") / n_pairs
+    best = None
+    for (t, _, _), (a, b, _) in keys.items():
+        ln = {"d2d": sys.d2d, "link": sys.link, "net": sys.net}[t]
+        if sys.fabric.enabled and payload > 0:      # 0.59: oversubscribed leaf uplinks + per-step hop latency
+            bw, al, pr = fabric.p2p_alpha(fabric.p2p(payload, t, ln, sys, a, b, stage_cards), t, ln, sys, a, b,
+                                          with_proto=True)
+        else:
+            bw, al = collective_seconds("p2p", payload, 2, ln)
+            pr = None
+        if best is None or bw + al > best[0] + best[1]:
+            best = (bw, al, t, pr)
+    bw, al, t, pr = best
+    if sys.fabric.enabled and payload > 0 and fabric.log() is not None:
+        nm = "p2p" if pr is None else f"p2p/{pr}"
+        e = fabric.log().setdefault(("p2p", stage, round(payload)), {
+            "kind": "p2p", "group": 2, "bytes": payload, "count": 0, "levels": [[t, 2]], "algo": nm,
+            "top": "", "cands": {nm: [bw, al]}, "stage": stage})
+        e["count"] += 1
+    return bw, al, fd, fn, t
 
 
 def _slc_time(sys: System, dram: dict) -> float:
@@ -410,12 +447,12 @@ def _stage_link(sys: System, agg: dict, link_bw: float, sync: float, d2d_b: floa
                 net_b += cnt * pay * (fn1 - fn0)
         choice = {key: nm for (cnt, (key, *_)), nm in zip(cl, best)}
     link = link_of(link_bw, busy, bw_max)
-    if fabric._LOG is not None:
+    if fabric.log() is not None:
         if choice:
             for key, nm in choice.items():
-                if key in fabric._LOG:
-                    fabric._LOG[key]["algo"] = nm
-        fabric._LOG.setdefault("_stages", []).append(
+                if key in fabric.log():
+                    fabric.log()[key]["algo"] = nm
+        fabric.log().setdefault("_stages", []).append(
             {"stage": stage, "link_sum_us": link_bw * 1e6, "link_ports_us": max(max(busy.values()), bw_max) * 1e6,
              "busy_us": {t: v * 1e6 for t, v in busy.items()}, "window_us": window * 1e6, "sync_us": sync * 1e6,
              "link_us": link * 1e6})
@@ -435,7 +472,7 @@ def _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx
     lc = plan_stages(m.n_layers, pp)
     if pp == 1 or scn.pp_split == "layers":
         return lc, None
-    log, fabric._LOG = fabric._LOG, None          # the proxy pass must not count collectives for fabric_report
+    log = fabric.log(); fabric.set_log(None)         # the proxy pass must not count collectives for fabric_report
     try:
         bw = sys.dram_GBps * 1e9
 
@@ -458,7 +495,7 @@ def _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx
         last = vec(_sum_ops(last_ops, sys, scn.mapping, m, mm)) if last_ops else (0.0,) * 5
         t_p, a_p, _, _ = _p2p(sys, p2p_payload, 0, scn.layout.cards // pp)
     finally:
-        fabric._LOG = log
+        fabric.set_log(log)
 
     def static(st_):
         return st_.weights + (st_.kv_per_seq + st_.idx_per_seq + st_.state_per_seq) * b_rank
@@ -497,7 +534,7 @@ def _pick_split(run, cands: tuple, lc) -> list:
     """The proxy proposed splits other than equal counts: evaluate them and the equal-count split with the full model
     and keep the fastest that fits (equal counts win ties; the proxy ignores SRAM / SLC residency, activations and
     fabric effects).  fabric_report's collective log keeps the chosen run's entries only."""
-    log = fabric._LOG
+    log = fabric.log()
     base = copy.deepcopy(log) if log is not None else None
     runs = []
     for plan_ in (lc, *cands):
@@ -599,7 +636,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     ops_memo = model_cache(m).setdefault("layer_sums", {})
     if len(ops_memo) > 200_000:
         ops_memo.clear()
-    if fabric._LOG is not None:     # fabric_report: run every collective (no layer memo)
+    if fabric.log() is not None:     # fabric_report: run every collective (no layer memo)
         ops_memo = {}
     mm = _memos(sys, scn.mapping, m)
     def _run(plan_):
@@ -613,7 +650,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 g = groups[li]
                 first_li, n = counts.get(g, (li, 0))
                 counts[g] = (first_li, n + 1)
-            if fabric._LOG is not None:     # count every stage's collectives (ops_memo is a private dict here)
+            if fabric.log() is not None:     # count every stage's collectives (ops_memo is a private dict here)
                 cache.clear()
                 ops_memo.clear()
             for g, (li, n) in counts.items():
@@ -621,9 +658,9 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                     okey = (g, ph, sh, scn.mapping, scn.chip, _links(scn))
                     cache[g] = ops_memo.get(okey)
                     if cache[g] is None:
-                        fabric._MULT = n
+                        fabric.set_mult(n)
                         cache[g] = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m, mm)
-                        fabric._MULT = 1
+                        fabric.set_mult(1)
                 _acc(agg, cache[g], n)
             tail = _tail_ops(m, st.has_head, ph, sh, spec_k)
             if tail:                        # 0.61: non-head stages have no tail ops (summing zeros is a no-op)
@@ -633,7 +670,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             if store is None:
                 store = store_memo[skey] = stage_storage(m, st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap,
                                                          n_mtp)
+            # 0.63: activations streamed (stream=True: staging ≤ the SRAM's activation half, spills in agg["act"]);
+            # a working set beyond the runtime reserve needs its excess in DRAM 「假设」
             mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
+                      act_need=max(0.0, agg["max_act_tot"] - RUNTIME_RESERVE), stream=True,
                       slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy)
             dram = step_dram_bytes(mp, store, agg)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
@@ -641,9 +681,9 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             extra = []
             if pp > 1 and not st.has_head:
                 act = ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp      # 0.61.1: residual stream ≥ bf16
-                bw, a, fd, fn = _p2p(sys, act, st.index, lay.cards // pp)
+                bw, a, fd, fn, tier = _p2p_full(sys, act, st.index, lay.cards // pp)
                 link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
-                extra.append((bw, _p2p_tier_of(fd, fn)))
+                extra.append((bw, tier))
             t_dram = dram["total"] / (sys.dram_GBps * 1e9)
             if sys.fabric.enabled:
                 link_bw, sync, d2d_b, net_b = _stage_link(
@@ -652,7 +692,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b)
-            stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], sram_bytes=agg["sram"]))
+            stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
+                                      sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"]))
         return stages
 
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx_cap, n_mtp, b_rank,
@@ -720,9 +761,12 @@ def _vision_cost(scn: Scenario, m: ModelSpec, sys: System, stages: list) -> dict
             c = memo[key] = _component_time([(vision_ops(v, g, per_card), 1)], sys, scn.mapping, "bf16")
         act = vision_act_peak(v, g, per_card)
         n = busy * dp_busy
-        out.update(s=c["s"], tflop=c["tflop"] * n, tflop_per_image=c["tflop"] / per_card, per_card=per_card,
+        # 0.63 (external review): a card's time is set by its ⌈images / card⌉, but only real images are work — MAC /
+        # vector counts and FLOPs × images / per_card (3 images on TP 2 counted 4); byte counts per busy card
+        k_w = sv.batch * sv.images / per_card
+        out.update(s=c["s"], tflop=c["tflop"] * k_w, tflop_per_image=c["tflop"] / per_card, per_card=per_card,
                    cards=n, bound=c["bound"], dram_GB=c["dram_GB"] * n,
-                   acts={k: x * n for k, x in c["acts"].items()})
+                   acts={k: x * (k_w if k in ("mac", "vec") else n) for k, x in c["acts"].items()})
     mp = stages[0].mem
     need = mp.dram_need + w + max(0.0, act - mp.act_total)
     stages[0].mem = replace(mp, dram_need=need, fits=need <= mp.dram_cap, pipe_w=mp.pipe_w + w)
@@ -782,7 +826,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     store_memo = model_cache(m).setdefault("stage_storage", {})
     if len(ops_memo) > 200_000:
         ops_memo.clear()
-    if fabric._LOG is not None:     # fabric_report: run every collective (no layer memo)
+    if fabric.log() is not None:     # fabric_report: run every collective (no layer memo)
         ops_memo = {}
     stages = []
     resid = _cdiv(seqs, lay.dp) * _cdiv(wl.tokens, lay.sp) * m.hidden * ab   # residual streams of in-flight sequences
@@ -798,7 +842,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         stages = []
         for st in plan_:
             agg = dict.fromkeys(_SUM_KEYS, 0.0)
-            if fabric._LOG is not None:
+            if fabric.log() is not None:
                 ops_memo.clear()
             if st.has_embed:
                 _acc(agg, _sum_ops(full_io_ops(m, ph, sh, "pre"), sys, scn.mapping, m))
@@ -811,9 +855,9 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 okey = (g, ph, sh, scn.mapping, scn.chip, _links(scn))
                 hit = ops_memo.get(okey)
                 if hit is None:
-                    fabric._MULT = n * layer_repeat(m.layers[li], ph)
+                    fabric.set_mult(n * layer_repeat(m.layers[li], ph))
                     hit = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
-                    fabric._MULT = 1
+                    fabric.set_mult(1)
                 _acc(agg, hit, n * layer_repeat(m.layers[li], ph))
             if st.has_head:
                 _acc(agg, _sum_ops(full_io_ops(m, ph, sh, "post"), sys, scn.mapping, m))
@@ -849,9 +893,9 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             extra = [(x, t) for t, x in extra_f.items()]
             if pp > 1 and not st.has_head:
                 act = ph.batch * (_cdiv(ph.q, lay.sp) * m.hidden * ab + pair_act) / lay.dp
-                bw, a, fd, fn = _p2p(sys, act, st.index, lay.cards // pp)
+                bw, a, fd, fn, tier = _p2p_full(sys, act, st.index, lay.cards // pp)
                 link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
-                extra.append((bw, _p2p_tier_of(fd, fn)))
+                extra.append((bw, tier))
             t_dram = dram["total"] / (sys.dram_GBps * 1e9)
             if sys.fabric.enabled:
                 link_bw, sync, d2d_b, net_b = _stage_link(
@@ -861,7 +905,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
-                                      sram_bytes=agg["sram"]))
+                                      sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"]))
         return stages
 
     p2p_pay = ph.batch * (_cdiv(ph.q, lay.sp) * m.hidden * ab + pair_act) / lay.dp

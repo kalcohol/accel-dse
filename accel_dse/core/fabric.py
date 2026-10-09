@@ -34,14 +34,32 @@ Topology factors divide the tier's β (≥ 1):
 
 from __future__ import annotations
 
+import contextvars
+
 import math
 from collections import defaultdict
 from functools import lru_cache
 
 from .hardware import Fabric, Link
 
-_LOG: dict | None = None        # collector for fabric_report (None = off)
-_MULT = 1                       # layers sharing the op list being summed (fabric_report counts)
+# 0.63 (external review): the fabric_report collector and its layer multiplier are per context (thread / task), not
+# module globals — the threaded HTTP server ran concurrent evaluations through one shared collector
+_LOG_CV: contextvars.ContextVar = contextvars.ContextVar("accel_dse_fabric_log", default=None)
+_MULT_CV: contextvars.ContextVar = contextvars.ContextVar("accel_dse_fabric_mult", default=1)
+
+
+def log() -> dict | None:
+    """Collector of the running fabric_report in this context (None = off)."""
+    return _LOG_CV.get()
+
+
+def set_log(v: dict | None) -> None:
+    _LOG_CV.set(v)
+
+
+def set_mult(n: int) -> None:
+    """Layers sharing the op list being summed (fabric_report counts)."""
+    _MULT_CV.set(n)
 
 
 def leaf_nodes(fab: Fabric, node_cards: int) -> int:
@@ -461,9 +479,10 @@ def collective_full(kind: str, payload: float, group: int, sys, stride: int = 1,
     bw, a, busy = cands[name]
     sh = shares[name]
     key = (kind, group, stride, k_pkg, k_node, round(payload))
-    if _LOG is not None:
+    lg = _LOG_CV.get()
+    if lg is not None:
         lv = meta["levels"]
-        e = _LOG.setdefault(key, {"kind": kind, "group": group, "bytes": payload, "count": 0,
+        e = lg.setdefault(key, {"kind": kind, "group": group, "bytes": payload, "count": 0,
                                   "levels": [[t, n] for n, _, t in lv], "algo": name,
                                   "top": meta["top"] if base_algo(name) == "hier" else "",
                                   "cands": {k: [v[0], v[1]] for k, v in cands.items()},
@@ -474,7 +493,7 @@ def collective_full(kind: str, payload: float, group: int, sys, stride: int = 1,
                                             "innet" if (base_algo(k) == "hier" and meta["top"] == "innet") else
                                             _PATTERN.get(base_algo(k), "ring"), meta["nt"], meta["s_net"], sys.node_cards)
                               for k in cands}
-        e["count"] += _MULT
+        e["count"] += _MULT_CV.get()
     full = None
     if fab.algo == "auto_overlap" and len(cands) > 1:
         full = (key, payload, name,
@@ -593,17 +612,16 @@ def fabric_report(scn, res=None) -> dict | None:
     """Per-collective breakdown of one evaluation with ``scn.fabric`` on (UI / CLI table): every distinct collective
     (kind, group, payload) with its tier levels, the chosen algorithm, its bandwidth / latency seconds and the other
     candidates; plus the step time of the same scenario with the fabric model off."""
-    global _LOG
     if not scn.fabric.enabled:
         return None
     import dataclasses
     from .evaluate import evaluate
-    _LOG = {}
+    tok = _LOG_CV.set({})
     try:
         r = evaluate(scn)
-        log = _LOG
+        log = _LOG_CV.get()
     finally:
-        _LOG = None
+        _LOG_CV.reset(tok)
     try:
         off = evaluate(dataclasses.replace(scn, fabric=dataclasses.replace(scn.fabric, enabled=False)))
         off_ms = off.step * 1e3

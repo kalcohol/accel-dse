@@ -42,6 +42,7 @@ path unchanged.
 
 from __future__ import annotations
 
+import contextvars
 import math
 from dataclasses import replace
 
@@ -58,6 +59,10 @@ from .pdqueue import _Pool, _pd_mode, _slo_rate, prefix_tokens, queue_report
 from .prefixcache import (both_hit, capacity, hit_of, per_card_bytes, pool_hits, tree_both_tail, tree_cum_tokens,
                           tree_depth_law, tree_depth_tail, tree_groups, tree_resident, zipf_groups)
 from .serving import Goodput, best_prefill, goodput
+
+# 0.63: pdsim.capture_ctx collects the live queueing ctx here (per context; was a monkey-patch of queue_report, which
+# leaked across threads of the HTTP server)
+CTX_SINK: contextvars.ContextVar = contextvars.ContextVar("accel_dse_pd_ctx_sink", default=None)
 
 
 def kv_bytes_per_request(model, prompt: int) -> float:
@@ -392,6 +397,9 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         dpool.memo[("decode", sv.batch, None, 0)] = dec
         cpool.memo = dpool.memo                           # same layout → same evaluations
     if queue:
+        sink = CTX_SINK.get()
+        if sink is not None:
+            sink["ctx"] = ctx
         q = queue_report(ctx, main["req_s"], pd, sv, energy)
         if q and "modes" in q and pd.simulate:
             from . import pdsim as _ps

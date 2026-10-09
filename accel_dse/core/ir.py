@@ -137,6 +137,11 @@ class Op:
     orient: bool = False      # full-phase attention: mapping may take either GEMM orientation (O = P·V or Oᵀ = Vᵀ·Pᵀ)
     bmm: bool = False         # activation×activation batched GEMM whose operands are plain tensors (triangle update,
                               # outer-product mean, pair-weighted averaging): streamed as A, B in and C out
+    share: float = 1.0        # 0.63: mean-rank useful work / this (busiest) rank's useful work of the op — uneven
+                              # splits (ceil heads / columns / tokens / batch, padded expert rows) cost the busiest rank's
+                              # time but only their share of work: energy / FLOP KPIs use work × share (rank_shares)
+    kv_pre: float = 0.0       # streamed LLM prefill attention (0.63): share of the attended K/V already read from the
+                              # cache (counted in kv_read) — its first pass is not charged again by act_stream
     in_elems: float = 0.0     # conv as implicit GEMM: elements of the real input tensor (the M×K im2col matrix is
                               # virtual — DRAM streaming moves the input once, 0 = M·K·count)
 
@@ -160,8 +165,29 @@ def _cdiv(a: int, b: int) -> int:
     return -(-a // b)
 
 
-def _lin_local(l: Linear, tp: int) -> tuple[int, int]:
-    """(K, N) of the per-rank slice of a linear (GEMM dims; grouped → per-group K)."""
+def gqa_local(n_q: int, n_kv: int, tp: int) -> tuple[int, int]:
+    """0.63 (external review): (KV heads, query heads) on the busiest TP rank of a GQA layer, GQA groups kept whole.
+    TP ≤ KV heads: ⌈KV / TP⌉ KV heads with all their G = Q / KV query heads; TP > KV: one KV head (replicated over the
+    ranks of its group), its G query heads split over ⌊TP / KV⌋ ranks at least.  Divisible TP: KV / TP, Q / TP as before;
+    non-divisible TP no longer drops heads (Qwen3-8B TP3 covered 27 of 32 query heads: ⌈8/3⌉·(⌈32/3⌉ // ⌈8/3⌉))."""
+    if n_kv <= 0 or n_q % n_kv:
+        return _cdiv(n_kv, tp), _cdiv(n_q, tp)
+    g = n_q // n_kv
+    if tp <= n_kv:
+        kv = _cdiv(n_kv, tp)
+        return kv, kv * g
+    return 1, _cdiv(g, tp // n_kv)
+
+
+def _lin_local(l: Linear, tp: int, core: AttnCore | None = None) -> tuple[int, int]:
+    """(K, N) of the per-rank slice of a linear (GEMM dims; grouped → per-group K).  ``core`` (a GQA layer's attention
+    core, 0.63): the query / output projections follow the busiest rank's query heads (head-aligned, gqa_local)."""
+    if core is not None and core.kind == "gqa" and tp > 1 and l.groups == 1 and core.n_q:
+        hq = gqa_local(core.n_q, core.n_kv, tp)[1]
+        if l.split == "col" and l.name in ("q", "o_gate") and l.n % core.n_q == 0:
+            return l.k, hq * (l.n // core.n_q)
+        if l.split == "row" and l.name == "o" and l.k % core.n_q == 0:
+            return hq * (l.k // core.n_q), l.n
     k = l.k // l.groups
     if l.split == "col":
         return k, _cdiv(l.n, tp)
@@ -272,8 +298,7 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
             # charge the exact mean over the prompt positions, not the cap for every query (was ≤ 2× at prompt ≤ cap)
             causal = core.keys_mean(ph.ctx, q) / ce
     if core.kind == "gqa":
-        kv_loc = _cdiv(core.n_kv, tp)
-        hq_loc = _cdiv(core.n_q, tp)
+        kv_loc, hq_loc = gqa_local(core.n_q, core.n_kv, tp)
         g = max(1, hq_loc // kv_loc)
         cnt = b_loc * kv_loc
         ops.append(Op("qk", "attn", li, m=q * g, k=core.qk_dim, n=ce, count=cnt, causal=causal,
@@ -330,7 +355,12 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
 
 # ------------------------------------------------------------------ layer ops
 def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None) -> list[Op]:
-    """Ops of one rank for transformer layer ``li`` (or an explicit MTP ``layer``)."""
+    """Ops of one rank for transformer layer ``li`` (or an explicit MTP ``layer``), with work shares (rank_shares)."""
+    return rank_shares(_rank_ops(model, li, ph, sh, layer), sh,
+                       lambda: _rank_ops(model, li, ph, Shard(), layer))
+
+
+def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None) -> list[Op]:
     L = layer if layer is not None else model.layers[li]
     if ph.kind == "full":
         return _full_layer_ops(model, li, L, ph, sh)
@@ -343,7 +373,7 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
     ops: list[Op] = []
     ops.append(Op("attn_norm", "vector", li, vec=t * h * 4))
     for l in L.attn_linears:
-        k, n = _lin_local(l, tp)
+        k, n = _lin_local(l, tp, L.core)
         m = t
         if l.name == "kv_b" and ph.kind == "prefill":
             m = b_loc * (ph.ctx + ph.q)      # decompress cached prefix + new tokens
@@ -363,7 +393,7 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
                         params=k * n * (l.groups if l.groups > 1 else 1), replicated=_repl(l, tp)))
     ops.extend(_attn_core_ops(model, li, L.core, ph, sh, b_loc))
     if L.core.kind in ("gqa", "mla"):
-        hq = _cdiv(L.core.n_q, tp)
+        hq = gqa_local(L.core.n_q, L.core.n_kv, tp)[1] if L.core.kind == "gqa" else _cdiv(L.core.n_q, tp)
         ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
     if tp > 1:
         ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
@@ -404,10 +434,31 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
         if tp > 1 and f.n_shared:
             ops.append(Op("shared_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     ops.append(Op("residual", "vector", li, vec=t * h * 2))
-    return ops
+    return _llm_stream(ops, ph)
+
+
+def _llm_stream(ops: list[Op], ph: Phase) -> list[Op]:
+    """0.63 (external review): LLM activations are streamed like the full-sequence forwards — every weight GEMM, and
+    the prefill attention (flash: Q / O blocks in SRAM, K / V re-read per block when they do not fit), may spill its
+    activations to DRAM (memplan.act_stream; nothing moves while they fit the SRAM's activation half).  Decode
+    attention reads its K / V from the cache once (kv_read) and keeps its tiny Q / O on chip: not streamed.
+    Prefill: the cached prefix's K / V first pass is already in kv_read (kv_pre = ctx / (ctx + q))."""
+    out = []
+    pre = ph.ctx / (ph.ctx + ph.q) if ph.kind == "prefill" and ph.ctx + ph.q > 0 else 0.0
+    for o in ops:
+        if o.kind == "gemm" and not o.stream:
+            o = replace(o, stream=True)
+        elif o.kind == "attn" and ph.kind == "prefill" and o.name in ("qk", "qk_latent") and not o.stream:
+            o = replace(o, stream=True, kv_pre=pre)
+        out.append(o)
+    return out
 
 
 def embed_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
+    return rank_shares(_embed_ops(model, ph, sh), sh, lambda: _embed_ops(model, ph, Shard()))
+
+
+def _embed_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
     b_loc = _cdiv(ph.batch, sh.dp)
     t = b_loc * ph.q
     rf = model.fmt("embed")
@@ -415,6 +466,10 @@ def embed_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
 
 
 def head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
+    return rank_shares(_head_ops(model, ph, sh), sh, lambda: _head_ops(model, ph, Shard()))
+
+
+def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
     """LM head, vocab-parallel over attention TP.  Prefill: only the last token
     of each sequence is projected; decode: every new/verified token."""
     b_loc = _cdiv(ph.batch, sh.dp)
@@ -422,7 +477,7 @@ def head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
     n = _cdiv(model.vocab, sh.tp)
     role = "embed" if model.tie_embeddings else "lm_head"
     ops = [Op("final_norm", "vector", model.n_layers, vec=b_loc * ph.q * model.hidden * 4),
-           gemm(model, "lm_head", model.n_layers, m, model.hidden, n, role),
+           gemm(model, "lm_head", model.n_layers, m, model.hidden, n, role, stream=True),
            Op("sample", "vector", model.n_layers, vec=m * n * 3)]
     if sh.tp > 1:
         ops.append(Op("logits_gather", "comm", model.n_layers, comm_kind="allgather", comm_group=sh.tp,
@@ -432,6 +487,10 @@ def head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
 
 def mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) -> list[Op]:
     """One MTP draft step (module ``depth``): eh_proj + MTP layer + shared head."""
+    return rank_shares(_mtp_ops(model, ph, sh, depth), sh, lambda: _mtp_ops(model, ph, Shard(), depth))
+
+
+def _mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) -> list[Op]:
     if not model.mtp_layers:
         return []
     L = model.mtp_layers[min(depth, len(model.mtp_layers) - 1)]
@@ -439,9 +498,9 @@ def mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) ->
     b_loc = _cdiv(ph.batch, sh.dp)
     t = b_loc * ph.q
     h = model.hidden
-    ops = [gemm(model, "mtp.eh_proj", li, t, 2 * h, h, "mtp", replicated=sh.tp)]
-    ops += build_rank_ops(model, li, ph, sh, layer=L)
-    ops += [gemm(model, "mtp.head", li, t, h, _cdiv(model.vocab, sh.tp), "lm_head")]
+    ops = [gemm(model, "mtp.eh_proj", li, t, 2 * h, h, "mtp", replicated=sh.tp, stream=True)]
+    ops += _rank_ops(model, li, ph, sh, layer=L)
+    ops += [gemm(model, "mtp.head", li, t, h, _cdiv(model.vocab, sh.tp), "lm_head", stream=True)]
     return ops
 
 
@@ -689,6 +748,10 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
 
 
 def full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
+    return rank_shares(_full_io_ops(model, ph, sh, side), sh, lambda: _full_io_ops(model, ph, Shard(), side))
+
+
+def _full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
     """Input side (first stage): token lookup / patch, text and timestep embedders.
     Output side (last stage): final norm, un-patchify head / MLM head.  io GEMMs are column-split over TP
     with an all-gather of their (small) outputs."""
@@ -714,6 +777,39 @@ def full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
         ops.append(gemm(model, "mlm_decoder", li, t, model.hidden, n, "embed", stream=True))
         ops.append(Op("act", "vector", li, vec=t * model.hidden * 8 + t * n * 3))
     return ops
+
+
+def rank_shares(ops: list[Op], sh: Shard, global_ops) -> list[Op]:
+    """0.63 (external review) — work conservation.  The per-rank op list is the busiest rank's (ceil splits of heads,
+    columns, tokens, batch; padded expert rows), which sets the stage time.  Each op gets ``share`` = mean-rank useful
+    work / this rank's useful work, by op name against the unsharded op graph (``global_ops()``, same phase):
+    share = W_global / (N · Σ_rank W / replicated), N = TP·DP·SP ranks of the stage, W = FLOPs (vector element-ops for
+    vector ops).  So N · Σ work·share / replicated = the global work exactly, and replicated execution (e.g. the MLA
+    latent on every TP rank) still counts on every rank.  Divisible splits: share = 1."""
+    n = sh.tp * sh.dp * sh.sp
+    if n == 1:
+        return ops
+    g_f: dict = {}; g_v: dict = {}
+    for o in global_ops():
+        if o.kind != "comm":
+            g_f[o.name] = g_f.get(o.name, 0.0) + o.flops
+            g_v[o.name] = g_v.get(o.name, 0.0) + o.vec
+    u_f: dict = {}; u_v: dict = {}
+    for o in ops:
+        if o.kind != "comm":
+            r = max(o.replicated, 1e-12)
+            u_f[o.name] = u_f.get(o.name, 0.0) + o.flops / r
+            u_v[o.name] = u_v.get(o.name, 0.0) + o.vec / r
+    out = []
+    for o in ops:
+        x = 1.0
+        if o.kind != "comm" and o.name in g_f:
+            if o.flops > 0 and u_f[o.name] > 0:
+                x = g_f[o.name] / (n * u_f[o.name])
+            elif o.vec > 0 and u_v[o.name] > 0:
+                x = g_v[o.name] / (n * u_v[o.name])
+        out.append(o if abs(x - 1.0) < 1e-12 else replace(o, share=x))
+    return out
 
 
 def total(ops: list[Op], attr: str) -> float:

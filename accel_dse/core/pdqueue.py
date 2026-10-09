@@ -1367,7 +1367,7 @@ def _coloc_chunked(ctx: dict, lam: float) -> dict:
     return _kv_wrap(_coloc_chunked_base, ctx, lam, "cpool", "r_c")
 
 
-SLO_SCAN = 96       # 0.63: grid points of the SLO-rate scan below the stability limit
+SLO_SCAN = 24       # 0.63: grid points of the SLO-rate scan below the stability limit (4 % of λ_s apart)
 
 
 def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float, known: tuple = ()) -> float:
@@ -1397,14 +1397,23 @@ def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float, kno
         return lo
     if start <= 0:
         return 0.0
-    lo, hi = 0.0, start
-    for _ in range(40):
-        if not stable(hi):
-            break
-        lo, hi = hi, hi * 2
+    own = ctx.get("_lam_s")                         # the stability limit is shared by the SLO and stable-rate calls
+    if own is None or own[0] is not ctx:            # of this ctx (a {**ctx, …} copy for another split starts afresh)
+        own = ctx["_lam_s"] = (ctx, {})
+    memo = own[1]
+    mk = (fn, start)
+    if mk in memo:
+        lam_s = memo[mk]
     else:
-        return lo
-    lam_s = bisect(lo, hi, stable)
+        lo, hi = 0.0, start
+        for _ in range(40):
+            if not stable(hi):
+                break
+            lo, hi = hi, hi * 2
+        else:
+            memo[mk] = lo
+            return lo
+        lam_s = memo[mk] = bisect(lo, hi, stable)
     if lam_s <= 0:
         return 0.0
     if math.isinf(ttft_slo) and math.isinf(tpot_slo):

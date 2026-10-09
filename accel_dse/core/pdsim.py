@@ -173,6 +173,15 @@ class Costs:
             self._pre[k] = self.pool.run("prefill", b, S, p).ttft
         return self._pre[k]
 
+    @property
+    def spec(self) -> tuple[int, float] | None:
+        """(draft tokens k, per-token acceptance a) when speculative decoding is on (0.63), else None."""
+        sv = self.pool.scn.serving
+        if not sv.spec_k:
+            return None
+        e = self.decode_step(1)[1]
+        return (int(sv.spec_k), float(sv.spec_accept)) if e > 1.0 + 1e-12 else None
+
     def decode_step(self, k: int) -> tuple[float, float]:
         """(step time, tokens accepted per sequence per step)."""
         k = max(1, k)
@@ -200,8 +209,9 @@ class Ev:
 
 
 class Engine:
-    def __init__(self, rng: random.Random):
+    def __init__(self, rng: random.Random, seed: int = 1):
         self.rng = rng
+        self.spec_rng = random.Random(f"spec-{seed}")    # 0.63: accepted-draft draws (own stream: arrivals unchanged)
         self.t = 0.0
         self._seq = 0
         self.hq: list[Ev] = []
@@ -301,6 +311,7 @@ class _Replica:
     def __init__(self, eng: Engine, costs: Costs, slots: int):
         self.eng = eng
         self.costs = costs
+        self._spec = costs.spec
         self.slots = slots
         self.running: list[Req] = []
         self.joinq: deque[Req] = deque()   # prefilled, waiting for a decode slot
@@ -398,7 +409,7 @@ class _Replica:
         copies the KV to host memory first, which stalls the replica — returned as extra seconds 「假设」)."""
         if self.kv_policy not in ("recompute", "swap") or self.kv_cap is None:
             return 0.0
-        e = max(1, int(round(self.costs.decode_step(max(1, len(self.running)))[1])))
+        e = self.costs.decode_step(max(1, len(self.running)))[1]     # expected growth per sequence (0.63: unrounded)
         used = self._kv_used()
         stall = 0.0
         while len(self.running) > 1 and used + e * len(self.running) > self.kv_cap:
@@ -436,10 +447,25 @@ class _Replica:
         self.running.append(r)               # last_tok untouched → its gap spans the preemption
         self.boundary()
 
-    def _credit(self, members: list[Req], e: int):
+    def _draw(self) -> int:
+        """Tokens one sequence emits in a step.  0.63 (external review): with speculative decoding each sequence
+        accepts j of its k drafts with P(j) = a^j (1 − a) (j < k), P(k) = a^k, and emits j + 1 tokens — mean
+        (1 − a^{k+1}) / (1 − a) as the closed form.  Was round(mean) for every sequence (1.7 → 2: +15 % throughput)."""
+        sp = self._spec
+        if sp is None:
+            return 1
+        k, a = sp
+        j = 0
+        rng = self.eng.spec_rng
+        while j < k and rng.random() < a:
+            j += 1
+        return j + 1
+
+    def _credit(self, members: list[Req], e: float):
         t = self.eng.t
         done = []
         for r in members:
+            e = self._draw()
             gap = (t - r.last_tok) / e
             if gap > r.itl_max:
                 r.itl_max = gap
@@ -468,7 +494,7 @@ class _Replica:
         stall = self._preempt()
         k = len(self.running)
         step, e = self.costs.decode_step(k)
-        self._start(step + stall, "rep_dec_done", (list(self.running), max(1, int(round(e)))))
+        self._start(step + stall, "rep_dec_done", (list(self.running), e))
 
     def dec_done(self, payload):
         members, e = payload
@@ -591,7 +617,7 @@ class ColocChunked(_Replica):
         pre1 = self._p1(self.cur.S, self.cur.p)
         dec = self.costs.pool.run("decode", max(1, len(self.running)))
         step = _fused_step(dec, pre1, take / new, rr)
-        e = max(1, int(round(dec.tokens_per_step)))
+        e = dec.tokens_per_step
         self.cur_left -= take
         fin = self.cur if self.cur_left <= 0 else None
         if fin is not None:
@@ -700,7 +726,7 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
     so the tail is not measured on a draining system)."""
     from .pdqueue import _contended, _coloc_prefill_first, _pd_mode, _tier_util, _wsum
     rng = random.Random(seed)
-    eng = Engine(rng)
+    eng = Engine(rng, seed)
     B, C = ctx["B"], ctx["C"]
     tree = tuple(prefix_tree or ())
     lru = ((prefix_len > 0 and prefix_n > 0) or bool(tree)) and prefix_K is not None
@@ -960,18 +986,12 @@ def slo_rate(ctx: dict, mode: str, ttft_slo: float, tpot_slo: float, start: floa
 def capture_ctx(scn, energy=None):
     """Run disagg_report while capturing the live queueing ctx (Pools are not JSON-serialisable)."""
     from . import disagg as dg
-    box = {}
-    orig = dg.queue_report
-
-    def wrap(ctx, *a, **k):
-        box["ctx"] = ctx
-        return orig(ctx, *a, **k)
-
-    dg.queue_report = wrap
+    box: dict = {}
+    tok = dg.CTX_SINK.set(box)
     try:
         rep = dg.disagg_report(scn, energy=energy)
     finally:
-        dg.queue_report = orig
+        dg.CTX_SINK.reset(tok)
     return rep, box.get("ctx")
 
 

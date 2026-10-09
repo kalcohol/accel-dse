@@ -110,22 +110,25 @@ def _counts(r) -> dict:
     lay, ch = r.scenario.layout, r.scenario.chip
     f = ch.freq_ghz * 1e9
     w = r.workload
-    # 0.61.4: DP ranks that hold no sequence (batch < dp, or a short last share) do no work — count the ranks that
-    # are busy, not dp (was dp: ESMFold batch 1 on DP 2 showed twice the request's MACs per sequence)
+    # 0.61.4: DP ranks that hold no sequence (batch < dp, or a short last share) do no work — byte counts are taken
+    # over the busy ranks (weight reads dominate).  0.63 (external review): MAC / vector work is the mean rank's
+    # useful work (Op.share: ceil splits of batch / heads / columns / tokens / expert rows only cost time) × every rank
+    # of the stage, and the last micro-batch's padding is not work: × S / (mb · ⌈S / mb⌉) (ESM-2 650M batch 3 on PP 2
+    # counted 4 sequences, +33 % MAC per sequence)
     seqs = r.scenario.serving.batch * (w.seqs_per_request if w is not None else 1)
     b_mb = -(-seqs // max(1, r.microbatches))
     b_rank = -(-b_mb // lay.dp)
     dp_act = min(lay.dp, -(-b_mb // b_rank)) if b_rank else lay.dp
     ranks = lay.tp * lay.sp * dp_act
-    fill = b_mb / (dp_act * b_rank) if b_rank else 1.0      # short last share: MAC / vector work ∝ its sequences
-    #                                                         (byte counts kept per busy rank: weight reads dominate)
+    mb_fill = seqs / (max(1, r.microbatches) * b_mb) if b_mb else 1.0
     passes = r.microbatches * (w.steps if w is not None and w.kind == "gen" else 1)
     c = dict.fromkeys(ACTIONS, 0.0)
     for st in r.stages:
         t = st.time
         n = passes * ranks
-        c["mac"] += t.t_ideal * ch.macs * f * n * fill
-        c["vec"] += t.t_vector * ch.lanes * f * n * fill
+        nw = passes * lay.tp * lay.sp * lay.dp * mb_fill
+        c["mac"] += st.ideal_w * ch.macs * f * nw
+        c["vec"] += st.vec_w * ch.lanes * f * nw
         c["sram"] += st.sram_bytes * n
         c["dram"] += t.dram_bytes * n
         c["slc"] += t.slc_bytes * n

@@ -73,7 +73,7 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
     hot = 0.0
     a = model.fmt("attn").bits / 8
     for l in L.attn_linears + L.cross_linears:
-        k, n = _lin_local(l, sh.tp)
+        k, n = _lin_local(l, sh.tp, L.core if l in L.attn_linears else None)
         hot += k * n * l.groups * a
     f = L.ffn
     for l in L.ffn_linears:
@@ -261,7 +261,7 @@ def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
         if qo + kv <= budget:
             return 0.0, 0.0
         br = max(1, int(budget // (op.k * (ab + 4))))
-        return qo + kv * math.ceil(op.m / br), 0.0
+        return qo + kv * (math.ceil(op.m / br) - op.kv_pre), 0.0
     return 0.0, 0.0
 
 
