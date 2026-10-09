@@ -248,16 +248,18 @@ def gemm_blocking(m: int, k: int, n: int, a_bytes: float, w_bytes: float, budget
     read) of the cheapest of three loop nests (DRAM bytes = A·r_A + W·r_W + C, C written once).  The budget holds
     the *resident* block; the streamed operand (a row / column / K slice) is double-buffered outside it, as in 0.63
     「假设」:
-      weight-stationary      a k×bn weight block resident (k·bn·w ≤ budget), A rows streamed → r_A = ⌈n/bn⌉, r_W = 1;
-      activation-stationary  a bm×k activation block resident (bm·k·a ≤ budget), W streamed → r_A = 1, r_W = ⌈m/bm⌉;
+      weight-stationary      W in ⌈W/budget⌉ resident chunks, A streamed past each → r_A = ⌈W/budget⌉, r_W = 1;
+      activation-stationary  A in ⌈A/budget⌉ resident chunks, W streamed past each → r_A = 1, r_W = ⌈A/budget⌉
+                             (chunk counts from bytes, not whole columns / rows: a chunk edge cutting a column /
+                             row along k keeps that partial sum on chip — so an exact fit, W = budget, is one pass);
       output-stationary      bm×bn fp32 partial sums resident (bm·bn·4 ≤ budget), A / W streamed in K slices
                              → r_A = ⌈n/bn⌉, r_W = ⌈m/bm⌉, bm over powers of two and m (the classic I/O-lower-bound
                              tiling, traffic ~ 2·m·n·k·e/√(budget/4)).
     a, w = bytes per element of A / W (A from ``a_bytes`` so implicit-GEMM inputs count their real size).  0.63 chose
     between the two one-sided extremes with whole-budget chunks (activation chunks with full weight re-reads,
     ⌈(A + C)/budget⌉, or weight chunks with full activation re-reads, ⌈W/budget⌉); both are (weakly) dominated by the
-    first two nests, so 0.64 traffic ≤ 0.63's.  Every feasible set grows with the budget → never increases with SRAM.
-    If nothing fits (budget < one k-row) r = (n, m)."""
+    first two nests, so 0.64 traffic ≤ 0.63's (exactly, not only off the exact-fit boundaries).  Every feasible set grows with the budget → never increases with SRAM.
+    The output-stationary tile count is whole tiles (bm, bn integers).  budget ≤ 0 → r = (n, m)."""
     ea = a_bytes / max(1, m * k)          # A bytes per element
     ew = w_bytes / max(1, k * n)
     cost = lambda ra, rw: a_bytes * ra + w_bytes * rw
@@ -267,12 +269,9 @@ def gemm_blocking(m: int, k: int, n: int, a_bytes: float, w_bytes: float, budget
         nonlocal best
         if best is None or cost(ra, rw) < cost(*best) - 1e-9:
             best = (ra, rw)
-    bn = int(budget // (k * ew)) if k * ew > 0 else n
-    if bn >= 1:
-        take(math.ceil(n / min(bn, n)), 1)
-    bm = int(budget // (k * ea)) if k * ea > 0 else m
-    if bm >= 1:
-        take(1, math.ceil(m / min(bm, m)))
+    if budget > 0:      # one-side-resident nests: chunk counts from bytes (a chunk edge may cut a column / row along
+        take(max(1, math.ceil(w_bytes / budget - 1e-12)), 1)          # k — its partial sums stay on chip)
+        take(1, max(1, math.ceil(a_bytes / budget - 1e-12)))
     for bm in sorted({min(m, 1 << i) for i in range(0, max(1, m).bit_length() + 1)} | {m}):
         bn = int(budget // (bm * ACC_BYTES))
         if bn < 1:

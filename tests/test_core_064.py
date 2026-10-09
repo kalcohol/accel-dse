@@ -85,15 +85,18 @@ def test_des_slo_rate_scan_refine():
 
 # ------------------------------------------------------------------ 2. 2-D blocking
 def test_gemm_blocking_hand_calc():
-    # 16384×4096 · 4096×12288 bf16, 32 MiB: weight-stationary bn = 32 Mi / (4096·2) = 4096 → A read ⌈12288/4096⌉ =
-    # 3×, W once: 3·128 + 96 = 480 MiB (activation-stationary bm 4096: 128 + 4·96 = 512; output-stationary bm 2048,
+    # 16384×4096 · 4096×12288 bf16, 32 MiB: weight-stationary W in ⌈96/32⌉ = 3 chunks → A read 3×, W once:
+    # 3·128 + 96 = 480 MiB (activation-stationary ⌈128/32⌉ = 4: 128 + 4·96 = 512; output-stationary bm 2048,
     # bn 4096: 3·128 + 8·96 = 1152).  0.63: min(A + C + W·⌈512/32⌉, W + A·⌈96/32⌉ + C) → A ×3 as well.
     m, k, n = 16384, 4096, 12288
     assert gemm_blocking(m, k, n, m * k * 2.0, k * n * 2.0, 32 * MiB) == (3, 1)
     # square 8192³ bf16, 4 MiB: output-stationary bm 1024 → bn = 4 Mi / (1024·4) = 1024 → (8, 8): 2048 MiB, vs
-    # weight-stationary bn 256 → 32·128 + 128 = 4224 MiB (0.63's best one-sided choice)
+    # weight-stationary ⌈128/4⌉ = 32 chunks → 32·128 + 128 = 4224 MiB (0.63's best one-sided choice)
     s = 8192
     assert gemm_blocking(s, s, s, s * s * 2.0, s * s * 2.0, 4 * MiB) == (8, 8)
+    # exact fit (W = 3 budgets, fp32 weights, Mochi-1 img_gate_up TP2): one pass per chunk, as 0.63 — whole-column
+    # tiles (2730 columns per 32 MiB) would need 4
+    assert gemm_blocking(267120, 3072, 8192, 267120 * 3072 * 2.0, 3072 * 8192 * 4.0, 32 * MiB) == (3, 1)
     op = Op("ffn.up", "gemm", 0, m=m, k=k, n=n, w_params=k * n, w_bits=16, w_fmt="bf16", stream=True)
     a, wx = act_stream(op, 2.0, 64 * MiB)                 # budget = SRAM / 2
     assert abs(a - (3 * 128 + 384) * MiB) < 1 and wx == 0.0   # A ×3 + C once = 768 MiB
@@ -112,8 +115,9 @@ def test_gemm_blocking_monotone_and_bounded_property():
         ea, ew = rng.choice((1.0, 2.0)), rng.choice((0.5, 1.0, 2.0))
         A, W = m * k * ea, k * n * ew
         prev = math.inf
-        for mib in (0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 512):
-            ra, rw = gemm_blocking(m, k, n, A, W, mib * MiB)
+        for bud in sorted({mib * MiB for mib in (0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 512)} | {W, W / 2, A / 3}):
+            mib = bud / MiB
+            ra, rw = gemm_blocking(m, k, n, A, W, bud)
             t = A * ra + W * rw
             assert ra >= 1 and rw >= 1 and t >= A + W - 1e-6
             assert t <= prev * (1 + 1e-12), (m, k, n, mib, t, prev)

@@ -289,7 +289,9 @@ def test_llm_prefill_activations_spill_with_small_sram():
         st = r.stages[0]
         assert st.mem.staging <= max(2 * 2**20, ch.sram_bytes / 2) + 1
         acts.append(st.dram.get("act", 0.0))
-    assert acts[0] > acts[1] > acts[2] > acts[3] >= 0 and acts[1] > 1e10
+    # 0.64 (2-D blocking): a nest may trade activation re-reads for weight re-reads, so the activation part alone
+    # is only non-increasing in SRAM (64 / 256 MiB: 96.6 GB both; total spill 143.8 → 96.6 GB)
+    assert acts[0] > acts[1] >= acts[2] > acts[3] >= 0 and acts[1] > 1e10
     d = evaluate(Scenario(model="qwen3-8b", chip=dataclasses.replace(CHIPS["100T"], sram_mib=64),
                           serving=Serving(phase="decode", batch=8, ctx=4096)))
     assert d.stages[0].dram.get("act", 0.0) == 0.0            # decode activations stay on chip
