@@ -228,6 +228,7 @@
         <div class="row3">
           <label title="每个副本的前缀缓存容量 GB；空 = 权重 + 活跃 batch 的 KV 之后剩余的 DRAM">缓存 GB / 副本<input type="number" id="pd-prefix_cache_GB" min="0" step="10"></label>
         </div>
+        <label title="radix 前缀树（0.58）「假设」：每层 token 数:分支数:Zipf α，从根到叶，逗号分隔（例 1024:8:1, 4096:100:1, 1024:50:0 = 系统提示词 → 文档 → 对话）；部分前缀命中节省匹配到的层；填了就替代上面的前缀长度 / 种数 / Zipf">前缀树（radix，层 tok:分支:Zipf）<input type="text" id="pd-prefix_tree" placeholder="tok:分支:Zipf, …"></label>
         <label class="inline" title="前缀感知路由（如按前缀哈希）：各副本分摊不同前缀 → 按总容量算命中率；不勾 = 随机路由，每个副本各自缓存全体前缀"><input type="checkbox" id="pd-prefix_affinity"> 前缀感知路由</label>
         <div class="small muted">异构池（0.53）：prefill 池可用不同芯片 / 存储器（默认与 decode 池相同）；合并对照用 decode 池的芯片与存储器</div>
         <div class="row3">

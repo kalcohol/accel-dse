@@ -54,7 +54,8 @@ from .scenario import PDConfig, Scenario
 from .energy import EnergyTable
 from .lengths import lengths_of
 from .pdqueue import _Pool, _pd_mode, _slo_rate, prefix_tokens, queue_report
-from .prefixcache import both_hit, capacity, hit_of, per_card_bytes, pool_hits, zipf_groups
+from .prefixcache import (both_hit, capacity, hit_of, per_card_bytes, pool_hits, tree_both_tail, tree_cum_tokens,
+                          tree_depth_law, tree_depth_tail, tree_groups, tree_resident, zipf_groups)
 from .serving import Goodput, best_prefill, goodput
 
 
@@ -100,7 +101,8 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         raise ValueError("PD 分离只适用于 LLM / VLM（视频 / 蛋白质模型没有 prefill / decode 两阶段）")
     pd, sv = scn.pd, scn.serving
     lens, h = lengths_of(pd, sv), pd.prefix_hit
-    cap_mode = pd.prefix_len > 0 and not h          # 0.53 prefix-cache capacity model (explicit prefix_hit overrides)
+    tree = pd.prefix_tree                            # 0.58 radix / partial prefix matching
+    cap_mode = (pd.prefix_len > 0 or bool(tree)) and not h   # 0.53 capacity model (explicit prefix_hit overrides)
     plain = lens.trivial and not h and sv.prefix_cached == 0 and not cap_mode
     S_rep = max(1, round(lens.mean_S))
     p_rep = prefix_tokens(S_rep, h)
@@ -130,7 +132,58 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         return b_, r_, True
 
     pcache = None
-    if cap_mode:
+    if cap_mode and tree:
+        # 0.58 radix tree: one token-capacity LRU per replica shared by all levels; Che per node (core/prefixcache)
+        dscn, pscn = scns(0, 0)
+        dec0 = evaluate(dscn)
+        tg, cum = tree_groups(tree), tree_cum_tokens(tree)
+        Lp = cum[-1]
+
+        def tree_pool(cap, reps_):
+            C = cap["K_float"] * Lp * (reps_ if pd.prefix_affinity else 1)
+            hh = tree_resident(tree, C, tg)
+            tail = tree_depth_tail(tg, hh)
+            return hh, tail, tree_depth_law(tail), C
+
+        def tok_of(law, S_):
+            return sum(q * min(c, S_ - 1) for q, c in zip(law, cum))
+        cap_d = capacity(m, dec0, Lp, pd.prefix_cache_GB)
+        hd, tail_d, law_d, C_d = tree_pool(cap_d, r_d)
+        hc, tail_c, law_c, C_c = tree_pool(cap_d, reps)
+        pb, pr, p_ok = prefill_of(pscn)
+        for _ in range(3):
+            cap_p = capacity(m, pr, Lp, pd.prefix_cache_GB)
+            hp, tail_p, law_p, C_p = tree_pool(cap_p, r_p)
+            pp_rep = int(tok_of(law_p, S_rep))
+            nb, nr, nok = prefill_of(scns(pp_rep, 0)[1])
+            same = nb == pb
+            pb, pr, p_ok = nb, nr, nok
+            if same:
+                break
+        pc_rep = int(tok_of(law_c, S_rep))
+        dscn, pscn = scns(pp_rep, pc_rep)
+        dec = replace(dec0, scenario=dscn)
+        # decode side holds min(prefill depth, decode depth): P(both hold the level-k node) per level
+        both = tree_both_tail(tg, hp, hd)
+        e_p = sum(L * t for (L, _, _), t in zip(tree, tail_p))
+        q_dec = (sum(L * t for (L, _, _), t in zip(tree, both)) / e_p if e_p > 0 else 0.0) if pd.prefix_on_decode else 0.0
+        p_rep = pp_rep
+        H_p = sum(q * c for q, c in zip(law_p, cum)) / Lp      # token hit ratio
+        H_c = sum(q * c for q, c in zip(law_c, cum)) / Lp
+
+        def lvl(law, tail, C):
+            return {"token_hit": sum(q * c for q, c in zip(law, cum)) / Lp, "level_hit": tail, "depth_law": law,
+                    "capacity_tokens": C}
+        pcache = {"policy": "LRU radix 树（Che 逐节点近似）", "tree": [list(x) for x in tree], "prefix_len": Lp,
+                  "affinity": pd.prefix_affinity,
+                  "prefill": {**cap_p, "replicas": r_p, "hit": H_p, **lvl(law_p, tail_p, C_p)},
+                  "decode": {**cap_d, "replicas": r_d, "hit": sum(q * c for q, c in zip(law_d, cum)) / Lp,
+                             "holds_given_prefill_hit": q_dec, **lvl(law_d, tail_d, C_d)},
+                  "coloc": {**cap_d, "replicas": reps, "hit": H_c, **lvl(law_c, tail_c, C_c)},
+                  "basis": "radix 前缀树「假设」：每层（token 数、分支数、Zipf）独立选子节点（IRM）；节点级 LRU，容量按 token "
+                           "计、各层共享；部分命中节省匹配到的层；命中按 Che 逐节点近似（树性质：子节点驻留 ⇒ 父节点驻留）；"
+                           + ("前缀感知路由：总容量近似（DES 按根节点分配副本）" if pd.prefix_affinity else "随机路由：每个副本各自缓存")}
+    elif cap_mode:
         dscn, pscn = scns(0, 0)
         dec0 = evaluate(dscn)                        # decode results do not depend on the cached prefix
         groups = zipf_groups(pd.prefix_count, pd.prefix_zipf)
@@ -172,6 +225,17 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
     S, out = (sv.prompt, sv.out_len) if lens.trivial else (S_rep, lens.mean_out)
 
     def mix_pts(H: float) -> list:
+        if tree:                                     # 0.58: matched depth law → one class per depth
+            law = H
+            res = []
+            for w, Si in lens.prompts():
+                acc: dict[int, float] = {}
+                for q, c in zip(law, cum):
+                    if q > 0:
+                        pi = min(c, Si - 1)
+                        acc[pi] = acc.get(pi, 0.0) + w * q
+                res += [(x, Si, pi) for pi, x in sorted(acc.items())]
+            return res
         res = []
         for w, Si in lens.prompts():
             pi = min(pd.prefix_len, Si - 1)
@@ -184,7 +248,7 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         return res
 
     if cap_mode:
-        pts, pts_c = mix_pts(H_p), mix_pts(H_c)
+        pts, pts_c = (mix_pts(law_p), mix_pts(law_c)) if tree else (mix_pts(H_p), mix_pts(H_c))
     else:
         pts = pts_c = [(w, Si, prefix_tokens(Si, h)) for w, Si in lens.prompts()]
         q_dec = 1.0 if pd.prefix_on_decode else 0.0
@@ -292,16 +356,18 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
             from . import pdsim as _ps
             sim_modes = {}
             pc = pcache
-            lru = dict(prefix_len=pd.prefix_len, prefix_n=pd.prefix_count, prefix_alpha=pd.prefix_zipf,
-                       affinity=pd.prefix_affinity) if pc else {}
+            lru = (dict(prefix_tree=tree, affinity=pd.prefix_affinity) if tree else
+                   dict(prefix_len=pd.prefix_len, prefix_n=pd.prefix_count, prefix_alpha=pd.prefix_zipf,
+                        affinity=pd.prefix_affinity)) if pc else {}
             for mode, ana in q["modes"].items():
                 if not ana.get("stable"):
                     continue
                 kw = dict(lru)
                 if pc:
-                    kw["prefix_K"] = pc["prefill"]["K"] if mode == "pd" else pc["coloc"]["K"]
+                    ck = "capacity_tokens" if tree else "K"
+                    kw["prefix_K"] = pc["prefill"][ck] if mode == "pd" else pc["coloc"][ck]
                     if mode == "pd":
-                        kw["prefix_K_dec"] = pc["decode"]["K"]
+                        kw["prefix_K_dec"] = pc["decode"][ck]
                 s = _ps.simulate(ctx, q["lambda_rps"], mode, n_req=1500, warmup=400, seed=1, **kw)
                 err = {name: _ps.rel_err(s[k][qk], _ps._ana_value(ana, name)) for name, k, qk in _ps.METRICS}
                 err = {kk: (v if math.isfinite(v) else None) for kk, v in err.items()}

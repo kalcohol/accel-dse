@@ -161,6 +161,10 @@ class PDConfig:
     prefix_zipf: float = 1.0        # Zipf popularity exponent (0 = uniform)
     prefix_cache_GB: float | None = None   # cache capacity per replica; None = DRAM left after weights + active KV
     prefix_affinity: bool = False   # prefix-aware routing: replicas partition the prefixes (aggregate capacity)
+    # 0.58 — radix / partial prefix matching (all 「假设」; () = off): levels root → leaf, each (tokens, branching,
+    # Zipf α) — e.g. ((1024, 8, 1.0), (4096, 100, 1.0), (1024, 50, 0.0)) = system prompt → document → conversation.
+    # Cache capacity as for prefix_len (pd.prefix_cache_GB or the free DRAM), shared by all levels, in tokens.
+    prefix_tree: tuple[tuple[int, int, float], ...] = ()
     search_decode_batch: bool = False   # layout search (0.53): also pick each decode layout's batch (B/2 … 4B, TPOT SLO)
     simulate: bool = False          # 0.54: also run the request-level DES (core/pdsim) and attach per-mode tails 「假设」
     # 0.55 — decode KV capacity (all 「假设」; default off = KV never binds, the 0.54 behaviour).  Admission into the
@@ -237,6 +241,26 @@ class PDConfig:
         if not isinstance(self.prefix_affinity, bool) or not isinstance(self.search_decode_batch, bool) \
                 or not isinstance(self.simulate, bool):
             raise ValueError("pd.prefix_affinity / pd.search_decode_batch / pd.simulate must be booleans")
+        tree = self.prefix_tree
+        if tree:
+            if not isinstance(tree, tuple) or len(tree) > 6:
+                raise ValueError("pd.prefix_tree: at most 6 [tokens, branching, zipf] levels")
+            nodes = 1.0
+            for row in tree:
+                if not isinstance(row, tuple) or len(row) != 3:
+                    raise ValueError("pd.prefix_tree rows must be [tokens, branching, zipf]")
+                L, n, a = row
+                if isinstance(L, bool) or not isinstance(L, int) or not 1 <= L <= 1 << 21:
+                    raise ValueError("pd.prefix_tree: tokens must be an integer in [1, 2097152]")
+                if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 10 ** 6:
+                    raise ValueError("pd.prefix_tree: branching must be an integer in [1, 1e6]")
+                if isinstance(a, bool) or not isinstance(a, (int, float)) or not 0 <= a <= 3:
+                    raise ValueError("pd.prefix_tree: zipf must be in [0, 3]")
+                nodes *= n
+            if nodes > 1e9:
+                raise ValueError("pd.prefix_tree: at most 1e9 leaf paths")
+            if self.prefix_len or self.prefix_hit:
+                raise ValueError("pd.prefix_tree and pd.prefix_len / pd.prefix_hit are alternatives — set one")
         if self.kv_policy not in ("off", "wait", "recompute", "swap"):
             raise ValueError("pd.kv_policy must be off | wait | recompute | swap")
         if self.kv_admit not in ("before_prefill", "after_prefill"):
@@ -481,6 +505,16 @@ def _from_plain(cls, d):
                 kw[k] = _from_plain(dc, v)
             else:
                 raise ValueError(f"{where}: expected {_tname(t)}, got {_jtype(v)}")
+        elif k == "prefix_tree":
+            if not isinstance(v, list) or not all(isinstance(x, list) and len(x) == 3 for x in v):
+                raise ValueError("PDConfig.prefix_tree: expected a list of [tokens, branching, zipf]")
+            def _row(n, x):
+                out = []
+                for i, (y, ty) in enumerate(zip(x, (int, int, float))):
+                    c = _coerce(y, ty, f"PDConfig.prefix_tree[{n}][{i}]")
+                    out.append(float(c) if i == 2 and isinstance(c, int) and not isinstance(c, bool) else c)
+                return tuple(out)
+            kw[k] = tuple(_row(n, x) for n, x in enumerate(v))
         elif k == "length_mix":
             if not isinstance(v, list) or not all(isinstance(x, list) and len(x) == 3 for x in v):
                 raise ValueError("PDConfig.length_mix: expected a list of [weight, prompt, out_len]")

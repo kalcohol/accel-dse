@@ -992,17 +992,65 @@ def _kv_slots(ctx: dict, B: int) -> tuple[int, dict | None]:
                          "ES": ES, "Eg": Eg, "var_f": var_f}
 
 
-def _wait_mix_sum_q(tq: dict, p: float, m_cond: float) -> dict:
-    """TTFT ⊕ admission wait (0.56) 「假设」: W = 0 w.p. 1 − p, else Exp(mean m_cond) (queue behind the KV slots; the
-    DES's conditional wait has c² ≈ 0.6 in PD and 1.6–2 colocated, so the exponential sits between, 0.57).  The TTFT
-    law is rebuilt from its quantiles (log-survival interpolated between p50 / p90 / p99 and extrapolated past p99
-    with the p90→p99 slope; linear from 0.6·p50 below the median) on a 64-point grid, then
-    P(T + W > t) = S_T(t) + p·E[e^{−(t−T)/m}; T ≤ t] is solved for each quantile."""
+def _gammq(a: float, x: float) -> float:
+    """Regularized upper incomplete gamma Q(a, x) (series below a + 1, Lentz continued fraction above)."""
+    if x <= 0:
+        return 1.0
+    gln = math.lgamma(a)
+    if x < a + 1:
+        ap, d = a, 1.0 / a
+        tot = d
+        for _ in range(500):
+            ap += 1
+            d *= x / ap
+            tot += d
+            if abs(d) < abs(tot) * 1e-14:
+                break
+        return max(0.0, 1.0 - tot * math.exp(-x + a * math.log(x) - gln))
+    b = x + 1 - a
+    c, d = 1e300, 1.0 / b
+    h = d
+    for i in range(1, 500):
+        an = -i * (i - a)
+        b += 2
+        d = an * d + b
+        d = 1e-300 if abs(d) < 1e-300 else d
+        c = b + an / c
+        c = 1e-300 if abs(c) < 1e-300 else c
+        d = 1.0 / d
+        de = d * c
+        h *= de
+        if abs(de - 1) < 1e-14:
+            break
+    return math.exp(-x + a * math.log(x) - gln) * h
+
+
+def _wait_mix_sum_q(tq: dict, p: float, m_cond: float, c2: float = 1.0) -> dict:
+    """TTFT ⊕ admission wait (0.56) 「假设」: W = 0 w.p. 1 − p, else a conditional wait of mean m_cond — exponential
+    (c2 = 1) or, 0.58, Gamma with squared CV ``c2`` (tabulated once, 512 points).  The TTFT law is rebuilt from its
+    quantiles (log-survival interpolated between p50 / p90 / p99 and extrapolated past p99 with the p90→p99 slope;
+    linear from 0.6·p50 below the median) on a 64-point grid, then P(T + W > t) = S_T(t) + p·E[S_W(t − T); T ≤ t]
+    is solved for each quantile."""
     if p <= 0 or m_cond <= 0:
         return dict(tq)
+    if abs(c2 - 1.0) < 1e-9:
+        def sw(y: float) -> float:
+            return math.exp(-y / m_cond)
+    else:
+        k_, th = 1.0 / c2, m_cond * c2
+        n_g = 512
+        y_hi = th * (k_ + 12 * math.sqrt(k_) + 30)
+        dy = y_hi / n_g
+        tab = [_gammq(k_, i * dy / th) for i in range(n_g + 1)]
 
-    def sw(y: float) -> float:
-        return math.exp(-y / m_cond)
+        def sw(y: float) -> float:
+            if y <= 0:
+                return 1.0
+            u = y / dy
+            i = int(u)
+            if i >= n_g:
+                return tab[-1] * math.exp(-(y - y_hi) / th)
+            return tab[i] + (tab[i + 1] - tab[i]) * (u - i)
     p50, p90, p99 = tq["p50"], tq["p90"], tq["p99"]
     lo = 0.6 * p50
 
@@ -1073,7 +1121,11 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
     cs2 = ctx.get("out_cs2", 1.0)
     admit = ctx.get("kv_admit", "before_prefill")
     hold = kvi["binds"] and admit == "before_prefill" and pool_key == "cpool" and lam_r > 0 and run0 > 0
-    t_pre = x["ttft"].get("mean", 0.0) if hold else 0.0
+    # 0.58: the slot is taken at the boundary where the prompt starts prefilling (the queueing for the replica happens
+    # before admission, at the head of the prompt queue) → hold = prefill service = TTFT mean − prefill queue wait
+    # (0.57 used the whole TTFT mean)
+    t_pre = max(0.0, x["ttft"].get("mean", 0.0) - ((x.get("prefill") or {}).get("wait_ms") or {}).get("mean", 0.0) / 1e3) \
+        if hold else 0.0
 
     def slot_stats(slow: float):
         """(P(wait), mean wait W, E[running]) with the decode service slowed by ``slow`` (restore stalls, 0.57);
@@ -1150,6 +1202,13 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
         # (G ~ Exp(E[o]), memoryless) — ≈ 0.37 at fixed outputs, ≈ 0.5 for exponential ones.
         e_od = sum(w * math.exp(-o / Eo) for w, _, o in pts) / tot if Eo > 0 else 1.0
         p_ev *= e_od
+        if base is _coloc_chunked_base:
+            # 0.58 「假设」: chunked prefill admits one prompt at a time, when the chunk server frees up — a departure
+            # met while a prompt is prefilling (probability ρ_pre) is not followed by a tight greedy refill (growth
+            # first eats into the freed room), so only (1 − ρ_pre) of the refills leave the U(0, S) headroom
+            rho_pre = min(0.95, max(0.0, (x.get("prefill") or {}).get("rho", 0.0)))
+            p_ev *= 1 - rho_pre
+            kvi["refill_tight_share"] = 1 - rho_pre
         # 0.57 recompute cascade: restores take a share f of the replica, every slot is held 1/(1 − f) longer → more
         # queueing for KV → more saturation preemptions → larger f.  Iterate f ← ν(f)·T_stall on the chain slowed by
         # 1/(1 − f) (smallest fixed point; diverges → unstable).
@@ -1191,7 +1250,12 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
     kvi.update(p_wait=p_wait, slot_wait_mean_ms=W * 1e3, admit=admit,
                in_ttft=bool(kvi["binds"] and admit == "before_prefill"))
     if kvi["in_ttft"] and p_wait > 0 and W > 0:
-        x["ttft"] = _wait_mix_sum_q(x["ttft"], min(1.0, p_wait), W / min(1.0, p_wait))
+        # 0.58 wait shape 「假设」 (DES-calibrated): PD's conditional wait is exponential-like (DES c² ≈ 0.6, but the
+        # Exp fold scores better there); colocated slot waits come in clumps (a prefill batch / chunked prompt takes
+        # slots together) and spread with the hold variability: DES c² ≈ 1.1 at CV 0, 1.6–1.7 at CV 1 → 1 + 0.7·c_s².
+        c2w = 1.0 if pool_key == "dpool" else 1.0 + 0.7 * min(2.0, max(0.0, cs2))
+        x["ttft"] = _wait_mix_sum_q(x["ttft"], min(1.0, p_wait), W / min(1.0, p_wait), c2w)
+        kvi["wait_c2"] = c2w
         x["e2e_mean"] = x.get("e2e_mean", 0.0) + W
     return x
 

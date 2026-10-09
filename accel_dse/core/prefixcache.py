@@ -105,15 +105,18 @@ def capacity(model, result, tokens: int, cache_GB: float | None) -> dict:
     free_tot = sum(f * cps for f in free)
     if cache_GB is not None:
         K = math.floor(cache_GB * 1e9 / foot) if foot > 0 else 0
+        Kf = cache_GB * 1e9 / foot if foot > 0 else 0.0
         src, cap = "pd.prefix_cache_GB", cache_GB * 1e9
     else:
         k_st = [math.floor(f / b) if b > 0 else math.inf for f, b in zip(free, per)]
+        kf_st = [f / b if b > 0 else math.inf for f, b in zip(free, per)]
         K = min(k_st) * lay.dp if k_st else 0
+        Kf = min(kf_st) * lay.dp if kf_st else 0.0
         if not math.isfinite(K):
-            K = 0
+            K, Kf = 0, 0.0
         src, cap = "derived_free_dram", free_tot
-    return {"K": int(K), "capacity_GB": cap / 1e9, "footprint_MB": foot / 1e6, "free_GB": free_tot / 1e9,
-            "source": src, "fits": result.fits}
+    return {"K": int(K), "K_float": Kf, "capacity_GB": cap / 1e9, "footprint_MB": foot / 1e6,
+            "free_GB": free_tot / 1e9, "source": src, "fits": result.fits}
 
 
 def pool_hits(groups, K: int, replicas: int, affinity: bool) -> list[float]:
@@ -126,3 +129,94 @@ def hit_of(groups, h) -> float:
 
 def both_hit(groups, h1, h2) -> float:
     return sum(c * q * x * y for (c, q), x, y in zip(groups, h1, h2))
+
+
+# --------------------------------------------------------------------------- 0.58 radix / partial prefix matching
+#
+# ``pd.prefix_tree`` = levels root → leaf, each (tokens L_k, branching n_k, Zipf α_k) 「假设」: e.g. system prompt →
+# document → conversation history.  A request picks one child per level independently (Zipf over the n_k children of
+# its parent, IRM), so its prompt starts with a path of Σ L_k shared tokens.  The cache is one LRU over tree nodes
+# measured in tokens (vLLM / SGLang radix cache: blocks of a shared prefix are stored once).  A lookup matches the
+# deepest resident node on the path and saves the tokens of levels 1 … k (a partial hit).  Touching a path refreshes
+# every node on it, so a node is never less recent than its child: LRU keeps the tree property (child resident ⇒
+# parent resident).  Che per node: node popularity p = Π of the per-level Zipf masses on its path, residency
+# h = 1 − e^{−p·T}, and T solves Σ_nodes L_k·h = C (tokens; the capacity is shared by all levels).  Then
+# P(match depth ≥ k) = H_k = Σ_{level-k nodes} p·h, exactly (by the tree property) given Che.
+
+TREE_RATIO = 1.01
+
+
+def _merge_groups(groups) -> list[tuple[float, float]]:
+    """Merge (count, p) groups into geometric p-bins (ratio TREE_RATIO; mass preserved)."""
+    if len(groups) <= EXACT_N:
+        return list(groups)
+    lr = math.log(TREE_RATIO)
+    bins: dict[int, list[float]] = {}
+    for c, q in groups:
+        if q <= 0 or c <= 0:
+            continue
+        b = bins.setdefault(int(math.floor(math.log(q) / lr)), [0.0, 0.0])
+        b[0] += c
+        b[1] += c * q
+    return [(c, m / c) for c, m in bins.values()]
+
+
+def tree_groups(levels) -> list[list[tuple[float, float]]]:
+    """Per level k: [(node count, p_each)] with Σ count·p = 1 (path popularity = product of the level Zipfs)."""
+    out, prev = [], [(1.0, 1.0)]
+    for _, n, a in levels:
+        z = zipf_groups(int(n), float(a))
+        prev = _merge_groups([(c1 * c2, q1 * q2) for c1, q1 in prev for c2, q2 in z])
+        out.append(prev)
+    return out
+
+
+def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
+    """Per level, per group: Che residency under one token-capacity LRU shared by all levels."""
+    gs = groups or tree_groups(levels)
+    tot = sum(L * c for (L, _, _), g in zip(levels, gs) for c, _ in g)
+    if C_tokens <= 0:
+        return [[0.0] * len(g) for g in gs]
+    if C_tokens >= tot:
+        return [[1.0] * len(g) for g in gs]
+
+    def occ(T):
+        return sum(L * c * -math.expm1(-q * T) for (L, _, _), g in zip(levels, gs) for c, q in g)
+    lo, hi = 0.0, 1.0
+    while occ(hi) < C_tokens and hi < 1e300:
+        hi *= 2.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if occ(mid) < C_tokens:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo <= 1e-12 * hi:
+            break
+    T = 0.5 * (lo + hi)
+    return [[-math.expm1(-q * T) for _, q in g] for g in gs]
+
+
+def tree_depth_tail(groups, h) -> list[float]:
+    """[H_1 … H_m]: P(match depth ≥ k)."""
+    return [sum(c * q * x for (c, q), x in zip(g, hk)) for g, hk in zip(groups, h)]
+
+
+def tree_both_tail(groups, h1, h2) -> list[float]:
+    """P(both caches hold the level-k node of the request's path) per level (independent caches given the node)."""
+    return [sum(c * q * x * y for (c, q), x, y in zip(g, a, b)) for g, a, b in zip(groups, h1, h2)]
+
+
+def tree_depth_law(tail) -> list[float]:
+    """[P(D = 0), …, P(D = m)] from the tails H_k (H_0 = 1)."""
+    t = [1.0] + list(tail) + [0.0]
+    return [max(0.0, t[k] - t[k + 1]) for k in range(len(t) - 1)]
+
+
+def tree_cum_tokens(levels) -> list[int]:
+    """Matched tokens at depth 0 … m."""
+    out, acc = [0], 0
+    for L, _, _ in levels:
+        acc += int(L)
+        out.append(acc)
+    return out

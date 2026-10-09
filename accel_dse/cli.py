@@ -153,6 +153,9 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="PD (0.53): memory id of the prefill pool (default: same as decode)")
     p.add_argument("--pd-prefix-len", dest="pd_prefix_len", type=int, default=None,
                    help="PD (0.53): shared-prefix length, tokens → prefix-cache capacity + LRU model (0 = off)")
+    p.add_argument("--pd-prefix-tree", dest="pd_prefix_tree", default=None,
+                   help="PD (0.58): radix prefix tree 'tokens:branching:zipf,…' root → leaf "
+                        "(e.g. 1024:8:1,4096:100:1,1024:50:0) → partial prefix matching 「假设」; replaces --pd-prefix-len")
     p.add_argument("--pd-prefix-count", dest="pd_prefix_count", type=int, default=None,
                    help="PD (0.53): distinct prefixes in the working set (default 1000)")
     p.add_argument("--pd-prefix-zipf", dest="pd_prefix_zipf", type=float, default=None,
@@ -191,6 +194,19 @@ def _parse_mix(text: str) -> list:
             rows.append([float(bits[0]), int(bits[1]), int(bits[2])])
         except ValueError:
             raise SystemExit(f"--pd-mix: bad number in {part!r}") from None
+    return rows
+
+
+def _parse_tree(text: str) -> list:
+    rows = []
+    for part in text.split(","):
+        bits = part.strip().split(":")
+        if len(bits) != 3:
+            raise SystemExit(f"--pd-prefix-tree: expected tokens:branching:zipf, got {part!r}")
+        try:
+            rows.append([int(bits[0]), int(bits[1]), float(bits[2])])
+        except ValueError:
+            raise SystemExit(f"--pd-prefix-tree: bad number in {part!r}") from None
     return rows
 
 
@@ -263,6 +279,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                 sc["pd"][k] = getattr(a, dest)
         if getattr(a, "pd_mix", None):
             sc["pd"]["length_mix"] = _parse_mix(a.pd_mix)
+        if getattr(a, "pd_prefix_tree", None):
+            sc["pd"]["prefix_tree"] = _parse_tree(a.pd_prefix_tree)
         if getattr(a, "pd_prefix_not_on_decode", False):
             sc["pd"]["prefix_on_decode"] = False
         if getattr(a, "pd_search_layouts", False):
@@ -409,7 +427,16 @@ def cmd_eval(a) -> dict:
                   f"mean out {L['mean_out']:.0f} (cv {L['out_cv_eff']:.2f})  decode ctx {L['decode_ctx']}"
                   + (f"  prefix hit {L['prefix_hit']:.0%}" + ("" if L["prefix_on_decode"] else " (full KV hand-off)")
                      if L["prefix_hit"] else ""))
-        if pc := pd.get("prefix_cache"):
+        if (pc := pd.get("prefix_cache")) and pc.get("tree"):          # 0.58 radix tree
+            print(f"  prefix cache 「假设」 radix tree LRU (Che per node): levels "
+                  + " → ".join(f"{L_} tok × {n_} (Zipf {a_:g})" for L_, n_, a_ in pc["tree"])
+                  + f", {'affinity routing' if pc['affinity'] else 'random routing'}")
+            for k, nm in (("prefill", "PD prefill"), ("decode", "PD decode"), ("coloc", "colocated")):
+                x = pc[k]
+                print(f"    {nm:10s} {x['replicas']} replicas × {x['capacity_tokens']:.0f} tok ({x['source']})  token hit "
+                      f"{x['token_hit']:.1%}  P(depth ≥ k) " + " / ".join(f"{v:.0%}" for v in x["level_hit"])
+                      + (f"  decode holds {x['holds_given_prefill_hit']:.1%} of the matched tokens" if k == "decode" else ""))
+        elif pc := pd.get("prefix_cache"):
             print(f"  prefix cache 「假设」 {pc['policy']}: {pc['prefix_count']} prefixes × {pc['prefix_len']} tok, "
                   f"Zipf {pc['zipf']:g}, {'affinity routing' if pc['affinity'] else 'random routing'}")
             for k, nm in (("prefill", "PD prefill"), ("decode", "PD decode"), ("coloc", "colocated")):

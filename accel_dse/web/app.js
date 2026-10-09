@@ -164,6 +164,7 @@ function d2dPaint() { $('d2d-inputs').hidden = !S.sc.d2d_enabled; d2dNote(); }
 function syncInputs() {
   document.querySelectorAll('input[type=number]').forEach((i) => i._sync && i._sync());
   if ($('pd-length_mix') && $('pd-length_mix')._sync) $('pd-length_mix')._sync();
+  if ($('pd-prefix_tree') && $('pd-prefix_tree')._sync) $('pd-prefix_tree')._sync();
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
   if ($('w-placement')) $('w-placement').value = S.sc.workload.placement || 'auto';
   if ($('w-vae_tiling')) $('w-vae_tiling').checked = !!S.sc.workload.vae_tiling;
@@ -674,6 +675,21 @@ function renderPD(r) {
 function renderPDCache(pc) {
   $('pdpc-box').hidden = !pc;
   if (!pc) return;
+  if (pc.tree) {   // 0.58 radix tree
+    $('pdpc-basis').textContent = `前缀树 ${pc.tree.map((r) => `${r[0]} tok × ${r[1]}（Zipf ${r[2]}）`).join(' → ')}，${pc.policy}；${pc.basis}`;
+    const headT = h('tr', {}, h('th', { class: 'l' }, '缓存'), h('th', {}, '副本'), h('th', {}, '容量 GB', h('br'), '/ 副本'),
+      h('th', {}, '容量', h('br'), 'tok / 副本'), h('th', {}, 'token', h('br'), '命中率'), h('th', {}, '各层命中', h('br'), 'P(深度 ≥ k)'), h('th', { class: 'l' }, '说明'));
+    const rowsT = [['prefill', 'PD · prefill 池'], ['decode', 'PD · decode 池'], ['coloc', '合并副本']].map(([k, nm]) => {
+      const x = pc[k];
+      const note = (x.source === 'pd.prefix_cache_GB' ? '给定容量' : '剩余 DRAM（权重 + 活跃 KV 之后）')
+        + (k === 'decode' ? `；decode 池也持有的匹配 token 比例 ${pct(x.holds_given_prefill_hit)}（只传其余 KV）` : '');
+      return h('tr', {}, h('td', { class: 'l' }, nm), h('td', {}, String(x.replicas)), h('td', {}, num(x.capacity_GB)),
+        h('td', {}, num(x.capacity_tokens)), h('td', {}, h('b', {}, pct(x.token_hit))), h('td', {}, x.level_hit.map((v) => pct(v)).join(' / ')),
+        h('td', { class: 'l small', style: 'white-space:normal;min-width:180px' }, note));
+    });
+    put($('pdpc-tbl'), h('thead', {}, headT), h('tbody', {}, ...rowsT));
+    return;
+  }
   $('pdpc-basis').textContent = `${pc.prefix_count} 个前缀 × ${pc.prefix_len} tok，Zipf α ${pc.zipf}，${pc.policy}；${pc.basis}`;
   const head = h('tr', {}, h('th', { class: 'l' }, '缓存'), h('th', {}, '副本'), h('th', {}, '容量 GB', h('br'), '/ 副本'),
     h('th', {}, '每前缀', h('br'), 'MB'), h('th', {}, '可存前缀', h('br'), '/ 副本'), h('th', {}, '命中率'), h('th', { class: 'l' }, '说明'));
@@ -1271,6 +1287,22 @@ async function init() {
     schedule();
   });
   mixInp._sync = () => { mixInp.value = (S.sc.pd.length_mix || []).map((r) => r.join(':')).join(', '); mixInp.classList.remove('bad'); };
+  const treeInp = $('pd-prefix_tree');
+  treeInp.addEventListener('input', () => {
+    const t = treeInp.value.trim();
+    let rows = [];
+    let ok = true;
+    if (t) {
+      rows = t.split(/[,，;]/).map((p) => p.trim()).filter((p) => p).map((p) => p.split(':').map(Number));
+      ok = rows.length <= 6 && rows.every((r) => r.length === 3 && Number.isInteger(r[0]) && r[0] >= 1 && Number.isInteger(r[1]) && r[1] >= 1 && r[2] >= 0 && r[2] <= 3);
+    }
+    treeInp.classList.toggle('bad', !ok);
+    if (!ok) return;
+    S.sc.pd.prefix_tree = rows;
+    if (rows.length) S.sc.pd.prefix_len = 0;
+    schedule();
+  });
+  treeInp._sync = () => { treeInp.value = (S.sc.pd.prefix_tree || []).map((r) => r.join(':')).join(', '); treeInp.classList.remove('bad'); };
   for (const k of ['prefix_on_decode', 'search_layouts', 'prefix_affinity', 'search_decode_batch', 'simulate'])
     $('pd-' + k).addEventListener('change', (e) => { S.sc.pd[k] = e.target.checked; schedule(); });
   bindNumber('pd-prefix_len', () => S.sc.pd.prefix_len || null, (x) => (S.sc.pd.prefix_len = x === null ? 0 : x), { int: true, nullable: true, check: (x) => x >= 0 });

@@ -62,6 +62,8 @@ class Req:
     preempts: int = 0
     ready_t: float = 0.0     # 0.56: started waiting for KV admission
     admit_t: float = 0.0     # 0.56: admitted (slot + KV)
+    depth: int = 0           # 0.58 radix: matched tree depth (prefill side)
+    depth_dec: int = 0       # 0.58 radix: matched depth on the decode replica
 
 
 # --------------------------------------------------------------------------- length / prefix sampling
@@ -91,6 +93,53 @@ class LRUCache:
     @property
     def hit_rate(self) -> float:
         return self.hits / self.looks if self.looks else 0.0
+
+
+class RadixLRU:
+    """0.58 radix prefix cache: one LRU over tree nodes (path tuples), capacity in tokens.  ``access(path)`` returns
+    the matched depth (deepest resident node, consecutive from the root) and refreshes the whole path leaf → root,
+    so a parent is never less recent than its child (eviction from the LRU end keeps the tree property)."""
+
+    def __init__(self, cap_tokens: float, lens):
+        self.cap = max(0.0, float(cap_tokens))
+        self.lens = [int(x) for x in lens]
+        self.od: OrderedDict = OrderedDict()
+        self.used = 0
+        self.looks = 0
+        self.depth_n = [0] * (len(self.lens) + 1)
+
+    def access(self, path) -> int:
+        self.looks += 1
+        m = len(self.lens)
+        d = 0
+        for k in range(1, m + 1):
+            if path[:k] in self.od:
+                d = k
+            else:
+                break
+        self.depth_n[d] += 1
+        if self.cap <= 0:
+            return 0
+        for k in range(m, 0, -1):                 # leaf first, root last → root most recent
+            key = path[:k]
+            if key in self.od:
+                self.od.move_to_end(key)
+            elif self.lens[k - 1] <= self.cap:
+                self.od[key] = self.lens[k - 1]
+                self.used += self.lens[k - 1]
+        while self.used > self.cap and self.od:
+            _, sz = self.od.popitem(last=False)
+            self.used -= sz
+        return d
+
+    def reset_stats(self):
+        self.looks = 0
+        self.depth_n = [0] * (len(self.lens) + 1)
+
+
+def _tree_paths(rng: random.Random, levels, count: int) -> list[tuple]:
+    cols = [_zipf_ids(rng, int(n), float(a), count) for _, n, a in levels]
+    return [tuple(c[i] for c in cols) for i in range(count)]
 
 
 def _zipf_ids(rng: random.Random, n: int, alpha: float, count: int) -> list[int]:
@@ -597,7 +646,7 @@ def _warm_caches(caches: list[LRUCache], n: int, alpha: float, rng: random.Rando
 
 
 def _requests(rng: random.Random, ctx: dict, mode: str, lam: float, n_tot: int, lru: bool,
-              prefix_n: int, prefix_alpha: float) -> list[Req]:
+              prefix_n: int, prefix_alpha: float, tree=()) -> list[Req]:
     lens = ctx["len"]
     pts = ctx["pts"] if mode == "pd" else ctx.get("pts_c", ctx["pts"])
     p_of = {S: p for _, S, p in pts}            # explicit / no prefix: one p per prompt value
@@ -606,7 +655,10 @@ def _requests(rng: random.Random, ctx: dict, mode: str, lam: float, n_tot: int, 
     for w, S, o in joint:
         acc += w
         cum.append(acc)
-    pids = _zipf_ids(rng, prefix_n, prefix_alpha, n_tot) if lru else [-1] * n_tot
+    if lru and tree:
+        pids = _tree_paths(rng, tree, n_tot)
+    else:
+        pids = _zipf_ids(rng, prefix_n, prefix_alpha, n_tot) if lru else [-1] * n_tot
     reqs, t = [], 0.0
     for i in range(n_tot):
         t += rng.expovariate(lam)
@@ -617,10 +669,23 @@ def _requests(rng: random.Random, ctx: dict, mode: str, lam: float, n_tot: int, 
     return reqs
 
 
+def _hit_stat(done, lru, tree, cum_t, attr, flag="hit"):
+    """Whole-prefix: share of hits.  0.58 radix: token hit ratio = E[matched path tokens] / Σ L_k."""
+    if not (lru and done):
+        return None
+    if tree:
+        return sum(cum_t[getattr(r, attr)] for r in done) / (len(done) * cum_t[-1])
+    return sum(1 for r in done if getattr(r, flag)) / len(done)
+
+
+def _level_hits(done, m, attr="depth"):
+    return [sum(1 for r in done if getattr(r, attr) >= k) / len(done) for k in range(1, m + 1)] if done else None
+
+
 def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup: int = 400,
              seed: int = 1, prefix_K: int | None = None, prefix_K_dec: int | None = None,
              prefix_n: int = 0, prefix_alpha: float = 1.0, prefix_len: int = 0,
-             affinity: bool = False, max_events: int = 5_000_000) -> dict:
+             affinity: bool = False, max_events: int = 5_000_000, prefix_tree=()) -> dict:
     """DES of one serving mode at Poisson rate ``lam`` (requests/s).  ``ctx`` = the dict disagg builds for
     queue_report.  Statistics over requests ``warmup ≤ id < warmup + n_req`` (another ``warmup`` arrive after them
     so the tail is not measured on a draining system)."""
@@ -628,9 +693,41 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
     rng = random.Random(seed)
     eng = Engine(rng)
     B, C = ctx["B"], ctx["C"]
-    lru = prefix_len > 0 and prefix_n > 0 and prefix_K is not None
+    tree = tuple(prefix_tree or ())
+    lru = ((prefix_len > 0 and prefix_n > 0) or bool(tree)) and prefix_K is not None
     n_tot = n_req + 2 * warmup
-    reqs = _requests(rng, ctx, mode, lam, n_tot, lru, prefix_n, prefix_alpha)
+    reqs = _requests(rng, ctx, mode, lam, n_tot, lru, prefix_n, prefix_alpha, tree)
+    cum_t = [0]
+    for L_, _, _ in tree:
+        cum_t.append(cum_t[-1] + int(L_))
+
+    def mk_cache(K):
+        return RadixLRU(K, [L_ for L_, _, _ in tree]) if tree else LRUCache(K)
+
+    def warm(caches):
+        if tree:
+            if not caches:
+                return
+            C = max(c.cap for c in caches)
+            n_w = int(min(400000, max(20000, 20 * C / max(1, min(L_ for L_, _, _ in tree)))))
+            for path in _tree_paths(rng, tree, n_w):
+                for c in caches:
+                    c.access(path)
+            for c in caches:
+                c.reset_stats()
+        else:
+            _warm_caches(caches, prefix_n, prefix_alpha, rng)
+
+    def route(r, n):
+        return ((r.prefix_id[0] if tree else r.prefix_id) % n) if (affinity and lru) else rng.randrange(n)
+
+    def look(cache, r) -> int:
+        """→ cached prompt tokens (whole prefix or the radix depth)."""
+        if tree:
+            d = cache.access(r.prefix_id)
+            r.depth = d
+            return min(cum_t[d], r.S - 1)
+        return min(prefix_len, r.S - 1) if cache.access(r.prefix_id) else 0
     lo_id, hi_id = warmup, warmup + n_req
     done: list[Req] = []
 
@@ -670,24 +767,31 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
             for kv in kvs:
                 kv.alpha = ctx["alpha"] * L
         if lru:
-            caches_p = [LRUCache(prefix_K) for _ in range(r_p)]
-            caches_d = [LRUCache(prefix_K if prefix_K_dec is None else prefix_K_dec) for _ in range(r_d)]
-            _warm_caches(caches_p + caches_d, prefix_n, prefix_alpha, rng)
+            caches_p = [mk_cache(prefix_K) for _ in range(r_p)]
+            caches_d = [mk_cache(prefix_K if prefix_K_dec is None else prefix_K_dec) for _ in range(r_d)]
+            warm(caches_p + caches_d)
         kv_xfer, kv_new, kv_full = ctx["kv_xfer"], ctx["kv_new"], ctx.get("kv_full", {})
 
         def nbytes(r: Req) -> float:
             if not lru:
                 return kv_xfer[(r.S, r.p)]
             full = kv_full.get((r.S, 0)) or kv_full.get((r.S, r.p)) or kv_new.get((r.S, 0), 0.0)
+            if tree:                          # the decode replica already holds min(prefill, decode) matched levels
+                held = min(r.p, cum_t[min(r.depth, r.depth_dec)])
+                return full * (r.S - held) / r.S if held else full
             if r.hit and r.dec_holds and r.p:
                 return full * (r.S - r.p) / r.S
             return full
 
         def after_prefill(batch, t):
             for r in batch:
-                r.dec = (r.prefix_id % r_d) if (affinity and lru) else rng.randrange(r_d)
+                r.dec = route(r, r_d)
                 if lru:
-                    r.dec_holds = caches_d[r.dec].access(r.prefix_id)
+                    if tree:
+                        r.depth_dec = caches_d[r.dec].access(r.prefix_id)
+                        r.dec_holds = r.depth_dec > 0
+                    else:
+                        r.dec_holds = caches_d[r.dec].access(r.prefix_id)
                 if decs[r.dec].before:            # vLLM: the decode side allocates KV, then pulls it
                     decs[r.dec].request_admit(r)
                 else:
@@ -723,10 +827,10 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
             k = ev.kind
             if k == "arrive":
                 r = ev.payload
-                r.replica = (r.prefix_id % r_p) if (affinity and lru) else rng.randrange(r_p)
+                r.replica = route(r, r_p)
                 if lru:
-                    r.hit = caches_p[r.replica].access(r.prefix_id)
-                    r.p = min(prefix_len, r.S - 1) if r.hit else 0
+                    r.p = look(caches_p[r.replica], r)
+                    r.hit = r.p > 0
                 prefs[r.replica].offer(r)
             elif k == "prefill_done":
                 pr, batch = ev.payload
@@ -745,8 +849,8 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
                 rep, payload = ev.payload
                 rep.recompute_done(payload)
         # Hit rates over the measurement window only (Che is steady-state; cold misses excluded).
-        hit = (sum(1 for r in done if r.hit) / len(done)) if (lru and done) else None
-        hit_d = (sum(1 for r in done if r.dec_holds) / len(done)) if (lru and done) else None
+        hit = _hit_stat(done, lru, tree, cum_t, "depth")
+        hit_d = _hit_stat(done, lru, tree, cum_t, "depth_dec", "dec_holds")
         ttfts = [r.kv_done - r.arrive for r in done]
         extra = {"batch_cap": cap, "prefix_hit_decode": hit_d,
                  "prefill_util": sum(p.busy_time for p in prefs) / max(eng.t, 1e-12) / len(prefs)}
@@ -767,8 +871,8 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
             raise ValueError(f"unknown mode {mode!r}")
         _kv_setup(reps, ctx)
         if lru:
-            caches_p = [LRUCache(prefix_K) for _ in range(r_c)]
-            _warm_caches(caches_p, prefix_n, prefix_alpha, rng)
+            caches_p = [mk_cache(prefix_K) for _ in range(r_c)]
+            warm(caches_p)
         for rep in reps:
             rep.on_finish = record
         for r in reqs:
@@ -781,22 +885,23 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
             n_ev += 1
             if ev.kind == "arrive":
                 r = ev.payload
-                r.replica = (r.prefix_id % r_c) if (affinity and lru) else rng.randrange(r_c)
+                r.replica = route(r, r_c)
                 if lru:
-                    r.hit = caches_p[r.replica].access(r.prefix_id)
-                    r.p = min(prefix_len, r.S - 1) if r.hit else 0
+                    r.p = look(caches_p[r.replica], r)
+                    r.hit = r.p > 0
                 reps[r.replica].offer_prefill(r)
             else:
                 rep, payload = ev.payload
                 getattr(rep, done_kinds[ev.kind])(payload)
-        hit = (sum(1 for r in done if r.hit) / len(done)) if (lru and done) else None
+        hit = _hit_stat(done, lru, tree, cum_t, "depth")
         ttfts = [r.prefill_done - r.arrive for r in done]
         extra = {"batch_cap": cap, "busy": sum(rp.busy_time for rp in reps) / max(eng.t, 1e-12) / len(reps)}
 
     tpots = [(r.decode_done - r.decode_start) / r.out for r in done if r.out > 0]
     itls = [r.itl_max for r in done]
     st = {"mode": mode, "lambda_rps": lam, "n": len(done), "complete": len(done) >= n_req,
-          "ttft": _stats(ttfts), "tpot": _stats(tpots), "itl_max": _stats(itls), "prefix_hit": hit, **extra}
+          "ttft": _stats(ttfts), "tpot": _stats(tpots), "itl_max": _stats(itls), "prefix_hit": hit,
+          **({"prefix_level_hit": _level_hits(done, len(tree))} if (lru and tree) else {}), **extra}
     if ctx.get("kv_policy", "off") != "off":       # 0.55: decode-admission wait and preemptions
         st["slot_wait"] = _stats([r.admit_t - r.ready_t for r in done])
         st["preempt_per_req"] = sum(r.preempts for r in done) / max(1, len(done))
@@ -893,8 +998,10 @@ def compare(scn, n_req: int = 2000, warmup: int = 400, seed: int = 1,
         return {"error": q.get("error", "no queueing context")}
     lam, pd = q["lambda_rps"], scn.pd
     pc = rep.get("prefix_cache")
-    lru = dict(prefix_len=pd.prefix_len, prefix_n=pd.prefix_count, prefix_alpha=pd.prefix_zipf,
-               affinity=pd.prefix_affinity) if pc else {}
+    tree = tuple(pd.prefix_tree or ())
+    lru = (dict(prefix_tree=tree, affinity=pd.prefix_affinity) if tree else
+           dict(prefix_len=pd.prefix_len, prefix_n=pd.prefix_count, prefix_alpha=pd.prefix_zipf,
+                affinity=pd.prefix_affinity)) if pc else {}
     sv = scn.serving
     cards = ctx["n_p"] + ctx["n_d"]
     rows = {}
@@ -904,9 +1011,10 @@ def compare(scn, n_req: int = 2000, warmup: int = 400, seed: int = 1,
             continue
         kw = dict(lru)
         if pc:
-            kw["prefix_K"] = pc["prefill"]["K"] if mode == "pd" else pc["coloc"]["K"]
+            ck = "capacity_tokens" if tree else "K"
+            kw["prefix_K"] = pc["prefill"][ck] if mode == "pd" else pc["coloc"][ck]
             if mode == "pd":
-                kw["prefix_K_dec"] = pc["decode"]["K"]
+                kw["prefix_K_dec"] = pc["decode"][ck]
         sims = [simulate(ctx, lam, mode, n_req=n_req, warmup=warmup, seed=sd, **kw) for sd in seeds]
         row = {"stable_analytic": bool(ana.get("stable")), "complete": all(x["complete"] for x in sims),
                "sim": {}, "ana": {}, "err": {}}
@@ -928,6 +1036,10 @@ def compare(scn, n_req: int = 2000, warmup: int = 400, seed: int = 1,
             row["sim"]["prefix_hit"] = sum(hits) / len(hits)
             row["ana"]["prefix_hit"] = pc[key]["hit"]
             row["err"]["prefix_hit"] = pc[key]["hit"] - row["sim"]["prefix_hit"]          # absolute
+            lh = [x["prefix_level_hit"] for x in sims if x.get("prefix_level_hit")]
+            if lh:                                   # 0.58 radix: per-level P(match depth ≥ k)
+                row["sim"]["prefix_level_hit"] = [sum(v[k] for v in lh) / len(lh) for k in range(len(lh[0]))]
+                row["ana"]["prefix_level_hit"] = pc[key]["level_hit"]
             if mode == "pd":
                 hd = [x["prefix_hit_decode"] for x in sims if x["prefix_hit_decode"] is not None]
                 row["sim"]["prefix_hit_decode"] = sum(hd) / len(hd) if hd else None
