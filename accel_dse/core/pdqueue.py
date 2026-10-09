@@ -268,7 +268,8 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
     e = rB.tokens_per_step
     if lam <= 0 or out <= 0:
         st1, r1 = step_of(1)
-        return {"k": 1, "occupancy": 0.0, "r": r1, "tpot": st1 / e, "step": st1, "running_mean": 1.0,
+        return {"k": 1, "occupancy": 0.0, "r": r1, "mix": ((1.0, r1),), "tpot": st1 / e, "step": st1,
+                "running_mean": 1.0,
                 "pi_run": (1.0,), "seen_mean": 1.0, "seen_sd": 0.0, "step_of": step_of, "e": e}
     stretch = 1.0 if batch is None else batch[2]
     # 0.61 (B ≥ FAST_B): stop the chain once it is past its mode and below ~1e-20 of the peak instead of always
@@ -364,8 +365,20 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
     seen_sd = math.sqrt(max(0.0, sum(k * k * x for k, x in enumerate(wsee)) - seen_mean ** 2))
     st_mean = sum(sv[k] * x for k, x in enumerate(wsee) if x)
     st_sd = math.sqrt(max(0.0, sum(sv[k] ** 2 * x for k, x in enumerate(wsee) if x) - st_mean ** 2))
-    k_hat = max(1, min(B, int(round(seen_mean))))
-    st, r = step_of(k_hat)
+    # 0.64: the seen running batch is fractional — step / Result as the two-point mixture of ⌊k⌋ and ⌊k⌋ + 1 with
+    # the matching weights (0.54–0.63 rounded to the nearest integer batch: ±0.5 batch of bias in the step, the
+    # prefill-first residual, the KV-tier utilisation and the decode energy counts)
+    k_lo = max(1, min(B, int(math.floor(seen_mean))))
+    k_hi = min(B, k_lo + 1)
+    fr = min(1.0, max(0.0, seen_mean - k_lo)) if k_hi > k_lo else 0.0
+    st_lo, r_lo = step_of(k_lo)
+    if fr > 0:
+        st_hi, r_hi = step_of(k_hi)
+        st, mix = (1 - fr) * st_lo + fr * st_hi, ((1 - fr, r_lo), (fr, r_hi))
+        r = r_hi if fr >= 0.5 else r_lo
+    else:
+        st, mix, r = st_lo, ((1.0, r_lo),), r_lo
+    k_hat = max(1.0, min(float(B), seen_mean))
     # 0.55: lifetime-averaging factor from the occupancy's integrated autocorrelation time (exact for this chain)
     tau = _occ_tau(pi, B, (lam, [1.0]) if batch is None else batch[:2],
                    lambda k: k * e / (out * sv[k]))
@@ -374,7 +387,8 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
     if tau and tau > 0 and life > 0:
         x_ = life / tau
         win = math.sqrt(2 * (x_ - 1 + math.exp(-x_)) / (x_ * x_)) if x_ > 1e-6 else 1.0
-    return {"k": k_hat, "occupancy": EN, "r": r, "tpot": Ek / (lam * out), "step": st, "running_mean": k_mean,
+    return {"k": k_hat, "occupancy": EN, "r": r, "mix": mix, "tpot": Ek / (lam * out), "step": st,
+            "running_mean": k_mean,
             "tau_int": tau, "win": win, "pi_n": tuple(pi), "life": life,
             "mu": lambda n: min(n, B) * e / (out * step_of(min(n, B))[0]),
             "pi_run": pi_run, "seen_mean": seen_mean, "seen_sd": seen_sd, "w_seen": tuple(wsee), "step_seen_mean": st_mean,
@@ -808,8 +822,8 @@ def _pd_mode_base(ctx: dict, lam: float) -> dict:
         res["why"] = ("prefill 池" if pre is None else "decode 池" if dec is None else "KV 链路") + "在此负载下不稳定" \
             + ("（KV 与池内集合通信共用互联层，争用计入）" if max(u_kv_d, u_kv_p) > 0.3 else "")
         return res
-    u_coll = max(_wsum(ws, [_tier_util(r, tier, beta) for r in pre["rs"]]), _tier_util(dec["r"], tier, beta)) \
-        if shared else 0.0
+    u_coll = max(_wsum(ws, [_tier_util(r, tier, beta) for r in pre["rs"]]),
+                 sum(w_ * _tier_util(r, tier, beta) for w_, r in dec["mix"])) if shared else 0.0
     beta_av = beta * (1 - u_coll)
     b_req = ctx["pair"] * beta_av
     t_bw = [x / b_req if b_req > 0 else math.inf for x in xfer]
@@ -834,7 +848,7 @@ def _pd_mode_base(ctx: dict, lam: float) -> dict:
                    "shared_tier": shared, "u_coll": u_coll, "GBps_req_avail": b_req / 1e9,
                    "u_kv_decode": u_kv_d, "u_kv_prefill": u_kv_p},
             "decode": {"running_batch": dec["k"], "occupancy": dec["occupancy"], "slots": B,
-                       "kv_slowdown": sc_d(dec["r"]), "slot_wait_ms": _ms(slot),
+                       "kv_slowdown": sum(w_ * sc_d(r) for w_, r in dec["mix"]), "slot_wait_ms": _ms(slot),
                        "running_p90": max(1, int(round(dec["seen_mean"] + _Z[0.9] * dec["seen_sd"])))},
             "_pre": pre, "_dec": dec}
 
@@ -873,8 +887,8 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
         dec = _decode_birth_death(cp, lam_c, out, B, batch=(nu_b, Xb, 1 / share))
     if dec is None:
         return {**res, "stable": False, "why": "decode 在此负载下不稳定（prefill 占用后剩余时间不够）"}
-    tp = dec["r"].step / dec["r"].tokens_per_step
-    resid = dec["r"].step
+    tp = dec["step"] / dec["r"].tokens_per_step      # 0.64: fractional seen batch (two-point mixture)
+    resid = dec["step"]
     lats_w = list(zip(pre["ws"], pre["lats"]))
     ttft = _ttft(pre["wait"], lats_w, conv=(pre["lam"], pre["taus"]))
     ttft["mean"] += resid / 2
@@ -971,6 +985,19 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
             memo[k] = (tbar, r, t1, min(1.0, nu * tbar), t1m, tsum)
         return memo[k]
 
+    def frac_step(kf: float):
+        """0.64: mean_step at a fractional batch — linear in the two neighbouring integer batches."""
+        lo = max(1, min(B, int(math.floor(kf))))
+        hi = min(B, lo + 1)
+        a = min(1.0, max(0.0, kf - lo)) if hi > lo else 0.0
+        L_ = mean_step(lo)
+        if a == 0:
+            return L_[1].step, ((1.0, L_[1]),), L_[2], L_[3], L_[4], L_[5]
+        H_ = mean_step(hi)
+        mixv = lambda u, v: [(1 - a) * x_ + a * y_ for x_, y_ in zip(u, v)]
+        return ((1 - a) * L_[1].step + a * H_[1].step, ((1 - a, L_[1]), (a, H_[1])), mixv(L_[2], H_[2]),
+                (1 - a) * L_[3] + a * H_[3], (1 - a) * L_[4] + a * H_[4], mixv(L_[5], H_[5]))
+
     tB, rB, _, xB, _, _ = mean_step(B)
     if not rB.fits or not math.isfinite(tB) or xB >= 1:
         return {**res, "why": "分块 prefill + decode 在此负载下不稳定"}
@@ -981,12 +1008,11 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     # busy ρ_s = λ·Σw·n_c·T₁ of the wall time) hands its X requests to decode as one batch (M/G/1 busy-period
     # count, Takács); decode runs at its pure step T₀(k).  Batch rate = λ(1 − ρ_s)/(1 − f), f = λ·Σw·n_c·(T₁ − T₀).
     # T₁ − T₀ is evaluated at the batch the decodes see (two fixed-point passes from the 0.54 mean-iteration chain).
-    k_s = max(1, min(B, int(round(dec0["seen_mean"]))))
+    k_s = max(1.0, min(float(B), dec0["seen_mean"]))
     kappa = _pair_kappa([(w_, o_) for w_, _, o_ in ctx["len"].points])
     dec = None
     for _ in range(2):
-        _, r, t1, x, t1m, tsum = mean_step(k_s)
-        T0 = r.step
+        T0, mixr, t1, x, t1m, tsum = frac_step(k_s)
         serv = tsum
         exc = [t - m * T0 for m, t in zip(ns, tsum)]
         rho_s, f = lam_c * _wsum(ws, serv), lam_c * _wsum(ws, exc)
@@ -1002,10 +1028,10 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         if d is None:
             break
         dec = d
-        k_s = max(1, min(B, int(round(dec["seen_mean"]))))
+        k_s = max(1.0, min(float(B), dec["seen_mean"]))
     if dec is None:
         return {**res, "why": "分块 prefill + decode 在此负载下不稳定"}
-    _, r, t1, x, t1m, tsum = mean_step(k_s)
+    T0, mixr, t1, x, t1m, tsum = frac_step(k_s)
     serv = tsum                                     # prefill service = Σ fused chunk iterations
     # TTFT: the chunk server's speed follows the running batch, which drifts slowly — mix the service over the
     # time-weighted batch law (8 equal-mass bins; 0.55, V4 showed the single seen-batch service misses the tail)
@@ -1046,7 +1072,6 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     t1_99 = mean_step(max(1, _kmax_life_q(dec, 0.99)))[2]
     slot = mdc_wait(lam_c, out * dec["tpot"], B, QS, cs2=ctx["out_cs2"])
     # request-average TPOT spread: occupancy deviation (stretched) ⊕ the chunk excess met over its life
-    T0 = r.step
     exc = [t - m * T0 for m, t in zip(ns, tsum)]
     rho_s, f = lam_c * _wsum(ws, serv), lam_c * _wsum(ws, exc)
     ratio = _wsum(ws, exc) / max(1e-300, _wsum(ws, serv))
@@ -1065,9 +1090,9 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
                                         max(mean_step(max(1, k_))[4] for k_ in kbins) * 1e3],
                         "rho": lam_c * _wsum(ws, serv), "chunk_share": x, "wait_ms": _ms(w)},
             "decode": {"running_batch": dec["k"], "occupancy": dec["occupancy"], "slots": B,
-                       "iter_ms_no_chunk": r.step * 1e3, "slot_wait_ms": _ms(slot), "excess_share": f,
+                       "iter_ms_no_chunk": T0 * 1e3, "slot_wait_ms": _ms(slot), "excess_share": f,
                        "batch_pair": a_thin},
-            "_dec_r": r, "_pre1": pre1, "_plans": plans, "_dec": dec}
+            "_dec_r": mixr, "_pre1": pre1, "_plans": plans, "_dec": dec}
 
 
 def _kv_slots(ctx: dict, B: int) -> tuple[int, dict | None]:
@@ -1536,7 +1561,11 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
 def _mix(pres, pts, dec: Result, out: float, extra: dict, shared_weights: bool = False) -> dict:
     """Counts per output token: Σ_i w_i · (prefill counts per prompt token at S_i) · S_i + decode counts · out, ÷ out.
     (Prefill units are full prompt tokens, so a cached prefix shows up as fewer counts per unit.)"""
-    d = _per_unit(dec)
+    mix = dec if isinstance(dec, (tuple, list)) else ((1.0, dec),)     # 0.64: fractional running batch
+    d: dict = {}
+    for w_, r_ in mix:
+        for k, v in _per_unit(r_).items():
+            d[k] = d.get(k, 0.0) + w_ * v
     c = {k: d[k] * out for k in d}
     for r, (w, S, _) in zip(pres, pts):
         p = _per_unit(r)
@@ -1643,14 +1672,14 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
     x = modes["pd"]
     if x["stable"]:
         kv = _wsum(ws, [ctx["kv_xfer"][(S, p)] for _, S, p in pts])
-        en["pd"] = _energy(_mix(x["_pre"]["rs"], pts, x["_dec"]["r"], o,
+        en["pd"] = _energy(_mix(x["_pre"]["rs"], pts, x["_dec"]["mix"], o,
                                 _restore_extra(x, {ctx["tier"] if ctx["tier"] == "net" else "link": kv})),
                            cards / lam / o, table, ctx["n_p"] / lam / o)
     pts = ctx.get("pts_c", pts)                 # colocated replicas: their own prefix-cache hit mix (0.53)
     ws = [w for w, _, _ in pts]
     y = modes.get("coloc_prefill_first")
     if y and y["stable"]:
-        en["coloc_prefill_first"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["r"], o, _restore_extra(y, {})),
+        en["coloc_prefill_first"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["mix"], o, _restore_extra(y, {})),
                                             cards / lam / o, table)
     y = modes.get("coloc_chunked")
     if y and y["stable"]:
