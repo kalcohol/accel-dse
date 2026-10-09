@@ -88,7 +88,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                             ("--idle-W", "idle_W", "W per card"),
                             ("--idle-W-prefill", "idle_W_prefill", "W per card of the PD prefill pool (default --idle-W)"),
                             ("--pJ-bit-slc", "pJ_bit_slc", "per SLC bit"), ("--pJ-bit-d2d", "pJ_bit_d2d", "per D2D bit"),
-                            ("--pJ-bit-net", "pJ_bit_net", "per cross-node network bit")):
+                            ("--pJ-bit-net", "pJ_bit_net", "per cross-node network bit"),
+                            ("--pJ-bit-host", "pJ_bit_host", "per host-link (PCIe) bit of a PD kv_policy=swap transfer (0.61.4)")):
         p.add_argument(flag, dest=dest, type=float, default=None,
                        help=f"energy table (user-supplied, no default): {hlp}")
     p.add_argument("--slc-mib", dest="slc_mib", type=float, default=None,
@@ -339,7 +340,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
             sc["pd"]["simulate"] = True
     body = {"chip_preset": a.chip, "scenario": sc}
     en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
-                                     "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net", "idle_W_prefill")
+                                     "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net", "idle_W_prefill",
+                                     "pJ_bit_host")
           if getattr(a, k, None) is not None}
     if en:
         body["energy"] = en
@@ -387,7 +389,8 @@ def cmd_eval(a) -> dict:
     s = out["summary"]
     m = out["model"]
     print(f"{m['id']}  [{m['provenance']} · {m['coverage']} · {m['dtype']}{' · what-if' if m.get('what_if') else ''}]"
-          f"{'  「架构代理」' if m['proxy_badge'] else ''}")
+          f"{'  「架构代理」' if m['proxy_badge'] else ''}"
+          + (f"  VLM：视觉编码器（{m['vision_params_B']:.2f}B）未建模，只评估语言主干" if m.get("vision_params_B") else ""))
     print(f"layout {s['layout']}  mapping {s['mapping']}  batch {s['batch']}  bound {s['bound']}  "
           f"array_util {s['array_util']:.1%}")
     sc = out["scenario"]
@@ -639,7 +642,8 @@ def cmd_models(a) -> dict:
     out = api.api_models()
     if a.json:
         return out
-    _table([[m["id"], m["provenance"], m["coverage"] + (" 「架构代理」" if m["proxy_badge"] else ""), m["dtype"],
+    _table([[m["id"], m["provenance"], m["coverage"] + (" 「架构代理」" if m["proxy_badge"] else "")
+             + (" · VLM 视觉编码器未建模" if m.get("domain") == "vlm" else ""), m["dtype"],   # 0.61.4: as the Web badge
              m["params_B"], m["active_B"]] for m in out["models"]],
            ["id", "provenance", "coverage", "dtype", "params B", "active B"])
     print("\n暂未接入 v2（只列在目录中，不能评估；视频 Wan2.1 / CogVideoX 与蛋白质 ESM-2 已在上表中）:")

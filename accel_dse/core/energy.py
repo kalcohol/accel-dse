@@ -58,6 +58,7 @@ class EnergyTable:
     pJ_bit_d2d: float | None = None    # per bit on the die-to-die tier (0.48)
     pJ_bit_net: float | None = None    # per bit on the cross-node network tier (0.50)
     idle_W_prefill: float | None = None  # PD report: static power per card of the prefill pool's chip (0.56; null = idle_W)
+    pJ_bit_host: float | None = None   # PD report: per bit on the host link (PCIe class) of a kv_policy=swap transfer (0.61.4)
 
     def __post_init__(self):
         for f in fields(self):
@@ -107,15 +108,23 @@ def action_counts(r) -> dict:
 def _counts(r) -> dict:
     lay, ch = r.scenario.layout, r.scenario.chip
     f = ch.freq_ghz * 1e9
-    ranks = lay.tp * lay.sp * lay.dp
     w = r.workload
+    # 0.61.4: DP ranks that hold no sequence (batch < dp, or a short last share) do no work — count the ranks that
+    # are busy, not dp (was dp: ESMFold batch 1 on DP 2 showed twice the request's MACs per sequence)
+    seqs = r.scenario.serving.batch * (w.seqs_per_request if w is not None else 1)
+    b_mb = -(-seqs // max(1, r.microbatches))
+    b_rank = -(-b_mb // lay.dp)
+    dp_act = min(lay.dp, -(-b_mb // b_rank)) if b_rank else lay.dp
+    ranks = lay.tp * lay.sp * dp_act
+    fill = b_mb / (dp_act * b_rank) if b_rank else 1.0      # short last share: MAC / vector work ∝ its sequences
+    #                                                         (byte counts kept per busy rank: weight reads dominate)
     passes = r.microbatches * (w.steps if w is not None and w.kind == "gen" else 1)
     c = dict.fromkeys(ACTIONS, 0.0)
     for st in r.stages:
         t = st.time
         n = passes * ranks
-        c["mac"] += t.t_ideal * ch.macs * f * n
-        c["vec"] += t.t_vector * ch.lanes * f * n
+        c["mac"] += t.t_ideal * ch.macs * f * n * fill
+        c["vec"] += t.t_vector * ch.lanes * f * n * fill
         c["sram"] += st.sram_bytes * n
         c["dram"] += t.dram_bytes * n
         c["slc"] += t.slc_bytes * n
@@ -129,11 +138,13 @@ def _counts(r) -> dict:
         pl = r.pipeline or {}
         window = pl.get("period_s", r.latency)
         unit = w.unit
+        B = r.scenario.serving.batch                  # 0.61.4: a part's acts are for one DP rank's share ⌈B/dp⌉ of the
+        comp_k = B / -(-B // lay.dp)                  # requests → × B / share (was × dp: idle ranks counted)
         for p in pl.get("parts", []):
             if p.get("on_host") or "acts" not in p:
                 continue
             for k, v in p["acts"].items():
-                c[k] += v * lay.dp                       # components run once per replica's batch share
+                c[k] += v * comp_k                       # components run once per replica's batch share
     else:
         window = r.latency
         unit = w.unit
@@ -150,7 +161,8 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
     per["idle_card_s"] = r.scenario.layout.cards * a["window_s"] / u
     out = {"unit": a["unit"], "window_s": a["window_s"], "units_per_window": a["units"],
            "counts_per_unit": per, "provided": table.provided,
-           "missing": [f.name for f in fields(EnergyTable) if getattr(table, f.name) is None and f.name != "idle_W_prefill"],
+           "missing": [f.name for f in fields(EnergyTable) if getattr(table, f.name) is None
+                       and f.name not in ("idle_W_prefill", "pJ_bit_host")],
            "basis": "动作计数 × 用户提供的每动作能耗（Accelergy 式 ERT）；工具不内置任何能耗数值"}
     if not table.provided:
         return out

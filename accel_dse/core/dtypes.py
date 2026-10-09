@@ -89,12 +89,15 @@ def gemm_exec(w_fmt: str, a_fmt: str, support: FormatSupport) -> tuple[str, floa
 
     Returns (exec_format, mac_rate_multiplier, conversion, elements_converted_flag)
     conversion ∈ {"none", "dequant_w", "upcast_both"}; flag bit0 = weights, bit1 = activations.
-      * same native format (e.g. W8A8 fp8 on fp8 hardware) → native rate
+      * same native format (e.g. W8A8 fp8 on fp8 hardware) → native rate; same width, other type → as below
       * weight-only quant (W lower than A): dequant W to A's format (if A native)
       * nothing native: upcast both to bf16 (if bf16 native) else fp16/fp32
     """
     w, a = fmt(w_fmt), fmt(a_fmt)
-    if w.compute_bits == a.compute_bits and support.native(w_fmt) and support.native(a_fmt):
+    base = lambda n: "fp8" if n.startswith("fp8") else n
+    # 0.61.4: the native path needs one compute format — same width *and* the same element type (fp8 × int8 or
+    # bf16 × fp16 have no common MAC path: both go to the widest native format below, was taken as native)
+    if base(w_fmt) == base(a_fmt) and support.native(w_fmt) and support.native(a_fmt):
         return w_fmt, float(support.rate(w_fmt)), "none", 0
     if w.compute_bits < a.compute_bits and support.native(a_fmt):
         return a_fmt, float(support.rate(a_fmt)), "dequant_w", 1

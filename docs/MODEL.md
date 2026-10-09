@@ -626,6 +626,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - **swap**：`pd.kv_policy = "swap"`，`pd.swap_GBps` = 每卡主机链路 GB/s（不给就用 `workload.host_GBps` = 50 GB/s「假设」：PCIe 5.0 x16 有效带宽）。T_io = (S̄ + ḡ)·KV 字节/token ÷（GB/s × 每副本卡数），停顿 = 换出 + 换入 = 2·T_io。DES：换出在抢占时计入迭代，换入在重新准入时计入。§18.1 例子 12 GB：swap 一次 2 × 6.4 ms，重算一次 86 ms；被抢占者的平均间隔分别为 429 ms 和 501 ms，大部分是回队等待，所以两种策略的最长间隔差得不多（389 vs 462 ms）。
 - **M/G/1 等待：精确的 Pollaczek–Khinchine 律**（`queueing._pk_surv`）。0.54 / 0.55 用 P(W > x) ≈ min(ρ, c·e^{−θx})（Cramér–Lundberg），只有尾部准确。CV 1 时 15 档服务时间从 7 ms 跨到 700 ms，正的等待大多很短（排在短请求后面），CL 律给这部分的概率太少。例如 dense8b L0.3 CV1：DES 的 TTFT p50 正好是第 10 档的原子（71.5 ms），闭式落到下一档（92 ms，+27 %）。精确律：W = 几何（ρ）个均衡剩余服务时间之和；离散服务律的剩余密度 P(S > x)/E[S] 是阶梯函数，所以 g(x) = λ·Σ_i w_i[G(x) − G(x − τ_i)]（G 含 0 处原子 1 − ρ）可以在 0 … 4·τ_max 的 800 点网格上推进。原子造成的台阶精确积分，其余用梯形格式（二阶）；4·τ_max 以外接 CL 指数尾，从网格末端的值续上。均值与 P-K 公式相对差 < 1e-6，M/D/1 与 Erlang 精确式一致，生存函数与 300 万样本 Lindley 仿真差 ≤ 0.002。用于：PD / prefill 优先的 TTFT 卷积（`mg1_sum_quantile`）、分块准静态混合里服务时间混合的环境（`mg1_mix_sum_quantile`）、报告的 prefill 等待分位数（`mg1`）。单一服务时间仍走精确 M/D/1，定长结果不变。每个（λ, 服务律）缓存一次，约 2 ms。CV 1 的 PD 报告 3.1 → 6.1 s：15 档让 `_mg1_busy` 变贵，已改为平铺数组。
 - **按池静态功耗**：`energy.idle_W_prefill` = PD prefill 池芯片每卡 W（异构 prefill 芯片时填；不给 = `idle_W`；没有默认值）。静态能耗 = W × 每输出 token 的卡·秒（按挂钟时间，忙闲都算），PD 拆成 prefill 池 n_p/λ/out 与 decode 池 n_d/λ/out。动态能耗两池仍用同一张能耗表「假设」。各模式输出 `tok_per_J`、`static_share`。只给 `idle_W_prefill` 时写明 decode 池（及合并部署）的静态能耗未计入。单芯片报告不用这个字段。
+- **主机链路能耗**（0.61.4）：`energy.pJ_bit_host` = PD `kv_policy = swap` 换出 / 换入经主机链路（PCIe 等）每 bit 能耗，没有默认值；不给时 swap 的主机链路字节不计能耗并给出 `host_note`。
 
 - **V4 误差（0.56 网格，30 点 × 3 seed × 3000 请求；误差 = (闭式 − DES)/DES，> 0 = 闭式偏保守；SLO goodput 符号相反，> 0 仍为保守）**。全部场景族合并，括号内为 0.55：
 
@@ -1063,3 +1064,24 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - **DES 不变量**（新场景）：MoE TP2 / TP4·EP4 异构池、整前缀 LRU（亲和开 / 关）、radix 树、kv_policy wait / recompute / swap × 准入 before / after（紧 KV 容量）、gpt-oss 长度混合、投机解码、load 0.97，三种模式各 1500 请求：顺序、token 数、重复、槽位、KV 预留与占用均无违反。
 - **回归**：0.61.1 / 0.61.2 的修正在 sweep / search / PD 路径与其他共用代码的模型上一致；指纹 0.61.2 → 0.61.3 默认 68 / 1356 变化（只有 alphafold2、openfold、boltz-1、protenix、opensora-stdit3），多节点 48 / 985，fabric 0 / 3150。
 - **其他**：芯片预设峰值（100T 100.35、1P 1048.6、H100-like 959.4 TFLOPS）与文档一致；SLC pin / lru 公式；dtype 执行格式与反量化规则；场景哈希的往返与 int / float 稳定性；CLI 参数与文档；README 示例全部可运行。
+
+### 19.13 第四轮审计修正（0.61.4）
+
+修正：
+- **DP 空闲 rank 的能耗 / TFLOP**：batch 不是 dp 的倍数（或 batch < dp）时，部分 DP rank 没有样本，原来能耗计数按 tp·sp·dp 个 rank 全满计 MAC / 向量操作，视频管线的 TFLOP 也乘满 dp。现在按实际有样本的 rank 数与填充率计（每单位 MAC 对 batch × dp 不变，测试覆盖 esmfold / boltz-1 / wan2.1-1.3b）。例（能耗表 0.5 pJ/MAC 等，见测试）：ESMFold batch 1 · DP2 每单位 MAC 194.65 → 97.32 TFLOP、1148 → 1078 J；Boltz-1 batch 3 · DP2 349.14 → 261.85 TFLOP、1329 → 1305 J；Wan2.1-1.3B batch 1 · DP4 每请求 29440.6 → 28585.3 TFLOP、每帧 MAC 712.85 → 352.90 TFLOP、1105 → 997.6 J；Wan2.1-14B batch 2 · DP4 653641.7 → 652992.7 TFLOP。时间与容量不变（dp = 1 的指纹全部不变）。
+- **PD prefill 布局卡数不整除 decode_cards**：prefill TP4、decode 池 2 × TP1 时，换入 prefill 布局后 PD 块按新布局校验，报 「pd.decode_cards must be a multiple of the (decode) layout's 4 cards」，整个 PD 结果变成 error。池内评估改用去掉 PD 块的场景。
+- **PD prefill 池预算**（0.61.3 只加了范围说明）：给预算且开 PD 时，按 prefill 池（prefill 布局、芯片、内存、prefill batch）再核对一次，结果在 `pd.budget`（含 `pool`）；`budget.ok_with_pd` = 两个池都满足；`budget.scope_note` 指向 `pd.budget`。
+- **swap 主机链路能耗**：新增 `energy.pJ_bit_host`（PD kv_policy = swap 换出 / 换入经主机链路的每 bit 能耗，没有默认值）。swap 每次抢占的 KV 字节 × 2（出 + 入）计入 `host`；不填时 `host_note` 写明未计。CLI `--pJ-bit-host`，Web「pJ / bit 主机链路」。
+- **混合格式**：gemm_exec 原来按同位宽当作原生（fp8 × int8、fp16 × bf16 按 int8 / fp16 原生速率），现在只有基础格式相同（fp8 各变体视为同一种）才走原生，否则两侧升到 bf16。发布模型无此组合，指纹不变。
+- **Pareto**：默认 batch 列表原来止于 512，大 TP 的前沿被截断；现在 512 之后按 1.5k / 2k 步长扩到 `b_cap_for(cards)`，在第一个放不下处停止（显式 batches 不变）。例 Qwen3-8B TP8（100T + HBM3E）：前沿 11 → 15 点，最大 batch 384 → 3072，峰值 630.4 → 633.6 tok/s/卡。pareto 过滤 NaN / inf 点。
+- **上下文超出发布长度**：ModelSpec 新增 `max_ctx`（发布 config 的 max_position_embeddings）；decode ctx + 1 + spec_k（或 prefill prompt）超过时警告（需 RoPE 外推 / YaRN，KV 与注意力仍按给定长度计）。
+- **PP 流水级不平衡**：流水级按层数均分（不按代价），异构层栈（ESMFold LM + trunk、Boltz trunk + 扩散、AF2）最慢级 / 最快级可达 3×，节拍取最慢级，PP 结果偏悲观。现在比值 > 1.5 时警告（例 ESMFold PP2：2.14 / 7.02 s，3.3×）；不改切分。
+- **CLI VLM 标注**：models 表与 eval 表头写明 VLM 视觉编码器未建模（Web 原有标注）。
+
+复核无误（不改数值）：
+- 第三轮修正回归：Boltz 缓存 / 别名、Protenix 按样本投影、Open-Sora 时间 VAE、AF2 模板行、冷存储不驻留（所有模型 SRAM 64 GiB / 512 MiB × PP1 / PP2 驻留率在 [0, 1]，Wan2.2 待机专家不占驻留）、PD recompute / swap 能耗、最佳 batch 警告、格式速率哈希。
+- 投机解码 / MTP：期望 token 数 (1 − a^{k+1}) / (1 − a)，k 超过 MTP 层数时复用 MTP 层，验证宽度 1 + k，能耗单位按 token。
+- 长上下文：全部 LLM 在 TP8 下 ctx 4k → 1M 的 TPOT、KV 单调有限（DSA / 压缩注意力 / 线性注意力族增长平缓）。
+- batch > 1 视频 / 蛋白：每单位 TFLOP 与 MAC 对 batch 1 / 3 / PP2·微批 2 不变，延迟随 batch 线性。
+- 数值极端：4×4×1 阵列 + 0.1 MiB SRAM、0.01 MiB SRAM、256×256×80 阵列、64 GiB SRAM、4 GiB SLC × 9 个模型 × prefill / decode：无异常、无 NaN / inf、无负值；延迟随芯片规模单调。
+- VLM：视觉编码器（图像 token、分辨率）按设计未建模，只评估语言主干（§ 模型覆盖）。

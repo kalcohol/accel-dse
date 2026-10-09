@@ -3,6 +3,18 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.61.4] - 2026-10-09
+
+第四轮审计：第三轮修正回归、PD prefill 池预算、swap 主机链路能耗、混合格式、VLM 视觉编码器、投机解码 / MTP、长上下文、batch > 1 视频 / 蛋白、Pareto、数值极端。
+
+### 修正（见建模说明 §19.13）
+- **DP 空闲 rank**：batch 不满 dp 时能耗与视频 TFLOP 不再按全部 rank 计。例 ESMFold batch 1 · DP2 每单位 MAC 194.65 → 97.32 TFLOP、1148 → 1078 J；Wan2.1-1.3B batch 1 · DP4 每请求 29440.6 → 28585.3 TFLOP。时间与容量不变。
+- **PD**：prefill 布局卡数不整除 decode_cards 时不再报错；预算核对 prefill 池（`pd.budget`、`budget.ok_with_pd`）。
+- **能耗**：新增 `energy.pJ_bit_host`（swap 主机链路，无默认值；未填时给出 `host_note`）。
+- **混合格式**：fp8 × int8、fp16 × bf16 升到 bf16 执行（原来按同位宽原生）。发布模型不受影响。
+- **Pareto**：默认 batch 扩到 512 以上（Qwen3-8B TP8 前沿最大 batch 384 → 3072）；过滤 NaN 点。
+- 新警告：上下文超过发布 max_position_embeddings；PP 流水级按层数均分导致的不平衡（> 1.5×）。CLI 标注 VLM 视觉编码器未建模。
+
 ## [0.61.3] - 2026-10-09
 
 第三轮审计：结构模型端到端 FLOPs 对独立计数（OpenFold / AF2 / Boltz-1 / Protenix 发布实现的 FlopCounterMode 计数）、Open-Sora VAE、DES 新场景不变量、PD 能耗与预算、前两轮修正的回归，以及芯片预设、SLC、dtype、场景哈希、CLI 与 README 示例。

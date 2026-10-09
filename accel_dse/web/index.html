@@ -305,6 +305,7 @@
       <label title="节点内 scale-up 层（封装之间）每发送 bit 的能耗，pJ">pJ / bit 节点内<input type="number" id="e-pJ_bit_link" min="0" step="0.5"></label>
       <label title="封装内 die-to-die 层每发送 bit 的能耗，pJ（D2D 开且每封装 die 数 > 1 时才有流量）">pJ / bit D2D<input type="number" id="e-pJ_bit_d2d" min="0" step="0.1"></label>
       <label title="跨节点网络每发送 bit 的能耗，pJ（每节点卡数 > 0 且通信组跨节点时才有流量）">pJ / bit 跨节点<input type="number" id="e-pJ_bit_net" min="0" step="0.1"></label>
+      <label title="PD kv_policy = swap：换出 / 换入经主机链路（PCIe 类）每 bit 的能耗，pJ（只用于 PD 能耗；不填则不计）">pJ / bit 主机链路<input type="number" id="e-pJ_bit_host" min="0" step="0.1"></label>
       <label title="系统级缓存命中每 bit 的能耗，pJ（SLC MiB > 0 时才有流量；DRAM 只计未命中）">pJ / bit SLC<input type="number" id="e-pJ_bit_slc" min="0" step="0.1"></label>
       <label title="每卡静态 / 空闲功耗，W（× 卡数 × 时间窗）">静态 W / 卡<input type="number" id="e-idle_W" min="0" step="5"></label>
       <label title="PD 报告：prefill 池芯片每卡静态功耗，W（prefill 芯片与 decode 不同时填；空 = 同上）">静态 W / 卡 · PD prefill<input type="number" id="e-idle_W_prefill" min="0" step="5"></label>

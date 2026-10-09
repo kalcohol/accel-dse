@@ -300,6 +300,21 @@ def _flag_rows(dicts: list[dict], results: list, body: dict) -> list[dict]:
     return sorted(dicts, key=lambda d: d.get("budget_ok") is False)
 
 
+def _pd_prefill_budget(scn, pd_rep: dict, bud: Budget, table: EnergyTable) -> dict:
+    """0.61.4: the budget against the PD prefill pool — its own chip / memory / layout at its operating batch."""
+    pd = scn.pd
+    ps = scn.colocated().replace("layout", pd.prefill_layout).replace("serving.phase", "prefill") \
+        .replace("serving.batch", max(1, int(pd_rep["prefill"]["batch"] or 1)))
+    if pd.prefill_chip is not None:
+        ps = ps.replace("chip", pd.prefill_chip)
+    if pd.prefill_mem_id is not None:
+        ps = ps.replace("mem_id", pd.prefill_mem_id)
+    pr = evaluate(ps)
+    rep = budget_report(pr, bud, energy_report(pr, table) if bud.power_W_card is not None else None)
+    rep["pool"] = {"chip": ps.chip.name, "mem_id": ps.mem_id, "layout": ps.layout.label, "batch": ps.serving.batch}
+    return rep
+
+
 def api_eval(body: dict) -> dict:
     scn = scenario_from_body(body)
     bud = _budget(body)
@@ -327,11 +342,13 @@ def api_eval(body: dict) -> dict:
         except ValueError as e:
             out["pd"] = {"error": str(e)}
         if bud is not None and bud.provided:
-            # 0.61.3: the budget rows check the colocated (decode) configuration above; the PD prefill pool's chip /
-            # layout is not re-checked — say so instead of implying the whole PD deployment is within budget
-            out["budget"]["scope_note"] = ("预算只核对合并部署这一配置（芯片 " + scn.chip.name + "、" + scn.layout.label
-                                           + "）；PD prefill 池" + ("（异构芯片）" if scn.pd.prefill_chip is not None else "")
-                                           + "的芯片 / 布局未核对")
+            out["budget"]["scope_note"] = ("上表核对合并部署 / PD decode 池（芯片 " + scn.chip.name + "、" + scn.layout.label + "）"
+                                           + ("；PD prefill 池见 pd.budget" if "error" not in out["pd"] else ""))
+            if "error" not in out["pd"]:
+                out["pd"]["budget"] = _pd_prefill_budget(scn, out["pd"], bud, table)
+                # the deployment is within budget only if both pools are
+                oks = (out["budget"]["ok"], out["pd"]["budget"]["ok"])
+                out["budget"]["ok_with_pd"] = False if False in oks else (None if None in oks else True)
     return out
 
 

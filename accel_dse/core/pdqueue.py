@@ -1420,6 +1420,11 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
         e = getattr(table, attr)
         if e is not None:
             j[k] = counts_tok.get(k, 0.0) * e * 1e-12 * (8 if k in _BITS else 1)
+    if counts_tok.get("host", 0.0) > 0:
+        if table.pJ_bit_host is not None:
+            j["host"] = counts_tok["host"] * table.pJ_bit_host * 1e-12 * 8
+        else:
+            out["host_note"] = "换出 / 换入经主机链路的字节未计能耗：未填 pJ_bit_host"
     split = prefill_card_s_tok > 0 and table.idle_W_prefill is not None     # else one rate for every card (0.51)
     if split:
         j["idle_prefill"] = table.idle_W_prefill * prefill_card_s_tok
@@ -1459,8 +1464,8 @@ def _mix(pres, pts, dec: Result, out: float, extra: dict, shared_weights: bool =
 def _restore_extra(x: dict, extra: dict) -> dict:
     """0.61.3: counts of the KV-preemption restores (``pd.kv_policy`` recompute / swap), added per request (p_v
     restores each): recompute = one re-prefill of S̄ + ḡ tokens (its own action counts); swap = the KV read out of and
-    written back into DRAM, 2·(S̄ + ḡ)·bytes/token.  The host-link (PCIe) transfer of a swap has no action in the
-    energy table and is not counted 「假设」."""
+    written back into DRAM, 2·(S̄ + ḡ)·bytes/token, and the same bytes over the host link (``host``, priced by the
+    user-entered ``energy.pJ_bit_host``, no default; 0.61.4)."""
     rs = x.get("_restore")
     if not rs or rs[0] <= 0:
         return extra
@@ -1472,6 +1477,7 @@ def _restore_extra(x: dict, extra: dict) -> dict:
             extra[k] = extra.get(k, 0.0) + p_v * v * rs[3]
     else:
         extra["dram"] = extra.get("dram", 0.0) + p_v * 2 * rs[2]
+        extra["host"] = extra.get("host", 0.0) + p_v * 2 * rs[2]      # 0.61.4: out + in over the host link
     return extra
 
 

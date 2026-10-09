@@ -11,6 +11,8 @@ bound returns the exact maximiser with far fewer evaluations than a scan.
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass
 
 from .catalog import get_model
@@ -332,7 +334,7 @@ def _prefetch(pool, base: Scenario, cands: list) -> None:
 
 def pareto(points: list[tuple[float, float, object]]) -> list[tuple[float, float, object]]:
     """Non-dominated set for (minimise x, maximise y)."""
-    pts = sorted(points, key=lambda p: (p[0], -p[1]))
+    pts = sorted((p for p in points if math.isfinite(p[0]) and math.isfinite(p[1])), key=lambda p: (p[0], -p[1]))
     out, best_y = [], -float("inf")
     for p in pts:
         if p[1] > best_y:
@@ -344,13 +346,21 @@ def pareto(points: list[tuple[float, float, object]]) -> list[tuple[float, float
 def tpot_throughput_front(base: Scenario, batches: list[int] | None = None) -> list[dict]:
     """Latency–throughput Pareto front over batch (LLM: TPOT vs tok/s/card; video / protein: request
     latency vs units/s/card, keys latency_ms / units_s_card)."""
-    batches = batches or [1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192, 256, 384, 512]
+    explicit = batches is not None
+    batches = list(batches or [1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192, 256, 384, 512])
+    if not explicit:     # 0.61.4: continue ×1.5 / ×2 up to the replica's batch cap (was stopped at 512 for any size)
+        cap, k = b_cap_for(base.layout.cards), 512
+        while k * 3 // 2 <= cap:
+            batches += [x for x in (k * 3 // 2, 2 * k) if x <= cap]
+            k *= 2
     full = not get_model(base.model).kv_cache
     pts = []
     for b in batches:
         r = evaluate(base.replace("serving.batch", b))
         if r.fits:
             pts.append(((r.latency if full else r.tpot) * 1e3, r.per_card, b))
+        elif not explicit and b > 512:
+            break               # capacity is monotone in batch
     if full:
         return [{"latency_ms": x, "units_s_card": y, "batch": b} for x, y, b in pareto(pts)]
     return [{"tpot_ms": x, "tok_s_card": y, "batch": b} for x, y, b in pareto(pts)]

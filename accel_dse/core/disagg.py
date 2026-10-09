@@ -118,7 +118,11 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         if not plain:
             d = d.replace("serving.prefix_cached", 0).replace("serving.prompt", S_rep) \
                 .replace("serving.prefix_cached", pc_rep).replace("serving.ctx", ctx_eff)
-        p = d.replace("layout", pd.prefill_layout).replace("serving.prefix_cached", pp_rep if not plain else 0)
+        # 0.61.4: drop the PD block before swapping in the prefill layout — pd.decode_cards is validated against the
+        # scenario's layout, so a prefill layout whose cards do not divide decode_cards (prefill TP4, decode 2 × TP1)
+        # raised "decode_cards must be a multiple of the (decode) layout's 4 cards"; the pools' evaluations never
+        # read the PD block
+        p = d.colocated().replace("layout", pd.prefill_layout).replace("serving.prefix_cached", pp_rep if not plain else 0)
         if pd.prefill_chip is not None:              # 0.53 heterogeneous pools
             p = p.replace("chip", pd.prefill_chip)
         if pd.prefill_mem_id is not None:

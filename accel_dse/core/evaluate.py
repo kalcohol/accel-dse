@@ -418,6 +418,16 @@ def _stage_link(sys: System, agg: dict, link_bw: float, sync: float, d2d_b: floa
     return link, sync, d2d_b, net_b
 
 
+
+def _pp_imbalance_warn(stages, tick: float, warnings: list) -> None:
+    """0.61.4: stages split by layer count (plan_stages), not by cost -- flag heterogeneous stacks."""
+    if len(stages) < 2 or tick <= 0:
+        return
+    lo = min(s.time.total for s in stages)
+    if tick > 1.5 * lo:
+        warnings.append(f"流水级按层数均分（不按代价平衡）：最慢级 / 最快级 = {tick / max(lo, 1e-30):.1f}×，"
+                        "节拍取最慢级——异构层栈（蛋白质 trunk / 扩散、首层稠密等）的 PP 结果偏悲观")
+
 def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     m = model or get_model(scn.model)
     if scn.formats_override:
@@ -454,6 +464,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if not m.kv_cache:
         return _evaluate_full(scn, m, sys, warnings)
     spec_k = sv.spec_k if (sv.phase == "decode" and m.mtp_layers) else 0
+    need_ctx = sv.ctx + 1 + spec_k if sv.phase == "decode" else sv.prompt
+    if m.max_ctx and need_ctx > m.max_ctx:    # 0.61.4: evaluated as asked, but say the release does not cover it
+        warnings.append(f"上下文 {need_ctx} 超过发布 config 的 max_position_embeddings {m.max_ctx}"
+                        "（需要 RoPE 外推 / YaRN 等，发布未必支持；KV 与注意力仍按所给长度计）")
     if sv.spec_k and not m.mtp_layers and sv.phase == "decode":
         warnings.append("spec_k 已忽略：该模型没有 MTP 模块（独立草稿模型的投机解码未建模）")
     pp = lay.pp
@@ -533,6 +547,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], sram_bytes=agg["sram"]))
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
+    _pp_imbalance_warn(stages, tick, warnings)
     cap_heavy = max(range(len(stages)), key=lambda i: stages[i].mem.dram_need)
     fits = all(s.mem.fits for s in stages)
     if not fits:
@@ -670,6 +685,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             pipe = _place_components(scn, m, pipe, stages, sys, warnings)
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
+    _pp_imbalance_warn(stages, tick, warnings)
     cap_heavy = max(range(len(stages)), key=lambda i: stages[i].mem.dram_need)
     fits = all(s.mem.fits for s in stages)
     if not fits:
@@ -681,7 +697,10 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         denoise = wl.steps * max(mb, pp) * tick
         latency = denoise + (pipe["te_s"] + pipe["decode_s"] + pipe["load_s"] if pipe else 0.0)
         if pipe:
-            pipe = {**pipe, "denoise_s": denoise, "tflop": pipe["tflop_replica"] * lay.dp}
+            # 0.61.4: tflop_replica is one DP rank's share ⌈B/dp⌉ of the requests → × B / share (was × dp, which
+            # counted idle ranks: batch 1 on DP 2 showed the text encoder + VAE twice per request)
+            b_ = scn.serving.batch
+            pipe = {**pipe, "denoise_s": denoise, "tflop": pipe["tflop_replica"] * b_ / _cdiv(b_, lay.dp)}
     else:
         latency = (mb + pp - 1) * tick
     period = latency
