@@ -30,10 +30,10 @@
 - 结构：GQA、MLA、线性注意力（Gated DeltaNet / KDA / lightning）、滑窗、稀疏索引注意力、dense / MoE / latent MoE、共享专家、MTP。
 - 修正项：MTP 层按层号 ≥ `num_hidden_layers` 归类；tied lm_head 的重复拷贝不重复计数；配置缺失 MTP 时从发布权重推断；n-gram / engram 查表按发布 embed 角色的大小计入存储，不计入激活参数。
 - 三轴标签：来源（official 官方 / mirror 镜像，如 meta-llama 的 unsloth 公开镜像）× 覆盖 × dtype。覆盖度指建模覆盖程度，与模型好坏无关，每个模型都标出：「完整」= 全部算子按发布结构逐项建模；「部分」= 主干逐项建模、个别机制近似（线性注意力的递归状态、DSA 稀疏索引、attention sink）；「架构代理」= 含未建模的结构（超连接多流残差的混合计算、n-gram / engram 查表、压缩稀疏注意力），结果只作量级参考。每个非「完整」模型都附逐项的「近似之处」（`coverage_reasons`，由结构自动生成，UI 悬停与模型目录可见）。
-- VLM（发布中带视觉编码器的模型）：只评估语言主干，视觉编码器（约 0.4–0.6B 参数）的权重存储与图像 prefill 不计，在标签中注明。
-- 目录：按厂商 → 系列排列，同一厂商的 LLM 与 VLM（甚至同一系列里的文本版与多模态版）放在一起，领域只作为行内标记（VLM 行标「VLM · 视觉编码器未建模」）；系列内按尺寸从大到小，官方量化版（FP8 / AWQ）紧跟原版，名称用官方仓库名。结构与 dtype 完全相同的发布合并为一条（如 DeepSeek-V3 / V3.1 / R1、Kimi-K2.5 / K2.7-Code、GLM-5 / 5.2、GLM-4.5 / 4.6、MiniMax-Text-01 / M1-80k），尺寸已被覆盖的通用稠密 GQA 模型不单列；它们仍可按 id 评估，也都参与参数核对。
+- VLM（发布中带视觉编码器的模型）：0.62 起视觉编码器（ViT + 合并 / 投影，约 0.45–0.56B 参数，bf16 按发布）按发布 config 与图像预处理器逐项建模：每请求图像数与分辨率是场景输入（默认 0 张 = 只算文本，分辨率默认 1024×1024「假设」），编码器在 prefill 时运行，图像 token 加进 prompt 与 KV（§20）。
+- 目录：按厂商 → 系列排列，同一厂商的 LLM 与 VLM（甚至同一系列里的文本版与多模态版）放在一起，领域只作为行内标记（VLM 行标「VLM · 含视觉编码器」）；系列内按尺寸从大到小，官方量化版（FP8 / AWQ）紧跟原版，名称用官方仓库名。结构与 dtype 完全相同的发布合并为一条（如 DeepSeek-V3 / V3.1 / R1、Kimi-K2.5 / K2.7-Code、GLM-5 / 5.2、GLM-4.5 / 4.6、MiniMax-Text-01 / M1-80k），尺寸已被覆盖的通用稠密 GQA 模型不单列；它们仍可按 id 评估，也都参与参数核对。
 - 已接入 v2 的视频 / 蛋白质发布（0.41）：Wan2.1-T2V-14B / 1.3B、CogVideoX-5b / 2b（DiT 去噪主干）与 ESM-2 3B / 650M（编码器），同样从 config + safetensors 头建模，参数与发布逐项一致（偏差 0.00%），建模见 §11。
-- 暂未接入 v2 的目录条目：视频生成（Wan2.2-A14B、MiniMax-H3、HunyuanVideo、LTX-Video、Mochi 1、Open-Sora STDiT3）与蛋白质（ESMFold、AlphaFold3 / AlphaFold2、Protenix、Boltz-1、OpenFold）列在各自厂商 / 机构之下、该厂商可评估条目之后，标「暂未接入 v2」，不能评估、不能按 id 解析。维数取自历史目录（`data/series_catalog.json`，公开 config / 论文仓库；AF 类的 FFN 宽度与部分头数是代理值），在接入 v2 之前只是占位。分子动力学 / 机器学习力场（MLFF）从未有过目录条目，不列出。
+- 暂未接入 v2 的目录条目（0.62 校正：此前这里仍列着已接入的视频 / 结构模型）：AlphaFold3 等没有可核对公开发布文件的条目，列在各自厂商 / 机构之下、该厂商可评估条目之后，标「暂未接入 v2」，不能评估、不能按 id 解析。视频（Wan2.2-A14B、MiniMax-H3、HunyuanVideo、LTX-Video、Mochi 1、Open-Sora STDiT3）与结构预测（ESMFold、AlphaFold2、OpenFold、Boltz-1、Protenix）已按发布接入（§11、§12）。分子动力学 / 机器学习力场（MLFF）从未有过目录条目，不列出。
 - 参数核对：与发布 safetensors 总量偏差 > 2% 时附注；当前 61 个发布（55 个 LLM / VLM + 6 个视频 / 蛋白质）全部在 ±0.5% 内。
 
 ## 3. 逐 rank 算子图与并行
@@ -41,7 +41,7 @@
 - 布局 `PP·TP·DP·EP·ETP`：dense 模型 DP = EP = ETP = 1（数据并行副本是独立服务实例）；MoE 要求 `EP·ETP = TP·DP`——注意力按 TP 切分、在 DP 组间复制，专家按 EP 分组、组内按 ETP 切分。
 - 每个 rank 生成算子：投影 GEMM、注意力核心（GQA / MLA 吸收 / 线性状态更新）、MoE 路由与专家 GEMM、embedding / 词表并行 lm_head、MTP。
 - MoE 命中专家数：`hit = max(ceil(局部期望命中), ceil(全局期望命中 / EP))`，限定在 [1, 本地专家数]；每专家 token 数 `m_e = ceil(本地 token·top_k / hit)`。默认 token 均匀路由（「假设」）；0.49 起可选 EP 负载倾斜（§16）。
-- stage 划分按层的整数切分（如 61 层 / 8 → 8,8,8,8,8,7,7,7），容量检查取最重的 stage。
+- stage 划分：连续的整层切分。0.62 起默认按代价平衡（`pp_split = "cost"`，§21）：使最慢 stage 最快，计入嵌入 / 输出头 / MTP / 级间传递与异构层栈；`pp_split = "layers"` 保留 0.61 的按层数均分（如 61 层 / 8 → 8,8,8,8,8,7,7,7）。容量检查取最重的 stage。
 - 视频 / 蛋白质（无 KV 缓存的全序列前向）：布局 `PP·TP·DP·SP`，EP = ETP = 1。DP 切分一次前向的序列（视频含 CFG 的 cond / uncond 两路，即 CFG 并行）；SP 为 Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all，每 rank 对完整序列计算 `ceil(ceil(H/TP)/SP)` 个头，权重在 SP 组内复制。LLM 布局保持 SP = 1。
 
 ## 4. 映射：数据通路组织
@@ -104,7 +104,7 @@
 
 ## 10. 范围与近似
 
-- LLM 推理（VLM 只算语言主干）；视频生成覆盖 DiT 去噪主干（§11），蛋白质覆盖 ESM-2 编码器（§11）与结构预测的神经网络推理（ESMFold、AlphaFold 2、OpenFold、Boltz-1、Protenix，§12）。AlphaFold 3 权重需申请、无可核对的公开发布文件，标「暂未接入 v2」（§2）。不覆盖分子动力学 / 力场（目录中也无此类条目）。
+- LLM / VLM 推理（0.62 起 VLM 含视觉编码器，§20）；视频生成覆盖 DiT 去噪主干与文本编码器 / VAE pipeline（§11），蛋白质覆盖 ESM-2 编码器（§11）与结构预测的神经网络推理（ESMFold、AlphaFold 2、OpenFold、Boltz-1、Protenix，§12）。AlphaFold 3 权重需申请、无可核对的公开发布文件，标「暂未接入 v2」（§2）。不覆盖分子动力学 / 力场（目录中也无此类条目）。
 - 「架构代理」模型：超连接多流残差只计参数不计混合计算；查表只计存储与每 token 行读取；压缩稀疏注意力按有效上下文 `ctx/ratio`（+ 窗口，索引层 ≤ top-k）近似；哈希路由层按 top-k MoE 处理。
 - 解析模型不模拟周期级行为：无 bank 冲突、无 DRAM 刷新 / 页冲突细节（统一由效率「假设」吸收），集合通信用 α-β 近似，MoE 默认 token 均匀路由（可选倾斜系数，§16）。
 - 不内置功耗、面积、成本估计。0.47.1 起给出每输出单位的动作计数，能耗只在用户提供每动作能耗时计算（§13）；0.49 起可填资源 / 面积预算，面积按用户给的密度估算，只报告余量（§17）。
@@ -1084,4 +1084,43 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - 长上下文：全部 LLM 在 TP8 下 ctx 4k → 1M 的 TPOT、KV 单调有限（DSA / 压缩注意力 / 线性注意力族增长平缓）。
 - batch > 1 视频 / 蛋白：每单位 TFLOP 与 MAC 对 batch 1 / 3 / PP2·微批 2 不变，延迟随 batch 线性。
 - 数值极端：4×4×1 阵列 + 0.1 MiB SRAM、0.01 MiB SRAM、256×256×80 阵列、64 GiB SRAM、4 GiB SLC × 9 个模型 × prefill / decode：无异常、无 NaN / inf、无负值；延迟随芯片规模单调。
-- VLM：视觉编码器（图像 token、分辨率）按设计未建模，只评估语言主干（§ 模型覆盖）。
+- VLM：视觉编码器（图像 token、分辨率）当时未建模，只评估语言主干（0.62 起已建模，§20）。
+
+### 19.14 第五轮审计（0.62.0）
+
+计划内的两项缺口（§20 视觉编码器、§21 PP 按代价切分）之外：
+
+修正：
+- **PD KV 交接字节（带缓存前缀）**：decode 侧已持有前缀时，要传的 KV 原来按整请求字节 × (S − p) / S 估算。滑窗层只需传窗口内未持有的 min(W, S − p) 个条目；递归状态（线性注意力）必须整份传（S 个 token 之后的状态不是前缀的状态）；压缩条目 / 索引键按 ⌈S/c⌉ − ⌈p/c⌉。新函数 `memplan.cache_new_bytes` 按层类型计。例 S = 8192、p = 4096（每请求）：Qwen3.8-27B 346.9 → 425.3 MB，Kimi-K3 345.6 → 577.9 MB，GLM-5.3-Flash 134.0 → 210.3 MB，Qwen3.5-397B 223.5 → 321.2 MB，Qwen3.8-2.4T 683.8 → 981.6 MB，MiniMax-Text-01 / M1 314.6 → 461.4 MB，Qwen3-Next-80B 140.2 → 179.7 MB，Qwen3.8-Flash-Next 159.5 → 218.3 MB，DeepSeek-V4.1-Flash 40.4 → 43.0 MB，DeepSeek-V4-Pro 44.3 → 48.3 MB，DeepSeek-V4-Flash 31.0 → 33.8 MB，gpt-oss-120b / 20b 153.4 → 155.7 / 102.2 → 103.8 MB；纯 GQA（Qwen3-8B 等）不变。只影响开 PD、有前缀命中（prefix_len / prefix_hit / prefix_tree）且 prefix_on_decode = true（默认）时的 KV 传输字节与时间；指纹场景没有前缀，不变。
+- **DeepSeek-V4.1-Flash 发布角色**：`aligner.w1/w2.*`（视觉对齐投影，73,410,560 参数，bf16）被 `scripts/summarize_release.py` 归为 other（视觉正则缺 aligner），算进了语言主干的发布参数。现归 vision：params_llm 748,568,095,104 → 748,494,684,544，params_vision 411,857,920 → 485,268,480；参数偏差 −0.051 % → −0.042 %。不影响时间 / 容量（发布参数只用于核对）。
+- **视频卸载放置的主机流量能耗**：每次重载全副本经主机链路读回的字节 = Σ 每卡（DiT 本级权重 + 文本编码器份额 + VAE 副本），按用户的 `energy.pJ_bit_host` 计入 `host`；未填时给 `host_note`。例 Wan2.1-14B 单卡卸载：69.0 GB / 段、852 MB / 帧。load_s（时间）不变。
+- **Kimi-K2.7-Code 视觉编码器**：发布与 K2.5 的 vision_config 与图像处理器相同（只差视频参数），补进预处理表（否则这个 VLM 不计图像）。
+- **关于页范围说明过时**：仍写着视频文本编码器 / VAE 未建模、ESMFold / Protenix 等未接入、「不做功耗 / 面积 / 成本估计」；本文 §2 也仍把已接入的视频 / 结构模型列为「暂未接入」。已按现状改写。
+
+复核无误（不改数值）：
+- 第四轮修正回归：DP 空闲 rank 能耗、PD prefill 预算 / 整除、swap 主机链路、混合格式、Pareto > 512、上下文 / PP 警告（tests/test_core_061_4.py 全过；PP 警告在 cost 切分下改为「已按代价平衡，仍不均」，按层数的提示只在 `pp_split = "layers"` 时出现）。
+- 部分共享前缀（radix 树）的容量：前缀足迹按整条路径 Lp 计，按 token 线性换算成容量 token 数；全注意力模型精确，滑窗 / 递归状态模型是近似（状态按路径摊销），保持「假设」。前缀容量与 KV 容量现在按评估实际的各级层范围计（cost 切分后各级层数不同）。
+- 图像 token 经 PD（prefill 池含编码器）、length_mix、prefix_hit、goodput、最佳 batch、扫描（serving.images / image_w / image_h）均一致。
+
+## 20. VLM 视觉编码器（0.62）
+
+目录里每个 VLM（Qwen3.5-397B-A17B、Qwen3.8-27B、Qwen3.8-Flash-Next、GLM-5.3-Flash、Kimi-K2.5 / K2.7-Code、Kimi-K3、DeepSeek-V4.1-Flash）的视觉塔 + 合并 / 投影按发布 `vision_config` 与发布的图像预处理器建模（`core/vision.py`），dtype 按发布（全部 bf16）。
+
+- **图像 → patch 网格**（按各自预处理器）：Qwen `smart_resize`（因子 = patch 16 × 合并 2 = 32，像素 65536–16777216）；GLM `smart_resize`（因子 28，16–8000 token，时间 patch 2 对静态图重复）；Kimi MoonViT `navit_resize`（patch 14，in_patch_limit K2.5 / K2.7 16384、K3 65536，单边 ≤ 512 patch，补齐到 28）；DeepSeek `plan_image_grid`（min_pixels 295936，max_image_tokens 1024，宽高比 ≤ 3）。
+- **进入语言模型的 token**：合并后的位置数（Qwen / GLM / Kimi 2×2 合并；DeepSeek 3×3 对齐器后每行加换行，另加首尾 2 个）。1024×1024：Qwen 1024、GLM / Kimi 1369、DeepSeek 652；448×448：196 / 256 / 256 / 184。聊天模板的分隔 token 算作文本 token。
+- **算子**：patch 嵌入 GEMM、每层 QKV / O / MLP（GLM、DeepSeek 为门控 MLP）、整图双向注意力（每张图 N×N，N = patch 数；QK、PV 计 MAC，softmax 每个分数 5 次向量操作）、合并 / 投影 GEMM（按合并后的行数）。走与语言主干相同的映射 / 存储 / 调度路径（流式，bf16）。
+- **对照参考实现**：torch FlopCounterMode 计 transformers 5.19（qwen3_5 / qwen3_5_moe / qwen4_exp / glm5_next）与 Kimi、DeepSeek 发布 remote code 的视觉模块（在 meta 上构建后 materialise、bf16、eager 注意力）。7 个模型 × 448×448 / 640×480 / 1024×768 的 token 数与 FLOPs 全部精确一致（tests/test_core_062.py），参数与发布 params_vision 逐个相等（DeepSeek 含对齐器，见 §19.14）。K2.7-Code 的视觉代码与 K2.5 相同，沿用其对照。
+- **场景输入**：`serving.images`（每请求图像数，默认 0 = 只算文本，所以既有结果全部不变）、`serving.image_w / image_h`（默认 1024×1024「假设」，代表常见的截图 / 照片分辨率）。图像 token 一次性并入 prompt 与上下文（prefill 长度、KV、PD 长度、goodput 随之变化）；结果里的 scenario 原样回显所填的 prompt，`summary.vision` 给出 text_prompt + image_tokens。prefill 的 tok/s 按含图像 token 的 prompt 计。
+- **放置与时间「假设」**：编码器在 prefill 时、语言 prefill 之前串行运行；首个流水级的卡各编码一部分图像（数据并行，即 vLLM `mm_encoder_tp_mode = data` 的做法），时间 = 每卡 ⌈本 DP rank 图像数 / (TP·SP)⌉ 张的编码时间；权重（bf16）常驻首级，两个阶段都占容量。decode 不运行编码器。能耗计数计入编码器的动作。
+- **未建模**：视频输入（时间合并 / 抽帧）、编码器输出缓存（同一图像重复出现时跳过编码）、前缀缓存命中图像 token 时跳过编码（按全部重新编码计，偏保守）、编码器与语言 prefill 的流水重叠。
+- 入口：API `serving.images / image_w / image_h`（扫描路径同名）；CLI `--images N --image-size WxH`；Web「服务」组（只在 VLM 显示）与单点页「视觉编码器」卡片。
+
+## 21. PP 按代价切分（0.62，默认）
+
+0.61 及以前流水级按层数均分。一个 stage 的时间是 `max(Σ阵列, Σ向量, ΣDRAM, Σ链路) + Σ同步`，首级另有嵌入，末级另有输出头 / MTP 草稿；异构层栈（结构模型的 trunk / 结构模块 / 扩散、首层稠密 MoE、滑窗与全注意力交替）各层代价差别很大。按层数均分是建模错误，节拍偏悲观。
+
+- **代理**：每层（按层组记忆）用与评估相同的算子求和得到（阵列, 向量, DRAM 触达字节 / 带宽, 链路, 同步），嵌入 / io-pre 加到首级，输出头 / io-post / MTP 加到末级，非末级加级间传递；DRAM 按全部流式计（忽略 SRAM / SLC 驻留）。
+- **切分**：对节拍二分 + 贪心装箱，求连续切分的精确极小极大（代理意义下）；再在可行窗口内把边界调向剩余工作的均分，避免末级空闲。每级存储（权重 + 本级 KV / 状态 × batch）不超过 max(按层数均分的最重级, 每卡 DRAM)。
+- **由完整模型裁决**：代理给出的候选（均分调整版、前置贪心版）与按层数均分一起用完整评估（含驻留、激活、fabric）各跑一次，取放得下且节拍最小者，平局取按层数均分。所以 cost 切分的节拍不会劣于 layers，也不会因此从放得下变成放不下（指纹核对：0 个变慢、0 个 fits 变化）。fabric_report 只记录被选中的那次运行的集合通信。
+- **选项**：场景 `pp_split = "cost" | "layers"`（默认 cost；默认值不进场景哈希）；CLI `--pp-split`；Web 布局组「PP 切分」。CLI eval 打印各级层范围。
+- **变化范围**（0.61.4 → 0.62，只在 PP > 1；PP = 1 全部不变）：LLM decode 时末级的输出头使均分偏慢，PP2 节拍 −0.03 % ~ −13.7 %（小模型、量化模型与 lm_head 占比大的 MoE 降得多），PP4 −0.9 % ~ −36 %；prefill 只有 DeepSeek-V4.1-Flash 变化（−5.7 % ~ −6.0 %）；结构模型 PP2 −2.4 % ~ −37.9 %、PP4 −0.6 % ~ −50.4 %（ESMFold、Boltz-1、Protenix 最大）；视频只在 PP4 有 ≤ 0.1 % 的变化（指纹的 PP2 无变化）。逐项见 CHANGELOG 0.62.0。

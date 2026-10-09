@@ -27,6 +27,7 @@ from .core.fabric import fabric_report
 from .core.scenario import Scenario, upgrade_legacy
 from .core.search import best_batch, search_layouts, tpot_throughput_front
 from .core.serving import goodput
+from .core.vision import text_view
 from .core.stability import ranking_stability
 
 HONESTY = ("所有硬件参数（频率、阵列几何、SRAM 端口、DRAM 效率、链路 α/β、MAC 效率）均为「假设」，未经硅片标定；"
@@ -34,6 +35,7 @@ HONESTY = ("所有硬件参数（频率、阵列几何、SRAM 端口、DRAM 效�
 MAX_CARDS = 8192          # 0.60: was 64 (= core.parallel.MAX_REPLICA_CARDS)
 SWEEP_PATHS = {
     "serving.batch": int, "serving.ctx": int, "serving.prompt": int, "serving.spec_k": int,
+    "serving.images": int, "serving.image_w": int, "serving.image_h": int,
     "chip.sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
     "serving.moe_skew": float, "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
@@ -126,7 +128,7 @@ def scenario_from_body(body: dict) -> Scenario:
     preset = body.get("chip_preset", "100T")
     if not isinstance(preset, str) or preset not in CHIPS:
         raise ApiError(f"chip_preset must be one of {sorted(CHIPS)}")
-    base = Scenario(chip=CHIPS[preset]).to_dict()
+    base = Scenario(chip=CHIPS[preset]).to_dict(full=True)
     try:
         d = _merge(base, upgrade_legacy(sc))
         scn = Scenario.from_dict(d)
@@ -186,7 +188,7 @@ def result_dict(r: Result, *, with_goodput: bool = False) -> dict:
     s = r.scenario
     out = {"summary": r.summary(), "stages": [_stage_dict(x) for x in r.stages],
            "model": {"id": r.model.id, "hf_id": r.model.hf_id, **labels(r.model)},
-           "hash": s.hash(), "scenario": s.to_dict()}
+           "hash": text_view(s).hash(), "scenario": text_view(s).to_dict()}   # 0.62: as entered (image tokens not folded in)
     if with_goodput and s.serving.phase == "decode" and r.workload is None:
         g = goodput(r)
         out["goodput"] = {"tok_s": g.goodput_tok_s, "tok_s_card": g.goodput_per_card, "ttft_ms": g.ttft_ms,
@@ -227,7 +229,7 @@ def api_catalog() -> dict:
                  "port_GBps": c.port_GBps, "gemv": c.gemv, "lanes": c.lanes}
              for k, c in CHIPS.items()}
     return {"chips": chips, "mappings": [{"id": o, "label": ORG_LABEL[o]} for o in ORGS],
-            "memory": mem_catalog.catalog_dict(), "defaults": Scenario().to_dict(), "honesty": HONESTY,
+            "memory": mem_catalog.catalog_dict(), "defaults": Scenario().to_dict(full=True), "honesty": HONESTY,
             "sweep_paths": sorted(SWEEP_PATHS), "max_cards": MAX_CARDS,
             "d2d_standards": [{"id": k, **v} for k, v in D2D_STANDARDS.items()], "d2d_default_std": D2D_DEFAULT_STD,
             "d2d_default_units": D2D_DEFAULT_UNITS}

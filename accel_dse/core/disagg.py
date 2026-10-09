@@ -49,10 +49,11 @@ from .catalog import get_model
 from .evaluate import Result, evaluate
 from .ir import Shard
 from .parallel import MAX_REPLICA_CARDS, enumerate_layouts
-from .memplan import stage_storage
+from .memplan import cache_new_bytes, stage_storage
 from .scenario import PDConfig, Scenario
 from .energy import EnergyTable
 from .lengths import lengths_of
+from .vision import expand_images
 from .pdqueue import _Pool, _pd_mode, _slo_rate, prefix_tokens, queue_report
 from .prefixcache import (both_hit, capacity, hit_of, per_card_bytes, pool_hits, tree_both_tail, tree_cum_tokens,
                           tree_depth_law, tree_depth_tail, tree_groups, tree_resident, zipf_groups)
@@ -71,7 +72,8 @@ def kv_token_capacity(model, result, cap_GB: float | None) -> dict:
     KV slope of that stage (KV + indexer; recurrent state is per sequence, not per token, and is ignored 「假设」)."""
     lay = result.scenario.layout
     t1, t2 = 1024, 2048
-    b1, b2 = per_card_bytes(model, lay, t1), per_card_bytes(model, lay, t2)
+    rg = [s.layers for s in result.stages]
+    b1, b2 = per_card_bytes(model, lay, t1, rg), per_card_bytes(model, lay, t2, rg)
     slope = [(y - x) / (t2 - t1) for x, y in zip(b1, b2)]
     cps = lay.cards // lay.pp
     per_rep = sum(sl * cps / lay.dp for sl in slope)          # bytes per token over one replica
@@ -99,6 +101,7 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
     m = get_model(scn.model)
     if not m.kv_cache:
         raise ValueError("PD 分离只适用于 LLM / VLM（视频 / 蛋白质模型没有 prefill / decode 两阶段）")
+    scn = expand_images(scn, m)      # 0.62: VLM image tokens are prompt tokens of every request (idempotent)
     pd, sv = scn.pd, scn.serving
     lens, h = lengths_of(pd, sv), pd.prefix_hit
     tree = pd.prefix_tree                            # 0.58 radix / partial prefix matching
@@ -258,7 +261,8 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         q_dec = 1.0 if pd.prefix_on_decode else 0.0
     kv_full = {(Si, pi): kv_bytes_per_request(m, Si) for _, Si, pi in pts + pts_c}
     kv_full.setdefault((S_rep, p_rep), kv_bytes_per_request(m, S_rep))
-    kv_new = {k: (v * (k[0] - k[1]) / k[0] if k[1] else v) for k, v in kv_full.items()}   # KV of the uncached tokens
+    # KV / state the decode side lacks given the cached prefix (0.62: per layer kind -- was (S − p) / S of the total)
+    kv_new = {k: (cache_new_bytes(m, k[0], k[1]) if k[1] else v) for k, v in kv_full.items()}
     # 「假设」 the decode pool holds the prefix (0.53: with probability q_dec given a prefill hit)
     kv_xfer = {k: kv_full[k] - q_dec * (kv_full[k] - kv_new[k]) if q_dec != 1.0 else kv_new[k] for k in kv_full}
     kv = kv_bytes_per_request(m, S) if plain else sum(w * kv_xfer[(Si, pi)] for w, Si, pi in pts)

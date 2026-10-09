@@ -93,6 +93,36 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
     return hot, exp
 
 
+def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
+    """0.62: whole-model KV + indexer + recurrent-state bytes a receiver still lacks after an ``S``-token prefill
+    when it already holds the cache of the first ``p`` tokens (PD hand-off with the prefix cached on the decode side).
+    Token-proportional entries (full / compressed attention, indexer keys): those of tokens p … S; a sliding window:
+    the entries outside the held prefix's window, min(W, S − p) (the held window ends at p); recurrent state: all of
+    it (the state after S tokens is not the prefix's).  ≤ 0.61 scaled the whole request's bytes by (S − p) / S, which
+    under-counted window and state bytes (hybrid linear-attention / SWA models)."""
+    p = max(0, min(p, S))
+    kvb = _fmt(model.kv_fmt).bytes
+    stb = _fmt(model.state_fmt).bytes
+    kv = idx = st = 0.0
+    new = S - p
+    for L in model.layers:
+        c = L.core
+        if c.kind == "gqa":
+            n = min(c.window, new) if (c.window and c.compress == 1) else new
+            kv += n * c.n_kv * (c.qk_dim + c.v_dim) / c.compress * kvb
+        elif c.kind == "mla":
+            if c.compress > 1:
+                n = math.ceil(S / c.compress) - math.ceil(p / c.compress) + (min(c.window, new) if c.window else 0)
+            else:
+                n = min(c.window, new) if c.window else new
+            kv += n * (c.kv_lora + c.rope_dim) * kvb
+        elif c.kind == "linear":
+            st += (c.n_state_heads * c.state_dk * c.state_dv + c.conv_channels * max(0, c.conv_kernel - 1)) * stb
+        if c.idx_heads:
+            idx += (math.ceil(S / c.compress) - math.ceil(p / c.compress)) * c.idx_dim * kvb
+    return kv + idx + st
+
+
 def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_head: bool, sh: Shard,
                   ctx: int, n_mtp: int = 0) -> StageStorage:
     hot = exp = kv = idx = st = 0.0

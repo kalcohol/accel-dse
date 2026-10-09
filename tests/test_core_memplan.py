@@ -62,7 +62,7 @@ def test_deepseek_pp8_heaviest_stage_capacity_hand_count():
     assert abs(st.weights - w) / w < 0.002, (st.weights / GiB, w / GiB)
     assert abs(st.kv_per_seq * 16 - kv) / kv < 1e-9
     r = evaluate(Scenario(model="deepseek-v3", mem_id="hbm3e_8s_12h24g_9200", layout=Layout(pp=8),
-                          serving=Serving(batch=16, ctx=4096 - 1)))
+                          serving=Serving(batch=16, ctx=4096 - 1), pp_split="layers"))   # hand count of the 8-layer split
     needs = [x.mem.dram_need for x in r.stages]
     # stages 1-4 hold 8 MoE layers each → heavier than stage 0 (3 dense + 5 MoE + embedding)
     assert needs.index(max(needs)) == 1 and abs(needs[1] - needs[4]) < 1

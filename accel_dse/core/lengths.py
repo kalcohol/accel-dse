@@ -93,7 +93,8 @@ class Lengths:
 def lengths_of(pd, sv) -> Lengths:
     if pd.length_mix:
         tot = sum(r[0] for r in pd.length_mix)
-        return Lengths(tuple((w / tot, s, o) for w, s, o in pd.length_mix), "mix")
+        it = getattr(sv, "image_tokens", 0)          # 0.62: rows give text prompts; every request carries its images
+        return Lengths(tuple((w / tot, s + it, o) for w, s, o in pd.length_mix), "mix")
     if pd.prompt_cv or pd.out_cv:
         ps, os_ = lognormal_bins(sv.prompt, pd.prompt_cv), lognormal_bins(sv.out_len, pd.out_cv)
         return Lengths(tuple((a * b, s, o) for a, s in ps for b, o in os_), "cv")

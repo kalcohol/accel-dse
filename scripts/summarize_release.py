@@ -33,7 +33,7 @@ SCALE_RE = re.compile(r"(\.weight_scale_inv$|\.scale_inv$|\.weight_scale(_2)?$|\
                       r"\.qzeros$|\.g_idx$|\.weight_shape$|\.input_scale$|\.weight_global_scale$|"
                       r"\.input_global_scale$|\.weight_zero_point$|_scale$)")
 ROLE = [
-    ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed)"),
+    ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.)"),
     ("mtp", r"(^mtp\.|\.mtp\.|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),
     ("embed", r"(embed_tokens|\bwte\b|tok_embeddings|word_embeddings|^embed\.|\.embed\.weight|ple_embedding)"),
     ("lm_head", r"(lm_head|^output\.weight$|embed_out|^head\.weight$)"),

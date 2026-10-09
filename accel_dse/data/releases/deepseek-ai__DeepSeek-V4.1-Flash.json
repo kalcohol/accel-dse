@@ -1,5 +1,5 @@
 {
- "bytes_llm": 501529431568,
+ "bytes_llm": 501382610448,
  "bytes_mtp": 7932874560,
  "bytes_total": 510286023000,
  "config": {
@@ -174,9 +174,9 @@
  },
  "fetched": "2026-10-08",
  "n_tensors": 96085,
- "params_llm": 748568095104,
+ "params_llm": 748494684544,
  "params_mtp": 14225362512,
- "params_vision": 411857920,
+ "params_vision": 485268480,
  "quantization_config": {
   "activation_scheme": "dynamic",
   "expert_dtype": "fp4",
@@ -257,8 +257,8 @@
   },
   "other": {
    "bf16": {
-    "bytes": 146984960,
-    "params": 73492480
+    "bytes": 163840,
+    "params": 81920
    },
    "fp32": {
     "bytes": 157294080,
@@ -293,8 +293,8 @@
   },
   "vision": {
    "bf16": {
-    "bytes": 823715840,
-    "params": 411857920
+    "bytes": 970536960,
+    "params": 485268480
    }
   }
  },

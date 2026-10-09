@@ -43,6 +43,12 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--ctx", type=int, default=None, help="decode context length")
     p.add_argument("--prompt", type=int, default=None, help="prompt length (prefill / goodput)")
     p.add_argument("--spec-k", type=int, default=0)
+    p.add_argument("--pp-split", choices=("cost", "layers"), default=None,
+                   help="pipeline stages: cost-balanced (default) or equal layer counts (<= 0.61)")
+    p.add_argument("--images", type=int, default=None,
+                   help="VLM: images per request (default 0 = text only); encoder runs at prefill, image tokens extend prompt / KV")
+    p.add_argument("--image-size", default=None, metavar="WxH",
+                   help="VLM: image resolution in pixels (default 1024x1024 「假设」)")
     p.add_argument("--spec-accept", type=float, default=None)
     p.add_argument("--tpot-slo", type=float, default=None, help="TPOT SLO ms")
     p.add_argument("--ttft-slo", type=float, default=None, help="TTFT SLO ms")
@@ -89,7 +95,7 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                             ("--idle-W-prefill", "idle_W_prefill", "W per card of the PD prefill pool (default --idle-W)"),
                             ("--pJ-bit-slc", "pJ_bit_slc", "per SLC bit"), ("--pJ-bit-d2d", "pJ_bit_d2d", "per D2D bit"),
                             ("--pJ-bit-net", "pJ_bit_net", "per cross-node network bit"),
-                            ("--pJ-bit-host", "pJ_bit_host", "per host-link (PCIe) bit of a PD kv_policy=swap transfer (0.61.4)")):
+                            ("--pJ-bit-host", "pJ_bit_host", "per host-link (PCIe) bit: PD kv_policy=swap transfers, video offload reloads")):
         p.add_argument(flag, dest=dest, type=float, default=None,
                        help=f"energy table (user-supplied, no default): {hlp}")
     p.add_argument("--slc-mib", dest="slc_mib", type=float, default=None,
@@ -250,11 +256,21 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                     ("ttft_slo_ms", "ttft_slo"), ("out_len", "out_len"), ("prefix_cached", "prefix_cached")):
         if getattr(a, attr) is not None:
             sv[k] = getattr(a, attr)
+    if getattr(a, "images", None) is not None:
+        sv["images"] = a.images
+    if getattr(a, "image_size", None):
+        try:
+            w, h = (int(x) for x in a.image_size.lower().split("x"))
+        except ValueError:
+            raise SystemExit(f"--image-size: expected WxH, got {a.image_size!r}") from None
+        sv["image_w"], sv["image_h"] = w, h
     if getattr(a, "moe_skew", None) is not None:
         sv["moe_skew"] = a.moe_skew
     if getattr(a, "moe_expert_load", None):
         sv["moe_expert_load"] = _load_list(a.moe_expert_load)
     sc = {"model": a.model, "mapping": a.mapping, "serving": sv}
+    if getattr(a, "pp_split", None):
+        sc["pp_split"] = a.pp_split
     wl = {k: getattr(a, k) for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles",
                                      "samples") if getattr(a, k)}
     if getattr(a, "dit_only", False):
@@ -388,11 +404,18 @@ def cmd_eval(a) -> dict:
         return out
     s = out["summary"]
     m = out["model"]
+    sc0 = out["scenario"].get("serving", {})
     print(f"{m['id']}  [{m['provenance']} · {m['coverage']} · {m['dtype']}{' · what-if' if m.get('what_if') else ''}]"
           f"{'  「架构代理」' if m['proxy_badge'] else ''}"
-          + (f"  VLM：视觉编码器（{m['vision_params_B']:.2f}B）未建模，只评估语言主干" if m.get("vision_params_B") else ""))
+          + (f"  VLM：视觉编码器 {m['vision']['label']}（{m['vision_params_B']:.2f}B，bf16）已建模，"
+             f"{'本场景 ' + str(sc0.get('images', 0)) + ' 张图/请求' if sc0.get('images') else '本场景无图像（--images 0）'}"
+             if m.get("vision") else
+             f"  VLM：视觉编码器（{m['vision_params_B']:.2f}B）未建模，只评估语言主干" if m.get("vision_params_B") else ""))
     print(f"layout {s['layout']}  mapping {s['mapping']}  batch {s['batch']}  bound {s['bound']}  "
           f"array_util {s['array_util']:.1%}")
+    if len(out.get("stages", [])) > 1:
+        print(f"PP stages ({out['scenario'].get('pp_split', 'cost')}): "
+              + "  ".join(f"{st['layers'][0]}-{st['layers'][1] - 1}" for st in out["stages"]))
     sc = out["scenario"]
     if sc.get("d2d_enabled") or sc.get("node_cards"):
         d2d = (f"D2D {sc['package_cards']} dies/pkg @ {_d2d_GBps(sc):.0f} GB/s ({sc['d2d_std']}"
@@ -455,13 +478,20 @@ def cmd_eval(a) -> dict:
                   f"{'OK' if g['ttft_ok'] else 'over SLO'}")
     else:
         print(f"TTFT {s['ttft_ms']:.1f} ms   {s['tok_s']:.0f} prompt tok/s")
+    if v := s.get("vision"):
+        print(f"vision {v['label']}: {v['images']} img/req @ {v['px'][0]}x{v['px'][1]} -> {v['resized_px'][0]}x{v['resized_px'][1]}, "
+              f"{v['tokens_per_image']} tok/img (prompt = {v['text_prompt']} text + {v['image_tokens']} image)"
+              + (f"   encoder {v['s'] * 1e3:.1f} ms  {v['tflop']:.1f} TFLOP on {v['cards']} cards ({v['per_card']} img/card, {v['bound']})"
+                 if v.get("cards") else "") + f"   weights {v['weights_GB']:.2f} GB on stage 0")
     print(f"DRAM need {s['dram_need_GiB']:.1f} GiB / card   fits {s['fits']}")
     if e := out.get("energy"):
         c = e["counts_per_unit"]
         print(f"actions / {e['unit']}: MAC {c['mac']:.3g}  vec {c['vec']:.3g}  SRAM {c['sram']:.3g} B  "
               f"DRAM {c['dram']:.3g} B  link {c['link']:.3g} B  card·s {c['idle_card_s']:.3g}"
               + (f"  SLC {c['slc']:.3g} B" if c.get("slc") else "") + (f"  D2D {c['d2d']:.3g} B" if c.get("d2d") else "")
-              + (f"  net {c['net']:.3g} B" if c.get("net") else ""))
+              + (f"  net {c['net']:.3g} B" if c.get("net") else "") + (f"  host {c['host']:.3g} B" if c.get("host") else ""))
+        if e.get("host_note"):
+            print("  " + e["host_note"])
         if "J_per_unit" in e:
             print(f"energy {e['J_per_unit']:.4g} J / {e['unit']}  (avg {e['avg_W_per_card']:.0f} W/card; user-supplied "
                   f"table: {', '.join(e['provided'])}; missing: {', '.join(e['missing']) or '-'})  "
@@ -643,7 +673,8 @@ def cmd_models(a) -> dict:
     if a.json:
         return out
     _table([[m["id"], m["provenance"], m["coverage"] + (" 「架构代理」" if m["proxy_badge"] else "")
-             + (" · VLM 视觉编码器未建模" if m.get("domain") == "vlm" else ""), m["dtype"],   # 0.61.4: as the Web badge
+             + ((" · VLM 含视觉编码器" if m.get("vision") else " · VLM 视觉编码器未建模")
+                if m.get("domain") == "vlm" else ""), m["dtype"],   # 0.61.4: as the Web badge
              m["params_B"], m["active_B"]] for m in out["models"]],
            ["id", "provenance", "coverage", "dtype", "params B", "active B"])
     print("\n暂未接入 v2（只列在目录中，不能评估；视频 Wan2.1 / CogVideoX 与蛋白质 ESM-2 已在上表中）:")

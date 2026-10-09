@@ -34,7 +34,8 @@ const COVER_LEGEND = '覆盖度表示本工具对该模型结构的建模覆盖�
 function coverTip(m) {
   const r = m.coverage_reasons || [];
   return (r.length ? '近似之处：\n· ' + r.join('\n· ') : '全部算子按发布结构逐项建模') +
-    (m.vision_params_B ? `\n· 视觉编码器（${num(m.vision_params_B)}B 参数）未建模：只评估语言主干` : '');
+    (m.vision ? `\n· 视觉编码器 ${m.vision.label}（${num(m.vision_params_B)}B 参数，bf16）已按发布建模：图像数 / 分辨率在「服务」里设，默认 0 张 = 只算文本`
+      : m.vision_params_B ? `\n· 视觉编码器（${num(m.vision_params_B)}B 参数）未建模：只评估语言主干` : '');
 }
 function coverBadge(m) {
   return h('span', { class: 'badge cov ' + m.coverage, title: coverTip(m) }, h('span', { class: 'ax' }, '覆盖'), COVER_ZH[m.coverage]);
@@ -200,6 +201,7 @@ function renderFabric(r) {
 }
 function syncInputs() {
   document.querySelectorAll('input[type=number]').forEach((i) => i._sync && i._sync());
+  if ($('l-pp_split')) $('l-pp_split').value = S.sc.pp_split || 'cost';
   if ($('pd-length_mix') && $('pd-length_mix')._sync) $('pd-length_mix')._sync();
   if ($('pd-prefix_tree') && $('pd-prefix_tree')._sync) $('pd-prefix_tree')._sync();
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
@@ -266,7 +268,7 @@ function badges(m, whatIf) {
     h('span', { class: 'badge ' + m.provenance, title: m.provenance === 'mirror' ? '官方仓库需授权，使用字节相同的公开镜像' : '官方发布' },
       h('span', { class: 'ax' }, '来源'), PROV_ZH[m.provenance] || m.provenance),
     coverBadge(m),
-    m.domain === 'vlm' ? h('span', { class: 'badge vlm', title: coverTip(m) }, 'VLM · 视觉编码器未建模') : domainBadge(m),
+    m.domain === 'vlm' ? h('span', { class: 'badge vlm', title: coverTip(m) }, m.vision ? 'VLM · 含视觉编码器' : 'VLM · 视觉编码器未建模') : domainBadge(m),
     h('span', { class: 'badge' }, h('span', { class: 'ax' }, 'dtype'), m.dtype),
     whatIf ? h('span', { class: 'badge wi' }, 'what-if dtype') : null,
   ].filter(Boolean);
@@ -347,11 +349,13 @@ function onModel() {
     m.mtp_layers ? h('span', {}, `MTP ×${m.mtp_layers}`) : null,
     h('span', { class: 'muted', title: '与发布 safetensors 头统计值的偏差' }, `vs 发布 ${(m.param_err * 100).toFixed(2)}%`));
   put($('model-approx'), ...(m.coverage_reasons || []).map((r) => h('li', {}, r)),
-    ...(m.vision_params_B ? [h('li', {}, `视觉编码器（${num(m.vision_params_B)}B 参数）未建模：不计其权重存储与图像 prefill，只评估语言主干`)] : []));
-  $('model-approx-wrap').hidden = !(m.coverage_reasons || []).length && !m.vision_params_B;
+    ...(m.vision_params_B && !m.vision ? [h('li', {}, `视觉编码器（${num(m.vision_params_B)}B 参数）未建模：不计其权重存储与图像 prefill，只评估语言主干`)] : []));
+  $('model-approx-wrap').hidden = !(m.coverage_reasons || []).length && !(m.vision_params_B && !m.vision);
   put($('model-notes'), ...m.notes.map((n) => h('li', {}, n)));
   $('model-notes-wrap').hidden = !m.notes.length;
   document.querySelectorAll('.moe-only').forEach((e) => (e.hidden = !m.is_moe));
+  document.querySelectorAll('.vlm-only').forEach((e) => (e.hidden = !m.vision));
+  if (!m.vision && S.sc.serving.images) { S.sc.serving.images = 0; $('s-images')._sync(); }   // images only mean something on a VLM
   const L = S.sc.layout;
   if (isFull(m)) { L.ep = 1; L.etp = 1; L.sp = L.sp || 1; if (m.is_pair) L.tp = 1; }
   else { L.sp = 1; if (!m.is_moe) { L.dp = 1; L.ep = 1; L.etp = 1; } else fixMoe('tp'); }
@@ -557,7 +561,9 @@ function renderEval(r) {
     k.push(kpi('吞吐 / 卡', num(s.tok_s_card) + ' tok/s', `共 ${num(s.tok_s)} tok/s · ${s.cards} 卡 · ${s.layout}`));
   } else {
     const over = s.ttft_ms > sv.ttft_slo_ms;
-    k.push(kpi('TTFT', num(s.ttft_ms) + ' ms', `batch ${s.batch} · prompt ${sv.prompt} · SLO ${sv.ttft_slo_ms} ms`, over ? 'warn' : ''));
+    const vz = s.vision;
+    k.push(kpi('TTFT', num(s.ttft_ms) + ' ms', `batch ${s.batch} · prompt ${vz ? `${vz.text_prompt} 文本 + ${vz.image_tokens} 图像 token` : sv.prompt} · SLO ${sv.ttft_slo_ms} ms`
+      + (vz && vz.cards ? ` · 含视觉编码 ${num(vz.s * 1e3)} ms` : ''), over ? 'warn' : ''));
     k.push(kpi('prefill 吞吐 / 卡', num(s.tok_s_card) + ' tok/s', `共 ${num(s.tok_s)} tok/s · ${s.cards} 卡 · ${s.layout}`));
   }
   k.push(h('div', { class: 'kpi' }, h('div', { class: 'l' }, '绑定瓶颈 · 有效 MAC'),
@@ -571,6 +577,13 @@ function renderEval(r) {
   k.push(h('div', { class: 'kpi' }, h('div', { class: 'l' }, 'DRAM 需求 / 容量（每卡）'),
     h('div', { class: 'v' }, `${num(s.dram_need_GiB)} / ${num(cap)} GiB`),
     h('div', { class: 's' }, h('span', { class: 'ubar wide' }, h('i', { style: `width:${frac * 100}%` })), `SRAM 驻留 ${pct(s.residency)}`)));
+  if (s.vision) {
+    const v = s.vision;
+    k.push(kpi('视觉编码器', v.cards ? num(v.s * 1e3) + ' ms' : '—',
+      `${v.label} · ${v.images} 张/请求 · ${v.px[0]}×${v.px[1]} → ${v.resized_px[0]}×${v.resized_px[1]} · ${v.tokens_per_image} token/张`
+      + (v.cards ? ` · ${num(v.tflop)} TFLOP · ${v.cards} 卡各 ${v.per_card} 张（数据并行「假设」）· ${BOUND_ZH[v.bound] || v.bound}` : ' · decode 不跑编码器，图像 token 在 KV 中')
+      + ` · 权重 ${num(v.weights_GB)} GB 在首级`));
+  }
   put($('kpis'), ...k);
 }
 function memKpi(s, cap) {
@@ -690,12 +703,14 @@ function renderEnergy(r) {
     [c.slc ? 'DRAM 读写（SLC 未命中）' : 'DRAM 读写', c.dram, ' B', 'dram', 'pJ_bit_dram'],
     ...(c.d2d ? [['D2D 发送（封装内）', c.d2d, ' B', 'd2d', 'pJ_bit_d2d']] : []),
     [c.d2d || c.net ? '节点内 scale-up 发送' : '链路发送', c.link, ' B', 'link', 'pJ_bit_link'],
-    ...(c.net ? [['跨节点网络发送', c.net, ' B', 'net', 'pJ_bit_net']] : []), ['卡·秒（静态）', c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
+    ...(c.net ? [['跨节点网络发送', c.net, ' B', 'net', 'pJ_bit_net']] : []),
+    ...(c.host ? [['主机链路重载（卸载放置）', c.host, ' B', 'host', 'pJ_bit_host']] : []), ['卡·秒（静态）', c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
   const head = h('tr', {}, h('th', {}, '动作'), h('th', {}, `次数 / ${u}`), h('th', {}, `能耗 J / ${u}`));
   const body = rows.map(([lab, n, sfx, k, key]) => h('tr', {}, h('td', {}, lab), h('td', { class: 'num' }, sci(n) + sfx),
     h('td', { class: 'num' }, e.provided.includes(key) ? sci(j[k] || 0) : h('span', { class: 'muted' }, '未提供'))));
   if (e.J_per_unit !== undefined) body.push(h('tr', {}, h('td', {}, h('b', {}, '合计')), h('td', { class: 'num' }, ''),
     h('td', { class: 'num' }, h('b', {}, sci(e.J_per_unit)), ` · 平均 ${num(e.avg_W_per_card)} W/卡`)));
+  if (e.host_note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, e.host_note)));
   put($('energy-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
 }
 function renderPD(r) {
@@ -1084,18 +1099,20 @@ const SWEEP_ZH = {
   d2d_units: 'D2D 单元数', 'net.GBps': '跨节点 GB/s', 'net.alpha_us': '跨节点 α µs', node_cards: '每节点卡数', 'fabric.oversub': '收敛比 r（需开拓扑感知）', 'fabric.oversub_spine': 'spine 收敛比 r₂（需三层）', 'fabric.pod_nodes': '每 pod 节点数（需三层）', 'fabric.hop_spine_us': '跨 leaf 每步附加 µs（需拓扑感知）', 'fabric.hop_core_us': '跨 pod 每步附加 µs（需三层）',
   'workload.frames': '帧数', 'workload.steps': '去噪步数', 'workload.height': '高 px', 'workload.width': '宽 px',
   'workload.seq_len': '序列长度（残基）', 'workload.msa': 'MSA 行数', 'workload.recycles': '主干遍数',
-  'workload.samples': '扩散样本数',
+  'workload.samples': '扩散样本数', 'serving.images': '图像 / 请求', 'serving.image_w': '图像宽 px', 'serving.image_h': '图像高 px',
 };
 const SWEEP_DOMAIN = { 'serving.moe_skew': 'llm', 'serving.ctx': 'llm', 'serving.prompt': 'llm', 'serving.spec_k': 'llm', 'workload.frames': 'gen',
   'workload.steps': 'gen', 'workload.height': 'gen', 'workload.width': 'gen', 'workload.seq_len': 'protein',
-  'workload.msa': 'pair', 'workload.recycles': 'pair', 'workload.samples': 'pair' };
+  'workload.msa': 'pair', 'workload.recycles': 'pair', 'workload.samples': 'pair',
+  'serving.images': 'vlm', 'serving.image_w': 'vlm', 'serving.image_h': 'vlm' };
 function fillSweepPaths() {
   const m = model(), d = isFull(m) ? m.domain : 'llm';
   const cur = $('sw-path').value;
   const list = S.cat.sweep_paths.filter((p) => !SWEEP_DOMAIN[p] || SWEEP_DOMAIN[p] === d
     || (SWEEP_DOMAIN[p] === 'pair' && m.is_pair && (p !== 'workload.msa' || m.workload.msa || m.workload.xmsa)
         && (p !== 'workload.samples' || m.workload.diff_steps))
-    || (p === 'workload.steps' && m.is_pair && m.workload.diff_steps));
+    || (p === 'workload.steps' && m.is_pair && m.workload.diff_steps)
+    || (SWEEP_DOMAIN[p] === 'vlm' && !!m.vision));
   opts($('sw-path'), list.map((p) => [p, SWEEP_ZH[p] || p]), list.includes(cur) ? cur : 'serving.batch');
   if (!list.includes(cur)) $('sw-values').value = SWEEP_DEFAULT[$('sw-path').value] || '';
 }
@@ -1110,6 +1127,7 @@ const SWEEP_DEFAULT = {
   'workload.frames': '17,33,49,81,121', 'workload.steps': '10,20,30,50', 'workload.height': '240,480,720',
   'workload.width': '416,832,1280', 'workload.seq_len': '128,256,512,1022,2048',
   'workload.msa': '64,256,512,1024,4096', 'workload.recycles': '1,2,3,4,6', 'workload.samples': '1,5,10,25',
+  'serving.images': '0,1,2,4,8', 'serving.image_w': '448,640,1024,1536,2048', 'serving.image_h': '448,640,1024,1536,2048',
 };
 function line(points, { xl, yl, y2l, log }) {
   if (!points.length) return h('div', { class: 'empty' }, '无数据');
@@ -1216,9 +1234,9 @@ function renderModels() {
           h('td', { class: 'l' }, '—'), h('td', {}, '—'), h('td', {}, '—'), h('td', {}, '—'), h('td', { class: 'l' }, m.arch)));
         continue;
       }
-      const approx = [...(m.coverage_reasons || []), ...(m.vision_params_B ? [`视觉编码器（${num(m.vision_params_B)}B）未建模`] : [])];
+      const approx = [...(m.coverage_reasons || []), ...(m.vision_params_B && !m.vision ? [`视觉编码器（${num(m.vision_params_B)}B）未建模`] : [])];
       rows.push(h('tr', { class: 'click', 'data-id': m.id, 'data-domain': m.domain, onclick: () => { setModel(m.id); activate('eval'); schedule(); } },
-        h('td', { class: 'l' }, m.label, m.domain === 'vlm' ? h('div', {}, h('span', { class: 'badge vlm', title: coverTip(m) }, 'VLM · 视觉编码器未建模'))
+        h('td', { class: 'l' }, m.label, m.domain === 'vlm' ? h('div', {}, h('span', { class: 'badge vlm', title: coverTip(m) }, m.vision ? 'VLM · 含视觉编码器' : 'VLM · 视觉编码器未建模'))
           : DOMAIN_ZH[m.domain] ? h('div', {}, h('span', { class: 'badge dom' }, DOMAIN_ZH[m.domain] + ' · 可评估')) : null,
           h('div', { class: 'small muted mono' }, m.hf_id),
           m.same_as.length ? h('div', { class: 'small muted' }, '同结构：' + m.same_as.map((x) => x.label).join('、')) : null),
@@ -1341,6 +1359,9 @@ async function init() {
     $('p-package_cards')._sync(); d2dPaint(); schedule();
   });
   $('c-slc_policy').addEventListener('change', (e) => { S.chipOver.slc_policy = e.target.value; schedule(); });
+  $('l-pp_split').addEventListener('change', (e) => { S.sc.pp_split = e.target.value; schedule(); });
+  for (const k of ['images', 'image_w', 'image_h'])
+    bindNumber('s-' + k, () => S.sc.serving[k] ?? (k === 'images' ? 0 : 1024), (x) => (S.sc.serving[k] = x), { int: true });
   for (const k of ['batch', 'ctx', 'prompt', 'out_len', 'spec_k', 'microbatches'])
     bindNumber('s-' + k, () => S.sc.serving[k], (x) => (S.sc.serving[k] = x), { int: true });
   for (const k of ['spec_accept', 'tpot_slo_ms', 'ttft_slo_ms']) bindNumber('s-' + k, () => S.sc.serving[k], (x) => (S.sc.serving[k] = x));

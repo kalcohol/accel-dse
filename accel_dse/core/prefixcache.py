@@ -23,6 +23,7 @@ replica's transient prefill KV, the queueing model's larger batch caps shrinking
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 from .memplan import stage_storage
 from .parallel import plan_stages
@@ -86,10 +87,13 @@ def lru_hit(n: int, alpha: float, K: float) -> float:
     return sum(c * q * h for (c, q), h in zip(g, resident(g, K)))
 
 
-def per_card_bytes(model, layout, tokens: int) -> list[float]:
-    """Bytes of one cached prefix of ``tokens`` tokens on one card of each pipeline stage (KV + idx + state)."""
+def per_card_bytes(model, layout, tokens: int, ranges: list | None = None) -> list[float]:
+    """Bytes of one cached prefix of ``tokens`` tokens on one card of each pipeline stage (KV + idx + state).
+    ``ranges`` = the evaluation's stage layer ranges (0.62: the PP split is cost-balanced, not equal counts)."""
     out = []
-    for st in plan_stages(model.n_layers, layout.pp):
+    sts = plan_stages(model.n_layers, layout.pp) if ranges is None else \
+        [SimpleNamespace(first=a, last=b, has_embed=i == 0, has_head=i == len(ranges) - 1) for i, (a, b) in enumerate(ranges)]
+    for st in sts:
         s = stage_storage(model, st.first, st.last, st.has_embed, st.has_head, layout.shard, tokens, 0)
         out.append(s.kv_per_seq + s.idx_per_seq + s.state_per_seq)
     return out
@@ -98,7 +102,7 @@ def per_card_bytes(model, layout, tokens: int) -> list[float]:
 def capacity(model, result, tokens: int, cache_GB: float | None) -> dict:
     """Prefixes one replica can hold (``result`` = that pool's evaluation at its operating batch)."""
     lay = result.scenario.layout
-    per = per_card_bytes(model, lay, tokens)
+    per = per_card_bytes(model, lay, tokens, [s.layers for s in result.stages])
     cps = lay.cards // lay.pp                     # cards per stage
     foot = sum(b * cps / lay.dp for b in per)     # one prefix, all cards of one DP group
     free = [max(0.0, s.mem.dram_cap - s.mem.dram_need) for s in result.stages]

@@ -115,7 +115,7 @@ OFFLINE_REASONS = {
 }
 
 # ---------------------------------------------------------------- listing: vendor (厂商) → family; domain is only a badge
-DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态，评估语言主干）", "gen": "视频生成（DiT）", "protein": "蛋白质"}
+DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态：语言主干 + 视觉编码器）", "gen": "视频生成（DiT）", "protein": "蛋白质"}
 OFFLINE_DOMAINS = {"video": "gen", "protein": "protein"}     # series_catalog domain → listing domain (not on core v2)
 PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only releases) — listing order
     ("alibaba", "阿里（Qwen · Wan）", ("Qwen/", "Wan-AI/")), ("deepseek", "DeepSeek（深度求索）", ("deepseek-ai/",)),
@@ -320,6 +320,9 @@ def labels(spec: ModelSpec) -> dict:
         "release_params_B": (pc["release"] or 0) / 1e9,
         "param_err": pc["rel_err"],
         "vision_params_B": spec.vision_params / 1e9,
+        "vision": ({"label": spec.vision.label, "patch": spec.vision.patch, "merge": spec.vision.merge,
+                    "depth": spec.vision.depth, "hidden": spec.vision.hidden, "params_B": spec.vision.params / 1e9}
+                   if spec.vision else None),
         "notes": [n for n in spec.notes if not n.startswith(_COVER_FILTER)],
         "arch": spec.arch,
         "what_if": spec.what_if,

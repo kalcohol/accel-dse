@@ -58,7 +58,8 @@ class EnergyTable:
     pJ_bit_d2d: float | None = None    # per bit on the die-to-die tier (0.48)
     pJ_bit_net: float | None = None    # per bit on the cross-node network tier (0.50)
     idle_W_prefill: float | None = None  # PD report: static power per card of the prefill pool's chip (0.56; null = idle_W)
-    pJ_bit_host: float | None = None   # PD report: per bit on the host link (PCIe class) of a kv_policy=swap transfer (0.61.4)
+    pJ_bit_host: float | None = None   # per bit on the host link (PCIe class): PD kv_policy=swap transfers (0.61.4),
+    #                                    video offload weight reloads (0.62)
 
     def __post_init__(self):
         for f in fields(self):
@@ -134,6 +135,9 @@ def _counts(r) -> dict:
     if w is None:
         window = r.step
         unit = "token" if r.scenario.serving.phase == "decode" else "prompt token"
+        vis = getattr(r, "vision", None) or {}
+        for k, v in vis.get("acts", {}).items():      # 0.62: VLM encoder at prefill (replica totals)
+            c[k] += v
     elif w.kind == "gen":
         pl = r.pipeline or {}
         window = pl.get("period_s", r.latency)
@@ -159,6 +163,9 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
     u = a["units"] or 1.0
     per = {k: v / u for k, v in a["counts"].items() if k != "idle"}
     per["idle_card_s"] = r.scenario.layout.cards * a["window_s"] / u
+    host_b = (getattr(r, "pipeline", None) or {}).get("load_bytes", 0.0)
+    if host_b:              # 0.62: video sequential offload -- weights re-read over the host link every window
+        per["host"] = host_b / u
     out = {"unit": a["unit"], "window_s": a["window_s"], "units_per_window": a["units"],
            "counts_per_unit": per, "provided": table.provided,
            "missing": [f.name for f in fields(EnergyTable) if getattr(table, f.name) is None
@@ -173,6 +180,11 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
             j[k] = per[k] * e * 1e-12 * (8 if k in _BITS else 1)
     if table.idle_W is not None:
         j["idle"] = table.idle_W * per["idle_card_s"]
+    if per.get("host"):
+        if table.pJ_bit_host is not None:
+            j["host"] = per["host"] * table.pJ_bit_host * 1e-12 * 8
+        else:
+            out["host_note"] = "卸载放置每次从主机重载权重的字节未计能耗：未填 pJ_bit_host"
     tot = sum(j.values())
     out.update(J_per_unit=tot, J_by_action=j,
                avg_W_per_card=tot * u / a["window_s"] / r.scenario.layout.cards if a["window_s"] > 0 else 0.0)

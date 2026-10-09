@@ -111,5 +111,7 @@ def test_context_beyond_max_position_warns():
 
 
 def test_pp_imbalance_warning_only_for_heterogeneous_stacks():
-    w = lambda mid: [x for x in _eval({"model": mid, "layout": {"pp": 2}})["summary"]["warnings"] if "流水级按层数" in x]
+    # 0.62: the default split is cost-balanced; the equal-count warning is for pp_split = "layers"
+    w = lambda mid: [x for x in _eval({"model": mid, "layout": {"pp": 2}, "pp_split": "layers"})["summary"]["warnings"]
+                     if "流水级按层数" in x]
     assert w("esmfold") and not w("qwen3-8b")

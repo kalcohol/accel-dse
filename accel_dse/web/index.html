@@ -92,6 +92,7 @@
       <label class="moe-only">ETP<input type="number" id="l-etp" min="1" step="1"></label>
       <label class="full-only sp-in" id="l-sp-lab" title="Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all（每 rank 算 heads/SP 个头的完整序列）"><span id="l-sp-name">SP</span><input type="number" id="l-sp" min="1" step="1"></label>
     </div>
+    <label class="inline" title="0.62：流水级怎样切层。cost（默认）= 按每层代价（含嵌入 / 输出头 / MTP / 级间传递，按级时间规则 max(阵列, 向量, DRAM, 链路) + 同步）找使最慢级最快的连续切分，再与按层数均分的结果在完整模型上比较，取更快且放得下的；layers = 按层数均分（0.61 及以前）">PP 切分<select id="l-pp_split"><option value="cost">按代价平衡（默认）</option><option value="layers">按层数均分</option></select></label>
     <div class="small muted moe-only">MoE 约束 EP·ETP = TP·DP（注意力按 TP、DP 切分，专家按 EP、ETP 切分）；修改时自动补齐 ETP。</div>
     <div class="small muted full-only">视频 / 蛋白质：卡数 = PP·TP·DP·SP。DP 切分前向 batch（视频含 CFG 的 cond / uncond 两路 = CFG 并行）；SP = Ulysses 序列并行，权重在 SP 组内复制。蛋白质结构模型：SP 位置为 DAP（pair / MSA 网格按残基轴切分，FastFold 动态轴并行），无 TP。</div>
     <button class="btn ghost sm" id="best-layout">搜索当前卡数的最优布局并应用</button>
@@ -211,6 +212,9 @@
       <label class="llm-only">TPOT SLO ms<input type="number" id="s-tpot_slo_ms" min="1" step="5"></label>
       <label class="llm-only">TTFT SLO ms<input type="number" id="s-ttft_slo_ms" min="1" step="100"></label>
       <label>微批数<input type="number" id="s-microbatches" min="0" step="1" title="0 = 自动（= PP）"></label>
+      <label class="vlm-only" title="每请求图像数（VLM）：视觉编码器在 prefill 时运行（与语言 prefill 串行），图像 token 加进 prompt 与 KV。默认 0 = 只算文本">图像 / 请求<input type="number" id="s-images" min="0" max="64" step="1"></label>
+      <label class="vlm-only" title="图像宽（像素），按各模型发布的预处理器缩放 / 切块；默认 1024×1024 「假设」">图像宽 px <span class="tag assume">假设</span><input type="number" id="s-image_w" min="1" max="16384" step="64"></label>
+      <label class="vlm-only" title="图像高（像素）">图像高 px<input type="number" id="s-image_h" min="1" max="16384" step="64"></label>
       <label class="moe-only" title="MoE 负载倾斜：最忙的 EP rank 收到的 token-专家对 / 平均值。1 = 均匀路由（默认）。最忙 rank 决定级时间；all-to-all 按最忙 rank 的载荷计；能耗计数不变（倾斜只在 rank 间搬工作）。实测每专家 token 分布可经 API / CLI 的 moe_expert_load 给出">MoE 倾斜 <span class="tag assume">假设</span><input type="number" id="s-moe_skew" min="1" max="64" step="0.05"></label>
     </div>
     <label class="inline"><input type="checkbox" id="best-batch"> <span id="best-batch-label">自动取满足 TPOT SLO 的最大 batch</span></label>
@@ -305,7 +309,7 @@
       <label title="节点内 scale-up 层（封装之间）每发送 bit 的能耗，pJ">pJ / bit 节点内<input type="number" id="e-pJ_bit_link" min="0" step="0.5"></label>
       <label title="封装内 die-to-die 层每发送 bit 的能耗，pJ（D2D 开且每封装 die 数 > 1 时才有流量）">pJ / bit D2D<input type="number" id="e-pJ_bit_d2d" min="0" step="0.1"></label>
       <label title="跨节点网络每发送 bit 的能耗，pJ（每节点卡数 > 0 且通信组跨节点时才有流量）">pJ / bit 跨节点<input type="number" id="e-pJ_bit_net" min="0" step="0.1"></label>
-      <label title="PD kv_policy = swap：换出 / 换入经主机链路（PCIe 类）每 bit 的能耗，pJ（只用于 PD 能耗；不填则不计）">pJ / bit 主机链路<input type="number" id="e-pJ_bit_host" min="0" step="0.1"></label>
+      <label title="主机链路（PCIe 类）每 bit 的能耗，pJ：PD kv_policy = swap 的换出 / 换入，以及视频卸载放置每次从主机重载的权重（0.62）；不填则不计">pJ / bit 主机链路<input type="number" id="e-pJ_bit_host" min="0" step="0.1"></label>
       <label title="系统级缓存命中每 bit 的能耗，pJ（SLC MiB > 0 时才有流量；DRAM 只计未命中）">pJ / bit SLC<input type="number" id="e-pJ_bit_slc" min="0" step="0.1"></label>
       <label title="每卡静态 / 空闲功耗，W（× 卡数 × 时间窗）">静态 W / 卡<input type="number" id="e-idle_W" min="0" step="5"></label>
       <label title="PD 报告：prefill 池芯片每卡静态功耗，W（prefill 芯片与 decode 不同时填；空 = 同上）">静态 W / 卡 · PD prefill<input type="number" id="e-idle_W_prefill" min="0" step="5"></label>
@@ -403,7 +407,7 @@
 
   <section class="tab" id="tab-models" hidden>
     <p class="small muted">按厂商 → 系列排列，同一厂商的 LLM、VLM、视频生成与蛋白质模型放在一起（带领域标记）；系列内按尺寸从大到小，官方量化版（FP8 / AWQ）紧跟原版；已按发布接入 v2 的视频（Wan2.1、CogVideoX）与蛋白质（ESM-2）模型可评估，其余标「暂未接入 v2」。三轴标签：来源（官方 / 镜像）× 覆盖 × 按发布的 dtype；参数量由发布的 safetensors 头统计，并与按 config 推导的值核对。</p>
-    <p class="small"><b>覆盖度</b>指本工具对该模型结构的建模覆盖程度，与模型好坏无关：<span class="badge cov full">完整</span> 全部算子按发布结构逐项建模；<span class="badge cov partial">部分</span> 主干逐项建模，个别机制近似（见「近似之处」）；<span class="badge cov proxy">架构代理</span> 含未建模的结构，结果只作量级参考。VLM 只评估语言主干，视觉编码器未建模；视频生成默认整条 pipeline：DiT 去噪主干 + 文本编码器 + VAE 解码（按发布检查点头建模，与去噪串行「假设」；组件放置可选常驻 / 文本编码器分片 / 顺序卸载，默认自动取第一个放得下的；工作负载里取消勾选即只看 DiT）。</p>
+    <p class="small"><b>覆盖度</b>指本工具对该模型结构的建模覆盖程度，与模型好坏无关：<span class="badge cov full">完整</span> 全部算子按发布结构逐项建模；<span class="badge cov partial">部分</span> 主干逐项建模，个别机制近似（见「近似之处」）；<span class="badge cov proxy">架构代理</span> 含未建模的结构，结果只作量级参考。VLM 的视觉编码器（ViT + 合并 / 投影）按发布配置与预处理器逐项建模（图像数默认 0 = 只算文本，在「服务」里设图像数与分辨率）；视频生成默认整条 pipeline：DiT 去噪主干 + 文本编码器 + VAE 解码（按发布检查点头建模，与去噪串行「假设」；组件放置可选常驻 / 文本编码器分片 / 顺序卸载，默认自动取第一个放得下的；工作负载里取消勾选即只看 DiT）。</p>
     <p class="small" id="models-summary"></p>
     <div class="scroll"><table class="tbl" id="models-tbl"></table></div>
     <details class="notes"><summary>未单列的发布（仍可按 id 评估，也都参与参数核对）</summary><ul id="models-unlisted"></ul></details>
@@ -416,12 +420,12 @@
     <p id="honesty-text"></p>
     <h4>范围</h4>
     <ul>
-      <li>LLM 推理：decode / prefill / goodput；VLM 只算语言主干。</li>
-      <li>视频生成（0.41 起）：Wan2.1-T2V（1.3B / 14B）与 CogVideoX（2b / 5b）的 DiT 去噪主干，全 3D 注意力（不是时空分解），每个去噪步按 CFG 前向 1–2 次；指标为单段延迟、每帧延迟、帧/s/卡。文本编码器与 VAE 未建模（覆盖「部分」）。其余视频模型（HunyuanVideo、Wan2.2、LTX、Mochi 等）仍为目录条目。</li>
-      <li>蛋白质（0.41 起）：ESM-2（650M / 3B）编码器一次前向；指标为批延迟、序列/s/卡、残基/s/卡。AlphaFold / ESMFold / Protenix 等结构预测模型仍为目录条目（未接入）。分子动力学 / 力场不在范围内（目录中也无此类条目）。</li>
+      <li>LLM 推理：decode / prefill / goodput；VLM 另计视觉编码器（prefill 时运行，图像 token 进入 prompt / KV；0.62 起）。</li>
+      <li>视频生成（0.41 起）：Wan2.1 / Wan2.2、CogVideoX、HunyuanVideo、LTX-Video、Mochi、Open-Sora、MiniMax-H3 的 DiT 去噪主干（按各自发布的注意力形式），每个去噪步按 CFG 前向 1–2 次；默认整条 pipeline：文本编码器 + 去噪 + VAE 解码（按发布检查点头建模，组件放置可选常驻 / 分片 / 卸载），工作负载里可只看 DiT；指标为单段延迟、每帧延迟、帧/s/卡。</li>
+      <li>蛋白质（0.41 起）：ESM-2（650M / 3B）编码器一次前向；结构预测 ESMFold、OpenFold、AlphaFold2、Boltz-1、Protenix（主干 / 循环 / 扩散按发布配置）；指标为批延迟、序列/s/卡、残基/s/卡。其余结构模型仍为目录条目；分子动力学 / 力场不在范围内（目录中也无此类条目）。</li>
       <li>「架构代理」：模型含有尚未逐项建模的结构（如超连接、n-gram 查找表、压缩稀疏注意力），参数按发布计入，部分计算按近似处理。</li>
       <li>dtype 按发布；芯片不支持的格式按反量化 / 上转换计入向量单元开销。自由覆盖只作为标注的 what-if。</li>
-      <li>不做功耗 / 面积 / 成本估计。</li>
+      <li>不内置任何能耗、面积或成本数值：能耗 = 动作计数 × 用户填写的每动作能耗；面积只是用户给出密度时的代理预算检查；不做成本估计。</li>
     </ul>
     <h4>校验</h4>
     <p>V1 参数量对照发布（55 个发布，±0.5%）；V2 H100 类配置的趋势区间；V3 对照 GenZ（LPDDR 与可比的 HBM 点）。详见 <code>docs/MODEL.md</code>，命令行 <code>python3 -m accel_dse validate</code>。</p>

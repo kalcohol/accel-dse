@@ -19,7 +19,7 @@ from .dtypes import FormatSupport
 from .d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS, d2d_GBps
 from .hardware import CHIPS, D2D_DEFAULT, NET_DEFAULT, Chip, Fabric, Link
 from .mapping import ORGS
-from .parallel import Layout
+from .parallel import PP_SPLITS, Layout
 
 
 SERVING_MAX = 1 << 24          # 0.61.1: upper bound of serving.batch / prompt / ctx / out_len / microbatches (16.7 M)
@@ -40,6 +40,13 @@ class Serving:
     moe_skew: float = 1.0          # MoE: busiest EP rank's token-expert pairs / mean (0.49; 1 = uniform) 「假设」
     moe_expert_load: tuple[float, ...] = ()   # MoE: relative tokens per expert (measured) → skew per EP layout
     prefix_cached: int = 0         # prefill: prompt tokens already in the KV cache (prefix-cache hit, 0.52) 「假设」
+    # 0.62 — VLM images per request (vision encoder at prefill; image tokens join the prompt / KV).  Serialised only
+    # when not default (scenario hashes of earlier versions unchanged).  0 = text-only request.
+    images: int = field(default=0, metadata={"omit_default": True})
+    image_w: int = field(default=1024, metadata={"omit_default": True})     # 「假设」 typical image, px
+    image_h: int = field(default=1024, metadata={"omit_default": True})
+    # internal: image tokens already added to prompt / ctx by vision.expand_images (never serialised or accepted)
+    image_tokens: int = field(default=0, metadata={"internal": True})
 
     def __post_init__(self):
         if self.phase not in ("decode", "prefill"):
@@ -60,6 +67,12 @@ class Serving:
             raise ValueError("serving.prefix_cached must be an integer in [0, prompt)")
         if not (0.0 <= self.spec_accept <= 1.0):
             raise ValueError("serving.spec_accept must be in [0, 1]")
+        for k, lo, hi in (("images", 0, 64), ("image_w", 1, 16384), ("image_h", 1, 16384), ("image_tokens", 0, SERVING_MAX)):
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                raise ValueError(f"serving.{k} must be an integer in [{lo}, {hi}]")
+        if max(self.image_w, self.image_h) > 200 * min(self.image_w, self.image_h):
+            raise ValueError("serving.image_w / image_h: aspect ratio must be ≤ 200 (Qwen2-VL smart_resize limit)")
         for k in ("tpot_slo_ms", "ttft_slo_ms"):
             v = getattr(self, k)
             if not (v > 0 and math.isfinite(v)):
@@ -302,10 +315,13 @@ class Scenario:
     node_cards: int = 0                                  # cards per node; 0 = one node (cross-node tier unused)
     pd: PDConfig = PDConfig()                            # prefill / decode disaggregation (0.50; off = colocated)
     fabric: Fabric = Fabric()                            # topology-aware collectives (0.59; off = 0.50 α-β tiers) 「假设」
+    pp_split: str = field(default="cost", metadata={"omit_default": True})   # 0.62: PP stages balanced by cost | "layers"
 
     def __post_init__(self):
         if self.mapping not in ORGS:
             raise ValueError(f"mapping must be one of {ORGS}")
+        if self.pp_split not in PP_SPLITS:
+            raise ValueError(f"pp_split must be one of {PP_SPLITS}")
         if isinstance(self.package_cards, bool) or not isinstance(self.package_cards, int) \
                 or not 1 <= self.package_cards <= 1024:
             raise ValueError("package_cards must be an integer in [1, 1024]")
@@ -345,8 +361,9 @@ class Scenario:
         and pd.decode_cards is validated against the layout — irrelevant to a colocated evaluation."""
         return self if self.pd == PDConfig() else dataclasses.replace(self, pd=PDConfig())
 
-    def to_dict(self) -> dict:
-        return _to_plain(self)
+    def to_dict(self, full: bool = False) -> dict:
+        """Plain dict (hash input).  ``full``: also the fields left at an omit-when-default value (0.62)."""
+        return _to_plain(self, full)
 
     @staticmethod
     def from_dict(d: dict) -> "Scenario":
@@ -389,11 +406,24 @@ def _num_canon(f, v):
     return v
 
 
-def _to_plain(o):
+def _serialised(o, full: bool = False) -> list:
+    """Fields written by to_dict: internal ones never; ``omit_default`` ones only when not at their default (0.62)
+    unless ``full`` (the API's default template lists every accepted key)."""
+    out = []
+    for f in fields(o):
+        if f.metadata.get("internal"):
+            continue
+        if not full and f.metadata.get("omit_default") and getattr(o, f.name) == f.default:
+            continue
+        out.append(f)
+    return out
+
+
+def _to_plain(o, full: bool = False):
     if is_dataclass(o):
-        return {f.name: _to_plain(_num_canon(f, getattr(o, f.name))) for f in fields(o)}
+        return {f.name: _to_plain(_num_canon(f, getattr(o, f.name)), full) for f in _serialised(o, full)}
     if isinstance(o, tuple):
-        return [_to_plain(x) for x in o]
+        return [_to_plain(x, full) for x in o]
     if isinstance(o, float) and not math.isfinite(o):
         raise ValueError("non-finite value in scenario")
     return o
@@ -489,7 +519,7 @@ def _coerce(v, t, where):
 def _from_plain(cls, d):
     if not isinstance(d, dict):
         raise ValueError(f"{cls.__name__}: expected object, got {_jtype(d)}")
-    known = {f.name: f for f in fields(cls)}
+    known = {f.name: f for f in fields(cls) if not f.metadata.get("internal")}
     unknown = set(d) - set(known)
     if unknown:
         raise ValueError(f"{cls.__name__}: unknown keys {sorted(unknown)}")

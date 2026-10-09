@@ -3,6 +3,68 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.62.0] - 2026-10-09
+
+第五轮：补上两个已知的覆盖缺口（VLM 视觉编码器；PP 按代价切分，设为默认），视频卸载的主机流量能耗，部分共享前缀字节核对，第四轮修正回归。
+
+### 新增
+- **VLM 视觉编码器**（建模说明 §20）：目录里 8 个 VLM 的视觉塔 + 合并 / 投影按发布 vision_config 与图像预处理器建模（patch、动态分辨率、空间合并、进入语言模型的 token、bf16 按发布）。7 个模型 × 3 种分辨率的 token 数与 FLOPs 与 transformers / 发布 remote code 的 FlopCounterMode 计数逐一精确一致，参数等于发布 params_vision。场景 `serving.images`（默认 0 = 只算文本，既有结果不变）、`serving.image_w / image_h`（默认 1024×1024「假设」）；编码器在 prefill 时运行（首级数据并行「假设」），图像 token 进入 prompt / KV / PD 长度；`summary.vision`；CLI `--images --image-size WxH`；Web 服务组输入（只在 VLM 显示）与「视觉编码器」卡片；扫描路径 serving.images / image_w / image_h。覆盖标签改为「VLM · 含视觉编码器」。
+- **PP 按代价切分（默认）**（§21）：`pp_split = "cost"` 用逐层代价（含嵌入 / 输出头 / MTP / 级间传递）求使最慢级最快的连续切分，候选与按层数均分一起由完整模型裁决（节拍不劣、不会失去 fit）；`pp_split = "layers"` 保留旧切分；CLI `--pp-split`，Web 布局组「PP 切分」，CLI eval 打印各级层范围。
+
+### 修正（§19.14）
+- **PD 带缓存前缀的 KV 交接字节**按层类型计（滑窗 min(W, S − p)、递归状态整份、压缩条目按 ⌈·/c⌉），原为整请求 × (S − p)/S。例 S 8192 / p 4096：Qwen3.8-27B 346.9 → 425.3 MB，Kimi-K3 345.6 → 577.9 MB，GLM-5.3-Flash 134.0 → 210.3 MB；纯 GQA 不变。
+- **DeepSeek-V4.1-Flash** 对齐器（73.41 M 参数）从 other 归入 vision：params_llm 748.568 → 748.495 B，params_vision 0.412 → 0.485 B，参数偏差 −0.051 % → −0.042 %（`scripts/summarize_release.py` 视觉正则补 aligner）。
+- **视频卸载重载**的主机链路字节（每次重载全副本）按 `energy.pJ_bit_host` 计入能耗 `host`，未填时 `host_note`。例 Wan2.1-14B 单卡：69.0 GB / 段。
+- **Kimi-K2.7-Code** 补进图像预处理表（与 K2.5 相同）。
+- 关于页与建模说明 §2 的范围说明过时（视频 pipeline、结构模型已接入；能耗 / 面积是用户表驱动），已改写。
+
+### 指纹变化（0.61.4 → 0.62.0）
+- 默认场景（PP = 1）、images = 0 的所有结果、场景哈希：不变。
+- 变化只在 PP > 1，全部是 cost 切分带来的节拍下降（0 个变慢、0 个 fits 变化；step 有变化的配置：单节点指纹 134 / 1356、多节点 168 / 985、fabric 715 / 3150），按模型（step_ms 变化，mem × mapping 或节点配置的范围）：
+  - alphafold2：PP2·TP1 full -12.0…-7.3%；PP4·TP1 full -24.9%
+  - boltz-1：PP2·TP1 full -35.5…-34.7%；PP4·TP1 full -49.7%
+  - deepseek-v3：PP2·TP1 decode -3.2…-1.0%；PP2·TP2·DP2·EP4 decode -3.1%
+  - deepseek-v3.2：PP2·TP1 decode -3.2…-1.6%；PP2·TP2·DP2·EP4 decode -3.0%
+  - deepseek-v4-flash：PP2·TP1 decode -0.0%
+  - deepseek-v4.1-flash：PP2·TP1 prefill -6.0…-5.7%；PP2·TP2·DP2·EP4 prefill -6.0%
+  - esmfold：PP2·TP1 full -34.7…-34.3%；PP4·TP1 full -46.6%
+  - glm-4.5-air：PP2·TP1 decode -1.2…-1.0%；PP2·TP2·DP2·EP4 decode -2.3%
+  - glm-4.6：PP2·TP1 decode -2.1%；PP2·TP2·DP2·EP4 decode -2.1%
+  - glm-5.2：PP2·TP1 decode -2.5%；PP2·TP2·DP2·EP4 decode -2.5%
+  - glm-5.3：PP2·TP1 decode -3.6…-3.2%；PP2·TP2·DP2·EP4 decode -3.4%
+  - glm-5.3-flash：PP2·TP1 decode -3.6…-3.1%；PP2·TP2·DP2·EP4 decode -3.5%
+  - gpt-oss-120b：PP2·TP1 decode -9.1…-0.8%；PP2·TP2·DP2·EP4 decode -9.3%
+  - gpt-oss-20b：PP2·TP1 decode -12.3…-2.1%；PP2·TP2·DP2·EP4 decode -12.5…-12.2%
+  - llama-3.1-8b：PP2·TP1 decode -5.6…-2.4%；PP2·TP4 decode -4.7…-4.6%；PP4·TP2 decode -11.0…-11.0%
+  - llama-3.2-1b：PP2·TP1 decode -12.6…-3.4%；PP2·TP4 decode -10.7…-10.7%；PP4·TP2 decode -36.2…-35.8%
+  - llama-3.2-3b：PP2·TP1 decode -6.0…-3.7%；PP2·TP4 decode -6.4%；PP4·TP2 decode -20.4…-20.2%
+  - llama-3.3-70b：PP2·TP1 decode -0.4…-0.0%；PP2·TP4 decode -0.3%；PP4·TP2 decode -0.9%
+  - magistral-small：PP2·TP1 decode -0.7…-0.6%；PP2·TP4 decode -0.3%；PP4·TP2 decode -1.2%
+  - openfold：PP2·TP1 full -3.6…-2.4%；PP4·TP1 full -0.5%
+  - phi-4：PP2·TP1 decode -1.6…-1.5%；PP2·TP4 decode -0.7…-0.7%；PP4·TP2 decode -3.0%
+  - protenix：PP2·TP1 full -37.9…-22.7%；PP4·TP1 full -50.4%
+  - qwen2.5-72b：PP2·TP1 decode -0.9…-0.4%；PP2·TP4 decode -0.8%；PP4·TP2 decode -1.7%
+  - qwen3-0.6b：PP2·TP1 decode -7.0…-6.1%；PP2·TP4 decode -5.7…-5.0%；PP4·TP2 decode -24.2…-23.6%
+  - qwen3-1.7b：PP2·TP1 decode -9.9…-3.7%；PP2·TP4 decode -6.5%；PP4·TP2 decode -27.1…-26.8%
+  - qwen3-235b-a22b：PP2·TP2·DP2·EP4 decode -0.1%
+  - qwen3-235b-a22b-fp8：PP2·TP1 decode -2.0…-0.9%；PP2·TP2·DP2·EP4 decode -3.9%
+  - qwen3-30b-a3b：PP2·TP1 decode -2.9…-0.7%；PP2·TP2·DP2·EP4 decode -3.7…-3.6%
+  - qwen3-30b-a3b-fp8：PP2·TP1 decode -10.0…-3.3%；PP2·TP2·DP2·EP4 decode -10.0%
+  - qwen3-32b：PP2·TP1 decode -1.5…-0.6%；PP2·TP4 decode -1.2%；PP4·TP2 decode -2.8%
+  - qwen3-32b-awq：PP2·TP1 decode -5.5…-0.6%；PP2·TP4 decode -5.5…-5.3%；PP4·TP2 decode -14.7%
+  - qwen3-32b-fp8：PP2·TP1 decode -2.9%；PP2·TP4 decode -2.9%；PP4·TP2 decode -9.7%
+  - qwen3-4b：PP2·TP1 decode -4.9…-3.0%；PP2·TP4 decode -5.1%；PP4·TP2 decode -16.5…-16.4%
+  - qwen3-8b：PP2·TP1 decode -4.9…-4.0%；PP2·TP4 decode -5.0%；PP4·TP2 decode -15.2…-15.1%
+  - qwen3-8b-awq：PP2·TP1 decode -13.7…-4.0%；PP2·TP4 decode -9.8…-9.1%；PP4·TP2 decode -34.6…-34.2%
+  - qwen3-8b-fp8：PP2·TP1 decode -8.9…-4.9%；PP2·TP4 decode -8.3…-7.8%；PP4·TP2 decode -22.6%
+  - qwen3-next-80b-a3b：PP2·TP1 decode -3.1…-1.0%；PP2·TP2·DP2·EP4 decode -3.3…-3.3%
+  - qwen3.8-27b：PP2·TP1 decode -3.4…-3.3%；PP2·TP4 decode -3.1…-3.0%；PP4·TP2 decode -11.5%
+  - qwen3.8-flash-next：PP2·TP1 decode -3.9…-3.8%
+  - seed-oss-36b：PP2·TP1 decode -1.2…-0.4%；PP2·TP4 decode -0.9%；PP4·TP2 decode -2.2%
+  - fabric 指纹：deepseek-v3 PP2·TP4·DP4·EP16 −2.6 %、PP4·TP1·DP16·EP16 −11.0 %；llama-3.3-70b PP4·TP8 −0.2 %、PP8·TP4 −1.2 %；qwen3-32b PP8·TP2 −4.3 %（各 143 个拓扑 / 算法组合）。
+  - 视频（Wan / CogVideoX / MiniMax-H3）只在 PP4 有 ≤ 0.1 % 的变化，指纹 PP2 无变化。
+- 两个旧测试改为显式 `pp_split = "layers"`（MTP 只在末级、DeepSeek PP8 容量手算），一个 0.61.4 测试按新警告文本调整。
+
 ## [0.61.4] - 2026-10-09
 
 第四轮审计：第三轮修正回归、PD prefill 池预算、swap 主机链路能耗、混合格式、VLM 视觉编码器、投机解码 / MTP、长上下文、batch > 1 视频 / 蛋白、Pareto、数值极端。

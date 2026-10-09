@@ -38,7 +38,9 @@ def test_pipeline_decode_and_prefill_formulas():
 
 
 def test_mtp_draft_runs_on_last_stage_only():
-    base = Scenario(model="deepseek-v3", mem_id=HBM, layout=Layout(pp=8), serving=Serving(batch=8, ctx=2048))
+    # equal-count split so the stages compared hold the same layers (0.62's cost split moves layers off the MTP stage)
+    base = Scenario(model="deepseek-v3", mem_id=HBM, layout=Layout(pp=8), serving=Serving(batch=8, ctx=2048),
+                    pp_split="layers")
     a = evaluate(base)
     b = evaluate(base.replace("serving.spec_k", 1))
     assert b.tokens_per_step > 1.0

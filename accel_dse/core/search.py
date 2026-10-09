@@ -19,6 +19,7 @@ from .catalog import get_model
 from .evaluate import Result, evaluate
 from .parallel import Layout, enumerate_layouts
 from .scenario import Scenario
+from .vision import expand_images
 
 B_CAP = 4096
 B_CAP_PER_CARD = 64      # 0.60: batch cap per replica = max(B_CAP, 64 × cards) — 4096 = 64 × 64 at the old 64-card limit
@@ -277,7 +278,8 @@ def search_layouts(base: Scenario, cards: int, mappings: tuple[str, ...] | None 
             continue
         if objective == "goodput" and need > 0:
             rp, ok = _prefill_rate(bs.base)
-            c = bs.base.serving.prompt / bs.base.serving.out_len
+            sv_ = expand_images(bs.base, get_model(bs.base.model)).serving      # 0.62: image tokens are prompt
+            c = sv_.prompt / sv_.out_len
             denom = 1.0 / need - (c / rp if rp > 0 else float("inf"))
             if rp <= 0 or denom <= 0:
                 pruned += 1

@@ -311,7 +311,8 @@ class ModelSpec:
     quantized_release: bool = False
     what_if: bool = False                    # formats overridden by the user
     coverage_reasons: tuple[str, ...] = ()   # what is approximated (empty ⇔ coverage == full)
-    vision_params: int = 0                   # VLM vision encoder in the release (not modelled)
+    vision_params: int = 0                   # VLM vision encoder + projector params (bf16 as released; 0.62 modelled)
+    vision: object = None                    # core.vision.VisionSpec (0.62; None = no vision tower / text-only model)
     max_ctx: int = 0                         # config max_position_embeddings (0 = unknown) — warning only (0.61.4)
     # ---- non-autoregressive domains (video generation DiT / protein encoders); defaults = LLM
     domain: str = "llm"                      # llm | gen | protein
@@ -865,8 +866,10 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                                    f"（{gap / spec.release_params:+.1%}），见 docs/MODEL.md",))
         rel_gap = (spec.release_params - spec.params()) / spec.release_params if spec.release_params else 0.0
         mp = c.get("max_position_embeddings")
+        from .vision import vision_spec
+        vs = vision_spec(hf_id, cfg)
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap),
-                       vision_params=rel.get("params_vision") or 0,
+                       vision=vs, vision_params=vs.params if vs is not None else (rel.get("params_vision") or 0),
                        max_ctx=int(mp) if isinstance(mp, (int, float)) and not isinstance(mp, bool) and mp > 0 else 0)
         if spec.coverage == "full" and spec.coverage_reasons:
             spec = replace(spec, coverage="partial")
