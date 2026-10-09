@@ -264,7 +264,7 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
         d["t_ideal_w"] += idl * o.share; d["t_vec_w"] += (v - vw) * o.share   # 0.63: mean-rank work (energy, KPIs)
-        d["t_conv_w"] += vw
+        d["t_conv_w"] += vw * o.wshare        # 0.64: mean-rank weight elements (uneven TP / EP splits)
         d["flops"] += o.flops
         d["flops_u"] += o.flops * o.share / max(1, o.replicated)
         d["max_act"] = max(d["max_act"], o.act_bytes / max(o.count, 1))

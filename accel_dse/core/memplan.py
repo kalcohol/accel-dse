@@ -342,6 +342,10 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict) -> dict:
     act, wx = t.get("act", 0.0), t.get("w_extra", 0.0)
     out = {"weights": w + wx, "kv_read": kv_r, "kv_write": kv_w, "state": st, "lookup": t["lookup"], "act": act,
            "total": w + wx + kv_r + kv_w + st + t["lookup"] + act, "w_touched": t["hot"] + t["exp"]}
+    # 0.64: routed-expert weight reads alone (DRAM after any SLC hits / SLC hits) — what a DP rank without sequences
+    # still moves under EP (energy action counts)
+    w_e = t["exp"] * miss_exp
+    out["exp_dram"], out["exp_slc"] = w_e, 0.0
     if mp.slc <= 0:
         return out
     if mp.slc_policy == "lru":
@@ -354,6 +358,11 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict) -> dict:
         w_hit = t["hot"] * f_hot + t["exp"] * f_exp
         wx_hit = wx * (w_hit / w) if w > 0 else 0.0     # streamed weight re-reads follow the weights' SLC share
         hit = {"weights": w_hit + wx_hit, "kv_read": kv_r * f_kv, "state": st * f_kv}
+    if mp.slc_policy == "lru":
+        e_hit = w_e if mp.slc_all else 0.0
+    else:
+        e_hit = t["exp"] * f_exp
+    out["exp_dram"], out["exp_slc"] = w_e - e_hit, e_hit
     for k, v in hit.items():
         out[k] -= v
     s = sum(hit.values())

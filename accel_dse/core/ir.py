@@ -142,6 +142,8 @@ class Op:
                               # time but only their share of work: energy / FLOP KPIs use work × share (rank_shares)
     kv_pre: float = 0.0       # streamed LLM prefill attention (0.63): share of the attended K/V already read from the
                               # cache (counted in kv_read) — its first pass is not charged again by act_stream
+    wshare: float = 1.0       # 0.64: mean-rank weight elements / this (busiest) rank's — weight dequant (once per pass)
+                              # is weight work, not token work: uneven TP / EP splits (rank_shares) scale it by this
     in_elems: float = 0.0     # conv as implicit GEMM: elements of the real input tensor (the M×K im2col matrix is
                               # virtual — DRAM streaming moves the input once, 0 = M·K·count)
 
@@ -822,9 +824,26 @@ def rank_shares(ops: list[Op], sh: Shard, global_ops) -> list[Op]:
             u_f[o.name] = u_f.get(o.name, 0.0) + o.flops * o.share / r
             u_v[o.name] = u_v.get(o.name, 0.0) + o.vec * o.share   # vector-only ops: ``replicated`` marks the
             # replicated latent-cache bytes (MLA softmax), the score work itself is split by heads
+    # 0.64: weight share — Σ_rank w_params = copies · W_global, copies = ⌊N · w_rank / W_global⌋ (≥ 1; the integer
+    # replication of the weight over DP / SP / replicated-over-TP ranks — a ceil split inflates the busiest rank by
+    # < one copy), wshare = copies · W_global / (N · w_rank).  假设: a partially replicated split (e.g. 2 KV heads on
+    # TP 3) is read as uneven, not replicated
+    g_w: dict = {}; u_w: dict = {}
+    for o in global_ops():
+        if o.kind != "comm" and o.w_params:
+            g_w[o.name] = g_w.get(o.name, 0.0) + o.w_params
+    for o in ops:
+        if o.kind != "comm" and o.w_params:
+            u_w[o.name] = u_w.get(o.name, 0.0) + o.w_params
     out = []
     for o in ops:
         x = 1.0
+        xw = 1.0
+        if o.kind != "comm" and u_w.get(o.name, 0) > 0 and g_w.get(o.name, 0) > 0:
+            cp = max(1, math.floor(n * u_w[o.name] / g_w[o.name] + 1e-9))
+            xw = min(1.0, cp * g_w[o.name] / (n * u_w[o.name]))
+        if xw < 1.0 - 1e-12:
+            o = replace(o, wshare=xw)
         if o.kind != "comm" and o.name in g_f:
             if o.flops > 0 and u_f[o.name] > 0:
                 x = g_f[o.name] / (n * u_f[o.name])

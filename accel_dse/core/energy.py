@@ -119,7 +119,11 @@ def _counts(r) -> dict:
     b_mb = -(-seqs // max(1, r.microbatches))
     b_rank = -(-b_mb // lay.dp)
     dp_act = min(lay.dp, -(-b_mb // b_rank)) if b_rank else lay.dp
-    if lay.ep > 1:      # 0.63: with expert parallelism a DP rank without sequences still runs its experts
+    # 0.63: with expert parallelism a DP rank without sequences still runs its experts.  0.64: it moves only its
+    # routed-expert weights (no attention / dense / KV / activation bytes) — DRAM / SLC bytes of the idle ranks are
+    # the stage's expert reads (StageResult.dram["exp_dram"]), not the busy rank's whole step
+    idle = (lay.dp - dp_act) * lay.tp * lay.sp if lay.ep > 1 else 0
+    if lay.ep > 1:
         dp_act = lay.dp
     ranks = lay.tp * lay.sp * dp_act
     mb_fill = seqs / (max(1, r.microbatches) * b_mb) if b_mb else 1.0
@@ -132,8 +136,13 @@ def _counts(r) -> dict:
         c["mac"] += st.ideal_w * ch.macs * f * nw
         c["vec"] += st.vec_w * ch.lanes * f * nw + st.conv_w * ch.lanes * f * n   # weight dequant: per pass
         c["sram"] += st.sram_bytes * n
-        c["dram"] += t.dram_bytes * n
-        c["slc"] += t.slc_bytes * n
+        if idle:
+            nb = passes * (ranks - idle)
+            c["dram"] += t.dram_bytes * nb + st.dram.get("exp_dram", t.dram_bytes) * passes * idle
+            c["slc"] += t.slc_bytes * nb + st.dram.get("exp_slc", t.slc_bytes) * passes * idle
+        else:
+            c["dram"] += t.dram_bytes * n
+            c["slc"] += t.slc_bytes * n
         c["d2d"] += t.d2d_bytes * n
         c["net"] += t.net_bytes * n
         c["link"] += scaleup_bytes(t) * n
