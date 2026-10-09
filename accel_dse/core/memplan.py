@@ -45,6 +45,7 @@ Video pipeline components (text encoder, VAE) do not use the SLC.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from dataclasses import dataclass, replace
 
 from .dtypes import fmt as _fmt
@@ -238,6 +239,53 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
                    slc_residency=sres)
 
 
+ACC_BYTES = 4.0     # 0.64: output-tile partial sums held on chip in fp32 「假设」
+K_TILE = 128        # 0.64: K slice streamed per step of an output-stationary tile 「假设」
+
+
+@lru_cache(maxsize=1 << 16)
+def gemm_blocking(m: int, k: int, n: int, a_bytes: float, w_bytes: float, budget: float) -> tuple[int, int]:
+    """0.64 — 2-D blocking of C[m,n] = A[m,k]·W[k,n] under an on-chip budget (bytes): (times A is read, times W is
+    read) of the cheapest of three loop nests (DRAM bytes = A·r_A + W·r_W + C, C written once):
+      output-stationary  bm×bn partial sums (fp32) resident, A / W streamed in K slices of ``K_TILE``:
+                         bm·bn·4 + kt·(bm·a + bn·w) ≤ budget → r_A = ⌈n/bn⌉, r_W = ⌈m/bm⌉ (best bn per bm, bm over
+                         powers of two and m — the classic I/O-lower-bound tiling, traffic ~ 2·m·n·k/√budget);
+      weight-stationary  a k×bn weight block resident, A rows streamed: k·bn·w + k·a + 4·bn ≤ budget
+                         → r_A = ⌈n/bn⌉, r_W = 1;
+      activation-stationary  a bm×k activation block resident, W columns streamed: bm·k·a + k·w + 4·bm ≤ budget
+                         → r_A = 1, r_W = ⌈m/bm⌉.
+    a, w = bytes per element of A / W (A from ``a_bytes`` so implicit-GEMM inputs count their real size).  Every
+    feasible set grows with the budget, so the traffic never increases with SRAM.  0.63 chose between the two
+    one-sided extremes (activation chunks with full weight re-reads, or weight chunks with full activation re-reads).
+    A nest that does not fit even at 1×1 is skipped; if none fits (budget below one K slice) r = (n, m)."""
+    ea = a_bytes / max(1, m * k)          # A bytes per element
+    ew = w_bytes / max(1, k * n)
+    kt = min(k, K_TILE)
+    cost = lambda ra, rw: a_bytes * ra + w_bytes * rw
+    best = None
+
+    def take(ra: int, rw: int):
+        nonlocal best
+        if best is None or cost(ra, rw) < cost(*best) - 1e-9:
+            best = (ra, rw)
+    bn = int((budget - k * ea) // (k * ew + ACC_BYTES)) if k * ew + ACC_BYTES > 0 else n
+    if bn >= 1:
+        take(math.ceil(n / min(bn, n)), 1)
+    bm = int((budget - k * ew) // (k * ea + ACC_BYTES)) if k * ea + ACC_BYTES > 0 else m
+    if bm >= 1:
+        take(1, math.ceil(m / min(bm, m)))
+    cands = sorted({min(m, 1 << i) for i in range(0, max(1, m).bit_length() + 1)} | {m})
+    for bm in cands:
+        room = budget - kt * bm * ea
+        if room <= 0:
+            break
+        bn = int(room // (bm * ACC_BYTES + kt * ew))
+        if bn < 1:
+            continue
+        take(math.ceil(n / min(bn, n)), math.ceil(m / bm))
+    return best if best is not None else (n, m)
+
+
 def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
     """(activation DRAM bytes, extra weight re-read bytes) of one streamed op of a full-sequence forward."""
     budget = sram_bytes / 2.0
@@ -247,16 +295,13 @@ def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
         if a_in + a_out <= budget:
             return 0.0, 0.0
         # 0.63: each of the ``count`` instances (experts, heads, groups) has its own weight and activation slice,
-        # so the chunking is decided per instance (whole-op chunking re-read every expert's input per weight chunk)
+        # so the blocking is decided per instance.  0.64: 2-D blocking (gemm_blocking) instead of chunking one side.
         c = max(1, op.count)
         ai, ao, w = a_in / c, a_out / c, op.w_bytes / c
         if ai + ao <= budget:
             return 0.0, 0.0
-        act_chunked = ai + ao + w * math.ceil((ai + ao) / budget)
-        w_chunked = w + ai * math.ceil(w / budget) + ao
-        if act_chunked <= w_chunked:
-            return c * (ai + ao), c * w * (math.ceil((ai + ao) / budget) - 1)
-        return c * (ai * math.ceil(w / budget) + ao), 0.0
+        r_a, r_w = gemm_blocking(op.m, op.k, op.n, ai, w, budget)
+        return c * (ai * r_a + ao), c * w * (r_w - 1)
     if op.bmm:                  # operands and result are whole activations; each channel slice fits the budget,
         tot = (op.m * op.k + op.k * op.n + op.m * op.n) * op.count * ab     # so A, B are read and C written once
         return (tot, 0.0) if tot > budget else (0.0, 0.0)
