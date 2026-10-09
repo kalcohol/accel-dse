@@ -108,7 +108,8 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         if c.kind == "gqa":
             kv += ce * _cdiv(c.n_kv, sh.tp) * (c.qk_dim + c.v_dim) / c.compress * kvb
         elif c.kind == "mla":
-            kv += (math.ceil(ctx / c.compress) + (c.window or 0 if c.compress > 1 else 0)) * (c.kv_lora + c.rope_dim) * kvb
+            # 0.61.1: a sliding-window-only latent layer (compress 1) keeps min(ctx, window) entries (was ctx)
+            kv += ((math.ceil(ctx / c.compress) + (c.window or 0)) if c.compress > 1 else ce) * (c.kv_lora + c.rope_dim) * kvb
         elif c.kind == "linear":
             st += (_cdiv(c.n_state_heads, sh.tp) * c.state_dk * c.state_dv + _cdiv(c.conv_channels, sh.tp) * max(0, c.conv_kernel - 1)) * stb
         if c.idx_heads:

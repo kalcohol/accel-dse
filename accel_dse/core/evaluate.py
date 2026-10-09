@@ -23,7 +23,7 @@ from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages
 from .pipeline import TILING, pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
 from .scenario import Scenario
-from .ir import skew_from_load
+from .ir import red_bytes, skew_from_load
 from . import fabric
 from .schedule import StageTime, collective_seconds, fabric_collective, p2p_tier, spec_expected_tokens
 
@@ -518,7 +518,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         net_b = agg["net_bytes"]
         extra = []
         if pp > 1 and not st.has_head:
-            act = ph.batch * ph.q * m.hidden * _fmt(m.act_fmt).bytes / lay.dp
+            act = ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp      # 0.61.1: residual stream ≥ bf16
             bw, a, fd, fn = _p2p(sys, act, st.index, lay.cards // pp)
             link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
             extra.append((bw, _p2p_tier_of(fd, fn)))

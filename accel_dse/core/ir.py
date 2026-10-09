@@ -149,6 +149,13 @@ class Op:
         return self.w_params * self.w_bits / 8.0
 
 
+def red_bytes(model: ModelSpec) -> float:
+    """0.61.1: bytes per element of reductions / the residual stream on the wire (TP / ETP all-reduce partial sums, MoE
+    combine, PP hand-off): ≥ 2 (bf16) even when GEMM inputs are fp8 — DeepSeek-V3 report §3.3: dispatch in FP8,
+    combine in BF16; all-reduces of row-parallel outputs are bf16 in vLLM / SGLang 「假设」.  fp8 dispatch keeps 1 B."""
+    return max(_fmt(model.act_fmt).bytes, 2.0)
+
+
 def _cdiv(a: int, b: int) -> int:
     return -(-a // b)
 
@@ -240,7 +247,9 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
     if core.kind == "linear":
         h_loc = _cdiv(core.n_state_heads, tp)
         t = b_loc * q
-        st_bytes = h_loc * core.state_dk * core.state_dv * _fmt(model.state_fmt).bytes
+        # 0.61.1: + the conv state (kernel − 1 columns per channel) — stored by memplan, now also read / written
+        st_bytes = (h_loc * core.state_dk * core.state_dv
+                    + _cdiv(core.conv_channels, tp) * max(0, core.conv_kernel - 1)) * _fmt(model.state_fmt).bytes
         chunk = 64 if ph.kind == "prefill" else 1          # 「假设」 chunked-scan length
         vec = t * h_loc * core.state_dk * core.state_dv * 4 + t * h_loc * chunk * (core.state_dk + core.state_dv) * 2
         conv = _cdiv(core.conv_channels, tp) * core.conv_kernel * t * 2
@@ -259,6 +268,9 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         causal = 0.5 * (1 + ph.ctx / ctx_tot) if core.window is None and core.topk is None and core.compress == 1 else 1.0
         if core.window is not None or core.topk is not None or core.compress > 1:
             ce = min(ce, ctx_tot)
+            # 0.61.1: the first positions attend fewer keys than the cap (min(p, window / top-k / ⌈p/c⌉ + w)):
+            # charge the exact mean over the prompt positions, not the cap for every query (was ≤ 2× at prompt ≤ cap)
+            causal = core.keys_mean(ph.ctx, q) / ce
     if core.kind == "gqa":
         kv_loc = _cdiv(core.n_kv, tp)
         hq_loc = _cdiv(core.n_q, tp)
@@ -289,17 +301,27 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         sm_elems = b_loc * q * hq_loc * ce * causal
     if core.idx_heads:
         n_keys = math.ceil(ctx_tot / core.compress)
+        # 0.61.1: prefill — the query at position p scores ⌈p/c⌉ compressed keys (exact mean; was the full square for
+        # top-k / compressed layers); decode keeps every cached key
+        icaus = 1.0
+        if ph.kind != "decode":
+            cs = lambda m_: (lambda a, r: core.compress * a * (a + 1) // 2 + r * (a + 1))(*divmod(m_, core.compress))
+            icaus = (cs(ctx_tot) - cs(ph.ctx)) / q / n_keys
         ops.append(Op("indexer_score", "attn", li, m=q * core.idx_heads, k=core.idx_dim, n=n_keys, count=b_loc,
-                      causal=causal if core.compress == 1 else 1.0, replicated=tp,
+                      causal=icaus, replicated=tp,
                       kv_read=b_loc * n_keys * core.idx_dim * kvb if ph.kind == "decode" else 0.0,
                       vec=b_loc * q * n_keys * 2))
         ops.append(Op("indexer_kv_write", "vector", li, kv_write=b_loc * q * core.idx_dim * kvb / core.compress, replicated=tp))
     # KV cache traffic: read the attended entries (sparse/window aware), write the new ones
     if ph.kind == "decode":
-        attended = min(ce, ctx_tot) if core.topk is None else min(ce, ctx_tot)
-        kv_read = b_loc * attended * kv_tok * kvb
+        # 0.61.1: ``attended`` counts cache entries (compressed layers: ⌈ctx/c⌉ + window), each a full entry of
+        # kv_tok·c bytes — was × kv_tok (per original token), i.e. c× too few bytes (DeepSeek-V4: 4× / 128×)
+        attended = min(ce, ctx_tot)
+        kv_read = b_loc * attended * kv_tok * core.compress * kvb
     else:
-        kv_read = b_loc * ph.ctx * kv_tok * kvb           # prefix (cached) context only
+        # prefix (cached) context only; a sliding-window-only layer needs the last ``window`` tokens of it (0.61.1)
+        pre = min(ph.ctx, core.window) if (core.window and core.compress == 1 and core.topk is None) else ph.ctx
+        kv_read = b_loc * pre * kv_tok * kvb
     kv_write = b_loc * q * kv_tok * kvb
     ops.append(Op("softmax", "vector", li, vec=sm_elems * 5, kv_read=kv_read, kv_write=kv_write,
                   replicated=(tp if core.kind == "mla" else 1)))
@@ -314,6 +336,7 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
         return _full_layer_ops(model, li, L, ph, sh)
     h = model.hidden
     ab = _fmt(model.act_fmt).bytes
+    rb = red_bytes(model)
     tp, dp = sh.tp, sh.dp
     b_loc = _cdiv(ph.batch, dp)
     t = b_loc * ph.q                      # tokens through this rank's attention replica
@@ -331,7 +354,7 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
         hq = _cdiv(L.core.n_q, tp)
         ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
     if tp > 1:
-        ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
+        ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4))
     f = L.ffn
     if f.kind == "dense":
@@ -340,7 +363,7 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
             ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, "mlp"))
         ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4))
         if tp > 1:
-            ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
+            ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     elif f.kind == "moe":
         sh.check_moe()
         T = ph.tokens                       # global tokens in the stage step
@@ -361,13 +384,13 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
             pay = r.pairs_local * ein * ab
             ops.append(Op("moe_dispatch", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay,
                           comm_stride=sh.etp))
-            ops.append(Op("moe_combine", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay,
+            ops.append(Op("moe_combine", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay * rb / ab,
                           comm_stride=sh.etp))
         if sh.etp > 1:
             ops.append(Op("expert_allreduce", "comm", li, comm_kind="allreduce", comm_group=sh.etp,
-                          comm_bytes=r.pairs_local * ein * ab))
+                          comm_bytes=r.pairs_local * ein * rb))
         if tp > 1 and f.n_shared:
-            ops.append(Op("shared_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
+            ops.append(Op("shared_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     ops.append(Op("residual", "vector", li, vec=t * h * 2))
     return ops
 
@@ -620,6 +643,7 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         return _pair_layer_ops(model, li, L, ph, sh)
     h = model.hidden
     ab = _fmt(model.act_fmt).bytes
+    rb = red_bytes(model)
     tp, sp = sh.tp, sh.sp
     b = _cdiv(ph.batch, sh.dp)
     t = b * _cdiv(ph.q, sp)                    # tokens through this rank's GEMMs
@@ -634,18 +658,18 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
     ops += [lin("attn", l, "attn") for l in L.attn_linears]
     ops += _full_attn(model, li, L.core, ph, sh, b, cross=False)
     if tp > 1 and not L.fused_out:
-        ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
+        ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     if L.cross is not None:
         ops.append(Op("cross_norm", "vector", li, vec=t * h * 4))
         ops += [lin("cross", l, "attn") for l in L.cross_linears]
         ops += _full_attn(model, li, L.cross, ph, sh, b, cross=True)
         if tp > 1:
-            ops.append(Op("cross_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
+            ops.append(Op("cross_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     ops.append(Op("ffn_norm", "vector", li, vec=t * h * (4 + mod)))
     ops += [lin("mlp", l, "mlp") for l in L.ffn_linears]
     ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))     # GELU (tanh) / SwiGLU 「假设」 8 ops / element
     if tp > 1:
-        ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * ab))
+        ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     ops.append(Op("residual", "vector", li, vec=t * h * (2 + (2 if model.adaln else 0))))
     return ops
 

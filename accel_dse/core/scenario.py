@@ -22,6 +22,9 @@ from .mapping import ORGS
 from .parallel import Layout
 
 
+SERVING_MAX = 1 << 24          # 0.61.1: upper bound of serving.batch / prompt / ctx / out_len / microbatches (16.7 M)
+
+
 @dataclass(frozen=True)
 class Serving:
     phase: str = "decode"          # decode | prefill
@@ -41,12 +44,15 @@ class Serving:
     def __post_init__(self):
         if self.phase not in ("decode", "prefill"):
             raise ValueError("serving.phase must be decode|prefill")
+        # 0.61.1: booleans rejected (True passed as 1) and an upper bound (2^62 was accepted and evaluated)
         for k in ("batch", "prompt", "out_len"):
-            if not isinstance(getattr(self, k), int) or getattr(self, k) < 1:
-                raise ValueError(f"serving.{k} must be an integer ≥ 1")
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= SERVING_MAX:
+                raise ValueError(f"serving.{k} must be an integer in [1, {SERVING_MAX}]")
         for k in ("ctx", "microbatches", "spec_k"):
-            if not isinstance(getattr(self, k), int) or getattr(self, k) < 0:
-                raise ValueError(f"serving.{k} must be an integer ≥ 0")
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= SERVING_MAX:
+                raise ValueError(f"serving.{k} must be an integer in [0, {SERVING_MAX}]")
         if self.spec_k > 8:
             raise ValueError("serving.spec_k must be ≤ 8")
         if isinstance(self.prefix_cached, bool) or not isinstance(self.prefix_cached, int) \

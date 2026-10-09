@@ -3,6 +3,32 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.61.1] - 2026-10-09
+
+第一轮对抗式审计：手算复核稠密 / MoE / MLA / DSA / CSA / 线性注意力 / 视频 DiT / 结构模型 / PD 的 FLOPs、字节、KV、权重驻留与通信，跨模块（eval / sweep / layouts / CLI / API）一致性，默认关闭项等价，API 模糊测试（约 1.3 万个用例），以及 1440 / 1280 / 1024 / 820 px 宽度下的界面。
+
+### 修正（影响默认数值，见建模说明 §19.10）
+- **DeepSeek-V4 压缩层 decode 的 KV 读**被多除了一次压缩比（r = 4 层少 4×，r = 128 层少 128×），现在按完整条目计。
+- **滑窗 / top-k / 压缩注意力的 prefill** 改按每个 query 实际 key 数的精确平均计（原按上限计，DSA prompt 4096 时多 33%，prompt ≤ 2048 时 2×）。
+- **DSA / CSA 索引器的 prefill** 改为因果（原 top-k 与压缩层按整方阵计）。
+- **纯滑窗 latent 层**只存窗口内的 KV；有前缀缓存的 prefill 中，纯滑窗层只读最后一个窗口。
+- **线性注意力**每步读写 conv 状态（原只计存储）。
+- **fp8 激活的发布**：all-reduce、MoE combine、PP 交接按 bf16 计（dispatch 仍按 fp8）「假设」。
+- **serving 尺寸**上限 2²⁴，并拒绝布尔值。
+- 界面：窄卡片的数值自动缩小字号，不再被截成「…」；SLC 策略选项文字缩短。
+
+### 数值变化（默认指纹 1356 项中 197 项、多节点 985 项中 168 项、fabric 3150 项中 1432 项；fits / 瓶颈无翻转）
+- prefill 步时（100T 默认芯片，batch 8，prompt 4096）：
+  - DeepSeek-V3.2 −13.8 … −15.2 %（多节点 −15.2 … −19.5 %）
+  - GLM-5.3 −10.4 … −11.5 %，GLM-5.2 −6.4 … −7.3 %
+  - DeepSeek-V4.1-Flash −9.5 … −16.8 %，V4-Pro −5.6 … −5.7 %，V4-Flash −3.2 … −4.1 %
+  - GLM-5.3-Flash −3.1 … −3.9 %，gpt-oss −0.03 … −0.04 %
+- decode 步时：
+  - DeepSeek-V4 系 +0.1 … +0.6 %（多节点 +0.2 … +2.8 %；KV 读 / 步在 1P、ctx 32k–128k 时 +19 … +98 %，计算受限点步时不变）
+  - 线性注意力混合模型（Qwen3-Next、Qwen3.5/3.8、Kimi-K3、GLM-5.3-Flash）+0.03 … +0.3 %
+- DRAM 需求：DeepSeek-V4.1-Flash / V4-Flash −0.02 … −0.42 %
+- fabric 开、多节点、链路受限的 DeepSeek-V3 prefill：+2.3 … +26.9 %（20 项）；其余 1412 项只有链路字节变化。
+
 ## [0.61.0] - 2026-10-09
 
 性能（纯 Python、零依赖），以及交换机层数时延、NVLS 类 allgather / reduce-scatter、NCCL 第二棵树、传输协议（「假设」，默认关）。默认结果（1356 项指纹）与 0.60.0 逐字节一致（与旧 fp471 基线的 26 项 MiniMax-H3 / LPDDR 差异在 0.60.0 中已存在），985 项多节点 / D2D / PD 指纹与 3150 项 fabric 开的指纹均 0 diff；大规模 PD 报告全 JSON 与 0.60 对照 0 diff（B ≤ 1024 的个别值有 ≤ 3e-16 的舍入差）。

@@ -993,3 +993,19 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - auto 只会让结果变慢或不变（off 是两者最好的组合）。例：DeepSeek-V3 1024 卡 decode +2–3%（all-to-all 选 LL128），prefill +0.02–3%（大消息 Simple）。
 
 **0.61 剩余缺口**：ECMP / 拥塞 / incast；协议通道数（nChannels）与每通道带宽上限、LL 的 llMaxBw 未建模；reduce-scatter 未出现在推理算子图中；KV 回馈只回灌 decode 池；PD + 布局搜索在 B ≤ 1024 时每个状态仍是一次精确评估（256 卡约 16 s）；映射对比在服务中按映射并行，单个映射内部串行。
+
+### 19.10 第一轮审计修正（0.61.1）
+
+逐项手算复核后修正（默认指纹里只有下列模型变化；fits / 瓶颈无翻转）：
+- **滑窗 / top-k / 压缩注意力的 prefill**：
+  - 原先每个 query 都按上限 c = min(窗口 | top-k | ⌈ctx/r⌉ + 窗口, ctx) 个 key 计，但前面的位置看到的 key 更少。
+  - 现在按精确平均计：Σ_p min(p, 上限(p)) / q，p = ctx+1 … ctx+q（`AttnCore.keys_sum`，闭式，与逐位置求和一致）。
+  - 例：DSA top-k 2048、prompt 4096 → 1536.25 个 key / query（原 2048）；prompt ≤ 2048 时原来是 2×。
+- **DSA / CSA 索引器的 prefill**：位置 p 的 query 只给 ⌈p/r⌉ 个（压缩）key 打分，按精确平均计（原 top-k 与压缩层按整方阵计，2×）。decode 仍是全部 key。
+- **压缩层 decode 的 KV 读**：所读条目数（⌈ctx/r⌉ + 窗口，≤ top-k + 窗口）每条都是完整的 latent 条目，原来又除了一次 r（DeepSeek-V4：r = 4 层少 4×，r = 128 层少 128×）。现在与 memplan 的存储一致。
+- **纯滑窗 latent 层**（压缩比 1）只存 min(ctx, 窗口) 条 KV（原存全部 ctx；计算与读本来就按窗口）。有前缀缓存的 prefill 中，纯滑窗层只读前缀的最后一个窗口。
+- **线性注意力的 conv 状态**：memplan 已计入存储，但每步读写没有计；现在 state 读写 = 2 ×（递归状态 + conv 状态），Qwen3-Next 每层 +4.7%。
+- **归约 / 残差流的线上字节 ≥ bf16**「假设」（DeepSeek-V3 报告 §3.3：dispatch FP8、combine BF16；vLLM / SGLang 的行并行 all-reduce 为 bf16）：
+  - fp8 激活的发布（DeepSeek-V3/V3.2/V4、Kimi-K2、GLM-5.3、Qwen3-FP8 …）的 TP / ETP / 共享专家 all-reduce、MoE combine、PP 交接，原来按 1 B / 元素计，现在按 2 B；dispatch 仍按 fp8。
+  - 链路被计算 / DRAM 隐藏时步时不变，只有链路受限的点变慢（fabric 指纹 1430 项中 20 项：多节点 prefill +2.3 … +26.9 %）。
+- **输入校验**：serving.batch / prompt / ctx / out_len / microbatches 上限 2²⁴，并拒绝布尔值（原来 2⁶² 也能通过，true 被当作 1）。

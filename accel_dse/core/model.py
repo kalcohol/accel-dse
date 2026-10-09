@@ -128,6 +128,41 @@ class AttnCore:
             c = min(c, self.topk + (self.window or 0) if self.compress > 1 else self.topk)
         return c
 
+    def keys_sum(self, n: int) -> int:
+        """0.61.1: Σ_{p=1..n} keys attended by the query at position p, min(p, ctx_eff(p)) — exact closed form.
+        Prefill of a windowed / top-k / compressed layer charges the mean over its positions (the first queries see
+        fewer than the cap).  compress > 1: min(p, ⌈p/c⌉ + w, top-k + w)."""
+        if n <= 0:
+            return 0
+        c, w = self.compress, self.window or 0
+        if c <= 1:
+            cap = min(x for x in (self.window, self.topk, n) if x is not None)
+            return n * (n + 1) // 2 if n <= cap else cap * (cap + 1) // 2 + (n - cap) * cap
+        top = self.topk + w if self.topk is not None else None
+
+        def ceil_sum(m: int) -> int:           # Σ_{p=1..m} ⌈p/c⌉
+            a, r = divmod(m, c)
+            return c * a * (a + 1) // 2 + r * (a + 1)
+
+        def last(ok) -> int:                   # largest p in [0, n] with ok(p) (ok monotone: true then false)
+            lo, hi = 0, n
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                lo, hi = (mid, hi) if ok(mid) else (lo, mid - 1)
+            return lo
+
+        g = lambda p: -(-p // c) + w
+        p1 = last(lambda p: p <= g(p))         # below p1 every key exists in the compressed cache + window
+        hsum = lambda m: m * (m + 1) // 2 if m <= p1 else p1 * (p1 + 1) // 2 + (ceil_sum(m) - ceil_sum(p1)) + w * (m - p1)
+        if top is None:
+            return hsum(n)
+        p3 = last(lambda p: min(p, g(p)) <= top)
+        return hsum(p3) + (n - p3) * top
+
+    def keys_mean(self, ctx: int, q: int) -> float:
+        """Mean keys per query over the q positions after a cached prefix of ``ctx`` (0.61.1)."""
+        return (self.keys_sum(ctx + q) - self.keys_sum(ctx)) / q
+
 
 @dataclass(frozen=True)
 class PairCore:
