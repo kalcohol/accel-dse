@@ -1229,3 +1229,55 @@ Qwen3-8B B4 4K prefill，SRAM 16 / 64 / 256 / 1024 MiB 时激活 DRAM 分别为 
   - api 最大可放 batch 的二分，容量随 batch 单调，仍成立；
   - 精确 batch 搜索依赖 P1（step 随 B 不减），已有测试；
   - DES slo_rate 仍是二分，只用于校验（0.64 已改为扫描 + 细化）。
+
+## 23. 0.63 未做项收尾（0.64）
+
+0.63 留下的「未做」清单在本版全部完成：SLO 感知的 prefill batch 上限、DES SLO 搜索、二维 GEMM 分块、闭式运行 batch 取整、不整除 TP 的反量化、EP 下空闲 DP rank 的 DRAM 字节。每项都加了性质测试（`tests/test_core_064.py`，12 项）。下面的数值在 1P + HBM3E（PD 例）或 100T 默认芯片上测得。
+
+### 23.1 SLO 感知的 prefill batch 上限
+默认上限仍取平均 TTFT 最小者（DistServe 规则）。场景给了 SLO（`ctx["slo"]` = (p90 TTFT, p90 TPOT)）而默认上限不满足时，逐一试 B_CAPS 中其余上限，在满足两项 SLO 的上限中取平均 TTFT 最小者（结果 `prefill.cap_rule = "slo"`）；都不满足则保留默认。于是「λ 处 SLO 可行」= 「某个上限可行」，为各上限可行集（对固定上限随 λ 单调）之并。
+- PD：decode / KV 的稳定性与 prefill 上限无关，默认上限不稳定时不再试。
+- 合并 · prefill 优先：上限同时决定 decode 份额，默认上限不稳定时也试其余上限；没有 SLO（或都不满足）时取稳定上限中平均 TTFT 最小者（`cap_rule = "stable"`）。**新发现**：0.63 只按 prefill 队列选上限，上限 1 的占用让 decode 份额不稳定，而上限 4 稳定且满足 SLO——Qwen3-Next-80B-A3B（下例）负载 0.95 时该模式原报「不稳定」，现在 cap 4、p90 TTFT 67.0 ms、p90 TPOT 12.5 ms。稳定性 = 「某个上限稳定」，仍随 λ 单调，二分有效。
+- 分块 prefill 没有上限，不变。
+- SLO 速率搜索仍是 §22.3 的稳定上限二分 + 24 点扫描 + 细化；稳定性判断用无 SLO 的选择。
+- DES `pdsim.slo_rate`：完成上限 λ_c（全部请求完成）用 ×1.5 增长 + 二分，再在 (0, λ_c] 上自上而下扫 `DES_SLO_SCAN` = 8 点并细化；共同随机数、按 λ 缓存。DES 的 prefill 上限取闭式结果在该 λ 选出的上限。
+
+例：Qwen3-Next-80B-A3B，TP2·EP2 decode、TP1 prefill，B16，prompt 1024 / out 512，SLO 80 / 100 ms：
+- 命中 0、负载 0.6：PD 上限 1 → 2，TTFT 均值 / p50 / p90 / p99 = 76.3 / 71.3 / 86.4 / 141.4 → 80.8 / 79.4 / 79.4 / 114.6 ms（均值略升、p90 降到 SLO 内）；PD SLO 速率 1.580 → 2.564 req/s（+62 %），最优切分同。
+- 命中 0.4、负载 0.6 / 0.85：上限 1 → 2，p90 80.4 → 73.8、100.4 → 73.8 ms。
+- 合并 prefill 优先 SLO 速率 2.605 → 2.779（命中 0），2.619 → 2.828（命中 0.4）；稳定速率同幅上升（稳定上限回退）。
+- DES 对照（n_req 1200）：PD 1.500 → 1.489（命中 0），1.594 → 1.615（0.4）。闭式 2.564 / 2.892 明显高于 DES：闭式上限 2 的 p90 TTFT（λ 2 时 79.4 ms）比 DES（约 86 ms）乐观——p90 落在 P(W = 0) 的原子上。DES 的 prefill 优先「速率」23–44 req/s 是 `complete` 作稳定性代理的已知弱点（0.63 即如此），不是本版引入。
+
+### 23.2 二维 GEMM 分块（激活溢出）
+`memplan.gemm_blocking(m, k, n, A, W, budget)` 返回 (A 读次数, W 读次数)，DRAM 字节 = A·r_A + W·r_W + C（C 写一次），取三种循环嵌套中最便宜的：
+- 权重驻留：W 分 ⌈W / budget⌉ 块驻留，A 每块流过一次 → (⌈W/budget⌉, 1)；
+- 激活驻留：A 分 ⌈A / budget⌉ 块，W 每块流过一次 → (1, ⌈A/budget⌉)；
+- 输出驻留：bm × bn 的 fp32 部分和驻留（bm·bn·4 ≤ budget「假设」），A / W 按 K 片流入 → (⌈n/bn⌉, ⌈m/bm⌉)，bm 取 2 的幂与 m（经典 I/O 下界式分块，流量约 2·m·n·k·e / √(budget/4)）。
+
+budget 只装驻留块，流入的行 / 列 / K 片双缓冲在预算外（与 0.63 相同「假设」）；前两种的块数按字节而不是整列 / 整行算（块边界把某一列沿 k 切开时，该列的部分和留在片上），所以恰好装下（W = budget）只读一遍。0.63 的两种单边分块被前两种（弱）支配，故 0.64 流量 ≤ 0.63，且随 SRAM 不增。手算：16384×4096 · 4096×12288 bf16、budget 32 MiB：权重驻留 3 块 → A ×3，3·128 + 96 = 480 MiB（输出驻留 1152，激活驻留 512）；8192³ bf16、4 MiB：输出驻留 bm = bn = 1024 → (8, 8) = 2048 MiB，0.63 的最优单边为 4224 MiB。
+
+开发中的一个中间版本把流入片也算进预算、且按整列计块，在恰好装下处（Mochi-1 img_gate_up TP2：fp32 权重 96 MiB = 3 × 32 MiB，整列分块需 4 块）流量反而比 0.63 高 5 %；最终版按上面的规则，指纹中 DRAM 计数全部不升。
+
+Qwen3-8B B4 4K prefill，SRAM 16 / 64 / 256 / 1024 MiB 时溢出（激活 + 权重重读）≈ 305.6 / 143.8 / 96.6 / 33.8 GB（0.63：398.6 / 149.8 / 101.5 / 33.8）；DeepSeek-V3 B8 2K：≈ 431.9 / 281.8 / 212.8 / 133.7 GB（0.63：518.1 / 283.4 / 213.1 / 133.7）。步时不变（MAC 受限）。激活部分单独看只是不增（64 / 256 MiB 都是 96.6 GB），因为一种嵌套可以拿激活重读换权重重读。
+
+### 23.3 闭式运行 batch：两点混合
+生灭过程的所见运行 batch 均值 n̄ 是小数。0.54–0.63 取 k̂ = round(n̄) 求步时与 Result（± 半个 batch 的偏差）。现在 k_lo = ⌊n̄⌋、k_hi = k_lo + 1、f = n̄ − k_lo：步时 = (1 − f)·step(k_lo) + f·step(k_hi)；prefill 优先的残余与 decode 份额、KV 层利用率 u_coll、`kv_slowdown`、decode 能耗计数都按两点混合；分块模式的 k_s 也按两点插值（`mean_step` 的 T₀、各块迭代、t₁）。`decode.running_batch` 报小数。指纹：prefill 优先 TTFT −3.1 % ~ +2.5 %；PD TTFT 只有 < 1e-4 的变化（u_coll）；分块 p90 TPOT ±0.03 %。
+**新发现**：Qwen3-30B-A3B TP2·EP2（多节点指纹 PD 例，B32，prompt 4096 / out 256，SLO 2000 / 50 ms）的合并分块 SLO 速率 0.715 → 0.177 req/s。0.63 在 λ = 稳定上限处取整的不动点落到一个错误解（k = 2，p90 TTFT 555 ms、TPOT 18.7 ms），把稳定上限本身判为可行；而 0.18 req/s 以上 TPOT 都超过 50 ms。两点混合后边界处为 k ≈ 32、TTFT 发散，结果正确。
+
+### 23.4 不整除 TP / EP 的权重反量化
+权重反量化每遍、每个忙碌 rank 一次，0.63 用最忙 rank 的权重切片 × rank 数。新增 `Op.wshare` = 平均 rank 的权重元素 / 本 rank：Σ_rank w = copies · W_global，copies = ⌊N · w_rank / W_global⌋（≥ 1，DP / SP / TP 复制的整数份数；ceil 切分让最忙 rank 多出不到一份），wshare = copies · W_global / (N · w_rank)。「假设」：部分复制的切分（如 TP3 下 2 个 KV 头）按不均匀切分处理。例：qwen3-32b-awq B4 decode 向量计数 / token TP3 16.08 → 15.70 G、TP6 17.21 → 15.70 G（= TP1）；gpt-oss-20b TP2·EP2 / DP2·EP2 decode −8.3 %（各 rank 命中的专家数不均）。
+
+### 23.5 EP 下空闲 DP rank 的 DRAM 字节
+EP > 1 时没有序列的 DP rank 仍运行其专家（0.63），但它只读自己的路由专家权重，不读注意力 / dense / KV / 激活。`step_dram_bytes` 新增 `exp_dram` / `exp_slc`（专家权重的 DRAM / SLC 字节），能耗里空闲 rank 只计这部分。例（decode，每 token DRAM）：Qwen3-30B-A3B DP4·EP4 B1 14.81 → 6.42 GB，B1–B4 现在都是 6.42 GB（低 batch 下专家字节 ∝ token）；DeepSeek-V3 DP8·EP8 B1 160.0 → 37.9 GB。空闲 rank 的 SRAM / 链路 / 反量化计数仍按忙碌 rank（略高估，未做）。
+
+### 23.6 数值变化（0.63.0 → 0.64.0 指纹）
+- 单节点 0 / 1356；fabric 2 / 3150（DeepSeek-V3 PD 单卡 prefill 池 TTFT 3870.8 → 3860.0 ms，−0.28 %，二维分块）。
+- 多节点 170 / 5859 个值，全部在两个 PD 报告里：Qwen3-8B 合并分块 TTFT −5.9 % ~ −9.0 %、prefill 迭代 88.2 → 85.8 ms（二维分块减少块迭代的激活流量）、槽位等待 p99 442.8 → 120.4 ms；Qwen3-30B-A3B 合并分块 SLO 速率 0.715 → 0.177（23.3）；prefill 优先稳定速率 +0.4 % ~ +1.6 %（23.1 回退）；运行 batch 改报小数，能耗 DRAM −2.3 % ~ +0.5 %。
+- fp63（840 项）381 项变化：DRAM 计数全部不升——prefill −0 % ~ −50.8 %（二维分块；最大 qwen2.5-72b PP3 B1），视频 / 蛋白质 −0 % ~ −23.1 %，DP·EP decode −12.0 % ~ −46.7 %（23.5）；向量计数 TP3 / TP6 −0.5 % ~ −2.6 %，gpt-oss-20b EP2 −8.3 %（23.4）；步时、MAC、TFLOP 不变。PD 速率见 23.1。
+- fp64（PD TTFT，5 场景 × 4 负载 × 命中 2 × CV 2 = 80 行）全部有变化，418 个 TTFT 值：prefill 优先 276 个 −3.1 % ~ +2.5 %（23.3）；PD 110 个 < 1e-4（u_coll）；8 行换上限或稳定性（PD 上限 1 → 2 四行，prefill 优先由不稳定变为 cap 4 四行，见 23.1）；PD SLO 速率 1.580 → 2.564（命中 0 四行）；prefill 优先 SLO 速率 −0.04 % ~ +8.0 %、稳定速率 +0.04 % ~ +8.1 %；分块 p90 TPOT ±0.03 %。
+
+### 23.7 未做 / 剩余
+- 闭式上限 2 的 p90 TTFT 比 DES 乐观（M/D/1 批服务器近似 + P(W = 0) 原子）；DES 的 `complete` 是弱稳定性代理（prefill 优先的 DES 速率偏大）。
+- 空闲 EP rank 的 SRAM / 链路 / 反量化计数。
+- 输出驻留的块大小只在 2 的幂上搜，K 片大小未参与。
+- SLO 感知上限只在 B_CAPS 上选，不做连续 / 动态批。

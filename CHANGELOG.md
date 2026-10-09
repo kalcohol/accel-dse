@@ -3,6 +3,29 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.64.0] - 2026-10-09
+
+收尾 0.63 的「未做」清单：SLO 感知的 prefill batch 上限、DES SLO 搜索、二维 GEMM 分块、闭式运行 batch 两点混合、不整除 TP / EP 的反量化、EP 空闲 DP rank 的 DRAM 字节。新增性质测试 `tests/test_core_064.py`（12 项）。详见建模说明 §23。
+
+### 变更
+- **SLO 感知的 prefill batch 上限**（PD / 合并 prefill 优先）：默认上限（平均 TTFT 最小）不满足 SLO 时，在满足 SLO 的上限中取平均 TTFT 最小者（`prefill.cap_rule = "slo"`）；可行集为各上限可行集之并，扫描 + 细化搜索不变。Qwen3-Next-80B-A3B（TP2·EP2 / TP1，B16，SLO 80 / 100 ms）PD SLO 速率 1.580 → 2.564 req/s，负载 0.6 时 p90 TTFT 86.4 → 79.4 ms（上限 1 → 2，均值 76.3 → 80.8 ms）。
+- **prefill 优先的稳定上限回退**（新发现）：0.63 只按 prefill 队列选上限，可能让 decode 份额不稳定而其他上限稳定。现在默认上限不稳定时取稳定上限中平均 TTFT 最小者（`cap_rule = "stable"`）。上例负载 0.95 由「不稳定」变为 cap 4、p90 67.0 ms；SLO 速率 2.605 → 2.779。
+- **DES `slo_rate`**：完成上限增长 + 二分，再在其下扫 8 点并细化（原来直接二分 SLO 判据）。
+- **二维 GEMM 分块**：激活溢出在权重驻留 / 激活驻留 / 输出驻留三种嵌套中取最便宜者（`memplan.gemm_blocking`），流量 ≤ 0.63 且随 SRAM 不增。Qwen3-8B B4 4K prefill 溢出 16 / 64 / 256 MiB：398.6 / 149.8 / 101.5 → 305.6 / 143.8 / 96.6 GB。
+- **闭式运行 batch 两点混合**：⌊n̄⌋ / ⌊n̄⌋+1 按小数部分混合（步时、残余、u_coll、能耗、分块 k_s），`running_batch` 报小数。prefill 优先 TTFT −3.1 % ~ +2.5 %。修掉了 0.63 分块模式在稳定上限处的错误不动点：Qwen3-30B-A3B TP2·EP2 分块 SLO 速率 0.715 → 0.177（0.18 以上 TPOT 都超 50 ms）。
+- **反量化按平均 rank 的权重量**（`Op.wshare`）：qwen3-32b-awq decode 向量计数 TP3 / TP6 = TP1（原来 +2.4 % / +9.6 %）。
+- **EP 空闲 DP rank 只计专家权重字节**（`dram.exp_dram / exp_slc`）：Qwen3-30B-A3B DP4·EP4 B1 decode DRAM / token 14.81 → 6.42 GB；DeepSeek-V3 DP8·EP8 B1 160.0 → 37.9 GB。
+
+### 指纹变化（0.63.0 → 0.64.0）
+- 单节点 0 / 1356；fabric 2 / 3150（DeepSeek-V3 PD TTFT −0.28 %）。
+- 多节点 170 个值，都在两个 PD 报告：Qwen3-8B 合并分块 TTFT −5.9 % ~ −9.0 %；Qwen3-30B-A3B 分块 SLO 速率 0.715 → 0.177。
+- fp63 381 / 840：DRAM 计数全部不升（prefill 最多 −50.8 %，DP·EP decode −12 % ~ −47 %），向量计数 TP3 / TP6 −0.5 % ~ −2.6 %；步时 / MAC 不变。
+- fp64（PD TTFT 80 行）：418 个 TTFT 值变化，逐类见 §23.6。
+
+### 未做
+- 闭式上限 2 的 p90 比 DES 乐观；DES `complete` 是弱稳定性代理。
+- 空闲 EP rank 的 SRAM / 链路 / 反量化计数。
+
 ## [0.63.0] - 2026-10-09
 
 外部评审（external review）对 0.62.1 提出 9 条问题和 1 个覆盖缺口，本版全部修正。每条都先复现，再加永久的性质测试（work conservation、调度依赖合法性、容量硬约束、搜索结果不低于已知可行点）。详见建模说明 §22。
