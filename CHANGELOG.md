@@ -3,6 +3,31 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.65.0] - 2026-10-10
+
+收尾 0.64 的「未做」：prefill 批服务器改为精确的贪心批服务排队（M/G^[b]/1），DES 稳定性改为漂移 / 利用率判据，EP 空闲 rank 的 SRAM / 链路 / 反量化计数，输出驻留分块搜所有整数行块。新增性质测试 `tests/test_core_065.py`（10 项）。详见建模说明 §24。
+
+### 变更
+- **prefill 批服务器 = 贪心批服务排队**（`core/bulkq.py`，上限 ≥ 2）：空闲时取 min(队列, b) 个请求成批，墙钟 = 批内 TTFT(k, S_i) 的均值（与 DES 相同）。服务开始时刻的嵌入链精确求解（带状消元 + 几何尾），标记请求按年龄积分得到 TTFT 律（等待 + 自己批的墙钟 + KV 暴露，按 prompt 类型精确混合）。上限按精确均值选，分位数只对选中上限求。0.51–0.64 用流体 M/G/1（τ_b = T(b)/b，满批假设），部分负载下低估占用：Qwen3-Next-80B-A3B PD（SLO 80 / 100 ms）SLO 速率 2.564 → 1.591 req/s（DES 1.60，误差 −0.7 %，原来 +72 %）；负载 0.6 p90 TTFT 79.4 → 85.4 ms（DES 84.6）。
+- **prefill 优先的忙时份额**用批服务器的真实忙时（部分批更长）：Qwen3-Next 稳定速率 2.803 → 2.606（**新发现**：0.64 在负载 0.95 报「cap 4 稳定」，DES 在 λ 2.75 时任何上限都不稳定）。
+- **DES 稳定性**（`pdsim.stability`）：完成 + PD prefill 忙时 < 99.5 % + TTFT 与 TTFT 之后时间的窗口均值漂移 |d| ≤ 0.5（5 个窗口，预热丢弃）。`slo_rate` 与 V4 行用它（`stable_des`、`drift_*`）；原来「全部请求完成」对过载的有限运行也成立。
+- **EP 空闲 rank**：SRAM 端口字节 / 反量化只计专家 GEMM，链路字节只计 EP dispatch / combine / expert all-reduce 份额（`StageResult.exp_acts`）。DP2·EP2 B1 decode 向量计数 MiniMax-M1 −8.4 %，Qwen3-30B-A3B-FP8 −49.3 %，Qwen3-235B-A22B-FP8 −48.7 %（fp8 专家权重反量化只算专家部分）。
+- **输出驻留分块**搜所有整数 bm（O(√m) 个不同的 ⌈m/bm⌉），是整数块下的精确最优：视频 / 蛋白质 full 与部分 prefill 的 DRAM 计数 −1.6 % ~ −7.4 %。
+
+- **校核**（§24.2）：prefill 受限 QN 强制上限 1 / 2 / 4 / 8 / 自动、CV 0 / 1，PD 闭式 SLO 容量对 DES −2.5 % ~ +1.1 %，p90 TTFT 在负载 ≤ 0.7 时 ≤ 3 %（负载 ≥ 0.85 闭式偏保守，有限长 DES 尾部偏低）；prefill 优先 SLO 容量 −3.7 % / +9.0 %（单 seed），p90 +3 % ~ +12 %（保守）。
+
+### 指纹变化（0.64.0 → 0.65.0）
+- 单节点 0 / 8136；fabric 0 / 126758。
+- 多节点 12 / 5859：prefill 优先稳定速率 −0.3 % ~ −0.6 %，SLO 速率 +0.02 %。
+- fp63 75 / 5854：DRAM（整数分块）−1.6 % ~ −7.4 %；空闲 EP 反量化 −8 % ~ −49 %；PD / prefill 优先速率见上。
+- fp64（PD TTFT 80 行）：PD 上限 1 → 2 / 4 / 8 共 56 行，PD p90 −20 % ~ +36 %；prefill 优先 4 行由稳定变为不稳定（与 DES 一致），逐类见 §24.6。
+
+### 未做
+- 能耗按选中上限的满批 Result 计（部分批的能耗未分摊）。
+- V4 网格（`scripts/v4_serving.py --slo`）未按新稳定判据重跑，`data/v4_serving.json` 仍为 0.57 的结果。
+- 近饱和（负载 ≥ 0.85）DES 尾部需更长运行才能判定闭式偏差。
+- 批墙钟律在 k > 8 时用 5 点 Gauss–Hermite（忽略偏度），8 以上非 2 的幂的 k 线性插值。
+
 ## [0.64.0] - 2026-10-09
 
 收尾 0.63 的「未做」清单：SLO 感知的 prefill batch 上限、DES SLO 搜索、二维 GEMM 分块、闭式运行 batch 两点混合、不整除 TP / EP 的反量化、EP 空闲 DP rank 的 DRAM 字节。新增性质测试 `tests/test_core_064.py`（12 项）。详见建模说明 §23。

@@ -717,6 +717,46 @@ def _level_hits(done, m, attr="depth"):
     return [sum(1 for r in done if getattr(r, attr) >= k) / len(done) for k in range(1, m + 1)] if done else None
 
 
+STAB_WINDOWS = 5      # 0.65: measurement windows (arrival order) for the drift test
+DRIFT_TOL = 0.5       # 0.65: max relative growth of the window means across the measured run (fit, first → last)
+UTIL_MAX = 0.995      # 0.65: server busy fraction at or above this = saturated
+
+
+def _drift(xs: list) -> float:
+    """Relative growth of the window means of ``xs`` (arrival order) across the run: least-squares line through the
+    STAB_WINDOWS window means, (fit at last − fit at first) / overall mean."""
+    W = STAB_WINDOWS
+    n = len(xs)
+    if n < 4 * W:
+        return 0.0
+    m = [sum(xs[i * n // W:(i + 1) * n // W]) / max(1, (i + 1) * n // W - i * n // W) for i in range(W)]
+    mu = sum(m) / W
+    if mu <= 0:
+        return 0.0
+    xb = (W - 1) / 2
+    slope = sum((i - xb) * (v - mu) for i, v in enumerate(m)) / sum((i - xb) ** 2 for i in range(W))
+    return slope * (W - 1) / mu
+
+
+def stability(done: list, ttfts: list, util: float, complete: bool) -> dict:
+    """DES stability (0.65).  0.51–0.64 called a run stable when every measured request finished ("complete") — an
+    overloaded system still finishes a finite run, so DES SLO rates past saturation were not meaningful.  Now (the
+    first ``warmup`` requests are already discarded) a run is stable iff it is complete, the PD prefill servers are busy
+    below ``UTIL_MAX`` of the time (colocated replicas are busy whenever anything decodes, so no utilisation test),
+    and neither the TTFT nor the post-TTFT time (decode + slot / KV waits) of the measured requests drifts by more
+    than ``DRIFT_TOL`` (either sign) across the run (window means in arrival order; a growing backlog makes both grow
+    linearly, and its drain after the finite arrival stream ends makes the last windows fall).  → {"stable", "drift_ttft", "drift_post", "util"}."""
+    order = sorted(range(len(done)), key=lambda i: done[i].rid)
+    tt = [ttfts[i] for i in order]
+    post = [max(0.0, done[i].decode_done - done[i].arrive - ttfts[i]) for i in order]
+    d1, d2 = _drift(tt), _drift(post)
+    # |drift|: a backlog that builds up grows the window means; when the finite arrival stream ends the backlog
+    # drains and the last arrivals see an emptier system (prefill-first decode starved, then released) — a large
+    # downward trend is the same non-stationarity
+    ok = complete and util < UTIL_MAX and abs(d1) <= DRIFT_TOL and abs(d2) <= DRIFT_TOL
+    return {"stable": bool(ok), "drift_ttft": d1, "drift_post": d2, "util": util}
+
+
 def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup: int = 400,
              seed: int = 1, prefix_K: int | None = None, prefix_K_dec: int | None = None,
              prefix_n: int = 0, prefix_alpha: float = 1.0, prefix_len: int = 0,
@@ -934,7 +974,9 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
 
     tpots = [(r.decode_done - r.decode_start) / r.out for r in done if r.out > 0]
     itls = [r.itl_max for r in done]
-    st = {"mode": mode, "lambda_rps": lam, "n": len(done), "complete": len(done) >= n_req,
+    util = extra.get("prefill_util", 0.0)    # coloc: the replica is busy whenever anything decodes — drift only
+    stab = stability(done, ttfts, util, len(done) >= n_req)
+    st = {"mode": mode, "lambda_rps": lam, "n": len(done), "complete": len(done) >= n_req, **stab,
           "ttft": _stats(ttfts), "tpot": _stats(tpots), "itl_max": _stats(itls), "prefix_hit": hit,
           **({"prefix_level_hit": _level_hits(done, len(tree))} if (lru and tree) else {}), **extra}
     if ctx.get("kv_policy", "off") != "off":       # 0.55: decode-admission wait and preemptions
@@ -952,8 +994,8 @@ DES_SLO_SCAN = 8     # 0.64: grid points of the DES SLO-rate scan below its comp
 def slo_rate(ctx: dict, mode: str, ttft_slo: float, tpot_slo: float, start: float, n_req: int = 1200,
              warmup: int = 250, seed: int = 1, rel_tol: float = 0.03, **kw) -> float:
     """Largest λ whose simulated p90 TTFT and p90 request-average TPOT meet the SLOs (common random numbers across
-    λ).  Same definition as pdqueue._slo_rate, and (0.64) the same monotone-safe search: the completion limit λ_c
-    (every request finished — the DES's stability) is found by growth + bisection, then (0, λ_c] is scanned top-down
+    λ).  Same definition as pdqueue._slo_rate, and (0.64) the same monotone-safe search: the stability limit λ_c
+    (0.65: ``stability`` — no upward drift, prefill busy < UTIL_MAX; 0.64 used "every request finished") is found by growth + bisection, then (0, λ_c] is scanned top-down
     on ``DES_SLO_SCAN`` points and the largest feasible one refined towards the next grid point.  0.63 bisected the
     SLO predicate itself, which assumes it is monotone (the prefill batch cap changes with λ)."""
     memo: dict = {}
@@ -967,10 +1009,10 @@ def slo_rate(ctx: dict, mode: str, ttft_slo: float, tpot_slo: float, start: floa
         if lam <= 0:
             return True
         x = sim(lam)
-        return x["complete"] and x["ttft"]["p90"] <= ttft_slo and x["tpot"]["p90"] <= tpot_slo
+        return x["stable"] and x["ttft"]["p90"] <= ttft_slo and x["tpot"]["p90"] <= tpot_slo
 
-    def complete(lam: float) -> bool:
-        return lam <= 0 or sim(lam)["complete"]
+    def complete(lam: float) -> bool:          # 0.65: the DES stability test (drift / utilisation), not completion
+        return lam <= 0 or sim(lam)["stable"]
 
     def bisect(lo: float, hi: float, pred) -> float:
         while hi - lo > rel_tol * hi:
@@ -1067,6 +1109,8 @@ def compare(scn, n_req: int = 2000, warmup: int = 400, seed: int = 1,
                 kw["prefix_K_dec"] = pc["decode"][ck]
         sims = [simulate(ctx, lam, mode, n_req=n_req, warmup=warmup, seed=sd, **kw) for sd in seeds]
         row = {"stable_analytic": bool(ana.get("stable")), "complete": all(x["complete"] for x in sims),
+               "stable_des": all(x["stable"] for x in sims),
+               "drift_ttft": max(x["drift_ttft"] for x in sims), "drift_post": max(x["drift_post"] for x in sims),
                "sim": {}, "ana": {}, "err": {}}
         if len(sims) > 1:
             row["noise"] = {}

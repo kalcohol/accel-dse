@@ -104,6 +104,7 @@ import math
 
 from .energy import ACTIONS, EnergyTable, _BITS, _UNIT_PJ, action_counts, scaleup_bytes
 from .evaluate import Result, evaluate
+from .bulkq import batch_wall_law, bulk_busy, bulk_law, bulk_mean, bulk_own_k, law_quantile, merge_atoms
 from .queueing import mg1_mix_sum_quantile, dquantile, erlang_c, mdc_wait, mg1, mg1_sum_quantile
 from .scenario import Scenario
 
@@ -181,30 +182,157 @@ def prefix_tokens(S: int, h: float) -> int:
     return min(S - 1, int(h * S)) if h > 0 else 0
 
 
-def _prefill_server(pool: _Pool, lam: float, pts, scale: float = 1.0, cap: int | None = None) -> dict | None:
-    """Batch cap minimising mean TTFT (M/G/1 over the prompt mix, τ_i = TTFT(b, S_i)/b); None if none is stable.
-    ``cap`` (0.64): evaluate only that cap (the SLO-aware selection in ``_slo_select`` tries the others)."""
+def _walls(pool: _Pool, b: int, pts) -> list | None:
+    """Per-request prefill wall TTFT(k, S_i) for k = 1..b (0.65; unscaled).  Exact engine evaluations for k ≤ 8 and at
+    powers of two; between powers of two above 8 linear in k 「假设」(the batch wall is ~affine in k there).  None
+    if the cap-b batch does not fit."""
+    exact = {}
+
+    def ev(k):
+        if k not in exact:
+            exact[k] = [pool.run("prefill", k, S, p) for _, S, p in pts]
+        return exact[k]
+    if not all(r.fits for r in ev(b)):
+        return None
+    out = []
+    for k in range(1, b + 1):
+        if k <= 8 or (k & (k - 1)) == 0 or k == b:
+            out.append([r.ttft for r in ev(k)])
+        else:
+            lo = 1 << (k.bit_length() - 1)
+            hi = min(b, lo * 2)
+            a, c = ev(lo), ev(hi)
+            f = (k - lo) / (hi - lo)
+            out.append([x.ttft + (y.ttft - x.ttft) * f for x, y in zip(a, c)])
+    return out
+
+
+OTHER_ATOMS = 4     # atoms of the law of the other k − 1 prompts' mean wall (typed own wall)
+OWN_ATOMS = 32      # atoms of the own-part law O_k (own wall + exposure, mixed over prompt types)
+
+
+def _bulk_base(pool: _Pool, b: int, pts) -> dict:
+    """Scale-free bulk-queue inputs of one pool / cap / prompt mix (memoised on the pool; the KV contention factor
+    scales every wall linearly): walls, D_k = law of the batch wall (mean of TTFT(k, S_i) over the k requests,
+    pdsim), and the law of the other k − 1 requests' mean wall."""
+    key = ("bulk", b, tuple(pts))
+    got = pool.memo.get(key)
+    if got is None:
+        ws = [w for w, _, _ in pts]
+        tot = sum(ws)
+        walls = _walls(pool, b, pts)
+        D = tuple(tuple(batch_wall_law(k, [(t, w / tot) for t, w in zip(walls[k - 1], ws)])) for k in range(1, b + 1))
+        oth = tuple(tuple(batch_wall_law(k - 1, [(t, w / tot) for t, w in zip(walls[k - 1], ws)], OTHER_ATOMS))
+                    if k > 1 else ((0.0, 1.0),) for k in range(1, b + 1))
+        got = pool.memo[key] = {"walls": walls, "D": D, "oth": oth}
+    return got
+
+
+def _scale_law(L: tuple, sc: float) -> tuple:
+    return L if sc == 1.0 else tuple(tuple((t * sc, w) for t, w in d) for d in L)
+
+
+def _own_law(pre: dict, expo=None) -> tuple:
+    """O_k (k = 1..b): law of the tagged request's own wall (T(k, S_i) + (k − 1)·mean of the others)/k plus
+    ``expo(i, own_wall)`` (its KV exposure), mixed over its prompt type i — merged to OWN_ATOMS quantile slices."""
+    ws, walls, oth, sc = pre["ws"], pre["_walls1"], pre["_oth1"], pre["scale"]
+    tot = sum(ws)
+    out = []
+    for k in range(1, pre["b"] + 1):
+        at = []
+        for i, w in enumerate(ws):
+            ti = walls[k - 1][i]
+            for m, wm in oth[k - 1]:
+                own = (ti + (k - 1) * m) / k * sc
+                at.append((own + (expo(i, own) if expo else 0.0), w / tot * wm))
+        out.append(tuple(merge_atoms(at, OWN_ATOMS)))
+    return tuple(out)
+
+
+def _prefill_server(pool: _Pool, lam: float, pts, scale: float = 1.0, cap: int | None = None,
+                    law: bool = True) -> dict | None:
+    """Batch cap minimising mean TTFT; None if none is stable.  ``cap`` (0.64): evaluate only that cap (the SLO-aware
+    selection in ``_slo_select`` tries the others).
+
+    Cap 1: M/G/1 over the prompt mix (exact).  Cap b ≥ 2 (0.65): the greedy bulk-service queue M/G^[b]/1 of
+    core/bulkq — the replica starts min(queue, b) requests whenever it is free (pdsim.PrefillReplica), the batch wall
+    is the mean of TTFT(k, S_i) over the batch.  The cap is chosen on the exact mean (embedded chain + Little); the
+    TTFT law (quantiles) is solved for the chosen cap only.  0.51–0.64 used a fluid M/G/1 with τ_b = TTFT(b)/b and
+    own latency TTFT(b) — exact only for always-full batches; at partial load it under-stated the busy time and p90
+    TTFT was optimistic (Qwen3-Next PD cap 2: p90 79.4 vs DES ≈ 86 ms).  Stability is unchanged: λ·E[T(b)] < b."""
     best = None
     ws = [w for w, _, _ in pts]
+    tot = sum(ws)
     for b in B_CAPS:
         if cap is not None and b > cap:
             break
+        if cap is not None and b != cap:
+            if not all(r.fits for r in [pool.run("prefill", b, S, p) for _, S, p in pts]):
+                break
+            continue
         rs = [pool.run("prefill", b, S, p) for _, S, p in pts]
         if not all(r.fits for r in rs):
             break
-        if cap is not None and b != cap:
-            continue
         taus = [r.ttft * scale / b for r in rs]
-        w = mg1(lam, taus, ws, QS)
-        if not w["stable"]:
-            continue
-        tbar = _wsum(ws, taus)
-        lats = [t + (b - 1) * tbar for t in taus] if len(taus) > 1 else [rs[0].ttft * scale]
-        lat = _wsum(ws, lats)
-        if best is None or w["mean"] + lat < best["wait"]["mean"] + best["lat"]:
-            best = {"b": b, "lat": lat, "lats": lats, "wait": w, "rs": rs, "ws": ws, "scale": scale, "taus": taus,
-                    "lam": lam}
+        if b == 1:
+            w = mg1(lam, taus, ws, QS)
+            if not w["stable"]:
+                continue
+            lats = [rs[0].ttft * scale] if len(taus) == 1 else list(taus)
+            lat = _wsum(ws, lats)
+            cand = {"b": 1, "lat": lat, "lats": lats, "wait": w, "rs": rs, "ws": ws, "scale": scale, "taus": taus,
+                    "lam": lam, "mean": w["mean"] + lat}
+        else:
+            if lam * _wsum(ws, [r.ttft * scale for r in rs]) >= b * (1 - 1e-9):
+                continue
+            base = _bulk_base(pool, b, pts)
+            D = _scale_law(base["D"], scale)
+            m = bulk_mean(lam, b, D)
+            if m is None:
+                continue
+            cand = {"b": b, "rs": rs, "ws": ws, "scale": scale, "lam": lam, "mean": m["mean"], "_bm": m,
+                    "_walls1": base["walls"], "_oth1": base["oth"], "_D": D, "taus": taus}
+        if best is None or cand["mean"] < best["mean"]:
+            best = cand
+    if best is not None and best["b"] > 1:
+        _bulk_fill(best, law)
     return best
+
+
+def _bulk_fill(pre: dict, law: bool = True) -> None:
+    """Complete a cap ≥ 2 prefill-server record: own latency per prompt type, wait summary, busy share, and (``law``)
+    the exact TTFT-core law of the bulk queue (no exposure; PD adds it with ``_bulk_ttft_law``)."""
+    b, lam, ws, m, sc = pre["b"], pre["lam"], pre["ws"], pre["_bm"], pre["scale"]
+    walls = [[t * sc for t in row] for row in pre["_walls1"]]
+    tot = sum(ws)
+    pk = bulk_own_k(lam, b, pre["_D"])          # request-average own-batch-size law
+    # own wall given the request's own prompt type i: (T(k, S_i) + (k − 1)·T̄(k)) / k over its own batch size k
+    tbar = [_wsum(ws, walls[k - 1]) / tot for k in range(1, b + 1)]
+    lats = [sum(p * (walls[k - 1][i] + (k - 1) * tbar[k - 1]) / k for k, p in pk) for i in range(len(ws))]
+    rho = bulk_busy(lam, b, pre["_D"])
+    tau_f = sum(w * t for w, t in zip(ws, pre["taus"])) / tot
+    f = rho / (lam * tau_f) if lam > 0 and tau_f > 0 else 1.0
+    pre["lats"] = lats
+    pre["lat"] = _wsum(ws, lats)
+    pre["own_k"] = pk
+    pre["taus_fluid"] = pre["taus"]
+    pre["taus"] = [t * f for t in pre["taus"]]      # per-request busy share such that λ·Σw·τ = time-busy fraction
+    w = {"mean": m["wait_mean"], "rho": rho, "stable": True, "p_wait": m["p_wait"], "bulk": True}
+    if law:
+        L = _bulk_ttft_law(pre)
+        for q in QS:      # wait quantiles 「近似」: TTFT-core quantile minus the mean own wall (display only)
+            w[f"p{q * 100:g}"] = max(0.0, law_quantile(L, q) - pre["lat"])
+    pre["wait"] = w
+
+
+def _bulk_ttft_law(pre: dict, expo=None, key=None) -> dict:
+    """Bulk-queue TTFT law of a cap ≥ 2 record (wait + typed own wall [+ exposure ``expo(i, own_wall)``])."""
+    if expo is None and "law" in pre:
+        return pre["law"]
+    L = bulk_law(pre["lam"], pre["b"], pre["_D"], _own_law(pre, expo))
+    if expo is None:
+        pre["law"] = L
+    return L
 
 
 _Z = {0.5: 0.0, 0.9: 1.2815515655446004, 0.99: 2.3263478740408408}
@@ -778,10 +906,21 @@ def _tpot_at(pool: _Pool, k: int, share: float = 1.0, scale=lambda r: 1.0) -> fl
     return r.step * scale(r) / share / r.tokens_per_step
 
 
-def _ttft(wait: dict, lats_w, extra: dict | None = None, add: float = 0.0, conv: tuple | None = None) -> dict:
+def _ttft(wait: dict, lats_w, extra: dict | None = None, add: float = 0.0, conv: tuple | None = None,
+          law: dict | None = None, shift=((0.0, 1.0),)) -> dict:
     """TTFT quantiles = prefill-wait ⊕ own latency (+ ``extra`` queue quantile + ``add``).  ``conv`` = (λ, taus)
     of the prefill M/G/1: with a mixed service law the wait and the request's own latency are combined as a proper
     sum of independent variables (0.54, mg1_sum_quantile); otherwise (one service value) the quantiles add exactly."""
+    if law is not None:
+        # 0.65: cap ≥ 2 — exact bulk-queue TTFT core (wait + own batch wall) ⊕ an independent shift law (KV exposure
+        # per prompt type; independent of the core 「近似」 when prompt lengths differ, exact for one length)
+        tot = sum(w for _, w in shift)
+        sh = tuple((x, w / tot) for x, w in shift if w > 0)
+        out = {"mean": law["mean"] + sum(x * w for x, w in sh) + add + (extra["mean"] if extra else 0.0)}
+        for q in QS:
+            k = f"p{q * 100:g}"
+            out[k] = law_quantile(law, q, sh) + add + (extra[k] if extra else 0.0)
+        return out
     ws = [w for w, _ in lats_w]
     out = {"mean": wait["mean"] + _wsum(ws, [x for _, x in lats_w]) + add + (extra["mean"] if extra else 0.0)}
     for q in QS:
@@ -809,7 +948,7 @@ def _pd_mode_base(ctx: dict, lam: float) -> dict:
     u_kv_p = lam * kv / (n_p * beta) if kv > 0 and shared else 0.0
     sc_d = lambda r: _contended(r, tier, beta, u_kv_d)
     rep = pp.run("prefill", 1, *ctx["rep"])
-    pre = _prefill_server(pp, lam_p, pts, _contended(rep, tier, beta, u_kv_p), ctx.get("_cap"))
+    pre = _prefill_server(pp, lam_p, pts, _contended(rep, tier, beta, u_kv_p), ctx.get("_cap"), law=False)
     dm = ctx.get("_dec_memo")                   # 0.64: decode does not depend on the prefill cap (SLO-aware retries)
     dk = (id(dp), lam_d, out, B, u_kv_d, tier, beta)
     if dm is not None and dk in dm:
@@ -836,8 +975,18 @@ def _pd_mode_base(ctx: dict, lam: float) -> dict:
         exposed = [max(alpha + t / L, L * alpha + t - lat * (L - 1) / L) for t, lat in zip(t_bw, pre["lats"])]
     else:
         exposed = [alpha + t for t in t_bw]
+    law = None
+    if pre["b"] > 1:      # 0.65: exposure per own wall (layerwise overlap depends on it) inside the bulk law
+        if ctx["layerwise"]:
+            expo = lambda i, own: max(alpha + t_bw[i] / L, L * alpha + t_bw[i] - own * (L - 1) / L)
+        else:
+            expo = lambda i, own: alpha + t_bw[i]
+        law = _bulk_ttft_law(pre, expo)
+        e_m = _wsum(ws, exposed) / sum(ws)
+        for q in QS:      # display: wait quantiles 「近似」 = TTFT-law quantile − mean own wall − mean exposure
+            pre["wait"][f"p{q * 100:g}"] = max(0.0, law_quantile(law, q) - pre["lat"] - e_m)
     ttft = _ttft(pre["wait"], [(w, lat + e) for w, lat, e in zip(ws, pre["lats"], exposed)], kvq,
-                 conv=(pre["lam"], pre["taus"]))
+                 conv=(pre["lam"], pre["taus"]), law=law)
     slot = mdc_wait(lam_d, out * dec["tpot"], B, QS, cs2=ctx["out_cs2"])
     tp90, tp99 = _tpot_req_q(dec, 0.9), _tpot_req_q(dec, 0.99)
     return {**res, "ttft": ttft, "tpot_mean": dec["tpot"], "tpot_p90": tp90,
@@ -891,12 +1040,13 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     tp = dec["step"] / dec["r"].tokens_per_step      # 0.64: fractional seen batch (two-point mixture)
     resid = dec["step"]
     lats_w = list(zip(pre["ws"], pre["lats"]))
-    ttft = _ttft(pre["wait"], lats_w, conv=(pre["lam"], pre["taus"]))
+    ttft = _ttft(pre["wait"], lats_w, conv=(pre["lam"], pre["taus"]),
+                 law=_bulk_ttft_law(pre) if pre["b"] > 1 else None)
     ttft["mean"] += resid / 2
     ttft["p50"] += resid / 2
     ttft["p90"] += resid
     ttft["p99"] += resid
-    stall_share = min(1.0, lam_c / pre["b"] * dec["tpot"])
+    stall_share = min(1.0, lam_c / pre.get("_bm", {}).get("batch_mean", pre["b"]) * dec["tpot"])   # 0.65: batches/s
     life = out * dec["tpot"]
     # request-average TPOT spread (root-sum-square of independent parts): the occupancy deviation of the steps it
     # sees (stretched) and the stall time it meets — busy periods arrive at λ(1 − ρ) over its life and each adds V,

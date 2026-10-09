@@ -134,18 +134,29 @@ def _counts(r) -> dict:
         n = passes * ranks
         nw = passes * lay.tp * lay.sp * lay.dp * mb_fill
         c["mac"] += st.ideal_w * ch.macs * f * nw
-        c["vec"] += st.vec_w * ch.lanes * f * nw + st.conv_w * ch.lanes * f * n   # weight dequant: per pass
-        c["sram"] += st.sram_bytes * n
+        c["vec"] += st.vec_w * ch.lanes * f * nw
         if idle:
-            nb = passes * (ranks - idle)
-            c["dram"] += t.dram_bytes * nb + st.dram.get("exp_dram", t.dram_bytes) * passes * idle
-            c["slc"] += t.slc_bytes * nb + st.dram.get("exp_slc", t.slc_bytes) * passes * idle
+            # 0.65: an idle EP rank's SRAM-port bytes and weight dequant are its expert GEMMs', its collective bytes
+            # the EP dispatch / combine (+ expert all-reduce) share of the stage's (same tier split 「近似」); 0.64
+            # charged it the busy rank's whole step for these
+            nb, ni = passes * (ranks - idle), passes * idle
+            ea = st.exp_acts or {}
+            fl = ea.get("link_frac", 1.0)
+            c["vec"] += st.conv_w * ch.lanes * f * nb + ea.get("conv_w", st.conv_w) * ch.lanes * f * ni
+            c["sram"] += st.sram_bytes * nb + ea.get("sram", st.sram_bytes) * ni
+            c["dram"] += t.dram_bytes * nb + st.dram.get("exp_dram", t.dram_bytes) * ni
+            c["slc"] += t.slc_bytes * nb + st.dram.get("exp_slc", t.slc_bytes) * ni
+            c["d2d"] += t.d2d_bytes * (nb + fl * ni)
+            c["net"] += t.net_bytes * (nb + fl * ni)
+            c["link"] += scaleup_bytes(t) * (nb + fl * ni)
         else:
+            c["vec"] += st.conv_w * ch.lanes * f * n   # weight dequant: per pass
+            c["sram"] += st.sram_bytes * n
             c["dram"] += t.dram_bytes * n
             c["slc"] += t.slc_bytes * n
-        c["d2d"] += t.d2d_bytes * n
-        c["net"] += t.net_bytes * n
-        c["link"] += scaleup_bytes(t) * n
+            c["d2d"] += t.d2d_bytes * n
+            c["net"] += t.net_bytes * n
+            c["link"] += scaleup_bytes(t) * n
     if w is None:
         window = r.step
         unit = "token" if r.scenario.serving.phase == "decode" else "prompt token"

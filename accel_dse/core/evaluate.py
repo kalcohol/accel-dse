@@ -44,6 +44,7 @@ class StageResult:
     ideal_w: float = 0.0     # 0.63: array s at 100 % of the mean rank's useful work (Op.share) — energy MAC count
     vec_w: float = 0.0       # 0.63: vector s of the mean rank's token work (excl. weight conversion)
     conv_w: float = 0.0      # 0.63: vector s of weight conversion (once per pass on every busy rank)
+    exp_acts: dict = field(default_factory=dict)  # 0.65: routed-expert part {sram, conv_w, link_frac} (idle EP ranks)
 
 
 @dataclass
@@ -197,8 +198,9 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
              "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
-             "t_ideal_w", "t_vec_w", "t_conv_w")
+             "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e")
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
+_EP_COMM = ("moe_dispatch", "moe_combine", "expert_allreduce")
 _TIERS = ("d2d", "link", "net")
 
 
@@ -230,6 +232,13 @@ def _memos(sys: System, org: str, model: ModelSpec) -> tuple:
     return om, cm
 
 
+def _exp_acts(agg: dict) -> dict:
+    """0.65: the routed-expert part of a stage step — SRAM-port bytes and weight-dequant vector seconds of the
+    expert GEMMs, and the EP dispatch / combine / expert all-reduce share of the stage's collective bytes."""
+    lb = agg["link_bytes"]
+    return {"sram": agg["sram_e"], "conv_w": agg["conv_w_e"], "link_frac": agg["link_bytes_e"] / lb if lb > 0 else 0.0}
+
+
 def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tuple | None = None) -> dict:
     d = dict.fromkeys(_SUM_KEYS, 0.0)
     om, cm = memos if memos is not None else _memos(sys, org, model)
@@ -255,6 +264,8 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
             else:
                 bw, a, fd, fn = _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)
             d["link_bw"] += bw; d["sync"] += a; d["link_bytes"] += o.comm_bytes; d["d2d_bytes"] += o.comm_bytes * fd
+            if o.name in _EP_COMM:            # 0.65: what a DP rank without sequences still sends / receives under EP
+                d["link_bytes_e"] += o.comm_bytes
             d["net_bytes"] += o.comm_bytes * fn
             continue
         r_ = om.get(o)
@@ -265,6 +276,9 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         d["t_ideal"] += idl; d["sram"] += sb
         d["t_ideal_w"] += idl * o.share; d["t_vec_w"] += (v - vw) * o.share   # 0.63: mean-rank work (energy, KPIs)
         d["t_conv_w"] += vw * o.wshare        # 0.64: mean-rank weight elements (uneven TP / EP splits)
+        if o.role == "expert":                # 0.65: routed-expert share (idle EP ranks, energy action counts)
+            d["sram_e"] += sb
+            d["conv_w_e"] += vw * o.wshare
         d["flops"] += o.flops
         d["flops_u"] += o.flops * o.share / max(1, o.replicated)
         d["max_act"] = max(d["max_act"], o.act_bytes / max(o.count, 1))
@@ -698,7 +712,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             dram.get("slc", 0.0), d2d_b, net_b)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
-                                      conv_w=agg["t_conv_w"]))
+                                      conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))
         return stages
 
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx_cap, n_mtp, b_rank,
@@ -911,7 +925,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                             dram.get("slc", 0.0), d2d_b, net_b)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
-                                      conv_w=agg["t_conv_w"]))
+                                      conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))
         return stages
 
     p2p_pay = ph.batch * (_cdiv(ph.q, lay.sp) * m.hidden * ab + pair_act) / lay.dp

@@ -253,7 +253,7 @@ def gemm_blocking(m: int, k: int, n: int, a_bytes: float, w_bytes: float, budget
                              (chunk counts from bytes, not whole columns / rows: a chunk edge cutting a column /
                              row along k keeps that partial sum on chip — so an exact fit, W = budget, is one pass);
       output-stationary      bm×bn fp32 partial sums resident (bm·bn·4 ≤ budget), A / W streamed in K slices
-                             → r_A = ⌈n/bn⌉, r_W = ⌈m/bm⌉, bm over powers of two and m (the classic I/O-lower-bound
+                             → r_A = ⌈n/bn⌉, r_W = ⌈m/bm⌉, every integer bm (0.65; 0.64: powers of two) (the classic I/O-lower-bound
                              tiling, traffic ~ 2·m·n·k·e/√(budget/4)).
     a, w = bytes per element of A / W (A from ``a_bytes`` so implicit-GEMM inputs count their real size).  0.63 chose
     between the two one-sided extremes with whole-budget chunks (activation chunks with full weight re-reads,
@@ -272,11 +272,19 @@ def gemm_blocking(m: int, k: int, n: int, a_bytes: float, w_bytes: float, budget
     if budget > 0:      # one-side-resident nests: chunk counts from bytes (a chunk edge may cut a column / row along
         take(max(1, math.ceil(w_bytes / budget - 1e-12)), 1)          # k — its partial sums stay on chip)
         take(1, max(1, math.ceil(a_bytes / budget - 1e-12)))
-    for bm in sorted({min(m, 1 << i) for i in range(0, max(1, m).bit_length() + 1)} | {m}):
+    # 0.65: every integer row tile, not only powers of two — for each distinct row-pass count r_W = ⌈m/bm⌉ the
+    # smallest bm reaching it (bm = ⌈m/r_W⌉) leaves the widest bn = ⌊budget/(4·bm)⌋, so walking the O(√m) distinct
+    # values of ⌈m/r⌉ is the exact integer optimum of the output-stationary nest (0.64: bm ∈ powers of two ∪ {m})
+    m1 = max(1, m)
+    r = 1
+    while r <= m1:
+        bm = -(-m1 // r)
         bn = int(budget // (bm * ACC_BYTES))
-        if bn < 1:
+        if bn >= 1:
+            take(math.ceil(n / min(bn, n)), r)
+        if bm == 1:
             break
-        take(math.ceil(n / min(bn, n)), math.ceil(m / bm))
+        r = -(-m1 // (bm - 1))            # next r with a smaller ⌈m/r⌉
     return best if best is not None else (n, m)
 
 

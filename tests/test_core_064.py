@@ -52,13 +52,16 @@ def test_slo_aware_cap_meets_slo_when_some_cap_does():
                 assert x["ttft"]["mean"] <= min(p["ttft"]["mean"] for p in ok) * (1 + 1e-9), (name, lam)
             if x.get("prefill", {}).get("cap_rule") == "slo":
                 picked += 1
-    assert picked > 0
+    # 0.65: with the exact bulk queue the min-mean cap already meets the SLOs wherever any cap does on this grid
+    # (0.64's fluid model made cap 2 look better than it is), so ``picked`` may be 0 — the property is what counts
 
 
 def test_slo_aware_cap_raises_pd_slo_rate():
     rep, _ = _ctx(_QN)
     m = rep["queue"]["modes"]["pd"]
-    assert m["slo_rate_rps"] > 2.5, m["slo_rate_rps"]                   # 0.63: 1.580 (cap 1 only meets 80 ms below)
+    # 0.63: 1.580; 0.64: 2.564 (fluid cap-2 p90 79.4 ms, optimistic — DES 1.489); 0.65 exact bulk queue: 1.59,
+    # DES (drift-based stability, 3 seeds) 1.60
+    assert 1.5 < m["slo_rate_rps"] < 1.7, m["slo_rate_rps"]
     without = dict(_QN, serving=dict(_QN["serving"], ttft_slo_ms=10 ** 6, tpot_slo_ms=10 ** 6))
     r2, _ = _ctx(without)
     assert "cap_rule" not in (r2["queue"]["modes"]["pd"].get("prefill") or {})    # no SLO → 0.63's min-mean cap
@@ -194,14 +197,18 @@ def test_idle_ep_ranks_move_only_expert_bytes():
 
 
 def test_prefill_first_stable_cap_fallback():
-    """0.63 chose the prefill-first cap on the prefill queue alone: at load 0.95 the min-mean cap left the decode
-    share unstable (mode reported unstable) while cap 4 is stable and meets the SLOs.  Stability = some cap is
-    stable; the SLO rate is then ≥ the operating point."""
+    """0.64: at load 0.95 (λ 2.748) the min-mean cap left the decode share unstable while cap 4 looked stable (fluid
+    busy share λ·T(4)/4).  0.65: the bulk queue's time-busy share (partial batches) makes every cap unstable there —
+    the DES agrees (cap 4 / 8 / 64 at λ 2.75: post-TTFT drift +1.4, prefill busy 100 %).  Property: reported unstable
+    ⇒ no cap is stable; at 0.9 × the stable rate the mode is stable with some cap."""
     body = dict(_QN, pd=dict(_QN["pd"], load=0.95))
     rep, ctx = _ctx(body)
     q = rep["queue"]
     x = q["modes"]["coloc_prefill_first"]
-    assert x["stable"] and x["prefill"]["batch_cap"] == 4 and x["prefill"].get("cap_rule") == "slo"
-    assert x["slo_rate_rps"] >= q["lambda_rps"] * (1 - 1e-9) and x["stable_rate_rps"] >= q["lambda_rps"]
-    y = pq._coloc_prefill_first({**ctx, "slo": None}, q["lambda_rps"])        # no SLOs: the stable fallback
-    assert y["stable"] and y["prefill"].get("cap_rule") == "stable" and y["prefill"]["batch_cap"] > 1
+    base = lambda c, l: pq._kv_wrap(pq._coloc_prefill_first_base, c, l, "cpool", "r_c")
+    c0 = {**ctx, "slo": None}
+    if not x["stable"]:
+        assert not any(base({**c0, "_cap": b}, q["lambda_rps"])["stable"] for b in pq.B_CAPS)
+    lam = 0.9 * x["stable_rate_rps"]
+    y = pq._coloc_prefill_first(c0, lam)
+    assert y["stable"] and y["prefill"]["batch_cap"] >= 1

@@ -422,7 +422,7 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
                 err = {kk: (v if math.isfinite(v) else None) for kk, v in err.items()}
                 sim_modes[mode] = {"ttft_ms": s["ttft_ms"], "tpot_ms": s["tpot_ms"], "itl_max_ms": s["itl_max_ms"],
                                    "prefix_hit": s.get("prefix_hit"), "prefix_hit_decode": s.get("prefix_hit_decode"),
-                                   "n": s["n"], "complete": s["complete"], "err": err}
+                                   "n": s["n"], "complete": s["complete"], "stable": s["stable"], "err": err}
             q = {**q, "sim": {"modes": sim_modes, "n_req": 1500, "warmup": 400, "seed": 1},
                  "sim_basis": "request-level DES (core/pdsim) 「假设」; n=1500 after 400 warmup; "
                  "same per-step costs as the closed form; err = (analytic − DES) / DES"}
