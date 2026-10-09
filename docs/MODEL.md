@@ -1,6 +1,6 @@
 # 建模说明（Modelling method）
 
-本文说明 accel-dse 0.41（core v2）怎么算、假设了什么、用什么校验，方便逐条挑错。
+本文说明 accel-dse（core v2，0.41 起；本文对应 0.62.x）怎么算、假设了什么、用什么校验，方便逐条挑错。各节标题里的版本号是该机制引入的版本；标明「数值变化（a → b）」的段落记的是当时的数值，之后的变化见后续各节与 CHANGELOG。
 「假设」= 可调输入、未经硅片标定；其余量由模型发布、几何与公式推出。**所有绝对数都依赖「假设」，不是实测数据。**
 
 目录：[1 分层](#1-分层) · [2 模型](#2-模型按发布建模) · [3 算子图与并行](#3-逐-rank-算子图与并行) · [4 映射](#4-映射数据通路组织) · [5 存储](#5-存储规划) · [6 调度](#6-调度) · [7 服务与搜索](#7-服务goodput-与搜索) · [8 稳定性](#8-排名稳定性) · [9 校验](#9-校验) · [10 范围](#10-范围与近似) · [11 视频生成与蛋白质](#11-视频生成dit与蛋白质模型)
@@ -34,7 +34,7 @@
 - 目录：按厂商 → 系列排列，同一厂商的 LLM 与 VLM（甚至同一系列里的文本版与多模态版）放在一起，领域只作为行内标记（VLM 行标「VLM · 含视觉编码器」）；系列内按尺寸从大到小，官方量化版（FP8 / AWQ）紧跟原版，名称用官方仓库名。结构与 dtype 完全相同的发布合并为一条（如 DeepSeek-V3 / V3.1 / R1、Kimi-K2.5 / K2.7-Code、GLM-5 / 5.2、GLM-4.5 / 4.6、MiniMax-Text-01 / M1-80k），尺寸已被覆盖的通用稠密 GQA 模型不单列；它们仍可按 id 评估，也都参与参数核对。
 - 已接入 v2 的视频 / 蛋白质发布（0.41）：Wan2.1-T2V-14B / 1.3B、CogVideoX-5b / 2b（DiT 去噪主干）与 ESM-2 3B / 650M（编码器），同样从 config + safetensors 头建模，参数与发布逐项一致（偏差 0.00%），建模见 §11。
 - 暂未接入 v2 的目录条目（0.62 校正：此前这里仍列着已接入的视频 / 结构模型）：AlphaFold3 等没有可核对公开发布文件的条目，列在各自厂商 / 机构之下、该厂商可评估条目之后，标「暂未接入 v2」，不能评估、不能按 id 解析。视频（Wan2.2-A14B、MiniMax-H3、HunyuanVideo、LTX-Video、Mochi 1、Open-Sora STDiT3）与结构预测（ESMFold、AlphaFold2、OpenFold、Boltz-1、Protenix）已按发布接入（§11、§12）。分子动力学 / 机器学习力场（MLFF）从未有过目录条目，不列出。
-- 参数核对：与发布 safetensors 总量偏差 > 2% 时附注；当前 61 个发布（55 个 LLM / VLM + 6 个视频 / 蛋白质）全部在 ±0.5% 内。
+- 参数核对：与发布 safetensors 总量偏差 > 2% 时附注；当前 72 个发布（55 个 LLM / VLM + 10 个视频 + 7 个蛋白质）全部在 ±0.5% 内，其中视频 / 蛋白质逐项一致（偏差 < 0.001%）。（0.62.1 更正：原写 61 = 55 + 6，是 0.41 时的计数。）
 
 ## 3. 逐 rank 算子图与并行
 
@@ -95,8 +95,8 @@
 
 `python3 -m accel_dse validate` 复现以下结果；测试守护 V0–V3。
 
-- **V0 变形关系**：受控替换同值不变；更多 DRAM 带宽 / SRAM / 更宽端口 / 更快链路不会更慢；更长上下文不会更快；`reconf` 不慢于任一单一组织；去掉原生 fp8 不会让 fp8 发布更快。另有 TP / EP 分片守恒测试（FLOPs、权重、KV、专家存储、stage 存储）。视频 / 蛋白质：同样的 SRAM / 带宽 / `reconf` 关系、batch 增大延迟不减、延迟 ∝ 去噪步数、TP / SP 分片 FLOPs 守恒（SP 下文本跨注意力 K/V 每 rank 重算，偏差 < 0.2%）、SP 复制权重 / TP 切分权重，以及精确 batch 搜索与暴力枚举一致。
-- **V1 参数**：55 个 LLM / VLM 发布与 safetensors 总量偏差全部 ≤ 0.5%，6 个视频 / 蛋白质发布逐项一致；8 个模型卡的激活参数 ≤ 5%；FLOPs 与独立计数对照（视频 / 蛋白质：按 config 的闭式计数，偏差 < 1%）。
+- **V0 变形关系**（PP = 1 或 `pp_split = layers`；cost 切分见 §21 单调性一条）：受控替换同值不变；更多 DRAM 带宽 / SRAM / 更宽端口 / 更快链路不会更慢；更长上下文不会更快；`reconf` 不慢于任一单一组织；去掉原生 fp8 不会让 fp8 发布更快。另有 TP / EP 分片守恒测试（FLOPs、权重、KV、专家存储、stage 存储）。视频 / 蛋白质：同样的 SRAM / 带宽 / `reconf` 关系、batch 增大延迟不减、延迟 ∝ 去噪步数、TP / SP 分片 FLOPs 守恒（SP 下文本跨注意力 K/V 每 rank 重算，偏差 < 0.2%）、SP 复制权重 / TP 切分权重，以及精确 batch 搜索与暴力枚举一致。
+- **V1 参数**：55 个 LLM / VLM 发布与 safetensors 总量偏差全部 ≤ 0.5%，17 个视频 / 蛋白质发布逐项一致（< 0.001%）；8 个模型卡的激活参数 ≤ 5%；FLOPs 与独立计数对照（视频 / 蛋白质：按 config 的闭式计数，偏差 < 1%）。
 - **V2 趋势区间**（H100 类配置：128 × 128 × 16 @ 1.83 GHz ≈ 959 TFLOPS bf16、SRAM 50 MiB、HBM3 5 堆 3.33 TB/s、DRAM 效率 0.8、可重构映射，均为「假设」）：Llama-3.1-8B bf16 B1 TPOT 5.7 ms（区间 4.5–9）；B16/B1 = 1.13；Qwen3-8B FP8/BF16 = 0.54；4K prompt TTFT 83 ms；Qwen3-32B TP2 加速 1.94；B256 吞吐 1.4 万 tok/s。视频只做工作负载 / FLOP 的合理性核对（不是硬件标定）：Wan2.1 README 称 T2V-1.3B 在单张 RTX 4090 上约 4 分钟生成 5 s 480P（含 T5、VAE 与 offload）；本工具每段 28.6 PFLOP（0.44 起含 umT5 与 Wan-VAE 解码 0.29 PFLOP），折合 4090 约 165 TFLOPS（bf16、fp32 累加）的 0.72（区间 0.4–1.0）。
 - **V3 GenZ 对照**（Llama-3.1-8B decode，参考值由 `scripts/genz_reference.py` 生成）：LPDDR 191 GB/s 各点比值 1.07（DRAM 效率口径差异）；HBM 6.6 TB/s 下 `reconf` 映射比值 1.07–1.22，长上下文 / 大 batch 点偏高来自注意力小 M 分块，而 GenZ 按理想 FLOPS 计；`os` 映射在 HBM 下比值 3.6–6.8，因为小 M decode 被 SRAM 供数端口限制——这正是映射作为设计变量要暴露的差别，不视为误差。容差：访存受限点 15%，其余 60%。
 - **V4 服务验证**（0.54）：闭式排队模型对照请求级 DES（同一套逐步代价），54 点网格与误差表见 §18.4。
@@ -289,7 +289,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 
 **扩散样本分卡（0.46，`workload.sample_split`，默认开；Web「DAP 时扩散样本分卡」，CLI `--no-sample-split` 关闭）**：DAP > 1 且样本数 S > 1 时，扩散模块（`samples = "tok"` 的块：原子编码器、扩散 transformer、原子解码器）的 S 条轨迹分到 D 张 DAP 卡，每卡 ⌈S / D⌉ 条——样本之间相互独立，条件（单一表示与 pair 条件）在 DAP 下已在每张卡上，所以这是精确的并行、不增加通信；块内 pair 网格的工作（pair 偏置投影）仍按 DAP 切分，偏置 all-gather 不变；D > S 时多出的卡空闲（`Op.replicated = D·⌈S/D⌉ / S`，请求 FLOPs 不变）。置信度头（`samples = "all"`，每样本一份 pair 副本）仍按 DAP 切 pair、不分样本。参考实现（Boltz、Protenix）没有现成的多卡样本并行，这里作为布局设计选项给出。100T + HBM3E，DAP 1 / 2 / 4 / 8：Protenix（5 样本）27.86 / 14.55 / 7.91 / 4.02 s（6.9×；不分卡为 3.2×）；Boltz-1 默认 1 个样本（`--diffusion_samples` 默认 1）不变（3.9×），取 5 个样本时 DAP 8 为 17.5 → 2.8 s（不分卡 6.9 s）（0.61.3 数值）。ESMFold 的 ESM-2 语言模型层在 SP 维上按 Ulysses 切分（与 ESM-2 相同）。批延迟 `T = (mb + PP − 1) × t_stage`，与 ESM-2 相同。「假设」：400 GB/s 链路下通信基本被计算覆盖（链路变慢时会成为瓶颈，可在链路参数里试）；没有可逐项核对的公开 DAP 推理时延，故不加校验行。
 
-**dtype**：发布权重 fp32（ESMFold 的 ESM-2 为 fp16）；激活按 bf16「假设」（参考实现：ESMFold / OpenFold / AF2 单体 / Boltz-1 为 fp32，Protenix 默认 bf16）。0.44：fp32 激活用激活 dtype what-if 评估（Web「激活 dtype」/ CLI `--act fp32` / 场景 `formats_override: [["act", "fp32"]]`，标注 what-if）——激活存储、DRAM 流式、SRAM 端口读写（含输出）按 4 B；计算仍在 bf16 阵列上，激活逐 GEMM 转换的开销计入向量单元，所以它是「fp32 数据搬运 + bf16 计算」的代价，数值上不等价于 fp32 矩阵乘。例：ESMFold 512 残基、100T + LPDDR5X（DRAM 受限）6.3 s → 12.5 s；HBM3E 上 MAC 受限，延迟不变、容量 +0.4 GiB。芯片无 fp32 MAC：逐 GEMM 转换为 bf16，开销计入向量单元（与 LLM 反量化同一规则）。
+**dtype**：发布权重 fp32（ESMFold 的 ESM-2 为 fp16）；激活按 bf16「假设」（参考实现：ESMFold / OpenFold / AF2 单体 / Boltz-1 为 fp32，Protenix 默认 bf16）。0.44：fp32 激活用激活 dtype what-if 评估（Web「激活 dtype」/ CLI `--act fp32` / 场景 `formats_override: [["act", "fp32"]]`，标注 what-if）——激活存储、DRAM 流式、SRAM 端口读写（含输出）按 4 B；计算仍在 bf16 阵列上，激活逐 GEMM 转换的开销计入向量单元，所以它是「fp32 数据搬运 + bf16 计算」的代价，数值上不等价于 fp32 矩阵乘。例：ESMFold 512 残基、100T + LPDDR5X（DRAM 受限）5.0 s → 10.0 s（0.61.2 起主干 4 遍；原文 6.3 → 12.5 s 是 5 遍时的数值）；HBM3E 上 MAC 受限，延迟不变、容量 +0.4 GiB。芯片无 fp32 MAC：逐 GEMM 转换为 bf16，开销计入向量单元（与 LLM 反量化同一规则）。
 
 **校验**：`validate` 增加 ESMFold 行——论文（Lin et al., Science 2023）：单 V100 上 384 残基 14.2 s；按本模型的 FLOPs（50.2 TFLOP，4 遍主干；0.61.2 前按 5 遍计为 62.2 TFLOP）折算为 V100 fp32 峰值（15.7 TFLOPS，主干为 fp32）的 23%，落在 [0.05, 0.8] 带内。测试核对：参数逐项一致；AF2 官方 JAX 参数映射后的逐层 GEMM 与 OpenFold 检查点完全相同；每块检测到的核（Evoformer：三角乘法 ×2、三角注意力 ×2、行 / 列注意力、外积均值；AF3 类 MSA 模块：pair 加权平均代替行注意力）；核 FLOPs 与闭式一致；recycle / 扩散步数 / 样本数的线性缩放；ESMFold 中 ESM-2 每请求只算一次。
 
@@ -425,7 +425,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 上面的流体模型只回答「容量多大」。0.51 在 `pd.queue` 里加一层**解析排队近似「假设」**（不是仿真器）：在同一个泊松到达率 λ 下比较三种服务方式——PD 分离、合并 · prefill 优先（vLLM 不开分块时的默认调度）、合并 · 分块 prefill（Sarathi / vLLM chunked prefill）。λ = `pd.load` × PD 流体容量（默认 0.8），或直接给 `pd.rate_rps`。共同假设：泊松到达、每请求 prompt / 输出长度固定（= `serving.prompt` / `serving.out_len`）、副本间均分到达、分位数**逐项相加**（偏保守）。每个模式的单步时间都来自现有评估器（同一个 `evaluate`，只是换 batch / phase），没有新的硬件参数。
 
 - **M/D/1**（`core/queueing.py`）：平均等待 W̄ = ρτ / (2(1 − ρ))（P-K，精确）；P(W > 0) = ρ；尾 P(W > t) ≈ C·e^(−θt)，θτ = x 为 ρ(e^x − 1) = x 的正根，C = (1 − ρ) / (ρe^x − 1)（Cramér–Lundberg 渐近）；分位数 w_q = 0（ρ ≤ 1 − q）否则 ln(C / (1 − q)) / θ。测试用 Lindley 递推仿真核对 ρ = 0.5 / 0.8 / 0.9 的均值、p90、p99（误差 < 8%，实测约 2–5%）。decode 槽位等待用 Erlang C × ½（Allen–Cunneen，确定服务）；运行 batch 的波动按 Poisson（M/G/∞）取分位。
-- **PD 分离**：prefill 池每副本是一个带静态 batch 上限 b ∈ {1, 2, …, 64} 的 M/D/1（DistServe 式）：服务时间 τ_b = TTFT(b) / b，延迟下限 TTFT(b)，取使平均 TTFT 最小的 b。TTFT 分位 = 排队等待分位 + TTFT(b) + KV 队列等待分位 + 暴露的 KV 传输。decode 池是**连续批处理**：运行 batch n̄ 由 Little 定律的不动点 n̄ = λ_d · out / e · step(⌈n̄⌉) 决定（e = 每步 token 数，含投机解码），TPOT 均值 = step(⌈n̄⌉) / e；p90 / p99 TPOT 用运行 batch 的 Poisson 分位处的步时。部分负载下运行 batch 小于配置 batch，所以排队模型里的 TPOT 低于流体模型（流体按满 batch）。
+- **PD 分离**：prefill 池每副本是一个带静态 batch 上限 b ∈ {1, 2, …, 64} 的 M/D/1（DistServe 式）：服务时间 τ_b = TTFT(b) / b，延迟下限 TTFT(b)，取使平均 TTFT 最小的 b。（b 按平均值选，所以平均 TTFT 随负载单调不降，但 p90 可能在 b 换挡时下降：例 Qwen3-Next-80B-A3B，decode TP2·EP2、prefill TP1，b16，prompt 1024，命中率 0.4，负载 0.8 → 0.9 时 b 1 → 2，p90 97.2 → 73.8 ms。0.62.1 审计 114 组 × 5 档负载平均值无反例。）TTFT 分位 = 排队等待分位 + TTFT(b) + KV 队列等待分位 + 暴露的 KV 传输。decode 池是**连续批处理**：运行 batch n̄ 由 Little 定律的不动点 n̄ = λ_d · out / e · step(⌈n̄⌉) 决定（e = 每步 token 数，含投机解码），TPOT 均值 = step(⌈n̄⌉) / e；p90 / p99 TPOT 用运行 batch 的 Poisson 分位处的步时。部分负载下运行 batch 小于配置 batch，所以排队模型里的 TPOT 低于流体模型（流体按满 batch）。
 - **KV 与池内集合通信争用**：没设 `pd.kv_GBps` 时 KV 与两池的 TP / EP 集合通信共用同一层（节点内 link 或跨节点 net）。KV 能用的带宽 = β · (1 − u_coll)，u_coll = 两池最忙级在该层的字节 / β / tick；反过来 KV 占该层 u_kv = λ · KV / (N · β)，各池在该层的时间乘 1 / (1 − u_kv) 后重算级时间（只在该层是瓶颈时才变慢）。KV 传输本身也是 M/D/1（每 prefill 副本一个出口）。给了 `pd.kv_GBps` 视为专用 KV 通道，不争用。
 - **合并 · prefill 优先**：prefill 同样是带 b 上限的 M/D/1，占用 ρ_p；decode 只在剩余 1 − ρ_p 的时间里跑，不动点里步时除以 (1 − ρ_p)。新 prefill 到来时整批 decode 停顿 TTFT(b)：最长 token 间隔 = TPOT + TTFT(b)；一个请求生命周期内碰到的停顿数 ~ Poisson((λ/b) · 生命周期)，请求平均 TPOT 的分位 = TPOT(运行 batch 分位) + 停顿数分位 · TTFT(b) / out。TTFT 再加半个（p90 / p99 用一个）decode 步的残余。
 - **合并 · 分块 prefill**：每次迭代带 C = `pd.chunk_tokens`（默认 512）个 prompt token。融合迭代在**级层面**合并：max(算力_d + f·算力_p, DRAM_d + f·(prefill 非权重字节) + 前缀 KV 重读, SLC_d, 链路_d + f·链路_p) + 同步，f = C / S（prefill 的权重读由 decode 迭代顺带完成；第 i 块要重读前面 i − 1 块的 KV，平均 KV · (S − C) / (2S) 每块）。prefill 是服务时间 ⌈S/C⌉ · T₁ 的 M/D/1，占用 ρ = λ · S · T₁ / C；decode 平均步时 = ρ · T₁ + (1 − ρ) · T₀，不动点同上。最长 token 间隔 = T₁ / e（停顿被块大小封顶），请求平均 TPOT 分位按「带块迭代数 ~ Poisson(ρ · 迭代数)」。
@@ -841,12 +841,12 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 **手算对照**（`tests/test_core_059.py`）：单节点 8 卡 ring = 2·7/8·B/β、14 步；2 节点 × 8 的 ring、tree、hier 三种公式；NCCL `ncclGetBtree` 的父节点表（n = 8：−1, 2, 4, 2, 0, 6, 4, 6）；EP all-to-all 4 节点、每 leaf 1 节点时网络时间 × r；rail PXN；full mesh 上 TP2 为 7×；SHARP 的 b/β。
 
 **例子**（1P + HBM3e，8 卡 / 节点，网络 50 GB/s / 卡）：
-- **A. DeepSeek-V3 DP64·EP64（8 节点）**：
-  - prefill b64：拓扑模型关时步 707.7 ms（MAC 绑定，link 476.9 ms）。
-  - 默认推导的 leaf（radix 64，r = 1 / 2 / 4 → 每 leaf 4 / 5 / 6 节点）下，r = 4 时 link 545 ms，步不变。
-  - 每 leaf 2 节点：r = 2 → 818 ms，r = 4 → 1636 ms（变为 LINK 绑定，2.3×）。每 leaf 1 节点：955 / 1909 ms。
-  - rail 用默认推导的规模（每交换机 32+ 节点）时 8 节点全在一个 rail 域内，不受收敛影响。
-  - decode b512（7.7 ms，MAC 绑定）：link 0.93 → 3.73 ms（每 leaf 1 节点、r = 4），仍被计算掩盖。
+- **A. DeepSeek-V3 DP64·EP64（8 节点）**（0.62.1 按当前代码重算：0.61.1 起 fp8 激活发布的 MoE combine / all-reduce 按 bf16 线上字节计，§19.10，all-to-all 字节变多；0.59 原文数值附在括号里）：
+  - prefill b64：拓扑模型关时步 715.9 ms（LINK 绑定，link 715.3 ms；0.59：707.7 ms，MAC 绑定，link 476.9 ms）。
+  - 默认推导的 leaf（radix 64，r = 1 / 2 / 4 → 每 leaf 4 / 5 / 6 节点）：716.2 / 716.2 / 818.3 ms（0.59：r = 4 时 link 545 ms、步不变）。
+  - 每 leaf 2 节点：r = 2 → 1227 ms，r = 4 → 2453 ms（3.4×；0.59：818 / 1636 ms）。每 leaf 1 节点：1431 / 2862 ms（0.59：955 / 1909 ms）。
+  - rail 用默认推导的规模（每交换机 32+ 节点）时 8 节点全在一个 rail 域内，不受收敛影响（716.2 ms）。
+  - decode b512（7.41 ms，MAC 绑定）：link 1.40 → 5.59 ms（每 leaf 1 节点、r = 4；0.59：0.93 → 3.73 ms），仍被计算掩盖（步 7.73 ms，增量来自每步时延）。
 - **B. qwen3-32b TP16（2 节点）decode b64**：拓扑模型关 20.84 ms；ring 22.92、tree 22.43、hier 21.85 ms，auto 取 hier。增加的部分来自每步时延（ring 30 步）。
 - **C. 单节点 8 卡 TP2·PP4 prefill 的 link 时间**：switch 6.7 ms；ring 13.4（链，2×）；torus 4×2 26.8（行内部分跨度，4×）；full mesh 47.0（7×）。都被计算掩盖。TP8：torus 4×2 为 4/3×，其余为 1×。
 - **D. TP16 跨 2 节点 prefill，每 leaf 1 节点、r = 4**：link 617 ms；开网内归约（hier + SHARP 顶层）295 ms。r = 1 时 ring（201 ms）比 hier + SHARP 好。
@@ -927,18 +927,18 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
   - u_kv = λ·kv / (min(n_p, n_d)·β)，与 0.59 的 `coll_slowdown` 同一定义，是 KV 流占 NIC 的份额。decode 池的网络带宽 × (1 − u_kv)，重算 decode，λ 随之下降；不动点迭代 ≤ 6 次（|Δu| < 1e-4 停止）。
   - prefill 池的发送侧不回灌（缺口）。
   - 报告 `kv.fabric.feedback`：u_kv、回馈前后 TPOT、decode 池有效网络 GB/s。
-  - 例：DeepSeek-V3 PD 960P + 64D，网络 12.5 GB/s，每 leaf 1 节点、r = 4：u_kv 4.5%，TPOT 15.80 → 16.50 ms；decode 被计算绑定时 TPOT 不变。
+  - 例：DeepSeek-V3 PD 960P + 64D（两池 DP64·EP64、batch 512、out 128），网络 12.5 GB/s，每 leaf 1 节点、r = 4：u_kv 3.0%，TPOT 23.25 → 23.94 ms（0.62.1 重算；0.60 原文 u_kv 4.5%、15.80 → 16.50 ms——0.61.1 起 combine 按 bf16，decode 在 12.5 GB/s 网络上变为链路绑定、λ 更低）；decode 被计算绑定时 TPOT 不变。
 
 ### 19.5 例子与剩余缺口（0.60）
 
-**例子**（1P + HBM3e，8 卡 / 节点，网络 50 GB/s / 卡，leaf 由 radix 64 推导）：
+**例子**（1P + HBM3e，8 卡 / 节点，网络 50 GB/s / 卡，leaf 由 radix 64 推导；0.62.1 按当前代码重算 Kimi-K2 / DeepSeek-V3 两项——0.61.1 起 fp8 激活发布的 combine / all-reduce 按 bf16 线上字节，§19.10；0.60 原文数值见 CHANGELOG [0.60.0]）：
 - **Kimi-K2 DP1024·EP1024（1024 卡，128 节点）**：
-  - decode b8192：关 5.74 ms；两层 r = 1 / 2 / 4 均为 6.07 ms（link 1.09 / 2.12 / 4.20 ms 被计算 5.14 ms 掩盖）；三层 pod 32 节点：r₁/r₂ = 2/2 仍为 6.07（link 3.30），2/4 → 7.53 ms（LINK 绑定，−19% tok/s/卡）。
-  - prefill b1024：关 560 ms；两层 r = 2 / 4 → 1085 / 2151 ms；三层 2/2 → 1693 ms，2/4 → 3384 ms。76% 的跨节点字节离开 pod。
+  - decode b8192：关 5.74 ms；两层 r = 1 / 2 → 6.07 ms（link 1.64 / 3.17 ms 被计算 5.14 ms 掩盖），r = 4 → 7.22 ms（link 6.30 ms，LINK 绑定）；三层 pod 32 节点：r₁/r₂ = 2/2 仍为 6.07（link 4.95），2/4 → 10.83 ms（LINK 绑定，−47% tok/s/卡）。（0.60：两层 r = 1 / 2 / 4 均为 6.07 ms，三层 2/4 → 7.53 ms、−19%。）
+  - prefill b1024：关 840 ms；两层 r = 2 / 4 → 1626 / 3225 ms；三层 2/2 → 2538 ms，2/4 → 5075 ms（0.60：560 / 1085 / 2151 / 1693 / 3384 ms）。76% 的跨节点字节离开 pod。
 - **DeepSeek-V3 DP256·EP256（256 卡，32 节点）**：
-  - 三层 pod 32 = 一个 pod，与两层相同。pod 16 节点、r₁/r₂ = 2/4：prefill b256 921 → 2181 ms，decode b2048 link 1.80 → 4.26 ms，仍被计算 5.85 ms 掩盖。
+  - 三层 pod 32 = 一个 pod，与两层相同。pod 16 节点、r₁/r₂ = 2/4（对照两层 r = 2）：prefill b256 1380 → 3271 ms，decode b2048 link 2.69 → 6.39 ms，超过计算 5.85 ms，变为 LINK 绑定（7.28 ms）。（0.60：921 → 2181 ms，link 1.80 → 4.26 ms，被计算掩盖。）
   - PP4·DP256（1024 卡）：每级 256 卡，pod 32 时 a2a 不出 pod。
-- **端口并发**：DeepSeek-V3 TP8·DP32·EP256 decode 链路 2.04 → 1.80 ms（ports）。TP16 跨节点 prefill（pod 16，2/4）：ports + auto_overlap 616.5 → 584.1 ms，allreduce 由 ring 改选 hier。
+- **端口并发**：DeepSeek-V3 TP8·DP32·EP256 decode（两层 r = 2）链路 3.18 → 2.69 ms（ports；0.60：2.04 → 1.80 ms）。TP16 跨节点 prefill（pod 16，2/4）：ports + auto_overlap 616.5 → 584.1 ms，allreduce 由 ring 改选 hier。
 - **auto_overlap**：TP32·DP8 decode 时 allreduce 由 tree（bw + α 最小）改为 hier（α 4.99 → 4.52 ms），TPOT 89.64 → 89.17 ms。
 
 **剩余缺口**：
@@ -1122,5 +1122,6 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - **代理**：每层（按层组记忆）用与评估相同的算子求和得到（阵列, 向量, DRAM 触达字节 / 带宽, 链路, 同步），嵌入 / io-pre 加到首级，输出头 / io-post / MTP 加到末级，非末级加级间传递；DRAM 按全部流式计（忽略 SRAM / SLC 驻留）。
 - **切分**：对节拍二分 + 贪心装箱，求连续切分的精确极小极大（代理意义下）；再在可行窗口内把边界调向剩余工作的均分，避免末级空闲。每级存储（权重 + 本级 KV / 状态 × batch）不超过 max(按层数均分的最重级, 每卡 DRAM)。
 - **由完整模型裁决**：代理给出的候选（均分调整版、前置贪心版）与按层数均分一起用完整评估（含驻留、激活、fabric）各跑一次，取放得下且节拍最小者，平局取按层数均分。所以 cost 切分的节拍不会劣于 layers，也不会因此从放得下变成放不下（指纹核对：0 个变慢、0 个 fits 变化）。fabric_report 只记录被选中的那次运行的集合通信。
+- **单调性（0.62.1 审计）**：候选集由代理给出，而代理随硬件参数变化（DRAM 带宽进入代理的 DRAM 项），所以 cost 切分下 §9 V0 的「更多带宽 / SRAM / 更快链路不会更慢」只是近似成立：在 400 个随机 PP > 1 场景 × DRAM 效率 / 链路带宽 / SRAM 三组扫描中没有出现反例；组合 fuzz 1200 个场景中出现 1 例——Qwen3-8B-AWQ PP4·TP8、H100 类芯片 + 256 MiB SLC、权重全部驻留 SRAM / SLC（代理却按 DRAM 流式计），DRAM 效率 0.5 → 0.7 时换到另一候选，TPOT 0.523 → 0.573 ms（+9.6 %），仍优于按层数均分（0.674 ms）。layers 切分与 PP = 1 的单调关系保持严格（测试只对这两种情形断言）。
 - **选项**：场景 `pp_split = "cost" | "layers"`（默认 cost；默认值不进场景哈希）；CLI `--pp-split`；Web 布局组「PP 切分」。CLI eval 打印各级层范围。
 - **变化范围**（0.61.4 → 0.62，只在 PP > 1；PP = 1 全部不变）：LLM decode 时末级的输出头使均分偏慢，PP2 节拍 −0.03 % ~ −13.7 %（小模型、量化模型与 lm_head 占比大的 MoE 降得多），PP4 −0.9 % ~ −36 %；prefill 只有 DeepSeek-V4.1-Flash 变化（−5.7 % ~ −6.0 %）；结构模型 PP2 −2.4 % ~ −37.9 %、PP4 −0.6 % ~ −50.4 %（ESMFold、Boltz-1、Protenix 最大）；视频只在 PP4 有 ≤ 0.1 % 的变化（指纹的 PP2 无变化）。逐项见 CHANGELOG 0.62.0。
