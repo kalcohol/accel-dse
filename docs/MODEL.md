@@ -1651,8 +1651,10 @@ dsp-dec-4096-mtp [0.93, 0.88, 1.88]
 3. GQA decode：上限是 q·g / R，和调度无关（Qwen3-32B：g = 8，R = 32 时 25 %，R = 128 时 6 %）。要更高，得用更小的 R、GEMV 单元或投机解码（q > 1）。MoE decode 的专家 GEMM 每专家 token 极少，也是同样的 M 上限。
 4. decode 大多受 DRAM 限制，所以默认 stage 重叠下 TPOT 基本不变。prefill、kernel / serial 重叠模式、以及算力相对带宽紧张的设计，受影响最大。
 
-**默认值政策。** 多核 NPU 上，若各核有独立 sequencer，`"wide"` 就是建模错误：没有理由让所有核锁步做同一个实例，`reconf` 本来就是「逐 op 取最优」。但如果是单 sequencer 的锁步阵列，wide 就是对的。**建议**（待确认，本分支默认仍是 wide）：目录芯片默认改为 `"auto"`。全部数值变化见 `/workspace/val5/diff_all.csv`（逐条：芯片 / 模型 / 服务点 / 布局 / 指标 / 旧值 / 新值）；汇总：
-changed numbers: 555 (models 74; bound flips 167)
+**默认值（0.71 起）。** 目录里的 NPU 芯片（以及 `Chip()` 的默认值）改为 `"auto"`：各核有独立 sequencer，「所有核锁步跑同一个实例」是 ≤ 0.70 的建模错误。`"wide"` 仍可选（单 sequencer 锁步阵列用它）。参考硬件 GPU 显式设为 `"wide"`：§25.9 的校核表就是在 wide 下得到的，GPU 上更忠实的映射会让总体高估加大，所以外部校核表逐行不变。`instance_sched` 是 omit_default 字段：默认场景的 `hash()` 不变，但含义从 wide 变成了 auto；只有显式写 `"wide"` 的场景才会序列化这个字段。
+
+**数值变化**（0.70 wide → 0.71 auto，3 种目录芯片 × 75 个模型 × 3 个服务点 × 1 卡 / TP8 / DP8·EP8；逐条见 `scripts/instance_sched_diff.py` 的输出 diff_all.csv）：
+changed numbers: 555 (models 74); bottleneck flips: 167 — MAC→DRAM 167
 
 | chip | point | metric | n | min | median | max |
 |---|---|---|---|---|---|---|
@@ -1669,4 +1671,4 @@ changed numbers: 555 (models 74; bound flips 167)
 | H100-like | prefill b2 8k | throughput | 31 | +0.0% | +6.5% | +209.8% |
 | H100-like | prefill b2 8k | ttft | 21 | -67.7% | -8.3% | -2.8% |
 
-参考硬件（GPU）保持 wide：§25.9 已经说明，GPU 上更忠实的映射会让总体高估加大（误差互相抵消的那部分被拿掉了）。
+decode 受 DRAM 限制，几乎不变；prefill TTFT 中位数：100T −25.7 %、1P −40.0 %、H100-like −8.3 %。瓶颈变化全部是 MAC → DRAM（167 处）。

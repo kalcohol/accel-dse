@@ -3,13 +3,35 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
-## [Unreleased] — 分支 r5（0.71 候选）
+## [0.71.0] - 2026-10-10
+
+多核上的独立小 GEMM 调度成为 NPU 设计变量，默认 `"auto"`（建模说明 §26）。**有意改变默认数值。**
 
 ### 新增
-- `Chip.instance_sched`：`"wide"`（默认，与 0.70 逐位相同）/ `"split"` / `"auto"`。决定 count > 1 的独立 GEMM 实例（每请求 / 每头注意力、MLA 吸收后的每头乘积、每专家 GEMM）在 engine 上怎么排：宽阵列串行、每核一个实例，或逐 op 取最优的核组大小 g | E，外加行切分；每组分到 g/E 的 SRAM 端口与累加器。建模说明 §26，`scripts/instance_sched_study.py` / `instance_sched_diff.py`。
+- `Chip.instance_sched`：`"wide"` / `"split"` / `"auto"`。决定 count > 1 的独立 GEMM 实例（每请求 / 每头注意力、MLA 吸收后的每头乘积、每专家 GEMM）在 engine 上怎么排：auto 逐 op 取最优的核组大小 g | E（E/g 组，每组 R × (C·g)），外加行切分；每组分到 g/E 的 SRAM 端口与累加器。研究脚本 `scripts/instance_sched_study.py`，逐数对比脚本 `scripts/instance_sched_diff.py`。
 
-### 待定
-- 建议目录芯片默认改为 `"auto"`：多核且各核有独立 sequencer 时，`"wide"` 是建模错误。变化逐条列在 /workspace/val5/diff_all.csv（555 个数，74 个模型；decode 基本不变，prefill TTFT 中位数 −8 ~ −40 %）。
+### 变更（默认数值）
+- 目录 NPU 芯片与 `Chip()` 默认改为 `"auto"`（≤ 0.70 的 wide 对多核芯片是建模错误）；`"wide"` 仍可选；参考硬件 GPU 显式 wide，外部校核表逐行不变；默认场景 hash 不变。
+- 指纹基线有意更新（单卡与 TP8 / DP8·EP8 两版，75 / 75 改变）。逐数变化汇总：
+changed numbers: 555 (models 74); bottleneck flips: 167 — MAC→DRAM 167
+
+| chip | point | metric | n | min | median | max |
+|---|---|---|---|---|---|---|
+| 100T | decode b1 | throughput | 21 | +0.0% | +0.5% | +6.8% |
+| 100T | decode b16 ctx32k | throughput | 27 | +0.0% | +0.6% | +6.8% |
+| 100T | prefill b2 8k | throughput | 143 | +0.0% | +30.3% | +169.3% |
+| 100T | prefill b2 8k | ttft | 116 | -62.9% | -25.7% | -7.1% |
+| 1P | decode b1 | throughput | 11 | +0.0% | +1.7% | +28.6% |
+| 1P | decode b16 ctx32k | throughput | 15 | +0.0% | +0.9% | +25.6% |
+| 1P | prefill b2 8k | throughput | 82 | +0.0% | +56.0% | +773.5% |
+| 1P | prefill b2 8k | ttft | 69 | -88.6% | -40.0% | -0.5% |
+| H100-like | decode b1 | throughput | 9 | +0.0% | +0.0% | +1.0% |
+| H100-like | decode b16 ctx32k | throughput | 10 | +0.0% | +0.0% | +1.1% |
+| H100-like | prefill b2 8k | throughput | 31 | +0.0% | +6.5% | +209.8% |
+| H100-like | prefill b2 8k | ttft | 21 | -67.7% | -8.3% | -2.8% |
+
+- decode 中位数 < 2 %；prefill TTFT 中位数 −8.3 %（H100-like）/ −25.7 %（100T）/ −40.0 %（1P）；167 处瓶颈 MAC → DRAM。
+
 ## [0.70.1] - 2026-10-10
 
 ### 修复

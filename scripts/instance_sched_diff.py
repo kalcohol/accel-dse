@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.71: every headline number that changes if Chip.instance_sched defaulted to "auto" (catalog models, default chip,
+"""0.71: every headline number changed by the 0.71 default Chip.instance_sched = "auto" (vs "wide") (catalog models, default chip,
 the fingerprint serving points, 1 card / TP8 / DP8·EP8, and the three catalog chips)."""
 import json, sys
 from dataclasses import replace
@@ -23,7 +23,7 @@ for cn in chips:
                     kw["chip"] = CHIPS[cn]
                 try:
                     s = Scenario(**kw)
-                    a = evaluate(s); b = evaluate(replace(s, chip=replace(s.chip, instance_sched="auto")))
+                    a = evaluate(replace(s, chip=replace(s.chip, instance_sched="wide"))); b = evaluate(s)
                 except Exception as ex:          # invalid layout for this model (e.g. EP on dense)
                     continue
                 for k in ("tpot", "ttft", "throughput"):

@@ -14,7 +14,7 @@
 - **多卡结构模型与组件放置**：结构模型支持 DAP（FastFold 动态轴并行，占用布局的 SP 维）：pair / MSA / 模板网格按残基轴切分，三角乘法 / 偏置 / 外积均值的 all-gather 与行 ↔ 列 all-to-all 逐核计入（AF2 8 卡 7.8×，扩散为主的 Protenix 1.8×）。视频组件放置 `workload.placement`：常驻 / 文本编码器 FSDP 分片（Wan `--t5_fsdp`）/ 顺序卸载（diffusers `enable_model_cpu_offload`、Wan `--offload_model`），默认 auto 取第一个放得下的——64 GiB LPDDR 上 Wan2.1-14B、Wan2.2-A14B、MiniMax-H3 可放下（每请求 1–2.5 s 主机重载）。可选 VAE 分块解码（`--vae-tiling`，CogVideoX / Mochi 按 diffusers 默认 tile）。请求 TFLOP 改为整个副本的有用 FLOPs（此前多卡布局按单 rank 计）。
 - **服务与系统**：PD 分离（池大小 / 布局 / KV 交接）、排队与尾延迟（闭式 + 请求级 DES 对照）、长度分布、前缀缓存（容量 / LRU / radix）、KV 容量策略（等待 / 重算 / swap）、MoE 专家倾斜、多节点网络拓扑与集合通信算法、SLC 与 D2D 两级互连、能耗动作计数、资源 / 面积预算。
 - **外部校核**：参考硬件（H100 / H200 / H800 / A100 / MI300X / B200，数据手册峰值）对照公开实测（TensorRT-LLM、vLLM / ROCm、SGLang、DeepSeek），留出法检验，见建模说明 §25。
-- **映射是设计变量**：输出驻留（OS）、权重驻留（边缘加载 / 宽面广播）、OS + GEMV 单元、可重构，逐算子计算 MAC 界与 SRAM 供数界；芯片不原生支持的格式计入反量化开销。
+- **映射是设计变量**：输出驻留（OS）、权重驻留（边缘加载 / 宽面广播）、OS + GEMV 单元、可重构，逐算子计算 MAC 界与 SRAM 供数界；芯片不原生支持的格式计入反量化开销；多核上独立小 GEMM（每请求 / 每头注意力、每专家 GEMM）的核组调度也是设计变量（`instance_sched`：auto / wide / split）。
 - **逐 rank 算子图**：TP / PP / 注意力 DP / EP / ETP，单卡就是全 1 布局，没有第二条路径。
 - **存储规划与调度**：权重 / KV 的 SRAM 驻留、staging、逐 stage 容量；每级 `max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC`，绑定瓶颈与有效 MAC 比例直接给出。
 - **精确搜索**：每个布局在 TPOT SLO 下的最大 batch（分支定界，已用暴力枚举核对），decode 或含 prefill 的 goodput 目标，DP prefill 的 TTFT 标记，排名在「假设」扰动下是否稳定。
