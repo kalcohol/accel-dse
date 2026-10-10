@@ -97,6 +97,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
     extra = {}
     if r.get("node_cards"):            # 0.67 multi-node rows: cards per node + scale-out NIC per card
         extra = dict(node_cards=r["node_cards"], net=Link(r["net_GBps"], r.get("net_alpha_us", 5.0)))
+    if r.get("spec_k"):                # 0.70: MTP as speculative decoding (published acceptance, not fitted)
+        sv = {**sv, "spec_k": r["spec_k"], "spec_accept": r["spec_accept"]}
     if r.get("moe_skew"):
         sv = {**sv, "moe_skew": r["moe_skew"]}
     return Scenario(model=r["model"], chip=chip, mem_id=h.mem_id, mem_eff=mem_eff, link=h.link, mapping="reconf",

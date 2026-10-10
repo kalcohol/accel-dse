@@ -564,6 +564,28 @@
    "value": 575.02,
    "note": "perf-overview v0.17 max-load total output tok/s, TP8 (EP off: TRT-LLM default MoE TP)",
    "etp": 8
+  },
+  {
+   "id": "dsp-dec-4096-mtp",
+   "src": "deepseek-profile-decode",
+   "url": "https://lmsys.org/blog/2025-05-05-large-scale-ep/ (decode table, 'DeepSeek Profile' column); https://github.com/deepseek-ai/profile-data (decode.json: EP128, TP1, 4K prompt, 128 requests per GPU, two micro-batches, balanced routing)",
+   "hw": "H800-SXM",
+   "model": "deepseek-v3",
+   "dtype": "native",
+   "metric": "decode_tok_s_node",
+   "tp": 1,
+   "dp": 128,
+   "ep": 128,
+   "nodes": 16,
+   "node_cards": 8,
+   "net_GBps": 50.0,
+   "per_gpu_batch": 128,
+   "kv_len": 4096,
+   "osl": 1,
+   "spec_k": 1,
+   "spec_accept": 0.875,
+   "value": 18598,
+   "note": "DeepSeek profile decode, 16 H800 nodes; MTP 1 draft — acceptance 0.85–0.90 per DeepSeek-V3 report §5.4.3 (midpoint 0.875 used, not fitted)"
   }
  ]
 }

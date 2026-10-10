@@ -20,7 +20,7 @@ E._sum_ops = sum_ops
 row = dict(id="x", hw="H800-SXM", model="deepseek-v3", dtype="native", tp=1, dp=128, ep=128, node_cards=8, net_GBps=50.0)
 v = sys.argv[1] if len(sys.argv) > 1 else "catalog_tbo"
 if v.endswith("+S"): v = X.split_variant(v[:-2])
-scn = X.scenario(row, v, phase="decode", batch=128 * 128, ctx=4096, out_len=2)
+scn = X.scenario(row, v, phase="decode", batch=128 * 128, ctx=4096, out_len=2, spec_k=1, spec_accept=0.875)
 import accel_dse.core.evaluate as EE
 EE._MEMO_OFF = True
 r = E.evaluate(scn)
