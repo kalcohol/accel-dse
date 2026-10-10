@@ -901,6 +901,15 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
     if spec.lookup_params:
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
+    if mt.startswith("qwen4_exp"):
+        r.append(f"QSA 索引注意力（indexer {c.get('indexer_n_heads')} 头 × {c.get('indexer_head_dim')}，压缩比 "
+                 f"{c.get('indexer_compress_ratio')}，预算 {c.get('indexer_budget')}）与 PLE n-gram 嵌入层（第 "
+                 f"{c.get('ple_layer_ids')} 层，conv {c.get('ple_conv_kernel_size')}）未建模，全注意力层按稠密注意力计；"
+                 f"参数与发布相差 {gap:+.2%}。参考 transformers qwen4_exp 已公开（门控残差 hc_count={c.get('hc_count')}、"
+                 "QSAIndexer、PLELayer），需按参考重写模板，本轮未完成")
+    if mt.startswith("deepseek_v41"):
+        r.append("官方 inference/model.py（V4.1）已公开：engram 查表（engram.py）、候选块选择 select_candidate_blocks、"
+                 "DSpark 草稿头与共享注意力运行时与 V4 不同，尚未按参考逐项建模（V4 / V4-Pro 已完成）")
     if abs(gap) > 0.02:
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
     return tuple(r)
