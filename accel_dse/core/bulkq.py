@@ -355,11 +355,19 @@ def _tagged(lam: float, b: int, D: tuple):
     if b in rlaw:
         classes.append(([(r, pr) for r, pr in rlaw[b].items() if pr > 1e-13], list(D[b - 1])))
     keys: dict = {}
+    # 0.72 perf: every key starts with (t, u-slot); when no atom duration t occurs twice over the classes, each
+    # (t, u-slot) is visited exactly once, so its keys can live in their own small dict keyed (ΣF, k) — same sums in
+    # the same order, and visiting the sub-dicts in visit order reproduces the flat first-touch order exactly.
+    # Otherwise (a repeated t) the flat dict is kept.
+    ts = [t for _, atoms in classes for t, _ in atoms]
+    nested = len(ts) == len(set(ts))
     for rd, atoms in classes:
         asc = all(rd[i][0] < rd[i + 1][0] for i in range(len(rd) - 1)) and bool(rd)
         for t, w in atoms:
             base_w = w * t / cyc / N_U
             for ui in range(N_U):
+                if nested:
+                    sub = keys[(t, ui)] = {}
                 u = t * (ui + 0.5) / N_U
                 pj = _pois_c(round(lam * u, 12), 1e-11)
                 if asc:
@@ -410,9 +418,18 @@ def _tagged(lam: float, b: int, D: tuple):
                             cdf = cd[n - 1] if n else 0.0
                             if 1 - cdf > 1e-12:
                                 kd.append((m0 + 1 + n, 1 - cdf))
-                        for ko, pk in kd:
-                            key = (t, ui, sF, ko)
-                            keys[key] = keys.get(key, 0.0) + mass * wF * pk
+                        mw = mass * wF                       # (mass · wF) · pk, as before (left to right)
+                        if nested:
+                            g = sub.get
+                            for ko, pk in kd:
+                                key = (sF, ko)
+                                sub[key] = g(key, 0.0) + mw * pk
+                        else:
+                            for ko, pk in kd:
+                                key = (t, ui, sF, ko)
+                                keys[key] = keys.get(key, 0.0) + mw * pk
+    if nested:
+        keys = {(t, ui, sF, ko): v for (t, ui), sub in keys.items() for (sF, ko), v in sub.items()}
     return keys, f_idle, wq, own, bm
 
 
