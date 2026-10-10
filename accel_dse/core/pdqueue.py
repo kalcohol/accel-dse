@@ -207,8 +207,8 @@ def _walls(pool: _Pool, b: int, pts) -> list | None:
     return out
 
 
-OTHER_ATOMS = 4     # atoms of the law of the other k − 1 prompts' mean wall (typed own wall)
-OWN_ATOMS = 32      # atoms of the own-part law O_k (own wall + exposure, mixed over prompt types)
+OTHER_ATOMS = 16    # atoms of the law of the other k − 1 prompts' mean wall (typed own wall)
+OWN_ATOMS = 48      # atoms of the own-part law O_k (own wall + exposure, mixed over prompt types)
 
 
 def _bulk_base(pool: _Pool, b: int, pts) -> dict:

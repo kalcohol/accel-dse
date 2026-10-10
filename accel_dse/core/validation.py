@@ -184,10 +184,12 @@ def _summ(rows: list[dict]) -> list[dict]:
 def _grid_point(args):
     load, cv, prefix, family, n_req, slo, seeds = args[:7]
     slo_n = args[7] if len(args) > 7 else max(600, n_req // 2)
+    import time
     from .pdsim import compare
+    t0 = time.time()
     r = compare(v4_scenario(load, cv, prefix, family), n_req=n_req, warmup=n_req // 4, seeds=seeds, slo=slo,
                 slo_n=slo_n, slo_tol=0.01)
-    r.update(load=load, cv=cv, prefix=prefix, family=family, n_req=n_req)
+    r.update(load=load, cv=cv, prefix=prefix, family=family, n_req=n_req, elapsed_s=round(time.time() - t0, 1))
     return r
 
 
@@ -197,11 +199,14 @@ V4_EXTRA_GRID = dict(loads=V4_LOADS, cvs=(0.0, 1.0), prefixes=(False,))
 
 def v4_grid(n_req: int = 3000, slo: bool = False, loads=V4_LOADS, cvs=V4_CVS, prefixes=(False, True),
             seed: int = 11, progress: bool = False, seeds: int = 3, families=tuple(V4_FAMILIES),
-            jobs: int = 1, n_high: int | None = None, high_load: float = 0.85) -> dict:
+            jobs: int = 1, n_high: int | None = None, high_load: float = 0.85, partial_dir: str | None = None,
+            only: int | None = None) -> dict:
     """Full V4 grid (scripts/v4_serving.py).  0.55: ``seeds`` independent DES runs per point (metrics averaged,
     spread reported as ``noise``), the dense8b family on the full grid and the others on V4_EXTRA_GRID; ``jobs``
     worker processes.  0.57: ``n_high`` requests per DES run at load ≥ ``high_load`` (the slot / prompt queues relax
-    slowly there; the SLO bisection keeps ``n_req // 2``)."""
+    slowly there; the SLO bisection keeps ``n_req // 2``).  0.65.1: ``partial_dir`` (sequential only) writes one JSON
+    per point and skips points already there, so an interrupted run resumes; ``only`` = run at most that many new
+    points and return (rows / summary then cover the points done so far)."""
     seed_t = tuple(seed + i for i in range(max(1, seeds)))
     pts = []
     for fam in families:
@@ -212,6 +217,16 @@ def v4_grid(n_req: int = 3000, slo: bool = False, loads=V4_LOADS, cvs=V4_CVS, pr
                     n_pt = n_high if (n_high and load >= high_load) else n_req
                     pts.append((load, cv, prefix, fam, n_pt, slo, seed_t, max(600, n_req // 2)))
     rows = []
+    pdir = None
+    if partial_dir:
+        import json
+        from pathlib import Path
+        pdir = Path(partial_dir)
+        pdir.mkdir(parents=True, exist_ok=True)
+
+    def _pfile(a):
+        load, cv, prefix, fam, n_pt = a[:5]
+        return pdir / f"{fam}_l{load}_cv{cv}_p{int(prefix)}_n{n_pt}_s{len(seed_t)}_slo{int(bool(slo))}.json"
 
     def show(r):
         if progress:
@@ -229,7 +244,17 @@ def v4_grid(n_req: int = 3000, slo: bool = False, loads=V4_LOADS, cvs=V4_CVS, pr
         rows = [got[i] for i in range(len(pts))]
     else:
         for a in pts:
+            if pdir is not None and _pfile(a).exists():          # 0.65.1: resume from per-point files
+                rows.append(json.loads(_pfile(a).read_text()))
+                continue
+            if only is not None and only <= 0:
+                continue
             r = _grid_point(a)
+            if only is not None:
+                only -= 1
+            if pdir is not None:
+                _pfile(a).with_suffix(".tmp").write_text(json.dumps(r, default=float))
+                _pfile(a).with_suffix(".tmp").replace(_pfile(a))
             rows.append(r)
             show(r)
     return {"rows": rows, "summary": _summ(rows), "n_req": n_req, "n_high": n_high, "high_load": high_load,

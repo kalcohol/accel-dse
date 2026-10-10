@@ -45,12 +45,18 @@ def main() -> None:
     ap.add_argument("--slo", action="store_true", help="also bisect the DES SLO rate (slower)")
     ap.add_argument("--n-high", type=int, default=None, help="requests per DES run at load ≥ --high-load (0.57)")
     ap.add_argument("--high-load", type=float, default=0.85)
+    ap.add_argument("--partial", default=None, help="per-point result dir; resumes an interrupted run (0.65.1)")
+    ap.add_argument("--only", type=int, default=None, help="run at most this many new points, then stop (0.65.1)")
     ap.add_argument("--out", default=str(Path(__file__).resolve().parents[1] / "accel_dse" / "data" / "v4_serving.json"))
     a = ap.parse_args()
     t0 = time.time()
     res = v4_grid(n_req=a.n, slo=a.slo, progress=True, seeds=a.seeds, jobs=a.jobs,
-                  families=tuple(f for f in a.families.split(",") if f), n_high=a.n_high, high_load=a.high_load)
+                  families=tuple(f for f in a.families.split(",") if f), n_high=a.n_high, high_load=a.high_load,
+                  partial_dir=a.partial, only=a.only)
     res["elapsed_s"] = round(time.time() - t0, 1)
+    if a.only is not None:
+        print("partial:", len(res["rows"]), "points done")
+        return
     Path(a.out).write_text(json.dumps(_clean(res), indent=1, ensure_ascii=False, allow_nan=False))
     print("wrote", a.out, res["elapsed_s"], "s")
     for row in res["summary"]:

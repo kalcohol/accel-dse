@@ -34,7 +34,8 @@ from functools import lru_cache
 
 GRID = 160          # bins across the mean TTFT scale (bulk_law grid floor)
 N_U = 8             # sub-intervals of the age u within a service
-MAX_ATOMS = 6       # atoms kept for a batch-wall law D_k
+MAX_ATOMS = 24      # atoms kept for a batch-wall law D_k (0.65.1: 6 clipped the service tail)
+PER_ATOMS = 48      # atoms of the per-request wall law fed to batch_wall_law
 TOL = 1e-12
 
 
@@ -109,7 +110,7 @@ def batch_wall_law(k: int, per_req, n_atoms: int = MAX_ATOMS) -> list[tuple[floa
     """Law of the mean of k i.i.d. draws from per_req [(t, w)] (t = TTFT(k, S_i)).  Exact convolution (merged to
     ``n_atoms`` quantile slices) for k ≤ EXACT_K; beyond, 5-point Gauss–Hermite with the exact mean and variance / k
     (skewness ∝ 1/√k ignored 「近似」)."""
-    per = merge_atoms(per_req, 12)
+    per = merge_atoms(per_req, PER_ATOMS)
     if len(per) == 1 or k <= 0:
         return [(per[0][0], 1.0)] if per else [(0.0, 1.0)]
     if k > EXACT_K:
