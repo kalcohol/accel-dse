@@ -27,10 +27,11 @@ def main(argv: list[str]) -> int:
         for name in sorted(n for n in dir(m) if n.startswith("test_")):
             if argv and not any(a in mod_path.stem or a in name for a in argv):
                 continue
+            t1 = time.time()
             try:
                 getattr(m, name)()
                 passed += 1
-                print(f"OK   {mod_path.stem}::{name}")
+                print(f"OK   {mod_path.stem}::{name}  ({time.time() - t1:.1f}s)", flush=True)
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 print(f"FAIL {mod_path.stem}::{name}: {exc}")
