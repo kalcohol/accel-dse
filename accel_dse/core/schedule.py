@@ -193,12 +193,17 @@ class StageTime:
                   max(t_vector, max(t_gemm, t_dram_w) + max(t_attn, t_dram_kv), t_slc) + t_link + t_sync
           kernel  class, with the vector work as kernels of its own (added, not overlapped)
           serial  no overlap at all: t_array + t_vector + max(t_dram, t_slc) + t_link + t_sync (upper bound)
-        Every mode is ≥ the stage value."""
+          tbo     (0.67) kernel-serial compute as in ``kernel``, but collectives hidden behind it — two-micro-batch
+                  overlap (DeepSeek / SGLang "two-batch overlap": one micro-batch's all-to-all runs during the other's
+                  compute): max(kernel core, t_slc, t_link) + t_sync
+        Every mode is ≥ the stage value; stage ≤ tbo ≤ kernel ≤ serial."""
         if self.overlap != "stage":
             if self.overlap == "serial":
                 return self.t_array + self.t_vector + max(self.t_dram, self.t_slc) + self.t_link + self.t_sync
             core = max(self.t_array - self.t_arr_attn, self.t_dram - self.t_dram_kv) + max(self.t_arr_attn, self.t_dram_kv)
-            core = core + self.t_vector if self.overlap == "kernel" else max(self.t_vector, core)
+            core = core + self.t_vector if self.overlap in ("kernel", "tbo") else max(self.t_vector, core)
+            if self.overlap == "tbo":
+                return max(core, self.t_slc, self.t_link) + self.t_sync
             return max(core, self.t_slc) + self.t_link + self.t_sync
         return max(self.t_compute, self.t_dram, self.t_slc, self.t_link) + self.t_sync
 

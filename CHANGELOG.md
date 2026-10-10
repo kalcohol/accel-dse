@@ -3,6 +3,19 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.68.0] - 2026-10-10
+
+外部校核第二轮（MoE / MLA / 大规模 EP，建模说明 §25.7）。
+
+### 新增
+- `data/ext_measurements_moe.json`：34 条公开实测（逐条带 URL）：SGLang 96 × H100 大规模 EP（DeepSeek-V3 prefill EP32、decode EP72）、DeepSeek profile-data prefill（H800）、TensorRT-LLM DS-R1 8 × H200（EP8 + attention DP）、TensorRT-LLM 0.17 Mixtral-8x22B TP8（H200 / H100 / A100）。
+- 参考硬件 H800-SXM（H100 die「假设」，NVLink 400 GB/s）。
+- `Scenario.exec_overlap="tbo"`：计算按 kernel 串行，集合通信藏在计算后面（双微批重叠）；stage ≤ tbo ≤ kernel ≤ serial。默认不变。
+- extval：多节点（node_cards / net）、dp / ep / etp 布局，指标 prefill_tok_s_node / decode_tok_s_node / static_tok_s_total。
+
+### 结论
+- 大规模 EP（显式双微批重叠）`stage` / `tbo` 误差 9 %；第一轮拟合出的 serial / kernel 组合留出误差 77 ~ 87 %。按软件文档选重叠模式的预定规则：1.03 / 15 %。继续不引入拟合效率系数。
+
 ## [0.67.0] - 2026-10-10
 
 0.66.0 + 目录覆盖收口（分支 `cov`）：全部 LLM 覆盖为「完整」（71 完整 / 4 部分，含视频 / 蛋白质）。核对：0.65.1 时已完整的 50 个模型 evaluate 数值指纹（3 个服务点）不变；变化的只有收口的 15 个模型；外部校核表（`data/ext_validation.json`，含 3 个校核专用模型与目录 Llama-3.x）逐行不变。
