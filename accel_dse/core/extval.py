@@ -97,7 +97,7 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         sv = {**sv, "moe_skew": r["moe_skew"]}
     return Scenario(model=r["model"], chip=chip, mem_id=h.mem_id, mem_eff=mem_eff, link=h.link, mapping="reconf",
                     exec_overlap=ov,
-                    layout=Layout(tp=r["tp"], dp=r.get("dp", 1), ep=r.get("ep", 1)),
+                    layout=Layout(tp=r["tp"], dp=r.get("dp", 1), ep=r.get("ep", 1), etp=r.get("etp", 1)),
                     formats_override=FP8 if r["dtype"] == "fp8" else (),
                     serving=Serving(**sv), **extra)
 

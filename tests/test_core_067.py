@@ -52,3 +52,12 @@ def test_moe_harness_bands():
     assert g("catalog_serial", ep) < 0.65
     trt = [r for r in R if r["src"] == "trtllm-0.21-dsr1"]
     assert 1.0 < g("catalog_serial", trt) < 1.3 < g("catalog_kernel", trt) < 1.5 < g("catalog", trt)
+
+
+def test_mixtral_tp8_bands():
+    R = [r for r in X.rows(X.DATA_MOE) if r["src"] == "trtllm-0.17"]
+    assert len(R) == 27 and all(r["etp"] == r["tp"] == 8 for r in R)
+    g = lambda v, rs: math.exp(sum(math.log(X.predict(r, v)["pred"] / r["value"]) for r in rs) / len(rs))
+    hop = [r for r in R if r["hw"] != "A100-SXM-80GB"]
+    assert 0.7 < g("catalog_kernel", hop) < 1.0 < g("catalog", hop) < 1.35
+    assert 0.8 < g("catalog_serial", [r for r in R if r["hw"] == "A100-SXM-80GB"]) < 1.05
