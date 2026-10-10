@@ -1588,3 +1588,85 @@ dsp-pf-4096 [0.85, 0.85, 0.85]
 dsp-dec-4096-mtp [0.93, 0.88, 1.88]
 ```
 尚未解决、有系统性的：MI300X 满载吞吐仍高估约 2 ×（软件栈；小批延迟加 100 µs / 层后已对上）；kernel 级的注意力效率（见上，不拟合）；PD 端到端没有数值实测。
+
+## 26. 独立 GEMM 实例在多核上的调度（0.71，`Chip.instance_sched`）
+
+**问题。** ≤ 0.70 把 E 个 engine（核）并成一块 R × (C·E) 的宽阵列，一个 op 的 `count` 个独立实例（每请求 / 每 KV 头的注意力 QK·PV、MLA 吸收后的每头乘积、每专家 GEMM）在这块宽阵列上一个接一个跑。N 小（head_dim 128、latent 512）时，绝大多数列空着：1P（128² × 32）上，prefill 注意力的阵列利用率只有 6 ~ 7 %。
+
+**设计变量**（芯片字段，默认 `"wide"` = 0.70 的行为）：
+- `"wide"`：同上。
+- `"split"`：每个 engine 跑一个实例，共 ⌈count / E⌉ 波（= 0.70 的 `split_instances=True`）。
+- `"auto"`：逐 op 取最便宜的方案，候选是 wide，以及每种整除 E 的核组大小 g（共 E/g 组，每组是一块 R × (C·g) 阵列）；实例数少于组数时，再把每个实例的 M 行切到 s 个组上（行并行）。
+
+约束：
+- 每组分到 g/E 的 SRAM 端口（片上 NoC / 端口带宽共享；行切分时每组都要把完整的 K × N 操作数流过自己那份端口）。
+- 每组分到 g/E 的累加器。
+- SRAM / DRAM 总字节数不变（操作数都是流式的）。
+- 每组需要自己的指令流 / sequencer「假设」。
+- 每波的调度开销取 0「假设」。
+
+**注意力 / 专家利用率**（固定总 MAC 数 = 1P 的 524,288，1 GHz，单卡，`scripts/instance_sched_study.py`）：
+| case | R×C×E | attn util wide / split / auto | attn array ms wide → auto | expert util wide → auto |
+|---|---|---|---|---|
+| DS-V3 MLA decode b64 ctx4k | 512x512x2 | 16% / 23% / 23% | 27.2 → 18.1 | 1% → 1% |
+| DS-V3 MLA decode b64 ctx4k | 256x256x8 | 19% / 48% / 48% | 22.7 → 8.8 | 1% → 1% |
+| DS-V3 MLA decode b64 ctx4k | 128x128x32 | 21% / 98% / 98% | 20.5 → 4.3 | 2% → 2% |
+| DS-V3 MLA decode b64 ctx4k | 64x64x128 | 12% / 50% / 99% | 36.5 → 4.3 | 3% → 5% |
+| DS-V3 MLA decode b64 ctx4k | 32x32x512 | 6% / 17% / 99% | 73.0 → 4.3 | 3% → 9% |
+| DS-V3 MLA decode b8 ctx32k | 512x512x2 | 17% / 25% / 25% | 25.3 → 17.1 | 0% → 0% |
+| DS-V3 MLA decode b8 ctx32k | 256x256x8 | 20% / 50% / 50% | 20.8 → 8.5 | 1% → 1% |
+| DS-V3 MLA decode b8 ctx32k | 128x128x32 | 23% / 40% / 99% | 18.5 → 4.3 | 1% → 2% |
+| DS-V3 MLA decode b8 ctx32k | 64x64x128 | 12% / 12% / 99% | 34.8 → 4.3 | 2% → 3% |
+| DS-V3 MLA decode b8 ctx32k | 32x32x512 | 6% / 6% / 99% | 67.3 → 4.3 | 2% → 6% |
+| Qwen3-32B GQA decode b64 ctx4k | 512x512x2 | 0% / 1% / 1% | 155.2 → 86.0 | — → — |
+| Qwen3-32B GQA decode b64 ctx4k | 256x256x8 | 0% / 2% / 2% | 146.8 → 25.7 | — → — |
+| Qwen3-32B GQA decode b64 ctx4k | 128x128x32 | 0% / 6% / 6% | 142.6 → 8.5 | — → — |
+| Qwen3-32B GQA decode b64 ctx4k | 64x64x128 | 0% / 12% / 12% | 138.4 → 4.2 | — → — |
+| Qwen3-32B GQA decode b64 ctx4k | 32x32x512 | 0% / 25% / 25% | 138.4 → 2.1 | — → — |
+| Qwen3-32B GQA decode b8 ctx128k | 512x512x2 | 0% / 1% / 1% | 604.5 → 335.8 | — → — |
+| Qwen3-32B GQA decode b8 ctx128k | 256x256x8 | 0% / 2% / 2% | 571.0 → 100.7 | — → — |
+| Qwen3-32B GQA decode b8 ctx128k | 128x128x32 | 0% / 6% / 6% | 554.2 → 33.6 | — → — |
+| Qwen3-32B GQA decode b8 ctx128k | 64x64x128 | 0% / 8% / 12% | 545.8 → 16.8 | — → — |
+| Qwen3-32B GQA decode b8 ctx128k | 32x32x512 | 0% / 5% / 17% | 541.6 → 12.6 | — → — |
+| Qwen3-32B prefill b1 4k | 512x512x2 | 22% / 40% / 40% | 75.5 → 41.9 | — → — |
+| Qwen3-32B prefill b1 4k | 256x256x8 | 12% / 67% / 67% | 142.6 → 25.2 | — → — |
+| Qwen3-32B prefill b1 4k | 128x128x32 | 6% / 40% / 100% | 276.8 → 16.8 | — → — |
+| Qwen3-32B prefill b1 4k | 64x64x128 | 3% / 11% / 100% | 553.6 → 16.8 | — → — |
+| Qwen3-32B prefill b1 4k | 32x32x512 | 2% / 3% / 100% | 1107.3 → 16.8 | — → — |
+| DS-V3 prefill b1 4k | 512x512x2 | 26% / 45% / 45% | 151.9 → 87.9 | 25% → 25% |
+| DS-V3 prefill b1 4k | 256x256x8 | 14% / 71% / 71% | 279.8 → 56.0 | 48% → 50% |
+| DS-V3 prefill b1 4k | 128x128x32 | 7% / 100% / 100% | 535.7 → 40.0 | 95% → 100% |
+| DS-V3 prefill b1 4k | 64x64x128 | 4% / 100% / 100% | 1071.4 → 40.0 | 58% → 100% |
+| DS-V3 prefill b1 4k | 32x32x512 | 2% / 25% / 100% | 2142.8 → 40.0 | 29% → 100% |
+| Qwen3-30B-A3B MoE decode b64 ctx4k | 512x512x2 | 0% / 1% / 1% | 58.2 → 32.2 | 1% → 1% |
+| Qwen3-30B-A3B MoE decode b64 ctx4k | 256x256x8 | 0% / 2% / 2% | 55.1 → 9.6 | 2% → 2% |
+| Qwen3-30B-A3B MoE decode b64 ctx4k | 128x128x32 | 0% / 6% / 6% | 53.5 → 3.2 | 2% → 4% |
+| Qwen3-30B-A3B MoE decode b64 ctx4k | 64x64x128 | 0% / 12% / 12% | 51.9 → 1.6 | 2% → 8% |
+| Qwen3-30B-A3B MoE decode b64 ctx4k | 32x32x512 | 0% / 12% / 25% | 51.9 → 0.8 | 2% → 15% |
+
+
+**设计结论。**
+1. 只能 wide 时，核越多，注意力越差（N = head_dim 只占宽阵列的一小段）：32² × 512 上 prefill 注意力仅 2 %。
+2. 核组能各自跑实例（auto）时，MLA（M = 128 头）和 prefill 注意力在 R ≤ 128 的所有几何上都接近 100 %。大阵列（512²、256²）因为 N = head_dim / latent 小于 C，上限只有 23 ~ 71 %。在固定 MAC 下，从注意力角度看，128² × 32 或 64² × 128 加独立调度最好；512² × 2 在注意力算力上至少损失 55 %。
+3. GQA decode：上限是 q·g / R，和调度无关（Qwen3-32B：g = 8，R = 32 时 25 %，R = 128 时 6 %）。要更高，得用更小的 R、GEMV 单元或投机解码（q > 1）。MoE decode 的专家 GEMM 每专家 token 极少，也是同样的 M 上限。
+4. decode 大多受 DRAM 限制，所以默认 stage 重叠下 TPOT 基本不变。prefill、kernel / serial 重叠模式、以及算力相对带宽紧张的设计，受影响最大。
+
+**默认值政策。** 多核 NPU 上，若各核有独立 sequencer，`"wide"` 就是建模错误：没有理由让所有核锁步做同一个实例，`reconf` 本来就是「逐 op 取最优」。但如果是单 sequencer 的锁步阵列，wide 就是对的。**建议**（待确认，本分支默认仍是 wide）：目录芯片默认改为 `"auto"`。全部数值变化见 `/workspace/val5/diff_all.csv`（逐条：芯片 / 模型 / 服务点 / 布局 / 指标 / 旧值 / 新值）；汇总：
+changed numbers: 555 (models 74; bound flips 167)
+
+| chip | point | metric | n | min | median | max |
+|---|---|---|---|---|---|---|
+| 100T | decode b1 | throughput | 21 | +0.0% | +0.5% | +6.8% |
+| 100T | decode b16 ctx32k | throughput | 27 | +0.0% | +0.6% | +6.8% |
+| 100T | prefill b2 8k | throughput | 143 | +0.0% | +30.3% | +169.3% |
+| 100T | prefill b2 8k | ttft | 116 | -62.9% | -25.7% | -7.1% |
+| 1P | decode b1 | throughput | 11 | +0.0% | +1.7% | +28.6% |
+| 1P | decode b16 ctx32k | throughput | 15 | +0.0% | +0.9% | +25.6% |
+| 1P | prefill b2 8k | throughput | 82 | +0.0% | +56.0% | +773.5% |
+| 1P | prefill b2 8k | ttft | 69 | -88.6% | -40.0% | -0.5% |
+| H100-like | decode b1 | throughput | 9 | +0.0% | +0.0% | +1.0% |
+| H100-like | decode b16 ctx32k | throughput | 10 | +0.0% | +0.0% | +1.1% |
+| H100-like | prefill b2 8k | throughput | 31 | +0.0% | +6.5% | +209.8% |
+| H100-like | prefill b2 8k | ttft | 21 | -67.7% | -8.3% | -2.8% |
+
+参考硬件（GPU）保持 wide：§25.9 已经说明，GPU 上更忠实的映射会让总体高估加大（误差互相抵消的那部分被拿掉了）。
