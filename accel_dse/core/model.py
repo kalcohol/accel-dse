@@ -93,6 +93,10 @@ class AttnCore:
     idx_rope: int = 0          # indexer RoPE dims (q per head and k)
     idx_fp8: bool = False      # DeepSeek-V3.2 reference indexer: Hadamard-rotated q / k quantised to fp8 e4m3 with one
                                # fp32 scale per 128 elements; key cache fp8 + scales (inference/model.py, Indexer)
+    idx_split: bool = False    # DeepSeek-V4 reference: indexer heads column-parallel over TP + all-reduce of the scores
+    cmp_coff: int = 0          # DeepSeek-V4 Compressor: 1, or 2 for the overlapping ratio-4 windows (0 = no compressor)
+    idx_cmp: bool = False      # DeepSeek-V4 indexer keys come from its own (Hadamard-rotated) compressor
+    rope_n: int = 0            # rotary dims actually rotated per head when it differs from the MLA latent split
     idx_kpool: int = 0         # GLM-5.3-Flash: indexer scores gated k-pools of this many keys (top-k/kpool pools)
     lin: str = ""              # linear-attention recurrence: gdn | kda (delta rule, scalar / per-channel gate) | lightning
     lin_chunk: int = 0         # prefill chunk (block) length of the reference chunked kernel
@@ -238,6 +242,7 @@ class Layer:
     misc_params: int = 0                     # norms, gates, conv, hc — not GEMMs
     hc: int = 0                              # mHC streams (GLM-5.3-Flash): attn + ffn hyper-connection compute per layer
     hc_iters: int = 0                        # Sinkhorn-Knopp iterations of the comb weight
+    hc_head: str = ""                        # last layer only: final stream collapse — mean (GLM-5.3-Flash) | mix (V4)
     cross_linears: tuple[Linear, ...] = ()   # cross-attention projections (video DiT: q from tokens, k/v from text)
     cross: AttnCore | None = None
     fused_out: bool = False                  # parallel attention + MLP block with one fused output GEMM
@@ -718,6 +723,62 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, mtp, notes, cov
 
 
+def _build_dsv4_ref(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """DeepSeek-V4-Flash / -Pro per the official inference/model.py (identical in both repos): MQA head_dim 512 (one
+    shared K = V entry, attention sink, per-head q RMSNorm, inverse RoPE on o), grouped low-rank output, sliding
+    window 128 + per-layer Compressor (ratio 4 overlapping / 128), ratio-4 layers with a compressed-key indexer
+    (heads column-parallel, top-k), hash routing (gate scores still computed; experts from tid2eid), mHC ×hc_mult
+    with a learned final collapse."""
+    h = c["hidden_size"]
+    L = c["num_hidden_layers"]
+    H, hd = c["num_attention_heads"], c["head_dim"]
+    ql, ol, og = c["q_lora_rank"], c["o_lora_rank"], c["o_groups"]
+    rope = c.get("qk_rope_head_dim") or 64
+    win = c.get("sliding_window") or 128
+    ratios = _list(c.get("compress_ratios")) or [0] * (L + 1)
+    ih, idim, topk = c.get("index_n_heads") or 0, c.get("index_head_dim") or 0, c.get("index_topk")
+    hc, iters = c.get("hc_mult") or 1, c.get("hc_sinkhorn_iters") or 1
+    E, k, de = c["n_routed_experts"], c["num_experts_per_tok"], c["moe_intermediate_size"]
+    n_hash = c.get("num_hash_layers") or 0
+    hc_p = 2 * ((2 + hc) * hc * (hc * h + 1) + 3)          # hc_attn / hc_ffn: fn, base, scale
+    head_p = hc * hc * h + hc + 1                            # hc_head_fn / base / scale
+    notes = [f"DeepSeek-V4 按官方 inference/model.py 逐项建模：滑窗 {win} + 压缩器（比 4 重叠 / 128）、比 4 层压缩 key 索引器"
+             f"（{ih} 头 TP 切分 + 分数 all-reduce，top-{topk}）、attention sink、mHC ×{hc}（Sinkhorn {iters} 次）、"
+             f"前 {n_hash} 层哈希路由（gate 分数照算，专家由 tid2eid 给定）"]
+
+    def layer(i: int, last: bool = False) -> Layer:
+        r = ratios[i] if i < len(ratios) else 0
+        r = r if r and r > 1 else 1
+        alin = [Linear("q_a", h, ql, "rep"), Linear("q_b", ql, H * hd, "col"), Linear("kv", h, hd, "rep"),
+                Linear("o_a", H * hd, og * ol, "col", groups=og), Linear("o_b", og * ol, h, "row")]
+        core = AttnCore("mla", n_q=H, n_kv=1, qk_dim=hd, v_dim=hd, kv_lora=hd, rope_dim=0, rope_n=rope,
+                        window=win, compress=r, sink=True)
+        misc = ql + hd + H                                   # q_norm, kv_norm, attn_sink
+        if r > 1:
+            cw = 2 if r == 4 else 1
+            alin += [Linear("cmp_kv", h, cw * hd, "rep"), Linear("cmp_gate", h, cw * hd, "rep")]
+            misc += cw * r * hd + hd                         # ape, norm
+            core = replace(core, cmp_coff=cw)
+            if r == 4 and ih:
+                alin += [Linear("idx_q", ql, ih * idim, "col"), Linear("idx_cmp_kv", h, cw * idim, "rep"),
+                         Linear("idx_cmp_gate", h, cw * idim, "rep"), Linear("idx_w", h, ih, "col")]
+                misc += cw * r * idim + idim
+                core = replace(core, idx_heads=ih, idx_dim=idim, topk=topk, idx_split=True, idx_cmp=True,
+                               idx_rope=rope)
+        ffn, flin = _ffn_moe(h, E, k, de, c.get("n_shared_experts") or 0, de)
+        misc += 2 * h + hc_p + (0 if i < n_hash else E)      # norms, hc, gate bias (hash layers: tid2eid instead)
+        if last:
+            misc += head_p
+        return Layer(tuple(alin), core, ffn, flin, misc, hc=hc, hc_iters=iters, hc_head="mix" if last else "")
+
+    layers = [layer(i, i == L - 1) for i in range(L)]
+    mtp = []
+    for j in range(c.get("num_nextn_predict_layers") or 0):
+        m_ = layer(L + j)
+        mtp.append(replace(m_, misc_params=m_.misc_params + 3 * h + head_p, hc_head="mix"))
+    return layers, mtp, notes, "full"
+
+
 def _build_dsv4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """DeepSeek-V4 family: MQA head_dim 512, grouped low-rank output, compressed
     sparse attention (CSA) with per-layer compress ratio, sliding window, hash
@@ -760,6 +821,8 @@ def _build_dsv4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
 
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if mt == "deepseek_v4":
+        return _build_dsv4_ref, "DeepSeek-V4 (CSA/MQA-512)"
     if mt.startswith("deepseek_v4"):
         return _build_dsv4, "DeepSeek-V4 (CSA/MQA-512)"
     if mt in ("kimi_linear", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
@@ -826,12 +889,12 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     mt = c.get("model_type", "")
     L = len(spec.layers)
     r = []
-    cmp = sum(1 for l in spec.layers if l.core.compress > 1)
+    cmp = sum(1 for l in spec.layers if l.core.compress > 1 and not l.core.cmp_coff)
     idx = [l.core for l in spec.layers if l.core.idx_heads]
     if cmp:
         r.append(f"压缩稀疏注意力 CSA（{cmp}/{L} 层）：按有效上下文 ctx/压缩比 + 滑窗近似"
                  + (f"，索引层只读 top-{idx[0].topk} 个 token" if idx else ""))
-    if c.get("num_hash_layers"):
+    if c.get("num_hash_layers") and mt != "deepseek_v4":
         r.append(f"哈希路由（前 {c['num_hash_layers']} 层）：按 top-k MoE 计")
     hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
     if hc and not any(l.hc for l in spec.layers):

@@ -371,6 +371,8 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
                           act_bytes=b_loc * hq_loc * q * core.v_dim * ab))
         kv_tok = lat / core.compress
         sm_elems = b_loc * q * hq_loc * ce * causal
+        if core.sink:                      # DeepSeek-V4 sparse_attn: learnable attn_sink logit per head
+            sm_elems += b_loc * q * hq_loc
     if core.idx_heads:
         n_keys = math.ceil(ctx_tot / core.compress)
         # 0.61.1: prefill — the query at position p scores ⌈p/c⌉ compressed keys (exact mean; was the full square for
@@ -396,7 +398,9 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         # per scored (query, key) pair, after the q·k GEMM (DeepSeek-V3.2 inference/model.py fp8_index; transformers
         # GlmMoeDsaIndexer): ReLU per head, × head weight and sum over heads (3·heads), fp8 key-scale multiply (fp8
         # path), top-k selection 1 compare per candidate (vector-count convention, like softmax's 5 per element)
-        per_pair = 3 * core.idx_heads + 1 + (1 if core.idx_fp8 else 0)
+        ih_loc = _cdiv(core.idx_heads, tp) if core.idx_split else core.idx_heads
+        rep_i = 1 if core.idx_split else tp
+        per_pair = 3 * ih_loc + 1 + (1 if core.idx_fp8 else 0)
         # per new token: k LayerNorm (4/elem, as the layer norms), RoPE on q heads + k (3/elem, as attention RoPE);
         # fp8 path: Hadamard rotation of q heads + k (d·log2 d adds, fast_hadamard_transform) and block fp8 quant
         # (2/elem, the converted-element convention of evaluate._op_seconds)
@@ -404,12 +408,28 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         per_tok = 4 * core.idx_dim + 3 * rows * core.idx_rope
         if core.idx_fp8:
             per_tok += rows * core.idx_dim * (math.log2(core.idx_dim) + 2)
-        ops.append(Op("indexer_score", "attn", li, m=q * core.idx_heads, k=core.idx_dim, n=n_keys, count=b_loc,
-                      causal=icaus, replicated=tp, w_fmt="fp8" if core.idx_fp8 else "",
+        if core.idx_cmp:
+            # DeepSeek-V4 Indexer: RoPE + Hadamard + fp4-simulated quant on the local q heads; keys from its own
+            # Compressor (gated softmax pooling over 2·ratio overlapped slots per channel: ape 1 + softmax 5 + sum 2;
+            # per compressed entry RMSNorm 4, RoPE, Hadamard, fp4 quant 2)
+            d_ = core.idx_dim
+            per_tok = ih_loc * (3 * core.idx_rope + d_ * (math.log2(d_) + 2)) + 2 * d_ * 8 \
+                + (4 * d_ + 3 * core.idx_rope + d_ * (math.log2(d_) + 2)) / core.compress
+        ops.append(Op("indexer_score", "attn", li, m=q * ih_loc, k=core.idx_dim, n=n_keys, count=b_loc,
+                      causal=icaus, replicated=rep_i, w_fmt="fp8" if core.idx_fp8 else "",
                       a_fmt="fp8" if core.idx_fp8 else "bf16",
                       kv_read=(b_loc * (ctx_tot if core.idx_kpool else n_keys) * ib) if ph.kind == "decode" else 0.0,
                       vec=t_new * n_keys * icaus * per_pair + t_new * per_tok + pool_vec))
+        if core.idx_split and tp > 1:     # dist.all_reduce(index_score): fp32 [tokens, compressed keys]
+            ops.append(Op("indexer_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp,
+                          comm_bytes=t_new * n_keys * icaus * 4))
         ops.append(Op("indexer_kv_write", "vector", li, kv_write=t_new * ib / core.compress, replicated=tp))
+    if core.cmp_coff:
+        # DeepSeek-V4 Compressor (KV path): gated softmax pooling of coff·head_dim channels per token (ape 1 + softmax 5
+        # + weighted sum 2); per compressed entry RMSNorm (4), RoPE, fp8 quant of the non-rope dims (2)
+        hd_ = core.kv_lora
+        ops.append(Op("compressor_pool", "vector", li, replicated=tp,
+                      vec=b_loc * q * (core.cmp_coff * hd_ * 8 + (4 * hd_ + 3 * core.rope_n + 2 * hd_) / core.compress)))
     # KV cache traffic: read the attended entries (sparse/window aware), write the new ones
     if ph.kind == "decode":
         # 0.61.1: ``attended`` counts cache entries (compressed layers: ⌈ctx/c⌉ + window), each a full entry of
@@ -486,12 +506,23 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     ops.extend(_attn_core_ops(model, li, L.core, ph, sh, b_loc))
     if L.core.kind in ("gqa", "mla"):
         hq = gqa_local(L.core.n_q, L.core.n_kv, tp)[1] if L.core.kind == "gqa" else _cdiv(L.core.n_q, tp)
-        ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
+        if L.core.rope_n:
+            # DeepSeek-V4: RoPE on q heads + kv, inverse RoPE on o heads; per-head q RMSNorm and kv RMSNorm (4/elem)
+            c_ = L.core
+            ops.append(Op("rope", "vector", li, vec=t * (2 * hq + 1) * c_.rope_n * 3 + t * (hq + 1) * c_.qk_dim * 4))
+        else:
+            ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
     if tp > 1:
         ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     if L.hc:
         ops += _hc_ops(model, li, L, t, tp, "ffn")
-        if li == len(model.layers) - 1:      # Glm5NextTextHyperHead: unweighted mean of the N streams
+        if L.hc_head == "mix":
+            # DeepSeek-V4 ParallelHead.hc_head: rsqrt-norm, fn GEMM [N·h → N], sigmoid pre, weighted collapse
+            N = L.hc
+            ops.append(Op("hc_head_fn", "gemm", li, m=t, k=N * h, n=N, w_fmt="bf16", w_bits=16, a_fmt="bf16",
+                          act_bytes=t * (N * h + N) * 2, replicated=tp))
+            ops.append(Op("hc_head", "vector", li, vec=t * (4 * N * h + 4 * N + 2 * N * h), replicated=tp))
+        elif li == len(model.layers) - 1 and layer is None:   # Glm5NextTextHyperHead: unweighted mean of N streams
             ops.append(Op("hc_head", "vector", li, vec=t * L.hc * h, replicated=tp))
     ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4))
     f = L.ffn

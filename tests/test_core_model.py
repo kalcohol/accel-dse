@@ -58,7 +58,7 @@ def test_three_axis_labels_and_proxy_badge():
         assert lab["coverage"] in ("full", "partial", "proxy")
         assert lab["proxy_badge"] == (lab["coverage"] == "proxy")
         assert lab["dtype"].startswith("W ")
-    assert labels(get_model("deepseek-v4-pro"))["proxy_badge"]
+    assert labels(get_model("deepseek-v4.1-flash"))["proxy_badge"]   # Unreleased: V4 / V4-Pro now 「完整」
     assert labels(get_model("llama-3.1-8b"))["provenance"] == "mirror"
     assert labels(get_model("qwen3-8b"))["coverage"] == "full"
 

@@ -67,8 +67,9 @@ _FULL_0651 = {
 }
 
 CLOSED = ("gpt-oss-120b", "gpt-oss-20b", "deepseek-v3.2", "glm-5", "glm-5.2", "glm-5.3", "kimi-k3", "qwen3.8-2.4t",
-          "qwen3.8-27b", "qwen3.5-397b-a17b", "qwen3-next-80b-a3b", "minimax-text-01", "minimax-m1-80k")
-PROXY = ("glm-5.3-flash", "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-flash-next")
+          "qwen3.8-27b", "qwen3.5-397b-a17b", "qwen3-next-80b-a3b", "minimax-text-01", "minimax-m1-80k",
+          "glm-5.3-flash", "deepseek-v4-flash", "deepseek-v4-pro")
+PROXY = ("deepseek-v4.1-flash", "qwen3.8-flash-next")
 PROTEIN_PARTIAL = ("openfold", "alphafold2", "boltz-1", "protenix")
 
 
@@ -142,3 +143,30 @@ def test_gdn_chunk_flops_reference():
 def test_lightning_block_256():
     c = next(l.core for l in get_model("minimax-m1-80k").layers if l.core.kind == "linear")
     assert c.lin == "lightning" and c.lin_chunk == 256
+
+
+def test_hc_and_v4_params_match_release_layers():
+    """GLM-5.3-Flash (transformers glm5_next) and DeepSeek-V4-Flash / -Pro (official inference/model.py): the only
+    difference to the release summary is the hc_*_scale tensors (3 per hyper-connection, + 1 for the V4 head), which
+    summarize_release files under quantisation scales."""
+    for i, extra in (("glm-5.3-flash", 45 * 6), ("deepseek-v4-flash", 43 * 6 + 1), ("deepseek-v4-pro", 61 * 6 + 1)):
+        pc = get_model(i).param_check()
+        assert pc["ours"] - pc["release"] == extra and pc["mtp_ours"] == pc["mtp_release"], (i, pc)
+
+
+def test_hc_ops_reference_counts():
+    m = get_model("glm-5.3-flash")
+    ops = {o.name: o for o in build_rank_ops(m, 0, Phase("prefill", batch=1, q=8192, ctx=0))}
+    N, h = 4, m.hidden
+    assert ops["attn_hc_fn"].flops == 2 * 8192 * N * h * (2 + N) * N     # fn GEMM [N·h → (2+N)·N]
+    assert "ffn_hc_mix" in ops and m.layers[0].hc_iters == 20
+
+
+def test_v4_attention_keys_reference():
+    """V4 ratio-0 layer: window 128 only; ratio-128 layer: window + every compressed entry; ratio-4: window + top-k."""
+    m = get_model("deepseek-v4-flash")
+    c0, c4, c128 = (m.layers[i].core for i in (0, 2, 3))
+    assert (c0.compress, c4.compress, c128.compress) == (1, 4, 128) and c4.idx_heads == 64 and not c128.idx_heads
+    ctx = 65536
+    assert c0.ctx_eff(ctx) == 128 and c128.ctx_eff(ctx) == 128 + 512 and c4.ctx_eff(ctx) == 128 + 512
+    assert c0.sink and c4.cmp_coff == 2 and c128.cmp_coff == 1
