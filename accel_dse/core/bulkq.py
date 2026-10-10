@@ -355,19 +355,25 @@ def _tagged(lam: float, b: int, D: tuple):
     if b in rlaw:
         classes.append(([(r, pr) for r, pr in rlaw[b].items() if pr > 1e-13], list(D[b - 1])))
     keys: dict = {}
-    # 0.72 perf: every key starts with (t, u-slot); when no atom duration t occurs twice over the classes, each
-    # (t, u-slot) is visited exactly once, so its keys can live in their own small dict keyed (ΣF, k) — same sums in
-    # the same order, and visiting the sub-dicts in visit order reproduces the flat first-touch order exactly.
-    # Otherwise (a repeated t) the flat dict is kept.
-    ts = [t for _, atoms in classes for t, _ in atoms]
-    nested = len(ts) == len(set(ts))
+    # 0.72 perf: every key starts with (t, u-slot).  Keys live in one small dict per (t, u-slot) visit keyed
+    # (ΣF, k): same sums in the same order.  A first visit owns its dict; a revisit of the same (t, u-slot) (an atom
+    # duration t repeated over the classes) adds to the key where it was first touched and puts new keys in a fresh
+    # dict for this visit, so flattening the dicts in visit order reproduces the flat dict's first-touch order.
+    visits: list = []
+    seen: dict = {}
     for rd, atoms in classes:
         asc = all(rd[i][0] < rd[i + 1][0] for i in range(len(rd) - 1)) and bool(rd)
         for t, w in atoms:
             base_w = w * t / cyc / N_U
             for ui in range(N_U):
-                if nested:
-                    sub = keys[(t, ui)] = {}
+                sub = {}
+                visits.append((t, ui, sub))
+                prior = seen.get((t, ui))
+                if prior is None:
+                    seen[(t, ui)] = [sub]
+                else:
+                    prior.append(sub)
+                    prior = prior[:-1]
                 u = t * (ui + 0.5) / N_U
                 pj = _pois_c(round(lam * u, 12), 1e-11)
                 if asc:
@@ -419,17 +425,21 @@ def _tagged(lam: float, b: int, D: tuple):
                             if 1 - cdf > 1e-12:
                                 kd.append((m0 + 1 + n, 1 - cdf))
                         mw = mass * wF                       # (mass · wF) · pk, as before (left to right)
-                        if nested:
+                        if prior is None:
                             g = sub.get
                             for ko, pk in kd:
                                 key = (sF, ko)
                                 sub[key] = g(key, 0.0) + mw * pk
                         else:
                             for ko, pk in kd:
-                                key = (t, ui, sF, ko)
-                                keys[key] = keys.get(key, 0.0) + mw * pk
-    if nested:
-        keys = {(t, ui, sF, ko): v for (t, ui), sub in keys.items() for (sF, ko), v in sub.items()}
+                                key = (sF, ko)
+                                for d in prior:
+                                    if key in d:
+                                        d[key] += mw * pk
+                                        break
+                                else:
+                                    sub[key] = sub.get(key, 0.0) + mw * pk
+    keys = {(t, ui, sF, ko): v for t, ui, sub in visits for (sF, ko), v in sub.items()}
     return keys, f_idle, wq, own, bm
 
 
