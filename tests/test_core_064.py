@@ -3,6 +3,7 @@ on the same scan + refine, 2-D blocking in the activation-spill model, fractiona
 weight dequant under uneven TP, DRAM bytes of idle DP ranks under EP.  Plus extended invariant property tests."""
 
 from __future__ import annotations
+from dataclasses import replace
 
 import math
 import random
@@ -27,6 +28,9 @@ _QN = {"model": "qwen3-next-80b-a3b", "mem_id": HBM, "layout": {"tp": 2, "ep": 2
 
 def _ctx(body):
     s = api.scenario_from_body({"scenario": body, "chip_preset": "1P"})
+    # 0.71: operating points / SLO set on the 0.70 (wide) step costs; with the auto default the prefill TTFT drops
+    # well under the 85 ms SLO and the PD SLO rate is 7.16 rps (wide: 1.23)
+    s = replace(s, chip=replace(s.chip, instance_sched="wide"))
     return pdsim.capture_ctx(s)
 
 

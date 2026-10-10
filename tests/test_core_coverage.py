@@ -1,6 +1,7 @@
 """Coverage closure (Unreleased): DSA indexer, gpt-oss sinks and chunked linear attention per the reference code;
 already-complete models keep their default numbers (KPI hashes pinned at 548b9d5 / 0.65.1)."""
 from __future__ import annotations
+from dataclasses import replace
 
 import hashlib
 import json
@@ -78,7 +79,9 @@ def _kpi(i):
     s = []
     for sv in _SV:
         try:
-            r = evaluate(Scenario(model=i, serving=sv))
+            # 0.71: the 0.65.1 hashes are guarded at the wide schedule; auto-default numbers: /workspace/prof66/fp_0710.json
+            sc = Scenario(model=i, serving=sv)
+            r = evaluate(replace(sc, chip=replace(sc.chip, instance_sched="wide")))
             s.append([float(f"{x:.10g}") for x in (r.tpot, r.ttft, r.throughput, r.per_card, r.tick)] + [r.fits, r.bound])
         except Exception as x:  # noqa: BLE001
             s.append(str(x)[:40])

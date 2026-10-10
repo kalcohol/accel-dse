@@ -32,6 +32,9 @@ changed numbers: 555 (models 74); bottleneck flips: 88 — MAC→DRAM 88
 
 - decode 中位数 < 2 %；prefill TTFT 中位数 −8.3 %（H100-like）/ −25.7 %（100T）/ −40.0 %（1P）；88 个场景瓶颈 MAC → DRAM（涉及 167 个数值）。
 
+### 测试
+- 手算 / 标定数值的测试钉在 wide（其数值按 wide 推导）：test_core_mapping、test_core_063 MLA 周期、test_core_062_1 §19 示例、test_core_064 PD SLO 带（auto 下 7.16 rps，wide 1.23）、test_core_coverage 的 0.65.1 指纹、V4 网格与 052/054–057 排队场景。auto 默认数值由 fp_0710 指纹基线覆盖。
+
 ### 审计（调度改动）
 - 不变量扫描测试 `tests/test_core_071_audit.py`（600 组随机几何 / 形状 / 端口 / 累加器）：auto 不慢于 wide 和 split；不快于理想 MAC 下界（功守恒）；不快于全片 SRAM 端口下界；每核阵列与每核累加器不变时核数翻倍不变慢（端口按几何推导或总量固定两种）。
 - 审计前的实现（每组固定 g/E 端口份额、每个实例各付一次填充）在核数翻倍时有 44 / 4000 个反例（≤ 3 % 到 1.7×，均在端口受限或小实例处）；修正后 0 个。目录 / 指纹 / 头条数值逐项不变（555 个变化数值与修正前完全相同）。

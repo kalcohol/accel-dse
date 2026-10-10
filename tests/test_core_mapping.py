@@ -1,5 +1,6 @@
 """L3 — hand-checked mapping bounds for each organisation."""
 from __future__ import annotations
+from dataclasses import replace
 
 import math
 
@@ -7,7 +8,8 @@ from accel_dse.core.dtypes import FormatSupport, gemm_exec
 from accel_dse.core.hardware import CHIP_100T, Chip
 from accel_dse.core.mapping import gemm_cost
 
-C = CHIP_100T          # 56×56×16 @1GHz, Ce = 896, port = 4·(56+896)·2 = 7616 B/cycle
+C = replace(CHIP_100T, instance_sched="wide")  # 0.71: hand checks of the wide array (auto default would spread count>1 over cores)
+#          # 56×56×16 @1GHz, Ce = 896, port = 4·(56+896)·2 = 7616 B/cycle
 
 
 def test_100t_geometry():

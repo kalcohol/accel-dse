@@ -2,6 +2,7 @@
 neutral-value identities of the optional features, eval / sweep agreement with images."""
 
 from __future__ import annotations
+from dataclasses import replace
 
 import glob
 import json
@@ -39,7 +40,8 @@ def test_esmfold_fp32_activation_example():
 def test_fabric_examples_after_bf16_combine():
     """MODEL §19 example A and §19.5 (re-derived: combine / all-reduce wire bytes ≥ bf16 since 0.61.1)."""
     def run(model, lay, phase, batch, fab=Fabric()):
-        return evaluate(Scenario(model=model, chip=CHIPS["1P"], mem_id=HBM, layout=lay, node_cards=8,
+        return evaluate(Scenario(model=model, chip=replace(CHIPS["1P"], instance_sched="wide"),  # 0.71: §19 examples at the wide schedule
+                                 mem_id=HBM, layout=lay, node_cards=8,
                                  serving=Serving(phase=phase, batch=batch), fabric=fab))
     r = run("deepseek-v3", Layout(dp=64, ep=64), "prefill", 64)
     assert round(r.step * 1e3, 1) == 715.9 and r.bound == "LINK"

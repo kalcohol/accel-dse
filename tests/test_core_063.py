@@ -4,6 +4,7 @@ per-context fabric collector, LLM activation streaming.  Plus the permanent prop
 work conservation, schedule legality, hard capacity constraints, search ≥ any known feasible point."""
 
 from __future__ import annotations
+from dataclasses import replace
 
 import dataclasses
 import itertools
@@ -38,7 +39,7 @@ def test_mla_decode_kv_b_per_head_gemms():
     pre = {o.name: o for o in build_rank_ops(m, li, Phase("prefill", 1, 64, 0))}["attn.kv_b"]
     assert uk.w_params + uv.w_params == pre.w_params == 512 * 128 * 256
     assert abs(uk.flops + uv.flops - 2 * 512 * 128 * 256) < 1e-6
-    ch = CHIPS["100T"]
+    ch = replace(CHIPS["100T"], instance_sched="wide")  # 0.71: hand-checked numbers are for the wide schedule (auto default changes them)
     kw = dict(w_fmt=uk.w_fmt, a_fmt=uk.a_fmt)
     c = gemm_cost(ch, "os", 1, 128, 512, count=128, **kw).cycles + gemm_cost(ch, "os", 1, 512, 128, count=128, **kw).cycles
     assert c == 40960 and gemm_cost(ch, "os", 1, 512, 32768, **kw).cycles == 9472
