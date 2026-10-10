@@ -38,7 +38,7 @@
 
 ### 2.1 覆盖度清单（Unreleased：按参考实现收口）
 
-收口前（0.65.1）目录里 72 个可评估发布中 22 个不是「完整」（现剩 6 个：2 个架构代理 + 4 个结构预测「部分」），另有 1 个目录条目「暂未接入 v2」。逐项判断：有公开 config + safetensors 头 + 参考代码的，按参考实现逐项建模并核对；没有的保留标签与精确原因。
+收口前（0.65.1）目录里 72 个可评估发布中 22 个不是「完整」（现剩 4 个：结构预测「部分」，LLM 全部「完整」），另有 1 个目录条目「暂未接入 v2」。逐项判断：有公开 config + safetensors 头 + 参考代码的，按参考实现逐项建模并核对；没有的保留标签与精确原因。
 
 | 模型 | 0.65.1 | 现在 | 依据 / 剩余原因 |
 |---|---|---|---|
@@ -50,12 +50,12 @@
 | minimax-m1-80k / minimax-text-01（Lightning） | 部分（同上） | 完整 | 发布仓库 `modeling_minimax_text_01.py`：BLOCK = 256，kv 状态 fp32；每块 Q·Kᵀ、A·V、Q·S、Kᵀ·V；decode 每 token 每头 5·dk·dv |
 | glm-5.3-flash | 架构代理 | 完整 | transformers `glm5_next`：KDA 低秩输出门 g_a / g_b（原按满秩 g 计，参数多 1.05B）；mHC ×4（每层 attn_hc / ffn_hc：N·h 的 RMSNorm、fn GEMM [N·h → (2+N)·N]、sigmoid / softmax + Sinkhorn 20 次、collapse、post ⊗ out + combᵀ·residual；残差 N 流 TP 复制，流水级间传 N·h），末端 HyperHead 均值；DSA 索引器 key 池化（门控 GEMM h → 128 + APE，每次前向对全部缓存 key 重建池：1 + 5 + 2 次 / 元素；按 ⌈ctx/4⌉ 个池打分，top-512 池展开 + 尾池 ≤ 3；缓存 [k, gate, valid] bf16 514 B / token）。逐层参数与 safetensors 头一致；与发布汇总差 270 = 45 × 6 个 hc_*_scale（汇总脚本归为量化 scale） |
 | deepseek-v4-flash / -pro | 架构代理 | 完整 | 官方 `inference/model.py`（两个仓库相同）：MQA head_dim 512（K = V 共用一份 512 维条目，attention sink，q 逐头 RMSNorm，o 逆 RoPE），滑窗 128 + 压缩器（比 4 重叠 coff 2 / 比 128；wkv / wgate、softmax 池化 1 + 5 + 2 次 / 元素，每条压缩条目 RMSNorm + RoPE + fp8 量化），比 4 层索引器（自带 Hadamard 压缩器，64 头按 TP 列切分 + fp32 分数 all-reduce，top-512 / Pro 1024），比 128 层读全部压缩条目；哈希路由层 gate 分数照算（与 top-k 同代价）；mHC ×4 + 学习的末端 hc_head（fn GEMM [N·h → N]）；MTP 为比 0 层。参数与发布汇总差 259 / 367（hc_*_scale）。未计：tid2eid 查表（3 层 × 129280 × 6 int64 ≈ 18.6 MB 存储，每 token 读 6 个整数）；压缩器在参考中以 fp32 计算，这里按 bf16 操作数；压缩条目数按 ⌈p/r⌉（参考 ⌊p/r⌋，每查询最多差 1 个） |
-| deepseek-v4.1-flash | 架构代理 | 架构代理 | 官方 V4.1 `inference/model.py` + `engram.py` 已公开，但结构与 V4 不同（engram 查表 196.6B、select_candidate_blocks 候选块选择、DSpark 草稿头、共享注意力运行时、视觉）；本轮未逐项建模，仍按 CSA 有效上下文 / 超连接只计参数 / 查表只计存储近似 |
-| qwen3.8-flash-next | 架构代理 | 架构代理 | 发布为 `qwen4_exp`；transformers `qwen4_exp` 参考已公开：GatedDeltaNet + QSA 索引注意力（4 头 × 128，压缩比 4，预算 2048）+ 门控残差（hc_count 4，低秩 320）+ PLE n-gram 嵌入层（第 2 层，conv 4；n-gram 表 51.2B）。当前模板按 GDN + 超连接 + 查表近似，参数差 +0.50%；需按参考重写，本轮未完成 |
+| deepseek-v4.1-flash | 架构代理 | 完整 | 官方 V4.1 `inference/model.py` + `engram.py`：每层 MQA-512 滑窗 128 + sink；压缩层（比 2 / 比 1）另读 top-512 压缩条目，keys = min(p, 128) + min(512, ⌊p/r⌋)（逐查询精确）；压缩器（比 1 为纯投影、比 > 1 softmax 池化 7 次 / 元素、无 APE）与压缩 KV 只在 kv 源层 2 / 8 / 14 / 20 计算和存储，其余层只读；索引器只在 2 / 8 / 14 / 20 / 24 / 28 / 32 / 36 运行（index key = wk(latent) 只在 kv 源层算 / 存，头按 TP 切分 + 分数 all-reduce），其余层复用 top-k；第 20 层 select_candidate_blocks（每位置 amax 1 + 块 top-2048），24–36 层按候选块掩码；Engram（第 1 / 14 层）：每 token 哈希（4 乘 3 异或 24 取模 24 加），按行分片的表读 24 行 × (256 B fp8 + 8 B e8m0 scale)、反量化、TP all-reduce、wkv GEMM [6144 → 5·h]、门控（9·N·h）；表存储 196.6B × 8.25 bit；mHC ×4，末端用最后的 pre_mix 加权 collapse（无 head 投影）；DSpark 草稿（spec_k > 0）：prefill 用 main_proj [3h → h] 与各草稿层 wkv 播种窗口，decode 每步一次 5 位置块经 3 层（窗口 + 块内非因果 5 键，块 KV 不写缓存）、共享 head、Markov 头逐位置（rank-256 embed + head）、置信头；spec_k > 5 按 5 计并警告；视觉沿用 0.62 的 DeepSeek ViT + aligner（485.3M，与发布一致）。逐层参数与 safetensors 头一致（fp4 专家按逻辑数），与汇总差 240 = 40 × 6 个 hc_*_scale；MTP 一致。缓存按参考的默认 dtype（bf16）缓冲计：窗口 / 压缩条目 1024 B、index key 256 B（参考的 fp8 / fp4 act_quant 是原位模拟量化；按 fp8 / fp4 存储将是 528 / 288 / 68 B） |
+| qwen3.8-flash-next | 架构代理 | 完整 | transformers `qwen4_exp`（主干）+ SGLang `qwen4_exp_mtp.py`（MTP）：GDN（同 Qwen3.5）/ 门控 q 的 GQA（q / k 逐头 RMSNorm、部分 RoPE 64、σ 输出门）；QSA 索引器：index_qk_proj [h → (4+1)·128]，每次前向把缓存的原始 key 按 4 个一块均值池化 + LayerNorm + RoPE（参考循环里每个查询重算一遍，值相同，按每次前向一次计），按 ⌊p/4⌋ 块打分（ReLU + 头求和 + top-512 块），注意力 keys = p（⌊p/4⌋ ≤ 512）否则 2048 + p mod 4（尾块）；原始 key 缓存 256 B / token；门控残差 ×2 / 层（分组 RMSNorm N·h、低秩 down / up GEMM [N·h ↔ 320]、inject GEMM [N·h → 4]、σ 混合与注入；无逐层 RMSNorm），末端 mixer（无 inject、无最终 norm）；PLE（第 1 层）：n-gram 哈希、16 行 × 160 bf16 查表（表 51.2B）、key / value 投影 GEMM、3 个分组 RMSNorm、门控、膨胀 3 的 depthwise conv 4（状态 9 × N·h bf16 / 序列）；MoE 512 选 10 + σ 门控共享专家；MTP 输入融合 fc_embedding + 对 4 条流各做 fc_hidden（5·h² MAC / token）。参数与发布汇总逐项一致（差 0）；视觉 448.9M 一致。门控残差 / 索引器权重在 TP 内复制（残差流复制，与 mHC 同约定） |
 | openfold / alphafold2 / boltz-1 / protenix | 部分 | 部分 | 神经网络推理已逐项建模；MSA / 模板检索（jackhmmer / HHblits / MMseqs2，CPU / 检索服务）、特征化与 AMBER 松弛不属于加速器推理，按范围保留 |
 | alphafold3 | 暂未接入 v2 | 暂未接入 v2 | 权重需向 Google DeepMind 申请、禁止再分发，无公开 safetensors 头可核对；同架构用 Protenix / Boltz-1 |
 
-数值影响（HBM3e、TP8 / EP8，单卡 100T 默认芯片）：GLM-5.3-Flash / DeepSeek-V4-Flash / V4-Pro 收口后 decode（batch 16、32k）TPOT +5.8 / +8.0 / +7.4 %，prefill 8k TTFT +31 / +29 / +23 %，64k +2.8 / −1.8 / +8.6 %（mHC 混合与压缩器、sink 等原先未计的向量 / 小 GEMM 开销；V4 64k 略降来自索引器 TP 切分）。DSA 模型 decode（batch 16、ctx 32k）TPOT −9 ~ −13 %（DeepSeek-V3.2 fp8 打分；GLM-5.2 / 5.3 少 57 层索引），prefill 64k TTFT −36 ~ −49 %（GLM-5 不变，打分向量开销被其他瓶颈掩盖）；线性注意力模型 prefill 8k / 64k TTFT +4 ~ +17 % / +3 ~ +9 %（小块 GEMM 在大阵列上利用率低，原向量计数偏乐观），decode 不变（DRAM 主导）；gpt-oss 不变（sink 开销被掩盖）。已是「完整」的 50 个模型默认结果不变（`tests/test_core_coverage.py` 钉住 0.65.1 的 KPI 哈希）。
+数值影响（HBM3e、TP8 / EP8，单卡 100T 默认芯片）：GLM-5.3-Flash / DeepSeek-V4-Flash / V4-Pro 收口后 decode（batch 16、32k）TPOT +5.8 / +8.0 / +7.4 %，prefill 8k TTFT +31 / +29 / +23 %，64k +2.8 / −1.8 / +8.6 %（mHC 混合与压缩器、sink 等原先未计的向量 / 小 GEMM 开销；V4 64k 略降来自索引器 TP 切分）。DSA 模型 decode（batch 16、ctx 32k）TPOT −9 ~ −13 %（DeepSeek-V3.2 fp8 打分；GLM-5.2 / 5.3 少 57 层索引），prefill 64k TTFT −36 ~ −49 %（GLM-5 不变，打分向量开销被其他瓶颈掩盖）；线性注意力模型 prefill 8k / 64k TTFT +4 ~ +17 % / +3 ~ +9 %（小块 GEMM 在大阵列上利用率低，原向量计数偏乐观），decode 不变（DRAM 主导）；gpt-oss 不变（sink 开销被掩盖）。DeepSeek-V4.1-Flash / Qwen3.8-Flash-Next 收口后 decode（batch 16、32k）TPOT −23 / −31 %（共享压缩 KV 与索引、按真实条目读；QSA 2048 键替代原稠密全注意力），prefill 8k TTFT +40 / +127 %、64k −23 / +34 %（TP 复制的 mHC / 门控残差 GEMM 与向量、Engram / PLE；Qwen 在 TP8 下门控残差 4 个 [N·h ↔ 320] GEMM 每 rank 全量计算，占每 rank prefill FLOP 的 42 %）。已是「完整」的 50 个模型默认结果不变（`tests/test_core_coverage.py` 钉住 0.65.1 的 KPI 哈希），V4 / V4-Pro / GLM-5.3-Flash 本轮不变。
 
 ## 3. 逐 rank 算子图与并行
 
@@ -126,7 +126,7 @@
 ## 10. 范围与近似
 
 - LLM / VLM 推理（0.62 起 VLM 含视觉编码器，§20）；视频生成覆盖 DiT 去噪主干与文本编码器 / VAE pipeline（§11），蛋白质覆盖 ESM-2 编码器（§11）与结构预测的神经网络推理（ESMFold、AlphaFold 2、OpenFold、Boltz-1、Protenix，§12）。AlphaFold 3 权重需申请、无可核对的公开发布文件，标「暂未接入 v2」（§2）。不覆盖分子动力学 / 力场（目录中也无此类条目）。
-- 「架构代理」模型：超连接多流残差只计参数不计混合计算；查表只计存储与每 token 行读取；压缩稀疏注意力按有效上下文 `ctx/ratio`（+ 窗口，索引层 ≤ top-k）近似；哈希路由层按 top-k MoE 处理；GLM-5.3-Flash 的 DSA key 池化未逐项建模（§2.1）。
+- 「架构代理」：目录中现无此类 LLM（Unreleased 全部按参考实现收口，§2.1）；标签与 `coverage_reasons` 机制保留，新加入的含未建模结构的发布仍会自动标出。
 - 解析模型不模拟周期级行为：无 bank 冲突、无 DRAM 刷新 / 页冲突细节（统一由效率「假设」吸收），集合通信用 α-β 近似，MoE 默认 token 均匀路由（可选倾斜系数，§16）。
 - 不内置功耗、面积、成本估计。0.47.1 起给出每输出单位的动作计数，能耗只在用户提供每动作能耗时计算（§13）；0.49 起可填资源 / 面积预算，面积按用户给的密度估算，只报告余量（§17）。
 
