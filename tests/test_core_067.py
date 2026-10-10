@@ -46,7 +46,7 @@ def test_moe_harness_bands():
     """Regression bands for MODEL §25.7 (not accuracy targets): large-EP rows (TBO software) agree with the
     comm-hiding modes; the dense-fitted serial mode under-predicts them ~2×; TRT-LLM DS-R1 (no TBO) is over-predicted."""
     R = X.rows(X.DATA_MOE)
-    ep = [r for r in R if r["src"] != "trtllm-0.21-dsr1"]
+    ep = [r for r in R if r["metric"] in ("prefill_tok_s_node", "decode_tok_s_node")]
     g = lambda v, rs: math.exp(sum(math.log(X.predict(r, v)["pred"] / r["value"]) for r in rs) / len(rs))
     assert 0.85 < g("catalog_tbo", ep) < 1.15
     assert g("catalog_serial", ep) < 0.65
