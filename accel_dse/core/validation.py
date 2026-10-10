@@ -20,6 +20,8 @@ batch 1), not calibration targets.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import json
 from pathlib import Path
 
@@ -142,6 +144,11 @@ V4_FAMILIES = {
 }
 
 
+# 0.71: the V4 grid's operating points (loads that queue / preempt) were set on 0.70 step costs → its chip keeps the
+# wide instance schedule so the closed-form-vs-DES check stays at the same points (V4 is self-consistency, not speed)
+V4_SCHED = "wide"
+
+
 def v4_scenario(load: float, cv: float = 0.0, prefix: bool = False, family: str = "dense8b") -> Scenario:
     from .hardware import CHIPS
     from .scenario import PDConfig
@@ -150,7 +157,7 @@ def v4_scenario(load: float, cv: float = 0.0, prefix: bool = False, family: str 
               prompt_cv=cv, out_cv=cv)
     if prefix:
         pd.update(prefix_len=2048, prefix_count=20000)
-    return Scenario(model=model, chip=CHIPS["1P"], mem_id=HBM_6600, layout=Layout(**lay),
+    return Scenario(model=model, chip=replace(CHIPS["1P"], instance_sched=V4_SCHED), mem_id=HBM_6600, layout=Layout(**lay),
                     serving=Serving(batch=64, prompt=4096, out_len=512, ttft_slo_ms=ttft_slo, tpot_slo_ms=tpot_slo),
                     pd=PDConfig(**pd))
 

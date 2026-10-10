@@ -3,6 +3,7 @@ convolution, prefill-first worst gap)."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import math
 import random
@@ -19,7 +20,8 @@ from accel_dse.core.scenario import PDConfig, Scenario, Serving
 from accel_dse.core.validation import V4_BANDS, v4_scenario
 
 SV = Serving(batch=64, prompt=4096, out_len=512, ttft_slo_ms=400, tpot_slo_ms=10)
-BASE = dict(model="qwen3-8b", chip=CHIPS["1P"], mem_id="hbm3e_8s_12h24g_9200", layout=Layout(tp=2), serving=SV)
+BASE = dict(model="qwen3-8b", chip=replace(CHIPS["1P"], instance_sched="wide"),   # 0.71: bands set at 0.70 step costs
+            mem_id="hbm3e_8s_12h24g_9200", layout=Layout(tp=2), serving=SV)
 PD = dict(enabled=True, prefill_layout=Layout(tp=2), prefill_cards=2, decode_cards=6)
 DATA = Path(__file__).resolve().parents[1] / "accel_dse" / "data" / "v4_serving.json"
 
