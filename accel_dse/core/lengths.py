@@ -32,12 +32,29 @@ def lognormal_bins(mean: float, cv: float, n: int = BINS) -> list[tuple[float, i
         return [(1.0, max(1, round(mean)))]
     sig = math.sqrt(math.log1p(cv * cv))
     z = [-math.inf] + [_N.inv_cdf(k / n) for k in range(1, n)] + [math.inf]
-    out = []
+    xs = []
     for k in range(n):
         lo = _N.cdf(z[k] - sig) if math.isfinite(z[k]) else 0.0
         hi = _N.cdf(z[k + 1] - sig) if math.isfinite(z[k + 1]) else 1.0
-        out.append((1.0 / n, max(1, round(n * mean * (hi - lo)))))
-    return out
+        xs.append(n * mean * (hi - lo))
+    # 0.73: integer values with the mean kept (Σ = round(n · mean)): floor (≥ 1), then +1 to the largest fractional
+    # parts (ties → higher bin, keeps the values non-decreasing); per-bin rounding drifted the mean (e.g. 64 → 64.13)
+    v = [max(1, math.floor(x)) for x in xs]
+    d = max(n, round(n * mean)) - sum(v)
+    order = sorted(range(n), key=lambda i: (-(xs[i] - v[i]), -i))
+    i = 0
+    while d > 0:
+        v[order[i % n]] += 1
+        d -= 1
+        i += 1
+    if d < 0:                       # the ≥ 1 floor of the low bins overshot: take back from the most over-rounded
+        for j in sorted(range(n), key=lambda i: (xs[i] - v[i], -i)):
+            if d == 0:
+                break
+            if v[j] > 1 and (j == 0 or v[j] - 1 >= v[j - 1]):
+                v[j] -= 1
+                d += 1
+    return [(1.0 / n, x) for x in v]
 
 
 @dataclass(frozen=True)
