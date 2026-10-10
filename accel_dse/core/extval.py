@@ -192,3 +192,67 @@ SPLITS = {   # held-out designs: (fit predicate, test predicate)
 def mean_abs_log(rs: list[dict]) -> float:
     lr = [abs(math.log(x["ratio"])) for x in rs if x["ratio"] == x["ratio"] and x["ratio"] > 0]
     return sum(lr) / len(lr) if lr else float("nan")
+
+
+# ---------------------------------------------------------------- 0.69: continuous batching (in-flight) proxy
+CB_CHUNK = 8192     # TensorRT-LLM default max_num_tokens (chunked-prefill token budget per iteration) 「假设」
+
+
+def _fused(dec, pre1, f: float, rr: float) -> float:
+    """One iteration carrying dec's batch + an f share of pre1's prompt.  exec_overlap="stage" uses the tool's own
+    ``pdqueue._fused_step``; the kernel-serial modes add the same per-stage components and take that mode's total."""
+    from .pdqueue import _fused_step
+    if f <= 0:
+        return dec.step
+    if dec.stages[0].time.overlap == "stage":
+        return _fused_step(dec, pre1, f, rr)
+    worst = 0.0
+    for sd, sp in zip(dec.stages, pre1.stages):
+        td, tp = sd.time, sp.time
+        bw = td.dram_bytes / td.t_dram if td.t_dram > 0 else math.inf
+        nonw = sp.dram["total"] - sp.dram["weights"]
+        t = replace(td, t_array=td.t_array + f * tp.t_array, t_mac=td.t_mac + f * tp.t_mac,
+                    t_feed=td.t_feed + f * tp.t_feed, t_vector=td.t_vector + f * tp.t_vector,
+                    t_arr_attn=td.t_arr_attn + f * tp.t_arr_attn,
+                    t_dram=td.t_dram + (f * nonw + rr * sp.dram["kv_write"]) / bw,
+                    t_dram_kv=td.t_dram_kv + (f * tp.t_dram_kv if tp.t_dram > 0 else 0.0) + rr * sp.dram["kv_write"] / bw,
+                    t_link=td.t_link + f * tp.t_link, t_sync=max(td.t_sync, tp.t_sync))
+        worst = max(worst, t.total)
+    return dec.step * worst / dec.tick if dec.tick > 0 else math.inf
+
+
+def _cb_at(r: dict, b: int, eff: str, C: int = CB_CHUNK):
+    """Fluid in-flight batching at max load with running batch b: each request needs n chunk iterations (C tokens)
+    and osl decode steps; a share x = n·b/osl of iterations carries a chunk (x ≤ 1), else prefill limits the batch to
+    osl/n.  Returns (output tok/s, fits)."""
+    from .pdqueue import _chunk_plan
+    isl, osl = r["isl"], max(1, r["osl"])
+    n, f, rr = _chunk_plan(isl, 0, C)
+    lf = max(0.0, isl - (n - 1) * C) / isl
+    pre1 = evaluate(scenario(r, eff, phase="prefill", batch=1, prompt=isl, out_len=osl), _spec(r["model"], True))
+
+    def at(k):
+        dec = evaluate(scenario(r, eff, phase="decode", batch=k, ctx=isl + osl // 2, out_len=osl), _spec(r["model"], True))
+        full = evaluate(scenario(r, eff, phase="decode", batch=k, ctx=isl + osl, out_len=osl), _spec(r["model"], True))
+        t1 = ((n - 1) * _fused(dec, pre1, f, rr) + _fused(dec, pre1, lf, rr)) / n
+        return dec, t1, full.fits and pre1.fits
+    x = n * b / osl
+    if x <= 1:
+        dec, t1, fits = at(b)
+        t = (1 - x) * dec.step + x * t1
+        return b / t, fits
+    k = max(1, int(osl / n))
+    dec, t1, fits = at(k)
+    return k / t1, fits
+
+
+def predict_cb(r: dict, eff: str = "catalog") -> dict:
+    """max_tok_s_total rows under the continuous-batching proxy: best power-of-two running batch that fits."""
+    best = None
+    for k in range(0, 14):
+        v, fits = _cb_at(r, 2 ** k, eff)
+        if not fits:
+            break
+        if best is None or v > best["pred"]:
+            best = {"pred": v, "fits": True, "batch": 2 ** k}
+    return best or {"pred": float("nan"), "fits": False}
