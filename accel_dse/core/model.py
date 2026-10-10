@@ -93,6 +93,18 @@ class AttnCore:
     idx_rope: int = 0          # indexer RoPE dims (q per head and k)
     idx_fp8: bool = False      # DeepSeek-V3.2 reference indexer: Hadamard-rotated q / k quantised to fp8 e4m3 with one
                                # fp32 scale per 128 elements; key cache fp8 + scales (inference/model.py, Indexer)
+    # DeepSeek-V4.1 (official inference/model.py): every attending query reads its window AND top-k compressed entries
+    # (keys = min(p, w) + min(top-k, ⌊p/r⌋), exact); entry bytes per cache; compressed KV / index keys shared by layers
+    dual: bool = False
+    win_bytes: float = 0.0     # bytes per window-cache entry (fp8 + e8m0 scale per 32)
+    cmp_bytes: float = 0.0     # bytes per compressed entry (fp4 + e4m3 scale per 16)
+    kv_owner: bool = False     # this layer runs the Compressor and stores the compressed cache (kv_source_layers)
+    idx_owner: bool = False    # this layer derives + stores the index keys (wk on the latent; fp4)
+    idx_kbytes: float = 0.0    # bytes per index-key entry
+    cmp_noape: bool = False    # Compressor without the learned position bias (V4.1)
+    cand: str = ""             # two-level top-k: src (select_candidate_blocks) | use (mask to the source's blocks)
+    cand_block: int = 0
+    cand_topk: int = 0
     idx_split: bool = False    # DeepSeek-V4 reference: indexer heads column-parallel over TP + all-reduce of the scores
     cmp_coff: int = 0          # DeepSeek-V4 Compressor: 1, or 2 for the overlapping ratio-4 windows (0 = no compressor)
     idx_cmp: bool = False      # DeepSeek-V4 indexer keys come from its own (Hadamard-rotated) compressor
@@ -140,6 +152,8 @@ class AttnCore:
 
     def ctx_eff(self, ctx: int) -> int:
         """Keys actually attended per query at context length ``ctx``."""
+        if self.dual:
+            return min(ctx, self.window or 0) + min(self.topk if self.topk is not None else ctx, ctx // self.compress)
         c = ctx
         if self.window is not None:
             c = min(c, self.window)
@@ -156,6 +170,17 @@ class AttnCore:
         if n <= 0:
             return 0
         c, w = self.compress, self.window or 0
+        if self.dual:                           # Σ min(p, w) + Σ min(top-k, ⌊p/c⌋)
+            ws = n * (n + 1) // 2 if n <= w else w * (w + 1) // 2 + (n - w) * w
+
+            def floor_sum(m: int) -> int:       # Σ_{p=1..m} ⌊p/c⌋
+                a, r = divmod(m, c)
+                return c * a * (a - 1) // 2 + a * (r + 1)
+            k = self.topk
+            if k is None or n < (k + 1) * c:
+                return ws + floor_sum(n)
+            pk = k * c                           # ⌊p/c⌋ ≥ k from p = k·c on
+            return ws + floor_sum(pk - 1) + (n - pk + 1) * k
         if c <= 1:
             cap = min(x for x in (self.window, self.topk, n) if x is not None)
             return n * (n + 1) // 2 if n <= cap else cap * (cap + 1) // 2 + (n - cap) * cap
@@ -242,6 +267,8 @@ class Layer:
     misc_params: int = 0                     # norms, gates, conv, hc — not GEMMs
     hc: int = 0                              # mHC streams (GLM-5.3-Flash): attn + ffn hyper-connection compute per layer
     hc_iters: int = 0                        # Sinkhorn-Knopp iterations of the comb weight
+    engram_cols: int = 0                     # V4.1 Engram: hash rows fetched per token (n-gram sizes × heads)
+    engram_dim: int = 0                      # row width (fp8 + e8m0 scale per 32)
     hc_head: str = ""                        # last layer only: final stream collapse — mean (GLM-5.3-Flash) | mix (V4)
     cross_linears: tuple[Linear, ...] = ()   # cross-attention projections (video DiT: q from tokens, k/v from text)
     cross: AttnCore | None = None
@@ -323,6 +350,12 @@ class ModelSpec:
     mtp_layers: tuple[Layer, ...] = ()
     mtp_extra_params: int = 0                # eh_proj etc. per MTP module
     lookup_params: int = 0                   # n-gram / engram tables (lookup only)
+    lookup_bits: float = 0.0                 # stored bits per lookup param incl. scales (0 = embed format)
+    engram_ngram: int = 0                    # V4.1 engram_max_ngram_size (hash multiplies per token)
+    draft: str = ""                          # dspark: V4.1 block draft head (one pass of draft_block positions)
+    draft_block: int = 0
+    draft_targets: int = 0                   # target layers whose stream means feed main_proj
+    draft_markov: int = 0                    # markov head rank
     formats: tuple[tuple[str, RoleFormat], ...] = ()
     act_fmt: str = "bf16"
     kv_fmt: str = "bf16"
@@ -779,6 +812,85 @@ def _build_dsv4_ref(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, mtp, notes, "full"
 
 
+def _build_dsv41_ref(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """DeepSeek-V4.1-Flash per the official inference/model.py + engram.py: every layer MQA-512 over its sliding
+    window (+ attention sink); compress_ratios > 0 layers also attend to top-k entries of a compressed KV that only
+    kv_source_layers compute (Compressor: ratio 1 plain projection, ratio > 1 fp32 softmax pooling, no APE) and
+    store; index_source_layers run an indexer (index keys from wk on the source latent), the layers in between reuse
+    its top-k; candidate_source_layer adds block pre-selection (select_candidate_blocks) used by later indexers;
+    Engram n-gram tables (fp8 rows + e8m0 scales) at engram_layer_ids; mHC ×hc_mult with the final collapse by the
+    last pre_mix (no head projection); DSpark block draft head (mtp.*)."""
+    h = c["hidden_size"]
+    L = c["num_hidden_layers"]
+    H, hd = c["num_attention_heads"], c["head_dim"]
+    ql, ol, og = c["q_lora_rank"], c["o_lora_rank"], c["o_groups"]
+    rope = c.get("qk_rope_head_dim") or 64
+    win = c.get("sliding_window") or 128
+    ratios = _list(c.get("compress_ratios")) or [0] * L
+    ih, idim, topk = c["index_n_heads"], c["index_head_dim"], c["index_topk"]
+    kv_src = set(_list(c.get("kv_source_layer_ids")) or [])
+    idx_src = set(_list(c.get("index_source_layer_ids")) or [])
+    cand_src = c.get("candidate_source_layer_id", -1)
+    hc, iters = c.get("hc_mult") or 1, c.get("hc_sinkhorn_iters") or 1
+    E, k, de = c["n_routed_experts"], c["num_experts_per_tok"], c["moe_intermediate_size"]
+    eng_ids = set(_list(c.get("engram_layer_ids")) or [])
+    ecols = (c.get("engram_max_ngram_size", 1) - 1) * (c.get("engram_n_heads") or 0)
+    edim = c.get("engram_head_dim") or 0
+    hc_p = 2 * ((2 + hc) * hc * (hc * h + 1) + 3)
+    kvb = 2.0       # reference caches are default-dtype (bf16) buffers; fp8 / fp4 act_quant is in-place simulation
+    notes = [f"DeepSeek-V4.1 按官方 inference/model.py + engram.py 逐项建模：每层滑窗 {win} + attention sink；"
+             f"压缩层另读 top-{topk} 压缩条目（keys = min(p, w) + min(top-k, ⌊p/r⌋)），压缩 KV 只在 {sorted(kv_src)} 层计算 / 存储，"
+             f"索引器只在 {sorted(idx_src)} 层运行（其余层复用 top-k），第 {cand_src} 层候选块预选；Engram 查表层 "
+             f"{sorted(eng_ids)}（每 token {ecols} 行 × {edim} fp8 + e8m0 scale）；mHC ×{hc}；DSpark 块草稿头"]
+
+    def attn(i: int, r: int, backbone: bool = True):
+        alin = [Linear("q_a", h, ql, "rep"), Linear("q_b", ql, H * hd, "col"), Linear("kv", h, hd, "rep"),
+                Linear("o_a", H * hd, og * ol, "col", groups=og), Linear("o_b", og * ol, h, "row")]
+        core = AttnCore("mla", n_q=H, n_kv=1, qk_dim=hd, v_dim=hd, kv_lora=hd, rope_dim=0, rope_n=rope,
+                        window=win, sink=True, win_bytes=hd * kvb)
+        misc = ql + hd + H
+        if r and backbone:
+            own = i in kv_src
+            core = replace(core, dual=True, compress=r, topk=topk, cmp_bytes=hd * kvb, kv_owner=own,
+                           cmp_coff=1 if own else 0, cmp_noape=True)
+            if own:
+                alin += [Linear("cmp_kv", h, hd, "rep")] + ([Linear("cmp_gate", h, hd, "rep")] if r > 1 else [])
+                misc += hd
+            if i in idx_src:
+                alin += [Linear("idx_q", ql, ih * idim, "col"), Linear("idx_w", h, ih, "col")]
+                core = replace(core, idx_heads=ih, idx_dim=idim, idx_split=True, idx_rope=rope, idx_owner=own,
+                               idx_kbytes=idim * kvb,
+                               cand="src" if i == cand_src else ("use" if 0 <= cand_src < i else ""),
+                               cand_block=c.get("candidate_block_size") or 0,
+                               cand_topk=c.get("candidate_topk_blocks") or 0)
+                if own:
+                    misc += hd * idim + idim         # wk (on compressed latents) + k_norm
+        return alin, core, misc
+
+    layers = []
+    for i in range(L):
+        r = ratios[i] if i < len(ratios) else 0
+        alin, core, misc = attn(i, r)
+        ec = 0
+        if i in eng_ids:
+            alin.append(Linear("engram_wkv", ecols * edim, h * (hc + 1), "rep"))
+            misc += 2 * hc * h                       # q_weight, k_weight
+            ec = ecols
+        ffn, flin = _ffn_moe(h, E, k, de, c.get("n_shared_experts") or 0, de)
+        misc += 2 * h + hc_p + 2 * E                 # norms, hc, gate bias + bias_vl
+        layers.append(Layer(tuple(alin), core, ffn, flin, misc, hc=hc, hc_iters=iters, engram_cols=ec,
+                            engram_dim=edim, hc_head="pre" if i == L - 1 else ""))
+    mtp = []
+    n_mtp = c.get("num_nextn_predict_layers") or 0
+    Ed, kd = c.get("dspark_n_routed_experts") or E, c.get("dspark_num_experts_per_tok") or k
+    for j in range(n_mtp):
+        alin, core, misc = attn(L + j, 0, backbone=False)
+        ffn, flin = _ffn_moe(h, Ed, kd, de, c.get("n_shared_experts") or 0, de)
+        misc += 2 * h + hc_p + 2 * Ed
+        mtp.append(Layer(tuple(alin), core, ffn, flin, misc, hc=hc, hc_iters=iters))
+    return layers, mtp, notes, "full"
+
+
 def _build_dsv4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """DeepSeek-V4 family: MQA head_dim 512, grouped low-rank output, compressed
     sparse attention (CSA) with per-layer compress ratio, sliding window, hash
@@ -821,6 +933,8 @@ def _build_dsv4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
 
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if mt.startswith("deepseek_v41"):
+        return _build_dsv41_ref, "DeepSeek-V4.1 (CSA/MQA-512 + Engram)"
     if mt == "deepseek_v4":
         return _build_dsv4_ref, "DeepSeek-V4 (CSA/MQA-512)"
     if mt.startswith("deepseek_v4"):
@@ -889,7 +1003,7 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     mt = c.get("model_type", "")
     L = len(spec.layers)
     r = []
-    cmp = sum(1 for l in spec.layers if l.core.compress > 1 and not l.core.cmp_coff)
+    cmp = sum(1 for l in spec.layers if l.core.compress > 1 and not (l.core.cmp_coff or l.core.dual))
     idx = [l.core for l in spec.layers if l.core.idx_heads]
     if cmp:
         r.append(f"压缩稀疏注意力 CSA（{cmp}/{L} 层）：按有效上下文 ctx/压缩比 + 滑窗近似"
@@ -899,7 +1013,7 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
     if hc and not any(l.hc for l in spec.layers):
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
-    if spec.lookup_params:
+    if spec.lookup_params and not any(l.engram_cols for l in spec.layers):
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
     if mt.startswith("qwen4_exp"):
         r.append(f"QSA 索引注意力（indexer {c.get('indexer_n_heads')} 头 × {c.get('indexer_head_dim')}，压缩比 "
@@ -907,9 +1021,6 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
                  f"{c.get('ple_layer_ids')} 层，conv {c.get('ple_conv_kernel_size')}）未建模，全注意力层按稠密注意力计；"
                  f"参数与发布相差 {gap:+.2%}。参考 transformers qwen4_exp 已公开（门控残差 hc_count={c.get('hc_count')}、"
                  "QSAIndexer、PLELayer），需按参考重写模板，本轮未完成")
-    if mt.startswith("deepseek_v41"):
-        r.append("官方 inference/model.py（V4.1）已公开：engram 查表（engram.py）、候选块选择 select_candidate_blocks、"
-                 "DSpark 草稿头与共享注意力运行时与 V4 不同，尚未按参考逐项建模（V4 / V4-Pro 已完成）")
     if abs(gap) > 0.02:
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
     return tuple(r)
@@ -956,12 +1067,19 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             n_eff = max(1, min(len(spec.mtp_layers), round(rmtp / max(per, 1))))
             extra = max(0, (rmtp - n_eff * per) // n_eff)
             spec = replace(spec, mtp_layers=spec.mtp_layers[:n_eff], mtp_extra_params=extra)
+        if (c.get("model_type") or "").startswith("deepseek_v41"):
+            # Engram tables stay fp8 with an e8m0 scale per 32 (ParallelEngramEmbedding) → 8.25 bits / param stored
+            spec = replace(spec, lookup_bits=8 + 8 / 32, engram_ngram=c.get("engram_max_ngram_size") or 0,
+                           draft="dspark" if c.get("dspark_block_size") else "",
+                           draft_block=c.get("dspark_block_size") or 0,
+                           draft_targets=len(_list(c.get("dspark_target_layer_ids")) or []),
+                           draft_markov=c.get("dspark_markov_rank") or 0)
         exotic = [k for k in ("hc_mult", "hc_count", "mhc") if c.get(k)] if not any(l.hc for l in spec.layers) else []
-        if exotic or spec.lookup_params:
+        if exotic or (spec.lookup_params and not spec.lookup_bits):
             why = []
             if exotic:
                 why.append("超连接（多流残差）：参数计入，混合计算未计")
-            if spec.lookup_params:
+            if spec.lookup_params and not spec.lookup_bits:
                 why.append("n-gram / engram 查表：只计存储")
             spec = replace(spec, coverage="proxy", notes=spec.notes + ("「架构代理」：" + "；".join(why),))
         if head_copy:

@@ -111,6 +111,9 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
         if c.kind == "gqa":
             n = min(c.window, new) if (c.window and c.compress == 1) else new
             kv += n * c.n_kv * (c.qk_dim + c.v_dim) / c.compress * kvb
+        elif c.kind == "mla" and c.win_bytes:
+            kv += min(c.window, new) * c.win_bytes + ((S // c.compress - p // c.compress) * c.cmp_bytes
+                                                      if c.kv_owner else 0.0)
         elif c.kind == "mla":
             if c.compress > 1:
                 n = math.ceil(S / c.compress) - math.ceil(p / c.compress) + (min(c.window, new) if c.window else 0)
@@ -119,7 +122,9 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
             kv += n * (c.kv_lora + c.rope_dim) * kvb
         elif c.kind == "linear":
             st += (c.n_state_heads * c.state_dk * c.state_dv + c.conv_channels * max(0, c.conv_kernel - 1)) * stb
-        if c.idx_heads:
+        if c.idx_heads and c.dual:
+            idx += (S // c.compress - p // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
+        elif c.idx_heads:
             idx += (math.ceil(S / c.compress) - math.ceil(p / c.compress)) * c.idx_bytes_per_token(kvb) * c.compress
     return kv + idx + st
 
@@ -141,12 +146,16 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             continue
         if c.kind == "gqa":
             kv += ce * _cdiv(c.n_kv, sh.tp) * (c.qk_dim + c.v_dim) / c.compress * kvb
+        elif c.kind == "mla" and c.win_bytes:     # V4.1: per-layer window ring + compressed cache of kv sources
+            kv += min(ctx, c.window) * c.win_bytes + ((ctx // c.compress) * c.cmp_bytes if c.kv_owner else 0.0)
         elif c.kind == "mla":
             # 0.61.1: a sliding-window-only latent layer (compress 1) keeps min(ctx, window) entries (was ctx)
             kv += ((math.ceil(ctx / c.compress) + (c.window or 0)) if c.compress > 1 else ce) * (c.kv_lora + c.rope_dim) * kvb
         elif c.kind == "linear":
             st += (_cdiv(c.n_state_heads, sh.tp) * c.state_dk * c.state_dv + _cdiv(c.conv_channels, sh.tp) * max(0, c.conv_kernel - 1)) * stb
-        if c.idx_heads:
+        if c.idx_heads and c.dual:
+            idx += (ctx // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
+        elif c.idx_heads:
             idx += math.ceil(ctx / c.compress) * c.idx_bytes_per_token(kvb) * c.compress
     store_extra = 0.0
     if model.standby_params:        # idle expert of a multi-expert denoiser (Wan2.2 A14B): stored, not read this step
@@ -169,7 +178,7 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             hot += table
         else:
             store_extra += table
-        store_extra += model.lookup_params * emb_b / sh.tp
+        store_extra += model.lookup_params * ((model.lookup_bits / 8) if model.lookup_bits else emb_b) / sh.tp
     if has_head:
         if not model.tie_embeddings:
             hot += _cdiv(model.vocab, sh.tp) * model.hidden * model.fmt("lm_head").bits / 8

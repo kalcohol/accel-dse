@@ -68,8 +68,8 @@ _FULL_0651 = {
 
 CLOSED = ("gpt-oss-120b", "gpt-oss-20b", "deepseek-v3.2", "glm-5", "glm-5.2", "glm-5.3", "kimi-k3", "qwen3.8-2.4t",
           "qwen3.8-27b", "qwen3.5-397b-a17b", "qwen3-next-80b-a3b", "minimax-text-01", "minimax-m1-80k",
-          "glm-5.3-flash", "deepseek-v4-flash", "deepseek-v4-pro")
-PROXY = ("deepseek-v4.1-flash", "qwen3.8-flash-next")
+          "glm-5.3-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash")
+PROXY = ("qwen3.8-flash-next",)
 PROTEIN_PARTIAL = ("openfold", "alphafold2", "boltz-1", "protenix")
 
 
@@ -149,7 +149,8 @@ def test_hc_and_v4_params_match_release_layers():
     """GLM-5.3-Flash (transformers glm5_next) and DeepSeek-V4-Flash / -Pro (official inference/model.py): the only
     difference to the release summary is the hc_*_scale tensors (3 per hyper-connection, + 1 for the V4 head), which
     summarize_release files under quantisation scales."""
-    for i, extra in (("glm-5.3-flash", 45 * 6), ("deepseek-v4-flash", 43 * 6 + 1), ("deepseek-v4-pro", 61 * 6 + 1)):
+    for i, extra in (("glm-5.3-flash", 45 * 6), ("deepseek-v4-flash", 43 * 6 + 1), ("deepseek-v4-pro", 61 * 6 + 1),
+                     ("deepseek-v4.1-flash", 40 * 6)):
         pc = get_model(i).param_check()
         assert pc["ours"] - pc["release"] == extra and pc["mtp_ours"] == pc["mtp_release"], (i, pc)
 
@@ -170,3 +171,24 @@ def test_v4_attention_keys_reference():
     ctx = 65536
     assert c0.ctx_eff(ctx) == 128 and c128.ctx_eff(ctx) == 128 + 512 and c4.ctx_eff(ctx) == 128 + 512
     assert c0.sink and c4.cmp_coff == 2 and c128.cmp_coff == 1
+
+
+def test_v41_reference_structure():
+    """DeepSeek-V4.1-Flash (official inference/model.py + engram.py): window + top-k compressed keys
+    (min(p, w) + min(k, ⌊p/r⌋)), compressed cache / index keys only on the kv sources, indexer only on index sources,
+    candidate blocks from layer 20, Engram fp8 + e8m0 tables, DSpark draft."""
+    m = get_model("deepseek-v4.1-flash")
+    c = [l.core for l in m.layers]
+    assert [i for i, x in enumerate(c) if x.kv_owner] == [2, 8, 14, 20]
+    assert [i for i, x in enumerate(c) if x.idx_heads] == [2, 8, 14, 20, 24, 28, 32, 36]
+    assert c[20].cand == "src" and [i for i, x in enumerate(c) if x.cand == "use"] == [24, 28, 32, 36]
+    for x, r in ((c[3], 2), (c[25], 1)):
+        assert x.dual and x.compress == r
+        assert x.keys_sum(3000) == sum(min(p, 128) + min(512, p // r) for p in range(1, 3001))
+    assert not c[0].dual and c[0].ctx_eff(10 ** 5) == 128
+    assert [i for i, l in enumerate(m.layers) if l.engram_cols] == [1, 14] and m.layers[1].engram_cols == 24
+    assert m.lookup_params == 384006168 * 256 + 384016682 * 256 and m.lookup_bits == 8.25
+    assert m.draft == "dspark" and m.draft_block == 5 and len(m.mtp_layers) == 3
+    ops = {o.name: o for o in build_rank_ops(m, 1, Phase("decode", 1, 1, 4096))}
+    assert ops["engram_lookup"].kv_read == 24 * (256 + 8)          # one token: 24 fp8 rows + scales
+    assert ops["attn.engram_wkv"].flops == 2 * 24 * 256 * 5 * 5120

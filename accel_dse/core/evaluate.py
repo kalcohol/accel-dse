@@ -25,7 +25,7 @@ from .parallel import Layout, plan_stages, plan_stages_balanced
 from .pipeline import TILING, pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
 from .scenario import Scenario
 from .vision import expand_images, image_grid, vision_act_peak, vision_ops
-from .ir import red_bytes, skew_from_load
+from .ir import dspark_ops, red_bytes, skew_from_load
 from . import fabric
 from .schedule import StageTime, collective_seconds, fabric_collective, p2p_tier, spec_expected_tokens
 
@@ -188,7 +188,9 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
     ops: list[Op] = []
     if has_head:
         ops += head_ops(model, ph, sh)
-        if spec_k and model.mtp_layers and ph.kind == "decode":
+        if spec_k and model.draft == "dspark":
+            ops += dspark_ops(model, ph, sh)       # one block pass per step (prefill: seed the draft windows)
+        elif spec_k and model.mtp_layers and ph.kind == "decode":
             dph = Phase("decode", ph.batch, 1, ph.ctx, skew=ph.skew)
             for d in range(spec_k):
                 ops += mtp_ops(model, dph, sh, depth=d)
@@ -630,6 +632,12 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if not m.kv_cache:
         return _evaluate_full(scn, m, sys, warnings)
     spec_k = sv.spec_k if (sv.phase == "decode" and m.mtp_layers) else 0
+    if m.draft == "dspark" and sv.spec_k:
+        if sv.phase == "decode" and spec_k > m.draft_block:
+            warnings.append(f"spec_k {spec_k} 超过 DSpark 草稿块 {m.draft_block}：按 {m.draft_block} 计")
+            spec_k = m.draft_block
+        if sv.phase == "prefill":
+            spec_k = sv.spec_k          # prefill seeds the DSpark draft windows (no draft tokens)
     need_ctx = sv.ctx + 1 + spec_k if sv.phase == "decode" else sv.prompt
     if m.max_ctx and need_ctx > m.max_ctx:    # 0.61.4: evaluated as asked, but say the release does not cover it
         warnings.append(f"上下文 {need_ctx} 超过发布 config 的 max_position_embeddings {m.max_ctx}"
@@ -651,7 +659,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         ctx_cap = sv.prompt
     sh = lay.shard
     stages = []
-    n_mtp = min(spec_k, len(m.mtp_layers)) if spec_k else 0
+    n_mtp = (len(m.mtp_layers) if m.draft == "dspark" else min(spec_k, len(m.mtp_layers))) if spec_k else 0
     b_rank = _cdiv(sv.batch, lay.dp)          # sequences whose KV lives on one rank (all micro-batches)
     cache: dict = {}
     groups = layer_groups(m)
