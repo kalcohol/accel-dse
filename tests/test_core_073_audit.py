@@ -173,16 +173,26 @@ def test_length_bins_keep_the_mean():
         assert sum(v) == round(len(v) * mean), (mean, cv, sum(v) / len(v))
 
 
+def test_pd_length_law_keeps_means():
+    # 0.73 bug: per-bin rounding drifted the PD length-law means (out 64, cv 0.9 → 64.13), so the PD goodput was
+    # not req/s × out_len; checked at the source (the full cv queue report costs minutes)
+    from accel_dse.core.lengths import lengths_of
+    from accel_dse.core.scenario import PDConfig
+    for pr, out, pcv, ocv in ((8192, 64, 0.7, 0.9), (1024, 256, 0.5, 2.0), (4000, 1000, 1.0, 0.3)):
+        L = lengths_of(PDConfig(enabled=True, prompt_cv=pcv, out_cv=ocv), Serving(prompt=pr, out_len=out))
+        assert abs(L.mean_out - out) < 1e-9 and abs(L.mean_S - pr) < 1e-9, (pr, out, L.mean_S, L.mean_out)
+
+
 def test_pd_fluid_and_energy_identities():
     from accel_dse.core.disagg import disagg_report
     from accel_dse.core.scenario import PDConfig
-    s = Scenario(model="qwen3-8b", chip=CHIPS["1P"], mem_id="hbm3e_8s_12h24g_9200", node_cards=8,
-                 serving=Serving(batch=8, prompt=8192, out_len=64, ttft_slo_ms=300, tpot_slo_ms=30),
-                 pd=PDConfig(enabled=True, prefill_cards=1, decode_cards=3, load=0.3, prompt_cv=0.7, out_cv=0.9))
+    s = Scenario(model="qwen3-8b", mem_id="hbm3e_8s_12h24g_9200", node_cards=8,
+                 serving=Serving(batch=32, prompt=1024, out_len=256),
+                 pd=PDConfig(enabled=True, prefill_cards=2, decode_cards=2))
     r = disagg_report(s, energy=replace(T, idle_W_prefill=60.0))
-    # 0.73: the length law keeps the configured mean, so goodput = req/s × out_len exactly
-    assert abs(r["goodput_per_card"] - r["req_s"] * 64 / r["cards"]) <= 1e-9 * r["goodput_per_card"]
+    assert abs(r["goodput_per_card"] - r["req_s"] * 256 / r["cards"]) <= 1e-9 * r["goodput_per_card"]
     assert abs(r["req_s"] - min(r["cap_req_s"].values())) <= 1e-9 * r["req_s"]
+    assert all(0 <= u <= 1 + 1e-9 for u in r["util"].values())
     assert r["best_split"]["goodput_per_card"] >= r["goodput_per_card"] * (1 - 1e-9)
     q = r["queue"]
     assert q["modes"]["pd"]["slo_rate_rps"] <= r["req_s"] * (1 + 1e-6)
