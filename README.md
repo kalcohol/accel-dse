@@ -23,6 +23,7 @@
 - **0.53**：PD 前缀缓存容量 + LRU 淘汰（`--pd-prefix-len / --pd-prefix-count / --pd-prefix-zipf`：Zipf 工作集、Che 近似，命中率由剩余 DRAM 或 `--pd-prefix-cache-GB` 推出，`--pd-prefix-affinity` 前缀感知路由；显式 `--pd-prefix-hit` 仍可覆盖）、异构池（`--pd-prefill-chip / --pd-prefill-mem`，prefill 池可用不同芯片 / 存储器）、布局搜索里的 decode batch（`--pd-search-decode-batch`）。全部「假设」、默认关，默认结果不变。
 - **0.54**：验证版本。新增请求级离散事件仿真（DES），用同一套逐步代价对照 PD 闭式排队模型（V4 服务验证：54 点网格，`accel-dse validate` / `scripts/v4_serving.py`；SLO goodput 误差 −8 % … 0 %，合并模式 TPOT 尾偏乐观，见 MODEL.md §18.4）。修正 decode 连续批处理（birth–death 替代 Little 不动点）、prefill 优先的 TPOT 分位数与最长停顿、混合服务时间的 TTFT 分位数（卷积），PD 报告数值随之变化。可选 `--pd-sim` 附上模拟尾部。默认结果不变。
 - **0.55**：合并模式尾部与覆盖面。V4 改为多 seed（30 点 × 3 seed，含 MoE Qwen3-30B-A3B 与 TP4 Qwen3-32B 两个新场景族）；prefill 停顿造成的 decode 成批到达（批到达链 + 配对系数）、TPOT 窗口因子按相关时间、分块 TTFT 尾（准静态混合 + 休假）、最长间隔按一生最大 batch，合并模式 TPOT p90 中位误差由 −14 … −18 % 收敛到 −4 % 左右（MODEL.md §18.5）。可选 decode KV 容量策略 `--pd-kv-policy wait|recompute`（默认关）。默认结果不变。
+- **0.66.0**：外部校核——参考硬件（H100 / H200 / A100，数据手册峰值）对照 100 条公开实测（TensorRT-LLM、Databricks），留出法校准研究；可选 `exec_overlap` 级内重叠模式（默认不变）。结论：级内全重叠是主要系统误差，不引入拟合效率系数（建模说明 §25）。
 - **0.65.1**：V4 网格按 0.65 闭式与 DES 稳定判据重跑（可续跑 `--partial`），修正批服务律原子截断（CV 1 时上限 2 的 TTFT 尾部乐观 −19 %）（建模说明 §24.8）。
 - **0.65.0**：prefill 批服务器改为精确的贪心批服务排队（PD 闭式 SLO 容量与 DES 相差 ≤ 3 %，prefill 优先 ≤ 10 %，原上限 2 乐观 +72 %）、DES 稳定性按漂移 / 利用率判定、EP 空闲 rank 的 SRAM / 链路 / 反量化计数、输出驻留分块搜所有整数块（建模说明 §24）。
 - **0.64.0**：SLO 感知的 prefill batch 上限（PD / prefill 优先，含稳定上限回退）、DES SLO 搜索改扫描 + 细化、二维 GEMM 分块（激活溢出）、闭式运行 batch 两点混合、不整除 TP / EP 的反量化与 EP 空闲 rank 的 DRAM 字节（建模说明 §23）。

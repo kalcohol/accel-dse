@@ -19,7 +19,7 @@ from .dtypes import FormatSupport
 from .d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS, d2d_GBps
 from .hardware import CHIPS, D2D_DEFAULT, NET_DEFAULT, Chip, Fabric, Link
 from .mapping import ORGS
-from .parallel import PP_SPLITS, Layout
+from .parallel import EXEC_OVERLAPS, PP_SPLITS, Layout
 
 
 SERVING_MAX = 1 << 24          # 0.61.1: upper bound of serving.batch / prompt / ctx / out_len / microbatches (16.7 M)
@@ -316,12 +316,19 @@ class Scenario:
     pd: PDConfig = PDConfig()                            # prefill / decode disaggregation (0.50; off = colocated)
     fabric: Fabric = Fabric()                            # topology-aware collectives (0.59; off = 0.50 α-β tiers) 「假设」
     pp_split: str = field(default="cost", metadata={"omit_default": True})   # 0.62: PP stages balanced by cost | "layers"
+    # 0.66: compute / memory / link overlap inside a stage step — "stage" (one roofline over the whole stage, the
+    # pre-0.66 model) | "class" (GEMM ‖ weight traffic, attention ‖ KV traffic, the two classes and the collectives
+    # serial: kernel-by-kernel execution, e.g. GPUs) | "kernel" (class + vector kernels serial) | "serial" (no
+    # overlap, upper bound) — see schedule.StageTime.total 「假设」
+    exec_overlap: str = field(default="stage", metadata={"omit_default": True})
 
     def __post_init__(self):
         if self.mapping not in ORGS:
             raise ValueError(f"mapping must be one of {ORGS}")
         if self.pp_split not in PP_SPLITS:
             raise ValueError(f"pp_split must be one of {PP_SPLITS}")
+        if self.exec_overlap not in EXEC_OVERLAPS:
+            raise ValueError(f"exec_overlap must be one of {EXEC_OVERLAPS}")
         if isinstance(self.package_cards, bool) or not isinstance(self.package_cards, int) \
                 or not 1 <= self.package_cards <= 1024:
             raise ValueError("package_cards must be an integer in [1, 1024]")

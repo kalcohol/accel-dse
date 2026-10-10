@@ -198,7 +198,7 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
              "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
-             "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e")
+             "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e", "t_arr_attn")
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _EP_COMM = ("moe_dispatch", "moe_combine", "expert_allreduce")
 _TIERS = ("d2d", "link", "net")
@@ -272,6 +272,8 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         if r_ is None:
             r_ = om[o] = _op_seconds(o, sys, org, model)
         a_, ma, fe, v, ce, idl, sb, vw = r_
+        if o.kind == "attn":
+            d["t_arr_attn"] += a_
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
         d["t_ideal_w"] += idl * o.share; d["t_vec_w"] += (v - vw) * o.share   # 0.63: mean-rank work (energy, KPIs)
@@ -709,7 +711,9 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                     max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram)), st.index)
             stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
-                            dram.get("slc", 0.0), d2d_b, net_b)
+                            dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
+                            (dram["kv_read"] + dram["kv_write"] + dram["state"]) / (sys.dram_GBps * 1e9),
+                            scn.exec_overlap)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))
@@ -922,7 +926,9 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                     max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram)), st.index)
             stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
-                            dram.get("slc", 0.0), d2d_b, net_b)
+                            dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
+                            (dram["kv_read"] + dram["kv_write"] + dram["state"]) / (sys.dram_GBps * 1e9),
+                            scn.exec_overlap)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))

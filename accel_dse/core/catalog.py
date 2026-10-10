@@ -33,8 +33,13 @@ EXTRA = [
     ("llama-3.3-70b", "unsloth/Llama-3.3-70B-Instruct"),
     ("llama-3.2-3b", "unsloth/Llama-3.2-3B-Instruct"),
     ("llama-3.2-1b", "unsloth/Llama-3.2-1B-Instruct"),
+    # 0.66 external validation only (published TensorRT-LLM / Databricks measurements; core/extval.py)
+    ("llama-2-7b", "NousResearch/Llama-2-7b-hf"),
+    ("llama-2-70b", "NousResearch/Llama-2-70b-hf"),
+    ("mistral-7b", "mistralai/Mistral-7B-v0.1"),
 ]
-MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors"}
+MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors",
+           "NousResearch/": "meta-llama (gated) → public mirror NousResearch/*, same safetensors"}
 
 # Non-autoregressive releases on core v2 (0.41 / 0.42): id, hf_id, builder, native workload (official config / README).
 # The remaining protein entries of series_catalog.json stay catalog-only until modelled.
@@ -155,7 +160,9 @@ MERGED = {"deepseek-v3.1": "deepseek-v3", "deepseek-r1": "deepseek-v3", "kimi-k2
 # Generic dense GQA models whose sizes are already covered by Qwen3 / Llama 3: no extra design insight.
 UNLISTED = {"yi-1.5-34b": "与 Qwen3-32B 同类（稠密 GQA）", "internlm3-8b": "与 Qwen3-8B / Llama-3.1-8B 同类",
             "internlm2-5-20b": "与 Qwen3-32B / Magistral-Small 同类", "qwen2.5-3b": "与 Qwen3-4B 同类",
-            "qwen2.5-1.5b": "与 Qwen3-1.7B 同类", "opensora-stdit2": "已由 STDiT3 取代（同尺寸）"}
+            "qwen2.5-1.5b": "与 Qwen3-1.7B 同类", "opensora-stdit2": "已由 STDiT3 取代（同尺寸）",
+            "llama-2-7b": "仅用于外部校核（0.66 参考硬件）", "llama-2-70b": "仅用于外部校核（0.66 参考硬件）",
+            "mistral-7b": "仅用于外部校核（0.66 参考硬件）"}
 _VARIANT = {"": 0, "fp8": 1, "awq": 2}
 
 

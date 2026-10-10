@@ -171,6 +171,9 @@ class StageTime:
     slc_bytes: float = 0.0  # bytes served by the SLC
     d2d_bytes: float = 0.0  # share of link_bytes carried by the die-to-die tier
     net_bytes: float = 0.0  # share of link_bytes carried by the cross-node network tier (0.50)
+    t_arr_attn: float = 0.0 # 0.66: array time of attention-core ops (part of t_array)
+    t_dram_kv: float = 0.0  # 0.66: KV / state traffic time (part of t_dram)
+    overlap: str = "stage"  # 0.66: stage | class | kernel | serial (see total)
 
     @property
     def array_util(self) -> float:
@@ -183,6 +186,20 @@ class StageTime:
 
     @property
     def total(self) -> float:
+        """Overlap inside a stage step (``Scenario.exec_overlap``; 0.66 modes 「假设」):
+          stage   max(t_compute, t_dram, t_slc, t_link) + t_sync — everything in the stage overlaps (pre-0.66)
+          class   kernel-serial GPU-like execution with a roofline per op class: GEMMs ‖ weight traffic, attention ‖
+                  KV traffic, the classes add, vector work overlaps that sum, collectives exposed:
+                  max(t_vector, max(t_gemm, t_dram_w) + max(t_attn, t_dram_kv), t_slc) + t_link + t_sync
+          kernel  class, with the vector work as kernels of its own (added, not overlapped)
+          serial  no overlap at all: t_array + t_vector + max(t_dram, t_slc) + t_link + t_sync (upper bound)
+        Every mode is ≥ the stage value."""
+        if self.overlap != "stage":
+            if self.overlap == "serial":
+                return self.t_array + self.t_vector + max(self.t_dram, self.t_slc) + self.t_link + self.t_sync
+            core = max(self.t_array - self.t_arr_attn, self.t_dram - self.t_dram_kv) + max(self.t_arr_attn, self.t_dram_kv)
+            core = core + self.t_vector if self.overlap == "kernel" else max(self.t_vector, core)
+            return max(core, self.t_slc) + self.t_link + self.t_sync
         return max(self.t_compute, self.t_dram, self.t_slc, self.t_link) + self.t_sync
 
     @property

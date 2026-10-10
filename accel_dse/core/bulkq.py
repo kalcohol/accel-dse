@@ -233,6 +233,44 @@ def _pois_c(mu: float, tol: float = TOL) -> tuple:
     return tuple(_pois(mu, tol))
 
 
+@lru_cache(maxsize=1 << 16)
+def _pois_head(mu: float, tol: float, n: int) -> tuple:
+    """The first min(n, len) terms of ``_pois(mu, tol)`` — same recurrence, same floating-point operations, so the
+    terms are bit-identical — without building the rest of the pmf (0.66 perf: ``_tagged`` uses ≤ b − 1 terms of a
+    pmf that is hundreds of terms long)."""
+    if n <= 0:
+        return ()
+    if mu <= 0:
+        return (1.0,)
+    p = math.exp(-mu) if mu < 700 else 0.0
+    out = []
+    if p == 0.0:
+        # all n head terms underflow to 0.0 exactly when j < mu (lg rises monotonically) and the largest exponent
+        # bound −mu + n·ln mu stays below −746 (1 of margin ≫ the accumulated rounding); the loop would emit n zeros
+        if n < mu and -mu + n * math.log(mu) < -746:
+            return (0.0,) * n
+        j, lg, acc = 0, -mu, 0.0
+        while True:
+            v = math.exp(lg) if lg > -745 else 0.0
+            out.append(v)
+            if len(out) >= n:
+                return tuple(out)
+            acc += v
+            j += 1
+            lg += math.log(mu) - math.log(j)
+            if j > mu and (1 - acc < tol or v < tol * 1e-3):
+                return tuple(out)
+    out, acc, j = [p], p, 0
+    while len(out) < n and 1 - acc > tol and j < 100000:
+        j += 1
+        p *= mu / j
+        out.append(p)
+        acc += p
+        if j > mu and p < tol * 1e-3:
+            break
+    return tuple(out)
+
+
 @lru_cache(maxsize=512)
 def _chain(lam: float, b: int, D: tuple):
     pi, z, a = _stationary(lam, b, D)
@@ -318,32 +356,60 @@ def _tagged(lam: float, b: int, D: tuple):
         classes.append(([(r, pr) for r, pr in rlaw[b].items() if pr > 1e-13], list(D[b - 1])))
     keys: dict = {}
     for rd, atoms in classes:
+        asc = all(rd[i][0] < rd[i + 1][0] for i in range(len(rd) - 1)) and bool(rd)
         for t, w in atoms:
             base_w = w * t / cyc / N_U
             for ui in range(N_U):
                 u = t * (ui + 0.5) / N_U
                 pj = _pois_c(round(lam * u, 12), 1e-11)
-                pl: dict = {}
-                for r, pr in rd:
-                    for j, v in enumerate(pj):
-                        pl[r + j] = pl.get(r + j, 0.0) + pr * v
-                for pp, pv in pl.items():
+                if asc:
+                    # 0.66 perf: dense list instead of a dict — per index the same products added in the same r order
+                    # (0.0 + x is exact), and with rd ascending the dict's insertion order is ascending index; untouched
+                    # slots stay 0.0 and fall under the mass cut below exactly like absent keys
+                    n_j = len(pj)
+                    acc = [0.0] * (rd[-1][0] + n_j)
+                    for r, pr in rd:
+                        acc[r:r + n_j] = [a + pr * v for a, v in zip(acc[r:r + n_j], pj)]
+                    pl = enumerate(acc)
+                else:
+                    pd_: dict = {}
+                    for r, pr in rd:
+                        for j, v in enumerate(pj):
+                            pd_[r + j] = pd_.get(r + j, 0.0) + pr * v
+                    pl = pd_.items()
+                # 0.66 perf: per own-batch block F the three ΣF atoms and their arrival pmf heads are shared by every
+                # m0 (heads of one pmf are prefixes of each other, cdf prefix sums are the same sequential sums), so
+                # they are built once per (t, u, F) — every number is bit-identical to the per-pp construction
+                fc: dict = {}
+                for pp, pv in pl:
                     mass = base_w * pv
                     if mass < 1e-13:
                         continue
                     F, m0 = divmod(pp, b)
                     need = b - m0 - 1
-                    for sF, wF in _sum3(F, mb, mb_var):
+                    blk = fc.get(F)
+                    if blk is None:
+                        blk = []
+                        for sF, wF in _sum3(F, mb, mb_var):
+                            if b > 1:
+                                pL = _pois_head(round(lam * (t - u + sF), 9), 1e-11, b - 1)
+                                cd, c = [], 0.0
+                                for v in pL:
+                                    c += v
+                                    cd.append(c)
+                            else:
+                                pL, cd = (), []
+                            blk.append((sF, wF, pL, cd))
+                        fc[F] = blk
+                    for sF, wF, pL, cd in blk:
                         if need == 0:
                             kd = ((b, 1.0),)
                         else:
-                            pL = _pois_c(round(lam * (t - u + sF), 9), 1e-11)
-                            kd, cdf = [], 0.0
-                            for L in range(min(need, len(pL))):
-                                kd.append((m0 + 1 + L, pL[L]))
-                                cdf += pL[L]
+                            n = min(need, len(pL))
+                            kd = [(m0 + 1 + L, pL[L]) for L in range(n)]
+                            cdf = cd[n - 1] if n else 0.0
                             if 1 - cdf > 1e-12:
-                                kd.append((m0 + 1 + min(need, len(pL)), 1 - cdf))
+                                kd.append((m0 + 1 + n, 1 - cdf))
                         for ko, pk in kd:
                             key = (t, ui, sF, ko)
                             keys[key] = keys.get(key, 0.0) + mass * wF * pk

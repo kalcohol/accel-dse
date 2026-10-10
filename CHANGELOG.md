@@ -3,6 +3,26 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.66.0] - 2026-10-10
+
+外部校核：用**公开发表的实测**（TensorRT-LLM 官方性能表、Databricks 推理工程博客）对照 accel-dse 的代价模型，并做留出法校准研究。只在本地，未发布。详见建模说明 §25。
+
+### 性能（结果不变）
+- `bulkq._tagged`（0.65 批服务排队的 tagged-request 分解，0.65.1 加原子后成为套件主耗时）：每个 ΣF 原子后的到达数只用到 pmf 前 ≤ b − 1 项，新 `_pois_head` 用同一递推只算这几项（逐位相同；全部下溢为 0 的情形直接返回）；同一块 F 的三个 ΣF 原子与 cdf 前缀和对所有 m0 共用；r ⊕ j 卷积改为稠密列表（同序同乘加）。核对：72 个目录模型 × 3 个服务点 evaluate 数值指纹 0.65.1 = 0.66.0；三份 disagg 报告（含 prompt_cv / out_cv）JSON 哈希逐位相同。
+- 套件逐模块计时（box，`/workspace/prof66`）：test_core_052 1220 s → 302 s；逐模块总和 ≈ 2860 s → 1820 s（基线中 053 以后已部分含第一步提速，真实旧基线更大）。
+
+### 新增
+- `core/refhw.py` 参考硬件（仅校核用，不进 `CHIPS`）：H100-SXM、H200-SXM、A100-SXM-40GB / 80GB。峰值 FLOPS（稠密）、HBM 带宽 / 容量、NVLink 带宽取自厂商数据手册（逐条带链接）；其余（等效阵列几何、L2 作 SRAM、链路 α、映射 reconf、DRAM 效率）沿用模型的「假设」，**未按实测调**。
+- `data/ext_measurements.json`：100 条实测（逐条带 URL，数值照抄）：TensorRT-LLM 0.8 静态批吞吐（H100 / H200 FP8、A100 FP16；LLaMA-2 7B / 70B、Mistral 7B；batch / TP / ISL / OSL 全给定）36 条、batch 1 首 token 延迟 18 条；TensorRT-LLM 0.21 满载吞吐（H100 / H200，Llama-3.1-8B TP1、Llama-3.3-70B TP2，FP8）44 条；Databricks A100-40GB Llama-2-70B TTFT 2 条。目录新增 `llama-2-7b`、`llama-2-70b`、`mistral-7b`（仅校核，unlisted）。
+- `core/extval.py`（V6）+ `scripts/ext_validate.py` → `data/ext_validation.json`；`scripts/ext_calib.py`（可续跑网格）+ `scripts/ext_calib_report.py`（留出法报告）。
+- `Scenario.exec_overlap`（「假设」，默认 `stage` = 0.65 行为，场景哈希不变）：`class`（GEMM ‖ 权重流量、attention ‖ KV 流量，两类与集合通信串行——逐 kernel 执行）、`kernel`（再加向量 kernel 串行）、`serial`（完全不重叠，上界）。`StageTime` 新增 `t_arr_attn`、`t_dram_kv`。
+
+### 发现（未改默认）
+- **级内全重叠是主要系统误差**：默认 `stage` 把整个流水级的计算、DRAM、链路取一个 max，对 GPU 实测吞吐偏乐观（几何均值 1.23×（满载）/ 1.32×（静态），峰值带宽时 1.50× / 1.60×），70B TP2 尤甚（TP all-reduce 被藏在计算后面）。`serial` / `kernel` 把满载吞吐误差从 32.5 % 降到 22.5 % / 22.6 %（目录 DRAM 效率），峰值带宽 + `serial` 14.9 %。
+- **不引入拟合的效率系数**：在三种留出切分（按硬件、按模型、按数据源）上拟合 (DRAM 效率, MAC 效率)，留出误差相对未调参数只降 0 ~ 4 个百分点，`kernel` 模式按模型 / 按数据源切分反而变差（35.9 % → 41.6 %、39.5 % → 45.5 %）。系数不外推，保持纯数据手册峰值 + 目录默认效率。
+- **短 prompt 的 TTFT 低估 2 ~ 5×**：128 token 时实测比模型多出约 0.11 ms / 层（H100 / H200）、0.2 ms / 层（A100）——kernel 启动 / 同步一类每层固定开销，模型没有；2048 token 时 7B 误差 −7 % ~ +4 %（H100 / H200）。
+- TensorRT-LLM 0.8 上 Mistral-7B（GQA 8）与 LLaMA-2-7B（MHA）的吞吐几乎相同，模型因 KV 少 4× 预测 Mistral 快约 2×；「KV 不按 GQA 复用」假设能解释 0.8 的 Mistral，但会把 0.21（现代 kernel）的吞吐低估一半——只作为软件版本差异记录。
+
 ## [0.65.1] - 2026-10-10
 
 V4 网格按 0.65 的闭式与 DES 稳定性判据重跑（顺序、逐点可续跑），并修正重跑中发现的批服务律原子截断。详见建模说明 §24.8。

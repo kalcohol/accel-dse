@@ -73,3 +73,6 @@ Lightricks/LTX-Video:transformer
 genmo/mochi-1-preview:transformer
 hpcai-tech/OpenSora-STDiT-v3
 MiniMaxAI/MiniMax-H3:transformer
+NousResearch/Llama-2-7b-hf
+NousResearch/Llama-2-70b-hf
+mistralai/Mistral-7B-v0.1

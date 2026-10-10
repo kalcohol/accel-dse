@@ -34,7 +34,7 @@
 - 目录：按厂商 → 系列排列，同一厂商的 LLM 与 VLM（甚至同一系列里的文本版与多模态版）放在一起，领域只作为行内标记（VLM 行标「VLM · 含视觉编码器」）；系列内按尺寸从大到小，官方量化版（FP8 / AWQ）紧跟原版，名称用官方仓库名。结构与 dtype 完全相同的发布合并为一条（如 DeepSeek-V3 / V3.1 / R1、Kimi-K2.5 / K2.7-Code、GLM-5 / 5.2、GLM-4.5 / 4.6、MiniMax-Text-01 / M1-80k），尺寸已被覆盖的通用稠密 GQA 模型不单列；它们仍可按 id 评估，也都参与参数核对。
 - 已接入 v2 的视频 / 蛋白质发布（0.41）：Wan2.1-T2V-14B / 1.3B、CogVideoX-5b / 2b（DiT 去噪主干）与 ESM-2 3B / 650M（编码器），同样从 config + safetensors 头建模，参数与发布逐项一致（偏差 0.00%），建模见 §11。
 - 暂未接入 v2 的目录条目（0.62 校正：此前这里仍列着已接入的视频 / 结构模型）：AlphaFold3 等没有可核对公开发布文件的条目，列在各自厂商 / 机构之下、该厂商可评估条目之后，标「暂未接入 v2」，不能评估、不能按 id 解析。视频（Wan2.2-A14B、MiniMax-H3、HunyuanVideo、LTX-Video、Mochi 1、Open-Sora STDiT3）与结构预测（ESMFold、AlphaFold2、OpenFold、Boltz-1、Protenix）已按发布接入（§11、§12）。分子动力学 / 机器学习力场（MLFF）从未有过目录条目，不列出。
-- 参数核对：与发布 safetensors 总量偏差 > 2% 时附注；当前 72 个发布（55 个 LLM / VLM + 10 个视频 + 7 个蛋白质）全部在 ±0.5% 内，其中视频 / 蛋白质逐项一致（偏差 < 0.001%）。（0.62.1 更正：原写 61 = 55 + 6，是 0.41 时的计数。）
+- 参数核对：与发布 safetensors 总量偏差 > 2% 时附注；当前 75 个发布（58 个 LLM / VLM，含 0.66 起仅供外部校核的 Llama-2-7B / 70B、Mistral-7B + 10 个视频 + 7 个蛋白质）全部在 ±0.5% 内，其中视频 / 蛋白质逐项一致（偏差 < 0.001%）。（0.62.1 更正：原写 61 = 55 + 6，是 0.41 时的计数。）
 
 ## 3. 逐 rank 算子图与并行
 
@@ -1390,3 +1390,72 @@ QN decode 受限（负载 0.6，3 seed × 6000）：PD SLO 速率闭式 1.591（
 
 
   与 0.57 基本相同（V4 的点上闭式差别小）；PD SLO goodput 中位 +3 → +4 %、最小 −1 → −2 %；PD TTFT p90 / p99 最大 +6 / +7 → +5 / +6 %。
+
+## 25. 外部校核：公开实测对照（0.66，V6）
+
+V4 只比较模型与模型（闭式 vs DES，共用逐步代价）。V6 第一次拿**代价模型本身**去对公开发表的实测。
+
+### 25.1 数据（`data/ext_measurements.json`，100 条，数值照抄，逐条带 URL）
+
+| 来源 | 条数 | 内容 | 完整性 |
+|---|---|---|---|
+| TensorRT-LLM 0.8 performance.md（github.com/NVIDIA/TensorRT-LLM/blob/v0.8.0/docs/source/performance.md） | 36 + 18 | 静态批吞吐（out tok/s/GPU）：H100 / H200 FP8（权重 + KV）、A100 FP16；LLaMA-2 7B / 70B、Mistral 7B；batch 16 ~ 1024、TP 1 ~ 4、ISL / OSL ∈ {128, 2048}；batch 1 首 token 延迟（TP 1 / 8） | 硬件、模型配置（页面给出 ckpt_config）、dtype、batch、TP、长度全给定；A100 页面只写 "A100"，由容量推断 80 GB（70B TP4 B128 128/2048 FP16 每卡 > 40 GB） |
+| TensorRT-LLM 0.21 perf-overview（nvidia.github.io/TensorRT-LLM/performance/perf-overview.html） | 44 | 满载 in-flight batching 总输出吞吐：H100 / H200，Llama-3.1-8B TP1、Llama-3.3-70B TP2，FP8，11 组 ISL / OSL | batch 由运行时决定（未给出）——模型取能装下的最大吞吐（2 的幂 batch，静态批代理） |
+| Databricks "LLM Inference Performance Engineering"（2023） | 2 | A100-40GB Llama-2-70B FP16 TTFT，512 token，batch 1，TP4 / TP8 | 软件栈只说 "TensorRT-LLM-based" |
+
+MLPerf Inference v5.0 Llama-2-70B（H200 ×8 offline 34,988 tok/s、B200 ×8 98,858 tok/s 等，docs.mlcommons.org/inference_results_v5.0/）只作背景：OpenOrca 输入长度分布未公开为数值（只有输出均值 294.45），不进误差表。B200 / MI300X / DeepSeek-V3 / 分离式（DistServe、Mooncake）尚未纳入（见 §25.6）。
+
+### 25.2 参考硬件（`core/refhw.py`，参考硬件，不进 `CHIPS`）
+
+| | 稠密 BF16 / FP8 TFLOPS | HBM | NVLink（单向） | 出处 |
+|---|---|---|---|---|
+| H100-SXM | 989.5 / 1979 | 80 GB，3.35 TB/s | 450 GB/s | nvidia.com/en-us/data-center/h100/（表中为稀疏值，取半） |
+| H200-SXM | 989.5 / 1979 | 141 GB，4.8 TB/s | 450 GB/s | nvidia.com/en-us/data-center/h200/ |
+| A100-SXM-40GB / 80GB | 312 / — | 40 GB 1555 GB/s / 80 GB 2039 GB/s | 300 GB/s | A100 数据手册 PDF |
+
+等效几何：每 SM 一个 32 × (MAC/SM ÷ 32) 阵列、engines = SM 数，频率反推使 R·C·E·2·f = 数据手册峰值；L2 作 `sram_mib`；向量 lanes = FP32 核数。存储器目录没有 HBM2，A100 用总线宽度 / 速率 / 容量相同的 HBM3 编号代替（只影响能耗表）。DRAM 效率两种：目录默认 0.7（「假设」，`catalog`）与 1.0（`peak`）。**没有任何参数按实测调。**
+
+### 25.3 怎么预测
+
+TTFT = `evaluate(prefill, batch, prompt=ISL).ttft`；静态批吞吐 = B·OSL / (TTFT(B, ISL) + (OSL − 1)·TPOT̄) / TP，TPOT̄ 取 4 个中点上下文的平均；满载吞吐同式，对 2 的幂 batch 取装得下的最大值。FP8 行：attn / mlp 权重、激活、KV 为 FP8，embed / lm_head BF16（与 TensorRT-LLM FP8 checkpoint 一致）。
+
+### 25.4 误差表（几何均值 预测/实测 / 平均 |log 误差|，`data/ext_validation.json`）
+
+| 组 | n | catalog（默认） | peak | catalog + kernel | catalog + serial | peak + serial |
+|---|---|---|---|---|---|---|
+| TRT-LLM 0.21 满载吞吐 H100 | 22 | 1.14 / 24 % | 1.44 / 46 % | 1.01 / 22 % | 0.82 / 25 % | 0.97 / 15 % |
+| TRT-LLM 0.21 满载吞吐 H200 | 22 | 1.33 / 42 % | 1.56 / 58 % | 1.04 / 23 % | 0.87 / 20 % | 0.99 / 15 % |
+| TRT-LLM 0.8 静态吞吐 A100-80GB | 12 | 1.13 / 20 % | 1.38 / 38 % | 1.04 / 15 % | 0.86 / 16 % | 1.02 / 11 % |
+| TRT-LLM 0.8 静态吞吐 H100 | 12 | 1.37 / 44 % | 1.67 / 67 % | 1.18 / 31 % | 1.01 / 19 % | 1.20 / 22 % |
+| TRT-LLM 0.8 静态吞吐 H200 | 12 | 1.49 / 50 % | 1.77 / 77 % | 1.29 / 37 % | 1.08 / 22 % | 1.26 / 27 % |
+| TRT-LLM 0.8 TTFT A100-80GB | 6 | 0.72 / 53 % | 0.67 / 63 % | 0.80 / 39 % | 1.12 / 21 % | 1.01 / 19 % |
+| TRT-LLM 0.8 TTFT H100 | 6 | 0.52 / 91 % | 0.44 / 127 % | 0.60 / 68 % | 0.77 / 42 % | 0.69 / 55 % |
+| TRT-LLM 0.8 TTFT H200 | 6 | 0.47 / 115 % | 0.41 / 145 % | 0.55 / 86 % | 0.73 / 48 % | 0.66 / 60 % |
+| Databricks TTFT A100-40GB | 2 | 0.47 / 112 % | 0.47 / 112 % | 0.55 / 81 % | 0.73 / 38 % | 0.67 / 48 % |
+
+（TPOT 没有单列：所有吞吐行都是解码主导或混合，TPOT 的误差体现在吞吐里；公开数据里给定 batch 的逐步 TPOT 几乎没有。）
+
+### 25.5 发现与决定
+
+1. **级内全重叠（默认 `stage`）是主要系统误差。** 一个流水级的计算、DRAM、链路取一个 max，相当于假设 attention 的 KV 读、下一个 GEMM 的权重读、TP all-reduce 全都藏在别的工作后面。GPU 逐 kernel 执行做不到：吞吐偏乐观，70B TP2 最明显（满载 1.6 ~ 2.3×，all-reduce 被藏）。新增 `exec_overlap`：`class`（GEMM‖权重、attention‖KV，两类与通信串行）、`kernel`（再加向量 kernel）、`serial`（完全不重叠，上界）。实测落在 `kernel` 与 `serial` 之间。**默认不改**：对设计中的 NPU，双缓冲 / DMA 预取能做到多少级内重叠本身是设计变量，默认 `stage` 应读作乐观界；对照 GPU 类逐 kernel 执行时用 `kernel` / `serial`。
+2. **不引入拟合效率系数。** 留出法（`scripts/ext_calib.py`，DRAM 效率 0.5 ~ 1.0 × MAC 效率 0.4 ~ 1.0 × 四种重叠模式；按硬件 H100 → H200 / A100、按模型 7–8B → 70B、按数据源 0.21 → 0.8 / Databricks 三种切分）：
+
+| 切分 / 模式 | 拟合 (mem, mac) | 拟合误差 | 留出误差 | 未调（目录 0.7 / 峰值 1.0）留出误差 |
+|---|---|---|---|---|
+| 硬件 / stage | 0.60, 0.80 | 32.1 % | 36.1 % | 47.5 % / 66.8 % |
+| 硬件 / kernel | 0.60, 0.90 | 29.0 % | 30.7 % | 32.6 % / 40.7 % |
+| 硬件 / serial | 1.00, 0.90 | 21.5 % | 21.2 % | 23.0 % / 21.7 % |
+| 模型 / stage | 0.60, 1.00 | 28.8 % | 52.3 % | 62.8 % / 83.8 % |
+| 模型 / kernel | 0.80, 1.00 | 28.2 % | 41.6 % | 35.9 % / 50.0 % |
+| 模型 / serial | 1.00, 1.00 | 22.4 % | 21.5 % | 17.1 % / 21.5 % |
+| 数据源 / stage | 0.60, 0.70 | 23.6 % | 43.1 % | 53.4 % / 75.9 % |
+| 数据源 / kernel | 1.00, 0.80 | 19.6 % | 45.5 % | 39.5 % / 52.8 % |
+| 数据源 / serial | 1.00, 1.00 | 14.9 % | 27.9 % | 25.1 % / 27.9 % |
+
+   拟合系数只在 `stage` 下明显有用——它在补偿重叠假设，而不是测出了效率；换成结构上更对的模式后，拟合相对未调只差 ±4 个百分点，按模型 / 数据源切分甚至更差。结论：保持纯数据手册峰值 + 目录默认效率，把结构项（重叠模式）作为显式「假设」暴露。
+3. **短 prompt 的固定开销。** 128 token TTFT 低估 2 ~ 5×，残差约 0.11 ms / 层（H100 / H200 TP1）、0.15 ms / 层（TP8）、0.2 ms / 层（A100）——每层 kernel 启动 / 同步一类固定开销，模型没有（NPU 上取决于调度器设计，未加参数）。2048 token 7B TTFT 在 H100 / H200 误差 −7 % ~ +4 %；A100 上模型偏慢 15 %（等效 32 × 32 × 108 几何的分块利用率偏悲观——等效几何的副作用）。70B TP8 TTFT 低估约 2×（TP 通信暴露 + 每层开销）。
+4. **GQA 复用的软件依赖。** TRT-LLM 0.8 上 Mistral-7B（8 KV 头）吞吐 ≈ LLaMA-2-7B（32 KV 头），模型按 KV 少 4× 预测 Mistral 快约 2×；`peak_noreuse` 诊断变体（解码 attention 按 query 头各读一次 KV）能解释 0.8，却把 0.21 的满载吞吐低估一半（几何均值 0.46）——现代 kernel 复用 GQA，模型的复用假设保留。
+
+### 25.6 仍未校核
+
+B200 / GB200（FP4）、MI300X / MI325X、TPU、Gaudi；MoE（Mixtral、DeepSeek-V3/R1：EP 分发 / 合并、专家负载不均）；MLA；PD 分离与大规模 EP（DeepSeek 推理系统报告、SGLang 96×H100、Mooncake、DistServe）；跨节点网络；推测解码；KV / 前缀缓存；能耗；排队尾延迟（V4 只对 DES）。给定 batch 的逐步 TPOT 实测几乎没有公开，TPOT 只通过吞吐间接校核。参考硬件的等效阵列几何只匹配峰值，不代表 tensor core 的真实分块行为。
