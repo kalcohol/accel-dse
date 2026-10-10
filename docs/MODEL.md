@@ -1480,3 +1480,34 @@ TTFT = `evaluate(prefill, batch, prompt=ISL).ttft`；静态批吞吐 = B·OSL / 
 ### 25.6 仍未校核
 
 B200 / GB200（FP4）、MI300X / MI325X、TPU、Gaudi；MoE（Mixtral、DeepSeek-V3/R1：EP 分发 / 合并、专家负载不均）；MLA；PD 分离与大规模 EP（DeepSeek 推理系统报告、SGLang 96×H100、Mooncake、DistServe）；跨节点网络；推测解码；KV / 前缀缓存；能耗；排队尾延迟（V4 只对 DES）。给定 batch 的逐步 TPOT 实测几乎没有公开，TPOT 只通过吞吐间接校核。参考硬件的等效阵列几何只匹配峰值，不代表 tensor core 的真实分块行为。
+
+
+### 25.7 第二轮：MoE / MLA / 大规模 EP（V6.2，`data/ext_measurements_moe.json`，34 条）
+
+数据（逐条带 URL，照抄）：
+- SGLang「PD Disaggregation and Large-Scale EP on 96 H100」（lmsys.org/blog/2025-05-05-large-scale-ep/）：DeepSeek-V3，prefill EP32 / DP32（4 × 8 H100，16,384 token / 卡，ISL 1K / 2K / 4K，默认分布与模拟完美 EPLB），decode EP72（9 节点，256 请求 / 卡，KV 2,000，无 MTP）。1K / 2K 的每卡 token 数原文未给，按 4K 档的 16,384「假设」。
+- DeepSeek profile-data（prefill EP32 TP1，4K，16K token / 卡，绝对均衡路由；每节点吞吐取 SGLang 博客的换算值）。decode 档用了 MTP，不入表。Day-6 线上平均值（73.7k / 14.8k tok/s/节点）长度与缓存命中混合，只作背景。
+- TensorRT-LLM「Best perf practice on DeepSeek-R1」v0.21：8 × H200，`--tp 8 --ep 8` + attention DP，并发 1024，ISL 1K / OSL 2K 固定，无 MTP：11,489 tok/s。
+- TensorRT-LLM 0.17 perf-overview：Mixtral-8x22B TP8，H200 / H100 FP8、A100 FP16，9 组 ISL / OSL，共 27 条。
+
+参考硬件新增 H800-SXM：H100-SXM 同一 die（NVIDIA 没有 SXM H800 数据手册：SM / 频率 / HBM 按 H100「假设」），NVLink 400 GB/s 双向（Lenovo H800 资料 + DeepSeek-V3 报告）。跨节点：每卡 50 GB/s IB（400 Gb/s，DeepSeek-V3 报告；SGLang 集群为 IB，速率「假设」相同）。DeepSeek 行用发布格式（FP8 块缩放 GEMM，BF16 KV 与核心 MLA）。
+
+新增 `exec_overlap="tbo"`：计算按 `kernel` 串行，集合通信藏在计算后面（双微批重叠：一个微批的 all-to-all 和另一个的计算同时跑）。stage ≤ tbo ≤ kernel ≤ serial，有测试。
+
+误差表（几何均值 / 平均 |log 误差|）：
+
+| group | n | catalog | catalog_tbo | catalog_kernel | catalog_serial | peak_serial_m |
+| SGLang/DeepSeek large-EP prefill | 5 | 0.94 / 9% | 0.94 / 9% | 0.56 / 78% | 0.53 / 89% | 0.54 / 85% |
+| SGLang EP72 decode | 1 | 1.28 / 28% | 1.27 / 27% | 0.78 / 28% | 0.63 / 58% | 0.67 / 49% |
+| TRT-LLM DS-R1 H200 EP8 | 1 | 2.10 / 110% | 1.43 / 43% | 1.35 / 35% | 1.10 / 10% | 1.26 / 26% |
+| TRT 0.17 Mixtral-8x22B TP8 H200-SXM | 9 | 1.21 / 28% | 1.05 / 14% | 0.80 / 25% | 0.71 / 41% | 0.75 / 33% |
+| TRT 0.17 Mixtral-8x22B TP8 H100-SXM | 9 | 1.18 / 30% | 1.08 / 22% | 0.85 / 21% | 0.69 / 45% | 0.77 / 31% |
+| TRT 0.17 Mixtral-8x22B TP8 A100-SXM-80GB | 9 | 1.40 / 44% | 1.35 / 40% | 1.18 / 24% | 0.93 / 9% | 1.06 / 11% |
+
+结论：
+1. **重叠方式由软件决定，不能统一拟合。** SGLang / DeepSeek 的大规模 EP 显式做双微批重叠，prefill 是 IB all-to-all 瓶颈，`stage` / `tbo` 误差 9 %；第一轮在稠密 TRT-LLM 上最好的 `serial` 这里低估约 2 ×（误差 89 %）。第一轮各切分上拟合出来的组合（serial 1.0 / 0.9、kernel 0.6 / 0.9）拿到这批数据上做留出：大规模 EP 误差 87 % / 77 %。预先定好的规则（软件做通信重叠用 `tbo`，否则用 `kernel`）在 7 条 DeepSeek 行上是 1.03 / 15 %。所以继续不引入拟合效率系数，重叠方式作为显式「假设」给用户选。
+2. EP72 decode 仍高估 1.27 ×。原文 EPLB 用的是与数据匹配的分布，剩余的专家不均衡没有数值；`moe_skew` ≈ 1.3 就能解释，但没有依据，不调。
+3. TRT-LLM DS-R1（单节点 attention DP，无 TBO）：`serial` 1.10、`kernel` 1.35。
+4. Mixtral-8x22B TP8：Hopper 上 `tbo` 1.05 ~ 1.08 / `kernel` 0.80 ~ 0.85，A100 上 `serial` 0.93。长 prompt 档（5000 / 500、20000 / 2000）各模式都偏低：静态批代理把 prefill 和 decode 串起来算，而 in-flight batching 会把 prefill 块和 decode 交错，所以这一档代理偏悲观（§25.3）。
+
+仍未校核：MI300X（公开数据没有完整给出 batch / 长度 / 并行配置），B200 FP4，DistServe / Splitwise / Mooncake（只有 SLO 达成率曲线，没有能照抄的数值表），跨节点 PD 的 KV 传输，MTP / 推测解码，专家不均衡的数值。
