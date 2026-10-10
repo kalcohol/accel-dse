@@ -321,12 +321,18 @@ class Scenario:
     # serial: kernel-by-kernel execution, e.g. GPUs) | "kernel" (class + vector kernels serial) | "serial" (no
     # overlap, upper bound) — see schedule.StageTime.total 「假设」
     exec_overlap: str = field(default="stage", metadata={"omit_default": True})
+    # 0.69: fixed per-layer time per step (kernel launch / sync / scheduler), µs; added to the stage's exposed sync
+    # time in every overlap mode.  NPU- and runtime-dependent 「假设」; default 0 (off), not fitted.
+    layer_overhead_us: float = field(default=0.0, metadata={"omit_default": True})
 
     def __post_init__(self):
         if self.mapping not in ORGS:
             raise ValueError(f"mapping must be one of {ORGS}")
         if self.pp_split not in PP_SPLITS:
             raise ValueError(f"pp_split must be one of {PP_SPLITS}")
+        if isinstance(self.layer_overhead_us, bool) or not isinstance(self.layer_overhead_us, (int, float)) \
+                or not 0.0 <= self.layer_overhead_us <= 1e4:
+            raise ValueError("layer_overhead_us must be in [0, 10000]")
         if self.exec_overlap not in EXEC_OVERLAPS:
             raise ValueError(f"exec_overlap must be one of {EXEC_OVERLAPS}")
         if isinstance(self.package_cards, bool) or not isinstance(self.package_cards, int) \

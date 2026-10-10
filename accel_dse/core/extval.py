@@ -101,7 +101,7 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
                     exec_overlap=ov,
                     layout=Layout(tp=r["tp"], dp=r.get("dp", 1), ep=r.get("ep", 1), etp=r.get("etp", 1)),
                     formats_override={"fp8": FP8, "nvfp4": NVFP4}.get(r["dtype"], ()),
-                    serving=Serving(**sv), **extra)
+                    serving=Serving(**sv), **extra, **({"layer_overhead_us": v["layer_us"]} if v.get("layer_us") else {}))
 
 
 def _ev(r, var, **sv):
@@ -179,6 +179,13 @@ def summary(t: list[dict]) -> dict:
                   "mean_abs_err_pct": 100 * (math.exp(sum(abs(v) for v in lr) / len(lr)) - 1),
                   "min_ratio": math.exp(min(lr)), "max_ratio": math.exp(max(lr))}
     return out
+
+
+def overhead_variant(base: str, us: float) -> str:
+    """0.69: ``base`` variant + a fixed per-layer overhead of ``us`` µs (Scenario.layer_overhead_us)."""
+    name = f"{base}+L{us:g}"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "layer_us": float(us)})
+    return name
 
 
 def calib_variant(mem_eff: float, mac_eff: float, overlap: str) -> str:

@@ -722,6 +722,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 link_bw, sync, d2d_b, net_b = _stage_link(
                     sys, agg, link_bw, sync, d2d_b, net_b, extra,
                     max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram)), st.index)
+            if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
+                sync += (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
             stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
@@ -937,6 +939,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 link_bw, sync, d2d_b, net_b = _stage_link(
                     sys, agg, link_bw, sync, d2d_b, net_b, extra,
                     max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram)), st.index)
+            if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
+                sync += (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
             stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
