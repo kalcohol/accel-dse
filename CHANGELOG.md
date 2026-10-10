@@ -3,6 +3,21 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.70.0] - 2026-10-10
+
+外部校核第四轮（建模说明 §25.9）。新选项都关时，默认指纹不变。
+
+### 变更
+- `exec_overlap="tbo"`：每个微批各读一遍权重（双微批，t_dram 加一份 weights / BW）。只影响 tbo 模式。
+
+### 新增
+- `Chip.split_instances`（默认 False，「假设」）：批量 GEMM 实例分到各 engine 上，每个 engine 是一个 R × C 阵列；与整芯片宽阵列两者取便宜的。
+- DeepSeek profile decode 行（MTP 按 spec_k = 1 处理，接受率用公开的 0.875）；extval 支持 spec_k / spec_accept、split_variant；`scripts/ext_opbreak.py` 与 DeepSeek decode trace 逐项对照；`scripts/ext_score_all.py`。
+
+### 结论
+- EP72 decode 1.27 → 1.19（tbo）；DeepSeek profile decode 0.93。宽阵列抽象下的注意力偏慢 2.8 ×，和 GEMM / 小 kernel / 通信偏快的部分互相抵消；split_instances 不在参考硬件上打开（否则要拟合 kernel 效率）。
+- PD 端到端：没有公开的数值实测。
+
 ## [0.69.0] - 2026-10-10
 
 外部校核第三轮（建模说明 §25.8）。默认指纹不变。

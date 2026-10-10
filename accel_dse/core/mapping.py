@@ -33,7 +33,7 @@ this is what makes small-M mapping a first-order design question.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 
 from .dtypes import FormatSupport, fmt as _fmt, gemm_exec
@@ -129,6 +129,14 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
             best = (cyc, mac, feed, df)
     cyc, mac, feed, df = best
     fill = (ch.rows + ch.c_eff) if df.startswith("ws") else 0.0   # pipeline fill once per op (instances stream back-to-back)
+    if ch.split_instances and count > 1 and ch.engines > 1:      # 0.70: instances spread over engines
+        sub = replace(ch, engines=1, split_instances=False, sram_port_Bpc=ch.port_Bpc / ch.engines,
+                      acc_kib=ch.acc_kib / ch.engines)
+        one = _gemm_cost(sub, org, m, k, n, 1, w_fmt, a_fmt, w_bits)
+        waves = _cd(count, ch.engines)
+        if one.cycles * waves < max(mac * count + fill, feed * count):
+            return GemmCost(one.cycles * waves, one.mac_cycles * waves, one.feed_cycles * waves, one.dataflow, one.exec_fmt,
+                            one.conversion, one.convert_elems * count, one.convert_w * count)
     conv_elems = 0.0
     if flag & 1:
         conv_elems += k * n

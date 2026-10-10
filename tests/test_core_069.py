@@ -56,3 +56,23 @@ def test_r3_bands():
     b2 = [r for r in R if r["hw"] == "B200"]
     gb = math.exp(sum(math.log(X.predict_cb(r, "catalog_kernel")["pred"] / r["value"]) for r in b2) / len(b2))
     assert 1.0 < gb < 1.35
+
+
+def test_split_instances_engine_parallel_and_off_by_default():
+    from accel_dse.core.mapping import gemm_cost
+    ch = REF_HW["H800-SXM"].chip
+    assert ch.split_instances is False and all(not c.split_instances for c in CHIPS.values())
+    sp = replace(ch, split_instances=True)
+    a = gemm_cost(ch, "reconf", 128, 4097, 512, count=128)
+    b = gemm_cost(sp, "reconf", 128, 4097, 512, count=128)
+    ideal = 128 * 4097 * 512 * 128 / ch.macs
+    assert b.cycles < a.cycles and ideal <= b.cycles < 1.1 * ideal
+    assert gemm_cost(sp, "reconf", 4096, 4096, 4096).cycles == gemm_cost(ch, "reconf", 4096, 4096, 4096).cycles
+
+
+def test_tbo_weights_per_microbatch_decode_bands():
+    """MODEL §25.9: two decode rows (SGLang EP72, DeepSeek profile EP128 with MTP) bracket 1 under tbo."""
+    R = {r["id"]: r for r in X.rows(X.DATA_MOE)}
+    s = X.predict(R["sgl-dec-2000-default"], "catalog_tbo")["pred"] / R["sgl-dec-2000-default"]["value"]
+    d = X.predict(R["dsp-dec-4096-mtp"], "catalog_tbo")["pred"] / R["dsp-dec-4096-mtp"]["value"]
+    assert 1.1 < s < 1.3 and 0.85 < d < 1.0

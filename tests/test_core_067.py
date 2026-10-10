@@ -37,8 +37,11 @@ def test_tbo_between_stage_and_kernel_and_hides_collectives():
         r = {m: evaluate(replace(s0, exec_overlap=m)) for m in ("stage", "tbo", "kernel", "serial")}
         key = "tpot" if sv["phase"] == "decode" else "ttft"
         v = {m: getattr(x, key) for m, x in r.items()}
-        assert v["stage"] <= v["tbo"] * (1 + 1e-12) <= v["kernel"] * (1 + 1e-12) <= v["serial"] * (1 + 1e-12)
-        t = r["tbo"].stages[0].time
+        # 0.70: tbo also streams the weights twice (two micro-batches), so it can exceed kernel when weights dominate
+        assert v["stage"] <= v["tbo"] * (1 + 1e-12) and v["kernel"] <= v["serial"] * (1 + 1e-12)
+        t, tk = r["tbo"].stages[0].time, r["kernel"].stages[0].time
+        w = r["tbo"].stages[0].dram["weights"] / (tk.dram_bytes / tk.t_dram)
+        assert abs(t.t_dram - tk.t_dram - w) <= 1e-12 * t.t_dram
         assert t.t_link > 0 and t.total >= t.t_link
 
 

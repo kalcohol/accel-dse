@@ -91,10 +91,14 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
     e = v.get("eff", eff)
     h = REF_HW[r["hw"]]
     chip = h.chip if v.get("mac_eff") is None else replace(h.chip, mac_eff=v["mac_eff"])
+    if v.get("split"):                 # 0.70: SMs run independent GEMM instances (Chip.split_instances)
+        chip = replace(chip, split_instances=True)
     mem_eff = e if isinstance(e, float) else EFF[e]
     extra = {}
     if r.get("node_cards"):            # 0.67 multi-node rows: cards per node + scale-out NIC per card
         extra = dict(node_cards=r["node_cards"], net=Link(r["net_GBps"], r.get("net_alpha_us", 5.0)))
+    if r.get("spec_k"):                # 0.70: MTP as speculative decoding (published acceptance, not fitted)
+        sv = {**sv, "spec_k": r["spec_k"], "spec_accept": r["spec_accept"]}
     if r.get("moe_skew"):
         sv = {**sv, "moe_skew": r["moe_skew"]}
     return Scenario(model=r["model"], chip=chip, mem_id=h.mem_id, mem_eff=mem_eff, link=h.link, mapping="reconf",
@@ -179,6 +183,13 @@ def summary(t: list[dict]) -> dict:
                   "mean_abs_err_pct": 100 * (math.exp(sum(abs(v) for v in lr) / len(lr)) - 1),
                   "min_ratio": math.exp(min(lr)), "max_ratio": math.exp(max(lr))}
     return out
+
+
+def split_variant(base: str) -> str:
+    """0.70: ``base`` variant with Chip.split_instances (GEMM instances spread over SMs)."""
+    name = base + "+S"
+    VARIANTS.setdefault(name, {**VARIANTS.get(base, {"eff": base}), "split": True})
+    return name
 
 
 def overhead_variant(base: str, us: float) -> str:
