@@ -142,9 +142,11 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
             best = (cyc, mac, feed, df)
     cyc, mac, feed, df = best
     fill = (ch.rows + ch.c_eff) if df.startswith("ws") else 0.0   # pipeline fill once per op (instances stream back-to-back)
+    lat = ch.noc_cycles() + ch.wave_overhead_cycles   # 0.72 (default 0): NoC hand-off over E cores + one launch
     sched = "split" if ch.split_instances else ch.instance_sched
-    if sched != "wide" and count > 1 and ch.engines > 1:      # 0.70 / 0.71: instances spread over core groups
-        best_c = max(mac * count + fill, feed * count)
+    # 0.70 / 0.71: instances spread over core groups; 0.72: auto also for a single GEMM (count = 1)
+    if sched != "wide" and ch.engines > 1 and (count > 1 or sched == "auto"):
+        best_c = max(mac * count + fill, feed * count) + lat
         alt = None
         for g in (_groups(ch.engines) if sched == "auto" else (1,)):
             par = ch.engines // g
@@ -155,23 +157,35 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
                               sram_port_Bpc=ch.port_Bpc / act, acc_kib=ch.acc_kib * g / ch.engines)
                 # auto: when instances < active groups, also split each instance's M rows over s groups (row-parallel;
                 # every group streams the full K×N operand through its share of the port)
-                s_ = max(1, min(act // count, m)) if sched == "auto" else 1
-                for sp in ((1, s_) if s_ > 1 else (1,)):
+                # 0.72: or split its N columns over s groups (each group streams the full M×K operand)
+                s_m = max(1, min(act // count, m)) if sched == "auto" else 1
+                s_n = max(1, min(act // count, n)) if sched == "auto" else 1
+                cands = [(1, m, n)] + ([(s_m, _cd(m, s_m), n)] if s_m > 1 else []) + \
+                    ([(s_n, m, _cd(n, s_n))] if s_n > 1 else [])
+                for sp, mm, nn in cands:
                     waves = _cd(count * sp, act)
-                    # each group streams its `waves` instances back to back (pipeline fill once, as wide does)
-                    one = _gemm_cost(sub, org, _cd(m, sp), k, n, waves, w_fmt, a_fmt, w_bits)
-                    if one.cycles < best_c:
-                        best_c, alt = one.cycles, (one, count * sp / waves)
+                    # each group streams its `waves` instances back to back (pipeline fill once, as wide does);
+                    # the sub-call already pays one launch + its own NoC span, later waves add a launch each
+                    one = _gemm_cost(sub, org, mm, k, nn, waves, w_fmt, a_fmt, w_bits)
+                    c1 = one.cycles + (waves - 1) * ch.wave_overhead_cycles
+                    if c1 < best_c:
+                        best_c, alt = c1, (one, count * sp / waves, c1 - one.cycles)
         if alt is not None:
             # conversions: every (row-split) instance piece converts its own operands (row splits replicate K×N)
-            one, per = alt
-            return GemmCost(one.cycles, one.mac_cycles, one.feed_cycles, one.dataflow, one.exec_fmt, one.conversion,
-                            one.convert_elems * per, one.convert_w * per)
+            one, per, extra = alt
+            if not extra:
+                return GemmCost(one.cycles, one.mac_cycles, one.feed_cycles, one.dataflow, one.exec_fmt, one.conversion,
+                                one.convert_elems * per, one.convert_w * per)
+            return GemmCost(one.cycles + extra, one.mac_cycles + extra, one.feed_cycles, one.dataflow, one.exec_fmt,
+                            one.conversion, one.convert_elems * per, one.convert_w * per)
     conv_elems = 0.0
     if flag & 1:
         conv_elems += k * n
     if flag & 2:
         conv_elems += m * k
+    if lat:
+        return GemmCost(max(mac * count + fill, feed * count) + lat, mac * count + fill + lat, feed * count, df, ex,
+                        conv, conv_elems * count, (k * n * count) if flag & 1 else 0.0)
     return GemmCost(max(mac * count + fill, feed * count), mac * count + fill, feed * count, df, ex, conv,
                     conv_elems * count, (k * n * count) if flag & 1 else 0.0)
 

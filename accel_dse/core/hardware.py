@@ -26,6 +26,7 @@ System = Chip + external memory (mem_catalog.MemSpec) + a three-tier interconnec
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 
@@ -37,6 +38,7 @@ SLC_POLICIES = ("pin", "lru")
 
 
 INSTANCE_SCHEDS = ("wide", "split", "auto")
+NOC_TOPOLOGIES = ("crossbar", "ring", "mesh")
 
 
 @dataclass(frozen=True)
@@ -69,8 +71,22 @@ class Chip:
     #             SRAM port and accumulator), per op.  Total SRAM / DRAM bytes are unchanged (operands streamed);
     #             each group needs its own instruction stream / sequencer 「假设」.
     instance_sched: str = field(default="auto", metadata={"omit_default": True})   # 0.71 default auto
+    # 0.72 (optional, default off): on-chip NoC latency between cores.  A schedule spanning s cores pays
+    # noc_hop_cycles × diameter(topology, s) once per op per sequencer (operand distribution / systolic hand-off);
+    # topology "crossbar" (1 hop), "ring" (⌊s/2⌋), "mesh" (2·(⌈√s⌉−1)).  0 = ideal NoC (≤ 0.71) 「假设」
+    noc_topology: str = field(default="mesh", metadata={"omit_default": True})
+    noc_hop_cycles: float = field(default=0.0, metadata={"omit_default": True})
+    # 0.72 (optional, default 0): sequencer launch / sync overhead per wave (cycles).  Wide pays it once per op
+    # (one sequencer, instances streamed); core-group schedules pay it once per wave on the critical path 「假设」
+    wave_overhead_cycles: float = field(default=0.0, metadata={"omit_default": True})
 
     def __post_init__(self):
+        if self.noc_topology not in NOC_TOPOLOGIES:
+            raise ValueError(f"chip.noc_topology must be one of {NOC_TOPOLOGIES} (got {self.noc_topology!r})")
+        for k in ("noc_hop_cycles", "wave_overhead_cycles"):
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0.0 <= v < 1e9):
+                raise ValueError(f"chip.{k} must be finite and >= 0 (got {v})")
         for k in ("freq_ghz", "rows", "cols", "engines", "sram_mib", "mac_eff"):
             v = getattr(self, k)
             if not (v == v) or v <= 0 or v == float("inf"):
@@ -87,6 +103,16 @@ class Chip:
     @property
     def slc_bytes(self) -> float:
         return self.slc_mib * 2**20
+
+    def noc_cycles(self, cores: int | None = None) -> float:
+        """0.72: NoC distribution latency (cycles) across ``cores`` (default all engines)."""
+        if not self.noc_hop_cycles:
+            return 0.0
+        s_ = cores or self.engines
+        if s_ <= 1:
+            return 0.0
+        d = {"crossbar": 1, "ring": s_ // 2, "mesh": 2 * math.isqrt(s_ - 1)}[self.noc_topology]
+        return self.noc_hop_cycles * d
 
     @property
     def c_eff(self) -> int:
