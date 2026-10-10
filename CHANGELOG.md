@@ -11,8 +11,12 @@
 - **DSA lightning indexer 按参考逐项建模**（DeepSeek-V3.2、GLM-5 / 5.2 / 5.3）：打分 GEMM 之后的 ReLU、按头加权求和、top-k 选择，k LayerNorm / RoPE；DeepSeek-V3.2 走参考的 fp8 路径（Hadamard 旋转、fp8 打分 GEMM、索引缓存 132 B / token）。GLM-5.2 / 5.3 的 57 个 `shared` 层不再带索引器（参数与发布由 +0.07 % 变为一致）；GLM-5 与 GLM-5.2 因此不再同结构，取消合并。
 - **gpt-oss attention sink**：softmax 每行多 1 个 sink logit（openai/gpt-oss 参考 `sdpa`）。
 - **线性注意力按参考 chunk 形式上阵列**（Gated DeltaNet / KDA chunk 64，MiniMax Lightning BLOCK 256，状态 fp32 均按参考）：块内 / 块间 GEMM 计入阵列，decode 递归向量计数按参考（delta 7·dk·dv，lightning 5·dk·dv）。
-- 覆盖度：13 个模型 部分 → 完整；剩余非完整 = 5 个架构代理（DeepSeek-V4 ×3、GLM-5.3-Flash、Qwen3.8-Flash-Next）+ 4 个结构预测「部分」（检索 / 松弛不在范围）；AlphaFold3 仍「暂未接入 v2」。
-- 数值：DSA 模型 decode TPOT −9 ~ −13 %、长 prefill TTFT 最多 −49 %；线性注意力模型 prefill TTFT +3 ~ +17 %；已「完整」的 50 个模型默认结果不变（新测试钉住）。
+- **GLM-5.3-Flash 按 transformers glm5_next**：mHC 超连接混合计算（fn GEMM、Sinkhorn、collapse / mix，流水级间传 N 流）、HyperHead、DSA 索引器 key 池化（门控压缩、池打分、尾池、514 B / token 缓存）、KDA 低秩输出门（参数原多 1.05B，现与逐层 safetensors 头一致）。架构代理 → 完整。
+- **DeepSeek-V4-Flash / -Pro 按官方 inference/model.py**：压缩器（重叠比 4 / 比 128）、自带压缩器的索引器（头按 TP 切分 + 分数 all-reduce）、attention sink、q / kv RMSNorm 与 o 逆 RoPE、mHC + 学习的末端 hc_head、MTP 为比 0 层；HC 参数原少算 ×4（−25 / −63 M）。架构代理 → 完整（tid2eid 18.6 MB 查表未计，压缩器 fp32 按 bf16，见 §2.1）。
+- DeepSeek-V4.1-Flash 与 Qwen3.8-Flash-Next（qwen4_exp）的参考代码已公开但结构不同（engram / 候选块 / DSpark；QSA / 门控残差 / PLE），本轮未重写，保留「架构代理」并在 `coverage_reasons` 写明。
+- 覆盖度：16 个模型收口为完整；剩余非完整 = 2 个架构代理（DeepSeek-V4.1-Flash、Qwen3.8-Flash-Next）+ 4 个结构预测「部分」（检索 / 松弛不在范围）；AlphaFold3 仍「暂未接入 v2」。
+- 已知：`test_core_052::test_length_spread_effects` 在 548b9d5 上也超过 600 s（与本次改动无关，测试提速由主线处理）。
+- 数值（另见 §2.1）：GLM-5.3-Flash / V4-Flash / V4-Pro decode TPOT +6 ~ +8 %、prefill 8k TTFT +23 ~ +31 %；DSA 模型 decode TPOT −9 ~ −13 %、长 prefill TTFT 最多 −49 %；线性注意力模型 prefill TTFT +3 ~ +17 %；已「完整」的 50 个模型默认结果不变（新测试钉住）。
 
 ## [0.65.1] - 2026-10-10
 

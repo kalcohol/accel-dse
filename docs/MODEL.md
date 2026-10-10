@@ -38,7 +38,7 @@
 
 ### 2.1 覆盖度清单（Unreleased：按参考实现收口）
 
-收口前（0.65.1）目录里 72 个可评估发布中 22 个不是「完整」，另有 1 个目录条目「暂未接入 v2」。逐项判断：有公开 config + safetensors 头 + 参考代码的，按参考实现逐项建模并核对；没有的保留标签与精确原因。
+收口前（0.65.1）目录里 72 个可评估发布中 22 个不是「完整」（现剩 6 个：2 个架构代理 + 4 个结构预测「部分」），另有 1 个目录条目「暂未接入 v2」。逐项判断：有公开 config + safetensors 头 + 参考代码的，按参考实现逐项建模并核对；没有的保留标签与精确原因。
 
 | 模型 | 0.65.1 | 现在 | 依据 / 剩余原因 |
 |---|---|---|---|
@@ -48,13 +48,14 @@
 | qwen3-next-80b-a3b、qwen3.5-397b-a17b、qwen3.8-2.4t、qwen3.8-27b（Gated DeltaNet） | 部分（递归按向量计、状态 fp32 / 分块 64「假设」） | 完整 | transformers `torch_chunk_gated_delta_rule`（chunk 64，fp32 状态）：每块每头 kβ·Kᵀ、Q·Kᵀ [C,dk,C]，UT 三角求解 ½·C²(dv+dk)，k_cumdecay·S、Q·S、Kᵀ·v_new [C·dk·dv]，A·v_new [C,C,dv] 上阵列（bf16 操作数，FLA 内核）；衰减掩码 / β / L2 norm 按向量；decode 按 fused_recurrent：每 token 每头 7·dk·dv |
 | kimi-k3（KDA） | 部分（同上） | 完整 | transformers `chunk_kimi_delta_attention`（chunk 64，fp32 状态），GEMM 同 GDN；逐通道门控另计 3·C·dk / 块 |
 | minimax-m1-80k / minimax-text-01（Lightning） | 部分（同上） | 完整 | 发布仓库 `modeling_minimax_text_01.py`：BLOCK = 256，kv 状态 fp32；每块 Q·Kᵀ、A·V、Q·S、Kᵀ·V；decode 每 token 每头 5·dk·dv |
-| glm-5.3-flash | 架构代理 | 架构代理 | KDA / DSA 打分已按参考；剩余：超连接 mHC（hc_mult 4）混合计算未计；DSA key 池化 `index_kpool` 未逐项建模。参考 transformers `glm5_next` 已公开，可在后续补齐 |
-| deepseek-v4-flash / -pro / v4.1-flash | 架构代理 | 架构代理 | 压缩稀疏注意力 CSA 按 ctx/压缩比 + 滑窗近似、哈希路由按 top-k、超连接混合未计、（v4.1）engram 查表只计存储；本次未找到可核对的公开参考推理代码，不臆造 |
-| qwen3.8-flash-next | 架构代理 | 架构代理 | GDN 已按参考；超连接混合未计、n-gram / engram 51.2B 查表只计存储（无可核对的参考代码） |
+| glm-5.3-flash | 架构代理 | 完整 | transformers `glm5_next`：KDA 低秩输出门 g_a / g_b（原按满秩 g 计，参数多 1.05B）；mHC ×4（每层 attn_hc / ffn_hc：N·h 的 RMSNorm、fn GEMM [N·h → (2+N)·N]、sigmoid / softmax + Sinkhorn 20 次、collapse、post ⊗ out + combᵀ·residual；残差 N 流 TP 复制，流水级间传 N·h），末端 HyperHead 均值；DSA 索引器 key 池化（门控 GEMM h → 128 + APE，每次前向对全部缓存 key 重建池：1 + 5 + 2 次 / 元素；按 ⌈ctx/4⌉ 个池打分，top-512 池展开 + 尾池 ≤ 3；缓存 [k, gate, valid] bf16 514 B / token）。逐层参数与 safetensors 头一致；与发布汇总差 270 = 45 × 6 个 hc_*_scale（汇总脚本归为量化 scale） |
+| deepseek-v4-flash / -pro | 架构代理 | 完整 | 官方 `inference/model.py`（两个仓库相同）：MQA head_dim 512（K = V 共用一份 512 维条目，attention sink，q 逐头 RMSNorm，o 逆 RoPE），滑窗 128 + 压缩器（比 4 重叠 coff 2 / 比 128；wkv / wgate、softmax 池化 1 + 5 + 2 次 / 元素，每条压缩条目 RMSNorm + RoPE + fp8 量化），比 4 层索引器（自带 Hadamard 压缩器，64 头按 TP 列切分 + fp32 分数 all-reduce，top-512 / Pro 1024），比 128 层读全部压缩条目；哈希路由层 gate 分数照算（与 top-k 同代价）；mHC ×4 + 学习的末端 hc_head（fn GEMM [N·h → N]）；MTP 为比 0 层。参数与发布汇总差 259 / 367（hc_*_scale）。未计：tid2eid 查表（3 层 × 129280 × 6 int64 ≈ 18.6 MB 存储，每 token 读 6 个整数）；压缩器在参考中以 fp32 计算，这里按 bf16 操作数；压缩条目数按 ⌈p/r⌉（参考 ⌊p/r⌋，每查询最多差 1 个） |
+| deepseek-v4.1-flash | 架构代理 | 架构代理 | 官方 V4.1 `inference/model.py` + `engram.py` 已公开，但结构与 V4 不同（engram 查表 196.6B、select_candidate_blocks 候选块选择、DSpark 草稿头、共享注意力运行时、视觉）；本轮未逐项建模，仍按 CSA 有效上下文 / 超连接只计参数 / 查表只计存储近似 |
+| qwen3.8-flash-next | 架构代理 | 架构代理 | 发布为 `qwen4_exp`；transformers `qwen4_exp` 参考已公开：GatedDeltaNet + QSA 索引注意力（4 头 × 128，压缩比 4，预算 2048）+ 门控残差（hc_count 4，低秩 320）+ PLE n-gram 嵌入层（第 2 层，conv 4；n-gram 表 51.2B）。当前模板按 GDN + 超连接 + 查表近似，参数差 +0.50%；需按参考重写，本轮未完成 |
 | openfold / alphafold2 / boltz-1 / protenix | 部分 | 部分 | 神经网络推理已逐项建模；MSA / 模板检索（jackhmmer / HHblits / MMseqs2，CPU / 检索服务）、特征化与 AMBER 松弛不属于加速器推理，按范围保留 |
 | alphafold3 | 暂未接入 v2 | 暂未接入 v2 | 权重需向 Google DeepMind 申请、禁止再分发，无公开 safetensors 头可核对；同架构用 Protenix / Boltz-1 |
 
-数值影响（HBM3e、TP8 / EP8，单卡 100T 默认芯片）：DSA 模型 decode（batch 16、ctx 32k）TPOT −9 ~ −13 %（DeepSeek-V3.2 fp8 打分；GLM-5.2 / 5.3 少 57 层索引），prefill 64k TTFT −36 ~ −49 %（GLM-5 不变，打分向量开销被其他瓶颈掩盖）；线性注意力模型 prefill 8k / 64k TTFT +4 ~ +17 % / +3 ~ +9 %（小块 GEMM 在大阵列上利用率低，原向量计数偏乐观），decode 不变（DRAM 主导）；gpt-oss 不变（sink 开销被掩盖）。已是「完整」的 50 个模型默认结果不变（`tests/test_core_coverage.py` 钉住 0.65.1 的 KPI 哈希）。
+数值影响（HBM3e、TP8 / EP8，单卡 100T 默认芯片）：GLM-5.3-Flash / DeepSeek-V4-Flash / V4-Pro 收口后 decode（batch 16、32k）TPOT +5.8 / +8.0 / +7.4 %，prefill 8k TTFT +31 / +29 / +23 %，64k +2.8 / −1.8 / +8.6 %（mHC 混合与压缩器、sink 等原先未计的向量 / 小 GEMM 开销；V4 64k 略降来自索引器 TP 切分）。DSA 模型 decode（batch 16、ctx 32k）TPOT −9 ~ −13 %（DeepSeek-V3.2 fp8 打分；GLM-5.2 / 5.3 少 57 层索引），prefill 64k TTFT −36 ~ −49 %（GLM-5 不变，打分向量开销被其他瓶颈掩盖）；线性注意力模型 prefill 8k / 64k TTFT +4 ~ +17 % / +3 ~ +9 %（小块 GEMM 在大阵列上利用率低，原向量计数偏乐观），decode 不变（DRAM 主导）；gpt-oss 不变（sink 开销被掩盖）。已是「完整」的 50 个模型默认结果不变（`tests/test_core_coverage.py` 钉住 0.65.1 的 KPI 哈希）。
 
 ## 3. 逐 rank 算子图与并行
 
