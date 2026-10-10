@@ -36,6 +36,9 @@ from .dtypes import FormatSupport
 SLC_POLICIES = ("pin", "lru")
 
 
+INSTANCE_SCHEDS = ("wide", "split", "auto")
+
+
 @dataclass(frozen=True)
 class Chip:
     name: str = "chip"
@@ -57,6 +60,14 @@ class Chip:
     # a ``count``-instance op then also costs ceil(count / engines) waves on one R×C engine each (cheaper of that and
     # the chip-wide array).  GPU-like (SMs are independent); False = the 0.69 chip-wide array only 「假设」
     split_instances: bool = False
+    # 0.71: how a GEMM with count > 1 independent instances (per-request / per-head attention QK·PV, absorbed MLA
+    # per-head products, per-expert GEMMs) is scheduled over the engines (cores):
+    #   "wide"  — all engines ganged as one R × (C·E) array, instances back to back (≤ 0.70 default);
+    #   "split" — one instance per engine, ceil(count / E) waves (= split_instances=True);
+    #   "auto"  — cheapest of wide and every core-group size g | E (E/g groups of R × (C·g), each with g/E of the
+    #             SRAM port and accumulator), per op.  Total SRAM / DRAM bytes are unchanged (operands streamed);
+    #             each group needs its own instruction stream / sequencer 「假设」.
+    instance_sched: str = "wide"
 
     def __post_init__(self):
         for k in ("freq_ghz", "rows", "cols", "engines", "sram_mib", "mac_eff"):
@@ -67,6 +78,8 @@ class Chip:
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not (lo <= v < 1e7):
                 raise ValueError(f"chip.{k} must be finite and ≥ {lo:g}")
+        if self.instance_sched not in INSTANCE_SCHEDS:
+            raise ValueError(f"chip.instance_sched must be one of {', '.join(INSTANCE_SCHEDS)}")
         if self.slc_policy not in SLC_POLICIES:
             raise ValueError(f"chip.slc_policy must be one of {', '.join(SLC_POLICIES)}")
 

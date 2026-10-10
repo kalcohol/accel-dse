@@ -93,6 +93,11 @@ def _gemv(ch: Chip, m, k, n, r, wb, ab, ob):
     return mac, byt / ch.port_Bpc
 
 
+def _groups(e: int) -> tuple[int, ...]:
+    """Core-group sizes g < E that divide E (E/g concurrent instances)."""
+    return tuple(g for g in range(1, e) if e % g == 0)
+
+
 def _candidates(org: str) -> tuple[str, ...]:
     return {"os": ("os",), "ws_edge": ("ws_edge",), "ws_broad": ("ws_broad",),
             "os_vec": ("os", "gemv"), "reconf": ("os", "ws_edge", "ws_broad", "gemv")}[org]
@@ -129,14 +134,22 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
             best = (cyc, mac, feed, df)
     cyc, mac, feed, df = best
     fill = (ch.rows + ch.c_eff) if df.startswith("ws") else 0.0   # pipeline fill once per op (instances stream back-to-back)
-    if ch.split_instances and count > 1 and ch.engines > 1:      # 0.70: instances spread over engines
-        sub = replace(ch, engines=1, split_instances=False, sram_port_Bpc=ch.port_Bpc / ch.engines,
-                      acc_kib=ch.acc_kib / ch.engines)
-        one = _gemm_cost(sub, org, m, k, n, 1, w_fmt, a_fmt, w_bits)
-        waves = _cd(count, ch.engines)
-        if one.cycles * waves < max(mac * count + fill, feed * count):
-            return GemmCost(one.cycles * waves, one.mac_cycles * waves, one.feed_cycles * waves, one.dataflow, one.exec_fmt,
-                            one.conversion, one.convert_elems * count, one.convert_w * count)
+    sched = "split" if ch.split_instances else ch.instance_sched
+    if sched != "wide" and count > 1 and ch.engines > 1:      # 0.70 / 0.71: instances spread over core groups
+        best_c = max(mac * count + fill, feed * count)
+        alt = None
+        for g in (_groups(ch.engines) if sched == "auto" else (1,)):
+            par = ch.engines // g
+            sub = replace(ch, engines=g, split_instances=False, instance_sched="wide",
+                          sram_port_Bpc=ch.port_Bpc * g / ch.engines, acc_kib=ch.acc_kib * g / ch.engines)
+            one = _gemm_cost(sub, org, m, k, n, 1, w_fmt, a_fmt, w_bits)
+            waves = _cd(count, par)
+            if one.cycles * waves < best_c:
+                best_c, alt = one.cycles * waves, (one, waves)
+        if alt is not None:
+            one, waves = alt
+            return GemmCost(one.cycles * waves, one.mac_cycles * waves, one.feed_cycles * waves, one.dataflow,
+                            one.exec_fmt, one.conversion, one.convert_elems * count, one.convert_w * count)
     conv_elems = 0.0
     if flag & 1:
         conv_elems += k * n
