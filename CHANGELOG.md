@@ -3,6 +3,14 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [Unreleased] — 分支 r5（0.71 候选）
+
+### 新增
+- `Chip.instance_sched`：`"wide"`（默认，与 0.70 逐位相同）/ `"split"` / `"auto"`。决定 count > 1 的独立 GEMM 实例（每请求 / 每头注意力、MLA 吸收后的每头乘积、每专家 GEMM）在 engine 上怎么排：宽阵列串行、每核一个实例，或逐 op 取最优的核组大小 g | E，外加行切分；每组分到 g/E 的 SRAM 端口与累加器。建模说明 §26，`scripts/instance_sched_study.py` / `instance_sched_diff.py`。
+
+### 待定
+- 建议目录芯片默认改为 `"auto"`：多核且各核有独立 sequencer 时，`"wide"` 是建模错误。变化逐条列在 /workspace/val5/diff_all.csv（555 个数，74 个模型；decode 基本不变，prefill TTFT 中位数 −8 ~ −40 %）。
+
 ## [0.70.0] - 2026-10-10
 
 外部校核第四轮（建模说明 §25.9）。新选项都关时，默认指纹不变。
