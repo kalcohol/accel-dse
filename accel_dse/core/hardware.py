@@ -62,12 +62,13 @@ class Chip:
     split_instances: bool = field(default=False, metadata={"omit_default": True})   # 0.70.1: hash-stable
     # 0.71: how a GEMM with count > 1 independent instances (per-request / per-head attention QK·PV, absorbed MLA
     # per-head products, per-expert GEMMs) is scheduled over the engines (cores):
-    #   "wide"  — all engines ganged as one R × (C·E) array, instances back to back (≤ 0.70 default);
+    #   "wide"  — all engines ganged as one R × (C·E) array, instances back to back (≤ 0.70 behaviour; a lock-step
+    #             single-sequencer array, or a GPU reference where the 0.70 calibration holds);
     #   "split" — one instance per engine, ceil(count / E) waves (= split_instances=True);
-    #   "auto"  — cheapest of wide and every core-group size g | E (E/g groups of R × (C·g), each with g/E of the
+    #   "auto"  — (0.71 default: independent core sequencers) cheapest of wide and every core-group size g | E (E/g groups of R × (C·g), each with g/E of the
     #             SRAM port and accumulator), per op.  Total SRAM / DRAM bytes are unchanged (operands streamed);
     #             each group needs its own instruction stream / sequencer 「假设」.
-    instance_sched: str = field(default="wide", metadata={"omit_default": True})
+    instance_sched: str = field(default="auto", metadata={"omit_default": True})   # 0.71 default auto
 
     def __post_init__(self):
         for k in ("freq_ghz", "rows", "cols", "engines", "sram_mib", "mac_eff"):

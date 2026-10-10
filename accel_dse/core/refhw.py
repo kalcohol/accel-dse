@@ -54,7 +54,8 @@ class RefHW:
 def _chip(name, sms, mac_per_sm, peak_tflops, fmts, l2_mib, lanes):
     rows, cols = 32, mac_per_sm // 32
     f = peak_tflops * 1e12 / (2 * rows * cols * sms) / 1e9
-    return Chip(name, f, rows, cols, sms, formats=fmts, sram_mib=l2_mib, vector_lanes=lanes)
+    return Chip(name, f, rows, cols, sms, formats=fmts, sram_mib=l2_mib, vector_lanes=lanes,
+                instance_sched="wide")     # 0.71: GPU references keep the 0.70 calibrated wide schedule (MODEL §25.9 / §26)
 
 
 REF_HW = {h.name: h for h in (

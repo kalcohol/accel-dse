@@ -9,7 +9,14 @@ SHAPES = [(128, 4097, 512, 64), (8, 128, 4096, 512), (8, 4096, 128, 512), (4096,
 
 
 def test_default_wide_and_validation():
-    assert Chip().instance_sched == "wide" and all(c.instance_sched == "wide" for c in CHIPS.values())
+    assert Chip().instance_sched == "auto" and all(c.instance_sched == "auto" for c in CHIPS.values())
+    from accel_dse.core.refhw import REF_HW
+    assert all(h.chip.instance_sched == "wide" for h in REF_HW.values())
+    from accel_dse.core.scenario import Scenario
+    s = Scenario(model="qwen3.8-27b")
+    assert s.hash() == "a6463624c5748f5f" and "instance_sched" not in s.to_dict()["chip"]
+    w = s.replace("chip.instance_sched", "wide")
+    assert w.to_dict()["chip"]["instance_sched"] == "wide" and w.hash() != s.hash()
     try:
         Chip(instance_sched="lockstep")
     except ValueError:
@@ -21,7 +28,7 @@ def test_default_wide_and_validation():
 
 def test_auto_le_split_le_wide_and_ge_ideal():
   for r, c, e in [(128, 128, 32), (64, 64, 128), (256, 256, 8), (32, 32, 512), (56, 56, 16)]:
-    ch = Chip("t", 1.0, r, c, e)
+    ch = Chip("t", 1.0, r, c, e, instance_sched="wide")
     for m, k, n, cnt in SHAPES:
         w, s, a = (gemm_cost(replace(ch, instance_sched=x), "reconf", m, k, n, count=cnt).cycles
                    for x in ("wide", "split", "auto"))
@@ -31,24 +38,24 @@ def test_auto_le_split_le_wide_and_ge_ideal():
 
 
 def test_single_instance_and_single_engine_unchanged():
-    ch = Chip("t", 1.0, 64, 64, 32)
+    ch = Chip("t", 1.0, 64, 64, 32, instance_sched="wide")
     for x in ("split", "auto"):
         assert gemm_cost(replace(ch, instance_sched=x), "reconf", 512, 1024, 768).cycles == \
             gemm_cost(ch, "reconf", 512, 1024, 768).cycles
-    one = Chip("t1", 1.0, 64, 64, 1)
+    one = Chip("t1", 1.0, 64, 64, 1, instance_sched="wide")
     assert gemm_cost(replace(one, instance_sched="auto"), "reconf", 8, 128, 4096, count=64).cycles == \
         gemm_cost(one, "reconf", 8, 128, 4096, count=64).cycles
 
 
 def test_split_instances_alias():
-    ch = Chip("t", 1.0, 128, 128, 32)
+    ch = Chip("t", 1.0, 128, 128, 32, instance_sched="wide")
     assert gemm_cost(replace(ch, split_instances=True), "reconf", 128, 4097, 512, count=64).cycles == \
         gemm_cost(replace(ch, instance_sched="split"), "reconf", 128, 4097, 512, count=64).cycles
 
 
 def test_feed_shared_port():
     """A group gets g/E of the SRAM port: a feed-bound batched op is not sped up beyond the shared port."""
-    ch = Chip("t", 1.0, 32, 32, 512, sram_port_Bpc=4096.0)
+    ch = Chip("t", 1.0, 32, 32, 512, sram_port_Bpc=4096.0, instance_sched="wide")
     w = gemm_cost(ch, "reconf", 1, 4096, 128, count=4096)
     a = gemm_cost(replace(ch, instance_sched="auto"), "reconf", 1, 4096, 128, count=4096)
     assert a.cycles >= a.feed_cycles and a.feed_cycles >= 0.99 * (4096 * 128 * 2 * 4096) / 4096
