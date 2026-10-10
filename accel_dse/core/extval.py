@@ -31,6 +31,7 @@ from .scenario import Scenario, Serving
 
 DATA = Path(__file__).resolve().parents[1] / "data" / "ext_measurements.json"
 FP8 = (("attn", "fp8"), ("mlp", "fp8"), ("act", "fp8"), ("kv", "fp8"))
+NVFP4 = (("attn", "nvfp4"), ("mlp", "nvfp4"), ("act", "nvfp4"), ("kv", "fp8"))   # 0.69: TRT-LLM FP4 ckpt W4A4 + FP8 KV 「假设」
 EFF = {"catalog": None, "peak": 1.0}
 
 
@@ -77,6 +78,7 @@ class _Pt:
 
 
 DATA_MOE = DATA.with_name("ext_measurements_moe.json")
+DATA_R3 = DATA.with_name("ext_measurements_r3.json")
 
 
 def rows(path: Path = DATA) -> list[dict]:
@@ -98,7 +100,7 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
     return Scenario(model=r["model"], chip=chip, mem_id=h.mem_id, mem_eff=mem_eff, link=h.link, mapping="reconf",
                     exec_overlap=ov,
                     layout=Layout(tp=r["tp"], dp=r.get("dp", 1), ep=r.get("ep", 1), etp=r.get("etp", 1)),
-                    formats_override=FP8 if r["dtype"] == "fp8" else (),
+                    formats_override={"fp8": FP8, "nvfp4": NVFP4}.get(r["dtype"], ()),
                     serving=Serving(**sv), **extra)
 
 
@@ -132,6 +134,10 @@ def predict(r: dict, eff: str = "catalog") -> dict:
     if m == "static_tok_s_gpu":
         v, fits, det = _static(r, r["batch"], eff)
         return {"pred": v / r["tp"], "fits": fits, **det}
+    if m == "static_latency_s":        # 0.69: one static batch end to end (vllm bench latency)
+        p = _ttft(r, r["batch"], r["isl"], eff)
+        t, fits = _decode(r, r["batch"], r["isl"], r["osl"], eff)
+        return {"pred": p.ttft + (r["osl"] - 1) * t, "fits": fits and p.fits, "ttft_s": p.ttft, "tpot_s": t}
     if m == "static_tok_s_total":
         v, fits, det = _static(r, r["batch"], eff)
         return {"pred": v, "fits": fits, **det}
@@ -250,7 +256,7 @@ def predict_cb(r: dict, eff: str = "catalog") -> dict:
     """max_tok_s_total rows under the continuous-batching proxy: best power-of-two running batch that fits."""
     best = None
     for k in range(0, 14):
-        v, fits = _cb_at(r, 2 ** k, eff)
+        v, fits = _cb_at(r, 2 ** k, eff, r.get("cb_chunk", CB_CHUNK))
         if not fits:
             break
         if best is None or v > best["pred"]:
