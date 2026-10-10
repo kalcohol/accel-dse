@@ -98,6 +98,14 @@ def _groups(e: int) -> tuple[int, ...]:
     return tuple(g for g in range(1, e) if e % g == 0)
 
 
+def _actives(par: int) -> tuple[int, ...]:
+    """Active group counts tried by auto: par, par/2, … (integer halvings) down to 1."""
+    out, a = [], par
+    while a >= 1:
+        out.append(a); a //= 2
+    return tuple(out)
+
+
 def _candidates(org: str) -> tuple[str, ...]:
     return {"os": ("os",), "ws_edge": ("ws_edge",), "ws_broad": ("ws_broad",),
             "os_vec": ("os", "gemv"), "reconf": ("os", "ws_edge", "ws_broad", "gemv")}[org]
@@ -140,20 +148,25 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
         alt = None
         for g in (_groups(ch.engines) if sched == "auto" else (1,)):
             par = ch.engines // g
-            sub = replace(ch, engines=g, split_instances=False, instance_sched="wide",
-                          sram_port_Bpc=ch.port_Bpc * g / ch.engines, acc_kib=ch.acc_kib * g / ch.engines)
-            # auto: when instances < groups, also split each instance's M rows over s groups (row-parallel; every
-            # group streams the full K×N operand through its share of the port)
-            s_ = max(1, min(par // count, m)) if sched == "auto" else 1
-            for sp in ((1, s_) if s_ > 1 else (1,)):
-                one = _gemm_cost(sub, org, _cd(m, sp), k, n, 1, w_fmt, a_fmt, w_bits)
-                waves = _cd(count * sp, par)
-                if one.cycles * waves < best_c:
-                    best_c, alt = one.cycles * waves, (one, waves)
+            # active groups: all, or fewer (idle groups free their share of the shared SRAM port / NoC; the port is
+            # a chip-total budget split over the groups that are streaming, accumulators stay per core)
+            for act in (_actives(par) if sched == "auto" else (par,)):
+                sub = replace(ch, engines=g, split_instances=False, instance_sched="wide",
+                              sram_port_Bpc=ch.port_Bpc / act, acc_kib=ch.acc_kib * g / ch.engines)
+                # auto: when instances < active groups, also split each instance's M rows over s groups (row-parallel;
+                # every group streams the full K×N operand through its share of the port)
+                s_ = max(1, min(act // count, m)) if sched == "auto" else 1
+                for sp in ((1, s_) if s_ > 1 else (1,)):
+                    waves = _cd(count * sp, act)
+                    # each group streams its `waves` instances back to back (pipeline fill once, as wide does)
+                    one = _gemm_cost(sub, org, _cd(m, sp), k, n, waves, w_fmt, a_fmt, w_bits)
+                    if one.cycles < best_c:
+                        best_c, alt = one.cycles, (one, count * sp / waves)
         if alt is not None:
-            one, waves = alt
-            return GemmCost(one.cycles * waves, one.mac_cycles * waves, one.feed_cycles * waves, one.dataflow,
-                            one.exec_fmt, one.conversion, one.convert_elems * count, one.convert_w * count)
+            # conversions: every (row-split) instance piece converts its own operands (row splits replicate K×N)
+            one, per = alt
+            return GemmCost(one.cycles, one.mac_cycles, one.feed_cycles, one.dataflow, one.exec_fmt, one.conversion,
+                            one.convert_elems * per, one.convert_w * per)
     conv_elems = 0.0
     if flag & 1:
         conv_elems += k * n
