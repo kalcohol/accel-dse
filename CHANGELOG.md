@@ -10,6 +10,8 @@
 - 修复：`lengths.lognormal_bins` 逐 bin 取整使长度分布均值漂移（如 out_len 64、cv 0.9 → 64.13），PD goodput ≠ req/s × out_len / 卡数。改为保持均值的整数化（Σ = round(N·mean)，floor 后按小数部分补 1，值保持非降）；仅当 mean·N < N（均值 < ~3 且 cv 大）时受 ≥ 1 下限所限。只影响设置了 prompt_cv / out_cv 的 PD / 排队结果（量级 ≤ 0.2 %），默认指纹不变。
 - 新增常驻测试 `tests/test_core_073_audit.py`：能量计数（求和、逐动作线性、与能耗表无关、idle = 卡 × 窗口）、SLC（pin / lru 不变慢、不增 DRAM 字节、fits 不变）、SRAM / SLC 分区容量、fabric 集合通信（有限、份额 ∈ [0,1]、随载荷单调且至多线性、不低于最快链路理想界、oversub 单调）、PP 调度（step ≥ Σ 阶段、≥ 微批 × 瓶颈、层划分恰好一次）、视频 / 蛋白调度（编码 → 去噪 → 解码链、周期界、工作量对 batch / SP / DP 守恒）、搜索不劣于随机可行点与暴力 batch、PD 流体 / 能量恒等式、长度分布均值。
 - 审计规模：约 1.3 万次随机检查（val7/fuzz*.py），除上述 1 处外 0 违例（另确认 idle_W_prefill 仅用于 PD prefill 池，属文档行为）。
+- 指纹：默认 fp / fpmc 与 0.72.0 完全一致（75/75 × 2）。外部验证不受影响（refhw 未设长度 cv）。
+- 测试：`-j 1` 顺序全量 403 通过 / 0 失败，测试耗时合计 3339 s（墙钟约 61 min；最慢 test_core_052 924 s、061_3 458 s、053 265 s）；`-j 8` 约 5.5 min。
 
 ## [0.72.0] - 2026-10-11
 
