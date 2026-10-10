@@ -2,7 +2,6 @@
 import math
 from dataclasses import replace
 
-import pytest
 
 from accel_dse.core import extval as X
 from accel_dse.core.evaluate import evaluate
@@ -10,6 +9,18 @@ from accel_dse.core.hardware import CHIPS
 from accel_dse.core.refhw import REF_HW
 from accel_dse.core.scenario import Scenario, Serving
 
+
+
+def _approx(a, b, rel=1e-6):
+    return abs(a - b) <= rel * max(abs(a), abs(b))
+
+
+def _raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return
+    raise AssertionError(f"{exc.__name__} not raised")
 
 def test_refhw_mi300x_b200_datasheet():
     a, b = REF_HW["MI300X"], REF_HW["B200"]
@@ -21,8 +32,7 @@ def test_refhw_mi300x_b200_datasheet():
 def test_layer_overhead_default_identical_and_linear():
     s = Scenario(model="llama-3.1-8b", serving=Serving(batch=4, ctx=1024))
     assert "layer_overhead_us" not in s.to_dict()
-    with pytest.raises(ValueError):
-        replace(s, layer_overhead_us=-1.0)
+    _raises(ValueError, lambda: replace(s, layer_overhead_us=-1.0))
     r0, r1, r2 = (evaluate(replace(s, layer_overhead_us=u)) for u in (0.0, 50.0, 100.0))
     d1, d2 = r1.tpot - r0.tpot, r2.tpot - r0.tpot
     assert abs(d1 - 32 * 50e-6) < 1e-12 and abs(d2 - 2 * d1) < 1e-12

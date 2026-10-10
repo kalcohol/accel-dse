@@ -1,7 +1,6 @@
 """0.66 — 参考硬件 catalog, external-measurement dataset / harness, exec_overlap modes."""
 from dataclasses import replace
 
-import pytest
 
 from accel_dse.core import extval as X
 from accel_dse.core.catalog import get_model
@@ -12,17 +11,29 @@ from accel_dse.core.refhw import REF_HW
 from accel_dse.core.scenario import Scenario, Serving
 
 
+
+def _approx(a, b, rel=1e-6):
+    return abs(a - b) <= rel * max(abs(a), abs(b))
+
+
+def _raises(exc, fn):
+    try:
+        fn()
+    except exc:
+        return
+    raise AssertionError(f"{exc.__name__} not raised")
+
 def test_refhw_matches_datasheet_and_stays_out_of_design_presets():
     for h in REF_HW.values():
         assert abs(h.chip.peak_tflops_bf16 - h.peak_bf16_tflops) / h.peak_bf16_tflops < 1e-3
         fp8 = h.chip.formats.rate("fp8")
-        assert (fp8 or 0) * h.peak_bf16_tflops == pytest.approx(h.peak_fp8_tflops, rel=2e-3)
+        assert _approx((fp8 or 0) * h.peak_bf16_tflops, h.peak_fp8_tflops, rel=2e-3)
         s = Scenario(chip=h.chip, mem_id=h.mem_id, mem_eff=1.0)
         from accel_dse.core.hardware import System
         sysm = System(h.chip, h.mem_id, 1.0)
         assert abs(sysm.dram_GBps - h.hbm_GBps) / h.hbm_GBps < 0.01
         assert sysm.dram_bytes >= 0.99 * h.hbm_GB * 1e9 * (0.9 if h.name.startswith("H200") else 1.0)
-        assert h.link.GBps == pytest.approx(h.link_GBps_bidir / 2)
+        assert _approx(h.link.GBps, h.link_GBps_bidir / 2)
         assert h.url.startswith("https://") and "参考硬件" in h.chip.name
         assert h.chip.name not in CHIPS and s.chip.mac_eff == 1.0      # utilisation not tuned
 
@@ -41,8 +52,7 @@ def test_exec_overlap_default_unchanged_and_modes_ordered():
     base = Scenario(model="llama-3.3-70b", chip=h.chip, mem_id=h.mem_id, link=h.link, layout=Layout(tp=2),
                     mapping="reconf")
     assert "exec_overlap" not in base.to_dict()          # scenario hashes of earlier versions unchanged
-    with pytest.raises(ValueError):
-        replace(base, exec_overlap="bogus")
+    _raises(ValueError, lambda: replace(base, exec_overlap="bogus"))
     for sv in (dict(phase="decode", batch=1, ctx=512), dict(phase="decode", batch=256, ctx=4096),
                dict(phase="prefill", batch=1, prompt=2048)):
         s0 = replace(base, serving=Serving(**sv))
