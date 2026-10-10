@@ -374,8 +374,9 @@ def _decode_birth_death(pool: _Pool, lam: float, out: float, B: int, share: floa
     if B <= INTERP_B:
         step_of = exact
     else:   # 0.60 「假设」: B > 1024 (large replicas) — step(k) exact for k ≤ 64, linear between geometric grid points
-        grid = sorted({k for k in range(1, 65)} | {min(B, int(round(64 * 2 ** (j / 8)))) for j in range(1, 200)
-                                                   if 64 * 2 ** ((j - 1) / 8) < B} | {B})
+            # (0.72: ratio 2^(1/12), was 2^(1/8) — auto core-group schedules make step(k) less smooth)
+        grid = sorted({k for k in range(1, 65)} | {min(B, int(round(64 * 2 ** (j / 12)))) for j in range(1, 300)
+                                                   if 64 * 2 ** ((j - 1) / 12) < B} | {B})
         interp: dict = {}
 
         def step_of(k: int):
