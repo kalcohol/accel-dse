@@ -90,6 +90,12 @@ class AttnCore:
     compress: int = 1
     idx_heads: int = 0
     idx_dim: int = 0
+    idx_rope: int = 0          # indexer RoPE dims (q per head and k)
+    idx_fp8: bool = False      # DeepSeek-V3.2 reference indexer: Hadamard-rotated q / k quantised to fp8 e4m3 with one
+                               # fp32 scale per 128 elements; key cache fp8 + scales (inference/model.py, Indexer)
+    lin: str = ""              # linear-attention recurrence: gdn | kda (delta rule, scalar / per-channel gate) | lightning
+    lin_chunk: int = 0         # prefill chunk (block) length of the reference chunked kernel
+    sink: bool = False         # learned attention sink per head (gpt-oss): one extra softmax logit per query row
     n_state_heads: int = 0
     state_dk: int = 0
     state_dv: int = 0
@@ -110,6 +116,14 @@ class AttnCore:
 
     def idx_elems_per_token(self) -> float:
         return float(self.idx_dim) / self.compress if self.idx_heads else 0.0
+
+    def idx_bytes_per_token(self, kvb: float) -> float:
+        """Indexer key-cache bytes per token: fp8 key + fp32 scale per 128 (DeepSeek-V3.2 reference), else the
+        KV-cache dtype (transformers GlmMoeDsaIndexer caches the bf16 key)."""
+        if not self.idx_heads:
+            return 0.0
+        per = self.idx_dim + 4 * math.ceil(self.idx_dim / 128) if self.idx_fp8 else self.idx_dim * kvb
+        return per / self.compress
 
     def state_elems(self) -> int:
         """Recurrent state per sequence (linear attention) incl. conv state."""
@@ -502,6 +516,8 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         elif mt in ("mistral", "mixtral") and window and window < (c.get("max_position_embeddings") or 0):
             w = window
         alin, core = _gqa(h, H, KV, hd, window=w)
+        if mt == "gpt_oss":
+            core = replace(core, sink=True)
         if E and i >= first_dense and i not in mlp_only:
             ffn, flin = _ffn_moe(h, E, k, de, n_sh, d_sh, shared_gate=bool(c.get("shared_expert_intermediate_size")))
         else:
@@ -514,7 +530,8 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             misc += E * (2 * de + h)  # expert biases
         layers.append(Layer(alin, core, ffn, flin, misc))
     if mt == "gpt_oss":
-        cov = "partial"; notes.append("attention sink 只计参数；128-token 交替滑窗已建模")
+        notes.append("attention sink 按参考实现建模（每个 query 行的 softmax 多一个可学习 logit，随后丢弃）；"
+                     "128-token 交替滑窗已建模")
     if any(l.core.window for l in layers) and mt != "gpt_oss":
         notes.append(f"滑窗 {window} 已建模")
     mtp = []
@@ -534,16 +551,23 @@ def _build_mla(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     first_dense = c.get("first_k_dense_replace") or 0
     notes, cov = [], "full"
     ilin, ih, idim, topk = _indexer(c, h, c.get("q_lora_rank"))
+    itypes = c.get("indexer_types") or []
+    fp8 = c.get("model_type") == "deepseek_v32"
     if ih:
-        cov = "partial"
-        notes.append(f"DSA lightning indexer（{ih}×{idim}）按 GEMM + O(ctx) 打分建模；"
-                     f"稀疏注意力只看 top-{topk} 个 token")
+        n_sh = sum(1 for t in itypes[:L] if t == "shared")
+        notes.append(f"DSA lightning indexer（{ih}×{idim}）按参考实现逐项建模：q·k 打分 GEMM"
+                     + ("（fp8，Hadamard 旋转 + 每 128 元素 fp32 scale）" if fp8 else "")
+                     + f"、ReLU、按头加权求和、top-{topk} 选择；稀疏注意力只读 top-{topk} 个 token"
+                     + (f"；{n_sh} 层为 shared（复用前一 full 层的 top-k，无索引器权重 / 缓存）" if n_sh else ""))
 
     def layer(i: int) -> Layer:
         alin, core, misc = _mla(c, h)
-        if ih:
+        if ih and i < len(itypes) and itypes[i] == "shared":
+            core = replace(core, topk=topk)       # transformers GlmMoeDsa: reuse the previous full layer's top-k
+        elif ih:
             alin = alin + ilin
-            core = replace(core, idx_heads=ih, idx_dim=idim, topk=topk)
+            core = replace(core, idx_heads=ih, idx_dim=idim, topk=topk, idx_fp8=fp8,
+                           idx_rope=c.get("qk_rope_head_dim") or 0)
             misc += 2 * idim
         if E and i >= first_dense:
             ffn, flin = _ffn_moe(h, E, c["num_experts_per_tok"], c["moe_intermediate_size"],
@@ -566,7 +590,8 @@ def _gdn(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
     qkv = 2 * nk * dk + nv * dv
     lin = (Linear("lin_qkv", h, qkv, "col"), Linear("lin_z", h, nv * dv, "col"),
            Linear("lin_ba", h, 2 * nv, "col"), Linear("lin_out", nv * dv, h, "row"))
-    core = AttnCore("linear", n_state_heads=nv, state_dk=dk, state_dv=dv, conv_channels=qkv, conv_kernel=kern)
+    core = AttnCore("linear", n_state_heads=nv, state_dk=dk, state_dv=dv, conv_channels=qkv, conv_kernel=kern,
+                    lin="gdn", lin_chunk=64)   # transformers torch_chunk_gated_delta_rule(chunk_size=64) / FLA
     misc = qkv * kern + 2 * nv + dv
     return lin, core, misc
 
@@ -580,7 +605,8 @@ def _kda(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
     lin = (Linear("kda_q", h, d, "col"), Linear("kda_k", h, d, "col"), Linear("kda_v", h, d, "col"),
            Linear("kda_g", h, d, "col"), Linear("kda_b", h, H, "col"), Linear("kda_f_a", h, hd, "rep"),
            Linear("kda_f_b", hd, d, "col"), Linear("kda_o", d, h, "row"))
-    core = AttnCore("linear", n_state_heads=H, state_dk=hd, state_dv=hd, conv_channels=3 * d, conv_kernel=kern)
+    core = AttnCore("linear", n_state_heads=H, state_dk=hd, state_dv=hd, conv_channels=3 * d, conv_kernel=kern,
+                    lin="kda", lin_chunk=64)   # transformers chunk_kimi_delta_attention(chunk_size=64) / FLA chunk_kda
     misc = 3 * d * kern + d + H + hd
     return lin, core, misc
 
@@ -590,7 +616,7 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     h = c["hidden_size"]
     L = c["num_hidden_layers"]
     mt = c.get("model_type", "")
-    notes, cov = [], "partial"
+    notes, cov = [], "full"
     types = _list(c.get("layer_types"))
     lc = _list(c.get("linear_attn_config")) or {}
     if not types:
@@ -645,7 +671,9 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             hd = c.get("head_dim") or h // H
             lin = (Linear("lin_qkv", h, 3 * H * hd, "col"), Linear("lin_gate", h, H * hd, "col"),
                    Linear("lin_out", H * hd, h, "row"))
-            return lin, AttnCore("linear", n_state_heads=H, state_dk=hd, state_dv=hd), H * hd
+            # MiniMax remote code modeling_minimax_text_01.py: BLOCK = 256, kv state fp32
+            return lin, AttnCore("linear", n_state_heads=H, state_dk=hd, state_dv=hd, lin="lightning",
+                                 lin_chunk=256), H * hd
         return _gdn(c, h)
 
     layers = []
@@ -657,7 +685,7 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             misc += E
         layers.append(Layer(alin, core, ffn, flin, misc + 2 * h))
     n_lin = sum(1 for l in layers if l.core.kind == "linear")
-    notes.append(f"混合注意力：{n_lin}/{L} 层线性注意力（递归状态 fp32「假设」），"
+    notes.append(f"混合注意力：{n_lin}/{L} 层线性注意力（chunk 形式按参考实现上阵列，递归状态 fp32 按参考），"
                  f"{L - n_lin} 层全注意力")
     n_mtp = c.get("mtp_num_hidden_layers") or c.get("num_nextn_predict_layers") or 0
     mtp = []
@@ -776,24 +804,17 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     mt = c.get("model_type", "")
     L = len(spec.layers)
     r = []
-    lin = sum(1 for l in spec.layers if l.core.kind == "linear")
-    if lin:
-        mech = ("Lightning Attention" if mt.startswith("minimax") else
-                "KDA" if mt == "kimi_linear" or mt.startswith("glm5_next") else "Gated DeltaNet")
-        r.append(f"线性注意力 {mech}（{lin}/{L} 层）：递归状态更新按向量运算计、不上阵列；"
-                 "状态 fp32 与 prefill 分块长度 64 为「假设」")
     cmp = sum(1 for l in spec.layers if l.core.compress > 1)
     idx = [l.core for l in spec.layers if l.core.idx_heads]
     if cmp:
         r.append(f"压缩稀疏注意力 CSA（{cmp}/{L} 层）：按有效上下文 ctx/压缩比 + 滑窗近似"
                  + (f"，索引层只读 top-{idx[0].topk} 个 token" if idx else ""))
-    elif idx:
-        r.append(f"DSA 稀疏注意力（{len(idx)}/{L} 层）：lightning indexer 按 GEMM + O(ctx) 打分近似，"
-                 f"注意力只读 top-{idx[0].topk} 个 token")
+    elif idx and c.get("index_kpool"):
+        r.append(f"DSA 稀疏注意力（{len(idx)}/{L} 层）：lightning indexer 打分按 DeepSeek-V3.2 / GlmMoeDsa 参考逐项建模，"
+                 f"但 key 池化（index_kpool={c['index_kpool']}：门控压缩 key 后取 top-{idx[0].topk}/{c['index_kpool']} 个池再展开）"
+                 "尚未逐项建模，按未池化的 key 打分（参考 transformers Glm5NextTextIndexer 已公开，可补）")
     if c.get("num_hash_layers"):
         r.append(f"哈希路由（前 {c['num_hash_layers']} 层）：按 top-k MoE 计")
-    if mt == "gpt_oss":
-        r.append("attention sink：只计参数，不计其 softmax 修正开销（128-token 交替滑窗已建模）")
     hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
     if hc:
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")

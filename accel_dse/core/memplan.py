@@ -120,7 +120,7 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
         elif c.kind == "linear":
             st += (c.n_state_heads * c.state_dk * c.state_dv + c.conv_channels * max(0, c.conv_kernel - 1)) * stb
         if c.idx_heads:
-            idx += (math.ceil(S / c.compress) - math.ceil(p / c.compress)) * c.idx_dim * kvb
+            idx += (math.ceil(S / c.compress) - math.ceil(p / c.compress)) * c.idx_bytes_per_token(kvb) * c.compress
     return kv + idx + st
 
 
@@ -147,7 +147,7 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         elif c.kind == "linear":
             st += (_cdiv(c.n_state_heads, sh.tp) * c.state_dk * c.state_dv + _cdiv(c.conv_channels, sh.tp) * max(0, c.conv_kernel - 1)) * stb
         if c.idx_heads:
-            idx += math.ceil(ctx / c.compress) * c.idx_dim * kvb
+            idx += math.ceil(ctx / c.compress) * c.idx_bytes_per_token(kvb) * c.compress
     store_extra = 0.0
     if model.standby_params:        # idle expert of a multi-expert denoiser (Wan2.2 A14B): stored, not read this step
         store_extra += model.standby_params * (last - first) / model.n_layers / sh.tp * model.fmt("attn").bits / 8

@@ -160,7 +160,7 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
         c = min((gemm_cost(ch, org, a, op.k, b, count=op.count, w_fmt=af, a_fmt=af)
                  for a, b in ((op.m, op.n), (op.n, op.m))), key=lambda x: x.cycles)
     elif op.kind == "attn":
-        c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=model.kv_fmt, a_fmt="bf16")
+        c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=op.w_fmt or model.kv_fmt, a_fmt=op.a_fmt)
     else:
         return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0, 0.0, 0.0, 0.0
     t = c.cycles * op.causal / f

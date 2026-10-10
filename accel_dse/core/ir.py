@@ -296,9 +296,33 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         # 0.61.1: + the conv state (kernel − 1 columns per channel) — stored by memplan, now also read / written
         st_bytes = (h_loc * core.state_dk * core.state_dv
                     + _cdiv(core.conv_channels, tp) * max(0, core.conv_kernel - 1)) * _fmt(model.state_fmt).bytes
-        chunk = 64 if ph.kind == "prefill" else 1          # 「假设」 chunked-scan length
-        vec = t * h_loc * core.state_dk * core.state_dv * 4 + t * h_loc * chunk * (core.state_dk + core.state_dv) * 2
+        dk, dv = core.state_dk, core.state_dv
         conv = _cdiv(core.conv_channels, tp) * core.conv_kernel * t * 2
+        delta = core.lin in ("gdn", "kda")
+        # per token per head, outside the matmuls: β-scaling of k, v (delta rule), q·k L2 norm (3/elem), gate decay on q, k
+        tok_vec = (dk + dv if delta else 0) + (6 * dk if delta else 0) + 2 * dk + 2 * dv
+        if ph.kind == "prefill" and core.lin_chunk:
+            # chunked form of the reference kernels (transformers torch_chunk_gated_delta_rule / chunk_kimi_delta_attention,
+            # chunk 64; MiniMax modeling_minimax_text_01 lightning attention, BLOCK 256) — per chunk of C tokens, per head:
+            #   delta rule: A_kk = (k·β)Kᵀ [C,dk,C]; UT solve of A on [v·β | k·β·decay] [C,C,dv+dk] (unitriangular, ½);
+            #               v' = k_cumdecay·S [C,dk,dv]
+            #   all:        A_qk = Q·Kᵀ [C,dk,C]; intra A_qk·V [C,C,dv]; inter Q·S [C,dk,dv]; state Kᵀ·V [dk,C,dv]
+            # operands in bf16, fp32 accumulate (FLA kernels the transformers code dispatches to)
+            C = core.lin_chunk
+            nc = _cdiv(q, C)
+            cnt = b_loc * h_loc * nc
+            g = lambda nm, m_, k_, n_, cz=1.0: Op(nm, "attn", li, m=m_, k=k_, n=n_, count=cnt, causal=cz,
+                                                  w_fmt="bf16", a_fmt="bf16", act_bytes=cnt * (m_ * k_ + m_ * n_) * 2)
+            if delta:
+                ops += [g("lin_akk", C, dk, C), g("lin_ut_solve", C, C, dv + dk, 0.5), g("lin_vprime", C, dk, dv)]
+            ops += [g("lin_aqk", C, dk, C), g("lin_intra", C, C, dv), g("lin_inter", C, dk, dv), g("lin_state", dk, C, dv)]
+            # per chunk: decay masks (build 3/elem, apply to A_qk / A_kk); KDA per-channel gate exp on q, k, k·β
+            # (FLA chunk_kda factorisation); v_new subtract; state decay
+            ch_vec = (3 + (2 if delta else 1)) * C * C + (3 * C * dk if core.lin == "kda" else 0) + C * dv + dk * dv
+            vec = t * h_loc * tok_vec + cnt * ch_vec
+        else:
+            # recurrent step (fused_recurrent kernels): state decay, kᵀ·S read (delta), rank-1 update, q·S read
+            vec = t * h_loc * (tok_vec + (7 if delta else 5) * dk * dv)
         ops.append(Op("state_update", "state", li, vec=vec + conv,
                       state_rw=2 * st_bytes * b_loc, kv_read=0.0))
         return ops
@@ -327,6 +351,9 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
                       act_bytes=cnt * (q * g * core.v_dim) * ab))
         kv_tok = kv_loc * (core.qk_dim + core.v_dim) / core.compress
         sm_elems = cnt * q * g * ce * causal
+        if core.sink:
+            # gpt-oss reference sdpa: the per-head sink logit is concatenated to every score row, softmaxed, dropped
+            sm_elems += cnt * q * g
     else:  # mla (latent cache, replicated on every attention-TP rank)
         hq_loc = _cdiv(core.n_q, tp)
         lat = core.kv_lora + core.rope_dim
@@ -352,11 +379,25 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         if ph.kind != "decode":
             cs = lambda m_: (lambda a, r: core.compress * a * (a + 1) // 2 + r * (a + 1))(*divmod(m_, core.compress))
             icaus = (cs(ctx_tot) - cs(ph.ctx)) / q / n_keys
+        ib = core.idx_bytes_per_token(kvb) * core.compress          # bytes per cached indexer key
+        t_new = b_loc * q
+        # per scored (query, key) pair, after the q·k GEMM (DeepSeek-V3.2 inference/model.py fp8_index; transformers
+        # GlmMoeDsaIndexer): ReLU per head, × head weight and sum over heads (3·heads), fp8 key-scale multiply (fp8
+        # path), top-k selection 1 compare per candidate (vector-count convention, like softmax's 5 per element)
+        per_pair = 3 * core.idx_heads + 1 + (1 if core.idx_fp8 else 0)
+        # per new token: k LayerNorm (4/elem, as the layer norms), RoPE on q heads + k (3/elem, as attention RoPE);
+        # fp8 path: Hadamard rotation of q heads + k (d·log2 d adds, fast_hadamard_transform) and block fp8 quant
+        # (2/elem, the converted-element convention of evaluate._op_seconds)
+        rows = core.idx_heads + 1
+        per_tok = 4 * core.idx_dim + 3 * rows * core.idx_rope
+        if core.idx_fp8:
+            per_tok += rows * core.idx_dim * (math.log2(core.idx_dim) + 2)
         ops.append(Op("indexer_score", "attn", li, m=q * core.idx_heads, k=core.idx_dim, n=n_keys, count=b_loc,
-                      causal=icaus, replicated=tp,
-                      kv_read=b_loc * n_keys * core.idx_dim * kvb if ph.kind == "decode" else 0.0,
-                      vec=b_loc * q * n_keys * 2))
-        ops.append(Op("indexer_kv_write", "vector", li, kv_write=b_loc * q * core.idx_dim * kvb / core.compress, replicated=tp))
+                      causal=icaus, replicated=tp, w_fmt="fp8" if core.idx_fp8 else "",
+                      a_fmt="fp8" if core.idx_fp8 else "bf16",
+                      kv_read=b_loc * n_keys * ib if ph.kind == "decode" else 0.0,
+                      vec=t_new * n_keys * icaus * per_pair + t_new * per_tok))
+        ops.append(Op("indexer_kv_write", "vector", li, kv_write=t_new * ib / core.compress, replicated=tp))
     # KV cache traffic: read the attended entries (sparse/window aware), write the new ones
     if ph.kind == "decode":
         # 0.61.1: ``attended`` counts cache entries (compressed layers: ⌈ctx/c⌉ + window), each a full entry of
