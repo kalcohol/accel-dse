@@ -134,9 +134,11 @@ def test_length_spread_effects():
     assert _close(r["cap_req_s"]["decode"], 3 * r["decode"]["tok_s_replica"] / r["lengths"]["mean_out"], 1e-9)
     assert _close(r["kv"]["bytes_per_req"], 0.7 * kv_bytes_per_request(get_model("qwen3-8b"), 1024)
                   + 0.3 * kv_bytes_per_request(get_model("qwen3-8b"), 11264), 1e-9)
-    # stable rate ≈ fluid capacity for PD (queueing adds latency, not capacity)
+    # stable rate ≈ fluid capacity for PD (queueing adds latency, not capacity).  0.71: the queue re-chooses the
+    # prefill batch cap per λ, so it may slightly exceed the fluid capacity at the fixed fluid batch (+0.07 % here
+    # with the auto instance schedule); 1 % band
     x = r["queue"]["modes"]["pd"]
-    assert x["stable_rate_rps"] <= r["req_s"] * 1.0001 and x["stable_rate_rps"] > 0.9 * r["req_s"]
+    assert x["stable_rate_rps"] <= r["req_s"] * 1.01 and x["stable_rate_rps"] > 0.9 * r["req_s"]
 
 
 def test_prefix_cache_effects():
