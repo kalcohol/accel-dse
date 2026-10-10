@@ -1,4 +1,4 @@
-"""0.71 schedule audit: invariants of Chip.instance_sched over a deterministic random sweep of geometries / shapes.
+"""0.71 / 0.72 schedule audit (0.72: count = 1 included, optional NoC hop latency and wave barriers): invariants of Chip.instance_sched over a deterministic random sweep of geometries / shapes.
 
 - auto is never slower than wide or split (they are among its candidates);
 - auto never beats the ideal MAC bound (work conservation: cnt·m·k·n MACs over all engines);
@@ -20,16 +20,18 @@ def _cases(n=600, seed=11):
                r.choice([1, 2, 3, 4, 6, 8, 12, 16, 32, 64]), r.choice([None, 256.0, 1024.0, 8192.0]),
                r.choice([64.0, 256.0, 1024.0]), r.choice([1, 2, 3, 8, 17, 64, 128, 1000]),
                r.choice([16, 64, 128, 576, 4097]), r.choice([1, 64, 128, 512, 4096]),
-               r.choice([2, 7, 32, 128, 1000]), r.choice(["bf16", "fp8"]))
+               r.choice([1, 2, 7, 32, 128, 1000]), r.choice(["bf16", "fp8"]),
+               r.choice(["mesh", "ring", "crossbar"]), r.choice([0.0, 0.0, 2.0, 20.0]), r.choice([0.0, 0.0, 50.0, 500.0]))
 
 
 def test_schedule_invariants():
-    for R, C, E, port, acc, m, k, n, cnt, fm in _cases():
-        base = Chip("a", 1.0, R, C, E, sram_port_Bpc=port, acc_kib=acc, instance_sched="wide")
+    for R, C, E, port, acc, m, k, n, cnt, fm, topo, hop, ov in _cases():
+        base = Chip("a", 1.0, R, C, E, sram_port_Bpc=port, acc_kib=acc, instance_sched="wide", noc_topology=topo,
+                    noc_hop_cycles=hop, wave_overhead_cycles=ov)
         cost = lambda ch: gemm_cost(ch, "reconf", m, k, n, count=cnt, w_fmt=fm, a_fmt=fm)
         w, s = cost(base), cost(replace(base, instance_sched="split"))
         a = cost(replace(base, instance_sched="auto"))
-        case = (R, C, E, port, acc, m, k, n, cnt, fm)
+        case = (R, C, E, port, acc, m, k, n, cnt, fm, topo, hop, ov)
         assert a.cycles <= min(w.cycles, s.cycles) * (1 + 1e-12), case
         ideal = m * k * n * cnt / (base.macs * gemm_exec(fm, fm, base.formats)[1])
         assert a.cycles >= ideal * (1 - 1e-9), case

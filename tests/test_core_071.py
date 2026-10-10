@@ -39,9 +39,10 @@ def test_auto_le_split_le_wide_and_ge_ideal():
 
 def test_single_instance_and_single_engine_unchanged():
     ch = Chip("t", 1.0, 64, 64, 32, instance_sched="wide")
-    for x in ("split", "auto"):
-        assert gemm_cost(replace(ch, instance_sched=x), "reconf", 512, 1024, 768).cycles == \
-            gemm_cost(ch, "reconf", 512, 1024, 768).cycles
+    w = gemm_cost(ch, "reconf", 512, 1024, 768).cycles
+    assert gemm_cost(replace(ch, instance_sched="split"), "reconf", 512, 1024, 768).cycles == w
+    # 0.72: auto may split a single GEMM over core groups (here N = 768 < C·E = 2048) — never slower than wide
+    assert gemm_cost(replace(ch, instance_sched="auto"), "reconf", 512, 1024, 768).cycles < w
     one = Chip("t1", 1.0, 64, 64, 1, instance_sched="wide")
     assert gemm_cost(replace(one, instance_sched="auto"), "reconf", 8, 128, 4096, count=64).cycles == \
         gemm_cost(one, "reconf", 8, 128, 4096, count=64).cycles

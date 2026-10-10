@@ -76,8 +76,9 @@ class Chip:
     # topology "crossbar" (1 hop), "ring" (⌊s/2⌋), "mesh" (2·(⌈√s⌉−1)).  0 = ideal NoC (≤ 0.71) 「假设」
     noc_topology: str = field(default="mesh", metadata={"omit_default": True})
     noc_hop_cycles: float = field(default=0.0, metadata={"omit_default": True})
-    # 0.72 (optional, default 0): sequencer launch / sync overhead per wave (cycles).  Wide pays it once per op
-    # (one sequencer, instances streamed); core-group schedules pay it once per wave on the critical path 「假设」
+    # 0.72 (optional, default 0): sequencer launch / barrier overhead (cycles).  Every op pays one launch; when ≥ 2
+    # core groups run instances in lock-step waves, each further wave adds one barrier (a single sequencer — wide,
+    # or one active group — streams its instances back to back) 「假设」
     wave_overhead_cycles: float = field(default=0.0, metadata={"omit_default": True})
 
     def __post_init__(self):

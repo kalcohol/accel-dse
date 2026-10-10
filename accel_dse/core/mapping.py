@@ -165,9 +165,11 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
                 for sp, mm, nn in cands:
                     waves = _cd(count * sp, act)
                     # each group streams its `waves` instances back to back (pipeline fill once, as wide does);
-                    # the sub-call already pays one launch + its own NoC span, later waves add a launch each
+                    # the sub-call already pays one launch + its own NoC span
                     one = _gemm_cost(sub, org, mm, k, nn, waves, w_fmt, a_fmt, w_bits)
-                    c1 = one.cycles + (waves - 1) * ch.wave_overhead_cycles
+                    # 0.72: ≥ 2 active groups advance in lock-step waves → a barrier per extra wave; one active group
+                    # (wide on a subset of cores) streams back to back like wide
+                    c1 = one.cycles + ((waves - 1) * ch.wave_overhead_cycles if act > 1 else 0.0)
                     if c1 < best_c:
                         best_c, alt = c1, (one, count * sp / waves, c1 - one.cycles)
         if alt is not None:
