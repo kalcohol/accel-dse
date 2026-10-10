@@ -3,6 +3,17 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [Unreleased]
+
+覆盖度收口：按公开参考实现补齐「部分」模型，见建模说明 §2.1。
+
+### 变更
+- **DSA lightning indexer 按参考逐项建模**（DeepSeek-V3.2、GLM-5 / 5.2 / 5.3）：打分 GEMM 之后的 ReLU、按头加权求和、top-k 选择，k LayerNorm / RoPE；DeepSeek-V3.2 走参考的 fp8 路径（Hadamard 旋转、fp8 打分 GEMM、索引缓存 132 B / token）。GLM-5.2 / 5.3 的 57 个 `shared` 层不再带索引器（参数与发布由 +0.07 % 变为一致）；GLM-5 与 GLM-5.2 因此不再同结构，取消合并。
+- **gpt-oss attention sink**：softmax 每行多 1 个 sink logit（openai/gpt-oss 参考 `sdpa`）。
+- **线性注意力按参考 chunk 形式上阵列**（Gated DeltaNet / KDA chunk 64，MiniMax Lightning BLOCK 256，状态 fp32 均按参考）：块内 / 块间 GEMM 计入阵列，decode 递归向量计数按参考（delta 7·dk·dv，lightning 5·dk·dv）。
+- 覆盖度：13 个模型 部分 → 完整；剩余非完整 = 5 个架构代理（DeepSeek-V4 ×3、GLM-5.3-Flash、Qwen3.8-Flash-Next）+ 4 个结构预测「部分」（检索 / 松弛不在范围）；AlphaFold3 仍「暂未接入 v2」。
+- 数值：DSA 模型 decode TPOT −9 ~ −13 %、长 prefill TTFT 最多 −49 %；线性注意力模型 prefill TTFT +3 ~ +17 %；已「完整」的 50 个模型默认结果不变（新测试钉住）。
+
 ## [0.65.1] - 2026-10-10
 
 V4 网格按 0.65 的闭式与 DES 稳定性判据重跑（顺序、逐点可续跑），并修正重跑中发现的批服务律原子截断。详见建模说明 §24.8。

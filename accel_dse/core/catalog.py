@@ -151,7 +151,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.
 MERGED = {"deepseek-v3.1": "deepseek-v3", "deepseek-r1": "deepseek-v3", "kimi-k2.7-code": "kimi-k2.5",
-          "glm-5": "glm-5.2", "glm-4.5": "glm-4.6", "minimax-text-01": "minimax-m1-80k"}
+          "glm-4.5": "glm-4.6", "minimax-text-01": "minimax-m1-80k"}
 # Generic dense GQA models whose sizes are already covered by Qwen3 / Llama 3: no extra design insight.
 UNLISTED = {"yi-1.5-34b": "与 Qwen3-32B 同类（稠密 GQA）", "internlm3-8b": "与 Qwen3-8B / Llama-3.1-8B 同类",
             "internlm2-5-20b": "与 Qwen3-32B / Magistral-Small 同类", "qwen2.5-3b": "与 Qwen3-4B 同类",
