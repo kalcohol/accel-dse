@@ -59,7 +59,7 @@ class Chip:
     # 0.70: engines may each run an independent GEMM instance (batched attention heads / requests, grouped experts):
     # a ``count``-instance op then also costs ceil(count / engines) waves on one R×C engine each (cheaper of that and
     # the chip-wide array).  GPU-like (SMs are independent); False = the 0.69 chip-wide array only 「假设」
-    split_instances: bool = False
+    split_instances: bool = field(default=False, metadata={"omit_default": True})   # 0.70.1: hash-stable
     # 0.71: how a GEMM with count > 1 independent instances (per-request / per-head attention QK·PV, absorbed MLA
     # per-head products, per-expert GEMMs) is scheduled over the engines (cores):
     #   "wide"  — all engines ganged as one R × (C·E) array, instances back to back (≤ 0.70 default);
@@ -67,7 +67,7 @@ class Chip:
     #   "auto"  — cheapest of wide and every core-group size g | E (E/g groups of R × (C·g), each with g/E of the
     #             SRAM port and accumulator), per op.  Total SRAM / DRAM bytes are unchanged (operands streamed);
     #             each group needs its own instruction stream / sequencer 「假设」.
-    instance_sched: str = "wide"
+    instance_sched: str = field(default="wide", metadata={"omit_default": True})
 
     def __post_init__(self):
         for k in ("freq_ghz", "rows", "cols", "engines", "sram_mib", "mac_eff"):
