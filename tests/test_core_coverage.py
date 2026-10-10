@@ -68,8 +68,9 @@ _FULL_0651 = {
 
 CLOSED = ("gpt-oss-120b", "gpt-oss-20b", "deepseek-v3.2", "glm-5", "glm-5.2", "glm-5.3", "kimi-k3", "qwen3.8-2.4t",
           "qwen3.8-27b", "qwen3.5-397b-a17b", "qwen3-next-80b-a3b", "minimax-text-01", "minimax-m1-80k",
-          "glm-5.3-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash")
-PROXY = ("qwen3.8-flash-next",)
+          "glm-5.3-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash",
+          "qwen3.8-flash-next")
+PROXY = ()
 PROTEIN_PARTIAL = ("openfold", "alphafold2", "boltz-1", "protenix")
 
 
@@ -192,3 +193,25 @@ def test_v41_reference_structure():
     ops = {o.name: o for o in build_rank_ops(m, 1, Phase("decode", 1, 1, 4096))}
     assert ops["engram_lookup"].kv_read == 24 * (256 + 8)          # one token: 24 fp8 rows + scales
     assert ops["attn.engram_wkv"].flops == 2 * 24 * 256 * 5 * 5120
+
+
+def test_qwen4exp_params_and_ops_reference():
+    """Qwen3.8-Flash-Next (transformers modeling_qwen4_exp + SGLang qwen4_exp_mtp.py): params equal the safetensors
+    summary exactly (no final norm; gated residuals, PLE, QSA indexer, final mixer); QSA keys per query; op counts."""
+    m = get_model("qwen3.8-flash-next")
+    pc = m.param_check()
+    assert pc["ours"] == pc["release"] and pc["mtp_ours"] == pc["mtp_release"], pc
+    assert m.coverage == "full" and not m.coverage_reasons and m.final_norm_params == 0
+    assert m.lookup_params == 128 * 2500012 * 160 and [i for i, l in enumerate(m.layers) if l.ple_rows] == [1]
+    c = m.layers[3].core
+    assert c.qsa == 4 and c.topk == 2048 and c.ctx_eff(2051) == 2051 and c.ctx_eff(2053) == 2048 + 1
+    assert c.keys_sum(5000) == sum(p if p // 4 <= 512 else 2048 + p % 4 for p in range(1, 5001))
+    t, N, h = 8192, 4, m.hidden
+    ops = {o.name: o for o in build_rank_ops(m, 1, Phase("prefill", batch=1, q=t, ctx=0))}
+    assert ops["attn.gr_a_down"].flops == 2 * t * N * h * 320 and ops["attn.gr_a_inj"].flops == 2 * t * N * h * N
+    assert ops["attn.ple_key"].flops == 2 * t * 2560 * N * h
+    assert ops["ple_lookup"].kv_read == t * 16 * 160 * 2
+    assert "attn_norm" not in ops and "ffn_norm" not in ops
+    from accel_dse.core.ir import mtp_ops
+    mo = {o.name: o for o in mtp_ops(m, Phase("decode", 1, 1, 1000))}
+    assert mo["mtp.fc_hidden"].flops == 2 * N * h * h and mo["mtp.fc_embedding"].flops == 2 * h * h

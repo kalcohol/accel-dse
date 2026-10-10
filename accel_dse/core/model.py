@@ -109,6 +109,8 @@ class AttnCore:
     cmp_coff: int = 0          # DeepSeek-V4 Compressor: 1, or 2 for the overlapping ratio-4 windows (0 = no compressor)
     idx_cmp: bool = False      # DeepSeek-V4 indexer keys come from its own (Hadamard-rotated) compressor
     rope_n: int = 0            # rotary dims actually rotated per head when it differs from the MLA latent split
+    qsa: int = 0               # Qwen4Exp QSA: key-block size; query sees every token until > top-k/qsa complete blocks,
+                               # then top-k tokens of the best blocks + the incomplete tail block
     idx_kpool: int = 0         # GLM-5.3-Flash: indexer scores gated k-pools of this many keys (top-k/kpool pools)
     lin: str = ""              # linear-attention recurrence: gdn | kda (delta rule, scalar / per-channel gate) | lightning
     lin_chunk: int = 0         # prefill chunk (block) length of the reference chunked kernel
@@ -152,6 +154,8 @@ class AttnCore:
 
     def ctx_eff(self, ctx: int) -> int:
         """Keys actually attended per query at context length ``ctx``."""
+        if self.qsa:
+            return ctx if ctx // self.qsa <= self.topk // self.qsa else self.topk + ctx % self.qsa
         if self.dual:
             return min(ctx, self.window or 0) + min(self.topk if self.topk is not None else ctx, ctx // self.compress)
         c = ctx
@@ -170,6 +174,13 @@ class AttnCore:
         if n <= 0:
             return 0
         c, w = self.compress, self.window or 0
+        if self.qsa:                            # Σ keys(p): p up to p0 − 1, then top-k + p mod b
+            b, p0 = self.qsa, (self.topk // self.qsa + 1) * self.qsa
+            if n < p0:
+                return n * (n + 1) // 2
+            m = n - p0 + 1                      # positions p0..n, p0 ≡ 0 (mod b)
+            a, r = divmod(m, b)
+            return (p0 - 1) * p0 // 2 + m * self.topk + a * (b * (b - 1) // 2) + r * (r - 1) // 2
         if self.dual:                           # Σ min(p, w) + Σ min(top-k, ⌊p/c⌋)
             ws = n * (n + 1) // 2 if n <= w else w * (w + 1) // 2 + (n - w) * w
 
@@ -267,6 +278,12 @@ class Layer:
     misc_params: int = 0                     # norms, gates, conv, hc — not GEMMs
     hc: int = 0                              # mHC streams (GLM-5.3-Flash): attn + ffn hyper-connection compute per layer
     hc_iters: int = 0                        # Sinkhorn-Knopp iterations of the comb weight
+    gres_n: int = 0                          # Qwen4Exp gated residual: streams (attn + mlp GatedResidual per layer)
+    gres_head: bool = False                  # last layer: final hyper_connection_mixer (no combine)
+    ple_rows: int = 0                        # Qwen4Exp PLE layer: n-gram rows per token (heads × (ngram − 1))
+    ple_row_dim: int = 0
+    ple_conv: int = 0                        # dilated depthwise conv kernel (dilation = ngram_size)
+    ple_dil: int = 0
     engram_cols: int = 0                     # V4.1 Engram: hash rows fetched per token (n-gram sizes × heads)
     engram_dim: int = 0                      # row width (fp8 + e8m0 scale per 32)
     hc_head: str = ""                        # last layer only: final stream collapse — mean (GLM-5.3-Flash) | mix (V4)
@@ -812,6 +829,75 @@ def _build_dsv4_ref(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, mtp, notes, "full"
 
 
+def _build_qwen4exp(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """Qwen3.8-Flash-Next (qwen4_exp) per transformers modeling_qwen4_exp: Gated DeltaNet / gated-q GQA with a QSA
+    indexer (pooled key blocks, top budget/ratio blocks + tail); hc_count residual streams with two GatedResidual
+    mixers per layer (low-rank input mix + block injection; no per-layer RMSNorms) and a final mixer; PLE n-gram
+    layer(s) (hashed table rows → key / value projections, stream-gated, dilated depthwise conv); sparse MoE with
+    a sigmoid-gated shared expert."""
+    h = c["hidden_size"]
+    L = c["num_hidden_layers"]
+    types = c.get("layer_types") or []
+    N, r = c["hc_count"], c["hc_lowrank"]
+    Nh = N * h
+    H, KV, hd = c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
+    rope = int(hd * (c.get("partial_rotary_factor") or 1))
+    ih, ikv, idim = c["indexer_n_heads"], c["indexer_kv_heads"], c["indexer_head_dim"]
+    budget, ratio = c["indexer_budget"], c["indexer_compress_ratio"]
+    ple_ids = set(_list(c.get("ple_layer_ids")) or [])
+    ng, hpn, ped = c.get("ngram_size") or 0, c.get("heads_per_ngram") or 0, c.get("ple_embed_dim") or 0
+    prow = (ng - 1) * hpn
+    pk = c.get("ple_conv_kernel_size") or 0
+    E, k, de = c["num_experts"], c["num_experts_per_tok"], c["moe_intermediate_size"]
+    notes = [f"Qwen4Exp 按 transformers modeling_qwen4_exp 逐项建模：门控残差 ×{N}（低秩 {r}）、QSA 索引注意力"
+             f"（{ih} 头 × {idim}，块 {ratio}，预算 {budget} + 尾块）、PLE n-gram 层 {sorted(i - 1 for i in ple_ids)}"
+             f"（每 token {prow} 行 × {ped // max(prow, 1)}，膨胀 conv {pk}）"]
+
+    def gres(tag: str, combine: bool = True):
+        lin = (Linear(f"gr_{tag}_down", Nh, r, "rep"), Linear(f"gr_{tag}_up", r, Nh, "rep"))
+        if combine:
+            lin += (Linear(f"gr_{tag}_inj", Nh, N, "rep"),)
+        return lin, Nh                                # + hc_norm weight
+
+    def full(i: int):
+        alin, core = _gqa(h, H, KV, hd, out_gate=True)
+        alin = alin + (Linear("idx_qk", h, (ih + ikv) * idim, "rep"),)
+        core = replace(core, qsa=ratio, topk=budget, idx_heads=ih, idx_dim=idim, idx_rope=rope, rope_n=rope)
+        return alin, core, 2 * hd + 2 * idim
+
+    def layer(i: int, typ: str, last: bool = False) -> Layer:
+        alin, core, misc = full(i) if typ == "full_attention" else _gdn(c, h)
+        ga, ma = gres("a")
+        gm, mm = gres("m")
+        alin = tuple(alin) + ga + gm
+        misc += ma + mm
+        ffn, flin = _ffn_moe(h, E, k, de, 1, c["shared_expert_intermediate_size"], shared_gate=True)
+        kw = {}
+        if i + 1 in ple_ids:
+            alin += (Linear("ple_key", ped, Nh, "rep"), Linear("ple_value", ped, h, "rep"))
+            misc += 3 * Nh + Nh * pk
+            kw = dict(ple_rows=prow, ple_row_dim=ped // prow, ple_conv=pk, ple_dil=ng)
+        if last:
+            gf, mf = gres("f", combine=False)
+            alin += gf
+            misc += mf
+        return Layer(alin, core, ffn, flin, misc, gres_n=N, gres_head=last, **kw)
+
+    layers = [layer(i, types[i] if i < len(types) else "linear_attention", i == L - 1) for i in range(L)]
+    mc = c.get("mtp") or {}
+    mtp = []
+    for j in range(c.get("mtp_num_hidden_layers") or 0):
+        typ = (mc.get("layer_types") or ["full_attention"])[j]
+        m_ = layer(L + j, typ)
+        gf, mf = gres("f", combine=False)
+        # MTP (SGLang qwen4_exp_mtp.py _fuse_residual_linear_shared): fc_embedding(norm(embed)) + fc_hidden applied
+        # to each of the N normed streams (fc weights = mtp_extra 2·h·h), pre-fc norms (h + N·h), one QSA full-attention
+        # layer without PLE, its own hyper_connection_mixer
+        mtp.append(replace(m_, attn_linears=m_.attn_linears + gf, misc_params=m_.misc_params + mf + h + Nh,
+                           gres_head=True))
+    return layers, mtp, notes, "full"
+
+
 def _build_dsv41_ref(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """DeepSeek-V4.1-Flash per the official inference/model.py + engram.py: every layer MQA-512 over its sliding
     window (+ attention sink); compress_ratios > 0 layers also attend to top-k entries of a compressed KV that only
@@ -933,6 +1019,8 @@ def _build_dsv4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
 
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if mt.startswith("qwen4_exp"):
+        return _build_qwen4exp, "混合注意力（GDN + QSA）+ 门控残差 / PLE"
     if mt.startswith("deepseek_v41"):
         return _build_dsv41_ref, "DeepSeek-V4.1 (CSA/MQA-512 + Engram)"
     if mt == "deepseek_v4":
@@ -1011,16 +1099,10 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     if c.get("num_hash_layers") and mt != "deepseek_v4":
         r.append(f"哈希路由（前 {c['num_hash_layers']} 层）：按 top-k MoE 计")
     hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
-    if hc and not any(l.hc for l in spec.layers):
+    if hc and not any(l.hc or l.gres_n for l in spec.layers):
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
-    if spec.lookup_params and not any(l.engram_cols for l in spec.layers):
+    if spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers):
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
-    if mt.startswith("qwen4_exp"):
-        r.append(f"QSA 索引注意力（indexer {c.get('indexer_n_heads')} 头 × {c.get('indexer_head_dim')}，压缩比 "
-                 f"{c.get('indexer_compress_ratio')}，预算 {c.get('indexer_budget')}）与 PLE n-gram 嵌入层（第 "
-                 f"{c.get('ple_layer_ids')} 层，conv {c.get('ple_conv_kernel_size')}）未建模，全注意力层按稠密注意力计；"
-                 f"参数与发布相差 {gap:+.2%}。参考 transformers qwen4_exp 已公开（门控残差 hc_count={c.get('hc_count')}、"
-                 "QSAIndexer、PLELayer），需按参考重写模板，本轮未完成")
     if abs(gap) > 0.02:
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
     return tuple(r)
@@ -1067,6 +1149,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             n_eff = max(1, min(len(spec.mtp_layers), round(rmtp / max(per, 1))))
             extra = max(0, (rmtp - n_eff * per) // n_eff)
             spec = replace(spec, mtp_layers=spec.mtp_layers[:n_eff], mtp_extra_params=extra)
+        if (c.get("model_type") or "").startswith("qwen4_exp"):
+            spec = replace(spec, final_norm_params=0)    # the final hyper_connection_mixer replaces the last norm
         if (c.get("model_type") or "").startswith("deepseek_v41"):
             # Engram tables stay fp8 with an e8m0 scale per 32 (ParallelEngramEmbedding) → 8.25 bits / param stored
             spec = replace(spec, lookup_bits=8 + 8 / 32, engram_ngram=c.get("engram_max_ngram_size") or 0,
@@ -1074,12 +1158,14 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                            draft_block=c.get("dspark_block_size") or 0,
                            draft_targets=len(_list(c.get("dspark_target_layer_ids")) or []),
                            draft_markov=c.get("dspark_markov_rank") or 0)
-        exotic = [k for k in ("hc_mult", "hc_count", "mhc") if c.get(k)] if not any(l.hc for l in spec.layers) else []
-        if exotic or (spec.lookup_params and not spec.lookup_bits):
+        exotic = [k for k in ("hc_mult", "hc_count", "mhc") if c.get(k)] \
+            if not any(l.hc or l.gres_n for l in spec.layers) else []
+        lk_open = spec.lookup_params and not spec.lookup_bits and not any(l.ple_rows for l in spec.layers)
+        if exotic or lk_open:
             why = []
             if exotic:
                 why.append("超连接（多流残差）：参数计入，混合计算未计")
-            if spec.lookup_params and not spec.lookup_bits:
+            if lk_open:
                 why.append("n-gram / engram 查表：只计存储")
             spec = replace(spec, coverage="proxy", notes=spec.notes + ("「架构代理」：" + "；".join(why),))
         if head_copy:

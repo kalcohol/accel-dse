@@ -588,7 +588,7 @@ def _pp_imbalance_warn(stages, tick: float, warnings: list, split: str = "cost")
 
 def _streams(m: ModelSpec) -> int:
     """Residual streams passed between pipeline stages (mHC: hc_mult streams of width hidden)."""
-    return max((l.hc for l in m.layers), default=0) or 1
+    return max((max(l.hc, l.gres_n) for l in m.layers), default=0) or 1
 
 
 def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:

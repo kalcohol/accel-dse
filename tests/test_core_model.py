@@ -58,7 +58,7 @@ def test_three_axis_labels_and_proxy_badge():
         assert lab["coverage"] in ("full", "partial", "proxy")
         assert lab["proxy_badge"] == (lab["coverage"] == "proxy")
         assert lab["dtype"].startswith("W ")
-    assert labels(get_model("qwen3.8-flash-next"))["proxy_badge"] != (get_model("qwen3.8-flash-next").coverage == "full")
+    assert not labels(get_model("qwen3.8-flash-next"))["proxy_badge"]   # Unreleased: every catalog LLM 「完整」
     assert labels(get_model("llama-3.1-8b"))["provenance"] == "mirror"
     assert labels(get_model("qwen3-8b"))["coverage"] == "full"
 

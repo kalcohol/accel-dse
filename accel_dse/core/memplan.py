@@ -120,7 +120,9 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
             else:
                 n = min(c.window, new) if c.window else new
             kv += n * (c.kv_lora + c.rope_dim) * kvb
-        elif c.kind == "linear":
+        if L.ple_rows:
+            st += (L.ple_conv - 1) * L.ple_dil * L.gres_n * model.hidden * 2
+        if c.kind == "linear":
             st += (c.n_state_heads * c.state_dk * c.state_dv + c.conv_channels * max(0, c.conv_kernel - 1)) * stb
         if c.idx_heads and c.dual:
             idx += (S // c.compress - p // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
@@ -151,7 +153,9 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         elif c.kind == "mla":
             # 0.61.1: a sliding-window-only latent layer (compress 1) keeps min(ctx, window) entries (was ctx)
             kv += ((math.ceil(ctx / c.compress) + (c.window or 0)) if c.compress > 1 else ce) * (c.kv_lora + c.rope_dim) * kvb
-        elif c.kind == "linear":
+        if L.ple_rows:      # Qwen4Exp PLE dilated conv state, bf16 (kernel − 1)·dilation columns of N·h
+            st += (L.ple_conv - 1) * L.ple_dil * L.gres_n * model.hidden * 2
+        if c.kind == "linear":
             st += (_cdiv(c.n_state_heads, sh.tp) * c.state_dk * c.state_dv + _cdiv(c.conv_channels, sh.tp) * max(0, c.conv_kernel - 1)) * stb
         if c.idx_heads and c.dual:
             idx += (ctx // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
