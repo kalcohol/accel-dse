@@ -10,6 +10,13 @@
 
 ### 待定
 - 建议目录芯片默认改为 `"auto"`：多核且各核有独立 sequencer 时，`"wide"` 是建模错误。变化逐条列在 /workspace/val5/diff_all.csv（555 个数，74 个模型；decode 基本不变，prefill TTFT 中位数 −8 ~ −40 %）。
+## [0.70.1] - 2026-10-10
+
+### 修复
+- 0.70.0 给 Chip 加的 `split_instances` 字段会进入序列化，导致默认场景的 `Scenario.hash()` 改变（test_core_062 失败）；该字段改为 omit_default，hash 恢复为 0.61.4 起的值。
+
+### 文档
+- README.md / README.en.md 改成标准项目说明（功能、安装、用法、覆盖范围、文档链接），去掉逐版本条目；版本历史只记在 CHANGELOG（原 README 里的条目这里都已有）。新增 guard 测试 test_core_readme。
 
 ## [0.70.0] - 2026-10-10
 
