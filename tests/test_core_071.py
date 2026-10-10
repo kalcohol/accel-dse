@@ -1,8 +1,6 @@
 """0.71: Chip.instance_sched — independent GEMM instances over core groups (wide / split / auto)."""
 from dataclasses import replace
 
-import pytest
-
 from accel_dse.core.hardware import CHIPS, Chip
 from accel_dse.core.mapping import gemm_cost, _groups
 
@@ -12,14 +10,17 @@ SHAPES = [(128, 4097, 512, 64), (8, 128, 4096, 512), (8, 4096, 128, 512), (4096,
 
 def test_default_wide_and_validation():
     assert Chip().instance_sched == "wide" and all(c.instance_sched == "wide" for c in CHIPS.values())
-    with pytest.raises(ValueError):
+    try:
         Chip(instance_sched="lockstep")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("ValueError not raised")
     assert _groups(32) == (1, 2, 4, 8, 16) and _groups(1) == ()
 
 
-@pytest.mark.parametrize("geom", [(128, 128, 32), (64, 64, 128), (256, 256, 8), (32, 32, 512), (56, 56, 16)])
-def test_auto_le_split_le_wide_and_ge_ideal(geom):
-    r, c, e = geom
+def test_auto_le_split_le_wide_and_ge_ideal():
+  for r, c, e in [(128, 128, 32), (64, 64, 128), (256, 256, 8), (32, 32, 512), (56, 56, 16)]:
     ch = Chip("t", 1.0, r, c, e)
     for m, k, n, cnt in SHAPES:
         w, s, a = (gemm_cost(replace(ch, instance_sched=x), "reconf", m, k, n, count=cnt).cycles
