@@ -3,6 +3,11 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.70.1] - 2026-10-10
+
+### 修复
+- 0.70.0 给 Chip 加的 `split_instances` 字段会进入序列化，导致默认场景的 `Scenario.hash()` 改变（test_core_062 失败）；该字段改为 omit_default，hash 恢复为 0.61.4 起的值。
+
 ## [0.70.0] - 2026-10-10
 
 外部校核第四轮（建模说明 §25.9）。新选项都关时，默认指纹不变。
