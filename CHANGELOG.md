@@ -3,6 +3,14 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.73.0] - 2026-10-11
+
+对抗性审计（第 7 轮）：按四条验收标准（逐 rank 工作守恒、合法调度依赖、硬容量约束、搜索不劣于已知可行点）对此前无性质测试的区域做随机不变量检查。
+
+- 修复：`lengths.lognormal_bins` 逐 bin 取整使长度分布均值漂移（如 out_len 64、cv 0.9 → 64.13），PD goodput ≠ req/s × out_len / 卡数。改为保持均值的整数化（Σ = round(N·mean)，floor 后按小数部分补 1，值保持非降）；仅当 mean·N < N（均值 < ~3 且 cv 大）时受 ≥ 1 下限所限。只影响设置了 prompt_cv / out_cv 的 PD / 排队结果（量级 ≤ 0.2 %），默认指纹不变。
+- 新增常驻测试 `tests/test_core_073_audit.py`：能量计数（求和、逐动作线性、与能耗表无关、idle = 卡 × 窗口）、SLC（pin / lru 不变慢、不增 DRAM 字节、fits 不变）、SRAM / SLC 分区容量、fabric 集合通信（有限、份额 ∈ [0,1]、随载荷单调且至多线性、不低于最快链路理想界、oversub 单调）、PP 调度（step ≥ Σ 阶段、≥ 微批 × 瓶颈、层划分恰好一次）、视频 / 蛋白调度（编码 → 去噪 → 解码链、周期界、工作量对 batch / SP / DP 守恒）、搜索不劣于随机可行点与暴力 batch、PD 流体 / 能量恒等式、长度分布均值。
+- 审计规模：约 1.3 万次随机检查（val7/fuzz*.py），除上述 1 处外 0 违例（另确认 idle_W_prefill 仅用于 PD prefill 池，属文档行为）。
+
 ## [0.72.0] - 2026-10-11
 
 0.71 调度审计遗留项（建模说明 §26.1）。**有意改变默认数值**（仅 auto 芯片；参考硬件 GPU 仍为 wide，外部校核不变）。
