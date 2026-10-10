@@ -56,3 +56,15 @@ def test_r3_bands():
     b2 = [r for r in R if r["hw"] == "B200"]
     gb = math.exp(sum(math.log(X.predict_cb(r, "catalog_kernel")["pred"] / r["value"]) for r in b2) / len(b2))
     assert 1.0 < gb < 1.35
+
+
+def test_split_instances_engine_parallel_and_off_by_default():
+    from accel_dse.core.mapping import gemm_cost
+    ch = REF_HW["H800-SXM"].chip
+    assert ch.split_instances is False and all(not c.split_instances for c in CHIPS.values())
+    sp = replace(ch, split_instances=True)
+    a = gemm_cost(ch, "reconf", 128, 4097, 512, count=128)
+    b = gemm_cost(sp, "reconf", 128, 4097, 512, count=128)
+    ideal = 128 * 4097 * 512 * 128 / ch.macs
+    assert b.cycles < a.cycles and ideal <= b.cycles < 1.1 * ideal
+    assert gemm_cost(sp, "reconf", 4096, 4096, 4096).cycles == gemm_cost(ch, "reconf", 4096, 4096, 4096).cycles

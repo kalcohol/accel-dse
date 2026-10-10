@@ -53,6 +53,10 @@ class Chip:
     slc_mib: float = 0.0                  # system-level cache (0.48) 「假设」; 0 = none
     slc_GBps: float = 2000.0              # SLC bandwidth 「假设」 (used only when slc_mib > 0)
     slc_policy: str = "pin"               # pin | lru (see module doc) 「假设」
+    # 0.70: engines may each run an independent GEMM instance (batched attention heads / requests, grouped experts):
+    # a ``count``-instance op then also costs ceil(count / engines) waves on one R×C engine each (cheaper of that and
+    # the chip-wide array).  GPU-like (SMs are independent); False = the 0.69 chip-wide array only 「假设」
+    split_instances: bool = False
 
     def __post_init__(self):
         for k in ("freq_ghz", "rows", "cols", "engines", "sram_mib", "mac_eff"):
