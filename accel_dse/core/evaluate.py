@@ -584,6 +584,11 @@ def _pp_imbalance_warn(stages, tick: float, warnings: list, split: str = "cost")
             warnings.append(f"流水级已按代价平衡，仍不均：最慢级 / 最快级 = {tick / max(lo, 1e-30):.1f}×（整层粒度或容量上限所限），"
                             "节拍取最慢级")
 
+def _streams(m: ModelSpec) -> int:
+    """Residual streams passed between pipeline stages (mHC: hc_mult streams of width hidden)."""
+    return max((l.hc for l in m.layers), default=0) or 1
+
+
 def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     m = model or get_model(scn.model)
     if scn.formats_override:
@@ -698,7 +703,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             net_b = agg["net_bytes"]
             extra = []
             if pp > 1 and not st.has_head:
-                act = ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp      # 0.61.1: residual stream ≥ bf16
+                act = ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m)   # 0.61.1: ≥ bf16; × mHC streams
                 bw, a, fd, fn, tier = _p2p_full(sys, act, st.index, lay.cards // pp)
                 link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
                 extra.append((bw, tier))
@@ -717,7 +722,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
 
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx_cap, n_mtp, b_rank,
                                  embed_ops(m, ph, sh), _tail_ops(m, True, ph, sh, spec_k),
-                                 ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp)
+                                 ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m))
     stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
     vis = _vision_cost(scn, m, sys, stages) if (m.vision is not None and sv.images and sv.image_tokens) else None
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)

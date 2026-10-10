@@ -380,6 +380,18 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
             cs = lambda m_: (lambda a, r: core.compress * a * (a + 1) // 2 + r * (a + 1))(*divmod(m_, core.compress))
             icaus = (cs(ctx_tot) - cs(ph.ctx)) / q / n_keys
         ib = core.idx_bytes_per_token(kvb) * core.compress          # bytes per cached indexer key
+        pool_vec = 0.0
+        if core.idx_kpool:
+            # transformers Glm5NextTextIndexer.get_pooled_states: every forward rebuilds the pools over all cached keys —
+            # gate + APE (1/elem), softmax over the kpool slots (5/elem), weighted sum (2/elem) per key channel; then the
+            # q·k GEMM, ReLU / head weighting and top-(topk/kpool) run over ⌈ctx/kpool⌉ pools (tail pool appended raw)
+            pool_vec = b_loc * ctx_tot * core.idx_dim * 8
+            n_keys = math.ceil(ctx_tot / core.idx_kpool)
+            if ph.kind != "decode":
+                kp = core.idx_kpool                 # the query at position p sees ⌊p/kp⌋ complete pools
+                fl = lambda m_: (lambda a_, r_: kp * a_ * (a_ - 1) // 2 + a_ * (r_ + 1))(*divmod(m_, kp))
+                icaus = (fl(ctx_tot) - fl(ph.ctx)) / q / max(n_keys, 1)
+            icaus = min(1.0, icaus)
         t_new = b_loc * q
         # per scored (query, key) pair, after the q·k GEMM (DeepSeek-V3.2 inference/model.py fp8_index; transformers
         # GlmMoeDsaIndexer): ReLU per head, × head weight and sum over heads (3·heads), fp8 key-scale multiply (fp8
@@ -395,8 +407,8 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         ops.append(Op("indexer_score", "attn", li, m=q * core.idx_heads, k=core.idx_dim, n=n_keys, count=b_loc,
                       causal=icaus, replicated=tp, w_fmt="fp8" if core.idx_fp8 else "",
                       a_fmt="fp8" if core.idx_fp8 else "bf16",
-                      kv_read=b_loc * n_keys * ib if ph.kind == "decode" else 0.0,
-                      vec=t_new * n_keys * icaus * per_pair + t_new * per_tok))
+                      kv_read=(b_loc * (ctx_tot if core.idx_kpool else n_keys) * ib) if ph.kind == "decode" else 0.0,
+                      vec=t_new * n_keys * icaus * per_pair + t_new * per_tok + pool_vec))
         ops.append(Op("indexer_kv_write", "vector", li, kv_write=t_new * ib / core.compress, replicated=tp))
     # KV cache traffic: read the attended entries (sparse/window aware), write the new ones
     if ph.kind == "decode":
@@ -421,6 +433,23 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
                        lambda: _rank_ops(model, li, ph, Shard(), layer))
 
 
+def _hc_ops(model: ModelSpec, li: int, L: Layer, t: int, tp: int, which: str) -> list[Op]:
+    """One mHC hyper-connection (transformers Glm5NextTextHyperConnection + the decoder-layer mix), per token:
+    RMSNorm of the N·h flattened streams; fn GEMM [N·h → (2+N)·N]; sigmoid pre / post, softmax + Sinkhorn-Knopp comb
+    (1 + 2·(iters − 1) normalisations of N×N); collapse Σ pre·streams; after the block post ⊗ out + combᵀ·residual.
+    The residual streams are replicated on every TP rank.  fn weights are in misc_params (read with the hot set)."""
+    N, h = L.hc, model.hidden
+    nh, nw = N * h, (2 + N) * N
+    vec = t * (4 * nh                                   # unweighted RMSNorm over N·h
+               + 2 * N * 4 + N * N * 5                  # sigmoid pre / post, softmax comb
+               + (2 * L.hc_iters - 1) * 2 * N * N       # Sinkhorn row / column normalisations (sum + divide)
+               + 2 * nh                                 # collapse
+               + nh * (2 * N + 2))                      # post ⊗ out (N·h) + combᵀ·residual (2N·h) + add (N·h)
+    return [Op(f"{which}_hc_fn", "gemm", li, m=t, k=nh, n=nw, w_fmt="bf16", w_bits=16, a_fmt="bf16",
+               act_bytes=t * (nh + nw) * 2, replicated=tp),
+            Op(f"{which}_hc_mix", "vector", li, vec=vec, replicated=tp)]
+
+
 def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None) -> list[Op]:
     L = layer if layer is not None else model.layers[li]
     if ph.kind == "full":
@@ -432,6 +461,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     b_loc = _cdiv(ph.batch, dp)
     t = b_loc * ph.q                      # tokens through this rank's attention replica
     ops: list[Op] = []
+    if L.hc:
+        ops += _hc_ops(model, li, L, t, tp, "attn")
     ops.append(Op("attn_norm", "vector", li, vec=t * h * 4))
     for l in L.attn_linears:
         k, n = _lin_local(l, tp, L.core)
@@ -458,6 +489,10 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
     if tp > 1:
         ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
+    if L.hc:
+        ops += _hc_ops(model, li, L, t, tp, "ffn")
+        if li == len(model.layers) - 1:      # Glm5NextTextHyperHead: unweighted mean of the N streams
+            ops.append(Op("hc_head", "vector", li, vec=t * L.hc * h, replicated=tp))
     ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4))
     f = L.ffn
     if f.kind == "dense":

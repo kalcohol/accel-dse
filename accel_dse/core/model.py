@@ -93,6 +93,7 @@ class AttnCore:
     idx_rope: int = 0          # indexer RoPE dims (q per head and k)
     idx_fp8: bool = False      # DeepSeek-V3.2 reference indexer: Hadamard-rotated q / k quantised to fp8 e4m3 with one
                                # fp32 scale per 128 elements; key cache fp8 + scales (inference/model.py, Indexer)
+    idx_kpool: int = 0         # GLM-5.3-Flash: indexer scores gated k-pools of this many keys (top-k/kpool pools)
     lin: str = ""              # linear-attention recurrence: gdn | kda (delta rule, scalar / per-channel gate) | lightning
     lin_chunk: int = 0         # prefill chunk (block) length of the reference chunked kernel
     sink: bool = False         # learned attention sink per head (gpt-oss): one extra softmax logit per query row
@@ -122,6 +123,8 @@ class AttnCore:
         KV-cache dtype (transformers GlmMoeDsaIndexer caches the bf16 key)."""
         if not self.idx_heads:
             return 0.0
+        if self.idx_kpool:      # transformers Glm5NextTextIndexer packs [k, gate scores, valid] in the hidden dtype
+            return (2 * self.idx_dim + 1) * kvb / self.compress
         per = self.idx_dim + 4 * math.ceil(self.idx_dim / 128) if self.idx_fp8 else self.idx_dim * kvb
         return per / self.compress
 
@@ -233,6 +236,8 @@ class Layer:
     ffn: Ffn
     ffn_linears: tuple[Linear, ...] = ()     # dense / shared / router / latent projections
     misc_params: int = 0                     # norms, gates, conv, hc — not GEMMs
+    hc: int = 0                              # mHC streams (GLM-5.3-Flash): attn + ffn hyper-connection compute per layer
+    hc_iters: int = 0                        # Sinkhorn-Knopp iterations of the comb weight
     cross_linears: tuple[Linear, ...] = ()   # cross-attention projections (video DiT: q from tokens, k/v from text)
     cross: AttnCore | None = None
     fused_out: bool = False                  # parallel attention + MLP block with one fused output GEMM
@@ -602,9 +607,12 @@ def _kda(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
     H, hd = lc.get("num_heads", c["num_attention_heads"]), lc.get("head_dim", 128)
     kern = lc.get("short_conv_kernel_size", 4)
     d = H * hd
-    lin = (Linear("kda_q", h, d, "col"), Linear("kda_k", h, d, "col"), Linear("kda_v", h, d, "col"),
-           Linear("kda_g", h, d, "col"), Linear("kda_b", h, H, "col"), Linear("kda_f_a", h, hd, "rep"),
-           Linear("kda_f_b", hd, d, "col"), Linear("kda_o", d, h, "row"))
+    # output gate: full g_proj (Kimi-K3 release) or low-rank g_a / g_b (transformers Glm5NextTextLinearAttention)
+    gate = ((Linear("kda_g_a", h, hd, "rep"), Linear("kda_g_b", hd, d, "col")) if c.get("model_type", "").startswith("glm5_next")
+            else (Linear("kda_g", h, d, "col"),))
+    lin = (Linear("kda_q", h, d, "col"), Linear("kda_k", h, d, "col"), Linear("kda_v", h, d, "col")) + gate + (
+        Linear("kda_b", h, H, "col"), Linear("kda_f_a", h, hd, "rep"), Linear("kda_f_b", hd, d, "col"),
+        Linear("kda_o", d, h, "row"))
     core = AttnCore("linear", n_state_heads=H, state_dk=hd, state_dv=hd, conv_channels=3 * d, conv_kernel=kern,
                     lin="kda", lin_chunk=64)   # transformers chunk_kimi_delta_attention(chunk_size=64) / FLA chunk_kda
     misc = 3 * d * kern + d + H + hd
@@ -653,7 +661,15 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             ilin, ih, idim, topk = _indexer(c, h, c.get("q_lora_rank"))
             if ih and (not types or types[i] != "full_attention" or mt.startswith("glm5")):
                 alin = alin + ilin
-                core = replace(core, idx_heads=ih, idx_dim=idim, topk=topk)
+                core = replace(core, idx_heads=ih, idx_dim=idim, topk=topk, idx_rope=c.get("qk_rope_head_dim") or 0)
+                kp = c.get("index_kpool") or 0
+                if kp and c.get("index_kpool_compress"):
+                    # transformers Glm5NextTextIndexer: gate GEMM h → idx_dim, learned per-slot APE, k LayerNorm (w + b);
+                    # top-(topk / kpool) pools, expanded back to tokens, + the incomplete tail pool (≤ kpool − 1 tokens)
+                    alin = alin + (Linear("idx_kpool_gate", h, idim, "rep"),)
+                    misc += kp * idim + 2 * idim
+                    core = replace(core, idx_kpool=kp,
+                                   topk=topk + (kp - 1 if c.get("index_kpool_always_select_tail") else 0))
             if c.get("mla_use_output_gate"):
                 alin = alin + (Linear("o_gate", h, core.n_q * core.v_dim, "col"),)
             return alin, core, misc
@@ -683,7 +699,13 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         ffn, flin = ffn_for(i)
         if ffn.kind == "moe" and mt in ("kimi_linear",) or (ffn.kind == "moe" and c.get("n_routed_experts")):
             misc += E
-        layers.append(Layer(alin, core, ffn, flin, misc + 2 * h))
+        hc = c.get("hc_mult") or 0
+        if hc and mt.startswith("glm5_next"):
+            # transformers Glm5NextTextHyperConnection ×2 per layer (attn_hc, ffn_hc): fn [(2+N)·N, N·h], base, scale
+            misc += 2 * ((2 + hc) * hc * (hc * h + 1) + 3)
+            layers.append(Layer(alin, core, ffn, flin, misc + 2 * h, hc=hc, hc_iters=c.get("hc_sinkhorn_iters") or 1))
+        else:
+            layers.append(Layer(alin, core, ffn, flin, misc + 2 * h))
     n_lin = sum(1 for l in layers if l.core.kind == "linear")
     notes.append(f"混合注意力：{n_lin}/{L} 层线性注意力（chunk 形式按参考实现上阵列，递归状态 fp32 按参考），"
                  f"{L - n_lin} 层全注意力")
@@ -809,14 +831,10 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     if cmp:
         r.append(f"压缩稀疏注意力 CSA（{cmp}/{L} 层）：按有效上下文 ctx/压缩比 + 滑窗近似"
                  + (f"，索引层只读 top-{idx[0].topk} 个 token" if idx else ""))
-    elif idx and c.get("index_kpool"):
-        r.append(f"DSA 稀疏注意力（{len(idx)}/{L} 层）：lightning indexer 打分按 DeepSeek-V3.2 / GlmMoeDsa 参考逐项建模，"
-                 f"但 key 池化（index_kpool={c['index_kpool']}：门控压缩 key 后取 top-{idx[0].topk}/{c['index_kpool']} 个池再展开）"
-                 "尚未逐项建模，按未池化的 key 打分（参考 transformers Glm5NextTextIndexer 已公开，可补）")
     if c.get("num_hash_layers"):
         r.append(f"哈希路由（前 {c['num_hash_layers']} 层）：按 top-k MoE 计")
     hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
-    if hc:
+    if hc and not any(l.hc for l in spec.layers):
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
     if spec.lookup_params:
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
@@ -866,7 +884,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             n_eff = max(1, min(len(spec.mtp_layers), round(rmtp / max(per, 1))))
             extra = max(0, (rmtp - n_eff * per) // n_eff)
             spec = replace(spec, mtp_layers=spec.mtp_layers[:n_eff], mtp_extra_params=extra)
-        exotic = [k for k in ("hc_mult", "hc_count", "mhc") if c.get(k)]
+        exotic = [k for k in ("hc_mult", "hc_count", "mhc") if c.get(k)] if not any(l.hc for l in spec.layers) else []
         if exotic or spec.lookup_params:
             why = []
             if exotic:
