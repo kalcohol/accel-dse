@@ -3,6 +3,24 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.67.0] - 2026-10-10
+
+0.66.0 + 目录覆盖收口（分支 `cov`）：全部 LLM 覆盖为「完整」。
+
+覆盖度收口：按公开参考实现补齐「部分」模型，见建模说明 §2.1。
+
+### 变更
+- **DSA lightning indexer 按参考逐项建模**（DeepSeek-V3.2、GLM-5 / 5.2 / 5.3）：打分 GEMM 之后的 ReLU、按头加权求和、top-k 选择，k LayerNorm / RoPE；DeepSeek-V3.2 走参考的 fp8 路径（Hadamard 旋转、fp8 打分 GEMM、索引缓存 132 B / token）。GLM-5.2 / 5.3 的 57 个 `shared` 层不再带索引器（参数与发布由 +0.07 % 变为一致）；GLM-5 与 GLM-5.2 因此不再同结构，取消合并。
+- **gpt-oss attention sink**：softmax 每行多 1 个 sink logit（openai/gpt-oss 参考 `sdpa`）。
+- **线性注意力按参考 chunk 形式上阵列**（Gated DeltaNet / KDA chunk 64，MiniMax Lightning BLOCK 256，状态 fp32 均按参考）：块内 / 块间 GEMM 计入阵列，decode 递归向量计数按参考（delta 7·dk·dv，lightning 5·dk·dv）。
+- **GLM-5.3-Flash 按 transformers glm5_next**：mHC 超连接混合计算（fn GEMM、Sinkhorn、collapse / mix，流水级间传 N 流）、HyperHead、DSA 索引器 key 池化（门控压缩、池打分、尾池、514 B / token 缓存）、KDA 低秩输出门（参数原多 1.05B，现与逐层 safetensors 头一致）。架构代理 → 完整。
+- **DeepSeek-V4-Flash / -Pro 按官方 inference/model.py**：压缩器（重叠比 4 / 比 128）、自带压缩器的索引器（头按 TP 切分 + 分数 all-reduce）、attention sink、q / kv RMSNorm 与 o 逆 RoPE、mHC + 学习的末端 hc_head、MTP 为比 0 层；HC 参数原少算 ×4（−25 / −63 M）。架构代理 → 完整（tid2eid 18.6 MB 查表未计，压缩器 fp32 按 bf16，见 §2.1）。
+- **DeepSeek-V4.1-Flash 按官方 inference/model.py + engram.py**：窗口 + top-k 压缩键（min(p, w) + min(k, ⌊p/r⌋)，精确）、压缩 KV / index key 只在 kv 源层计算与存储（其余层共享）、索引器只在索引源层运行（其余复用 top-k）、第 20 层候选块预选与后续层掩码、Engram 查表（fp8 行 + e8m0 scale，8.25 bit / 参数存储，按行分片读取 + all-reduce + wkv + 门控）、mHC 末端 pre_mix collapse、DSpark 块草稿（prefill 播种窗口，decode 每步一次 5 位置块 + Markov / 置信头；spec_k 上限为块大小）；视觉沿用 0.62。逐层参数与 safetensors 头一致。架构代理 → 完整。
+- **Qwen3.8-Flash-Next 按 transformers qwen4_exp + SGLang qwen4_exp_mtp.py**：门控残差（低秩混合 + 注入，替代逐层 RMSNorm；末端 mixer、无最终 norm）、QSA 索引注意力（块均值池化打分、top-512 块 + 尾块，原始 key 缓存）、PLE n-gram 层（查表 + key / value 投影 + 门控 + 膨胀 depthwise conv 及其状态）、MTP 输入融合（每流 fc_hidden）。参数与发布逐项一致（原 +0.50 %）。架构代理 → 完整。
+- 覆盖度：18 个模型收口为完整，目录中的 LLM 全部「完整」；剩余非完整 = 4 个结构预测「部分」（检索 / 松弛不在范围）；AlphaFold3 仍「暂未接入 v2」。
+- 已知：`test_core_052::test_length_spread_effects` 在 548b9d5 上也超过 600 s（与本次改动无关，测试提速由主线处理）。
+- 数值（另见 §2.1）：GLM-5.3-Flash / V4-Flash / V4-Pro decode TPOT +6 ~ +8 %、prefill 8k TTFT +23 ~ +31 %；DSA 模型 decode TPOT −9 ~ −13 %、长 prefill TTFT 最多 −49 %；线性注意力模型 prefill TTFT +3 ~ +17 %；V4.1-Flash / Qwen3.8-Flash-Next decode TPOT −23 / −31 %、prefill 8k TTFT +40 / +127 %、64k −23 / +34 %；已「完整」的 50 个模型默认结果不变（新测试钉住）。
+
 ## [0.66.0] - 2026-10-10
 
 外部校核：用**公开发表的实测**（TensorRT-LLM 官方性能表、Databricks 推理工程博客）对照 accel-dse 的代价模型，并做留出法校准研究。只在本地，未发布。详见建模说明 §25。

@@ -25,7 +25,7 @@ from .parallel import Layout, plan_stages, plan_stages_balanced
 from .pipeline import TILING, pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
 from .scenario import Scenario
 from .vision import expand_images, image_grid, vision_act_peak, vision_ops
-from .ir import red_bytes, skew_from_load
+from .ir import dspark_ops, red_bytes, skew_from_load
 from . import fabric
 from .schedule import StageTime, collective_seconds, fabric_collective, p2p_tier, spec_expected_tokens
 
@@ -160,7 +160,7 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
         c = min((gemm_cost(ch, org, a, op.k, b, count=op.count, w_fmt=af, a_fmt=af)
                  for a, b in ((op.m, op.n), (op.n, op.m))), key=lambda x: x.cycles)
     elif op.kind == "attn":
-        c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=model.kv_fmt, a_fmt="bf16")
+        c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=op.w_fmt or model.kv_fmt, a_fmt=op.a_fmt)
     else:
         return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0, 0.0, 0.0, 0.0
     t = c.cycles * op.causal / f
@@ -188,7 +188,9 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
     ops: list[Op] = []
     if has_head:
         ops += head_ops(model, ph, sh)
-        if spec_k and model.mtp_layers and ph.kind == "decode":
+        if spec_k and model.draft == "dspark":
+            ops += dspark_ops(model, ph, sh)       # one block pass per step (prefill: seed the draft windows)
+        elif spec_k and model.mtp_layers and ph.kind == "decode":
             dph = Phase("decode", ph.batch, 1, ph.ctx, skew=ph.skew)
             for d in range(spec_k):
                 ops += mtp_ops(model, dph, sh, depth=d)
@@ -586,6 +588,11 @@ def _pp_imbalance_warn(stages, tick: float, warnings: list, split: str = "cost")
             warnings.append(f"流水级已按代价平衡，仍不均：最慢级 / 最快级 = {tick / max(lo, 1e-30):.1f}×（整层粒度或容量上限所限），"
                             "节拍取最慢级")
 
+def _streams(m: ModelSpec) -> int:
+    """Residual streams passed between pipeline stages (mHC: hc_mult streams of width hidden)."""
+    return max((max(l.hc, l.gres_n) for l in m.layers), default=0) or 1
+
+
 def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     m = model or get_model(scn.model)
     if scn.formats_override:
@@ -627,6 +634,12 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if not m.kv_cache:
         return _evaluate_full(scn, m, sys, warnings)
     spec_k = sv.spec_k if (sv.phase == "decode" and m.mtp_layers) else 0
+    if m.draft == "dspark" and sv.spec_k:
+        if sv.phase == "decode" and spec_k > m.draft_block:
+            warnings.append(f"spec_k {spec_k} 超过 DSpark 草稿块 {m.draft_block}：按 {m.draft_block} 计")
+            spec_k = m.draft_block
+        if sv.phase == "prefill":
+            spec_k = sv.spec_k          # prefill seeds the DSpark draft windows (no draft tokens)
     need_ctx = sv.ctx + 1 + spec_k if sv.phase == "decode" else sv.prompt
     if m.max_ctx and need_ctx > m.max_ctx:    # 0.61.4: evaluated as asked, but say the release does not cover it
         warnings.append(f"上下文 {need_ctx} 超过发布 config 的 max_position_embeddings {m.max_ctx}"
@@ -648,7 +661,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         ctx_cap = sv.prompt
     sh = lay.shard
     stages = []
-    n_mtp = min(spec_k, len(m.mtp_layers)) if spec_k else 0
+    n_mtp = (len(m.mtp_layers) if m.draft == "dspark" else min(spec_k, len(m.mtp_layers))) if spec_k else 0
     b_rank = _cdiv(sv.batch, lay.dp)          # sequences whose KV lives on one rank (all micro-batches)
     cache: dict = {}
     groups = layer_groups(m)
@@ -700,7 +713,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             net_b = agg["net_bytes"]
             extra = []
             if pp > 1 and not st.has_head:
-                act = ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp      # 0.61.1: residual stream ≥ bf16
+                act = ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m)   # 0.61.1: ≥ bf16; × mHC streams
                 bw, a, fd, fn, tier = _p2p_full(sys, act, st.index, lay.cards // pp)
                 link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
                 extra.append((bw, tier))
@@ -721,7 +734,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
 
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx_cap, n_mtp, b_rank,
                                  embed_ops(m, ph, sh), _tail_ops(m, True, ph, sh, spec_k),
-                                 ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp)
+                                 ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m))
     stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
     vis = _vision_cost(scn, m, sys, stages) if (m.vision is not None and sv.images and sv.image_tokens) else None
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)

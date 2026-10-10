@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "accel-dse"
-version = "0.66.0"
+version = "0.67.0"
 description = "Analytical design-space exploration for LLM inference accelerators: models as released, mapping as a design variable, exact layout/batch search"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -58,7 +58,7 @@ def test_three_axis_labels_and_proxy_badge():
         assert lab["coverage"] in ("full", "partial", "proxy")
         assert lab["proxy_badge"] == (lab["coverage"] == "proxy")
         assert lab["dtype"].startswith("W ")
-    assert labels(get_model("deepseek-v4-pro"))["proxy_badge"]
+    assert not labels(get_model("qwen3.8-flash-next"))["proxy_badge"]   # Unreleased: every catalog LLM 「完整」
     assert labels(get_model("llama-3.1-8b"))["provenance"] == "mirror"
     assert labels(get_model("qwen3-8b"))["coverage"] == "full"
 
@@ -162,5 +162,6 @@ def test_catalog_listing_grouping_coverage_and_merges():
     vend = {c["id"]: c["provider"] for c in cat}
     assert vend["wan2.1-14b"] == vend["qwen3-8b"] and vend["esm2-3b"] == vend["llama-3.1-8b"]
     assert vend["cogvideox-5b"] == vend["glm-4.6"] and vend["protenix"] == vend["seed-oss-36b"]
-    assert labels(get_model("kimi-k3"))["coverage"] == "partial"
-    assert labels(get_model("qwen3-next-80b-a3b"))["coverage_reasons"][0].startswith("线性注意力 Gated DeltaNet")
+    # Unreleased: chunked linear attention per the reference kernels → 「完整」 (was 「部分」)
+    assert labels(get_model("kimi-k3"))["coverage"] == "full"
+    assert labels(get_model("qwen3-next-80b-a3b"))["coverage_reasons"] == []

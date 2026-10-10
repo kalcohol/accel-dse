@@ -296,9 +296,33 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         # 0.61.1: + the conv state (kernel − 1 columns per channel) — stored by memplan, now also read / written
         st_bytes = (h_loc * core.state_dk * core.state_dv
                     + _cdiv(core.conv_channels, tp) * max(0, core.conv_kernel - 1)) * _fmt(model.state_fmt).bytes
-        chunk = 64 if ph.kind == "prefill" else 1          # 「假设」 chunked-scan length
-        vec = t * h_loc * core.state_dk * core.state_dv * 4 + t * h_loc * chunk * (core.state_dk + core.state_dv) * 2
+        dk, dv = core.state_dk, core.state_dv
         conv = _cdiv(core.conv_channels, tp) * core.conv_kernel * t * 2
+        delta = core.lin in ("gdn", "kda")
+        # per token per head, outside the matmuls: β-scaling of k, v (delta rule), q·k L2 norm (3/elem), gate decay on q, k
+        tok_vec = (dk + dv if delta else 0) + (6 * dk if delta else 0) + 2 * dk + 2 * dv
+        if ph.kind == "prefill" and core.lin_chunk:
+            # chunked form of the reference kernels (transformers torch_chunk_gated_delta_rule / chunk_kimi_delta_attention,
+            # chunk 64; MiniMax modeling_minimax_text_01 lightning attention, BLOCK 256) — per chunk of C tokens, per head:
+            #   delta rule: A_kk = (k·β)Kᵀ [C,dk,C]; UT solve of A on [v·β | k·β·decay] [C,C,dv+dk] (unitriangular, ½);
+            #               v' = k_cumdecay·S [C,dk,dv]
+            #   all:        A_qk = Q·Kᵀ [C,dk,C]; intra A_qk·V [C,C,dv]; inter Q·S [C,dk,dv]; state Kᵀ·V [dk,C,dv]
+            # operands in bf16, fp32 accumulate (FLA kernels the transformers code dispatches to)
+            C = core.lin_chunk
+            nc = _cdiv(q, C)
+            cnt = b_loc * h_loc * nc
+            g = lambda nm, m_, k_, n_, cz=1.0: Op(nm, "attn", li, m=m_, k=k_, n=n_, count=cnt, causal=cz,
+                                                  w_fmt="bf16", a_fmt="bf16", act_bytes=cnt * (m_ * k_ + m_ * n_) * 2)
+            if delta:
+                ops += [g("lin_akk", C, dk, C), g("lin_ut_solve", C, C, dv + dk, 0.5), g("lin_vprime", C, dk, dv)]
+            ops += [g("lin_aqk", C, dk, C), g("lin_intra", C, C, dv), g("lin_inter", C, dk, dv), g("lin_state", dk, C, dv)]
+            # per chunk: decay masks (build 3/elem, apply to A_qk / A_kk); KDA per-channel gate exp on q, k, k·β
+            # (FLA chunk_kda factorisation); v_new subtract; state decay
+            ch_vec = (3 + (2 if delta else 1)) * C * C + (3 * C * dk if core.lin == "kda" else 0) + C * dv + dk * dv
+            vec = t * h_loc * tok_vec + cnt * ch_vec
+        else:
+            # recurrent step (fused_recurrent kernels): state decay, kᵀ·S read (delta), rank-1 update, q·S read
+            vec = t * h_loc * (tok_vec + (7 if delta else 5) * dk * dv)
         ops.append(Op("state_update", "state", li, vec=vec + conv,
                       state_rw=2 * st_bytes * b_loc, kv_read=0.0))
         return ops
@@ -327,6 +351,9 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
                       act_bytes=cnt * (q * g * core.v_dim) * ab))
         kv_tok = kv_loc * (core.qk_dim + core.v_dim) / core.compress
         sm_elems = cnt * q * g * ce * causal
+        if core.sink:
+            # gpt-oss reference sdpa: the per-head sink logit is concatenated to every score row, softmaxed, dropped
+            sm_elems += cnt * q * g
     else:  # mla (latent cache, replicated on every attention-TP rank)
         hq_loc = _cdiv(core.n_q, tp)
         lat = core.kv_lora + core.rope_dim
@@ -344,6 +371,8 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
                           act_bytes=b_loc * hq_loc * q * core.v_dim * ab))
         kv_tok = lat / core.compress
         sm_elems = b_loc * q * hq_loc * ce * causal
+        if core.sink:                      # DeepSeek-V4 sparse_attn: learnable attn_sink logit per head
+            sm_elems += b_loc * q * hq_loc
     if core.idx_heads:
         n_keys = math.ceil(ctx_tot / core.compress)
         # 0.61.1: prefill — the query at position p scores ⌈p/c⌉ compressed keys (exact mean; was the full square for
@@ -352,11 +381,89 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         if ph.kind != "decode":
             cs = lambda m_: (lambda a, r: core.compress * a * (a + 1) // 2 + r * (a + 1))(*divmod(m_, core.compress))
             icaus = (cs(ctx_tot) - cs(ph.ctx)) / q / n_keys
-        ops.append(Op("indexer_score", "attn", li, m=q * core.idx_heads, k=core.idx_dim, n=n_keys, count=b_loc,
-                      causal=icaus, replicated=tp,
-                      kv_read=b_loc * n_keys * core.idx_dim * kvb if ph.kind == "decode" else 0.0,
-                      vec=b_loc * q * n_keys * 2))
-        ops.append(Op("indexer_kv_write", "vector", li, kv_write=b_loc * q * core.idx_dim * kvb / core.compress, replicated=tp))
+        ib = core.idx_bytes_per_token(kvb) * core.compress          # bytes per cached indexer key
+        pool_vec = 0.0
+        if core.qsa:
+            # Qwen4Exp QSA: score ⌊p/b⌋ mean-pooled key blocks (every forward pools the cached raw keys once: mean
+            # 1/elem, k LayerNorm 4/elem, RoPE on the block start; the reference loop recomputes this per query —
+            # identical values, counted once), q LayerNorm + RoPE, ReLU + head sum, top-(budget/b) blocks
+            b_ = core.qsa
+            n_keys = max(ctx_tot // b_, 1)
+            fs = lambda m_: (lambda a_, c_: b_ * a_ * (a_ - 1) // 2 + a_ * (c_ + 1))(*divmod(m_, b_))
+            icaus = 1.0 if ph.kind == "decode" else min(1.0, (fs(ctx_tot) - fs(ph.ctx)) / q / n_keys)
+            pool_vec = b_loc * (ctx_tot // b_) * (b_ * core.idx_dim + 4 * core.idx_dim + 3 * core.idx_rope)
+        if core.dual:
+            # V4.1 Indexer: the query at position p scores ⌊p/r⌋ compressed positions (index keys of the kv source)
+            r_ = core.compress
+            n_keys = max(ctx_tot // r_, 1)
+            fs = lambda m_: (lambda a_, b_: r_ * a_ * (a_ - 1) // 2 + a_ * (b_ + 1))(*divmod(m_, r_))
+            icaus = 1.0 if ph.kind == "decode" else min(1.0, (fs(ctx_tot) - fs(ph.ctx)) / q / n_keys)
+            ib = core.idx_kbytes
+            nl = b_loc * (ctx_tot // r_ - ph.ctx // r_)               # latents completed in this pass
+            if core.idx_owner:   # k = k_norm(wk(latent)), RoPE, fp4 quant (simulated) — on the new latents only
+                ops.append(Op("idx_wk", "gemm", li, m=nl, k=core.kv_lora, n=core.idx_dim, w_fmt="bf16", w_bits=16,
+                              a_fmt="bf16", act_bytes=nl * (core.kv_lora + core.idx_dim) * 2, replicated=tp))
+                pool_vec += nl * (4 * core.idx_dim + 3 * core.idx_rope + 2 * core.idx_dim)
+            if core.cand == "src":   # select_candidate_blocks: amax per block (1/position) + top-k over blocks
+                pool_vec += b_loc * q * n_keys * icaus * (1 + 1 / max(core.cand_block, 1))
+            elif core.cand == "use":  # mask to the source's candidate blocks (1/position)
+                pool_vec += b_loc * q * n_keys * icaus
+        if core.idx_kpool:
+            # transformers Glm5NextTextIndexer.get_pooled_states: every forward rebuilds the pools over all cached keys —
+            # gate + APE (1/elem), softmax over the kpool slots (5/elem), weighted sum (2/elem) per key channel; then the
+            # q·k GEMM, ReLU / head weighting and top-(topk/kpool) run over ⌈ctx/kpool⌉ pools (tail pool appended raw)
+            pool_vec = b_loc * ctx_tot * core.idx_dim * 8
+            n_keys = math.ceil(ctx_tot / core.idx_kpool)
+            if ph.kind != "decode":
+                kp = core.idx_kpool                 # the query at position p sees ⌊p/kp⌋ complete pools
+                fl = lambda m_: (lambda a_, r_: kp * a_ * (a_ - 1) // 2 + a_ * (r_ + 1))(*divmod(m_, kp))
+                icaus = (fl(ctx_tot) - fl(ph.ctx)) / q / max(n_keys, 1)
+            icaus = min(1.0, icaus)
+        t_new = b_loc * q
+        # per scored (query, key) pair, after the q·k GEMM (DeepSeek-V3.2 inference/model.py fp8_index; transformers
+        # GlmMoeDsaIndexer): ReLU per head, × head weight and sum over heads (3·heads), fp8 key-scale multiply (fp8
+        # path), top-k selection 1 compare per candidate (vector-count convention, like softmax's 5 per element)
+        ih_loc = _cdiv(core.idx_heads, tp) if core.idx_split else core.idx_heads
+        rep_i = 1 if core.idx_split else tp
+        per_pair = 3 * ih_loc + 1 + (1 if core.idx_fp8 else 0)
+        # per new token: k LayerNorm (4/elem, as the layer norms), RoPE on q heads + k (3/elem, as attention RoPE);
+        # fp8 path: Hadamard rotation of q heads + k (d·log2 d adds, fast_hadamard_transform) and block fp8 quant
+        # (2/elem, the converted-element convention of evaluate._op_seconds)
+        rows = core.idx_heads + 1
+        per_tok = 4 * core.idx_dim + 3 * rows * core.idx_rope
+        if core.idx_fp8:
+            per_tok += rows * core.idx_dim * (math.log2(core.idx_dim) + 2)
+        if core.qsa:       # q LayerNorm (4/elem) + RoPE on the index q heads; per pair ReLU + head sum, top-k
+            per_tok = core.idx_heads * (4 * core.idx_dim + 3 * core.idx_rope)
+            per_pair = 2 * core.idx_heads + 1
+        if core.dual:      # V4.1: RoPE + fp4-simulated quant on the local q heads; weights GEMM is a Linear
+            per_tok = ih_loc * (3 * core.idx_rope + 2 * core.idx_dim)
+        if core.idx_cmp:
+            # DeepSeek-V4 Indexer: RoPE + Hadamard + fp4-simulated quant on the local q heads; keys from its own
+            # Compressor (gated softmax pooling over 2·ratio overlapped slots per channel: ape 1 + softmax 5 + sum 2;
+            # per compressed entry RMSNorm 4, RoPE, Hadamard, fp4 quant 2)
+            d_ = core.idx_dim
+            per_tok = ih_loc * (3 * core.idx_rope + d_ * (math.log2(d_) + 2)) + 2 * d_ * 8 \
+                + (4 * d_ + 3 * core.idx_rope + d_ * (math.log2(d_) + 2)) / core.compress
+        ops.append(Op("indexer_score", "attn", li, m=q * ih_loc, k=core.idx_dim, n=n_keys, count=b_loc,
+                      causal=icaus, replicated=rep_i, w_fmt="fp8" if core.idx_fp8 else "",
+                      a_fmt="fp8" if core.idx_fp8 else "bf16",
+                      kv_read=(b_loc * (ctx_tot if core.idx_kpool else n_keys) * ib) if ph.kind == "decode" else
+                      (b_loc * (ph.ctx // core.compress) * ib if core.dual else 0.0),
+                      vec=t_new * n_keys * icaus * per_pair + t_new * per_tok + pool_vec))
+        if core.idx_split and tp > 1:     # dist.all_reduce(index_score): fp32 [tokens, compressed keys]
+            ops.append(Op("indexer_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp,
+                          comm_bytes=t_new * n_keys * icaus * 4))
+        ops.append(Op("indexer_kv_write", "vector", li, replicated=tp,
+                      kv_write=(nl * ib if core.idx_owner else 0.0) if core.dual else t_new * ib / core.compress))
+    if core.cmp_coff:
+        # DeepSeek-V4 Compressor (KV path): gated softmax pooling of coff·head_dim channels per token (ape 1 + softmax 5
+        # + weighted sum 2); per compressed entry RMSNorm (4), RoPE, fp8 quant of the non-rope dims (2)
+        # V4.1: no APE (7/elem), ratio 1 = plain projection (no pooling); fp4-simulated quant of the whole entry
+        hd_ = core.kv_lora
+        pool = 0 if core.compress == 1 else core.cmp_coff * hd_ * (7 if core.cmp_noape else 8)
+        ops.append(Op("compressor_pool", "vector", li, replicated=tp,
+                      vec=b_loc * q * (pool + (4 * hd_ + 3 * core.rope_n + 2 * hd_) / core.compress)))
     # KV cache traffic: read the attended entries (sparse/window aware), write the new ones
     if ph.kind == "decode":
         # 0.61.1: ``attended`` counts cache entries (compressed layers: ⌈ctx/c⌉ + window), each a full entry of
@@ -368,6 +475,17 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         pre = min(ph.ctx, core.window) if (core.window and core.compress == 1 and core.topk is None) else ph.ctx
         kv_read = b_loc * pre * kv_tok * kvb
     kv_write = b_loc * q * kv_tok * kvb
+    if core.win_bytes:
+        # V4.1: window ring buffer per layer + the shared compressed cache (written by its kv source only)
+        r_ = max(core.compress, 1)
+        if ph.kind == "decode":
+            kv_read = b_loc * (min(core.window, ctx_tot) * core.win_bytes
+                               + (min(core.topk, ctx_tot // r_) * core.cmp_bytes if core.dual else 0.0))
+        else:
+            kv_read = b_loc * (min(core.window, ph.ctx) * core.win_bytes
+                               + ((ph.ctx // r_) * core.cmp_bytes if core.dual else 0.0))
+        kv_write = b_loc * q * core.win_bytes + (b_loc * (ctx_tot // r_ - ph.ctx // r_) * core.cmp_bytes
+                                                 if core.kv_owner else 0.0)
     ops.append(Op("softmax", "vector", li, vec=sm_elems * 5, kv_read=kv_read, kv_write=kv_write,
                   replicated=(tp if core.kind == "mla" else 1)))
     return ops
@@ -378,6 +496,34 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
     """Ops of one rank for transformer layer ``li`` (or an explicit MTP ``layer``), with work shares (rank_shares)."""
     return rank_shares(_rank_ops(model, li, ph, sh, layer), sh,
                        lambda: _rank_ops(model, li, ph, Shard(), layer))
+
+
+def _hc_ops(model: ModelSpec, li: int, L: Layer, t: int, tp: int, which: str) -> list[Op]:
+    """One mHC hyper-connection (transformers Glm5NextTextHyperConnection + the decoder-layer mix), per token:
+    RMSNorm of the N·h flattened streams; fn GEMM [N·h → (2+N)·N]; sigmoid pre / post, softmax + Sinkhorn-Knopp comb
+    (1 + 2·(iters − 1) normalisations of N×N); collapse Σ pre·streams; after the block post ⊗ out + combᵀ·residual.
+    The residual streams are replicated on every TP rank.  fn weights are in misc_params (read with the hot set)."""
+    N, h = L.hc, model.hidden
+    nh, nw = N * h, (2 + N) * N
+    vec = t * (4 * nh                                   # unweighted RMSNorm over N·h
+               + 2 * N * 4 + N * N * 5                  # sigmoid pre / post, softmax comb
+               + (2 * L.hc_iters - 1) * 2 * N * N       # Sinkhorn row / column normalisations (sum + divide)
+               + 2 * nh                                 # collapse
+               + nh * (2 * N + 2))                      # post ⊗ out (N·h) + combᵀ·residual (2N·h) + add (N·h)
+    return [Op(f"{which}_hc_fn", "gemm", li, m=t, k=nh, n=nw, w_fmt="bf16", w_bits=16, a_fmt="bf16",
+               act_bytes=t * (nh + nw) * 2, replicated=tp),
+            Op(f"{which}_hc_mix", "vector", li, vec=vec, replicated=tp)]
+
+
+def _gres_op(model: ModelSpec, li: int, L: Layer, t: int, tp: int, which: str) -> Op:
+    """One Qwen4Exp GatedResidual (transformers Qwen4ExpTextGatedResidual) around a block, outside its Linears
+    (down / up / inject GEMMs are Linears of the layer): grouped RMSNorm over N·h (4/elem), SiLU on the low rank (4),
+    sigmoid input mix (4/elem), weighted stream mean (2/elem), injection sigmoid (4 / stream); after the block
+    out ⊗ injection (1/elem) + residual add (1/elem).  Replicated over TP like the residual streams."""
+    Nh = L.gres_n * model.hidden
+    r = next((l.n for l in L.attn_linears if l.name == "gr_a_down"), 0)
+    return Op(f"{which}_gres", "vector", li, replicated=tp,
+              vec=t * (4 * Nh + 4 * r + 4 * Nh + 2 * Nh + 4 * L.gres_n + 2 * Nh))
 
 
 def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None) -> list[Op]:
@@ -391,7 +537,40 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     b_loc = _cdiv(ph.batch, dp)
     t = b_loc * ph.q                      # tokens through this rank's attention replica
     ops: list[Op] = []
-    ops.append(Op("attn_norm", "vector", li, vec=t * h * 4))
+    if L.ple_rows:
+        # Qwen4Exp PLE (transformers Qwen4ExpTextPLELayer / NGramEmbedding): n-gram hash ids (shift gathers; per
+        # n-gram size n multiplies + n − 1 xor, heads × (mod + offset add)); table rows (bf16) — memory-bound lookup;
+        # key / value projections are Linears; norm_key / norm_query / norm_conv grouped RMSNorms (4/elem), gate dot
+        # (2/elem), signed sqrt + sigmoid (6 / stream), gated value (1), dilated depthwise conv (2·k) + SiLU (4), adds
+        Nh = L.gres_n * h
+        ng = L.ple_dil
+        hpn = L.ple_rows // max(ng - 1, 1)
+        hv = ng + sum(n + (n - 1) + 2 * hpn for n in range(2, ng + 1))
+        st = (L.ple_conv - 1) * L.ple_dil * Nh * 2               # conv state (bf16), read + written each step
+        ops.append(Op("ple_lookup", "lookup", li, kv_read=t * L.ple_rows * L.ple_row_dim * _fmt("bf16").bytes,
+                      vec=t * hv, replicated=tp))
+        ops.append(Op("ple_mix", "state", li, replicated=tp,
+                      vec=t * (Nh * (4 + 4 + 2 + 1 + 4 + 2 * L.ple_conv + 4 + 1 + 1) + 6 * L.gres_n),
+                      state_rw=(2 * st * b_loc) if ph.kind == "decode" else st * b_loc))
+    if L.engram_cols:
+        # V4.1 Engram (engram.py NgramHashState + model.py Engram): hash ids per token (4 multiplies, 3 xor, 24 mod,
+        # 24 offset adds); fetch engram_cols rows of fp8 + e8m0 scale per 32 from the row-sharded table (memory-bound
+        # lookup), dequant (2/elem), all-reduce of the bf16 rows over TP; wkv GEMM (a Linear); gate: rstd of stream
+        # and key per copy (2+2/elem), dot (3/elem), signed sqrt + sigmoid (6/copy), h + gate·value (2/elem)
+        ec, ed, N = L.engram_cols, L.engram_dim, max(L.hc, 1)
+        mx = model.engram_ngram
+        ops.append(Op("engram_lookup", "lookup", li, kv_read=t * ec * (ed + ed / 32) / max(tp, 1),
+                      vec=t * (mx + (mx - 1) + 2 * ec) + t * ec * ed * 2))
+        if tp > 1:
+            ops.append(Op("engram_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp,
+                          comm_bytes=t * ec * ed * 2))
+        ops.append(Op("engram_gate", "vector", li, replicated=tp, vec=t * (N * h * 9 + 6 * N)))
+    if L.hc:
+        ops += _hc_ops(model, li, L, t, tp, "attn")
+    if L.gres_n:
+        ops.append(_gres_op(model, li, L, t, tp, "attn"))
+    else:
+        ops.append(Op("attn_norm", "vector", li, vec=t * h * 4))
     for l in L.attn_linears:
         k, n = _lin_local(l, tp, L.core)
         m = t
@@ -414,10 +593,40 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     ops.extend(_attn_core_ops(model, li, L.core, ph, sh, b_loc))
     if L.core.kind in ("gqa", "mla"):
         hq = gqa_local(L.core.n_q, L.core.n_kv, tp)[1] if L.core.kind == "gqa" else _cdiv(L.core.n_q, tp)
-        ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
+        if L.core.rope_n and L.core.kind == "gqa":
+            # Qwen4Exp: q / k per-head RMSNorm (4/elem) + partial RoPE (3/elem) on q heads and k heads; σ output gate
+            c_ = L.core
+            kv_ = gqa_local(c_.n_q, c_.n_kv, tp)[0]
+            ops.append(Op("rope", "vector", li, vec=t * (hq + kv_) * (c_.qk_dim * 4 + c_.rope_n * 3)
+                          + t * hq * c_.v_dim * 5))
+        elif L.core.rope_n:
+            # DeepSeek-V4: RoPE on q heads + kv, inverse RoPE on o heads; per-head q RMSNorm and kv RMSNorm (4/elem)
+            c_ = L.core
+            ops.append(Op("rope", "vector", li, vec=t * (2 * hq + 1) * c_.rope_n * 3 + t * (hq + 1) * c_.qk_dim * 4))
+        else:
+            ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
     if tp > 1:
         ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
-    ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4))
+    if L.hc:
+        ops += _hc_ops(model, li, L, t, tp, "ffn")
+        if L.hc_head == "mix":
+            # DeepSeek-V4 ParallelHead.hc_head: rsqrt-norm, fn GEMM [N·h → N], sigmoid pre, weighted collapse
+            N = L.hc
+            ops.append(Op("hc_head_fn", "gemm", li, m=t, k=N * h, n=N, w_fmt="bf16", w_bits=16, a_fmt="bf16",
+                          act_bytes=t * (N * h + N) * 2, replicated=tp))
+            ops.append(Op("hc_head", "vector", li, vec=t * (4 * N * h + 4 * N + 2 * N * h), replicated=tp))
+        elif L.hc_head == "pre":      # V4.1: final hc_pre with the last pre_mix (weighted collapse, no projection)
+            ops.append(Op("hc_head", "vector", li, vec=t * 2 * L.hc * h, replicated=tp))
+        elif li == len(model.layers) - 1 and layer is None and model.draft == "":   # Glm5NextTextHyperHead: unweighted mean of N streams
+            ops.append(Op("hc_head", "vector", li, vec=t * L.hc * h, replicated=tp))
+    if L.gres_n:
+        ops.append(_gres_op(model, li, L, t, tp, "mlp"))
+        if L.gres_head:
+            # final hyper_connection_mixer (no combine): grouped RMSNorm, SiLU, sigmoid, weighted stream mean
+            Nh = L.gres_n * h
+            ops.append(Op("gres_head", "vector", li, replicated=tp, vec=t * (4 * Nh + 4 * Nh + 2 * Nh)))
+    else:
+        ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4))
     f = L.ffn
     if f.kind == "dense":
         for l in L.ffn_linears:
@@ -499,7 +708,8 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
     m = b_loc if ph.kind == "prefill" else b_loc * ph.q
     n = _cdiv(model.vocab, sh.tp)
     role = "embed" if model.tie_embeddings else "lm_head"
-    ops = [Op("final_norm", "vector", model.n_layers, vec=b_loc * ph.q * model.hidden * 4),
+    ops = [Op("final_norm", "vector", model.n_layers,
+              vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
            gemm(model, "lm_head", model.n_layers, m, model.hidden, n, role, stream=True),
            Op("sample", "vector", model.n_layers, vec=m * n * 3)]
     if sh.tp > 1:
@@ -513,6 +723,60 @@ def mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) ->
     return rank_shares(_mtp_ops(model, ph, sh, depth), sh, lambda: _mtp_ops(model, ph, Shard(), depth))
 
 
+def dspark_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
+    """DeepSeek-V4.1 DSpark block draft (official inference/model.py forward_spec), one rank."""
+    return rank_shares(_dspark_ops(model, ph, sh), sh, lambda: _dspark_ops(model, ph, Shard()))
+
+
+def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
+    """Prefill (start_pos 0): main_proj + main_norm over the prompt's target-layer stream means, and every draft
+    layer only seeds its window cache from main_x (wkv, kv_norm, RoPE, fp8 quant).  Decode: one pass of the
+    draft_block positions [last token, noise × (block − 1)] through all draft layers (window of main KV + the whole
+    block, non-causal; the main_x KV of the step is written to the ring), hc_pre, norm, the shared head on every
+    position, then the Markov head per position (rank-r embed + head, logits add, sample) and the confidence head."""
+    b_loc = _cdiv(ph.batch, sh.dp)
+    tp, h, N = sh.tp, model.hidden, max(model.layers[0].hc, 1)
+    nt = model.draft_targets
+    li = model.n_layers + 1
+    hd = model.mtp_layers[0].core.qk_dim
+    m_rows = b_loc * (ph.q if ph.kind == "prefill" else 1)
+    ops = [Op("dspark_target_mean", "vector", li, vec=m_rows * nt * N * h, replicated=tp),
+           gemm(model, "dspark.main_proj", li, m_rows, nt * h, h, "mtp", replicated=tp),
+           Op("dspark_main_norm", "vector", li, vec=m_rows * h * 4, replicated=tp)]
+    for j, L in enumerate(model.mtp_layers):
+        lj = li + j
+        c = L.core
+        # main_x KV: wkv + kv_norm (4/elem) + RoPE + quant (2/elem), written into the ring buffer
+        ops.append(gemm(model, "dspark.main_wkv", lj, m_rows, h, hd, "mtp", replicated=tp))
+        ops.append(Op("dspark_main_kv", "vector", lj, replicated=tp, vec=m_rows * (6 * hd + 3 * c.rope_n),
+                      kv_write=m_rows * min(c.window, m_rows // max(b_loc, 1)) / max(m_rows // max(b_loc, 1), 1)
+                      * c.win_bytes))
+    if ph.kind == "prefill":
+        return ops
+    B = model.draft_block
+    dph = Phase("decode", ph.batch, B, ph.ctx, skew=ph.skew)
+    ops.append(Op("dspark_embed", "lookup", li, kv_read=b_loc * B * h * model.fmt("embed").bits / 8, vec=b_loc * B * h))
+    for j, L in enumerate(model.mtp_layers):
+        lj = li + j
+        lops = _rank_ops(model, lj, dph, sh, layer=L)
+        # the draft block's own KV is temporary (not written to the ring); the block keys are attended non-causally
+        lops = [replace(o, kv_write=0.0) if o.name == "softmax" else o for o in lops]
+        hq = _cdiv(L.core.n_q, tp)
+        for nm in ("dspark_block_qk", "dspark_block_pv"):
+            lops.append(Op(nm, "attn", lj, m=B * hq, k=hd, n=B, count=b_loc, w_fmt="bf16", a_fmt="bf16"))
+        lops.append(Op("dspark_block_softmax", "vector", lj, vec=b_loc * B * hq * B * 5))
+        ops += lops
+    V = _cdiv(model.vocab, tp)
+    r = model.draft_markov
+    ops += [Op("dspark_hc_pre", "vector", li, vec=b_loc * B * (2 * N * h + 4 * h), replicated=tp),
+            gemm(model, "dspark.head", li, b_loc * B, h, V, "lm_head", stream=True),
+            Op("dspark_markov_embed", "lookup", li, kv_read=b_loc * B * r * 2, vec=b_loc * B * r),
+            gemm(model, "dspark.markov_head", li, b_loc * B, r, V, "mtp", stream=True),
+            Op("dspark_sample", "vector", li, vec=b_loc * B * V * 3),
+            gemm(model, "dspark.confidence", li, b_loc * B, h + r, 1, "mtp", replicated=tp)]
+    return ops
+
+
 def _mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) -> list[Op]:
     if not model.mtp_layers:
         return []
@@ -521,7 +785,15 @@ def _mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) -
     b_loc = _cdiv(ph.batch, sh.dp)
     t = b_loc * ph.q
     h = model.hidden
-    ops = [gemm(model, "mtp.eh_proj", li, t, 2 * h, h, "mtp", replicated=sh.tp, stream=True)]
+    if L.gres_n:
+        # Qwen4Exp MTP input fusion (SGLang qwen4_exp_mtp.py): fc_embedding on the normed embedding, fc_hidden on each
+        # of the N normed hc streams, broadcast add; GemmaRMSNorms over h and N·h (4/elem)
+        N = L.gres_n
+        ops = [gemm(model, "mtp.fc_embedding", li, t, h, h, "mtp", replicated=sh.tp, stream=True),
+               gemm(model, "mtp.fc_hidden", li, t * N, h, h, "mtp", replicated=sh.tp, stream=True),
+               Op("mtp.fuse", "vector", li, vec=t * (4 * h + 4 * N * h + N * h), replicated=sh.tp)]
+    else:
+        ops = [gemm(model, "mtp.eh_proj", li, t, 2 * h, h, "mtp", replicated=sh.tp, stream=True)]
     ops += _rank_ops(model, li, ph, sh, layer=L)
     ops += [gemm(model, "mtp.head", li, t, h, _cdiv(model.vocab, sh.tp), "lm_head", stream=True)]
     return ops

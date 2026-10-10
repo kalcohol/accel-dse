@@ -77,7 +77,7 @@ def test_schedule_legality_video_denoise():
 
 # ------------------------------------------------------------------ 3. SLO rate ≥ any known feasible point
 _PD = {"model": "qwen3-next-80b-a3b", "mem_id": HBM, "layout": {"tp": 2, "ep": 2},
-       "serving": {"batch": 16, "prompt": 1024, "out_len": 512, "ttft_slo_ms": 80, "tpot_slo_ms": 100},
+       "serving": {"batch": 16, "prompt": 1024, "out_len": 512, "ttft_slo_ms": 85, "tpot_slo_ms": 100},
        "pd": {"enabled": True, "prefill_layout": {"tp": 1}, "prefix_hit": 0.4}}
 
 
@@ -103,7 +103,8 @@ def test_slo_rate_not_below_feasible_points():
     res = _feasible_scan(_PD)
     rate, feas = res["pd"]
     # 0.63: was 1.724 with 2.834 feasible; 0.65 exact bulk queue: feasible ~1.735 (DES ~1.60, fluid 2.834 was optimistic)
-    assert feas >= 1.7 and rate >= feas * (1 - 1e-9), res
+    # Unreleased: TTFT SLO 80 → 85 ms (chunked GDN prefill +5.5 %); feasible ~1.47
+    assert feas >= 1.4 and rate >= feas * (1 - 1e-9), res
     for body in (dict(_PD, model="qwen3-8b", layout={"tp": 2}), dict(_PD, serving=dict(_PD["serving"], ttft_slo_ms=300))):
         for name, (rate, feas) in _feasible_scan(body, 60).items():
             assert rate >= feas * (1 - 1e-9), (body["model"], name, rate, feas)

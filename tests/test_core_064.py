@@ -21,7 +21,7 @@ from accel_dse.core.scenario import Scenario, Serving
 HBM = "hbm3e_8s_12h24g_9200"
 MiB = 2 ** 20
 _QN = {"model": "qwen3-next-80b-a3b", "mem_id": HBM, "layout": {"tp": 2, "ep": 2},
-       "serving": {"batch": 16, "prompt": 1024, "out_len": 512, "ttft_slo_ms": 80, "tpot_slo_ms": 100},
+       "serving": {"batch": 16, "prompt": 1024, "out_len": 512, "ttft_slo_ms": 85, "tpot_slo_ms": 100},
        "pd": {"enabled": True, "prefill_layout": {"tp": 1}, "prefix_hit": 0.0, "load": 0.6}}
 
 
@@ -61,7 +61,9 @@ def test_slo_aware_cap_raises_pd_slo_rate():
     m = rep["queue"]["modes"]["pd"]
     # 0.63: 1.580; 0.64: 2.564 (fluid cap-2 p90 79.4 ms, optimistic — DES 1.489); 0.65 exact bulk queue: 1.59,
     # DES (drift-based stability, 3 seeds) 1.60
-    assert 1.5 < m["slo_rate_rps"] < 1.7, m["slo_rate_rps"]
+    # Unreleased: chunked GDN per reference → prefill TTFT 79.1 → 83.4 ms, so the TTFT SLO moved 80 → 85 ms (same
+    # relative headroom) and the rate is 1.23 (0.65.1 at 80 ms: 1.59)
+    assert 1.15 < m["slo_rate_rps"] < 1.35, m["slo_rate_rps"]
     without = dict(_QN, serving=dict(_QN["serving"], ttft_slo_ms=10 ** 6, tpot_slo_ms=10 ** 6))
     r2, _ = _ctx(without)
     assert "cap_rule" not in (r2["queue"]["modes"]["pd"].get("prefill") or {})    # no SLO → 0.63's min-mean cap
@@ -80,10 +82,10 @@ def test_slo_rate_not_below_any_feasible_point_property():
 
 def test_des_slo_rate_scan_refine():
     _, ctx = _ctx(_QN)
-    r = pdsim.slo_rate(ctx, "pd", 0.08, 0.1, 1.0, n_req=400, warmup=80)
+    r = pdsim.slo_rate(ctx, "pd", 0.085, 0.1, 1.0, n_req=400, warmup=80)
     assert r > 1.0
     x = pdsim.simulate(ctx, r, "pd", n_req=400, warmup=80)
-    assert x["complete"] and x["ttft"]["p90"] <= 0.08 and x["tpot"]["p90"] <= 0.1
+    assert x["complete"] and x["ttft"]["p90"] <= 0.085 and x["tpot"]["p90"] <= 0.1
 
 
 # ------------------------------------------------------------------ 2. 2-D blocking
