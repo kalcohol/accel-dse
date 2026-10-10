@@ -8,12 +8,12 @@
 多核上的独立小 GEMM 调度成为 NPU 设计变量，默认 `"auto"`（建模说明 §26）。**有意改变默认数值。**
 
 ### 新增
-- `Chip.instance_sched`：`"wide"` / `"split"` / `"auto"`。决定 count > 1 的独立 GEMM 实例（每请求 / 每头注意力、MLA 吸收后的每头乘积、每专家 GEMM）在 engine 上怎么排：auto 逐 op 取最优的核组大小 g | E（E/g 组，每组 R × (C·g)），外加行切分；每组分到 g/E 的 SRAM 端口与累加器。研究脚本 `scripts/instance_sched_study.py`，逐数对比脚本 `scripts/instance_sched_diff.py`。
+- `Chip.instance_sched`：`"wide"` / `"split"` / `"auto"`。决定 count > 1 的独立 GEMM 实例（每请求 / 每头注意力、MLA 吸收后的每头乘积、每专家 GEMM）在 engine 上怎么排：auto 逐 op 取最优的核组大小 g | E（E/g 组，每组 R × (C·g)），外加行切分与“少用几组”；SRAM 端口是全片预算、按正在工作的组均分（空闲组让出份额），累加器按核分（g/E）；每组的实例背靠背流过，流水线填充每组一次。研究脚本 `scripts/instance_sched_study.py`，逐数对比脚本 `scripts/instance_sched_diff.py`。
 
 ### 变更（默认数值）
 - 目录 NPU 芯片与 `Chip()` 默认改为 `"auto"`（≤ 0.70 的 wide 对多核芯片是建模错误）；`"wide"` 仍可选；参考硬件 GPU 显式 wide，外部校核表逐行不变；默认场景 hash 不变。
 - 指纹基线有意更新（单卡与 TP8 / DP8·EP8 两版，75 / 75 改变）。逐数变化汇总：
-changed numbers: 555 (models 74); bottleneck flips: 167 — MAC→DRAM 167
+changed numbers: 555 (models 74); bottleneck flips: 88 — MAC→DRAM 88
 
 | chip | point | metric | n | min | median | max |
 |---|---|---|---|---|---|---|
@@ -23,14 +23,19 @@ changed numbers: 555 (models 74); bottleneck flips: 167 — MAC→DRAM 167
 | 100T | prefill b2 8k | ttft | 116 | -62.9% | -25.7% | -7.1% |
 | 1P | decode b1 | throughput | 11 | +0.0% | +1.7% | +28.6% |
 | 1P | decode b16 ctx32k | throughput | 15 | +0.0% | +0.9% | +25.6% |
-| 1P | prefill b2 8k | throughput | 82 | +0.0% | +56.0% | +773.5% |
+| 1P | prefill b2 8k | throughput | 82 | +0.0% | +54.2% | +773.5% |
 | 1P | prefill b2 8k | ttft | 69 | -88.6% | -40.0% | -0.5% |
 | H100-like | decode b1 | throughput | 9 | +0.0% | +0.0% | +1.0% |
 | H100-like | decode b16 ctx32k | throughput | 10 | +0.0% | +0.0% | +1.1% |
 | H100-like | prefill b2 8k | throughput | 31 | +0.0% | +6.5% | +209.8% |
 | H100-like | prefill b2 8k | ttft | 21 | -67.7% | -8.3% | -2.8% |
 
-- decode 中位数 < 2 %；prefill TTFT 中位数 −8.3 %（H100-like）/ −25.7 %（100T）/ −40.0 %（1P）；167 处瓶颈 MAC → DRAM。
+- decode 中位数 < 2 %；prefill TTFT 中位数 −8.3 %（H100-like）/ −25.7 %（100T）/ −40.0 %（1P）；88 个场景瓶颈 MAC → DRAM（涉及 167 个数值）。
+
+### 审计（调度改动）
+- 不变量扫描测试 `tests/test_core_071_audit.py`（600 组随机几何 / 形状 / 端口 / 累加器）：auto 不慢于 wide 和 split；不快于理想 MAC 下界（功守恒）；不快于全片 SRAM 端口下界；每核阵列与每核累加器不变时核数翻倍不变慢（端口按几何推导或总量固定两种）。
+- 审计前的实现（每组固定 g/E 端口份额、每个实例各付一次填充）在核数翻倍时有 44 / 4000 个反例（≤ 3 % 到 1.7×，均在端口受限或小实例处）；修正后 0 个。目录 / 指纹 / 头条数值逐项不变（555 个变化数值与修正前完全相同）。
+- count = 1 的单个 GEMM 仍只走 wide（本版范围）；wide 本身在核数翻倍时会因填充 (R + C·E) 变长而略慢，这是 wide 阵列的性质，不属于 auto。
 
 ## [0.70.1] - 2026-10-10
 

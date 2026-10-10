@@ -1599,7 +1599,8 @@ dsp-dec-4096-mtp [0.93, 0.88, 1.88]
 - `"auto"`：逐 op 取最便宜的方案，候选是 wide，以及每种整除 E 的核组大小 g（共 E/g 组，每组是一块 R × (C·g) 阵列）；实例数少于组数时，再把每个实例的 M 行切到 s 个组上（行并行）。
 
 约束：
-- 每组分到 g/E 的 SRAM 端口（片上 NoC / 端口带宽共享；行切分时每组都要把完整的 K × N 操作数流过自己那份端口）。
+- SRAM 端口是全片预算（片上 NoC / 端口带宽共享），按正在工作的组均分：auto 也试只用 par、par/2、… 个组，空闲组让出份额（0.71 审计）；行切分时每组都要把完整的 K × N 操作数流过自己那份端口。
+- 每组的实例背靠背流过，流水线填充每组每 op 一次（与 wide 相同）。
 - 每组分到 g/E 的累加器。
 - SRAM / DRAM 总字节数不变（操作数都是流式的）。
 - 每组需要自己的指令流 / sequencer「假设」。
@@ -1645,6 +1646,8 @@ dsp-dec-4096-mtp [0.93, 0.88, 1.88]
 | Qwen3-30B-A3B MoE decode b64 ctx4k | 32x32x512 | 0% / 12% / 25% | 51.9 → 0.8 | 2% → 15% |
 
 
+**审计（0.71，`tests/test_core_071_audit.py`）。** 600 组随机几何 / 形状 / 端口 / 累加器上检查：auto ≤ min(wide, split)；auto ≥ 理想 MAC 下界 cnt·m·k·n / (MAC 数 × 速率)（功守恒）；auto ≥ 全片端口下界 cnt·(K·N + M·K + M·N) 字节 / 端口；每核阵列与每核累加器不变、核数翻倍时不变慢（端口按几何推导或总量固定）。审计前的版本（每组固定 g/E 端口、每实例各付一次填充）在核数翻倍检查上有 44 / 4000 个反例，修正后为 0；上表与目录头条数值逐项不变。count = 1 仍只走 wide；wide 本身在核数翻倍时因填充 R + C·E 变长可略慢，属于 wide 阵列的性质。
+
 **设计结论。**
 1. 只能 wide 时，核越多，注意力越差（N = head_dim 只占宽阵列的一小段）：32² × 512 上 prefill 注意力仅 2 %。
 2. 核组能各自跑实例（auto）时，MLA（M = 128 头）和 prefill 注意力在 R ≤ 128 的所有几何上都接近 100 %。大阵列（512²、256²）因为 N = head_dim / latent 小于 C，上限只有 23 ~ 71 %。在固定 MAC 下，从注意力角度看，128² × 32 或 64² × 128 加独立调度最好；512² × 2 在注意力算力上至少损失 55 %。
@@ -1654,7 +1657,7 @@ dsp-dec-4096-mtp [0.93, 0.88, 1.88]
 **默认值（0.71 起）。** 目录里的 NPU 芯片（以及 `Chip()` 的默认值）改为 `"auto"`：各核有独立 sequencer，「所有核锁步跑同一个实例」是 ≤ 0.70 的建模错误。`"wide"` 仍可选（单 sequencer 锁步阵列用它）。参考硬件 GPU 显式设为 `"wide"`：§25.9 的校核表就是在 wide 下得到的，GPU 上更忠实的映射会让总体高估加大，所以外部校核表逐行不变。`instance_sched` 是 omit_default 字段：默认场景的 `hash()` 不变，但含义从 wide 变成了 auto；只有显式写 `"wide"` 的场景才会序列化这个字段。
 
 **数值变化**（0.70 wide → 0.71 auto，3 种目录芯片 × 75 个模型 × 3 个服务点 × 1 卡 / TP8 / DP8·EP8；逐条见 `scripts/instance_sched_diff.py` 的输出 diff_all.csv）：
-changed numbers: 555 (models 74); bottleneck flips: 167 — MAC→DRAM 167
+changed numbers: 555 (models 74); bottleneck flips: 88 — MAC→DRAM 88
 
 | chip | point | metric | n | min | median | max |
 |---|---|---|---|---|---|---|
@@ -1664,7 +1667,7 @@ changed numbers: 555 (models 74); bottleneck flips: 167 — MAC→DRAM 167
 | 100T | prefill b2 8k | ttft | 116 | -62.9% | -25.7% | -7.1% |
 | 1P | decode b1 | throughput | 11 | +0.0% | +1.7% | +28.6% |
 | 1P | decode b16 ctx32k | throughput | 15 | +0.0% | +0.9% | +25.6% |
-| 1P | prefill b2 8k | throughput | 82 | +0.0% | +56.0% | +773.5% |
+| 1P | prefill b2 8k | throughput | 82 | +0.0% | +54.2% | +773.5% |
 | 1P | prefill b2 8k | ttft | 69 | -88.6% | -40.0% | -0.5% |
 | H100-like | decode b1 | throughput | 9 | +0.0% | +0.0% | +1.0% |
 | H100-like | decode b16 ctx32k | throughput | 10 | +0.0% | +0.0% | +1.1% |
