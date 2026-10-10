@@ -25,7 +25,7 @@
 ```bash
 git clone https://github.com/kalcohol/accel-dse.git
 cd accel-dse
-python3 tests/run_tests.py          # 自检（零依赖；也可 python3 -m pytest tests/ -q）
+python3 tests/run_tests.py          # 自检（零依赖，按 CPU 数并行跑测试模块；-j 1 顺序执行）
 python3 -m accel_dse serve          # Web 工作台 → http://127.0.0.1:8765
 ```
 
