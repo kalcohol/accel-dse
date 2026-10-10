@@ -3,6 +3,42 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.72.0] - 2026-10-11
+
+0.71 调度审计遗留项（建模说明 §26.1）。**有意改变默认数值**（仅 auto 芯片；参考硬件 GPU 仍为 wide，外部校核不变）。
+
+### 变更（默认数值）
+- `instance_sched="auto"` 也作用于单个 GEMM（count = 1）：候选为 wide、各核组大小 g | E、活跃组数减半，以及把 M 行或 N 列切到多组（行切分每组流过完整 K × N，列切分每组流过完整 M × K）。修正了 wide 阵列填充 R + C·E 随核数增长而让窄 N 的 GEMM 变慢、核越多越慢的问题。`"split"` 的 count = 1 语义不变。
+- B > 1024 的 decode 链插值网格由 2^(1/8) 加密为 2^(1/12)（auto 下 step(k) 不够平滑，0.5 % 误差带需要）。
+- 逐数变化（`/workspace/val5/headline.py`，0.71.0 → 0.72.0，3 芯片 × 目录模型 × 3 工作点 × 3 布局，1305 个场景）：451 个数值改变，瓶颈翻转 MAC → DRAM 21，MAC → LINK 9。
+
+| chip | point | metric | n | min | median | max |
+|---|---|---|---|---|---|---|
+| 100T | decode b1 | throughput | 22 | +0.1% | +16.7% | +82.3% |
+| 100T | decode b16 ctx32k | throughput | 25 | +0.1% | +16.7% | +114.3% |
+| 100T | prefill b2 8k | throughput | 141 | +0.1% | +5.6% | +86.2% |
+| 100T | prefill b2 8k | ttft | 116 | -36.3% | -4.8% | -1.0% |
+| 1P | decode b1 | throughput | 21 | +0.0% | +16.5% | +154.3% |
+| 1P | decode b16 ctx32k | throughput | 23 | +0.0% | +17.7% | +115.6% |
+| 1P | prefill b2 8k | throughput | 32 | +0.0% | +22.2% | +131.7% |
+| 1P | prefill b2 8k | ttft | 11 | -56.8% | -37.4% | -9.9% |
+| H100-like | decode b1 | throughput | 20 | +0.0% | +3.9% | +40.0% |
+| H100-like | decode b16 ctx32k | throughput | 20 | +0.0% | +3.9% | +40.2% |
+| H100-like | prefill b2 8k | throughput | 20 | +0.0% | +3.9% | +40.1% |
+- 指纹基线有意更新（单卡与多卡两版，75 / 75 改变）。
+
+### 新增（默认关闭，默认数值与 hash 不变）
+- `Chip.noc_topology`（"mesh" / "ring" / "crossbar"）与 `Chip.noc_hop_cycles`：跨 s 个核的调度每个 op 每个 sequencer 付一次 hop × 直径（crossbar 1、ring ⌊s/2⌋、mesh 2·(⌈√s⌉ − 1)）。
+- `Chip.wave_overhead_cycles`：每个 op 付一次启动；≥ 2 个核组按锁步波次运行时每多一波付一次屏障（单一 sequencer —— wide 或单个活跃组 —— 背靠背流过，不付）。
+
+### 审计
+- `tests/test_core_071_audit.py` 扩展到 count = 1、随机 NoC 拓扑 / hop / 屏障：auto ≤ min(wide, split)、理想 MAC 下界、端口下界、核数翻倍不变慢，全部成立。第一版"每波都付开销"在核数单调上有 135 / 4000 个反例（单活跃组也付了每波开销），改为上述屏障语义后为 0。
+
+### 测试 / 性能
+- `tests/test_core_072.py`；test_core_071 的单 GEMM 断言按新语义更新（auto 严格快于 wide 的示例）。
+- `tests/run_tests.py` 每个测试打印耗时。
+- `bulkq._tagged`：按 (t, u 槽) 分小字典累加，键、和与首次插入顺序逐位不变（对捕获的调用逐项比对）。
+
 ## [0.71.0] - 2026-10-10
 
 多核上的独立小 GEMM 调度成为 NPU 设计变量，默认 `"auto"`（建模说明 §26）。**有意改变默认数值。**

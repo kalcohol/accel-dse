@@ -1646,7 +1646,34 @@ dsp-dec-4096-mtp [0.93, 0.88, 1.88]
 | Qwen3-30B-A3B MoE decode b64 ctx4k | 32x32x512 | 0% / 12% / 25% | 51.9 → 0.8 | 2% → 15% |
 
 
-**审计（0.71，`tests/test_core_071_audit.py`）。** 600 组随机几何 / 形状 / 端口 / 累加器上检查：auto ≤ min(wide, split)；auto ≥ 理想 MAC 下界 cnt·m·k·n / (MAC 数 × 速率)（功守恒）；auto ≥ 全片端口下界 cnt·(K·N + M·K + M·N) 字节 / 端口；每核阵列与每核累加器不变、核数翻倍时不变慢（端口按几何推导或总量固定）。审计前的版本（每组固定 g/E 端口、每实例各付一次填充）在核数翻倍检查上有 44 / 4000 个反例，修正后为 0；上表与目录头条数值逐项不变。count = 1 仍只走 wide；wide 本身在核数翻倍时因填充 R + C·E 变长可略慢，属于 wide 阵列的性质。
+**审计（0.71，`tests/test_core_071_audit.py`）。** 600 组随机几何 / 形状 / 端口 / 累加器上检查：auto ≤ min(wide, split)；auto ≥ 理想 MAC 下界 cnt·m·k·n / (MAC 数 × 速率)（功守恒）；auto ≥ 全片端口下界 cnt·(K·N + M·K + M·N) 字节 / 端口；每核阵列与每核累加器不变、核数翻倍时不变慢（端口按几何推导或总量固定）。审计前的版本（每组固定 g/E 端口、每实例各付一次填充）在核数翻倍检查上有 44 / 4000 个反例，修正后为 0；上表与目录头条数值逐项不变。count = 1 仍只走 wide；wide 本身在核数翻倍时因填充 R + C·E 变长可略慢，属于 wide 阵列的性质。（0.72 起 count = 1 也走 auto，见 §26.1。）
+
+### 26.1 单个 GEMM、NoC 与波次屏障（0.72）
+
+- **单个 GEMM。** auto 对 count = 1 也比较 wide 与核组方案：g | E 的核组、活跃组数 par, par/2, …，以及把 M 行（每组流过完整 K × N）或 N 列（每组流过完整 M × K）切到 s 组。wide 的流水线填充是 R + C·E（一条跨所有核的 systolic 链「假设」），N 远小于 C·E 时它既浪费列又拉长填充；N 切分把填充降到 R + C·g。`"split"` 只处理 count > 1（0.70 语义）。
+- **NoC（可选，默认关）。** `noc_topology` ∈ {crossbar, ring, mesh}、`noc_hop_cycles`：跨 s 个核的调度每个 op 每个 sequencer 付 hop × 直径(s)（1、⌊s/2⌋、2·(⌈√s⌉ − 1)）。wide 跨 E 个核，核组跨 g 个核。只计延迟；带宽仍由共享 SRAM 端口约束。
+- **波次屏障（可选，默认 0）。** `wave_overhead_cycles`：每个 op 一次启动；≥ 2 个活跃核组按锁步波次跑实例时每多一波一次屏障。单一 sequencer（wide 或单个活跃组）背靠背流过实例，不付屏障。
+- **不变量**（扩展后的审计测试，含 count = 1 与随机 NoC / 屏障）：auto ≤ min(wide, split)；≥ 理想 MAC 下界；≥ 全片端口下界；每核资源不变、核数翻倍不变慢。
+- **默认数值变化**（0.71 → 0.72）：
+
+逐数变化（`/workspace/val5/headline.py`，0.71.0 → 0.72.0，3 芯片 × 目录模型 × 3 工作点 × 3 布局，1305 个场景）：451 个数值改变，瓶颈翻转 MAC → DRAM 21，MAC → LINK 9。
+
+| chip | point | metric | n | min | median | max |
+|---|---|---|---|---|---|---|
+| 100T | decode b1 | throughput | 22 | +0.1% | +16.7% | +82.3% |
+| 100T | decode b16 ctx32k | throughput | 25 | +0.1% | +16.7% | +114.3% |
+| 100T | prefill b2 8k | throughput | 141 | +0.1% | +5.6% | +86.2% |
+| 100T | prefill b2 8k | ttft | 116 | -36.3% | -4.8% | -1.0% |
+| 1P | decode b1 | throughput | 21 | +0.0% | +16.5% | +154.3% |
+| 1P | decode b16 ctx32k | throughput | 23 | +0.0% | +17.7% | +115.6% |
+| 1P | prefill b2 8k | throughput | 32 | +0.0% | +22.2% | +131.7% |
+| 1P | prefill b2 8k | ttft | 11 | -56.8% | -37.4% | -9.9% |
+| H100-like | decode b1 | throughput | 20 | +0.0% | +3.9% | +40.0% |
+| H100-like | decode b16 ctx32k | throughput | 20 | +0.0% | +3.9% | +40.2% |
+| H100-like | prefill b2 8k | throughput | 20 | +0.0% | +3.9% | +40.1% |
+
+  小模型 / 窄 N 的 GEMM 在大芯片（1P、TP8）上变化最大，部分场景瓶颈由 MAC 变为 DRAM / LINK；参考硬件 GPU 仍为 wide，外部校核表不变。
+
 
 **设计结论。**
 1. 只能 wide 时，核越多，注意力越差（N = head_dim 只占宽阵列的一小段）：32² × 512 上 prefill 注意力仅 2 %。
