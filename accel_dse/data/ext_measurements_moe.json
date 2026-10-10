@@ -7,7 +7,7 @@
    "url": "https://lmsys.org/blog/2025-05-05-large-scale-ep/",
    "hw": "H100-SXM",
    "model": "deepseek-v3",
-   "dtype": "fp8",
+   "dtype": "native",
    "metric": "prefill_tok_s_node",
    "tp": 1,
    "dp": 32,
@@ -20,7 +20,8 @@
    "eplb": "default",
    "node_cards": 8,
    "net_GBps": 50.0,
-   "note": "Profile Results table: 16,384 tokens/device, input 4,096, EP32 on 4×8 H100, TBO on; default expert distribution"
+   "note": "Profile Results table: 16,384 tokens/device, input 4,096, EP32 on 4×8 H100, TBO on; default expert distribution",
+   "dtype_note": "release formats (FP8 block-scaled GEMMs / dispatch, BF16 KV + core MLA, as DeepSeek / TRT-LLM serve it)"
   },
   {
    "id": "sgl-pf-4096-perfect",
@@ -28,7 +29,7 @@
    "url": "https://lmsys.org/blog/2025-05-05-large-scale-ep/",
    "hw": "H100-SXM",
    "model": "deepseek-v3",
-   "dtype": "fp8",
+   "dtype": "native",
    "metric": "prefill_tok_s_node",
    "tp": 1,
    "dp": 32,
@@ -41,7 +42,8 @@
    "eplb": "perfect",
    "node_cards": 8,
    "net_GBps": 50.0,
-   "note": "Profile Results table: 16,384 tokens/device, input 4,096, EP32 on 4×8 H100, TBO on; simulated perfect EPLB"
+   "note": "Profile Results table: 16,384 tokens/device, input 4,096, EP32 on 4×8 H100, TBO on; simulated perfect EPLB",
+   "dtype_note": "release formats (FP8 block-scaled GEMMs / dispatch, BF16 KV + core MLA, as DeepSeek / TRT-LLM serve it)"
   },
   {
    "id": "sgl-pf-1024-default",
@@ -49,7 +51,7 @@
    "url": "https://lmsys.org/blog/2025-05-05-large-scale-ep/",
    "hw": "H100-SXM",
    "model": "deepseek-v3",
-   "dtype": "fp8",
+   "dtype": "native",
    "metric": "prefill_tok_s_node",
    "tp": 1,
    "dp": 32,
@@ -65,7 +67,8 @@
    "assumed": [
     "tokens_per_gpu"
    ],
-   "note": "Prefill phase: 4 nodes EP32, per-node 57,674 / 54,543 tok/s for 1K / 2K prompts; tokens/device not stated for these (16,384 assumed as in the 4K profile)"
+   "note": "Prefill phase: 4 nodes EP32, per-node 57,674 / 54,543 tok/s for 1K / 2K prompts; tokens/device not stated for these (16,384 assumed as in the 4K profile)",
+   "dtype_note": "release formats (FP8 block-scaled GEMMs / dispatch, BF16 KV + core MLA, as DeepSeek / TRT-LLM serve it)"
   },
   {
    "id": "sgl-pf-2048-default",
@@ -73,7 +76,7 @@
    "url": "https://lmsys.org/blog/2025-05-05-large-scale-ep/",
    "hw": "H100-SXM",
    "model": "deepseek-v3",
-   "dtype": "fp8",
+   "dtype": "native",
    "metric": "prefill_tok_s_node",
    "tp": 1,
    "dp": 32,
@@ -89,7 +92,8 @@
    "assumed": [
     "tokens_per_gpu"
    ],
-   "note": "Prefill phase: 4 nodes EP32, per-node 57,674 / 54,543 tok/s for 1K / 2K prompts; tokens/device not stated for these (16,384 assumed as in the 4K profile)"
+   "note": "Prefill phase: 4 nodes EP32, per-node 57,674 / 54,543 tok/s for 1K / 2K prompts; tokens/device not stated for these (16,384 assumed as in the 4K profile)",
+   "dtype_note": "release formats (FP8 block-scaled GEMMs / dispatch, BF16 KV + core MLA, as DeepSeek / TRT-LLM serve it)"
   },
   {
    "id": "sgl-dec-2000-default",
@@ -97,7 +101,7 @@
    "url": "https://lmsys.org/blog/2025-05-05-large-scale-ep/",
    "hw": "H100-SXM",
    "model": "deepseek-v3",
-   "dtype": "fp8",
+   "dtype": "native",
    "metric": "decode_tok_s_node",
    "tp": 1,
    "dp": 72,
@@ -111,7 +115,8 @@
    "eplb": "default",
    "node_cards": 8,
    "net_GBps": 50.0,
-   "note": "Decode: 9 nodes EP72, batch 256/device, KV 2,000, no MTP, TBO on, default EPLB"
+   "note": "Decode: 9 nodes EP72, batch 256/device, KV 2,000, no MTP, TBO on, default EPLB",
+   "dtype_note": "release formats (FP8 block-scaled GEMMs / dispatch, BF16 KV + core MLA, as DeepSeek / TRT-LLM serve it)"
   },
   {
    "id": "dsp-pf-4096",
@@ -119,7 +124,7 @@
    "url": "https://github.com/deepseek-ai/profile-data/blob/main/README.md ; per-node value from https://lmsys.org/blog/2025-05-05-large-scale-ep/",
    "hw": "H800-SXM",
    "model": "deepseek-v3",
-   "dtype": "fp8",
+   "dtype": "native",
    "metric": "prefill_tok_s_node",
    "tp": 1,
    "dp": 32,
@@ -132,7 +137,8 @@
    "eplb": "perfect",
    "node_cards": 8,
    "net_GBps": 50.0,
-   "note": "DeepSeek public profile (prefill EP32 TP1, prompt 4K, 16K tokens/GPU, absolutely balanced routing); throughput per node as derived in the SGLang blog table"
+   "note": "DeepSeek public profile (prefill EP32 TP1, prompt 4K, 16K tokens/GPU, absolutely balanced routing); throughput per node as derived in the SGLang blog table",
+   "dtype_note": "release formats (FP8 block-scaled GEMMs / dispatch, BF16 KV + core MLA, as DeepSeek / TRT-LLM serve it)"
   },
   {
    "id": "trt-dsr1-h200-maxtput",
@@ -140,10 +146,10 @@
    "url": "https://github.com/NVIDIA/TensorRT-LLM/blob/v0.21.0/docs/source/blogs/Best_perf_practice_on_DeepSeek-R1_in_TensorRT-LLM.md",
    "hw": "H200-SXM",
    "model": "deepseek-r1",
-   "dtype": "fp8",
+   "dtype": "native",
    "metric": "static_tok_s_total",
-   "tp": 8,
-   "dp": 1,
+   "tp": 1,
+   "dp": 8,
    "ep": 8,
    "attn_dp": true,
    "nodes": 1,
@@ -151,7 +157,8 @@
    "isl": 1024,
    "osl": 2048,
    "value": 11489.2671,
-   "note": "H200 max-throughput: trtllm-bench --tp 8 --ep 8, attention DP, max_batch_size 128/rank, concurrency 1024, ISL 1K / OSL 2K fixed, no MTP; Total Output Throughput"
+   "note": "H200 max-throughput: trtllm-bench --tp 8 --ep 8, attention DP, max_batch_size 128/rank, concurrency 1024, ISL 1K / OSL 2K fixed, no MTP; Total Output Throughput",
+   "dtype_note": "release formats (FP8 block-scaled GEMMs / dispatch, BF16 KV + core MLA, as DeepSeek / TRT-LLM serve it)"
   }
  ]
 }

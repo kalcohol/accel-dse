@@ -102,7 +102,7 @@ def plan_stages(n_layers: int, pp: int) -> list[Stage]:
 
 
 PP_SPLITS = ("cost", "layers")
-EXEC_OVERLAPS = ("stage", "class", "kernel", "serial")   # 0.66: see schedule.StageTime.total
+EXEC_OVERLAPS = ("stage", "class", "kernel", "serial", "tbo")   # 0.66 (+ tbo 0.67): see schedule.StageTime.total
 
 
 def plan_stages_balanced(costs: list, pp: int, first: tuple, last: tuple, p2p: tuple,

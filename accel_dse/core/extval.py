@@ -25,6 +25,7 @@ from pathlib import Path
 from .catalog import get_model
 from .evaluate import evaluate
 from .parallel import Layout
+from .hardware import Link
 from .refhw import REF_HW
 from .scenario import Scenario, Serving
 
@@ -50,6 +51,8 @@ VARIANTS = {
     "peak_kernel": dict(eff="peak", overlap="kernel", kv_reuse=True),
     "catalog_serial": dict(eff="catalog", overlap="serial", kv_reuse=True),
     "peak_serial_m": dict(eff="peak", overlap="serial", kv_reuse=True),
+    "catalog_tbo": dict(eff="catalog", overlap="tbo", kv_reuse=True),
+    "peak_tbo": dict(eff="peak", overlap="tbo", kv_reuse=True),
 }
 
 
@@ -73,21 +76,30 @@ class _Pt:
         self.ttft, self.tpot, self.fits, self.bound = res.ttft * k, res.tpot * k, res.fits, res.bound
 
 
+DATA_MOE = DATA.with_name("ext_measurements_moe.json")
+
+
 def rows(path: Path = DATA) -> list[dict]:
     return json.loads(path.read_text())["rows"]
 
 
 def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
     v = VARIANTS.get(eff, {})
-    ov = v.get("overlap") if v.get("overlap") in ("class", "kernel", "serial") else "stage"
+    ov = v.get("overlap") if v.get("overlap") in ("class", "kernel", "serial", "tbo") else "stage"
     e = v.get("eff", eff)
     h = REF_HW[r["hw"]]
     chip = h.chip if v.get("mac_eff") is None else replace(h.chip, mac_eff=v["mac_eff"])
     mem_eff = e if isinstance(e, float) else EFF[e]
+    extra = {}
+    if r.get("node_cards"):            # 0.67 multi-node rows: cards per node + scale-out NIC per card
+        extra = dict(node_cards=r["node_cards"], net=Link(r["net_GBps"], r.get("net_alpha_us", 5.0)))
+    if r.get("moe_skew"):
+        sv = {**sv, "moe_skew": r["moe_skew"]}
     return Scenario(model=r["model"], chip=chip, mem_id=h.mem_id, mem_eff=mem_eff, link=h.link, mapping="reconf",
                     exec_overlap=ov,
-                    layout=Layout(tp=r["tp"]), formats_override=FP8 if r["dtype"] == "fp8" else (),
-                    serving=Serving(**sv))
+                    layout=Layout(tp=r["tp"], dp=r.get("dp", 1), ep=r.get("ep", 1)),
+                    formats_override=FP8 if r["dtype"] == "fp8" else (),
+                    serving=Serving(**sv), **extra)
 
 
 def _ev(r, var, **sv):
@@ -120,6 +132,17 @@ def predict(r: dict, eff: str = "catalog") -> dict:
     if m == "static_tok_s_gpu":
         v, fits, det = _static(r, r["batch"], eff)
         return {"pred": v / r["tp"], "fits": fits, **det}
+    if m == "static_tok_s_total":
+        v, fits, det = _static(r, r["batch"], eff)
+        return {"pred": v, "fits": fits, **det}
+    if m == "prefill_tok_s_node":      # 0.67: B = dp · tokens_per_gpu / ISL requests prefilled together
+        b = r["dp"] * r["tokens_per_gpu"] // r["isl"]
+        p = _ttft(r, b, r["isl"], eff)
+        return {"pred": b * r["isl"] / p.ttft / r["nodes"], "fits": p.fits, "bound": p.bound, "ttft_s": p.ttft}
+    if m == "decode_tok_s_node":       # 0.67: B = dp · per-GPU batch at KV length kv_len, one token per step
+        b = r["dp"] * r["per_gpu_batch"]
+        p = _ev(r, eff, phase="decode", batch=b, ctx=r["kv_len"], out_len=max(1, r["osl"]))
+        return {"pred": b / p.tpot / r["nodes"], "fits": p.fits, "bound": p.bound, "tpot_s": p.tpot}
     if m == "max_tok_s_total":
         best = None
         for k in range(0, 14):

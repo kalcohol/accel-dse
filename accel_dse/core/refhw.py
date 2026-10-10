@@ -23,6 +23,8 @@ from .hardware import Chip, Link
 
 H100_URL = "https://www.nvidia.com/en-us/data-center/h100/"
 H200_URL = "https://www.nvidia.com/en-us/data-center/h200/"
+H800_URL = ("https://lenovopress.lenovo.com/lp1814.pdf (H800 PCIe sheet: NVLink 400 GB/s, BF16 1,513 sparse); "
+            "https://arxiv.org/abs/2412.19437 (DeepSeek-V3 report §3.1: H800 SXM nodes, NVLink, 50 GB/s IB per GPU)")
 A100_URL = ("https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/"
             "nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf")
 
@@ -52,6 +54,10 @@ def _chip(name, sms, mac_per_sm, peak_tflops, fmts, l2_mib, lanes):
 
 
 REF_HW = {h.name: h for h in (
+    RefHW("H800-SXM", _chip("H800-SXM 参考硬件", 132, 2048, 989.5, _HOPPER, 50.0, 16896),
+          "hbm3_5s_8h16g_5234", Link(200.0, 3.0), 989.5, 1979.0, 3350.0, 80.0, 400.0, H800_URL,
+          "H100-SXM die (same SM count / clocks / HBM3 80 GB 3.35 TB/s 「假设」: NVIDIA publishes no SXM H800 sheet) with "
+          "NVLink capped at 400 GB/s bidirectional (PCIe sheet + DeepSeek-V3 report)"),
     RefHW("H100-SXM", _chip("H100-SXM 参考硬件", 132, 2048, 989.5, _HOPPER, 50.0, 16896),
           "hbm3_5s_8h16g_5234", Link(450.0, 3.0), 989.5, 1979.0, 3350.0, 80.0, 900.0, H100_URL,
           "datasheet: BF16 1,979 / FP8 3,958 TFLOPS with sparsity; 80 GB; 3.35 TB/s; NVLink 900 GB/s"),
