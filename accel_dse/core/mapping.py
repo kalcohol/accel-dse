@@ -142,10 +142,14 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
             par = ch.engines // g
             sub = replace(ch, engines=g, split_instances=False, instance_sched="wide",
                           sram_port_Bpc=ch.port_Bpc * g / ch.engines, acc_kib=ch.acc_kib * g / ch.engines)
-            one = _gemm_cost(sub, org, m, k, n, 1, w_fmt, a_fmt, w_bits)
-            waves = _cd(count, par)
-            if one.cycles * waves < best_c:
-                best_c, alt = one.cycles * waves, (one, waves)
+            # auto: when instances < groups, also split each instance's M rows over s groups (row-parallel; every
+            # group streams the full K×N operand through its share of the port)
+            s_ = max(1, min(par // count, m)) if sched == "auto" else 1
+            for sp in ((1, s_) if s_ > 1 else (1,)):
+                one = _gemm_cost(sub, org, _cd(m, sp), k, n, 1, w_fmt, a_fmt, w_bits)
+                waves = _cd(count * sp, par)
+                if one.cycles * waves < best_c:
+                    best_c, alt = one.cycles * waves, (one, waves)
         if alt is not None:
             one, waves = alt
             return GemmCost(one.cycles * waves, one.mac_cycles * waves, one.feed_cycles * waves, one.dataflow,
