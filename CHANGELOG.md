@@ -3,6 +3,19 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.69.0] - 2026-10-10
+
+外部校核第三轮（建模说明 §25.8）。默认指纹不变。
+
+### 新增
+- `Scenario.layer_overhead_us`（默认 0，关闭，「假设」，依赖 NPU / 运行时）：每层每步的固定时间，所有重叠模式下都暴露。
+- 参考硬件 MI300X、B200；`data/ext_measurements_r3.json`（31 条：AMD ROCm vLLM MI300X、TensorRT-LLM B200 NVFP4）；指标 `static_latency_s`。
+- extval：连续批代理 `predict_cb`（pdqueue 分块计划 + 合并步）；`scripts/ext_cb.py`。
+
+### 结论
+- 每层固定开销：只在 H100 短 prompt TTFT 上选 100 µs / 层，留出测试：非 H100 TTFT 误差 130 % → 22 %，MI300X 静态批延迟 227 % → 23 %。
+- `moe_skew` 用公开 EPLB 统计核对（1.115 / 2.56）；更正 0.68：EP72 decode 的高估不是不均衡造成的。
+
 ## [0.68.0] - 2026-10-10
 
 外部校核第二轮（MoE / MLA / 大规模 EP，建模说明 §25.7）。

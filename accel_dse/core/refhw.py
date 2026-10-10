@@ -28,6 +28,10 @@ H800_URL = ("https://lenovopress.lenovo.com/lp1814.pdf (H800 PCIe sheet: NVLink 
 A100_URL = ("https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/"
             "nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf")
 
+MI300X_URL = "https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/data-sheets/amd-instinct-mi300x-data-sheet.pdf"
+B200_URL = "https://www.nvidia.com/en-us/data-center/dgx-b200/ (8-GPU totals ÷ 8; sparse figures halved)"
+_CDNA3 = FormatSupport(rates=(("bf16", 1.0), ("fp16", 1.0), ("fp8", 2.0), ("int8", 2.0)))
+_BLACKWELL = FormatSupport(rates=(("bf16", 1.0), ("fp16", 1.0), ("fp8", 2.0), ("int8", 2.0), ("nvfp4", 4.0), ("mxfp4", 4.0)))
 _HOPPER = FormatSupport(rates=(("bf16", 1.0), ("fp16", 1.0), ("fp8", 2.0), ("int8", 2.0)))
 _AMPERE = FormatSupport(rates=(("bf16", 1.0), ("fp16", 1.0), ("int8", 2.0)))
 
@@ -54,6 +58,15 @@ def _chip(name, sms, mac_per_sm, peak_tflops, fmts, l2_mib, lanes):
 
 
 REF_HW = {h.name: h for h in (
+    RefHW("MI300X", _chip("MI300X 参考硬件", 304, 1024, 1307.4, _CDNA3, 32.0, 19456),
+          "hbm3_8s_8h24g_5200", Link(448.0, 3.0), 1307.4, 2614.9, 5300.0, 192.0, 896.0, MI300X_URL,
+          "datasheet: 304 CUs, BF16 1,307.4 / FP8 2,614.9 TFLOPS dense, 192 GB HBM3 5.3 TB/s, 7 × 128 GB/s Infinity "
+          "Fabric (bidir) — aggregate taken as the scale-up link 「假设」(a ring over the mesh uses less); L2 8 × 4 MB as "
+          "sram (256 MB Infinity Cache NOT modelled)"),
+    RefHW("B200", _chip("B200 参考硬件", 148, 4096, 2250.0, _BLACKWELL, 126.0, 18944),
+          "hbm3e_8s_8h24g_7800", Link(900.0, 3.0), 2250.0, 4500.0, 8000.0, 180.0, 1800.0, B200_URL,
+          "DGX B200: 72 PF FP8 / 144 PF FP4 (sparse, 8 GPUs) → 4.5 / 9 PF dense per GPU, BF16 2.25 PF dense 「假设」"
+          "(half of FP8), 1,440 GB HBM3e / 8 = 180 GB (catalog 192 GiB stacks), 64 TB/s / 8 = 8 TB/s, NVLink5 1.8 TB/s"),
     RefHW("H800-SXM", _chip("H800-SXM 参考硬件", 132, 2048, 989.5, _HOPPER, 50.0, 16896),
           "hbm3_5s_8h16g_5234", Link(200.0, 3.0), 989.5, 1979.0, 3350.0, 80.0, 400.0, H800_URL,
           "H100-SXM die (same SM count / clocks / HBM3 80 GB 3.35 TB/s 「假设」: NVIDIA publishes no SXM H800 sheet) with "

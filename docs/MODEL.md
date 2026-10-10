@@ -1511,3 +1511,38 @@ B200 / GB200（FP4）、MI300X / MI325X、TPU、Gaudi；MoE（Mixtral、DeepSeek
 4. Mixtral-8x22B TP8：Hopper 上 `tbo` 1.05 ~ 1.08 / `kernel` 0.80 ~ 0.85，A100 上 `serial` 0.93。长 prompt 档（5000 / 500、20000 / 2000）各模式都偏低：静态批代理把 prefill 和 decode 串起来算，而 in-flight batching 会把 prefill 块和 decode 交错，所以这一档代理偏悲观（§25.3）。
 
 仍未校核：MI300X（公开数据没有完整给出 batch / 长度 / 并行配置），B200 FP4，DistServe / Splitwise / Mooncake（只有 SLO 达成率曲线，没有能照抄的数值表），跨节点 PD 的 KV 传输，MTP / 推测解码，专家不均衡的数值。
+
+
+### 25.8 第三轮（V6.3，分支 r3，本地）
+
+**(a) 连续批代理。** `extval.predict_cb`：in-flight 行改用工具自己的合并式分块模型——`pdqueue._chunk_plan`（每块 C token，默认 8192 = TensorRT-LLM max_num_tokens「假设」；vLLM / ROCm 行 131072 按原文）+ `_fused_step`（stage 模式原样调用；kernel / serial / tbo 把同样的逐级分量相加，再取该模式的 total）。满载下运行批 b：每次迭代有 x = n·b/OSL 的比例带一个 prefill 块；x > 1 时 prefill 成为瓶颈，运行批被限制在 OSL/n。b 在 2 的幂里取装得下且最快的。
+| group | n | catalog static | catalog CB | catalog_tbo static | catalog_tbo CB | catalog_kernel static | catalog_kernel CB | catalog_serial static | catalog_serial CB | peak_serial_m static | peak_serial_m CB |
+| all | 71 | 1.24 / 33% | 1.26 / 36% | 1.09 / 25% | 1.09 / 26% | 0.99 / 23% | 0.99 / 23% | 0.81 / 26% | 0.77 / 32% | 0.93 / 18% | 0.88 / 22% |
+| prefill-heavy (ISL ≥ 4·OSL) | 21 | 0.95 / 18% | 1.07 / 17% | 0.91 / 22% | 1.01 / 18% | 0.82 / 28% | 0.90 / 22% | 0.73 / 38% | 0.76 / 34% | 0.81 / 26% | 0.83 / 25% |
+| decode-heavy | 50 | 1.39 / 40% | 1.35 / 45% | 1.18 / 27% | 1.12 / 29% | 1.07 / 21% | 1.03 / 24% | 0.85 / 21% | 0.77 / 31% | 0.98 / 15% | 0.90 / 21% |
+
+prefill 重的行变好了（kernel 0.82 → 0.90；stage 0.95 → 1.07），decode 重的行稍降，总体持平。代理换成连续批后，原来「静态批代理偏悲观」的那部分误差基本消掉；剩下的误差来自重叠方式和固定开销，不在批处理代理。
+
+**(b) MI300X / B200。** 参考硬件 MI300X（AMD 数据手册：304 CU，BF16 1307.4 / FP8 2614.9 TFLOPS 稠密，192 GB HBM3 5.3 TB/s，Infinity Fabric 7 × 128 GB/s；256 MB Infinity Cache 不建模）与 B200（DGX B200 总量 ÷ 8，稀疏值取半：FP8 4.5 / FP4 9 PF，BF16 取 FP8 的一半「假设」，8 TB/s，NVLink5 1.8 TB/s）。数据（`data/ext_measurements_r3.json`，31 条）：AMD ROCm vLLM 0.11.2 文档（固定 commit 2026250）的 Llama-3.1-70B FP8 TP8 满载吞吐 4 条 + 静态批端到端延迟 16 条（batch 1 ~ 128，ISL 128 / 2048，OSL 2048）；TensorRT-LLM 0.21 的 B200 Llama-3.3-70B NVFP4 TP1 满载 11 条。MI325X 没找到同时给出 batch、长度、并行配置的表；GB200 是 Grace 耦合的 NVL72，跳过；MLPerf v5.x 的长度分布没有公开数值。
+| group | n | catalog | catalog_tbo | catalog_kernel | catalog_serial | peak_serial_m |
+| MI300X 70B FP8 TP8 max-load (CB proxy) | 4 | 4.49 / 349% | 3.11 / 211% | 2.15 / 115% | 1.87 / 87% | 2.03 / 103% |
+| MI300X 70B static-batch latency | 16 | 3.67 / 267% | 3.61 / 261% | 3.27 / 227% | 2.89 / 189% | 3.60 / 260% |
+| B200 70B NVFP4 TP1 max-load (CB proxy) | 11 | 1.38 / 39% | 1.16 / 22% | 1.16 / 22% | 0.85 / 18% | 0.99 / 9% |
+
+MI300X 上不加固定开销时，模型比实测快约 3 ×：batch 1 实测 7.8 ms / token，roofline 约 2.4 ms；AMD 自己也注明这些数「不是峰值」，同一篇 AMD 博客里 MI300X 的吞吐和 H100 持平，而 HBM 带宽是 H100 的 1.6 ×。B200 NVFP4：peak + serial 0.99 / 9 %，kernel 1.16 / 22 %。
+
+**(c) 专家不均衡（核对 `moe_skew`，不调）。** 公开统计：TensorRT-LLM wide_ep EPLB 示例（github.com/NVIDIA/TensorRT-LLM/tree/6b1b4cd/examples/wide_ep/ep_load_balancer），DeepSeek-R1：EP32 不做 EPLB 时，最忙 rank / 均值 = 1 + 1.564 = 2.56（各层各迭代平均）；EP36 + 32 个冗余专家的离线 EPLB 后为 1.115。代入 SGLang 行：用 1.115 时，模型给出的默认分布 / 完美 EPLB prefill 减速是 1.115 ×，实测 59,337 / 50,302 = 1.18 ×，方向一致，量级接近；用 2.56 时 prefill 预测只剩实测的 0.41，说明 SGLang 的「默认」已经过 EPLB。**更正 §25.7 第 2 条**：EP72 decode 高估 1.27 ×，用不均衡解释不了——在模型里 skew 1.115 只把它变成 1.25（decode 受 MAC 限制）。
+
+**(d) 每层固定开销。** 新增 `Scenario.layer_overhead_us`（每层每步的固定时间，单位 µs，所有重叠模式下都暴露；默认 0 = 关，与默认指纹逐位相同；取值依赖 NPU / 运行时「假设」，不拟合进默认值）。留出检验：只在 H100 的 128-token TTFT 上选值（kernel 模式约 100 µs / 层最好），拿去测别的组：
+
+| group (speed ratio pred/meas) | n | catalog_kernel | catalog_kernel+L100 | catalog_serial | catalog_serial+L100 | catalog_tbo | catalog_tbo+L100 |
+| v1 TRT 0.8 static | 36 | 1.16/27% | 1.01/20% | 0.98/19% | 0.87/21% | 1.19/29% | 1.03/22% |
+| v1 TTFT | 20 | 1.59/65% | 1.11/20% | 1.19/37% | 0.91/21% | 1.75/82% | 1.19/29% |
+| v1 0.21 max-load (CB) | 44 | 1.04/20% | 0.89/22% | 0.81/26% | 0.72/40% | 1.08/24% | 0.91/23% |
+| MoE large-EP | 6 | 0.59/69% | 0.59/70% | 0.55/83% | 0.54/84% | 0.99/12% | 0.97/10% |
+| Mixtral TP8 (CB) | 27 | 0.90/29% | 0.81/36% | 0.70/43% | 0.65/54% | 1.11/30% | 0.98/27% |
+| MI300X latency | 16 | 3.27/227% | 1.03/23% | 2.89/189% | 0.98/21% | 3.61/261% | 1.07/27% |
+| MI300X max-load (CB) | 4 | 2.15/115% | 1.96/96% | 1.87/87% | 1.72/72% | 3.11/211% | 2.74/174% |
+| B200 NVFP4 (CB) | 11 | 1.16/22% | 0.90/14% | 0.85/18% | 0.71/41% | 1.16/22% | 0.90/14% |
+
+在 H100 短 prompt 上选出的 100 µs / 层，换到非 H100 的短 prompt TTFT 误差从 130 % 降到 22 %，换到完全不同来源 / 硬件 / 指标的 MI300X 静态批延迟（全部 16 条）从 227 % 降到 23 %。所以 GPU 运行时确实有一项结构性的每层固定开销（约 0.1 ms / 层），模型现在可以显式表达；NPU 设计的默认值仍然是 0。它对大批量吞吐（MI300X 满载仍是 2 ×，Mixtral 稍差）帮助不大。
