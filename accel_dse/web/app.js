@@ -211,6 +211,7 @@ function syncInputs() {
   for (const k of ['dit_fsdp', 'te_cpu', 'vae_parallel', 'overlap']) if ($('w-' + k)) $('w-' + k).checked = !!S.sc.workload[k];
   if ($('w-sample_split')) $('w-sample_split').checked = S.sc.workload.sample_split !== false;
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
+  if ($('c-attn_fmt') && S.cat) $('c-attn_fmt').value = chipVal('attn_fmt') || '';
   if ($('fab-enabled') && S.sc && S.cat) fabPaint();
   if ($('d2d-enabled') && S.sc) { $('d2d-enabled').checked = !!S.sc.d2d_enabled; if (S.cat) $('d2d-std').value = S.sc.d2d_std; d2dPaint(); }
   if ($('pd-enabled') && S.sc) { $('pd-enabled').checked = !!S.sc.pd.enabled; $('pd-inputs').hidden = !S.sc.pd.enabled; $('pd-kv_layerwise').checked = !!S.sc.pd.kv_layerwise;
@@ -565,6 +566,7 @@ function renderEval(r) {
   renderEnergy(r);
   renderFabric(r);
   renderBudget(r);
+  renderSensitivity(r);
   renderPD(r);
   { const sc = r.scenario, P = sc.d2d_enabled ? (sc.package_cards || 1) : 1, N = sc.node_cards || 0,
       // 0.78: shares of the bytes actually sent (per algorithm and tier: what the energy table charges)
@@ -883,6 +885,23 @@ function budgetMark(x) {
   if (x.budget_ok === false) return h('span', { class: 'tag danger', title: '超出预算：' + (x.budget_violations || []).join(', ') }, '超预算');
   if (x.budget_ok === null) return h('span', { class: 'tag', title: '预算无法判定（缺输入或只有下界）' }, '预算?');
   return null;
+}
+// 0.96: 敏感度 panel — the result under the 「假设」 constants that drive design conclusions (MODEL §41)
+const SENS_ZH = { exec_overlap: '计算 / 访存 / 通信重叠', mem_eff: 'DRAM 效率', vector_lanes: '向量 lane 数' };
+function renderSensitivity(r) {
+  const s = r.sensitivity;
+  $('sens-box').hidden = !s;
+  if (!s) return;
+  const head = h('tr', {}, h('th', { class: 'l' }, '假设变化'), h('th', {}, 'tok/s'), h('th', {}, '相对当前'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '判定'));
+  const rows = s.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 4, class: 'l small' }, x.error))
+    : h('tr', { class: x.hinge ? 'warn' : '' }, h('td', { class: 'l' }, x.label), h('td', {}, num(x.tok_s)),
+      h('td', { style: x.hinge ? 'color:var(--danger);font-weight:700' : '' }, num(x.ratio) + '×'),
+      h('td', {}, boundTag(x.bound), x.bound_flip ? h('span', { class: 'small' }, ' ⇄') : ''),
+      h('td', { class: 'l small' }, x.hinge ? (x.bound_flip ? '瓶颈翻转' : `变化 > ${pct(s.threshold)}`) : '稳健')));
+  put($('sens-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
+  $('sens-note').textContent = s.hinges.length
+    ? `⚠ 本结果取决于：${s.hinges.map((k) => SENS_ZH[k] || k).join('、')}——比较设计点时请在这些假设下复核（当前 ${num(s.base_tok_s)} tok/s，瓶颈 ${s.base_bound}）`
+    : `本结果对重叠方式、DRAM 效率、向量 lane 的变化不敏感（阈值 ${pct(s.threshold)}）`;
 }
 function renderBudget(r) {
   const b = r.budget;
@@ -1403,8 +1422,8 @@ async function init() {
 
   fillModels();
   seg('chip-preset', Object.keys(S.cat.chips).map((k) => [k, k]), () => S.preset, (v) => { S.preset = v; S.chipOver = {}; onPreset(); syncInputs(); schedule(); });
-  for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps']) {
-    const nullable = k === 'sram_port_Bpc' || k === 'gemv_macs';
+  for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps']) {
+    const nullable = k === 'sram_port_Bpc' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine';
     bindNumber('c-' + k, () => chipVal(k), (x) => { if (x === null) delete S.chipOver[k]; else S.chipOver[k] = x; if (k === 'freq_ghz') onPreset(); },
       { int: k === 'gemv_macs', nullable });
   }
@@ -1476,6 +1495,7 @@ async function init() {
     $('p-package_cards')._sync(); d2dPaint(); schedule();
   });
   $('c-slc_policy').addEventListener('change', (e) => { S.chipOver.slc_policy = e.target.value; schedule(); });
+  $('c-attn_fmt').addEventListener('change', (e) => { if (e.target.value) S.chipOver.attn_fmt = e.target.value; else delete S.chipOver.attn_fmt; schedule(); });
   $('l-pp_split').addEventListener('change', (e) => { S.sc.pp_split = e.target.value; schedule(); });
   $('l-indexer').addEventListener('change', (e) => { S.sc.indexer = e.target.value; schedule(); });
   for (const k of ['images', 'image_w', 'image_h'])

@@ -3,6 +3,25 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.96.0]
+
+### Added (opt-in; NPU catalog fingerprint c034bfe3 unchanged)
+- `Chip.attn_fmt = "kv"`: native KV-format attention. When the KV format is native, QK / PV run at its MAC rate with
+  Q quantised on the vector path and P cast in the softmax epilogue (the FlashAttention-3 FP8 recipe); there is no
+  per-step KV up-cast. Default "" = bf16 math with the KV up-cast. Exposed in the UI (注意力计算) and the CLI (`--attn-fmt`).
+- `Chip.sram_port_Bpc_per_engine`: SRAM port width per engine, scaled by `engines`, so engine sweeps and die splits
+  carry a per-die port. Exclusive with the chip-wide `sram_port_Bpc`. UI + `--sram-port-per-engine`.
+- 敏感度 panel / `sensitivity` block in `/api/eval` (on by default; `"sensitivity": false` or `--no-sensitivity` turns
+  it off): the same scenario under no overlap (serial), DRAM efficiency 0.5 / 0.9 and ¼ of the vector lanes, with the
+  ratio, the bottleneck, flips, and the constants the result hinges on (|Δ| > 15 % or a bottleneck flip). The CLI prints
+  one 敏感度 line when something hinges.
+
+### Unchanged (documented)
+- `mem_eff` stays 0.7 for both HBM and LPDDR. Public streaming measurements put both at about 80–95 % of peak:
+  H100 HBM3 BabelStream Triad ≈ 87–89 % (Godoy et al. 2025); Grace LPDDR5X STREAM Triad 80–95 % (NVIDIA Grace
+  benchmarking guide), up to 98 % (NVIDIA Grace blog), 90.6 % independent (GH200, 480 GB). That does not support a
+  type-specific default. 0.7 is an inference-traffic effective value, not a STREAM value (MODEL §42).
+
 ## [0.95.0]
 
 ### Fixed

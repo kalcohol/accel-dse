@@ -2020,3 +2020,21 @@ sweep engines.
 4. **mac_eff = 1.0 / weight-tile load = rows cycles.** These set the engine count at which decode turns memory-bound (C4).
 
 The fix found along the way: `dequant_elems_per_cycle` is now honoured (it was a dead knob).
+
+## 42. 0.96 — follow-ups to the §41 review
+
+* **Native KV-format attention** (`Chip.attn_fmt = "kv"`, opt-in). §41 found that "FP8 KV helps" depends on the
+  vector-lane constant, because the bf16 attention core up-casts the whole cache every decode step. The native path
+  computes QK / PV in the KV format: Q is quantised (one vector op per Q element) and P is cast inside the softmax
+  epilogue (FlashAttention-3 FP8 / FP8 FMHA). 1P, qwen3-8b, FP8 W/A/KV, B = 64 decode: 10.8k → 15.5k tok/s; at ¼ of
+  the lanes 6.5k → 15.5k. The result no longer depends on vector lanes. A KV format the chip does not support natively
+  falls back to the default path.
+* **Per-engine SRAM port** (`Chip.sram_port_Bpc_per_engine`) removes the §41 die-split trap.
+* **Sensitivity panel.** Every `/api/eval` result carries `sensitivity`: re-evaluations with no overlap, DRAM efficiency
+  0.5 / 0.9 and ¼ of the vector lanes. A row hinges when |Δ| > 15 % (a display threshold 「假设」) or the bottleneck flips.
+  The UI shows the table (敏感度) and a one-line verdict. For DRAM-bound points, DRAM efficiency always hinges (the result
+  scales with it): treat absolute numbers as conditional on that constant, and compare design points under the same value.
+* **HBM vs LPDDR efficiency.** Kept at one value of 0.7. Public STREAM / BabelStream data shows no systematic gap (HBM3
+  H100 Triad ≈ 87–89 %; Grace LPDDR5X 80–95 %, NVIDIA up to 98 %, independent 90.6 %). Both sit well above 0.7, which
+  stands for inference traffic (mixed read / write, irregular KV), not for streaming. Type-specific defaults would need
+  inference-traffic measurements per type, and none are public.

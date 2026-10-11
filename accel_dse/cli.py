@@ -116,6 +116,12 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--slc-GBps", dest="slc_GBps", type=float, default=None, help="SLC bandwidth (default 2000 「假设」)")
     p.add_argument("--slc-policy", dest="slc_policy", default=None, choices=["pin", "lru", "pin_bw"],
                    help="SLC policy: pin (software-pinned like SRAM) | lru (all-or-nothing cyclic bound)")
+    p.add_argument("--attn-fmt", dest="attn_fmt", default=None, choices=["", "kv"],
+                   help="attention core: '' = bf16 + KV up-cast (default) | kv = native KV-format attention (0.96)")
+    p.add_argument("--sram-port-per-engine", dest="sram_port_Bpc_per_engine", type=float, default=None,
+                   help="SRAM port width per engine, B/cycle (scales with engines; 0.96)")
+    p.add_argument("--no-sensitivity", dest="no_sensitivity", action="store_true",
+                   help="skip the 0.96 sensitivity block (no-overlap / DRAM efficiency / vector lanes re-evaluation)")
     p.add_argument("--link-GBps", dest="link_GBps", type=float, default=None,
                    help="in-node scale-up tier bandwidth per rank (default 400 「假设」)")
     p.add_argument("--link-alpha-us", dest="link_alpha_us", type=float, default=None, help="scale-up tier α (default 3)")
@@ -337,7 +343,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["layout"] = {k: getattr(a, k) for k in ("pp", "tp", "dp", "ep", "etp", "sp")}
         if getattr(a, "cp", 1) > 1:     # 0.88 context parallel (omitted at 1: hash unchanged)
             sc["layout"]["cp"] = a.cp
-    chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy") if getattr(a, k, None) is not None}
+    chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy", "attn_fmt", "sram_port_Bpc_per_engine")
+            if getattr(a, k, None) is not None}
     if chip:
         sc["chip"] = chip
     for tier, pre in (("link", "link"), ("d2d", "d2d"), ("net", "net")):
@@ -436,9 +443,15 @@ def cmd_d2d(a) -> dict:
 def cmd_eval(a) -> dict:
     body = _body(a)
     body["best_batch"] = a.best_batch
+    if getattr(a, "no_sensitivity", False):
+        body["sensitivity"] = False
     out = api.api_eval(body)
     if a.json:
         return out
+    sens = out.get("sensitivity")
+    if sens and sens["hinges"]:
+        print("敏感度: " + "; ".join(f"{x['label']} → {x['ratio']:.2f}×{' (瓶颈 ' + x['bound'] + ')' if x.get('bound_flip') else ''}"
+                                   for x in sens["rows"] if x.get("hinge")))
     s = out["summary"]
     m = out["model"]
     sc0 = out["scenario"].get("serving", {})

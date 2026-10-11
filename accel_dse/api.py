@@ -18,6 +18,8 @@ from .core.catalog import DOMAINS, catalog_listing, get_model, labels, list_mode
 from .core.budget import Budget, budget_report
 from .core.disagg import disagg_report
 from .core.energy import EnergyTable, energy_report, scaleup_bytes
+from dataclasses import replace
+
 from .core.evaluate import Result, evaluate
 from .core.hardware import CHIPS, Chip
 from .core.mapping import ORG_LABEL, ORGS
@@ -119,7 +121,7 @@ def _finite(x: Any, where: str = "body") -> None:
 
 
 _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
-_ROUTE_KEYS = {"eval": {"best_batch", "goodput"}, "fit": set(), "layouts": {"cards", "objective"},
+_ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
                "pareto": set(), "sweep": {"path", "values"}}
 
@@ -334,6 +336,43 @@ def _pd_prefill_budget(scn, pd_rep: dict, bud: Budget, table: EnergyTable) -> di
     return rep
 
 
+SENS_HINGE = 0.15     # 0.96: |Δ| above which a result "hinges" on the assumption 「假设」 (display threshold only)
+
+
+def sensitivity_report(scn: Scenario, r: Result) -> dict:
+    """0.96: the same scenario under the three 「假设」 constants that drive NPU design conclusions (MODEL §41):
+    no compute / memory / link overlap, DRAM efficiency 0.5 / 0.9, a quarter of the vector lanes."""
+    eff = scn.mem_eff if scn.mem_eff is not None else evaluate_mem_eff(scn)
+    cases = []
+    if scn.exec_overlap != "serial":
+        cases.append(("exec_overlap", "无重叠（serial：计算 / 访存 / 通信串行）", scn.replace("exec_overlap", "serial")))
+    for e in (0.5, 0.9):
+        if abs(e - eff) > 1e-9:
+            cases.append(("mem_eff", f"DRAM 效率 {e:g}（当前 {eff:g}）", scn.replace("mem_eff", e)))
+    ch = scn.chip
+    cases.append(("vector_lanes", f"向量 lane ÷4（{ch.lanes} → {max(1, ch.lanes // 4)}）",
+                  scn.replace("chip", replace(ch, vector_lanes=max(1, ch.lanes // 4)))))
+    base = r.throughput
+    rows = []
+    for key, label, s in cases:
+        try:
+            q = evaluate(s)
+        except ValueError as e:
+            rows.append({"key": key, "label": label, "error": str(e)})
+            continue
+        ratio = q.throughput / base if base else None
+        rows.append({"key": key, "label": label, "tok_s": q.throughput, "ratio": ratio, "bound": q.bound,
+                     "fits": q.fits, "bound_flip": q.bound != r.bound,
+                     "hinge": bool(ratio is not None and (abs(ratio - 1) > SENS_HINGE or q.bound != r.bound))})
+    hinges = sorted({x["key"] for x in rows if x.get("hinge")})
+    return {"base_tok_s": base, "base_bound": r.bound, "threshold": SENS_HINGE, "rows": rows, "hinges": hinges}
+
+
+def evaluate_mem_eff(scn: Scenario) -> float:
+    from .core.hardware import System
+    return System(scn.chip, scn.mem_id, None).mem.efficiency
+
+
 def api_eval(body: dict) -> dict:
     _check_keys(body, "eval")
     scn = scenario_from_body(body)
@@ -352,6 +391,8 @@ def api_eval(body: dict) -> dict:
     if bb is not None and not bb.batch:     # 0.61.3: say so instead of silently evaluating the entered batch
         out["summary"]["warnings"].append(f"最佳 batch：没有既放得下又满足 SLO 的 batch，按输入的 batch {scn.serving.batch} 评估")
     out["energy"] = energy_report(r, table)      # 0.47.1: action counts always; J only for user-supplied entries
+    if body.get("sensitivity", True):
+        out["sensitivity"] = sensitivity_report(scn, r)
     if bud is not None:
         out["budget"] = budget_report(r, bud, out["energy"])
     if scn.fabric.enabled:  # 0.59: per-collective algorithm / topology breakdown

@@ -91,6 +91,13 @@ class Chip:
     # from a public kernel benchmark (e.g. Hopper FP8 block-scaled GEMM, DeepGEMM), applied as max(t, ideal / frac);
     # a "<kind>:<fmt>" key (e.g. "attn:bf16") takes precedence for that op kind
     fmt_ceiling: tuple = field(default=(), metadata={"omit_default": True})
+    # 0.96 (opt-in): attention-core compute format. "" = bf16 math with the KV cache up-cast on the vector path (the
+    # default); "kv" = native low-precision attention when the KV format is native (Q and P quantised to it — the
+    # FlashAttention-3 FP8 / FP8-FMHA recipe): no KV up-cast, MAC rate of the KV format, Q / P quantisation charged
+    attn_fmt: str = field(default="", metadata={"omit_default": True})
+    # 0.96: SRAM port width per engine (B/cycle) — scales with `engines` (sweeps / die splits); exclusive with the
+    # chip-wide absolute sram_port_Bpc
+    sram_port_Bpc_per_engine: float | None = field(default=None, metadata={"omit_default": True})
 
     def __post_init__(self):
         # 0.94: JSON round-trips give lists — keep the field hashable and the scenario hash stable
@@ -112,6 +119,14 @@ class Chip:
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not (lo <= v < 1e7):
                 raise ValueError(f"chip.{k} must be finite and ≥ {lo:g}")
+        if self.sram_port_Bpc_per_engine is not None:
+            v = self.sram_port_Bpc_per_engine
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not (math.isfinite(v) and v > 0):
+                raise ValueError("chip.sram_port_Bpc_per_engine must be finite and > 0")
+            if self.sram_port_Bpc:
+                raise ValueError("set either chip.sram_port_Bpc (chip-wide) or chip.sram_port_Bpc_per_engine, not both")
+        if self.attn_fmt not in ("", "kv"):
+            raise ValueError("chip.attn_fmt must be '' (bf16 + KV up-cast) or 'kv' (native KV-format attention)")
         if self.attn_sched and self.attn_sched not in INSTANCE_SCHEDS:
             raise ValueError(f"chip.attn_sched must be empty or one of {', '.join(INSTANCE_SCHEDS)}")
         if self.instance_sched not in INSTANCE_SCHEDS:
@@ -155,6 +170,8 @@ class Chip:
 
     @property
     def port_Bpc(self) -> float:
+        if self.sram_port_Bpc_per_engine:
+            return self.sram_port_Bpc_per_engine * self.engines
         return self.sram_port_Bpc or 4.0 * (self.rows + self.c_eff) * 2.0
 
     @property

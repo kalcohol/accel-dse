@@ -176,7 +176,15 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
         c = min((gemm_cost(ch, org, a, op.k, b, count=op.count, w_fmt=af, a_fmt=af)
                  for a, b in ((op.m, op.n), (op.n, op.m))), key=lambda x: x.cycles)
     elif op.kind == "attn":
-        c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=op.w_fmt or model.kv_fmt, a_fmt=op.a_fmt)
+        kf = op.w_fmt or model.kv_fmt
+        if ch.attn_fmt == "kv" and kf != op.a_fmt and ch.formats.native(kf):
+            # 0.96 native KV-format attention: Q quantised on the vector path (QK); P is cast inside the softmax epilogue
+            # (FlashAttention-3 FP8), already charged with softmax
+            c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=kf, a_fmt=kf)
+            if op.name.startswith("qk"):
+                c = replace(c, convert_elems=c.convert_elems + op.m * op.k * op.count)
+        else:
+            c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=kf, a_fmt=op.a_fmt)
     else:
         return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0, 0.0, 0.0, 0.0
     t = c.cycles * op.causal / f
