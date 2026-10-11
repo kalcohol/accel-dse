@@ -149,6 +149,17 @@ class Workload:
                 raise ValueError(f"workload.{k} must be finite > 0")
 
 
+def _resolve_chip(v, where: str):
+    """0.81: a chip preset name → the preset (the Python constructors accepted a str for ``chip`` and failed later with
+    AttributeError, and rejected one for ``pd.prefill_chip`` with a message saying names are allowed); unknown names
+    and non-chips → ValueError.  Chip objects pass unchanged (hashes unaffected)."""
+    if isinstance(v, str):
+        if v not in CHIPS:
+            raise ValueError(f"{where}: unknown chip preset {v!r} (one of {', '.join(CHIPS)})")
+        return CHIPS[v]
+    return v
+
+
 @dataclass(frozen=True)
 class PDConfig:
     """Prefill / decode disaggregation (0.50; core/disagg.py).  Off by default = colocated serving (unchanged).
@@ -240,6 +251,7 @@ class PDConfig:
                     raise ValueError("pd.length_mix: prompt / out_len must be integers in [1, 2097152]")
         if mix and (self.prompt_cv or self.out_cv):
             raise ValueError("pd.length_mix and pd.prompt_cv / pd.out_cv are alternatives — set one")
+        object.__setattr__(self, "prefill_chip", _resolve_chip(self.prefill_chip, "pd.prefill_chip"))
         if self.prefill_chip is not None and not isinstance(self.prefill_chip, Chip):
             raise ValueError("pd.prefill_chip must be a chip preset name, a chip object or null")
         if self.prefill_mem_id is not None and (not isinstance(self.prefill_mem_id, str) or not self.prefill_mem_id
@@ -326,6 +338,9 @@ class Scenario:
     layer_overhead_us: float = field(default=0.0, metadata={"omit_default": True})
 
     def __post_init__(self):
+        object.__setattr__(self, "chip", _resolve_chip(self.chip, "chip"))
+        if not isinstance(self.chip, Chip):
+            raise ValueError("chip must be a chip preset name or a chip object")
         if self.mapping not in ORGS:
             raise ValueError(f"mapping must be one of {ORGS}")
         if self.pp_split not in PP_SPLITS:

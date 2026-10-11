@@ -323,6 +323,7 @@ class _Replica:
         self.kv_cap: int | None = None
         self.kv_policy = "off"
         self.kv_res = 0                    # wait: reserved S + out of the running set
+        self.arrived: deque[Req] = deque()   # 0.81: PD before_prefill, KV arrived, joins at the next boundary
         self.reprefq: deque[Req] = deque()  # recompute / swap: preempted, waiting to be restored
         self.restoring: Req | None = None    # 0.57: the sequence being restored holds its KV + slot (vLLM allocates
                                              # the blocks when it schedules the recompute / swap-in)
@@ -343,8 +344,11 @@ class _Replica:
     def offer_decode(self, r: Req):
         r.tokens_left = r.out
         if self.before and r in self.pending:     # PD before_prefill: admitted earlier, KV has arrived
-            self.pending.remove(r)
-            self._start_decoding(r)
+            # 0.81: it joins at the next iteration boundary (still reserved in `pending` until then).  It used to start
+            # here mid-iteration: decode_start / last_tok were set before the iteration it first runs in, so its
+            # first gap (TPOT, worst gap) included the in-flight iteration's remainder — the same schedule measured
+            # 32–44 % larger worst gaps than with the KV cap off (the joinq path starts at the boundary)
+            self.arrived.append(r)
         else:
             r.ready_t = self.eng.t
             self.joinq.append(r)
@@ -397,6 +401,10 @@ class _Replica:
         self.running.append(r)
 
     def _admit(self):
+        while self.arrived:                       # 0.81: KV-arrived before_prefill requests start at the boundary
+            r = self.arrived.popleft()
+            self.pending.remove(r)
+            self._start_decoding(r)
         self._admit_pd()
         while self.joinq and self._can_admit(self.joinq[0]):
             r = self.joinq.popleft()

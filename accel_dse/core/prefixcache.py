@@ -16,7 +16,7 @@ stages, × attention-DP groups.  Footprint of one prefix = its KV + indexer keys
 ``prefix_len`` tokens, as stored on the cards (TP shards / replicas counted as memplan does).
 Routing: random → each replica's cache sees the whole population (H at per-replica K); ``pd.prefix_affinity`` →
 prefix-aware routing partitions the prefixes (H at the aggregate K · replicas).
-Not modelled: partial-prefix (radix-tree) matches, block granularity, cache warm-up, eviction cost, the colocated
+Not modelled here: block granularity (partial-prefix radix matching: the 0.58 tree model below), cache warm-up, eviction cost, the colocated
 replica's transient prefill KV, the queueing model's larger batch caps shrinking the free memory.
 """
 
@@ -199,18 +199,36 @@ def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
 
     def occ(T):
         return sum(L * c * -math.expm1(-q * T) for (L, _, _), g in zip(lv, gs_fit) for c, q in g)
-    lo, hi = 0.0, 1.0
-    while occ(hi) < C_tokens and hi < 1e300:
-        hi *= 2.0
-    for _ in range(200):
-        mid = 0.5 * (lo + hi)
-        if occ(mid) < C_tokens:
-            lo = mid
-        else:
-            hi = mid
-        if hi - lo <= 1e-12 * hi:
-            break
-    T = 0.5 * (lo + hi)
+
+    def solve(C):
+        lo, hi = 0.0, 1.0
+        while occ(hi) < C and hi < 1e300:
+            hi *= 2.0
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            if occ(mid) < C:
+                lo = mid
+            else:
+                hi = mid
+            if hi - lo <= 1e-12 * hi:
+                break
+        return 0.5 * (lo + hi)
+    # 0.81: the LRU holds whole nodes (evicts until used ≤ C), so part of C is always slack.  One node length: exactly
+    # ⌊C/L⌋ nodes.  Mixed lengths: slack ≈ ½ the mean evicted node length (eviction mix ∝ node miss rate p·(1 − h),
+    # one Che pass at C).  Che on the raw C overstated hits when the cache holds a few nodes (128-token nodes in 308
+    # tokens: H 0.24 vs the RadixLRU's 0.20)
+    lens = {L for L, _, _ in lv}
+    if len(lens) == 1:
+        L0 = lens.pop()
+        C_eff = math.floor(C_tokens / L0) * L0
+    else:
+        T0 = solve(C_tokens)
+        num = sum(L * c * q * math.exp(-q * T0) for (L, _, _), g in zip(lv, gs_fit) for c, q in g)
+        den = sum(c * q * math.exp(-q * T0) for (L, _, _), g in zip(lv, gs_fit) for c, q in g)
+        C_eff = C_tokens - 0.5 * num / den if den > 0 else C_tokens
+    if C_eff <= 0:
+        return [[0.0] * len(g) for g in gs]
+    T = solve(C_eff)
     return [[-math.expm1(-q * T) for _, q in g] for g in gs_fit] + zero
 
 

@@ -3,6 +3,18 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.81.0] - 2026-10-11
+
+第 15 轮对抗性审计：前缀缓存、KV 策略、分块 prefill、投机解码、异构 prefill、PD 能耗对照 DES / 恒等式；MODEL.md 过时表述清理。默认指纹不变。
+
+- **radix 前缀树的节点粒度（数值修正，仅 `pd.prefix_tree`）**：LRU 只存整节点，Che 按连续容量求解，缓存只放得下少数节点时高估命中（10 个 128-token 节点、308 token：0.24 → 0.20，与 RadixLRU 一致）。节点长度相同时取 ⌊C/L⌋·L；不同时减去被淘汰节点平均长度的一半。286 个随机树对 RadixLRU：平均 |误差| 0.029 → 0.013，p90 0.088 → 0.030。整前缀 LRU 的 Che 对 DES 60 / 60 一致。
+- **DES 修正（PD before_prefill + KV 策略）**：KV 到达的请求原来在迭代中途记为开始 decode，首个间隔多算在途迭代的剩余时间：同一调度下，开一个从不绑定的 KV 上限，最长间隔 p99 就从 10.0 变为 14.3 ms。现在在下一个迭代边界开始，与关闭上限逐位一致。V4 数据不受影响。
+- **构造函数接受芯片预设名**：`Scenario(chip="1P")` 原来在 evaluate 时 AttributeError，`PDConfig(prefill_chip="100T")` 原来被拒绝；现在都解析为预设（哈希不变），未知名称报 ValueError。
+- **对照结论（无需修改）**：28 个随机 KV 策略 / 投机解码 / 异构 prefill / 分块点对 DES，除 seed 噪声大的 TTFT p99 外都在 V4 误差带内；两个短运行「DES 不稳定」点在 4 倍长度下稳定。PD 能耗：静态能耗按池 = W × 卡数 /(λ·out)，KV 交接字节只计一次，对能耗表线性。投机解码能耗按接受 token 计。
+- **已知缺口（记录，未拟合）**：合并模式 recompute、KV 很紧时，闭式按「等一个离开」Exp(1/λ_r) 计被抢占者等待（740 ms），DES 平均 40 ms（被抢占者下一边界即可装回，vLLM 式）；最长间隔偏保守 5–8 倍（MODEL §27）。
+- **MODEL.md**：标注 / 改正后续版本已补上的「不做」与过时常数（网络拓扑与网内归约、异构池、按池闲置功率、radix / KV 容量排队、`split_instances` → `instance_sched`、decode batch 搜索上限、池搜索副本规模、`workload.tmpl_msa`）；新增 §27。
+- 新增常驻测试 `tests/test_core_081.py`（7 项）。
+
 ## [0.80.0] - 2026-10-11
 
 PD 池布局搜索审计收尾与提速（结果逐位不变）；V4 服务验证改用长运行重跑。
