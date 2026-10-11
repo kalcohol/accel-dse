@@ -1009,6 +1009,10 @@ def _repl_full(l: Linear, tp: int, sp: int) -> int:
 def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:
     if L.pair_linears or L.pair_cores:
         return _pair_layer_ops(model, li, L, ph, sh)
+    if not (L.attn_linears or L.ffn_linears or L.cross_linears or L.cross is not None or L.core.kind != "none"):
+        # 0.75: a parameter-holder layer (misc_params only — e.g. ESMFold's esm_s combine / esm I/O norms, read with
+        # the hot set by memplan) has no block: it emitted a phantom pre-norm / FFN-norm / residual (+ TP all-reduces)
+        return []
     h = model.hidden
     ab = _fmt(model.act_fmt).bytes
     rb = red_bytes(model)
