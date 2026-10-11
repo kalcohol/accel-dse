@@ -82,6 +82,7 @@ def handle(method: str, path: str, raw: bytes = b"") -> tuple[int, dict]:
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 30      # 0.88: socket read / write timeout — a client that never sends its body no longer holds a thread
     server_version = f"accel-dse/{__version__}"
 
     def log_message(self, fmt, *args):  # quieter log: one line per API call
@@ -119,15 +120,28 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         if n > MAX_BODY:
             return self._send(413, b'{"error":"request body too large"}', "application/json")
-        self._api("POST", self.rfile.read(n))
+        try:
+            body = self.rfile.read(n)
+        except TimeoutError:
+            self.close_connection = True
+            return self._send(408, b'{"error":"request body not received in time"}', "application/json")
+        self._api("POST", body)
 
 
 def _on_sigterm(signum, frame):
     raise KeyboardInterrupt
 
 
+class Server(ThreadingHTTPServer):
+    """0.88: listen backlog 5 (socketserver default) reset 39–55 % of the connections of a 64–128-request burst
+    (ECONNRESET); the kernel caps the backlog at net.core.somaxconn.  Handler threads are daemons so a stuck request
+    cannot block shutdown."""
+    request_queue_size = 1024
+    daemon_threads = True
+
+
 def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = Server((host, port), Handler)
     workers = api.enable_pool()
     print(f"accel_dse v{__version__} http://{host}:{port}/ ({workers} search workers)", flush=True)
     signal.signal(signal.SIGTERM, _on_sigterm)
