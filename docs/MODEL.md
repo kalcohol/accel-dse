@@ -1969,3 +1969,54 @@ the default either: alone, under `wide`, they worsen r4 and moe decode / prefill
 the candidate gives 42 ms, DRAM-bound (expert weights about 82 GB/step). The 1.2.0 1024/1024 row is still 2.4×.
 Candidates without public numbers: masked grouped-GEMM efficiency at M ≈ 32 per expert, attention-DP imbalance, and
 host / detokenisation overhead at concurrency 1024 (the GPT-OSS blog notes it "cannot be hidden" at high concurrency).
+
+## 41. 0.95 — NPU design-space adversarial review
+
+Base: `1P` (32 × 128 × 128 engines, 1 GHz, 256 MiB SRAM), qwen3-8b / qwen3-30b-a3b / qwen3-32b, HBM3e 8 stacks and
+LPDDR6 8×96. Scripts: `val5/npu095/{sweeps,sweeps2,sens,mono}.py`.
+
+**Monotonicity.** None of the SRAM, engine, clock, DRAM-efficiency or memory-bandwidth sweeps lowers throughput.
+The randomised check (≈ 890 pairs, three overlap modes, five models, SLC policies) has no violations other than
+capacity-losing memory steps.
+
+**Bottleneck flips, and why they happen:**
+* **Engines 16 → 32, and clock 0.5 → 1 GHz (decode, any batch ≤ rows): MAC → DRAM.** Weight-stationary B = 1 decode
+  loads each 128 × 128 tile in `rows` cycles, so the array takes in weights at engines · cols · 2 B · f = 4.1 TB/s
+  (16 engines), which is below the 4.6 TB/s effective HBM bandwidth. 32 engines (8.2 TB/s) are above it. The flip is the
+  same at B = 64, because M < rows still leaves the tile load-bound.
+* **Partition 8 × 256² vs 32 × 128²** (same MACs): fewer, larger arrays take in half the weights per cycle, so decode
+  becomes MAC-bound. Prefill is nearly unchanged.
+* **Memory HBM3e → HBM4 (decode): DRAM → MAC.** 11.5 TB/s exceeds the 8.2 TB/s array intake.
+* **SRAM on LPDDR prefill 256 → 512 MiB: DRAM → MAC.** With a smaller SRAM the weight tiles are re-streamed per
+  activation M-tile (budget SRAM / 2). On HBM the re-streaming is hidden.
+* **DRAM efficiency 0.7 → 0.8 / 0.9: DRAM → MAC.** Same crossing, on the efficiency axis.
+
+**Conclusion sensitivity** (base → value under the perturbed constant):
+
+| conclusion | base | exec_overlap kernel / serial | mem_eff 0.5 / 0.9 | mac_eff 0.8 | vector_lanes ÷ 4 |
+|---|---|---|---|---|---|
+| C1 HBM / LPDDR6 decode ratio | 10.4 | 10.2 / **6.0** | 10.4 / 9.5 | 9.8 | 10.4 |
+| C3 LPDDR6 prefill SRAM knee (95 %) | 128 MiB | 128 / **512** | 256 / 64 | 64 | 128 |
+| C4 engines for 95 % B = 1 decode | 32 | 32 / **64** | 32 / **64** | **64** | 32 |
+| C5 FP8 act + KV gain (HBM, B = 64) | 1.20 | 1.05 / 1.19 | **1.68** / 1.16 | 1.16 | **0.72** |
+| C2 D2D 16 / 1 units, prefill | 1.00 | **1.09** / 1.09 | 1.00 | 1.00 | 1.00 |
+| C6 2-die / monolithic, decode | 0.995 | 0.99 | 1.00 | 1.00 | 1.00 |
+
+No effect on any conclusion: acc_kib 256 / 4096, gemv_macs, noc_hop_cycles 20, sram_port ×4, d2d α 5 µs (except C6
+0.96), wave_overhead 500 (C5 1.15). `sram_port ×0.25` changed C6 (2-die 1.10×), but that is a harness artifact: an
+explicit `sram_port_Bpc` is absolute, so it does not shrink with engines when a die is halved. Pass it scaled when you
+sweep engines.
+
+**Conclusions driven by an arbitrary constant (treat them as assumption-conditional):**
+1. **exec_overlap = "stage"** (one roofline per stage). It hides TP / D2D collectives completely, which is why D2D
+   bandwidth "does not matter" (C2). Under serial overlap the HBM-vs-LPDDR ratio drops from 10.4 to 6.0, and the SRAM
+   knee and the engine count needed both double. **Highest-impact constant.**
+2. **mem_eff = 0.7** (one value for HBM and LPDDR). It sets every decode absolute number, the position of the
+   compute / memory flips (C4) and the size of the FP8 gain (C5). Per-type efficiency is not modelled; if LPDDR is
+   less efficient than HBM, C1 grows.
+3. **vector_lanes = 4 · cols · engines.** With FP8 KV the attention core upcasts the cache on the vector path every
+   decode step. At ÷4 lanes, FP8 KV makes decode **slower** (0.72×). Native FP8 attention (no upcast) is not a modelled
+   option, so "FP8 KV helps" holds only when the vector budget is large enough.
+4. **mac_eff = 1.0 / weight-tile load = rows cycles.** These set the engine count at which decode turns memory-bound (C4).
+
+The fix found along the way: `dequant_elems_per_cycle` is now honoured (it was a dead knob).

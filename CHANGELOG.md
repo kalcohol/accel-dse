@@ -3,6 +3,21 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.95.0]
+
+### Fixed
+- `FormatSupport.dequant_elems_per_cycle` was validated and documented but never read: format conversion always ran on
+  the vector lanes. It now sets the conversion throughput; the default (None = vector lanes) is bit-identical.
+
+### Validation (NPU design space, MODEL §41)
+- Randomised monotonicity check (≈ 890 pairs: SRAM / engines / clock / memory bandwidth / SLC size + bandwidth,
+  stage / kernel / serial overlap, dense / MoE / linear-attention, decode / prefill): no violations. The only flags were
+  memory steps that lose capacity (LPDDR6 256 GB → HBM3e 144 GB no longer fits).
+- Every bottleneck flip in the SRAM / engines / partition / memory / clock / DRAM-efficiency sweeps is explained by a
+  roofline crossing (§41).
+- Conclusion sensitivity to 「假设」 constants is tabulated. The constants that drive conclusions are exec_overlap,
+  mem_eff, mac_eff and vector_lanes (with FP8 KV); acc_kib, gemv_macs, noc_hop, sram_port (×4) and d2d units do not.
+
 ## [0.94.0]
 
 ### Added (all opt-in; NPU catalog and refhw defaults bit-identical)

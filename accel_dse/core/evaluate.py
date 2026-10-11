@@ -152,6 +152,13 @@ def _attn_chip(ch):
     return replace(ch, instance_sched=ch.attn_sched, attn_sched="")
 
 
+def _convert_seconds(ch, elem_ops: float) -> float:
+    """0.95: format conversion runs on the dequant path — formats.dequant_elems_per_cycle (elements / cycle / chip)
+    when set, else the vector lanes (the pre-0.95 behaviour; the field was validated but never read)."""
+    d = ch.formats.dequant_elems_per_cycle
+    return elem_ops / (d * ch.freq_ghz * 1e9) if d else vector_seconds(ch, elem_ops)
+
+
 def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     """(array s, mac-bound share s, feed-bound share s, vector s, convert elems, ideal s, SRAM-port bytes,
     vector s of per-pass weight conversion)."""
@@ -173,7 +180,7 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     else:
         return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0, 0.0, 0.0, 0.0
     t = c.cycles * op.causal / f
-    vec = vector_seconds(ch, op.vec + c.convert_elems * 2.0)   # 2 element-ops per converted element 「假设」
+    vec = vector_seconds(ch, op.vec) + _convert_seconds(ch, c.convert_elems * 2.0)   # 2 element-ops / element 「假设」
     mac_share = t if c.bound == "mac" else 0.0
     rate = ch.formats.rate(c.exec_fmt) or 1.0
     ideal = op.flops / 2.0 / (ch.macs * rate * ch.freq_ghz * 1e9)   # 100 % array utilisation
@@ -184,7 +191,7 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
             d = ideal / cap - t
             t += d
             mac_share += d
-    vw = vector_seconds(ch, c.convert_w * 2.0) if op.kind == "gemm" else 0.0   # weight dequant: per pass, not per token
+    vw = _convert_seconds(ch, c.convert_w * 2.0) if op.kind == "gemm" else 0.0   # weight dequant: per pass, not per token
     return t, mac_share, t - mac_share, vec, c.convert_elems, ideal, c.feed_cycles * op.causal * ch.port_Bpc, vw
 
 
