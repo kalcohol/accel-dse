@@ -110,6 +110,7 @@ from .scenario import Scenario
 
 QS = (0.5, 0.9, 0.99)
 B_CAPS = (1, 2, 4, 8, 16, 32, 64)
+VICTIM_WAIT = "exp"       # preempted-request restore wait law; "resid" = 0.82 experimental (not adopted, MODEL §28)
 SPLIT_EXACT = 32    # 0.60: PD SLO split search evaluates every split up to this many candidates, else coarse → fine
 INTERP_B = 1024     # 0.60: decode batch above which the birth–death chain interpolates step(k) (see _decode_birth_death)
 FAST_B, FAST_NL = 256, 20000   # 0.61: chains with B ≥ FAST_B and N·L > FAST_NL use C-level dot products
@@ -1517,6 +1518,7 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
             restore = ("recompute", r_re, S_re)
         K, m_f, v_f = kvi["capacity_tokens"], kvi["ES"] + kvi["Eg"], kvi["var_f"]
         nu_rice = 0.0
+        nu_k: dict = {}                            # 0.82: Rice preemption rate per running count k (victim-wait mixture)
         for k_, pk in enumerate(dec.get("run_w") or ()):
             if k_ < 1 or pk <= 0:
                 continue
@@ -1526,7 +1528,9 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
             z = (K - k_ * m_f) / sd
             if z > 12:
                 continue
-            nu_rice += pk * math.exp(-0.5 * z * z) / (sd * math.sqrt(2 * math.pi)) * k_ * dec["e"] / dec["step_of"](k_)[0]
+            dn = pk * math.exp(-0.5 * z * z) / (sd * math.sqrt(2 * math.pi)) * k_ * dec["e"] / dec["step_of"](k_)[0]
+            nu_rice += dn
+            nu_k[k_] = nu_k.get(k_, 0.0) + dn
         pts = ctx["len"].points
         tot = sum(w for w, _, _ in pts)
         Eo = sum(w * o for w, _, o in pts) / tot
@@ -1563,16 +1567,19 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
         nu = nu_rice + nu_sat
         p_v = min(1.0, nu / lam_r) if lam_r > 0 else 0.0                 # preemptions per request
         st = 1 / (1 - f_r)
-        g_mean = t_fix + (1 / lam_r if lam_r > 0 else 0.0)
         tp_mean0 = x["tpot_mean"] * st
+        wl = _victim_wait_law(ctx, nu_k, nu_sat, K, kvi, tp_mean0, lam_r)
+        g_mean = t_fix + wl["mean"]
         x["tpot_mean"] = tp_mean0 + p_v * g_mean / ctx["out"]
         for k_, q in (("tpot_p90", 0.9), ("tpot_p99", 0.99)):
             v = x[k_] * st + p_v * g_mean / ctx["out"]
             if p_v > 1 - q and lam_r > 0:
-                v = max(v, tp_mean0 + (t_fix + math.log(p_v / (1 - q)) / lam_r) / ctx["out"])
+                v = max(v, tp_mean0 + (t_fix + wl["q"](p_v / (1 - q))) / ctx["out"])
             x[k_] = v
         if p_v > 0.01 and lam_r > 0:
-            x["itl_max"] = max(x["itl_max"], t_fix + math.log(p_v / 0.01) / lam_r)
+            x["itl_max"] = max(x["itl_max"], t_fix + wl["q"](p_v / 0.01))
+        if wl["model"] != "exp":
+            kvi["victim_wait_model"] = wl["model"]
         x["e2e_mean"] = x.get("e2e_mean", 0.0) + ctx["out"] * (x["tpot_mean"] - x["tpot_mean"] / st)
         kvi.update(preempt_per_req=p_v, preempt_rice=nu_rice / lam_r if lam_r > 0 else 0.0,
                    preempt_sat=nu_sat / lam_r if lam_r > 0 else 0.0, restore_share=f_r,
@@ -1729,6 +1736,76 @@ def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float, kno
         if k and k > best and k <= lam_s and ok(k):
             best = k
     return best
+
+
+def _victim_wait_law(ctx, nu_k: dict, nu_sat: float, K: float, kvi: dict, tpot: float, lam_r: float) -> dict:
+    """A preempted request's wait until it can be restored: {"mean": s, "q": r → wait with P(W > wait) = 1/r}.
+
+    "exp" (≤ 0.81): Exp(1/λ_r) — the next departure at the mean rate.  "resid" (0.82): the victim (youngest) is
+    restored when one of the k − 1 others departs (its own freed room then fits again, vLLM-style readmission).
+    Preemption happens when the footprint reaches K, i.e. when the running set is old: the others' remaining output
+    R is taken from the equilibrium residual law of the length mix (length-biased, age U·o), rescaled to its mean
+    given Σ footprint = K (Gaussian conditioning over the k exchangeable requests: fixed lengths → Ψ/k with
+    Ψ = k(S + o) − K; exponential outputs → unshifted).  Wait = min of k − 1 such R, × TPOT; mixed over k by the Rice
+    rate per k, saturation preemptions at k_sat = round(K / E[S + o/2])."""
+    mode = ctx.get("_victim_wait", VICTIM_WAIT)
+    if mode == "exp" or tpot <= 0:
+        m = 1 / lam_r if lam_r > 0 else 0.0
+        return {"model": "exp", "mean": m, "q": lambda r: math.log(r) / lam_r}      # ≤ 0.81 expressions, bit-identical
+    pts = [(w, S, o) for w, S, o in ctx["len"].points if w > 0 and o > 0]
+    # running requests: length-biased (time in system ∝ o), age a = U·o; footprint F = S + a, remaining R = o − a
+    Z = sum(w * o for w, _, o in pts)
+    if Z <= 0:
+        return {"model": "resid", "mean": 0.0, "q": lambda r: 0.0}
+    mF = sum(w * o * (S + o / 2) for w, S, o in pts) / Z
+    vF = sum(w * o * (S * S + S * o + o * o / 3) for w, S, o in pts) / Z - mF * mF
+    mR = sum(w * o * o / 2 for w, S, o in pts) / Z
+    cFR = sum(w * o * (S * o / 2 + o * o / 6) for w, S, o in pts) / Z - mF * mR
+    ws = dict(nu_k)
+    if nu_sat > 0:
+        ks = max(2, int(round(K / max(1e-9, kvi["ES"] + kvi["Eg"]))))
+        ws[ks] = ws.get(ks, 0.0) + nu_sat
+    comps = []
+    for k_, w_ in ws.items():
+        if w_ <= 0 or k_ < 2:
+            continue
+        # E[R | Σ F = K] by Gaussian conditioning (k exchangeable requests): fixed lengths → Ψ/k with Ψ = k(S + o) − K;
+        # exponential outputs → no shift (memoryless)
+        m_c = mR + (cFR / vF * (K / k_ - mF) if vF > 0 else 0.0)
+        m_c = min(max(0.0, m_c), max(o for _, _, o in pts))
+        comps.append((w_, k_, m_c))
+    wt = sum(c[0] for c in comps)
+    if wt <= 0:
+        return {"model": "resid", "mean": 0.0, "q": lambda r: 0.0}
+    comps = [(w_ / wt, k_, m_c) for w_, k_, m_c in comps]
+
+    def r_surv(r):           # equilibrium residual law P(R > r) = Σ w (o − r)⁺ / Σ w o
+        return sum(w * max(0.0, o - r) for w, _, o in pts) / Z
+
+    def surv(x):             # P(wait > x seconds): min over the k − 1 others of R scaled to mean m_c, × TPOT
+        tot_ = 0.0
+        for w_, k_, m_c in comps:
+            if m_c <= 0:
+                continue
+            tot_ += w_ * r_surv(x / tpot * mR / m_c) ** (k_ - 1)
+        return tot_
+    hi = max(o for _, _, o in pts) * tpot * max((m_c / mR if mR > 0 else 0.0) for _, _, m_c in comps)
+    n_ = 400
+    mean = sum(surv(hi * (i + 0.5) / n_) for i in range(n_)) * hi / n_ if hi > 0 else 0.0
+
+    def q(r):                # wait with P(W > wait) = 1 / r
+        t = 1.0 / r
+        if t >= 1 or hi <= 0:
+            return 0.0
+        lo_, hi_ = 0.0, hi
+        for _ in range(60):
+            mid = 0.5 * (lo_ + hi_)
+            if surv(mid) > t:
+                lo_ = mid
+            else:
+                hi_ = mid
+        return 0.5 * (lo_ + hi_)
+    return {"model": "resid", "mean": mean, "q": q}
 
 
 def _public(x: dict) -> dict:

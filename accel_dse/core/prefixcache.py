@@ -22,6 +22,7 @@ replica's transient prefill KV, the queueing model's larger batch caps shrinking
 
 from __future__ import annotations
 
+import functools
 import math
 from types import SimpleNamespace
 
@@ -148,6 +149,7 @@ def both_hit(groups, h1, h2) -> float:
 # P(match depth ≥ k) = H_k = Σ_{level-k nodes} p·h, exactly (by the tree property) given Che.
 
 TREE_RATIO = 1.01
+TREE_SLACK = "mean"        # capacity slack of the boundary node (0.82: "size"-biased tested, worse — kept 0.81)
 
 
 def _merge_groups(groups) -> list[tuple[float, float]]:
@@ -193,6 +195,10 @@ def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
             break
     lv, gs_fit = levels[:m], gs[:m]
     zero = [[0.0] * len(g) for g in gs[m:]]
+    if m and EXACT_TREE and _n_paths(lv) <= EXACT_PATHS and all(len(g) == n for g, n in zip(gs_fit, _level_nodes(lv))):
+        ex = _tree_exact_memo(tuple((int(L), int(n), float(a)) for L, n, a in lv), float(C_tokens))
+        if ex is not None:                         # None: over the enumeration budget → Che below
+            return [list(x) for x in ex] + zero
     tot = sum(L * c for (L, _, _), g in zip(lv, gs_fit) for c, _ in g)
     if C_tokens >= tot:
         return [[1.0] * len(g) for g in gs_fit] + zero
@@ -223,13 +229,124 @@ def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
         C_eff = math.floor(C_tokens / L0) * L0
     else:
         T0 = solve(C_tokens)
-        num = sum(L * c * q * math.exp(-q * T0) for (L, _, _), g in zip(lv, gs_fit) for c, q in g)
-        den = sum(c * q * math.exp(-q * T0) for (L, _, _), g in zip(lv, gs_fit) for c, q in g)
+        w0 = [(L, c * q * math.exp(-q * T0)) for (L, _, _), g in zip(lv, gs_fit) for c, q in g]
+        if TREE_SLACK == "size":
+            # 0.82: the node straddling the capacity boundary is size-biased (inspection paradox) — its type ∝ L ×
+            # boundary density p·e^{−pT}; slack ~ U(0, L) of it → E = ½·Σ w L² / Σ w L
+            num = sum(w * L * L for L, w in w0)
+            den = sum(w * L for L, w in w0)
+        else:
+            num = sum(w * L for L, w in w0)
+            den = sum(w for L, w in w0)
         C_eff = C_tokens - 0.5 * num / den if den > 0 else C_tokens
     if C_eff <= 0:
         return [[0.0] * len(g) for g in gs]
     T = solve(C_eff)
     return [[-math.expm1(-q * T) for _, q in g] for g in gs_fit] + zero
+
+
+EXACT_TREE = True
+EXACT_PATHS = 4096           # stored paths considered for exact enumeration …
+EXACT_BUDGET = 50_000       # … if the recency-order enumeration stays within this many steps
+
+
+def _n_paths(levels) -> int:
+    n = 1
+    for _, k, _ in levels:
+        n *= int(k)
+    return n
+
+
+def _level_nodes(levels) -> list[int]:
+    out, n = [], 1
+    for _, k, _ in levels:
+        n *= int(k)
+        out.append(n)
+    return out
+
+
+@functools.lru_cache(maxsize=4096)
+def _tree_exact_memo(levels: tuple, C: float):
+    r = _tree_exact(levels, C)
+    return None if r is None else tuple(tuple(x) for x in r)
+
+
+def _tree_exact(levels, C: float) -> list[list[float]]:
+    """0.82: exact per-node residency for a small radix tree (≤ EXACT_PATHS stored paths and ≤ EXACT_BUDGET enumeration steps; ``levels`` already cut to the
+    levels that fit).  IRM + LRU: the stationary recency order of the paths is sampling without replacement ∝ path
+    probability (move-to-front); a path touch refreshes root → leaf, so in node recency order each path contributes
+    its not-yet-listed nodes root first.  The token LRU keeps the longest recency prefix that fits C (it evicts from
+    the old end until used ≤ C).  Enumerates the orders until the capacity is exceeded.  Che (a large-population
+    approximation) was off by up to 0.3–0.5 here (few paths resident): e.g. a 64-token root with two 4096-token children and room for one."""
+    m = len(levels)
+    zs = [zipf_groups(int(n), float(a)) for _, n, a in levels]
+    ns = [int(n) for _, n, _ in levels]
+    paths = []
+    def build(k, idx, pr):
+        if k == m:
+            paths.append((tuple(idx), pr))
+            return
+        for j, (_, q) in enumerate(zs[k]):
+            build(k + 1, idx + [j], pr * q)
+    build(0, [], 1.0)
+    Ls = [int(L) for L, _, _ in levels]
+    res: dict = {}
+    steps = [0]
+
+    class _Over(Exception):
+        pass
+
+    def node_ids(path):
+        return [path[:k + 1] for k in range(m)]
+
+    def rec(left, chosen_mass, resident, used, prob):
+        if prob <= 0:
+            return
+        if not left:
+            for nd in resident:
+                res[nd] = res.get(nd, 0.0) + prob
+            return
+        rem = 1.0 - chosen_mass
+        steps[0] += len(left)
+        if steps[0] > EXACT_BUDGET:
+            raise _Over
+        for i, (path, pr) in enumerate(left):
+            pp = prob * pr / rem if rem > 0 else 0.0
+            u, add, full = used, [], False
+            for k, nd in enumerate(node_ids(path)):
+                if nd in resident:
+                    continue
+                if u + Ls[k] > C:
+                    full = True
+                    break
+                u += Ls[k]
+                add.append(nd)
+            r2 = resident | set(add)
+            if full:
+                for nd in r2:
+                    res[nd] = res.get(nd, 0.0) + pp
+            else:
+                rec(left[:i] + left[i + 1:], chosen_mass + pr, r2, u, pp)
+    if len(paths) > EXACT_BUDGET:
+        return None
+    try:
+        rec(paths, 0.0, frozenset(), 0, 1.0)
+    except _Over:
+        return None
+    out = []
+    for k in range(m):
+        cnt = 1
+        for n in ns[:k + 1]:
+            cnt *= n
+        row = [0.0] * cnt
+        for nd, v in res.items():
+            if len(nd) == k + 1:
+                i = 0
+                for j, n in zip(nd, ns[:k + 1]):
+                    i = i * n + j
+                row[i] = min(1.0, v)
+        out.append(row)
+    return out
 
 
 def tree_depth_tail(groups, h) -> list[float]:
