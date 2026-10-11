@@ -312,6 +312,15 @@ def _moe_skew(m: ModelSpec, sv, lay: Layout, warnings: list[str]) -> float:
             raise ValueError(f"serving.moe_expert_load needs {n} entries (one per routed expert), got "
                              f"{len(sv.moe_expert_load)}")
         return skew_from_load(sv.moe_expert_load, lay.ep)
+    # 0.74: physical cap — a token sends its top-k pairs to distinct experts, at most min(k, E/EP) of them to one
+    # rank, so the busiest rank holds ≤ min(k, E/EP)/k of all pairs: skew ≤ EP · min(k, E/EP) / k (≤ EP)
+    f = next(L.ffn for L in m.layers if L.ffn.kind == "moe")
+    k = max(1, f.top_k)
+    cap = lay.ep * min(k, -(-f.n_experts // lay.ep)) / k
+    if sv.moe_skew > cap * (1 + 1e-12):
+        warnings.append(f"serving.moe_skew = {sv.moe_skew:g} 超过物理上限 {cap:g}（EP {lay.ep}、top-{k}、"
+                        f"{f.n_experts} 专家：最忙 rank 至多承担全部 token-专家对的 min(k, E/EP)/k），按上限计")
+        return float(cap)
     return float(sv.moe_skew)
 
 
