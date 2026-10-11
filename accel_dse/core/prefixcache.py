@@ -247,7 +247,7 @@ def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
 
 EXACT_TREE = True
 EXACT_PATHS = 4096           # stored paths considered for exact enumeration …
-EXACT_BUDGET = 50_000       # … if the recency-order enumeration stays within this many steps
+EXACT_BUDGET = 100_000      # … if the fitting-subset DP stays within this many states (0.83; 0.82: 50k order steps)
 
 
 def _n_paths(levels) -> int:
@@ -271,80 +271,88 @@ def _tree_exact_memo(levels: tuple, C: float):
     return None if r is None else tuple(tuple(x) for x in r)
 
 
-def _tree_exact(levels, C: float) -> list[list[float]]:
-    """0.82: exact per-node residency for a small radix tree (≤ EXACT_PATHS stored paths and ≤ EXACT_BUDGET enumeration steps; ``levels`` already cut to the
-    levels that fit).  IRM + LRU: the stationary recency order of the paths is sampling without replacement ∝ path
-    probability (move-to-front); a path touch refreshes root → leaf, so in node recency order each path contributes
-    its not-yet-listed nodes root first.  The token LRU keeps the longest recency prefix that fits C (it evicts from
-    the old end until used ≤ C).  Enumerates the orders until the capacity is exceeded.  Che (a large-population
-    approximation) was off by up to 0.3–0.5 here (few paths resident): e.g. a 64-token root with two 4096-token children and room for one."""
+def _tree_exact(levels, C: float):
+    """0.82 / 0.83: exact per-node residency for a small radix tree (``levels`` already cut to the levels that fit).
+    IRM + LRU: the stationary recency order of the paths is sampling without replacement ∝ path probability
+    (move-to-front); a path touch refreshes root → leaf, so in node recency order each path contributes its
+    not-yet-listed nodes root first, and the token LRU keeps the longest recency prefix that fits C.  The resident set
+    depends only on the set A of the most recent paths that fit completely and on the next path b (its new nodes
+    root-first until one does not fit), so (0.83) a DP over fitting subsets replaces 0.82's enumeration of orders:
+    f(A) = P(A is the set of the |A| most recent paths) = Σ_{a∈A} f(A − a)·p_a / (1 − P(A − a)).  None when the
+    number of fitting subsets exceeds EXACT_BUDGET (→ Che)."""
     m = len(levels)
     zs = [zipf_groups(int(n), float(a)) for _, n, a in levels]
     ns = [int(n) for _, n, _ in levels]
+    Ls = [int(L) for L, _, _ in levels]
     paths = []
+
     def build(k, idx, pr):
         if k == m:
             paths.append((tuple(idx), pr))
             return
-        for j, (_, q) in enumerate(zs[k]):
-            build(k + 1, idx + [j], pr * q)
+        for j_, (_, q) in enumerate(zs[k]):
+            build(k + 1, idx + [j_], pr * q)
     build(0, [], 1.0)
-    Ls = [int(L) for L, _, _ in levels]
-    res: dict = {}
-    steps = [0]
-
-    class _Over(Exception):
-        pass
-
-    def node_ids(path):
-        return [path[:k + 1] for k in range(m)]
-
-    def rec(left, chosen_mass, resident, used, prob):
-        if prob <= 0:
-            return
-        if not left:
-            for nd in resident:
-                res[nd] = res.get(nd, 0.0) + prob
-            return
-        rem = 1.0 - chosen_mass
-        steps[0] += len(left)
-        if steps[0] > EXACT_BUDGET:
-            raise _Over
-        for i, (path, pr) in enumerate(left):
-            pp = prob * pr / rem if rem > 0 else 0.0
-            u, add, full = used, [], False
-            for k, nd in enumerate(node_ids(path)):
-                if nd in resident:
-                    continue
-                if u + Ls[k] > C:
-                    full = True
-                    break
-                u += Ls[k]
-                add.append(nd)
-            r2 = resident | set(add)
-            if full:
-                for nd in r2:
-                    res[nd] = res.get(nd, 0.0) + pp
-            else:
-                rec(left[:i] + left[i + 1:], chosen_mass + pr, r2, u, pp)
     if len(paths) > EXACT_BUDGET:
         return None
-    try:
-        rec(paths, 0.0, frozenset(), 0, 1.0)
-    except _Over:
-        return None
+    nodes = [[path[:k + 1] for k in range(m)] for path, _ in paths]
+    P = [pr for _, pr in paths]
+    res: dict = {}
+    # layer by subset size: state bitmask → (f, P(A), used, frozenset nodes)
+    layer = {0: (1.0, 0.0, 0, frozenset())}
+    n_states = 0
+    while layer:
+        nxt: dict = {}
+        for mask, (f, pa, used, nd) in layer.items():
+            rem = 1.0 - pa
+            if f <= 0:
+                continue
+            for b in range(len(paths)):
+                if mask >> b & 1:
+                    continue
+                pb = f * P[b] / rem if rem > 0 else 0.0
+                u, add, full = used, [], False
+                for k, x in enumerate(nodes[b]):
+                    if x in nd:
+                        continue
+                    if u + Ls[k] > C:
+                        full = True
+                        break
+                    u += Ls[k]
+                    add.append(x)
+                if full:                           # b straddles: final resident set
+                    for x in nd:
+                        res[x] = res.get(x, 0.0) + pb
+                    for x in add:
+                        res[x] = res.get(x, 0.0) + pb
+                    continue
+                m2 = mask | (1 << b)
+                if m2 in nxt:
+                    g = nxt[m2]
+                    nxt[m2] = (g[0] + pb, g[1], g[2], g[3])
+                else:
+                    nxt[m2] = (pb, pa + P[b], u, nd | frozenset(add))
+                    n_states += 1
+                    if n_states > EXACT_BUDGET:
+                        return None
+        # every path fitting (A = all) is handled by the caller (C ≥ total → all resident)
+        for mask, (f, pa, used, nd) in nxt.items():
+            if mask == (1 << len(paths)) - 1:
+                for x in nd:
+                    res[x] = res.get(x, 0.0) + f
+        layer = {k_: v for k_, v in nxt.items() if k_ != (1 << len(paths)) - 1}
     out = []
     for k in range(m):
         cnt = 1
-        for n in ns[:k + 1]:
-            cnt *= n
+        for n_ in ns[:k + 1]:
+            cnt *= n_
         row = [0.0] * cnt
-        for nd, v in res.items():
-            if len(nd) == k + 1:
-                i = 0
-                for j, n in zip(nd, ns[:k + 1]):
-                    i = i * n + j
-                row[i] = min(1.0, v)
+        for x, v in res.items():
+            if len(x) == k + 1:
+                ii = 0
+                for j_, n_ in zip(x, ns[:k + 1]):
+                    ii = ii * n_ + j_
+                row[ii] = min(1.0, v)
         out.append(row)
     return out
 

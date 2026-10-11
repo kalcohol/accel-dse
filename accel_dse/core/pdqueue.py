@@ -110,7 +110,7 @@ from .scenario import Scenario
 
 QS = (0.5, 0.9, 0.99)
 B_CAPS = (1, 2, 4, 8, 16, 32, 64)
-VICTIM_WAIT = "exp"       # preempted-request restore wait law; "resid" = 0.82 experimental (not adopted, MODEL §28)
+VICTIM_WAIT = "exp"         # 0.83: P(W>x) = (1−c²)·resid + c²·exp, c² = lifetime CV² (MODEL §29); "exp" = ≤ 0.82
 SPLIT_EXACT = 32    # 0.60: PD SLO split search evaluates every split up to this many candidates, else coarse → fine
 INTERP_B = 1024     # 0.60: decode batch above which the birth–death chain interpolates step(k) (see _decode_birth_death)
 FAST_B, FAST_NL = 256, 20000   # 0.61: chains with B ≥ FAST_B and N·L > FAST_NL use C-level dot products
@@ -1540,6 +1540,14 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
         # (G ~ Exp(E[o]), memoryless) — ≈ 0.37 at fixed outputs, ≈ 0.5 for exponential ones.
         e_od = sum(w * math.exp(-o / Eo) for w, _, o in pts) / tot if Eo > 0 else 1.0
         p_ev *= e_od
+        c2 = _life_cv2(pts, x) if SAT_MODEL == "gamma" else 1.0
+        if c2 < 1.0 and Eo > 0:
+            # 0.83: G (growth between two departures) ~ Gamma(mean E[o], CV² = c²) instead of Exp — in saturation each
+            # departure refills its own slot, so departures repeat at the request lifetime: with fixed lengths the
+            # headroom walk h → h + o_d − G only oscillates (zero sum per cycle of k departures) and diffuses with the
+            # lifetime variance.  c² = min(1, CV²(output) + CV²(per-request TPOT)); c² = 1 is the ≤ 0.82 Exp term.
+            p_ev = _sat_evict_gamma(pts, Eo, c2)
+        kvi["sat_growth_cv2"] = c2
         if base is _coloc_chunked_base:
             # 0.58 「假设」: chunked prefill admits one prompt at a time, when the chunk server frees up — a departure
             # met while a prompt is prefilling (probability ρ_pre) is not followed by a tight greedy refill (growth
@@ -1568,7 +1576,7 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
         p_v = min(1.0, nu / lam_r) if lam_r > 0 else 0.0                 # preemptions per request
         st = 1 / (1 - f_r)
         tp_mean0 = x["tpot_mean"] * st
-        wl = _victim_wait_law(ctx, nu_k, nu_sat, K, kvi, tp_mean0, lam_r)
+        wl = _victim_wait_law(ctx, nu_k, nu_sat, K, kvi, tp_mean0, lam_r, c2)
         g_mean = t_fix + wl["mean"]
         x["tpot_mean"] = tp_mean0 + p_v * g_mean / ctx["out"]
         for k_, q in (("tpot_p90", 0.9), ("tpot_p99", 0.99)):
@@ -1738,7 +1746,73 @@ def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float, kno
     return best
 
 
-def _victim_wait_law(ctx, nu_k: dict, nu_sat: float, K: float, kvi: dict, tpot: float, lam_r: float) -> dict:
+SAT_MODEL = "exp"          # 0.83: saturation-preemption growth law ("exp" = ≤ 0.82)
+
+
+def _life_cv2(pts, x) -> float:
+    """CV² of a request's decode lifetime: output length spread + per-request TPOT spread (p90 → σ, normal)."""
+    tot = sum(w for w, _, _ in pts)
+    Eo = sum(w * o for w, _, o in pts) / tot
+    vo = sum(w * (o - Eo) ** 2 for w, _, o in pts) / tot
+    cvo2 = vo / (Eo * Eo) if Eo > 0 else 0.0
+    tm, t90 = x.get("tpot_mean", 0.0), x.get("tpot_p90", 0.0)
+    cvt = max(0.0, (t90 - tm) / (1.2815515655446004 * tm)) if tm > 0 else 0.0
+    return min(1.0, cvo2 + cvt * cvt)
+
+
+def _gamma_q(a: float, z: float) -> float:
+    """Regularised upper incomplete gamma Q(a, z)."""
+    if z <= 0:
+        return 1.0
+    if a > 400:                                   # Wilson–Hilferty
+        t = ((z / a) ** (1 / 3) - (1 - 1 / (9 * a))) / math.sqrt(1 / (9 * a))
+        return 0.5 * math.erfc(t / math.sqrt(2))
+    lg = math.lgamma(a)
+    if z < a + 1:                                 # series for P
+        term = tot = 1.0 / a
+        ap = a
+        for _ in range(2000):
+            ap += 1
+            term *= z / ap
+            tot += term
+            if abs(term) < abs(tot) * 1e-15:
+                break
+        return max(0.0, 1.0 - tot * math.exp(-z + a * math.log(z) - lg))
+    b, c, d = z + 1 - a, 1e300, 1 / (z + 1 - a)   # Lentz continued fraction for Q
+    h = d
+    for i in range(1, 2000):
+        an = -i * (i - a)
+        b += 2
+        d = an * d + b
+        d = 1e-300 if abs(d) < 1e-300 else d
+        c = b + an / c
+        c = 1e-300 if abs(c) < 1e-300 else c
+        d = 1 / d
+        dl = d * c
+        h *= dl
+        if abs(dl - 1) < 1e-15:
+            break
+    return math.exp(-z + a * math.log(z) - lg) * h
+
+
+def _sat_evict_gamma(pts, Eo: float, c2: float, n: int = 64) -> float:
+    """E over requests (S, o_d) and headroom h ~ U(0, S) of P(G > h + o_d), G ~ Gamma(mean Eo, CV² c2)."""
+    tot = sum(w for w, _, _ in pts)
+    out = 0.0
+    for w, S, o_d in pts:
+        acc = 0.0
+        for i in range(n):
+            xx = S * (i + 0.5) / n + o_d
+            if c2 < 1e-9:
+                acc += 1.0 if Eo > xx else 0.0
+            else:
+                acc += _gamma_q(1 / c2, xx / (Eo * c2))
+        out += w * acc / n
+    return out / tot
+
+
+def _victim_wait_law(ctx, nu_k: dict, nu_sat: float, K: float, kvi: dict, tpot: float, lam_r: float,
+                     c2: float = 1.0) -> dict:
     """A preempted request's wait until it can be restored: {"mean": s, "q": r → wait with P(W > wait) = 1/r}.
 
     "exp" (≤ 0.81): Exp(1/λ_r) — the next departure at the mean rate.  "resid" (0.82): the victim (youngest) is
@@ -1749,14 +1823,39 @@ def _victim_wait_law(ctx, nu_k: dict, nu_sat: float, K: float, kvi: dict, tpot: 
     Ψ = k(S + o) − K; exponential outputs → unshifted).  Wait = min of k − 1 such R, × TPOT; mixed over k by the Rice
     rate per k, saturation preemptions at k_sat = round(K / E[S + o/2])."""
     mode = ctx.get("_victim_wait", VICTIM_WAIT)
-    if mode == "exp" or tpot <= 0:
+    if mode == "blend" and c2 >= 1.0:
+        mode = "exp"                     # memoryless lifetimes: the exp law is the exact limit (bit-identical)
+    if mode == "blend" and lam_r > 0 and tpot > 0:
+        # 0.83: P(W > x) = (1 − c²)·resid + c²·exp — c² = lifetime CV² (as the saturation law): fixed lengths → the
+        # crossing-conditioned residual law, memoryless lifetimes → Exp(1/λ_r)
+        r_ = _victim_wait_law({**ctx, "_victim_wait": "resid"}, nu_k, nu_sat, K, kvi, tpot, lam_r)
+        if r_["mean"] <= 0 and nu_k == {} and nu_sat <= 0:
+            mode = "exp"
+        else:
+            def surv(x):
+                return (1 - c2) * r_["surv"](x) + c2 * math.exp(-lam_r * x)
+
+            def q(r):
+                t = 1.0 / r
+                if t >= 1:
+                    return 0.0
+                lo_, hi_ = 0.0, max(r_["hi"], -math.log(t) / lam_r)
+                for _ in range(60):
+                    mid = 0.5 * (lo_ + hi_)
+                    if surv(mid) > t:
+                        lo_ = mid
+                    else:
+                        hi_ = mid
+                return 0.5 * (lo_ + hi_)
+            return {"model": "blend", "mean": (1 - c2) * r_["mean"] + c2 / lam_r, "q": q}
+    if mode in ("exp", "blend") or tpot <= 0:
         m = 1 / lam_r if lam_r > 0 else 0.0
         return {"model": "exp", "mean": m, "q": lambda r: math.log(r) / lam_r}      # ≤ 0.81 expressions, bit-identical
     pts = [(w, S, o) for w, S, o in ctx["len"].points if w > 0 and o > 0]
     # running requests: length-biased (time in system ∝ o), age a = U·o; footprint F = S + a, remaining R = o − a
     Z = sum(w * o for w, _, o in pts)
     if Z <= 0:
-        return {"model": "resid", "mean": 0.0, "q": lambda r: 0.0}
+        return {"model": "resid", "mean": 0.0, "q": lambda r: 0.0, "surv": lambda x: 0.0, "hi": 0.0}
     mF = sum(w * o * (S + o / 2) for w, S, o in pts) / Z
     vF = sum(w * o * (S * S + S * o + o * o / 3) for w, S, o in pts) / Z - mF * mF
     mR = sum(w * o * o / 2 for w, S, o in pts) / Z
@@ -1776,7 +1875,7 @@ def _victim_wait_law(ctx, nu_k: dict, nu_sat: float, K: float, kvi: dict, tpot: 
         comps.append((w_, k_, m_c))
     wt = sum(c[0] for c in comps)
     if wt <= 0:
-        return {"model": "resid", "mean": 0.0, "q": lambda r: 0.0}
+        return {"model": "resid", "mean": 0.0, "q": lambda r: 0.0, "surv": lambda x: 0.0, "hi": 0.0}
     comps = [(w_ / wt, k_, m_c) for w_, k_, m_c in comps]
 
     def r_surv(r):           # equilibrium residual law P(R > r) = Σ w (o − r)⁺ / Σ w o
@@ -1805,7 +1904,7 @@ def _victim_wait_law(ctx, nu_k: dict, nu_sat: float, K: float, kvi: dict, tpot: 
             else:
                 hi_ = mid
         return 0.5 * (lo_ + hi_)
-    return {"model": "resid", "mean": mean, "q": q}
+    return {"model": "resid", "mean": mean, "q": q, "surv": surv, "hi": hi}
 
 
 def _public(x: dict) -> dict:

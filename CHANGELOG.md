@@ -3,6 +3,18 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.83.0]
+
+### Research（未采用为默认；默认与 0.82 逐位一致）
+- 紧 KV 饱和抢占高估（固定长度点 17/18 最坏间隔高 65–140×）：根因是饱和项把「两次离开之间的增长」当指数分布（无记忆），固定长度时 footprint 只在容量下方振荡、几乎不越线。现按 Gamma 增长律（`_sat_evict_gamma`，形状 = 1 / 寿命 CV²；寿命 CV² 合并输出长度散布与逐请求 TPOT 散布）：CV² = 1 退化为旧式，CV² → 0 时 → 0。`pdqueue.SAT_MODEL="gamma"` 内部开关（默认 "exp"）。
+- 恢复等待律 `VICTIM_WAIT="blend"`（内部开关）：P(W > x) = (1 − c²)·resid + c²·Exp(λ_r)，两个极限（固定长度 / 无记忆）各自精确；c² ≥ 1 时与旧式逐位一致。
+
+### Validation
+- 全紧 KV 网格（42 点 × 3 模式 × 2 seed，DES 共用基线）：相对 0.82，没有一个点变差（容差 0.1 log + seed 散布）；抢占/请求 log 误差均值 0.70 → 0.46，最坏间隔 p99 log 误差均值 0.89 → 0.37（最大 5.8 → 2.9）；TPOT 不变。点 17/18（DES 无抢占）：PD 4 vs 3.8 ms、chunked 14 vs 13 ms、prefill_first 174 vs 175 ms / 312 vs 158 ms（原 969）。单独 resid 在 MoE CV1 点变差 4–6 处，按 c² < 1 硬切分仍 2 处 → 不采用。
+- radix 精确解改为子集 DP（不按次序枚举，状态预算 100k）：与 0.82 枚举相差 ≤ 7e-14，回退 Che 次数少约 17 %；随机树对 RadixLRU 平均误差 0.005–0.013。仍回退的是「很多极小叶子」的树。
+- **否决点**：test_core_056 的场景（dense8b、固定长度、负载 0.85、recompute 12 GB，不在网格内）DES 抢占/请求 0.024–0.055，exp 0.020，gamma 0.006；gamma 下最坏间隔 12.8 ms，低于不设 KV 上限时的 34 ms。高负载下 Poisson 到达本身就会让 footprint 越线，只看寿命 CV² 漏掉了这一项 → 不满足「处处更好」，默认保持 exp/exp。
+- 默认场景指纹不变。
+
 ## [0.82.0] - 2026-10-11
 
 radix 小树精确驻留；recompute / swap 被抢占者恢复等待的研究（未采用）。默认指纹不变。
