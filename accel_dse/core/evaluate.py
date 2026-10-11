@@ -718,9 +718,9 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if sys.node_cards > 0 and lay.cards > sys.node_cards and lay.cards % sys.node_cards:
         warnings.append(f"node_cards = {sys.node_cards} 不整除总卡数 {lay.cards}：末尾节点未满，"
                         "按每个通信组的整除部分近似分层")
-    if scn.chip.slc_bytes and scn.chip.slc_policy == "pin" and scn.chip.slc_GBps < sys.dram_GBps:   # 0.90
+    if scn.chip.slc_bytes and scn.chip.slc_policy == "pin" and scn.chip.slc_GBps < sys.dram_GBps:   # 0.90 (0.91: pin_bw)
         warnings.append(f"SLC 带宽 {scn.chip.slc_GBps:.0f} GB/s 低于 DRAM {sys.dram_GBps:.0f} GB/s：pin 策略把热数据固定在更慢的 "
-                        "SLC 上，读得反而更慢（与计算重叠时可能被掩盖；serial / kernel 下可见）——提高 slc_GBps 或改用 lru")
+                        "SLC 上，读得反而更慢（与计算重叠时可能被掩盖；serial / kernel 下可见）——提高 slc_GBps，或改用 pin_bw（按带宽均衡分流）/ lru")
     if not m.kv_cache:
         if scn.pd.enabled:              # 0.90: was silently ignored
             warnings.append("PD 分离（pd.enabled）对视频 / 蛋白模型无效：没有 KV 缓存，也没有 decode 阶段——按单一部署评估，PD 设置被忽略")
@@ -820,7 +820,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=max(0.0, agg["max_act_tot"] - RUNTIME_RESERVE), stream=True,
                       slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy)
-            dram = step_dram_bytes(mp, store, agg)
+            dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]
             wire = {t: agg["wire_" + t] for t in _TIERS}
@@ -1022,7 +1022,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             mp = plan(store, 0, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=agg["max_act_tot"] + resid, stream=True,
                       slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy)
-            dram = step_dram_bytes(mp, store, agg)
+            dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]
             wire = {t: agg["wire_" + t] for t in _TIERS}

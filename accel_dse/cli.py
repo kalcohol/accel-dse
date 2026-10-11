@@ -112,7 +112,7 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--slc-mib", dest="slc_mib", type=float, default=None,
                    help="system-level cache per card, MiB (0.48; default 0 = none) 「假设」")
     p.add_argument("--slc-GBps", dest="slc_GBps", type=float, default=None, help="SLC bandwidth (default 2000 「假设」)")
-    p.add_argument("--slc-policy", dest="slc_policy", default=None, choices=["pin", "lru"],
+    p.add_argument("--slc-policy", dest="slc_policy", default=None, choices=["pin", "lru", "pin_bw"],
                    help="SLC policy: pin (software-pinned like SRAM) | lru (all-or-nothing cyclic bound)")
     p.add_argument("--link-GBps", dest="link_GBps", type=float, default=None,
                    help="in-node scale-up tier bandwidth per rank (default 400 「假设」)")

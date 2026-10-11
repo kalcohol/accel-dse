@@ -212,7 +212,7 @@ class MemPlan:
     act_total: float = 0.0  # activation working set kept in DRAM (full-sequence forward)
     pipe_w: float = 0.0     # video pipeline components stored on this card (text encoder / VAE weights, 0.44)
     slc: float = 0.0        # SLC capacity per card (0.48; 0 = none)
-    slc_policy: str = ""    # pin | lru ("" without an SLC)
+    slc_policy: str = ""    # pin | lru | pin_bw ("" without an SLC)
     slc_hot: float = 0.0    # pin: hot-weight bytes held in the SLC
     slc_expert: float = 0.0
     slc_kv: float = 0.0
@@ -250,7 +250,7 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     s_exp = min(r_exp, free); free -= s_exp
     s_kv = min(r_kv, free)
     sres = (p_hot + p_exp + s_hot + s_exp) / strm if strm else 1.0
-    return replace(mp, slc=slc_bytes, slc_policy="pin", slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv,
+    return replace(mp, slc=slc_bytes, slc_policy="pin_bw" if slc_policy == "pin_bw" else "pin", slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv,
                    slc_residency=sres)
 
 
@@ -347,7 +347,7 @@ def touched(ops: list[Op]) -> dict:
     return d
 
 
-def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict) -> dict:
+def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: float = 0.0) -> dict:
     """DRAM bytes moved in one stage step given the plan and touched-byte sums.  With an SLC the entries are the
     DRAM (miss) bytes and ``slc`` holds the bytes served by the SLC (split in ``slc_parts``)."""
     miss_hot = 0.0 if store.hot_w <= 0 else (1.0 - mp.pinned_hot / store.hot_w)
@@ -379,6 +379,17 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict) -> dict:
         e_hit = w_e if mp.slc_all else 0.0
     else:
         e_hit = t["exp"] * f_exp
+    if mp.slc_policy == "pin_bw" and slc_bw_ratio > 0:
+        # 0.91: inclusive SLC (resident lines also live in DRAM) as a second read path.  Serve x ≤ H of the resident
+        # bytes from the SLC so that both paths finish together: x/B_slc = (T − x)/B_dram → x = T·r/(1 + r), r =
+        # B_slc/B_dram, T = every DRAM byte of the step (writes / lookups are DRAM-only but share its time).  Like CUDA
+        # accessPolicyWindow.hitRatio chosen optimally; memory time = T/(B_dram + B_slc) when H suffices, never worse
+        # than DRAM alone or than pin
+        H = sum(hit.values())
+        if H > 0:
+            g = min(1.0, out["total"] * slc_bw_ratio / (1.0 + slc_bw_ratio) / H)
+            hit = {k: v * g for k, v in hit.items()}
+            e_hit *= g
     out["exp_dram"], out["exp_slc"] = w_e - e_hit, e_hit
     for k, v in hit.items():
         out[k] -= v

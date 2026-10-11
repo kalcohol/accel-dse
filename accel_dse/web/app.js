@@ -925,7 +925,7 @@ function renderStages(r) {
     h('td', { style: st.mem.fits ? '' : 'color:var(--danger)' }, `${num(st.mem.need_GiB)} / ${num(st.mem.cap_GiB)}`),
     h('td', {}, pct(st.mem.residency)), h('td', {}, num(st.mem.kv_sram_MiB)), h('td', {}, num(st.mem.staging_MiB)),
     h('td', {}, num(st.dram_GB.total)),
-    ...(hasSlc ? [h('td', { title: st.mem.slc_policy === 'lru' ? (st.mem.slc_all ? 'lru：片外工作集放得下 → 全部读命中' : 'lru：放不下 → 循环访问全部未命中') : `pin：SLC 中权重 ${num(st.mem.slc_w_MiB)} MiB，KV / 状态 ${num(st.mem.slc_kv_MiB)} MiB` }, pct(st.mem.slc_residency)),
+    ...(hasSlc ? [h('td', { title: st.mem.slc_policy === 'lru' ? (st.mem.slc_all ? 'lru：片外工作集放得下 → 全部读命中' : 'lru：放不下 → 循环访问全部未命中') : `${st.mem.slc_policy === 'pin_bw' ? 'pin_bw（带宽均衡分流）' : 'pin'}：SLC 中权重 ${num(st.mem.slc_w_MiB)} MiB，KV / 状态 ${num(st.mem.slc_kv_MiB)} MiB` }, pct(st.mem.slc_residency)),
       h('td', {}, num(st.dram_GB.slc || 0))] : []), h('td', {}, num(st.convert_Melems))));
   put($('mem-tbl'), h('thead', {}, mh), h('tbody', {}, mr));
 }
@@ -940,7 +940,7 @@ function renderAssumptions(r) {
     `DRAM 效率 ${sc.mem_eff ?? (S.memInfo ? S.memInfo.efficiency : 0.7)}；预留 1 GiB；暂存区 = max(2 MiB, 2·最大激活)`,
     `三层互连：${sc.d2d_enabled && (sc.package_cards || 1) > 1 ? `封装内 ${sc.package_cards} die 走 D2D ${num(sc.d2d_std === 'custom' ? sc.d2d.GBps : ((S.cat.d2d_standards || []).find((d) => d.id === sc.d2d_std) || {}).per_unit_GBps * sc.d2d_units)} GB/s（${sc.d2d_std === 'custom' ? '自定义' : sc.d2d_std + ' × ' + sc.d2d_units}）、α ${sc.d2d.alpha_us} µs` : 'D2D 关（单片大 die，每卡一个封装）'}；节点内 scale-up ${sc.link.GBps} GB/s、α ${sc.link.alpha_us} µs（${sc.fabric && sc.fabric.enabled ? ({ switch: '交换', ring: '环形', full_mesh: '全互连', torus2d: '2D torus' }[sc.link.topology] || sc.link.topology) : '交换；拓扑只在拓扑感知集合通信开启时生效'}）；${sc.node_cards ? `每节点 ${sc.node_cards} 卡，跨节点网络 ${sc.net.GBps} GB/s、α ${sc.net.alpha_us} µs` : '单节点（跨节点层未用）'}。卡按 TP → SP → DP → PP 编号，通信组按落在同一封装 / 节点内的成员数分层（allreduce / allgather 逐级、all-to-all 各层同时按目的地分摊；PP 交接按流水级边界判断所走层级）`,
     c.slc_mib > 0
-      ? `系统级缓存 SLC ${c.slc_mib} MiB @ ${c.slc_GBps} GB/s，策略 ${c.slc_policy === 'lru' ? 'lru（循环访问：片外工作集放得下全部读命中，否则 0 命中——上界 / 下界之间）' : 'pin（SRAM 之后按热权重 → 专家 → KV / 状态钉住，流式激活与 KV 写入绕过）'}；不增加容量；文本编码器 / VAE 不用 SLC`
+      ? `系统级缓存 SLC ${c.slc_mib} MiB @ ${c.slc_GBps} GB/s，策略 ${c.slc_policy === 'lru' ? 'lru（循环访问：片外工作集放得下全部读命中，否则 0 命中——上界 / 下界之间）' : c.slc_policy === 'pin_bw' ? 'pin_bw（同 pin 钉住，读命中按 SLC / DRAM 带宽均衡分流：两条路径同时读完，SLC 慢于 DRAM 也不变慢）' : 'pin（SRAM 之后按热权重 → 专家 → KV / 状态钉住，流式激活与 KV 写入绕过）'}；不增加容量；文本编码器 / VAE 不用 SLC`
       : '无系统级缓存（SLC MiB = 0）',
     '芯片不支持的权重格式：反量化每元素 2 次向量操作',
   ];

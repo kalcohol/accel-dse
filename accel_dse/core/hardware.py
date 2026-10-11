@@ -34,7 +34,7 @@ from .. import mem_catalog
 from .dtypes import FormatSupport
 
 
-SLC_POLICIES = ("pin", "lru")
+SLC_POLICIES = ("pin", "lru", "pin_bw")   # 0.91 pin_bw: pin + bandwidth-balanced hit ratio (opt-in)
 
 
 INSTANCE_SCHEDS = ("wide", "split", "auto")
