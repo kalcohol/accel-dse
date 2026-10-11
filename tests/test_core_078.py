@@ -53,3 +53,21 @@ def test_energy_counts_use_wire_and_timing_unchanged():
     h = evaluate(Scenario(model="qwen3-8b", layout=Layout(tp=4), d2d_enabled=True, package_cards=2)).stages[0].time
     assert abs(h.wire_d2d / h.link_bytes - 1.0) < 1e-3 and abs(h.wire_link / h.link_bytes - 0.5) < 1e-3
     assert abs(h.d2d_bytes / h.link_bytes - 2 / 3) < 1e-9                      # timing share unchanged (payload)
+
+
+def test_des_overload_detected_when_run_shorter_than_request_lifetime():
+    # 0.78: 800 requests at 1.1–1.8× colocated capacity arrive in < 2 request lifetimes (512 tokens × ~50 ms): drift and
+    # utilisation tests missed the backlog; the decode-capacity bound (prefill share included) must flag it
+    from dataclasses import replace
+    from accel_dse.core import pdsim
+    from accel_dse.core.validation import v4_scenario
+    for rate, want in ((10.8, False), (18.0, False), (9.5, True)):
+        s = v4_scenario(0.5)
+        s = replace(s, pd=replace(s.pd, rate_rps=rate))
+        rep, ctx = pdsim.capture_ctx(s)
+        for mode in ("pd", "coloc_prefill_first", "coloc_chunked"):
+            if want and mode == "pd":
+                continue                       # 9.5 > PD fluid capacity 9.02: PD is over, colocated (9.76) is not
+            r = pdsim.simulate(ctx, rate, mode, n_req=800, warmup=200, seed=3)
+            assert r["stable"] == want == rep["queue"]["modes"][mode]["stable"], (rate, mode, r["stable"])
+            assert r["over_capacity"] == (not want)

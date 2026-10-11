@@ -738,6 +738,18 @@ def _drift(xs: list) -> float:
     return slope * (W - 1) / mu
 
 
+def _decode_token_cap(costs, n_rep: int, B: int) -> float:
+    """0.78: best decode token rate of ``n_rep`` replicas with batch cap ``B`` (tokens / s, over k = 1, 2, 4 … B)."""
+    B = max(1, int(B))
+    ks = sorted({B} | {2 ** i for i in range(B.bit_length()) if 2 ** i <= B})
+    best = 0.0
+    for k in ks:
+        st, tps = costs.decode_step(k)
+        if st > 0:
+            best = max(best, k * tps / st)
+    return n_rep * best
+
+
 def stability(done: list, ttfts: list, util: float, complete: bool) -> dict:
     """DES stability (0.65).  0.51–0.64 called a run stable when every measured request finished ("complete") — an
     overloaded system still finishes a finite run, so DES SLO rates past saturation were not meaningful.  Now (the
@@ -929,6 +941,7 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
         ttfts = [r.kv_done - r.arrive for r in done]
         extra = {"batch_cap": cap, "prefix_hit_decode": hit_d,
                  "prefill_util": sum(p.busy_time for p in prefs) / max(eng.t, 1e-12) / len(prefs)}
+        tok_cap = _decode_token_cap(dp, len(decs), B)
     else:
         r_c = ctx["r_c"]
         costs = Costs(ctx["cpool"])
@@ -971,11 +984,26 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
         hit = _hit_stat(done, lru, tree, cum_t, "depth")
         ttfts = [r.prefill_done - r.arrive for r in done]
         extra = {"batch_cap": cap, "busy": sum(rp.busy_time for rp in reps) / max(eng.t, 1e-12) / len(reps)}
+        tok_cap = _decode_token_cap(costs, len(reps), B)
+        # colocated: prefill shares the replica's time — the decode share left is 1 − prefill work (best batch ≤ B,
+        # mean prompt / cached prefix: still a necessary condition up to the convexity of prefill in S)
+        S_m = max(1, round(sum(r.S for r in reqs) / max(1, len(reqs))))
+        p_m = round(sum(r.p for r in reqs) / max(1, len(reqs)))
+        pf = min(costs.prefill(b, S_m, p_m) / b for b in sorted({1, 2, 4, 8, 16, 32, 64, B}) if b <= max(1, B))
+        tok_cap *= max(0.0, 1.0 - lam / len(reps) * pf)
 
     tpots = [(r.decode_done - r.decode_start) / r.out for r in done if r.out > 0]
     itls = [r.itl_max for r in done]
     util = extra.get("prefill_util", 0.0)    # coloc: the replica is busy whenever anything decodes — drift only
     stab = stability(done, ttfts, util, len(done) >= n_req)
+    # 0.78: hard decode-capacity test.  A run whose arrivals span less than a request's lifetime (long outputs, high
+    # rate) is still filling up when measurement starts: neither drift nor (colocated) utilisation sees a backlog —
+    # 1.84× the colocated capacity was called stable.  Offered tokens above the decode pool's best token rate
+    # (replicas × max_k k·tokens/step(k), prefill time ignored → a necessary condition) cannot be stable.
+    offered = lam * sum(r.out for r in reqs) / max(1, len(reqs))
+    stab["over_capacity"] = bool(offered > tok_cap * (1 + 1e-9))
+    if stab["over_capacity"]:
+        stab["stable"] = False
     st = {"mode": mode, "lambda_rps": lam, "n": len(done), "complete": len(done) >= n_req, **stab,
           "ttft": _stats(ttfts), "tpot": _stats(tpots), "itl_max": _stats(itls), "prefix_hit": hit,
           **({"prefix_level_hit": _level_hits(done, len(tree))} if (lru and tree) else {}), **extra}
