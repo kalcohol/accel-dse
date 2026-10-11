@@ -45,10 +45,12 @@ python3 -m accel_dse eval --model qwen3.8-27b --phase prefill --prompt 1024 \
 python3 -m accel_dse eval --model esmfold --pp 4 --pp-split layers   # PP 按层数均分（默认按代价平衡）
 python3 -m accel_dse eval --model esm2-650m --seq-len 1022    # 蛋白质：批延迟、序列/s
 python3 -m accel_dse eval --model boltz-1 --msa 1024 --samples 5   # 结构预测：主干 / 扩散 / 置信度，TFLOP/序列
+python3 -m accel_dse eval --model deepseek-v3.2 --phase prefill --prompt 131072 --tp 8 --ep 8 \
+    --mem hbm3e_8s_12h24g_9200 --indexer key_split               # 稀疏注意力 indexer 部署（默认按发布）
 python3 -m accel_dse validate                                 # 趋势区间 + GenZ 对照
 ```
 
-所有子命令都支持 `--json`。HTTP API：POST `/api/eval`、`/api/fit`、`/api/compare`、`/api/layouts`、`/api/stability`、`/api/sweep`、`/api/pareto`、`/api/memory`；GET `/api/health`、`/api/models`、`/api/catalog`。POST 接受与命令行相同的场景描述，严格解析：拒绝未知字段（body 顶层与 scenario 内部都拒绝）以及 NaN / Infinity。
+除 `serve` 外的子命令都支持 `--json`；场景的每个字段都有对应的命令行参数。HTTP API：POST `/api/eval`、`/api/fit`、`/api/compare`、`/api/layouts`、`/api/stability`、`/api/sweep`、`/api/pareto`、`/api/memory`；GET `/api/health`、`/api/models`、`/api/catalog`。POST 接受与命令行相同的场景描述，严格解析：拒绝未知字段（body 顶层与 scenario 内部都拒绝）以及 NaN / Infinity。
 
 ## 目录结构
 

@@ -3,6 +3,27 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.87.0]
+
+### Added
+- `Scenario.indexer`（Web「indexer 部署」/ CLI `--indexer`）：稀疏注意力 indexer（DeepSeek-V3.2 / V4、GLM-5 类 DSA）在注意力 TP 上的部署方式，可选，默认关。
+  - `reference`（默认）= 按发布：V3.2 / GLM-5 在每个 TP rank 上重复计算，V4 按头切分。指纹不变。
+  - `replicated` = 每个 TP rank 都算全部头。
+  - `tp_split` = 头按 TP 列切分，fp32 打分矩阵做 all-reduce（V4 参考实现的做法）。
+  - `key_split` = 缓存的 index 键按 TP 分片：各 rank 用全部头给本地键打分，取局部 top-k，all-gather TP·k 个（fp32 分数，int32 下标）候选再合并；结果精确，indexer 缓存按 TP 分摊。
+
+  「按头切分 + 只汇集 top-k」不精确：分数是 Σ_h w_h·ReLU(q_h·k)，局部头的部分和上取 top-k 不等于全局 top-k。精确的头切分需要分数 all-reduce；只汇集 top-k 的精确做法是按键切分。`key_split` 只支持逐 token 的 DSA indexer；QSA 分块、k-pool、V4 压缩键会报错。
+- 注意力 DP 副本空闲警告：每个微批的序列数小于 DP 时提示（长上下文单请求 prefill 用 DP 注意力没有收益）。
+- CLI 补齐 11 个之前没有参数的场景字段：`--exec-overlap`、`--layer-overhead-us`、`--microbatches`、`--indexer`、`--clip-slo`、`--seq-slo`、`--fold-slo`、`--hop-d2d-us`、`--hop-link-us`、`--hop-net-us`、`--hop-net-tree-us`。README 说 API 接受与命令行相同的场景描述，此前这些字段只能经 API 设置。
+
+### Validation
+- 手算（DeepSeek-V3.2，8 卡 TP8，1M 提示 prefill）：reference 2820 s；tp_split 598 s，其中打分 all-reduce 587 s = 2.35e14 B / 400 GB/s；key_split 425 s，其中 top-k 汇集 18.3 s = 7.3e12 B / 400 GB/s，每 rank indexer 缓存少 7.4 GB（= 7/8 × 8.45 GB）。
+- 工作量守恒：9 个带 indexer 的模型 × TP 1 / 2 / 4 / 8 × prefill / decode，4 个选项的有用 FLOP 完全相同；TP 1 时 4 个选项完全一致；reference 等于发布时的模式。
+- DP 注意力（V3.2，1M prefill）：batch 1 时 7/8 的副本空闲（3056 s）；batch 8 时 DP8 每序列 406 s，且是唯一放得下的布局。
+- 默认指纹：372 个点（全部模型 × 3 种布局 × 2 个阶段）与 0.86 逐位相同。
+- UI 端到端（local/ui_check_indexer.py）：中文选项正确，请求带 indexer，结果随选项变化，默认值等价于不传。
+- CLI 审计：命令行与 API 结果一致（hash 与 summary 相同）；15 种错误输入干净退出、没有 traceback（TP 3 与 microbatches 0 都是合法输入：不均匀 TP / 自动）。
+
 ## [0.86.0]
 
 ### Validation

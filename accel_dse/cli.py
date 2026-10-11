@@ -8,6 +8,7 @@ import sys
 
 from . import __version__, api
 from .core.d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS
+from .core.parallel import EXEC_OVERLAPS, INDEXER_MODES
 
 
 _BUDGET_FLAGS = (
@@ -45,6 +46,16 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--spec-k", type=int, default=0)
     p.add_argument("--pp-split", choices=("cost", "layers"), default=None,
                    help="pipeline stages: cost-balanced (default) or equal layer counts (<= 0.61)")
+    p.add_argument("--microbatches", type=int, default=None, help="microbatches per step (default min(pp, batch))")
+    p.add_argument("--exec-overlap", dest="exec_overlap", default=None, choices=EXEC_OVERLAPS,
+                   help="compute / memory / link overlap inside a stage (0.66; default stage)")
+    p.add_argument("--layer-overhead-us", dest="layer_overhead_us", type=float, default=None,
+                   help="fixed per-layer time per step, µs (0.69; default 0) 「假设」")
+    p.add_argument("--indexer", default=None, choices=INDEXER_MODES,
+                   help="sparse-attention indexer over TP (0.87): reference (as released) | replicated | tp_split | key_split")
+    p.add_argument("--clip-slo", dest="clip_slo_s", type=float, default=None, help="video: clip latency SLO, s")
+    p.add_argument("--seq-slo", dest="seq_slo_ms", type=float, default=None, help="protein encoder: per-sequence SLO, ms")
+    p.add_argument("--fold-slo", dest="fold_slo_s", type=float, default=None, help="structure model: fold SLO, s")
     p.add_argument("--images", type=int, default=None,
                    help="VLM: images per request (default 0 = text only); encoder runs at prefill, image tokens extend prompt / KV")
     p.add_argument("--image-size", default=None, metavar="WxH",
@@ -137,6 +148,14 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="0.60: ports = different tiers' ports run concurrently (stage link = busiest port), sum = 0.59")
     p.add_argument("--hop-spine-us", dest="hop_spine_us", type=float, default=None,
                    help="0.61: extra per-step latency of a network step leaving the leaf (default 0) 「假设」")
+    p.add_argument("--hop-d2d-us", dest="hop_d2d_us", type=float, default=None,
+                   help="fabric: per-hop latency, µs (D2D tier) 「假设」")
+    p.add_argument("--hop-link-us", dest="hop_link_us", type=float, default=None,
+                   help="fabric: per-hop latency, µs (scale-up tier) 「假设」")
+    p.add_argument("--hop-net-us", dest="hop_net_us", type=float, default=None,
+                   help="fabric: per-hop latency, µs (network tier) 「假设」")
+    p.add_argument("--hop-net-tree-us", dest="hop_net_tree_us", type=float, default=None,
+                   help="fabric: per-hop latency, µs (network tree step) 「假设」")
     p.add_argument("--hop-core-us", dest="hop_core_us", type=float, default=None,
                    help="0.61: extra per-step latency of a network step leaving the pod (3-tier, default 0) 「假设」")
     p.add_argument("--fabric-protocol", dest="fabric_protocol", default=None, choices=["off", "auto", "LL", "LL128", "Simple"],
@@ -268,9 +287,14 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sv["moe_skew"] = a.moe_skew
     if getattr(a, "moe_expert_load", None):
         sv["moe_expert_load"] = _load_list(a.moe_expert_load)
+    if getattr(a, "microbatches", None) is not None:
+        sv["microbatches"] = a.microbatches
     sc = {"model": a.model, "mapping": a.mapping, "serving": sv}
     if getattr(a, "pp_split", None):
         sc["pp_split"] = a.pp_split
+    for k in ("exec_overlap", "layer_overhead_us", "indexer"):
+        if getattr(a, k, None) is not None:
+            sc[k] = getattr(a, k)
     wl = {k: getattr(a, k) for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles",
                                      "samples") if getattr(a, k)}
     if getattr(a, "dit_only", False):
@@ -292,6 +316,9 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
             wl[k] = True
     if getattr(a, "no_sample_split", False):
         wl["sample_split"] = False
+    for k in ("clip_slo_s", "seq_slo_ms", "fold_slo_s"):
+        if getattr(a, k, None) is not None:
+            wl[k] = getattr(a, k)
     if wl:
         sc["workload"] = wl
     if getattr(a, "act", None):
@@ -319,6 +346,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                                                 ("pod_nodes", "pod_nodes"), ("oversub_spine", "oversub_spine"),
                                                 ("overlap", "fabric_overlap"), ("kv_feedback", "kv_feedback"),
                                                 ("hop_spine_us", "hop_spine_us"), ("hop_core_us", "hop_core_us"),
+                                                ("hop_d2d_us", "hop_d2d_us"), ("hop_link_us", "hop_link_us"),
+                                                ("hop_net_us", "hop_net_us"), ("hop_net_tree_us", "hop_net_tree_us"),
                                                 ("protocol", "fabric_protocol"))
            if getattr(a, dest, None) is not None}
     if getattr(a, "fabric", False) or fab:

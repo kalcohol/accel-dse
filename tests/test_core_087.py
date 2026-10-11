@@ -93,3 +93,49 @@ def test_ui_selector():
     for v in INDEXER_MODES:
         assert f'<option value="{v}"' in html
     assert "S.sc.indexer = e.target.value" in js
+
+
+def _leaf_fields():
+    import dataclasses as dc
+    from accel_dse.core.scenario import Scenario as S
+
+    def walk(cls, pre):
+        for f in dc.fields(cls):
+            t = f.default if f.default is not dc.MISSING else (f.default_factory() if f.default_factory is not dc.MISSING else None)
+            if dc.is_dataclass(t):
+                yield from walk(type(t), pre + f.name + ".")
+            else:
+                yield pre + f.name, f.name
+    return list(walk(S, ""))
+
+
+def test_cli_reaches_every_scenario_field():
+    """0.87 audit: 11 scenario fields (exec_overlap, layer_overhead_us, microbatches, video / protein SLOs, fabric hop
+    latencies, indexer) had no command-line flag although the README says the API takes the CLI's scenario."""
+    import re
+    src = (Path(__file__).resolve().parents[1] / "accel_dse/cli.py").read_text(encoding="utf-8")
+    miss = [p for p, n in _leaf_fields() if not p.startswith("chip.")
+            and not re.search(r'["\']%s["\']' % re.escape(n), src) and not re.search(r"\b%s\b" % re.escape(n.replace("_", "-")), src)]
+    assert miss == [], miss
+
+
+def test_cli_new_flags_and_api_parity():
+    import json
+    import subprocess
+    import sys
+    from accel_dse import api
+    root = Path(__file__).resolve().parents[1]
+    args = ["--model", "deepseek-v3.2", "--tp", "8", "--ep", "8", "--mem", H, "--indexer", "key_split", "--exec-overlap", "kernel",
+            "--layer-overhead-us", "5", "--hop-link-us", "0.5"]
+    out = subprocess.run([sys.executable, "-m", "accel_dse.cli", "eval", "--json", *args], cwd=root, capture_output=True,
+                         text=True, timeout=600, check=True).stdout
+    co = json.loads(out)
+    sc = co["scenario"]
+    assert sc["indexer"] == "key_split" and sc["exec_overlap"] == "kernel" and sc["layer_overhead_us"] == 5.0
+    assert sc["fabric"]["hop_link_us"] == 0.5 and sc["fabric"]["enabled"] is True
+    ap = api.api_eval({"scenario": {"model": "deepseek-v3.2", "layout": {"tp": 8, "ep": 8}, "mem_id": H, "indexer": "key_split",
+                                    "exec_overlap": "kernel", "layer_overhead_us": 5.0,
+                                    "fabric": {"enabled": True, "hop_link_us": 0.5}}})
+    assert co["hash"] == ap["hash"] and co["summary"] == ap["summary"]
+    bad = subprocess.run([sys.executable, "-m", "accel_dse.cli", "eval", "--indexer", "bogus"], cwd=root, capture_output=True, text=True)
+    assert bad.returncode != 0 and "Traceback" not in bad.stderr

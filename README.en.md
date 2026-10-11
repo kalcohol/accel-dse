@@ -45,10 +45,12 @@ python3 -m accel_dse eval --model qwen3.8-27b --phase prefill --prompt 1024 \
 python3 -m accel_dse eval --model esmfold --pp 4 --pp-split layers   # equal-layer PP split (default: cost-balanced)
 python3 -m accel_dse eval --model esm2-650m --seq-len 1022    # protein: batch latency, sequences/s
 python3 -m accel_dse eval --model boltz-1 --msa 1024 --samples 5   # structure prediction: trunk / diffusion / confidence, TFLOP per sequence
+python3 -m accel_dse eval --model deepseek-v3.2 --phase prefill --prompt 131072 --tp 8 --ep 8 \
+    --mem hbm3e_8s_12h24g_9200 --indexer key_split               # sparse-attention indexer deployment (default: as released)
 python3 -m accel_dse validate                                 # trend bands + GenZ comparison
 ```
 
-Every subcommand accepts `--json`. HTTP API: POST `/api/eval`, `/api/fit`, `/api/compare`, `/api/layouts`, `/api/stability`, `/api/sweep`, `/api/pareto`, `/api/memory`; GET `/api/health`, `/api/models`, `/api/catalog`. POST bodies take the same scenario description and are parsed strictly: unknown fields (at the body's top level and inside the scenario) and NaN / Infinity are rejected.
+Every subcommand except `serve` accepts `--json`; every scenario field has a command-line flag. HTTP API: POST `/api/eval`, `/api/fit`, `/api/compare`, `/api/layouts`, `/api/stability`, `/api/sweep`, `/api/pareto`, `/api/memory`; GET `/api/health`, `/api/models`, `/api/catalog`. POST bodies take the same scenario description and are parsed strictly: unknown fields (at the body's top level and inside the scenario) and NaN / Infinity are rejected.
 
 ## Layout
 

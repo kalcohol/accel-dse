@@ -1777,3 +1777,19 @@ decode 受 DRAM 限制，几乎不变；prefill TTFT 中位数：100T −25.7 %�
 
 **数值极端。** 上下文到 1M、1 → 1024 卡、batch 1 → 65536、主频 / SRAM 极端值：结果全部有限，单调性成立，超过 max_position_embeddings 时有警告。deepseek-v3.2 的 1M prefill 主要花在 indexer 上（O(L²)，按参考实现在每个 TP rank 上重复计算）；这是设计上值得注意的点（长上下文 prefill 应该用 DP 注意力或把 indexer 按 TP 切分），不是模型错误。
 
+## 33. 第 21 轮（0.87.0）：稀疏注意力 indexer 的部署选项；CLI 审计
+
+**选项（`Scenario.indexer`，「假设」）。** DSA 的 indexer 分数是 s(q, k) = Σ_h w_h·ReLU(q_h·k)：只有一个共享的键头，查询有 H_I 个头。在 TP 上有三种精确的部署：
+
+| 选项 | 每 rank 打分 | 通信 | 每 rank indexer 缓存 |
+|---|---|---|---|
+| replicated（V3.2 / GLM-5 发布） | 全部 H_I 头 × 全部键 | 无 | 全部键 |
+| tp_split（V4 发布） | ⌈H_I/TP⌉ 头 × 全部键 | all-reduce fp32 [token × 键] | 全部键 |
+| key_split | 全部 H_I 头 × ⌈键/TP⌉（轮转分片，因果均值不变） | all-gather 每 token k_loc ×（fp32 + int32） | ⌈键/TP⌉ |
+
+key_split 每个 rank 取局部 top-k；全局 top-k 一定包含在各 rank 局部 top-k 的并集里，因此合并（TP·k_loc 次比较）是精确的。查询侧的准备（LayerNorm / RoPE / Hadamard / fp8 量化）在每个 rank 上重复。「按头切分后只汇集 top-k」不精确，所以不提供。默认 reference 表示保持发布时的方式，指纹不变。
+
+**设计含义。** 在 1M prefill、TP8 下：replicated 由 O(L²) 的 indexer 主导（2820 s）；tp_split 把计算除以 TP，但打分矩阵的 all-reduce（每层 2.2 TB）占主导（598 s）；key_split 计算同样除以 TP，通信只剩 top-k 候选（425 s），还省下 7/8 的 indexer 缓存。decode（128K 上下文，batch 32）：77 → 59 → 46 ms。在长上下文的 NPU 部署里，indexer 的分片方式是一阶设计变量。DP 注意力只有在 batch ≥ DP 时有用：单请求时 7/8 的副本空闲（新增警告）；batch 8 时 DP8 最好，而且是唯一放得下的布局（TP 下 MLA latent 缓存会按 TP 重复）。
+
+**CLI 审计。** 此前有 11 个场景字段没有命令行参数，现已补齐；常驻测试检查每个字段都能从命令行设置。命令行与 API 结果一致；错误输入都干净退出、没有 traceback。
+
