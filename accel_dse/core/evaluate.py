@@ -177,6 +177,13 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     mac_share = t if c.bound == "mac" else 0.0
     rate = ch.formats.rate(c.exec_fmt) or 1.0
     ideal = op.flops / 2.0 / (ch.macs * rate * ch.freq_ghz * 1e9)   # 100 % array utilisation
+    if ch.fmt_ceiling:                                   # 0.94 (default off)
+        fc = dict(ch.fmt_ceiling)
+        cap = fc.get(f"{op.kind}:{c.exec_fmt}", fc.get(c.exec_fmt))
+        if cap and ideal / cap > t:
+            d = ideal / cap - t
+            t += d
+            mac_share += d
     vw = vector_seconds(ch, c.convert_w * 2.0) if op.kind == "gemm" else 0.0   # weight dequant: per pass, not per token
     return t, mac_share, t - mac_share, vec, c.convert_elems, ideal, c.feed_cycles * op.causal * ch.port_Bpc, vw
 
@@ -714,7 +721,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if lay.cp > 1:
         _cp_check(m, sv)
     sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
-                 scn.fabric, lay.cards)
+                 scn.fabric, lay.cards, scn.mem_cap_GB, scn.kv_mem_frac)
     if scn.chip.slc_bytes and scn.chip.slc_bytes >= sys.dram_bytes:
         warnings.append("SLC 容量不小于每卡 DRAM 容量——不现实的设计点（SLC 不增加容量，按包含式缓存计）")
     if sys.package_cards > 1 and lay.cards > sys.package_cards and lay.cards % sys.package_cards:
@@ -829,7 +836,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             # a working set beyond the runtime reserve needs its excess in DRAM 「假设」
             mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=max(0.0, agg["max_act_tot"] - RUNTIME_RESERVE), stream=True,
-                      slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy)
+                      slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac)
             dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]
@@ -1031,7 +1038,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 store = store_memo[skey] = stage_storage(m, st.first, st.last, st.has_embed, st.has_head, sh, 0, 0)
             mp = plan(store, 0, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=agg["max_act_tot"] + resid, stream=True,
-                      slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy)
+                      slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac)
             dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]

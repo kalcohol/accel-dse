@@ -312,6 +312,10 @@ class Scenario:
     chip: Chip = CHIPS["100T"]
     mem_id: str = "lpddr5x_4x64_8533_16g"
     mem_eff: float | None = None
+    # 0.94 (optional): usable DRAM capacity per card in GB (1e9; 0 = the memory config's stack capacity) and the share
+    # of post-weight free memory the runtime grants the KV / state cache (TRT-LLM free_gpu_memory_fraction)
+    mem_cap_GB: float = field(default=0.0, metadata={"omit_default": True})
+    kv_mem_frac: float = field(default=1.0, metadata={"omit_default": True})
     link: Link = Link()                                  # in-node scale-up between packages (0.50 three tiers)
     mapping: str = "os"
     layout: Layout = Layout()
@@ -371,6 +375,10 @@ class Scenario:
             raise ValueError(f"pd.decode_cards must be a multiple of the (decode) layout's {self.layout.cards} cards")
         if self.mem_eff is not None and not (0 < self.mem_eff <= 1):
             raise ValueError("mem_eff must be in (0,1]")
+        if not (self.mem_cap_GB == 0 or (math.isfinite(self.mem_cap_GB) and self.mem_cap_GB > 0)):
+            raise ValueError("mem_cap_GB must be 0 (stack capacity) or finite > 0")
+        if not (0 < self.kv_mem_frac <= 1):
+            raise ValueError("kv_mem_frac must be in (0,1]")
 
     @property
     def d2d_link(self) -> Link:

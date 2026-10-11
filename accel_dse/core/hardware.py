@@ -87,6 +87,10 @@ class Chip:
     # 0.93 (optional, default "" = instance_sched): schedule for attention ops only (QK / PV, incl. MLA latent), e.g.
     # "cta" — attention kernels spread (request, head) tiles over SMs (FlashMLA / FMHA) even where GEMMs keep "wide"
     attn_sched: str = field(default="", metadata={"omit_default": True})
+    # 0.94 (optional): sustained fraction of peak MAC rate per exec format, ((fmt, frac), ...) — a kernel-level ceiling
+    # from a public kernel benchmark (e.g. Hopper FP8 block-scaled GEMM, DeepGEMM), applied as max(t, ideal / frac);
+    # a "<kind>:<fmt>" key (e.g. "attn:bf16") takes precedence for that op kind
+    fmt_ceiling: tuple = field(default=(), metadata={"omit_default": True})
 
     def __post_init__(self):
         if self.noc_topology not in NOC_TOPOLOGIES:
@@ -292,6 +296,8 @@ class System:
     node_cards: int = 0                 # cards per node; 0 = one node (cross-node tier unused)
     fabric: Fabric = Fabric()           # 0.59 topology-aware collectives (off = 0.50 model)
     cards: int = 0                      # cards of the evaluated replica (scale-up domain when node_cards = 0; 0.59)
+    cap_GB: float = 0.0                 # 0.94: usable capacity override (GB); 0 = stack capacity
+    kv_frac: float = 1.0                # 0.94: KV / state share of post-weight free memory
 
     @property
     def mem(self) -> mem_catalog.MemSpec:
@@ -303,7 +309,7 @@ class System:
 
     @property
     def dram_bytes(self) -> float:
-        return float(self.mem.capacity_bytes)
+        return self.cap_GB * 1e9 if self.cap_GB else float(self.mem.capacity_bytes)
 
 
 @lru_cache(maxsize=4096)

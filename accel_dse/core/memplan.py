@@ -224,7 +224,8 @@ class MemPlan:
 
 
 def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: float, max_act: float,
-         act_need: float = 0.0, stream: bool = False, slc_bytes: float = 0.0, slc_policy: str = "pin") -> MemPlan:
+         act_need: float = 0.0, stream: bool = False, slc_bytes: float = 0.0, slc_policy: str = "pin",
+         kv_frac: float = 1.0) -> MemPlan:
     kv_t = (store.kv_per_seq + store.idx_per_seq) * batch_local
     st_t = store.state_per_seq * batch_local
     need = store.weights + kv_t + st_t + RUNTIME_RESERVE + act_need
@@ -237,7 +238,9 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     kv_s = min(kv_t + st_t, free)
     strm = store.hot_w + store.expert_w            # 0.61.3: residency of the weights a step reads (cold bytes excluded)
     res = (p_hot + p_exp) / strm if strm else 1.0
-    mp = MemPlan(store.weights, kv_t, st_t, need, dram_cap, need <= dram_cap, sram_bytes, staging,
+    # 0.94: a runtime granting the cache only kv_frac of the post-weight free memory (default 1 = unchanged)
+    fit = need <= dram_cap if kv_frac >= 1 else need - kv_t - st_t + (kv_t + st_t) / kv_frac <= dram_cap
+    mp = MemPlan(store.weights, kv_t, st_t, need, dram_cap, fit, sram_bytes, staging,
                  p_hot, p_exp, kv_s, res, act_need, slc_residency=res)
     if slc_bytes <= 0:
         return mp

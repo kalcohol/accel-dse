@@ -125,6 +125,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         chip = replace(chip, instance_sched=v["sched"])
     if v.get("kernel_us") is not None:  # 0.92: per-kernel fixed cost
         chip = replace(chip, kernel_us=v["kernel_us"])
+    if v.get("fmt_ceiling") and chip.name.split("-")[0] in HOPPER:   # 0.94: Hopper only
+        chip = replace(chip, fmt_ceiling=v["fmt_ceiling"])
     if v.get("attn_sched"):            # 0.93: attention-only schedule
         chip = replace(chip, attn_sched=v["attn_sched"])
     mem_eff = e if isinstance(e, float) else EFF[e]
@@ -135,6 +137,7 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         sv = {**sv, "spec_k": r["spec_k"], "spec_accept": r["spec_accept"]}
     if r.get("moe_skew"):
         sv = {**sv, "moe_skew": r["moe_skew"]}
+    extra.update(_mem_runtime(r, h) if v.get("mem_rt", MEM_RT) else {})
     return Scenario(model=r["model"], chip=chip, mem_id=h.mem_id, mem_eff=mem_eff, link=h.link, mapping="reconf",
                     exec_overlap=ov,
                     layout=Layout(tp=r["tp"], dp=r.get("dp", 1), ep=r.get("ep", 1), etp=r.get("etp", 1)),
@@ -259,13 +262,40 @@ def gpu_variant(base: str, kernel_us: float = 0.53, sched: str = "cta", inflight
     return name
 
 
+HOPPER = ("H100", "H800", "H200")
+# 0.94 memory as the runtime sees it (public specs / documented defaults, not fitted):
+#  * usable capacity = the vendor's published per-GPU figure (RefHW.hbm_GB: H200 141 GB, B200 180 GB — the catalog
+#    stack configs give 144 / 192 GiB = 154.6 / 206.2 GB)
+#  * TensorRT-LLM grants the KV cache free_gpu_memory_fraction = 0.9 of the memory left after weights / activations
+#    (KvCacheConfig default; trtllm-bench and the 0.x engine flow use the same 0.9)
+#  * vLLM: gpu_memory_utilization = 0.9 of total memory for weights + activations + KV (EngineArgs default)
+MEM_RT = False     # opt-in (variant key "mem_rt"); in candidate_variant — MODEL §40
+KV_FRAC = {"trtllm": 0.9}
+TOTAL_FRAC = {"rocm-vllm": 0.9}
+
+
+def _mem_runtime(r: dict, h) -> dict:
+    src = r.get("src", "")
+    cap = h.hbm_GB * next((f for k, f in TOTAL_FRAC.items() if src.startswith(k)), 1.0)
+    return dict(mem_cap_GB=cap, kv_mem_frac=next((f for k, f in KV_FRAC.items() if src.startswith(k)), 1.0))
+# 0.94: DeepGEMM README (2025-04-18): FP8 block-scaled GEMM "up to 1550 TFLOPS on H800" (dense FP8 peak 1979) — the
+# best public sustained Hopper FP8 kernel rate (WGMMA FP8 accumulators are promoted to FP32 on CUDA cores every
+# 128-K block, plus clocks under full tensor load).  Not fitted to any validation row.
+HOPPER_FP8_CEIL = 1550 / 1979
+# FlashMLA README (2025-04-22): dense MLA decoding "up to 660 TFlops on H800" (bf16 dense peak 989.5) — attention ops
+HOPPER_ATTN_CEIL = 660 / 989.5
+HOPPER_CEILING = (("fp8", HOPPER_FP8_CEIL), ("attn:bf16", HOPPER_ATTN_CEIL))
+
+
 def candidate_variant(base: str = "catalog_kernel") -> str:
     """0.93 refhw candidate (NOT default — fails the no-set-worse rule on one single-row group, MODEL §39): attention
     ops on the GPU thread-block schedule (attn_sched "cta": FMHA / FlashMLA tile (request, head, q-block) over SMs;
     DeepSeek trace §25.9: MLA 31 ms vs wide 88) + per-layer software overhead from the public DeepSeek trace
     (TRACE_LAYER_US); GEMMs keep wide."""
     name = base + "+cand093"
-    VARIANTS.setdefault(name, {**VARIANTS[base], "attn_sched": "cta", "layer_us": TRACE_LAYER_US})
+    VARIANTS.setdefault(name, {**VARIANTS[base], "attn_sched": "cta", "layer_us": TRACE_LAYER_US,
+                               # 0.94: runtime memory view + Hopper kernel ceilings (public, not fitted)
+                               "mem_rt": True, "fmt_ceiling": HOPPER_CEILING})
     return name
 
 
