@@ -26,6 +26,7 @@
 git clone https://github.com/kalcohol/accel-dse.git
 cd accel-dse
 python3 tests/run_tests.py          # self-test (zero deps, test modules in parallel; -j 1 sequential)
+python3 tests/run_tests.py test_core_052 test_x::test_y   # exact module / single-test selection; -k WORD = substring
 python3 -m accel_dse serve          # web workbench → http://127.0.0.1:8765
 ```
 

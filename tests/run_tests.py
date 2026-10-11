@@ -35,7 +35,7 @@ def _run_module(mod_path: Path, argv: list[str]) -> tuple[int, int]:
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     for name in sorted(n for n in dir(m) if n.startswith("test_")):
-        if argv and not any(a in mod_path.stem or a in name for a in argv):
+        if argv and not _wants(mod_path.stem, name, argv):
             continue
         t1 = time.time()
         try:
@@ -49,11 +49,38 @@ def _run_module(mod_path: Path, argv: list[str]) -> tuple[int, int]:
     return passed, failed
 
 
+def _norm(a: str) -> str:
+    return Path(a.split("::")[0]).stem if a.endswith(".py") or "/" in a.split("::")[0] else a.split("::")[0]
+
+
+def _wants(stem: str, name: str, argv: list[str]) -> bool:
+    """0.74: exact selection — ``test_x`` / ``tests/test_x.py`` = whole module, ``test_x::test_y`` = one test,
+    any other word = a test function of that exact name; ``-k WORD`` = substring match (the pre-0.74 behaviour)."""
+    for a in argv:
+        if a.startswith("-k="):
+            if a[3:] in stem or a[3:] in name:
+                return True
+        elif "::" in a:
+            if _norm(a) == stem and a.split("::", 1)[1] == name:
+                return True
+        elif _norm(a) == stem or a == name:
+            return True
+    return False
+
+
 def _selected(mod_path: Path, argv: list[str]) -> bool:
-    if not argv or any(a in mod_path.stem for a in argv):
+    if not argv:
         return True
     src = mod_path.read_text(encoding="utf-8")
-    return any(re.search(rf"^def test_\w*{re.escape(a)}", src, re.M) for a in argv)
+    names = re.findall(r"^def (test_\w+)", src, re.M)
+    return any(_wants(mod_path.stem, n, argv) for n in names) or any(_norm(a) == mod_path.stem for a in argv)
+
+
+def _kflags(argv: list[str]) -> list[str]:
+    out, it = [], iter(argv)
+    for a in it:
+        out.append("-k=" + next(it, "") if a == "-k" else a)
+    return out
 
 
 def main(argv: list[str]) -> int:
@@ -67,9 +94,13 @@ def main(argv: list[str]) -> int:
             jobs, argv = int(argv[1]), argv[2:]
         else:
             jobs, argv = int(argv[0][2:]), argv[1:]
+    argv = _kflags(argv)
     failed = passed = 0
     t0 = time.time()
     mods = sorted(HERE.glob("test_*.py"))
+    if argv and not any(_selected(m, argv) for m in mods):
+        print(f"no test module / test matches {argv} (exact names; use -k WORD for substring)")
+        return 2
     if jobs <= 1:
         for mod_path in mods:
             p, f = _run_module(mod_path, argv)
