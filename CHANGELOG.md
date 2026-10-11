@@ -3,6 +3,15 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.86.0]
+
+### Validation
+- 组合对抗审计（val14/combo.py，960 个随机组合：PD + D2D 小芯片 + SLC（pin / lru）+ MoE 倾斜 + 投机解码 + 前缀缓存（prefix_cached / prefix_hit / radix 树）+ KV 策略（wait / recompute / swap）+ 异构 prefill 芯片）：fits ⇔ 各段 DRAM 需求 ≤ 容量、时间分量有限且 total ≥ 最大分量、能量按动作求和 = 总量且对 pJ 线性、关闭 D2D / SLC 时其能量为 0、倾斜 / 接受率 / 已缓存前缀 / pin SLC 单调、TP 上工作量守恒、PD 流体恒等式（req_s = min 容量，decode 容量 = 副本·tok/s / 输出长度，goodput = req_s·输出长度）、best_split ≥ 给定划分、排队指标有限、PD 能量按动作求和——0 违例、0 崩溃。
+- 共置与 PD 的 1:1 极限：prefill 池与 decode 同布局时，PD 每卡 goodput ≤ 共置分时流体 goodput（35 个反例全部是 PD prefill 池用 TP1、共置的 prefill 跑在 decode 的 TP≥2 布局上，省去了集合通信；同布局后比值 0.50–0.99）。该界只在同布局下成立，已写成常驻测试。
+- 数值极端（val14/extremes.py）：上下文到 1M（qwen3-8b、llama-3.1-8b、qwen3-next、deepseek-v3.2、minimax-m1）、1 → 1024 卡、batch 1 → 65536、主频 0.1 / 10 GHz、SRAM 1 MiB / 16 GiB：0 个非有限值、0 个 fits 不一致，TPOT 随上下文、TTFT 随提示长度单调；超过 max_position_embeddings 时有警告。被拒绝的输入都是正确的校验（稠密模型不支持 DP/EP；SRAM 必须 > 0）。
+- 观察（非 bug）：deepseek-v3.2 在 8 卡 TP8 上 1M 提示 prefill 2820 s，主要是 lightning indexer：O(L²)，因果减半，fp8，并且按参考实现（`Linear`，不按 TP 切分）在每个 TP rank 上重复计算；手算 5.5e17 FLOP/rank，与模型一致。
+- 没有发现 bug；数值输出与 0.85.0 逐位相同（仅新增测试）。
+
 ## [0.85.0]
 
 ### Fixed

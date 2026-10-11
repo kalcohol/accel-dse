@@ -1761,3 +1761,19 @@ decode 受 DRAM 限制，几乎不变；prefill TTFT 中位数：100T −25.7 %�
 
 **审计。** API 现在拒绝未知的 body 顶层键；UI 的「放不下」结论与错误信息也会被标为过期；目录覆盖标签与实现一致（见 CHANGELOG 0.85.0）。
 
+## 32. 第 20 轮（0.86.0）：特性组合与数值极端
+
+**组合。** 随机组合 PD、D2D 小芯片、SLC（pin / lru）、MoE 倾斜、投机解码、前缀缓存（单前缀 / radix 树）、KV 策略和异构 prefill 芯片（960 例）。检查四条验收准则以及内部一致性：
+- 容量：fits ⇔ 各段 DRAM 需求 ≤ 容量；
+- 部分之和 = 总量：能量按动作求和、PD 流体容量（req_s = min 容量，decode 容量 = 副本 × tok/s / 输出长度）；
+- 能量对每动作 pJ 线性，关闭 D2D / SLC 时对应能量为 0；
+- 工作量在 TP 上守恒；
+- 单调性：倾斜、接受率、已缓存前缀、pin SLC 容量；
+- 搜索：best_split 不劣于给定划分。
+
+结果：0 违例。
+
+**共置与 PD 的 1:1 极限。** 两边用相同的 prefill / decode 速率时，共置分时是流体最优解：每卡 goodput = 1 / (1/r_d + (S/o)/r_p)，而 PD 的整数划分只能达到或低于它。因此在 prefill 池与 decode 同布局时，PD ≤ 共置成立（常驻测试 `test_core_086`）。PD prefill 池用更便宜的布局（例如 TP1，没有集合通信）时，可以合理地超过共置，在随机审计里最多高 45%。
+
+**数值极端。** 上下文到 1M、1 → 1024 卡、batch 1 → 65536、主频 / SRAM 极端值：结果全部有限，单调性成立，超过 max_position_embeddings 时有警告。deepseek-v3.2 的 1M prefill 主要花在 indexer 上（O(L²)，按参考实现在每个 TP rank 上重复计算）；这是设计上值得注意的点（长上下文 prefill 应该用 DP 注意力或把 indexer 按 TP 切分），不是模型错误。
+
