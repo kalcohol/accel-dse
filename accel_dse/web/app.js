@@ -497,7 +497,23 @@ function bindMem() {
 
 /* ------------------------------------------------------------------ evaluation */
 let timer = null;
-function schedule() { clearTimeout(timer); timer = setTimeout(runEval, 120); invalidate(); }
+function schedule() { clearTimeout(timer); timer = setTimeout(runEval, 120); invalidate(); swHint(); }
+// 0.90: fabric algo = auto picks each collective's algorithm alone (bw + α, like a runtime tuner) — with D2D chiplets a
+// faster link can switch to a higher-α algorithm whose bandwidth hides under compute (≤ 0.4 % non-monotone, 0.89
+// audit, MODEL §35); auto_overlap minimises the stage time and is monotone
+const BW_PATH = /^(link\.|d2d\.|net\.|fabric\.|hop_)|GBps|alpha_us/;
+function swHint() {
+  const el = $('sw-hint');
+  if (!el || !S.sc || !S.cat) return;
+  const f = S.sc.fabric;
+  const on = !!(f && f.enabled && f.algo === 'auto' && S.sc.d2d_enabled && (S.sc.package_cards || 1) > 1);
+  el.hidden = !on;
+  if (!on) return;
+  const bw = BW_PATH.test($('sw-path').value || '');
+  put(el, h('b', {}, bw ? '带宽敏感性扫描：建议把集合通信算法改为 auto_overlap。' : '提示：fabric + D2D 下做带宽敏感性分析时建议用 auto_overlap。'),
+    ' 当前 fabric 算法为 auto：每次集合通信单独取「带宽 + α」最小的算法（类似运行时调优器）。开启 D2D 芯粒时，链路更快可能改选 α 更大、带宽更省的算法，而这部分带宽本来就被计算掩盖，于是结果对带宽不单调（实测 ≤ 0.4 %，约 1/5 的场景）。auto_overlap 按流水级的暴露时间选算法，对带宽单调。 ',
+    h('button', { class: 'btn ghost', id: 'sw-hint-fix', onclick: () => { fab().algo = 'auto_overlap'; $('fab-algo').value = 'auto_overlap'; schedule(); } }, '切换为 auto_overlap'));
+}
 // 0.61.2: every scenario change bumps S.ver; a search / sweep that lands after an edit is labelled stale and is
 // rendered with the model / phase it was computed for (it used to read the current ones: an LLM sweep that finished
 // after switching to a video model showed 帧/s and a 0 s latency column)
@@ -1550,6 +1566,7 @@ async function init() {
   opts($('sw-path'), S.cat.sweep_paths.map((p) => [p, SWEEP_ZH[p] || p]), 'serving.batch');
   $('sw-path').addEventListener('change', () => { $('sw-values').value = SWEEP_DEFAULT[$('sw-path').value] || ''; });
   $('sw-run').addEventListener('click', runSweep);
+  $('sw-path').addEventListener('change', swHint);
   $('pf-run').addEventListener('click', runPareto);
   fillSweepPaths();
   renderModels();

@@ -195,3 +195,8 @@ input.bad { border-color: var(--danger); }
   .toolbar label, .toolbar label:has(select), .toolbar label:has(input[type=text]) { width: calc(50% - 6px); }
 }
 #models-tbl td:first-child { min-width: 9em; overflow-wrap: anywhere; }
+
+/* 0.90: inline advisory (sweep tab: fabric auto + D2D) */
+.note.warn { border: 1px solid var(--warn); border-radius: 6px; padding: 6px 10px; margin: 6px 0; color: var(--text); }
+.note.warn b { color: var(--warn); }
+.note.warn .btn { margin-left: 6px; }
