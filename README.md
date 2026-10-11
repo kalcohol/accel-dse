@@ -48,7 +48,7 @@ python3 -m accel_dse eval --model boltz-1 --msa 1024 --samples 5   # 结构预�
 python3 -m accel_dse validate                                 # 趋势区间 + GenZ 对照
 ```
 
-所有子命令都支持 `--json`。HTTP API（`/api/eval`、`/api/compare`、`/api/layouts`、`/api/stability`、`/api/sweep`、`/api/pareto`、`/api/memory`）接受与命令行相同的场景描述，严格解析（拒绝未知字段与 NaN / Infinity）。
+所有子命令都支持 `--json`。HTTP API：POST `/api/eval`、`/api/fit`、`/api/compare`、`/api/layouts`、`/api/stability`、`/api/sweep`、`/api/pareto`、`/api/memory`；GET `/api/health`、`/api/models`、`/api/catalog`。POST 接受与命令行相同的场景描述，严格解析：拒绝未知字段（body 顶层与 scenario 内部都拒绝）以及 NaN / Infinity。
 
 ## 目录结构
 

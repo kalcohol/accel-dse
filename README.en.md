@@ -48,7 +48,7 @@ python3 -m accel_dse eval --model boltz-1 --msa 1024 --samples 5   # structure p
 python3 -m accel_dse validate                                 # trend bands + GenZ comparison
 ```
 
-Every subcommand accepts `--json`. The HTTP API (`/api/eval`, `/api/compare`, `/api/layouts`, `/api/stability`, `/api/sweep`, `/api/pareto`, `/api/memory`) takes the same scenario description and parses it strictly (unknown fields and NaN / Infinity are rejected).
+Every subcommand accepts `--json`. HTTP API: POST `/api/eval`, `/api/fit`, `/api/compare`, `/api/layouts`, `/api/stability`, `/api/sweep`, `/api/pareto`, `/api/memory`; GET `/api/health`, `/api/models`, `/api/catalog`. POST bodies take the same scenario description and are parsed strictly: unknown fields (at the body's top level and inside the scenario) and NaN / Infinity are rejected.
 
 ## Layout
 

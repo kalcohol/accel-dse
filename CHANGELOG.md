@@ -3,6 +3,20 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.85.0]
+
+### Fixed
+- 紧 KV 闭式在「整数装箱」下凭空预测抢占（点 18 PD 最坏间隔 243 ms，DES 3.8 ms、0 次抢占）：recompute / swap 准入要求 used + S ≤ K，最多同时运行 n = min(B, ⌊K / S_min⌋) 条序列；若 n·(max(S + o) + e) ≤ K（e = 每步增长），任何到达过程都不可能抢占。连续（Gauss / Gamma）footprint 模型看不到这一点。现在该条件成立时 Rice 与饱和抢占率都置 0（`pdqueue.PACK_BOUND`，`kv_cap.pack_preempt_free`）。
+- API：`/api/eval`、`/api/fit`、`/api/layouts`、`/api/compare`、`/api/stability`、`/api/pareto` 会静默接受未知的 body 顶层键（例如拼错的 `"objetive"` 会悄悄按默认目标运行），与 README 的「严格解析」不符。现按路由校验允许的键，未知键返回 400（UI / CLI 发送的键已核对）。
+- UI：映射对比「任何布局都放不下」的结论和各面板的错误信息没有设置 `dataset.done`，改了卡数等之后不会标为过期（仍显示「1 卡下…放不下」）。现在这些分支同样会被标为过期。
+- `domain.py` 文档字符串过时：视频管线的文本编码器 / VAE 解码早已建模（不属于 coverage 原因）。
+
+### Validation
+- 紧 KV 98 点网格（val12 / val13）：装箱界只在 9 个点-模式对上生效（点 18 / 36 / 39 的全部模式，这些点 DES 都是 0 次抢占），其余逐位不变；0 个变差。PD 最坏间隔 242.7 → 3.8 ms（DES 3.8）、85.5 → 2.7 ms（DES 2.7）。
+- UI 端到端（Playwright，box）：ui_check / ui_check_catalog / ui_check_domain 均 0 问题。后两个脚本里的过时预期已更新：Wan、HunyuanVideo 已接入；clip_s 含固定的 TE / VAE 时间，因此按 denoise_s 检查 50→20 步比例。新增 local/ui_check_stale.py：完成后编辑、重新运行清除、运行中编辑（慢场景 compare 5.9 s 与稳定性）、「放不下」结论都正确标为过期。
+- 目录覆盖标签：63 个模型，「完整」⇔ 无原因且参数与发布一致（偏差 0）；4 个蛋白模型「部分」的原因属实；10 个视频模型都建模了 TE + VAE；AlphaFold3「暂未接入」。
+- 默认场景指纹不变。
+
 ## [0.84.0]
 
 ### Changed（紧 KV 闭式数值有意变化；默认场景指纹不变）

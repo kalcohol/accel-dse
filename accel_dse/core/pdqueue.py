@@ -1317,7 +1317,7 @@ def _kv_slots(ctx: dict, B: int) -> tuple[int, dict | None]:
     VS = sum(w * S * S for w, S, _ in pts) / tot - ES * ES
     Eg = Eo2 / (2 * Eo)
     var_f = max(0.0, VS + Eo3 / (3 * Eo) - Eg * Eg)           # running footprint S + g, g ~ U(0, o), o size-biased
-    return min(B, Bkv), {"policy": pol, "capacity_tokens": K, "capacity_GB": cap.get("capacity_GB"),
+    return min(B, Bkv), {"policy": pol, "capacity_tokens": K, "capacity_GB": cap.get("capacity_GB"), "slots_B": B,
                          "source": cap.get("source"), "footprint_tokens": foot, "slots_kv": Bkv, "binds": Bkv < B,
                          "ES": ES, "Eg": Eg, "var_f": var_f}
 
@@ -1534,6 +1534,9 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
         pts = ctx["len"].points
         tot = sum(w for w, _, _ in pts)
         Eo = sum(w * o for w, _, o in pts) / tot
+        pack_free = _pack_preempt_free(pts, K, kvi.get("slots_B"), dec.get("e", 1.0)) if PACK_BOUND else False
+        if pack_free:
+            nu_rice, nu_k = 0.0, {}
         p_ev = sum(w * (Eo / S) * (1 - math.exp(-S / Eo)) for w, S, _ in pts) / tot if Eo > 0 else 0.0
         # 0.57: the departure that refills also frees its own grown output o_d, so the headroom walks
         # h → h + o_d − G (not a fresh U(0, S) draw against G): P(G − o_d > h) = the 0.56 term × E_o[e^{−o/E[o]}]
@@ -1556,6 +1559,11 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
             # lifetime variance.  c² = min(1, CV²(output) + CV²(per-request TPOT)); c² = 1 is the ≤ 0.82 Exp term.
             p_ev = _sat_evict_gamma(pts, Eo, c2)
         kvi["sat_growth_cv2"] = c2
+        if pack_free:
+            # 0.85: integer packing — admission needs used + S ≤ K, so at most n = min(B, ⌊K / S_min⌋) run; if even
+            # n fully grown sequences (+ one step of growth) fit, no preemption can happen (exact, any arrival law)
+            p_ev = 0.0
+            kvi["pack_preempt_free"] = True
         if base is _coloc_chunked_base:
             # 0.58 「假设」: chunked prefill admits one prompt at a time, when the chunk server frees up — a departure
             # met while a prompt is prefilling (probability ρ_pre) is not followed by a tight greedy refill (growth
@@ -1756,6 +1764,24 @@ def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float, kno
 
 SAT_ARR_M = 1              # 0.84: arrival-variance exponent in the gamma growth law (None = 0.83 gamma)
 SAT_MODEL = "gamma"        # 0.83: saturation-preemption growth law ("exp" = ≤ 0.82)
+
+
+PACK_BOUND = True           # 0.85: exact zero-preemption packing bound (False = ≤ 0.84)
+
+
+def _pack_preempt_free(pts, K: float, B, e: float) -> bool:
+    """True when no admissible running set can outgrow K: admission (recompute / swap) needs used + S ≤ K, so at most
+    n = ⌊K / S_min⌋ sequences (and ≤ B slots) run; preemption-free if n·(max(S + o) + e) ≤ K (e = growth per step)."""
+    if not pts or K <= 0:
+        return False
+    s_min = min(S for _, S, _ in pts)
+    if s_min <= 0:
+        return False
+    n = int(K // s_min)
+    if B:
+        n = min(n, int(B))
+    n = max(1, n)
+    return n * (max(S + o for _, S, o in pts) + max(0.0, e)) <= K
 
 
 def _arr_c2(c2: float, rho_K: float, m: float) -> float:

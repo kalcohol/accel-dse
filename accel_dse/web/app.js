@@ -983,9 +983,10 @@ async function runCompare() {
     const stab = {};
     paintCompare(r, stab, m0);
     const none = r.rows.every((x) => !x.batch);
-    $('cmp-status').textContent = none ? `${cards()} 卡下任何布局都放不下或不满足 SLO —— 先在「单点评估」按提示修正卡数` :
+    $('cmp-status').textContent = none ? `${cards()} 卡下任何布局都放不下或不满足 SLO —— 先在「单点评估」按提示修正卡数${staleTag(v0)}` :
       `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s · 稳定性计算中（0/${r.rows.length}）…${staleTag(v0)}`;
-    if (none) return;
+    // 0.85: the "nothing fits" verdict is a result too — mark it done so a later edit (e.g. more cards) flags it stale
+    if (none) { $('cmp-status').dataset.done = '1'; return; }
     let done = 0;
     $('cmp-status').dataset.done = '1';
     // the server runs these in parallel worker processes; each row fills in as its result arrives
@@ -1006,7 +1007,7 @@ async function runCompare() {
     const res = await Promise.all(r.rows.filter((x) => x.batch).map(one));
     if (res.some((x) => !x)) return;
     $('cmp-status').textContent = `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s${staleTag(v0)}`;
-  } catch (e) { $('cmp-status').textContent = '错误：' + e.message; }
+  } catch (e) { $('cmp-status').textContent = '错误：' + e.message; $('cmp-status').dataset.done = '1'; }   // 0.85: stale-flag errors too
   finally { btn.disabled = false; }
 }
 function latCell(x) { return x.unit === 'token' || !x.unit ? num(x.tpot_ms) : fmtDur(x.latency_ms / 1e3); }
@@ -1086,7 +1087,7 @@ async function runLayouts() {
     put($('lay-tbl'), h('thead', {}, head), h('tbody', {}, rows));
     $('lay-status').textContent = `${r.n_layouts} 个布局 · 精确前 ${r.rows.length} 名 · ${((performance.now() - t0) / 1000).toFixed(1)} s${staleTag(v0)}`;
     $('lay-status').dataset.done = '1';
-  } catch (e) { $('lay-status').textContent = '错误：' + e.message; }
+  } catch (e) { $('lay-status').textContent = '错误：' + e.message; $('lay-status').dataset.done = '1'; }   // 0.85: stale-flag errors too
 }
 async function runStability() {
   paintScope();
@@ -1198,7 +1199,7 @@ async function runSweep() {
       h('td', {}, x.fits ? '✓' : h('span', { style: 'color:var(--danger)' }, '✗'))))));
     $('sw-status').textContent = `${r.rows.length} 点${staleTag(v0)}`;
     $('sw-status').dataset.done = '1';
-  } catch (e) { $('sw-status').textContent = '错误：' + e.message; }
+  } catch (e) { $('sw-status').textContent = '错误：' + e.message; $('sw-status').dataset.done = '1'; }   // 0.85: stale-flag errors too
 }
 async function runPareto() {
   $('sw-status').textContent = '计算 Pareto…';
@@ -1219,7 +1220,7 @@ async function runPareto() {
       h('td', { class: 'l' }, p.batch), h('td', {}, num(lat(p))), h('td', {}, num(thr(p)))))));
     $('sw-status').textContent = `Pareto ${r.front.length} 点${staleTag(v0)}`;
     $('sw-status').dataset.done = '1';
-  } catch (e) { $('sw-status').textContent = '错误：' + e.message; }
+  } catch (e) { $('sw-status').textContent = '错误：' + e.message; $('sw-status').dataset.done = '1'; }   // 0.85: stale-flag errors too
 }
 
 /* ------------------------------------------------------------------ models table */

@@ -118,6 +118,22 @@ def _finite(x: Any, where: str = "body") -> None:
             _finite(v, f"{where}[{i}]")
 
 
+_COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
+_ROUTE_KEYS = {"eval": {"best_batch", "goodput"}, "fit": set(), "layouts": {"cards", "objective"},
+               "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
+               "pareto": set(), "sweep": {"path", "values"}}
+
+
+def _check_keys(body, route: str) -> None:
+    """0.85: reject unknown top-level body keys (README: strict parsing) — they were silently ignored, so a typo
+    such as "objetive" ran the default objective."""
+    if not isinstance(body, dict):
+        raise ApiError("body must be a JSON object")
+    bad = set(body) - _COMMON_KEYS - _ROUTE_KEYS[route]
+    if bad:
+        raise ApiError(f"{route}: unknown keys {sorted(bad)}; allowed {sorted(_COMMON_KEYS | _ROUTE_KEYS[route])}")
+
+
 def scenario_from_body(body: dict) -> Scenario:
     if not isinstance(body, dict):
         raise ApiError("body must be a JSON object")
@@ -319,6 +335,7 @@ def _pd_prefill_budget(scn, pd_rep: dict, bud: Budget, table: EnergyTable) -> di
 
 
 def api_eval(body: dict) -> dict:
+    _check_keys(body, "eval")
     scn = scenario_from_body(body)
     bud = _budget(body)
     bb = None
@@ -356,6 +373,7 @@ def api_eval(body: dict) -> dict:
 
 
 def api_layouts(body: dict) -> dict:
+    _check_keys(body, "layouts")
     scn = scenario_from_body(body)
     obj = _objective(body)
     stats: dict = {}
@@ -390,6 +408,7 @@ def _compare_row(body: dict, org: str) -> dict:
 
 def api_compare(body: dict) -> dict:
     """Best layout per mapping organisation (the mapping comparison view)."""
+    _check_keys(body, "compare")
     scenario_from_body(body)                    # validate in-process (ApiError → 400)
     obj, cards = _objective(body), _cards(body)
     if _POOL is not None:
@@ -427,6 +446,7 @@ def _mem_candidates(mem_id: str) -> list:
 
 def api_fit(body: dict) -> dict:
     """Capacity check with concrete fixes: fewest cards that hold the model, or the smallest larger memory."""
+    _check_keys(body, "fit")
     scn = scenario_from_body(body)
     m = get_model(scn.model)
     try:                                  # 0.74: invalid layout / scenario → 400 (was an uncaught ValueError → 500)
@@ -481,6 +501,7 @@ def api_fit(body: dict) -> dict:
 
 
 def api_stability(body: dict) -> dict:
+    _check_keys(body, "stability")
     scenario_from_body(body), _cards(body), _objective(body)     # validate in-process
     return _stability(body)
 
@@ -495,11 +516,13 @@ def _stability(body: dict) -> dict:
 
 
 def api_pareto(body: dict) -> dict:
+    _check_keys(body, "pareto")
     scn = scenario_from_body(body)
     return {"front": tpot_throughput_front(scn), "layout": scn.layout.label}
 
 
 def api_sweep(body: dict) -> dict:
+    _check_keys(body, "sweep")
     scn = scenario_from_body(body)
     path = body.get("path")
     if not isinstance(path, str) or path not in SWEEP_PATHS:

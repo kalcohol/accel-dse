@@ -21,7 +21,8 @@ Video DiT (one denoise step = one forward over every latent token of the clip, *
              the 13 B AdaLN branch is precomputed per timestep at inference (README) and not loaded.
 Protein (ESM-2): bidirectional pre-LN encoder with rotary attention, GELU FFN, tied MLM head.
 
-What is *not* modelled is listed in ``coverage_reasons`` (text encoder / VAE of the video pipelines).
+What is *not* modelled is listed in ``coverage_reasons`` (e.g. MSA search / featurization of the structure models);
+the video pipelines' text encoder and VAE decode are modelled (``pipeline``: te_s / decode_s) and not a reason.
 """
 
 from __future__ import annotations
