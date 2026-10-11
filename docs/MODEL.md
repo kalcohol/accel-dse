@@ -1863,3 +1863,31 @@ key_split 每个 rank 取局部 top-k；全局 top-k 一定包含在各 rank 局
 **对比表**（catalog_kernel，n / gmean 预测/实测 / 平均 |log 误差|；脚本 val5/extval091.py）：v1 max 44 / 1.03 / 20 %，static 36 / 1.17 / 24 %，ttft 20 / 0.63 / 50 %；moe max 27 / 1.13 / 18 %；r3 max 15 / 1.38 / 36 %，latency 16 / 0.31 / 118 %（per-layer overhead 见 §25.8）；r4 38 / 0.83 / 33 %。
 
 Mixtral 8×7B（TRT-LLM 0.17，TP8，FP8 行）在专家格式修正后的数值：Hopper catalog_kernel 的 gmean 0.82 → 1.10（|log 误差| 21 → 16 %），catalog_serial 0.70 → 0.97（36 → 11 %），stage 1.20 → 1.90（stage 仍是宽松上界）。test_core_067 的区间相应更新；以前的区间把 bf16 专家的错误定价当成了基准。A100 行是 fp16，不受影响。
+
+## 38. 第 26 轮（0.92.0）：参考硬件的 GPU kernel 模型；in-flight 批的内存检查
+
+**GPU kernel 模型（实现了，可选；不作为参考硬件默认）。** 常数全部来自公开资料，没有对任何一行拟合：
+- `Chip.instance_sched = "cta"`：输出按线程块 tile 切分。tile 集合取自 NVIDIA《Matrix Multiplication Background》用户指南（256×128 / 128×256 / 128×128 / 256×64 / 64×256 / 128×64 / 64×128 / 64×64），由库挑最快的一个，可以 split-K。每个 SM 一次执行一个 tile，所以有 tile 量化（不完整的 tile 也做完整的计算）和 wave 量化（ceil(tiles / SMs) 个 wave，尾 wave 和满 wave 一样长）。一个 tile 的代价 = 它那段 K 上 max(MAC, 操作数供给)，用一个 SM 的 R × C 阵列和 1 / E 的 SRAM 端口；再加上不重叠的 epilogue，写出 tm × tn 个输出（split-K 时写 fp32 部分和，再做一次归约）。分组 / 批量实例共享 wave。核对：用指南里的例子（A100，固定 256×128，M = 2304，K = 4096），N 从 1536 到 1544 时耗时 ×2.0，和指南一致；允许换 tile 后只 ×1.12。大 GEMM 的利用率约 0.99（wide 只有 0.12–0.24）。
+- `Chip.kernel_us`：每个 kernel 的固定代价，串行计入，每个 GEMM 和每次融合注意力（QK·softmax·PV）各计一次；逐元素算子按 TRT-LLM 的做法视为融合进 GEMM。取值 0.53 µs：NVIDIA 博客《Constant Time Launch for Straight-Line CUDA Graphs》里，100 个空 kernel 节点的直线图在设备上重复启动用时 53 µs（CUDA 12.6）。
+
+**采纳检验**（val5/adopt092.py → adopt092.txt；r4 = TRT-LLM 1.2 作为留出测试集，什么都不在上面拟合；catalog_kernel，gmean / |log 误差|）：
+
+| 集 | wide（0.91） | wide + in-flight | cta | cta + kernel_us | cta + kernel_us + in-flight |
+|---|---|---|---|---|---|
+| v1 max（44） | 1.03 / 20.4 % | 1.03 / 20.4 % | 1.23 / 25.3 % | 1.23 / 25.0 % | 1.23 / 25.7 % |
+| v1 static（36） | 1.16 / 24.0 % | = | 1.37 / 36.2 % | 1.36 / 35.8 % | 1.36 / 35.8 % |
+| v1 TTFT（20） | 0.63 / 50.0 % | = | 0.48 / 72.5 % | 0.49 / 70.5 % | 0.49 / 70.5 % |
+| moe max（27） | 1.13 / 18.1 % | 1.15 / 17.1 % | 1.46 / 37.6 % | 1.45 / 37.2 % | 1.51 / 41.1 % |
+| moe prefill / decode | 0.56 / 58 %，0.72 / 33 % | = | 0.72 / 33 %，1.27 / 24 % | ≈ | ≈ |
+| r3 max（15） | 1.38 / 36.2 % | = | 1.76 / 56.5 % | 1.75 / 55.9 % | 1.75 / 55.9 % |
+| r3 latency（16） | 0.31 / 118 % | = | 0.30 / 120 % | 0.33 / 112 % | 0.33 / 112 % |
+| **r4（留出，38）** | 0.83 / 32.6 % | **0.85 / 31.2 %** | 1.31 / 29.3 % | 1.30 / 28.9 % | 1.37 / 32.0 % |
+
+结论：
+- **cta 不采纳。** GEMM 层面它更贴近真实 GPU，但吞吐在 v1 / r3 / moe 上偏乐观（1.2–1.8×），误差变大；只有 moe 的 prefill / decode 和留出集 r4 变好。kernel_us 只影响 1 % 量级：0.53 µs × 每层约 8–12 个 kernel ≈ 每层 5 µs，远小于 §25.8 的约 100 µs / 层残差。所以公开的 launch 下限解释不了那部分残差，它来自软件栈（调度、主机侧开销、未融合的小 kernel；DeepSeek trace 里每层约 28 个小 kernel，共 125 µs，§25.9）。
+- 诊断：即使把 mac_eff 降到 0.7（大约 cuBLAS 实测 / 峰值的量级，但这里没有逐芯片的公开出处，只作诊断），cta 在 moe max 上仍是 31 %，而 wide 是 17 %。可见 wide 的低利用率替模型缺少的、kernel 以外的开销买单，不能简单用 GEMM 效率替代。
+- 下一步要的是逐层的软件开销模型，需要有公开出处的 kernel 级 trace。在那之前，参考硬件保持 `wide`，cta / kernel_us 用 `extval.gpu_variant` 选用。
+
+**In-flight 批的内存检查（采纳，作为满载行的默认）。** 以前满载吞吐的静态批 proxy 一次 prefill 全部 B 个 prompt，所以「放不下」常常卡在 prefill 的激活（例：gpt-oss-120b 8192/1024，B = 512 时 KV 放得下，但 512 × 8192 个 token 的激活放不下）。In-flight 批每轮最多 prefill CB_CHUNK = 8192 个 token（TRT-LLM 默认 max_num_tokens），所以激活检查改为按一个 chunk。B 个常驻请求的 KV 仍按 decode 点检查，最长到 ISL + 7/8·OSL，接近 TRT-LLM 默认的 GUARANTEED_NO_EVICT（为每个请求预留完整长度）。吞吐时间不变。影响：headline（catalog_kernel）和 serial 下，没有一个集变差（moe max 18.1 → 17.1 %，serial 10.1 → 8.2 %；v1 / r3 不变），留出集 r4 32.6 → 31.2 %。stage 变体下 moe max 54.9 → 58.1 % 变差，因为 stage 本来就偏乐观，放宽容量后更乐观；stage 是宽松上界，不作为判断依据。静态批行（static_tok_s_*、latency）不变。`extval.INFLIGHT_FIT[variant] = False` 恢复 0.91 的检查。
+
+**更正 §37：** 0.91 说 Qwen3-235B 1024/8192 被容量卡在 B = 256，这个诊断是在专家格式修正之前做的；修正之后 B = 512 就放得下（预测 5316 vs 实测 3881）。r4 剩下偏悲观的行主要是 gpt-oss（0.4–0.7×）、DeepSeek-R1 B200 和 Qwen3 的长序列。

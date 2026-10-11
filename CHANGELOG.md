@@ -3,6 +3,19 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.92.0]
+
+### Added
+- 参考硬件的 GPU kernel 模型（可选，见 MODEL §38）：`Chip.instance_sched = "cta"`（线程块 tile / wave 量化、split-K、epilogue，tile 集合取自 NVIDIA 矩阵乘用户指南）和 `Chip.kernel_us`（每个 kernel 的固定代价；参考值 0.53 µs 来自 NVIDIA CUDA Graphs 博客）。通过 `extval.gpu_variant` 选用。
+- 采纳检验脚本与结果表（r4 TRT-LLM 1.2 作为留出测试集，不在上面拟合）。
+
+### Changed
+- 外部验证的满载吞吐行（max_tok_s_*）：放不放得下改为按 in-flight 批检查。prefill 激活按一个 chunk（8192 token），常驻请求的 KV 仍按 decode 点检查。moe 集误差 18.1 → 17.1 %，r4 32.6 → 31.2 %，v1 / r3 不变；静态批行不变。
+
+### Validation
+- cta 和 kernel_us **不**作为参考硬件默认：吞吐在 v1 / r3 / moe 上偏乐观 1.2–1.8×，误差变大。公开的 launch 下限（每层约 5 µs）解释不了约 100 µs / 层的软件开销残差。参考硬件保持 wide。
+- NPU 目录芯片的默认数值逐位不变（209 个场景的指纹 c034bfe3 一致）；`kernel_us` 是 omit_default 字段，场景 hash 不变。
+
 ## [0.91.0]
 
 ### Added
