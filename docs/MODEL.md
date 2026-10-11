@@ -1933,3 +1933,39 @@ over SMs) + 62.3 µs/layer. GEMMs stay `wide`.
 
 It fails the "no set worse" rule on the one-row group, so it is not the default. That row and the r4 H200 DeepSeek rows are
 already over-predicted under the default (1.35×, 1.53×), which points to a separate H200 DeepSeek issue.
+
+## 40. 0.94 — H200 DeepSeek over-prediction
+
+Rows: trt-dsr1-h200-maxtput (0.21 blog, 1.35× default / 1.88× candidate) and r4 H200 DEP8 FP8 (1.53× / 2.64× at
+1024/1024). Causes checked, each against public sources only:
+
+1. **Hopper FP8 block-scaled GEMM efficiency.** DeepGEMM's public H800 table (README @55ab91f7) replayed through the
+   GEMM model: `wide` gmean 1.27×, `cta` 1.61× (`cta` reaches 98 % of peak, while DeepGEMM's best is 1550 TFLOPS = 78 %).
+   Memory-bound M = 64 / 128 shapes measure 1.5–2.7 TB/s, consistent with the catalog DRAM efficiency of 0.7.
+   → `Chip.fmt_ceiling` ("fp8", 1550 / 1979), Hopper only.
+2. **MLA kernel.** FlashMLA README: dense MLA decoding reaches up to 660 TFLOPS on H800 (bf16 peak 989.5).
+   → ("attn:bf16", 0.667). TRT-LLM documents FP8 MLA generation with FP8 KV (FP8 FlashMLA on Hopper) but publishes no
+   rate for it, so it is not modelled.
+3. **Published configs.** 0.21 blog: `--max_batch_size 128 --max_num_tokens 1151 --kv_cache_free_gpu_mem_fraction 0.8`,
+   concurrency 1024 (batch fixed, so the fit is irrelevant for this row). 1.2.0: no MTP, CUTLASS MoE, FP8 KV.
+   Capacity: the catalog stacks give H200 144 GiB and B200 192 GiB, while NVIDIA's published usable figures are
+   141 GB and 180 GB. → `mem_cap_GB` and `kv_mem_frac` (TRT-LLM 0.9; vLLM 0.9 of total).
+4. **EP/TP.** DEP8 = attention DP + EP8, as modelled. The MoE all-gather / reduce-scatter cost is about 2 ms per step
+   (t_link), so it is not the gap.
+
+Effect (error per group; `default_old` = 0.93 default):
+
+| variant | moe dec / max / pf / static | r3 max / lat | r4 | v1 max / static / ttft |
+|---|---|---|---|---|
+| default (0.93) | 33.4 / 17.1 / 57.8 / 30.0 | 36.2 / 118.4 | 26.7 | 20.4 / 24.0 / 50.0 |
+| default + fixes | 33.8 / 17.3 / 58.8 / 29.8 | 33.9 / 118.4 | 28.9 | 17.7 / 22.1 / 49.6 |
+| candidate 0.93 | 10.5 / 14.1 / 45.5 / 63.2 | 30.0 / 32.8 | 19.2 | 17.4 / 20.0 / 28.5 |
+| candidate 0.94 | 5.4 / 12.9 / 48.2 / 60.1 | 28.5 / 32.8 | 18.1 | 18.3 / 18.2 / 27.1 |
+
+Candidate 0.94 is not the default, because the trt-dsr1-h200 group is still worse (1.82× vs 1.35×). The fixes are not
+the default either: alone, under `wide`, they worsen r4 and moe decode / prefill. All of them stay opt-in.
+
+**Residual (unexplained).** H200 DeepSeek decode at 128 req/GPU: the measured step is about 88 ms (11.35 tok/s/user);
+the candidate gives 42 ms, DRAM-bound (expert weights about 82 GB/step). The 1.2.0 1024/1024 row is still 2.4×.
+Candidates without public numbers: masked grouped-GEMM efficiency at M ≈ 32 per expert, attention-DP imbalance, and
+host / detokenisation overhead at concurrency 1024 (the GPT-OSS blog notes it "cannot be hidden" at high concurrency).

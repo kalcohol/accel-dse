@@ -3,6 +3,22 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.94.0]
+
+### Added (all opt-in; NPU catalog and refhw defaults bit-identical)
+- `Scenario.mem_cap_GB` (usable DRAM per card, GB) and `Scenario.kv_mem_frac` (KV / state share of post-weight free
+  memory). `extval` "mem_rt": published per-GPU capacity (H200 141 GB, B200 180 GB vs 144 / 192 GiB stacks),
+  TRT-LLM free_gpu_memory_fraction 0.9, vLLM gpu_memory_utilization 0.9.
+- `Chip.fmt_ceiling` (sustained fraction of peak per exec format, or per `<kind>:<fmt>`). Hopper values from public
+  kernel benchmarks: FP8 block-scaled GEMM 1550 / 1979 (DeepGEMM), MLA decode attention 660 / 989.5 (FlashMLA).
+- `extval.candidate_variant()` now bundles these. Still not the default: it improves 9 of 10 validation groups (moe
+  decode 33.4 → 5.4 %, r4 hold-out 26.7 → 18.1 %) but the single-row moe `static_tok_s_total` (trt-dsr1-h200) goes
+  30 → 60 %.
+
+### Validation
+- DeepGEMM's public H800 table replayed through the GEMM model (`val5/deepgemm094.py`): `wide` gmean 1.27×, `cta` 1.61×
+  — Hopper FP8 compute is over-rated without the ceiling; memory-bound shapes agree with DRAM efficiency 0.7.
+
 ## [0.93.0]
 
 ### Fixed

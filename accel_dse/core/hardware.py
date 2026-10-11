@@ -93,6 +93,11 @@ class Chip:
     fmt_ceiling: tuple = field(default=(), metadata={"omit_default": True})
 
     def __post_init__(self):
+        # 0.94: JSON round-trips give lists — keep the field hashable and the scenario hash stable
+        object.__setattr__(self, "fmt_ceiling", tuple((str(k), float(v)) for k, v in self.fmt_ceiling))
+        for k, v in self.fmt_ceiling:
+            if not (0 < v <= 1):
+                raise ValueError(f"chip.fmt_ceiling[{k!r}] must be in (0, 1]")
         if self.noc_topology not in NOC_TOPOLOGIES:
             raise ValueError(f"chip.noc_topology must be one of {NOC_TOPOLOGIES} (got {self.noc_topology!r})")
         for k in ("noc_hop_cycles", "wave_overhead_cycles", "kernel_us"):
