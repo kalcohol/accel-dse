@@ -616,6 +616,11 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
         xmsa = d.xmsa
         if w.msa and d.xmsa and not d.msa:
             xmsa, msa = w.msa, 0
+        cap_ = d.msa or d.xmsa
+        if w.msa and cap_ and w.msa > cap_:
+            # 0.79: the release pipelines cluster / subsample the MSA to their cap (AF2 / OpenFold max_msa_clusters,
+            # Boltz / Protenix max_msa_seqs); the extra rows are evaluated as given (what-if), was silent
+            warns.append(f"MSA {w.msa} 行超过发布实现的上限 {cap_} 行（发布代码会聚类 / 截断到该上限）；按所填行数计（what-if）")
         atoms = math.ceil(L * d.atoms_per_res) if d.atoms_per_res else 0
         # 0.61.3: AF2 / OpenFold concatenate the template torsion-angle embeddings (T rows) to the MSA representation
         # (alphafold/model/modules.py EmbeddingsAndEvoformer; openfold model.py embed_templates → torch.cat([m, a]))
