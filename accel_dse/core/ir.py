@@ -425,6 +425,9 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         # path), top-k selection 1 compare per candidate (vector-count convention, like softmax's 5 per element)
         ih_loc = _cdiv(core.idx_heads, tp) if core.idx_split else core.idx_heads
         rep_i = 1 if core.idx_split else tp
+        ksh = core.idx_kshard and tp > 1
+        if ksh:     # 0.87 key_split: index keys round-robin over the TP ranks (causal mean per rank unchanged)
+            n_keys, rep_i = _cdiv(n_keys, tp), 1
         per_pair = 3 * ih_loc + 1 + (1 if core.idx_fp8 else 0)
         # per new token: k LayerNorm (4/elem, as the layer norms), RoPE on q heads + k (3/elem, as attention RoPE);
         # fp8 path: Hadamard rotation of q heads + k (d·log2 d adds, fast_hadamard_transform) and block fp8 quant
@@ -450,12 +453,22 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
                       a_fmt="fp8" if core.idx_fp8 else "bf16",
                       kv_read=(b_loc * (ctx_tot if core.idx_kpool else n_keys) * ib) if ph.kind == "decode" else
                       (b_loc * (ph.ctx // core.compress) * ib if core.dual else 0.0),
-                      vec=t_new * n_keys * icaus * per_pair + t_new * per_tok + pool_vec))
+                      vec=t_new * n_keys * icaus * per_pair + (0.0 if ksh else t_new * per_tok) + pool_vec))
+        if ksh:
+            # q-side prep (LayerNorm / RoPE / Hadamard / fp8 quant of the index q heads) on every rank; local top-k
+            # (in the score vec), then all-gather (fp32 score, int32 index) of k_loc candidates per rank and a merge
+            # over TP·k_loc candidates (1 compare each, the top-k convention) on every rank
+            k_loc = min(core.topk or n_keys, n_keys)
+            ops.append(Op("indexer_q_prep", "vector", li, replicated=tp, vec=t_new * per_tok))
+            ops.append(Op("indexer_topk_gather", "comm", li, comm_kind="allgather", comm_group=tp,
+                          comm_bytes=t_new * k_loc * 8))
+            ops.append(Op("indexer_topk_merge", "vector", li, replicated=tp, vec=t_new * tp * k_loc))
         if core.idx_split and tp > 1:     # dist.all_reduce(index_score): fp32 [tokens, compressed keys]
             ops.append(Op("indexer_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp,
                           comm_bytes=t_new * n_keys * icaus * 4))
-        ops.append(Op("indexer_kv_write", "vector", li, replicated=tp,
-                      kv_write=(nl * ib if core.idx_owner else 0.0) if core.dual else t_new * ib / core.compress))
+        ops.append(Op("indexer_kv_write", "vector", li, replicated=1 if ksh else tp,
+                      kv_write=(nl * ib if core.idx_owner else 0.0) if core.dual else
+                      (t_new * ib / core.compress / (tp if ksh else 1))))
     if core.cmp_coff:
         # DeepSeek-V4 Compressor (KV path): gated softmax pooling of coff·head_dim channels per token (ape 1 + softmax 5
         # + weighted sum 2); per compressed entry RMSNorm (4), RoPE, fp8 quant of the non-rope dims (2)

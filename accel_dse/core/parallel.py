@@ -102,6 +102,10 @@ def plan_stages(n_layers: int, pp: int) -> list[Stage]:
 
 
 PP_SPLITS = ("cost", "layers")
+# 0.87: sparse-attention indexer deployment over attention TP — "reference" (as the release: V3.2-type replicated on
+# every TP rank, V4-type heads split), "replicated", "tp_split" (index heads column-parallel + all-reduce of the fp32
+# scores), "key_split" (cached index keys sharded over TP, local top-k + all-gather of TP·k candidates + merge) 「假设」
+INDEXER_MODES = ("reference", "replicated", "tp_split", "key_split")
 EXEC_OVERLAPS = ("stage", "class", "kernel", "serial", "tbo")   # 0.66 (+ tbo 0.67): see schedule.StageTime.total
 
 

@@ -106,6 +106,7 @@ class AttnCore:
     cand_block: int = 0
     cand_topk: int = 0
     idx_split: bool = False    # DeepSeek-V4 reference: indexer heads column-parallel over TP + all-reduce of the scores
+    idx_kshard: bool = False   # 0.87 key_split: cached index keys sharded over TP, local top-k + gather (opt-in)
     cmp_coff: int = 0          # DeepSeek-V4 Compressor: 1, or 2 for the overlapping ratio-4 windows (0 = no compressor)
     idx_cmp: bool = False      # DeepSeek-V4 indexer keys come from its own (Hadamard-rotated) compressor
     rope_n: int = 0            # rotary dims actually rotated per head when it differs from the MLA latent split
@@ -1193,6 +1194,27 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         if spec.coverage == "full" and spec.coverage_reasons:
             spec = replace(spec, coverage="partial")
     return spec
+
+
+def has_indexer(spec: ModelSpec) -> bool:
+    return any(l.core is not None and l.core.idx_heads for l in (*spec.layers, *spec.mtp_layers))
+
+
+def with_indexer(spec: ModelSpec, mode: str) -> ModelSpec:
+    """0.87: sparse-attention indexer deployment over attention TP (Scenario.indexer); "reference" = as released.
+    key_split needs a plain token-level indexer (DSA type: not QSA blocks, k-pools, V4.1 dual or V4 compressed keys)."""
+    if mode == "reference" or not has_indexer(spec):
+        return spec
+
+    def tr(L):
+        c = L.core
+        if c is None or not c.idx_heads:
+            return L
+        if mode == "key_split" and (c.qsa or c.idx_kpool or c.dual or c.idx_cmp or c.compress > 1):
+            raise ValueError("indexer = key_split 只支持逐 token 的 DSA 型 indexer（DeepSeek-V3.2 / GLM-5 类）；"
+                             "该模型的 indexer 打分压缩 / 分块键，请用 replicated 或 tp_split")
+        return replace(L, core=replace(c, idx_split=(mode == "tp_split"), idx_kshard=(mode == "key_split")))
+    return replace(spec, layers=tuple(tr(l) for l in spec.layers), mtp_layers=tuple(tr(l) for l in spec.mtp_layers))
 
 
 def with_formats(spec: ModelSpec, overrides: dict[str, str]) -> ModelSpec:

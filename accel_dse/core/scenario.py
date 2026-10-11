@@ -19,7 +19,7 @@ from .dtypes import FormatSupport
 from .d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS, d2d_GBps
 from .hardware import CHIPS, D2D_DEFAULT, NET_DEFAULT, Chip, Fabric, Link
 from .mapping import ORGS
-from .parallel import EXEC_OVERLAPS, PP_SPLITS, Layout
+from .parallel import EXEC_OVERLAPS, INDEXER_MODES, PP_SPLITS, Layout
 
 
 SERVING_MAX = 1 << 24          # 0.61.1: upper bound of serving.batch / prompt / ctx / out_len / microbatches (16.7 M)
@@ -336,6 +336,8 @@ class Scenario:
     # 0.69: fixed per-layer time per step (kernel launch / sync / scheduler), µs; added to the stage's exposed sync
     # time in every overlap mode.  NPU- and runtime-dependent 「假设」; default 0 (off), not fitted.
     layer_overhead_us: float = field(default=0.0, metadata={"omit_default": True})
+    # 0.87: sparse-attention indexer deployment over attention TP (parallel.INDEXER_MODES); default = as released
+    indexer: str = field(default="reference", metadata={"omit_default": True})
 
     def __post_init__(self):
         object.__setattr__(self, "chip", _resolve_chip(self.chip, "chip"))
@@ -350,6 +352,8 @@ class Scenario:
             raise ValueError("layer_overhead_us must be in [0, 10000]")
         if self.exec_overlap not in EXEC_OVERLAPS:
             raise ValueError(f"exec_overlap must be one of {EXEC_OVERLAPS}")
+        if self.indexer not in INDEXER_MODES:
+            raise ValueError(f"indexer must be one of {INDEXER_MODES}")
         if isinstance(self.package_cards, bool) or not isinstance(self.package_cards, int) \
                 or not 1 <= self.package_cards <= 1024:
             raise ValueError("package_cards must be an integer in [1, 1024]")

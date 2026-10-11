@@ -637,6 +637,15 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             wi[key] = with_formats(m, dict(scn.formats_override))
         m = wi[key]
     warnings: list[str] = []
+    if scn.indexer != "reference":
+        from .model import has_indexer, with_indexer
+        if not has_indexer(m):
+            warnings.append(f"indexer = {scn.indexer} 已忽略：该模型没有稀疏注意力 indexer")
+        else:
+            ix = model_cache(m).setdefault("indexer", {})
+            if scn.indexer not in ix:
+                ix[scn.indexer] = with_indexer(m, scn.indexer)
+            m = ix[scn.indexer]
     if scn.serving.images and not scn.serving.image_tokens:
         if m.vision is None:
             warnings.append("serving.images 已忽略：该模型没有视觉编码器（只有 VLM 计图像）")
@@ -694,6 +703,9 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         mb = max(1, min(mb, sv.batch))
         ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=skew)
         ctx_cap = sv.prompt
+    if lay.dp > 1 and ph.batch < lay.dp and m.kv_cache:     # 0.87
+        warnings.append(f"注意力 DP 副本空闲：每个微批只有 {ph.batch} 条序列，DP = {lay.dp}，{lay.dp - ph.batch} 个注意力副本"
+                        "无事可做（长上下文单请求 prefill 请用 TP / indexer = key_split，或增大 batch）")
     sh = lay.shard
     stages = []
     n_mtp = (len(m.mtp_layers) if m.draft == "dspark" else min(spec_k, len(m.mtp_layers))) if spec_k else 0

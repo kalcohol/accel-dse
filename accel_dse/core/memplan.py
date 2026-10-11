@@ -159,6 +159,8 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             st += (_cdiv(c.n_state_heads, sh.tp) * c.state_dk * c.state_dv + _cdiv(c.conv_channels, sh.tp) * max(0, c.conv_kernel - 1)) * stb
         if c.idx_heads and c.dual:
             idx += (ctx // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
+        elif c.idx_heads and c.idx_kshard:     # 0.87 key_split: this rank holds ⌈n_keys / TP⌉ index keys
+            idx += _cdiv(math.ceil(ctx / c.compress), sh.tp) * c.idx_bytes_per_token(kvb) * c.compress
         elif c.idx_heads:
             idx += math.ceil(ctx / c.compress) * c.idx_bytes_per_token(kvb) * c.compress
     store_extra = 0.0

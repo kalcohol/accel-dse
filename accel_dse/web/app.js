@@ -202,6 +202,7 @@ function renderFabric(r) {
 function syncInputs() {
   document.querySelectorAll('input[type=number]').forEach((i) => i._sync && i._sync());
   if ($('l-pp_split')) $('l-pp_split').value = S.sc.pp_split || 'cost';
+  if ($('l-indexer')) $('l-indexer').value = S.sc.indexer || 'reference';
   if ($('pd-length_mix') && $('pd-length_mix')._sync) $('pd-length_mix')._sync();
   if ($('pd-prefix_tree') && $('pd-prefix_tree')._sync) $('pd-prefix_tree')._sync();
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
@@ -1374,6 +1375,7 @@ async function init() {
   });
   $('c-slc_policy').addEventListener('change', (e) => { S.chipOver.slc_policy = e.target.value; schedule(); });
   $('l-pp_split').addEventListener('change', (e) => { S.sc.pp_split = e.target.value; schedule(); });
+  $('l-indexer').addEventListener('change', (e) => { S.sc.indexer = e.target.value; schedule(); });
   for (const k of ['images', 'image_w', 'image_h'])
     bindNumber('s-' + k, () => S.sc.serving[k] ?? (k === 'images' ? 0 : 1024), (x) => (S.sc.serving[k] = x), { int: true });
   for (const k of ['batch', 'ctx', 'prompt', 'out_len', 'spec_k', 'microbatches'])
