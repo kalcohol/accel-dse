@@ -249,6 +249,35 @@ def _own_law(pre: dict, expo=None) -> tuple:
     return tuple(out)
 
 
+def _prefill_stable_caps(pool: _Pool, lam: float, pts, scale: float = 1.0, cap: int | None = None) -> list:
+    """0.80: the caps ``_prefill_server`` would find stable, with their prefill Results — the same loop, fits breaks
+    and stability tests (cap 1: M/G/1; cap ≥ 2: λ·E[T(b)] < b and bulk_mean's own check) without solving the bulk
+    chains.  ``_prefill_server`` returns None iff this is empty."""
+    ws = [w for w, _, _ in pts]
+    out = []
+    for b in B_CAPS:
+        if cap is not None and b > cap:
+            break
+        if cap is not None and b != cap:
+            if not all(r.fits for r in [pool.run("prefill", b, S, p) for _, S, p in pts]):
+                break
+            continue
+        rs = [pool.run("prefill", b, S, p) for _, S, p in pts]
+        if not all(r.fits for r in rs):
+            break
+        if b == 1:
+            if not mg1(lam, [r.ttft * scale for r in rs], ws, QS)["stable"]:
+                continue
+        else:
+            if lam * _wsum(ws, [r.ttft * scale for r in rs]) >= b * (1 - 1e-9):
+                continue
+            D = _scale_law(_bulk_base(pool, b, pts)["D"], scale)
+            if lam * sum(t * w for t, w in D[b - 1]) >= b * (1 - 1e-12):
+                continue
+        out.append((b, rs))
+    return out
+
+
 def _prefill_server(pool: _Pool, lam: float, pts, scale: float = 1.0, cap: int | None = None,
                     law: bool = True) -> dict | None:
     """Batch cap minimising mean TTFT; None if none is stable.  ``cap`` (0.64): evaluate only that cap (the SLO-aware
@@ -949,7 +978,6 @@ def _pd_mode_base(ctx: dict, lam: float) -> dict:
     u_kv_p = lam * kv / (n_p * beta) if kv > 0 and shared else 0.0
     sc_d = lambda r: _contended(r, tier, beta, u_kv_d)
     rep = pp.run("prefill", 1, *ctx["rep"])
-    pre = _prefill_server(pp, lam_p, pts, _contended(rep, tier, beta, u_kv_p), ctx.get("_cap"), law=False)
     dm = ctx.get("_dec_memo")                   # 0.64: decode does not depend on the prefill cap (SLO-aware retries)
     dk = (id(dp), lam_d, out, B, u_kv_d, tier, beta)
     if dm is not None and dk in dm:
@@ -958,6 +986,25 @@ def _pd_mode_base(ctx: dict, lam: float) -> dict:
         dec = _decode_fixed_point(dp, lam_d, out, B, scale=sc_d)
         if dm is not None:
             dm[dk] = dec
+    if ctx.get("_stab_only") and dec is not None and u_kv_d < 1 and u_kv_p < 1:
+        # 0.80: stability only.  The prefill side is stable iff some cap is (no chain solve needed); the KV-link test
+        # depends on the min-mean cap only through u_coll and is monotone in it — when every stable cap gives the
+        # same verdict that is the answer, otherwise fall through to the full cap choice
+        caps = _prefill_stable_caps(pp, lam_p, pts, _contended(rep, tier, beta, u_kv_p), ctx.get("_cap"))
+        if not caps:
+            return {"lambda_rps": lam, "stable": False, "why": "prefill 池在此负载下不稳定"}
+        u_dec = sum(w_ * _tier_util(r, tier, beta) for w_, r in dec["mix"]) if shared else 0.0
+        verdicts = set()
+        for _, rs in caps:
+            u_coll = max(_wsum(ws, [_tier_util(r, tier, beta) for r in rs]), u_dec) if shared else 0.0
+            b_req = ctx["pair"] * beta * (1 - u_coll)
+            t_bw = [x / b_req if b_req > 0 else math.inf for x in xfer]
+            verdicts.add(bool(mg1(lam_p, t_bw, ws, QS)["stable"]))
+            if len(verdicts) > 1:
+                break
+        if len(verdicts) == 1:
+            return {"lambda_rps": lam, "stable": verdicts.pop()}
+    pre = _prefill_server(pp, lam_p, pts, _contended(rep, tier, beta, u_kv_p), ctx.get("_cap"), law=False)
     res = {"lambda_rps": lam, "stable": pre is not None and dec is not None and u_kv_d < 1 and u_kv_p < 1}
     if not res["stable"]:
         res["why"] = ("prefill 池" if pre is None else "decode 池" if dec is None else "KV 链路") + "在此负载下不稳定" \
@@ -971,6 +1018,8 @@ def _pd_mode_base(ctx: dict, lam: float) -> dict:
     kvq = mg1(lam_p, t_bw, ws, QS)
     if not kvq["stable"]:
         return {**res, "stable": False, "why": "KV 链路（扣除池内集合通信后）在此负载下不稳定"}
+    if ctx.get("_stab_only"):   # 0.80: stability bisection reads only "stable" (decided above) — skip laws / tails
+        return res
     if ctx["layerwise"]:
         L = ctx["L"]
         exposed = [max(alpha + t / L, L * alpha + t - lat * (L - 1) / L) for t, lat in zip(t_bw, pre["lats"])]
@@ -1388,6 +1437,8 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
     B, kvi = _kv_slots(ctx, B0)
     if kvi is None:
         return base(ctx, lam)
+    if ctx.get("_stab_only"):   # 0.80: the KV-capacity terms below can turn "stable" off — run the full mode
+        ctx = {k: v for k, v in ctx.items() if k != "_stab_only"}
     x = base({**ctx, "B": B} if B != B0 else ctx, lam)
     x["kv_cap"] = kvi
     if not x.get("stable"):
@@ -1564,6 +1615,11 @@ def _slo_select(fn, ctx: dict, lam: float, try_unstable: bool = False) -> dict:
         return x0
     if not x0["stable"] and not try_unstable:   # PD: decode / KV stability does not depend on the prefill cap
         return x0
+    if (not try_unstable and has_slo and x0["stable"] and "kv_cap" not in x0
+            and not x0["tpot_p90"] <= slo[1]):
+        # 0.80: PD without a KV cap — decode (TPOT) does not depend on the prefill cap (_pd_mode_base memoises it
+        # across caps), so a TPOT miss is a miss for every cap: no other cap can meet the SLOs → x0 (same result)
+        return x0
     c0 = x0.get("_pre", {}).get("b") if x0.get("_pre") else None
     best = best_st = None
     for b in B_CAPS:
@@ -1619,6 +1675,8 @@ def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float, kno
         return _meets(fn(cs, lam), slo)
 
     cu = {**ctx, "slo": None}                   # stability does not depend on the SLO-aware cap choice
+    if fn is _pd_mode:          # 0.80: PD stability is fixed before the TTFT law / tails (_pd_mode_base) — skip them
+        cu["_stab_only"] = True
 
     def stable(lam: float) -> bool:
         return fn(cu, lam)["stable"]
