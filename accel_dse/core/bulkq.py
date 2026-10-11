@@ -413,9 +413,28 @@ def _tagged(lam: float, b: int, D: tuple):
                                     cd.append(c)
                             else:
                                 pL, cd = (), []
-                            blk.append((sF, wF, pL, cd))
+                            blk.append((sF, wF, pL, cd, [(sF, j) for j in range(b + 1)]))
                         fc[F] = blk
-                    for sF, wF, pL, cd in blk:
+                    for sF, wF, pL, cd, krow in blk:
+                        mw = mass * wF                       # (mass · wF) · pk, as before (left to right)
+                        if prior is None:
+                            # 0.74 perf: same keys, same products, same order as the kd list below — without
+                            # building it (prebuilt (ΣF, k) key row per ΣF atom)
+                            g = sub.get
+                            if need == 0:
+                                key = krow[b]
+                                sub[key] = g(key, 0.0) + mw * 1.0
+                                continue
+                            n = min(need, len(pL))
+                            o = m0 + 1
+                            for L in range(n):
+                                key = krow[o + L]
+                                sub[key] = g(key, 0.0) + mw * pL[L]
+                            cdf = cd[n - 1] if n else 0.0
+                            if 1 - cdf > 1e-12:
+                                key = krow[o + n]
+                                sub[key] = g(key, 0.0) + mw * (1 - cdf)
+                            continue
                         if need == 0:
                             kd = ((b, 1.0),)
                         else:
@@ -424,21 +443,14 @@ def _tagged(lam: float, b: int, D: tuple):
                             cdf = cd[n - 1] if n else 0.0
                             if 1 - cdf > 1e-12:
                                 kd.append((m0 + 1 + n, 1 - cdf))
-                        mw = mass * wF                       # (mass · wF) · pk, as before (left to right)
-                        if prior is None:
-                            g = sub.get
-                            for ko, pk in kd:
-                                key = (sF, ko)
-                                sub[key] = g(key, 0.0) + mw * pk
-                        else:
-                            for ko, pk in kd:
-                                key = (sF, ko)
-                                for d in prior:
-                                    if key in d:
-                                        d[key] += mw * pk
-                                        break
-                                else:
-                                    sub[key] = sub.get(key, 0.0) + mw * pk
+                        for ko, pk in kd:
+                            key = (sF, ko)
+                            for d in prior:
+                                if key in d:
+                                    d[key] += mw * pk
+                                    break
+                            else:
+                                sub[key] = sub.get(key, 0.0) + mw * pk
     keys = {(t, ui, sF, ko): v for t, ui, sub in visits for (sF, ko), v in sub.items()}
     return keys, f_idle, wq, own, bm
 

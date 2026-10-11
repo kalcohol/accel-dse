@@ -428,8 +428,11 @@ def api_fit(body: dict) -> dict:
     """Capacity check with concrete fixes: fewest cards that hold the model, or the smallest larger memory."""
     scn = scenario_from_body(body)
     m = get_model(scn.model)
-    r = evaluate(scn)
-    r1 = r if scn.serving.batch == 1 else evaluate(scn.replace("serving.batch", 1))
+    try:                                  # 0.74: invalid layout / scenario → 400 (was an uncaught ValueError → 500)
+        r = evaluate(scn)
+        r1 = r if scn.serving.batch == 1 else evaluate(scn.replace("serving.batch", 1))
+    except ValueError as e:
+        raise ApiError(str(e)) from None
     heavy = r1.stages[max(range(len(r1.stages)), key=lambda i: r1.stages[i].mem.dram_need)]
     out = {"fits": r.fits, "fits_batch1": r1.fits, "need_GiB": heavy.mem.dram_need / 2**30,
            "cap_GiB": heavy.mem.dram_cap / 2**30, "cards": scn.layout.cards, "weights_GiB": (heavy.mem.stored_w + heavy.mem.pipe_w) / 2**30,

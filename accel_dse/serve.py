@@ -71,7 +71,7 @@ def handle(method: str, path: str, raw: bytes = b"") -> tuple[int, dict]:
             return 200, hit
         try:
             out = POST_ROUTES[path](body)
-        except api.ApiError as e:
+        except (api.ApiError, ValueError) as e:     # 0.74: model ValueErrors are input validation → 400, not 500
             return 400, {"error": str(e)}
         if key:
             CACHE.put(key, out)
