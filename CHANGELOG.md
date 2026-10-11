@@ -17,7 +17,7 @@
 - 视频 / 蛋白对抗：17 个模型、196 个随机场景（D2D / fabric / SLC / node_cards / exec_overlap / layer_overhead），不崩溃，输出有限，结果确定，能耗分项之和等于总量。
   - 结构模型的 MAC 计数随 DAP 线性增加，正好是 1 + f·(sp−1)，即真实的 single / atom 轨道重复计算。
   - 固定算法因为协议仍逐次选择，同样对带宽不单调；auto_overlap 单调。
-- PD 扫描（0.89 未完成的部分，可续跑）：PD_SWEEP_RESULT
+- PD 扫描（0.89 未完成的部分，可续跑）：200 / 200 完成（148 个 prefill 池用 CP），0 崩溃、0 ValueError、CP 标签全部正确；33 个 prefill 容量 = 0 都是 prefill 池放不下（fits = False 且带明确警告）；72 个 coloc.ttft_ms / tpot_eff_ms = inf 都是合并部署放不下（API 序列化成 null）。没有发现新问题。
 - 默认指纹：372 个点逐位不变。UI：local/ui_check_swhint.py 0 个问题。
 
 ## [0.89.0]
