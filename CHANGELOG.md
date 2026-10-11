@@ -12,9 +12,9 @@ PD 池布局搜索审计收尾与提速（结果逐位不变）；V4 服务验�
   - `_slo_rate` 的稳定性二分只读 `stable`。PD 模式改走仅判稳定的路径：跳过 TTFT 分布与尾部计算；prefill 侧按各 cap 的闭式条件判稳定，不解 bulk 链。KV 链路判据只通过 u_coll 依赖所选 cap，且对 u_coll 单调，所有稳定 cap 给出相同结论时直接采用，否则回到完整路径。有 KV 容量上限时始终走完整路径。
   - PD 无 KV 上限时，若默认 cap 未满足 TPOT SLO，则不再逐个尝试其他 cap（decode 与 prefill cap 无关，任何 cap 都不可能满足）。
   - 11 个随机池布局场景的报告 JSON 逐字节一致，耗时降为 1/1.4–1/2.5（最慢 109 → 63 s）。V4 网格重算的闭式值与旧数据逐位一致。
-- **V4 长运行重跑**：`accel_dse/data/v4_serving.json` 改为 4 倍长度（12000 / 80000 请求 × 3 seed）。DES 中位数移动 ≤ 1.3 %，原网格未被短仿真拉偏。seed 噪声降为约 1/2–1/4，30 点全部仍在误差带内，部分最大误差收窄（chunked TTFT p99 0.23 → 0.12、PD itl_max 0.23 → 0.15）。说明见 MODEL §18.4。
+- **V4 长运行重跑**：`accel_dse/data/v4_serving.json` 改为 4 倍长度（12000 / 80000 请求 × 3 seed，SLO goodput 二分每次 6000 请求）。DES 中位数移动 ≤ 1.3 %，原网格未被短仿真拉偏。seed 噪声降为约 1/2–1/4，30 点全部仍在误差带内，部分最大误差收窄（chunked TTFT p99 0.23 → 0.12、PD itl_max 0.23 → 0.15）。chunked SLO goodput 的最大误差变大（0.05 → 0.17，仍在 0.20 带内），旧值是噪声下的偏乐观估计。说明见 MODEL §18.4。
 - 新增常驻测试 `tests/test_core_080.py`：仅判稳定路径与完整模式对各 λ 结论一致（含 KV 上限）；`_prefill_stable_caps` 非空当且仅当 `_prefill_server` 稳定；`_slo_rate` 结果与不走捷径时相等。
-- 指纹：默认 fp / fpmc 与 0.79.0 一致。全量 SUITELINE。
+- 指纹：默认 fp / fpmc 与 0.79.0 一致。全量 436 / 436 通过（-j 8，271 s，无 pytest）。
 
 ## [0.79.0] - 2026-10-11
 
