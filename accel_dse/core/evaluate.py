@@ -754,7 +754,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         cp, S = lay.cp, sv.prompt
         q_loc = _cdiv(S, cp)
         c_eq = max(0, round(S * S / (2 * cp * q_loc) - q_loc / 2))
-        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=skew)
+        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=skew, cp=cp, cp_len=S)
         ctx_cap = q_loc
         cp_ring = (cp, lay.tp, _cdiv(sv.batch, mb) * q_loc / lay.dp)   # tokens of this rank's block per step
         lay = Layout(lay.pp, lay.tp, lay.dp * cp, lay.ep, lay.etp, 1)   # internal: CP ranks as attention replicas

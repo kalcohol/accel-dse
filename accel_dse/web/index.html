@@ -375,6 +375,7 @@
       <div class="seg" id="cmp-obj"><button data-v="decode" class="on">目标：decode 吞吐</button><button data-v="goodput" class="llm-only">目标：goodput（含 prefill）</button></div>
       <button class="btn" id="cmp-run">运行映射对比</button>
       <span class="small muted" id="cmp-status"></span>
+      <span id="cmp-exp" hidden><button class="btn ghost" id="cmp-exp-csv" title="导出当前结果表（CSV，UTF-8 带 BOM，Excel 可直接打开；表头含单位，数值为未取整的原始值）">导出 CSV</button> <button class="btn ghost" id="cmp-exp-json" title="导出当前结果（JSON：场景快照、列定义、逐行数据与原始 API 响应）">导出 JSON</button></span>
     </div>
     <p class="small muted" id="cmp-scope"></p>
     <p class="small muted">每种映射组织下独立搜索最佳布局与 batch（满足延迟 SLO：LLM 为 TPOT，视频为单段延迟，蛋白质为批延迟），显示绑定瓶颈、有效 MAC 比例、DP prefill 的 TTFT 是否达标（仅 LLM），以及在「假设」扰动下的排名稳定性。点击行把映射、布局、batch 一起应用到场景。</p>
@@ -401,6 +402,7 @@
       <button class="btn" id="sw-run">扫描</button>
       <button class="btn ghost" id="pf-run">延迟–吞吐 Pareto</button>
       <span class="small muted" id="sw-status"></span>
+      <span id="sw-exp" hidden><button class="btn ghost" id="sw-exp-csv" title="导出当前结果表（CSV，UTF-8 带 BOM，Excel 可直接打开；表头含单位，数值为未取整的原始值）">导出 CSV</button> <button class="btn ghost" id="sw-exp-json" title="导出当前结果（JSON：场景快照、列定义、逐行数据与原始 API 响应）">导出 JSON</button></span>
     </div>
     <p class="small muted">受控替换：只改所选一个变量，其余保持左侧场景不变。</p>
     <div class="chart" id="sw-chart"></div>

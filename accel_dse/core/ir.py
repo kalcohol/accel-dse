@@ -96,6 +96,8 @@ class Phase:
     aux: int = 0         # full: joint audio rows in the sequence (MiniMax-H3)
     pair: PairDims | None = None   # full: structure-model grids (AlphaFold-family / ESMFold trunks)
     skew: float = 1.0    # MoE: token-expert pairs on the busiest EP rank / the mean (0.49; 1 = uniform routing)
+    cp: int = 1          # 0.89: context-parallel chunk phase (evaluate) — cp ranks, true prompt length cp_len
+    cp_len: int = 0
 
     def __post_init__(self):
         if self.kind not in ("decode", "prefill", "full"):
@@ -501,6 +503,12 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
                                                  if core.kv_owner else 0.0)
     ops.append(Op("softmax", "vector", li, vec=sm_elems * 5, kv_read=kv_read, kv_write=kv_write,
                   replicated=(tp if core.kind == "mla" else 1)))
+    if ph.cp > 1 and ph.kind == "prefill" and core.topk is not None:
+        # 0.89: the chunk phase charges every query of the busiest zigzag rank top-k keys (its positions are all past
+        # the first top-k); the mean rank also holds the early positions that see fewer → Op.share = mean-rank keys /
+        # busiest-rank keys, so the work KPI is exact (step time stays the busiest rank's)
+        f = core.keys_sum(ph.cp_len) / (ph.cp * q * core.keys_mean(ph.ctx, q))
+        ops = [replace(o, share=o.share * f) if o.name in ("qk", "pv", "softmax") else o for o in ops]
     return ops
 
 
@@ -711,7 +719,12 @@ def _embed_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
 
 
 def head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
-    return rank_shares(_head_ops(model, ph, sh), sh, lambda: _head_ops(model, ph, Shard()))
+    ops = rank_shares(_head_ops(model, ph, sh), sh, lambda: _head_ops(model, ph, Shard()))
+    if ph.kind == "prefill" and ph.cp > 1:
+        # 0.89: only the CP rank holding a sequence's last chunk (zigzag rank 0) projects its last token — the chunk
+        # phase charges that rank's time on every rank; the mean rank does 1/cp of it (work KPI exact)
+        ops = [replace(o, share=o.share / ph.cp) if o.kind != "comm" else o for o in ops]
+    return ops
 
 
 def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:

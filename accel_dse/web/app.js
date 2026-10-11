@@ -969,6 +969,49 @@ function scopeText() {
   return `场景：${m.label} · ${cards()} 卡 · 芯片 ${S.preset} · 存储器 ${mi ? `${mi.kind} ${num(mi.raw_GBps)} GB/s ${num(mi.capacity_GiB)} GiB` : S.sc.mem_id} · ${tail}（在左侧面板修改）`;
 }
 function paintScope() { $('cmp-scope').textContent = scopeText(); $('lay-scope').textContent = scopeText(); }
+
+/* ------------------------------------------------------------------ 0.89: CSV / JSON export of compare / sweep / Pareto */
+const EXP = {};
+function csvCell(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number') return isFinite(v) ? String(v) : '';
+  if (typeof v === 'boolean') return v ? '是' : '否';
+  let t = String(v);
+  if (/^[=+\-@\t\r]/.test(t)) t = "'" + t;            // spreadsheet formula injection guard
+  return /[",\r\n]/.test(t) || t !== String(v) ? '"' + t.replace(/"/g, '""') + '"' : t;
+}
+function expCSV(cols, rows) {
+  return '\ufeff' + [cols.map((c) => csvCell(c.label)).join(','), ...rows.map((r) => cols.map((c) => csvCell(c.v(r))).join(','))].join('\r\n') + '\r\n';
+}
+function expJSON(kind, e) {
+  const rows = e.rows();
+  return JSON.stringify({ tool: 'accel-dse', version: S.version || null, exported_at: new Date().toISOString(), kind, title: e.title,
+    scenario: e.scenario, columns: e.cols.map((c) => ({ key: c.key, label: c.label })),
+    rows: rows.map((r) => Object.fromEntries(e.cols.map((c) => { const v = c.v(r); return [c.key, v === undefined || (typeof v === 'number' && !isFinite(v)) ? null : v]; }))),
+    raw: e.raw }, null, 2);
+}
+function expName(e, ext) {
+  const d = new Date(), z = (n) => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`;
+  return `accel-dse_${e.kind}_${String(e.scenario.model || 'model').replace(/[^\w.\-]+/g, '_')}_${stamp}.${ext}`;
+}
+function download(name, text, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+}
+function setExport(box, spec) { EXP[box] = spec; $(box + '-exp').hidden = false; }
+function clearExport(box) { delete EXP[box]; $(box + '-exp').hidden = true; }
+function doExport(box, fmt) {
+  const e = EXP[box];
+  if (!e) return;
+  if (fmt === 'csv') download(expName(e, 'csv'), expCSV(e.cols, e.rows()), 'text/csv;charset=utf-8');
+  else download(expName(e, 'json'), expJSON(e.kind, e), 'application/json');
+}
+const yesNo = (x) => (x === null || x === undefined ? null : x ? '是' : '否');
+const snap = (b) => JSON.parse(JSON.stringify(b.scenario));
 async function runCompare() {
   paintScope();
   const btn = $('cmp-run');
@@ -979,11 +1022,34 @@ async function runCompare() {
   const v0 = S.ver, m0 = model();
   try {
     const b = body({ cards: cards(), objective: S.cmpObj });
+    clearExport('cmp');
     const r = await track(req('compare', '/api/compare', b));
     if (!r) return;
     const mySeq = seq.compare;
     const stab = {};
     paintCompare(r, stab, m0);
+    {
+      const full = isFull(m0), ux = full ? `${UNIT_ZH[m0.domain === 'gen' ? 'frame' : 'seq']}/s/卡` : 'tok/s/卡';
+      const tokLat = (x) => x.unit === 'token' || !x.unit;
+      const cols = [
+        { key: 'mapping', label: '映射组织', v: (x) => x.label }, { key: 'mapping_id', label: '映射 id', v: (x) => x.mapping },
+        { key: 'layout', label: '最佳布局', v: (x) => (x.batch ? x.layout : '放不下') }, { key: 'cards', label: '卡数', v: () => b.cards },
+        { key: 'batch', label: 'batch', v: (x) => x.batch || null },
+        { key: 'thr_card', label: `吞吐（${ux}）`, v: (x) => (x.batch ? x.tok_s_card : null) },
+        ...(full ? [] : [{ key: 'goodput_card', label: '有效吞吐 goodput（tok/s/卡）', v: (x) => (x.batch ? x.goodput_card : null) }]),
+        full ? { key: 'latency_s', label: m0.domain === 'gen' ? '单段延迟（s）' : '批延迟（s）', v: (x) => (x.batch ? x.latency_ms / 1e3 : null) }
+          : { key: 'tpot_ms', label: 'TPOT（ms）', v: (x) => (x.batch ? (tokLat(x) ? x.tpot_ms : x.latency_ms) : null) },
+        { key: 'bound', label: '瓶颈', v: (x) => (x.batch ? x.bound : null) }, { key: 'bound_zh', label: '瓶颈说明', v: (x) => (x.batch ? BOUND_ZH[x.bound] : null) },
+        { key: 'mac_util_pct', label: '有效 MAC 利用率（%）', v: (x) => (x.batch && x.array_util != null ? x.array_util * 100 : null) },
+        ...(full ? [] : [{ key: 'ttft_ms', label: 'prefill TTFT（ms）', v: (x) => (x.batch ? x.ttft_ms : null) },
+          { key: 'ttft_ok', label: 'TTFT 满足 SLO', v: (x) => (x.batch ? yesNo(x.ttft_ok) : null) }]),
+        { key: 'runner_up', label: '次优布局', v: (x) => (x.runner_up ? x.runner_up.layout : null) },
+        { key: 'runner_up_score', label: '次优得分（同目标单位）', v: (x) => (x.runner_up ? x.runner_up.score : null) },
+        { key: 'stable', label: '排名稳定性', v: (x) => { const st = stab[x.mapping]; return !x.batch || !st ? null : st.error ? '错误' : st.stable ? '稳定' : '不稳定'; } },
+        { key: 'stable_agree_pct', label: '稳定性一致率（%）', v: (x) => { const st = stab[x.mapping]; return st && !st.error ? st.agree * 100 : null; } },
+      ];
+      setExport('cmp', { kind: 'compare', title: `映射对比（目标 ${r.objective}）`, cols, rows: () => r.rows, raw: { compare: r, stability: stab }, scenario: snap(b) });
+    }
     const none = r.rows.every((x) => !x.batch);
     $('cmp-status').textContent = none ? `${cards()} 卡下任何布局都放不下或不满足 SLO —— 先在「单点评估」按提示修正卡数${staleTag(v0)}` :
       `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s · 稳定性计算中（0/${r.rows.length}）…${staleTag(v0)}`;
@@ -1185,7 +1251,9 @@ async function runSweep() {
   delete $('sw-status').dataset.done;
   const v0 = S.ver, m = model(), decode = S.sc.serving.phase === 'decode';
   try {
-    const r = await track(req('sweep', '/api/sweep', body({ path, values: vals })));
+    clearExport('sw');
+    const bs = body({ path, values: vals });
+    const r = await track(req('sweep', '/api/sweep', bs));
     if (!r) return;
     const full = isFull(m), gen = m.domain === 'gen';
     const u = full ? UNIT_ZH[gen ? 'frame' : 'seq'] : 'tok';
@@ -1199,6 +1267,12 @@ async function runSweep() {
       h('td', { class: 'l' }, x.value), h('td', {}, num(lat(x))), h('td', {}, num(x.tok_s)),
       h('td', {}, num(x.tok_s_card)), h('td', {}, boundTag(x.bound)), h('td', {}, pct(x.array_util)),
       h('td', {}, x.fits ? '✓' : h('span', { style: 'color:var(--danger)' }, '✗'))))));
+    const latK = full ? (gen ? '单段延迟（s）' : '批延迟（ms）') : decode ? 'TPOT（ms）' : 'TTFT（ms）';
+    setExport('sw', { kind: 'sweep', title: `参数扫描：${SWEEP_ZH[path] || path}`, raw: r, scenario: snap(bs), rows: () => r.rows, cols: [
+      { key: 'path', label: '扫描参数', v: () => path }, { key: 'param', label: SWEEP_ZH[path] || path, v: (x) => x.value },
+      { key: 'latency', label: latK, v: lat }, { key: 'thr', label: `吞吐（${u}/s）`, v: (x) => x.tok_s }, { key: 'thr_card', label: `吞吐（${u}/s/卡）`, v: (x) => x.tok_s_card },
+      { key: 'bound', label: '瓶颈', v: (x) => x.bound }, { key: 'mac_util_pct', label: '有效 MAC 利用率（%）', v: (x) => (x.array_util != null ? x.array_util * 100 : null) },
+      { key: 'fits', label: '放得下', v: (x) => yesNo(x.fits) }] });
     $('sw-status').textContent = `${r.rows.length} 点${staleTag(v0)}`;
     $('sw-status').dataset.done = '1';
   } catch (e) { $('sw-status').textContent = '错误：' + e.message; $('sw-status').dataset.done = '1'; }   // 0.85: stale-flag errors too
@@ -1208,7 +1282,9 @@ async function runPareto() {
   delete $('sw-status').dataset.done;
   const v0 = S.ver, m = model();
   try {
-    const r = await track(req('sweep', '/api/pareto', body()));
+    clearExport('sw');
+    const bp = body();
+    const r = await track(req('sweep', '/api/pareto', bp));
     if (!r) return;
     const full = isFull(m), gen = m.domain === 'gen';
     const u = full ? UNIT_ZH[gen ? 'frame' : 'seq'] : 'tok';
@@ -1220,6 +1296,10 @@ async function runPareto() {
     const head = h('tr', {}, h('th', { class: 'l' }, 'batch'), h('th', {}, latL), h('th', {}, `${u}/s/卡`));
     put($('sw-tbl'), h('thead', {}, head), h('tbody', {}, r.front.map((p) => h('tr', {},
       h('td', { class: 'l' }, p.batch), h('td', {}, num(lat(p))), h('td', {}, num(thr(p)))))));
+    setExport('sw', { kind: 'pareto', title: `Pareto 前沿（布局 ${r.layout}）`, raw: r, scenario: snap(bp), rows: () => r.front, cols: [
+      { key: 'layout', label: '布局', v: () => r.layout }, { key: 'batch', label: 'batch', v: (p) => p.batch },
+      { key: 'latency', label: full ? (gen ? '单段延迟（s）' : '批延迟（ms）') : 'TPOT（ms）', v: lat },
+      { key: 'thr_card', label: `吞吐（${u}/s/卡）`, v: thr }] });
     $('sw-status').textContent = `Pareto ${r.front.length} 点${staleTag(v0)}`;
     $('sw-status').dataset.done = '1';
   } catch (e) { $('sw-status').textContent = '错误：' + e.message; $('sw-status').dataset.done = '1'; }   // 0.85: stale-flag errors too
@@ -1291,6 +1371,7 @@ async function init() {
     S.unlisted = models.unlisted;
     for (const m of S.models) S.byId[m.id] = m;
     $('ver').textContent = 'v' + health.version;
+    S.version = health.version;
     $('honesty-chip').title = cat.honesty;
     $('honesty-text').textContent = cat.honesty;
     S.sc = JSON.parse(JSON.stringify(cat.defaults));
@@ -1332,6 +1413,7 @@ async function init() {
   for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   $('best-layout').addEventListener('click', bestLayout);
+  for (const bx of ['cmp', 'sw']) for (const f of ['csv', 'json']) $(`${bx}-exp-${f}`).addEventListener('click', () => doExport(bx, f));
   $('best-batch').checked = S.best;
   AFTER.layout = () => {
     const k = AFTER.lastLayout;
@@ -1472,7 +1554,7 @@ async function init() {
   fillSweepPaths();
   renderModels();
   paintScope();
-  window.__accel = { S, req, seq };
+  window.__accel = { S, req, seq, EXP, expCSV, expJSON, csvCell };
   runEval();
 }
 init();
