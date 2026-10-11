@@ -59,7 +59,7 @@ def test_exact_budget_falls_back_to_che():
 
 
 def test_victim_wait_default_and_resid_limits():
-    assert Q.VICTIM_WAIT == "exp"
+    assert Q.VICTIM_WAIT == "blend"   # 0.84 default (c² ≥ 1 → exp)
     from types import SimpleNamespace
     # fixed lengths S = 1000, o = 200; K = 3 footprints at the crossing → remaining Ψ = 3·1200 − K split over 3
     ctx = {"len": SimpleNamespace(points=[(1.0, 1000, 200)]), "_victim_wait": "resid"}

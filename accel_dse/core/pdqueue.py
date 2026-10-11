@@ -110,7 +110,7 @@ from .scenario import Scenario
 
 QS = (0.5, 0.9, 0.99)
 B_CAPS = (1, 2, 4, 8, 16, 32, 64)
-VICTIM_WAIT = "exp"         # 0.83: P(W>x) = (1−c²)·resid + c²·exp, c² = lifetime CV² (MODEL §29); "exp" = ≤ 0.82
+VICTIM_WAIT = "blend"       # 0.83: P(W>x) = (1−c²)·resid + c²·exp, c² = lifetime CV² (MODEL §29); "exp" = ≤ 0.82
 SPLIT_EXACT = 32    # 0.60: PD SLO split search evaluates every split up to this many candidates, else coarse → fine
 INTERP_B = 1024     # 0.60: decode batch above which the birth–death chain interpolates step(k) (see _decode_birth_death)
 FAST_B, FAST_NL = 256, 20000   # 0.61: chains with B ≥ FAST_B and N·L > FAST_NL use C-level dot products
@@ -1541,6 +1541,14 @@ def _kv_wrap(base, ctx: dict, lam: float, pool_key: str, reps_key: str) -> dict:
         e_od = sum(w * math.exp(-o / Eo) for w, _, o in pts) / tot if Eo > 0 else 1.0
         p_ev *= e_od
         c2 = _life_cv2(pts, x) if SAT_MODEL == "gamma" else 1.0
+        rho_K = min(1.0, run * m_f / K) if K > 0 else 1.0
+        arr_m = ctx.get("_sat_arr_m", SAT_ARR_M)
+        if c2 < 1.0 and arr_m is not None:
+            # 0.84: arrival variance — the running set's starts are Poisson-phased, so its departures tend to a Poisson
+            # stream (Burke / M/G/∞) unless gated admission keeps it in lockstep; the gating weakens as the KV fill
+            # ρ_K = E[k]·E[footprint]/K falls, the arrival term grows with it: c² → c² + (1 − c²)·ρ_K^m
+            c2 = _arr_c2(c2, rho_K, arr_m)
+        kvi["kv_fill"] = rho_K
         if c2 < 1.0 and Eo > 0:
             # 0.83: G (growth between two departures) ~ Gamma(mean E[o], CV² = c²) instead of Exp — in saturation each
             # departure refills its own slot, so departures repeat at the request lifetime: with fixed lengths the
@@ -1746,7 +1754,13 @@ def _slo_rate(fn, ctx: dict, start: float, ttft_slo: float, tpot_slo: float, kno
     return best
 
 
-SAT_MODEL = "exp"          # 0.83: saturation-preemption growth law ("exp" = ≤ 0.82)
+SAT_ARR_M = 1              # 0.84: arrival-variance exponent in the gamma growth law (None = 0.83 gamma)
+SAT_MODEL = "gamma"        # 0.83: saturation-preemption growth law ("exp" = ≤ 0.82)
+
+
+def _arr_c2(c2: float, rho_K: float, m: float) -> float:
+    """0.84 arrival-variance term: c² + (1 − c²)·ρ_K^m (ρ_K = mean KV fill; m = 1 picked on the val12 even points)."""
+    return c2 + (1 - c2) * min(1.0, max(0.0, rho_K)) ** m
 
 
 def _life_cv2(pts, x) -> float:
