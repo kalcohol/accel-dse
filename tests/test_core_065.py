@@ -166,7 +166,7 @@ def test_idle_ep_ranks_sram_link_dequant_are_expert_parts():
         busy, idle = b, 4 - b
         units = r.throughput * r.step
         sram = sum(s.sram_bytes * busy + s.exp_acts["sram"] * idle for s in r.stages) * r.microbatches / units
-        link = sum(scaleup_bytes(s.time) * (busy + s.exp_acts["link_frac"] * idle) for s in r.stages) \
+        link = sum(s.time.wire_link * (busy + s.exp_acts["link_frac"] * idle) for s in r.stages) \
             * r.microbatches / units
         assert abs(a["sram"] - sram) < 1e-6 * sram, (b, a["sram"], sram)
         assert abs(a.get("link", 0.0) - link) <= 1e-6 * max(link, 1.0)

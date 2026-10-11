@@ -348,6 +348,7 @@ def candidates(kind: str, payload: float, group: int, sys, stride: int = 1, k_pk
     # (SHARP-class network aggregation stays allreduce-only, as in 0.59)
     inn = [t == "link" and fab.innet_reduce == "net+link" and topo == "switch" for _, _, t in lv]
     cands: dict = {}
+    wires: dict = {}
     tops_pick = ""
     for pr in _protos(fab):
         def H(t: str, tree: bool = False) -> float:     # per-step latency of tier t (switch tiers on the network)
@@ -425,12 +426,42 @@ def candidates(kind: str, payload: float, group: int, sys, stride: int = 1, k_pk
         else:                                   # p2p-like: the outermost tier
             x = payload / beta(top, "ring")
             c["p2p"] = (x, a_launch + H(tt), {tt: x})
+        # 0.78: bytes one rank puts on each tier's wire per algorithm (energy), protocol overhead ÷ efficiency
+        w: dict = {}
+        if kind == "allreduce":
+            tot = 2 * (group - 1) / group * payload
+            U = [math.prod(n for n, _, _ in lv[i:]) for i in range(len(lv))] + [1]
+            hp = [U[i] - U[i + 1] for i in range(top)] + [nt]
+            w["ring"] = {t: tot * h / group for h, (_, _, t) in zip(hp, lv)}
+            if "tree" in c:     # reduce + broadcast over g − 1 edges: 2(g−1)/g · payload per rank, edges by tier
+                w["tree"] = dict(w["ring"])
+            if "hier" in c:
+                hw = {lv[i][2]: 2 * (lv[i][0] - 1) / lv[i][0] * payload / K[i] for i in range(top)}
+                hw[tt] = hw.get(tt, 0.0) + (b_top if tops_pick == "innet" else
+                                            2 * (nt - 1) / nt * b_top)   # ring or tree top: 2(n−1)/n of its shard
+                w["hier"] = hw
+        elif kind in ("allgather", "reducescatter"):
+            g1 = (group - 1) * payload
+            U = [math.prod(n for n, _, _ in lv[i:]) for i in range(len(lv))] + [1]
+            hp = [U[i] - U[i + 1] for i in range(top)] + [nt]
+            w["ring"] = {t: g1 * h / group for h, (_, _, t) in zip(hp, lv)}
+            w["hier"] = {t: (n - 1) * math.prod(m for m, _, _ in lv[i + 1:]) * payload for i, (n, _, t) in enumerate(lv)}
+            if "innet" in c:
+                rs = kind == "reducescatter"
+                w["innet"] = {t: ((n if rs else n - 1) if inn[i] else (n - 1)) * math.prod(m for m, _, _ in lv[i + 1:])
+                              * payload for i, (n, _, t) in enumerate(lv)}
+        elif kind == "alltoall":
+            w["direct"] = {t: v for v, (_, _, t) in zip(vols, lv)}
+        else:
+            w["p2p"] = {tt: payload}
         for name, (bw, a, busy) in c.items():
             if pr is None:
                 cands[name] = (bw, a, busy)
+                wires[name] = w.get(name, {})
             else:
                 e = _PROTO_EFF[pr]
                 cands[f"{name}/{pr}"] = (bw / e, a, {t: x / e for t, x in busy.items()})
+                wires[f"{name}/{pr}"] = {t: x / e for t, x in w.get(name, {}).items()}
     # byte shares for the energy counts: hierarchical volumes (alltoall: per-tier destinations; ring: link mix)
     if kind == "alltoall":
         vol = [(n - 1) * K[i] / group for i, (n, _, _) in enumerate(lv)]
@@ -448,7 +479,7 @@ def candidates(kind: str, payload: float, group: int, sys, stride: int = 1, k_pk
             shares[name] = {t: h / group for h, (_, _, t) in zip(hops, lv)}
         else:
             shares[name] = hshare
-    meta = {"levels": lv, "top": tops_pick, "s_net": s_net, "nt": nt, "tt": tt}
+    meta = {"levels": lv, "top": tops_pick, "s_net": s_net, "nt": nt, "tt": tt, "wire": wires}
     return cands, shares, meta
 
 
@@ -470,11 +501,11 @@ def collective_full(kind: str, payload: float, group: int, sys, stride: int = 1,
     """(bw, α, D2D share, net share, {tier: busy}, candidates | None) — candidates (with shares) are returned for
     ``algo = auto_overlap`` so the stage can re-pick (evaluate._stage_link)."""
     if group <= 1 or payload <= 0:
-        return 0.0, 0.0, 0.0, 0.0, {}, None
+        return 0.0, 0.0, 0.0, 0.0, {}, None, {}
     fab: Fabric = sys.fabric
     cands, shares, meta = candidates(kind, payload, group, sys, stride, k_pkg, k_node)
     if not cands:
-        return 0.0, 0.0, 0.0, 0.0, {}, None
+        return 0.0, 0.0, 0.0, 0.0, {}, None, {}
     name = pick(cands, fab)
     bw, a, busy = cands[name]
     sh = shares[name]
@@ -497,8 +528,9 @@ def collective_full(kind: str, payload: float, group: int, sys, stride: int = 1,
     full = None
     if fab.algo == "auto_overlap" and len(cands) > 1:
         full = (key, payload, name,
-                {k: (v[0], v[1], v[2], shares[k].get("d2d", 0.0), shares[k].get("net", 0.0)) for k, v in cands.items()})
-    return bw, a, sh.get("d2d", 0.0), sh.get("net", 0.0), busy, full
+                {k: (v[0], v[1], v[2], shares[k].get("d2d", 0.0), shares[k].get("net", 0.0), meta["wire"][k])
+                 for k, v in cands.items()})
+    return bw, a, sh.get("d2d", 0.0), sh.get("net", 0.0), busy, full, meta["wire"][name]
 
 
 def collective(kind: str, payload: float, group: int, sys, stride: int = 1, k_pkg: int | None = None,

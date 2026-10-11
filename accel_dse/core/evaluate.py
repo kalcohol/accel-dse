@@ -27,7 +27,8 @@ from .scenario import Scenario
 from .vision import expand_images, image_grid, vision_act_peak, vision_ops
 from .ir import dspark_ops, red_bytes, skew_from_load
 from . import fabric
-from .schedule import StageTime, collective_seconds, fabric_collective, p2p_tier, spec_expected_tokens
+from .schedule import (StageTime, collective_seconds, collective_wire, fabric_collective, p2p_tier,
+                       spec_expected_tokens, wire_single)
 
 
 @dataclass
@@ -200,7 +201,8 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
              "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
-             "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e", "t_arr_attn")
+             "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e", "t_arr_attn",
+             "wire_d2d", "wire_link", "wire_net")
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _EP_COMM = ("moe_dispatch", "moe_combine", "expert_allreduce")
 _TIERS = ("d2d", "link", "net")
@@ -253,9 +255,9 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
                     if cr is None:
                         cr = cm[ck] = fabric.collective_full(o.comm_kind, o.comm_bytes, o.comm_group, sys,
                                                              o.comm_stride)
-                    bw, a, fd, fn, busy, full = cr
+                    bw, a, fd, fn, busy, full, wr = cr
                 else:
-                    bw, a, fd, fn, busy, full = fabric.collective_full(o.comm_kind, o.comm_bytes, o.comm_group, sys,
+                    bw, a, fd, fn, busy, full, wr = fabric.collective_full(o.comm_kind, o.comm_bytes, o.comm_group, sys,
                                                                        o.comm_stride)
                 for t, x in busy.items():
                     d["busy_" + t] += x
@@ -265,6 +267,9 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
                     c[full[0]] = [c[full[0]][0] + 1 if full[0] in c else 1, full]
             else:
                 bw, a, fd, fn = _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)
+                wr = _comm_wire(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)
+            for t, x in wr.items():                # 0.78: physical bytes on each tier's wire (energy)
+                d["wire_" + t] += x
             d["link_bw"] += bw; d["sync"] += a; d["link_bytes"] += o.comm_bytes; d["d2d_bytes"] += o.comm_bytes * fd
             if o.name in _EP_COMM:            # 0.65: what a DP rank without sequences still sends / receives under EP
                 d["link_bytes_e"] += o.comm_bytes
@@ -337,6 +342,24 @@ def _comm(sys: System, kind: str, payload: float, group: int, stride: int = 1,
     return fabric_collective(kind, payload, group, sys.link, sys.d2d if sys.package_cards > 1 else None,
                              sys.package_cards, sys.net if sys.node_cards > 0 else None, sys.node_cards, stride,
                              k_pkg=kp, k_node=kn)
+
+
+def _comm_wire(sys: System, kind: str, payload: float, group: int, stride: int = 1,
+               members: tuple[int | None, int | None] | None = None) -> dict:
+    """0.78: {tier: bytes one rank sends on the wire} of the collective ``_comm`` times (per algorithm / level)."""
+    kp, kn = members if members is not None else (None, None)
+    if sys.fabric.enabled:
+        return fabric.collective_full(kind, payload, group, sys, stride, k_pkg=kp, k_node=kn)[6]
+    if sys.package_cards <= 1 and sys.node_cards <= 0:
+        x = wire_single(kind, payload, group)
+        return {"link": x} if x else {}
+    return collective_wire(kind, payload, group, sys.package_cards > 1, sys.package_cards, sys.node_cards, stride,
+                           k_pkg=kp, k_node=kn)
+
+
+def _add_wire(w: dict, d: dict, k: float = 1.0) -> None:
+    for t, x in d.items():
+        w[t] = w.get(t, 0.0) + k * x
 
 
 def _p2p(sys: System, payload: float, stage: int, stage_cards: int) -> tuple[float, float, float, float]:
@@ -422,7 +445,7 @@ def _p2p_tier_of(fd: float, fn: float) -> str:
 
 
 def _stage_link(sys: System, agg: dict, link_bw: float, sync: float, d2d_b: float, net_b: float, extra: list,
-                window: float, stage: int = 0) -> tuple[float, float, float, float]:
+                window: float, stage: int = 0, wire: dict | None = None) -> tuple[float, float, float, float]:
     """0.60 (fabric on): stage link seconds under ``fabric.overlap`` and the ``auto_overlap`` re-pick.
     extra = [(bw, tier)] of the stage's PP / FSDP transfers already in link_bw.  Returns (link, sync, d2d, net)."""
     fab = sys.fabric
@@ -441,7 +464,7 @@ def _stage_link(sys: System, agg: dict, link_bw: float, sync: float, d2d_b: floa
     if fab.algo == "auto_overlap" and cl:
         base_lb, base_sync, base_bz = link_bw, sync, dict(busy)
         for cnt, (key, pay, dflt, cands) in cl:     # strip the default picks
-            bw, a, bz, _, _ = cands[dflt]
+            bw, a, bz, _, _, _ = cands[dflt]
             base_lb -= cnt * bw
             base_sync -= cnt * a
             for t, x in bz.items():
@@ -451,7 +474,7 @@ def _stage_link(sys: System, agg: dict, link_bw: float, sync: float, d2d_b: floa
         def cost(sel):
             lb, sy, bz, bm = base_lb, base_sync, dict(base_bz), bw_max
             for (cnt, (key, pay, dflt, cands)), nm in zip(cl, sel):
-                bw, a, b_, _, _ = cands[nm]
+                bw, a, b_, _, _, _ = cands[nm]
                 lb += cnt * bw
                 sy += cnt * a
                 for t, x in b_.items():
@@ -472,10 +495,13 @@ def _stage_link(sys: System, agg: dict, link_bw: float, sync: float, d2d_b: floa
         _, link_bw, sync, busy, bw_max = cost(best)
         for (cnt, (key, pay, dflt, cands)), nm in zip(cl, best):
             if nm != dflt:
-                _, _, _, fd0, fn0 = cands[dflt]
-                _, _, _, fd1, fn1 = cands[nm]
+                _, _, _, fd0, fn0, w0 = cands[dflt]
+                _, _, _, fd1, fn1, w1 = cands[nm]
                 d2d_b += cnt * pay * (fd1 - fd0)
                 net_b += cnt * pay * (fn1 - fn0)
+                if wire is not None:            # 0.78: the re-picked algorithm's wire bytes
+                    _add_wire(wire, w0, -cnt)
+                    _add_wire(wire, w1, cnt)
         choice = {key: nm for (cnt, (key, *_)), nm in zip(cl, best)}
     link = link_of(link_bw, busy, bw_max)
     if fabric.log() is not None:
@@ -720,17 +746,19 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             dram = step_dram_bytes(mp, store, agg)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]
+            wire = {t: agg["wire_" + t] for t in _TIERS}
             extra = []
             if pp > 1 and not st.has_head:
                 act = ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m)   # 0.61.1: ≥ bf16; × mHC streams
                 bw, a, fd, fn, tier = _p2p_full(sys, act, st.index, lay.cards // pp)
                 link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
+                _add_wire(wire, {"d2d": act * fd, "net": act * fn, "link": act * (1 - fd - fn)})
                 extra.append((bw, tier))
             t_dram = dram["total"] / (sys.dram_GBps * 1e9)
             if sys.fabric.enabled:
                 link_bw, sync, d2d_b, net_b = _stage_link(
                     sys, agg, link_bw, sync, d2d_b, net_b, extra,
-                    max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram)), st.index)
+                    max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram)), st.index, wire)
             if scn.exec_overlap == "tbo":   # 0.70: two micro-batches each stream the stage's weights once
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
@@ -739,7 +767,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
                             (dram["kv_read"] + dram["kv_write"] + dram["state"]) / (sys.dram_GBps * 1e9),
-                            scn.exec_overlap)
+                            scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]))
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))
@@ -920,6 +948,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             dram = step_dram_bytes(mp, store, agg)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]
+            wire = {t: agg["wire_" + t] for t in _TIERS}
             extra_f: dict = {}
             if fsdp:
                 # DiT weights FSDP-sharded over the stage's g = SP·DP ranks (Wan --dit_fsdp): each card keeps w / g plus
@@ -935,6 +964,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 bw, a_, fd, fn = _comm(sys, "allgather", act_w / fsdp, fsdp, stride=lay.tp)  # SP·DP ranks, stride TP
                 link_bw += bw; sync += a_ * nl; link_bytes += act_w / fsdp; d2d_b += act_w / fsdp * fd
                 net_b += act_w / fsdp * fn
+                _add_wire(wire, _comm_wire(sys, "allgather", act_w / fsdp, fsdp, stride=lay.tp))
                 if sys.fabric.enabled:
                     extra_f = fabric.collective_full("allgather", act_w / fsdp, fsdp, sys, lay.tp)[4]
                 gw = act_w * (fsdp - 1) / fsdp
@@ -944,12 +974,13 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 act = ph.batch * (_cdiv(ph.q, lay.sp) * m.hidden * ab + pair_act) / lay.dp
                 bw, a, fd, fn, tier = _p2p_full(sys, act, st.index, lay.cards // pp)
                 link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
+                _add_wire(wire, {"d2d": act * fd, "net": act * fn, "link": act * (1 - fd - fn)})
                 extra.append((bw, tier))
             t_dram = dram["total"] / (sys.dram_GBps * 1e9)
             if sys.fabric.enabled:
                 link_bw, sync, d2d_b, net_b = _stage_link(
                     sys, agg, link_bw, sync, d2d_b, net_b, extra,
-                    max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram)), st.index)
+                    max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram)), st.index, wire)
             if scn.exec_overlap == "tbo":   # 0.70: two micro-batches each stream the stage's weights once
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
@@ -958,7 +989,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
                             (dram["kv_read"] + dram["kv_write"] + dram["state"]) / (sys.dram_GBps * 1e9),
-                            scn.exec_overlap)
+                            scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]))
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))

@@ -121,6 +121,52 @@ def fabric_collective(kind: str, payload: float, group: int, link: Link, d2d: Li
     return bw, a, share.get("d2d", 0.0), share.get("net", 0.0)
 
 
+def wire_single(kind: str, payload: float, group: int) -> float:
+    """0.78: bytes one rank puts on the wire for one collective on a single tier (the α-β volumes above): ring
+    all-reduce 2(n−1)/n · payload, all-gather / reduce-scatter (n−1) · shard, all-to-all (n−1)/n · payload, p2p payload."""
+    if group <= 1 or payload <= 0:
+        return 0.0
+    if kind == "allreduce":
+        return 2 * (group - 1) / group * payload
+    if kind == "alltoall":
+        return (group - 1) / group * payload
+    if kind in ("allgather", "reducescatter"):
+        return (group - 1) * payload
+    return payload
+
+
+def collective_wire(kind: str, payload: float, group: int, d2d: bool = False, package: int = 1, node: int = 0,
+                    stride: int = 1, k_pkg: int | None = None, k_node: int | None = None) -> dict:
+    """0.78: {tier: bytes one rank sends} of ``fabric_collective`` (same levels and per-level volumes)."""
+    if group <= 1 or payload <= 0:
+        return {}
+    k1 = k_pkg if k_pkg is not None else (1 if not d2d else _members(package, group, stride))
+    k1 = math.gcd(max(1, k1), group)
+    if node <= 0:
+        k2 = group
+    else:
+        k2 = math.gcd(max(1, k_node if k_node is not None else _members(node, group, stride)), group)
+        if k2 % k1:
+            k2 = k1
+    levels = [(n, t) for n, t in ((k1, "d2d"), (k2 // k1, "link"), (group // k2, "net")) if n > 1]
+    if not levels:
+        return {}
+    if len(levels) == 1 or kind not in ("allreduce", "allgather", "alltoall"):
+        return {levels[-1][1] if len(levels) > 1 else levels[0][1]: wire_single(kind, payload, group)}
+    sizes = [n for n, _ in levels]
+    out = {}
+    for i, (n, t) in enumerate(levels):
+        pre, post = math.prod(sizes[:i]), math.prod(sizes[i + 1:])
+        if kind == "allreduce":
+            v = 2 * (n - 1) / n * payload / pre
+        elif kind == "allgather":
+            v = (n - 1) * post * payload
+        else:
+            v = (n - 1) * pre / group * payload
+        out[t] = v
+    return out
+
+
 def tiered_collective(kind: str, payload: float, group: int, link: Link, d2d: Link, package: int,
                       stride: int = 1) -> tuple[float, float, float]:
     """(bandwidth s, exposed-latency s, D2D share of the sent bytes) on the 0.48 two-tier fabric (one node)."""
@@ -174,6 +220,9 @@ class StageTime:
     t_arr_attn: float = 0.0 # 0.66: array time of attention-core ops (part of t_array)
     t_dram_kv: float = 0.0  # 0.66: KV / state traffic time (part of t_dram)
     overlap: str = "stage"  # 0.66: stage | class | kernel | serial (see total)
+    wire_d2d: float = 0.0   # 0.78: bytes one rank sends on the wire per tier (per algorithm; energy) — the *_bytes
+    wire_link: float = 0.0  #       fields above stay payload (timing / KV-transfer shares)
+    wire_net: float = 0.0
 
     @property
     def array_util(self) -> float:

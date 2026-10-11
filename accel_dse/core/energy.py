@@ -146,17 +146,17 @@ def _counts(r) -> dict:
             c["sram"] += st.sram_bytes * nb + ea.get("sram", st.sram_bytes) * ni
             c["dram"] += t.dram_bytes * nb + st.dram.get("exp_dram", t.dram_bytes) * ni
             c["slc"] += t.slc_bytes * nb + st.dram.get("exp_slc", t.slc_bytes) * ni
-            c["d2d"] += t.d2d_bytes * (nb + fl * ni)
-            c["net"] += t.net_bytes * (nb + fl * ni)
-            c["link"] += scaleup_bytes(t) * (nb + fl * ni)
+            c["d2d"] += t.wire_d2d * (nb + fl * ni)       # 0.78: bytes on each tier's wire (per algorithm)
+            c["net"] += t.wire_net * (nb + fl * ni)
+            c["link"] += t.wire_link * (nb + fl * ni)
         else:
             c["vec"] += st.conv_w * ch.lanes * f * n   # weight dequant: per pass
             c["sram"] += st.sram_bytes * n
             c["dram"] += t.dram_bytes * n
             c["slc"] += t.slc_bytes * n
-            c["d2d"] += t.d2d_bytes * n
-            c["net"] += t.net_bytes * n
-            c["link"] += scaleup_bytes(t) * n
+            c["d2d"] += t.wire_d2d * n
+            c["net"] += t.wire_net * n
+            c["link"] += t.wire_link * n
     if w is None:
         window = r.step
         unit = "token" if r.scenario.serving.phase == "decode" else "prompt token"

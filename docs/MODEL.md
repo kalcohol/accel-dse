@@ -330,7 +330,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 | SLC | 系统级缓存命中的字节（0.48，§14；无 SLC 时为 0） | `pJ_bit_slc` |
 | DRAM | 外部存储读写字节（权重、KV、激活流式、FSDP gather 写入）；有 SLC 时只计未命中 | `pJ_bit_dram` |
 | D2D | 封装内 die-to-die 层发送的字节（0.48，§15；D2D 关或每封装 1 die 时为 0） | `pJ_bit_d2d` |
-| 节点内链路 | 每 rank 在节点内 scale-up 层发送的字节（集合通信载荷、PP 交接、VAE tile all-gather；扣除 D2D 与跨节点份额） | `pJ_bit_link` |
+| 节点内链路 | 每 rank 在节点内 scale-up 层**实际上线**的字节（0.78：按所选算法的物理流量——环形 all-reduce 2(n−1)/n × 载荷、all-gather / reduce-scatter (n−1) × 分片、all-to-all (n−1)/n × 载荷、tree 2(n−1)/n、分层按各层体积、in-network 顶层每 rank 一个分片、协议开销 ÷ 效率；PP 交接 = 载荷；VAE tile all-gather） | `pJ_bit_link` |
 | 跨节点网络 | 跨节点发送的字节（0.50，§15；单节点时为 0） | `pJ_bit_net` |
 | 静态 | 卡数 × 时间窗 | `idle_W`（W / 卡） |
 
@@ -390,7 +390,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 调研过但不在选择器里：NVIDIA NV-HBI（Blackwell 双 die，「10 TB/s」未注明方向）、AMD Infinity Fabric AP（MI300X IOD 之间每方向 2.4 / 3.0 TB/s）、TSMC LIPINCON（2019 VLSI 测试芯片，8 Gb/s/pin、320 GB/s、0.56 pJ/bit）；CCIX 等旧接口不列。不虚构厂商 SKU。
 
 - **量级**（1P + HBM3E，Qwen3-8B prefill TP8 4096 tokens × 8，节点内链路 50 GB/s、α 5 µs）：单片 TTFT 676.8 ms（LINK 瓶颈）→ 每封装 8 die：UCIe-A 48G × 4 / 64G × 4 / UCIe-S 32G × 4 / BoW-512 × 4 / NVLink-C2C × 1 均为 247.8 ms（MAC 瓶颈；每级链路时间 22.0 / 16.5 / 132.1 / 132.1 / 75.2 ms），BoW-256 × 4（128 GB/s）264.3 ms（LINK）。三层（1P + HBM3E、默认链路，同一 prefill TP16）：单节点 199.6 ms（MAC）→ 每节点 8 卡、跨节点 50 GB/s 200.2 ms（链路时间 90.6 → 132.9 ms，仍被计算掩盖）→ 每节点 4 卡 218.2 ms（LINK）。Qwen3-30B-A3B decode TP2·DP8·EP16 batch 64：TPOT 5.39 → 每节点 8 卡 5.58 ms（+ D2D 每封装 2 die 5.46 ms）。
-- **能耗**：链路字节仍按载荷口径，按每次集合通信各层实际发送字节之比拆成 `d2d`（`pJ_bit_d2d`）、节点内 `link`（`pJ_bit_link`）、跨节点 `net`（`pJ_bit_net`），三者之和 = 单层时的链路字节（测试守恒）。
+- **能耗**（0.78 起）：链路能耗按**物理上线字节**计——每次集合通信按所选算法（ring / tree / hier / in-network / direct）与各层（`d2d` → `pJ_bit_d2d`、节点内 `link` → `pJ_bit_link`、跨节点 `net` → `pJ_bit_net`）的实际发送字节累计（`StageTime.wire_d2d / wire_link / wire_net`）。0.77 及以前为载荷口径（按份额拆分，三者之和 = 载荷），低估环形 all-reduce 至多 2×、高估 all-to-all。`link_bytes / d2d_bytes / net_bytes` 仍为载荷口径，仅用于计时与 PD KV 传输份额，数值不变。
 - **入口**：API scenario `d2d_enabled`、`package_cards`、`d2d_std`、`d2d_units`、`d2d`、`link`、`node_cards`、`net`；每级 `link_GB`（total / d2d / scaleup / net）；`/api/catalog` 给出 `d2d_standards`。CLI `--d2d --package-cards（> 1 隐含 --d2d） --d2d-std --d2d-units --d2d-GBps（隐含 custom） --d2d-alpha-us --link-GBps --link-alpha-us --node-cards --net-GBps --net-alpha-us --pJ-bit-net`，`accel-dse d2d` 列出档位。Web 并行组「三层互连」：D2D 芯粒堆叠开关（关 = 单片大 die）→ 档位 / 每封装 die 数 / 单元数 / GB/s / α；节点内两项；每节点卡数与跨节点两项。扫描可选 `package_cards`（> 1 时自动开 D2D）、`d2d_units`、`d2d.GBps`（自动切到自定义）、`d2d.alpha_us`、`node_cards`、`net.GBps`、`net.alpha_us`。
 - **不做 / 待定**：拓扑（胖树 / torus / 轨道优化）、拥塞与超额订阅、in-network reduction（SHARP）、多路径 / 链路聚合、NIC 与 scale-up 之间的 PCIe 瓶颈都不建模；`Link.topology` 仍只是标签；D2D 的协议效率（flit 开销）不扣——需要时用自定义档位填有效带宽。
 
