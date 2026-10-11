@@ -7,7 +7,8 @@ A ``Layout`` places one model replica on ``pp·tp·dp`` cards:
   sp  sequence parallel (Ulysses) — non-autoregressive models only (video DiT, protein encoders; structure
       models: DAP, the pair / MSA grids split along a residue axis);
       their dp splits the forward batch (incl. the CFG cond/uncond pair) inside the replica
-Cards = pp·tp·dp·sp.  Single card = Layout() (all 1).  There is no second code path.
+  cp  context parallel (0.88, LLM prefill only): ring attention over cp ranks; MoE ep·etp = tp·dp·cp
+Cards = pp·tp·dp·sp·cp.  Single card = Layout() (all 1).  There is no second code path.
 
 Stage plan: layers split contiguously, remainder to the *first* stages
 (61 / 8 → [8,8,8,8,8,7,7,7]); embedding on stage 0; final norm + LM head +
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 import math
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .ir import Shard
 
@@ -31,16 +32,19 @@ class Layout:
     ep: int = 1
     etp: int = 1
     sp: int = 1
+    # 0.88: context parallel (ring attention, zigzag load-balanced) for LLM prefill — each CP rank holds 1/cp of every
+    # sequence's tokens and its KV shard; KV blocks circulate over the CP ranks.  Cards numbered TP → CP → DP → PP.
+    cp: int = field(default=1, metadata={"omit_default": True})
 
     def __post_init__(self):
-        for k in ("pp", "tp", "dp", "ep", "etp", "sp"):
+        for k in ("pp", "tp", "dp", "ep", "etp", "sp", "cp"):
             v = getattr(self, k)
             if not isinstance(v, int) or v < 1:
                 raise ValueError(f"layout.{k} must be an integer ≥ 1 (got {v!r})")
 
     @property
     def cards(self) -> int:
-        return self.pp * self.tp * self.dp * self.sp
+        return self.pp * self.tp * self.dp * self.sp * self.cp
 
     @property
     def shard(self) -> Shard:
@@ -51,11 +55,11 @@ class Layout:
         Non-autoregressive (``full``, dense): ep = etp = 1, any dp / sp.
         Structure models (``pair``): tp = 1; sp = DAP degree (0.45: pair / MSA grids split over sp ranks), any dp / pp."""
         if full:
-            return self.ep == 1 and self.etp == 1 and (not pair or self.tp == 1)
+            return self.cp == 1 and self.ep == 1 and self.etp == 1 and (not pair or self.tp == 1)
         if self.sp != 1:
             return False
-        if moe:
-            return self.ep * self.etp == self.tp * self.dp
+        if moe:      # 0.88: the CP ranks are attention replicas of the expert group too
+            return self.ep * self.etp == self.tp * self.dp * self.cp
         return self.ep == 1 and self.etp == 1 and self.dp == 1
 
     @property
@@ -69,6 +73,8 @@ class Layout:
             s += f"·ETP{self.etp}"
         if self.sp > 1:
             s += f"·SP{self.sp}"
+        if self.cp > 1:
+            s += f"·CP{self.cp}"
         return s
 
 

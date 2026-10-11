@@ -96,7 +96,7 @@ class Result:
         w, lay = self.workload, self.scenario.layout
         # 0.63: flops_u is the mean rank's useful work (Op.share) → × all TP·SP·DP ranks / sequences of the micro-batch
         b_mb = _cdiv(self.scenario.serving.batch * w.seqs_per_request, self.microbatches)
-        per_seq = sum(st.flops_u for st in self.stages) * lay.tp * lay.sp * lay.dp / b_mb
+        per_seq = sum(st.flops_u for st in self.stages) * lay.tp * lay.sp * lay.dp * lay.cp / b_mb
         return per_seq * w.seqs_per_request * w.steps / 1e12
 
     def domain_summary(self) -> dict:
@@ -623,6 +623,44 @@ def _pp_imbalance_warn(stages, tick: float, warnings: list, split: str = "cost")
             warnings.append(f"流水级已按代价平衡，仍不均：最慢级 / 最快级 = {tick / max(lo, 1e-30):.1f}×（整层粒度或容量上限所限），"
                             "节拍取最慢级")
 
+def _cp_check(m: ModelSpec, sv) -> None:
+    """0.88: context parallel is modelled for LLM prefill over softmax attention (GQA / MLA, incl. plain DSA top-k)."""
+    if not m.kv_cache or m.domain != "llm":
+        raise ValueError("layout.cp（上下文并行）只用于 LLM；视频 / 蛋白模型请用 sp")
+    if sv.phase != "prefill":
+        raise ValueError("layout.cp（上下文并行）只用于 prefill；decode 的 KV 分片未建模（PD 时把 CP 放在 prefill_layout）")
+    if sv.prefix_cached:
+        raise ValueError("layout.cp 与 serving.prefix_cached 不能同时使用（分块 + 前缀缓存的 zigzag 划分未建模）")
+    if sv.images:
+        raise ValueError("layout.cp 与 serving.images 不能同时使用")
+    for L in m.layers:
+        c = L.core
+        if c is None:
+            continue
+        if c.kind not in ("gqa", "mla") or c.window or c.compress > 1 or c.win_bytes or c.dual or c.qsa or c.idx_kpool:
+            raise ValueError("layout.cp 只支持全局 softmax 注意力（GQA / MLA，含逐 token 的 DSA top-k）；该模型有线性 / "
+                             "滑窗 / 压缩 KV 层，环形注意力的分块等价不成立")
+
+
+def _cp_ring_ops(m: ModelSpec, first: int, last: int, ring) -> list:
+    """Ring-attention KV traffic of one stage: per attention layer an all-gather (cp − 1 blocks received per rank) of
+    this rank's KV block — GQA: ⌈kv heads / TP⌉ · (qk + v) dims; MLA: the latent (every TP rank holds it); + DSA
+    index keys."""
+    cp, tp, tok = ring
+    kvb = _fmt(m.kv_fmt).bytes
+    ops = []
+    for li in range(first, last):
+        c = m.layers[li].core
+        if c is None:
+            continue
+        per = _cdiv(c.n_kv, tp) * (c.qk_dim + c.v_dim) * kvb if c.kind == "gqa" else (c.kv_lora + c.rope_dim) * kvb
+        if c.idx_heads:
+            per += c.idx_bytes_per_token(kvb)
+        ops.append(Op("cp_ring_kv", "comm", li, comm_kind="allgather", comm_group=cp, comm_bytes=tok * per,
+                      comm_stride=tp))
+    return ops
+
+
 def _streams(m: ModelSpec) -> int:
     """Residual streams passed between pipeline stages (mHC: hc_mult streams of width hidden)."""
     return max((max(l.hc, l.gres_n) for l in m.layers), default=0) or 1
@@ -660,6 +698,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             "(MoE needs ep·etp = tp·dp; dense needs dp=ep=etp=1; sp only for video / protein models)"))
     if lay.pp > m.n_layers:
         raise ValueError("pp exceeds layer count")
+    if lay.cp > 1:
+        _cp_check(m, sv)
     sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
                  scn.fabric, lay.cards)
     if scn.chip.slc_bytes and scn.chip.slc_bytes >= sys.dram_bytes:
@@ -703,13 +743,28 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         mb = max(1, min(mb, sv.batch))
         ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=skew)
         ctx_cap = sv.prompt
+    cp_ring = None
+    if lay.cp > 1:
+        # 0.88 context parallel (zigzag ring attention): rank i holds chunks i and 2cp−1−i of every sequence, so every
+        # rank has q = ⌈S/cp⌉ query tokens and exactly 1/cp of the causal work S²/2.  A chunked-prefill phase of q new
+        # tokens behind a prefix c does q·(c + q/2) — c = S²/(2·cp·q) − q/2 makes it equal; every token-linear op sees
+        # q tokens.  So a CP rank = an attention-DP replica prefilling one chunk of each sequence (virtual batch ×cp);
+        # resident KV = its own shard (the two in-flight ring blocks of one layer are not counted); the KV blocks
+        # circulate as one all-gather of the rank's block per attention layer over the CP group (stride TP).
+        cp, S = lay.cp, sv.prompt
+        q_loc = _cdiv(S, cp)
+        c_eq = max(0, round(S * S / (2 * cp * q_loc) - q_loc / 2))
+        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=skew)
+        ctx_cap = q_loc
+        cp_ring = (cp, lay.tp, _cdiv(sv.batch, mb) * q_loc / lay.dp)   # tokens of this rank's block per step
+        lay = Layout(lay.pp, lay.tp, lay.dp * cp, lay.ep, lay.etp, 1)   # internal: CP ranks as attention replicas
     if lay.dp > 1 and ph.batch < lay.dp and m.kv_cache:     # 0.87
         warnings.append(f"注意力 DP 副本空闲：每个微批只有 {ph.batch} 条序列，DP = {lay.dp}，{lay.dp - ph.batch} 个注意力副本"
                         "无事可做（长上下文单请求 prefill 请用 TP / indexer = key_split，或增大 batch）")
     sh = lay.shard
     stages = []
     n_mtp = (len(m.mtp_layers) if m.draft == "dspark" else min(spec_k, len(m.mtp_layers))) if spec_k else 0
-    b_rank = _cdiv(sv.batch, lay.dp)          # sequences whose KV lives on one rank (all micro-batches)
+    b_rank = _cdiv(sv.batch, scn.layout.dp)   # sequences whose KV lives on one rank (all micro-batches; CP: a shard each)
     cache: dict = {}
     groups = layer_groups(m)
     store_memo = model_cache(m).setdefault("stage_storage", {})
@@ -742,6 +797,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                         cache[g] = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m, mm)
                         fabric.set_mult(1)
                 _acc(agg, cache[g], n)
+            if cp_ring is not None:
+                _acc(agg, _sum_ops(_cp_ring_ops(m, st.first, st.last, cp_ring), sys, scn.mapping, m, mm))
             tail = _tail_ops(m, st.has_head, ph, sh, spec_k)
             if tail:                        # 0.61: non-head stages have no tail ops (summing zeros is a no-op)
                 _acc(agg, _sum_ops(tail, sys, scn.mapping, m, mm))

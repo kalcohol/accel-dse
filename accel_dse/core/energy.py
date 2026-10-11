@@ -117,6 +117,11 @@ def _counts(r) -> dict:
     # counted 4 sequences, +33 % MAC per sequence)
     seqs = r.scenario.serving.batch * (w.seqs_per_request if w is not None else 1)
     b_mb = -(-seqs // max(1, r.microbatches))
+    mb_fill = seqs / (max(1, r.microbatches) * b_mb) if b_mb else 1.0
+    if getattr(lay, "cp", 1) > 1:      # 0.88: CP ranks are attention replicas, each with a chunk of every sequence
+        from .parallel import Layout as _L
+        b_mb *= lay.cp
+        lay = _L(lay.pp, lay.tp, lay.dp * lay.cp, lay.ep, lay.etp, 1)
     b_rank = -(-b_mb // lay.dp)
     dp_act = min(lay.dp, -(-b_mb // b_rank)) if b_rank else lay.dp
     # 0.63: with expert parallelism a DP rank without sequences still runs its experts.  0.64: it moves only its
@@ -126,7 +131,6 @@ def _counts(r) -> dict:
     if lay.ep > 1:
         dp_act = lay.dp
     ranks = lay.tp * lay.sp * dp_act
-    mb_fill = seqs / (max(1, r.microbatches) * b_mb) if b_mb else 1.0
     passes = r.microbatches * (w.steps if w is not None and w.kind == "gen" else 1)
     c = dict.fromkeys(ACTIONS, 0.0)
     for st in r.stages:

@@ -300,6 +300,7 @@ function paintDomain(m) {
   document.querySelectorAll('.diff-only').forEach((e) => (e.hidden = !(m.is_pair && m.workload && m.workload.diff_steps)));
   document.querySelectorAll('.tp-in').forEach((e) => (e.hidden = !!m.is_pair));   // structure models: PP × DP × DAP, no TP
   document.querySelectorAll('.sp-in').forEach((e) => (e.hidden = !full));
+  document.querySelectorAll('.cp-in').forEach((e) => (e.hidden = full));
   $('l-sp-name').textContent = m.is_pair ? 'DAP' : 'SP';
   $('l-sp-lab').title = m.is_pair
     ? 'DAP（动态轴并行，FastFold）：pair / MSA / 模板网格沿一个残基轴切到 DAP 张卡，单一 / 原子轨道每卡重复；三角乘法、偏置、外积均值 all-gather，轴切换 all-to-all'
@@ -358,7 +359,7 @@ function onModel() {
   document.querySelectorAll('.vlm-only').forEach((e) => (e.hidden = !m.vision));
   if (!m.vision && S.sc.serving.images) { S.sc.serving.images = 0; $('s-images')._sync(); }   // images only mean something on a VLM
   const L = S.sc.layout;
-  if (isFull(m)) { L.ep = 1; L.etp = 1; L.sp = L.sp || 1; if (m.is_pair) L.tp = 1; }
+  if (isFull(m)) { L.ep = 1; L.etp = 1; L.sp = L.sp || 1; delete L.cp; if (m.is_pair) L.tp = 1; }
   else { L.sp = 1; if (!m.is_moe) { L.dp = 1; L.ep = 1; L.etp = 1; } else fixMoe('tp'); }
   if (L.pp > m.n_layers) L.pp = 1;
   syncInputs();
@@ -367,15 +368,15 @@ function onModel() {
 function fixMoe(changed) {
   const L = S.sc.layout;
   if (!model().is_moe) return;
-  const want = L.tp * L.dp;
+  const want = L.tp * L.dp * (L.cp || 1);
   if (changed === 'etp') { if (want % L.etp === 0) { L.ep = want / L.etp; return; } }
   if (want % L.ep === 0) L.etp = want / L.ep; else { L.ep = want; L.etp = 1; }
 }
-const cards = () => S.sc.layout.pp * S.sc.layout.tp * S.sc.layout.dp * (S.sc.layout.sp || 1);
+const cards = () => S.sc.layout.pp * S.sc.layout.tp * S.sc.layout.dp * (S.sc.layout.sp || 1) * (S.sc.layout.cp || 1);
 function setCards(n) {
   // default fill for a new card count: all TP (MoE: experts spread with EP = TP); 「布局搜索」finds the best
   const L = S.sc.layout;
-  L.pp = 1; L.tp = n; L.dp = 1; L.sp = 1;
+  L.pp = 1; L.tp = n; L.dp = 1; L.sp = 1; delete L.cp;
   if (model().is_pair) { L.tp = 1; L.sp = n; }   // structure models: no TP — fill with DAP (pair grid split)
   if (model().is_moe) { L.ep = n; L.etp = 1; } else { L.ep = 1; L.etp = 1; }
   if (n > 64 && !model().is_pair) {   // 0.60: large replicas — TP inside a node, the rest DP (MoE) / PP (dense)
@@ -394,7 +395,7 @@ function cardsNote() {
   const L = S.sc.layout;
   const m = model();
   $('cards-note').textContent = m.is_pair ? `PP${L.pp} × DP${L.dp} × DAP${L.sp || 1} = ${cards()} 卡；结构模型无 TP（改卡数按 DAP 填充）`
-    : `PP${L.pp} × TP${L.tp} × DP${L.dp}${isFull(m) ? ` × SP${L.sp || 1}` : ''} = ${cards()} 卡；改卡数会重新填充布局（≤ 64 卡全 TP；更大时 TP ≤ 每节点卡数，其余 MoE 用 DP、dense 用 PP）`;
+    : `PP${L.pp} × TP${L.tp} × DP${L.dp}${isFull(m) ? ` × SP${L.sp || 1}` : ''}${(L.cp || 1) > 1 ? ` × CP${L.cp}` : ''} = ${cards()} 卡；改卡数会重新填充布局（≤ 64 卡全 TP；更大时 TP ≤ 每节点卡数，其余 MoE 用 DP、dense 用 PP）`;
   const c = $('l-cards');
   if (c._sync && document.activeElement !== c) c._sync();
 }
@@ -1315,7 +1316,9 @@ async function init() {
     $('l-' + k).dataset.after = 'layout';
     bindNumber('l-' + k, () => S.sc.layout[k], (x) => { S.sc.layout[k] = x; AFTER.lastLayout = k; }, { int: true });
   }
-  bindNumber('l-cards', cards, (x) => { setCards(x); for (const k of ['pp', 'tp', 'dp', 'ep', 'etp', 'sp']) $('l-' + k)._sync(); cardsNote(); }, { int: true });
+  $('l-cp').dataset.after = 'layout';
+  bindNumber('l-cp', () => S.sc.layout.cp || 1, (x) => { if (x > 1) S.sc.layout.cp = x; else delete S.sc.layout.cp; AFTER.lastLayout = 'cp'; }, { int: true });
+  bindNumber('l-cards', cards, (x) => { setCards(x); for (const k of ['pp', 'tp', 'dp', 'ep', 'etp', 'sp', 'cp']) $('l-' + k)._sync(); cardsNote(); }, { int: true });
   for (const k of ['frames', 'height', 'width', 'steps', 'cfg', 'seq_len', 'msa', 'recycles', 'samples'])   // empty = release default (0)
     bindNumber('w-' + k, () => S.sc.workload[k] || null, (x) => (S.sc.workload[k] = x === null ? 0 : x), { int: true, nullable: true });
   bindNumber('w-psteps', () => S.sc.workload.steps || null, (x) => (S.sc.workload.steps = x === null ? 0 : x), { int: true, nullable: true });

@@ -90,6 +90,7 @@
       <label class="dp-in">DP<input type="number" id="l-dp" min="1" step="1"></label>
       <label class="moe-only">EP<input type="number" id="l-ep" min="1" step="1"></label>
       <label class="moe-only">ETP<input type="number" id="l-etp" min="1" step="1"></label>
+      <label class="cp-in" title="0.88：上下文并行（环形注意力，zigzag 负载均衡），只用于 LLM prefill：每张 CP 卡持有每条序列 1/CP 的 token 与其 KV 分片，KV 块在 CP 组内环形传递（每层一次 all-gather）；权重在 CP 卡间复制。MoE：EP·ETP = TP·DP·CP。decode 不支持（PD 时放在 prefill 布局）；线性 / 滑窗 / 压缩 KV 模型不支持">CP <span class="tag assume">假设</span><input type="number" id="l-cp" min="1" step="1"></label>
       <label class="full-only sp-in" id="l-sp-lab" title="Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all（每 rank 算 heads/SP 个头的完整序列）"><span id="l-sp-name">SP</span><input type="number" id="l-sp" min="1" step="1"></label>
     </div>
     <label class="inline" title="0.62：流水级怎样切层。cost（默认）= 按每层代价（含嵌入 / 输出头 / MTP / 级间传递，按级时间规则 max(阵列, 向量, DRAM, 链路) + 同步）找使最慢级最快的连续切分，再与按层数均分的结果在完整模型上比较，取更快且放得下的；layers = 按层数均分（0.61 及以前）">PP 切分<select id="l-pp_split"><option value="cost">按代价平衡（默认）</option><option value="layers">按层数均分</option></select></label>
