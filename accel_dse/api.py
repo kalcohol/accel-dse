@@ -173,7 +173,8 @@ def _stage_dict(s) -> dict:
             "dram_GB": {k: v / 1e9 for k, v in s.dram.items() if k != "slc_parts"},
             "slc_GB": {k: v / 1e9 for k, v in s.dram.get("slc_parts", {}).items()},
             "link_GB": {"total": t.link_bytes / 1e9, "d2d": t.d2d_bytes / 1e9, "net": t.net_bytes / 1e9,
-                        "scaleup": scaleup_bytes(t) / 1e9},
+                        "scaleup": scaleup_bytes(t) / 1e9,     # payload basis (timing); 0.78: wire = sent bytes
+                        "wire": {"d2d": t.wire_d2d / 1e9, "link": t.wire_link / 1e9, "net": t.wire_net / 1e9}},
             "mem": {"stored_w_GiB": s.mem.stored_w / 2**30, "kv_GiB": s.mem.kv_total / 2**30,
                     "state_GiB": s.mem.state_total / 2**30, "need_GiB": s.mem.dram_need / 2**30,
                     "cap_GiB": s.mem.dram_cap / 2**30, "fits": s.mem.fits, "residency": s.mem.residency,

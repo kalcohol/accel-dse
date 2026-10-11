@@ -440,7 +440,7 @@ function fillMem() {
   $('m-cap-wrap').hidden = hbm;
   $('m-height-wrap').hidden = !hbm;
   if (hbm) opts($('m-height'), f.cap_tags.map((c) => [`${c.height}:${c.die_Gb}`, `${c.height}-Hi ${c.die_Gb}Gb · ${c.GB} GB` + tagSuffix(c)]), `${S.mem.height}:${S.mem.die}`);
-  else opts($('m-cap'), (f.caps[String(S.mem.width)] || []).map((c) => [c.GB, c.GB + ' GB' + tagSuffix(c)]), S.mem.cap);
+  else opts($('m-cap'), (f.caps[String(S.mem.width)] || []).map((c) => [c.GB, c.GB + ' GiB' + tagSuffix(c)]), S.mem.cap);
   $('m-meta-wrap').hidden = t.id !== 'LPDDR6';
   if (t.id !== 'LPDDR6') S.mem.meta_mode = false;
   $('m-meta').checked = !!S.mem.meta_mode;
@@ -506,6 +506,12 @@ function invalidate() {
   if (S.cat) paintScope();
   for (const id of ['cmp-status', 'lay-status', 'sw-status'])
     if ($(id).dataset.done) $(id).textContent = STALE;
+  // 0.78: the stability verdict was only tagged at render time — later edits left it looking current
+  const sb = $('stab-box');
+  if (sb && sb.dataset.done && !sb.querySelector('.stale')) {
+    delete sb.dataset.done;
+    sb.prepend(h('div', { class: 'stale warn' }, STALE));
+  }
 }
 function showErr(msg) {
   put($('warns'), h('div', { class: 'err' }, msg));
@@ -542,11 +548,13 @@ function renderEval(r) {
   renderBudget(r);
   renderPD(r);
   { const sc = r.scenario, P = sc.d2d_enabled ? (sc.package_cards || 1) : 1, N = sc.node_cards || 0,
-      sum = (k) => r.stages.reduce((x, st) => x + (st.link_GB ? st.link_GB[k] || 0 : 0), 0), tot = sum('total');
+      // 0.78: shares of the bytes actually sent (per algorithm and tier: what the energy table charges)
+      sum = (k) => r.stages.reduce((x, st) => x + (st.link_GB && st.link_GB.wire ? st.link_GB.wire[k] || 0 : 0), 0),
+      tot = sum('d2d') + sum('link') + sum('net');
     const parts = [];
     if (P > 1) parts.push(`D2D ${tot > 0 ? pct(sum('d2d') / tot) : '—'}`);
     if (N > 0) parts.push(`跨节点 ${tot > 0 ? pct(sum('net') / tot) : '—'}`);
-    $('tier-note').textContent = parts.length ? `通信字节分层（每封装 ${P} die${N ? `，每节点 ${N} 卡` : ''}）：${parts.join('，')}，其余走节点内 scale-up` : ''; }
+    $('tier-note').textContent = parts.length ? `上线字节分层（按所选集合通信算法的实际发送量；每封装 ${P} die${N ? `，每节点 ${N} 卡` : ''}）：${parts.join('，')}，其余走节点内 scale-up` : ''; }
   renderAssumptions(r);
   if (!s.fits) { $('kpis').hidden = true; runFit(); return; }
   $('fit').hidden = true;
@@ -1041,9 +1049,12 @@ async function bestLayout() {
   btn.disabled = true;
   const old = btn.textContent;
   btn.textContent = '搜索中…';
+  const v0 = S.ver;
   try {
     const r = await track(req('best-layout', '/api/layouts', body({ cards: cards(), objective: 'decode' })));
     if (!r) return;
+    // 0.78: an edit during the search (model, cards, phase…) — don't overwrite it with a layout for the old scenario
+    if (S.ver !== v0) { showErr(`最佳布局：${STALE}（搜索期间场景已修改，结果未应用）`); return; }
     const top = r.rows[0];
     if (!top || !top.batch) { showErr(`${cards()} 卡下没有满足容量和 SLO 的布局`); return; }
     applyLayout(top.layout_obj, top.batch);
@@ -1079,6 +1090,7 @@ async function runLayouts() {
 }
 async function runStability() {
   paintScope();
+  delete $('stab-box').dataset.done;
   put($('stab-box'), h('div', { class: 'stab muted' }, '稳定性计算中（每个扰动重新精确搜索 top-1 布局）…'));
   const v0 = S.ver;
   try {
@@ -1087,6 +1099,7 @@ async function runStability() {
     put($('stab-box'), h('div', { class: 'stab' },
       h('div', {}, '基准 top-1：', h('b', { class: 'mono' }, r.base_top), '  ', stabFlag(r), '  ', h('span', { class: 'muted' }, r.rule + staleTag(v0))),
       h('ul', {}, r.cases.map((c) => h('li', { style: c.same || c.within5 ? '' : 'color:var(--warn)' }, caseText(c))))));
+    $('stab-box').dataset.done = '1';
   } catch (e) { put($('stab-box'), h('div', { class: 'stab' }, '错误：' + e.message)); }
 }
 
