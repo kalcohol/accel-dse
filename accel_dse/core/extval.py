@@ -99,6 +99,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         chip = replace(chip, split_instances=True)
     if v.get("sched"):                 # 0.91: Chip.instance_sched (reference chips ship "wide")
         chip = replace(chip, instance_sched=v["sched"])
+    if v.get("kernel_us") is not None:  # 0.92: per-kernel fixed cost
+        chip = replace(chip, kernel_us=v["kernel_us"])
     mem_eff = e if isinstance(e, float) else EFF[e]
     extra = {}
     if r.get("node_cards"):            # 0.67 multi-node rows: cards per node + scale-out NIC per card
@@ -129,11 +131,19 @@ def _decode(r, b, isl, osl, eff, n=4):
     return sum(x.tpot for x in res) / n, all(x.fits for x in res)
 
 
-def _static(r, b, eff):
+def _static(r, b, eff, inflight: bool = False):
     p = _ttft(r, b, r["isl"], eff)
     t, fits = _decode(r, b, r["isl"], r["osl"], eff)
     total = p.ttft + (r["osl"] - 1) * t
-    return b * r["osl"] / total, fits and p.fits, {"ttft_s": p.ttft, "tpot_s": t, "prefill_share": p.ttft / total}
+    pf = p.fits
+    if inflight and INFLIGHT_FIT.get(eff, INFLIGHT_DEFAULT):
+        # 0.92: in-flight batching prefills in chunks of ≤ CB_CHUNK tokens per iteration, so the activation working
+        # set is one chunk's, not all b prompts' at once (the static proxy's time is kept: same tokens, same work).
+        # KV of the b resident requests is still checked by the decode points (up to ISL + 7/8·OSL — TRT-LLM's
+        # default GUARANTEED_NO_EVICT reserves each request's full length)
+        q = min(r["isl"], CB_CHUNK)
+        pf = _ev(r, eff, phase="prefill", batch=max(1, CB_CHUNK // q), prompt=q, out_len=max(1, r["osl"])).fits
+    return b * r["osl"] / total, fits and pf, {"ttft_s": p.ttft, "tpot_s": t, "prefill_share": p.ttft / total}
 
 
 def predict(r: dict, eff: str = "catalog") -> dict:
@@ -163,7 +173,7 @@ def predict(r: dict, eff: str = "catalog") -> dict:
         best = None
         for k in range(0, 14):
             b = 2 ** k
-            v, fits, det = _static(r, b, eff)
+            v, fits, det = _static(r, b, eff, inflight=True)
             if not fits:
                 break
             if best is None or v > best["pred"]:
@@ -214,6 +224,15 @@ def sched_variant(base: str, sched: str = "auto") -> str:
     return name
 
 
+def gpu_variant(base: str, kernel_us: float = 0.53, sched: str = "cta", inflight: bool = True) -> str:
+    """0.92: ``base`` with the GPU kernel model (instance_sched cta + kernel_us) and the in-flight memory check
+    switched independently (diagnostics for the adoption study)."""
+    name = f"{base}+G{sched}:{kernel_us:g}:{int(inflight)}"
+    VARIANTS.setdefault(name, {**VARIANTS.get(base, {"eff": base}), "sched": sched, "kernel_us": kernel_us})
+    INFLIGHT_FIT[name] = inflight
+    return name
+
+
 def overhead_variant(base: str, us: float) -> str:
     """0.69: ``base`` variant + a fixed per-layer overhead of ``us`` µs (Scenario.layer_overhead_us)."""
     name = f"{base}+L{us:g}"
@@ -242,6 +261,8 @@ def mean_abs_log(rs: list[dict]) -> float:
 
 # ---------------------------------------------------------------- 0.69: continuous batching (in-flight) proxy
 CB_CHUNK = 8192     # TensorRT-LLM default max_num_tokens (chunked-prefill token budget per iteration) 「假设」
+INFLIGHT_DEFAULT = True    # 0.92: max-load rows check prefill memory per chunk (see _static)
+INFLIGHT_FIT: dict = {}    # per-variant override (False = the ≤ 0.91 whole-batch prefill check)
 
 
 def _fused(dec, pre1, f: float, rr: float) -> float:

@@ -281,6 +281,8 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         a_, ma, fe, v, ce, idl, sb, vw = r_
         if o.kind == "attn":
             d["t_arr_attn"] += a_
+        if sys.chip.kernel_us and (o.kind == "gemm" or (o.kind == "attn" and o.name.startswith("qk"))):
+            d["sync"] += sys.chip.kernel_us * 1e-6    # 0.92: one kernel per GEMM / fused attention (QK·softmax·PV)
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
         d["t_ideal_w"] += idl * o.share; d["t_vec_w"] += (v - vw) * o.share   # 0.63: mean-rank work (energy, KPIs)

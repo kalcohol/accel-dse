@@ -128,6 +128,8 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
     wb = (w_bits if w_bits is not None else _fmt(w_fmt).bits) / 8.0
     ab = _fmt(a_fmt).bytes
     ob = max(2.0, ab)       # outputs leave in bf16 (fp32 when the activations are fp32)
+    if ch.instance_sched == "cta":
+        return _cta(ch, m, k, n, count, rate, wb, ab, ob, ex, conv, flag)
     best = None
     for df in _candidates(org):
         if df == "os":
@@ -189,6 +191,44 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
         return GemmCost(max(mac * count + fill, feed * count) + lat, mac * count + fill + lat, feed * count, df, ex,
                         conv, conv_elems * count, (k * n * count) if flag & 1 else 0.0)
     return GemmCost(max(mac * count + fill, feed * count), mac * count + fill, feed * count, df, ex, conv,
+                    conv_elems * count, (k * n * count) if flag & 1 else 0.0)
+
+
+# 0.92: NVIDIA "Matrix Multiplication Background" user guide — cuBLAS thread-block tiles (most → least efficient)
+CTA_TILES = ((256, 128), (128, 256), (128, 128), (256, 64), (64, 256), (128, 64), (64, 128), (64, 64))
+SPLIT_K = (1, 2, 4, 8, 16)
+
+
+def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost:
+    """0.92 instance_sched "cta" (GPU reference hardware): the output is cut into thread-block tiles tm × tn (the
+    guide's tile set; the library picks the fastest, optionally split-K), one tile per SM (engine) at a time →
+    tile quantization (partial tiles do full work) and wave quantization (ceil(tiles / SMs) waves, the tail wave
+    as long as a full one).  A tile costs max(MAC, operand feed) over its K slice on one SM (R × C MACs, 1 / E of the
+    SRAM port) plus a non-overlapped epilogue writing its tm × tn outputs (fp32 partials under split-K, then one
+    reduction pass).  Grouped / batched instances (count) share the waves.  No tuned constants."""
+    E = ch.engines
+    macs = ch.rows * ch.cols * rate
+    port = ch.port_Bpc / E
+    best = None
+    for tm, tn in CTA_TILES:
+        tiles = _cd(m, tm) * _cd(n, tn) * count
+        for s in SPLIT_K:
+            if s > 1 and (tiles * s > 2 * E or _cd(k, s) < 64):
+                break                    # split-K only to fill an under-occupied GPU, K slices ≥ 64
+            kk = _cd(k, s)
+            mac_t = tm * tn * kk / macs
+            feed_t = (tm * ab + tn * wb) * kk / port
+            epi = tm * tn * (ob if s == 1 else 4.0) / port
+            waves = _cd(tiles * s, E)
+            red = (m * n * count * 4.0 * s + m * n * count * ob) / ch.port_Bpc if s > 1 else 0.0
+            cyc = waves * (max(mac_t, feed_t) + epi) + red
+            if best is None or cyc < best[0]:
+                # mac share: MAC-bound tiles' compute (+ epilogue / reduction); feed = operand bytes / port (SRAM bytes)
+                byt = tiles * s * (tm * ab + tn * wb) * kk
+                best = (cyc, cyc if mac_t >= feed_t else 0.0, byt / ch.port_Bpc)
+    cyc, mac_c, feed_c = best
+    conv_elems = (k * n if flag & 1 else 0.0) + (m * k if flag & 2 else 0.0)
+    return GemmCost(cyc, mac_c, feed_c, "cta", ex, conv,
                     conv_elems * count, (k * n * count) if flag & 1 else 0.0)
 
 

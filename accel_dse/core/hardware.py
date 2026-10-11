@@ -37,7 +37,7 @@ from .dtypes import FormatSupport
 SLC_POLICIES = ("pin", "lru", "pin_bw")   # 0.91 pin_bw: pin + bandwidth-balanced hit ratio (opt-in)
 
 
-INSTANCE_SCHEDS = ("wide", "split", "auto")
+INSTANCE_SCHEDS = ("wide", "split", "auto", "cta")   # 0.92 cta: GPU thread-block tiling (reference hardware)
 NOC_TOPOLOGIES = ("crossbar", "ring", "mesh")
 
 
@@ -80,11 +80,15 @@ class Chip:
     # core groups run instances in lock-step waves, each further wave adds one barrier (a single sequencer — wide,
     # or one active group — streams its instances back to back) 「假设」
     wave_overhead_cycles: float = field(default=0.0, metadata={"omit_default": True})
+    # 0.92 (optional, default 0): fixed device-side cost per kernel (µs), paid serially once per GEMM / attention op
+    # (elementwise ops are taken as fused into GEMM prologues / epilogues).  GPU reference hardware: 0.53 µs = NVIDIA's
+    # repeat-launch device runtime of a 100-node straight-line CUDA graph of empty kernels (53 µs, CUDA 12.6)
+    kernel_us: float = field(default=0.0, metadata={"omit_default": True})
 
     def __post_init__(self):
         if self.noc_topology not in NOC_TOPOLOGIES:
             raise ValueError(f"chip.noc_topology must be one of {NOC_TOPOLOGIES} (got {self.noc_topology!r})")
-        for k in ("noc_hop_cycles", "wave_overhead_cycles"):
+        for k in ("noc_hop_cycles", "wave_overhead_cycles", "kernel_us"):
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0.0 <= v < 1e9):
                 raise ValueError(f"chip.{k} must be finite and >= 0 (got {v})")
