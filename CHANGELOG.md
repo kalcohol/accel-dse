@@ -3,6 +3,25 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.89.0]
+
+### Added
+- Web：映射对比、参数扫描、Pareto 结果可以导出 CSV / JSON（「导出 CSV」「导出 JSON」按钮）。
+  - CSV：UTF-8 带 BOM，Excel 可直接打开；中文表头带单位（如「吞吐（tok/s/卡）」「TPOT（ms）」「有效 MAC 利用率（%）」）；数值是原始值（不取整）；防公式注入。
+  - JSON：工具 / 版本 / 时间、场景快照、列定义、逐行数据，以及原始 API 响应（映射对比含各映射的稳定性结果）。
+  - 结果运行中隐藏导出按钮。
+
+### Fixed
+- CP 工作量 KPI 现在精确（步时不变）：
+  - DSA top-k：前 top-k 个早期位置看到的键更少（0.88 在 131K 时偏高 0.8 %）。
+  - LM 头：只有持有最后一块的卡才投影最后一个 token（0.88 偏高 (CP−1) 倍 LM 头工作量，短 prompt 时为 3e-5 – 4e-4）。
+
+### Validation
+- 对抗：242 个随机 CP 场景（43 个支持 CP 的模型 × PD / fabric / D2D / indexer / PP / 微批 / exec_overlap）与 CP1 对照，工作量完全相同；结果确定，hash 往返一致；能耗分项之和等于总量；无超线性加速；PD 下 prefill 池用 CP 布局正常。
+- fabric `auto` 对链路带宽不单调：19–24 % 的 D2D + fabric 场景出现「链路 ÷4 反而快 ≤ 0.38 %」。这是已有设计（auto 逐次集合通信取 min(带宽 + α)，相当于运行时调优器的选法），现已写明幅度。`auto_overlap` 在同一批场景上 0 / 160 违例，常驻测试锁定这一点。
+- PD 报告中合并部署放不下时 `coloc.ttft_ms = inf`，与 CP 无关；API 序列化成 null（HTTP 200）。
+- UI：local/ui_check_export.py 0 个问题（下载文件逐值与 API 响应一致）。默认指纹不变。
+
 ## [0.88.0]
 
 ### Added
