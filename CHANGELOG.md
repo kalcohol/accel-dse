@@ -3,6 +3,23 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.90.0]
+
+### Added
+- Web「扫描 · Pareto」页：在 fabric 开启 + D2D 芯粒 + 算法不是 auto_overlap 时，提示带宽敏感性分析应改用 auto_overlap（扫描带宽 / α 类参数时措辞更强），并提供一键「切换为 auto_overlap」。
+- 警告：SLC 带宽低于 DRAM 时，pin 策略读得反而更慢。
+
+### Fixed
+- 视频 / 蛋白模型开启 PD 时以前被静默接受：现在给出警告并按单一部署评估，API 不再附带 `pd: {error}` 块。
+- 视频 / 蛋白模型设置 layout.cp 时，报错信息现在说明原因，并指向 sp（Ulysses / DAP）。
+
+### Validation
+- 视频 / 蛋白对抗：17 个模型、196 个随机场景（D2D / fabric / SLC / node_cards / exec_overlap / layer_overhead），不崩溃，输出有限，结果确定，能耗分项之和等于总量。
+  - 结构模型的 MAC 计数随 DAP 线性增加，正好是 1 + f·(sp−1)，即真实的 single / atom 轨道重复计算。
+  - 固定算法因为协议仍逐次选择，同样对带宽不单调；auto_overlap 单调。
+- PD 扫描（0.89 未完成的部分，可续跑）：PD_SWEEP_RESULT
+- 默认指纹：372 个点逐位不变。UI：local/ui_check_swhint.py 0 个问题。
+
 ## [0.89.0]
 
 ### Added
