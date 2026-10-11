@@ -356,7 +356,7 @@ def api_eval(body: dict) -> dict:
         out["budget"] = budget_report(r, bud, out["energy"])
     if scn.fabric.enabled:  # 0.59: per-collective algorithm / topology breakdown
         out["fabric"] = fabric_report(scn, r)
-    if scn.pd.enabled:      # 0.50: prefill / decode disaggregation next to the colocated numbers
+    if scn.pd.enabled and r.model.kv_cache:   # 0.50 PD next to colocated; 0.90: video / protein → warning only (no pd block)
         try:
             out["pd"] = disagg_report(scn, r, _energy_table(body))
         except ValueError as e:

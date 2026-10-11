@@ -690,6 +690,9 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         else:
             scn = expand_images(scn, m)     # 0.62: image positions join prompt / ctx (KV, prefill length)
     sv, lay = scn.serving, scn.layout
+    if lay.cp > 1 and not m.kv_cache:     # 0.90: say why, not just "layout invalid"
+        raise ValueError(f"layout.cp = {lay.cp}（上下文并行）只用于 LLM prefill；视频 / 蛋白模型的序列切分请用 sp"
+                         + ("（结构模型为 DAP）" if m.is_pair else "（Ulysses）"))
     if not lay.valid_for(m.is_moe, full=not m.kv_cache, pair=m.is_pair):
         raise ValueError(f"layout {lay.label} invalid for {'MoE' if m.is_moe else 'dense'} model "
                          + ("(structure models: tp = 1 — TP of the pair stack not modelled; use DAP (sp) / DP / PP)"
@@ -715,7 +718,12 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if sys.node_cards > 0 and lay.cards > sys.node_cards and lay.cards % sys.node_cards:
         warnings.append(f"node_cards = {sys.node_cards} 不整除总卡数 {lay.cards}：末尾节点未满，"
                         "按每个通信组的整除部分近似分层")
+    if scn.chip.slc_bytes and scn.chip.slc_policy == "pin" and scn.chip.slc_GBps < sys.dram_GBps:   # 0.90
+        warnings.append(f"SLC 带宽 {scn.chip.slc_GBps:.0f} GB/s 低于 DRAM {sys.dram_GBps:.0f} GB/s：pin 策略把热数据固定在更慢的 "
+                        "SLC 上，读得反而更慢（与计算重叠时可能被掩盖；serial / kernel 下可见）——提高 slc_GBps 或改用 lru")
     if not m.kv_cache:
+        if scn.pd.enabled:              # 0.90: was silently ignored
+            warnings.append("PD 分离（pd.enabled）对视频 / 蛋白模型无效：没有 KV 缓存，也没有 decode 阶段——按单一部署评估，PD 设置被忽略")
         return _evaluate_full(scn, m, sys, warnings)
     spec_k = sv.spec_k if (sv.phase == "decode" and m.mtp_layers) else 0
     if m.draft == "dspark" and sv.spec_k:
