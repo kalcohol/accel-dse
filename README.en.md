@@ -47,6 +47,8 @@ python3 -m accel_dse eval --model esm2-650m --seq-len 1022    # protein: batch l
 python3 -m accel_dse eval --model boltz-1 --msa 1024 --samples 5   # structure prediction: trunk / diffusion / confidence, TFLOP per sequence
 python3 -m accel_dse eval --model deepseek-v3.2 --phase prefill --prompt 131072 --tp 8 --ep 8 \
     --mem hbm3e_8s_12h24g_9200 --indexer key_split               # sparse-attention indexer deployment (default: as released)
+python3 -m accel_dse eval --model qwen3-8b --phase prefill --prompt 1048576 --cp 8 \
+    --mem hbm3e_8s_12h24g_9200                                   # context parallel (ring attention) for long prefill
 python3 -m accel_dse validate                                 # trend bands + GenZ comparison
 ```
 

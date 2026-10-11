@@ -73,7 +73,7 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    ("samples", "diffusion samples per sequence (structure models)")):
         p.add_argument(f"--{k}", type=int, default=0, help=f"{hlp} (0 = release default; video / protein models)")
     if layout:
-        for k in ("pp", "tp", "dp", "ep", "etp", "sp"):
+        for k in ("pp", "tp", "dp", "ep", "etp", "sp", "cp"):
             p.add_argument(f"--{k}", type=int, default=1)
     p.add_argument("--dit-only", action="store_true",
                    help="video: evaluate the DiT denoiser only (text encoder + VAE decode not counted; default counts them)")
@@ -329,6 +329,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["mem_eff"] = a.mem_eff
     if layout:
         sc["layout"] = {k: getattr(a, k) for k in ("pp", "tp", "dp", "ep", "etp", "sp")}
+        if getattr(a, "cp", 1) > 1:     # 0.88 context parallel (omitted at 1: hash unchanged)
+            sc["layout"]["cp"] = a.cp
     chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy") if getattr(a, k, None) is not None}
     if chip:
         sc["chip"] = chip

@@ -3,6 +3,27 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.88.0]
+
+### Added
+- 上下文并行 `layout.cp`（Web 布局「CP」/ CLI `--cp`），只用于 LLM prefill，可选，默认 1，指纹不变：环形注意力，按 zigzag 负载均衡。
+  - 每张 CP 卡持有每条序列 1/CP 的 token 及其 KV 分片；每个注意力层把本卡的 KV 块在 CP 组内 all-gather（环形，组内跨度为 TP）；权重在 CP 卡间复制。MoE 要求 EP·ETP = TP·DP·CP。
+  - 建模方式是精确等价，没有引入新的近似：一张 CP 卡等价于一个注意力 DP 副本，对每条序列做一次分块 prefill（q = ⌈S/CP⌉ 个新 token，前缀 c 满足 q·(c + q/2) = S²/(2·CP)，即最忙的 zigzag 卡的因果工作量）。
+  - MLA：卡间交换的是 latent（576 B/token，而 K/V 是 82 KB），每张卡要对收到的块重做 kv_b 上投影，总量 = (CP+1)/2 倍，这是实际代价。DSA top-k 的前 2048 个位置使工作量 KPI 偏高 0.8 %（131K）/ 0.1 %（1M），步时不受影响。
+  - 不支持：decode、线性 / 滑窗 / 压缩 KV 层、prefix_cached、images，都会给出明确报错。PD 时可以把 CP 放在 `pd.prefill_layout` 上。
+
+### Fixed
+- Web 服务：监听队列 5（socketserver 默认值）在 64 / 128 个并发请求的突发下重置了 39 % / 55 % 的连接（ECONNRESET）。现在监听队列为 1024、处理线程为 daemon；256 个并发请求全部成功。
+- Web 服务：发了请求头却不发 body 的客户端会一直占着一个线程。现在 socket 超时 30 s，超时返回 408。
+
+### Validation
+- CP 手算：qwen3-8b 1M prefill CP8，环形 KV 0.338 s = 7 × 19.3 GB / 400 GB/s；每卡 KV 正好是 1/8（19.3 / 154.6 GB）；稠密模型各布局工作量守恒（误差 ≤ 1e-5，来自前缀取整）；MAC 能耗计数守恒。DeepSeek-V3.2 1M prefill：TP8 2820 s → CP8 410 s（0.87 的 key_split 是 425 s），每卡内存 181 → 132 GB。
+- 场景 hash 向后兼容：10 个代表性场景在 0.70.1、0.80、0.86 与当前版本的 hash 完全相同；旧版本的 to_dict 与 to_dict(full) 都能在当前版本载入，且 hash 相同（golden 值写入常驻测试）。新版本的 full dict 带有新字段，旧版本按严格解析会拒绝，这是设计行为；最小 dict 仍能被旧版本载入。
+- 并发：24 个线程混合 eval / PD / CP / 视频 / 蛋白 / compare / stability / layouts / 错误请求，结果与串行逐字节相同；fabric 状态本来就是 contextvar，并且按线程隔离。
+- docs/MODEL.md 机械一致性检查：章节编号连续；19 个文件路径都存在；38 个代码引用都能解析（其余是 JSON 键或场景字段）；文中写出的常量值与代码一致。
+- Web 没有扫描 / Pareto 导出功能（没有下载 / CSV / 剪贴板），因此不需要审计。
+- 默认指纹：372 个点与 0.87 逐位相同。UI：local/ui_check_cp.py 0 个问题。
+
 ## [0.87.0]
 
 ### Added

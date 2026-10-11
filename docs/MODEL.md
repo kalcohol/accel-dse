@@ -13,7 +13,7 @@
 |----|------|------|
 | L0 | `core/scenario.py` | 不可变场景：模型、芯片、存储器 id、链路、映射、布局、服务参数、视频 / 蛋白质工作负载、dtype what-if；`replace(path, value)` 受控替换；规范化哈希；严格解析（未知字段 / 非有限数拒绝） |
 | L1 | `core/model.py` `core/catalog.py` `core/domain.py` | HF config + safetensors 头 → `ModelSpec`（逐层注意力 / FFN、逐角色 dtype；视频 DiT / 蛋白质编码器见 §11） |
-| L2 | `core/ir.py` `core/parallel.py` | 逐 rank 算子图；布局 PP·TP·DP·EP·ETP（视频 / 蛋白质：PP·TP·DP·SP）与 stage 划分 |
+| L2 | `core/ir.py` `core/parallel.py` | 逐 rank 算子图；布局 PP·TP·DP·EP·ETP（LLM prefill 可加 CP，§34；视频 / 蛋白质：PP·TP·DP·SP）与 stage 划分 |
 | L3 | `core/mapping.py` | 每个 GEMM 在映射组织下的 MAC 与供数周期 |
 | L4 | `core/memplan.py` | SRAM 驻留、staging、逐 stage DRAM 容量与每步流量 |
 | L5 | `core/schedule.py` `core/evaluate.py` | 每级时间、集合通信、流水、投机解码 |
@@ -63,7 +63,7 @@
 - 每个 rank 生成算子：投影 GEMM、注意力核心（GQA / MLA 吸收 / 线性状态更新）、MoE 路由与专家 GEMM、embedding / 词表并行 lm_head、MTP。
 - MoE 命中专家数：`hit = max(ceil(局部期望命中), ceil(全局期望命中 / EP))`，限定在 [1, 本地专家数]；每专家 token 数 `m_e = ceil(本地 token·top_k / hit)`。默认 token 均匀路由（「假设」）；0.49 起可选 EP 负载倾斜（§16）。
 - stage 划分：连续的整层切分。0.62 起默认按代价平衡（`pp_split = "cost"`，§21）：使最慢 stage 最快，计入嵌入 / 输出头 / MTP / 级间传递与异构层栈；`pp_split = "layers"` 保留 0.61 的按层数均分（如 61 层 / 8 → 8,8,8,8,8,7,7,7）。容量检查取最重的 stage。
-- 视频 / 蛋白质（无 KV 缓存的全序列前向）：布局 `PP·TP·DP·SP`，EP = ETP = 1。DP 切分一次前向的序列（视频含 CFG 的 cond / uncond 两路，即 CFG 并行）；SP 为 Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all，每 rank 对完整序列计算 `ceil(ceil(H/TP)/SP)` 个头，权重在 SP 组内复制。LLM 布局保持 SP = 1。
+- 视频 / 蛋白质（无 KV 缓存的全序列前向）：布局 `PP·TP·DP·SP`，EP = ETP = 1。DP 切分一次前向的序列（视频含 CFG 的 cond / uncond 两路，即 CFG 并行）；SP 为 Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all，每 rank 对完整序列计算 `ceil(ceil(H/TP)/SP)` 个头，权重在 SP 组内复制。LLM 布局保持 SP = 1；长上下文 prefill 可用上下文并行 CP（环形注意力，§34）。
 
 ## 4. 映射：数据通路组织
 
@@ -1792,4 +1792,28 @@ key_split 每个 rank 取局部 top-k；全局 top-k 一定包含在各 rank 局
 **设计含义。** 在 1M prefill、TP8 下：replicated 由 O(L²) 的 indexer 主导（2820 s）；tp_split 把计算除以 TP，但打分矩阵的 all-reduce（每层 2.2 TB）占主导（598 s）；key_split 计算同样除以 TP，通信只剩 top-k 候选（425 s），还省下 7/8 的 indexer 缓存。decode（128K 上下文，batch 32）：77 → 59 → 46 ms。在长上下文的 NPU 部署里，indexer 的分片方式是一阶设计变量。DP 注意力只有在 batch ≥ DP 时有用：单请求时 7/8 的副本空闲（新增警告）；batch 8 时 DP8 最好，而且是唯一放得下的布局（TP 下 MLA latent 缓存会按 TP 重复）。
 
 **CLI 审计。** 此前有 11 个场景字段没有命令行参数，现已补齐；常驻测试检查每个字段都能从命令行设置。命令行与 API 结果一致；错误输入都干净退出、没有 traceback。
+
+## 34. 第 22 轮（0.88.0）：上下文并行（环形注意力）；hash 兼容、服务并发、文档一致性
+
+**模型（`layout.cp`，LLM prefill，「假设」：zigzag 环形注意力）。** 把序列切成 2·CP 块，卡 i 持有第 i 块与第 2CP−1−i 块，于是每张卡都有 q = ⌈S/CP⌉ 个查询，并且正好承担 1/CP 的因果工作量 S²/2。前缀为 c 的分块 prefill 的注意力工作量是 q·(c + q/2)；取 c = S²/(2·CP·q) − q/2 就与之相等，而所有随 token 线性增长的算子看到的正好是 q 个 token。因此：一张 CP 卡就是一个注意力 DP 副本，对每条序列做一次分块 prefill（虚拟 batch × CP）。实现直接复用 DP 路径：MoE 的 EP all-to-all、稠密 FFN 在副本间复制。
+
+在此之上：
+- **常驻 KV**：每张卡只放自己的分片（一层的两个在途环形块不计入）。
+- **环形流量**：每个注意力层 all-gather 一次本卡的 KV 块（GQA ⌈kv/TP⌉·(qk+v)，MLA 的 latent，加上 DSA 的 index 键），组内跨度为 TP（卡编号顺序为 TP → CP → DP → PP）。
+
+不成立、因此拒绝的情况：
+- 线性注意力（需要串行传递状态）；
+- 滑窗与压缩 KV（块等价不成立）；
+- decode（需要 KV 分片的解码，未建模）。
+
+**MLA 与 DSA。** 交换 latent 而不是上投影后的 K/V（每 token 576 B 对 82 KB），代价是每张卡都要对收到的块做 kv_b 上投影：各卡键数之和 = CP·(c + q) ≈ S·(CP+1)/2。这是计入工作量的真实成本。DSA 的前 2048 个查询看到的键少于 top-k，块等价让每个查询都按 top-k 计：工作量 KPI 偏高 0.8 %（131K）/ 0.1 %（1M）；步时取最忙的 zigzag 卡，不受影响。
+
+**设计含义（1M prefill，8 卡）。**
+- qwen3-8b：CP8 与 TP8 的时间相同（受 MAC 限制），链路时间 0.34 s 对 2.7 s，但每卡要放完整的权重。
+- DeepSeek-V3.2：CP8 410 s，对 TP8 2820 s（indexer 在 TP 上重复计算）、TP8 + key_split 425 s；每卡内存 132 GB，对 181 GB。
+
+**审计。**
+- 场景 hash：0.70.1、0.80、0.86、0.88 之间完全相同（omit_default 起了作用）。
+- 服务并发：修复了监听队列（突发并发下 39–55 % 的连接被重置），并加了 socket 超时。
+- MODEL.md 机械一致性：编号、路径、代码引用、常量值都没有问题。
 

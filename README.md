@@ -47,6 +47,8 @@ python3 -m accel_dse eval --model esm2-650m --seq-len 1022    # 蛋白质：批�
 python3 -m accel_dse eval --model boltz-1 --msa 1024 --samples 5   # 结构预测：主干 / 扩散 / 置信度，TFLOP/序列
 python3 -m accel_dse eval --model deepseek-v3.2 --phase prefill --prompt 131072 --tp 8 --ep 8 \
     --mem hbm3e_8s_12h24g_9200 --indexer key_split               # 稀疏注意力 indexer 部署（默认按发布）
+python3 -m accel_dse eval --model qwen3-8b --phase prefill --prompt 1048576 --cp 8 \
+    --mem hbm3e_8s_12h24g_9200                                   # 上下文并行（环形注意力），长上下文 prefill
 python3 -m accel_dse validate                                 # 趋势区间 + GenZ 对照
 ```
 
