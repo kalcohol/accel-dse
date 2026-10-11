@@ -84,6 +84,9 @@ class Chip:
     # (elementwise ops are taken as fused into GEMM prologues / epilogues).  GPU reference hardware: 0.53 µs = NVIDIA's
     # repeat-launch device runtime of a 100-node straight-line CUDA graph of empty kernels (53 µs, CUDA 12.6)
     kernel_us: float = field(default=0.0, metadata={"omit_default": True})
+    # 0.93 (optional, default "" = instance_sched): schedule for attention ops only (QK / PV, incl. MLA latent), e.g.
+    # "cta" — attention kernels spread (request, head) tiles over SMs (FlashMLA / FMHA) even where GEMMs keep "wide"
+    attn_sched: str = field(default="", metadata={"omit_default": True})
 
     def __post_init__(self):
         if self.noc_topology not in NOC_TOPOLOGIES:
@@ -100,6 +103,8 @@ class Chip:
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not (lo <= v < 1e7):
                 raise ValueError(f"chip.{k} must be finite and ≥ {lo:g}")
+        if self.attn_sched and self.attn_sched not in INSTANCE_SCHEDS:
+            raise ValueError(f"chip.attn_sched must be empty or one of {', '.join(INSTANCE_SCHEDS)}")
         if self.instance_sched not in INSTANCE_SCHEDS:
             raise ValueError(f"chip.instance_sched must be one of {', '.join(INSTANCE_SCHEDS)}")
         if self.slc_policy not in SLC_POLICIES:

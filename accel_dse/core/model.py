@@ -407,6 +407,14 @@ class ModelSpec:
     def n_layers(self) -> int:
         return len(self.layers)
 
+    def act_fmt_for(self, role: str) -> str:
+        """0.93: GEMM input-activation format of ``role`` — a per-role "act_<role>" entry (what-if only, e.g. MXFP8
+        activations into MXFP4 experts on Blackwell) or the model's act_fmt."""
+        for k, v in self.formats:
+            if k == "act_" + role:
+                return v.fmt
+        return self.act_fmt
+
     def fmt(self, role: str) -> RoleFormat:
         d = dict(self.formats)
         if role in d:

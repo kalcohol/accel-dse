@@ -234,9 +234,10 @@ def gemm(model: ModelSpec, name: str, layer: int, m: int, k: int, n: int, role: 
          params: int | None = None, replicated: int = 1, stream: bool = False) -> Op:
     rf = model.fmt(role)
     p = k * n * count if params is None else params
-    ab = _fmt(model.act_fmt).bytes
+    af = model.act_fmt_for(role)
+    ab = _fmt(af).bytes
     return Op(name, "gemm", layer, m=m, k=k, n=n, count=count, role=role, w_params=p, w_bits=rf.bits,
-              w_fmt=rf.fmt, a_fmt=model.act_fmt, act_bytes=(m * k + m * n) * count * ab, replicated=replicated,
+              w_fmt=rf.fmt, a_fmt=af, act_bytes=(m * k + m * n) * count * ab, replicated=replicated,
               stream=stream)
 
 

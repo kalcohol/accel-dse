@@ -35,6 +35,30 @@ DATA = Path(__file__).resolve().parents[1] / "data" / "ext_measurements.json"
 FP8 = (("attn", "fp8"), ("mlp", "fp8"), ("expert", "fp8"), ("act", "fp8"), ("kv", "fp8"))   # 0.91: + routed experts
 NVFP4 = (("attn", "nvfp4"), ("mlp", "nvfp4"), ("expert", "nvfp4"), ("act", "nvfp4"), ("kv", "fp8"))   # 0.91: + experts   # 0.69: TRT-LLM FP4 ckpt W4A4 + FP8 KV 「假设」
 MXFP4 = (("kv", "fp8"),)   # 0.91: gpt-oss release checkpoint (MXFP4 experts) as published; TRT-LLM 1.2 config FP8 KV
+# 0.93 (public docs, per checkpoint / hardware — not fitted):
+#  * gpt-oss on Blackwell: MoE runs MXFP4 weights × MXFP8 activations (W4A8, UTCQMMA; TRT-LLM examples/models/core/
+#    gpt_oss/README.md and the GPT-OSS Blackwell deployment guide); attention / router stay bf16 (released checkpoint)
+#  * nvidia/DeepSeek-R1-0528-NVFP4-v2: only MoE linears + attention wo are FP4 (model card: v2 "additionally quantizes
+#    the wo module"); the other attention projections keep the native FP8 block-scaled checkpoint.  wo is taken FP8
+#    with the rest of attention (one role; ≈1 % of FLOPs)
+MXFP4_BLACKWELL = MXFP4 + (("act_expert", "fp8"),)
+DSR1_NVFP4_V2 = (("attn", "fp8"), ("mlp", "nvfp4"), ("expert", "nvfp4"), ("shared_expert", "nvfp4"), ("act", "fp8"), ("act_mlp", "nvfp4"),
+                 ("act_expert", "nvfp4"), ("act_shared_expert", "nvfp4"), ("kv", "fp8"))
+FMT_FIX = True     # 0.93 per-checkpoint formats above (False = 0.92 dtype-only overrides)
+# 0.93: per-layer software overhead grounded on a PUBLIC kernel trace (not fitted): deepseek-ai/profile-data decode.json
+# (EP128 decode step, two micro-batches): 1,734 small elementwise / norm / cast / rope / gate kernels = 7.6 ms over
+# 61 layers × 2 micro-batches → 62.3 µs per layer per forward (≈ 14 kernels × 4.4 µs).  DeepSeek's own stack; diagnostic
+# only (overhead_variant(base, TRACE_LAYER_US)) — not a default (MODEL §39)
+TRACE_LAYER_US = 7.6e3 / 61 / 2
+
+
+def _formats(r: dict) -> tuple:
+    d = r["dtype"]
+    if FMT_FIX and d == "mxfp4" and REF_HW[r["hw"]].chip.formats.native("mxfp4"):
+        return MXFP4_BLACKWELL
+    if FMT_FIX and d == "nvfp4" and r["model"] == "deepseek-r1":
+        return DSR1_NVFP4_V2
+    return {"fp8": FP8, "nvfp4": NVFP4, "mxfp4": MXFP4}.get(d, ())
 EFF = {"catalog": None, "peak": 1.0}
 
 
@@ -101,6 +125,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         chip = replace(chip, instance_sched=v["sched"])
     if v.get("kernel_us") is not None:  # 0.92: per-kernel fixed cost
         chip = replace(chip, kernel_us=v["kernel_us"])
+    if v.get("attn_sched"):            # 0.93: attention-only schedule
+        chip = replace(chip, attn_sched=v["attn_sched"])
     mem_eff = e if isinstance(e, float) else EFF[e]
     extra = {}
     if r.get("node_cards"):            # 0.67 multi-node rows: cards per node + scale-out NIC per card
@@ -112,7 +138,7 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
     return Scenario(model=r["model"], chip=chip, mem_id=h.mem_id, mem_eff=mem_eff, link=h.link, mapping="reconf",
                     exec_overlap=ov,
                     layout=Layout(tp=r["tp"], dp=r.get("dp", 1), ep=r.get("ep", 1), etp=r.get("etp", 1)),
-                    formats_override={"fp8": FP8, "nvfp4": NVFP4, "mxfp4": MXFP4}.get(r["dtype"], ()),
+                    formats_override=_formats(r),
                     serving=Serving(**sv), **extra, **({"layer_overhead_us": v["layer_us"]} if v.get("layer_us") else {}))
 
 
@@ -230,6 +256,16 @@ def gpu_variant(base: str, kernel_us: float = 0.53, sched: str = "cta", inflight
     name = f"{base}+G{sched}:{kernel_us:g}:{int(inflight)}"
     VARIANTS.setdefault(name, {**VARIANTS.get(base, {"eff": base}), "sched": sched, "kernel_us": kernel_us})
     INFLIGHT_FIT[name] = inflight
+    return name
+
+
+def candidate_variant(base: str = "catalog_kernel") -> str:
+    """0.93 refhw candidate (NOT default — fails the no-set-worse rule on one single-row group, MODEL §39): attention
+    ops on the GPU thread-block schedule (attn_sched "cta": FMHA / FlashMLA tile (request, head, q-block) over SMs;
+    DeepSeek trace §25.9: MLA 31 ms vs wide 88) + per-layer software overhead from the public DeepSeek trace
+    (TRACE_LAYER_US); GEMMs keep wide."""
+    name = base + "+cand093"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "attn_sched": "cta", "layer_us": TRACE_LAYER_US})
     return name
 
 

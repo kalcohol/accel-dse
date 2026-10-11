@@ -9,6 +9,7 @@ import copy
 import itertools
 import math
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from types import SimpleNamespace
 
 from .catalog import get_model
@@ -146,11 +147,18 @@ class Result:
         }
 
 
+@lru_cache(maxsize=64)
+def _attn_chip(ch):
+    return replace(ch, instance_sched=ch.attn_sched, attn_sched="")
+
+
 def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     """(array s, mac-bound share s, feed-bound share s, vector s, convert elems, ideal s, SRAM-port bytes,
     vector s of per-pass weight conversion)."""
     ch = sys.chip
     f = ch.freq_ghz * 1e9 * ch.mac_eff
+    if op.kind == "attn" and ch.attn_sched:      # 0.93 (default off)
+        ch = _attn_chip(ch)
     if op.kind == "gemm":
         c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=op.w_fmt, a_fmt=op.a_fmt, w_bits=op.w_bits)
     elif op.kind == "attn" and op.orient:
