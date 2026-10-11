@@ -38,6 +38,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--chip", default="100T", help="chip preset: 100T | 1P | H100-like")
     p.add_argument("--mem", default=None, help="memory id, e.g. lpddr5x_4x64_8533_16g / hbm3e_8s_12h24g_9200")
     p.add_argument("--mem-eff", type=float, default=None, help="DRAM efficiency 「假设」 (default 0.7)")
+    p.add_argument("--mem-cap-gb", type=float, default=None, help="usable DRAM per card, GB (default: stack capacity)")
+    p.add_argument("--kv-mem-frac", type=float, default=None, help="KV / state share of post-weight free memory (default 1)")
     p.add_argument("--mapping", default="os", help="os | ws_edge | ws_broad | os_vec | reconf")
     p.add_argument("--phase", default="decode", choices=["decode", "prefill"])
     p.add_argument("--batch", type=int, default=1)
@@ -327,6 +329,10 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["mem_id"] = a.mem
     if a.mem_eff is not None:
         sc["mem_eff"] = a.mem_eff
+    if a.mem_cap_gb is not None:
+        sc["mem_cap_GB"] = a.mem_cap_gb
+    if a.kv_mem_frac is not None:
+        sc["kv_mem_frac"] = a.kv_mem_frac
     if layout:
         sc["layout"] = {k: getattr(a, k) for k in ("pp", "tp", "dp", "ep", "etp", "sp")}
         if getattr(a, "cp", 1) > 1:     # 0.88 context parallel (omitted at 1: hash unchanged)
