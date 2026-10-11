@@ -3,6 +3,16 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.75.0] - 2026-10-11
+
+对抗性审计（第 9 轮：蛋白 / 视频逐算子形状、硬件规格）+ PD 长度分布报告剖析。
+
+- 修复：只承载 misc 参数的「参数层」（ESMFold 87/92、Boltz-1 144/145/147、Protenix 91/93/94/96）在 full 阶段走了 Transformer 块路径，凭空产生 pre-norm / ffn-norm / residual 向量操作和零尺寸注意力算子（TP > 1 时还会有 all-reduce）。现不产生任何算子（参数仍由 memplan 计入热集）。向量工作量 −4e-6（相对），时延逐位不变；仅这三个模型的向量能耗末位变化。
+- 审计（与参考代码 / 配置逐算子核对，均一致）：OpenFold（模板 / extra-MSA / Evoformer：行列注意力 8×32、OPM c=32、三角乘 c_z=128、三角注意力 4×32、132 = 128 + 4 模板行）、ESMFold（ESM-2 3B、折叠主干 32 头、IPA 16+4·3 / 16+8·3+128）、Boltz-1（pairformer 16×24、扩散 24 块 16×48、原子窗口 32×128 4 头、PWA 8×32）、Protenix（AF3：PWA 8×8、5 个样本批处理、逐样本置信度）；视频 Wan 2.1、HunyuanVideo（双流 / 单流、调制 6× / 3×、融合 linear2）、LTX、Open-Sora STDiT3（空间 / 时间交替）、Mochi、CogVideoX 的帧 → token 换算；参考硬件 MI300X / B200（nvfp4 9 PF）/ H100 / H800 / H200 / A100 与内存目录（HBM3/3E/4、LPDDR5/5X/6）对数据手册。
+- 剖析（PD + 长度 cv 报告）：热点为 `_tagged`（每块平均 3.8 项）与 `_wait_hists`（每段平均 6.4 bin）中约 5.8 亿次 dict 操作。各量都随 λ 变化，跨二分无可复用；稠密列表 / 切片向量化两种改写均逐位一致但不更快（段太短），已撤回。保留 `_wait_hists` 去掉逐键临时分配的微调（逐位一致，提速在噪声内）。纯 Python 下已到下限，进一步提速需改变数值的算法改动。
+- 新增常驻测试 `tests/test_core_075.py`：参数层无算子、无零尺寸注意力；上述蛋白 / 视频参考形状锁定。
+- 指纹：默认 fp / fpmc 与 0.74.0 完全一致（75/75 × 2）；PD 长度 cv 比较报告逐位一致。全量 412 通过 / 0 失败（-j 8 356 s，隐藏 pytest）。
+
 ## [0.74.0] - 2026-10-11
 
 对抗性审计（第 8 轮）+ 测试运行器 + 测试提速。

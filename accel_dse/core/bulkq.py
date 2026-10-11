@@ -465,21 +465,31 @@ def _wait_hists(lam: float, b: int, D: tuple):
     mb = sum(t * w for t, w in D[b - 1])
     h = max(sum(t * w for t, w in D[0]) / (4 * N_U), (wq + mb) / GRID)
     acc: dict = {}
+    nu = N_U
+    last_ko = None
+    # 0.75 perf: no per-key ({}, [0.0]) allocation (setdefault built one per key), the (hist, mom) of the previous key
+    # reused while ko repeats, bound get — same operations on the same values in the same order
     for (t, ui, sF, ko), ms in keys.items():
-        hist, mom = acc.setdefault(ko, ({}, [0.0]))
-        wd = t / N_U
-        lo = t - t * (ui + 1) / N_U + sF
+        if ko != last_ko:
+            st = acc.get(ko)
+            if st is None:
+                st = acc[ko] = ({}, [0.0])
+            hist, mom = st
+            g = hist.get
+            last_ko = ko
+        wd = t / nu
+        lo = t - t * (ui + 1) / nu + sF
         mom[0] += ms * (lo + wd / 2)
         x0, x1 = lo / h, (lo + wd) / h
         i0, i1 = int(x0), int(x1)
         if i0 == i1:
-            hist[i0] = hist.get(i0, 0.0) + ms
+            hist[i0] = g(i0, 0.0) + ms
             continue
         dens = ms / (x1 - x0)
-        hist[i0] = hist.get(i0, 0.0) + dens * (i0 + 1 - x0)
+        hist[i0] = g(i0, 0.0) + dens * (i0 + 1 - x0)
         for i in range(i0 + 1, i1):
-            hist[i] = hist.get(i, 0.0) + dens
-        hist[i1] = hist.get(i1, 0.0) + dens * (x1 - i1)
+            hist[i] = g(i, 0.0) + dens
+        hist[i1] = g(i1, 0.0) + dens * (x1 - i1)
     out = {}
     for ko, (hist, mom) in acc.items():
         tot = sum(hist.values())
