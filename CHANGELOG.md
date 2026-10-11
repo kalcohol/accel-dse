@@ -3,6 +3,16 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.76.0] - 2026-10-11
+
+对抗性审计（第 10 轮）：LLM / VLM 逐算子形状对官方配置与参考代码，解码 KV 读取与内存规划字节核对。**有意改变 3 个模型的数值**。
+
+- 修复：softmax 注意力的 sigmoid 输出门。Qwen3-Next 的 `Qwen3NextAttention` 固定把 q_proj 做成 2× 宽（query + gate），配置里没有 `attn_output_gate` 键，原先漏掉（−100.7 M 参数、12 层全注意力的 q GEMM 少一半）；MiniMax-Text-01 / M1 的 softmax 层（`MiniMaxText01Attention`）只有 q/k/v/o，输出门属于闪电注意力层，原先多算（+503 M 参数）。现三者参数与发布的 safetensors 一致。默认场景：qwen3-next-80b-a3b TPOT +2.83 %、8k prefill TTFT +2.58 %；minimax-text-01 / m1-80k TPOT −1.05 %、TTFT −1.03 %。其余模型不变。
+- 审计（与官方 config.json / modeling 代码逐项一致）：DeepSeek-V3 / R1 / V3.1（MLA 吸收解码、q_lora 1536、kv 512 + 64、前 3 层稠密）、V3.2（DSA 索引器 64×128、fp8 + scale 132 B/token、top-2048 及短上下文边界）、Kimi-K2 / K2.5（64 头、首层稠密、384 专家）、GLM-4.5 / 4.6 / Air、Qwen3 稠密 / MoE、Qwen3-Next / Qwen3.5（Gated DeltaNet 投影、fp32 状态 + conv 状态）、MiniMax（闪电注意力、每 8 层 1 层 softmax）、gpt-oss（128 滑窗与全注意力交替）、Mixtral 等；视觉塔 Qwen3.5（无 deepstack）、Kimi-K2.5 MoonViT。
+- 字节核对：全部 58 个 LLM 的 memplan KV + 索引器 + 状态存储与 `cache_new_bytes` 完全一致；稠密模型的解码读取 = 整个缓存 + 新 token 一项；稀疏 / 压缩 / 跨层共享缓存模型（DSA、V4、GLM-5 等）读取 ≠ 存储，属设计行为。
+- 新增常驻测试 `tests/test_core_076.py`：输出门、参数总量对发布值（全部 LLM，±0.1 %）、上述形状锁定、解码 KV 读取对 memplan、视觉塔配置。
+- 指纹：fp / fpmc 仅 qwen3-next-80b-a3b、minimax-text-01、minimax-m1-80k 变化（有意），其余 72 个与 0.75.0 完全一致。全量 416 通过 / 0 失败（-j 8 349 s，隐藏 pytest）。
+
 ## [0.75.0] - 2026-10-11
 
 对抗性审计（第 9 轮：蛋白 / 视频逐算子形状、硬件规格）+ PD 长度分布报告剖析。
