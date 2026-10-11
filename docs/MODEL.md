@@ -1835,3 +1835,16 @@ key_split 每个 rank 取局部 top-k；全局 top-k 一定包含在各 rank 局
 
 报告中 `coloc.ttft_ms / tpot_eff_ms = inf` 出现在合并部署放不下（decode 份额为 0）时，CP1 也一样，不是 CP 引入的。API 序列化成 null（HTTP 200），UI 显示「—」。
 
+## 36. 第 24 轮（0.90.0）：视频 / 蛋白 × 新功能对抗；auto_overlap 提示
+
+**视频 / 蛋白对抗**（17 个模型，196 个随机场景：PP / DP / SP·DAP / TP × D2D × fabric × SLC × node_cards × exec_overlap × layer_overhead）：不崩溃，输出有限，结果确定。修正与结论如下。
+- **PD 不适用但被静默接受**（17 / 17 个模型）：现在给出警告，并按单一部署评估。API 不再附带 `pd` 块（以前是 `{error}`），步时与关闭 PD 时完全相同。
+- **CP 的拒绝信息**说明原因：上下文并行只用于 LLM prefill，视频请用 sp（Ulysses），结构模型请用 sp（DAP）。indexer 本来就有警告。
+- **SLC pin 反而更慢**（esm2，serial 下慢 1.4 %）是真实现象：默认 SLC 带宽 2000 GB/s 低于 HBM3e 8 堆栈的 6595 GB/s，pin 把热数据固定在更慢的 SLC 上。新增警告「SLC 带宽低于 DRAM」。SLC 带宽高于 DRAM 时，SLC 越大越不慢（常驻测试）。
+- **结构模型的 MAC 计数随 DAP 变多**：正好是 1 + f·(sp − 1)（protenix f = 0.1145，boltz-1 f = 0.2543），即每张 DAP 卡都重复计算 single / atom 轨道（§ DAP 的「假设」）。这是真实执行的工作，能耗应当计入。其余模型的 MAC 计数与布局无关（≤ 1e-3）。
+- **固定算法（ring / tree / hier）同样不单调**：基本算法固定，但协议 / 变体仍按每次集合通信取 min(带宽 + α)（0.61）。例：esmfold DAP、D2D、tree，链路或 D2D ÷4 反而快 58 µs。auto_overlap 单调。
+
+**UI 提示**：「扫描 · Pareto」页在 fabric 开启 + D2D 芯粒（package_cards > 1）且算法不是 auto_overlap 时显示提示。扫描带宽 / α 类参数时措辞更强，并提供一键「切换为 auto_overlap」。
+
+**PD 扫描**（0.89 未完成的部分，可续跑：val5/pd_sweep.sh → pd_sweep.jsonl）：结论见 CHANGELOG 0.90.0。
+
