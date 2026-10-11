@@ -55,7 +55,7 @@ def test_sensitivity_block():
     o = api.api_eval(body)
     s = o["sensitivity"]
     keys = [x["key"] for x in s["rows"]]
-    assert keys == ["exec_overlap", "mem_eff", "mem_eff", "vector_lanes"]
+    assert keys == ["exec_overlap", "pipe", "mem_eff", "mem_eff", "vector_lanes"]     # 0.98: + pipe
     assert abs(s["base_tok_s"] - o["summary"]["tok_s"]) < 1e-9
     eff = {x["label"]: x["ratio"] for x in s["rows"] if x["key"] == "mem_eff"}
     assert any(abs(v - 0.5 / 0.7) < 1e-6 for v in eff.values())                   # DRAM-bound: ∝ efficiency

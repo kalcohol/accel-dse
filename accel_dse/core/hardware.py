@@ -98,6 +98,12 @@ class Chip:
     # 0.96: SRAM port width per engine (B/cycle) — scales with `engines` (sweeps / die splits); exclusive with the
     # chip-wide absolute sram_port_Bpc
     sram_port_Bpc_per_engine: float | None = field(default=None, metadata={"omit_default": True})
+    # 0.98 exec_overlap "pipe" (core/overlap.py): DMA runs ahead into the next ops (False = GPU kernel boundaries);
+    # optional DMA issue limit by Little's law — engines × outstanding KiB / DRAM latency (all three or none)
+    pipe_cross_op: bool = field(default=True, metadata={"omit_default": True})
+    dma_engines: int | None = field(default=None, metadata={"omit_default": True})
+    dma_outstanding_KiB: float | None = field(default=None, metadata={"omit_default": True})
+    dram_latency_ns: float | None = field(default=None, metadata={"omit_default": True})
 
     def __post_init__(self):
         # 0.94: JSON round-trips give lists — keep the field hashable and the scenario hash stable
@@ -119,6 +125,13 @@ class Chip:
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not (lo <= v < 1e7):
                 raise ValueError(f"chip.{k} must be finite and ≥ {lo:g}")
+        dma = (self.dma_engines, self.dma_outstanding_KiB, self.dram_latency_ns)
+        if any(x is not None for x in dma):
+            if any(x is None for x in dma):
+                raise ValueError("chip.dma_engines, dma_outstanding_KiB and dram_latency_ns go together (Little's law)")
+            for nm, x in zip(("dma_engines", "dma_outstanding_KiB", "dram_latency_ns"), dma):
+                if isinstance(x, bool) or not isinstance(x, (int, float)) or not (math.isfinite(x) and x > 0):
+                    raise ValueError(f"chip.{nm} must be finite and > 0")
         if self.sram_port_Bpc_per_engine is not None:
             v = self.sram_port_Bpc_per_engine
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not (math.isfinite(v) and v > 0):
@@ -327,6 +340,9 @@ class System:
 
     @property
     def dram_GBps(self) -> float:
+        c = self.chip
+        if c.dma_engines:     # 0.98 (opt-in): DMA issue limit, Little's law — engines × outstanding bytes / latency
+            return min(self.mem.effective_GBps, c.dma_engines * c.dma_outstanding_KiB * 1024 / (c.dram_latency_ns * 1e-9) / 1e9)
         return self.mem.effective_GBps
 
     @property

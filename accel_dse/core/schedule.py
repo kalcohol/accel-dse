@@ -223,6 +223,7 @@ class StageTime:
     wire_d2d: float = 0.0   # 0.78: bytes one rank sends on the wire per tier (per algorithm; energy) — the *_bytes
     wire_link: float = 0.0  #       fields above stay payload (timing / KV-transfer shares)
     wire_net: float = 0.0
+    t_pipe: float = 0.0     # 0.98: exec_overlap "pipe" — op-sequence makespan on DMA + compute (core/overlap.py)
 
     @property
     def array_util(self) -> float:
@@ -246,6 +247,10 @@ class StageTime:
                   overlap (DeepSeek / SGLang "two-batch overlap": one micro-batch's all-to-all runs during the other's
                   compute): max(kernel core, t_slc, t_link) + t_sync
         Every mode is ≥ the stage value; stage ≤ tbo ≤ kernel ≤ serial."""
+        if self.overlap == "pipe":       # 0.98: bracketed by the full-overlap and the serial bounds
+            lo = max(self.t_compute, self.t_dram, self.t_slc, self.t_link) + self.t_sync
+            hi = self.t_array + self.t_vector + max(self.t_dram, self.t_slc) + self.t_link + self.t_sync
+            return min(max(self.t_pipe + self.t_sync, lo), hi)
         if self.overlap != "stage":
             if self.overlap == "serial":
                 return self.t_array + self.t_vector + max(self.t_dram, self.t_slc) + self.t_link + self.t_sync

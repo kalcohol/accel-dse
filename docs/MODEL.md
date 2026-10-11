@@ -2063,3 +2063,40 @@ The fix found along the way: `dequant_elems_per_cycle` is now honoured (it was a
   These are the conclusions to report with their assumption. The batch Pareto front was unchanged in every case
   tried: it is capacity-limited and monotone in batch, and capacity does not depend on the three constants. The flags
   are still there for safety.
+
+## 44. 0.98 — hardware-derived overlap (`exec_overlap = "pipe"`, opt-in)
+
+§41 and §43 showed that the overlap rule is the constant design conclusions hinge on most. `stage` (everything
+overlaps) and `serial` (nothing does) bracket reality. `class` / `kernel` / `tbo` are fixed mixtures. `pipe` derives
+the overlap from the mechanism. Rules and constants are in core/overlap.py; summary:
+
+* **Double buffering.** The stage's ops are replayed in program order on two engines. The DMA engine streams each
+  op's DRAM bytes: touched bytes × the plan's miss fraction per class, scaled so the stage's DRAM / SLC time is
+  unchanged. It may run ahead of compute by at most the SRAM not used for pinned weights and cached KV, which is at
+  least the staging area. Compute processes a tile once it has landed. More SRAM means a larger lookahead and fewer
+  bytes, so the result is monotone; checked over 1 MiB … 1 GiB.
+* **Tiles, prologue and epilogue.** An op is cut into max(32, ⌈bytes / 1 MiB⌉) tiles 「假设」. The tiling is fixed
+  by the op, so pinning more of an op shrinks each tile without re-tiling it. The first load and the last compute of
+  an op are exposed unless a neighbour covers them.
+* **Dependencies.** Inside an op the array and the vector unit pipeline (max). QK · softmax · PV is one fused step
+  that carries the K/V reads. Separate vector ops follow the op they depend on. A collective blocks the compute chain,
+  but the DMA keeps prefetching. MoE dispatch / combine overlap the shared expert of the same layer. A PP hand-off
+  is exposed; FSDP gathers are prefetches.
+* **Kernel boundaries** (`Chip.pipe_cross_op = False`). No prefetch across ops, as on a GPU without programmatic
+  dependent launch: every op pays its own prologue and epilogue.
+* **DMA issue rate** (`Chip.dma_engines × dma_outstanding_KiB / dram_latency_ns`). This caps the DRAM bandwidth in
+  every mode. Opt-in only: there are no public NPU figures.
+
+**Where it sits.** On 1P, pipe ≈ stage within 0–3 % for single-card decode and prefill: the vector ops and tile
+edges are the only exposure. DeepSeek-V3 TP8·EP8 decode: 1.16× stage (class 1.13×, serial 2.0×), because the
+attention and shared all-reduces are exposed. Prefill: 1.74×. Random set: median 6 % of the way from stage to serial.
+
+**Refhw.** With kernel boundaries, pipe improves moe pf / static, v1 ttft / max, and worsens r3 max (36 → 43 %),
+r4 (26.7 → 28.3 %) and v1 static. On top of the candidate it improves 7 of 10 groups, but r3 max and moe dec worsen.
+Not adopted: rule "every group improves". The measured GPU rows sit between kernel-serial and pipe. Prologue and
+epilogue alone do not explain the gap, which is consistent with §39's per-kernel fixed costs.
+
+**NPU default.** Kept at `stage`. Pipe is better grounded in mechanism, but it is not better validated: there are no
+NPU measurements, and on the catalog it moves 8 of 89 points by at most 3 %. Switching would change the fingerprint
+c034bfe3 → f7963e41. Use pipe, and the sensitivity panel's pipe row, to see whether a conclusion survives a
+mechanistic overlap model.

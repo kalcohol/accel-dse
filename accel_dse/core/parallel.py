@@ -112,7 +112,7 @@ PP_SPLITS = ("cost", "layers")
 # every TP rank, V4-type heads split), "replicated", "tp_split" (index heads column-parallel + all-reduce of the fp32
 # scores), "key_split" (cached index keys sharded over TP, local top-k + all-gather of TP·k candidates + merge) 「假设」
 INDEXER_MODES = ("reference", "replicated", "tp_split", "key_split")
-EXEC_OVERLAPS = ("stage", "class", "kernel", "serial", "tbo")   # 0.66 (+ tbo 0.67): see schedule.StageTime.total
+EXEC_OVERLAPS = ("stage", "class", "kernel", "serial", "tbo", "pipe")   # 0.66 (+ tbo 0.67): see schedule.StageTime.total
 
 
 def plan_stages_balanced(costs: list, pp: int, first: tuple, last: tuple, p2p: tuple,

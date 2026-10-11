@@ -115,7 +115,7 @@ def rows(path: Path = DATA) -> list[dict]:
 
 def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
     v = VARIANTS.get(eff, {})
-    ov = v.get("overlap") if v.get("overlap") in ("class", "kernel", "serial", "tbo") else "stage"
+    ov = v.get("overlap") if v.get("overlap") in ("class", "kernel", "serial", "tbo", "pipe") else "stage"
     e = v.get("eff", eff)
     h = REF_HW[r["hw"]]
     chip = h.chip if v.get("mac_eff") is None else replace(h.chip, mac_eff=v["mac_eff"])
@@ -127,6 +127,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         chip = replace(chip, kernel_us=v["kernel_us"])
     if v.get("fmt_ceiling") and chip.name.split("-")[0] in HOPPER:   # 0.94: Hopper only
         chip = replace(chip, fmt_ceiling=v["fmt_ceiling"])
+    if v.get("pipe_cross_op") is not None:   # 0.98: exec_overlap "pipe" — GPU kernel boundaries (no cross-op prefetch)
+        chip = replace(chip, pipe_cross_op=v["pipe_cross_op"])
     if v.get("attn_sched"):            # 0.93: attention-only schedule
         chip = replace(chip, attn_sched=v["attn_sched"])
     mem_eff = e if isinstance(e, float) else EFF[e]
@@ -296,6 +298,14 @@ def candidate_variant(base: str = "catalog_kernel") -> str:
     VARIANTS.setdefault(name, {**VARIANTS[base], "attn_sched": "cta", "layer_us": TRACE_LAYER_US,
                                # 0.94: runtime memory view + Hopper kernel ceilings (public, not fitted)
                                "mem_rt": True, "fmt_ceiling": HOPPER_CEILING})
+    return name
+
+
+def pipe_variant(base: str = "catalog", cross_op: bool = False) -> str:
+    """0.98: ``base`` with the hardware-derived overlap (exec_overlap "pipe"). GPUs run one kernel at a time, so by
+    default there is no prefetch across ops (cross_op False)."""
+    name = f"{base}+pipe{'x' if cross_op else ''}"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "overlap": "pipe", "pipe_cross_op": cross_op})
     return name
 
 

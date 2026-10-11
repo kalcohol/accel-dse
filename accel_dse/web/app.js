@@ -900,7 +900,7 @@ function budgetMark(x) {
   return null;
 }
 // 0.96: 敏感度 panel — the result under the 「假设」 constants that drive design conclusions (MODEL §41)
-const SENS_ZH = { exec_overlap: '计算 / 访存 / 通信重叠', mem_eff: 'DRAM 效率', vector_lanes: '向量 lane 数' };
+const SENS_ZH = { exec_overlap: '计算 / 访存 / 通信重叠', pipe: '双缓冲推导的重叠（pipe）', mem_eff: 'DRAM 效率', vector_lanes: '向量 lane 数' };
 function renderSensitivity(r) {
   const s = r.sensitivity;
   $('sens-box').hidden = false;

@@ -3,6 +3,37 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.98.0]
+
+### Added (opt-in; NPU default `exec_overlap = "stage"` and fingerprint c034bfe3 unchanged)
+- `exec_overlap = "pipe"`: overlap derived from the hardware instead of all-or-nothing (core/overlap.py). The stage's
+  op sequence is replayed on a DMA engine and a compute engine:
+  - DMA runs ahead of compute by at most the SRAM left for streaming (≥ the plan's 2 MiB staging area);
+  - ops are tiled (≥ 32 tiles, 1 MiB DMA tiles), so prologue and epilogue are exposed;
+  - flash-attention fusion; vector ops depend on the op before them;
+  - collectives sit on the compute chain while prefetch continues, and MoE dispatch / combine hide behind the
+    shared-expert compute;
+  - PP hand-offs are exposed and FSDP gathers are prefetched.
+
+  The result is bracketed by `stage` and `serial` and is monotone in SRAM (tiling fixed by the op; float-tolerant
+  buffer test).
+- `Chip.pipe_cross_op` (default True; False = GPU kernel boundaries, no prefetch across ops).
+- `Chip.dma_engines` / `dma_outstanding_KiB` / `dram_latency_ns`: DRAM bandwidth capped by Little's law
+  (all three or none; every mode).
+- `extval.pipe_variant(base, cross_op=False)`. Sensitivity panel: a `pipe` row (hardware-derived overlap) next to
+  the serial one. CLI: `--exec-overlap pipe`.
+
+### Validation (not adopted for refhw: not every group improves)
+- Random bracket test over 187 stage points (5 models, 3 chips, PP / TP / EP / fabric / D2D, prefill / decode):
+  never outside [stage, serial] before the clamp; median position 0.06 of the way from stage to serial, p90 0.37.
+- SRAM sweeps 1 MiB … 1 GiB (3 models × HBM / LPDDR × 3 phases × cross-op on / off): 0 monotonicity violations.
+- Refhw, 10 groups (mean |log|, %), catalog_kernel → catalog + pipe (kernel boundaries):
+  moe pf 57.8 → 55.2, dec 33.4 → 33.5, static 30.0 → 29.7, max 17.1 → 17.2; r3 max 36.2 → 43.4, lat 118.4 → 118.4;
+  r4 26.7 → 28.3; v1 static 24.0 → 24.8, ttft 50.0 → 48.6, max 20.4 → 18.7. Candidate + pipe vs candidate: 7 of 10
+  improve (r4 18.1 → 16.6), but r3 max 28.5 → 33.0 and moe dec 5.4 → 5.7 worsen. Neither is adopted.
+- If pipe were the NPU default: fingerprint c034bfe3 → f7963e41. 8 of 89 catalog points change by > 0.1 %,
+  at most −3.0 % throughput.
+
 ## [0.97.0]
 
 ### Fixed

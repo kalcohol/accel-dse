@@ -360,6 +360,8 @@ def sensitivity_report(scn: Scenario, r: Result) -> dict:
     cases = []
     if scn.exec_overlap != "serial":
         cases.append(("exec_overlap", "无重叠（serial：计算 / 访存 / 通信串行）", scn.replace("exec_overlap", "serial")))
+    if scn.exec_overlap not in ("pipe", "serial"):     # 0.98: the hardware-derived overlap (double buffering)
+        cases.append(("pipe", "硬件推导重叠（pipe：双缓冲 + 数据依赖）", scn.replace("exec_overlap", "pipe")))
     for e in (0.5, 0.9):
         if abs(e - eff) > 1e-9:
             cases.append(("mem_eff", f"DRAM 效率 {e:g}（当前 {eff:g}）", scn.replace("mem_eff", e)))

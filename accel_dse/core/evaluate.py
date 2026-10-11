@@ -28,6 +28,7 @@ from .scenario import Scenario
 from .vision import expand_images, image_grid, vision_act_peak, vision_ops
 from .ir import dspark_ops, red_bytes, skew_from_load
 from . import fabric
+from . import overlap as _ovl
 from .schedule import (StageTime, collective_seconds, collective_wire, fabric_collective, p2p_tier,
                        spec_expected_tokens, wire_single)
 
@@ -460,6 +461,42 @@ def _links(scn: Scenario) -> tuple:
             scn.net if scn.node_cards > 0 else None, scn.node_cards)
 
 
+def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, store, dram: dict,
+               tail_comm: float = 0.0, hidden_link: float = 0.0) -> float:
+    """0.98: exec_overlap "pipe" — replay the stage's op sequence on DMA + compute (core/overlap.py).
+    segments = [(op list, repeat)] in program order."""
+    om = mm[0] if mm else {}
+    ab = _fmt(m.act_fmt).bytes
+
+    def op_secs(o):
+        r_ = om.get(o)
+        if r_ is None:
+            r_ = om[o] = _op_seconds(o, sys, org, m)
+        return r_
+
+    def comm_secs(o):
+        if sys.fabric.enabled:
+            return fabric.collective_full(o.comm_kind, o.comm_bytes, o.comm_group, sys, o.comm_stride)[0]
+        return _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)[0]
+
+    def act_b(o):
+        a, wx = act_stream(o, ab, sys.chip.sram_bytes)
+        return a + wx
+    segs = [(_ovl.items_of(ops, op_secs, comm_secs, act_b), n) for ops, n in segments]
+    kvst = mp.kv_total + mp.state_total
+    f = {"hot": 0.0 if store.hot_w <= 0 else 1.0 - mp.pinned_hot / store.hot_w,
+         "exp": 0.0 if store.expert_w <= 0 else 1.0 - mp.pinned_expert / store.expert_w,
+         "kv": 0.0 if kvst <= 0 else 1.0 - mp.kv_sram / kvst, "lookup": 1.0, "act": 1.0}
+    nb = sum(n * sum(x * f.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
+    t_mem = max(dram["total"] / (sys.dram_GBps * 1e9), _slc_time(sys, dram))
+    if nb <= 0 and t_mem > 0:          # traffic the ops do not carry (e.g. FSDP copies): one leading DMA step
+        segs.insert(0, ([(0.0, {"x": 1.0}, 0.0)], 1)); nb = 1.0
+    spb = t_mem / nb if nb > 0 else 0.0
+    ch = sys.chip            # the DMA issue limit (Chip.dma_*) is already in sys.dram_GBps (every overlap mode)
+    buf = max(mp.staging, ch.sram_bytes - mp.pinned_hot - mp.pinned_expert - mp.kv_sram)
+    return _ovl.stage_pipe_time(segs, f, spb, buf, ch.pipe_cross_op, 1.0, tail_comm, hidden_link)
+
+
 def _acc(a: dict, b: dict, n: int = 1) -> None:
     for k in _SUM_KEYS:
         if k in _MAX_KEYS:
@@ -872,11 +909,21 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
                 sync += (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
+            t_pipe = 0.0
+            if scn.exec_overlap == "pipe":  # 0.98 (opt-in)
+                segs = ([(embed_ops(m, ph, sh), 1)] if st.has_embed else [])
+                segs += [(build_rank_ops(m, li, ph, sh), n) for g, (li, n) in counts.items()]
+                if cp_ring is not None:
+                    segs.append((_cp_ring_ops(m, st.first, st.last, cp_ring), 1))
+                if tail:
+                    segs.append((tail, 1))
+                t_pipe = _pipe_time(sys, scn.mapping, m, mm, segs, mp, store, dram, sum(b for b, _ in extra))
             stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
                             (dram["kv_read"] + dram["kv_write"] + dram["state"]) / (sys.dram_GBps * 1e9),
-                            scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]))
+                            scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
+                            t_pipe)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))
@@ -1094,11 +1141,21 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
                 sync += (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
+            t_pipe = 0.0
+            if scn.exec_overlap == "pipe":  # 0.98 (opt-in); FSDP gathers are prefetches (hidden behind the chain)
+                segs = [(full_io_ops(m, ph, sh, "pre"), 1)] if st.has_embed else []
+                segs += [(build_rank_ops(m, li, ph, sh), n * layer_repeat(m.layers[li], ph)) for g, (li, n) in counts.items()]
+                if st.has_head:
+                    segs.append((full_io_ops(m, ph, sh, "post"), 1))
+                hid = sum(extra_f.values()) if extra_f else 0.0
+                pp_b = sum(b for b, _ in extra) - hid
+                t_pipe = _pipe_time(sys, scn.mapping, m, None, segs, mp, store, dram, max(0.0, pp_b), hid)
             stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
                             (dram["kv_read"] + dram["kv_write"] + dram["state"]) / (sys.dram_GBps * 1e9),
-                            scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]))
+                            scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
+                            t_pipe)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))
