@@ -1891,3 +1891,45 @@ Mixtral 8×7B（TRT-LLM 0.17，TP8，FP8 行）在专家格式修正后的数值
 **In-flight 批的内存检查（采纳，作为满载行的默认）。** 以前满载吞吐的静态批 proxy 一次 prefill 全部 B 个 prompt，所以「放不下」常常卡在 prefill 的激活（例：gpt-oss-120b 8192/1024，B = 512 时 KV 放得下，但 512 × 8192 个 token 的激活放不下）。In-flight 批每轮最多 prefill CB_CHUNK = 8192 个 token（TRT-LLM 默认 max_num_tokens），所以激活检查改为按一个 chunk。B 个常驻请求的 KV 仍按 decode 点检查，最长到 ISL + 7/8·OSL，接近 TRT-LLM 默认的 GUARANTEED_NO_EVICT（为每个请求预留完整长度）。吞吐时间不变。影响：headline（catalog_kernel）和 serial 下，没有一个集变差（moe max 18.1 → 17.1 %，serial 10.1 → 8.2 %；v1 / r3 不变），留出集 r4 32.6 → 31.2 %。stage 变体下 moe max 54.9 → 58.1 % 变差，因为 stage 本来就偏乐观，放宽容量后更乐观；stage 是宽松上界，不作为判断依据。静态批行（static_tok_s_*、latency）不变。`extval.INFLIGHT_FIT[variant] = False` 恢复 0.91 的检查。
 
 **更正 §37：** 0.91 说 Qwen3-235B 1024/8192 被容量卡在 B = 256，这个诊断是在专家格式修正之前做的；修正之后 B = 512 就放得下（预测 5316 vs 实测 3881）。r4 剩下偏悲观的行主要是 gpt-oss（0.4–0.7×）、DeepSeek-R1 B200 和 Qwen3 的长序列。
+
+## 39. 0.93 — r4 under-prediction study
+
+Row-by-row (TRT-LLM 1.2.0, hold-out set, nothing fitted on it):
+
+* **Pattern.** Under-prediction tracks prefill share, for every model: 1024/1024 and decode-heavy rows sit at 0.8–1.5×,
+  8K/32K-ISL rows at 0.4–0.7×. Cause is structural: the refhw default `instance_sched = "wide"` gives 12–24 % GEMM /
+  attention utilisation on large prefill work (§37). The `cta` model (§38) fixes prefill but over-predicts decode-heavy
+  rows, so it is still not the default.
+* **gpt-oss (0.42–0.69×).** Sliding window (128, alternating) and attention sinks were already modelled. Missing was the
+  Blackwell MoE path: MXFP4 weights × **MXFP8 activations** (TRT-LLM `examples/models/core/gpt_oss/README.md`, the default
+  for CUTLASS / TRTLLM backends; Hopper stays bf16). Fixed: expert GEMMs now run at FP8 rate. gpt-oss rows move to
+  0.52–1.43×. The rows that remain low are the long-ISL ones (the prefill pattern above).
+* **DeepSeek-R1 B200 (0.67–0.86×).** The NVFP4-v2 checkpoint quantises only MoE linears + attention `wo` (model card).
+  Attention is now FP8, which is slower, so this fix moves the rows the wrong way for the ratio but is correct. The
+  dominant term is MLA decode attention under `wide` (57 of 85 ms per step). The public DeepSeek trace has it at about 1/3
+  of the `wide` value (§25.9).
+* **MTP.** Ruled out: the published 1.2.0 configs carry no `speculative_config`.
+* **FP4 attention.** TRT-LLM never runs attention math in FP4. FP8 context FMHA exists but is not documented as the
+  PyTorch-backend default, so it is not modelled. Generation dequantises the FP8 KV in-kernel, which is what the model
+  already does.
+* **Concurrency.** trtllm-bench uses concurrency −1 with CUDA-graph batch sizes up to 8192, and the batch search covers
+  that range. DeepSeek B200 decode is KV-capacity-bound at about 256 requests per GPU in both the model and the configs.
+
+**Per-layer overhead grounding.** Public per-layer traces: TRT-LLM ships the tooling (`layer_wise_benchmarks`, perf-analysis
+guide) but publishes no numbers. The only public kernel-level trace found is deepseek-ai/profile-data (§25.9): 1,734
+small kernels taking 7.6 ms per decode step, across 61 layers × 2 micro-batches. That gives **62.3 µs per layer per
+forward pass** (≈ 14 kernels × 4.4 µs), against the ~100 µs from §25.8. `extval.TRACE_LAYER_US`.
+
+**Candidate.** `candidate_variant()` = attention-only `cta` (`Chip.attn_sched`: FMHA / FlashMLA tile (request, head)
+over SMs) + 62.3 µs/layer. GEMMs stay `wide`.
+
+| group | default | candidate |
+|---|---|---|
+| v1 max / static / ttft | 20.4 / 24.0 / 50.0 % | 17.4 / 20.0 / 28.5 % |
+| moe decode / max / prefill | 33.4 / 17.1 / 57.8 % | 10.5 / 14.1 / 45.5 % |
+| moe static (1 row, trt-dsr1-h200) | 30.0 % | 63.2 % |
+| r3 max / latency | 36.2 / 118.4 % | 30.0 / 32.8 % |
+| r4 (hold-out) | 26.7 % | 19.2 % |
+
+It fails the "no set worse" rule on the one-row group, so it is not the default. That row and the r4 H200 DeepSeek rows are
+already over-predicted under the default (1.35×, 1.53×), which points to a separate H200 DeepSeek issue.

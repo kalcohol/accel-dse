@@ -3,6 +3,21 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.93.0]
+
+### Fixed
+- External validation formats per checkpoint / hardware from public docs (not fitted): gpt-oss on Blackwell runs MoE as
+  MXFP4 weights × MXFP8 activations (TRT-LLM gpt_oss README, W4A8 / UTCQMMA) — was bf16 activations with weight dequant;
+  `nvidia/DeepSeek-R1-0528-NVFP4-v2` keeps FP8 attention projections (model card) — was all-NVFP4. r4 (hold-out) MAPE
+  31.2 → 26.7 %; v1 / moe / r3 identical.
+
+### Added
+- Per-role GEMM activation formats (`act_<role>` in formats overrides, `ModelSpec.act_fmt_for`); catalog unchanged.
+- Opt-in `Chip.attn_sched` (schedule for attention ops only, e.g. `"cta"`); default empty = bit-identical.
+- `extval.TRACE_LAYER_US` = 62.3 µs/layer from the public DeepSeek profile-data decode trace, and
+  `extval.candidate_variant()` (attention `cta` + that overhead). Not default: improves 9 of 10 validation groups
+  (r4 26.7 → 19.2 %, r3 latency 118 → 33 %) but worsens the single-row moe `static_tok_s_total` group (30 → 63 %).
+
 ## [0.92.0]
 
 ### Added
