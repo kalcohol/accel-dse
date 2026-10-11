@@ -1848,3 +1848,18 @@ key_split 每个 rank 取局部 top-k；全局 top-k 一定包含在各 rank 局
 
 **PD 扫描**（0.89 未完成的部分，可续跑：val5/pd_sweep.sh → pd_sweep.jsonl）：结论见 CHANGELOG 0.90.0。
 
+
+## 37. 第 25 轮（0.91.0）：SLC pin_bw；外部验证集 r4（TensorRT-LLM 1.2.0）
+
+**SLC `pin_bw`（可选，默认不变）。** 模型里 SLC 和 DRAM 本来就是两条并行读路径（访存时间 = max(DRAM 字节 / B_dram, SLC 字节 / B_slc)）。`pin` 把驻留集的读全部交给 SLC：这是普通缓存的忠实模型（命中就由缓存服务，不会绕回 DRAM），所以保留为默认。SLC 比 DRAM 慢时，pin 会更慢（0.90 的警告）。`pin_bw` 利用包含式 SLC（驻留行在 DRAM 里也有）：驻留的 H 字节中只让 x = min(H, T·r/(1 + r)) 走 SLC（r = B_slc / B_dram，T = 这一步全部 DRAM 字节，包括只能走 DRAM 的 KV 写入 / lookup），两条路径同时读完，访存时间 = T / (B_dram + B_slc)（H 足够时）。相当于取了最优值的 CUDA accessPolicyWindow.hitRatio。性质（tests/test_core_091）：不比 pin、也不比没有 SLC 更慢；SLC 越大越不慢；SLC 快而小（H < x*）时与 pin 完全相同。手算核对：esm2-650m TP2 serial，4096 MiB @ 2000 GB/s：pin 6.253 ms（比没有 SLC 的 5.821 ms 还慢），pin_bw 5.777 ms，t_dram = t_slc = 0.1448 ms。SLC 快时也可能有收益：4096 MiB @ 20000 GB/s，pin 5.694，pin_bw 5.679（pin 让 SLC 过载）。能量按实际走 SLC / DRAM 的字节计。
+
+**外部验证集复查。**
+- **新数据：** TensorRT-LLM 1.2.0 perf-overview（URL 固定版本）。B200 FP4 / H200 FP8 两列，目录里有的 6 个模型（DeepSeek-R1-0528、gpt-oss-120b / 20b、Llama 3.3 70B、Qwen3-235B-A22B、Qwen3-30B-A3B），共 38 行，存为 `ext_measurements_r4.json`。指标是新的 `max_tok_s_gpu`：满载每卡输出 tok/s，即 max_tok_s_total 的同一搜索 ÷ 副本卡数 tp·dp。DEP N = 注意力 DP N + EP N。
+- **没有纳入：** GB200 / B300 / RTX 6000 列（没有参考硬件）；gpt-oss 的 H200「FP8」列（发布的权重是 MXFP4，精度含义不明）；ROCm 表里的 Llama 3.1 405B（目录里没有）；MLPerf Inference v5.1 / v6.0（2026-04）：只有数据集的长度分布，没有每次运行的 ISL / OSL，仍只作背景（v6.0 GB300 NVL72 DeepSeek-R1 离线 9,821 tok/s/GPU）。ROCm 的 MI300X 行与固定提交里的数字逐一一致；它被标为「Llama 3.1 70B」，按同构的 llama-3.3-70b 建模（行备注里已注明）。
+- **发现的缺陷（已修）：** extval 的 FP8 / NVFP4 格式覆盖没有包含 `expert` 角色，MoE 的路由专家仍按 bf16 计算。修正后，moe 集 max_tok_s_total 的 |log 误差| 从 21.1 % 降到 18.1 %（gmean 0.93 → 1.13）；r4 从 59 % 降到 33 %（gmean 0.53 → 0.83）。r3 的 B200 行都是稠密模型，不受影响。gpt-oss 行用发布的权重格式 + FP8 KV（与 1.2.0 的配置一致）。
+- **发现（诊断，默认不改）：** 参考芯片的 `instance_sched = "wide"` 把一个 GEMM 看作横跨全部 SM 列的一个阵列，大的 prefill GEMM 利用率只有 12–24 %（H100 / B200，例如 131072×4096×2048）。`auto`（M / N 按 SM 组切分，GPU 的 CTA 铺法）约 99 %。但用 `auto` 后，吞吐在 v1 / r3 / moe 上偏乐观 1.2–1.75×，误差变大（v1 max 20 → 25 %，r3 36 → 56 %）；只有 r4 和 moe 的 prefill / decode 变好。也就是说，`wide` 的低利用率在替模型缺少的开销（每层 kernel / 同步、实际 GEMM 效率）买单。所以保留默认，新增诊断变体 `extval.sched_variant(base)`（`+A`）。真正的修法是先给 GPU 的 kernel 开销建模，再改 `auto`，这会改变外部验证的数值，需要单独一轮。
+- **剩余差距：** r4 的长上下文 / MoE 行仍偏悲观（0.3–0.6×）。原因有两个：一是静态批的 proxy 按最终上下文计 KV 容量，实际 in-flight 批里的请求处在不同阶段，平均上下文约一半，可容纳约 2 倍请求（Qwen3-235B 1024/8192：容量限制 B = 256；不限容量时 4600 vs 实测 3881）；二是上面的 GEMM 利用率。
+
+**对比表**（catalog_kernel，n / gmean 预测/实测 / 平均 |log 误差|；脚本 val5/extval091.py）：v1 max 44 / 1.03 / 20 %，static 36 / 1.17 / 24 %，ttft 20 / 0.63 / 50 %；moe max 27 / 1.13 / 18 %；r3 max 15 / 1.38 / 36 %，latency 16 / 0.31 / 118 %（per-layer overhead 见 §25.8）；r4 38 / 0.83 / 33 %。
+
+Mixtral 8×7B（TRT-LLM 0.17，TP8，FP8 行）在专家格式修正后的数值：Hopper catalog_kernel 的 gmean 0.82 → 1.10（|log 误差| 21 → 16 %），catalog_serial 0.70 → 0.97（36 → 11 %），stage 1.20 → 1.90（stage 仍是宽松上界）。test_core_067 的区间相应更新；以前的区间把 bf16 专家的错误定价当成了基准。A100 行是 fp16，不受影响。

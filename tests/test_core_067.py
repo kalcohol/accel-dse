@@ -62,5 +62,8 @@ def test_mixtral_tp8_bands():
     assert len(R) == 27 and all(r["etp"] == r["tp"] == 8 for r in R)
     g = lambda v, rs: math.exp(sum(math.log(X.predict(r, v)["pred"] / r["value"]) for r in rs) / len(rs))
     hop = [r for r in R if r["hw"] != "A100-SXM-80GB"]
-    assert 0.7 < g("catalog_kernel", hop) < 1.0 < g("catalog", hop) < 1.35
+    # 0.91: FP8 rows now run the routed experts in FP8 (the override had missed the "expert" role → bf16 experts);
+    # kernel 0.82 → 1.10 (|log err| 21 → 16 %), serial 0.70 → 0.97, stage stays the loose upper bound (MODEL §37)
+    assert 1.0 < g("catalog_kernel", hop) < 1.25 < g("catalog", hop)
+    assert 0.85 < g("catalog_serial", hop) < 1.1
     assert 0.8 < g("catalog_serial", [r for r in R if r["hw"] == "A100-SXM-80GB"]) < 1.05

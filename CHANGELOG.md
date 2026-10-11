@@ -3,6 +3,21 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.91.0]
+
+### Added
+- SLC 策略 `pin_bw`（可选；Web「SLC 策略」/ CLI `--slc-policy pin_bw`）：钉住方式与 pin 相同，但把包含式 SLC 当作第二条读路径，命中按 SLC / DRAM 带宽均衡分流，访存时间 = T / (B_dram + B_slc)。不比 pin、也不比没有 SLC 更慢，SLC 越大越不慢。默认 pin 不变（普通缓存的命中就由缓存服务）。
+- 外部验证集 r4：TensorRT-LLM 1.2.0 perf-overview，B200 FP4 / H200 FP8，6 个模型，38 行，新指标 `max_tok_s_gpu`（满载每卡输出 tok/s，DEP = 注意力 DP + EP）。
+- 诊断变体 `extval.sched_variant`（Chip.instance_sched = auto）。
+
+### Fixed
+- 外部验证的 FP8 / NVFP4 格式覆盖漏了路由专家（`expert`），MoE 专家 GEMM 仍按 bf16 计算。moe 集吞吐误差 21 → 18 %，r4 59 → 33 %。gpt-oss 行用发布的 MXFP4 权重 + FP8 KV。
+
+### Validation
+- 参考芯片的 `instance_sched = wide` 让大 prefill GEMM 利用率只有 12–24 %；`auto` 约 99 %，但吞吐会偏乐观 1.2–1.75×（缺 kernel 开销）。保留默认，详见 MODEL §37。
+- MLPerf Inference v5.1 / v6.0 没有每次运行的 ISL / OSL，仍只作背景；GB200 / B300、405B、gpt-oss H200「FP8」不纳入（原因见 MODEL §37）。
+- 默认数值与 0.90 逐位相同（209 个场景的指纹一致）。
+
 ## [0.90.0]
 
 ### Added
