@@ -123,7 +123,7 @@ def _finite(x: Any, where: str = "body") -> None:
 _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
 _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
-               "pareto": set(), "sweep": {"path", "values"}}
+               "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": set()}
 
 
 def _check_keys(body, route: str) -> None:
@@ -339,6 +339,20 @@ def _pd_prefill_budget(scn, pd_rep: dict, bud: Budget, table: EnergyTable) -> di
 SENS_HINGE = 0.15     # 0.96: |Δ| above which a result "hinges" on the assumption 「假设」 (display threshold only)
 
 
+def _lanes_q(s: Scenario) -> Scenario:
+    ch = s.chip
+    return s.replace("chip", replace(ch, vector_lanes=max(1, ch.lanes // 4)))
+
+
+# 0.97: one definition shared by eval / sweep / Pareto. (key, short label, transform) — the transform is applied to
+# each evaluated point, so a swept chip keeps "¼ of ITS lanes" and a swept memory keeps its own capacity.
+SENS_CASES = (("exec_overlap", "无重叠", lambda s: None if s.exec_overlap == "serial" else s.replace("exec_overlap", "serial")),
+              ("mem_eff", "DRAM 效率 0.5", lambda s: s.replace("mem_eff", 0.5)),
+              ("mem_eff", "DRAM 效率 0.9", lambda s: s.replace("mem_eff", 0.9)),
+              ("vector_lanes", "向量 lane ÷4", _lanes_q))
+SENS_SWEEP_SKIP = {"exec_overlap": "exec_overlap", "mem_eff": "mem_eff", "chip.vector_lanes": "vector_lanes"}
+
+
 def sensitivity_report(scn: Scenario, r: Result) -> dict:
     """0.96: the same scenario under the three 「假设」 constants that drive NPU design conclusions (MODEL §41):
     no compute / memory / link overlap, DRAM efficiency 0.5 / 0.9, a quarter of the vector lanes."""
@@ -350,8 +364,7 @@ def sensitivity_report(scn: Scenario, r: Result) -> dict:
         if abs(e - eff) > 1e-9:
             cases.append(("mem_eff", f"DRAM 效率 {e:g}（当前 {eff:g}）", scn.replace("mem_eff", e)))
     ch = scn.chip
-    cases.append(("vector_lanes", f"向量 lane ÷4（{ch.lanes} → {max(1, ch.lanes // 4)}）",
-                  scn.replace("chip", replace(ch, vector_lanes=max(1, ch.lanes // 4)))))
+    cases.append(("vector_lanes", f"向量 lane ÷4（{ch.lanes} → {max(1, ch.lanes // 4)}）", _lanes_q(scn)))
     base = r.throughput
     rows = []
     for key, label, s in cases:
@@ -365,7 +378,107 @@ def sensitivity_report(scn: Scenario, r: Result) -> dict:
                      "fits": q.fits, "bound_flip": q.bound != r.bound,
                      "hinge": bool(ratio is not None and (abs(ratio - 1) > SENS_HINGE or q.bound != r.bound))})
     hinges = sorted({x["key"] for x in rows if x.get("hinge")})
-    return {"base_tok_s": base, "base_bound": r.bound, "threshold": SENS_HINGE, "rows": rows, "hinges": hinges}
+    return {"base_tok_s": base, "base_bound": r.bound, "threshold": SENS_HINGE, "rows": rows, "hinges": hinges,
+            "domain": r.model.domain,
+            # 0.97: what was re-evaluated (PD pools / budgets are not)
+            "scope": "合并部署（PD 池未复核）" if scn.pd.enabled and r.model.kv_cache else "本场景"}
+
+
+SENS_TIE = 0.01     # 0.97: points within 1 % are ties (a flat roofline is not a ranking) 「假设」
+SENS_KNEE = 0.05    # 0.97: knee = first swept value within 5 % of the sweep's best ("enough SRAM / clock") 「假设」
+
+
+def _knee(vals: list):
+    m = max((v for v in vals if v is not None), default=None)
+    return None if m is None else next(i for i, v in enumerate(vals) if v is not None and v >= m * (1 - SENS_KNEE))
+
+
+def _near_best(vals: list) -> set:
+    m = max((v for v in vals if v is not None), default=None)
+    return set() if m is None else {i for i, v in enumerate(vals) if v is not None and v >= m * (1 - SENS_TIE)}
+
+
+def _discordant(a: list, b: list) -> list:
+    """Pairs (i, j) that are ordered one way in a and the other way in b, each by more than SENS_TIE."""
+    def gt(x, y):
+        return x > y * (1 + SENS_TIE)
+    out = []
+    for i in range(len(a)):
+        for j in range(i + 1, len(a)):
+            if None in (a[i], a[j], b[i], b[j]):
+                continue
+            if (gt(a[i], a[j]) and gt(b[j], b[i])) or (gt(a[j], a[i]) and gt(b[i], b[j])):
+                out.append((i, j))
+    return out
+
+
+def sweep_sensitivity(scns: list, base_rows: list, path: str, key_of=lambda d: d["tok_s_card"]) -> dict:
+    """0.97: re-run every sweep point under each SENS_CASES alternative. A conclusion flips when the best value
+    changes (no overlap between the base and alternative near-best sets, ties within SENS_TIE), when a pair of
+    points swaps order by more than SENS_TIE (rank flip), or when a point's bottleneck changes."""
+    skip = SENS_SWEEP_SKIP.get(path)
+    base = [key_of(d) if d.get("fits") else None for d in base_rows]
+    b0, k0 = _near_best(base), _knee(base)
+    cases, row_flags = [], [[] for _ in base_rows]
+    for key, label, f in SENS_CASES:
+        if key == skip:
+            continue
+        ts = [f(s) for s in scns]
+        if all(t is None for t in ts):
+            continue                                  # case does not apply (already serial)
+        alt, bounds = [], []
+        for t in ts:
+            if t is None:
+                alt.append(None); bounds.append(None)
+                continue
+            try:
+                q = evaluate(t)
+                alt.append(q.per_card if q.fits else None); bounds.append(q.bound)
+            except ValueError:
+                alt.append(None); bounds.append(None)
+        b1, disc, k1 = _near_best(alt), _discordant(base, alt), _knee(alt)
+        inpair = {k for p in disc for k in p}
+        rows = []
+        for i, d in enumerate(base_rows):
+            rf = i in inpair
+            bf = bounds[i] is not None and bounds[i] != d["bound"]
+            if rf or bf:
+                row_flags[i].append(label)
+            rows.append({"value": d["value"], "thr_card": alt[i], "ratio": (alt[i] / base[i]) if alt[i] and base[i] else None,
+                         "bound": bounds[i], "rank_flip": rf, "bound_flip": bf})
+        cases.append({"key": key, "label": label, "best_values": [base_rows[i]["value"] for i in sorted(b1)],
+                      "best_changed": bool(b0 and b1 and not (b0 & b1)), "flips": len(disc),
+                      "knee_value": base_rows[k1]["value"] if k1 is not None else None,
+                      "knee_changed": k0 is not None and k1 is not None and k1 != k0, "rows": rows})
+    return {"best_values": [base_rows[i]["value"] for i in sorted(b0)], "tie": SENS_TIE, "knee_tol": SENS_KNEE,
+            "knee_value": base_rows[k0]["value"] if k0 is not None else None, "cases": cases, "row_flags": row_flags,
+            "hinges": sorted({c["key"] for c in cases if c["best_changed"] or c["flips"] or c["knee_changed"]})}
+
+
+def pareto_sensitivity(scn: Scenario, front: list) -> dict:
+    """0.97: the latency–throughput front under each alternative; a base front point that is dominated there is
+    flagged (its "best trade-off" status hinges on that assumption)."""
+    from .core.search import tpot_throughput_front
+    batches = [p["batch"] for p in front]
+    cases, flags = [], [[] for _ in front]
+    for key, label, f in SENS_CASES:
+        t = f(scn)
+        if t is None:
+            continue
+        try:
+            alt = tpot_throughput_front(t)
+        except ValueError as e:
+            cases.append({"key": key, "label": label, "error": str(e)})
+            continue
+        on = {p["batch"] for p in alt}
+        off = [b for b in batches if b not in on]
+        for i, b in enumerate(batches):
+            if b not in on:
+                flags[i].append(label)
+        cases.append({"key": key, "label": label, "front_batches": sorted(on), "off_front": off,
+                      "new_on_front": sorted(on - set(batches))})
+    return {"cases": cases, "point_flags": flags,
+            "hinges": sorted({c["key"] for c in cases if c.get("off_front") or c.get("new_on_front")})}
 
 
 def evaluate_mem_eff(scn: Scenario) -> float:
@@ -559,7 +672,10 @@ def _stability(body: dict) -> dict:
 def api_pareto(body: dict) -> dict:
     _check_keys(body, "pareto")
     scn = scenario_from_body(body)
-    return {"front": tpot_throughput_front(scn), "layout": scn.layout.label}
+    out = {"front": tpot_throughput_front(scn), "layout": scn.layout.label}
+    if body.get("sensitivity"):          # 0.97 opt-in (≈ 4× the cost)
+        out["sensitivity"] = pareto_sensitivity(scn, out["front"])
+    return out
 
 
 def api_sweep(body: dict) -> dict:
@@ -572,7 +688,7 @@ def api_sweep(body: dict) -> dict:
     if not isinstance(vals, list) or not (1 <= len(vals) <= 32):
         raise ApiError("values must be a list of 1..32 numbers")
     typ = SWEEP_PATHS[path]
-    rows, results = [], []
+    rows, results, scns = [], [], []
     for v in vals:
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             raise ApiError("values must be numbers")
@@ -589,6 +705,7 @@ def api_sweep(body: dict) -> dict:
             r = evaluate(s_v)
         except (ValueError, TypeError) as e:
             raise ApiError(f"{path}={v}: {e}") from None
+        scns.append(s_v)
         dec = r.scenario.serving.phase == "decode" and r.workload is None
         llm = r.workload is None
         rows.append({"value": v, "tpot_ms": r.tpot * 1e3 if dec else None,
@@ -600,4 +717,19 @@ def api_sweep(body: dict) -> dict:
     if _budget(body) is not None:       # flag only — sweep rows keep their order
         order = {id(d): i for i, d in enumerate(rows)}
         rows = sorted(_flag_rows(rows, results, body), key=lambda d: order[id(d)])
-    return {"path": path, "rows": rows, "base_hash": scn.hash()}
+    out = {"path": path, "rows": rows, "base_hash": scn.hash()}
+    if body.get("sensitivity"):          # 0.97 opt-in (≈ 4× the cost)
+        out["sensitivity"] = sweep_sensitivity(scns, rows, path)
+    return out
+
+
+def api_sensitivity(body: dict) -> dict:
+    """0.97: the eval sensitivity block alone, so the UI can render the main result first and fill the 敏感度
+    panel afterwards (DiT points cost ≈ 5× the plain eval)."""
+    _check_keys(body, "sensitivity")
+    scn = scenario_from_body(body)
+    try:
+        r = evaluate(scn)
+    except ValueError as e:
+        raise ApiError(str(e)) from None
+    return {"sensitivity": sensitivity_report(scn, r), "hash": scn.hash()}

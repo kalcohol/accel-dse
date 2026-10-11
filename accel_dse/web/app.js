@@ -540,12 +540,25 @@ function showErr(msg) {
 async function runEval() {
   const t0 = performance.now();
   try {
-    const r = await track(req('eval', '/api/eval', body({ best_batch: S.best })));
+    const r = await track(req('eval', '/api/eval', body({ best_batch: S.best, sensitivity: false })));
     if (!r) return;
     S.last = r;
     renderEval(r);
     status(`就绪 · ${Math.round(performance.now() - t0)} ms`);
+    runSensitivity(r);
   } catch (e) { showErr(e.message); }
+}
+// 0.97: the 敏感度 panel is filled after the main result (≈ 4 extra evaluations; a DiT point costs ≈ 5× the eval)
+async function runSensitivity(r) {
+  const b = body();
+  if (S.best) b.scenario.serving = { ...b.scenario.serving, batch: r.summary.batch };
+  $('sens-note').textContent = '敏感度计算中…';
+  try {
+    const x = await req('sens', '/api/sensitivity', b);
+    if (!x || S.last !== r) return;
+    r.sensitivity = x.sensitivity;
+    renderSensitivity(r);
+  } catch (e) { $('sens-note').textContent = '敏感度：' + e.message; }
 }
 function kpi(label, value, sub, cls = '') {
   return h('div', { class: 'kpi ' + cls }, h('div', { class: 'l' }, label), h('div', { class: 'v' }, value), h('div', { class: 's' }, sub));
@@ -890,9 +903,10 @@ function budgetMark(x) {
 const SENS_ZH = { exec_overlap: '计算 / 访存 / 通信重叠', mem_eff: 'DRAM 效率', vector_lanes: '向量 lane 数' };
 function renderSensitivity(r) {
   const s = r.sensitivity;
-  $('sens-box').hidden = !s;
-  if (!s) return;
-  const head = h('tr', {}, h('th', { class: 'l' }, '假设变化'), h('th', {}, 'tok/s'), h('th', {}, '相对当前'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '判定'));
+  $('sens-box').hidden = false;
+  if (!s) { put($('sens-tbl')); return; }
+  const m = model(), u = isFull(m) ? UNIT_ZH[m.domain === 'gen' ? 'frame' : 'seq'] : 'tok';
+  const head = h('tr', {}, h('th', { class: 'l' }, '假设变化'), h('th', {}, `${u}/s`), h('th', {}, '相对当前'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '判定'));
   const rows = s.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 4, class: 'l small' }, x.error))
     : h('tr', { class: x.hinge ? 'warn' : '' }, h('td', { class: 'l' }, x.label), h('td', {}, num(x.tok_s)),
       h('td', { style: x.hinge ? 'color:var(--danger);font-weight:700' : '' }, num(x.ratio) + '×'),
@@ -900,8 +914,44 @@ function renderSensitivity(r) {
       h('td', { class: 'l small' }, x.hinge ? (x.bound_flip ? '瓶颈翻转' : `变化 > ${pct(s.threshold)}`) : '稳健')));
   put($('sens-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
   $('sens-note').textContent = s.hinges.length
-    ? `⚠ 本结果取决于：${s.hinges.map((k) => SENS_ZH[k] || k).join('、')}——比较设计点时请在这些假设下复核（当前 ${num(s.base_tok_s)} tok/s，瓶颈 ${s.base_bound}）`
+    ? `⚠ 本结果取决于：${s.hinges.map((k) => SENS_ZH[k] || k).join('、')}——比较设计点时请在这些假设下复核（当前 ${num(s.base_tok_s)} ${u}/s，瓶颈 ${s.base_bound}）`
     : `本结果对重叠方式、DRAM 效率、向量 lane 的变化不敏感（阈值 ${pct(s.threshold)}）`;
+  if (s.scope && s.scope !== '本场景') $('sens-note').textContent += `；范围：${s.scope}`;
+}
+// 0.97: sweep / Pareto sensitivity summaries
+function renderSweepSens(s, xl, u) {
+  $('sw-sens-box').hidden = !s;
+  if (!s) return;
+  const head = h('tr', {}, h('th', { class: 'l' }, '假设变化'), h('th', { class: 'l' }, '最佳取值（1% 内并列）'),
+    h('th', { class: 'l' }, `拐点（达最佳 ${pct(1 - s.knee_tol)}）`), h('th', {}, '排序翻转对数'), h('th', { class: 'l' }, '瓶颈翻转点'), h('th', { class: 'l' }, '判定'));
+  const base = h('tr', {}, h('td', { class: 'l' }, '当前假设'), h('td', { class: 'l' }, s.best_values.join(', ') || '—'),
+    h('td', { class: 'l' }, s.knee_value ?? '—'), h('td', {}, '—'), h('td', { class: 'l' }, '—'), h('td', { class: 'l small' }, '基准'));
+  const rows = s.cases.map((c) => {
+    const bad = c.best_changed || c.flips || c.knee_changed;
+    const why = [c.best_changed && '最佳取值改变', c.knee_changed && '拐点移动', c.flips && `${c.flips} 对排序翻转`].filter(Boolean).join('；');
+    return h('tr', { class: bad ? 'warn' : '' }, h('td', { class: 'l' }, c.label),
+      h('td', { class: 'l', style: c.best_changed ? 'color:var(--danger);font-weight:700' : '' }, c.best_values.join(', ') || '—'),
+      h('td', { class: 'l', style: c.knee_changed ? 'color:var(--danger);font-weight:700' : '' }, c.knee_value ?? '—'),
+      h('td', {}, c.flips), h('td', { class: 'l small' }, c.rows.filter((x) => x.bound_flip).map((x) => `${x.value}→${x.bound}`).join(', ') || '—'),
+      h('td', { class: 'l small' }, bad ? '⚠ ' + why : '稳健'));
+  });
+  put($('sw-sens-tbl'), h('thead', {}, head), h('tbody', {}, base, ...rows));
+  $('sw-sens-note').textContent = s.hinges.length
+    ? `⚠ 「${xl}」扫描的结论取决于：${s.hinges.map((k) => SENS_ZH[k] || k).join('、')}（最佳取值 / 拐点 / 排序在该假设下改变）`
+    : `「${xl}」扫描的最佳取值、拐点与排序在各假设下不变`;
+}
+function renderParetoSens(s) {
+  $('sw-sens-box').hidden = !s;
+  if (!s) return;
+  const head = h('tr', {}, h('th', { class: 'l' }, '假设变化'), h('th', { class: 'l' }, '前沿 batch'), h('th', { class: 'l' }, '离开前沿'), h('th', { class: 'l' }, '新进前沿'));
+  put($('sw-sens-tbl'), h('thead', {}, head), h('tbody', {}, ...s.cases.map((c) => c.error
+    ? h('tr', {}, h('td', { class: 'l' }, c.label), h('td', { colspan: 3, class: 'l small' }, c.error))
+    : h('tr', { class: c.off_front.length || c.new_on_front.length ? 'warn' : '' }, h('td', { class: 'l' }, c.label),
+      h('td', { class: 'l small' }, c.front_batches.join(', ')), h('td', { class: 'l', style: c.off_front.length ? 'color:var(--danger)' : '' }, c.off_front.join(', ') || '—'),
+      h('td', { class: 'l' }, c.new_on_front.join(', ') || '—')))));
+  $('sw-sens-note').textContent = s.hinges.length
+    ? `⚠ Pareto 前沿取决于：${s.hinges.map((k) => SENS_ZH[k] || k).join('、')}`
+    : 'Pareto 前沿上的点在各假设下不变';
 }
 function renderBudget(r) {
   const b = r.budget;
@@ -1287,8 +1337,9 @@ async function runSweep() {
   delete $('sw-status').dataset.done;
   const v0 = S.ver, m = model(), decode = S.sc.serving.phase === 'decode';
   try {
-    clearExport('sw');
-    const bs = body({ path, values: vals });
+    clearExport('sw'); $('sw-sens-box').hidden = true;
+    const sens = $('sw-sens').checked;
+    const bs = body({ path, values: vals, ...(sens ? { sensitivity: true } : {}) });
     const r = await track(req('sweep', '/api/sweep', bs));
     if (!r) return;
     const full = isFull(m), gen = m.domain === 'gen';
@@ -1298,17 +1349,22 @@ async function runSweep() {
     put($('sw-chart'), line(r.rows.map((x) => ({ x: x.value, y: x.tok_s_card, y2: lat(x) })),
       { xl: SWEEP_ZH[path] || path, yl: `${u}/s/卡`, y2l: latL, log: vals.every((v) => v > 0) && Math.max(...vals) / Math.min(...vals) >= 16 }));
     const head = h('tr', {}, h('th', { class: 'l' }, SWEEP_ZH[path] || path), h('th', {}, latL),
-      h('th', {}, `${u}/s`), h('th', {}, `${u}/s/卡`), h('th', {}, '瓶颈'), h('th', {}, '有效 MAC'), h('th', {}, '放得下'));
-    put($('sw-tbl'), h('thead', {}, head), h('tbody', {}, r.rows.map((x) => h('tr', {},
+      h('th', {}, `${u}/s`), h('th', {}, `${u}/s/卡`), h('th', {}, '瓶颈'), h('th', {}, '有效 MAC'), h('th', {}, '放得下'),
+      ...(r.sensitivity ? [h('th', { class: 'l' }, '敏感度（排序 / 瓶颈翻转）')] : []));
+    const fl = r.sensitivity ? r.sensitivity.row_flags : null;
+    put($('sw-tbl'), h('thead', {}, head), h('tbody', {}, r.rows.map((x, i) => h('tr', { class: fl && fl[i].length ? 'warn' : '' },
       h('td', { class: 'l' }, x.value), h('td', {}, num(lat(x))), h('td', {}, num(x.tok_s)),
       h('td', {}, num(x.tok_s_card)), h('td', {}, boundTag(x.bound)), h('td', {}, pct(x.array_util)),
-      h('td', {}, x.fits ? '✓' : h('span', { style: 'color:var(--danger)' }, '✗'))))));
+      h('td', {}, x.fits ? '✓' : h('span', { style: 'color:var(--danger)' }, '✗')),
+      ...(fl ? [h('td', { class: 'l small' }, fl[i].length ? '⚠ ' + fl[i].join('、') : '稳健')] : [])))));
+    renderSweepSens(r.sensitivity, SWEEP_ZH[path] || path, u);
     const latK = full ? (gen ? '单段延迟（s）' : '批延迟（ms）') : decode ? 'TPOT（ms）' : 'TTFT（ms）';
     setExport('sw', { kind: 'sweep', title: `参数扫描：${SWEEP_ZH[path] || path}`, raw: r, scenario: snap(bs), rows: () => r.rows, cols: [
       { key: 'path', label: '扫描参数', v: () => path }, { key: 'param', label: SWEEP_ZH[path] || path, v: (x) => x.value },
       { key: 'latency', label: latK, v: lat }, { key: 'thr', label: `吞吐（${u}/s）`, v: (x) => x.tok_s }, { key: 'thr_card', label: `吞吐（${u}/s/卡）`, v: (x) => x.tok_s_card },
       { key: 'bound', label: '瓶颈', v: (x) => x.bound }, { key: 'mac_util_pct', label: '有效 MAC 利用率（%）', v: (x) => (x.array_util != null ? x.array_util * 100 : null) },
-      { key: 'fits', label: '放得下', v: (x) => yesNo(x.fits) }] });
+      { key: 'fits', label: '放得下', v: (x) => yesNo(x.fits) },
+      ...(fl ? [{ key: 'sens_flags', label: '敏感度翻转（假设）', v: (x) => fl[r.rows.indexOf(x)].join('；') }] : [])] });
     $('sw-status').textContent = `${r.rows.length} 点${staleTag(v0)}`;
     $('sw-status').dataset.done = '1';
   } catch (e) { $('sw-status').textContent = '错误：' + e.message; $('sw-status').dataset.done = '1'; }   // 0.85: stale-flag errors too
@@ -1318,8 +1374,8 @@ async function runPareto() {
   delete $('sw-status').dataset.done;
   const v0 = S.ver, m = model();
   try {
-    clearExport('sw');
-    const bp = body();
+    clearExport('sw'); $('sw-sens-box').hidden = true;
+    const bp = body($('sw-sens').checked ? { sensitivity: true } : {});
     const r = await track(req('sweep', '/api/pareto', bp));
     if (!r) return;
     const full = isFull(m), gen = m.domain === 'gen';
@@ -1329,13 +1385,18 @@ async function runPareto() {
     const thr = (p) => full ? p.units_s_card : p.tok_s_card;
     const pts = r.front.map((p) => ({ x: p.batch, xlabel: 'B' + p.batch, y: thr(p), y2: lat(p) }));
     put($('sw-chart'), line(pts, { xl: `batch（布局 ${r.layout}，Pareto 前沿：延迟 ↑ 换吞吐 ↑）`, yl: `${u}/s/卡`, y2l: latL, log: true }));
-    const head = h('tr', {}, h('th', { class: 'l' }, 'batch'), h('th', {}, latL), h('th', {}, `${u}/s/卡`));
-    put($('sw-tbl'), h('thead', {}, head), h('tbody', {}, r.front.map((p) => h('tr', {},
-      h('td', { class: 'l' }, p.batch), h('td', {}, num(lat(p))), h('td', {}, num(thr(p)))))));
+    const pf = r.sensitivity ? r.sensitivity.point_flags : null;
+    const head = h('tr', {}, h('th', { class: 'l' }, 'batch'), h('th', {}, latL), h('th', {}, `${u}/s/卡`),
+      ...(pf ? [h('th', { class: 'l' }, '敏感度（在该假设下被支配、离开前沿）')] : []));
+    put($('sw-tbl'), h('thead', {}, head), h('tbody', {}, r.front.map((p, i) => h('tr', { class: pf && pf[i].length ? 'warn' : '' },
+      h('td', { class: 'l' }, p.batch), h('td', {}, num(lat(p))), h('td', {}, num(thr(p))),
+      ...(pf ? [h('td', { class: 'l small' }, pf[i].length ? '⚠ ' + pf[i].join('、') : '稳健')] : [])))));
+    renderParetoSens(r.sensitivity);
     setExport('sw', { kind: 'pareto', title: `Pareto 前沿（布局 ${r.layout}）`, raw: r, scenario: snap(bp), rows: () => r.front, cols: [
       { key: 'layout', label: '布局', v: () => r.layout }, { key: 'batch', label: 'batch', v: (p) => p.batch },
       { key: 'latency', label: full ? (gen ? '单段延迟（s）' : '批延迟（ms）') : 'TPOT（ms）', v: lat },
-      { key: 'thr_card', label: `吞吐（${u}/s/卡）`, v: thr }] });
+      { key: 'thr_card', label: `吞吐（${u}/s/卡）`, v: thr },
+      ...(pf ? [{ key: 'sens_flags', label: '敏感度：离开前沿（假设）', v: (p) => pf[r.front.indexOf(p)].join('；') }] : [])] });
     $('sw-status').textContent = `Pareto ${r.front.length} 点${staleTag(v0)}`;
     $('sw-status').dataset.done = '1';
   } catch (e) { $('sw-status').textContent = '错误：' + e.message; $('sw-status').dataset.done = '1'; }   // 0.85: stale-flag errors too

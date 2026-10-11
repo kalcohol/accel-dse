@@ -3,6 +3,33 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.97.0]
+
+### Fixed
+- `Chip.sram_port_Bpc_per_engine` (0.96) crashed every GEMM that took the engine-group split (`mapping._gemm_cost`
+  rebuilt the sub-chip with both port fields set → ValueError). The sub-chip now clears the per-engine field. Default
+  untouched; the 0.96 test never evaluated a scenario with the field set.
+
+### Added
+- Sweep / Pareto sensitivity (opt-in: `"sensitivity": true` on `/api/sweep` and `/api/pareto`; UI 敏感度复核 checkbox).
+  Every point is re-run under the same alternatives as the eval panel (no overlap; DRAM efficiency 0.5 / 0.9; ¼ of the
+  vector lanes), each applied to the swept point itself. Sweeps report, per alternative, the best values (ties within
+  1 %), the knee (first value within 5 % of the best), discordant pairs (> 1 % both ways) and bottleneck flips, with a
+  flag on every affected row. Pareto reports base points that leave the front and new ones that join it. Flags appear
+  in the tables and in the CSV / JSON exports. An alternative that is swept itself is skipped.
+- `/api/sensitivity`: the eval sensitivity block on its own. The UI now renders the main result first and fills the
+  敏感度 panel after it. `/api/eval` still includes the block by default. The block now carries `scope` (PD pools not
+  re-evaluated) and uses the domain unit in the UI.
+
+### Validation
+- FP8 attention against FlashAttention-3 (H100 SXM5): FP16 up to 740 TFLOPS, FP8 ≈ 1.2 PFLOPS, so ≈ 1.6× at hd 256.
+  The H100-like preset gives 1.76× with no softmax overlap and 2.0× with full overlap at hd 256, and 1.61× / 2.0× at
+  hd 128: the measured ratio falls inside the bracket. Absolute TFLOPS on this preset (959 bf16) exceed FA3's 740
+  because the preset's mac_eff is not FA3-calibrated; that is a property of the preset, not of the FP8 path. FA3 fuses
+  Q quantisation into RoPE (free); the model charges one vector op per Q element (a slight over-count).
+- Sensitivity latency (cold, server): qwen3-8b eval 5.5 → 10 ms, DeepSeek-V3 prefill 15 → 37 ms, DiT 99 → 498 ms.
+  Hence the separate endpoint.
+
 ## [0.96.0]
 
 ### Added (opt-in; NPU catalog fingerprint c034bfe3 unchanged)

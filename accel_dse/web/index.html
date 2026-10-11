@@ -407,6 +407,7 @@
       <label>扫描变量<select id="sw-path"></select></label>
       <label>取值<input type="text" id="sw-values" value="1,2,4,8,16,32,64"></label>
       <button class="btn" id="sw-run">扫描</button>
+      <label class="small" title="0.97：在无重叠 / DRAM 效率 0.5、0.9 / 向量 lane ÷4 下重算每个点（约 ×4 计算），标出最佳取值、拐点（达最佳 95%）、排序或 Pareto 前沿随假设改变的点"><input type="checkbox" id="sw-sens"> 敏感度复核</label>
       <button class="btn ghost" id="pf-run">延迟–吞吐 Pareto</button>
       <span class="small muted" id="sw-status"></span>
       <span id="sw-exp" hidden><button class="btn ghost" id="sw-exp-csv" title="导出当前结果表（CSV，UTF-8 带 BOM，Excel 可直接打开；表头含单位，数值为未取整的原始值）">导出 CSV</button> <button class="btn ghost" id="sw-exp-json" title="导出当前结果（JSON：场景快照、列定义、逐行数据与原始 API 响应）">导出 JSON</button></span>
@@ -415,6 +416,11 @@
     <p class="small muted">受控替换：只改所选一个变量，其余保持左侧场景不变。</p>
     <div class="chart" id="sw-chart"></div>
     <div class="scroll"><table class="tbl" id="sw-tbl"></table></div>
+    <div id="sw-sens-box" hidden>
+      <h4>敏感度复核 <span class="small muted">（结论在「假设」常数变化下是否成立）</span></h4>
+      <div class="note small" id="sw-sens-note"></div>
+      <div class="scroll"><table class="tbl" id="sw-sens-tbl"></table></div>
+    </div>
   </section>
 
   <section class="tab" id="tab-models" hidden>

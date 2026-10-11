@@ -156,7 +156,7 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
             # a chip-total budget split over the groups that are streaming, accumulators stay per core)
             for act in (_actives(par) if sched == "auto" else (par,)):
                 sub = replace(ch, engines=g, split_instances=False, instance_sched="wide",
-                              sram_port_Bpc=ch.port_Bpc / act, acc_kib=ch.acc_kib * g / ch.engines)
+                              sram_port_Bpc=ch.port_Bpc / act, sram_port_Bpc_per_engine=None, acc_kib=ch.acc_kib * g / ch.engines)
                 # auto: when instances < active groups, also split each instance's M rows over s groups (row-parallel;
                 # every group streams the full K×N operand through its share of the port)
                 # 0.72: or split its N columns over s groups (each group streams the full M×K operand)

@@ -2038,3 +2038,28 @@ The fix found along the way: `dequant_elems_per_cycle` is now honoured (it was a
   H100 Triad ≈ 87–89 %; Grace LPDDR5X 80–95 %, NVIDIA up to 98 %, independent 90.6 %). Both sit well above 0.7, which
   stands for inference traffic (mixed read / write, irregular KV), not for streaming. Type-specific defaults would need
   inference-traffic measurements per type, and none are public.
+
+## 43. 0.97 — adversarial review of 0.96, and sensitivity for sweeps / Pareto
+
+* **FP8 attention vs FA3.** FA3 on H100 SXM5 measures FP16 ≤ 740 TFLOPS and FP8 ≈ 1.2 PFLOPS (≈ 1.6×, hd 256). The
+  exponential runs on the MUFU at the same rate in both precisions, so FP8 gains less than 2×. The model keeps softmax
+  on the vector path, which reproduces this structure. H100-like preset: 1.76× serial / 2.0× overlapped at hd 256, and
+  1.61× / 2.0× at hd 128. The measurement lies in that bracket. Absolute numbers depend on the preset's `mac_eff`.
+  DiT full-sequence attention (`orient` ops) runs in the activation format and ignores `attn_fmt`; use an FP8
+  activation override there.
+* **Per-engine SRAM port × D2D.** Bug fixed: the engine-group split crashed when the field was set. At fixed silicon
+  (32 engines split over 1 / 2 / 4 dies, port-bound) the per-engine port gives the same throughput within D2D traffic
+  (6.47k → 6.30k → 5.98k tok/s prefill). The absolute port reproduces the trap (6.47k → 12.4k → 14.7k).
+* **Sensitivity panel.** The base value equals the summary, including under best_batch (the UI re-sends the chosen
+  batch). PD pools are outside its scope (`scope`). Cold server latency: +4–25 ms for LLMs, +0.4 s for DiT, hence
+  `/api/sensitivity` and asynchronous filling.
+* **Sweep / Pareto.** Monotone resource sweeps never swap order. Their design conclusion is the knee, and the knee
+  moves under the alternatives. Examples (1P):
+  - LPDDR prefill, SRAM sweep: knee 64 MiB; no overlap → 256 MiB; DRAM efficiency 0.5 → 128 MiB.
+  - qwen3-8b HBM decode, clock sweep: knee 0.8 GHz; no overlap → 1.5 GHz; DRAM efficiency 0.9 → 1.2 GHz.
+  - DeepSeek-V3 decode, link sweep: 50 GB/s is enough; no overlap → 200 GB/s.
+  - FP8 batch sweep: knee 128; ¼ lanes → 16, with the bottleneck flipping to VECTOR.
+
+  These are the conclusions to report with their assumption. The batch Pareto front was unchanged in every case
+  tried: it is capacity-limited and monotone in batch, and capacity does not depend on the three constants. The flags
+  are still there for safety.
