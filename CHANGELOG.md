@@ -3,6 +3,16 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.77.0] - 2026-10-11
+
+2026 年发布模型的锁定 + 硬件侧（映射 / 内存规划）对抗性审计（第 11 轮）。数值不变。
+
+- 2026 年模型（GLM-5 / 5.2 / 5.3 / 5.3-Flash、DeepSeek-V4-Flash / V4-Pro / V4.1-Flash、Kimi-K3 / K2.7-Code、Qwen3.8-2.4T / 27B / Flash-Next）在 Hugging Face 均已公开：本地快照（2026-10-08 抓取）与线上 config.json 逐键一致，safetensors 索引 total_size 与张量数完全一致；标签准确（Kimi-K2.7-Code 标为 nearest：用户要求的「Kimi K2.7」无同名发布）。由常驻测试锁定。
+- 硬件侧手算核对（均一致，未发现 bug）：DRAM 有效带宽 = 原始 × 0.7（LPDDR6 另 × 8/9 载荷）；解码 DRAM 时间 = 字节 / 有效带宽；SRAM / SLC 容量扫描单调、饱和时退化为纯计算；SLC pin 命中 = min(容量, 每步足迹)、t_slc = 命中 / slc_GBps，LRU 对大于缓存的循环扫描命中为 0；AWQ int4 = 4 + 20/128 bit、反量化 2 次向量操作 / 元素 / lane；FP8 检查点按 W8A8 原生；容量按 GiB；集合通信 α-β（t_sync = α × 次数、环形 2(n−1)/n）；D2D 分层（层内 RS/AG + 层间 AR 的 α 与字节份额）；MAC 计数。
+- 待决（未改，已文档化的口径）：能耗中的链路字节按「集合通信载荷」计（MODEL.md：链路字节按载荷口径、按各层实际发送字节之比拆分），而非物理发送字节（环形 all-reduce 为 2(n−1)/n × 载荷，all-to-all 为 (n−1)/n）。改为物理口径会改变所有 TP > 1 场景的链路能耗，需要用户决定。
+- 新增常驻测试 `tests/test_core_077.py`（7 项）。
+- 指纹：默认 fp / fpmc 与 0.76.0 完全一致（75/75 × 2）。全量 423 通过（-j 8、隐藏 pytest，334 s）。
+
 ## [0.76.0] - 2026-10-11
 
 对抗性审计（第 10 轮）：LLM / VLM 逐算子形状对官方配置与参考代码，解码 KV 读取与内存规划字节核对。**有意改变 3 个模型的数值**。
