@@ -731,7 +731,11 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         H = c["num_attention_heads"]
         KV = c.get("num_key_value_heads") or H
         hd = c.get("head_dim") or h // H
-        alin, core = _gqa(h, H, KV, hd, out_gate=bool(c.get("attn_output_gate")) or is_minimax)
+        # 0.76: sigmoid output gate on the softmax-attention q_proj (×2) — Qwen3-Next hard-codes it (modeling_qwen3_next
+        # Qwen3NextAttention, no config key); MiniMax-Text-01 / M1 softmax layers have none (MiniMaxText01Attention:
+        # plain q/k/v/o — the output_gate belongs to the lightning layers, see lin_attn)
+        gate = c.get("attn_output_gate")
+        alin, core = _gqa(h, H, KV, hd, out_gate=bool(mt == "qwen3_next" if gate is None else gate))
         return alin, core, 2 * hd
 
     def lin_attn(i: int):
