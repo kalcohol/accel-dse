@@ -9,6 +9,8 @@ datasheet peaks, nothing tuned).  Metrics and how accel-dse predicts them:
   max_tok_s_total    in-flight batching under infinite load, batch chosen by the runtime: the max over B (powers of two,
                      must fit) of B·OSL / (TTFT(B, ISL) + (OSL − 1)·mean TPOT) — a static-batch proxy (an upper bound
                      on the decode side, since in-flight batching interleaves prefill chunks with decode)
+  max_tok_s_gpu      (0.91) the same max-load search ÷ the replica's cards (tp · dp): TRT-LLM ≥ 1.0 "Per GPU Output
+                     Throughput"; a DEP-N column is attention-DP N + EP N (Layout tp=1, dp=N, ep=N)
 
 Variants (``eff``):  "catalog" = DRAM efficiency of the memory catalog (0.7 「假设」), everything else as shipped;
 "peak" = DRAM efficiency 1.0 (pure datasheet peak).  An explicit efficiency factor is NOT applied by default; see
@@ -30,8 +32,9 @@ from .refhw import REF_HW
 from .scenario import Scenario, Serving
 
 DATA = Path(__file__).resolve().parents[1] / "data" / "ext_measurements.json"
-FP8 = (("attn", "fp8"), ("mlp", "fp8"), ("act", "fp8"), ("kv", "fp8"))
-NVFP4 = (("attn", "nvfp4"), ("mlp", "nvfp4"), ("act", "nvfp4"), ("kv", "fp8"))   # 0.69: TRT-LLM FP4 ckpt W4A4 + FP8 KV 「假设」
+FP8 = (("attn", "fp8"), ("mlp", "fp8"), ("expert", "fp8"), ("act", "fp8"), ("kv", "fp8"))   # 0.91: + routed experts
+NVFP4 = (("attn", "nvfp4"), ("mlp", "nvfp4"), ("expert", "nvfp4"), ("act", "nvfp4"), ("kv", "fp8"))   # 0.91: + experts   # 0.69: TRT-LLM FP4 ckpt W4A4 + FP8 KV 「假设」
+MXFP4 = (("kv", "fp8"),)   # 0.91: gpt-oss release checkpoint (MXFP4 experts) as published; TRT-LLM 1.2 config FP8 KV
 EFF = {"catalog": None, "peak": 1.0}
 
 
@@ -79,6 +82,7 @@ class _Pt:
 
 DATA_MOE = DATA.with_name("ext_measurements_moe.json")
 DATA_R3 = DATA.with_name("ext_measurements_r3.json")
+DATA_R4 = DATA.with_name("ext_measurements_r4.json")   # 0.91: TensorRT-LLM 1.2.0 perf-overview (B200 FP4 / H200 FP8)
 
 
 def rows(path: Path = DATA) -> list[dict]:
@@ -93,6 +97,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
     chip = h.chip if v.get("mac_eff") is None else replace(h.chip, mac_eff=v["mac_eff"])
     if v.get("split"):                 # 0.70: SMs run independent GEMM instances (Chip.split_instances)
         chip = replace(chip, split_instances=True)
+    if v.get("sched"):                 # 0.91: Chip.instance_sched (reference chips ship "wide")
+        chip = replace(chip, instance_sched=v["sched"])
     mem_eff = e if isinstance(e, float) else EFF[e]
     extra = {}
     if r.get("node_cards"):            # 0.67 multi-node rows: cards per node + scale-out NIC per card
@@ -104,7 +110,7 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
     return Scenario(model=r["model"], chip=chip, mem_id=h.mem_id, mem_eff=mem_eff, link=h.link, mapping="reconf",
                     exec_overlap=ov,
                     layout=Layout(tp=r["tp"], dp=r.get("dp", 1), ep=r.get("ep", 1), etp=r.get("etp", 1)),
-                    formats_override={"fp8": FP8, "nvfp4": NVFP4}.get(r["dtype"], ()),
+                    formats_override={"fp8": FP8, "nvfp4": NVFP4, "mxfp4": MXFP4}.get(r["dtype"], ()),
                     serving=Serving(**sv), **extra, **({"layer_overhead_us": v["layer_us"]} if v.get("layer_us") else {}))
 
 
@@ -163,7 +169,14 @@ def predict(r: dict, eff: str = "catalog") -> dict:
             if best is None or v > best["pred"]:
                 best = {"pred": v, "fits": True, "batch": b, **det}
         return best or {"pred": float("nan"), "fits": False}
+    if m == "max_tok_s_gpu":           # 0.91: same max-load search, per GPU of the replica (TRT-LLM ≥ 1.0 tables)
+        best = predict({**r, "metric": "max_tok_s_total"}, eff)
+        return {**best, "pred": best["pred"] / _cards(r)}
     raise ValueError(m)
+
+
+def _cards(r: dict) -> int:
+    return r["tp"] * r.get("dp", 1)
 
 
 def table(eff: str = "catalog", path: Path = DATA) -> list[dict]:
@@ -189,6 +202,15 @@ def split_variant(base: str) -> str:
     """0.70: ``base`` variant with Chip.split_instances (GEMM instances spread over SMs)."""
     name = base + "+S"
     VARIANTS.setdefault(name, {**VARIANTS.get(base, {"eff": base}), "split": True})
+    return name
+
+
+def sched_variant(base: str, sched: str = "auto") -> str:
+    """0.91: ``base`` variant with Chip.instance_sched = ``sched``.  "wide" (reference default) runs one GEMM as a single
+    array spanning all SMs' columns, so N < engines·cols idles most of the chip (large prefill GEMMs ≈ 12–24 % on
+    H100 / B200); "auto" also splits M / N over SM groups — how a GPU tiles CTAs."""
+    name = f"{base}+{'A' if sched == 'auto' else sched}"
+    VARIANTS.setdefault(name, {**VARIANTS.get(base, {"eff": base}), "sched": sched})
     return name
 
 
@@ -271,7 +293,7 @@ def _cb_at(r: dict, b: int, eff: str, C: int = CB_CHUNK):
 
 
 def predict_cb(r: dict, eff: str = "catalog") -> dict:
-    """max_tok_s_total rows under the continuous-batching proxy: best power-of-two running batch that fits."""
+    """max_tok_s_total (and 0.91 max_tok_s_gpu, ÷ cards) rows under the continuous-batching proxy: best power-of-two running batch that fits."""
     best = None
     for k in range(0, 14):
         v, fits = _cb_at(r, 2 ** k, eff, r.get("cb_chunk", CB_CHUNK))
@@ -279,4 +301,6 @@ def predict_cb(r: dict, eff: str = "catalog") -> dict:
             break
         if best is None or v > best["pred"]:
             best = {"pred": v, "fits": True, "batch": 2 ** k}
+    if best and r["metric"] == "max_tok_s_gpu":
+        best["pred"] /= _cards(r)
     return best or {"pred": float("nan"), "fits": False}
