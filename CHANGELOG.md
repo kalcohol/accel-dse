@@ -3,6 +3,28 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.99.0]
+
+### Changed (opt-in `pipe` only; NPU default and fingerprint c034bfe3 unchanged)
+- `exec_overlap = "pipe"` is now replayed exactly, with no extrapolation. A streaming flow-shop simulator advances
+  repeated layers one at a time and jumps ahead only once the state, relative to the compute clock, repeats; that
+  jump is exact for a deterministic flow shop. On 189 catalog points (base, TP2, SRAM 256 MiB) the result is
+  bit-equal to brute-force replay. The worst evaluation takes 1.9 s (protenix, SRAM 256 MiB); DiT takes ≤ 0.3 s.
+  Tile sizes are whole bytes, so the window sums are exact (replaces the 0.98 float tolerance).
+- DMA tile = min(1 MiB, buffer / 2): double buffering needs two tiles. A larger tile used to serialise
+  load and compute (q8 decode b1: 1.11× → 1.76× stage at a 2 MiB tile).
+- Sensitivity panel / sweep / Pareto: the overlap alternatives are bracketed. The panel shows
+  `pipe` first (现实估计), then `serial` (吞吐下界), and `stage` (吞吐上界) when the base is not stage. New
+  `base_label` field. Sweep cases are "pipe（现实估计）", then "无重叠（下界）".
+
+### Validation
+- Knees from 0.97 under pipe (val5/v099/knees.log):
+  - **Robust:** HBM decode clock (0.8 GHz), FP8 decode clock (1.5), batch (128), mac_eff (0.9).
+  - **Shifts:** LPDDR prefill SRAM 64 → 128 MiB; D2D package 1 → 2; DeepSeek-V3 link 50 → 400 GB/s (the link
+    curve is flat under stage); Wan frames best 33 → 17.
+- Sensitivity of pipe to its constants (tile 256 KiB … 4 MiB, minimum 8 … 128 tiles; 7 cases × cross-op on / off):
+  ≤ 0.7 % change (val5/v099/consts.log). The one large effect was tile > buffer / 2, which is now capped.
+
 ## [0.98.0]
 
 ### Added (opt-in; NPU default `exec_overlap = "stage"` and fingerprint c034bfe3 unchanged)

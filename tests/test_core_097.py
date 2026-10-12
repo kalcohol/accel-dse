@@ -61,7 +61,7 @@ def test_sweep_sensitivity_flags():
     s = o["sensitivity"]
     assert s["knee_value"] == 64
     by = {c["label"]: c for c in s["cases"]}
-    assert by["无重叠"]["knee_value"] == 256 and by["无重叠"]["knee_changed"]       # "64 MiB is enough" hinges on overlap
+    assert by["无重叠（下界）"]["knee_value"] == 256 and by["无重叠（下界）"]["knee_changed"]       # "64 MiB is enough" hinges on overlap
     assert by["DRAM 效率 0.5"]["knee_value"] == 128
     assert "exec_overlap" in s["hinges"] and "mem_eff" in s["hinges"]
     assert len(s["row_flags"]) == 5

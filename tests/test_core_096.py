@@ -55,7 +55,7 @@ def test_sensitivity_block():
     o = api.api_eval(body)
     s = o["sensitivity"]
     keys = [x["key"] for x in s["rows"]]
-    assert keys == ["exec_overlap", "pipe", "mem_eff", "mem_eff", "vector_lanes"]     # 0.98: + pipe
+    assert keys == ["pipe", "exec_overlap", "mem_eff", "mem_eff", "vector_lanes"]     # 0.99: pipe first (现实), serial (下界)
     assert abs(s["base_tok_s"] - o["summary"]["tok_s"]) < 1e-9
     eff = {x["label"]: x["ratio"] for x in s["rows"] if x["key"] == "mem_eff"}
     assert any(abs(v - 0.5 / 0.7) < 1e-6 for v in eff.values())                   # DRAM-bound: ∝ efficiency
@@ -63,7 +63,7 @@ def test_sensitivity_block():
     assert "sensitivity" not in api.api_eval({**body, "sensitivity": False})
     b2 = {**body, "scenario": {**body["scenario"], "mem_eff": 0.5, "exec_overlap": "serial"}}
     s2 = api.api_eval(b2)["sensitivity"]
-    assert [x["key"] for x in s2["rows"]] == ["mem_eff", "vector_lanes"]          # no self-comparisons
+    assert [x["key"] for x in s2["rows"]] == ["exec_overlap", "mem_eff", "vector_lanes"]   # 0.99: + stage (上界)          # no self-comparisons
 
 
 def test_ui_and_cli_wiring():

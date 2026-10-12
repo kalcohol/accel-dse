@@ -38,8 +38,6 @@ import math
 
 PIPE_TILE = float(2 ** 20)    # bytes per DMA tile (half the minimum 2 MiB staging area) 「假设」
 PIPE_MIN_TILES = 32           # tiles per op at least (bounds the prologue to 1/32 of the op's load) 「假设」
-PIPE_REPEATS = 3              # identical layers simulated before extrapolating the steady-state period
-PIPE_MAX_TILES = 400_000      # stages up to this many tiles are replayed exactly; longer ones extrapolate
 
 
 def items_of(ops, op_secs, comm_secs, act_bytes) -> list[tuple]:
@@ -86,7 +84,7 @@ def items_of(ops, op_secs, comm_secs, act_bytes) -> list[tuple]:
     return out
 
 
-def _tiles(items, f: dict, sec_per_byte: float, dma_scale: float) -> list[tuple]:
+def _tiles(items, f: dict, sec_per_byte: float, dma_scale: float, tile: float = PIPE_TILE) -> list[tuple]:
     """(bytes, load s, compute s) per tile."""
     out = []
     for c, b, comm in items:
@@ -101,62 +99,97 @@ def _tiles(items, f: dict, sec_per_byte: float, dma_scale: float) -> list[tuple]
             continue
         # the tiling is the op's (from its touched bytes), not the plan's: pinning more of an op shrinks each tile's
         # load but never re-tiles it (monotone in SRAM)
-        k = max(PIPE_MIN_TILES, math.ceil(raw / PIPE_TILE))
+        k = max(PIPE_MIN_TILES, math.ceil(raw / tile))
         m = nb * sec_per_byte * dma_scale / k
         out.extend([(nb / k, m, c / k)] * k)
     return out
 
 
+class _Sim:
+    """Two-engine flow shop, fed tile by tile: the DMA loads tiles in order, at most ``buf`` bytes ahead of compute;
+    compute runs tiles in order once loaded.  cross_op False: an op's first load waits for the previous op's compute
+    (kernel boundary).  Tile sizes are whole bytes (rounded up), so the window sums are exact."""
+    __slots__ = ("buf", "cross_op", "d_end", "c_end", "last", "win", "wsum")
+
+    def __init__(self, buf: float, cross_op: bool = True):
+        self.buf, self.cross_op = math.floor(buf), cross_op
+        self.d_end = self.c_end = self.last = 0.0      # last = compute end of the newest tile that left the window
+        self.win = []                                  # [size, compute end] of tiles still holding buffer space
+        self.wsum = 0
+
+    def feed(self, tiles, op_start: bool = False) -> None:
+        win, buf = self.win, self.buf
+        first = op_start and not self.cross_op
+        for sz, m, c in tiles:
+            start = self.d_end
+            if sz > 0:
+                sz = math.ceil(sz)
+                h = 0
+                while self.wsum + sz > buf and h < len(win):    # tiles before must have been consumed
+                    self.wsum -= win[h][0]; self.last = win[h][1]; h += 1
+                if h:
+                    del win[:h]
+                if self.last > start:
+                    start = self.last
+                if first and self.c_end > start:
+                    start = self.c_end
+            first = False
+            self.d_end = start + m
+            if sz > 0 and self.d_end > self.c_end:
+                self.c_end = self.d_end
+            self.c_end += c
+            win.append([sz, self.c_end]); self.wsum += sz
+
+    def state(self):
+        """Everything that decides the future, relative to the compute clock."""
+        c = self.c_end
+        return (self.d_end - c, self.last - c, tuple((s, d - c) for s, d in self.win))
+
+    def shift(self, dt: float) -> None:
+        self.d_end += dt; self.c_end += dt; self.last += dt
+        for w in self.win:
+            w[1] += dt
+
+
 def makespan(tiles: list[tuple], buf: float, cross_op: bool = True, op_starts: set | None = None) -> float:
-    """Two-engine flow shop: the DMA loads tiles in order, at most ``buf`` bytes ahead of compute; compute runs tiles
-    in order once loaded.  cross_op False: an op's first load waits for the previous op's compute (kernel boundary)."""
-    n = len(tiles)
-    cum = [0.0] * (n + 1)
-    for i, t in enumerate(tiles):
-        cum[i + 1] = cum[i] + t[0]
-    done = [0.0] * n
-    lim = buf * (1 + 1e-9) + 1e-6 * (cum[n] / max(n, 1))   # cum is a float prefix sum: compare with a tolerance
-    d_end = c_end = 0.0
-    p = 0
-    for j, (sz, m, c) in enumerate(tiles):
-        start = d_end
-        if sz > 0:
-            while cum[j + 1] - cum[p] > lim and p < j:     # tiles before p must have been consumed
-                p += 1
-            if p > 0:
-                start = max(start, done[p - 1])
-            if not cross_op and op_starts is not None and j in op_starts and j > 0:
-                start = max(start, done[j - 1])
-        d_end = start + m
-        c_end = max(c_end, d_end if sz > 0 else c_end) + c
-        done[j] = c_end
-    return c_end
+    sim = _Sim(buf, cross_op)
+    if op_starts is None:
+        sim.feed(tiles)
+    else:
+        for j, t in enumerate(tiles):
+            sim.feed([t], j in op_starts)
+    return sim.c_end
+
+
+def _same(a, b, scale: float) -> bool:
+    tol = 1e-12 * max(scale, 1e-30)
+    if len(a[2]) != len(b[2]) or abs(a[0] - b[0]) > tol or abs(a[1] - b[1]) > tol:
+        return False
+    return all(x[0] == y[0] and abs(x[1] - y[1]) <= tol for x, y in zip(a[2], b[2]))
 
 
 def stage_pipe_time(segments, f: dict, sec_per_byte: float, buf: float, cross_op: bool = True,
                     dma_scale: float = 1.0, tail_comm: float = 0.0, hidden_link: float = 0.0) -> float:
-    """segments = [(items, repeat)] in program order.  Repeated layer groups are simulated PIPE_REPEATS times and
-    extrapolated with their steady-state period (measured in isolation)."""
-    def run(seq_items):
-        tl, starts = [], set()
-        for c, b, comm in seq_items:
-            starts.add(len(tl))
-            tl.extend(_tiles([(c, b, comm)], f, sec_per_byte, dma_scale))
-        return makespan(tl, buf, cross_op, starts)
-    def ntiles(its):
-        return sum(1 if comm > 0 or sum(b.values()) <= 0 else max(PIPE_MIN_TILES, math.ceil(sum(b.values()) / PIPE_TILE))
-                   for c, b, comm in its)
-    total = sum(ntiles(its) * n for its, n in segments if its and n > 0)
-    seq, extra = [], 0.0
+    """segments = [(items, repeat)] in program order, replayed exactly.  A repeated layer group is fed one repeat at
+    a time; once a repeat leaves the simulator in the same state relative to the compute clock as the repeat before
+    it, every later repeat adds the same time (the flow shop is deterministic), so the rest are added in one step.
+    This is exact up to a 1e-12 relative tolerance on the state compare. 0.99: replaces the 0.98 extrapolation of
+    very long stages."""
+    sim = _Sim(buf, cross_op)
+    tile = min(PIPE_TILE, buf / 2)      # 0.99: double buffering needs two tiles in the buffer
     for items, n in segments:
         if not items or n <= 0:
             continue
-        if total <= PIPE_MAX_TILES:         # exact: the whole stage is replayed (monotone in every input)
-            seq.extend(items * n)
-            continue
-        r = min(n, PIPE_REPEATS)            # very long stages (DiT steps × layers): steady-state extrapolation
-        seq.extend(items * r)
-        if n > r:
-            t2, t3 = run(items * (PIPE_REPEATS - 1)), run(items * PIPE_REPEATS)
-            extra += (n - r) * max(0.0, t3 - t2)
-    return max(run(seq) + extra, hidden_link) + tail_comm
+        per = [_tiles([it], f, sec_per_byte, dma_scale, tile) for it in items]
+        prev, prev_dt, done = None, None, 0
+        while done < n:
+            t0 = sim.c_end
+            for tl in per:
+                sim.feed(tl, True)
+            done += 1
+            st, dt = sim.state(), sim.c_end - t0
+            if prev is not None and prev_dt is not None and _same(st, prev, sim.c_end) \
+                    and abs(dt - prev_dt) <= 1e-12 * max(sim.c_end, 1e-30):
+                sim.shift(dt * (n - done)); done = n
+            prev, prev_dt = st, dt
+    return max(sim.c_end, hidden_link) + tail_comm

@@ -900,7 +900,7 @@ function budgetMark(x) {
   return null;
 }
 // 0.96: 敏感度 panel — the result under the 「假设」 constants that drive design conclusions (MODEL §41)
-const SENS_ZH = { exec_overlap: '计算 / 访存 / 通信重叠', pipe: '双缓冲推导的重叠（pipe）', mem_eff: 'DRAM 效率', vector_lanes: '向量 lane 数' };
+const SENS_ZH = { exec_overlap: '重叠上下界（stage / serial）', pipe: '硬件推导重叠（pipe，现实估计）', mem_eff: 'DRAM 效率', vector_lanes: '向量 lane 数' };
 function renderSensitivity(r) {
   const s = r.sensitivity;
   $('sens-box').hidden = false;
@@ -917,6 +917,7 @@ function renderSensitivity(r) {
     ? `⚠ 本结果取决于：${s.hinges.map((k) => SENS_ZH[k] || k).join('、')}——比较设计点时请在这些假设下复核（当前 ${num(s.base_tok_s)} ${u}/s，瓶颈 ${s.base_bound}）`
     : `本结果对重叠方式、DRAM 效率、向量 lane 的变化不敏感（阈值 ${pct(s.threshold)}）`;
   if (s.scope && s.scope !== '本场景') $('sens-note').textContent += `；范围：${s.scope}`;
+  if (s.base_label) $('sens-note').textContent += `；当前重叠：${s.base_label}`;   // 0.99: stage = 上界, pipe = 现实, serial = 下界
 }
 // 0.97: sweep / Pareto sensitivity summaries
 function renderSweepSens(s, xl, u) {

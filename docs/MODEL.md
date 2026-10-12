@@ -2100,3 +2100,30 @@ epilogue alone do not explain the gap, which is consistent with §39's per-kerne
 NPU measurements, and on the catalog it moves 8 of 89 points by at most 3 %. Switching would change the fingerprint
 c034bfe3 → f7963e41. Use pipe, and the sensitivity panel's pipe row, to see whether a conclusion survives a
 mechanistic overlap model.
+
+## 45. 0.99 — how robust are the knees under pipe; pipe's own constants
+
+**Knees** (0.97 table, knee = first value within 5 % of the best; stage → pipe → serial):
+
+| sweep | stage | pipe | serial | verdict |
+|---|---|---|---|---|
+| HBM decode clock | 0.8 | 0.8 | 1.5 | robust (holds under realistic overlap) |
+| HBM FP8 decode clock | 1.5 | 1.5 | 1.5 | robust |
+| decode batch | 128 | 128 | 128 | robust |
+| mac_eff | 0.9 | 0.9 | 0.9 | robust |
+| LPDDR prefill SRAM | 64 | 128 | 256 | shifts: exposed tile edges and vector ops make 64 MiB "not enough" |
+| D2D package cards | 1 | 2 | 1 | shifts (not monotone across modes: pipe exposes collectives that D2D shortens) |
+| DeepSeek-V3 link GB/s | 50 (flat) | 400 | 200 | shifts: under stage the link hides behind compute. With dependent collectives on the chain, link bandwidth matters up to 400 GB/s |
+| Wan frames | 33 | 17 | 17 | shifts |
+
+Under stage, a conclusion like "link bandwidth doesn't matter" for MoE EP decode is an artefact of full overlap.
+Quote such conclusions only with the pipe column.
+
+**Pipe constants.** Tile 256 KiB … 4 MiB and minimum 8 … 128 tiles move pipe/stage by ≤ 0.7 % on all 7 cases,
+with cross-op prefetch on and off. The exception was a tile larger than half the buffer, where double buffering is
+impossible. That is now prevented: tile = min(1 MiB, buffer / 2). The conclusions do not hinge on these constants.
+
+**Exactness.** Pipe is now exact for every stage, DiT and protein included. A repeated layer group is fed one
+repeat at a time. Once two consecutive repeats leave the same state relative to the compute clock (DMA lead,
+buffer window), the rest of the group is added in one step. This is exact, because the flow shop is deterministic.
+Worst catalog evaluation: 1.9 s.

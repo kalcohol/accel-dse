@@ -346,7 +346,10 @@ def _lanes_q(s: Scenario) -> Scenario:
 
 # 0.97: one definition shared by eval / sweep / Pareto. (key, short label, transform) — the transform is applied to
 # each evaluated point, so a swept chip keeps "¼ of ITS lanes" and a swept memory keeps its own capacity.
-SENS_CASES = (("exec_overlap", "无重叠", lambda s: None if s.exec_overlap == "serial" else s.replace("exec_overlap", "serial")),
+# 0.99: overlap is bracketed — pipe (hardware-derived, MODEL §44) is the realistic alternative, serial the lower bound
+# on throughput; the stage default is the upper bound
+SENS_CASES = (("pipe", "pipe（现实估计）", lambda s: None if s.exec_overlap in ("pipe", "serial") else s.replace("exec_overlap", "pipe")),
+              ("exec_overlap", "无重叠（下界）", lambda s: None if s.exec_overlap == "serial" else s.replace("exec_overlap", "serial")),
               ("mem_eff", "DRAM 效率 0.5", lambda s: s.replace("mem_eff", 0.5)),
               ("mem_eff", "DRAM 效率 0.9", lambda s: s.replace("mem_eff", 0.9)),
               ("vector_lanes", "向量 lane ÷4", _lanes_q))
@@ -358,10 +361,13 @@ def sensitivity_report(scn: Scenario, r: Result) -> dict:
     no compute / memory / link overlap, DRAM efficiency 0.5 / 0.9, a quarter of the vector lanes."""
     eff = scn.mem_eff if scn.mem_eff is not None else evaluate_mem_eff(scn)
     cases = []
-    if scn.exec_overlap != "serial":
-        cases.append(("exec_overlap", "无重叠（serial：计算 / 访存 / 通信串行）", scn.replace("exec_overlap", "serial")))
-    if scn.exec_overlap not in ("pipe", "serial"):     # 0.98: the hardware-derived overlap (double buffering)
-        cases.append(("pipe", "硬件推导重叠（pipe：双缓冲 + 数据依赖）", scn.replace("exec_overlap", "pipe")))
+    ov = scn.exec_overlap
+    if ov not in ("pipe", "serial"):     # 0.98/0.99: the hardware-derived overlap — the realistic alternative
+        cases.append(("pipe", "pipe：硬件推导重叠（双缓冲 + 数据依赖，现实估计）", scn.replace("exec_overlap", "pipe")))
+    if ov != "stage":
+        cases.append(("exec_overlap", "stage：全重叠（吞吐上界）", scn.replace("exec_overlap", "stage")))
+    if ov != "serial":
+        cases.append(("exec_overlap", "serial：无重叠（吞吐下界）", scn.replace("exec_overlap", "serial")))
     for e in (0.5, 0.9):
         if abs(e - eff) > 1e-9:
             cases.append(("mem_eff", f"DRAM 效率 {e:g}（当前 {eff:g}）", scn.replace("mem_eff", e)))
@@ -380,12 +386,13 @@ def sensitivity_report(scn: Scenario, r: Result) -> dict:
                      "fits": q.fits, "bound_flip": q.bound != r.bound,
                      "hinge": bool(ratio is not None and (abs(ratio - 1) > SENS_HINGE or q.bound != r.bound))})
     hinges = sorted({x["key"] for x in rows if x.get("hinge")})
-    return {"base_tok_s": base, "base_bound": r.bound, "threshold": SENS_HINGE, "rows": rows, "hinges": hinges,
+    return {"base_tok_s": base, "base_bound": r.bound, "base_label": SENS_BASE_LABEL.get(ov, ov), "threshold": SENS_HINGE, "rows": rows, "hinges": hinges,
             "domain": r.model.domain,
             # 0.97: what was re-evaluated (PD pools / budgets are not)
             "scope": "合并部署（PD 池未复核）" if scn.pd.enabled and r.model.kv_cache else "本场景"}
 
 
+SENS_BASE_LABEL = {"stage": "stage 全重叠（吞吐上界）", "pipe": "pipe 硬件推导（现实估计）", "serial": "serial 无重叠（吞吐下界）"}
 SENS_TIE = 0.01     # 0.97: points within 1 % are ties (a flat roofline is not a ranking) 「假设」
 SENS_KNEE = 0.05    # 0.97: knee = first swept value within 5 % of the sweep's best ("enough SRAM / clock") 「假设」
 
@@ -423,7 +430,7 @@ def sweep_sensitivity(scns: list, base_rows: list, path: str, key_of=lambda d: d
     b0, k0 = _near_best(base), _knee(base)
     cases, row_flags = [], [[] for _ in base_rows]
     for key, label, f in SENS_CASES:
-        if key == skip:
+        if key == skip or (skip == "exec_overlap" and key == "pipe"):
             continue
         ts = [f(s) for s in scns]
         if all(t is None for t in ts):
