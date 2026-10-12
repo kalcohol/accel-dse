@@ -204,6 +204,11 @@ def predict(r: dict, eff: str = "catalog") -> dict:
         b = r["dp"] * r["per_gpu_batch"]
         p = _ev(r, eff, phase="decode", batch=b, ctx=r["kv_len"], out_len=max(1, r["osl"]))
         return {"pred": b / p.tpot / r["nodes"], "fits": p.fits, "bound": p.bound, "tpot_s": p.tpot}
+    if m in ("max_tok_s_total", "max_tok_s_gpu") and VARIANTS.get(eff, {}).get("est"):
+        est = estimator(r)                 # 0.105: per-source batching estimator (methodology, not fitted)
+        if est["kind"] == "cb":
+            best = predict_cb({**r, "cb_chunk": est["chunk"]}, eff, max_seqs=est["max_seqs"])
+            return best                     # predict_cb already divides max_tok_s_gpu by the cards
     if m == "max_tok_s_total":
         best = None
         for k in range(0, 14):
@@ -305,6 +310,38 @@ def candidate_variant(base: str = "catalog_kernel") -> str:
     return name
 
 
+# 0.105: batching estimator per source, from each source's published methodology (not fitted). Every max-load
+# source is an in-flight / continuous-batching engine fed the whole dataset at once, so the continuous-batching proxy
+# (predict_cb: chunked prefill fused into decode iterations, best running batch that fits) is the faithful one; the
+# static-batch max search (predict "max_tok_s_total") models no engine. Chunk budget and running-sequence cap are the
+# engine defaults:
+#   trtllm-0.17 / 0.21 / 0.21-b200 / 1.2.0 — trtllm-bench throughput, in-flight batching (perf-overview pages);
+#       max_num_tokens 8192 (TensorRT-LLM LlmArgs / BuildConfig default); running cap = memory (max_batch_size 2048
+#       default not binding below the KV limit at these lengths 「假设」)
+#   rocm-vllm-0.11.2 — vLLM offline throughput (LLM class): V1 continuous batching + chunked prefill;
+#       max_num_batched_tokens 16384 and max_num_seqs 1024 on H100 / MI300X (vllm/engine/arg_utils.py,
+#       get_batch_defaults, UsageContext.LLM_CLASS)
+SOURCE_ESTIMATOR = {
+    "trtllm-0.17": dict(kind="cb", chunk=8192, max_seqs=None),
+    "trtllm-0.21": dict(kind="cb", chunk=8192, max_seqs=None),
+    "trtllm-0.21-b200": dict(kind="cb", chunk=8192, max_seqs=None),
+    "trtllm-1.2.0": dict(kind="cb", chunk=8192, max_seqs=None),
+    "rocm-vllm-0.11.2": dict(kind="cb", chunk=16384, max_seqs=1024),
+}
+
+
+def estimator(r: dict) -> dict:
+    """0.105: batching estimator of a max-load row (SOURCE_ESTIMATOR; unknown sources keep the static search)."""
+    return SOURCE_ESTIMATOR.get(r.get("src"), dict(kind="static", chunk=CB_CHUNK, max_seqs=None))
+
+
+def est_variant(base: str = "catalog") -> str:
+    """0.105: ``base`` with the per-source batching estimator on max-load rows."""
+    name = f"{base}+est"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "est": True})
+    return name
+
+
 def pipe_variant(base: str = "catalog", cross_op: bool = False) -> str:
     """0.98: ``base`` with the hardware-derived overlap (exec_overlap "pipe"). GPUs run one kernel at a time, so by
     default there is no prefetch across ops (cross_op False)."""
@@ -395,10 +432,12 @@ def _cb_at(r: dict, b: int, eff: str, C: int = CB_CHUNK):
     return k / t1, fits
 
 
-def predict_cb(r: dict, eff: str = "catalog") -> dict:
+def predict_cb(r: dict, eff: str = "catalog", max_seqs: int | None = None) -> dict:
     """max_tok_s_total (and 0.91 max_tok_s_gpu, ÷ cards) rows under the continuous-batching proxy: best power-of-two running batch that fits."""
     best = None
     for k in range(0, 14):
+        if max_seqs and 2 ** k > max_seqs:    # 0.105: the engine's running-sequence cap
+            break
         v, fits = _cb_at(r, 2 ** k, eff, r.get("cb_chunk", CB_CHUNK))
         if not fits:
             break
