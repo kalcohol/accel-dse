@@ -154,6 +154,15 @@ def _attn_chip(ch):
     return replace(ch, instance_sched=ch.attn_sched, attn_sched="")
 
 
+def _vec_seconds(ch, op) -> float:
+    """Vector seconds of an op. 0.103 (opt-in Chip.sfu_per_cycle): transcendentals issue on a separate SFU pipe
+    alongside the lanes — the op takes the slower of the two."""
+    t = vector_seconds(ch, op.vec)
+    if ch.sfu_per_cycle and op.sfu:
+        t = max(t, op.sfu / (ch.sfu_per_cycle * ch.freq_ghz * 1e9))
+    return t
+
+
 def _convert_seconds(ch, elem_ops: float) -> float:
     """0.95: format conversion runs on the dequant path — formats.dequant_elems_per_cycle (elements / cycle / chip)
     when set, else the vector lanes (the pre-0.95 behaviour; the field was validated but never read)."""
@@ -188,9 +197,9 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
         else:
             c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=kf, a_fmt=op.a_fmt)
     else:
-        return 0.0, 0.0, 0.0, vector_seconds(ch, op.vec), 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, _vec_seconds(ch, op), 0.0, 0.0, 0.0, 0.0
     t = c.cycles * op.causal / f
-    vec = vector_seconds(ch, op.vec) + _convert_seconds(ch, c.convert_elems * 2.0)   # 2 element-ops / element 「假设」
+    vec = _vec_seconds(ch, op) + _convert_seconds(ch, c.convert_elems * 2.0)   # 2 element-ops / element 「假设」
     mac_share = t if c.bound == "mac" else 0.0
     rate = ch.formats.rate(c.exec_fmt) or 1.0
     ideal = op.flops / 2.0 / (ch.macs * rate * ch.freq_ghz * 1e9)   # 100 % array utilisation

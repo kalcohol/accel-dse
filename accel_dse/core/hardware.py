@@ -50,6 +50,10 @@ class Chip:
     engines: int = 16
     formats: FormatSupport = FormatSupport()
     vector_lanes: int | None = None       # 「假设」 None → 4·cols·engines
+    # 0.103 (opt-in): transcendental (exp / rsqrt / reciprocal) results per cycle on a separate SFU pipe that runs
+    # alongside the lanes; None = transcendentals at the lane rate (pre-0.103). NVIDIA: 16 / clk / SM (CUDA Programming
+    # Guide, native arithmetic throughput, cc 7.x–10.0) vs 64–128 FP32 lanes / SM
+    sfu_per_cycle: float | None = field(default=None, metadata={"omit_default": True})
     gemv_macs: int | None = None          # 「假设」 None → R·C·E / 8 (only used by mappings with a vector unit)
     sram_mib: float = 64.0                # 「假设」
     sram_port_Bpc: float | None = None    # 「假设」 None → 4·(R + C·E)·2 B/cycle

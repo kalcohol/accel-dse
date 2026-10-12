@@ -129,6 +129,7 @@ class Op:
     kv_write: float = 0.0
     state_rw: float = 0.0     # recurrent state bytes read+written
     vec: float = 0.0          # vector element-ops
+    sfu: float = 0.0          # 0.103: transcendentals among them (exp, rsqrt, reciprocal) — Chip.sfu_per_cycle
     comm_kind: str = ""       # allreduce | alltoall | allgather | p2p
     comm_group: int = 1
     comm_bytes: float = 0.0   # payload per rank
@@ -502,7 +503,7 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
                                + ((ph.ctx // r_) * core.cmp_bytes if core.dual else 0.0))
         kv_write = b_loc * q * core.win_bytes + (b_loc * (ctx_tot // r_ - ph.ctx // r_) * core.cmp_bytes
                                                  if core.kv_owner else 0.0)
-    ops.append(Op("softmax", "vector", li, vec=sm_elems * 5, kv_read=kv_read, kv_write=kv_write,
+    ops.append(Op("softmax", "vector", li, vec=sm_elems * 5, sfu=sm_elems, kv_read=kv_read, kv_write=kv_write,
                   replicated=(tp if core.kind == "mla" else 1)))
     if ph.cp > 1 and ph.kind == "prefill" and core.topk is not None:
         # 0.89: the chunk phase charges every query of the busiest zigzag rank top-k keys (its positions are all past
@@ -592,7 +593,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     if L.gres_n:
         ops.append(_gres_op(model, li, L, t, tp, "attn"))
     else:
-        ops.append(Op("attn_norm", "vector", li, vec=t * h * 4))
+        ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t))
     for l in L.attn_linears:
         k, n = _lin_local(l, tp, L.core)
         m = t
@@ -648,13 +649,13 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             Nh = L.gres_n * h
             ops.append(Op("gres_head", "vector", li, replicated=tp, vec=t * (4 * Nh + 4 * Nh + 2 * Nh)))
     else:
-        ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4))
+        ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t))
     f = L.ffn
     if f.kind == "dense":
         for l in L.ffn_linears:
             k, n = _lin_local(l, tp)
             ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, "mlp"))
-        ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4))
+        ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4, sfu=t * _cdiv(f.d_ff, tp) * 2))   # silu: exp + rcp
         if tp > 1:
             ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     elif f.kind == "moe":
@@ -675,7 +676,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(replace(gemm(model, "expert.gate_up", li, r.m_e, ein, mats_up * d_loc, "expert", count=r.hit),
                                share=u))
             ops.append(replace(gemm(model, "expert.down", li, r.m_e, d_loc, ein, "expert", count=r.hit), share=u))
-            ops.append(Op("expert_act", "vector", li, vec=r.pairs_local * d_loc * 4))
+            ops.append(Op("expert_act", "vector", li, vec=r.pairs_local * d_loc * 4, sfu=r.pairs_local * d_loc * 2))
         if sh.ep > 1:
             pay = r.pairs_local * ein * ab
             ops.append(Op("moe_dispatch", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay,
@@ -738,7 +739,7 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
     ops = [Op("final_norm", "vector", model.n_layers,
               vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
            gemm(model, "lm_head", model.n_layers, m, model.hidden, n, role, stream=True),
-           Op("sample", "vector", model.n_layers, vec=m * n * 3)]
+           Op("sample", "vector", model.n_layers, vec=m * n * 3, sfu=m * n)]
     if sh.tp > 1:
         ops.append(Op("logits_gather", "comm", model.n_layers, comm_kind="allgather", comm_group=sh.tp,
                       comm_bytes=m * 2 * 4))  # (max, idx) per rank for greedy/top-k 「假设」
@@ -791,7 +792,7 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
         hq = _cdiv(L.core.n_q, tp)
         for nm in ("dspark_block_qk", "dspark_block_pv"):
             lops.append(Op(nm, "attn", lj, m=B * hq, k=hd, n=B, count=b_loc, w_fmt="bf16", a_fmt="bf16"))
-        lops.append(Op("dspark_block_softmax", "vector", lj, vec=b_loc * B * hq * B * 5))
+        lops.append(Op("dspark_block_softmax", "vector", lj, vec=b_loc * B * hq * B * 5, sfu=b_loc * B * hq * B))
         ops += lops
     V = _cdiv(model.vocab, tp)
     r = model.draft_markov
@@ -877,7 +878,7 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
               act_bytes=cnt * nq * core.qk_dim * ab, stream=True, orient=True),
            Op(tag + "pv", "attn", li, m=nq, k=nk, n=core.v_dim, count=cnt, causal=causal,
               act_bytes=cnt * nq * core.v_dim * ab, orient=True),
-           Op(tag + "softmax", "vector", li, vec=cnt * nq * nk * causal * 5)]
+           Op(tag + "softmax", "vector", li, vec=cnt * nq * nk * causal * 5, sfu=cnt * nq * nk * causal)]
     t_loc = b * _cdiv(ph.q, sh.sp)
     if not cross:
         ops.append(Op("qk_norm_rope", "vector", li, vec=t_loc * heads_tp * (core.qk_dim * 2 * 3 + core.rope_dim * 2 * 3)))
@@ -945,7 +946,7 @@ def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int,
         return [Op(tag + ".qk", "attn", li, m=nq, k=d, n=nk, count=cnt, act_bytes=cnt * nq * d * ab, stream=True,
                    orient=True),
                 Op(tag + ".pv", "attn", li, m=nq, k=nk, n=vd, count=cnt, act_bytes=cnt * nq * vd * ab, orient=True),
-                Op(tag + ".softmax", "vector", li, vec=cnt * nq * nk * (5 + (1 if bias else 0)))]
+                Op(tag + ".softmax", "vector", li, vec=cnt * nq * nk * (5 + (1 if bias else 0)), sfu=cnt * nq * nk)]
 
     def bmm(m: int, k: int, nn: int, cnt: int) -> Op:
         return Op(tag, "attn", li, m=m, k=k, n=nn, count=cnt, act_bytes=cnt * (m * k + k * nn + m * nn) * ab,
@@ -978,7 +979,7 @@ def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int,
     if c.kind == "pwa":
         cm("allgather", b * ps * nd * n * c.heads, "weights")
         return [bmm(nd, n, pd.msa * c.dim, b * ps * c.heads),
-                Op(tag + ".softmax", "vector", li, vec=b * ps * c.heads * nd * n * 5)] + comm
+                Op(tag + ".softmax", "vector", li, vec=b * ps * c.heads * nd * n * 5, sfu=b * ps * c.heads * nd * n)] + comm
     if c.kind == "seq_att":
         cm("allgather", b * nd * n * c.heads, "bias")
         return att(b * s, n, n, d, vd, True) + comm
