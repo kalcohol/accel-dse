@@ -2283,3 +2283,39 @@ Effect (1P + HBM3e, chunk = 1/32 of a 4K prompt; ratios are fused / decode step)
 
 DES (V4 moe30b, coloc_chunked, loads 0.3 / 0.6): the analytic-vs-DES errors stay within the 0.102 band, since
 both sides use the same step model.
+
+
+## 50. 0.104 — FA3 softmax overlap; H200 DeepSeek gap; chunk-MoE invariants
+
+**FA3 overlap** (`Chip.attn_vec_overlap`, opt-in). In the kernel and tbo modes, the attention core costs
+max(t_arr_attn, t_vec_attn, t_dram_kv) and the remaining vector kernels add serially. Under this overlap, the SFU
+rate is charged where FA3 actually has it, so the 0.103 test is now fair.
+
+Refhw groups (mean |log err| %; `val5/v0104_groups.log`):
+
+| variant | moe pf | moe dec | moe static | moe max | r3 max | r4 | v1 static | v1 ttft | v1 max |
+|---|---|---|---|---|---|---|---|---|---|
+| cand093 | 48.2 | 5.4 | 60.1 | 12.9 | 28.5 | 18.1 | 18.2 | 27.1 | 18.3 |
+| +fa3 | 47.3 | 6.5 | 60.8 | 14.4 | 33.2 | 16.7 | 18.5 | 27.4 | 14.6 |
+| +fa3+sfu | 47.5 | 6.4 | 60.7 | 14.2 | 32.4 | 17.1 | 18.2 | 27.1 | 14.6 |
+
+The overlap helps the rows where attention is long (r4, v1 max). It hurts the rows that were already
+over-predicted (r3 max, moe max). Neither change improves every group, so both stay opt-in.
+
+**H200 DeepSeek decode gap** (trt120 DEP8 1024/1024, measured 1,724 tok/s/GPU):
+
+- The max-load proxy `predict()` takes the best static batch that fits. It picks b = 4096 (TTFT 46 s, prefill
+  share 37 %) and predicts 4,201 (2.44×).
+- The in-flight-batching proxy `predict_cb` predicts 2,051 (1.19×) at b = 1024.
+- At 1024/8192 both proxies are within 1.05×.
+
+So the gap is a serving-proxy effect (batch choice under `--concurrency -1`), not a kernel effect. The published
+config (perf-overview 1.2.0) uses the CUTLASS MoE backend on Hopper, not DeepGEMM; the candidate's
+DeepGEMM-derived FP8 ceiling may therefore be optimistic for MoE. No public CUTLASS blockwise-FP8 grouped-GEMM
+efficiency is available, so nothing is changed. Open: choosing the max proxy per source (static vs CB) would need
+a rule that is not fitted to r4.
+
+**Chunk MoE invariants.** A randomized audit (4 MoE models; EP / ETP / PP; skew 1.0 or 1.5; stage, pipe, kernel
+and serial; 2 memories) checked five properties. Extra expert bytes are ≥ 0 and monotone in f. The fused step is
+monotone in f and never below the decode step. Hit experts satisfy hit_dec ≤ hit_union ≤ n_local. Result: 149
+points, 0 violations.

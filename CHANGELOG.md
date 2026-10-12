@@ -3,6 +3,21 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.104.0]
+
+### Added
+- `Chip.attn_vec_overlap` (opt-in, default False, so the NPU fingerprint is unchanged). In the kernel and tbo
+  modes, the flash-attention kernel's softmax / exp now overlaps its MMAs: the attention term becomes
+  max(array, vector, KV), as in FlashAttention-3 (Shah et al. 2024: warpgroup ping-pong plus intra-warpgroup
+  pipelining). Other vector kernels stay serial. Added `StageTime.t_vec_attn` / `attn_ovl`.
+- `extval.fa3_variant()` turns this on for H100, H200, H800 and B200; A100 (FA2) and MI300X keep the serial
+  softmax. **Not adopted as the refhw default:** the 10 groups are mixed.
+  - catalog_kernel + fa3: r3 max goes from 36.2 to 43.6 and moe max gets worse; moe pf/dec and v1 max get better.
+  - cand093 + fa3: r4 improves from 18.1 to 16.7 and v1 max from 18.3 to 14.6; r3 max worsens from 28.5 to 33.2.
+  - The SFU rate re-evaluated with the overlap on (fa3+sfu vs fa3) is still mixed: moe pf and r4 get worse. It
+    stays opt-in.
+- A randomized invariant audit of the chunk MoE experts (149 points, 0 violations; `val5/v0104_moe_rand.py`).
+
 ## [0.103.0]
 
 ### Added
