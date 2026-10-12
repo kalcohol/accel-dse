@@ -2247,3 +2247,39 @@ Remaining approximations in the merged iteration:
   new warning says so.
 - Caveat: GPUs run exp on SFUs at 1/8 of the FP32 lane rate (FA3: 3.9 TFLOPS exp on H100). The model charges
   exp at the lane rate, so softmax-heavy conclusions on GPU-like vector budgets are optimistic.
+
+
+## 49. 0.103 — SFU rate; MoE experts touched by a chunk
+
+**SFU** (`Chip.sfu_per_cycle`, opt-in). On GPUs, exp, rsqrt and reciprocal run on the MUFU/SFU at 16 results per
+clock per SM, against 64–128 FP32 lanes (CUDA C++ Programming Guide, throughput of native arithmetic
+instructions). An op's vector time becomes max(vec / lanes, sfu / sfu_rate). The NPU presets keep None, so they
+are bit-identical.
+
+Refhw groups (mean |log err| %, 10 groups):
+
+- catalog: identical with and without SFU.
+- catalog_kernel + SFU: 6 groups better or equal; moe pf +0.6, moe dec +0.5, r4 +1.3.
+- cand093 + SFU: moe dec 5.4→4.7, r3 max 28.5→27.8; moe pf +0.7, r4 +1.4, v1 max +0.2.
+
+So the SFU is not adopted. A likely reason: FA3-style kernels overlap exp with the MMAs (ping-pong warpgroups),
+while the kernel-serial variants charge it serially. That makes the already under-predicted long-sequence r4
+rows worse. Not every group improved, so the variant stays opt-in.
+
+**MoE chunk experts.** A co-located iteration's routed experts are the union over decode plus chunk tokens:
+hit = n_local·(1−(1−k/E)^T), the same uniform expectation as `ir.moe_routing`, with skew handled the same way.
+
+- Extra DRAM bytes = the decode's expert DRAM bytes × (hit_union / hit_dec − 1). These are added to the fused
+  DRAM in every mode.
+- The pipe replay merges each expert GEMM into hit_union GEMMs of m_e rows.
+
+Effect (1P + HBM3e, chunk = 1/32 of a 4K prompt; ratios are fused / decode step):
+
+| scenario | before | after |
+|---|---|---|
+| qwen3-30b-a3b, k=1 | 1.3× | 3.5× (stage) / 4.1× (pipe) |
+| deepseek-v3 TP8 EP8 | 1.3–1.6× | 5–6× |
+| k=128 (all experts already hit) | unchanged | unchanged |
+
+DES (V4 moe30b, coloc_chunked, loads 0.3 / 0.6): the analytic-vs-DES errors stay within the 0.102 band, since
+both sides use the same step model.

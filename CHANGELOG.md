@@ -3,6 +3,26 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.103.0]
+
+### Added
+- `Chip.sfu_per_cycle` (opt-in, default None, so the NPU fingerprint is unchanged): transcendentals (`Op.sfu`)
+  run on a separate SFU pipe next to the vector lanes, and an op takes the slower of the two. Counted per element:
+  softmax 1 exp (LLM, DiT, protein, DSpark), SiLU activation 2 (exp + reciprocal), norms 1 rsqrt per token, and
+  sampling 1 exp per logit.
+- `RefHW.sfu_per_sm`: 16 for the NVIDIA references (CUDA C++ Programming Guide, native arithmetic throughput,
+  cc 7.x–10.0). MI300X is left unset because AMD publishes no per-CU transcendental rate.
+- `extval.sfu_variant()`. **Not adopted as the refhw default.** Under the default variant (catalog, stage
+  overlap) all 10 groups are unchanged. Under the kernel and candidate variants the results are mixed: moe pf,
+  moe dec / r4, and v1 max get worse.
+
+### Changed
+- A co-located chunk now reads the extra MoE experts its tokens touch, using the uniform-routing union of decode
+  and chunk tokens (`evaluate.union_routing` / `extra_expert_bytes`). The pipe replay uses the merged expert GEMM
+  (hit experts, rows per expert). This applies in every overlap mode. Example: qwen3-30b-a3b with a decode batch
+  of 1 plus a 128-token chunk now streams ~all 128 experts, 3.5–9.7× the decode step (was 1.0–1.3×). Dense models
+  are unchanged.
+
 ## [0.102.0]
 
 ### Changed
