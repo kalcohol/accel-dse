@@ -2205,3 +2205,45 @@ What did not change:
 * the HBM / LPDDR ratio, the SRAM knee at qwen3-8b 4K, and the engine count;
 * the conclusions' dependence on vector lanes and dequant throughput, which is still the largest
   (C5: 0.37–1.58× across knobs). That dependence is not an overlap effect.
+
+
+## 48. 0.102 — op-level chunk iteration; vector / dequant sanity
+
+**Chunk iteration under pipe.** Each co-located iteration (decode batch k ⊕ an f share of a prompt) is now
+merged op by op and replayed on the pipe flow-shop under the decode's memory plan (`overlap.merge_chunk`). The
+0.101 interpolation is no longer used.
+
+- GEMMs fuse at their real merged shape.
+- Attention for the chunk is its own fused step, plus rr × the prompt's KV writes.
+- Vector ops and collectives scale × f, which is exact because they are linear in tokens.
+
+Audit results (72 points across 6 model×layout combinations, k∈{1,16,128}, f∈{0,1/8,1/2,1}):
+
+- Every point is aligned (no fallback).
+- Stage ≤ pipe at every point.
+- Pipe ≤ the linear-scaled serial bound, except qwen3-32b PP2 by +0.1%. There the chunk's own GEMMs are less
+  efficient than f × the prompt GEMM, which is a real effect the old serial bound missed.
+
+DES validation (`val5/v0102_des.py`, V4 dense8b / moe30b at load 0.3 / 0.6 / 0.85, coloc_chunked, 2 seeds):
+
+- The analytic-vs-DES errors are within ±0.02 of 0.101 at every point.
+- Both sides share the step model, so the tails at load 0.85 (+0.2–0.45) are queueing effects, as before.
+
+Remaining approximations in the merged iteration:
+
+- Chunk attention is taken as f × the whole-prompt attention. This averages exactly over the chunks of a prompt.
+- MoE expert weights touched by the chunk's tokens are not added. This is unchanged from the stage formula.
+
+**Vector lanes / dequant** (`core/vecsanity.py`). Two ratios are compared against public chips:
+
+| ratio | public chips | presets |
+|---|---|---|
+| MAC/cycle ÷ lanes | MI300X 8, H100 14.8, A100 16, TPU v5p 16, TPU v4 32, Ascend 910 32 (FP16 vec) / 64 (FP32) | 100T 14, 1P 32, H100-like 16 |
+| int4 dequant headroom (conv elems/s ÷ 2·DRAM B/s) | 1.7–7.7 | 100T+LPDDR6 2.8, 1P+HBM3e 1.24 (below band), 100T+HBM3e 0.27 (below band; an unbalanced pairing) |
+
+- The default lanes = 4·cols·engines puts every preset's lane ratio inside the public band, so no preset is
+  changed.
+- The headroom is low only for the HBM pairings. There, weight-only int4 decode becomes dequant-bound, and the
+  new warning says so.
+- Caveat: GPUs run exp on SFUs at 1/8 of the FP32 lane rate (FA3: 3.9 TFLOPS exp on H100). The model charges
+  exp at the lane rate, so softmax-heavy conclusions on GPU-like vector budgets are optimistic.

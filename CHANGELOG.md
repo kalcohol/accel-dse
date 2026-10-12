@@ -3,6 +3,25 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.102.0]
+
+### Changed
+- Under `exec_overlap = "pipe"`, the co-located chunked-prefill iteration (`pdqueue._fused_step`, which the DES
+  and `extval._fused` also use) is now replayed op by op by `evaluate.pipe_fused_time` / `overlap.merge_chunk`.
+  This replaces the 0.101 bracket interpolation. Each GEMM merges into one GEMM of m_dec + round(f·m_pre) rows, so
+  the weights are read once. The chunk's flash-attention step comes after the decode's and re-reads rr × the
+  prompt's KV writes. The chunk's vector ops and collectives follow the decode op of the same name, scaled × f. A
+  prefill-only GEMM (DeepSeek non-absorbed MLA) runs as the chunk's own GEMM at its real shape. The serial bound
+  of the fused step now uses the merged ops' own array and vector seconds, because a chunk GEMM costs more than
+  f × the prompt GEMM. The interpolation remains only as a fallback when the layer groups do not line up, which
+  happened at 0 of 72 audit points. Results are memoised per stage pair, so DES runtime stays the same as 0.101.
+  The NPU single-point fingerprint is unchanged (e51c7ec1); PD coloc_chunked numbers under pipe change.
+- Added a warning when weight conversion (dequant) takes longer than a stage's DRAM time.
+
+### Added
+- `core/vecsanity.py` checks catalog presets against public datapoints (H100, A100, MI300X, TPU v4/v5p,
+  Ascend 910) for the MAC:vector-lane ratio and int4 dequant headroom, with citations. Presets are not changed.
+
 ## [0.101.0]
 
 ### Fixed

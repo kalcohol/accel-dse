@@ -48,6 +48,7 @@ class StageResult:
     vec_w: float = 0.0       # 0.63: vector s of the mean rank's token work (excl. weight conversion)
     conv_w: float = 0.0      # 0.63: vector s of weight conversion (once per pass on every busy rank)
     exp_acts: dict = field(default_factory=dict)  # 0.65: routed-expert part {sram, conv_w, link_frac} (idle EP ranks)
+    pipe_ctx: tuple | None = field(default=None, repr=False, compare=False)   # 0.102: inputs of the pipe replay
 
 
 @dataclass
@@ -497,6 +498,76 @@ def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, s
     return _ovl.stage_pipe_time(segs, f, spb, buf, ch.pipe_cross_op, 1.0, tail_comm, hidden_link)
 
 
+def pipe_fused_time(sd, sp, f: float, rr: float, t_mem: float) -> tuple | None:
+    """0.102: pipe makespan of one co-located iteration (decode stage sd ⊕ an f share of prefill stage sp), replayed
+    op by op (overlap.merge_chunk) under the decode's memory plan; t_mem = the iteration's DRAM / SLC seconds.
+    Returns (makespan without α, array s, vector s) of the merged ops; None when the stages carry no pipe replay
+    inputs or their layer groups do not line up."""
+    if sd.pipe_ctx is None or sp.pipe_ctx is None:
+        return None
+    key = (id(sp.pipe_ctx), f, rr, t_mem)
+    memo = sd.pipe_ctx[-1] if len(sd.pipe_ctx) > 8 else None
+    if memo is not None and key in memo:
+        return memo[key]
+    r = _pipe_fused(sd, sp, f, rr, t_mem)
+    if memo is not None:
+        if len(memo) > 4096:
+            memo.clear()
+        memo[key] = r
+    return r
+
+
+def _pipe_fused(sd, sp, f, rr, t_mem):
+    sys, org, m, mm, segs_d, mp, store, tail = sd.pipe_ctx[:8]
+    segs_p = sp.pipe_ctx[4]
+    if len(segs_d) != len(segs_p):
+        return None
+    merged = []
+    for (od, n), (op_, n2) in zip(segs_d, segs_p):
+        if n != n2:
+            return None
+        mo = _ovl.merge_chunk(od, op_, f, rr)
+        if mo is None:
+            return None
+        merged.append((mo, n))
+    om = mm[0] if mm else {}
+    ab = _fmt(m.act_fmt).bytes
+
+    def op_secs(o):
+        r_ = om.get(o)
+        if r_ is None:
+            r_ = om[o] = _op_seconds(o, sys, org, m)
+        return r_
+
+    def comm_secs(o):
+        if sys.fabric.enabled:
+            return fabric.collective_full(o.comm_kind, o.comm_bytes, o.comm_group, sys, o.comm_stride)[0]
+        return _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)[0]
+
+    def act_b(o):
+        a, wx = act_stream(o, ab, sys.chip.sram_bytes)
+        return a + wx
+    segs = [(_ovl.items_of(ops, op_secs, comm_secs, act_b), n) for ops, n in merged]
+    t_arr = t_vec = 0.0                 # the merged iteration's own array / vector seconds (bracket bounds)
+    for ops, n in merged:
+        for e in ops:
+            o, sc = (e[0], e[1]) if isinstance(e, tuple) else (e, 1.0)
+            if o.kind != "comm":
+                r_ = op_secs(o)
+                t_arr += n * sc * r_[0]; t_vec += n * sc * r_[3]
+    kvst = mp.kv_total + mp.state_total
+    fr = {"hot": 0.0 if store.hot_w <= 0 else 1.0 - mp.pinned_hot / store.hot_w,
+          "exp": 0.0 if store.expert_w <= 0 else 1.0 - mp.pinned_expert / store.expert_w,
+          "kv": 0.0 if kvst <= 0 else 1.0 - mp.kv_sram / kvst, "lookup": 1.0, "act": 1.0}
+    nb = sum(n * sum(x * fr.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
+    if nb <= 0 and t_mem > 0:
+        segs.insert(0, ([(0.0, {"x": 1.0}, 0.0)], 1)); nb = 1.0
+    spb = t_mem / nb if nb > 0 else 0.0
+    ch = sys.chip
+    buf = max(mp.staging, ch.sram_bytes - mp.pinned_hot - mp.pinned_expert - mp.kv_sram)
+    return _ovl.stage_pipe_time(segs, fr, spb, buf, ch.pipe_cross_op, 1.0, tail, 0.0), t_arr, t_vec
+
+
 def _acc(a: dict, b: dict, n: int = 1) -> None:
     for k in _SUM_KEYS:
         if k in _MAX_KEYS:
@@ -676,6 +747,19 @@ def _pick_split(run, cands: tuple, lc) -> list:
     if log is not None:
         log.clear(); log.update(runs[best][1])
     return runs[best][0]
+
+
+def _dequant_warn(stages, sys, warnings: list) -> None:
+    """0.102: weight conversion on the vector / dequant path exceeds the stage's DRAM time — the dequant rate, a
+    「假设」 constant (lanes or formats.dequant_elems_per_cycle), decides the step.  Public chips keep ≥ 1.7×
+    int4 headroom (core/vecsanity.py)."""
+    for st in stages:
+        if st.conv_w > 0 and st.conv_w > st.time.t_dram:
+            from .vecsanity import check
+            h = check(sys.chip, sys.dram_GBps)["dequant_headroom"][0]
+            warnings.append(f"权重格式转换（反量化）{st.conv_w * 1e3:.3g} ms 超过 DRAM 时间 {st.time.t_dram * 1e3:.3g} ms，"
+                            f"结果取决于反量化吞吐假设（int4 余量 {h:.2f}×，公开芯片 ≥ 1.7×；见 vecsanity）")
+            return
 
 
 def _pp_imbalance_warn(stages, tick: float, warnings: list, split: str = "cost") -> None:
@@ -909,7 +993,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
                 sync += (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
-            t_pipe = 0.0
+            t_pipe, pctx = 0.0, None
             if scn.exec_overlap == "pipe":  # 0.98 (opt-in)
                 segs = ([(embed_ops(m, ph, sh), 1)] if st.has_embed else [])
                 segs += [(build_rank_ops(m, li, ph, sh), n) for g, (li, n) in counts.items()]
@@ -918,6 +1002,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 if tail:
                     segs.append((tail, 1))
                 t_pipe = _pipe_time(sys, scn.mapping, m, mm, segs, mp, store, dram, sum(b for b, _ in extra))
+                pctx = (sys, scn.mapping, m, mm, segs, mp, store, sum(b for b, _ in extra), {})
             stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
@@ -926,7 +1011,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             t_pipe)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
-                                      conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))
+                                      conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg), pipe_ctx=pctx))
         return stages
 
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx_cap, n_mtp, b_rank,
@@ -937,6 +1022,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
     _pp_imbalance_warn(stages, tick, warnings, scn.pp_split)
+    _dequant_warn(stages, sys, warnings)
     cap_heavy = max(range(len(stages)), key=lambda i: stages[i].mem.dram_need)
     fits = all(s.mem.fits for s in stages)
     if not fits:

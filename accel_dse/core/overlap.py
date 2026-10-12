@@ -46,8 +46,11 @@ def items_of(ops, op_secs, comm_secs, act_bytes) -> list[tuple]:
     the layer's shared-expert compute."""
     out, fused, shared = [], None, 0.0
     for o in ops:
+        sc, xkv = 1.0, 0.0
+        if isinstance(o, tuple):            # 0.102: (op, scale, extra KV bytes) — a chunk's share of a prefill op
+            o, sc, xkv = o
         if o.kind == "comm":
-            bw = comm_secs(o)
+            bw = comm_secs(o) * sc
             if o.name in ("moe_dispatch", "moe_combine") and shared > 0:
                 hide = min(shared, bw)
                 shared -= hide
@@ -55,15 +58,16 @@ def items_of(ops, op_secs, comm_secs, act_bytes) -> list[tuple]:
             out.append((0.0, {}, bw))
             continue
         a, _, _, v, _, _, _, _ = op_secs(o)
+        a, v = a * sc, v * sc
         b = {}
         if o.kind == "gemm":
-            b["exp" if o.role == "expert" else "hot"] = o.w_bytes
+            b["exp" if o.role == "expert" else "hot"] = o.w_bytes * sc
         if o.kind == "lookup":
-            b["lookup"] = o.kv_read
-        elif o.kv_read or o.kv_write or o.state_rw:
-            b["kv"] = o.kv_read + o.kv_write + o.state_rw
+            b["lookup"] = o.kv_read * sc
+        elif o.kv_read or o.kv_write or o.state_rw or xkv:
+            b["kv"] = (o.kv_read + o.kv_write + o.state_rw) * sc + xkv
         if o.stream:
-            b["act"] = act_bytes(o)
+            b["act"] = act_bytes(o) * sc
         if o.kind == "attn" or (o.name == "softmax" and fused is not None):
             if fused is None:
                 fused = [0.0, 0.0, {}]
@@ -220,3 +224,52 @@ def stage_pipe_time(segments, f: dict, sec_per_byte: float, buf: float, cross_op
                 sim.shift(dt * (n - done)); done = n
             prev, prev_dt = st, dt
     return max(sim.c_end, hidden_link) + tail_comm
+
+
+_ATTN_CORE = ("softmax",)
+
+
+def merge_chunk(ops_d, ops_p, f: float, rr: float):
+    """0.102: one co-located iteration = decode ops ⊕ an f share of a prefill's ops, op by op (the engine runs one
+    batched forward). GEMMs merge into one GEMM of m_dec + round(f·m_pre) rows (the weights are read once). The
+    chunk's attention core runs as its own fused step after the decode's, reading f of the prompt's KV writes plus
+    rr × the prompt's KV write (the prefix and the earlier chunks). Vector ops and collectives of the chunk follow
+    the decode op of the same name, with work and payload × f. A prefill GEMM without a decode partner runs as the
+    chunk's own GEMM of round(f·m) rows. Returns entries for ``items_of``."""
+    from collections import defaultdict, deque
+    from dataclasses import replace as _rep
+    pend = defaultdict(deque)
+    for o in ops_p:
+        pend[o.name].append(o)
+    kvw = sum(o.kv_write for o in ops_p)
+    out, attn_p, seen_attn = [], [], False
+    for od in ops_d:
+        q = pend.get(od.name)
+        op = q.popleft() if q else None
+        if od.kind == "gemm":
+            if op is not None and op.kind == "gemm":
+                out.append(_rep(od, m=od.m + max(1, round(f * op.m))))
+            else:
+                out.append(od)
+            continue
+        out.append(od)
+        if od.kind == "attn" or od.name in _ATTN_CORE:
+            seen_attn = True
+            if op is not None:
+                attn_p.append(op)
+            if od.name in _ATTN_CORE and attn_p:
+                for i, x in enumerate(attn_p):          # the chunk's flash-attention step (+ the KV it re-reads)
+                    out.append((x, f, rr * kvw if x.name in _ATTN_CORE else 0.0))
+                attn_p = []
+            continue
+        if op is not None:
+            out.append((op, f, 0.0))
+    for x in attn_p:
+        out.append((x, f, 0.0))
+    for qq in pend.values():
+        for x in qq:
+            if x.kind == "gemm":                          # a prefill-only GEMM (e.g. non-absorbed MLA): the chunk's
+                out.append(_rep(x, m=max(1, round(f * x.m))))   # own GEMM at its real shape
+            else:
+                out.append((x, f, 0.0))
+    return out

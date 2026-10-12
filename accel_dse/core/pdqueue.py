@@ -1158,10 +1158,18 @@ def _fused_step(dec: Result, pre1: Result, f: float, reread_frac: float) -> floa
                         + reread_frac * sp.dram["kv_write"] / bw,
                         t_link=td.t_link + f * tp.t_link, t_sync=max(td.t_sync, tp.t_sync))
             if td.overlap == "pipe":
-                lo_d, hi_d = (replace(td, overlap=o).total for o in ("stage", "serial"))
-                g = (td.total - lo_d) / (hi_d - lo_d) if hi_d > lo_d else 0.0
-                lo, hi = (replace(t, overlap=o).total for o in ("stage", "serial"))
-                t = replace(t, t_pipe=lo + g * (hi - lo) - t.t_sync)
+                # 0.102: the combined iteration replayed op by op (evaluate.pipe_fused_time); the 0.101 bracket
+                # interpolation only when the op lists do not line up
+                from .evaluate import pipe_fused_time
+                tp_ = pipe_fused_time(sd, sp, f, reread_frac, max(dram, td.t_slc))
+                if tp_ is None:
+                    lo_d, hi_d = (replace(td, overlap=o).total for o in ("stage", "serial"))
+                    g = (td.total - lo_d) / (hi_d - lo_d) if hi_d > lo_d else 0.0
+                    lo, hi = (replace(t, overlap=o).total for o in ("stage", "serial"))
+                    t = replace(t, t_pipe=lo + g * (hi - lo) - t.t_sync)
+                else:   # the merged ops' own array / vector seconds (a chunk GEMM is not f × the prompt's GEMM)
+                    t = replace(t, t_pipe=tp_[0], t_array=tp_[1], t_vector=tp_[2],
+                                t_arr_attn=min(t.t_arr_attn, tp_[1]))
             t = t.total
         worst = max(worst, t)
     return dec.step * worst / dec.tick if dec.tick > 0 else math.inf
