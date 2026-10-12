@@ -223,7 +223,11 @@ class StageTime:
     wire_d2d: float = 0.0   # 0.78: bytes one rank sends on the wire per tier (per algorithm; energy) — the *_bytes
     wire_link: float = 0.0  #       fields above stay payload (timing / KV-transfer shares)
     wire_net: float = 0.0
-    t_pipe: float = 0.0     # 0.98: exec_overlap "pipe" — op-sequence makespan on DMA + compute (core/overlap.py)
+    t_pipe: float = 0.0
+    # 0.104 (opt-in Chip.attn_vec_overlap): vector seconds of the attention core (softmax / exp) and whether the
+    # flash kernel overlaps them with its MMAs (FlashAttention-3 ping-pong + intra-warpgroup pipelining)
+    t_vec_attn: float = 0.0
+    attn_ovl: bool = False     # 0.98: exec_overlap "pipe" — op-sequence makespan on DMA + compute (core/overlap.py)
 
     @property
     def array_util(self) -> float:
@@ -254,8 +258,13 @@ class StageTime:
         if self.overlap != "stage":
             if self.overlap == "serial":
                 return self.t_array + self.t_vector + max(self.t_dram, self.t_slc) + self.t_link + self.t_sync
-            core = max(self.t_array - self.t_arr_attn, self.t_dram - self.t_dram_kv) + max(self.t_arr_attn, self.t_dram_kv)
-            core = core + self.t_vector if self.overlap in ("kernel", "tbo") else max(self.t_vector, core)
+            if self.attn_ovl and self.overlap in ("kernel", "tbo"):
+                # 0.104: exp / softmax inside the flash kernel overlap its MMAs (FA3); other vector kernels stay serial
+                core = (max(self.t_array - self.t_arr_attn, self.t_dram - self.t_dram_kv)
+                        + max(self.t_arr_attn, self.t_vec_attn, self.t_dram_kv) + self.t_vector - self.t_vec_attn)
+            else:
+                core = max(self.t_array - self.t_arr_attn, self.t_dram - self.t_dram_kv) + max(self.t_arr_attn, self.t_dram_kv)
+                core = core + self.t_vector if self.overlap in ("kernel", "tbo") else max(self.t_vector, core)
             if self.overlap == "tbo":
                 return max(core, self.t_slc, self.t_link) + self.t_sync
             return max(core, self.t_slc) + self.t_link + self.t_sync

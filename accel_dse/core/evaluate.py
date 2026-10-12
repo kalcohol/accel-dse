@@ -270,7 +270,7 @@ def _tail_ops(model, has_head, ph, sh, spec_k):
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
              "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
-             "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e", "t_arr_attn",
+             "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e", "t_arr_attn", "t_vec_attn",
              "wire_d2d", "wire_link", "wire_net")
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _EP_COMM = ("moe_dispatch", "moe_combine", "expert_allreduce")
@@ -350,6 +350,8 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         a_, ma, fe, v, ce, idl, sb, vw = r_
         if o.kind == "attn":
             d["t_arr_attn"] += a_
+        if o.kind == "attn" or o.name.endswith("softmax"):
+            d["t_vec_attn"] += v                    # 0.104: attention-core vector work (Chip.attn_vec_overlap)
         if sys.chip.kernel_us and (o.kind == "gemm" or (o.kind == "attn" and o.name.startswith("qk"))):
             d["sync"] += sys.chip.kernel_us * 1e-6    # 0.92: one kernel per GEMM / fused attention (QK·softmax·PV)
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
@@ -1047,6 +1049,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             (dram["kv_read"] + dram["kv_write"] + dram["state"]) / (sys.dram_GBps * 1e9),
                             scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
                             t_pipe)
+            if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
+                stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg), pipe_ctx=pctx,
@@ -1281,6 +1285,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                             (dram["kv_read"] + dram["kv_write"] + dram["state"]) / (sys.dram_GBps * 1e9),
                             scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
                             t_pipe)
+            if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
+                stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))

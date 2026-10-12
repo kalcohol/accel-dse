@@ -131,6 +131,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         chip = replace(chip, pipe_cross_op=v["pipe_cross_op"])
     if v.get("sfu") and h.sfu_per_sm:  # 0.103: transcendentals on the SFU pipe (NVIDIA, CUDA Programming Guide)
         chip = replace(chip, sfu_per_cycle=h.sfu_per_sm * chip.engines)
+    if v.get("fa3") and chip.name.split("-")[0].split(" ")[0] in FA3_HW:   # 0.104: FA3-style softmax/MMA overlap
+        chip = replace(chip, attn_vec_overlap=True)
     if v.get("attn_sched"):            # 0.93: attention-only schedule
         chip = replace(chip, attn_sched=v["attn_sched"])
     mem_eff = e if isinstance(e, float) else EFF[e]
@@ -315,6 +317,17 @@ def sfu_variant(base: str = "catalog") -> str:
     """0.103: ``base`` with transcendentals on a separate SFU pipe at the public rate (RefHW.sfu_per_sm)."""
     name = f"{base}+sfu"
     VARIANTS.setdefault(name, {**VARIANTS[base], "sfu": True})
+    return name
+
+
+FA3_HW = ("H100", "H200", "H800", "B200")   # Hopper (FlashAttention-3) / Blackwell (async warpgroup MMA kernels)
+
+
+def fa3_variant(base: str = "catalog_kernel") -> str:
+    """0.104: ``base`` with the flash kernel's softmax / exp overlapped with its MMAs on Hopper / Blackwell
+    (Chip.attn_vec_overlap; FA3, Shah et al. 2024). A100 (FA2) and MI300X keep the serial softmax."""
+    name = f"{base}+fa3"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "fa3": True})
     return name
 
 

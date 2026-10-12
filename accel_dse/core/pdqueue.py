@@ -1156,6 +1156,7 @@ def _fused_step(dec: Result, pre1: Result, f: float, reread_frac: float) -> floa
             t = replace(td, t_array=td.t_array + f * tp.t_array, t_mac=td.t_mac + f * tp.t_mac,
                         t_feed=td.t_feed + f * tp.t_feed, t_vector=td.t_vector + f * tp.t_vector,
                         t_arr_attn=td.t_arr_attn + f * tp.t_arr_attn, t_dram=dram,
+                        t_vec_attn=td.t_vec_attn + f * tp.t_vec_attn,
                         t_dram_kv=td.t_dram_kv + (f * tp.t_dram_kv if tp.t_dram > 0 else 0.0)
                         + reread_frac * sp.dram["kv_write"] / bw,
                         t_link=td.t_link + f * tp.t_link, t_sync=max(td.t_sync, tp.t_sync))
