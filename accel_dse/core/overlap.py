@@ -229,7 +229,7 @@ def stage_pipe_time(segments, f: dict, sec_per_byte: float, buf: float, cross_op
 _ATTN_CORE = ("softmax",)
 
 
-def merge_chunk(ops_d, ops_p, f: float, rr: float):
+def merge_chunk(ops_d, ops_p, f: float, rr: float, route=None):
     """0.102: one co-located iteration = decode ops ⊕ an f share of a prefill's ops, op by op (the engine runs one
     batched forward). GEMMs merge into one GEMM of m_dec + round(f·m_pre) rows (the weights are read once). The
     chunk's attention core runs as its own fused step after the decode's, reading f of the prompt's KV writes plus
@@ -247,7 +247,11 @@ def merge_chunk(ops_d, ops_p, f: float, rr: float):
         q = pend.get(od.name)
         op = q.popleft() if q else None
         if od.kind == "gemm":
-            if op is not None and op.kind == "gemm":
+            if od.role == "expert" and route is not None and op is not None:
+                # 0.103: routed experts — the union of decode + chunk tokens hits more distinct experts
+                rd, ru = route
+                out.append(_rep(od, m=ru.m_e, count=ru.hit, w_params=od.w_params * ru.hit / max(od.count, 1)))
+            elif op is not None and op.kind == "gemm":
                 out.append(_rep(od, m=od.m + max(1, round(f * op.m))))
             else:
                 out.append(od)

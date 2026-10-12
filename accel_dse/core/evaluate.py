@@ -49,6 +49,7 @@ class StageResult:
     conv_w: float = 0.0      # 0.63: vector s of weight conversion (once per pass on every busy rank)
     exp_acts: dict = field(default_factory=dict)  # 0.65: routed-expert part {sram, conv_w, link_frac} (idle EP ranks)
     pipe_ctx: tuple | None = field(default=None, repr=False, compare=False)   # 0.102: inputs of the pipe replay
+    exp_route: tuple = field(default=(), repr=False, compare=False)  # 0.103: (E, top-k, tokens, EP, skew) of MoE layers
 
 
 @dataclass
@@ -152,6 +153,33 @@ class Result:
 @lru_cache(maxsize=64)
 def _attn_chip(ch):
     return replace(ch, instance_sched=ch.attn_sched, attn_sched="")
+
+
+def union_routing(sd, sp, f: float):
+    """0.103: (decode routing, routing of decode + chunk tokens) of the co-located iteration — the chunk's tokens
+    touch more distinct experts (uniform-routing expectation, ir.moe_routing). None for dense models."""
+    if not sd.exp_route or not sp.exp_route:
+        return None
+    from .ir import moe_routing
+    E, k, td, ep, sk = sd.exp_route
+    tu = td + max(1, round(f * sp.exp_route[2]))
+    return moe_routing(E, k, td, ep, sk), moe_routing(E, k, tu, ep, sk)
+
+
+def extra_expert_bytes(sd, sp, f: float) -> float:
+    """0.103: DRAM bytes of the experts the chunk's tokens touch beyond the decode batch's (per stage)."""
+    ru = union_routing(sd, sp, f)
+    if ru is None or not ru[0].hit:
+        return 0.0
+    return sd.dram.get("exp_dram", 0.0) * (ru[1].hit / ru[0].hit - 1.0)
+
+
+def _exp_route(m, ph, sh) -> tuple:
+    """0.103: routing inputs of the stage's MoE layers (for the co-located chunk's extra experts)."""
+    if not m.is_moe:
+        return ()
+    f = next(L.ffn for L in m.layers if L.ffn.kind == "moe")
+    return (f.n_experts, f.top_k, ph.tokens, sh.ep, ph.skew)
 
 
 def _vec_seconds(ch, op) -> float:
@@ -529,13 +557,14 @@ def pipe_fused_time(sd, sp, f: float, rr: float, t_mem: float) -> tuple | None:
 def _pipe_fused(sd, sp, f, rr, t_mem):
     sys, org, m, mm, segs_d, mp, store, tail = sd.pipe_ctx[:8]
     segs_p = sp.pipe_ctx[4]
+    ru = union_routing(sd, sp, f)
     if len(segs_d) != len(segs_p):
         return None
     merged = []
     for (od, n), (op_, n2) in zip(segs_d, segs_p):
         if n != n2:
             return None
-        mo = _ovl.merge_chunk(od, op_, f, rr)
+        mo = _ovl.merge_chunk(od, op_, f, rr, ru)
         if mo is None:
             return None
         merged.append((mo, n))
@@ -1020,7 +1049,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             t_pipe)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
-                                      conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg), pipe_ctx=pctx))
+                                      conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg), pipe_ctx=pctx,
+                                      exp_route=_exp_route(m, ph, sh)))
         return stages
 
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx_cap, n_mtp, b_rank,

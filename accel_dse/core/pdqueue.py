@@ -1143,7 +1143,9 @@ def _fused_step(dec: Result, pre1: Result, f: float, reread_frac: float) -> floa
         td, tp = sd.time, sp.time
         bw = td.dram_bytes / td.t_dram if td.t_dram > 0 else math.inf
         nonw = sp.dram["total"] - sp.dram["weights"]
-        dram = td.t_dram + (f * nonw + reread_frac * sp.dram["kv_write"]) / bw
+        from .evaluate import extra_expert_bytes
+        xe = extra_expert_bytes(sd, sp, f)   # 0.103: experts the chunk's tokens touch beyond the decode batch's
+        dram = td.t_dram + (f * nonw + reread_frac * sp.dram["kv_write"] + xe) / bw
         if td.overlap == "stage":
             t = max(td.t_compute + f * tp.t_compute, dram, td.t_slc, td.t_link + f * tp.t_link) + max(td.t_sync, tp.t_sync)
         else:
