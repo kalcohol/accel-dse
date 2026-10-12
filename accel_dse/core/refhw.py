@@ -16,7 +16,7 @@ H200: the catalog's 6 × 24 GiB HBM3e stacks give 144 GiB vs the marketed 141 GB
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import replace, dataclass
 
 from .dtypes import FormatSupport
 from .hardware import Chip, Link
@@ -49,6 +49,9 @@ class RefHW:
     link_GBps_bidir: float
     url: str
     note: str = ""
+    # 0.103: transcendental results / clock / SM (CUDA C++ Programming Guide, "Throughput of Native Arithmetic
+    # Instructions": 32-bit reciprocal / rsqrt / log2 / exp2 / sin / cos = 16 for cc 7.x–10.0); 0 = not public (AMD)
+    sfu_per_sm: float = 0.0
 
 
 def _chip(name, sms, mac_per_sm, peak_tflops, fmts, l2_mib, lanes):
@@ -58,6 +61,7 @@ def _chip(name, sms, mac_per_sm, peak_tflops, fmts, l2_mib, lanes):
                 instance_sched="wide")     # 0.71: GPU references keep the 0.70 calibrated wide schedule (MODEL §25.9 / §26)
 
 
+_NV_SFU = 16.0
 REF_HW = {h.name: h for h in (
     RefHW("MI300X", _chip("MI300X 参考硬件", 304, 1024, 1307.4, _CDNA3, 32.0, 19456),
           "hbm3_8s_8h24g_5200", Link(448.0, 3.0), 1307.4, 2614.9, 5300.0, 192.0, 896.0, MI300X_URL,
@@ -85,3 +89,5 @@ REF_HW = {h.name: h for h in (
           "hbm3_5s_8h16g_3186", Link(300.0, 3.0), 312.0, 0.0, 2039.0, 80.0, 600.0, A100_URL,
           "datasheet: BF16 312 TFLOPS dense; 80 GB HBM2e 2,039 GB/s (SXM); NVLink 600 GB/s"),
 )}
+# NVIDIA references: SFU rate from the CUDA Programming Guide (MI300X: no public per-CU transcendental rate → unset)
+REF_HW = {k: (replace(h, sfu_per_sm=_NV_SFU) if k != "MI300X" else h) for k, h in REF_HW.items()}

@@ -129,6 +129,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         chip = replace(chip, fmt_ceiling=v["fmt_ceiling"])
     if v.get("pipe_cross_op") is not None:   # 0.98: exec_overlap "pipe" — GPU kernel boundaries (no cross-op prefetch)
         chip = replace(chip, pipe_cross_op=v["pipe_cross_op"])
+    if v.get("sfu") and h.sfu_per_sm:  # 0.103: transcendentals on the SFU pipe (NVIDIA, CUDA Programming Guide)
+        chip = replace(chip, sfu_per_cycle=h.sfu_per_sm * chip.engines)
     if v.get("attn_sched"):            # 0.93: attention-only schedule
         chip = replace(chip, attn_sched=v["attn_sched"])
     mem_eff = e if isinstance(e, float) else EFF[e]
@@ -306,6 +308,13 @@ def pipe_variant(base: str = "catalog", cross_op: bool = False) -> str:
     default there is no prefetch across ops (cross_op False)."""
     name = f"{base}+pipe{'x' if cross_op else ''}"
     VARIANTS.setdefault(name, {**VARIANTS[base], "overlap": "pipe", "pipe_cross_op": cross_op})
+    return name
+
+
+def sfu_variant(base: str = "catalog") -> str:
+    """0.103: ``base`` with transcendentals on a separate SFU pipe at the public rate (RefHW.sfu_per_sm)."""
+    name = f"{base}+sfu"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "sfu": True})
     return name
 
 
