@@ -1,6 +1,4 @@
 """0.102: op-level co-located chunk iteration under pipe; vector-lane / dequant catalog sanity."""
-import pytest
-
 from accel_dse.core.evaluate import evaluate, pipe_fused_time
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.parallel import Layout
@@ -17,9 +15,13 @@ def _pair(model, lay, ov="pipe", k=16):
             evaluate(b.replace("serving", Serving(phase="prefill", batch=1, prompt=4096))))
 
 
-@pytest.mark.parametrize("model,lay", [("qwen3-8b", Layout(tp=2)), ("qwen3-30b-a3b", Layout(tp=2, ep=2)),
-                                       ("deepseek-v3", Layout(tp=8, ep=8))])
-def test_fused_pipe_is_op_level_and_bracketed(model, lay):
+def test_fused_pipe_is_op_level_and_bracketed():
+    for model, lay in (("qwen3-8b", Layout(tp=2)), ("qwen3-30b-a3b", Layout(tp=2, ep=2)),
+                       ("deepseek-v3", Layout(tp=8, ep=8))):
+        _check_bracket(model, lay)
+
+
+def _check_bracket(model, lay):
     d, p = _pair(model, lay)
     ds, ps = _pair(model, lay, "stage")
     dz, pz = _pair(model, lay, "serial")
@@ -38,7 +40,7 @@ def test_fused_pipe_grows_with_chunk():
 
 def test_vector_lane_presets_within_public_band():
     lo, hi = V.public_band()["mac_per_lane"]
-    assert lo == pytest.approx(8.0, rel=1e-3) and hi == 64.0
+    assert abs(lo - 8.0) < 8e-3 and hi == 64.0
     for name, ch in CHIPS.items():
         r = V.check(ch, 1000.0)
         assert r["mac_per_lane"][1], name
