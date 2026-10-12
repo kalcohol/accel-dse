@@ -107,7 +107,8 @@ def test_innet_reduction():
 
 
 def test_pp_cross_leaf_and_report():
-    sc = Scenario(model="qwen3-32b", layout=Layout(tp=8, pp=4), node_cards=8, serving=Serving(batch=16),
+    sc = Scenario(model="qwen3-32b", layout=Layout(tp=8, pp=4), node_cards=8, serving=Serving(batch=16), exec_overlap="stage",
+                 
                   fabric=Fabric(enabled=True, oversub=4.0, leaf_nodes=2))
     r = F.fabric_report(sc)
     p2p = sorted((x for x in r["rows"] if x["kind"] == "p2p"), key=lambda x: x["bw_us"])

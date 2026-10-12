@@ -51,7 +51,8 @@ def test_sram_port_per_engine():
 
 def test_sensitivity_block():
     body = {"chip_preset": "1P", "scenario": {"model": "qwen3-8b", "mem_id": "lpddr6_8x96_10667_16g",
-                                              "serving": {"phase": "decode", "batch": 64, "ctx": 4096}}}
+                                              "serving": {"phase": "decode", "batch": 64, "ctx": 4096},
+                                              "exec_overlap": "stage"}}     # 0.100: base pinned to stage
     o = api.api_eval(body)
     s = o["sensitivity"]
     keys = [x["key"] for x in s["rows"]]

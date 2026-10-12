@@ -39,7 +39,7 @@ def test_dsa_topk_share_exact():
 
 def test_cp_ttft_unchanged_by_share_fix():
     r = evaluate(Scenario(model="deepseek-v3.2", layout=Layout(cp=8, ep=8), mem_id=H, node_cards=8,
-                          serving=Serving(phase="prefill", batch=1, prompt=131072)))
+                          serving=Serving(phase="prefill", batch=1, prompt=131072), exec_overlap="stage"))
     assert abs(r.ttft - 13.921) < 5e-3       # 0.88 value: the share fix touches the work KPI, not time
 
 

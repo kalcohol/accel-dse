@@ -3,6 +3,37 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.100.0]
+
+### Changed — default numbers change (intentional)
+- **`Scenario.exec_overlap` defaults to `"pipe"`** (hardware-derived overlap, MODEL §44/§45), replacing `"stage"`.
+  Under stage, design conclusions such as the SRAM knee and the irrelevance of link bandwidth were artefacts of
+  assuming full overlap. `stage` stays selectable (`--exec-overlap stage`, `"exec_overlap": "stage"`).
+  Refhw validation is unchanged because extval variants set their overlap explicitly: all 10 groups are identical
+  to 0.99.
+- **Fingerprint (209 catalog points).** Default c034bfe3 → e51c7ec1. With `exec_overlap: "stage"` the numbers are
+  still c034bfe3 (pinned in test_core_0100). Of the 209 points none is bit-identical, 5 change by more than 1 %,
+  the median ratio is 1.000, the worst is −3.0 % (wan2.1-1.3b TP2), and no bottleneck flips.
+- **Saved scenarios.** A partial dict without `exec_overlap` keeps its hash (e.g. `{"model": "qwen3-8b"}` →
+  917ab559e6aa1c07) but now evaluates under pipe. Full dicts saved by the UI carry `"exec_overlap": "stage"` and
+  reload as stage, so they reproduce their numbers exactly.
+- **Sensitivity.** For a pipe base the panel shows stage (吞吐上界) and serial (吞吐下界). Sweep / Pareto get a
+  new "全重叠（上界）" case.
+- **Pipe speed.** Inside a run of identical tiles the simulator now skips ahead once the state repeats. It is
+  checked only around powers of two, and short runs are replayed. Difference from the 0.99 replay is ≤ 4.3e-12.
+
+### Correction to 0.99
+- The 0.99 claim that the exact replay is bit-equal to brute force on 189 points was wrong. That comparison ran
+  `python -c` from inside one worktree, so both sides imported the same code. Re-run from a neutral directory:
+  the 0.98 extrapolation differed from the exact replay by at most 9.9e-5 (relative).
+
+### Tests re-pinned to `exec_overlap="stage"` (they hand-calculate or pin stage numbers or identities)
+- test_core_051, 052, 059, 060, 062_1, 077, 089, 096, 097, and coverage `_kpi`.
+- 051 found that "chunked prefill moves no more DRAM per token than prefill-first" holds under stage but not under
+  pipe (+5 %). Under pipe the chunked iterations are slower, the running decode batch is smaller, and weight reads
+  are amortised over fewer tokens. The relation depends on the regime; it is not an invariant.
+- 052: the chunk-share identity is exact only for additive step costs (stage); under pipe it is off by 1.8e-6.
+
 ## [0.99.0]
 
 ### Changed (opt-in `pipe` only; NPU default and fingerprint c034bfe3 unchanged)

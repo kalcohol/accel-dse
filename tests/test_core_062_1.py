@@ -32,7 +32,7 @@ def test_release_count_and_param_error():
 
 def test_esmfold_fp32_activation_example():
     """MODEL §12: ESMFold 512 residues, 100T + LPDDR5X, 5.0 → 10.0 s (4 trunk passes since 0.61.2)."""
-    s = Scenario(chip=CHIPS["100T"], model="esmfold", mem_id=LP)
+    s = Scenario(chip=CHIPS["100T"], model="esmfold", mem_id=LP, exec_overlap="stage")   # 0.100: hand-calc pins the stage path
     assert round(evaluate(s).latency, 1) == 5.0
     assert round(evaluate(s.replace("formats_override", (("act", "fp32"),))).latency, 1) == 10.0
 
@@ -42,7 +42,7 @@ def test_fabric_examples_after_bf16_combine():
     def run(model, lay, phase, batch, fab=Fabric()):
         return evaluate(Scenario(model=model, chip=replace(CHIPS["1P"], instance_sched="wide"),  # 0.71: §19 examples at the wide schedule
                                  mem_id=HBM, layout=lay, node_cards=8,
-                                 serving=Serving(phase=phase, batch=batch), fabric=fab))
+                                 serving=Serving(phase=phase, batch=batch), fabric=fab, exec_overlap="stage"))
     r = run("deepseek-v3", Layout(dp=64, ep=64), "prefill", 64)
     assert round(r.step * 1e3, 1) == 715.9 and r.bound == "LINK"
     r = run("deepseek-v3", Layout(dp=64, ep=64), "prefill", 64, Fabric(enabled=True, oversub=4.0, leaf_nodes=2))

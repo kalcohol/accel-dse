@@ -336,7 +336,7 @@ class Scenario:
     # pre-0.66 model) | "class" (GEMM ‖ weight traffic, attention ‖ KV traffic, the two classes and the collectives
     # serial: kernel-by-kernel execution, e.g. GPUs) | "kernel" (class + vector kernels serial) | "serial" (no
     # overlap, upper bound) — see schedule.StageTime.total 「假设」
-    exec_overlap: str = field(default="stage", metadata={"omit_default": True})
+    exec_overlap: str = field(default="pipe", metadata={"omit_default": True})   # 0.100: pipe (was stage)
     # 0.69: fixed per-layer time per step (kernel launch / sync / scheduler), µs; added to the stage's exposed sync
     # time in every overlap mode.  NPU- and runtime-dependent 「假设」; default 0 (off), not fitted.
     layer_overhead_us: float = field(default=0.0, metadata={"omit_default": True})

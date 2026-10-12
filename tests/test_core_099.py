@@ -17,8 +17,11 @@ def test_periodic_jump_is_exact():
             for it in items * 40:
                 tl.append(O._tiles([it], f, spb, 1.0, min(O.PIPE_TILE, buf / 2)))
             sim = O._Sim(buf, xop)
-            for t in tl:
-                sim.feed(t, True)
+            for t in tl:                                  # brute force: every tile fed one by one
+                first = True
+                for (tile, k) in t:
+                    for _ in range(k):
+                        sim.feed([tile], first); first = False
             a = O.stage_pipe_time([(items, 40)], f, spb, buf, xop)
             assert abs(a - sim.c_end) <= 1e-9 * sim.c_end
 
@@ -43,7 +46,7 @@ def test_tile_capped_by_buffer():
 
 
 def test_sensitivity_bracket_labels():
-    body = {"chip_preset": "1P", "scenario": {"model": "qwen3-8b"}}
+    body = {"chip_preset": "1P", "scenario": {"model": "qwen3-8b", "exec_overlap": "stage"}}   # 0.100: pipe is the default
     s = api.api_sensitivity(body)["sensitivity"]
     assert s["base_label"].startswith("stage") and "上界" in s["base_label"]
     labels = [x["label"] for x in s["rows"]]
@@ -53,3 +56,6 @@ def test_sensitivity_bracket_labels():
     assert "上界" in p["rows"][0]["label"] and "下界" in p["rows"][1]["label"]
     sw = api.api_sweep({**body, "path": "chip.sram_mib", "values": [16, 64], "sensitivity": True})["sensitivity"]
     assert [c["label"] for c in sw["cases"]][:2] == ["pipe（现实估计）", "无重叠（下界）"]
+    d = api.api_sweep({"chip_preset": "1P", "scenario": {"model": "qwen3-8b"}, "path": "chip.sram_mib", "values": [16, 64],
+                       "sensitivity": True})["sensitivity"]                    # default (pipe): bracket both ways
+    assert [c["label"] for c in d["cases"]][:2] == ["全重叠（上界）", "无重叠（下界）"]

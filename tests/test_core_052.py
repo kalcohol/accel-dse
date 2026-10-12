@@ -21,7 +21,8 @@ from accel_dse.core.scenario import PDConfig, Scenario, Serving
 
 SV = Serving(batch=64, prompt=4096, out_len=512, ttft_slo_ms=400, tpot_slo_ms=10)
 BASE = dict(model="qwen3-8b", chip=replace(CHIPS["1P"], instance_sched="wide"),   # 0.71: bands set at 0.70 step costs
-            mem_id="hbm3e_8s_12h24g_9200", layout=Layout(tp=2), serving=SV)
+            mem_id="hbm3e_8s_12h24g_9200", layout=Layout(tp=2), serving=SV,
+            exec_overlap="stage")   # 0.100: the chunk identities are exact for additive (stage) step costs
 PD = dict(enabled=True, prefill_layout=Layout(tp=2), prefill_cards=2, decode_cards=6)
 _CACHE: dict = {}
 

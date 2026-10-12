@@ -80,7 +80,7 @@ def _kpi(i):
     for sv in _SV:
         try:
             # 0.71: the 0.65.1 hashes are guarded at the wide schedule; auto-default numbers: /workspace/prof66/fp_0710.json
-            sc = Scenario(model=i, serving=sv)
+            sc = Scenario(model=i, serving=sv, exec_overlap="stage")   # 0.100: the 0.65.1 hashes pin the stage path
             r = evaluate(replace(sc, chip=replace(sc.chip, instance_sched="wide")))
             s.append([float(f"{x:.10g}") for x in (r.tpot, r.ttft, r.throughput, r.per_card, r.tick)] + [r.fits, r.bound])
         except Exception as x:  # noqa: BLE001

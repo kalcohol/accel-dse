@@ -346,9 +346,10 @@ def _lanes_q(s: Scenario) -> Scenario:
 
 # 0.97: one definition shared by eval / sweep / Pareto. (key, short label, transform) — the transform is applied to
 # each evaluated point, so a swept chip keeps "¼ of ITS lanes" and a swept memory keeps its own capacity.
-# 0.99: overlap is bracketed — pipe (hardware-derived, MODEL §44) is the realistic alternative, serial the lower bound
-# on throughput; the stage default is the upper bound
+# 0.99/0.100: overlap is bracketed — pipe (hardware-derived, MODEL §44; the default since 0.100) is the realistic
+# estimate, stage (full overlap) the upper bound on throughput, serial the lower bound
 SENS_CASES = (("pipe", "pipe（现实估计）", lambda s: None if s.exec_overlap in ("pipe", "serial") else s.replace("exec_overlap", "pipe")),
+              ("exec_overlap", "全重叠（上界）", lambda s: None if s.exec_overlap == "stage" else s.replace("exec_overlap", "stage")),
               ("exec_overlap", "无重叠（下界）", lambda s: None if s.exec_overlap == "serial" else s.replace("exec_overlap", "serial")),
               ("mem_eff", "DRAM 效率 0.5", lambda s: s.replace("mem_eff", 0.5)),
               ("mem_eff", "DRAM 效率 0.9", lambda s: s.replace("mem_eff", 0.9)),

@@ -52,7 +52,8 @@ def test_fa3_ratio_band():
 
 def test_sweep_sensitivity_flags():
     b = {"chip_preset": "1P", "scenario": {"model": "qwen3-32b", "mem_id": "lpddr6_8x96_10667_16g",
-                                           "serving": {"phase": "prefill", "batch": 1, "prompt": 16384}},
+                                           "serving": {"phase": "prefill", "batch": 1, "prompt": 16384},
+                                           "exec_overlap": "stage"},     # 0.100: base pinned to stage
          "path": "chip.sram_mib", "values": [16, 32, 64, 128, 256]}
     plain = api.api_sweep(b)
     assert "sensitivity" not in plain

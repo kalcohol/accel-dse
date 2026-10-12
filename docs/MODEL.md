@@ -2127,3 +2127,22 @@ impossible. That is now prevented: tile = min(1 MiB, buffer / 2). The conclusion
 repeat at a time. Once two consecutive repeats leave the same state relative to the compute clock (DMA lead,
 buffer window), the rest of the group is added in one step. This is exact, because the flow shop is deterministic.
 Worst catalog evaluation: 1.9 s.
+
+## 46. 0.100 — pipe is the default overlap
+
+`Scenario.exec_overlap` now defaults to `"pipe"` (§44, §45). The reason is §45: under `stage`, the LPDDR prefill
+SRAM knee (64 → 128 MiB), the D2D package knee and "MoE EP decode is insensitive to link bandwidth" were all
+artefacts of full overlap. Pipe derives the overlap from double buffering and data dependencies, and its own
+constants move results by ≤ 0.7 %.
+
+* `stage` and `serial` remain selectable. In the sensitivity panel they bracket pipe as the upper and lower bounds
+  on throughput.
+* Refhw (extval) sets its overlap explicitly, so all 10 validation groups are unchanged. GPU measurements are
+  still judged under the 0.92–0.94 variants (§44: pipe was not adopted for refhw).
+* Fingerprint c034bfe3 → e51c7ec1: 0/209 points bit-identical, median ratio 1.000, worst −3.0 % (wan2.1-1.3b
+  TP2), 5 points beyond 1 %, no bottleneck flips. Explicit stage reproduces c034bfe3.
+* Two analytic statements that used to hold in the default become regime-dependent; their tests are now pinned to
+  stage:
+  * chunked-prefill DRAM per token ≤ prefill-first: under pipe +5 % at the test point;
+  * the chunk-share identity (§23): 1.8e-6 off under pipe.
+* Saved partial scenarios keep their hash but evaluate under pipe. Full UI dicts carry `"stage"` and reproduce.

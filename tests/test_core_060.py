@@ -90,7 +90,8 @@ def test_three_tier_kv_and_p2p():
 
 def test_three_tier_r2_1_equals_two_tier_end_to_end():
     lay = Layout(1, 1, 64, 64, 1)
-    base = Scenario(model="deepseek-v3", chip=CHIPS["1P"], mem_id=HBM, layout=lay, node_cards=8,
+    base = Scenario(model="deepseek-v3", chip=CHIPS["1P"], mem_id=HBM, layout=lay, node_cards=8, exec_overlap="stage",
+                    
                     serving=Serving(batch=512), fabric=Fabric(enabled=True, oversub=2.0))
     three = dataclasses.replace(base, fabric=dataclasses.replace(base.fabric, net_tiers=3, pod_nodes=4))
     assert evaluate(base).step == evaluate(three).step

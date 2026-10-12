@@ -41,12 +41,12 @@ def test_between_stage_and_serial():
              ("qwen3-32b", HB, Serving(phase="decode", batch=128, ctx=8192), F8),
              ("wan2.1-14b", HB, Serving(), ())]
     for model, mem, sv, fo in cases:
-        s = Scenario(model=model, chip=C, mem_id=mem, serving=sv, formats_override=fo)
+        s = Scenario(model=model, chip=C, mem_id=mem, serving=sv, formats_override=fo, exec_overlap="stage")
         lo, hi = _t(s).total, _t(s.replace("exec_overlap", "serial")).total
         p = _t(s.replace("exec_overlap", "pipe"))
         raw = p.t_pipe + p.t_sync
         assert lo * (1 - 1e-9) <= raw <= hi * (1 + 1e-9), model        # not clamped
-    s = Scenario(model="deepseek-v3", chip=C, mem_id=HB, formats_override=F8,
+    s = Scenario(model="deepseek-v3", chip=C, mem_id=HB, formats_override=F8, exec_overlap="stage",
                  serving=Serving(phase="decode", batch=256, ctx=4096)).replace("layout.tp", 8).replace("layout.ep", 8)
     st, pp = _t(s).total, _t(s.replace("exec_overlap", "pipe")).total
     assert 1.05 < pp / st < 1.3                                          # exposed collectives, MoE overlap with shared
@@ -81,7 +81,7 @@ def test_kernel_boundaries_and_dma():
 
 def test_default_unchanged_and_extval_variant():
     s = Scenario(model="qwen3-8b", chip=C)
-    assert "pipe_cross_op" not in str(s.to_dict()) and s.exec_overlap == "stage"
+    assert "pipe_cross_op" not in str(s.to_dict()) and s.exec_overlap == "pipe"     # 0.100: pipe is the default
     import accel_dse.core.extval as X
     v = X.pipe_variant("catalog")
     assert X.VARIANTS[v]["overlap"] == "pipe" and X.VARIANTS[v]["pipe_cross_op"] is False

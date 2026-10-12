@@ -85,23 +85,23 @@ def items_of(ops, op_secs, comm_secs, act_bytes) -> list[tuple]:
 
 
 def _tiles(items, f: dict, sec_per_byte: float, dma_scale: float, tile: float = PIPE_TILE) -> list[tuple]:
-    """(bytes, load s, compute s) per tile."""
+    """Runs of identical tiles: ((bytes, load s, compute s), count)."""
     out = []
     for c, b, comm in items:
         if comm > 0:
-            out.append((0.0, 0.0, comm))
+            out.append(((0.0, 0.0, comm), 1))
             continue
         raw = sum(b.values())
         nb = sum(x * f.get(k, 1.0) for k, x in b.items())
         if raw <= 0:
             if c > 0:
-                out.append((0.0, 0.0, c))
+                out.append(((0.0, 0.0, c), 1))
             continue
         # the tiling is the op's (from its touched bytes), not the plan's: pinning more of an op shrinks each tile's
         # load but never re-tiles it (monotone in SRAM)
         k = max(PIPE_MIN_TILES, math.ceil(raw / tile))
         m = nb * sec_per_byte * dma_scale / k
-        out.extend([(nb / k, m, c / k)] * k)
+        out.append(((nb / k, m, c / k), k))
     return out
 
 
@@ -116,6 +116,33 @@ class _Sim:
         self.d_end = self.c_end = self.last = 0.0      # last = compute end of the newest tile that left the window
         self.win = []                                  # [size, compute end] of tiles still holding buffer space
         self.wsum = 0
+
+    def feed_runs(self, runs, op_start: bool = False) -> None:
+        """Runs of identical tiles. Inside a run, once a tile leaves the same relative state as the tile before it,
+        the rest of the run adds the same time per tile, so it is added in one step (exact, as for layers)."""
+        first = op_start
+        for t, k in runs:
+            prev = prev_dt = None
+            i = 0
+            if k < 8 * (len(self.win) + 8):         # short run vs the window: replaying is cheaper than comparing
+                self.feed([t], first); first = False
+                if k > 1:
+                    self.feed([t] * (k - 1))
+                continue
+            while i < k:
+                c0 = self.c_end
+                self.feed([t], first); first = False; i += 1
+                if k - i <= 0:
+                    break
+                # compare tile i with tile i − 1 only around powers of two (O(window · log k) state work)
+                if (i & (i - 1)) == 0 and i >= 2:
+                    prev, prev_dt = self.state(), self.c_end - c0
+                elif prev is not None:
+                    st, dt = self.state(), self.c_end - c0
+                    if abs(dt - prev_dt) <= 1e-12 * max(self.c_end, 1e-30) and _same(st, prev, self.c_end):
+                        self.shift(dt * (k - i)); i = k
+                        break
+                    prev = None
 
     def feed(self, tiles, op_start: bool = False) -> None:
         win, buf = self.win, self.buf
@@ -185,7 +212,7 @@ def stage_pipe_time(segments, f: dict, sec_per_byte: float, buf: float, cross_op
         while done < n:
             t0 = sim.c_end
             for tl in per:
-                sim.feed(tl, True)
+                sim.feed_runs(tl, True)
             done += 1
             st, dt = sim.state(), sim.c_end - t0
             if prev is not None and prev_dt is not None and _same(st, prev, sim.c_end) \

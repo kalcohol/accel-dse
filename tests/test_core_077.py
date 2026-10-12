@@ -41,10 +41,10 @@ def test_dram_time_and_kv_bytes_hand_calc():
 
 def test_sram_slc_residency_extremes():
     c = CHIPS["100T"]
-    t_c = evaluate(Scenario(model="qwen3-8b")).stages[0].time.t_array
+    t_c = evaluate(Scenario(model="qwen3-8b", exec_overlap="stage")).stages[0].time.t_array
     prev = None
     for s in (1, 64, 1024, 8192, 14435, 15000, 20000, 1e6):
-        r = evaluate(Scenario(model="qwen3-8b", chip=replace(c, sram_mib=float(s))))
+        r = evaluate(Scenario(model="qwen3-8b", chip=replace(c, sram_mib=float(s)), exec_overlap="stage"))
         cur = (r.tpot, r.stages[0].dram["weights"] + r.stages[0].dram["kv_read"])
         assert prev is None or (cur[0] <= prev[0] * (1 + 1e-12) and cur[1] <= prev[1] * (1 + 1e-12)), s
         prev = cur

@@ -17,7 +17,8 @@ from accel_dse.core.hardware import CHIPS
 from accel_dse.core.scenario import PDConfig, Scenario, Serving
 
 BASE = dict(model="qwen3-8b", chip=CHIPS["1P"], mem_id="hbm3e_8s_12h24g_9200", layout=Layout(tp=2),
-            serving=Serving(batch=64, prompt=4096, out_len=512))
+            serving=Serving(batch=64, prompt=4096, out_len=512),
+            exec_overlap="stage")   # 0.100: closed-form identities / bands set under stage
 PD = PDConfig(enabled=True, prefill_layout=Layout(tp=2), prefill_cards=2, decode_cards=6)
 
 
