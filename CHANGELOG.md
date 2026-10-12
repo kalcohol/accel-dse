@@ -3,6 +3,32 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.101.0]
+
+### Fixed
+- **Co-located chunked-prefill iterations ignored the overlap mode** (`pdqueue._fused_step`). The fused
+  decode + chunk iteration always used the stage rule. Under the 0.100 pipe default, chunked co-location was
+  therefore priced with full overlap: qwen3-8b TP2 gave 66.06 req/s under stage and the same 66.06 under pipe.
+  It now follows the scenario's mode:
+  - stage: unchanged, bit-identical;
+  - kernel-serial modes: components add, as `extval._fused` did since 0.70; extval now delegates to this function,
+    and its numbers are identical;
+  - pipe: the fused op sequence is not replayed. The iteration keeps the decode step's position between the stage
+    and serial bounds 「假设」, which is exact at f = 0.
+
+  qwen3-8b: stage 66.06 > pipe 63.06 > serial 37.40 req/s. The NPU fingerprint is unchanged (e51c7ec1; it does not
+  cover PD) and refhw is unchanged (10/10 groups identical).
+
+### Validation (pipe default, val5/v101)
+- **Feature combos:** 206 random scenarios over PD, CP, PP, TP / SP / EP, D2D, SLC pin / lru / pin_bw, fabric,
+  video and protein. No pipe stage outside [stage, serial] and no errors.
+- **Energy:** action counts are identical across overlap modes (rel 1e-9); only idle card-seconds (static energy)
+  grow with the slower step.
+- **Feature monotonicity:** link, D2D, SLC size / bandwidth, SRAM and mem_eff: 0 violations.
+- **Resource monotonicity:** 3 × 300 random pipe-weighted points. 4 violations, all the known 0.95 artefact: the
+  `mem` step lpddr6_16x96 → hbm3e_4s lowers capacity, so the model no longer fits.
+- **Knees and the 0.95 constant table** re-run under the default: MODEL §47.
+
 ## [0.100.0]
 
 ### Changed — default numbers change (intentional)

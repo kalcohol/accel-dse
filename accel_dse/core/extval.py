@@ -342,26 +342,10 @@ INFLIGHT_FIT: dict = {}    # per-variant override (False = the ≤ 0.91 whole-ba
 
 
 def _fused(dec, pre1, f: float, rr: float) -> float:
-    """One iteration carrying dec's batch + an f share of pre1's prompt.  exec_overlap="stage" uses the tool's own
-    ``pdqueue._fused_step``; the kernel-serial modes add the same per-stage components and take that mode's total."""
+    """One iteration carrying dec's batch + an f share of pre1's prompt — ``pdqueue._fused_step`` (0.101: that now
+    handles every overlap mode the way this function did since 0.70; identical numbers)."""
     from .pdqueue import _fused_step
-    if f <= 0:
-        return dec.step
-    if dec.stages[0].time.overlap == "stage":
-        return _fused_step(dec, pre1, f, rr)
-    worst = 0.0
-    for sd, sp in zip(dec.stages, pre1.stages):
-        td, tp = sd.time, sp.time
-        bw = td.dram_bytes / td.t_dram if td.t_dram > 0 else math.inf
-        nonw = sp.dram["total"] - sp.dram["weights"]
-        t = replace(td, t_array=td.t_array + f * tp.t_array, t_mac=td.t_mac + f * tp.t_mac,
-                    t_feed=td.t_feed + f * tp.t_feed, t_vector=td.t_vector + f * tp.t_vector,
-                    t_arr_attn=td.t_arr_attn + f * tp.t_arr_attn,
-                    t_dram=td.t_dram + (f * nonw + rr * sp.dram["kv_write"]) / bw,
-                    t_dram_kv=td.t_dram_kv + (f * tp.t_dram_kv if tp.t_dram > 0 else 0.0) + rr * sp.dram["kv_write"] / bw,
-                    t_link=td.t_link + f * tp.t_link, t_sync=max(td.t_sync, tp.t_sync))
-        worst = max(worst, t.total)
-    return dec.step * worst / dec.tick if dec.tick > 0 else math.inf
+    return _fused_step(dec, pre1, f, rr)
 
 
 def _cb_at(r: dict, b: int, eff: str, C: int = CB_CHUNK):

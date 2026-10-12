@@ -2146,3 +2146,62 @@ constants move results by ≤ 0.7 %.
   * chunked-prefill DRAM per token ≤ prefill-first: under pipe +5 % at the test point;
   * the chunk-share identity (§23): 1.8e-6 off under pipe.
 * Saved partial scenarios keep their hash but evaluate under pipe. Full UI dicts carry `"stage"` and reproduce.
+
+## 47. 0.101 — pipe as default: adversarial review
+
+**Bug found.** The co-located chunked-prefill iteration (`pdqueue._fused_step`) always used the stage rule, so
+under the pipe default it was the only part of the PD report that ignored overlap. It now follows the mode
+(CHANGELOG 0.101). Stage and refhw are bit-identical.
+
+**Invariants under pipe (206 random combos: PD, CP, PP, EP, D2D, SLC, fabric, video, protein).**
+* No stage falls outside [stage, serial].
+* Action counts (MAC, SRAM, DRAM, link and wire bytes) do not depend on the overlap mode. Only idle card-seconds
+  move, i.e. static energy, and they grow with the step time.
+* No monotonicity violations for link, D2D, SLC, SRAM or mem_eff.
+
+**PD.** Ordering stage ≥ pipe ≥ serial holds for fluid capacity, PD, prefill-first and chunked co-location
+(qwen3-8b, qwen3-30b-a3b). One regime effect: qwen3-30b-a3b PD is unstable under stage ("KV link unstable after
+the pool's collectives") but stable under pipe at 40 req/s. The KV transfer shares the link with the pool's
+collectives. Stage packs those collectives into a shorter step, so they leave less link time for KV. This is a
+property of the stage assumption, not a pipe artefact.
+
+**Knees under the default** (pipe base; stage and serial from the sensitivity cases; same sweeps as §45):
+
+| sweep | pipe (default) | stage | serial |
+|---|---|---|---|
+| HBM decode clock | 0.8 | 0.8 | 1.5 |
+| FP8 decode clock | 1.5 | 1.5 | 1.5 |
+| decode batch | 128 | 128 | 128 |
+| mac_eff | 0.9 | 0.9 | 0.9 |
+| LPDDR prefill SRAM (MiB) | 128 | 64 | 256 |
+| D2D package cards | 2 | 1 | 1 |
+| DeepSeek-V3 link (GB/s) | 400 | 50 (flat) | 200 |
+| Wan frames (best) | 17 | 33 | 17 |
+
+These match §45 exactly, now read from the default side.
+
+**0.95 constant table under the default** (qwen3-8b on 1P unless noted; MODEL §41 conclusions C1–C6):
+
+| conclusion | 0.95 (stage) | 0.101 default (pipe) | moved by (under pipe) |
+|---|---|---|---|
+| C1 HBM / LPDDR6 decode ratio | 10.35 | 10.35 | serial 6.03; mem_eff 0.9 9.51; mac_eff 0.8 9.78 |
+| C3 LPDDR6 prefill SRAM knee | 128 MiB | 128 MiB | serial 512; mem_eff 0.5 256; mem_eff 0.9 / mac_eff 0.8 64 |
+| C4 engines for 95 % decode b1 | 32 | 32 | serial 64 |
+| C5 FP8-activation gain, HBM decode b64 | 1.20× | 1.30× | dequant 64/cyc 0.37×; lanes ÷4 0.85×; mem_eff 0.5 1.58×; kernel 1.05× |
+| C5b int4 vs FP8, LPDDR6 decode | 1.14× | 1.14× | dequant 64/cyc 0.75× |
+| C2 D2D 16 vs 1 unit, prefill | 1.00× | 1.10× | d2d α 5 µs 1.00× |
+| C6 2-die / mono, decode | 0.995 | 0.995 | d2d α 5 µs 0.957 |
+| C6b 2-die / mono, prefill | 0.999 | 0.968 | lanes ÷4 1.08; port ×0.25 1.07 |
+
+Pipe's own constants (tile 256 KiB / 4 MiB, minimum tiles 8 / 128) and `pipe_cross_op=False` move every entry by
+≤ 3 %.
+
+What changed under the default:
+* **C2.** D2D units now matter: +10 % from 16 units, where stage hid the D2D transfer behind compute.
+* **C6b.** A 2-die prefill is 3 % slower than a single die.
+* **C5.** The FP8-activation gain rises from 1.20× to 1.30×.
+
+What did not change:
+* the HBM / LPDDR ratio, the SRAM knee at qwen3-8b 4K, and the engine count;
+* the conclusions' dependence on vector lanes and dequant throughput, which is still the largest
+  (C5: 0.37–1.58× across knobs). That dependence is not an overlap effect.

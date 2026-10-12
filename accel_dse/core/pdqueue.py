@@ -101,6 +101,7 @@ from __future__ import annotations
 
 import bisect
 import math
+from dataclasses import replace
 
 from .energy import ACTIONS, EnergyTable, _BITS, _UNIT_PJ, action_counts, scaleup_bytes
 from .evaluate import Result, evaluate
@@ -1143,7 +1144,25 @@ def _fused_step(dec: Result, pre1: Result, f: float, reread_frac: float) -> floa
         bw = td.dram_bytes / td.t_dram if td.t_dram > 0 else math.inf
         nonw = sp.dram["total"] - sp.dram["weights"]
         dram = td.t_dram + (f * nonw + reread_frac * sp.dram["kv_write"]) / bw
-        t = max(td.t_compute + f * tp.t_compute, dram, td.t_slc, td.t_link + f * tp.t_link) + max(td.t_sync, tp.t_sync)
+        if td.overlap == "stage":
+            t = max(td.t_compute + f * tp.t_compute, dram, td.t_slc, td.t_link + f * tp.t_link) + max(td.t_sync, tp.t_sync)
+        else:
+            # 0.101: the iteration's own overlap mode (was: the stage rule for every mode — under the pipe default the
+            # fused chunk iteration ignored the overlap and was mode-independent). Components add; the kernel-serial
+            # modes take their total (as extval did since 0.70). pipe: the fused op sequence is not replayed — the
+            # iteration keeps the decode step's position between the stage and serial bounds (exact at f = 0) 「假设」
+            t = replace(td, t_array=td.t_array + f * tp.t_array, t_mac=td.t_mac + f * tp.t_mac,
+                        t_feed=td.t_feed + f * tp.t_feed, t_vector=td.t_vector + f * tp.t_vector,
+                        t_arr_attn=td.t_arr_attn + f * tp.t_arr_attn, t_dram=dram,
+                        t_dram_kv=td.t_dram_kv + (f * tp.t_dram_kv if tp.t_dram > 0 else 0.0)
+                        + reread_frac * sp.dram["kv_write"] / bw,
+                        t_link=td.t_link + f * tp.t_link, t_sync=max(td.t_sync, tp.t_sync))
+            if td.overlap == "pipe":
+                lo_d, hi_d = (replace(td, overlap=o).total for o in ("stage", "serial"))
+                g = (td.total - lo_d) / (hi_d - lo_d) if hi_d > lo_d else 0.0
+                lo, hi = (replace(t, overlap=o).total for o in ("stage", "serial"))
+                t = replace(t, t_pipe=lo + g * (hi - lo) - t.t_sync)
+            t = t.total
         worst = max(worst, t)
     return dec.step * worst / dec.tick if dec.tick > 0 else math.inf
 
