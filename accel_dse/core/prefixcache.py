@@ -202,6 +202,23 @@ def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
     tot = sum(L * c for (L, _, _), g in zip(lv, gs_fit) for c, _ in g)
     if C_tokens >= tot:
         return [[1.0] * len(g) for g in gs_fit] + zero
+    # 0.112: a leading chain of single-node levels (n = 1, e.g. one shared system prompt) is touched by every request,
+    # so it is always the most recent and (it fits: cumulative check above) always resident under LRU.  Che gave it
+    # h = 1 − e^{−T} < 1, charged only part of its tokens and broke monotonicity in C (H_1 1.0 → 0.9999 as C grew,
+    # when the exact path switched to Che).  Pin it and run Che on the rest of the capacity.
+    j = 0
+    while j < m and len(gs_fit[j]) == 1 and gs_fit[j][0][0] == 1.0 and gs_fit[j][0][1] == 1.0:
+        j += 1
+    if 0 < j < m:
+        pin = sum(L for L, _, _ in lv[:j])
+        rest = _tree_che(lv[j:], gs_fit[j:], C_tokens - pin)
+        return [[1.0] for _ in range(j)] + rest + zero
+    return _tree_che(lv, gs_fit, C_tokens) + zero
+
+
+def _tree_che(lv, gs_fit, C_tokens: float) -> list[list[float]]:
+    if C_tokens <= 0:
+        return [[0.0] * len(g) for g in gs_fit]
 
     def occ(T):
         return sum(L * c * -math.expm1(-q * T) for (L, _, _), g in zip(lv, gs_fit) for c, q in g)
@@ -240,9 +257,9 @@ def tree_resident(levels, C_tokens: float, groups=None) -> list[list[float]]:
             den = sum(w for L, w in w0)
         C_eff = C_tokens - 0.5 * num / den if den > 0 else C_tokens
     if C_eff <= 0:
-        return [[0.0] * len(g) for g in gs]
+        return [[0.0] * len(g) for g in gs_fit]
     T = solve(C_eff)
-    return [[-math.expm1(-q * T) for _, q in g] for g in gs_fit] + zero
+    return [[-math.expm1(-q * T) for _, q in g] for g in gs_fit]
 
 
 EXACT_TREE = True

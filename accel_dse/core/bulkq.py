@@ -455,7 +455,7 @@ def _tagged(lam: float, b: int, D: tuple):
     return keys, f_idle, wq, own, bm
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=1024)       # 0.112: was 128 — evicted within one PD report (548 calls, 385 distinct)
 def _wait_hists(lam: float, b: int, D: tuple):
     """Per own-batch-size k: the wait part (time until the tagged request's own batch starts) on the grid of width
     h = E[T(1)]/(4·N_U) — {k: (first bin, [mass …], Σ mass·mean)} — plus the idle fraction (zero wait)."""
@@ -500,7 +500,7 @@ def _wait_hists(lam: float, b: int, D: tuple):
     return out, f_idle, wq, own, bm, h
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=1024)       # 0.112: was 256
 def bulk_law(lam: float, b: int, D: tuple, O: tuple | None = None) -> dict | None:
     """TTFT law of the greedy bulk server.  D[k−1] = ((t, w), …) = batch-wall law for k = 1..b.  ``O`` (optional)
     O[k−1] = law of the tagged request's own part when it is served in a batch of k — its batch wall plus anything

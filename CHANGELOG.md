@@ -3,6 +3,32 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.112.0]
+
+### Fixed
+- Radix prefix cache (`pd.prefix_tree`). A leading chain of single-node levels (one shared system prompt) is touched
+  by every request, so under LRU it is always resident once its path fits. The Che branch gave it h = 1 − e^{−T} < 1,
+  which made H₁ fall (1.0 → 0.9999) as capacity grew and the exact path handed over to Che. Those levels are now
+  pinned, and Che runs on the remaining capacity.
+
+### Performance (results bit-identical)
+- `overlap.stage_pipe_time` is memoised on its full input, and the `_Sim.feed` loop keeps its state in locals.
+- pdqueue: the victim-wait `r_surv` sum skips zero terms, `surv` is memoised, and `_gamma_q` is LRU-cached.
+- bulkq: the `_wait_hists` and `bulk_law` caches go from 128 / 256 to 1024 entries (they were evicting within a
+  single PD report).
+- A PD kv_cap report takes 242 → 152 s (swap) and 242 → 190 s (recompute), with an identical SHA-256 of the full
+  report. 152 randomized `api_eval` / `api_sweep` outputs are byte-identical to 0.111.
+
+### Audit
+- Randomized adversarial audit (val5/v0112) of spec_k, PP microbatches, MoE skew cap / measured load, prefix scenarios,
+  the dtype exec matrix and radix tree vs `RadixLRU`.
+  - 0 violations apart from the radix pin above.
+  - Che vs LRU: worst error 0.14 on one adversarial tree (two 500-token roots with tiny leaves, where the exact
+    enumeration is over budget). This is a known Che approximation, recorded and not fitted.
+  - fp32 × fp32 on hardware without fp32 is labelled `upcast_both`, although it is a forced down-cast. Only the label
+    is affected; the cost is correct.
+- Standing tests: `test_core_112`.
+
 ## [0.111.0]
 
 ### Added

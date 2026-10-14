@@ -149,27 +149,33 @@ class _Sim:
                     prev = None
 
     def feed(self, tiles, op_start: bool = False) -> None:
+        # 0.112: attributes held in locals for the loop (same operations in the same order — bit-identical)
         win, buf = self.win, self.buf
         first = op_start and not self.cross_op
+        d_end, c_end, last, wsum = self.d_end, self.c_end, self.last, self.wsum
+        ceil = math.ceil
         for sz, m, c in tiles:
-            start = self.d_end
+            start = d_end
             if sz > 0:
-                sz = math.ceil(sz)
-                h = 0
-                while self.wsum + sz > buf and h < len(win):    # tiles before must have been consumed
-                    self.wsum -= win[h][0]; self.last = win[h][1]; h += 1
-                if h:
-                    del win[:h]
-                if self.last > start:
-                    start = self.last
-                if first and self.c_end > start:
-                    start = self.c_end
+                sz = ceil(sz)
+                if wsum + sz > buf:
+                    h, nw = 0, len(win)
+                    while wsum + sz > buf and h < nw:    # tiles before must have been consumed
+                        w = win[h]
+                        wsum -= w[0]; last = w[1]; h += 1
+                    if h:
+                        del win[:h]
+                if last > start:
+                    start = last
+                if first and c_end > start:
+                    start = c_end
             first = False
-            self.d_end = start + m
-            if sz > 0 and self.d_end > self.c_end:
-                self.c_end = self.d_end
-            self.c_end += c
-            win.append([sz, self.c_end]); self.wsum += sz
+            d_end = start + m
+            if sz > 0 and d_end > c_end:
+                c_end = d_end
+            c_end += c
+            win.append([sz, c_end]); wsum += sz
+        self.d_end, self.c_end, self.last, self.wsum = d_end, c_end, last, wsum
 
     def state(self):
         """Everything that decides the future, relative to the compute clock."""
@@ -205,7 +211,26 @@ def stage_pipe_time(segments, f: dict, sec_per_byte: float, buf: float, cross_op
     a time; once a repeat leaves the simulator in the same state relative to the compute clock as the repeat before
     it, every later repeat adds the same time (the flow shop is deterministic), so the rest are added in one step.
     This is exact up to a 1e-12 relative tolerance on the state compare. 0.99: replaces the 0.98 extrapolation of
-    very long stages."""
+    very long stages.
+
+    0.112: memoised on the full input (a pure function — the layout search / sweeps replay identical stages many
+    times); the key holds every float and the dict insertion order, so a hit returns the bit-identical value."""
+    key = (tuple((tuple((c, tuple(b.items()), cm) for c, b, cm in items), n) for items, n in segments),
+           tuple(f.items()), sec_per_byte, buf, cross_op, dma_scale, tail_comm, hidden_link)
+    r = _PIPE_MEMO.get(key)
+    if r is None:
+        r = _stage_pipe_time(segments, f, sec_per_byte, buf, cross_op, dma_scale, tail_comm, hidden_link)
+        if len(_PIPE_MEMO) >= PIPE_MEMO_MAX:
+            _PIPE_MEMO.clear()
+        _PIPE_MEMO[key] = r
+    return r
+
+
+PIPE_MEMO_MAX = 20000
+_PIPE_MEMO: dict = {}
+
+
+def _stage_pipe_time(segments, f, sec_per_byte, buf, cross_op, dma_scale, tail_comm, hidden_link) -> float:
     sim = _Sim(buf, cross_op)
     tile = min(PIPE_TILE, buf / 2)      # 0.99: double buffering needs two tiles in the buffer
     for items, n in segments:

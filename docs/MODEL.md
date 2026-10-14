@@ -2581,3 +2581,51 @@ qwen3-8b reference: median 1–4 %, p90 of |err| ≤ 25 %. Genomics, protein and
 warning.
 
 Standing tests: `test_core_111`.
+
+## 58. 0.112 — randomized audit; radix single-node pin; bit-identical performance work
+
+**Audit.** Random scenarios (6 seeds × 20 per area) were checked against invariants:
+- spec_k: tok/s and TPOT are monotone in acceptance, the step time does not depend on acceptance, accept = 0 is
+  never faster than no speculation, and acceptance has no effect when k = 0.
+- PP: auto microbatches = min(pp, batch), and the microbatch count never exceeds the batch.
+- MoE: the step is monotone in skew, the cap warning fires, a uniform measured load equals uniform routing, and a
+  single hot expert stays ≤ the cap.
+- Prefix: TTFT is monotone in `prefix_cached`, and the LRU/Che hit is monotone in K and lies in [0, 1].
+- dtype: the exec format is native, and the conversion flags agree with the formats.
+- Radix trees were compared against `RadixLRU` (30k requests each).
+
+One mechanism bug was found. A single-node level reached by every request (a shared system prompt) is always the most
+recent node, so it is resident whenever its cumulative path fits. The Che branch charged it 1 − e^{−T}. It is now
+pinned (h = 1, its tokens taken out of C), and Che runs on the remaining levels (`_tree_che`).
+
+LRU is not monotone in C across a fitting-depth boundary. When a deeper level starts to fit, its large leaves evict
+siblings: in the example below, H₁ falls from 1.0 to 0.73, and `RadixLRU` shows the same drop. So monotonicity is
+tested only within a fitting depth.
+
+- Example tree: 3 roots × 64 tokens, each with one 64-token child, each with one 500-token leaf.
+- The drop happens when C passes 628 tokens.
+
+Che vs LRU on an adversarial tree (two 500-token roots, 16-token leaves, exact enumeration over budget) is off by
+0.14 on H₁. This is a known approximation; it was not fitted.
+
+**Performance (bit-identical).** The suite's wall time is set by single PD kv_cap tests (061_4 603 s, 057 569 s,
+061_3 509 s). Profiling showed the time going to:
+- the victim-wait residual sums (≈ 10⁹ generator steps);
+- `_gamma_q` in the saturation-eviction quadrature;
+- `bulkq._tagged` recomputed on cache eviction;
+- `overlap.feed` in the layout search.
+
+Fixes:
+- The zero-term skip is exact: adding +0.0 to a non-negative partial sum leaves both the plain and the compensated
+  sum unchanged.
+- The memos are pure-function caches keyed on full-precision inputs.
+- The caches are larger.
+
+Checks:
+- PD report: 242 → 152 / 190 s, with an identical SHA-256.
+- 152 randomized API outputs are byte-identical.
+- NPU fingerprints c034bfe3 / e51c7ec1 are unchanged.
+
+`/api/sweep` (8 representative bodies, including sensitivity) already takes 0.02–0.24 s per sweep, so no change was
+needed there.
+

@@ -100,6 +100,7 @@ is conservative (p90 +20…40 %) and recompute at high load / CV 1 misses the DE
 from __future__ import annotations
 
 import bisect
+import functools
 import math
 from dataclasses import replace
 
@@ -1845,8 +1846,9 @@ def _life_cv2(pts, x) -> float:
     return min(1.0, cvo2 + cvt * cvt)
 
 
+@functools.lru_cache(maxsize=1 << 18)
 def _gamma_q(a: float, z: float) -> float:
-    """Regularised upper incomplete gamma Q(a, z)."""
+    """Regularised upper incomplete gamma Q(a, z).  0.112: memoised (pure; the eviction quadrature repeats points)."""
     if z <= 0:
         return 1.0
     if a > 400:                                   # Wilson–Hilferty
@@ -1963,15 +1965,24 @@ def _victim_wait_law(ctx, nu_k: dict, nu_sat: float, K: float, kvi: dict, tpot: 
         return {"model": "resid", "mean": 0.0, "q": lambda r: 0.0, "surv": lambda x: 0.0, "hi": 0.0}
     comps = [(w_ / wt, k_, m_c) for w_, k_, m_c in comps]
 
+    wo = [(w, o) for w, _, o in pts]
+
     def r_surv(r):           # equilibrium residual law P(R > r) = Σ w (o − r)⁺ / Σ w o
-        return sum(w * max(0.0, o - r) for w, _, o in pts) / Z
+        # 0.112: zero terms skipped (adding +0.0 to a non-negative partial sum is exact) — bit-identical, ~2× faster
+        return sum([w * (o - r) for w, o in wo if o - r > 0.0]) / Z
+
+    s_memo: dict = {}
 
     def surv(x):             # P(wait > x seconds): min over the k − 1 others of R scaled to mean m_c, × TPOT
+        v = s_memo.get(x)    # 0.112: memo (the quantile bisections revisit the same midpoints)
+        if v is not None:
+            return v
         tot_ = 0.0
         for w_, k_, m_c in comps:
             if m_c <= 0:
                 continue
             tot_ += w_ * r_surv(x / tpot * mR / m_c) ** (k_ - 1)
+        s_memo[x] = tot_
         return tot_
     hi = max(o for _, _, o in pts) * tpot * max((m_c / mR if mR > 0 else 0.0) for _, _, m_c in comps)
     n_ = 400
