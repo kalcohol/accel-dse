@@ -1118,8 +1118,9 @@ def rank_shares(ops: list[Op], sh: Shard, global_ops) -> list[Op]:
     n = sh.tp * sh.dp * sh.sp
     if n == 1:
         return ops
+    gops = list(global_ops())     # 0.113: built once (was rebuilt for the weight pass below) — same ops, same order
     g_f: dict = {}; g_v: dict = {}
-    for o in global_ops():
+    for o in gops:
         if o.kind != "comm":
             g_f[o.name] = g_f.get(o.name, 0.0) + o.flops * o.share     # an op's own share = its useful fraction
             g_v[o.name] = g_v.get(o.name, 0.0) + o.vec * o.share       # (padded expert rows), 1 otherwise
@@ -1135,7 +1136,7 @@ def rank_shares(ops: list[Op], sh: Shard, global_ops) -> list[Op]:
     # < one copy), wshare = copies · W_global / (N · w_rank).  假设: a partially replicated split (e.g. 2 KV heads on
     # TP 3) is read as uneven, not replicated
     g_w: dict = {}; u_w: dict = {}
-    for o in global_ops():
+    for o in gops:
         if o.kind != "comm" and o.w_params:
             g_w[o.name] = g_w.get(o.name, 0.0) + o.w_params
     for o in ops:

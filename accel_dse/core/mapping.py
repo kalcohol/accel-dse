@@ -56,7 +56,7 @@ class GemmCost:
     feed_cycles: float
     dataflow: str          # os | ws_edge | ws_broad | gemv
     exec_fmt: str
-    conversion: str        # none | dequant_w | upcast_both
+    conversion: str        # none | dequant_w | upcast_both | downcast
     convert_elems: float   # elements converted on the vector path
     convert_w: float = 0.0  # of which second-operand (weight) elements: once per pass, independent of tokens (0.63)
 

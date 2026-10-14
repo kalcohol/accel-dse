@@ -3,6 +3,36 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.113.0]
+
+### Fixed
+- dtype exec matrix: fp32 inputs on hardware without fp32 are narrowed to the widest native format. They are now
+  labelled `downcast` instead of `upcast_both`. Only the label changes; the conversion cost and every result are
+  unchanged.
+
+### Added
+- `accel-dse eval --scenario FILE` evaluates a full scenario JSON: a UI export, an API `scenario`, or a body with
+  `scenario` (+ `chip_preset`). The result is identical to `api_eval`. Before this, the CLI could not reach 22 chip
+  micro-architecture fields beyond the presets.
+
+### Audit
+- Hardware catalog (val5/v0113/hw_audit.py), 0 violations:
+  - 1,186 LPDDR5/5X/6 + HBM3/3E/4/4E combinations: bandwidth = bus × MT/s, capacity = stacks × height × die (HBM)
+    or units × GB, mem-id round-trip, defaults in their lists, LPDDR6 payload 256/288.
+  - Reference GPUs: R·C·E·2·f = datasheet BF16 peak, FP8 = 2× (MI300X 2614.9 is datasheet rounding), HBM
+    bandwidth within 1 % and capacity within 8 % (marketed GB vs GiB stacks), link = bidirectional / 2.
+  - D2D (UCIe-A 48/64, UCIe-S 32, BoW-256/512): lanes × rate / 8; NVLink-C2C 450 GB/s per direction.
+  - Power and area are user budgets (no catalog values).
+- CLI vs API: every one of the 154 scenario flags reaches the scenario hash (PD flags under `--pd`). The gap found is
+  closed by `--scenario` above.
+- State round-trip: 120 random scenarios (chip / PD / D2D / fabric / link overrides). Re-evaluating the API's echoed
+  scenario gives the same hash and summary. The UI keeps no URL or localStorage state.
+- Standing tests: `test_core_113`.
+
+### Performance (bit-identical)
+- `ir.rank_shares` builds the unsharded op graph once instead of twice (layout search 134 → 126 s). 152 randomized
+  API outputs are byte-identical.
+
 ## [0.112.0]
 
 ### Fixed

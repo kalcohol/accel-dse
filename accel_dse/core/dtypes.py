@@ -88,7 +88,7 @@ def gemm_exec(w_fmt: str, a_fmt: str, support: FormatSupport) -> tuple[str, floa
     """Execution format for a GEMM with weight format ``w_fmt`` × activation ``a_fmt``.
 
     Returns (exec_format, mac_rate_multiplier, conversion, elements_converted_flag)
-    conversion ∈ {"none", "dequant_w", "upcast_both"}; flag bit0 = weights, bit1 = activations.
+    conversion ∈ {"none", "dequant_w", "upcast_both", "downcast"}; flag bit0 = weights, bit1 = activations.
       * same native format (e.g. W8A8 fp8 on fp8 hardware) → native rate; same width, other type → as below
       * weight-only quant (W lower than A): dequant W to A's format (if A native)
       * nothing native: upcast both to bf16 (if bf16 native) else fp16/fp32
@@ -104,5 +104,8 @@ def gemm_exec(w_fmt: str, a_fmt: str, support: FormatSupport) -> tuple[str, floa
     for wide in ("bf16", "fp16", "fp32"):
         if support.native(wide):
             flag = (0 if w_fmt == wide else 1) | (0 if a_fmt == wide else 2)
-            return wide, float(support.rate(wide)), ("upcast_both" if flag else "none"), flag
+            # 0.113: an input wider than the exec format (fp32 on hardware without fp32) is narrowed — labelled
+            # "downcast", was "upcast_both" (label only; the conversion cost is the same element count)
+            down = (flag & 1 and w.compute_bits > fmt(wide).compute_bits) or (flag & 2 and a.compute_bits > fmt(wide).compute_bits)
+            return wide, float(support.rate(wide)), ("downcast" if down else "upcast_both" if flag else "none"), flag
     raise ValueError("hardware supports none of bf16/fp16/fp32")

@@ -2629,3 +2629,27 @@ Checks:
 `/api/sweep` (8 representative bodies, including sensitivity) already takes 0.02–0.24 s per sweep, so no change was
 needed there.
 
+## 59. 0.113 — catalog / CLI / round-trip audits; downcast label
+
+**dtype.** `gemm_exec` falls back to the widest native format when no common native path exists. If an input is wider
+than that format (fp32 on bf16 / fp16-only hardware), it is now labelled `downcast`, not `upcast_both`. The converted
+element count, and therefore the cost, is unchanged.
+
+**Hardware catalog consistency** (`val5/v0113/hw_audit.py`), checked against the cited specs:
+- every memory combination follows the derived formulas (bus × rate, stacks × height × die / 8);
+- mem ids round-trip;
+- the JEDEC limits hold: HBM3 ≤ 6.4 Gb/s, HBM4 2048-bit at 8 Gb/s, LPDDR5X JEDEC ≤ 8533;
+- the reference GPUs reproduce their datasheet peak, HBM and link figures;
+- the D2D entries equal lanes × rate / 8.
+
+There are 0 violations. Power and area are not catalog data; they are user budgets with user densities (core/budget.py).
+
+**CLI ↔ API.** All 154 scenario flags change the scenario hash. The scenario's 22 chip micro-architecture leaves
+(freq, array geometry, DMA, NoC and others) were reachable only through presets. `eval --scenario FILE` now takes any
+scenario JSON, and the API's echoed scenario re-evaluates to the same hash and summary.
+
+**Performance.** `rank_shares` reused the unsharded op-graph callback twice per op list; it now builds the graph once.
+Outputs are byte-identical, and the layout search is about 7 % faster. The remaining PD kv_cap tails are spread over
+victim-wait sums, the incomplete gamma and `bulkq._stationary`. None of these has a further bit-identical shortcut
+without changing the summation order, so they were left as they are.
+

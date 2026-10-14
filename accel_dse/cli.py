@@ -36,6 +36,9 @@ def _load_list(v: str) -> list[float]:
 def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--model", default="qwen3-8b", help="model id (see `models`)")
     p.add_argument("--chip", default="100T", help="chip preset: 100T | 1P | H100-like")
+    p.add_argument("--scenario", dest="scenario_file", default=None, metavar="FILE",
+                   help="0.113: evaluate a full scenario JSON (UI export / API 'scenario', or a body with 'scenario' "
+                        "[+ 'chip_preset']) — scenario flags are then ignored; energy / budget flags still apply")
     p.add_argument("--mem", default=None, help="memory id, e.g. lpddr5x_4x64_8533_16g / hbm3e_8s_12h24g_9200")
     p.add_argument("--mem-eff", type=float, default=None, help="DRAM efficiency 「假设」 (default 0.7)")
     p.add_argument("--mem-cap-gb", type=float, default=None, help="usable DRAM per card, GB (default: stack capacity)")
@@ -408,6 +411,13 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         if getattr(a, "pd_sim", False):
             sc["pd"]["simulate"] = True
     body = {"chip_preset": a.chip, "scenario": sc}
+    if getattr(a, "scenario_file", None):
+        with open(a.scenario_file, encoding="utf-8") as f:
+            x = json.load(f)
+        if not isinstance(x, dict):
+            raise SystemExit("--scenario: expected a JSON object")
+        body = {"chip_preset": x.get("chip_preset", a.chip), "scenario": x["scenario"]} if "scenario" in x \
+            else {"chip_preset": a.chip, "scenario": x}
     en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
                                      "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net", "idle_W_prefill",
                                      "pJ_bit_host")
