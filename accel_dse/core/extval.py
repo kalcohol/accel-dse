@@ -135,6 +135,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         chip = replace(chip, attn_vec_overlap=True)
     if v.get("attn_sched"):            # 0.93: attention-only schedule
         chip = replace(chip, attn_sched=v["attn_sched"])
+    if v.get("tbo_pf") and sv.get("phase") == "prefill" and r.get("src") in TBO_PREFILL_SRC:
+        ov = "tbo"                     # 0.109: the source's engine runs prefill as two overlapped micro-batches
     mem_eff = e if isinstance(e, float) else EFF[e]
     extra = {}
     if r.get("node_cards"):            # 0.67 multi-node rows: cards per node + scale-out NIC per card
@@ -308,7 +310,9 @@ def candidate_variant(base: str = "catalog_kernel") -> str:
     name = base + "+cand093"
     VARIANTS.setdefault(name, {**VARIANTS[base], "attn_sched": "cta", "layer_us": TRACE_LAYER_US,
                                # 0.94: runtime memory view + Hopper kernel ceilings (public, not fitted)
-                               "mem_rt": True, "fmt_ceiling": HOPPER_CEILING})
+                               "mem_rt": True, "fmt_ceiling": HOPPER_CEILING,
+                               # 0.109: prefill two-batch overlap for the sources that document it (TBO_PREFILL_SRC)
+                               "tbo_pf": True})
     return name
 
 
@@ -371,6 +375,23 @@ def kveff_variant(base: str = "catalog_kernel", eff: float = KV_STREAM_EFF) -> s
     """0.108: ``base`` with KV-cache read / write streams at ``eff`` of peak DRAM bandwidth (Scenario.kv_mem_eff)."""
     name = f"{base}+kv{eff:.3f}"
     VARIANTS.setdefault(name, {**VARIANTS[base], "kv_eff": eff})
+    return name
+
+
+# 0.109: sources whose published prefill configuration overlaps EP dispatch / combine with compute by two-batch
+# overlap (one micro-batch's all-to-all during the other's GEMMs / attention):
+#   sglang-ep-2025   — LMSYS "Deploying DeepSeek with PD Disaggregation and Large-scale EP" (2025-05-05): prefill
+#                      nodes run two-batch overlap (TBO), DeepEP normal kernels
+#   deepseek-profile — deepseek-ai/profile-data README: prefill "two micro-batches ... overlapping computation and
+#                      all-to-all communication"
+# Decode rows keep the refhw overlap (no change), so does every other source.
+TBO_PREFILL_SRC = frozenset({"sglang-ep-2025", "deepseek-profile"})
+
+
+def tbopf_variant(base: str = "catalog_kernel") -> str:
+    """0.109: ``base`` with two-batch-overlap prefill for the sources in ``TBO_PREFILL_SRC``."""
+    name = f"{base}+tbopf"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "tbo_pf": True})
     return name
 
 

@@ -2443,3 +2443,28 @@ Rejected mechanisms for r4:
   slc_GBps < DRAM; this is now warned for `lru` too (it was silent).
 
 Standing tests: `test_core_108`.
+
+## 55. 0.109 — prefill two-batch overlap (extval); API audit
+
+**moe pf.** The prefill rows (SGLang large-scale EP blog and DeepSeek profile-data, DeepSeek-V3 EP32 over 4 nodes)
+are LINK-bound. The candidate's `kernel` overlap adds the EP all-to-all (≈ 2.45 s per batch) to the compute
+(≈ 1.31 s), so the rows predicted 0.55–0.68 of measured. Both sources document two-batch overlap in prefill: one
+micro-batch's dispatch / combine runs during the other's compute. extval therefore evaluates exactly those
+sources' prefill with `exec_overlap = "tbo"` (`TBO_PREFILL_SRC`, not fitted). The pf rows move to 0.85–1.06, and
+the group error goes 48.2 → 8.5 %. No other group changes.
+
+Turning on TBO for every row was rejected: decode rows go to 1.85–1.91 and Mixtral max rows to 1.1–1.9, because
+those sources do not document it.
+
+The single moe-static row (TRT-LLM 0.21 DeepSeek-R1 on H200, 1.82×) is decode-DRAM-bound. It is left as is, because
+no documented mechanism explains the gap without fitting.
+
+**API audit** (`val5/v0109_api_audit*.py`):
+
+- Strict parsing holds under fuzz: only 200 / 400, never 5xx, and the JSON is always finite.
+- Sweep rows, Pareto points and the `/api/sensitivity` endpoint equal `/api/eval`.
+- Finding: the eval summary reported inapplicable latencies as 0.0 ms. They are now null at the API layer
+  (`api._api_summary`), with the same rule as sweep rows. `Result.summary()` and the fingerprints are unchanged.
+- The UI CSV export round-trips adversarial cells, including the formula-injection guard.
+
+Standing tests: `test_core_109`.

@@ -203,9 +203,26 @@ def _stage_dict(s) -> dict:
             "convert_Melems": s.convert_elems / 1e6, "tflops": t.flops / 1e12}
 
 
+def _api_summary(r: Result) -> dict:
+    """0.109 (API audit): the summary with the latency metrics that do not apply to the result as null, the rule the
+    sweep rows already use — decode: ttft_ms / latency_ms; LLM prefill: tpot_ms / latency_ms; non-LLM workloads:
+    tpot_ms / ttft_ms.  The core summary (and the fingerprints) still carries 0.0 for them; exported JSON / CSV of
+    eval and sweep now agree instead of reporting "0 ms"."""
+    s = r.summary()
+    if r.workload is not None:
+        na = ("tpot_ms", "ttft_ms")
+    elif r.scenario.serving.phase == "decode":
+        na = ("ttft_ms", "latency_ms")
+    else:
+        na = ("tpot_ms", "latency_ms")
+    for k in na:
+        s[k] = None
+    return s
+
+
 def result_dict(r: Result, *, with_goodput: bool = False) -> dict:
     s = r.scenario
-    out = {"summary": r.summary(), "stages": [_stage_dict(x) for x in r.stages],
+    out = {"summary": _api_summary(r), "stages": [_stage_dict(x) for x in r.stages],
            "model": {"id": r.model.id, "hf_id": r.model.hf_id, **labels(r.model)},
            "hash": text_view(s).hash(), "scenario": text_view(s).to_dict()}   # 0.62: as entered (image tokens not folded in)
     if with_goodput and s.serving.phase == "decode" and r.workload is None:

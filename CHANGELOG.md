@@ -3,6 +3,39 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.109.0]
+
+### Changed
+- extval refhw candidate (`candidate_variant`): prefill runs with two-batch overlap (`exec_overlap = "tbo"`) for
+  the sources whose published prefill configuration overlaps EP dispatch / combine with compute (`TBO_PREFILL_SRC`:
+  SGLang large-scale EP blog 2025-05, DeepSeek profile-data). Decode and every other source are unchanged.
+  - moe pf: 48.2 → 8.5 %. The other nine groups are identical, `catalog` is unchanged, and the NPU fingerprints are
+    unchanged (extval only).
+  - The opt-in `tbopf_variant()` applies the same rule to any base variant.
+
+### Fixed
+- `/api/eval` (and every `result_dict` consumer) reported latency metrics that do not apply to the result as
+  `0.0` ms, while `/api/sweep` rows reported them as null. The affected metrics:
+  - decode: `ttft_ms`, `latency_ms`;
+  - LLM prefill: `tpot_ms`, `latency_ms`;
+  - encoders and video: `tpot_ms`, `ttft_ms`.
+
+  They are now null in the API, as in sweep, so exported JSON / CSV of eval and sweep agree. The core
+  `Result.summary()` and the fingerprints are unchanged.
+
+### Added
+- Randomized UI / API audit (`val5/v0109_api_audit*.py`):
+  - Body fuzz over 7 POST routes plus malformed raw bodies: only 200 / 400, never 5xx, and JSON always finite.
+  - Sweep rows, Pareto points and `/api/sensitivity` all equal `/api/eval`.
+  - CSV export (`csvCell` / `expCSV`): 3,000 adversarial cells round-trip through a CSV parser.
+- Standing tests: `test_core_109`.
+
+### Investigated (not changed)
+- moe static (one row, TRT-LLM DeepSeek-R1 H200 EP8, attention DP; predicts 1.82×). Decode is DRAM-bound on weight
+  streaming. No documented mechanism (two-batch overlap, imbalance, padding) explains the gap without fitting, so
+  it is left as is.
+- Per-node deduplicated DeepEP dispatch is not modelled. It would raise the pf rows further.
+
 ## [0.108.0]
 
 ### Added
