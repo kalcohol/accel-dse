@@ -386,6 +386,8 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
                "shared": pd.kv_GBps is None, "len": lens, "pts": pts, "rep": (S_rep, p_rep), "kv_xfer": kv_xfer,
                "kv_new": kv_new, "kv_full": kv_full, "out_cs2": lens.out_cs2, "pts_c": pts_c,
                **({"prefix_hits": (H_p, H_c)} if cap_mode else {})}
+        if pd.ttft_resid == "busy":     # 0.111 opt-in (pdqueue._coloc_prefill_first_base)
+            ctx["resid_busy"] = True
         if pd.kv_policy != "off":       # 0.55: decode KV capacity (decode pool and colocated replicas share the layout)
             ctx["kv_policy"] = pd.kv_policy
             ctx["kv_cap"] = kv_token_capacity(m, dec, pd.kv_capacity_GB)

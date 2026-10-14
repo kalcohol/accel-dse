@@ -126,6 +126,7 @@ except AttributeError:                        # pragma: no cover
     def _dot(a, b):
         return math.fsum(map(_op.mul, a, b))
 _QK = ("mean", "p50", "p90", "p99")
+_RESID_BUSY = False   # 0.111: default for pd.ttft_resid (False = "full"); a ctx's "resid_busy" overrides it
 
 
 def _ms(d: dict) -> dict:
@@ -1094,10 +1095,19 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     lats_w = list(zip(pre["ws"], pre["lats"]))
     ttft = _ttft(pre["wait"], lats_w, conv=(pre["lam"], pre["taus"]),
                  law=_bulk_ttft_law(pre) if pre["b"] > 1 else None)
-    ttft["mean"] += resid / 2
-    ttft["p50"] += resid / 2
-    ttft["p90"] += resid
-    ttft["p99"] += resid
+    if ctx.get("resid_busy", _RESID_BUSY):
+        # 0.111: an arrival meets an in-flight decode iteration only when the prefill server is idle (else it queues
+        # and the next prefill starts at the boundary) and decode holds a request: p = (1 − ρ)·(1 − π₀) (PASTA,
+        # π from the decode birth–death law).  Residual R = Bern(p)·U(0, step); quantile shift r_q = step·(q − 1 + p)/p
+        # R = Bern(p)·U(0, step), convolved with the TTFT law (rebuilt from its quantiles, _wait_mix_sum_q)
+        pi = dec.get("pi_n") or (1.0,)
+        pb = max(0.0, min(1.0, share * (1.0 - pi[0])))
+        ttft = {**ttft, **_wait_mix_sum_q(ttft, pb, resid / 2, uniform=True)}
+    else:
+        ttft["mean"] += resid / 2
+        ttft["p50"] += resid / 2
+        ttft["p90"] += resid
+        ttft["p99"] += resid
     stall_share = min(1.0, lam_c / pre.get("_bm", {}).get("batch_mean", pre["b"]) * dec["tpot"])   # 0.65: batches/s
     life = out * dec["tpot"]
     # request-average TPOT spread (root-sum-square of independent parts): the occupancy deviation of the steps it
@@ -1385,7 +1395,7 @@ def _gammq(a: float, x: float) -> float:
     return math.exp(-x + a * math.log(x) - gln) * h
 
 
-def _wait_mix_sum_q(tq: dict, p: float, m_cond: float, c2: float = 1.0) -> dict:
+def _wait_mix_sum_q(tq: dict, p: float, m_cond: float, c2: float = 1.0, uniform: bool = False) -> dict:
     """TTFT ⊕ admission wait (0.56) 「假设」: W = 0 w.p. 1 − p, else a conditional wait of mean m_cond — exponential
     (c2 = 1) or, 0.58, Gamma with squared CV ``c2`` (tabulated once, 512 points).  The TTFT law is rebuilt from its
     quantiles (log-survival interpolated between p50 / p90 / p99 and extrapolated past p99 with the p90→p99 slope;
@@ -1393,7 +1403,12 @@ def _wait_mix_sum_q(tq: dict, p: float, m_cond: float, c2: float = 1.0) -> dict:
     is solved for each quantile."""
     if p <= 0 or m_cond <= 0:
         return dict(tq)
-    if abs(c2 - 1.0) < 1e-9:
+    if uniform:                     # 0.111: W | W > 0 ~ U(0, 2·m_cond) (residual of an in-flight decode iteration)
+        span = 2.0 * m_cond
+
+        def sw(y: float) -> float:
+            return 1.0 if y <= 0 else max(0.0, 1.0 - y / span)
+    elif abs(c2 - 1.0) < 1e-9:
         def sw(y: float) -> float:
             return math.exp(-y / m_cond)
     else:

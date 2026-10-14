@@ -2527,3 +2527,57 @@ Findings:
    split run on every rank. Useful work (`flops_u` × ranks) is conserved exactly.
 
 Standing tests: `test_core_110`.
+
+## 57. 0.111 — r3 lat / v1 ttft investigation; prefill-first decode residual (opt-in)
+
+**r3 lat** (vLLM 0.11.2 `bench latency`, MI300X, Llama-70B FP8 weights and KV, TP8, one static batch):
+
+- The candidate matches at batch 1 (pred / meas 1.0) but falls to 0.46 at batch 128, for both ISL 128 and ISL 2048.
+  The rows are decode-dominated (OSL 2048).
+- Implied measured step: ≈ 22 ms (ISL 128) and ≈ 28 ms (ISL 2048) at batch 128, against a modelled 10–12 ms. The
+  modelled step is DRAM 4.5 ms (KV 2.2), MAC 2.6 ms and per-layer overhead 5.5 ms.
+- The gap grows about linearly with batch, at ≈ 0.1–0.16 ms per sequence per step. The plausible mechanisms are
+  per-sequence host work (sampling over a 128 K vocabulary, input preparation) and ROCm paged-attention
+  efficiency. Neither has a public per-sequence figure, so neither is modelled.
+
+**v1 ttft** (TRT-LLM 0.8, batch 1):
+
+- Long prompts are 0.74–1.08, but ISL 128 gives 0.59–0.79. The gap grows with model size and on slower parts, which
+  suggests small-M GEMM wave quantisation.
+- The `cta` GEMM schedule captures that effect but overshoots long prompts:
+
+  | probe | v1 ttft | r3 max | r4 |
+  |---|---|---|---|
+  | `cta` for all GEMMs | 27.1 → 40.9 % | 28.5 → 42.2 % | 18.1 → 24.1 % |
+  | `cta` for dense prefill GEMMs only | 27.1 → 40.9 % | 28.5 → 36.0 % | — |
+
+  Both probes were rejected.
+
+**Prefill-first decode residual** (`pd.ttft_resid`). The closed form charged every colocated prefill-first arrival
+the in-flight decode iteration: half a step at the median and a full step at p90 / p99. The DES only waits when an
+iteration is running. For small models the step (≈ 7 ms) is comparable to the TTFT, so the DES audit flagged p50 at
++55 % (Carbon-500M) and +63 % (Qwen3-0.6B).
+
+`busy` uses p = (1 − ρ)(1 − π₀): the prefill server is idle and decode is non-empty (PASTA, with π from the decode
+birth–death law). R = Bern(p)·U(0, step) is convolved with the TTFT law, rebuilt from its quantiles
+(`_wait_mix_sum_q(uniform=True)`).
+
+Against the DES (5 models × 2 shapes × load 0.3 / 0.6 / 0.85 × CV 0 / 1, 6,000 requests each), the mean
+|log error| goes from `full` to `busy` as follows:
+
+| metric | full | busy |
+|---|---|---|
+| mean | 6.1 % | 1.3 % |
+| p50 | 8.5 % | 4.7 % |
+| p90 | 10.9 % | 2.0 % |
+| p99 | 6.3 % | 5.2 % |
+
+Two slices get worse: big-model p50 (3.7 → 4.7 %) and CV 1 p99 (4.3 → 5.5 %). An additive quantile shift was tried
+first and was worse; the convolution replaced it. Under the no-slice-worse rule `busy` stays opt-in, and `full`
+remains the default (conservative).
+
+**DES vs analytical, new domains.** Over Carbon 500M / 3B / 8B (30 scenarios, 90 mode pairs), the errors match the
+qwen3-8b reference: median 1–4 %, p90 of |err| ≤ 25 %. Genomics, protein and video encoders ignore `pd` with a
+warning.
+
+Standing tests: `test_core_111`.

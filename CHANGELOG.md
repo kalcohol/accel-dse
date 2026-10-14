@@ -3,6 +3,28 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.111.0]
+
+### Added
+- `pd.ttft_resid` (opt-in; `--pd-ttft-resid`; Web "decode 残余"), affecting the colocated prefill-first TTFT.
+  - `full` (default, unchanged): every arrival waits half a decode step at the median and a full step at
+    p90 / p99.
+  - `busy`: the arrival waits only when an iteration is in flight. With prefill idle and decode non-empty,
+    p = (1 − ρ)(1 − π₀) from the decode birth–death law, and R = Bern(p)·U(0, step) is convolved with the TTFT law.
+  - Against the DES (60 cases, 6,000 requests each), `busy` improves mean 6.1 → 1.3 %, p50 8.5 → 4.7 % and p90
+    10.9 → 2.0 %. It worsens big-model p50 (3.7 → 4.7 %) and CV 1 p99 (4.3 → 5.5 %), so it is not the default.
+- DES vs analytical audit over Carbon LLMs (30 scenarios, 90 mode pairs). The errors are in line with the qwen3-8b
+  reference (median 1–4 %), and genomics / protein / video encoders ignore PD with a warning.
+- Standing tests: `test_core_111`.
+
+### Investigated (not changed)
+- r3 lat (vLLM 0.11.2 MI300X Llama-70B FP8 TP8, static batch). pred / meas falls from 1.0 at batch 1 to 0.46 at
+  batch 128, both for ISL 128 and ISL 2048. The decode-step gap grows about linearly with batch (≈ 0.1–0.16 ms per
+  sequence per step), while the KV, attention and link terms are small. This points to per-sequence host / sampling
+  overhead or ROCm paged-attention efficiency. No public per-sequence figure exists, so nothing was modelled.
+- v1 ttft (TRT-LLM 0.8, batch 1): short prompts give 0.59–0.79. CTA-tiled GEMMs (all GEMMs, or dense prefill
+  only) were probed and rejected, because long prompts overshoot: v1 ttft 27.1 → 40.9 %.
+
 ## [0.110.0]
 
 ### Fixed

@@ -206,6 +206,10 @@ class PDConfig:
     kv_capacity_GB: float | None = None    # KV capacity per decode replica; None = DRAM left after weights + runtime
     kv_admit: str = "before_prefill"       # 0.56: before_prefill (vLLM: KV allocated, then prefill / KV pull — the
     #                                        admission wait is part of TTFT) | after_prefill (0.55 order, wait apart)
+    # 0.111 (opt-in): colocated prefill-first TTFT residual of the in-flight decode iteration — "full" (default:
+    # every arrival waits step/2 at the median, a full step at p90 / p99) | "busy" (only when the prefill server is
+    # idle and decode holds a request, p = (1 − ρ)(1 − π₀), R = Bern(p)·U(0, step) convolved with the TTFT law)
+    ttft_resid: str = field(default="full", metadata={"omit_default": True})
     swap_GBps: float | None = None         # 0.56 kv_policy=swap: host link per card; None = workload.host_GBps 「假设」
 
     def __post_init__(self):
@@ -294,6 +298,8 @@ class PDConfig:
                 raise ValueError("pd.prefix_tree and pd.prefix_len / pd.prefix_hit are alternatives — set one")
         if self.kv_policy not in ("off", "wait", "recompute", "swap"):
             raise ValueError("pd.kv_policy must be off | wait | recompute | swap")
+        if self.ttft_resid not in ("full", "busy"):
+            raise ValueError("pd.ttft_resid must be full | busy")
         if self.kv_admit not in ("before_prefill", "after_prefill"):
             raise ValueError("pd.kv_admit must be before_prefill | after_prefill")
         if self.swap_GBps is not None and (isinstance(self.swap_GBps, bool)

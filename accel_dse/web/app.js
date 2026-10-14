@@ -222,6 +222,7 @@ function syncInputs() {
     $('pd-prefix_affinity').checked = !!S.sc.pd.prefix_affinity;
     $('pd-kv_policy').value = S.sc.pd.kv_policy || 'off';
     $('pd-kv_admit').value = S.sc.pd.kv_admit || 'before_prefill';
+    $('pd-ttft_resid').value = S.sc.pd.ttft_resid || 'full';
     if (S.cat) {
       const sel = $('pd-prefill_chip'), pc = S.sc.pd.prefill_chip;
       if (!sel.options.length) put(sel, h('option', { value: '' }, '同 decode'), ...Object.keys(S.cat.chips).map((k) => h('option', { value: k }, k)));
@@ -1632,6 +1633,7 @@ async function init() {
   $('pd-kv_policy').addEventListener('change', (e) => { S.sc.pd.kv_policy = e.target.value || 'off'; schedule(); });
   bindNumber('pd-kv_capacity_GB', () => S.sc.pd.kv_capacity_GB ?? null, (x) => (S.sc.pd.kv_capacity_GB = x), { nullable: true, check: (x) => x > 0 });
   $('pd-kv_admit').addEventListener('change', (e) => { S.sc.pd.kv_admit = e.target.value || 'before_prefill'; schedule(); });
+  $('pd-ttft_resid').addEventListener('change', (e) => { S.sc.pd.ttft_resid = e.target.value || 'full'; schedule(); });
   bindNumber('pd-swap_GBps', () => S.sc.pd.swap_GBps ?? null, (x) => (S.sc.pd.swap_GBps = x), { nullable: true, check: (x) => x > 0 && x < 1e5 });
   $('pd-prefill_chip').addEventListener('change', (e) => { S.sc.pd.prefill_chip = e.target.value || null; schedule(); });
   $('pd-prefill_mem_id').addEventListener('change', (e) => { S.sc.pd.prefill_mem_id = e.target.value.trim() || null; schedule(); });

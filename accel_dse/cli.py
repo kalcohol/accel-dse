@@ -242,6 +242,9 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="PD (0.55/0.56): decode KV capacity — wait (reserve prompt+output, admission waits) | recompute "
                         "(optimistic admission, preempt youngest + re-prefill) | swap (preempt youngest, KV out/in "
                         "over the host link); default off")
+    p.add_argument("--pd-ttft-resid", dest="pd_ttft_resid", choices=("full", "busy"), default=None,
+                   help="PD (0.111, opt-in): colocated prefill-first TTFT decode residual — full (default) | busy "
+                        "(only when an iteration is in flight: p = (1 − ρ)(1 − π₀), U(0, step) convolved)")
     p.add_argument("--pd-kv-admit", dest="pd_kv_admit", choices=("before_prefill", "after_prefill"), default=None,
                    help="PD (0.56): KV admission order — before_prefill (vLLM: slot + KV reserved before prefill / KV "
                         "pull, the wait is in TTFT and SLO goodput; default) | after_prefill (0.55: wait reported apart)")
@@ -386,7 +389,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                         ("prefix_len", "pd_prefix_len"), ("prefix_count", "pd_prefix_count"),
                         ("prefix_zipf", "pd_prefix_zipf"), ("prefix_cache_GB", "pd_prefix_cache_GB"),
                         ("kv_policy", "pd_kv_policy"), ("kv_capacity_GB", "pd_kv_capacity_GB"),
-                        ("kv_admit", "pd_kv_admit"), ("swap_GBps", "pd_swap_GBps")):
+                        ("kv_admit", "pd_kv_admit"), ("swap_GBps", "pd_swap_GBps"),
+                        ("ttft_resid", "pd_ttft_resid")):
             if getattr(a, dest, None) is not None:
                 sc["pd"][k] = getattr(a, dest)
         if getattr(a, "pd_mix", None):
