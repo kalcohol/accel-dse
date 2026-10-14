@@ -3,6 +3,27 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.105.0]
+
+### Added
+- `extval.SOURCE_ESTIMATOR` / `estimator()` / `est_variant()`: a batching estimator per source for the max-load
+  rows, set from each source's published methodology (not fitted). Every max-load source (TRT-LLM 0.17 / 0.21 /
+  0.21-b200 / 1.2.0 `trtllm-bench throughput`, and ROCm vLLM 0.11.2 offline throughput) is an in-flight /
+  continuous-batching engine fed the whole dataset at once, so all of them get the continuous-batching proxy with
+  the engine's default chunk budget and sequence cap:
+  - TRT-LLM: `max_num_tokens` 8192.
+  - vLLM `LLM` class on MI300X: `max_num_batched_tokens` 16384, `max_num_seqs` 1024 (`get_batch_defaults`).
+
+  **Not adopted as the default.** On cand093, r3 max goes from 28.5 to 27.9 and v1 max from 18.3 to 18.1, but
+  moe max goes from 12.9 to 18.4 and r4 from 18.1 to 24.5. The continuous-batching proxy lowers max-load
+  predictions; that fixes H200 DeepSeek (2.44× → 1.19×) but deepens the r4 rows that were already under-predicted.
+  `predict_cb` gains a `max_seqs` cap.
+- Randomized audits:
+  - CP: 40 points, dense and MoE (ep = tp·cp), cp 1/2/4, S 8K–131K; work is conserved to 1e-6.
+  - Sweep vs eval: 20 sweeps, every row exactly equal to `api_eval`.
+  - Pareto: 20 fronts, all non-dominated.
+  - PD monotonicity (KV bandwidth, cards, prefix, link): see MODEL §51.
+
 ## [0.104.0]
 
 ### Added
