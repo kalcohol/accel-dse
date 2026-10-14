@@ -124,7 +124,7 @@ def test_catalog_listing_grouping_coverage_and_merges():
         elif prev["family"] == m["family"]:
             assert m["params_B"] <= prev["params_B"] + 1e-9, (prev["id"], m["id"])
         prev = m
-    assert {"llm", "vlm", "gen", "protein"} == {m["domain"] for m in ms}
+    assert {"llm", "vlm", "gen", "protein", "genomics"} == {m["domain"] for m in ms}
     for v in ("alibaba", "deepseek", "kimi", "zhipu"):                # text + VLM releases share one vendor group
         assert {"llm", "vlm"} <= {m["domain"] for m in ms if m["provider"] == v}, v
     listed = {m["id"] for m in ms}

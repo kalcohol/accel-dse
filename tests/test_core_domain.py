@@ -186,4 +186,4 @@ def test_api_domain_round_trip_and_llm_unchanged():
     assert not big["fits"] and big["min_cards"]["cards"] >= 2 and big["min_mem"]  # 57 GB fp32 weights > 32 GiB
     e = api.api_eval({"scenario": {"model": "qwen3-8b"}})
     assert "gen" not in e["summary"] and "goodput" in e and e["summary"]["domain"] == "llm"
-    assert set(api.api_health()["domains"]) == {"llm", "vlm", "gen", "protein"}
+    assert set(api.api_health()["domains"]) == {"llm", "vlm", "gen", "protein", "genomics"}
