@@ -971,6 +971,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         cp, S = lay.cp, sv.prompt
         q_loc = _cdiv(S, cp)
         c_eq = max(0, round(S * S / (2 * cp * q_loc) - q_loc / 2))
+        if any(L.core is not None and L.core.kind in ("gqa", "mla") and not L.core.causal for L in m.layers):
+            # 0.107: attn_mode = bidir — no mask, every rank's q queries see all S keys (was the causal S²/(2cp):
+            # CP silently removed up to half of the bidirectional attention work)
+            c_eq = S - q_loc
         ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=skew, cp=cp, cp_len=S)
         ctx_cap = q_loc
         cp_ring = (cp, lay.tp, _cdiv(sv.batch, mb) * q_loc / lay.dp)   # tokens of this rank's block per step

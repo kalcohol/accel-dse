@@ -2388,3 +2388,29 @@ rule. For a plain core, the LLM prefill path then uses causal factor 1 instead o
 ctx 0 the qk / pv FLOPs and the softmax elements are exactly 2× the causal values, and the projections and FFN are
 unchanged. KV write is 0 (an encoder-style forward of a causal model). "reference" returns the model unchanged,
 so every causal fingerprint is bit-identical; `test_core_106` checks both fingerprints.
+
+
+## 53. 0.107 — genomics audit; bidirectional context parallelism
+
+**CP under `attn_mode = bidir`.** The zigzag mapping (§ 0.88) gives every CP rank q = ⌈S/cp⌉ queries behind an
+equivalent prefix c = S²/(2·cp·q) − q/2, so that the rank does exactly 1/cp of the causal work S²/2. With the mask
+removed, every query attends all S keys, so the equivalent prefix is c = S − q (causal factor 1), and the per-rank
+work is q·S, i.e. S²/cp. Before 0.107 the causal prefix was kept for bidir, and CP silently dropped up to half of
+the bidirectional attention. The KV ring (one all-gather of the rank's block per attention layer) is unchanged.
+
+**Audit** (`val5/v0107_audit.py`, 173 checks, 0 violations after the fix):
+
+- Monotonicity: windows/s/card is non-decreasing in frequency, MAC efficiency, memory efficiency, link bandwidth
+  and SRAM.
+- Window accounting:
+  - overlap ∈ [0, L);
+  - new bp = (L − overlap)·k;
+  - bp/s = windows/s × new bp;
+  - tokens/s = windows/s × L.
+- Useful work (Σ flops_u × ranks ÷ sequences per microbatch):
+  - conserved for Carbon-A over TP / PP / SP / DP;
+  - conserved for bidir LLM prefill over TP / PP / CP.
+- Sweep / Pareto / sensitivity over genomics: sweep rows equal `api_eval`, and the fronts are non-dominated in
+  (latency, windows/s/card).
+
+Standing tests: `test_core_107`.

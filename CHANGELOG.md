@@ -3,6 +3,24 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.107.0]
+
+### Fixed
+- `attn_mode = "bidir"` with context parallelism (`layout.cp > 1`) charged each CP rank the causal zigzag share
+  (S²/(2·cp)) of the attention. Bidirectional work was lost as cp grew: cp 4 at 32K kept 68–78 % of it (Carbon-3B:
+  590 → 442 TFLOP). Now each rank's ⌈S/cp⌉ queries see all S keys, so work is conserved to 1e-6 under CP, TP, PP
+  and their combinations. Causal CP is unchanged.
+
+### Added
+- Genomics adversarial audit (`val5/v0107_audit.py`), 173 checks with 0 violations after the fix:
+  - Carbon-A windows/s/card is monotone in frequency, MAC efficiency, memory efficiency, link bandwidth and SRAM
+    (60 sweeps).
+  - Window accounting holds for L = 1 … 65,536 (overlap < L, new bp = (L − overlap)·6, rates consistent).
+  - Encoder work is conserved over TP / PP / SP / DP (30 points; CP is rejected).
+  - bidir LLM prefill is conserved under TP / PP / CP (30 points).
+  - Sweeps equal `api_eval`; Pareto fronts are non-dominated and sorted; sensitivity is finite (15 each).
+- Standing tests: `test_core_107`.
+
 ## [0.106.0]
 
 ### Added
