@@ -144,6 +144,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
     if r.get("moe_skew"):
         sv = {**sv, "moe_skew": r["moe_skew"]}
     extra.update(_mem_runtime(r, h) if v.get("mem_rt", MEM_RT) else {})
+    if v.get("kv_eff"):                # 0.108: KV-cache streams at the decode-attention kernels' published efficiency
+        extra["kv_mem_eff"] = v["kv_eff"]
     return Scenario(model=r["model"], chip=chip, mem_id=h.mem_id, mem_eff=mem_eff, link=h.link, mapping="reconf",
                     exec_overlap=ov,
                     layout=Layout(tp=r["tp"], dp=r.get("dp", 1), ep=r.get("ep", 1), etp=r.get("etp", 1)),
@@ -358,6 +360,18 @@ def sfu_variant(base: str = "catalog") -> str:
 
 
 FA3_HW = ("H100", "H200", "H800", "B200")   # Hopper (FlashAttention-3) / Blackwell (async warpgroup MMA kernels)
+
+
+# 0.108: FlashMLA README (deepseek-ai/FlashMLA): "up to 3000 GB/s in memory-bound configuration" on H800 SXM5
+# (3.35 TB/s HBM3) — the KV-streaming efficiency of a long-context decode-attention kernel (not fitted)
+KV_STREAM_EFF = 3000 / 3350
+
+
+def kveff_variant(base: str = "catalog_kernel", eff: float = KV_STREAM_EFF) -> str:
+    """0.108: ``base`` with KV-cache read / write streams at ``eff`` of peak DRAM bandwidth (Scenario.kv_mem_eff)."""
+    name = f"{base}+kv{eff:.3f}"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "kv_eff": eff})
+    return name
 
 
 def fa3_variant(base: str = "catalog_kernel") -> str:

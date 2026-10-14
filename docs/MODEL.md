@@ -2414,3 +2414,32 @@ the bidirectional attention. The KV ring (one all-gather of the rank's block per
   (latency, windows/s/card).
 
 Standing tests: `test_core_107`.
+
+## 54. 0.108 — KV stream efficiency (opt-in); VLM / DiT / D2D / SLC audit
+
+**KV stream efficiency.** Long-OSL decode in r4 is DRAM-bound, and KV traffic is 30–60 % of its time. Decode
+attention kernels stream the cache at a higher fraction of peak than the global `mem_eff` (0.7): FlashMLA reports
+3000 GB/s on the 3350 GB/s H800. `Scenario.kv_mem_eff` charges the KV read and write bytes of a stage at that
+efficiency:
+
+t_dram = (bytes + kv·(s − 1)) / BW, where s = BW(mem_eff) / BW(kv_mem_eff).
+
+The same scale applies to the stage's KV time component. Bytes, capacity and energy are unchanged. On the extval
+groups (calibrated base + 0.896), r4 goes 18.1 → 16.5 % and v1 max 18.3 → 13.9 %, but moe dec, moe max, r3 max,
+r3 lat and v1 ttft get worse. The field therefore stays opt-in, and the default is unchanged.
+
+Rejected mechanisms for r4:
+
+- Exact capacity batch instead of the power-of-two grid: DeepSeek long-OSL overshoots.
+- CTA-tiled prefill GEMMs: dense long-ISL rows reach ≈ 1.0, but MoE / gpt-oss overshoot to 1.2–1.8×.
+
+**Audit** (`val5/v0108_audit.py`):
+
+- VLM encoder: useful work is invariant over TP / PP / DP / SP, the encode time is non-increasing in TP and DP, CP
+  with images is rejected, and decode carries weights only.
+- Video DiT: work is invariant over SP / TP / PP / DP; CP is rejected with an explanation.
+- D2D: latency is non-increasing in grade and units, and package_cards without d2d_enabled is inert.
+- SLC: `pin_bw` is never slower than `pin` and is monotone in size. `pin` and `lru` get slower with size only when
+  slc_GBps < DRAM; this is now warned for `lru` too (it was silent).
+
+Standing tests: `test_core_108`.

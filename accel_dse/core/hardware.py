@@ -340,6 +340,14 @@ class System:
     cards: int = 0                      # cards of the evaluated replica (scale-up domain when node_cards = 0; 0.59)
     cap_GB: float = 0.0                 # 0.94: usable capacity override (GB); 0 = stack capacity
     kv_frac: float = 1.0                # 0.94: KV / state share of post-weight free memory
+    kv_eff: float | None = None         # 0.108 (opt-in): DRAM efficiency of KV-cache streams (None = mem_eff)
+
+    @property
+    def kv_time_scale(self) -> float:
+        """0.108: time of one KV-cache byte relative to an average DRAM byte (1.0 unless kv_eff is set)."""
+        if self.kv_eff is None:
+            return 1.0
+        return self.mem.effective_GBps / _mem_spec(self.mem_id, self.kv_eff).effective_GBps
 
     @property
     def mem(self) -> mem_catalog.MemSpec:

@@ -505,6 +505,13 @@ def _links(scn: Scenario) -> tuple:
             scn.net if scn.node_cards > 0 else None, scn.node_cards)
 
 
+def _dram_t(sys: System, dram: dict) -> float:
+    """DRAM seconds of a stage's traffic; 0.108: KV-cache bytes at System.kv_eff when set (else = total / BW)."""
+    s = sys.kv_time_scale
+    b = dram["total"] if s == 1.0 else dram["total"] + (dram["kv_read"] + dram["kv_write"]) * (s - 1.0)
+    return b / (sys.dram_GBps * 1e9)
+
+
 def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, store, dram: dict,
                tail_comm: float = 0.0, hidden_link: float = 0.0) -> float:
     """0.98: exec_overlap "pipe" — replay the stage's op sequence on DMA + compute (core/overlap.py).
@@ -532,7 +539,7 @@ def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, s
          "exp": 0.0 if store.expert_w <= 0 else 1.0 - mp.pinned_expert / store.expert_w,
          "kv": 0.0 if kvst <= 0 else 1.0 - mp.kv_sram / kvst, "lookup": 1.0, "act": 1.0}
     nb = sum(n * sum(x * f.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
-    t_mem = max(dram["total"] / (sys.dram_GBps * 1e9), _slc_time(sys, dram))
+    t_mem = max(_dram_t(sys, dram), _slc_time(sys, dram))
     if nb <= 0 and t_mem > 0:          # traffic the ops do not carry (e.g. FSDP copies): one leading DMA step
         segs.insert(0, ([(0.0, {"x": 1.0}, 0.0)], 1)); nb = 1.0
     spb = t_mem / nb if nb > 0 else 0.0
@@ -913,7 +920,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if lay.cp > 1:
         _cp_check(m, sv)
     sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
-                 scn.fabric, lay.cards, scn.mem_cap_GB, scn.kv_mem_frac)
+                 scn.fabric, lay.cards, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
     if scn.chip.slc_bytes and scn.chip.slc_bytes >= sys.dram_bytes:
         warnings.append("SLC 容量不小于每卡 DRAM 容量——不现实的设计点（SLC 不增加容量，按包含式缓存计）")
     if sys.package_cards > 1 and lay.cards > sys.package_cards and lay.cards % sys.package_cards:
@@ -927,9 +934,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if sys.node_cards > 0 and lay.cards > sys.node_cards and lay.cards % sys.node_cards:
         warnings.append(f"node_cards = {sys.node_cards} 不整除总卡数 {lay.cards}：末尾节点未满，"
                         "按每个通信组的整除部分近似分层")
-    if scn.chip.slc_bytes and scn.chip.slc_policy == "pin" and scn.chip.slc_GBps < sys.dram_GBps:   # 0.90 (0.91: pin_bw)
-        warnings.append(f"SLC 带宽 {scn.chip.slc_GBps:.0f} GB/s 低于 DRAM {sys.dram_GBps:.0f} GB/s：pin 策略把热数据固定在更慢的 "
-                        "SLC 上，读得反而更慢（与计算重叠时可能被掩盖；serial / kernel 下可见）——提高 slc_GBps，或改用 pin_bw（按带宽均衡分流）/ lru")
+    # 0.90 (0.91: pin_bw; 0.108 audit: lru too — its hits are also served at slc_GBps, previously silent)
+    if scn.chip.slc_bytes and scn.chip.slc_policy in ("pin", "lru") and scn.chip.slc_GBps < sys.dram_GBps:
+        warnings.append(f"SLC 带宽 {scn.chip.slc_GBps:.0f} GB/s 低于 DRAM {sys.dram_GBps:.0f} GB/s：{scn.chip.slc_policy} 策略把热数据放在更慢的 "
+                        "SLC 上，读得反而更慢（与计算重叠时可能被掩盖；serial / kernel 下可见）——提高 slc_GBps，或改用 pin_bw（按带宽均衡分流）" + (" / lru" if scn.chip.slc_policy == "pin" else ""))
     if not m.kv_cache:
         if scn.pd.enabled:              # 0.90: was silently ignored
             warnings.append("PD 分离（pd.enabled）对视频 / 蛋白模型无效：没有 KV 缓存，也没有 decode 阶段——按单一部署评估，PD 设置被忽略")
@@ -1044,7 +1052,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
                 _add_wire(wire, {"d2d": act * fd, "net": act * fn, "link": act * (1 - fd - fn)})
                 extra.append((bw, tier))
-            t_dram = dram["total"] / (sys.dram_GBps * 1e9)
+            t_dram = _dram_t(sys, dram)
             if sys.fabric.enabled:
                 link_bw, sync, d2d_b, net_b = _stage_link(
                     sys, agg, link_bw, sync, d2d_b, net_b, extra,
@@ -1066,7 +1074,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
-                            (dram["kv_read"] + dram["kv_write"] + dram["state"]) / (sys.dram_GBps * 1e9),
+                            ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
                             scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
                             t_pipe)
             if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
@@ -1281,7 +1289,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
                 _add_wire(wire, {"d2d": act * fd, "net": act * fn, "link": act * (1 - fd - fn)})
                 extra.append((bw, tier))
-            t_dram = dram["total"] / (sys.dram_GBps * 1e9)
+            t_dram = _dram_t(sys, dram)
             if sys.fabric.enabled:
                 link_bw, sync, d2d_b, net_b = _stage_link(
                     sys, agg, link_bw, sync, d2d_b, net_b, extra,
@@ -1302,7 +1310,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
                             dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
                             dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
-                            (dram["kv_read"] + dram["kv_write"] + dram["state"]) / (sys.dram_GBps * 1e9),
+                            ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
                             scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
                             t_pipe)
             if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)

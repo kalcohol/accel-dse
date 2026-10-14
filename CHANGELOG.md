@@ -3,6 +3,33 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.108.0]
+
+### Added
+- `Scenario.kv_mem_eff` (opt-in, default unset): DRAM efficiency of the KV-cache read / write streams. When unset,
+  KV bytes run at `mem_eff` and every number is bit-identical (fingerprints unchanged). Only time changes; bytes and
+  energy do not. extval `kveff_variant()` uses `KV_STREAM_EFF` = 3000 / 3350, FlashMLA's published H800 figure
+  (not fitted). It improves r4 18.1 → 16.5 % and v1 max 18.3 → 13.9 %, but worsens moe dec / moe max / r3 max /
+  r3 lat / v1 ttft, so it is **not** a default.
+- Randomized audit of VLM vision encoder and video DiT under TP / SP / PP / DP / CP, D2D tiers and SLC policies
+  (`val5/v0108_audit.py`, 2 runs, ~1,000 cases). Results:
+  - Vision work is conserved; tflop = batch × images × per-image tflop.
+  - CP with images is rejected, and decode does no encode.
+  - DiT work is conserved; CP is rejected for video with an explanation.
+  - D2D is monotone in grade and units, and `d2d_enabled = false` is inert apart from its warning.
+  - `pin_bw` is never slower than `pin` and is monotone in SLC size.
+- Standing tests: `test_core_108`.
+
+### Fixed
+- A slower-than-DRAM SLC under `slc_policy = "lru"` made a larger SLC slower without any warning. The `pin` warning
+  now covers `lru`, with policy-specific text.
+
+### Investigated (not adopted)
+- r4 long-sequence under-prediction:
+  - Bisecting the batch to the true KV capacity: r4 got worse, 18.1 → 18.4 %, and DeepSeek long-OSL overshot to
+    1.3–1.6×.
+  - CTA-tiled prefill GEMMs: r4 got worse, 18.1 → 19.9 %, and MoE overshot. The prototype was removed.
+
 ## [0.107.0]
 
 ### Fixed
