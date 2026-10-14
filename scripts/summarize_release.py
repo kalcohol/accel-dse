@@ -68,6 +68,15 @@ ROLE_DOMAIN = {
         ("attn", r"\.attention\."),
         ("mlp", r"(\.intermediate\.|\.output\.dense)"),
     ],
+    # 0.106 genomics encoders (Carbon-A / Generanno: Llama-style blocks, per-token strand heads score.{0,1})
+    "genomics": [
+        ("buffer", r"(inv_freq$|position_ids$)"),
+        ("embed", r"embed_tokens"),
+        ("lm_head", r"^score\.\d+\."),
+        ("norm", r"(layernorm|\.norm\.)"),
+        ("attn", r"self_attn"),
+        ("mlp", r"\.mlp\."),
+    ],
 }
 BLOCK_RE = re.compile(r"(blocks|layers|layer|transformer_blocks)\.(\d+)\.")
 
@@ -80,6 +89,8 @@ def domain_of(cfg: dict) -> str:
         return "video"
     if cfg.get("model_type") == "esm":
         return "protein"
+    if cfg.get("model_type") == "generanno":
+        return "genomics"
     return "llm"
 
 

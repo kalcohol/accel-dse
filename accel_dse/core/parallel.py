@@ -112,6 +112,9 @@ PP_SPLITS = ("cost", "layers")
 # every TP rank, V4-type heads split), "replicated", "tp_split" (index heads column-parallel + all-reduce of the fp32
 # scores), "key_split" (cached index keys sharded over TP, local top-k + all-gather of TP·k candidates + merge) 「假设」
 INDEXER_MODES = ("reference", "replicated", "tp_split", "key_split")
+# 0.106: attention mask mode — "reference" (as released: causal LLMs, bidirectional encoders) | "bidir" (what-if:
+# every self-attention non-causal, full S² scores, no KV cache written — an encoder-style forward of a causal LLM)
+ATTN_MODES = ("reference", "bidir")
 EXEC_OVERLAPS = ("stage", "class", "kernel", "serial", "tbo", "pipe")   # 0.66 (+ tbo 0.67): see schedule.StageTime.total
 
 

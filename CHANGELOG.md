@@ -3,6 +3,31 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.106.0]
+
+### Added
+- Genomics model group (vendor "Hugging Face Bio", `HuggingFaceBio/*` releases fetched with
+  `scripts/fetch_hf_release.py`). Parameter counts match the releases exactly for all four models.
+  - `carbon-a-1.2b` (Carbon-A, Generanno), new domain `genomics`. It is a bidirectional token-classification
+    encoder: 26 layers, hidden 2048, GQA 32 / 4 heads, head_dim 64, SwiGLU 5632, vocab 4128 (6-mer tokens), no KV
+    cache. The output is two per-token strand heads `score.{0,1}`. Their release shape is hidden → 12, i.e. 6 bases
+    × 2 classes (CDS / non-coding) per token, not hidden → 2. There is no vocabulary MLM head (new
+    `ModelSpec.vocab_head`).
+  - Carbon-A workload: 16,384-token windows (98,304 bp) that overlap by 1,024 tokens. The KPIs are windows/s/card,
+    tokens/s/card and new bp/s/card (92,160 new bp per window).
+  - Carbon-A weights and activations are BF16, the model card's inference setting (BF16 + FlashAttention-2). The
+    safetensors are fp32.
+  - `carbon-500m` / `carbon-3b` / `carbon-8b`: stock `LlamaForCausalLM` DNA LMs, released in BF16, evaluated as LLMs.
+    They are appended after the domain releases, so the catalog order and fingerprints are unchanged.
+- `Scenario.attn_mode` (`reference` | `bidir`; CLI `--attn-mode`; UI 注意力掩码 select). `bidir` is a what-if: every
+  causal self-attention becomes non-causal (full S² scores, so qk / pv FLOPs are exactly 2× causal at ctx 0), and
+  prefill writes no KV cache. It is prefill-only (decode raises) and is ignored, with a warning, for models that
+  already run a full-sequence forward. The LLM prefill path now honours `AttnCore.causal`.
+- UI / API: `genomics` in the domain list (`/api/health`), with its own badge, window / Mbp/s KPIs, window-length
+  input and seq_len sweep.
+- Tests: `test_core_106` (bidir = 2× causal attention FLOPs and no KV write; reference identical; dense causal
+  fingerprints c034bfe3… / e51c7ec1… unchanged; Carbon params, dtypes, heads and workload; API).
+
 ## [0.105.0]
 
 ### Added

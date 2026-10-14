@@ -97,6 +97,7 @@
     </div>
     <label class="inline" title="0.62：流水级怎样切层。cost（默认）= 按每层代价（含嵌入 / 输出头 / MTP / 级间传递，按级时间规则 max(阵列, 向量, DRAM, 链路) + 同步）找使最慢级最快的连续切分，再与按层数均分的结果在完整模型上比较，取更快且放得下的；layers = 按层数均分（0.61 及以前）">PP 切分<select id="l-pp_split"><option value="cost">按代价平衡（默认）</option><option value="layers">按层数均分</option></select></label>
     <label class="inline" title="0.87：稀疏注意力 indexer（DeepSeek-V3.2 / V4、GLM-5 类 DSA）在注意力 TP 上怎样部署。按发布（默认）= V3.2 / GLM-5 每个 TP rank 重复算全部 indexer 头，V4 按头切分；重复 = 每个 rank 都算全部头；按头切分 = 头按 TP 列切分 + fp32 打分矩阵 all-reduce（长 prefill 时通信很大）；按键切分 = 缓存的 index 键按 TP 分片，各 rank 局部 top-k 后 all-gather TP·k 个候选再合并（精确，indexer 缓存按 TP 分摊）。没有 indexer 的模型忽略此项">indexer 部署 <span class="tag assume">假设</span><select id="l-indexer"><option value="reference">按发布（默认）</option><option value="replicated">每个 TP rank 重复</option><option value="tp_split">按头切分 + 打分 all-reduce</option><option value="key_split">按键切分 + top-k 汇集</option></select></label>
+    <label class="inline llm-only" title="0.106：注意力掩码 what-if。按发布（默认）= 因果 LLM / 双向编码器保持原样；双向 = 所有自注意力不加因果掩码（整 S² 打分，注意力 FLOP 为因果的 2 倍），prefill 不写 KV cache（编码器式整序列前向）。只用于 prefill；编码器 / DiT 本身已是双向，忽略此项">注意力掩码 <span class="tag assume">what-if</span><select id="l-attn_mode"><option value="reference">按发布（默认）</option><option value="bidir">双向（无因果、无 KV cache）</option></select></label>
     <div class="small muted moe-only">MoE 约束 EP·ETP = TP·DP（注意力按 TP、DP 切分，专家按 EP、ETP 切分）；修改时自动补齐 ETP。</div>
     <div class="small muted full-only">视频 / 蛋白质：卡数 = PP·TP·DP·SP。DP 切分前向 batch（视频含 CFG 的 cond / uncond 两路 = CFG 并行）；SP = Ulysses 序列并行，权重在 SP 组内复制。蛋白质结构模型：SP 位置为 DAP（pair / MSA 网格按残基轴切分，FastFold 动态轴并行），无 TP。</div>
     <button class="btn ghost sm" id="best-layout">搜索当前卡数的最优布局并应用</button>
@@ -189,7 +190,7 @@
       <label class="inline" title="跨请求重叠：文本编码器在主机 CPU（需同时勾选「文本编码器放主机 CPU」）时，主机编码下一请求与卡上去噪 / 解码当前请求并行；稳态周期 = max(卡忙, 主机忙)，单段延迟不变、吞吐按周期计。组件同卡时没有独立资源，按串行计"><input type="checkbox" id="w-overlap"> 跨请求重叠（主机编码 ∥ 去噪）</label>
     </div>
     <div class="row3 protein-only">
-      <label>序列长度（残基）<input type="number" id="w-seq_len" min="1" max="65536" step="64"></label>
+      <label><span id="w-seq_len-name">序列长度（残基）</span><input type="number" id="w-seq_len" min="1" max="65536" step="64"></label>
       <label class="seq-slo">批延迟 SLO ms <span class="tag assume">假设</span><input type="number" id="w-seq_slo_ms" min="1" step="50"></label>
       <label class="pair-only">批延迟 SLO s <span class="tag assume">假设</span><input type="number" id="w-fold_slo_s" min="1" step="10"></label>
     </div>

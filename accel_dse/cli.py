@@ -8,7 +8,7 @@ import sys
 
 from . import __version__, api
 from .core.d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS
-from .core.parallel import EXEC_OVERLAPS, INDEXER_MODES
+from .core.parallel import ATTN_MODES, EXEC_OVERLAPS, INDEXER_MODES
 
 
 _BUDGET_FLAGS = (
@@ -55,6 +55,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="fixed per-layer time per step, µs (0.69; default 0) 「假设」")
     p.add_argument("--indexer", default=None, choices=INDEXER_MODES,
                    help="sparse-attention indexer over TP (0.87): reference (as released) | replicated | tp_split | key_split")
+    p.add_argument("--attn-mode", dest="attn_mode", default=None, choices=ATTN_MODES,
+                   help="attention mask what-if (0.106): reference (as released) | bidir (non-causal, full S², no KV cache; prefill only)")
     p.add_argument("--clip-slo", dest="clip_slo_s", type=float, default=None, help="video: clip latency SLO, s")
     p.add_argument("--seq-slo", dest="seq_slo_ms", type=float, default=None, help="protein encoder: per-sequence SLO, ms")
     p.add_argument("--fold-slo", dest="fold_slo_s", type=float, default=None, help="structure model: fold SLO, s")
@@ -300,7 +302,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     sc = {"model": a.model, "mapping": a.mapping, "serving": sv}
     if getattr(a, "pp_split", None):
         sc["pp_split"] = a.pp_split
-    for k in ("exec_overlap", "layer_overhead_us", "indexer"):
+    for k in ("exec_overlap", "layer_overhead_us", "indexer", "attn_mode"):
         if getattr(a, k, None) is not None:
             sc[k] = getattr(a, k)
     wl = {k: getattr(a, k) for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles",

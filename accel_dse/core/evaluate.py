@@ -85,7 +85,7 @@ class Result:
         sv, w = self.scenario.serving, self.scenario.workload
         if self.model.domain == "gen":
             return self.latency <= w.clip_slo_s
-        if self.model.domain == "protein":
+        if self.model.domain in ("protein", "genomics"):
             return self.latency * 1e3 <= self._seq_slo_ms
         return self.tpot * 1e3 <= sv.tpot_slo_ms
 
@@ -128,6 +128,10 @@ class Result:
                      frames_per_s_card=self.per_card, clips_per_hour_card=3600 * b / period / cards,
                      realtime_x=(w.info["video_s"] * b / self.latency) if w.info.get("video_s") else None,
                      slo_s=self.scenario.workload.clip_slo_s)
+        elif w.kind == "genomics":     # 0.106: windows of a long record (overlap re-read, new bases counted)
+            d.update(batch_ms=self.latency * 1e3, windows_per_s_card=self.per_card, seq_per_s_card=self.per_card,
+                     tokens_per_s_card=self.per_card * w.info["seq_len"],
+                     bp_per_s_card=self.per_card * w.info["new_bp_per_window"], slo_ms=self._seq_slo_ms)
         else:
             d.update(batch_ms=self.latency * 1e3, seq_per_s_card=self.per_card,
                      residues_per_s_card=self.per_card * w.info["seq_len"], slo_ms=self._seq_slo_ms)
@@ -877,6 +881,18 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             if scn.indexer not in ix:
                 ix[scn.indexer] = with_indexer(m, scn.indexer)
             m = ix[scn.indexer]
+    if scn.attn_mode != "reference":
+        from .model import with_attn_mode
+        if not m.kv_cache:
+            warnings.append(f"attn_mode = {scn.attn_mode} 已忽略：该模型本身就是整序列前向（编码器 / DiT），注意力按发布")
+        elif scn.serving.phase != "prefill":
+            raise ValueError("attn_mode = bidir（双向、无 KV cache）只用于 prefill / 整序列前向；decode 需要因果 KV cache")
+        else:
+            am = model_cache(m).setdefault("attn_mode", {})
+            if scn.attn_mode not in am:
+                am[scn.attn_mode] = with_attn_mode(m, scn.attn_mode)
+            m = am[scn.attn_mode]
+            warnings.append("attn_mode = bidir（what-if）：自注意力不加因果掩码（整 S² 打分），prefill 不写 KV cache")
     if scn.serving.images and not scn.serving.image_tokens:
         if m.vision is None:
             warnings.append("serving.images 已忽略：该模型没有视觉编码器（只有 VLM 计图像）")

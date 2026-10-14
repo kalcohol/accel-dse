@@ -466,12 +466,44 @@ def build_esm(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Model
     return replace(spec, notes=tuple(notes))
 
 
+def build_generanno(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
+    """0.106 Carbon-A (Generanno): Llama-style blocks (RMSNorm, GQA + RoPE, SwiGLU), bidirectional, no KV cache;
+    two per-token strand heads score.{0,1} (hidden → k·2: per base of the 6-mer token, CDS / non-coding)."""
+    from .model import _ffn_dense, _gqa
+    c, sh = rel["config"], rel["shapes"]
+    d, H, KV, f, L, V = (c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"], c["intermediate_size"],
+                         c["num_hidden_layers"], c["vocab_size"])
+    hd = c.get("head_dim") or d // H
+    alin, core = _gqa(d, H, KV, hd)
+    core = replace(core, rope_dim=hd, causal=False)
+    ffn, flin = _ffn_dense(d, f, gated=True)
+    layer = Layer(alin, core, ffn, flin, 2 * d)              # input / post-attention RMSNorm
+    heads = sorted(n for n in sh if n.startswith("score.") and n.endswith(".weight"))
+    io_post = tuple(Linear(n.rsplit(".", 1)[0].replace(".", "_"), d, sh[n][0], "rep") for n in heads)
+    wl = replace(wl, max_seq=c.get("max_position_embeddings", wl.seq_len), kmer=c.get("k", wl.kmer))
+    spec = _finish(model_id, hf_id, rel, "Carbon-A 编码器（Generanno：双向 GQA + RoPE + SwiGLU，逐 token 链头）", d, L,
+                   layer, (), io_post, 0, V, wl, "")
+    # the card's inference setting (BF16 + FlashAttention-2, every reported result) — the safetensors are fp32
+    bf = RoleFormat("bf16", 16.0)
+    fm = tuple((k, bf) for k, _ in spec.formats)
+    k_ = wl.kmer or 6
+    notes = [n for n in spec.notes if "fp32" not in n] + [
+        "发布 safetensors 为 fp32；按模型卡的推理设置（BF16 + FlashAttention-2，全部报告结果）计权重与激活",
+        f"无词表 MLM 头：两个逐 token 链头（正 / 反链）{' + '.join(f'{d}→{l.n}' for l in io_post)}"
+        f"（每 token {k_} 个碱基 × 2 类：CDS / 非编码）",
+        f"窗口 {wl.seq_len} token（{wl.seq_len * k_:,} bp），相邻窗口重叠 {wl.overlap} token；每窗口新增 "
+        f"{(wl.seq_len - wl.overlap) * k_:,} bp（注释流水线对重叠部分取平均）"]
+    reasons = [r for r in spec.coverage_reasons]
+    return replace(spec, formats=fm, act_fmt="bf16", kv_fmt="bf16", final_norm_params=d, vocab_head=False,
+                   notes=tuple(notes), coverage_reasons=tuple(reasons), coverage="partial" if reasons else "full")
+
+
 # ---------------------------------------------------------------- common tail
 def _finish(model_id, hf_id, rel, arch, d, L, layer, io_pre, io_post, io_misc, vocab, wl, _, skip=(), extra_notes=(),
             ext_parts=()):
     fm = _formats(rel)
     fmd = dict(fm)
-    dom = "gen" if wl.kind == "gen" else "protein"
+    dom = wl.kind if wl.kind in ("gen", "genomics") else "protein"
     layers = tuple(layer) if isinstance(layer, (list, tuple)) else tuple([layer] * L)
     spec = ModelSpec(
         id=model_id, hf_id=hf_id, arch=arch, hidden=d, vocab=vocab, layers=layers,
@@ -524,7 +556,8 @@ def _finish(model_id, hf_id, rel, arch, d, L, layer, io_pre, io_post, io_misc, v
 
 
 BUILDERS = {"wan": build_wan, "wan22": build_wan22, "cogvideox": build_cogvideox, "hunyuan": build_hunyuan,
-            "ltx": build_ltx, "mochi": build_mochi, "stdit": build_stdit, "h3": build_h3, "esm": build_esm}
+            "ltx": build_ltx, "mochi": build_mochi, "stdit": build_stdit, "h3": build_h3, "esm": build_esm,
+            "generanno": build_generanno}
 from .structure import BUILDERS as _STRUCTURE_BUILDERS  # noqa: E402  (0.43 protein structure models)
 BUILDERS.update(_STRUCTURE_BUILDERS)
 
@@ -601,6 +634,16 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
             info["attn_groups"] = {"spatial": [gt, gh * gw], "temporal": [gh * gw, gt]}
         return ResolvedWorkload("gen", vid + d.prefix_tokens + aud, d.text_tokens, cfg,
                                 steps, float(F), "frame", info, tuple(warns), frames=gt, aux=aud)
+    if spec.domain == "genomics":                       # 0.106: one window of k-mer tokens per sequence
+        L = w.seq_len or d.seq_len
+        if d.max_seq and L > d.max_seq:
+            warns.append(f"窗口 {L} token 超过训练长度 {d.max_seq}（RoPE 外推，精度不在本工具范围）")
+        k_ = d.kmer or 1
+        ov = min(d.overlap, L - 1)
+        info = {"seq_len": L, "tokens": L, "max_seq": d.max_seq, "kmer": k_, "bp_per_window": L * k_,
+                "overlap_tokens": ov, "new_bp_per_window": (L - ov) * k_,
+                "default": {"seq_len": d.seq_len}, "source": d.source}
+        return ResolvedWorkload("genomics", L, 0, 1, 1, 1.0, "window", info, tuple(warns))
     L = w.seq_len or d.seq_len
     if d.max_seq and L > d.max_seq:
         warns.append(f"序列长度 {L} 超过训练长度 {d.max_seq} 残基" + ("（RoPE 可外推，精度不在本工具范围）"

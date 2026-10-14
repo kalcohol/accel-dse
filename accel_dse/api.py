@@ -232,7 +232,7 @@ def _row(r, objective: str) -> dict:
 
 # ------------------------------------------------------------------ endpoints
 def api_health() -> dict:
-    return {"ok": True, "version": __version__, "core": "v2", "domains": ["llm", "vlm", "gen", "protein"]}
+    return {"ok": True, "version": __version__, "core": "v2", "domains": ["llm", "vlm", "gen", "protein", "genomics"]}
 
 
 def api_models() -> dict:

@@ -41,9 +41,10 @@ function coverBadge(m) {
   return h('span', { class: 'badge cov ' + m.coverage, title: coverTip(m) }, h('span', { class: 'ax' }, '覆盖'), COVER_ZH[m.coverage]);
 }
 const PROV_ZH = { official: '官方', mirror: '镜像' };
-const DOMAIN_ZH = { gen: '视频生成', protein: '蛋白质' };
-const isFull = (m) => !!m && (m.domain === 'gen' || m.domain === 'protein');   // non-autoregressive full-sequence forward
-const UNIT_ZH = { frame: '帧', seq: '序列', token: 'tok' };
+const DOMAIN_ZH = { gen: '视频生成', protein: '蛋白质', genomics: '基因组' };
+const isFull = (m) => !!m && (m.domain === 'gen' || m.domain === 'protein' || m.domain === 'genomics');   // non-autoregressive full-sequence forward
+const UNIT_ZH = { frame: '帧', seq: '序列', token: 'tok', window: '窗口' };
+const isSeqEnc = (m) => !!m && (m.domain === 'protein' || m.domain === 'genomics');   // per-sequence encoders (0.106)
 function fmtDur(sec) {
   if (sec === null || sec === undefined || !isFinite(sec)) return '—';
   if (sec >= 7200) return num(sec / 3600) + ' h';
@@ -55,6 +56,7 @@ function domainBadge(m) {
   if (m.domain === 'gen') return h('span', { class: 'badge vlm', title: coverTip(m) },
     S.sc.workload.pipeline === false ? '视频生成 · 只评估 DiT 主干' : '视频生成 · DiT + 文本编码器 + VAE 解码');
   if (m.domain === 'protein') return h('span', { class: 'badge vlm', title: coverTip(m) }, m.is_pair ? '蛋白质 · 结构预测' : '蛋白质 · 编码器前向');
+  if (m.domain === 'genomics') return h('span', { class: 'badge vlm', title: coverTip(m) }, '基因组 · 双向编码器前向（逐 token 分类）');
   return null;
 }
 const BOUND_ZH = { MAC: 'MAC 算力', FEED: 'FEED 供数', VECTOR: 'VECTOR 向量', DRAM: 'DRAM 带宽', SLC: 'SLC 系统级缓存', LINK: 'LINK 互连', SYNC: 'SYNC 同步' };
@@ -203,6 +205,7 @@ function syncInputs() {
   document.querySelectorAll('input[type=number]').forEach((i) => i._sync && i._sync());
   if ($('l-pp_split')) $('l-pp_split').value = S.sc.pp_split || 'cost';
   if ($('l-indexer')) $('l-indexer').value = S.sc.indexer || 'reference';
+  if ($('l-attn_mode')) $('l-attn_mode').value = S.sc.attn_mode || 'reference';
   if ($('pd-length_mix') && $('pd-length_mix')._sync) $('pd-length_mix')._sync();
   if ($('pd-prefix_tree') && $('pd-prefix_tree')._sync) $('pd-prefix_tree')._sync();
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
@@ -294,7 +297,8 @@ function paintDomain(m) {
   document.querySelectorAll('.llm-only').forEach((e) => (e.hidden = full));
   document.querySelectorAll('.full-only').forEach((e) => (e.hidden = !full));
   document.querySelectorAll('.gen-only').forEach((e) => (e.hidden = m.domain !== 'gen'));
-  document.querySelectorAll('.protein-only').forEach((e) => (e.hidden = m.domain !== 'protein'));
+  document.querySelectorAll('.protein-only').forEach((e) => (e.hidden = !isSeqEnc(m)));
+  if ($('w-seq_len-name')) $('w-seq_len-name').textContent = m.domain === 'genomics' ? '窗口长度（token）' : '序列长度（残基）';
   document.querySelectorAll('.dp-in').forEach((e) => (e.hidden = !(m.is_moe || full)));
   document.querySelectorAll('.pair-only').forEach((e) => (e.hidden = !m.is_pair));
   document.querySelectorAll('.seq-slo').forEach((e) => (e.hidden = !!m.is_pair));
@@ -310,15 +314,16 @@ function paintDomain(m) {
     if (S.cmpObj === 'goodput') { S.cmpObj = 'decode'; paintSeg('cmp-obj', 'decode'); }
     if (S.layObj === 'goodput') { S.layObj = 'decode'; paintSeg('lay-obj', 'decode'); }
   }
-  const unit = m.domain === 'gen' ? '帧/s/卡' : m.domain === 'protein' ? '序列/s/卡' : null;
+  const unit = m.domain === 'gen' ? '帧/s/卡' : m.domain === 'genomics' ? '窗口/s/卡' : m.domain === 'protein' ? '序列/s/卡' : null;
   for (const id of ['cmp-obj', 'lay-obj']) $(id).querySelector('[data-v=decode]').textContent = unit ? `目标：吞吐（${unit}）` : '目标：decode 吞吐';
-  $('batch-label').textContent = m.domain === 'gen' ? 'batch（视频段数）' : m.domain === 'protein' ? 'batch（序列数）' : 'batch';
+  $('batch-label').textContent = m.domain === 'gen' ? 'batch（视频段数）' : m.domain === 'genomics' ? 'batch（窗口数）' : m.domain === 'protein' ? 'batch（序列数）' : 'batch';
   $('best-batch-label').textContent = m.domain === 'gen' ? '自动取满足单段延迟 SLO 的最大 batch（最大化帧/s/卡）'
-    : m.domain === 'protein' ? '自动取满足批延迟 SLO 的最大 batch（最大化序列/s/卡）' : '自动取满足 TPOT SLO 的最大 batch';
+    : isSeqEnc(m) ? `自动取满足批延迟 SLO 的最大 batch（最大化${m.domain === 'genomics' ? '窗口' : '序列'}/s/卡）` : '自动取满足 TPOT SLO 的最大 batch';
   const w = m.workload;
   if (w) {
     $('wl-kind').textContent = m.domain === 'gen' ? `视频 · 默认 ${w.width}×${w.height} · ${w.frames} 帧 · ${w.fps} fps · ${w.steps} 步 · CFG ${w.cfg}`
       : w.structure ? `蛋白质结构 · 默认 ${w.seq_len} 残基 · ${w.msa ? `MSA ${w.msa} 行` : w.xmsa ? `MSA ${w.xmsa} 行` : '单序列'} · 主干 ${w.recycles} 遍${w.diff_steps ? ` · 扩散 ${w.diff_steps} 步 × ${w.samples} 样本` : ''}`
+      : w.kind === 'genomics' ? `基因组 · 默认窗口 ${w.seq_len} token（${w.kmer}-mer，${num(w.seq_len * w.kmer)} bp）· 重叠 ${w.overlap} token`
       : `蛋白质 · 默认 ${w.seq_len} 残基（训练上限 ${w.max_seq}）`;
     for (const [k, v] of Object.entries({ frames: w.frames, height: w.height, width: w.width, steps: w.steps, cfg: w.cfg, seq_len: w.seq_len,
       msa: w.msa || w.xmsa, recycles: w.recycles, psteps: w.diff_steps, samples: w.samples }))
@@ -654,6 +659,13 @@ function domainKpis(s, cap, auto) {
       `每去噪步 ${fmtDur(g.step_ms / 1e3)} · ${num(w.seq_tokens)} token / 前向${w.audio_tokens ? `（含音频 ${num(w.audio_tokens)}）` : ''}${w.attention === 'factorized' ? ' · 分解注意力' : ''} · 视频 ${num(w.video_s)} s${g.realtime_x ? ` · 实时倍率 ${num(g.realtime_x)}×` : ''}`));
     k.push(kpi('吞吐 / 卡', num(g.frames_per_s_card) + ' 帧/s',
       `${num(g.clips_per_hour_card)} 段/小时/卡 · ${s.cards} 卡 · ${s.layout} · ${num(g.tflop_per_request)} TFLOP/段${pl ? `（其中文本编码 + 解码 ${num(pl.tflop / s.batch)}）` : ''}`));
+  } else if (g.unit === 'window') {     // 0.106 genomics encoder: windows of a long record
+    const over = !s.slo_ok;
+    k.push(kpi('批延迟', fmtDur(g.batch_ms / 1e3),
+      `batch ${s.batch}${auto} × ${w.seq_len} token（${num(w.bp_per_window)} bp）· SLO ${num(g.slo_ms)} ms${over ? ' · 超出' : ''}`, over ? 'warn' : ''));
+    k.push(kpi('吞吐 / 卡', num(g.bp_per_s_card / 1e6) + ' Mbp/s',
+      `${num(g.windows_per_s_card)} 窗口/s/卡（每窗口新增 ${num(w.new_bp_per_window)} bp，重叠 ${w.overlap_tokens} token）· ${s.cards} 卡 · ${s.layout}`));
+    k.push(kpi('每窗口计算', num(g.tflop_per_request) + ' TFLOP', `${w.seq_len} token · 双向全注意力（S²）· 单次编码器前向`));
   } else {
     const over = !s.slo_ok;
     k.push(kpi('批延迟', fmtDur(g.batch_ms / 1e3),
@@ -1052,6 +1064,7 @@ function scopeText() {
   const mi = S.memInfo;
   const w = S.sc.workload, mw = m.workload;
   const tail = m.domain === 'gen' ? `${w.width || mw.width}×${w.height || mw.height} · ${w.frames || mw.frames} 帧 · ${w.steps || mw.steps} 步 · 单段 SLO ${fmtDur(w.clip_slo_s)}`
+    : m.domain === 'genomics' ? `窗口 ${w.seq_len || mw.seq_len} token · 批延迟 SLO ${w.seq_slo_ms} ms`
     : m.domain === 'protein' ? `${w.seq_len || mw.seq_len} 残基 · 批延迟 SLO ${m.is_pair ? w.fold_slo_s + ' s' : w.seq_slo_ms + ' ms'}` : `ctx ${sv.ctx} · TPOT SLO ${sv.tpot_slo_ms} ms`;
   return `场景：${m.label} · ${cards()} 卡 · 芯片 ${S.preset} · 存储器 ${mi ? `${mi.kind} ${num(mi.raw_GBps)} GB/s ${num(mi.capacity_GiB)} GiB` : S.sc.mem_id} · ${tail}（在左侧面板修改）`;
 }
@@ -1271,7 +1284,7 @@ const SWEEP_ZH = {
   'workload.samples': '扩散样本数', 'serving.images': '图像 / 请求', 'serving.image_w': '图像宽 px', 'serving.image_h': '图像高 px',
 };
 const SWEEP_DOMAIN = { 'serving.moe_skew': 'llm', 'serving.ctx': 'llm', 'serving.prompt': 'llm', 'serving.spec_k': 'llm', 'workload.frames': 'gen',
-  'workload.steps': 'gen', 'workload.height': 'gen', 'workload.width': 'gen', 'workload.seq_len': 'protein',
+  'workload.steps': 'gen', 'workload.height': 'gen', 'workload.width': 'gen', 'workload.seq_len': 'seqenc',
   'workload.msa': 'pair', 'workload.recycles': 'pair', 'workload.samples': 'pair',
   'serving.images': 'vlm', 'serving.image_w': 'vlm', 'serving.image_h': 'vlm' };
 function fillSweepPaths() {
@@ -1281,6 +1294,7 @@ function fillSweepPaths() {
     || (SWEEP_DOMAIN[p] === 'pair' && m.is_pair && (p !== 'workload.msa' || m.workload.msa || m.workload.xmsa)
         && (p !== 'workload.samples' || m.workload.diff_steps))
     || (p === 'workload.steps' && m.is_pair && m.workload.diff_steps)
+    || (SWEEP_DOMAIN[p] === 'seqenc' && isSeqEnc(m))
     || (SWEEP_DOMAIN[p] === 'vlm' && !!m.vision));
   opts($('sw-path'), list.map((p) => [p, SWEEP_ZH[p] || p]), list.includes(cur) ? cur : 'serving.batch');
   if (!list.includes(cur)) $('sw-values').value = SWEEP_DEFAULT[$('sw-path').value] || '';
@@ -1444,7 +1458,7 @@ function renderModels() {
   }
   const cnt = (f) => all.filter(f).length;
   put($('models-summary'), `共 ${all.length} 个：可评估 ${cnt((m) => m.evaluable)} 个（LLM ${cnt((m) => m.domain === 'llm')} · VLM ${cnt((m) => m.domain === 'vlm')}`
-    + ` · 视频生成 ${cnt((m) => m.evaluable && m.domain === 'gen')} · 蛋白质 ${cnt((m) => m.evaluable && m.domain === 'protein')}）；`,
+    + ` · 视频生成 ${cnt((m) => m.evaluable && m.domain === 'gen')} · 蛋白质 ${cnt((m) => m.evaluable && m.domain === 'protein')} · 基因组编码器 ${cnt((m) => m.evaluable && m.domain === 'genomics')}）；`,
     `暂未接入 v2（灰色行，不能评估）${cnt((m) => !m.evaluable)} 个（视频生成 ${cnt((m) => !m.evaluable && m.domain === 'gen')} · 蛋白质 ${cnt((m) => !m.evaluable && m.domain === 'protein')}）。`,
     '分子动力学 / 机器学习力场（MLFF）目录中暂无条目。');
   put($('models-tbl'), h('thead', {}, head), h('tbody', {}, rows));
@@ -1560,6 +1574,7 @@ async function init() {
   $('c-attn_fmt').addEventListener('change', (e) => { if (e.target.value) S.chipOver.attn_fmt = e.target.value; else delete S.chipOver.attn_fmt; schedule(); });
   $('l-pp_split').addEventListener('change', (e) => { S.sc.pp_split = e.target.value; schedule(); });
   $('l-indexer').addEventListener('change', (e) => { S.sc.indexer = e.target.value; schedule(); });
+  $('l-attn_mode').addEventListener('change', (e) => { if (e.target.value === 'reference') delete S.sc.attn_mode; else S.sc.attn_mode = e.target.value; schedule(); });
   for (const k of ['images', 'image_w', 'image_h'])
     bindNumber('s-' + k, () => S.sc.serving[k] ?? (k === 'images' ? 0 : 1024), (x) => (S.sc.serving[k] = x), { int: true });
   for (const k of ['batch', 'ctx', 'prompt', 'out_len', 'spec_k', 'microbatches'])

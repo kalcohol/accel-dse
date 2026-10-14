@@ -340,6 +340,8 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         ctx_tot = ph.ctx + q
         ce = core.ctx_eff(ctx_tot)
         causal = 0.5 * (1 + ph.ctx / ctx_tot) if core.window is None and core.topk is None and core.compress == 1 else 1.0
+        if not core.causal and core.window is None and core.topk is None and core.compress == 1:
+            causal = 1.0                     # 0.106 attn_mode = bidir: every query sees all ctx_tot keys
         if core.window is not None or core.topk is not None or core.compress > 1:
             ce = min(ce, ctx_tot)
             # 0.61.1: the first positions attend fewer keys than the cap (min(p, window / top-k / ⌈p/c⌉ + w)):
@@ -491,7 +493,7 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         # prefix (cached) context only; a sliding-window-only layer needs the last ``window`` tokens of it (0.61.1)
         pre = min(ph.ctx, core.window) if (core.window and core.compress == 1 and core.topk is None) else ph.ctx
         kv_read = b_loc * pre * kv_tok * kvb
-    kv_write = b_loc * q * kv_tok * kvb
+    kv_write = b_loc * q * kv_tok * kvb if core.causal else 0.0   # 0.106 bidir: encoder forward, no KV cache
     if core.win_bytes:
         # V4.1: window ring buffer per layer + the shared compressed cache (written by its kv source only)
         r_ = max(core.compress, 1)
@@ -1099,7 +1101,7 @@ def _full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
                         replicated=_repl_full(l, sh.tp, sh.sp)))
         if sh.tp > 1:
             ops.append(Op("io_allgather", "comm", li, comm_kind="allgather", comm_group=sh.tp, comm_bytes=m * n * ab))
-    if side == "post" and model.vocab:     # MLM logits for every token (tied decoder)
+    if side == "post" and model.vocab and model.vocab_head:     # MLM logits for every token (tied decoder)
         n = _cdiv(model.vocab, sh.tp)
         ops.append(gemm(model, "mlm_decoder", li, t, model.hidden, n, "embed", stream=True))
         ops.append(Op("act", "vector", li, vec=t * model.hidden * 8 + t * n * 3))

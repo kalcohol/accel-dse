@@ -38,6 +38,13 @@ EXTRA = [
     ("llama-2-70b", "NousResearch/Llama-2-70b-hf"),
     ("mistral-7b", "mistralai/Mistral-7B-v0.1"),
 ]
+# 0.106 genomics: Carbon DNA foundation models (stock LlamaForCausalLM, 6-mer + Qwen3 BPE hybrid vocab, BF16).
+# Appended after the domain releases so the order of every earlier entry (and the fingerprints over it) is unchanged.
+EXTRA_TAIL = [
+    ("carbon-8b", "HuggingFaceBio/Carbon-8B"),
+    ("carbon-3b", "HuggingFaceBio/Carbon-3B"),
+    ("carbon-500m", "HuggingFaceBio/Carbon-500M"),
+]
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors",
            "NousResearch/": "meta-llama (gated) → public mirror NousResearch/*, same safetensors"}
 
@@ -61,6 +68,8 @@ _H3_SRC = ("diffusers MiniMax-H3 文档 / pipeline：画布 1344×768（短边 7
            "SGLang 默认 num_inference_steps 50（49 次前向）、CFG 蒸馏；VisualVAE f16t4d24 + patch (1, 2, 2)、"
            "音频 40 latent/s × 立体声；文本 512 token「假设」")
 _ESM_SRC = "config.json：max_position_embeddings 1026（1022 残基 + <cls>/<eos>）；默认 512 残基为工作负载「假设」"
+_CARBON_A_SRC = ("Carbon-A 模型卡：16,384 token 窗口（98,304 bp，6-mer）、长记录按重叠 1,024 token（6,144 bp）的窗口读入；"
+                 "推理 BF16 + FlashAttention-2")
 _ESMFOLD_SRC = ("esmfold_v1 config.json（esmfold_config.trunk：48 块、max_recycles 4、结构模块 8 次迭代）；"
                 "默认 512 残基为工作负载「假设」")
 _OF_SRC = ("openfold/config.py：data.predict max_msa_clusters 512、max_extra_msa 1024、max_templates 4；"
@@ -108,6 +117,9 @@ DOMAIN_RELEASES = [
      NativeWorkload("protein", seq_len=512, steps=1, cfg=1, atoms_per_res=8.0, source=_BOLTZ_SRC)),
     ("protenix", "gh:bytedance/Protenix", "protenix",
      NativeWorkload("protein", seq_len=512, steps=1, cfg=1, atoms_per_res=8.0, source=_PX_SRC)),
+    # 0.106 genomics: bidirectional token-classification encoder (gene annotation)
+    ("carbon-a-1.2b", "HuggingFaceBio/Carbon-A-1.2B", "generanno",
+     NativeWorkload("genomics", seq_len=16384, steps=1, cfg=1, kmer=6, overlap=1024, source=_CARBON_A_SRC)),
 ]
 _DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
 # GitHub-only releases: the repo name alone does not say which checkpoint is evaluated
@@ -120,7 +132,8 @@ OFFLINE_REASONS = {
 }
 
 # ---------------------------------------------------------------- listing: vendor (厂商) → family; domain is only a badge
-DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态：语言主干 + 视觉编码器）", "gen": "视频生成（DiT）", "protein": "蛋白质"}
+DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态：语言主干 + 视觉编码器）", "gen": "视频生成（DiT）", "protein": "蛋白质",
+           "genomics": "基因组（DNA 编码器）"}
 OFFLINE_DOMAINS = {"video": "gen", "protein": "protein"}     # series_catalog domain → listing domain (not on core v2)
 PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only releases) — listing order
     ("alibaba", "阿里（Qwen · Wan）", ("Qwen/", "Wan-AI/")), ("deepseek", "DeepSeek（深度求索）", ("deepseek-ai/",)),
@@ -136,6 +149,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("genmo", "Genmo（Mochi）", ("genmo/",)), ("hpcai", "HPC-AI Tech（Open-Sora）", ("hpcai-tech/",)),
     ("deepmind", "Google DeepMind（AlphaFold）", ("gh:google-deepmind/",)), ("boltz", "Boltz（MIT）", ("gh:jwohlwend/", "boltz-community/")),
     ("openfold", "OpenFold（aqlaboratory）", ("gh:aqlaboratory/",)),
+    ("hfbio", "Hugging Face Bio（Carbon 基因组）", ("HuggingFaceBio/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
@@ -152,6 +166,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("tencent", "HunyuanVideo", ("hunyuanvideo",)), ("lightricks", "LTX-Video", ("ltx-video",)),
     ("genmo", "Mochi 1", ("mochi",)), ("hpcai", "Open-Sora", ("opensora",)),
     ("deepmind", "AlphaFold", ("alphafold",)), ("boltz", "Boltz", ("boltz",)), ("openfold", "OpenFold", ("openfold",)),
+    ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.
@@ -204,6 +219,8 @@ def entries() -> list[dict]:
     for i, h, b, wl in DOMAIN_RELEASES:
         al = tuple(old.get(i, {}).get("aliases") or ()) + (h,)
         out.append({"id": i, "hf_id": h, "aliases": al, "builder": b, "workload": wl})
+    for i, h in EXTRA_TAIL:
+        out.append({"id": i, "hf_id": h, "aliases": (h,)})
     out = [e for e in out if load_release(e["hf_id"]) is not None]
     for e in out:
         e["label"] = DOMAIN_LABELS.get(e["id"]) or _repo_name(e["hf_id"])
@@ -368,6 +385,9 @@ def _workload_dict(spec: ModelSpec) -> dict | None:
                 "vae_frames": w.vae_frames, "audio_per_s": w.audio_per_s, "audio_channels": w.audio_channels,
                 "attention": "factorized" if any(l.core.span != "full" for l in spec.layers) else "full",
                 "cfg_distilled": w.cfg == 1, "pipeline": _pipeline_dict(spec.id)}
+    if w.kind == "genomics":
+        return {"kind": "genomics", "seq_len": w.seq_len, "max_seq": w.max_seq, "kmer": w.kmer, "overlap": w.overlap,
+                "source": w.source, "structure": False}
     d = {"kind": "protein", "seq_len": w.seq_len, "max_seq": w.max_seq, "source": w.source, "structure": spec.is_pair}
     if spec.is_pair:
         d.update({"msa": w.msa, "xmsa": w.xmsa, "templates": w.templates, "recycles": w.recycles,

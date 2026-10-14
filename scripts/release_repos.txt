@@ -76,3 +76,8 @@ MiniMaxAI/MiniMax-H3:transformer
 NousResearch/Llama-2-7b-hf
 NousResearch/Llama-2-70b-hf
 mistralai/Mistral-7B-v0.1
+# 0.106 genomics (Carbon)
+HuggingFaceBio/Carbon-A-1.2B
+HuggingFaceBio/Carbon-500M
+HuggingFaceBio/Carbon-3B
+HuggingFaceBio/Carbon-8B

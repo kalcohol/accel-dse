@@ -1,0 +1,74 @@
+{
+ "bytes_llm": 16511410176,
+ "bytes_mtp": 0,
+ "bytes_total": 16511410176,
+ "config": {
+  "architectures": [
+   "LlamaForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": 1,
+  "dtype": "float32",
+  "eos_token_id": 2,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 4096,
+  "initializer_range": 0.02,
+  "intermediate_size": 14336,
+  "max_position_embeddings": 32768,
+  "mlp_bias": false,
+  "model_type": "llama",
+  "num_attention_heads": 32,
+  "num_hidden_layers": 32,
+  "num_key_value_heads": 8,
+  "pretraining_tp": 1,
+  "rms_norm_eps": 1e-05,
+  "rope_scaling": null,
+  "rope_theta": 5000000.0,
+  "tie_word_embeddings": false,
+  "transformers_version": "4.57.6",
+  "use_cache": true,
+  "vocab_size": 155776
+ },
+ "fetched": "2026-10-15",
+ "n_tensors": 291,
+ "params_llm": 8255705088,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "HuggingFaceBio/Carbon-8B",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 2684354560,
+    "params": 1342177280
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1276116992,
+    "params": 638058496
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 1276116992,
+    "params": 638058496
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 11274289152,
+    "params": 5637144576
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 532480,
+    "params": 266240
+   }
+  }
+ },
+ "torch_dtype": "float32"
+}

@@ -2359,3 +2359,32 @@ as the default.
     never rises: 0 violations.
   - The fluid TTFT never rises at an unchanged batch.
   - Standing test: `test_core_105::test_pd_ttft_never_rises_with_prefix_or_link_at_fixed_rate`.
+
+
+## 52. 0.106 — genomics (Carbon); attention-mask mode
+
+**Carbon-A** (`HuggingFaceBio/Carbon-A-1.2B`, `model_type` generanno). The blocks are Llama-style (RMSNorm, GQA
+32 / 4 with head_dim 64 and RoPE θ 5e5, SwiGLU 5632), but attention is bidirectional. Each layer is built with
+`AttnCore.causal = False` and runs on the full-sequence (encoder) path. That path charges the whole S × S score
+matrix (`_full_attn`, causal factor 1), has no KV cache, and writes no KV.
+
+- Output: the two strand heads `score.0` / `score.1` (hidden → 12 = k 6 × 2 classes per token, read from the
+  safetensors header) run as replicated io GEMMs on the last stage. There is no MLM decoder over the vocabulary
+  (`vocab_head = False`).
+- Precision: the card states that every reported result uses BF16 + FlashAttention-2, so weights and activations
+  are charged at bf16. The fp32 safetensors set only the storage of the download, not the runtime footprint.
+- Workload: the annotation pipeline reads a record in windows of 16,384 tokens (98,304 bp) that overlap by 1,024
+  tokens. One sequence of the batch is one window. Throughput is reported in windows/s/card and in new bp/s/card,
+  where a window adds (16,384 − 1,024) × 6 = 92,160 bp.
+- 「假设」 No special tokens are counted per window, and the overlap-averaging post-processing (host side) is not
+  modelled.
+
+**Carbon-500M / 3B / 8B** are stock `LlamaForCausalLM` checkpoints with the 155,776-entry hybrid vocabulary
+(6-mer DNA + Qwen3 BPE), released in BF16. They are evaluated as LLMs with no special casing.
+
+**Attention-mask mode** (`Scenario.attn_mode = "bidir"`, a what-if, prefill only). `model.with_attn_mode` turns
+every causal GQA / MLA self-attention core non-causal. Windowed, top-k and compressed cores keep their key-count
+rule. For a plain core, the LLM prefill path then uses causal factor 1 instead of ½·(1 + ctx/(ctx + q)). So at
+ctx 0 the qk / pv FLOPs and the softmax elements are exactly 2× the causal values, and the projections and FFN are
+unchanged. KV write is 0 (an encoder-style forward of a causal model). "reference" returns the model unchanged,
+so every causal fingerprint is bit-identical; `test_core_106` checks both fingerprints.

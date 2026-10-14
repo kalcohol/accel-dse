@@ -324,7 +324,7 @@ class RoleFormat:
 class NativeWorkload:
     """Native workload of a non-autoregressive release (video DiT clip / protein sequence).  Defaults come from the
     official config / README (cited in the catalog); the scenario's ``workload`` block overrides them."""
-    kind: str = ""                 # gen | protein
+    kind: str = ""                 # gen | protein | genomics
     frames: int = 0                # output video frames
     height: int = 0                # output pixels
     width: int = 0
@@ -353,6 +353,8 @@ class NativeWorkload:
     pair_dim: int = 0              # pair-representation width c_z (residual-stream / p2p accounting)
     max_seq: int = 0               # longest trained sequence (residues)
     special_tokens: int = 0        # protein: <cls> + <eos>
+    kmer: int = 0                  # genomics (0.106): bases per token (Carbon: non-overlapping 6-mers)
+    overlap: int = 0               # genomics: tokens shared by consecutive windows of a long record
     source: str = ""
 
 
@@ -390,7 +392,7 @@ class ModelSpec:
     vision: object = None                    # core.vision.VisionSpec (0.62; None = no vision tower / text-only model)
     max_ctx: int = 0                         # config max_position_embeddings (0 = unknown) — warning only (0.61.4)
     # ---- non-autoregressive domains (video generation DiT / protein encoders); defaults = LLM
-    domain: str = "llm"                      # llm | gen | protein
+    domain: str = "llm"                      # llm | gen | protein | genomics
     kv_cache: bool = True                    # autoregressive KV cache (False: one full-sequence forward)
     io_pre: tuple[Linear, ...] = ()          # input-side GEMMs on the first stage (patch / text / timestep embedders)
     io_post: tuple[Linear, ...] = ()         # output-side GEMMs on the last stage (un-patchify head, LM-head dense)
@@ -398,6 +400,8 @@ class ModelSpec:
     final_norm_params: int | None = None     # None → hidden (LLM RMSNorm)
     adaln: bool = False                      # AdaLN modulation (shift/scale/gate) around each norm
     workload: NativeWorkload | None = None
+    vocab_head: bool = True                  # encoders: MLM decoder over the vocab on every token (0.106: False =
+                                             # token-classification heads only, in io_post — Carbon-A)
     standby_params: int = 0                  # stored but idle per forward (Wan2.2 A14B: the other noise-level expert)
     cached_params: int = 0                   # in the release but not loaded for inference (MiniMax-H3 AdaLN branches:
                                              # modulation outputs precomputed per timestep, README)
@@ -1223,6 +1227,21 @@ def with_indexer(spec: ModelSpec, mode: str) -> ModelSpec:
                              "该模型的 indexer 打分压缩 / 分块键，请用 replicated 或 tp_split")
         return replace(L, core=replace(c, idx_split=(mode == "tp_split"), idx_kshard=(mode == "key_split")))
     return replace(spec, layers=tuple(tr(l) for l in spec.layers), mtp_layers=tuple(tr(l) for l in spec.mtp_layers))
+
+
+def with_attn_mode(spec: ModelSpec, mode: str) -> ModelSpec:
+    """0.106: ``bidir`` makes every self-attention core non-causal (full S² scores; the LLM prefill path then writes
+    no KV cache).  "reference" = as released.  Cross-attention / linear / no-attention layers are left as they are."""
+    if mode == "reference":
+        return spec
+
+    def tr(L):
+        c = L.core
+        if c is None or c.kind not in ("gqa", "mla") or not c.causal:
+            return L
+        return replace(L, core=replace(c, causal=False))
+    return replace(spec, layers=tuple(tr(l) for l in spec.layers), mtp_layers=tuple(tr(l) for l in spec.mtp_layers),
+                   what_if=True)
 
 
 def with_formats(spec: ModelSpec, overrides: dict[str, str]) -> ModelSpec:

@@ -1,0 +1,186 @@
+{
+ "bytes_llm": 4614627328,
+ "bytes_mtp": 0,
+ "bytes_total": 4614627328,
+ "config": {
+  "architectures": [
+   "GenerannoForTokenClassification"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "auto_map": {
+   "AutoConfig": "configuration_generanno.GenerannoConfig",
+   "AutoModel": "modeling_generanno.GenerannoModel",
+   "AutoModelForMaskedLM": "modeling_generanno.GenerannoForMaskedLM",
+   "AutoModelForSequenceClassification": "modeling_generanno.GenerannoForSequenceClassification",
+   "AutoModelForTokenClassification": "modeling_generanno.GenerannoForTokenClassification"
+  },
+  "bos_token_id": 1,
+  "dtype": "float32",
+  "eos_token_id": 2,
+  "hidden_act": "silu",
+  "hidden_size": 2048,
+  "id2label": {
+   "0": "NON_CODING",
+   "1": "CDS"
+  },
+  "initializer_range": 0.02,
+  "intermediate_size": 5632,
+  "k": 6,
+  "label2id": {
+   "CDS": 1,
+   "NON_CODING": 0
+  },
+  "mask_token_id": 4,
+  "max_position_embeddings": 16384,
+  "mlp_bias": false,
+  "model_type": "generanno",
+  "num_attention_heads": 32,
+  "num_hidden_layers": 26,
+  "num_key_value_heads": 4,
+  "num_prediction_heads": 2,
+  "pad_token_id": 3,
+  "pretraining_tp": 1,
+  "rms_norm_eps": 1e-05,
+  "rope_scaling": null,
+  "rope_theta": 500000.0,
+  "tie_word_embeddings": false,
+  "transformers_version": "4.56.0",
+  "use_cache": true,
+  "vocab_size": 4128
+ },
+ "domain": "genomics",
+ "fetched": "2026-10-15",
+ "n_tensors": 238,
+ "params_llm": 1153656832,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "HuggingFaceBio/Carbon-A-1.2B",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 981467136,
+    "params": 245366784
+   }
+  },
+  "embed": {
+   "fp32": {
+    "bytes": 33816576,
+    "params": 8454144
+   }
+  },
+  "lm_head": {
+   "fp32": {
+    "bytes": 196608,
+    "params": 49152
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 3598712832,
+    "params": 899678208
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 434176,
+    "params": 108544
+   }
+  }
+ },
+ "shapes": {
+  "model.embed_tokens.weight": [
+   4128,
+   2048
+  ],
+  "model.layers.0.input_layernorm.weight": [
+   2048
+  ],
+  "model.layers.0.mlp.down_proj.weight": [
+   2048,
+   5632
+  ],
+  "model.layers.0.mlp.gate_proj.weight": [
+   5632,
+   2048
+  ],
+  "model.layers.0.mlp.up_proj.weight": [
+   5632,
+   2048
+  ],
+  "model.layers.0.post_attention_layernorm.weight": [
+   2048
+  ],
+  "model.layers.0.self_attn.k_proj.weight": [
+   256,
+   2048
+  ],
+  "model.layers.0.self_attn.o_proj.weight": [
+   2048,
+   2048
+  ],
+  "model.layers.0.self_attn.q_proj.weight": [
+   2048,
+   2048
+  ],
+  "model.layers.0.self_attn.v_proj.weight": [
+   256,
+   2048
+  ],
+  "model.layers.25.input_layernorm.weight": [
+   2048
+  ],
+  "model.layers.25.mlp.down_proj.weight": [
+   2048,
+   5632
+  ],
+  "model.layers.25.mlp.gate_proj.weight": [
+   5632,
+   2048
+  ],
+  "model.layers.25.mlp.up_proj.weight": [
+   5632,
+   2048
+  ],
+  "model.layers.25.post_attention_layernorm.weight": [
+   2048
+  ],
+  "model.layers.25.self_attn.k_proj.weight": [
+   256,
+   2048
+  ],
+  "model.layers.25.self_attn.o_proj.weight": [
+   2048,
+   2048
+  ],
+  "model.layers.25.self_attn.q_proj.weight": [
+   2048,
+   2048
+  ],
+  "model.layers.25.self_attn.v_proj.weight": [
+   256,
+   2048
+  ],
+  "model.norm.weight": [
+   2048
+  ],
+  "score.0.weight": [
+   12,
+   2048
+  ],
+  "score.1.weight": [
+   12,
+   2048
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {},
+  "revision": "main",
+  "spec": "HuggingFaceBio/Carbon-A-1.2B",
+  "subfolder": "",
+  "subfolders": null
+ },
+ "torch_dtype": "float32"
+}
