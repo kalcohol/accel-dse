@@ -2319,3 +2319,43 @@ a rule that is not fitted to r4.
 and serial; 2 memories) checked five properties. Extra expert bytes are ≥ 0 and monotone in f. The fused step is
 monotone in f and never below the decode step. Hit experts satisfy hit_dec ≤ hit_union ≤ n_local. Result: 149
 points, 0 violations.
+
+
+## 51. 0.105 — per-source batching estimator (`est_variant`); randomized audits
+
+**Per-source estimator** (`extval.SOURCE_ESTIMATOR`, `estimator()`, `est_variant()`, opt-in). Every max-load row
+comes from an in-flight / continuous-batching engine that is fed the whole dataset at once (TRT-LLM
+`trtllm-bench throughput` 0.17 / 0.21 / 0.21-b200 / 1.2.0; ROCm vLLM 0.11.2 offline). So each source gets the
+continuous-batching proxy `predict_cb` with that engine's published defaults, which are not fitted:
+
+- TRT-LLM: chunk budget `max_num_tokens` = 8192.
+- vLLM `LLM` on MI300X: `max_num_batched_tokens` = 16384, `max_num_seqs` = 1024 (`predict_cb(max_seqs=…)`).
+
+Refhw groups (mean |log err| %, `val5/v0105_groups.py`):
+
+| base | moe max | r3 max | r4 | v1 max |
+|---|---|---|---|---|
+| cand093 | 12.9 | 28.5 | 18.1 | 18.3 |
+| cand093 + est_variant | 18.4 | 27.9 | 24.5 | 18.1 |
+
+catalog r4 goes from 32.1 to 42.4. The CB proxy lowers max-load predictions. That fixes the H200 DeepSeek
+outlier (2.44× → 1.19×, §50) but makes the r4 rows worse, since they were already under-predicted. Not adopted
+as the default.
+
+**Audits** (`val5/v0105_audit.py`, `v0105_pd_q.py`):
+
+- CP: 40 points (dense and MoE with ep = tp·cp; cp 1 / 2 / 4; S 8K–131K; pipe, stage and kernel). Work is
+  conserved to 1e-6, and a cp rank is never more than cp× slower. 0 violations.
+- Sweep vs eval: 20 sweeps, every row exactly equal to `api_eval`. Pareto: 20 fronts, all non-dominated.
+- PD, 60 points: fluid capacity (`cap_req_s`, min over pools) is monotone in KV bandwidth ×4, cards ×2,
+  prefix hit 0.5 and link ×2. 0 violations.
+- PD TTFT. The top-level `ttft_ms` is the TTFT of the prefill batch that `best_prefill` picks: the
+  largest-throughput batch that still meets the TTFT SLO. When prefill gets faster (a prefix hit, or a faster
+  link on a LINK-bound prefill), a larger batch fits the SLO, so the reported TTFT can rise. Example: DeepSeek-V3
+  TP8·EP8 with link ×2 goes from b = 32 to b = 64, and TTFT from 1361 to 1695 ms. At b = 64 the base would be
+  2722 ms. This is a batch choice, not a latency regression. It happens both at a relative load and at a fixed
+  absolute rate (38 of 180 checks).
+  - At a fixed absolute rate (`pd.rate_rps`), the queueing TTFT (`queue.modes.pd.ttft_ms`, mean / p90 / p99)
+    never rises: 0 violations.
+  - The fluid TTFT never rises at an unchanged batch.
+  - Standing test: `test_core_105::test_pd_ttft_never_rises_with_prefix_or_link_at_fixed_rate`.

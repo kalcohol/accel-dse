@@ -22,7 +22,11 @@
   - CP: 40 points, dense and MoE (ep = tp·cp), cp 1/2/4, S 8K–131K; work is conserved to 1e-6.
   - Sweep vs eval: 20 sweeps, every row exactly equal to `api_eval`.
   - Pareto: 20 fronts, all non-dominated.
-  - PD monotonicity (KV bandwidth, cards, prefix, link): see MODEL §51.
+  - PD monotonicity (60 points): fluid capacity is monotone in KV bandwidth, cards, prefix hit and link
+    bandwidth (0 violations). At a fixed absolute arrival rate, the queueing TTFT (mean / p90 / p99) never rises
+    with a prefix hit, link ×2 or KV bandwidth ×4 (0 violations). The headline fluid `ttft_ms` can rise (38 cases),
+    but only because faster prefill lets `best_prefill` pick a larger batch under the TTFT SLO; at an unchanged
+    batch it never rises. Not a bug; now a standing test. See MODEL §51.
 
 ## [0.104.0]
 
