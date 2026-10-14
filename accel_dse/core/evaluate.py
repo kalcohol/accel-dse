@@ -360,7 +360,10 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
             d["sync"] += sys.chip.kernel_us * 1e-6    # 0.92: one kernel per GEMM / fused attention (QK·softmax·PV)
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
-        d["t_ideal_w"] += idl * o.share; d["t_vec_w"] += (v - vw) * o.share   # 0.63: mean-rank work (energy, KPIs)
+        # 0.110 (audit): the SFU pipe (Chip.sfu_per_cycle) only changes the op's *time* (max of lanes and SFU); the
+        # vector work counted for energy / KPIs stays the lane work (SFU-bound ops inflated the vec count)
+        sfu_x = _vec_seconds(sys.chip, o) - vector_seconds(sys.chip, o.vec) if (sys.chip.sfu_per_cycle and o.sfu) else 0.0
+        d["t_ideal_w"] += idl * o.share; d["t_vec_w"] += (v - vw - sfu_x) * o.share   # 0.63: mean-rank work (energy, KPIs)
         d["t_conv_w"] += vw * o.wshare        # 0.64: mean-rank weight elements (uneven TP / EP splits)
         if o.role == "expert":                # 0.65: routed-expert share (idle EP ranks, energy action counts)
             d["sram_e"] += sb

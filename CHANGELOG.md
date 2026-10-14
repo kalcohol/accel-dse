@@ -3,6 +3,21 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.110.0]
+
+### Fixed
+- Energy: `Chip.sfu_per_cycle` inflated the `vec` action count of SFU-bound ops (softmax / sigmoid-heavy folding
+  and genomics models), because vector work was taken from the op's max(lane, SFU) time. Vector work is now the
+  lane work. The SFU still sets the time.
+
+### Added
+- MODEL §56: a consolidated validation summary of all 10 groups for 4 variants (error, median and range, share
+  within ±25 %), from public assumptions only.
+- Energy / sweep audit over genomics, protein and Carbon LLM with the current defaults (`val5/v0110_audit.py`).
+  Sweep rows equal eval (energy included), throughput is monotone, and time-only knobs leave counts unchanged.
+  Replicated DAP ops are charged per rank, while useful work is conserved.
+- Standing tests: `test_core_110`.
+
 ## [0.109.0]
 
 ### Changed

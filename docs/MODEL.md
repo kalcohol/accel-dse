@@ -2468,3 +2468,62 @@ no documented mechanism explains the gap without fitting.
 - The UI CSV export round-trips adversarial cells, including the formula-injection guard.
 
 Standing tests: `test_core_109`.
+
+## 56. 0.110 — consolidated validation summary; energy-accounting audit
+
+**Validation table (0.110, all groups re-run).** The sources are public only: TRT-LLM perf-overview pages and blogs,
+the SGLang large-scale EP blog, DeepSeek profile-data, and the vLLM / ROCm docs (`core/data/ext_measurements*.json`).
+The hardware is the reference catalogue chips (`core/refhw.py`), and every efficiency and ceiling is a published
+figure (§39–§40, §54–§55). Nothing is fitted.
+
+Each cell gives:
+
+- the mean |log(pred / meas)|;
+- the median pred / meas, with the [min–max] range;
+- the share of rows within ±25 %.
+
+| group | rows | `catalog` (stage overlap, catalog efficiencies) | `catalog_kernel` (kernel-serial) | candidate (`candidate_variant`) | candidate + batching estimator |
+|---|---|---|---|---|---|
+| moe pf | 5 | 8.4 % · 0.93 [0.85–1.06] · 100 % | 57.8 % · 0.59 [0.49–0.61] · 0 % | 8.5 % · 0.93 [0.85–1.06] · 100 % | 8.5 % · 0.93 [0.85–1.06] · 100 % |
+| moe dec | 2 | 14.5 % · 1.28 [0.96–1.28] · 50 % | 33.4 % · 0.78 [0.66–0.78] · 0 % | 5.4 % · 1.09 [1.03–1.09] · 100 % | 5.4 % · 1.09 [1.03–1.09] · 100 % |
+| moe static | 1 | 74.1 % · 2.10 [2.10–2.10] · 0 % | 30.0 % · 1.35 [1.35–1.35] · 0 % | 60.1 % · 1.82 [1.82–1.82] · 0 % | 60.1 % · 1.82 [1.82–1.82] · 0 % |
+| moe max | 27 | 58.1 % · 1.91 [1.08–2.84] · 11 % | 17.1 % · 1.13 [0.85–1.56] · 70 % | 12.9 % · 1.09 [0.84–1.46] · 85 % | 18.4 % · 1.08 [0.43–1.46] · 78 % |
+| r3 max | 15 | 66.6 % · 1.70 [0.92–4.66] · 20 % | 36.2 % · 1.37 [0.79–2.26] · 33 % | 28.5 % · 1.12 [0.87–2.18] · 67 % | 27.9 % · 1.12 [0.79–2.00] · 67 % |
+| r3 lat | 16 | 130.1 % · 0.29 [0.17–0.36] · 0 % | 118.4 % · 0.31 [0.24–0.37] · 0 % | 32.8 % · 0.79 [0.46–1.01] · 38 % | 32.8 % · 0.79 [0.46–1.01] · 38 % |
+| r4 | 38 | 32.1 % · 1.14 [0.59–2.39] · 39 % | 26.7 % · 0.95 [0.50–1.53] · 45 % | 18.1 % · 0.91 [0.68–2.44] · 74 % | 24.5 % · 0.89 [0.39–1.22] · 61 % |
+| v1 static | 36 | 31.7 % · 1.23 [0.86–2.71] · 53 % | 24.0 % · 1.16 [0.77–2.40] · 64 % | 18.2 % · 1.09 [0.72–1.77] · 75 % | 18.2 % · 1.09 [0.72–1.77] · 75 % |
+| v1 ttft | 20 | 62.7 % · 0.53 [0.19–1.15] · 35 % | 50.0 % · 0.67 [0.27–1.17] · 35 % | 27.1 % · 0.77 [0.55–1.08] · 35 % | 27.1 % · 0.77 [0.55–1.08] · 35 % |
+| v1 max | 44 | 28.2 % · 1.24 [0.70–2.13] · 48 % | 20.4 % · 1.02 [0.63–1.52] · 66 % | 18.3 % · 0.88 [0.63–1.29] · 61 % | 18.1 % · 0.88 [0.63–1.25] · 64 % |
+
+Summary:
+
+- The candidate (with or without the estimator) is the most accurate variant, or within 0.1 point of it, on 9 of
+  10 groups. Its remaining large error is moe static: the single TRT-LLM DeepSeek-R1 H200 row, at 1.82×, where
+  `catalog_kernel` gives 1.35×.
+- That row's mechanism candidates without public numbers remain open: grouped-GEMM efficiency at M ≈ 32 per
+  expert, attention-DP imbalance, and host overhead at concurrency 1024 (§40).
+- r3 lat and v1 ttft under-predict (median 0.77–0.79) and are the next largest.
+- `catalog` is the shipped default of the reference chips. Its large r3 lat / v1 ttft errors come from stage
+  overlap hiding serial kernels on GPUs.
+- No new mechanism with public support was found in this round. No default changed, and the NPU fingerprints are
+  unchanged.
+
+**Energy-accounting audit** (`val5/v0110_audit.py`, genomics / protein / Carbon LLM with the newest defaults —
+`pipe` overlap, `auto` schedule):
+
+- The API sweep rows equal `/api/eval`, including the energy counts.
+- Throughput is monotone in frequency, memory efficiency and link bandwidth.
+- A single card has no link / net / D2D bytes.
+- Time-only knobs (overlap, `kv_mem_eff`, `layer_overhead_us`) leave every count unchanged.
+
+Findings:
+
+1. **Fixed.** `Chip.sfu_per_cycle` (§ 0.103) is a time-only knob, but it raised the `vec` action count of
+   SFU-bound ops, because the energy work took the op's vector *time* (max of lanes and SFU). Energy and KPI vector
+   work is now the lane work; time is unchanged.
+2. **By design.** `instance_sched` changes `vec` through weight dequant (`conv_w`): each core group converts its
+   own weights.
+3. **By design.** Under DAP (`sp`) the folding models' MAC count per unit grows with sp, because ops that are not
+   split run on every rank. Useful work (`flops_u` × ranks) is conserved exactly.
+
+Standing tests: `test_core_110`.
