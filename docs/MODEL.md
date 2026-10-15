@@ -3402,3 +3402,27 @@ is 23.7 % vs 8.9 %, so `moe_a2a` stays opt-in. Adopted instead: rows that simula
 slowest-rank excess (`moe_rank_max = off`), which moves MoE prefill from 9.2 % to 8.9 %. Next lead: the balanced-case
 over-prediction of the node-dedup all-to-all (achieved RDMA / NVLink-forward bandwidth and the SM share of DeepEP
 normal kernels).
+
+## 89. DeepEP node-mode bandwidths; per-shape GEMM ceilings; why moe_a2a stays opt-in (0.143)
+
+**Forwarding.** DeepEP normal kernels send a token once per destination node over RDMA, to the GPU with the same local
+rank, and then forward it over NVLink to each expert GPU in that node. The scale-up volume per GPU is therefore
+(k−1)/G · P for node-local pairs plus (G−k)/G · (k−1)/k · P for forwarded remote pairs. For EP32 on 8-GPU nodes that is
+0.875 P, where ≤ 0.142 counted 0.219 P.
+
+**Achieved rates** (DeepEP README, H800, 2025-06): NVLink dispatch / combine run at 153 / 158 GB/s against the model's
+200 GB/s nominal, giving 0.78. RDMA runs at 43 / 58 / 51 GB/s at EP16 / 32 / 64. That is at or above the 50 GB/s CX7
+line rate under DeepEP's byte count, so no derating is applied 「假设」. The SM share stays at DeepEP's default of 20 of
+132 SMs.
+
+**Where the balanced gap is.** On the deepseek-profile row (EP32, 16K tokens per GPU, TBO) the per-step terms are
+attention + shared 746 ms, experts 611 ms, dispatch 369 ms and combine 739 ms. Comm stays below compute even at the
+achieved rates, so the prediction is compute-bound and the DeepEP corrections leave it unchanged. The measured step is
+2090 ms. With the per-shape DeepGEMM ceilings (2025-03 table: K-small MLA projections 590–990 TFLOPS, grouped down
+projection 1099) the balanced rows over-predict by 1.23 / 1.16× instead of 1.38 / 1.30×. The rest is attention and SM
+share, which is the next lead.
+
+**Decision.** Mean of group errors: default 27.5 %; with DeepGEMM shapes 27.8 %; with DeepGEMM and node + sm all-to-all
+30.4 %. MoE prefill error is 35.2 %, or 19.9 % with the published 2.56× linear-placement imbalance, against 8.9 % for
+the default. The default (per-pair all-to-all) stays. Its LINK-bound prefill rows match only because the per-pair
+cross-node bytes over-count, which offsets compute that is too fast. Both are known and documented (§ 80, § 88).

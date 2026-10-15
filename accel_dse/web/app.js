@@ -439,9 +439,12 @@ function onPreset() {
   put($('chip-facts'), 
     h('span', {}, '阵列 ', h('b', {}, `${c.rows}×${c.cols}×${c.engines}`)),
     h('span', {}, 'bf16 峰值 ', h('b', {}, num(c.peak_tflops_bf16 * (chipVal('freq_ghz') / c.freq_ghz)) + ' TFLOPS')),
-    h('span', {}, 'SRAM 端口 ', h('b', {}, num(c.port_GBps / c.freq_ghz) + ' B/cycle'), ' (默认)'));
+    h('span', {}, 'SRAM 端口 ', h('b', {}, num(c.port_GBps / c.freq_ghz) + ' B/cycle'), ' (默认)'),
+    h('span', {}, '累加器 ', h('b', {}, num(c.acc_total_kib) + ' KiB'), ` (默认 ${c.acc_kib_per_engine_default} KiB/核)`));
   $('c-sram_port_Bpc').placeholder = `默认 ${num(c.port_GBps / c.freq_ghz)}`;
   $('c-gemv_macs').placeholder = `默认 ${c.gemv}`;
+  $('c-acc_kib').placeholder = `默认 ${num(c.acc_total_kib)}`;
+  $('c-acc_kib').title = `留空 = 默认 ${c.acc_kib_per_engine_default} KiB/核 × ${c.engines} 核 = ${num(c.acc_total_kib)} KiB（填入值为整片总量）`;
   $('chip-formats').textContent = '原生格式 × 速率：' + c.formats.map(([f, r]) => `${f}×${r}`).join(' · ') +
     '；其余格式反量化 / 上转换，在向量单元计入开销。';
 }
@@ -1055,7 +1058,7 @@ function renderAssumptions(r) {
     `芯片 ${c.name}：${c.rows}×${c.cols}×${c.engines} @ ${c.freq_ghz} GHz，MAC 效率 ${c.mac_eff}`,
     `SRAM ${c.sram_mib} MiB，端口 ${num(port)} B/cycle${c.sram_port_Bpc ? '' : '（默认每核 4·(R+C)·2 × E，0.141）'}`,
     `GEMV 单元 ${c.gemv_macs || cc.gemv} MAC/cycle${c.gemv_macs ? '' : '（默认 = 阵列 MAC / 8）'}；向量通道 ${c.vector_lanes || cc.lanes}`,
-    `累加器 ${c.acc_kib ?? (c.acc_kib_per_engine ?? 64) * c.engines} KiB（默认每核 64 KiB；超出的部分和行溢出到 SRAM）`,
+    `累加器 ${num(c.acc_kib ?? (c.acc_kib_per_engine ?? cc.acc_kib_per_engine_default) * c.engines)} KiB${c.acc_kib == null && c.acc_kib_per_engine == null ? `（默认 ${cc.acc_kib_per_engine_default} KiB/核 × ${c.engines}）` : ''}（超出的部分和行溢出到 SRAM）`,
     `DRAM 效率 ${sc.mem_eff ?? (S.memInfo ? S.memInfo.efficiency : 0.7)}；预留 1 GiB；暂存区 = max(2 MiB, 2·最大激活)`,
     `三层互连：${sc.d2d_enabled && (sc.package_cards || 1) > 1 ? `封装内 ${sc.package_cards} die 走 D2D ${num(sc.d2d_std === 'custom' ? sc.d2d.GBps : ((S.cat.d2d_standards || []).find((d) => d.id === sc.d2d_std) || {}).per_unit_GBps * sc.d2d_units)} GB/s（${sc.d2d_std === 'custom' ? '自定义' : sc.d2d_std + ' × ' + sc.d2d_units}）、α ${sc.d2d.alpha_us} µs` : 'D2D 关（单片大 die，每卡一个封装）'}；节点内 scale-up ${sc.link.GBps} GB/s、α ${sc.link.alpha_us} µs（${sc.fabric && sc.fabric.enabled ? ({ switch: '交换', ring: '环形', full_mesh: '全互连', torus2d: '2D torus' }[sc.link.topology] || sc.link.topology) : '交换；拓扑只在拓扑感知集合通信开启时生效'}）；${sc.node_cards ? `每节点 ${sc.node_cards} 卡，跨节点网络 ${sc.net.GBps} GB/s、α ${sc.net.alpha_us} µs` : '单节点（跨节点层未用）'}。卡按 TP → SP → DP → PP 编号，通信组按落在同一封装 / 节点内的成员数分层（allreduce / allgather 逐级、all-to-all 各层同时按目的地分摊；PP 交接按流水级边界判断所走层级）`,
     c.slc_mib > 0

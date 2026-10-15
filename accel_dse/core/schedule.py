@@ -63,6 +63,28 @@ def _members(cap: int, group: int, stride: int) -> int:
     return math.gcd(max(1, min(group, cap // max(1, stride))), group)
 
 
+# 0.143: DeepEP normal (node-mode) all-to-all, achieved rates from DeepEP's published H800 table (README, 2025-06,
+# "~160 GB/s NVLink maximum", CX7 400 Gb/s ≈ 50 GB/s): intranode NVLink dispatch 153 / combine 158 GB/s against the
+# 200 GB/s nominal NVLink of the model's H800 → 0.78; internode RDMA 43 / 58 / 51 GB/s at EP16 / 32 / 64 — at or above
+# the 50 GB/s line rate on the logical byte count (EP32 / 64), so no RDMA derating is applied 「假设」.
+DEEPEP_NVL_EFF = 155.5 / 200.0
+
+
+def _node_fwd(vol: list, levels: list, payload: float, group: int, net_scale: float) -> list:
+    """0.143: node-mode all-to-all forwarding.  A remote token-expert pair arrives over RDMA at the same-local-rank GPU
+    of the destination node and is forwarded over NVLink to the expert's GPU ((k − 1) / k of them), so the scale-up
+    tier carries the remote pairs as well, not only the node-local ones."""
+    if net_scale >= 1.0 or not any(t == "net" for *_, t in levels):
+        return vol
+    k = math.prod(lv[0] for lv in levels if lv[-1] != "net")
+    li = next((i for i, lv in enumerate(levels) if lv[-1] == "link"), None)
+    if li is None or k <= 1:
+        return vol
+    vol = list(vol)
+    vol[li] += (group - k) / group * payload * (k - 1) / k
+    return vol
+
+
 def fabric_collective(kind: str, payload: float, group: int, link: Link, d2d: Link | None = None, package: int = 1,
                       net: Link | None = None, node: int = 0, stride: int = 1, k_pkg: int | None = None,
                       k_node: int | None = None, net_scale: float = 1.0) -> tuple[float, float, float, float]:
@@ -103,7 +125,11 @@ def fabric_collective(kind: str, payload: float, group: int, link: Link, d2d: Li
             if t == "net":
                 v *= net_scale
         vol.append(v)
-    secs = [v / (ln.GBps * 1e9) for v, (_, ln, _) in zip(vol, levels)]
+    eff = [1.0] * len(levels)
+    if kind == "alltoall" and net_scale < 1.0:
+        vol = _node_fwd(vol, levels, payload, group, net_scale)
+        eff = [DEEPEP_NVL_EFF if t == "link" else 1.0 for _, _, t in levels]
+    secs = [v / (ln.GBps * 1e9 * e) for v, (_, ln, _), e in zip(vol, levels, eff)]
     alphas = [ln.alpha_us * 1e-6 for _, ln, _ in levels]
     if kind == "alltoall":
         bw, a = max(secs), max(alphas)
@@ -169,6 +195,9 @@ def collective_wire(kind: str, payload: float, group: int, d2d: bool = False, pa
         else:
             v = (n - 1) * pre / group * payload * (net_scale if t == "net" else 1.0)
         out[t] = v
+    if kind == "alltoall" and net_scale < 1.0 and "net" in out and "link" in out:   # 0.143: NVLink forwarding
+        k = math.prod(n for n, t in levels if t != "net")
+        out["link"] += (group - k) / group * payload * (k - 1) / k
     return out
 
 

@@ -3,6 +3,22 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.143.0]
+### Changed
+- UI: the accumulator field no longer looks empty. The chip facts show `累加器 <total> KiB (默认 64 KiB/核)`; the field placeholder shows the derived default total, with a tooltip giving per-core × cores (an entered value is the chip total); the assumptions line shows the default breakdown. `api_catalog` chips carry `acc_total_kib` and `acc_kib_per_engine_default`.
+- `moe_a2a = "node"` (opt-in, DeepEP normal kernels), mechanism from DeepEP's published H800 table (README 2025-06):
+  - A remote token-expert pair lands on the same-local-rank GPU of the destination node and is forwarded over NVLink, so the scale-up tier carries (k − 1)/k of the remote pairs as well as the node-local ones (EP32 on 8-GPU nodes: 7/32 → 28/32 of the payload).
+  - Node-mode NVLink runs at DeepEP's achieved 153–158 of the 200 GB/s nominal (`DEEPEP_NVL_EFF` = 0.78).
+  - Internode RDMA: the published 43 / 58 / 51 GB/s (EP16 / 32 / 64) is at or above the 50 GB/s line rate under DeepEP's logical byte count, so no derating is applied 「假设」.
+  - The SM share stays at DeepEP's default 20 / 132.
+  - Per-pair mode and all defaults are unchanged.
+### Added
+- Per-shape kernel ceilings: `Chip.fmt_ceiling` keys `gemm:<fmt>@<N>x<K>` (dense) and `@g<N>x<K>` (grouped) are applied at the nearest published shape (`evaluate._shape_cap`). The validation variant `deepgemm_variant` uses the DeepGEMM README (2025-03, H800) FP8 table (e.g. MLA kv_b K 512: 590 TFLOPS, expert down K 2048: 1099) for DeepGEMM sources only (`DEEPGEMM_SRC`).
+- `tests/test_core_143.py`.
+### Evaluated, not adopted (defaults and fingerprints unchanged)
+- Balanced-case analysis (`val5/v0143/phases.py`, deepseek-profile EP32 prefill). With node-mode all-to-all and TBO, the step is compute-bound in the model (attention 746 ms, experts 611 ms, dispatch 369 ms, combine 739 ms per step), so the DeepEP bandwidth corrections do not move it. The 1.30× over-prediction is compute. The per-shape DeepGEMM ceilings take the balanced rows from 1.38 / 1.30× to 1.23 / 1.16×. The rest is attention / SM share (open).
+- Group table (mean |err|): default 27.5 % mean of groups; + DeepGEMM shapes 27.8 % (MoE decode 1.7 → 3.9 %); + DeepGEMM + `moe_a2a` node + sm 30.4 % (MoE prefill 8.9 → 35.2 %; 19.9 % even with the published 2.56× linear-placement imbalance on default-EPLB rows). Applying DeepGEMM shapes to all Hopper FP8 rows (TRT-LLM / vLLM do not run DeepGEMM) was mixed: v1 max 19.8 → 22.5 %. So `moe_a2a` stays opt-in and the default variant is unchanged.
+
 ## [0.142.0]
 ### Fixed
 - `exec_overlap = "pipe"` (default) with `fabric.algo = "auto_overlap"` (default): the stage re-pick set the link / sync terms, but the flow-shop replay still ran every collective at its per-collective default pick. That inconsistent mix could undercut both consistent choices, so 4 → 8 D2D units was +0.009 % slower (sysfuzz 0.141 seed 41: Qwen3-Next TP8/EP8, 2-card packages, 4-unit point = hier α with ring bandwidth). The replay now uses the same picks (`fabric` pick override), and the combination is chosen on the pipe total itself (`evaluate._pipe_repick`): the stage-optimal and default picks, then coordinate descent. The chunked-prefill fused replay uses the decode stage's picks. `auto_overlap` ≤ `auto` holds by construction.

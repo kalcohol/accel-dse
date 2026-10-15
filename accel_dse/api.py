@@ -22,7 +22,7 @@ from .core.energy import EnergyTable, energy_report, scaleup_bytes
 from dataclasses import replace
 
 from .core.evaluate import Result, evaluate
-from .core.hardware import CHIPS, Chip
+from .core.hardware import ACC_KIB_PER_ENGINE, CHIPS, Chip
 from .core.mapping import ORG_LABEL, ORGS
 from .core.parallel import Layout, enumerate_layouts
 from .core.d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS
@@ -279,7 +279,8 @@ def api_models() -> dict:
 
 def api_catalog() -> dict:
     chips = {k: {**c.__dict__, "formats": [list(x) for x in c.formats.rates], "peak_tflops_bf16": c.peak_tflops_bf16,
-                 "port_GBps": c.port_GBps, "gemv": c.gemv, "lanes": c.lanes}
+                 "port_GBps": c.port_GBps, "gemv": c.gemv, "lanes": c.lanes,
+                 "acc_total_kib": c.acc_total_kib, "acc_kib_per_engine_default": ACC_KIB_PER_ENGINE}
              for k, c in CHIPS.items()}
     return {"chips": chips, "mappings": [{"id": o, "label": ORG_LABEL[o]} for o in ORGS],
             "memory": mem_catalog.catalog_dict(), "defaults": Scenario().to_dict(full=True), "honesty": HONESTY,

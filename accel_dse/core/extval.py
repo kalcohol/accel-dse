@@ -136,6 +136,8 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
         chip = replace(chip, kernel_us=v["kernel_us"])
     if v.get("fmt_ceiling") and chip.name.split("-")[0] in HOPPER:   # 0.94: Hopper only
         chip = replace(chip, fmt_ceiling=v["fmt_ceiling"])
+    if v.get("deepgemm") and chip.name.split("-")[0] in HOPPER and r.get("src") in DEEPGEMM_SRC:   # 0.143
+        chip = replace(chip, fmt_ceiling=tuple(dict(chip.fmt_ceiling or ()).items()) + DEEPGEMM_SHAPES)
     if v.get("pipe_cross_op") is not None:   # 0.98: exec_overlap "pipe" — GPU kernel boundaries (no cross-op prefetch)
         chip = replace(chip, pipe_cross_op=v["pipe_cross_op"])
     if v.get("sfu") and h.sfu_per_sm:  # 0.103: transcendentals on the SFU pipe (NVIDIA, CUDA Programming Guide)
@@ -321,6 +323,15 @@ HOPPER_FP8_CEIL = 1550 / 1979
 # FlashMLA README (2025-04-22): dense MLA decoding "up to 660 TFlops on H800" (bf16 dense peak 989.5) — attention ops
 HOPPER_ATTN_CEIL = 660 / 989.5
 HOPPER_CEILING = (("fp8", HOPPER_FP8_CEIL), ("attn:bf16", HOPPER_ATTN_CEIL))
+# 0.143: DeepGEMM README (2025-03, H800, FP8 block-scaled, largest published M per shape) — sustained TFLOPS per
+# (N, K), normal (dense) and grouped-contiguous (MoE prefill) GEMMs, / the 1979 TFLOPS dense FP8 peak.  The K-small /
+# N-wide shapes of MLA (K 512 / 1536) and the expert down projection (K 2048) run far below the 1550 "up to" figure.
+# Used through Chip.fmt_ceiling shape keys (evaluate._shape_cap, nearest published (N, K)).  Not fitted.
+DEEPGEMM_0325 = {"2112x7168": 1058, "24576x1536": 990, "32768x512": 590, "7168x16384": 1358, "4096x7168": 1304,
+                 "7168x2048": 1025, "g4096x7168": 1297, "g7168x2048": 1099}
+# sources whose stack runs DeepGEMM (DeepSeek's own profile, SGLang large-EP); TRT-LLM / vLLM FP8 rows use other kernels
+DEEPGEMM_SRC = ("deepseek-profile", "deepseek-profile-decode", "sglang-ep-2025")
+DEEPGEMM_SHAPES = tuple((f"gemm:fp8@{k}", v / 1979) for k, v in DEEPGEMM_0325.items())
 
 
 def candidate_variant(base: str = "catalog_kernel") -> str:
@@ -571,3 +582,10 @@ def predict_cb(r: dict, eff: str = DEFAULT, max_seqs: int | None = None) -> dict
     if best and r["metric"] == "max_tok_s_gpu":
         best["pred"] /= _cards(r)
     return best or {"pred": float("nan"), "fits": False}
+
+
+def deepgemm_variant(base: str) -> str:
+    """0.143: base + per-shape DeepGEMM FP8 ceilings on Hopper (DEEPGEMM_0325)."""
+    name = base + "+dg"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "deepgemm": True})
+    return name

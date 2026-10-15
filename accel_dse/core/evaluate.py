@@ -208,6 +208,27 @@ def _convert_seconds(ch, elem_ops: float) -> float:
     return elem_ops / (d * ch.freq_ghz * 1e9) if d else vector_seconds(ch, elem_ops)
 
 
+def _shape_cap(fc: tuple, op: Op, fmt: str) -> float | None:
+    """0.143: published per-shape kernel throughput (Chip.fmt_ceiling keys "gemm:<fmt>@<N>x<K>" dense and
+    "gemm:<fmt>@g<N>x<K>" grouped): the entry nearest the op's (N, K) in log space (grouped ops prefer grouped
+    entries).  None when the chip carries no shape entries for this kind / format."""
+    if op.kind != "gemm" or not fc:
+        return None
+    pre = f"gemm:{fmt}@"
+    pts = [(k[len(pre):], v) for k, v in fc if k.startswith(pre)]
+    if not pts:
+        return None
+    grp = [(k[1:], v) for k, v in pts if k.startswith("g")]
+    den = [(k, v) for k, v in pts if not k.startswith("g")]
+    use = grp if (op.count > 1 and grp) or not den else den
+    ln, lk = math.log(max(1, op.n)), math.log(max(1, op.k))
+
+    def dist(e):
+        n_, k_ = (float(x) for x in e[0].split("x"))
+        return (math.log(n_) - ln) ** 2 + (math.log(k_) - lk) ** 2, e[0]
+    return min(use, key=dist)[1]
+
+
 def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     """(array s, mac-bound share s, feed-bound share s, vector s, convert elems, ideal s, SRAM-port bytes,
     vector s of per-pass weight conversion)."""
@@ -245,7 +266,7 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     ideal = op.flops / 2.0 / (ch.macs * rate * ch.freq_ghz * 1e9)   # 100 % array utilisation
     if ch.fmt_ceiling:                                   # 0.94 (default off)
         fc = dict(ch.fmt_ceiling)
-        cap = fc.get(f"{op.kind}:{c.exec_fmt}", fc.get(c.exec_fmt))
+        cap = _shape_cap(ch.fmt_ceiling, op, c.exec_fmt) or fc.get(f"{op.kind}:{c.exec_fmt}", fc.get(c.exec_fmt))
         if cap and ideal / cap > t:
             d = ideal / cap - t
             t += d
