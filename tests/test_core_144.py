@@ -27,7 +27,7 @@ def test_step5_exact_params_and_structure():
 
 def test_mimo_v26_exact_params_and_structure():
     m = get_model("mimo-v2.6-flash")
-    assert m.params() == m.release_params == 308_778_780_864 and m.coverage == "partial"   # ViT windows as full
+    assert m.params() == m.release_params == 308_778_780_864 and m.coverage == "full"   # 0.145: ViT band windows
     assert m.params(include_mtp=True) - m.params() == m.release_mtp_params == 987_820_224
     swa = [l.core for l in m.layers if l.core.window == 128]
     full = [l.core for l in m.layers if l.core.window is None]
@@ -86,8 +86,9 @@ def test_fingerprints_unchanged():
 def test_new_vision_encoders_exact_and_tokens():
     """Vision towers + projectors from the released headers: params exact (MiMo: + audio encoder stored only)."""
     from accel_dse.core.vision import image_grid, vision_ops
+    # 0.145: MiniCPM 1024×768 = 448²-class overview + 2×2 slices, 63 tokens each + 14 special (was one 448² view, 64)
     want = {"intern-s2-397b": (456_010_480, 768), "step-5-preview": (1_981_014_784, 169),
-            "minicpm-v-4.7-35b-a3b": (552_986_032, 64), "mimo-v2.6-flash": (989_721_600, 768)}
+            "minicpm-v-4.7-35b-a3b": (552_986_032, 329), "mimo-v2.6-flash": (989_721_600, 768)}
     for mid, (p, tok) in want.items():
         m = get_model(mid)
         assert m.vision.params == m.vision_params == p, mid

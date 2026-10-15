@@ -614,9 +614,13 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         if core.idx_split and tp > 1:     # dist.all_reduce(index_score): fp32 [tokens, compressed keys]
             ops.append(Op("indexer_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp,
                           comm_bytes=t_new * n_keys * icaus * 4))
-        ops.append(Op("indexer_kv_write", "vector", li, replicated=1 if ksh else tp,
-                      kv_write=(nl * ib if core.idx_owner else 0.0) if core.dual else
-                      (t_new * ib / core.compress / (tp if ksh else 1))))
+        if core.idx_sum and core.qsa:
+            # 0.145 hostile review: Step-5 writes one fp32 + fp8 summary (5·idx_dim bytes) per region completed in
+            # this pass — was idx_dim bytes per new token (8/5× the stored growth for qsa 8)
+            iw = b_loc * (ctx_tot // core.qsa - ph.ctx // core.qsa) * core.idx_dim * 5.0
+        else:
+            iw = (nl * ib if core.idx_owner else 0.0) if core.dual else (t_new * ib / core.compress / (tp if ksh else 1))
+        ops.append(Op("indexer_kv_write", "vector", li, replicated=1 if ksh else tp, kv_write=iw))
     if core.cmp_coff:
         # DeepSeek-V4 Compressor (KV path): gated softmax pooling of coff·head_dim channels per token (ape 1 + softmax 5
         # + weighted sum 2); per compressed entry RMSNorm (4), RoPE, fp8 quant of the non-rope dims (2)

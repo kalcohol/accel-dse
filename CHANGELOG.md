@@ -3,6 +3,29 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.145.0]
+### Added
+- **MiMo-V2.6-Pro** (`XiaomiMiMo/MiMo-V2.6-Pro-RL`, https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL), `mimo_v2` builder:
+  - 1,021,248,126,336 params + MTP ×3 (1,934,715,264), exact;
+  - vision 1,033,761,792, exact;
+  - MXFP4 experts, FP8 attention.
+- **Ling-3.0-flash-VL** (`inclusionAI/Ling-3.0-flash-VL`, https://huggingface.co/inclusionAI/Ling-3.0-flash-VL), released 2026-09-04:
+  - Verified to be a different architecture from Ling-3.1-flash: h 2560, 42 layers (7 MLA + 35 KDA), MLA without q-LoRA, 512 × 768 experts, 2 dense layers, no MTP.
+  - 124,414,211,552 params, exact.
+  - Vision: Qwen3-VL ViT + `linear_proj`, 434,248,944, exact.
+- Catalog: 90 → 92 releases.
+### Changed
+- MiniCPM-V-4.7 image slicing follows the transformers `MiniCPMV4_6ImageProcessor`:
+  - overview + up to 9 slices, patches / 16 tokens per view, plus the special tokens;
+  - 1024×768 is now 329 tokens (was 64).
+  - Coverage partial → full.
+- MiMo ViT banded windows (±64 over the patch sequence, sink bias, 4 full blocks) are now modelled. Coverage of mimo-v2.6-flash goes from partial to full.
+- `summarize_release`: `^linear_proj.` is classified as vision.
+### Fixed
+- Step-5 indexer cache writes are now one fp32 + fp8 summary per completed region; they were idx_dim bytes per token, 8/5× too many. Stored indexer bytes now count completed regions only.
+  - Found by the 0.145 hostile review (randomized write = store invariants).
+- Fingerprints unchanged.
+
 ## [0.144.0]
 ### Added
 - Catalog refresh for the NPU product purpose (official Aug–Oct 2026 open-weight releases, public `config.json` + safetensors headers, as-released dtypes, exact parameter counts). Catalog 85 → 90 releases (72 → 77 listed).

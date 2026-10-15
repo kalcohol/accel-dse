@@ -126,6 +126,8 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
             st += (c.n_state_heads * c.state_dk * c.state_dv + c.conv_channels * max(0, c.conv_kernel - 1)) * stb
         if c.idx_heads and c.dual:
             idx += (S // c.compress - p // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
+        elif c.idx_heads and c.idx_sum and c.qsa:     # 0.145: Step-5 summaries of completed regions only
+            idx += (S // c.qsa - p // c.qsa) * c.idx_dim * 5.0
         elif c.idx_heads:
             idx += (math.ceil(S / c.compress) - math.ceil(p / c.compress)) * c.idx_bytes_per_token(kvb) * c.compress
     return kv + idx + st
@@ -159,6 +161,8 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             st += (_cdiv(c.n_state_heads, sh.tp) * c.state_dk * c.state_dv + _cdiv(c.conv_channels, sh.tp) * max(0, c.conv_kernel - 1)) * stb
         if c.idx_heads and c.dual:
             idx += (ctx // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
+        elif c.idx_heads and c.idx_sum and c.qsa:     # 0.145: Step-5 fp32 + fp8 summary per completed region
+            idx += (ctx // c.qsa) * c.idx_dim * 5.0
         elif c.idx_heads and c.idx_kshard:     # 0.87 key_split: this rank holds ⌈n_keys / TP⌉ index keys
             idx += _cdiv(math.ceil(ctx / c.compress), sh.tp) * c.idx_bytes_per_token(kvb) * c.compress
         elif c.idx_heads:

@@ -533,6 +533,9 @@ def _gqa(h: int, H: int, KV: int, hd: int, *, vd: int | None = None, out_gate: b
     return lin, AttnCore("gqa", n_q=H, n_kv=KV, qk_dim=hd, v_dim=vd, window=window)
 
 
+_LING = ("bailing_hybrid", "bailing_moe_v3_vl")    # 0.145: Ling-3.1 (text) / Ling-3.0-VL (text_config flattened)
+
+
 def _mla(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore]:
     H = c["num_attention_heads"]
     ql = c.get("q_lora_rank")
@@ -682,7 +685,7 @@ def _gdn(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
 def _kda(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
     """Kimi Delta Attention (Kimi-Linear / Kimi-K3 / GLM-5.x-Next)."""
     lc = _list(c.get("linear_attn_config")) or {}
-    ling = c.get("model_type") == "bailing_hybrid"       # 0.114: Ling-3.x keeps these at the top level
+    ling = c.get("model_type") in _LING       # 0.114: Ling-3.x keeps these at the top level
     H, hd = lc.get("num_heads", c["num_attention_heads"]), lc.get("head_dim", (c.get("head_dim") if ling else None) or 128)
     kern = lc.get("short_conv_kernel_size", (c.get("short_conv_kernel_size") if ling else None) or 4)
     d = H * hd
@@ -717,7 +720,7 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             types = ["full_attention" if (i + 1) % n == 0 else "linear_attention" for i in range(L)]
         elif c.get("attn_type_list"):
             types = ["full_attention" if t == 1 else "linear_attention" for t in c["attn_type_list"]]
-        elif mt == "bailing_hybrid" and c.get("layer_group_size"):
+        elif mt in _LING and c.get("layer_group_size"):
             # 0.114 Ling-3.x: groups of layer_group_size, the last of each group MLA, the rest KDA
             n = c["layer_group_size"]
             types = ["full_attention" if (i + 1) % n == 0 else "linear_attention" for i in range(L)]
@@ -726,7 +729,7 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     de = _g(c, "moe_intermediate_size", "intermediate_size")
     mlp_types = _list(c.get("mlp_layer_types"))
     first_dense = c.get("first_k_dense_replace") or 0
-    kda = mt in ("kimi_linear", "bailing_hybrid") or mt.startswith("glm5_next")
+    kda = mt in ("kimi_linear",) + _LING or mt.startswith("glm5_next")
     is_minimax = mt.startswith("minimax")
 
     def ffn_for(i: int):
@@ -737,6 +740,8 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             return _ffn_moe(h, E, k, de, c.get("num_shared_experts") or 0, de,
                             latent=c.get("routed_expert_hidden_size") or 0)
         n_sh = c.get("n_shared_experts") or c.get("num_shared_experts") or (1 if c.get("shared_expert_intermediate_size") else 0)
+        if mt == "bailing_moe_v3_vl" and not n_sh:
+            n_sh = 1        # 0.145: BailingMoeV3VLConfig num_shared_experts default 1 (absent from text_config)
         d_sh = c.get("shared_expert_intermediate_size") or (de if n_sh else 0)
         return _ffn_moe(h, E, k, de, n_sh, d_sh, shared_gate=bool(c.get("shared_expert_intermediate_size")))
 
@@ -757,7 +762,7 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
                                    topk=topk + (kp - 1 if c.get("index_kpool_always_select_tail") else 0))
             if c.get("mla_use_output_gate"):
                 alin = alin + (Linear("o_gate", h, core.n_q * core.v_dim, "col"),)
-            elif mt == "bailing_hybrid" and c.get("gated_attention_proj_granularity_type") == "head_wise":
+            elif mt in _LING and c.get("gated_attention_proj_granularity_type") == "head_wise":
                 alin = alin + (Linear("o_gate", h, core.n_q, "col"),)    # Ling-3.x: one sigmoid gate per head
             return alin, core, misc
         H = c["num_attention_heads"]
@@ -788,7 +793,7 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         t = types[i] if types and i < len(types) else "full_attention"
         alin, core, misc = full_attn(i) if t != "linear_attention" else lin_attn(i)
         ffn, flin = ffn_for(i)
-        if ffn.kind == "moe" and mt in ("kimi_linear", "bailing_hybrid") or (ffn.kind == "moe" and c.get("n_routed_experts")):
+        if ffn.kind == "moe" and mt in ("kimi_linear",) + _LING or (ffn.kind == "moe" and c.get("n_routed_experts")):
             misc += E
         hc = c.get("hc_mult") or 0
         if hc and mt.startswith("glm5_next"):
@@ -1127,7 +1132,12 @@ def _build_mimo_v2(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             misc = 0
         layers.append(Layer(alin, core, ffn, flin, misc + sinks + 2 * h))
     mtp = []
-    for _ in range(c.get("num_nextn_predict_layers") or 0):
+    n_mtp = c.get("num_nextn_predict_layers")
+    if n_mtp is None:
+        # 0.145 MiMo-V2.6-Pro: config omits num_nextn_predict_layers but ships model.mtp.layers.{0,1,2} → offer up to
+        # 8 MTP templates; from_release trims them to the released MTP parameter count
+        n_mtp = 8
+    for _ in range(n_mtp):
         alin, (core, sinks) = attn(True)
         ffn, flin = _ffn_dense(h, c["intermediate_size"])
         mtp.append(Layer(alin, core, ffn, flin, sinks + 2 * h + 3 * h))   # + enorm / hnorm / final_layernorm
@@ -1207,7 +1217,7 @@ def _builder(c: dict):
         return _build_dsv4_ref, "DeepSeek-V4 (CSA/MQA-512)"
     if mt.startswith("deepseek_v4"):
         return _build_dsv4, "DeepSeek-V4 (CSA/MQA-512)"
-    if mt in ("kimi_linear", "bailing_hybrid", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
+    if mt in ("kimi_linear", "bailing_hybrid", "bailing_moe_v3_vl", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
               "qwen4_exp", "qwen4_exp_text", "minimax_text_01", "minimax_m1", "minimax") or mt.startswith("glm5_next"):
         return _build_hybrid, "混合注意力（linear + full）"
     if c.get("kv_lora_rank"):

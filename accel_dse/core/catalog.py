@@ -53,6 +53,9 @@ EXTRA_TAIL = [
     ("mimo-v2.6-flash", "XiaomiMiMo/MiMo-V2.6-Flash-RL"),
     ("intern-s2-397b", "internlm/Intern-S2-397B"),
     ("minicpm-v-4.7-35b-a3b", "openbmb/MiniCPM-V-4.7-35B-A3B"),
+    # 0.145 (official releases 2026-09-04 / 2026-10; public config.json + safetensors headers, as released)
+    ("mimo-v2.6-pro", "XiaomiMiMo/MiMo-V2.6-Pro-RL"),
+    ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
 ]
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors",
            "NousResearch/": "meta-llama (gated) → public mirror NousResearch/*, same safetensors"}
@@ -200,7 +203,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("genmo", "Mochi 1", ("mochi",)), ("hpcai", "Open-Sora", ("opensora",)),
     ("deepmind", "AlphaFold", ("alphafold",)), ("boltz", "Boltz", ("boltz",)), ("openfold", "OpenFold", ("openfold",)),
     ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
-    ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)),
+    ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)), ("ant", "Ling-3.0-VL", ("ling-3.0",)),
     ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),
     ("stepfun", "Step-5", ("step-5",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),
     ("openbmb", "MiniCPM-V 4.7", ("minicpm-v-4.7",)), ("robbyant", "LingBot-Video", ("lingbot-video",)),

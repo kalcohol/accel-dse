@@ -3505,3 +3505,73 @@ The DiT entry is therefore `full`, like the other video models.
 
 **Fingerprints** are unchanged (`0a954915c5fb003f` / `53ee9e08165795c6`). The new entries are appended, and no existing
 model's spec changed.
+
+## 91. MiMo-V2.6-Pro, Ling-3.0-flash-VL; MiniCPM slicing and MiMo ViT windows; hostile review of the 0.144 builders (0.145)
+
+**New entries** (public `config.json` + safetensors headers, as-released dtypes, exact; test_core_145):
+
+| id | release | builder | params | vision | coverage |
+|---|---|---|---|---|---|
+| mimo-v2.6-pro | https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL | `mimo_v2` | 1,021,248,126,336 + MTP 1,934,715,264 | 1,033,761,792 (+ audio 294,681,600 stored) | full |
+| ling-3.0-flash-vl | https://huggingface.co/inclusionAI/Ling-3.0-flash-VL | hybrid (KDA + MLA) | 124,414,211,552 | 434,248,944 | full |
+
+- MiMo-V2.6-Pro: 70 layers (60 SWA-128 with a sink, 10 full), 384 experts top-8, 1 dense layer, MXFP4 experts. Its config
+  omits `num_nextn_predict_layers` although the release ships `model.mtp.layers.{0,1,2}`. The builder therefore offers up
+  to 8 MTP templates and `from_release` trims them to the released MTP parameters, which gives 3, exact.
+- Ling-3.0-flash-VL (`bailing_moe_v3_vl`, the text config nested) is a different architecture from Ling-3.1-flash, so it
+  is a separate entry:
+
+  | | Ling-3.0-flash-VL | Ling-3.1-flash |
+  |---|---|---|
+  | hidden / layers | 2560 / 42 | 4096 / 72 |
+  | layer groups | 6 (7 MLA + 35 KDA) | 8 |
+  | MLA q-LoRA | none (q 32 × 192) | 1536 |
+  | experts | 512 × 768, 1 shared | 512 × 1280 |
+  | dense layers | 2 | 4 |
+  | MTP | none | yes |
+
+  - The head-wise MLA gate and full-rank KDA f/g are shared with 3.1. The default `num_shared_experts` = 1 comes from
+    `BailingMoeV3VLConfig`.
+  - Vision: a Qwen3-VL ViT (27 × 1152, no deepstack, merger = norm only) plus the BailingMM `linear_proj`
+    (4608 → 2560 → 2560, GELU). `linear_proj.*` is now classified as vision in summarize_release; re-summarising every
+    other release leaves its parameters unchanged.
+  - Image resize: Qwen rule, factor 32, min/max pixels taken from `preprocessor_config.json`.
+
+**MiniCPM-V slicing** (transformers `MiniCPMV4_6ImageProcessor`, which `minicpmv4_7` maps to in `image_processing_auto`):
+- `get_sliced_grid`: multiple = min(⌈W·H / 448²⌉, 9), and slicing applies only when multiple > 1. The grid comes from the
+  candidates {m−1, m, m+1} with the least |log aspect error|, ties going to more rows.
+- `find_best_resize` sizes the overview, with upscaling only when the image is not sliced. `get_refine_size` sizes the
+  slices.
+- Both sizes snap to multiples of 56: patch 14 × the two 2×2 merges.
+- Tokens per view = patches / 16. The LLM placeholder also has:
+  - 2 tokens for the image start / end;
+  - 3 tokens for `<image_id>0</image_id>`; the index is assumed to be one token for fewer than 10 images (「假设」);
+  - 2 tokens for each slice's start / end;
+  - rows − 1 newlines.
+- `ImageGrid.views` holds (ph, pw, count) per view group, and `vision_ops` runs one tower pass per group.
+- Checked against the transcribed processor functions: 0 mismatches over 20k random sizes.
+- Example: 1024×768 → a 2×2 grid. Overview and slices are each 28×36 patches (63 tokens), 329 LLM tokens in total. 0.144
+  used one 448² view of 64 tokens.
+
+**MiMo ViT windows** (`MiMoVisionAttention._build_window_mask`):
+- Blocks outside `fullatt_block_indexes` (0 / 9 / 18 / 27) mask |i − j| > `visual_token_window_size` (64) over each
+  image's patch sequence. `vit_window_attn_types` 1 does this in merge-unit column order and 0 in row order; the key
+  count is the same.
+- Keys per image = `band_keys(N, 64)` = N + 2(wN − w(w+1)/2), charged as the score / PV fraction.
+- The sink is a per-head bias on key column 0 of the windowed blocks: no extra key, 1 extra op per score.
+- Row ↔ column re-index gathers: 6 per pass.
+- Coverage moves from partial to full for mimo-v2.6-flash, mimo-v2.6-pro and minicpm-v-4.7. Step-5 stays partial: its
+  crop count is decided by an external processor.
+
+**Hostile review** (val5/v0145/hostile.py, test_core_145) used randomized invariants:
+- Step-5 `keys_sum` = Σ min(p, ctx_eff(p)), checked by brute force.
+- Indexer summary writes are chunk-additive and equal to the stored growth.
+- MiMo: KV writes ≥ stored bytes, equal when S ≤ window. Decode keys are capped at the window on SWA layers only, for any
+  TP.
+- Video MoE: expert (token, expert) pairs are conserved (m_e · hit · share = t · k) under TP × SP, with hit ≤ E.
+- **Break found:** the Step-5 indexer wrote idx_dim bytes per new token, but the cache stores one fp32 + fp8 summary
+  (5 · idx_dim) per completed 8-token region, so writes were 8/5× the stored bytes.
+  - Writes are now 5 · idx_dim per region completed in the pass.
+  - `stage_storage` / `cache_new_bytes` count completed regions only; before, they used ⌈ctx⌉ · 5 · idx_dim / 8.
+- System fuzzer: `val5/v0145/sysfuzz.py` (the 0.140 harness with the new models added).
+- Fingerprints are unchanged.

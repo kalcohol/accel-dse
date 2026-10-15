@@ -55,7 +55,10 @@ _PREPROC = {
     "internlm/Intern-S2-397B": {"min_px": 65536, "max_px": 16777216},          # Qwen2VLImageProcessorFast size
     "XiaomiMiMo/MiMo-V2.6-Flash-RL": {"min_px": 8192, "max_px": 8388608},      # processor_config image_min/max_pixels
     "stepfun-ai/Step-5-Preview": {"side": 728},                                # Step5VisionConfig image_size (overview)
-    "openbmb/MiniCPM-V-4.7-35B-A3B": {"side": 448},                            # one 448² view 「假设」          # min_pixels / max_image_tokens live in vision_config
+    "openbmb/MiniCPM-V-4.7-35B-A3B": {"side": 448, "max_slice": 9},           # MiniCPMV4_6ImageProcessor defaults
+    # 0.145
+    "XiaomiMiMo/MiMo-V2.6-Pro-RL": {"min_px": 8192, "max_px": 8388608},        # processor_config image_min/max_pixels
+    "inclusionAI/Ling-3.0-flash-VL": {"min_px": 4096, "max_px": 4194304},      # preprocessor_config min/max_pixels
 }
 
 
@@ -83,6 +86,14 @@ class VisionSpec:
     mid: tuple[tuple[int, int, int], ...] = ()   # (K, N, row divisor vs patches) GEMMs at the insert point
     extra: int = 0              # stored but not run for images (MiMo audio encoder + speech embeddings)
     approx: str = ""            # coverage reason when the encoder / resize is approximated
+    # 0.145 MiMo windowed ViT layers (modeling_mimo_v2 MiMoVisionAttention._build_window_mask): every block not in
+    # ``full_idx`` masks |i − j| > ``win`` over the per-image patch sequence (row order for vit_window_attn_types 0,
+    # merge-unit column order for 1: same key count); ``sink`` = learned per-head bias on key column 0 of those blocks;
+    # ``perm`` = row ↔ column re-index gathers of the hidden states per pass (apply_index)
+    win: int = 0
+    full_idx: tuple[int, ...] = ()
+    sink: bool = False
+    perm: int = 0
 
     @property
     def head_dim(self) -> int:
@@ -154,6 +165,17 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         pre.update(min_pixels=vc["min_pixels"], max_tok=vc["max_image_tokens"], ratio=r)
         return VisionSpec("ds", "DeepSeek ViT + aligner", p, 1, h, inter, L, nh, h, True, r,
                           ((r * r * h, text_h), (text_h, text_h)), params, tuple(sorted(pre.items())))
+    if mt == "qwen3_moe_vit" and vc.get("disable_merger_proj"):   # 0.145 Ling-3.0-VL: Qwen3-VL ViT, merger = norm only
+        h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["depth"], vc["num_heads"]
+        p, t, mk = vc["patch_size"], vc["temporal_patch_size"], vc["spatial_merge_size"]
+        hm = h * mk * mk
+        # BailingMM linear_proj (mlp_depth 2): Linear(4·h → text_h), GELU, Linear(text_h → text_h), outside the tower
+        params = (_lin(3 * t * p * p, h) + vc["num_position_embeddings"] * h
+                  + L * (4 * h + _lin(h, 3 * h) + _lin(h, h) + _lin(h, inter) + _lin(inter, h))
+                  + 2 * h + _lin(hm, text_h) + _lin(text_h, text_h))
+        pre["factor"] = p * mk
+        return VisionSpec("qwen", "Qwen3-VL ViT + linear_proj", p, t, h, inter, L, nh, h, False, mk,
+                          ((hm, text_h), (text_h, text_h)), params, tuple(sorted(pre.items())))
     if "fullatt_block_indexes" in vc and vc.get("num_key_value_heads"):   # 0.144 MiMo-V2.6 ViT (Qwen2.5-VL style)
         h, inter, L, nh, kv = vc["hidden_size"], vc["intermediate_size"], vc["depth"], vc["num_heads"], vc["num_key_value_heads"]
         p, t, mk, out = vc["patch_size"], vc["temporal_patch_size"], vc["spatial_merge_size"], vc["out_hidden_size"]
@@ -164,9 +186,12 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         params = (3 * t * p * p * h + L * (2 * h + _lin(h, qd + 2 * kvd) + _lin(qd, h) + 2 * _lin(h, inter) + _lin(inter, h))
                   + (L - n_full) * nh * (1 if vc.get("use_sink") else 0) + h + _lin(hm, hm, False) + _lin(hm, out, False))
         pre["factor"] = p * mk
-        return VisionSpec("qwen", "MiMo ViT（GQA + 窗口注意力）", p, t, h, inter, L, nh, qd, True, mk,
+        types = list(vc.get("vit_window_attn_types") or [-1] * L)
+        perm = sum(1 for i in range(L) if i and (types[i] == 1) != (types[i - 1] == 1)) + (types[0] == 1)
+        return VisionSpec("qwen", "MiMo ViT（GQA + 带状窗口注意力 + sink）", p, t, h, inter, L, nh, qd, True, mk,
                           ((hm, hm), (hm, out)), params, tuple(sorted(pre.items())), kv_heads=kv,
-                          approx=f"视觉塔 {L - n_full}/{L} 层窗口注意力（含 sink）按整图注意力计（偏保守）；音频编码器只计存储")
+                          win=vc.get("visual_token_window_size") or 0, full_idx=tuple(vc["fullatt_block_indexes"]),
+                          sink=bool(vc.get("use_sink")), perm=perm)
     if vc.get("model_type") == "perception_encoder":          # 0.144 Step-5 PE + 2× stride-2 3×3 downsamplers
         h, L, nh, p, side = vc["width"], vc["layers"], vc["heads"], vc["patch_size"], vc["image_size"]
         inter = 8960 if h == 1536 else int(h * vc.get("mlp_ratio", 8960 / 1536))
@@ -187,10 +212,10 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         params = (_lin(3 * p * p, h) + g * g * h + L * (4 * h + 4 * _lin(h, h) + _lin(h, inter) + _lin(inter, h)) + 2 * h
                   + 2 * h + 4 * _lin(h, h) + 2 * h4 + _lin(h4, mi) + _lin(mi, h)
                   + 2 * h4 + _lin(h4, h4) + _lin(h4, text_h))
-        return VisionSpec("fixed", "SigLIP + 塔内 2×2 合并 + 2×2 merger", p, 1, h, inter, L, nh, h, False, 4,
+        pre["patch"] = p
+        return VisionSpec("minicpm", "SigLIP + 塔内 2×2 合并 + 2×2 merger（概览 + 切片）", p, 1, h, inter, L, nh, h, False, 4,
                           ((h4, h4, 16), (h4, text_h, 16)), params, tuple(sorted(pre.items())), insert=ins,
-                          mid=((h, 3 * h, 1), (h, h, 1), (h4, mi, 4), (mi, h, 4)),
-                          approx="视觉：每图按一个 448² 视图计「假设」（MiniCPM 切片最多 9 片 + 概览未建模）")
+                          mid=((h, 3 * h, 1), (h, h, 1), (h4, mi, 4), (mi, h, 4)))
     return None
 
 
@@ -259,6 +284,48 @@ def _ds_grid(h: int, w: int, p: int, r: int, min_px: int, max_tok: int) -> tuple
     return bh // p, bw // p, gh, gw
 
 
+# 0.145 MiniCPM-V-4.x slicing (transformers MiniCPMV4_6ImageProcessor, which minicpmv4_7 maps to)
+def _ensure_divide(length: float, divisor: int) -> int:
+    return max(round(length / divisor) * divisor, divisor)
+
+
+def _cpm_best_resize(h: float, w: float, side: int, p: int, upscale: bool) -> tuple[int, int]:
+    if h * w > side * side or upscale:
+        ar = w / h
+        h = int(side / math.sqrt(ar))
+        w = int(h * ar)
+    return _ensure_divide(h, p * 4), _ensure_divide(w, p * 4)
+
+
+def _cpm_grid(h: int, w: int, max_slices: int, side: int) -> tuple[int, int] | None:
+    log_ratio = math.log(w / h)
+    multiple = min(math.ceil(w * h / (side * side)), max_slices)
+    if multiple <= 1:
+        return None
+    best, err_min = (1, 1), float("inf")
+    for n in (multiple - 1, multiple, multiple + 1):
+        if n == 1 or n > max_slices:
+            continue
+        for r in range(1, n + 1):
+            if n % r == 0:
+                err = abs(log_ratio - math.log((n // r) / r))
+                if err < err_min or (err == err_min and r > best[0]):
+                    best, err_min = (r, n // r), err
+    return best
+
+
+def minicpm_views(width: int, height: int, side: int, p: int, max_slices: int):
+    """(overview (ph, pw), slice (ph, pw) or None, (rows, cols)) as MiniCPMV4_6ImageProcessor._preprocess."""
+    grid = _cpm_grid(height, width, max_slices, side)
+    sh, sw = _cpm_best_resize(height, width, side, p, upscale=grid is None)
+    if grid is None:
+        return (sh // p, sw // p), None, (0, 0)
+    gy, gx = grid
+    rh, rw = _ensure_divide(height, gy), _ensure_divide(width, gx)
+    bh, bw = _cpm_best_resize(rh / gy, rw / gx, side, p, upscale=True)
+    return (sh // p, sw // p), (bh // p, bw // p), (gy, gx)
+
+
 @dataclass(frozen=True)
 class ImageGrid:
     ph: int                     # patch rows / cols into the tower
@@ -266,6 +333,7 @@ class ImageGrid:
     merged: int                 # positions out of the merger / aligner
     llm_tokens: int             # positions the image occupies in the LLM sequence
     px: tuple[int, int]         # (width, height) the image is resized / padded to
+    views: tuple = ()           # 0.145: ((ph, pw, count), …) when one image runs as several tower passes (MiniCPM)
 
 
 def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
@@ -289,51 +357,92 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
         ph = pw = pr["side"] // v.patch
         m = ph * pw // (v.merge * v.merge)
         return ImageGrid(ph, pw, m, m, (pr["side"], pr["side"]))
+    if v.family == "minicpm":
+        # 0.145: overview + rows × cols slices; tokens = patches / 16 per view (MiniCPMV4_7Processor.replace_image_token)
+        # + <image>/</image> + per-slice <slice>/</slice> + "\n" between slice rows + <image_id>0</image_id> (3,
+        # use_image_id default True; the index renders as one token 「假设」 for < 10 images)
+        (oh, ow), sl, (r, c) = minicpm_views(width, height, pr["side"], v.patch, pr["max_slice"])
+        to = oh * ow // 16
+        views = ((oh, ow, 1),)
+        tok = 2 + to + 3
+        merged = to
+        if sl:
+            ts = sl[0] * sl[1] // 16
+            views += ((sl[0], sl[1], r * c),)
+            tok += r * c * (ts + 2) + (r - 1)
+            merged += r * c * ts
+        return ImageGrid(oh, ow, merged, tok, (ow * v.patch, oh * v.patch), views)
     ph, pw, gh, gw = _ds_grid(height, width, v.patch, pr["ratio"], pr["min_pixels"], pr["max_tok"])
     return ImageGrid(ph, pw, gh * gw, gh * (gw + 1) + 2, (pw * v.patch, ph * v.patch))
 
 
 # ------------------------------------------------------------------ op graph
+def band_keys(n: int, w: int) -> int:
+    """Σ over queries of unmasked keys under |i − j| ≤ w in a sequence of n (w ≤ 0: full n²)."""
+    if w <= 0 or w >= n - 1:
+        return n * n
+    return n + 2 * (w * n - w * (w + 1) // 2)
+
+
 def vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str = "bf16") -> list[Op]:
-    """Op list of one encoder pass over ``images`` images of grid ``g`` (bf16 weights)."""
+    """Op list of one encoder pass over ``images`` images of grid ``g`` (bf16 weights).  0.145: an image of several
+    views (MiniCPM overview + slices) runs one tower pass per view group (ops of later groups are named vis.v<i>.…);
+    MiMo windowed blocks charge only the band's keys (``band_keys``)."""
     if images <= 0:
         return []
+    groups = g.views or ((g.ph, g.pw, 1),)
+    ops: list[Op] = []
+    for gi, (ph, pw, cnt) in enumerate(groups):
+        mrows = images * g.merged if len(groups) == 1 else None
+        ops += _tower_ops(v, ph * pw, images * cnt, mrows, "vis." if gi == 0 else f"vis.v{gi}.", af)
+    return ops
+
+
+def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, af: str) -> list[Op]:
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
-    N = g.ph * g.pw
+    N0 = N
     rows = images * N
-    mrows = images * g.merged
     wf, wb = "bf16", 16.0
     ops: list[Op] = []
 
     def gemm(name: str, m: int, k: int, n: int, layer: int = 0) -> Op:
-        return Op("vis." + name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=wb, w_fmt=wf,
+        return Op(pfx + name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=wb, w_fmt=wf,
                   a_fmt=af, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+
+    def attn(tag: str, li: int, N: int, keys: int, sink: bool) -> list[Op]:
+        fr = keys / (N * N)
+        return [Op(f"{pfx}{tag}.qk", "attn", li, m=N, k=dh, n=N, count=cnt, causal=fr, act_bytes=cnt * N * dh * ab,
+                   stream=True, orient=True),
+                Op(f"{pfx}{tag}.pv", "attn", li, m=N, k=N, n=dh, count=cnt, causal=fr, act_bytes=cnt * N * dh * ab,
+                   orient=True),
+                Op(f"{pfx}{tag}.softmax", "vector", li, vec=cnt * keys * (5.0 + (1.0 if sink else 0.0)))]
 
     ops.append(gemm("patch_embed", rows, 3 * v.tpatch * v.patch * v.patch, v.hidden))
     h, q, dh = v.hidden, v.qkv, v.head_dim
     cnt = images * v.heads
     qkv_n = (v.heads + 2 * v.kv_heads) * dh if v.kv_heads else 3 * q
+    if v.perm:
+        # apply_index gathers (row ↔ merge-unit column order): read + write the hidden states per switch
+        ops.append(Op(pfx + "win_perm", "vector", 0, vec=v.perm * rows * h, act_bytes=v.perm * 2 * rows * h * ab))
     for li in range(v.depth):
         if v.insert and li == v.insert:
             # 0.144 MiniCPM-V-4.7 vit_merger: attention at full resolution, 2×2 concat, MLP down to the tower width
             for i, (k, n, dv) in enumerate(v.mid):
                 ops.append(gemm(f"vit_merger.{i}", images * (N // dv), k, n, li))
-            ops += [Op("vis.vit_merger.qk", "attn", li, m=N, k=dh, n=N, count=cnt, act_bytes=cnt * N * dh * ab,
-                       stream=True, orient=True),
-                    Op("vis.vit_merger.pv", "attn", li, m=N, k=N, n=dh, count=cnt, act_bytes=cnt * N * dh * ab, orient=True),
-                    Op("vis.vit_merger.softmax", "vector", li, vec=cnt * N * N * 5.0)]
+            ops += attn("vit_merger", li, N, N * N, False)
             N, rows = N // 4, rows // 4
         ops += [gemm(f"{li}.qkv", rows, h, qkv_n, li), gemm(f"{li}.o", rows, q, h, li)]
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
         ops.append(gemm(f"{li}.mlp_out", rows, v.inter, h, li))
-        ops += [Op(f"vis.{li}.qk", "attn", li, m=N, k=dh, n=N, count=cnt, act_bytes=cnt * N * dh * ab, stream=True,
-                   orient=True),
-                Op(f"vis.{li}.pv", "attn", li, m=N, k=N, n=dh, count=cnt, act_bytes=cnt * N * dh * ab, orient=True),
-                Op(f"vis.{li}.softmax", "vector", li, vec=cnt * N * N * 5.0)]
+        windowed = bool(v.win) and li not in v.full_idx
+        ops += attn(str(li), li, N, band_keys(N, v.win) if windowed else N * N, windowed and v.sink)
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
-        m_ = images * (g.ph * g.pw // kn[2]) if len(kn) > 2 else mrows
+        if len(kn) > 2:
+            m_ = images * (N0 // kn[2])
+        else:
+            m_ = mrows if mrows is not None else images * (N0 // (v.merge * v.merge))
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
     return ops
 

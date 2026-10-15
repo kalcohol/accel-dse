@@ -77,7 +77,7 @@ PROTEIN_PARTIAL = ("openfold", "alphafold2", "boltz-1", "protenix")
 IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")
 # 0.144 VLMs whose vision side is approximated (LLM side exact): Step-5 overview only, MiniCPM one 448² view, MiMo window
 # attention as full + audio encoder storage-only
-VISION_PARTIAL = ("step-5-preview", "minicpm-v-4.7-35b-a3b", "mimo-v2.6-flash")
+VISION_PARTIAL = ("step-5-preview",)   # 0.145: MiniCPM slicing + MiMo band windows modelled → full
 
 
 def _kpi(i):
