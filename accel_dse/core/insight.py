@@ -22,13 +22,15 @@ and the sweeps; nothing here models hardware by itself.  Probes (each relative t
   d2d_x2        die-to-die bandwidth × 2              (only with D2D on and package_cards > 1)
   c2c_x2        card-to-card link bandwidth × 2       (only with > 1 card)
 
-Probe sizes (× 2, next grade) are probes, not claims about cost.  Metrics per model: TTFT (prefill latency of the
-scenario's prompt), TPOT and decode throughput per card at the scenario's batch.  A knob's score per metric is the
-geometric mean over the models that evaluate (speed-up > 1 = better); models whose point does not fit stay in the
-table but are flagged.  Area: Δ die-area proxy from the user's budget densities (budget.area_estimate) — no density,
-no mm² (the tool ships no process library).  Power proxy: Δ energy per output token from the user's energy table
-(energy.energy_report); without one, the Δ action counts per token (DRAM bytes, MAC slots, SRAM bytes) — model
-outputs that need no assumption.
+Probe sizes (× 2, next grade) are probes, not claims about cost.  Metrics (0.151: one domain per report):
+  llm       TTFT, TPOT, decode tok/s/card
+  gen       clip/image latency, frames/s/card (image DiT = 1 frame → images/s)
+  protein   batch latency, sequences/s/card
+  genomics  batch latency, windows/s/card
+A knob's score per metric is the geometric mean over the models that evaluate (speed-up > 1 = better); models whose
+point does not fit stay in the table but are flagged.  Area: Δ die-area proxy from the user's budget densities
+(budget.area_estimate / full_area) — no density, no mm².  Power proxy: Δ energy / action counts from the user's
+energy table when given.
 """
 from __future__ import annotations
 
@@ -43,10 +45,48 @@ from .evaluate import evaluate
 from .scenario import Scenario
 
 DEFAULT_MODELS = ("qwen3-8b", "gpt-oss-120b", "mimo-v2.6-flash", "step-5-preview", "deepseek-v3.2", "ling-3.0-flash-vl")
+DEFAULT_MODELS_BY_DOMAIN = {
+    "llm": DEFAULT_MODELS,
+    "gen": ("wan2.1-1.3b", "flux.2-klein-4b", "qwen-image", "lingbot-video-moe-dmd"),
+    "protein": ("esm2-650m", "esmfold", "boltz-1"),
+    "genomics": ("carbon-a-1.2b",),
+}
 MAX_MODELS = 8
 MXFP4_VS_FP8 = 2.0      # 「假设」 native mxfp4 MAC rate = 2 × fp8 (NVIDIA Blackwell dense FP4 vs FP8)
-METRICS = ("ttft", "tpot", "thr")
+# 0.151: per-domain metric keys.  LLM keeps ttft/tpot/thr; other domains use lat (lower better) + thr (higher better).
+DOMAIN_METRICS = {
+    "llm": ("ttft", "tpot", "thr"),
+    "gen": ("lat", "thr"),
+    "protein": ("lat", "thr"),
+    "genomics": ("lat", "thr"),
+}
+DEFAULT_METRIC = {"llm": "tpot", "gen": "thr", "protein": "thr", "genomics": "thr"}
+THR_UNIT = {"llm": "tok/s/卡", "gen": "帧/s/卡", "protein": "序列/s/卡", "genomics": "窗口/s/卡"}
+LAT_NAME = {"gen": "单段/图延迟", "protein": "批延迟", "genomics": "批延迟"}
+METRICS = ("ttft", "tpot", "thr", "lat")          # union; a report only scores the domain's subset
 TIE = 0.01              # 「假设」 within 1 % = no move (same as api.SENS_TIE)
+
+
+def insight_domain(models) -> str:
+    """One catalog domain for the model set, or ValueError if empty / mixed / unknown."""
+    if not models:
+        raise ValueError("models: need at least one id")
+    doms = []
+    for mid in models:
+        d = get_model(mid).domain
+        if d not in DOMAIN_METRICS:
+            raise ValueError(f"{mid}: domain {d!r} is not supported by insight")
+        doms.append(d)
+    if len(set(doms)) > 1:
+        raise ValueError(f"models must share one domain; got {sorted(set(doms))}")
+    return doms[0]
+
+
+def metric_labels(domain: str) -> dict:
+    thr = f"吞吐/卡加速（{THR_UNIT[domain]}）"
+    if domain == "llm":
+        return {"ttft": "TTFT 加速", "tpot": "TPOT 加速", "thr": thr}
+    return {"lat": f"{LAT_NAME[domain]} 加速", "thr": thr}
 
 
 def _features(mid: str) -> list[str]:
@@ -66,6 +106,12 @@ def _features(mid: str) -> list[str]:
         f.append("FP8 权重")
     if m.is_moe:
         f.append("MoE")
+    if m.domain == "gen":
+        f.append("图像/视频 DiT")
+    elif m.domain == "protein":
+        f.append("蛋白质")
+    elif m.domain == "genomics":
+        f.append("基因组")
     return f
 
 
@@ -82,7 +128,10 @@ def model_scenario(base: Scenario, mid: str) -> Scenario:
         try:
             for k, v in kv.items():
                 t = t.replace("layout." + k, v)
-            evaluate(t.replace("serving.phase", "decode"))
+            if get_model(mid).domain == "llm":
+                evaluate(t.replace("serving.phase", "decode"))
+            else:
+                evaluate(t)
             return t
         except ValueError as e:
             last = e
@@ -161,37 +210,50 @@ def knobs(base: Scenario) -> list[tuple[str, str, object, str]]:
     return out
 
 
-def _point(s: Scenario, table: EnergyTable) -> dict:
-    d = evaluate(s.replace("serving.phase", "decode"))
-    p = evaluate(s.replace("serving.phase", "prefill"))
-    e = energy_report(d, table)
+def _point(s: Scenario, table: EnergyTable, domain: str = "llm") -> dict:
+    """One evaluated point.  LLM: decode + prefill.  Other domains: a single evaluate (phase is ignored)."""
+    if domain == "llm":
+        d = evaluate(s.replace("serving.phase", "decode"))
+        p = evaluate(s.replace("serving.phase", "prefill"))
+        e = energy_report(d, table)
+        per = e["counts_per_unit"]
+        return {"ttft": p.ttft, "tpot": d.tpot, "thr": d.per_card, "fits": bool(d.fits and p.fits),
+                "bound_d": d.bound, "bound_p": p.bound, "J_tok": e.get("J_per_unit"),
+                "J_partial": bool(e.get("J_per_unit") and e["missing"]),
+                "dram_B_tok": per.get("dram"), "mac_tok": per.get("mac"), "sram_B_tok": per.get("sram")}
+    r = evaluate(s)
+    e = energy_report(r, table)
     per = e["counts_per_unit"]
-    return {"ttft": p.ttft, "tpot": d.tpot, "thr": d.per_card, "fits": bool(d.fits and p.fits),
-            "bound_d": d.bound, "bound_p": p.bound, "J_tok": e.get("J_per_unit"), "J_partial": bool(e.get("J_per_unit") and e["missing"]),
-            "dram_B_tok": per.get("dram"), "mac_tok": per.get("mac"), "sram_B_tok": per.get("sram")}
+    return {"lat": r.latency, "thr": r.per_card, "fits": bool(r.fits),
+            "bound_d": r.bound, "bound_p": r.bound, "J_tok": e.get("J_per_unit"),
+            "J_partial": bool(e.get("J_per_unit") and e["missing"]),
+            "dram_B_tok": per.get("dram"), "mac_tok": per.get("mac"), "sram_B_tok": per.get("sram"),
+            "unit": r.workload.unit if r.workload else None}
 
 
 def _gain(m: str, base: dict, alt: dict) -> float | None:
     a, b = base[m], alt[m]
     if not a or not b:
         return None
-    return a / b if m in ("ttft", "tpot") else b / a          # speed-up, > 1 = better
+    return a / b if m in ("ttft", "tpot", "lat") else b / a   # speed-up, > 1 = better
 
 
 def insight_report(base: Scenario, models=None, budget: Budget | None = None, table: EnergyTable | None = None) -> dict:
     table = table or EnergyTable()
-    models = list(models or DEFAULT_MODELS)
+    models = list(models) if models is not None else list(DEFAULT_MODELS)
     if not 1 <= len(models) <= MAX_MODELS:
         raise ValueError(f"models: 1..{MAX_MODELS} ids")
+    domain = insight_domain(models)
+    metrics = DOMAIN_METRICS[domain]
     ks = knobs(base)
     area0 = full_area(base, budget) if budget is not None else None
     mrows, scns = [], {}
     for mid in models:
         try:
             s = model_scenario(base, mid)
-            b0 = _point(s, table)
+            b0 = _point(s, table, domain)
             scns[mid] = s
-            mrows.append({"model": mid, "layout": s.layout.label, "features": _features(mid), **b0})
+            mrows.append({"model": mid, "layout": s.layout.label, "features": _features(mid), "domain": domain, **b0})
         except (ValueError, KeyError) as e:
             mrows.append({"model": mid, "error": str(e)})
     base_by = {r["model"]: r for r in mrows if "error" not in r}
@@ -199,10 +261,10 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
     for key, label, tf, cost in ks:
         inv = isinstance(tf, tuple)
         f = tf[1] if inv else tf
-        per_model, g = [], {m: [] for m in METRICS}
+        per_model, g = [], {m: [] for m in metrics}
         for mid, s in scns.items():
             try:
-                alt = _point(f(s), table)
+                alt = _point(f(s), table, domain)
             except ValueError as e:
                 per_model.append({"model": mid, "error": str(e)})
                 continue
@@ -210,7 +272,7 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
             lo, hi = (alt, b0) if inv else (b0, alt)        # invert: the value of the feature the base already has
             row = {"model": mid, "fits": hi["fits"], "bound_d": hi["bound_d"], "bound_p": hi["bound_p"],
                    "bound_flip": (hi["bound_d"], hi["bound_p"]) != (lo["bound_d"], lo["bound_p"])}
-            for m in METRICS:
+            for m in metrics:
                 x = _gain(m, lo, hi)
                 row[m] = x
                 if x is not None:
@@ -224,23 +286,23 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
             a1 = full_area(f(base), budget)      # 0.149: incl. interface PHYs (DRAM pins, D2D units, C2C) when set
             d_mm2 = (a1["mm2"] - area0["mm2"]) * (-1 if inv else 1) if a1["mm2"] is not None else None
             d_mm2 = d_mm2 if d_mm2 else None
-        per_mm2 = {m: ((score[m] - 1) / d_mm2 if score[m] is not None and d_mm2 else None) for m in METRICS}
+        per_mm2 = {m: ((score[m] - 1) / d_mm2 if score[m] is not None and d_mm2 else None) for m in metrics}
         krows.append({"key": key, "label": label, "cost": cost, "inverted": inv, "score": score,
                       "d_mm2": d_mm2, "gain_per_mm2": per_mm2, "models": per_model})
     # ties within TIE (the sensitivity convention, api.SENS_TIE 「假设」) do not "move" the metric
     rank = {m: [k["key"] for k in sorted(krows, key=lambda k: -(k["score"][m] or 0))
-                if k["score"][m] is not None and k["score"][m] - 1 > TIE] for m in METRICS}
-    hurts = {m: [k["key"] for k in krows if k["score"][m] is not None and 1 - k["score"][m] > TIE] for m in METRICS}
+                if k["score"][m] is not None and k["score"][m] - 1 > TIE] for m in metrics}
+    hurts = {m: [k["key"] for k in krows if k["score"][m] is not None and 1 - k["score"][m] > TIE] for m in metrics}
     rank_mm2 = {m: [k["key"] for k in sorted((k for k in krows if k["gain_per_mm2"][m] is not None),
-                                             key=lambda k: -k["gain_per_mm2"][m]) if k["score"][m] - 1 > TIE] for m in METRICS}
+                                             key=lambda k: -k["gain_per_mm2"][m]) if k["score"][m] - 1 > TIE] for m in metrics}
     notes = (["pd.enabled：洞察按合并部署（prefill + decode 同卡）评估，不含 PD 分离"] if base.pd.enabled else [])
     return {"chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label, "notes": notes,
             "serving": {"batch": base.serving.batch, "prompt": base.serving.prompt, "ctx": base.serving.ctx},
-            "models": mrows, "knobs": krows, "rank": rank, "rank_per_mm2": rank_mm2, "hurts": hurts, "tie": TIE, "metrics": {"ttft": "TTFT 加速", "tpot": "TPOT 加速",
-                                                                         "thr": "decode 吞吐/卡 倍数"},
+            "models": mrows, "knobs": krows, "rank": rank, "rank_per_mm2": rank_mm2, "hurts": hurts, "tie": TIE, "domain": domain, "metrics": metric_labels(domain), "default_metric": DEFAULT_METRIC[domain],
             "area": area0, "energy_provided": table.provided,
-            "basis": "单变量探针 × 现有引擎（evaluate）；面积只用用户密度（budget.area_estimate），功耗只用用户能耗表或动作计数；"
-                     "探针幅度（×2、下一档）不是成本结论。「假设」：原生 MXFP4 速率 = 2× FP8；原生 FP8 = 2× bf16（FormatSupport 默认）。"}
+            "basis": "单变量探针 × 现有引擎（evaluate）；面积只用用户密度（budget.area_estimate / full_area），功耗只用用户能耗表或动作计数；"
+                     "探针幅度（×2、下一档）不是成本结论。指标随领域：LLM = TTFT/TPOT/tok/s；视频/图像 = 延迟/帧/s；"
+                     "蛋白质 = 延迟/序列/s；基因组 = 延迟/窗口/s。「假设」：原生 MXFP4 速率 = 2× FP8；原生 FP8 = 2× bf16。"}
 
 
 # ---------------------------------------------------------------------------------------------------------------- 0.148
@@ -261,7 +323,7 @@ def _geo(v):
 MAX_BEAM = 5
 
 
-def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budget | None = None, steps: int = 6,
+def upgrade_path(base: Scenario, models=None, metric: str | None = None, budget: Budget | None = None, steps: int = 6,
                  max_cost: float | None = None, table: EnergyTable | None = None, beam: int = 1) -> dict:
     """Multi-step upgrade path for one metric over a model set.  Each step re-runs every additive knob of
     `knobs(current)` on every model and keeps candidates that (a) raise the model-set geomean by > TIE, (b) leave every
@@ -270,8 +332,6 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
     ln(gain)/cost.  beam = w > 1 (0.149): keep the w best partial paths by cumulative ln(gain)/cost each step; the
     greedy path is always computed too and the beam result is returned only if its final gain is ≥ greedy's (so
     beam is never worse than greedy).  Either way the path is never worse than the start."""
-    if metric not in METRICS:
-        raise ValueError(f"metric must be one of {METRICS}")
     if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= MAX_STEPS:
         raise ValueError(f"steps must be an integer 1..{MAX_STEPS}")
     if not isinstance(beam, int) or isinstance(beam, bool) or not 1 <= beam <= MAX_BEAM:
@@ -280,9 +340,15 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
                                  or not math.isfinite(max_cost) or max_cost <= 0):
         raise ValueError("max_cost must be a finite number > 0")
     table = table or EnergyTable()
-    models = list(models or DEFAULT_MODELS)
+    models = list(models) if models is not None else list(DEFAULT_MODELS)
     if not 1 <= len(models) <= MAX_MODELS:
         raise ValueError(f"models: 1..{MAX_MODELS} ids")
+    domain = insight_domain(models)
+    metrics = DOMAIN_METRICS[domain]
+    if metric is None:
+        metric = DEFAULT_METRIC[domain]
+    if metric not in metrics:
+        raise ValueError(f"metric must be one of {metrics} for domain {domain}")
     a0 = full_area(base, budget) if budget is not None else None
     area_mode = bool(a0 and a0["mm2"] is not None)
     cap_mm2 = budget.die_mm2 if (area_mode and budget.die_mm2) else None
@@ -292,7 +358,7 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
     for mid in models:
         try:
             s = model_scenario(base, mid)
-            start[mid] = _point(s, table)
+            start[mid] = _point(s, table, domain)
             scns[mid] = s
         except (ValueError, KeyError) as e:
             skipped.append({"model": mid, "error": str(e)})
@@ -334,7 +400,7 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
                 mk = (nb.hash(), mid)
                 if mk not in memo:
                     try:
-                        memo[mk] = _point(model_scenario(nb, mid), table)
+                        memo[mk] = _point(model_scenario(nb, mid), table, domain)
                     except ValueError:
                         memo[mk] = None
                 p = memo[mk]
@@ -415,7 +481,7 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
     notes = []
     if base.pd.enabled:
         notes.append("pd.enabled：升级路径按合并部署（prefill + decode 同卡）评估，不含 PD 分离")
-    return {"metric": metric, "cost_mode": "area" if area_mode else "proxy", "search": search, "beam": beam, "notes": notes,
+    return {"metric": metric, "domain": domain, "metrics": metric_labels(domain), "cost_mode": "area" if area_mode else "proxy", "search": search, "beam": beam, "notes": notes,
             "greedy_cum_gain": g_gain, "greedy_cum_cost": g[2],
             "cost_unit": "mm²" if area_mode else "相对成本单位「假设」",
             "unit_mm2": unit if area_mode else None, "cap_mm2": cap_mm2, "max_cost": max_cost,

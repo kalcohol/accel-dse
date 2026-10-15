@@ -846,17 +846,22 @@ def api_sensitivity(body: dict) -> dict:
 
 
 def _insight_models(body: dict) -> list:
-    from .core.insight import DEFAULT_MODELS, MAX_MODELS
-    models = body.get("models") or list(DEFAULT_MODELS)
+    """0.151: any catalog domain; the set must share one domain (llm / gen / protein / genomics)."""
+    from .core.insight import DEFAULT_MODELS, DEFAULT_MODELS_BY_DOMAIN, MAX_MODELS, insight_domain
+    models = body.get("models")
+    if models is None:
+        models = list(DEFAULT_MODELS)
     if not isinstance(models, list) or not all(isinstance(m, str) for m in models) or not 1 <= len(models) <= MAX_MODELS:
         raise ApiError(f"models must be a list of 1..{MAX_MODELS} model ids")
     for m in models:
         try:
-            mm = get_model(m)
+            get_model(m)
         except (KeyError, ValueError):
             raise ApiError(f"unknown model {m!r}") from None
-        if mm.domain != "llm" or not mm.kv_cache:
-            raise ApiError(f"{m}: insight covers LLM / VLM models (TTFT / TPOT)")
+    try:
+        insight_domain(models)          # raises ValueError on mixed / unsupported
+    except ValueError as e:
+        raise ApiError(str(e)) from None
     return models
 
 
@@ -867,30 +872,23 @@ def api_insight_path(body: dict) -> dict:
     scn = scenario_from_body(body)
     models = _insight_models(body)
     try:
-        return {**upgrade_path(scn, models, body.get("metric", "tpot"), _budget(body), body.get("steps", 6),
+        return {**upgrade_path(scn, models, body.get("metric"), _budget(body), body.get("steps", 6),
                                body.get("max_cost"), _energy_table(body), body.get("beam", 1)), "hash": scn.hash()}
     except ValueError as e:
         raise ApiError(str(e)) from None
 
 
 def api_insight(body: dict) -> dict:
-    """0.146: NPU design insight — which hardware knob moves TTFT / TPOT / decode throughput most for a model set,
-    per area (user budget densities) / power proxy (user energy table or action counts).  See core/insight.py."""
-    from .core.insight import DEFAULT_MODELS, MAX_MODELS, insight_report
+    """0.146/0.151: NPU design insight — which hardware knob moves the domain's native metrics most for a model set
+    (LLM: TTFT/TPOT/tok/s; gen: latency/frames/s; protein: latency/seq/s; genomics: latency/windows/s), per area /
+    power proxy.  See core/insight.py."""
+    from .core.insight import DEFAULT_MODELS, DEFAULT_MODELS_BY_DOMAIN, insight_report
     _check_keys(body, "insight")
     scn = scenario_from_body(body)
-    models = body.get("models") or list(DEFAULT_MODELS)
-    if not isinstance(models, list) or not all(isinstance(m, str) for m in models) or not 1 <= len(models) <= MAX_MODELS:
-        raise ApiError(f"models must be a list of 1..{MAX_MODELS} model ids")
-    for m in models:
-        try:
-            mm = get_model(m)
-        except (KeyError, ValueError):
-            raise ApiError(f"unknown model {m!r}") from None
-        if mm.domain != "llm" or not mm.kv_cache:
-            raise ApiError(f"{m}: insight covers LLM / VLM models (TTFT / TPOT)")
+    models = _insight_models(body)
     try:
         return {**insight_report(scn, models, _budget(body), _energy_table(body)), "hash": scn.hash(),
-                "default_models": list(DEFAULT_MODELS)}
+                "default_models": list(DEFAULT_MODELS),
+                "default_models_by_domain": {k: list(v) for k, v in DEFAULT_MODELS_BY_DOMAIN.items()}}
     except ValueError as e:
         raise ApiError(str(e)) from None

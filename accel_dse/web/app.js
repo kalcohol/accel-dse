@@ -1538,8 +1538,11 @@ async function runInsight() {
     const r = await track(req('insight', '/api/insight', body(ms.length ? { models: ms } : {})));
     if (!r) return;
     S.insight = r;
+    S.insMetric = r.default_metric || S.insMetric;
+    paintInsMetric(r);
     paintInsight();
-    $('ins-status').textContent = `完成 · ${r.chip} · ${r.mem_id} · ${r.layout} · batch ${r.serving.batch}`;
+    setInsightExport();
+    $('ins-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout} · batch ${r.serving.batch}`;
   } catch (e) {
     $('ins-status').textContent = '错误：' + e.message;
   } finally { btn.disabled = false; }
@@ -1574,6 +1577,60 @@ function initDensityPresets() {
     schedule();
   });
 }
+/* 0.151: metric buttons follow the report domain; export uses the shared EXP_SCHEMA envelope */
+function paintInsMetric(r) {
+  const box = $('ins-metric'); if (!box || !r || !r.metrics) return;
+  const keys = Object.keys(r.metrics);
+  const cur = keys.includes(S.insMetric) ? S.insMetric : (r.default_metric || keys[0]);
+  S.insMetric = cur;
+  put(box, ...keys.map((k) => {
+    const b = h('button', { 'data-v': k }, '按 ' + r.metrics[k].replace(/加速$/, ''));
+    if (k === cur) b.classList.add('on');
+    b.addEventListener('click', () => { S.insMetric = k; paintInsMetric(r); paintInsight(); });
+    return b;
+  }));
+}
+function setInsightExport() {
+  const r = S.insight; if (!r) { clearExport('ins'); return; }
+  const m = S.insMetric || r.default_metric || 'tpot';
+  const lab = (k) => (r.knobs.find((x) => x.key === k) || {}).label || k;
+  setExport('ins', {
+    kind: 'insight', title: `设计洞察 · ${r.domain} · ${r.metrics[m] || m}`,
+    scenario: { chip: r.chip, mem_id: r.mem_id, layout: r.layout, serving: r.serving, models: r.models.map((x) => x.model), domain: r.domain, metric: m },
+    cols: [
+      { key: 'rank', label: '排名', v: (row) => row._rank },
+      { key: 'key', label: '旋钮', v: (row) => row.key },
+      { key: 'label', label: '说明', v: (row) => row.label },
+      { key: 'score', label: r.metrics[m] || m, v: (row) => row.score[m] },
+      { key: 'd_mm2', label: 'Δmm²', v: (row) => row.d_mm2 },
+      { key: 'gain_per_mm2', label: '增益/mm²', v: (row) => row.gain_per_mm2[m] },
+      { key: 'cost', label: '成本类', v: (row) => row.cost },
+      { key: 'inverted', label: '取反', v: (row) => yesNo(row.inverted) },
+    ],
+    rows: () => r.knobs.slice().sort((a, b) => (b.score[m] || 0) - (a.score[m] || 0)).map((k, i) => ({ ...k, _rank: i + 1 })),
+    raw: r,
+  });
+}
+function setInsightPathExport() {
+  const r = S.insPath; if (!r) { clearExport('ins-path'); return; }
+  setExport('ins-path', {
+    kind: 'insight_path', title: `升级路径 · ${r.domain} · ${r.metrics[r.metric] || r.metric}`,
+    scenario: { models: Object.keys(r.start), domain: r.domain, metric: r.metric, cost_mode: r.cost_mode, search: r.search, beam: r.beam },
+    cols: [
+      { key: 'step', label: '步', v: (p) => p.step },
+      { key: 'key', label: '旋钮', v: (p) => p.key },
+      { key: 'label', label: '说明', v: (p) => p.label },
+      { key: 'gain', label: '本步增益', v: (p) => p.gain },
+      { key: 'cum_gain', label: '累计增益', v: (p) => p.cum_gain },
+      { key: 'cost', label: '本步成本', v: (p) => p.cost },
+      { key: 'cost_basis', label: '成本依据', v: (p) => p.cost_basis },
+      { key: 'cum_cost', label: '累计成本', v: (p) => p.cum_cost },
+      { key: 'gain_per_cost', label: '增益/成本', v: (p) => p.gain_per_cost },
+    ],
+    rows: () => r.path,
+    raw: r,
+  });
+}
 /* 0.148: greedy multi-step upgrade path */
 async function runInsightPath() {
   const btn = $('ins-path-run');
@@ -1581,13 +1638,14 @@ async function runInsightPath() {
   $('ins-path-status').textContent = '计算中（每步 × 每个旋钮 × 每个模型）…';
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
-    const extra = { metric: S.insMetric || 'tpot', steps: Math.round(+$('ins-steps').value || 6), beam: $('ins-beam').checked ? 3 : 1 };
+    const extra = { metric: S.insMetric || (S.insight && S.insight.default_metric) || undefined, steps: Math.round(+$('ins-steps').value || 6), beam: $('ins-beam').checked ? 3 : 1 };
     if (ms.length) extra.models = ms;
     if ($('ins-maxcost').value !== '') extra.max_cost = +$('ins-maxcost').value;
     const r = await track(req('insight_path', '/api/insight_path', body(extra)));
     if (!r) return;
     S.insPath = r;
     paintInsightPath();
+    setInsightPathExport();
     $('ins-path-status').textContent = `完成 · ${r.path.length} 步 · ${r.search} · 成本 = ${r.cost_unit}`;
   } catch (e) {
     $('ins-path-status').textContent = '错误：' + e.message;
@@ -1597,7 +1655,7 @@ function paintInsightPath() {
   const r = S.insPath;
   if (!r) return;
   const last = r.path.length ? r.path[r.path.length - 1] : null;
-  const ml = { ttft: 'TTFT', tpot: 'TPOT', thr: 'decode 吞吐/卡' }[r.metric];
+  const ml = (r.metrics && r.metrics[r.metric]) || r.metric;
   put($('ins-path-summary'),
     h('div', {}, h('b', {}, `${ml}：`), last ? `${r.path.length} 步后 ×${num(last.cum_gain)}（几何平均，相对起点），累计成本 ${num(last.cum_cost)} ${r.cost_unit}`
       : '无可取的升级（没有旋钮在不使任何模型变差、且不超预算的前提下提升 > 1%）'),
@@ -1614,37 +1672,47 @@ function paintInsightPath() {
 function paintInsight() {
   const r = S.insight;
   if (!r) return;
-  const m = S.insMetric || 'tpot';
+  const m = S.insMetric || r.default_metric || Object.keys(r.metrics)[0];
   if (!$('ins-models').placeholder) $('ins-models').placeholder = r.default_models.join(', ');
-  const rk = r.rank[m], ra = r.rank_per_mm2[m], hu = r.hurts[m];
+  const rk = r.rank[m] || [], ra = r.rank_per_mm2[m] || [], hu = r.hurts[m] || [];
   const lab = (k) => (r.knobs.find((x) => x.key === k) || {}).label || k;
   put($('ins-summary'),
-    h('div', {}, h('b', {}, `${r.metrics[m]}：最能改善的旋钮 `), rk.length ? rk.map((k, i) => (i ? ' > ' : '') + lab(k)).join('') : '无（全部在 ±1% 内）'),
+    h('div', {}, h('b', {}, `${r.domain} · ${r.metrics[m]}：最能改善的旋钮 `), rk.length ? rk.map((k, i) => (i ? ' > ' : '') + lab(k)).join('') : '无（全部在 ±1% 内）'),
     h('div', {}, '每 mm²（按你的面积密度）：', ra.length ? ra.map(lab).join(' > ') : (r.area ? '—' : '未填面积密度（预算 → mm²/MiB、mm²/kMAC、固定面积），不排序')),
     hu.length ? h('div', {}, '变差：', hu.map(lab).join('；')) : null,
     (r.notes || []).length ? h('div', {}, '注：', r.notes.join('；')) : null,
     h('div', { class: 'muted' }, r.basis));
-  put($('ins-models-tbl'), h('thead', {}, h('tr', {}, ['模型', '布局', '特征', 'TTFT (ms)', 'TPOT (ms)', 'decode tok/s/卡', '瓶颈 d/p', '放得下'].map((x) => h('th', {}, x)))),
-    h('tbody', {}, r.models.map((x) => x.error ? h('tr', {}, h('td', {}, x.model), h('td', { colspan: 7 }, '错误：' + x.error))
-      : h('tr', {}, h('td', {}, x.model), h('td', {}, x.layout), h('td', {}, x.features.join('、')), h('td', {}, num(x.ttft * 1e3)),
-        h('td', {}, num(x.tpot * 1e3)), h('td', {}, num(x.thr)), h('td', {}, `${x.bound_d} / ${x.bound_p}`), h('td', {}, x.fits ? '是' : '否')))));
+  const llm = r.domain === 'llm';
+  const heads = llm
+    ? ['模型', '布局', '特征', 'TTFT (ms)', 'TPOT (ms)', 'decode tok/s/卡', '瓶颈 d/p', '放得下']
+    : ['模型', '布局', '特征', (r.metrics.lat || '延迟').replace(' 加速','') + ' (s)', (r.metrics.thr || '吞吐').replace(' 加速',''), '瓶颈', '放得下'];
+  put($('ins-models-tbl'), h('thead', {}, h('tr', {}, heads.map((x) => h('th', {}, x)))),
+    h('tbody', {}, r.models.map((x) => x.error ? h('tr', {}, h('td', {}, x.model), h('td', { colspan: heads.length - 1 }, '错误：' + x.error))
+      : llm
+        ? h('tr', {}, h('td', {}, x.model), h('td', {}, x.layout), h('td', {}, x.features.join('、')), h('td', {}, num(x.ttft * 1e3)),
+            h('td', {}, num(x.tpot * 1e3)), h('td', {}, num(x.thr)), h('td', {}, `${x.bound_d} / ${x.bound_p}`), h('td', {}, x.fits ? '是' : '否'))
+        : h('tr', {}, h('td', {}, x.model), h('td', {}, x.layout), h('td', {}, x.features.join('、')), h('td', {}, num(x.lat)),
+            h('td', {}, num(x.thr)), h('td', {}, x.bound_d), h('td', {}, x.fits ? '是' : '否')))));
   const ks = [...r.knobs].sort((a, b) => (b.score[m] || 0) - (a.score[m] || 0));
-  put($('ins-tbl'), h('thead', {}, h('tr', {}, ['旋钮', '成本类别', 'TTFT', 'TPOT', 'decode 吞吐', 'Δ面积 mm²', `${r.metrics[m]} 收益 / mm²`].map((x) => h('th', {}, x)))),
+  const mkeys = Object.keys(r.metrics);
+  put($('ins-tbl'), h('thead', {}, h('tr', {}, ['旋钮', '成本类别', ...mkeys.map((q) => r.metrics[q].replace(/加速$/, '')), 'Δ面积 mm²', `${r.metrics[m]} 收益 / mm²`].map((x) => h('th', {}, x)))),
     h('tbody', {}, ks.map((k) => h('tr', { class: 'ins-row', 'data-key': k.key, onclick: () => paintInsightDetail(k.key) },
-      h('td', {}, k.label), h('td', {}, INS_COST_ZH[k.cost]), ...['ttft', 'tpot', 'thr'].map((q) => h('td', { class: q === m ? 'b' : '' }, insX(k.score[q]))),
+      h('td', {}, k.label), h('td', {}, INS_COST_ZH[k.cost]), ...mkeys.map((q) => h('td', { class: q === m ? 'b' : '' }, insX(k.score[q]))),
       h('td', {}, k.d_mm2 === null ? '—' : num(k.d_mm2)), h('td', {}, k.gain_per_mm2[m] === null ? '—' : pct(k.gain_per_mm2[m]))))));
   paintInsightDetail(ks[0] && ks[0].key);
+  setInsightExport();
 }
 function paintInsightDetail(key) {
   const r = S.insight, k = r && r.knobs.find((x) => x.key === key);
   if (!k) return put($('ins-detail'));
-  const pw = r.energy_provided ? 'Δ能耗/token' : 'ΔDRAM 字节/token';
+  const mkeys = Object.keys(r.metrics);
+  const pw = r.energy_provided ? 'Δ能耗/单位' : 'ΔDRAM 字节/单位';
   put($('ins-detail'), h('caption', {}, '逐模型：' + k.label + (k.inverted ? '（数值为「有」相对「无」）' : '')),
-    h('thead', {}, h('tr', {}, ['模型', 'TTFT', 'TPOT', 'decode 吞吐', pw, 'ΔMAC/token', '瓶颈 d/p', '瓶颈变化', '放得下'].map((x) => h('th', {}, x)))),
-    h('tbody', {}, k.models.map((x) => x.error ? h('tr', {}, h('td', {}, x.model), h('td', { colspan: 8 }, '错误：' + x.error))
-      : h('tr', {}, h('td', {}, x.model), h('td', {}, insX(x.ttft)), h('td', {}, insX(x.tpot)), h('td', {}, insX(x.thr)),
+    h('thead', {}, h('tr', {}, ['模型', ...mkeys.map((q) => r.metrics[q].replace(/加速$/, '')), pw, 'ΔMAC/单位', '瓶颈', '瓶颈变化', '放得下'].map((x) => h('th', {}, x)))),
+    h('tbody', {}, k.models.map((x) => x.error ? h('tr', {}, h('td', {}, x.model), h('td', { colspan: mkeys.length + 5 }, '错误：' + x.error))
+      : h('tr', {}, h('td', {}, x.model), ...mkeys.map((q) => h('td', {}, insX(x[q]))),
         h('td', {}, pct(r.energy_provided ? x.d_J_tok : x.d_dram_B_tok)), h('td', {}, pct(x.d_mac_tok)),
-        h('td', {}, `${x.bound_d} / ${x.bound_p}`), h('td', {}, x.bound_flip ? '是' : ''), h('td', {}, x.fits ? '是' : '否')))));
+        h('td', {}, r.domain === 'llm' ? `${x.bound_d} / ${x.bound_p}` : x.bound_d), h('td', {}, x.bound_flip ? '是' : ''), h('td', {}, x.fits ? '是' : '否')))));
 }
 
 /* ------------------------------------------------------------------ tabs */
@@ -1874,7 +1942,7 @@ async function init() {
   $('pf-run').addEventListener('click', runPareto);
   $('ins-run').addEventListener('click', runInsight);
   $('ins-path-run').addEventListener('click', runInsightPath);
-  seg('ins-metric', null, () => S.insMetric || 'tpot', (v) => { S.insMetric = v; paintInsight(); });
+  for (const f of ['csv', 'json']) { $('ins-exp-' + f).addEventListener('click', () => doExport('ins', f)); $('ins-path-exp-' + f).addEventListener('click', () => doExport('ins-path', f)); }
   fillSweepPaths();
   renderModels();
   paintScope();

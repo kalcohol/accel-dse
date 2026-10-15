@@ -52,7 +52,12 @@ python3 -m accel_dse eval --model qwen3-8b --phase prefill --prompt 1048576 --cp
 python3 -m accel_dse validate                                 # 趋势区间 + GenZ 对照
 ```
 
-除 `serve` 外的子命令都支持 `--json`；场景的每个字段都有对应的命令行参数。HTTP API：POST `/api/eval`、`/api/fit`、`/api/compare`、`/api/layouts`、`/api/stability`、`/api/sweep`、`/api/pareto`、`/api/memory`；GET `/api/health`、`/api/models`、`/api/catalog`。POST 接受与命令行相同的场景描述，严格解析：拒绝未知字段（body 顶层与 scenario 内部都拒绝）以及 NaN / Infinity。
+除 `serve` 外的子命令都支持 `--json`；场景的每个字段都有对应的命令行参数。HTTP API：POST `/api/eval`、`/api/fit`、`/api/compare`、`/api/layouts`、`/api/stability`、`/api/sweep`、`/api/pareto`、`/api/memory`、`/api/insight`、`/api/insight_path`；GET `/api/health`、`/api/models`、`/api/catalog`。POST 接受与命令行相同的场景描述，严格解析：拒绝未知字段（body 顶层与 scenario 内部都拒绝）以及 NaN / Infinity。
+
+
+## 设计洞察
+
+Web 工作台的「设计洞察」页：在左侧芯片 / 外存 / 布局确定后，对一组同领域模型逐个只改一个硬件旋钮（SRAM、MAC、DRAM、原生 dtype、混合精度、反量化、D2D / 卡间链路等），用现有引擎重算并按几何平均加速排序；可再算一条按增益/成本贪心（或束搜索）的多步升级路径。模型集须同属一个领域——LLM（TTFT / TPOT / tok/s）、视频与图像（延迟 / 帧/s）、蛋白质（延迟 / 序列/s）、基因组（延迟 / 窗口/s）。面积用「预算」里填的密度或密度预设（有出处的按节点标注）；旋钮排名与升级路径可导出 CSV / JSON。API：`POST /api/insight`、`POST /api/insight_path`。
 
 ## 目录结构
 

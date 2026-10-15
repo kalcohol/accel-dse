@@ -51,8 +51,10 @@ def test_area_and_power_only_from_user_inputs():
 def test_api_insight_validation():
     r = A.api_insight({"scenario": {"layout": {"tp": 2}}, "models": ["qwen3-8b", "deepseek-v3.2"]})
     assert {m["model"] for m in r["models"]} == {"qwen3-8b", "deepseek-v3.2"} and r["rank"].keys() == {"ttft", "tpot", "thr"}
-    for bad in ({"models": ["wan2.1-1.3b"]}, {"models": ["nope"]}, {"models": "qwen3-8b"}, {"modls": ["qwen3-8b"]},
-                {"models": ["qwen3-8b"] * 9}):
+    # 0.151: non-LLM domains are accepted when homogeneous; mixed domains and junk still fail
+    assert A.api_insight({"models": ["wan2.1-1.3b"]})["domain"] == "gen"
+    for bad in ({"models": ["wan2.1-1.3b", "qwen3-8b"]}, {"models": ["nope"]}, {"models": "qwen3-8b"},
+                {"modls": ["qwen3-8b"]}, {"models": ["qwen3-8b"] * 9}):
         try:
             A.api_insight(bad)
         except A.ApiError:

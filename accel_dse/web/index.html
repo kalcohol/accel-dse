@@ -450,11 +450,12 @@
   <section class="tab" id="tab-insight" hidden>
     <div class="toolbar">
       <label>模型集（逗号分隔，最多 8，空 = 默认）<input type="text" id="ins-models" size="60" placeholder=""></label>
-      <div class="seg" id="ins-metric"><button data-v="tpot" class="on">按 TPOT</button><button data-v="ttft">按 TTFT</button><button data-v="thr">按 decode 吞吐/卡</button></div>
+      <div class="seg" id="ins-metric"></div>
       <button class="btn" id="ins-run">运行设计洞察</button>
+      <span id="ins-exp" hidden><button class="btn ghost" id="ins-exp-csv" title="导出旋钮排名表（CSV，UTF-8 带 BOM）">导出 CSV</button> <button class="btn ghost" id="ins-exp-json" title="导出洞察报告（JSON：场景快照、列定义、逐行与原始响应）">导出 JSON</button></span>
       <span class="small muted" id="ins-status"></span>
     </div>
-    <p class="small muted">0.146：对左侧芯片 / 外存 / 卡数 / 服务设置，逐个只改一个硬件旋钮（SRAM、SLC、MAC 阵列行数 / 核数 / 形状、DRAM 速率与颗数、原生 FP8 / MXFP4、反量化吞吐、D2D、卡间链路），用现有引擎重算每个模型的 TTFT / TPOT / decode 吞吐，按几何平均加速排序。面积只用「预算」里你填的密度（不内置工艺库）；功耗用你填的能耗表，否则给每 token 的 DRAM 字节 / MAC 次数变化。探针幅度（×2、下一档）不是成本结论。</p>
+    <p class="small muted">对左侧芯片 / 外存 / 卡数 / 服务设置，逐个只改一个硬件旋钮，用现有引擎重算模型集的领域原生指标并按几何平均加速排序。模型集须同属一个领域：LLM（TTFT / TPOT / tok/s）、视频/图像（延迟 / 帧/s）、蛋白质（延迟 / 序列/s）、基因组（延迟 / 窗口/s）。面积只用「预算」密度（或密度预设）；功耗用能耗表，否则给动作计数变化。探针幅度不是成本结论。</p>
     <div class="note small" id="ins-summary"></div>
     <div class="scroll"><table class="tbl tight" id="ins-models-tbl"></table></div>
     <div class="scroll"><table class="tbl tight" id="ins-tbl"></table></div>
@@ -465,6 +466,7 @@
       <label title="仅相对成本模式（未填面积密度）；面积模式用 预算 → 裸片面积 上限">成本上限（相对单位，空 = 不限）<input type="number" id="ins-maxcost" min="0" step="0.5" style="width:6em"></label>
       <label title="0.149：束搜索（宽 3），结果不劣于贪心（同时算贪心，取较好者）"><input type="checkbox" id="ins-beam"> 束搜索（宽 3）</label>
       <button class="btn" id="ins-path-run">计算升级路径（按上方指标）</button>
+      <span id="ins-path-exp" hidden><button class="btn ghost" id="ins-path-exp-csv" title="导出升级路径（CSV）">导出 CSV</button> <button class="btn ghost" id="ins-path-exp-json" title="导出升级路径（JSON）">导出 JSON</button></span>
       <span class="small muted" id="ins-path-status"></span>
     </div>
     <div class="note small" id="ins-path-summary"></div>

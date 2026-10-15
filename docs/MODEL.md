@@ -3700,3 +3700,13 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
 - PD: insight and the path evaluate colocated prefill/decode and say so. Non-LLM domains are not insight models (the API
   rejects them), but their area / budget pass the PHY-aware path (sysfuzz `area`).
 
+## 97. Insight multi-domain metrics and export (0.151)
+- One report = one catalog domain. Mixed sets are rejected.
+  - llm: TTFT, TPOT, decode tok/s/card (decode + prefill evaluates).
+  - gen: latency (clip / image), frames/s/card (image DiT = 1 frame → images/s).
+  - protein: batch latency, sequences/s/card.
+  - genomics: batch latency, windows/s/card.
+- Gain: latency-like metrics (ttft / tpot / lat) are lower-better; thr is higher-better. The upgrade path's
+  never-worse rule uses the same direction.
+- Export: kinds `insight` and `insight_path` under the shared EXP_SCHEMA = 1 envelope (same as compare / sweep).
+

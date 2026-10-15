@@ -52,7 +52,12 @@ python3 -m accel_dse eval --model qwen3-8b --phase prefill --prompt 1048576 --cp
 python3 -m accel_dse validate                                 # trend bands + GenZ comparison
 ```
 
-Every subcommand except `serve` accepts `--json`; every scenario field has a command-line flag. HTTP API: POST `/api/eval`, `/api/fit`, `/api/compare`, `/api/layouts`, `/api/stability`, `/api/sweep`, `/api/pareto`, `/api/memory`; GET `/api/health`, `/api/models`, `/api/catalog`. POST bodies take the same scenario description and are parsed strictly: unknown fields (at the body's top level and inside the scenario) and NaN / Infinity are rejected.
+Every subcommand except `serve` accepts `--json`; every scenario field has a command-line flag. HTTP API: POST `/api/eval`, `/api/fit`, `/api/compare`, `/api/layouts`, `/api/stability`, `/api/sweep`, `/api/pareto`, `/api/memory`, `/api/insight`, `/api/insight_path`; GET `/api/health`, `/api/models`, `/api/catalog`. POST bodies take the same scenario description and are parsed strictly: unknown fields (at the body's top level and inside the scenario) and NaN / Infinity are rejected.
+
+
+## Design insight
+
+The web workbench's Design insight tab: with the chip / memory / layout on the left fixed, it probes one hardware knob at a time (SRAM, MAC, DRAM, native dtypes, mixed precision, dequant, D2D / card-to-card link, …) over a same-domain model set, re-running the existing engine and ranking by geometric-mean speed-up; it can also build a multi-step upgrade path (greedy or beam) by gain per cost. The model set must share one domain — LLM (TTFT / TPOT / tok/s), video and image (latency / frames/s), protein (latency / sequences/s), genomics (latency / windows/s). Area uses the densities you enter under Budget, or a cited per-node preset. The ranking and the path export as CSV / JSON. API: `POST /api/insight`, `POST /api/insight_path`.
 
 ## Layout
 

@@ -3,6 +3,12 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.151.0]
+### Added
+- **Insight / upgrade path multi-domain**: model sets may be llm, gen (video/image), protein or genomics. Metrics follow the domain — LLM keeps TTFT / TPOT / tok/s/card; gen uses clip/image latency and frames/s/card; protein uses batch latency and sequences/s/card; genomics uses batch latency and windows/s/card. A set must share one domain (mixed sets return an ApiError). Default model lists per domain are in `DEFAULT_MODELS_BY_DOMAIN`.
+- **CSV / JSON export** of the insight ranking and the upgrade path, using the existing export envelope (`tool` / `schema` / `kind` / `columns` / `rows`; schema stays 1). UI buttons on the 设计洞察 tab.
+- README.md / README.en.md: short 「设计洞察」 / Design insight usage blurb (no version bullets); HTTP API list includes `/api/insight` and `/api/insight_path`.
+
 ## [0.150.0]
 ### Fixed (hostile review of 0.146–0.149)
 - `upgrade_path`: `max_cost` was ignored in area mode, so a path could run past the cap. It now applies in both modes, in the reported cost unit (mm² in area mode), for greedy and beam.
