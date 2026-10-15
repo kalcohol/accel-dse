@@ -3049,3 +3049,27 @@ opt-in because it worsens the Zipf group.
 **Open gap.** Even with uniform routing the per-step maximum over ranks of distinct experts exceeds the expectation
 (random imbalance, e.g. 13.9 vs 10.3 at E=256, k=6, EP=8, T=16). Modelling it would change the default for every
 MoE scenario and the fingerprints; it is not done.
+
+## 79. Slowest-rank random imbalance (0.133, opt-in)
+
+**Mechanism.** All EP ranks wait for the slowest one at the combine all-to-all. Even with uniform expert popularity,
+the per-step routing is random, so the most-loaded rank reads more distinct experts and computes more token-expert
+pairs than the mean rank. The default model routes with the mean rank (plus `moe_skew` / measured loads).
+
+**Model (`serving.moe_rank_max = "expected"`).** Per rank r:
+- distinct experts D_r = Σ_e 1[e hit], with q_e = 1−(1−p_e)^T: mean Σ q_e, variance Σ q_e(1−q_e) (independent
+  indicators);
+- pairs: per token the count on rank r is hypergeometric (k draws from E, share π_r = Σ p_e / k): mean T·k·π_r,
+  variance T·k·π_r(1−π_r)(E−k)/(E−1).
+
+E[max over ranks] uses a normal approximation: Blom's constant μ + σ·Φ⁻¹((n−0.375)/(n+0.25)) for identical ranks,
+numeric integration of 1−ΠΦ otherwise (measured loads). The result raises the routed hit count (rounded up to whole
+experts) and pairs; it never lowers them.
+
+**Validation (Monte-Carlo, Gumbel top-k).** 7 configurations (E, k, EP) from (64, 2, 8) to (256, 8, 32), shapes Zipf 0
+/ 1, one hot rank, one hot expert, T = 1…256, 200 trials. Mean relative error of E[max] distinct experts: 3.6 %
+(max 23 %; 9.7 % after rounding up to whole experts) vs 23 % for the mean rank; pairs: 4.5 % (max 24 %) vs 22 %.
+
+**Validation rows (EP > 1).** Mixed. Catalog: decode 15.6 → 14.5 %, R1 static 110 → 107 %, B200/H200 max-load 40.6 →
+40.4 %, but DeepSeek-V3 prefill 8.8 → 9.2 %. Catalog_kernel: decode 39.6 → 47.0 %, prefill 78.3 → 79.0 %. Since a
+group worsens, and turning it on changes every MoE EP prediction, it stays opt-in; adopting it is a user decision.

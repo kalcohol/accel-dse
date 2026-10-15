@@ -43,6 +43,9 @@ class Serving:
     # 0.49 assumption: distinct experts = the uniform expectation) | "uniform" (spread over all the rank's experts:
     # P(token → local expert) = k·skew/E).  Opt-in; ignored with moe_expert_load (exact occupancy from the load).
     moe_skew_spread: str = field(default="popular", metadata={"omit_default": True})
+    # 0.133: "expected" = route with the expected per-step MAX over EP ranks of distinct experts read and token-expert
+    # pairs under random routing (normal order statistic; MODEL §79).  Opt-in; default "off" (mean-rank routing).
+    moe_rank_max: str = field(default="off", metadata={"omit_default": True})
     prefix_cached: int = 0         # prefill: prompt tokens already in the KV cache (prefix-cache hit, 0.52) 「假设」
     # 0.62 — VLM images per request (vision encoder at prefill; image tokens join the prompt / KV).  Serialised only
     # when not default (scenario hashes of earlier versions unchanged).  0 = text-only request.
@@ -93,6 +96,8 @@ class Serving:
                 raise ValueError("serving.moe_skew and serving.moe_expert_load are alternatives — set one")
         if self.moe_skew_spread not in ("popular", "uniform"):
             raise ValueError("serving.moe_skew_spread must be popular|uniform")
+        if self.moe_rank_max not in ("off", "expected"):
+            raise ValueError("serving.moe_rank_max must be off|expected")
 
 
 PLACEMENTS = ("auto", "resident", "shard", "offload", "shard+offload")

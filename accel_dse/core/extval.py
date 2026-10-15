@@ -145,6 +145,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         sv = {**sv, "spec_k": r["spec_k"], "spec_accept": r["spec_accept"]}
     if r.get("moe_skew"):
         sv = {**sv, "moe_skew": r["moe_skew"]}
+    if v.get("rank_max"):              # 0.133 opt-in: slowest-rank random imbalance (Serving.moe_rank_max)
+        sv = {**sv, "moe_rank_max": v["rank_max"]}
     extra.update(_mem_runtime(r, h) if v.get("mem_rt", MEM_RT) else {})
     if v.get("kv_eff"):                # 0.108: KV-cache streams at the decode-attention kernels' published efficiency
         extra["kv_mem_eff"] = v["kv_eff"]
@@ -345,6 +347,13 @@ SOURCE_ESTIMATOR = {
 def estimator(r: dict) -> dict:
     """0.105: batching estimator of a max-load row (SOURCE_ESTIMATOR; unknown sources keep the static search)."""
     return SOURCE_ESTIMATOR.get(r.get("src"), dict(kind="static", chunk=CB_CHUNK, max_seqs=None))
+
+
+def rankmax_variant(base: str = "catalog") -> str:
+    """0.133: base + serving.moe_rank_max = "expected" (MODEL §79)."""
+    name = base + "+rankmax"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "rank_max": "expected"})
+    return name
 
 
 def est_variant(base: str = "catalog") -> str:

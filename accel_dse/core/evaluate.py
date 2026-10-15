@@ -978,6 +978,12 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             rskew = SkewSpec(skew, hot_rank_probs(tuple(sv.moe_expert_load), lay.ep, f_.top_k))
         elif sv.moe_skew_spread != "popular":
             rskew = SkewSpec(skew, (), sv.moe_skew_spread)
+    if sv.moe_rank_max != "off" and lay.ep > 1 and any(L.ffn.kind == "moe" for L in m.layers):
+        from .ir import SkewSpec, hot_rank_probs
+        f_ = next(L.ffn for L in m.layers if L.ffn.kind == "moe")
+        hp = hot_rank_probs(tuple(sv.moe_expert_load), lay.ep, f_.top_k) if sv.moe_expert_load else ()
+        sp = rskew.spread if isinstance(rskew, SkewSpec) else "popular"
+        rskew = SkewSpec(skew, hp, sp, sv.moe_rank_max)
     if sv.phase == "decode":
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))

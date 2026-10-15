@@ -19,6 +19,7 @@ Op kinds
 
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import dataclass, field, replace
 
@@ -281,6 +282,7 @@ class SkewSpec:
     skew: float = 1.0
     hot_p: tuple = ()
     spread: str = "popular"
+    rank_max: str = "off"          # 0.133: "expected" = E[max over EP ranks] of per-step distinct experts / pairs
 
     def __float__(self):
         return float(self.skew)
@@ -319,8 +321,67 @@ def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int, skew=1.0) -> R
         elif spec is not None and spec.spread == "uniform":
             hit = math.ceil(n_local * (1.0 - (1.0 - min(1.0, top_k * skew / n_experts)) ** tokens) - 1e-9)
         hit = min(n_local, max(1, hit, math.ceil(pairs_local / tokens - 1e-9)))
+    if spec is not None and spec.rank_max == "expected" and ep > 1:
+        d_max, p_max = _rank_max(n_experts, top_k, tokens, ep, spec.hot_p, skew)
+        pairs_local = min(max(pairs_local, p_max), float(tokens * top_k), float(n_local * tokens))
+        hit = min(n_local, max(1, hit, math.ceil(d_max - 1e-9), math.ceil(pairs_local / tokens - 1e-9)))
     m_e = max(1, math.ceil(pairs_local / hit))
     return Routing(tokens, pairs_local, hit, m_e, n_local, pairs_mean)
+
+
+def _emax_normal(ms: tuple) -> float:
+    """E[max] of independent normals N(mu, sd^2): Blom's order-statistic constant for identical ranks, else
+    numeric integration E[max] = lo + ∫ (1 − Π Φ((x − mu)/sd)) dx."""
+    from statistics import NormalDist
+    nd = NormalDist()
+    sdm = max(sd for _, sd in ms)
+    if sdm <= 0:
+        return max(mu for mu, _ in ms)
+    if len(set(ms)) == 1:
+        n = len(ms)
+        mu, sd = ms[0]
+        return mu + sd * nd.inv_cdf((n - 0.375) / (n + 0.25))
+    lo = min(mu for mu, _ in ms) - 6 * sdm
+    hi = max(mu for mu, _ in ms) + 6 * sdm
+    N = 600
+    dx = (hi - lo) / N
+    acc = 0.0
+    for i in range(N):
+        x = lo + (i + 0.5) * dx
+        P = 1.0
+        for mu, sd in ms:
+            P *= nd.cdf((x - mu) / sd) if sd > 0 else (1.0 if x >= mu else 0.0)
+        acc += 1.0 - P
+    return lo + acc * dx
+
+
+@functools.lru_cache(maxsize=4096)
+def _rank_max(n_experts: int, top_k: int, tokens: int, ep: int, hot_p: tuple, skew: float) -> tuple:
+    """0.133 opt-in (serving.moe_rank_max = "expected"): the stage waits for the slowest EP rank, and under random
+    routing the per-step maxima over ranks of distinct experts read and token-expert pairs exceed their means even
+    with uniform popularity.  Per rank: distinct experts D = Σ_e 1[e hit], mean Σ q_e, var Σ q_e(1 − q_e) with
+    q_e = 1 − (1 − p_e)^T (independent-indicator approximation); pairs = Σ_tokens hypergeometric count, mean T·k·π,
+    var T·k·π(1 − π)(E − k)/(E − 1) with π = Σ_e p_e / k.  E[max] over ranks under a normal approximation
+    (_emax_normal).  A scalar skew > 1 raises one rank's pairs to skew × mean (its distinct experts as moe_routing).
+    Returns (E[max D], E[max pairs])."""
+    n_local = _cdiv(n_experts, ep)
+    if hot_p:
+        ranks = hot_p if isinstance(hot_p[0], tuple) else None
+    else:
+        ranks = None
+    if ranks is None:
+        ranks = tuple((top_k / n_experts,) * max(0, min(n_local, n_experts - r * n_local)) for r in range(ep))
+    dm, pm = [], []
+    for r in ranks:
+        q = [1.0 - (1.0 - min(1.0, p)) ** tokens for p in r]
+        dm.append((round(sum(q), 9), round(math.sqrt(sum(x * (1 - x) for x in q)), 9)))
+        pi = min(1.0, sum(r) / top_k)
+        var = tokens * top_k * pi * (1 - pi) * (n_experts - top_k) / max(1, n_experts - 1)
+        pm.append((round(tokens * top_k * pi, 9), round(math.sqrt(max(0.0, var)), 9)))
+    p_max = _emax_normal(tuple(pm))
+    if skew > 1.0 and not hot_p:
+        p_max = max(p_max, tokens * top_k / ep * skew)
+    return _emax_normal(tuple(dm)), p_max
 
 
 def hot_rank_probs(load: tuple, ep: int, top_k: int) -> tuple:

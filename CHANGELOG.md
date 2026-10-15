@@ -3,6 +3,11 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.133.0]
+### Added
+- `serving.moe_rank_max` (`off` default | `expected`, opt-in; CLI `--moe-rank-max`): MoE routing with the expected per-step maximum over EP ranks of distinct experts read and token-expert pairs under random routing (normal order statistic). Against a Monte-Carlo routing simulation: 3.6 % / 4.5 % mean error vs 23 % / 22 % for the mean rank. Not the default: on the validation rows it helps decode/static/max-load under the catalog variant but worsens DeepSeek-V3 prefill and catalog_kernel decode. Fingerprints unchanged.
+- `extval.rankmax_variant`; tests for the order statistic vs Monte-Carlo, default unchanged, validation and CLI.
+
 ## [0.132.0]
 ### Changed
 - MoE routing with a measured `serving.moe_expert_load`: the busiest rank's distinct experts are now the exact occupancy Σ 1−(1−p_e)^T (p_e = k·load_e/Σload), maximised over EP ranks, instead of the uniform expectation. Against a Monte-Carlo routing simulation the mean error falls from 22 % to 1.6 %. Concentrated loads now read fewer experts (faster); a hot rank with spread-out load reads more (slower). Fingerprints and validation groups are unchanged.

@@ -209,6 +209,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="MoE: busiest EP rank's token load / mean (0.49; default 1 = uniform routing) 「假设」")
     p.add_argument("--moe-skew-spread", dest="moe_skew_spread", choices=("popular", "uniform"), default=None,
                    help="where a scalar --moe-skew's extra pairs land on the hot rank (0.132; uniform = opt-in)")
+    p.add_argument("--moe-rank-max", dest="moe_rank_max", choices=("off", "expected"), default=None,
+                   help="MoE: route with the expected per-step max over EP ranks (random imbalance; 0.133 opt-in)")
     p.add_argument("--moe-expert-load", dest="moe_expert_load", default=None,
                    help="MoE: measured tokens per routed expert — JSON file with a list, or comma-separated numbers "
                         "(skew derived per EP layout, contiguous expert placement)")
@@ -331,6 +333,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sv["image_w"], sv["image_h"] = w, h
     if getattr(a, "moe_skew", None) is not None:
         sv["moe_skew"] = a.moe_skew
+    if getattr(a, "moe_rank_max", None):
+        sv["moe_rank_max"] = a.moe_rank_max
     if getattr(a, "moe_skew_spread", None):
         sv["moe_skew_spread"] = a.moe_skew_spread
     if getattr(a, "moe_expert_load", None):
