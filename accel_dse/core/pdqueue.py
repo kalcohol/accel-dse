@@ -1127,6 +1127,9 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
              for q in (0.9, 0.99)}
     slot = mdc_wait(lam_c, out * dec["tpot"], B, QS, cs2=ctx["out_cs2"])
     # longest token gap (p99 over requests of each request's worst gap): one decode step + the longest prefill busy
+    # 0.128: with a single prompt length the busy durations sit on a lattice (n · lat), so the p99 is an atom: the
+    # DES 'bias' at load 0.4 (tp3 −26 %, pp3 −18 %) is the atom boundary — P(max ≥ n) matches DES within noise
+    # (tp3 P(≥3) 0.0099 vs 0.0102) while the 0.99 level falls between atoms (MODEL §74).  No closed-form change.
     # period met in its life.  Cap 1: exact M/G/1 busy-period duration (Takács, 0.55); cap > 1: batch count
     # geometric × latency mix (0.54).
     if pre["b"] <= 1:

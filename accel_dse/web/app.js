@@ -1094,6 +1094,7 @@ function paintScope() { $('cmp-scope').textContent = scopeText(); $('lay-scope')
 
 /* ------------------------------------------------------------------ 0.89: CSV / JSON export of compare / sweep / Pareto */
 const EXP = {};
+const EXP_SCHEMA = 1;   // 0.128: JSON export layout version (bump on any key / meaning change); booleans are exported as 是/否 labels
 function csvCell(v) {
   if (v === null || v === undefined) return '';
   if (typeof v === 'number') return isFinite(v) ? String(v) : '';
@@ -1107,7 +1108,7 @@ function expCSV(cols, rows) {
 }
 function expJSON(kind, e) {
   const rows = e.rows();
-  return JSON.stringify({ tool: 'accel-dse', version: S.version || null, exported_at: new Date().toISOString(), kind, title: e.title,
+  return JSON.stringify({ tool: 'accel-dse', schema: EXP_SCHEMA, version: S.version || null, exported_at: new Date().toISOString(), kind, title: e.title,
     scenario: e.scenario, columns: e.cols.map((c) => ({ key: c.key, label: c.label })),
     rows: rows.map((r) => Object.fromEntries(e.cols.map((c) => { const v = c.v(r); return [c.key, v === undefined || (typeof v === 'number' && !isFinite(v)) ? null : v]; }))),
     raw: e.raw }, null, 2);

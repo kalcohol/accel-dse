@@ -2955,3 +2955,18 @@ because split-K needs slices of at least 64 (a library heuristic, kept).
 **Fewest cards.** `/api/fit` first finds the smallest power of two that holds the model, then scans the card counts
 between the last failing power of two and it (at most 32), because layouts such as TP3 can hold a model that TP2
 cannot. Both counts are returned.
+
+## 74. Colocated worst-gap lattice and review round 4 (0.128)
+
+**Worst token gap.** In prefill-first colocation, a request's longest gap is one decode step plus the longest prefill
+busy period it meets. With a single prompt length, busy durations take only the values n · lat, with Borel(λ·lat)
+masses (cap 1) or geometric masses (cap > 1). The longest of m busy periods therefore has an atomic law, and its p99 is
+an atom. Decomposing the DES confirms that the worst gaps are prefill time, not decode-step time. The closed-form tail
+probabilities P(max ≥ n) agree with the DES at every atom. At load 0.4 on the edge layouts, the 0.99 level falls at
+an atom boundary, so the DES p99 (an empirical quantile over requests) straddles two atoms while the closed form
+returns the lower one. The 8–26 % shortfall is this discreteness, not a missing mechanism, so the closed form is
+unchanged. Prompt-length spread fills the lattice and removes the effect.
+
+**Review.** Catalog labels (coverage reasons ⇔ partial, well-formed dtype labels, https sources), the sensitivity
+block (scenario ratios, not derivatives; ratio = alt / base), and export schemas (sweep rows, sensitivity block,
+JSON export `schema: 1`) are locked by tests/test_core_128.py.

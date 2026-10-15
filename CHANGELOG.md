@@ -3,6 +3,16 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.128.0]
+### Investigated (no closed-form change)
+- Colocated prefill-first worst-case ITL (p99 over requests of each request's longest gap) read 8–26 % below the DES at load 0.4 on edge layouts. DES decomposition: the worst gaps are almost entirely prefill busy time (tp3: 172 of 177 ms; the decode-step part is ≈ 5 ms), so neither the batch-size step variance nor a larger post-burst step explains the gap. With one prompt length, busy durations take only the values n · prefill latency, so the p99 is an atom. The closed-form probabilities P(max ≥ n) match the DES (tp3 P(≥3) 0.0099 vs 0.0102; pp2 0.033 vs 0.034; pp3 P(≥4) 0.0085 vs 0.0100). The 0.99 level sits at an atom boundary, where a ±0.1-point shift in probability moves the quantile by a whole prefill. The bias is an artefact of how the quantile is defined, not a missing mechanism (MODEL §74).
+### Changed
+- The JSON export of compare / sweep / Pareto carries `schema: 1` (bumped on any key or meaning change).
+### Verified (no change)
+- Catalog labels: coverage reasons are present exactly for partial entries; dtype labels are well formed and show the expert format only when it differs from attention; offline entries cite https sources. The DeepSeek-V4.1-Flash `mlp` role (15 360 fp32 parameters) feeds no operator.
+- Sensitivity: the block runs scenario swaps (overlap bracket, DRAM efficiency 0.5 / 0.9, vector lanes ÷4), not finite differences. `ratio` = alternative / base, and `hinge` = |ratio − 1| > 0.15 or a bottleneck flip. Sweep-sensitivity skip keys all refer to existing cases.
+- Export schema: the sweep row and sensitivity block key sets are locked by tests.
+
 ## [0.127.0]
 ### Fixed (hostile review round 3, hardware side)
 - Capacity fix (`/api/fit`): the fewest-cards search tried powers of two only, so a model that fits on 3 cards was offered 4 (Llama-3.3-70B on the default chip: TP3 holds it). It now also scans the card counts between the last failing and the first fitting power of two (≤ 32 counts) and returns `pow2_cards` alongside; the UI shows both when they differ.
