@@ -327,6 +327,9 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         else:
             # recurrent step (fused_recurrent kernels): state decay, kᵀ·S read (delta), rank-1 update, q·S read
             vec = t * h_loc * (tok_vec + (7 if delta else 5) * dk * dv)
+        if core.lin == "conv":
+            # 0.114 LFM2 gated short conv: B·x before and C·y after the depthwise conv (1 op / element each)
+            vec += t * _cdiv(core.conv_channels, tp) * 2
         ops.append(Op("state_update", "state", li, vec=vec + conv,
                       state_rw=2 * st_bytes * b_loc, kv_read=0.0))
         return ops

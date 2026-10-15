@@ -44,6 +44,10 @@ EXTRA_TAIL = [
     ("carbon-8b", "HuggingFaceBio/Carbon-8B"),
     ("carbon-3b", "HuggingFaceBio/Carbon-3B"),
     ("carbon-500m", "HuggingFaceBio/Carbon-500M"),
+    # 0.114 coverage refresh (official releases 2026-10-12 / 13; public config.json + safetensors headers)
+    ("lfm2.5-24b-a2b", "LiquidAI/LFM2.5-24B-A2B"),
+    ("lfm2.5-24b-a2b-fp8", "LiquidAI/LFM2.5-24B-A2B-FP8"),
+    ("ling-3.1-flash", "inclusionAI/Ling-3.1-flash"),
 ]
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors",
            "NousResearch/": "meta-llama (gated) → public mirror NousResearch/*, same safetensors"}
@@ -150,6 +154,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("deepmind", "Google DeepMind（AlphaFold）", ("gh:google-deepmind/",)), ("boltz", "Boltz（MIT）", ("gh:jwohlwend/", "boltz-community/")),
     ("openfold", "OpenFold（aqlaboratory）", ("gh:aqlaboratory/",)),
     ("hfbio", "Hugging Face Bio（Carbon 基因组）", ("HuggingFaceBio/",)),
+    ("liquid", "Liquid AI（LFM）", ("LiquidAI/",)), ("ant", "蚂蚁集团（Ling）", ("inclusionAI/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
@@ -167,6 +172,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("genmo", "Mochi 1", ("mochi",)), ("hpcai", "Open-Sora", ("opensora",)),
     ("deepmind", "AlphaFold", ("alphafold",)), ("boltz", "Boltz", ("boltz",)), ("openfold", "OpenFold", ("openfold",)),
     ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
+    ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)),
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.

@@ -20,12 +20,12 @@ LP = "lpddr5x_4x64_8533_16g"
 
 
 def test_release_count_and_param_error():
-    """MODEL §2 / §9 V1: 79 releases (61 LLM / VLM incl. 3 validation-only Llama-2-7B/70B + Mistral-7B (0.66) and Carbon 500M/3B/8B (0.106) + 18 video / protein / genomics), all within ±0.5 %."""
+    """MODEL §2 / §9 V1: 82 releases (64 LLM / VLM incl. 3 validation-only Llama-2-7B/70B + Mistral-7B (0.66), Carbon 500M/3B/8B (0.106), LFM2.5-24B-A2B (+FP8) and Ling-3.1-flash (0.114) + 18 video / protein / genomics), all within ±0.5 %."""
     files = glob.glob(os.path.join(os.path.dirname(__file__), "..", "accel_dse", "data", "releases", "*.json"))
     doms = [json.load(open(f)).get("domain", "llm") for f in files]
-    assert len(files) == 79 and doms.count("llm") == 61
+    assert len(files) == 82 and doms.count("llm") == 64
     listed = {x["id"]: x for x in list_models()}
-    assert len(listed) + len(unlisted_models()) == 79
+    assert len(listed) + len(unlisted_models()) == 82
     assert all(abs(x["param_err"]) <= 0.005 for x in listed.values())
     assert all(abs(x["param_err"]) < 1e-5 for x in listed.values() if get_model(x["id"]).domain in ("gen", "protein", "genomics"))
 

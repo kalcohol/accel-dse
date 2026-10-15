@@ -2653,3 +2653,42 @@ Outputs are byte-identical, and the layout search is about 7 % faster. The remai
 victim-wait sums, the incomplete gamma and `bulkq._stationary`. None of these has a further bit-identical shortcut
 without changing the summation order, so they were left as they are.
 
+## 60. 0.114 — coverage refresh (LFM2.5, Ling-3.1-flash); config / weight drift audit
+
+**Selection.** The HF model lists of the in-scope official orgs were checked for releases since 2026-10-01 with a
+public, non-gated config.json. Two LLMs qualify: LiquidAI/LFM2.5-24B-A2B (+ official FP8) and
+inclusionAI/Ling-3.1-flash. Qwen-Image-2.1-Turbo (image DiT) is out of the modelled domains.
+
+**LFM2 / LFM2-MoE.** The structure follows transformers `Lfm2Moe`.
+
+- The short conv (`Lfm2ShortConv`) is:
+  - in_proj h → 3h, split into B, C and x;
+  - B ⊙ x;
+  - a depthwise causal conv with kernel `conv_L_cache` = 3;
+  - C ⊙ (conv output);
+  - out_proj h → h.
+- It runs as a linear core (`lin = "conv"`, no recurrent heads):
+  - the state is (k − 1) columns per channel in `state_fmt`, as for the GDN / KDA conv states;
+  - the vector work is 2k + 2 operations per channel per token.
+- Attention is GQA with 32 / 8 heads and head_dim 64, plus per-head q / k RMSNorm.
+- The MoE has 64 experts, top-4, a sigmoid router and an expert bias.
+- The parameter count is 23,971,587,712, equal to the headers.
+
+In the FP8 release the conv projections stay BF16. The per-role format therefore takes the larger group (BF16) for
+attn, while the experts and dense MLP are FP8.
+
+**Ling-3.1-flash** (`bailing_hybrid`). The layers come in groups of 8: layers 1–7 are KDA and layer 8 is MLA.
+
+- KDA: q / k / v / g / o are 64 × 128. f_proj is full rank (`no_kda_lora`), b_proj is h → 64, there are 3 depthwise
+  convs with kernel 4, plus A_log, dt_bias and o_norm.
+- MLA: q_lora 1536, kv_lora 512, rope 64, v 128, and a head-wise sigmoid gate `g_proj` (h → 64 heads).
+- The MoE has 512 experts, top-8, 1 shared expert of 1280 and an expert bias; the first 4 layers are dense (10240).
+- There is 1 MTP layer (MLA + MoE + eh_proj and enorm / hnorm / final norm).
+- Parameter counts are 563,946,483,520 + 8,174,197,248 (MTP), exact.
+
+**Drift.** Every stored config was compared with the current HF `config.json` (with subfolders for diffusers repos).
+There is no value change on any shared key. Stored tensor bytes were compared with the current safetensors sizes, and
+there is no change apart from known artifacts (non-safetensors checkpoints, and duplicated consolidated copies in the
+Mistral repos). Fingerprints c034bfe3 / e51c7ec1 are unchanged, because the new entries are appended at the end of
+`EXTRA_TAIL`.
+

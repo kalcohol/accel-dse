@@ -3,6 +3,35 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.114.0]
+
+### Added
+- Coverage refresh. Official releases since early October 2026 with a public, non-gated config.json, at released
+  dtype. Parameter counts match the safetensors headers exactly.
+  - **LFM2.5-24B-A2B** (Liquid AI, 2026-10-12, BF16) and its official **-FP8** (compressed-tensors block FP8; the
+    short-conv layers stay BF16): 23,971,587,712 parameters.
+    - New `lfm2` / `lfm2_moe` builder: 30 of 40 layers are gated short convs (in_proj 3h, depthwise kernel 3,
+      B·x / C·y gates, out_proj), and 10 are GQA with q / k RMSNorm.
+    - The first 2 layers are dense SwiGLU; the rest are MoE with 64 experts, top-4, and an expert bias.
+    - The conv layer runs as a linear core with `lin = "conv"`: state is (k − 1) columns per channel, and the vector
+      work is the conv plus 2 gate products per element.
+  - **Ling-3.1-flash** (inclusionAI / Ant Group, 2026-10-13, FP8 block-128): 563,946,483,520 parameters, plus an
+    8,174,197,248-parameter MTP layer.
+    - `bailing_hybrid` goes through the hybrid builder in groups of 8: 7 KDA layers (full-rank f_proj) and 1 MLA
+      layer with a head-wise sigmoid output gate.
+    - The first 4 layers are dense; the rest are MoE with 512 experts, top-8, 1 shared expert and an expert bias.
+- `summarize_release`: LFM2 `conv.*` tensors map to the attn role.
+- Standing tests: `test_core_114`. The release inventory goes from 79 to 82 (64 LLM / VLM).
+
+### Audit
+- Config drift: 78 stored configs match current HF main on every shared key. boltz-1 has no config.json, and the 3
+  GitHub-only releases were skipped.
+- Weight drift: tensor bytes vs the current safetensors sizes are unchanged for 75 releases. 4 were flagged, all
+  artifacts: ESMFold and Boltz ship .bin / .ckpt, and the Mistral repos ship consolidated + sharded copies.
+
+### Not added
+- Qwen-Image-2.1-Turbo (2026-10-09): an image DiT, and image generation is not a modelled domain (video DiT only).
+
 ## [0.113.0]
 
 ### Fixed

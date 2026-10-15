@@ -1,0 +1,367 @@
+{
+ "bytes_llm": 565541421184,
+ "bytes_mtp": 8211859968,
+ "bytes_total": 573753281152,
+ "config": {
+  "architectures": [
+   "BailingMoeV3ForCausalLM"
+  ],
+  "attention_dropout": 0.0,
+  "auto_map": {
+   "AutoConfig": "configuration_bailing_moe_v3.BailingMoeV3Config",
+   "AutoModel": "modeling_bailing_moe_v3.BailingMoeV3Model",
+   "AutoModelForCausalLM": "modeling_bailing_moe_v3.BailingMoeV3ForCausalLM"
+  },
+  "embedding_dropout": 0.0,
+  "eos_token_id": 156895,
+  "expert_swiglu_limit_list": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   10,
+   10,
+   10,
+   10,
+   10,
+   10,
+   10
+  ],
+  "first_k_dense_replace": 4,
+  "gated_attention_proj_granularity_type": "head_wise",
+  "group_norm_size": 1,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 4096,
+  "initializer_range": 0.02,
+  "intermediate_size": 10240,
+  "kda_lower_bound": -5.0,
+  "kda_safe_gate": true,
+  "kv_lora_rank": 512,
+  "layer_group_size": 8,
+  "linear_silu": true,
+  "max_position_embeddings": 262144,
+  "max_window_layers": 20,
+  "model_type": "bailing_hybrid",
+  "moe_intermediate_size": 1280,
+  "moe_router_enable_expert_bias": true,
+  "moe_shared_expert_intermediate_size": 1280,
+  "mtp_loss_scaling_factor": 0,
+  "mtp_use_kda": false,
+  "n_group": 8,
+  "no_kda_lora": true,
+  "norm_topk_prob": true,
+  "num_attention_heads": 64,
+  "num_experts": 512,
+  "num_experts_per_tok": 8,
+  "num_hidden_layers": 72,
+  "num_key_value_heads": 64,
+  "num_kv_heads_for_linear_attn": 0,
+  "num_nextn_predict_layers": 1,
+  "num_shared_experts": 1,
+  "output_dropout": 0.0,
+  "output_router_logits": false,
+  "pad_token_id": 156892,
+  "partial_rotary_factor": 0.5,
+  "q_lora_rank": 1536,
+  "qk_head_dim": 192,
+  "qk_nope_head_dim": 128,
+  "qk_rope_head_dim": 64,
+  "quantization_config": {
+   "activation_scheme": "dynamic",
+   "fmt": "e4m3",
+   "modules_to_not_convert": [
+    "lm_head",
+    "model.word_embeddings",
+    "b_proj",
+    "mlp.gate",
+    "model.layers.7.attention.g_proj",
+    "model.layers.15.attention.g_proj",
+    "model.layers.23.attention.g_proj",
+    "model.layers.31.attention.g_proj",
+    "model.layers.39.attention.g_proj",
+    "model.layers.47.attention.g_proj",
+    "model.layers.55.attention.g_proj",
+    "model.layers.63.attention.g_proj",
+    "model.layers.71.attention.g_proj",
+    "model.layers.72.eh_proj"
+   ],
+   "quant_method": "fp8",
+   "weight_block_size": [
+    128,
+    128
+   ]
+  },
+  "rms_norm_eps": 1e-06,
+  "rope_interleave": true,
+  "rope_scaling": null,
+  "rope_theta": 6000000,
+  "rotary_dim": 64,
+  "routed_scaling_factor": 2.5,
+  "router_dtype": "fp32",
+  "scale_router_input": false,
+  "score_function": "sigmoid",
+  "scoring_func": "sigmoid",
+  "seq_aux": true,
+  "share_expert_swiglu_limit_list": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   10,
+   10,
+   10,
+   10,
+   10,
+   10,
+   10,
+   10
+  ],
+  "short_conv_kernel_size": 4,
+  "tie_word_embeddings": false,
+  "topk_group": 4,
+  "topk_method": "noaux_tc",
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.45.0",
+  "up_proj_norm": false,
+  "use_bias": false,
+  "use_cache": true,
+  "use_kda_lora": false,
+  "use_mla_nope": false,
+  "use_nGPT": false,
+  "use_qk_norm": true,
+  "use_qkv_bias": false,
+  "v_head_dim": 128,
+  "value_norm": false,
+  "vocab_size": 157184
+ },
+ "fetched": "2026-10-15",
+ "n_tensors": 214025,
+ "params_llm": 563946483520,
+ "params_mtp": 8174197248,
+ "params_vision": 0,
+ "quantization_config": {
+  "activation_scheme": "dynamic",
+  "fmt": "e4m3",
+  "modules_to_not_convert": [
+   "lm_head",
+   "model.word_embeddings",
+   "b_proj",
+   "mlp.gate",
+   "model.layers.7.attention.g_proj",
+   "model.layers.15.attention.g_proj",
+   "model.layers.23.attention.g_proj",
+   "model.layers.31.attention.g_proj",
+   "model.layers.39.attention.g_proj",
+   "model.layers.47.attention.g_proj",
+   "model.layers.55.attention.g_proj",
+   "model.layers.63.attention.g_proj",
+   "model.layers.71.attention.g_proj",
+   "model.layers.72.eh_proj"
+  ],
+  "quant_method": "fp8",
+  "weight_block_size": [
+   128,
+   128
+  ]
+ },
+ "repo": "inclusionAI/Ling-3.1-flash",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 50135040,
+    "params": 25067520
+   },
+   "fp32": {
+    "bytes": 2080512,
+    "params": 520128
+   },
+   "fp8": {
+    "bytes": 13312038528,
+    "params": 13308788736
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1287651328,
+    "params": 643825664
+   }
+  },
+  "expert": {
+   "fp8": {
+    "bytes": 547742023680,
+    "params": 547608330240
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 1287651328,
+    "params": 643825664
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 139264,
+    "params": 34816
+   },
+   "fp8": {
+    "bytes": 503439360,
+    "params": 503316480
+   }
+  },
+  "mtp": {
+   "bf16": {
+    "bytes": 71348224,
+    "params": 35674112
+   },
+   "fp32": {
+    "bytes": 2048,
+    "params": 512
+   },
+   "fp8": {
+    "bytes": 8140509696,
+    "params": 8138522624
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 1240832,
+    "params": 620416
+   }
+  },
+  "router": {
+   "bf16": {
+    "bytes": 285212672,
+    "params": 142606336
+   }
+  },
+  "shared_expert": {
+   "fp8": {
+    "bytes": 1069808640,
+    "params": 1069547520
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

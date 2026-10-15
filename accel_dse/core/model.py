@@ -672,15 +672,18 @@ def _gdn(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
 def _kda(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
     """Kimi Delta Attention (Kimi-Linear / Kimi-K3 / GLM-5.x-Next)."""
     lc = _list(c.get("linear_attn_config")) or {}
-    H, hd = lc.get("num_heads", c["num_attention_heads"]), lc.get("head_dim", 128)
-    kern = lc.get("short_conv_kernel_size", 4)
+    ling = c.get("model_type") == "bailing_hybrid"       # 0.114: Ling-3.x keeps these at the top level
+    H, hd = lc.get("num_heads", c["num_attention_heads"]), lc.get("head_dim", (c.get("head_dim") if ling else None) or 128)
+    kern = lc.get("short_conv_kernel_size", (c.get("short_conv_kernel_size") if ling else None) or 4)
     d = H * hd
     # output gate: full g_proj (Kimi-K3 release) or low-rank g_a / g_b (transformers Glm5NextTextLinearAttention)
     gate = ((Linear("kda_g_a", h, hd, "rep"), Linear("kda_g_b", hd, d, "col")) if c.get("model_type", "").startswith("glm5_next")
             else (Linear("kda_g", h, d, "col"),))
+    # 0.114: Ling-3.x (bailing_hybrid, no_kda_lora): full-rank f_proj h → d instead of the low-rank f_a / f_b
+    fgate = ((Linear("kda_f", h, d, "col"),) if c.get("no_kda_lora") else
+             (Linear("kda_f_a", h, hd, "rep"), Linear("kda_f_b", hd, d, "col")))
     lin = (Linear("kda_q", h, d, "col"), Linear("kda_k", h, d, "col"), Linear("kda_v", h, d, "col")) + gate + (
-        Linear("kda_b", h, H, "col"), Linear("kda_f_a", h, hd, "rep"), Linear("kda_f_b", hd, d, "col"),
-        Linear("kda_o", d, h, "row"))
+        Linear("kda_b", h, H, "col"),) + fgate + (Linear("kda_o", d, h, "row"),)
     core = AttnCore("linear", n_state_heads=H, state_dk=hd, state_dv=hd, conv_channels=3 * d, conv_kernel=kern,
                     lin="kda", lin_chunk=64)   # transformers chunk_kimi_delta_attention(chunk_size=64) / FLA chunk_kda
     misc = 3 * d * kern + d + H + hd
@@ -704,12 +707,16 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             types = ["full_attention" if (i + 1) % n == 0 else "linear_attention" for i in range(L)]
         elif c.get("attn_type_list"):
             types = ["full_attention" if t == 1 else "linear_attention" for t in c["attn_type_list"]]
+        elif mt == "bailing_hybrid" and c.get("layer_group_size"):
+            # 0.114 Ling-3.x: groups of layer_group_size, the last of each group MLA, the rest KDA
+            n = c["layer_group_size"]
+            types = ["full_attention" if (i + 1) % n == 0 else "linear_attention" for i in range(L)]
     E = _g(c, "num_experts", "n_routed_experts", "num_local_experts", default=0)
     k = _g(c, "num_experts_per_tok", "num_experts_per_token")
     de = _g(c, "moe_intermediate_size", "intermediate_size")
     mlp_types = _list(c.get("mlp_layer_types"))
     first_dense = c.get("first_k_dense_replace") or 0
-    kda = mt in ("kimi_linear",) or mt.startswith("glm5_next")
+    kda = mt in ("kimi_linear", "bailing_hybrid") or mt.startswith("glm5_next")
     is_minimax = mt.startswith("minimax")
 
     def ffn_for(i: int):
@@ -740,6 +747,8 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
                                    topk=topk + (kp - 1 if c.get("index_kpool_always_select_tail") else 0))
             if c.get("mla_use_output_gate"):
                 alin = alin + (Linear("o_gate", h, core.n_q * core.v_dim, "col"),)
+            elif mt == "bailing_hybrid" and c.get("gated_attention_proj_granularity_type") == "head_wise":
+                alin = alin + (Linear("o_gate", h, core.n_q, "col"),)    # Ling-3.x: one sigmoid gate per head
             return alin, core, misc
         H = c["num_attention_heads"]
         KV = c.get("num_key_value_heads") or H
@@ -769,7 +778,7 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         t = types[i] if types and i < len(types) else "full_attention"
         alin, core, misc = full_attn(i) if t != "linear_attention" else lin_attn(i)
         ffn, flin = ffn_for(i)
-        if ffn.kind == "moe" and mt in ("kimi_linear",) or (ffn.kind == "moe" and c.get("n_routed_experts")):
+        if ffn.kind == "moe" and mt in ("kimi_linear", "bailing_hybrid") or (ffn.kind == "moe" and c.get("n_routed_experts")):
             misc += E
         hc = c.get("hc_mult") or 0
         if hc and mt.startswith("glm5_next"):
@@ -1034,8 +1043,47 @@ def _build_dsv4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, mtp, notes, "proxy"
 
 
+def _build_lfm2(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.114: Liquid LFM2 / LFM2-MoE (transformers Lfm2Moe): ``layer_types`` conv | full_attention.
+    conv (Lfm2ShortConv): in_proj h → 3h (B, C, x), B·x, depthwise causal conv (kernel conv_L_cache) over h channels,
+    C·(conv), out_proj h → h.  full_attention: GQA with per-head q / k RMSNorm.  FFN: SwiGLU (w1 / w3 / w2); the first
+    ``num_dense_layers`` dense (intermediate_size), the rest MoE (num_experts, top-k, moe_intermediate_size, sigmoid
+    router + per-expert bias, no shared expert).  Norms: operator_norm + ffn_norm per layer; final embedding_norm."""
+    h = c["hidden_size"]
+    H = c["num_attention_heads"]
+    KV = c.get("num_key_value_heads") or H
+    hd = c.get("head_dim") or h // H
+    L = c["num_hidden_layers"]
+    kern = c.get("conv_L_cache") or 3
+    types = _list(c.get("layer_types")) or ["full_attention"] * L
+    E = c.get("num_experts") or 0
+    n_dense = c.get("num_dense_layers") or 0
+    layers = []
+    for i in range(L):
+        if types[i] == "conv":
+            alin = (Linear("conv_in", h, 3 * h, "col"), Linear("conv_out", h, h, "row"))
+            core = AttnCore("linear", n_state_heads=0, state_dk=0, state_dv=0, conv_channels=h, conv_kernel=kern,
+                            lin="conv")
+            misc = h * kern + (h if c.get("conv_bias") else 0)
+        else:
+            alin, core = _gqa(h, H, KV, hd)
+            misc = 2 * hd
+        if E and i >= n_dense:
+            ffn, flin = _ffn_moe(h, E, c["num_experts_per_tok"], c["moe_intermediate_size"])
+            misc += E if c.get("use_expert_bias") else 0
+        else:
+            ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        layers.append(Layer(alin, core, ffn, flin, misc + 2 * h))
+    n_conv = sum(1 for t in types[:L] if t == "conv")
+    notes = [f"LFM2 混合：{n_conv}/{L} 层门控短卷积（in_proj 3h、深度卷积 kernel {kern}、两次逐元素门控），"
+             f"{L - n_conv} 层 GQA 全注意力（q/k RMSNorm）"]
+    return layers, [], notes, "full"
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if mt in ("lfm2", "lfm2_moe"):
+        return _build_lfm2, "LFM2 混合（短卷积 + GQA）" + (" MoE" if c.get("num_experts") else "")
     if mt.startswith("qwen4_exp"):
         return _build_qwen4exp, "混合注意力（GDN + QSA）+ 门控残差 / PLE"
     if mt.startswith("deepseek_v41"):
@@ -1044,7 +1092,7 @@ def _builder(c: dict):
         return _build_dsv4_ref, "DeepSeek-V4 (CSA/MQA-512)"
     if mt.startswith("deepseek_v4"):
         return _build_dsv4, "DeepSeek-V4 (CSA/MQA-512)"
-    if mt in ("kimi_linear", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
+    if mt in ("kimi_linear", "bailing_hybrid", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
               "qwen4_exp", "qwen4_exp_text", "minimax_text_01", "minimax_m1", "minimax") or mt.startswith("glm5_next"):
         return _build_hybrid, "混合注意力（linear + full）"
     if c.get("kv_lora_rank"):

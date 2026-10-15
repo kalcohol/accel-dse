@@ -81,3 +81,7 @@ HuggingFaceBio/Carbon-A-1.2B
 HuggingFaceBio/Carbon-500M
 HuggingFaceBio/Carbon-3B
 HuggingFaceBio/Carbon-8B
+# 0.114 coverage refresh
+LiquidAI/LFM2.5-24B-A2B
+LiquidAI/LFM2.5-24B-A2B-FP8
+inclusionAI/Ling-3.1-flash

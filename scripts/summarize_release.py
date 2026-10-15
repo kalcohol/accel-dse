@@ -41,7 +41,7 @@ ROLE = [
     ("router", r"(\.gate\.weight$|\.router\.|gate\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid)"),
     ("shared_expert", r"shared_expert"),
     ("expert", r"(\.experts\.|block_sparse_moe\.experts|routed_expert)"),
-    ("attn", r"(self_attn|attention|\.attn\.|linear_attn|\.mixer\.|\.attn_)"),
+    ("attn", r"(self_attn|attention|\.attn\.|linear_attn|\.mixer\.|\.attn_|\.conv\.(in_proj|out_proj|conv)\.)"),  # 0.114 LFM2 short conv
     ("mlp", r"(\.mlp\.|feed_forward|\.ffn\.)"),
 ]
 
