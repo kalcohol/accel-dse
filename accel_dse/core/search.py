@@ -3,9 +3,11 @@
 Batch search (per layout): maximise throughput B·E/step(B) subject to
 the latency SLO (LLM: TPOT; video: clip latency; protein: batch latency) and capacity.  Exactness relies on two properties that the test
 suite certifies by brute force on every catalog family:
-  (P1) step(B) is non-decreasing in B;
+  (P1) thr(B)/B is non-increasing in B (decode: step(B) non-decreasing; 0.125: the bound is taken from the
+       evaluated thr(p)/p itself — the 0.124 E/step form left out the prompt factor of prefill (thr = B·S/step) and
+       the host-overlap period of video, so it under-bounded and pruned the optimum);
   (P2) feasibility (fits ∧ TPOT ≤ SLO) is monotone (true ⇒ true for smaller B).
-Given P1, thr(B) ≤ hi·E/step(lo) for B ∈ [lo, hi]; branch-and-bound on that
+Given P1, thr(B) ≤ hi·thr(lo)/lo for B ∈ [lo, hi]; branch-and-bound on that
 bound returns the exact maximiser with far fewer evaluations than a scan.
 """
 
@@ -92,13 +94,13 @@ class _BatchSearch:
 
     def _piecewise(self, hi: int) -> float:
         """Bound on max thr(B), B ≤ hi, from every evaluated feasible point (P1):
-        thr(B) ≤ (p_{i+1} − 1)·E/step(p_i) for B ∈ [p_i, p_{i+1})."""
+        thr(B) ≤ (p_{i+1} − 1)·thr(p_i)/p_i for B ∈ [p_i, p_{i+1})."""
         pts = sorted(b for b, r in self.memo.items() if b <= hi and _feasible(r))
         ub = 0.0
         for i, p in enumerate(pts):
             nxt = pts[i + 1] - 1 if i + 1 < len(pts) else hi
             r = self.memo[p]
-            ub = max(ub, nxt * r.tokens_per_step / r.step)
+            ub = max(ub, nxt * r.throughput / p)     # 0.125: thr/B, not E/step (prefill: × prompt)
         return ub
 
     def _segment(self, a: int, b: int) -> float:
@@ -109,7 +111,7 @@ class _BatchSearch:
         for i, p in enumerate(pts):
             nxt = pts[i + 1] - 1 if i + 1 < len(pts) else b
             r = self.memo[p]
-            ub = max(ub, nxt * r.tokens_per_step / r.step)
+            ub = max(ub, nxt * r.throughput / p)     # 0.125: thr/B, not E/step (prefill: × prompt)
         return ub
 
     def bound(self, floor: float | None = None) -> float:

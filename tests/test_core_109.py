@@ -32,8 +32,8 @@ def test_tbo_prefill_moves_pf_rows_toward_measured():
 
 def test_fingerprints_unchanged():
     from tests.test_core_0100 import _fp
-    assert _fp({"exec_overlap": "stage"}) == "c034bfe3e3a3afa2"
-    assert _fp({}) == "e51c7ec17bbdb998"
+    assert _fp({"exec_overlap": "stage"}) == "e2176af2610c144c"
+    assert _fp({}) == "392692e6937f69ef"
 
 
 def _ev(sc):

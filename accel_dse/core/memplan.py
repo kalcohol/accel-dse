@@ -49,7 +49,7 @@ from functools import lru_cache
 from dataclasses import dataclass, replace
 
 from .dtypes import fmt as _fmt
-from .ir import Op, Phase, Shard, _cdiv, _lin_local
+from .ir import Op, Phase, Shard, _cdiv, _lin_local, groups_local
 from .model import Layer, ModelSpec
 
 RUNTIME_RESERVE = 1.0 * 2**30   # 「假设」 runtime / activations reserve in DRAM
@@ -75,7 +75,7 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
     a = model.fmt("attn").bits / 8
     for l in L.attn_linears + L.cross_linears:
         k, n = _lin_local(l, sh.tp, L.core if l in L.attn_linears else None)
-        hot += k * n * l.groups * a
+        hot += k * n * (groups_local(l, sh.tp)[0] if l.groups > 1 else 1) * a
     f = L.ffn
     for l in L.ffn_linears:
         k, n = _lin_local(l, sh.tp)

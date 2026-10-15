@@ -2915,3 +2915,20 @@ crashed `extval.summary` (now `n_invalid`) and the stored `data/ext_validation.j
 that moves at most `channel_GBps`. Per scale-up / network tier the collective sees
 b = min(link GBps, channels × channel_GBps) before the topology factor. Both 0 (default) = off, bit-identical.
 Point-to-point (PP / KV) transfers are not capped. No public per-channel figure is used; values are user assumptions.
+
+
+## 71. Hostile core review (0.125)
+
+Invariants checked on every catalog model: each weight GEMM's K·N·count equals its weight parameters; the busiest
+rank never does less than the mean (share, wshare ≤ 1) under TP / EP / SP; a batch-1 decode reads exactly the active
+parameters minus the embedding table (a lookup); the stored weights equal the release bytes up to documented
+differences; the batch search returns the brute-force optimum.
+
+**Grouped linears.** A block-diagonal linear with g groups and total K × N has per group K/g × N/g. Under TP each rank
+holds ⌈g/TP⌉ whole groups; with TP > g one group whose N is split over ⌈TP/g⌉ ranks. Before 0.125 the per-group N was
+the total N (DeepSeek-V4 `o_a`: 8× work, weight reads and storage).
+
+**Search bound.** For B in [p, q) with step(B) ≥ step(p): thr(B) = B·u/step(B) ≤ (q − 1)·thr(p)/p, where u is the
+work per sequence (decode: E tokens; prefill: S prompt tokens; video: units per request with the overlap period). The
+bound is taken from the evaluated thr(p)/p, which holds for every phase; 0.124 used E/step and missed the prompt
+factor.

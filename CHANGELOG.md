@@ -3,6 +3,14 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.125.0]
+### Fixed (hostile core review)
+- Grouped (block-diagonal) linears: the per-rank GEMM kept the full N per group (N = n instead of n/g), so DeepSeek-V4 / V4-Pro / V4.1 `o_a` (8 groups) did 8× its work and weight reads, and the storage plan held 8× its bytes (V4-Flash batch-1 decode weight reads +69 %, V4-Pro +121 %; stored weights +7 %). `ir.groups_local`: whole groups per rank (⌈g/TP⌉), N split once TP > g. No validation data covers V4, so no validation result changes. Fingerprints rebaselined (stage c034bfe3e3a3afa2 → e2176af2610c144c, default e51c7ec17bbdb998 → 392692e6937f69ef); only the V4 rows move (without them the hash is unchanged, tested).
+- Batch search bound: the branch-and-bound bound was E/step, but prefill throughput is B·S/step and video uses the host-overlap period, so the bound was too low and pruned the optimum (qwen3-8b 2048-token prefill: batch 124 instead of 112; 4-card layout ranking top-1 1.5 % below brute force; Wan te_cpu + overlap batch 5 instead of 4). The bound now uses thr(p)/p. Decode results are unchanged.
+### Verified (no change)
+- Per-op weight GEMM shape = weight params, and share / wshare ≤ 1 under TP / EP / SP splits for every catalog family (incl. LFM2, Ling, Carbon, image DiTs, structure models); batch-1 decode weight reads = active − embedding params (misc vectors ≤ 0.7 %); stored weights vs release bytes; batch-search monotonicity (P1 / P2) over 10 models × 3 layouts × 6 options.
+- Public data searched for the open gaps (ROCm per-sequence decode overhead, small-M GEMM efficiency): nothing quantitative enough to adopt.
+
 ## [0.124.0]
 ### Validator audit
 - Adversarial audit of the validators against brute-force references on small random cases: pdsim RadixLRU / LRUCache, DecodeReplica, ColocPrefillFirst, KVServer (Lindley), PrefillReplica batch cap, `_pct`, the overlap pipe flow shop (+ `feed_runs` / `stage_pipe_time` repeat shortcuts), vecsanity PUBLIC values, extval summary. No simulator bug found.

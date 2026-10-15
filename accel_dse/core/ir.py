@@ -221,6 +221,9 @@ def _lin_local(l: Linear, tp: int, core: AttnCore | None = None) -> tuple[int, i
         if l.split == "row" and l.name == "o" and l.k % core.n_q == 0:
             return hq * (l.k // core.n_q), l.n
     k = l.k // l.groups
+    if l.groups > 1:              # 0.125 (review): block-diagonal — per group K = k/g, N = n/g (was N = n: ×g work)
+        g_loc, n_g = groups_local(l, tp)
+        return k, n_g
     if l.split == "col":
         return k, _cdiv(l.n, tp)
     if l.split == "row":
@@ -229,6 +232,15 @@ def _lin_local(l: Linear, tp: int, core: AttnCore | None = None) -> tuple[int, i
         heads = l.n // max(l.unit, 1)
         return k, _cdiv(heads, tp) * l.unit
     return k, l.n
+
+
+def groups_local(l: Linear, tp: int) -> tuple[int, int]:
+    """0.125: (groups on the busiest rank, N per group) of a grouped linear under TP — whole groups per rank while
+    TP ≤ groups (⌈g/TP⌉), else one group with its N split over TP/g ranks."""
+    g, n_g = l.groups, l.n // l.groups
+    if tp <= g:
+        return _cdiv(g, tp), n_g
+    return 1, _cdiv(n_g, _cdiv(tp, g))
 
 
 def _repl(l: Linear, tp: int) -> int:
@@ -625,8 +637,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(gemm(model, "attn.kv_b.uv", li, t, c.kv_lora, c.v_dim, "attn", count=hq,
                             params=hq * c.kv_lora * c.v_dim, replicated=_repl(l, tp)))
             continue
-        ops.append(gemm(model, f"attn.{l.name}", li, m, k, n, "attn", count=l.groups if l.groups > 1 else 1,
-                        params=k * n * (l.groups if l.groups > 1 else 1), replicated=_repl(l, tp)))
+        gc = groups_local(l, tp)[0] if l.groups > 1 else 1
+        ops.append(gemm(model, f"attn.{l.name}", li, m, k, n, "attn", count=gc, params=k * n * gc,
+                        replicated=_repl(l, tp)))
     ops.extend(_attn_core_ops(model, li, L.core, ph, sh, b_loc))
     if L.core.kind in ("gqa", "mla"):
         hq = gqa_local(L.core.n_q, L.core.n_kv, tp)[1] if L.core.kind == "gqa" else _cdiv(L.core.n_q, tp)

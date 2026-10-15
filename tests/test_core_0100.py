@@ -26,8 +26,8 @@ def test_default_is_pipe_and_stage_selectable():
 
 
 def test_fingerprints():
-    assert _fp({"exec_overlap": "stage"}) == "c034bfe3e3a3afa2"     # the 0.99 default numbers, explicitly stage
-    assert _fp({}) == "e51c7ec17bbdb998"                            # 0.100 default (pipe)
+    assert _fp({"exec_overlap": "stage"}) == "e2176af2610c144c"     # the 0.99 default numbers, explicitly stage
+    assert _fp({}) == "392692e6937f69ef"                            # 0.100 default (pipe)
 
 
 def test_refhw_unchanged():
