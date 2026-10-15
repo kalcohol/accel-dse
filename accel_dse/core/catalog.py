@@ -136,7 +136,7 @@ DOMAIN_RELEASES = [
     ("qwen-image", "Qwen/Qwen-Image", "qwenimage",
      NativeWorkload("gen", frames=1, height=1328, width=1328, vae_s=8, steps=50, cfg=2, source=_QI_SRC)),
     ("flux.2-klein-4b", "black-forest-labs/FLUX.2-klein-4B", "flux2",
-     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=16, steps=4, cfg=1, source=_FLUX2K_SRC)),
+     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=4, cfg=1, source=_FLUX2K_SRC)),
 ]
 _DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
 # GitHub-only releases: the repo name alone does not say which checkpoint is evaluated

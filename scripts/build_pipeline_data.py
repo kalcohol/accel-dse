@@ -50,6 +50,17 @@ SPECS = {
     "opensora-vae": ("os_vae.json", "hpcai-tech/OpenSora-VAE-v1.2", None, None, ""),
     "h3-vae": ("h3_vae.json", "MiniMaxAI/MiniMax-H3 · vae", None, None, ""),
     "h3-audio-vae": ("h3_avae.json", "MiniMaxAI/MiniMax-H3 · audio_vae", None, None, ""),
+    # 0.116 image DiT pipelines (headers fetched like the others: text_encoder/ and vae/ safetensors of the repo)
+    "qwen2.5-vl-7b": ("qi_te.json", "Qwen/Qwen-Image · text_encoder", lambda k: k.startswith("model."), None,
+                      "视觉塔（0.68 B）与 lm_head 随 text_encoder 加载、计入存储，文生图不经过它们"),
+    "qwen3-vl-8b": ("qi21_te.json", "Qwen/Qwen-Image-2.1-Turbo · text_encoder",
+                    lambda k: k.startswith("model.language_model."), None,
+                    "视觉塔与 lm_head 随 text_encoder 加载、计入存储，文生图不经过它们"),
+    "qwen3-4b": ("fk_te.json", "black-forest-labs/FLUX.2-klein-4B · text_encoder", lambda k: True, None, ""),
+    "qwen-image-vae": ("qi_vae.json", "Qwen/Qwen-Image · vae", None, None, ""),
+    "qwen-image-2.1-vae": ("qi21_vae.json", "Qwen/Qwen-Image-2.1-Turbo · vae", None, None, ""),
+    "flux2-vae": ("fk_vae.json", "black-forest-labs/FLUX.2-klein-4B · vae", None, "bf16",
+                  "int64 张量为 BatchNorm 计数（num_batches_tracked），权重均为 bf16"),
 }
 
 

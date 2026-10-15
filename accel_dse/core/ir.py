@@ -98,6 +98,8 @@ class Phase:
     skew: float = 1.0    # MoE: token-expert pairs on the busiest EP rank / the mean (0.49; 1 = uniform routing)
     cp: int = 1          # 0.89: context-parallel chunk phase (evaluate) — cp ranks, true prompt length cp_len
     cp_len: int = 0
+    kvpre: int = 0       # 0.116 full: cached text-prefix tokens (prefix K/V reuse); q then holds the image tokens only
+    kvx: bool = False    # 0.116 full: extract step of the prefix K/V reuse (writes the cache)
 
     def __post_init__(self):
         if self.kind not in ("decode", "prefill", "full"):
@@ -839,7 +841,7 @@ def _prefix(model: ModelSpec) -> int:
 
 def _video_rows(model: ModelSpec, ph: Phase) -> int:
     """Video tokens of the sequence (minus the joint text prefix and the joint audio rows)."""
-    return ph.q - _prefix(model) - ph.aux
+    return ph.q - ph.aux if ph.kvpre else ph.q - _prefix(model) - ph.aux
 
 
 def _rows(model: ModelSpec, l: Linear, ph: Phase, b: int, sp: int) -> int:
@@ -852,8 +854,8 @@ def _rows(model: ModelSpec, l: Linear, ph: Phase, b: int, sp: int) -> int:
         return b
     if l.rows == "img":
         return b * _cdiv(_video_rows(model, ph), sp)
-    if l.rows == "txt":
-        return b * _cdiv(_prefix(model), sp)
+    if l.rows == "txt":         # 0.116: a cached prefix runs no text rows
+        return 0 if ph.kvpre else b * _cdiv(_prefix(model), sp)
     if l.rows == "aud":
         return b * _cdiv(ph.aux, sp)
     return b * _cdiv(ph.q, sp)
@@ -878,8 +880,23 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
             groups, nq = (T, hw) if core.span == "spatial" else (hw, T)
             nk = nq
     causal = 0.5 if core.causal else 1.0
+    kv_r = kv_w = 0.0
+    wl = model.workload
+    if not cross and wl is not None and wl.cond_causal and groups == 1:
+        T = _prefix(model)
+        if ph.kvpre:
+            # 0.116 cached step (QwenImage21 kv_cache_mode "cached"): image queries over [cached prefix ‖ image];
+            # the prefix K/V (post-RoPE) are read from the cache
+            nk = ph.q + ph.kvpre
+            kv_r = b * h_loc * ph.kvpre * (core.qk_dim + core.v_dim) * ab
+        elif T:
+            # block-causal mask: text rows causal over the text keys, image rows over every key
+            N = ph.q - T
+            causal = (N * ph.q + T * (T + 1) / 2) / (ph.q * ph.q)
+            if ph.kvx:          # extract step (kv_cache_mode "extract"): the prefix K/V are written to the cache
+                kv_w = b * h_loc * T * (core.qk_dim + core.v_dim) * ab
     cnt = b * h_loc * groups
-    ops = [Op(tag + "qk", "attn", li, m=nq, k=core.qk_dim, n=nk, count=cnt, causal=causal,
+    ops = [Op(tag + "qk", "attn", li, m=nq, k=core.qk_dim, n=nk, count=cnt, causal=causal, kv_read=kv_r, kv_write=kv_w,
               act_bytes=cnt * nq * core.qk_dim * ab, stream=True, orient=True),
            Op(tag + "pv", "attn", li, m=nq, k=nk, n=core.v_dim, count=cnt, causal=causal,
               act_bytes=cnt * nq * core.v_dim * ab, orient=True),

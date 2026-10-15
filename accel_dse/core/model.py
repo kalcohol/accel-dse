@@ -355,6 +355,10 @@ class NativeWorkload:
     special_tokens: int = 0        # protein: <cls> + <eos>
     kmer: int = 0                  # genomics (0.106): bases per token (Carbon: non-overlapping 6-mers)
     overlap: int = 0               # genomics: tokens shared by consecutive windows of a long record
+    cond_causal: bool = False      # 0.116 image DiT: block-causal condition mask — text attends causally to text only,
+                                   # image tokens to [text ‖ image] (Qwen-Image-2.1 causal_condition)
+    prefix_kv: bool = False        # 0.116: the reference caches the text-prefix K/V at step 1 and runs later steps on the
+                                   # image tokens only (needs cond_causal: the prefix is timestep-independent)
     source: str = ""
 
 

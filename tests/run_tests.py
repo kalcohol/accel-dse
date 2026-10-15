@@ -24,7 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 HERE = Path(__file__).parent
 # known slow modules first, so they do not end up as the tail of a parallel run
-SLOW_FIRST = ("test_core_053", "test_core_061_3", "test_core_052", "test_core_061_4", "test_core_057",
+SLOW_FIRST = ("test_core_scenario_search_topk1", "test_core_scenario_search_topk2", "test_core_057", "test_core_057b",
+              "test_core_scenario_search", "test_core_053", "test_core_061_3", "test_core_052", "test_core_061_4",
               "test_core_060", "test_core_058", "test_core_062", "test_core_054", "test_core_055", "test_core_056")
 
 

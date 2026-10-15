@@ -73,8 +73,8 @@ CLOSED = ("gpt-oss-120b", "gpt-oss-20b", "deepseek-v3.2", "glm-5", "glm-5.2", "g
           "qwen3.8-flash-next")
 PROXY = ()
 PROTEIN_PARTIAL = ("openfold", "alphafold2", "boltz-1", "protenix")
-# 0.115 image DiTs: DiT trunk only (text encoder / VAE not in pipeline.py yet) → partial with the stated reason
-IMAGE_PARTIAL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")
+# 0.115 image DiTs were DiT-only (partial); 0.116 adds their text encoder + VAE pipelines → full
+IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")
 
 
 def _kpi(i):
@@ -99,9 +99,9 @@ def test_coverage_list():
     cov = {e["id"]: get_model(e["id"]).coverage for e in entries()}
     assert all(cov[i] == "full" and not get_model(i).coverage_reasons for i in CLOSED)
     assert all(cov[i] == "proxy" for i in PROXY)
-    assert all(cov[i] == "partial" for i in PROTEIN_PARTIAL + IMAGE_PARTIAL)
-    assert all(get_model(i).coverage_reasons[0].startswith("只评估 DiT 去噪主干") for i in IMAGE_PARTIAL)
-    assert sorted(i for i, c in cov.items() if c != "full") == sorted(PROXY + PROTEIN_PARTIAL + IMAGE_PARTIAL)
+    assert all(cov[i] == "partial" for i in PROTEIN_PARTIAL)
+    assert all(cov[i] == "full" and not get_model(i).coverage_reasons for i in IMAGE_FULL)
+    assert sorted(i for i, c in cov.items() if c != "full") == sorted(PROXY + PROTEIN_PARTIAL)
     assert [o["id"] for o in offline_entries()] == ["alphafold3"]
 
 

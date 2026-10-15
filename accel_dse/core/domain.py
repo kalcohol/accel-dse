@@ -497,12 +497,16 @@ def build_qwenimage21(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) 
     io_post, used2 = _io(sh, [("norm_out.linear", "norm_out_mod", "seq", "cond"), ("proj_out", "head", "img")])
     io_misc = _io_misc(sh, io_pre + io_post, used + used2)
     wl = _image_wl(wl, c["patch_size"], wl.text_tokens or 256)
+    cc = bool(c.get("causal_condition", False))
+    # 0.116: causal_condition → block-causal mask (text causal over text, image over all) and, as QwenImage21Pipeline's
+    # use_kv_cache=True default, the text-prefix K/V extracted at step 1 and reused by steps 2…n (workload.prefix_kv)
+    wl = replace(wl, cond_causal=cc, prefix_kv=cc)
     return _finish(model_id, hf_id, rel, f"Qwen-Image-2.1 单流 DiT（{L} 层，[文本 ‖ 图像] 共享权重联合注意力；单帧 2D 潜空间）",
                    d, 0, [layer] * L, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
                        f"图像 = 1 个潜帧（VAE 空间 ×{wl.vae_s}、z=64、1×1 patch；无时间维 / 时间注意力）",
-                       f"文本（Qwen3-VL 隐状态）按 {wl.text_tokens} token 计入联合序列「假设」；causal_condition：文本只看文本，"
-                       "参考实现跨步复用文本前缀 K/V（未作为优化建模：文本 token 每步按全层计入，"
-                       f"默认分辨率下多算约 {wl.text_tokens / (wl.text_tokens + (wl.height // wl.vae_s) * (wl.width // wl.vae_s)):.1%} 的 token）",
+                       f"文本（Qwen3-VL 隐状态）按 {wl.text_tokens} token 计入联合序列「假设」；causal_condition：文本 token 只按因果"
+                       "看文本、图像 token 看 [文本 ‖ 图像]（块因果掩码），文本前缀从 t=0 调制、与时间步无关 → 参考实现第 1 步"
+                       "抽取前缀 K/V，后续步只算图像 token、注意力读缓存（默认开，workload.prefix_kv = off 关闭）",
                        "Turbo：8 步蒸馏采样（sample_sigmas 8 个），CFG = 1（README）"))
 
 
@@ -539,10 +543,12 @@ def build_flux2(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Mod
                             ("single_stream_modulation.linear", "single_mod", "seq", "cond")])
     io_post, used2 = _io(sh, [("norm_out.linear", "norm_out_mod", "seq", "cond"), ("proj_out", "head", "img")])
     io_misc = _io_misc(sh, io_pre + io_post, used + used2)
-    wl = _image_wl(wl, c.get("patch_size", 1), wl.text_tokens or 512)
+    # 0.116: the pipeline packs 2×2 latent pixels of the ×8 VAE into one 128-channel token (x_embedder in = 32·2·2), so the
+    # latent grid is H/8 and the DiT patch is 2 (was vae_s 16 / patch 1: same tokens, wrong VAE input size)
+    wl = _image_wl(wl, 2 if sh["x_embedder.weight"][1] == 4 * 32 else c.get("patch_size", 1), wl.text_tokens or 512)
     return _finish(model_id, hf_id, rel, f"FLUX.2 MMDiT（{Ld} 双流 + {Ls} 单流，[文本 ‖ 图像] 联合注意力；单帧 2D 潜空间）",
                    d, 0, [double] * Ld + [single] * Ls, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
-                       f"图像 = 1 个潜帧（VAE ×8 + 2×2 打包 = 每 token {wl.vae_s}×{wl.vae_s} px；无时间维 / 时间注意力）",
+                       f"图像 = 1 个潜帧（VAE ×{wl.vae_s} + 2×2 打包 = 每 token {2 * wl.vae_s}×{2 * wl.vae_s} px；无时间维 / 时间注意力）",
                        f"文本（Qwen3 第 9/18/27 层隐状态拼接）按 pipeline 补齐到 {wl.text_tokens} token 计入联合序列",
                        "klein：4 步蒸馏，guidance_scale 1.0（无 CFG，README）"))
 
@@ -729,6 +735,16 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
         steps, cfg = w.steps or d.steps, w.cfg or d.cfg
         pt, ph, pw = d.patch
         lt = _latent_frames(d, F, warns)
+        if image:
+            # 0.116: the image pipelines (QwenImage / QwenImage21 / Flux2) take latent = 2·⌊px / (2·vae_s)⌋ — the size
+            # rounds *down* to a multiple of 2·vae_s (QwenImage21 rejects other sizes); video keeps its ceil rule
+            q_ = 2 * d.vae_s
+            Hf, Wf = Hh // q_ * q_, Ww // q_ * q_
+            if (Hf, Wf) != (Hh, Ww):
+                warns.append(f"分辨率 {Ww}×{Hh} 不是 {q_} 的整数倍：参考 pipeline 向下取整为 {Wf}×{Hf}")
+            if not (Hf and Wf):
+                raise ValueError(f"image size below one latent patch ({q_} px)")
+            Hh, Ww = Hf, Wf
         lh, lw = math.ceil(Hh / d.vae_s), math.ceil(Ww / d.vae_s)
         gt, gh, gw = math.ceil(lt / pt), math.ceil(lh / ph), math.ceil(lw / pw)
         if Hh % (d.vae_s * ph) or Ww % (d.vae_s * pw):

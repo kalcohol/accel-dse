@@ -118,6 +118,9 @@ class Workload:
     host_TFLOPS: float = 2.0       # te_cpu: effective host CPU throughput for the encoder (「假设」 — set from a measurement)
     vae_parallel: bool = False     # video: tiled VAE decode split over the replica's cards (H3 parallel_tiling, 0.47)
     overlap: bool = False          # video: host-CPU encode of the next request overlaps this one's denoise (0.47)
+    # 0.116: text-prefix K/V reuse across denoise steps (Qwen-Image-2.1 causal_condition + QwenImage21KVCache):
+    # auto = as the model declares (reference use_kv_cache default), on / off = force
+    prefix_kv: str = field(default="auto", metadata={"omit_default": True})
 
     def __post_init__(self):
         for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles", "samples"):
@@ -132,6 +135,8 @@ class Workload:
             raise ValueError("workload: msa ≤ 65536, recycles ≤ 64, samples ≤ 64")
         if not isinstance(self.pipeline, bool):
             raise ValueError("workload.pipeline must be true or false")
+        if self.prefix_kv not in ("auto", "on", "off"):
+            raise ValueError("workload.prefix_kv must be auto | on | off")
         for k in ("vae_tiling", "sample_split", "dit_fsdp", "te_cpu", "vae_parallel", "overlap"):
             if not isinstance(getattr(self, k), bool):
                 raise ValueError(f"workload.{k} must be true or false")

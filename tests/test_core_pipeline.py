@@ -20,8 +20,9 @@ VIDEO = ("wan2.1-14b", "wan2.1-1.3b", "wan2.2-a14b", "cogvideox-5b", "cogvideox-
 
 
 def test_every_video_model_has_a_pipeline_with_release_data():
-    assert set(PIPELINES) == set(VIDEO)
-    for mid in VIDEO:
+    image = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")      # 0.116 image DiT pipelines
+    assert set(PIPELINES) == set(VIDEO) | set(image)
+    for mid in VIDEO + image:
         pl = pipeline_for(mid)
         for k in [t.key for t in pl.text] + [v.key for v in (pl.vae, pl.audio) if v]:
             d = component_data(k)

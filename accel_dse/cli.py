@@ -90,6 +90,9 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                         "offload → shard+offload)")
     p.add_argument("--host-GBps", dest="host_GBps", type=float, default=None,
                    help="video offload: host → card bandwidth per card (default 50 GB/s 「假设」)")
+    p.add_argument("--prefix-kv", dest="prefix_kv", choices=("auto", "on", "off"), default=None,
+                   help="image/video gen: reuse the text-prefix K/V across denoise steps (auto = as the model declares; "
+                        "Qwen-Image-2.1 causal_condition)")
     p.add_argument("--vae-tiling", action="store_true",
                    help="video: diffusers enable_tiling() decode (CogVideoX / Mochi / Wan / LTX; HunyuanVideo and "
                         "MiniMax-H3 always tile)")
@@ -322,6 +325,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         wl["host_GBps"] = a.host_GBps
     if getattr(a, "vae_tiling", False):
         wl["vae_tiling"] = True
+    if getattr(a, "prefix_kv", None):
+        wl["prefix_kv"] = a.prefix_kv
     if getattr(a, "dit_fsdp", False):
         wl["dit_fsdp"] = True
     if getattr(a, "te_cpu", False):

@@ -52,9 +52,7 @@ def test_mdc_blend_and_colocated_slot_hold():
 
 
 def test_refill_offset_and_cascade():
-    rep0, _ = _rep(0.85, 0.0, "recompute")
-    k0 = rep0["queue"]["modes"]["pd"]["kv_cap"]
-    assert abs(k0["refill_offset_factor"] - math.exp(-1)) < 0.02        # fixed outputs: e^{-1}
+    # 0.116: the fixed-output (cv 0) half moved to test_core_057b (own process, runs in parallel); assertions unchanged
     rep1, _ = _rep(0.85, 1.0, "recompute")
     k1 = rep1["queue"]["modes"]["pd"]["kv_cap"]
     assert 0.3 < k1["refill_offset_factor"] < 0.7

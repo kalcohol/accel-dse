@@ -3,6 +3,55 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.116.0]
+
+### Added
+- **Text-prefix K/V reuse across denoise steps** (Qwen-Image-2.1). The mechanism follows the diffusers reference:
+  `QwenImage21Transformer2DModel` with `causal_condition` and `QwenImage21KVCache`, and `QwenImage21Pipeline` with
+  `use_kv_cache=True` as its default.
+  - With `causal_condition`, text tokens attend causally to text only, while image tokens attend to [text ‖ image]
+    (a block-causal mask). The text prefix is modulated from t = 0, so its K/V do not depend on the timestep.
+  - Step 1 extracts and writes the prefix K/V. Steps 2…n run only the image rows, with keys = cached prefix + image,
+    and read the cache.
+  - The denoise time is per_step · (t_extract + (steps − 1) · t_cached). The cache (layers × T × heads × (dk + dv))
+    is resident per in-flight sequence.
+  - The feature is model-declared through `NativeWorkload.cond_causal` / `prefix_kv`, both set from the release config.
+    `workload.prefix_kv` = auto | on | off (default auto, which follows the model). `on` is refused, with a warning,
+    for models without causal_condition. With steps = 1 there is no reuse.
+  - The block-causal mask is now applied even when reuse is off. For Qwen-Image-2.1-Turbo the DiT work goes from
+    3019.8 to 3002.1 TFLOP per image with reuse off, and to 2976.8 with reuse on (the default). Denoise time goes
+    from 32.50 to 32.14 s.
+- **Text-encoder and VAE stages for the image DiTs**, built from the released text_encoder/ and vae/ safetensors
+  headers. Coverage is now **full** for all 3 image models.
+  - Qwen-Image: Qwen2.5-VL-7B text tower (290 tokens) + the Qwen-Image VAE (Wan-VAE decoder).
+  - Qwen-Image-2.1-Turbo: Qwen3-VL-8B text tower (270 tokens) + the Qwen-Image-2.1 VAE (new `qi21` family: ×16,
+    5 up blocks, 1152-wide).
+  - FLUX.2-klein-4B: Qwen3-4B (512 tokens, all 36 layers run) + the FLUX.2 VAE (SD-VAE-style 2-D decoder).
+  - Causal VAE decoders skip `time_conv` on the first latent frame, as the reference does (feat_cache "Rep"). A
+    1-frame image decode therefore runs none of it; video (T > 1) is unchanged.
+  - FLUX.2 workload: vae_s 8 + DiT patch 2. This matches the pipeline's 2×2 packing and gives the same 64×64 tokens
+    at 1024², so the VAE input size is now correct.
+- **Image-mode resolution rule.** The latent is 2·⌊px / (2·vae_s)⌋, so sizes round *down* to a multiple of 2·vae_s,
+  as `QwenImage` / `QwenImage21` / `Flux2` pipelines do; a warning is given. Video keeps its ceil rule.
+
+### Audit
+- Adversarial audit of image mode (`val5/v0116/audit.py`): no defects found beyond the resolution rule above.
+  - Latent, grid and sequence length match the reference rule over 8 sizes × 3 models.
+  - CFG doubles the DiT FLOP and the forward sequences; per-request FLOP is invariant to batch and PP.
+  - Denoise time is linear in steps; with reuse it equals t_x + (s − 1)·t_c.
+  - The extract / cached FLOP of Turbo matches the closed forms (< 0.2 %).
+  - Per-request FLOP (with reuse) is conserved under TP / SP / PP / DP, including uneven splits.
+  - CP is rejected for gen models by design; use SP.
+
+### Tests / suite time
+- The suite-time creep from 535 to 701 s was the critical-path module. `test_core_scenario_search` contains the 4
+  top-k branch-and-bound searches (156.8 s alone, unchanged since 0.113). It started late, because it was not in
+  `SLOW_FIRST`, and stretched to 325 s under 8-way contention.
+  - Fix: split it into `test_core_scenario_search_topk1/2` (2 cases each, assertions unchanged).
+  - The fixed-output half of `test_core_057::test_refill_offset_and_cascade` moves to `test_core_057b`.
+  - Heavy modules are scheduled first. Results are unchanged.
+- New tests: `test_core_116`.
+
 ## [0.115.0]
 
 ### Added

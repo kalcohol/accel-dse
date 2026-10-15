@@ -2737,3 +2737,43 @@ and latency metrics are the frame metrics.
   - For gen models the micro-batch unit is the CFG sequence.
   - PP with micro-batches that don't divide the sequences pads the busiest micro-batch.
 
+## 62. 0.116 — text-prefix K/V reuse; image pipelines; image-mode audit
+
+**Prefix K/V reuse** (Qwen-Image-2.1, `causal_condition`). The reference attention mask is
+`(q_idx ≥ kv_idx) or same_image_block`, with text and condition tokens modulated from t = 0. With T text tokens,
+N image tokens and q = T + N:
+
+- Without reuse, every step is one full forward. Attention work is (N·q + T(T+1)/2)·d per head-dim slice, and
+  GEMMs run over all q rows.
+- With reuse, step 1 is the forward above plus a write of the prefix K/V: T·heads·(dk + dv) per layer.
+- Each later step runs the GEMMs over the N image rows only, with no text-stream or text-projection rows.
+- Attention in a later step is N queries over T + N keys, plus a read of the cached prefix K/V.
+- denoise = per_step · (t₁ + (steps − 1)·t_c).
+- The cache is resident per in-flight sequence: layers(stage) × T × ⌈⌈n_kv / TP⌉ / SP⌉ × (dk + dv) × bytes.
+
+Activation is model-declared (`NativeWorkload.prefix_kv`, the reference `use_kv_cache = True` default).
+`workload.prefix_kv = off` disables it, and `on` requires `cond_causal`.
+
+**Image pipelines.** Text encoders and VAEs are built from the released `text_encoder/` and `vae/` headers
+(`scripts/build_pipeline_data.py`), using the same op-graph costing as the video pipelines (§11.4).
+
+- Qwen-Image uses the Wan-VAE decoder.
+- Qwen-Image-2.1 uses a 2-D decoder with 5 up blocks (×16, 1152 → 144 channels, RGBA out). Its mid attention is per
+  frame.
+- FLUX.2 uses an SD-VAE-style decoder.
+- On a single latent frame the causal decoders run no `time_conv` (feat_cache "Rep" on the first chunk).
+- Text-encoder token counts: the template prefix + 256 text tokens (an assumption) for the Qwen models, and the
+  padded 512 for FLUX.2.
+
+**Image-mode geometry.** The latent is 2·⌊px / (2 s)⌋ and grid = latent / p, using the image pipelines' rounding.
+
+| Model | VAE ×s | DiT patch p |
+|---|---|---|
+| Qwen-Image | 8 | 2 |
+| Qwen-Image-2.1 | 16 | 1 |
+| FLUX.2 | 8 | 2 (pipeline packing) |
+
+**Suite time.** The runner parallelises by module, so wall time is bounded below by the slowest module. The
+heaviest searches are now split across modules and started first, which bounds the wall time at roughly the
+single-module maximum (about 160 s alone) rather than the length of one worker's queue.
+

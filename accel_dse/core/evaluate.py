@@ -74,6 +74,7 @@ class Result:
     pipeline: dict | None = None   # video (0.44): text-encoder / VAE-decode time, FLOP, storage (None = DiT only)
     moe_skew: float = 1.0          # effective EP load skew used (0.49)
     vision: dict | None = None     # VLM (0.62): images, image tokens, encoder time / FLOP / storage (None = text-only)
+    prefix_kv: dict | None = None  # gen (0.116): text-prefix K/V reuse — extract / cached step times and FLOP, cache size
 
     @property
     def domain(self) -> str:
@@ -100,6 +101,9 @@ class Result:
         w, lay = self.workload, self.scenario.layout
         # 0.63: flops_u is the mean rank's useful work (Op.share) → × all TP·SP·DP ranks / sequences of the micro-batch
         b_mb = _cdiv(self.scenario.serving.batch * w.seqs_per_request, self.microbatches)
+        if self.prefix_kv:      # 0.116: one extract step + (steps − 1) cached steps
+            pk = self.prefix_kv
+            return (pk["extract_tflop_seq"] + (w.steps - 1) * pk["cached_tflop_seq"]) * w.seqs_per_request
         per_seq = sum(st.flops_u for st in self.stages) * lay.tp * lay.sp * lay.dp * lay.cp / b_mb
         return per_seq * w.seqs_per_request * w.steps / 1e12
 
@@ -124,6 +128,8 @@ class Result:
                 d["tflop_per_request"] += pl["tflop"] / b
                 d["dit_tflop_per_request"] = d["tflop_per_request"] - pl["tflop"] / b
             d.update(pipeline=pl, denoise_s=denoise)
+            if self.prefix_kv:          # 0.116 (key only present when the reuse is active)
+                d["prefix_kv"] = self.prefix_kv
             d.update(clip_s=self.latency, s_per_frame=self.latency / w.units, step_ms=denoise / w.steps * 1e3,
                      frames_per_s_card=self.per_card, clips_per_hour_card=3600 * b / period / cards,
                      realtime_x=(w.info["video_s"] * b / self.latency) if w.info.get("video_s") else None,
@@ -1231,7 +1237,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     if scn.workload.dit_fsdp and not fsdp:
         warnings.append("workload.dit_fsdp 已忽略：" + ("只用于视频 DiT" if wl.kind != "gen" else
                                                        "需要 SP · DP > 1（FSDP 在同一流水级的数据 / 序列并行卡之间分片）"))
-    def _run(plan_):
+    def _run(plan_, ph=ph, resid=resid):
         stages = []
         for st in plan_:
             agg = dict.fromkeys(_SUM_KEYS, 0.0)
@@ -1326,7 +1332,27 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     p2p_pay = ph.batch * (_cdiv(ph.q, lay.sp) * m.hidden * ab + pair_act) / lay.dp
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, _memos(sys, scn.mapping, m), ops_memo, store_memo, 0, 0,
                                  0, full_io_ops(m, ph, sh, "pre"), full_io_ops(m, ph, sh, "post"), p2p_pay, repeat=True)
-    stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
+    # 0.116: text-prefix K/V reuse (model-declared, workload.prefix_kv) — step 1 extracts the prefix K/V, steps 2…n run
+    # the image tokens only against the cached prefix (diffusers QwenImage21 kv_cache "extract" / "cached")
+    pkv = _prefix_kv(scn, m, wl, warnings)
+    stages_x = None
+    if pkv:
+        T = m.workload.prefix_tokens
+        ph_x = replace(ph, kvx=True)
+        ph_c = Phase("full", ph.batch, wl.tokens - T, wl.ctx, frames=wl.frames, aux=wl.aux, pair=pd, kvpre=T)
+        cache = _prefix_cache_bytes(m, T, lay, ab) * _cdiv(seqs, lay.dp)
+        pkv = {"tokens": T, "cache_GiB_card": cache / 2**30}
+        chosen: dict = {}
+
+        def _run_x(pl):
+            r_ = _run(pl, ph_x, resid + cache)
+            chosen[id(r_)] = pl
+            return r_
+        stages_x = _pick_split(_run_x, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run_x(plan_)
+        stages = _run(chosen[id(stages_x)], ph_c, _cdiv(seqs, lay.dp) * _cdiv(wl.tokens - T, lay.sp) * m.hidden * ab
+                      + cache)
+    else:
+        stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
     pipe = None
     if wl.kind == "gen":
         pipe = _pipeline_cost(scn, m, wl, sys, warnings)
@@ -1350,7 +1376,18 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         # sits in one microbatch).  Was max(mb, pp): cond / uncond in different microbatches ran as independent.
         k_chain = _cfg_chain(seqs, mb, wl.seqs_per_request)
         per_step = max(mb, k_chain + pp - 1) if k_chain > 1 else max(mb, pp)
-        denoise = wl.steps * per_step * tick
+        if pkv:
+            tick_x = max(st.time.total for st in stages_x)
+            denoise = per_step * (tick_x + (wl.steps - 1) * tick)
+            b_mb = _cdiv(seqs, mb)
+            n_r = lay.tp * lay.sp * lay.dp * lay.cp
+            pkv.update(extract_ms=tick_x * 1e3, cached_ms=tick * 1e3,
+                       extract_tflop_seq=sum(st.flops_u for st in stages_x) * n_r / b_mb / 1e12,
+                       cached_tflop_seq=sum(st.flops_u for st in stages) * n_r / b_mb / 1e12,
+                       fits=all(st.mem.fits for st in stages_x))
+            fits = fits and pkv["fits"]
+        else:
+            denoise = wl.steps * per_step * tick
         latency = denoise + (pipe["te_s"] + pipe["decode_s"] + pipe["load_s"] if pipe else 0.0)
         if pipe:
             # 0.61.4: tflop_replica is one DP rank's share ⌈B/dp⌉ of the requests → × B / share (was × dp, which
@@ -1371,8 +1408,41 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         else:
             warnings.append("workload.overlap：文本编码器与 DiT 同在卡上（未开 te_cpu），没有独立资源可跨请求重叠——按串行计")
     thr = sv.batch * wl.units / period
-    return Result(scn, m, stages, tick, latency, wl.units, 0.0, 0.0, thr, thr / lay.cards, fits,
-                  stages[heavy].time.bound, heavy, warnings, mb, latency, wl, pipe)
+    r = Result(scn, m, stages, tick, latency, wl.units, 0.0, 0.0, thr, thr / lay.cards, fits,
+               stages[heavy].time.bound, heavy, warnings, mb, latency, wl, pipe)
+    if pkv:
+        r.prefix_kv = pkv
+    return r
+
+
+def _prefix_kv(scn: Scenario, m: ModelSpec, wl, warnings: list[str]) -> bool:
+    """0.116: is the text-prefix K/V reuse active?  auto = the model's declaration (reference default); on needs a
+    block-causal condition mask (the prefix must not see the image tokens or the timestep); off disables it."""
+    mode = scn.workload.prefix_kv
+    nw = m.workload
+    if wl.kind != "gen" or nw is None or mode == "off":
+        return False
+    ok = nw.cond_causal and nw.prefix_tokens > 0
+    if mode == "on" and not ok:
+        warnings.append("workload.prefix_kv = on 已忽略：该模型的文本前缀会看到图像 token / 随时间步调制（无 causal_condition），"
+                        "其 K/V 每步不同，不能跨步复用")
+        return False
+    if not (nw.prefix_kv or mode == "on") or not ok:
+        return False
+    if wl.steps < 2:
+        return False
+    return True
+
+
+def _prefix_cache_bytes(m: ModelSpec, T: int, lay, ab: float) -> float:
+    """Per-card prefix K/V cache of one sequence: T tokens × the card's heads (TP, then SP head split) × (dk + dv) for
+    every self-attention layer of the busiest stage (layers / PP, ceil)."""
+    per = 0.0
+    for L in m.layers:
+        c = L.core
+        if c.kind != "none":
+            per += T * _cdiv(_cdiv(c.n_kv, lay.tp), lay.sp) * (c.qk_dim + c.v_dim) * ab
+    return per * _cdiv(m.n_layers, lay.pp) / m.n_layers
 
 
 def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, af: str) -> dict:

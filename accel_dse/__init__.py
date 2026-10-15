@@ -6,4 +6,4 @@ memory planning, schedule, exact search.  See docs/MODEL.md.
 All hardware numbers are assumptions (「假设」), not silicon measurements.
 """
 
-__version__ = "0.115.0"
+__version__ = "0.116.0"

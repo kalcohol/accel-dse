@@ -117,6 +117,21 @@ PIPELINES: dict[str, Pipeline] = {
         audio=Vae("h3-audio-vae", "audio", "MiniMax-H3 音频 VAE（BigVGAN 型）",
                   note="按声道数逐路解码 40 Hz 潜变量 → 32 kHz 波形「假设」"),
         neg_prompt=False),
+    # 0.116 image DiTs: text encoder(s) + VAE decode of one latent frame
+    "qwen-image": Pipeline(
+        (TextEnc("qwen2.5-vl-7b", "Qwen2.5-VL-7B 文本塔", 290, 28, 128, causal=True,
+                 note="模板前缀 34 token（prompt_template_encode_start_idx，编码后丢弃）+ 文本 256 token「假设」= 290 token；"
+                      "取最后一层隐状态"),),
+        Vae("qwen-image-vae", "wan", "Qwen-Image VAE（Wan-VAE 结构，单潜帧）"),
+        note="true CFG：负提示（默认 \" \"）另编码一次"),
+    "qwen-image-2.1-turbo": Pipeline(
+        (TextEnc("qwen3-vl-8b", "Qwen3-VL-8B 文本塔", 270, 32, 128, causal=True,
+                 note="系统提示约 14 token（编码后丢弃）+ 文本 256 token「假设」= 270 token；hidden_states[-1]"),),
+        Vae("qwen-image-2.1-vae", "qi21", "Qwen-Image-2.1 VAE（×16、z=64，单潜帧）")),
+    "flux.2-klein-4b": Pipeline(
+        (TextEnc("qwen3-4b", "Qwen3-4B 文本塔", 512, 32, 128, causal=True,
+                 note="padding 到 max_sequence_length 512；取第 9/18/27 层隐状态，HF 前向跑满 36 层"),),
+        Vae("flux2-vae", "os_s", "FLUX.2 VAE（SD-VAE 型 2D 解码器，×8；DiT 侧 2×2 打包）")),
 }
 
 
@@ -195,7 +210,7 @@ class _Fam:
 
 
 _TAIL = ("conv_out", "norm_out", "block_out", "proj_out", "conv_post", "conv_norm_out")
-_UPS = ("upsamplers", "conv_blocks", ".proj.")
+_UPS = ("upsamplers", "conv_blocks", ".proj.", "upsampler.")     # 0.116: Qwen-Image-2.1 VAE names it upsampler.
 
 FAMILIES = {
     "wan": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (2, 2), 1: (2, 2), 2: (1, 2)}, pre=("time_conv",),
@@ -216,6 +231,11 @@ FAMILIES = {
                  pre=("conv_blocks",), trule="double", chunk="whole", shift=("conv_blocks", 1)),
     "os_s": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (1, 2), 1: (1, 2), 2: (1, 2)}, attn="frame",
                  attn_dim=512),
+    # 0.116 image VAEs.  Qwen-Image = the Wan-VAE decoder (family "wan"); FLUX.2 = SD-VAE-style 2-D decoder ("os_s"
+    # schedule, 512-wide mid attention); Qwen-Image-2.1 (AutoencoderKLQwenImage21): 5 up blocks, the first four upsample
+    # ×2 spatially (×16), time_conv in blocks 0–2 (temporal, input resolution), 1152-wide mid attention per frame
+    "qi21": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3, 4), {0: (2, 2), 1: (2, 2), 2: (2, 2), 3: (1, 2)},
+                 pre=("time_conv",), attn="frame", attn_dim=1152),
 }
 
 
@@ -247,6 +267,10 @@ def _conv_walk(tensors: dict, prefix: str, fam: _Fam, lat: tuple[int, int, int],
         if not name.startswith(prefix) or len(sh) < 2 or not name.endswith(("weight", "weight_v")):
             continue
         if "norm" in name and "conv" not in name:
+            continue
+        if lat[0] == 1 and "time_conv" in name:
+            # 0.116: the causal decoders skip time_conv on the first latent frame (WanUpsample / Qwen-Image: feat_cache
+            # "Rep" on the first chunk) → a 1-latent-frame decode (image) runs none.  Video (T > 1) unchanged.
             continue
         mm = bre.search(name)
         bi = int(mm.group(1)) + (fam.shift[1] if fam.shift and fam.shift[0] in name else 0) if mm else -1
