@@ -3728,3 +3728,10 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
 - Step-5 vision remains `partial`: open weights expose overview 728² → 169 tokens and an external crop interface
   (504² → 81 tokens/crop via `patch_pixel_values` / `num_patches`); the crop-count algorithm is not published.
   Platform docs only give detail low/high longest-side resize tips.
+
+## 100. Optional TCO ranking (0.154)
+- $/unit = CapEx + OpEx. CapEx = card_usd / (amort_years · 365.25 d · thr), thr = units/s/card (LLM decode tok/s/card).
+  OpEx = J/unit (energy table, else TDP × time 「假设」) · PUE (missing → 1, IT-only, noted) · $/kWh / 3.6e6.
+- Knob score `tco_gain` = geometric mean over models of TCO(lo)/TCO(hi); ranked when > 1 + TIE. The card price is held
+  fixed per knob 「假设」; hardware increments are costed separately (Δmm², upgrade path).
+- PUE presets: Uptime Institute 2024 survey 1.56 (per-site), 2023 capacity-weighted 1.47 (「来源」).

@@ -311,6 +311,9 @@
       <label title="每卡平均功耗上限（需要左侧能耗表；表不全时只是下界）">功耗 W / 卡<input type="number" id="b-power_W_card" min="0" step="10"></label>
       <label title="0.153：电价 $/kWh；填了且有能耗 ΔJ（或下方 TDP）时洞察可按每美元排序。不内置默认电价，可用电价预设">电价 $/kWh<input type="number" id="b-usd_per_kWh" min="0" step="0.01"></label>
       <label title="0.153：铭牌/设计 TDP（W/卡）。无能耗表时按恒定 TDP×时间估 J（「假设」）；有表时表优先">TDP W / 卡<input type="number" id="b-tdp_W_card" min="0" step="10"></label>
+      <label title="0.154：每卡采购价（$）。与摊销年数同填后洞察给 CapEx+OpEx（TCO）排序；不内置卡价">卡价 $<input type="number" id="b-card_usd" min="0" step="100"></label>
+      <label title="0.154：直线摊销年数（不内置默认）">摊销 年<input type="number" id="b-amort_years" min="0" step="0.5"></label>
+      <label title="0.154：机房 PUE（≥ 1）；空 = OpEx 只计 IT 电费；可选 PUE 预设">PUE<input type="number" id="b-pue" min="1" step="0.01"></label>
       <label title="每卡 DRAM 容量上限">DRAM GiB / 卡<input type="number" id="b-dram_GiB" min="0" step="8"></label>
       <label title="每卡面积代理上限，mm²">面积 mm² / 卡<input type="number" id="b-die_mm2" min="0" step="50"></label>
       <label title="每 MiB SRAM（含外围）的面积，mm²「假设」">mm² / MiB SRAM<input type="number" id="b-mm2_per_mib_sram" min="0" step="0.05"></label>
@@ -327,6 +330,8 @@
       <span class="small muted" id="b-preset-note"></span></div>
     <div class="row"><label title="0.153：有出处的区域电价均价（来源/二手/假设见悬停；不静默填入；仍可改写）">电价预设<select id="b-elec-preset"><option value="">（不用预设）</option></select></label>
       <span class="small muted" id="b-elec-preset-note"></span></div>
+    <div class="row"><label title="0.154：有出处的 PUE（来源见悬停；卡价 / 摊销无公开口径，需自填）">PUE 预设<select id="b-tco-preset"><option value="">（不用预设）</option></select></label>
+      <span class="small muted" id="b-tco-preset-note"></span></div>
   </section>
 
   <section class="grp">

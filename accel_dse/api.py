@@ -292,6 +292,13 @@ def _energy_presets() -> dict:
             for k, v in ENERGY_PRESETS.items()}
 
 
+def _tco_presets() -> dict:
+    from .core.budget import TCO_PRESETS
+    return {k: {"label": v["label"], "fields": {f: {"value": x, "status": st, "source": src}
+                                                for f, (x, st, src) in v["fields"].items()}}
+            for k, v in TCO_PRESETS.items()}
+
+
 def _electricity_presets() -> dict:
     from .core.budget import ELECTRICITY_PRESETS
     return {k: {"label": v["label"], "fields": {f: {"value": x, "status": st, "source": src}
@@ -313,6 +320,7 @@ def api_catalog() -> dict:
             "density_presets": _density_presets(),
             "energy_presets": _energy_presets(),
             "electricity_presets": _electricity_presets(),
+            "tco_presets": _tco_presets(),
             "mixed_presets": {k: {"pairs": [list(p) for p in v[0]], "source": v[1]} for k, v in MIXED_PRESETS.items()}}
 
 
@@ -370,6 +378,9 @@ def _budget(body: dict) -> Budget | None:
                 d = apply_preset(d)
             if "electricity_preset" in d:
                 d = apply_electricity_preset(d)
+            if "tco_preset" in d:
+                from .core.budget import apply_tco_preset
+                d = apply_tco_preset(d)
         return Budget.from_dict(d)
     except (ValueError, TypeError) as e:
         raise ApiError(str(e)) from None

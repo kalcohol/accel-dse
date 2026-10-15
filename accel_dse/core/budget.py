@@ -104,6 +104,31 @@ ELECTRICITY_PRESETS: dict[str, dict] = {
 }
 
 
+# 0.154: PUE presets only (no published card price / amortisation figure is adopted — those stay user inputs).
+_UPTIME = "Uptime Institute Global Data Center Survey 2024 (n=526), Figure 2: industry average annual PUE"
+TCO_PRESETS: dict[str, dict] = {
+    "uptime_2024_avg": {"label": "PUE 行业均值 2024（Uptime）", "fields": {
+        "pue": (1.56, "来源", _UPTIME + " 1.56 (per-site average, incl. legacy sites)")}},
+    "uptime_2023_capw": {"label": "PUE 按容量加权 2023（Uptime）", "fields": {
+        "pue": (1.47, "来源", "Uptime Institute Journal, 'Large data centers are mostly more efficient, analysis "
+                "confirms': 2023 capacity-weighted PUE 1.47 (per-site 1.58)")}},
+}
+
+
+def apply_tco_preset(d: dict) -> dict:
+    """Body ``budget`` with ``tco_preset``: fill only unset fields (user values win)."""
+    d = dict(d)
+    pid = d.pop("tco_preset", None)
+    if pid is None:
+        return d
+    if pid not in TCO_PRESETS:
+        raise ValueError(f"budget.tco_preset must be one of {sorted(TCO_PRESETS)}")
+    for k, (v, _, _) in TCO_PRESETS[pid]["fields"].items():
+        if d.get(k) is None:
+            d[k] = v
+    return d
+
+
 def apply_electricity_preset(d: dict) -> dict:
     """Body ``budget`` with ``electricity_preset``: fill usd_per_kWh only if the user left it unset."""
     d = dict(d)
@@ -191,6 +216,10 @@ class Budget:
     # 0.153: absolute operating cost (optional; None = insight does not rank by $).
     usd_per_kWh: float | None = None           # electricity rate; presets in ELECTRICITY_PRESETS
     tdp_W_card: float | None = None            # nameplate / design TDP for J≈W·t when energy table has no J
+    # 0.154: optional TCO inputs (None = no CapEx+OpEx ranking).  Never defaulted silently.
+    card_usd: float | None = None              # purchase price per card ($)
+    pue: float | None = None                   # facility PUE (≥ 1); presets in TCO_PRESETS
+    amort_years: float | None = None           # straight-line amortisation of card_usd
 
     def __post_init__(self):
         for f in fields(self):
@@ -201,6 +230,10 @@ class Budget:
                 raise ValueError(f"budget.{f.name} must be a finite number in [0, 1e9) or null")
             if f.name in _LIMITS and v <= 0:
                 raise ValueError(f"budget.{f.name} must be > 0")
+        if self.pue is not None and self.pue < 1:
+            raise ValueError("budget.pue must be ≥ 1")
+        if self.amort_years is not None and self.amort_years <= 0:
+            raise ValueError("budget.amort_years must be > 0")
         if self.cards is not None and float(self.cards) != int(self.cards):
             raise ValueError("budget.cards must be an integer")
 

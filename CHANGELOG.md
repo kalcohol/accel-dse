@@ -3,6 +3,18 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.154.0]
+### Added
+- **Optional TCO inputs** `Budget.card_usd`, `Budget.amort_years`, `Budget.pue` (validated: PUE ≥ 1, years > 0).
+  - Insight reports `tco` per model ($/unit = CapEx `card_usd / (amort_years · thr/card)` + OpEx `J · PUE · $/kWh`) and knob `tco_gain` / `rank_tco`.
+  - Knobs are assumed not to change the card price (noted; hardware cost stays in Δmm² / upgrade path). Missing $/kWh → CapEx only; missing PUE → IT-only OpEx (noted).
+  - No silent defaults. `TCO_PRESETS` holds PUE only: Uptime 2024 industry average 1.56 and 2023 capacity-weighted 1.47 (「来源」). No published card price / amortisation figure adopted.
+  - UI: 卡价 / 摊销 / PUE inputs, PUE 预设, insight 「每单位 TCO」 line.
+### Checked (catalog hygiene, no fixes needed)
+- 53 catalog repos resolve (3 GitHub-only `gh:` repos OK); 189 cited URLs incl. split-string constants resolve; 92 cached release configs match live HF architecture fields (12 diffusers repos have no root config, expected); coverage label vs reasons / param gap: 0 mismatches. Scripts in `val5/v0154/`.
+### Tests
+- `tests/test_core_154.py` (3); Playwright `val5/v0154/ui.py`: insight + beam path with energy + electricity + PUE presets and TCO, llm and gen.
+
 ## [0.153.0]
 ### Added
 - **Absolute electricity cost for insight**: `Budget.usd_per_kWh` and `Budget.tdp_W_card`.

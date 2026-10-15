@@ -64,6 +64,20 @@ def _usd_unit(j: float | None, rate: float | None) -> float | None:
     return j * rate / _J_PER_KWH
 
 
+_YEAR_S = 365.25 * 86400
+
+
+def _tco_unit(pt: dict, domain: str, b) -> dict | None:
+    """0.154: $ per output unit = CapEx (card_usd / (amort_years · thr)) + OpEx (J · PUE · $/kWh).
+    Needs card_usd + amort_years + thr; OpEx only when $/kWh and a J source exist (PUE missing → IT-only, noted)."""
+    if b is None or b.card_usd is None or b.amort_years is None or not pt.get("thr"):
+        return None
+    capex = b.card_usd / (b.amort_years * _YEAR_S * pt["thr"])
+    j = _j_eff(pt, domain, b.tdp_W_card)
+    opex = (j * (b.pue or 1.0) * b.usd_per_kWh / _J_PER_KWH) if (j is not None and b.usd_per_kWh is not None) else None
+    return {"capex": capex, "opex": opex, "tco": capex + (opex or 0.0)}
+
+
 def _gain_per(score, d, metrics, tie=None):
     """Map Δcost → gain/cost; win-win (faster and Δ≤0) → 1e30; missing → None."""
     if tie is None:
@@ -300,7 +314,7 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
     for key, label, tf, cost in ks:
         inv = isinstance(tf, tuple)
         f = tf[1] if inv else tf
-        per_model, g, dJ_acc = [], {m: [] for m in metrics}, []
+        per_model, g, dJ_acc, tco_acc = [], {m: [] for m in metrics}, [], []
         for mid, s in scns.items():
             try:
                 alt = _point(f(s), table, domain)
@@ -318,6 +332,10 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
                     g[m].append(x)
             for c in ("J_tok", "dram_B_tok", "mac_tok", "sram_B_tok"):
                 row["d_" + c] = (hi[c] / lo[c] - 1) if hi.get(c) and lo.get(c) else None
+            t_lo, t_hi = _tco_unit(lo, domain, budget), _tco_unit(hi, domain, budget)
+            if t_lo and t_hi and t_hi["tco"] > 0:
+                row["tco_gain"] = t_lo["tco"] / t_hi["tco"]          # > 1 = cheaper per unit
+                tco_acc.append(row["tco_gain"])
             j_lo, j_hi = _j_eff(lo, domain, tdp_W), _j_eff(hi, domain, tdp_W)
             if j_lo is not None and j_hi is not None:
                 dJ_acc.append(j_hi - j_lo)               # 0.152/0.153: absolute ΔJ / unit (table or TDP×t)
@@ -338,7 +356,9 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
         per_usd = _gain_per(score, d_usd, metrics)
         krows.append({"key": key, "label": label, "cost": cost, "inverted": inv, "score": score,
                       "d_mm2": d_mm2, "gain_per_mm2": per_mm2, "d_J": d_J, "gain_per_J": per_J,
-                      "d_usd": d_usd, "gain_per_usd": per_usd, "models": per_model})
+                      "d_usd": d_usd, "gain_per_usd": per_usd,
+                      "tco_gain": (math.exp(sum(math.log(x) for x in tco_acc) / len(tco_acc)) if tco_acc else None),
+                      "models": per_model})
     # ties within TIE (the sensitivity convention, api.SENS_TIE 「假设」) do not "move" the metric
     rank = {m: [k["key"] for k in sorted(krows, key=lambda k: -(k["score"][m] or 0))
                 if k["score"][m] is not None and k["score"][m] - 1 > TIE] for m in metrics}
@@ -349,14 +369,24 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
                                            key=lambda k: -k["gain_per_J"][m]) if k["score"][m] - 1 > TIE] for m in metrics}
     rank_usd = {m: [k["key"] for k in sorted((k for k in krows if k["gain_per_usd"][m] is not None),
                                              key=lambda k: -k["gain_per_usd"][m]) if k["score"][m] - 1 > TIE] for m in metrics}
+    rank_tco = [k["key"] for k in sorted((k for k in krows if k["tco_gain"] is not None), key=lambda k: -k["tco_gain"])
+                if k["tco_gain"] - 1 > TIE]
+    tco0 = {r["model"]: _tco_unit(r, domain, budget) for r in mrows if "error" not in r}
+    tco0 = {k: v for k, v in tco0.items() if v}
     notes = (["pd.enabled：洞察按合并部署（prefill + decode 同卡）评估，不含 PD 分离"] if base.pd.enabled else [])
     if tdp_W is not None and not table.provided:
         notes.append("tdp_W_card：无能耗表时按恒定 TDP × 时间估 J（「假设」）；有表时表优先")
+    if tco0:
+        notes.append("TCO：旋钮不改卡价「假设」（硬件增量成本请看 Δmm² / 升级路径）；CapEx = card_usd ÷ (amort_years × 吞吐/卡)")
+        if budget.pue is None and budget.usd_per_kWh is not None:
+            notes.append("未填 PUE：OpEx 只计 IT 电费")
+        if budget.usd_per_kWh is None:
+            notes.append("未填电价：TCO 只含 CapEx")
     j_src = ("能耗表" if table.provided else ("TDP×时间" if tdp_W is not None else None))
     return {"chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label, "notes": notes,
             "serving": {"batch": base.serving.batch, "prompt": base.serving.prompt, "ctx": base.serving.ctx},
             "models": mrows, "knobs": krows, "rank": rank, "rank_per_mm2": rank_mm2, "rank_per_J": rank_J,
-            "rank_per_usd": rank_usd, "hurts": hurts, "tie": TIE, "domain": domain, "metrics": metric_labels(domain),
+            "rank_per_usd": rank_usd, "rank_tco": rank_tco, "tco": tco0, "hurts": hurts, "tie": TIE, "domain": domain, "metrics": metric_labels(domain),
             "default_metric": DEFAULT_METRIC[domain],
             "area": area0, "energy_provided": table.provided,
             "usd_per_kWh": usd_kwh, "tdp_W_card": tdp_W, "j_source": j_src,
