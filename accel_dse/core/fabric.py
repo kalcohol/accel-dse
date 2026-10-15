@@ -48,6 +48,18 @@ _LOG_CV: contextvars.ContextVar = contextvars.ContextVar("accel_dse_fabric_log",
 _MULT_CV: contextvars.ContextVar = contextvars.ContextVar("accel_dse_fabric_mult", default=1)
 
 
+# 0.142: per-collective algorithm overrides {key: name} for the pipe replay under auto_overlap (evaluate._pipe_repick)
+_PICK_CV: contextvars.ContextVar = contextvars.ContextVar("accel_dse_fabric_pick", default=None)
+
+
+def set_pick(v: dict | None):
+    return _PICK_CV.set(v)
+
+
+def reset_pick(tok) -> None:
+    _PICK_CV.reset(tok)
+
+
 def log() -> dict | None:
     """Collector of the running fabric_report in this context (None = off)."""
     return _LOG_CV.get()
@@ -509,9 +521,14 @@ def collective_full(kind: str, payload: float, group: int, sys, stride: int = 1,
     if not cands:
         return 0.0, 0.0, 0.0, 0.0, {}, None, {}
     name = pick(cands, fab)
+    key = (kind, group, stride, k_pkg, k_node, round(payload))
+    ov = _PICK_CV.get()
+    if ov:
+        nm = ov.get(key) or ov.get((kind, group, stride, round(payload)))
+        if nm in cands:
+            name = nm
     bw, a, busy = cands[name]
     sh = shares[name]
-    key = (kind, group, stride, k_pkg, k_node, round(payload))
     lg = _LOG_CV.get()
     if lg is not None:
         lv = meta["levels"]

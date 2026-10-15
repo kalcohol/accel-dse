@@ -3,6 +3,18 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.142.0]
+### Fixed
+- `exec_overlap = "pipe"` (default) with `fabric.algo = "auto_overlap"` (default): the stage re-pick set the link / sync terms, but the flow-shop replay still ran every collective at its per-collective default pick. That inconsistent mix could undercut both consistent choices, so 4 → 8 D2D units was +0.009 % slower (sysfuzz 0.141 seed 41: Qwen3-Next TP8/EP8, 2-card packages, 4-unit point = hier α with ring bandwidth). The replay now uses the same picks (`fabric` pick override), and the combination is chosen on the pipe total itself (`evaluate._pipe_repick`): the stage-optimal and default picks, then coordinate descent. The chunked-prefill fused replay uses the decode stage's picks. `auto_overlap` ≤ `auto` holds by construction.
+- Results change only for pipe + fabric-on scenarios whose re-pick differed from the default pick (they were optimistic before). Example: the seed-41 point at 4 units, 115.155 → 115.212 ms TTFT (equal to `auto`).
+### Changed
+- GPU validation: rows whose source simulates absolutely balanced routing (`eplb = "perfect"`: deepseek-ai/profile-data, SGLang "simulated perfect EPLB") run with `moe_rank_max = "off"`, since there is no random slowest-rank excess. MoE prefill 9.2 → 8.9 %; mean of group errors 27.6 → 27.5 %.
+### Evaluated, not adopted
+- Default-EPLB imbalance from a published statistic (TensorRT-LLM wide-EP EPLB README: DeepSeek-R1 EP32, linear placement, layer-averaged (max − mean)/mean = 1.564, i.e. hottest rank 2.56× mean; 0.115 with EPLB) as the slowest-rank skew on the `eplb = "default"` rows, with `moe_a2a` node + sm (20/132). Default rows go 1.62–1.69× → 0.80–0.92×, but the perfectly balanced rows stay 1.30–1.38× over: the node + sm all-to-all mechanism over-predicts the balanced case, which imbalance cannot explain. MoE prefill 23.7 % vs 8.9 %, so `moe_a2a` stays opt-in. The same skew on the per-pair default is 86.8 %.
+### Added
+- Fingerprints and scenario hashes are unchanged (no pinned scenario has fabric on under pipe). `test_core_060` now states its stage-rule hier pick at `exec_overlap = "stage"`; under pipe, the consistent replay keeps tree, which is 2.7 % faster than hier. It adds a pipe check that the result is never worse than any forced algorithm.
+- `tests/test_core_142.py`; `val5/v0142/` (sysfuzz seeds 41 / 45 / 46: 0 violations; `eplb_try.py`; Playwright UI smoke).
+
 ## [0.141.0]
 ### Changed (defaults; fingerprints re-baselined, user-approved)
 - GPU / validation default: `extval.DEFAULT = "default"` = the per-SM candidate path with ceil (`ceil_variant(candidate_variant())`); `scenario` / `predict` / `table` / `predict_cb` default to it, and `ext_validation.json` is regenerated. Group errors, old `catalog` → new `default` (gmean / mean |err|): v1 static 1.32/37.3 % → 1.06/20.1 %; v1 TTFT 1.81/87.2 % → 1.29/31.6 %; v1 max 1.28/33.0 % → 0.89/19.8 %; MoE prefill 0.94/8.8 % → 0.94/9.2 %; MoE decode 1.11/15.6 % → 0.98/1.7 %; MoE static 2.10/109.9 % → 1.82/82.0 %; MoE max (Mixtral) 1.71/77.8 % → 1.01/20.0 %; r3 lat 3.67/267.4 % → 1.39/38.8 %; r3 max 1.89/90.2 % → 1.18/32.9 %; r4 1.12/37.8 % → 0.95/19.6 %; all 204 rows 1.50/60.2 % → 1.04/23.1 %; mean of group errors 76.5 % → 27.6 %.

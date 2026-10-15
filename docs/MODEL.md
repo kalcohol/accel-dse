@@ -3381,3 +3381,24 @@ still fill a ganged R + C·E array, so they can be up to +11 % slower with more 
 re-pick minimises stage time rather than flow-shop time, so a 2× D2D-unit point measured +0.009 % (fuzz seed 41). PD
 uses the smallest power-of-two prefill batch that keeps the SLO and the request rate. The default TTFT drops from 1298 ms
 to 658 ms at the same goodput.
+
+## 88. Pipe replay with the auto_overlap picks; EPLB imbalance study (0.142)
+
+**Pipe + auto_overlap.** Before 0.142, the stage re-pick (§ 0.60) set the stage's link / sync terms while the flow-shop
+replay (§ 0.98) ran each collective at its per-collective default pick. The pipe total therefore mixed one algorithm's
+α with another's bandwidth, and could undercut both consistent choices. The sysfuzz 0.141 seed-41 point is an example:
+Qwen3-Next TP8/EP8 on 2-card packages, 4 D2D units = hier α + ring bandwidth, so 8 units looked 0.009 % slower. Now
+`fabric` takes a per-collective pick override during the replay, and `_pipe_repick` chooses the combination on the pipe
+total: the stage-optimal and default picks, then ≤ 2 rounds of coordinate descent. `auto_overlap` ≤ `auto` holds in
+pipe mode by construction. The chunked fused replay uses the decode stage's picks; merged-chunk payloads that do not
+match fall back to the default pick.
+
+**EPLB.** A published linear-placement statistic exists: TensorRT-LLM wide-EP EPLB README, DeepSeek-R1 EP32,
+layer-averaged (max − mean)/mean = 1.564 without EPLB and 0.115 with it. Applying it as the hottest rank's load
+(skew 2.564) to the SGLang `eplb = default` prefill rows under `moe_a2a` node + sm moves them from 1.62–1.69× to
+0.80–0.92×. The perfectly balanced rows (`deepseek-profile`, SGLang simulated-perfect) stay 1.30–1.38× over, so the
+node + sm all-to-all mechanism over-predicts the balanced case. Imbalance cannot explain that gap. MoE prefill error
+is 23.7 % vs 8.9 %, so `moe_a2a` stays opt-in. Adopted instead: rows that simulate absolute balance drop the random
+slowest-rank excess (`moe_rank_max = off`), which moves MoE prefill from 9.2 % to 8.9 %. Next lead: the balanced-case
+over-prediction of the node-dedup all-to-all (achieved RDMA / NVLink-forward bandwidth and the SM share of DeepEP
+normal kernels).

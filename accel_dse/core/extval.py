@@ -158,6 +158,8 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
         sv = {**sv, "moe_a2a": v["a2a"], **({"moe_a2a_sm": v["a2a_sm"]} if v.get("a2a_sm") else {})}
     if v.get("rank_max"):              # 0.133 opt-in: slowest-rank random imbalance (Serving.moe_rank_max)
         sv = {**sv, "moe_rank_max": v["rank_max"]}
+    if r.get("eplb") == "perfect":     # 0.142: the source simulates absolutely balanced routing (deepseek-ai/profile-data
+        sv = {**sv, "moe_rank_max": "off"}  # README, SGLang "simulated perfect EPLB") — no random slowest-rank excess
     extra.update(_mem_runtime(r, h) if v.get("mem_rt", MEM_RT) else {})
     if v.get("kv_eff"):                # 0.108: KV-cache streams at the decode-attention kernels' published efficiency
         extra["kv_mem_eff"] = v["kv_eff"]

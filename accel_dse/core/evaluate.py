@@ -598,6 +598,15 @@ def pipe_fused_time(sd, sp, f: float, rr: float, t_mem: float) -> tuple | None:
 
 
 def _pipe_fused(sd, sp, f, rr, t_mem):
+    picks = sd.pipe_ctx[8] if len(sd.pipe_ctx) > 9 else None   # 0.142: the decode stage's pipe re-pick
+    tok = fabric.set_pick(picks)
+    try:
+        return _pipe_fused_(sd, sp, f, rr, t_mem)
+    finally:
+        fabric.reset_pick(tok)
+
+
+def _pipe_fused_(sd, sp, f, rr, t_mem):
     sys, org, m, mm, segs_d, mp, store, tail = sd.pipe_ctx[:8]
     segs_p = sp.pipe_ctx[4]
     ru = union_routing(sd, sp, f)
@@ -666,7 +675,8 @@ def _p2p_tier_of(fd: float, fn: float) -> str:
 
 
 def _stage_link(sys: System, agg: dict, link_bw: float, sync: float, d2d_b: float, net_b: float, extra: list,
-                window: float, stage: int = 0, wire: dict | None = None) -> tuple[float, float, float, float]:
+                window: float, stage: int = 0, wire: dict | None = None, sel: tuple | None = None,
+                out: dict | None = None) -> tuple[float, float, float, float]:
     """0.60 (fabric on): stage link seconds under ``fabric.overlap`` and the ``auto_overlap`` re-pick.
     extra = [(bw, tier)] of the stage's PP / FSDP transfers already in link_bw.  Returns (link, sync, d2d, net)."""
     fab = sys.fabric
@@ -705,7 +715,11 @@ def _stage_link(sys: System, agg: dict, link_bw: float, sync: float, d2d_b: floa
 
         dsel = [f[2] for _, f in cl]
         n_comb = math.prod(len(x) for x in names)
-        if n_comb <= 729:
+        if out is not None:     # 0.142: the search space for the pipe re-pick (_pipe_repick)
+            out["names"], out["dsel"], out["keys"] = names, tuple(dsel), [f[0] for _, f in cl]
+        if sel is not None:
+            best = tuple(sel)
+        elif n_comb <= 729:
             best = min(itertools.product(*names), key=lambda sel: (cost(sel)[0], sel != tuple(dsel)))
         else:                   # coordinate descent from the default picks
             best = list(dsel)
@@ -713,6 +727,8 @@ def _stage_link(sys: System, agg: dict, link_bw: float, sync: float, d2d_b: floa
                 for i in range(len(best)):
                     best[i] = min(names[i], key=lambda nm: (cost(best[:i] + [nm] + best[i + 1:])[0], nm != best[i]))
             best = tuple(best)
+        if out is not None:
+            out["best"] = best
         _, link_bw, sync, busy, bw_max = cost(best)
         for (cnt, (key, pay, dflt, cands)), nm in zip(cl, best):
             if nm != dflt:
@@ -736,6 +752,58 @@ def _stage_link(sys: System, agg: dict, link_bw: float, sync: float, d2d_b: floa
              "link_us": link * 1e6})
     return link, sync, d2d_b, net_b
 
+
+
+def _pipe_repick(sys, agg, pre: tuple, extra: list, window: float, idx: int, so: dict, sync_add: float,
+                 tpipe, make_stt, stt0):
+    """0.142 (exec_overlap = pipe, fabric.algo = auto_overlap): ≤ 0.141 the stage re-pick set the link / sync terms
+    while the flow-shop replay still ran every collective at its default (per-collective) pick — an inconsistent mix
+    that could undercut both (fuzz seed 41: 2× D2D units +0.009 % because the 4-unit point mixed hier α with ring
+    bandwidth).  Now the replay uses the same picks, and the combination is chosen on the pipe total itself (which
+    also clamps to the stage / serial bracket): the stage-optimal and the default picks, then
+    combination on the pipe total itself: the stage-optimal and the default picks, then coordinate descent (≤ 2 rounds)
+    from the better one.  Returns (StageTime, picks {collective key: algorithm} | None)."""
+    names, keys = so.get("names"), so.get("keys")
+    if not names or math.prod(len(x) for x in names) <= 1:
+        return stt0, None
+    best0 = tuple(so["best"])
+    lg = fabric.log()
+    fabric.set_log(None)
+    memo = {}       # stt0 replayed the default picks in the flow shop while its link / sync used best0 (≤ 0.141)
+
+    def run(sel):
+        sel = tuple(sel)
+        if sel not in memo:
+            w = dict(pre[4])
+            lb, sy, dd, nn = _stage_link(sys, agg, pre[0], pre[1], pre[2], pre[3], extra, window, idx, w, sel=sel)
+            tok = fabric.set_pick(dict(zip(keys, sel)))
+            try:
+                tp = tpipe()
+            finally:
+                fabric.reset_pick(tok)
+            memo[sel] = make_stt(lb, sy + sync_add, dd, nn, w, tp)
+        return memo[sel].total
+
+    try:
+        cur = list(min((best0, tuple(so["dsel"])), key=lambda x: (run(x), x != best0)))
+        for _ in range(2):
+            moved = False
+            for i in range(len(cur)):
+                nm = min(names[i], key=lambda n: (run(cur[:i] + [n] + cur[i + 1:]), n != cur[i]))
+                moved |= nm != cur[i]
+                cur[i] = nm
+            if not moved:
+                break
+    finally:
+        fabric.set_log(lg)
+    cur = tuple(cur)
+    if cur == best0 and best0 == tuple(so["dsel"]):
+        return stt0, dict(zip(keys, cur))
+    if lg is not None and cur != best0:          # the log follows the chosen combination
+        if lg.get("_stages"):
+            lg["_stages"].pop()
+        _stage_link(sys, agg, pre[0], pre[1], pre[2], pre[3], extra, window, idx, dict(pre[4]), sel=cur)
+    return memo[cur], dict(zip(keys, cur))
 
 
 _DRAM_KEYS = ("hot", "exp", "kv_read", "kv_write", "state", "lookup", "act", "w_extra")
@@ -1137,16 +1205,19 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 _add_wire(wire, {"d2d": act * fd, "net": act * fn, "link": act * (1 - fd - fn)})
                 extra.append((bw, tier))
             t_dram = _dram_t(sys, dram)
+            so, pre = {}, (link_bw, sync, d2d_b, net_b, dict(wire))
+            win = max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram))
             if sys.fabric.enabled:
-                link_bw, sync, d2d_b, net_b = _stage_link(
-                    sys, agg, link_bw, sync, d2d_b, net_b, extra,
-                    max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram)), st.index, wire)
+                link_bw, sync, d2d_b, net_b = _stage_link(sys, agg, link_bw, sync, d2d_b, net_b, extra, win, st.index,
+                                                          wire, out=so)
             if scn.exec_overlap == "tbo":   # 0.70: two micro-batches each stream the stage's weights once
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
+            s_add = 0.0
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
-                sync += (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
-                agg["kern"] += (st.last - st.first) * scn.layer_overhead_us * 1e-6
-            t_pipe, pctx = 0.0, None
+                s_add = (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
+                sync += s_add
+                agg["kern"] += s_add
+            t_pipe, pctx, tpipe = 0.0, None, None
             if scn.exec_overlap == "pipe":  # 0.98 (opt-in)
                 segs = ([(embed_ops(m, ph, sh), 1)] if st.has_embed else [])
                 segs += [(build_rank_ops(m, li, ph, sh), n) for g, (li, n) in counts.items()]
@@ -1154,17 +1225,28 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                     segs.append((_cp_ring_ops(m, st.first, st.last, cp_ring), 1))
                 if tail:
                     segs.append((tail, 1))
-                t_pipe = _pipe_time(sys, scn.mapping, m, mm, segs, mp, store, dram, sum(b for b, _ in extra))
-                pctx = (sys, scn.mapping, m, mm, segs, mp, store, sum(b for b, _ in extra), {})
-            stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
-                            dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
-                            dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
-                            ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
-                            scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
-                            t_pipe)
-            stt = _a2a_sm_share(replace(stt, t_kern=min(agg["kern"], stt.t_sync)), ph, sv)
-            if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
-                stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
+
+                def tpipe(segs=segs, mp=mp, store=store, dram=dram, extra=extra):
+                    return _pipe_time(sys, scn.mapping, m, mm, segs, mp, store, dram, sum(b for b, _ in extra))
+                t_pipe = tpipe()
+
+            def mk(link_bw, sync, d2d_b, net_b, wire, t_pipe, agg=agg, dram=dram, t_dram=t_dram, link_bytes=link_bytes):
+                stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
+                                dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
+                                dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
+                                ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
+                                scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
+                                t_pipe)
+                stt = _a2a_sm_share(replace(stt, t_kern=min(agg["kern"], stt.t_sync)), ph, sv)
+                if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
+                    stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
+                return stt
+            stt = mk(link_bw, sync, d2d_b, net_b, wire, t_pipe)
+            picks = None
+            if tpipe is not None and so:
+                stt, picks = _pipe_repick(sys, agg, pre, extra, win, st.index, so, s_add, tpipe, mk, stt)
+            if tpipe is not None:
+                pctx = (sys, scn.mapping, m, mm, segs, mp, store, sum(b for b, _ in extra), picks, {})
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg), pipe_ctx=pctx,
@@ -1385,16 +1467,19 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 _add_wire(wire, {"d2d": act * fd, "net": act * fn, "link": act * (1 - fd - fn)})
                 extra.append((bw, tier))
             t_dram = _dram_t(sys, dram)
+            so, pre = {}, (link_bw, sync, d2d_b, net_b, dict(wire))
+            win = max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram))
             if sys.fabric.enabled:
-                link_bw, sync, d2d_b, net_b = _stage_link(
-                    sys, agg, link_bw, sync, d2d_b, net_b, extra,
-                    max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram)), st.index, wire)
+                link_bw, sync, d2d_b, net_b = _stage_link(sys, agg, link_bw, sync, d2d_b, net_b, extra, win, st.index,
+                                                          wire, out=so)
             if scn.exec_overlap == "tbo":   # 0.70: two micro-batches each stream the stage's weights once
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
+            s_add = 0.0
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
-                sync += (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
-                agg["kern"] += (st.last - st.first) * scn.layer_overhead_us * 1e-6
-            t_pipe = 0.0
+                s_add = (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
+                sync += s_add
+                agg["kern"] += s_add
+            t_pipe, tpipe = 0.0, None
             if scn.exec_overlap == "pipe":  # 0.98 (opt-in); FSDP gathers are prefetches (hidden behind the chain)
                 segs = [(full_io_ops(m, ph, sh, "pre"), 1)] if st.has_embed else []
                 segs += [(build_rank_ops(m, li, ph, sh), n * layer_repeat(m.layers[li], ph)) for g, (li, n) in counts.items()]
@@ -1402,16 +1487,25 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                     segs.append((full_io_ops(m, ph, sh, "post"), 1))
                 hid = sum(extra_f.values()) if extra_f else 0.0
                 pp_b = sum(b for b, _ in extra) - hid
-                t_pipe = _pipe_time(sys, scn.mapping, m, None, segs, mp, store, dram, max(0.0, pp_b), hid)
-            stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
-                            dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
-                            dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
-                            ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
-                            scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
-                            t_pipe)
-            stt = _a2a_sm_share(replace(stt, t_kern=min(agg["kern"], stt.t_sync)), ph, sv)
-            if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
-                stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
+
+                def tpipe(segs=segs, mp=mp, store=store, dram=dram, pp_b=pp_b, hid=hid):
+                    return _pipe_time(sys, scn.mapping, m, None, segs, mp, store, dram, max(0.0, pp_b), hid)
+                t_pipe = tpipe()
+
+            def mk(link_bw, sync, d2d_b, net_b, wire, t_pipe, agg=agg, dram=dram, t_dram=t_dram, link_bytes=link_bytes):
+                stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
+                                dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
+                                dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
+                                ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
+                                scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
+                                t_pipe)
+                stt = _a2a_sm_share(replace(stt, t_kern=min(agg["kern"], stt.t_sync)), ph, sv)
+                if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
+                    stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
+                return stt
+            stt = mk(link_bw, sync, d2d_b, net_b, wire, t_pipe)
+            if tpipe is not None and so:
+                stt, _ = _pipe_repick(sys, agg, pre, extra, win, st.index, so, s_add, tpipe, mk, stt)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))

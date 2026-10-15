@@ -134,7 +134,8 @@ def test_auto_overlap_minimises_stage_time():
     # lower-latency hier wins the stage (exposed α)
     s = Scenario(model="deepseek-v3", chip=CHIPS["1P"], mem_id=HBM, layout=Layout(1, 32, 8, 256, 1), node_cards=8,
                  serving=Serving(batch=2048), fabric=Fabric(enabled=True, algo="auto", oversub=2.0, net_tiers=3, pod_nodes=16,
-                                                            oversub_spine=4.0))
+                                                            oversub_spine=4.0),
+                 exec_overlap="stage")   # 0.142: the stage rule (under pipe the consistent replay keeps tree)
     o = dataclasses.replace(s, fabric=dataclasses.replace(s.fabric, algo="auto_overlap"))
     ra, ro = evaluate(s), evaluate(o)
     assert ro.step < ra.step
@@ -150,6 +151,11 @@ def test_auto_overlap_minimises_stage_time():
             for algo in ("auto", "ring", "tree", "hier"):
                 assert best <= evaluate(dataclasses.replace(base, fabric=dataclasses.replace(base.fabric, algo=algo))).step \
                     * (1 + 1e-12)
+    # 0.142: pipe — the re-pick is made on the replayed total, so it is never worse than any forced algorithm either
+    p = dataclasses.replace(s, exec_overlap="pipe")
+    best = evaluate(dataclasses.replace(p, fabric=dataclasses.replace(p.fabric, algo="auto_overlap"))).step
+    for algo in ("auto", "ring", "tree", "hier"):
+        assert best <= evaluate(dataclasses.replace(p, fabric=dataclasses.replace(p.fabric, algo=algo))).step * (1 + 1e-12)
 
 
 def test_p2p_multi_hop_scaleup():
