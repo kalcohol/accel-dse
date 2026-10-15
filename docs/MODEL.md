@@ -3742,3 +3742,11 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
   per tick may drop by at most the extra SRAM (pp − 1 cards; with microbatches, staging shrinks so up to pp · SRAM).
 - Fabric: per collective, `pick` minimises bw + α, and α is charged in `t_sync`, so the guard compares stage totals,
   not `t_link`. Monotone in link GB/s, α, oversub and channel cap; in-network reduce only adds candidates.
+
+## 102. Datapath / residency / non-LLM multi-card invariants (0.156)
+- Dequant throughput and vector lanes are monotone. At default settings the dequant path is hidden for AWQ / MXFP4
+  decode (×4 or ÷4 changes TPOT by < 1 ulp) and dominates only near 1 element/cycle.
+- Residency: pinned bytes rise with SRAM and fall with batch (activation staging); per-step weight reads may rise with
+  batch (MoE expert coverage, less pinning), but per sequence they fall.
+- Non-LLM: TP / SP conserve FLOPs; DP for diffusion is the CFG cond / uncond split (latency ≤), for protein /
+  genomics it replicates whole requests (latency =).

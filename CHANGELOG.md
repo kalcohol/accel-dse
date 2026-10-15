@@ -3,6 +3,16 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.156.0]
+### Added (standing invariants; no engine change, defaults / fingerprints unchanged)
+- `val5/v0156/dpfuzz.py <repo> <seed> <N> [dp|res|dom|hard]`: randomized datapath / residency / non-LLM multi-card suite.
+  - **dp** (quantized releases: AWQ, FP8, MXFP4, MLA FP8): dequant throughput ↑ never slower and ↓ never faster; vector lanes ×2 never slower; storage independent of compute knobs.
+  - **res**: SRAM ×2 never slower, pinned bytes never fewer, weight reads never more; batch ↑ keeps stored weights, never pins more (staging grows), and weight reads per sequence never rise.
+  - **dom** (video / image DiT, protein, genomics): TP / SP conserve total FLOPs; per-card stored weights never grow with cards; DP keeps protein / genomics latency and never raises diffusion latency (DP = CFG cond / uncond split); fits never flips off.
+  - **hard**: forced mappings, SLC, DiT FSDP, SP and PP mixes; SRAM, lanes, frequency, engines, SLC bandwidth and DRAM package count must stay monotone.
+- Results: 330 randomized cases → 0 violations. Two first-run flags were harness errors, not engine bugs: diffusion DP splits CFG branches, and weight reads per step rise with batch (more MoE experts touched; staging shrinks pinning), so the check is per sequence.
+- `tests/test_core_156.py` (3) deterministic guards; the dequant check also asserts the path is exercised (1 elem/cycle ≫ slower).
+
 ## [0.155.0]
 ### Added (standing invariants; no engine change)
 - `val5/v0155/ppfab.py <repo> <seed> <N> [pp|fab|edge]`: randomized PP / fabric invariant suite (12 LLMs incl. MoE, hybrid, MLA, tied-embedding; 3 memory types).
