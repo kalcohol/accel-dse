@@ -804,7 +804,7 @@ def _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx
     cands = plan_stages_balanced(costs, pp, first, last, (0.0, 0.0, 0.0, t_p, a_p), mem, mem_first, mem_last,
                                  max(lc_peak, sys.dram_bytes), alternatives=True)
     if not isinstance(cands, tuple):
-        return lc, None
+        cands = ()                       # 0.140: the proxy sees no gain, but the full model still refines locally
     return cands, {"lc_peak": lc_peak}
 
 
@@ -825,9 +825,36 @@ def _pick_split(run, cands: tuple, lc) -> list:
         st = runs[i][0]
         return (not all(s.mem.fits for s in st), max(s.time.total for s in st), i)
     best = min(range(len(runs)), key=key)
+    # 0.140: local refinement with the full model — move one stage boundary by ±1 layer while that is strictly
+    # faster (fits first).  The proxy ignores residency / overlap, so its split can sit next to a better one; without
+    # this, more DRAM bandwidth could change the proxy's answer to a split slower than the old one.
+    plans = [lc, *cands]
+    seen = {tuple(st.first for st in p) for p in plans}
+    for _ in range(PP_REFINE_STEPS):
+        cur = plans[best]
+        bd = [st.first for st in cur] + [cur[-1].last]
+        moved = False
+        for j in range(1, len(bd) - 1):
+            for d in (-1, 1):
+                nb = list(bd); nb[j] += d
+                if nb[j] <= nb[j - 1] or nb[j] >= nb[j + 1] or tuple(nb[:-1]) in seen:
+                    continue
+                seen.add(tuple(nb[:-1]))
+                pl = [type(cur[0])(i, nb[i], nb[i + 1], i == 0, i == len(cur) - 1) for i in range(len(cur))]
+                if log is not None:
+                    log.clear(); log.update(copy.deepcopy(base))
+                st = run(pl)
+                runs.append((st, copy.deepcopy(log) if log is not None else None)); plans.append(pl)
+                if key(len(runs) - 1)[:2] < key(best)[:2]:
+                    best, moved = len(runs) - 1, True
+        if not moved:
+            break
     if log is not None:
         log.clear(); log.update(runs[best][1])
     return runs[best][0]
+
+
+PP_REFINE_STEPS = 8
 
 
 def _dequant_warn(stages, sys, warnings: list) -> None:

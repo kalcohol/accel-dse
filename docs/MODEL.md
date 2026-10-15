@@ -3319,3 +3319,28 @@ Not bugs, by definition:
   and accumulator rows scale with the width. `acc_kib` and an explicit `sram_port_Bpc` are chip totals, so doubling
   E halves each core's share. Under `cta`, a tile's port share is 1/E (the GPU per-SM model), and tiles below E leave
   that share idle. The `auto` default never showed the effect in the samples.
+
+
+## 86. System-level invariants; PP split refinement (0.140)
+
+`val5/v0140/sysfuzz.py` extends the 0.139 fuzzer to the system level: multi-card layouts (TP / PP / EP / DP), D2D
+packages, node / net tiers, the fabric, overlap modes, every domain, PD pools (KV bandwidth, layer-wise KV, prefix
+cache / hit, pool sizes) and the batch search.
+
+**Found: the PP split could miss a neighbouring better split.** The cost split (§ 0.62) lets the proxy (stage rule,
+full DRAM streaming, no residency or overlap) propose splits, and the full model picks among those plus equal counts.
+The proxy optimum can sit one layer away from the full-model optimum. Worse, when the proxy saw no gain the full model
+never ran, so a resource increase could switch from a better proxy split to equal counts: Qwen3-8B-FP8 PP2 prefill
+went 2.7 % slower with six LPDDR6 packages instead of four. Fix: a hill-climb under the full model that moves one
+boundary ±1 layer while strictly faster (fits first), for up to 8 rounds. This is a local optimum, not an exhaustive
+search, so monotonicity is restored in every sampled case but not proven. Catalog impact: 48 of 340 PP points are
+faster (up to 11.8 %) and none is slower.
+
+**Not bugs:**
+- With `fabric.algo = auto`, the per-collective bw + α pick ignores that the stage hides bw under compute. `auto_overlap`
+  fixes this, which is why it exists.
+- PD prefill batch = the largest batch inside the TTFT SLO, so TTFT may rise while goodput rises.
+- DRAM need at PP > 1 follows the time-balanced partition, which moves with resources.
+
+**Clean:** link / D2D / net bandwidth and α, D2D units, host bandwidth, fabric oversubscription, `best_batch`
+versus random feasible batches, and `best_batch` monotone in DRAM / clock / link / SRAM.

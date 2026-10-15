@@ -3,6 +3,17 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.140.0]
+### Fixed
+- PP split (`pp_split = "cost"`, default): the time proxy (stage rule, full DRAM streaming) proposes splits and the full model picks among them. A better split one layer away was never tried, and when the proxy found nothing better than equal counts the full model was skipped altogether. So more DRAM bandwidth could select a 2.7 % slower split (Qwen3-8B-FP8 PP2 prefill, LPDDR6 4→6 packages). `_pick_split` now hill-climbs each boundary ±1 layer under the full model (fits first, then the slowest stage; at most `PP_REFINE_STEPS` = 8 rounds), including in the equal-count case.
+- Default results change for PP > 1 only, and only get faster: 48 of 340 catalog PP2 / PP4 points improve, by up to 11.8 % (AlphaFold2 PP4; Kimi-K2 / Qwen3.5-397B PP4 decode about −10 %). None gets slower. PP evaluation costs about 2.3× more. PP = 1, the fingerprints, and the validation group table are unchanged.
+### Added
+- `val5/v0140/sysfuzz.py` (reusable; `python3 sysfuzz.py <repo> <seed> <N> [eval|pd|search]`): a system-level fuzzer over TP / PP / EP / DP, D2D packages, node / net tiers, fabric, overlap modes, all domains (LLM, video, image, protein, genomics), PD pools (KV bandwidth, layer-wise KV, prefix cache, prefix hit), and batch search. Invariants: more link / D2D / net / DRAM / SRAM / clock / host bandwidth never lowers throughput or raises latency; fits and SLO-ok stay true; DRAM need is conserved (PP = 1); PD goodput does not drop and its SLO flags do not flip; `best_batch` is at least any feasible point and is monotone in resources.
+- `tests/test_core_140.py`.
+### Notes
+- With `fabric.algo = "auto"`, each collective picks its algorithm by its own bw + α, so a hidden bandwidth term can make a higher-α algorithm win and the stage gets slightly slower (+0.08 %, net 50→100 GB/s). `auto_overlap` re-picks per stage and is monotone. Left as is.
+- PD TTFT can rise with more resources because the prefill batch is the largest one inside the TTFT SLO; goodput never drops. This is by design.
+
 ## [0.139.0]
 ### Fixed
 - Multi-core GEMM picker (`instance_sched = "auto"` / `"split"`): row and column splits make every core group convert its own copy of a non-native operand (e.g. AWQ int4 weights), but the picker compared array cycles only. A wider SRAM port could select a split whose replicated dequant made the op vector-bound: up to 7× slower with a 4× port. Each plan is now scored as max(array, conversion) cycles on the dequant / vector path. The catalog sweep is unchanged.
