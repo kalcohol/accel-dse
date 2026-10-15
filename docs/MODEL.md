@@ -3750,3 +3750,6 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
   batch (MoE expert coverage, less pinning), but per sequence they fall.
 - Non-LLM: TP / SP conserve FLOPs; DP for diffusion is the CFG cond / uncond split (latency ≤), for protein /
   genomics it replicates whole requests (latency =).
+
+## 103. Datapath sizing headroom (0.157)
+`sizing_report(base, models, budget, resources)` answers the inverse of the knob probes: how far can dequant throughput, vector width or SRAM shrink before any model's native metric (TTFT/TPOT/tok·s; latency/frames·s; …) loses more than TIE = 1 % or stops fitting. Search: halve until failure (floor current/1024), then 3 geometric bisections; min_ok is always an evaluated passing point (no extrapolation), relying on the 0.156 monotonicity invariants (fewer lanes / dequant / SRAM never speeds up). Per-model layouts follow `model_scenario`. Advisory only; no defaults changed, fingerprints unchanged.

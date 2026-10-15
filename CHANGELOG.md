@@ -3,6 +3,11 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.157.0] — datapath sizing headroom
+- Added `insight.sizing_report` + `POST /api/insight_sizing` + UI「缩减余量」table: per resource (dequant elems/cycle, vector lanes, SRAM MiB) the smallest value at which every model in the set keeps every domain metric within ±1 % (TIE) and still fits. Halving then 3-step geometric bisection; floor = current/1024; reported min is always a probed pass; `limited_by` names the model/metric that fails just below; SRAM gets `mm2_saved` when `mm2_per_mib_sram` is set.
+- Default chip findings: LLM (qwen3-8b+gpt-oss-20b) dequant→21 %, lanes→46 %, SRAM→46 %; wan2.1 dequant→9 %, lanes→59 %, SRAM→25 %; esm2-650m dequant→3 %, lanes→16 %, SRAM→65 %.
+- No default changed (sizing is advisory) → no fingerprint re-baseline. Tests: tests/test_core_157.py (3).
+
 ## [0.156.0]
 ### Added (standing invariants; no engine change, defaults / fingerprints unchanged)
 - `val5/v0156/dpfuzz.py <repo> <seed> <N> [dp|res|dom|hard]`: randomized datapath / residency / non-LLM multi-card suite.

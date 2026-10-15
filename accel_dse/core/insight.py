@@ -591,3 +591,92 @@ def upgrade_path(base: Scenario, models=None, metric: str | None = None, budget:
                      + ("成本 = 用户密度 / 预设下的 Δ 面积 mm²（含接口 PHY：DRAM 引脚、D2D 单元、C2C，若已设）；无面积项的旋钮按 "
                         "「假设」 1 单位 = 起点面积 1 % 折算。" if area_mode else
                         "成本 = 「假设」相对成本单位（REL_COST；SRAM / MAC 类随当前规模放大）；给出面积密度（或密度预设）后改用 mm²。")}
+
+
+# ---------------------------------------------------------------------------------------------------------------- 0.157
+# Datapath sizing headroom: how far can a sized resource shrink before any model's native metric degrades > TIE?
+# The single-knob probes above say what doubling buys; this answers the architect's opposite question (area to cut).
+SIZING = {
+    # key: (label, unit, get(chip) → value, set(chip, value) → chip, integer)
+    "dequant": ("反量化 / 转换吞吐", "元素/周期",
+                lambda ch: float(ch.formats.dequant_elems_per_cycle or ch.lanes),
+                lambda ch, v: replace(ch, formats=replace(ch.formats, dequant_elems_per_cycle=v)), False),
+    "lanes": ("向量单元宽度", "元素/周期", lambda ch: float(ch.lanes),
+              lambda ch, v: replace(ch, vector_lanes=max(1, int(round(v)))), True),
+    "sram": ("SRAM 容量", "MiB", lambda ch: float(ch.sram_mib), lambda ch, v: replace(ch, sram_mib=v), False),
+}
+SIZING_MIN_FRAC = 1 / 1024        # search floor (10 halvings)
+SIZING_REFINE = 3                 # geometric bisection steps after the first failing halving
+
+
+def sizing_report(base: Scenario, models=None, budget: Budget | None = None, resources=None) -> dict:
+    """Per resource: the smallest value (≥ current × SIZING_MIN_FRAC) at which every model keeps every domain metric
+    within TIE of the current chip and still fits.  Halving search, then geometric bisection; the reported minimum is
+    always a probed point that passed.  ``limited_by`` = the first model / metric that fails just below it."""
+    models = list(models) if models is not None else list(DEFAULT_MODELS)
+    if not 1 <= len(models) <= MAX_MODELS:
+        raise ValueError(f"models: 1..{MAX_MODELS} ids")
+    domain = insight_domain(models)
+    metrics = DOMAIN_METRICS[domain]
+    res = list(resources) if resources is not None else list(SIZING)
+    bad_res = [r for r in res if r not in SIZING]
+    if bad_res:
+        raise ValueError(f"resources must be among {sorted(SIZING)}")
+    scns = {mid: model_scenario(base, mid) for mid in models}
+    table = EnergyTable()
+    ref = {mid: _point(s, table, domain) for mid, s in scns.items()}
+
+    def check(key, v):
+        """None if every model holds; else (model, metric | 'fits', gain)."""
+        setter = SIZING[key][3]
+        for mid, s in scns.items():
+            try:
+                p = _point(s.replace("chip", setter(s.chip, v)), table, domain)
+            except ValueError:
+                return (mid, "invalid", None)
+            if ref[mid]["fits"] and not p["fits"]:
+                return (mid, "fits", None)
+            for m in metrics:
+                g = _gain(m, ref[mid], p)
+                if g is not None and g < 1 - TIE:
+                    return (mid, m, g)
+        return None
+
+    out = []
+    for key in res:
+        label, unit, get, _, integer = SIZING[key]
+        cur = get(base.chip)
+        ok, fail, why = cur, None, None
+        v = cur
+        while v / 2 >= cur * SIZING_MIN_FRAC:
+            v = v / 2
+            if integer:
+                v = float(max(1, int(round(v))))
+            w = check(key, v)
+            if w is None:
+                ok = v
+            else:
+                fail, why = v, w
+                break
+        if fail is not None:
+            for _ in range(SIZING_REFINE):
+                mid_v = math.sqrt(ok * fail)
+                if integer:
+                    mid_v = float(max(1, int(round(mid_v))))
+                if mid_v in (ok, fail):
+                    break
+                w = check(key, mid_v)
+                if w is None:
+                    ok = mid_v
+                else:
+                    fail, why = mid_v, w
+        row = {"key": key, "label": label, "unit": unit, "current": cur, "min_ok": ok, "frac": ok / cur if cur else None,
+               "floor_hit": fail is None, "fail_at": fail,
+               "limited_by": None if why is None else {"model": why[0], "metric": why[1], "gain": why[2]}}
+        if key == "sram" and budget is not None and budget.mm2_per_mib_sram is not None:
+            row["mm2_saved"] = (cur - ok) * budget.mm2_per_mib_sram
+        out.append(row)
+    return {"domain": domain, "models": models, "metrics": metric_labels(domain), "tie": TIE, "resources": out,
+            "chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label,
+            "basis": "逐项缩小（先减半再几何二分）× 现有引擎；每个模型的全部领域指标都在 ±1% 内且仍放得下才算可行；"
+                     "min_ok 是实测通过的点（不是外推）。只回答「还能省多少」，不做面积换算（SRAM 有密度时给 mm²）。"}

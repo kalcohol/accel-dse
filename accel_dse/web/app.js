@@ -1690,6 +1690,26 @@ function initElectricityPresets(selId = 'b-elec-preset', catKey = 'electricity_p
   });
 }
 
+/* 0.157: datapath sizing headroom */
+async function runInsightSizing() {
+  const btn = $('ins-size-run');
+  btn.disabled = true;
+  $('ins-size-status').textContent = '计算中（每个资源逐次减半再二分 × 每个模型）…';
+  try {
+    const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
+    const r = await track(req('insight_sizing', '/api/insight_sizing', body(ms.length ? { models: ms } : {})));
+    if (!r) return;
+    const mz = (k) => (r.metrics[k] || k).replace(/ 加速$/, '');
+    put($('ins-size-tbl'), h('thead', {}, h('tr', {}, ['资源', '当前', '最小可行', '可缩到', '受限于', '省 mm²'].map((x) => h('th', {}, x)))),
+      h('tbody', {}, r.resources.map((x) => h('tr', {}, h('td', {}, x.label), h('td', {}, `${num(x.current)} ${x.unit}`),
+        h('td', {}, `${num(x.min_ok)} ${x.unit}`), h('td', {}, (x.floor_hit ? '≤ ' : '') + num(x.frac * 100) + '%'),
+        h('td', {}, x.limited_by ? `${x.limited_by.model} · ${x.limited_by.metric === 'fits' ? '放不下' : mz(x.limited_by.metric)}${x.limited_by.gain ? ' ×' + num(x.limited_by.gain) : ''}` : '—（到搜索下限）'),
+        h('td', {}, x.mm2_saved != null ? num(x.mm2_saved) : '—')))));
+    $('ins-size-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout}`;
+  } catch (e) {
+    $('ins-size-status').textContent = '错误：' + e.message;
+  } finally { btn.disabled = false; }
+}
 /* 0.148: greedy multi-step upgrade path */
 async function runInsightPath() {
   const btn = $('ins-path-run');
@@ -2007,6 +2027,7 @@ async function init() {
   $('pf-run').addEventListener('click', runPareto);
   $('ins-run').addEventListener('click', runInsight);
   $('ins-path-run').addEventListener('click', runInsightPath);
+  $('ins-size-run').addEventListener('click', runInsightSizing);
   for (const f of ['csv', 'json']) { $('ins-exp-' + f).addEventListener('click', () => doExport('ins', f)); $('ins-path-exp-' + f).addEventListener('click', () => doExport('ins-path', f)); }
   fillSweepPaths();
   renderModels();

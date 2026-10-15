@@ -141,7 +141,8 @@ _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
 _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
                "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": set(),
-               "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"}}
+               "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
+               "insight_sizing": {"models", "resources"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -908,6 +909,21 @@ def api_insight_path(body: dict) -> dict:
     try:
         return {**upgrade_path(scn, models, body.get("metric"), _budget(body), body.get("steps", 6),
                                body.get("max_cost"), _energy_table(body), body.get("beam", 1)), "hash": scn.hash()}
+    except ValueError as e:
+        raise ApiError(str(e)) from None
+
+
+def api_insight_sizing(body: dict) -> dict:
+    """0.157: datapath sizing headroom — smallest dequant rate / vector width / SRAM keeping every model within ±1 %."""
+    from .core.insight import sizing_report
+    _check_keys(body, "insight_sizing")
+    scn = scenario_from_body(body)
+    models = _insight_models(body)
+    res = body.get("resources")
+    if res is not None and (not isinstance(res, list) or not all(isinstance(x, str) for x in res)):
+        raise ApiError("resources must be a list of strings")
+    try:
+        return {**sizing_report(scn, models, _budget(body), res), "hash": scn.hash()}
     except ValueError as e:
         raise ApiError(str(e)) from None
 
