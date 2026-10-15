@@ -164,8 +164,18 @@ class Workload:
     # release code does at this N)
     tri_attn: str = field(default="fused", metadata={"omit_default": True})
     tri_chunk: int = field(default=0, metadata={"omit_default": True})
+    # 0.167 — TeaCache-style step caching (ali-vilab/TeaCache, TeaCache4Wan2.1 teacache_generate.py): on a skipped
+    # denoise step the transformer blocks are replaced by "x += previous residual"; embeddings and head still run.
+    # step_skip = skipped steps per request (threshold-dependent → user input); step_cache = teacache (first and last
+    # step always computed) | teacache_ret (use_ret_steps: first 5 steps computed, no forced last step)
+    step_skip: int = field(default=0, metadata={"omit_default": True})
+    step_cache: str = field(default="teacache", metadata={"omit_default": True})
 
     def __post_init__(self):
+        if not isinstance(self.step_skip, int) or isinstance(self.step_skip, bool) or not 0 <= self.step_skip <= 1000:
+            raise ValueError("workload.step_skip must be an integer in [0, 1000]")
+        if self.step_cache not in ("teacache", "teacache_ret"):
+            raise ValueError("workload.step_cache must be teacache | teacache_ret")
         for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles", "samples"):
             v = getattr(self, k)
             if not isinstance(v, int) or isinstance(v, bool) or v < 0:

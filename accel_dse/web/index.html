@@ -175,6 +175,8 @@
       <label>宽 px<input type="number" id="w-width" min="16" max="4096" step="16"></label>
       <label>去噪步数<input type="number" id="w-steps" min="1" max="1000" step="1"></label>
       <label title="每个去噪步的前向次数：2 = classifier-free guidance（cond + uncond），1 = 关闭 CFG / 蒸馏">CFG 前向 / 步<input type="number" id="w-cfg" min="1" max="2" step="1"></label>
+      <label title="TeaCache 式跳步（0.167）：跳过的去噪步只跑嵌入与输出头，加上缓存的残差。跳几步取决于阈值和内容，请按实测填写（默认 0 = 关）">跳步数 <span class="tag assume">假设</span><input type="number" id="w-step_skip" min="0" max="1000" step="1"></label>
+      <label title="固定计算的步（来源 TeaCache4Wan2.1）：teacache = 第一步与最后一步；teacache_ret = 前 5 步">跳步规则<select id="w-step_cache"><option value="teacache">teacache</option><option value="teacache_ret">teacache_ret</option></select></label>
       <label><span id="w-clip_slo_s-name">单段 SLO s</span> <span class="tag assume">假设</span><input type="number" id="w-clip_slo_s" min="1" step="60"></label>
     </div>
     <label class="inline gen-only" title="默认计入：文本编码器（每请求一次）与 VAE 解码（每段一次）的时间串行加在去噪前后，权重计入首 / 末流水级卡的存储。取消 = 只看 DiT 去噪主干（相当于把它们卸载到别处）"><input type="checkbox" id="w-pipeline" checked> 计入文本编码器与 VAE 解码（时间 + 存储）</label>

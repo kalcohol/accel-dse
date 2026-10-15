@@ -40,6 +40,18 @@ with sync_playwright() as pw:
         if p.is_visible("#kpis") and "8600 token/段" in kpis(p): break
         time.sleep(0.5)
     print("KIMI fits/kpi:", p.is_visible("#kpis"), "8600 token/段" in kpis(p))
+    p.select_option("#model", "wan2.1-14b"); time.sleep(2)      # 0.167 step cache
+    p.fill("#w-step_skip", "20")
+    for _ in range(150):
+        if p.is_visible("#kpis") and "跳步缓存" in kpis(p): break
+        time.sleep(0.5)
+    assert "20 / 50 步跳过" in kpis(p), kpis(p)
+    p.select_option("#w-step_cache", "teacache_ret"); time.sleep(4)
+    assert "teacache_ret" in kpis(p)
+    p.fill("#w-step_skip", "49"); time.sleep(4)          # over the cap (50 − 5): input flagged, nothing sent
+    assert "bad" in (p.get_attribute("#w-step_skip", "class") or "") and "20 / 50 步跳过" in kpis(p)
+    p.fill("#w-step_skip", "0"); time.sleep(4)
+    print("STEP CACHE ok")
     p.select_option("#model", "qwen3-8b"); time.sleep(3)
     assert not p.is_visible("#s-videos")
     p.screenshot(path="/workspace/smoke/ui166.png", full_page=False)

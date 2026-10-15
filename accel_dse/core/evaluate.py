@@ -75,6 +75,7 @@ class Result:
     moe_skew: float = 1.0          # effective EP load skew used (0.49)
     vision: dict | None = None     # VLM (0.62): images, image tokens, encoder time / FLOP / storage (None = text-only)
     host: dict | None = None       # 0.164 (opt-in): host / runtime step time {s, device_s, exposed_s, host_bound, …}
+    step_cache: dict | None = None  # gen (0.167): TeaCache-style skipped steps
     prefix_kv: dict | None = None  # gen (0.116): text-prefix K/V reuse — extract / cached step times and FLOP, cache size
 
     @property
@@ -106,6 +107,9 @@ class Result:
             pk = self.prefix_kv
             return (pk["extract_tflop_seq"] + (w.steps - 1) * pk["cached_tflop_seq"]) * w.seqs_per_request
         per_seq = sum(st.flops_u for st in self.stages) * lay.tp * lay.sp * lay.dp * lay.cp / b_mb
+        if self.step_cache:     # 0.167: skipped steps run embed + head + residual add only
+            sc = self.step_cache
+            return (per_seq / 1e12 * (w.steps - sc["skip"]) + sc["skip"] * sc["tflop_seq_skip"]) * w.seqs_per_request
         return per_seq * w.seqs_per_request * w.steps / 1e12
 
     def domain_summary(self) -> dict:
@@ -131,6 +135,8 @@ class Result:
             d.update(pipeline=pl, denoise_s=denoise)
             if self.prefix_kv:          # 0.116 (key only present when the reuse is active)
                 d["prefix_kv"] = self.prefix_kv
+            if self.step_cache:         # 0.167 (key only present when step skipping is active)
+                d["step_cache"] = self.step_cache
             d.update(clip_s=self.latency, s_per_frame=self.latency / w.units, step_ms=denoise / w.steps * 1e3,
                      frames_per_s_card=self.per_card, clips_per_hour_card=3600 * b / period / cards,
                      realtime_x=(w.info["video_s"] * b / self.latency) if w.info.get("video_s") else None,
@@ -1095,6 +1101,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         if scn.pd.enabled:              # 0.90: was silently ignored
             warnings.append("PD 分离（pd.enabled）对视频 / 蛋白模型无效：没有 KV 缓存，也没有 decode 阶段——按单一部署评估，PD 设置被忽略")
         return _evaluate_full(scn, m, sys, warnings)
+    if scn.workload.step_skip:
+        warnings.append("workload.step_skip 已忽略：只用于视频 / 图像生成（去噪步）")
     spec_k = sv.spec_k if (sv.phase == "decode" and m.mtp_layers) else 0
     if m.draft == "dspark" and sv.spec_k:
         if sv.phase == "decode" and spec_k > m.draft_block:
@@ -1640,6 +1648,13 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             fits = fits and pkv["fits"]
         else:
             denoise = wl.steps * per_step * tick
+        sc_ = _step_cache(scn, m, wl, sys, ph, sh, stages, seqs, mb, pp, pkv, warnings)
+        if sc_:
+            # skipped steps: every microbatch runs embed + head + residual add instead of the blocks (pp = 1 only)
+            denoise -= sc_["skip"] * per_step * (tick - sc_["t_skip"])
+            sc_["denoise_saved_s"] = sc_["skip"] * per_step * (tick - sc_["t_skip"])
+            sc_["t_skip_ms"] = sc_.pop("t_skip") * 1e3
+            fits = fits and sc_["fits"]
         latency = denoise + (pipe["te_s"] + pipe["decode_s"] + pipe["load_s"] if pipe else 0.0)
         if pipe:
             # 0.61.4: tflop_replica is one DP rank's share ⌈B/dp⌉ of the requests → × B / share (was × dp, which
@@ -1648,6 +1663,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             pipe = {**pipe, "denoise_s": denoise, "tflop": pipe["tflop_replica"] * b_ / _cdiv(b_, lay.dp)}
     else:
         latency = (mb + pp - 1) * tick
+        if scn.workload.step_skip:
+            warnings.append("workload.step_skip 已忽略：只用于视频 / 图像生成（去噪步）")
     period = latency
     if wl.kind == "gen" and scn.workload.overlap:
         # cross-request overlap (0.47): with the text encoder on the host CPU (te_cpu) the host encodes request
@@ -1664,7 +1681,51 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                stages[heavy].time.bound, heavy, warnings, mb, latency, wl, pipe)
     if pkv:
         r.prefix_kv = pkv
+    if wl.kind == "gen" and sc_:
+        r.step_cache = sc_
     return r
+
+
+# 「来源」 TeaCache4Wan2.1 teacache_generate.py: ret_steps = 1·2, cutoff = steps·2 − 2 (first and last step computed);
+# use_ret_steps: ret_steps = 5·2, cutoff = steps·2 (first 5 computed).  The skip test uses the timestep embedding only
+# (modulated_inp = e / e0), identical for the cond and uncond forwards → both CFG branches skip the same steps.
+STEP_CACHE_FORCED = {"teacache": (1, 1), "teacache_ret": (5, 0)}
+
+
+def _step_cache(scn, m, wl, sys, ph, sh, stages, seqs, mb, pp, pkv, warnings):
+    """0.167: TeaCache-style step skipping for DiT generation.  A skipped forward still runs the patch / timestep /
+    text embedders and the head (they precede / follow the block loop in the reference forward) plus one residual
+    add over the latent tokens; it keeps one cached residual (tokens × hidden) per CFG branch per sequence."""
+    k = scn.workload.step_skip
+    if not k:
+        return None
+    if pp > 1 or pkv:
+        warnings.append("workload.step_skip 已忽略：" + ("流水并行（PP > 1）下跳步的级间行为未建模" if pp > 1 else
+                                                       "与 prefix_kv 同用未建模"))
+        return None
+    first, last = STEP_CACHE_FORCED[scn.workload.step_cache]
+    cap = max(0, wl.steps - min(wl.steps, first + last))
+    if k > cap:
+        raise ValueError(f"workload.step_skip = {k} 超过可跳步数 {cap}（{wl.steps} 步，{scn.workload.step_cache} 固定计算"
+                         f"前 {first} 步{'与最后 1 步' if last else ''}）")
+    lay = scn.layout
+    ab = _fmt(m.act_fmt).bytes
+    tok = _cdiv(wl.tokens, lay.sp)
+    add = Op("step_cache.residual_add", "vector", 0, vec=ph.batch * tok * m.hidden,
+             act_bytes=3 * ph.batch * tok * m.hidden * ab)
+    ops = full_io_ops(m, ph, sh, "pre") + full_io_ops(m, ph, sh, "post") + [add]
+    c = _component_time([(ops, 1)], sys, scn.mapping, m.act_fmt)
+    # cached residual: one per CFG branch → per sequence (seqs already counts cond / uncond) on this DP rank
+    buf = _cdiv(seqs, lay.dp) * tok * m.hidden * ab
+    st0 = stages[0]
+    mp = st0.mem
+    need = mp.dram_need + buf
+    stages[0] = replace(st0, mem=replace(mp, dram_need=need, fits=need <= mp.dram_cap))
+    b_mb = ph.batch
+    tf_skip = c["tflop"] * lay.tp * lay.sp * lay.dp * lay.cp / b_mb
+    return {"skip": k, "mode": scn.workload.step_cache, "computed": wl.steps - k, "steps": wl.steps,
+            "t_skip": c["s"], "tflop_seq_skip": tf_skip, "buffer_GiB_card": buf / 2**30, "fits": need <= mp.dram_cap,
+            "label": "跳步数取决于阈值与内容系数，由用户给出；固定步规则「来源」TeaCache4Wan2.1"}
 
 
 def _prefix_kv(scn: Scenario, m: ModelSpec, wl, warnings: list[str]) -> bool:

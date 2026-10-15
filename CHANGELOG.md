@@ -3,6 +3,19 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.167.0] — TeaCache-style step caching for video/image DiT
+- New mechanism (outside VLM): skipped denoise steps. Opt-in Workload fields `step_skip` (skipped steps per request) and `step_cache` teacache | teacache_ret.
+- 「来源」 ali-vilab/TeaCache, TeaCache4Wan2.1 `teacache_generate.py`:
+  - A skipped forward still runs the patch, time and text embedders and the head. Only the block loop is replaced by `x += previous_residual`.
+  - One residual is cached per CFG branch (`previous_residual_even` / `_odd`).
+  - Steps always computed: teacache (ret_steps = 1·2, cutoff = steps·2 − 2) → first and last step; use_ret_steps (ret_steps = 5·2, cutoff = steps·2) → first 5.
+  - The skip test reads only the timestep embedding (`modulated_inp = e / e0`), which is the same for cond and uncond, so both CFG branches skip the same steps.
+- Model: denoise −= skip · per_step · (t_forward − t_skip), where t_skip = embedders + head + residual add (a vector op over tokens × hidden). Residual buffer = sequences on the rank × tokens/SP × hidden × act bytes (bf16 「假设」), added to stage 0 DRAM. FLOPs per request count skipped forwards at their reduced cost.
+- Not applied, with a warning: PP > 1 (stage behaviour on a skip not modelled), use together with prefix_kv, and non-generation models. step_skip above steps − forced raises an error.
+- Why `step_skip` is a user input: the skip count depends on the threshold and the per-model rescale coefficients applied to learned time embeddings, so it can't be derived without the weights. 推导 example from the TeaCache README (14B: 1829 s → 1234 s at thresh 0.14, end-to-end): about a third of the steps skipped. Not used as a default.
+- CLI --step-skip / --step-cache. UI: 跳步数 / 跳步规则 inputs (values above the cap are flagged in the browser and not sent) and a 跳步缓存 KPI. `scripts/ui_smoke.py` extended; 0 console errors.
+- Defaults are off, so results are bit-identical and fingerprints unchanged. Tests: tests/test_core_167.py (4).
+
 ## [0.166.0] — Kimi K2.5 / K2.7-Code video chunks; UI smoke fixes
 - UI (Playwright smoke of the 0.165 video and host fields): switching to a VLM without a modelled video processor (e.g. GLM) while `videos` > 0 posted an eval that returned 400 (console error).
   - The video inputs are now `video-only`: shown only when the catalog's new `vision.video` flag is true, and `videos` is cleared otherwise.

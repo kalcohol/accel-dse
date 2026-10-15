@@ -232,6 +232,7 @@ function syncInputs() {
   for (const k of ['dit_fsdp', 'te_cpu', 'vae_parallel', 'overlap']) if ($('w-' + k)) $('w-' + k).checked = !!S.sc.workload[k];
   if ($('w-sample_split')) $('w-sample_split').checked = S.sc.workload.sample_split !== false;
   if ($('w-tri_attn')) $('w-tri_attn').value = S.sc.workload.tri_attn || 'fused';
+  if ($('w-step_cache')) $('w-step_cache').value = S.sc.workload.step_cache || 'teacache';
   if ($('w-tri_chunk')) { $('w-tri_chunk').value = S.sc.workload.tri_chunk || ''; $('w-tri_chunk').disabled = (S.sc.workload.tri_attn || 'fused') !== 'chunked'; }
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
   if ($('c-attn_fmt') && S.cat) $('c-attn_fmt').value = chipVal('attn_fmt') || '';
@@ -719,6 +720,9 @@ function domainKpis(s, cap, auto) {
     k.push(kpi(im ? '单张延迟' : '单段延迟（clip）', fmtDur(g.clip_s),
       `${w.width}×${w.height}${im ? '' : ` · ${w.frames} 帧`} · ${w.steps} 步 × CFG ${w.cfg} · batch ${s.batch}${auto} · SLO ${fmtDur(g.slo_s)}${over ? ' · 超出' : ''}`
       + (pl ? ` · 文本编码 ${fmtDur(pl.te_s)} + 去噪 ${fmtDur(g.denoise_s)} + 解码 ${fmtDur(pl.decode_s)}${pl.load_s ? ` + 主机重载 ${fmtDur(pl.load_s)}` : ''} · 组件${pl.placement === 'auto' ? '（自动）' : ''}${pl.place_label}` : ' · 只计 DiT 去噪（文本编码器 / VAE 未计）'), over ? 'warn' : ''));
+    const sc = g.step_cache;
+    if (sc) k.push(kpi('跳步缓存', `${sc.skip} / ${sc.steps} 步跳过`,
+      `${sc.mode} · 跳过的步 ${fmtDur(sc.t_skip_ms / 1e3)}（只跑嵌入 + 输出头 + 残差加）· 省去噪 ${fmtDur(sc.denoise_saved_s)} · 残差缓存 ${num(sc.buffer_GiB_card)} GiB/卡`));
     if (im) k.push(kpi('每去噪步', fmtDur(g.step_ms / 1e3), `${num(w.seq_tokens)} token / 前向 · ${w.steps} 步 × CFG ${w.cfg}`));
     else k.push(kpi('每帧延迟', fmtDur(g.s_per_frame),
       `每去噪步 ${fmtDur(g.step_ms / 1e3)} · ${num(w.seq_tokens)} token / 前向${w.audio_tokens ? `（含音频 ${num(w.audio_tokens)}）` : ''}${w.attention === 'factorized' ? ' · 分解注意力' : ''} · 视频 ${num(w.video_s)} s${g.realtime_x ? ` · 实时倍率 ${num(g.realtime_x)}×` : ''}`));
@@ -1869,6 +1873,13 @@ async function init() {
   bindNumber('w-psteps', () => S.sc.workload.steps || null, (x) => (S.sc.workload.steps = x === null ? 0 : x), { int: true, nullable: true });
   for (const k of ['clip_slo_s', 'seq_slo_ms', 'fold_slo_s']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
   bindNumber('w-host_GBps', () => S.sc.workload.host_GBps, (x) => (S.sc.workload.host_GBps = x));
+  // 0.167: at most steps − forced (teacache: first + last; teacache_ret: first 5) — the server refuses more
+  const skipCap = () => { const m = model(), st = S.sc.workload.steps || (m && m.workload && m.workload.steps) || 0;
+    return Math.max(0, st - (S.sc.workload.step_cache === 'teacache_ret' ? 5 : 2)); };
+  bindNumber('w-step_skip', () => S.sc.workload.step_skip || 0, (x) => { if (x) S.sc.workload.step_skip = x; else delete S.sc.workload.step_skip; },
+    { int: true, check: (x) => x >= 0 && x <= skipCap() });
+  $('w-step_cache').addEventListener('change', (e) => { if (e.target.value === 'teacache') delete S.sc.workload.step_cache; else S.sc.workload.step_cache = e.target.value;
+    if ((S.sc.workload.step_skip || 0) > skipCap()) { S.sc.workload.step_skip = skipCap(); $('w-step_skip')._sync(); } schedule(); });
   bindNumber('w-host_TFLOPS', () => S.sc.workload.host_TFLOPS, (x) => (S.sc.workload.host_TFLOPS = x));
   for (const k of ['sram_mib', 'macs', 'tflops', 'cards', 'power_W_card', 'usd_per_kWh', 'tdp_W_card', 'card_usd', 'amort_years', 'pue', 'dram_GiB', 'die_mm2', 'mm2_per_mib_sram', 'mm2_per_kmac',
     'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2', 'mm2_per_dq_hbm', 'mm2_per_dq_lpddr', 'mm2_per_d2d_unit', 'mm2_per_GBps_c2c'])

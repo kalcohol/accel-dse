@@ -111,6 +111,10 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    default=None, help="structure models: triangle-attention kernel (default fused)")
     p.add_argument("--tri-chunk", dest="tri_chunk", type=int, default=None,
                    help="structure models, --tri-attn chunked: rows per chunk (0 → reference default)")
+    p.add_argument("--step-skip", dest="step_skip", type=int, default=None,
+                   help="video/image gen (0.167): TeaCache-skipped denoise steps per request (blocks → cached residual)")
+    p.add_argument("--step-cache", dest="step_cache", choices=("teacache", "teacache_ret"), default=None,
+                   help="step cache rule: teacache (first + last step computed) | teacache_ret (first 5 computed)")
     p.add_argument("--prefix-kv", dest="prefix_kv", choices=("auto", "on", "off"), default=None,
                    help="image/video gen: reuse the text-prefix K/V across denoise steps (auto = as the model declares; "
                         "Qwen-Image-2.1 causal_condition)")
@@ -395,6 +399,10 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         wl["tri_chunk"] = a.tri_chunk
     if getattr(a, "prefix_kv", None):
         wl["prefix_kv"] = a.prefix_kv
+    if getattr(a, "step_skip", None) is not None:
+        wl["step_skip"] = a.step_skip
+    if getattr(a, "step_cache", None):
+        wl["step_cache"] = a.step_cache
     if getattr(a, "dit_fsdp", False):
         wl["dit_fsdp"] = True
     if getattr(a, "te_cpu", False):

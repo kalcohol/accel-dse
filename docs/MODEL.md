@@ -3799,3 +3799,11 @@ Models: Kimi-K2.5 and Kimi-K2.7-Code. Settings are 「来源」 from preprocesso
 - Contrast with Qwen (§111): Qwen merges 2 frames in the Conv3d and attends per slice. Kimi embeds every frame, attends across 4 frames, then pools.
 - Not counted: timestamp "hh:mm:ss.fff" and media marker tokens per chunk.
 
+## 113. Step caching for DiT generation (0.167, opt-in)
+TeaCache (TeaCache4Wan2.1 teacache_generate.py, 「来源」 for the forced-step rules and which ops run on a skipped step).
+- Skipped forward = full_io_ops pre (patch, time, text embedders) + post (head) + one residual add (tokens × hidden vector op). Timed with `_component_time` (weights read from DRAM).
+- Clip denoise = steps·per_step·t − k·per_step·(t − t_skip). CFG branches skip in lockstep (the skip test uses only the timestep embedding).
+- Memory: one cached residual per forward sequence (cond and uncond each) on the DP rank: ⌈seqs/dp⌉·⌈tokens/sp⌉·hidden·act bytes, added to stage 0.
+- Forced steps: teacache = first and last; teacache_ret = first 5.
+- k is a user input; there is no default. PP > 1 and use with prefix_kv are not modelled (warning, ignored).
+
