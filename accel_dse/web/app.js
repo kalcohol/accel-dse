@@ -392,7 +392,9 @@ function onModel() {
   document.querySelectorAll('.moe-only').forEach((e) => (e.hidden = !m.is_moe));
   document.querySelectorAll('.vlm-only').forEach((e) => (e.hidden = !m.vision));
   if (!m.vision && S.sc.serving.images) { S.sc.serving.images = 0; $('s-images')._sync(); }
-  if (!m.vision && S.sc.serving.videos) { delete S.sc.serving.videos; $('s-videos')._sync(); }   // images only mean something on a VLM
+  const vid = !!(m.vision && m.vision.video);   // 0.166: only models with a modelled video processor
+  document.querySelectorAll('.video-only').forEach((e) => (e.hidden = !vid));
+  if (!vid && S.sc.serving.videos) { delete S.sc.serving.videos; $('s-videos')._sync(); }   // images only mean something on a VLM
   const L = S.sc.layout;
   if (isFull(m)) { L.ep = 1; L.etp = 1; L.sp = L.sp || 1; delete L.cp; if (m.is_pair) L.tp = 1; }
   else { L.sp = 1; if (!m.is_moe) { L.dp = 1; L.ep = 1; L.etp = 1; } else fixMoe('tp'); }
@@ -660,7 +662,7 @@ function renderEval(r) {
   } else {
     const over = s.ttft_ms > sv.ttft_slo_ms;
     const vz = s.vision;
-    k.push(kpi('TTFT', num(s.ttft_ms) + ' ms', `batch ${s.batch} · prompt ${vz ? `${vz.text_prompt} 文本 + ${vz.image_tokens} 图像 token` : sv.prompt} · SLO ${sv.ttft_slo_ms} ms`
+    k.push(kpi('TTFT', num(s.ttft_ms) + ' ms', `batch ${s.batch} · prompt ${vz ? `${vz.text_prompt} 文本 + ${vz.image_tokens} ${vz.video ? '视觉（图像 + 视频）' : '图像'} token` : sv.prompt} · SLO ${sv.ttft_slo_ms} ms`
       + (vz && vz.cards ? ` · 含视觉编码 ${num(vz.s * 1e3)} ms` : ''), over ? 'warn' : ''));
     k.push(kpi('prefill 吞吐 / 卡', num(s.tok_s_card) + ' tok/s', `共 ${num(s.tok_s)} tok/s · ${s.cards} 卡 · ${s.layout}`));
   }
@@ -677,14 +679,15 @@ function renderEval(r) {
     h('div', { class: 's' }, h('span', { class: 'ubar wide' }, h('i', { style: `width:${frac * 100}%` })), `SRAM 驻留 ${pct(s.residency)}`)));
   if (s.vision) {
     const v = s.vision;
-    k.push(kpi('视觉编码器', v.cards ? num(v.s * 1e3) + ' ms' : '—',
+    if (v.images || !v.video) k.push(kpi('视觉编码器', v.cards ? num(v.s * 1e3) + ' ms' : '—',
       `${v.label} · ${v.images} 张/请求 · ${v.px[0]}×${v.px[1]} → ${v.resized_px[0]}×${v.resized_px[1]} · ${v.tokens_per_image} token/张`
       + (v.cards ? ` · ${num(v.tflop)} TFLOP · ${v.cards} 卡各 ${v.per_card} 张（数据并行「假设」）· ${BOUND_ZH[v.bound] || v.bound}` : ' · decode 不跑编码器，图像 token 在 KV 中')
       + ` · 权重 ${num(v.weights_GB)} GB 在首级`));
     const vv = v.video;
     if (vv) k.push(kpi('视频编码', vv.s ? num(vv.s * 1e3) + ' ms' : '—',
       `${vv.videos} 段/请求 · ${vv.frames} 帧 → ${vv.slices} 时间片 · ${vv.px[0]}×${vv.px[1]} → ${vv.resized_px[0]}×${vv.resized_px[1]} · ${vv.tokens_per_video} token/段`
-      + (vv.cap ? ' · 逐帧上限' : '') + (vv.s ? ` · ${num(vv.tflop)} TFLOP` : ' · decode 不跑编码器，视频 token 在 KV 中')));
+      + (vv.cap ? ' · 逐帧上限' : '') + (vv.s ? ` · ${num(vv.tflop)} TFLOP · 每卡 ${vv.slices_per_card} 片` : ' · decode 不跑编码器，视频 token 在 KV 中')
+      + (v.images ? '' : ` · ${v.label} 权重 ${num(v.weights_GB)} GB 在首级`)));
   }
   if (s.host) {
     const hh = s.host;

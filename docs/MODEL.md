@@ -3790,3 +3790,12 @@ Models: those with a released Qwen3VLVideoProcessor (Qwen3.5-397B-A17B, Qwen3.8-
 - Encoder: grid_t passes of the per-image tower op graph on a ph×pw grid. The reason is that cu_seqlens = repeat_interleave(h·w, t) (vision_utils.get_vision_attention_seqlens, merge_temporal=False), so attention is quadratic in ph·pw per slice and linear in grid_t. The Conv3d patch embed has K = 3·2·16².
 - 「假设」 defaults: 32 frames, 1280×720. Timestamp text tokens are not counted.
 
+## 112. Kimi video chunks (0.166, opt-in)
+Models: Kimi-K2.5 and Kimi-K2.7-Code. Settings are 「来源」 from preprocessor_config.json media_proc_cfg and config.json vision_config (listed in CHANGELOG 0.166).
+- Chunks: n = ⌈F/4⌉. The last chunk has F mod 4 frames when that is nonzero.
+- Per-frame resize (navit_resize_image): limit = 4096 patches, or min(round(655360/frames in chunk), 4096) when in_patch_limit_video is set. Side limit 512 patches. Pad to 28.
+- Tower: one pass per chunk on tframes·ph·pw patches. Attention is joint over the chunk (cu_seqlens = t·h·w). Then a temporal mean (vis.tpool, vector op), then the merger on ph·pw/4 rows.
+- LLM tokens = n·ph·pw/4.
+- Contrast with Qwen (§111): Qwen merges 2 frames in the Conv3d and attends per slice. Kimi embeds every frame, attends across 4 frames, then pools.
+- Not counted: timestamp "hh:mm:ss.fff" and media marker tokens per chunk.
+

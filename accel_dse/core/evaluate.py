@@ -1347,14 +1347,17 @@ def _vision_cost(scn: Scenario, m: ModelSpec, sys: System, stages: list) -> dict
     if vg is not None:
         out["video"] = {"videos": sv.videos, "frames": vg.frames, "px": [sv.video_w, sv.video_h],
                         "resized_px": list(vg.slice.px), "slices": vg.t, "patches": [vg.slice.ph, vg.slice.pw],
-                        "tokens_per_slice": vg.slice.llm_tokens, "tokens_per_video": vg.llm_tokens, "cap": sv.video_cap}
+                        "tokens_per_slice": vg.slice.llm_tokens, "tokens_per_video": vg.llm_tokens, "cap": sv.video_cap and vg.slice.tframes == 1,
+                        "frames_per_slice": vg.slice.tframes if vg.slice.tframes > 1 else m.vision.tpatch}
     act = 0.0
     if sv.phase == "prefill":
         # 0.165: encoder passes = images (one grid each) + video temporal slices (the tower's cu_seqlens split a clip
         # per t: attention within a slice, Conv3d patch-embed over temporal_patch frames — the same pass as a still)
         units = [(g, sv.images)] if sv.images else []
         if vg is not None:
-            units.append((vg.slice, sv.videos * vg.t))
+            units.append((vg.slice, sv.videos * (vg.t - (1 if vg.tail is not None else 0))))
+            if vg.tail is not None:                               # 0.166 Kimi: shorter last chunk
+                units.append((vg.tail, sv.videos))
         tot = None
         for gi, cnt in units:
             per_rank = _cdiv(sv.batch, lay.dp) * cnt             # passes of one DP rank's requests in the step
@@ -1386,8 +1389,10 @@ def _vision_cost(scn: Scenario, m: ModelSpec, sys: System, stages: list) -> dict
                 tot.update(s=tot["s"] + c["s"], tflop=tot["tflop"] + c["tflop"] * k_w, dram_GB=tot["dram_GB"] + c["dram_GB"] * n,
                            per_card=max(tot["per_card"], per_card), cards=max(tot["cards"], n),
                            acts={k: tot["acts"].get(k, 0.0) + acts.get(k, 0.0) for k in set(tot["acts"]) | set(acts)})
-            if vg is not None and gi is vg.slice:
-                out["video"].update(s=c["s"], tflop=c["tflop"] * k_w, slices_per_card=per_card)
+            if vg is not None and (gi is vg.slice or gi is vg.tail):
+                ov = out["video"]
+                ov.update(s=ov.get("s", 0.0) + c["s"], tflop=ov.get("tflop", 0.0) + c["tflop"] * k_w,
+                          slices_per_card=max(ov.get("slices_per_card", 0), per_card))
         if tot is not None:
             out.update(tot)
     mp = stages[0].mem

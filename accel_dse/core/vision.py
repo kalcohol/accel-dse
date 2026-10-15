@@ -65,6 +65,11 @@ _PREPROC = {
 # 4096 / longest_edge 25165824 (a pixel budget over t_bar·h·w of the whole clip), patch 16, temporal_patch 2, merge 2.
 _VIDEO = {k: {"min_px": 4096, "max_px": 25165824} for k in (
     "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-Flash-Next", "internlm/Intern-S2-397B")}
+# 0.166 — Kimi K2.5 / K2.7-Code video chunks.  「来源」 preprocessor_config.json media_proc_cfg: temporal_merge_kernel_size 4,
+# in_patch_limit_each_frame 4096, in_patch_limit_video null (K2.5) / 655360 (K2.7-Code), patch_limit_on_one_side 512;
+# config.json vision_config video_attn_type spatial_temporal, merge_type sd2_tpool (modeling_kimi_k25 identical vision code).
+_VIDEO.update({k: {"chunk": 4, "frame_lim": 4096, "total": t} for k, t in (
+    ("moonshotai/Kimi-K2.5", None), ("moonshotai/Kimi-K2.7-Code", 655360))})
 # 「来源」 transformers qwen3_vl/video_processing_qwen3_vl.py: fps 2, min_frames 4, max_frames 768, max_video_tokens 768
 VIDEO_FPS, VIDEO_MIN_FRAMES, VIDEO_MAX_FRAMES, VIDEO_MAX_TOK = 2, 4, 768, 768
 
@@ -341,6 +346,8 @@ class ImageGrid:
     llm_tokens: int             # positions the image occupies in the LLM sequence
     px: tuple[int, int]         # (width, height) the image is resized / padded to
     views: tuple = ()           # 0.145: ((ph, pw, count), …) when one image runs as several tower passes (MiniCPM)
+    tframes: int = 1            # 0.166: frames attended jointly in one pass (Kimi video chunk: spatial-temporal
+                                # attention over tframes·ph·pw, temporal mean before the merger)
 
 
 def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
@@ -397,6 +404,16 @@ def vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str = "bf16") -> li
     MiMo windowed blocks charge only the band's keys (``band_keys``)."""
     if images <= 0:
         return []
+    if g.tframes > 1:
+        # 0.166 Kimi chunk (modeling_kimi_k25): patch-embed + tower over every frame's patches with one cu_seqlens
+        # span of t·h·w (spatial_temporal); tpool_patch_merger means over t, then the merger runs on h/2·w/2 rows
+        n = g.ph * g.pw
+        ops = _tower_ops(v, g.tframes * n, images, images * g.merged, "vis.", af)
+        from .dtypes import fmt as _fmt
+        i = next(k for k, o in enumerate(ops) if o.name.startswith("vis.merger"))
+        ops.insert(i, Op("vis.tpool", "vector", v.depth, vec=images * g.tframes * n * v.hidden,
+                         act_bytes=images * (g.tframes + 1) * n * v.hidden * _fmt(af).bytes))
+        return ops
     groups = g.views or ((g.ph, g.pw, 1),)
     ops: list[Op] = []
     for gi, (ph, pw, cnt) in enumerate(groups):
@@ -486,9 +503,12 @@ def expand_images(scn, m):
 
 
 def video_pre(m) -> dict | None:
-    """Video processor bounds of a model with a released Qwen3VLVideoProcessor, else None."""
+    """Video processor settings of a model with a modelled video path (Qwen3VLVideoProcessor; 0.166 Kimi chunks)."""
     v = getattr(m, "vision", None)
-    return _VIDEO.get(getattr(m, "hf_id", "")) if v is not None and v.family == "qwen" else None
+    pre = _VIDEO.get(getattr(m, "hf_id", "")) if v is not None else None
+    if pre is None or v.family != ("kimi" if "chunk" in pre else "qwen"):
+        return None
+    return pre
 
 
 @dataclass(frozen=True)
@@ -497,12 +517,15 @@ class VideoGrid:
     t: int                      # temporal slices = ⌈frames / temporal_patch⌉ (frames padded to a multiple)
     slice: ImageGrid            # one temporal slice (the tower attends within a slice: cu_seqlens per t)
     llm_tokens: int             # t · merged positions in the LLM sequence (timestamp text tokens not counted)
+    tail: ImageGrid | None = None   # 0.166 Kimi: shorter last chunk (F mod 4 frames), one of the t passes
 
 
 def video_grid(v: VisionSpec, pre: dict, frames: int, width: int, height: int, cap: bool = False) -> VideoGrid:
     """transformers Qwen3VLVideoProcessor.resize + smart_resize, verbatim: the pixel budget bounds t_bar·h·w of the
     clip, so more frames → smaller frames.  cap = cap_pixels_per_frame (qwen-vl-utils: per-frame pixels ≤
     min(768·f², longest/F), floored at 1.05·shortest)."""
+    if "chunk" in pre:
+        return _kimi_video(v, pre, frames, width, height)
     tp, f = max(1, v.tpatch), v.patch * v.merge
     lo, hi = pre["min_px"], pre["max_px"]
     if frames < tp:
@@ -527,13 +550,33 @@ def video_grid(v: VisionSpec, pre: dict, frames: int, width: int, height: int, c
     return VideoGrid(frames, t, ImageGrid(ph, pw, mg, mg, (wb, hb)), t * mg)
 
 
+def _kimi_video(v: VisionSpec, pre: dict, frames: int, width: int, height: int) -> VideoGrid:
+    """kimi_k25_vision_processing.split_video_chunks + navit_resize_video, verbatim: frames are cut into chunks of
+    ``chunk`` (last one shorter); each chunk is resized per frame with in_patch_limit_each_frame (lowered to
+    round(total / frames in chunk) when in_patch_limit_video is set) and the side limit; tokens per chunk =
+    (h/28)·(w/28) after tpool (independent of the frame count)."""
+    c, side = pre["chunk"], v.rz["side"]
+    n = -(-frames // c)
+
+    def g(nf):
+        lim = pre["frame_lim"] if pre["total"] is None else min(round(pre["total"] / nf), pre["frame_lim"])
+        hb, wb = _kimi_resize(height, width, v.patch, v.merge, lim, side)
+        ph, pw = hb // v.patch, wb // v.patch
+        mg = ph * pw // (v.merge * v.merge)
+        return ImageGrid(ph, pw, mg, mg, (wb, hb), tframes=nf)
+    full, r = g(c), frames % c
+    tail = g(r) if r and n > 1 else None
+    first = full if (r == 0 or n > 1) else g(r)
+    return VideoGrid(frames, n, first, n * first.merged if tail is None else (n - 1) * first.merged + tail.merged, tail)
+
+
 def video_grid_of(m, sv) -> VideoGrid | None:
     if not getattr(sv, "videos", 0):
         return None
     pre = video_pre(m)
     if pre is None:
-        raise ValueError("serving.videos：该模型没有已发布的视频处理器（只建了 Qwen3VLVideoProcessor 系：Qwen3.5-397B / "
-                         "Qwen3.8 / Intern-S2）")
+        raise ValueError("serving.videos：该模型没有已建模的视频处理器（Qwen3VLVideoProcessor 系：Qwen3.5-397B / "
+                         "Qwen3.8 / Intern-S2；0.166 Kimi K2.5 / K2.7-Code 4 帧块）")
     return video_grid(m.vision, pre, sv.video_frames, sv.video_w, sv.video_h, sv.video_cap)
 
 

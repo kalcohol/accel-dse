@@ -3,6 +3,21 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.166.0] — Kimi K2.5 / K2.7-Code video chunks; UI smoke fixes
+- UI (Playwright smoke of the 0.165 video and host fields): switching to a VLM without a modelled video processor (e.g. GLM) while `videos` > 0 posted an eval that returned 400 (console error).
+  - The video inputs are now `video-only`: shown only when the catalog's new `vision.video` flag is true, and `videos` is cleared otherwise.
+  - Video-only requests no longer show an image KPI reading "0 张/请求 … 每卡 128 张". The TTFT token line now says 视觉（图像 + 视频） token when video is present.
+  - The smoke script is `scripts/ui_smoke.py` (optional, needs Playwright; not part of the suite). After the fixes: 0 console errors, all KPIs render.
+- New mechanism: Kimi video chunks, a different design from Qwen's.
+  - 「来源」 moonshotai/Kimi-K2.5 and Kimi-K2.7-Code `preprocessor_config.json` media_proc_cfg: temporal_merge_kernel_size 4, in_patch_limit_each_frame 4096, in_patch_limit_video null / 655360, patch_limit_on_one_side 512.
+  - 「来源」 Both repos' `config.json`: video_attn_type spatial_temporal, merge_type sd2_tpool.
+  - 「来源」 kimi_k25_vision_processing.split_video_chunks + media_utils.navit_resize_video (frames cut into chunks of 4, last one shorter, per-frame patch limit) and modeling_kimi_k25 (cu_seqlens span t·h·w = joint attention over the chunk; tpool_patch_merger takes the mean over t before the merger). The two repos' vision code is identical; they differ only in cache helpers.
+  - Effect: tokens per chunk = (h/28)·(w/28), independent of frames per chunk. The encoder runs one pass per chunk over 4·h·w patches, so attention is quadratic in the chunk. Example: kimi-k2.5, 32 frames at 1280×720 → 1204×700, 8 chunks × 1075 = 8600 tokens. The chunk pass costs 2.1× the FLOPs of 4 separate frames.
+  - Kimi-K3 is not modelled (own kimi_k3 processor; no video_attn_type in its config) and still refuses `videos`.
+  - `video_cap` doesn't apply to Kimi (reported as cap false). Chunk timestamp and media-marker text tokens are not counted.
+- `ImageGrid.tframes` (default 1) and `VideoGrid.tail` added. Defaults are bit-identical; fingerprints unchanged.
+- Tests: tests/test_core_166.py (4).
+
 ## [0.165.0] — VLM video input (Qwen3VLVideoProcessor models); video + host fields in the UI
 - New mechanism: video clips per request. Opt-in Serving fields `videos` (0…16), `video_frames` (2…768, default 32 「假设」 = 16 s at the processor's 2 fps), `video_w`/`video_h` (default 1280×720 「假设」), `video_cap` (qwen-vl-utils per-frame cap, which transformers makes opt-in via cap_pixels_per_frame). Applies to the four models whose repos ship a Qwen3VLVideoProcessor: Qwen3.5-397B-A17B, Qwen3.8-27B, Qwen3.8-Flash-Next, Intern-S2-397B. Any other model raises an error when `videos` is set; a model with no vision tower gets an "ignored" warning.
 - 「来源」 Each repo's video_preprocessor_config.json: size shortest_edge 4096 / longest_edge 25165824, patch 16, temporal_patch 2, merge 2. transformers qwen3_vl/video_processing_qwen3_vl.py: smart_resize bounds t_bar·h·w of the whole clip, factor = patch·merge = 32, grid_t = ⌈F/2⌉, fps 2, min/max frames 4/768, cap = max(min(768·32², longest/F), ⌊1.05·shortest⌋)·F. These are implemented verbatim. transformers vision_utils.get_vision_attention_seqlens (merge_temporal=False for Qwen3-VL) splits cu_seqlens per temporal slice, so the encoder runs one tower pass per slice: attention covers h·w patches, not the clip. The patch-embed Conv3d still spans 2 frames.

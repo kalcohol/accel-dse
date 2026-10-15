@@ -221,6 +221,11 @@ UNLISTED = {"yi-1.5-34b": "与 Qwen3-32B 同类（稠密 GQA）", "internlm3-8b"
 _VARIANT = {"": 0, "fp8": 1, "awq": 2}
 
 
+def _video_pre(spec):
+    from .vision import video_pre
+    return video_pre(spec)
+
+
 def provider_of(hf_id: str) -> tuple[str, str]:
     for key, label, orgs in PROVIDERS:
         if hf_id.startswith(orgs):
@@ -385,7 +390,8 @@ def labels(spec: ModelSpec) -> dict:
         "param_err": pc["rel_err"],
         "vision_params_B": spec.vision_params / 1e9,
         "vision": ({"label": spec.vision.label, "patch": spec.vision.patch, "merge": spec.vision.merge,
-                    "depth": spec.vision.depth, "hidden": spec.vision.hidden, "params_B": spec.vision.params / 1e9}
+                    "depth": spec.vision.depth, "hidden": spec.vision.hidden, "params_B": spec.vision.params / 1e9,
+                    "video": _video_pre(spec) is not None}
                    if spec.vision else None),
         "notes": [n for n in spec.notes if not n.startswith(_COVER_FILTER)],
         "arch": spec.arch,
