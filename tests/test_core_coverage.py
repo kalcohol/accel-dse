@@ -59,7 +59,7 @@ _FULL_0651 = {
 "wan2.2-a14b": "237d74973e0a",
 "hunyuanvideo": "1f529f8bd192",
 "ltx-video": "b76914968ee6",
-"mochi-1": "d134d7d69b76",
+"mochi-1": "07a12203b662",   # 0.141: per-core SRAM port default (was d134d7d69b76)
 "opensora-stdit3": "d7ec0d162072",
 "minimax-h3": "b786010ff458",
 "esm2-3b": "34f7544287cd",

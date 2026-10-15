@@ -133,7 +133,7 @@ def test_auto_overlap_minimises_stage_time():
     # TP32 decode across 4 nodes: auto (bw + α per collective) picks tree; with compute hiding the bandwidth, the
     # lower-latency hier wins the stage (exposed α)
     s = Scenario(model="deepseek-v3", chip=CHIPS["1P"], mem_id=HBM, layout=Layout(1, 32, 8, 256, 1), node_cards=8,
-                 serving=Serving(batch=2048), fabric=Fabric(enabled=True, oversub=2.0, net_tiers=3, pod_nodes=16,
+                 serving=Serving(batch=2048), fabric=Fabric(enabled=True, algo="auto", oversub=2.0, net_tiers=3, pod_nodes=16,
                                                             oversub_spine=4.0))
     o = dataclasses.replace(s, fabric=dataclasses.replace(s.fabric, algo="auto_overlap"))
     ra, ro = evaluate(s), evaluate(o)

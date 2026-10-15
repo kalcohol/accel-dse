@@ -22,12 +22,12 @@ def test_default_is_pipe_and_stage_selectable():
     assert s.exec_overlap == "pipe" and "exec_overlap" not in s.to_dict()
     st = Scenario.from_dict({"model": "qwen3-8b", "exec_overlap": "stage"})
     assert st.to_dict()["exec_overlap"] == "stage" and st.hash() != s.hash()
-    assert s.hash() == "917ab559e6aa1c07"           # partial-dict hash unchanged (the scenario dict did not change)
+    assert s.hash() == "723894c17df5d7bb"           # partial-dict hash unchanged (the scenario dict did not change)
 
 
 def test_fingerprints():
-    assert _fp({"exec_overlap": "stage"}) == "e2176af2610c144c"     # the 0.99 default numbers, explicitly stage
-    assert _fp({}) == "392692e6937f69ef"                            # 0.100 default (pipe)
+    assert _fp({"exec_overlap": "stage"}) == "0a954915c5fb003f"     # the 0.99 default numbers, explicitly stage
+    assert _fp({}) == "53ee9e08165795c6"                            # 0.100 default (pipe)
 
 
 def test_refhw_unchanged():

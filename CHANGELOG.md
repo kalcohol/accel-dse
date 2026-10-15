@@ -3,6 +3,20 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.141.0]
+### Changed (defaults; fingerprints re-baselined, user-approved)
+- GPU / validation default: `extval.DEFAULT = "default"` = the per-SM candidate path with ceil (`ceil_variant(candidate_variant())`); `scenario` / `predict` / `table` / `predict_cb` default to it, and `ext_validation.json` is regenerated. Group errors, old `catalog` → new `default` (gmean / mean |err|): v1 static 1.32/37.3 % → 1.06/20.1 %; v1 TTFT 1.81/87.2 % → 1.29/31.6 %; v1 max 1.28/33.0 % → 0.89/19.8 %; MoE prefill 0.94/8.8 % → 0.94/9.2 %; MoE decode 1.11/15.6 % → 0.98/1.7 %; MoE static 2.10/109.9 % → 1.82/82.0 %; MoE max (Mixtral) 1.71/77.8 % → 1.01/20.0 %; r3 lat 3.67/267.4 % → 1.39/38.8 %; r3 max 1.89/90.2 % → 1.18/32.9 %; r4 1.12/37.8 % → 0.95/19.6 %; all 204 rows 1.50/60.2 % → 1.04/23.1 %; mean of group errors 76.5 % → 27.6 %.
+- Per-core accumulator and SRAM port. `acc_kib = None` now means 64 KiB × engines (an explicit value stays the chip total); new `acc_kib_per_engine` (exclusive with `acc_kib`). The default port is 4·(R+C)·2 B/cycle per core, × engines (was 4·(R+C·E)·2 for the chip), e.g. 56×56×16: 7616 → 14336 B/cycle. With `instance_sched = "auto"` more engines are never slower; forced `wide` / `ws_*` schedules can still be up to +11 % slower with more engines, because the ganged array fill (R + C·E) grows (definitional).
+- Migration: `upgrade_legacy` converts saved chips with a numeric `acc_kib`, an `sram_port_Bpc` key and no `acc_kib_per_engine` (also `pd.prefill_chip`) to per-engine fields that reproduce the old hardware exactly.
+- `serving.moe_rank_max` default `"off"` → `"expected"` (MoE groups better overall; catalog column: decode 15.6 → 14.5 %, prefill 8.8 → 9.2 %). `moe_a2a` node+sm stays opt-in: MoE prefill 8.8 → 52.7 % (mean of group errors 32.4 % vs 27.6 %).
+- `fabric.algo` default `"auto"` → `"auto_overlap"` (per-stage re-pick; monotone in bandwidth, see 0.140 notes).
+- PD: after `best_prefill`, the smallest power-of-two prefill batch that still meets the TTFT SLO and carries the same request rate is used. Default PD TTFT goes from 1298 to 658 ms at the same goodput.
+- Re-baselined pins: fingerprints `_fp` stage `e2176af2610c144c` → `0a954915c5fb003f`, default `392692e6937f69ef` → `53ee9e08165795c6`; 125 `fpx` `d29ef7bf6936030d` / `c4e341987bf2461f` → `4690f724dabe9fa6` / `ea2456afee7c3a86`; scenario hashes qwen3-8b `917ab559e6aa1c07` → `723894c17df5d7bb`, qwen3.8-27b `a6463624c5748f5f` → `95f47a808a9c342d` (and the six other 088 hashes); coverage KPI mochi-1 `d134d7d69b76` → `07a12203b662`. Tests that exercise other mechanisms pin `moe_rank_max = "off"` / `algo = "auto"` explicitly.
+### Added
+- `tests/test_core_141.py`; `val5/v0141/` (`groups.py`, engine-adapted `fuzz.py`).
+### Notes
+- Fuzz (r75): engine fuzz is clean under auto / cta; sysfuzz seeds 41–43 found one +0.009 % point (2× D2D units, `exec_overlap = pipe`): the `auto_overlap` re-pick minimises stage time, not flow-shop time. Documented, not fixed.
+
 ## [0.140.0]
 ### Fixed
 - PP split (`pp_split = "cost"`, default): the time proxy (stage rule, full DRAM streaming) proposes splits and the full model picks among them. A better split one layer away was never tried, and when the proxy found nothing better than equal counts the full model was skipped altogether. So more DRAM bandwidth could select a 2.7 % slower split (Qwen3-8B-FP8 PP2 prefill, LPDDR6 4→6 packages). `_pick_split` now hill-climbs each boundary ±1 layer under the full model (fits first, then the slowest stage; at most `PP_REFINE_STEPS` = 8 rounds), including in the equal-count case.

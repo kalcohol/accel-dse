@@ -64,7 +64,7 @@ def test_deepseek_aligner_counted_as_vision():
 
 
 def test_images_default_off_and_hash_unchanged():
-    assert Scenario(model="qwen3.8-27b").hash() == "a6463624c5748f5f"          # same as 0.61.4
+    assert Scenario(model="qwen3.8-27b").hash() == "95f47a808a9c342d"          # same as 0.61.4
     assert "images" not in Scenario(model="qwen3.8-27b").to_dict()["serving"]
     full = Scenario().to_dict(full=True)
     assert full["serving"]["images"] == 0 and full["pp_split"] == "cost" and "image_tokens" not in full["serving"]

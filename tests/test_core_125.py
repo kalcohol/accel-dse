@@ -80,7 +80,7 @@ def test_layout_search_never_worse_than_known_point():
 
 
 def test_fingerprints_change_only_v4():
-    """0.125 rebaseline (e2176af2610c144c stage / 392692e6937f69ef default, were c034bfe3e3a3afa2 / e51c7ec17bbdb998):
+    """0.125 rebaseline (e2176af2610c144c stage / 392692e6937f69ef default; 0.141: 0a954915c5fb003f / 53ee9e08165795c6, were c034bfe3e3a3afa2 / e51c7ec17bbdb998):
     the grouped-linear fix moves only the DeepSeek-V4 rows — without them the fingerprint equals the 0.124 one."""
     import hashlib
     import json
@@ -98,4 +98,5 @@ def test_fingerprints_change_only_v4():
                 except Exception as ex:  # noqa: BLE001
                     h.update(type(ex).__name__.encode())
         return h.hexdigest()[:16]
-    assert fpx({"exec_overlap": "stage"}) == "d29ef7bf6936030d" and fpx({}) == "c4e341987bf2461f"
+    # 0.141 rebaseline (were d29ef7bf6936030d / c4e341987bf2461f)
+    assert fpx({"exec_overlap": "stage"}) == "4690f724dabe9fa6" and fpx({}) == "ea2456afee7c3a86"

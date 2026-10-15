@@ -14,7 +14,7 @@ def test_default_wide_and_validation():
     assert all(h.chip.instance_sched == "wide" for h in REF_HW.values())
     from accel_dse.core.scenario import Scenario
     s = Scenario(model="qwen3.8-27b")
-    assert s.hash() == "a6463624c5748f5f" and "instance_sched" not in s.to_dict()["chip"]
+    assert s.hash() == "95f47a808a9c342d" and "instance_sched" not in s.to_dict()["chip"]
     w = s.replace("chip.instance_sched", "wide")
     assert w.to_dict()["chip"]["instance_sched"] == "wide" and w.hash() != s.hash()
     try:

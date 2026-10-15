@@ -51,7 +51,7 @@ def test_spec_moe_pp_invariants():
     assert hi["tok_s"] >= lo["tok_s"] and lo["step_ms"] == hi["step_ms"] and z["tok_s"] <= s0["tok_s"]
     assert _s({**base, "serving": {**sv, "spec_accept": 0.9}}) == s0           # accept is inert without spec_k
     sk = [_s({**base, "serving": {**sv, "moe_skew": x}})["step_ms"] for x in (1.0, 2.0, 7.9, 64.0)]
-    assert sk == sorted(sk)
+    assert all(b >= a * (1 - 1e-12) for a, b in zip(sk, sk[1:]))      # 0.141: flat under the rank-max default
     big = _s({**base, "serving": {**sv, "moe_skew": 64.0}})
     assert any("上限" in w for w in big["warnings"])
     hot = [0.0] * 256; hot[0] = 1.0
@@ -96,5 +96,5 @@ def test_perf_memos_bit_identical():
 
 def test_fingerprints_unchanged():
     from tests.test_core_0100 import _fp
-    assert _fp({"exec_overlap": "stage"}) == "e2176af2610c144c"
-    assert _fp({}) == "392692e6937f69ef"
+    assert _fp({"exec_overlap": "stage"}) == "0a954915c5fb003f"
+    assert _fp({}) == "53ee9e08165795c6"

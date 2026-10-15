@@ -190,7 +190,7 @@ def test_weight_share_property():
 def test_idle_ep_ranks_move_only_expert_bytes():
     per_tok = []
     for b in (1, 2, 3, 4):
-        r = evaluate(Scenario(model="qwen3-30b-a3b", mem_id=HBM, layout=Layout(dp=4, ep=4), serving=Serving(batch=b)))
+        r = evaluate(Scenario(model="qwen3-30b-a3b", mem_id=HBM, layout=Layout(dp=4, ep=4), serving=Serving(batch=b, moe_rank_max="off")))   # 0.141: mean-rank bytes
         st = r.stages[0]
         assert 0 < st.dram["exp_dram"] < st.time.dram_bytes
         per_tok.append(energy_report(r)["counts_per_unit"]["dram"])

@@ -57,7 +57,7 @@ KNOBS = {
     "freq": lambda s: s.replace("chip", replace(s.chip, freq_ghz=s.chip.freq_ghz * 1.5)),
     "port": lambda s: s.replace("chip", replace(s.chip, sram_port_Bpc=s.chip.port_Bpc * 4)),
     "lanes": lambda s: s.replace("chip", replace(s.chip, vector_lanes=s.chip.lanes * 4)),
-    "acc": lambda s: s.replace("chip", replace(s.chip, acc_kib=s.chip.acc_kib * 4)),
+    "acc": lambda s: s.replace("chip", replace(s.chip, acc_kib=s.chip.acc_total_kib * 4)),
     "dram": lambda s: s.replace("mem_id", MEMS[s.mem_id]),
     "link": lambda s: s.replace("link", replace(s.link, GBps=s.link.GBps * 4)),
     "dequant": lambda s: s.replace("chip", replace(s.chip, formats=replace(

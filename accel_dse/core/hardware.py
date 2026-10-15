@@ -37,6 +37,7 @@ from .dtypes import FormatSupport
 SLC_POLICIES = ("pin", "lru", "pin_bw")   # 0.91 pin_bw: pin + bandwidth-balanced hit ratio (opt-in)
 
 
+ACC_KIB_PER_ENGINE = 64.0     # 0.141: = the ≤ 0.140 1024 KiB chip default / 16 engines 「假设」
 INSTANCE_SCHEDS = ("wide", "split", "auto", "cta")   # 0.92 cta: GPU thread-block tiling (reference hardware)
 NOC_TOPOLOGIES = ("crossbar", "ring", "mesh")
 
@@ -59,9 +60,13 @@ class Chip:
     attn_vec_overlap: bool = field(default=False, metadata={"omit_default": True})
     gemv_macs: int | None = None          # 「假设」 None → R·C·E / 8 (only used by mappings with a vector unit)
     sram_mib: float = 64.0                # 「假设」
-    sram_port_Bpc: float | None = None    # 「假设」 None → 4·(R + C·E)·2 B/cycle
+    # 0.141: per-core default — every engine feeds its own R × C array: None → 4·(R + C)·2 B/cycle per engine
+    # (≤ 0.140: 4·(R + C·E)·2 for the whole chip; saved ≤ 0.140 scenarios are migrated, scenario.upgrade_legacy)
+    sram_port_Bpc: float | None = field(default=None, metadata={"omit_default": True})   # chip-wide absolute when set
     mac_eff: float = 1.0                  # sustained / peak MAC utilisation inside a tile 「假设」
-    acc_kib: float = 1024.0               # WS partial-sum accumulator (fp32) 「假设」; overflow spills to SRAM
+    # WS partial-sum accumulator (fp32) 「假设」; overflow spills to SRAM.  0.141: per core by default
+    # (ACC_KIB_PER_ENGINE × engines); an explicit acc_kib is the chip total (legacy), acc_kib_per_engine scales with E
+    acc_kib: float | None = field(default=None, metadata={"omit_default": True})
     slc_mib: float = 0.0                  # system-level cache (0.48) 「假设」; 0 = none
     slc_GBps: float = 2000.0              # SLC bandwidth 「假设」 (used only when slc_mib > 0)
     slc_policy: str = "pin"               # pin | lru (see module doc) 「假设」
@@ -119,6 +124,7 @@ class Chip:
     # attention kernel) are kernels too and pay kernel_us each (the GPU floor of a small kernel)
     kernel_vec: bool = field(default=False, metadata={"omit_default": True})
     tile_io_Bpc: float = field(default=0.0, metadata={"omit_default": True})
+    acc_kib_per_engine: float | None = field(default=None, metadata={"omit_default": True})   # 0.141
 
     def __post_init__(self):
         # 0.94: JSON round-trips give lists — keep the field hashable and the scenario hash stable
@@ -155,6 +161,12 @@ class Chip:
                 raise ValueError("chip.sram_port_Bpc_per_engine must be finite and > 0")
             if self.sram_port_Bpc:
                 raise ValueError("set either chip.sram_port_Bpc (chip-wide) or chip.sram_port_Bpc_per_engine, not both")
+        for k in ("acc_kib", "acc_kib_per_engine"):
+            v = getattr(self, k)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not (math.isfinite(v) and v >= 0)):
+                raise ValueError(f"chip.{k} must be finite and >= 0")
+        if self.acc_kib is not None and self.acc_kib_per_engine is not None:
+            raise ValueError("set either chip.acc_kib (chip-wide) or chip.acc_kib_per_engine, not both")
         if self.attn_fmt not in ("", "kv"):
             raise ValueError("chip.attn_fmt must be '' (bf16 + KV up-cast) or 'kv' (native KV-format attention)")
         if self.tile_io not in ("", "dram", "persistent"):
@@ -204,7 +216,14 @@ class Chip:
     def port_Bpc(self) -> float:
         if self.sram_port_Bpc_per_engine:
             return self.sram_port_Bpc_per_engine * self.engines
-        return self.sram_port_Bpc or 4.0 * (self.rows + self.c_eff) * 2.0
+        return self.sram_port_Bpc or 4.0 * (self.rows + self.cols) * 2.0 * self.engines
+
+    @property
+    def acc_total_kib(self) -> float:
+        """0.141: chip-total accumulator KiB (explicit total, else per engine × engines)."""
+        if self.acc_kib is not None:
+            return self.acc_kib
+        return (self.acc_kib_per_engine if self.acc_kib_per_engine is not None else ACC_KIB_PER_ENGINE) * self.engines
 
     @property
     def port_GBps(self) -> float:
@@ -213,7 +232,7 @@ class Chip:
     @property
     def acc_rows(self) -> int:
         """Output rows of a full-width (C·E) tile the WS accumulator can hold."""
-        return int(self.acc_kib * 1024 // (4 * self.c_eff))
+        return int(self.acc_total_kib * 1024 // (4 * self.c_eff))
 
     @property
     def sram_bytes(self) -> float:
@@ -291,7 +310,7 @@ class Fabric:
                   multicast / in-switch reduction): same bytes per port (reduce-scatter sends n shards instead of n − 1),
                   one switch round trip instead of n − 1 steps; SHARP-class "net" stays allreduce-only."""
     enabled: bool = False
-    algo: str = "auto"
+    algo: str = "auto_overlap"     # 0.141 default (stage re-pick; monotone in bandwidth); ≤ 0.140 "auto"
     net_topology: str = "fat_tree"
     oversub: float = 1.0
     leaf_nodes: int = 0

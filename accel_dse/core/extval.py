@@ -60,6 +60,7 @@ def _formats(r: dict) -> tuple:
         return DSR1_NVFP4_V2
     return {"fp8": FP8, "nvfp4": NVFP4, "mxfp4": MXFP4}.get(d, ())
 EFF = {"catalog": None, "peak": 1.0}
+DEFAULT = "default"      # 0.141: VARIANTS["default"] (per-SM path, defined below); ≤ 0.140 "catalog"
 
 
 # Hypothesis variants (diagnostics, never defaults of the cost model):
@@ -113,7 +114,7 @@ def rows(path: Path = DATA) -> list[dict]:
     return json.loads(path.read_text())["rows"]
 
 
-def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
+def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
     v = VARIANTS.get(eff, {})
     ov = v.get("overlap") if v.get("overlap") in ("class", "kernel", "serial", "tbo", "pipe") else "stage"
     e = v.get("eff", eff)
@@ -197,7 +198,7 @@ def _static(r, b, eff, inflight: bool = False):
     return b * r["osl"] / total, fits and pf, {"ttft_s": p.ttft, "tpot_s": t, "prefill_share": p.ttft / total}
 
 
-def predict(r: dict, eff: str = "catalog") -> dict:
+def predict(r: dict, eff: str = DEFAULT) -> dict:
     m = r["metric"]
     if m == "ttft_ms":
         p = _ttft(r, r["batch"], r["isl"], eff)
@@ -245,7 +246,7 @@ def _cards(r: dict) -> int:
     return r["tp"] * r.get("dp", 1)
 
 
-def table(eff: str = "catalog", path: Path = DATA) -> list[dict]:
+def table(eff: str = DEFAULT, path: Path = DATA) -> list[dict]:
     out = []
     for r in rows(path):
         p = predict(r, eff)
@@ -381,6 +382,13 @@ def ceil_variant(base: str) -> str:
     name = base + "+gceil"
     VARIANTS.setdefault(name, {**VARIANTS[base], "gemm_ceil": True})
     return name
+
+
+# 0.141: the reference-hardware (GPU / validation) default = the per-SM path — candidate (attention on the thread-block
+# schedule, trace per-layer overhead, runtime memory view, Hopper kernel ceilings, prefill TBO) + published library-
+# best GEMM ceilings; serving.moe_rank_max "expected" is now the scenario default.  Best overall of the per-SM variants
+# (MODEL §87 group table); "catalog" (the ≤ 0.140 default: stage rule, wide GEMMs) stays as a named variant.
+VARIANTS["default"] = dict(VARIANTS[ceil_variant(candidate_variant())])
 
 
 def tileio_variant(base: str = "catalog", mode: str = "dram") -> str:
@@ -547,7 +555,7 @@ def _cb_at(r: dict, b: int, eff: str, C: int = CB_CHUNK):
     return k / t1, fits
 
 
-def predict_cb(r: dict, eff: str = "catalog", max_seqs: int | None = None) -> dict:
+def predict_cb(r: dict, eff: str = DEFAULT, max_seqs: int | None = None) -> dict:
     """max_tok_s_total (and 0.91 max_tok_s_gpu, ÷ cards) rows under the continuous-batching proxy: best power-of-two running batch that fits."""
     best = None
     for k in range(0, 14):

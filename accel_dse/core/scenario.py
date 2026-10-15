@@ -45,7 +45,8 @@ class Serving:
     moe_skew_spread: str = field(default="popular", metadata={"omit_default": True})
     # 0.133: "expected" = route with the expected per-step MAX over EP ranks of distinct experts read and token-expert
     # pairs under random routing (normal order statistic; MODEL §79).  Opt-in; default "off" (mean-rank routing).
-    moe_rank_max: str = field(default="off", metadata={"omit_default": True})
+    # 0.141 default "expected" (MODEL §87: validation overall better; ≤ 0.140 "off")
+    moe_rank_max: str = field(default="expected", metadata={"omit_default": True})
     # 0.134: EP all-to-all across nodes — "pair" (every token-expert pair crosses the network) | "node" (a token crosses
     # it once per destination node, NVLink forwards: DeepEP normal kernels) | "auto" (node in prefill, pair in decode)
     moe_a2a: str = field(default="pair", metadata={"omit_default": True})
@@ -497,6 +498,36 @@ def upgrade_legacy(d: dict) -> dict:
         out["d2d_enabled"] = True
     if "d2d_std" not in out and isinstance(out.get("d2d"), dict) and "GBps" in out["d2d"]:
         out["d2d_std"] = "custom"
+    for key in ("chip", ):
+        if isinstance(out.get(key), dict):
+            out[key] = upgrade_chip_0141(out[key])
+    pd = out.get("pd")
+    if isinstance(pd, dict) and isinstance(pd.get("prefill_chip"), dict):
+        out["pd"] = {**pd, "prefill_chip": upgrade_chip_0141(pd["prefill_chip"])}
+    return out
+
+
+def upgrade_chip_0141(c: dict) -> dict:
+    """0.141: a ≤ 0.140 saved chip (its full dict carries "acc_kib" and "sram_port_Bpc", both always written then)
+    used chip-total accumulator / port: migrate both to per-engine values that give the same totals at the saved
+    engine count (the old port default 4·(R + C·E)·2 included), so saved scenarios evaluate as before and scale with
+    engines from now on."""
+    # ≤ 0.140 dicts: numeric acc_kib + an sram_port_Bpc key, never acc_kib_per_engine (0.141 full dicts carry it;
+    # 0.141 partial dicts omit sram_port_Bpc unless set)
+    if c.get("acc_kib") is None or "sram_port_Bpc" not in c or "acc_kib_per_engine" in c:
+        return c
+    out = dict(c)
+    try:
+        E = int(out.get("engines", 16)); R = int(out.get("rows", 56)); C = int(out.get("cols", 56))
+        acc = out.pop("acc_kib")
+        if acc is not None:
+            out["acc_kib_per_engine"] = float(acc) / E
+        port = out.get("sram_port_Bpc")
+        if not out.get("sram_port_Bpc_per_engine"):
+            out.pop("sram_port_Bpc", None)
+            out["sram_port_Bpc_per_engine"] = (float(port) if port else 4.0 * (R + C * E) * 2.0) / E
+    except (TypeError, ValueError, ZeroDivisionError):
+        return c                          # malformed: let validation report it
     return out
 
 

@@ -9,19 +9,19 @@ from accel_dse.core.hardware import CHIP_100T, Chip
 from accel_dse.core.mapping import gemm_cost
 
 C = replace(CHIP_100T, instance_sched="wide")  # 0.71: hand checks of the wide array (auto default would spread count>1 over cores)
-#          # 56×56×16 @1GHz, Ce = 896, port = 4·(56+896)·2 = 7616 B/cycle
+#          # 56×56×16 @1GHz, Ce = 896, port = 4·(56+56)·2·16 = 14336 B/cycle (0.141 per core)
 
 
 def test_100t_geometry():
     assert C.c_eff == 896 and C.macs == 50176
     assert abs(C.peak_tflops_bf16 - 100.352) < 1e-9
-    assert C.port_Bpc == 7616
+    assert C.port_Bpc == 14336
 
 
 def test_os_hand_check_m1():
     g = gemm_cost(C, "os", 1, 5120, 25600)
     assert g.mac_cycles == 1 * math.ceil(25600 / 896) * 5120 == 148480
-    feed = (1 * 5120 * 25600 * 2 + 29 * 1 * 5120 * 2 + 1 * 25600 * 2) / 7616
+    feed = (1 * 5120 * 25600 * 2 + 29 * 1 * 5120 * 2 + 1 * 25600 * 2) / 14336
     assert abs(g.feed_cycles - feed) < 1e-6
     assert g.bound == "mac" and g.dataflow == "os"
 
@@ -46,7 +46,7 @@ def test_ws_broadside_hand_check():
     g = gemm_cost(C, "ws_broad", 1, 5120, 25600)
     tiles = 92 * 29
     assert g.mac_cycles == tiles * 1 + 952
-    feed = (5120 * 25600 * 2 + 29 * 5120 * 2 + 25600 * 2) / 7616
+    feed = (5120 * 25600 * 2 + 29 * 5120 * 2 + 25600 * 2) / 14336
     assert abs(g.feed_cycles - feed) < 1e-6 and g.bound == "feed"
 
 
@@ -55,8 +55,8 @@ def test_ws_psum_spill_beyond_accumulator():
     assert rows == 292
     a = gemm_cost(C, "ws_broad", rows, 1024, 896)
     b = gemm_cost(C, "ws_broad", rows + 100, 1024, 896)
-    spill = 2 * (math.ceil(1024 / 56) - 1) * 100 * 896 * 4 / 7616
-    base_b = (1024 * 896 * 2 + 1 * (rows + 100) * 1024 * 2 + (rows + 100) * 896 * 2) / 7616
+    spill = 2 * (math.ceil(1024 / 56) - 1) * 100 * 896 * 4 / 14336
+    base_b = (1024 * 896 * 2 + 1 * (rows + 100) * 1024 * 2 + (rows + 100) * 896 * 2) / 14336
     assert abs(b.feed_cycles - (base_b + spill)) < 1e-6
 
 
@@ -96,7 +96,7 @@ def test_dtype_exec_rules():
 
 
 def test_port_bandwidth_is_design_variable():
-    wide = Chip("w", 1.0, 56, 56, 16, sram_port_Bpc=4 * 7616)
+    wide = replace(C, sram_port_Bpc=4 * 14336)
     a = gemm_cost(C, "ws_broad", 1, 8192, 8192)
     b = gemm_cost(wide, "ws_broad", 1, 8192, 8192)
     assert abs(a.feed_cycles / b.feed_cycles - 4) < 1e-9

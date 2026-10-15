@@ -68,5 +68,5 @@ def test_genomics_protein_sweep_rows_equal_eval_with_energy():
 
 def test_fingerprints_unchanged():
     from tests.test_core_0100 import _fp
-    assert _fp({"exec_overlap": "stage"}) == "e2176af2610c144c"
-    assert _fp({}) == "392692e6937f69ef"
+    assert _fp({"exec_overlap": "stage"}) == "0a954915c5fb003f"
+    assert _fp({}) == "53ee9e08165795c6"

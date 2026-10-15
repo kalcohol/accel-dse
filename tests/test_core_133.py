@@ -48,7 +48,9 @@ def test_default_off_unchanged_and_on_never_faster():
         assert c.hit >= a.hit and c.pairs_local >= a.pairs_local
     assert moe_routing(256, 8, 8, 1, SkewSpec(1.0, (), "popular", "expected")) == moe_routing(256, 8, 8, 1)
     s = Scenario().replace("model", "deepseek-v4-flash").replace("layout", Layout(tp=8, ep=8)).replace("serving.batch", 16)
-    off, on = evaluate(s), evaluate(s.replace("serving.moe_rank_max", "expected"))
+    # 0.141: "expected" is the default
+    off, on = evaluate(s.replace("serving.moe_rank_max", "off")), evaluate(s)
+    assert s.serving.moe_rank_max == "expected"
     assert on.throughput <= off.throughput * (1 + 1e-12) and on.throughput < off.throughput
 
 

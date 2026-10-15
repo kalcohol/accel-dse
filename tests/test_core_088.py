@@ -28,7 +28,7 @@ def _work(r):
 
 
 def test_default_unchanged_and_label():
-    assert Scenario(model="qwen3-8b").hash() == Scenario(model="qwen3-8b", layout=Layout(cp=1)).hash() == "917ab559e6aa1c07"
+    assert Scenario(model="qwen3-8b").hash() == Scenario(model="qwen3-8b", layout=Layout(cp=1)).hash() == "723894c17df5d7bb"
     assert "cp" not in Scenario(model="qwen3-8b").to_dict()["layout"]
     assert Layout(tp=2, cp=4).label == "PP1·TP2·CP4" and Layout(tp=2, cp=4).cards == 8
 
@@ -98,13 +98,13 @@ def test_cp_energy_and_pd_prefill_layout():
 
 def test_scenario_hash_back_compat():
     """Hashes identical from 0.70.1 through 0.88 (val5/hash_compat.py); pinned here."""
-    G = [({"model": "qwen3-8b"}, "917ab559e6aa1c07"),
-         ({"model": "deepseek-v3", "layout": {"tp": 8, "ep": 8}, "mem_id": H}, "51e1b0825ebfd09b"),
-         ({"model": "qwen3-30b-a3b", "serving": {"phase": "prefill", "batch": 4, "prompt": 2048}, "layout": {"tp": 2, "ep": 2}}, "73e90c3f1947b8ee"),
-         ({"model": "wan2.1-1.3b", "layout": {"sp": 2}}, "7c98275138d527c2"),
-         ({"model": "qwen3-8b", "package_cards": 2, "d2d_enabled": True}, "c975393f20d620c7"),
-         ({"model": "qwen3-8b", "pd": {"enabled": True, "prefill_cards": 2, "decode_cards": 2}}, "7badad5c1605dc9e"),
-         ({"model": "llama-3.1-8b", "fabric": {"enabled": True}}, "146f2c5bdfb6d258")]
+    G = [({"model": "qwen3-8b"}, "723894c17df5d7bb"),
+         ({"model": "deepseek-v3", "layout": {"tp": 8, "ep": 8}, "mem_id": H}, "7c782993c0592810"),
+         ({"model": "qwen3-30b-a3b", "serving": {"phase": "prefill", "batch": 4, "prompt": 2048}, "layout": {"tp": 2, "ep": 2}}, "e28e246709c1e6e2"),
+         ({"model": "wan2.1-1.3b", "layout": {"sp": 2}}, "b81420e735aad402"),
+         ({"model": "qwen3-8b", "package_cards": 2, "d2d_enabled": True}, "48bf40d36a8b1682"),
+         ({"model": "qwen3-8b", "pd": {"enabled": True, "prefill_cards": 2, "decode_cards": 2}}, "104bd23e73966053"),
+         ({"model": "llama-3.1-8b", "fabric": {"enabled": True}}, "92a7383bf47ea4ae")]
     for d, h in G:
         s = Scenario.from_dict(d)
         assert s.hash() == h, (d, s.hash())

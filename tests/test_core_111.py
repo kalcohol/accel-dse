@@ -14,7 +14,7 @@ def _q(extra=None):
 def test_default_full_and_validation():
     s = Scenario.from_dict(SC)
     assert s.pd.ttft_resid == "full" and "ttft_resid" not in s.to_dict()["pd"]
-    assert Scenario.from_dict({"model": "qwen3-8b"}).hash() == "917ab559e6aa1c07"
+    assert Scenario.from_dict({"model": "qwen3-8b"}).hash() == "723894c17df5d7bb"
     a, b = _q(), _q({"ttft_resid": "full"})
     assert a == b
     try:
@@ -35,5 +35,5 @@ def test_busy_lowers_small_model_prefill_first_ttft_toward_des():
 
 def test_fingerprints_unchanged():
     from tests.test_core_0100 import _fp
-    assert _fp({"exec_overlap": "stage"}) == "e2176af2610c144c"
-    assert _fp({}) == "392692e6937f69ef"
+    assert _fp({"exec_overlap": "stage"}) == "0a954915c5fb003f"
+    assert _fp({}) == "53ee9e08165795c6"

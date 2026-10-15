@@ -39,8 +39,9 @@ def test_counts_layout_and_cache_invariants():
 
 def test_moe_skew_moves_no_work():
     lay = Layout(1, 8, 1, 8, 1)
-    a = energy_report(ev(model="deepseek-v4-flash", layout=lay, **{"serving.batch": 1}))["counts_per_unit"]
-    b = energy_report(ev(model="deepseek-v4-flash", layout=lay, **{"serving.batch": 1, "serving.moe_skew": 3.0}))
+    off = {"serving.moe_rank_max": "off"}     # 0.141: the scalar-skew window alone (rank-max default would cover it)
+    a = energy_report(ev(model="deepseek-v4-flash", layout=lay, **{"serving.batch": 1, **off}))["counts_per_unit"]
+    b = energy_report(ev(model="deepseek-v4-flash", layout=lay, **{"serving.batch": 1, "serving.moe_skew": 3.0, **off}))
     for k in ("mac", "vec", "sram", "dram", "link"):
         assert abs(b["counts_per_unit"][k] / a[k] - 1) < 1e-9, k
     assert b["counts_per_unit"]["idle_card_s"] > 1.4 * a["idle_card_s"]     # the slower window is charged

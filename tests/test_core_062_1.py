@@ -42,7 +42,8 @@ def test_fabric_examples_after_bf16_combine():
     def run(model, lay, phase, batch, fab=Fabric()):
         return evaluate(Scenario(model=model, chip=replace(CHIPS["1P"], instance_sched="wide"),  # 0.71: §19 examples at the wide schedule
                                  mem_id=HBM, layout=lay, node_cards=8,
-                                 serving=Serving(phase=phase, batch=batch), fabric=fab, exec_overlap="stage"))
+                                 serving=Serving(phase=phase, batch=batch, moe_rank_max="off"),   # 0.141: pinned
+                                 fabric=replace(fab, algo="auto"), exec_overlap="stage"))
     r = run("deepseek-v3", Layout(dp=64, ep=64), "prefill", 64)
     assert round(r.step * 1e3, 1) == 715.9 and r.bound == "LINK"
     r = run("deepseek-v3", Layout(dp=64, ep=64), "prefill", 64, Fabric(enabled=True, oversub=4.0, leaf_nodes=2))

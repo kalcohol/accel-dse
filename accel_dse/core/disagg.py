@@ -369,6 +369,27 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         return {"req_s": lam, "goodput_tok_s": lam * out, "goodput_per_card": lam * out / (np_ + nd_),
                 "bottleneck": bott, "cap_req_s": {"prefill": lp, "decode": ld, "kv": lk}, "util": util}
 
+    # 0.141: when the prefill pool is not the bottleneck, the smallest power-of-two prefill batch whose capacity still
+    # carries the same request rate gives the same goodput at a lower TTFT (best_prefill maximises prefill throughput)
+    if pr.fits and p_ok and pb > 1:
+        lam0 = rates(n_p, n_d)["req_s"]
+        b_ = 1
+        while b_ < pb:
+            r_ = evaluate(pscn.replace("serving.phase", "prefill").replace("serving.batch", b_))
+            if r_.fits and r_.ttft * 1e3 <= sv.ttft_slo_ms:
+                if plain:
+                    lp_ = (n_p // c_p) * r_.throughput / S
+                else:
+                    tq = sum(w * ppool.run("prefill", b_, Si, pi).ttft for w, Si, pi in pts) / b_
+                    lp_ = (n_p // c_p) * (1.0 / tq if tq > 0 else 0.0)
+                if lp_ >= lam0 * (1 - 1e-12):
+                    pb, pr, rp = b_, r_, r_.throughput
+                    if not plain:
+                        rq_p = 1.0 / tq
+                    t_kv, exposed = kv_time(pr.ttft)
+                    break
+            b_ *= 2
+
     kv_fb = None
     if kv_fab is not None and scn.fabric.kv_feedback and kv_tier == "net" and kv > 0 and dec.fits:
         # 0.60 「假设」: the KV stream takes u_kv = λ·kv / (min(n_p, n_d)·β) of the decode pool's NICs, so the decode

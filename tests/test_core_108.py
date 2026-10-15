@@ -16,8 +16,8 @@ def test_kv_mem_eff_default_unset_and_identical():
 
 def test_fingerprints_unchanged():
     from tests.test_core_0100 import _fp
-    assert _fp({"exec_overlap": "stage"}) == "e2176af2610c144c"
-    assert _fp({}) == "392692e6937f69ef"
+    assert _fp({"exec_overlap": "stage"}) == "0a954915c5fb003f"
+    assert _fp({}) == "53ee9e08165795c6"
 
 
 def test_kv_mem_eff_speeds_kv_bound_decode_only():

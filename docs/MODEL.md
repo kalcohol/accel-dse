@@ -3344,3 +3344,40 @@ faster (up to 11.8 %) and none is slower.
 
 **Clean:** link / D2D / net bandwidth and α, D2D units, host bandwidth, fabric oversubscription, `best_batch`
 versus random feasible batches, and `best_batch` monotone in DRAM / clock / link / SRAM.
+
+## 87. Default changes on overall validation merit (0.141)
+
+Fingerprint stability is no longer a constraint. Defaults change where the mechanism is justified and validation
+improves overall. Every pin was re-baselined, with old → new recorded in the CHANGELOG.
+
+**GPU / validation default.** `extval.DEFAULT = "default"` is the per-SM candidate path with ceil
+(`ceil_variant(candidate_variant())`). Group errors, catalog → default (gmean / mean |err|):
+
+| group | n | catalog (≤ 0.140) | default (0.141) |
+|---|---|---|---|
+| v1 static | 36 | 1.32 / 37.3 % | 1.06 / 20.1 % |
+| v1 TTFT | 20 | 1.81 / 87.2 % | 1.29 / 31.6 % |
+| v1 max | 44 | 1.28 / 33.0 % | 0.89 / 19.8 % |
+| MoE prefill | 5 | 0.94 / 8.8 % | 0.94 / 9.2 % |
+| MoE decode | 2 | 1.11 / 15.6 % | 0.98 / 1.7 % |
+| MoE static | 1 | 2.10 / 109.9 % | 1.82 / 82.0 % |
+| MoE max (Mixtral) | 27 | 1.71 / 77.8 % | 1.01 / 20.0 % |
+| r3 lat | 16 | 3.67 / 267.4 % | 1.39 / 38.8 % |
+| r3 max | 15 | 1.89 / 90.2 % | 1.18 / 32.9 % |
+| r4 | 38 | 1.12 / 37.8 % | 0.95 / 19.6 % |
+| all rows | 204 | 1.50 / 60.2 % | 1.04 / 23.1 % |
+| mean of group errors | | 76.5 % | 27.6 % |
+
+**MoE.** `moe_rank_max = "expected"` is now the default (§ 0.133): the stage waits for the slowest EP rank. `moe_a2a`
+node + sm stays opt-in because MoE prefill rises from 8.8 % to 52.7 % (mean of group errors 32.4 % vs 27.6 %).
+
+**Per-core accumulator and port.** Each core owns 64 KiB of accumulator and a 4·(R+C)·2 B/cycle port, so both scale
+with the number of engines. Before 0.141 the accumulator was a chip total and the port was 4·(R+C·E)·2, which starved
+split schedules as E grew. Under `instance_sched = auto`, more engines are never slower. Forced wide / ws schedules
+still fill a ganged R + C·E array, so they can be up to +11 % slower with more engines. That is definitional.
+`upgrade_legacy` maps saved ≤ 0.140 chips to per-engine fields that reproduce the old hardware.
+
+**Fabric / PD.** `fabric.algo = auto_overlap` (stage re-pick) is the default. Residual: under `exec_overlap = pipe`, the
+re-pick minimises stage time rather than flow-shop time, so a 2× D2D-unit point measured +0.009 % (fuzz seed 41). PD
+uses the smallest power-of-two prefill batch that keeps the SLO and the request rate. The default TTFT drops from 1298 ms
+to 658 ms at the same goodput.

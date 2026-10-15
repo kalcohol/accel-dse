@@ -13,7 +13,7 @@ HBM = "hbm3e_8s_12h24g_9200"
 
 def test_per_engine_port_evaluates_and_scales():
     # 0.96 bug: the engine-group split re-built the chip with both port fields → ValueError on every GEMM
-    pe = C.port_Bpc / C.engines / 8
+    pe = 4.0 * (C.rows + C.cols * C.engines) * 2.0 / C.engines / 8    # the ≤ 0.140 default port / 8 (feed-bound)
     sv = Serving(phase="prefill", batch=1, prompt=8192)
     a = evaluate(Scenario(model="qwen3-32b", chip=replace(C, sram_port_Bpc=pe * C.engines), mem_id=HBM, serving=sv))
     b = evaluate(Scenario(model="qwen3-32b", chip=replace(C, sram_port_Bpc_per_engine=pe), mem_id=HBM, serving=sv))
