@@ -229,6 +229,7 @@ class StageTime:
     wire_link: float = 0.0  #       fields above stay payload (timing / KV-transfer shares)
     wire_net: float = 0.0
     t_pipe: float = 0.0
+    t_kern: float = 0.0     # 0.137: part of t_sync that is GPU-stream kernel overhead (kernel_us, layer_overhead_us)
     # 0.104 (opt-in Chip.attn_vec_overlap): vector seconds of the attention core (softmax / exp) and whether the
     # flash kernel overlaps them with its MMAs (FlashAttention-3 ping-pong + intra-warpgroup pipelining)
     t_vec_attn: float = 0.0
@@ -271,7 +272,9 @@ class StageTime:
                 core = max(self.t_array - self.t_arr_attn, self.t_dram - self.t_dram_kv) + max(self.t_arr_attn, self.t_dram_kv)
                 core = core + self.t_vector if self.overlap in ("kernel", "tbo") else max(self.t_vector, core)
             if self.overlap == "tbo":
-                return max(core, self.t_slc, self.t_link) + self.t_sync
+                # 0.137: per-kernel / per-layer overhead runs on the compute stream, so the other micro-batch's
+                # all-to-all hides it like the kernels themselves (was added after the max: a link-bound TBO stage paid it)
+                return max(core + self.t_kern, self.t_slc, self.t_link) + self.t_sync - self.t_kern
             return max(core, self.t_slc) + self.t_link + self.t_sync
         return max(self.t_compute, self.t_dram, self.t_slc, self.t_link) + self.t_sync
 

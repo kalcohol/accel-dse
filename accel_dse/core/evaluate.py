@@ -283,7 +283,7 @@ _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "l
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
              "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
              "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e", "t_arr_attn", "t_vec_attn",
-             "wire_d2d", "wire_link", "wire_net")
+             "wire_d2d", "wire_link", "wire_net", "kern")
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _EP_COMM = ("moe_dispatch", "moe_combine", "expert_allreduce")
 _TIERS = ("d2d", "link", "net")
@@ -366,10 +366,13 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
             d["t_vec_attn"] += v                    # 0.104: attention-core vector work (Chip.attn_vec_overlap)
         if sys.chip.kernel_us and o.launch:
             d["sync"] += sys.chip.kernel_us * 1e-6 * o.launch    # 0.120: explicit launches (structure-model ops, chunks)
+            d["kern"] += sys.chip.kernel_us * 1e-6 * o.launch
         elif sys.chip.kernel_us and (o.kind == "gemm" or (o.kind == "attn" and o.name.startswith("qk"))):
             d["sync"] += sys.chip.kernel_us * 1e-6    # 0.92: one kernel per GEMM / fused attention (QK·softmax·PV)
+            d["kern"] += sys.chip.kernel_us * 1e-6
         elif sys.chip.kernel_us and sys.chip.kernel_vec and o.kind == "vector" and not o.name.endswith("softmax"):
             d["sync"] += sys.chip.kernel_us * 1e-6    # 0.136 opt-in: stand-alone vector kernels
+            d["kern"] += sys.chip.kernel_us * 1e-6
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
         # 0.110 (audit): the SFU pipe (Chip.sfu_per_cycle) only changes the op's *time* (max of lanes and SFU); the
@@ -1115,6 +1118,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
                 sync += (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
+                agg["kern"] += (st.last - st.first) * scn.layer_overhead_us * 1e-6
             t_pipe, pctx = 0.0, None
             if scn.exec_overlap == "pipe":  # 0.98 (opt-in)
                 segs = ([(embed_ops(m, ph, sh), 1)] if st.has_embed else [])
@@ -1131,7 +1135,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
                             scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
                             t_pipe)
-            stt = _a2a_sm_share(stt, ph, sv)
+            stt = _a2a_sm_share(replace(stt, t_kern=min(agg["kern"], stt.t_sync)), ph, sv)
             if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
                 stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
@@ -1362,6 +1366,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
                 sync += (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
+                agg["kern"] += (st.last - st.first) * scn.layer_overhead_us * 1e-6
             t_pipe = 0.0
             if scn.exec_overlap == "pipe":  # 0.98 (opt-in); FSDP gathers are prefetches (hidden behind the chain)
                 segs = [(full_io_ops(m, ph, sh, "pre"), 1)] if st.has_embed else []
@@ -1377,7 +1382,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                             ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
                             scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
                             t_pipe)
-            stt = _a2a_sm_share(stt, ph, sv)
+            stt = _a2a_sm_share(replace(stt, t_kern=min(agg["kern"], stt.t_sync)), ph, sv)
             if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
                 stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],

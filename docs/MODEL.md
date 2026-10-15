@@ -3178,3 +3178,40 @@ not cover. Opt-in.
   Neither is derivable from public sources without fitting, so neither is modelled.
 - Max-load 8B decode is DRAM-bound (KV 7.9 of 11.3 ms per step at batch 256). The remaining under-prediction comes
   from the kernel-overlap serialisation plus the 2 ms lump per step.
+
+## 83. TBO hides per-kernel overhead; per-SM path vs the rule (0.137)
+
+**Cause of the 8.8 → 8.9 %.** The per-SM candidate predicted each DeepSeek-V3 prefill row 0.1–0.2 % slower. The
+difference was exactly 61 layers × 62.3 µs = 3.8 ms on a 2.45 s TTFT. The candidate runs prefill as two-batch overlap,
+and these rows are link-bound. `layer_overhead_us` (and `kernel_us`) were added to `t_sync` after the max, so the
+link-bound stage paid them in full. Mechanistically they are GPU-stream time: small kernels on the compute stream,
+which the other micro-batch's all-to-all hides exactly as it hides the GEMMs.
+
+**Fix.** `StageTime.t_kern` is the part of `t_sync` that comes from kernel or layer overhead. For `tbo`:
+total = max(core + t_kern, t_slc, t_link) + t_sync − t_kern. The `kernel`, `class`, `serial`, `stage` and `pipe`
+modes are unchanged; for the first three nothing overlaps communication.
+
+**Mechanisms checked and ruled out.** All five rows stay link-bound in every variant, so per-expert tile
+quantisation of the grouped GEMMs, the all-to-all's SM share, and `cta` vs `wide` cannot move them. They only add
+compute that the overlap hides.
+
+**Full group table** (gmean ratio / mean abs error):
+
+| group | n | default (`catalog`, `wide`) | candidate | candidate + tile I/O (per-SM) | + kfloor | + kfloor + tile I/O |
+|---|---|---|---|---|---|---|
+| v1 static | 36 | 1.32 / 37.3 % | 1.07 / 20.0 % | 1.12 / 23.1 % | 1.13 / 22.9 % | 1.18 / 27.0 % |
+| v1 TTFT | 20 | 1.81 / 87.2 % | 1.29 / 31.2 % | 1.40 / 40.1 % | 1.48 / 50.3 % | 1.61 / 61.3 % |
+| v1 max | 44 | 1.28 / 33.0 % | 0.89 / 19.8 % | 0.91 / 18.9 % | 0.96 / 16.5 % | 0.97 / 15.6 % |
+| moe prefill | 5 | 0.94 / 8.8 % | 0.94 / 8.8 % | 0.94 / 8.8 % | 0.94 / 8.8 % | 0.94 / 8.8 % |
+| moe decode | 2 | 1.11 / 15.6 % | 1.06 / 5.6 % | 1.05 / 5.2 % | 1.08 / 7.6 % | 1.07 / 7.2 % |
+| moe static | 1 | 2.10 / 109.9 % | 1.82 / 82.4 % | 1.84 / 84.2 % | 1.89 / 89.1 % | 1.91 / 91.1 % |
+| Mixtral max | 27 | 1.71 / 77.8 % | 1.01 / 20.2 % | 1.10 / 27.8 % | 1.07 / 21.2 % | 1.15 / 30.1 % |
+| r3 latency | 16 | 3.67 / 267.4 % | 1.39 / 38.8 % | 1.40 / 39.6 % | 2.14 / 113.7 % | 2.16 / 115.6 % |
+| r3 max | 15 | 1.89 / 90.2 % | 1.19 / 33.4 % | 1.27 / 39.7 % | 1.31 / 34.0 % | 1.40 / 42.9 % |
+| r4 | 38 | 1.12 / 37.8 % | 0.96 / 19.8 % | 1.11 / 23.7 % | 1.00 / 19.2 % | 1.17 / 25.1 % |
+
+Against the default, the candidate and candidate + tile I/O now worsen no group. MoE prefill is identical: those rows
+are insensitive, not improved. Candidate alone beats candidate + tile I/O in 6 of 10 groups, even though tile I/O is
+more accurate per op (§81). The fingerprints use the default NPU chip with `stage` / `pipe` overlap, so they are not
+affected by this fix, nor would they be by a GPU-reference-hardware default switch. The published ext_validation
+numbers would change. The default is not switched in this version (user decision).

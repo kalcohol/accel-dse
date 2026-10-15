@@ -3,6 +3,12 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.137.0]
+### Fixed
+- `exec_overlap = "tbo"`: per-kernel / per-layer overhead (`kernel_us`, `layer_overhead_us`) runs on the compute stream, so the other micro-batch's all-to-all now hides it (`StageTime.t_kern`). It used to be added after the max, so link-bound TBO stages paid it in full. This was the per-SM candidate's only regression (MoE prefill 8.8 → 8.9 %, now 8.8 %).
+### Notes
+- With this fix the per-SM path (candidate, with or without tile I/O) worsens no validation group compared with the default (MODEL §83 has the table). The default is not switched in this version (user decision). Fingerprints are unchanged.
+
 ## [0.136.0]
 ### Fixed
 - Opt-in tile I/O (0.135) was also charged to attention under `cta`: a per-tile prologue and C writeback to DRAM, which flash attention never does, on K / V bytes already counted. For 8B decode this made attention 4.5× too slow and caused the v1 max / r4 under-prediction. It now applies to GEMMs only. Candidate + tile I/O now beats the `wide` default in every group except MoE prefill (8.8 → 8.9 %).
