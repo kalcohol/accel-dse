@@ -3765,3 +3765,12 @@ Single-resource minima are each checked against the reference chip with everythi
 
 ## 107. Area-aware joint sizing and binding summary (0.161)
 Step rank with densities: Δ(worst gain) / Δmm² (a resource without a density costs 0 mm², so it is given back first; flagged as unpriced). A beam of width 3 runs next to the greedy path. The objective is priced mm² saved, else Σ log(cur/v). The reported point is always a probed pass, and it is never worse than greedy because greedy's point is a candidate. `binding`: min_ok = current → binding resource; the others ordered by headroom; joint back-offs not in the binding set → bind only in combination.
+
+## 108. Vector-lane / dequant densities and unpriced resources (0.162)
+Sources:
+- Horowitz, "Computing's energy problem (and what we can do about it)", ISSCC 2014 plenary. 45 nm operator areas, area column as reproduced in Sze et al. (MIT EEMS) and NYCU AAML lecture slides (二手): 8b add 36 µm², 16b FP add 1360, 32b FP add 4184, 16b FP mult 1640, 32b FP mult 7700.
+- Jouppi et al., ISCA 2021 (TPUv4i) Fig. 6 / §7.A: MXU 11 %, CMEM 28 %; no VPU share published.
+
+Derivation (推导/二手): node density = node `mm2_per_kmac` × area ratio to a bf16 MAC (FP16 mult + FP32 add = 5824 µm²). Lane (FP32 FMA datapath, 11884 µm²) ×2.0405; dequant element/cycle (FP16 scale mult + 8b zero-point add, 1676 µm²) ×0.2878. Assumes operators scale like the MAC array across nodes. Datapath only (no RF / control / shuffle), so these are lower bounds. TPUv1's int8 MAC density makes its derived values optimistic.
+
+Sizing-only fields: the die-area proxy is untouched. Unpriced resources (DRAM bandwidth via mem_eff) default to `unpriced="last"`: ranked after improving priced steps. "free" ranks them first (0.161). Units: cores R·C/1024 × mm2_per_kmac (fixed from /1000); lanes / dequant per 1024.

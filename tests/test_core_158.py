@@ -39,7 +39,7 @@ def test_mac_area_only_from_density():
     r = sizing_report(Scenario(), ["esm2-650m"], Budget(mm2_per_kmac=dens), resources=["cores", "dram_bw"])
     cores, bw = r["resources"]
     ch = Scenario().chip
-    assert abs(cores["mm2_saved"] - (cores["current"] - cores["min_ok"]) * ch.rows * ch.cols / 1000 * dens) < 1e-9
+    assert abs(cores["mm2_saved"] - (cores["current"] - cores["min_ok"]) * ch.rows * ch.cols / 1024 * dens) < 1e-9
     assert "mm2_saved" not in bw
     assert all("mm2_saved" not in x for x in sizing_report(Scenario(), ["esm2-650m"], resources=["cores"])["resources"])
 

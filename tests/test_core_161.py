@@ -43,7 +43,7 @@ def test_area_aware_saves_more_priced_area_than_unpriced_rank():
     for models in (["esm2-650m"], ["wan2.1-1.3b"], ["qwen3-8b", "gpt-oss-20b"]):
         un = sizing_report(Scenario(), models, None, joint=True)["joint"]
         pr = sizing_report(Scenario(), models, B, joint=True)["joint"]
-        per = {"sram": D["mm2_per_mib_sram"][0], "cores": D["mm2_per_kmac"][0] * Scenario().chip.rows * Scenario().chip.cols / 1000}
+        per = {"sram": D["mm2_per_mib_sram"][0], "cores": D["mm2_per_kmac"][0] * Scenario().chip.rows * Scenario().chip.cols / 1024}
         cur = {e["key"]: e["joint"] / e["frac"] for e in un["resources"]}
         un_mm2 = sum((cur[e["key"]] - e["joint"]) * per[e["key"]] for e in un["resources"] if e["key"] in per)
         assert pr["mm2_saved_total"] >= un_mm2 - 1e-9

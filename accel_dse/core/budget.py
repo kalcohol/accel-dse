@@ -55,23 +55,47 @@ _PHY = {
                          "al., VLSI 2022; area as reported secondary, paper closed) → 0.37 mm² per lane ÷ 14 GB/s per lane per "
                          "direction"),
 }
+# 0.162: vector-lane and dequant-unit densities for insight sizing (sizing only — not added to the die-area proxy, whose
+# mm2_fixed already covers "vector unit").  No public NPU floorplan splits out the vector unit (TPUv4i ISCA 2021 Fig. 6
+# gives CMEM 28 % and MXUs 11 % only), so they are derived per node from that node's MAC density × an operator-area
+# ratio from Horowitz's 45 nm table (ISSCC 2014 plenary "Computing's energy problem", area column as reproduced in
+# Sze et al. / MIT EEMS and NYCU AAML slides — 二手): 16b FP mult 1640 µm², 32b FP add 4184, 32b FP mult 7700, 8b add 36.
+#   bf16 MAC (16b FP mult + 32b FP add)        = 5824 µm²   (the unit the MXU densities count)
+#   vector lane (32b FP mult + 32b FP add)     = 11884 µm²  → ×2.0405 of a MAC   (elementwise fp32 FMA datapath)
+#   dequant elem/cycle (16b FP mult + 8b add)  = 1676 µm²   → ×0.2878 of a MAC   (int → bf16 × scale + zero point)
+# Datapath operators only (no register file / control / shuffle network): lower bounds for a real lane.
+_HZ = "Horowitz ISSCC 2014 45 nm operator areas (二手: area table via Sze et al. / MIT EEMS slides)"
+_LANE_R = (7700 + 4184) / (1640 + 4184)
+_DQ_R = (1640 + 36) / (1640 + 4184)
+
+
+def _vec(kmac: float, node_src: str) -> dict:
+    return {"mm2_per_klane": (kmac * _LANE_R, "推导/二手", f"{node_src} MAC density × (FP32 mult + FP32 add)/(FP16 mult + FP32 add)"
+                              f" = 11884/5824 µm² per lane, {_HZ}; datapath only (lower bound)"),
+            "mm2_per_kdq": (kmac * _DQ_R, "推导/二手", f"{node_src} MAC density × (FP16 mult + 8b add)/(FP16 mult + FP32 add)"
+                            f" = 1676/5824 µm² per dequant element/cycle, {_HZ}; datapath only (lower bound)")}
+
+
 DENSITY_PRESETS: dict[str, dict] = {
     "n28_tpuv1": {"label": "28 nm（TPUv1 平面图）", "fields": {
         "mm2_per_mib_sram": (330 / 3 / 24, "来源", _TPUV1 + ": 24 MiB Unified Buffer ≈ 1/3 of the die (upper bound)"),
         "mm2_per_mib_slc": (330 / 3 / 24, "来源", "= SRAM (same macro class) 「假设」 on " + _TPUV1),
         "mm2_per_kmac": (330 / 4 / 64, "来源", _TPUV1 + ": 256×256 int8 MXU = 1/4 of the die (upper bound; int8 MAC — a "
                          "bf16 MAC unit is larger, so for a bf16 array this is optimistic)"),
+        **_vec(330 / 4 / 64, "TPUv1 (int8 MAC — ratio is for bf16, so optimistic)"),
         **_PHY}},
     "n7_tpuv4i": {"label": "7 nm（TPUv4i 平面图）", "fields": {
         "mm2_per_mib_sram": (400 * 0.28 / 128, "来源", _TPUV4I + ": 128 MiB CMEM = 28 % of a < 400 mm² die (upper bound)"),
         "mm2_per_mib_slc": (400 * 0.28 / 128, "来源", "= CMEM density (" + _TPUV4I + ")"),
         "mm2_per_kmac": (400 * 0.11 / 64, "来源", _TPUV4I + ": 4 × 128×128 bf16 MXUs = 11 % of a < 400 mm² die (upper bound)"),
+        **_vec(400 * 0.11 / 64, "TPUv4i"),
         **_PHY}},
     "n5_derived": {"label": "5 nm / N3E（由 7 nm 推导）", "fields": {
         "mm2_per_mib_sram": (400 * 0.28 / 128 * 0.021 / 0.027, "推导", "TPUv4i CMEM × bitcell 0.021/0.027 (paper says 128 MB; taken as MiB, ≤ 5 %); " + _BITCELL
                              + "; array-only lower bound 31.8 Mib/mm² = 0.25 mm²/MiB (WikiChip, IEDM 2022 N3E)"),
         "mm2_per_mib_slc": (400 * 0.28 / 128 * 0.021 / 0.027, "推导", "= SRAM density (TPUv4i CMEM × bitcell ratio)"),
         "mm2_per_kmac": (400 * 0.11 / 64 / 1.8, "推导", "TPUv4i MXU ÷ 1.8 logic density; " + _BITCELL),
+        **_vec(400 * 0.11 / 64 / 1.8, "N5 (TPUv4i ÷ 1.8)"),
         **_PHY}},
 }
 
@@ -208,6 +232,9 @@ class Budget:
     mm2_per_mib_slc: float | None = None      # 「假设」
     mm2_per_kmac: float | None = None         # 「假设」 per 1024 MAC units incl. local registers / wiring
     mm2_fixed: float | None = None            # 「假设」 everything else (I/O, PHY, vector unit, NoC)
+    # 0.162: insight sizing only (not in the die-area proxy): per 1024 vector lanes / per 1024 dequant elements per cycle
+    mm2_per_klane: float | None = None
+    mm2_per_kdq: float | None = None
     # 0.149: interface PHY area (optional; None = not counted).  Presets in DENSITY_PRESETS carry the sources.
     mm2_per_dq_hbm: float | None = None       # per HBM data pin (bus bit) of the DRAM interface
     mm2_per_dq_lpddr: float | None = None     # per data pin of any non-HBM DRAM interface (LPDDR / DDR / GDDR)

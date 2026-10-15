@@ -613,9 +613,9 @@ SIZING = {
     # key: (label, unit, get(Scenario) → value, set(Scenario, value) → Scenario, integer, area density field | None)
     "dequant": ("反量化 / 转换吞吐", "元素/周期",
                 lambda s: float(s.chip.formats.dequant_elems_per_cycle or s.chip.lanes),
-                _chip_set(lambda ch, v: replace(ch, formats=replace(ch.formats, dequant_elems_per_cycle=v))), False, None),
+                _chip_set(lambda ch, v: replace(ch, formats=replace(ch.formats, dequant_elems_per_cycle=v))), False, "mm2_per_kdq"),
     "lanes": ("向量单元宽度", "元素/周期", lambda s: float(s.chip.lanes),
-              _chip_set(lambda ch, v: replace(ch, vector_lanes=max(1, int(round(v))))), True, None),
+              _chip_set(lambda ch, v: replace(ch, vector_lanes=max(1, int(round(v))))), True, "mm2_per_klane"),
     "sram": ("SRAM 容量", "MiB", lambda s: float(s.chip.sram_mib), _chip_set(lambda ch, v: replace(ch, sram_mib=v)), False,
              "mm2_per_mib_sram"),
     # 0.158: MAC array via core (engine) count, R×C per engine fixed; area = ΔkMAC × mm2_per_kmac (density preset / user)
@@ -631,7 +631,8 @@ SIZING_REFINE = 3                 # geometric bisection steps after the first fa
 _JOINT_ORDER = ("cores", "lanes", "dequant", "sram", "dram_bw")   # cores pins vector_lanes, so lanes is applied after it
 
 
-def sizing_report(base: Scenario, models=None, budget: Budget | None = None, resources=None, joint: bool = False) -> dict:
+def sizing_report(base: Scenario, models=None, budget: Budget | None = None, resources=None, joint: bool = False,
+                  unpriced: str = "last") -> dict:
     """Per resource: the smallest value (≥ current × SIZING_MIN_FRAC) at which every model keeps every domain metric
     within TIE of the current chip and still fits.  Halving search, then geometric bisection; the reported minimum is
     always a probed point that passed.  ``limited_by`` = the first model / metric that fails just below it."""
@@ -719,15 +720,16 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
                "limited_by": None if why is None else {"model": why[0], "metric": why[1], "gain": why[2]}}
         d = getattr(budget, dens, None) if (budget is not None and dens) else None
         if d is not None:
-            per = (base.chip.rows * base.chip.cols / 1000.0) if key == "cores" else 1.0   # kMAC per core
-            row["mm2_saved"] = (cur - ok) * per * d
+            row["mm2_saved"] = (cur - ok) * _unit_mm2(key, base, d)
         out.append(row)
     rep = {"domain": domain, "models": models, "metrics": metric_labels(domain), "tie": TIE, "resources": out,
            "chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label,
             "basis": "逐项缩小（先减半再几何二分）× 现有引擎；每个模型的全部领域指标都在 ±1% 内且仍放得下才算可行；"
                      "min_ok 是实测通过的点（不是外推）。只回答「还能省多少」，面积仅在已有密度（SRAM mm²/MiB、MAC mm²/kMAC，来自密度预设或用户）时给 mm²；DRAM 带宽经 mem_eff 连续缩放（容量不变），不给 PHY 面积。"}
     if joint:
-        rep["joint"] = _joint_shrink(base, out, budget, worst)
+        if unpriced not in ("last", "free"):
+            raise ValueError("unpriced must be 'last' or 'free'")
+        rep["joint"] = _joint_shrink(base, out, budget, worst, unpriced)
     rep["binding"] = _binding(out, rep.get("joint"))
     return rep
 
@@ -746,11 +748,21 @@ def _binding(rows: list, joint) -> dict:
     return out
 
 
+def _unit_mm2(key: str, base: Scenario, d: float) -> float:
+    """mm² per unit of a sizing resource from its density.  Densities are per 1024 (kMAC as in budget.area_estimate,
+    klane, kdq); 0.162 fixes the ≤ 0.161 cores conversion that divided R·C by 1000 (+2.4 % on cores mm²)."""
+    if key == "cores":
+        return base.chip.rows * base.chip.cols / 1024.0 * d
+    if key in ("lanes", "dequant"):
+        return d / 1024.0
+    return d
+
+
 JOINT_BEAM = 3          # 0.161: beam width of the joint back-off search (the greedy path is always kept too)
 JOINT_MAX_STEPS = 24
 
 
-def _joint_shrink(base: Scenario, rows: list, budget, worst) -> dict:
+def _joint_shrink(base: Scenario, rows: list, budget, worst, unpriced: str = "last") -> dict:
     """0.160/0.161: joint sizing.  The per-resource minima interact (shared elementwise / memory time), so all minima
     together can break the ±TIE contract.  From every min_ok at once, resources are backed off one geometric step
     toward their current value (√(v·cur), snapping to cur within 3 %; integers ≥ 1) until every model holds.
@@ -769,7 +781,7 @@ def _joint_shrink(base: Scenario, rows: list, budget, worst) -> dict:
         dens = SIZING[k][5]
         d = getattr(budget, dens, None) if (budget is not None and dens) else None
         if d is not None:
-            per_unit[k] = d * ((base.chip.rows * base.chip.cols / 1000.0) if k == "cores" else 1.0)
+            per_unit[k] = _unit_mm2(k, base, d)
     priced = bool(per_unit)
     memo: dict = {}
 
@@ -804,11 +816,15 @@ def _joint_shrink(base: Scenario, rows: list, budget, worst) -> dict:
         w0, w1 = W(vals)[0], W(cand)[0]
         if not priced:
             return (w1,)
-        cost = (nv - vals[k]) * per_unit.get(k, 0.0)
         gain = w1 - w0 if math.isfinite(w0) else (math.inf if math.isfinite(w1) else 0.0)
-        if cost <= 0:
-            return (1, gain) if gain > 0 else (-1, gain)
-        return (0, gain / cost)
+        if k not in per_unit:
+            # 0.162: unknown area is not free.  "last" (default): unpriced steps rank after every improving priced step
+            # (the area the search gives back is then priced first); "free" = ≤ 0.161 behaviour (cost 0 → first)
+            if unpriced == "free":
+                return (2, gain) if gain > 0 else (-1, gain)
+            return (0, gain) if gain > 0 else (-1, gain)
+        cost = (nv - vals[k]) * per_unit[k]
+        return (1, gain / cost) if gain > 0 else (-1, gain / max(cost, 1e-12))
 
     ok = lambda v: W(v)[0] >= 1 - TIE
     first_w, first_why = W(start)
@@ -866,6 +882,8 @@ def _joint_shrink(base: Scenario, rows: list, budget, worst) -> dict:
     return {"all_minima_hold": first_w >= 1 - TIE, "all_minima_worst_gain": first_w, "all_minima_limited_by": first_why,
             "holds": w >= 1 - TIE, "worst_gain": w, "resources": res, "backoffs": trail,
             "mm2_saved_total": saved(vals) if priced else None, "search": how, "beam": JOINT_BEAM,
-            "rank": "Δworst-gain per mm²（未定价资源视为 0 mm²，面积未知而非免费）" if priced else "worst gain",
+            "rank": (("Δworst-gain per mm²；未定价资源排在已定价之后" if unpriced == "last" else
+                      "Δworst-gain per mm²；未定价资源视为 0 mm²（优先回退）") if priced else "worst gain"),
+            "unpriced_mode": unpriced, "unpriced": sorted(k for k in start if k not in per_unit),
             "greedy_mm2_saved": (saved(greedy[0]) if priced else None) if greedy else None,
             "greedy_shrink": shrink(greedy[0]) if greedy else None, "shrink": shrink(vals), "evals": len(memo)}

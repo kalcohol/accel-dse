@@ -483,7 +483,7 @@
     <div class="note small" id="ins-path-summary"></div>
     <div class="scroll"><table class="tbl tight" id="ins-path-tbl"></table></div>
     <h4>缩减余量 <span class="small muted">0.157/0.158：反量化吞吐 / 向量宽度 / SRAM / MAC 核数 / DRAM 带宽最多能缩到多少，模型集的全部指标仍在 ±1% 内且放得下（实测点，非外推）</span></h4>
-    <div class="row"><button class="btn" id="ins-size-run">计算缩减余量</button> <label class="small"><input type="checkbox" id="ins-size-joint" checked> 联合缩减（各项最小值同时生效时回退）</label> <span class="small muted" id="ins-size-status"></span></div>
+    <div class="row"><button class="btn" id="ins-size-run">计算缩减余量</button> <label class="small"><input type="checkbox" id="ins-size-joint" checked> 联合缩减（各项最小值同时生效时回退）</label> <label class="small">未定价资源 <select id="ins-size-unpriced"><option value="last">排在最后（默认）</option><option value="free">视为 0 mm²</option></select></label> <span class="small muted" id="ins-size-status"></span></div>
     <div class="scroll"><table class="tbl tight" id="ins-size-tbl"></table></div>
     <div class="note small" id="ins-size-binding"></div>
     <div class="note small" id="ins-size-joint-sum"></div>

@@ -1697,7 +1697,7 @@ async function runInsightSizing() {
   $('ins-size-status').textContent = '计算中（每个资源逐次减半再二分 × 每个模型）…';
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
-    const r = await track(req('insight_sizing', '/api/insight_sizing', body({ ...(ms.length ? { models: ms } : {}), joint: $('ins-size-joint').checked })));
+    const r = await track(req('insight_sizing', '/api/insight_sizing', body({ ...(ms.length ? { models: ms } : {}), joint: $('ins-size-joint').checked, unpriced: $('ins-size-unpriced').value })));
     if (!r) return;
     const mz = (k) => (r.metrics[k] || k).replace(/ 加速$/, '');
     put($('ins-size-tbl'), h('thead', {}, h('tr', {}, ['资源', '当前', '最小可行', '可缩到', '受限于', '省 mm²'].map((x) => h('th', {}, x)))),
