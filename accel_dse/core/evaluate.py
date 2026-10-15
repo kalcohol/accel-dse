@@ -215,6 +215,8 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     f = ch.freq_ghz * 1e9 * ch.mac_eff
     if op.kind == "attn" and ch.attn_sched:      # 0.93 (default off)
         ch = _attn_chip(ch)
+    if op.kind == "attn" and ch.tile_io_Bpc:     # 0.136: flash attention keeps S / P on chip and its K / V stream is
+        ch = replace(ch, tile_io_Bpc=0.0)        # already DRAM traffic — tile I/O is a GEMM-kernel term only
     if op.kind == "gemm":
         c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=op.w_fmt, a_fmt=op.a_fmt, w_bits=op.w_bits)
     elif op.kind == "attn" and op.orient:
@@ -366,6 +368,8 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
             d["sync"] += sys.chip.kernel_us * 1e-6 * o.launch    # 0.120: explicit launches (structure-model ops, chunks)
         elif sys.chip.kernel_us and (o.kind == "gemm" or (o.kind == "attn" and o.name.startswith("qk"))):
             d["sync"] += sys.chip.kernel_us * 1e-6    # 0.92: one kernel per GEMM / fused attention (QK·softmax·PV)
+        elif sys.chip.kernel_us and sys.chip.kernel_vec and o.kind == "vector" and not o.name.endswith("softmax"):
+            d["sync"] += sys.chip.kernel_us * 1e-6    # 0.136 opt-in: stand-alone vector kernels
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
         # 0.110 (audit): the SFU pipe (Chip.sfu_per_cycle) only changes the op's *time* (max of lanes and SFU); the

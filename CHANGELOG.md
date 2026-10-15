@@ -3,6 +3,15 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.136.0]
+### Fixed
+- Opt-in tile I/O (0.135) was also charged to attention under `cta`: a per-tile prologue and C writeback to DRAM, which flash attention never does, on K / V bytes already counted. For 8B decode this made attention 4.5× too slow and caused the v1 max / r4 under-prediction. It now applies to GEMMs only. Candidate + tile I/O now beats the `wide` default in every group except MoE prefill (8.8 → 8.9 %).
+### Added
+- `Chip.kernel_vec` (opt-in) and `extval.kfloor_variant`: a per-kernel floor of 2.0 µs (the DeepSeek decode trace's 10th-percentile small-kernel duration) on every GEMM / attention / vector kernel. It replaces the per-layer lump, which double-counts vector work at large batch. It improves max-load and r4 but worsens TTFT and r3 latency, so it stays opt-in.
+- MODEL §82: decomposition of the v1 TTFT / max-load rows.
+### Not changed
+- Defaults and fingerprints. The per-SM path still fails the rule by 0.1 point in MoE prefill.
+
 ## [0.135.0]
 ### Added
 - `Chip.tile_io` (`""` default | `"dram"`, opt-in, with `instance_sched = "cta"`): each GEMM output tile also pays its pipeline prologue (one K-stage of A and B) and its C writeback at the SM's share of DRAM bandwidth. With a format ceiling, the main loop runs at the ceiling per tile. Against the DeepSeek prefill trace's 9 DeepGEMM shapes the mean error is 7 % (every shape 0.89–0.98×), against 33 % for the default `wide` and 34 % for `cta`. Small-K GEMMs (down, q_b) are no longer too fast.

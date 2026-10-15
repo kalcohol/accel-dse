@@ -115,6 +115,9 @@ class Chip:
     # A and B, 128 B of K per row: the TMA swizzle width) and its C writeback at the SM's share of DRAM bandwidth,
     # not overlapped with the main loop (MODEL §81).  tile_io_Bpc: chip DRAM bytes / cycle, filled by evaluate.
     tile_io: str = field(default="", metadata={"omit_default": True})
+    # 0.136 (opt-in): stand-alone vector ops (norms, rope, activation, residual — not the softmax inside the fused
+    # attention kernel) are kernels too and pay kernel_us each (the GPU floor of a small kernel)
+    kernel_vec: bool = field(default=False, metadata={"omit_default": True})
     tile_io_Bpc: float = field(default=0.0, metadata={"omit_default": True})
 
     def __post_init__(self):

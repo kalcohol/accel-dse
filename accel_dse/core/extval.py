@@ -123,6 +123,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         chip = replace(chip, split_instances=True)
     if v.get("sched"):                 # 0.91: Chip.instance_sched (reference chips ship "wide")
         chip = replace(chip, instance_sched=v["sched"])
+    if v.get("kernel_vec"):            # 0.136: vector ops pay the per-kernel floor too (Chip.kernel_vec)
+        chip = replace(chip, kernel_vec=True)
     if v.get("tile_io"):               # 0.135: CTA tile prologue + C writeback at the SM's DRAM share (opt-in)
         chip = replace(chip, tile_io="dram")
     if v.get("kernel_us") is not None:  # 0.92: per-kernel fixed cost
@@ -357,6 +359,19 @@ def tileio_variant(base: str = "catalog") -> str:
     """0.135: base with GEMMs on the CTA tile model (instance_sched "cta") + per-tile DRAM I/O (MODEL §81)."""
     name = base + "+tileio"
     VARIANTS.setdefault(name, {**VARIANTS[base], "sched": "cta", "tile_io": True})
+    return name
+
+
+# 0.136: GPU floor of one small kernel = the 10th-percentile duration of the 1,738 non-GEMM / non-attention / non-
+# communication kernels of the public DeepSeek decode trace (profile-data decode.json; median 3.0 µs, which includes work)
+TRACE_KERNEL_FLOOR_US = 2.0
+
+
+def kfloor_variant(base: str) -> str:
+    """0.136: base with the per-layer lump (layer_us, which is mean small-kernel *duration* and so repeats the vector
+    work the model already charges) replaced by a per-kernel floor on every GEMM / attention / vector kernel."""
+    name = base + "+kfloor"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "layer_us": 0, "kernel_us": TRACE_KERNEL_FLOOR_US, "kernel_vec": True})
     return name
 
 

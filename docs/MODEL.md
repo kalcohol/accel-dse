@@ -3150,3 +3150,31 @@ DRAM bandwidth. Test variant: `extval.tileio_variant`.
 Against the shipped default (`wide` GEMMs), it worsens v1 TTFT, v1 static, moe decode, moe static and r4. So it is
 opt-in. The default still schedules GEMMs and attention as `wide`. Per-SM attention scheduling (`Chip.attn_sched =
 "cta"`) is also opt-in, used only in `candidate_variant`.
+
+## 82. Per-SM path consistency: attention tile I/O, small-kernel floor, v1 decomposition (0.136)
+
+**Double count fixed.** Under `cta`, attention ops also went through the tile model, so 0.135's tile I/O charged them a
+per-tile prologue and a C writeback to DRAM. That is wrong twice over: flash attention keeps S / P on chip, and its
+K / V stream is already counted in DRAM time. For Llama-3.1-8B decode at batch 256, attention array time rose 4.5×
+(2.6 → 11.6 ms) and the step turned MAC-bound. Tile I/O now applies to GEMM kernels only.
+
+Corrected §81 numbers for candidate + tile I/O (GEMMs `cta`): v1 max 18.9 % (was 31.0 %), r4 23.7 % (was 31.5 %).
+Against the shipped `wide` default, every group improves (v1 static 37 → 23 %, TTFT 87 → 40 %, v1 max 33 → 19 %,
+moe decode 16 → 5 %, moe static 110 → 84 %, Mixtral 78 → 28 %, r3 lat 267 → 40 %, r3 max 90 → 40 %, r4 38 → 24 %)
+except moe prefill (8.8 → 8.9 %). The rule therefore still fails, by 0.1 point.
+
+**Per-layer lump vs per-kernel floor (opt-in `Chip.kernel_vec`, `extval.kfloor_variant`).** `TRACE_LAYER_US`
+(62.3 µs per layer) is the mean small-kernel *duration* in the DeepSeek decode trace, which includes those kernels'
+work: 1,738 kernels, 7.6 ms, median 3.0 µs. The model already charges that work as vector ops, so at large batch it
+is counted twice. The alternative is a 2.0 µs floor (the trace's 10th-percentile duration) on every GEMM, attention
+and stand-alone vector kernel: v1 max 19.8 → 16.5 %, r4 19.8 → 19.2 %. But TTFT gets worse (31 → 50 %) and so does r3
+latency (39 → 114 %). The lump was also standing in for fixed per-request costs at small batch, which the floor does
+not cover. Opt-in.
+
+**v1 decomposition (candidate).**
+- TTFT at 128 tokens, batch 1, is short by an absolute gap of about 1.5–1.8 ms for 7B on H100 / H200 (3.4–4.4 ms on
+  A100). The gap is the same across the two Hopper chips, which suggests host / scheduling time per request. 70B TP8
+  is short by 6.5 ms, about 40 µs per all-reduce over 160 per pass, which looks like small-message all-reduce latency.
+  Neither is derivable from public sources without fitting, so neither is modelled.
+- Max-load 8B decode is DRAM-bound (KV 7.9 of 11.3 ms per step at batch 256). The remaining under-prediction comes
+  from the kernel-overlap serialisation plus the 2 ms lump per step.
