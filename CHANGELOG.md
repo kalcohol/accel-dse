@@ -3,6 +3,13 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.126.0]
+### Fixed (hostile review round 2)
+- Compressed + sliding-window attention (DeepSeek-V4 layers with compress > 1 and a window): a decode query at context n was charged ⌈n/c⌉ + w keys even when that exceeds n (129 keys at n = 1), while prefill already used min(p, ·). `AttnCore.ctx_eff` now caps at n, so decode equals the prefill last-position count. Only short contexts (n ≲ w + n/c) change; default fingerprints are unchanged.
+### Verified (no change)
+- Attention key counts vs brute force; GQA under TP that does not divide the KV heads (storage and decode KV reads follow `gqa_local`); KV / recurrent-state bytes per family vs hand formulas (GQA, MLA, gpt-oss sliding layers, Qwen3-Next GDN state); hierarchical all-reduce / all-gather / all-to-all volumes vs the textbook ring / direct formulas; collective payloads; PP partitions (contiguous, non-empty, work-conserving, pp > layers rejected); DiT cross-attention shapes incl. sequence parallel; MLA absorbed decode / naive prefill.
+- DES vs closed form on edge layouts (PP2, TP3, PP3, PP2·TP2, 1-card prefill pool): within the validation bands except one ITL-max tail (−33 % vs a 30 % band, noisy).
+
 ## [0.125.0]
 ### Fixed (hostile core review)
 - Grouped (block-diagonal) linears: the per-rank GEMM kept the full N per group (N = n instead of n/g), so DeepSeek-V4 / V4-Pro / V4.1 `o_a` (8 groups) did 8× its work and weight reads, and the storage plan held 8× its bytes (V4-Flash batch-1 decode weight reads +69 %, V4-Pro +121 %; stored weights +7 %). `ir.groups_local`: whole groups per rank (⌈g/TP⌉), N split once TP > g. No validation data covers V4, so no validation result changes. Fingerprints rebaselined (stage c034bfe3e3a3afa2 → e2176af2610c144c, default e51c7ec17bbdb998 → 392692e6937f69ef); only the V4 rows move (without them the hash is unchanged, tested).

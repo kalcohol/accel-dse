@@ -2932,3 +2932,13 @@ the total N (DeepSeek-V4 `o_a`: 8× work, weight reads and storage).
 work per sequence (decode: E tokens; prefill: S prompt tokens; video: units per request with the overlap period). The
 bound is taken from the evaluated thr(p)/p, which holds for every phase; 0.124 used E/step and missed the prompt
 factor.
+
+
+## 72. Hostile review round 2 (0.126)
+
+Checked against independent references: attention keys per query (window, top-k, compressed, dual, QSA) vs a
+position-by-position sum; decode keys at context n = keys of prefill position n, never more than n tokens for
+non-dual layers (0.126 fix: compressed + window layers were charged ⌈n/c⌉ + w at short context); GQA KV storage and
+reads under uneven TP; KV / state bytes vs config formulas; hierarchical collective volumes (with equal tiers they
+reduce to 2(g−1)/g·B, (g−1)·B and ≤ (g−1)/g·B); PP partitions and per-stage work conservation; DiT cross-attention
+GEMM rows (conditioning tokens for K/V, replicated over SP ranks); DES vs closed form on PP / odd-TP layouts.

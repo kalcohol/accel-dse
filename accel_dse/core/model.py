@@ -166,7 +166,7 @@ class AttnCore:
             c = math.ceil(ctx / self.compress) + (self.window or 0)
         if self.topk is not None:
             c = min(c, self.topk + (self.window or 0) if self.compress > 1 else self.topk)
-        return c
+        return min(c, ctx)      # 0.126: compressed + window never more keys than tokens (decode = keys_sum's min(p, ·))
 
     def keys_sum(self, n: int) -> int:
         """0.61.1: Σ_{p=1..n} keys attended by the query at position p, min(p, ctx_eff(p)) — exact closed form.
