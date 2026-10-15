@@ -293,6 +293,8 @@
         </div>
         <div class="row3">
           <label title="每个副本的前缀缓存容量 GB；空 = 权重 + 活跃 batch 的 KV 之后剩余的 DRAM">缓存 GB / 副本<input type="number" id="pd-prefix_cache_GB" min="0" step="10"></label>
+          <label title="主机内存 L2 前缀缓存（0.168，SGLang HiCache）每副本 GB；0 = 关。命中主机的前缀不重算，逐层从主机加载（与计算重叠）">主机 L2 GB / 副本<input type="number" id="pd-prefix_host_GB" min="0" step="50"></label>
+          <label title="write_through：每个显存条目都备份到主机（包含式，可达 max(K1,K2)）；write_back：显存淘汰时才写到主机（互斥式，可达 K1+K2）">L2 策略<select id="pd-prefix_host_policy"><option value="write_through">write_through</option><option value="write_back">write_back</option></select></label>
         </div>
         <label title="radix 前缀树（0.58）「假设」：每层 token 数:分支数:Zipf α，从根到叶，逗号分隔（例 1024:8:1, 4096:100:1, 1024:50:0 = 系统提示词 → 文档 → 对话）；部分前缀命中节省匹配到的层；填了就替代上面的前缀长度 / 种数 / Zipf">前缀树（radix，层 tok:分支:Zipf）<input type="text" id="pd-prefix_tree" placeholder="tok:分支:Zipf, …"></label>
         <label title="0.122 多轮对话「假设」（需前缀树）：每个叶路径 = 一个会话；第 t 轮 prompt = 上一轮 prompt + 输出（输出长度）+ 新用户消息；1 = 关">每会话轮数<input type="number" id="pd-prefix_turns" min="1" max="64" step="1"></label>

@@ -3,6 +3,18 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.169.0] — host L2 prefix tier on radix / multi-turn; card→host write traffic; UI
+- The host L2 tier now also applies to the radix prefix tree (0.58) and multi-turn (0.122/0.123, including session mode).
+  - Reachable token capacity: write_through max(C1, C2), write_back C1 + C2, with C2 = prefix_host_GB / footprint × path tokens. The Che per-node model runs at the device and the reachable capacity.
+  - Host share = token hit at reach − token hit at device. Load cost reuses the 0.168 rule, using whole-path bytes with probability equal to the host token share (same mean bytes; 「假设」 for exposure).
+- New: card→host backup writes. 「来源」 SGLang HiCache write policies.
+  - Per request, as a fraction of the prefix: write_through backs up every newly computed token (1 − H); write_back demotes L1 evictions, and in steady state L1 admits every token it didn't hold (1 − H1) 「假设」.
+  - Writes use the other PCIe direction (full duplex), so they get their own `host_write` capacity: GBps / (write bytes per card).
+  - Shown in `cap_req_s` / `util`, and it can be the bottleneck. Write traffic doesn't add to TTFT (asynchronous).
+- UI: PD panel inputs 主机 L2 GB / 副本 and L2 策略. The prefix-cache line shows device/host hits, load / exposed / TTFT increase and backup writes. Bottleneck and utilisation now include host read/write. `scripts/ui_smoke.py` extended; passes with 0 console errors.
+- Example (dense8b validation tree, 20 GB device, 100 GB host, write_through): prefill token hit 0.360 → 0.526. Backup writes are 107 MB per card per request, capping a prefill replica at 466 req/s.
+- Defaults are off, so results are bit-identical and fingerprints unchanged. Tests: tests/test_core_169.py (3).
+
 ## [0.168.0] — host-memory L2 tier for the prefix cache (HiCache-style)
 - Sanity check of the 0.167 example (no code change). wan2.1-14b at 720P: 81 frames → latent 21×90×160 → 75600 tokens, d 5120, FFN 13824, 40 layers, CFG 2.
   - Per sequence and layer: linear 2.26e13 MAC, self-attention 2·L²·d = 5.85e13, cross-attention 4e11.

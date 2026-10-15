@@ -54,6 +54,17 @@ with sync_playwright() as pw:
     print("STEP CACHE ok")
     p.select_option("#model", "qwen3-8b"); time.sleep(3)
     assert not p.is_visible("#s-videos")
+    # 0.169 host L2 prefix cache in the PD panel
+    p.check("#pd-enabled"); time.sleep(1)
+    p.fill("#pd-prefix_len", "2048"); time.sleep(1)
+    p.fill("#pd-prefix_host_GB", "200"); time.sleep(1)
+    p.select_option("#pd-prefix_host_policy", "write_back")
+    for _ in range(240):
+        if "主机 L2" in (p.inner_text("#pdpc-basis") if p.is_visible("#pdpc-basis") else ""): break
+        time.sleep(0.5)
+    t = p.inner_text("#pdpc-basis")
+    assert "主机 L2 200 GB" in t and "write_back" in t, t[:400]
+    print("HOST L2 ok")
     p.screenshot(path="/workspace/smoke/ui166.png", full_page=False)
     b.close()
 print("ERRORS:", errs)

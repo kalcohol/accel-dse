@@ -232,6 +232,7 @@ function syncInputs() {
   for (const k of ['dit_fsdp', 'te_cpu', 'vae_parallel', 'overlap']) if ($('w-' + k)) $('w-' + k).checked = !!S.sc.workload[k];
   if ($('w-sample_split')) $('w-sample_split').checked = S.sc.workload.sample_split !== false;
   if ($('w-tri_attn')) $('w-tri_attn').value = S.sc.workload.tri_attn || 'fused';
+  if ($('pd-prefix_host_policy')) $('pd-prefix_host_policy').value = S.sc.pd.prefix_host_policy || 'write_through';
   if ($('w-step_cache')) $('w-step_cache').value = S.sc.workload.step_cache || 'teacache';
   if ($('w-tri_chunk')) { $('w-tri_chunk').value = S.sc.workload.tri_chunk || ''; $('w-tri_chunk').disabled = (S.sc.workload.tri_attn || 'fused') !== 'chunked'; }
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
@@ -851,7 +852,7 @@ function renderPD(r) {
       h('td', { class: 'l small', style: 'white-space:normal;min-width:150px' }, `prefill ${P.cards}（${P.replicas} × ${P.layout}，batch ${P.batch}）+ decode ${D.cards}（${D.replicas} × ${D.layout}，batch ${D.batch}）`),
       h('td', { style: ok(pd.ttft_ok) }, num(pd.ttft_ms)), h('td', { style: ok(pd.tpot_ok) }, num(pd.tpot_ms)), h('td', { style: ok(pd.tpot_ok) }, num(pd.tpot_ms)),
       h('td', {}, h('b', {}, num(pd.goodput_per_card))),
-      h('td', { class: 'l small', style: 'white-space:normal;min-width:150px' }, `${{ prefill: 'prefill 池', decode: 'decode 池', kv: 'KV 传输' }[pd.bottleneck]}；利用率 P ${pct(pd.util.prefill)} · D ${pct(pd.util.decode)} · KV ${pct(pd.util.kv)}`)),
+      h('td', { class: 'l small', style: 'white-space:normal;min-width:150px' }, `${{ prefill: 'prefill 池', decode: 'decode 池', kv: 'KV 传输', host: '主机→卡加载', host_write: '卡→主机备份' }[pd.bottleneck]}；利用率 P ${pct(pd.util.prefill)} · D ${pct(pd.util.decode)} · KV ${pct(pd.util.kv)}${pd.util.host != null ? ` · 主机读 ${pct(pd.util.host)} · 主机写 ${pct(pd.util.host_write)}` : ''}`)),
     h('tr', { class: c.goodput_per_card > pd.goodput_per_card ? 'best' : '' }, h('td', { class: 'l' }, '合并（同卡数）'),
       h('td', { class: 'l small', style: 'white-space:normal;min-width:150px' }, `${c.cards}（${c.replicas} × ${c.layout}${c.idle_cards ? `，${c.idle_cards} 卡闲置` : ''}）`),
       h('td', { style: ok(c.ttft_ok) }, num(c.ttft_ms)), h('td', {}, num(c.tpot_ms)), h('td', { style: ok(c.tpot_eff_ok) }, num(c.tpot_eff_ms)),
@@ -873,9 +874,14 @@ function renderPD(r) {
 function renderPDCache(pc) {
   $('pdpc-box').hidden = !pc;
   if (!pc) return;
+  const hn = pc.host ? (() => { const x = pc.host, l = x.load || {};   // 0.168/0.169 host L2 tier
+    return `；主机 L2 ${num(x.GB)} GB/副本（${x.policy === 'write_through' ? 'write_through 包含式' : 'write_back 互斥式'}，`
+      + `${x.K_host} 前缀）：显存命中 ${pct(x.hit_device)} + 主机命中 ${pct(x.hit_host)}；每次主机命中每卡加载 ${num(l.bytes_per_card_MB)} MB `
+      + `${num(l.t_load_ms)} ms（逐层重叠后露出 ${num(l.exposed_ms)} ms，TTFT 均值 +${num(l.mean_added_ms)} ms）；`
+      + `备份写 ${num(l.write_MB_card_req)} MB/卡/请求（主机链路 ${num(l.host_GBps_card)} GB/s「假设」）`; })() : '';
   if (pc.tree) {   // 0.58 radix tree
     $('pdpc-basis').textContent = `前缀树 ${pc.tree.map((r) => `${r[0]} tok × ${r[1]}（Zipf ${r[2]}）`).join(' → ')}，${pc.policy}；${pc.basis}`
-      + (pc.turns ? `；${pc.turns.turns} 轮 / 会话（每轮输出 ${pc.turns.output_tokens} + 用户 ${pc.turns.user_tokens} tok，平均 prompt ${num(pc.turns.mean_turn_prompt)} tok${pc.turns.auto_prompt ? '，已用作 prompt' : ''}）${pc.turns.session_survival != null ? `，会话历史存活 ${pct(pc.turns.session_survival)}` : ''}；${pc.turns.basis}` : '');
+      + hn + (pc.turns ? `；${pc.turns.turns} 轮 / 会话（每轮输出 ${pc.turns.output_tokens} + 用户 ${pc.turns.user_tokens} tok，平均 prompt ${num(pc.turns.mean_turn_prompt)} tok${pc.turns.auto_prompt ? '，已用作 prompt' : ''}）${pc.turns.session_survival != null ? `，会话历史存活 ${pct(pc.turns.session_survival)}` : ''}；${pc.turns.basis}` : '');
     const headT = h('tr', {}, h('th', { class: 'l' }, '缓存'), h('th', {}, '副本'), h('th', {}, '容量 GB', h('br'), '/ 副本'),
       h('th', {}, '容量', h('br'), 'tok / 副本'), h('th', {}, 'token', h('br'), '命中率'), h('th', {}, '各层命中', h('br'), 'P(深度 ≥ k)'), h('th', { class: 'l' }, '说明'));
     const rowsT = [['prefill', 'PD · prefill 池'], ['decode', 'PD · decode 池'], ['coloc', '合并副本']].map(([k, nm]) => {
@@ -889,7 +895,7 @@ function renderPDCache(pc) {
     put($('pdpc-tbl'), h('thead', {}, headT), h('tbody', {}, ...rowsT));
     return;
   }
-  $('pdpc-basis').textContent = `${pc.prefix_count} 个前缀 × ${pc.prefix_len} tok，Zipf α ${pc.zipf}，${pc.policy}；${pc.basis}`;
+  $('pdpc-basis').textContent = `${pc.prefix_count} 个前缀 × ${pc.prefix_len} tok，Zipf α ${pc.zipf}，${pc.policy}；${pc.basis}` + hn;
   const head = h('tr', {}, h('th', { class: 'l' }, '缓存'), h('th', {}, '副本'), h('th', {}, '容量 GB', h('br'), '/ 副本'),
     h('th', {}, '每前缀', h('br'), 'MB'), h('th', {}, '可存前缀', h('br'), '/ 副本'), h('th', {}, '命中率'), h('th', { class: 'l' }, '说明'));
   const src = (x) => x.source === 'pd.prefix_cache_GB' ? '给定容量' : '剩余 DRAM（权重 + 活跃 KV 之后）';
@@ -917,7 +923,7 @@ function renderPDLayouts(ls) {
   const body = rows.map((r) => h('tr', { class: same(r, bs) ? 'best' : '' },
     h('td', { class: 'l' }, `${r.prefill_layout} × ${r.prefill_cards}`, same(r, cur) ? h('span', { class: 'tag', style: 'margin-left:6px' }, '当前布局') : null),
     h('td', { class: 'l' }, `${r.decode_layout} × ${r.decode_cards}`), h('td', {}, num(r.prefill_ttft_ms)), h('td', {}, num(r.decode_tpot_ms)),
-    ...(showB ? [h('td', {}, String(r.decode_batch))] : []), h('td', {}, num(r.goodput_per_card)), h('td', { class: 'l' }, { prefill: 'prefill 池', decode: 'decode 池', kv: 'KV 传输' }[r.bottleneck]),
+    ...(showB ? [h('td', {}, String(r.decode_batch))] : []), h('td', {}, num(r.goodput_per_card)), h('td', { class: 'l' }, { prefill: 'prefill 池', decode: 'decode 池', kv: 'KV 传输', host: '主机→卡加载', host_write: '卡→主机备份' }[r.bottleneck]),
     h('td', {}, r.slo_goodput_per_card === undefined ? h('span', { class: 'muted' }, '未算') : h('b', {}, num(r.slo_goodput_per_card)))));
   put($('pdls-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
   $('pdls-note').textContent = bs ? `SLO 下最佳：prefill ${bs.prefill_layout} × ${bs.prefill_cards} + decode ${bs.decode_layout} × ${bs.decode_cards} → ${num(bs.slo_goodput_per_card)} tok/s/卡（流体 ${num(bs.goodput_per_card)}）。流体排名与 SLO 排名可以不同：流体只看容量，SLO 还看 TTFT / TPOT 尾部。` : '';
@@ -2013,6 +2019,8 @@ async function init() {
   bindNumber('pd-prefix_len', () => S.sc.pd.prefix_len || null, (x) => (S.sc.pd.prefix_len = x === null ? 0 : x), { int: true, nullable: true, check: (x) => x >= 0 });
   bindNumber('pd-prefix_count', () => S.sc.pd.prefix_count ?? 1000, (x) => (S.sc.pd.prefix_count = x), { int: true, check: (x) => x >= 1 && x <= 1e9 });
   bindNumber('pd-prefix_zipf', () => S.sc.pd.prefix_zipf ?? 1, (x) => (S.sc.pd.prefix_zipf = x), { check: (x) => x >= 0 && x <= 3 });
+  bindNumber('pd-prefix_host_GB', () => S.sc.pd.prefix_host_GB || 0, (x) => { if (x) S.sc.pd.prefix_host_GB = x; else delete S.sc.pd.prefix_host_GB; }, { check: (x) => x >= 0 });
+  $('pd-prefix_host_policy').addEventListener('change', (e) => { if (e.target.value === 'write_through') delete S.sc.pd.prefix_host_policy; else S.sc.pd.prefix_host_policy = e.target.value; schedule(); });
   bindNumber('pd-prefix_cache_GB', () => S.sc.pd.prefix_cache_GB ?? null, (x) => (S.sc.pd.prefix_cache_GB = x), { nullable: true, check: (x) => x >= 0 });
   $('pd-kv_policy').addEventListener('change', (e) => { S.sc.pd.kv_policy = e.target.value || 'off'; schedule(); });
   bindNumber('pd-kv_capacity_GB', () => S.sc.pd.kv_capacity_GB ?? null, (x) => (S.sc.pd.kv_capacity_GB = x), { nullable: true, check: (x) => x > 0 });

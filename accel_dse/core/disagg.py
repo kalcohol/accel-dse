@@ -189,11 +189,13 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
             return sum(q * min(c, S_ - 1) for q, c in zip(law, cum))
         cap_d = capacity(m, dec0, Lp, pd.prefix_cache_GB)
         hd, tail_d, law_d, C_d = tree_pool(cap_d, r_d)
-        hc, tail_c, law_c, C_c = tree_pool(cap_d, reps)
+        hc, tail_c, law_c, C_c = tree_pool(_reach_cap(pd, cap_d), reps)
+        tokh = lambda law: sum(q * c for q, c in zip(law, cum)) / Lp      # noqa: E731
+        H_c1 = tokh(tree_pool(cap_d, reps)[2]) if pd.prefix_host_GB else None
         pb, pr, p_ok = prefill_of(pscn)
         for _ in range(3):
             cap_p = capacity(m, pr, Lp, pd.prefix_cache_GB)
-            hp, tail_p, law_p, C_p = tree_pool(cap_p, r_p)
+            hp, tail_p, law_p, C_p = tree_pool(_reach_cap(pd, cap_p), r_p)
             pp_rep = int(tok_of(law_p, S_rep))
             nb, nr, nok = prefill_of(scns(pp_rep, 0)[1])
             same = nb == pb
@@ -219,12 +221,16 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         def lvl(law, tail, C):
             return {"token_hit": sum(q * c for q, c in zip(law, cum)) / Lp, "level_hit": tail, "depth_law": law,
                     "capacity_tokens": C}
+        if pd.prefix_host_GB:          # 0.169: L2 on the radix tree — token hit ratios at the device / reachable capacity
+            H_p1 = tokh(tree_pool(cap_p, r_p)[2])
+            host_t = _host_entry(pd, cap_p, H_p1, H_p, H_c1, H_c)
         pcache = {"policy": "LRU radix 树（Che 逐节点近似）", "tree": [list(x) for x in tree], "prefix_len": Lp,
                   "affinity": pd.prefix_affinity,
                   "prefill": {**cap_p, "replicas": r_p, "hit": H_p, **lvl(law_p, tail_p, C_p)},
                   "decode": {**cap_d, "replicas": r_d, "hit": sum(q * c for q, c in zip(law_d, cum)) / Lp,
                              "holds_given_prefill_hit": q_dec, **lvl(law_d, tail_d, C_d)},
                   "coloc": {**cap_d, "replicas": reps, "hit": H_c, **lvl(law_c, tail_c, C_c)},
+                  **({"host": host_t} if pd.prefix_host_GB else {}),
                   "basis": "radix 前缀树「假设」：每层（token 数、分支数、Zipf）独立选子节点（IRM）；节点级 LRU，容量按 token "
                            "计、各层共享；部分命中节省匹配到的层；命中按 Che 逐节点近似（树性质：子节点驻留 ⇒ 父节点驻留）；"
                            + ("前缀感知路由：总容量近似（DES 按根节点分配副本）" if pd.prefix_affinity else "随机路由：每个副本各自缓存")}
@@ -277,9 +283,7 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
                   "prefill": {**cap_p, "replicas": r_p, "hit": H_p},
                   "decode": {**cap_d, "replicas": r_d, "hit": hit_of(groups, hd), "holds_given_prefill_hit": q_dec},
                   "coloc": {**cap_d, "replicas": reps, "hit": H_c},
-                  **({"host": {"GB": pd.prefix_host_GB, "policy": pd.prefix_host_policy,
-                               "K_host": _k_host(pd, cap_p), "hit_device": H_p1, "hit_host": H_p - H_p1,
-                               "coloc_hit_device": H_c1, "coloc_hit_host": H_c - H_c1}} if pd.prefix_host_GB else {}),
+                  **({"host": _host_entry(pd, cap_p, H_p1, H_p, H_c1, H_c)} if pd.prefix_host_GB else {}),
                   "basis": "前缀缓存容量模型「假设」：N 个共享前缀、Zipf 流行度、独立请求（IRM）；整前缀 LRU，命中率按 Che 近似；"
                            "容量 = 权重 + 活跃 batch KV 之后剩余的 DRAM（或 pd.prefix_cache_GB）；"
                            + ("前缀感知路由：副本分摊前缀（总容量）" if pd.prefix_affinity else "随机路由：每个副本各自缓存全体前缀")}
@@ -372,13 +376,16 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         lk = min(np_, nd_) * beta / kv if kv > 0 else math.inf
         # 0.168: host → card loads of L2 hits share each prefill card's host link
         lh = (np_ // c_p) * hostL2["req_s_replica"] if hostL2 and hostL2["req_s_replica"] < math.inf else math.inf
-        lam = min(lp, ld, lk, lh)
-        bott = "prefill" if lam == lp else "decode" if lam == ld else "kv" if lam == lk else "host"
+        # 0.169: card → host backup writes use the other PCIe direction (full duplex) → their own cap
+        lw = (np_ // c_p) * hostL2["write_req_s_replica"] if hostL2 and hostL2["write_req_s_replica"] < math.inf else math.inf
+        lam = min(lp, ld, lk, lh, lw)
+        bott = ("prefill" if lam == lp else "decode" if lam == ld else "kv" if lam == lk else "host" if lam == lh
+                else "host_write")
         util = {k: (lam / v if v > 0 and math.isfinite(v) else 0.0)
-                for k, v in (("prefill", lp), ("decode", ld), ("kv", lk), ("host", lh))}
+                for k, v in (("prefill", lp), ("decode", ld), ("kv", lk), ("host", lh), ("host_write", lw))}
         return {"req_s": lam, "goodput_tok_s": lam * out, "goodput_per_card": lam * out / (np_ + nd_),
-                "bottleneck": bott, "cap_req_s": {"prefill": lp, "decode": ld, "kv": lk, **({"host": lh} if hostL2 else {})},
-                "util": util if hostL2 else {k: v for k, v in util.items() if k != "host"}}
+                "bottleneck": bott, "cap_req_s": {"prefill": lp, "decode": ld, "kv": lk, **({"host": lh, "host_write": lw} if hostL2 else {})},
+                "util": util if hostL2 else {k: v for k, v in util.items() if k not in ("host", "host_write")}}
 
     # 0.141: when the prefill pool is not the bottleneck, the smallest power-of-two prefill batch whose capacity still
     # carries the same request rate gives the same goodput at a lower TTFT (best_prefill maximises prefill throughput)
@@ -470,8 +477,8 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
           "idle_cards": total - reps * c_d}
     warnings = list(turn_warn)
     if pd.prefix_host_GB and not (pcache and "host" in pcache):
-        warnings.append("pd.prefix_host_GB 已忽略：主机 L2 层只建在整前缀缓存模型上（pd.prefix_len > 0、无 prefix_tree、"
-                        "未显式给 prefix_hit）")
+        warnings.append("pd.prefix_host_GB 已忽略：主机 L2 层需要前缀缓存容量模型（pd.prefix_len > 0 或 prefix_tree，"
+                        "且未显式给 prefix_hit）")
     if not p_ok:
         warnings.append("prefill 池：单条请求的 prefill 也超过 TTFT SLO 或放不下（按 batch 1 计）")
     if not dec.fits:
@@ -709,6 +716,26 @@ def _k_tot(pd, cap: dict, m, Lp: int) -> int:
     return max(cap["K"], k2) if pd.prefix_host_policy == "write_through" else cap["K"] + k2
 
 
+def _reach_cap(pd, cap: dict) -> dict:
+    """Capacity dict with K_float = prefixes reachable in L1 ∪ L2 (token capacity for the radix tree)."""
+    if not pd.prefix_host_GB:
+        return cap
+    foot = cap["footprint_MB"] * 1e6
+    k2 = pd.prefix_host_GB * 1e9 / foot if foot > 0 else 0.0
+    kf = max(cap["K_float"], k2) if pd.prefix_host_policy == "write_through" else cap["K_float"] + k2
+    return {**cap, "K_float": kf}
+
+
+def _host_entry(pd, cap, H1, H, Hc1, Hc) -> dict:
+    """L2 summary.  hit_* are token hit ratios of the prefix (= request hit rates for whole prefixes).  Card → host
+    writes per request, as a fraction of the prefix (「来源」 HiCache policies; steady state 「假设」): write_through
+    backs up every newly computed prefix token (1 − H); write_back demotes what L1 evicts, and L1 admits every token
+    it did not hold (1 − H1)."""
+    wf = (1.0 - H) if pd.prefix_host_policy == "write_through" else (1.0 - H1)
+    return {"GB": pd.prefix_host_GB, "policy": pd.prefix_host_policy, "K_host": _k_host(pd, cap),
+            "hit_device": H1, "hit_host": H - H1, "coloc_hit_device": Hc1, "coloc_hit_host": Hc - Hc1, "write_frac": wf}
+
+
 def _host_load(scn, m, pr, pcache) -> dict:
     """Load-back of an L2 hit: every card reads its own shard of the prefix KV over its host link (PCIe-class,
     pd.swap_GBps or workload.host_GBps 「假设」), layer by layer while the previous layer computes (「来源」 HiCache
@@ -716,12 +743,14 @@ def _host_load(scn, m, pr, pcache) -> dict:
     same rule as the layer-wise PD hand-off.  Host link capacity per replica: GBps / (h_L2 · bytes per card)."""
     pd, lay = scn.pd, pr.scenario.layout
     bw = (pd.swap_GBps or scn.workload.host_GBps) * 1e9
-    per = per_card_bytes(m, lay, pd.prefix_len, [s.layers for s in pr.stages])
+    per = per_card_bytes(m, lay, pcache.get("prefix_len") or pd.prefix_len, [s.layers for s in pr.stages])
     b = max(per) if per else 0.0
     t = b / bw
     L = max(1, m.n_layers // lay.pp)
     h2 = pcache["host"]["hit_host"]
+    wf = pcache["host"].get("write_frac", 0.0)
     return {"bytes_per_card_MB": b / 1e6, "host_GBps_card": bw / 1e9, "t_load_ms": t * 1e3,
             "req_s_replica": (bw / (h2 * b)) if h2 > 0 and b > 0 else math.inf,
+            "write_MB_card_req": wf * b / 1e6, "write_req_s_replica": (bw / (wf * b)) if wf > 0 and b > 0 else math.inf,
             "exposed_s": lambda ttft_p, t=t, L=L: max(t / L, t - ttft_p * (L - 1) / L)}
 

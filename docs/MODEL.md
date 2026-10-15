@@ -3814,3 +3814,7 @@ SGLang HiCache (「来源」 docs.sglang.io hicache_design: L1 GPU / L2 host; wr
 - Load of an L2 hit: t = max-per-card shard bytes / host GBps. Exposed = max(t/L, t − TTFT_p·(L−1)/L). TTFT += h2·exposed (mean). Host link capacity per prefill replica = GBps / (h2 · bytes per card).
 - Whole-prefix model only. Not modelled: tree / multi-turn, D2H write traffic, L3.
 
+## 115. Host L2 on the radix tree / multi-turn; backup writes (0.169)
+- Tree / multi-turn: token capacity C = K_float·Lp. Reach = max(C1, C2) (write_through) or C1 + C2 (write_back). H(reach) and H(C1) by the existing per-node Che models. h2 = H(reach) − H(C1).
+- Writes: wf = 1 − H (write_through) or 1 − H1 (write_back), as a fraction of the prefix. Bytes per card per request = wf · prefix shard bytes. Capacity per prefill replica = host GBps / that, on the card→host direction (full duplex, separate from loads).
+
