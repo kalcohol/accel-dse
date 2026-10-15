@@ -322,7 +322,8 @@ function paintDomain(m) {
     : isSeqEnc(m) ? `自动取满足批延迟 SLO 的最大 batch（最大化${m.domain === 'genomics' ? '窗口' : '序列'}/s/卡）` : '自动取满足 TPOT SLO 的最大 batch';
   const w = m.workload;
   if (w) {
-    $('wl-kind').textContent = m.domain === 'gen' ? `视频 · 默认 ${w.width}×${w.height} · ${w.frames} 帧 · ${w.fps} fps · ${w.steps} 步 · CFG ${w.cfg}`
+    $('wl-kind').textContent = m.domain === 'gen' && w.image ? `图像 · 默认 ${w.width}×${w.height} · 单帧 · ${w.steps} 步 · CFG ${w.cfg}`
+      : m.domain === 'gen' ? `视频 · 默认 ${w.width}×${w.height} · ${w.frames} 帧 · ${w.fps} fps · ${w.steps} 步 · CFG ${w.cfg}`
       : w.structure ? `蛋白质结构 · 默认 ${w.seq_len} 残基 · ${w.msa ? `MSA ${w.msa} 行` : w.xmsa ? `MSA ${w.xmsa} 行` : '单序列'} · 主干 ${w.recycles} 遍${w.diff_steps ? ` · 扩散 ${w.diff_steps} 步 × ${w.samples} 样本` : ''}`
       : w.kind === 'genomics' ? `基因组 · 默认窗口 ${w.seq_len} token（${w.kmer}-mer，${num(w.seq_len * w.kmer)} bp）· 重叠 ${w.overlap} token`
       : `蛋白质 · 默认 ${w.seq_len} 残基（训练上限 ${w.max_seq}）`;

@@ -1,0 +1,183 @@
+{
+ "bytes_llm": 14230249472,
+ "bytes_mtp": 0,
+ "bytes_total": 14230249472,
+ "config": {
+  "_class_name": "QwenImage21Transformer2DModel",
+  "_diffusers_version": "0.41.0.dev0",
+  "attention_head_dim": 128,
+  "axes_dims_rope": [
+   16,
+   56,
+   56
+  ],
+  "causal_condition": true,
+  "context_in_dim": 4096,
+  "eps": 1e-06,
+  "in_channels": 64,
+  "mlp_ratio": 3,
+  "num_attention_heads": 32,
+  "num_layers": 32,
+  "out_channels": 64,
+  "patch_size": 1
+ },
+ "domain": "video",
+ "fetched": "2026-10-15",
+ "n_tensors": 297,
+ "params_llm": 7115124736,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "Qwen/Qwen-Image-2.1-Turbo",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 4294967296,
+    "params": 2147483648
+   }
+  },
+  "cond": {
+   "bf16": {
+    "bytes": 203423744,
+    "params": 101711872
+   }
+  },
+  "io": {
+   "bf16": {
+    "bytes": 68157440,
+    "params": 34078720
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 9663676416,
+    "params": 4831838208
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 24576,
+    "params": 12288
+   }
+  }
+ },
+ "shapes": {
+  "img_in.weight": [
+   4096,
+   64
+  ],
+  "modulation.1.weight": [
+   16384,
+   4096
+  ],
+  "norm_out.linear.weight": [
+   4096,
+   4096
+  ],
+  "proj_out.weight": [
+   64,
+   4096
+  ],
+  "time_text_embed.timestep_embedder.linear_1.weight": [
+   4096,
+   256
+  ],
+  "time_text_embed.timestep_embedder.linear_2.weight": [
+   4096,
+   4096
+  ],
+  "transformer_blocks.0.attn.norm_k.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.norm_q.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.to_k.weight": [
+   4096,
+   4096
+  ],
+  "transformer_blocks.0.attn.to_out.0.weight": [
+   4096,
+   4096
+  ],
+  "transformer_blocks.0.attn.to_q.weight": [
+   4096,
+   4096
+  ],
+  "transformer_blocks.0.attn.to_v.weight": [
+   4096,
+   4096
+  ],
+  "transformer_blocks.0.img_mlp.gate_layer.weight": [
+   12288,
+   4096
+  ],
+  "transformer_blocks.0.img_mlp.out.weight": [
+   4096,
+   12288
+  ],
+  "transformer_blocks.0.img_mlp.proj.weight": [
+   12288,
+   4096
+  ],
+  "transformer_blocks.31.attn.norm_k.weight": [
+   128
+  ],
+  "transformer_blocks.31.attn.norm_q.weight": [
+   128
+  ],
+  "transformer_blocks.31.attn.to_k.weight": [
+   4096,
+   4096
+  ],
+  "transformer_blocks.31.attn.to_out.0.weight": [
+   4096,
+   4096
+  ],
+  "transformer_blocks.31.attn.to_q.weight": [
+   4096,
+   4096
+  ],
+  "transformer_blocks.31.attn.to_v.weight": [
+   4096,
+   4096
+  ],
+  "transformer_blocks.31.img_mlp.gate_layer.weight": [
+   12288,
+   4096
+  ],
+  "transformer_blocks.31.img_mlp.out.weight": [
+   4096,
+   12288
+  ],
+  "transformer_blocks.31.img_mlp.proj.weight": [
+   12288,
+   4096
+  ],
+  "txt_in.in_layer.weight": [
+   4096,
+   4096
+  ],
+  "txt_in.out_layer.weight": [
+   4096,
+   4096
+  ],
+  "txt_in.text_norm.weight": [
+   4096
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "text_encoder/model.safetensors": 17534340584,
+   "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": 9968332504,
+   "transformer/diffusion_pytorch_model-00002-of-00002.safetensors": 4261951904,
+   "vae/diffusion_pytorch_model.safetensors": 675508656
+  },
+  "revision": "main",
+  "spec": "Qwen/Qwen-Image-2.1-Turbo:transformer",
+  "subfolder": "transformer",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}

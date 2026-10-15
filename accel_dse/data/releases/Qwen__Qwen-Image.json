@@ -1,0 +1,354 @@
+{
+ "bytes_llm": 40860802176,
+ "bytes_mtp": 0,
+ "bytes_total": 40860802176,
+ "config": {
+  "_class_name": "QwenImageTransformer2DModel",
+  "_diffusers_version": "0.34.0.dev0",
+  "attention_head_dim": 128,
+  "axes_dims_rope": [
+   16,
+   56,
+   56
+  ],
+  "guidance_embeds": false,
+  "in_channels": 64,
+  "joint_attention_dim": 3584,
+  "num_attention_heads": 24,
+  "num_layers": 60,
+  "out_channels": 16,
+  "patch_size": 2,
+  "pooled_projection_dim": 768
+ },
+ "domain": "video",
+ "fetched": "2026-10-15",
+ "n_tensors": 1933,
+ "params_llm": 20430401088,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "Qwen/Qwen-Image",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 9062645760,
+    "params": 4531322880
+   }
+  },
+  "cond": {
+   "bf16": {
+    "bytes": 13652189184,
+    "params": 6826094592
+   }
+  },
+  "io": {
+   "bf16": {
+    "bytes": 22818944,
+    "params": 11409472
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 18123079680,
+    "params": 9061539840
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 68608,
+    "params": 34304
+   }
+  }
+ },
+ "shapes": {
+  "img_in.bias": [
+   3072
+  ],
+  "img_in.weight": [
+   3072,
+   64
+  ],
+  "norm_out.linear.bias": [
+   6144
+  ],
+  "norm_out.linear.weight": [
+   6144,
+   3072
+  ],
+  "proj_out.bias": [
+   64
+  ],
+  "proj_out.weight": [
+   64,
+   3072
+  ],
+  "time_text_embed.timestep_embedder.linear_1.bias": [
+   3072
+  ],
+  "time_text_embed.timestep_embedder.linear_1.weight": [
+   3072,
+   256
+  ],
+  "time_text_embed.timestep_embedder.linear_2.bias": [
+   3072
+  ],
+  "time_text_embed.timestep_embedder.linear_2.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.add_k_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.add_k_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.add_q_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.add_q_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.add_v_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.add_v_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.norm_added_k.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.norm_added_q.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.norm_k.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.norm_q.weight": [
+   128
+  ],
+  "transformer_blocks.0.attn.to_add_out.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.to_add_out.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.to_k.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.to_out.0.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.to_q.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.attn.to_v.bias": [
+   3072
+  ],
+  "transformer_blocks.0.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.0.img_mlp.net.0.proj.bias": [
+   12288
+  ],
+  "transformer_blocks.0.img_mlp.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.0.img_mlp.net.2.bias": [
+   3072
+  ],
+  "transformer_blocks.0.img_mlp.net.2.weight": [
+   3072,
+   12288
+  ],
+  "transformer_blocks.0.img_mod.1.bias": [
+   18432
+  ],
+  "transformer_blocks.0.img_mod.1.weight": [
+   18432,
+   3072
+  ],
+  "transformer_blocks.0.txt_mlp.net.0.proj.bias": [
+   12288
+  ],
+  "transformer_blocks.0.txt_mlp.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.0.txt_mlp.net.2.bias": [
+   3072
+  ],
+  "transformer_blocks.0.txt_mlp.net.2.weight": [
+   3072,
+   12288
+  ],
+  "transformer_blocks.0.txt_mod.1.bias": [
+   18432
+  ],
+  "transformer_blocks.0.txt_mod.1.weight": [
+   18432,
+   3072
+  ],
+  "transformer_blocks.59.attn.add_k_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.59.attn.add_k_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.59.attn.add_q_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.59.attn.add_q_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.59.attn.add_v_proj.bias": [
+   3072
+  ],
+  "transformer_blocks.59.attn.add_v_proj.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.59.attn.norm_added_k.weight": [
+   128
+  ],
+  "transformer_blocks.59.attn.norm_added_q.weight": [
+   128
+  ],
+  "transformer_blocks.59.attn.norm_k.weight": [
+   128
+  ],
+  "transformer_blocks.59.attn.norm_q.weight": [
+   128
+  ],
+  "transformer_blocks.59.attn.to_add_out.bias": [
+   3072
+  ],
+  "transformer_blocks.59.attn.to_add_out.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.59.attn.to_k.bias": [
+   3072
+  ],
+  "transformer_blocks.59.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.59.attn.to_out.0.bias": [
+   3072
+  ],
+  "transformer_blocks.59.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.59.attn.to_q.bias": [
+   3072
+  ],
+  "transformer_blocks.59.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.59.attn.to_v.bias": [
+   3072
+  ],
+  "transformer_blocks.59.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "transformer_blocks.59.img_mlp.net.0.proj.bias": [
+   12288
+  ],
+  "transformer_blocks.59.img_mlp.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.59.img_mlp.net.2.bias": [
+   3072
+  ],
+  "transformer_blocks.59.img_mlp.net.2.weight": [
+   3072,
+   12288
+  ],
+  "transformer_blocks.59.img_mod.1.bias": [
+   18432
+  ],
+  "transformer_blocks.59.img_mod.1.weight": [
+   18432,
+   3072
+  ],
+  "transformer_blocks.59.txt_mlp.net.0.proj.bias": [
+   12288
+  ],
+  "transformer_blocks.59.txt_mlp.net.0.proj.weight": [
+   12288,
+   3072
+  ],
+  "transformer_blocks.59.txt_mlp.net.2.bias": [
+   3072
+  ],
+  "transformer_blocks.59.txt_mlp.net.2.weight": [
+   3072,
+   12288
+  ],
+  "transformer_blocks.59.txt_mod.1.bias": [
+   18432
+  ],
+  "transformer_blocks.59.txt_mod.1.weight": [
+   18432,
+   3072
+  ],
+  "txt_in.bias": [
+   3072
+  ],
+  "txt_in.weight": [
+   3072,
+   3584
+  ],
+  "txt_norm.weight": [
+   3584
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "text_encoder/model-00001-of-00004.safetensors": 4968243304,
+   "text_encoder/model-00002-of-00004.safetensors": 4991495816,
+   "text_encoder/model-00003-of-00004.safetensors": 4932751040,
+   "text_encoder/model-00004-of-00004.safetensors": 1691924384,
+   "transformer/diffusion_pytorch_model-00001-of-00009.safetensors": 4989364312,
+   "transformer/diffusion_pytorch_model-00002-of-00009.safetensors": 4984214160,
+   "transformer/diffusion_pytorch_model-00003-of-00009.safetensors": 4946470000,
+   "transformer/diffusion_pytorch_model-00004-of-00009.safetensors": 4984213736,
+   "transformer/diffusion_pytorch_model-00005-of-00009.safetensors": 4946471896,
+   "transformer/diffusion_pytorch_model-00006-of-00009.safetensors": 4946451560,
+   "transformer/diffusion_pytorch_model-00007-of-00009.safetensors": 4908690520,
+   "transformer/diffusion_pytorch_model-00008-of-00009.safetensors": 4984232856,
+   "transformer/diffusion_pytorch_model-00009-of-00009.safetensors": 1170918840,
+   "vae/diffusion_pytorch_model.safetensors": 253806966
+  },
+  "revision": "main",
+  "spec": "Qwen/Qwen-Image:transformer",
+  "subfolder": "transformer",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}

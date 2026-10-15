@@ -2692,3 +2692,48 @@ there is no change apart from known artifacts (non-safetensors checkpoints, and 
 Mistral repos). Fingerprints c034bfe3 / e51c7ec1 are unchanged, because the new entries are appended at the end of
 `EXTRA_TAIL`.
 
+## 61. 0.115 — image DiT (single latent frame); LFM2 / KDA builder audit
+
+**Image as one latent frame.** An image DiT is the video DiT path with F = 1.
+
+- latent (1, ⌈H/s⌉, ⌈W/s⌉), grid (1, ⌈lh/p⌉, ⌈lw/p⌉);
+- full 2-D attention over [text ‖ image] (no temporal axis or temporal attention);
+- one forward per step and CFG branch, as for video.
+
+The mode is set by the workload `frames = 1, fps = 0`. Frame overrides are clamped to 1 with a warning, and
+`info.image = true` appears only for image models. The unit stays "frame" (1 per request), so the image-per-second
+and latency metrics are the frame metrics.
+
+**Builders** (from the transformer/ safetensors headers; parameter counts exact):
+
+- `qwenimage` (Qwen-Image): 60 × dual-stream MMDiT.
+  - Each stream has its own QKV / out, GELU-tanh MLP 4d and `*_mod.1` AdaLN (6d).
+  - RMS QK-norms; joint attention.
+- `qwenimage21` (Qwen-Image-2.1-Turbo): 32 × single-stream blocks.
+  - QKV / out and a SwiGLU MLP 3d, shared by text and image tokens.
+  - One global `modulation.1` (4d) computed from the timestep; `txt_in` is a 2-layer projection of the Qwen3-VL states.
+  - `causal_condition`: text attends only to text, and the reference reuses the text prefix K/V across steps. This is
+    not modelled as an optimisation: text tokens are charged every step, which is about 1.5 % extra tokens at
+    2048².
+- `flux2` (FLUX.2-klein-4B): 5 dual-stream blocks (SwiGLU 3d) + 20 single-stream parallel blocks.
+  - The single-stream blocks have a fused [QKV ‖ gate-up] input and a fused [attn ‖ mlp] output (`fused_out`).
+  - Three shared modulation projections; no biases.
+
+**Audit** (`val5/v0115/audit.py`):
+
+- **Work conservation.** FLOPs are conserved under every TP / ETP / EP / DP / PP layout tried, including uneven
+  ones, for LFM2.5 and Ling-3.1 (decode and prefill) and for the image DiTs (TP / SP / PP).
+- **KV accounting.**
+  - KV = Σ_attn-layers 2 · n_kv · hd · 2 B · (ctx + 1) for LFM.
+  - KV = 9 · (512 + 64) · 2 B · (ctx + 1) for Ling. The MLA latent is replicated on each TP rank by design.
+- **State accounting.**
+  - State is independent of ctx (1K–128K).
+  - LFM: 30 · h · (k − 1) · 4 B.
+  - Ling: 63 · (H · dk · dv + 3 · H · d · (k − 1)) · 4 B, which is 1.054 GiB per 4 sequences.
+  - Σ over TP ranks equals the global state (ceil-split bound at TP 3).
+  - Per-step state traffic = read + write of the state.
+- **No defects found.**
+- **Measurement artefacts (not model defects).**
+  - For gen models the micro-batch unit is the CFG sequence.
+  - PP with micro-batches that don't divide the sequences pads the busiest micro-batch.
+

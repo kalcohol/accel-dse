@@ -3,6 +3,47 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.115.0]
+
+### Added
+- Image DiTs in the gen domain. The domain grouping is image *and* video generation.
+  - Before this release, the gen path already evaluated a 1-frame clip mechanically (causal (F − 1)/t + 1 = 1 latent
+    frame), but it had no image mode.
+  - Image mode: an image is one latent frame (frames 1, fps 0, temporal patch 1, no temporal attention).
+    - A `workload.frames` override on an image model is ignored, with a warning.
+    - The summary workload carries `image: true`, and the UI shows 图像.
+    - The domain label is now 图像 / 视频生成（DiT）.
+    - Video summaries are unchanged, because the key is only present for image models.
+- New releases at released dtype (BF16). Parameter counts match the safetensors headers exactly.
+  - **Qwen-Image-2.1-Turbo** (Qwen, 2026-10-09): 7,115,124,736 parameters. https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo
+    - New `qwenimage21` builder: 32 single-stream blocks over [text ‖ image] with shared QKV / out / SwiGLU weights,
+      one shared timestep modulation and no per-block AdaLN tables.
+    - The VAE is ×16 with z = 64 and a 1×1 patch. Defaults: 2048×2048, 8 steps, CFG 1 (README).
+  - **Qwen-Image** (Qwen, 2025-08): 20,430,401,088 parameters. https://huggingface.co/Qwen/Qwen-Image
+    - New `qwenimage` builder: 60 dual-stream MMDiT blocks with per-stream AdaLN.
+    - The VAE is ×8 with a 2×2 patch. Defaults: 1328×1328, 50 steps, CFG 2.
+  - **FLUX.2-klein-4B** (Black Forest Labs, Apache-2.0, not gated): 3,875,544,576 parameters.
+    https://huggingface.co/black-forest-labs/FLUX.2-klein-4B
+    - New `flux2` builder: 5 dual-stream blocks + 20 single-stream parallel blocks (fused QKV + MLP-in, fused out),
+      with shared modulation.
+    - Defaults: 1024×1024, 4 steps, no CFG, text padded to 512.
+    - FLUX.1-dev / schnell and FLUX.2-dev are gated, so they are not added.
+  - In all three, the text encoder and VAE are not modelled. The coverage is therefore partial, with the DiT trunk
+    only, as for any gen release without a pipeline entry. Text is counted in the joint sequence: 256 tokens for
+    Qwen (an assumption, since prompt length varies) and 512 for FLUX.2 (the pipeline pads to this length).
+- `summarize_release`: image DiT classes use the video role table, with new patterns (`_mod.N`,
+  `stream_modulation`, `_mlp.`, `img_in` / `txt_in`). The roles of the existing video releases are unchanged.
+- Standing tests: `test_core_115`. The release inventory goes from 82 to 85.
+
+### Audit
+- Adversarial audit of the LFM2 short-conv and Ling KDA builders: no defects found.
+  - Work is conserved (FLOPs, 1e-6) over TP / ETP / EP / DP / PP, including uneven 3 / 5.
+  - KV equals the closed form: LFM has 10 GQA layers; Ling has 9 MLA layers at 1152 B per token per layer, with the
+    latent replicated per TP rank.
+  - Recurrent / conv state is independent of the sequence length and Σ over ranks equals the global value (ceil
+    bound at TP 3): LFM is 30 × h × 2 columns; Ling is 63 × (64 × 128² + 3 · 8192 · 3), fp32.
+  - Decode and prefill state traffic is 2 × the state.
+
 ## [0.114.0]
 
 ### Added

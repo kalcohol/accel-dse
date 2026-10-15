@@ -437,6 +437,116 @@ def build_h3(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelS
     return _recheck(replace(spec, cached_params=cached * L))
 
 
+# ---------------------------------------------------------------- 0.115 image DiT (single 2-D latent frame)
+def _image_wl(wl: NativeWorkload, patch: int, text: int) -> NativeWorkload:
+    """Image = one latent frame: frames 1, temporal patch 1, no temporal attention; text joins the attention sequence."""
+    return replace(wl, frames=1, fps=0, vae_t=1, patch=(1, patch, patch), text_tokens=text, prefix_tokens=text)
+
+
+def build_qwenimage(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
+    """Qwen-Image (QwenImageTransformer2DModel): 60 dual-stream MMDiT blocks (per-stream QKV / out / GELU-tanh MLP /
+    AdaLN modulation, joint attention over [text ‖ image], RMS QK-norm, 3-axis MSRoPE)."""
+    c, sh = rel["config"], rel["shapes"]
+    H, hd, L = c["num_attention_heads"], c["attention_head_dim"], c["num_layers"]
+    d = H * hd
+    core = AttnCore("gqa", n_q=H, n_kv=H, qk_dim=hd, v_dim=hd, rope_dim=hd, causal=False)
+    p = "transformer_blocks.0."
+    a = [("attn.to_q", "img_q", "col", "img"), ("attn.to_k", "img_k", "col", "img"), ("attn.to_v", "img_v", "col", "img"),
+         ("attn.to_out.0", "img_o", "row", "img"), ("attn.add_q_proj", "txt_q", "col", "txt"),
+         ("attn.add_k_proj", "txt_k", "col", "txt"), ("attn.add_v_proj", "txt_v", "col", "txt"),
+         ("attn.to_add_out", "txt_o", "row", "txt"), ("img_mod.1", "img_mod", "col", "seq"),
+         ("txt_mod.1", "txt_mod", "col", "seq")]
+    f = [("img_mlp.net.0.proj", "img_up", "col", "img"), ("img_mlp.net.2", "img_down", "row", "img"),
+         ("txt_mlp.net.0.proj", "txt_up", "col", "txt"), ("txt_mlp.net.2", "txt_down", "row", "txt")]
+    misc, _ = _misc(sh, p, [n for n, *_ in a + f])
+    layer = Layer(tuple(_lin(sh, p + n, s_, sp, r) for n, s_, sp, r in a), core,
+                  Ffn("dense", d_ff=sh[p + "img_mlp.net.0.proj.weight"][0], gated=False),
+                  tuple(_lin(sh, p + n, s_, sp, r) for n, s_, sp, r in f), misc)
+    io_pre, used = _io(sh, [("img_in", "patch_embed", "img"), ("txt_in", "text_in", "txt", "cond"),
+                            ("time_text_embed.timestep_embedder.linear_1", "time_1", "seq"),
+                            ("time_text_embed.timestep_embedder.linear_2", "time_2", "seq")])
+    io_post, used2 = _io(sh, [("norm_out.linear", "norm_out_mod", "seq", "cond"), ("proj_out", "head", "img")])
+    io_misc = _io_misc(sh, io_pre + io_post, used + used2)
+    wl = _image_wl(wl, c["patch_size"], wl.text_tokens or 256)
+    return _finish(model_id, hf_id, rel, f"Qwen-Image MMDiT（{L} 双流，[文本 ‖ 图像] 联合注意力；单帧 2D 潜空间）",
+                   d, 0, [layer] * L, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
+                       f"图像 = 1 个潜帧（VAE 空间 ×{wl.vae_s}、2×2 patch 打包；无时间维 / 时间注意力）",
+                       f"文本（Qwen2.5-VL 隐状态，去掉模板前缀）按 {wl.text_tokens} token 计入联合序列「假设」"
+                       "（参考 pipeline 按批内最长提示补齐，长度不定）"))
+
+
+def build_qwenimage21(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
+    """Qwen-Image-2.1 (QwenImage21Transformer2DModel): 32 single-stream blocks over [text ‖ image] with shared
+    weights (QKV / out / SwiGLU MLP), RMS QK-norm; AdaLN from one shared timestep modulation (no per-block tables)."""
+    c, sh = rel["config"], rel["shapes"]
+    H, hd, L = c["num_attention_heads"], c["attention_head_dim"], c["num_layers"]
+    d = H * hd
+    core = AttnCore("gqa", n_q=H, n_kv=H, qk_dim=hd, v_dim=hd, rope_dim=hd, causal=False)
+    p = "transformer_blocks.0."
+    a = [("attn.to_q", "q", "col"), ("attn.to_k", "k", "col"), ("attn.to_v", "v", "col"), ("attn.to_out.0", "o", "row")]
+    f = [("img_mlp.gate_layer", "gate", "col"), ("img_mlp.proj", "up", "col"), ("img_mlp.out", "down", "row")]
+    misc, _ = _misc(sh, p, [n for n, *_ in a + f])
+    layer = Layer(tuple(_lin(sh, p + n, s_, sp) for n, s_, sp in a), core,
+                  Ffn("dense", d_ff=sh[p + "img_mlp.proj.weight"][0], gated=True),
+                  tuple(_lin(sh, p + n, s_, sp) for n, s_, sp in f), misc)
+    io_pre, used = _io(sh, [("img_in", "patch_embed", "img"), ("txt_in.in_layer", "text_in_1", "txt", "cond"),
+                            ("txt_in.out_layer", "text_in_2", "txt", "cond"),
+                            ("time_text_embed.timestep_embedder.linear_1", "time_1", "seq"),
+                            ("time_text_embed.timestep_embedder.linear_2", "time_2", "seq"),
+                            ("modulation.1", "time_mod", "seq", "cond")])
+    io_post, used2 = _io(sh, [("norm_out.linear", "norm_out_mod", "seq", "cond"), ("proj_out", "head", "img")])
+    io_misc = _io_misc(sh, io_pre + io_post, used + used2)
+    wl = _image_wl(wl, c["patch_size"], wl.text_tokens or 256)
+    return _finish(model_id, hf_id, rel, f"Qwen-Image-2.1 单流 DiT（{L} 层，[文本 ‖ 图像] 共享权重联合注意力；单帧 2D 潜空间）",
+                   d, 0, [layer] * L, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
+                       f"图像 = 1 个潜帧（VAE 空间 ×{wl.vae_s}、z=64、1×1 patch；无时间维 / 时间注意力）",
+                       f"文本（Qwen3-VL 隐状态）按 {wl.text_tokens} token 计入联合序列「假设」；causal_condition：文本只看文本，"
+                       "参考实现跨步复用文本前缀 K/V（未作为优化建模：文本 token 每步按全层计入，"
+                       f"默认分辨率下多算约 {wl.text_tokens / (wl.text_tokens + (wl.height // wl.vae_s) * (wl.width // wl.vae_s)):.1%} 的 token）",
+                       "Turbo：8 步蒸馏采样（sample_sigmas 8 个），CFG = 1（README）"))
+
+
+def build_flux2(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
+    """FLUX.2 (Flux2Transformer2DModel): dual-stream MMDiT blocks + single-stream parallel blocks (fused
+    QKV+MLP-in, fused out); shared modulation projections (no per-block tables), SwiGLU MLP, no biases."""
+    c, sh = rel["config"], rel["shapes"]
+    H, hd = c["num_attention_heads"], c["attention_head_dim"]
+    d, Ld, Ls = H * hd, c["num_layers"], c["num_single_layers"]
+    core = AttnCore("gqa", n_q=H, n_kv=H, qk_dim=hd, v_dim=hd, rope_dim=hd, causal=False)
+    p = "transformer_blocks.0."
+    a = [("attn.to_q", "img_q", "col", "img"), ("attn.to_k", "img_k", "col", "img"), ("attn.to_v", "img_v", "col", "img"),
+         ("attn.to_out.0", "img_o", "row", "img"), ("attn.add_q_proj", "txt_q", "col", "txt"),
+         ("attn.add_k_proj", "txt_k", "col", "txt"), ("attn.add_v_proj", "txt_v", "col", "txt"),
+         ("attn.to_add_out", "txt_o", "row", "txt")]
+    f = [("ff.linear_in", "img_gate_up", "col", "img"), ("ff.linear_out", "img_down", "row", "img"),
+         ("ff_context.linear_in", "txt_gate_up", "col", "txt"), ("ff_context.linear_out", "txt_down", "row", "txt")]
+    dff = sh[p + "ff.linear_out.weight"][1]
+    misc, _ = _misc(sh, p, [n for n, *_ in a + f])
+    double = Layer(tuple(_lin(sh, p + n, s_, sp, r) for n, s_, sp, r in a), core, Ffn("dense", d_ff=dff, gated=True),
+                   tuple(_lin(sh, p + n, s_, sp, r) for n, s_, sp, r in f), misc)
+    p = "single_transformer_blocks.0."
+    w_in, w_out = sh[p + "attn.to_qkv_mlp_proj.weight"], sh[p + "attn.to_out.weight"]
+    sff = (w_in[0] - 3 * d) // 2
+    assert w_in[0] == 3 * d + 2 * sff and w_out[1] == d + sff, (w_in, w_out)
+    misc, _ = _misc(sh, p, ["attn.to_qkv_mlp_proj", "attn.to_out"])
+    single = Layer((Linear("qkv", d, 3 * d, "col"),), core, Ffn("dense", d_ff=sff, gated=True),
+                   (Linear("mlp_gate_up", d, 2 * sff, "col"), Linear("fused_out", d + sff, d, "row")), misc, fused_out=True)
+    io_pre, used = _io(sh, [("x_embedder", "patch_embed", "img"), ("context_embedder", "text_in", "txt", "cond"),
+                            ("time_guidance_embed.timestep_embedder.linear_1", "time_1", "seq"),
+                            ("time_guidance_embed.timestep_embedder.linear_2", "time_2", "seq"),
+                            ("double_stream_modulation_img.linear", "img_mod", "seq", "cond"),
+                            ("double_stream_modulation_txt.linear", "txt_mod", "seq", "cond"),
+                            ("single_stream_modulation.linear", "single_mod", "seq", "cond")])
+    io_post, used2 = _io(sh, [("norm_out.linear", "norm_out_mod", "seq", "cond"), ("proj_out", "head", "img")])
+    io_misc = _io_misc(sh, io_pre + io_post, used + used2)
+    wl = _image_wl(wl, c.get("patch_size", 1), wl.text_tokens or 512)
+    return _finish(model_id, hf_id, rel, f"FLUX.2 MMDiT（{Ld} 双流 + {Ls} 单流，[文本 ‖ 图像] 联合注意力；单帧 2D 潜空间）",
+                   d, 0, [double] * Ld + [single] * Ls, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
+                       f"图像 = 1 个潜帧（VAE ×8 + 2×2 打包 = 每 token {wl.vae_s}×{wl.vae_s} px；无时间维 / 时间注意力）",
+                       f"文本（Qwen3 第 9/18/27 层隐状态拼接）按 pipeline 补齐到 {wl.text_tokens} token 计入联合序列",
+                       "klein：4 步蒸馏，guidance_scale 1.0（无 CFG，README）"))
+
+
 # ---------------------------------------------------------------- ESM-2
 def build_esm(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
     c, sh = rel["config"], rel["shapes"]
@@ -557,7 +667,8 @@ def _finish(model_id, hf_id, rel, arch, d, L, layer, io_pre, io_post, io_misc, v
 
 BUILDERS = {"wan": build_wan, "wan22": build_wan22, "cogvideox": build_cogvideox, "hunyuan": build_hunyuan,
             "ltx": build_ltx, "mochi": build_mochi, "stdit": build_stdit, "h3": build_h3, "esm": build_esm,
-            "generanno": build_generanno}
+            "generanno": build_generanno, "qwenimage": build_qwenimage, "qwenimage21": build_qwenimage21,
+            "flux2": build_flux2}
 from .structure import BUILDERS as _STRUCTURE_BUILDERS  # noqa: E402  (0.43 protein structure models)
 BUILDERS.update(_STRUCTURE_BUILDERS)
 
@@ -611,6 +722,10 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
     warns: list[str] = []
     if spec.domain == "gen":
         F, Hh, Ww = w.frames or d.frames, w.height or d.height, w.width or d.width
+        image = d.frames == 1 and not d.fps         # 0.115 image DiT: one latent frame, no temporal axis
+        if image and F != 1:
+            warns.append(f"图像模型只生成单帧：帧数 {F} 忽略，按 1 帧计")
+            F = 1
         steps, cfg = w.steps or d.steps, w.cfg or d.cfg
         pt, ph, pw = d.patch
         lt = _latent_frames(d, F, warns)
@@ -630,6 +745,8 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
                 "seq_tokens": vid + d.prefix_tokens + aud, "steps": steps, "cfg": cfg,
                 "default": {"frames": d.frames, "height": d.height, "width": d.width, "steps": d.steps, "cfg": d.cfg},
                 "source": d.source}
+        if image:                                   # only image models carry the key (video summaries unchanged)
+            info["image"] = True
         if attn == "factorized":
             info["attn_groups"] = {"spatial": [gt, gh * gw], "temporal": [gh * gw, gt]}
         return ResolvedWorkload("gen", vid + d.prefix_tokens + aud, d.text_tokens, cfg,

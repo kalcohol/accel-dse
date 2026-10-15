@@ -255,7 +255,7 @@ def api_health() -> dict:
 def api_models() -> dict:
     return {"models": list_models(), "offline": offline_entries(), "catalog": [m["id"] for m in catalog_listing()],
             "unlisted": unlisted_models(), "domains": DOMAINS,
-            "note": "按厂商 → 系列排列；视频生成（DiT）与蛋白质（ESM-2 编码器、ESMFold / AlphaFold 2 / OpenFold / "
+            "note": "按厂商 → 系列排列；图像 / 视频生成（DiT）与蛋白质（ESM-2 编码器、ESMFold / AlphaFold 2 / OpenFold / "
                     "Boltz-1 / Protenix 结构预测）已接入 v2 可评估；AlphaFold 3 权重需申请，仍为离线条目；"
                     "见 docs/MODEL.md §10–§12"}
 

@@ -84,6 +84,12 @@ _BOLTZ_SRC = ("boltz v0.4.1 main.py predict：recycling_steps 3、sampling_steps
               "max_msa_seqs 4096；默认 512 残基、每残基 8 个重原子「假设」")
 _PX_SRC = ("Protenix v0.5.0 configs_base.py：N_cycle 4、sample_diffusion N_step 200 / N_sample 5；configs_data.py："
            "MSA sample_cutoff 2048、模板关闭；默认 512 残基、每残基 8 个重原子「假设」")
+_QI21_SRC = ("Qwen/Qwen-Image-2.1-Turbo README：QwenImage21Pipeline、保存的 8 步 sample_sigmas、CFG=1；分辨率预设 1:1 = 2048×2048"
+             "（文本 256 token「假设」）")
+_QI_SRC = ("Qwen/Qwen-Image README：aspect_ratios 1:1 = 1328×1328、num_inference_steps 50、true_cfg_scale 4.0（CFG）"
+           "（文本 256 token「假设」）")
+_FLUX2K_SRC = ("black-forest-labs/FLUX.2-klein-4B README：1024×1024、num_inference_steps 4、guidance_scale 1.0（蒸馏，无 CFG）；"
+               "Flux2KleinPipeline max_sequence_length 512（padding=max_length）")
 DOMAIN_RELEASES = [
     ("wan2.1-14b", "Wan-AI/Wan2.1-T2V-14B", "wan",
      NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, source=_WAN_SRC.format(res="720P（1280×720）"))),
@@ -124,6 +130,13 @@ DOMAIN_RELEASES = [
     # 0.106 genomics: bidirectional token-classification encoder (gene annotation)
     ("carbon-a-1.2b", "HuggingFaceBio/Carbon-A-1.2B", "generanno",
      NativeWorkload("genomics", seq_len=16384, steps=1, cfg=1, kmer=6, overlap=1024, source=_CARBON_A_SRC)),
+    # 0.115 image DiT (gen domain, one latent frame; appended last so earlier entries keep their order)
+    ("qwen-image-2.1-turbo", "Qwen/Qwen-Image-2.1-Turbo", "qwenimage21",
+     NativeWorkload("gen", frames=1, height=2048, width=2048, vae_s=16, steps=8, cfg=1, source=_QI21_SRC)),
+    ("qwen-image", "Qwen/Qwen-Image", "qwenimage",
+     NativeWorkload("gen", frames=1, height=1328, width=1328, vae_s=8, steps=50, cfg=2, source=_QI_SRC)),
+    ("flux.2-klein-4b", "black-forest-labs/FLUX.2-klein-4B", "flux2",
+     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=16, steps=4, cfg=1, source=_FLUX2K_SRC)),
 ]
 _DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
 # GitHub-only releases: the repo name alone does not say which checkpoint is evaluated
@@ -136,7 +149,7 @@ OFFLINE_REASONS = {
 }
 
 # ---------------------------------------------------------------- listing: vendor (厂商) → family; domain is only a badge
-DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态：语言主干 + 视觉编码器）", "gen": "视频生成（DiT）", "protein": "蛋白质",
+DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态：语言主干 + 视觉编码器）", "gen": "图像 / 视频生成（DiT）", "protein": "蛋白质",
            "genomics": "基因组（DNA 编码器）"}
 OFFLINE_DOMAINS = {"video": "gen", "protein": "protein"}     # series_catalog domain → listing domain (not on core v2)
 PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only releases) — listing order
@@ -155,6 +168,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("openfold", "OpenFold（aqlaboratory）", ("gh:aqlaboratory/",)),
     ("hfbio", "Hugging Face Bio（Carbon 基因组）", ("HuggingFaceBio/",)),
     ("liquid", "Liquid AI（LFM）", ("LiquidAI/",)), ("ant", "蚂蚁集团（Ling）", ("inclusionAI/",)),
+    ("bfl", "Black Forest Labs（FLUX）", ("black-forest-labs/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
@@ -173,6 +187,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("deepmind", "AlphaFold", ("alphafold",)), ("boltz", "Boltz", ("boltz",)), ("openfold", "OpenFold", ("openfold",)),
     ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
     ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)),
+    ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.
@@ -385,7 +400,8 @@ def _workload_dict(spec: ModelSpec) -> dict | None:
     if w is None:
         return None
     if w.kind == "gen":
-        return {"kind": "gen", "frames": w.frames, "height": w.height, "width": w.width, "fps": w.fps,
+        return {"kind": "gen", "image": w.frames == 1 and not w.fps,     # 0.115 image DiT (one latent frame)
+                "frames": w.frames, "height": w.height, "width": w.width, "fps": w.fps,
                 "steps": w.steps, "cfg": w.cfg, "patch": list(w.patch), "vae": [w.vae_t, w.vae_s, w.vae_s],
                 "text_tokens": w.text_tokens, "joint_text": bool(w.prefix_tokens), "source": w.source,
                 "vae_frames": w.vae_frames, "audio_per_s": w.audio_per_s, "audio_channels": w.audio_channels,

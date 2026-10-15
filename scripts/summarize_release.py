@@ -51,12 +51,13 @@ ROLE_DOMAIN = {
     "video": [
         ("cond", r"(modulation|time_embedding|time_projection|norm\d\.linear|norm_out\.linear|text_embedding|text_proj|"
                  r"time_text_embed|time_embed|context_embedder|caption_proj|t_block|t_embedder|fps_embedder|y_embedder|"
-                 r"adaln_proj|norm1_context\.linear|\.norm\.linear|scale_shift_table|token_refiner)"),
+                 r"adaln_proj|norm1_context\.linear|\.norm\.linear|scale_shift_table|token_refiner|_mod\.\d|stream_modulation|"
+                 r"time_guidance_embed)"),  # 0.115 image DiT: Qwen-Image img_/txt_mod, FLUX.2 shared modulation
         ("norm", r"(norm_[qk]\.|norm_added_[qk]|[qk]_norm\.|norm\d?\.(weight|bias)$|norm_final|norm_out\.norm|"
                  r"\.norm\.(weight|bias)$)"),
         ("attn", r"(self_attn|cross_attn|attn1|attn2|\.attn\.)"),
-        ("mlp", r"(\.ffn\.|\.ff\.|ff_context|\.mlp\.|proj_mlp|single_transformer_blocks\.\d+\.proj_out)"),
-        ("io", r"(patch_embed|^proj_out|^head\.|x_embedder|^proj_in|audio_proj|final_layer\.linear)"),
+        ("mlp", r"(\.ffn\.|\.ff\.|ff_context|\.mlp\.|proj_mlp|single_transformer_blocks\.\d+\.proj_out|_mlp\.)"),
+        ("io", r"(patch_embed|^proj_out|^head\.|x_embedder|^proj_in|audio_proj|final_layer\.linear|^img_in|^txt_in|^txt_norm)"),
     ],
     "protein": [
         ("buffer", r"(inv_freq$|position_ids$)"),
@@ -82,9 +83,11 @@ BLOCK_RE = re.compile(r"(blocks|layers|layer|transformer_blocks)\.(\d+)\.")
 
 
 def domain_of(cfg: dict) -> str:
+    # 0.115: image DiTs (Qwen-Image, FLUX.2) use the video role table (gen domain, 1-frame latent)
     cls = cfg.get("_class_name") or ""
     if cls in ("WanModel", "WanTransformer3DModel", "CogVideoXTransformer3DModel", "HunyuanVideoTransformer3DModel",
-               "LTXVideoTransformer3DModel", "MochiTransformer3DModel", "MiniMaxH3Transformer3DModel") \
+               "LTXVideoTransformer3DModel", "MochiTransformer3DModel", "MiniMaxH3Transformer3DModel",
+               "QwenImageTransformer2DModel", "QwenImage21Transformer2DModel", "Flux2Transformer2DModel") \
             or cfg.get("model_type") == "STDiT3":
         return "video"
     if cfg.get("model_type") == "esm":

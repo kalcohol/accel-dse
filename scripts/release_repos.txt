@@ -85,3 +85,7 @@ HuggingFaceBio/Carbon-8B
 LiquidAI/LFM2.5-24B-A2B
 LiquidAI/LFM2.5-24B-A2B-FP8
 inclusionAI/Ling-3.1-flash
+# 0.115 image DiT
+Qwen/Qwen-Image-2.1-Turbo:transformer
+Qwen/Qwen-Image:transformer
+black-forest-labs/FLUX.2-klein-4B:transformer
