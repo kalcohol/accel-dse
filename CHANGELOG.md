@@ -3,7 +3,20 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
-## [0.116.0]
+## [0.117.0]
+
+### Fixed
+
+- 视频分辨率取整：非 `vae_s · patch` 整数倍的宽高此前按向上取整的 patch 网格计；参考实现向下取整（diffusers WanPipeline 带警告取整，HunyuanVideo / LTX-Video / Mochi / CogVideoX 拒绝或在 latent `//` 与步长 p 的 patch 卷积处截断）→ 统一向下取整到 `vae_s · patch` 并警告（图像模型保持 0.116 规则）。
+- Wan2.1 / 2.2 帧数：WanPipeline 把 `num_frames` 取为 `F // 4 · 4 + 1`（F ≡ 0 mod 4 时多 1 个潜帧）；新 `vae_frames = "wan"`。因果 VAE 模型报告的帧数改为解码器实际输出 `(lt − 1)·t + 1`。
+- 发布默认工作负载不受影响；指纹 c034bfe3e3a3afa2 / e51c7ec17bbdb998 不变。
+
+### Audit
+
+- 10 个视频模型的文本编码器 + VAE 流水线自 0.44 起已齐全（coverage full），无需新增。
+- VAE 3D（时间压缩）审计：各卷积族解码器几何（因果时间上采样 `e·t − (e−1)`、LTX 4×4 unpatchify）精确还原请求的帧数 / 宽高；VAE 配置的空间 / 时间压缩、潜通道数与目录及 DiT `in_channels` 全部一致——其他生成模型无 FLUX.2 式的 VAE 下采样倍数错误。
+
+
 
 ### Added
 - **Text-prefix K/V reuse across denoise steps** (Qwen-Image-2.1). The mechanism follows the diffusers reference:

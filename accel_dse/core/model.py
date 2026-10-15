@@ -336,7 +336,7 @@ class NativeWorkload:
     prefix_tokens: int = 0         # text tokens concatenated into the attention sequence (joint attention)
     steps: int = 50                # denoise steps (reference sampler default)
     cfg: int = 2                   # forward passes per step (classifier-free guidance cond + uncond)
-    vae_frames: str = "causal"     # latent-frame rule: causal (F−1)/t+1 | chunk17 (Open-Sora 1.2: 17 → 5 per chunk) |
+    vae_frames: str = "causal"     # latent-frame rule: causal (F−1)/t+1 | wan (F snapped to F//t·t+1, 0.117) | chunk17 (Open-Sora 1.2: 17 → 5 per chunk) |
                                    # h3 (MiniMax-H3: F snapped to 17n+5 → 5n+2)
     audio_per_s: int = 0           # joint audio rows per second of video (MiniMax-H3: 40 latents/s × channels)
     audio_channels: int = 0

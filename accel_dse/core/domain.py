@@ -716,6 +716,12 @@ def _latent_frames(d: NativeWorkload, F: int, warns: list[str]) -> int:
         if Fa != F:
             warns.append(f"帧数 {F} 按 VAE 规则补齐到 17n+5 = {Fa}")
         return (Fa - 5) // 17 * 5 + 2
+    if d.vae_frames == "wan" and F % d.vae_t != 1:
+        # 0.117: diffusers WanPipeline snaps num_frames → F // t · t + 1 (warning "Rounding to the nearest number"); F ≡ 0
+        # (mod t) therefore rounds *up* one latent frame vs (F − 1) // t + 1
+        Fa = F // d.vae_t * d.vae_t + 1
+        warns.append(f"帧数 {F} 不满足 {d.vae_t}k+1：参考 pipeline 取 {Fa} 帧")
+        return (Fa - 1) // d.vae_t + 1
     lt = (F - 1) // d.vae_t + 1
     if (F - 1) % d.vae_t:
         warns.append(f"帧数 {F} 不满足 {d.vae_t}k+1：潜空间按 {lt} 帧计")
@@ -735,20 +741,21 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
         steps, cfg = w.steps or d.steps, w.cfg or d.cfg
         pt, ph, pw = d.patch
         lt = _latent_frames(d, F, warns)
-        if image:
-            # 0.116: the image pipelines (QwenImage / QwenImage21 / Flux2) take latent = 2·⌊px / (2·vae_s)⌋ — the size
-            # rounds *down* to a multiple of 2·vae_s (QwenImage21 rejects other sizes); video keeps its ceil rule
-            q_ = 2 * d.vae_s
-            Hf, Wf = Hh // q_ * q_, Ww // q_ * q_
-            if (Hf, Wf) != (Hh, Ww):
-                warns.append(f"分辨率 {Ww}×{Hh} 不是 {q_} 的整数倍：参考 pipeline 向下取整为 {Wf}×{Hf}")
-            if not (Hf and Wf):
-                raise ValueError(f"image size below one latent patch ({q_} px)")
-            Hh, Ww = Hf, Wf
-        lh, lw = math.ceil(Hh / d.vae_s), math.ceil(Ww / d.vae_s)
-        gt, gh, gw = math.ceil(lt / pt), math.ceil(lh / ph), math.ceil(lw / pw)
-        if Hh % (d.vae_s * ph) or Ww % (d.vae_s * pw):
-            warns.append(f"分辨率 {Ww}×{Hh} 不是 {d.vae_s * pw} 的整数倍：按向上取整的 patch 网格计")
+        if d.vae_frames in ("causal", "wan") and not image:
+            F = (lt - 1) * d.vae_t + 1                  # 0.117: the causal decoder emits (lt − 1)·t + 1 frames
+        # 0.117: every gen pipeline floors H / W to a multiple of vae_s · patch (image: QwenImage / QwenImage21 / Flux2,
+        # 0.116; video: diffusers WanPipeline rounds down with a warning, HunyuanVideo / LTX / Mochi / CogVideoX reject
+        # other sizes or floor at latent // and the stride-p patch conv).  0.44–0.116 took a ceil patch grid for video.
+        # image pipelines pack 2×2 latents even at DiT patch 1 (QwenImage21: latent = 2·⌊px / (2·vae_s)⌋)
+        q_h, q_w = (d.vae_s * max(ph, 2), d.vae_s * max(pw, 2)) if image else (d.vae_s * ph, d.vae_s * pw)
+        Hf, Wf = Hh // q_h * q_h, Ww // q_w * q_w
+        if (Hf, Wf) != (Hh, Ww):
+            warns.append(f"分辨率 {Ww}×{Hh} 不是 {q_w}×{q_h} 的整数倍：参考 pipeline 向下取整为 {Wf}×{Hf}")
+        if not (Hf and Wf):
+            raise ValueError(f"frame size below one latent patch ({q_w}×{q_h} px)")
+        Hh, Ww = Hf, Wf
+        lh, lw = Hh // d.vae_s, Ww // d.vae_s
+        gt, gh, gw = math.ceil(lt / pt), lh // ph, lw // pw
         vid = gt * gh * gw
         if (F, Hh, Ww) != (d.frames, d.height, d.width):
             warns.append(f"工作负载偏离发布默认（{d.width}×{d.height}，{d.frames} 帧）")

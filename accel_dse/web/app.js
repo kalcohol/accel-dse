@@ -332,7 +332,8 @@ function paintDomain(m) {
       if ($('w-' + k)) $('w-' + k).placeholder = v ? `默认 ${v}` : '';
     if ($('w-msa')) $('w-msa').disabled = !!w.structure && !w.msa && !w.xmsa;
     const fr = m.domain !== 'gen' ? '' : w.vae_frames === 'chunk17' ? `帧每 17 帧一块 → ${(16 / w.vae[0] | 0) + 1} 潜帧`
-      : w.vae_frames === 'h3' ? '帧补齐到 17n+5 → 5n+2 潜帧' : `帧 (F−1)/${w.vae[0]}+1`;
+      : w.vae_frames === 'h3' ? '帧补齐到 17n+5 → 5n+2 潜帧'
+      : w.vae_frames === 'wan' ? `帧取 ⌊F/${w.vae[0]}⌋·${w.vae[0]}+1 → F/${w.vae[0]}+1 潜帧` : `帧 (F−1)/${w.vae[0]}+1`;
     $('wl-note').textContent = '留空 = 按发布默认（' + w.source + '）。' + (m.domain === 'gen'
       ? `token 数 = 潜空间网格（${fr}，像素 /${w.vae[1]}，patch ${w.patch.join('×')}）${w.joint_text ? ` + ${w.text_tokens} 个文本 token（联合注意力）` : `；文本 ${w.text_tokens} token 走跨注意力`}`
         + (w.audio_per_s ? ` + 音频 ${w.audio_per_s}/s × ${w.audio_channels} 声道 token（同一序列）` : '')

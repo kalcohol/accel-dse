@@ -2777,3 +2777,22 @@ Activation is model-declared (`NativeWorkload.prefix_kv`, the reference `use_kv_
 heaviest searches are now split across modules and started first, which bounds the wall time at roughly the
 single-module maximum (about 160 s alone) rather than the length of one worker's queue.
 
+## 63. 0.117 — video VAE / latent audit; reference resolution and frame rounding
+
+**Coverage.** The ten catalog video DiTs already carry text-encoder + VAE pipelines built from their released headers
+(§ 0.44 onward), so all gen models are `full`; no new components were needed.
+
+**VAE 3-D audit.** For every conv-decoder family the up-block walk (causal temporal upsampling t → e·t − (e − 1), spatial
+×2 per upsampling block; LTX additionally unpatchifies 4×4) reproduces exactly the requested frames × H × W from the
+resolved latent; VAE configs (spatial / temporal compression, `dim_mult` / `temperal_downsample`, latent channels)
+agree with the catalog `vae_t` / `vae_s` and with each DiT's `in_channels` (Wan / Cog / Hunyuan 16, LTX 128, Mochi 12,
+Open-Sora 4, H3 24).  No other gen model has the FLUX.2-type downscale error.
+
+**Rounding (mechanism from the references).**
+- Spatial: H, W floor to a multiple of `vae_s · patch` (Wan: `height // (vae_s·p) · (vae_s·p)` with a warning; Hunyuan /
+  LTX / Mochi / Cog validate divisibility and otherwise floor at `latent = px // vae_s` and the stride-p patch conv).
+  0.44–0.116 used a ceil patch grid for video.  Image models keep the 0.116 rule (2 · vae_s).
+- Temporal: latent frames `(F − 1) // t + 1`; Wan snaps `F → F // t · t + 1` first (`vae_frames = "wan"`), one more
+  latent frame when F ≡ 0 (mod t).  The reported frame count is the decoder output `(lt − 1)·t + 1`.
+- Release defaults are exact multiples, so default results and fingerprints are unchanged.
+

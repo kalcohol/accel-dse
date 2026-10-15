@@ -92,15 +92,15 @@ _FLUX2K_SRC = ("black-forest-labs/FLUX.2-klein-4B README：1024×1024、num_infe
                "Flux2KleinPipeline max_sequence_length 512（padding=max_length）")
 DOMAIN_RELEASES = [
     ("wan2.1-14b", "Wan-AI/Wan2.1-T2V-14B", "wan",
-     NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, source=_WAN_SRC.format(res="720P（1280×720）"))),
+     NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, vae_frames="wan", source=_WAN_SRC.format(res="720P（1280×720）"))),
     ("wan2.1-1.3b", "Wan-AI/Wan2.1-T2V-1.3B", "wan",
-     NativeWorkload("gen", frames=81, height=480, width=832, fps=16, source=_WAN_SRC.format(res="480P（832×480）"))),
+     NativeWorkload("gen", frames=81, height=480, width=832, fps=16, vae_frames="wan", source=_WAN_SRC.format(res="480P（832×480）"))),
     ("cogvideox-5b", "zai-org/CogVideoX-5b", "cogvideox",
      NativeWorkload("gen", frames=49, height=480, width=720, fps=8, source=_COG_SRC)),
     ("cogvideox-2b", "zai-org/CogVideoX-2b", "cogvideox",
      NativeWorkload("gen", frames=49, height=480, width=720, fps=8, source=_COG_SRC)),
     ("wan2.2-a14b", "Wan-AI/Wan2.2-T2V-A14B", "wan22",
-     NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, steps=40, source=_WAN22_SRC)),
+     NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, vae_frames="wan", steps=40, source=_WAN22_SRC)),
     ("hunyuanvideo", "hunyuanvideo-community/HunyuanVideo", "hunyuan",
      NativeWorkload("gen", frames=129, height=720, width=1280, fps=24, steps=50, cfg=1, text_tokens=256, source=_HY_SRC)),
     ("ltx-video", "Lightricks/LTX-Video", "ltx",
