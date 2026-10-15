@@ -596,14 +596,33 @@ def upgrade_path(base: Scenario, models=None, metric: str | None = None, budget:
 # ---------------------------------------------------------------------------------------------------------------- 0.157
 # Datapath sizing headroom: how far can a sized resource shrink before any model's native metric degrades > TIE?
 # The single-knob probes above say what doubling buys; this answers the architect's opposite question (area to cut).
+def _memspec(s):
+    return mem_catalog.parse_mem_id(s.mem_id, efficiency=s.mem_eff)
+
+
+def _chip_set(f):
+    return lambda s, v: s.replace("chip", f(s.chip, v))
+
+
+def _cores_set(ch, v):
+    # 0.158: fewer engines (cores) at fixed vector width / per-engine accumulator & port — the MAC array alone shrinks
+    return replace(ch, engines=max(1, int(round(v))), vector_lanes=ch.lanes)
+
+
 SIZING = {
-    # key: (label, unit, get(chip) → value, set(chip, value) → chip, integer)
+    # key: (label, unit, get(Scenario) → value, set(Scenario, value) → Scenario, integer, area density field | None)
     "dequant": ("反量化 / 转换吞吐", "元素/周期",
-                lambda ch: float(ch.formats.dequant_elems_per_cycle or ch.lanes),
-                lambda ch, v: replace(ch, formats=replace(ch.formats, dequant_elems_per_cycle=v)), False),
-    "lanes": ("向量单元宽度", "元素/周期", lambda ch: float(ch.lanes),
-              lambda ch, v: replace(ch, vector_lanes=max(1, int(round(v)))), True),
-    "sram": ("SRAM 容量", "MiB", lambda ch: float(ch.sram_mib), lambda ch, v: replace(ch, sram_mib=v), False),
+                lambda s: float(s.chip.formats.dequant_elems_per_cycle or s.chip.lanes),
+                _chip_set(lambda ch, v: replace(ch, formats=replace(ch.formats, dequant_elems_per_cycle=v))), False, None),
+    "lanes": ("向量单元宽度", "元素/周期", lambda s: float(s.chip.lanes),
+              _chip_set(lambda ch, v: replace(ch, vector_lanes=max(1, int(round(v))))), True, None),
+    "sram": ("SRAM 容量", "MiB", lambda s: float(s.chip.sram_mib), _chip_set(lambda ch, v: replace(ch, sram_mib=v)), False,
+             "mm2_per_mib_sram"),
+    # 0.158: MAC array via core (engine) count, R×C per engine fixed; area = ΔkMAC × mm2_per_kmac (density preset / user)
+    "cores": ("MAC 阵列（核数）", "核", lambda s: float(s.chip.engines), _chip_set(_cores_set), True, "mm2_per_kmac"),
+    # 0.158: effective DRAM bandwidth at fixed stack / capacity (scaled through mem_eff ≤ current); no PHY area (discrete)
+    "dram_bw": ("DRAM 有效带宽", "GB/s", lambda s: float(_memspec(s).effective_GBps),
+                lambda s, v: s.replace("mem_eff", v / _memspec(s).payload_GBps), False, None),
 }
 SIZING_MIN_FRAC = 1 / 1024        # search floor (10 halvings)
 SIZING_REFINE = 3                 # geometric bisection steps after the first failing halving
@@ -631,7 +650,7 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
         setter = SIZING[key][3]
         for mid, s in scns.items():
             try:
-                p = _point(s.replace("chip", setter(s.chip, v)), table, domain)
+                p = _point(setter(s, v), table, domain)
             except ValueError:
                 return (mid, "invalid", None)
             if ref[mid]["fits"] and not p["fits"]:
@@ -644,8 +663,8 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
 
     out = []
     for key in res:
-        label, unit, get, _, integer = SIZING[key]
-        cur = get(base.chip)
+        label, unit, get, _, integer, dens = SIZING[key]
+        cur = get(base)
         ok, fail, why = cur, None, None
         v = cur
         while v / 2 >= cur * SIZING_MIN_FRAC:
@@ -673,10 +692,12 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
         row = {"key": key, "label": label, "unit": unit, "current": cur, "min_ok": ok, "frac": ok / cur if cur else None,
                "floor_hit": fail is None, "fail_at": fail,
                "limited_by": None if why is None else {"model": why[0], "metric": why[1], "gain": why[2]}}
-        if key == "sram" and budget is not None and budget.mm2_per_mib_sram is not None:
-            row["mm2_saved"] = (cur - ok) * budget.mm2_per_mib_sram
+        d = getattr(budget, dens, None) if (budget is not None and dens) else None
+        if d is not None:
+            per = (base.chip.rows * base.chip.cols / 1000.0) if key == "cores" else 1.0   # kMAC per core
+            row["mm2_saved"] = (cur - ok) * per * d
         out.append(row)
     return {"domain": domain, "models": models, "metrics": metric_labels(domain), "tie": TIE, "resources": out,
             "chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label,
             "basis": "逐项缩小（先减半再几何二分）× 现有引擎；每个模型的全部领域指标都在 ±1% 内且仍放得下才算可行；"
-                     "min_ok 是实测通过的点（不是外推）。只回答「还能省多少」，不做面积换算（SRAM 有密度时给 mm²）。"}
+                     "min_ok 是实测通过的点（不是外推）。只回答「还能省多少」，面积仅在已有密度（SRAM mm²/MiB、MAC mm²/kMAC，来自密度预设或用户）时给 mm²；DRAM 带宽经 mem_eff 连续缩放（容量不变），不给 PHY 面积。"}

@@ -3753,3 +3753,6 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
 
 ## 103. Datapath sizing headroom (0.157)
 `sizing_report(base, models, budget, resources)` answers the inverse of the knob probes: how far can dequant throughput, vector width or SRAM shrink before any model's native metric (TTFT/TPOT/tok·s; latency/frames·s; …) loses more than TIE = 1 % or stops fitting. Search: halve until failure (floor current/1024), then 3 geometric bisections; min_ok is always an evaluated passing point (no extrapolation), relying on the 0.156 monotonicity invariants (fewer lanes / dequant / SRAM never speeds up). Per-model layouts follow `model_scenario`. Advisory only; no defaults changed, fingerprints unchanged.
+
+## 104. Sizing: MAC cores and DRAM bandwidth (0.158)
+`cores` changes `chip.engines` with vector_lanes pinned to the current width, so only the MAC array (plus the per-engine accumulator / SRAM port, which scale with engines) shrinks; area saved = (E − E_min)·R·C/1000·mm2_per_kmac, and only when that density is set. `dram_bw` scales effective bandwidth through `mem_eff` (≤ current, so always valid). Capacity and stack stay fixed; KV streams follow it unless `kv_eff` is set. Same search and acceptance rules as §103.

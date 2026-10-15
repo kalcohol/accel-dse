@@ -3,6 +3,11 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.158.0] — sizing: MAC cores + DRAM bandwidth; parallel test runner
+- `sizing_report` adds `cores` (MAC array via engine count, R×C per engine and vector width held; area = ΔkMAC × `mm2_per_kmac`, from a density preset or user input only) and `dram_bw` (effective GB/s via `mem_eff`, same stack and capacity; no PHY area because PHYs come in discrete channels). SIZING setters now act on the Scenario. Default chip: LLM set (qwen3-8b+gpt-oss-20b) has no headroom on cores (TTFT is compute-bound) or bandwidth (TPOT is bandwidth-bound); esm2-650m cores 16→10 (12.9 mm² saved with n7_tpuv4i); wan2.1 bandwidth → 65 %.
+- `scripts/run_tests.py`: stdlib parallel runner (one pytest per file, longest-first from `scripts/test_durations.json`, per-file timeout reported as TIMEOUT). Runs the same files as serial pytest. Full suite: 818 passed in 415 s wall on 8 cores (longest-first); serial run is ≈ 3490 s total. The 0.157 "stalled shard" was not a hang: that shard held 049+057+061_3 (≈ 14 min alone) while 8 shards competed for 8 cores. Main hotspot: test_core_057::test_refill_offset_and_cascade (296 s) — `queue_report` for recompute at load 0.85 takes ≈ 318 s (SLO-rate scans × cap selection × KV wrap); left for a separate bit-identical optimisation.
+- No default changed; fingerprints unchanged. Tests: tests/test_core_158.py (5); test_core_157 helper updated to the Scenario-level setter.
+
 ## [0.157.0] — datapath sizing headroom
 - Added `insight.sizing_report` + `POST /api/insight_sizing` + UI「缩减余量」table: per resource (dequant elems/cycle, vector lanes, SRAM MiB) the smallest value at which every model in the set keeps every domain metric within ±1 % (TIE) and still fits. Halving then 3-step geometric bisection; floor = current/1024; reported min is always a probed pass; `limited_by` names the model/metric that fails just below; SRAM gets `mm2_saved` when `mm2_per_mib_sram` is set.
 - Default chip findings: LLM (qwen3-8b+gpt-oss-20b) dequant→21 %, lanes→46 %, SRAM→46 %; wan2.1 dequant→9 %, lanes→59 %, SRAM→25 %; esm2-650m dequant→3 %, lanes→16 %, SRAM→65 %.

@@ -12,7 +12,7 @@ def _holds(base, models, key, v, domain_metrics):
     setter = SIZING[key][3]
     for mid in models:
         s = model_scenario(base, mid)
-        r, p = _point(s, EnergyTable(), "llm"), _point(s.replace("chip", setter(s.chip, v)), EnergyTable(), "llm")
+        r, p = _point(s, EnergyTable(), "llm"), _point(setter(s, v), EnergyTable(), "llm")
         if r["fits"] and not p["fits"]:
             return False
         if any((g := _gain(m, r, p)) is not None and g < 1 - TIE for m in domain_metrics):
