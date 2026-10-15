@@ -43,19 +43,29 @@ PIPE_MIN_TILES = 32           # tiles per op at least (bounds the prologue to 1/
 def items_of(ops, op_secs, comm_secs, act_bytes) -> list[tuple]:
     """(compute s, {class: bytes}, chain-comm s) per schedulable step of one op list.  The attention core (QK, PV and
     the softmax that carries the K/V reads) is one fused step (flash attention); MoE dispatch / combine may hide behind
-    the layer's shared-expert compute."""
-    out, fused, shared = [], None, 0.0
+    the layer's shared-expert compute.
+
+    0.139: the hiding window is the shared-expert steps' *wall* time in the flow shop, not their compute seconds —
+    marker steps ("open" / "close" around each run of shared-expert steps, "hide" for a dispatch / combine) let the
+    simulator credit the window it actually replays.  A DMA-bound shared expert (weights streaming) is a longer window
+    than its compute; crediting compute only made a faster array expose more of the all-to-all (slower with more
+    clock).  Unchanged whenever the window is compute-bound (wall = compute)."""
+    out, fused, opened, seen = [], None, False, False
     for o in ops:
         sc, xkv = 1.0, 0.0
         if isinstance(o, tuple):            # 0.102: (op, scale, extra KV bytes) — a chunk's share of a prefill op
             o, sc, xkv = o
+        role = getattr(o, "role", "")
+        if opened and role != "shared_expert" and not (o.kind == "attn" or (o.name == "softmax" and fused is not None)):
+            if fused is not None:
+                out.append((max(fused[0], fused[1]), fused[2], 0.0)); fused = None
+            out.append(("close", {}, 0.0)); opened = False
         if o.kind == "comm":
             bw = comm_secs(o) * sc
-            if o.name in ("moe_dispatch", "moe_combine") and shared > 0:
-                hide = min(shared, bw)
-                shared -= hide
-                bw -= hide
-            out.append((0.0, {}, bw))
+            if o.name in ("moe_dispatch", "moe_combine") and seen:
+                out.append(("hide", {}, bw))
+            else:
+                out.append((0.0, {}, bw))
             continue
         a, _, _, v, _, _, _, _ = op_secs(o)
         a, v = a * sc, v * sc
@@ -80,11 +90,17 @@ def items_of(ops, op_secs, comm_secs, act_bytes) -> list[tuple]:
         if fused is not None:
             out.append((max(fused[0], fused[1]), fused[2], 0.0)); fused = None
         c = max(a, v)
-        if o.role == "shared_expert":
-            shared += c
+        if o.role == "shared_expert" and c > 0:
+            if not opened:
+                out.append(("open", {}, 0.0)); opened = True
+            seen = True
         out.append((c, b, 0.0))
     if fused is not None:
         out.append((max(fused[0], fused[1]), fused[2], 0.0))
+    if opened:
+        out.append(("close", {}, 0.0))
+    if seen:
+        out.append(("reset", {}, 0.0))     # unused credit does not carry past the op list (as before 0.139)
     return out
 
 
@@ -92,6 +108,9 @@ def _tiles(items, f: dict, sec_per_byte: float, dma_scale: float, tile: float = 
     """Runs of identical tiles: ((bytes, load s, compute s), count)."""
     out = []
     for c, b, comm in items:
+        if c.__class__ is str:              # 0.139: shared-expert window markers / hideable all-to-all
+            out.append(((c, 0.0, comm), 1))
+            continue
         if comm > 0:
             out.append(((0.0, 0.0, comm), 1))
             continue
@@ -113,13 +132,15 @@ class _Sim:
     """Two-engine flow shop, fed tile by tile: the DMA loads tiles in order, at most ``buf`` bytes ahead of compute;
     compute runs tiles in order once loaded.  cross_op False: an op's first load waits for the previous op's compute
     (kernel boundary).  Tile sizes are whole bytes (rounded up), so the window sums are exact."""
-    __slots__ = ("buf", "cross_op", "d_end", "c_end", "last", "win", "wsum")
+    __slots__ = ("buf", "cross_op", "d_end", "c_end", "last", "win", "wsum", "s0", "hw", "op")
 
     def __init__(self, buf: float, cross_op: bool = True):
         self.buf, self.cross_op = math.floor(buf), cross_op
         self.d_end = self.c_end = self.last = 0.0      # last = compute end of the newest tile that left the window
         self.win = []                                  # [size, compute end] of tiles still holding buffer space
         self.wsum = 0
+        self.op = False
+        self.s0 = self.hw = 0.0                        # 0.139: open shared-expert window start / unused hide credit
 
     def feed_runs(self, runs, op_start: bool = False) -> None:
         """Runs of identical tiles. Inside a run, once a tile leaves the same relative state as the tile before it,
@@ -155,6 +176,16 @@ class _Sim:
         d_end, c_end, last, wsum = self.d_end, self.c_end, self.last, self.wsum
         ceil = math.ceil
         for sz, m, c in tiles:
+            if sz.__class__ is str:                    # 0.139: window markers (no bytes, no buffer)
+                if sz == "open":
+                    self.s0, self.op = c_end, True
+                elif sz == "close":
+                    self.hw += c_end - self.s0; self.op = False
+                elif sz == "reset":
+                    self.hw = 0.0
+                else:                                  # "hide": the all-to-all runs under the window's wall time
+                    h = min(self.hw, c); self.hw -= h; c_end += c - h
+                continue
             start = d_end
             if sz > 0:
                 sz = ceil(sz)
@@ -180,10 +211,11 @@ class _Sim:
     def state(self):
         """Everything that decides the future, relative to the compute clock."""
         c = self.c_end
-        return (self.d_end - c, self.last - c, tuple((s, d - c) for s, d in self.win))
+        return (self.d_end - c, self.last - c, tuple((s, d - c) for s, d in self.win),
+                (self.s0 - c) if self.op else 0.0, self.hw)
 
     def shift(self, dt: float) -> None:
-        self.d_end += dt; self.c_end += dt; self.last += dt
+        self.d_end += dt; self.c_end += dt; self.last += dt; self.s0 += dt
         for w in self.win:
             w[1] += dt
 
@@ -201,6 +233,8 @@ def makespan(tiles: list[tuple], buf: float, cross_op: bool = True, op_starts: s
 def _same(a, b, scale: float) -> bool:
     tol = 1e-12 * max(scale, 1e-30)
     if len(a[2]) != len(b[2]) or abs(a[0] - b[0]) > tol or abs(a[1] - b[1]) > tol:
+        return False
+    if abs(a[3] - b[3]) > tol or abs(a[4] - b[4]) > tol:
         return False
     return all(x[0] == y[0] and abs(x[1] - y[1]) <= tol for x, y in zip(a[2], b[2]))
 

@@ -150,6 +150,13 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
     if sched != "wide" and ch.engines > 1 and (count > 1 or sched == "auto"):
         best_c = max(mac * count + fill, feed * count) + lat
         alt = None
+        # 0.139: a row (column) split makes every group convert its own copy of the K×N (M×K) operand on the
+        # dequant / vector path, which overlaps the array (stage = max of the paths) — the picker scores each plan as
+        # max(array, conversion) cycles, so a wider SRAM port can never select a split whose replicated conversion
+        # outweighs the array cycles it saves
+        conv_rate = ch.formats.dequant_elems_per_cycle or ch.lanes
+        base_conv = ((k * n if flag & 1 else 0.0) + (m * k if flag & 2 else 0.0)) * count * 2.0 / conv_rate
+        best_s = max(best_c, base_conv)
         for g in (_groups(ch.engines) if sched == "auto" else (1,)):
             par = ch.engines // g
             # active groups: all, or fewer (idle groups free their share of the shared SRAM port / NoC; the port is
@@ -172,8 +179,9 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
                     # 0.72: ≥ 2 active groups advance in lock-step waves → a barrier per extra wave; one active group
                     # (wide on a subset of cores) streams back to back like wide
                     c1 = one.cycles + ((waves - 1) * ch.wave_overhead_cycles if act > 1 else 0.0)
-                    if c1 < best_c:
-                        best_c, alt = c1, (one, count * sp / waves, c1 - one.cycles)
+                    sc = max(c1, one.convert_elems * count * sp / waves * 2.0 / conv_rate) if flag else c1
+                    if sc < best_s:
+                        best_s, best_c, alt = sc, c1, (one, count * sp / waves, c1 - one.cycles)
         if alt is not None:
             # conversions: every (row-split) instance piece converts its own operands (row splits replicate K×N)
             one, per, extra = alt

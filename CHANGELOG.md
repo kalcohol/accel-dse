@@ -3,6 +3,18 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.139.0]
+### Fixed
+- Multi-core GEMM picker (`instance_sched = "auto"` / `"split"`): row and column splits make every core group convert its own copy of a non-native operand (e.g. AWQ int4 weights), but the picker compared array cycles only. A wider SRAM port could select a split whose replicated dequant made the op vector-bound: up to 7× slower with a 4× port. Each plan is now scored as max(array, conversion) cycles on the dequant / vector path. The catalog sweep is unchanged.
+- `exec_overlap = "pipe"`: MoE dispatch / combine were credited against the shared expert's compute seconds, but they hide under the shared expert's wall time in the flow shop. When the shared expert was DMA-bound, a faster clock exposed more all-to-all (+0.3 % TTFT at 1.5× clock). The simulator now credits the window it replays. Results are identical when the window is compute-bound, and the catalog sweep is unchanged.
+### Added
+- `tests/test_core_139.py`: standing tests for both fixes, plus seeded randomized invariants: 4× SRAM / port / lanes / accumulator, 1.5× clock, more DRAM channels, 8× dequant, and 4× link are never slower; DRAM need is conserved; SRAM residency does not drop.
+- MODEL §85: the NPU hostile-review scope, method and findings.
+### Changed
+- `test_core_127` GEMM monotonicity (count + 1, reconf ≤ fixed organisation) is now stated on the picker's objective, max(array, conversion) cycles, rather than on array cycles alone.
+### Not changed
+- Defaults, the GPU / validation default, fingerprints, and the validation group table (both fixes are NPU-only paths).
+
 ## [0.138.0]
 ### Added
 - `extval.GEMM_CEILING` / `ceil_variant` (opt-in): published library-best dense-GEMM fractions per chip and format (A100 fp16/bf16 0.844, Hopper bf16/fp16 0.752, B200 bf16 0.689, B200 fp4 0.691; sources in the code). Under tile I/O they set the per-tile main-loop rate, as Hopper fp8 already did.

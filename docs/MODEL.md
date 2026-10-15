@@ -3285,3 +3285,37 @@ blog's B200 configurations in ways the model does not represent:
 
 None of these can be quantified from public sources, so the row stays a known 1.8–2.1× outlier. It is listed in §73
 for a decision on whether a single host-bound row should block the rule.
+
+
+## 85. NPU hostile review: randomized invariants (0.139)
+
+Scope: the NPU-side mechanisms that GPU validation cannot reach, namely native-format and dequant paths, SRAM residency
+(KV vs weights), D2D / UCIe tiers, LPDDR / HBM geometry, OS / WS datapath variables, and multi-core small-GEMM
+scheduling. Method: a seeded fuzzer (`val5/v0139/fuzz.py`, about 5 000 random scenarios × 14 knobs). Each scenario
+draws a model (dense, MoE, MoE with shared expert, fp8, AWQ), phase, batch, context, mapping, array geometry, engine
+count, SRAM size, schedule, format matrix (bf16-only with or without a dequant engine), memory, TP / EP, D2D package,
+NoC / wave overhead, explicit port and SLC. Each knob adds one resource. The fuzzer asserts that latency never rises,
+that DRAM need is conserved, that SRAM residency never drops, and that fit never flips to non-fit.
+
+Found and fixed:
+1. **The split picker ignored replicated conversion.** Under `auto` / `split`, a row split makes each group dequantize
+   the full K×N operand (and a column split the full M×K), which `GemmCost.convert_elems` already charged after the
+   choice. The choice itself compared array cycles only, so a faster port favoured splits and the vector path then
+   paid E/g× the dequant. Example: Qwen3-8B-AWQ decode, reconf, 56×16×8, tpot 31.4 → 221 ms at 4× port. Plans are
+   now scored as max(array, 2·conv / rate) (array and vector overlap in every overlap mode), so a split wins only
+   when it is faster with its conversion.
+2. **The pipe hide credit used compute, not wall time.** `items_of` credited dispatch / combine against the shared
+   expert's compute seconds. In the flow shop a DMA-bound shared expert occupies its weight-streaming time, which is
+   longer, so less compute (a higher clock) meant more exposed all-to-all. The credit is now taken inside the
+   simulator from the replayed wall time of the shared-expert steps (open / close / hide / reset markers). Credit
+   does not carry past the op list, as before. When the window is compute-bound the result is bit-identical.
+
+Checked and clean: memory geometry (266 catalog LPDDR / HBM specs: bandwidth and capacity scale exactly with package
+or stack count), D2D units 1→8 are monotone, dequant engine rate, native fp8 / int8 added to a bf16-only chip, SLC
+size and bandwidth, link bandwidth, the WS accumulator, and the residency / KV-vs-weight plan under 4× SRAM.
+
+Not bugs, by definition:
+- More engines can be slower under a *forced* schedule. Under `wide`, the cores are one R × (C·E) array whose fill
+  and accumulator rows scale with the width. `acc_kib` and an explicit `sram_port_Bpc` are chip totals, so doubling
+  E halves each core's share. Under `cta`, a tile's port share is 1/E (the GPU per-SM model), and tiles below E leave
+  that share idle. The `auto` default never showed the effect in the samples.

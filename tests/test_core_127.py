@@ -30,10 +30,12 @@ def test_gemm_mapping_bounds_and_monotone():
         _, rate, _, _ = gemm_exec(wf, "bf16", ch.formats)
         assert c.cycles >= m * k * n * cnt / (ch.macs * rate) * (1 - 1e-9)           # ≤ peak MAC rate
         assert c.cycles >= k * n * fmt(wf).bits / 8 * cnt / ch.port_Bpc * (1 - 1e-9)  # every weight through the port
-        assert gemm_cost(ch, org, m, k, n, count=cnt + 1, w_fmt=wf).cycles >= c.cycles * (1 - 1e-9)
+        # 0.139: the multi-core picker minimises max(array, replicated-conversion) cycles — monotone in that score
+        sc = lambda g: max(g.cycles, g.convert_elems * 2.0 / (ch.formats.dequant_elems_per_cycle or ch.lanes))
+        assert sc(gemm_cost(ch, org, m, k, n, count=cnt + 1, w_fmt=wf)) >= sc(c) * (1 - 1e-9)
         if org == "reconf":
             for o in ("os", "ws_edge", "ws_broad", "os_vec"):
-                assert c.cycles <= gemm_cost(ch, o, m, k, n, count=cnt, w_fmt=wf).cycles * (1 + 1e-9)
+                assert sc(c) <= sc(gemm_cost(ch, o, m, k, n, count=cnt, w_fmt=wf)) * (1 + 1e-9)
 
 
 def test_energy_mac_counts_layout_invariant():
