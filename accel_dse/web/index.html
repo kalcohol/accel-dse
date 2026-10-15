@@ -453,6 +453,15 @@
     <div class="scroll"><table class="tbl tight" id="ins-models-tbl"></table></div>
     <div class="scroll"><table class="tbl tight" id="ins-tbl"></table></div>
     <div class="scroll"><table class="tbl tight" id="ins-detail"></table></div>
+    <h3 title="0.148：贪心多步升级路径——每步对当前配置重跑全部旋钮（含交互），取 ln(增益)/成本最大者；不会差于起点">升级路径（多步，按增益/成本）</h3>
+    <div class="row">
+      <label>步数<input type="number" id="ins-steps" min="1" max="10" value="6" style="width:4em"></label>
+      <label title="仅相对成本模式（未填面积密度）；面积模式用 预算 → 裸片面积 上限">成本上限（相对单位，空 = 不限）<input type="number" id="ins-maxcost" min="0" step="0.5" style="width:6em"></label>
+      <button class="btn" id="ins-path-run">计算升级路径（按上方指标）</button>
+      <span class="small muted" id="ins-path-status"></span>
+    </div>
+    <div class="note small" id="ins-path-summary"></div>
+    <div class="scroll"><table class="tbl tight" id="ins-path-tbl"></table></div>
   </section>
 
   <section class="tab" id="tab-models" hidden>

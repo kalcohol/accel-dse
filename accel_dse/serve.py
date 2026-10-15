@@ -18,7 +18,8 @@ GET_ROUTES = {"/api/health": api.api_health, "/api/models": api.api_models, "/ap
 POST_ROUTES = {"/api/memory": api.api_memory, "/api/fit": api.api_fit, "/api/eval": api.api_eval, "/api/layouts": api.api_layouts,
                "/api/compare": api.api_compare, "/api/stability": api.api_stability,
                "/api/pareto": api.api_pareto, "/api/sweep": api.api_sweep,
-               "/api/sensitivity": api.api_sensitivity, "/api/insight": api.api_insight}
+               "/api/sensitivity": api.api_sensitivity, "/api/insight": api.api_insight,
+               "/api/insight_path": api.api_insight_path}
 CACHED = {"/api/compare", "/api/stability", "/api/layouts"}
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}

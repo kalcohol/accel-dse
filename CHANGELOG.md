@@ -3,6 +3,16 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.148.0]
+### Added
+- **Insight upgrade path**: `core.insight.upgrade_path`, `POST /api/insight_path` (`models`, `metric` ttft|tpot|thr, `steps` 1..10, `max_cost`) and a UI table 「升级路径」 in the 设计洞察 tab.
+  - Greedy multi-step: each step re-runs every additive knob on the *current* config, so knob interactions are re-evaluated. Knobs include mixed-precision MAC (W4A8 / W4A16 / W8A16) and dequant ×4.
+  - It takes the largest ln(geomean gain)/cost.
+  - Cost is Δmm² from the user's budget densities when they are given; knobs with no die area are converted at 1 unit = 1 % of the start area 「假设」. The cap is `budget.die_mm2`.
+  - Otherwise cost is the labelled relative-cost proxy `REL_COST` 「假设」; the SRAM / MAC knobs scale with their current size, and the cap is `max_cost`.
+  - A step is accepted only if the geomean improves by > 1 %, no model is worse than at the start, a model that fit still fits, and the budget holds. So the path is never worse than the start, and the (cum cost, cum gain) chain is monotone.
+- Tests: test_core_148 (7). A random path fuzz found 0 worse results.
+
 ## [0.147.0]
 ### Added
 - **Mixed-precision native MAC as a design variable**: `FormatSupport.mixed` holds (W, A, rate) pairs. `gemm_exec` runs a listed pair natively (exec label `w*a`, e.g. `mxfp4*fp8`) with no weight dequant. An unlisted pair still dequantizes W to A (or both operands upcast to bf16), and that cost is still charged.

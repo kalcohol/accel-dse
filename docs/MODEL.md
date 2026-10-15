@@ -3645,3 +3645,20 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
   with W4A16.
 - Tests: test_core_147. Fuzzer knob `mixed_all` (monotone). Playwright: `val5/v0147/ui.py`.
 
+## 94. Insight upgrade path: greedy multi-step design exploration (0.148)
+- `upgrade_path(base, models, metric, budget, steps, max_cost)` builds on the §92 probes. At each step it evaluates every
+  additive knob of `knobs(current)` on every model (prefill and decode) and keeps a candidate only if:
+  - the model-set geomean gain is > TIE;
+  - every model's metric is ≥ its start value (exact, cumulative);
+  - a model that fit still fits;
+  - the budget holds.
+  It then picks max ln(gain)/cost. Inverted knobs (removing a feature) are never steps.
+- Cost:
+  - Area mode (all densities given): die knobs cost their Δmm²; other knobs use REL_COST × 1 % of the start area
+    「假设」. The cap is `budget.die_mm2`.
+  - Proxy mode: REL_COST units 「假设」 (SRAM ×2 = 4, MAC rows ×2 = 4, cores ×2 = 6, DRAM count = 3, DRAM rate = 1,
+    mixed W4A8/W4A16 = 1, W8A16 = 0.5, dequant ×4 = 0.5, …). SRAM and MAC costs scale with the current size. The cap
+    is `max_cost`.
+- Guarantee: never worse than the start, per model, on the chosen metric. It is asserted in code, tested, and fuzzed.
+  Greedy is not globally optimal. The top 3 alternatives are reported per step.
+

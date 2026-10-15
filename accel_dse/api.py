@@ -141,7 +141,7 @@ _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
 _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
                "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": set(),
-               "insight": {"models"}}
+               "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -831,6 +831,34 @@ def api_sensitivity(body: dict) -> dict:
     except ValueError as e:
         raise ApiError(str(e)) from None
     return {"sensitivity": sensitivity_report(scn, r), "hash": scn.hash()}
+
+
+def _insight_models(body: dict) -> list:
+    from .core.insight import DEFAULT_MODELS, MAX_MODELS
+    models = body.get("models") or list(DEFAULT_MODELS)
+    if not isinstance(models, list) or not all(isinstance(m, str) for m in models) or not 1 <= len(models) <= MAX_MODELS:
+        raise ApiError(f"models must be a list of 1..{MAX_MODELS} model ids")
+    for m in models:
+        try:
+            mm = get_model(m)
+        except (KeyError, ValueError):
+            raise ApiError(f"unknown model {m!r}") from None
+        if mm.domain != "llm" or not mm.kv_cache:
+            raise ApiError(f"{m}: insight covers LLM / VLM models (TTFT / TPOT)")
+    return models
+
+
+def api_insight_path(body: dict) -> dict:
+    """0.148: greedy multi-step upgrade path (gain per area / 「假设」 relative cost), never worse than the start."""
+    from .core.insight import upgrade_path
+    _check_keys(body, "insight_path")
+    scn = scenario_from_body(body)
+    models = _insight_models(body)
+    try:
+        return {**upgrade_path(scn, models, body.get("metric", "tpot"), _budget(body), body.get("steps", 6),
+                               body.get("max_cost"), _energy_table(body)), "hash": scn.hash()}
+    except ValueError as e:
+        raise ApiError(str(e)) from None
 
 
 def api_insight(body: dict) -> dict:

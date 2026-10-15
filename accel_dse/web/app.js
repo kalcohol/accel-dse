@@ -1544,6 +1544,41 @@ async function runInsight() {
     $('ins-status').textContent = '错误：' + e.message;
   } finally { btn.disabled = false; }
 }
+/* 0.148: greedy multi-step upgrade path */
+async function runInsightPath() {
+  const btn = $('ins-path-run');
+  btn.disabled = true;
+  $('ins-path-status').textContent = '计算中（每步 × 每个旋钮 × 每个模型）…';
+  try {
+    const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
+    const extra = { metric: S.insMetric || 'tpot', steps: Math.round(+$('ins-steps').value || 6) };
+    if (ms.length) extra.models = ms;
+    if ($('ins-maxcost').value !== '') extra.max_cost = +$('ins-maxcost').value;
+    const r = await track(req('insight_path', '/api/insight_path', body(extra)));
+    if (!r) return;
+    S.insPath = r;
+    paintInsightPath();
+    $('ins-path-status').textContent = `完成 · ${r.path.length} 步 · 成本 = ${r.cost_unit}`;
+  } catch (e) {
+    $('ins-path-status').textContent = '错误：' + e.message;
+  } finally { btn.disabled = false; }
+}
+function paintInsightPath() {
+  const r = S.insPath;
+  if (!r) return;
+  const last = r.path.length ? r.path[r.path.length - 1] : null;
+  const ml = { ttft: 'TTFT', tpot: 'TPOT', thr: 'decode 吞吐/卡' }[r.metric];
+  put($('ins-path-summary'),
+    h('div', {}, h('b', {}, `${ml}：`), last ? `${r.path.length} 步后 ×${num(last.cum_gain)}（几何平均，相对起点），累计成本 ${num(last.cum_cost)} ${r.cost_unit}`
+      : '无可取的升级（没有旋钮在不使任何模型变差、且不超预算的前提下提升 > 1%）'),
+    r.skipped.length ? h('div', {}, '跳过：', r.skipped.map((x) => `${x.model}（${x.error}）`).join('；')) : null,
+    h('div', { class: 'muted' }, r.basis));
+  put($('ins-path-tbl'), h('thead', {}, h('tr', {}, ['步', '旋钮', '本步增益', '累计增益', '本步成本', '累计成本', '增益/成本', '逐模型累计', '次优备选'].map((x) => h('th', {}, x)))),
+    h('tbody', {}, r.path.map((p) => h('tr', {}, h('td', {}, String(p.step)), h('td', {}, p.label), h('td', {}, '×' + num(p.gain)),
+      h('td', {}, '×' + num(p.cum_gain)), h('td', {}, num(p.cost)), h('td', {}, num(p.cum_cost)), h('td', {}, num(p.gain_per_cost)),
+      h('td', {}, p.models.map((x) => `${x.model} ×${num(x.cum)}`).join('，')),
+      h('td', {}, p.alternatives.map((a) => `${a.key} ×${num(a.gain)}@${num(a.cost)}`).join('，') || '—')))));
+}
 function paintInsight() {
   const r = S.insight;
   if (!r) return;
@@ -1804,6 +1839,7 @@ async function init() {
   $('sw-path').addEventListener('change', swHint);
   $('pf-run').addEventListener('click', runPareto);
   $('ins-run').addEventListener('click', runInsight);
+  $('ins-path-run').addEventListener('click', runInsightPath);
   seg('ins-metric', null, () => S.insMetric || 'tpot', (v) => { S.insMetric = v; paintInsight(); });
   fillSweepPaths();
   renderModels();
