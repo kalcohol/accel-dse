@@ -3,6 +3,15 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.155.0]
+### Added (standing invariants; no engine change)
+- `val5/v0155/ppfab.py <repo> <seed> <N> [pp|fab|edge]`: randomized PP / fabric invariant suite (12 LLMs incl. MoE, hybrid, MLA, tied-embedding; 3 memory types).
+  - **pp**: contiguous layer partition; stored weights conserved (at most one extra tied-embedding table when the head lands on another stage, as memplan intends); KV conserved; max-stage DRAM need ≤ PP1; decode weight reads only drop, by at most the added SRAM; fits never flips off.
+  - **fab**: auto ≤ every explicit algorithm on stage totals; link bandwidth ×2 never slower; α ×2 never faster; TP1 ⇒ zero link time.
+  - **edge**: oversub ↑ never faster; channel cap ↑ never slower and never faster than uncapped; in-network reduce under auto never slower; PP-microbatch weight reads per tick ≥ PP1 − pipeline SRAM.
+- Results: pp+fab 240 cases, edge 120 cases → 0 violations after three invariant-definition corrections (no mechanism bug): tied-head copy, per-stage SRAM pinning, α counted in `t_sync` not `t_link`.
+- `tests/test_core_155.py` (2): deterministic guards for the same invariants.
+
 ## [0.154.0]
 ### Added
 - **Optional TCO inputs** `Budget.card_usd`, `Budget.amort_years`, `Budget.pue` (validated: PUE ≥ 1, years > 0).

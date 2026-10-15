@@ -3735,3 +3735,10 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
 - Knob score `tco_gain` = geometric mean over models of TCO(lo)/TCO(hi); ranked when > 1 + TIE. The card price is held
   fixed per knob 「假设」; hardware increments are costed separately (Δmm², upgrade path).
 - PUE presets: Uptime Institute 2024 survey 1.56 (per-site), 2023 capacity-weighted 1.47 (「来源」).
+
+## 101. PP / fabric standing invariants (0.155)
+- PP: stages partition [0, L) contiguously. Σ stored weights = PP1, except that a tied embedding whose LM head sits on
+  another stage keeps its own copy (≤ one vocab × hidden table). Σ KV = PP1. max dram_need ≤ PP1. Decode weight reads
+  per tick may drop by at most the extra SRAM (pp − 1 cards; with microbatches, staging shrinks so up to pp · SRAM).
+- Fabric: per collective, `pick` minimises bw + α, and α is charged in `t_sync`, so the guard compares stage totals,
+  not `t_link`. Monotone in link GB/s, α, oversub and channel cap; in-network reduce only adds candidates.
