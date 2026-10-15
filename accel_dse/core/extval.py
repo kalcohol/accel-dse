@@ -145,6 +145,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         sv = {**sv, "spec_k": r["spec_k"], "spec_accept": r["spec_accept"]}
     if r.get("moe_skew"):
         sv = {**sv, "moe_skew": r["moe_skew"]}
+    if v.get("a2a"):                   # 0.134: EP all-to-all mode (Serving.moe_a2a) + SM share
+        sv = {**sv, "moe_a2a": v["a2a"], **({"moe_a2a_sm": v["a2a_sm"]} if v.get("a2a_sm") else {})}
     if v.get("rank_max"):              # 0.133 opt-in: slowest-rank random imbalance (Serving.moe_rank_max)
         sv = {**sv, "moe_rank_max": v["rank_max"]}
     extra.update(_mem_runtime(r, h) if v.get("mem_rt", MEM_RT) else {})
@@ -347,6 +349,16 @@ SOURCE_ESTIMATOR = {
 def estimator(r: dict) -> dict:
     """0.105: batching estimator of a max-load row (SOURCE_ESTIMATOR; unknown sources keep the static search)."""
     return SOURCE_ESTIMATOR.get(r.get("src"), dict(kind="static", chunk=CB_CHUNK, max_seqs=None))
+
+
+DEEPEP_NORMAL_SM = 20 / 132   # 0.134: DeepEP Buffer.num_sms default (20) of the 132 H800 / H100 SMs
+
+
+def a2a_variant(base: str = "catalog", mode: str = "auto", sm: float = 0.0) -> str:
+    """0.134: base + serving.moe_a2a = mode (+ moe_a2a_sm = sm) (MODEL §80)."""
+    name = base + "+a2a" + mode + (f"+sm{sm:.3f}" if sm else "")
+    VARIANTS.setdefault(name, {**VARIANTS[base], "a2a": mode, "a2a_sm": sm})
+    return name
 
 
 def rankmax_variant(base: str = "catalog") -> str:

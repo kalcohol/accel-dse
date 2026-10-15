@@ -101,6 +101,7 @@ class Phase:
     skew: float = 1.0    # MoE: token-expert pairs on the busiest EP rank / the mean (0.49; 1 = uniform routing)
     cp: int = 1          # 0.89: context-parallel chunk phase (evaluate) — cp ranks, true prompt length cp_len
     cp_len: int = 0
+    ep_nodes: int = 1    # 0.134: nodes the EP group spans when the all-to-all sends a token once per node (else 1)
     kvpre: int = 0       # 0.116 full: cached text-prefix tokens (prefix K/V reuse); q then holds the image tokens only
     kvx: bool = False    # 0.116 full: extract step of the prefix K/V reuse (writes the cache)
 
@@ -138,6 +139,7 @@ class Op:
     comm_kind: str = ""       # allreduce | alltoall | allgather | p2p
     comm_group: int = 1
     comm_bytes: float = 0.0   # payload per rank
+    comm_net: float = 1.0     # 0.134: factor on an all-to-all's network-tier bytes (per-node token dedup)
     comm_stride: int = 1      # card-index stride between group members (cards numbered TP, SP, DP, PP; 0.48 tiers)
     act_bytes: float = 0.0    # activation in+out bytes (for SRAM-port / spill accounting)
     replicated: float = 1     # how many ranks of the stage compute this identical op (fractional: idle sample slots)
@@ -382,6 +384,20 @@ def _rank_max(n_experts: int, top_k: int, tokens: int, ep: int, hot_p: tuple, sk
     if skew > 1.0 and not hot_p:
         p_max = max(p_max, tokens * top_k / ep * skew)
     return _emax_normal(tuple(dm)), p_max
+
+
+def node_dedup_factor(n_experts: int, top_k: int, nodes: int) -> float:
+    """0.134: network bytes of a node-deduplicating EP all-to-all (DeepEP normal kernels, DeepSeek-V3 report §3.2: a
+    token crosses the scale-out network once per destination node, then NVLink forwards it to the node's experts) /
+    those of per-pair sends.  With k distinct experts drawn uniformly from E, spread evenly over N nodes:
+    E[remote nodes] = (N − 1)(1 − C(E − E/N, k)/C(E, k)) vs E[remote pairs] = k(N − 1)/N, ratio N(1 − miss)/k."""
+    if nodes <= 1 or top_k <= 1:
+        return 1.0
+    per = n_experts / nodes
+    miss = 1.0
+    for i in range(top_k):
+        miss *= max(0.0, (n_experts - per - i) / (n_experts - i))
+    return min(1.0, nodes * (1.0 - miss) / top_k)
 
 
 def hot_rank_probs(load: tuple, ep: int, top_k: int) -> tuple:
@@ -801,10 +817,11 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(Op("expert_act", "vector", li, vec=r.pairs_local * d_loc * 4, sfu=r.pairs_local * d_loc * 2))
         if sh.ep > 1:
             pay = r.pairs_local * ein * ab
+            fn = node_dedup_factor(f.n_experts, f.top_k, ph.ep_nodes)
             ops.append(Op("moe_dispatch", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay,
-                          comm_stride=sh.etp))
+                          comm_stride=sh.etp, comm_net=fn))
             ops.append(Op("moe_combine", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay * rb / ab,
-                          comm_stride=sh.etp))
+                          comm_stride=sh.etp, comm_net=fn))
         if sh.etp > 1:
             ops.append(Op("expert_allreduce", "comm", li, comm_kind="allreduce", comm_group=sh.etp,
                           comm_bytes=r.pairs_local * ein * rb))

@@ -65,8 +65,10 @@ def _members(cap: int, group: int, stride: int) -> int:
 
 def fabric_collective(kind: str, payload: float, group: int, link: Link, d2d: Link | None = None, package: int = 1,
                       net: Link | None = None, node: int = 0, stride: int = 1, k_pkg: int | None = None,
-                      k_node: int | None = None) -> tuple[float, float, float, float]:
+                      k_node: int | None = None, net_scale: float = 1.0) -> tuple[float, float, float, float]:
     """(bandwidth s, exposed-latency s, D2D share, network share of the sent bytes) on the three-tier fabric.
+    ``net_scale`` (0.134): factor on an all-to-all's network-tier volume (DeepEP normal kernels send a token once per
+    destination node, Op.comm_net).
     ``k_pkg`` / ``k_node``: members of the group inside one package / node when the group is not a uniform stride."""
     if group <= 1 or payload <= 0:
         return 0.0, 0.0, 0.0, 0.0
@@ -98,6 +100,8 @@ def fabric_collective(kind: str, payload: float, group: int, link: Link, d2d: Li
             v = (n - 1) * post * payload
         else:
             v = (n - 1) / group * payload if pre == 1 else (n - 1) * pre / group * payload
+            if t == "net":
+                v *= net_scale
         vol.append(v)
     secs = [v / (ln.GBps * 1e9) for v, (_, ln, _) in zip(vol, levels)]
     alphas = [ln.alpha_us * 1e-6 for _, ln, _ in levels]
@@ -136,7 +140,8 @@ def wire_single(kind: str, payload: float, group: int) -> float:
 
 
 def collective_wire(kind: str, payload: float, group: int, d2d: bool = False, package: int = 1, node: int = 0,
-                    stride: int = 1, k_pkg: int | None = None, k_node: int | None = None) -> dict:
+                    stride: int = 1, k_pkg: int | None = None, k_node: int | None = None,
+                    net_scale: float = 1.0) -> dict:
     """0.78: {tier: bytes one rank sends} of ``fabric_collective`` (same levels and per-level volumes)."""
     if group <= 1 or payload <= 0:
         return {}
@@ -162,7 +167,7 @@ def collective_wire(kind: str, payload: float, group: int, d2d: bool = False, pa
         elif kind == "allgather":
             v = (n - 1) * post * payload
         else:
-            v = (n - 1) * pre / group * payload
+            v = (n - 1) * pre / group * payload * (net_scale if t == "net" else 1.0)
         out[t] = v
     return out
 

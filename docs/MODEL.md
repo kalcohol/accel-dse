@@ -3073,3 +3073,44 @@ experts) and pairs; it never lowers them.
 **Validation rows (EP > 1).** Mixed. Catalog: decode 15.6 → 14.5 %, R1 static 110 → 107 %, B200/H200 max-load 40.6 →
 40.4 %, but DeepSeek-V3 prefill 8.8 → 9.2 %. Catalog_kernel: decode 39.6 → 47.0 %, prefill 78.3 → 79.0 %. Since a
 group worsens, and turning it on changes every MoE EP prediction, it stays opt-in; adopting it is a user decision.
+
+## 80. DeepSeek-V3 prefill decomposition and the EP all-to-all (0.134)
+
+**Per-op check against deepseek-ai/profile-data `prefill.json`** (H800, EP32 on 4 nodes, 4K prompts, 16K tokens per GPU,
+two micro-batches). The kernel span is 2.12 s; the reported rate implies 2.09 s. Per MoE layer, both micro-batches:
+
+| op | trace | model `wide` | model `cta` attention |
+|---|---|---|---|
+| MLA attention (FlashAttention 192/128) | 5.6 ms | 13.0 ms | 4.9 ms |
+| gate/up GEMMs (routed + shared) | 8.0 ms | 9.0 ms | 9.0 ms |
+| down GEMMs | 5.4 ms | 2.8 ms | 2.8 ms |
+| o_proj / q_b / q_a+kv_a | 3.4 / 1.7 / 0.5 ms | 2.3 / 0.6 / 1.6 ms | 2.5 / 0.6 / 1.6 ms |
+| all-to-all kernels (all layers, own stream) | 1.78 s | link 2.45 s | link 2.45 s |
+
+Model compute is 1.77 s. Under the default `stage` overlap the prediction is link-bound, at 0.85×.
+
+**catalog_kernel's 78 %.** The `kernel` overlap serialises the all-to-all with compute. The sources run two-batch
+overlap, which `tbopf_variant` (0.109) and `candidate_variant` already apply; there the error is 8.8–8.9 %. So the
+78 % comes from the variant, not from a missing mechanism.
+
+**Mechanism 1: node-deduplicating all-to-all** (opt-in `serving.moe_a2a = node | auto`). DeepEP's normal
+(prefill) kernels send a token over the scale-out network once per destination node, then forward it over NVLink
+(DeepSeek-V3 report §3.2). With k experts drawn uniformly from E and spread over N nodes, network bytes scale by
+N·(1 − C(E − E/N, k)/C(E, k))/k, which is 0.45 for DeepSeek-V3 on 4 nodes (Monte-Carlo checked). `auto` applies it in
+prefill only, because decode's low-latency kernels send every pair over RDMA. Link time drops from 2.45 s to about
+1.1 s, which matches DeepEP's published internode bandwidth (about 44–47 GB/s).
+
+**Mechanism 2: SMs held by communication** (opt-in `serving.moe_a2a_sm`). The trace README states that prefill
+all-to-all occupies SMs and decode's does not. DeepEP's default `num_sms` is 20 of 132, so prefill compute is
+scaled by 1/(1 − 0.152).
+
+**Result with both on (catalog).** The balanced rows land on the measurement: perfect-EPLB 1.06×, DeepSeek profile
+1.00×. The default-EPLB SGLang rows rise to 1.25–1.42×, because routing imbalance is not modelled for them (no
+measured expert loads are published). The prefill group goes from 8.8 % to 20.9 %. Today's 8.8 % rests on the
+per-pair link over-count cancelling the missing imbalance and the SM share, so the new mechanisms stay opt-in. No
+other group changes (decode and single-node rows are untouched).
+
+**r4 max-load (31–38 %).** The ratio falls with ISL in every model, dense and MoE alike: about 1.3–2.2× at 1K/1K and
+0.5–0.7× at 32K ISL. This is the prefill-utilisation pattern of §39 (`wide` scheduling on large prefill GEMMs and
+attention), not an MoE mechanism. `candidate_variant` brings r4 to 19.8 %, but it still fails the one-row moe-static
+group (§39, §40).

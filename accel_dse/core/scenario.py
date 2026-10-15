@@ -46,6 +46,12 @@ class Serving:
     # 0.133: "expected" = route with the expected per-step MAX over EP ranks of distinct experts read and token-expert
     # pairs under random routing (normal order statistic; MODEL §79).  Opt-in; default "off" (mean-rank routing).
     moe_rank_max: str = field(default="off", metadata={"omit_default": True})
+    # 0.134: EP all-to-all across nodes — "pair" (every token-expert pair crosses the network) | "node" (a token crosses
+    # it once per destination node, NVLink forwards: DeepEP normal kernels) | "auto" (node in prefill, pair in decode)
+    moe_a2a: str = field(default="pair", metadata={"omit_default": True})
+    # 0.134: share of compute units the node-mode all-to-all kernels hold while overlapping prefill compute (DeepEP
+    # normal kernels: Buffer.num_sms, 20 of 132 H800 SMs by default → 0.15).  Opt-in; 0 = none.
+    moe_a2a_sm: float = field(default=0.0, metadata={"omit_default": True})
     prefix_cached: int = 0         # prefill: prompt tokens already in the KV cache (prefix-cache hit, 0.52) 「假设」
     # 0.62 — VLM images per request (vision encoder at prefill; image tokens join the prompt / KV).  Serialised only
     # when not default (scenario hashes of earlier versions unchanged).  0 = text-only request.
@@ -98,6 +104,11 @@ class Serving:
             raise ValueError("serving.moe_skew_spread must be popular|uniform")
         if self.moe_rank_max not in ("off", "expected"):
             raise ValueError("serving.moe_rank_max must be off|expected")
+        if self.moe_a2a not in ("pair", "node", "auto"):
+            raise ValueError("serving.moe_a2a must be pair|node|auto")
+        if isinstance(self.moe_a2a_sm, bool) or not isinstance(self.moe_a2a_sm, (int, float)) \
+                or not (0.0 <= self.moe_a2a_sm < 0.9):
+            raise ValueError("serving.moe_a2a_sm must be in [0, 0.9)")
 
 
 PLACEMENTS = ("auto", "resident", "shard", "offload", "shard+offload")

@@ -345,8 +345,8 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
                     c = d.setdefault("_cands", {})
                     c[full[0]] = [c[full[0]][0] + 1 if full[0] in c else 1, full]
             else:
-                bw, a, fd, fn = _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)
-                wr = _comm_wire(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)
+                bw, a, fd, fn = _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride, net_scale=o.comm_net)
+                wr = _comm_wire(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride, net_scale=o.comm_net)
             for t, x in wr.items():                # 0.78: physical bytes on each tier's wire (energy)
                 d["wire_" + t] += x
             d["link_bw"] += bw; d["sync"] += a; d["link_bytes"] += o.comm_bytes; d["d2d_bytes"] += o.comm_bytes * fd
@@ -417,8 +417,20 @@ def _moe_skew(m: ModelSpec, sv, lay: Layout, warnings: list[str]) -> float:
     return float(sv.moe_skew)
 
 
+def _a2a_sm_share(stt, ph, sv):
+    """0.134 opt-in (serving.moe_a2a_sm): node-mode all-to-all kernels (DeepEP normal) run on a share of the compute
+    units while they overlap the other micro-batch's compute (deepseek-ai/profile-data: prefill all-to-all occupies SMs,
+    decode's low-latency kernels do not), so prefill array / vector time grows by 1 / (1 − share)."""
+    f = sv.moe_a2a_sm
+    if f <= 0 or ph.ep_nodes <= 1 or ph.kind == "decode":
+        return stt
+    k = 1.0 / (1.0 - f)
+    return replace(stt, t_array=stt.t_array * k, t_mac=stt.t_mac * k, t_feed=stt.t_feed * k, t_vector=stt.t_vector * k,
+                   t_arr_attn=stt.t_arr_attn * k)
+
+
 def _comm(sys: System, kind: str, payload: float, group: int, stride: int = 1,
-          members: tuple[int | None, int | None] | None = None) -> tuple[float, float, float, float]:
+          members: tuple[int | None, int | None] | None = None, net_scale: float = 1.0) -> tuple[float, float, float, float]:
     """One collective on the system's three-tier fabric (0.50; 0.48 two-tier when node_cards = 0):
     (bandwidth s, α s, D2D share, network share of the bytes).  ``members``: (ranks inside one package, inside one
     node) when the group is not a uniform stride (None entries = derive from the stride)."""
@@ -429,11 +441,11 @@ def _comm(sys: System, kind: str, payload: float, group: int, stride: int = 1,
         return (*collective_seconds(kind, payload, group, sys.link), 0.0, 0.0)
     return fabric_collective(kind, payload, group, sys.link, sys.d2d if sys.package_cards > 1 else None,
                              sys.package_cards, sys.net if sys.node_cards > 0 else None, sys.node_cards, stride,
-                             k_pkg=kp, k_node=kn)
+                             k_pkg=kp, k_node=kn, net_scale=net_scale)
 
 
 def _comm_wire(sys: System, kind: str, payload: float, group: int, stride: int = 1,
-               members: tuple[int | None, int | None] | None = None) -> dict:
+               members: tuple[int | None, int | None] | None = None, net_scale: float = 1.0) -> dict:
     """0.78: {tier: bytes one rank sends on the wire} of the collective ``_comm`` times (per algorithm / level)."""
     kp, kn = members if members is not None else (None, None)
     if sys.fabric.enabled:
@@ -442,7 +454,7 @@ def _comm_wire(sys: System, kind: str, payload: float, group: int, stride: int =
         x = wire_single(kind, payload, group)
         return {"link": x} if x else {}
     return collective_wire(kind, payload, group, sys.package_cards > 1, sys.package_cards, sys.node_cards, stride,
-                           k_pkg=kp, k_node=kn)
+                           k_pkg=kp, k_node=kn, net_scale=net_scale)
 
 
 def _add_wire(w: dict, d: dict, k: float = 1.0) -> None:
@@ -539,7 +551,7 @@ def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, s
     def comm_secs(o):
         if sys.fabric.enabled:
             return fabric.collective_full(o.comm_kind, o.comm_bytes, o.comm_group, sys, o.comm_stride)[0]
-        return _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)[0]
+        return _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride, net_scale=o.comm_net)[0]
 
     def act_b(o):
         a, wx = act_stream(o, ab, sys.chip.sram_bytes)
@@ -604,7 +616,7 @@ def _pipe_fused(sd, sp, f, rr, t_mem):
     def comm_secs(o):
         if sys.fabric.enabled:
             return fabric.collective_full(o.comm_kind, o.comm_bytes, o.comm_group, sys, o.comm_stride)[0]
-        return _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride)[0]
+        return _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride, net_scale=o.comm_net)[0]
 
     def act_b(o):
         a, wx = act_stream(o, ab, sys.chip.sram_bytes)
@@ -984,16 +996,25 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         hp = hot_rank_probs(tuple(sv.moe_expert_load), lay.ep, f_.top_k) if sv.moe_expert_load else ()
         sp = rskew.spread if isinstance(rskew, SkewSpec) else "popular"
         rskew = SkewSpec(skew, hp, sp, sv.moe_rank_max)
+    # 0.134: node-deduplicating EP all-to-all (DeepEP normal kernels) — serving.moe_a2a; "auto" = prefill only (decode
+    # runs the low-latency kernels, which send every token-expert pair over RDMA)
+    ep_nodes = 1
+    a2a = sv.moe_a2a if sv.moe_a2a != "auto" else ("node" if sv.phase != "decode" else "pair")
+    if a2a == "node" and lay.ep > 1 and sys.node_cards > 0 and not sys.fabric.enabled:
+        from .schedule import _members
+        import math as _m
+        ep_nodes = lay.ep // _m.gcd(max(1, _members(sys.node_cards, lay.ep, lay.etp)), lay.ep)
     if sv.phase == "decode":
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
         q = 1 + spec_k
-        ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=rskew)
+        ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=rskew, ep_nodes=ep_nodes)
         ctx_cap = sv.ctx + q
     else:
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
-        ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=rskew)
+        ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=rskew,
+                   ep_nodes=ep_nodes)
         ctx_cap = sv.prompt
     cp_ring = None
     if lay.cp > 1:
@@ -1010,7 +1031,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             # 0.107: attn_mode = bidir — no mask, every rank's q queries see all S keys (was the causal S²/(2cp):
             # CP silently removed up to half of the bidirectional attention work)
             c_eq = S - q_loc
-        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=rskew, cp=cp, cp_len=S)
+        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=rskew, cp=cp, cp_len=S, ep_nodes=ep_nodes)
         ctx_cap = q_loc
         cp_ring = (cp, lay.tp, _cdiv(sv.batch, mb) * q_loc / lay.dp)   # tokens of this rank's block per step
         lay = Layout(lay.pp, lay.tp, lay.dp * cp, lay.ep, lay.etp, 1)   # internal: CP ranks as attention replicas
@@ -1104,6 +1125,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
                             scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
                             t_pipe)
+            stt = _a2a_sm_share(stt, ph, sv)
             if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
                 stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
@@ -1349,6 +1371,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                             ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
                             scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
                             t_pipe)
+            stt = _a2a_sm_share(stt, ph, sv)
             if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
                 stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],

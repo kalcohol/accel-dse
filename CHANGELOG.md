@@ -3,6 +3,15 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.134.0]
+### Added
+- `serving.moe_a2a` (`pair` default | `node` | `auto`, opt-in; CLI `--moe-a2a`): node-deduplicating EP all-to-all, as in DeepEP's normal kernels. A token crosses the scale-out network once per destination node. Network bytes scale by N·(1 − C(E−E/N, k)/C(E, k))/k, which is 0.45 for DeepSeek-V3 on EP32 across 4 nodes. `auto` applies it in prefill only.
+- `serving.moe_a2a_sm` (opt-in; CLI `--moe-a2a-sm`): the share of compute units the node-mode all-to-all kernels hold while overlapping prefill. `extval.DEEPEP_NORMAL_SM` = 20/132.
+- `extval.a2a_variant`; MODEL §80, a per-op decomposition of the DeepSeek-V3 prefill against the public DeepSeek trace.
+### Not changed (default-change rule)
+- With both options on, the balanced-routing prefill rows match (1.00–1.06×), but the default-EPLB rows over-predict because routing imbalance is unmodelled, so the prefill group worsens (8.8 → 20.9 %). Defaults and fingerprints are unchanged.
+- catalog_kernel's 78 % prefill error comes from serialising communication the sources overlap (TBO); `tbopf_variant` / `candidate_variant` already give 8.8–8.9 %. The r4 max-load error follows ISL in dense and MoE models alike (prefill utilisation, MODEL §39).
+
 ## [0.133.0]
 ### Added
 - `serving.moe_rank_max` (`off` default | `expected`, opt-in; CLI `--moe-rank-max`): MoE routing with the expected per-step maximum over EP ranks of distinct experts read and token-expert pairs under random routing (normal order statistic). Against a Monte-Carlo routing simulation: 3.6 % / 4.5 % mean error vs 23 % / 22 % for the mean rank. Not the default: on the validation rows it helps decode/static/max-load under the catalog variant but worsens DeepSeek-V3 prefill and catalog_kernel decode. Fingerprints unchanged.
