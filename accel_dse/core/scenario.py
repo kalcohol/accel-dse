@@ -283,6 +283,12 @@ class PDConfig:
     # 0.123: serving.prompt := the turns' mean prompt (tree + (T − 1)/2 · (output + user)) for the PD report
     prefix_turn_prompt: bool = field(default=False, metadata={"omit_default": True})
     swap_GBps: float | None = None         # 0.56 kv_policy=swap: host link per card; None = workload.host_GBps 「假设」
+    # 0.168 — host-memory (L2) tier of the whole-prefix cache (SGLang HiCache: GPU L1 + host L2; write_through backs
+    # every device entry up to host = inclusive, write_back demotes on eviction = exclusive).  prefix_host_GB = host
+    # cache per replica (0 = off); host hits are loaded back over the host link (swap_GBps / workload.host_GBps per card)
+    # layer by layer, overlapped with the prefill compute
+    prefix_host_GB: float = field(default=0.0, metadata={"omit_default": True})
+    prefix_host_policy: str = field(default="write_through", metadata={"omit_default": True})
 
     def __post_init__(self):
         for k in ("prefill_cards", "decode_cards"):
@@ -335,6 +341,11 @@ class PDConfig:
             raise ValueError("pd.prefill_mem_id must be a memory id or null")
         if isinstance(self.prefix_len, bool) or not isinstance(self.prefix_len, int) or not 0 <= self.prefix_len <= 1 << 21:
             raise ValueError("pd.prefix_len must be an integer in [0, 2097152]")
+        if isinstance(self.prefix_host_GB, bool) or not isinstance(self.prefix_host_GB, (int, float)) \
+                or not 0 <= self.prefix_host_GB < 1e6:
+            raise ValueError("pd.prefix_host_GB must be in [0, 1e6)")
+        if self.prefix_host_policy not in ("write_through", "write_back"):
+            raise ValueError("pd.prefix_host_policy must be write_through | write_back")
         if isinstance(self.prefix_count, bool) or not isinstance(self.prefix_count, int) \
                 or not 1 <= self.prefix_count <= 10 ** 9:
             raise ValueError("pd.prefix_count must be an integer in [1, 1e9]")

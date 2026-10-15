@@ -3807,3 +3807,10 @@ TeaCache (TeaCache4Wan2.1 teacache_generate.py, 「来源」 for the forced-step
 - Forced steps: teacache = first and last; teacache_ret = first 5.
 - k is a user input; there is no default. PP > 1 and use with prefix_kv are not modelled (warning, ignored).
 
+## 114. Host-memory L2 prefix cache (0.168, opt-in)
+SGLang HiCache (「来源」 docs.sglang.io hicache_design: L1 GPU / L2 host; write_through / write_back; layer-wise compute-transfer overlap).
+- K2 = ⌊prefix_host_GB / footprint⌋, with the same footprint as L1. Reachable prefixes: write_through max(K1, K2), write_back K1 + K2. Hit rate H(·) by Che over the union 「假设」.
+- Host share h2 = H(reach) − H(K1). The prefill computes S − H(reach)·Lp tokens per request (through the existing cached-token path).
+- Load of an L2 hit: t = max-per-card shard bytes / host GBps. Exposed = max(t/L, t − TTFT_p·(L−1)/L). TTFT += h2·exposed (mean). Host link capacity per prefill replica = GBps / (h2 · bytes per card).
+- Whole-prefix model only. Not modelled: tree / multi-turn, D2H write traffic, L3.
+

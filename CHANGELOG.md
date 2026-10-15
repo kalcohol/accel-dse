@@ -3,6 +3,20 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.168.0] — host-memory L2 tier for the prefix cache (HiCache-style)
+- Sanity check of the 0.167 example (no code change). wan2.1-14b at 720P: 81 frames → latent 21×90×160 → 75600 tokens, d 5120, FFN 13824, 40 layers, CFG 2.
+  - Per sequence and layer: linear 2.26e13 MAC, self-attention 2·L²·d = 5.85e13, cross-attention 4e11.
+  - Per step: ×40 layers ×2 sequences ×2 = 1.304e16 FLOP. Model reports 13,047 TFLOP.
+  - Default chip: 50176 MAC × 1 GHz = 100.35 TFLOPS bf16 → 130 s ideal. Model MAC time is 144.9 s (89.7 % efficiency); stage time 145.6 s. Not a units bug.
+  - Order-of-magnitude check: TeaCache README, 14B on A800 ≈ 55 min / 50 steps ≈ 66 s/step at 312 TFLOPS peak.
+- New mechanism (KV/memory hierarchy): opt-in `pd.prefix_host_GB` (host cache per replica) and `pd.prefix_host_policy` write_through | write_back, on the whole-prefix cache model (prefix_len > 0).
+  - 「来源」 SGLang HiCache docs (hicache_design): GPU memory is L1, host memory L2. write_through backs up every device entry, so L1 ⊆ L2 and the union holds max(K1, K2) prefixes. write_back demotes entries on eviction, so the union holds K1 + K2. Prefill overlaps loading layer N+1's KV while layer N computes.
+  - Model: union hit rate by Che over the reachable count 「假设」 LRU. Host-hit share = H(union) − H(K1). Host hits skip recompute but load their shard over each card's host link (pd.swap_GBps or workload.host_GBps, 「假设」 50 GB/s). Exposed time = max(t/L, t − TTFT·(L−1)/L), the same rule as the layer-wise PD hand-off.
+  - Mean TTFT adds hit_host × exposed. A new `host` capacity entry, GBps / (hit_host · bytes per card) per prefill replica, can become the bottleneck. The colocated comparison uses the same rule.
+  - Not modelled: the D2H write-through traffic (opposite PCIe direction), L3 storage, and the radix-tree and multi-turn modes (ignored with a warning).
+- Example (qwen3-8b, TP2, 2048-token prefixes, Zipf 1, 100k prefixes, write_back 200 GB): prefill hit 0.572 → 0.601. Load per hit is 151 MB per card, 3.0 ms, exposed 0.08 ms.
+- CLI --pd-prefix-host-GB / --pd-prefix-host-policy. Defaults are off, so results are bit-identical and fingerprints unchanged. Tests: tests/test_core_168.py (3).
+
 ## [0.167.0] — TeaCache-style step caching for video/image DiT
 - New mechanism (outside VLM): skipped denoise steps. Opt-in Workload fields `step_skip` (skipped steps per request) and `step_cache` teacache | teacache_ret.
 - 「来源」 ali-vilab/TeaCache, TeaCache4Wan2.1 `teacache_generate.py`:

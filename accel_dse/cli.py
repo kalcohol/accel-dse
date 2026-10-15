@@ -278,6 +278,10 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="PD (0.53): Zipf popularity exponent of the prefixes (default 1.0; 0 = uniform)")
     p.add_argument("--pd-prefix-cache-GB", dest="pd_prefix_cache_GB", type=float, default=None,
                    help="PD (0.53): prefix-cache capacity per replica, GB (default: DRAM left after weights + active KV)")
+    p.add_argument("--pd-prefix-host-GB", dest="pd_prefix_host_GB", type=float, default=None,
+                   help="PD (0.168): host-memory L2 prefix cache per replica, GB (SGLang HiCache; 0 = off)")
+    p.add_argument("--pd-prefix-host-policy", dest="pd_prefix_host_policy", choices=("write_through", "write_back"),
+                   default=None, help="L2 policy: write_through (inclusive) | write_back (exclusive)")
     p.add_argument("--pd-prefix-affinity", dest="pd_prefix_affinity", action="store_true",
                    help="PD (0.53): prefix-aware routing (replicas partition the prefixes)")
     p.add_argument("--pd-search-decode-batch", dest="pd_search_decode_batch", action="store_true",
@@ -474,6 +478,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                         ("prefill_chip", "pd_prefill_chip"), ("prefill_mem_id", "pd_prefill_mem"),
                         ("prefix_len", "pd_prefix_len"), ("prefix_count", "pd_prefix_count"),
                         ("prefix_zipf", "pd_prefix_zipf"), ("prefix_cache_GB", "pd_prefix_cache_GB"),
+                        ("prefix_host_GB", "pd_prefix_host_GB"), ("prefix_host_policy", "pd_prefix_host_policy"),
                         ("kv_policy", "pd_kv_policy"), ("kv_capacity_GB", "pd_kv_capacity_GB"),
                         ("kv_admit", "pd_kv_admit"), ("swap_GBps", "pd_swap_GBps"),
                         ("ttft_resid", "pd_ttft_resid"), ("prefix_turns", "pd_turns"),
