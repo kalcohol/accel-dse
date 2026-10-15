@@ -287,6 +287,7 @@
         <label title="0.122：每轮新用户消息 token 数「假设」">每轮用户 token<input type="number" id="pd-prefix_turn_user" min="0" step="1"></label>
         <label title="0.122：同时进行的会话数（各轮顺序到达，时间局部性）；0 = 各轮独立到达（IRM，保守）「假设」">并发会话<input type="number" id="pd-prefix_sessions" min="0" step="1"></label>
         <label class="inline" title="0.122：请求完成后把 prompt + 输出写入前缀树（SGLang cache_finished_req），下一轮可命中上一轮输出"><input type="checkbox" id="pd-prefix_writeback"> 输出写回前缀树</label>
+        <label class="inline" title="0.123：prompt 长度按多轮推导：树 + (轮数 − 1)/2 ×（输出 + 用户 token），decode 上下文 = prompt + 输出/2（覆盖上面的 prompt / ctx）"><input type="checkbox" id="pd-prefix_turn_prompt"> prompt 按轮次推导</label>
         <label class="inline" title="前缀感知路由（如按前缀哈希）：各副本分摊不同前缀 → 按总容量算命中率；不勾 = 随机路由，每个副本各自缓存全体前缀"><input type="checkbox" id="pd-prefix_affinity"> 前缀感知路由</label>
         <div class="small muted">异构池（0.53）：prefill 池可用不同芯片 / 存储器（默认与 decode 池相同）；合并对照用 decode 池的芯片与存储器</div>
         <div class="row3">

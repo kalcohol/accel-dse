@@ -109,6 +109,13 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         raise ValueError("PD 分离只适用于 LLM / VLM（视频 / 蛋白质模型没有 prefill / decode 两阶段）")
     scn = expand_images(scn, m)      # 0.62: VLM image tokens are prompt tokens of every request (idempotent)
     pd, sv = scn.pd, scn.serving
+    turn_prompt0 = None
+    if pd.prefix_turn_prompt and pd.prefix_tree:     # 0.123: serving.prompt := the turns' mean prompt
+        o_ = max(0, round(lengths_of(pd, sv).mean_out))
+        S_auto = round(sum(int(L) for L, _, _ in pd.prefix_tree) + (pd.prefix_turns - 1) / 2 * (o_ + pd.prefix_turn_user))
+        turn_prompt0 = sv.prompt
+        scn = scn.replace("serving.prompt", max(1, S_auto)).replace("serving.ctx", max(1, S_auto) + o_ // 2)
+        pd, sv = scn.pd, scn.serving
     lens, h = lengths_of(pd, sv), pd.prefix_hit
     tree = pd.prefix_tree                            # 0.58 radix / partial prefix matching
     cap_mode = (pd.prefix_len > 0 or bool(tree)) and not h   # 0.53 capacity model (explicit prefix_hit overrides)
@@ -163,8 +170,11 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         def tree_pool(cap, reps_):
             C = cap["K_float"] * Lp * (reps_ if pd.prefix_affinity else 1)
             if turns and pd.prefix_sessions:
+                # 0.123: a conversation sticks to one replica (session affinity; DES routes by conversation) →
+                # A / replicas open conversations per replica cache; prefix-aware routing pools the caches (A, Σ C)
+                a_eff = pd.prefix_sessions if pd.prefix_affinity else max(1, round(pd.prefix_sessions / max(1, reps_)))
                 tail, inf = turn_session_tail(base_tree, pd.prefix_turns, pd.prefix_turn_user, o_tok,
-                                              pd.prefix_writeback, C, pd.prefix_sessions)
+                                              pd.prefix_writeback, C, a_eff)
                 t_info.update(inf)
                 hh = None
             elif turns:
@@ -223,6 +233,7 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
             pcache["turns"] = {"turns": pd.prefix_turns, "user_tokens": pd.prefix_turn_user, "output_tokens": o_tok,
                                "writeback": pd.prefix_writeback, "sessions": pd.prefix_sessions,
                                "mean_turn_prompt": mean_prompt, "query_depth": list(t_qd),
+                               **({"auto_prompt": True, "prompt_given": turn_prompt0} if turn_prompt0 is not None else {}),
                                **({"tau_requests": t_info.get("tau_requests"),
                                    "session_survival": t_info.get("session_survival")} if pd.prefix_sessions else {}),
                                "basis": "多轮对话「假设」：第 t 轮 prompt = 上一轮 prompt + 输出 + 新用户消息；"
@@ -417,8 +428,6 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
           "tpot_eff_ok": dec.tpot * 1e3 / g.decode_share <= sv.tpot_slo_ms if g.decode_share > 0 else False,
           "idle_cards": total - reps * c_d}
     warnings = list(turn_warn)
-    if pd.simulate and (pd.prefix_turns > 1 or pd.prefix_writeback):
-        warnings.append("多轮前缀：DES 按不带轮次历史的前缀树仿真（闭式含轮次）")
     if not p_ok:
         warnings.append("prefill 池：单条请求的 prefill 也超过 TTFT SLO 或放不下（按 batch 1 计）")
     if not dec.fits:
@@ -473,6 +482,8 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
                     kw["prefix_K"] = pc["prefill"][ck] if mode == "pd" else pc["coloc"][ck]
                     if mode == "pd":
                         kw["prefix_K_dec"] = pc["decode"][ck]
+                    if _ps.turn_kw(pc):
+                        kw["turns"] = _ps.turn_kw(pc)
                 s = _ps.simulate(ctx, q["lambda_rps"], mode, n_req=1500, warmup=400, seed=1, **kw)
                 err = {name: _ps.rel_err(s[k][qk], _ps._ana_value(ana, name)) for name, k, qk in _ps.METRICS}
                 err = {kk: (v if math.isfinite(v) else None) for kk, v in err.items()}

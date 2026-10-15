@@ -232,6 +232,8 @@ class PDConfig:
     prefix_turn_user: int = field(default=0, metadata={"omit_default": True})
     prefix_writeback: bool = field(default=False, metadata={"omit_default": True})
     prefix_sessions: int = field(default=0, metadata={"omit_default": True})
+    # 0.123: serving.prompt := the turns' mean prompt (tree + (T − 1)/2 · (output + user)) for the PD report
+    prefix_turn_prompt: bool = field(default=False, metadata={"omit_default": True})
     swap_GBps: float | None = None         # 0.56 kv_policy=swap: host link per card; None = workload.host_GBps 「假设」
 
     def __post_init__(self):
@@ -324,8 +326,10 @@ class PDConfig:
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                 raise ValueError(f"pd.{k} must be an integer in [{lo}, {hi}]")
-        if not isinstance(self.prefix_writeback, bool):
-            raise ValueError("pd.prefix_writeback must be a boolean")
+        if not isinstance(self.prefix_writeback, bool) or not isinstance(self.prefix_turn_prompt, bool):
+            raise ValueError("pd.prefix_writeback / pd.prefix_turn_prompt must be booleans")
+        if self.prefix_turn_prompt and self.prefix_turns < 2:
+            raise ValueError("pd.prefix_turn_prompt needs pd.prefix_turns ≥ 2")
         if (self.prefix_turns > 1 or self.prefix_writeback or self.prefix_sessions or self.prefix_turn_user) \
                 and not self.prefix_tree:
             raise ValueError("pd.prefix_turns / prefix_turn_user / prefix_writeback / prefix_sessions need pd.prefix_tree")

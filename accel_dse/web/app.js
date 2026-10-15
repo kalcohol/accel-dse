@@ -234,6 +234,7 @@ function syncInputs() {
     $('pd-kv_admit').value = S.sc.pd.kv_admit || 'before_prefill';
     $('pd-ttft_resid').value = S.sc.pd.ttft_resid || 'full';
     $('pd-prefix_writeback').checked = !!S.sc.pd.prefix_writeback;
+    $('pd-prefix_turn_prompt').checked = !!S.sc.pd.prefix_turn_prompt;
     if (S.cat) {
       const sel = $('pd-prefill_chip'), pc = S.sc.pd.prefill_chip;
       if (!sel.options.length) put(sel, h('option', { value: '' }, '同 decode'), ...Object.keys(S.cat.chips).map((k) => h('option', { value: k }, k)));
@@ -824,7 +825,7 @@ function renderPDCache(pc) {
   if (!pc) return;
   if (pc.tree) {   // 0.58 radix tree
     $('pdpc-basis').textContent = `前缀树 ${pc.tree.map((r) => `${r[0]} tok × ${r[1]}（Zipf ${r[2]}）`).join(' → ')}，${pc.policy}；${pc.basis}`
-      + (pc.turns ? `；${pc.turns.turns} 轮 / 会话（每轮输出 ${pc.turns.output_tokens} + 用户 ${pc.turns.user_tokens} tok，平均 prompt ${num(pc.turns.mean_turn_prompt)} tok）${pc.turns.session_survival != null ? `，会话历史存活 ${pct(pc.turns.session_survival)}` : ''}；${pc.turns.basis}` : '');
+      + (pc.turns ? `；${pc.turns.turns} 轮 / 会话（每轮输出 ${pc.turns.output_tokens} + 用户 ${pc.turns.user_tokens} tok，平均 prompt ${num(pc.turns.mean_turn_prompt)} tok${pc.turns.auto_prompt ? '，已用作 prompt' : ''}）${pc.turns.session_survival != null ? `，会话历史存活 ${pct(pc.turns.session_survival)}` : ''}；${pc.turns.basis}` : '');
     const headT = h('tr', {}, h('th', { class: 'l' }, '缓存'), h('th', {}, '副本'), h('th', {}, '容量 GB', h('br'), '/ 副本'),
       h('th', {}, '容量', h('br'), 'tok / 副本'), h('th', {}, 'token', h('br'), '命中率'), h('th', {}, '各层命中', h('br'), 'P(深度 ≥ k)'), h('th', { class: 'l' }, '说明'));
     const rowsT = [['prefill', 'PD · prefill 池'], ['decode', 'PD · decode 池'], ['coloc', '合并副本']].map(([k, nm]) => {
@@ -1610,6 +1611,7 @@ async function init() {
   bindNumber('pd-prefix_turns', () => S.sc.pd.prefix_turns ?? 1, (x) => { if (x === 1) delete S.sc.pd.prefix_turns; else S.sc.pd.prefix_turns = x; }, { int: true, check: (x) => x >= 1 && x <= 64 });
   bindNumber('pd-prefix_turn_user', () => S.sc.pd.prefix_turn_user ?? 0, (x) => { if (!x) delete S.sc.pd.prefix_turn_user; else S.sc.pd.prefix_turn_user = x; }, { int: true, check: (x) => x >= 0 });
   bindNumber('pd-prefix_sessions', () => S.sc.pd.prefix_sessions ?? 0, (x) => { if (!x) delete S.sc.pd.prefix_sessions; else S.sc.pd.prefix_sessions = x; }, { int: true, check: (x) => x >= 0 });
+  $('pd-prefix_turn_prompt').addEventListener('change', (e) => { if (e.target.checked) S.sc.pd.prefix_turn_prompt = true; else delete S.sc.pd.prefix_turn_prompt; schedule(); });
   $('pd-prefix_writeback').addEventListener('change', (e) => { if (e.target.checked) S.sc.pd.prefix_writeback = true; else delete S.sc.pd.prefix_writeback; schedule(); });
   bindNumber('pd-kv_GBps', () => S.sc.pd.kv_GBps, (x) => (S.sc.pd.kv_GBps = x), { nullable: true });
   bindNumber('pd-load', () => S.sc.pd.load ?? 0.8, (x) => (S.sc.pd.load = x), { check: (x) => x > 0 && x < 1 });

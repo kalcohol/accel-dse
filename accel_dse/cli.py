@@ -266,6 +266,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="0.122: insert each finished sequence (prompt + output) into the prefix tree")
     p.add_argument("--pd-sessions", dest="pd_sessions", type=int, default=None,
                    help="0.122: conversations open at once (sequential turns); 0 = independent turns (IRM) 「假设」")
+    p.add_argument("--pd-turn-prompt", dest="pd_turn_prompt", action="store_true", default=None,
+                   help="0.123: serving.prompt := the turns' mean prompt (tree + (T-1)/2·(output + user)), ctx := prompt + out/2")
     p.add_argument("--pd-ttft-resid", dest="pd_ttft_resid", choices=("full", "busy"), default=None,
                    help="PD (0.111, opt-in): colocated prefill-first TTFT decode residual — full (default) | busy "
                         "(only when an iteration is in flight: p = (1 − ρ)(1 − π₀), U(0, step) convolved)")
@@ -423,7 +425,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                         ("kv_admit", "pd_kv_admit"), ("swap_GBps", "pd_swap_GBps"),
                         ("ttft_resid", "pd_ttft_resid"), ("prefix_turns", "pd_turns"),
                         ("prefix_turn_user", "pd_turn_user"), ("prefix_writeback", "pd_writeback"),
-                        ("prefix_sessions", "pd_sessions")):
+                        ("prefix_sessions", "pd_sessions"), ("prefix_turn_prompt", "pd_turn_prompt")):
             if getattr(a, dest, None) is not None:
                 sc["pd"][k] = getattr(a, dest)
         if getattr(a, "pd_mix", None):

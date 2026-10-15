@@ -64,6 +64,8 @@ class Req:
     admit_t: float = 0.0     # 0.56: admitted (slot + KV)
     depth: int = 0           # 0.58 radix: matched tree depth (prefill side)
     depth_dec: int = 0       # 0.58 radix: matched depth on the decode replica
+    ins: int = 0             # 0.123 multi-turn: levels this request inserts (0 = the whole path)
+    qd: int = 0              # 0.123 multi-turn: deepest level it can match (its previous turn's sequence)
 
 
 # --------------------------------------------------------------------------- length / prefix sampling
@@ -110,7 +112,7 @@ class RadixLRU:
 
     def access(self, path) -> int:
         self.looks += 1
-        m = len(self.lens)
+        m = min(len(self.lens), len(path))    # 0.123: a shorter path (a multi-turn prompt) stops at its own depth
         d = 0
         for k in range(1, m + 1):
             if path[:k] in self.od:
@@ -124,7 +126,7 @@ class RadixLRU:
         # needs its parent; storing them only wasted capacity on nodes no lookup could reach)
         # 0.63: … and so does a path whose cumulative length exceeds the capacity (the node needs all its ancestors)
         m_fit, acc = m, 0
-        for k, L in enumerate(self.lens):
+        for k, L in enumerate(self.lens[:m]):
             acc += L
             if acc > self.cap:
                 m_fit = k
@@ -149,6 +151,64 @@ class RadixLRU:
 def _tree_paths(rng: random.Random, levels, count: int) -> list[tuple]:
     cols = [_zipf_ids(rng, int(n), float(a), count) for _, n, a in levels]
     return [tuple(c[i] for c in cols) for i in range(count)]
+
+
+def _turn_stream(rng: random.Random, turns: dict, count: int, state: dict | None = None) -> list[tuple]:
+    """0.123 multi-turn requests (prefixcache.turn_tree): → [(path over the extended tree, insert depth, query depth,
+    prompt tokens)].  sessions > 0: that many open conversations, each request from a uniformly random one, turns in
+    order, a finished conversation replaced by a new one (unique history ids); sessions = 0: IRM over (leaf path,
+    turn), the leaf path is the conversation (history ids 0).  ``state`` carries the open conversations across calls
+    (warm-up → run)."""
+    from .prefixcache import tree_cum_tokens, turn_tree
+    base, T, wb, A = turns["tree"], turns["turns"], turns["writeback"], turns["sessions"]
+    ext, _, qd = turn_tree(base, T, turns["user"], turns["out"], wb)
+    m0, cum = len(base), tree_cum_tokens(ext)
+    kinds = [x for t in range(1, T) for x in ((("o", t),) if turns["out"] else ())
+             + ((("s", t + 1),) if turns["user"] else ())]
+
+    def depth(t, with_out):
+        d = m0
+        for j, (k, i) in enumerate(kinds):
+            if (k == "s" and i <= t) or (k == "o" and (i <= t - 1 or (with_out and i == t))):
+                d = m0 + j + 1
+            else:
+                break
+        return d
+    ins = [depth(t, wb) for t in range(1, T + 1)]
+    prompt = [cum[depth(t, False)] for t in range(1, T + 1)]
+    st = state if state is not None else {}
+    cols = [_zipf_ids(rng, int(n), float(a), count + (A or 0) + 1) for _, n, a in base]
+    k_col = [0]
+
+    def newpath():
+        k = k_col[0] % len(cols[0]) if cols else 0
+        k_col[0] += 1
+        st["ctr"] = st.get("ctr", 0) + 1
+        hid = st["ctr"] if A else 0
+        return tuple(c[k] for c in cols) + (hid,) * (len(ext) - m0)
+    out = []
+    if A:
+        act = st.setdefault("act", [])
+        while len(act) < A:
+            act.append([newpath(), 1])
+    for _ in range(count):
+        if A:
+            a = rng.randrange(A)
+            path, t = act[a]
+            act[a] = [newpath(), 1] if t == T else [path, t + 1]
+        else:
+            path, t = newpath(), rng.randint(1, T)
+        out.append((path, ins[t - 1], qd[t - 1], prompt[t - 1]))
+    return out
+
+
+def turn_kw(pc: dict | None) -> dict | None:
+    """0.123: DES multi-turn spec from a disagg report's prefix_cache block (None without turns)."""
+    t = (pc or {}).get("turns")
+    if not t:
+        return None
+    return {"turns": t["turns"], "user": t["user_tokens"], "out": t["output_tokens"], "writeback": t["writeback"],
+            "sessions": t["sessions"]}
 
 
 def _zipf_ids(rng: random.Random, n: int, alpha: float, count: int) -> list[int]:
@@ -689,7 +749,7 @@ def _warm_caches(caches: list[LRUCache], n: int, alpha: float, rng: random.Rando
 
 
 def _requests(rng: random.Random, ctx: dict, mode: str, lam: float, n_tot: int, lru: bool,
-              prefix_n: int, prefix_alpha: float, tree=()) -> list[Req]:
+              prefix_n: int, prefix_alpha: float, tree=(), turns=None, tstate=None) -> list[Req]:
     lens = ctx["len"]
     pts = ctx["pts"] if mode == "pd" else ctx.get("pts_c", ctx["pts"])
     p_of = {S: p for _, S, p in pts}            # explicit / no prefix: one p per prompt value
@@ -698,7 +758,10 @@ def _requests(rng: random.Random, ctx: dict, mode: str, lam: float, n_tot: int, 
     for w, S, o in joint:
         acc += w
         cum.append(acc)
-    if lru and tree:
+    tq = _turn_stream(rng, turns, n_tot, tstate) if (lru and turns) else None
+    if tq is not None:
+        pids = [x[0] for x in tq]
+    elif lru and tree:
         pids = _tree_paths(rng, tree, n_tot)
     else:
         pids = _zipf_ids(rng, prefix_n, prefix_alpha, n_tot) if lru else [-1] * n_tot
@@ -709,6 +772,8 @@ def _requests(rng: random.Random, ctx: dict, mode: str, lam: float, n_tot: int, 
         j = min(bisect.bisect_left(cum, u), len(cum) - 1)
         _, S, o = joint[j]
         reqs.append(Req(i, t, S, max(1, int(o)), 0 if lru else p_of.get(S, 0), pids[i]))
+        if tq is not None:
+            reqs[-1].ins, reqs[-1].qd = tq[i][1], tq[i][2]
     return reqs
 
 
@@ -780,7 +845,7 @@ def stability(done: list, ttfts: list, util: float, complete: bool) -> dict:
 def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup: int = 400,
              seed: int = 1, prefix_K: int | None = None, prefix_K_dec: int | None = None,
              prefix_n: int = 0, prefix_alpha: float = 1.0, prefix_len: int = 0,
-             affinity: bool = False, max_events: int = 5_000_000, prefix_tree=()) -> dict:
+             affinity: bool = False, max_events: int = 5_000_000, prefix_tree=(), turns=None) -> dict:
     """DES of one serving mode at Poisson rate ``lam`` (requests/s).  ``ctx`` = the dict disagg builds for
     queue_report.  Statistics over requests ``warmup ≤ id < warmup + n_req`` (another ``warmup`` arrive after them
     so the tail is not measured on a draining system)."""
@@ -790,8 +855,20 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
     B, C = ctx["B"], ctx["C"]
     tree = tuple(prefix_tree or ())
     lru = ((prefix_len > 0 and prefix_n > 0) or bool(tree)) and prefix_K is not None
+    tstate: dict = {}
+    if turns and tree:              # 0.123: caches over the tree extended by the turn history
+        from .prefixcache import turn_tree
+        turns = {**turns, "tree": tree}
+        tree = tuple(turn_tree(tree, turns["turns"], turns["user"], turns["out"], turns["writeback"])[0])
+    else:
+        turns = None
     n_tot = n_req + 2 * warmup
-    reqs = _requests(rng, ctx, mode, lam, n_tot, lru, prefix_n, prefix_alpha, tree)
+    warm_list = None
+    if turns and lru:               # warm-up conversations precede the measured ones (same open-session state)
+        C_w = max(prefix_K or 0, prefix_K_dec or 0)
+        n_w = int(min(400000, max(20000, 20 * C_w / max(1, min(L_ for L_, _, _ in tree)))))
+        warm_list = _turn_stream(rng, turns, n_w, tstate)
+    reqs = _requests(rng, ctx, mode, lam, n_tot, lru, prefix_n, prefix_alpha, tree, turns, tstate)
     cum_t = [0]
     for L_, _, _ in tree:
         cum_t.append(cum_t[-1] + int(L_))
@@ -805,21 +882,30 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
                 return
             C = max(c.cap for c in caches)
             n_w = int(min(400000, max(20000, 20 * C / max(1, min(L_ for L_, _, _ in tree)))))
-            for path in _tree_paths(rng, tree, n_w):
-                for c in caches:
-                    c.access(path)
+            if warm_list is not None:
+                for path, ins, _, _ in warm_list:
+                    for c in caches:
+                        c.access(path[:ins])
+            else:
+                for path in _tree_paths(rng, tree, n_w):
+                    for c in caches:
+                        c.access(path)
             for c in caches:
                 c.reset_stats()
         else:
             _warm_caches(caches, prefix_n, prefix_alpha, rng)
 
     def route(r, n):
+        if turns and turns["sessions"] and not affinity and lru:     # 0.123: a conversation sticks to one replica
+            return hash(r.prefix_id[-1]) % n
         return ((r.prefix_id[0] if tree else r.prefix_id) % n) if (affinity and lru) else rng.randrange(n)
 
     def look(cache, r) -> int:
         """→ cached prompt tokens (whole prefix or the radix depth)."""
         if tree:
-            d = cache.access(r.prefix_id)
+            d = cache.access(r.prefix_id[:r.ins] if r.ins else r.prefix_id)
+            if r.qd:
+                d = min(d, r.qd)
             r.depth = d
             return min(cum_t[d], r.S - 1)
         return min(prefix_len, r.S - 1) if cache.access(r.prefix_id) else 0
@@ -883,7 +969,9 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
                 r.dec = route(r, r_d)
                 if lru:
                     if tree:
-                        r.depth_dec = caches_d[r.dec].access(r.prefix_id)
+                        r.depth_dec = caches_d[r.dec].access(r.prefix_id[:r.ins] if r.ins else r.prefix_id)
+                        if r.qd:
+                            r.depth_dec = min(r.depth_dec, r.qd)
                         r.dec_holds = r.depth_dec > 0
                     else:
                         r.dec_holds = caches_d[r.dec].access(r.prefix_id)
@@ -1143,6 +1231,8 @@ def compare(scn, n_req: int = 2000, warmup: int = 400, seed: int = 1,
             kw["prefix_K"] = pc["prefill"][ck] if mode == "pd" else pc["coloc"][ck]
             if mode == "pd":
                 kw["prefix_K_dec"] = pc["decode"][ck]
+            if turn_kw(pc):
+                kw["turns"] = turn_kw(pc)
         sims = [simulate(ctx, lam, mode, n_req=n_req, warmup=warmup, seed=sd, **kw) for sd in seeds]
         row = {"stable_analytic": bool(ana.get("stable")), "complete": all(x["complete"] for x in sims),
                "stable_des": all(x["stable"] for x in sims),

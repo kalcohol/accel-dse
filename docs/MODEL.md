@@ -2880,3 +2880,22 @@ Two closed forms:
 The serving prompt is not changed: the report gives the implied mean turn prompt (base + (T − 1)/2·(output + user))
 and warns when `serving.prompt` differs by more than 10 %.  The PD DES keeps the tree without history (warned).
 
+## 69. 0.123 — multi-turn: simulator fix, DES history, derived prompt
+
+The −18 % "low-side error" of the concurrent-session model in 0.122 came from the reference simulator.
+`RadixLRU.access(path)` looped over the tree depth.  For a path shorter than the tree (any multi-turn prompt
+before the last turn), `path[:k]` with k > len(path) is the path itself, so the leaf node was stored at the size of the
+deepest level.  The simulated cache held too little history and gave too many hits.  With the loop bounded by the path
+depth, the 0.122 closed forms match the simulator: sessions −3.9 … +0.6 %, independent turns −1.0 … +0.1 %.  The
+partial-chain survival proposed as the missing mechanism happens in ≤ 0.4 % of returns (a chain is refreshed at one
+instant, root last, so it is evicted within a few requests), so it is not modelled.
+
+PD DES: requests carry (extended path, insert depth, query depth) from the same conversation process; the warm-up stream
+precedes the measured one and shares the open conversations.  Conversations are sticky to a replica (session affinity),
+so the closed form uses A / replicas conversations per replica cache (A with prefix-aware routing, which pools capacity).
+DES vs closed-form token hit ratio: |Δ| ≤ 0.01.
+
+`pd.prefix_turn_prompt` (opt-in) sets serving.prompt to the turns' mean prompt (tree + (T − 1)/2·(output + user)) and
+the decode context to prompt + output/2.  The DES keeps the prompt-length law of `serving` (it does not vary S per turn),
+like the closed form.
+
