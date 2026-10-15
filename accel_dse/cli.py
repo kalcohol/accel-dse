@@ -60,6 +60,14 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="compute / memory / link overlap inside a stage (0.66; default stage)")
     p.add_argument("--layer-overhead-us", dest="layer_overhead_us", type=float, default=None,
                    help="fixed per-layer time per step, µs (0.69; default 0) 「假设」")
+    p.add_argument("--host-step-us", dest="host_step_us", type=float, default=None,
+                   help="host / runtime time per engine step, µs (0.164; default 0 = off)")
+    p.add_argument("--host-seq-us", dest="host_seq_us", type=float, default=None,
+                   help="host time per sequence per DP rank per step, µs (0.164; default 0)")
+    p.add_argument("--host-overlap", dest="host_overlap", default=None, choices=("serial", "async"),
+                   help="host time added to (serial) or overlapped with (async) the device step (0.164)")
+    p.add_argument("--host-steps", dest="host_steps", type=int, default=None,
+                   help="multi-step scheduling: decode steps per host pass (0.164; default 1)")
     p.add_argument("--indexer", default=None, choices=INDEXER_MODES,
                    help="sparse-attention indexer over TP (0.87): reference (as released) | replicated | tp_split | key_split")
     p.add_argument("--attn-mode", dest="attn_mode", default=None, choices=ATTN_MODES,
@@ -352,7 +360,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     sc = {"model": a.model, "mapping": a.mapping, "serving": sv}
     if getattr(a, "pp_split", None):
         sc["pp_split"] = a.pp_split
-    for k in ("exec_overlap", "layer_overhead_us", "indexer", "attn_mode"):
+    for k in ("exec_overlap", "layer_overhead_us", "indexer", "attn_mode", "host_step_us", "host_seq_us", "host_overlap",
+              "host_steps"):
         if getattr(a, k, None) is not None:
             sc[k] = getattr(a, k)
     wl = {k: getattr(a, k) for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles",

@@ -600,6 +600,15 @@ def _memspec(s):
     return mem_catalog.parse_mem_id(s.mem_id, efficiency=s.mem_eff)
 
 
+def _dram_delivered(s) -> float:
+    """0.164: delivered DRAM GB/s = min(memory effective, opt-in DMA issue limit) — as System.dram_GBps."""
+    m = float(_memspec(s).effective_GBps)
+    c = s.chip
+    if c.dma_engines:
+        return min(m, c.dma_engines * c.dma_outstanding_KiB * 1024 / (c.dram_latency_ns * 1e-9) / 1e9)
+    return m
+
+
 def _chip_set(f):
     return lambda s, v: s.replace("chip", f(s.chip, v))
 
@@ -628,7 +637,7 @@ SIZING = {
     # 0.158: MAC array via core (engine) count, R×C per engine fixed; area = ΔkMAC × mm2_per_kmac (density preset / user)
     "cores": ("MAC 阵列（核数）", "核", lambda s: float(s.chip.engines), _chip_set(_cores_set), True, "mm2_per_kmac"),
     # 0.158: effective DRAM bandwidth at fixed stack / capacity (scaled through mem_eff ≤ current); no PHY area (discrete)
-    "dram_bw": ("DRAM 有效带宽", "GB/s", lambda s: float(_memspec(s).effective_GBps),
+    "dram_bw": ("DRAM 有效带宽", "GB/s", lambda s: _dram_delivered(s),
                 lambda s, v: s.replace("mem_eff", v / _memspec(s).payload_GBps), False, None),
 }
 SIZING_MIN_FRAC = 1 / 1024        # search floor (10 halvings)

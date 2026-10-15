@@ -407,6 +407,15 @@ class Scenario:
     # 0.69: fixed per-layer time per step (kernel launch / sync / scheduler), µs; added to the stage's exposed sync
     # time in every overlap mode.  NPU- and runtime-dependent 「假设」; default 0 (off), not fitted.
     layer_overhead_us: float = field(default=0.0, metadata={"omit_default": True})
+    # 0.164 (opt-in, default off = bit-identical): host / serving-runtime time per engine step — scheduling, input
+    # preparation, output processing (vLLM v0.6 blog: 29 % of time on Llama-3-8B/H100 in v0.5.3; WukLab 2024: grows
+    # with the requests in the batch).  host = host_step_us + host_seq_us × sequences per DP rank; decode amortises it
+    # over ``host_steps`` (multi-step scheduling); "serial" adds it to the device step, "async" overlaps it with the
+    # previous step (step = max(device, host)).  No default value: runtime-specific, user input only.
+    host_step_us: float = field(default=0.0, metadata={"omit_default": True})
+    host_seq_us: float = field(default=0.0, metadata={"omit_default": True})
+    host_overlap: str = field(default="serial", metadata={"omit_default": True})
+    host_steps: int = field(default=1, metadata={"omit_default": True})
     # 0.87: sparse-attention indexer deployment over attention TP (parallel.INDEXER_MODES); default = as released
     indexer: str = field(default="reference", metadata={"omit_default": True})
     # 0.106: attention mask what-if (parallel.ATTN_MODES); default = as released
@@ -423,6 +432,14 @@ class Scenario:
         if isinstance(self.layer_overhead_us, bool) or not isinstance(self.layer_overhead_us, (int, float)) \
                 or not 0.0 <= self.layer_overhead_us <= 1e4:
             raise ValueError("layer_overhead_us must be in [0, 10000]")
+        for nm in ("host_step_us", "host_seq_us"):
+            v = getattr(self, nm)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0.0 <= v <= 1e6:
+                raise ValueError(f"{nm} must be in [0, 1e6] µs")
+        if self.host_overlap not in ("serial", "async"):
+            raise ValueError("host_overlap must be 'serial' or 'async'")
+        if isinstance(self.host_steps, bool) or not isinstance(self.host_steps, int) or not 1 <= self.host_steps <= 64:
+            raise ValueError("host_steps must be an integer in [1, 64]")
         if self.exec_overlap not in EXEC_OVERLAPS:
             raise ValueError(f"exec_overlap must be one of {EXEC_OVERLAPS}")
         if self.indexer not in INDEXER_MODES:

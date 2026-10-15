@@ -3,6 +3,13 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.164.0] — dram_bw sizing honours the DMA cap; opt-in host/runtime step overhead
+- Fix (AGENTS §114): `dram_bw` sizing now reports the delivered bandwidth, min(memory effective GB/s, opt-in DMA issue limit), the same rule as `System.dram_GBps`. With the DMA limit binding, "current" was previously the memory's figure and overstated what is delivered.
+- New mechanism (AGENTS §73 0.136 open gap: unmodelled host/scheduling time per step). Opt-in Scenario fields `host_step_us` (fixed per engine step), `host_seq_us` (per sequence on a DP rank), `host_overlap` serial|async, `host_steps` (multi-step scheduling, decode only). host = (step + seq × sequences/rank) µs, ÷ host_steps for decode. Serial: device + host; async: max(device, host). TPOT / TTFT / throughput follow, `Result.host` reports device / exposed / host_bound, and eval JSON carries it. LLM phases only.
+- Grounding (qualitative, no adopted numbers): vLLM v0.6.0 blog (2024-09-05) — Llama-3-8B on 1×H100 in v0.5.3: 38 % GPU execution, 29 % scheduling + input preparation, 33 % HTTP server; fixes are multi-step scheduling and async output processing. WukLab (Srivatsa et al., 2024-09-10) — vLLM scheduling up to half of iteration time, grows with requests per batch; SGLang ≤ 18 %. Neither gives a portable µs figure (absolute values are figure-only and runtime-, CPU- and version-specific), so there is no default and no preset. All four fields default to off, which is bit-identical (fingerprints unchanged).
+- CLI flags --host-step-us / --host-seq-us / --host-overlap / --host-steps (test_core_087 audit: every scenario field must have a CLI flag).
+- Tests: tests/test_core_164.py (3).
+
 ## [0.163.0] — sizing adversarial review: lanes→dequant coupling fix
 - Bug: the `lanes` sizing setter changed `vector_lanes` only. The dequant path defaults to the vector width (`formats.dequant_elems_per_cycle` None → lanes, mapping.py), so shrinking the vector unit also silently cut dequant throughput on the default chip. The lanes setter now pins the dequant rate to its current value. Latent on the sample sets: the vector width binds (TTFT) before dequant does (TPOT), so the minima, joint points and mm² are unchanged (qwen3-8b+gpt-oss-20b / wan2.1 / esm2-650m: 30.9 / 30.5 / 34.5 mm² at n7; qwen3-8b-awq lanes 1382, dequant 753). It would matter for any chip or model where dequant binds near the vector width.
 - Standing guard: tests/test_core_163.py checks that every SIZING setter moves only its own resource, on every chip preset at ×0.5 and ×0.13.

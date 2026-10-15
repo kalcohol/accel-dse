@@ -3777,3 +3777,8 @@ Sizing-only fields: the die-area proxy is untouched. Unpriced resources (DRAM ba
 
 ## 109. Sizing setter isolation (0.163)
 Each sizing resource must move alone. The lanes setter pins the dequant rate, which otherwise defaults to the vector width; cores pins the vector width (0.158). Guarded on all chip presets. Caveat: with the opt-in DMA limit, dram_bw sizes the memory, not min(memory, DMA).
+
+## 110. Host / runtime step overhead (0.164, opt-in)
+Per engine step, host h = (host_step_us + host_seq_us · ⌈batch/dp⌉) µs. Decode divides by host_steps (vLLM / SGLang multi-step scheduling; prefill steps run single-step, as in vLLM PR #7000). host_overlap "serial": step = device + h. "async" (output processing / scheduling overlapped with the previous device step): step = max(device, h), with host_bound = h > device. Sources (mechanism only): vLLM v0.6.0 performance blog; WukLab "Can Scheduling Overhead Dominate LLM Inference Performance?" (2024). No numeric default: the published absolute times are runtime- and CPU-specific. Non-LLM domains are unchanged.
+
+dram_bw sizing (§104) now uses delivered bandwidth min(memory, DMA issue limit).

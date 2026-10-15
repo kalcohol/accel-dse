@@ -74,6 +74,7 @@ class Result:
     pipeline: dict | None = None   # video (0.44): text-encoder / VAE-decode time, FLOP, storage (None = DiT only)
     moe_skew: float = 1.0          # effective EP load skew used (0.49)
     vision: dict | None = None     # VLM (0.62): images, image tokens, encoder time / FLOP / storage (None = text-only)
+    host: dict | None = None       # 0.164 (opt-in): host / runtime step time {s, device_s, exposed_s, host_bound, …}
     prefix_kv: dict | None = None  # gen (0.116): text-prefix K/V reuse — extract / cached step times and FLOP, cache size
 
     @property
@@ -157,6 +158,7 @@ class Result:
             "latency_ms": self.latency * 1e3, **({"gen": self.domain_summary()} if self.workload else {}),
             **({"moe_skew": self.moe_skew} if self.moe_skew != 1.0 else {}),
             **({"vision": {k: v for k, v in self.vision.items() if k != "acts"}} if self.vision else {}),
+            **({"host": dict(self.host)} if self.host else {}),
         }
 
 
@@ -1292,8 +1294,20 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                            if vis and stages[cap_heavy].mem.pipe_w else ""))
     if m.coverage == "proxy":
         warnings.append("「架构代理」模型：结果为近似值（见建模说明）")
+    host = None
+    if scn.host_step_us or scn.host_seq_us:     # 0.164 (opt-in): host / runtime time per engine step
+        seqs = _cdiv(sv.batch, lay.dp)
+        h = (scn.host_step_us + scn.host_seq_us * seqs) * 1e-6
+        if sv.phase == "decode":
+            h /= scn.host_steps                  # multi-step scheduling: one host pass per host_steps device steps
+        host = {"s": h, "overlap": scn.host_overlap, "steps": scn.host_steps if sv.phase == "decode" else 1,
+                "seqs_per_rank": seqs}
     if sv.phase == "decode":
         step = max(mb, pp) * tick
+        if host:
+            dev = step
+            step = dev + host["s"] if scn.host_overlap == "serial" else max(dev, host["s"])
+            host.update(device_s=dev, exposed_s=step - dev, host_bound=host["s"] > dev)
         e_tok = spec_expected_tokens(spec_k, sv.spec_accept) if spec_k else 1.0
         tpot = step / e_tok
         thr = sv.batch * e_tok / step
@@ -1301,12 +1315,16 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     else:
         # 0.62: the vision encoder runs before the LLM prefill of the step (serial 「假设」)
         step = (mb + pp - 1) * tick + (vis["s"] if vis else 0.0)
+        if host:
+            dev = step
+            step = dev + host["s"] if scn.host_overlap == "serial" else max(dev, host["s"])
+            host.update(device_s=dev, exposed_s=step - dev, host_bound=host["s"] > dev)
         e_tok = 1.0
         tpot = 0.0
         ttft = step
         thr = sv.batch * sv.prompt / step
     return Result(scn, m, stages, tick, step, e_tok, tpot, ttft, thr, thr / lay.cards, fits,
-                  stages[heavy].time.bound, heavy, warnings, mb, moe_skew=skew, vision=vis)
+                  stages[heavy].time.bound, heavy, warnings, mb, moe_skew=skew, vision=vis, host=host)
 
 
 
