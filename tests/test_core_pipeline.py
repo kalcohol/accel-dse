@@ -21,8 +21,9 @@ VIDEO = ("wan2.1-14b", "wan2.1-1.3b", "wan2.2-a14b", "cogvideox-5b", "cogvideox-
 
 def test_every_video_model_has_a_pipeline_with_release_data():
     image = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")      # 0.116 image DiT pipelines
-    assert set(PIPELINES) == set(VIDEO) | set(image)
-    for mid in VIDEO + image:
+    moe = ("lingbot-video-moe-dmd",)                                      # 0.144 MoE video DiT
+    assert set(PIPELINES) == set(VIDEO) | set(image) | set(moe)
+    for mid in VIDEO + image + moe:
         pl = pipeline_for(mid)
         for k in [t.key for t in pl.text] + [v.key for v in (pl.vae, pl.audio) if v]:
             d = component_data(k)
@@ -33,6 +34,7 @@ def test_every_video_model_has_a_pipeline_with_release_data():
     assert abs(stored_bytes("llava-llama3-8b") / 1e9 - 15.01) < 0.01
     assert abs(stored_bytes("qwen3-vl-32b") / 1e9 - 66.71) < 0.01
     assert abs(stored_bytes("t5-v1_1-xxl.deepfloyd") / 1e9 - 19.05) < 0.01      # fp32 .bin (no safetensors header)
+    assert abs(stored_bytes("qwen3-vl-4b.lingbot") / 1e9 - 8.88) < 0.01         # LingBot text_encoder/ (2 shards, bf16)
 
 
 def test_text_encoder_flops_closed_form():

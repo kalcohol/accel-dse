@@ -75,6 +75,9 @@ PROXY = ()
 PROTEIN_PARTIAL = ("openfold", "alphafold2", "boltz-1", "protenix")
 # 0.115 image DiTs were DiT-only (partial); 0.116 adds their text encoder + VAE pipelines → full
 IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")
+# 0.144 VLMs whose vision side is approximated (LLM side exact): Step-5 overview only, MiniCPM one 448² view, MiMo window
+# attention as full + audio encoder storage-only
+VISION_PARTIAL = ("step-5-preview", "minicpm-v-4.7-35b-a3b", "mimo-v2.6-flash")
 
 
 def _kpi(i):
@@ -101,7 +104,8 @@ def test_coverage_list():
     assert all(cov[i] == "proxy" for i in PROXY)
     assert all(cov[i] == "partial" for i in PROTEIN_PARTIAL)
     assert all(cov[i] == "full" and not get_model(i).coverage_reasons for i in IMAGE_FULL)
-    assert sorted(i for i, c in cov.items() if c != "full") == sorted(PROXY + PROTEIN_PARTIAL)
+    assert all(cov[i] == "partial" and len(get_model(i).coverage_reasons) == 1 for i in VISION_PARTIAL)
+    assert sorted(i for i, c in cov.items() if c != "full") == sorted(PROXY + PROTEIN_PARTIAL + VISION_PARTIAL)
     assert [o["id"] for o in offline_entries()] == ["alphafold3"]
 
 

@@ -1,0 +1,342 @@
+{
+ "bytes_llm": 60272785536,
+ "bytes_mtp": 0,
+ "bytes_total": 60272785536,
+ "config": {
+  "_class_name": "LingBotVideoTransformer3DModel",
+  "_diffusers_version": "0.38.0",
+  "axes_dims": [
+   32,
+   48,
+   48
+  ],
+  "axes_lens": [
+   4096,
+   512,
+   512
+  ],
+  "decoder_sparse_step": 1,
+  "depth": 48,
+  "freq_dim": 256,
+  "hidden_size": 2048,
+  "in_channels": 16,
+  "intermediate_size": 6144,
+  "mlp_only_layers": [],
+  "moe_intermediate_size": 768,
+  "n_group": 4,
+  "n_shared_experts": 1,
+  "norm_eps": 1e-06,
+  "norm_topk_prob": true,
+  "num_attention_heads": 16,
+  "num_experts": 128,
+  "num_experts_per_tok": 8,
+  "out_bias": true,
+  "out_channels": 16,
+  "patch_embed_bias": true,
+  "patch_size": [
+   1,
+   2,
+   2
+  ],
+  "qkv_bias": false,
+  "rope_theta": 256.0,
+  "routed_scaling_factor": 2.5,
+  "score_func": "sigmoid",
+  "text_dim": 2560,
+  "timestep_mlp_bias": true,
+  "topk_group": 2
+ },
+ "domain": "video",
+ "fetched": "2026-10-15",
+ "n_tensors": 977,
+ "params_llm": 30084512320,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "robbyant/lingbot-video-moe-dmd-30b-a3b",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 1610809344,
+    "params": 805404672
+   }
+  },
+  "cond": {
+   "bf16": {
+    "bytes": 18882560,
+    "params": 9441280
+   },
+   "fp32": {
+    "bytes": 155543552,
+    "params": 38885888
+   }
+  },
+  "expert": {
+   "bf16": {
+    "bytes": 57982058496,
+    "params": 28991029248
+   }
+  },
+  "io": {
+   "bf16": {
+    "bytes": 528512,
+    "params": 264256
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 1622016,
+    "params": 405504
+   }
+  },
+  "router": {
+   "fp32": {
+    "bytes": 50356224,
+    "params": 12589056
+   }
+  },
+  "shared_expert": {
+   "bf16": {
+    "bytes": 452984832,
+    "params": 226492416
+   }
+  }
+ },
+ "shapes": {
+  "blocks.0.attn.norm_k.weight": [
+   128
+  ],
+  "blocks.0.attn.norm_q.weight": [
+   128
+  ],
+  "blocks.0.attn.to_k.weight": [
+   2048,
+   2048
+  ],
+  "blocks.0.attn.to_out.bias": [
+   2048
+  ],
+  "blocks.0.attn.to_out.weight": [
+   2048,
+   2048
+  ],
+  "blocks.0.attn.to_q.weight": [
+   2048,
+   2048
+  ],
+  "blocks.0.attn.to_v.weight": [
+   2048,
+   2048
+  ],
+  "blocks.0.ffn.experts.w1": [
+   128,
+   768,
+   2048
+  ],
+  "blocks.0.ffn.experts.w2": [
+   128,
+   2048,
+   768
+  ],
+  "blocks.0.ffn.experts.w3": [
+   128,
+   768,
+   2048
+  ],
+  "blocks.0.ffn.router.e_score_correction_bias": [
+   128
+  ],
+  "blocks.0.ffn.router.weight": [
+   128,
+   2048
+  ],
+  "blocks.0.ffn.shared_experts.down_proj.weight": [
+   2048,
+   768
+  ],
+  "blocks.0.ffn.shared_experts.gate_proj.weight": [
+   768,
+   2048
+  ],
+  "blocks.0.ffn.shared_experts.up_proj.weight": [
+   768,
+   2048
+  ],
+  "blocks.0.norm1.weight": [
+   2048
+  ],
+  "blocks.0.norm2.weight": [
+   2048
+  ],
+  "blocks.0.norm_post_attn.weight": [
+   2048
+  ],
+  "blocks.0.norm_post_ffn.weight": [
+   2048
+  ],
+  "blocks.0.scale_shift_table": [
+   1,
+   12288
+  ],
+  "blocks.47.attn.norm_k.weight": [
+   128
+  ],
+  "blocks.47.attn.norm_q.weight": [
+   128
+  ],
+  "blocks.47.attn.to_k.weight": [
+   2048,
+   2048
+  ],
+  "blocks.47.attn.to_out.bias": [
+   2048
+  ],
+  "blocks.47.attn.to_out.weight": [
+   2048,
+   2048
+  ],
+  "blocks.47.attn.to_q.weight": [
+   2048,
+   2048
+  ],
+  "blocks.47.attn.to_v.weight": [
+   2048,
+   2048
+  ],
+  "blocks.47.ffn.experts.w1": [
+   128,
+   768,
+   2048
+  ],
+  "blocks.47.ffn.experts.w2": [
+   128,
+   2048,
+   768
+  ],
+  "blocks.47.ffn.experts.w3": [
+   128,
+   768,
+   2048
+  ],
+  "blocks.47.ffn.router.e_score_correction_bias": [
+   128
+  ],
+  "blocks.47.ffn.router.weight": [
+   128,
+   2048
+  ],
+  "blocks.47.ffn.shared_experts.down_proj.weight": [
+   2048,
+   768
+  ],
+  "blocks.47.ffn.shared_experts.gate_proj.weight": [
+   768,
+   2048
+  ],
+  "blocks.47.ffn.shared_experts.up_proj.weight": [
+   768,
+   2048
+  ],
+  "blocks.47.norm1.weight": [
+   2048
+  ],
+  "blocks.47.norm2.weight": [
+   2048
+  ],
+  "blocks.47.norm_post_attn.weight": [
+   2048
+  ],
+  "blocks.47.norm_post_ffn.weight": [
+   2048
+  ],
+  "blocks.47.scale_shift_table": [
+   1,
+   12288
+  ],
+  "norm_out_modulation.1.bias": [
+   4096
+  ],
+  "norm_out_modulation.1.weight": [
+   4096,
+   2048
+  ],
+  "patch_embedder.bias": [
+   2048
+  ],
+  "patch_embedder.weight": [
+   2048,
+   64
+  ],
+  "proj_out.bias": [
+   64
+  ],
+  "proj_out.weight": [
+   64,
+   2048
+  ],
+  "text_embedder.linear_1.bias": [
+   2048
+  ],
+  "text_embedder.linear_1.weight": [
+   2048,
+   2560
+  ],
+  "text_embedder.linear_2.bias": [
+   2048
+  ],
+  "text_embedder.linear_2.weight": [
+   2048,
+   2048
+  ],
+  "text_embedder.norm.weight": [
+   2560
+  ],
+  "time_embedder.linear_1.bias": [
+   2048
+  ],
+  "time_embedder.linear_1.weight": [
+   2048,
+   256
+  ],
+  "time_embedder.linear_2.bias": [
+   2048
+  ],
+  "time_embedder.linear_2.weight": [
+   2048,
+   2048
+  ],
+  "time_modulation.1.bias": [
+   12288
+  ],
+  "time_modulation.1.weight": [
+   12288,
+   2048
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "text_encoder/model-00001-of-00002.safetensors": 4967229296,
+   "text_encoder/model-00002-of-00002.safetensors": 3908490048,
+   "transformer/diffusion_pytorch_model-00001-of-00013.safetensors": 4735021800,
+   "transformer/diffusion_pytorch_model-00002-of-00013.safetensors": 4605704096,
+   "transformer/diffusion_pytorch_model-00003-of-00013.safetensors": 4605704128,
+   "transformer/diffusion_pytorch_model-00004-of-00013.safetensors": 4998898704,
+   "transformer/diffusion_pytorch_model-00005-of-00013.safetensors": 4999967560,
+   "transformer/diffusion_pytorch_model-00006-of-00013.safetensors": 4999968760,
+   "transformer/diffusion_pytorch_model-00007-of-00013.safetensors": 4999968760,
+   "transformer/diffusion_pytorch_model-00008-of-00013.safetensors": 4998854096,
+   "transformer/diffusion_pytorch_model-00009-of-00013.safetensors": 4605704160,
+   "transformer/diffusion_pytorch_model-00010-of-00013.safetensors": 4605704176,
+   "transformer/diffusion_pytorch_model-00011-of-00013.safetensors": 4605704176,
+   "transformer/diffusion_pytorch_model-00012-of-00013.safetensors": 4998898704,
+   "transformer/diffusion_pytorch_model-00013-of-00013.safetensors": 2512787328,
+   "vae/diffusion_pytorch_model.safetensors": 507591892
+  },
+  "revision": "main",
+  "spec": "robbyant/lingbot-video-moe-dmd-30b-a3b:transformer",
+  "subfolder": "transformer",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}

@@ -59,6 +59,10 @@ SPECS = {
     "qwen3-4b": ("fk_te.json", "black-forest-labs/FLUX.2-klein-4B · text_encoder", lambda k: True, None, ""),
     "qwen-image-vae": ("qi_vae.json", "Qwen/Qwen-Image · vae", None, None, ""),
     "qwen-image-2.1-vae": ("qi21_vae.json", "Qwen/Qwen-Image-2.1-Turbo · vae", None, None, ""),
+    # 0.144 LingBot-Video: Qwen3-VL-4B text encoder shipped in the release (its VAE = the Wan2.1 VAE, header-identical)
+    "qwen3-vl-4b.lingbot": ("lbv_te.json", "robbyant/lingbot-video-moe-dmd-30b-a3b · text_encoder",
+                            lambda k: k.startswith("model.language_model."), None,
+                            "视觉塔与 lm_head 随 text_encoder 加载、计入存储，文生视频不经过它们"),
     "flux2-vae": ("fk_vae.json", "black-forest-labs/FLUX.2-klein-4B · vae", None, "bf16",
                   "int64 张量为 BatchNorm 计数（num_batches_tracked），权重均为 bf16"),
 }

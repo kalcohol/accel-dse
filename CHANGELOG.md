@@ -3,6 +3,35 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.144.0]
+### Added
+- Catalog refresh for the NPU product purpose (official Aug–Oct 2026 open-weight releases, public `config.json` + safetensors headers, as-released dtypes, exact parameter counts). Catalog 85 → 90 releases (72 → 77 listed).
+  - **Step-5-Preview** (`stepfun-ai/Step-5-Preview`, https://huggingface.co/stepfun-ai/Step-5-Preview): new `step5` builder following the official `inference/model.py` + `kernel.py`. 69 SWA-512 layers and 23 DSA full layers: the indexer (16 × 256) scores a cached fp8 summary per completed 8-token region, and each KV group reads its top-512 regions plus the current one (≤ 4104 keys). Head-wise sigmoid gate, 352 experts top-8 + shared, MTP ×3. FP8 experts (bf16 in layers 88–90), FP8 dynamic activations. 598.48 B / 27.1 B active, exact.
+  - **MiMo-V2.6-Flash** (`XiaomiMiMo/MiMo-V2.6-Flash-RL`, https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL): new `mimo_v2` builder. 39 SWA-128 layers (KV 8, attention sink) and 9 full layers (KV 4), qk 192 / v 128, 256 experts top-8 with no shared expert, 1 dense layer, MTP ×3. MXFP4 experts, FP8 attention / dense. 308.78 B, exact.
+  - **Intern-S2-397B** (`internlm/Intern-S2-397B`, https://huggingface.co/internlm/Intern-S2-397B): Qwen3.5-MoE hybrid (GDN + full), bf16. 396.37 B + MTP 6.60 B, exact.
+  - **MiniCPM-V-4.7-35B-A3B** (`openbmb/MiniCPM-V-4.7-35B-A3B`, https://huggingface.co/openbmb/MiniCPM-V-4.7-35B-A3B): Qwen3.5-MoE text, bf16. 34.66 B, exact. The config declares MTP but the release ships no MTP weights, so no draft module is modelled.
+  - **LingBot-Video MoE-DMD 30B-A3B** (`robbyant/lingbot-video-moe-dmd-30b-a3b`, https://huggingface.co/robbyant/lingbot-video-moe-dmd-30b-a3b; source https://github.com/Robbyant/lingbot-video): new `lingbot` MoE DiT builder.
+    - 48 single-stream blocks over [video ‖ text]: MHA with QK-norm, per-token AdaLN plus per-block table, sandwich norms.
+    - FFN: 128 experts top-8 + shared expert; sigmoid grouped routing.
+    - Workload: 8-step DMD, CFG 1, 832×480, 121 frames.
+    - 30.085 B / 2.9 B active, exact.
+- `ir._full_layer_ops`: MoE FFN for full-sequence (DiT) forwards. Router and shared-expert GEMMs run on every local token; routed experts run as grouped GEMMs over the rank's tokens (uniform-routing hit expectation, TP splits `d_expert`, no EP as in the reference). New `Layer.post_norm` charges the sandwich RMSNorms.
+- Vision encoders, all equal to the release headers:
+  - Intern-S2: Qwen ViT, 456.0 M.
+  - Step-5: Perception Encoder 47 × 1536 + two stride-2 3×3 downsamplers + projector, 1.981 B; 169 tokens per 728² overview.
+  - MiniCPM-V-4.7: SigLIP 27 × 1152 with the in-tower 2×2 merger after block 6 (`VisionSpec.insert`) + 2×2 merger, 553.0 M; one 448² view.
+  - MiMo-V2.6: GQA ViT 28 × 1280 (`VisionSpec.kv_heads`) + merger, 728.6 M; the 261 M audio encoder is stored only (`VisionSpec.extra`).
+  - Approximations become coverage reasons (`VisionSpec.approx`), so Step-5, MiniCPM-V-4.7 and MiMo-V2.6 are labelled `partial`: Step-5 crops are not counted, MiniCPM slices are not modelled, MiMo windowed ViT layers are charged as full attention. Their LLM side is exact.
+- LingBot-Video pipeline: text encoder = the release's Qwen3-VL-4B (`qwen3-vl-4b.lingbot`, 1k tokens 「假设」), VAE = Wan2.1 VAE (header-identical, fp32). Coverage is `full`.
+- `AttnCore.idx_sum`: indexer over cached region summaries. Only newly completed regions are compressed; the cache holds fp32 + fp8 per region; decode reads one fp8 summary per region.
+### Fixed
+- `summarize_release` roles:
+  - vision: `merger.` (MiniCPM-V projector), `vit_large_projector`, `speech_embeddings`.
+  - `share_expert` → shared_expert; `.moe.(gate|up|down)_proj` → expert.
+  - Video: `.ffn.router / experts / shared_experts`, `text_embedder` → cond, `norm_post_` → norm.
+  - Re-summarizing every cached release leaves all existing roles and parameter counts unchanged.
+- Fingerprints unchanged (`0a954915c5fb003f` / `53ee9e08165795c6`).
+
 ## [0.143.0]
 ### Changed
 - UI: the accumulator field no longer looks empty. The chip facts show `累加器 <total> KiB (默认 64 KiB/核)`; the field placeholder shows the derived default total, with a tooltip giving per-core × cores (an entered value is the chip total); the assumptions line shows the default breakdown. `api_catalog` chips carry `acc_total_kib` and `acc_kib_per_engine_default`.

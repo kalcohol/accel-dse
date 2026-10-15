@@ -3426,3 +3426,82 @@ share, which is the next lead.
 30.4 %. MoE prefill error is 35.2 %, or 19.9 % with the published 2.56× linear-placement imbalance, against 8.9 % for
 the default. The default (per-pair all-to-all) stays. Its LINK-bound prefill rows match only because the per-pair
 cross-node bytes over-count, which offsets compute that is too fast. Both are known and documented (§ 80, § 88).
+
+## 90. Catalog refresh: Step-5, MiMo-V2.6, Intern-S2, MiniCPM-V-4.7, LingBot-Video MoE (0.144)
+
+**Scope.** These are the notable official open-weight releases from Aug–Oct 2026 that were not yet in the catalog. Each
+entry comes from the public `config.json` plus the safetensors headers, keeps its as-released dtypes, and has an exact
+parameter count (test_core_144).
+
+| id | release | builder | params (LLM / DiT) | dtypes | coverage |
+|---|---|---|---|---|---|
+| step-5-preview | https://huggingface.co/stepfun-ai/Step-5-Preview | `step5` (new) | 598,476,053,952 + MTP 2,515,858,560 | experts FP8 (layers 88–90 bf16), rest bf16, A fp8 | partial (vision: overview only) |
+| mimo-v2.6-flash | https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL | `mimo_v2` (new) | 308,778,780,864 + MTP 987,820,224 | experts MXFP4, attn / dense FP8 (o_proj bf16), A fp8 | partial (ViT windows as full) |
+| intern-s2-397b | https://huggingface.co/internlm/Intern-S2-397B | hybrid (Qwen3.5-MoE) | 396,371,516,160 + MTP 6,595,568,128 | bf16 | full |
+| minicpm-v-4.7-35b-a3b | https://huggingface.co/openbmb/MiniCPM-V-4.7-35B-A3B | hybrid (Qwen3.5-MoE text) | 34,659,889,792 | bf16 | partial (vision: one 448² view) |
+| lingbot-video-moe-dmd | https://huggingface.co/robbyant/lingbot-video-moe-dmd-30b-a3b | `lingbot` (new, MoE DiT) | 30,084,512,320 | bf16, router / modulation fp32 | full (pipeline: Qwen3-VL-4B text encoder + Wan VAE) |
+
+**Step-5** (official `inference/model.py`, `kernel.py`):
+- Attention: 92 layers in the pattern s s s f. All layers are GQA with 64 heads, 4 KV groups and head 192, q / k RMSNorm, and
+  a head-wise sigmoid gate (`g_proj` h → 64). The SWA layers use window 512.
+- DSA full layers: the indexer projects q (16 heads × 256), k, a gate z and fp32 head weights w. Each completed 8-token
+  region is compressed once into a cached summary (`csa_compress_regions`, fp32 + fp8), and the scores are a weighted
+  ReLU over the fp8 summaries. Each KV provider group keeps its top-512 regions plus the current one, and attention reads
+  those tokens from the full K/V.
+- Model: `qsa = 8`, `topk = 4096`, so keys = all ⌈p⌉ until 512 regions, then 4096 + p mod 8. New `AttnCore.idx_sum`:
+  only the regions completed in a pass are compressed (no per-forward re-pooling as in QSA), the cache holds idx_dim·5 / 8
+  bytes per token, and decode reads idx_dim bytes per region.
+- Layers 3–90 are MoE: 352 experts, top-8, one ungated shared expert of 1536. The other layers are dense SwiGLU 13824.
+- MTP ×3: SWA + dense layers, each carrying its own `shared_head` vocab projection, counted in the MTP extra.
+
+**MiMo-V2.6** (`modeling_mimo_v2.py`):
+- Layers: `hybrid_layer_pattern` has 39 SWA-128 layers (KV 8, learned sink per head) and 9 full layers (KV 4). qk 192 /
+  v 128, fused qkv.
+- FFN: `moe_layer_freq` gives 1 dense layer and 47 MoE layers (256 experts, top-8, sigmoid noaux_tc, no shared expert).
+- Experts are stored MXFP4 (U8 packed, e8m0 per 32). quant_method fp8 with dynamic activations gives A = fp8 under the
+  as-released rule.
+- The audio `speech_embeddings` (26 M) now count as vision / multimodal, not LLM.
+
+**MiniCPM-V-4.7.** The 30.7 M `model.merger` projector was classified as LLM MLP. It now counts as vision, and the count is
+exact. The text config keeps Qwen3.5's `mtp_num_hidden_layers: 1`, but the release ships no MTP tensors, so the MTP is
+dropped. It is the only catalog model in that state.
+
+**LingBot-Video MoE** (https://github.com/Robbyant/lingbot-video `transformer_lingbot_video.py`, `pipeline_lingbot_video.py`):
+- Blocks: 48 single-stream blocks over [video ‖ text], with no cross-attention. `text_embedder` maps the Qwen3-VL states
+  (2560) to d = 2048. MHA has 16 heads × 128 with QK-norm and 3-axis RoPE.
+- Modulation: AdaLN = per-token `time_modulation` (6d, evaluated for every joint token in the reference, charged so) plus
+  a per-block `scale_shift_table`. Sandwich RMSNorms sit on the attention and FFN outputs (`Layer.post_norm`).
+- FFN: 128 experts top-8 (sigmoid, 4 groups, top-2 groups) + 1 shared SwiGLU 768.
+- `ir._full_layer_ops` now emits router and shared GEMMs on all local tokens and grouped expert GEMMs with the
+  uniform-routing hit count and m_e = tokens·k / E. Ulysses SP splits tokens, TP splits d_expert, and there is no EP, as in
+  the reference.
+- Workload (README, DMD student): 832×480, 121 frames, 24 fps, 8 steps, guidance 1. The text uses a structured JSON
+  caption of ≈ 1k tokens 「假设」.
+
+**Vision encoders** (`core/vision.py`). Every encoder's parameter count equals the release header.
+- Intern-S2 uses the Qwen ViT with the Qwen2-VL resize: 456,010,480.
+- Step-5 uses the Perception Encoder: conv patch 14 without bias, 52² absolute positions, ln_pre, 47 LayerScale blocks
+  with GELU 8960, no ln_post. Two stride-2 3×3 convolutions follow (1536 → 3072 → 6144), then the projector to 4096,
+  giving 1,981,014,784 parameters and 169 tokens per 728² view. The crops come from an external processor, so only the
+  overview is counted; this is a coverage reason.
+- MiniCPM-V-4.7 uses SigLIP (27 × 1152, 70² positions). `vit_merger` sits after block 6 (`insert_layer_id`): attention at
+  full resolution, a 2×2 concat, then an MLP 4608 → 17216 → 1152, so blocks 6–26 run on N/4 rows. The final merger
+  (2×2, 4608 → 4608 → text) gives 552,986,032 parameters and 64 tokens per 448² view. Slicing (up to 9 slices) is not
+  modelled 「假设」.
+- MiMo-V2.6 uses a ViT with 28 RMSNorm blocks: GQA qkv (32 + 2·8) × 64 with bias, SiLU-gated MLP 4608, and sinks on the
+  24 windowed layers. The merger (5120 → 5120 → 4096) brings it to 728,594,432. The windowed layers are charged as full
+  attention (conservative). The audio encoder and speech embeddings (261,127,168) are stored but not run.
+
+**LingBot pipeline.** The text encoder is the Qwen3-VL-4B from the release's own `text_encoder/` (4.44 B stored). The VAE is
+the release `vae/`, whose header is identical to the Wan2.1 VAE, so the existing `wan-vae` component (fp32) is reused.
+The DiT entry is therefore `full`, like the other video models.
+
+**Considered, not added.**
+- LTX-2.5: gated repo.
+- ESMC-6B: original release May 2026, outside the window.
+- Ling-3.0-flash-VL: same text architecture as Ling-3.1-flash, already covered.
+- MiMo-V2.6-Pro (1.02 T): same builder as Flash; it can be added with a fetch.
+- No new genomics release beyond Carbon.
+
+**Fingerprints** are unchanged (`0a954915c5fb003f` / `53ee9e08165795c6`). The new entries are appended, and no existing
+model's spec changed.

@@ -89,3 +89,8 @@ inclusionAI/Ling-3.1-flash
 Qwen/Qwen-Image-2.1-Turbo:transformer
 Qwen/Qwen-Image:transformer
 black-forest-labs/FLUX.2-klein-4B:transformer
+stepfun-ai/Step-5-Preview
+XiaomiMiMo/MiMo-V2.6-Flash-RL
+internlm/Intern-S2-397B
+openbmb/MiniCPM-V-4.7-35B-A3B
+robbyant/lingbot-video-moe-dmd-30b-a3b:transformer

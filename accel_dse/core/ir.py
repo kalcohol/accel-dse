@@ -533,6 +533,13 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
             fs = lambda m_: (lambda a_, c_: b_ * a_ * (a_ - 1) // 2 + a_ * (c_ + 1))(*divmod(m_, b_))
             icaus = 1.0 if ph.kind == "decode" else min(1.0, (fs(ctx_tot) - fs(ph.ctx)) / q / n_keys)
             pool_vec = b_loc * (ctx_tot // b_) * (b_ * core.idx_dim + 4 * core.idx_dim + 3 * core.idx_rope)
+            if core.idx_sum:
+                # 0.144 Step-5 (inference/kernel.py update_summaries_*): only regions completed in this pass are
+                # compressed (z-gated weighted sum 3/elem, k LayerNorm 4/elem, RoPE, fp8 round 2/elem) and cached;
+                # the indexer reads one fp8 summary (idx_dim bytes) per completed region
+                pool_vec = b_loc * (ctx_tot // b_ - ph.ctx // b_) * (b_ * core.idx_dim * 3 + 6 * core.idx_dim
+                                                                     + 3 * core.idx_rope)
+                ib = float(core.idx_dim)
         if core.dual:
             # V4.1 Indexer: the query at position p scores ⌊p/r⌋ compressed positions (index keys of the kv source)
             r_ = core.compress
@@ -1241,8 +1248,30 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         if tp > 1:
             ops.append(Op("cross_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     ops.append(Op("ffn_norm", "vector", li, vec=t * h * (4 + mod)))
-    ops += [lin("mlp", l, "mlp") for l in L.ffn_linears]
-    ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))     # GELU (tanh) / SwiGLU 「假设」 8 ops / element
+    f = L.ffn
+    if f.kind == "moe":
+        # 0.144 MoE DiT (LingBot-Video LingBotVideoSparseMoeBlock): router + shared expert GEMMs on every local token;
+        # routed experts as grouped GEMMs over this rank's tokens (no EP in the reference: Ulysses SP splits tokens,
+        # every rank holds all experts, TP splits d_expert); uniform-routing expectation of the hit experts
+        for l in L.ffn_linears:
+            role = "router" if l.name.startswith("router") else ("shared_expert" if l.name.startswith("shared") else "mlp")
+            ops.append(lin("moe", l, role))
+        r = moe_routing(f.n_experts, f.top_k, t, 1)
+        d_loc, ein = _cdiv(f.d_expert, tp), f.expert_in(h)
+        if r.hit:
+            u = min(1.0, r.pairs_local / (r.hit * r.m_e))
+            ops.append(replace(gemm(model, "expert.gate_up", li, r.m_e, ein, (2 if f.gated else 1) * d_loc,
+                                    "expert", count=r.hit, stream=True), share=u))
+            ops.append(replace(gemm(model, "expert.down", li, r.m_e, d_loc, ein, "expert", count=r.hit, stream=True),
+                               share=u))
+        ops.append(Op("act", "vector", li, vec=(r.pairs_local * d_loc + (t * _cdiv(f.n_shared * f.d_shared, tp)))
+                      * 4 + t * f.n_experts * 6, sfu=(r.pairs_local * d_loc + t * _cdiv(f.n_shared * f.d_shared, tp)) * 2
+                      + t * f.n_experts))   # SiLU·mul (4 / elem, exp + rcp on SFU); sigmoid router + top-k (6 / expert)
+    else:
+        ops += [lin("mlp", l, "mlp") for l in L.ffn_linears]
+        ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))     # GELU (tanh) / SwiGLU 「假设」 8 ops / element
+    if L.post_norm:      # 0.144 sandwich norms (RMSNorm on the attention and FFN outputs before the gated residual)
+        ops.append(Op("post_norm", "vector", li, vec=2 * t * h * 4))
     if tp > 1:
         ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     ops.append(Op("residual", "vector", li, vec=t * h * (2 + (2 if model.adaln else 0))))

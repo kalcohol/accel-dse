@@ -671,10 +671,56 @@ def _finish(model_id, hf_id, rel, arch, d, L, layer, io_pre, io_post, io_misc, v
                    coverage="partial" if reasons else "full")
 
 
+
+# ---------------------------------------------------------------- 0.144 LingBot-Video (MoE DiT)
+def build_lingbot(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
+    """LingBot-Video MoE (LingBotVideoTransformer3DModel, Robbyant/lingbot-video transformer_lingbot_video.py):
+    single-stream blocks over the joint [video ‖ text] sequence (text_embedder projects the Qwen3-VL hidden states to
+    the model width; no cross-attention), MHA with RMS QK-norm and 3-axis RoPE; AdaLN from a shared per-token time
+    modulation (time_modulation 6·d, computed for every joint token in the reference) + a per-block scale_shift_table;
+    sandwich RMSNorms on the attention / FFN outputs; FFN = sigmoid grouped-top-k MoE (num_experts, top-k,
+    n_group / topk_group) + shared SwiGLU experts (mlp_only_layers stay dense)."""
+    c, sh = rel["config"], rel["shapes"]
+    d, H, L = c["hidden_size"], c["num_attention_heads"], c["depth"]
+    hd = d // H
+    E, k, de, nsh = c["num_experts"], c["num_experts_per_tok"], c["moe_intermediate_size"], c.get("n_shared_experts") or 0
+    core = AttnCore("gqa", n_q=H, n_kv=H, qk_dim=hd, v_dim=hd, rope_dim=hd, causal=False)
+    mlp_only = set(c.get("mlp_only_layers") or [])
+    step = c.get("decoder_sparse_step") or 1
+    p = "blocks.0."
+    a = [("attn.to_q", "q", "col"), ("attn.to_k", "k", "col"), ("attn.to_v", "v", "col"), ("attn.to_out", "o", "row")]
+    alin = tuple(_lin(sh, p + n, s_, sp) for n, s_, sp in a)
+    flin = (Linear("router", d, E, "rep"), Linear("shared_gate_up", d, 2 * nsh * de, "col"),
+            Linear("shared_down", nsh * de, d, "row"))
+    misc, _ = _misc(sh, p, [n for n, *_ in a] + ["ffn.router", "ffn.shared_experts.gate_proj",
+                                                  "ffn.shared_experts.up_proj", "ffn.shared_experts.down_proj"])
+    misc -= 3 * E * de * d          # routed expert tensors (ffn.experts.w1/w2/w3, no .weight suffix) are the Ffn experts
+    moe = Layer(alin, core, Ffn("moe", gated=True, n_experts=E, top_k=k, d_expert=de, n_shared=nsh, d_shared=de),
+                flin, misc, post_norm=True)
+    layers = []
+    for i in range(L):
+        if i in mlp_only or (i + 1) % step:
+            raise ValueError("LingBot-Video dense blocks not in this release")   # every released block is MoE
+        layers.append(moe)
+    io_pre, used = _io(sh, [("patch_embedder", "patch_embed", "img"), ("text_embedder.linear_1", "text_in_1", "txt", "cond"),
+                            ("text_embedder.linear_2", "text_in_2", "txt", "cond"),
+                            ("time_embedder.linear_1", "time_1", "seq"), ("time_embedder.linear_2", "time_2", "seq"),
+                            ("time_modulation.1", "time_mod", "tok", "cond")])
+    io_post, used2 = _io(sh, [("norm_out_modulation.1", "norm_out_mod", "tok", "cond"), ("proj_out", "head", "img")])
+    io_misc = _io_misc(sh, io_pre + io_post, used + used2)
+    wl = replace(wl, patch=tuple(c["patch_size"]), prefix_tokens=wl.text_tokens)
+    return _finish(model_id, hf_id, rel, f"LingBot-Video MoE DiT（{L} 层单流，[视频 ‖ 文本] 联合注意力；"
+                   f"MoE {E} 专家 top-{k} + {nsh} 共享）", d, 0, layers, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
+                       f"每块 FFN = sigmoid 分组路由（{c.get('n_group')} 组选 {c.get('topk_group')}）top-{k} MoE：路由专家按本卡"
+                       "token 的分组 GEMM（参考实现无 EP：Ulysses SP 切 token、每卡持有全部专家），均匀路由期望命中专家数「假设」",
+                       "时间调制 time_modulation / norm_out_modulation 按参考实现对联合序列每个 token 计算（广播后的同一 t_emb）",
+                       f"文本（Qwen3-VL 隐状态，padding=longest，上限 TOKEN_LENGTH 37698）按 {wl.text_tokens} token 计入联合序列「假设」",
+                       "DMD 蒸馏学生：8 步（dmd_student），guidance 1.0（无 CFG），README 默认 832×480、121 帧、24 fps"))
+
 BUILDERS = {"wan": build_wan, "wan22": build_wan22, "cogvideox": build_cogvideox, "hunyuan": build_hunyuan,
             "ltx": build_ltx, "mochi": build_mochi, "stdit": build_stdit, "h3": build_h3, "esm": build_esm,
             "generanno": build_generanno, "qwenimage": build_qwenimage, "qwenimage21": build_qwenimage21,
-            "flux2": build_flux2}
+            "flux2": build_flux2, "lingbot": build_lingbot}
 from .structure import BUILDERS as _STRUCTURE_BUILDERS  # noqa: E402  (0.43 protein structure models)
 BUILDERS.update(_STRUCTURE_BUILDERS)
 

@@ -112,6 +112,9 @@ class AttnCore:
     rope_n: int = 0            # rotary dims actually rotated per head when it differs from the MLA latent split
     qsa: int = 0               # Qwen4Exp QSA: key-block size; query sees every token until > top-k/qsa complete blocks,
                                # then top-k tokens of the best blocks + the incomplete tail block
+    idx_sum: bool = False      # 0.144 Step-5 CSA region summaries: each completed region of ``qsa`` keys is compressed
+                               # once into a cached fp32 + fp8 summary (kernel.py csa_compress_regions); the
+                               # indexer reads the fp8 summaries, no per-forward re-pooling
     idx_kpool: int = 0         # GLM-5.3-Flash: indexer scores gated k-pools of this many keys (top-k/kpool pools)
     lin: str = ""              # linear-attention recurrence: gdn | kda (delta rule, scalar / per-channel gate) | lightning
     lin_chunk: int = 0         # prefill chunk (block) length of the reference chunked kernel
@@ -142,6 +145,8 @@ class AttnCore:
         KV-cache dtype (transformers GlmMoeDsaIndexer caches the bf16 key)."""
         if not self.idx_heads:
             return 0.0
+        if self.idx_sum and self.qsa:   # Step-5: fp32 + fp8 summary per completed region (+ ≤ qsa pending raw keys)
+            return self.idx_dim * 5 / self.qsa
         if self.idx_kpool:      # transformers Glm5NextTextIndexer packs [k, gate scores, valid] in the hidden dtype
             return (2 * self.idx_dim + 1) * kvb / self.compress
         per = self.idx_dim + 4 * math.ceil(self.idx_dim / 128) if self.idx_fp8 else self.idx_dim * kvb
@@ -290,6 +295,7 @@ class Layer:
     hc_head: str = ""                        # last layer only: final stream collapse — mean (GLM-5.3-Flash) | mix (V4)
     cross_linears: tuple[Linear, ...] = ()   # cross-attention projections (video DiT: q from tokens, k/v from text)
     cross: AttnCore | None = None
+    post_norm: bool = False                  # 0.144 sandwich RMSNorms on attention / FFN outputs (LingBot-Video)
     fused_out: bool = False                  # parallel attention + MLP block with one fused output GEMM
                                              # (HunyuanVideo single-stream): one TP all-reduce per block
     # structure models (0.43): a block of the AlphaFold-family trunk / diffusion module
@@ -1084,8 +1090,113 @@ def _build_lfm2(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, [], notes, "full"
 
 
+def _build_mimo_v2(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.144 Xiaomi MiMo-V2.x (modeling_mimo_v2.py): ``hybrid_layer_pattern`` 0 = full / 1 = sliding-window GQA with
+    per-type geometry (full: num_key_value_heads, head_dim / v_head_dim; SWA: swa_num_key_value_heads, swa_head_dim /
+    swa_v_head_dim, window sliding_window) and a learned attention-sink logit per head on the SWA layers
+    (add_swa_attention_sink_bias); fused qkv_proj (q / k / v parameter split identical); ``moe_layer_freq`` 0 = dense
+    SwiGLU (intermediate_size), 1 = sigmoid noaux_tc MoE (n_routed_experts, top-k, no shared expert, score-correction
+    bias); MTP layers = SWA attention + dense FFN + enorm / hnorm / eh_proj."""
+    h = c["hidden_size"]
+    L = c["num_hidden_layers"]
+    H = c["num_attention_heads"]
+    pat = _list(c.get("hybrid_layer_pattern")) or [0] * L
+    moe = _list(c.get("moe_layer_freq")) or [1] * L
+    win = c.get("sliding_window") or c.get("sliding_window_size")
+    E, k, de = c["n_routed_experts"], c["num_experts_per_tok"], c["moe_intermediate_size"]
+    swa_sink = bool(c.get("add_swa_attention_sink_bias"))
+    full_sink = bool(c.get("add_full_attention_sink_bias"))
+
+    def attn(swa: bool):
+        if swa:
+            Hs = c.get("swa_num_attention_heads") or H
+            alin, core = _gqa(h, Hs, c["swa_num_key_value_heads"], c["swa_head_dim"], vd=c["swa_v_head_dim"],
+                              window=win)
+            return alin, (replace(core, sink=True), Hs) if swa_sink else (core, 0)
+        alin, core = _gqa(h, H, c["num_key_value_heads"], c["head_dim"], vd=c.get("v_head_dim") or c["head_dim"])
+        return alin, (replace(core, sink=True), H) if full_sink else (core, 0)
+
+    layers = []
+    for i in range(L):
+        alin, (core, sinks) = attn(bool(pat[i]))
+        if moe[i]:
+            ffn, flin = _ffn_moe(h, E, k, de)
+            misc = E                                   # e_score_correction_bias
+        else:
+            ffn, flin = _ffn_dense(h, c["intermediate_size"])
+            misc = 0
+        layers.append(Layer(alin, core, ffn, flin, misc + sinks + 2 * h))
+    mtp = []
+    for _ in range(c.get("num_nextn_predict_layers") or 0):
+        alin, (core, sinks) = attn(True)
+        ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        mtp.append(Layer(alin, core, ffn, flin, sinks + 2 * h + 3 * h))   # + enorm / hnorm / final_layernorm
+    n_swa = sum(1 for x in pat[:L] if x)
+    notes = [f"MiMo-V2 混合：{n_swa}/{L} 层滑窗 {win}（KV {c['swa_num_key_value_heads']} 头，attention sink），"
+             f"{L - n_swa} 层全注意力（KV {c['num_key_value_heads']} 头）；qk {c['head_dim']} / v {c.get('v_head_dim')}；"
+             f"MoE {E} 专家 top-{k}（无共享专家），{sum(1 for x in moe[:L] if not x)} 层稠密"]
+    return layers, mtp, notes, "full"
+
+
+def _build_step5(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.144 StepFun Step-5 (official inference/model.py + kernel.py).  ``layer_types`` sliding_attention (window
+    sliding_window) | full_attention; every layer GQA (num_attention_groups KV heads, head_dim) with q / k RMSNorm and
+    a head-wise sigmoid output gate (g_proj h → heads).  Full layers are DSA layers (sparse_config): an indexer
+    (sparse_indexer_num_heads × proxy_dim q, single k and z projections, fp32 head weights w) scores the cached
+    summary of every completed region of region_block_size tokens (z-gated compression, fp8), each KV provider group
+    keeps its top-k regions + the current region, and attention reads those tokens of the full K/V.  MoE layers
+    (moe_layer_list): sigmoid router with bias, moe_num_experts top-k, one ungated shared expert (share_expert_dim);
+    other layers dense SwiGLU.  MTP layers (num_nextn_predict_layers) follow the main stack (layer_types continue)
+    with dense FFN, enorm / hnorm / eh_proj and their own shared_head (norm + vocab projection)."""
+    h = c["hidden_size"]
+    L = c["num_hidden_layers"]
+    H, KV, hd = c["num_attention_heads"], c["num_attention_groups"], c["head_dim"]
+    types = _list(c.get("layer_types")) or []
+    win = c.get("sliding_window")
+    sp = c.get("sparse_config") or {}
+    sparse_on = bool(sp.get("enabled")) and "full_attention" in (sp.get("apply_to_layer_types") or [])
+    ih, pd, rb, topk = (sp.get("sparse_indexer_num_heads") or 0, sp.get("proxy_dim") or 0,
+                        sp.get("region_block_size") or 1, sp.get("topk") or 0)
+    moe_ids = set(_list(c.get("moe_layer_list")) or [])
+    E, k, de = c["moe_num_experts"], c.get("moe_top_k") or c["num_experts_per_tok"], c["moe_intermediate_size"]
+    d_sh = c.get("share_expert_dim") or 0
+    rope_f = _list(c.get("partial_rotary_factors")) or []
+
+    def layer(i: int, mtp: bool = False) -> Layer:
+        typ = types[i] if i < len(types) else "full_attention"
+        swa = typ == "sliding_attention"
+        alin, core = _gqa(h, H, KV, hd, window=win if swa else None)
+        alin = alin + (Linear("g_head", h, H, "col"),)
+        misc = 2 * hd + 2 * h
+        if not swa and sparse_on:
+            alin = alin + (Linear("idx_q", h, ih * pd, "rep"), Linear("idx_k", h, pd, "rep"),
+                           Linear("idx_z", h, pd, "rep"), Linear("idx_w", h, ih, "rep"))
+            rope = sp.get("sparse_indexer_rope_dim") or 0
+            core = replace(core, qsa=rb, topk=topk * rb, idx_heads=ih, idx_dim=pd, idx_rope=rope, idx_sum=True,
+                           rope_n=int(hd * (rope_f[i] if i < len(rope_f) else 1)))
+            misc += pd + 2 * pd + H                    # q_norm, k_norm (LayerNorm w + b), ssmax_s
+        if not mtp and i in moe_ids:
+            ffn, flin = _ffn_moe(h, E, k, de, 1 if d_sh else 0, d_sh)
+            misc += E                                  # router_bias
+        else:
+            ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        return Layer(alin, core, ffn, flin, misc + (3 * h if mtp else 0))
+
+    layers = [layer(i) for i in range(L)]
+    mtp = [layer(L + j, True) for j in range(c.get("num_nextn_predict_layers") or 0)]
+    n_sp = sum(1 for l in layers if l.core.idx_heads)
+    notes = [f"Step-5 按官方 inference/model.py + kernel.py 建模：{L - n_sp}/{L} 层滑窗 {win}，{n_sp} 层 DSA 稀疏注意力"
+             f"（索引器 {ih}×{pd}，每 {rb} token 区域压缩为缓存 fp8 摘要，每 KV 组 top-{topk} 区域 + 当前区域 = "
+             f"≤{topk * rb + rb} 个 token）；逐头 sigmoid 输出门；MoE {E} 专家 top-{k} + 1 共享专家（{len(moe_ids)} 层）"]
+    return layers, mtp, notes, "full"
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if mt == "mimo_v2":
+        return _build_mimo_v2, "混合注意力（SWA + full）MoE"
+    if mt == "step5":
+        return _build_step5, "混合注意力（SWA + DSA 区域稀疏）MoE"
     if mt in ("lfm2", "lfm2_moe"):
         return _build_lfm2, "LFM2 混合（短卷积 + GQA）" + (" MoE" if c.get("num_experts") else "")
     if mt.startswith("qwen4_exp"):
@@ -1210,6 +1321,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             last = spec.layers[-1]
             spec = replace(spec, mtp_layers=(replace(last, misc_params=last.misc_params + 2 * h),),
                            notes=spec.notes + ("MTP 模块由发布权重推断（config 中没有 MTP 字段）",))
+        if spec.mtp_layers and not rmtp and rel.get("params_mtp") == 0:
+            # 0.144: the config declares MTP (mtp_num_hidden_layers) but the release ships no MTP weights
+            # (MiniCPM-V-4.7 keeps the Qwen3.5 text config) → no draft module
+            spec = replace(spec, mtp_layers=(), mtp_extra_params=0,
+                           notes=spec.notes + ("config 声明 MTP，但发布权重中没有 MTP 模块 → 不建模 MTP",))
         head_copy = 0
         if tie and "lm_head" in rel.get("roles", {}):
             head_copy = sum(v["params"] for v in rel["roles"]["lm_head"].values())
@@ -1252,7 +1368,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         mp = c.get("max_position_embeddings")
         from .vision import vision_spec
         vs = vision_spec(hf_id, cfg)
-        spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap),
+        rv = rel.get("params_vision") or 0
+        if vs is not None and rv > vs.params:
+            # 0.144: multimodal parts stored with the release but not run for images (MiMo audio encoder + speech
+            # embeddings) → storage only
+            vs = replace(vs, extra=rv - vs.params, params=rv)
+        spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ()),
                        vision=vs, vision_params=vs.params if vs is not None else (rel.get("params_vision") or 0),
                        max_ctx=int(mp) if isinstance(mp, (int, float)) and not isinstance(mp, bool) and mp > 0 else 0)
         if spec.coverage == "full" and spec.coverage_reasons:

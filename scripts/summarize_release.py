@@ -33,14 +33,14 @@ SCALE_RE = re.compile(r"(\.weight_scale_inv$|\.scale_inv$|\.weight_scale(_2)?$|\
                       r"\.qzeros$|\.g_idx$|\.weight_shape$|\.input_scale$|\.weight_global_scale$|"
                       r"\.input_global_scale$|\.weight_zero_point$|_scale$)")
 ROLE = [
-    ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.)"),
+    ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.)"),
     ("mtp", r"(^mtp\.|\.mtp\.|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),
     ("embed", r"(embed_tokens|\bwte\b|tok_embeddings|word_embeddings|^embed\.|\.embed\.weight|ple_embedding)"),
     ("lm_head", r"(lm_head|^output\.weight$|embed_out|^head\.weight$)"),
     ("norm", r"(norm\.|norm$|_norm|ln_|layernorm|\.ln\d)"),
     ("router", r"(\.gate\.weight$|\.router\.|gate\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid)"),
-    ("shared_expert", r"shared_expert"),
-    ("expert", r"(\.experts\.|block_sparse_moe\.experts|routed_expert)"),
+    ("shared_expert", r"(shared_expert|\.share_expert\.)"),
+    ("expert", r"(\.experts\.|block_sparse_moe\.experts|routed_expert|\.moe\.(gate|up|down)_proj\.)"),
     ("attn", r"(self_attn|attention|\.attn\.|linear_attn|\.mixer\.|\.attn_|\.conv\.(in_proj|out_proj|conv)\.)"),  # 0.114 LFM2 short conv
     ("mlp", r"(\.mlp\.|feed_forward|\.ffn\.)"),
 ]
@@ -52,10 +52,14 @@ ROLE_DOMAIN = {
         ("cond", r"(modulation|time_embedding|time_projection|norm\d\.linear|norm_out\.linear|text_embedding|text_proj|"
                  r"time_text_embed|time_embed|context_embedder|caption_proj|t_block|t_embedder|fps_embedder|y_embedder|"
                  r"adaln_proj|norm1_context\.linear|\.norm\.linear|scale_shift_table|token_refiner|_mod\.\d|stream_modulation|"
-                 r"time_guidance_embed)"),  # 0.115 image DiT: Qwen-Image img_/txt_mod, FLUX.2 shared modulation
-        ("norm", r"(norm_[qk]\.|norm_added_[qk]|[qk]_norm\.|norm\d?\.(weight|bias)$|norm_final|norm_out\.norm|"
+                 r"time_guidance_embed|text_embedder)"),  # 0.115 image DiT: Qwen-Image img_/txt_mod, FLUX.2 shared modulation
+        ("norm", r"(norm_post_|norm_[qk]\.|norm_added_[qk]|[qk]_norm\.|norm\d?\.(weight|bias)$|norm_final|norm_out\.norm|"
                  r"\.norm\.(weight|bias)$)"),
         ("attn", r"(self_attn|cross_attn|attn1|attn2|\.attn\.)"),
+        # 0.144 MoE DiT (LingBot-Video): routed / shared experts and the router keep their LLM roles
+        ("router", r"\.ffn\.router\."),
+        ("shared_expert", r"\.ffn\.shared_experts\."),
+        ("expert", r"\.ffn\.experts\."),
         ("mlp", r"(\.ffn\.|\.ff\.|ff_context|\.mlp\.|proj_mlp|single_transformer_blocks\.\d+\.proj_out|_mlp\.)"),
         ("io", r"(patch_embed|^proj_out|^head\.|x_embedder|^proj_in|audio_proj|final_layer\.linear|^img_in|^txt_in|^txt_norm)"),
     ],
@@ -87,7 +91,8 @@ def domain_of(cfg: dict) -> str:
     cls = cfg.get("_class_name") or ""
     if cls in ("WanModel", "WanTransformer3DModel", "CogVideoXTransformer3DModel", "HunyuanVideoTransformer3DModel",
                "LTXVideoTransformer3DModel", "MochiTransformer3DModel", "MiniMaxH3Transformer3DModel",
-               "QwenImageTransformer2DModel", "QwenImage21Transformer2DModel", "Flux2Transformer2DModel") \
+               "QwenImageTransformer2DModel", "QwenImage21Transformer2DModel", "Flux2Transformer2DModel",
+               "LingBotVideoTransformer3DModel") \
             or cfg.get("model_type") == "STDiT3":
         return "video"
     if cfg.get("model_type") == "esm":

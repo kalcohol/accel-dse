@@ -48,6 +48,11 @@ EXTRA_TAIL = [
     ("lfm2.5-24b-a2b", "LiquidAI/LFM2.5-24B-A2B"),
     ("lfm2.5-24b-a2b-fp8", "LiquidAI/LFM2.5-24B-A2B-FP8"),
     ("ling-3.1-flash", "inclusionAI/Ling-3.1-flash"),
+    # 0.144 catalog refresh (official releases 2026-09 / 10; public config.json + safetensors headers, as released)
+    ("step-5-preview", "stepfun-ai/Step-5-Preview"),
+    ("mimo-v2.6-flash", "XiaomiMiMo/MiMo-V2.6-Flash-RL"),
+    ("intern-s2-397b", "internlm/Intern-S2-397B"),
+    ("minicpm-v-4.7-35b-a3b", "openbmb/MiniCPM-V-4.7-35B-A3B"),
 ]
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors",
            "NousResearch/": "meta-llama (gated) → public mirror NousResearch/*, same safetensors"}
@@ -90,6 +95,9 @@ _QI_SRC = ("Qwen/Qwen-Image README：aspect_ratios 1:1 = 1328×1328、num_infere
            "（文本 256 token「假设」）")
 _FLUX2K_SRC = ("black-forest-labs/FLUX.2-klein-4B README：1024×1024、num_inference_steps 4、guidance_scale 1.0（蒸馏，无 CFG）；"
                "Flux2KleinPipeline max_sequence_length 512（padding=max_length）")
+_LBV_SRC = ("Robbyant/lingbot-video README（MoE-DMD）：--scheduler dmd_student --steps 8 --guidance_scale 1、832×480、"
+            "121 帧、24 fps；pipeline_lingbot_video.py：VAE ×4 时间 / ×8 空间（AutoencoderKLWan），文本 = Qwen3-VL 隐状态"
+            "（裁掉系统模板，padding=longest），按示例结构化 JSON 提示 ≈ 1k token 计「假设」")
 DOMAIN_RELEASES = [
     ("wan2.1-14b", "Wan-AI/Wan2.1-T2V-14B", "wan",
      NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, vae_frames="wan", source=_WAN_SRC.format(res="720P（1280×720）"))),
@@ -137,6 +145,10 @@ DOMAIN_RELEASES = [
      NativeWorkload("gen", frames=1, height=1328, width=1328, vae_s=8, steps=50, cfg=2, source=_QI_SRC)),
     ("flux.2-klein-4b", "black-forest-labs/FLUX.2-klein-4B", "flux2",
      NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=4, cfg=1, source=_FLUX2K_SRC)),
+    # 0.144 MoE video DiT (transformer/ subfolder of the diffusers release)
+    ("lingbot-video-moe-dmd", "robbyant/lingbot-video-moe-dmd-30b-a3b", "lingbot",
+     NativeWorkload("gen", frames=121, height=480, width=832, fps=24, vae_frames="wan", steps=8, cfg=1,
+                    text_tokens=1024, source=_LBV_SRC)),
 ]
 _DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
 # GitHub-only releases: the repo name alone does not say which checkpoint is evaluated
@@ -169,6 +181,8 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("hfbio", "Hugging Face Bio（Carbon 基因组）", ("HuggingFaceBio/",)),
     ("liquid", "Liquid AI（LFM）", ("LiquidAI/",)), ("ant", "蚂蚁集团（Ling）", ("inclusionAI/",)),
     ("bfl", "Black Forest Labs（FLUX）", ("black-forest-labs/",)),
+    ("stepfun", "阶跃星辰（Step）", ("stepfun-ai/",)), ("xiaomi", "小米（MiMo）", ("XiaomiMiMo/",)),
+    ("openbmb", "面壁智能 / OpenBMB（MiniCPM）", ("openbmb/",)), ("robbyant", "Robbyant（LingBot-Video）", ("robbyant/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
@@ -188,6 +202,8 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
     ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)),
     ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),
+    ("stepfun", "Step-5", ("step-5",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),
+    ("openbmb", "MiniCPM-V 4.7", ("minicpm-v-4.7",)), ("robbyant", "LingBot-Video", ("lingbot-video",)),
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.

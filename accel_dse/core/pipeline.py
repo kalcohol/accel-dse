@@ -132,6 +132,14 @@ PIPELINES: dict[str, Pipeline] = {
         (TextEnc("qwen3-4b", "Qwen3-4B 文本塔", 512, 32, 128, causal=True,
                  note="padding 到 max_sequence_length 512；取第 9/18/27 层隐状态，HF 前向跑满 36 层"),),
         Vae("flux2-vae", "os_s", "FLUX.2 VAE（SD-VAE 型 2D 解码器，×8；DiT 侧 2×2 打包）")),
+    # 0.144 MoE video DiT: release text_encoder/ (Qwen3-VL-4B) + vae/ (AutoencoderKLWan, header-identical to Wan2.1's;
+    # README --vae_dtype fp32)
+    "lingbot-video-moe-dmd": Pipeline(
+        (TextEnc("qwen3-vl-4b.lingbot", "Qwen3-VL-4B 文本塔", 1024, 32, 128, causal=True,
+                 note="系统模板编码后裁掉（crop_start），结构化 JSON 提示 ≈ 1k token「假设」，padding=longest；"
+                      "取最后一层隐状态（HIDDEN_STATE_SKIP_LAYER 0）"),),
+        _WAN_VAE, neg_prompt=False,
+        note="DMD 学生 guidance 1：无 uncond 分支，每请求只编码 1 条提示"),
 }
 
 
