@@ -970,16 +970,24 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         warnings.append("spec_k 已忽略：该模型没有 MTP 模块（独立草稿模型的投机解码未建模）")
     pp = lay.pp
     skew = _moe_skew(m, sv, lay, warnings)
+    rskew = skew                     # 0.132: what the phases route with (SkewSpec carries the busiest rank's shape)
+    if skew != 1.0:
+        from .ir import SkewSpec, hot_rank_probs
+        f_ = next(L.ffn for L in m.layers if L.ffn.kind == "moe")
+        if sv.moe_expert_load:
+            rskew = SkewSpec(skew, hot_rank_probs(tuple(sv.moe_expert_load), lay.ep, f_.top_k))
+        elif sv.moe_skew_spread != "popular":
+            rskew = SkewSpec(skew, (), sv.moe_skew_spread)
     if sv.phase == "decode":
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
         q = 1 + spec_k
-        ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=skew)
+        ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=rskew)
         ctx_cap = sv.ctx + q
     else:
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
-        ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=skew)
+        ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=rskew)
         ctx_cap = sv.prompt
     cp_ring = None
     if lay.cp > 1:
@@ -996,7 +1004,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             # 0.107: attn_mode = bidir — no mask, every rank's q queries see all S keys (was the causal S²/(2cp):
             # CP silently removed up to half of the bidirectional attention work)
             c_eq = S - q_loc
-        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=skew, cp=cp, cp_len=S)
+        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=rskew, cp=cp, cp_len=S)
         ctx_cap = q_loc
         cp_ring = (cp, lay.tp, _cdiv(sv.batch, mb) * q_loc / lay.dp)   # tokens of this rank's block per step
         lay = Layout(lay.pp, lay.tp, lay.dp * cp, lay.ep, lay.etp, 1)   # internal: CP ranks as attention replicas

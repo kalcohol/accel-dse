@@ -3021,3 +3021,31 @@ invariants, all now tested:
 - byte entries are converted at 8 bits per byte.
 
 A table with none of the entries a report uses yields no total rather than zero energy.
+
+## 78. EP-skew routing: distinct experts on the busiest rank (0.132)
+
+**Assumption under review.** With `serving.moe_skew = s > 1`, the busiest EP rank receives s × the mean token-expert
+pairs. Since 0.49 its distinct-expert count stays at the uniform expectation n·(1−(1−k/E)^T): the extra load is assumed
+to land on experts the rank already reads ("popular"), so weight bytes do not grow, only rows per expert.
+
+**Mechanism.** For a token, expert e is selected with inclusion probability p_e. Over T tokens a rank reads expert e
+at least once with probability 1−(1−p_e)^T, so its expected distinct experts are Σ_e 1−(1−p_e)^T over its experts
+(occupancy). With a measured load, p_e = k·load_e/Σload. The stage waits for the slowest rank, and the rank reading
+the most experts need not be the rank with the most pairs: a hot rank whose load sits on a few experts reads few
+distinct experts while a flat, cooler rank reads many. The model therefore takes the maximum occupancy over ranks
+(contiguous placement), floored at ceil(pairs/T) and capped at n_local.
+
+**Validation (Monte-Carlo routing, Gumbel top-k without replacement).** Configurations (E, k, EP) = (256,6,8),
+(128,8,8), (128,4,4), (384,8,16); popularity shapes Zipf 0 / 0.5 / 1.0, one hot rank (1.5×, 3×), one hot expert;
+T = 1…256, 300 trials. Expected distinct experts on the busiest rank, mean relative error: popular rule 22 %,
+uniform-in-rank spread 11 % (worse than popular on Zipf ≥ 0.5), exact occupancy 1.6 % (max 13 %). Against the
+per-step maximum over ranks (what sets time), exact occupancy is 12 % vs 27 % for the popular rule.
+
+**Adoption.** Exact occupancy applies only when `serving.moe_expert_load` is given; no validation group uses loads and
+fingerprints are unchanged, so it is the default for loads. For a scalar skew the shape is unknown; the popular rule
+stays the default and `serving.moe_skew_spread = "uniform"` (p = k·s/E on every local expert of the hot rank) is
+opt-in because it worsens the Zipf group.
+
+**Open gap.** Even with uniform routing the per-step maximum over ranks of distinct experts exceeds the expectation
+(random imbalance, e.g. 13.9 vs 10.3 at E=256, k=6, EP=8, T=16). Modelling it would change the default for every
+MoE scenario and the fingerprints; it is not done.

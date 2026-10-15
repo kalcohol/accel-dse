@@ -3,6 +3,13 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.132.0]
+### Changed
+- MoE routing with a measured `serving.moe_expert_load`: the busiest rank's distinct experts are now the exact occupancy Σ 1−(1−p_e)^T (p_e = k·load_e/Σload), maximised over EP ranks, instead of the uniform expectation. Against a Monte-Carlo routing simulation the mean error falls from 22 % to 1.6 %. Concentrated loads now read fewer experts (faster); a hot rank with spread-out load reads more (slower). Fingerprints and validation groups are unchanged.
+### Added
+- `serving.moe_skew_spread` (`popular` default | `uniform`, opt-in): for a scalar `moe_skew`, `uniform` spreads the hot rank's extra pairs over all its experts (p = k·s/E). Not the default because it is worse than the current rule for Zipf-shaped popularity.
+- Tests for occupancy vs Monte-Carlo, unchanged scalar behaviour, the opt-in, and validation.
+
 ## [0.131.0]
 ### Fixed
 - Energy report: a table that held only entries the single-scenario report cannot use (`idle_W_prefill`, which is for the PD prefill pool; `pJ_bit_host` without host-link traffic) produced `J_per_unit = 0` and `avg_W_per_card = 0`, which reads as zero energy. It now returns no total plus a note, as the PD energy helper already did, and the UI shows the note.

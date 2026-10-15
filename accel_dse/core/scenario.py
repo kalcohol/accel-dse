@@ -39,6 +39,10 @@ class Serving:
     ttft_slo_ms: float = 2000.0
     moe_skew: float = 1.0          # MoE: busiest EP rank's token-expert pairs / mean (0.49; 1 = uniform) 「假设」
     moe_expert_load: tuple[float, ...] = ()   # MoE: relative tokens per expert (measured) → skew per EP layout
+    # 0.132: where a scalar moe_skew's extra pairs land on the busiest rank — "popular" (already-read experts, the
+    # 0.49 assumption: distinct experts = the uniform expectation) | "uniform" (spread over all the rank's experts:
+    # P(token → local expert) = k·skew/E).  Opt-in; ignored with moe_expert_load (exact occupancy from the load).
+    moe_skew_spread: str = field(default="popular", metadata={"omit_default": True})
     prefix_cached: int = 0         # prefill: prompt tokens already in the KV cache (prefix-cache hit, 0.52) 「假设」
     # 0.62 — VLM images per request (vision encoder at prefill; image tokens join the prompt / KV).  Serialised only
     # when not default (scenario hashes of earlier versions unchanged).  0 = text-only request.
@@ -87,6 +91,8 @@ class Serving:
                 raise ValueError("serving.moe_expert_load: ≤ 4096 finite numbers ≥ 0 with a positive sum")
             if self.moe_skew != 1.0:
                 raise ValueError("serving.moe_skew and serving.moe_expert_load are alternatives — set one")
+        if self.moe_skew_spread not in ("popular", "uniform"):
+            raise ValueError("serving.moe_skew_spread must be popular|uniform")
 
 
 PLACEMENTS = ("auto", "resident", "shard", "offload", "shard+offload")

@@ -274,13 +274,32 @@ class Routing:
     pairs_mean: float = 0.0  # mean pairs per rank (= pairs_local without skew)
 
 
-def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int, skew: float = 1.0) -> Routing:
+@dataclass(frozen=True)
+class SkewSpec:
+    """0.132: EP load skew with the busiest rank's routing shape.  ``hot_p``: P(a token routes to each expert stored on
+    the busiest rank) from a measured load (exact occupancy); ``spread``: scalar-skew assumption (popular | uniform)."""
+    skew: float = 1.0
+    hot_p: tuple = ()
+    spread: str = "popular"
+
+    def __float__(self):
+        return float(self.skew)
+
+
+def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int, skew=1.0) -> Routing:
     """Uniform-routing expectation (「假设」).  E_hit = n·(1−(1−k/E)^T).
 
     ``skew`` (0.49, default 1 = uniform): the busiest EP rank receives skew × the mean T·k/EP token-expert pairs
     (capped at T·k and at T per local expert).  Its distinct-expert count stays the uniform expectation (the extra
     load lands on popular experts) unless T rows per expert cannot hold it.  The busiest rank sets the stage time
-    (all ranks wait for it at the combine all-to-all)."""
+    (all ranks wait for it at the combine all-to-all).
+
+    0.132 (``SkewSpec``): with a measured per-expert load the busiest rank's distinct experts are the occupancy
+    max over ranks of Σ_e 1 − (1 − p_e)^T over the rank's experts (p_e = k · load_e / Σ load, a token's inclusion probability; Monte-Carlo
+    routing: mean error 1.6 % vs 22 % for the popular-expert rule, MODEL §78).  Opt-in ``spread = "uniform"`` for a
+    scalar skew: p = k · skew / E on every local expert."""
+    spec = skew if isinstance(skew, SkewSpec) else None
+    skew = float(skew)
     n_local = _cdiv(n_experts, ep)
     if tokens <= 0:
         return Routing(0, 0.0, 0, 0, n_local)
@@ -293,9 +312,24 @@ def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int, skew: float = 
     pairs_local = pairs_mean
     if skew > 1.0 and ep > 1:
         pairs_local = min(pairs_mean * skew, float(tokens * top_k), float(n_local * tokens))
-        hit = min(n_local, max(hit, math.ceil(pairs_local / tokens - 1e-9)))
+        if spec is not None and spec.hot_p:
+            ranks = spec.hot_p if isinstance(spec.hot_p[0], tuple) else (spec.hot_p,)
+            occ = max(sum(1.0 - (1.0 - min(1.0, p)) ** tokens for p in r) for r in ranks)
+            hit = math.ceil(occ - 1e-9)
+        elif spec is not None and spec.spread == "uniform":
+            hit = math.ceil(n_local * (1.0 - (1.0 - min(1.0, top_k * skew / n_experts)) ** tokens) - 1e-9)
+        hit = min(n_local, max(1, hit, math.ceil(pairs_local / tokens - 1e-9)))
     m_e = max(1, math.ceil(pairs_local / hit))
     return Routing(tokens, pairs_local, hit, m_e, n_local, pairs_mean)
+
+
+def hot_rank_probs(load: tuple, ep: int, top_k: int) -> tuple:
+    """0.132: per-rank tuples of inclusion probabilities k · load_e / Σ load (contiguous placement, as skew_from_load).
+    moe_routing takes the max occupancy over ranks: the rank reading the most distinct experts need not be the rank
+    with the most pairs (a concentrated hot rank reads few experts while a flat cool rank reads many)."""
+    n_local = _cdiv(len(load), ep)
+    tot = sum(load) or 1.0
+    return tuple(tuple(min(1.0, top_k * x / tot) for x in load[r * n_local:(r + 1) * n_local]) for r in range(ep))
 
 
 def skew_from_load(load: tuple[float, ...], ep: int) -> float:
