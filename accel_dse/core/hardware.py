@@ -111,6 +111,11 @@ class Chip:
     dma_engines: int | None = field(default=None, metadata={"omit_default": True})
     dma_outstanding_KiB: float | None = field(default=None, metadata={"omit_default": True})
     dram_latency_ns: float | None = field(default=None, metadata={"omit_default": True})
+    # 0.135 (opt-in, instance_sched "cta"): "dram" = each output tile also pays its pipeline prologue (one K-stage of
+    # A and B, 128 B of K per row: the TMA swizzle width) and its C writeback at the SM's share of DRAM bandwidth,
+    # not overlapped with the main loop (MODEL §81).  tile_io_Bpc: chip DRAM bytes / cycle, filled by evaluate.
+    tile_io: str = field(default="", metadata={"omit_default": True})
+    tile_io_Bpc: float = field(default=0.0, metadata={"omit_default": True})
 
     def __post_init__(self):
         # 0.94: JSON round-trips give lists — keep the field hashable and the scenario hash stable
@@ -149,6 +154,8 @@ class Chip:
                 raise ValueError("set either chip.sram_port_Bpc (chip-wide) or chip.sram_port_Bpc_per_engine, not both")
         if self.attn_fmt not in ("", "kv"):
             raise ValueError("chip.attn_fmt must be '' (bf16 + KV up-cast) or 'kv' (native KV-format attention)")
+        if self.tile_io not in ("", "dram"):
+            raise ValueError("chip.tile_io must be empty or dram")
         if self.attn_sched and self.attn_sched not in INSTANCE_SCHEDS:
             raise ValueError(f"chip.attn_sched must be empty or one of {', '.join(INSTANCE_SCHEDS)}")
         if self.instance_sched not in INSTANCE_SCHEDS:

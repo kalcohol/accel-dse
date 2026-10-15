@@ -209,6 +209,11 @@ def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost
     E = ch.engines
     macs = ch.rows * ch.cols * rate
     port = ch.port_Bpc / E
+    if ch.tile_io_Bpc > 0 and ch.fmt_ceiling:   # 0.135: the format ceiling is the main loop's rate, per tile
+        fc = dict(ch.fmt_ceiling)
+        cap = fc.get(f"gemm:{ex}", fc.get(ex))
+        if cap:
+            macs *= cap
     best = None
     for tm, tn in CTA_TILES:
         tiles = _cd(m, tm) * _cd(n, tn) * count
@@ -219,6 +224,10 @@ def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost
             mac_t = tm * tn * kk / macs
             feed_t = (tm * ab + tn * wb) * kk / port
             epi = tm * tn * (ob if s == 1 else 4.0) / port
+            if ch.tile_io_Bpc > 0:       # 0.135 opt-in: prologue stage + C writeback at the SM's DRAM share
+                io = ch.tile_io_Bpc / E
+                bk = min(kk, max(1, int(128 / max(ab, wb, 0.5))))
+                epi = max(epi, tm * tn * (ob if s == 1 else 4.0) / io) + bk * (tm * ab + tn * wb) / io
             waves = _cd(tiles * s, E)
             red = (m * n * count * 4.0 * s + m * n * count * ob) / ch.port_Bpc if s > 1 else 0.0
             cyc = waves * (max(mac_t, feed_t) + epi) + red

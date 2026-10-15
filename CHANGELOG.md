@@ -3,6 +3,13 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.135.0]
+### Added
+- `Chip.tile_io` (`""` default | `"dram"`, opt-in, with `instance_sched = "cta"`): each GEMM output tile also pays its pipeline prologue (one K-stage of A and B) and its C writeback at the SM's share of DRAM bandwidth. With a format ceiling, the main loop runs at the ceiling per tile. Against the DeepSeek prefill trace's 9 DeepGEMM shapes the mean error is 7 % (every shape 0.89–0.98×), against 33 % for the default `wide` and 34 % for `cta`. Small-K GEMMs (down, q_b) are no longer too fast.
+- `extval.tileio_variant`; MODEL §81.
+### Not changed (default-change rule)
+- On top of `cta` GEMMs, tile I/O improves almost every validation group. Compared with the shipped `wide` default it worsens several groups, so the default is unchanged; fingerprints are unchanged. Per-SM attention scheduling (`attn_sched = "cta"`) also remains opt-in.
+
 ## [0.134.0]
 ### Added
 - `serving.moe_a2a` (`pair` default | `node` | `auto`, opt-in; CLI `--moe-a2a`): node-deduplicating EP all-to-all, as in DeepEP's normal kernels. A token crosses the scale-out network once per destination node. Network bytes scale by N·(1 − C(E−E/N, k)/C(E, k))/k, which is 0.45 for DeepSeek-V3 on EP32 across 4 nodes. `auto` applies it in prefill only.

@@ -3114,3 +3114,39 @@ other group changes (decode and single-node rows are untouched).
 0.5–0.7× at 32K ISL. This is the prefill-utilisation pattern of §39 (`wide` scheduling on large prefill GEMMs and
 attention), not an MoE mechanism. `candidate_variant` brings r4 to 19.8 %, but it still fails the one-row moe-static
 group (§39, §40).
+
+## 81. GEMMs with a small inner dimension: per-tile I/O (0.135, opt-in)
+
+**Trace shapes.** All prefill GEMMs in deepseek-ai/profile-data are DeepGEMM FP8 kernels: 128×128 tiles, a 5-stage
+pipeline, and a grid of 108 SMs (132 minus the all-to-all's SMs) or 132 for the dense layers. Per call, one
+micro-batch of 8192 tokens.
+
+**Mechanism.** Per output tile, the time is (K / 128)·t_k + t_fix. Inside each tile:
+- the main loop runs at the format ceiling (DeepGEMM's best is 78 % of FP8 peak, the existing `fmt_ceiling`);
+- t_fix is not hidden by the main loop. It is the prologue (one K-stage of A and B, 128 B of K per row, the TMA swizzle
+  width) plus the C-tile writeback, both at the SM's 1/E share of DRAM bandwidth.
+
+Tiles quantize along M and N, and waves quantize over the SMs. All of this is in the existing `cta` model except t_fix:
+before, its epilogue went to the SRAM port and there was no prologue. With the catalog DRAM efficiency, t_fix is about
+3.4 µs, equal to 12 K-iterations. This is why K = 2048 (down) and K = 1536 (q_b) were too fast: their main loop is
+only 16 or 12 iterations long.
+
+**Per-op check (no fitting).** Model / trace ratios over 9 trace shapes:
+
+| model | gmean | mean abs error |
+|---|---|---|
+| default `wide` | 0.97 | 33 % (shape-dependent, up to 2× either way) |
+| `cta` + ceiling | 0.74 | 34 % (small-K shapes 0.57–0.63) |
+| `cta` + ceiling + tile I/O | 0.93 | 7 % (every shape 0.89–0.98) |
+
+**Opt-in.** `Chip.tile_io = "dram"` applies with `instance_sched = "cta"`; evaluate fills `tile_io_Bpc` from the system
+DRAM bandwidth. Test variant: `extval.tileio_variant`.
+
+**Validation groups.** Adding tile I/O on top of `cta` GEMMs improves nearly every group:
+- catalog + cta: all groups better (for example v1 max 48 → 26 %, r4 91 → 42 %);
+- candidate + cta: better everywhere except v1 max (19.6 → 31.0 %) and r4 (27.3 → 31.5 %), which overshoot to
+  0.78× / 0.86×.
+
+Against the shipped default (`wide` GEMMs), it worsens v1 TTFT, v1 static, moe decode, moe static and r4. So it is
+opt-in. The default still schedules GEMMs and attention as `wide`. Per-SM attention scheduling (`Chip.attn_sched =
+"cta"`) is also opt-in, used only in `candidate_variant`.

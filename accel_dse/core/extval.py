@@ -123,6 +123,8 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         chip = replace(chip, split_instances=True)
     if v.get("sched"):                 # 0.91: Chip.instance_sched (reference chips ship "wide")
         chip = replace(chip, instance_sched=v["sched"])
+    if v.get("tile_io"):               # 0.135: CTA tile prologue + C writeback at the SM's DRAM share (opt-in)
+        chip = replace(chip, tile_io="dram")
     if v.get("kernel_us") is not None:  # 0.92: per-kernel fixed cost
         chip = replace(chip, kernel_us=v["kernel_us"])
     if v.get("fmt_ceiling") and chip.name.split("-")[0] in HOPPER:   # 0.94: Hopper only
@@ -349,6 +351,13 @@ SOURCE_ESTIMATOR = {
 def estimator(r: dict) -> dict:
     """0.105: batching estimator of a max-load row (SOURCE_ESTIMATOR; unknown sources keep the static search)."""
     return SOURCE_ESTIMATOR.get(r.get("src"), dict(kind="static", chunk=CB_CHUNK, max_seqs=None))
+
+
+def tileio_variant(base: str = "catalog") -> str:
+    """0.135: base with GEMMs on the CTA tile model (instance_sched "cta") + per-tile DRAM I/O (MODEL §81)."""
+    name = base + "+tileio"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "sched": "cta", "tile_io": True})
+    return name
 
 
 DEEPEP_NORMAL_SM = 20 / 132   # 0.134: DeepEP Buffer.num_sms default (20) of the 132 H800 / H100 SMs
