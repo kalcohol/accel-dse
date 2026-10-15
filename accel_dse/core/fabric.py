@@ -329,6 +329,8 @@ def candidates(kind: str, payload: float, group: int, sys, stride: int = 1, k_pk
     def beta(i: int, pattern: str) -> float:
         n, ln, t = lv[i]
         b = ln.GBps * 1e9
+        if fab.channels and t in ("link", "net"):      # 0.124: per-channel copy-engine cap
+            b = min(b, fab.channels * fab.channel_GBps * 1e9)
         if t == "link":
             f = su_a2a_factor(topo, dom, n, s_link, fab.torus_x) if pattern == "alltoall" else \
                 1.0 if pattern == "innet" else su_ring_factor(topo, dom, n, s_link, fab.torus_x)

@@ -262,6 +262,9 @@ class Fabric:
                   max(compute / DRAM window, link) + Σα (exposed time) instead of each collective's bw + α alone.
     kv_feedback   PD: the KV stream's share of the decode pool's NIC slows the decode pool's network collectives
                   (u_kv; decode TPOT recomputed) — 0.59 only reported the collectives' slowdown on the KV stream.
+    channels / channel_GBps  0.124 「假设」 (0 = off): a collective is split over ``channels`` rings / trees, each
+                  driven by one copy engine (an SM / DMA queue) that moves at most ``channel_GBps``; a scale-up or
+                  network tier then delivers min(link GBps, channels × channel_GBps) to the collective (NCCL nChannels).
     kv_feedback_prefill  0.121 PD (with kv_feedback): the same u_kv also takes the prefill pool's NICs (the sending
                   side of each pair carries the same bytes), so the prefill pool's network collectives run on
                   (1 − u_kv)·net.GBps too; prefill TTFT / request rate recomputed inside the same fixed point.
@@ -297,12 +300,19 @@ class Fabric:
     hop_core_us: float = 0.0
     protocol: str = "off"
     kv_feedback_prefill: bool = field(default=False, metadata={"omit_default": True})   # 0.121
+    channels: int = field(default=0, metadata={"omit_default": True})          # 0.124 (0 = off)
+    channel_GBps: float = field(default=0.0, metadata={"omit_default": True})  # 0.124
 
     def __post_init__(self):
         if not all(isinstance(getattr(self, k), bool) for k in ("enabled", "contention", "kv_feedback",
                                                                  "kv_feedback_prefill")):
             raise ValueError("fabric.enabled / fabric.contention / fabric.kv_feedback / fabric.kv_feedback_prefill "
                              "must be booleans")
+        if isinstance(self.channels, bool) or not isinstance(self.channels, int) or not 0 <= self.channels <= 1024:
+            raise ValueError("fabric.channels must be an integer in [0, 1024]")
+        if isinstance(self.channel_GBps, bool) or not isinstance(self.channel_GBps, (int, float)) \
+                or not 0 <= self.channel_GBps <= 1e5 or (self.channels > 0) != (self.channel_GBps > 0):
+            raise ValueError("fabric.channels and fabric.channel_GBps are set together (both > 0) or both 0")
         if self.net_tiers not in NET_TIERS or isinstance(self.net_tiers, bool):
             raise ValueError("fabric.net_tiers must be 2 (leaf-spine) or 3 (leaf / spine / core)")
         if isinstance(self.oversub_spine, bool) or not isinstance(self.oversub_spine, (int, float)) \

@@ -2899,3 +2899,19 @@ DES vs closed-form token hit ratio: |Δ| ≤ 0.01.
 the decode context to prompt + output/2.  The DES keeps the prompt-length law of `serving` (it does not vary S per turn),
 like the closed form.
 
+
+
+## 70. Validator audit and collective channel cap (0.124)
+
+**Audit.** Every validator was checked against an independent brute-force implementation on small random cases:
+RadixLRU vs a list-LRU over path prefixes (3000 cases), LRUCache (2000), the overlap pipe makespan vs an O(n²)
+flow-shop recurrence (4000) and its repeat shortcuts vs flat replay, DecodeReplica / ColocPrefillFirst vs a direct
+step loop (600), KVServer vs the Lindley recursion (300), `_pct` vs exact rationals, vecsanity PUBLIC values vs
+FLOPS-derived values and the extval summary recomputed. All matched; the only defects were in scoring: a zero ratio
+crashed `extval.summary` (now `n_invalid`) and the stored `data/ext_validation.json` dated from 0.66
+(regenerated; ≤ 0.4 pt on any summary error, no conclusion changes; the §56 group table is reproduced exactly).
+
+**Channels (opt-in, 「假设」).** A collective is split over `channels` rings / trees, each driven by one copy engine
+that moves at most `channel_GBps`. Per scale-up / network tier the collective sees
+b = min(link GBps, channels × channel_GBps) before the topology factor. Both 0 (default) = off, bit-identical.
+Point-to-point (PP / KV) transfers are not capped. No public per-channel figure is used; values are user assumptions.

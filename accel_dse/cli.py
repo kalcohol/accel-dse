@@ -186,6 +186,10 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="0.61: NCCL-like protocol (bandwidth efficiency vs per-step latency); auto = fastest per collective 「假设」")
     p.add_argument("--kv-feedback", dest="kv_feedback", action="store_true", default=None,
                    help="0.60 PD: KV stream's NIC share slows the decode pool's network collectives 「假设」")
+    p.add_argument("--fabric-channels", dest="fabric_channels", type=int, default=None,
+                   help="0.124: channels per collective (NCCL nChannels; with --channel-gbps) 「假设」")
+    p.add_argument("--channel-gbps", dest="channel_GBps", type=float, default=None,
+                   help="0.124: GB/s one channel's copy engine moves 「假设」")
     p.add_argument("--kv-feedback-prefill", dest="kv_feedback_prefill", action="store_true", default=None,
                    help="0.121 PD (with --kv-feedback): the same KV share also slows the prefill pool's network "
                         "collectives (TTFT recomputed) 「假设」")
@@ -401,6 +405,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                                                 ("pod_nodes", "pod_nodes"), ("oversub_spine", "oversub_spine"),
                                                 ("overlap", "fabric_overlap"), ("kv_feedback", "kv_feedback"),
                                                 ("kv_feedback_prefill", "kv_feedback_prefill"),
+                                                ("channels", "fabric_channels"), ("channel_GBps", "channel_GBps"),
                                                 ("hop_spine_us", "hop_spine_us"), ("hop_core_us", "hop_core_us"),
                                                 ("hop_d2d_us", "hop_d2d_us"), ("hop_link_us", "hop_link_us"),
                                                 ("hop_net_us", "hop_net_us"), ("hop_net_tree_us", "hop_net_tree_us"),

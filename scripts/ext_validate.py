@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from accel_dse import __version__
 from accel_dse.core import extval as X
 
 ap = argparse.ArgumentParser()
@@ -13,7 +14,7 @@ ap.add_argument("--out", default=str(Path(X.DATA).with_name("ext_validation.json
 ap.add_argument("--calib", default=None)
 a = ap.parse_args()
 REPORT = ("catalog", "peak", "catalog_class", "catalog_kernel", "catalog_serial", "peak_serial_m", "peak_noreuse")
-res = {"generated": "0.66.0", "variants": {k: X.VARIANTS[k] for k in REPORT}, "summary": {}, "rows": {}}
+res = {"generated": __version__, "variants": {k: X.VARIANTS[k] for k in REPORT}, "summary": {}, "rows": {}}
 for v in REPORT:
     t = X.table(v)
     res["summary"][v] = X.summary(t)

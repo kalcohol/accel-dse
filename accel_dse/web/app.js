@@ -1566,6 +1566,11 @@ async function init() {
   for (const [k, o] of [['oversub', {}], ['oversub_spine', {}], ['pod_nodes', { int: true }], ['leaf_nodes', { int: true }], ['switch_radix', { int: true }], ['torus_x', { int: true }],
     ['hop_d2d_us', {}], ['hop_link_us', {}], ['hop_net_us', {}], ['hop_net_tree_us', {}], ['hop_spine_us', {}], ['hop_core_us', {}]])
     bindNumber('fab-' + k, () => fab()[k], (x) => (fab()[k] = x), o);
+  for (const k of ['channels', 'channel_GBps'])     // 0.124: both > 0 or both off (read the pair from the inputs)
+    bindNumber('fab-' + k, () => fab()[k] || null, () => {
+      const c = readNum($('fab-channels'), true), g = readNum($('fab-channel_GBps'), false);
+      if (c > 0 && g > 0) { fab().channels = c; fab().channel_GBps = g; } else { delete fab().channels; delete fab().channel_GBps; }
+    }, { int: k === 'channels', nullable: true, check: (x) => x >= 0 });
   opts($('fab-link_topology'), [['switch', 'switch（非阻塞交换）'], ['full_mesh', 'full mesh（全互连）'], ['ring', 'ring（双向环）'], ['torus2d', '2D torus']], S.sc.link.topology || 'switch');
   opts($('fab-net_topology'), [['fat_tree', 'fat-tree / leaf-spine'], ['rail', 'rail-optimized']], fab().net_topology);
   opts($('fab-algo'), [['auto', 'auto（取最快）'], ['auto_overlap', 'auto_overlap（按暴露时间，计入与计算重叠）'], ['ring', 'ring'], ['tree', 'tree（双二叉树）'], ['hier', 'hier（分层）']], fab().algo);

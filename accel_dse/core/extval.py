@@ -245,8 +245,14 @@ def summary(t: list[dict]) -> dict:
     """Per metric: n, geometric-mean ratio pred/meas, mean |log error| (as %), worst ratio."""
     out = {}
     for m in sorted({x["metric"] for x in t}):
-        lr = [math.log(x["ratio"]) for x in t if x["metric"] == m and x["ratio"] == x["ratio"]]
-        out[m] = {"n": len(lr), "gmean_ratio": math.exp(sum(lr) / len(lr)),
+        # 0.124: a zero / infinite ratio (prediction 0 or no fit) is counted, not logged (math.log raised ValueError)
+        xs = [x["ratio"] for x in t if x["metric"] == m and x["ratio"] == x["ratio"]]
+        lr = [math.log(r) for r in xs if 0 < r < math.inf]
+        if not lr:
+            out[m] = {"n": 0, "n_invalid": len(xs)}
+            continue
+        out[m] = {"n": len(lr), **({"n_invalid": len(xs) - len(lr)} if len(xs) > len(lr) else {}),
+                  "gmean_ratio": math.exp(sum(lr) / len(lr)),
                   "mean_abs_err_pct": 100 * (math.exp(sum(abs(v) for v in lr) / len(lr)) - 1),
                   "min_ratio": math.exp(min(lr)), "max_ratio": math.exp(max(lr))}
     return out
