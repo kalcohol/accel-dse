@@ -55,4 +55,5 @@ def test_parallel_runner_covers_every_test_file():
     root = Path(A.__file__).resolve().parent.parent
     src = (root / "scripts" / "run_tests.py").read_text()
     ast.parse(src)
+    assert "pytest" not in src.split('"""', 2)[2]                    # 0.159: stdlib only
     assert 'glob("test_*.py")' in src and "TIMEOUT" in src and "-k" not in src.split("def run")[1].split("def main")[0]

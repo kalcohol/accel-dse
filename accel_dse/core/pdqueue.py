@@ -1861,11 +1861,11 @@ def _gamma_q(a: float, z: float) -> float:
     if z < a + 1:                                 # series for P
         term = tot = 1.0 / a
         ap = a
-        for _ in range(2000):
+        for _ in range(2000):        # 0.159: term, tot > 0 here (a, z > 0) → abs() dropped (bit-identical)
             ap += 1
             term *= z / ap
             tot += term
-            if abs(term) < abs(tot) * 1e-15:
+            if term < tot * 1e-15:
                 break
         return max(0.0, 1.0 - tot * math.exp(-z + a * math.log(z) - lg))
     b, c, d = z + 1 - a, 1e300, 1 / (z + 1 - a)   # Lentz continued fraction for Q
@@ -1886,6 +1886,12 @@ def _gamma_q(a: float, z: float) -> float:
 
 
 def _sat_evict_gamma(pts, Eo: float, c2: float, n: int = 64) -> float:
+    """0.159: memoised on the exact arguments (pure; 871 calls / 269 distinct in a recompute KV report)."""
+    return _sat_evict_gamma_c(tuple(tuple(p) for p in pts), Eo, c2, n)
+
+
+@functools.lru_cache(maxsize=1 << 14)
+def _sat_evict_gamma_c(pts, Eo: float, c2: float, n: int = 64) -> float:
     """E over requests (S, o_d) and headroom h ~ U(0, S) of P(G > h + o_d), G ~ Gamma(mean Eo, CV² c2)."""
     tot = sum(w for w, _, _ in pts)
     out = 0.0
@@ -1901,8 +1907,27 @@ def _sat_evict_gamma(pts, Eo: float, c2: float, n: int = 64) -> float:
     return out / tot
 
 
+_VW_MEMO: dict = {}
+_VW_MEMO_MAX = 1 << 14
+
+
 def _victim_wait_law(ctx, nu_k: dict, nu_sat: float, K: float, kvi: dict, tpot: float, lam_r: float,
                      c2: float = 1.0) -> dict:
+    """0.159: memoised on every input the law reads (mode, length points, ν_k, ν_sat, K, E[S], E[g], TPOT, λ_r, c²);
+    the returned law is read-only for callers, and its surv memo is pure, so sharing it is bit-identical
+    (1596 calls / 428 distinct in a recompute KV report)."""
+    key = (ctx.get("_victim_wait", VICTIM_WAIT), tuple(tuple(p) for p in ctx["len"].points),
+           tuple(sorted(nu_k.items())), nu_sat, K, kvi.get("ES"), kvi.get("Eg"), tpot, lam_r, c2)
+    v = _VW_MEMO.get(key)
+    if v is None:
+        if len(_VW_MEMO) >= _VW_MEMO_MAX:
+            _VW_MEMO.clear()
+        v = _VW_MEMO[key] = _victim_wait_law_raw(ctx, nu_k, nu_sat, K, kvi, tpot, lam_r, c2)
+    return v
+
+
+def _victim_wait_law_raw(ctx, nu_k: dict, nu_sat: float, K: float, kvi: dict, tpot: float, lam_r: float,
+                         c2: float = 1.0) -> dict:
     """A preempted request's wait until it can be restored: {"mean": s, "q": r → wait with P(W > wait) = 1/r}.
 
     "exp" (≤ 0.81): Exp(1/λ_r) — the next departure at the mean rate.  "resid" (0.82): the victim (youngest) is

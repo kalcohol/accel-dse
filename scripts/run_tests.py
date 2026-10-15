@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""0.158: stdlib parallel test runner — one pytest process per test file, longest-first, per-file timeout.
+"""0.158/0.159: stdlib parallel test runner (no pytest) — one tests/run_tests.py --one process per test file, longest-first, per-file timeout.
 
     python3 scripts/run_tests.py [-j N] [--timeout S] [files…]
 
-Same tests as a serial ``pytest`` (every tests/test_*.py, nothing skipped or filtered); only the scheduling differs.
+Same tests as ``python3 tests/run_tests.py`` (every tests/test_*.py, nothing skipped or filtered); only the scheduling differs.
 Per-file wall times are kept in scripts/test_durations.json to order the next run longest-first (shortest makespan).
 Exit code 0 iff every file passed; a file over --timeout is killed and reported as TIMEOUT (a hang, not a pass)."""
 from __future__ import annotations
@@ -13,18 +13,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+HARNESS = ROOT / "tests" / "run_tests.py"
 DUR = ROOT / "scripts" / "test_durations.json"
 
 
-def run(f: Path, timeout: float) -> tuple[str, str, float, str]:
+def run(f: Path, timeout: float) -> tuple[str, str, float, str, int, int]:
+    """One test file in its own interpreter through the project's stdlib harness (tests/run_tests.py --one)."""
     t0 = time.monotonic()
     try:
-        p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(f)], cwd=ROOT,
-                           capture_output=True, text=True, timeout=timeout)
-        out, st = p.stdout + p.stderr, ("ok" if p.returncode == 0 else "FAIL")
+        p = subprocess.run([sys.executable, str(HARNESS), "--one", str(f)], cwd=ROOT, capture_output=True, text=True,
+                           timeout=timeout)
+        out = p.stdout + p.stderr
+        m = re.search(r"^@@RESULT (\d+) (\d+)$", p.stdout, re.M)
+        ok, bad = (int(m[1]), int(m[2])) if m else (0, 1)          # no result line = crash → counted as a failure
+        st = "ok" if (p.returncode == 0 and m and bad == 0) else "FAIL"
     except subprocess.TimeoutExpired as e:
-        out, st = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or ""), "TIMEOUT"
-    return f.name, st, time.monotonic() - t0, out
+        out = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+        st, ok, bad = "TIMEOUT", 0, 1
+    return f.name, st, time.monotonic() - t0, out, ok, bad
 
 
 def main(argv=None) -> int:
@@ -39,10 +45,9 @@ def main(argv=None) -> int:
     t0, passed, bad = time.monotonic(), 0, []
     with ThreadPoolExecutor(a.j) as ex:
         for fut in as_completed([ex.submit(run, f, a.timeout) for f in files]):
-            name, st, dt, out = fut.result()
+            name, st, dt, out, ok, _ = fut.result()
             dur[name] = round(dt, 2)
-            m = re.search(r"(\d+) passed", out)
-            passed += int(m.group(1)) if m else 0
+            passed += ok
             print(f"{st:7s} {dt:7.1f}s {name}", flush=True)
             if st != "ok":
                 bad.append((name, st, out[-3000:]))

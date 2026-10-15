@@ -3756,3 +3756,6 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
 
 ## 104. Sizing: MAC cores and DRAM bandwidth (0.158)
 `cores` changes `chip.engines` with vector_lanes pinned to the current width, so only the MAC array (plus the per-engine accumulator / SRAM port, which scale with engines) shrinks; area saved = (E − E_min)·R·C/1000·mm2_per_kmac, and only when that density is set. `dram_bw` scales effective bandwidth through `mem_eff` (≤ current, so always valid). Capacity and stack stay fixed; KV streams follow it unless `kv_eff` is set. Same search and acceptance rules as §103.
+
+## 105. queue_report performance (0.159, bit-identical)
+Memoising pure sub-laws (victim wait law, saturation-eviction quadrature) and enlarging the bulk-chain LRU cut the recompute KV report by about 40 % while every reported float stays the same. Changing summation order or quadrature resolution to go further is not bit-identical, so it was deliberately not done.

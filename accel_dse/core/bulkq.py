@@ -271,7 +271,7 @@ def _pois_head(mu: float, tol: float, n: int) -> tuple:
     return tuple(out)
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=8192)       # 0.159: was 512 — evicted within one recompute KV report (1205 calls, 923 distinct)
 def _chain(lam: float, b: int, D: tuple):
     pi, z, a = _stationary(lam, b, D)
     ext = []
