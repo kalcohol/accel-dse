@@ -58,7 +58,8 @@ DENSITY_PRESETS: dict[str, dict] = {
     "n28_tpuv1": {"label": "28 nm（TPUv1 平面图）", "fields": {
         "mm2_per_mib_sram": (330 / 3 / 24, "来源", _TPUV1 + ": 24 MiB Unified Buffer ≈ 1/3 of the die (upper bound)"),
         "mm2_per_mib_slc": (330 / 3 / 24, "来源", "= SRAM (same macro class) 「假设」 on " + _TPUV1),
-        "mm2_per_kmac": (330 / 4 / 64, "来源", _TPUV1 + ": 256×256 int8 MXU = 1/4 of the die (upper bound; int8 MAC)"),
+        "mm2_per_kmac": (330 / 4 / 64, "来源", _TPUV1 + ": 256×256 int8 MXU = 1/4 of the die (upper bound; int8 MAC — a "
+                         "bf16 MAC unit is larger, so for a bf16 array this is optimistic)"),
         **_PHY}},
     "n7_tpuv4i": {"label": "7 nm（TPUv4i 平面图）", "fields": {
         "mm2_per_mib_sram": (400 * 0.28 / 128, "来源", _TPUV4I + ": 128 MiB CMEM = 28 % of a < 400 mm² die (upper bound)"),
@@ -66,7 +67,7 @@ DENSITY_PRESETS: dict[str, dict] = {
         "mm2_per_kmac": (400 * 0.11 / 64, "来源", _TPUV4I + ": 4 × 128×128 bf16 MXUs = 11 % of a < 400 mm² die (upper bound)"),
         **_PHY}},
     "n5_derived": {"label": "5 nm / N3E（由 7 nm 推导）", "fields": {
-        "mm2_per_mib_sram": (400 * 0.28 / 128 * 0.021 / 0.027, "推导", "TPUv4i CMEM × bitcell 0.021/0.027; " + _BITCELL
+        "mm2_per_mib_sram": (400 * 0.28 / 128 * 0.021 / 0.027, "推导", "TPUv4i CMEM × bitcell 0.021/0.027 (paper says 128 MB; taken as MiB, ≤ 5 %); " + _BITCELL
                              + "; array-only lower bound 31.8 Mib/mm² = 0.25 mm²/MiB (WikiChip, IEDM 2022 N3E)"),
         "mm2_per_mib_slc": (400 * 0.28 / 128 * 0.021 / 0.027, "推导", "= SRAM density (TPUv4i CMEM × bitcell ratio)"),
         "mm2_per_kmac": (400 * 0.11 / 64 / 1.8, "推导", "TPUv4i MXU ÷ 1.8 logic density; " + _BITCELL),
@@ -102,8 +103,16 @@ def phy_area(scn, b: Budget) -> dict:
             notes.append("d2d_std = custom：单元数未知，D2D PHY 未计")
         else:
             terms["d2d_phy"] = scn.d2d_units * b.mm2_per_d2d_unit
-    if scn.layout.cards > 1 and b.mm2_per_GBps_c2c is not None:
-        terms["c2c_phy"] = scn.link.GBps * b.mm2_per_GBps_c2c
+    pk = scn.package_cards if scn.d2d_enabled else 1
+    if b.mm2_per_GBps_c2c is not None:
+        if scn.layout.cards > pk:          # 0.150: the scale-up link only leaves the package when cards > dies/package
+            terms["c2c_phy"] = scn.link.GBps * b.mm2_per_GBps_c2c
+        elif scn.layout.cards > 1:
+            notes.append("全部卡在同一封装内（D2D）：卡间链路 PHY 不计，避免与 D2D 重复")
+    if scn.node_cards:
+        notes.append("跨节点网卡（net）PHY 不在面积代理内")
+    if terms and b.mm2_fixed is not None:
+        notes.append("已单独计入接口 PHY：固定面积 mm2_fixed 应不含这些 PHY（否则重复计算）")
     return {"mm2": sum(terms.values()), "terms": terms, "notes": notes}
 
 

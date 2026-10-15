@@ -3,6 +3,23 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.150.0]
+### Fixed (hostile review of 0.146–0.149)
+- `upgrade_path`: `max_cost` was ignored in area mode, so a path could run past the cap. It now applies in both modes, in the reported cost unit (mm² in area mode), for greedy and beam.
+- `phy_area`: card-to-card link PHY was counted even when all cards sit in one package. Those cards talk over D2D, so the PHY was double counted with D2D. The C2C term now applies only when cards > dies per package. The `c2c_x2` insight knob is likewise offered only when the link is actually used.
+- UI 「密度预设」:
+  - Picking a preset overwrote densities the user had typed. Now it fills only empty fields and ones it filled earlier itself, and lists the user values it kept.
+  - Choosing 「不用预设」 now clears the values the preset filled.
+### Added
+- Notes in the insight and upgrade-path responses (shown in the UI):
+  - `pd.enabled` is evaluated colocated, not as PD.
+  - `mm2_fixed` must exclude any PHY counted separately.
+  - Scale-out NIC PHY is not in the proxy.
+- Preset source notes: n28 kMAC is an int8 MAC (optimistic for bf16), and TPUv4i's "128 MB" is taken as MiB (≤ 5 % difference).
+- Tests: test_core_150 (7).
+- `val5/v0150/hostile.py`: randomized invariants for preset precedence, PHY additivity, no double terms, determinism, beam ≥ greedy, never worse than start, cost and area caps, and Δmm² signs.
+- sysfuzz `area` family: every domain plus PD bases, additivity, monotonicity, budget-report consistency. On the old tree it reproduced the C2C bug (20 violations); on the fixed tree it finds 0.
+
 ## [0.149.0]
 ### Added
 - **Cited per-node density presets** `budget.DENSITY_PRESETS`: n28_tpuv1, n7_tpuv4i and n5_derived.

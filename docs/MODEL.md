@@ -3687,3 +3687,16 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
 - Fix: the `d2d_x2` knob now doubles `d2d_units` for catalog grades. Previously it changed `d2d.GBps`, which only applies to
   `custom`.
 
+## 96. Hostile review of insight / upgrade path / density (0.150)
+- Units: SRAM density is mm² per MiB (8 Mib), and the bitcell array density 31.8 Mib/mm² = 0.25 mm²/MiB. kMAC = 1024 MAC
+  units of the chip's array. The n28 preset is an int8 MAC, which is optimistic for bf16, and this is noted. PHY: per
+  DRAM data pin, per D2D unit, and per GB/s of uni-directional link (`Link.GBps` is per-rank uni-directional).
+- No double counting: chip terms (sram / slc / mac / fixed) and PHY terms (dram_phy / d2d_phy / c2c_phy) are disjoint.
+  C2C is counted only for cards beyond one package. `mm2_fixed` must exclude any PHY that is set separately, and a note
+  says so.
+- Precedence: a user value (including 0) wins over a preset in both the API and the UI. Only None or empty is filled.
+- The cost cap applies in both modes. Beam is deterministic (no set or dict-hash ordering; scenario hashes are sha
+  based) and is checked across PYTHONHASHSEED.
+- PD: insight and the path evaluate colocated prefill/decode and say so. Non-LLM domains are not insight models (the API
+  rejects them), but their area / budget pass the PHY-aware path (sysfuzz `area`).
+

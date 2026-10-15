@@ -155,7 +155,7 @@ def knobs(base: Scenario) -> list[tuple[str, str, object, str]]:
             out.append(("d2d_x2", f"D2D 单元 ×2（{base.d2d_units} → {base.d2d_units * 2}，"
                                   f"{base.d2d_link.GBps:g} → {base.d2d_link.GBps * 2:g} GB/s）",
                         lambda s: s.replace("d2d_units", s.d2d_units * 2), "offdie"))
-    if base.layout.cards > 1:
+    if base.layout.cards > (base.package_cards if base.d2d_enabled else 1):   # 0.150: link used only across packages
         out.append(("c2c_x2", f"卡间链路 ×2（{base.link.GBps:g} → {base.link.GBps * 2:g} GB/s）",
                     lambda s: s.replace("link", replace(s.link, GBps=s.link.GBps * 2)), "offdie"))
     return out
@@ -233,7 +233,8 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
     hurts = {m: [k["key"] for k in krows if k["score"][m] is not None and 1 - k["score"][m] > TIE] for m in METRICS}
     rank_mm2 = {m: [k["key"] for k in sorted((k for k in krows if k["gain_per_mm2"][m] is not None),
                                              key=lambda k: -k["gain_per_mm2"][m]) if k["score"][m] - 1 > TIE] for m in METRICS}
-    return {"chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label,
+    notes = (["pd.enabled：洞察按合并部署（prefill + decode 同卡）评估，不含 PD 分离"] if base.pd.enabled else [])
+    return {"chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label, "notes": notes,
             "serving": {"batch": base.serving.batch, "prompt": base.serving.prompt, "ctx": base.serving.ctx},
             "models": mrows, "knobs": krows, "rank": rank, "rank_per_mm2": rank_mm2, "hurts": hurts, "tie": TIE, "metrics": {"ttft": "TTFT 加速", "tpot": "TPOT 加速",
                                                                          "thr": "decode 吞吐/卡 倍数"},
@@ -326,7 +327,7 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
                 if key in SCALE_WITH and not area_mode:
                     c *= chip_qty(cur_base.chip, SCALE_WITH[key]) / chip_qty(base.chip, SCALE_WITH[key])
                 cost = c * unit
-            if max_cost is not None and not area_mode and cum_cost + cost > max_cost * (1 + 1e-12):
+            if max_cost is not None and cum_cost + cost > max_cost * (1 + 1e-12):   # 0.150: both modes (cost units)
                 continue
             pts, ok = {}, True
             for mid in scns:
@@ -411,7 +412,10 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
     cur_base, cur, cum_cost, path = best
     final = {m: _gain(metric, start[m], cur[m]) for m in cur}
     assert all(x >= 1.0 for x in final.values())          # the guarantee; candidates violating it were never taken
-    return {"metric": metric, "cost_mode": "area" if area_mode else "proxy", "search": search, "beam": beam,
+    notes = []
+    if base.pd.enabled:
+        notes.append("pd.enabled：升级路径按合并部署（prefill + decode 同卡）评估，不含 PD 分离")
+    return {"metric": metric, "cost_mode": "area" if area_mode else "proxy", "search": search, "beam": beam, "notes": notes,
             "greedy_cum_gain": g_gain, "greedy_cum_cost": g[2],
             "cost_unit": "mm²" if area_mode else "相对成本单位「假设」",
             "unit_mm2": unit if area_mode else None, "cap_mm2": cap_mm2, "max_cost": max_cost,

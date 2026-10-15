@@ -1550,18 +1550,27 @@ function initDensityPresets() {
   for (const [k, v] of Object.entries(P)) sel.appendChild(h('option', { value: k }, v.label));
   sel.addEventListener('change', () => {
     const p = P[sel.value];
-    if (!p) { $('b-preset-note').textContent = ''; return; }
     const b = { ...(S.budget || {}) };
+    S.presetFilled = S.presetFilled || {};
+    if (!p) {                                   // 0.150: back to 「不用预设」 → drop the values a preset filled (unchanged)
+      for (const [f, v] of Object.entries(S.presetFilled)) if (b[f] === v) { delete b[f]; const inp = $('b-' + f); if (inp) inp.title = ''; }
+      S.presetFilled = {};
+      S.budget = b; syncInputs(); $('b-preset-note').textContent = ''; schedule(); return;
+    }
+    const kept = [], st = {};
     for (const [f, x] of Object.entries(p.fields)) {
-      b[f] = +x.value.toPrecision(4);
+      // 0.150: a value the user typed wins — fill only empty fields or ones a preset filled earlier (unchanged since)
+      const cur = b[f], mine = cur !== null && cur !== undefined && S.presetFilled[f] !== cur;
       const inp = $('b-' + f);
+      if (mine) { kept.push(f); if (inp) inp.title = '你的输入（预设未覆盖）'; continue; }
+      b[f] = +x.value.toPrecision(4); S.presetFilled[f] = b[f];
+      st[x.status] = (st[x.status] || 0) + 1;
       if (inp) inp.title = `「${x.status}」${x.source}`;
     }
     S.budget = b;
-    for (const f of Object.keys(p.fields)) { const inp = $('b-' + f); if (inp && inp._sync) inp._sync(); }
-    const st = {};
-    for (const x of Object.values(p.fields)) st[x.status] = (st[x.status] || 0) + 1;
-    $('b-preset-note').textContent = '已填入：' + Object.entries(st).map(([k, n]) => `${n} 项「${k}」`).join('，') + '（悬停各输入框看出处）';
+    syncInputs();
+    $('b-preset-note').textContent = '已填入：' + Object.entries(st).map(([k, n]) => `${n} 项「${k}」`).join('，') +
+      (kept.length ? `；保留你的输入：${kept.join('、')}` : '') + '（悬停各输入框看出处）';
     schedule();
   });
 }
@@ -1593,6 +1602,7 @@ function paintInsightPath() {
     h('div', {}, h('b', {}, `${ml}：`), last ? `${r.path.length} 步后 ×${num(last.cum_gain)}（几何平均，相对起点），累计成本 ${num(last.cum_cost)} ${r.cost_unit}`
       : '无可取的升级（没有旋钮在不使任何模型变差、且不超预算的前提下提升 > 1%）'),
     r.beam > 1 ? h('div', {}, `搜索：${r.search}；贪心为 ×${num(r.greedy_cum_gain)} @ ${num(r.greedy_cum_cost)}`) : null,
+    (r.notes || []).length ? h('div', {}, '注：', r.notes.join('；')) : null,
     r.skipped.length ? h('div', {}, '跳过：', r.skipped.map((x) => `${x.model}（${x.error}）`).join('；')) : null,
     h('div', { class: 'muted' }, r.basis));
   put($('ins-path-tbl'), h('thead', {}, h('tr', {}, ['步', '旋钮', '本步增益', '累计增益', '本步成本（依据）', '累计成本', '增益/成本', '逐模型累计', '次优备选'].map((x) => h('th', {}, x)))),
@@ -1612,6 +1622,7 @@ function paintInsight() {
     h('div', {}, h('b', {}, `${r.metrics[m]}：最能改善的旋钮 `), rk.length ? rk.map((k, i) => (i ? ' > ' : '') + lab(k)).join('') : '无（全部在 ±1% 内）'),
     h('div', {}, '每 mm²（按你的面积密度）：', ra.length ? ra.map(lab).join(' > ') : (r.area ? '—' : '未填面积密度（预算 → mm²/MiB、mm²/kMAC、固定面积），不排序')),
     hu.length ? h('div', {}, '变差：', hu.map(lab).join('；')) : null,
+    (r.notes || []).length ? h('div', {}, '注：', r.notes.join('；')) : null,
     h('div', { class: 'muted' }, r.basis));
   put($('ins-models-tbl'), h('thead', {}, h('tr', {}, ['模型', '布局', '特征', 'TTFT (ms)', 'TPOT (ms)', 'decode tok/s/卡', '瓶颈 d/p', '放得下'].map((x) => h('th', {}, x)))),
     h('tbody', {}, r.models.map((x) => x.error ? h('tr', {}, h('td', {}, x.model), h('td', { colspan: 7 }, '错误：' + x.error))
