@@ -2833,3 +2833,16 @@ Reference chunking: ESMFold `chunk_size` None (materialised); OpenFold inference
 FLOPs are identical in every mode (no recompute at inference); the 4 logit passes are write, softmax read + write,
 read by P·V.  Rows are the pair rows on the rank (DAP slices them).  Chunk launch overhead is not modelled.
 
+## 66. 0.120 — kernel launch overhead on structure-model kernels; unfused-attention streaming
+
+`chip.kernel_us` (opt-in since 0.92, default 0) adds a fixed cost per kernel to the stage's sync time.  0.92 counted
+GEMMs and fused LLM attentions; 0.120 adds explicit launch counts (`Op.launch`) for the structure-model kernels: each
+fused pair attention 1, each activation × activation bmm (triangle multiplication, outer-product mean, pair-weighted
+averaging) 1, and an unfused triangle attention 3 per chunk (QKᵀ, softmax, ·V) — so a chunked kernel pays
+⌈rows / c⌉ × 3 launches per module.
+
+Streaming fix: when one chunk's logits fit the SRAM budget the logits stay on chip, but q, k, v and the output still
+cross DRAM once whenever the module's tensors exceed the budget (the same single pass the fused kernel pays).  0.119
+charged 0 there, which made small chunks faster than the fused kernel; now chunked = fused at `kernel_us` 0 and slower
+with any launch overhead.
+

@@ -3,7 +3,22 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
-## [0.119.0]
+## [0.120.0]
+
+### Added
+
+- 每 kernel 启动 / 调度开销 `chip.kernel_us`（0.92 起已有，默认 0 = 不计，结果不变）扩展到结构模型：融合注意力、三角乘 / OPM / PWA 各 1 次；分块三角注意力每块 3 次（QKᵀ、softmax、·V）。命令行 `--kernel-us`，工作台芯片参数里可填。
+
+### Fixed
+
+- 分块三角注意力（0.119，非默认）在单块 logits 放得下片上时 DRAM 记为 0，而融合内核要付 q / k / v / 输出的一遍流式 → 小块显得比融合快（OpenFold 512 残基 13.65 vs 13.76 s）。现在 logits 留在片上、q / k / v / 输出照付一遍：kernel_us = 0 时与融合相同，> 0 时更慢（0.53 µs：13.86 vs 13.77 s）。
+
+### Audit
+
+- 工作台 vs API 一致性（headless，30 个跨领域随机场景，经真实控件操作）：同一请求的哈希与 summary 一致，每个 KPI / 流水级 / 存储表数值在显示舍入内相等——0 问题。
+- 0.100 以来未改动模块的随机不变量（queueing、lengths、mem_catalog、energy、fabric、vision）：无误；视觉分辨率到达 token 上限处 token 数可随尺寸非单调（Kimi / DeepSeek 参考 resize 逐轴取整），属参考行为。
+
+
 
 ### Added
 

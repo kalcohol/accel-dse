@@ -151,7 +151,10 @@ class Op:
                               # cache (counted in kv_read) — its first pass is not charged again by act_stream
     wshare: float = 1.0       # 0.64: mean-rank weight elements / this (busiest) rank's — weight dequant (once per pass)
                               # is weight work, not token work: uneven TP / EP splits (rank_shares) scale it by this
+    launch: float = 0.0       # 0.120: kernel launches of this op when Chip.kernel_us > 0 (0 = the 0.92 rule: one per GEMM /
+                              # fused attention named qk*); structure-model ops set it explicitly
     chunks: int = 1           # 0.119: an unfused bmm run in this many sequential chunks (peak / SRAM fit per chunk)
+    lg_bytes: float = 0.0     # 0.120: logits bytes inside an unfused attention op (stay on chip when one chunk fits)
     act_x: float = 0.0        # 0.119: extra activation DRAM bytes when the op spills (softmax read + write of logits)
     in_elems: float = 0.0     # conv as implicit GEMM: elements of the real input tensor (the M×K im2col matrix is
                               # virtual — DRAM streaming moves the input once, 0 = M·K·count)
@@ -970,13 +973,13 @@ def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int,
     def att(groups: int, nq: int, nk: int, d: int, vd: int, bias: bool) -> list[Op]:
         cnt = groups * c.heads
         return [Op(tag + ".qk", "attn", li, m=nq, k=d, n=nk, count=cnt, act_bytes=cnt * nq * d * ab, stream=True,
-                   orient=True),
+                   orient=True, launch=1),          # 0.120: one fused kernel (QK·softmax·PV)
                 Op(tag + ".pv", "attn", li, m=nq, k=nk, n=vd, count=cnt, act_bytes=cnt * nq * vd * ab, orient=True),
                 Op(tag + ".softmax", "vector", li, vec=cnt * nq * nk * (5 + (1 if bias else 0)), sfu=cnt * nq * nk)]
 
     def bmm(m: int, k: int, nn: int, cnt: int) -> Op:
         return Op(tag, "attn", li, m=m, k=k, n=nn, count=cnt, act_bytes=cnt * (m * k + k * nn + m * nn) * ab,
-                  stream=True, bmm=True)
+                  stream=True, bmm=True, launch=1)
 
     d, vd = c.dim, c.v_dim or c.dim
     if c.kind == "trimul":
@@ -1028,10 +1031,12 @@ def _tri_unfused(tag: str, li: int, rows: int, n: int, d: int, vd: int, heads: i
     cnt = rows * heads
     lg = cnt * n * n * ab                                   # all logits of this module execution
     peak = cr * heads * (2 * n * d + n * n + n * vd) * ab   # one chunk: q, k, logits, v (+ out)
+    # 0.120: three kernels (QKᵀ, softmax, ·V) per chunk when Chip.kernel_us > 0
     return [Op(tag + ".qk", "attn", li, m=n, k=d, n=n, count=cnt, act_bytes=peak, stream=True, bmm=True,
-               chunks=nch, act_x=2 * lg),
-            Op(tag + ".pv", "attn", li, m=n, k=n, n=vd, count=cnt, act_bytes=peak, stream=True, bmm=True, chunks=nch),
-            Op(tag + ".softmax", "vector", li, vec=cnt * n * n * 6, sfu=cnt * n * n)]
+               chunks=nch, act_x=2 * lg, launch=nch, lg_bytes=lg),
+            Op(tag + ".pv", "attn", li, m=n, k=n, n=vd, count=cnt, act_bytes=peak, stream=True, bmm=True, chunks=nch,
+               launch=nch, lg_bytes=lg),
+            Op(tag + ".softmax", "vector", li, vec=cnt * n * n * 6, sfu=cnt * n * n, launch=nch)]
 
 
 def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:

@@ -325,7 +325,13 @@ def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
     if op.bmm:                  # operands and result are whole activations; each channel slice fits the budget,
         tot = (op.m * op.k + op.k * op.n + op.m * op.n) * op.count * ab     # so A, B are read and C written once
         # 0.119: an unfused triangle attention decides per chunk (its logits stay on chip when one chunk fits)
-        return (tot + op.act_x, 0.0) if tot / max(1, op.chunks) > budget else (0.0, 0.0)
+        if tot / max(1, op.chunks) > budget:
+            return tot + op.act_x, 0.0
+        # 0.120: one chunk fits, so its logits stay on chip — but q, k, v and the output still stream through DRAM
+        # once when the module's tensors exceed the budget (as the fused kernel's single pass does); 0.119 charged 0,
+        # which made small chunks look faster than the fused kernel
+        io = tot - op.lg_bytes
+        return (io, 0.0) if tot > budget else (0.0, 0.0)
     if op.kind == "attn":       # qk op of a flash-style attention (v_dim == qk_dim for these models)
         qo = 2.0 * op.count * op.m * op.k * ab
         kv = 2.0 * op.count * op.n * op.k * ab

@@ -362,7 +362,9 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
             d["t_arr_attn"] += a_
         if o.kind == "attn" or o.name.endswith("softmax"):
             d["t_vec_attn"] += v                    # 0.104: attention-core vector work (Chip.attn_vec_overlap)
-        if sys.chip.kernel_us and (o.kind == "gemm" or (o.kind == "attn" and o.name.startswith("qk"))):
+        if sys.chip.kernel_us and o.launch:
+            d["sync"] += sys.chip.kernel_us * 1e-6 * o.launch    # 0.120: explicit launches (structure-model ops, chunks)
+        elif sys.chip.kernel_us and (o.kind == "gemm" or (o.kind == "attn" and o.name.startswith("qk"))):
             d["sync"] += sys.chip.kernel_us * 1e-6    # 0.92: one kernel per GEMM / fused attention (QK·softmax·PV)
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb

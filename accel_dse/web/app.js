@@ -1515,8 +1515,8 @@ async function init() {
 
   fillModels();
   seg('chip-preset', Object.keys(S.cat.chips).map((k) => [k, k]), () => S.preset, (v) => { S.preset = v; S.chipOver = {}; onPreset(); syncInputs(); schedule(); });
-  for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps']) {
-    const nullable = k === 'sram_port_Bpc' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine';
+  for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us']) {
+    const nullable = k === 'sram_port_Bpc' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine' || k === 'kernel_us';
     bindNumber('c-' + k, () => chipVal(k), (x) => { if (x === null) delete S.chipOver[k]; else S.chipOver[k] = x; if (k === 'freq_ghz') onPreset(); },
       { int: k === 'gemv_macs', nullable });
   }

@@ -36,6 +36,9 @@ def _load_list(v: str) -> list[float]:
 def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--model", default="qwen3-8b", help="model id (see `models`)")
     p.add_argument("--chip", default="100T", help="chip preset: 100T | 1P | H100-like")
+    p.add_argument("--kernel-us", dest="kernel_us", type=float, default=None,
+                   help="per-kernel launch / dispatch overhead in µs (default 0 = off): GEMMs, fused attentions, "
+                        "structure-model kernels incl. every chunk of a chunked triangle attention")
     p.add_argument("--scenario", dest="scenario_file", default=None, metavar="FILE",
                    help="0.113: evaluate a full scenario JSON (UI export / API 'scenario', or a body with 'scenario' "
                         "[+ 'chip_preset']) — scenario flags are then ignored; energy / budget flags still apply")
@@ -367,7 +370,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["layout"] = {k: getattr(a, k) for k in ("pp", "tp", "dp", "ep", "etp", "sp")}
         if getattr(a, "cp", 1) > 1:     # 0.88 context parallel (omitted at 1: hash unchanged)
             sc["layout"]["cp"] = a.cp
-    chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy", "attn_fmt", "sram_port_Bpc_per_engine")
+    chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy", "attn_fmt", "sram_port_Bpc_per_engine", "kernel_us")
             if getattr(a, k, None) is not None}
     if chip:
         sc["chip"] = chip
