@@ -92,6 +92,70 @@ def scaleup_bytes(t) -> float:
     return 0.0 if x <= 1e-9 * t.link_bytes else x
 
 
+
+# ---------------------------------------------------------------------------------------------------------------- 0.152
+# Cited energy presets (Accelergy-style action costs).  Same status labels as budget.DENSITY_PRESETS.
+# Tools still ship no process library: presets fill only unset fields; user values (incl. 0) win; idle_W is never
+# preset (static power is product-specific).  Insight ΔJ / rank_per_J light up once a preset or a user table is set.
+_HOROWITZ = ("Horowitz, 'Computing's Energy Problem (and What We Can Do About It)', ISSCC 2014, Fig. 1.1.9 "
+             "(45 nm, 0.9 V); table values as widely cited, e.g. National Academies / MIT 6.S983 lecture notes")
+_TPUV4I = ("Jouppi et al., 'Ten Lessons From Three Generations Shaped Google's TPUv4i', ISCA 2021, Table 2 / §1: "
+           "45 nm → 7 nm average energy gain 2.6×, SRAM access 1.3–2.4×, DRAM access 6.3× (HBM packaging); "
+           "'SRAM is 20× more energy efficient than DRAM'")
+_UCIE = ("UCIe Consortium Hot Chips 2023 tutorial / UCIe 2.0 overview: Advanced-package target 0.25 pJ/bit, "
+         "Standard-package target 0.5 pJ/bit (already in core/d2d_catalog.py)")
+_NVL = ("NVIDIA Grace Hopper Superchip Architecture whitepaper: NVLink-C2C 1.3 pJ/bit "
+        "(already in core/d2d_catalog.py as the NVLink-C2C reference)")
+
+ENERGY_PRESETS: dict[str, dict] = {
+    "horowitz_45nm": {
+        "label": "45 nm（Horowitz ISSCC 2014）",
+        "fields": {
+            # 16b FP multiply ≈ bf16 MAC; 16b FP add as a stand-in for mixed vector ops
+            "pJ_mac": (1.1, "来源", _HOROWITZ + ": 16-bit FP multiply 1.1 pJ"),
+            "pJ_vec": (0.4, "来源", _HOROWITZ + ": 16-bit FP add 0.4 pJ（向量操作代理）"),
+            "pJ_bit_sram": (5.0 / 32, "来源", _HOROWITZ + ": 32-bit SRAM cache read 5 pJ → 5/32 pJ/bit"),
+            "pJ_bit_slc": (5.0 / 32, "假设", "= SRAM（同宏类）on " + _HOROWITZ),
+            "pJ_bit_dram": (640.0 / 32, "来源", _HOROWITZ + ": 32-bit DRAM read 640 pJ → 20 pJ/bit（DDR 类接口时代；含 I/O）"),
+            "pJ_bit_d2d": (0.25, "来源", _UCIE + "（Advanced）"),
+            "pJ_bit_link": (1.3, "来源", _NVL + "（节点内 scale-up 代理）"),
+            "pJ_bit_net": (5.0, "假设", "跨节点网卡 / 光模块量级，无单一公开数字 — 约数倍于 C2C"),
+            "pJ_bit_host": (10.0, "假设", "PCIe 类主机链路；Horowitz 文中 DRAM I/O ~20 pJ/bit 量级的一半作代理"),
+        },
+    },
+    "tpuv4i_7nm": {
+        "label": "7 nm（TPUv4i Table 2 对 Horowitz 的缩放）",
+        "fields": {
+            # average logic 2.6×; SRAM mid of 1.3–2.4 = √(1.3·2.4)≈1.77; DRAM 6.3× (HBM)
+            "pJ_mac": (1.1 / 2.6, "推导", _TPUV4I + "; base 16b FP mult 1.1 pJ / 2.6"),
+            "pJ_vec": (0.4 / 2.6, "推导", _TPUV4I + "; base 16b FP add 0.4 pJ / 2.6"),
+            "pJ_bit_sram": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "推导", _TPUV4I + "; SRAM 1.3–2.4× (geom. mean)"),
+            "pJ_bit_slc": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "假设", "= SRAM after 7 nm scale"),
+            "pJ_bit_dram": ((640.0 / 32) / 6.3, "推导", _TPUV4I + "; DRAM 6.3× via HBM packaging "
+                            "→ ≈ 3.2 pJ/bit（I/O+阵列量级；HBM3 接口 alone 0.29 pJ/bit, Chae et al. JSSC 2023, 仅 PHY）"),
+            "pJ_bit_d2d": (0.25, "来源", _UCIE),
+            "pJ_bit_link": (1.3, "来源", _NVL),
+            "pJ_bit_net": (5.0, "假设", "跨节点网卡 / 光模块量级，无单一公开数字 — 约数倍于 C2C（与 horowitz_45nm 预设相同）"),
+            "pJ_bit_host": (10.0, "假设", "PCIe 类主机链路代理（与 horowitz_45nm 预设相同；Horowitz 文中 DRAM I/O ~20 pJ/bit 量级的一半）"),
+        },
+    },
+}
+
+
+def apply_energy_preset(d: dict) -> dict:
+    """Body ``energy`` with ``energy_preset``: fill every energy field the user left unset from the preset.
+    ``idle_W`` / ``idle_W_prefill`` are never filled (static power is a product choice, not a literature constant)."""
+    d = dict(d)
+    pid = d.pop("energy_preset", None)
+    if pid is None:
+        return d
+    if pid not in ENERGY_PRESETS:
+        raise ValueError(f"energy.energy_preset must be one of {sorted(ENERGY_PRESETS)}")
+    for k, (v, _, _) in ENERGY_PRESETS[pid]["fields"].items():
+        if d.get(k) is None:
+            d[k] = v
+    return d
+
 def action_counts(r) -> dict:
     """(counts per window, window s, output units per window, unit label) for one evaluated result."""
     sv = r.scenario.serving

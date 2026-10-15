@@ -340,6 +340,8 @@
       <label title="系统级缓存命中每 bit 的能耗，pJ（SLC MiB > 0 时才有流量；DRAM 只计未命中）">pJ / bit SLC<input type="number" id="e-pJ_bit_slc" min="0" step="0.1"></label>
       <label title="每卡静态 / 空闲功耗，W（× 卡数 × 时间窗）">静态 W / 卡<input type="number" id="e-idle_W" min="0" step="5"></label>
       <label title="PD 报告：prefill 池芯片每卡静态功耗，W（prefill 芯片与 decode 不同时填；空 = 同上）">静态 W / 卡 · PD prefill<input type="number" id="e-idle_W_prefill" min="0" step="5"></label>
+      <label title="0.152：按文献填入有出处的动作能耗（来源见悬停；idle_W 不进预设；仍可逐项改写）">能耗预设<select id="e-preset"><option value="">（不用预设）</option></select></label>
+      <span class="small muted" id="e-preset-note"></span>
     </div>
   </section>
 </aside>

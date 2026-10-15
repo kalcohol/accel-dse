@@ -3710,3 +3710,11 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
   never-worse rule uses the same direction.
 - Export: kinds `insight` and `insight_path` under the shared EXP_SCHEMA = 1 envelope (same as compare / sweep).
 
+## 98. Cited energy presets and insight rank_per_J (0.152)
+- `ENERGY_PRESETS` (horowitz_45nm, tpuv4i_7nm): Accelergy-style action costs with the same status labels as
+  `DENSITY_PRESETS` (来源 / 推导 / 假设). `apply_energy_preset` fills only unset fields; idle_W never preset.
+- Horowitz ISSCC 2014 Fig 1.1.9 (45 nm, 0.9 V): 16b FP mult 1.1 pJ, 16b FP add 0.4 pJ, 32b SRAM 5 pJ → 5/32 pJ/bit,
+  32b DRAM 640 pJ → 20 pJ/bit. UCIe Advanced 0.25 pJ/bit; NVLink-C2C 1.3 pJ/bit. net 5 / host 10 pJ/bit are 「假设」.
+- TPUv4i ISCA 2021 Table 2: 45→7 nm average energy 2.6×, SRAM 1.3–2.4× (geom. mean), DRAM 6.3× (HBM) → 「推导」 from Horowitz.
+- Insight: accumulate absolute ΔJ = hi.J_tok − lo.J_tok (not relative); `rank_per_J` = (score−1)/d_J when d_J>0;
+  win-win (score>TIE and d_J≤0) → 1e30; near-zero |d_J|<1e-12 → 0. Multi-domain path hostile: never-worse + beam≥greedy.

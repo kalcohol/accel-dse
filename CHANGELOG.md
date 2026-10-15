@@ -3,6 +3,19 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.152.0]
+### Added
+- **Cited energy presets** `energy.ENERGY_PRESETS`: `horowitz_45nm` and `tpuv4i_7nm`, analogous to density presets.
+  - Every value carries a status (「来源」 / 「推导」 / 「假设」) and a source string.
+  - Use via `energy.energy_preset` or the UI select 「能耗预设」. Fills only unset fields; user values (incl. 0) win.
+  - `idle_W` / `idle_W_prefill` are never filled (static power is a product choice).
+  - Horowitz ISSCC 2014 Fig 1.1.9 (45 nm): MAC / vec / SRAM / DRAM 「来源」; UCIe 0.25 pJ/bit and NVLink-C2C 1.3 pJ/bit 「来源」; net / host 「假设」.
+  - TPUv4i ISCA 2021 Table 2 scales Horowitz → 7 nm (logic 2.6×, SRAM geom. mean of 1.3–2.4×, DRAM 6.3×) as 「推导」.
+- **Insight `rank_per_J`**: absolute ΔJ accumulated across models (`hi.J − lo.J`); win-win (faster and ΔJ ≤ 0) sorts first as 1e30; `|d_J| < 1e-12` → 0. UI paints a 「每焦耳」 line when a preset or user table is set.
+### Tests / review
+- `tests/test_core_152.py` (5); `val5/v0152/hostile.py`: multi-domain insight/path randomized invariants (gen / protein / genomics / llm × 40), 0 violations.
+- Playwright: energy preset fill + gen 「每焦耳」 + protein domain metrics + path.
+
 ## [0.151.0]
 ### Added
 - **Insight / upgrade path multi-domain**: model sets may be llm, gen (video/image), protein or genomics. Metrics follow the domain — LLM keeps TTFT / TPOT / tok/s/card; gen uses clip/image latency and frames/s/card; protein uses batch latency and sequences/s/card; genomics uses batch latency and windows/s/card. A set must share one domain (mixed sets return an ApiError). Default model lists per domain are in `DEFAULT_MODELS_BY_DOMAIN`.

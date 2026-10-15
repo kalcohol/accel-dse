@@ -261,7 +261,7 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
     for key, label, tf, cost in ks:
         inv = isinstance(tf, tuple)
         f = tf[1] if inv else tf
-        per_model, g = [], {m: [] for m in metrics}
+        per_model, g, dJ_acc = [], {m: [] for m in metrics}, []
         for mid, s in scns.items():
             try:
                 alt = _point(f(s), table, domain)
@@ -279,6 +279,8 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
                     g[m].append(x)
             for c in ("J_tok", "dram_B_tok", "mac_tok", "sram_B_tok"):
                 row["d_" + c] = (hi[c] / lo[c] - 1) if hi.get(c) and lo.get(c) else None
+            if hi.get("J_tok") is not None and lo.get("J_tok") is not None:
+                dJ_acc.append(hi["J_tok"] - lo["J_tok"])     # 0.152: absolute ΔJ / unit
             per_model.append(row)
         score = {m: (math.exp(sum(math.log(x) for x in v) / len(v)) if v else None) for m, v in g.items()}
         d_mm2 = None
@@ -287,22 +289,36 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
             d_mm2 = (a1["mm2"] - area0["mm2"]) * (-1 if inv else 1) if a1["mm2"] is not None else None
             d_mm2 = d_mm2 if d_mm2 else None
         per_mm2 = {m: ((score[m] - 1) / d_mm2 if score[m] is not None and d_mm2 else None) for m in metrics}
+        d_J = (sum(dJ_acc) / len(dJ_acc)) if dJ_acc else None
+        d_J = d_J if d_J is not None and abs(d_J) > 1e-12 else (0.0 if d_J is not None else None)
+        # win-win (faster, ΔJ ≤ 0) sorts first as 1e30; JSON-safe stand-in for +∞
+        per_J = {}
+        for m in metrics:
+            if score[m] is None or score[m] - 1 <= TIE or d_J is None:
+                per_J[m] = None
+            elif d_J > 0:
+                per_J[m] = (score[m] - 1) / d_J
+            else:
+                per_J[m] = 1e30
         krows.append({"key": key, "label": label, "cost": cost, "inverted": inv, "score": score,
-                      "d_mm2": d_mm2, "gain_per_mm2": per_mm2, "models": per_model})
+                      "d_mm2": d_mm2, "gain_per_mm2": per_mm2, "d_J": d_J, "gain_per_J": per_J, "models": per_model})
     # ties within TIE (the sensitivity convention, api.SENS_TIE 「假设」) do not "move" the metric
     rank = {m: [k["key"] for k in sorted(krows, key=lambda k: -(k["score"][m] or 0))
                 if k["score"][m] is not None and k["score"][m] - 1 > TIE] for m in metrics}
     hurts = {m: [k["key"] for k in krows if k["score"][m] is not None and 1 - k["score"][m] > TIE] for m in metrics}
     rank_mm2 = {m: [k["key"] for k in sorted((k for k in krows if k["gain_per_mm2"][m] is not None),
                                              key=lambda k: -k["gain_per_mm2"][m]) if k["score"][m] - 1 > TIE] for m in metrics}
+    rank_J = {m: [k["key"] for k in sorted((k for k in krows if k["gain_per_J"][m] is not None),
+                                           key=lambda k: -k["gain_per_J"][m]) if k["score"][m] - 1 > TIE] for m in metrics}
     notes = (["pd.enabled：洞察按合并部署（prefill + decode 同卡）评估，不含 PD 分离"] if base.pd.enabled else [])
     return {"chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label, "notes": notes,
             "serving": {"batch": base.serving.batch, "prompt": base.serving.prompt, "ctx": base.serving.ctx},
-            "models": mrows, "knobs": krows, "rank": rank, "rank_per_mm2": rank_mm2, "hurts": hurts, "tie": TIE, "domain": domain, "metrics": metric_labels(domain), "default_metric": DEFAULT_METRIC[domain],
+            "models": mrows, "knobs": krows, "rank": rank, "rank_per_mm2": rank_mm2, "rank_per_J": rank_J, "hurts": hurts, "tie": TIE, "domain": domain, "metrics": metric_labels(domain), "default_metric": DEFAULT_METRIC[domain],
             "area": area0, "energy_provided": table.provided,
             "basis": "单变量探针 × 现有引擎（evaluate）；面积只用用户密度（budget.area_estimate / full_area），功耗只用用户能耗表或动作计数；"
                      "探针幅度（×2、下一档）不是成本结论。指标随领域：LLM = TTFT/TPOT/tok/s；视频/图像 = 延迟/帧/s；"
-                     "蛋白质 = 延迟/序列/s；基因组 = 延迟/窗口/s。「假设」：原生 MXFP4 速率 = 2× FP8；原生 FP8 = 2× bf16。"}
+                     "蛋白质 = 延迟/序列/s；基因组 = 延迟/窗口/s。能耗预设（0.152）或用户表点亮 ΔJ / 每焦耳排序；"
+                     "idle_W 不进预设。「假设」：原生 MXFP4 = 2× FP8；原生 FP8 = 2× bf16。"}
 
 
 # ---------------------------------------------------------------------------------------------------------------- 0.148

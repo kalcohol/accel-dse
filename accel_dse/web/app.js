@@ -1631,6 +1631,35 @@ function setInsightPathExport() {
     raw: r,
   });
 }
+/* 0.152: cited energy presets — fill unset energy fields (idle_W never preset); same precedence as density */
+function initEnergyPresets() {
+  const sel = $('e-preset'), P = S.cat.energy_presets || {};
+  if (!sel) return;
+  for (const [k, v] of Object.entries(P)) sel.appendChild(h('option', { value: k }, v.label));
+  sel.addEventListener('change', () => {
+    const p = P[sel.value];
+    const e = { ...(S.energy || {}) };
+    S.energyPresetFilled = S.energyPresetFilled || {};
+    if (!p) {
+      for (const [f, v] of Object.entries(S.energyPresetFilled)) if (e[f] === v) { delete e[f]; const inp = $('e-' + f); if (inp) inp.title = ''; }
+      S.energyPresetFilled = {};
+      S.energy = e; syncInputs(); $('e-preset-note').textContent = ''; schedule(); return;
+    }
+    const kept = [], st = {};
+    for (const [f, x] of Object.entries(p.fields)) {
+      const cur = e[f], mine = cur !== null && cur !== undefined && S.energyPresetFilled[f] !== cur;
+      const inp = $('e-' + f);
+      if (mine) { kept.push(f); if (inp) inp.title = '你的输入（预设未覆盖）'; continue; }
+      e[f] = +x.value.toPrecision(4); S.energyPresetFilled[f] = e[f];
+      st[x.status] = (st[x.status] || 0) + 1;
+      if (inp) inp.title = `「${x.status}」${x.source}`;
+    }
+    S.energy = e; syncInputs();
+    $('e-preset-note').textContent = '已填入：' + Object.entries(st).map(([k, n]) => `${n} 项「${k}」`).join('，') +
+      (kept.length ? `；保留你的输入：${kept.join('、')}` : '') + '（idle_W 不进预设；悬停看出处）';
+    schedule();
+  });
+}
 /* 0.148: greedy multi-step upgrade path */
 async function runInsightPath() {
   const btn = $('ins-path-run');
@@ -1679,6 +1708,7 @@ function paintInsight() {
   put($('ins-summary'),
     h('div', {}, h('b', {}, `${r.domain} · ${r.metrics[m]}：最能改善的旋钮 `), rk.length ? rk.map((k, i) => (i ? ' > ' : '') + lab(k)).join('') : '无（全部在 ±1% 内）'),
     h('div', {}, '每 mm²（按你的面积密度）：', ra.length ? ra.map(lab).join(' > ') : (r.area ? '—' : '未填面积密度（预算 → mm²/MiB、mm²/kMAC、固定面积），不排序')),
+    h('div', {}, '每焦耳（按你的能耗表 / 预设）：', (r.rank_per_J && r.rank_per_J[m] && r.rank_per_J[m].length) ? r.rank_per_J[m].map(lab).join(' > ') : (r.energy_provided && r.energy_provided.length ? '—' : '未填能耗（或选左侧能耗预设）')),
     hu.length ? h('div', {}, '变差：', hu.map(lab).join('；')) : null,
     (r.notes || []).length ? h('div', {}, '注：', r.notes.join('；')) : null,
     h('div', { class: 'muted' }, r.basis));
@@ -1775,6 +1805,7 @@ async function init() {
   for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   initDensityPresets();
+  initEnergyPresets();
   $('best-layout').addEventListener('click', bestLayout);
   for (const bx of ['cmp', 'sw']) for (const f of ['csv', 'json']) $(`${bx}-exp-${f}`).addEventListener('click', () => doExport(bx, f));
   $('best-batch').checked = S.best;

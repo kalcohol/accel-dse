@@ -285,6 +285,13 @@ def _density_presets() -> dict:
             for k, v in DENSITY_PRESETS.items()}
 
 
+def _energy_presets() -> dict:
+    from .core.energy import ENERGY_PRESETS
+    return {k: {"label": v["label"], "fields": {f: {"value": x, "status": st, "source": src}
+                                                for f, (x, st, src) in v["fields"].items()}}
+            for k, v in ENERGY_PRESETS.items()}
+
+
 def api_catalog() -> dict:
     from .core.dtypes import MIXED_PRESETS
     chips = {k: {**c.__dict__, "formats": [list(x) for x in c.formats.rates], "mixed": [list(x) for x in c.formats.mixed], "peak_tflops_bf16": c.peak_tflops_bf16,
@@ -297,6 +304,7 @@ def api_catalog() -> dict:
             "d2d_standards": [{"id": k, **v} for k, v in D2D_STANDARDS.items()], "d2d_default_std": D2D_DEFAULT_STD,
             "d2d_default_units": D2D_DEFAULT_UNITS,
             "density_presets": _density_presets(),
+            "energy_presets": _energy_presets(),
             "mixed_presets": {k: {"pairs": [list(p) for p in v[0]], "source": v[1]} for k, v in MIXED_PRESETS.items()}}
 
 
@@ -333,7 +341,11 @@ def api_memory(body: dict) -> dict:
 
 def _energy_table(body: dict) -> EnergyTable:
     try:
-        return EnergyTable.from_dict(body.get("energy"))
+        d = body.get("energy")
+        if isinstance(d, dict) and "energy_preset" in d:
+            from .core.energy import apply_energy_preset
+            d = apply_energy_preset(d)
+        return EnergyTable.from_dict(d)
     except (ValueError, TypeError) as e:
         raise ApiError(str(e)) from None
 
