@@ -258,6 +258,14 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="PD (0.55/0.56): decode KV capacity — wait (reserve prompt+output, admission waits) | recompute "
                         "(optimistic admission, preempt youngest + re-prefill) | swap (preempt youngest, KV out/in "
                         "over the host link); default off")
+    p.add_argument("--pd-turns", dest="pd_turns", type=int, default=None,
+                   help="0.122 with --pd-prefix-tree: turns per conversation (prompt_t = prompt_{t-1} + output + user) 「假设」")
+    p.add_argument("--pd-turn-user", dest="pd_turn_user", type=int, default=None,
+                   help="0.122: new user-message tokens per turn 「假设」")
+    p.add_argument("--pd-writeback", dest="pd_writeback", action="store_true", default=None,
+                   help="0.122: insert each finished sequence (prompt + output) into the prefix tree")
+    p.add_argument("--pd-sessions", dest="pd_sessions", type=int, default=None,
+                   help="0.122: conversations open at once (sequential turns); 0 = independent turns (IRM) 「假设」")
     p.add_argument("--pd-ttft-resid", dest="pd_ttft_resid", choices=("full", "busy"), default=None,
                    help="PD (0.111, opt-in): colocated prefill-first TTFT decode residual — full (default) | busy "
                         "(only when an iteration is in flight: p = (1 − ρ)(1 − π₀), U(0, step) convolved)")
@@ -413,7 +421,9 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                         ("prefix_zipf", "pd_prefix_zipf"), ("prefix_cache_GB", "pd_prefix_cache_GB"),
                         ("kv_policy", "pd_kv_policy"), ("kv_capacity_GB", "pd_kv_capacity_GB"),
                         ("kv_admit", "pd_kv_admit"), ("swap_GBps", "pd_swap_GBps"),
-                        ("ttft_resid", "pd_ttft_resid")):
+                        ("ttft_resid", "pd_ttft_resid"), ("prefix_turns", "pd_turns"),
+                        ("prefix_turn_user", "pd_turn_user"), ("prefix_writeback", "pd_writeback"),
+                        ("prefix_sessions", "pd_sessions")):
             if getattr(a, dest, None) is not None:
                 sc["pd"][k] = getattr(a, dest)
         if getattr(a, "pd_mix", None):

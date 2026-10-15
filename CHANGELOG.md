@@ -3,6 +3,17 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.122.0]
+
+### Added
+
+- 多轮对话前缀（radix 树，默认关）：`pd.prefix_turns`（每会话轮数，1 = 关）、`pd.prefix_turn_user`（每轮新用户 token）、`pd.prefix_writeback`（完成后把 prompt + 输出写回树）、`pd.prefix_sessions`（同时进行的会话数；0 = 各轮独立到达）。第 t 轮 prompt = 上一轮 prompt + 输出 + 新用户消息，历史作为分支为 1 的层接在树叶下；不写回时第 t 轮只能命中上一轮的 prompt，写回时再多命中上一轮输出。命令行 `--pd-turns / --pd-turn-user / --pd-writeback / --pd-sessions`，工作台 PD 前缀树下方。
+- 闭式两种：各轮独立（IRM，叶路径 = 会话；Che 逐节点、按触达份额）与顺序会话（Che 按请求时间：会话间隔几何分布，节点存活 = 间隔 ≤ τ，结束后滞留 τ；基础树节点按会话突发的 τ 膨胀）。对 RadixLRU 仿真：IRM −6 … +0.1 %，顺序会话 −18 … +3 %（偏保守，最大误差在会话多、写回、容量中等处）。PD DES 仍按不带历史的树仿真（给出警告）。
+
+### Fixed
+
+- CHANGELOG：0.116–0.120 的版本标题在发布时被下一版覆盖，已补回（新测试检查 0.100 起每版都有标题）。
+
 ## [0.121.0]
 
 ### Added
@@ -10,6 +21,8 @@
 - PD + fabric：`fabric.kv_feedback_prefill`（默认关，需同时开 `kv_feedback`）。KV 流的 NIC 份额 u_kv 同样占用 prefill 池（发送端）的 NIC：prefill 池跨节点集合通信带宽 × (1 − u_kv)，prefill TTFT 与请求速率在同一不动点里重算（0.60 只回馈 decode 侧）。命令行 `--kv-feedback-prefill`，工作台 fabric 面板勾选项。例：DeepSeek-V3 PD（DP64·EP64，12.5 GB/s，oversub 4）TTFT 5800 → 5971 ms，goodput / 卡 2.59 → 2.51，u_kv 2.98 → 2.89 %。
 
 
+
+## [0.120.0]
 
 ### Added
 
@@ -26,6 +39,8 @@
 
 
 
+## [0.119.0]
+
 ### Added
 
 - 结构模型三角注意力内核 `workload.tri_attn`：`fused`（flash 式，默认，结果不变）| `materialized`（参考 PyTorch 实现整块写出 H·N³ logits）| `chunked`（`chunk_layer` 每次 `tri_chunk` 行，0 = 参考默认）| `reference`（发布代码在该 N 下的做法：ESMFold 不分块；OpenFold / AF2 chunk 4；Boltz-1 N > 384 → 128 否则 512；Protenix ≤ 1024 不分块、≤ 1536 512、≤ 2048 256、更长 128）。计算量不变；每块 logits 定激活峰值，超过 SRAM/2 时 logits 走 4 次 DRAM（写、softmax 读写、P·V 读）。推理无重算。命令行 `--tri-attn` / `--tri-chunk`，工作台蛋白质工作负载里可选。
@@ -37,6 +52,8 @@
 - Carbon 基础 DNA 语言模型加领域标签；页头领域列表补全（VLM / 图像 / 基因组）。
 
 
+
+## [0.118.0]
 
 ### Fixed
 
@@ -55,6 +72,8 @@
 
 
 
+## [0.117.0]
+
 ### Fixed
 
 - 视频分辨率取整：非 `vae_s · patch` 整数倍的宽高此前按向上取整的 patch 网格计；参考实现向下取整（diffusers WanPipeline 带警告取整，HunyuanVideo / LTX-Video / Mochi / CogVideoX 拒绝或在 latent `//` 与步长 p 的 patch 卷积处截断）→ 统一向下取整到 `vae_s · patch` 并警告（图像模型保持 0.116 规则）。
@@ -67,6 +86,8 @@
 - VAE 3D（时间压缩）审计：各卷积族解码器几何（因果时间上采样 `e·t − (e−1)`、LTX 4×4 unpatchify）精确还原请求的帧数 / 宽高；VAE 配置的空间 / 时间压缩、潜通道数与目录及 DiT `in_channels` 全部一致——其他生成模型无 FLUX.2 式的 VAE 下采样倍数错误。
 
 
+
+## [0.116.0]
 
 ### Added
 - **Text-prefix K/V reuse across denoise steps** (Qwen-Image-2.1). The mechanism follows the diffusers reference:

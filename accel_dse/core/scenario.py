@@ -224,6 +224,14 @@ class PDConfig:
     # every arrival waits step/2 at the median, a full step at p90 / p99) | "busy" (only when the prefill server is
     # idle and decode holds a request, p = (1 − ρ)(1 − π₀), R = Bern(p)·U(0, step) convolved with the TTFT law)
     ttft_resid: str = field(default="full", metadata={"omit_default": True})
+    # 0.122 — multi-turn conversations on the radix tree (all 「假设」; prefix_turns = 1 → off): each leaf path is a
+    # conversation of prefix_turns turns, turn t's prompt = turn t−1's prompt + its output (serving.out_len) + a new user
+    # message (prefix_turn_user tokens); prefix_writeback inserts the finished sequence (prompt + output) into the tree;
+    # prefix_sessions = conversations open at once (sequential turns, temporal locality; 0 = IRM over turns)
+    prefix_turns: int = field(default=1, metadata={"omit_default": True})
+    prefix_turn_user: int = field(default=0, metadata={"omit_default": True})
+    prefix_writeback: bool = field(default=False, metadata={"omit_default": True})
+    prefix_sessions: int = field(default=0, metadata={"omit_default": True})
     swap_GBps: float | None = None         # 0.56 kv_policy=swap: host link per card; None = workload.host_GBps 「假设」
 
     def __post_init__(self):
@@ -312,6 +320,15 @@ class PDConfig:
                 raise ValueError("pd.prefix_tree and pd.prefix_len / pd.prefix_hit are alternatives — set one")
         if self.kv_policy not in ("off", "wait", "recompute", "swap"):
             raise ValueError("pd.kv_policy must be off | wait | recompute | swap")
+        for k, lo, hi in (("prefix_turns", 1, 64), ("prefix_turn_user", 0, 1 << 20), ("prefix_sessions", 0, 10 ** 7)):
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                raise ValueError(f"pd.{k} must be an integer in [{lo}, {hi}]")
+        if not isinstance(self.prefix_writeback, bool):
+            raise ValueError("pd.prefix_writeback must be a boolean")
+        if (self.prefix_turns > 1 or self.prefix_writeback or self.prefix_sessions or self.prefix_turn_user) \
+                and not self.prefix_tree:
+            raise ValueError("pd.prefix_turns / prefix_turn_user / prefix_writeback / prefix_sessions need pd.prefix_tree")
         if self.ttft_resid not in ("full", "busy"):
             raise ValueError("pd.ttft_resid must be full | busy")
         if self.kv_admit not in ("before_prefill", "after_prefill"):

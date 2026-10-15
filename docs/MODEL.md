@@ -2855,3 +2855,28 @@ the prefill pool at its chosen batch (TTFT, per-request rate over the prompt mix
 fixed point.  A slower prefill lowers λ and hence u_kv, so the decode TPOT is no worse than with decode-only feedback.
 Report: `kv.fabric.feedback.{ttft_ms_before, ttft_ms_after, net_GBps_prefill}`.
 
+## 68. 0.122 — multi-turn conversations on the radix prefix tree
+
+Opt-in (`pd.prefix_turns` > 1 or `pd.prefix_writeback`; needs `pd.prefix_tree`).  Each leaf path of the tree starts a
+conversation of T turns.  Turn t's prompt is turn t − 1's prompt + its output (`serving.out_len`) + a new user message
+(`pd.prefix_turn_user`), so the history extends the tree by branching-1 levels o₁, s₂, o₂, …, o_{T−1}, s_T.  A node is
+touched by every request whose prompt contains it: s_t by turns ≥ t, o_t by turns ≥ t + 1 — and by turn t itself with
+write-back (SGLang `cache_finished_req` inserts prompt + output).  Turn t looks up before its own insert, so it matches at
+most turn t − 1's prompt, plus o_{t−1} with write-back.
+
+Two closed forms:
+
+- **Independent turns** (`prefix_sessions` = 0): IRM over (conversation, turn), t uniform; the leaf path is the
+  conversation.  Che per node with rate = path probability × the level's touch share; depth tail mixed over turns,
+  each stopping at its query depth.  Against a RadixLRU simulation of the same process: −6 … +0.1 % matched tokens.
+- **Sequential sessions** (`prefix_sessions` = A): A conversations open, a request comes from a uniformly random one, so
+  the gap between its turns is geometric with mean A requests.  Che in request time τ: a history node is resident
+  across a gap iff G ≤ τ and lingers τ after its last touch (resident time (n − 1)·E[min(G, τ)] + τ, conversations
+  start at 1/T per request); a base node sees Poisson bursts of T touches (P = 1 − exp(−p/T·(τ + (T − 1)·E[min(G,
+  τ)]))).  Turn t ≥ 2 finds its whole chain iff its gap ≤ τ, otherwise only the base tree.  Against the simulation:
+  −18 … +3 % (conservative; the largest gaps at many sessions with write-back and mid capacity, where part of a
+  chain survives).
+
+The serving prompt is not changed: the report gives the implied mean turn prompt (base + (T − 1)/2·(output + user))
+and warns when `serving.prompt` differs by more than 10 %.  The PD DES keeps the tree without history (warned).
+

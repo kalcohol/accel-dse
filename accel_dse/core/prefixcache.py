@@ -401,3 +401,160 @@ def tree_cum_tokens(levels) -> list[int]:
         acc += int(L)
         out.append(acc)
     return out
+
+
+# --------------------------------------------------------------------------- 0.122 multi-turn conversations
+
+def turn_tree(levels, turns: int, user: int, out: int, writeback: bool):
+    """0.122 「假设」: each leaf path of ``levels`` is one conversation of ``turns`` turns; turn t's prompt = turn t−1's
+    prompt + its output (``out`` tokens) + a new user message (``user`` tokens).  The history is appended to the tree
+    as branching-1 levels  o_1, s_2, o_2, s_3, …, o_{T−1}, s_T  (o = an output, s = a user message).
+
+    Requests are a stationary mix over turns, t uniform on 1 … T, conversation by path popularity (IRM).  A node is
+    touched (inserted / refreshed) by every request whose prompt contains it, i.e. s_t by turns ≥ t; the output o_t is
+    in turn t+1's prompt, so turns ≥ t+1 touch it — and with ``writeback`` (the serving engine inserts the finished
+    sequence prompt + output, SGLang's cache_finished_req) turn t inserts it too.  Turn t looks up before its own
+    insert: it can match base + o_1 … s_{t−1} (= turn t−1's prompt), plus o_{t−1} only with write-back.
+
+    Returns (ext_levels, rate_w, query_depth): ext_levels = levels + history levels (tokens, 1, 0); rate_w[k] = share
+    of requests touching a level-k node (1 for the base levels); query_depth[t − 1] = deepest level turn t can match."""
+    T = int(turns)
+    base = [tuple(x) for x in levels]
+    ext, w, kind = list(base), [1.0] * len(base), []
+    for t in range(1, T):                  # o_t, then s_{t+1}
+        if out > 0:
+            ext.append((int(out), 1, 0.0))
+            w.append((T - t + (1 if writeback else 0)) / T)
+            kind.append(("o", t))
+        if user > 0:
+            ext.append((int(user), 1, 0.0))
+            w.append((T - t) / T)
+            kind.append(("s", t + 1))
+    m0 = len(base)
+    qd = []
+    for t in range(1, T + 1):
+        d = m0
+        for j, (k, i) in enumerate(kind):
+            if (k == "s" and i <= t - 1) or (k == "o" and (i <= t - 2 or (writeback and i == t - 1))):
+                d = m0 + j + 1
+            else:
+                break
+        qd.append(d)
+    return ext, w, qd
+
+
+def turn_groups(levels, rate_w):
+    """Per level [(count, p_touch)]: the tree_groups path probabilities × the level's touch share."""
+    g = tree_groups(levels)
+    return [[(c, q * wk) for c, q in gk] for gk, wk in zip(g, rate_w)]
+
+
+def turn_resident(levels, C_tokens: float, rate_w) -> list[list[float]]:
+    """Che per node with per-level touch rates (the exact small-tree DP assumes every request walks the whole path, so
+    it is not used here); same cumulative-fit cut and pinned single-node root chain as ``tree_resident``."""
+    gs = turn_groups(levels, rate_w)
+    m, acc = len(levels), 0.0
+    for k, (L, _, _) in enumerate(levels):
+        acc += L
+        if acc > C_tokens:
+            m = k
+            break
+    lv, gs_fit = levels[:m], gs[:m]
+    zero = [[0.0] * len(g) for g in gs[m:]]
+    if C_tokens <= 0 or not m:
+        return [[0.0] * len(g) for g in gs]
+    tot = sum(L * c for (L, _, _), g in zip(lv, gs_fit) for c, _ in g)
+    if C_tokens >= tot:
+        return [[1.0] * len(g) for g in gs_fit] + zero
+    j = 0
+    while j < m and len(gs_fit[j]) == 1 and gs_fit[j][0] == (1.0, 1.0):
+        j += 1
+    if 0 < j < m:
+        pin = sum(L for L, _, _ in lv[:j])
+        return [[1.0] for _ in range(j)] + _tree_che(lv[j:], gs_fit[j:], C_tokens - pin) + zero
+    return _tree_che(lv, gs_fit, C_tokens) + zero
+
+
+def turn_depth_tail(levels, h, query_depth) -> list[float]:
+    """P(match depth ≥ k), mixed uniformly over turns: turn t's chain stops at its query depth."""
+    g = tree_groups(levels)                # request-weighted (path popularity, not touch rate)
+    per = []
+    prev = 1.0
+    for gk, hk in zip(g, h):
+        prev = min(prev, sum(c * q * x for (c, q), x in zip(gk, hk)))
+        per.append(prev)
+    T = len(query_depth)
+    return [sum(per[k] for d in query_depth if k < d) / T for k in range(len(levels))]
+
+
+def turn_both_tail(levels, h1, h2, query_depth) -> list[float]:
+    g = tree_groups(levels)
+    per = [sum(c * q * x * y for (c, q), x, y in zip(gk, a, b)) for gk, a, b in zip(g, h1, h2)]
+    T = len(query_depth)
+    return [sum(per[k] for d in query_depth if k < d) / T for k in range(len(levels))]
+
+
+def turn_session_tail(levels, turns: int, user: int, out: int, writeback: bool, C_tokens: float,
+                      sessions: int) -> tuple[list[float], dict]:
+    """0.122 「假设」 sequential conversations: ``sessions`` conversations are open at once, each issues its turns in
+    order and a request comes from a uniformly random open conversation (so the gap between two turns of one
+    conversation is geometric, mean ``sessions`` requests); a finished conversation is replaced by a new one (path by
+    popularity).  The IRM model (``turn_resident``) ignores this temporal locality and is very conservative for it.
+
+    Che in request time τ: a node is resident iff it was touched within the last τ requests.
+      base-tree node:  conversations through it start at p/T per request (Poisson), each touching it T times; it is
+                       resident iff some touch fell in the last τ: 1 − exp(−p/T·(τ + (T − 1)·E[min(G, τ)]))
+                       (the τ-dilation of a burst's touch times)
+      history node:    touched by n = w·T turns of its conversation; resident across a gap G iff G ≤ τ, then
+                       lingers τ after the last touch → resident time (n − 1)·E[min(G, τ)] + τ per conversation,
+                       E[min(G, τ)] = (1 − (1 − 1/A)^τ)·A; conversations start at 1/T per request.
+    τ solves occupancy = C.  Turn t ≥ 2 finds its whole query chain (touched together at turn t − 1, root most recent)
+    iff the gap ≤ τ: s = 1 − (1 − 1/A)^τ; otherwise only the base tree's own Che residency.  Turn 1: base only.
+    Returns (P(depth ≥ k) per extended level, info)."""
+    ext, w, qd = turn_tree(levels, turns, user, out, writeback)
+    T, A = int(turns), max(1, int(sessions))
+    m0 = len(levels)
+    g = tree_groups(levels)
+    keep = 1.0 - 1.0 / A
+
+    def surv(tau):
+        return 1.0 - keep ** tau if A > 1 else (1.0 if tau >= 1 else 0.0)
+
+    def hb_of(q, tau):        # base node: conversations through it start at q/T per request, each a burst of T
+        return -math.expm1(-q / T * (tau + (T - 1) * surv(tau) * A))      # touches (τ-dilation of the burst)
+
+    def occ(tau):
+        o_b = sum(L * c * hb_of(q, tau) for (L, _, _), gk in zip(levels, g) for c, q in gk)
+        eg = surv(tau) * A
+        o_h = sum(L * ((wk * T - 1) * eg + tau) / T for (L, _, _), wk in zip(ext[m0:], w[m0:]))
+        return o_b + o_h
+    if C_tokens <= 0:
+        tau = 0.0
+    elif occ(1e15) <= C_tokens:
+        tau = math.inf
+    else:
+        lo, hi = 0.0, 1.0
+        while occ(hi) < C_tokens:
+            hi *= 2.0
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if occ(mid) < C_tokens else (lo, mid)
+            if hi - lo <= 1e-12 * hi:
+                break
+        tau = 0.5 * (lo + hi)
+    s = 1.0 if tau == math.inf else surv(tau)
+    hb = [[1.0 if tau == math.inf else hb_of(q, tau) for _, q in gk] for gk in g]
+    bt, prev = [], 1.0
+    for gk, hk in zip(g, hb):
+        prev = min(prev, sum(c * q * x for (c, q), x in zip(gk, hk)))
+        bt.append(prev)
+    tail = []
+    for k in range(len(ext)):
+        acc = 0.0
+        for t in range(1, T + 1):
+            if k >= qd[t - 1]:
+                continue
+            b = bt[k] if k < m0 else 0.0
+            acc += b if t == 1 else s + (1.0 - s) * b
+        tail.append(acc / T)
+    return tail, {"tau_requests": tau, "session_survival": s, "query_depth": qd}

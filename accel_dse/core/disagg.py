@@ -57,7 +57,8 @@ from .lengths import lengths_of
 from .vision import expand_images
 from .pdqueue import _Pool, _pd_mode, _slo_rate, prefix_tokens, queue_report
 from .prefixcache import (both_hit, capacity, hit_of, per_card_bytes, pool_hits, tree_both_tail, tree_cum_tokens,
-                          tree_depth_law, tree_depth_tail, tree_groups, tree_resident, zipf_groups)
+                          tree_depth_law, tree_depth_tail, tree_groups, tree_resident, turn_both_tail,
+                          turn_depth_tail, turn_resident, turn_session_tail, turn_tree, zipf_groups)
 from .serving import Goodput, best_prefill, goodput
 
 # 0.63: pdsim.capture_ctx collects the live queueing ctx here (per context; was a monkey-patch of queue_report, which
@@ -144,17 +145,34 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         return b_, r_, True
 
     pcache = None
+    turn_warn: list = []
     if cap_mode and tree:
         # 0.58 radix tree: one token-capacity LRU per replica shared by all levels; Che per node (core/prefixcache)
         dscn, pscn = scns(0, 0)
         dec0 = evaluate(dscn)
+        turns = pd.prefix_turns > 1 or pd.prefix_writeback
+        base_tree = tree
+        if turns:                                    # 0.122 multi-turn history levels (prefixcache.turn_tree)
+            o_tok = max(0, round(lens.mean_out))
+            tree, t_w, t_qd = turn_tree(base_tree, pd.prefix_turns, pd.prefix_turn_user, o_tok, pd.prefix_writeback)
+            tree = tuple(tree)
         tg, cum = tree_groups(tree), tree_cum_tokens(tree)
         Lp = cum[-1]
+        t_info = {}
 
         def tree_pool(cap, reps_):
             C = cap["K_float"] * Lp * (reps_ if pd.prefix_affinity else 1)
-            hh = tree_resident(tree, C, tg)
-            tail = tree_depth_tail(tg, hh)
+            if turns and pd.prefix_sessions:
+                tail, inf = turn_session_tail(base_tree, pd.prefix_turns, pd.prefix_turn_user, o_tok,
+                                              pd.prefix_writeback, C, pd.prefix_sessions)
+                t_info.update(inf)
+                hh = None
+            elif turns:
+                hh = turn_resident(tree, C, t_w)
+                tail = turn_depth_tail(tree, hh, t_qd)
+            else:
+                hh = tree_resident(tree, C, tg)
+                tail = tree_depth_tail(tg, hh)
             return hh, tail, tree_depth_law(tail), C
 
         def tok_of(law, S_):
@@ -176,7 +194,12 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         dscn, pscn = scns(pp_rep, pc_rep)
         dec = replace(dec0, scenario=dscn)
         # decode side holds min(prefill depth, decode depth): P(both hold the level-k node) per level
-        both = tree_both_tail(tg, hp, hd)
+        if turns and pd.prefix_sessions:             # 「假设」 the two pools' caches independent per level
+            both = [a * b for a, b in zip(tail_p, tail_d)]
+        elif turns:
+            both = turn_both_tail(tree, hp, hd, t_qd)
+        else:
+            both = tree_both_tail(tg, hp, hd)
         e_p = sum(L * t for (L, _, _), t in zip(tree, tail_p))
         q_dec = (sum(L * t for (L, _, _), t in zip(tree, both)) / e_p if e_p > 0 else 0.0) if pd.prefix_on_decode else 0.0
         p_rep = pp_rep
@@ -195,6 +218,21 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
                   "basis": "radix 前缀树「假设」：每层（token 数、分支数、Zipf）独立选子节点（IRM）；节点级 LRU，容量按 token "
                            "计、各层共享；部分命中节省匹配到的层；命中按 Che 逐节点近似（树性质：子节点驻留 ⇒ 父节点驻留）；"
                            + ("前缀感知路由：总容量近似（DES 按根节点分配副本）" if pd.prefix_affinity else "随机路由：每个副本各自缓存")}
+        if turns:
+            mean_prompt = cum[len(base_tree)] + (pd.prefix_turns - 1) / 2 * (o_tok + pd.prefix_turn_user)
+            pcache["turns"] = {"turns": pd.prefix_turns, "user_tokens": pd.prefix_turn_user, "output_tokens": o_tok,
+                               "writeback": pd.prefix_writeback, "sessions": pd.prefix_sessions,
+                               "mean_turn_prompt": mean_prompt, "query_depth": list(t_qd),
+                               **({"tau_requests": t_info.get("tau_requests"),
+                                   "session_survival": t_info.get("session_survival")} if pd.prefix_sessions else {}),
+                               "basis": "多轮对话「假设」：第 t 轮 prompt = 上一轮 prompt + 输出 + 新用户消息；"
+                                        + ("输出写回树（完成后插入 prompt + 输出）；" if pd.prefix_writeback else
+                                           "输出不写回（下一轮只能命中上一轮的 prompt）；")
+                                        + (f"{pd.prefix_sessions} 个会话同时进行、轮次顺序到达（Che 按请求时间、会话间隔几何分布）"
+                                           if pd.prefix_sessions else "各轮独立到达（IRM，叶路径 = 会话）")}
+            if abs(S_rep - mean_prompt) > 0.1 * mean_prompt:
+                turn_warn.append(f"多轮前缀：各轮平均 prompt 应为 {mean_prompt:.0f} token（树 + 历史），serving.prompt 为 "
+                                 f"{S_rep}；命中 token 按 serving.prompt − 1 封顶")
     elif cap_mode:
         dscn, pscn = scns(0, 0)
         dec0 = evaluate(dscn)                        # decode results do not depend on the cached prefix
@@ -378,7 +416,9 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
           "goodput_per_card": reps * g.goodput_tok_s / total if total else 0.0, "ttft_ok": g.ttft_ok,
           "tpot_eff_ok": dec.tpot * 1e3 / g.decode_share <= sv.tpot_slo_ms if g.decode_share > 0 else False,
           "idle_cards": total - reps * c_d}
-    warnings = []
+    warnings = list(turn_warn)
+    if pd.simulate and (pd.prefix_turns > 1 or pd.prefix_writeback):
+        warnings.append("多轮前缀：DES 按不带轮次历史的前缀树仿真（闭式含轮次）")
     if not p_ok:
         warnings.append("prefill 池：单条请求的 prefill 也超过 TTFT SLO 或放不下（按 batch 1 计）")
     if not dec.fits:
@@ -421,7 +461,7 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
             from . import pdsim as _ps
             sim_modes = {}
             pc = pcache
-            lru = (dict(prefix_tree=tree, affinity=pd.prefix_affinity) if tree else
+            lru = (dict(prefix_tree=pd.prefix_tree, affinity=pd.prefix_affinity) if tree else
                    dict(prefix_len=pd.prefix_len, prefix_n=pd.prefix_count, prefix_alpha=pd.prefix_zipf,
                         affinity=pd.prefix_affinity)) if pc else {}
             for mode, ana in q["modes"].items():
