@@ -214,6 +214,9 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
             j["host"] = per["host"] * table.pJ_bit_host * 1e-12 * 8
         else:
             out["host_note"] = "卸载放置每次从主机重载权重的字节未计能耗：未填 pJ_bit_host"
+    if not j:      # 0.131: only entries this report does not use (idle_W_prefill, pJ_bit_host without host traffic)
+        out["note"] = "所填能耗项不适用于本报告（idle_W_prefill 只用于 PD prefill 池；pJ_bit_host 只用于主机链路流量），未计能耗"
+        return out      # was J_per_unit = 0 and avg_W_per_card = 0 — read as "zero energy"
     tot = sum(j.values())
     out.update(J_per_unit=tot, J_by_action=j,
                avg_W_per_card=tot * u / a["window_s"] / r.scenario.layout.cards if a["window_s"] > 0 else 0.0)

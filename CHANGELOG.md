@@ -3,6 +3,27 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.131.0]
+### Fixed
+- Energy report: a table that held only entries the single-scenario report cannot use (`idle_W_prefill`, which is for the PD prefill pool; `pJ_bit_host` without host-link traffic) produced `J_per_unit = 0` and `avg_W_per_card = 0`, which reads as zero energy. It now returns no total plus a note, as the PD energy helper already did, and the UI shows the note.
+### Verified (no change)
+- Headless browser (Chrome + Playwright, 1400 / 900 px):
+  - all 72 selectable models load with no console errors or page errors;
+  - for 11 models across every domain, eval / sweep / compare complete with no text overflow or overlapping KPI tiles;
+  - the capacity-fix button, layout search, Pareto and the models / about tabs work;
+  - a forced 400 dims the last result with a note, and the next valid eval clears it.
+- Energy / power model:
+  - idle-only power equals the table's W per card in every domain;
+  - MAC / vector counts per token are invariant under TP / PP;
+  - DRAM + SLC bytes are conserved when the cache absorbs traffic;
+  - MoE skew moves no work and charges only the longer window;
+  - bit entries are × 8 and MAC entries per bf16-equivalent MAC;
+  - weight bytes per token fall about 1 / B;
+  - the PD energy helper and the single report agree to 1e-12;
+  - units per window = throughput × window.
+  - These are pinned by tests/test_core_131.py.
+  - PP re-reads weights per micro-batch (more DRAM / SRAM bytes per token under PP), which is real, not double counting.
+
 ## [0.130.0]
 ### Fixed (hostile review: frontend, newest catalog builders)
 - `/api/sweep` returned 200 with a flat line for more knobs the model does not read. These now return 400 with the reason: `serving.ctx` / `serving.prompt` on fixed-workload models; `serving.prompt` in decode without PD; `serving.moe_skew` at EP = 1; and workload knobs that don't apply to the workload kind (`frames` on image DiTs and protein models, `msa` on sequence encoders, `samples` without diffusion). A sweep over every catalog model × 14 paths now has no flat 200 results. The UI no longer offers `moe_skew` on dense models, `spec_k` without MTP / draft, or `frames` on image DiTs; the catalog exposes `draft` for this.

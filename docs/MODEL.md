@@ -3006,3 +3006,18 @@ Image DiTs use per-image terms (单张延迟, 张/s/卡).
 **Parameter counts.** The newest builders (LFM2.5, Ling-3.1 KDA+MLA, Carbon, Qwen-Image, FLUX.2-klein) equal the
 official checkpoint totals. LFM2.5 differs from HF `total_parameters` only by its fp32 router `expert_bias` buffers
 (64 per MoE layer), which the safetensors files store and the index's parameter count omits.
+
+## 77. Browser check and energy-model invariants (0.131)
+
+**UI.** The UI was exercised in headless Chrome (Playwright) across every domain at two widths: eval, sweep, compare,
+fit, layouts, Pareto, and the stale-result state. No console errors and no text overflow were found.
+
+**Energy.** The report multiplies action counts by the user's table. Its internal consistency rests on these
+invariants, all now tested:
+- static power alone gives exactly the table's W per card;
+- useful MAC and vector work per output unit does not depend on how the model is split across cards;
+- a system-level cache moves bytes between DRAM and SLC without creating or losing any;
+- MoE load skew changes the window (card·s), not the work;
+- byte entries are converted at 8 bits per byte.
+
+A table with none of the entries a report uses yields no total rather than zero energy.

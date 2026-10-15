@@ -799,6 +799,7 @@ function renderEnergy(r) {
   if (e.J_per_unit !== undefined) body.push(h('tr', {}, h('td', {}, h('b', {}, '合计')), h('td', { class: 'num' }, ''),
     h('td', { class: 'num' }, h('b', {}, sci(e.J_per_unit)), ` · 平均 ${num(e.avg_W_per_card)} W/卡`)));
   if (e.host_note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, e.host_note)));
+  if (e.note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, e.note)));   // 0.131
   put($('energy-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
 }
 function renderPD(r) {
