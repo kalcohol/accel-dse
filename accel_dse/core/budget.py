@@ -11,7 +11,8 @@ changes nothing.  Two kinds of entries:
                   they trust).  0.149: optional cited per-node presets (DENSITY_PRESETS, each value labelled 来源 / 推导 /
                   二手 / 假设 with its source) fill unset densities; interface PHY area (DRAM pins, D2D units,
                   C2C GB/s) is added by full_area() when those densities are set.  Checked against a per-card die limit and a
-                  replica silicon limit (cards × die).
+                  replica silicon limit (cards × die).  0.153: optional ``usd_per_kWh`` + ``tdp_W_card`` turn insight ΔJ (or
+constant-TDP × time) into Δ$; electricity presets are labelled regional averages, never silent defaults.
 
 Each limit gives value, limit, headroom = 1 − value / limit and ok = True / False / None.  ``None`` means the tool
 cannot decide: an area density the estimate needs is missing, or the power is only a lower bound (energy table
@@ -73,6 +74,48 @@ DENSITY_PRESETS: dict[str, dict] = {
         "mm2_per_kmac": (400 * 0.11 / 64 / 1.8, "推导", "TPUv4i MXU ÷ 1.8 logic density; " + _BITCELL),
         **_PHY}},
 }
+
+
+# 0.153: labelled regional electricity averages for insight $/unit.  Never applied unless the user picks a preset or
+# types usd_per_kWh.  status labels match DENSITY_PRESETS.  FX for non-USD sources is itself 「假设」.
+_EIA_2024 = ("U.S. EIA Electric Power Annual Table 2.10 / Electric Power Monthly Table 5.3: Average Price of "
+             "Electricity to Ultimate Customers by End-Use Sector, 2024 (cents/kWh → $/kWh)")
+_CN_PRICE = ("中国价格信息网（chinaprice.cn）2024-09-25：36 大中城市普通工业用电（35 kV 及以上）总平均价 0.62 元/kWh；"
+             "USD 换算用中间价 7.1 CNY/USD「假设」（非牌价锁定）")
+ELECTRICITY_PRESETS: dict[str, dict] = {
+    "eia_us_industrial_2024": {
+        "label": "美国工业用电均价 2024（EIA）",
+        "fields": {
+            "usd_per_kWh": (0.0813, "来源", _EIA_2024 + ": industrial 8.13 ¢/kWh → 0.0813 $/kWh"),
+        },
+    },
+    "eia_us_commercial_2024": {
+        "label": "美国商业用电均价 2024（EIA）",
+        "fields": {
+            "usd_per_kWh": (0.1275, "来源", _EIA_2024 + ": commercial 12.75 ¢/kWh → 0.1275 $/kWh"),
+        },
+    },
+    "cn_36city_industrial_2024_09": {
+        "label": "中国 36 城工业用电 2024-09（价信网）",
+        "fields": {
+            "usd_per_kWh": (0.62 / 7.1, "二手/假设", _CN_PRICE + " → ≈ 0.0873 $/kWh"),
+        },
+    },
+}
+
+
+def apply_electricity_preset(d: dict) -> dict:
+    """Body ``budget`` with ``electricity_preset``: fill usd_per_kWh only if the user left it unset."""
+    d = dict(d)
+    pid = d.pop("electricity_preset", None)
+    if pid is None:
+        return d
+    if pid not in ELECTRICITY_PRESETS:
+        raise ValueError(f"budget.electricity_preset must be one of {sorted(ELECTRICITY_PRESETS)}")
+    for k, (v, _, _) in ELECTRICITY_PRESETS[pid]["fields"].items():
+        if d.get(k) is None:
+            d[k] = v
+    return d
 
 
 def apply_preset(d: dict) -> dict:
@@ -145,6 +188,9 @@ class Budget:
     mm2_per_dq_lpddr: float | None = None     # per data pin of any non-HBM DRAM interface (LPDDR / DDR / GDDR)
     mm2_per_d2d_unit: float | None = None     # per D2D unit (UCIe module / BoW slice) on the die
     mm2_per_GBps_c2c: float | None = None     # per GB/s (per direction) of card-to-card SerDes link
+    # 0.153: absolute operating cost (optional; None = insight does not rank by $).
+    usd_per_kWh: float | None = None           # electricity rate; presets in ELECTRICITY_PRESETS
+    tdp_W_card: float | None = None            # nameplate / design TDP for J≈W·t when energy table has no J
 
     def __post_init__(self):
         for f in fields(self):

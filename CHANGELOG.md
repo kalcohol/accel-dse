@@ -3,6 +3,23 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.153.0]
+### Added
+- **Absolute electricity cost for insight**: `Budget.usd_per_kWh` and `Budget.tdp_W_card`.
+  - When `$/kWh` is set and J per unit is known, knobs get `d_usd` / `gain_per_usd` / `rank_per_usd` (Δ$ from ΔJ).
+  - J source: energy table first; else constant-TDP × time 「假设」 (`tdp_W × tpot` for LLM, `tdp_W / thr` otherwise).
+  - **No silent electricity default.** Optional labelled presets `ELECTRICITY_PRESETS`:
+    - `eia_us_industrial_2024` / `eia_us_commercial_2024` (EIA 2024, 「来源」): 0.0813 / 0.1275 $/kWh.
+    - `cn_36city_industrial_2024_09` (chinaprice.cn 0.62 CNY/kWh ÷ 7.1 FX, 「二手/假设」).
+  - UI: 电价预设 / `$/kWh` / `TDP W/卡`; insight paints 「每美元」.
+### Documented
+- **Step-5 vision** remains `partial` after reviewing StepFun open weights + platform docs: overview 728→169 tokens;
+  optional external 504² crops (81 tokens each); crop-count algorithm not published. Approx string updated.
+- **AGENTS §73**: crisp product-default backlog table (frequency, SRAM, dtype, C2C/tp/pp, KV fabric, EP/MLA, …) with
+  current tool values; no engine defaults changed.
+### Tests
+- `tests/test_core_153.py` (4).
+
 ## [0.152.0]
 ### Added
 - **Cited energy presets** `energy.ENERGY_PRESETS`: `horowitz_45nm` and `tpuv4i_7nm`, analogous to density presets.

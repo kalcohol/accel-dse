@@ -3718,3 +3718,13 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
 - TPUv4i ISCA 2021 Table 2: 45→7 nm average energy 2.6×, SRAM 1.3–2.4× (geom. mean), DRAM 6.3× (HBM) → 「推导」 from Horowitz.
 - Insight: accumulate absolute ΔJ = hi.J_tok − lo.J_tok (not relative); `rank_per_J` = (score−1)/d_J when d_J>0;
   win-win (score>TIE and d_J≤0) → 1e30; near-zero |d_J|<1e-12 → 0. Multi-domain path hostile: never-worse + beam≥greedy.
+
+## 99. Absolute electricity cost ranking and Step-5 vision review (0.153)
+- `Budget.usd_per_kWh` + `Budget.tdp_W_card` (optional). `ELECTRICITY_PRESETS`: EIA 2024 US industrial 8.13 ¢/kWh and
+  commercial 12.75 ¢/kWh (「来源」); China 36-city industrial 0.62 CNY/kWh (2024-09, chinaprice.cn) ÷ 7.1 FX 「二手/假设」.
+  Presets fill only unset `usd_per_kWh`; never a silent default.
+- Insight: J per unit = energy-table `J_tok` if present, else `tdp_W × tpot` (LLM) or `tdp_W / thr` (other domains) as
+  constant-power 「假设」. `d_usd = d_J × usd_per_kWh / 3.6e6`; `rank_per_usd` mirrors `rank_per_J` (win-win → 1e30).
+- Step-5 vision remains `partial`: open weights expose overview 728² → 169 tokens and an external crop interface
+  (504² → 81 tokens/crop via `patch_pixel_values` / `num_patches`); the crop-count algorithm is not published.
+  Platform docs only give detail low/high longest-side resize tips.

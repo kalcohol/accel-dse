@@ -292,6 +292,13 @@ def _energy_presets() -> dict:
             for k, v in ENERGY_PRESETS.items()}
 
 
+def _electricity_presets() -> dict:
+    from .core.budget import ELECTRICITY_PRESETS
+    return {k: {"label": v["label"], "fields": {f: {"value": x, "status": st, "source": src}
+                                                for f, (x, st, src) in v["fields"].items()}}
+            for k, v in ELECTRICITY_PRESETS.items()}
+
+
 def api_catalog() -> dict:
     from .core.dtypes import MIXED_PRESETS
     chips = {k: {**c.__dict__, "formats": [list(x) for x in c.formats.rates], "mixed": [list(x) for x in c.formats.mixed], "peak_tflops_bf16": c.peak_tflops_bf16,
@@ -305,6 +312,7 @@ def api_catalog() -> dict:
             "d2d_default_units": D2D_DEFAULT_UNITS,
             "density_presets": _density_presets(),
             "energy_presets": _energy_presets(),
+            "electricity_presets": _electricity_presets(),
             "mixed_presets": {k: {"pairs": [list(p) for p in v[0]], "source": v[1]} for k, v in MIXED_PRESETS.items()}}
 
 
@@ -356,9 +364,12 @@ def _budget(body: dict) -> Budget | None:
         return None
     try:
         d = body["budget"]
-        if isinstance(d, dict) and "density_preset" in d:
-            from .core.budget import apply_preset
-            d = apply_preset(d)
+        if isinstance(d, dict):
+            from .core.budget import apply_preset, apply_electricity_preset
+            if "density_preset" in d:
+                d = apply_preset(d)
+            if "electricity_preset" in d:
+                d = apply_electricity_preset(d)
         return Budget.from_dict(d)
     except (ValueError, TypeError) as e:
         raise ApiError(str(e)) from None

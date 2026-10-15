@@ -202,7 +202,7 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return VisionSpec("fixed", "Perception Encoder + 下采样卷积", p, 1, h, inter, L, nh, h, False, 4,
                           ((9 * h, 2 * h, 4), (9 * 2 * h, 4 * h, 16), (4 * h, text_h, 16)), params,
                           tuple(sorted(pre.items())),
-                          approx=f"视觉：每图只计 {side}² 概览（169 token）；裁剪块数由外部处理器决定，未计")
+                          approx=f"视觉：每图只计 {side}² 概览（config.image_token_len=169 token）；开放权重 inference 接受外部预处理的 504² 裁剪（patch_token_len=81/块，num_patches），但裁剪块数算法未随 Step-5-Preview 发布（model.py: external image preprocessing）；平台 API 仅给 detail low/high 的最长边缩放建议（728 / 504 倍数），无公开 crop/overview 处理器 → 仍 partial")
     if vc.get("model_type") == "minicpmv4_7_vision":          # 0.144 SigLIP + in-tower merger (insert_layer_id) + merger
         h, inter, L, nh, p = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"], vc["patch_size"]
         ins = cfg.get("insert_layer_id") or 0

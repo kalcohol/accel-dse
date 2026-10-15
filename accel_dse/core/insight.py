@@ -41,6 +41,43 @@ from .. import mem_catalog
 from .budget import Budget, area_estimate, full_area
 from .catalog import get_model
 from .energy import EnergyTable, energy_report
+
+_J_PER_KWH = 3.6e6  # 0.153: Joules per kWh
+
+
+def _j_eff(pt: dict, domain: str, tdp_W: float | None) -> float | None:
+    """J per output unit: energy-table J_tok wins; else constant-TDP × time 「假设」."""
+    if pt.get("J_tok") is not None:
+        return pt["J_tok"]
+    if tdp_W is None:
+        return None
+    if domain == "llm":
+        t = pt.get("tpot")
+        return (tdp_W * t) if t else None          # decode: W · s/tok
+    thr = pt.get("thr")
+    return (tdp_W / thr) if thr else None          # W / (units/s/card)
+
+
+def _usd_unit(j: float | None, rate: float | None) -> float | None:
+    if j is None or rate is None:
+        return None
+    return j * rate / _J_PER_KWH
+
+
+def _gain_per(score, d, metrics, tie=None):
+    """Map Δcost → gain/cost; win-win (faster and Δ≤0) → 1e30; missing → None."""
+    if tie is None:
+        tie = TIE
+    out = {}
+    for m in metrics:
+        if score[m] is None or score[m] - 1 <= tie or d is None:
+            out[m] = None
+        elif d > 0:
+            out[m] = (score[m] - 1) / d
+        else:
+            out[m] = 1e30
+    return out
+
 from .evaluate import evaluate
 from .scenario import Scenario
 
@@ -240,6 +277,8 @@ def _gain(m: str, base: dict, alt: dict) -> float | None:
 
 def insight_report(base: Scenario, models=None, budget: Budget | None = None, table: EnergyTable | None = None) -> dict:
     table = table or EnergyTable()
+    usd_kwh = budget.usd_per_kWh if budget is not None else None
+    tdp_W = budget.tdp_W_card if budget is not None else None
     models = list(models) if models is not None else list(DEFAULT_MODELS)
     if not 1 <= len(models) <= MAX_MODELS:
         raise ValueError(f"models: 1..{MAX_MODELS} ids")
@@ -279,8 +318,9 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
                     g[m].append(x)
             for c in ("J_tok", "dram_B_tok", "mac_tok", "sram_B_tok"):
                 row["d_" + c] = (hi[c] / lo[c] - 1) if hi.get(c) and lo.get(c) else None
-            if hi.get("J_tok") is not None and lo.get("J_tok") is not None:
-                dJ_acc.append(hi["J_tok"] - lo["J_tok"])     # 0.152: absolute ΔJ / unit
+            j_lo, j_hi = _j_eff(lo, domain, tdp_W), _j_eff(hi, domain, tdp_W)
+            if j_lo is not None and j_hi is not None:
+                dJ_acc.append(j_hi - j_lo)               # 0.152/0.153: absolute ΔJ / unit (table or TDP×t)
             per_model.append(row)
         score = {m: (math.exp(sum(math.log(x) for x in v) / len(v)) if v else None) for m, v in g.items()}
         d_mm2 = None
@@ -292,16 +332,13 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
         d_J = (sum(dJ_acc) / len(dJ_acc)) if dJ_acc else None
         d_J = d_J if d_J is not None and abs(d_J) > 1e-12 else (0.0 if d_J is not None else None)
         # win-win (faster, ΔJ ≤ 0) sorts first as 1e30; JSON-safe stand-in for +∞
-        per_J = {}
-        for m in metrics:
-            if score[m] is None or score[m] - 1 <= TIE or d_J is None:
-                per_J[m] = None
-            elif d_J > 0:
-                per_J[m] = (score[m] - 1) / d_J
-            else:
-                per_J[m] = 1e30
+        per_J = _gain_per(score, d_J, metrics)
+        d_usd = (d_J * usd_kwh / _J_PER_KWH) if (d_J is not None and usd_kwh is not None) else None
+        d_usd = d_usd if d_usd is not None and abs(d_usd) > 1e-18 else (0.0 if d_usd is not None else None)
+        per_usd = _gain_per(score, d_usd, metrics)
         krows.append({"key": key, "label": label, "cost": cost, "inverted": inv, "score": score,
-                      "d_mm2": d_mm2, "gain_per_mm2": per_mm2, "d_J": d_J, "gain_per_J": per_J, "models": per_model})
+                      "d_mm2": d_mm2, "gain_per_mm2": per_mm2, "d_J": d_J, "gain_per_J": per_J,
+                      "d_usd": d_usd, "gain_per_usd": per_usd, "models": per_model})
     # ties within TIE (the sensitivity convention, api.SENS_TIE 「假设」) do not "move" the metric
     rank = {m: [k["key"] for k in sorted(krows, key=lambda k: -(k["score"][m] or 0))
                 if k["score"][m] is not None and k["score"][m] - 1 > TIE] for m in metrics}
@@ -310,15 +347,24 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
                                              key=lambda k: -k["gain_per_mm2"][m]) if k["score"][m] - 1 > TIE] for m in metrics}
     rank_J = {m: [k["key"] for k in sorted((k for k in krows if k["gain_per_J"][m] is not None),
                                            key=lambda k: -k["gain_per_J"][m]) if k["score"][m] - 1 > TIE] for m in metrics}
+    rank_usd = {m: [k["key"] for k in sorted((k for k in krows if k["gain_per_usd"][m] is not None),
+                                             key=lambda k: -k["gain_per_usd"][m]) if k["score"][m] - 1 > TIE] for m in metrics}
     notes = (["pd.enabled：洞察按合并部署（prefill + decode 同卡）评估，不含 PD 分离"] if base.pd.enabled else [])
+    if tdp_W is not None and not table.provided:
+        notes.append("tdp_W_card：无能耗表时按恒定 TDP × 时间估 J（「假设」）；有表时表优先")
+    j_src = ("能耗表" if table.provided else ("TDP×时间" if tdp_W is not None else None))
     return {"chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label, "notes": notes,
             "serving": {"batch": base.serving.batch, "prompt": base.serving.prompt, "ctx": base.serving.ctx},
-            "models": mrows, "knobs": krows, "rank": rank, "rank_per_mm2": rank_mm2, "rank_per_J": rank_J, "hurts": hurts, "tie": TIE, "domain": domain, "metrics": metric_labels(domain), "default_metric": DEFAULT_METRIC[domain],
+            "models": mrows, "knobs": krows, "rank": rank, "rank_per_mm2": rank_mm2, "rank_per_J": rank_J,
+            "rank_per_usd": rank_usd, "hurts": hurts, "tie": TIE, "domain": domain, "metrics": metric_labels(domain),
+            "default_metric": DEFAULT_METRIC[domain],
             "area": area0, "energy_provided": table.provided,
+            "usd_per_kWh": usd_kwh, "tdp_W_card": tdp_W, "j_source": j_src,
             "basis": "单变量探针 × 现有引擎（evaluate）；面积只用用户密度（budget.area_estimate / full_area），功耗只用用户能耗表或动作计数；"
                      "探针幅度（×2、下一档）不是成本结论。指标随领域：LLM = TTFT/TPOT/tok/s；视频/图像 = 延迟/帧/s；"
                      "蛋白质 = 延迟/序列/s；基因组 = 延迟/窗口/s。能耗预设（0.152）或用户表点亮 ΔJ / 每焦耳排序；"
-                     "idle_W 不进预设。「假设」：原生 MXFP4 = 2× FP8；原生 FP8 = 2× bf16。"}
+                     "idle_W 不进预设。0.153：$/kWh（电价预设或手填）+ 能耗 ΔJ（或 tdp_W_card × 时间）→ Δ$ / 每美元排序；"
+                     "不内置默认电价。「假设」：原生 MXFP4 = 2× FP8；原生 FP8 = 2× bf16。"}
 
 
 # ---------------------------------------------------------------------------------------------------------------- 0.148

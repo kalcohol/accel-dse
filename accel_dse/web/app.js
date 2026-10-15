@@ -1660,6 +1660,36 @@ function initEnergyPresets() {
     schedule();
   });
 }
+/* 0.153: labelled electricity-rate presets — fill usd_per_kWh only if unset; never a silent default */
+function initElectricityPresets() {
+  const sel = $('b-elec-preset'), P = S.cat.electricity_presets || {};
+  if (!sel) return;
+  for (const [k, v] of Object.entries(P)) sel.appendChild(h('option', { value: k }, v.label));
+  sel.addEventListener('change', () => {
+    const p = P[sel.value];
+    const b = { ...(S.budget || {}) };
+    S.elecPresetFilled = S.elecPresetFilled || {};
+    if (!p) {
+      for (const [f, v] of Object.entries(S.elecPresetFilled)) if (b[f] === v) { delete b[f]; const inp = $('b-' + f); if (inp) inp.title = ''; }
+      S.elecPresetFilled = {};
+      S.budget = b; syncInputs(); $('b-elec-preset-note').textContent = ''; schedule(); return;
+    }
+    const kept = [], st = {};
+    for (const [f, x] of Object.entries(p.fields)) {
+      const cur = b[f], mine = cur !== null && cur !== undefined && S.elecPresetFilled[f] !== cur;
+      const inp = $('b-' + f);
+      if (mine) { kept.push(f); if (inp) inp.title = '你的输入（预设未覆盖）'; continue; }
+      b[f] = +x.value.toPrecision(4); S.elecPresetFilled[f] = b[f];
+      st[x.status] = (st[x.status] || 0) + 1;
+      if (inp) inp.title = `「${x.status}」${x.source}`;
+    }
+    S.budget = b; syncInputs();
+    $('b-elec-preset-note').textContent = '已填入：' + Object.entries(st).map(([k, n]) => `${n} 项「${k}」`).join('，') +
+      (kept.length ? `；保留你的输入：${kept.join('、')}` : '') + '（不静默填电价；悬停看出处）';
+    schedule();
+  });
+}
+
 /* 0.148: greedy multi-step upgrade path */
 async function runInsightPath() {
   const btn = $('ins-path-run');
@@ -1708,7 +1738,8 @@ function paintInsight() {
   put($('ins-summary'),
     h('div', {}, h('b', {}, `${r.domain} · ${r.metrics[m]}：最能改善的旋钮 `), rk.length ? rk.map((k, i) => (i ? ' > ' : '') + lab(k)).join('') : '无（全部在 ±1% 内）'),
     h('div', {}, '每 mm²（按你的面积密度）：', ra.length ? ra.map(lab).join(' > ') : (r.area ? '—' : '未填面积密度（预算 → mm²/MiB、mm²/kMAC、固定面积），不排序')),
-    h('div', {}, '每焦耳（按你的能耗表 / 预设）：', (r.rank_per_J && r.rank_per_J[m] && r.rank_per_J[m].length) ? r.rank_per_J[m].map(lab).join(' > ') : (r.energy_provided && r.energy_provided.length ? '—' : '未填能耗（或选左侧能耗预设）')),
+    h('div', {}, '每焦耳（能耗表 / 预设，或 TDP×时间）：', (r.rank_per_J && r.rank_per_J[m] && r.rank_per_J[m].length) ? r.rank_per_J[m].map(lab).join(' > ') : (r.j_source ? '—' : '未填能耗（或选能耗预设）且未填 TDP')),
+    h('div', {}, '每美元（电价 × ΔJ）：', (r.rank_per_usd && r.rank_per_usd[m] && r.rank_per_usd[m].length) ? r.rank_per_usd[m].map(lab).join(' > ') : (r.usd_per_kWh != null && r.j_source ? '—' : '未填电价（或选电价预设）或缺少 J 来源')),
     hu.length ? h('div', {}, '变差：', hu.map(lab).join('；')) : null,
     (r.notes || []).length ? h('div', {}, '注：', r.notes.join('；')) : null,
     h('div', { class: 'muted' }, r.basis));
@@ -1798,7 +1829,7 @@ async function init() {
   for (const k of ['clip_slo_s', 'seq_slo_ms', 'fold_slo_s']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
   bindNumber('w-host_GBps', () => S.sc.workload.host_GBps, (x) => (S.sc.workload.host_GBps = x));
   bindNumber('w-host_TFLOPS', () => S.sc.workload.host_TFLOPS, (x) => (S.sc.workload.host_TFLOPS = x));
-  for (const k of ['sram_mib', 'macs', 'tflops', 'cards', 'power_W_card', 'dram_GiB', 'die_mm2', 'mm2_per_mib_sram', 'mm2_per_kmac',
+  for (const k of ['sram_mib', 'macs', 'tflops', 'cards', 'power_W_card', 'usd_per_kWh', 'tdp_W_card', 'dram_GiB', 'die_mm2', 'mm2_per_mib_sram', 'mm2_per_kmac',
     'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2', 'mm2_per_dq_hbm', 'mm2_per_dq_lpddr', 'mm2_per_d2d_unit', 'mm2_per_GBps_c2c'])
     bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
       { nullable: true, int: k === 'cards' });
@@ -1806,6 +1837,7 @@ async function init() {
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   initDensityPresets();
   initEnergyPresets();
+  initElectricityPresets();
   $('best-layout').addEventListener('click', bestLayout);
   for (const bx of ['cmp', 'sw']) for (const f of ['csv', 'json']) $(`${bx}-exp-${f}`).addEventListener('click', () => doExport(bx, f));
   $('best-batch').checked = S.best;
