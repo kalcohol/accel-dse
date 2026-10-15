@@ -302,7 +302,7 @@
 
   <section class="grp">
     <h3>资源 / 面积预算 <span class="tag assume">用户提供</span></h3>
-    <div class="small muted">可选设计约束：只报告余量、标出超限；搜索本身不受影响，超预算的布局排在后面。工具不内置工艺库——面积按你填的密度「假设」估算，缺密度或缺固定面积时只给下界。</div>
+    <div class="small muted">可选设计约束：只报告余量、标出超限；搜索本身不受影响，超预算的布局排在后面。面积按你填的密度估算（0.149 起可选「密度预设」：有出处的按节点密度，标注 来源/推导/二手/假设，仍可改写），缺密度或缺固定面积时只给下界。</div>
     <div class="row3">
       <label title="每卡片上 SRAM 上限">SRAM MiB / 卡<input type="number" id="b-sram_mib" min="0" step="16"></label>
       <label title="每卡 MAC 单元上限（rows·cols·engines）">MAC / 卡<input type="number" id="b-macs" min="0" step="1024"></label>
@@ -316,7 +316,13 @@
       <label title="每 MiB SLC 的面积，mm²「假设」（有 SLC 时需要）">mm² / MiB SLC<input type="number" id="b-mm2_per_mib_slc" min="0" step="0.05"></label>
       <label title="I/O、PHY、向量单元、NoC 等固定面积，mm²「假设」；已计入密度时填 0">固定 mm²<input type="number" id="b-mm2_fixed" min="0" step="10"></label>
       <label title="每副本硅面积代理上限（卡数 × 每卡面积），mm²">面积 mm² / 副本<input type="number" id="b-system_mm2" min="0" step="100"></label>
+      <label title="每个 HBM 数据引脚的 PHY 面积，mm²（0.149）">mm² / HBM DQ<input type="number" id="b-mm2_per_dq_hbm" min="0" step="0.001"></label>
+      <label title="每个非 HBM（LPDDR/DDR/GDDR）数据引脚的 PHY 面积，mm²（0.149）">mm² / LPDDR DQ<input type="number" id="b-mm2_per_dq_lpddr" min="0" step="0.001"></label>
+      <label title="每个 D2D 单元（UCIe 模块 / BoW slice）的 PHY 面积，mm²（0.149）">mm² / D2D 单元<input type="number" id="b-mm2_per_d2d_unit" min="0" step="0.05"></label>
+      <label title="卡间 SerDes 每 GB/s（单向）的 PHY 面积，mm²（0.149）">mm² / C2C GB/s<input type="number" id="b-mm2_per_GBps_c2c" min="0" step="0.001"></label>
     </div>
+    <div class="row"><label title="0.149：按工艺节点填入有出处的密度（来源见悬停；仍可逐项改写）">密度预设<select id="b-preset"><option value="">（不用预设）</option></select></label>
+      <span class="small muted" id="b-preset-note"></span></div>
   </section>
 
   <section class="grp">
@@ -457,6 +463,7 @@
     <div class="row">
       <label>步数<input type="number" id="ins-steps" min="1" max="10" value="6" style="width:4em"></label>
       <label title="仅相对成本模式（未填面积密度）；面积模式用 预算 → 裸片面积 上限">成本上限（相对单位，空 = 不限）<input type="number" id="ins-maxcost" min="0" step="0.5" style="width:6em"></label>
+      <label title="0.149：束搜索（宽 3），结果不劣于贪心（同时算贪心，取较好者）"><input type="checkbox" id="ins-beam"> 束搜索（宽 3）</label>
       <button class="btn" id="ins-path-run">计算升级路径（按上方指标）</button>
       <span class="small muted" id="ins-path-status"></span>
     </div>

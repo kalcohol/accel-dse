@@ -3662,3 +3662,28 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
 - Guarantee: never worse than the start, per model, on the chosen metric. It is asserted in code, tested, and fuzzed.
   Greedy is not globally optimal. The top 3 alternatives are reported per step.
 
+## 95. Cited density presets, interface PHY area, beam-search upgrade path (0.149)
+- Presets (`budget.DENSITY_PRESETS`) fill only unset fields; user entries win. Values:
+  - **n28_tpuv1**: 4.58 mm²/MiB (24 MiB UB ≈ 1/3 of a < 330 mm² die) and 1.29 mm²/kMAC (int8 MXU = 1/4 of the die).
+    Source: Jouppi et al., ISCA 2017, with the die size from ISCA 2021 Table 1. Both are upper bounds.
+  - **n7_tpuv4i**: 0.875 mm²/MiB (128 MiB CMEM = 28 % of < 400 mm²) and 0.6875 mm²/kMAC (4 × 128² bf16 MXUs = 11 %).
+    Source: Jouppi et al., ISCA 2021. Both are upper bounds.
+  - **n5_derived** (「推导」): 0.68 mm²/MiB (N7 → N5 HD bitcell 0.027 → 0.021 µm²) and 0.38 mm²/kMAC (TSMC N5 logic density
+    1.8× N7). The array-only lower bound is 31.8 Mib/mm² = 0.25 mm²/MiB.
+  - **PHY**, all presets:
+    - UCIe-A x64 module 388.8 × 1043 µm = 0.406 mm² (「来源」, HC2023 UCIe tutorial).
+    - C2C 0.027 mm² per GB/s per direction: quad 112G 5 nm SerDes 1806 × 825 µm (Varzaghani et al., VLSI 2022; 「二手」).
+    - HBM 14 mm² / 1024 DQ (「二手/假设」, die-shot estimates; ISSCC 2023 RX-only 0.0056 mm²/DQ is the lower bound).
+    - LPDDR 0.03 mm²/DQ (「假设」, no public figure found).
+- Mechanism: PHY area scales with what the hardware actually adds:
+  - DRAM: pins (bus bits), so a rate upgrade adds no PHY area and a package-count upgrade does.
+  - D2D: units (UCIe modules).
+  - C2C: GB/s.
+  `full_area` = chip densities + PHY. It is used by the budget area check (only when a PHY density is set), insight
+  Δmm² and upgrade-path costs. A knob with no area term keeps the 「假设」 relative cost (1 unit = 1 % of the start area).
+- Beam search (width w): each state expands its w−1 best-ratio steps plus the largest-gain step. Kept states are the w−1
+  most efficient partial paths plus the highest-gain one. Greedy always runs too, and the beam result is returned only if
+  its final gain is ≥ greedy's. The per-model "never worse than the start" rule is unchanged.
+- Fix: the `d2d_x2` knob now doubles `d2d_units` for catalog grades. Previously it changed `d2d.GBps`, which only applies to
+  `custom`.
+

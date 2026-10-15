@@ -1544,6 +1544,27 @@ async function runInsight() {
     $('ins-status').textContent = '错误：' + e.message;
   } finally { btn.disabled = false; }
 }
+/* 0.149: cited density presets per process node — fill the budget densities (still editable), sources on hover */
+function initDensityPresets() {
+  const sel = $('b-preset'), P = S.cat.density_presets || {};
+  for (const [k, v] of Object.entries(P)) sel.appendChild(h('option', { value: k }, v.label));
+  sel.addEventListener('change', () => {
+    const p = P[sel.value];
+    if (!p) { $('b-preset-note').textContent = ''; return; }
+    const b = { ...(S.budget || {}) };
+    for (const [f, x] of Object.entries(p.fields)) {
+      b[f] = +x.value.toPrecision(4);
+      const inp = $('b-' + f);
+      if (inp) inp.title = `「${x.status}」${x.source}`;
+    }
+    S.budget = b;
+    for (const f of Object.keys(p.fields)) { const inp = $('b-' + f); if (inp && inp._sync) inp._sync(); }
+    const st = {};
+    for (const x of Object.values(p.fields)) st[x.status] = (st[x.status] || 0) + 1;
+    $('b-preset-note').textContent = '已填入：' + Object.entries(st).map(([k, n]) => `${n} 项「${k}」`).join('，') + '（悬停各输入框看出处）';
+    schedule();
+  });
+}
 /* 0.148: greedy multi-step upgrade path */
 async function runInsightPath() {
   const btn = $('ins-path-run');
@@ -1551,14 +1572,14 @@ async function runInsightPath() {
   $('ins-path-status').textContent = '计算中（每步 × 每个旋钮 × 每个模型）…';
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
-    const extra = { metric: S.insMetric || 'tpot', steps: Math.round(+$('ins-steps').value || 6) };
+    const extra = { metric: S.insMetric || 'tpot', steps: Math.round(+$('ins-steps').value || 6), beam: $('ins-beam').checked ? 3 : 1 };
     if (ms.length) extra.models = ms;
     if ($('ins-maxcost').value !== '') extra.max_cost = +$('ins-maxcost').value;
     const r = await track(req('insight_path', '/api/insight_path', body(extra)));
     if (!r) return;
     S.insPath = r;
     paintInsightPath();
-    $('ins-path-status').textContent = `完成 · ${r.path.length} 步 · 成本 = ${r.cost_unit}`;
+    $('ins-path-status').textContent = `完成 · ${r.path.length} 步 · ${r.search} · 成本 = ${r.cost_unit}`;
   } catch (e) {
     $('ins-path-status').textContent = '错误：' + e.message;
   } finally { btn.disabled = false; }
@@ -1571,11 +1592,12 @@ function paintInsightPath() {
   put($('ins-path-summary'),
     h('div', {}, h('b', {}, `${ml}：`), last ? `${r.path.length} 步后 ×${num(last.cum_gain)}（几何平均，相对起点），累计成本 ${num(last.cum_cost)} ${r.cost_unit}`
       : '无可取的升级（没有旋钮在不使任何模型变差、且不超预算的前提下提升 > 1%）'),
+    r.beam > 1 ? h('div', {}, `搜索：${r.search}；贪心为 ×${num(r.greedy_cum_gain)} @ ${num(r.greedy_cum_cost)}`) : null,
     r.skipped.length ? h('div', {}, '跳过：', r.skipped.map((x) => `${x.model}（${x.error}）`).join('；')) : null,
     h('div', { class: 'muted' }, r.basis));
-  put($('ins-path-tbl'), h('thead', {}, h('tr', {}, ['步', '旋钮', '本步增益', '累计增益', '本步成本', '累计成本', '增益/成本', '逐模型累计', '次优备选'].map((x) => h('th', {}, x)))),
+  put($('ins-path-tbl'), h('thead', {}, h('tr', {}, ['步', '旋钮', '本步增益', '累计增益', '本步成本（依据）', '累计成本', '增益/成本', '逐模型累计', '次优备选'].map((x) => h('th', {}, x)))),
     h('tbody', {}, r.path.map((p) => h('tr', {}, h('td', {}, String(p.step)), h('td', {}, p.label), h('td', {}, '×' + num(p.gain)),
-      h('td', {}, '×' + num(p.cum_gain)), h('td', {}, num(p.cost)), h('td', {}, num(p.cum_cost)), h('td', {}, num(p.gain_per_cost)),
+      h('td', {}, '×' + num(p.cum_gain)), h('td', {}, `${num(p.cost)}（${p.cost_basis}）`), h('td', {}, num(p.cum_cost)), h('td', {}, num(p.gain_per_cost)),
       h('td', {}, p.models.map((x) => `${x.model} ×${num(x.cum)}`).join('，')),
       h('td', {}, p.alternatives.map((a) => `${a.key} ×${num(a.gain)}@${num(a.cost)}`).join('，') || '—')))));
 }
@@ -1668,11 +1690,12 @@ async function init() {
   bindNumber('w-host_GBps', () => S.sc.workload.host_GBps, (x) => (S.sc.workload.host_GBps = x));
   bindNumber('w-host_TFLOPS', () => S.sc.workload.host_TFLOPS, (x) => (S.sc.workload.host_TFLOPS = x));
   for (const k of ['sram_mib', 'macs', 'tflops', 'cards', 'power_W_card', 'dram_GiB', 'die_mm2', 'mm2_per_mib_sram', 'mm2_per_kmac',
-    'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2'])
+    'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2', 'mm2_per_dq_hbm', 'mm2_per_dq_lpddr', 'mm2_per_d2d_unit', 'mm2_per_GBps_c2c'])
     bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
       { nullable: true, int: k === 'cards' });
   for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
+  initDensityPresets();
   $('best-layout').addEventListener('click', bestLayout);
   for (const bx of ['cmp', 'sw']) for (const f of ['csv', 'json']) $(`${bx}-exp-${f}`).addEventListener('click', () => doExport(bx, f));
   $('best-batch').checked = S.best;

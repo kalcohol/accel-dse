@@ -36,7 +36,7 @@ import math
 from dataclasses import replace
 
 from .. import mem_catalog
-from .budget import Budget, area_estimate
+from .budget import Budget, area_estimate, full_area
 from .catalog import get_model
 from .energy import EnergyTable, energy_report
 from .evaluate import evaluate
@@ -148,8 +148,13 @@ def knobs(base: Scenario) -> list[tuple[str, str, object, str]]:
     out.append(("dequant_x4", f"反量化 / 转换吞吐 ×4（{dq:g} → {dq * 4:g} 元素/周期）",
                 chip(formats=replace(ch.formats, dequant_elems_per_cycle=dq * 4)), "none"))
     if base.d2d_enabled and base.package_cards > 1:
-        out.append(("d2d_x2", f"D2D 带宽 ×2（{base.d2d.GBps:g} → {base.d2d.GBps * 2:g} GB/s）",
-                    lambda s: s.replace("d2d", replace(s.d2d, GBps=s.d2d.GBps * 2)), "offdie"))
+        if base.d2d_std == "custom":
+            out.append(("d2d_x2", f"D2D 带宽 ×2（{base.d2d.GBps:g} → {base.d2d.GBps * 2:g} GB/s）",
+                        lambda s: s.replace("d2d", replace(s.d2d, GBps=s.d2d.GBps * 2)), "offdie"))
+        elif base.d2d_units * 2 <= 64:      # 0.149: a catalog grade's bandwidth = units × per-unit (d2d.GBps is ignored)
+            out.append(("d2d_x2", f"D2D 单元 ×2（{base.d2d_units} → {base.d2d_units * 2}，"
+                                  f"{base.d2d_link.GBps:g} → {base.d2d_link.GBps * 2:g} GB/s）",
+                        lambda s: s.replace("d2d_units", s.d2d_units * 2), "offdie"))
     if base.layout.cards > 1:
         out.append(("c2c_x2", f"卡间链路 ×2（{base.link.GBps:g} → {base.link.GBps * 2:g} GB/s）",
                     lambda s: s.replace("link", replace(s.link, GBps=s.link.GBps * 2)), "offdie"))
@@ -179,7 +184,7 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
     if not 1 <= len(models) <= MAX_MODELS:
         raise ValueError(f"models: 1..{MAX_MODELS} ids")
     ks = knobs(base)
-    area0 = area_estimate(base.chip, budget) if budget is not None else None
+    area0 = full_area(base, budget) if budget is not None else None
     mrows, scns = [], {}
     for mid in models:
         try:
@@ -215,9 +220,10 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
             per_model.append(row)
         score = {m: (math.exp(sum(math.log(x) for x in v) / len(v)) if v else None) for m, v in g.items()}
         d_mm2 = None
-        if area0 is not None and area0["mm2"] is not None and cost == "die":
-            a1 = area_estimate(f(base).chip, budget)
+        if area0 is not None and area0["mm2"] is not None and cost in ("die", "offdie"):
+            a1 = full_area(f(base), budget)      # 0.149: incl. interface PHYs (DRAM pins, D2D units, C2C) when set
             d_mm2 = (a1["mm2"] - area0["mm2"]) * (-1 if inv else 1) if a1["mm2"] is not None else None
+            d_mm2 = d_mm2 if d_mm2 else None
         per_mm2 = {m: ((score[m] - 1) / d_mm2 if score[m] is not None and d_mm2 else None) for m in METRICS}
         krows.append({"key": key, "label": label, "cost": cost, "inverted": inv, "score": score,
                       "d_mm2": d_mm2, "gain_per_mm2": per_mm2, "models": per_model})
@@ -251,17 +257,24 @@ def _geo(v):
     return math.exp(sum(math.log(x) for x in v) / len(v)) if v else None
 
 
+MAX_BEAM = 5
+
+
 def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budget | None = None, steps: int = 6,
-                 max_cost: float | None = None, table: EnergyTable | None = None) -> dict:
-    """Greedy upgrade path for one metric over a model set.  Each step re-runs every additive knob of `knobs(current)`
-    on every model, keeps candidates that (a) raise the model-set geomean by > TIE, (b) leave every model's metric
-    no worse than at the START (cumulative, exact ≥ 1), (c) keep every model that fit still fitting, (d) stay inside the
-    budget (die_mm2 in area mode; max_cost units otherwise); then takes the largest ln(gain)/cost.  Hence the path is
-    never worse than the start, and the cumulative (cost, gain) points are monotone (a Pareto-ordered chain)."""
+                 max_cost: float | None = None, table: EnergyTable | None = None, beam: int = 1) -> dict:
+    """Multi-step upgrade path for one metric over a model set.  Each step re-runs every additive knob of
+    `knobs(current)` on every model and keeps candidates that (a) raise the model-set geomean by > TIE, (b) leave every
+    model's metric no worse than at the START (cumulative, exact ≥ 1), (c) keep every model that fit still fitting,
+    (d) stay inside the budget (die_mm2 in area mode; max_cost units otherwise).  beam = 1: greedy, largest
+    ln(gain)/cost.  beam = w > 1 (0.149): keep the w best partial paths by cumulative ln(gain)/cost each step; the
+    greedy path is always computed too and the beam result is returned only if its final gain is ≥ greedy's (so
+    beam is never worse than greedy).  Either way the path is never worse than the start."""
     if metric not in METRICS:
         raise ValueError(f"metric must be one of {METRICS}")
     if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= MAX_STEPS:
         raise ValueError(f"steps must be an integer 1..{MAX_STEPS}")
+    if not isinstance(beam, int) or isinstance(beam, bool) or not 1 <= beam <= MAX_BEAM:
+        raise ValueError(f"beam must be an integer 1..{MAX_BEAM}")
     if max_cost is not None and (isinstance(max_cost, bool) or not isinstance(max_cost, (int, float))
                                  or not math.isfinite(max_cost) or max_cost <= 0):
         raise ValueError("max_cost must be a finite number > 0")
@@ -269,7 +282,7 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
     models = list(models or DEFAULT_MODELS)
     if not 1 <= len(models) <= MAX_MODELS:
         raise ValueError(f"models: 1..{MAX_MODELS} ids")
-    a0 = area_estimate(base.chip, budget) if budget is not None else None
+    a0 = full_area(base, budget) if budget is not None else None
     area_mode = bool(a0 and a0["mm2"] is not None)
     cap_mm2 = budget.die_mm2 if (area_mode and budget.die_mm2) else None
     unit = a0["mm2"] * UNIT_MM2_FRAC if area_mode else 1.0
@@ -284,28 +297,31 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
             skipped.append({"model": mid, "error": str(e)})
     if not scns:
         raise ValueError("no model could be evaluated on the start configuration")
+    memo = {}
 
     def chip_qty(chip, attr):
         return chip.macs if attr == "macs" else getattr(chip, attr)
 
-    cur_base, cur, cum_cost, path = base, dict(start), 0.0, []
-    for _ in range(steps):
+    def expand(cur_base, cur, cum_cost):
+        """All admissible single-knob steps from (cur_base, cur): list of candidate tuples, best ratio first."""
         cands = []
+        cur_a = full_area(cur_base, budget)["mm2"] if area_mode else None
         for key, label, tf, kind in knobs(cur_base):
             if isinstance(tf, tuple) or key not in REL_COST:
                 continue                                  # inverted = removing an existing feature; never an upgrade
             nb = tf(cur_base)
-            mm2 = None
-            if area_mode and kind == "die":
-                a1 = area_estimate(nb.chip, budget)["mm2"]
-                cur_a = area_estimate(cur_base.chip, budget)["mm2"]
+            mm2, area_cost = None, False
+            if area_mode:
+                a1 = full_area(nb, budget)["mm2"]
                 if a1 is None:                            # density for this term missing (e.g. SLC) → not costable
                     continue
-                mm2 = a1 - cur_a
-                cost = max(mm2, 1e-9)
-                if cap_mm2 is not None and a1 > cap_mm2 * (1 + 1e-12):
+                if cap_mm2 is not None and a1 > cap_mm2 * (1 + 1e-12) and a1 > cur_a:
                     continue
-            else:
+                if a1 - cur_a > 1e-9:                     # a real area term (die, or interface PHY when set)
+                    mm2, area_cost = a1 - cur_a, True
+            if area_cost:
+                cost = mm2
+            else:                                         # no area term → 「假设」 relative cost (× 1 % area in area mode)
                 c = REL_COST[key]
                 if key in SCALE_WITH and not area_mode:
                     c *= chip_qty(cur_base.chip, SCALE_WITH[key]) / chip_qty(base.chip, SCALE_WITH[key])
@@ -313,13 +329,15 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
             if max_cost is not None and not area_mode and cum_cost + cost > max_cost * (1 + 1e-12):
                 continue
             pts, ok = {}, True
-            for mid, s in scns.items():
-                try:
-                    p = _point(tf(model_scenario(cur_base, mid)), table)
-                except ValueError:
-                    ok = False
-                    break
-                if start[mid]["fits"] and not p["fits"]:
+            for mid in scns:
+                mk = (nb.hash(), mid)
+                if mk not in memo:
+                    try:
+                        memo[mk] = _point(model_scenario(nb, mid), table)
+                    except ValueError:
+                        memo[mk] = None
+                p = memo[mk]
+                if p is None or (start[mid]["fits"] and not p["fits"]):
                     ok = False
                     break
                 gs = _gain(metric, start[mid], p)
@@ -332,22 +350,69 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
             step_g = _geo([_gain(metric, cur[m], pts[m]) for m in pts])
             if step_g is None or step_g - 1 <= TIE:
                 continue
-            cands.append((math.log(step_g) / cost, key, label, kind, cost, mm2, step_g, nb, pts))
-        if not cands:
-            break
-        cands.sort(key=lambda c: (-c[0], c[1]))
-        ratio, key, label, kind, cost, mm2, step_g, nb, pts = cands[0]
-        cum_cost += cost
-        cur_base, cur = nb, pts
+            cands.append({"ratio": math.log(step_g) / cost, "key": key, "label": label, "kind": kind, "cost": cost,
+                          "d_mm2": mm2, "area_cost": area_cost, "gain": step_g, "base": nb, "pts": pts})
+        cands.sort(key=lambda c: (-c["ratio"], c["key"]))
+        return cands
+
+    def step_row(n, c, cum_cost, cur, others):
         cum = _geo([_gain(metric, start[m], cur[m]) for m in cur])
-        path.append({"step": len(path) + 1, "key": key, "label": label, "kind": kind, "cost": cost, "d_mm2": mm2,
-                     "cum_cost": cum_cost, "gain": step_g, "cum_gain": cum, "gain_per_cost": ratio,
-                     "alternatives": [{"key": c[1], "gain": c[6], "cost": c[4]} for c in cands[1:4]],
-                     "models": [{"model": m, "cum": _gain(metric, start[m], cur[m]), "bound_d": cur[m]["bound_d"],
-                                 "bound_p": cur[m]["bound_p"], metric: cur[m][metric]} for m in cur]})
+        return {"step": n, "key": c["key"], "label": c["label"], "kind": c["kind"], "cost": c["cost"], "d_mm2": c["d_mm2"],
+                "cost_basis": "mm²" if c["area_cost"] else "假设", "cum_cost": cum_cost, "gain": c["gain"], "cum_gain": cum,
+                "gain_per_cost": c["ratio"], "alternatives": [{"key": o["key"], "gain": o["gain"], "cost": o["cost"]} for o in others[:3]],
+                "models": [{"model": m, "cum": _gain(metric, start[m], cur[m]), "bound_d": cur[m]["bound_d"],
+                            "bound_p": cur[m]["bound_p"], metric: cur[m][metric]} for m in cur]}
+
+    def run(width):
+        states = [(base, dict(start), 0.0, [])]          # (config, points, cum cost, path rows)
+        finished = []
+        for n in range(1, steps + 1):
+            children = []
+            for cb, cur, cc, path in states:
+                cands = expand(cb, cur, cc)
+                if not cands:
+                    finished.append((cb, cur, cc, path))
+                    continue
+                pick = cands[:max(1, width - 1)]
+                if width > 1:                              # + the biggest single step (may be pricier)
+                    big = max(cands, key=lambda c: (c["gain"], -c["cost"]))
+                    pick = pick + ([big] if all(big is not x for x in pick) else cands[width - 1:width])
+                for c in pick:
+                    ncc = cc + c["cost"]
+                    row = step_row(n, c, ncc, c["pts"], [o for o in cands if o is not c])
+                    children.append((c["base"], c["pts"], ncc, path + [row]))
+            if not children:
+                states = []
+                break
+            uniq = {}
+            for ch in children:                          # same config reached twice → keep the cheaper
+                k = ch[0].hash()
+                if k not in uniq or ch[2] < uniq[k][2]:
+                    uniq[k] = ch
+            ranked = sorted(uniq.values(), key=lambda t: (-math.log(t[3][-1]["cum_gain"]) / t[2], t[2]))
+            states = ranked[:max(1, width - 1)]           # most efficient partial paths …
+            if width > 1:                                  # … plus the highest-gain one (diversity: big steps)
+                rest = [t for t in ranked if all(t is not x for x in states)]
+                if rest:
+                    states.append(max(rest, key=lambda t: (t[3][-1]["cum_gain"], -t[2])))
+        finished += states
+        return max(finished, key=lambda t: ((t[3][-1]["cum_gain"] if t[3] else 1.0), -t[2]))
+
+    g = run(1)
+    best, search = g, "greedy"
+    g_gain = g[3][-1]["cum_gain"] if g[3] else 1.0
+    if beam > 1:
+        b = run(beam)
+        b_gain = b[3][-1]["cum_gain"] if b[3] else 1.0
+        if b_gain > g_gain * (1 + 1e-9) or (abs(b_gain / g_gain - 1) <= 1e-9 and b[2] < g[2] * (1 - 1e-9)):
+            best, search = b, f"beam{beam}"
+        else:
+            search = f"beam{beam}（= 贪心）"
+    cur_base, cur, cum_cost, path = best
     final = {m: _gain(metric, start[m], cur[m]) for m in cur}
-    assert all(g >= 1.0 for g in final.values())          # the guarantee; candidates violating it were never taken
-    return {"metric": metric, "cost_mode": "area" if area_mode else "proxy",
+    assert all(x >= 1.0 for x in final.values())          # the guarantee; candidates violating it were never taken
+    return {"metric": metric, "cost_mode": "area" if area_mode else "proxy", "search": search, "beam": beam,
+            "greedy_cum_gain": g_gain, "greedy_cum_cost": g[2],
             "cost_unit": "mm²" if area_mode else "相对成本单位「假设」",
             "unit_mm2": unit if area_mode else None, "cap_mm2": cap_mm2, "max_cost": max_cost,
             "start_area_mm2": a0["mm2"] if area_mode else None,
@@ -358,7 +423,9 @@ def upgrade_path(base: Scenario, models=None, metric: str = "tpot", budget: Budg
                            "formats": [list(x) for x in cur_base.chip.formats.rates],
                            "mixed": [list(x) for x in cur_base.chip.formats.mixed],
                            "dequant_elems_per_cycle": cur_base.chip.formats.dequant_elems_per_cycle},
-            "basis": "贪心：每步对当前配置重跑全部加法旋钮（含交互），取 ln(几何平均增益)/成本最大者；只接受几何平均提升 > "
+            "basis": ("贪心" if beam == 1 else f"束搜索（宽 {beam}，结果不劣于贪心）") +
+                     "：每步对当前配置重跑全部加法旋钮（含交互），按 ln(几何平均增益)/成本排序；只接受几何平均提升 > "
                      f"{TIE:g} 且每个模型相对起点不变差、原本放得下的仍放得下、且不超预算的步骤，因此路径不会差于起点。"
-                     + ("成本 = 用户密度下的 Δ 面积 mm²；非裸片旋钮按 「假设」 1 单位 = 起点面积 1 % 折算。" if area_mode else
-                        "成本 = 「假设」相对成本单位（REL_COST；SRAM / MAC 类随当前规模放大）；给出面积密度后改用 mm²。")}
+                     + ("成本 = 用户密度 / 预设下的 Δ 面积 mm²（含接口 PHY：DRAM 引脚、D2D 单元、C2C，若已设）；无面积项的旋钮按 "
+                        "「假设」 1 单位 = 起点面积 1 % 折算。" if area_mode else
+                        "成本 = 「假设」相对成本单位（REL_COST；SRAM / MAC 类随当前规模放大）；给出面积密度（或密度预设）后改用 mm²。")}

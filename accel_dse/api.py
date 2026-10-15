@@ -141,7 +141,7 @@ _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
 _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
                "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": set(),
-               "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost"}}
+               "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -278,6 +278,13 @@ def api_models() -> dict:
                     "见 docs/MODEL.md §10–§12"}
 
 
+def _density_presets() -> dict:
+    from .core.budget import DENSITY_PRESETS
+    return {k: {"label": v["label"], "fields": {f: {"value": x, "status": st, "source": src}
+                                                for f, (x, st, src) in v["fields"].items()}}
+            for k, v in DENSITY_PRESETS.items()}
+
+
 def api_catalog() -> dict:
     from .core.dtypes import MIXED_PRESETS
     chips = {k: {**c.__dict__, "formats": [list(x) for x in c.formats.rates], "mixed": [list(x) for x in c.formats.mixed], "peak_tflops_bf16": c.peak_tflops_bf16,
@@ -289,6 +296,7 @@ def api_catalog() -> dict:
             "sweep_paths": sorted(SWEEP_PATHS), "max_cards": MAX_CARDS,
             "d2d_standards": [{"id": k, **v} for k, v in D2D_STANDARDS.items()], "d2d_default_std": D2D_DEFAULT_STD,
             "d2d_default_units": D2D_DEFAULT_UNITS,
+            "density_presets": _density_presets(),
             "mixed_presets": {k: {"pairs": [list(p) for p in v[0]], "source": v[1]} for k, v in MIXED_PRESETS.items()}}
 
 
@@ -335,7 +343,11 @@ def _budget(body: dict) -> Budget | None:
     if body.get("budget") is None:
         return None
     try:
-        return Budget.from_dict(body["budget"])
+        d = body["budget"]
+        if isinstance(d, dict) and "density_preset" in d:
+            from .core.budget import apply_preset
+            d = apply_preset(d)
+        return Budget.from_dict(d)
     except (ValueError, TypeError) as e:
         raise ApiError(str(e)) from None
 
@@ -856,7 +868,7 @@ def api_insight_path(body: dict) -> dict:
     models = _insight_models(body)
     try:
         return {**upgrade_path(scn, models, body.get("metric", "tpot"), _budget(body), body.get("steps", 6),
-                               body.get("max_cost"), _energy_table(body)), "hash": scn.hash()}
+                               body.get("max_cost"), _energy_table(body), body.get("beam", 1)), "hash": scn.hash()}
     except ValueError as e:
         raise ApiError(str(e)) from None
 

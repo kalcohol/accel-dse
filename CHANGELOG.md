@@ -3,6 +3,22 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.149.0]
+### Added
+- **Cited per-node density presets** `budget.DENSITY_PRESETS`: n28_tpuv1, n7_tpuv4i and n5_derived.
+  - Every value carries a status (「来源」 / 「推导」 / 「二手」 / 「假设」) and a source.
+  - Use them via `budget.density_preset` or the UI select 「密度预设」. They fill only unset fields; user entries win.
+  - SRAM and MAC density come from the TPUv1 (ISCA 2017) and TPUv4i (ISCA 2021) floorplans, as upper bounds. N5 is derived via the TSMC bitcell ratio (0.021/0.027) and the 1.8× logic-density claim.
+  - UCIe-A module PHY 388.8 × 1043 µm comes from the Hot Chips 2023 UCIe tutorial.
+  - 112G SerDes area comes from VLSI 2022 (secondary report). The HBM PHY figure is 「二手/假设」 and the LPDDR PHY figure is 「假设」.
+- **Interface PHY area**: new budget fields `mm2_per_dq_hbm`, `mm2_per_dq_lpddr`, `mm2_per_d2d_unit` and `mm2_per_GBps_c2c`, plus `full_area` / `phy_area`.
+  - They are counted in the budget area check and in insight Δmm² for DRAM / D2D / C2C knobs. This resolves the 0.146 open item on PHY area.
+  - With no PHY density set, results are unchanged.
+- **Beam search** for the upgrade path (`beam` 1..5; UI checkbox for width 3). Greedy is always computed too, and the beam result is returned only if its final gain is ≥ greedy's.
+  - In a random check of 48 cases, beam was better in 11 and never worse.
+### Fixed
+- Insight knob `d2d_x2` was a no-op for catalog D2D grades, where bandwidth = units × per-unit. It now doubles `d2d_units`.
+
 ## [0.148.0]
 ### Added
 - **Insight upgrade path**: `core.insight.upgrade_path`, `POST /api/insight_path` (`models`, `metric` ttft|tpot|thr, `steps` 1..10, `max_cost`) and a UI table 「升级路径」 in the 设计洞察 tab.
