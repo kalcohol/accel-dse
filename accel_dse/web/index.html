@@ -346,6 +346,7 @@
     <button data-tab="compare">映射对比</button>
     <button data-tab="layouts">布局搜索</button>
     <button data-tab="sweep">扫描 · Pareto</button>
+    <button data-tab="insight">设计洞察</button>
     <button data-tab="models">模型目录</button>
     <button data-tab="about">说明</button>
   </nav>
@@ -437,6 +438,20 @@
       <div class="note small" id="sw-sens-note"></div>
       <div class="scroll"><table class="tbl" id="sw-sens-tbl"></table></div>
     </div>
+  </section>
+
+  <section class="tab" id="tab-insight" hidden>
+    <div class="toolbar">
+      <label>模型集（逗号分隔，最多 8，空 = 默认）<input type="text" id="ins-models" size="60" placeholder=""></label>
+      <div class="seg" id="ins-metric"><button data-v="tpot" class="on">按 TPOT</button><button data-v="ttft">按 TTFT</button><button data-v="thr">按 decode 吞吐/卡</button></div>
+      <button class="btn" id="ins-run">运行设计洞察</button>
+      <span class="small muted" id="ins-status"></span>
+    </div>
+    <p class="small muted">0.146：对左侧芯片 / 外存 / 卡数 / 服务设置，逐个只改一个硬件旋钮（SRAM、SLC、MAC 阵列行数 / 核数 / 形状、DRAM 速率与颗数、原生 FP8 / MXFP4、反量化吞吐、D2D、卡间链路），用现有引擎重算每个模型的 TTFT / TPOT / decode 吞吐，按几何平均加速排序。面积只用「预算」里你填的密度（不内置工艺库）；功耗用你填的能耗表，否则给每 token 的 DRAM 字节 / MAC 次数变化。探针幅度（×2、下一档）不是成本结论。</p>
+    <div class="note small" id="ins-summary"></div>
+    <div class="scroll"><table class="tbl tight" id="ins-models-tbl"></table></div>
+    <div class="scroll"><table class="tbl tight" id="ins-tbl"></table></div>
+    <div class="scroll"><table class="tbl tight" id="ins-detail"></table></div>
   </section>
 
   <section class="tab" id="tab-models" hidden>

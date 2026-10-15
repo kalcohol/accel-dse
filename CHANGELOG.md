@@ -3,6 +3,16 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.146.0]
+### Added
+- **NPU design-insight report**: `core/insight.py`, `POST /api/insight` and the UI tab 「设计洞察」.
+  - For a chip config and a model set (default: qwen3-8b, gpt-oss-120b, mimo-v2.6-flash, step-5-preview, deepseek-v3.2, ling-3.0-flash-vl, i.e. sparse / indexer attention plus MXFP4 experts), it ranks hardware knobs by TTFT / TPOT / decode-throughput speed-up (geomean over models).
+  - Knobs: SRAM, SLC, MAC rows, cores, array shape, DRAM rate and package count, native FP8 / MXFP4, dequant throughput, D2D, C2C.
+  - Each knob is a one-variable probe of the existing `evaluate`.
+  - Area per mm² uses only the user's budget densities. The power proxy uses the user's energy table, otherwise action counts per token.
+  - New labelled assumption: native MXFP4 MAC = 2× FP8 rate 「假设」.
+  - No model / engine change; fingerprints unchanged.
+
 ## [0.145.0]
 ### Added
 - **MiMo-V2.6-Pro** (`XiaomiMiMo/MiMo-V2.6-Pro-RL`, https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL), `mimo_v2` builder:

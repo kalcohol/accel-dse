@@ -140,7 +140,8 @@ def _finite(x: Any, where: str = "body") -> None:
 _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
 _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
-               "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": set()}
+               "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": set(),
+               "insight": {"models"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -828,3 +829,26 @@ def api_sensitivity(body: dict) -> dict:
     except ValueError as e:
         raise ApiError(str(e)) from None
     return {"sensitivity": sensitivity_report(scn, r), "hash": scn.hash()}
+
+
+def api_insight(body: dict) -> dict:
+    """0.146: NPU design insight — which hardware knob moves TTFT / TPOT / decode throughput most for a model set,
+    per area (user budget densities) / power proxy (user energy table or action counts).  See core/insight.py."""
+    from .core.insight import DEFAULT_MODELS, MAX_MODELS, insight_report
+    _check_keys(body, "insight")
+    scn = scenario_from_body(body)
+    models = body.get("models") or list(DEFAULT_MODELS)
+    if not isinstance(models, list) or not all(isinstance(m, str) for m in models) or not 1 <= len(models) <= MAX_MODELS:
+        raise ApiError(f"models must be a list of 1..{MAX_MODELS} model ids")
+    for m in models:
+        try:
+            mm = get_model(m)
+        except (KeyError, ValueError):
+            raise ApiError(f"unknown model {m!r}") from None
+        if mm.domain != "llm" or not mm.kv_cache:
+            raise ApiError(f"{m}: insight covers LLM / VLM models (TTFT / TPOT)")
+    try:
+        return {**insight_report(scn, models, _budget(body), _energy_table(body)), "hash": scn.hash(),
+                "default_models": list(DEFAULT_MODELS)}
+    except ValueError as e:
+        raise ApiError(str(e)) from None

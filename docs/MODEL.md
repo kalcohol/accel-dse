@@ -3575,3 +3575,59 @@ model's spec changed.
   - `stage_storage` / `cache_new_bytes` count completed regions only; before, they used ⌈ctx⌉ · 5 · idx_dim / 8.
 - System fuzzer: `val5/v0145/sysfuzz.py` (the 0.140 harness with the new models added).
 - Fingerprints are unchanged.
+
+## 92. NPU design insight: which hardware knob moves TTFT / TPOT / throughput, per area / power proxy (0.146)
+
+**Purpose.** On the product side, the question is which knob to spend silicon or package budget on, given a chip
+configuration and the models it must serve. `core/insight.py` answers it with one-variable probes of the existing engine,
+the same `evaluate` that the eval sensitivity and the sweeps use. The new module adds no hardware model. It is served at
+`POST /api/insight` (body `scenario`, `chip_preset`, optional `models` ≤ 8, `budget`, `energy`) and shown in the UI tab
+「设计洞察」.
+
+**Probes** (each relative to the base point; the sizes are probes, not cost claims):
+
+| knob | change | cost class |
+|---|---|---|
+| sram_x2 | SRAM × 2 | on-die |
+| slc_add | add an SLC of the SRAM size | on-die |
+| macs_x2 | MAC rows × 2 | on-die |
+| engines_x2 | cores × 2 | on-die |
+| shape_tall | rows × 2 / cols ÷ 2 (equal MACs) | none |
+| dram_rate | next catalog speed grade | off-die / PHY |
+| dram_count | next catalog package or stack count (bandwidth + capacity) | off-die / PHY |
+| native_fp8 | value of native FP8 / INT8 (removed vs present, or added at the FormatSupport default × 2 「假设」) | none |
+| native_mxfp4 | add native MXFP4 MAC at 2 × FP8 「假设」 (Blackwell dense FP4 / FP8) | none |
+| dequant_x4 | conversion throughput × 4 | none |
+| d2d_x2 | D2D bandwidth × 2 (D2D packages only) | off-die / PHY |
+| c2c_x2 | card link bandwidth × 2 (> 1 card only) | off-die / PHY |
+
+**Metrics.**
+- Per model: TTFT is the prefill of the scenario's prompt; TPOT and decode tok/s/card are at the scenario batch.
+- Each model gets a valid layout with the same card count. MoE models put experts over the TP·DP ranks.
+- A knob's score is the geometric-mean speed-up over the models. A score within 1 % (the sensitivity tie) counts as no
+  move, and scores below that are listed under "worse".
+- Area: Δ die-area proxy from the user's budget densities (`budget.area_estimate`). Off-die knobs have no mm²: PHY and
+  package are not in the proxy.
+- Power proxy: Δ J/token from the user's energy table. Without a table it is the Δ DRAM bytes and MAC slots per token
+  (action counts, no assumption).
+
+**Default model set:**
+
+| model | why it is in the set |
+|---|---|
+| qwen3-8b | dense reference |
+| gpt-oss-120b | MXFP4 experts, sink, SWA |
+| mimo-v2.6-flash | MXFP4 experts, SWA + sink |
+| step-5-preview | region-summary DSA indexer, FP8 |
+| deepseek-v3.2 | DSA indexer, MLA, FP8 |
+| ling-3.0-flash-vl | KDA hybrid |
+
+**What it shows on the defaults** (100T, LPDDR5X 4×64; these are examples, not product conclusions):
+- At batch 1–8, decode is DRAM-bound. DRAM package count, then speed grade, lead TPOT. MAC rows × 2 does nothing for
+  decode: small M leaves the extra rows idle.
+- Cores × 2 and MAC rows × 2 lead TTFT.
+- A native MXFP4 MAC alone gives 0 % for the as-released MXFP4-expert models. They run W4A8 / W4A16, and `gemm_exec`
+  only uses a native format when weights *and* activations share it. The mechanism-consistent levers for them are DRAM
+  bytes (already 4.25 bits per weight) and the dequant path.
+- Tests: test_core_146. The probe numbers equal a direct `evaluate` of the one-variable change. Area and energy are
+  absent without user inputs. Playwright smoke: `val5/v0146/ui.py`.

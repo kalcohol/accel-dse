@@ -1511,6 +1511,60 @@ function renderModels() {
   put($('models-unlisted'), ...S.unlisted.map((u) => h('li', {}, h('b', {}, u.label), '：', u.reason)));
 }
 
+
+/* ------------------------------------------------------------------ 0.146 design insight */
+const INS_COST_ZH = { die: '片上（面积代理）', offdie: '片外 / PHY（不在面积代理内）', none: '无面积项' };
+const insX = (x) => (x === null || x === undefined ? '—' : '×' + x.toFixed(3));
+async function runInsight() {
+  const btn = $('ins-run');
+  btn.disabled = true;
+  $('ins-status').textContent = '计算中（每个模型 × 每个旋钮 × prefill + decode）…';
+  try {
+    const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
+    const r = await track(req('insight', '/api/insight', body(ms.length ? { models: ms } : {})));
+    if (!r) return;
+    S.insight = r;
+    paintInsight();
+    $('ins-status').textContent = `完成 · ${r.chip} · ${r.mem_id} · ${r.layout} · batch ${r.serving.batch}`;
+  } catch (e) {
+    $('ins-status').textContent = '错误：' + e.message;
+  } finally { btn.disabled = false; }
+}
+function paintInsight() {
+  const r = S.insight;
+  if (!r) return;
+  const m = S.insMetric || 'tpot';
+  if (!$('ins-models').placeholder) $('ins-models').placeholder = r.default_models.join(', ');
+  const rk = r.rank[m], ra = r.rank_per_mm2[m], hu = r.hurts[m];
+  const lab = (k) => (r.knobs.find((x) => x.key === k) || {}).label || k;
+  put($('ins-summary'),
+    h('div', {}, h('b', {}, `${r.metrics[m]}：最能改善的旋钮 `), rk.length ? rk.map((k, i) => (i ? ' > ' : '') + lab(k)).join('') : '无（全部在 ±1% 内）'),
+    h('div', {}, '每 mm²（按你的面积密度）：', ra.length ? ra.map(lab).join(' > ') : (r.area ? '—' : '未填面积密度（预算 → mm²/MiB、mm²/kMAC、固定面积），不排序')),
+    hu.length ? h('div', {}, '变差：', hu.map(lab).join('；')) : null,
+    h('div', { class: 'muted' }, r.basis));
+  put($('ins-models-tbl'), h('thead', {}, h('tr', {}, ['模型', '布局', '特征', 'TTFT (ms)', 'TPOT (ms)', 'decode tok/s/卡', '瓶颈 d/p', '放得下'].map((x) => h('th', {}, x)))),
+    h('tbody', {}, r.models.map((x) => x.error ? h('tr', {}, h('td', {}, x.model), h('td', { colspan: 7 }, '错误：' + x.error))
+      : h('tr', {}, h('td', {}, x.model), h('td', {}, x.layout), h('td', {}, x.features.join('、')), h('td', {}, num(x.ttft * 1e3)),
+        h('td', {}, num(x.tpot * 1e3)), h('td', {}, num(x.thr)), h('td', {}, `${x.bound_d} / ${x.bound_p}`), h('td', {}, x.fits ? '是' : '否')))));
+  const ks = [...r.knobs].sort((a, b) => (b.score[m] || 0) - (a.score[m] || 0));
+  put($('ins-tbl'), h('thead', {}, h('tr', {}, ['旋钮', '成本类别', 'TTFT', 'TPOT', 'decode 吞吐', 'Δ面积 mm²', `${r.metrics[m]} 收益 / mm²`].map((x) => h('th', {}, x)))),
+    h('tbody', {}, ks.map((k) => h('tr', { class: 'ins-row', 'data-key': k.key, onclick: () => paintInsightDetail(k.key) },
+      h('td', {}, k.label), h('td', {}, INS_COST_ZH[k.cost]), ...['ttft', 'tpot', 'thr'].map((q) => h('td', { class: q === m ? 'b' : '' }, insX(k.score[q]))),
+      h('td', {}, k.d_mm2 === null ? '—' : num(k.d_mm2)), h('td', {}, k.gain_per_mm2[m] === null ? '—' : pct(k.gain_per_mm2[m]))))));
+  paintInsightDetail(ks[0] && ks[0].key);
+}
+function paintInsightDetail(key) {
+  const r = S.insight, k = r && r.knobs.find((x) => x.key === key);
+  if (!k) return put($('ins-detail'));
+  const pw = r.energy_provided ? 'Δ能耗/token' : 'ΔDRAM 字节/token';
+  put($('ins-detail'), h('caption', {}, '逐模型：' + k.label + (k.inverted ? '（数值为「有」相对「无」）' : '')),
+    h('thead', {}, h('tr', {}, ['模型', 'TTFT', 'TPOT', 'decode 吞吐', pw, 'ΔMAC/token', '瓶颈 d/p', '瓶颈变化', '放得下'].map((x) => h('th', {}, x)))),
+    h('tbody', {}, k.models.map((x) => x.error ? h('tr', {}, h('td', {}, x.model), h('td', { colspan: 8 }, '错误：' + x.error))
+      : h('tr', {}, h('td', {}, x.model), h('td', {}, insX(x.ttft)), h('td', {}, insX(x.tpot)), h('td', {}, insX(x.thr)),
+        h('td', {}, pct(r.energy_provided ? x.d_J_tok : x.d_dram_B_tok)), h('td', {}, pct(x.d_mac_tok)),
+        h('td', {}, `${x.bound_d} / ${x.bound_p}`), h('td', {}, x.bound_flip ? '是' : ''), h('td', {}, x.fits ? '是' : '否')))));
+}
+
 /* ------------------------------------------------------------------ tabs */
 function activate(tab) {
   S.tab = tab;
@@ -1735,6 +1789,8 @@ async function init() {
   $('sw-run').addEventListener('click', runSweep);
   $('sw-path').addEventListener('change', swHint);
   $('pf-run').addEventListener('click', runPareto);
+  $('ins-run').addEventListener('click', runInsight);
+  seg('ins-metric', null, () => S.insMetric || 'tpot', (v) => { S.insMetric = v; paintInsight(); });
   fillSweepPaths();
   renderModels();
   paintScope();
