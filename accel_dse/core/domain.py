@@ -705,9 +705,12 @@ class ResolvedWorkload:
 
 def _latent_frames(d: NativeWorkload, F: int, warns: list[str]) -> int:
     if d.vae_frames == "chunk17":           # Open-Sora 1.2 VAE: micro-batches of 17 frames → 5 latent frames each
-        lt = math.ceil(F / 17) * ((17 - 1) // d.vae_t + 1)
-        if F % 17:
-            warns.append(f"帧数 {F} 不是 17 的整数倍：VAE 按 {math.ceil(F / 17)} 个 17 帧块（补齐）计")
+        # 0.118: VideoAutoencoderPipeline.get_latent_size — full 17-frame chunks give 5 latents each; the remainder r
+        # frames is front-padded to a multiple of t (VAE_Temporal) → ⌈r / t⌉ latents (0.44–0.117 padded it to 17)
+        r = F % 17
+        lt = F // 17 * ((17 - 1) // d.vae_t + 1) + math.ceil(r / d.vae_t)
+        if r:
+            warns.append(f"帧数 {F} 不是 17 的整数倍：末段 {r} 帧 → {math.ceil(r / d.vae_t)} 潜帧")
         return lt
     if d.vae_frames == "h3":                # MiniMax-H3: frames snapped up to 17n+5 → 5n+2 latent frames
         Fa = F
@@ -779,7 +782,12 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
         if d.max_seq and L > d.max_seq:
             warns.append(f"窗口 {L} token 超过训练长度 {d.max_seq}（RoPE 外推，精度不在本工具范围）")
         k_ = d.kmer or 1
-        ov = min(d.overlap, L - 1)
+        ov = d.overlap
+        if ov >= L:
+            # 0.118: a window no longer than the overlap cannot advance (0.106 clamped to L − 1 → 1 new token per
+            # window); a record this short is read as one window with no overlap
+            warns.append(f"窗口 {L} token 不长于重叠 {ov} token：按单窗口（无重叠）计")
+            ov = 0
         info = {"seq_len": L, "tokens": L, "max_seq": d.max_seq, "kmer": k_, "bp_per_window": L * k_,
                 "overlap_tokens": ov, "new_bp_per_window": (L - ov) * k_,
                 "default": {"seq_len": d.seq_len}, "source": d.source}

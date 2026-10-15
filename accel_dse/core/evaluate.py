@@ -1233,6 +1233,15 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     if wl.pair is not None:      # structure models: the pair representation N²·c_z rides along with the single track
         pair_act = _cdiv(wl.pair.n, lay.sp) * wl.pair.n * m.workload.pair_dim * ab   # DAP: residue-axis slice
         resid += _cdiv(seqs, lay.dp) * pair_act
+        # 0.118 audit: the activation plan assumes fused (flash-style) triangle attention — no H·N³ logits tensor.
+        # Unchunked reference kernels (HF / esm ESMFold with chunk_size None, plain PyTorch OpenFold / Boltz without
+        # chunking) materialise one per block; flag when that alone exceeds the card's DRAM
+        th = max((c.heads for L in m.layers for c in L.pair_cores if c.kind == "tri_att"), default=0)
+        lg = _cdiv(wl.pair.n, lay.sp) * wl.pair.n ** 2 * th * ab
+        if th and lg > sys.dram_bytes:
+            warnings.append(f"三角注意力 logits（{th} 头 × N³，N = {wl.pair.n}）未分块时 {lg / 2**30:.0f} GiB/卡，超过 DRAM "
+                            f"{sys.dram_bytes / 2**30:.0f} GiB：结果按融合（flash 式）三角注意力计；参考实现需设 chunk_size"
+                            "（只降峰值显存，不改计算量）")
     fsdp = lay.sp * lay.dp if scn.workload.dit_fsdp and wl.kind == "gen" and lay.sp * lay.dp > 1 else 0
     if scn.workload.dit_fsdp and not fsdp:
         warnings.append("workload.dit_fsdp 已忽略：" + ("只用于视频 DiT" if wl.kind != "gen" else

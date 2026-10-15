@@ -2796,3 +2796,23 @@ Open-Sora 4, H3 24).  No other gen model has the FLUX.2-type downscale error.
   latent frame when F ≡ 0 (mod t).  The reported frame count is the decoder output `(lt − 1)·t + 1`.
 - Release defaults are exact multiples, so default results and fingerprints are unchanged.
 
+## 64. 0.118 — Open-Sora / H3 decode geometry; protein and genomics audit
+
+**Open-Sora 1.2 latent frames.** `VideoAutoencoderPipeline.get_latent_size`: each full 17-frame micro-chunk gives 5
+latent frames; the remainder r is front-padded by `VAE_Temporal` to a multiple of 4 → ⌈r / 4⌉ latent frames.
+0.44–0.117 padded the remainder to a full chunk.  The temporal decoder walk (×2 · ×2 per latent, `double` rule)
+then equals Σ chunks · 4·latents frames, matching the per-chunk decode; the SD-VAE spatial decoder runs on the F
+output frames.
+
+**MiniMax-H3.** `h3_geometry` reproduces diffusers `AutoencoderKLMiniMaxH3._decode` (`tokens_chunk_size` 5,
+`token_overlap` 2, `num_chunks = (T + drop + pad)/5 − 1`, trailing latent repeat) and `_split_tiles` (fewest 256-px
+tiles with ≥ 64 px overlap); unchanged.
+
+**Protein path.** Closed forms of every pair core, recycle / diffusion-step / sample linearity, DAP work conservation
+(SP 2 / 4 on all five structure models), N³ asymptotics, MSA-depth convexity (column attention ∝ S²) and the TP refusal
+hold.  The activation plan assumes fused triangle attention (no H·N³ logits); a warning now quantifies the unchunked
+reference tensor per card when it alone exceeds DRAM (`chunk_size` lowers the peak, not the work).
+
+**Genomics.** A window no longer than the overlap is read as one window with no overlap (was: overlap clamped to
+L − 1, one new token per window).
+

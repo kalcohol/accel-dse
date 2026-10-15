@@ -3,7 +3,24 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
-## [0.117.0]
+## [0.118.0]
+
+### Fixed
+
+- Open-Sora 1.2 潜帧：非 17 整数倍的末段此前补齐到 17 帧（5 潜帧）；参考 `VideoAutoencoderPipeline.get_latent_size` 为整块 5 个 + 末段 r 帧前补到 4 的倍数 → `⌈r/4⌉` 个（例：100 帧 30 → 29 潜帧）。默认 102 帧不变。
+- 基因组窗口：窗口不长于重叠（默认 1024 token）时此前把重叠钳到 L − 1（每窗口只前进 1 token）；现按单窗口、无重叠计并警告。
+
+### Added
+
+- 结构模型：激活计划按融合（flash 式）三角注意力计（不物化 H·N³ logits）；未分块参考实现的单块 logits 超过每卡 DRAM 时给出警告（只告警，不改结果）。
+
+### Audit
+
+- MiniMax-H3 VAE 解码几何对照 diffusers `AutoencoderKLMiniMaxH3._decode` / `_split_tiles`：段数、5 + 2 潜帧重叠、补帧与 tile 数一致；Open-Sora 时间 + 空间 VAE 解码几何一致（除上面的末段潜帧）。
+- 蛋白质路径：三角乘 / 三角注意力 / MSA 行列注意力 / OPM / PWA 闭式、recycle / 步数 / 样本线性、DAP（SP 2 / 4）总计算量守恒（5 个模型）、N³ 渐近、MSA 深度（列注意力 S²）凸、TP 拒绝——无误。基因组 16k / 32k 窗口正常。
+- HF 新发布（2026-10-01 起、非 gated、公开配置）：只有已收录的 Carbon-A-1.2B；Prompteina（10-09，设计模型）只有 Lightning .ckpt、config.json 无结构、自编码器另发——未收录。
+
+
 
 ### Fixed
 
