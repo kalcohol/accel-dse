@@ -325,6 +325,8 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         # 0.60 「假设」: the KV stream takes u_kv = λ·kv / (min(n_p, n_d)·β) of the decode pool's NICs, so the decode
         # pool's network collectives run on (1 − u_kv)·net.GBps; λ falls with the slower decode → fixed point
         tpot0, u, net0 = dec.tpot, 0.0, dscn.net.GBps
+        fb_p = scn.fabric.kv_feedback_prefill and pr.fits
+        ttft0, pnet0 = pr.ttft, pscn.net.GBps
         for _ in range(6):
             lam_ = rates(n_p, n_d)["req_s"]
             u_new = min(0.95, lam_ * kv / (min(n_p, n_d) * kv_fab["GBps_raw"] * 1e9))
@@ -334,9 +336,21 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
             dscn = dscn.replace("net.GBps", net0 * (1.0 - u))
             dec = evaluate(dscn)
             rd = dec.throughput if dec.fits else 0.0
+            if fb_p:            # 0.121: the sending (prefill) NICs carry the same KV bytes
+                pscn = pscn.replace("net.GBps", pnet0 * (1.0 - u))
+                ppool = _Pool(pscn)
+                pr = evaluate(pscn.replace("serving.phase", "prefill").replace("serving.batch", pb))
+                rp = pr.throughput if pr.fits else 0.0
+                if not plain:
+                    t_req = sum(w * ppool.run("prefill", pb, Si, pi).ttft for w, Si, pi in pts) / pb
+                    rq_p = 1.0 / t_req if pr.fits and t_req > 0 else 0.0
         dpool = _Pool(dscn)
         kv_fb = {"u_kv": u, "tpot_ms_before": tpot0 * 1e3, "tpot_ms_after": dec.tpot * 1e3,
                  "net_GBps_decode": net0 * (1.0 - u)}
+        if fb_p:
+            t_kv, exposed = kv_time(pr.ttft)
+            kv_fb.update({"ttft_ms_before": ttft0 * 1e3, "ttft_ms_after": pr.ttft * 1e3,
+                          "net_GBps_prefill": pnet0 * (1.0 - u)})
     main = rates(n_p, n_d)
     ttft = pr.ttft + exposed
     splits = []

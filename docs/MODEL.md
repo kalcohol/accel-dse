@@ -2846,3 +2846,12 @@ cross DRAM once whenever the module's tensors exceed the budget (the same single
 charged 0 there, which made small chunks faster than the fused kernel; now chunked = fused at `kernel_us` 0 and slower
 with any launch overhead.
 
+## 67. 0.121 — KV contention feedback on the prefill side
+
+With `fabric.kv_feedback` (0.60) the KV hand-off's share of a NIC, u_kv = λ·kv / (min(n_p, n_d)·β), slows the decode
+pool's network collectives.  Each prefill → decode pair carries the same bytes on both ends, so the sending NICs are
+equally busy; `fabric.kv_feedback_prefill` (opt-in) applies (1 − u_kv)·net.GBps to the prefill pool as well, re-evaluates
+the prefill pool at its chosen batch (TTFT, per-request rate over the prompt mix) and iterates λ → u_kv to the same
+fixed point.  A slower prefill lowers λ and hence u_kv, so the decode TPOT is no worse than with decode-only feedback.
+Report: `kv.fabric.feedback.{ttft_ms_before, ttft_ms_after, net_GBps_prefill}`.
+

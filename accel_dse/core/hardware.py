@@ -262,6 +262,9 @@ class Fabric:
                   max(compute / DRAM window, link) + Σα (exposed time) instead of each collective's bw + α alone.
     kv_feedback   PD: the KV stream's share of the decode pool's NIC slows the decode pool's network collectives
                   (u_kv; decode TPOT recomputed) — 0.59 only reported the collectives' slowdown on the KV stream.
+    kv_feedback_prefill  0.121 PD (with kv_feedback): the same u_kv also takes the prefill pool's NICs (the sending
+                  side of each pair carries the same bytes), so the prefill pool's network collectives run on
+                  (1 − u_kv)·net.GBps too; prefill TTFT / request rate recomputed inside the same fixed point.
     0.61 「假设」 (defaults = the 0.60 behaviour):
     hop_spine_us  extra per-step latency of a network step that leaves the leaf (leaf → spine → leaf: two more switch
                   traversals); hop_net_us / hop_net_tree_us stay the same-leaf step.
@@ -293,10 +296,13 @@ class Fabric:
     hop_spine_us: float = 0.0
     hop_core_us: float = 0.0
     protocol: str = "off"
+    kv_feedback_prefill: bool = field(default=False, metadata={"omit_default": True})   # 0.121
 
     def __post_init__(self):
-        if not all(isinstance(getattr(self, k), bool) for k in ("enabled", "contention", "kv_feedback")):
-            raise ValueError("fabric.enabled / fabric.contention / fabric.kv_feedback must be booleans")
+        if not all(isinstance(getattr(self, k), bool) for k in ("enabled", "contention", "kv_feedback",
+                                                                 "kv_feedback_prefill")):
+            raise ValueError("fabric.enabled / fabric.contention / fabric.kv_feedback / fabric.kv_feedback_prefill "
+                             "must be booleans")
         if self.net_tiers not in NET_TIERS or isinstance(self.net_tiers, bool):
             raise ValueError("fabric.net_tiers must be 2 (leaf-spine) or 3 (leaf / spine / core)")
         if isinstance(self.oversub_spine, bool) or not isinstance(self.oversub_spine, (int, float)) \

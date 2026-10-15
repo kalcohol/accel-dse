@@ -3,7 +3,13 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
-## [0.120.0]
+## [0.121.0]
+
+### Added
+
+- PD + fabric：`fabric.kv_feedback_prefill`（默认关，需同时开 `kv_feedback`）。KV 流的 NIC 份额 u_kv 同样占用 prefill 池（发送端）的 NIC：prefill 池跨节点集合通信带宽 × (1 − u_kv)，prefill TTFT 与请求速率在同一不动点里重算（0.60 只回馈 decode 侧）。命令行 `--kv-feedback-prefill`，工作台 fabric 面板勾选项。例：DeepSeek-V3 PD（DP64·EP64，12.5 GB/s，oversub 4）TTFT 5800 → 5971 ms，goodput / 卡 2.59 → 2.51，u_kv 2.98 → 2.89 %。
+
+
 
 ### Added
 

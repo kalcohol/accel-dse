@@ -155,6 +155,7 @@
       <div class="row3">
         <label title="0.60：同一流水级内各集合通信的链路时间如何合成。sum = 相加（0.59）；ports = D2D PHY、scale-up 端口、NIC 是不同物理端口可同时工作，同端口串行：级链路时间 = 最忙端口的忙时之和（不低于最长的单次集合通信）">层间重叠 <span class="tag assume">假设</span><select id="fab-overlap"></select></label>
         <label class="inline" title="0.60（PD）：KV 流占 decode 池 NIC 的份额 u_kv 反馈到 decode 池的跨节点集合通信（网络带宽 × (1 − u_kv)），decode TPOT 重算（不动点迭代）"><input type="checkbox" id="fab-kv_feedback"> KV 争用回馈 decode TPOT <span class="tag assume">假设</span></label>
+        <label class="inline" title="0.121（PD，需先勾选上一项）：同一 KV 份额也占 prefill 池（发送端）NIC，prefill 池跨节点集合通信带宽 × (1 − u_kv)，prefill TTFT 与请求速率在同一不动点内重算"><input type="checkbox" id="fab-kv_feedback_prefill"> 回馈 prefill TTFT <span class="tag assume">假设</span></label>
       </div>
       <div class="row3">
         <label title="0.61：跨节点每一步若离开 leaf（leaf → spine → leaf，多经过两级交换）额外增加的时延 µs，叠加在网络 ring / tree 每步时延上；tree 只有跨 leaf 的层（相距 2^j ≥ 每 leaf 组内节点数）计入；0 = 不计（0.60）">跨 leaf 每步附加 µs <span class="tag assume">假设</span><input type="number" id="fab-hop_spine_us" step="0.1" min="0"></label>

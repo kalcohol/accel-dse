@@ -181,6 +181,7 @@ function fabPaint() {
   $('fab-link_topology').value = S.sc.link.topology || 'switch';
   $('fab-contention').checked = !!fab().contention;
   $('fab-kv_feedback').checked = !!fab().kv_feedback;
+  $('fab-kv_feedback_prefill').checked = !!fab().kv_feedback_prefill;
   const three = (fab().net_tiers || 2) === 3;
   $('fab-pod_nodes').disabled = !three; $('fab-oversub_spine').disabled = !three;
 }
@@ -808,7 +809,8 @@ function renderPD(r) {
   const bs = pd.best_split;
   $('pd-note').textContent = `KV 每请求 ${num(K.bytes_per_req / 2 ** 20)} MiB，${num(K.GBps_req)} GB/s（${K.source}，min(c_p, c_d) 卡并行），传输 ${num(K.t_ms)} ms，暴露 ${num(K.exposed_ms)} ms${K.layerwise ? '（逐层流式）' : ''}。`
     + (K.fabric ? ` 拓扑「假设」：上行系数 ${num(K.fabric.leaf_factor)}，NIC 被集合通信占用 ${pct(K.fabric.u_coll)}，${num(K.fabric.GBps_raw)} → ${num(K.fabric.GBps_eff)} GB/s/卡`
-      + (K.fabric.feedback ? `；回馈：KV 占 decode 池 NIC ${pct(K.fabric.feedback.u_kv)} → decode TPOT ${num(K.fabric.feedback.tpot_ms_before)} → ${num(K.fabric.feedback.tpot_ms_after)} ms` : '') + '。' : '')
+      + (K.fabric.feedback ? `；回馈：KV 占 decode 池 NIC ${pct(K.fabric.feedback.u_kv)} → decode TPOT ${num(K.fabric.feedback.tpot_ms_before)} → ${num(K.fabric.feedback.tpot_ms_after)} ms`
+        + (K.fabric.feedback.ttft_ms_after != null ? `，prefill TTFT ${num(K.fabric.feedback.ttft_ms_before)} → ${num(K.fabric.feedback.ttft_ms_after)} ms` : '') : '') + '。' : '')
     + (bs ? ` 同 ${pd.cards} 卡最佳切分：prefill ${bs.prefill_cards} + decode ${bs.decode_cards} → ${num(bs.goodput_per_card)} tok/s/卡（瓶颈 ${bs.bottleneck}）。` : '')
     + (pd.warnings.length ? ' ⚠ ' + pd.warnings.join('；') : '');
   renderPDQueue(pd.queue, pd.cards, pd.lengths);
@@ -1574,6 +1576,7 @@ async function init() {
   opts($('fab-protocol'), [['off', 'off（0.60：LL 时延 + 满带宽）'], ['auto', 'auto（每次取最快）'], ['LL', 'LL'], ['LL128', 'LL128'], ['Simple', 'Simple']], fab().protocol || 'off');
   $('fab-protocol').addEventListener('change', (e) => { fab().protocol = e.target.value; schedule(); });
   $('fab-kv_feedback').addEventListener('change', (e) => { fab().kv_feedback = e.target.checked; schedule(); });
+  $('fab-kv_feedback_prefill').addEventListener('change', (e) => { fab().kv_feedback_prefill = e.target.checked; schedule(); });
   $('fab-link_topology').addEventListener('change', (e) => { S.sc.link.topology = e.target.value; schedule(); });
   for (const k of ['algo', 'net_topology', 'innet_reduce']) $('fab-' + k).addEventListener('change', (e) => { fab()[k] = e.target.value; schedule(); });
   fabPaint();

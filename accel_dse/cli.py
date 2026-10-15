@@ -186,6 +186,9 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="0.61: NCCL-like protocol (bandwidth efficiency vs per-step latency); auto = fastest per collective 「假设」")
     p.add_argument("--kv-feedback", dest="kv_feedback", action="store_true", default=None,
                    help="0.60 PD: KV stream's NIC share slows the decode pool's network collectives 「假设」")
+    p.add_argument("--kv-feedback-prefill", dest="kv_feedback_prefill", action="store_true", default=None,
+                   help="0.121 PD (with --kv-feedback): the same KV share also slows the prefill pool's network "
+                        "collectives (TTFT recomputed) 「假设」")
     p.add_argument("--net-topology", dest="net_topology", default=None, choices=["fat_tree", "rail"],
                    help="cross-node topology with --fabric (default fat_tree)")
     p.add_argument("--oversub", dest="oversub", type=float, default=None,
@@ -387,6 +390,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                                                 ("innet_reduce", "innet_reduce"), ("net_tiers", "net_tiers"),
                                                 ("pod_nodes", "pod_nodes"), ("oversub_spine", "oversub_spine"),
                                                 ("overlap", "fabric_overlap"), ("kv_feedback", "kv_feedback"),
+                                                ("kv_feedback_prefill", "kv_feedback_prefill"),
                                                 ("hop_spine_us", "hop_spine_us"), ("hop_core_us", "hop_core_us"),
                                                 ("hop_d2d_us", "hop_d2d_us"), ("hop_link_us", "hop_link_us"),
                                                 ("hop_net_us", "hop_net_us"), ("hop_net_tree_us", "hop_net_tree_us"),
@@ -602,6 +606,8 @@ def cmd_eval(a) -> dict:
                   f"{kf['GBps_raw']:.1f} → {kf['GBps_eff']:.2f} GB/s per card"
                   + (f"; feedback: KV takes {kf['feedback']['u_kv']:.1%} of decode NICs → TPOT "
                      f"{kf['feedback']['tpot_ms_before']:.2f} → {kf['feedback']['tpot_ms_after']:.2f} ms"
+                     + (f", prefill TTFT {kf['feedback']['ttft_ms_before']:.0f} → {kf['feedback']['ttft_ms_after']:.0f} ms"
+                        if "ttft_ms_after" in kf["feedback"] else "")
                      if kf.get("feedback") else ""))
         print(f"    TTFT {pd['ttft_ms']:.0f} ms  TPOT {pd['tpot_ms']:.2f} ms  goodput {pd['goodput_per_card']:.1f} tok/s/card  "
               f"bottleneck {pd['bottleneck']}"
