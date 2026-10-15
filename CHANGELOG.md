@@ -3,6 +3,17 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.127.0]
+### Fixed (hostile review round 3, hardware side)
+- Capacity fix (`/api/fit`): the fewest-cards search tried powers of two only, so a model that fits on 3 cards was offered 4 (Llama-3.3-70B on the default chip: TP3 holds it). It now also scans the card counts between the last failing and the first fitting power of two (≤ 32 counts) and returns `pow2_cards` alongside; the UI shows both when they differ.
+### Verified (no change)
+- GEMM mapping (all organisations, wide / auto / CTA scheduling, 5 weight formats, 6000 random shapes): never above the peak MAC rate or the SRAM-port weight bound, monotone in instance count, `reconf` ≤ every single organisation. The dtype execution matrix (native / dequant-W / upcast / downcast).
+- Energy: useful MAC counts per token are invariant under PP / TP / DP for dense models and under DP·EP for MoE; extra counts under TP come only from work every TP rank really executes (e.g. the MoE router and the V4 compressor / indexer), and extra vector work under PP from weight dequantisation repeated per micro-batch, both by design.
+- Faster hardware (SRAM, port, frequency, MAC efficiency, memory efficiency, link, SLC, GEMV unit) never gives a slower step (7 models × 2 chips × 2 batches).
+- Capacity: per-stage need = weights + KV + state + reserve + activations + pipeline components. Video adds component activation peaks, FSDP gathered layers or the prefix cache on top, all accounted once.
+- Pareto front = brute-force non-dominated set.
+- The TP3 colocated ITL-max tail, rerun with 10 seeds: −26 % (band 30 %). The closed form runs 8–26 % low on colocated ITL max at load 0.4 on every edge layout.
+
 ## [0.126.0]
 ### Fixed (hostile review round 2)
 - Compressed + sliding-window attention (DeepSeek-V4 layers with compress > 1 and a window): a decode query at context n was charged ⌈n/c⌉ + w keys even when that exceeds n (129 keys at n = 1), while prefill already used min(p, ·). `AttnCore.ctx_eff` now caps at n, so decode equals the prefill last-position count. Only short contexts (n ≲ w + n/c) change; default fingerprints are unchanged.

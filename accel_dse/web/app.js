@@ -731,7 +731,7 @@ async function runFit() {
     if (f.min_cards) {
       const c = f.min_cards;
       acts.push(h('button', { class: 'btn', onclick: () => applyLayout(c.layout_obj, c.batch) },
-        `改为 ${c.cards} 卡 · ${c.layout} · batch ${c.batch}（每卡 ${num(c.need_GiB)} GiB${c.meets_slo ? '' : isFull(m) ? '，延迟 SLO 未满足' : '，TPOT SLO 未满足'}）`));
+        `改为 ${c.cards} 卡 · ${c.layout} · batch ${c.batch}（每卡 ${num(c.need_GiB)} GiB${c.meets_slo ? '' : isFull(m) ? '，延迟 SLO 未满足' : '，TPOT SLO 未满足'}${c.pow2_cards && c.pow2_cards !== c.cards ? `；2 的幂卡数为 ${c.pow2_cards}` : ''}）`));
     }
     if (m.domain === 'gen' && S.sc.workload.pipeline !== false && (S.sc.workload.placement || 'auto') !== 'auto') acts.push(h('button', { class: 'btn', onclick: () => { S.sc.workload.placement = 'auto'; syncInputs(); schedule(); } },
       '组件放置改为「自动」（常驻 → 文本编码器分片 → 顺序卸载，取第一个放得下的）'));

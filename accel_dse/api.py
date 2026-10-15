@@ -625,6 +625,9 @@ def _mem_candidates(mem_id: str) -> list:
     return out
 
 
+FIT_SCAN = 32     # 0.127: non-power-of-two card counts scanned below the first fitting power of two
+
+
 def api_fit(body: dict) -> dict:
     """Capacity check with concrete fixes: fewest cards that hold the model, or the smallest larger memory."""
     _check_keys(body, "fit")
@@ -651,16 +654,29 @@ def api_fit(body: dict) -> dict:
     cards = scn.layout.cards
     bud = _budget(body)
     scn = scn.colocated()                 # 0.56: other layouts need not divide pd.decode_cards
+    def fits_on(n: int) -> list:
+        return [lay for lay in enumerate_layouts(n, m.n_layers, m.is_moe, full=not m.kv_cache, pair=m.is_pair)
+                if evaluate(scn.replace("layout", lay).replace("serving.batch", 1)).fits]
+
+    prev = cards
     for n in [2 ** i for i in range(1, MAX_CARDS.bit_length())]:    # 0.60: up to MAX_CARDS (was ≤ 64)
         if n <= cards:
             continue
         if bud is not None and bud.cards is not None and n > bud.cards:
             out["budget_cards_limit"] = int(bud.cards)      # more cards would break the card budget
             break
-        fit = [lay for lay in enumerate_layouts(n, m.n_layers, m.is_moe, full=not m.kv_cache, pair=m.is_pair)
-               if evaluate(scn.replace("layout", lay).replace("serving.batch", 1)).fits]
+        fit = fits_on(n)
         if not fit:
+            prev = n
             continue
+        # 0.127 review: the fewest cards need not be a power of two (Llama-3.3-70B: TP3 holds it, 4 was reported) —
+        # scan the card counts between the last failing power of two and n (bounded: ≤ FIT_SCAN counts)
+        pow2 = n
+        for n2 in range(prev + 1, min(n, prev + 1 + FIT_SCAN)):
+            f2 = fits_on(n2)
+            if f2:
+                n, fit = n2, f2
+                break
         rows = search_layouts(scn, n, top=1, pool=_POOL)
         if rows and rows[0].batch:
             lay, batch = rows[0].layout, rows[0].batch
@@ -671,7 +687,7 @@ def api_fit(body: dict) -> dict:
         rr = evaluate(scn.replace("layout", lay).replace("serving.batch", batch))
         out["min_cards"] = {"cards": n, "layout": lay.label, "layout_obj": lay.__dict__, "batch": batch,
                             "need_GiB": max(s.mem.dram_need for s in rr.stages) / 2**30,
-                            "meets_slo": bool(rows and rows[0].batch)}
+                            "meets_slo": bool(rows and rows[0].batch), "pow2_cards": pow2}
         break
     for sp in _mem_candidates(scn.mem_id):
         if evaluate(scn.replace("mem_id", sp.id).replace("serving.batch", 1)).fits:

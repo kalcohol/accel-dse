@@ -2942,3 +2942,16 @@ non-dual layers (0.126 fix: compressed + window layers were charged ⌈n/c⌉ + 
 reads under uneven TP; KV / state bytes vs config formulas; hierarchical collective volumes (with equal tiers they
 reduce to 2(g−1)/g·B, (g−1)·B and ≤ (g−1)/g·B); PP partitions and per-stage work conservation; DiT cross-attention
 GEMM rows (conditioning tokens for K/V, replicated over SP ranks); DES vs closed form on PP / odd-TP layouts.
+
+
+## 73. Hostile review round 3 — hardware side (0.127)
+
+Checked: GEMM mapping lower bounds (peak MACs, every weight byte through the SRAM port) and monotonicity in the
+instance count for every organisation and scheduling mode; `reconf` = per-op minimum; energy MAC counts invariant
+under PP / TP / DP where no work is replicated; better hardware never slower; the capacity identity per stage; the
+Pareto filter against brute-force dominance. The CTA (GPU reference) tile search is not monotone in K below 128,
+because split-K needs slices of at least 64 (a library heuristic, kept).
+
+**Fewest cards.** `/api/fit` first finds the smallest power of two that holds the model, then scans the card counts
+between the last failing power of two and it (at most 32), because layouts such as TP3 can hold a model that TP2
+cannot. Both counts are returned.
