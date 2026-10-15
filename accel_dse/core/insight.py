@@ -604,6 +604,13 @@ def _chip_set(f):
     return lambda s, v: s.replace("chip", f(s.chip, v))
 
 
+def _lanes_set(ch, v):
+    # 0.163: the dequant path defaults to the vector width (formats.dequant_elems_per_cycle None → lanes); ≤ 0.162 a
+    # narrower vector unit silently also cut dequant throughput.  Pin it so only the vector width moves.
+    f = ch.formats if ch.formats.dequant_elems_per_cycle else replace(ch.formats, dequant_elems_per_cycle=float(ch.lanes))
+    return replace(ch, vector_lanes=max(1, int(round(v))), formats=f)
+
+
 def _cores_set(ch, v):
     # 0.158: fewer engines (cores) at fixed vector width / per-engine accumulator & port — the MAC array alone shrinks
     return replace(ch, engines=max(1, int(round(v))), vector_lanes=ch.lanes)
@@ -615,7 +622,7 @@ SIZING = {
                 lambda s: float(s.chip.formats.dequant_elems_per_cycle or s.chip.lanes),
                 _chip_set(lambda ch, v: replace(ch, formats=replace(ch.formats, dequant_elems_per_cycle=v))), False, "mm2_per_kdq"),
     "lanes": ("向量单元宽度", "元素/周期", lambda s: float(s.chip.lanes),
-              _chip_set(lambda ch, v: replace(ch, vector_lanes=max(1, int(round(v))))), True, "mm2_per_klane"),
+              _chip_set(_lanes_set), True, "mm2_per_klane"),
     "sram": ("SRAM 容量", "MiB", lambda s: float(s.chip.sram_mib), _chip_set(lambda ch, v: replace(ch, sram_mib=v)), False,
              "mm2_per_mib_sram"),
     # 0.158: MAC array via core (engine) count, R×C per engine fixed; area = ΔkMAC × mm2_per_kmac (density preset / user)

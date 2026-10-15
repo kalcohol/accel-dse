@@ -3,6 +3,13 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.163.0] — sizing adversarial review: lanes→dequant coupling fix
+- Bug: the `lanes` sizing setter changed `vector_lanes` only. The dequant path defaults to the vector width (`formats.dequant_elems_per_cycle` None → lanes, mapping.py), so shrinking the vector unit also silently cut dequant throughput on the default chip. The lanes setter now pins the dequant rate to its current value. Latent on the sample sets: the vector width binds (TTFT) before dequant does (TPOT), so the minima, joint points and mm² are unchanged (qwen3-8b+gpt-oss-20b / wan2.1 / esm2-650m: 30.9 / 30.5 / 34.5 mm² at n7; qwen3-8b-awq lanes 1382, dequant 753). It would matter for any chip or model where dequant binds near the vector width.
+- Standing guard: tests/test_core_163.py checks that every SIZING setter moves only its own resource, on every chip preset at ×0.5 and ×0.13.
+- Hostile review `val5/v0163/sizefuzz.py`: 48 random cases (chip 100T / 1P / H100-like × 6 model sets across llm / gen / protein × density presets × unpriced modes). It independently re-checks that each single-resource min passes and its fail point fails, that the joint point holds and sits between single-resource min and current, setter isolation, and binding consistency: 0 violations.
+- Known, not changed: with the opt-in DMA issue limit (`chip.dma_engines`), `dram_bw` reports the memory's effective GB/s rather than min(mem, DMA), so its "current" can overstate the delivered bandwidth.
+- No default changed; fingerprints unchanged.
+
 ## [0.162.0] — priced vector lanes / dequant in sizing; safer unpriced handling
 - New budget densities `mm2_per_klane` / `mm2_per_kdq` (per 1024 lanes / dequant elements per cycle), in every density preset, used by insight sizing only. They are not added to the die-area proxy, whose `mm2_fixed` already covers the vector unit, so area outputs and fingerprints are unchanged. No public NPU floorplan splits out the vector unit (TPUv4i ISCA 2021 Fig. 6 gives only CMEM 28 % and MXU 11 %). So each node's value = that node's MAC density × an operator-area ratio from Horowitz's 45 nm table (ISSCC 2014; area column via Sze et al. / MIT EEMS slides, 二手). Lane = FP32 mult + FP32 add = 11884 µm² vs bf16 MAC = FP16 mult + FP32 add = 5824 → ×2.0405. Dequant = FP16 mult + 8b add = 1676 → ×0.2878. Labelled 推导/二手, datapath-only lower bounds. n7: 1.403 mm²/klane, 0.198 mm²/kdq.
 - DRAM bandwidth stays unpriced: sizing scales `mem_eff`, which is not a PHY change; PHY area per pin is already covered by the 0.149 PHY densities.

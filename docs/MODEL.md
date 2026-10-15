@@ -3774,3 +3774,6 @@ Sources:
 Derivation (推导/二手): node density = node `mm2_per_kmac` × area ratio to a bf16 MAC (FP16 mult + FP32 add = 5824 µm²). Lane (FP32 FMA datapath, 11884 µm²) ×2.0405; dequant element/cycle (FP16 scale mult + 8b zero-point add, 1676 µm²) ×0.2878. Assumes operators scale like the MAC array across nodes. Datapath only (no RF / control / shuffle), so these are lower bounds. TPUv1's int8 MAC density makes its derived values optimistic.
 
 Sizing-only fields: the die-area proxy is untouched. Unpriced resources (DRAM bandwidth via mem_eff) default to `unpriced="last"`: ranked after improving priced steps. "free" ranks them first (0.161). Units: cores R·C/1024 × mm2_per_kmac (fixed from /1000); lanes / dequant per 1024.
+
+## 109. Sizing setter isolation (0.163)
+Each sizing resource must move alone. The lanes setter pins the dequant rate, which otherwise defaults to the vector width; cores pins the vector width (0.158). Guarded on all chip presets. Caveat: with the opt-in DMA limit, dram_bw sizes the memory, not min(memory, DMA).
