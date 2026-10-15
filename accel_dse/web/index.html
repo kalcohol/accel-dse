@@ -57,6 +57,7 @@
       <label title="pin：软件按 SRAM 同样顺序把剩余热权重 / 专家 / KV 钉在 SLC，流式激活绕过；lru：硬件替换，按循环访问的全有或全无上界（工作集放得下才全部命中，否则 0 命中）；pin_bw（0.91）：同 pin 钉住，但 SLC 作为第二条读路径（包含式，数据在 DRAM 也有）只服务按带宽均衡的那部分命中（类似 CUDA accessPolicyWindow 的 hitRatio 取最优），SLC 比 DRAM 慢时也不会更慢">SLC 策略<select id="c-slc_policy"><option value="pin">pin 钉住</option><option value="lru">lru 替换</option><option value="pin_bw">pin_bw 钉住 · 带宽均衡</option></select></label>
     </div>
     <div class="small muted" id="chip-formats"></div>
+    <div class="small" id="chip-mixed" title="0.147：权重 × 激活混合精度原生 MAC；仅当该 (W, A) 组合原生时权重反量化开销才消失"></div>
   </section>
 
   <section class="grp">

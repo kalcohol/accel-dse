@@ -3631,3 +3631,17 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
   bytes (already 4.25 bits per weight) and the dequant path.
 - Tests: test_core_146. The probe numbers equal a direct `evaluate` of the one-variable change. Area and energy are
   absent without user inputs. Playwright smoke: `val5/v0146/ui.py`.
+
+## 93. Mixed-precision native MAC (W4A8 / W4A16 / W8A16) as a design variable (0.147)
+- Gap left by §92: a native MXFP4 MAC gives 0 % for models released as W4A8 (MiMo experts: mxfp4 × fp8) or W4A16 (gpt-oss
+  experts: mxfp4 × bf16), because a native format only applies when W and A share it.
+- `FormatSupport.mixed`: (w, a, rate) pairs. If (w, a) is listed (fp8_tensor folds to fp8), `gemm_exec` returns
+  `("w*a", rate, "none", 0)`, so there are no `convert_elems` and no vector-path dequant. Otherwise the earlier rule applies
+  unchanged. The dequant cost vanishes only when the mixed MAC is native.
+- Rates: W4A8 at the FP8 rate is sourced (PTX ISA 8.7, tcgen05.mma kind::f8f6f4 runs FP4/FP6 × FP8 at the f8 rate).
+  W4A16 and W8A16 at the bf16 rate are 「假设」.
+- Default chip unchanged: no mixed pairs. The gain depends on whether dequant is the bottleneck. On the default 100T chip
+  it is hidden (×1.00). With `dequant_elems_per_cycle` = 256, gpt-oss-120b at b64 decode drops from 846 ms to 347 ms TPOT
+  with W4A16.
+- Tests: test_core_147. Fuzzer knob `mixed_all` (monotone). Playwright: `val5/v0147/ui.py`.
+

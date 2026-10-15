@@ -3,6 +3,18 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.147.0]
+### Added
+- **Mixed-precision native MAC as a design variable**: `FormatSupport.mixed` holds (W, A, rate) pairs. `gemm_exec` runs a listed pair natively (exec label `w*a`, e.g. `mxfp4*fp8`) with no weight dequant. An unlisted pair still dequantizes W to A (or both operands upcast to bf16), and that cost is still charged.
+  - Presets `dtypes.MIXED_PRESETS`:
+    - W4A8: mxfp4 / nvfp4 × fp8 and int4 × int8 at the FP8 rate. Sourced: PTX ISA 8.7 `tcgen05.mma kind::f8f6f4`.
+    - W4A16 and W8A16 at the bf16 rate, labelled 「假设」 (the gain is only the removed dequant).
+  - Validation: format names must be known, the rate must be finite and > 0, and malformed entries return an ApiError.
+- Insight knobs `mixed_w4a8` / `mixed_w4a16` / `mixed_w8a16`. When the chip already has the pairs, the knob is inverted and reports their value.
+- The catalog lists `chips[].mixed` and `mixed_presets`. The chip panel's dtype line shows the mixed pairs, with toggles W4A8 / W4A16 / W8A16.
+### Unchanged
+- Default chips have no mixed pairs. The `omit_default` field keeps scenario hashes unchanged (default 723894c17df5d7bb).
+
 ## [0.146.0]
 ### Added
 - **NPU design-insight report**: `core/insight.py`, `POST /api/insight` and the UI tab 「设计洞察」.

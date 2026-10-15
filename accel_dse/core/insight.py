@@ -15,6 +15,9 @@ and the sweeps; nothing here models hardware by itself.  Probes (each relative t
   native_mxfp4  add native mxfp4 MAC at 2 × the fp8 rate 「假设」(NVIDIA Blackwell dense FP4 = 2 × FP8); used only
                 by GEMMs whose weights *and* activations are mxfp4 (dtypes.gemm_exec) — as-released MXFP4-expert
                 models run W4A8 / W4A16, so this probe shows what a W4A4 datapath alone buys them (usually nothing)
+  mixed_w4a8 / mixed_w4a16 / mixed_w8a16   (0.147) native mixed-precision MAC pairs, dtypes.MIXED_PRESETS: the W4 / W8
+                weight dequant vanishes and the pair runs at its rate (W4A8 = FP8 rate, PTX ISA kind::f8f6f4; W4A16 /
+                W8A16 = bf16 rate 「假设」)
   dequant_x4    weight-dequant / convert throughput × 4 (the W4 / W8 → MAC-format path on the vector unit)
   d2d_x2        die-to-die bandwidth × 2              (only with D2D on and package_cards > 1)
   c2c_x2        card-to-card link bandwidth × 2       (only with > 1 card)
@@ -129,6 +132,18 @@ def knobs(base: Scenario) -> list[tuple[str, str, object, str]]:
         fr = rates.get("fp8", 2.0) * MXFP4_VS_FP8
         out.append(("native_mxfp4", f"加原生 MXFP4 MAC（×{fr:g} bf16「假设」，仅 W4A4 GEMM 可用）",
                     chip(formats=replace(ch.formats, rates=ch.formats.rates + (("mxfp4", fr),))), "none"))
+    # 0.147: native mixed-precision MAC pairs (dtypes.MIXED_PRESETS) — the dequant of W4 / W8 weights vanishes and the
+    # pair runs at its own rate; already present → the value of having them (inverted)
+    from .dtypes import MIXED_PRESETS
+    for name, (pairs, src) in MIXED_PRESETS.items():
+        have = all(ch.formats.pair_rate(w, a) is not None for w, a, _ in pairs)
+        if have:
+            rest = tuple(p for p in ch.formats.mixed if (p[0], p[1]) not in {(w, a) for w, a, _ in pairs})
+            out.append((f"mixed_{name}", f"原生 {name.upper()} 混合精度 MAC 的价值（{src}）",
+                        ("invert", chip(formats=replace(ch.formats, mixed=rest))), "none"))
+        else:
+            out.append((f"mixed_{name}", f"加原生 {name.upper()} 混合精度 MAC（{src}）",
+                        chip(formats=replace(ch.formats, mixed=ch.formats.mixed + pairs)), "none"))
     dq = ch.formats.dequant_elems_per_cycle or float(ch.lanes)
     out.append(("dequant_x4", f"反量化 / 转换吞吐 ×4（{dq:g} → {dq * 4:g} 元素/周期）",
                 chip(formats=replace(ch.formats, dequant_elems_per_cycle=dq * 4)), "none"))

@@ -84,7 +84,7 @@ const MAP_DESC = {
 
 /* ------------------------------------------------------------------ state */
 const S = {
-  cat: null, models: [], byId: {}, preset: '100T', chipOver: {}, sc: null,
+  cat: null, models: [], byId: {}, preset: '100T', chipOver: {}, mixed: [], sc: null,
   mem: {}, memInfo: null, wiW: '', wiKV: '', wiAct: '', best: false, last: null,
   cmpObj: 'decode', layObj: 'decode', tab: 'eval',
   kindMem: {},   // per model kind (llm / full): batch + auto-batch, restored when switching between kinds
@@ -136,6 +136,7 @@ function overrides() {
 function body(extra = {}) {
   const sc = JSON.parse(JSON.stringify(S.sc));
   sc.chip = { ...S.chipOver };
+  if (S.mixed.length) sc.chip.formats = { mixed: [...S.cat.chips[S.preset].mixed, ...S.mixed.flatMap((k) => S.cat.mixed_presets[k].pairs)] };
   sc.formats_override = overrides();
   if (sc.pd && !model().is_moe) Object.assign(sc.pd.prefill_layout, { dp: 1, ep: 1, etp: 1 });
   if (sc.pd && isFull(model())) sc.pd.enabled = false;
@@ -445,8 +446,21 @@ function onPreset() {
   $('c-gemv_macs').placeholder = `默认 ${c.gemv}`;
   $('c-acc_kib').placeholder = `默认 ${num(c.acc_total_kib)}`;
   $('c-acc_kib').title = `留空 = 默认 ${c.acc_kib_per_engine_default} KiB/核 × ${c.engines} 核 = ${num(c.acc_total_kib)} KiB（填入值为整片总量）`;
+  const mx = [...c.mixed, ...S.mixed.flatMap((k) => S.cat.mixed_presets[k].pairs)];
   $('chip-formats').textContent = '原生格式 × 速率：' + c.formats.map(([f, r]) => `${f}×${r}`).join(' · ') +
-    '；其余格式反量化 / 上转换，在向量单元计入开销。';
+    (mx.length ? '；混合精度 MAC（W×A）：' + mx.map(([w, a, r]) => `${w}×${a}@${r}`).join(' · ') : '') +
+    '；其余 W/A 组合：权重反量化到激活格式（或双方上转 bf16），在向量单元计入开销。';
+  paintMixed();
+}
+/* 0.147: mixed-precision MAC toggles (design variable; default chip has none) */
+function paintMixed() {
+  const box = $('chip-mixed'); if (!box || !S.cat.mixed_presets) return;
+  put(box, '混合精度 MAC：', ...Object.entries(S.cat.mixed_presets).map(([k, p]) => {
+    const cb = h('input', { type: 'checkbox', id: 'mx-' + k });
+    cb.checked = S.mixed.includes(k);
+    cb.addEventListener('change', () => { S.mixed = cb.checked ? [...S.mixed, k] : S.mixed.filter((x) => x !== k); onPreset(); schedule(); });
+    return h('label', { title: p.pairs.map(([w, a, r]) => `${w}×${a} @${r}`).join('，') + ' — ' + p.source }, cb, ' ' + k.toUpperCase() + ' ');
+  }));
 }
 
 /* ------------------------------------------------------------------ memory */
@@ -1597,7 +1611,7 @@ async function init() {
   } catch (e) { showErr('初始化失败：' + e.message); return; }
 
   fillModels();
-  seg('chip-preset', Object.keys(S.cat.chips).map((k) => [k, k]), () => S.preset, (v) => { S.preset = v; S.chipOver = {}; onPreset(); syncInputs(); schedule(); });
+  seg('chip-preset', Object.keys(S.cat.chips).map((k) => [k, k]), () => S.preset, (v) => { S.preset = v; S.chipOver = {}; S.mixed = []; onPreset(); syncInputs(); schedule(); });
   for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us']) {
     const nullable = k === 'sram_port_Bpc' || k === 'acc_kib' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine' || k === 'kernel_us';
     bindNumber('c-' + k, () => chipVal(k), (x) => { if (x === null) delete S.chipOver[k]; else S.chipOver[k] = x; if (k === 'freq_ghz') onPreset(); },

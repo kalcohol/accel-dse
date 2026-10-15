@@ -279,7 +279,8 @@ def api_models() -> dict:
 
 
 def api_catalog() -> dict:
-    chips = {k: {**c.__dict__, "formats": [list(x) for x in c.formats.rates], "peak_tflops_bf16": c.peak_tflops_bf16,
+    from .core.dtypes import MIXED_PRESETS
+    chips = {k: {**c.__dict__, "formats": [list(x) for x in c.formats.rates], "mixed": [list(x) for x in c.formats.mixed], "peak_tflops_bf16": c.peak_tflops_bf16,
                  "port_GBps": c.port_GBps, "gemv": c.gemv, "lanes": c.lanes,
                  "acc_total_kib": c.acc_total_kib, "acc_kib_per_engine_default": ACC_KIB_PER_ENGINE}
              for k, c in CHIPS.items()}
@@ -287,7 +288,8 @@ def api_catalog() -> dict:
             "memory": mem_catalog.catalog_dict(), "defaults": Scenario().to_dict(full=True), "honesty": HONESTY,
             "sweep_paths": sorted(SWEEP_PATHS), "max_cards": MAX_CARDS,
             "d2d_standards": [{"id": k, **v} for k, v in D2D_STANDARDS.items()], "d2d_default_std": D2D_DEFAULT_STD,
-            "d2d_default_units": D2D_DEFAULT_UNITS}
+            "d2d_default_units": D2D_DEFAULT_UNITS,
+            "mixed_presets": {k: {"pairs": [list(p) for p in v[0]], "source": v[1]} for k, v in MIXED_PRESETS.items()}}
 
 
 def api_memory(body: dict) -> dict:

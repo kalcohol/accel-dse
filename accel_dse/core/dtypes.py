@@ -9,7 +9,8 @@ format and pays a conversion (dequant / upcast) cost on the vector path.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,15 @@ FORMATS: dict[str, Format] = {f.name: f for f in (
 
 ACT_DEFAULT = "bf16"
 
+# 0.147: mixed-precision MAC presets (W, A, rate vs bf16) for the UI / insight knobs.  W4A8 at the FP8 rate is sourced
+# (NVIDIA PTX ISA 8.7, tcgen05.mma kind::f8f6f4: fp4 / fp6 / fp8 operand mixes at the f8f6f4 = FP8 rate); W4A16 / W8A16
+# at the bf16 rate are 「假设」 (the 16-bit operand sets the multiplier; the gain is the removed dequant only).
+MIXED_PRESETS = {
+    "w4a8": ((("mxfp4", "fp8", 2.0), ("int4", "int8", 2.0), ("nvfp4", "fp8", 2.0)), "PTX ISA 8.7 tcgen05.mma kind::f8f6f4（W4A8 = FP8 速率）"),
+    "w4a16": ((("mxfp4", "bf16", 1.0), ("int4", "bf16", 1.0), ("int4", "fp16", 1.0), ("nvfp4", "bf16", 1.0)), "「假设」W4A16 = bf16 速率（只省反量化）"),
+    "w8a16": ((("fp8", "bf16", 1.0), ("int8", "bf16", 1.0), ("int8", "fp16", 1.0)), "「假设」W8A16 = bf16 速率（只省反量化）"),
+}
+
 
 def fmt(name: str) -> Format:
     try:
@@ -61,6 +71,12 @@ class FormatSupport:
 
     rates: tuple[tuple[str, float], ...] = (("bf16", 1.0), ("fp16", 1.0), ("fp8", 2.0), ("int8", 2.0))
     dequant_elems_per_cycle: float | None = None
+    # 0.147: native mixed-precision MAC pairs (weight format, activation format, MAC-rate multiplier vs bf16) — a design
+    # variable, empty by default (no shipped chip changes).  A GEMM whose (W, A) pair is listed runs on the array at
+    # that rate with no weight dequant (gemm_exec); otherwise the pre-0.147 rules apply.  Rate guidance: Blackwell
+    # tcgen05.mma kind::f8f6f4 takes e2m1 × e4m3 operands at the FP8 rate (PTX ISA 8.7) → W4A8 = fp8 rate; W4A16 /
+    # W8A16 at the 16-bit rate 「假设」 (the wider operand sets the multiplier array).  MIXED_PRESETS below.
+    mixed: tuple[tuple[str, str, float], ...] = field(default=(), metadata={"omit_default": True})
 
     def __post_init__(self):
         # 0.61.3: rates as (str, float) so equal chips serialise / hash identically (["fp8", 2] vs ["fp8", 2.0])
@@ -69,11 +85,31 @@ class FormatSupport:
         except (TypeError, ValueError):
             return          # left for the scenario validation to report
         object.__setattr__(self, "rates", rs)
+        try:
+            mx = tuple((str(w), str(a), float(r)) for w, a, r in self.mixed)
+        except (TypeError, ValueError):
+            return
+        object.__setattr__(self, "mixed", mx)
+        for w, a, r in mx:
+            fmt(w), fmt(a)
+            if not r > 0 or not math.isfinite(r):
+                raise ValueError(f"formats.mixed rate for {w}×{a} must be a finite number > 0")
         d = self.dequant_elems_per_cycle
         if isinstance(d, int) and not isinstance(d, bool):
             object.__setattr__(self, "dequant_elems_per_cycle", float(d))
 
+    def pair_rate(self, w_fmt: str, a_fmt: str) -> float | None:
+        """0.147: native mixed-precision MAC rate for weights ``w_fmt`` × activations ``a_fmt`` (None = not native)."""
+        b = lambda n: "fp8" if n.startswith("fp8") else n          # noqa: E731
+        for w, a, r in self.mixed:
+            if b(w) == b(w_fmt) and b(a) == b(a_fmt):
+                return r
+        return None
+
     def rate(self, name: str) -> float | None:
+        if "*" in name:                                           # 0.147 mixed exec label "<w>*<a>"
+            w, a = name.split("*", 1)
+            return self.pair_rate(w, a)
         base = "fp8" if name.startswith("fp8") else name
         for n, r in self.rates:
             if n == base:
@@ -99,6 +135,9 @@ def gemm_exec(w_fmt: str, a_fmt: str, support: FormatSupport) -> tuple[str, floa
     # bf16 × fp16 have no common MAC path: both go to the widest native format below, was taken as native)
     if base(w_fmt) == base(a_fmt) and support.native(w_fmt) and support.native(a_fmt):
         return w_fmt, float(support.rate(w_fmt)), "none", 0
+    pr = support.pair_rate(w_fmt, a_fmt) if support.mixed else None
+    if pr is not None:      # 0.147: native mixed-precision MAC — no dequant, the pair's own rate
+        return f"{w_fmt}*{a_fmt}", float(pr), "none", 0
     if w.compute_bits < a.compute_bits and support.native(a_fmt):
         return a_fmt, float(support.rate(a_fmt)), "dequant_w", 1
     for wide in ("bf16", "fp16", "fp32"):
