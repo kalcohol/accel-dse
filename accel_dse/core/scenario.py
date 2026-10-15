@@ -121,6 +121,11 @@ class Workload:
     # 0.116: text-prefix K/V reuse across denoise steps (Qwen-Image-2.1 causal_condition + QwenImage21KVCache):
     # auto = as the model declares (reference use_kv_cache default), on / off = force
     prefix_kv: str = field(default="auto", metadata={"omit_default": True})
+    # 0.119: triangle-attention kernel of the structure models — fused (flash-style, default) | materialized (H·N³
+    # logits in DRAM) | chunked (tri_chunk rows of logits at a time; 0 → the reference default) | reference (what the
+    # release code does at this N)
+    tri_attn: str = field(default="fused", metadata={"omit_default": True})
+    tri_chunk: int = field(default=0, metadata={"omit_default": True})
 
     def __post_init__(self):
         for k in ("frames", "height", "width", "steps", "cfg", "seq_len", "msa", "recycles", "samples"):
@@ -135,6 +140,10 @@ class Workload:
             raise ValueError("workload: msa ≤ 65536, recycles ≤ 64, samples ≤ 64")
         if not isinstance(self.pipeline, bool):
             raise ValueError("workload.pipeline must be true or false")
+        if self.tri_attn not in ("fused", "materialized", "chunked", "reference"):
+            raise ValueError("workload.tri_attn must be fused | materialized | chunked | reference")
+        if not isinstance(self.tri_chunk, int) or isinstance(self.tri_chunk, bool) or not 0 <= self.tri_chunk <= 65536:
+            raise ValueError("workload.tri_chunk must be an integer in [0, 65536]")
         if self.prefix_kv not in ("auto", "on", "off"):
             raise ValueError("workload.prefix_kv must be auto | on | off")
         for k in ("vae_tiling", "sample_split", "dit_fsdp", "te_cpu", "vae_parallel", "overlap"):

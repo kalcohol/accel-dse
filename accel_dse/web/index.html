@@ -9,7 +9,7 @@
 </head>
 <body>
 <header class="top">
-  <div class="brand">accel-dse <span class="sub">推理加速器设计空间探索 · LLM / 视频生成 DiT / 蛋白质</span></div>
+  <div class="brand">accel-dse <span class="sub">推理加速器设计空间探索 · LLM / VLM / 图像视频生成 DiT / 蛋白质 / 基因组</span></div>
   <span class="chip mono" id="ver">v—</span>
   <button class="chip warn" id="honesty-chip" title="">硬件参数均为「假设」</button>
   <span class="spacer"></span>
@@ -166,12 +166,12 @@
   <section class="grp full-only" id="wl-grp">
     <h3>工作负载 <span class="small muted" id="wl-kind"></span></h3>
     <div class="row3 gen-only">
-      <label>帧数<input type="number" id="w-frames" min="1" max="1024" step="4"></label>
+      <label class="video-only">帧数<input type="number" id="w-frames" min="1" max="1024" step="4"></label>
       <label>高 px<input type="number" id="w-height" min="16" max="4096" step="16"></label>
       <label>宽 px<input type="number" id="w-width" min="16" max="4096" step="16"></label>
       <label>去噪步数<input type="number" id="w-steps" min="1" max="1000" step="1"></label>
       <label title="每个去噪步的前向次数：2 = classifier-free guidance（cond + uncond），1 = 关闭 CFG / 蒸馏">CFG 前向 / 步<input type="number" id="w-cfg" min="1" max="2" step="1"></label>
-      <label>单段 SLO s <span class="tag assume">假设</span><input type="number" id="w-clip_slo_s" min="1" step="60"></label>
+      <label><span id="w-clip_slo_s-name">单段 SLO s</span> <span class="tag assume">假设</span><input type="number" id="w-clip_slo_s" min="1" step="60"></label>
     </div>
     <label class="inline gen-only" title="默认计入：文本编码器（每请求一次）与 VAE 解码（每段一次）的时间串行加在去噪前后，权重计入首 / 末流水级卡的存储。取消 = 只看 DiT 去噪主干（相当于把它们卸载到别处）"><input type="checkbox" id="w-pipeline" checked> 计入文本编码器与 VAE 解码（时间 + 存储）</label>
     <div class="row3 gen-only">
@@ -200,6 +200,12 @@
       <label class="diff-only" title="扩散模块去噪步数（每步扩散 transformer 一次前向）">扩散步数<input type="number" id="w-psteps" min="1" max="1000" step="10"></label>
       <label class="diff-only" title="每条序列采样的结构数（扩散 + 置信度头按样本数成倍；pair 条件共享）">扩散样本数<input type="number" id="w-samples" min="1" max="64" step="1"></label>
       <label class="inline diff-only" title="DAP > 1 时把扩散样本分到 DAP 各卡（每卡 ⌈样本 / DAP⌉ 条轨迹；样本间独立、条件已在每卡上 → 精确、无额外通信）；取消 = 每卡重复全部样本"><input type="checkbox" id="w-sample_split" checked> DAP 时扩散样本分卡</label>
+    </div>
+    <div class="row3 pair-only">
+      <label title="三角注意力内核：融合 = flash 式（不物化 logits，默认）；物化 = 参考 PyTorch 实现整块写出 H·N³ logits；分块 = chunk_layer 每次 chunk 行；参考实现 = 发布代码在该 N 下的做法（ESMFold 不分块、OpenFold / AF2 chunk 4、Boltz-1 N>384 → 128 否则 512、Protenix 按 N 阈值）">三角注意力内核<select id="w-tri_attn">
+        <option value="fused">融合（flash 式）</option><option value="reference">参考实现</option>
+        <option value="materialized">物化 logits</option><option value="chunked">分块</option></select></label>
+      <label title="分块时每块的行数（0 = 参考实现的默认块大小）">分块行数<input type="number" id="w-tri_chunk" min="0" max="65536" step="1" placeholder="参考默认"></label>
     </div>
     <div class="small muted" id="wl-note"></div>
   </section>

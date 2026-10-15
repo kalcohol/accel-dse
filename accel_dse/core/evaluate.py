@@ -888,6 +888,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             wi[key] = with_formats(m, dict(scn.formats_override))
         m = wi[key]
     warnings: list[str] = []
+    if not m.is_pair and m.domain in ("llm", "vlm") and (scn.workload.tri_attn != "fused" or scn.workload.tri_chunk):
+        warnings.append("workload.tri_attn / tri_chunk 只用于带三角注意力的结构模型，已忽略")   # 0.119
     if scn.indexer != "reference":
         from .model import has_indexer, with_indexer
         if not has_indexer(m):
@@ -1238,10 +1240,10 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         # chunking) materialise one per block; flag when that alone exceeds the card's DRAM
         th = max((c.heads for L in m.layers for c in L.pair_cores if c.kind == "tri_att"), default=0)
         lg = _cdiv(wl.pair.n, lay.sp) * wl.pair.n ** 2 * th * ab
-        if th and lg > sys.dram_bytes:
+        if th and lg > sys.dram_bytes and not wl.pair.tri_chunk:
             warnings.append(f"三角注意力 logits（{th} 头 × N³，N = {wl.pair.n}）未分块时 {lg / 2**30:.0f} GiB/卡，超过 DRAM "
                             f"{sys.dram_bytes / 2**30:.0f} GiB：结果按融合（flash 式）三角注意力计；参考实现需设 chunk_size"
-                            "（只降峰值显存，不改计算量）")
+                            "（只降峰值显存，不改计算量；workload.tri_attn = chunked / reference 可评估）")
     fsdp = lay.sp * lay.dp if scn.workload.dit_fsdp and wl.kind == "gen" and lay.sp * lay.dp > 1 else 0
     if scn.workload.dit_fsdp and not fsdp:
         warnings.append("workload.dit_fsdp 已忽略：" + ("只用于视频 DiT" if wl.kind != "gen" else

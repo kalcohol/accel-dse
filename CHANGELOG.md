@@ -3,7 +3,19 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
-## [0.118.0]
+## [0.119.0]
+
+### Added
+
+- 结构模型三角注意力内核 `workload.tri_attn`：`fused`（flash 式，默认，结果不变）| `materialized`（参考 PyTorch 实现整块写出 H·N³ logits）| `chunked`（`chunk_layer` 每次 `tri_chunk` 行，0 = 参考默认）| `reference`（发布代码在该 N 下的做法：ESMFold 不分块；OpenFold / AF2 chunk 4；Boltz-1 N > 384 → 128 否则 512；Protenix ≤ 1024 不分块、≤ 1536 512、≤ 2048 256、更长 128）。计算量不变；每块 logits 定激活峰值，超过 SRAM/2 时 logits 走 4 次 DRAM（写、softmax 读写、P·V 读）。推理无重算。命令行 `--tri-attn` / `--tri-chunk`，工作台蛋白质工作负载里可选。
+
+### Fixed（工作台）
+
+- 图像模型此前显示「视频生成 / 单段延迟 / 1 帧 / 帧/s」→「图像生成 / 单张延迟 / 张/小时」，隐藏帧数、SLO 改为单张。
+- 基因组模型在对比 / 扫描 / 敏感度表头显示「序列/s」→「窗口/s」；能耗表「次数 / window」→「窗口」。
+- Carbon 基础 DNA 语言模型加领域标签；页头领域列表补全（VLM / 图像 / 基因组）。
+
+
 
 ### Fixed
 

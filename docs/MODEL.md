@@ -2816,3 +2816,20 @@ reference tensor per card when it alone exceeds DRAM (`chunk_size` lowers the pe
 **Genomics.** A window no longer than the overlap is read as one window with no overlap (was: overlap clamped to
 L − 1, one new token per window).
 
+## 65. 0.119 — triangle-attention kernel choice (structure models)
+
+`workload.tri_attn` selects how triangle attention (starting / ending node; templates included) runs:
+
+| mode | logits | activation peak | DRAM |
+|---|---|---|---|
+| `fused` (default) | never materialised (flash-style) | q, k, v tiles | flash streaming as before |
+| `materialized` | all rows of the module at once | rows · H · N² (+ q, k, v) per rank | 4 passes over the logits when they exceed SRAM / 2 |
+| `chunked` (`tri_chunk` c) | c rows at a time (OpenFold `chunk_layer`) | c · H · N² | as materialized when one chunk exceeds SRAM / 2, else 0 |
+| `reference` | the release code at this N | — | — |
+
+Reference chunking: ESMFold `chunk_size` None (materialised); OpenFold inference `globals.chunk_size` 4; AlphaFold 2
+`subbatch_size` 4; Boltz-1 `chunk_size_tri_attn` 128 when N > 384 (`const.chunk_size_threshold`) else 512; Protenix
+`infer_setting.chunk_size_thresholds` (≤ 1024 none, ≤ 1536 512, ≤ 2048 256, ≤ 2560 128; longer 128 「假设」).
+FLOPs are identical in every mode (no recompute at inference); the 4 logit passes are write, softmax read + write,
+read by P·V.  Rows are the pair rows on the rank (DAP slices them).  Chunk launch overhead is not modelled.
+

@@ -90,6 +90,10 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                         "offload → shard+offload)")
     p.add_argument("--host-GBps", dest="host_GBps", type=float, default=None,
                    help="video offload: host → card bandwidth per card (default 50 GB/s 「假设」)")
+    p.add_argument("--tri-attn", dest="tri_attn", choices=("fused", "materialized", "chunked", "reference"),
+                   default=None, help="structure models: triangle-attention kernel (default fused)")
+    p.add_argument("--tri-chunk", dest="tri_chunk", type=int, default=None,
+                   help="structure models, --tri-attn chunked: rows per chunk (0 → reference default)")
     p.add_argument("--prefix-kv", dest="prefix_kv", choices=("auto", "on", "off"), default=None,
                    help="image/video gen: reuse the text-prefix K/V across denoise steps (auto = as the model declares; "
                         "Qwen-Image-2.1 causal_condition)")
@@ -325,6 +329,10 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         wl["host_GBps"] = a.host_GBps
     if getattr(a, "vae_tiling", False):
         wl["vae_tiling"] = True
+    if getattr(a, "tri_attn", None):
+        wl["tri_attn"] = a.tri_attn
+    if getattr(a, "tri_chunk", None) is not None:
+        wl["tri_chunk"] = a.tri_chunk
     if getattr(a, "prefix_kv", None):
         wl["prefix_kv"] = a.prefix_kv
     if getattr(a, "dit_fsdp", False):

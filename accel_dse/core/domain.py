@@ -731,10 +731,31 @@ def _latent_frames(d: NativeWorkload, F: int, warns: list[str]) -> int:
     return lt
 
 
+def tri_reference_chunk(model_id: str, n: int) -> int:
+    """0.119: triangle-attention chunking of the release inference code at N tokens (−1 = whole logits materialised).
+      esmfold     esm / HF EsmFoldingTrunk chunk_size None (set_chunk_size not called) → materialised
+      openfold    config.py globals chunk_size 4 (inference)
+      alphafold2  global_config.subbatch_size 4
+      boltz-1     trunk.py: N > const.chunk_size_threshold (384) → 128, else 512
+      protenix    configs_base infer_setting chunk_size_thresholds: ≤ 1024 none, ≤ 1536 512, ≤ 2048 256, ≤ 2560 128;
+                  longer: 128 「假设」"""
+    if model_id == "esmfold":
+        return -1
+    if model_id in ("openfold", "alphafold2"):
+        return 4
+    if model_id == "boltz-1":
+        return 128 if n > 384 else 512
+    if model_id == "protenix":
+        return -1 if n <= 1024 else 512 if n <= 1536 else 256 if n <= 2048 else 128
+    return -1
+
+
 def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
     """Model defaults overridden by the scenario's ``workload`` block (0 = model default)."""
     d = spec.workload
     warns: list[str] = []
+    if not spec.is_pair and (getattr(w, "tri_attn", "fused") != "fused" or getattr(w, "tri_chunk", 0)):
+        warns.append("workload.tri_attn / tri_chunk 只用于带三角注意力的结构模型，已忽略")
     if spec.domain == "gen":
         F, Hh, Ww = w.frames or d.frames, w.height or d.height, w.width or d.width
         image = d.frames == 1 and not d.fps         # 0.115 image DiT: one latent frame, no temporal axis
@@ -817,7 +838,22 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
         # 0.61.3: AF2 / OpenFold concatenate the template torsion-angle embeddings (T rows) to the MSA representation
         # (alphafold/model/modules.py EmbeddingsAndEvoformer; openfold model.py embed_templates → torch.cat([m, a]))
         msa_rows = msa + d.templates if d.tmpl_msa and msa else msa
-        pd = PairDims(L, msa_rows, xmsa, d.templates, atoms, rec, steps, smp)
+        tri = getattr(w, "tri_attn", "fused")
+        ref = tri_reference_chunk(spec.id, L)
+        if tri == "fused":
+            tc = 0
+        elif tri == "materialized":
+            tc = -1
+        elif tri == "chunked":
+            tc = w.tri_chunk or (ref if ref > 0 else 128)
+        else:                                       # reference
+            tc = ref
+        if w.tri_chunk and tri != "chunked":
+            warns.append(f"workload.tri_chunk = {w.tri_chunk} 只用于 tri_attn = chunked，已忽略")
+        pd = PairDims(L, msa_rows, xmsa, d.templates, atoms, rec, steps, smp, tri_chunk=tc)
+        info["tri_attn"] = {"mode": tri, "chunk": tc, "reference_chunk": ref} if tri != "fused" else None
+        if info["tri_attn"] is None:
+            del info["tri_attn"]
         info.update({"msa": msa, "msa_rows": msa_rows, "xmsa": xmsa, "templates": d.templates, "atoms": atoms, "recycles": rec,
                      "diff_steps": steps, "samples": smp, "pair_dim": d.pair_dim,
                      "default": {"seq_len": d.seq_len, "msa": d.msa or d.xmsa, "recycles": d.recycles,

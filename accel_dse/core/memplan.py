@@ -324,7 +324,8 @@ def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
         return c * (ai * r_a + ao), c * w * (r_w - 1)
     if op.bmm:                  # operands and result are whole activations; each channel slice fits the budget,
         tot = (op.m * op.k + op.k * op.n + op.m * op.n) * op.count * ab     # so A, B are read and C written once
-        return (tot, 0.0) if tot > budget else (0.0, 0.0)
+        # 0.119: an unfused triangle attention decides per chunk (its logits stay on chip when one chunk fits)
+        return (tot + op.act_x, 0.0) if tot / max(1, op.chunks) > budget else (0.0, 0.0)
     if op.kind == "attn":       # qk op of a flash-style attention (v_dim == qk_dim for these models)
         qo = 2.0 * op.count * op.m * op.k * ab
         kv = 2.0 * op.count * op.n * op.k * ab

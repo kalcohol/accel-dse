@@ -72,6 +72,8 @@ class PairDims:
     diff_steps: int = 0
     samples: int = 1
     split: bool = False      # DAP > 1: diffusion samples split over the DAP ranks instead of replicated (0.46)
+    tri_chunk: int = 0       # 0.119 triangle attention: 0 = fused (flash-style); −1 = logits materialised whole;
+                             # c > 0 = chunked over c rows (reference chunk_layer)
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,8 @@ class Op:
                               # cache (counted in kv_read) — its first pass is not charged again by act_stream
     wshare: float = 1.0       # 0.64: mean-rank weight elements / this (busiest) rank's — weight dequant (once per pass)
                               # is weight work, not token work: uneven TP / EP splits (rank_shares) scale it by this
+    chunks: int = 1           # 0.119: an unfused bmm run in this many sequential chunks (peak / SRAM fit per chunk)
+    act_x: float = 0.0        # 0.119: extra activation DRAM bytes when the op spills (softmax read + write of logits)
     in_elems: float = 0.0     # conv as implicit GEMM: elements of the real input tensor (the M×K im2col matrix is
                               # virtual — DRAM streaming moves the input once, 0 = M·K·count)
 
@@ -981,6 +985,8 @@ def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int,
     if c.kind == "tri_att":
         cm("allgather", bt * nd * n * c.heads, "bias")
         cm("alltoall", bt * nd * n * (c.width or model.workload.pair_dim), "transpose")
+        if pd.tri_chunk:
+            return _tri_unfused(tag, li, bt * nd, n, d, vd, c.heads, pd.tri_chunk, ab) + comm
         return att(bt * nd, n, n, d, vd, True) + comm
     if c.kind == "row_att":
         g = pd.xmsa if c.over == "xmsa" else pd.msa
@@ -1009,6 +1015,23 @@ def _pair_core_ops(model: ModelSpec, li: int, c: PairCore, pd: PairDims, b: int,
         wq, wk = c.win
         return att(b * s * _cdiv(pd.atoms, wq), wq, wk, d, vd, True)
     raise ValueError(f"unknown pair core {c.kind}")
+
+
+def _tri_unfused(tag: str, li: int, rows: int, n: int, d: int, vd: int, heads: int, chunk: int, ab: float) -> list[Op]:
+    """0.119: triangle attention as the reference PyTorch kernels run it (OpenFold / Boltz / Protenix / ESMFold
+    ``Attention``): logits = q·kᵀ (+ pair bias) written as a tensor, softmax in place, then ·v.  ``rows`` = pair rows
+    (attention batch) on this rank; ``chunk`` < 0 materialises all rows at once, c > 0 runs ⌈rows / c⌉ chunks of c
+    rows (``chunk_layer``).  Same FLOPs as the fused kernel; the per-chunk logits set the activation peak and, when they
+    exceed the SRAM budget, the logits make 4 DRAM passes (write, softmax read + write, read by P·V)."""
+    cr = rows if chunk < 0 else min(rows, chunk)
+    nch = math.ceil(rows / cr)
+    cnt = rows * heads
+    lg = cnt * n * n * ab                                   # all logits of this module execution
+    peak = cr * heads * (2 * n * d + n * n + n * vd) * ab   # one chunk: q, k, logits, v (+ out)
+    return [Op(tag + ".qk", "attn", li, m=n, k=d, n=n, count=cnt, act_bytes=peak, stream=True, bmm=True,
+               chunks=nch, act_x=2 * lg),
+            Op(tag + ".pv", "attn", li, m=n, k=n, n=vd, count=cnt, act_bytes=peak, stream=True, bmm=True, chunks=nch),
+            Op(tag + ".softmax", "vector", li, vec=cnt * n * n * 6, sfu=cnt * n * n)]
 
 
 def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:
