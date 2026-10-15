@@ -1697,7 +1697,7 @@ async function runInsightSizing() {
   $('ins-size-status').textContent = '计算中（每个资源逐次减半再二分 × 每个模型）…';
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
-    const r = await track(req('insight_sizing', '/api/insight_sizing', body(ms.length ? { models: ms } : {})));
+    const r = await track(req('insight_sizing', '/api/insight_sizing', body({ ...(ms.length ? { models: ms } : {}), joint: $('ins-size-joint').checked })));
     if (!r) return;
     const mz = (k) => (r.metrics[k] || k).replace(/ 加速$/, '');
     put($('ins-size-tbl'), h('thead', {}, h('tr', {}, ['资源', '当前', '最小可行', '可缩到', '受限于', '省 mm²'].map((x) => h('th', {}, x)))),
@@ -1705,6 +1705,10 @@ async function runInsightSizing() {
         h('td', {}, `${num(x.min_ok)} ${x.unit}`), h('td', {}, (x.floor_hit ? '≤ ' : '') + num(x.frac * 100) + '%'),
         h('td', {}, x.limited_by ? `${x.limited_by.model} · ${x.limited_by.metric === 'fits' ? '放不下' : mz(x.limited_by.metric)}${x.limited_by.gain ? ' ×' + num(x.limited_by.gain) : ''}` : '—（到搜索下限）'),
         h('td', {}, x.mm2_saved != null ? num(x.mm2_saved) : '—')))));
+    const j = r.joint;
+    $('ins-size-joint-sum').textContent = j ? `各项最小值同时生效：${j.all_minima_hold ? '仍在 ±1% 内' : `不成立（最差 ×${num(j.all_minima_worst_gain)}，${(j.all_minima_limited_by || []).join(' · ')}）`}；回退 ${j.backoffs.length} 步后 ${j.holds ? '成立' : '仍不成立'}（最差 ×${num(j.worst_gain)}）${j.mm2_saved_total != null ? `，合计省 ${num(j.mm2_saved_total)} mm²` : ''}` : '';
+    put($('ins-size-joint-tbl'), j ? h('thead', {}, h('tr', {}, ['资源', '单项最小', '联合可行', '可缩到', '省 mm²'].map((x) => h('th', {}, x)))) : '',
+      j ? h('tbody', {}, j.resources.map((e) => h('tr', {}, h('td', {}, e.key), h('td', {}, num(e.solo_min)), h('td', {}, num(e.joint)), h('td', {}, num(e.frac * 100) + '%'), h('td', {}, e.mm2_saved != null ? num(e.mm2_saved) : '—')))) : '');
     $('ins-size-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout}`;
   } catch (e) {
     $('ins-size-status').textContent = '错误：' + e.message;

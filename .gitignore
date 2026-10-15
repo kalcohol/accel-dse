@@ -19,3 +19,5 @@ out/
 # Local-only notes (not published)
 AGENTS.md
 local/
+scripts/.run_status.json
+scripts/.run_status.tmp

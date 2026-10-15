@@ -628,7 +628,10 @@ SIZING_MIN_FRAC = 1 / 1024        # search floor (10 halvings)
 SIZING_REFINE = 3                 # geometric bisection steps after the first failing halving
 
 
-def sizing_report(base: Scenario, models=None, budget: Budget | None = None, resources=None) -> dict:
+_JOINT_ORDER = ("cores", "lanes", "dequant", "sram", "dram_bw")   # cores pins vector_lanes, so lanes is applied after it
+
+
+def sizing_report(base: Scenario, models=None, budget: Budget | None = None, resources=None, joint: bool = False) -> dict:
     """Per resource: the smallest value (≥ current × SIZING_MIN_FRAC) at which every model keeps every domain metric
     within TIE of the current chip and still fits.  Halving search, then geometric bisection; the reported minimum is
     always a probed point that passed.  ``limited_by`` = the first model / metric that fails just below it."""
@@ -660,6 +663,28 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
                 if g is not None and g < 1 - TIE:
                     return (mid, m, g)
         return None
+
+    def apply_all(s, vals):
+        for k in _JOINT_ORDER:
+            if k in vals:
+                s = SIZING[k][3](s, vals[k])
+        return s
+
+    def worst(vals):
+        """0.160: (min gain over models × metrics, or -inf on a fit loss / invalid point, first failing (model, metric))."""
+        w, why = math.inf, None
+        for mid, s in scns.items():
+            try:
+                p = _point(apply_all(s, vals), table, domain)
+            except ValueError:
+                return -math.inf, (mid, "invalid")
+            if ref[mid]["fits"] and not p["fits"]:
+                return -math.inf, (mid, "fits")
+            for m in metrics:
+                g = _gain(m, ref[mid], p)
+                if g is not None and g < w:
+                    w, why = g, (mid, m)
+        return w, why
 
     out = []
     for key in res:
@@ -697,7 +722,59 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
             per = (base.chip.rows * base.chip.cols / 1000.0) if key == "cores" else 1.0   # kMAC per core
             row["mm2_saved"] = (cur - ok) * per * d
         out.append(row)
-    return {"domain": domain, "models": models, "metrics": metric_labels(domain), "tie": TIE, "resources": out,
-            "chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label,
+    rep = {"domain": domain, "models": models, "metrics": metric_labels(domain), "tie": TIE, "resources": out,
+           "chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label,
             "basis": "逐项缩小（先减半再几何二分）× 现有引擎；每个模型的全部领域指标都在 ±1% 内且仍放得下才算可行；"
                      "min_ok 是实测通过的点（不是外推）。只回答「还能省多少」，面积仅在已有密度（SRAM mm²/MiB、MAC mm²/kMAC，来自密度预设或用户）时给 mm²；DRAM 带宽经 mem_eff 连续缩放（容量不变），不给 PHY 面积。"}
+    if joint:
+        rep["joint"] = _joint_shrink(base, out, budget, worst)
+    return rep
+
+
+def _joint_shrink(base: Scenario, rows: list, budget, worst) -> dict:
+    """0.160: the per-resource minima interact (a narrower vector unit and a slower dequant path share the same
+    elementwise time; less SRAM moves traffic onto a thinner DRAM), so all minima together can break the ±TIE
+    contract.  Start from every min_ok at once; while some model fails, back the resource off whose geometric step
+    toward its current value (√(v·cur), snapping to cur within 3 %) gives the best worst-case gain; stop when it
+    holds.  Terminates: every resource at its current value is the reference chip itself (gain 1).  The result is a
+    probed passing point, greedy (not proven area-optimal)."""
+    cur = {r["key"]: r["current"] for r in rows}
+    vals = {r["key"]: r["min_ok"] for r in rows}
+    integer = {k: SIZING[k][4] for k in vals}
+    trail = []
+    w, why = worst(vals)
+    first = {"worst_gain": w, "limited_by": why}
+    steps = 0
+    while w < 1 - TIE and steps < 64:
+        best = None
+        for k, v in vals.items():
+            if v >= cur[k]:
+                continue
+            nv = math.sqrt(v * cur[k])
+            nv = cur[k] if nv >= 0.97 * cur[k] else nv
+            if integer[k]:
+                nv = float(min(cur[k], max(v + 1, int(round(nv)))))
+            cand = {**vals, k: nv}
+            cw, cwhy = worst(cand)
+            if best is None or cw > best[0]:
+                best = (cw, cwhy, k, nv)
+        if best is None:
+            break
+        w, why, k, nv = best
+        trail.append({"backoff": k, "to": nv, "worst_gain": w})
+        vals[k] = nv
+        steps += 1
+    res = []
+    for r in rows:
+        k = r["key"]
+        e = {"key": k, "solo_min": r["min_ok"], "joint": vals[k], "frac": vals[k] / cur[k] if cur[k] else None}
+        dens = SIZING[k][5]
+        d = getattr(budget, dens, None) if (budget is not None and dens) else None
+        if d is not None:
+            per = (base.chip.rows * base.chip.cols / 1000.0) if k == "cores" else 1.0
+            e["mm2_saved"] = (cur[k] - vals[k]) * per * d
+        res.append(e)
+    tot = [e["mm2_saved"] for e in res if "mm2_saved" in e]
+    return {"all_minima_hold": first["worst_gain"] >= 1 - TIE, "all_minima_worst_gain": first["worst_gain"],
+            "all_minima_limited_by": first["limited_by"], "holds": w >= 1 - TIE, "worst_gain": w,
+            "resources": res, "backoffs": trail, "mm2_saved_total": sum(tot) if tot else None}

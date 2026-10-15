@@ -3759,3 +3759,6 @@ the same `evaluate` that the eval sensitivity and the sweeps use. The new module
 
 ## 105. queue_report performance (0.159, bit-identical)
 Memoising pure sub-laws (victim wait law, saturation-eviction quadrature) and enlarging the bulk-chain LRU cut the recompute KV report by about 40 % while every reported float stays the same. Changing summation order or quadrature resolution to go further is not bit-identical, so it was deliberately not done.
+
+## 106. Joint sizing (0.160)
+Single-resource minima are each checked against the reference chip with everything else unchanged. Applied together they compound, because the shrunk resources share critical-path time. The joint pass starts from all minima, measures the worst gain over models × metrics (−∞ on a fit loss), and while it is below 1 − TIE backs off the one resource whose step toward its current value, √(v·cur) (snapping to cur within 3 %; integers move by ≥ 1), maximises the worst gain. It always terminates, because all resources back at current is the reference chip. Order of application: cores (which pins vector width) before lanes. Area totals use only the set densities.
