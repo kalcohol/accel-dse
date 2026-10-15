@@ -1706,7 +1706,9 @@ async function runInsightSizing() {
         h('td', {}, x.limited_by ? `${x.limited_by.model} · ${x.limited_by.metric === 'fits' ? '放不下' : mz(x.limited_by.metric)}${x.limited_by.gain ? ' ×' + num(x.limited_by.gain) : ''}` : '—（到搜索下限）'),
         h('td', {}, x.mm2_saved != null ? num(x.mm2_saved) : '—')))));
     const j = r.joint;
-    $('ins-size-joint-sum').textContent = j ? `各项最小值同时生效：${j.all_minima_hold ? '仍在 ±1% 内' : `不成立（最差 ×${num(j.all_minima_worst_gain)}，${(j.all_minima_limited_by || []).join(' · ')}）`}；回退 ${j.backoffs.length} 步后 ${j.holds ? '成立' : '仍不成立'}（最差 ×${num(j.worst_gain)}）${j.mm2_saved_total != null ? `，合计省 ${num(j.mm2_saved_total)} mm²` : ''}` : '';
+    $('ins-size-joint-sum').textContent = j ? `各项最小值同时生效：${j.all_minima_hold ? '仍在 ±1% 内' : `不成立（最差 ×${num(j.all_minima_worst_gain)}，${(j.all_minima_limited_by || []).join(' · ')}）`}；回退 ${j.backoffs.length} 步后 ${j.holds ? '成立' : '仍不成立'}（最差 ×${num(j.worst_gain)}）${j.mm2_saved_total != null ? `，合计省 ${num(j.mm2_saved_total)} mm²（贪心 ${num(j.greedy_mm2_saved)}）` : ''} · 搜索 ${j.search} · 排序 ${j.rank}` : '';
+    const bd = r.binding;
+    $('ins-size-binding').textContent = bd ? `受限资源（无单项余量）：${bd.binding.map((x) => x.label).join('、') || '无'}；余量最大：${bd.most_slack.slice(0, 2).map((x) => `${x.label} ${num(x.frac * 100)}%`).join('、') || '—'}${bd.joint_only && bd.joint_only.length ? `；仅联合时受限：${bd.joint_only.join('、')}` : ''}` : '';
     put($('ins-size-joint-tbl'), j ? h('thead', {}, h('tr', {}, ['资源', '单项最小', '联合可行', '可缩到', '省 mm²'].map((x) => h('th', {}, x)))) : '',
       j ? h('tbody', {}, j.resources.map((e) => h('tr', {}, h('td', {}, e.key), h('td', {}, num(e.solo_min)), h('td', {}, num(e.joint)), h('td', {}, num(e.frac * 100) + '%'), h('td', {}, e.mm2_saved != null ? num(e.mm2_saved) : '—')))) : '');
     $('ins-size-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout}`;

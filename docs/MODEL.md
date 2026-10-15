@@ -3762,3 +3762,6 @@ Memoising pure sub-laws (victim wait law, saturation-eviction quadrature) and en
 
 ## 106. Joint sizing (0.160)
 Single-resource minima are each checked against the reference chip with everything else unchanged. Applied together they compound, because the shrunk resources share critical-path time. The joint pass starts from all minima, measures the worst gain over models × metrics (−∞ on a fit loss), and while it is below 1 − TIE backs off the one resource whose step toward its current value, √(v·cur) (snapping to cur within 3 %; integers move by ≥ 1), maximises the worst gain. It always terminates, because all resources back at current is the reference chip. Order of application: cores (which pins vector width) before lanes. Area totals use only the set densities.
+
+## 107. Area-aware joint sizing and binding summary (0.161)
+Step rank with densities: Δ(worst gain) / Δmm² (a resource without a density costs 0 mm², so it is given back first; flagged as unpriced). A beam of width 3 runs next to the greedy path. The objective is priced mm² saved, else Σ log(cur/v). The reported point is always a probed pass, and it is never worse than greedy because greedy's point is a candidate. `binding`: min_ok = current → binding resource; the others ordered by headroom; joint back-offs not in the binding set → bind only in combination.

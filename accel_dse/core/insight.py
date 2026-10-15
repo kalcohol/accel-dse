@@ -728,25 +728,68 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
                      "min_ok 是实测通过的点（不是外推）。只回答「还能省多少」，面积仅在已有密度（SRAM mm²/MiB、MAC mm²/kMAC，来自密度预设或用户）时给 mm²；DRAM 带宽经 mem_eff 连续缩放（容量不变），不给 PHY 面积。"}
     if joint:
         rep["joint"] = _joint_shrink(base, out, budget, worst)
+    rep["binding"] = _binding(out, rep.get("joint"))
     return rep
 
 
+def _binding(rows: list, joint) -> dict:
+    """0.161: which resources bind this model set — no single-resource headroom (min_ok = current) → binding; the
+    rest sorted by headroom (smallest fraction first = most over-provisioned); joint back-offs = resources that only
+    bind in combination."""
+    tight = [r["key"] for r in rows if r["frac"] is not None and r["frac"] >= 1.0 - 1e-12]
+    slack = sorted((r for r in rows if r["key"] not in tight), key=lambda r: r["frac"])
+    out = {"binding": [{"key": r["key"], "label": r["label"],
+                        "limited_by": r["limited_by"]} for r in rows if r["key"] in tight],
+           "most_slack": [{"key": r["key"], "label": r["label"], "frac": r["frac"]} for r in slack]}
+    if joint:
+        out["joint_only"] = sorted({b["backoff"] for b in joint["backoffs"]} - set(tight))
+    return out
+
+
+JOINT_BEAM = 3          # 0.161: beam width of the joint back-off search (the greedy path is always kept too)
+JOINT_MAX_STEPS = 24
+
+
 def _joint_shrink(base: Scenario, rows: list, budget, worst) -> dict:
-    """0.160: the per-resource minima interact (a narrower vector unit and a slower dequant path share the same
-    elementwise time; less SRAM moves traffic onto a thinner DRAM), so all minima together can break the ±TIE
-    contract.  Start from every min_ok at once; while some model fails, back the resource off whose geometric step
-    toward its current value (√(v·cur), snapping to cur within 3 %) gives the best worst-case gain; stop when it
-    holds.  Terminates: every resource at its current value is the reference chip itself (gain 1).  The result is a
-    probed passing point, greedy (not proven area-optimal)."""
+    """0.160/0.161: joint sizing.  The per-resource minima interact (shared elementwise / memory time), so all minima
+    together can break the ±TIE contract.  From every min_ok at once, resources are backed off one geometric step
+    toward their current value (√(v·cur), snapping to cur within 3 %; integers ≥ 1) until every model holds.
+
+    0.161 area-aware: when a density prices a resource, a step is ranked by worst-gain improvement per mm² given back
+    (an unpriced step costs 0 mm² and ranks first among improving steps — its area is unknown, not free; reported as
+    such).  Without densities the rank is the worst gain itself (0.160 greedy).  A beam of JOINT_BEAM states is kept
+    per depth, and the 0.160 greedy path is always run, so the result is never worse than greedy by the objective:
+    most priced mm² saved (else the deepest total shrink, Σ log(cur/v)), among probed passing points only.
+    Terminates: all resources at current is the reference chip (gain 1)."""
     cur = {r["key"]: r["current"] for r in rows}
-    vals = {r["key"]: r["min_ok"] for r in rows}
-    integer = {k: SIZING[k][4] for k in vals}
-    trail = []
-    w, why = worst(vals)
-    first = {"worst_gain": w, "limited_by": why}
-    steps = 0
-    while w < 1 - TIE and steps < 64:
-        best = None
+    start = {r["key"]: r["min_ok"] for r in rows}
+    integer = {k: SIZING[k][4] for k in start}
+    per_unit = {}
+    for k in start:
+        dens = SIZING[k][5]
+        d = getattr(budget, dens, None) if (budget is not None and dens) else None
+        if d is not None:
+            per_unit[k] = d * ((base.chip.rows * base.chip.cols / 1000.0) if k == "cores" else 1.0)
+    priced = bool(per_unit)
+    memo: dict = {}
+
+    def W(vals):
+        key = tuple(sorted(vals.items()))
+        if key not in memo:
+            memo[key] = worst(vals)
+        return memo[key]
+
+    def saved(vals):
+        return sum((cur[k] - vals[k]) * u for k, u in per_unit.items())
+
+    def shrink(vals):
+        return sum(math.log(cur[k] / vals[k]) for k in vals if vals[k] > 0 and cur[k] > 0)
+
+    def objective(vals):
+        return (saved(vals), shrink(vals)) if priced else (shrink(vals),)
+
+    def steps(vals):
+        out = []
         for k, v in vals.items():
             if v >= cur[k]:
                 continue
@@ -754,27 +797,75 @@ def _joint_shrink(base: Scenario, rows: list, budget, worst) -> dict:
             nv = cur[k] if nv >= 0.97 * cur[k] else nv
             if integer[k]:
                 nv = float(min(cur[k], max(v + 1, int(round(nv)))))
-            cand = {**vals, k: nv}
-            cw, cwhy = worst(cand)
-            if best is None or cw > best[0]:
-                best = (cw, cwhy, k, nv)
-        if best is None:
+            out.append((k, nv, {**vals, k: nv}))
+        return out
+
+    def rank(vals, k, nv, cand):
+        w0, w1 = W(vals)[0], W(cand)[0]
+        if not priced:
+            return (w1,)
+        cost = (nv - vals[k]) * per_unit.get(k, 0.0)
+        gain = w1 - w0 if math.isfinite(w0) else (math.inf if math.isfinite(w1) else 0.0)
+        if cost <= 0:
+            return (1, gain) if gain > 0 else (-1, gain)
+        return (0, gain / cost)
+
+    ok = lambda v: W(v)[0] >= 1 - TIE
+    first_w, first_why = W(start)
+    found = []                                   # (vals, path) of probed passing points
+    # greedy (0.160 path, area-aware rank when priced)
+    vals, path = dict(start), []
+    for _ in range(JOINT_MAX_STEPS * len(start)):
+        if ok(vals):
+            found.append((vals, path, "greedy"))
             break
-        w, why, k, nv = best
-        trail.append({"backoff": k, "to": nv, "worst_gain": w})
-        vals[k] = nv
-        steps += 1
+        c = steps(vals)
+        if not c:
+            break
+        k, nv, cand = max(c, key=lambda t: rank(vals, *t))
+        path = path + [{"backoff": k, "to": nv, "worst_gain": W(cand)[0]}]
+        vals = cand
+    # beam
+    beam = [(start, [])] if not ok(start) else []
+    if ok(start):
+        found.append((start, [], "beam"))
+    for _ in range(JOINT_MAX_STEPS):
+        nxt = []
+        for vals, path in beam:
+            for k, nv, cand in steps(vals):
+                pth = path + [{"backoff": k, "to": nv, "worst_gain": W(cand)[0]}]
+                if ok(cand):
+                    found.append((cand, pth, "beam"))
+                else:
+                    nxt.append((rank(vals, k, nv, cand), objective(cand), cand, pth))
+        if not nxt:
+            break
+        nxt.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        seen, beam = set(), []
+        for _, _, cand, pth in nxt:
+            kk = tuple(sorted(cand.items()))
+            if kk not in seen:
+                seen.add(kk)
+                beam.append((cand, pth))
+            if len(beam) >= JOINT_BEAM:
+                break
+    if not found:                                # cannot happen (all-current passes); keep the contract explicit
+        found.append((dict(cur), [], "current"))
+    greedy = next((f for f in found if f[2] == "greedy"), None)
+    vals, trail, how = max(found, key=lambda f: objective(f[0]))
+    w, why = W(vals)
+    assert w >= 1 - TIE or how == "current"     # never report an unverified point
     res = []
     for r in rows:
         k = r["key"]
-        e = {"key": k, "solo_min": r["min_ok"], "joint": vals[k], "frac": vals[k] / cur[k] if cur[k] else None}
-        dens = SIZING[k][5]
-        d = getattr(budget, dens, None) if (budget is not None and dens) else None
-        if d is not None:
-            per = (base.chip.rows * base.chip.cols / 1000.0) if k == "cores" else 1.0
-            e["mm2_saved"] = (cur[k] - vals[k]) * per * d
+        e = {"key": k, "solo_min": r["min_ok"], "joint": vals[k], "frac": vals[k] / cur[k] if cur[k] else None,
+             "priced": k in per_unit}
+        if k in per_unit:
+            e["mm2_saved"] = (cur[k] - vals[k]) * per_unit[k]
         res.append(e)
-    tot = [e["mm2_saved"] for e in res if "mm2_saved" in e]
-    return {"all_minima_hold": first["worst_gain"] >= 1 - TIE, "all_minima_worst_gain": first["worst_gain"],
-            "all_minima_limited_by": first["limited_by"], "holds": w >= 1 - TIE, "worst_gain": w,
-            "resources": res, "backoffs": trail, "mm2_saved_total": sum(tot) if tot else None}
+    return {"all_minima_hold": first_w >= 1 - TIE, "all_minima_worst_gain": first_w, "all_minima_limited_by": first_why,
+            "holds": w >= 1 - TIE, "worst_gain": w, "resources": res, "backoffs": trail,
+            "mm2_saved_total": saved(vals) if priced else None, "search": how, "beam": JOINT_BEAM,
+            "rank": "Δworst-gain per mm²（未定价资源视为 0 mm²，面积未知而非免费）" if priced else "worst gain",
+            "greedy_mm2_saved": (saved(greedy[0]) if priced else None) if greedy else None,
+            "greedy_shrink": shrink(greedy[0]) if greedy else None, "shrink": shrink(vals), "evals": len(memo)}
