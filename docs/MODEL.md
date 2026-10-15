@@ -2987,3 +2987,22 @@ distinct seeds, otherwise the reported seed-to-seed noise is 0 by construction. 
 
 **Colocated ITL p99.** No interpolated variant: the atomic law of §74 already matches the DES probabilities, so an
 interpolated quantile would only imitate the estimator.
+
+## 76. Frontend review and newest-builder parameter pins (0.130)
+
+**Applicability of swept knobs.** A sweep is only meaningful if the result reads the knob. The server rejects a knob
+by model and operating point:
+- context / prompt on fixed workloads;
+- prompt in a decode-only evaluation;
+- MoE skew at EP = 1, since routing imbalance only matters across expert-parallel ranks;
+- workload fields a workload kind ignores (frames for image DiTs, MSA for sequence encoders, diffusion samples
+  without a diffusion head).
+
+A full catalog × path scan finds no flat 200 sweeps.
+
+**UI.** Rejected evaluations dim the last valid result. Numbers are rounded before choosing their display tier.
+Image DiTs use per-image terms (单张延迟, 张/s/卡).
+
+**Parameter counts.** The newest builders (LFM2.5, Ling-3.1 KDA+MLA, Carbon, Qwen-Image, FLUX.2-klein) equal the
+official checkpoint totals. LFM2.5 differs from HF `total_parameters` only by its fp32 router `expert_bias` buffers
+(64 per MoE layer), which the safetensors files store and the index's parameter count omits.

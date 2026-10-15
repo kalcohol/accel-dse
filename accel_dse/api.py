@@ -748,8 +748,25 @@ def _sweep_inapplicable(path: str, r) -> str | None:
         return "该模型没有视觉塔（纯文本）"
     if path == "serving.moe_skew" and not m.is_moe:
         return "仅适用于 MoE 模型"
+    sc = r.scenario
+    if path == "serving.moe_skew" and sc.layout.ep <= 1 and not (sc.pd.enabled and sc.pd.prefill_layout.ep > 1):
+        return "专家负载倾斜只在 EP > 1 时起作用（当前 EP = 1）"      # 0.130
+    if path in ("serving.ctx", "serving.prompt") and r.workload is not None:
+        return "仅适用于 LLM / VLM（该模型为固定工作负载）"
+    if path == "serving.prompt" and sc.serving.phase == "decode" and not sc.pd.enabled:
+        return "decode 阶段的结果不读取 prompt 长度（改 ctx，或切到 prefill 阶段）"
     if path == "serving.spec_k" and not (m.mtp_layers or m.draft):
         return "该模型没有 MTP / 草稿模块（spec_k 被忽略）"
+    w = m.workload
+    if r.workload is not None and w is not None and path.startswith("workload."):     # 0.130: per workload kind (frames on an image DiT, …)
+        k = path.split(".", 1)[1]
+        pair = bool(m.is_pair)
+        ok = {"frames": w.kind == "gen" and w.frames > 1, "height": w.kind == "gen", "width": w.kind == "gen",
+              "steps": w.kind == "gen" or (pair and bool(w.diff_steps)),
+              "seq_len": w.kind in ("protein", "genomics"), "msa": pair and bool(w.msa or w.xmsa),
+              "recycles": pair, "samples": pair and bool(w.diff_steps)}.get(k, True)
+        if not ok:
+            return f"该模型的工作负载（{w.kind}）不读取 {k}"
     return None
 
 

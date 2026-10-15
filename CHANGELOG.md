@@ -3,6 +3,21 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.130.0]
+### Fixed (hostile review: frontend, newest catalog builders)
+- `/api/sweep` returned 200 with a flat line for more knobs the model does not read. These now return 400 with the reason: `serving.ctx` / `serving.prompt` on fixed-workload models; `serving.prompt` in decode without PD; `serving.moe_skew` at EP = 1; and workload knobs that don't apply to the workload kind (`frames` on image DiTs and protein models, `msa` on sequence encoders, `samples` without diffusion). A sweep over every catalog model × 14 paths now has no flat 200 results. The UI no longer offers `moe_skew` on dense models, `spec_k` without MTP / draft, or `frames` on image DiTs; the catalog exposes `draft` for this.
+- A rejected eval (400) left the previous result on screen looking current. It is now dimmed, with a note that it comes from the last valid input.
+- Number formatting rounded before choosing the tier: 99.96 showed as "100.0", 9.999 as "10.00", and 9999.6 as "10000" while 10 000 showed as "10,000".
+- Image DiTs (Qwen-Image, FLUX.2-klein) were labelled with video terms: "单段延迟" in sweep / Pareto / compare / layout columns and exports, "帧" in the energy table and the scenario line, and "帧/s/卡" in the capacity fix hint (genomics showed "decode 吞吐" there). They now read "单张延迟" / "张", and genomics shows "窗口/s/卡".
+- A non-JSON error body (proxy 502 page) surfaced as "Unexpected token <". It now shows the HTTP status.
+### Verified (no change)
+- Newest builders against the official checkpoints:
+  - Carbon-8B, Carbon-A-1.2B, FLUX.2-klein-4B, Qwen-Image and Qwen-Image-2.1-Turbo match exactly (index metadata / summed safetensors headers).
+  - LFM2.5-24B-A2B is official `total_parameters` + 64 × 38 fp32 router `expert_bias` buffers, consistent with `total_size`.
+  - Ling-3.1-flash main + MTP equals the snapshot, whose bytes equal the index `total_size`.
+  - These counts are now pinned by tests.
+- Stale-response handling: per-channel sequencing + abort is sound. The shared `mem` channel (form vs one-click) is latest-wins by design.
+
 ## [0.129.0]
 ### Fixed (hostile review: UI / API layer, DES seeding)
 - HTTP: a malformed `Content-Length` (`-5`, `abc`, `1e3`) crashed the request handler, so the connection was dropped with no response. It is now a 400. Deeply nested JSON (a `RecursionError` in the parser) was a 500; it is now a 400.

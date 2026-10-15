@@ -18,11 +18,16 @@ function num(x, d = 3) {
   if (x === null || x === undefined || !isFinite(x)) return '—';
   const a = Math.abs(x);
   if (a >= 1e4) return Math.round(x).toLocaleString('en-US');
-  if (a >= 100) return x.toFixed(0);
-  if (a >= 10) return x.toFixed(1);
-  if (a >= 1) return x.toFixed(2);
   if (a === 0) return '0';
-  return x.toPrecision(Math.max(1, d - 1));
+  // 0.130: round first, then pick the tier of the rounded value (99.96 was "100.0", 9999.6 "10000" vs "10,000")
+  const dec = a >= 100 ? 0 : a >= 10 ? 1 : a >= 1 ? 2 : null;
+  if (dec === null) {
+    const t = x.toPrecision(Math.max(1, d - 1));
+    return Math.abs(Number(t)) >= 1 ? num(Number(t), d) : t;
+  }
+  const r = Number(x.toFixed(dec));
+  const dec2 = Math.abs(r) >= 1e4 ? -1 : Math.abs(r) >= 100 ? 0 : Math.abs(r) >= 10 ? 1 : 2;
+  return dec2 === dec ? x.toFixed(dec) : num(r, d);
 }
 function put(e, ...kids) {
   e.replaceChildren(...kids.flat().filter((k) => k !== null && k !== undefined && k !== false));
@@ -46,6 +51,7 @@ const isFull = (m) => !!m && (m.domain === 'gen' || m.domain === 'protein' || m.
 const UNIT_ZH = { frame: '帧', seq: '序列', token: 'tok', window: '窗口' };
 // 0.119: throughput unit of a full-forward model — image DiT 张, video 帧, genomics 窗口, protein 序列
 const unitZh = (m) => (m.domain === 'gen' ? (m.workload && m.workload.image ? '张' : '帧') : m.domain === 'genomics' ? '窗口' : '序列');
+const clipZh = (m) => (m && m.workload && m.workload.image ? '单张延迟' : '单段延迟');   // 0.130: image DiTs
 const isSeqEnc = (m) => !!m && (m.domain === 'protein' || m.domain === 'genomics');   // per-sequence encoders (0.106)
 function fmtDur(sec) {
   if (sec === null || sec === undefined || !isFinite(sec)) return '—';
@@ -95,12 +101,14 @@ async function req(chan, path, body) {
   let r, j;
   try {
     r = await fetch(path, opt);
-    j = await r.json();
+    // 0.130: a non-JSON error body (proxy 502 page, truncated reply) showed "Unexpected token <" instead of the status
+    j = await r.json().catch(() => null);
   } catch (e) {
     if (e.name === 'AbortError' || my !== seq[chan]) return null;
     throw e;
   }
   if (my !== seq[chan]) return null;
+  if (j === null) throw new Error(`HTTP ${r.status}：响应不是 JSON`);
   if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
 }
@@ -566,10 +574,16 @@ async function runEval() {
     const r = await track(req('eval', '/api/eval', body({ best_batch: S.best, sensitivity: false })));
     if (!r) return;
     S.last = r;
+    markEvalStale(false);
     renderEval(r);
     status(`就绪 · ${Math.round(performance.now() - t0)} ms`);
     runSensitivity(r);
-  } catch (e) { showErr(e.message); }
+  } catch (e) { showErr(e.message); markEvalStale(!!S.last); }
+}
+// 0.130: a rejected eval (400) left the previous result on screen looking current — dim it and say so
+function markEvalStale(on) {
+  for (const id of ['kpis', 'tab-eval']) $(id).classList.toggle('stale-res', on);
+  if (on) $('warns').append(h('div', { class: 'warn' }, '下方结果来自上一次有效输入，与当前参数不符'));
 }
 // 0.97: the 敏感度 panel is filled after the main result (≈ 4 extra evaluations; a DiT point costs ≈ 5× the eval)
 async function runSensitivity(r) {
@@ -747,7 +761,7 @@ async function runFit() {
         `存储器改为 ${mm.count} ${S.memInfo && S.memInfo.kind === 'HBM' ? '堆栈' : '颗'} × ${+(mm.capacity_GiB / mm.count).toFixed(1)} GiB = ${num(mm.capacity_GiB)} GiB / 卡（${mm.tag_zh}）`));
     }
     if (!acts.length) lines.push(h('div', {}, `在 ${S.cat.max_cards || 8192} 卡以内、当前存储器类型的任何容量下都放不下；请换容量更大的存储器类型或更小的模型。`));
-    else lines.push(h('div', { class: 'small muted' }, `一键修正（最少卡数的布局按${m.domain === 'gen' ? '帧/s/卡' : m.domain === 'protein' ? '序列/s/卡' : ' decode 吞吐'}取最优；存储器只在当前类型、速率内加大容量）：`));
+    else lines.push(h('div', { class: 'small muted' }, `一键修正（最少卡数的布局按${isFull(m) ? unitZh(m) + '/s/卡' : ' decode 吞吐'}取最优；存储器只在当前类型、速率内加大容量）：`));
     put(box, ...lines, h('div', { class: 'fit-acts' }, acts));
   } catch (e) { put(box, h('div', { class: 'err' }, '容量检查失败：' + e.message)); }
 }
@@ -769,7 +783,7 @@ function renderEnergy(r) {
   const e = r.energy;
   if (!e) { put($('energy-tbl')); return; }
   const c = e.counts_per_unit, j = e.J_by_action || {};
-  const u = E_UNIT[e.unit] || e.unit;
+  const u = e.unit === 'frame' && model() && model().workload && model().workload.image ? '张' : (E_UNIT[e.unit] || e.unit);   // 0.130
   const sci = (x) => (x === 0 ? '0' : x.toExponential(3));
   const rows = [['MAC（bf16 等效）', c.mac, '', 'mac', 'pJ_mac'], ['向量操作', c.vec, '', 'vec', 'pJ_vec'],
     ['SRAM 端口', c.sram, ' B', 'sram', 'pJ_bit_sram'],
@@ -1085,7 +1099,8 @@ function scopeText() {
   const sv = S.sc.serving, m = model();
   const mi = S.memInfo;
   const w = S.sc.workload, mw = m.workload;
-  const tail = m.domain === 'gen' ? `${w.width || mw.width}×${w.height || mw.height} · ${w.frames || mw.frames} 帧 · ${w.steps || mw.steps} 步 · 单段 SLO ${fmtDur(w.clip_slo_s)}`
+  const tail = m.domain === 'gen' ? (mw.image ? `${w.width || mw.width}×${w.height || mw.height} · ${w.steps || mw.steps} 步 · 单张 SLO ${fmtDur(w.clip_slo_s)}`
+      : `${w.width || mw.width}×${w.height || mw.height} · ${w.frames || mw.frames} 帧 · ${w.steps || mw.steps} 步 · 单段 SLO ${fmtDur(w.clip_slo_s)}`)
     : m.domain === 'genomics' ? `窗口 ${w.seq_len || mw.seq_len} token · 批延迟 SLO ${w.seq_slo_ms} ms`
     : m.domain === 'protein' ? `${w.seq_len || mw.seq_len} 残基 · 批延迟 SLO ${m.is_pair ? w.fold_slo_s + ' s' : w.seq_slo_ms + ' ms'}` : `ctx ${sv.ctx} · TPOT SLO ${sv.tpot_slo_ms} ms`;
   return `场景：${m.label} · ${cards()} 卡 · 芯片 ${S.preset} · 存储器 ${mi ? `${mi.kind} ${num(mi.raw_GBps)} GB/s ${num(mi.capacity_GiB)} GiB` : S.sc.mem_id} · ${tail}（在左侧面板修改）`;
@@ -1160,7 +1175,7 @@ async function runCompare() {
         { key: 'batch', label: 'batch', v: (x) => x.batch || null },
         { key: 'thr_card', label: `吞吐（${ux}）`, v: (x) => (x.batch ? x.tok_s_card : null) },
         ...(full ? [] : [{ key: 'goodput_card', label: '有效吞吐 goodput（tok/s/卡）', v: (x) => (x.batch ? x.goodput_card : null) }]),
-        full ? { key: 'latency_s', label: m0.domain === 'gen' ? '单段延迟（s）' : '批延迟（s）', v: (x) => (x.batch ? x.latency_ms / 1e3 : null) }
+        full ? { key: 'latency_s', label: m0.domain === 'gen' ? `${clipZh(m0)}（s）` : '批延迟（s）', v: (x) => (x.batch ? x.latency_ms / 1e3 : null) }
           : { key: 'tpot_ms', label: 'TPOT（ms）', v: (x) => (x.batch ? (tokLat(x) ? x.tpot_ms : x.latency_ms) : null) },
         { key: 'bound', label: '瓶颈', v: (x) => (x.batch ? x.bound : null) }, { key: 'bound_zh', label: '瓶颈说明', v: (x) => (x.batch ? BOUND_ZH[x.bound] : null) },
         { key: 'mac_util_pct', label: '有效 MAC 利用率（%）', v: (x) => (x.batch && x.array_util != null ? x.array_util * 100 : null) },
@@ -1207,7 +1222,7 @@ function paintCompare(r, stab, m = model()) {
   const full = isFull(m);
   const ux = full ? `${unitZh(m)}/s/卡` : 'tok/s/卡';
   const head = h('tr', {}, h('th', { class: 'l' }, '映射组织'), h('th', { class: 'l' }, '最佳布局 / 次优'), h('th', {}, 'batch'),
-    h('th', {}, ux), full ? null : h('th', {}, 'goodput/卡'), h('th', {}, full ? (m.domain === 'gen' ? '单段延迟' : '批延迟') : 'TPOT ms'),
+    h('th', {}, ux), full ? null : h('th', {}, 'goodput/卡'), h('th', {}, full ? (m.domain === 'gen' ? clipZh(m) : '批延迟') : 'TPOT ms'),
     h('th', { class: 'l' }, '瓶颈 · 有效 MAC'), full ? null : h('th', {}, 'prefill TTFT'), h('th', {}, '排名稳定性'));
   const rows = r.rows.map((x) => {
     const ok = !!x.batch;
@@ -1268,7 +1283,7 @@ async function runLayouts() {
     const full = isFull(m0);
     const head = h('tr', {}, h('th', {}, '#'), h('th', { class: 'l' }, '布局'), h('th', {}, 'batch'),
       h('th', {}, full ? `${unitZh(m0)}/s/卡` : 'tok/s/卡'),
-      hasG ? h('th', {}, 'goodput/卡') : null, h('th', {}, full ? (m0.domain === 'gen' ? '单段延迟' : '批延迟') : 'TPOT ms'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '有效 MAC'),
+      hasG ? h('th', {}, 'goodput/卡') : null, h('th', {}, full ? (m0.domain === 'gen' ? clipZh(m0) : '批延迟') : 'TPOT ms'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '有效 MAC'),
       hasG ? h('th', {}, 'prefill TTFT') : null);
     const rows = r.rows.map((x, i) => h('tr', { class: (x.batch ? 'click ' : '') + (i === 0 && x.batch ? 'best' : ''), onclick: x.batch ? () => applyRow(x) : null },
       h('td', {}, i + 1), h('td', { class: 'l mono' }, x.layout, ' ', budgetMark(x)), h('td', {}, x.batch || '放不下'), h('td', {}, num(x.tok_s_card)),
@@ -1318,7 +1333,11 @@ function fillSweepPaths() {
         && (p !== 'workload.samples' || m.workload.diff_steps))
     || (p === 'workload.steps' && m.is_pair && m.workload.diff_steps)
     || (SWEEP_DOMAIN[p] === 'seqenc' && isSeqEnc(m))
-    || (SWEEP_DOMAIN[p] === 'vlm' && !!m.vision));
+    || (SWEEP_DOMAIN[p] === 'vlm' && !!m.vision))
+    // 0.130: knobs the model does not read (server answers 400 since 0.129): MoE skew on dense, spec_k without
+    // MTP / draft, frames on an image DiT
+    .filter((p) => !(p === 'serving.moe_skew' && !m.is_moe) && !(p === 'serving.spec_k' && !(m.mtp_layers || m.draft))
+      && !(p === 'workload.frames' && m.workload && m.workload.image));
   opts($('sw-path'), list.map((p) => [p, SWEEP_ZH[p] || p]), list.includes(cur) ? cur : 'serving.batch');
   if (!list.includes(cur)) $('sw-values').value = SWEEP_DEFAULT[$('sw-path').value] || '';
 }
@@ -1382,7 +1401,7 @@ async function runSweep() {
     if (!r) return;
     const full = isFull(m), gen = m.domain === 'gen';
     const u = full ? unitZh(m) : 'tok';
-    const latL = full ? (gen ? '单段延迟 s' : '批延迟 ms') : decode ? 'TPOT ms' : 'TTFT ms';
+    const latL = full ? (gen ? `${clipZh(m)} s` : '批延迟 ms') : decode ? 'TPOT ms' : 'TTFT ms';
     const lat = (x) => full ? (gen ? x.latency_ms / 1e3 : x.latency_ms) : decode ? x.tpot_ms : x.ttft_ms;
     put($('sw-chart'), line(r.rows.map((x) => ({ x: x.value, y: x.tok_s_card, y2: lat(x) })),
       { xl: SWEEP_ZH[path] || path, yl: `${u}/s/卡`, y2l: latL, log: vals.every((v) => v > 0) && Math.max(...vals) / Math.min(...vals) >= 16 }));
@@ -1396,7 +1415,7 @@ async function runSweep() {
       h('td', {}, x.fits ? '✓' : h('span', { style: 'color:var(--danger)' }, '✗')),
       ...(fl ? [h('td', { class: 'l small' }, fl[i].length ? '⚠ ' + fl[i].join('、') : '稳健')] : [])))));
     renderSweepSens(r.sensitivity, SWEEP_ZH[path] || path, u);
-    const latK = full ? (gen ? '单段延迟（s）' : '批延迟（ms）') : decode ? 'TPOT（ms）' : 'TTFT（ms）';
+    const latK = full ? (gen ? `${clipZh(m)}（s）` : '批延迟（ms）') : decode ? 'TPOT（ms）' : 'TTFT（ms）';
     setExport('sw', { kind: 'sweep', title: `参数扫描：${SWEEP_ZH[path] || path}`, raw: r, scenario: snap(bs), rows: () => r.rows, cols: [
       { key: 'path', label: '扫描参数', v: () => path }, { key: 'param', label: SWEEP_ZH[path] || path, v: (x) => x.value },
       { key: 'latency', label: latK, v: lat }, { key: 'thr', label: `吞吐（${u}/s）`, v: (x) => x.tok_s }, { key: 'thr_card', label: `吞吐（${u}/s/卡）`, v: (x) => x.tok_s_card },
@@ -1418,7 +1437,7 @@ async function runPareto() {
     if (!r) return;
     const full = isFull(m), gen = m.domain === 'gen';
     const u = full ? unitZh(m) : 'tok';
-    const latL = full ? (gen ? '单段延迟 s' : '批延迟 ms') : 'TPOT ms';
+    const latL = full ? (gen ? `${clipZh(m)} s` : '批延迟 ms') : 'TPOT ms';
     const lat = (p) => full ? (gen ? p.latency_ms / 1e3 : p.latency_ms) : p.tpot_ms;
     const thr = (p) => full ? p.units_s_card : p.tok_s_card;
     const pts = r.front.map((p) => ({ x: p.batch, xlabel: 'B' + p.batch, y: thr(p), y2: lat(p) }));
@@ -1432,7 +1451,7 @@ async function runPareto() {
     renderParetoSens(r.sensitivity);
     setExport('sw', { kind: 'pareto', title: `Pareto 前沿（布局 ${r.layout}）`, raw: r, scenario: snap(bp), rows: () => r.front, cols: [
       { key: 'layout', label: '布局', v: () => r.layout }, { key: 'batch', label: 'batch', v: (p) => p.batch },
-      { key: 'latency', label: full ? (gen ? '单段延迟（s）' : '批延迟（ms）') : 'TPOT（ms）', v: lat },
+      { key: 'latency', label: full ? (gen ? `${clipZh(m)}（s）` : '批延迟（ms）') : 'TPOT（ms）', v: lat },
       { key: 'thr_card', label: `吞吐（${u}/s/卡）`, v: thr },
       ...(pf ? [{ key: 'sens_flags', label: '敏感度：离开前沿（假设）', v: (p) => pf[r.front.indexOf(p)].join('；') }] : [])] });
     $('sw-status').textContent = `Pareto ${r.front.length} 点${staleTag(v0)}`;

@@ -375,6 +375,7 @@ def labels(spec: ModelSpec) -> dict:
         "is_moe": spec.is_moe,
         "is_pair": spec.is_pair,
         "mtp_layers": len(spec.mtp_layers),
+        "draft": spec.draft,
         "n_layers": spec.n_layers,
         "model_domain": spec.domain,
         "kv_cache": spec.kv_cache,
