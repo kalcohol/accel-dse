@@ -3,6 +3,17 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.129.0]
+### Fixed (hostile review: UI / API layer, DES seeding)
+- HTTP: a malformed `Content-Length` (`-5`, `abc`, `1e3`) crashed the request handler, so the connection was dropped with no response. It is now a 400. Deeply nested JSON (a `RecursionError` in the parser) was a 500; it is now a 400.
+- Worker pool: a search worker killed abruptly (OOM, signal) broke the process pool permanently, and every later compare / layouts / fit / stability request returned 500 until restart. The broken pool is now replaced and the request retried once.
+- Validation: `chip.mac_eff` > 1 was accepted (sustained above peak). It must now be in (0, 1], matching the UI input.
+- `/api/sweep`: sweeping a knob the model ignores returned a flat line with 200, which reads as "insensitive": `workload.*` on an LLM, `serving.images` / `image_w` / `image_h` without a vision tower, `serving.moe_skew` on a dense model, `serving.spec_k` without MTP / draft. These now return 400 with the reason.
+- DES: `simulate(seed=None)` seeded arrivals from the clock (not reproducible) while the draft stream used "spec-None". Seeds must now be integers, and `compare(seeds=…)` rejects repeated seeds (identical runs reported zero noise).
+### Verified (no change)
+- 900 fuzzed scenario bodies over every scenario leaf × 7 routes gave no 500s. Scenario round-trip (eval → `scenario` → eval, under any `chip_preset`) is hash- and summary-identical. 72 concurrent mixed requests against the threaded server (with the process pool) match serial responses. DES output is identical across `PYTHONHASHSEED` values and unaffected by runs in between. `/api/fit` and `/api/sweep` bounds behave as intended (1–32 values, integer paths, oversized values → 400).
+- Colocated ITL p99 interpolation: not offered. The model's probabilities already match the DES (0.128), so interpolating would only imitate the empirical quantile estimator; it is not a mechanism, and it would change the defaults.
+
 ## [0.128.0]
 ### Investigated (no closed-form change)
 - Colocated prefill-first worst-case ITL (p99 over requests of each request's longest gap) read 8–26 % below the DES at load 0.4 on edge layouts. DES decomposition: the worst gaps are almost entirely prefill busy time (tp3: 172 of 177 ms; the decode-step part is ≈ 5 ms), so neither the batch-size step variance nor a larger post-burst step explains the gap. With one prompt length, busy durations take only the values n · prefill latency, so the p99 is an atom. The closed-form probabilities P(max ≥ n) match the DES (tp3 P(≥3) 0.0099 vs 0.0102; pp2 0.033 vs 0.034; pp3 P(≥4) 0.0085 vs 0.0100). The 0.99 level sits at an atom boundary, where a ±0.1-point shift in probability moves the quantile by a whole prefill. The bias is an artefact of how the quantile is defined, not a missing mechanism (MODEL §74).

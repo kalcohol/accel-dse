@@ -2970,3 +2970,20 @@ unchanged. Prompt-length spread fills the lattice and removes the effect.
 **Review.** Catalog labels (coverage reasons ⇔ partial, well-formed dtype labels, https sources), the sensitivity
 block (scenario ratios, not derivatives; ratio = alt / base), and export schemas (sweep rows, sensitivity block,
 JSON export `schema: 1`) are locked by tests/test_core_128.py.
+
+## 75. UI / API robustness and DES seeding (0.129)
+
+**HTTP layer.** A malformed `Content-Length` header and over-deep JSON are answered with 400 (input errors), never a
+dropped connection or a 500. A process-pool worker that dies abruptly breaks the executor permanently, so the server
+replaces a broken pool and retries the request once.
+
+**Validation.** `chip.mac_eff` is a sustained / peak ratio, so it lies in (0, 1]. A sweep over a knob the model does
+not read (workload knobs on an LLM, image knobs without a vision tower, MoE skew on a dense model, `spec_k` without
+MTP / draft) is rejected rather than plotted as a flat, "insensitive" line.
+
+**DES seeds.** Seeds are integers (a `None` seed would draw arrivals from the clock); multi-seed comparisons need
+distinct seeds, otherwise the reported seed-to-seed noise is 0 by construction. The DES uses only seeded
+`random.Random` streams and hash-independent routing, so runs are identical across processes and hash seeds.
+
+**Colocated ITL p99.** No interpolated variant: the atomic law of §74 already matches the DES probabilities, so an
+interpolated quantile would only imitate the estimator.

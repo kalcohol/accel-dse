@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import multiprocessing
 import os
+import threading
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any
 
@@ -70,12 +71,28 @@ def _worker_init(parent: int) -> None:
 def enable_pool(workers: int | None = None) -> int:
     """Run the heavy searches (compare: one job per mapping; stability: one job per request) in
     worker processes.  Enabled by the HTTP server only; library / test calls stay in-process."""
-    global _POOL
+    global _POOL, _POOL_N
     n = workers if workers is not None else min(8, os.cpu_count() or 1)    # 0.61: 8 (was 5)
+    _POOL_N = n
     if n > 1 and _POOL is None:
         _POOL = ProcessPoolExecutor(max_workers=n, mp_context=multiprocessing.get_context("spawn"),
                                     initializer=_worker_init, initargs=(os.getpid(),))
     return n if _POOL is not None else 1
+
+
+_POOL_N = 0
+_POOL_LOCK = threading.Lock()
+
+
+def reset_pool(broken) -> None:
+    """0.129: a worker killed abruptly (OOM, signal) breaks a ProcessPoolExecutor for good — every later compare /
+    layouts / fit / stability request was a 500 until restart.  Replace the broken pool (once per breakage)."""
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is broken and _POOL is not None:
+            _POOL.shutdown(wait=False, cancel_futures=True)
+            _POOL = None
+            enable_pool(_POOL_N)
 
 
 def shutdown_pool() -> None:
@@ -721,6 +738,21 @@ def api_pareto(body: dict) -> dict:
     return out
 
 
+def _sweep_inapplicable(path: str, r) -> str | None:
+    """0.129: a knob the model ignores swept to a flat line with HTTP 200 (e.g. workload.frames on an LLM,
+    serving.moe_skew on a dense model, serving.spec_k without MTP / draft) — read as "insensitive"."""
+    m = r.model
+    if path.startswith("workload.") and r.workload is None:
+        return "仅适用于视频 / 蛋白质 / 基因组工作负载模型（该模型为 LLM）"
+    if path in ("serving.images", "serving.image_w", "serving.image_h") and m.vision is None:
+        return "该模型没有视觉塔（纯文本）"
+    if path == "serving.moe_skew" and not m.is_moe:
+        return "仅适用于 MoE 模型"
+    if path == "serving.spec_k" and not (m.mtp_layers or m.draft):
+        return "该模型没有 MTP / 草稿模块（spec_k 被忽略）"
+    return None
+
+
 def api_sweep(body: dict) -> dict:
     _check_keys(body, "sweep")
     scn = scenario_from_body(body)
@@ -748,6 +780,8 @@ def api_sweep(body: dict) -> dict:
             r = evaluate(s_v)
         except (ValueError, TypeError) as e:
             raise ApiError(f"{path}={v}: {e}") from None
+        if not results and (why := _sweep_inapplicable(path, r)):
+            raise ApiError(f"{path}: {why}")
         scns.append(s_v)
         dec = r.scenario.serving.phase == "decode" and r.workload is None
         llm = r.workload is None

@@ -128,6 +128,8 @@ class Chip:
             v = getattr(self, k)
             if not (v == v) or v <= 0 or v == float("inf"):
                 raise ValueError(f"chip.{k} must be finite and > 0 (got {v})")
+        if self.mac_eff > 1.0:      # 0.129: sustained / peak utilisation above 1 was accepted (silently ≈ 1)
+            raise ValueError(f"chip.mac_eff must be in (0, 1] (got {self.mac_eff})")
         for k, lo in (("slc_mib", 0.0), ("slc_GBps", 1e-9)):
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not (lo <= v < 1e7):

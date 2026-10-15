@@ -850,6 +850,9 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
     queue_report.  Statistics over requests ``warmup ≤ id < warmup + n_req`` (another ``warmup`` arrive after them
     so the tail is not measured on a draining system)."""
     from .pdqueue import _contended, _coloc_prefill_first, _pd_mode, _tier_util, _wsum
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        # 0.129: seed=None seeded the arrivals from the clock (non-reproducible) while the draft stream used "spec-None"
+        raise ValueError(f"seed must be an integer (got {seed!r})")
     rng = random.Random(seed)
     eng = Engine(rng, seed)
     B, C = ctx["B"], ctx["C"]
@@ -1208,6 +1211,8 @@ def compare(scn, n_req: int = 2000, warmup: int = 400, seed: int = 1,
     short run carries ±10–20 % on TPOT / gap tails (V4 0.55).  The DES SLO rate is also averaged over ``seeds``
     (one 1500-request bisection scatters ±7 % at the SLO operating point); ``slo_tol`` = bisection tolerance."""
     seeds = tuple(seeds) if seeds else (seed,)
+    if len(set(seeds)) != len(seeds):      # 0.129: repeated seeds = identical runs → noise reported as 0
+        raise ValueError(f"seeds must be distinct (got {seeds})")
     rep, ctx = capture_ctx(scn)
     q = rep.get("queue") or {}
     if ctx is None or "modes" not in q:

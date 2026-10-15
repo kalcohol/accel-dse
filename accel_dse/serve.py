@@ -6,6 +6,7 @@ import json
 import signal
 import threading
 from collections import OrderedDict
+from concurrent.futures.process import BrokenProcessPool
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -29,7 +30,10 @@ def _reject_constant(name: str):
 
 def parse_json_strict(raw: bytes) -> object:
     """JSON parser that rejects NaN / Infinity (Python's json accepts them by default)."""
-    return json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+    try:
+        return json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+    except RecursionError:      # 0.129: deeply nested JSON was a 500
+        raise ValueError("nesting too deep") from None
 
 
 class _LRU:
@@ -71,7 +75,12 @@ def handle(method: str, path: str, raw: bytes = b"") -> tuple[int, dict]:
         if key and (hit := CACHE.get(key)) is not None:
             return 200, hit
         try:
-            out = POST_ROUTES[path](body)
+            pool = api._POOL
+            try:
+                out = POST_ROUTES[path](body)
+            except BrokenProcessPool:           # 0.129: replace the dead pool and retry once
+                api.reset_pool(pool)
+                out = POST_ROUTES[path](body)
         except (api.ApiError, ValueError) as e:     # 0.74: model ValueErrors are input validation → 400, not 500
             return 400, {"error": str(e)}
         if key:
@@ -118,7 +127,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, f.read_bytes(), STATIC_TYPES[f.suffix])
 
     def do_POST(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        cl = (self.headers.get("Content-Length") or "0").strip()
+        if not (cl.isascii() and cl.isdigit()):        # 0.129: "-5" / "abc" crashed the handler (connection dropped, no response)
+            self.close_connection = True
+            return self._send(400, b'{"error":"invalid Content-Length"}', "application/json")
+        n = int(cl)
         if n > MAX_BODY:
             return self._send(413, b'{"error":"request body too large"}', "application/json")
         try:
