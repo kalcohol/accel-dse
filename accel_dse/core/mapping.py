@@ -224,13 +224,21 @@ def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost
             mac_t = tm * tn * kk / macs
             feed_t = (tm * ab + tn * wb) * kk / port
             epi = tm * tn * (ob if s == 1 else 4.0) / port
+            once = 0.0
             if ch.tile_io_Bpc > 0:       # 0.135 opt-in: prologue stage + C writeback at the SM's DRAM share
                 io = ch.tile_io_Bpc / E
                 bk = min(kk, max(1, int(128 / max(ab, wb, 0.5))))
-                epi = max(epi, tm * tn * (ob if s == 1 else 4.0) / io) + bk * (tm * ab + tn * wb) / io
+                t_io = max(epi, tm * tn * (ob if s == 1 else 4.0) / io) + bk * (tm * ab + tn * wb) / io
+                if ch.tile_io == "persistent":
+                    # 0.138: persistent warp-specialised kernel (CUTLASS sm90 ping-pong): tile i's epilogue and tile
+                    # i+1's prologue run under the neighbouring tile's main loop — exposed once per SM, and per tile
+                    # only where the I/O outlasts the main loop
+                    once, epi = t_io, max(0.0, t_io - max(mac_t, feed_t))
+                else:
+                    epi = t_io
             waves = _cd(tiles * s, E)
             red = (m * n * count * 4.0 * s + m * n * count * ob) / ch.port_Bpc if s > 1 else 0.0
-            cyc = waves * (max(mac_t, feed_t) + epi) + red
+            cyc = waves * (max(mac_t, feed_t) + epi) + once + red
             if best is None or cyc < best[0]:
                 # mac share: MAC-bound tiles' compute (+ epilogue / reduction); feed = operand bytes / port (SRAM bytes)
                 byt = tiles * s * (tm * ab + tn * wb) * kk

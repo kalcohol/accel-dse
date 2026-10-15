@@ -3215,3 +3215,73 @@ are insensitive, not improved. Candidate alone beats candidate + tile I/O in 6 o
 more accurate per op (§81). The fingerprints use the default NPU chip with `stage` / `pipe` overlap, so they are not
 affected by this fix, nor would they be by a GPU-reference-hardware default switch. The published ext_validation
 numbers would change. The default is not switched in this version (user decision).
+
+## 84. Why tile I/O loses to candidate in 6 of 10 groups (0.138)
+
+**Decomposition.** candidate + tile I/O differs from candidate in two ways: GEMMs move from `wide` to `cta`, and tile
+I/O is added. With GEMMs on `cta` but no tile I/O, every group is worse than candidate (v1 TTFT 31 → 51 %, r4 20 →
+27 %, Mixtral 20 → 37 %). Adding tile I/O recovers part of that in every group. So the loss comes from the `cta`
+GEMMs, not from tile I/O.
+
+Split by chip and format (candidate → candidate + tile I/O):
+
+| rows | change |
+|---|---|
+| A100 fp16 | 1.10 → 1.22× |
+| B200 mxfp4 | 0.84 → 1.20× |
+| B200 nvfp4 | 0.97 → 1.06× |
+| Hopper fp8 | about unchanged (it has the DeepGEMM ceiling) |
+
+**Mechanism 1: main-loop ceilings existed only for Hopper FP8.** Every other chip / format ran the `cta` main loop at
+100 % of peak. The opt-in `extval.GEMM_CEILING` (`ceil_variant`) adds published library-best dense-GEMM fractions
+for large compute-bound shapes (sources in the code), not fitted to the validation rows:
+
+| chip / format | ceiling |
+|---|---|
+| A100 fp16 / bf16 | 0.844 |
+| Hopper bf16 / fp16 | 0.752 |
+| B200 bf16 | 0.689 |
+| B200 nvfp4 / mxfp4 | 0.691 |
+
+No public B200 fp8 or MI300X figure was found. gpt-oss's B200 experts execute at fp8 (MXFP4 × MXFP8), so they stay
+at peak and keep over-predicting.
+
+**Mechanism 2: fixed costs that `wide` masked.** At batch 1, TTFT rows are short by a fixed per-request time (§82).
+`wide` under-utilisation was hiding that, and faster, more accurate GEMMs expose it again: TTFT 1.29× → 1.35× even
+with ceilings.
+
+**Persistent kernels (opt-in `tile_io = "persistent"`).** In a persistent ping-pong kernel, tile i's epilogue and tile
+i+1's prologue run under the neighbouring tile's main loop. This makes every group worse than `dram`, and the
+DeepGEMM trace matches `dram` (§81). Kept as an option only.
+
+**Group table** (gmean / mean abs error):
+
+| group | n | default | candidate | cand + tile I/O | cand + tile I/O + ceilings | cand + ceilings |
+|---|---|---|---|---|---|---|
+| v1 static | 36 | 1.32 / 37.3 % | 1.07 / 20.0 % | 1.12 / 23.1 % | 1.10 / 21.9 % | 1.06 / 20.1 % |
+| v1 TTFT | 20 | 1.81 / 87.2 % | 1.29 / 31.2 % | 1.40 / 40.1 % | 1.35 / 34.7 % | 1.29 / 31.6 % |
+| v1 max | 44 | 1.28 / 33.0 % | 0.89 / 19.8 % | 0.91 / 18.9 % | 0.91 / 18.9 % | 0.89 / 19.8 % |
+| moe prefill | 5 | 0.94 / 8.8 % | 0.94 / 8.8 % | 0.94 / 8.8 % | 0.94 / 8.8 % | 0.94 / 8.8 % |
+| moe decode | 2 | 1.11 / 15.6 % | 1.06 / 5.6 % | 1.05 / 5.2 % | 1.05 / 5.2 % | 1.06 / 5.6 % |
+| moe static | 1 | 2.10 / 109.9 % | 1.82 / 82.4 % | 1.84 / 84.2 % | 1.84 / 84.2 % | 1.82 / 82.4 % |
+| Mixtral max | 27 | 1.71 / 77.8 % | 1.01 / 20.2 % | 1.10 / 27.8 % | 1.08 / 26.4 % | 1.01 / 20.0 % |
+| r3 latency | 16 | 3.67 / 267.4 % | 1.39 / 38.8 % | 1.40 / 39.6 % | 1.40 / 39.6 % | 1.39 / 38.8 % |
+| r3 max | 15 | 1.89 / 90.2 % | 1.19 / 33.4 % | 1.27 / 39.7 % | 1.21 / 36.7 % | 1.18 / 32.9 % |
+| r4 | 38 | 1.12 / 37.8 % | 0.96 / 19.8 % | 1.11 / 23.7 % | 1.09 / 22.5 % | 0.95 / 19.9 % |
+
+Against candidate, candidate + tile I/O + ceilings is better in v1 max and moe decode, tied in moe prefill and r3
+latency, and still worse in v1 static, v1 TTFT, Mixtral, r3 max, r4 and moe static. Against the shipped default, it
+is better everywhere except moe prefill (a tie).
+
+**MoE static row (trt-dsr1-h200-maxtput), source re-read** (TRT-LLM v0.21.0 blog). Value and configuration are
+confirmed: Total Output Throughput 11,489 tok/s; per-GPU 1,436 tok/s at 128 sequences per rank, which implies about
+89 ms per decode step. The model gives 37 ms (default) and 43 ms (candidate). The H200 configuration differs from the
+blog's B200 configurations in ways the model does not represent:
+- the extra config enables only CUDA graphs (batch 128 only) and attention DP, with no overlap scheduler, so the
+  PyTorch backend's per-iteration host scheduling is exposed;
+- the KV cache is BF16 (no `kv_cache_dtype`);
+- chunked context is not supported (WIP), so with `max_num_tokens` 1151 a 1024-token context fits in an iteration
+  only next to at most 127 decode tokens, and those iterations run outside the batch-128 CUDA graph.
+
+None of these can be quantified from public sources, so the row stays a known 1.8–2.1× outlier. It is listed in §73
+for a decision on whether a single host-bound row should block the rule.

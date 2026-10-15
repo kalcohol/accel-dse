@@ -157,8 +157,8 @@ class Chip:
                 raise ValueError("set either chip.sram_port_Bpc (chip-wide) or chip.sram_port_Bpc_per_engine, not both")
         if self.attn_fmt not in ("", "kv"):
             raise ValueError("chip.attn_fmt must be '' (bf16 + KV up-cast) or 'kv' (native KV-format attention)")
-        if self.tile_io not in ("", "dram"):
-            raise ValueError("chip.tile_io must be empty or dram")
+        if self.tile_io not in ("", "dram", "persistent"):
+            raise ValueError("chip.tile_io must be empty, dram or persistent")
         if self.attn_sched and self.attn_sched not in INSTANCE_SCHEDS:
             raise ValueError(f"chip.attn_sched must be empty or one of {', '.join(INSTANCE_SCHEDS)}")
         if self.instance_sched not in INSTANCE_SCHEDS:

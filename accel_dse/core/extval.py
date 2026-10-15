@@ -125,8 +125,12 @@ def scenario(r: dict, eff: str = "catalog", **sv) -> Scenario:
         chip = replace(chip, instance_sched=v["sched"])
     if v.get("kernel_vec"):            # 0.136: vector ops pay the per-kernel floor too (Chip.kernel_vec)
         chip = replace(chip, kernel_vec=True)
+    if v.get("gemm_ceil"):             # 0.138: published library-best GEMM fractions (GEMM_CEILING), per tile
+        gc = GEMM_CEILING.get(chip.name.split("-")[0].split(" ")[0], ())
+        if gc:
+            chip = replace(chip, fmt_ceiling=tuple(dict(chip.fmt_ceiling or ()).items()) + gc)
     if v.get("tile_io"):               # 0.135: CTA tile prologue + C writeback at the SM's DRAM share (opt-in)
-        chip = replace(chip, tile_io="dram")
+        chip = replace(chip, tile_io=v["tile_io"] if isinstance(v["tile_io"], str) else "dram")
     if v.get("kernel_us") is not None:  # 0.92: per-kernel fixed cost
         chip = replace(chip, kernel_us=v["kernel_us"])
     if v.get("fmt_ceiling") and chip.name.split("-")[0] in HOPPER:   # 0.94: Hopper only
@@ -355,10 +359,35 @@ def estimator(r: dict) -> dict:
     return SOURCE_ESTIMATOR.get(r.get("src"), dict(kind="static", chunk=CB_CHUNK, max_seqs=None))
 
 
-def tileio_variant(base: str = "catalog") -> str:
-    """0.135: base with GEMMs on the CTA tile model (instance_sched "cta") + per-tile DRAM I/O (MODEL §81)."""
-    name = base + "+tileio"
-    VARIANTS.setdefault(name, {**VARIANTS[base], "sched": "cta", "tile_io": True})
+# 0.138: best published dense-GEMM throughput / the reference chip's peak, per format (large compute-bound shapes,
+# vendor library).  Not fitted to the validation rows.
+#   A100 fp16: cuBLAS 263.4 TFLOPS at 16384³ (github.com/bikrammajhi/fast-gpu-kernels) / 312 → 0.844 (bf16: same path 「假设」)
+#   Hopper bf16: cuBLAS ≈ 744 TFLOPS at 8192³ (same repo: a CuTe kernel at 728.8 = 98 % of cuBLAS) / 989.5 → 0.752
+#   B200 bf16: cuBLAS 1551 TFLOPS at 8192³ (paulwillchan.com, outperforming-cublas-b200) / 2250 → 0.689
+#   B200 fp4: cuBLASLt via cuDNN 6220 TFLOPS at 8192³ (flashinfer-ai/flashinfer#1732) / 9000 → 0.691
+# Hopper fp8 stays HOPPER_FP8_CEIL (DeepGEMM).  No public B200 fp8 / MI300X figure was found: those stay at peak.
+_HB = 744.0 / 989.5
+GEMM_CEILING = {
+    "A100": (("gemm:fp16", 263.4 / 312), ("gemm:bf16", 263.4 / 312)),
+    "H100": (("gemm:bf16", _HB), ("gemm:fp16", _HB)), "H200": (("gemm:bf16", _HB), ("gemm:fp16", _HB)),
+    "H800": (("gemm:bf16", _HB), ("gemm:fp16", _HB)),
+    "B200": (("gemm:bf16", 1551 / 2250), ("gemm:fp16", 1551 / 2250), ("gemm:nvfp4", 6220 / 9000),
+             ("gemm:mxfp4", 6220 / 9000)),
+}
+
+
+def ceil_variant(base: str) -> str:
+    """0.138: base + GEMM_CEILING (applied as the per-tile main-loop rate under tile I/O)."""
+    name = base + "+gceil"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "gemm_ceil": True})
+    return name
+
+
+def tileio_variant(base: str = "catalog", mode: str = "dram") -> str:
+    """0.135: base with GEMMs on the CTA tile model (instance_sched "cta") + per-tile DRAM I/O (MODEL §81);
+    0.138: mode "persistent" = I/O overlapped with the neighbouring tile's main loop."""
+    name = base + "+tileio" + ("" if mode == "dram" else "-" + mode)
+    VARIANTS.setdefault(name, {**VARIANTS[base], "sched": "cta", "tile_io": mode})
     return name
 
 

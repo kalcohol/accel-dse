@@ -3,6 +3,14 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.138.0]
+### Added
+- `extval.GEMM_CEILING` / `ceil_variant` (opt-in): published library-best dense-GEMM fractions per chip and format (A100 fp16/bf16 0.844, Hopper bf16/fp16 0.752, B200 bf16 0.689, B200 fp4 0.691; sources in the code). Under tile I/O they set the per-tile main-loop rate, as Hopper fp8 already did.
+- `Chip.tile_io = "persistent"` (opt-in): tile I/O hidden under the neighbouring tile's main loop (persistent ping-pong kernels). Every group is worse than `dram`, and the DeepGEMM trace matches `dram`.
+- MODEL §84: decomposition of candidate vs candidate + tile I/O, the full group table, and a re-read of the TRT-LLM 0.21 DeepSeek-R1 H200 source.
+### Not changed
+- Defaults, the GPU / validation default, and fingerprints.
+
 ## [0.137.0]
 ### Fixed
 - `exec_overlap = "tbo"`: per-kernel / per-layer overhead (`kernel_us`, `layer_overhead_us`) runs on the compute stream, so the other micro-batch's all-to-all now hides it (`StageTime.t_kern`). It used to be added after the max, so link-bound TBO stages paid it in full. This was the per-SM candidate's only regression (MoE prefill 8.8 → 8.9 %, now 8.8 %).

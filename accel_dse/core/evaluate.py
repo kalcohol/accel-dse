@@ -953,7 +953,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         _cp_check(m, sv)
     sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
                  scn.fabric, lay.cards, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
-    if scn.chip.tile_io == "dram" and not scn.chip.tile_io_Bpc:   # 0.135: DRAM bytes / cycle for the CTA tile I/O
+    if scn.chip.tile_io and not scn.chip.tile_io_Bpc:   # 0.135: DRAM bytes / cycle for the CTA tile I/O
         sys = replace(sys, chip=replace(scn.chip, tile_io_Bpc=sys.dram_GBps / scn.chip.freq_ghz))
     if scn.chip.slc_bytes and scn.chip.slc_bytes >= sys.dram_bytes:
         warnings.append("SLC 容量不小于每卡 DRAM 容量——不现实的设计点（SLC 不增加容量，按包含式缓存计）")
