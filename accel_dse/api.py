@@ -39,6 +39,7 @@ MAX_CARDS = 8192          # 0.60: was 64 (= core.parallel.MAX_REPLICA_CARDS)
 SWEEP_PATHS = {
     "serving.batch": int, "serving.ctx": int, "serving.prompt": int, "serving.spec_k": int,
     "serving.images": int, "serving.image_w": int, "serving.image_h": int,
+    "serving.videos": int, "serving.video_frames": int,
     "chip.sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
     "serving.moe_skew": float, "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
@@ -797,6 +798,10 @@ def _sweep_inapplicable(path: str, r) -> str | None:
         return "仅适用于视频 / 蛋白质 / 基因组工作负载模型（该模型为 LLM）"
     if path in ("serving.images", "serving.image_w", "serving.image_h") and m.vision is None:
         return "该模型没有视觉塔（纯文本）"
+    if path in ("serving.videos", "serving.video_frames"):
+        from .core.vision import video_pre
+        if video_pre(m) is None:
+            return "该模型没有已建模的视频处理器（Qwen3VLVideoProcessor 系）"
     if path == "serving.moe_skew" and not m.is_moe:
         return "仅适用于 MoE 模型"
     sc = r.scenario

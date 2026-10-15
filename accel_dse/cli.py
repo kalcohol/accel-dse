@@ -79,6 +79,12 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="VLM: images per request (default 0 = text only); encoder runs at prefill, image tokens extend prompt / KV")
     p.add_argument("--image-size", default=None, metavar="WxH",
                    help="VLM: image resolution in pixels (default 1024x1024 「假设」)")
+    p.add_argument("--videos", type=int, default=None,
+                   help="VLM (0.165): video clips per request (Qwen3VLVideoProcessor models); slices run the encoder at prefill")
+    p.add_argument("--video-frames", type=int, default=None, help="VLM: sampled frames per clip (default 32 「假设」; processor 2 fps, 4…768)")
+    p.add_argument("--video-size", default=None, metavar="WxH", help="VLM: source video resolution (default 1280x720 「假设」)")
+    p.add_argument("--video-cap", action="store_true", default=None,
+                   help="VLM: qwen-vl-utils per-frame pixel cap (transformers cap_pixels_per_frame)")
     p.add_argument("--spec-accept", type=float, default=None)
     p.add_argument("--tpot-slo", type=float, default=None, help="TPOT SLO ms")
     p.add_argument("--ttft-slo", type=float, default=None, help="TTFT SLO ms")
@@ -343,6 +349,15 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         except ValueError:
             raise SystemExit(f"--image-size: expected WxH, got {a.image_size!r}") from None
         sv["image_w"], sv["image_h"] = w, h
+    for k in ("videos", "video_frames", "video_cap"):
+        if getattr(a, k, None) is not None:
+            sv[k] = getattr(a, k)
+    if getattr(a, "video_size", None):
+        try:
+            w, h = (int(x) for x in a.video_size.lower().split("x"))
+        except ValueError:
+            raise SystemExit(f"--video-size: expected WxH, got {a.video_size!r}") from None
+        sv["video_w"], sv["video_h"] = w, h
     if getattr(a, "moe_skew", None) is not None:
         sv["moe_skew"] = a.moe_skew
     if getattr(a, "moe_a2a_sm", None) is not None:

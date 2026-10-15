@@ -25,7 +25,7 @@ from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages, plan_stages_balanced
 from .pipeline import TILING, pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
 from .scenario import Scenario
-from .vision import expand_images, image_grid, vision_act_peak, vision_ops
+from .vision import expand_images, image_grid, video_grid_of, vision_act_peak, vision_ops
 from .ir import dspark_ops, red_bytes, skew_from_load
 from . import fabric
 from . import overlap as _ovl
@@ -983,8 +983,8 @@ def _cp_check(m: ModelSpec, sv) -> None:
         raise ValueError("layout.cp（上下文并行）只用于 prefill；decode 的 KV 分片未建模（PD 时把 CP 放在 prefill_layout）")
     if sv.prefix_cached:
         raise ValueError("layout.cp 与 serving.prefix_cached 不能同时使用（分块 + 前缀缓存的 zigzag 划分未建模）")
-    if sv.images:
-        raise ValueError("layout.cp 与 serving.images 不能同时使用")
+    if sv.images or sv.videos:
+        raise ValueError("layout.cp 与 serving.images / videos 不能同时使用")
     for L in m.layers:
         c = L.core
         if c is None:
@@ -1050,9 +1050,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 am[scn.attn_mode] = with_attn_mode(m, scn.attn_mode)
             m = am[scn.attn_mode]
             warnings.append("attn_mode = bidir（what-if）：自注意力不加因果掩码（整 S² 打分），prefill 不写 KV cache")
-    if scn.serving.images and not scn.serving.image_tokens:
+    if (scn.serving.images or scn.serving.videos) and not scn.serving.image_tokens:
         if m.vision is None:
-            warnings.append("serving.images 已忽略：该模型没有视觉编码器（只有 VLM 计图像）")
+            warnings.append(("serving.images 已忽略" if scn.serving.images else "serving.videos 已忽略")
+                            + "：该模型没有视觉编码器（只有 VLM 计图像 / 视频）")
         else:
             scn = expand_images(scn, m)     # 0.62: image positions join prompt / ctx (KV, prefill length)
     sv, lay = scn.serving, scn.layout
@@ -1280,7 +1281,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                                  embed_ops(m, ph, sh), _tail_ops(m, True, ph, sh, spec_k),
                                  ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m))
     stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
-    vis = _vision_cost(scn, m, sys, stages) if (m.vision is not None and sv.images and sv.image_tokens) else None
+    vis = _vision_cost(scn, m, sys, stages) if (m.vision is not None and (sv.images or sv.videos) and sv.image_tokens) else None
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
     _pp_imbalance_warn(stages, tick, warnings, scn.pp_split)
@@ -1342,28 +1343,53 @@ def _vision_cost(scn: Scenario, m: ModelSpec, sys: System, stages: list) -> dict
            "merged": g.merged, "tokens_per_image": g.llm_tokens, "image_tokens": sv.image_tokens,
            "text_prompt": sv.prompt - sv.image_tokens, "label": v.label, "params_B": v.params / 1e9,
            "weights_GB": w / 1e9, "s": 0.0, "tflop": 0.0, "per_card": 0, "cards": 0}
+    vg = video_grid_of(m, sv)
+    if vg is not None:
+        out["video"] = {"videos": sv.videos, "frames": vg.frames, "px": [sv.video_w, sv.video_h],
+                        "resized_px": list(vg.slice.px), "slices": vg.t, "patches": [vg.slice.ph, vg.slice.pw],
+                        "tokens_per_slice": vg.slice.llm_tokens, "tokens_per_video": vg.llm_tokens, "cap": sv.video_cap}
     act = 0.0
     if sv.phase == "prefill":
-        per_rank = _cdiv(sv.batch, lay.dp) * sv.images       # images of one DP rank's requests in the step
-        c0 = max(1, lay.tp * lay.sp)                          # that rank's cards in the first stage
-        per_card = _cdiv(per_rank, c0)
-        busy = _cdiv(per_rank, per_card)
-        dp_busy = min(lay.dp, _cdiv(sv.batch, _cdiv(sv.batch, lay.dp)))
-        key = ("vision", g, per_card, scn.mapping, scn.chip, scn.mem_id, scn.mem_eff)
-        memo = model_cache(m).setdefault("vision", {})
-        c = memo.get(key)
-        if c is None:
-            if len(memo) > 4096:
-                memo.clear()
-            c = memo[key] = _component_time([(vision_ops(v, g, per_card), 1)], sys, scn.mapping, "bf16")
-        act = vision_act_peak(v, g, per_card)
-        n = busy * dp_busy
-        # 0.63 (external review): a card's time is set by its ⌈images / card⌉, but only real images are work — MAC /
-        # vector counts and FLOPs × images / per_card (3 images on TP 2 counted 4); byte counts per busy card
-        k_w = sv.batch * sv.images / per_card
-        out.update(s=c["s"], tflop=c["tflop"] * k_w, tflop_per_image=c["tflop"] / per_card, per_card=per_card,
-                   cards=n, bound=c["bound"], dram_GB=c["dram_GB"] * n,
-                   acts={k: x * (k_w if k in ("mac", "vec") else n) for k, x in c["acts"].items()})
+        # 0.165: encoder passes = images (one grid each) + video temporal slices (the tower's cu_seqlens split a clip
+        # per t: attention within a slice, Conv3d patch-embed over temporal_patch frames — the same pass as a still)
+        units = [(g, sv.images)] if sv.images else []
+        if vg is not None:
+            units.append((vg.slice, sv.videos * vg.t))
+        tot = None
+        for gi, cnt in units:
+            per_rank = _cdiv(sv.batch, lay.dp) * cnt             # passes of one DP rank's requests in the step
+            c0 = max(1, lay.tp * lay.sp)                          # that rank's cards in the first stage
+            per_card = _cdiv(per_rank, c0)
+            busy = _cdiv(per_rank, per_card)
+            dp_busy = min(lay.dp, _cdiv(sv.batch, _cdiv(sv.batch, lay.dp)))
+            key = ("vision", gi, per_card, scn.mapping, scn.chip, scn.mem_id, scn.mem_eff)
+            memo = model_cache(m).setdefault("vision", {})
+            c = memo.get(key)
+            if c is None:
+                if len(memo) > 4096:
+                    memo.clear()
+                c = memo[key] = _component_time([(vision_ops(v, gi, per_card), 1)], sys, scn.mapping, "bf16")
+            act = max(act, vision_act_peak(v, gi, per_card))
+            n = busy * dp_busy
+            # 0.63 (external review): a card's time is set by its ⌈images / card⌉, but only real images are work — MAC /
+            # vector counts and FLOPs × images / per_card (3 images on TP 2 counted 4); byte counts per busy card
+            k_w = sv.batch * cnt / per_card
+            acts = {k: x * (k_w if k in ("mac", "vec") else n) for k, x in c["acts"].items()}
+            if tot is None:
+                tot = dict(s=c["s"], tflop=c["tflop"] * k_w)
+                if gi is g:
+                    tot["tflop_per_image"] = c["tflop"] / per_card
+                tot.update(per_card=per_card, cards=n, bound=c["bound"], dram_GB=c["dram_GB"] * n, acts=acts)
+            else:
+                if c["s"] > tot["s"]:
+                    tot["bound"] = c["bound"]
+                tot.update(s=tot["s"] + c["s"], tflop=tot["tflop"] + c["tflop"] * k_w, dram_GB=tot["dram_GB"] + c["dram_GB"] * n,
+                           per_card=max(tot["per_card"], per_card), cards=max(tot["cards"], n),
+                           acts={k: tot["acts"].get(k, 0.0) + acts.get(k, 0.0) for k in set(tot["acts"]) | set(acts)})
+            if vg is not None and gi is vg.slice:
+                out["video"].update(s=c["s"], tflop=c["tflop"] * k_w, slices_per_card=per_card)
+        if tot is not None:
+            out.update(tot)
     mp = stages[0].mem
     need = mp.dram_need + w + max(0.0, act - mp.act_total)
     stages[0].mem = replace(mp, dram_need=need, fits=need <= mp.dram_cap, pipe_w=mp.pipe_w + w)

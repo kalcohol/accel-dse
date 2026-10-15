@@ -230,6 +230,14 @@
       <label class="vlm-only" title="每请求图像数（VLM）：视觉编码器在 prefill 时运行（与语言 prefill 串行），图像 token 加进 prompt 与 KV。默认 0 = 只算文本">图像 / 请求<input type="number" id="s-images" min="0" max="64" step="1"></label>
       <label class="vlm-only" title="图像宽（像素），按各模型发布的预处理器缩放 / 切块；默认 1024×1024 「假设」">图像宽 px <span class="tag assume">假设</span><input type="number" id="s-image_w" min="1" max="16384" step="64"></label>
       <label class="vlm-only" title="图像高（像素）">图像高 px<input type="number" id="s-image_h" min="1" max="16384" step="64"></label>
+      <label class="vlm-only" title="每请求视频段数（0.165，仅 Qwen3VLVideoProcessor 系：Qwen3.5-397B / Qwen3.8 / Intern-S2）：整段像素预算 25165824 分摊到各帧，每 2 帧一个时间片，编码器按片做注意力">视频 / 请求<input type="number" id="s-videos" min="0" max="16" step="1"></label>
+      <label class="vlm-only" title="每段采样帧数（处理器默认 2 fps，4…768；默认 32 「假设」）">视频帧数 <span class="tag assume">假设</span><input type="number" id="s-video_frames" min="2" max="768" step="2"></label>
+      <label class="vlm-only" title="视频源宽（像素，默认 1280 「假设」）">视频宽 px<input type="number" id="s-video_w" min="1" max="16384" step="64"></label>
+      <label class="vlm-only" title="视频源高（像素，默认 720 「假设」）">视频高 px<input type="number" id="s-video_h" min="1" max="16384" step="64"></label>
+      <label title="主机 / 运行时每步开销（0.164，µs，「假设」，默认 0 = 不计；来源只有定性描述，请按实测填）">主机 µs/步 <span class="tag assume">假设</span><input type="number" id="h-host_step_us" min="0" step="50"></label>
+      <label title="主机每序列每步开销（µs，「假设」，默认 0）">主机 µs/序列 <span class="tag assume">假设</span><input type="number" id="h-host_seq_us" min="0" step="5"></label>
+      <label title="serial = 主机时间加在设备步上；async = 与设备步重叠，只暴露超出部分">主机重叠<select id="h-host_overlap"><option value="serial">serial</option><option value="async">async</option></select></label>
+      <label title="decode 多步调度：主机开销摊到 N 步（1…64）">多步调度<input type="number" id="h-host_steps" min="1" max="64" step="1"></label>
       <label class="moe-only" title="MoE 负载倾斜：最忙的 EP rank 收到的 token-专家对 / 平均值。1 = 均匀路由（默认）。最忙 rank 决定级时间；all-to-all 按最忙 rank 的载荷计；能耗计数不变（倾斜只在 rank 间搬工作）。实测每专家 token 分布可经 API / CLI 的 moe_expert_load 给出">MoE 倾斜 <span class="tag assume">假设</span><input type="number" id="s-moe_skew" min="1" max="64" step="0.05"></label>
     </div>
     <label class="inline"><input type="checkbox" id="best-batch"> <span id="best-batch-label">自动取满足 TPOT SLO 的最大 batch</span></label>

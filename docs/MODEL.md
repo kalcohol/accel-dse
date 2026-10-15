@@ -3782,3 +3782,11 @@ Each sizing resource must move alone. The lanes setter pins the dequant rate, wh
 Per engine step, host h = (host_step_us + host_seq_us · ⌈batch/dp⌉) µs. Decode divides by host_steps (vLLM / SGLang multi-step scheduling; prefill steps run single-step, as in vLLM PR #7000). host_overlap "serial": step = device + h. "async" (output processing / scheduling overlapped with the previous device step): step = max(device, h), with host_bound = h > device. Sources (mechanism only): vLLM v0.6.0 performance blog; WukLab "Can Scheduling Overhead Dominate LLM Inference Performance?" (2024). No numeric default: the published absolute times are runtime- and CPU-specific. Non-LLM domains are unchanged.
 
 dram_bw sizing (§104) now uses delivered bandwidth min(memory, DMA issue limit).
+
+## 111. VLM video input (0.165, opt-in)
+Models: those with a released Qwen3VLVideoProcessor (Qwen3.5-397B-A17B, Qwen3.8-27B, Qwen3.8-Flash-Next, Intern-S2-397B). Bounds 「来源」 from video_preprocessor_config.json: min 4096 / max 25165824 px over the clip.
+- Resize (transformers smart_resize, verbatim): h̄, w̄ are rounded to 32 and t̄ = round(F/2)·2. If t̄·h̄·w̄ > max: β = √(F·h·w/max), h̄ = ⌊h/β/32⌋·32 (likewise w̄). The min bound is handled symmetrically. Optional per-frame cap (qwen-vl-utils): max = max(min(768·32², ⌊max/F⌋), ⌊1.05·min⌋)·F.
+- Grid: grid_t = ⌈F/2⌉, ph = h̄/16, pw = w̄/16. LLM tokens = grid_t·ph·pw/4, added to prompt/ctx.
+- Encoder: grid_t passes of the per-image tower op graph on a ph×pw grid. The reason is that cu_seqlens = repeat_interleave(h·w, t) (vision_utils.get_vision_attention_seqlens, merge_temporal=False), so attention is quadratic in ph·pw per slice and linear in grid_t. The Conv3d patch embed has K = 3·2·16².
+- 「假设」 defaults: 32 frames, 1280×720. Timestamp text tokens are not counted.
+

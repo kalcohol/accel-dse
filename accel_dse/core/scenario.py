@@ -59,7 +59,14 @@ class Serving:
     images: int = field(default=0, metadata={"omit_default": True})
     image_w: int = field(default=1024, metadata={"omit_default": True})     # 「假设」 typical image, px
     image_h: int = field(default=1024, metadata={"omit_default": True})
-    # internal: image tokens already added to prompt / ctx by vision.expand_images (never serialised or accepted)
+    # 0.165 — video clips per request (Qwen3VLVideoProcessor models): sampled frames (processor fps 2 → 4…768),
+    # source resolution 「假设」 1280×720; video_cap = qwen-vl-utils per-frame pixel cap (transformers opt-in)
+    videos: int = field(default=0, metadata={"omit_default": True})
+    video_frames: int = field(default=32, metadata={"omit_default": True})   # 「假设」 16 s at the processor's 2 fps
+    video_w: int = field(default=1280, metadata={"omit_default": True})
+    video_h: int = field(default=720, metadata={"omit_default": True})
+    video_cap: bool = field(default=False, metadata={"omit_default": True})
+    # internal: image (and 0.165 video) tokens already added to prompt / ctx by vision.expand_images (never serialised or accepted)
     image_tokens: int = field(default=0, metadata={"internal": True})
 
     def __post_init__(self):
@@ -85,6 +92,14 @@ class Serving:
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                 raise ValueError(f"serving.{k} must be an integer in [{lo}, {hi}]")
+        for k, lo, hi in (("videos", 0, 16), ("video_frames", 2, 768), ("video_w", 1, 16384), ("video_h", 1, 16384)):
+            v = getattr(self, k)
+            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                raise ValueError(f"serving.{k} must be an integer in [{lo}, {hi}]")
+        if not isinstance(self.video_cap, bool):
+            raise ValueError("serving.video_cap must be a boolean")
+        if max(self.video_w, self.video_h) > 200 * min(self.video_w, self.video_h):
+            raise ValueError("serving.video_w / video_h: aspect ratio must be ≤ 200 (smart_resize limit)")
         if max(self.image_w, self.image_h) > 200 * min(self.image_w, self.image_h):
             raise ValueError("serving.image_w / image_h: aspect ratio must be ≤ 200 (Qwen2-VL smart_resize limit)")
         for k in ("tpot_slo_ms", "ttft_slo_ms"):

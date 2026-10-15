@@ -223,6 +223,7 @@ function syncInputs() {
   if ($('l-pp_split')) $('l-pp_split').value = S.sc.pp_split || 'cost';
   if ($('l-indexer')) $('l-indexer').value = S.sc.indexer || 'reference';
   if ($('l-attn_mode')) $('l-attn_mode').value = S.sc.attn_mode || 'reference';
+  if ($('h-host_overlap')) $('h-host_overlap').value = S.sc.host_overlap || 'serial';
   if ($('pd-length_mix') && $('pd-length_mix')._sync) $('pd-length_mix')._sync();
   if ($('pd-prefix_tree') && $('pd-prefix_tree')._sync) $('pd-prefix_tree')._sync();
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
@@ -390,7 +391,8 @@ function onModel() {
   $('model-notes-wrap').hidden = !m.notes.length;
   document.querySelectorAll('.moe-only').forEach((e) => (e.hidden = !m.is_moe));
   document.querySelectorAll('.vlm-only').forEach((e) => (e.hidden = !m.vision));
-  if (!m.vision && S.sc.serving.images) { S.sc.serving.images = 0; $('s-images')._sync(); }   // images only mean something on a VLM
+  if (!m.vision && S.sc.serving.images) { S.sc.serving.images = 0; $('s-images')._sync(); }
+  if (!m.vision && S.sc.serving.videos) { delete S.sc.serving.videos; $('s-videos')._sync(); }   // images only mean something on a VLM
   const L = S.sc.layout;
   if (isFull(m)) { L.ep = 1; L.etp = 1; L.sp = L.sp || 1; delete L.cp; if (m.is_pair) L.tp = 1; }
   else { L.sp = 1; if (!m.is_moe) { L.dp = 1; L.ep = 1; L.etp = 1; } else fixMoe('tp'); }
@@ -679,6 +681,15 @@ function renderEval(r) {
       `${v.label} · ${v.images} 张/请求 · ${v.px[0]}×${v.px[1]} → ${v.resized_px[0]}×${v.resized_px[1]} · ${v.tokens_per_image} token/张`
       + (v.cards ? ` · ${num(v.tflop)} TFLOP · ${v.cards} 卡各 ${v.per_card} 张（数据并行「假设」）· ${BOUND_ZH[v.bound] || v.bound}` : ' · decode 不跑编码器，图像 token 在 KV 中')
       + ` · 权重 ${num(v.weights_GB)} GB 在首级`));
+    const vv = v.video;
+    if (vv) k.push(kpi('视频编码', vv.s ? num(vv.s * 1e3) + ' ms' : '—',
+      `${vv.videos} 段/请求 · ${vv.frames} 帧 → ${vv.slices} 时间片 · ${vv.px[0]}×${vv.px[1]} → ${vv.resized_px[0]}×${vv.resized_px[1]} · ${vv.tokens_per_video} token/段`
+      + (vv.cap ? ' · 逐帧上限' : '') + (vv.s ? ` · ${num(vv.tflop)} TFLOP` : ' · decode 不跑编码器，视频 token 在 KV 中')));
+  }
+  if (s.host) {
+    const hh = s.host;
+    k.push(kpi('主机开销', num(hh.exposed_s * 1e3) + ' ms 暴露', `${hh.overlap} · 每 ${hh.steps} 步 · ${num(hh.s * 1e3)} ms 主机 / ${num(hh.device_s * 1e3)} ms 设备`
+      + (hh.host_bound ? ' · 主机受限' : ''), hh.host_bound ? 'warn' : ''));
   }
   put($('kpis'), ...k);
 }
@@ -1929,6 +1940,13 @@ async function init() {
     bindNumber('s-' + k, () => S.sc.serving[k], (x) => (S.sc.serving[k] = x), { int: true });
   for (const k of ['spec_accept', 'tpot_slo_ms', 'ttft_slo_ms']) bindNumber('s-' + k, () => S.sc.serving[k], (x) => (S.sc.serving[k] = x));
   bindNumber('s-moe_skew', () => S.sc.serving.moe_skew ?? 1, (x) => (S.sc.serving.moe_skew = x));
+  const VDEF = { videos: 0, video_frames: 32, video_w: 1280, video_h: 720 };   // 0.165 video input
+  for (const k of Object.keys(VDEF))
+    bindNumber('s-' + k, () => S.sc.serving[k] ?? VDEF[k], (x) => { if (x === VDEF[k]) delete S.sc.serving[k]; else S.sc.serving[k] = x; }, { int: true });
+  const HDEF = { host_step_us: 0, host_seq_us: 0, host_steps: 1 };              // 0.164 host / runtime overhead
+  for (const k of Object.keys(HDEF))
+    bindNumber('h-' + k, () => S.sc[k] ?? HDEF[k], (x) => { if (x === HDEF[k]) delete S.sc[k]; else S.sc[k] = x; }, { int: k === 'host_steps' });
+  $('h-host_overlap').addEventListener('change', (e) => { if (e.target.value === 'serial') delete S.sc.host_overlap; else S.sc.host_overlap = e.target.value; schedule(); });
   for (const k of ['pp', 'tp', 'dp', 'ep', 'etp'])
     bindNumber('pd-' + k, () => S.sc.pd.prefill_layout[k], (x) => (S.sc.pd.prefill_layout[k] = x), { int: true });
   for (const k of ['prefill_cards', 'decode_cards'])

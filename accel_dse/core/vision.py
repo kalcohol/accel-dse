@@ -61,6 +61,13 @@ _PREPROC = {
     "inclusionAI/Ling-3.0-flash-VL": {"min_px": 4096, "max_px": 4194304},      # preprocessor_config min/max_pixels
 }
 
+# 0.165 — video input.  「来源」 each repo's video_preprocessor_config.json (Qwen3VLVideoProcessor): size shortest_edge
+# 4096 / longest_edge 25165824 (a pixel budget over t_bar·h·w of the whole clip), patch 16, temporal_patch 2, merge 2.
+_VIDEO = {k: {"min_px": 4096, "max_px": 25165824} for k in (
+    "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-Flash-Next", "internlm/Intern-S2-397B")}
+# 「来源」 transformers qwen3_vl/video_processing_qwen3_vl.py: fps 2, min_frames 4, max_frames 768, max_video_tokens 768
+VIDEO_FPS, VIDEO_MIN_FRAMES, VIDEO_MAX_FRAMES, VIDEO_MAX_TOK = 2, 4, 768, 768
+
 
 @dataclass(frozen=True)
 class VisionSpec:
@@ -467,14 +474,67 @@ def expand_images(scn, m):
     serving.image_tokens).  Everything downstream (prefill length, KV, PD lengths / capacity, goodput) then sees the
     image positions as prompt tokens; the encoder itself is costed by evaluate at prefill."""
     sv = scn.serving
-    if not sv.images or sv.image_tokens:
+    if not (sv.images or getattr(sv, "videos", 0)) or sv.image_tokens:
         return scn
     g = image_grid_of(m, sv)
-    if g is None:
+    vg = video_grid_of(m, sv) if getattr(m, "vision", None) is not None else None
+    if g is None and vg is None:
         return scn
     import dataclasses
-    t = sv.images * g.llm_tokens
+    t = (sv.images * g.llm_tokens if g is not None else 0) + (sv.videos * vg.llm_tokens if vg is not None else 0)
     return dataclasses.replace(scn, serving=dataclasses.replace(sv, prompt=sv.prompt + t, ctx=sv.ctx + t, image_tokens=t))
+
+
+def video_pre(m) -> dict | None:
+    """Video processor bounds of a model with a released Qwen3VLVideoProcessor, else None."""
+    v = getattr(m, "vision", None)
+    return _VIDEO.get(getattr(m, "hf_id", "")) if v is not None and v.family == "qwen" else None
+
+
+@dataclass(frozen=True)
+class VideoGrid:
+    frames: int                 # sampled frames into the processor
+    t: int                      # temporal slices = ⌈frames / temporal_patch⌉ (frames padded to a multiple)
+    slice: ImageGrid            # one temporal slice (the tower attends within a slice: cu_seqlens per t)
+    llm_tokens: int             # t · merged positions in the LLM sequence (timestamp text tokens not counted)
+
+
+def video_grid(v: VisionSpec, pre: dict, frames: int, width: int, height: int, cap: bool = False) -> VideoGrid:
+    """transformers Qwen3VLVideoProcessor.resize + smart_resize, verbatim: the pixel budget bounds t_bar·h·w of the
+    clip, so more frames → smaller frames.  cap = cap_pixels_per_frame (qwen-vl-utils: per-frame pixels ≤
+    min(768·f², longest/F), floored at 1.05·shortest)."""
+    tp, f = max(1, v.tpatch), v.patch * v.merge
+    lo, hi = pre["min_px"], pre["max_px"]
+    if frames < tp:
+        raise ValueError(f"serving.video_frames must be ≥ temporal_patch_size {tp}")
+    if cap:
+        hi = max(min(VIDEO_MAX_TOK * f * f, hi // frames), int(lo * 1.05)) * frames
+    h, w = height, width
+    if h < f or w < f:
+        sc = max(f / h, f / w)
+        h, w = int(h * sc), int(w * sc)
+    hb, wb = round(h / f) * f, round(w / f) * f
+    tb = round(frames / tp) * tp
+    if tb * hb * wb > hi:
+        beta = math.sqrt(frames * h * w / hi)
+        hb, wb = max(f, math.floor(h / beta / f) * f), max(f, math.floor(w / beta / f) * f)
+    elif tb * hb * wb < lo:
+        beta = math.sqrt(lo / (frames * h * w))
+        hb, wb = math.ceil(h * beta / f) * f, math.ceil(w * beta / f) * f
+    ph, pw = hb // v.patch, wb // v.patch
+    mg = ph * pw // (v.merge * v.merge)
+    t = -(-frames // tp)
+    return VideoGrid(frames, t, ImageGrid(ph, pw, mg, mg, (wb, hb)), t * mg)
+
+
+def video_grid_of(m, sv) -> VideoGrid | None:
+    if not getattr(sv, "videos", 0):
+        return None
+    pre = video_pre(m)
+    if pre is None:
+        raise ValueError("serving.videos：该模型没有已发布的视频处理器（只建了 Qwen3VLVideoProcessor 系：Qwen3.5-397B / "
+                         "Qwen3.8 / Intern-S2）")
+    return video_grid(m.vision, pre, sv.video_frames, sv.video_w, sv.video_h, sv.video_cap)
 
 
 def text_view(scn):
