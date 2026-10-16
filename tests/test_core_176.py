@@ -19,8 +19,9 @@ def test_scoped_by_phase_and_vendor():
     assert X.scenario(r, "catalog_kernel_fixed", phase="prefill").chip.kernel_us == X.VARIANTS["catalog_kernel_fixed"]["kernel_us"]["prefill"]
     assert X.scenario(r, "catalog_kernel_fixed", phase="decode").chip.kernel_us == X.VARIANTS["catalog_kernel_fixed"]["kernel_us"]["decode"]
     a = next(x for x in X.rows(X.DATA_R3) if x["hw"] == "MI300X")
-    # no ROCm trace → AMD rows identical to the no-fixed-cost baseline
-    assert X.predict(a, "catalog_kernel_fixed")["pred"] == X.predict(a, "catalog_kernel")["pred"]
+    # 0.178: AMD decode uses the sourced ROCm per-kernel cost; AMD prefill falls back to the lump (no ROCm eager trace)
+    assert X.scenario(a, "catalog_kernel_fixed", phase="decode").chip.kernel_us == X.ROCM_KERNEL_US["decode"]
+    assert X.scenario(a, "catalog_kernel_fixed", phase="prefill").layer_overhead_us == X.TRACE_LAYER_US
 
 
 def test_128_token_ttft_moves_toward_measurement_but_residual_remains():

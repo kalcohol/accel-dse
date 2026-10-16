@@ -42,4 +42,4 @@ def test_off_by_default_and_variant():
     assert b > a                                   # glue work (no kernel cost) still adds a little
     v = X.VARIANTS["catalog_kernel_fixed"]
     assert v["glue"] and v["kernel_vec"] and v["layer_us"] == 0 and isinstance(v["kernel_us"], dict)
-    assert "glue" not in X.VARIANTS["catalog_kernel"] and "glue" not in X.VARIANTS["default"]
+    assert "glue" not in X.VARIANTS["catalog_kernel"] and X.VARIANTS["default"]["glue"]   # 0.178

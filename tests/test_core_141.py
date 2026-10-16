@@ -46,7 +46,8 @@ def test_legacy_scenario_migrates_to_old_hardware():
 
 
 def test_validation_default_is_candidate_ceil_variant():
-    assert extval.VARIANTS[extval.DEFAULT] == extval.VARIANTS[extval.ceil_variant(extval.candidate_variant())]
+    # 0.178: the ≤ 0.177 default (candidate + gceil, flat lump) is now "default_lump"; default = its mechanism (§125)
+    assert extval.VARIANTS["default_lump"] == extval.VARIANTS[extval.ceil_variant(extval.candidate_variant())]
 
 
 def test_new_defaults():

@@ -3,6 +3,30 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.178.0] — Default = per-layer mechanism (per-kernel cost + glue); ROCm decode sourced; lump only as fallback
+
+- **Default change** (mechanism-justified; MODEL §125).
+  - The validation `default` replaces the flat 62.3 µs/layer lump with its mechanisms: the per-kernel floor plus the runtime launch gap (§122) and the GPU glue kernels (§123).
+  - Old → new definition: `ceil(candidate)` with `layer_us` 62.3 becomes `rocm(glue(mech(default_lump)))`. The old default stays as the variant `default_lump`.
+- **AMD.**
+  - Decode uses a sourced ROCm HIP-graph per-kernel cost, `ROCM_KERNEL_US` 4.85 µs (public MI300X DeepSeek V4 Flash trace: ~1,200 launch-floor kernels ≈ 5.8 ms; 0.04 ms idle over 1,970 kernels).
+  - Prefill keeps the 62.3 µs lump as a labelled 假设 fallback (`fallback_us`); there is no public ROCm eager trace.
+  - `catalog_kernel_fixed` gets the same AMD treatment.
+- **Old → new** (speed ratio, gmean / mean abs error):
+
+| group | old | new |
+|---|---|---|
+| v1 static | 1.13 / 24 % | 1.15 / 25 % |
+| TTFT | 1.33 / 35 % | 1.31 / 33 % |
+| max-load | 0.92 / 20 % | 0.92 / 19 % |
+| MoE | 0.97 / 8 % | 0.96 / 7 % |
+| Mixtral | 1.14 / 33 % | 1.12 / 32 % |
+| MI300X lat | 1.40 / 40 % | 1.13 / 23 % |
+| MI300X max-load | 2.09 / 109 % | 2.02 / 102 % |
+| B200 | 0.99 / 15 % | 1.01 / 14 % |
+
+- `ext_validation.json` regenerated. Tests: `test_core_141` / `176` / `177` updated for the new definitions; new `test_core_178`.
+
 ## [0.177.0] — GPU glue kernels in the op list; ratio-convention note
 
 - `Chip.gpu_glue` (opt-in) and `ir.glue_ops` add the GPU glue kernels. Each has its own bytes / work plus the 0.176 per-kernel fixed cost.

@@ -4034,3 +4034,49 @@ table and ≈ 0.72 in `ext_validation.json`.
 - The 0.176 report called them "measured ÷ predicted".
 
 Both labels were wrong: the values are speed ratios as defined above. The §119 and §122 headings are corrected.
+
+## §125 Default = the per-layer mechanism; ROCm decode sourced; lump only as fallback (0.178)
+
+**Decision** (user rule: a mechanism-justified default change takes priority over a 1-point score loss). The validation
+default's flat per-layer lump (`TRACE_LAYER_US` 62.3 µs, 来源 the DeepSeek CUDA trace) is replaced by its mechanisms:
+- the per-kernel latency floor plus the launch gap of the phase's runtime (§122);
+- the GPU glue kernels (§123).
+
+`default` = `rocm_variant(glue_variant(mech_variant("default_lump")))`. The ≤ 0.177 default stays as the named variant
+`default_lump`; nothing else changes (attention schedule, memory runtime, ceilings, TBO). `catalog_kernel_fixed` gets
+the same AMD treatment. `catalog_kernel` (no fixed cost) is still the pinned study baseline.
+
+**Scope by vendor and phase:**
+
+| rows | per-layer fixed cost | label |
+|---|---|---|
+| NVIDIA decode / prefill | per kernel 2.0 µs floor + graph 1.025 / eager 2.404 µs gap, glue kernels | 来源 CUDA trace (§122/§123) |
+| AMD decode | per kernel `ROCM_KERNEL_US` = 5.8 ms / 1200 + 0.04 ms / 1970 = 4.85 µs, glue kernels | 来源 / 推导, below |
+| AMD prefill | flat lump 62.3 µs per layer (`fallback_us`) | **假设** fallback: no public ROCm eager trace |
+
+**ROCm source.** ryanzhou/deepseek-v4-flash-mi300x, `DECODE-OPTIMIZATION-20260815.md`: MI300X, vLLM ROCm + AITER,
+DeepSeek V4 Flash, HIP-graph decode at M = 1.
+- "1,970 kernels with only 0.04 ms intra-graph idle" → gap 0.020 µs per kernel.
+- "~1,200 launch-floor kernels … ~5.8 ms" → floor 4.83 µs per kernel.
+
+Caveats: it is a different model and a newer stack than the vLLM 0.11.2 Llama-3.3-70B MI300X rows, and the glue
+inventory is still CUDA-trace derived. The lump fallback for AMD prefill (and for any vendor without a trace) should be
+replaced when a public ROCm eager / prefill per-kernel trace becomes available. Apply it through `amd_kernel_us`, as for
+decode.
+
+**Re-score, old → new** (speed ratio predicted / measured, §124; geomean / mean abs error):
+
+| group | n | default_lump (old default) | **default (0.178)** | catalog_kernel | catalog_kernel_fixed 0.177 → 0.178 |
+|---|---|---|---|---|---|
+| v1 static | 36 | 1.13 / 24 % | 1.15 / 25 % | 1.31 / 38 % | 1.21 / 30 % (=) |
+| v1 TTFT | 20 | 1.33 / 35 % | 1.31 / 33 % | 1.75 / 76 % | 1.33 / 34 % (=) |
+| v1 max-load | 44 | 0.92 / 20 % | 0.92 / 19 % | 1.12 / 21 % | 1.00 / 18 % (=) |
+| MoE large-EP | 7 | 0.97 / 8 % | 0.96 / 7 % | 0.82 / 33 % | 0.80 / 31 % (=) |
+| Mixtral TP8 | 27 | 1.14 / 33 % | 1.12 / 32 % | 1.34 / 47 % | 1.21 / 42 % (=) |
+| MI300X lat | 16 | 1.40 / 40 % | 1.13 / 23 % | 3.33 / 233 % | 3.33 / 233 % → 1.13 / 23 % |
+| MI300X max-load | 4 | 2.09 / 109 % | 2.02 / 102 % | 2.32 / 132 % | 2.32 / 132 % → 2.12 / 112 % |
+| B200 NVFP4 | 11 | 0.99 / 15 % | 1.01 / 14 % | 1.26 / 26 % | 1.07 / 13 % (=) |
+
+The new default is better or equal on 7 of 8 groups and loses 1 point on v1 static (noise, per the decision). MI300X
+latency improves most: 40 % → 23 %, from the sourced ROCm per-kernel cost. `data/ext_validation.json` is
+regenerated.

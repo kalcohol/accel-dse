@@ -125,6 +125,10 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
     if v.get("sched"):                 # 0.91: Chip.instance_sched (reference chips ship "wide")
         chip = replace(chip, instance_sched=v["sched"])
     amd = r["hw"].startswith("MI")
+    amd_mech = amd and v.get("cuda_only") and sv.get("phase", "decode") in (v.get("amd_kernel_us") or {})
+    if amd_mech:                       # 0.178: sourced ROCm per-kernel cost for this phase (ROCM_KERNEL_US)
+        chip = replace(chip, gpu_glue=bool(v.get("glue")), kernel_vec=True,
+                       kernel_us=v["amd_kernel_us"][sv.get("phase", "decode")])
     if v.get("glue") and not (v.get("cuda_only") and amd):   # 0.177: GPU-runtime glue kernels (Chip.gpu_glue)
         chip = replace(chip, gpu_glue=True)
     if v.get("kernel_vec") and not (v.get("cuda_only") and amd):   # 0.136: vector ops pay the per-kernel floor too
@@ -169,11 +173,14 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
     extra.update(_mem_runtime(r, h) if v.get("mem_rt", MEM_RT) else {})
     if v.get("kv_eff"):                # 0.108: KV-cache streams at the decode-attention kernels' published efficiency
         extra["kv_mem_eff"] = v["kv_eff"]
+    lu = v.get("layer_us")
+    if v.get("cuda_only") and amd and not amd_mech and v.get("fallback_us") is not None:   # 0.178: no-trace vendors keep the lump (假设)
+        lu = v["fallback_us"]
     return Scenario(model=r["model"], chip=chip, mem_id=h.mem_id, mem_eff=mem_eff, link=h.link, mapping="reconf",
                     exec_overlap=ov,
                     layout=Layout(tp=r["tp"], dp=r.get("dp", 1), ep=r.get("ep", 1), etp=r.get("etp", 1)),
                     formats_override=_formats(r),
-                    serving=Serving(**sv), **extra, **({"layer_overhead_us": v["layer_us"]} if v.get("layer_us") else {}))
+                    serving=Serving(**sv), **extra, **({"layer_overhead_us": lu} if lu else {}))
 
 
 def _ev(r, var, **sv):
@@ -524,11 +531,30 @@ TRACE_GAP_US = {"graph": 3791 / 3697, "eager": 8230 / 3423}
 RUNTIME_BY_PHASE = {"decode": "graph", "prefill": "eager"}
 
 
+# 0.178 「来源」 public MI300X HIP-graph decode trace (ryanzhou/deepseek-v4-flash-mi300x DECODE-OPTIMIZATION-20260815.md;
+# vLLM ROCm + AITER, DeepSeek V4 Flash, M=1): "~1,200 launch-floor kernels … ~5.8 ms" → floor 5.8e3/1200 µs (推导),
+# "1,970 kernels with only 0.04 ms intra-graph idle" → graph gap 40/1970 µs (推导).  Decode only: no public ROCm eager
+# (prefill) trace, so AMD prefill keeps the lump fallback (「假设」).
+ROCM_KERNEL_FLOOR_US = 5.8e3 / 1200
+ROCM_GRAPH_GAP_US = 40 / 1970
+ROCM_KERNEL_US = {"decode": ROCM_KERNEL_FLOOR_US + ROCM_GRAPH_GAP_US}
+
+
+def rocm_variant(base: str) -> str:
+    """0.178: ``base`` (a mech variant) + the sourced ROCm decode per-kernel cost on AMD rows."""
+    name = base + "+rocm"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "amd_kernel_us": dict(ROCM_KERNEL_US)})
+    return name
+
+
 def mech_variant(base: str = "catalog_kernel") -> str:
     """0.176: ``base`` with the per-layer lump replaced by its mechanisms: per kernel the small-kernel latency floor +
     the inter-kernel gap of the phase's launch runtime (TRACE_GAP_US); vector ops are kernels too (kernel_vec)."""
     name = base + "+mech"
     VARIANTS.setdefault(name, {**VARIANTS[base], "layer_us": 0, "kernel_vec": True, "cuda_only": True,
+                               # 0.178: rows with no per-kernel trace for the phase (AMD prefill: no public ROCm eager trace) fall back to
+                               # the flat per-layer lump TRACE_LAYER_US — 「假设」, replace when a ROCm trace exists
+                               "fallback_us": TRACE_LAYER_US,
                                "kernel_us": {ph: TRACE_KERNEL_FLOOR_US + TRACE_GAP_US[rt] for ph, rt in RUNTIME_BY_PHASE.items()}})
     return name
 
@@ -544,7 +570,15 @@ def glue_variant(base: str) -> str:
 # is a CUDA-graph / eager CUDA stack; no public ROCm / HIP-graph trace → MI300X rows keep no fixed cost).  The plain
 # "catalog_kernel" stays as the no-fixed-cost baseline the 0.66–0.105 studies pin.
 # 0.177: + the GPU glue kernels (the 0.176 definition = mech_variant("catalog_kernel") without glue)
-VARIANTS["catalog_kernel_fixed"] = dict(VARIANTS[glue_variant(mech_variant("catalog_kernel"))])
+VARIANTS["catalog_kernel_fixed"] = dict(VARIANTS[rocm_variant(glue_variant(mech_variant("catalog_kernel")))])   # 0.178: + rocm
+
+# 0.178: mechanism-justified default change (MODEL §125).  The default's flat per-layer lump (TRACE_LAYER_US, 62.3 µs)
+# is replaced on CUDA rows by its mechanisms (per-kernel latency floor + launch gap by runtime, GPU glue kernels — both
+# sourced from the CUDA DeepSeek trace); AMD decode uses the sourced ROCm HIP-graph per-kernel cost (ROCM_KERNEL_US);
+# AMD prefill (no ROCm eager trace) keeps the lump as a labelled fallback (fallback_us, 「假设」).
+# The ≤ 0.177 default stays as the named variant "default_lump".
+VARIANTS["default_lump"] = dict(VARIANTS["default"])
+VARIANTS["default"] = dict(VARIANTS[rocm_variant(glue_variant(mech_variant("default_lump")))])
 
 
 def overhead_variant(base: str, us: float) -> str:
