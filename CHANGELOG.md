@@ -3,6 +3,14 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.184.0] - 2026-10-16
+### 修复（UI）
+- 缩减余量面板：整数资源（核数、DRAM 封装/堆栈数）显示整数（旧 "4.00 个" / "16.0 核"）；已到 1 的整数资源显示「已是最小值 1」而不是「≤ 100% · 到搜索下限」。API 每行新增 `integer`、`unit_floor`。已用真实浏览器（Playwright + Chrome）跑过该面板，无 JS 错误。
+### 新增
+- scripts/fuzz_sizing.py：在随机小配置（1 核、1 封装、1×N 阵列、极小 SRAM/lanes/反量化，4 种密度预算）上跑 sizing 单项 / 联合 / upgrade_path / insight_report，每次调用有墙钟超时；检查 min_ok ≤ current、整数 ≥1、fail_at < min_ok、mm² ≥ 0、联合不含 dram_units。40 例 × 4 入口：0 发现，0 拒绝（单领域模型组）。测试套件内含 6 例冒烟。
+### 变更（默认值）
+- 密度预设 mm2_per_dq_lpddr：0.03「假设」→ 0.695/24 = 0.0290 mm²/DQ「推导/二手」（Samsung SF2 LPDDR6 PHY，ISSCC 2026 论文 37.3，经 SemiAnalysis：0.695 mm²，55.3 GB/s/mm² ⇒ 38.4 GB/s = 一个 x24 通道 @14.4 Gb/s）。dram_units / phy_area 的 LPDDR 面积 −3.5%（wan2.1 例 1.92 → 1.853 mm²）。MODEL §131。
+
 ## [0.183.0] - 2026-10-16
 ### 新增
 - sizing 资源 `dram_units`（DRAM 封装 / 堆栈数，离散）：同型号、同速率、同 mem_eff，仅改数量，带宽与容量同减（容量不足即 fits 失败）。面积 = (n−n_min) × 单元位宽 × DRAM PHY 密度（HBM → mm2_per_dq_hbm 二手/假设；其他 → mm2_per_dq_lpddr 假设），按内存类型取，未设则不给 mm²。默认资源列表变更（旧 5 项 → 新 6 项）；联合缩减跳过它（与 dram_bw 同一条线，不可分离）。MODEL §130。

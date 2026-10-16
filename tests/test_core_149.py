@@ -16,7 +16,7 @@ def test_presets_labelled_and_values():
             assert v > 0 and st in _STATUS and len(src) > 10, (pid, f)
     n7 = DENSITY_PRESETS["n7_tpuv4i"]["fields"]
     assert abs(n7["mm2_per_mib_sram"][0] - 0.875) < 1e-12 and abs(n7["mm2_per_kmac"][0] - 0.6875) < 1e-12
-    assert abs(n7["mm2_per_d2d_unit"][0] - 0.3888 * 1.043) < 1e-12 and n7["mm2_per_dq_lpddr"][1] == "假设"
+    assert abs(n7["mm2_per_d2d_unit"][0] - 0.3888 * 1.043) < 1e-12 and n7["mm2_per_dq_lpddr"][1] == "推导/二手" and abs(n7["mm2_per_dq_lpddr"][0] - 0.695 / 24) < 1e-12
     assert DENSITY_PRESETS["n5_derived"]["fields"]["mm2_per_mib_sram"][1] == "推导"
 
 

@@ -46,8 +46,12 @@ _BITCELL = ("TSMC N7 HD 6T bitcell 0.027 µm² (Wu et al., IEDM 2016); N5 0.021 
 _PHY = {
     "mm2_per_dq_hbm": (14.0 / 1024, "二手/假设", "≈ 14 mm² per 1024-bit HBM3 PHY: public H100 die-shot estimates (secondary, "
                        "unverified); lower bound RX-only 0.0056 mm²/DQ (Chae et al., ISSCC 2023, 4 nm HBM3, secondary)"),
-    "mm2_per_dq_lpddr": (0.03, "假设", "no public LPDDR5X PHY area found (A-SSCC 2024 4 nm 9.6 Gb/s PHY reports none in the "
-                         "abstract) — ≈ 1.9 mm² per x64 「假设」"),
+    # 0.184: was 0.03 「假设」 (no public LPDDR5X PHY area).  Now the Samsung SF2 LPDDR6 PHY (ISSCC 2026 paper 37.3, as
+    # reported by SemiAnalysis 2026-04-15: 0.695 mm², 2.32 mm shoreline, 55.3 GB/s/mm² ⇒ 38.4 GB/s = one x24 channel
+    # at 14.4 Gb/s incl. the 32/36 BL24 payload) → 0.695 / 24 DQ.  Includes the channel's CA / clock overhead.
+    "mm2_per_dq_lpddr": (0.695 / 24, "推导/二手", "Samsung SF2 LPDDR6 PHY 0.695 mm² for one x24 channel (ISSCC 2026 37.3 via "
+                         "SemiAnalysis 'ISSCC 2026 roundup'; x24 inferred from its 55.3 GB/s/mm² × 0.695 mm² = 38.4 GB/s "
+                         "= x24 @ 14.4 Gb/s payload) → 0.0290 mm²/DQ; 2 nm LPDDR6 — LPDDR5X / older nodes are larger 「假设」"),
     "mm2_per_d2d_unit": (0.3888 * 1.043, "来源", "UCIe x64 Advanced module 388.8 µm × 1043 µm (45 µm bump pitch), Hot Chips "
                          "2023 UCIe tutorial 'Electrical, Form Factor and Compliance' table; UCIe-S x16 is 571.5 × 1540 µm "
                          "= 0.88 mm² at 24/32 GT/s — override for UCIe-S / BoW"),

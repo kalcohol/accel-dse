@@ -748,6 +748,9 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
                     fail, why = mid_v, w
         row = {"key": key, "label": label, "unit": unit, "current": cur, "min_ok": ok, "frac": ok / cur if cur else None,
                "floor_hit": fail is None, "fail_at": fail,
+               # 0.184: an integer resource already at 1 has no search below it — not "headroom to the search floor"
+               "integer": bool(integer),
+               "unit_floor": bool(integer and fail is None and ok <= 1),
                "limited_by": None if why is None else {"model": why[0], "metric": why[1], "gain": why[2]}}
         d = _density(budget, dens, base)
         if d is not None:

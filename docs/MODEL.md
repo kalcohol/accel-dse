@@ -4365,3 +4365,11 @@ sourced curve can be dropped into `schedule.collective_seconds`.
 Default change: default sizing resources old {dequant, lanes, sram, cores, dram_bw} → new + dram_units. Engine outputs and fingerprints unchanged.
 
 Bug fixed (adversarial, found while adding an integer resource at n = 1): the halving loop for integer resources rounded 0.5 back to 1 and never terminated when the current value was 1 (engines = 1 or a single package). It now stops at the integer floor. Tests: tests/test_core_183.py.
+
+## §131 Sizing UI check, sizing fuzzer, sourced LPDDR PHY density (0.184)
+
+UI: the sizing panel renders rows generically from the API (label, unit, `mm2_saved` null → "—"). Two defects were found in a real-browser run and fixed: integer resources printed as "4.00 个", and a resource already at 1 showed "≤ 100% · 到搜索下限" (looks like unlimited headroom). Rows now carry `integer` and `unit_floor`.
+
+Fuzzer (scripts/fuzz_sizing.py): every sizing/headroom entry point (sizing per-resource, joint with unpriced last/free, upgrade_path, insight_report) over random small chips (engines 1–16, rows/cols down to 1, lanes/dequant down to 1, SRAM 0.25 MiB, 1–4 LPDDR packages or 1–2 HBM stacks) with a SIGALRM wall-clock limit per call and report invariants. 40 cases: no hang, no exception, no invariant break. The 0.183 integer-floor fix holds.
+
+LPDDR PHY density, old→new: 0.03 mm²/DQ 「假设」 → 0.695/24 = 0.02896 「推导/二手」. Source: Samsung SF2 LPDDR6 PHY, ISSCC 2026 paper 37.3, as reported by SemiAnalysis (2026-04-15): 0.695 mm², 2.32 mm shoreline, 55.3 Gb/s/mm² (the article's unit; ×0.695 = 38.4, equal to its own x24 @ 14.4 Gb/s payload GB/s figure). The x24 width is inferred from that identity. The area includes the channel's CA/clock lanes. Limits: 2 nm and LPDDR6; an LPDDR5X PHY on an older node is likely larger (no public number). The HBM density is unchanged: the Maia 200 floorplan shows 3 HBM3E PHYs per long edge, but no area figure is public.
