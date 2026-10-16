@@ -4266,3 +4266,92 @@ residual on TP1 (≈ 1.3 at isl 128) is the §122 framework residual.
 The Mixtral gmean moves away from 1 because the too-slow 128/128 rows no longer offset the too-fast ones; its error falls
 32 → 30 %. v1 max-load (19 → 21 %) and B200 (14 → 17 %) get slightly worse for the same reason: rows where the one-prompt
 cap had hidden optimism. This is a mechanism-justified default change.
+
+## §129 Microsoft MAI models (not added) and TRT-LLM 0.8 TP all-reduce (0.182)
+
+### MAI-Base-2 (2026-10-15)
+
+**Public sources:**
+- the PDF <https://microsoft.ai/pdf/Frontier-Pre-training-at-Microsoft-AI.pdf>, page 2 table;
+- the blog <https://microsoft.ai/news/frontier-pre-training-at-microsoft-ai/>.
+
+| | MAI-Base-1 | MAI-Base-2 |
+|---|---|---|
+| active / total | 35B / 1T | 80B / 2.8T |
+| layers | 78 | 102 |
+| hidden | 6656 | 8704 |
+| MoE layout | alternating dense / MoE | MoE in every layer |
+| dense FFN | 13312 | — |
+| MoE down-projection (latent) dimension | 3072 | 4096 |
+| expert FFN | 10240 | 8704 |
+| routing (shared + top-k / routed) | 0 + 8 / 512 | 1 + 7 / 512; the shared expert is not latent-projected |
+| attention KV / Q heads: global (every 6th layer) | 8 / 80 | 2 / 96 |
+| attention KV / Q heads: local | 8 / 80 | 16 / 96 |
+| embeddings | tied | untied |
+| training FP8 | — | MXFP8 |
+| vision | — | native encoder-free VLM |
+
+Also stated: trained on 50T tokens on 16k GB200 GPUs (MFU 21 %).
+
+**Not stated:** head dimension, vocabulary, local window, expert gating (SwiGLU or not), norms, RoPE.
+
+**Totals do not reconcile.** 512 × 102 SwiGLU experts of 4096 × 8704 is 5.6T; non-gated it is 3.7T; neither is 2.8T. The
+active count does not close either.
+
+The catalog only builds specs from released configs (`from_release`). Its proxy label marks a *released* config with
+unmodelled parts, not a closed model with guessed dimensions. Post-training is ongoing and the weights are licensed only
+to partners via Foundry. **Not added.**
+
+### MAI-Code-1.1-Flash (2026-10-07)
+
+**What is public:**
+- **Model card**, Foundry catalog `MAI-Code-1.1-Flash-On-Device` (<https://ai.azure.com/catalog/models/MAI-Code-1.1-Flash-On-Device>, version 2):
+  - MoE with 137.9B total and 6.8B active parameters;
+  - 256K context, 128K output;
+  - 53 GB, mixed-precision ≈ 3.3 bits per weight;
+  - DFlash2 sliding-window speculative decoding with a 700M drafter;
+  - 75.5 GB peak memory at 256K.
+- **Distribution:** downloaded as a GGUF from the anonymous Azure ML registry `azureml`. The VS Code agentHost PR
+  microsoft/vscode#341325 (merged 2026-10-14) does this through the registry's model-registry resolve API and runs it with
+  a user-supplied `llama-server`.
+- **llama.cpp architecture:** `maion-coder`, llama.cpp PR #29778 (merged; in v0.7.0). It has:
+  - periodic MoE layers (`interleave_moe_layer_step`);
+  - a latent MoE (`moe_latent_size`, latent down/up projections around the routed experts);
+  - sliding-window attention with a per-layer pattern;
+  - per-layer expert FFN sizes;
+  - NEOX RoPE.
+
+  This matches MAI-Base-1's layout, but the PR does not name MAI.
+
+**Not public as text:** the hyperparameter values. They exist only in the GGUF header behind the registry's signed
+(SAS) download, reached through a client API that requires a specific User-Agent. There is no HF repo, config.json, ONNX
+release or Foundry Local manifest with values. microsoft/MAI-Code holds only a README. The GGUF header was not fetched
+(a client-impersonating route, not a public document).
+
+**Not added.** Re-check when a config or GGUF metadata is published as a document.
+
+### TP all-reduce for v1 TTFT (§128 follow-up)
+
+**TRT-LLM v0.8.0 source (来源):**
+- `PluginConfig.use_custom_all_reduce = True` by default (`tensorrt_llm/plugin/plugin.py`).
+- `AllreducePlugin::selectImplementation`: a message above `getMaxRequiredWorkspaceSize` falls back to NCCL ring. That
+  limit is 8 MB at world size > 2 and 16 MB at ≤ 2 (`customAllReduceUtils.h`).
+- At TP8: ONESHOT below 500 kB, TWOSHOT otherwise (`allreducePlugin.cpp`).
+
+So for Llama-2-70B at TP8, the per-layer all-reduce (isl × 8192 × 2 B) runs as:
+
+| isl | message | path |
+|---|---|---|
+| 128 | 2.1 MB | TWOSHOT custom kernel |
+| 512 | 8.4 MB | NCCL (just above 8 MB) |
+| 2048 | 33.5 MB | NCCL |
+
+**NCCL at 32 MiB, single node.** Still not found as a table:
+- nccl-tests #309 and crusoe-ml-rke2 are 2-node runs (234.8 / 240.0 GB/s busbw at 32 MiB);
+- nccl-tests #212 and nccl #1374 give only the large-message single-node figure (≈ 480 GB/s busbw with NVLS, ≈ 370 without);
+- DGX BasePOD's table is a non-allreduce test.
+
+No published TWOSHOT throughput for TRT-LLM 0.8 was found either. **Not applied.** The paths are recorded so that a
+sourced curve can be dropped into `schedule.collective_seconds`.
+
+**Re-score:** identical to 0.181 for every group. No default change.

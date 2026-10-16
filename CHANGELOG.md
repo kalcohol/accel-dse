@@ -3,6 +3,13 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.182.0] — MAI models checked (not added); TRT-LLM 0.8 all-reduce paths recorded
+
+- **MAI-Base-2.** Not added. The PDF table gives layers, hidden, heads, experts and latent MoE dims, but not head_dim, vocab, window or gating, and the totals do not reconcile with 2.8T. It is a closed, post-training model.
+- **MAI-Code-1.1-Flash.** Not added. The card gives 137.9B / 6.8B, 3.3 bpw, 53 GB, 256K and a DFlash2 drafter; the llama.cpp arch is `maion-coder` (PR #29778). The hyperparameter values sit only in a GGUF behind the Azure ML registry's signed download; no public config was found.
+- **TP all-reduce.** TRT-LLM v0.8.0 uses its custom all-reduce by default (one-shot below 500 kB, two-shot otherwise at TP8) and NCCL above 8 MB. No single-node 8 × H100 NCCL table at 1–64 MiB was found, so nothing was applied (MODEL §129).
+- Scores unchanged.
+
 ## [0.181.0] — Continuous batching packs short prompts per prefill iteration; per-row TTFT / Mixtral residuals
 
 - **Packing.** `_cb_at` packs ⌊C / isl⌋ prompts per prefill iteration (TRT-LLM `max_num_tokens` packs tokens from different sequences, 来源). ≤ 0.180 put one prompt per iteration, which capped the running batch at osl.
