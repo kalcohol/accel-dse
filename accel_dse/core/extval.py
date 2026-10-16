@@ -125,6 +125,8 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
     if v.get("sched"):                 # 0.91: Chip.instance_sched (reference chips ship "wide")
         chip = replace(chip, instance_sched=v["sched"])
     amd = r["hw"].startswith("MI")
+    if v.get("glue") and not (v.get("cuda_only") and amd):   # 0.177: GPU-runtime glue kernels (Chip.gpu_glue)
+        chip = replace(chip, gpu_glue=True)
     if v.get("kernel_vec") and not (v.get("cuda_only") and amd):   # 0.136: vector ops pay the per-kernel floor too
         chip = replace(chip, kernel_vec=True)
     if v.get("gemm_ceil"):             # 0.138: published library-best GEMM fractions (GEMM_CEILING), per tile
@@ -531,10 +533,18 @@ def mech_variant(base: str = "catalog_kernel") -> str:
     return name
 
 
+def glue_variant(base: str) -> str:
+    """0.177: ``base`` + the GPU-runtime glue kernels (ir.glue_ops; Chip.gpu_glue)."""
+    name = base + "+glue"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "glue": True})
+    return name
+
+
 # 0.176: the reported catalog_kernel study variant with its fixed cost (mechanism-scoped, CUDA runtimes only: the trace
 # is a CUDA-graph / eager CUDA stack; no public ROCm / HIP-graph trace → MI300X rows keep no fixed cost).  The plain
 # "catalog_kernel" stays as the no-fixed-cost baseline the 0.66–0.105 studies pin.
-VARIANTS["catalog_kernel_fixed"] = dict(VARIANTS[mech_variant("catalog_kernel")])
+# 0.177: + the GPU glue kernels (the 0.176 definition = mech_variant("catalog_kernel") without glue)
+VARIANTS["catalog_kernel_fixed"] = dict(VARIANTS[glue_variant(mech_variant("catalog_kernel"))])
 
 
 def overhead_variant(base: str, us: float) -> str:

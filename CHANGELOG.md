@@ -3,6 +3,16 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.177.0] — GPU glue kernels in the op list; ratio-convention note
+
+- `Chip.gpu_glue` (opt-in) and `ir.glue_ops` add the GPU glue kernels. Each has its own bytes / work plus the 0.176 per-kernel fixed cost.
+  - New kernels: activation quant casts, MLA q_a norm, decode split-KV combine, router top-k, router split-K reduce, shared-expert SwiGLU + cast, and sampling passes.
+  - Collectives now count as GPU kernels (EP send + recv).
+  - DeepSeek-V3 decode: 17.2 → 29.05 kernels/layer (trace 30.4).
+- `catalog_kernel_fixed` changed from mech only to mech + glue. Old → new speed ratio: v1 static 1.23 → 1.21, TTFT 1.40 → 1.33, max-load 1.03 → 1.00, MoE 0.81 → 0.80, Mixtral 1.25 → 1.21, B200 1.11 → 1.07, MI300X unchanged. `ext_validation.json` regenerated.
+- Not promoted to `catalog_kernel`, because it does not match or beat the flat 62.3 µs lump on every group. It loses on v1 static (30 % vs 29 %), B200 (13 % vs 12 %) and MI300X (glue not applied). Defaults unchanged.
+- MODEL §123 (glue) and §124 (ratio direction conventions); §119 and §122 table labels corrected.
+
 ## [0.176.0] — Mechanism-scoped fixed cost for catalog_kernel; 128-token TTFT residual re-check
 
 - The 62.3 µs/layer lump (deepseek-ai/profile-data decode) split by mechanism from the public decode + prefill traces: per kernel = small-kernel latency floor (2.0 µs, p10) + inter-kernel gap of the launch runtime (CUDA-graph decode 1.025 µs, eager prefill 2.404 µs). The rest of the lump is size-dependent work the model already charges (prefill small kernels p50 116 µs) → not repeated.

@@ -123,6 +123,10 @@ class Chip:
     # 0.136 (opt-in): stand-alone vector ops (norms, rope, activation, residual — not the softmax inside the fused
     # attention kernel) are kernels too and pay kernel_us each (the GPU floor of a small kernel)
     kernel_vec: bool = field(default=False, metadata={"omit_default": True})
+    # 0.177 (opt-in): GPU-runtime kernels the op list otherwise omits (activation quant casts, MLA q-norm, split-KV combine,
+    # router top-k + split-K reduce, shared-expert activation, sampling passes; EP all-to-all as send + recv kernels) —
+    # ir.glue_ops; each pays its own work and, with kernel_us / kernel_vec, the per-kernel fixed cost
+    gpu_glue: bool = field(default=False, metadata={"omit_default": True})
     tile_io_Bpc: float = field(default=0.0, metadata={"omit_default": True})
     acc_kib_per_engine: float | None = field(default=None, metadata={"omit_default": True})   # 0.141
 

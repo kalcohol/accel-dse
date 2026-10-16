@@ -772,10 +772,76 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
 
 
 # ------------------------------------------------------------------ layer ops
-def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None) -> list[Op]:
-    """Ops of one rank for transformer layer ``li`` (or an explicit MTP ``layer``), with work shares (rank_shares)."""
-    return rank_shares(_rank_ops(model, li, ph, sh, layer), sh,
-                       lambda: _rank_ops(model, li, ph, Shard(), layer))
+def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None,
+                   glue: bool = False) -> list[Op]:
+    """Ops of one rank for transformer layer ``li`` (or an explicit MTP ``layer``), with work shares (rank_shares).
+    0.177: ``glue`` adds the GPU-runtime kernels of glue_ops."""
+    ops = rank_shares(_rank_ops(model, li, ph, sh, layer), sh,
+                      lambda: _rank_ops(model, li, ph, Shard(), layer))
+    return ops + glue_ops(ops, li, ph) if glue else ops
+
+
+_QUANT_ACT = ("fp8", "fp8_tensor", "nvfp4", "mxfp4", "int8")
+
+
+def _cast_family(name: str) -> str | None:
+    """Input tensor a quantised-activation GEMM reads: one cast kernel per distinct tensor.  Down projections read the
+    activation output, which the fused SwiGLU + cast kernel quantises (trace: *swiglu_forward_and_per_token_cast_to_fp8*);
+    absorbed-MLA kv_b bmms and the router read bf16."""
+    if "down" in name or "kv_b" in name or "router" in name:
+        return None
+    if name.endswith(".o") or name.endswith("o_proj"):
+        return "o"
+    if "q_b" in name:
+        return "q_b"
+    if name.startswith("attn."):
+        return "attn_in"
+    if any(x in name for x in ("gate_up", ".up", "gate")):
+        return "ffn_in"
+    return None
+
+
+def glue_ops(ops: list[Op], li: int, ph: Phase) -> list[Op]:
+    """0.177: kernels a GPU serving stack runs per layer that the op list leaves implicit.  Kernel inventory from the
+    public DeepSeek-V3 decode trace (deepseek-ai/profile-data, compute stream, per layer-forward): per_token_cast_to_fp8
+    2.95, layer_norm 2.98 (attn / ffn / q_a), flash_fwd_splitkv_mla_combine 0.98, top2_sum_gate 0.96, splitKreduce 0.96
+    (cuBLAS bf16 router GEMM), batched + shared SwiGLU-and-cast 1.95, DeepEP dispatch_ll / combine_ll 1.92 each
+    (send + recv halves).  Bytes are the tensors each kernel reads and writes (bf16 in, fp8 + fp32 per-128 scales out)."""
+    out: list[Op] = []
+    gem = [o for o in ops if o.kind == "gemm"]
+    names = {o.name for o in ops}
+    dispatch = "moe_dispatch" in names
+    seen: set = set()
+    for o in gem:
+        if o.a_fmt not in _QUANT_ACT:
+            continue
+        f = _cast_family(o.name)
+        if f is None or f in seen or (f == "ffn_in" and dispatch):     # DeepEP low-latency dispatch casts in-kernel
+            continue
+        seen.add(f)
+        r, k = o.m * max(o.count, 1) if f != "ffn_in" else o.m, o.k
+        out.append(Op(f"glue.cast_{f}", "vector", li, vec=r * k * 3, act_bytes=r * k * 3 + r * k / 128 * 4))
+    qb = next((o for o in gem if "q_b" in o.name), None)
+    if qb is not None:                                                     # MLA q_a_layernorm (RMSNorm over q_lora)
+        out.append(Op("glue.q_a_norm", "vector", li, vec=qb.m * qb.k * 4, act_bytes=qb.m * qb.k * 4))
+    if ph.kind == "decode":
+        qk = next((o for o in ops if o.kind == "attn" and o.name.startswith("qk")), None)
+        pv = next((o for o in ops if o.kind == "attn" and o.name.startswith("pv")), None)
+        if qk is not None and pv is not None:
+            # split-KV combine: read the per-split partial O (fp32) + LSE, write O — two splits 「假设」 (lower bound)
+            rows = pv.m * max(pv.count, 1)
+            out.append(Op("glue.attn_combine", "vector", li, vec=rows * pv.n * 2 * 3,
+                          act_bytes=rows * (2 * (pv.n + 1) * 4 + pv.n * 2)))
+    rt = next((o for o in gem if "router" in o.name), None)
+    if rt is not None:
+        out.append(Op("glue.router_topk", "vector", li, vec=rt.m * rt.n * 8, act_bytes=rt.m * rt.n * 4))
+        if ph.kind == "decode":
+            out.append(Op("glue.router_splitk_reduce", "vector", li, vec=rt.m * rt.n * 2,
+                          act_bytes=rt.m * rt.n * 4 * 3))
+    sg = next((o for o in gem if "shared_gate_up" in o.name), None)
+    if sg is not None:
+        out.append(Op("glue.shared_act", "vector", li, vec=sg.m * sg.n * 2, act_bytes=sg.m * sg.n * 2 * 1.5))
+    return out
 
 
 def _hc_ops(model: ModelSpec, li: int, L: Layer, t: int, tp: int, which: str) -> list[Op]:
@@ -979,8 +1045,8 @@ def _embed_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
     return [Op("embed_lookup", "lookup", -1, kv_read=t * model.hidden * rf.bits / 8, vec=t * model.hidden)]
 
 
-def head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
-    ops = rank_shares(_head_ops(model, ph, sh), sh, lambda: _head_ops(model, ph, Shard()))
+def head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = False) -> list[Op]:
+    ops = rank_shares(_head_ops(model, ph, sh, glue), sh, lambda: _head_ops(model, ph, Shard(), glue))
     if ph.kind == "prefill" and ph.cp > 1:
         # 0.89: only the CP rank holding a sequence's last chunk (zigzag rank 0) projects its last token — the chunk
         # phase charges that rank's time on every rank; the mean rank does 1/cp of it (work KPI exact)
@@ -988,7 +1054,7 @@ def head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
     return ops
 
 
-def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
+def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = False) -> list[Op]:
     """LM head, vocab-parallel over attention TP.  Prefill: only the last token
     of each sequence is projected; decode: every new/verified token."""
     b_loc = _cdiv(ph.batch, sh.dp)
@@ -999,6 +1065,11 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
               vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
            gemm(model, "lm_head", model.n_layers, m, model.hidden, n, role, stream=True),
            Op("sample", "vector", model.n_layers, vec=m * n * 3, sfu=m * n)]
+    if glue:
+        # 0.177: sampling passes over the logits (trace: apply_penalty, topk, mask_top_p, sort / gatherTopK) — fp32
+        # logits read + written per pass
+        ops += [Op(f"glue.sample_{x}", "vector", model.n_layers, vec=m * n * 2, act_bytes=m * n * 8)
+                for x in ("penalty", "topk", "top_p", "gather")]
     if sh.tp > 1:
         ops.append(Op("logits_gather", "comm", model.n_layers, comm_kind="allgather", comm_group=sh.tp,
                       comm_bytes=m * 2 * 4))  # (max, idx) per rank for greedy/top-k 「假设」

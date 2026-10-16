@@ -28,4 +28,4 @@ def test_128_token_ttft_moves_toward_measurement_but_residual_remains():
     for r in rs:
         old, new = X.predict(r, "catalog_kernel")["pred"], X.predict(r, "catalog_kernel_fixed")["pred"]
         assert old < new < r["value"]
-        assert 1.5 < r["value"] - new < 2.5          # MODEL §122: ~1.8–2.1 ms unexplained (no sourced breakdown)
+        assert 1.2 < r["value"] - new < 2.5          # §122: 1.8–2.1 ms; 0.177 glue (§123) → 1.4–1.7 ms unexplained

@@ -3195,7 +3195,7 @@ modes are unchanged; for the first three nothing overlaps communication.
 quantisation of the grouped GEMMs, the all-to-all's SM share, and `cta` vs `wide` cannot move them. They only add
 compute that the overlap hides.
 
-**Full group table** (gmean ratio / mean abs error):
+**Full group table** (speed ratio, see §124 — gmean / mean abs error):
 
 | group | n | default (`catalog`, `wide`) | candidate | candidate + tile I/O (per-SM) | + kfloor | + kfloor + tile I/O |
 |---|---|---|---|---|---|---|
@@ -3884,7 +3884,7 @@ Sources: the evo2 inference yml files (layer pattern hcs / hcm / hcl / attn, fil
 - **Kept, by design:**
   - The wide gang width (B200 18944 columns) gives 2–6× on full-sequence DiT shapes. `WIDE_GEMM_AUTO` removes it but worsens extval (default Mixtral TP8 1.14 → 1.17, MI300X max-load 2.09 → 2.39). The underfill stands in for real kernel efficiency, which has no source here.
   - Small-M decode on os arrays is a real design effect.
-- **Extval** (pred / meas geomean, default | catalog_kernel), 0.172 → 0.173:
+- **Extval** (speed ratio, see §124, default | catalog_kernel), 0.172 → 0.173:
 
   | group | default | catalog_kernel |
   |---|---|---|
@@ -3946,7 +3946,7 @@ The runtime split (graph decode, eager context) is also the TRT-LLM PyTorch back
 fused attention, stand-alone vector), so the cost follows the model, not DeepSeek's 30 kernels per layer. It applies to
 CUDA rows only.
 
-**Bands, catalog_kernel → catalog_kernel_fixed** (gmean ratio / mean abs error):
+**Bands, catalog_kernel → catalog_kernel_fixed** (speed ratio, see §124 — gmean / mean abs error):
 
 | group | catalog_kernel | catalog_kernel_fixed |
 |---|---|---|
@@ -3973,3 +3973,64 @@ OSL 1 on one max-throughput engine build (max_batch 64, max_input 2048), without
 enqueue). The doc's command line uses batch 64 / 32 while its table says batch 1. Its footnote says the low-latency
 numbers "will soon be updated to reflect real time latency with inflight-batching". NVIDIA publishes no per-component
 host / framework time for GptSession, so the residual stays open; nothing is fitted.
+
+## §123 GPU glue kernels in the op list (0.177)
+
+**What was added.** The opt-in `Chip.gpu_glue` flag adds the GPU-runtime kernels in `ir.glue_ops`. Each one has its own
+work (vector elements and the bytes it reads and writes). With `kernel_us` / `kernel_vec` it also pays the 0.176
+per-kernel cost: latency floor plus launch gap. The trace column gives kernels per layer-forward in the public DeepSeek
+trace (来源).
+
+| kernel | rule | DeepSeek trace per layer-forward |
+|---|---|---|
+| activation quant cast | one per distinct quantised-activation GEMM input (attention in, q_b, o, FFN in). Down projections take the fused SwiGLU + cast output. The FFN input cast is skipped under a DeepEP dispatch, which casts in-kernel (来源: trace). | per_token_cast_to_fp8 2.95 |
+| MLA q_a_layernorm | one per MLA layer with q_lora | layer_norm 2.98 |
+| split-KV combine | decode attention; partial O / LSE fp32, 2 splits (假设, lower bound) | mla_combine 0.98 |
+| router top-k | MoE layers | top2_sum_gate 0.96 |
+| split-K reduce of the bf16 router GEMM | MoE decode | splitKreduce 0.96 |
+| shared-expert SwiGLU + cast | MoE with shared experts | swiglu/cast 0.98 |
+| collectives counted as kernels | EP dispatch / combine = 2 each (send + recv), others 1 | dispatch_ll / combine_ll 1.92 each |
+| sampling passes | 4 per step, fp32 logits | penalty / topk / top_p / gatherTopK |
+
+**Kernel count.** DeepSeek-V3 decode (EP128, batch 128) now has 29.05 kernels per layer (推导), up from 17.2; the trace
+has 30.4. The remaining ≈ 1.4 per layer are generic torch elementwise / memcpy kernels with no attributable role and are
+not modelled.
+
+**Re-score** (speed ratio predicted / measured, geomean / mean abs error; §124):
+
+| group | ck + mech (0.176 ck_fixed) | ck_fixed 0.177 | ck + lump 62.3 | default |
+|---|---|---|---|---|
+| v1 static | 1.23 / 32 % | 1.21 / 30 % | 1.19 / 29 % | 1.13 / 24 % |
+| v1 TTFT | 1.40 / 41 % | 1.33 / 34 % | 1.36 / 37 % | 1.33 / 35 % |
+| v1 max-load | 1.03 / 19 % | 1.00 / 18 % | 1.00 / 18 % | 0.92 / 20 % |
+| MoE large-EP | 0.81 / 32 % | 0.80 / 31 % | 0.81 / 32 % | 0.97 / 8 % |
+| Mixtral TP8 | 1.25 / 44 % | 1.21 / 42 % | 1.23 / 43 % | 1.14 / 33 % |
+| MI300X lat | 3.33 / 233 % | 3.33 / 233 % | 1.40 / 40 % | 1.40 / 40 % |
+| MI300X max-load | 2.32 / 132 % | 2.32 / 132 % | 2.18 / 118 % | 2.09 / 109 % |
+| B200 NVFP4 | 1.11 / 13 % | 1.07 / 13 % | 1.05 / 12 % | 0.99 / 15 % |
+
+**128-token TTFT residual.** On Hopper 7B the unexplained residual falls from 1.8–2.1 ms to 1.4–1.7 ms.
+
+**Decision rule** (match or beat the lump on every group): **not met**.
+- It beats or ties the lump on TTFT, max-load, MoE and Mixtral.
+- It loses by 1 point on v1 static and B200.
+- On MI300X it is not applied, because there is no ROCm trace.
+
+So `catalog_kernel` and `default` are unchanged, and `catalog_kernel_fixed` (old: mech only → new: mech + glue) stays a
+reported variant.
+
+## §124 Ratio direction convention for the validation tables
+
+Two conventions are in use:
+
+| where | ratio | > 1 means |
+|---|---|---|
+| `scripts/ext_score_all.py` group tables (§83 onward, incl. §119, §122, §123) | **speed ratio**: throughput rows predicted / measured; latency rows (TTFT, static latency) measured / predicted. Geomean over the group, then mean abs error. | model optimistic (too fast) |
+| `extval.summary` / `data/ext_validation.json` | **raw predicted / measured value** per metric | throughput: too fast; latency: too slow |
+
+The two are reciprocal on latency rows. For example, 0.176 v1 TTFT for `catalog_kernel_fixed` is 1.40 in the §122
+table and ≈ 0.72 in `ext_validation.json`.
+- The 0.173 report (§119) labelled speed ratios "pred / meas".
+- The 0.176 report called them "measured ÷ predicted".
+
+Both labels were wrong: the values are speed ratios as defined above. The §119 and §122 headings are corrected.

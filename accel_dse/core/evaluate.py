@@ -415,10 +415,10 @@ def stage_ops(model: ModelSpec, first: int, last: int, has_embed: bool, has_head
     return ops
 
 
-def _tail_ops(model, has_head, ph, sh, spec_k):
+def _tail_ops(model, has_head, ph, sh, spec_k, glue: bool = False):
     ops: list[Op] = []
     if has_head:
-        ops += head_ops(model, ph, sh)
+        ops += head_ops(model, ph, sh, glue)
         if spec_k and model.draft == "dspark":
             ops += dspark_ops(model, ph, sh)       # one block pass per step (prefill: seed the draft windows)
         elif spec_k and model.mtp_layers and ph.kind == "decode":
@@ -498,6 +498,10 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
             else:
                 bw, a, fd, fn = _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride, net_scale=o.comm_net)
                 wr = _comm_wire(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride, net_scale=o.comm_net)
+            if sys.chip.gpu_glue and sys.chip.kernel_us:   # 0.177: collectives are GPU kernels too (EP a2a: send + recv)
+                nk = 2 if o.name in ("moe_dispatch", "moe_combine") else 1
+                d["sync"] += sys.chip.kernel_us * 1e-6 * nk
+                d["kern"] += sys.chip.kernel_us * 1e-6 * nk
             for t, x in wr.items():                # 0.78: physical bytes on each tier's wire (energy)
                 d["wire_" + t] += x
             d["link_bw"] += bw; d["sync"] += a; d["link_bytes"] += o.comm_bytes; d["d2d_bytes"] += o.comm_bytes * fd
@@ -983,7 +987,7 @@ def _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx
                 okey = (g, ph, sh, scn.mapping, scn.chip, _links(scn))
                 hit = ops_memo.get(okey)
                 if hit is None:
-                    hit = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m, mm)
+                    hit = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh, glue=scn.chip.gpu_glue), sys, scn.mapping, m, mm)
                 per_g[g] = vec(hit, layer_repeat(m.layers[li], ph) if repeat else 1)
             costs.append(per_g[g])
         first = vec(_sum_ops(first_ops, sys, scn.mapping, m, mm)) if first_ops else (0.0,) * 5
@@ -1343,12 +1347,12 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                     cache[g] = ops_memo.get(okey)
                     if cache[g] is None:
                         fabric.set_mult(n)
-                        cache[g] = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m, mm)
+                        cache[g] = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh, glue=scn.chip.gpu_glue), sys, scn.mapping, m, mm)
                         fabric.set_mult(1)
                 _acc(agg, cache[g], n)
             if cp_ring is not None:
                 _acc(agg, _sum_ops(_cp_ring_ops(m, st.first, st.last, cp_ring), sys, scn.mapping, m, mm))
-            tail = _tail_ops(m, st.has_head, ph, sh, spec_k)
+            tail = _tail_ops(m, st.has_head, ph, sh, spec_k, scn.chip.gpu_glue)
             if tail:                        # 0.61: non-head stages have no tail ops (summing zeros is a no-op)
                 _acc(agg, _sum_ops(tail, sys, scn.mapping, m, mm))
             skey = (st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap, n_mtp)
@@ -1388,7 +1392,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             t_pipe, pctx, tpipe = 0.0, None, None
             if scn.exec_overlap == "pipe":  # 0.98 (opt-in)
                 segs = ([(embed_ops(m, ph, sh), 1)] if st.has_embed else [])
-                segs += [(build_rank_ops(m, li, ph, sh), n) for g, (li, n) in counts.items()]
+                segs += [(build_rank_ops(m, li, ph, sh, glue=scn.chip.gpu_glue), n) for g, (li, n) in counts.items()]
                 if cp_ring is not None:
                     segs.append((_cp_ring_ops(m, st.first, st.last, cp_ring), 1))
                 if tail:
@@ -1422,7 +1426,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         return stages
 
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx_cap, n_mtp, b_rank,
-                                 embed_ops(m, ph, sh), _tail_ops(m, True, ph, sh, spec_k),
+                                 embed_ops(m, ph, sh), _tail_ops(m, True, ph, sh, spec_k, scn.chip.gpu_glue),
                                  ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m))
     stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
     vis = _vision_cost(scn, m, sys, stages) if (m.vision is not None and (sv.images or sv.videos or sv.audio_s)
@@ -1652,7 +1656,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 hit = ops_memo.get(okey)
                 if hit is None:
                     fabric.set_mult(n * layer_repeat(m.layers[li], ph))
-                    hit = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh), sys, scn.mapping, m)
+                    hit = ops_memo[okey] = _sum_ops(build_rank_ops(m, li, ph, sh, glue=scn.chip.gpu_glue), sys, scn.mapping, m)
                     fabric.set_mult(1)
                 _acc(agg, hit, n * layer_repeat(m.layers[li], ph))
             if st.has_head:
@@ -1711,7 +1715,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             t_pipe, tpipe = 0.0, None
             if scn.exec_overlap == "pipe":  # 0.98 (opt-in); FSDP gathers are prefetches (hidden behind the chain)
                 segs = [(full_io_ops(m, ph, sh, "pre"), 1)] if st.has_embed else []
-                segs += [(build_rank_ops(m, li, ph, sh), n * layer_repeat(m.layers[li], ph)) for g, (li, n) in counts.items()]
+                segs += [(build_rank_ops(m, li, ph, sh, glue=scn.chip.gpu_glue), n * layer_repeat(m.layers[li], ph)) for g, (li, n) in counts.items()]
                 if st.has_head:
                     segs.append((full_io_ops(m, ph, sh, "post"), 1))
                 hid = sum(extra_f.values()) if extra_f else 0.0
