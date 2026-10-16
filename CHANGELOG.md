@@ -4,6 +4,11 @@
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
 
+
+## [0.189.0]
+- Compound provenance tags accepted (core/provenance); LPDDR PHY 1.3 → 推导/二手.
+- Energy report: static share, dynamic J, idle source note, >50 % static warning (UI).
+- Opt-in TDP power cap (`power_cap`): throughput ×(TDP−P_static)/P_dyn when over TDP.
 ## [0.188.0]
 ### Added
 - Separate chip-side DRAM PHY energy line (`pJ_bit_phy_hbm` 0.29 来源 / `pJ_bit_phy_lpddr` 1.3 二手).

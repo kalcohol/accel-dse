@@ -7,7 +7,15 @@ from accel_dse.core.evaluate import evaluate
 from accel_dse.core.insight import knobs, upgrade_path
 from accel_dse.core.scenario import Scenario
 
-_STATUS = {"来源", "推导", "二手", "二手/假设", "假设", "推导/二手"}   # 0.162: derived from a secondary-sourced table
+from accel_dse.core.provenance import valid_tag as _vt
+
+
+class _ProvTags:
+    def __contains__(self, t):
+        return _vt(t)
+
+
+_STATUS = _ProvTags()   # 0.189: shared checker accepts compound tags
 
 
 def test_presets_labelled_and_values():

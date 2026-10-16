@@ -139,7 +139,7 @@ def _finite(x: Any, where: str = "body") -> None:
 
 
 _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
-_ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity"}, "fit": set(), "layouts": {"cards", "objective"},
+_ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
                "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": set(),
                "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
@@ -604,7 +604,10 @@ def api_eval(body: dict) -> dict:
     out = result_dict(r, with_goodput=bool(body.get("goodput", True)))
     if bb is not None and not bb.batch:     # 0.61.3: say so instead of silently evaluating the entered batch
         out["summary"]["warnings"].append(f"最佳 batch：没有既放得下又满足 SLO 的 batch，按输入的 batch {scn.serving.batch} 评估")
-    out["energy"] = energy_report(r, table)      # 0.47.1: action counts always; J only for user-supplied entries
+    pc = body.get("power_cap", False)
+    if not isinstance(pc, bool):
+        raise ApiError("power_cap must be true or false")
+    out["energy"] = energy_report(r, table, power_cap=pc)      # 0.47.1: action counts always; J only for user-supplied entries
     if body.get("sensitivity", True):
         out["sensitivity"] = sensitivity_report(scn, r)
     if bud is not None:

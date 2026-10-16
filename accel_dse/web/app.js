@@ -594,7 +594,7 @@ function showErr(msg) {
 async function runEval() {
   const t0 = performance.now();
   try {
-    const r = await track(req('eval', '/api/eval', body({ best_batch: S.best, sensitivity: false })));
+    const r = await track(req('eval', '/api/eval', body({ best_batch: S.best, sensitivity: false, ...(S.powerCap ? { power_cap: true } : {}) })));
     if (!r) return;
     S.last = r;
     markEvalStale(false);
@@ -835,6 +835,12 @@ function renderEnergy(r) {
     h('td', { class: 'num' }, (e.provided.includes(key) || k in j) ? sci(j[k] || 0) : h('span', { class: 'muted' }, '未提供'))));
   if (e.J_per_unit !== undefined) body.push(h('tr', {}, h('td', {}, h('b', {}, '合计')), h('td', { class: 'num' }, ''),
     h('td', { class: 'num' }, h('b', {}, sci(e.J_per_unit)), ` · 平均 ${num(e.avg_W_per_card)} W/卡`)));
+  if (e.idle_source_note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, '静态功耗来源：' + e.idle_source_note)));   // 0.189
+  if (e.static_share != null) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small', style: e.static_warning ? 'color:var(--danger)' : '' },
+    e.static_warning || `静态能耗占 ${Math.round(e.static_share * 100)}%`)));
+  const pc = e.power_cap;
+  if (pc) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small' }, pc.error ? '功耗封顶：' + pc.error
+    : `功耗封顶：需 ${num(pc.P_needed_W)} W / TDP ${num(pc.tdp_W)} W → ` + (pc.capped ? `吞吐 ×${num(pc.throughput_factor)}，J/单位 ${sci(pc.J_per_unit_capped)}` : '未超 TDP'))));
   if (e.host_note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, e.host_note)));
   if (e.note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, e.note)));   // 0.131
   put($('energy-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
@@ -1905,6 +1911,7 @@ async function init() {
       { nullable: true, int: k === 'cards' });
   for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
+  $('e-power_cap').addEventListener('change', (e) => { S.powerCap = e.target.checked; schedule(); });   // 0.189
   initDensityPresets();
   initEnergyPresets();
   initElectricityPresets();

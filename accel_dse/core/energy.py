@@ -163,7 +163,7 @@ ENERGY_PRESETS: dict[str, dict] = {
             "pJ_bit_phy_hbm": (0.29, "来源", "Chae et al. (Samsung), 'A 4-nm 1.15 TB/s HBM3 Interface…', ISSCC 2023 28.4 / "
                                "JSSC 2023: 0.29 pJ/bit (controller-side interface); cross-check Mehta et al. VLSID 2025 "
                                "HBM3 host PHY 0.5 pJ/bit"),
-            "pJ_bit_phy_lpddr": (0.65 * 2, "二手", "LPDDR4X controller PHY 0.65 pJ/b and 'LPDDR5X … halves the energy "
+            "pJ_bit_phy_lpddr": (0.65 * 2, "推导/二手", "LPDDR4X controller PHY 0.65 pJ/b and 'LPDDR5X … halves the energy "
                                  "efficiency compared to LPDDR4X' (SOCC 2025, 'A 4.266 Gbps/pin LPDDR4X PHY … 12nm', "
                                  "citing its refs [5][6]) → ≈ 1.3 pJ/bit for LPDDR5X"),
             "idle_frac_tdp": (71.8 / 700.0, "二手", "measured H100 SXM idle 71.8 W without a CUDA context (121.7 W with "
@@ -323,7 +323,10 @@ def dram_pJ_field(r, table: EnergyTable) -> str:
     return f if getattr(table, f) is not None else "pJ_bit_dram"
 
 
-def energy_report(r, table: EnergyTable | None = None) -> dict:
+def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) -> dict:
+    """0.189 power_cap (opt-in): when average card power (dynamic + static) exceeds table.tdp_W, sustained throughput
+    is cut to fit.  Energy per action held constant (no DVFS V² saving, 「假设」, conservative), so the window stretches
+    to t' = E_dyn / (TDP − P_static), i.e. ×(P_dyn / (TDP − P_static)); static J grows by the same factor."""
     """Action counts per output unit; energy (J / unit, by action) only for the entries the user supplied."""
     table = table or EnergyTable()
     a = action_counts(r)
@@ -361,6 +364,11 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
         j["idle"] = iw * per["idle_card_s"]
         out["idle_W_used"] = iw
         out["idle_source"] = "idle_W" if table.idle_W is not None else "idle_frac_tdp × tdp_W"
+        if table.idle_W is None:      # 0.189: say where the fraction comes from — a GPU number applied to an NPU
+            pre = ENERGY_PRESETS["tpuv4i_7nm"]["fields"]["idle_frac_tdp"]
+            out["idle_source_note"] = (f"idle_frac_tdp {table.idle_frac_tdp:g} × TDP {table.tdp_W:g} W；"
+                                       + (f"「{pre[1]}」{pre[2]} — GPU 整卡空闲值套用于本 NPU，不是本芯片的泄漏测量"
+                                          if abs(table.idle_frac_tdp - pre[0]) < 1e-12 else "用户填写"))
     if per.get("host"):
         if table.pJ_bit_host is not None:
             j["host"] = per["host"] * table.pJ_bit_host * 1e-12 * 8
@@ -372,4 +380,34 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
     tot = sum(j.values())
     out.update(J_per_unit=tot, J_by_action=j,
                avg_W_per_card=tot * u / a["window_s"] / r.scenario.layout.cards if a["window_s"] > 0 else 0.0)
+    if "idle" in j and tot > 0:       # 0.189: static share + dominant-term warning
+        out["static_share"] = j["idle"] / tot
+        out["J_dynamic_per_unit"] = tot - j["idle"]
+        if out["static_share"] > STATIC_WARN:
+            out["static_warning"] = (f"静态能耗占 J/{a['unit']} 的 {out['static_share']:.0%}（> {STATIC_WARN:.0%}）："
+                                     "结论主要由空闲功耗假设决定，而非动态动作")
+    if power_cap:
+        out["power_cap"] = _power_cap(out, j, iw, table, r.scenario.layout.cards, u, a["window_s"])
     return out
+
+
+STATIC_WARN = 0.5
+
+
+def _power_cap(out, j, iw, table, cards, u, win) -> dict:
+    """0.189: TDP-capped sustained throughput (opt-in).  Needs tdp_W.  See EnergyTable.power_cap."""
+    if table.tdp_W is None or win <= 0:
+        return {"error": "power_cap 需要 tdp_W（每卡 TDP，产品决策，无默认值）"}
+    p_stat = iw or 0.0
+    e_dyn_card = sum(v for k, v in j.items() if k != "idle") * u / cards        # J per card per window
+    p_dyn = e_dyn_card / win
+    need = p_dyn + p_stat
+    if p_stat >= table.tdp_W:
+        return {"P_needed_W": need, "tdp_W": table.tdp_W, "feasible": False,
+                "error": "静态功耗 ≥ TDP：任何吞吐都超功耗"}
+    slow = max(1.0, p_dyn / (table.tdp_W - p_stat))
+    J = out["J_per_unit"] + (j.get("idle", 0.0) * (slow - 1.0))
+    return {"P_needed_W": need, "P_dyn_W": p_dyn, "P_static_W": p_stat, "tdp_W": table.tdp_W, "feasible": True,
+            "capped": slow > 1.0, "slowdown": slow, "throughput_factor": 1.0 / slow, "J_per_unit_capped": J,
+            "basis": "每动作能耗不随频率变（不计 DVFS 的 V² 收益，「假设」，偏保守）；超 TDP 时窗口拉长到 "
+                     "E_dyn / (TDP − P_static)"}

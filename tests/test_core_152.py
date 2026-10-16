@@ -6,7 +6,15 @@ from accel_dse.core.energy import ENERGY_PRESETS, EnergyTable, apply_energy_pres
 from accel_dse.core.insight import DOMAIN_METRICS, upgrade_path, insight_report
 from accel_dse.core.scenario import Scenario
 
-_STATUS = {"来源", "推导", "二手", "二手/假设", "假设"}
+from accel_dse.core.provenance import valid_tag as _vt
+
+
+class _ProvTags:
+    def __contains__(self, t):
+        return _vt(t)
+
+
+_STATUS = _ProvTags()   # 0.189: shared checker accepts compound tags
 _B = Scenario().replace("layout.tp", 2)
 
 
