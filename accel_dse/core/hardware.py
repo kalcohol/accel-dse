@@ -120,6 +120,11 @@ class Chip:
     # A and B, 128 B of K per row: the TMA swizzle width) and its C writeback at the SM's share of DRAM bandwidth,
     # not overlapped with the main loop (MODEL §81).  tile_io_Bpc: chip DRAM bytes / cycle, filled by evaluate.
     tile_io: str = field(default="", metadata={"omit_default": True})
+    # 0.195 tile_io "occupancy": per-SM resources for resident CTAs (CUDA occupancy rules): shared memory KiB, register
+    # (or Blackwell TMEM) KiB for the fp32 accumulator tile, max resident threads
+    occ_smem_kib: float = field(default=0.0, metadata={"omit_default": True})
+    occ_reg_kib: float = field(default=0.0, metadata={"omit_default": True})
+    occ_threads: int = field(default=0, metadata={"omit_default": True})
     # 0.193: GEMM fmt_ceiling applied as a multiplicative achieved-peak fraction on top of the tile/wave-quantised
     # time (instance_sched "cta"), instead of a floor (max(t, ideal / cap)).  The fraction must already have the
     # wave quantisation of its measured shape divided out (extval.net_ceiling)
@@ -179,8 +184,8 @@ class Chip:
             raise ValueError("set either chip.acc_kib (chip-wide) or chip.acc_kib_per_engine, not both")
         if self.attn_fmt not in ("", "kv"):
             raise ValueError("chip.attn_fmt must be '' (bf16 + KV up-cast) or 'kv' (native KV-format attention)")
-        if self.tile_io not in ("", "dram", "persistent"):
-            raise ValueError("chip.tile_io must be empty, dram or persistent")
+        if self.tile_io not in ("", "dram", "persistent", "occupancy"):
+            raise ValueError("chip.tile_io must be empty, dram, persistent or occupancy")
         if self.attn_sched and self.attn_sched not in INSTANCE_SCHEDS:
             raise ValueError(f"chip.attn_sched must be empty or one of {', '.join(INSTANCE_SCHEDS)}")
         if self.instance_sched not in INSTANCE_SCHEDS:

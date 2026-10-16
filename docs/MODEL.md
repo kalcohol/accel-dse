@@ -4520,3 +4520,25 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - "dram" assumes one CTA per SM with serial I/O. The sm90 persistent ping-pong kernels (CUTLASS efficient_gemm.md) overlap it. With persistent I/O on Hopper / Blackwell (`default_tioauto`), MoE improves to 6.66 %, but v1 TTFT goes to 1.38 / 38 %, Mixtral to 28 %, and B200 2048³ to 1178 TF against 1006. Occupancy > 1 CTA per SM is the likely middle ground, with no source yet. Kept "dram"; this is not a bug.
 - **B200 NVFP4 regression.** The prefill-heavy short-osl rows got faster once the padding went (128/128 1.342 → 1.429, 2048/128 1.251 → 1.301, then 1.651 / 1.496 with NET_FULL). The padding had been compensating for costs that are still missing on B200 (§140). This is not a bug, and B200 goes 17.85 → 22.82 %.
 - Tests: `tests/test_core_194.py`.
+
+## §142 CTA occupancy (opt-in); TRT-LLM NVFP4 kernel rates on B200 (0.195)
+
+- **Occupancy (`tile_io` "occupancy", variant `default_occ`).** k = resident CTAs per SM is the minimum of three limits:
+  - shared memory (3 stages × (BM + BN) × 128 B of K);
+  - accumulator BM·BN·4 B in registers (Hopper) or TMEM (Blackwell);
+  - threads (2048 / 256).
+
+  Limits 「来源」: CUDA Programming Guide compute-capability table (smem 164 / 228 / 228 KB per SM for 8.0 / 9.0 / 10.0; 64 K registers; 2048 threads), PTX TMEM 256 KB, CDNA 3 white paper (64 KB LDS, 512 KB VGPR). Tile config 「二手」: CUTLASS sm80 DefaultGemmConfiguration.
+
+  A tile costs max(main, (main + I/O) / k), with k capped at the number of tiles per SM.
+  - k is 1 for 128×256 (H100), so large GEMMs behave like "dram"; 64×64 tiles get k = 4. MI300X gets k = 1 (LDS-bound).
+  - The picker then favours small tiles with hidden I/O, so it hides more than "persistent" rather than sitting between "dram" and "persistent".
+  - GEMM points (dram / occupancy / persistent vs measured): H100 4096³ 695 / 717 / 714 (716); B200 2048³ 1034 / 1214 / 1178 (1006); B200 4096³ 1446 / 1493 / 1487 (1532); 8192³ 1551 for all three. H100 MLA bmm 21.3 / 8.1 / 20.7 µs.
+  - Validation (dram → occupancy): static 22.8 → 27.0 %, TTFT 32.9 → 42.1 %, max-load 19.1 → 21.5 %, MoE 7.7 → 6.7 %, Mixtral 22.2 → 30.5 %, B200 22.8 → 23.5 %.
+  - Not default: B200 2048³ gets worse. The missing piece is likely the lower main-loop efficiency of small tiles.
+- **B200 prefill.** The 8192-token chunk is MAC-bound at about 6.4 PF effective, which matches the library-best source (cuDNN → cuBLASLt 6220 TF at 8192³, flashinfer #1732). That is not the kernel TRT-LLM runs.
+  - TensorRT-LLM PR #7943 (B200, autotuned, its default CUTLASS FP4 backend), M = N = 8192: K 1024 / 2048 / 4096 / 8192 / 16384 → 57.34 / 92.83 / 151.17 / 267.49 / 484.86 µs = 2397 / 2962 / 3637 / 4110 / 4535 TF. flashinfer's trtllm_autotune gives 3871 TF at 8192³.
+  - Applied as per-shape kernel throughput (nearest (N, K)) on TRT-LLM B200 rows (`TRTLLM_FP4_SHAPES`, variant key `trtllm_fp4`, default). Gross, measured kernel time.
+  - Rows: 128/128 1.651 → 1.216, 2048/128 1.496 → 1.108, 5000/500 1.281 → 1.086, 1000/1000 1.225 → 1.087. Group 1.125 / 22.82 % → 1.008 / 13.52 %; other groups unchanged.
+  - Attention (FA4 / cuDNN) is not the issue at these contexts: the chunk is GEMM-dominated. Activation FP4 quantisation is already charged as conversion work on the vector path.
+- `default_0194` keeps the previous default.

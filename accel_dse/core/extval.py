@@ -156,6 +156,8 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
         chip = replace(chip, fmt_ceiling=tuple(dict(chip.fmt_ceiling or ()).items()) + DEEPGEMM_SHAPES)
     if v.get("ceil_mul"):              # 0.193: GPU GEMMs = SM × CTA-tile wave quantisation × achieved-peak fraction
         chip = cta_ceiling_chip(chip, h.mem_id)
+    if v.get("trtllm_fp4") and chip.name.startswith("B200") and str(r.get("src", "")).startswith("trtllm"):   # 0.195
+        chip = replace(chip, fmt_ceiling=tuple(dict(chip.fmt_ceiling or ()).items()) + TRTLLM_FP4_SHAPES)
     if v.get("pipe_cross_op") is not None:   # 0.98: exec_overlap "pipe" — GPU kernel boundaries (no cross-op prefetch)
         chip = replace(chip, pipe_cross_op=v["pipe_cross_op"])
     if v.get("sfu") and h.sfu_per_sm:  # 0.103: transcendentals on the SFU pipe (NVIDIA, CUDA Programming Guide)
@@ -365,6 +367,14 @@ DEEPGEMM_0325 = {"2112x7168": 1058, "24576x1536": 990, "32768x512": 590, "7168x1
 # sources whose stack runs DeepGEMM (DeepSeek's own profile, SGLang large-EP); TRT-LLM / vLLM FP8 rows use other kernels
 DEEPGEMM_SRC = ("deepseek-profile", "deepseek-profile-decode", "sglang-ep-2025")
 DEEPGEMM_SHAPES = tuple((f"gemm:fp8@{k}", v / 1979) for k, v in DEEPGEMM_0325.items())
+# 0.195 「来源」 TensorRT-LLM PR #7943 (B200, autotuned, NVFP4 × NVFP4 → bf16): M = N = 8192, K = 1024…16384 —
+# CUTLASS (TRT-LLM's default FP4 linear backend; cuBLASLt is opt-in, "disabled by default") 57.34 / 92.83 / 151.17 /
+# 267.49 / 484.86 µs → 2397 / 2962 / 3637 / 4110 / 4535 TFLOPS / 9000 dense FP4 peak.  Applied to TRT-LLM B200 rows as
+# per-shape kernel throughput (nearest (N, K), evaluate._shape_cap); gross (measured kernel time) 「来源」.  The library
+# best (cuDNN → cuBLASLt 6220 at 8192³, flashinfer #1732) is not what that engine runs.
+TRTLLM_FP4_US = {1024: 57.34, 2048: 92.83, 4096: 151.17, 8192: 267.49, 16384: 484.86}
+TRTLLM_FP4_SHAPES = tuple((f"gemm:nvfp4@8192x{k}", 2 * 8192 * 8192 * k / (us * 1e-6) / 1e12 / 9000)
+                          for k, us in TRTLLM_FP4_US.items())
 
 
 def candidate_variant(base: str = "catalog_kernel") -> str:
@@ -689,6 +699,9 @@ VARIANTS["default"] = dict(VARIANTS[rocm_variant(glue_variant(mech_variant("defa
 VARIANTS["default_0192"] = dict(VARIANTS["default"])
 VARIANTS["default_0193"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="dram")
 VARIANTS["default"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="dram")
+VARIANTS["default_0194"] = dict(VARIANTS["default"])
+VARIANTS["default"] = dict(VARIANTS["default_0194"], trtllm_fp4=True)   # 0.195: TRT-LLM B200 NVFP4 kernel rates
+VARIANTS["default_occ"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="occupancy")   # 0.195
 VARIANTS["default_tioauto"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="auto")   # 0.194 diagnostic (TILE_IO_BY_HW)
 
 

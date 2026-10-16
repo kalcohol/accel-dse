@@ -62,8 +62,19 @@ def _chip(name, sms, mac_per_sm, peak_tflops, fmts, l2_mib, lanes):
     # (tile_io "dram", MODEL §81); published achieved-peak fractions multiply the main loop (gemm_ceil_mul; the
     # fractions themselves are attached by extval, net of their measured shape's wave quantisation).
     # ≤ 0.192: instance_sched "wide" (one rows × E·cols array; N padded to E·cols — MODEL §26 / §119 / §139)
+    occ = next((v for k, v in OCC_RES.items() if name.startswith(k)), (0.0, 0.0, 0))
     return Chip(name, f, rows, cols, sms, formats=fmts, sram_mib=l2_mib, vector_lanes=lanes,
-                instance_sched="cta", tile_io="dram", gemm_ceil_mul=True)
+                instance_sched="cta", tile_io="dram", gemm_ceil_mul=True,
+                occ_smem_kib=occ[0], occ_reg_kib=occ[1], occ_threads=occ[2])
+
+
+# 0.195: per-SM occupancy resources (shared memory KiB, accumulator storage KiB, max resident threads)
+#   NVIDIA 「来源」 CUDA C++ Programming Guide, "Technical Specifications per Compute Capability": max shared memory per SM
+#   164 KB (8.0), 228 KB (9.0, 10.0); 64 K 32-bit registers per SM (256 KB); 2048 resident threads.  Blackwell
+#   accumulators sit in tensor memory, 256 KB / SM (PTX ISA, "Tensor Memory": 512 columns × 128 lanes × 32 bit).
+#   MI300X 「来源」 AMD CDNA 3 white paper: 64 KB LDS / CU, 512 KB VGPR / CU; 2048 work-items (32 wave64) / CU.
+OCC_RES = {"A100": (164.0, 256.0, 2048), "H100": (228.0, 256.0, 2048), "H200": (228.0, 256.0, 2048),
+           "H800": (228.0, 256.0, 2048), "B200": (228.0, 256.0, 2048), "MI300X": (64.0, 512.0, 2048)}
 
 
 _NV_SFU = 16.0

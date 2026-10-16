@@ -1,5 +1,5 @@
 {
- "generated": "0.194.0",
+ "generated": "0.195.0",
  "variants": {
   "default": {
    "eff": "catalog",
@@ -32,7 +32,8 @@
     "decode": 4.853637901861251
    },
    "ceil_mul": true,
-   "tile_io": "dram"
+   "tile_io": "dram",
+   "trtllm_fp4": true
   },
   "catalog": {
    "eff": "catalog",

@@ -221,6 +221,23 @@ SPLIT_K = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
 # a handful of SMs (MI300X 3257× its FLOP time)
 
 
+# 0.195: CTA resources per tile config (CUTLASS sm80 DefaultGemmConfiguration, OpClassTensorOp: kStages = 3,
+# threadblock K = 64 for 16-bit operands = 128 B / row (the TMA / cp.async 128 B swizzle), 256 threads = 8 warps)
+# 「二手」; accumulator = BM × BN fp32 in registers (Hopper) / TMEM (Blackwell).  Max 32 resident CTAs per SM (CUDA
+# Programming Guide, compute capability table).
+OCC_STAGES, OCC_K_BYTES, OCC_CTA_THREADS, OCC_MAX_CTAS = 3, 128, 256, 32
+
+
+def cta_occupancy(ch: Chip, tm: int, tn: int, ab: float, wb: float) -> int:
+    """Resident CTAs per SM for a tm × tn tile under the CUDA occupancy rules: min over shared memory (stages × (BM +
+    BN) × 128 B of K), accumulator storage (BM·BN·4 B) and threads; ≥ 1."""
+    smem = OCC_STAGES * (tm + tn) * OCC_K_BYTES / 1024
+    acc = tm * tn * 4 / 1024
+    k = min(int(ch.occ_smem_kib // smem), int(ch.occ_reg_kib // acc) if ch.occ_reg_kib else OCC_MAX_CTAS,
+            (ch.occ_threads // OCC_CTA_THREADS) if ch.occ_threads else OCC_MAX_CTAS, OCC_MAX_CTAS)
+    return max(1, k)
+
+
 def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost:
     """0.92 instance_sched "cta" (GPU reference hardware): the output is cut into thread-block tiles tm × tn (the
     guide's tile set; the library picks the fastest, optionally split-K), one tile per SM (engine) at a time →
@@ -251,7 +268,14 @@ def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost
                 io = ch.tile_io_Bpc / E
                 bk = min(kk, max(1, int(128 / max(ab, wb, 0.5))))
                 t_io = max(epi, tm * tn * (ob if s == 1 else 4.0) / io) + bk * (tm * ab + tn * wb) / io
-                if ch.tile_io == "persistent":
+                if ch.tile_io == "occupancy" and ch.occ_smem_kib:
+                    # 0.195: k resident CTAs per SM (cta_occupancy); one tile's I/O runs under the others' main loops,
+                    # so a tile costs max(main, (main + I/O) / k) in steady state.  A single tile per SM (waves = 1)
+                    # has nothing to overlap with.  k = 1 → "dram"; k → ∞ → no exposed I/O
+                    kw = min(cta_occupancy(ch, tm, tn, ab, wb), _cd(tiles * s, E))
+                    main = max(mac_t, feed_t)
+                    epi = max(main, (main + t_io) / kw) - main
+                elif ch.tile_io == "persistent":
                     # 0.138: persistent warp-specialised kernel (CUTLASS sm90 ping-pong): tile i's epilogue and tile
                     # i+1's prologue run under the neighbouring tile's main loop — exposed once per SM, and per tile
                     # only where the I/O outlasts the main loop

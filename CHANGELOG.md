@@ -6,6 +6,9 @@
 
 
 
+## [0.195.0]
+- tile_io "occupancy" (opt-in, `default_occ`): resident CTAs per SM from documented smem / register (TMEM) / thread limits vs CUTLASS sm80 default tile configs (3 stages × 128 B of K, 256 threads); a tile costs max(main, (main + I/O)/k). Not default: B200 2048³ 1034 → 1214 TF (meas 1006), v1 TTFT 32.9 → 42.1 %.
+- B200 NVFP4: TRT-LLM rows use TRT-LLM's FP4 GEMM rates (PR #7943, CUTLASS default backend, 8192×8192×K: 2397–4535 TF), not the cuDNN library best (6220). B200 group 1.125 / 22.8 % → 1.008 / 13.5 %; 128/128 1.651 → 1.216, 2048/128 1.496 → 1.108. Other groups unchanged.
 ## [0.194.0]
 - Small-GEMM check: the 0.193 B200 2048³ "1534 vs 1006" left out the default's existing per-kernel cost (2 µs floor + 1.03 µs gap) and tile I/O; with them it is 997. No new fixed-cost term: pipeline fill ≈ one DRAM latency (GH100 658.7 cycles, arXiv 2507.10789) is < 3 % at 2048³.
 - Net GEMM ceiling now includes tile I/O + per-kernel cost at the source shape (`extval.NET_FULL`, bisection; ≤ 0.193 waves only, double-charging them). H100 4096³ 653 → 695 TF (meas 716), B200 2048³ 997 → 1034 (1006), 4096³ 1375 → 1446 (1532).
