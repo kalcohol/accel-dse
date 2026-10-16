@@ -4625,3 +4625,10 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - context FMHA on, TensorRT-native GEMMs (no gemm plugin), custom AR, gptSessionBenchmark, which has no tokenizer or HTTP.
   - Attention is ≤ 7 % of prefill at ≤ 2048 tokens.
   - The remaining ≈ 20 % too-fast bias has no sourced mechanism; TensorRT-native GEMM efficiency is unpublished. Not fitted.
+
+## §148 GPU mechanisms vs the NPU path; gptSessionBenchmark TTFT scope (0.201)
+- All-reduce latency now depends on `Link.ar_lat`. "gpu" (refhw NVLink/NVSwitch nodes): CUDA custom AR 6.8 µs for group ≤ 8 「二手」, NCCL Ring-LL beyond (§146–147). "" (NPU links, D2D, cross-node net): t_α = `alpha_us`, the design's own collective model. `GPU_AR_ONLY=False` restores ≤ 0.200.
+- CTA tile mechanisms (DRAM floor, SMEM BW, occupancy fill, L2 activation reuse) live only in `_cta` and need `tile_io_Bpc > 0`; NPU chips are unaffected.
+- Fused QKV is an IR transform valid for any engine/compiler; it conserves FLOPs and bytes.
+- gptSessionBenchmark TTFT (output_len 1) = generate() + sync: host setup (buffers, paged-KV add/remove, decoder newBatch) + context pass + last-token sampling + one host-only loop iteration (no extra engine pass). Modelled: context pass, last-token lm_head and sampling. Not modelled: the host setup, which has no sourced cost.
+- Prefill lm_head m = batch (last token), matching TRT-LLM `gather_context_logits=False`.

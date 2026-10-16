@@ -89,29 +89,29 @@ SMEM_BPC = 128.0
 _NV_SFU = 16.0
 REF_HW = {h.name: h for h in (
     RefHW("MI300X", _chip("MI300X 参考硬件", 304, 1024, 1307.4, _CDNA3, 32.0, 19456),
-          "hbm3_8s_8h24g_5200", Link(448.0, 3.0), 1307.4, 2614.9, 5300.0, 192.0, 896.0, MI300X_URL,
+          "hbm3_8s_8h24g_5200", Link(448.0, 3.0, ar_lat="gpu"), 1307.4, 2614.9, 5300.0, 192.0, 896.0, MI300X_URL,
           "datasheet: 304 CUs, BF16 1,307.4 / FP8 2,614.9 TFLOPS dense, 192 GB HBM3 5.3 TB/s, 7 × 128 GB/s Infinity "
           "Fabric (bidir) — aggregate taken as the scale-up link 「假设」(a ring over the mesh uses less); L2 8 × 4 MB as "
           "sram (256 MB Infinity Cache NOT modelled)"),
     RefHW("B200", _chip("B200 参考硬件", 148, 4096, 2250.0, _BLACKWELL, 126.0, 18944),
-          "hbm3e_8s_8h24g_7800", Link(900.0, 3.0), 2250.0, 4500.0, 8000.0, 180.0, 1800.0, B200_URL,
+          "hbm3e_8s_8h24g_7800", Link(900.0, 3.0, ar_lat="gpu"), 2250.0, 4500.0, 8000.0, 180.0, 1800.0, B200_URL,
           "DGX B200: 72 PF FP8 / 144 PF FP4 (sparse, 8 GPUs) → 4.5 / 9 PF dense per GPU, BF16 2.25 PF dense 「假设」"
           "(half of FP8), 1,440 GB HBM3e / 8 = 180 GB (catalog 192 GiB stacks), 64 TB/s / 8 = 8 TB/s, NVLink5 1.8 TB/s"),
     RefHW("H800-SXM", _chip("H800-SXM 参考硬件", 132, 2048, 989.5, _HOPPER, 50.0, 16896),
-          "hbm3_5s_8h16g_5234", Link(200.0, 3.0), 989.5, 1979.0, 3350.0, 80.0, 400.0, H800_URL,
+          "hbm3_5s_8h16g_5234", Link(200.0, 3.0, ar_lat="gpu"), 989.5, 1979.0, 3350.0, 80.0, 400.0, H800_URL,
           "H100-SXM die (same SM count / clocks / HBM3 80 GB 3.35 TB/s 「假设」: NVIDIA publishes no SXM H800 sheet) with "
           "NVLink capped at 400 GB/s bidirectional (PCIe sheet + DeepSeek-V3 report)"),
     RefHW("H100-SXM", _chip("H100-SXM 参考硬件", 132, 2048, 989.5, _HOPPER, 50.0, 16896),
-          "hbm3_5s_8h16g_5234", Link(450.0, 3.0), 989.5, 1979.0, 3350.0, 80.0, 900.0, H100_URL,
+          "hbm3_5s_8h16g_5234", Link(450.0, 3.0, ar_lat="gpu"), 989.5, 1979.0, 3350.0, 80.0, 900.0, H100_URL,
           "datasheet: BF16 1,979 / FP8 3,958 TFLOPS with sparsity; 80 GB; 3.35 TB/s; NVLink 900 GB/s"),
     RefHW("H200-SXM", _chip("H200-SXM 参考硬件", 132, 2048, 989.5, _HOPPER, 50.0, 16896),
-          "hbm3e_6s_8h24g_6250", Link(450.0, 3.0), 989.5, 1979.0, 4800.0, 141.0, 900.0, H200_URL,
+          "hbm3e_6s_8h24g_6250", Link(450.0, 3.0, ar_lat="gpu"), 989.5, 1979.0, 4800.0, 141.0, 900.0, H200_URL,
           "datasheet: same tensor FLOPS as H100 SXM; 141 GB; 4.8 TB/s; NVLink 900 GB/s"),
     RefHW("A100-SXM-40GB", _chip("A100-40GB 参考硬件", 108, 1024, 312.0, _AMPERE, 40.0, 6912),
-          "hbm3_5s_4h16g_2430", Link(300.0, 3.0), 312.0, 0.0, 1555.0, 40.0, 600.0, A100_URL,
+          "hbm3_5s_4h16g_2430", Link(300.0, 3.0, ar_lat="gpu"), 312.0, 0.0, 1555.0, 40.0, 600.0, A100_URL,
           "datasheet: BF16 312 TFLOPS dense; 40 GB HBM2 1,555 GB/s; NVLink 600 GB/s"),
     RefHW("A100-SXM-80GB", _chip("A100-80GB 参考硬件", 108, 1024, 312.0, _AMPERE, 40.0, 6912),
-          "hbm3_5s_8h16g_3186", Link(300.0, 3.0), 312.0, 0.0, 2039.0, 80.0, 600.0, A100_URL,
+          "hbm3_5s_8h16g_3186", Link(300.0, 3.0, ar_lat="gpu"), 312.0, 0.0, 2039.0, 80.0, 600.0, A100_URL,
           "datasheet: BF16 312 TFLOPS dense; 80 GB HBM2e 2,039 GB/s (SXM); NVLink 600 GB/s"),
 )}
 # NVIDIA references: SFU rate from the CUDA Programming Guide (MI300X: no public per-CU transcendental rate → unset)

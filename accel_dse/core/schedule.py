@@ -55,6 +55,10 @@ NCCL_AR_LAT = True
 # 6.8 µs at 2 KB on 8 × H100 with CUDA graphs (vLLM PR #33839, benchmark_device_communicators.py) 「二手」; the same
 # floor is used for TP 2 / 4 and A100 「假设」.  Larger messages keep the bandwidth term.  CUSTOM_AR False = 0.199 (NCCL).
 CUSTOM_AR = True
+# 0.201: only links marked ar_lat = "gpu" (the reference GPUs) take the CUDA all-reduce latency; any other link keeps its
+# own alpha_us.  ≤ 0.200 every switch link got max(alpha_us, 6.8 µs) — NPU design points silently inherited the CUDA
+# custom all-reduce floor.  False = ≤ 0.200.
+GPU_AR_ONLY = True
 CUSTOM_AR_US = 6.8
 NCCL_BASE_LAT_US, NCCL_NVL_HW_LAT_US = 6.6, 0.6
 
@@ -69,7 +73,7 @@ def collective_seconds(kind: str, payload: float, group: int, link: Link) -> tup
         return 0.0, 0.0
     beta = link.GBps * 1e9
     a = link.alpha_us * 1e-6
-    if kind == "allreduce" and NCCL_AR_LAT and link.topology == "switch":
+    if kind == "allreduce" and NCCL_AR_LAT and link.topology == "switch" and (link.ar_lat == "gpu" or not GPU_AR_ONLY):
         a = max(a, (CUSTOM_AR_US if CUSTOM_AR and group <= 8 else nccl_ring_ll_us(group)) * 1e-6)
     if kind == "allreduce":
         bw = 2 * (group - 1) / group * payload / beta

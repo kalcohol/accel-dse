@@ -11,7 +11,7 @@ def test_nccl_ring_ll_values():
 
 
 def test_allreduce_alpha_grows_with_group():
-    L = Link(450.0, 3.0, "switch")
+    L = Link(450.0, 3.0, "switch", ar_lat="gpu")   # 0.201: GPU link
     with E.model_flags(CUSTOM_AR=False):           # 0.200: NCCL path (no custom all-reduce)
         a2 = S.collective_seconds("allreduce", 1024, 2, L)[1]
         a8 = S.collective_seconds("allreduce", 1024, 8, L)[1]

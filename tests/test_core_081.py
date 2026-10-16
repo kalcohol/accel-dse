@@ -134,7 +134,10 @@ def test_des_nonbinding_kv_cap_equals_cap_off():
         rep, ctx = capture_ctx(s)
         return simulate(ctx, rep["queue"]["lambda_rps"], "pd", n_req=1500, warmup=300, seed=3)
     d1 = run(s1)
-    for cap, binding in ((12.0, False), (8.0, True)):
+    # 0.201: the 0.199/0.200 α reached this NPU scenario only through the GPU all-reduce leak (GPU_AR_ONLY); with its
+    # own 3 µs α restored, 8 GB is non-binding again — the premise is still asserted via kv_blocked, and the binding
+    # case is checked at 4 GB
+    for cap, binding in ((12.0, False), (8.0, False), (4.0, True)):
         s0 = replace(base, pd=replace(base.pd, kv_policy="recompute", kv_capacity_GB=cap, kv_admit="before_prefill"))
         d0 = run(s0)
         assert d0["preempt_per_req"] == 0.0

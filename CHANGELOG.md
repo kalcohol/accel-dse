@@ -6,6 +6,21 @@
 
 
 
+## [0.201.0]
+- NPU path vs the 0.196–0.200 GPU mechanisms (adversarial review):
+  - Bug: the CUDA all-reduce latency (`CUSTOM_AR` 6.8 µs / NCCL Ring-LL) applied to every `switch` link, so NPU design points (default `Link(400, 3)`) and the cross-node `net` link silently got max(α, 6.8 µs) instead of their own `alpha_us`. Custom AR is an intra-NVLink-node CUDA kernel.
+  - Fix: new `Link.ar_lat` ("" = own α, "gpu" = CUDA AR latency; omit-default, so hashes are stable); the 7 refhw GPU links are marked "gpu". Flag `schedule.GPU_AR_ONLY` (False = ≤ 0.200). Validation unchanged (all GPU rows use refhw links).
+  - Consequence: every NPU fingerprint returns exactly to its 0.198 value (stage `6dca732e67c83a75`, fpx `4aa21d67471fd69e` / `a3548246a90a9ceb`; `{}` → `bc06528a82e19e2a`). The 0.200 test_core_081 finding (8 GB cap binding under the new α) was itself produced by this leak: with the NPU's own α, 8 GB is non-binding again. The test keeps the kv_blocked premise check, with 12 / 8 GB non-binding and 4 GB binding.
+  - CLI: `--link-ar-lat`, `--d2d-ar-lat`, `--net-ar-lat`.
+  - Genz reference points (`validation._h100`, a plain Link) also return to α = 3 µs, which matches GenZ's own α-β model.
+  - DRAM floor, SMEM BW, occupancy fill, L2 activations: confined to `mapping._cta`, reached only with `tile_io_Bpc > 0` (GPU refhw chips); 100T / 1P have 0, verified flag-inert by test.
+  - Fused QKV: IR-level and applied to NPUs too. Kept: concatenating the Q/K/V weights is a model/compiler transform, not GPU hardware, and work is conserved (test).
+  - `W_BITS_ZERO_FIX`: general bug fix, correct on every chip.
+- TP1 short-request gap (H200 mistral-7b 128: 4.05 vs 6.0 ms), gptSessionBenchmark v0.8.0 sources 「来源」:
+  - Timed region = `session.generate()` + stream synchronize. It includes per-call buffer init/reshape, KV `addSequence`/`removeSequence`, decoder `newBatch` (sampling setup), the context engine pass, `decoderStepAsync` (sampling on last-token logits), and for output_len 1 one generation-loop iteration that only runs `prepareNextStep` + `shouldStopSync` (host sync) before stopping (no second engine pass), plus the output-id copy and final sync.
+  - The model already charges the context pass, the last-token lm_head and sampling. The remaining items are host-side overheads with no sourced magnitude, so nothing is added; the gap stays 「假设」-attributed to them.
+- Prefill lm_head: verified to project only the last token (m = batch). TRT-LLM v0.8.0 `gather_context_logits` defaults to False → `gather_last_token_logits` (models/modeling_utils.py) 「来源」. Test added.
+
 ## [0.200.0]
 - test_core_081: the 2 % p99 gap in "non-binding KV cap = cap off" was a cap that binds, not a simulator bug.
   - Under the 0.199 all-reduce α, decode steps are slower and more KV stays resident, so the 8 GB cap refused 57 admissions (0 preemptions).

@@ -264,12 +264,17 @@ class Link:
     GBps: float = 400.0       # 「假设」 per-rank uni-directional bandwidth
     alpha_us: float = 3.0     # 「假设」 per-collective latency (sync + launch)
     topology: str = "switch"  # switch | ring | full_mesh | torus2d — used only with fabric.enabled (0.59)
+    # 0.201: all-reduce latency model.  "" = α = alpha_us (the user's own interconnect: NPU design points);
+    # "gpu" = NVLink / NVSwitch GPU node (refhw): CUDA custom all-reduce floor / NCCL Ring-LL (schedule.py)
+    ar_lat: str = field(default="", metadata={"omit_default": True})
 
     def __post_init__(self):
         if not (self.GBps > 0 and self.GBps != float("inf")) or not (self.alpha_us >= 0):
             raise ValueError("link GBps must be finite > 0, alpha_us ≥ 0")
         if self.topology not in LINK_TOPOLOGIES:
             raise ValueError(f"link topology must be one of {', '.join(LINK_TOPOLOGIES)}")
+        if self.ar_lat not in ("", "gpu"):
+            raise ValueError("link ar_lat must be '' or 'gpu'")
 
 
 NET_TOPOLOGIES = ("fat_tree", "rail")

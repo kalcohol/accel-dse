@@ -103,4 +103,5 @@ def test_fingerprints_change_only_v4():
     # 0.198 rebaseline (were 45d9dbb41d0502ba / c68f3a7cb9ca4b7b): fused QKV
     # 0.199 rebaseline (were 4aa21d67471fd69e / a3548246a90a9ceb): NCCL all-reduce latency
     # 0.200 rebaseline (were 3e753f36c5bcdb36 / fefb5b23fdf2782c): custom all-reduce α
-    assert fpx({"exec_overlap": "stage"}) == "ba49c208f61b306c" and fpx({}) == "9bb4812eed9b116a"
+    # 0.201 rebaseline (were ba49c208f61b306c / 9bb4812eed9b116a): GPU all-reduce latency no longer on NPU links (= 0.198 values)
+    assert fpx({"exec_overlap": "stage"}) == "4aa21d67471fd69e" and fpx({}) == "a3548246a90a9ceb"
