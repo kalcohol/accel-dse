@@ -242,7 +242,7 @@ def _api_summary(r: Result) -> dict:
 
 def result_dict(r: Result, *, with_goodput: bool = False) -> dict:
     s = r.scenario
-    out = {"summary": _api_summary(r), "stages": [_stage_dict(x) for x in r.stages],
+    out = {"summary": _api_summary(r), "stages": [_stage_dict(x) for x in r.stages], "walls": r.walls(),
            "model": {"id": r.model.id, "hf_id": r.model.hf_id, **labels(r.model)},
            "hash": text_view(s).hash(), "scenario": text_view(s).to_dict()}   # 0.62: as entered (image tokens not folded in)
     if with_goodput and s.serving.phase == "decode" and r.workload is None:
@@ -465,6 +465,11 @@ def sensitivity_report(scn: Scenario, r: Result) -> dict:
             cases.append(("mem_eff", f"DRAM 效率 {e:g}（当前 {eff:g}）", scn.replace("mem_eff", e)))
     ch = scn.chip
     cases.append(("vector_lanes", f"向量 lane ÷4（{ch.lanes} → {max(1, ch.lanes // 4)}）", _lanes_q(scn)))
+    if not ch.dispatch and not ch.kernel_us and not ch.gpu:   # 0.203: NPU dispatch is 「假设」 0 by default — scan the modes
+        from .core.hardware import DISPATCH_US
+        for mode, lab in (("static", "每步静态图启动 + 同步"), ("trace", "每算子设备回放派发"), ("host", "每算子主机派发")):
+            cases.append(("dispatch", f"派发 {mode}：{lab} {DISPATCH_US[mode]:g} µs「二手」",
+                          scn.replace("chip", replace(ch, dispatch=mode))))
     base = r.throughput
     rows = []
     for key, label, s in cases:

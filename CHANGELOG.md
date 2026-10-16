@@ -6,6 +6,28 @@
 
 
 
+## [0.203.0]
+- NPU dispatch model, new `Chip.dispatch` with optional `dispatch_us`. The default "" stays ideal (0 cost, ≤ 0.202 behaviour), so hashes and fingerprints don't change. Modes and sourced defaults:
+  - `static` (one compiled program per step: launch plus token sync, once per step per stage): 10 µs per step. Source: JAX `jit_simple_dispatch` 9.1–10.1 µs, host path only (XLA commit 660c49a) 「二手」. This is a lower bound for TPU-style static graphs.
+  - `trace` (device-replayed command stream: TT Metal Trace, ACLGraph replay): 1.5 µs per op. Source: tt-metal #20681 kernel preload "up to around 1.5us"; tracy op-to-op constant 1500 ns 「二手」.
+  - `host` (host-launched per op): 20 µs per op. Source: vllm-ascend #13021, measured ~20 µs gaps on 910B 「二手」; the MindSpore ACLGraph doc's 20 µs is a worked example (「假设」 in the source).
+  - No public figure was found for Gaudi recipe launch, Inferentia/Trainium NEFF launch, Groq or Cerebras. They use `static` with a user-supplied `dispatch_us` 「假设」.
+- Counting: one op per GEMM, fused attention, stand-alone vector op or collective (`Op.launch` honoured). Dispatch is serial (`t_sync`, new `StageTime.t_disp`). CLI: `--dispatch`, `--dispatch-us`.
+- The sensitivity panel (`/api/sensitivity`) gains three dispatch rows for NPU chips that are on the ideal default. This is the sensitivity scan.
+- Per-step wall summary: `Result.walls()`, returned as `walls` in `/api/eval` and `eval --json`.
+  - It splits the heaviest stage into compute / DRAM / collective bandwidth / collective latency / dispatch / static (`layer_overhead_us`, new `StageTime.t_static`) and names the wall.
+  - The overlapped window is charged to the resource that sets it. The split is exact for `exec_overlap="stage"` and a dominant-resource reading otherwise (`exact` flag).
+  - Not a duplicate: the existing stage `t_ms` gives raw per-resource times and `summary.bound` a single label; neither gives the exposed split or dispatch.
+- Effect on decode TPOT, default qwen3-8b, ms (ideal / static / trace / host):
+
+  | chip | TP | batch | ideal | static | trace | host | host Δ |
+  |---|---|---|---|---|---|---|---|
+  | 100T | 1 | 1 | 82.01 | 82.02 | 82.56 | 89.27 | +8.9% |
+  | 100T | 4 | 1 | 20.47 | 20.48 | 21.12 | 29.19 | +42.6% |
+  | 100T | 4 | 64 | 70.31 | 70.32 | 70.96 | 79.03 | +12.4% |
+  | 1P | 1 | 1 | 80.96 | 80.97 | 81.50 | 88.22 | +9.0% |
+  | 1P | 4 | 1 | 19.41 | 19.42 | 20.07 | 28.13 | +44.9% |
+
 ## [0.202.0]
 - Standing leak audit of the GPU-specific mechanisms from 0.176–0.201 against the NPU design path (`tests/test_core_202.py`; register every new GPU-only mechanism there). Results:
 

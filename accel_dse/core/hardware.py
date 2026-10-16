@@ -143,7 +143,17 @@ class Chip:
     # 0.202: GPU reference hardware (refhw._chip).  Gate for GPU-kernel mechanisms that are otherwise reachable from an
     # NPU schedule (mapping.WIDE_WAVES); NPU presets / user chips leave it False
     gpu: bool = field(default=False, metadata={"omit_default": True})
+    # 0.203: NPU dispatch model (DISPATCH_MODES above); dispatch_us None = the mode's sourced default
+    dispatch: str = field(default="", metadata={"omit_default": True})
+    dispatch_us: float | None = field(default=None, metadata={"omit_default": True})
     acc_kib_per_engine: float | None = field(default=None, metadata={"omit_default": True})   # 0.141
+
+    def dispatch_s(self) -> tuple[float, float]:
+        """0.203: (seconds per step per stage, seconds per op) of the dispatch model."""
+        if not self.dispatch:
+            return 0.0, 0.0
+        us = (DISPATCH_US[self.dispatch] if self.dispatch_us is None else self.dispatch_us) * 1e-6
+        return (us, 0.0) if self.dispatch == "static" else (0.0, us)
 
     def __post_init__(self):
         # 0.94: JSON round-trips give lists — keep the field hashable and the scenario hash stable
@@ -151,6 +161,10 @@ class Chip:
         for k, v in self.fmt_ceiling:
             if not (0 < v <= 1):
                 raise ValueError(f"chip.fmt_ceiling[{k!r}] must be in (0, 1]")
+        if self.dispatch not in DISPATCH_MODES:
+            raise ValueError(f"chip.dispatch must be one of {DISPATCH_MODES}")
+        if self.dispatch_us is not None and (isinstance(self.dispatch_us, bool) or not 0.0 <= self.dispatch_us < 1e9):
+            raise ValueError("chip.dispatch_us must be finite and >= 0")
         if self.noc_topology not in NOC_TOPOLOGIES:
             raise ValueError(f"chip.noc_topology must be one of {NOC_TOPOLOGIES} (got {self.noc_topology!r})")
         for k in ("noc_hop_cycles", "wave_overhead_cycles", "kernel_us"):
@@ -259,6 +273,22 @@ class Chip:
 
 
 LINK_TOPOLOGIES = ("switch", "ring", "full_mesh", "torus2d")
+# 0.203: NPU dispatch / sync model (Chip.dispatch).  "" = ideal (no dispatch cost; ≤ 0.202, the default).
+#   static  one compiled program per step: host launch + host↔device token sync once per step per stage (decode is
+#           serial: the sampled token feeds the next step, so the launch cannot run ahead).  Default 10 µs / step:
+#           JAX jit dispatch microbenchmark jit_simple_dispatch 9.1–10.1 µs per call (XLA commit 660c49a, host CPU path
+#           only; the TPU program launch / sync is not in it) 「二手」 — a lower bound for TPU-style static graphs.
+#   trace   device-replayed command stream (Tenstorrent Metal Trace, Ascend ACLGraph replay): per-op device dispatch.
+#           Default 1.5 µs / op: tt-metal issue #20681 (TT dev: kernel load "up to around 1.5us" before launch on busy
+#           cores in trace mode; tracy PROFILER_OP_TO_OP_OVERHEAD_NANO_SEC = 1500) 「二手」.
+#   host    host-launched per op (eager / piecewise graph).  Default 20 µs / op: vllm-ascend issue #13021, Ascend 910B
+#           profile, ~20 µs gaps per piecewise-subgraph boundary 「二手」; MindSpore ACLGraph doc uses 20 µs / operator
+#           as its worked example 「假设」 in the source.
+#   No public figure was found for Gaudi recipe launch, Inferentia / Trainium NEFF launch, Groq or Cerebras: their
+#   static schedules are covered by "static" with dispatch_us as the user's figure 「假设」.
+DISPATCH_MODES = ("", "static", "trace", "host")
+DISPATCH_US = {"static": 10.0, "trace": 1.5, "host": 20.0}     # per step (static) / per op (trace, host)
+
 
 
 @dataclass(frozen=True)

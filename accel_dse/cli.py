@@ -172,6 +172,10 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="skip the 0.96 sensitivity block (no-overlap / DRAM efficiency / vector lanes re-evaluation)")
     p.add_argument("--link-GBps", dest="link_GBps", type=float, default=None,
                    help="in-node scale-up tier bandwidth per rank (default 400 「假设」)")
+    p.add_argument("--dispatch", dest="dispatch", default=None, choices=["", "static", "trace", "host"],
+                   help="0.203 NPU dispatch model: static (per-step graph launch + sync, 10 µs) / trace (1.5 µs per op) / "
+                        "host (20 µs per op) 「二手」; '' = ideal (default)")
+    p.add_argument("--dispatch-us", dest="dispatch_us", type=float, default=None, help="override the dispatch mode's µs")
     p.add_argument("--link-alpha-us", dest="link_alpha_us", type=float, default=None, help="scale-up tier α (default 3)")
     for t in ("link", "d2d", "net"):   # 0.201: all-reduce latency model of the tier ("" = own α; gpu = CUDA custom AR / NCCL)
         p.add_argument(f"--{t}-ar-lat", dest=f"{t}_ar_lat", default=None, choices=["", "gpu", "rocm"],
@@ -459,7 +463,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["layout"] = {k: getattr(a, k) for k in ("pp", "tp", "dp", "ep", "etp", "sp")}
         if getattr(a, "cp", 1) > 1:     # 0.88 context parallel (omitted at 1: hash unchanged)
             sc["layout"]["cp"] = a.cp
-    chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy", "attn_fmt", "sram_port_Bpc_per_engine", "kernel_us")
+    chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy", "attn_fmt", "sram_port_Bpc_per_engine", "kernel_us", "dispatch", "dispatch_us")
             if getattr(a, k, None) is not None}
     if chip:
         sc["chip"] = chip

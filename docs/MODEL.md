@@ -4638,3 +4638,16 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
 - NPU dispatch: no per-op launch cost (`kernel_us = 0`): a statically compiled schedule 「假设」. `layer_overhead_us` / `kernel_us` are the user's knobs. CUDA graph/eager numbers stay in extval.
 - `WIDE_WAVES` refill is GPU-only (`GPU_WAVES_ONLY`). On an NPU, "wide" is a lock-step ganged array with N padded to E·cols, consistent with its broadcast feed term.
 - All-reduce latency floor by `Link.ar_lat`: "" = alpha_us; "gpu" = 6.8 µs CUDA custom AR (≤ 8) or NCCL Ring-LL; "rocm" = vLLM ROCm custom AR measured on MI300X, {2: 7.26, 4: 7.18, 8: 12.29} µs 「来源」 vLLM PR #19744.
+
+## §150 NPU dispatch model; per-step walls (0.203)
+- `Chip.dispatch` modes:
+  - "" = ideal (default, 「假设」).
+  - static: `dispatch_us` (10 µs 「二手」) once per step per stage. Decode is serial because the sampled token feeds the next step.
+  - trace: 1.5 µs 「二手」 per dispatched op.
+  - host: 20 µs 「二手」 per dispatched op.
+  - Dispatch is serial and is added to t_sync (t_disp).
+- `Result.walls()` per step:
+  - The window (total − t_sync) goes to argmax(compute, max(DRAM, SLC), link).
+  - t_sync is split into dispatch (t_disp + GPU kernel_us), static (layer_overhead_us) and collective latency (the rest).
+  - The parts sum to the stage time and the split is exact under "stage" overlap.
+- Gaps: no public dispatch figure for Gaudi, Inferentia/Trainium, Groq or Cerebras. The TPU figure covers the host path only. The sensitivity panel scans the modes.
