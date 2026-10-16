@@ -1025,11 +1025,18 @@ function renderBalanceWhatif(w) {
   const tr = (lab, x, base) => h('tr', { class: x.works ? 'ok' : '' }, h('td', { class: 'l' }, lab),
     h('td', {}, num(x.chip_flop_per_byte)), h('td', {}, cell(x)), h('td', {}, `${x.batch_limit}${x.limited_by ? '（' + (LIMIT_ZH[x.limited_by] || x.limited_by) + '）' : ''}`),
     h('td', {}, num(x.ai_asymptote)), h('td', {}, num(x.tpot_ms) + ' ms'),
+    // 0.211: lever cost — Δ die area (SRAM incl. state buffer + DRAM PHY) and dynamic J/token at the lever's critical batch
+    h('td', { class: x.over_reticle ? 'warn' : '' }, base ? (x.area_mm2 != null ? num(x.area_mm2) + ' mm²' : '—')
+      : (x.d_area_mm2 != null ? (x.d_area_mm2 >= 0 ? '+' : '') + num(x.d_area_mm2) + ' mm²' + (x.over_reticle ? ' ⚠ 超光罩' : '') : '—')),
+    h('td', {}, base || x.J_per_tok == null ? '—' : `${num(x.J_per_tok * 1e3)} mJ @B${x.cost_batch}`
+      + (x.base_J_per_tok_at_cost_batch != null ? `（基线 ${num(x.base_J_per_tok_at_cost_batch * 1e3)}）` : '')),
+    h('td', {}, x.W_card != null ? num(x.W_card) + ' W' : '—'),
     h('td', { class: 'l small' }, base ? '当前' : (x.error ? x.error : (x.works ? '有效 · works' : '无效 · no effect'))));
   put(box, h('h4', {}, '机器平衡 what-if · balance levers（每次只改一个变量 · one variable each）'),
     h('table', { class: 'tbl', id: 'bal-whatif-tbl' },
-      h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
-      h('tbody', {}, tr('当前 base', w.base, true), ...w.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 6, class: 'l small' }, x.error)) : tr(x.label, x, false)))),
+      h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', 'Δ面积 area', 'J/token @临界 batch', '动态功耗 W/卡', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
+      h('tbody', {}, tr('当前 base', w.base, true), ...w.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 9, class: 'l small' }, x.error)) : tr(x.label, x, false)))),
+    w.cost_basis ? h('div', { class: 'small' }, w.cost_basis.note) : '',
     h('div', { class: 'small' }, w.works.length ? `有效杠杆 · levers that work：${w.works.join('、')}（阈值 ${pct(w.gain)}）` : '没有单一杠杆有效 · no single lever works'));
 }
 function renderSensitivity(r) {

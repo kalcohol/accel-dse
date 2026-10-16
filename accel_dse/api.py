@@ -515,6 +515,26 @@ def _mem_x2(mem_id: str):
     return None if not m else f"{m.group(1)}_{2 * int(m.group(2))}{m.group(3)}_{m.group(4)}"
 
 
+# 0.211: lever cost (area / power) on the sourced presets — the same accounting as the budget / energy panels
+WHATIF_DENSITY = "n5_derived"      # 1P is a 5 nm-class design point 「假设」; SRAM density 推导 (TPUv4i CMEM × N5 bitcell)
+WHATIF_ENERGY = "tpuv4i_7nm"       # newest energy preset (推导 / 来源 per field)
+RETICLE_MM2 = 26 * 33              # 858 mm² single-exposure reticle field (26 × 33 mm, ASML / industry standard) 「来源」
+
+
+def _lever_cost(q) -> dict:
+    """Die area (budget.full_area: SRAM incl. the state buffer + DRAM PHY pins) and energy per output token / average
+    card power (energy_report, dynamic only: no idle_W).  SRAM leakage is not modelled (static power is idle_W, a
+    product figure) — reported in cost_basis.note."""
+    from .core.budget import DENSITY_PRESETS, Budget, full_area
+    from .core.energy import ENERGY_PRESETS
+    b = Budget(**{k: v for k, (v, _, _) in DENSITY_PRESETS[WHATIF_DENSITY]["fields"].items() if k in Budget.__dataclass_fields__})
+    a = full_area(q.scenario, b)
+    t = EnergyTable.from_dict({k: v for k, (v, _, _) in ENERGY_PRESETS[WHATIF_ENERGY]["fields"].items()
+                               if k in EnergyTable.__dataclass_fields__ and k not in ("idle_W", "idle_frac_tdp", "tdp_W")})
+    e = energy_report(q, t)
+    return {"area_mm2": a.get("mm2"), "J_per_tok": e.get("J_per_unit"), "W_card": e.get("avg_W_per_card")}
+
+
 def balance_whatif(scn: Scenario, r: Result) -> dict | None:
     """0.208: the machine-balance levers, one variable each, on the sensitivity scan's case loop: fp8 KV, bf16
     recurrent state, half the context, 2× SRAM, 2× DRAM bandwidth (twice the channels / stacks at the SAME capacity,
@@ -559,16 +579,42 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
                 "reachable": b["reachable"], "ai_asymptote": b["ai_asymptote"], "asymptote_by": b["asymptote_by"],
                 "chip_flop_per_byte": b["chip_flop_per_byte"], "tpot_ms": q.tpot * 1e3}
     base = pick(r, b0)
+    c0 = _lever_cost(r)
+    base.update(c0)
+
+    def cost(x, q):
+        # 0.211: compare at the lever's balance point — its critical batch when reachable, else the configured
+        # batch — with the base chip at that same batch (a lever's value shows at the batch it unlocks)
+        bb = x["critical_batch"] if x["reachable"] and x["critical_batch"] else scn.serving.batch
+        x["cost_batch"] = bb
+        try:
+            qb = q if bb == scn.serving.batch else evaluate(q.scenario.replace("serving.batch", bb))
+            rb = r if bb == scn.serving.batch else evaluate(scn.replace("serving.batch", bb))
+        except ValueError:
+            return
+        c, cb = _lever_cost(qb), _lever_cost(rb)
+        x.update(c)
+        x["tpot_ms_at_cost_batch"] = qb.tpot * 1e3
+        x["base_J_per_tok_at_cost_batch"] = cb["J_per_tok"]
+        x["d_area_mm2"] = None if c["area_mm2"] is None or c0["area_mm2"] is None else c["area_mm2"] - c0["area_mm2"]
+        x["d_J_per_tok"] = None if c["J_per_tok"] is None or cb["J_per_tok"] is None else c["J_per_tok"] - cb["J_per_tok"]
+        x["over_reticle"] = bool(c["area_mm2"] and c["area_mm2"] > RETICLE_MM2)
 
     def row(q):
         x = pick(q, q.balance())
+        cost(x, q)
         g = lambda k: (x[k] or 0) > (base[k] or 0) * (1 + WHATIF_GAIN)
         x["tpot_ratio"] = x["tpot_ms"] / base["tpot_ms"] if base["tpot_ms"] else None
         x["works"] = bool((x["reachable"] and not base["reachable"]) or g("ai_asymptote") or g("batch_limit")
                           or (x["tpot_ratio"] is not None and x["tpot_ratio"] < 1 - WHATIF_GAIN))
         return x
     rows = _eval_cases(cases, row)
-    return {"base": base, "rows": rows, "gain": WHATIF_GAIN, "works": [x["key"] for x in rows if x.get("works")]}
+    return {"base": base, "rows": rows, "gain": WHATIF_GAIN, "works": [x["key"] for x in rows if x.get("works")],
+            "cost_basis": {"density_preset": WHATIF_DENSITY, "energy_preset": WHATIF_ENERGY, "reticle_mm2": RETICLE_MM2,
+                           "note": ("面积 = SRAM（含专用状态 SRAM，同宏密度）+ DRAM PHY 引脚（budget.full_area，n5_derived 密度 「推导」）；"
+                                    "能耗 = 动态 J/token（tpuv4i_7nm 预设，不含静态 idle_W），在各杠杆自己的临界 batch 与基线同 batch 比较；"
+                                    "SRAM 泄漏未建模 · area = SRAM incl. the state buffer + DRAM PHY pins; dynamic J/token at the "
+                                    "lever's critical batch vs the base at the same batch; SRAM leakage not modelled")}}
 
 
 SENS_BASE_LABEL = {"stage": "stage 全重叠（吞吐上界）", "pipe": "pipe 硬件推导（现实估计）", "serial": "serial 无重叠（吞吐下界）"}

@@ -6,6 +6,32 @@
 
 
 
+## [0.211.0]
+- **Area and power of the dedicated state SRAM.**
+  - What the existing accounting already covered:
+    - Shared SRAM area: `budget.area_estimate` with `mm2_per_mib_sram` from the density presets.
+    - SRAM access energy: `pJ_bit_sram` × SRAM-port bytes.
+  - What changed:
+    - `Chip.state_sram_mib` is now charged at the same macro density, as the `state_sram` area term.
+    - The budget's `sram_mib` limit now counts on-die SRAM including the state buffer.
+    - Access energy needed no change: state operands already go through the SRAM port whether or not the state is resident. Residency removes the DRAM read+write, so the DRAM energy line drops.
+  - Not covered: SRAM leakage. Static power is `idle_W`, a product figure. Leakage is listed as not modelled rather than invented.
+- **What-if lever cost columns** (`balance_whatif`; UI "机器平衡 what-if"):
+  - Δ die area: `budget.full_area` = SRAM including the state buffer, plus DRAM PHY pins. Densities from `n5_derived` (SRAM 0.68 mm²/MiB 推导; HBM PHY 1/64 mm² per DQ 推导/二手).
+  - Dynamic J/token and W/card from `tpuv4i_7nm`, without idle_W. Each lever is costed at its own critical batch, next to the base at the same batch.
+  - A flag marks a die that would exceed the 858 mm² reticle (26 × 33 mm 来源).
+  - `cost_basis` states which presets were used.
+- **RWKV-7 7.2B on 1P** (fp32 state, as released):
+
+  | Lever | Δ die area | J/token at its critical batch | Base chip at that batch |
+  |---|---|---|---|
+  | State SRAM 10.1 GiB | +7052 mm² (die ≈ 7486 mm², 8.7× the reticle; even the array-only N3E bound of 0.25 mm²/MiB gives ≈ 2590 mm²) | 4.34 mJ at B = 314 | 6.39 mJ |
+  | DRAM bandwidth ×2 (HBM3E 4 → 8 stacks, same capacity) | +64 mm² of PHY | 5.63 mJ at B = 758 | 5.63 mJ (no extra bits per token) |
+  | State bf16 (what-if only) | 0 mm² | 4.33 mJ at B = 1541 | 5.37 mJ |
+
+  - Dynamic power at those batches: 204 W per card with the state SRAM, 242 W with 2× bandwidth.
+  - For reaching balance, 2× DRAM bandwidth is about 110× cheaper in die area and fits on one die; the state buffer does not fit.
+
 ## [0.210.0]
 - **Pipe-mode per-op KV / state split** (finishes STATE_SPLIT): overlap `items_of` now gives recurrent-state bytes their own `state` key, and `evaluate._kv_state_miss` weights each op by its own stream's miss share. These are the same shares as `memplan.step_dram_bytes`; the old pooled share returns when STATE_SPLIT is off. The step DRAM total is unchanged; only how it is spread across ops in pipe mode moves. Re-baselined: default (pipe) fingerprint 62fd08857bc4c055 → 99a72aef99a2e674; test_core_125 fpx({}) a148b9cd855d95fc → 9982d6b04e230874; test_core_171 Evo2 (Hyena) ttft 0.37786053 → 0.37785506.
 - **RWKV-7 7.2B state size, reconciled.** Both earlier numbers are correct but measure different things:

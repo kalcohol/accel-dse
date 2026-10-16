@@ -293,12 +293,15 @@ class Budget:
 def area_estimate(chip, b: Budget) -> dict:
     """Per-card die-area proxy from the user's densities: {mm2 | None, terms, missing}."""
     terms, missing = {}, []
-    for name, qty, dens in (("sram", chip.sram_mib, b.mm2_per_mib_sram), ("slc", chip.slc_mib, b.mm2_per_mib_slc),
+    # 0.211: the dedicated recurrent-state buffer (Chip.state_sram_mib) is the same SRAM macro class → same density
+    for name, qty, dens in (("sram", chip.sram_mib, b.mm2_per_mib_sram),
+                            ("state_sram", getattr(chip, "state_sram_mib", 0.0), b.mm2_per_mib_sram),
+                            ("slc", chip.slc_mib, b.mm2_per_mib_slc),
                             ("mac", chip.macs / 1024, b.mm2_per_kmac)):
         if qty <= 0:
             continue
         if dens is None:
-            missing.append({"sram": "mm2_per_mib_sram", "slc": "mm2_per_mib_slc", "mac": "mm2_per_kmac"}[name])
+            missing.append({"sram": "mm2_per_mib_sram", "state_sram": "mm2_per_mib_sram", "slc": "mm2_per_mib_slc", "mac": "mm2_per_kmac"}[name])
         else:
             terms[name] = qty * dens
     if b.mm2_fixed is not None:
@@ -322,7 +325,8 @@ def budget_report(r, b: Budget, energy: dict | None = None) -> dict:
     """Headroom of one evaluated result against the budget.  ``energy``: energy_report(r, table) for the power limit."""
     ch, lay = r.scenario.chip, r.scenario.layout
     items = []
-    direct = {"sram_mib": ch.sram_mib, "slc_mib": ch.slc_mib, "macs": float(ch.macs),
+    # 0.211: sram_mib = on-die SRAM incl. the dedicated state buffer
+    direct = {"sram_mib": ch.sram_mib + getattr(ch, "state_sram_mib", 0.0), "slc_mib": ch.slc_mib, "macs": float(ch.macs),
               "tflops": ch.peak_tflops_bf16, "cards": float(lay.cards),
               "dram_GiB": r.stages[0].mem.dram_cap / 2**30 if r.stages else None}
     for k, v in direct.items():

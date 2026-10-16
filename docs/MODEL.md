@@ -4800,3 +4800,16 @@ limited by capacity and the TTFT SLO, which is used as the decision latency limi
   - RWKV-7 7.2B fp32: S = 33.0 MiB = 34.6 MB, so traffic is ≈ 69.2 MB per step.
   - The balance asymptote uses 2S. Residency and the state SRAM lever use S.
 - **Review closure.** Multi-card PP, walls, the preset memory pairing, cross-route fuzz and the huge-batch timing guard are covered in `tests/test_core_210.py`. No new defects were found beyond those fixed in 0.209.
+
+
+## §158 Lever cost: state SRAM area / energy vs 2× DRAM bandwidth (0.211)
+- **Accounting.**
+  - Area = Σ SRAM MiB (shared + dedicated state buffer) × `mm2_per_mib_sram` + DRAM bus bits × `mm2_per_dq_*` (+ D2D / C2C PHY).
+  - Energy = action counts × the preset's pJ per action. SRAM-port bytes are unchanged by residency; DRAM bytes drop by the state read+write.
+  - Leakage is not modelled 「假设：未建模」.
+- **Densities.**
+  - `n5_derived` SRAM: 0.68 mm²/MiB 「推导」 = TPUv4i CMEM 28 % of < 400 mm² ÷ 128 MiB × N5/N7 bitcell 0.021/0.027.
+  - Array-only N3E bound: 0.25 mm²/MiB (31.8 Mib/mm², IEDM 2022 via WikiChip) 「二手」.
+  - HBM PHY: 32 mm² per 2048 DQ 「推导/二手」 (Samsung HC2026).
+- **Where the cost is read.** At the lever's critical batch: what the lever buys is the batch it unlocks.
+- **RWKV-7 7.2B on 1P.** The state buffer needs +7052 mm² (above the 858 mm² reticle even at the array-only bound) and gives −32 % J/token at B = 314. 2× bandwidth needs +64 mm² of PHY, keeps J/token unchanged and reaches balance at B = 758. Bandwidth is the lever that is cheaper in die area. 「推导」 from the presets; no tuning.
