@@ -4716,3 +4716,37 @@ The same README's latency table (vllm bench latency, 70B FP8 TP8) separates the 
 | KV slope (isl 2048 − 128, b128) | 5.26 ms → ≈ 1.0 TB/s effective | 1.62 ms → 3.1 TB/s |
 
 So the model is too slow at b1 and too fast per sequence; the MI300X latency group's 21.6 % MAE averages opposite-sign errors. At max-load batches the per-sequence term dominates, which gives 1.6–1.85×. Candidates are hipBLASLt FP8 GEMM efficiency at decode M (the MAF ceiling is a large-square figure) and ROCm paged-attention throughput with fp8 KV. §127 has only relative kernel speedups, and no public absolute figure was found, so **nothing is applied**. Fitting the per-sequence slope to this README would be tuning on the validation source. `test_core_206` pins the localisation.
+
+
+## §154 MI300X decode suspects: independent sources (0.207)
+**ROCm paged attention, fp8 KV** (来源: ROCm/FlyDSL PR #825, production `pa_decode_ps_kernel`, gfx942/MI308X, block 16):
+
+| bs·ctx (q/kv heads) | KV bytes per call | µs | TB/s | ÷ 5.3 |
+|---|---|---|---|---|
+| 32·4096 (16/1) | 33.6 MB | 34.9 | 0.96 | 0.181 |
+| 128·4096 (16/1) | 134 MB | 83.6 | 1.61 | 0.303 |
+| 128·16384 (16/1) | 537 MB | 216.3 | 2.48 | 0.468 |
+| 256·8192 (8/1) | 537 MB | 235.5 | 2.28 | 0.430 |
+
+The KV stream efficiency (`Scenario.kv_mem_eff`) of an MI300X decode step is read from this curve at its KV bytes per
+layer call: log-linear in bytes, with the two 537 MB points averaged. The 0.206 README-derived figure (≈ 1.0 TB/s at
+b128) agrees in magnitude, but it was not used.
+- The MI308X → MI300X transfer is 推导 (same HBM3 5.3 TB/s, 二手; fewer CUs, so a conservative bound).
+- Only `PA_ROCM_HW = {"MI300X"}` decode is affected.
+- Effect: lat 1.02 / 23 % → 0.97 / 19 %; max-load 1.65 / 65 % → 1.49 / 49 %.
+
+**Small-M FP8 GEMM** (来源: aiter tuned table, gfx942 / 304 CU, a8w8 int8 = fp8 MFMA rate on CDNA3):
+- Times are flat in M up to about 1024: a per-kernel floor of 7.7–17 µs on 6.6–7.9 MB weights, i.e. 0.5–0.9 TB/s.
+- Large M sustains 0.38–0.49 of peak.
+- The model is faster than the source at M ≤ 256 and within 0.8–1.3× above.
+
+A small-M floor raises the per-step constant, not the per-sequence slope, so it cannot explain the residual. It would
+worsen batch 1, where the model is already 40 % slow. **Not applied.**
+
+**NVIDIA.** Max-load gmean is H100 0.88 / H200 1.04, and the TRT-LLM static rows show no batch-slope error of the
+MI300X kind. FlashMLA (0.108) remains the sourced NVIDIA attention-stream figure, as a variant. No change.
+
+**Remaining residual** (1.43–1.70×, max-load batch 1500–3200): still a per-sequence cost beyond PA at MI308X
+efficiency. Candidates (no source yet): PA efficiency at the 0.9 GB-per-call max-load sizes (beyond the 537 MB top of the
+curve, clamped), and the vLLM V1 per-sequence host and sampler costs at thousands of sequences (§127: ≈ 1.9 µs/seq,
+not applied).

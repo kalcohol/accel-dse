@@ -195,9 +195,54 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
                     serving=Serving(**sv), **extra, **({"layer_overhead_us": lu} if lu else {}))
 
 
+# 0.207: ROCm paged-attention decode, fp8 per-token KV, block 16 — achieved KV-stream efficiency vs KV bytes per call
+# (one layer, one GPU).  来源: ROCm/FlyDSL PR #825 (merged 2026-07-24), production `pa_decode_ps_kernel`, gfx942 /
+# MI308X, head 128, CUDA-graph wall time (main + reduce):  bs32·ctx4096 (16,1) 34.9 µs; bs128·ctx4096 83.6 µs;
+# bs128·ctx16384 216.3 µs; bs256·ctx8192 (8,1) 235.5 µs.  Bytes = bs · ctx · kv_heads · 128 · 2 (K, V) · 1 B (推导);
+# ÷ 5.3 TB/s HBM3 peak (MI308X shares the MI300X HBM3 stack configuration, 二手) → 0.181 / 0.303 / 0.468 / 0.430.
+# Transfer to MI300X (304 CU vs 80) is 推导: PA is HBM-bound at these sizes, so CU count matters less than the
+# memory system; the 304-CU part may stream somewhat faster (the curve is a conservative bound).
+PA_ROCM_PEAK_TBps = 5.3
+PA_ROCM_POINTS = ((32 * 4096 * 256, 34.9), (128 * 4096 * 256, 83.6), (128 * 16384 * 256, 216.3), (256 * 8192 * 256, 235.5))
+PA_ROCM_HW = frozenset({"MI300X"})
+
+
+def pa_rocm_eff(per_call_bytes: float) -> float:
+    """0.207: KV-stream efficiency of ROCm paged-attention decode at ``per_call_bytes`` of KV per kernel call —
+    log-linear in bytes through the PA_ROCM_POINTS (same-bytes points averaged), clamped at the ends."""
+    import math
+    pts: dict = {}
+    for b, us in PA_ROCM_POINTS:
+        pts.setdefault(b, []).append(b / (us * 1e-6) / (PA_ROCM_PEAK_TBps * 1e12))
+    xs = sorted(pts)
+    ys = [sum(pts[x]) / len(pts[x]) for x in xs]
+    if per_call_bytes <= xs[0]:
+        return ys[0]
+    if per_call_bytes >= xs[-1]:
+        return ys[-1]
+    for (x0, y0), (x1, y1) in zip(zip(xs, ys), zip(xs[1:], ys[1:])):
+        if per_call_bytes <= x1:
+            f = (math.log(per_call_bytes) - math.log(x0)) / (math.log(x1) - math.log(x0))
+            return y0 + f * (y1 - y0)
+    return ys[-1]
+
+
+def _eval(r, var, m, **sv):
+    """evaluate the row's scenario; 0.207: with the variant's ``pa_rocm`` flag, a decode step on a PA_ROCM_HW chip
+    streams its KV at pa_rocm_eff(KV bytes per layer call) (two passes: the first gives the call size)."""
+    sc = scenario(r, var, **sv)
+    res = evaluate(sc, m)
+    if VARIANTS.get(var, {}).get("pa_rocm") and r["hw"] in PA_ROCM_HW and sv.get("phase", "decode") == "decode":
+        kv = res.stages[res.heaviest_stage].dram.get("kv_read", 0.0)
+        layers = max(1, m.n_layers // max(1, sc.layout.pp))
+        if kv > 0:
+            res = evaluate(replace(sc, kv_mem_eff=pa_rocm_eff(kv / layers)), m)
+    return res
+
+
 def _ev(r, var, **sv):
     v = VARIANTS[var]
-    return _Pt(evaluate(scenario(r, var, **sv), _spec(r["model"], v["kv_reuse"])), v["overlap"])
+    return _Pt(_eval(r, var, _spec(r["model"], v["kv_reuse"]), **sv), v["overlap"])
 
 
 def _ttft(r, b, isl, eff):
@@ -701,6 +746,8 @@ VARIANTS["default_0193"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io
 VARIANTS["default"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="dram")
 VARIANTS["default_0194"] = dict(VARIANTS["default"])
 VARIANTS["default"] = dict(VARIANTS["default_0194"], trtllm_fp4=True)   # 0.195: TRT-LLM B200 NVFP4 kernel rates
+VARIANTS["default_0206"] = dict(VARIANTS["default"])
+VARIANTS["default"] = dict(VARIANTS["default_0206"], pa_rocm=True)   # 0.207: ROCm PA KV-stream efficiency (MI300X only)
 VARIANTS["default_occ"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="occupancy")   # 0.195
 VARIANTS["default_occ_0195"] = VARIANTS["default_occ"]
 VARIANTS["default_occ"] = dict(VARIANTS["default"], tile_io="occupancy")   # 0.196: on top of the current default
@@ -765,8 +812,8 @@ def _cb_at(r: dict, b: int, eff: str, C: int = CB_CHUNK):
     pre1 = evaluate(scenario(r, eff, phase="prefill", batch=q, prompt=isl, out_len=osl), _spec(r["model"], True))
 
     def at(k):
-        dec = evaluate(scenario(r, eff, phase="decode", batch=k, ctx=isl + osl // 2, out_len=osl), _spec(r["model"], True))
-        full = evaluate(scenario(r, eff, phase="decode", batch=k, ctx=isl + osl, out_len=osl), _spec(r["model"], True))
+        dec = _eval(r, eff, _spec(r["model"], True), phase="decode", batch=k, ctx=isl + osl // 2, out_len=osl)
+        full = _eval(r, eff, _spec(r["model"], True), phase="decode", batch=k, ctx=isl + osl, out_len=osl)
         t1 = ((n - 1) * _fused(dec, pre1, f, rr) + _fused(dec, pre1, lf, rr)) / n
         return dec, t1, full.fits and pre1.fits
     x = n * b / (osl * q)

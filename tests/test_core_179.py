@@ -30,4 +30,4 @@ def test_mi300x_maf_ceiling():
 def test_residual_documented():
     # MODEL §126: still ~1.7–2.0× optimistic after the sourced fixes (no sourced mechanism for the rest)
     for r in ROWS:
-        assert 1.5 < X.predict(r, "default")["pred"] / r["value"] < 2.2
+        assert 1.5 < X.predict(r, "default_0206")["pred"] / r["value"] < 2.2   # 0.207: pinned to the pre-PA default

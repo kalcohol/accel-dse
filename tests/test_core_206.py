@@ -62,11 +62,11 @@ def test_mi300x_residual_is_per_sequence_cost():
 
     def step(isl, b):
         r = rs[(isl, b)]
-        p = X.predict(r)
+        p = X.predict(r, "default_0206")      # 0.207: the default now carries the ROCm PA efficiency
         return (r["value"] - p["ttft_s"]) / (r["osl"] - 1), p["tpot_s"]
     (m64, p64), (m128, p128) = step(128, 64), step(128, 128)
     assert (m128 - m64) > 3 * (p128 - p64)               # batch slope: measured ≈ 3.9× the model
     (k128, q128) = step(2048, 128)
     assert (k128 - m128) > 2.5 * (q128 - p128)           # ctx (KV) slope: measured ≈ 3.2× the model
     ml = [r for r in X.rows(X.DATA_R3) if r["hw"] == "MI300X" and r["metric"] == "max_tok_s_total"]
-    assert all(1.5 < X.predict(r)["pred"] / r["value"] < 1.9 for r in ml)   # residual unchanged (no fix applied)
+    assert all(1.5 < X.predict(r, "default_0206")["pred"] / r["value"] < 1.9 for r in ml)   # the 0.206 residual

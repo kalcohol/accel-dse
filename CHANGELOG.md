@@ -6,6 +6,23 @@
 
 
 
+## [0.207.0]
+- **Default change (MI300X reference chip only): ROCm paged-attention KV-stream efficiency** (`extval.pa_rocm_eff`, variant flag `pa_rocm`; `default_0206` keeps the old default).
+  - Source (independent of the validation README): ROCm/FlyDSL PR #825 (merged 2026-07-24). Production `pa_decode_ps_kernel`, fp8 per-token KV, block 16, head 128, gfx942 / MI308X, CUDA-graph wall time: bs32·ctx4096 34.9 µs, bs128·ctx4096 83.6 µs, bs128·ctx16384 216.3 µs, bs256·ctx8192 (8 q / 1 kv) 235.5 µs (来源).
+  - KV bytes = bs·ctx·kv_heads·128·2·1 B (推导). Divided by 5.3 TB/s (二手), this gives efficiency 0.181 / 0.303 / 0.468 / 0.430. The curve is log-linear in KV bytes per layer call, clamped at the ends.
+  - Applied to decode steps of rows on `PA_ROCM_HW = {"MI300X"}`, through `Scenario.kv_mem_eff` (two passes: the first pass gives the call size). Prefill (FA) is untouched. No NPU or NVIDIA path changes; the NPU isolation test is kept.
+  - Transfer from MI308X (80 CU) to MI300X (304 CU) is 推导. PA is HBM-bound at these sizes; the 304-CU part may stream faster, so the curve is a conservative bound.
+  - MI300X lat 1.02 / 23 % → 0.97 / 19 %; max-load 1.65 / 65 % → 1.49 / 49 % (per row 1.85/1.71/1.81/1.59 → 1.70/1.50/1.65/1.43). All other groups unchanged.
+- Small-M FP8 GEMM on ROCm: source found, checked, **not applied**.
+  - Source: aiter `a8w8_bpreshuffle_tuned_gemm.csv` (ROCm/aiter@bb6fc3c), gfx942 / 304 CU (MI300X), int8 a8w8 (same MFMA rate as fp8 on CDNA3), M = 64–40960, N×K = 1536×5120 and 5120×1280.
+  - Kernel time is flat for M = 64–1024 (16.8 → 21.0 µs and 7.7 → 18.3 µs). Large M reaches 1000–1270 TFLOPS (0.38–0.49 of peak), consistent with the 0.179 MAF ceiling.
+  - Model vs source: 0.37–0.86× at M ≤ 256 (a per-kernel floor at 7–8 MB weights; the source has no Llama-70B TP8 shapes), 0.8–1.3× at M ≥ 512.
+  - A sourced small-M curve would lengthen the batch-1 step (already 40 % slow) and flatten the per-sequence slope, which is the wrong direction for the residual. The GEMM suspect is refuted for the slope.
+- NVIDIA: no systematic optimistic batch slope.
+  - Max-load gmean is H100 0.88 and H200 1.04. TRT-LLM static rows show no 3–4× slope error; the trend in batch is at most ≈ 1.3× across 56→896.
+  - The sourced NVIDIA decode-attention equivalent (FlashMLA 3000/3350, `kveff_variant`, 0.108) already exists, so no NVIDIA change.
+- Remaining MI300X max-load residual 1.43–1.70× (MODEL §154). Tests: `tests/test_core_207.py`; `test_core_206` pins its numbers to `default_0206`. Fingerprints unchanged.
+
 ## [0.206.0]
 - Machine-balance verdict reworked around the **critical batch** (`Result.critical_batch`, `balance()`).
   - AI(B) is the model's own per-step flops ÷ DRAM bytes at each batch, so the KV reads that grow with batch are included. B* is the smallest batch with AI ≥ chip FLOP/B (at effective bandwidth). B_lim is the largest batch that fits the KV capacity and the TPOT SLO. Search: powers of two up to `BALANCE_BMAX = 65536` (假设), then bisection.

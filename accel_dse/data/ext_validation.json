@@ -1,5 +1,5 @@
 {
- "generated": "0.206.0",
+ "generated": "0.207.0",
  "variants": {
   "default": {
    "eff": "catalog",
@@ -33,7 +33,8 @@
    },
    "ceil_mul": true,
    "tile_io": "dram",
-   "trtllm_fp4": true
+   "trtllm_fp4": true,
+   "pa_rocm": true
   },
   "catalog": {
    "eff": "catalog",
