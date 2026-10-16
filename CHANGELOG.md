@@ -6,6 +6,12 @@
 
 
 
+## [0.194.0]
+- Small-GEMM check: the 0.193 B200 2048³ "1534 vs 1006" left out the default's existing per-kernel cost (2 µs floor + 1.03 µs gap) and tile I/O; with them it is 997. No new fixed-cost term: pipeline fill ≈ one DRAM latency (GH100 658.7 cycles, arXiv 2507.10789) is < 3 % at 2048³.
+- Net GEMM ceiling now includes tile I/O + per-kernel cost at the source shape (`extval.NET_FULL`, bisection; ≤ 0.193 waves only, double-charging them). H100 4096³ 653 → 695 TF (meas 716), B200 2048³ 997 → 1034 (1006), 4096³ 1375 → 1446 (1532).
+- Hopper `fmt_ceiling` merges instead of replacing (`FMT_CEIL_REPLACE`): bf16 / fp16 GEMM ceilings were silently dropped on H100 / H200 / H800.
+- Re-score 0.193 → 0.194: static 22.66 → 22.76 %, TTFT 32.22 → 32.86, max-load 19.09 → 19.11, MoE 7.69 → 7.74, Mixtral 22.14 → 22.23, MI300X lat 20.98 → 21.07, MI300X max-load 66.79 → 68.21, B200 17.85 → 22.82 (NET_FULL; the padding had been compensating).
+- MoE regression traced to decode rows: tile I/O "dram" on many-tile small GEMMs (MLA kv_b bmm 5.5 → 57 µs). Persistent tile I/O (sm90 CUTLASS) is a diagnostic variant (`default_tioauto`, TILE_IO_BY_HW); not default (v1 TTFT 1.38).
 ## [0.193.0]
 - Reference GPUs: GEMMs = SM × CTA-tile wave quantisation (`instance_sched` "cta", NVIDIA tile set, tile I/O "dram") × sourced achieved-peak fraction applied multiplicatively (`Chip.gemm_ceil_mul`), net of the measured shape's own wave quantisation (`extval.CEIL_SHAPE`). Replaces the wide-gang N padding.
 - `mapping.WIDE_WAVES` on by default (abstract wide chips no longer pad N); `Chip.wide_pad` keeps ≤ 0.192 padding for historical variants.

@@ -140,16 +140,22 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
         if gc:
             chip = replace(chip, fmt_ceiling=tuple(dict(chip.fmt_ceiling or ()).items()) + gc)
     if v.get("tile_io"):               # 0.135: CTA tile prologue + C writeback at the SM's DRAM share (opt-in)
-        chip = replace(chip, tile_io=v["tile_io"] if isinstance(v["tile_io"], str) else "dram")
+        mode = v["tile_io"] if isinstance(v["tile_io"], str) else "dram"
+        if mode == "auto":   # 0.194: by GEMM kernel generation (TILE_IO_BY_HW)
+            mode = TILE_IO_BY_HW.get(chip.name.split("-")[0].split(" ")[0], "dram")
+        chip = replace(chip, tile_io=mode)
     if v.get("kernel_us") is not None and not (v.get("cuda_only") and amd):  # 0.92 per-kernel fixed cost (0.176: by runtime)
         ku = v["kernel_us"]
         chip = replace(chip, kernel_us=ku.get(sv.get("phase", "decode")) if isinstance(ku, dict) else ku)
     if v.get("fmt_ceiling") and chip.name.split("-")[0] in HOPPER:   # 0.94: Hopper only
-        chip = replace(chip, fmt_ceiling=v["fmt_ceiling"])
+        # 0.194: merge (≤ 0.193 replaced, silently dropping the GEMM_CEILING bf16 / fp16 entries on Hopper → bf16
+        # GEMMs at datasheet peak); FMT_CEIL_REPLACE keeps the old behaviour for the historical record
+        chip = replace(chip, fmt_ceiling=v["fmt_ceiling"] if FMT_CEIL_REPLACE else
+                       tuple({**dict(chip.fmt_ceiling or ()), **dict(v["fmt_ceiling"])}.items()))
     if v.get("deepgemm") and chip.name.split("-")[0] in HOPPER and r.get("src") in DEEPGEMM_SRC:   # 0.143
         chip = replace(chip, fmt_ceiling=tuple(dict(chip.fmt_ceiling or ()).items()) + DEEPGEMM_SHAPES)
     if v.get("ceil_mul"):              # 0.193: GPU GEMMs = SM × CTA-tile wave quantisation × achieved-peak fraction
-        chip = cta_ceiling_chip(chip)
+        chip = cta_ceiling_chip(chip, h.mem_id)
     if v.get("pipe_cross_op") is not None:   # 0.98: exec_overlap "pipe" — GPU kernel boundaries (no cross-op prefetch)
         chip = replace(chip, pipe_cross_op=v["pipe_cross_op"])
     if v.get("sfu") and h.sfu_per_sm:  # 0.103: transcendentals on the SFU pipe (NVIDIA, CUDA Programming Guide)
@@ -321,6 +327,13 @@ def gpu_variant(base: str, kernel_us: float = 0.53, sched: str = "cta", inflight
 
 
 HOPPER = ("H100", "H800", "H200")
+FMT_CEIL_REPLACE = False   # 0.194 (True = ≤ 0.193)
+# 0.194: tile I/O mode by GEMM kernel generation.  sm90 / sm100 library GEMMs are persistent warp-specialised kernels
+# (CUTLASS 3.x KernelTmaWarpSpecializedPingpong / Cooperative, Blackwell 2-SM UMMA persistent schedules; DeepGEMM is
+# persistent): a tile's epilogue / next prologue overlap the neighbouring tile's main loop 「来源」 CUTLASS docs
+# (efficient_gemm.md, "Warp-Specialized Persistent Ping-Pong").  A100 (sm80 multistage, non-persistent) and MI300X
+# (hipBLASLt, no public persistent default) keep "dram" 「假设」.
+TILE_IO_BY_HW = {"H100": "persistent", "H200": "persistent", "H800": "persistent", "B200": "persistent"}
 # 0.94 memory as the runtime sees it (public specs / documented defaults, not fitted):
 #  * usable capacity = the vendor's published per-GPU figure (RefHW.hbm_GB: H200 141 GB, B200 180 GB — the catalog
 #    stack configs give 144 / 192 GiB = 154.6 / 206.2 GB)
@@ -429,17 +442,55 @@ def _wave_eff(chip, m, k, n, fmt) -> float:
     return m * k * n / (c.rows * c.cols * c.engines * rate) / gemm_cost(c, "reconf", m, k, n, w_fmt=fmt, a_fmt=fmt).cycles
 
 
-def cta_ceiling_chip(chip):
+NET_FULL = True   # 0.194: net out everything the model charges at the measured shape (False = ≤ 0.193: waves only)
+
+
+def _model_tflops(chip, mem_id, m, k, n, fmt) -> float:
+    """Throughput the model gives one isolated GEMM on ``chip``: op time (tile / wave quantisation, tile I/O, the
+    multiplicative ceiling) + the per-kernel cost (kernel_us) — what a back-to-back benchmark loop measures."""
+    from .evaluate import _op_seconds
+    from .hardware import System
+    from .ir import Op
+    sysm = System(chip, mem_id)
+    if chip.tile_io:
+        sysm = replace(sysm, chip=replace(chip, tile_io_Bpc=sysm.dram_GBps / chip.freq_ghz))
+    t = _op_seconds(Op("g", "gemm", 0, m, k, n, w_fmt=fmt, a_fmt=fmt), sysm, "reconf", get_model("qwen3-8b"))[0]
+    return 2.0 * m * k * n / (t + (chip.kernel_us or 0.0) * 1e-6) / 1e12
+
+
+@lru_cache(maxsize=256)
+def cta_ceiling_chip(chip, mem_id: str | None = None):
     """0.193: chip with GEMMs on the cta schedule (NVIDIA Matrix Multiplication Background tile set over SMs, wave
-    and tile quantisation, split-K — mapping._cta) and the GEMM ceilings as multiplicative net fractions."""
+    and tile quantisation, split-K — mapping._cta) and the GEMM ceilings as multiplicative net fractions.
+    0.194: the net fraction is the main-loop rate at which the model reproduces the published throughput at its
+    measured shape *including* tile I/O and the per-kernel cost (bisection; ≤ 0.193 divided out the waves only, so
+    those terms were charged twice).  Not fitted to validation rows: each figure is matched at its own source shape."""
     fam = chip.name.split("-")[0].split(" ")[0]
     sh = CEIL_SHAPE.get(fam)
-    fc = []
-    for k, v in (chip.fmt_ceiling or ()):
-        fmt = k.split(":")[-1] if k.startswith("gemm:") and "@" not in k else None
+    out = replace(chip, instance_sched="cta", gemm_ceil_mul=True)
+    fc = dict(chip.fmt_ceiling or ())
+    for key, v in list(fc.items()):
+        fmt = key.split(":")[-1] if key.startswith("gemm:") and "@" not in key else None
         shape = (sh.get(fmt) if isinstance(sh, dict) else sh) if (sh and fmt) else None
-        fc.append((k, min(1.0, v / _wave_eff(chip, *shape, fmt)) if shape else v))
-    return replace(chip, instance_sched="cta", gemm_ceil_mul=True, fmt_ceiling=tuple(fc))
+        if not shape:
+            continue
+        if not (NET_FULL and mem_id):
+            fc[key] = min(1.0, v / _wave_eff(chip, *shape, fmt))
+            continue
+        rate = chip.formats.rate(fmt) or 1.0
+        want = v * 2.0 * chip.rows * chip.cols * chip.engines * rate * chip.freq_ghz * 1e9 / 1e12
+        lo, hi = v, 1.0
+        if _model_tflops(replace(out, fmt_ceiling=tuple({**fc, key: hi}.items())), mem_id, *shape, fmt) < want:
+            fc[key] = 1.0                      # model cannot reach the published rate even at peak: cap 1 「推导」
+            continue
+        for _ in range(40):
+            mid = (lo + hi) / 2
+            if _model_tflops(replace(out, fmt_ceiling=tuple({**fc, key: mid}.items())), mem_id, *shape, fmt) < want:
+                lo = mid
+            else:
+                hi = mid
+        fc[key] = hi
+    return replace(out, fmt_ceiling=tuple(fc.items()))
 
 
 def cta_variant(base: str = "default") -> str:
@@ -636,7 +687,9 @@ VARIANTS["default"] = dict(VARIANTS[rocm_variant(glue_variant(mech_variant("defa
 # 0.193: ≤ 0.192 default kept by name; the default adds GEMMs as SM × CTA-tile waves × net achieved-peak fraction with
 # tile I/O (cta_ceiling_chip; refhw chips now ship cta / dram) — MODEL §140
 VARIANTS["default_0192"] = dict(VARIANTS["default"])
+VARIANTS["default_0193"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="dram")
 VARIANTS["default"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="dram")
+VARIANTS["default_tioauto"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="auto")   # 0.194 diagnostic (TILE_IO_BY_HW)
 
 
 def overhead_variant(base: str, us: float) -> str:

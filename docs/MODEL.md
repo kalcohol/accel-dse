@@ -4496,3 +4496,27 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - `evaluate.LEGACY_0192` (WIDE_WAVES off, reference GPUs wide, guide split-K) pins the queue / worked-example tests (pin_legacy) and reproduces the 0.192 fingerprints exactly.
 - **Effect on the 9B example.** H200 raw chip (no ceilings), 9B read-out 256 / 1024 / 4096 / 8192: 5.2 / 21.6 / 84.0 / 125.6 → 4.3 / 16.8 / 67.8 / 136.9 ms. 4096 → 8192 goes from 1.50× to 2.02×; the vLLM measurement is 1.96×.
 - The prefill marginal-cost invariant (`tests/test_core_192.py`) now runs on the default.
+
+## §141 Small-GEMM fixed cost, net ceilings, regression diagnosis (0.194)
+
+- **Small-GEMM fixed cost.** No new term is needed.
+  - Every GPU GEMM in the default already pays the per-kernel cost (§136/§176: 2 µs floor + 1.03 µs graph gap) and the tile prologue / writeback (tile_io "dram", §81). The 0.193 GEMM-level check ran `_op_seconds` bare and omitted both.
+  - Pipeline fill (one DRAM latency per tile wave; GH100 658.7 cycles ≈ 0.4 µs, Dissecting Blackwell arXiv 2507.10789) is < 3 % at 2048³. B200 has no published figure. It is not added.
+- **Net ceiling (`extval.NET_FULL`).** The main-loop fraction is solved (bisection) so that the model, with tile I/O and kernel_us, reproduces each GEMM_CEILING figure at its own measured shape. ≤ 0.193 only divided out the waves, so tile I/O and kernel cost were charged twice.
+- **Hopper ceiling merge (`FMT_CEIL_REPLACE` = False).** The variant `fmt_ceiling` (fp8 / attention) used to replace the GEMM_CEILING entries, so Hopper bf16 GEMMs ran at datasheet peak. They are now merged.
+- **GEMM check** (cuBLAS bf16, TF; none of these points was used for matching):
+
+  | GEMM | Measured | 0.193 (full path) | 0.194 |
+  |---|---|---|---|
+  | H100 4096³ | 716 (fast.cu) | 834 (no bf16 ceiling) | 695 |
+  | H100 8192³ | 795 (fast.cu) / 744 (ceiling source) | 903 | 744 |
+  | B200 2048³ | 1006 (pyptx) | 997 | 1034 |
+  | B200 4096³ | 1532 | 1375 | 1446 |
+  | B200 8192³ | 1610 | 1470 | 1551 |
+
+- **MoE large-EP regression (0.192 → 0.193), per row.**
+  - Only the decode rows moved: sglang 1.015 → 0.943, profile-decode 1.029 → 0.968. Prefill is unchanged (DeepGEMM shape ceilings).
+  - The ops that moved are many-tile small GEMMs under tile_io "dram": the MLA absorbed bmm kv_b.uk 256×128×512 ×128 heads 5.5 → 57 µs, plus expert gate_up / down, q_b and o at +20–25 µs.
+  - "dram" assumes one CTA per SM with serial I/O. The sm90 persistent ping-pong kernels (CUTLASS efficient_gemm.md) overlap it. With persistent I/O on Hopper / Blackwell (`default_tioauto`), MoE improves to 6.66 %, but v1 TTFT goes to 1.38 / 38 %, Mixtral to 28 %, and B200 2048³ to 1178 TF against 1006. Occupancy > 1 CTA per SM is the likely middle ground, with no source yet. Kept "dram"; this is not a bug.
+- **B200 NVFP4 regression.** The prefill-heavy short-osl rows got faster once the padding went (128/128 1.342 → 1.429, 2048/128 1.251 → 1.301, then 1.651 / 1.496 with NET_FULL). The padding had been compensating for costs that are still missing on B200 (§140). This is not a bug, and B200 goes 17.85 → 22.82 %.
+- Tests: `tests/test_core_194.py`.
