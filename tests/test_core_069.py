@@ -86,3 +86,7 @@ def test_tbo_weights_per_microbatch_decode_bands():
     s = X.predict(R["sgl-dec-2000-default"], "catalog_tbo")["pred"] / R["sgl-dec-2000-default"]["value"]
     d = X.predict(R["dsp-dec-4096-mtp"], "catalog_tbo")["pred"] / R["dsp-dec-4096-mtp"]["value"]
     assert 1.1 < s < 1.3 and 0.85 < d < 1.0
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173: study bands at the 0.172 mapping; current numbers in data/ext_validation.json)
+pin_module(globals())

@@ -90,3 +90,7 @@ def test_sched_variant_diagnostic_only():
     assert u(c) < 0.2 and u(replace(c, instance_sched="auto")) > 0.95
     v = X.sched_variant("catalog_kernel")
     assert v == "catalog_kernel+A" and X.scenario(X.rows(X.DATA_R4)[0], v).chip.instance_sched == "auto"
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173: study bands at the 0.172 mapping; current numbers in data/ext_validation.json)
+pin_module(globals())

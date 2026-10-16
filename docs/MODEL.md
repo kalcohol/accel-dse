@@ -3863,3 +3863,44 @@ Sources: the evo2 inference yml files (layer pattern hcs / hcm / hcl / attn, fil
 - **Invariant.** `tests/test_core_172.py`: attention array time / FLOP time stays in [0.9, 3] for every REF_HW chip plus 100T / 1P at 4k / 32k / 131k.
 - **Impact.** See CHANGELOG 0.172.0. llama-3.1-8b 131k TTFT goes from 156 s to 8.0 s. evo2-7b 1M on tp8 × cp8 goes from 25.9 s to 2.78 s.
   - The R4 hold-out for `catalog_kernel` moves from 0.892 / 26.6 % to 1.016 / 16.8 %. The `default` variant is unchanged.
+
+## 119. Mapping-artifact sweep and roofline-ratio invariant (0.173)
+
+- **Sweep.** Every GEMM / attention op of all listed models, phases {prefill 8k, full 4k, decode b1, b64}, chips {H100, B200, MI300X, A100, 100T, 1P}. For each op: array time ÷ FLOP time, against the swapped orientation and the geometric tile underfill.
+- **Artifacts found and fixed** (all were a single forced plan, not physics):
+
+  | class | ops | before | after |
+  |---|---|---|---|
+  | small N on wide | k / v proj (N 1024) | 8–18× | ≈ 1× |
+  | | routers (N 256–384) | 37–74× | ≈ 1× |
+  | | hc mixers (N 4–24) | 350–4700× | ≈ 1× |
+  | instances on wide | MoE experts, few tokens | 4–9× | ≤ geometric |
+  | | linear-attention chunks | 66–132× | ≤ geometric |
+  | | B200 long attention | 4.6× | ≤ geometric |
+  | serial K, tiny output (non-cta) | hc mixer decode on 100T | 29 µs | 1.8 µs |
+
+  Mechanisms: Cᵀ = Bᵀ·Aᵀ (cuBLAS row-major); grouped GEMM / FA grid over (batch, head, q-block); split-K / Flash-Decoding. `evaluate._wide_alt`, `_splitk_alt`.
+- **Invariant** (`tests/test_core_173.py`): array ≤ max(3 · g · FLOP, operand bytes / BW) + 2 µs, for 13 model kinds × 4 phases × 9 chips.
+- **Kept, by design:**
+  - The wide gang width (B200 18944 columns) gives 2–6× on full-sequence DiT shapes. `WIDE_GEMM_AUTO` removes it but worsens extval (default Mixtral TP8 1.14 → 1.17, MI300X max-load 2.09 → 2.39). The underfill stands in for real kernel efficiency, which has no source here.
+  - Small-M decode on os arrays is a real design effect.
+- **Extval** (pred / meas geomean, default | catalog_kernel), 0.172 → 0.173:
+
+  | group | default | catalog_kernel |
+  |---|---|---|
+  | v1 static | 1.06 → 1.13 | 1.19 → 1.31 |
+  | v1 TTFT | 1.29 → 1.33 | 1.66 → 1.75 |
+  | v1 max-load | 0.89 → 0.92 | 1.08 → 1.12 |
+  | MoE large-EP | 0.95 → 0.97 | 0.62 → 0.82 |
+  | Mixtral TP8 | 1.01 → 1.14 | 1.13 → 1.34 |
+  | MI300X lat | 1.39 → 1.40 | 3.28 → 3.33 |
+  | MI300X max-load | 1.98 → 2.09 | 2.15 → 2.32 |
+  | B200 NVFP4 | 0.98 → 0.99 | 1.24 → 1.26 |
+
+  Removing artifacts exposes missing real-kernel efficiency and fixed costs; no number was fitted.
+- **Over-predicting catalog_kernel groups.** The catalog_kernel variant has no per-layer fixed cost. Adding the public-trace 62.3 µs/layer (§39) gives:
+  - v1 static 1.31 → 1.19;
+  - v1 TTFT 1.75 → 1.36;
+  - B200 NVFP4 1.26 → 1.05.
+
+  Library GEMM ceilings add only about 0.01. The residual is the 128-token TTFT rows (1.3–1.7×, fixed-cost dominated). There is no sourced breakdown of trtllm-0.8 TTFT framework time, so it is left open.

@@ -230,3 +230,7 @@ def test_validation_api_cli():
     with contextlib.redirect_stdout(buf):
         assert cli.main(["eval", "--model", "qwen3-8b", "--batch", "16", "--pd", "--pd-decode-cards", "3"]) == 0
     assert "queueing" in buf.getvalue() and "prefill-first" in buf.getvalue()
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals())

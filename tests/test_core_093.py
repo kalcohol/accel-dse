@@ -82,3 +82,7 @@ def test_attn_sched_default_off_and_candidate_bands():
     assert e(g(lat, v)) < 35                                                # 118 → 33 %
     one = [r for r in X.rows(X.DATA_MOE) if r["metric"] == "static_tok_s_total"]
     assert len(one) == 1 and e(g(one, v)) > e(g(one, "catalog_kernel"))    # the group that blocks adoption
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173: study bands at the 0.172 mapping; current numbers in data/ext_validation.json)
+pin_module(globals())

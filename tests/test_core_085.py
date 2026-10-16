@@ -52,3 +52,7 @@ def test_ui_verdict_and_error_branches_are_stale_flagged():
     for sid in ("cmp-status", "lay-status", "sw-status"):
         for m in re.finditer(r"catch \(e\) \{ \$\('" + sid + r"'\)\.textContent = '错误：' \+ e\.message;([^}]*)\}", js):
             assert f"$('{sid}').dataset.done = '1'" in m.group(1), sid
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals())

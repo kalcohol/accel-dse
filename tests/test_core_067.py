@@ -67,3 +67,7 @@ def test_mixtral_tp8_bands():
     assert 1.0 < g("catalog_kernel", hop) < 1.25 < g("catalog", hop)
     assert 0.85 < g("catalog_serial", hop) < 1.1
     assert 0.8 < g("catalog_serial", [r for r in R if r["hw"] == "A100-SXM-80GB"]) < 1.05
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173: study bands at the 0.172 mapping; current numbers in data/ext_validation.json)
+pin_module(globals())

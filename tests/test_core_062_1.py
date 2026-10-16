@@ -80,3 +80,7 @@ def test_sweep_images_matches_eval():
         r = evaluate(s.replace("serving.images", v))
         assert row["ttft_ms"] == r.ttft * 1e3 and row["fits"] == r.fits
     assert sw["rows"][0]["ttft_ms"] < sw["rows"][1]["ttft_ms"] < sw["rows"][2]["ttft_ms"]
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals())

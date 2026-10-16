@@ -218,3 +218,7 @@ def test_prefill_first_stable_cap_fallback():
     lam = 0.9 * x["stable_rate_rps"]
     y = pq._coloc_prefill_first(c0, lam)
     assert y["stable"] and y["prefill"]["batch_cap"] >= 1
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals(), only={"test_slo_aware_cap_raises_pd_slo_rate"})

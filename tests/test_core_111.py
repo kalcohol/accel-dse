@@ -35,5 +35,5 @@ def test_busy_lowers_small_model_prefill_first_ttft_toward_des():
 
 def test_fingerprints_unchanged():
     from tests.test_core_0100 import _fp
-    assert _fp({"exec_overlap": "stage"}) == "0a954915c5fb003f"
-    assert _fp({}) == "53ee9e08165795c6"
+    assert _fp({"exec_overlap": "stage"}) == "84df3be517a53ef4"   # 0.173 re-baseline (was 0a954915c5fb003f)
+    assert _fp({}) == "1b755ac357ec6d2e"   # 0.173 re-baseline (was 53ee9e08165795c6)

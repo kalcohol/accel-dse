@@ -85,3 +85,7 @@ def test_adoption_bands():
     assert e < 17.5
     g, e = err(X.rows(X.DATA_R4))
     assert 0.95 < g < 1.08 and e < 20      # 0.172 re-baseline: 0.892 / 26.6 % → 1.016 / 16.8 % (attention orientation)
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173: study bands at the 0.172 mapping; current numbers in data/ext_validation.json)
+pin_module(globals())

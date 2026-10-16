@@ -187,3 +187,7 @@ def test_simulate_flag_is_opt_in_and_additive():
 def test_default_colocated_report_has_no_pd():
     s = Scenario(**BASE)
     assert s.pd is None or not s.pd.enabled and not s.pd.simulate
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals())

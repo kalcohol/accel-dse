@@ -231,3 +231,7 @@ def test_validation_api_cli():
                          "--pd-prompt-cv", "0.5", "--pd-prefix-hit", "0.3", "--pd-search-layouts"]) == 0
     o = buf.getvalue()
     assert "lengths" in o and "M/G/1" in o and "layout search" in o and "prefix hit 30%" in o
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals())

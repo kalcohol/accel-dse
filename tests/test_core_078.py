@@ -71,3 +71,7 @@ def test_des_overload_detected_when_run_shorter_than_request_lifetime():
             r = pdsim.simulate(ctx, rate, mode, n_req=800, warmup=200, seed=3)
             assert r["stable"] == want == rep["queue"]["modes"][mode]["stable"], (rate, mode, r["stable"])
             assert r["over_capacity"] == (not want)
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals())

@@ -242,17 +242,91 @@ ATTN_ORIENT = True     # 0.172 default (False = ≤ 0.171 behaviour, kept for th
 
 
 @contextlib.contextmanager
-def attn_orient(on: bool):
-    """0.172: run with LLM attention orientation choice on/off (historical guards pin the ≤ 0.171 numbers)."""
-    global ATTN_ORIENT
+def model_flags(**kw):
+    """0.172 / 0.173: run with module-level mapping flags overridden (ATTN_ORIENT, WIDE_GEMM_ORIENT, WIDE_GEMM_SPLIT,
+    SPLIT_K, WIDE_GEMM_AUTO); historical guards pin pre-fix numbers with it.  Clears the stage memos."""
     from . import memo
-    old, ATTN_ORIENT = ATTN_ORIENT, on
+    g = globals()
+    old = {k: g[k] for k in kw}
+    g.update(kw)
     memo._TABLES.clear()
     try:
         yield
     finally:
-        ATTN_ORIENT = old
+        g.update(old)
         memo._TABLES.clear()
+
+
+LEGACY_0171 = dict(ATTN_ORIENT=False, WIDE_GEMM_ORIENT=False, WIDE_GEMM_SPLIT=False, SPLIT_K=False)
+LEGACY_0172 = dict(WIDE_GEMM_ORIENT=False, WIDE_GEMM_SPLIT=False, SPLIT_K=False)
+
+
+def attn_orient(on: bool):
+    """0.172: ``on`` False = the ≤ 0.171 mapping (0.173: also without the 0.173 wide / split-K alternatives)."""
+    return model_flags(ATTN_ORIENT=True) if on else model_flags(**LEGACY_0171)
+
+
+WIDE_GEMM_ORIENT = True   # 0.173 default
+WIDE_GEMM_SPLIT = True    # 0.173 default
+WIDE_GEMM_AUTO = False    # 0.173 diagnostic: also the core-group (auto) plan for count = 1
+
+
+def _wide_alt(ch, org, op, c):
+    """0.173: the "wide" schedule gangs every engine into one rows × (E·cols) array (GPU references, MODEL §26).  Two
+    shapes it forced into an unphysical mapping (the 0.172 bug class, sweep in MODEL §119):
+    * small N (k / v projections N = 1024, MLA / hyper-connection mixers N = 4–24): N filled N of E·cols columns.  A
+      GEMM library computes Cᵀ = Wᵀ·Xᵀ just as well (cuBLAS row-major is exactly that), so take the cheaper
+      orientation;
+    * many small instances (grouped MoE experts with few tokens, chunked linear-attention blocks): each instance
+      occupied the whole ganged array in turn.  Grouped / batched GEMM kernels spread instances over SMs (CUTLASS
+      grouped GEMM tiles every expert's output; the FlashAttention grid is batch × head × q-block) — take the core-group
+      (auto) plan, which spreads instances and splits each over the remaining groups, when cheaper."""
+    if WIDE_GEMM_ORIENT and op.n < op.m:
+        # swapped roles: the weight is now the streamed operand.  gemm_exec's conversion flags follow the operands, so
+        # converted element counts are unchanged (w side k·n' = k·m activations, a side m'·k = weight elements); the
+        # per-pass weight-dequant tag (convert_w) is kept from the native orientation; packed-format scale bits
+        # (w_bits above the format's) are dropped on the swapped side (≤ 10 %, feed term only)
+        t = gemm_cost(ch, org, op.n, op.k, op.m, count=op.count, w_fmt=op.a_fmt, a_fmt=op.w_fmt)
+        if t.cycles < c.cycles:
+            c = replace(t, convert_w=c.convert_w)
+    if WIDE_GEMM_AUTO:
+        t = gemm_cost(replace(ch, instance_sched="auto"), org, op.m, op.k, op.n, count=op.count, w_fmt=op.w_fmt,
+                      a_fmt=op.a_fmt, w_bits=op.w_bits)
+        if t.cycles < c.cycles:
+            c = t
+    if WIDE_GEMM_SPLIT and op.count > 1:
+        t = gemm_cost(replace(ch, instance_sched="auto"), org, op.m, op.k, op.n, count=op.count, w_fmt=op.w_fmt,
+                      a_fmt=op.a_fmt, w_bits=op.w_bits)
+        if t.cycles < c.cycles:
+            c = t
+    return c
+
+
+SPLIT_K = True            # 0.173 default
+
+
+def _splitk_alt(ch, org, m, k, n, count, w_fmt, a_fmt, w_bits, c):
+    """0.173: split-K over core groups.  Output-stationary arrays (all non-"cta" schedules) reduce K serially in one
+    tile, so a tiny output with a long K (hyper-connection mixers 1 × 28672 × 24, shared-expert gates N = 1, routers
+    at decode) took K cycles on one tile while every other core idled (deepseek-v4-pro decode: 3 such ops / layer ×
+    61 layers ≈ 5 ms / step on 100T).  GPU libraries split K over CTAs (cuBLAS / CUTLASS split-K, the 0.92 cta model
+    already does); here s groups each take K / s on E / s engines (port / accumulators shared out as the auto plan
+    does), then the s partial m × n tiles are summed on the vector lanes 「推导」."""
+    if ch.engines < 2 or m * n * count >= ch.rows * ch.cols * ch.engines or k < 256:
+        return c
+    best = c
+    s = 2
+    while s <= ch.engines and k // s >= 64:
+        sub = replace(ch, engines=ch.engines // s, sram_port_Bpc=ch.port_Bpc / s, sram_port_Bpc_per_engine=None,
+                      acc_kib=ch.acc_total_kib / s, acc_kib_per_engine=None)
+        one = gemm_cost(sub, org, m, -(-k // s), n, count=count, w_fmt=w_fmt, a_fmt=a_fmt, w_bits=w_bits)
+        red = m * n * count * (s - 1) / ch.lanes
+        if one.cycles + red < best.cycles:
+            # conversion work is the operands' (every K slice converted once, by its own group): unchanged
+            best = replace(one, cycles=one.cycles + red, mac_cycles=one.mac_cycles + red,
+                           convert_elems=c.convert_elems, convert_w=c.convert_w)
+        s *= 2
+    return best
 
 
 def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
@@ -266,6 +340,8 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
         ch = replace(ch, tile_io_Bpc=0.0)        # already DRAM traffic — tile I/O is a GEMM-kernel term only
     if op.kind == "gemm":
         c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=op.w_fmt, a_fmt=op.a_fmt, w_bits=op.w_bits)
+        if ch.instance_sched == "wide" and not ch.split_instances:
+            c = _wide_alt(ch, org, op, c)
     elif op.kind == "attn" and op.orient:
         # full-sequence (DiT / encoder) attention: both operands are activations in the activation dtype, and a
         # flash kernel may compute O = P·V or Oᵀ = Vᵀ·Pᵀ — take the cheaper orientation (PV has N = head_dim,
@@ -293,6 +369,24 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
                     c = t
     else:
         return 0.0, 0.0, 0.0, _vec_seconds(ch, op), 0.0, 0.0, 0.0, 0.0
+    if (op.kind == "attn" and WIDE_GEMM_SPLIT and op.count > 1 and ch.instance_sched == "wide"
+            and not ch.split_instances):
+        # 0.173: (batch × head × chunk) attention instances spread over SMs (see _wide_alt) — same formats as costed
+        kf = op.w_fmt or model.kv_fmt
+        wf, af = (model.act_fmt, model.act_fmt) if op.orient else (c.exec_fmt, c.exec_fmt) if c.exec_fmt == kf else (kf, op.a_fmt)
+        sp = replace(ch, instance_sched="auto")   # instances over SMs, rows of each over the rest (FA grid)
+        t = min((gemm_cost(sp, org, a, op.k, b, count=op.count, w_fmt=wf, a_fmt=af)
+                 for a, b in ((op.m, op.n), (op.n, op.m))), key=lambda x: x.cycles)
+        if t.cycles < c.cycles:
+            c = replace(t, convert_elems=c.convert_elems)
+    if SPLIT_K and ch.instance_sched != "cta":
+        if op.kind == "gemm":
+            c = _splitk_alt(ch, org, op.m, op.k, op.n, op.count, op.w_fmt, op.a_fmt, op.w_bits, c)
+        elif op.kind == "attn":
+            # Flash-Decoding (Dao et al., 2023): decode attention splits the KV length over thread blocks and
+            # rescales / sums the partial outputs — split-K of PV (K = ctx); QK's K is head_dim (no split)
+            kf = model.act_fmt if op.orient else (op.w_fmt or model.kv_fmt)
+            c = _splitk_alt(ch, org, op.m, op.k, op.n, op.count, kf, model.act_fmt if op.orient else op.a_fmt, None, c)
     t = c.cycles * op.causal / f
     vec = _vec_seconds(ch, op) + _convert_seconds(ch, c.convert_elems * 2.0)   # 2 element-ops / element 「假设」
     mac_share = t if c.bound == "mac" else 0.0
@@ -359,7 +453,7 @@ def _memos(sys: System, org: str, model: ModelSpec) -> tuple:
         return {}, None
     if len(om) > 64:
         om.clear()
-    om = om.setdefault((sys.chip, org, ATTN_ORIENT), {})   # 0.172: the flag changes attention op costs
+    om = om.setdefault((sys.chip, org, ATTN_ORIENT, WIDE_GEMM_ORIENT, WIDE_GEMM_SPLIT, WIDE_GEMM_AUTO, SPLIT_K), {})   # 0.172: the flag changes attention op costs
     if len(om) > _MEMO_CAP:
         om.clear()
     cm = None

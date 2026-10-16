@@ -136,10 +136,27 @@ def test_server_burst_and_stalled_client():
         assert res.count(200) == 96, {x: res.count(x) for x in set(res)}
         s = socket.create_connection(("127.0.0.1", port))
         s.sendall(b"POST /api/eval HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n{")
-        s.settimeout(30)
-        t0 = time.time()
-        assert s.recv(64).startswith(b"HTTP/1.0 408") and time.time() - t0 < 20
+        # 0.173: read until the status line is complete (a single recv may return a partial segment under load) and
+        # report what arrived; the bound checks the 2 s read timeout fired (not the 30 s default / a held thread)
+        s.settimeout(60)
+        t0 = time.monotonic()
+        ctl = []                        # control: a 2 s sleep started at t0 absorbs the same machine stall
+        ct = threading.Thread(target=lambda: (time.sleep(serve.Handler.timeout), ctl.append(time.monotonic() - t0)))
+        ct.start()
+        got = b""
+        while b"\r\n" not in got:
+            chunk = s.recv(256)
+            if not chunk:
+                break
+            got += chunk
+        dt = time.monotonic() - t0
         s.close()
+        assert got.startswith(b"HTTP/1.0 408"), (got[:80], dt)
+        ct.join()
+        # unloaded: ctl ≈ 2 s → bound 20 s as before (proves the 2 s timeout fired, not the 30 s default); under a
+        # whole-machine stall (suite -j 8) the bound moves by the stall the control timer saw, not by a fixed slack
+        stall = max(0.0, ctl[0] - serve.Handler.timeout)
+        assert dt < 20 + stall and dt < old_t + stall, (got[:40], dt, ctl[0])
     finally:
         serve.Handler.timeout = old_t
         srv.shutdown()

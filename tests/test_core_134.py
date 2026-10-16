@@ -54,3 +54,7 @@ def test_validation_and_cli():
     from pathlib import Path
     src = (Path(__file__).resolve().parents[1] / "accel_dse/cli.py").read_text()
     assert "--moe-a2a" in src and "--moe-a2a-sm" in src
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals())

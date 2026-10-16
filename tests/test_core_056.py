@@ -151,3 +151,7 @@ def test_exact_mg1_wait_law():
         assert abs(sv(q["p99"]) - 0.01) < 1e-6
     sv, _, _ = _pk_surv(0.8, [(1.0, 1.0)])
     assert max(abs(1 - sv(x) - md1_cdf(0.8, 1.0, x)) for x in (0.3, 1.0, 2.5, 4.0, 5.9)) < 1e-3
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals())

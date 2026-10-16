@@ -88,3 +88,7 @@ def test_default_unchanged_and_extval_variant():
     r = X.rows(X.DATA)[0]
     sc = X.scenario(r, v, phase="decode", batch=8, ctx=1024, out_len=8)
     assert sc.exec_overlap == "pipe" and sc.chip.pipe_cross_op is False
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals())

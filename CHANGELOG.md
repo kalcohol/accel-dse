@@ -3,6 +3,30 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.173.0] — Mapping-artifact sweep (wide orientation / instances / split-K), roofline-ratio invariant, 088 deflake
+- Sweep 「推导」 (`/workspace/sweep173`): every GEMM / attention op of all listed models × prefill 8k / full 4k / decode b1 / b64 × {H100, B200, MI300X, A100, 100T, 1P}, comparing array time with FLOP time and the swapped orientation. Three artifacts of the 0.172 class:
+  1. **Small N on "wide"** (GPU references): k / v projections (N 1024) ran 8–18×, routers (N 256–384) 37–74×, and hyper-connection mixers (N 4–24) 350–4700× their FLOP time, because one orientation was forced on a 32 × E·cols array. Fix: wide GEMMs take the cheaper of C / Cᵀ (cuBLAS row-major is exactly the swapped call). Conversion counts are preserved; packed-scale bits are dropped on the swapped side (≤ 10 %, feed only).
+  2. **Instances serialised on "wide"**: MoE experts with few tokens (m 147–410, count 160–896) ran 4–9×. Chunked linear-attention blocks (64 × 128 × 64, count 8–16k) ran 66–132×. Long-sequence attention (count = batch × heads) ran 4.6× on B200. Fix: for count > 1, also cost the core-group (auto) plan, which spreads instances and splits each over the remaining groups (CUTLASS grouped GEMM; FA grid over batch × head × q-block).
+  3. **Serial K on a tiny output** (all non-cta schedules): a 1 × 28672 × 24 hc mixer took 28672 cycles on one tile. That is about 5 ms per decode step for deepseek-v4-pro on 100T. Fix: split-K over core groups plus a vector-lane reduction (cuBLAS / CUTLASS split-K; Flash-Decoding for decode PV). Conversion work is unchanged.
+- Flags: `evaluate.WIDE_GEMM_ORIENT` / `WIDE_GEMM_SPLIT` / `SPLIT_K` (default on) and `WIDE_GEMM_AUTO` (diagnostic, off). `model_flags(**LEGACY_0172)` reproduces 0.172.
+- New standing invariant `tests/test_core_173.py`, run for 13 models (dense, GQA, MLA, MoE, hc, linear attention, Hyena, DiT, protein) × 4 phases × 9 chips: array ≤ max(3 · g · FLOP, operand bytes / BW) + 2 µs, where g is the geometric tile underfill of the better orientation (on wide, instances may share the gang). It fails with the fixes off.
+- Not changed (documented):
+  - The wide gang width itself: B200 has E·cols = 18944, so full-sequence DiT GEMMs with both sides < 18944 stay 2–6×. The `WIDE_GEMM_AUTO` diagnostic removes this but moves extval the wrong way (default Mixtral TP8 1.14 → 1.17, MI300X max-load 2.09 → 2.39). The wide underfill there stands in for real kernel efficiency, which is not otherwise modelled.
+  - Small-M decode on output-stationary arrays: this is a real design effect (the os / os_vec / reconf choice).
+- Default impact: abstract-chip defaults move ≤ 1.2 % (hc / MoE models; deepseek-v4-pro decode TPOT 208.11 → 205.66 ms). On the reference GPUs, prefill with small-N projections speeds up. evo2-7b 8k reference TTFT goes 0.41291 → 0.37423 s.
+- External validation, as default / catalog_kernel geomean, 0.172 → 0.173: see MODEL §119.
+- Over-predicting catalog_kernel groups (item 3, no fitting):
+  - The variant has no fixed per-layer cost. Adding the sourced public-trace 62.3 µs/layer (`TRACE_LAYER_US`, §39) brings v1 static from 1.31 to 1.19, v1 TTFT from 1.75 to 1.36, and B200 NVFP4 from 1.26 to 1.05. GEMM ceilings add only about 0.01.
+  - The residual sits on the 128-token TTFT rows (1.3–1.7×), which are fixed-cost dominated.
+  - Before 0.172 the wide-array underfill masked this missing overhead.
+- 088: the status line is now read until CRLF (a single recv can return a partial segment). Time is measured on the monotonic clock. The 20 s bound now moves only by the stall that a parallel 2 s control timer observes (unloaded: unchanged).
+- Re-baselines:
+  - Default fingerprints 0a954915c5fb003f / 53ee9e08165795c6 → 84df3be517a53ef4 / 1b755ac357ec6d2e, across 17 files.
+  - 125 fpx 4690f724dabe9fa6 / ea2456afee7c3a86 → 048879e566bfde2c / 9b1f6dda6e1fd768.
+  - 171 evo2 8k reference TTFT.
+  - Pinned to 0.172 via `tests/pin_legacy.py`: the DES / queue operating-point tests (051 052 054 055 056 078 085 064-slo), the worked examples (062_1 §19, 098, 134), and the study bands (067 069 091 092 093).
+  - `data/ext_validation.json` regenerated.
+
 ## [0.172.0] — Long-context attention: ~34× roofline was a mapping artifact (fixed)
 - Root cause 「推导」: the GPU references run `instance_sched = "wide"`, which treats all SMs as one 32 × 8448 array. LLM prefill/decode attention kept its 0.40 orientation, so PV (m = q·g, k = ctx, n = head_dim = 128) used 128 of 8448 columns: 66× its FLOP time. QK + PV ran at ~34× ideal at every length (4k–131k). It was not a physical effect: no DRAM materialisation of the scores and no KV re-read term was involved (t_dram 0.70 s at 131k).
 - 「来源」 FlashAttention-2 (arXiv 2307.08691) parallelises over (batch, head, query block), one CTA per SM, and reaches 73 % of peak on A100 and ~35 % on H100. FlashAttention-3 (arXiv 2407.08608) reaches up to 740 TFLOPS BF16 forward on H100 (75 %). Measured kernels therefore sit at 1.3–2.9× the FLOP bound, not 34×.

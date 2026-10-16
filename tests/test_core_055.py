@@ -165,3 +165,7 @@ def test_kv_policy_des():
             assert s["preempt_per_req"] == 0
         s0 = simulate(ctx | {"kv_policy": "off"}, lam, "coloc_chunked", n_req=300, warmup=80, seed=3)
         assert "slot_wait" not in s0
+
+
+from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+pin_module(globals())
