@@ -4632,3 +4632,9 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
 - Fused QKV is an IR transform valid for any engine/compiler; it conserves FLOPs and bytes.
 - gptSessionBenchmark TTFT (output_len 1) = generate() + sync: host setup (buffers, paged-KV add/remove, decoder newBatch) + context pass + last-token sampling + one host-only loop iteration (no extra engine pass). Modelled: context pass, last-token lm_head and sampling. Not modelled: the host setup, which has no sourced cost.
 - Prefill lm_head m = batch (last token), matching TRT-LLM `gather_context_logits=False`.
+
+## §149 Standing GPU→NPU leak audit; MI300X all-reduce latency (0.202)
+- Rule: a GPU-kernel mechanism must be gated on a GPU marker: `Chip.gpu` (refhw), `instance_sched="cta"` / `tile_io_Bpc`, `Link.ar_lat`, or extval-only refhw fields. It must never be gated on generic fields such as `instance_sched=="wide"` or `topology`. `tests/test_core_202.py` flips every GPU flag on 100T/1P (decode/prefill, TP1/TP4) and requires bit-identical results. It also lists the mechanisms that apply to NPUs on purpose, with the reason.
+- NPU dispatch: no per-op launch cost (`kernel_us = 0`): a statically compiled schedule 「假设」. `layer_overhead_us` / `kernel_us` are the user's knobs. CUDA graph/eager numbers stay in extval.
+- `WIDE_WAVES` refill is GPU-only (`GPU_WAVES_ONLY`). On an NPU, "wide" is a lock-step ganged array with N padded to E·cols, consistent with its broadcast feed term.
+- All-reduce latency floor by `Link.ar_lat`: "" = alpha_us; "gpu" = 6.8 µs CUDA custom AR (≤ 8) or NCCL Ring-LL; "rocm" = vLLM ROCm custom AR measured on MI300X, {2: 7.26, 4: 7.18, 8: 12.29} µs 「来源」 vLLM PR #19744.

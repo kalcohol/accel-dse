@@ -70,12 +70,17 @@ def _cd(a: float, b: float) -> int:
 
 
 WIDE_WAVES = True          # 0.193 default (False = ≤ 0.192 gang padding, MODEL §139)
+# 0.202: the wave refill ("a GEMM kernel hands idle SMs other row tiles") is a GPU-kernel mechanism; on an NPU the
+# "wide" schedule is one lock-step ganged array fed by a broadcast A row tile (the feed term above still assumes that
+# broadcast), so N stays padded to E·cols there.  ≤ 0.201 the refill also reached NPU "auto"→"wide" plans.
+# False = ≤ 0.201.
+GPU_WAVES_ONLY = True
 
 
 def _os(ch: Chip, m, k, n, r, wb, ab, ob):
     R, Ce = ch.rows, ch.c_eff
     mac = _cd(m, R) * _cd(n, Ce) * k / r
-    if WIDE_WAVES and not ch.wide_pad and ch.instance_sched == "wide" and ch.engines > 1:
+    if WIDE_WAVES and not ch.wide_pad and ch.instance_sched == "wide" and ch.engines > 1 and (ch.gpu or not GPU_WAVES_ONLY):
         # 0.192: a ganged array whose output that is not a multiple of E·cols leaves whole engines idle in the last column tile; a GEMM kernel hands
         # them other row tiles (R × cols output tile per engine, waves over E engines — the 0.92 cta tile/wave
         # quantisation without tuned tile shapes).  Before: N padded to E·cols, so efficiency depended on whether one
@@ -134,7 +139,8 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
     if m <= 0 or k <= 0 or n <= 0 or count <= 0:
         return GemmCost(0.0, 0.0, 0.0, "none", a_fmt, "none", 0.0)
     ex, rate, conv, flag = gemm_exec(w_fmt, a_fmt, ch.formats)
-    wb = (w_bits if w_bits or not W_BITS_ZERO_FIX else _fmt(w_fmt).bits) / 8.0   # 0.197: 0 = unset (Op default)
+    # 0.197: 0 = unset (Op default).  0.202: None is unset under both settings (the legacy branch divided None)
+    wb = (w_bits if w_bits is not None and (w_bits or not W_BITS_ZERO_FIX) else _fmt(w_fmt).bits) / 8.0
     ab = _fmt(a_fmt).bytes
     ob = max(2.0, ab)       # outputs leave in bf16 (fp32 when the activations are fp32)
     if ch.instance_sched == "cta":

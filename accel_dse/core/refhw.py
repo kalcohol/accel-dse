@@ -64,7 +64,7 @@ def _chip(name, sms, mac_per_sm, peak_tflops, fmts, l2_mib, lanes):
     # ≤ 0.192: instance_sched "wide" (one rows × E·cols array; N padded to E·cols — MODEL §26 / §119 / §139)
     occ = next((v for k, v in OCC_RES.items() if name.startswith(k)), (0.0, 0.0, 0))
     return Chip(name, f, rows, cols, sms, formats=fmts, sram_mib=l2_mib, vector_lanes=lanes,
-                instance_sched="cta", tile_io="dram", gemm_ceil_mul=True,
+                instance_sched="cta", tile_io="dram", gemm_ceil_mul=True, gpu=True,
                 occ_smem_kib=occ[0], occ_reg_kib=occ[1], occ_threads=occ[2],
                 smem_Bpc_sm=SMEM_BPC if occ[0] else 0.0)
 
@@ -89,7 +89,7 @@ SMEM_BPC = 128.0
 _NV_SFU = 16.0
 REF_HW = {h.name: h for h in (
     RefHW("MI300X", _chip("MI300X 参考硬件", 304, 1024, 1307.4, _CDNA3, 32.0, 19456),
-          "hbm3_8s_8h24g_5200", Link(448.0, 3.0, ar_lat="gpu"), 1307.4, 2614.9, 5300.0, 192.0, 896.0, MI300X_URL,
+          "hbm3_8s_8h24g_5200", Link(448.0, 3.0, ar_lat="rocm"), 1307.4, 2614.9, 5300.0, 192.0, 896.0, MI300X_URL,
           "datasheet: 304 CUs, BF16 1,307.4 / FP8 2,614.9 TFLOPS dense, 192 GB HBM3 5.3 TB/s, 7 × 128 GB/s Infinity "
           "Fabric (bidir) — aggregate taken as the scale-up link 「假设」(a ring over the mesh uses less); L2 8 × 4 MB as "
           "sram (256 MB Infinity Cache NOT modelled)"),

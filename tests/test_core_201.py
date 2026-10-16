@@ -23,7 +23,8 @@ def test_cross_node_net_not_custom_ar():
 
 def test_refhw_links_marked_gpu():
     from accel_dse.core import refhw
-    assert open(refhw.__file__).read().count('ar_lat="gpu"') == 7
+    src = open(refhw.__file__).read()
+    assert src.count('ar_lat="gpu"') + src.count('ar_lat="rocm"') == 7
 
 
 def test_link_ar_lat_hash_stable_and_validated():

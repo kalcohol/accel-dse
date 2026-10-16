@@ -140,6 +140,9 @@ class Chip:
     # ir.glue_ops; each pays its own work and, with kernel_us / kernel_vec, the per-kernel fixed cost
     gpu_glue: bool = field(default=False, metadata={"omit_default": True})
     tile_io_Bpc: float = field(default=0.0, metadata={"omit_default": True})
+    # 0.202: GPU reference hardware (refhw._chip).  Gate for GPU-kernel mechanisms that are otherwise reachable from an
+    # NPU schedule (mapping.WIDE_WAVES); NPU presets / user chips leave it False
+    gpu: bool = field(default=False, metadata={"omit_default": True})
     acc_kib_per_engine: float | None = field(default=None, metadata={"omit_default": True})   # 0.141
 
     def __post_init__(self):
@@ -265,7 +268,8 @@ class Link:
     alpha_us: float = 3.0     # 「假设」 per-collective latency (sync + launch)
     topology: str = "switch"  # switch | ring | full_mesh | torus2d — used only with fabric.enabled (0.59)
     # 0.201: all-reduce latency model.  "" = α = alpha_us (the user's own interconnect: NPU design points);
-    # "gpu" = NVLink / NVSwitch GPU node (refhw): CUDA custom all-reduce floor / NCCL Ring-LL (schedule.py)
+    # "gpu" = NVLink / NVSwitch GPU node (refhw): CUDA custom all-reduce floor / NCCL Ring-LL (schedule.py);
+    # 0.202 "rocm" = MI300X xGMI node: vLLM ROCm custom all-reduce measured floor (schedule.ROCM_AR_US)
     ar_lat: str = field(default="", metadata={"omit_default": True})
 
     def __post_init__(self):
@@ -273,8 +277,8 @@ class Link:
             raise ValueError("link GBps must be finite > 0, alpha_us ≥ 0")
         if self.topology not in LINK_TOPOLOGIES:
             raise ValueError(f"link topology must be one of {', '.join(LINK_TOPOLOGIES)}")
-        if self.ar_lat not in ("", "gpu"):
-            raise ValueError("link ar_lat must be '' or 'gpu'")
+        if self.ar_lat not in ("", "gpu", "rocm"):
+            raise ValueError("link ar_lat must be '', 'gpu' or 'rocm'")
 
 
 NET_TOPOLOGIES = ("fat_tree", "rail")

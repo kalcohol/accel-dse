@@ -104,4 +104,5 @@ def test_fingerprints_change_only_v4():
     # 0.199 rebaseline (were 4aa21d67471fd69e / a3548246a90a9ceb): NCCL all-reduce latency
     # 0.200 rebaseline (were 3e753f36c5bcdb36 / fefb5b23fdf2782c): custom all-reduce α
     # 0.201 rebaseline (were ba49c208f61b306c / 9bb4812eed9b116a): GPU all-reduce latency no longer on NPU links (= 0.198 values)
-    assert fpx({"exec_overlap": "stage"}) == "4aa21d67471fd69e" and fpx({}) == "a3548246a90a9ceb"
+    # 0.202 rebaseline (were 4aa21d67471fd69e / a3548246a90a9ceb): WIDE_WAVES refill GPU-only (GPU_WAVES_ONLY)
+    assert fpx({"exec_overlap": "stage"}) == "5b3efea75e12245d" and fpx({}) == "8220364829b88de3"

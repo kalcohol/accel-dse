@@ -60,6 +60,13 @@ CUSTOM_AR = True
 # custom all-reduce floor.  False = ≤ 0.200.
 GPU_AR_ONLY = True
 CUSTOM_AR_US = 6.8
+# 0.202: MI300X (ar_lat "rocm") — vLLM's ROCm custom all-reduce (the same one-/two-shot kernel on HIP, PR #14125; used
+# below 16 MB, QuickReduce off by default) measured on 8 × MI300X 「来源」: vLLM PR #19744 kernel benchmark, "baseline =
+# custom allreduce when the data size is less than 16MB": TP2 7.26 µs (2 KB), TP4 7.18 µs (2 KB), TP8 12.29 µs (min,
+# 32 KB; 14.07 at 4 KB).  Floor = the smallest measured value per TP.  Groups 3 / 5–7 take the next listed TP 「假设」;
+# > 8 keeps the NCCL Ring-LL model 「假设」 (no RCCL small-message source applied).  ROCM_AR False = ≤ 0.201 (CUDA 6.8 µs).
+ROCM_AR = True
+ROCM_AR_US = {2: 7.26, 4: 7.18, 8: 12.29}
 NCCL_BASE_LAT_US, NCCL_NVL_HW_LAT_US = 6.6, 0.6
 
 
@@ -73,8 +80,12 @@ def collective_seconds(kind: str, payload: float, group: int, link: Link) -> tup
         return 0.0, 0.0
     beta = link.GBps * 1e9
     a = link.alpha_us * 1e-6
-    if kind == "allreduce" and NCCL_AR_LAT and link.topology == "switch" and (link.ar_lat == "gpu" or not GPU_AR_ONLY):
-        a = max(a, (CUSTOM_AR_US if CUSTOM_AR and group <= 8 else nccl_ring_ll_us(group)) * 1e-6)
+    if kind == "allreduce" and NCCL_AR_LAT and link.topology == "switch" and (link.ar_lat in ("gpu", "rocm") or not GPU_AR_ONLY):
+        if link.ar_lat == "rocm" and ROCM_AR and CUSTOM_AR and group <= 8:
+            fl = ROCM_AR_US[min(g for g in ROCM_AR_US if g >= group)]
+        else:
+            fl = CUSTOM_AR_US if CUSTOM_AR and group <= 8 else nccl_ring_ll_us(group)
+        a = max(a, fl * 1e-6)
     if kind == "allreduce":
         bw = 2 * (group - 1) / group * payload / beta
     elif kind == "alltoall":

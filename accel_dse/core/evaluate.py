@@ -278,7 +278,7 @@ def model_flags(**kw):
     refhw_wide = kw.pop("REFHW_WIDE", None)      # 0.193: reference GPUs back on the ≤ 0.192 wide schedule
     cta_split = kw.pop("CTA_SPLIT_K", None)      # 0.193: mapping.SPLIT_K (cta split-K set)
     from . import ir as _ir, schedule as _sch
-    mods = {"GPU_AR_ONLY": _sch, "CUSTOM_AR": _sch, "NCCL_AR_LAT": _sch, "FUSE_QKV": _ir, "WIDE_WAVES": _mp, "STATE_FIRST": _mpl, "CTA_DRAM_FLOOR": _mp, "CTA_SMEM_BW": _mp, "CTA_OCC_FILL": _mp, "CTA_L2_ACT": _mp, "W_BITS_ZERO_FIX": _mp}   # 0.192: flags living in other modules
+    mods = {"ROCM_AR": _sch, "GPU_AR_ONLY": _sch, "CUSTOM_AR": _sch, "NCCL_AR_LAT": _sch, "FUSE_QKV": _ir, "WIDE_WAVES": _mp, "GPU_WAVES_ONLY": _mp, "STATE_FIRST": _mpl, "CTA_DRAM_FLOOR": _mp, "CTA_SMEM_BW": _mp, "CTA_OCC_FILL": _mp, "CTA_L2_ACT": _mp, "W_BITS_ZERO_FIX": _mp}   # 0.192: flags living in other modules
     tgt = {k: (vars(mods[k]) if k in mods else globals()) for k in kw}
     old = {k: tgt[k][k] for k in kw}
     for k, v in kw.items():
@@ -503,7 +503,7 @@ def _memos(sys: System, org: str, model: ModelSpec) -> tuple:
         return {}, None
     if len(om) > 64:
         om.clear()
-    om = om.setdefault((sys.chip, org, ATTN_ORIENT, WIDE_GEMM_ORIENT, WIDE_GEMM_SPLIT, WIDE_GEMM_AUTO, SPLIT_K, _mapping.WIDE_WAVES), {})   # 0.172: the flag changes attention op costs
+    om = om.setdefault((sys.chip, org, ATTN_ORIENT, WIDE_GEMM_ORIENT, WIDE_GEMM_SPLIT, WIDE_GEMM_AUTO, SPLIT_K, _mapping.WIDE_WAVES, _mapping.GPU_WAVES_ONLY), {})   # 0.172: the flag changes attention op costs
     if len(om) > _MEMO_CAP:
         om.clear()
     cm = None

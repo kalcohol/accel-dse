@@ -6,6 +6,30 @@
 
 
 
+## [0.202.0]
+- Standing leak audit of the GPU-specific mechanisms from 0.176–0.201 against the NPU design path (`tests/test_core_202.py`; register every new GPU-only mechanism there). Results:
+
+  | Mechanism | Gate | Reaches NPU? | Verdict |
+  |---|---|---|---|
+  | Per-kernel latency `kernel_us`, `kernel_vec`; CUDA graph / eager gap (extval `TRACE_GAP_US`, `RUNTIME_BY_PHASE`) | Chip field (0 / off on NPU presets); gap is set only by extval for refhw | No | NPU dispatch = statically scheduled graph, no per-op launch 「假设」; users can set `kernel_us` / `layer_overhead_us` |
+  | `gpu_glue` | Chip field | No | OK |
+  | CTA tile/wave model, occupancy, DRAM floor, SMEM, L2 activations | `instance_sched="cta"`, `tile_io_Bpc` | No | OK (flag-flip test) |
+  | Split-K / Stream-K (cta `mapping.SPLIT_K`) | cta only | No | OK |
+  | Split-K over core groups (`evaluate.SPLIT_K`, 0.173) | none | Yes | Intended: an NPU dataflow option for output-stationary arrays 「推导」 |
+  | **Wide wave refill (`WIDE_WAVES`, 0.193)** | `instance_sched=="wide"` | **Yes, a leak**: NPU auto→wide plans got the GPU "idle SMs take other row tiles" refill while the feed term still assumed a broadcast A tile (100T prefill −1.9 %) | **Fixed**: new `Chip.gpu` marker (refhw only), flag `mapping.GPU_WAVES_ONLY` (False = ≤ 0.201) |
+  | TRT-LLM FP4 rates, achieved-peak netting (`NET_FULL`), `FMT_CEIL_REPLACE` | extval on refhw chips (`fmt_ceiling`, `gemm_ceil_mul`) | No | OK |
+  | `idle_frac_tdp` (H100 whole-card idle) | `tpuv4i_7nm` energy preset, applied only with `tdp_W` | Yes | Kept: labelled 「二手」, and the report emits `idle_source_note` saying it is a GPU value applied to an NPU (0.189) |
+  | Per-pin HBM/LPDDR PHY area and energy | energy / budget fields | Yes | Correct: memory-interface physics (Chae ISSCC 2023, Samsung PHYs), not GPU-specific |
+  | Fused QKV, `W_BITS_ZERO_FIX` | none | Yes | Correct (0.201) |
+
+  - Fingerprints: stage `b47ec84b00fc0892`, {} `b4db8aea9e5680b6`, fpx `5b3efea75e12245d` / `8220364829b88de3` (WIDE_WAVES gate).
+  - Bug fixed: `W_BITS_ZERO_FIX=False` (the ≤ 0.196 branch) crashed when `w_bits` was None.
+- MI300X all-reduce latency: new `Link.ar_lat="rocm"` replaces the CUDA 6.8 µs assumption.
+  - Source 「来源」: vLLM PR #19744 kernel benchmark on 8 × MI300X, where the baseline is vLLM's ROCm custom all-reduce (used below 16 MB; QuickReduce is off by default). Measured: TP2 7.26 µs, TP4 7.18 µs, TP8 12.29 µs (smallest per TP).
+  - Cross-checks: MK1 QuickReduce README on 8 × MI300X, RCCL at 32 KB = 17.15 / 18.17 / 16.22 µs (TP2/4/8); vLLM PR #19094 custom AR at TP2 = 8.2–11.6 µs.
+  - TP3 and TP5–7 take the next listed TP 「假设」. Groups above 8 keep the NCCL Ring-LL model 「假设」. Flag `schedule.ROCM_AR` (False = ≤ 0.201).
+  - Effect: MI300X latency ratio 1.105 → 1.024 (MAE 21.60 → 22.81 %); MI300X max-load MAE 67.24 → 65.02 %. Other groups unchanged. Nothing tuned.
+
 ## [0.201.0]
 - NPU path vs the 0.196–0.200 GPU mechanisms (adversarial review):
   - Bug: the CUDA all-reduce latency (`CUSTOM_AR` 6.8 µs / NCCL Ring-LL) applied to every `switch` link, so NPU design points (default `Link(400, 3)`) and the cross-node `net` link silently got max(α, 6.8 µs) instead of their own `alpha_us`. Custom AR is an intra-NVLink-node CUDA kernel.

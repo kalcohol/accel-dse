@@ -174,8 +174,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="in-node scale-up tier bandwidth per rank (default 400 「假设」)")
     p.add_argument("--link-alpha-us", dest="link_alpha_us", type=float, default=None, help="scale-up tier α (default 3)")
     for t in ("link", "d2d", "net"):   # 0.201: all-reduce latency model of the tier ("" = own α; gpu = CUDA custom AR / NCCL)
-        p.add_argument(f"--{t}-ar-lat", dest=f"{t}_ar_lat", default=None, choices=["", "gpu"],
-                       help=f"{t} all-reduce latency model: '' = own α (default), gpu = CUDA custom all-reduce / NCCL floor")
+        p.add_argument(f"--{t}-ar-lat", dest=f"{t}_ar_lat", default=None, choices=["", "gpu", "rocm"],
+                       help=f"{t} all-reduce latency model: '' = own α (default), gpu = CUDA custom all-reduce / NCCL floor, rocm = MI300X custom all-reduce")
     p.add_argument("--d2d", dest="d2d_enabled", action="store_true", default=None,
                    help="chiplet stacking with a die-to-die tier (0.50; default off = monolithic die)")
     p.add_argument("--package-cards", dest="package_cards", type=int, default=None,
