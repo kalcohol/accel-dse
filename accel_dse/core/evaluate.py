@@ -30,6 +30,7 @@ from .vision import audio_ops, expand_images, image_grid, video_grid_of, vision_
 from .ir import dspark_ops, red_bytes, skew_from_load
 from . import fabric
 from . import overlap as _ovl
+from . import mapping as _mapping
 from .schedule import (StageTime, collective_seconds, collective_wire, fabric_collective, p2p_tier,
                        spec_expected_tokens, wire_single)
 
@@ -172,8 +173,24 @@ class Result:
     def decision(self) -> dict:
         """0.191 decision readout: one forward per question (prefill of prompt + options), no decode loop."""
         sv = self.scenario.serving
-        dps = sv.batch / self.step if self.step > 0 else 0.0
-        return {"labels": sv.labels, "latency_ms": self.step * 1e3, "decisions_per_s": dps,
+        think_s, think_note = 0.0, ""
+        if sv.think:
+            # 0.192: the thought is a decode run after the prompt prefill — T steps at ctx growing prompt → prompt + T,
+            # integrated at 4 segment midpoints; the closing readout is one more step on the label rows (≈ a decode
+            # step, inside the thought's last segment within the 4-point error)
+            T, n = sv.think_tokens, 4
+            for i in range(n):
+                c = sv.prompt + round((i + 0.5) * T / n)
+                d = self.scenario.replace("serving.think", False).replace("serving.labels", 0) \
+                    .replace("serving.phase", "decode").replace("serving.ctx", c)
+                think_s += evaluate(d).step * T / n
+            think_note = (f"思考 {T} token 解码（{'默认 = StartLux-Decision v1.1 AutoThink 卡片均值 596，gate 0.9 「二手」' if T == 596 else '用户填写'}）"
+                          "+ 读出；同批 batch 行并行")
+        total = self.step + think_s
+        dps = sv.batch / total if total > 0 else 0.0
+        return {"labels": sv.labels, "latency_ms": total * 1e3, "readout_ms": self.step * 1e3,
+                "think_tokens": sv.think_tokens if sv.think else 0, "think_ms": think_s * 1e3, "think_note": think_note,
+                "decisions_per_s": dps,
                 "decisions_per_s_card": dps / self.scenario.layout.cards, "prompt": sv.prompt,
                 "basis": "每个决策 = 一次前向（prompt + 选项）+ 末位置对 ≤ labels 个选项 token 的 logits（输出头按行取），"
                          "无解码循环；批内各行即各问题（StartLux-Decision 推理包同一前向内多问题）"}
@@ -255,19 +272,23 @@ ATTN_ORIENT = True     # 0.172 default (False = ≤ 0.171 behaviour, kept for th
 def model_flags(**kw):
     """0.172 / 0.173: run with module-level mapping flags overridden (ATTN_ORIENT, WIDE_GEMM_ORIENT, WIDE_GEMM_SPLIT,
     SPLIT_K, WIDE_GEMM_AUTO); historical guards pin pre-fix numbers with it.  Clears the stage memos."""
-    from . import memo
-    g = globals()
-    old = {k: g[k] for k in kw}
-    g.update(kw)
-    memo._TABLES.clear()
+    from . import memo, mapping as _mp, memplan as _mpl
+    mods = {"WIDE_WAVES": _mp, "STATE_FIRST": _mpl}   # 0.192: flags living in other modules
+    tgt = {k: (vars(mods[k]) if k in mods else globals()) for k in kw}
+    old = {k: tgt[k][k] for k in kw}
+    for k, v in kw.items():
+        tgt[k][k] = v
+    memo._TABLES.clear(); _mp._gemm_cost.cache_clear()
     try:
         yield
     finally:
-        g.update(old)
-        memo._TABLES.clear()
+        for k, v in old.items():
+            tgt[k][k] = v
+        memo._TABLES.clear(); _mp._gemm_cost.cache_clear()
 
 
 LEGACY_0171 = dict(ATTN_ORIENT=False, WIDE_GEMM_ORIENT=False, WIDE_GEMM_SPLIT=False, SPLIT_K=False)
+LEGACY_0191 = dict(WIDE_WAVES=False, STATE_FIRST=False)   # 0.192
 LEGACY_0172 = dict(WIDE_GEMM_ORIENT=False, WIDE_GEMM_SPLIT=False, SPLIT_K=False)
 
 
@@ -463,7 +484,7 @@ def _memos(sys: System, org: str, model: ModelSpec) -> tuple:
         return {}, None
     if len(om) > 64:
         om.clear()
-    om = om.setdefault((sys.chip, org, ATTN_ORIENT, WIDE_GEMM_ORIENT, WIDE_GEMM_SPLIT, WIDE_GEMM_AUTO, SPLIT_K), {})   # 0.172: the flag changes attention op costs
+    om = om.setdefault((sys.chip, org, ATTN_ORIENT, WIDE_GEMM_ORIENT, WIDE_GEMM_SPLIT, WIDE_GEMM_AUTO, SPLIT_K, _mapping.WIDE_WAVES), {})   # 0.172: the flag changes attention op costs
     if len(om) > _MEMO_CAP:
         om.clear()
     cm = None

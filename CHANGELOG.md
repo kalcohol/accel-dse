@@ -6,6 +6,10 @@
 
 
 
+## [0.192.0]
+- Prefill scaling found: the GPU "wide" gang pads an output dim to E·cols (H200 8448). Qwen3.5-9B at 4096 tokens has N = M = 4096 (48 % fill); at 8192 the 0.173 orientation swap fills the gang (97 %), so 4096 → 8192 cost 1.5×. `mapping.WIDE_WAVES` (opt-in) wave-quantises per-engine tiles instead: 2.0×, and the marginal-cost invariant holds. Default off: it reverses the §119 calibration (extval TTFT 1.31 → 1.44).
+- SRAM pins recurrent state before weights (`memplan.STATE_FIRST`, 2 B traffic / B vs 1); hybrid / RWKV models are slightly faster; fingerprints re-baselined.
+- AutoThink thought decode: `serving.think` / `think_tokens` (default 596 「二手」, ≤ 4096), CLI `--think [N]`; decision latency = readout + thought decode.
 ## [0.191.0]
 - Decision workload (`serving.labels` 1..1024, prefill only; CLI `--labels`): one forward, label-row readout at the last position, no decode/KV write at ctx 0; reports decisions/s and latency per decision.
 - StartLux-Decision v1 (0.8B/2B/4B/9B/27B/35B-A3B) and v1.1 (Instant/AutoThink) from live HF configs; Instant `jev_prompt_attention: bidirectional` → non-causal full-attention layers. Base Qwen/Qwen3.5-9B added.

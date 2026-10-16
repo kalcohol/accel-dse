@@ -69,9 +69,18 @@ def _cd(a: float, b: float) -> int:
     return int(-(-a // b))
 
 
+WIDE_WAVES = False        # 0.192 opt-in (True = wave-quantised wide gang; default keeps the §119 calibrated padding)
+
+
 def _os(ch: Chip, m, k, n, r, wb, ab, ob):
     R, Ce = ch.rows, ch.c_eff
     mac = _cd(m, R) * _cd(n, Ce) * k / r
+    if WIDE_WAVES and ch.instance_sched == "wide" and ch.engines > 1:
+        # 0.192: a ganged array whose output that is not a multiple of E·cols leaves whole engines idle in the last column tile; a GEMM kernel hands
+        # them other row tiles (R × cols output tile per engine, waves over E engines — the 0.92 cta tile/wave
+        # quantisation without tuned tile shapes).  Before: N padded to E·cols, so efficiency depended on whether one
+        # output dim happened to fit the gang (H200 4096 → 8192-token prefill per-token time fell 25 %)
+        mac = min(mac, _cd(_cd(m, R) * _cd(n, ch.cols), ch.engines) * k / r)
     byt = _cd(m, R) * k * n * wb + _cd(n, Ce) * m * k * ab + m * n * ob
     return mac, byt / ch.port_Bpc
 

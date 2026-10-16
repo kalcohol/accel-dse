@@ -227,6 +227,9 @@ class MemPlan:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
 
 
+STATE_FIRST = True        # 0.192 default
+
+
 def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: float, max_act: float,
          act_need: float = 0.0, stream: bool = False, slc_bytes: float = 0.0, slc_policy: str = "pin",
          kv_frac: float = 1.0) -> MemPlan:
@@ -237,9 +240,14 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     if stream:      # streamed activations use at most the activation half of SRAM (act_stream)
         staging = min(staging, max(2 * 2**20, sram_bytes / 2))
     free = max(0.0, sram_bytes - staging)
+    # 0.192: pin by DRAM bytes saved per step per byte of SRAM.  Recurrent state is read and written every step
+    # (2 B / B), a weight byte is read once per pass (1 B / B), a KV byte once (+ the new row) — so state goes
+    # first (STATE_FIRST; ≤ 0.191 weights → KV + state)
+    p_st = min(st_t, free) if STATE_FIRST else 0.0
+    free -= p_st
     p_hot = min(store.hot_w, free); free -= p_hot
     p_exp = min(store.expert_w, free); free -= p_exp
-    kv_s = min(kv_t + st_t, free)
+    kv_s = p_st + min(kv_t + st_t - p_st, free)
     strm = store.hot_w + store.expert_w            # 0.61.3: residency of the weights a step reads (cold bytes excluded)
     res = (p_hot + p_exp) / strm if strm else 1.0
     # 0.94: a runtime granting the cache only kv_frac of the post-weight free memory (default 1 = unchanged)

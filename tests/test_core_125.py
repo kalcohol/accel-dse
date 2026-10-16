@@ -100,4 +100,4 @@ def test_fingerprints_change_only_v4():
         return h.hexdigest()[:16]
     # 0.141 rebaseline (were d29ef7bf6936030d / c4e341987bf2461f)
     # 0.173 rebaseline (were 4690f724dabe9fa6 / ea2456afee7c3a86): split-K / wide GEMM plans also move non-v4 MoE / hc models
-    assert fpx({"exec_overlap": "stage"}) == "048879e566bfde2c" and fpx({}) == "9b1f6dda6e1fd768"
+    assert fpx({"exec_overlap": "stage"}) == "6c34609db08727a5" and fpx({}) == "84aa61920716ba97"

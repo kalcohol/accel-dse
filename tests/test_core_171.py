@@ -67,7 +67,7 @@ def test_fused_spill_and_reference_unchanged():
     assert fft_spill(n, ch.sram_bytes, ch.engines) == 16.0 * n                # four-step: 2 passes → 1 extra
     assert fft_spill(n, 2**20, 1024) > 16.0 * n                                # small SRAM per engine: more passes
     ref, fu = _run(8192), _run(8192, "fused")
-    assert abs(ref.ttft - 0.37423097029614844) < 1e-12   # 0.170 0.50315 → 0.172 0.41291 (attn orientation) → 0.173 0.37423 (wide GEMM orientation / split-K)
+    assert abs(ref.ttft - 0.37423076114007714) < 1e-12   # 0.170 0.50315 → 0.172 0.41291 (attn orientation) → 0.173 0.37423 (wide GEMM orientation / split-K) → 0.192 0.3742307611 (state pinned before weights; was …097030)
     assert fu.stages[0].dram["act"] < ref.stages[0].dram["act"] / 10 and fu.ttft < 0.6 * ref.ttft
     assert any("fused" in w for w in fu.warnings)
     assert fft_flops(8) == 5 * 8 * 3

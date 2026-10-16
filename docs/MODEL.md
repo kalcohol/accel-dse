@@ -4432,3 +4432,21 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - State: H×64×64 fp32 plus 2 token-shift vectors of C fp32. Decode per token: 38·C + 9·H·N² vector ops, 4C transcendentals, and read+write of the state, independent of ctx (an adversarial invariant, tested at 4k/128k/1M).
   - Prefill uses chunk-64 WY form GEMMs, linear in the prompt.
   - State residency uses the existing SRAM order: weights first, then KV and state. State-first could be better, because state is read and written every token (open).
+
+## §139 Prefill scaling on the wide gang; state-first SRAM; AutoThink thought (0.192)
+
+- **Prefill scaling (StartLux / Qwen3.5-9B, H200).** 4096 → 8192 tokens cost 1.50× in the simulation; vLLM measured ≈ 1.96×. The compute-efficiency path was checked op by op, and every GEMM's `gemm_cost` is linear in M. The cause is tile padding at 4096:
+  - The "wide" schedule gangs 132 SMs into a 32 × 8448 array, so an output dim < 8448 is padded to 8448. mlp.down (N = 4096), lin_z / lin_out / o (N = 4096) and q / lin_qkv (N = 8192 at M = 4096) run at 48–97 % fill. mlp.down at M = 4096 takes the same cycles as gate_up with twice the FLOPs.
+  - At M = 8192 the 0.173 orientation swap (Cᵀ = Wᵀ·Xᵀ, when N < M) puts M = 8192 on the columns, giving 97 % fill. The per-token time drops, and it oscillates (12288 → 2 tiles, 73 %). A100 (gang 3456) pads N = 4096 to 6912.
+  - Neither the efficiency curve nor double counting is involved.
+- **Mechanism fix: `mapping.WIDE_WAVES`, opt-in.** Each engine takes R × cols output tiles in ⌈tiles / E⌉ waves, the cta wave quantisation without tuned tile shapes. Results:
+  - 9B 4096 → 8192: 2.03×. H200 9B read-out 256 / 1024 / 4096 / 8192: 5.2 / 21.6 / 84.0 / 125.6 → 4.1 / 15.0 / 60.2 / 122.4 ms (measured 30 / 39 / 109 / 214).
+  - The marginal-cost invariant (`tests/test_core_192.py`, 5 chips × 5 models, prompts 4k–32k, 3 % tolerance) holds with it. Without it, 4 / 25 cases fail at that tolerance; the 4096 → 8192 step is the largest violation.
+- **Why it is not the default.** §119 kept the padding as a stand-in for unmodelled kernel efficiency. Removing it moves every GPU group further from measurement (default variant): v1 static 1.15 → 1.18, TTFT 1.31 → 1.44, max-load 0.99 → 1.01, Mixtral TP8 1.29 → 1.31, MI300X max-load 1.73 → 1.81, B200 1.06 → 1.13. It also breaks about 20 calibrated bands and schedule invariants. The shape is right but the level is wrong. Making it the default needs a sourced kernel-efficiency term to replace the padding: an open user decision.
+- **State-first SRAM pinning (`memplan.STATE_FIRST`, default on).** Order is by DRAM bytes saved per step per byte of SRAM: recurrent state is read and written every step (2 B / B), a weight byte is read once per pass (1 B / B), a KV byte once. So the order is state → hot weights → expert weights → KV. With ≥ 2 microbatches the weights tie with the state. KV and state still share one miss fraction.
+  - Default chip, ctx 4096, batch 1 / 32 / 256: RWKV-7 7.2B 72.517 / 83.779 / 165.223 → 72.335 / 83.475 / 165.047 ms; 1.5B 14.364 / 18.610 / 49.354 → 14.297 / 18.304 / 49.179 ms.
+  - Hybrids gain 0.03–0.4 % tok/s (qwen3-next-80b-a3b 26.12 → 26.22). Fingerprints re-baselined; the old values are reproduced with `STATE_FIRST=False`.
+- **AutoThink thought.** `serving.think` adds a thought decode of `think_tokens` (default 596, the card mean at gate 0.9 「二手」; ≤ 4096 from the card) after the prompt prefill. It is integrated at 4 context midpoints from prompt to prompt + T.
+  - Decision latency = read-out + thought (the closing read-out ≈ one decode step).
+  - 9B, prompt 1024, 3 labels: default chip 153.8 + 49 660 ms = 49.8 s (0.020 decisions/s); H200 21.6 + 2 828 ms = 2.85 s.
+  - CLI `--think [N]`.

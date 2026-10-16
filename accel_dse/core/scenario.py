@@ -26,7 +26,8 @@ from .parallel import ATTN_MODES, EXEC_OVERLAPS, INDEXER_MODES, PP_SPLITS, Layou
 SERVING_MAX = 1 << 24          # 0.61.1: upper bound of serving.batch / prompt / ctx / out_len / microbatches (16.7 M)
 
 
-DECISION_MAX_LABELS = 1024     # 0.191: option tokens read at the last position (StartLux: ≤ 26 letters per row)
+DECISION_MAX_LABELS = 1024
+THINK_MAX = 4096          # 0.192: StartLux-Decision v1.1 AutoThink card: thought ≤ 4096 tokens 「二手」     # 0.191: option tokens read at the last position (StartLux: ≤ 26 letters per row)
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,10 @@ class Serving:
     # 0.191 decision models ("System One"): one forward over prompt + options, logits over ≤ labels option tokens at
     # the last position; no decode loop.  0 = off.  Needs phase = prefill.  Metric: decisions / s, latency / decision.
     labels: int = field(default=0, metadata={"omit_default": True})
+    # 0.192 AutoThink: a thought decoded before the readout (opt-in).  Default length = StartLux-Decision v1.1
+    # AutoThink model card mean at gate 0.9 (596 tokens / question) 「二手」; card maximum 4096.  Needs labels.
+    think: bool = field(default=False, metadata={"omit_default": True})
+    think_tokens: int = field(default=596, metadata={"omit_default": True})
     # internal: image (and 0.165 video) tokens already added to prompt / ctx by vision.expand_images (never serialised or accepted)
     image_tokens: int = field(default=0, metadata={"internal": True})
 
@@ -112,6 +117,12 @@ class Serving:
             raise ValueError(f"serving.labels must be an integer in [0, {DECISION_MAX_LABELS}]")
         if self.labels and self.phase != "prefill":
             raise ValueError("serving.labels (decision readout) needs serving.phase = prefill: one forward, no decode")
+        if not isinstance(self.think, bool):
+            raise ValueError("serving.think must be a boolean")
+        if isinstance(self.think_tokens, bool) or not isinstance(self.think_tokens, int) or not 1 <= self.think_tokens <= THINK_MAX:
+            raise ValueError(f"serving.think_tokens must be an integer in [1, {THINK_MAX}]")
+        if self.think and not self.labels:
+            raise ValueError("serving.think (AutoThink thought before the readout) needs serving.labels > 0")
         if not isinstance(self.video_cap, bool):
             raise ValueError("serving.video_cap must be a boolean")
         if max(self.video_w, self.video_h) > 200 * min(self.video_w, self.video_h):

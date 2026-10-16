@@ -95,6 +95,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--out-len", dest="out_len", type=int, default=None, help="output tokens per request (goodput / PD)")
     p.add_argument("--prefix-cached", dest="prefix_cached", type=int, default=None,
                    help="prefill: prompt tokens already in the KV cache (prefix-cache hit, 0.52)")
+    p.add_argument("--think", nargs="?", type=int, const=596, default=None, metavar="TOKENS",
+                   help="decision: AutoThink thought decoded before the readout (default 596 = card mean 「二手」)")
     p.add_argument("--labels", type=int, default=None,
                    help="0.191 decision readout: logits over N option tokens, one forward (needs --phase prefill)")
     for k, hlp in (("frames", "video frames"), ("height", "video height px"), ("width", "video width px"),
@@ -362,6 +364,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                     ("labels", "labels")):
         if getattr(a, attr) is not None:
             sv[k] = getattr(a, attr)
+    if getattr(a, "think", None) is not None:
+        sv["think"], sv["think_tokens"] = True, a.think
     if getattr(a, "images", None) is not None:
         sv["images"] = a.images
     if getattr(a, "image_size", None):
@@ -680,8 +684,9 @@ def cmd_eval(a) -> dict:
                   f"need {pc['P_needed_W']:.1f} W / TDP {pc['tdp_W']:g} W → throughput ×{pc['throughput_factor']:.3g}"
                   + (f", J/{e['unit']} {pc['J_per_unit_capped']:.4g}" if pc["capped"] else " (not capped)")))
     if d := out.get("summary", {}).get("decision"):
-        print(f"decision: {d['labels']} labels, {d['latency_ms']:.2f} ms / forward, {d['decisions_per_s']:.4g} decisions/s "
-              f"({d['decisions_per_s_card']:.4g} / card)")
+        print(f"decision: {d['labels']} labels, {d['latency_ms']:.2f} ms / decision, {d['decisions_per_s']:.4g} decisions/s "
+              f"({d['decisions_per_s_card']:.4g} / card)"
+              + (f"; = readout {d['readout_ms']:.2f} + think {d['think_ms']:.2f} ms ({d['think_tokens']} tok)" if d["think_ms"] else ""))
     if b := out.get("budget"):
         mark = {True: "OK", False: "OVER", None: "?"}
         def val(i):

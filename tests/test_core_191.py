@@ -65,8 +65,9 @@ def test_rwkv_prefill_linear_in_prompt():
 
 
 def test_rwkv_state_follows_sram_residency():
-    small = evaluate(_s("rwkv7-g1k-1.5b", **{"chip__sram_mib": 64.0}))
-    big = evaluate(_s("rwkv7-g1k-1.5b", **{"chip__sram_mib": 8192.0}))
+    # 0.192: state is pinned first (STATE_FIRST), so the small case needs a batch whose state outgrows the SRAM
+    small = evaluate(_s("rwkv7-g1k-1.5b", **{"chip__sram_mib": 64.0, "serving__batch": 32}))
+    big = evaluate(_s("rwkv7-g1k-1.5b", **{"chip__sram_mib": 8192.0, "serving__batch": 32}))
     assert small.stages[0].dram["state"] > 0 and big.stages[0].dram["state"] == 0
     assert big.tpot < small.tpot
 
