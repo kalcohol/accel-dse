@@ -1027,14 +1027,19 @@ function renderBalanceWhatif(w) {
     h('td', {}, num(x.ai_asymptote)), h('td', {}, num(x.tpot_ms) + ' ms'),
     // 0.211: lever cost — Δ die area (SRAM incl. state buffer + DRAM PHY) and dynamic J/token at the lever's critical batch
     h('td', { class: x.over_reticle ? 'warn' : '' }, base ? (x.area_mm2 != null ? num(x.area_mm2) + ' mm²' : '—')
-      : (x.d_area_mm2 != null ? (x.d_area_mm2 >= 0 ? '+' : '') + num(x.d_area_mm2) + ' mm²' + (x.over_reticle ? ' ⚠ 超光罩' : '') : '—')),
+      : (x.d_area_mm2 != null ? (x.d_area_mm2 >= 0 ? '+' : '') + num(x.d_area_mm2) + ' mm²' + (x.over_reticle ? ' ⚠ 超光罩' : '') : '—'),
+      // 0.212: HBM shoreline (stacks × 11 mm vs the square die's two long sides / four sides)
+      x.shoreline ? h('div', { class: 'small' + (x.shoreline.status !== 'ok' ? ' warn' : ''), title: x.shoreline.warning || '' },
+        `岸线 ${x.shoreline.stacks} 堆栈 ${num(x.shoreline.need_mm)} / ${num(x.shoreline.edge_typical_mm)} mm（两边）`
+        + (x.shoreline.status === 'tight' ? ' ⚠ 需三、四边' : x.shoreline.status === 'over' ? ' ⚠ 超出四边 · 需多晶粒' : '')) : ''),
     h('td', {}, base || x.J_per_tok == null ? '—' : `${num(x.J_per_tok * 1e3)} mJ @B${x.cost_batch}`
       + (x.base_J_per_tok_at_cost_batch != null ? `（基线 ${num(x.base_J_per_tok_at_cost_batch * 1e3)}）` : '')),
-    h('td', {}, x.W_card != null ? num(x.W_card) + ' W' : '—'),
+    h('td', {}, (x.W_card != null ? num(x.W_card) + ' W' : '—')
+      + (x.d_leak_W ? `（泄漏 ${x.d_leak_W > 0 ? '+' : ''}${num(x.d_leak_W)} W）` : (base && x.leak_W ? `（泄漏 ${num(x.leak_W)} W）` : ''))),
     h('td', { class: 'l small' }, base ? '当前' : (x.error ? x.error : (x.works ? '有效 · works' : '无效 · no effect'))));
   put(box, h('h4', {}, '机器平衡 what-if · balance levers（每次只改一个变量 · one variable each）'),
     h('table', { class: 'tbl', id: 'bal-whatif-tbl' },
-      h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', 'Δ面积 area', 'J/token @临界 batch', '动态功耗 W/卡', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
+      h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', 'Δ面积 area', 'J/token @临界 batch', '功耗 W/卡（含 SRAM 泄漏）', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
       h('tbody', {}, tr('当前 base', w.base, true), ...w.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 9, class: 'l small' }, x.error)) : tr(x.label, x, false)))),
     w.cost_basis ? h('div', { class: 'small' }, w.cost_basis.note) : '',
     h('div', { class: 'small' }, w.works.length ? `有效杠杆 · levers that work：${w.works.join('、')}（阈值 ${pct(w.gain)}）` : '没有单一杠杆有效 · no single lever works'));
@@ -1102,6 +1107,9 @@ function renderBudget(r) {
   const rows = b.items.map((i) => h('tr', {}, h('td', { class: 'l' }, i.label), h('td', {}, i.value === null ? '—' : num(i.value) + ' ' + i.unit),
     h('td', {}, num(i.limit) + ' ' + i.unit), h('td', {}, i.headroom === null ? '—' : pct(i.headroom)), h('td', { class: 'l' }, mark(i.ok)),
     h('td', { class: 'l small' }, i.note || '')));
+  if (b.shoreline) rows.push(h('tr', { class: b.shoreline.status !== 'ok' ? 'warn' : '' }, h('td', { class: 'l' }, 'HBM 岸线 shoreline'),
+    h('td', {}, num(b.shoreline.need_mm) + ' mm'), h('td', {}, num(b.shoreline.edge_typical_mm) + ' mm'), h('td', {}, '—'),
+    h('td', { class: 'l' }, b.shoreline.status === 'ok' ? '✓' : '⚠'), h('td', { class: 'l small' }, b.shoreline.warning || `${b.shoreline.stacks} 堆栈 × 11 mm；两长边可放 ${b.shoreline.fit_typical}`)));   // 0.212
   if (b.area && b.area.mm2 !== null) rows.push(h('tr', {}, h('td', { class: 'l' }, '面积代理分项'), h('td', { colspan: 5, class: 'l small' },
     Object.entries(b.area.terms).map(([k, v]) => `${{ sram: 'SRAM', slc: 'SLC', mac: 'MAC 阵列', fixed: '固定' }[k] || k} ${num(v)} mm²`).join(' + ') + ` = ${num(b.area.mm2)} mm² / 卡「假设」`)));
   if (b.scope_note) rows.push(h('tr', {}, h('td', { class: 'l' }, '范围'), h('td', { colspan: 5, class: 'l small' }, b.scope_note)));

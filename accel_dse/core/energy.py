@@ -71,6 +71,10 @@ class EnergyTable:
     # 0.188: static power from a measured idle fraction of TDP: idle_W := idle_frac_tdp × tdp_W when idle_W is unset.
     idle_frac_tdp: float | None = None
     tdp_W: float | None = None
+    # 0.212: SRAM leakage per MiB of on-die SRAM (µW / MiB).  Charged for the dedicated state buffer always (it is not
+    # in any measured base-card idle figure) and for the shared SRAM only when no idle figure (idle_W / idle_frac_tdp)
+    # is set — a measured card idle already contains its SRAM leakage, so no double counting.
+    uW_per_mib_sram_leak: float | None = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -146,6 +150,11 @@ ENERGY_PRESETS: dict[str, dict] = {
         "label": "7 nm（TPUv4i Table 2 对 Horowitz 的缩放）",
         "fields": {
             # average logic 2.6×; SRAM mid of 1.3–2.4 = √(1.3·2.4)≈1.77; DRAM 6.3× (HBM)
+            "uW_per_mib_sram_leak": (27.5 * 8 * 2**20 / 1e6, "来源",
+                                     "3 nm proxy, lower bound — Aoyagi et al., 'A 3-nm FinFET 563-kbit 35.5-Mbit/mm² Dual-Rail SRAM…', IEEE JSSC 2025 "
+                                     "(doi 10.1109/JSSC.2025.3639747; VLSI 2025): HD 6T macro standby leakage 27.5 µW/Mbit "
+                                     "at 25 °C → 230.7 µW/MiB.  25 °C: leakage at operating temperature is several× higher "
+                                     "(40 nm: 17.3 µW/Mbit at 25 °C vs 2518 at 170 °C, Yokoyama thesis) — a lower bound"),
             "pJ_mac": (1.1 / 2.6, "推导", _TPUV4I + "; base 16b FP mult 1.1 pJ / 2.6"),
             "pJ_vec": (0.4 / 2.6, "推导", _TPUV4I + "; base 16b FP add 0.4 pJ / 2.6"),
             "pJ_bit_sram": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "推导", _TPUV4I + "; SRAM 1.3–2.4× (geom. mean)"),
@@ -341,7 +350,8 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
            "counts_per_unit": per, "provided": table.provided,
            "missing": [f.name for f in fields(EnergyTable) if getattr(table, f.name) is None
                        and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
-                                          "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W")
+                                          "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W",
+                                          "uW_per_mib_sram_leak")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
                        and not (f.name == "idle_W" and (idle_W_of(table) is not None or table.idle_frac_tdp is not None))]
                       + (["tdp_W"] if table.idle_W is None and table.idle_frac_tdp is not None and table.tdp_W is None
@@ -370,6 +380,14 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
             out["idle_source_note"] = (f"idle_frac_tdp {table.idle_frac_tdp:g} × TDP {table.tdp_W:g} W；"
                                        + (f"「{pre[1]}」{pre[2]} — GPU 整卡空闲值套用于本 NPU，不是本芯片的泄漏测量"
                                           if abs(table.idle_frac_tdp - pre[0]) <= 5e-3 * pre[0] else "用户填写"))
+    if table.uW_per_mib_sram_leak is not None:      # 0.212: SRAM leakage (static), see the field note
+        ch = r.scenario.chip
+        mib = getattr(ch, "state_sram_mib", 0.0) + (ch.sram_mib if iw is None else 0.0)
+        if mib > 0:
+            leak_W = mib * table.uW_per_mib_sram_leak * 1e-6
+            j["sram_leak"] = leak_W * per["idle_card_s"]
+            out["sram_leak_W_card"] = leak_W
+            out["sram_leak_scope"] = "state_sram + sram" if iw is None else "state_sram（共享 SRAM 泄漏已含于 idle 数值）"
     if per.get("host"):
         if table.pJ_bit_host is not None:
             j["host"] = per["host"] * table.pJ_bit_host * 1e-12 * 8
@@ -381,9 +399,10 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
     tot = sum(j.values())
     out.update(J_per_unit=tot, J_by_action=j,
                avg_W_per_card=tot * u / a["window_s"] / r.scenario.layout.cards if a["window_s"] > 0 else 0.0)
-    if "idle" in j and tot > 0:       # 0.189: static share + dominant-term warning
-        out["static_share"] = j["idle"] / tot
-        out["J_dynamic_per_unit"] = tot - j["idle"]
+    stat = j.get("idle", 0.0) + j.get("sram_leak", 0.0)      # 0.212: SRAM leakage is static too
+    if ("idle" in j or "sram_leak" in j) and tot > 0:       # 0.189: static share + dominant-term warning
+        out["static_share"] = stat / tot
+        out["J_dynamic_per_unit"] = tot - stat
         if out["static_share"] > STATIC_WARN:
             out["static_warning"] = (f"静态能耗占 J/{a['unit']} 的 {out['static_share']:.1%}（> {STATIC_WARN:.0%}）："
                                      "结论主要由空闲功耗假设决定，而非动态动作")

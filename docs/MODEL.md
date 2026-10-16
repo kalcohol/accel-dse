@@ -4813,3 +4813,11 @@ limited by capacity and the TTFT SLO, which is used as the decision latency limi
   - HBM PHY: 32 mm² per 2048 DQ 「推导/二手」 (Samsung HC2026).
 - **Where the cost is read.** At the lever's critical batch: what the lever buys is the batch it unlocks.
 - **RWKV-7 7.2B on 1P.** The state buffer needs +7052 mm² (above the 858 mm² reticle even at the array-only bound) and gives −32 % J/token at B = 314. 2× bandwidth needs +64 mm² of PHY, keeps J/token unchanged and reaches balance at B = 758. Bandwidth is the lever that is cheaper in die area. 「推导」 from the presets; no tuning.
+
+
+## §159 HBM shoreline; SRAM leakage (0.212)
+- **Shoreline.** need = stacks × 11 mm 「二手」. Available edge = k × √(die mm²): k = 2 is typical 「二手」, k = 4 is the limit 「假设」. The die is taken as square, and the area proxy is a lower bound, so a real die is larger and has more edge.
+- **Leakage.** P_leak = MiB × 230.7 µW/MiB (3 nm HD at 25 °C, a lower bound 「来源」).
+  - The scope avoids double counting: the state buffer is always charged; the shared SRAM is charged only without a measured idle figure.
+  - It enters J/token through the time window, like idle.
+- **RWKV-7 7.2B on 1P.** The 2× DRAM lever reaches balance at +64 mm² of PHY, but 8 stacks exceed two die sides even at the reticle, so it needs a multi-die package (B200-class). The state SRAM is +7052 mm², with leakage ≥ 2.4 W. Bandwidth is still the cheaper lever, but its real cost is packaging (CoWoS-L / 2 dies), not PHY area.

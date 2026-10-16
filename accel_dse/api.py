@@ -532,7 +532,9 @@ def _lever_cost(q) -> dict:
     t = EnergyTable.from_dict({k: v for k, (v, _, _) in ENERGY_PRESETS[WHATIF_ENERGY]["fields"].items()
                                if k in EnergyTable.__dataclass_fields__ and k not in ("idle_W", "idle_frac_tdp", "tdp_W")})
     e = energy_report(q, t)
-    return {"area_mm2": a.get("mm2"), "J_per_tok": e.get("J_per_unit"), "W_card": e.get("avg_W_per_card")}
+    from .core.budget import shoreline_check
+    return {"area_mm2": a.get("mm2"), "J_per_tok": e.get("J_per_unit"), "W_card": e.get("avg_W_per_card"),
+            "leak_W": e.get("sram_leak_W_card"), "shoreline": shoreline_check(q.scenario, a.get("mm2"))}
 
 
 def balance_whatif(scn: Scenario, r: Result) -> dict | None:
@@ -599,6 +601,7 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
         x["d_area_mm2"] = None if c["area_mm2"] is None or c0["area_mm2"] is None else c["area_mm2"] - c0["area_mm2"]
         x["d_J_per_tok"] = None if c["J_per_tok"] is None or cb["J_per_tok"] is None else c["J_per_tok"] - cb["J_per_tok"]
         x["over_reticle"] = bool(c["area_mm2"] and c["area_mm2"] > RETICLE_MM2)
+        x["d_leak_W"] = None if c["leak_W"] is None and c0["leak_W"] is None else (c["leak_W"] or 0.0) - (c0["leak_W"] or 0.0)
 
     def row(q):
         x = pick(q, q.balance())
@@ -612,9 +615,10 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
     return {"base": base, "rows": rows, "gain": WHATIF_GAIN, "works": [x["key"] for x in rows if x.get("works")],
             "cost_basis": {"density_preset": WHATIF_DENSITY, "energy_preset": WHATIF_ENERGY, "reticle_mm2": RETICLE_MM2,
                            "note": ("面积 = SRAM（含专用状态 SRAM，同宏密度）+ DRAM PHY 引脚（budget.full_area，n5_derived 密度 「推导」）；"
-                                    "能耗 = 动态 J/token（tpuv4i_7nm 预设，不含静态 idle_W），在各杠杆自己的临界 batch 与基线同 batch 比较；"
-                                    "SRAM 泄漏未建模 · area = SRAM incl. the state buffer + DRAM PHY pins; dynamic J/token at the "
-                                    "lever's critical batch vs the base at the same batch; SRAM leakage not modelled")}}
+                                    "能耗 = 动态 J/token + SRAM 泄漏（tpuv4i_7nm 预设，不含 idle_W），在各杠杆自己的临界 batch 与基线同 batch 比较；"
+                                    "HBM 岸线按面积代理的方形晶粒 · area = SRAM incl. the state buffer + DRAM PHY pins; dynamic J/token at the "
+                                    "lever's critical batch vs the base at the same batch; SRAM leakage 230.7 µW/MiB (3 nm, 25 °C, lower bound) "
+                                    "in W/卡 and Δ泄漏; HBM shoreline 11 mm/stack on a square die of the area proxy, 2 sides typical")}}
 
 
 SENS_BASE_LABEL = {"stage": "stage 全重叠（吞吐上界）", "pipe": "pipe 硬件推导（现实估计）", "serial": "serial 无重叠（吞吐下界）"}

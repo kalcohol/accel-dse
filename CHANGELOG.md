@@ -6,6 +6,21 @@
 
 
 
+## [0.212.0]
+- **HBM die-shoreline check** (`budget.shoreline_check`; in `budget_report.shoreline`, the budget panel and every what-if row).
+  - Each stack needs ≥ 11 mm of die edge: the HBM4 base die is 11 × 12.8 mm (Samsung HC2026) 「二手」.
+  - On a square die (the die limit if given, else the area proxy), 2 long sides are the typical budget. GH100, B200 and MI300X put HBM on the long sides and keep the rest for D2D / IO 「二手」. 4 sides are the geometric limit 「假设」.
+  - Status is ok, tight (needs the third and fourth side) or over (needs a multi-die package). Known package maxima: B200 8 stacks on 2 dies, MI300X 8 「来源」. This is a warning, not a budget item.
+- **SRAM leakage** (`EnergyTable.uW_per_mib_sram_leak`; the `tpuv4i_7nm` preset uses 230.7 µW/MiB).
+  - Source: Aoyagi et al., IEEE JSSC 2025 / VLSI 2025, 3 nm HD 6T macro, 27.5 µW/Mbit at 25 °C 「来源，3 nm 代理」.
+  - It is a lower bound: leakage at operating temperature is several times higher.
+  - It is a static term `sram_leak`. The dedicated state buffer is always charged. The shared SRAM is charged only when no measured idle figure (idle_W / idle_frac_tdp) is set, because a measured card idle already includes its SRAM leakage, so nothing is counted twice. `static_share` includes it.
+- **What-if:** each row adds a shoreline line under Δ area and Δ leakage next to W/card.
+- **RWKV-7 7.2B on 1P:**
+  - DRAM ×2 (8 HBM3E stacks) needs 88 mm of die edge. The area-proxy die (≈ 498 mm²) has 45 mm on its two long sides and 89 mm on all four, so it is tight. Even a full 858 mm² reticle die gives 59 mm on two sides, enough for 5 stacks. In practice 8 stacks means a multi-die package like B200.
+  - The 1P base (4 stacks, 44 mm) is already slightly over two sides of its 434 mm² proxy die. The proxy has no fixed logic area, so the real die is larger.
+  - The 10.1 GiB state SRAM adds ≥ 2.39 W of leakage at 25 °C, small next to ≈ 206 W of dynamic power. Its blocker is area (+7052 mm²), not leakage.
+
 ## [0.211.0]
 - **Area and power of the dedicated state SRAM.**
   - What the existing accounting already covered:

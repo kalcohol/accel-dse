@@ -218,6 +218,37 @@ def phy_area(scn, b: Budget) -> dict:
     return {"mm2": sum(terms.values()), "terms": terms, "notes": notes}
 
 
+# 0.212: die shoreline for HBM PHYs.  Each stack faces the host die with its 11 mm side (HBM4 base die 11 × 12.8 mm,
+# Samsung Hot Chips 2026 via Tom's Hardware 「二手」; HBM3E stack ≈ 11 mm wide 「二手」), so one stack takes ≥ 11 mm of
+# die edge.  Shipping packages put HBM on the two long sides and keep the other two for D2D / PCIe / NVLink: GH100
+# (6 sites, 3 per long side, 814 mm²), B200 (4 per die on 2 dies, 8 per package), MI300X (8 stacks on the long sides of
+# 4 IODs) 「二手」 — so 2 sides is the typical budget, 4 sides the geometric limit 「假设」.  The die is taken as square.
+HBM_STACK_EDGE_MM = 11.0
+HBM_SIDES_TYPICAL, HBM_SIDES_MAX = 2, 4
+KNOWN_MAX_STACKS = {"B200 (CoWoS-L, 2 dies)": 8, "MI300X (CoWoS-S, 4 IODs)": 8}    # vendor specs 「来源」
+
+
+def shoreline_check(scn, die_mm2: float | None) -> dict | None:
+    """HBM stacks vs the die edge: None for non-HBM memory or an unknown die area."""
+    from .. import mem_catalog
+    spec = mem_catalog.parse_mem_id(scn.mem_id)
+    if "HBM" not in spec.mem_type.upper() or not die_mm2:
+        return None
+    side = die_mm2 ** 0.5
+    need = spec.n_units * HBM_STACK_EDGE_MM
+    typ, mx = HBM_SIDES_TYPICAL * side, HBM_SIDES_MAX * side
+    status = "ok" if need <= typ else ("tight" if need <= mx else "over")
+    out = {"stacks": spec.n_units, "need_mm": need, "edge_typical_mm": typ, "edge_max_mm": mx, "die_mm2": die_mm2,
+           "status": status, "fit_typical": int(typ // HBM_STACK_EDGE_MM), "fit_max": int(mx // HBM_STACK_EDGE_MM),
+           "known_max_stacks": KNOWN_MAX_STACKS}
+    if status != "ok":
+        out["warning"] = (f"HBM 岸线：{spec.n_units} 堆栈需 {need:.0f} mm 晶粒边缘，方形晶粒 {die_mm2:.0f} mm² 两长边仅 "
+                          f"{typ:.0f} mm（四边 {mx:.0f} mm）" + ("；四边也放不下 — 需多晶粒封装（如 B200 2 晶粒 8 堆栈）"
+                                                              if status == "over" else "；需占用第三、四边")
+                          + f" · HBM shoreline: {spec.n_units} stacks need {need:.0f} mm of die edge")
+    return out
+
+
 def full_area(scn, b: Budget) -> dict:
     """Die area proxy incl. interface PHYs (0.149): area_estimate(chip) + phy_area(scenario)."""
     a = area_estimate(scn.chip, b)
@@ -375,6 +406,8 @@ def budget_report(r, b: Budget, energy: dict | None = None) -> dict:
                                    "未填固定面积 mm2_fixed：估计只是下界（已计入密度时填 0）"))
     oks = [i["ok"] for i in items]
     ok = False if False in oks else (None if None in oks else True)
-    return {"ok": ok, "items": items, "area": area, "provided": b.provided,
+    # 0.212: HBM shoreline on the die limit (die_mm2) when given, else the area proxy — a warning, not a budget item
+    shore = shoreline_check(r.scenario, b.die_mm2 or (area or {}).get("mm2"))
+    return {"ok": ok, "items": items, "area": area, "provided": b.provided, "shoreline": shore,
             "violations": [i["key"] for i in items if i["ok"] is False],
             "basis": "用户输入的限额与面积密度「假设」；工具不内置工艺库，只报告余量"}
