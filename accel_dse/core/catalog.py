@@ -61,6 +61,12 @@ EXTRA_TAIL = [
     ("evo2-40b", "arcinstitute/evo2_40b"),
     ("evo2-7b", "arcinstitute/evo2_7b"),
     ("evo2-1b", "arcinstitute/evo2_1b_base"),
+    # 0.174 Meta Muse Spark Open (2026-10-15).  meta-models/* is gated: the BF16 entry is derived from the public AMD
+    # release headers (same tensors; release JSON "derived"); AMD FP8 (PTPC) / MXFP4 releases read as published.
+    # NVFP4 (Meta) not listed: gated, and release-role formats have no nvfp4 (see MODEL §120)
+    ("muse-spark-open", "meta-models/Muse-Spark-Open-816B-A42B"),
+    ("muse-spark-open-fp8", "amd/Muse-Spark-Open-816B-A42B-Quark-PTPC-FP8"),
+    ("muse-spark-open-mxfp4", "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4"),
 ]
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors",
            "NousResearch/": "meta-llama (gated) → public mirror NousResearch/*, same safetensors"}
@@ -176,7 +182,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("alibaba", "阿里（Qwen · Wan）", ("Qwen/", "Wan-AI/")), ("deepseek", "DeepSeek（深度求索）", ("deepseek-ai/",)),
     ("kimi", "Kimi（月之暗面）", ("moonshotai/",)), ("zhipu", "智谱（GLM · CogVideoX）", ("zai-org/", "THUDM/")),
     ("minimax", "MiniMax（稀宇）", ("MiniMaxAI/",)),
-    ("meta", "Meta（Llama · ESM）", ("unsloth/", "meta-llama/", "facebook/")),
+    ("meta", "Meta（Llama · ESM · Muse）", ("unsloth/", "meta-llama/", "facebook/", "meta-models/", "amd/Muse-Spark")),
     ("openai", "OpenAI（gpt-oss）", ("openai/",)), ("mistral", "Mistral AI", ("mistralai/",)),
     ("microsoft", "微软（Phi）", ("microsoft/",)),
     ("bytedance", "字节跳动（Seed · Protenix）", ("ByteDance-Seed/", "gh:bytedance/")),
@@ -210,6 +216,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("deepmind", "AlphaFold", ("alphafold",)), ("boltz", "Boltz", ("boltz",)), ("openfold", "OpenFold", ("openfold",)),
     ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
     ("arc", "Evo 2（StripedHyena 2 DNA 语言模型）", ("evo2-",)),
+    ("meta", "Muse Spark Open", ("muse-spark",)),
     ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)), ("ant", "Ling-3.0-VL", ("ling-3.0",)),
     ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),
     ("stepfun", "Step-5", ("step-5",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),

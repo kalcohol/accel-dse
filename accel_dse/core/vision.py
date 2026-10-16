@@ -59,6 +59,11 @@ _PREPROC = {
     # 0.145
     "XiaomiMiMo/MiMo-V2.6-Pro-RL": {"min_px": 8192, "max_px": 8388608},        # processor_config image_min/max_pixels
     "inclusionAI/Ling-3.0-flash-VL": {"min_px": 4096, "max_px": 4194304},      # preprocessor_config min/max_pixels
+    # 0.174 Muse Spark Open: processor_config image_processor max_image_tokens 4096 (merged), patch 14, merge 2 → pixel
+    # budget 4096·28²; min_px = one merged token 「假设」 (MuseGlimmerImageProcessor resize code not public)
+    **{k: {"min_px": 784, "max_px": 4096 * 784} for k in (
+        "meta-models/Muse-Spark-Open-816B-A42B", "amd/Muse-Spark-Open-816B-A42B-Quark-PTPC-FP8",
+        "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4")},
 }
 
 # 0.165 — video input.  「来源」 each repo's video_preprocessor_config.json (Qwen3VLVideoProcessor): size shortest_edge
@@ -204,6 +209,22 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                           ((hm, hm), (hm, out)), params, tuple(sorted(pre.items())), kv_heads=kv,
                           win=vc.get("visual_token_window_size") or 0, full_idx=tuple(vc["fullatt_block_indexes"]),
                           sink=bool(vc.get("use_sink")), perm=perm)
+    if mt == "muse_spark_vision":                         # 0.174 vLLM PR #61879 vision.py NaViT
+        h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"]
+        p, t, mk = vc["patch_size"], vc["patch_temporal"], vc["merge_size"]
+        hm, ph = h * mk * mk, cfg["projector_hidden_size"]
+        # conv1_linear (no bias) + pos-emb grid + ln_pre/ln_post + blocks (LN×2, biased qkv/out/c_fc/c_proj, GELU MLP)
+        # + NaViTAdapter c_fc / c_proj (no bias)
+        params = (3 * t * p * p * h + vc["pos_emb_height"] * vc["pos_emb_width"] * h + 4 * h
+                  + L * (4 * h + _lin(h, 3 * h) + _lin(h, h) + _lin(h, inter) + _lin(inter, h))
+                  + _lin(hm, ph, False) + _lin(ph, ph, False))
+        pre["factor"] = p * mk
+        nwin = sum(1 for x in vc.get("layer_types", ()) if x == "window_attention")
+        return VisionSpec("qwen", "Muse Spark NaViT (Perception Encoder)", p, t, h, inter, L, nh, h, False, mk,
+                          ((hm, ph), (ph, ph)), params, tuple(sorted(pre.items())),
+                          approx=f"视觉：{nwin}/{L} 层为 {vc['pos_emb_height']}×{vc['pos_emb_width']} 块内窗口注意力，按全注意力计（上界）；"
+                                 "缩放按 4096 token 像素预算的 smart-resize 「假设」（MuseGlimmerImageProcessor 未公开）；"
+                                 "音频编码器（24 kHz，1920 样本/token）只计存储")
     if vc.get("model_type") == "perception_encoder":          # 0.144 Step-5 PE + 2× stride-2 3×3 downsamplers
         h, L, nh, p, side = vc["width"], vc["layers"], vc["heads"], vc["patch_size"], vc["image_size"]
         inter = 8960 if h == 1536 else int(h * vc.get("mlp_ratio", 8960 / 1536))

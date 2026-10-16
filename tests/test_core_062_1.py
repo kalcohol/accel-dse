@@ -20,12 +20,12 @@ LP = "lpddr5x_4x64_8533_16g"
 
 
 def test_release_count_and_param_error():
-    """MODEL §2 / §9 V1: 95 releases (73 LLM / VLM incl. 3 validation-only Llama-2-7B/70B + Mistral-7B (0.66), Carbon 500M/3B/8B (0.106), LFM2.5-24B-A2B (+FP8) and Ling-3.1-flash (0.114), Step-5-Preview, MiMo-V2.6-Flash, Intern-S2-397B, MiniCPM-V-4.7 (0.144), MiMo-V2.6-Pro, Ling-3.0-flash-VL (0.145), Evo 2 40B / 7B / 1B (0.170) + 22 image / video / protein / genomics incl. Qwen-Image-2.1-Turbo, Qwen-Image, FLUX.2-klein-4B (0.115), LingBot-Video MoE-DMD (0.144)), all within ±0.5 %."""
+    """MODEL §2 / §9 V1: 98 releases (76 LLM / VLM incl. 3 validation-only Llama-2-7B/70B + Mistral-7B (0.66), Carbon 500M/3B/8B (0.106), LFM2.5-24B-A2B (+FP8) and Ling-3.1-flash (0.114), Step-5-Preview, MiMo-V2.6-Flash, Intern-S2-397B, MiniCPM-V-4.7 (0.144), MiMo-V2.6-Pro, Ling-3.0-flash-VL (0.145), Evo 2 40B / 7B / 1B (0.170), Muse Spark Open BF16 / FP8 / MXFP4 (0.174) + 22 image / video / protein / genomics incl. Qwen-Image-2.1-Turbo, Qwen-Image, FLUX.2-klein-4B (0.115), LingBot-Video MoE-DMD (0.144)), all within ±0.5 %."""
     files = glob.glob(os.path.join(os.path.dirname(__file__), "..", "accel_dse", "data", "releases", "*.json"))
     doms = [json.load(open(f)).get("domain", "llm") for f in files]
-    assert len(files) == 95 and doms.count("llm") == 73
+    assert len(files) == 98 and doms.count("llm") == 76
     listed = {x["id"]: x for x in list_models()}
-    assert len(listed) + len(unlisted_models()) == 95
+    assert len(listed) + len(unlisted_models()) == 98
     assert all(abs(x["param_err"]) <= 0.005 for x in listed.values())
     assert all(abs(x["param_err"]) < 1e-5 for x in listed.values() if get_model(x["id"]).domain in ("gen", "protein", "genomics"))
 

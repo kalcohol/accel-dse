@@ -1262,8 +1262,40 @@ def _build_hyena(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, [], notes, "full"
 
 
+def _build_muse_spark(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.174 Meta Muse Spark Open (vLLM PR #61879 vllm/models/muse_spark/nvidia/model.py @ 6cc692b5 + checkpoint
+    config.json).  Every layer: GQA (num_attention_heads × head_dim, num_key_value_heads) with a fused per-head
+    sigmoid output gate (MuseSpark1xQKVOGateParallelLinear: q / k / v / o_gate rows, 2·(H + KV)·head_dim),
+    weightless q / k RMSNorm; ``layer_types`` sliding_attention (window sliding_window) | full_attention — cycle of 4
+    anchored to the end (full at i % 4 == 1 for 62 layers), full layers NoPE (layer_rope_theta 0).  Every layer MoE:
+    fp32 router hidden → num_local_experts (sigmoid, expert_bias), pooler hidden → moe_hidden_size, top-k SwiGLU experts
+    at moe_hidden_size × moe_intermediate_size, unpooler back (blog: "latent MoE"); no shared expert
+    (num_shared_experts 0).  Sandwich norm: x + post_norm(F(norm(x))) per block; gated residual (scalar gates);
+    final logit soft-cap (tanh, 20) — vector ops."""
+    h, H, KV, hd, L = c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"], c["num_hidden_layers"]
+    E, k = c["num_local_experts"], c["num_experts_per_tok"]
+    lat, de = c["moe_hidden_size"], c["moe_intermediate_size"]
+    types = _list(c.get("layer_types")) or ["full_attention"] * L
+    win = c.get("sliding_window")
+    layers = []
+    for i in range(L):
+        w = win if types[i] == "sliding_attention" else None
+        alin, core = _gqa(h, H, KV, hd, out_gate=True, window=w)
+        lin = [Linear("router", h, E, "rep"), Linear("latent_up", h, lat, "rep"), Linear("latent_down", lat, h, "rep")]
+        ffn = Ffn("moe", gated=True, n_experts=E, top_k=k, d_expert=de, latent=lat)
+        layers.append(Layer(alin, core, ffn, tuple(lin), 4 * h + E))   # 4 sandwich norms + expert_bias
+    nf = sum(1 for t in types[:L] if t == "full_attention")
+    notes = [f"Muse Spark Open：{L} 层全 MoE（{E} 专家 top-{k}，latent {h}→{lat}，专家 {lat}×{de}，无共享专家）；"
+             f"注意力 GQA {H}/{KV}×{hd} + 输出门；{L - nf} 层 SWA（窗口 {win}）+ {nf} 层全注意力（NoPE）；"
+             "三明治 norm、门控残差、logit soft-cap 计入向量开销",
+             "部分覆盖：Perception Encoder（视觉塔）与音频编码器（24 kHz，1920 样本 / token）只计参数，不计算前向"]
+    return layers, [], notes, "partial"
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if mt in ("muse_spark", "muse_spark_text"):
+        return _build_muse_spark, "GQA（SWA + full，输出门）latent MoE"
     if mt == "stripedhyena2":
         return _build_hyena, "StripedHyena 2（Hyena SE / MR / LR + MHA）"
     if mt == "mimo_v2":

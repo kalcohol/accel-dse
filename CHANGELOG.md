@@ -3,6 +3,13 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.174.0] — Meta Muse Spark Open (816B-A42B)
+
+- 新增 `muse-spark-open`（BF16，由 FP8 header 推导）、`muse-spark-open-fp8`（amd PTPC-FP8）、`muse-spark-open-mxfp4`（amd Quark MXFP4）。形状来源：AMD 公开 config.json + vLLM PR #61879 @ 6cc692b5；Meta 仓库 gated。
+- 参数核对（来源=release header）：819.99B，误差 −1.2e-6；experts 798.9B / attn 13.52B / latent 4.16B / embed+head 3.31B / vision 2.05B（含 audio/projector），与博客表一致；激活 42.8B（不含 embed/head）。
+- NVFP4 官方版未列入：release role 格式不支持 NVFP4（假设/partial）。视觉塔（NaViT 50 层 + adapter，1.89B）已建模，37 个窗口层按全注意力计、缩放规则为假设；音频编码器仅计存储（coverage partial）。
+- TPU v7 megakernel 仅作标注的 sanity 对比（无拟合），见 MODEL §120。默认值未改，无 re-baseline。
+
 ## [0.173.0] — Mapping-artifact sweep (wide orientation / instances / split-K), roofline-ratio invariant, 088 deflake
 - Sweep 「推导」 (`/workspace/sweep173`): every GEMM / attention op of all listed models × prefill 8k / full 4k / decode b1 / b64 × {H100, B200, MI300X, A100, 100T, 1P}, comparing array time with FLOP time and the swapped orientation. Three artifacts of the 0.172 class:
   1. **Small N on "wide"** (GPU references): k / v projections (N 1024) ran 8–18×, routers (N 256–384) 37–74×, and hyper-connection mixers (N 4–24) 350–4700× their FLOP time, because one orientation was forced on a 32 × E·cols array. Fix: wide GEMMs take the cheaper of C / Cᵀ (cuBLAS row-major is exactly the swapped call). Conversion counts are preserved; packed-scale bits are dropped on the swapped side (≤ 10 %, feed only).

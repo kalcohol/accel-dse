@@ -3904,3 +3904,11 @@ Sources: the evo2 inference yml files (layer pattern hcs / hcm / hcl / attn, fil
   - B200 NVFP4 1.26 → 1.05.
 
   Library GEMM ceilings add only about 0.01. The residual is the 128-token TTFT rows (1.3–1.7×, fixed-cost dominated). There is no sourced breakdown of trtllm-0.8 TTFT framework time, so it is left open.
+
+## §120 Muse Spark Open（0.174）
+
+- 结构（来源：PR #61879 / AMD config.json）：62 层全 MoE，hidden 8192；GQA 128/16 头，head_dim 64，带每头 o-gate（q 投影宽 2·H·hd）；256 专家 top-8，专家 FFN 4096，无共享专家；latent pooler/unpooler 8192↔4096 包围专家；sandwich norm；SWA 2048 的 4 层周期锚定在末层（i%4==1 为全注意力，16 层，NoPE）；vocab 202048。
+- 推导：1M 上下文 KV ≈ 全注意力的 0.26（博客"略多于 ¼"）。
+- TPU v7 sanity（不拟合）：MXFP4 release 每 token 激活字节 53.6 GB（假设 megakernel 用类似 4-bit 专家 + bf16 attn/latent）；HBM 7380 GB/s/芯片（来源：Google Cloud TPU7x 文档）→ 屋顶线 550 / 1101 tok/s（4 / 8 芯片）。博客无投机 270 / 350 tok/s = 0.49 / 0.32 屋顶线；DSpark（接受长度 6）650 / 960 tok/s。仅作量级检查。
+- 视觉：PR NaViT（50 层，13 全注意力）+ adapter = 1.89B（博客 1.9B）；37 窗口层按全注意力计（上界）；缩放用 4096 token 像素预算 smart-resize（假设）。
+- 未做：audio 编码器（24 kHz，1920 samples/token，来源 processor_config）仅计存储；NVFP4；catalog_kernel 62.3 µs/层固定开销（推迟）。
