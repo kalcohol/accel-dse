@@ -4648,6 +4648,20 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - Dispatch is serial and is added to t_sync (t_disp).
 - `Result.walls()` per step:
   - The window (total − t_sync) goes to argmax(compute, max(DRAM, SLC), link).
-  - t_sync is split into dispatch (t_disp + GPU kernel_us), static (layer_overhead_us) and collective latency (the rest).
+  - t_sync is split into dispatch (t_disp + GPU kernel_us), fixed overhead (per-layer fixed time, layer_overhead_us; key `fixed_overhead`, renamed from "static" in 0.204, not static power) and collective latency (the rest).
   - The parts sum to the stage time and the split is exact under "stage" overlap.
 - Gaps: no public dispatch figure for Gaudi, Inferentia/Trainium, Groq or Cerebras. The TPU figure covers the host path only. The sensitivity panel scans the modes.
+
+## §151 Walls in the UI; NPU preset TPOT check (0.204)
+- UI "每步时间分解 · Per-step time split":
+  - A bar of exposed shares (compute / DRAM / collective BW / collective latency / dispatch / fixed overhead) with the wall segment outlined and marked ▲.
+  - Bilingual zh/en labels.
+  - When `exact = false` (overlap mode other than "stage") a note says the overlapped window is attributed to the dominant resource.
+  - It is rendered from the same `/api/eval` response as the KPIs (the request is sequenced; stale answers are dropped), so it cannot show a different step.
+  - Dispatch control: `c-dispatch` / `c-dispatch_us`.
+- "Fixed overhead" is the per-layer fixed time (`layer_overhead_us`), not static power (energy's idle/static power is separate).
+- NPU preset sanity: qwen3-8b decode, TP1, batch 1, ctx 4096, LPDDR5X 4 × 64 bit @ 8533 MT/s = 273.1 GB/s × mem_eff 0.7 = 191.2 GB/s.
+  - Bytes per step: streamed bf16 weights 15.136 GB (7.568 B params = 8.19 B − 0.62 B embedding rows, which are looked up), minus the SRAM-resident weights (100T 64 MiB, 1P 256 MiB), plus KV read 0.604 GB (4097 positions × 36 layers × 8 KV heads × 128 × 2 × 2 B).
+  - 100T: 15.675 GB / 191.2 GB/s = 82.0 ms; 1P: 15.474 GB = 81.0 ms.
+  - Compute is hidden: an M=1 GEMV on a 56-row output-stationary array uses 1/56 of the rows, so 8.9 ms raw vs 82 ms DRAM.
+  - 1P is only 1.3 % faster because both presets use the same memory default; the only difference is 192 MiB more SRAM-resident weight. That is the correct DRAM-bound result.

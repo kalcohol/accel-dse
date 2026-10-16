@@ -107,6 +107,26 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 act("tp=1", lambda: p.fill("#l-tp", "1"))
             if p.is_visible("#l-cards"):
                 act("cards=1", lambda: p.fill("#l-cards", "1"))
+            # 0.204: per-step walls bar + dispatch control; rapid toggles must end on the last choice (no race)
+            if p.query_selector("#walls-bar") and p.query_selector("#c-dispatch"):
+                def wcheck(label, ok, extra=""):
+                    steps.append((label, bool(ok)))
+                    if not ok:
+                        errs.append(f"{label}: {extra[:300]}")
+                note = lambda: p.inner_text("#walls-note")
+                wcheck("walls bar has a wall", p.query_selector("#walls-bar i.wall") is not None, note())
+                wcheck("walls note bilingual", "墙 wall" in note() and "fixed overhead" in note(), note())
+                act("dispatch=host", lambda: p.select_option("#c-dispatch", "host"))
+                wcheck("dispatch segment", p.query_selector("#walls-bar i[data-k=dispatch]") is not None, note())
+                wcheck("note says host", "dispatch：host" in note(), note())
+                for v in ("trace", "static", "", "host", "trace"):     # fire without waiting: stale answers must drop
+                    p.select_option("#c-dispatch", v)
+                act("dispatch=ideal (after burst)", lambda: p.select_option("#c-dispatch", ""))
+                p.wait_for_load_state("networkidle")
+                time.sleep(0.5)
+                wcheck("burst ends on ideal", "dispatch：ideal" in note()
+                       and p.query_selector("#walls-bar i[data-k=dispatch]") is None, note())
+                wcheck("approx note iff not stage", ("近似" in note()) == ("exec_overlap = stage" not in note()), note())
             # 0.186: directional checks — a control that must move a metric has to move the rendered value
             import re
 

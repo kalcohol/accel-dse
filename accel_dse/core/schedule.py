@@ -300,7 +300,7 @@ class StageTime:
     t_pipe: float = 0.0
     t_kern: float = 0.0     # 0.137: part of t_sync that is GPU-stream kernel overhead (kernel_us, layer_overhead_us)
     t_disp: float = 0.0     # 0.203: part of t_sync that is NPU dispatch (Chip.dispatch)
-    t_static: float = 0.0   # 0.203: part of t_sync that is the fixed per-layer overhead (layer_overhead_us)
+    t_fixed: float = 0.0    # 0.203 (0.204 renamed from t_static): fixed per-layer overhead time in t_sync (layer_overhead_us) — not static power
     # 0.104 (opt-in Chip.attn_vec_overlap): vector seconds of the attention core (softmax / exp) and whether the
     # flash kernel overlaps them with its MMAs (FlashAttention-3 ping-pong + intra-warpgroup pipelining)
     t_vec_attn: float = 0.0

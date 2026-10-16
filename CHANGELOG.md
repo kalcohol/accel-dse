@@ -6,6 +6,23 @@
 
 
 
+## [0.204.0]
+- Web UI: new "每步时间分解 · Per-step time split" panel under the stage table, built from `walls` in the same `/api/eval` response (no extra request, so no race).
+  - Exposed-share bar: compute / DRAM / collective BW / collective latency / dispatch / fixed overhead.
+  - The wall is outlined and marked ▲; zh/en labels; an approximation note appears when `exact = false`.
+  - The dispatch mode control (`c-dispatch`, `c-dispatch_us`) is in the chip panel.
+- `scripts/ui_headless_smoke.py` now checks:
+  - the bar shows a wall and the note is bilingual;
+  - dispatch=host adds a dispatch segment;
+  - a burst of five dispatch changes without waiting ends on the last choice, with no stale render;
+  - the approximation note appears iff the overlap mode is not "stage".
+- Naming: the walls key "static" is now `fixed_overhead` and `StageTime.t_static` is now `t_fixed` (0.203 API rename). It is the per-layer fixed overhead time, not static power; labels and docs say so.
+- NPU preset sanity check (MODEL §151). 100T/1P qwen3-8b TP1 batch-1 decode at 82.0 / 81.0 ms is DRAM-limited and adds up:
+  - 15.68 / 15.47 GB per step ÷ (LPDDR5X 273.1 GB/s × 0.7);
+  - bytes = streamed weights 15.14 GB − SRAM-resident weights (64 / 256 MiB) + KV 0.604 GB;
+  - 1P is 1.3 % faster only through its 192 MiB more SRAM; both presets use the same memory.
+  - No bug found. Pinned in `tests/test_core_204.py`.
+
 ## [0.203.0]
 - NPU dispatch model, new `Chip.dispatch` with optional `dispatch_us`. The default "" stays ideal (0 cost, ≤ 0.202 behaviour), so hashes and fingerprints don't change. Modes and sourced defaults:
   - `static` (one compiled program per step: launch plus token sync, once per step per stage): 10 µs per step. Source: JAX `jit_simple_dispatch` 9.1–10.1 µs, host path only (XLA commit 660c49a) 「二手」. This is a lower bound for TPU-style static graphs.

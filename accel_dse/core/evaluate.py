@@ -172,24 +172,26 @@ class Result:
 
     def walls(self) -> dict:
         """0.203: which wall one step hits — the heaviest stage's time split into compute / DRAM / collective
-        (bandwidth, latency) / dispatch / static.  The overlapped window (stage total − t_sync) is charged to the
-        resource that sets it (the others are hidden behind it, shown as raw); the serial t_sync is split into
-        collective latency, dispatch (Chip.dispatch, or GPU kernel_us) and static (layer_overhead_us).  Exact for
-        exec_overlap "stage"; for the other overlap modes the window attribution is the dominant-resource reading."""
+        (bandwidth, latency) / dispatch / fixed overhead.  0.204: "fixed_overhead" (was "static") = the fixed
+        per-layer overhead time (layer_overhead_us) — a time term, not static power.  The overlapped window (stage
+        total − t_sync) is charged to the resource that sets it (the others are hidden behind it, shown as raw); the
+        serial t_sync is split into collective latency, dispatch (Chip.dispatch, or GPU kernel_us) and fixed overhead.
+        Exact for exec_overlap "stage"; for the other overlap modes the window attribution is the dominant-resource
+        reading."""
         t = self.stages[self.heaviest_stage].time
         tot = t.total
-        disp = t.t_disp + max(0.0, t.t_kern - t.t_static)
-        stat = t.t_static
-        lat = max(0.0, t.t_sync - disp - stat)
+        disp = t.t_disp + max(0.0, t.t_kern - t.t_fixed)
+        fixed = t.t_fixed
+        lat = max(0.0, t.t_sync - disp - fixed)
         raw = {"compute": t.t_compute, "dram": max(t.t_dram, t.t_slc), "collective_bw": t.t_link}
         win = max(0.0, tot - t.t_sync)
         wall = max(raw, key=raw.get) if win > 0 else "none"
         exp = {k: (win if k == wall else 0.0) for k in raw}
-        exp.update(collective_lat=lat, dispatch=disp, static=stat)
+        exp.update(collective_lat=lat, dispatch=disp, fixed_overhead=fixed)
         top = max(exp, key=exp.get) if tot > 0 else "none"
         return {"stage": self.heaviest_stage, "stage_ms": tot * 1e3, "step_ms": self.step * 1e3,
                 "raw_ms": {**{k: v * 1e3 for k, v in raw.items()}, "collective_lat": lat * 1e3, "dispatch": disp * 1e3,
-                           "static": stat * 1e3},
+                           "fixed_overhead": fixed * 1e3},
                 "exposed_ms": {k: v * 1e3 for k, v in exp.items()},
                 "share": {k: (v / tot if tot > 0 else 0.0) for k, v in exp.items()},
                 "wall": top, "overlap": t.overlap, "exact": t.overlap == "stage",
@@ -1470,7 +1472,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 s_add = (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
                 sync += s_add
                 agg["kern"] += s_add
-            agg["stat"] = s_add
+            agg["fixed"] = s_add
             _ps = sys.chip.dispatch_s()[0]
             if _ps:                        # 0.203: static-graph launch + token sync, once per step per stage
                 s_add += _ps
@@ -1497,7 +1499,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                                 scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
                                 t_pipe)
                 stt = _a2a_sm_share(replace(stt, t_kern=min(agg["kern"], stt.t_sync), t_disp=agg["disp"],
-                                            t_static=agg.get("stat", 0.0)), ph, sv)
+                                            t_fixed=agg.get("fixed", 0.0)), ph, sv)
                 if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
                     stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
                 return stt
@@ -1800,7 +1802,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 s_add = (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
                 sync += s_add
                 agg["kern"] += s_add
-            agg["stat"] = s_add
+            agg["fixed"] = s_add
             _ps = sys.chip.dispatch_s()[0]
             if _ps:                        # 0.203: static-graph launch + token sync, once per step per stage
                 s_add += _ps
@@ -1827,7 +1829,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                                 scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
                                 t_pipe)
                 stt = _a2a_sm_share(replace(stt, t_kern=min(agg["kern"], stt.t_sync), t_disp=agg["disp"],
-                                            t_static=agg.get("stat", 0.0)), ph, sv)
+                                            t_fixed=agg.get("fixed", 0.0)), ph, sv)
                 if sys.chip.attn_vec_overlap:     # 0.104 (opt-in)
                     stt = replace(stt, t_vec_attn=agg["t_vec_attn"], attn_ovl=True)
                 return stt

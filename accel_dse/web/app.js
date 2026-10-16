@@ -237,6 +237,7 @@ function syncInputs() {
   if ($('w-tri_chunk')) { $('w-tri_chunk').value = S.sc.workload.tri_chunk || ''; $('w-tri_chunk').disabled = (S.sc.workload.tri_attn || 'fused') !== 'chunked'; }
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
   if ($('c-attn_fmt') && S.cat) $('c-attn_fmt').value = chipVal('attn_fmt') || '';
+  if ($('c-dispatch') && S.cat) $('c-dispatch').value = chipVal('dispatch') || '';
   if ($('fab-enabled') && S.sc && S.cat) fabPaint();
   if ($('d2d-enabled') && S.sc) { $('d2d-enabled').checked = !!S.sc.d2d_enabled; if (S.cat) $('d2d-std').value = S.sc.d2d_std; d2dPaint(); }
   if ($('pd-enabled') && S.sc) { $('pd-enabled').checked = !!S.sc.pd.enabled; $('pd-inputs').hidden = !S.sc.pd.enabled; $('pd-kv_layerwise').checked = !!S.sc.pd.kv_layerwise;
@@ -636,6 +637,7 @@ function renderEval(r) {
   put($('warns'), ...s.warnings.filter((w) => !w.startsWith('容量不足')).map((w) => h('div', {}, w)),
     ...(r.model.what_if ? [h('div', {}, 'what-if：dtype 已偏离官方发布，结果仅供推演。')] : []));
   renderStages(r);
+  renderWalls(r);
   renderEnergy(r);
   renderFabric(r);
   renderBudget(r);
@@ -1064,6 +1066,27 @@ function renderBudget(r) {
     Object.entries(b.area.terms).map(([k, v]) => `${{ sram: 'SRAM', slc: 'SLC', mac: 'MAC 阵列', fixed: '固定' }[k] || k} ${num(v)} mm²`).join(' + ') + ` = ${num(b.area.mm2)} mm² / 卡「假设」`)));
   if (b.scope_note) rows.push(h('tr', {}, h('td', { class: 'l' }, '范围'), h('td', { colspan: 5, class: 'l small' }, b.scope_note)));
   put($('budget-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
+}
+// 0.204: per-step walls (r.walls from the same /api/eval response — rendered with it, so it can never show a stale
+// or mismatched step; no extra request channel to race)
+const WALL_LBL = { compute: ['计算', 'compute'], dram: ['DRAM', 'DRAM'], collective_bw: ['集合通信带宽', 'collective BW'],
+  collective_lat: ['集合通信延迟', 'collective latency'], dispatch: ['派发', 'dispatch'], fixed_overhead: ['固定开销', 'fixed overhead'] };
+function renderWalls(r) {
+  const w = r.walls, box = $('walls-box');
+  if (!box) return;
+  if (!w || !(w.stage_ms > 0)) { box.hidden = true; return; }
+  box.hidden = false;
+  const keys = Object.keys(WALL_LBL);
+  put($('walls-bar'), ...keys.filter((k) => w.share[k] > 0).map((k) => h('i', {
+    class: `wk-${k}` + (k === w.wall ? ' wall' : ''), 'data-k': k, style: `width:${w.share[k] * 100}%`,
+    title: `${WALL_LBL[k][0]} · ${WALL_LBL[k][1]}：${num(w.exposed_ms[k])} ms（${pct(w.share[k])}）· 原始 raw ${num(w.raw_ms[k])} ms` })));
+  put($('walls-legend'), ...keys.map((k) => h('span', { class: 'wleg' + (k === w.wall ? ' wall' : '') },
+    h('i', { class: `wk-${k}` }), h('b', {}, `${WALL_LBL[k][0]} ${WALL_LBL[k][1]}`), ` ${num(w.exposed_ms[k])} ms · ${pct(w.share[k])}`)));
+  const lb = WALL_LBL[w.wall] || [w.wall, w.wall];
+  $('walls-note').textContent = `墙 wall：${lb[0]} · ${lb[1]} · 流水级 stage ${w.stage} ${num(w.stage_ms)} ms / 步 step ${num(w.step_ms)} ms`
+    + ` · 派发 dispatch：${w.dispatch_mode}`
+    + (w.exact ? '' : ` · 近似：exec_overlap = ${w.overlap} 下重叠窗口按主导资源归因 · approximate: overlapped window attributed to the dominant resource under exec_overlap = ${w.overlap}`)
+    + ' · 固定开销 = 每层固定开销时间（layer_overhead_us），非静态功耗 · fixed overhead = per-layer fixed time, not static power';
 }
 function renderStages(r) {
   const hasSlc = r.stages.some((st) => st.mem.slc_MiB > 0);
@@ -1878,8 +1901,8 @@ async function init() {
 
   fillModels();
   seg('chip-preset', Object.keys(S.cat.chips).map((k) => [k, k]), () => S.preset, (v) => { S.preset = v; S.chipOver = {}; S.mixed = []; onPreset(); syncInputs(); schedule(); });
-  for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us']) {
-    const nullable = k === 'sram_port_Bpc' || k === 'acc_kib' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine' || k === 'kernel_us';
+  for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us', 'dispatch_us']) {
+    const nullable = k === 'sram_port_Bpc' || k === 'acc_kib' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine' || k === 'kernel_us' || k === 'dispatch_us';
     bindNumber('c-' + k, () => chipVal(k), (x) => { if (x === null) delete S.chipOver[k]; else S.chipOver[k] = x; if (k === 'freq_ghz') onPreset(); },
       { int: k === 'gemv_macs', nullable });
   }
@@ -1970,6 +1993,7 @@ async function init() {
   });
   $('c-slc_policy').addEventListener('change', (e) => { S.chipOver.slc_policy = e.target.value; schedule(); });
   $('c-attn_fmt').addEventListener('change', (e) => { if (e.target.value) S.chipOver.attn_fmt = e.target.value; else delete S.chipOver.attn_fmt; schedule(); });
+  $('c-dispatch').addEventListener('change', (e) => { if (e.target.value) S.chipOver.dispatch = e.target.value; else delete S.chipOver.dispatch; schedule(); });
   $('l-pp_split').addEventListener('change', (e) => { S.sc.pp_split = e.target.value; schedule(); });
   $('l-indexer').addEventListener('change', (e) => { S.sc.indexer = e.target.value; schedule(); });
   $('l-attn_mode').addEventListener('change', (e) => { if (e.target.value === 'reference') delete S.sc.attn_mode; else S.sc.attn_mode = e.target.value; schedule(); });

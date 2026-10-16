@@ -50,6 +50,8 @@
       <label>MAC 效率<input type="number" id="c-mac_eff" step="0.05" min="0.05" max="1"></label>
       <label>累加器 KiB<input type="number" id="c-acc_kib" step="128" min="0"></label>
       <label title="0.120：每个 kernel 的启动 / 调度固定开销（µs，默认 0 = 不计）。每个 GEMM、融合注意力、结构模型算子各一次；分块三角注意力每块 3 次（QKᵀ、softmax、·V）">kernel 启动 µs <span class="tag assume">假设</span><input type="number" id="c-kernel_us" step="0.5" min="0" placeholder="0"></label>
+      <label title="0.203 NPU 派发模型 · NPU dispatch model。空 = 理想（0 开销，「假设」）；static-graph = 每步一次静态图启动 + token 同步（10 µs，JAX jit 派发，仅主机路径 「二手」）；trace = 设备回放命令流，每算子 1.5 µs（tt-metal #20681 「二手」）；host = 主机逐算子派发，每算子 20 µs（vllm-ascend #13021，910B 实测 「二手」）">派发 dispatch <span class="tag assume">二手</span><select id="c-dispatch"><option value="">理想 ideal</option><option value="static">静态图 static-graph</option><option value="trace">设备回放 trace</option><option value="host">主机逐算子 host</option></select></label>
+      <label title="0.203：覆盖所选派发模式的 µs（static-graph = 每步，trace / host = 每算子）· override the mode's µs (per step / per op)">派发 µs dispatch_us<input type="number" id="c-dispatch_us" step="0.5" min="0" placeholder="默认 default"></label>
     </div>
     <div class="row3" id="slc-row">
       <label title="系统级缓存（SLC, system-level cache）：位于 SRAM 与 DRAM 之间，每卡容量；0 = 无（默认）。不增加容量（包含式）">SLC MiB <span class="tag assume">假设</span><input type="number" id="c-slc_mib" step="64" min="0"></label>
@@ -392,6 +394,8 @@
     <h4>流水级时间分解 <span class="small muted">每级 t = max(MAC/FEED, VECTOR, DRAM, LINK) + SYNC；绑定项高亮</span></h4>
     <div class="scroll"><table class="tbl" id="stage-tbl"></table></div>
     <div class="legend" id="legend"></div>
+    <h4>每步时间分解 · Per-step time split <span class="small muted">最重流水级 · heaviest stage；▲ = 墙 / wall</span></h4>
+    <div id="walls-box"><div class="wbar" id="walls-bar"></div><div class="legend" id="walls-legend"></div><div class="small muted" id="walls-note"></div></div>
     <h4>存储规划</h4>
     <div class="scroll"><table class="tbl" id="mem-tbl"></table></div>
     <h4>动作计数与能耗 <span class="small muted">每输出单位；能耗只按左侧「能耗」里填写的项计算</span></h4>

@@ -53,11 +53,11 @@ def test_walls_sum_to_stage_and_name_the_wall():
     assert w["exposed_ms"]["dispatch"] > 0 and w["dispatch_mode"] == "host"
 
 
-def test_static_split_from_layer_overhead():
+def test_fixed_overhead_split_from_layer_overhead():
     s = replace(_s(dispatch="static"), layer_overhead_us=5.0, exec_overlap="stage")
     w = evaluate(s).walls()
     L = evaluate(s).model.n_layers
-    assert abs(w["exposed_ms"]["static"] - (L - 1) * 5e-3) < 1e-9 or abs(w["exposed_ms"]["static"] - L * 5e-3) < 1e-9
+    assert abs(w["exposed_ms"]["fixed_overhead"] - (L - 1) * 5e-3) < 1e-9 or abs(w["exposed_ms"]["fixed_overhead"] - L * 5e-3) < 1e-9
     assert abs(w["exposed_ms"]["dispatch"] - 10e-3) < 1e-12
 
 
