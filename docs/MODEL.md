@@ -4750,3 +4750,25 @@ MI300X kind. FlashMLA (0.108) remains the sourced NVIDIA attention-stream figure
 efficiency. Candidates (no source yet): PA efficiency at the 0.9 GB-per-call max-load sizes (beyond the 537 MB top of the
 curve, clamped), and the vLLM V1 per-sequence host and sampler costs at thousands of sequences (§127: ≈ 1.9 µs/seq,
 not applied).
+
+
+## §155 Balance levers; fixed-state and decision critical batch (0.208)
+**What-if.** One variable per lever, evaluated on the sensitivity case loop (`_eval_cases`):
+
+| lever | qwen3-8b · 1P · ctx 4096 | RWKV-7 7.2B · 1P | StartLux 35B-A3B · 1P |
+|---|---|---|---|
+| base | B* ∞ (KV), limit 141 (capacity), 28.8 FLOP/B, 4.70 ms | ∞ (state), 1460 (SLO), 181, 4.13 ms | ∞ (kv+state), 218, 29.8, 1.76 ms |
+| KV fp8 | 57.1, limit 283 — works | n/a | 36.9, 303 — works |
+| state bf16 | n/a | **B* 1541 ≤ 2092 — reachable** | 42.6, 279 — works |
+| ctx ÷ 2 | 53.1, 283 — works | unchanged (state is ctx-free) | 35.0, 303 — works |
+| SRAM × 2 | no effect | limit 1525, no effect | no effect |
+| DRAM × 2, same capacity | balance 159; TPOT 2.35 ms — works (TPOT) | **B* 758 ≤ 2048 — reachable** | TPOT 0.88 ms — works (TPOT) |
+
+**Fixed state.** RWKV's recurrent state does not grow with context, but it is read and written for every sequence on
+every step (fp32: ≈ 69 MB per sequence per step at 7.2B). AI(B) therefore saturates at FLOP per token ÷ state bytes
+≈ 181 FLOP/B, a ctx-independent constant (KV models: ∝ 1 / ctx). Balance is reachable exactly when the chip's FLOP/B is
+below that constant. The critical-batch logic needed no special case; only the label and hint (`asymptote_by`)
+changed.
+
+**Decision readout.** One forward over prompt + options per decision. The batch of decisions has its own critical batch,
+limited by capacity and the TTFT SLO, which is used as the decision latency limit.

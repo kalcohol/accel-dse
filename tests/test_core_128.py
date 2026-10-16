@@ -44,7 +44,7 @@ def test_catalog_labels_consistent():
 
 
 SWEEP_ROW_KEYS = {"value", "tpot_ms", "ttft_ms", "latency_ms", "tok_s", "tok_s_card", "bound", "fits", "array_util"}
-SENS_KEYS = {"base_tok_s", "base_bound", "base_label", "threshold", "rows", "hinges", "domain", "scope"}
+SENS_KEYS = {"base_tok_s", "base_bound", "base_label", "threshold", "rows", "hinges", "domain", "scope", "balance_whatif"}   # 0.208: + balance_whatif
 SENS_ROW_KEYS = {"key", "label", "tok_s", "ratio", "bound", "fits", "bound_flip", "hinge"}
 
 

@@ -1625,8 +1625,9 @@ def with_formats(spec: ModelSpec, overrides: dict[str, str]) -> ModelSpec:
     from .dtypes import fmt as _fmt
     d = dict(spec.formats)
     for role, name in overrides.items():
-        if role in ("act", "kv"):
+        if role in ("act", "kv", "state"):
             continue
         d[role] = RoleFormat(name, _fmt(name).bits)
     return replace(spec, formats=tuple(sorted(d.items())), what_if=True,
-                   act_fmt=overrides.get("act", spec.act_fmt), kv_fmt=overrides.get("kv", spec.kv_fmt))
+                   act_fmt=overrides.get("act", spec.act_fmt), kv_fmt=overrides.get("kv", spec.kv_fmt),
+                   state_fmt=overrides.get("state", spec.state_fmt))   # 0.208: recurrent-state format what-if

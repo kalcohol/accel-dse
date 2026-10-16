@@ -142,6 +142,14 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 # 0.206: critical batch in the KPI; balanced-class 1P at the default ctx gets a hint, not a warning
                 bcheck("critical batch shown", "critical batch" in k, k[-300:])
                 bcheck("no balance warning on 1P", p.query_selector("#warns .balance-warn") is None, p.inner_text("#warns")[:300])
+                # 0.208: balance what-if table from the sensitivity response (one lever each)
+                try:
+                    p.wait_for_selector("#bal-whatif-tbl tbody tr", timeout=60000)
+                    wt = p.inner_text("#bal-whatif-tbl")
+                except Exception as e_:   # noqa: BLE001
+                    wt = f"missing: {e_}"
+                bcheck("balance what-if table", "KV fp8" in wt and "SRAM ×2" in wt and "DRAM 带宽 ×2" in wt, wt)
+                bcheck("what-if verdicts", "有效" in wt and "无效" in wt, wt)
                 act("preset 1P-lp4x64", lambda: p.query_selector_all("#chip-preset button")[names.index("1P-lp4x64")].click())
                 mf2 = p.inner_text("#mem-facts")
                 bcheck("legacy pairs with LPDDR 273 GB/s", "273" in mf2, mf2)

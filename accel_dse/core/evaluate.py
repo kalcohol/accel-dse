@@ -170,13 +170,18 @@ class Result:
             **({"decision": self.decision()} if s.serving.labels else {}),
         }
 
-    def _ai_at(self, b: int):
-        """0.206: (arithmetic intensity, fits, slo_ok) of the same scenario at decode batch ``b``."""
+    def _ai_at(self, b: int, dram: bool = False):
+        """0.206: (arithmetic intensity, fits, slo_ok) of the same scenario at decode batch ``b``; 0.208: ``dram``
+        adds the heaviest stage's DRAM breakdown (which stream grows with the batch)."""
         from dataclasses import replace as _rp
         sc = self.scenario
         r = evaluate(_rp(sc, serving=_rp(sc.serving, batch=b)), self.model)
-        t = r.stages[r.heaviest_stage].time
-        return (t.flops / t.dram_bytes if t.dram_bytes > 0 else float("inf")), r.fits, r.slo_ok
+        st = r.stages[r.heaviest_stage]
+        t = st.time
+        # 0.208: a decision readout (prefill + labels) has no TPOT — its latency limit is the TTFT SLO
+        slo = (r.ttft * 1e3 <= sc.serving.ttft_slo_ms) if sc.serving.phase == "prefill" else r.slo_ok
+        out = ((t.flops / t.dram_bytes if t.dram_bytes > 0 else float("inf")), r.fits, slo)
+        return out + (dict(st.dram),) if dram else out
 
     def critical_batch(self, bal: float) -> dict:
         """0.206: the decode batch at which the step's arithmetic intensity reaches the chip balance ``bal``
@@ -207,11 +212,27 @@ class Result:
         bstar = first(lambda b: at(b)[0] >= bal)
         kv_out = first(lambda b: not at(b)[1])
         slo_out = first(lambda b: not at(b)[2])
-        outs = [(x - 1, k) for x, k in ((kv_out, "kv_capacity"), (slo_out, "tpot_slo")) if x is not None]
+        slo_key = "ttft_slo" if self.scenario.serving.phase == "prefill" else "tpot_slo"   # 0.208: decision readout
+        outs = [(x - 1, k) for x, k in ((kv_out, "kv_capacity"), (slo_out, slo_key)) if x is not None]
         blim, limit = min(outs) if outs else (BALANCE_BMAX, None)
+        # 0.208: what saturates AI — the per-sequence DRAM stream that grows most from batch 1 to BALANCE_BMAX: "kv"
+        # (grows with ctx too), "state" (recurrent state: fixed per sequence, independent of ctx), "weights" (MoE:
+        # more experts touched), "act" (activations spilled)
+        d1, dn = self._ai_at(1, dram=True)[3], self._ai_at(BALANCE_BMAX, dram=True)[3]
+        grow: dict = {}
+        for k in dn:
+            if k in ("total", "w_touched", "exp_dram", "exp_slc") or not isinstance(dn.get(k), (int, float)):
+                continue                       # w_touched / exp_* are views of "weights"; nested breakdowns skipped
+            c = {"kv_read": "kv", "kv_write": "kv"}.get(k, k)
+            d1k = d1.get(k, 0.0)
+            grow[c] = grow.get(c, 0.0) + dn[k] - (d1k if isinstance(d1k, (int, float)) else 0.0)
+        top = sorted(grow, key=grow.get, reverse=True)
+        by = top[0] if top else None
+        if len(top) > 1 and {top[0], top[1]} == {"kv", "state"} and grow[top[1]] >= 0.25 * grow[top[0]]:
+            by = "kv+state"            # hybrid (linear-attention + full-attention layers): both streams matter
         return {"critical_batch": bstar, "batch_limit": blim if blim >= 1 else 0, "limited_by": limit,
                 "ai_asymptote": at(BALANCE_BMAX)[0], "ai_at_limit": at(blim)[0] if blim >= 1 else None,
-                "reachable": bstar is not None and bstar <= blim}
+                "asymptote_by": by, "reachable": bstar is not None and bstar <= blim}
 
     def balance(self) -> dict:
         """0.205: machine balance vs workload arithmetic intensity.  Chip: bf16 peak FLOP/s ÷ DRAM bytes/s (raw, and
@@ -232,30 +253,42 @@ class Result:
         warn = hint = idle = None
         cb = None
         b = sc.serving.batch
-        if sc.serving.phase == "decode" and self.model.domain in ("llm", "vlm") and r > 1:
+        decision = sc.serving.phase == "prefill" and bool(getattr(sc.serving, "labels", 0))   # 0.208: batch of decisions
+        if (sc.serving.phase == "decode" or decision) and self.model.domain in ("llm", "vlm") and r > 1:
             cb = self.critical_batch(bal)
             if cb["critical_batch"] is None:
                 # KV-bound: no batch reaches balance — a property of the workload (KV bytes per token), shared by every
                 # chip whose balance exceeds the asymptote.  Warn only when the chip is out of the public class
                 # (balance > BALANCE_CLASS_MAX): then compute is oversized for this workload at any batch.
                 idle = "compute"
-                hint = (f"KV 受限：KV 读随 batch 增长，强度饱和于 {cb['ai_asymptote']:.1f} FLOP/B < 芯片 {bal:.0f}，任何 batch 都到不了平衡点；"
-                        f"杠杆是 KV 字节（fp8 KV / MLA / 短 ctx）而不是算力 · KV-bound: intensity saturates at "
-                        f"{cb['ai_asymptote']:.1f} FLOP/B below the chip's {bal:.0f}; the lever is KV bytes, not compute")
+                if cb["asymptote_by"] == "kv+state":
+                    hint = (f"KV + 状态受限（混合注意力）：全注意力层的 KV 随 ctx 增长、线性层的状态每序列固定，强度饱和于 "
+                            f"{cb['ai_asymptote']:.1f} FLOP/B < 芯片 {bal:.0f}；杠杆是 KV 与状态字节 · KV- and state-bound (hybrid): "
+                            f"saturates at {cb['ai_asymptote']:.1f} FLOP/B; the levers are KV and state bytes, not compute")
+                elif cb["asymptote_by"] == "state":
+                    hint = (f"状态受限：循环状态每序列固定（与 ctx 无关），每步读写，强度饱和于 {cb['ai_asymptote']:.1f} FLOP/B < 芯片 {bal:.0f}；"
+                            f"杠杆是状态字节 / 状态常驻 SRAM，而不是 ctx 或算力 · state-bound: the fixed per-sequence recurrent state "
+                            f"is streamed every step, intensity saturates at {cb['ai_asymptote']:.1f} FLOP/B; the lever is state "
+                            f"bytes / SRAM-resident state, not context or compute")
+                else:
+                    hint = (f"KV 受限：KV 读随 batch 增长，强度饱和于 {cb['ai_asymptote']:.1f} FLOP/B < 芯片 {bal:.0f}，任何 batch 都到不了平衡点；"
+                            f"杠杆是 KV 字节（fp8 KV / MLA / 短 ctx）而不是算力 · KV-bound: intensity saturates at "
+                            f"{cb['ai_asymptote']:.1f} FLOP/B below the chip's {bal:.0f}; the lever is KV bytes, not compute")
                 if bal > BALANCE_CLASS_MAX:
                     warn = (f"算力闲置 compute idle：芯片 {bal:.0f} FLOP/B 超出公开同级上限 {BALANCE_CLASS_MAX:.0f}，"
                             f"本负载任何 batch 都到不了平衡点（饱和 {cb['ai_asymptote']:.1f} FLOP/B）；减算力或加带宽 · chip balance "
                             f"above the public class ({BALANCE_CLASS_MAX:.0f}) and unreachable at any batch — rebalance")
             elif not cb["reachable"]:
                 idle = "compute"
-                lim = {"kv_capacity": "KV 容量 KV capacity", "tpot_slo": "TPOT SLO"}.get(cb["limited_by"], cb["limited_by"])
+                lim = {"kv_capacity": "内存容量（KV / 权重）memory capacity", "tpot_slo": "TPOT SLO",
+                       "ttft_slo": "TTFT SLO"}.get(cb["limited_by"], cb["limited_by"])
                 warn = (f"算力闲置 compute idle：需 batch ≥ {cb['critical_batch']} 才到平衡点 {bal:.0f} FLOP/B，但 {lim} 只允许 ≤ "
                         f"{cb['batch_limit']}；加容量 / 带宽或放宽 SLO · needs batch ≥ {cb['critical_batch']} to reach balance, "
                         f"{lim} allows ≤ {cb['batch_limit']} — add capacity / bandwidth or relax the SLO")
             elif b < cb["critical_batch"]:
                 hint = (f"batch {b} < 临界 batch {cb['critical_batch']}（限制内可达，上限 {cb['batch_limit']}）：加大 batch 即可用满算力 · "
                         f"raise batch to ≥ {cb['critical_batch']} to reach the balance point")
-        elif r > BALANCE_WARN and sc.serving.phase != "decode":
+        elif r > BALANCE_WARN and sc.serving.phase != "decode" and not decision:
             idle = "compute"
             warn = (f"算力闲置 compute idle：芯片 {bal:.0f} FLOP/B 比负载算术强度 {ai:.1f} FLOP/B 高 {r:.0f}× · "
                     f"chip balance {r:.0f}× the workload's intensity — compute is wasted")
@@ -266,7 +299,8 @@ class Result:
         return {"chip_flop_per_byte_raw": peak / raw if raw > 0 else None, "chip_flop_per_byte": bal,
                 "workload_flop_per_byte": ai, "ratio": r, "threshold": BALANCE_WARN, "batch": b,
                 **({k: cb[k] for k in cb} if cb else {"critical_batch": None, "batch_limit": None, "limited_by": None,
-                                                       "ai_asymptote": None, "ai_at_limit": None, "reachable": None}),
+                                                       "ai_asymptote": None, "ai_at_limit": None, "asymptote_by": None,
+                                                       "reachable": None}),
                 "idle": idle, "warning": warn, "hint": hint,
                 "peak_tflops_bf16": peak / 1e12, "dram_GBps_raw": raw / 1e9, "dram_GBps_eff": eff / 1e9}
 

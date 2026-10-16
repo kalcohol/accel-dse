@@ -477,6 +477,23 @@ def sensitivity_report(scn: Scenario, r: Result) -> dict:
             cases.append(("dispatch", f"派发 {mode}：{lab} {DISPATCH_US[mode]:g} µs「二手」",
                           scn.replace("chip", replace(ch, dispatch=mode))))
     base = r.throughput
+
+    def row(q):
+        ratio = q.throughput / base if base else None
+        return {"tok_s": q.throughput, "ratio": ratio, "bound": q.bound, "fits": q.fits, "bound_flip": q.bound != r.bound,
+                "hinge": bool(ratio is not None and (abs(ratio - 1) > SENS_HINGE or q.bound != r.bound))}
+    rows = _eval_cases(cases, row)
+    hinges = sorted({x["key"] for x in rows if x.get("hinge")})
+    return {"base_tok_s": base, "base_bound": r.bound, "base_label": SENS_BASE_LABEL.get(ov, ov), "threshold": SENS_HINGE, "rows": rows, "hinges": hinges,
+            "domain": r.model.domain,
+            # 0.97: what was re-evaluated (PD pools / budgets are not)
+            "scope": "合并部署（PD 池未复核）" if scn.pd.enabled and r.model.kv_cache else "本场景",
+            "balance_whatif": balance_whatif(scn, r)}
+
+
+def _eval_cases(cases, row_fn) -> list:
+    """0.208: the sensitivity scan's case loop, shared by sensitivity_report and balance_whatif — each (key, label,
+    scenario) is evaluated once; a rejected case becomes an error row; row_fn(result) adds the per-panel fields."""
     rows = []
     for key, label, s in cases:
         try:
@@ -484,15 +501,64 @@ def sensitivity_report(scn: Scenario, r: Result) -> dict:
         except ValueError as e:
             rows.append({"key": key, "label": label, "error": str(e)})
             continue
-        ratio = q.throughput / base if base else None
-        rows.append({"key": key, "label": label, "tok_s": q.throughput, "ratio": ratio, "bound": q.bound,
-                     "fits": q.fits, "bound_flip": q.bound != r.bound,
-                     "hinge": bool(ratio is not None and (abs(ratio - 1) > SENS_HINGE or q.bound != r.bound))})
-    hinges = sorted({x["key"] for x in rows if x.get("hinge")})
-    return {"base_tok_s": base, "base_bound": r.bound, "base_label": SENS_BASE_LABEL.get(ov, ov), "threshold": SENS_HINGE, "rows": rows, "hinges": hinges,
-            "domain": r.model.domain,
-            # 0.97: what was re-evaluated (PD pools / budgets are not)
-            "scope": "合并部署（PD 池未复核）" if scn.pd.enabled and r.model.kv_cache else "本场景"}
+        rows.append({"key": key, "label": label, **row_fn(q)})
+    return rows
+
+
+WHATIF_GAIN = 0.10    # 0.208: a lever "works" when it makes balance reachable, moves the asymptote / batch limit up or TPOT down by > 10 % 「假设」
+
+
+def _mem_x2(mem_id: str):
+    """0.208: the same memory with twice the channels / stacks (2× raw bandwidth); None if the id is not of that form."""
+    import re
+    m = re.match(r"^([a-z0-9]+)_(\d+)(x\d+|s)_(.*)$", mem_id)
+    return None if not m else f"{m.group(1)}_{2 * int(m.group(2))}{m.group(3)}_{m.group(4)}"
+
+
+def balance_whatif(scn: Scenario, r: Result) -> dict | None:
+    """0.208: the machine-balance levers, one variable each, on the sensitivity scan's case loop: fp8 KV, bf16
+    recurrent state, half the context, 2× SRAM, 2× DRAM bandwidth (twice the channels / stacks at the SAME capacity,
+    Scenario.mem_cap_GB).  Each row: critical batch, batch limit (KV capacity / TPOT SLO), saturation intensity and
+    TPOT at the configured batch — so the designer sees which lever reaches the balance point.  Decode LLM / VLM
+    only (the critical batch is a decode notion)."""
+    from dataclasses import replace as rp
+    if scn.serving.phase != "decode" or r.model.domain not in ("llm", "vlm"):
+        return None
+    b0 = r.balance()
+    if b0.get("reachable") is None:
+        return None
+    m, ch = r.model, scn.chip
+    fo = dict(scn.formats_override)
+    cases = []
+    if "kv" in (b0["asymptote_by"] or "") and m.kv_fmt not in ("fp8", "int8") and fo.get("kv") not in ("fp8", "int8"):
+        cases.append(("kv_fp8", f"KV fp8（{fo.get('kv', m.kv_fmt)} → fp8）", rp(scn, formats_override=tuple({**fo, "kv": "fp8"}.items()))))
+    if "state" in (b0["asymptote_by"] or "") and fo.get("state", m.state_fmt) == "fp32":
+        cases.append(("state_bf16", "状态 bf16（fp32 → bf16）", rp(scn, formats_override=tuple({**fo, "state": "bf16"}.items()))))
+    if scn.serving.ctx > 1:
+        cases.append(("ctx_half", f"ctx ÷2（{scn.serving.ctx} → {scn.serving.ctx // 2}）",
+                      rp(scn, serving=rp(scn.serving, ctx=max(1, scn.serving.ctx // 2)))))
+    cases.append(("sram_x2", f"SRAM ×2（{ch.sram_mib:g} → {2 * ch.sram_mib:g} MiB）", rp(scn, chip=rp(ch, sram_mib=2 * ch.sram_mib))))
+    mx = _mem_x2(scn.mem_id)
+    if mx:
+        from .core.hardware import System
+        cap = scn.mem_cap_GB or System(ch, scn.mem_id, scn.mem_eff).dram_bytes / 1e9
+        cases.append(("dram_bw_x2", f"DRAM 带宽 ×2（{scn.mem_id} → {mx}，容量不变）", rp(scn, mem_id=mx, mem_cap_GB=cap)))
+
+    def pick(q, b):
+        return {"critical_batch": b["critical_batch"], "batch_limit": b["batch_limit"], "limited_by": b["limited_by"],
+                "reachable": b["reachable"], "ai_asymptote": b["ai_asymptote"], "asymptote_by": b["asymptote_by"],
+                "chip_flop_per_byte": b["chip_flop_per_byte"], "tpot_ms": q.tpot * 1e3}
+    base = pick(r, b0)
+
+    def row(q):
+        x = pick(q, q.balance())
+        g = lambda k: (x[k] or 0) > (base[k] or 0) * (1 + WHATIF_GAIN)
+        x["tpot_ratio"] = x["tpot_ms"] / base["tpot_ms"] if base["tpot_ms"] else None
+        x["works"] = bool((x["reachable"] and not base["reachable"]) or g("ai_asymptote") or g("batch_limit")
+                          or (x["tpot_ratio"] is not None and x["tpot_ratio"] < 1 - WHATIF_GAIN))
+        return x
+    rows = _eval_cases(cases, row)
+    return {"base": base, "rows": rows, "gain": WHATIF_GAIN, "works": [x["key"] for x in rows if x.get("works")]}
 
 
 SENS_BASE_LABEL = {"stage": "stage 全重叠（吞吐上界）", "pipe": "pipe 硬件推导（现实估计）", "serial": "serial 无重叠（吞吐下界）"}

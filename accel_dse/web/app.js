@@ -699,7 +699,8 @@ function renderEval(r) {
       `负载 workload ${num(b.workload_flop_per_byte)} FLOP/B · 比值 ratio ${num(b.ratio)}× · 原始带宽 raw ${num(b.chip_flop_per_byte_raw)} FLOP/B`
       + (b.reachable !== null && b.reachable !== undefined
         ? ` · 临界 batch critical batch ${b.critical_batch ?? '∞（KV 受限 KV-bound）'} · 上限 limit ${b.batch_limit}`
-          + (b.limited_by ? `（${b.limited_by === 'kv_capacity' ? 'KV 容量 KV capacity' : 'TPOT SLO'}）` : '')
+          + (b.limited_by ? `（${LIMIT_ZH[b.limited_by] || b.limited_by}）` : '')
+          + (b.asymptote_by ? ` · 饱和来源 ${ASYM_ZH[b.asymptote_by] || b.asymptote_by}` : '')
           + ` · 饱和强度 asymptote ${num(b.ai_asymptote)} FLOP/B` : '')
       + (b.idle ? ` · ${b.idle === 'compute' ? '算力闲置 compute idle' : '带宽闲置 bandwidth idle'}` : '')
       + (b.hint ? ` · ${b.hint}` : ''), b.warning ? 'warn' : ''));
@@ -1012,10 +1013,29 @@ function budgetMark(x) {
 }
 // 0.96: 敏感度 panel — the result under the 「假设」 constants that drive design conclusions (MODEL §41)
 const SENS_ZH = { exec_overlap: '重叠上下界（stage / serial）', pipe: '硬件推导重叠（pipe，现实估计）', mem_eff: 'DRAM 效率', vector_lanes: '向量 lane 数' };
+// 0.208: balance limit / saturation labels, shared by the KPI and the what-if table
+const LIMIT_ZH = { kv_capacity: '内存容量 capacity', tpot_slo: 'TPOT SLO', ttft_slo: 'TTFT SLO' };
+const ASYM_ZH = { kv: 'KV（随 ctx 增长）', state: '循环状态（每序列固定）', 'kv+state': 'KV + 状态（混合）', weights: '权重（MoE 专家）', act: '激活' };
+// 0.208: machine-balance what-if (one lever each), from the same /api/sensitivity response — no extra request
+function renderBalanceWhatif(w) {
+  let box = $('bal-whatif');
+  if (!box) { box = h('div', { id: 'bal-whatif' }); $('sens-tbl').after(box); }
+  if (!w) { put(box); return; }
+  const cell = (x) => x.reachable ? `${x.critical_batch} ✓` : (x.critical_batch ? `${x.critical_batch} ✗` : '∞');
+  const tr = (lab, x, base) => h('tr', { class: x.works ? 'ok' : '' }, h('td', { class: 'l' }, lab),
+    h('td', {}, num(x.chip_flop_per_byte)), h('td', {}, cell(x)), h('td', {}, `${x.batch_limit}${x.limited_by ? '（' + (LIMIT_ZH[x.limited_by] || x.limited_by) + '）' : ''}`),
+    h('td', {}, num(x.ai_asymptote)), h('td', {}, num(x.tpot_ms) + ' ms'),
+    h('td', { class: 'l small' }, base ? '当前' : (x.error ? x.error : (x.works ? '有效 · works' : '无效 · no effect'))));
+  put(box, h('h4', {}, '机器平衡 what-if · balance levers（每次只改一个变量 · one variable each）'),
+    h('table', { class: 'tbl', id: 'bal-whatif-tbl' },
+      h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
+      h('tbody', {}, tr('当前 base', w.base, true), ...w.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 6, class: 'l small' }, x.error)) : tr(x.label, x, false)))),
+    h('div', { class: 'small' }, w.works.length ? `有效杠杆 · levers that work：${w.works.join('、')}（阈值 ${pct(w.gain)}）` : '没有单一杠杆有效 · no single lever works'));
+}
 function renderSensitivity(r) {
   const s = r.sensitivity;
   $('sens-box').hidden = false;
-  if (!s) { put($('sens-tbl')); return; }
+  if (!s) { put($('sens-tbl')); renderBalanceWhatif(null); return; }
   const m = model(), u = isFull(m) ? unitZh(m) : 'tok';
   const head = h('tr', {}, h('th', { class: 'l' }, '假设变化'), h('th', {}, `${u}/s`), h('th', {}, '相对当前'), h('th', {}, '瓶颈'), h('th', { class: 'l' }, '判定'));
   const rows = s.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 4, class: 'l small' }, x.error))
@@ -1024,6 +1044,7 @@ function renderSensitivity(r) {
       h('td', {}, boundTag(x.bound), x.bound_flip ? h('span', { class: 'small' }, ' ⇄') : ''),
       h('td', { class: 'l small' }, x.hinge ? (x.bound_flip ? '瓶颈翻转' : `变化 > ${pct(s.threshold)}`) : '稳健')));
   put($('sens-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
+  renderBalanceWhatif(s.balance_whatif);
   $('sens-note').textContent = s.hinges.length
     ? `⚠ 本结果取决于：${s.hinges.map((k) => SENS_ZH[k] || k).join('、')}——比较设计点时请在这些假设下复核（当前 ${num(s.base_tok_s)} ${u}/s，瓶颈 ${s.base_bound}）`
     : `本结果对重叠方式、DRAM 效率、向量 lane 的变化不敏感（阈值 ${pct(s.threshold)}）`;

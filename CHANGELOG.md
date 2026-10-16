@@ -6,6 +6,28 @@
 
 
 
+## [0.208.0]
+- **Machine-balance what-if** (`api.balance_whatif`, part of the `/api/sensitivity` response, rendered under the sensitivity table as "机器平衡 what-if"). It reuses the sensitivity scan's case loop, now factored out as `api._eval_cases` and shared with `sensitivity_report`.
+  - Each lever changes one variable:
+    - KV fp8 (models whose saturation involves KV);
+    - recurrent state bf16 (models with state);
+    - ctx ÷ 2;
+    - SRAM × 2;
+    - DRAM bandwidth × 2 (twice the channels/stacks at the same capacity, via `mem_cap_GB`).
+  - Each row shows chip FLOP/B, critical batch, batch limit (with what binds it), saturation intensity and TPOT at the configured batch.
+  - A lever "works" when it makes balance reachable, or moves the asymptote or batch limit up, or TPOT down, by more than `WHATIF_GAIN = 10 %` (假设).
+  - qwen3-8b on 1P (ctx 4096): KV fp8 (asymptote 28.8 → 57.1, limit 141 → 283) and ctx ÷ 2 work. DRAM × 2 halves TPOT (4.70 → 2.35 ms) but leaves balance unreachable. SRAM × 2 has no effect.
+- **Saturation source** `balance.asymptote_by` ∈ kv / state / kv+state / weights / act: the per-sequence DRAM stream that grows most from batch 1 to 65536 (kv+state when both are ≥ 25 %).
+  - Fixed-state models (RWKV-7) are labelled `state`. Their asymptote is independent of ctx, and the hint names the state levers (state bytes / SRAM-resident state), not context.
+- **RWKV-7 G1k 7.2B** (fp32 state, as the reference kernels keep it):
+  - The asymptote is 181 FLOP/B (state read + written every step, ≈ 69 MB per sequence per step). On 1P (318 FLOP/B) balance is **not reachable**; this is correct, because the fixed state is still a per-sequence DRAM stream.
+  - It becomes reachable when the chip balance is below the asymptote: 2× DRAM gives B* = 758 ≤ 2048, and bf16 state (asymptote 331) gives B* = 1541 ≤ 2092.
+  - New `formats_override` role `state` (what-if).
+- **StartLux-Decision 35B-A3B** (hybrid GDN + full attention, MoE): `kv+state`, asymptote 29.8; every one of KV fp8, state bf16 and ctx ÷ 2 helps.
+- **Decision readout** (prefill + labels): the critical batch now applies to a batch of decisions, limited by memory capacity and the TTFT SLO (`limited_by: "ttft_slo"`). StartLux 35B-A3B on 1P is DRAM-bound at batch 1 (38.7 FLOP/B); B* = 9 ≤ 332, so this is a hint.
+  - The "limited by" label is now "memory capacity (KV / weights)", because weights not fitting also binds (e.g. 35B bf16 on 100T).
+- Tests: `tests/test_core_208.py`; the UI smoke checks the what-if table. Fingerprints are unchanged; the NPU isolation test is kept.
+
 ## [0.207.0]
 - **Default change (MI300X reference chip only): ROCm paged-attention KV-stream efficiency** (`extval.pa_rocm_eff`, variant flag `pa_rocm`; `default_0206` keeps the old default).
   - Source (independent of the validation README): ROCm/FlyDSL PR #825 (merged 2026-07-24). Production `pa_decode_ps_kernel`, fp8 per-token KV, block 16, head 128, gfx942 / MI308X, CUDA-graph wall time: bs32·ctx4096 34.9 µs, bs128·ctx4096 83.6 µs, bs128·ctx16384 216.3 µs, bs256·ctx8192 (8 q / 1 kv) 235.5 µs (来源).
