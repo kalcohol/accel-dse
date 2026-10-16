@@ -625,6 +625,14 @@ def _cores_set(ch, v):
     return replace(ch, engines=max(1, int(round(v))), vector_lanes=ch.lanes)
 
 
+def _dram_units_set(s, v):
+    # 0.183: drop whole DRAM packages / stacks (same parts, rate, height, mem_eff): bandwidth AND capacity shrink
+    # together and the interface PHY shrinks with the bus (budget.phy_area: bus_bits × mm2_per_dq_*)
+    spec = _memspec(s)
+    n = max(1, int(round(v)))
+    return s.replace("mem_id", replace(spec, n_units=n, legacy_id="", legacy_note="").id)
+
+
 SIZING = {
     # key: (label, unit, get(Scenario) → value, set(Scenario, value) → Scenario, integer, area density field | None)
     "dequant": ("反量化 / 转换吞吐", "元素/周期",
@@ -639,12 +647,17 @@ SIZING = {
     # 0.158: effective DRAM bandwidth at fixed stack / capacity (scaled through mem_eff ≤ current); no PHY area (discrete)
     "dram_bw": ("DRAM 有效带宽", "GB/s", lambda s: _dram_delivered(s),
                 lambda s, v: s.replace("mem_eff", v / _memspec(s).payload_GBps), False, None),
+    # 0.183: discrete DRAM interface width (package / stack count) priced by the DRAM PHY density (mm² per data pin)
+    "dram_units": ("DRAM 封装 / 堆栈数", "个", lambda s: float(_memspec(s).n_units), _dram_units_set, True, "mm2_per_dq"),
 }
 SIZING_MIN_FRAC = 1 / 1024        # search floor (10 halvings)
 SIZING_REFINE = 3                 # geometric bisection steps after the first failing halving
 
 
 _JOINT_ORDER = ("cores", "lanes", "dequant", "sram", "dram_bw")   # cores pins vector_lanes, so lanes is applied after it
+# 0.183: dram_units is per-resource only — it and dram_bw act on the same DRAM wire (dram_bw is an absolute GB/s
+# through mem_eff relative to the current bus), so joint back-off over both is not separable; joint skips it.
+JOINT_SKIP = ("dram_units",)
 
 
 def sizing_report(base: Scenario, models=None, budget: Budget | None = None, resources=None, joint: bool = False,
@@ -710,9 +723,11 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
         ok, fail, why = cur, None, None
         v = cur
         while v / 2 >= cur * SIZING_MIN_FRAC:
-            v = v / 2
+            prev, v = v, v / 2
             if integer:
                 v = float(max(1, int(round(v))))
+                if v >= prev:          # 0.183: integer floor (1) reached — ≤ 0.182 looped forever at a current of 1
+                    break
             w = check(key, v)
             if w is None:
                 ok = v
@@ -734,18 +749,18 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
         row = {"key": key, "label": label, "unit": unit, "current": cur, "min_ok": ok, "frac": ok / cur if cur else None,
                "floor_hit": fail is None, "fail_at": fail,
                "limited_by": None if why is None else {"model": why[0], "metric": why[1], "gain": why[2]}}
-        d = getattr(budget, dens, None) if (budget is not None and dens) else None
+        d = _density(budget, dens, base)
         if d is not None:
             row["mm2_saved"] = (cur - ok) * _unit_mm2(key, base, d)
         out.append(row)
     rep = {"domain": domain, "models": models, "metrics": metric_labels(domain), "tie": TIE, "resources": out,
            "chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label,
             "basis": "逐项缩小（先减半再几何二分）× 现有引擎；每个模型的全部领域指标都在 ±1% 内且仍放得下才算可行；"
-                     "min_ok 是实测通过的点（不是外推）。只回答「还能省多少」，面积仅在已有密度（SRAM mm²/MiB、MAC mm²/kMAC，来自密度预设或用户）时给 mm²；DRAM 带宽经 mem_eff 连续缩放（容量不变），不给 PHY 面积。"}
+                     "min_ok 是实测通过的点（不是外推）。只回答「还能省多少」，面积仅在已有密度（SRAM mm²/MiB、MAC mm²/kMAC，来自密度预设或用户）时给 mm²；DRAM 带宽经 mem_eff 连续缩放（容量不变），不给 PHY 面积；DRAM 封装/堆栈数为离散项（带宽+容量同减），面积 = 位宽 × DRAM PHY 密度（若已设），不参与联合缩减。"}
     if joint:
         if unpriced not in ("last", "free"):
             raise ValueError("unpriced must be 'last' or 'free'")
-        rep["joint"] = _joint_shrink(base, out, budget, worst, unpriced)
+        rep["joint"] = _joint_shrink(base, [r for r in out if r["key"] not in JOINT_SKIP], budget, worst, unpriced)
     rep["binding"] = _binding(out, rep.get("joint"))
     return rep
 
@@ -764,6 +779,15 @@ def _binding(rows: list, joint) -> dict:
     return out
 
 
+def _density(budget, dens, base):
+    """Density field value; 'mm2_per_dq' resolves to the HBM or non-HBM DRAM PHY density of the base memory."""
+    if budget is None or not dens:
+        return None
+    if dens == "mm2_per_dq":
+        dens = "mm2_per_dq_hbm" if "HBM" in _memspec(base).mem_type.upper() else "mm2_per_dq_lpddr"
+    return getattr(budget, dens, None)
+
+
 def _unit_mm2(key: str, base: Scenario, d: float) -> float:
     """mm² per unit of a sizing resource from its density.  Densities are per 1024 (kMAC as in budget.area_estimate,
     klane, kdq); 0.162 fixes the ≤ 0.161 cores conversion that divided R·C by 1000 (+2.4 % on cores mm²)."""
@@ -771,6 +795,8 @@ def _unit_mm2(key: str, base: Scenario, d: float) -> float:
         return base.chip.rows * base.chip.cols / 1024.0 * d
     if key in ("lanes", "dequant"):
         return d / 1024.0
+    if key == "dram_units":
+        return _memspec(base).unit_width_bits * d
     return d
 
 
@@ -794,8 +820,7 @@ def _joint_shrink(base: Scenario, rows: list, budget, worst, unpriced: str = "la
     integer = {k: SIZING[k][4] for k in start}
     per_unit = {}
     for k in start:
-        dens = SIZING[k][5]
-        d = getattr(budget, dens, None) if (budget is not None and dens) else None
+        d = _density(budget, SIZING[k][5], base)
         if d is not None:
             per_unit[k] = _unit_mm2(k, base, d)
     priced = bool(per_unit)

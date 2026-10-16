@@ -3,6 +3,14 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.183.0] - 2026-10-16
+### 新增
+- sizing 资源 `dram_units`（DRAM 封装 / 堆栈数，离散）：同型号、同速率、同 mem_eff，仅改数量，带宽与容量同减（容量不足即 fits 失败）。面积 = (n−n_min) × 单元位宽 × DRAM PHY 密度（HBM → mm2_per_dq_hbm 二手/假设；其他 → mm2_per_dq_lpddr 假设），按内存类型取，未设则不给 mm²。默认资源列表变更（旧 5 项 → 新 6 项）；联合缩减跳过它（与 dram_bw 同一条线，不可分离）。MODEL §130。
+### 修复
+- sizing 整数资源当前值为 1 时（engines=1、单封装）减半搜索死循环（0.5 四舍五入回 1）；现在到 1 即停。≤0.182 会挂起。
+### 示例
+- 默认芯片（LPDDR5X 4×x64，0.03 mm²/pin 假设）：qwen3-8b / esm2 不能少一个封装（TPOT/延迟 0.75）；wan2.1 可到 3 个，省 1.92 mm²。HBM3E 8 堆 + qwen3-8b：可到 3 堆，省 70 mm²（14 mm²/1024 pin 二手）。
+
 ## [0.182.0] — MAI models checked (not added); TRT-LLM 0.8 all-reduce paths recorded
 
 - **MAI-Base-2.** Not added. The PDF table gives layers, hidden, heads, experts and latent MoE dims, but not head_dim, vocab, window or gating, and the totals do not reconcile with 2.8T. It is a closed, post-training model.

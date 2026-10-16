@@ -10,7 +10,9 @@ def test_each_setter_moves_only_its_resource():
         for k, w in SIZING.items():
             for f in (0.5, 0.13):
                 s2 = w[3](s, w[2](s) * f)
-                moved = [j for j, x in SIZING.items() if j != k and abs(x[2](s2) - x[2](s)) > 1e-9]
+                # 0.183: dropping DRAM packages narrows the bus, so delivered bandwidth must follow (never rise)
+                moved = [j for j, x in SIZING.items() if j != k and abs(x[2](s2) - x[2](s)) > 1e-9
+                         and not (k == "dram_units" and j == "dram_bw" and x[2](s2) < x[2](s))]
                 assert not moved, (name, k, f, moved)
                 assert abs(w[2](s2) - (round(w[2](s) * f) if w[4] else w[2](s) * f)) <= 1e-6 * w[2](s) + (1 if w[4] else 0)
 

@@ -4355,3 +4355,13 @@ No published TWOSHOT throughput for TRT-LLM 0.8 was found either. **Not applied.
 sourced curve can be dropped into `schedule.collective_seconds`.
 
 **Re-score:** identical to 0.181 for every group. No default change.
+
+## §130 Discrete DRAM interface sizing and the integer-floor fix (0.183)
+
+`sizing_report` gains `dram_units`: the package (LPDDR) / stack (HBM) count of the current memory, everything else in the part fixed (rate, width, height, die density, `mem_eff`). Mechanism: bus_bits = n × unit_width, so bandwidth and capacity both scale with n; a lost fit is a failure, exactly as in §103. Area per unit = unit_width_bits × the DRAM PHY density of the current memory type (budget.phy_area, §96 presets: HBM 14 mm²/1024 pins 二手/假设, LPDDR 0.03 mm²/pin 假设); no density → no mm². Package / board / DRAM cost are not priced.
+
+`dram_bw` (continuous, via mem_eff) is kept: it answers "how much delivered bandwidth is spare", `dram_units` answers "can a package / stack be dropped". Joint shrink skips `dram_units` (`JOINT_SKIP`) because both act on the same wire and dram_bw is an absolute GB/s defined against the current bus.
+
+Default change: default sizing resources old {dequant, lanes, sram, cores, dram_bw} → new + dram_units. Engine outputs and fingerprints unchanged.
+
+Bug fixed (adversarial, found while adding an integer resource at n = 1): the halving loop for integer resources rounded 0.5 back to 1 and never terminated when the current value was 1 (engines = 1 or a single package). It now stops at the integer floor. Tests: tests/test_core_183.py.
