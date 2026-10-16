@@ -92,3 +92,7 @@ def test_default_unchanged_and_extval_variant():
 
 from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
 pin_module(globals())
+
+
+from tests.pin_legacy import pin_module_unfused  # noqa: E402  (0.198: per-projection checks on the unfused IR)
+pin_module_unfused(globals(), only={'test_kernel_boundaries_and_dma'})

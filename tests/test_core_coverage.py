@@ -231,3 +231,7 @@ def test_qwen4exp_params_and_ops_reference():
     from accel_dse.core.ir import mtp_ops
     mo = {o.name: o for o in mtp_ops(m, Phase("decode", 1, 1, 1000))}
     assert mo["mtp.fc_hidden"].flops == 2 * N * h * h and mo["mtp.fc_embedding"].flops == 2 * h * h
+
+
+from tests.pin_legacy import pin_module_unfused  # noqa: E402  (0.198: per-projection checks on the unfused IR)
+pin_module_unfused(globals(), only={'test_full_models_unchanged'})

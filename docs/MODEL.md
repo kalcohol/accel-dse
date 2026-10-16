@@ -4581,3 +4581,17 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
 
   The B200 2048³ overshoot came from the 0-byte operand. The wave tail (256 tiles on 148 SMs) is already modelled, and no throttle term is needed.
 - **Occupancy stays opt-in.**
+
+## §145 Fused QKV; short-prompt TTFT diagnosis (0.198)
+
+- **`ir.FUSE_QKV`.** When a layer's q, k and v are ungrouped linears over the same input with the same replication, they become one GEMM [t, h] × [h, (Hq + 2·Hkv)·d / rank] 「来源」. Sources: vLLM / SGLang QKVParallelLinear; TensorRT-LLM Attention.qkv (layers/attention.py), _torch/modules/attention.py qkv_proj.
+  - FLOPs and weight bytes are unchanged; one kernel replaces three.
+  - MI300X 70B TP8 b1: 10.3 µs → its 5.6 µs weight floor.
+  - MLA (q_a / kv_a) and grouped projections are not fused.
+- **Validation.** Every row gets faster.
+  - Unfused → fused (MAE %): static 22.5 → 23.3, TTFT 31.6 → 36.9, Mixtral 20.2 → 21.3, MI300X latency 21.9 → 23.1, max-load 19.3 → 18.7, B200 13.6 → 13.1.
+  - The groups that got worse were already too fast.
+- **TTFT diagnosis.** The §144 L2 excess is per op, over its own token count (op.m · count).
+  - 2048-token rows are unchanged by it, so long-sequence activations that exceed L2 are still charged.
+  - The prefill-heavy regressions all come from 128–512-token prompts, which were already 1.17–1.96× too fast before §143–§145. TP8 rows are the worst (A100 70B 512 TP8: 55.9 vs 114 ms).
+  - Missing term: fixed short-request latency (per request / per TP collective), not yet sourced. Not fitted.

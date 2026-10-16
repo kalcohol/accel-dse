@@ -79,3 +79,7 @@ def test_vision_towers_match_configs():
     v = get_model("kimi-k2.5").vision
     assert (v.depth, v.hidden, v.inter, v.heads, v.patch, v.merge) == (27, 1152, 4304, 16, 14, 2)
     assert v.post[-1] == (4608, 7168)
+
+
+from tests.pin_legacy import pin_module_unfused  # noqa: E402  (0.198: per-projection checks on the unfused IR)
+pin_module_unfused(globals())

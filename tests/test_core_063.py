@@ -322,3 +322,7 @@ def test_moe_energy_mac_invariant_to_split():
         mac = energy_report(r)["counts_per_unit"]["mac"]
         ref = ref or mac
         assert abs(mac / ref - 1) < 1e-9, (lay.label, mac, ref)
+
+
+from tests.pin_legacy import pin_module_unfused  # noqa: E402  (0.198: per-projection checks on the unfused IR)
+pin_module_unfused(globals(), only={'test_uneven_tp_keeps_every_head'})

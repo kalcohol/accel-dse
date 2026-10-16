@@ -27,3 +27,7 @@ def test_kernel_vec_counts_vector_kernels():
     # 32 layers × (6 GEMMs + 1 attention + 5 vector kernels) × 2 µs + head / embed kernels
     assert 32 * 12 * 2e-6 <= s < 32 * 12 * 2e-6 + 20e-6
     assert Chip().kernel_vec is False
+
+
+from tests.pin_legacy import pin_module_unfused  # noqa: E402  (0.198: per-projection checks on the unfused IR)
+pin_module_unfused(globals(), only={'test_kernel_vec_counts_vector_kernels'})

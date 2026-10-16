@@ -216,6 +216,32 @@ def gqa_local(n_q: int, n_kv: int, tp: int) -> tuple[int, int]:
     return min((kv_a, hq_a), (kv_b, hq), key=lambda c: key(*c))
 
 
+# 0.198: fused QKV projection — serving engines run q, k, v as ONE GEMM over the concatenated weight [h, (Hq + 2·Hkv)·d]
+# per rank 「来源」: vLLM model_executor/layers/linear.py QKVParallelLinear (models/llama.py qkv_proj), SGLang
+# srt/layers/linear.py QKVParallelLinear (srt/models/llama.py qkv_proj), TensorRT-LLM layers/attention.py
+# Attention.qkv = ColumnLinear(hidden, tp·(Hq + 2·Hkv)·d) (PyTorch backend _torch/modules/attention.py qkv_proj).
+# Same FLOPs / weight bytes; one kernel instead of three (≤ 0.197: three GEMMs, each paying its own tile / wave /
+# DRAM-floor cost — MI300X 70B b1 attn.k / attn.v 2.9 µs each vs 0.56 µs of weights).  False = ≤ 0.197.
+FUSE_QKV = True
+_QKV_NAMES = ("attn.q", "attn.k", "attn.v", "attn.qkv")
+
+
+def _qkv_fusable(L, tp: int):
+    """(K, [Nq, Nk, Nv] per rank, replicated) when the layer's q / k / v are plain (ungrouped) linears over the same
+    input, else None."""
+    by = {l.name: l for l in L.attn_linears}
+    if not all(x in by for x in ("q", "k", "v")):
+        return None
+    ls = [by[x] for x in ("q", "k", "v")]
+    if any(l.groups > 1 for l in ls):
+        return None
+    kn = [_lin_local(l, tp, L.core) for l in ls]
+    rp = {_repl(l, tp) for l in ls}
+    if len({k for k, _ in kn}) != 1 or len(rp) != 1:
+        return None
+    return kn[0][0], [n for _, n in kn], rp.pop()
+
+
 def _lin_local(l: Linear, tp: int, core: AttnCore | None = None) -> tuple[int, int]:
     """(K, N) of the per-rank slice of a linear (GEMM dims; grouped → per-group K).  ``core`` (a GQA layer's attention
     core, 0.63): the query / output projections follow the busiest rank's query heads (head-aligned, gqa_local)."""
@@ -965,7 +991,14 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         ops.append(_gres_op(model, li, L, t, tp, "attn"))
     else:
         ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t))
+    fq = _qkv_fusable(L, tp) if FUSE_QKV else None
     for l in L.attn_linears:
+        if fq and l.name in ("k", "v"):
+            continue                          # 0.198: folded into attn.qkv
+        if fq and l.name == "q":
+            k_, ns, rp = fq
+            ops.append(gemm(model, "attn.qkv", li, t, k_, sum(ns), "attn", params=k_ * sum(ns), replicated=rp))
+            continue
         k, n = _lin_local(l, tp, L.core)
         m = t
         if l.name == "kv_b" and ph.kind == "prefill":
@@ -1561,18 +1594,21 @@ def rank_shares(ops: list[Op], sh: Shard, global_ops) -> list[Op]:
     n = sh.tp * sh.dp * sh.sp
     if n == 1:
         return ops
+    # 0.198: fused / unfused QKV are one work item for the share match (the fusion test depends on the shard's head
+    # replication, so the unsharded reference may be fused where a rank is not)
+    _nk = lambda nm: "attn.qkv" if nm in _QKV_NAMES else nm
     gops = list(global_ops())     # 0.113: built once (was rebuilt for the weight pass below) — same ops, same order
     g_f: dict = {}; g_v: dict = {}
     for o in gops:
         if o.kind != "comm":
-            g_f[o.name] = g_f.get(o.name, 0.0) + o.flops * o.share     # an op's own share = its useful fraction
-            g_v[o.name] = g_v.get(o.name, 0.0) + o.vec * o.share       # (padded expert rows), 1 otherwise
+            g_f[_nk(o.name)] = g_f.get(_nk(o.name), 0.0) + o.flops * o.share     # an op's own share = its useful fraction
+            g_v[_nk(o.name)] = g_v.get(_nk(o.name), 0.0) + o.vec * o.share       # (padded expert rows), 1 otherwise
     u_f: dict = {}; u_v: dict = {}
     for o in ops:
         if o.kind != "comm":
             r = max(o.replicated, 1e-12)
-            u_f[o.name] = u_f.get(o.name, 0.0) + o.flops * o.share / r
-            u_v[o.name] = u_v.get(o.name, 0.0) + o.vec * o.share   # vector-only ops: ``replicated`` marks the
+            u_f[_nk(o.name)] = u_f.get(_nk(o.name), 0.0) + o.flops * o.share / r
+            u_v[_nk(o.name)] = u_v.get(_nk(o.name), 0.0) + o.vec * o.share   # vector-only ops: ``replicated`` marks the
             # replicated latent-cache bytes (MLA softmax), the score work itself is split by heads
     # 0.64: weight share — Σ_rank w_params = copies · W_global, copies = ⌊N · w_rank / W_global⌋ (≥ 1; the integer
     # replication of the weight over DP / SP / replicated-over-TP ranks — a ceil split inflates the busiest rank by
@@ -1581,24 +1617,24 @@ def rank_shares(ops: list[Op], sh: Shard, global_ops) -> list[Op]:
     g_w: dict = {}; u_w: dict = {}
     for o in gops:
         if o.kind != "comm" and o.w_params:
-            g_w[o.name] = g_w.get(o.name, 0.0) + o.w_params
+            g_w[_nk(o.name)] = g_w.get(_nk(o.name), 0.0) + o.w_params
     for o in ops:
         if o.kind != "comm" and o.w_params:
-            u_w[o.name] = u_w.get(o.name, 0.0) + o.w_params
+            u_w[_nk(o.name)] = u_w.get(_nk(o.name), 0.0) + o.w_params
     out = []
     for o in ops:
         x = 1.0
         xw = 1.0
-        if o.kind != "comm" and u_w.get(o.name, 0) > 0 and g_w.get(o.name, 0) > 0:
-            cp = max(1, math.floor(n * u_w[o.name] / g_w[o.name] + 1e-9))
-            xw = min(1.0, cp * g_w[o.name] / (n * u_w[o.name]))
+        if o.kind != "comm" and u_w.get(_nk(o.name), 0) > 0 and g_w.get(_nk(o.name), 0) > 0:
+            cp = max(1, math.floor(n * u_w[_nk(o.name)] / g_w[_nk(o.name)] + 1e-9))
+            xw = min(1.0, cp * g_w[_nk(o.name)] / (n * u_w[_nk(o.name)]))
         if xw < 1.0 - 1e-12:
             o = replace(o, wshare=xw)
-        if o.kind != "comm" and o.name in g_f:
-            if o.flops > 0 and u_f[o.name] > 0:
-                x = g_f[o.name] / (n * u_f[o.name])
-            elif o.vec > 0 and u_v[o.name] > 0:
-                x = g_v[o.name] / (n * u_v[o.name])
+        if o.kind != "comm" and _nk(o.name) in g_f:
+            if o.flops > 0 and u_f[_nk(o.name)] > 0:
+                x = g_f[_nk(o.name)] / (n * u_f[_nk(o.name)])
+            elif o.vec > 0 and u_v[_nk(o.name)] > 0:
+                x = g_v[_nk(o.name)] / (n * u_v[_nk(o.name)])
         out.append(o if abs(x - 1.0) < 1e-12 else replace(o, share=o.share * x))
     return out
 

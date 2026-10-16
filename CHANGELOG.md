@@ -6,6 +6,11 @@
 
 
 
+## [0.198.0]
+- Fused QKV: dense GQA layers emit one `attn.qkv` GEMM (`ir.FUSE_QKV`; False = ≤ 0.197 three GEMMs). Sources: vLLM QKVParallelLinear (models/llama.py qkv_proj), SGLang QKVParallelLinear, TensorRT-LLM Attention.qkv ColumnLinear / PyTorch-backend qkv_proj. FLOPs and weights are unchanged. MLA and grouped linears are untouched.
+- Default MAE % (unfused → fused): static 22.48 → 23.26, TTFT 31.57 → 36.86, max-load 19.34 → 18.72, MoE 7.88 → 7.88, Mixtral 20.23 → 21.32, MI300X latency 21.86 → 23.08, MI300X max-load 68.32 → 68.81, B200 13.55 → 13.13.
+- Re-baselined `_fp` fingerprints (6dca732e67c83a75 / bc06528a82e19e2a, were 5e72913c351849ac / eb634f2e8b513ffb) and test_core_125 fpx (4aa21d67471fd69e / a3548246a90a9ceb). Legacy pins now also run unfused QKV; per-projection shape and kernel-count tests are pinned unfused (`pin_module_unfused`). The IR share matcher treats attn.q/k/v/qkv as one work item, since fusion depends on per-shard head replication. test_core_139 gives the dequant knob 2e-4 slack: the split picker shows a +0.018 % per-op non-monotonicity on qwen3-8b-fp8 fused qkv.
+- Prefill-heavy regressions traced: they are all in 128-token TTFT rows, which were already 1.17–1.96× too fast. 2048-token rows are unchanged by the L2 discount, which is applied per op over its own token count. The missing term is fixed short-request latency (per-request / TP-collective), still unsourced, so nothing was fitted.
 ## [0.197.0]
 - GEMM DRAM floor: activation bytes count only beyond L2 (`CTA_L2_ACT`, L2 = refhw `sram_mib`). Before, the floor counted activations that memplan already keeps on chip (stage `dram["act"]` = 0), so they were counted twice. Example: H100 70B decode batch 256, attn.q 31.3 µs vs 28.6 µs of weights.
   - Reuse across tiles was never double-counted: the floor counts unique bytes.
