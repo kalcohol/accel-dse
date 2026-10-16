@@ -69,7 +69,7 @@ def test_r4_band_and_per_gpu_metric():
     R = X.rows(X.DATA_R4)
     lr = [math.log(X.predict(r, "catalog_kernel")["pred"] / r["value"]) for r in R]
     g = math.exp(sum(lr) / len(lr))
-    assert 0.7 < g < 1.0 and 100 * sum(map(abs, lr)) / len(lr) < 40       # MODEL §37: 0.83 / 33 %
+    assert 0.9 < g < 1.1 and 100 * sum(map(abs, lr)) / len(lr) < 20       # MODEL §37: 0.83 / 33 %; 0.172: 1.016 / 16.8 %
     r = next(x for x in R if x["id"] == "trt120-b200-qwen3-235b-a22b-nvfp4-dep4-1024-1024")
     tot = X.predict({**r, "metric": "max_tok_s_total"}, "catalog_kernel")["pred"]
     assert abs(X.predict(r, "catalog_kernel")["pred"] * 4 - tot) < 1e-6 * tot

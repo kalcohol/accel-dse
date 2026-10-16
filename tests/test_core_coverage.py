@@ -80,13 +80,17 @@ IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")
 VISION_PARTIAL = ("step-5-preview",)   # 0.145: MiniCPM slicing + MiMo band windows modelled → full
 
 
+from accel_dse.core.evaluate import attn_orient   # noqa: E402
+
+
 def _kpi(i):
     s = []
     for sv in _SV:
         try:
             # 0.71: the 0.65.1 hashes are guarded at the wide schedule; auto-default numbers: /workspace/prof66/fp_0710.json
             sc = Scenario(model=i, serving=sv, exec_overlap="stage")   # 0.100: the 0.65.1 hashes pin the stage path
-            r = evaluate(replace(sc, chip=replace(sc.chip, instance_sched="wide")))
+            with attn_orient(False):   # 0.172: the hashes also pin the ≤ 0.171 LLM attention orientation
+                r = evaluate(replace(sc, chip=replace(sc.chip, instance_sched="wide")))
             s.append([float(f"{x:.10g}") for x in (r.tpot, r.ttft, r.throughput, r.per_card, r.tick)] + [r.fits, r.bound])
         except Exception as x:  # noqa: BLE001
             s.append(str(x)[:40])

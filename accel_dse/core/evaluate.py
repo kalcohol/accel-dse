@@ -9,6 +9,7 @@ import copy
 import itertools
 import math
 from dataclasses import dataclass, field, replace
+import contextlib
 from functools import lru_cache
 from types import SimpleNamespace
 
@@ -237,6 +238,23 @@ def _shape_cap(fc: tuple, op: Op, fmt: str) -> float | None:
     return min(use, key=dist)[1]
 
 
+ATTN_ORIENT = True     # 0.172 default (False = ≤ 0.171 behaviour, kept for the re-baseline record / tests)
+
+
+@contextlib.contextmanager
+def attn_orient(on: bool):
+    """0.172: run with LLM attention orientation choice on/off (historical guards pin the ≤ 0.171 numbers)."""
+    global ATTN_ORIENT
+    from . import memo
+    old, ATTN_ORIENT = ATTN_ORIENT, on
+    memo._TABLES.clear()
+    try:
+        yield
+    finally:
+        ATTN_ORIENT = old
+        memo._TABLES.clear()
+
+
 def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     """(array s, mac-bound share s, feed-bound share s, vector s, convert elems, ideal s, SRAM-port bytes,
     vector s of per-pass weight conversion)."""
@@ -251,7 +269,7 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     elif op.kind == "attn" and op.orient:
         # full-sequence (DiT / encoder) attention: both operands are activations in the activation dtype, and a
         # flash kernel may compute O = P·V or Oᵀ = Vᵀ·Pᵀ — take the cheaper orientation (PV has N = head_dim,
-        # which leaves most of a wide array idle).  LLM prefill / decode attention keeps the 0.40 orientation.
+        # which leaves most of a wide array idle).  0.172: LLM prefill / decode attention takes the cheaper one too (below).
         af = model.act_fmt
         c = min((gemm_cost(ch, org, a, op.k, b, count=op.count, w_fmt=af, a_fmt=af)
                  for a, b in ((op.m, op.n), (op.n, op.m))), key=lambda x: x.cycles)
@@ -265,6 +283,14 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
                 c = replace(c, convert_elems=c.convert_elems + op.m * op.k * op.count)
         else:
             c = gemm_cost(ch, org, op.m, op.k, op.n, count=op.count, w_fmt=kf, a_fmt=op.a_fmt)
+            # 0.172: an attention kernel may also compute the transposed product (Sᵀ = K·Qᵀ, Oᵀ = Vᵀ·Pᵀ) — the same
+            # freedom the full-sequence path (orient) has had since 0.40.  Without it, PV of a long prefill (N =
+            # head_dim) used head_dim of the C·E columns of a ganged ("wide") array: 128 / 8448 on the GPU references,
+            # 66× its FLOP time (llama-3.1-8b 131k: attention 152 s vs 6.4 s ideal)
+            if ATTN_ORIENT:
+                t = gemm_cost(ch, org, op.n, op.k, op.m, count=op.count, w_fmt=op.a_fmt, a_fmt=kf)
+                if t.cycles < c.cycles:
+                    c = t
     else:
         return 0.0, 0.0, 0.0, _vec_seconds(ch, op), 0.0, 0.0, 0.0, 0.0
     t = c.cycles * op.causal / f
@@ -333,7 +359,7 @@ def _memos(sys: System, org: str, model: ModelSpec) -> tuple:
         return {}, None
     if len(om) > 64:
         om.clear()
-    om = om.setdefault((sys.chip, org), {})
+    om = om.setdefault((sys.chip, org, ATTN_ORIENT), {})   # 0.172: the flag changes attention op costs
     if len(om) > _MEMO_CAP:
         om.clear()
     cm = None

@@ -3,6 +3,33 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.172.0] — Long-context attention: ~34× roofline was a mapping artifact (fixed)
+- Root cause 「推导」: the GPU references run `instance_sched = "wide"`, which treats all SMs as one 32 × 8448 array. LLM prefill/decode attention kept its 0.40 orientation, so PV (m = q·g, k = ctx, n = head_dim = 128) used 128 of 8448 columns: 66× its FLOP time. QK + PV ran at ~34× ideal at every length (4k–131k). It was not a physical effect: no DRAM materialisation of the scores and no KV re-read term was involved (t_dram 0.70 s at 131k).
+- 「来源」 FlashAttention-2 (arXiv 2307.08691) parallelises over (batch, head, query block), one CTA per SM, and reaches 73 % of peak on A100 and ~35 % on H100. FlashAttention-3 (arXiv 2407.08608) reaches up to 740 TFLOPS BF16 forward on H100 (75 %). Measured kernels therefore sit at 1.3–2.9× the FLOP bound, not 34×.
+- Fix (default change): LLM attention now also costs the transposed product (Sᵀ = K·Qᵀ, Oᵀ = Vᵀ·Pᵀ) and keeps the cheaper one. This is the same freedom DiT/encoder attention (`orient`) has had since 0.40. GEMMs and the calibrated wide schedule are unchanged. `evaluate.ATTN_ORIENT` / `attn_orient(False)` reproduce ≤ 0.171.
+- Now 「推导」: attention is 1.00–1.19× its FLOP time on every reference chip and preset at 4k–131k (new standing invariant `tests/test_core_172.py`, band [0.9, 3]). It is optimistic against FA3 (1.3×) and FA2-on-H100 (2.8×). The sourced `fmt_ceiling` "attn:bf16" stays opt-in.
+- TTFT impact, old → new (H100-SXM reference, batch 1):
+
+  | model | context | layout | TTFT before | TTFT after |
+  |---|---|---|---|---|
+  | llama-3.1-8b | 8k | 1 card | 0.81 s | 0.23 s |
+  | llama-3.1-8b | 32k | 1 card | 10.4 s | 1.14 s |
+  | llama-3.1-8b | 131k | 1 card | 156 s | 8.0 s |
+  | evo2-7b | 8k | reference | 0.503 s | 0.413 s |
+  | evo2-7b | 131k | 1 card | 30.4 s | 7.3 s |
+  | evo2-7b | 1M | tp8 × cp8 | 25.9 s | 2.78 s |
+  | evo2-7b | 1M | fused cp8 | 194 s | 9.0 s |
+
+- External validation:
+  - `default` (attention already on cta) is unchanged.
+  - The headline `catalog_kernel` on the R4 hold-out (TRT-LLM 1.2.0) moves from 0.892 / 26.6 % to 1.016 / 16.8 %. The §39 "under-prediction tracks prefill share" pattern was largely this artifact.
+  - v1 static 1.16 → 1.19, v1 TTFT 1.59 → 1.66, B200 NVFP4 1.16 → 1.24 (these are pred / measured).
+- Re-baselines:
+  - R4 bands in test_core_091 / 092 / 093.
+  - The 0.171 evo2 8k reference TTFT goes from 0.50315 to 0.41291.
+  - Pinned to ≤ 0.171 with `attn_orient(False)`: the 0.65.1 KPI hashes (37 LLMs changed) and the V4 DES-vs-queue bands (test_core_054 / 057), because the faster prefill moves the fixed-λ operating point.
+  - `data/ext_validation.json` was regenerated.
+
 ## [0.171.0] — Evo 2 long-context prefill: Hyena context parallel, recurrence prefill, fused-FFT what-if
 - Context parallel for StripedHyena 2. `layout.cp` now accepts Hyena layers.
   - 「来源」 Zymrael/savanna `use_cp_hyena`, from hyena.py and distributed_a2a.py. Each Hyena layer does an all-to-all `split_to_full` of x1, x2 and v, so every rank holds the full sequence for ch/cp channels and runs the FFT conv at 2S. It then does an all-to-all `full_to_split` of z back.

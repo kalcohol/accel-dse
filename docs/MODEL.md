@@ -3848,3 +3848,18 @@ Sources: the evo2 inference yml files (layer pattern hcs / hcm / hcl / attn, fil
   - Beyond that, every extra out-of-core pass costs 16·N B per channel. At L = 1M (N = 2M) that is 32 MiB of DRAM traffic per channel per extra pass. With H100-class SRAM per engine, p = 2 at 1M.
   - The as-released code moves about 20× the weight bytes at 8k. Fusion, not extra bandwidth, is the lever.
 
+
+
+## 118. Long-context attention vs roofline (0.172)
+
+- **Symptom.** llama-3.1-8b prefill on H100-SXM at 131k had an attention array time of 152.5 s against a 6.4 s ideal. The same ~25–34× ratio showed up at every length and in the Evo 2 MHA layers.
+- **Mechanism.** On the reference GPUs, `instance_sched = "wide"` gangs 132 SMs into a 32 × 8448 output-stationary array (§26). PV has n = head_dim = 128, so it filled 1.5 % of the columns. QK (n = ctx) was already near 1×.
+  - This is not DRAM score materialisation: attention is costed as fused, and t_dram is 0.70 s at 131k.
+  - It is not KV re-reads per query tile.
+  - Abstract chips (`auto`) and the opt-in `attn_sched = "cta"` were already at 1.0–1.17×.
+- **Reference.** 「来源」 FA2 (arXiv 2307.08691): 73 % of peak on A100 and ~35 % on H100, with CTAs over (batch, head, q-block). FA3 (arXiv 2407.08608): ≤ 740 TFLOPS BF16 forward on H100, 75 %.
+- **Fix.** Attention ops choose the cheaper of C = A·B and Cᵀ = Bᵀ·Aᵀ (`evaluate.ATTN_ORIENT`, default on). Kernels are free to pick either orientation, as the full-sequence path has done since 0.40.
+  - Now 1.00–1.19× on all reference chips and presets, 4k–131k. This is an upper bound on speed: 1.3× faster than FA3 and 2.8× faster than FA2 on H100. The sourced opt-in ceiling (`fmt_ceiling` "attn:bf16") narrows the gap.
+- **Invariant.** `tests/test_core_172.py`: attention array time / FLOP time stays in [0.9, 3] for every REF_HW chip plus 100T / 1P at 4k / 32k / 131k.
+- **Impact.** See CHANGELOG 0.172.0. llama-3.1-8b 131k TTFT goes from 156 s to 8.0 s. evo2-7b 1M on tp8 × cp8 goes from 25.9 s to 2.78 s.
+  - The R4 hold-out for `catalog_kernel` moves from 0.892 / 26.6 % to 1.016 / 16.8 %. The `default` variant is unchanged.

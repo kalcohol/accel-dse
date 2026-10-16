@@ -75,7 +75,9 @@ def test_attn_sched_default_off_and_candidate_bands():
     g = lambda rows, var: [math.log(X.predict(r, var)["pred"] / r["value"]) for r in rows]
     e = lambda x: 100 * sum(map(abs, x)) / len(x)
     R4 = X.rows(X.DATA_R4)
-    assert e(g(R4, v)) < 20 < e(g(R4, "catalog_kernel"))                   # hold-out: 26.7 → 19.2 %
+    # hold-out: 26.7 → 19.2 % (0.93).  0.172: LLM attention orientation choice brings catalog_kernel itself to 16.8 %
+    # (old 26.6 %), so the attention-cta part of the candidate no longer buys anything on R4
+    assert e(g(R4, v)) < 20 and e(g(R4, "catalog_kernel")) < 18
     lat = [r for r in X.rows(X.DATA_R3) if r["metric"] == "static_latency_s"]
     assert e(g(lat, v)) < 35                                                # 118 → 33 %
     one = [r for r in X.rows(X.DATA_MOE) if r["metric"] == "static_tok_s_total"]

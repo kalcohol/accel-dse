@@ -84,4 +84,4 @@ def test_adoption_bands():
     g, e = err([r for r in X.rows(X.DATA_MOE) if r["metric"] == "max_tok_s_total"])
     assert e < 17.5
     g, e = err(X.rows(X.DATA_R4))
-    assert 0.75 < g < 0.95 and e < 32
+    assert 0.95 < g < 1.08 and e < 20      # 0.172 re-baseline: 0.892 / 26.6 % → 1.016 / 16.8 % (attention orientation)
