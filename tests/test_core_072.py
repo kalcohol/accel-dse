@@ -75,3 +75,8 @@ def test_wave_barriers_penalise_many_waves():
 
 def test_catalog_chips_noc_off():
     assert all(c.noc_hop_cycles == 0.0 and c.wave_overhead_cycles == 0.0 for c in CHIPS.values())
+
+
+# 0.193: these check the ≤ 0.192 wide-schedule / reference-GPU mechanism at fixed inputs (pin_legacy)
+from tests.pin_legacy import pin_module_0192  # noqa: E402
+pin_module_0192(globals())

@@ -120,6 +120,12 @@ class Chip:
     # A and B, 128 B of K per row: the TMA swizzle width) and its C writeback at the SM's share of DRAM bandwidth,
     # not overlapped with the main loop (MODEL §81).  tile_io_Bpc: chip DRAM bytes / cycle, filled by evaluate.
     tile_io: str = field(default="", metadata={"omit_default": True})
+    # 0.193: GEMM fmt_ceiling applied as a multiplicative achieved-peak fraction on top of the tile/wave-quantised
+    # time (instance_sched "cta"), instead of a floor (max(t, ideal / cap)).  The fraction must already have the
+    # wave quantisation of its measured shape divided out (extval.net_ceiling)
+    gemm_ceil_mul: bool = field(default=False, metadata={"omit_default": True})
+    # 0.193: ≤ 0.192 "wide" padding (N padded to E·cols) for this chip — kept by the historical extval variants
+    wide_pad: bool = field(default=False, metadata={"omit_default": True})
     # 0.136 (opt-in): stand-alone vector ops (norms, rope, activation, residual — not the softmax inside the fused
     # attention kernel) are kernels too and pay kernel_us each (the GPU floor of a small kernel)
     kernel_vec: bool = field(default=False, metadata={"omit_default": True})

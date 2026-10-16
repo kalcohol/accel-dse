@@ -30,6 +30,8 @@ def _q(x, t):
 
 def _g(ch, m, n, count):
     lo, hi = min(m, n), max(m, n)
+    if ch.instance_sched == "cta":      # 0.193 (reference GPUs): smallest CTA tile of the guide's set is 64 × 64
+        return _q(lo, 64) * _q(hi, 64)
     if ch.instance_sched == "wide":     # independent instances can fill the ganged columns side by side
         return _q(lo, ch.rows) * max(_q(hi, ch.cols), ch.cols * ch.engines / (hi * count))
     return _q(lo, ch.rows) * _q(hi, ch.cols)
@@ -79,12 +81,17 @@ def test_roofline_ratio_all_kinds_and_chips():
 
 def test_pre_173_artifacts_were_caught():
     """The invariant fails with the 0.173 fixes off (wide orientation, wide instance split, split-K)."""
-    old = (E.WIDE_GEMM_ORIENT, E.WIDE_GEMM_SPLIT, E.SPLIT_K)
-    E.WIDE_GEMM_ORIENT = E.WIDE_GEMM_SPLIT = E.SPLIT_K = False
+    # 0.193: the reference GPUs now run cta; the artefacts lived on the ≤ 0.192 wide-padded chips
+    global REF_HW
+    from dataclasses import replace
+    keep = REF_HW
+    REF_HW = {k: replace(h, chip=replace(h.chip, instance_sched="wide", tile_io="", gemm_ceil_mul=False, wide_pad=True))
+              for k, h in keep.items()}
     try:
-        bad = violations()
+        with E.model_flags(WIDE_GEMM_ORIENT=False, WIDE_GEMM_SPLIT=False, SPLIT_K=False, WIDE_WAVES=False):
+            bad = violations()
     finally:
-        E.WIDE_GEMM_ORIENT, E.WIDE_GEMM_SPLIT, E.SPLIT_K = old
+        REF_HW = keep
     names = {b[4] for b in bad}
     assert {"attn.k", "attn.v"} <= names                      # small-N projections on wide (8–18×)
     assert any("hc_fn" in x for x in names)                   # hyper-connection mixers: serial K / N = 24

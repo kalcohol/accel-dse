@@ -92,7 +92,7 @@ def _kpi(i):
             # 0.71: the 0.65.1 hashes are guarded at the wide schedule; auto-default numbers: /workspace/prof66/fp_0710.json
             sc = Scenario(model=i, serving=sv, exec_overlap="stage")   # 0.100: the 0.65.1 hashes pin the stage path
             with attn_orient(False):   # 0.172: the hashes also pin the ≤ 0.171 LLM attention orientation
-                r = evaluate(replace(sc, chip=replace(sc.chip, instance_sched="wide")))
+                r = evaluate(replace(sc, chip=replace(sc.chip, instance_sched="wide", wide_pad=True)))   # 0.193: + ≤ 0.192 padding
             s.append([float(f"{x:.10g}") for x in (r.tpot, r.ttft, r.throughput, r.per_card, r.tick)] + [r.fits, r.bound])
         except Exception as x:  # noqa: BLE001
             s.append(str(x)[:40])

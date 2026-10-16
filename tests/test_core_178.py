@@ -8,9 +8,11 @@ def test_default_definition():
     d, old = X.VARIANTS["default"], X.VARIANTS["default_lump"]
     assert old["layer_us"] == X.TRACE_LAYER_US and "glue" not in old
     assert d["layer_us"] == 0 and d["glue"] and d["kernel_vec"] and d["cuda_only"]
+    assert d["ceil_mul"] and d["tile_io"] == "dram"          # 0.193 (MODEL §140)
+    assert X.VARIANTS["default_0192"] == {k: v for k, v in d.items() if k not in ("ceil_mul", "tile_io")}
     assert d["fallback_us"] == X.TRACE_LAYER_US and d["amd_kernel_us"] == X.ROCM_KERNEL_US
     assert {k: v for k, v in d.items() if k not in ("layer_us", "glue", "kernel_vec", "cuda_only", "fallback_us",
-                                                      "kernel_us", "amd_kernel_us")} == {k: v for k, v in old.items() if k != "layer_us"}
+                                                      "kernel_us", "amd_kernel_us", "ceil_mul", "tile_io")} == {k: v for k, v in old.items() if k != "layer_us"}
 
 
 def test_rocm_constants_sourced():

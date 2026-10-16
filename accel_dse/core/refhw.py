@@ -57,8 +57,13 @@ class RefHW:
 def _chip(name, sms, mac_per_sm, peak_tflops, fmts, l2_mib, lanes):
     rows, cols = 32, mac_per_sm // 32
     f = peak_tflops * 1e12 / (2 * rows * cols * sms) / 1e9
+    # 0.193: GEMMs on the thread-block schedule (mapping._cta: NVIDIA "Matrix Multiplication Background" tile set over
+    # SMs → tile + wave quantisation, split-K) with the per-tile prologue / C writeback at the SM's DRAM share
+    # (tile_io "dram", MODEL §81); published achieved-peak fractions multiply the main loop (gemm_ceil_mul; the
+    # fractions themselves are attached by extval, net of their measured shape's wave quantisation).
+    # ≤ 0.192: instance_sched "wide" (one rows × E·cols array; N padded to E·cols — MODEL §26 / §119 / §139)
     return Chip(name, f, rows, cols, sms, formats=fmts, sram_mib=l2_mib, vector_lanes=lanes,
-                instance_sched="wide")     # 0.71: GPU references keep the 0.70 calibrated wide schedule (MODEL §25.9 / §26)
+                instance_sched="cta", tile_io="dram", gemm_ceil_mul=True)
 
 
 _NV_SFU = 16.0

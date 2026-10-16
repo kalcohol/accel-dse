@@ -99,3 +99,8 @@ def test_des_restore_holds_kv_and_slot():
 def test_v4_grid_n_high_option():
     sig = inspect.signature(v4_grid)
     assert sig.parameters["n_high"].default is None and sig.parameters["high_load"].default == 0.85
+
+
+# 0.193: these check the ≤ 0.192 wide-schedule / reference-GPU mechanism at fixed inputs (pin_legacy)
+from tests.pin_legacy import pin_module_0192  # noqa: E402
+pin_module_0192(globals())

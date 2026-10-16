@@ -21,7 +21,10 @@ def test_mi300x_maf_ceiling():
     c = dict(X.GEMM_CEILING["MI300X"])
     assert abs(c["gemm:fp8"] - 1223.6 / 2614.9) < 1e-12 and abs(c["gemm:bf16"] - 708 / 1307.4) < 1e-12
     r = ROWS[0]
-    assert dict(X.scenario(r, "default", phase="decode").chip.fmt_ceiling)["gemm:fp8"] == c["gemm:fp8"]
+    # 0.193: the default divides out the wave quantisation of the measured shape (M 4096, N 3648, K 32896) — net ≥ gross
+    net = dict(X.scenario(r, "default", phase="decode").chip.fmt_ceiling)["gemm:fp8"]
+    assert c["gemm:fp8"] <= net <= c["gemm:fp8"] * 1.05
+    assert dict(X.scenario(r, "default_0192", phase="decode").chip.fmt_ceiling)["gemm:fp8"] == c["gemm:fp8"]
 
 
 def test_residual_documented():

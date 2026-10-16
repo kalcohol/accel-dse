@@ -39,3 +39,8 @@ def test_schedule_invariants():
         assert a.cycles >= cnt * (k * n * b + m * k * b + m * n * 2) / base.port_Bpc * (1 - 1e-9), case
         a2 = cost(replace(base, engines=2 * E, acc_kib=2 * acc, instance_sched="auto"))
         assert a2.cycles <= a.cycles * (1 + 1e-9), case
+
+
+# 0.193: these check the ≤ 0.192 wide-schedule / reference-GPU mechanism at fixed inputs (pin_legacy)
+from tests.pin_legacy import pin_module_0192  # noqa: E402
+pin_module_0192(globals())

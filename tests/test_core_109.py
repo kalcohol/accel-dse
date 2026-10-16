@@ -32,8 +32,8 @@ def test_tbo_prefill_moves_pf_rows_toward_measured():
 
 def test_fingerprints_unchanged():
     from tests.test_core_0100 import _fp
-    assert _fp({"exec_overlap": "stage"}) == "8410808fd4f1e578"   # 0.192 re-baseline (state pinned first; 0.173 84df3be517a53ef4) (was 0a954915c5fb003f)
-    assert _fp({}) == "b8ca44d92e7589cd"   # 0.192 re-baseline (state pinned first; 0.173 1b755ac357ec6d2e) (was 53ee9e08165795c6)
+    assert _fp({"exec_overlap": "stage"}) == "5e72913c351849ac"   # 0.193 re-baseline (WIDE_WAVES, cta refhw; 0.192 8410808fd4f1e578) ← 0.192 re-baseline (state pinned first; 0.173 84df3be517a53ef4) (was 0a954915c5fb003f)
+    assert _fp({}) == "eb634f2e8b513ffb"   # 0.193 re-baseline (WIDE_WAVES, cta refhw; 0.192 b8ca44d92e7589cd) ← 0.192 re-baseline (state pinned first; 0.173 1b755ac357ec6d2e) (was 53ee9e08165795c6)
 
 
 def _ev(sc):

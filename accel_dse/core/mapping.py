@@ -69,13 +69,13 @@ def _cd(a: float, b: float) -> int:
     return int(-(-a // b))
 
 
-WIDE_WAVES = False        # 0.192 opt-in (True = wave-quantised wide gang; default keeps the §119 calibrated padding)
+WIDE_WAVES = True          # 0.193 default (False = ≤ 0.192 gang padding, MODEL §139)
 
 
 def _os(ch: Chip, m, k, n, r, wb, ab, ob):
     R, Ce = ch.rows, ch.c_eff
     mac = _cd(m, R) * _cd(n, Ce) * k / r
-    if WIDE_WAVES and ch.instance_sched == "wide" and ch.engines > 1:
+    if WIDE_WAVES and not ch.wide_pad and ch.instance_sched == "wide" and ch.engines > 1:
         # 0.192: a ganged array whose output that is not a multiple of E·cols leaves whole engines idle in the last column tile; a GEMM kernel hands
         # them other row tiles (R × cols output tile per engine, waves over E engines — the 0.92 cta tile/wave
         # quantisation without tuned tile shapes).  Before: N padded to E·cols, so efficiency depended on whether one
@@ -214,7 +214,11 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
 
 # 0.92: NVIDIA "Matrix Multiplication Background" user guide — cuBLAS thread-block tiles (most → least efficient)
 CTA_TILES = ((256, 128), (128, 256), (128, 128), (256, 64), (64, 256), (128, 64), (64, 128), (64, 64))
-SPLIT_K = (1, 2, 4, 8, 16)
+SPLIT_K = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
+# 0.193: splits beyond 16 = stream-K style K decomposition over idle SMs (CUTLASS Stream-K, Osama et al. PPoPP 2023:
+# MAC-loop iterations divided over all SMs, partial tiles fixed up), still bounded by tiles·s ≤ 2·E and K slices ≥ 64.
+# ≤ 0.192: 1–16 (the guide's split-K set) left a tiny-output long-K GEMM (DeepSeek-V4 hc mixers 1 × 28672 × 24) on
+# a handful of SMs (MI300X 3257× its FLOP time)
 
 
 def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost:

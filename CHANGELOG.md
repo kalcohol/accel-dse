@@ -6,6 +6,12 @@
 
 
 
+## [0.193.0]
+- Reference GPUs: GEMMs = SM × CTA-tile wave quantisation (`instance_sched` "cta", NVIDIA tile set, tile I/O "dram") × sourced achieved-peak fraction applied multiplicatively (`Chip.gemm_ceil_mul`), net of the measured shape's own wave quantisation (`extval.CEIL_SHAPE`). Replaces the wide-gang N padding.
+- `mapping.WIDE_WAVES` on by default (abstract wide chips no longer pad N); `Chip.wide_pad` keeps ≤ 0.192 padding for historical variants.
+- cta split-K up to 512 (Stream-K) for tiny-output long-K GEMMs.
+- Extval default old → new (geo / MAE): static 1.150/25.0 → 1.118/22.7; TTFT 1.307/32.8 → 1.322/32.2; max-load 0.985/21.5 → 0.955/19.1; MoE 0.962/7.0 → 0.943/7.7; Mixtral 1.291/29.6 → 1.213/22.1; MI300X lat 1.123/22.4 → 1.110/21.0; MI300X max-load 1.726/72.6 → 1.668/66.8; B200 1.061/17.5 → 1.065/17.9. `default_0192` keeps the old.
+- Prefill marginal-cost invariant now holds on the default; fingerprints re-baselined (old reproduced under `LEGACY_0192`).
 ## [0.192.0]
 - Prefill scaling found: the GPU "wide" gang pads an output dim to E·cols (H200 8448). Qwen3.5-9B at 4096 tokens has N = M = 4096 (48 % fill); at 8192 the 0.173 orientation swap fills the gang (97 %), so 4096 → 8192 cost 1.5×. `mapping.WIDE_WAVES` (opt-in) wave-quantises per-engine tiles instead: 2.0×, and the marginal-cost invariant holds. Default off: it reverses the §119 calibration (extval TTFT 1.31 → 1.44).
 - SRAM pins recurrent state before weights (`memplan.STATE_FIRST`, 2 B traffic / B vs 1); hybrid / RWKV models are slightly faster; fingerprints re-baselined.

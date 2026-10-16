@@ -4450,3 +4450,49 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - Decision latency = read-out + thought (the closing read-out ≈ one decode step).
   - 9B, prompt 1024, 3 labels: default chip 153.8 + 49 660 ms = 49.8 s (0.020 decisions/s); H200 21.6 + 2 828 ms = 2.85 s.
   - CLI `--think [N]`.
+
+## §140 GPU GEMMs: CTA-tile waves × achieved-peak fraction replace the wide padding (0.193)
+
+- **Decision (user, 0.192 review):** the mechanism wins. The wide-gang padding (§119, §139) was a stand-in, and it is replaced by sourced terms.
+- **Mechanism.**
+  - Reference GPUs run GEMMs on `instance_sched` "cta" (mapping._cta, 0.92). This uses the NVIDIA "Matrix Multiplication Background" thread-block tile set (256×128 … 64×64) over SM count, with tile and wave quantisation (⌈tiles / SMs⌉ waves, tail wave full length), plus split-K.
+  - Each tile also pays its prologue and C writeback at the SM's DRAM share (tile_io "dram", §81).
+  - Split-K extends past 16 up to 512 as Stream-K (Osama et al., PPoPP 2023), bounded by tiles·s ≤ 2E and K/s ≥ 64. This keeps tiny-output long-K GEMMs (hc mixers 1 × 28672 × 24) inside the roofline invariant.
+- **Achieved-peak fraction.** `extval.GEMM_CEILING` 「来源」 is applied multiplicatively on the main loop (`Chip.gemm_ceil_mul`) instead of as a floor:
+  - A100 cuBLAS fp16 263.4 TF at 16384³.
+  - Hopper cuBLAS bf16 744 at 8192³.
+  - B200 cuBLAS bf16 1551 at 8192³ and fp4 6220.
+  - MI300X hipBLASLt fp8 1223.6 / bf16 708 / fp16 654 at the AMD blog shapes.
+  - Hopper fp8 from DeepGEMM.
+  - Each figure is divided by the cta wave efficiency of its own measured shape (`CEIL_SHAPE`: net 0.845 / 0.758 / 0.692 / 0.468–0.542). Hopper fp8 and the DeepGEMM per-shape rows stay gross 「假设」, because their M is unstated.
+- **GEMM-level check** (bf16 cuBLAS, sources fast.cu README and pyptx.dev; not fitted):
+
+  | GEMM | Measured (TF) | Old wide padding (TF) | cta × fraction (TF) |
+  |---|---|---|---|
+  | H100 4096³ | 716 | 480 | 726 |
+  | H100 8192³ | 795 | 744 | 744 |
+  | B200 4096³ | 1532 | 486 | 1536 |
+  | B200 8192³ | 1610 | 973 | 1551 |
+
+  - B200 2048³ comes out at 1534 TF against 1006 measured: the small-shape launch and prologue cost is under-modelled (open).
+- **Re-score** (geo mean / MAE, default_0192 → default):
+
+  | group | old | new |
+  |---|---|---|
+  | v1 static | 1.150 / 25.0 % | 1.118 / 22.7 % |
+  | v1 TTFT | 1.307 / 32.8 % | 1.322 / 32.2 % |
+  | v1 max-load | 0.985 / 21.5 % | 0.955 / 19.1 % |
+  | MoE large-EP | 0.962 / 7.0 % | 0.943 / 7.7 % |
+  | Mixtral TP8 | 1.291 / 29.6 % | 1.213 / 22.1 % |
+  | MI300X lat | 1.123 / 22.4 % | 1.110 / 21.0 % |
+  | MI300X max-load | 1.726 / 72.6 % | 1.668 / 66.8 % |
+  | B200 NVFP4 | 1.061 / 17.5 % | 1.065 / 17.9 % |
+
+  - MAE is better in 6 of 8 groups. MoE (+0.7 pp, 7 rows) and B200 (+0.4 pp) are slightly worse. Without tile I/O, cta × fraction alone gives TTFT 1.42, and WIDE_WAVES alone gives 1.44. Tile I/O is what makes up the difference.
+  - Flipped as "equal or better" overall; the two marginal groups are recorded here.
+- **Defaults and legacy.**
+  - `mapping.WIDE_WAVES` is on, so abstract wide chips get wave-quantised tiles.
+  - `Chip.wide_pad` and the extval variants without `ceil_mul` keep the ≤ 0.192 chip, so historical variant bands are unchanged.
+  - `evaluate.LEGACY_0192` (WIDE_WAVES off, reference GPUs wide, guide split-K) pins the queue / worked-example tests (pin_legacy) and reproduces the 0.192 fingerprints exactly.
+- **Effect on the 9B example.** H200 raw chip (no ceilings), 9B read-out 256 / 1024 / 4096 / 8192: 5.2 / 21.6 / 84.0 / 125.6 → 4.3 / 16.8 / 67.8 / 136.9 ms. 4096 → 8192 goes from 1.50× to 2.02×; the vLLM measurement is 1.96×.
+- The prefill marginal-cost invariant (`tests/test_core_192.py`) now runs on the default.

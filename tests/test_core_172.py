@@ -48,3 +48,8 @@ def test_old_behaviour_was_the_artifact():
     new, rn = attn_ratio(h.chip, h.mem_id, 131072)
     assert old > 20 and ro.ttft > 100          # ≤ 0.171: 33.5× ideal, TTFT 156 s
     assert new < 1.5 and rn.ttft < 12          # 0.172: 1.02×, TTFT 8.0 s
+
+
+# 0.193: these check the ≤ 0.192 wide-schedule / reference-GPU mechanism at fixed inputs (pin_legacy)
+from tests.pin_legacy import pin_module_0192  # noqa: E402
+pin_module_0192(globals())

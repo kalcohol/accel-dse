@@ -120,6 +120,8 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
     e = v.get("eff", eff)
     h = REF_HW[r["hw"]]
     chip = h.chip if v.get("mac_eff") is None else replace(h.chip, mac_eff=v["mac_eff"])
+    if not v.get("ceil_mul"):          # 0.193: variants without ceil_mul keep the ≤ 0.192 reference chip (wide GEMMs,
+        chip = replace(chip, instance_sched="wide", tile_io="", gemm_ceil_mul=False, wide_pad=True)   # ceiling as a floor) unchanged
     if v.get("split"):                 # 0.70: SMs run independent GEMM instances (Chip.split_instances)
         chip = replace(chip, split_instances=True)
     if v.get("sched"):                 # 0.91: Chip.instance_sched (reference chips ship "wide")
@@ -146,6 +148,8 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
         chip = replace(chip, fmt_ceiling=v["fmt_ceiling"])
     if v.get("deepgemm") and chip.name.split("-")[0] in HOPPER and r.get("src") in DEEPGEMM_SRC:   # 0.143
         chip = replace(chip, fmt_ceiling=tuple(dict(chip.fmt_ceiling or ()).items()) + DEEPGEMM_SHAPES)
+    if v.get("ceil_mul"):              # 0.193: GPU GEMMs = SM × CTA-tile wave quantisation × achieved-peak fraction
+        chip = cta_ceiling_chip(chip)
     if v.get("pipe_cross_op") is not None:   # 0.98: exec_overlap "pipe" — GPU kernel boundaries (no cross-op prefetch)
         chip = replace(chip, pipe_cross_op=v["pipe_cross_op"])
     if v.get("sfu") and h.sfu_per_sm:  # 0.103: transcendentals on the SFU pipe (NVIDIA, CUDA Programming Guide)
@@ -409,6 +413,48 @@ GEMM_CEILING = {
 }
 
 
+# 0.193: the shape each GEMM_CEILING figure was measured at (same sources as above).  The library-best rate at that
+# shape already contains its own tile / wave quantisation; net_ceiling divides that out so the multiplicative fraction
+# is the per-tile main-loop rate.  Hopper fp8 (DeepGEMM "up to", shape unstated) and the DeepGEMM per-(N, K) rows (M
+# unstated) are kept gross 「假设」.
+CEIL_SHAPE = {"A100": (16384, 16384, 16384), "H100": (8192, 8192, 8192), "H200": (8192, 8192, 8192),
+              "H800": (8192, 8192, 8192), "B200": (8192, 8192, 8192),
+              "MI300X": {"bf16": (4096, 32896, 4864), "fp16": (4096, 32896, 4864), "fp8": (4096, 32896, 3648)}}
+
+
+def _wave_eff(chip, m, k, n, fmt) -> float:
+    from .mapping import gemm_cost
+    c = replace(chip, instance_sched="cta", fmt_ceiling=(), gemm_ceil_mul=False, tile_io="")
+    rate = c.formats.rate(fmt) or 1.0
+    return m * k * n / (c.rows * c.cols * c.engines * rate) / gemm_cost(c, "reconf", m, k, n, w_fmt=fmt, a_fmt=fmt).cycles
+
+
+def cta_ceiling_chip(chip):
+    """0.193: chip with GEMMs on the cta schedule (NVIDIA Matrix Multiplication Background tile set over SMs, wave
+    and tile quantisation, split-K — mapping._cta) and the GEMM ceilings as multiplicative net fractions."""
+    fam = chip.name.split("-")[0].split(" ")[0]
+    sh = CEIL_SHAPE.get(fam)
+    fc = []
+    for k, v in (chip.fmt_ceiling or ()):
+        fmt = k.split(":")[-1] if k.startswith("gemm:") and "@" not in k else None
+        shape = (sh.get(fmt) if isinstance(sh, dict) else sh) if (sh and fmt) else None
+        fc.append((k, min(1.0, v / _wave_eff(chip, *shape, fmt)) if shape else v))
+    return replace(chip, instance_sched="cta", gemm_ceil_mul=True, fmt_ceiling=tuple(fc))
+
+
+def cta_variant(base: str = "default") -> str:
+    name = base + "_ctaceil"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "ceil_mul": True})
+    return name
+
+
+def cta_io_variant(base: str = "default", mode: str = "persistent") -> str:
+    """0.193 diagnostic: cta + net multiplicative ceiling + the 0.135 tile prologue / epilogue I/O."""
+    name = f"{base}_ctaceil_io{mode[0]}"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "ceil_mul": True, "tile_io": mode})
+    return name
+
+
 def ceil_variant(base: str) -> str:
     """0.138: base + GEMM_CEILING (applied as the per-tile main-loop rate under tile I/O)."""
     name = base + "+gceil"
@@ -587,6 +633,10 @@ VARIANTS["catalog_kernel_fixed"] = dict(VARIANTS[rocm_variant(glue_variant(mech_
 # The ≤ 0.177 default stays as the named variant "default_lump".
 VARIANTS["default_lump"] = dict(VARIANTS["default"])
 VARIANTS["default"] = dict(VARIANTS[rocm_variant(glue_variant(mech_variant("default_lump")))])
+# 0.193: ≤ 0.192 default kept by name; the default adds GEMMs as SM × CTA-tile waves × net achieved-peak fraction with
+# tile I/O (cta_ceiling_chip; refhw chips now ship cta / dram) — MODEL §140
+VARIANTS["default_0192"] = dict(VARIANTS["default"])
+VARIANTS["default"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="dram")
 
 
 def overhead_variant(base: str, us: float) -> str:

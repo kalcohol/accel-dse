@@ -36,12 +36,11 @@ def _marginal(s):
 
 
 def test_prefill_marginal_cost_per_token_never_falls():
-    """Adversarial invariant (under WIDE_WAVES): for a fixed model, the marginal prefill time per extra prompt token
-    must not decrease as the prompt grows past the knee (linear terms constant, attention terms grow).  The default
-    wide gang pads N to E·cols (MODEL §119 calibration), and the 0.173 orientation swap fills it only once M ≳ E·cols:
-    H200 Qwen3.5-9B 4096 → 8192 costs 1.5×, marginal per token halves (pinned below as the known default artefact)."""
-    with model_flags(**WAVES):
-        _invariant()
+    """Adversarial invariant (default since 0.193): for a fixed model, the marginal prefill time per extra prompt token
+    must not decrease as the prompt grows past the knee (linear terms constant, attention terms grow).  ≤ 0.192 the
+    wide gang padded N to E·cols and the 0.173 orientation swap filled it only once M ≳ E·cols: H200 Qwen3.5-9B
+    4096 → 8192 cost 1.5×, marginal per token halved (pinned below under LEGACY_0192)."""
+    _invariant()
 
 
 def _invariant():
@@ -52,16 +51,20 @@ def _invariant():
 
 
 def test_wide_waves_fix_and_legacy_record():
-    s = _hw("H200-SXM").replace("model", "qwen3.5-9b").replace("serving.phase", "prefill")
-    o = {p: evaluate(s.replace("serving.prompt", p)).step for p in (4096, 8192)}
-    assert o[8192] / o[4096] < 1.6                     # default (padding) artefact, pinned
-    ch = refhw.REF_HW["H200-SXM"].chip
-    assert gemm_cost(ch, "os", 4096, 12288, 4096).cycles == gemm_cost(ch, "os", 4096, 4096, 24576).cycles  # ½ the FLOPs, same time
-    with model_flags(**WAVES):
-        t = {p: evaluate(s.replace("serving.prompt", p)).step for p in (4096, 8192)}
-        a, b = gemm_cost(ch, "os", 4096, 12288, 4096), gemm_cost(ch, "os", 4096, 4096, 24576)
-    assert 1.9 <= t[8192] / t[4096] <= 2.3 and t[4096] < o[4096]
-    assert _near(b.cycles, 2 * a.cycles, 0.05)         # cycles ∝ FLOPs once tiles fill the gang
+    from accel_dse.core.evaluate import LEGACY_0192
+    s = lambda: _hw("H200-SXM").replace("model", "qwen3.5-9b").replace("serving.phase", "prefill")
+    t = {p: evaluate(s().replace("serving.prompt", p)).step for p in (4096, 8192)}
+    assert 1.9 <= t[8192] / t[4096] <= 2.3
+    with model_flags(**LEGACY_0192):
+        o = {p: evaluate(s().replace("serving.prompt", p)).step for p in (4096, 8192)}
+        ch = refhw.REF_HW["H200-SXM"].chip
+        assert gemm_cost(ch, "os", 4096, 12288, 4096).cycles == gemm_cost(ch, "os", 4096, 4096, 24576).cycles  # ½ FLOPs, same time
+    assert o[8192] / o[4096] < 1.6                     # ≤ 0.192 artefact, pinned
+    with model_flags(WIDE_WAVES=True):
+        from dataclasses import replace
+        w = replace(refhw.REF_HW["H200-SXM"].chip, instance_sched="wide", tile_io="", gemm_ceil_mul=False)
+        a, b = gemm_cost(w, "os", 4096, 12288, 4096), gemm_cost(w, "os", 4096, 4096, 24576)
+    assert _near(b.cycles, 2 * a.cycles, 0.05)         # wide without padding: cycles ∝ FLOPs once tiles fill the gang
 
 
 def test_state_first_pinning():

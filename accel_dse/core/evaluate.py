@@ -273,22 +273,35 @@ def model_flags(**kw):
     """0.172 / 0.173: run with module-level mapping flags overridden (ATTN_ORIENT, WIDE_GEMM_ORIENT, WIDE_GEMM_SPLIT,
     SPLIT_K, WIDE_GEMM_AUTO); historical guards pin pre-fix numbers with it.  Clears the stage memos."""
     from . import memo, mapping as _mp, memplan as _mpl
+    from . import refhw as _rh
+    kw = dict(kw)
+    refhw_wide = kw.pop("REFHW_WIDE", None)      # 0.193: reference GPUs back on the ≤ 0.192 wide schedule
+    cta_split = kw.pop("CTA_SPLIT_K", None)      # 0.193: mapping.SPLIT_K (cta split-K set)
     mods = {"WIDE_WAVES": _mp, "STATE_FIRST": _mpl}   # 0.192: flags living in other modules
     tgt = {k: (vars(mods[k]) if k in mods else globals()) for k in kw}
     old = {k: tgt[k][k] for k in kw}
     for k, v in kw.items():
         tgt[k][k] = v
+    old_rh, old_sk = dict(_rh.REF_HW), _mp.SPLIT_K
+    if refhw_wide:
+        for k, h in old_rh.items():
+            _rh.REF_HW[k] = replace(h, chip=replace(h.chip, instance_sched="wide", tile_io="", gemm_ceil_mul=False))
+    if cta_split is not None:
+        _mp.SPLIT_K = cta_split
     memo._TABLES.clear(); _mp._gemm_cost.cache_clear()
     try:
         yield
     finally:
         for k, v in old.items():
             tgt[k][k] = v
+        _rh.REF_HW.update(old_rh); _mp.SPLIT_K = old_sk
         memo._TABLES.clear(); _mp._gemm_cost.cache_clear()
 
 
 LEGACY_0171 = dict(ATTN_ORIENT=False, WIDE_GEMM_ORIENT=False, WIDE_GEMM_SPLIT=False, SPLIT_K=False)
 LEGACY_0191 = dict(WIDE_WAVES=False, STATE_FIRST=False)   # 0.192
+# 0.193: ≤ 0.192 reference GPUs (wide, padded) and cta split-K set
+LEGACY_0192 = dict(WIDE_WAVES=False, REFHW_WIDE=True, CTA_SPLIT_K=(1, 2, 4, 8, 16))
 LEGACY_0172 = dict(WIDE_GEMM_ORIENT=False, WIDE_GEMM_SPLIT=False, SPLIT_K=False)
 
 
@@ -426,7 +439,12 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
     if ch.fmt_ceiling:                                   # 0.94 (default off)
         fc = dict(ch.fmt_ceiling)
         cap = _shape_cap(ch.fmt_ceiling, op, c.exec_fmt) or fc.get(f"{op.kind}:{c.exec_fmt}", fc.get(c.exec_fmt))
-        if cap and ideal / cap > t:
+        if cap and op.kind == "gemm" and ch.gemm_ceil_mul and ch.instance_sched == "cta" and not ch.tile_io_Bpc:
+            # (under tile I/O, mapping._cta already runs the main loop at the ceiling)
+            d = t / cap - t                              # 0.193: main loop at the achieved fraction of peak
+            t += d
+            mac_share += d
+        elif cap and ideal / cap > t:
             d = ideal / cap - t
             t += d
             mac_share += d

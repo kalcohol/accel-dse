@@ -60,3 +60,8 @@ def test_feed_shared_port():
     w = gemm_cost(ch, "reconf", 1, 4096, 128, count=4096)
     a = gemm_cost(replace(ch, instance_sched="auto"), "reconf", 1, 4096, 128, count=4096)
     assert a.cycles >= a.feed_cycles and a.feed_cycles >= 0.99 * (4096 * 128 * 2 * 4096) / 4096
+
+
+# 0.193: these check the ≤ 0.192 wide-schedule / reference-GPU mechanism at fixed inputs (pin_legacy)
+from tests.pin_legacy import pin_module_0192  # noqa: E402
+pin_module_0192(globals())
