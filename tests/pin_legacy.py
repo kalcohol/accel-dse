@@ -11,7 +11,7 @@ from accel_dse.core import evaluate as E
 def legacy_0172(f):
     @functools.wraps(f)
     def g(*a, **k):
-        with E.model_flags(**E.LEGACY_0172, **E.LEGACY_0192, FUSE_QKV=False):   # 0.198: + unfused QKV   # 0.193: + the ≤ 0.192 reference GPUs
+        with E.model_flags(**E.LEGACY_0172, **E.LEGACY_0192, FUSE_QKV=False, NCCL_AR_LAT=False):   # 0.198: + unfused QKV; 0.199: + flat α   # 0.193: + the ≤ 0.192 reference GPUs
             return f(*a, **k)
     return g
 
@@ -27,7 +27,7 @@ def legacy_0192(f):
     the ≤ 0.172 mapping when the test was already pinned."""
     @functools.wraps(f)
     def g(*a, **k):
-        with E.model_flags(**E.LEGACY_0192, FUSE_QKV=False):   # 0.198: + unfused QKV
+        with E.model_flags(**E.LEGACY_0192, FUSE_QKV=False, NCCL_AR_LAT=False):   # 0.198: + unfused QKV; 0.199: + flat α
             return f(*a, **k)
     return g
 
@@ -51,3 +51,18 @@ def pin_module_unfused(ns: dict, only=None):
     for k, v in list(ns.items()):
         if k.startswith("test_") and callable(v) and (only is None or k in only):
             ns[k] = unfused_qkv(v)
+
+
+def flat_alpha(f):
+    """0.199: run with the ≤ 0.198 flat all-reduce α (Link.alpha_us) — α-β formula / bit-for-bit checks."""
+    @functools.wraps(f)
+    def g(*a, **k):
+        with E.model_flags(NCCL_AR_LAT=False):
+            return f(*a, **k)
+    return g
+
+
+def pin_module_flat_alpha(ns: dict, only=None):
+    for k, v in list(ns.items()):
+        if k.startswith("test_") and callable(v) and (only is None or k in only):
+            ns[k] = flat_alpha(v)

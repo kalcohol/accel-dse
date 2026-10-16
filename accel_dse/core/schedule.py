@@ -40,12 +40,29 @@ from dataclasses import dataclass
 from .hardware import Link
 
 
+# 0.199: small-message all-reduce latency inside one NVLink / NVSwitch node 「来源」 NCCL's own cost model
+# (src/graph/tuning.cc, v2.19.3): Ring + LL protocol = baseLat 6.6 µs + nsteps × hwLat[NVLINK][Ring][LL] 0.6 µs,
+# nsteps = 2(n − 1) for all-reduce → n = 2: 7.8, 4: 10.2, 8: 15.0 µs (Tree LL: 6.8 + 2(n − 1)·0.6 — the same).
+# Measured cross-check 「二手」: nccl-tests issue #123 (DGX-A100, 8 GPUs, LL) ≈ 21 µs total incl. launch; NCCL dev
+# reply: ~7.5 µs base on 2 × H100.  ≤ 0.198: a flat Link.alpha_us = 3 µs per collective, any group size.
+# 「假设」: the engines' collectives run at the NCCL latency — vLLM / SGLang custom all-reduce and TRT-LLM's
+# all-reduce plugin can be faster for small messages; no per-engine measurement is applied.
+NCCL_AR_LAT = True
+NCCL_BASE_LAT_US, NCCL_NVL_HW_LAT_US = 6.6, 0.6
+
+
+def nccl_ring_ll_us(n: int) -> float:
+    return NCCL_BASE_LAT_US + 2 * (n - 1) * NCCL_NVL_HW_LAT_US if n > 1 else 0.0
+
+
 def collective_seconds(kind: str, payload: float, group: int, link: Link) -> tuple[float, float]:
     """(bandwidth seconds, exposed-latency seconds)."""
     if group <= 1 or payload <= 0:
         return 0.0, 0.0
     beta = link.GBps * 1e9
     a = link.alpha_us * 1e-6
+    if kind == "allreduce" and NCCL_AR_LAT and link.topology == "switch":
+        a = max(a, nccl_ring_ll_us(group) * 1e-6)
     if kind == "allreduce":
         bw = 2 * (group - 1) / group * payload / beta
     elif kind == "alltoall":

@@ -145,3 +145,7 @@ def test_api_validation_and_pd_kv():
     assert "fabric" not in out["pd"]["kv"] or True
     assert "fabric" not in off and "fabric" not in off["pd"]["kv"]
     assert out["pd"]["kv"]["t_ms"] > off["pd"]["kv"]["t_ms"]
+
+
+from tests.pin_legacy import pin_module_flat_alpha  # noqa: E402  (0.199: α-β / bit-for-bit checks on the flat α)
+pin_module_flat_alpha(globals(), only={'test_off_is_058_bit_for_bit'})

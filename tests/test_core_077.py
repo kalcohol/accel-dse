@@ -91,3 +91,7 @@ def test_mac_count_hand_calc():
     c = action_counts(evaluate(Scenario(model="qwen3-8b")))["counts"]
     hand = (m.params() - 151936 * 4096) + 36 * 32 * 128 * 4097 * 2
     assert _close(c["mac"], hand, 1e-4)
+
+
+from tests.pin_legacy import pin_module_flat_alpha  # noqa: E402  (0.199: α-β / bit-for-bit checks on the flat α)
+pin_module_flat_alpha(globals(), only={'test_collective_alpha_beta_and_d2d_tier'})

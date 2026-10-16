@@ -6,6 +6,17 @@
 
 
 
+## [0.199.0]
+- Small-message all-reduce latency now follows NCCL's own cost model (`schedule.NCCL_AR_LAT`): Ring + LL = 6.6 + 2(n−1)·0.6 µs on NVLink (src/graph/tuning.cc v2.19.3 「来源」). That is 7.8 / 10.2 / 15.0 µs at TP 2 / 4 / 8; ≤ 0.198 it was a flat 3 µs.
+  - Cross-check: nccl-tests issue #123 measured ≈ 21 µs on 8 × A100 「二手」.
+  - 「假设」: engines run their collectives at NCCL latency (vLLM / SGLang custom all-reduce and the TRT-LLM plugin may be faster), and RCCL on MI300X uses the same table.
+- Default MAE % (off → on): static 23.26 → 22.89, TTFT 36.86 → 33.16, max-load 18.72 → 18.91, MoE 7.88 → 7.88, Mixtral 21.32 → 18.88, MI300X latency 23.08 → 24.15 (bias 1.170 → 0.988), MI300X max-load 68.81 → 63.94, B200 13.13 → 13.13.
+- Short-request TTFT, row by row:
+  - (c) eager prefill launch gaps were already charged (2.0 µs floor + 2.40 µs eager gap per kernel, 0.176).
+  - (b) the TRT-LLM 0.8 rows come from gptSessionBenchmark (C++, token ids, no tokenizer / HTTP), so (b) doesn't apply. The Databricks rows are server-measured, but there is no sourced overhead figure.
+  - (a) explains ≈ 2 ms of the 6–58 ms TP8 gaps. The 2 ms TP1 gap (H200 mistral-7b 128) is still unexplained. Nothing was fitted.
+- These tests are pinned to the flat α (`pin_module_flat_alpha`): schedule α-β formula, 077, 050 CLI, 059 bit-for-bit, and 081 DES. In 081, "non-binding KV cap = cap off" differed at p99 by 2 % under the new α; this looks like DES sampling sensitivity, not investigated.
+- Fingerprints re-baselined: `_fp` 841b5c4e00c68d8c / 727e05f1eee3e647, test_core_125 3e753f36c5bcdb36 / fefb5b23fdf2782c. Legacy pins now also use the flat α.
 ## [0.198.0]
 - Fused QKV: dense GQA layers emit one `attn.qkv` GEMM (`ir.FUSE_QKV`; False = ≤ 0.197 three GEMMs). Sources: vLLM QKVParallelLinear (models/llama.py qkv_proj), SGLang QKVParallelLinear, TensorRT-LLM Attention.qkv ColumnLinear / PyTorch-backend qkv_proj. FLOPs and weights are unchanged. MLA and grouped linears are untouched.
 - Default MAE % (unfused → fused): static 22.48 → 23.26, TTFT 31.57 → 36.86, max-load 19.34 → 18.72, MoE 7.88 → 7.88, Mixtral 20.23 → 21.32, MI300X latency 21.86 → 23.08, MI300X max-load 68.32 → 68.81, B200 13.55 → 13.13.

@@ -60,3 +60,7 @@ def test_sync_exposed_and_link_bound():
     b = evaluate(base.replace("link.alpha_us", 10.0))
     n_coll = 2 * 64 + 1                                  # attn + mlp all-reduce per layer + logits gather
     assert abs((b.stages[0].time.t_sync - a.stages[0].time.t_sync) - n_coll * 7e-6) < 1e-9
+
+
+from tests.pin_legacy import pin_module_flat_alpha  # noqa: E402  (0.199: α-β / bit-for-bit checks on the flat α)
+pin_module_flat_alpha(globals(), only={'test_collective_alpha_beta', 'test_sync_exposed_and_link_bound'})

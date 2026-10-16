@@ -4595,3 +4595,22 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - 2048-token rows are unchanged by it, so long-sequence activations that exceed L2 are still charged.
   - The prefill-heavy regressions all come from 128–512-token prompts, which were already 1.17–1.96× too fast before §143–§145. TP8 rows are the worst (A100 70B 512 TP8: 55.9 vs 114 ms).
   - Missing term: fixed short-request latency (per request / per TP collective), not yet sourced. Not fitted.
+
+## §146 NCCL small-message all-reduce latency; short-request TTFT audit (0.199)
+
+- **All-reduce α.** In a single NVSwitch node, α = max(Link.alpha_us, 6.6 + 2(n − 1) · 0.6 µs).
+  - Source: NCCL src/graph/tuning.cc (v2.19.3), baseLat[Ring][LL] and hwLat[NVLINK][Ring][LL], with 2(n − 1) ring steps 「来源」. Tree LL gives the same.
+  - Measured cross-check: about 21 µs on 8 × A100 with LL (nccl-tests #123) 「二手」.
+  - Engines with a custom all-reduce may be faster; not modelled 「假设」.
+- **Short-prompt TTFT audit** (predicted vs measured, ms):
+
+  | Row | 0.198 | 0.199 | measured |
+  |---|---|---|---|
+  | H200 mistral-7b 128 TP1 | 4.05 | 4.05 | 6.0 |
+  | H200 70B 128 TP8 | 9.86 | 11.78 | 16 |
+  | A100 70B 128 TP8 | 21.4 | 23.3 | 35.6 |
+  | A100 70B 512 TP8 (Databricks server) | 55.9 | 57.9 | 114 |
+
+  - (c) Eager prefill launch gaps were already charged in §123.
+  - (b) Tokenizer / HTTP / scheduler cost doesn't apply to gptSessionBenchmark rows. The server rows have no sourced figure.
+  - The remaining gap, including about 20 % on 2048-token rows, is not explained by a sourced mechanism. Candidates are TRT-LLM 0.8's context-phase kernel efficiency and session host overhead; both are unsourced and not fitted.

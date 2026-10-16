@@ -133,3 +133,7 @@ def test_des_nonbinding_kv_cap_equals_cap_off():
         out.append((d["itl_max"], d["tpot"], d.get("preempt_per_req", 0.0)))
     assert out[0][2] == 0.0
     assert out[0][0] == out[1][0] and out[0][1] == out[1][1], out
+
+
+from tests.pin_legacy import pin_module_flat_alpha  # noqa: E402  (0.199: α-β / bit-for-bit checks on the flat α)
+pin_module_flat_alpha(globals(), only={'test_des_nonbinding_kv_cap_equals_cap_off'})

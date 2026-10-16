@@ -236,3 +236,7 @@ def test_pd_validation_api_cli():
     with contextlib.redirect_stdout(buf):
         assert cli.main(["eval", "--model", "qwen3-8b", "--batch", "16", "--pd", "--pd-decode-cards", "3"]) == 0
     assert "PD" in buf.getvalue()
+
+
+from tests.pin_legacy import pin_module_flat_alpha  # noqa: E402  (0.199: α-β / bit-for-bit checks on the flat α)
+pin_module_flat_alpha(globals(), only={'test_api_cli_three_tier'})
