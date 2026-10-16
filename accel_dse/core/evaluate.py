@@ -416,7 +416,7 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         d["flops_u"] += o.flops * o.share / max(1, o.replicated)
         d["max_act"] = max(d["max_act"], o.act_bytes / max(o.count, 1))
         if o.stream:
-            a, wx = act_stream(o, _fmt(model.act_fmt).bytes, sys.chip.sram_bytes)
+            a, wx = act_stream(o, _fmt(model.act_fmt).bytes, sys.chip.sram_bytes, sys.chip.engines)
             d["act"] += a; d["w_extra"] += wx
             ab = _fmt(model.act_fmt).bytes
             tot = (((o.in_elems or o.m * o.k * o.count) + o.m * o.n * o.count) * ab if o.kind == "gemm"
@@ -590,7 +590,7 @@ def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, s
         return _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride, net_scale=o.comm_net)[0]
 
     def act_b(o):
-        a, wx = act_stream(o, ab, sys.chip.sram_bytes)
+        a, wx = act_stream(o, ab, sys.chip.sram_bytes, sys.chip.engines)
         return a + wx
     segs = [(_ovl.items_of(ops, op_secs, comm_secs, act_b), n) for ops, n in segments]
     kvst = mp.kv_total + mp.state_total
@@ -664,7 +664,7 @@ def _pipe_fused_(sd, sp, f, rr, t_mem):
         return _comm(sys, o.comm_kind, o.comm_bytes, o.comm_group, o.comm_stride, net_scale=o.comm_net)[0]
 
     def act_b(o):
-        a, wx = act_stream(o, ab, sys.chip.sram_bytes)
+        a, wx = act_stream(o, ab, sys.chip.sram_bytes, sys.chip.engines)
         return a + wx
     segs = [(_ovl.items_of(ops, op_secs, comm_secs, act_b), n) for ops, n in merged]
     t_arr = t_vec = 0.0                 # the merged iteration's own array / vector seconds (bracket bounds)
@@ -995,6 +995,8 @@ def _cp_check(m: ModelSpec, sv) -> None:
         c = L.core
         if c is None:
             continue
+        if c.lin == "hyena":       # 0.171 savanna use_cp_hyena: all-to-all to channel-split full sequences
+            continue
         if c.kind not in ("gqa", "mla") or c.window or c.compress > 1 or c.win_bytes or c.dual or c.qsa or c.idx_kpool:
             raise ValueError("layout.cp 只支持全局 softmax 注意力（GQA / MLA，含逐 token 的 DSA top-k）；该模型有线性 / "
                              "滑窗 / 压缩 KV 层，环形注意力的分块等价不成立")
@@ -1056,6 +1058,17 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 am[scn.attn_mode] = with_attn_mode(m, scn.attn_mode)
             m = am[scn.attn_mode]
             warnings.append("attn_mode = bidir（what-if）：自注意力不加因果掩码（整 S² 打分），prefill 不写 KV cache")
+    if scn.hyena_prefill != "reference":
+        from .model import with_hyena_prefill
+        if not any(L.core is not None and L.core.lin == "hyena" for L in m.layers):
+            warnings.append(f"hyena_prefill = {scn.hyena_prefill} 已忽略：该模型没有 Hyena 层")
+        else:
+            hp = model_cache(m).setdefault("hyena_prefill", {})
+            if scn.hyena_prefill not in hp:
+                hp[scn.hyena_prefill] = with_hyena_prefill(m, scn.hyena_prefill)
+            m = hp[scn.hyena_prefill]
+            if scn.hyena_prefill == "fused":
+                warnings.append("hyena_prefill = fused（what-if）：MR / LR 的 FFT 卷积按单个片上内核计，频谱放不下时按四步 FFT 多遍")
     if (scn.serving.images or scn.serving.videos) and not scn.serving.image_tokens:
         if m.vision is None:
             warnings.append(("serving.images 已忽略" if scn.serving.images else "serving.videos 已忽略")

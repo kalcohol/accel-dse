@@ -310,9 +310,21 @@ def gemm_blocking(m: int, k: int, n: int, a_bytes: float, w_bytes: float, budget
     return best if best is not None else (n, m)
 
 
-def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
+def fft_spill(n: int, sram_bytes: float, engines: int) -> float:
+    """0.171 fused hyena what-if: DRAM bytes per transform row of an FFT convolution of size n whose rfft spectrum
+    (n/2 complex64) stays on chip when it fits one engine's activation share (SRAM / 2 / engines「假设」); otherwise a
+    four-step (Bailey) out-of-core FFT of p = ⌈log n / log n_fit⌉ passes, each extra pass one spectrum read + write,
+    forward and inverse「推导」."""
+    fit = max(2.0, sram_bytes / 2 / max(1, engines) / 8)
+    p = math.ceil(math.log(n) / math.log(fit) - 1e-12) if n > fit else 1
+    return (p - 1) * 2 * 2 * 4.0 * n
+
+
+def act_stream(op: Op, ab: float, sram_bytes: float, engines: int = 1) -> tuple[float, float]:
     """(activation DRAM bytes, extra weight re-read bytes) of one streamed op of a full-sequence forward."""
     budget = sram_bytes / 2.0
+    if op.kind == "state" and op.fft_n:
+        return op.act_x + op.fft_rows * fft_spill(op.fft_n, sram_bytes, engines), 0.0
     if op.kind == "gemm":
         a_in = (op.in_elems or op.m * op.k * op.count) * ab
         a_out = op.m * op.n * op.count * ab

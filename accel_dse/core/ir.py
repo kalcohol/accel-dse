@@ -157,6 +157,8 @@ class Op:
     launch: float = 0.0       # 0.120: kernel launches of this op when Chip.kernel_us > 0 (0 = the 0.92 rule: one per GEMM /
                               # fused attention named qk*); structure-model ops set it explicitly
     chunks: int = 1           # 0.119: an unfused bmm run in this many sequential chunks (peak / SRAM fit per chunk)
+    fft_n: int = 0            # 0.171 fused hyena FFT conv: transform size and transforms (sequence × channel) whose
+    fft_rows: float = 0.0     # spectra spill only when they do not fit on chip (memplan.fft_spill)
     lg_bytes: float = 0.0     # 0.120: logits bytes inside an unfused attention op (stay on chip when one chunk fits)
     act_x: float = 0.0        # 0.119: extra activation DRAM bytes when the op spills (softmax read + write of logits)
     in_elems: float = 0.0     # conv as implicit GEMM: elements of the real input tensor (the M×K im2col matrix is
@@ -454,6 +456,9 @@ def _hyena_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
     vec = _cdiv(core.conv_channels, tp) * core.conv_kernel * t * 2 + 2 * ch * t     # short FIR, x1·v, x2·z
     sfu = 0.0
     act_x = act_peak = 0.0
+    launch = 0.0
+    fft_rows = 0.0
+    comm = []
     if ph.kind == "decode":
         if core.hy in ("se", "mr"):
             vec += 2 * core.hy_len * ch * t + (2 * ch * t if core.hy == "mr" else 0)
@@ -461,28 +466,65 @@ def _hyena_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
             vec += ch * t * (4 * M + 2)
             sfu += ch * t * M
     else:
-        L = ph.q
+        cp = ph.cp if ph.cp > 1 else 1
+        # 0.171 context parallel (savanna use_cp_hyena): all-to-all "split_to_full" of x1, x2, v → each CP rank holds
+        # the whole sequence for ch / cp channels, convolves, all-to-alls z back ("full_to_split")
+        L = ph.cp_len if cp > 1 else ph.q
+        ch = _cdiv(ch, cp)
         N = 2 * L
+        mode = core.hy_prefill
+        fused = mode == "fused"
         if core.hy == "se":
-            vec += 2 * core.hy_len * ch * t
+            vec += 2 * core.hy_len * ch * t * cp
         elif core.hy == "mr":
-            g = _cdiv(core.hy_groups or core.conv_channels // 3, tp)
-            vec += b_loc * ch * (fft_flops(N, True) * 2 + 6 * (N // 2 + 1)) + g * fft_flops(N, True) + 2 * ch * t
-            act_x += b_loc * ch * L * (12 + 16 + 16) + g * L * 12      # rfft(u) 4→8, ·k_f 16→8, irfft 8→8
+            g = _cdiv(_cdiv(core.hy_groups or core.conv_channels // 3, tp), cp)
+            vec += b_loc * ch * (fft_flops(N, True) * 2 + 6 * (N // 2 + 1)) + g * fft_flops(N, True) + 2 * ch * L * b_loc
+            if fused:
+                fft_rows += b_loc * ch
+            else:
+                act_x += b_loc * ch * L * (12 + 16 + 16) + g * L * 12      # rfft(u) 4→8, ·k_f 16→8, irfft 8→8
         else:
             vec += ch * (2 * M * L + fft_flops(N, True))                          # h = Σ R·p^t, rfft(h)
             sfu += ch * M * L
-            vec += b_loc * ch * (fft_flops(N) + 6 * (N // 2 + 1) + fft_flops(N, True) + 3 * L)
-            act_x += ch * (8 * M * L + 12 * L) + b_loc * ch * L * (20 + 24 + 16)  # h build / rfft; fft(x1v), ·H, irfft
-            if core.hy_prefill == "fft":
-                vec += ch * M * fft_flops(N) + b_loc * ch * M * (6 * N + fft_flops(N))
-                sfu += ch * M * L
-                act_x += ch * M * L * (4 + 20) + b_loc * ch * M * L * (16 + 32 + 32)   # exp, fft; repeat, X·S, ifft
-                act_peak = 2.0 * b_loc * ch * M * N * 8
-            if ph.ctx:
+            if not fused:
+                act_x += ch * (8 * M * L + 12 * L)          # stock compute_filter: (ch, M, L) fp32, then rfft(h)
+                act_peak = 2.0 * 4 * ch * M * L             # log_poles·t and its exp, both (ch, M, L) fp32 live
+            if mode == "recurrence":
+                # engine.prefill_via_direct_recurrence: x1v repeated to (b, ch, L, M, 2) in x1v's bf16, then a Python
+                # loop over L of 14 elementwise kernels on the (b, ch, M, 2) fp32 state (3 statements) — no FFT conv
+                Sx = b_loc * ch * M
+                vec += L * Sx * 12 + b_loc * ch * L * 3
+                act_x += 6.0 * b_loc * ch * L * M + L * Sx * 120.0
+                act_peak = max(act_peak, 4.0 * b_loc * ch * L * M)
+                launch = 14 * L
+            else:
+                vec += b_loc * ch * ((fft_flops(N, True) if fused else fft_flops(N)) + 6 * (N // 2 + 1)
+                                     + fft_flops(N, True) + 3 * L)
+                if fused:
+                    # what-if「假设」: one kernel per operator, spectra on chip; modal state = Σ_t p^(L−1−t)·x1v_t in
+                    # the same pass (2·M flop / token / channel), the filter built on chip (vortex HCL tiled build)
+                    vec += b_loc * ch * 2 * M * L
+                    fft_rows += b_loc * ch
+                else:
+                    act_x += b_loc * ch * L * (20 + 24 + 16)    # fft(x1v), ·H, irfft
+                    if mode == "fft":
+                        vec += ch * M * fft_flops(N) + b_loc * ch * M * (6 * N + fft_flops(N))
+                        sfu += ch * M * L
+                        act_x += ch * M * L * (4 + 20) + b_loc * ch * M * L * (16 + 32 + 32)   # exp, fft; repeat, X·S, ifft
+                        act_peak = max(act_peak, 2.0 * b_loc * ch * M * N * 8)
+            if ph.ctx and cp == 1:
                 vec += ch * t * 2 * M
+        if cp > 1:
+            ab = _fmt(model.act_fmt).bytes
+            pay = b_loc * ph.q * _cdiv(core.conv_channels // 3, tp) * ab
+            comm = [Op(f"cp_hyena_a2a_{n}", "comm", li, comm_kind="alltoall", comm_group=cp, comm_bytes=pay,
+                       comm_stride=tp) for n in ("x1", "x2", "v", "z")]
+            # featurizer short FIR: the previous rank's last (taps − 1) columns (ExchangeOverlappingRegionsCausal)
+            comm.append(Op("cp_hyena_halo", "comm", li, comm_kind="p2p", comm_group=2, comm_stride=tp,
+                           comm_bytes=b_loc * _cdiv(core.conv_channels, tp) * max(0, core.conv_kernel - 1) * ab))
     return [Op("state_update", "state", li, vec=vec, sfu=sfu, state_rw=2 * st_bytes * b_loc, kv_read=0.0,
-               act_x=act_x, act_bytes=act_peak, stream=act_x > 0)]
+               act_x=act_x, act_bytes=act_peak, stream=act_x > 0 or fft_rows > 0, launch=launch,
+               fft_n=N if fft_rows else 0, fft_rows=fft_rows)] + comm
 
 
 # ------------------------------------------------------------------ attention core

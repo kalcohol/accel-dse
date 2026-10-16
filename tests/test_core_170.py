@@ -59,7 +59,7 @@ def test_fft_prefill_ops_and_modal_state_cost():
     noc = _hyena_ops(s, 2, replace(lr, hy_prefill=""), ph, sh, 1)[0]
     # modal-FFT state extraction: fp32 / complex64 tensors of channels × 16 modes × 2L dominate the DRAM traffic
     assert full.act_x - noc.act_x == 4096 * 16 * L * (24 + 80)
-    assert full.act_bytes == 2 * 4096 * 16 * N * 8 and noc.act_bytes == 0
+    assert full.act_bytes == 2 * 4096 * 16 * N * 8 and noc.act_bytes == 2 * 4 * 4096 * 16 * L   # 0.171: + stock h build
     assert full.act_x > 10 * o.act_x
 
 

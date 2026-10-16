@@ -19,6 +19,7 @@ from .dtypes import FormatSupport
 from .d2d_catalog import D2D_DEFAULT_STD, D2D_DEFAULT_UNITS, D2D_STANDARDS, d2d_GBps
 from .hardware import CHIPS, D2D_DEFAULT, NET_DEFAULT, Chip, Fabric, Link
 from .mapping import ORGS
+HYENA_PREFILL = ("reference", "recurrence", "fused")
 from .parallel import ATTN_MODES, EXEC_OVERLAPS, INDEXER_MODES, PP_SPLITS, Layout
 
 
@@ -456,6 +457,10 @@ class Scenario:
     indexer: str = field(default="reference", metadata={"omit_default": True})
     # 0.106: attention mask what-if (parallel.ATTN_MODES); default = as released
     attn_mode: str = field(default="reference", metadata={"omit_default": True})
+    # 0.171: StripedHyena 2 long-filter prefill (HYENA_PREFILL): reference = as released (vortex prefill_style fft:
+    # FFT conv + modal-FFT state) | recurrence (vortex prefill_via_direct_recurrence) | fused (what-if: one on-chip
+    # FFT-conv kernel per operator, state by direct sum)
+    hyena_prefill: str = field(default="reference", metadata={"omit_default": True})
 
     def __post_init__(self):
         object.__setattr__(self, "chip", _resolve_chip(self.chip, "chip"))
@@ -482,6 +487,8 @@ class Scenario:
             raise ValueError(f"indexer must be one of {INDEXER_MODES}")
         if self.attn_mode not in ATTN_MODES:
             raise ValueError(f"attn_mode must be one of {ATTN_MODES}")
+        if self.hyena_prefill not in HYENA_PREFILL:
+            raise ValueError(f"hyena_prefill must be one of {HYENA_PREFILL}")
         if isinstance(self.package_cards, bool) or not isinstance(self.package_cards, int) \
                 or not 1 <= self.package_cards <= 1024:
             raise ValueError("package_cards must be an integer in [1, 1024]")

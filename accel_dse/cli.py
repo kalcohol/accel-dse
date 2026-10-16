@@ -70,6 +70,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="multi-step scheduling: decode steps per host pass (0.164; default 1)")
     p.add_argument("--indexer", default=None, choices=INDEXER_MODES,
                    help="sparse-attention indexer over TP (0.87): reference (as released) | replicated | tp_split | key_split")
+    p.add_argument("--hyena-prefill", dest="hyena_prefill", default=None, choices=("reference", "recurrence", "fused"),
+                   help="StripedHyena 2 (Evo 2) prefill: reference (FFT + modal-FFT state, as released) | recurrence | fused (what-if)")
     p.add_argument("--attn-mode", dest="attn_mode", default=None, choices=ATTN_MODES,
                    help="attention mask what-if (0.106): reference (as released) | bidir (non-causal, full S², no KV cache; prefill only)")
     p.add_argument("--clip-slo", dest="clip_slo_s", type=float, default=None, help="video: clip latency SLO, s")
@@ -383,7 +385,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     sc = {"model": a.model, "mapping": a.mapping, "serving": sv}
     if getattr(a, "pp_split", None):
         sc["pp_split"] = a.pp_split
-    for k in ("exec_overlap", "layer_overhead_us", "indexer", "attn_mode", "host_step_us", "host_seq_us", "host_overlap",
+    for k in ("exec_overlap", "layer_overhead_us", "indexer", "attn_mode", "hyena_prefill", "host_step_us", "host_seq_us", "host_overlap",
               "host_steps"):
         if getattr(a, k, None) is not None:
             sc[k] = getattr(a, k)

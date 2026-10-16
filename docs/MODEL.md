@@ -3837,3 +3837,14 @@ Sources: the evo2 inference yml files (layer pattern hcs / hcm / hcl / attn, fil
   - The `recurrence` prefill style: the release uses fft.
   - The scoring-only forward without a cache, which skips the modal state.
 
+## 117. Evo 2 long-context prefill (0.171)
+- **CP (savanna use_cp_hyena):** per Hyena layer, 4 all-to-alls of the rank's block of x1, x2, v and z (b·S/cp·h/TP·2 B each) plus a p2p halo of (taps − 1)·3h/TP columns. The FFT conv runs at 2S on ch/(TP·cp) channels, which is the same work as TP·cp channel sharding. Attention uses the 0.88 ring.
+- **hyena_prefill:**
+  - reference (as released).
+  - recurrence (vortex direct recurrence): 12·16 flop per token per channel, about 120·b·ch·16 B per token of state traffic, 14·L launches, and a peak of max(h build, 4·b·ch·L·16 B).
+  - fused (what-if): single-pass FFT conv. Spill per transform row = (p − 1)·16·N B, with p = ⌈log N / log n_fit⌉ and n_fit = SRAM/2/engines/8.
+- **Design insight:**
+  - A fused Hyena-LR conv needs about 8·2L B of on-chip memory per in-flight channel to stay single-pass: 128 KiB at 8k, 16 MiB at 1M.
+  - Beyond that, every extra out-of-core pass costs 16·N B per channel. At L = 1M (N = 2M) that is 32 MiB of DRAM traffic per channel per extra pass. With H100-class SRAM per engine, p = 2 at 1M.
+  - The as-released code moves about 20× the weight bytes at 8k. Fusion, not extra bandwidth, is the lever.
+

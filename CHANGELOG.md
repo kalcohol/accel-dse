@@ -3,6 +3,28 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.171.0] — Evo 2 long-context prefill: Hyena context parallel, recurrence prefill, fused-FFT what-if
+- Context parallel for StripedHyena 2. `layout.cp` now accepts Hyena layers.
+  - 「来源」 Zymrael/savanna `use_cp_hyena`, from hyena.py and distributed_a2a.py. Each Hyena layer does an all-to-all `split_to_full` of x1, x2 and v, so every rank holds the full sequence for ch/cp channels and runs the FFT conv at 2S. It then does an all-to-all `full_to_split` of z back.
+  - The featurizer short FIR takes (taps − 1) halo columns from the neighbouring rank (`ExchangeOverlappingRegionsCausal`).
+  - The MHA layers use the existing 0.88 zigzag ring. Savanna's 40B 1M config uses `use_cp_hyena` with cp 2 / mp 64 (training).
+- New `hyena_prefill` = reference | recurrence | fused (CLI `--hyena-prefill`). Default is reference.
+  - recurrence 「来源」 vortex `prefill_via_direct_recurrence`: x1v is repeated to (b, ch, L, 16, 2) bf16, then a Python loop over L runs 14 elementwise kernels per token on the fp32 state, with no FFT conv. This lowers peak memory, but at 8k it moves more bytes than the FFT path (716 vs 628 GB) and adds 14·L kernel launches per LR layer.
+  - fused (what-if 「假设」): one on-chip kernel per MR / LR FFT conv, with the modal state computed as a direct sum in the same pass and the filter built on chip (as vortex's tiled HCL build does). The rfft spectrum stays on chip while it fits one engine's activation share (SRAM/2/engines). Beyond that, a four-step out-of-core FFT adds one spectrum read and write per extra pass, forward and inverse 「推导」.
+- Correction: the stock `compute_filter` materialises (ch, 16, L) fp32 twice. This is now counted in peak memory; 「来源」 the vortex HCL docstring says the intermediate "OOMs evo2_7b at L=131k". The 0.170 8k results are unchanged because the modal-FFT peak there is larger.
+- Results (evo2-7b, H100-SXM reference hardware, batch 1):
+  - 8k: reference 0.50 s, 628 GB of activation DRAM. fused 0.26 s, MAC-bound; its 51 GB of activation traffic is attention streaming. The fused spectrum fits on chip up to L ≈ 12k.
+  - 1M bases:
+
+    | cards | layout | reference | fused |
+    |---|---|---|---|
+    | 1 | — | 2140 GiB, no fit | 144 GiB, no fit (KV alone ≈ 84 GB) |
+    | 8 | cp 8 | 278 GiB, no fit | 33 GiB, fits |
+    | 64 | tp 8 × cp 8 | 35 GiB, fits, TTFT 25.9 s | — |
+
+  - In those TTFTs, attention dominates the 1M MAC time. The array time for long-context MHA is about 25× its ideal FLOP time on this hardware model, and llama-3.1-8b at 131k shows the same ratio. That is a pre-existing attention-mapping issue, not new in this release.
+- Tests: tests/test_core_171.py (4). test_core_170 now also checks the h-build peak.
+
 ## [0.170.0] — Evo 2 / StripedHyena 2 genomics models: hyena SE / MR / LR operators, FFT prefill, modal decode state
 - New genomics models `evo2-40b`, `evo2-7b` (1M context) and `evo2-1b` (`evo2_1b_base`, 8192 context), from Arc Institute.
   - 「来源」 Shapes and dtypes come from the PyTorch zip checkpoints on HF `arcinstitute/evo2_*`, read over HTTP range (`scripts/fetch_torch_ckpt.py` now also takes a checkpoint split into `.part0|.part1` parts, as 40B ships). Hyper-parameters come from the inference configs in github.com/ArcInstitute/evo2 (`evo2/configs/evo2-{40b-1m,7b-1m,1b-8k}.yml`). `scripts/build_evo2_release.py` writes the release JSONs.

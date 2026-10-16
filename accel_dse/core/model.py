@@ -1490,6 +1490,21 @@ def with_attn_mode(spec: ModelSpec, mode: str) -> ModelSpec:
                    what_if=True)
 
 
+def with_hyena_prefill(spec: ModelSpec, mode: str) -> ModelSpec:
+    """0.171: StripedHyena 2 prefill implementation (scenario.HYENA_PREFILL).  recurrence: LR layers only (MR / SE
+    keep the reference FIR / FFT conv); fused: MR and LR FFT convolutions as one on-chip kernel (what-if)."""
+    if mode == "reference":
+        return spec
+    hy = "recurrence" if mode == "recurrence" else "fused"
+
+    def tr(L):
+        c = L.core
+        if c is None or c.lin != "hyena" or (c.hy != "lr" and not (hy == "fused" and c.hy == "mr")):
+            return L
+        return replace(L, core=replace(c, hy_prefill=hy))
+    return replace(spec, layers=tuple(tr(l) for l in spec.layers), what_if=hy == "fused")
+
+
 def with_formats(spec: ModelSpec, overrides: dict[str, str]) -> ModelSpec:
     """What-if: replace role formats (labelled ``what_if``)."""
     from .dtypes import fmt as _fmt
