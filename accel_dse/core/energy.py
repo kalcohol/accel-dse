@@ -364,11 +364,12 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
         j["idle"] = iw * per["idle_card_s"]
         out["idle_W_used"] = iw
         out["idle_source"] = "idle_W" if table.idle_W is not None else "idle_frac_tdp × tdp_W"
+        # 0.190: preset match within 0.5 % (the UI rounds the filled value to 4 digits)
         if table.idle_W is None:      # 0.189: say where the fraction comes from — a GPU number applied to an NPU
             pre = ENERGY_PRESETS["tpuv4i_7nm"]["fields"]["idle_frac_tdp"]
             out["idle_source_note"] = (f"idle_frac_tdp {table.idle_frac_tdp:g} × TDP {table.tdp_W:g} W；"
                                        + (f"「{pre[1]}」{pre[2]} — GPU 整卡空闲值套用于本 NPU，不是本芯片的泄漏测量"
-                                          if abs(table.idle_frac_tdp - pre[0]) < 1e-12 else "用户填写"))
+                                          if abs(table.idle_frac_tdp - pre[0]) <= 5e-3 * pre[0] else "用户填写"))
     if per.get("host"):
         if table.pJ_bit_host is not None:
             j["host"] = per["host"] * table.pJ_bit_host * 1e-12 * 8
@@ -384,7 +385,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
         out["static_share"] = j["idle"] / tot
         out["J_dynamic_per_unit"] = tot - j["idle"]
         if out["static_share"] > STATIC_WARN:
-            out["static_warning"] = (f"静态能耗占 J/{a['unit']} 的 {out['static_share']:.0%}（> {STATIC_WARN:.0%}）："
+            out["static_warning"] = (f"静态能耗占 J/{a['unit']} 的 {out['static_share']:.1%}（> {STATIC_WARN:.0%}）："
                                      "结论主要由空闲功耗假设决定，而非动态动作")
     if power_cap:
         out["power_cap"] = _power_cap(out, j, iw, table, r.scenario.layout.cards, u, a["window_s"])

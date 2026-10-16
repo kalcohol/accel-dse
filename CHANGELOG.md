@@ -5,6 +5,10 @@
 
 
 
+
+## [0.190.0]
+- UI smoke covers energy controls incl. a binding power cap; fixed preset idle fraction losing its citation after UI rounding, and share display rounding.
+- CLI `eval --power-cap`.
 ## [0.189.0]
 - Compound provenance tags accepted (core/provenance); LPDDR PHY 1.3 → 推导/二手.
 - Energy report: static share, dynamic J, idle source note, >50 % static warning (UI).

@@ -563,6 +563,8 @@ def cmd_d2d(a) -> dict:
 def cmd_eval(a) -> dict:
     body = _body(a)
     body["best_batch"] = a.best_batch
+    if getattr(a, "power_cap", False):
+        body["power_cap"] = True
     if getattr(a, "no_sensitivity", False):
         body["sensitivity"] = False
     out = api.api_eval(body)
@@ -666,6 +668,14 @@ def cmd_eval(a) -> dict:
             print(f"energy {e['J_per_unit']:.4g} J / {e['unit']}  (avg {e['avg_W_per_card']:.0f} W/card; user-supplied "
                   f"table: {', '.join(e['provided'])}; missing: {', '.join(e['missing']) or '-'})  "
                   + "  ".join(f"{k} {v:.3g}" for k, v in e["J_by_action"].items()))
+        if e.get("idle_source_note"):
+            print("  static: " + e["idle_source_note"])
+        if e.get("static_warning"):
+            print("  WARNING " + e["static_warning"])
+        if pc := e.get("power_cap"):
+            print("  power cap: " + (pc["error"] if pc.get("error") else
+                  f"need {pc['P_needed_W']:.1f} W / TDP {pc['tdp_W']:g} W → throughput ×{pc['throughput_factor']:.3g}"
+                  + (f", J/{e['unit']} {pc['J_per_unit_capped']:.4g}" if pc["capped"] else " (not capped)")))
     if b := out.get("budget"):
         mark = {True: "OK", False: "OVER", None: "?"}
         def val(i):
@@ -893,6 +903,8 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("eval", help="evaluate one scenario")
     _scenario_args(e)
     e.add_argument("--best-batch", action="store_true", help="largest batch meeting the TPOT SLO")
+    e.add_argument("--power-cap", action="store_true",
+                   help="0.190: cap sustained throughput at --tdp-W (dynamic + static power), opt-in; needs --tdp-W")
     for name, helptext in (("search", "rank layouts for N cards"), ("compare", "best layout per mapping"),
                            ("stability", "ranking stability under assumption perturbations")):
         x = sub.add_parser(name, help=helptext)

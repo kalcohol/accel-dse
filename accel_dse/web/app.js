@@ -837,7 +837,7 @@ function renderEnergy(r) {
     h('td', { class: 'num' }, h('b', {}, sci(e.J_per_unit)), ` · 平均 ${num(e.avg_W_per_card)} W/卡`)));
   if (e.idle_source_note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, '静态功耗来源：' + e.idle_source_note)));   // 0.189
   if (e.static_share != null) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small', style: e.static_warning ? 'color:var(--danger)' : '' },
-    e.static_warning || `静态能耗占 ${Math.round(e.static_share * 100)}%`)));
+    e.static_warning || `静态能耗占 ${(e.static_share * 100).toFixed(1)}%`)));
   const pc = e.power_cap;
   if (pc) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small' }, pc.error ? '功耗封顶：' + pc.error
     : `功耗封顶：需 ${num(pc.P_needed_W)} W / TDP ${num(pc.tdp_W)} W → ` + (pc.capped ? `吞吐 ×${num(pc.throughput_factor)}，J/单位 ${sci(pc.J_per_unit_capped)}` : '未超 TDP'))));

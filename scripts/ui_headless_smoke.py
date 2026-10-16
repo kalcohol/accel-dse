@@ -201,6 +201,48 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 if not st.startswith("完成") or "能耗 ×" not in cells:
                     errs.append(f"energy sizing: {st[:200]} / energy column missing")
                 p.set_checked("#ins-size-energy", False)
+            # 0.190: energy controls — PHY fields, idle_frac_tdp, tdp_W, static warning, power cap (binding case)
+            if p.query_selector("#e-power_cap"):
+                if p.query_selector("button[data-tab=eval]"):
+                    p.click("button[data-tab=eval]")
+                if p.query_selector("#e-preset") and p.input_value("#e-preset") != "tpuv4i_7nm":
+                    act("energy preset", lambda: p.select_option("#e-preset", "tpuv4i_7nm"))
+
+                def etbl():
+                    return p.inner_text("#energy-tbl") if p.query_selector("#energy-tbl") else ""
+
+                def check(label, ok, extra=""):
+                    steps.append((label, bool(ok)))
+                    if not ok:
+                        errs.append(f"{label}: {extra[:300]}")
+                for k in ("pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W"):
+                    check(f"input e-{k}", p.query_selector(f"#e-{k}") is not None)
+                check("preset fills PHY", p.input_value("#e-pJ_bit_phy_lpddr") not in ("",),
+                      p.input_value("#e-pJ_bit_phy_lpddr"))
+                act("tdp_W 175", lambda: p.fill("#e-tdp_W", "175") or p.press("#e-tdp_W", "Tab"))
+                t = etbl()
+                check("dram_phy row", "DRAM PHY" in t, t)
+                check("static source names H100", "H100" in t, t[-400:])
+                sh = num(t, r"静态能耗占[^0-9]*([0-9.]+)%")
+                check("static share line", sh is not None, t[-400:])
+                if sh is not None and abs(sh - 50) > 0.1:   # warning iff share > 50 % (skip display-rounding tie)
+                    check("warning iff > 50%", ("（>" in t) == (sh > 50), t[-400:])
+                j0 = num(t, r"合计\s+([0-9.e+-]+)")
+                act("idle_frac 0.001", lambda: p.fill("#e-idle_frac_tdp", "0.001") or p.press("#e-idle_frac_tdp", "Tab"))
+                t = etbl()
+                check("no warning at low static", "静态能耗占" in t and "（>" not in t and "用户填写" in t, t)
+                j1 = num(t, r"合计\s+([0-9.e+-]+)")
+                check("J falls with idle_frac", j0 is not None and j1 is not None and j1 < j0, f"{j0} -> {j1}")
+                act("power_cap on", lambda: p.set_checked("#e-power_cap", True))
+                t = etbl()
+                check("cap not binding @175W", "未超 TDP" in t, t)
+                act("tdp_W 2", lambda: p.fill("#e-tdp_W", "2") or p.press("#e-tdp_W", "Tab"))
+                t = etbl()
+                f = num(t, r"吞吐 ×([0-9.]+)")
+                check("cap binds @2W, throughput falls", f is not None and f < 1, t)
+                act("power_cap off", lambda: p.set_checked("#e-power_cap", False))
+                check("cap line gone", "功耗封顶" not in etbl(), etbl())
+                p.click("button[data-tab=insight]")
             p.fill("#ins-steps", "1")
             p.click("#ins-path-run")
             p.wait_for_function("(() => { const t = document.getElementById('ins-path-status').textContent;"
