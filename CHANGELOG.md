@@ -3,6 +3,25 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.170.0] — Evo 2 / StripedHyena 2 genomics models: hyena SE / MR / LR operators, FFT prefill, modal decode state
+- New genomics models `evo2-40b`, `evo2-7b` (1M context) and `evo2-1b` (`evo2_1b_base`, 8192 context), from Arc Institute.
+  - 「来源」 Shapes and dtypes come from the PyTorch zip checkpoints on HF `arcinstitute/evo2_*`, read over HTTP range (`scripts/fetch_torch_ckpt.py` now also takes a checkpoint split into `.part0|.part1` parts, as 40B ships). Hyper-parameters come from the inference configs in github.com/ArcInstitute/evo2 (`evo2/configs/evo2-{40b-1m,7b-1m,1b-8k}.yml`). `scripts/build_evo2_release.py` writes the release JSONs.
+  - Parameters match the checkpoints exactly (41.118B / 6.582B / 1.108B). Excluded from the count: the stored `filter.t` time index and RoPE `inv_freq` buffers, and the duplicate copy of the tied unembedding that 40B stores.
+- Operators 「来源」 Zymrael/vortex `engine.py` (prefill_style fft, as released). Every hyena block starts with an h → 3h projection and a 3-tap short FIR over the 3h channels, computes x1·v, and gates with x2.
+  - SE: direct 7-tap depthwise FIR.
+  - MR: 128-tap FIR, prefilled with an FFT convolution at 2L (`parallel_fir` takes the FFT path for filters ≥ 128 taps).
+  - LR: modal long filter h = Σ R·p^t over 16 real modes, then rfft(h), fft(x1v), ·H, irfft.
+  - LR prefill for generation (`prefill_via_modal_fft`): fft(p^t, 2L) per channel × mode, and ifft(X·S, 2L) per sequence × channel × mode, keeping only position L−1.
+  - FFT FLOPs 「推导」: 5N·log2 N complex, half that for rfft/irfft. They are counted as vector work.
+  - Each torch.fft call or elementwise kernel round-trips its fp32 / complex64 operands through DRAM (`Op.act_x`, streamed). The largest live LR tensor is 2 × b·ch·16·2L·8 B and counts toward capacity.
+  - Decode: FIR caches of 2 / 6 / 127 bf16 columns, a 16-mode fp32 modal state, `step_fir` / `step_iir` arithmetic, and a KV cache only in the MHA layers (5 / 32 in 7B).
+- Example (evo2-7b, H100-SXM reference hardware, batch 1):
+  - Prefill 8192 bases: 0.50 s, DRAM-bound. Activation DRAM is 628 GB vs 31 GB of weights; the modal-FFT state extraction is ≈ 80 % of it (503 GB).
+  - Prefill 1M bases does not fit one card: 2140 GiB needed.
+  - Decode: 6.3 ms/token. The state is 13.5 MB per sequence and does not grow with context; KV is 80 KB/token.
+- `AttnCore.state_bytes()` now computes linear / conv state in one place (memplan, ir); results for existing models are unchanged.
+- Catalog: vendor Arc Institute (Evo 2), listed like Carbon, as causal DNA language models. Fingerprints of existing models are unchanged. Tests: tests/test_core_170.py (4).
+
 ## [0.169.0] — host L2 prefix tier on radix / multi-turn; card→host write traffic; UI
 - The host L2 tier now also applies to the radix prefix tree (0.58) and multi-turn (0.122/0.123, including session mode).
   - Reachable token capacity: write_through max(C1, C2), write_back C1 + C2, with C2 = prefix_host_GB / footprint × path tokens. The Che per-node model runs at the device and the reachable capacity.

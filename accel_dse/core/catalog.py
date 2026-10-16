@@ -56,6 +56,11 @@ EXTRA_TAIL = [
     # 0.145 (official releases 2026-09-04 / 2026-10; public config.json + safetensors headers, as released)
     ("mimo-v2.6-pro", "XiaomiMiMo/MiMo-V2.6-Pro-RL"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
+    # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
+    # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
+    ("evo2-40b", "arcinstitute/evo2_40b"),
+    ("evo2-7b", "arcinstitute/evo2_7b"),
+    ("evo2-1b", "arcinstitute/evo2_1b_base"),
 ]
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors",
            "NousResearch/": "meta-llama (gated) → public mirror NousResearch/*, same safetensors"}
@@ -182,6 +187,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("deepmind", "Google DeepMind（AlphaFold）", ("gh:google-deepmind/",)), ("boltz", "Boltz（MIT）", ("gh:jwohlwend/", "boltz-community/")),
     ("openfold", "OpenFold（aqlaboratory）", ("gh:aqlaboratory/",)),
     ("hfbio", "Hugging Face Bio（Carbon 基因组）", ("HuggingFaceBio/",)),
+    ("arc", "Arc Institute（Evo 2 基因组）", ("arcinstitute/",)),
     ("liquid", "Liquid AI（LFM）", ("LiquidAI/",)), ("ant", "蚂蚁集团（Ling）", ("inclusionAI/",)),
     ("bfl", "Black Forest Labs（FLUX）", ("black-forest-labs/",)),
     ("stepfun", "阶跃星辰（Step）", ("stepfun-ai/",)), ("xiaomi", "小米（MiMo）", ("XiaomiMiMo/",)),
@@ -203,6 +209,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("genmo", "Mochi 1", ("mochi",)), ("hpcai", "Open-Sora", ("opensora",)),
     ("deepmind", "AlphaFold", ("alphafold",)), ("boltz", "Boltz", ("boltz",)), ("openfold", "OpenFold", ("openfold",)),
     ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
+    ("arc", "Evo 2（StripedHyena 2 DNA 语言模型）", ("evo2-",)),
     ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)), ("ant", "Ling-3.0-VL", ("ling-3.0",)),
     ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),
     ("stepfun", "Step-5", ("step-5",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),

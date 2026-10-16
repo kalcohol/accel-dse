@@ -126,6 +126,18 @@ class AttnCore:
     conv_kernel: int = 0
     causal: bool = True        # False: bidirectional (DiT / protein encoders)
     cross: bool = False        # cross-attention: keys are the conditioning tokens (``full`` phase ``ctx``)
+    # 0.170 StripedHyena 2 (Evo 2, vortex engine.py): lin = "hyena"; conv_channels / conv_kernel = the featurizer short
+    # FIR over the 3h projections; the inner filter of the h-wide operator is
+    #   se  short explicit FIR (hcs, hy_len taps, direct depthwise conv)
+    #   mr  medium explicit FIR (hcm, hy_len taps; the reference prefills it with an FFT conv at fft size 2L)
+    #   lr  long implicit filter (hcl, modal form: hy_modes real poles / residues per channel; FFT conv at 2L; decode
+    #       = diagonal recurrence on an fp32 state of hy_modes per channel)
+    hy: str = ""
+    hy_len: int = 0
+    hy_groups: int = 0          # filter groups (channels sharing one explicit filter)
+    hy_modes: int = 0
+    hy_prefill: str = ""        # lr prefill for generation: fft (modal-FFT state extraction, the release config) |
+                                # recurrence (direct per-token recurrence)
     span: str = "full"         # full-phase self-attention extent: full (3D) | spatial (per latent frame) |
                                # temporal (per spatial position) — factorized ST-DiT (Open-Sora STDiT3)
 
@@ -151,6 +163,15 @@ class AttnCore:
             return (2 * self.idx_dim + 1) * kvb / self.compress
         per = self.idx_dim + 4 * math.ceil(self.idx_dim / 128) if self.idx_fp8 else self.idx_dim * kvb
         return per / self.compress
+
+    def state_bytes(self, tp: int, stb: float) -> float:
+        """Recurrent state bytes per sequence on one TP rank (linear attention / conv / hyena)."""
+        cd = lambda a: -(-a // tp)
+        if self.hy:
+            # vortex: FIR caches hold the bf16 inputs (u[..., -(len−1):]); the modal IIR state is fp32
+            fir = cd(self.conv_channels) * max(0, self.conv_kernel - 1) + cd(self.conv_channels // 3) * max(0, self.hy_len - 1)
+            return fir * 2.0 + cd(self.n_state_heads) * self.state_dk * self.state_dv * 4.0
+        return (cd(self.n_state_heads) * self.state_dk * self.state_dv + cd(self.conv_channels) * max(0, self.conv_kernel - 1)) * stb
 
     def state_elems(self) -> int:
         """Recurrent state per sequence (linear attention) incl. conv state."""
@@ -1201,8 +1222,50 @@ def _build_step5(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, mtp, notes, "full"
 
 
+def _build_hyena(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.170 StripedHyena 2 / Evo 2 (ArcInstitute/evo2 configs + Zymrael/vortex model.py, engine.py).
+    Every block: pre-norm mixer + post-norm gated MLP (l1, l2 → l3, inner_mlp_size).  Mixer by layer index:
+      hcs / hcm / hcl  hyena operator: projections h → 3h, short FIR (short_filter_length) over the 3h channels,
+                       split x2, x1, v; inner filter on x1·v (se: hcs_filter_length taps, mr: hcm_filter_length taps,
+                       lr: modal long filter of state_size poles), gate by x2 (+ D skip on mr / lr), out_filter_dense
+      attn             MHA (num_attention_heads, Wqkv 3h, out_proj with bias), RoPE; the only layers with a KV cache."""
+    h = c["hidden_size"]
+    H = c["num_attention_heads"]
+    L = c["num_hidden_layers"]
+    sf = c.get("short_filter_length") or 3
+    kind = {}
+    for k, t in (("hcs_layer_idxs", "se"), ("hcm_layer_idxs", "mr"), ("hcl_layer_idxs", "lr"), ("attn_layer_idxs", "attn")):
+        for i in c.get(k) or []:
+            kind[i] = t
+    layers = []
+    for i in range(L):
+        t = kind.get(i, "attn")
+        if t == "attn":
+            alin, core = _gqa(h, H, H, h // H)
+            misc = h                                   # out_proj bias
+        else:
+            alin = (Linear("hyena_in", h, 3 * h, "col"), Linear("hyena_out", h, h, "row"))
+            ln = {"se": c.get("hcs_filter_length") or 7, "mr": c.get("hcm_filter_length") or 128}.get(t, 0)
+            grp = {"se": c.get("hcs_filter_groups"), "mr": c.get("hcm_filter_groups"), "lr": c.get("hcl_filter_groups")}[t] or h
+            modes = (c.get("state_size") or 16) if t == "lr" else 0
+            core = AttnCore("linear", n_state_heads=h if t == "lr" else 0, state_dk=1 if t == "lr" else 0,
+                            state_dv=modes, conv_channels=3 * h, conv_kernel=sf, lin="hyena", hy=t, hy_len=ln,
+                            hy_groups=grp, hy_modes=modes, hy_prefill=str(c.get("prefill_style") or "fft") if t == "lr" else "")
+            # short FIR taps, out_filter_dense bias; se: filter.h [groups, 1, taps]; mr: + D; lr: D, log_poles, residues
+            misc = 3 * h * sf + h + {"se": grp * ln, "mr": grp * ln + h, "lr": h + 2 * h * modes}[t]
+        ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        layers.append(Layer(alin, core, ffn, flin, misc + 2 * h))
+    n = {t: sum(1 for i in range(L) if kind.get(i, "attn") == t) for t in ("se", "mr", "lr", "attn")}
+    notes = [f"StripedHyena 2：{n['se']} 层 Hyena-SE（{c.get('hcs_filter_length')} 抽头 FIR）、{n['mr']} 层 Hyena-MR"
+             f"（{c.get('hcm_filter_length')} 抽头，预填充走 FFT 卷积）、{n['lr']} 层 Hyena-LR（{c.get('state_size')} 模态"
+             f"长滤波，FFT 卷积 / 解码递推）、{n['attn']} 层 MHA（唯一有 KV cache 的层）"]
+    return layers, [], notes, "full"
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if mt == "stripedhyena2":
+        return _build_hyena, "StripedHyena 2（Hyena SE / MR / LR + MHA）"
     if mt == "mimo_v2":
         return _build_mimo_v2, "混合注意力（SWA + full）MoE"
     if mt == "step5":

@@ -420,12 +420,79 @@ def skew_from_load(load: tuple[float, ...], ep: int) -> float:
     return max(1.0, max(ranks) / mean) if mean > 0 else 1.0
 
 
+# ------------------------------------------------------------------ StripedHyena 2 operators (0.170)
+def fft_flops(n: int, real: bool = False) -> float:
+    """Radix-2 Cooley–Tukey count「推导」: complex FFT of size n = 5·n·log2 n real flops; a real-input / real-output
+    transform (rfft / irfft) ≈ half."""
+    if n <= 1:
+        return 0.0
+    f = 5.0 * n * math.log2(n)
+    return f / 2 if real else f
+
+
+def _hyena_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, b_loc: int) -> list[Op]:
+    """One hyena operator between its projections (vortex engine.py, as released: prefill_style fft).
+
+    Featurizer: short FIR (conv_kernel taps) over the 3h projection channels, u = x1·v, output gate x2·z.
+    se: direct depthwise FIR of hy_len taps.  mr: FFT convolution at fft size N = 2L (engine.parallel_fir takes the
+    fftconv path for filters ≥ 128 taps): rfft(u), ·k_f, irfft, + D·u.  lr: the long filter h = Σ_m R·p_m^t is built
+    over L (exp per mode), rfft(h) once per forward, complex fft(x1v), ·H, irfft, + D·x1v; for generation the state
+    after the prompt comes from ``prefill_via_modal_fft``: fft(p_m^t, N) per channel × mode (once, repeated over the
+    batch) and ifft(X·S, N) per sequence × channel × mode, of which only position L−1 is kept.
+    Each torch.fft call / elementwise op is its own kernel over fp32 / complex64 tensors, so its operands round-trip
+    DRAM (``act_x``: bytes per kernel below, L = prompt tokens, per channel; complex64 = 8 B, fp32 = 4 B「推导」);
+    ``act_bytes`` = the largest live intermediate (lr: the modal ifft input and output, 2 × b·ch·M·N·8 B).
+    Prefill with ph.ctx > 0 (chunked): the convolution runs over the chunk and the cached state adds M ops / channel
+    / token (the release has no chunked-prefill path「假设」).
+    Decode (engine.step_fir / step_iir): FIR dot over the cached taps, modal recurrence state = p·state + x1v and
+    y = x2·(Σ R·state + D·x1v); exp(log_poles) per step; caches read + written each step."""
+    tp = sh.tp
+    ch = _cdiv(core.conv_channels // 3, tp)
+    t = b_loc * ph.q
+    M = core.hy_modes
+    st_bytes = core.state_bytes(tp, _fmt(model.state_fmt).bytes)
+    vec = _cdiv(core.conv_channels, tp) * core.conv_kernel * t * 2 + 2 * ch * t     # short FIR, x1·v, x2·z
+    sfu = 0.0
+    act_x = act_peak = 0.0
+    if ph.kind == "decode":
+        if core.hy in ("se", "mr"):
+            vec += 2 * core.hy_len * ch * t + (2 * ch * t if core.hy == "mr" else 0)
+        else:
+            vec += ch * t * (4 * M + 2)
+            sfu += ch * t * M
+    else:
+        L = ph.q
+        N = 2 * L
+        if core.hy == "se":
+            vec += 2 * core.hy_len * ch * t
+        elif core.hy == "mr":
+            g = _cdiv(core.hy_groups or core.conv_channels // 3, tp)
+            vec += b_loc * ch * (fft_flops(N, True) * 2 + 6 * (N // 2 + 1)) + g * fft_flops(N, True) + 2 * ch * t
+            act_x += b_loc * ch * L * (12 + 16 + 16) + g * L * 12      # rfft(u) 4→8, ·k_f 16→8, irfft 8→8
+        else:
+            vec += ch * (2 * M * L + fft_flops(N, True))                          # h = Σ R·p^t, rfft(h)
+            sfu += ch * M * L
+            vec += b_loc * ch * (fft_flops(N) + 6 * (N // 2 + 1) + fft_flops(N, True) + 3 * L)
+            act_x += ch * (8 * M * L + 12 * L) + b_loc * ch * L * (20 + 24 + 16)  # h build / rfft; fft(x1v), ·H, irfft
+            if core.hy_prefill == "fft":
+                vec += ch * M * fft_flops(N) + b_loc * ch * M * (6 * N + fft_flops(N))
+                sfu += ch * M * L
+                act_x += ch * M * L * (4 + 20) + b_loc * ch * M * L * (16 + 32 + 32)   # exp, fft; repeat, X·S, ifft
+                act_peak = 2.0 * b_loc * ch * M * N * 8
+            if ph.ctx:
+                vec += ch * t * 2 * M
+    return [Op("state_update", "state", li, vec=vec, sfu=sfu, state_rw=2 * st_bytes * b_loc, kv_read=0.0,
+               act_x=act_x, act_bytes=act_peak, stream=act_x > 0)]
+
+
 # ------------------------------------------------------------------ attention core
 def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, b_loc: int) -> list[Op]:
     ops: list[Op] = []
     ab = _fmt(model.act_fmt).bytes
     kvb = _fmt(model.kv_fmt).bytes
     q, tp = ph.q, sh.tp
+    if core.kind == "linear" and core.lin == "hyena":
+        return _hyena_ops(model, li, core, ph, sh, b_loc)
     if core.kind == "linear":
         h_loc = _cdiv(core.n_state_heads, tp)
         t = b_loc * q

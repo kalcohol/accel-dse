@@ -5,7 +5,7 @@ with HTTP range requests; the pickle is replayed by a restricted unpickler that 
 callable from the file -- unknown globals become inert placeholder objects.  Output: the same header-JSON shape as
 fetch_hf_release.py ({name: {"dtype", "shape"}}) so summarize_release.py can consume it.
 
-usage: fetch_torch_ckpt.py URL OUT.json [--hparams OUT_hparams.json]
+usage: fetch_torch_ckpt.py URL[|URL_part2…] OUT.json [--hparams OUT_hparams.json]
 """
 from __future__ import annotations
 
@@ -26,11 +26,26 @@ TDT = {"float32": "F32", "float": "F32", "float16": "F16", "half": "F16", "bfloa
 
 class RangeFile(io.RawIOBase):
     def __init__(self, url: str, block: int = 1 << 20):
+        # 0.170: "URL1|URL2|…" = one checkpoint split into consecutive byte parts (Evo 2 40B: evo2_40b.pt.part0/1)
         self.url, self.block, self.pos, self.cache = url, block, 0, {}
-        req = urllib.request.Request(url, method="HEAD", headers=UA)
-        with urllib.request.urlopen(req, timeout=60) as r:
-            self.size = int(r.headers["Content-Length"])
+        self.parts = []
+        for u in url.split("|"):
+            req = urllib.request.Request(u, method="HEAD", headers=UA)
+            with urllib.request.urlopen(req, timeout=60) as r:
+                self.parts.append((u, int(r.headers["Content-Length"])))
+        self.size = sum(n for _, n in self.parts)
         self.fetched = 0
+
+    def _range(self, a, b):
+        out, base = bytearray(), 0
+        for u, n in self.parts:
+            lo, hi = max(a, base), min(b, base + n - 1)
+            if lo <= hi:
+                req = urllib.request.Request(u, headers={**UA, "Range": f"bytes={lo - base}-{hi - base}"})
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    out += r.read()
+            base += n
+        return bytes(out)
 
     def seekable(self): return True
     def readable(self): return True
@@ -43,9 +58,7 @@ class RangeFile(io.RawIOBase):
     def _blk(self, i):
         if i not in self.cache:
             a, b = i * self.block, min(self.size, (i + 1) * self.block) - 1
-            req = urllib.request.Request(self.url, headers={**UA, "Range": f"bytes={a}-{b}"})
-            with urllib.request.urlopen(req, timeout=120) as r:
-                self.cache[i] = r.read()
+            self.cache[i] = self._range(a, b)
             self.fetched += len(self.cache[i])
         return self.cache[i]
 

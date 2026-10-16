@@ -1,0 +1,159 @@
+{
+ "aliases_dropped": [
+  "unembed.weight"
+ ],
+ "bytes_llm": 13165805056,
+ "bytes_mtp": 0,
+ "bytes_total": 13766621200,
+ "checkpoint": "https://huggingface.co/arcinstitute/evo2_7b/resolve/main/evo2_7b.pt",
+ "config": {
+  "architectures": [
+   "StripedHyena2"
+  ],
+  "attn_layer_idxs": [
+   3,
+   10,
+   17,
+   24,
+   31
+  ],
+  "column_split": true,
+  "column_split_hyena": false,
+  "config_source": "https://raw.githubusercontent.com/ArcInstitute/evo2/main/evo2/configs/evo2-7b-1m.yml",
+  "eps": 1e-06,
+  "evo2_style_activations": true,
+  "final_norm": true,
+  "hcl_filter_groups": 4096,
+  "hcl_layer_idxs": [
+   2,
+   6,
+   9,
+   13,
+   16,
+   20,
+   23,
+   27,
+   30
+  ],
+  "hcm_filter_groups": 256,
+  "hcm_filter_length": 128,
+  "hcm_layer_idxs": [
+   1,
+   5,
+   8,
+   12,
+   15,
+   19,
+   22,
+   26,
+   29
+  ],
+  "hcs_filter_groups": 256,
+  "hcs_filter_length": 7,
+  "hcs_layer_idxs": [
+   0,
+   4,
+   7,
+   11,
+   14,
+   18,
+   21,
+   25,
+   28
+  ],
+  "hidden_size": 4096,
+  "hyena_filter_groups": 1,
+  "hyena_flip_x1x2": false,
+  "hyena_out_proj_bias": true,
+  "inference_mode": true,
+  "inner_mlp_size": 11264,
+  "inner_size_multiple_of": 16,
+  "interleave": true,
+  "intermediate_size": 11264,
+  "log_intermediate_values": false,
+  "make_vocab_size_divisible_by": 8,
+  "max_batch_size": 1,
+  "max_position_embeddings": 1048576,
+  "max_seqlen": 1048576,
+  "mha_out_proj_bias": true,
+  "mlp_activation": "gelu",
+  "mlp_init_method": "torch.nn.init.zeros_",
+  "mlp_output_init_method": "torch.nn.init.zeros_",
+  "model_name": "shc-evo2-7b-8k-2T-v2",
+  "model_parallel_size": 1,
+  "model_type": "stripedhyena2",
+  "num_attention_heads": 32,
+  "num_filters": 4096,
+  "num_hidden_layers": 32,
+  "num_layers": 32,
+  "pipe_parallel_size": 1,
+  "prefill_style": "fft",
+  "print_activations": false,
+  "proj_groups": 1,
+  "qkv_proj_bias": false,
+  "rotary_emb_base": 10000,
+  "rotary_emb_scaling_factor": 128,
+  "short_filter_bias": false,
+  "short_filter_length": 3,
+  "state_size": 16,
+  "tie_embeddings": true,
+  "tie_word_embeddings": true,
+  "tokenizer_type": "CharLevelTokenizer",
+  "use_flash_attn": true,
+  "use_flash_depthwise": false,
+  "use_flash_rmsnorm": false,
+  "use_flashfft": false,
+  "use_fp8_input_projections": true,
+  "use_interpolated_rotary_pos_emb": true,
+  "use_laughing_hyena": false,
+  "vocab_size": 512
+ },
+ "fetched": "2026-10-16",
+ "n_tensors": 353,
+ "params_llm": 6581722880,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "arcinstitute/evo2_7b",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 4297989632,
+    "params": 2148994816
+   },
+   "fp32": {
+    "bytes": 4718592,
+    "params": 1179648
+   }
+  },
+  "buffer": {
+   "bf16": {
+    "bytes": 640,
+    "params": 320
+   },
+   "fp32": {
+    "bytes": 37748736,
+    "params": 9437184
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 4194304,
+    "params": 2097152
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 8858370048,
+    "params": 4429185024
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 532480,
+    "params": 266240
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

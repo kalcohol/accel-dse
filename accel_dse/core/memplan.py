@@ -123,7 +123,7 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
         if L.ple_rows:
             st += (L.ple_conv - 1) * L.ple_dil * L.gres_n * model.hidden * 2
         if c.kind == "linear":
-            st += (c.n_state_heads * c.state_dk * c.state_dv + c.conv_channels * max(0, c.conv_kernel - 1)) * stb
+            st += c.state_bytes(1, stb)
         if c.idx_heads and c.dual:
             idx += (S // c.compress - p // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
         elif c.idx_heads and c.idx_sum and c.qsa:     # 0.145: Step-5 summaries of completed regions only
@@ -158,7 +158,7 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         if L.ple_rows:      # Qwen4Exp PLE dilated conv state, bf16 (kernel − 1)·dilation columns of N·h
             st += (L.ple_conv - 1) * L.ple_dil * L.gres_n * model.hidden * 2
         if c.kind == "linear":
-            st += (_cdiv(c.n_state_heads, sh.tp) * c.state_dk * c.state_dv + _cdiv(c.conv_channels, sh.tp) * max(0, c.conv_kernel - 1)) * stb
+            st += c.state_bytes(sh.tp, stb)
         if c.idx_heads and c.dual:
             idx += (ctx // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
         elif c.idx_heads and c.idx_sum and c.qsa:     # 0.145: Step-5 fp32 + fp8 summary per completed region
@@ -336,6 +336,8 @@ def act_stream(op: Op, ab: float, sram_bytes: float) -> tuple[float, float]:
         # which made small chunks look faster than the fused kernel
         io = tot - op.lg_bytes
         return (io, 0.0) if tot > budget else (0.0, 0.0)
+    if op.kind == "state" and op.act_x:     # 0.170 hyena FFT kernels: each torch.fft / elementwise call round-trips
+        return op.act_x, 0.0                # its fp32 / complex64 operands through DRAM (ir._hyena_ops)
     if op.kind == "attn":       # qk op of a flash-style attention (v_dim == qk_dim for these models)
         qo = 2.0 * op.count * op.m * op.k * ab
         kv = 2.0 * op.count * op.n * op.k * ab

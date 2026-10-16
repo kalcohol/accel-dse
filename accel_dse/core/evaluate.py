@@ -420,7 +420,7 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
             d["act"] += a; d["w_extra"] += wx
             ab = _fmt(model.act_fmt).bytes
             tot = (((o.in_elems or o.m * o.k * o.count) + o.m * o.n * o.count) * ab if o.kind == "gemm"
-                   else o.act_bytes if o.bmm
+                   else o.act_bytes if (o.bmm or o.kind == "state")
                    else 2.0 * o.count * (o.m + o.n) * o.k * ab)
             d["max_act_tot"] = max(d["max_act_tot"], tot)
     for k, v in touched(ops).items():

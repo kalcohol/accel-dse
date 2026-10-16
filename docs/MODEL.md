@@ -3818,3 +3818,22 @@ SGLang HiCache (「来源」 docs.sglang.io hicache_design: L1 GPU / L2 host; wr
 - Tree / multi-turn: token capacity C = K_float·Lp. Reach = max(C1, C2) (write_through) or C1 + C2 (write_back). H(reach) and H(C1) by the existing per-node Che models. h2 = H(reach) − H(C1).
 - Writes: wf = 1 − H (write_through) or 1 − H1 (write_back), as a fraction of the prefix. Bytes per card per request = wf · prefix shard bytes. Capacity per prefill replica = host GBps / that, on the card→host direction (full duplex, separate from loads).
 
+## 116. StripedHyena 2 / Evo 2 (0.170)
+Sources: the evo2 inference yml files (layer pattern hcs / hcm / hcl / attn, filter lengths and groups, state_size, inner_mlp_size, max_seqlen 1M) and checkpoint headers read over HTTP range (tensor shapes match exactly). Operator semantics come from vortex `engine.py`.
+
+| op | prefill (L = prompt, N = 2L, per channel) | decode / cached state |
+|---|---|---|
+| featurizer | 3-tap FIR over 3h, x1·v, x2·z | 2 bf16 columns × 3h |
+| SE (7 taps) | 14 flop / token | 6 bf16 columns |
+| MR (128 taps) | rfft + irfft (2.5 N log2 N each) + 6(N/2+1); DRAM 44·L B | 127 bf16 columns, 256 flop |
+| LR (16 modes) | build h (2·16·L, exp 16·L), rfft(h), fft(x1v), ·H, irfft; DRAM 12L + 60L·b B | 16 fp32, 4·16 + 2 flop, 16 exp |
+| LR modal-FFT state | 16 × [fft(p^t) 5N log2 N + b·(6N + ifft)]; DRAM 16·(24 + 80·b)·L B; live 2·b·16·N·8 B | (state above) |
+
+- The FFT operands round-trip DRAM because the reference runs one kernel per torch.fft / elementwise call. 「推导」 Byte counts are input + output per call.
+- Chunked prefill (ctx > 0) has no counterpart in the release. 「假设」 It is modelled as a convolution over the chunk plus 2·16 flop per channel per token for the carried state.
+- Not modelled:
+  - The opt-in HCS / HCM / HCL fused kernels (`use_h*_kernel`, off in the configs).
+  - FlashFFTConv (`use_flashfft: False`).
+  - The `recurrence` prefill style: the release uses fft.
+  - The scoring-only forward without a cache, which skips the modal state.
+
