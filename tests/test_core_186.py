@@ -42,7 +42,8 @@ def test_only_kind_field_is_not_missing_generic():
 
 def test_preset_values_and_labels():
     f = ENERGY_PRESETS["tpuv4i_7nm"]["fields"]
-    assert f["pJ_bit_dram_hbm"][:2] == (7.0, "二手") and f["pJ_bit_dram_lpddr"][:2] == (10.0, "二手")
+    assert abs(f["pJ_bit_dram_hbm"][0] - 3.44) < 1e-9 and f["pJ_bit_dram_hbm"][1] == "推导"
+    assert abs(f["pJ_bit_dram_lpddr"][0] - 4.0) < 1e-9 and f["pJ_bit_dram_lpddr"][1] == "推导"
     assert "pJ_bit_dram_hbm" not in ENERGY_PRESETS["horowitz_45nm"]["fields"]
     t = EnergyTable(**apply_energy_preset({"energy_preset": "tpuv4i_7nm"}))
     jl, jh = energy_report(_r(LP), t)["J_by_action"]["dram"], energy_report(_r(HBM), t)["J_by_action"]["dram"]

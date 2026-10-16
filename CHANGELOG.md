@@ -3,6 +3,21 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.187.0] - 2026-10-16
+### 变更（默认值，tpuv4i_7nm 能耗预设）
+- 一手来源与 0.186 的 PIM-AI 数值矛盾：一手数值约为它的一半，LPDDR/HBM 比值 1.16 而非 1.43。改为：
+  - pJ_bit_dram_hbm：7.0「二手」→ 3.44「推导」（SK hynix IEDM 2023 15.6：HBM2E ≈ 4.3 pJ/bit，HBM3E 低 20%）。
+  - pJ_bit_dram_lpddr：10.0「二手」→ 4.0「推导」（NVIDIA Grace：LPDDR5X 子系统约 16 W 提供 500 GB/s）。
+  - 二者都是内存侧、峰值带宽口径，SoC 侧 PHY 不含（HBM3 host PHY ≈ 0.29 pJ/bit，Chae JSSC 2023）。交叉核对：O'Connor MICRO 2017 HBM2 3.97。
+  - horowitz_45nm 预设不加按类型值（无 45 nm 时代的按类型来源）。
+  - 2 nm LPDDR6 PHY 的 pJ/bit：0.184 所用来源（SemiAnalysis 对 ISSCC 2026 37.3 的报道）未给，未用。
+- 效果（tpuv4i_7nm，默认芯片 + qwen3-8b）：DRAM 能耗 LPDDR5X 1.254 → 0.502 J/token，HBM3E 0.878 → 0.431。
+### 新增：缩减余量的能耗暴露 / 能耗约束
+- sizing_report / API / UI 每行给出最差模型在 min_ok 处的 DRAM 字节和 SRAM 字节倍数；有能耗表时也给 J/单位倍数。
+- energy_tie=true（UI「能耗也不变差」）把「能耗 / 单位 ≤ 当前 × 1.01」加入可行条件。
+- 例：wan2.1 SRAM 可缩到 25% 而延迟不变，但 DRAM 字节 ×1.64、能耗 ×1.033；加能耗约束后只能缩到 50%，受限于能耗。
+- 选用的 UI 冒烟脚本已覆盖能耗约束。MODEL §134。
+
 ## [0.186.0] - 2026-10-16
 ### UI 冒烟（选用脚本）加方向断言
 - scripts/ui_headless_smoke.py 现在检查渲染值确实变化且方向正确：固定 batch 1→16 TPOT 上升；2 卡 TP2 比 TP1 TPOT 低；DRAM 颗数减少则带宽、容量都降，恢复后带宽复原；prefill 显示 TTFT 卡。每次改动都等到 /api/eval 返回（不是任意 POST）。

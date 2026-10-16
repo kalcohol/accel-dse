@@ -143,7 +143,7 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity"}, "fit": set(), "
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
                "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": set(),
                "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
-               "insight_sizing": {"models", "resources", "joint", "unpriced"}}
+               "insight_sizing": {"models", "resources", "joint", "unpriced", "energy_tie"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -930,7 +930,8 @@ def api_insight_sizing(body: dict) -> dict:
     if res is not None and (not isinstance(res, list) or not all(isinstance(x, str) for x in res)):
         raise ApiError("resources must be a list of strings")
     try:
-        return {**sizing_report(scn, models, _budget(body), res, joint=bool(body.get("joint", False)), unpriced=body.get("unpriced", "last")), "hash": scn.hash()}
+        return {**sizing_report(scn, models, _budget(body), res, joint=bool(body.get("joint", False)), unpriced=body.get("unpriced", "last"),
+                                     table=_energy_table(body), energy_tie=body.get("energy_tie", False) is True), "hash": scn.hash()}
     except ValueError as e:
         raise ApiError(str(e)) from None
 

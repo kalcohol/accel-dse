@@ -286,7 +286,7 @@ def _gain(m: str, base: dict, alt: dict) -> float | None:
     a, b = base[m], alt[m]
     if not a or not b:
         return None
-    return a / b if m in ("ttft", "tpot", "lat") else b / a   # speed-up, > 1 = better
+    return a / b if m in ("ttft", "tpot", "lat", "J_tok") else b / a   # speed-up, > 1 = better (J: less = better)
 
 
 def insight_report(base: Scenario, models=None, budget: Budget | None = None, table: EnergyTable | None = None) -> dict:
@@ -661,7 +661,7 @@ JOINT_SKIP = ("dram_units",)
 
 
 def sizing_report(base: Scenario, models=None, budget: Budget | None = None, resources=None, joint: bool = False,
-                  unpriced: str = "last") -> dict:
+                  unpriced: str = "last", table: EnergyTable | None = None, energy_tie: bool = False) -> dict:
     """Per resource: the smallest value (≥ current × SIZING_MIN_FRAC) at which every model keeps every domain metric
     within TIE of the current chip and still fits.  Halving search, then geometric bisection; the reported minimum is
     always a probed point that passed.  ``limited_by`` = the first model / metric that fails just below it."""
@@ -675,8 +675,14 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
     if bad_res:
         raise ValueError(f"resources must be among {sorted(SIZING)}")
     scns = {mid: model_scenario(base, mid) for mid in models}
-    table = EnergyTable()
+    # 0.187: energy exposure — with an energy table each row reports J / unit at min_ok vs current (by action), and
+    # energy_tie=True makes "J / unit no worse than current × (1 + TIE)" part of the feasibility contract.
+    table = table or EnergyTable()
+    if energy_tie and not table.provided:
+        raise ValueError("energy_tie needs an energy table (energy / energy_preset)")
     ref = {mid: _point(s, table, domain) for mid, s in scns.items()}
+    if energy_tie:
+        metrics = tuple(metrics) + ("J_tok",)
 
     def check(key, v):
         """None if every model holds; else (model, metric | 'fits', gain)."""
@@ -752,11 +758,13 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
                "integer": bool(integer),
                "unit_floor": bool(integer and fail is None and ok <= 1),
                "limited_by": None if why is None else {"model": why[0], "metric": why[1], "gain": why[2]}}
+        row["traffic"] = _traffic_delta(scns, ref, SIZING[key][3], ok, table, domain)
         d = _density(budget, dens, base)
         if d is not None:
             row["mm2_saved"] = (cur - ok) * _unit_mm2(key, base, d)
         out.append(row)
-    rep = {"domain": domain, "models": models, "metrics": metric_labels(domain), "tie": TIE, "resources": out,
+    rep = {"domain": domain, "models": models, "metrics": {**metric_labels(domain), **({"J_tok": "能耗 / 单位（越低越好）"} if energy_tie else {})},
+           "energy_tie": bool(energy_tie), "tie": TIE, "resources": out,
            "chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label,
             "basis": "逐项缩小（先减半再几何二分）× 现有引擎；每个模型的全部领域指标都在 ±1% 内且仍放得下才算可行；"
                      "min_ok 是实测通过的点（不是外推）。只回答「还能省多少」，面积仅在已有密度（SRAM mm²/MiB、MAC mm²/kMAC，来自密度预设或用户）时给 mm²；DRAM 带宽经 mem_eff 连续缩放（容量不变），不给 PHY 面积；DRAM 封装/堆栈数为离散项（带宽+容量同减），面积 = 位宽 × DRAM PHY 密度（若已设），不参与联合缩减。"}
@@ -766,6 +774,27 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
         rep["joint"] = _joint_shrink(base, [r for r in out if r["key"] not in JOINT_SKIP], budget, worst, unpriced)
     rep["binding"] = _binding(out, rep.get("joint"))
     return rep
+
+
+def _traffic_delta(scns, ref, setter, v, table, domain) -> dict:
+    """0.187: at the reported min_ok, per model: DRAM / SRAM bytes per unit and (with a table) J per unit and its
+    DRAM / SRAM parts, as ratios to the current chip.  Exposes shrinks that hold speed but move traffic (and energy)
+    from SRAM to DRAM."""
+    out = {}
+    for mid, s in scns.items():
+        try:
+            p = _point(setter(s, v), table, domain)
+        except ValueError:
+            continue
+        r0 = ref[mid]
+        rat = lambda a, b: (b / a) if a else None          # noqa: E731
+        e = {"dram_B": rat(r0.get("dram_B_tok"), p.get("dram_B_tok")),
+             "sram_B": rat(r0.get("sram_B_tok"), p.get("sram_B_tok"))}
+        if r0.get("J_tok") and p.get("J_tok"):
+            e["J"] = p["J_tok"] / r0["J_tok"]
+            e["J_partial"] = bool(r0.get("J_partial"))
+        out[mid] = e
+    return out
 
 
 def _binding(rows: list, joint) -> dict:

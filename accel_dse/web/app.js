@@ -1714,6 +1714,14 @@ function initElectricityPresets(selId = 'b-elec-preset', catKey = 'electricity_p
   });
 }
 
+/* 0.187: worst model's DRAM-byte and energy ratio at min_ok (energy only with an energy table) */
+function trafficCell(t) {
+  const v = Object.values(t || {});
+  if (!v.length) return '—';
+  const mx = (k) => { const xs = v.map((e) => e[k]).filter((x) => x != null); return xs.length ? Math.max(...xs) : null; };
+  const d = mx('dram_B'), e = mx('J');
+  return `DRAM ×${d != null ? num(d) : '—'}` + (e != null ? ` · 能耗 ×${num(e)}${v.some((x) => x.J_partial) ? '（部分）' : ''}` : '');
+}
 /* 0.157: datapath sizing headroom */
 async function runInsightSizing() {
   const btn = $('ins-size-run');
@@ -1721,15 +1729,15 @@ async function runInsightSizing() {
   $('ins-size-status').textContent = '计算中（每个资源逐次减半再二分 × 每个模型）…';
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
-    const r = await track(req('insight_sizing', '/api/insight_sizing', body({ ...(ms.length ? { models: ms } : {}), joint: $('ins-size-joint').checked, unpriced: $('ins-size-unpriced').value })));
+    const r = await track(req('insight_sizing', '/api/insight_sizing', body({ ...(ms.length ? { models: ms } : {}), joint: $('ins-size-joint').checked, unpriced: $('ins-size-unpriced').value, energy_tie: $('ins-size-energy').checked })));
     if (!r) return;
-    const mz = (k) => (r.metrics[k] || k).replace(/ 加速$/, '');
+    const mz = (k) => (k === 'J_tok' ? '能耗' : (r.metrics[k] || k).replace(/ 加速$/, ''));
     const nv = (x, v) => (x.integer ? String(Math.round(v)) : num(v));   // 0.184: whole cores / packages
-    put($('ins-size-tbl'), h('thead', {}, h('tr', {}, ['资源', '当前', '最小可行', '可缩到', '受限于', '省 mm²'].map((x) => h('th', {}, x)))),
+    put($('ins-size-tbl'), h('thead', {}, h('tr', {}, ['资源', '当前', '最小可行', '可缩到', '受限于', '省 mm²', 'DRAM B / 能耗（最差模型，× 当前）'].map((x) => h('th', {}, x)))),
       h('tbody', {}, r.resources.map((x) => h('tr', {}, h('td', {}, x.label), h('td', {}, `${nv(x, x.current)} ${x.unit}`),
         h('td', {}, `${nv(x, x.min_ok)} ${x.unit}`), h('td', {}, (x.floor_hit && !x.unit_floor ? '≤ ' : '') + num(x.frac * 100) + '%'),
         h('td', {}, x.unit_floor ? `已是最小值 1 ${x.unit}` : x.limited_by ? `${x.limited_by.model} · ${x.limited_by.metric === 'fits' ? '放不下' : mz(x.limited_by.metric)}${x.limited_by.gain ? ' ×' + num(x.limited_by.gain) : ''}` : '—（到搜索下限）'),
-        h('td', {}, x.mm2_saved != null ? num(x.mm2_saved) : '—')))));
+        h('td', {}, x.mm2_saved != null ? num(x.mm2_saved) : '—'), h('td', {}, trafficCell(x.traffic))))));
     const j = r.joint;
     $('ins-size-joint-sum').textContent = j ? `各项最小值同时生效：${j.all_minima_hold ? '仍在 ±1% 内' : `不成立（最差 ×${num(j.all_minima_worst_gain)}，${(j.all_minima_limited_by || []).join(' · ')}）`}；回退 ${j.backoffs.length} 步后 ${j.holds ? '成立' : '仍不成立'}（最差 ×${num(j.worst_gain)}）${j.mm2_saved_total != null ? `，合计省 ${num(j.mm2_saved_total)} mm²（贪心 ${num(j.greedy_mm2_saved)}）` : ''} · 搜索 ${j.search} · 排序 ${j.rank}` : '';
     const bd = r.binding;

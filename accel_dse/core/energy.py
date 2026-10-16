@@ -113,6 +113,10 @@ _NVL = ("NVIDIA Grace Hopper Superchip Architecture whitepaper: NVLink-C2C 1.3 p
 
 _FGDRAM = ("O'Connor, Chatterjee et al. (NVIDIA), 'Fine-Grained DRAM: Energy-Efficient DRAM for Extreme Bandwidth "
            "Systems', MICRO 2017, §1 / Fig. 1b")
+_SKH_IEDM = ("SK hynix, 'Advanced Packaging Technologies in Memory Applications for Future Generative AI Era', "
+             "IEDM 2023 paper 15.6 (handout)")
+_GRACE = ("NVIDIA Grace CPU Superchip product page / Grace Performance Tuning Guide: 'LPDDR5X memory subsystem provides "
+          "up to 500 GB/s of bandwidth in only about 16W'")
 _PIMAI = "Ortega et al., 'PIM-AI: A Novel Architecture for High-Efficiency LLM Inference', arXiv 2411.17309 (2024), Table 1"
 
 ENERGY_PRESETS: dict[str, dict] = {
@@ -141,13 +145,13 @@ ENERGY_PRESETS: dict[str, dict] = {
             "pJ_bit_slc": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "假设", "= SRAM after 7 nm scale"),
             "pJ_bit_dram": ((640.0 / 32) / 6.3, "推导", _TPUV4I + "; DRAM 6.3× via HBM packaging "
                             "→ ≈ 3.2 pJ/bit（I/O+阵列量级；HBM3 接口 alone 0.29 pJ/bit, Chae et al. JSSC 2023, 仅 PHY）"),
-            # 0.186: per-kind DRAM (new fields; generic pJ_bit_dram above unchanged and still used when unset)
-            "pJ_bit_dram_hbm": (7.0, "二手", _PIMAI + ": HBM (DGX-H100) 7 pJ/bit incl. SoC- and memory-side interfaces "
-                                "(same 2× convention as the LPDDR value — both from one table on purpose); cross-check: "
-                                + _FGDRAM + " HBM2 ≈ 3.97 pJ/bit memory side only"),
-            "pJ_bit_dram_lpddr": (10.0, "二手", _PIMAI + ": LPDDR5X (Snapdragon 8 Gen 3) 10 pJ/bit incl. SoC- and "
-                                  "memory-side interfaces (their 2× factor); LPDDR5 (A17 Pro) 20 — the authors' derived "
-                                  "profile, not a measurement"),
+            # 0.187: per-kind DRAM from primary vendor figures (0.186 used PIM-AI's derived profile, HBM 7 / LPDDR 10,
+            # which counts both interfaces ×2 and is ≈ 2× these primary numbers; ratio 1.43 vs 1.16 here).  Both are
+            # memory-side at peak bandwidth; the SoC-side PHY is not included (HBM3 host PHY ≈ 0.29 pJ/bit, Chae JSSC 2023).
+            "pJ_bit_dram_hbm": (4.3 * 0.8, "推导", _SKH_IEDM + ": HBM2E ≈ 4.3 pJ/bit, HBM3E 20 % lower → 3.44 pJ/bit "
+                                "(memory side); cross-check " + _FGDRAM + " HBM2 ≈ 3.97"),
+            "pJ_bit_dram_lpddr": (16.0 / (500e9 * 8) * 1e12, "推导", _GRACE + ": LPDDR5X subsystem up to 500 GB/s in "
+                                  "about 16 W → 4.0 pJ/bit at peak (memory side); 0.186 value 10 (PIM-AI, 二手) dropped"),
             "pJ_bit_d2d": (0.25, "来源", _UCIE),
             "pJ_bit_link": (1.3, "来源", _NVL),
             "pJ_bit_net": (5.0, "假设", "跨节点网卡 / 光模块量级，无单一公开数字 — 约数倍于 C2C（与 horowitz_45nm 预设相同）"),

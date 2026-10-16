@@ -183,6 +183,24 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                     errs.append(f"sizing joint={joint}: {st[:200]} rows={rows}")
                 if joint and not p.query_selector_all("#ins-size-joint-tbl tbody tr"):
                     errs.append("joint table empty")
+            # 0.187: energy-constrained sizing with an energy preset
+            if p.query_selector("#e-preset"):
+                p.click("button[data-tab=eval]") if p.query_selector("button[data-tab=eval]") else None
+                o = [v for v in opts("#e-preset") if v]
+                if "tpuv4i_7nm" in o:
+                    p.select_option("#e-preset", "tpuv4i_7nm")
+                    time.sleep(1)
+                p.click("button[data-tab=insight]")
+                p.set_checked("#ins-size-energy", True)
+                p.click("#ins-size-run")
+                p.wait_for_function("(() => { const t = document.getElementById('ins-size-status').textContent;"
+                                    " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
+                st = p.inner_text("#ins-size-status")
+                cells = p.inner_text("#ins-size-tbl")
+                steps.append(("sizing energy_tie", st[:40], "能耗 ×" in cells))
+                if not st.startswith("完成") or "能耗 ×" not in cells:
+                    errs.append(f"energy sizing: {st[:200]} / energy column missing")
+                p.set_checked("#ins-size-energy", False)
             p.fill("#ins-steps", "1")
             p.click("#ins-path-run")
             p.wait_for_function("(() => { const t = document.getElementById('ins-path-status').textContent;"
