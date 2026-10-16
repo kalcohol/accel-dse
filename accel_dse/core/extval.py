@@ -124,7 +124,8 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
         chip = replace(chip, split_instances=True)
     if v.get("sched"):                 # 0.91: Chip.instance_sched (reference chips ship "wide")
         chip = replace(chip, instance_sched=v["sched"])
-    if v.get("kernel_vec"):            # 0.136: vector ops pay the per-kernel floor too (Chip.kernel_vec)
+    amd = r["hw"].startswith("MI")
+    if v.get("kernel_vec") and not (v.get("cuda_only") and amd):   # 0.136: vector ops pay the per-kernel floor too
         chip = replace(chip, kernel_vec=True)
     if v.get("gemm_ceil"):             # 0.138: published library-best GEMM fractions (GEMM_CEILING), per tile
         gc = GEMM_CEILING.get(chip.name.split("-")[0].split(" ")[0], ())
@@ -132,8 +133,9 @@ def scenario(r: dict, eff: str = DEFAULT, **sv) -> Scenario:
             chip = replace(chip, fmt_ceiling=tuple(dict(chip.fmt_ceiling or ()).items()) + gc)
     if v.get("tile_io"):               # 0.135: CTA tile prologue + C writeback at the SM's DRAM share (opt-in)
         chip = replace(chip, tile_io=v["tile_io"] if isinstance(v["tile_io"], str) else "dram")
-    if v.get("kernel_us") is not None:  # 0.92: per-kernel fixed cost
-        chip = replace(chip, kernel_us=v["kernel_us"])
+    if v.get("kernel_us") is not None and not (v.get("cuda_only") and amd):  # 0.92 per-kernel fixed cost (0.176: by runtime)
+        ku = v["kernel_us"]
+        chip = replace(chip, kernel_us=ku.get(sv.get("phase", "decode")) if isinstance(ku, dict) else ku)
     if v.get("fmt_ceiling") and chip.name.split("-")[0] in HOPPER:   # 0.94: Hopper only
         chip = replace(chip, fmt_ceiling=v["fmt_ceiling"])
     if v.get("deepgemm") and chip.name.split("-")[0] in HOPPER and r.get("src") in DEEPGEMM_SRC:   # 0.143
@@ -502,6 +504,37 @@ def fa3_variant(base: str = "catalog_kernel") -> str:
     name = f"{base}+fa3"
     VARIANTS.setdefault(name, {**VARIANTS[base], "fa3": True})
     return name
+
+
+# 0.176: mechanism split of the trace lump (deepseek-ai/profile-data, compute stream 7, kernels sorted by start):
+#   * inter-kernel gap = idle time between consecutive kernels (gaps < 50 µs; longer ones are all-to-all waits, modelled
+#     as communication): decode (CUDA-graph replay: 182 cudaLaunchKernel for 3,711 kernels) mean 1.025 µs over 3,697
+#     boundaries (31.1 µs per layer-forward); prefill (eager launches: 1,955 cudaLaunchKernel + 1,789 ExC + 367 cuLaunch)
+#     mean 2.404 µs over 3,423 boundaries (67.5 µs per layer-forward).  Scales with the launch runtime, not with work.
+#   * small-kernel latency floor = TRACE_KERNEL_FLOOR_US (p10 of the decode small kernels); the rest of the lump (mean
+#     4.4 µs) is size-dependent work the model already charges as vector ops → not repeated.
+# Per layer = kernels × (floor + gap(runtime)); kernel counts come from the model's own op list (one per GEMM, fused
+# attention and stand-alone vector op), so it follows the model instead of DeepSeek's 30 kernels / layer.
+TRACE_GAP_US = {"graph": 3791 / 3697, "eager": 8230 / 3423}
+# Runtime per phase: CUDA graphs for decode, eager prefill — the DeepSeek trace's own split; 「来源」 TRT-LLM repo
+# .claude/skills/perf-host-analysis/SKILL.md ("context (eager, no CUDA graphs) and generation (CUDA graph replay)");
+# 「假设」 for the older TRT-LLM 0.8 GptSession rows (gptSessionBenchmark without --enable_cuda_graph)
+RUNTIME_BY_PHASE = {"decode": "graph", "prefill": "eager"}
+
+
+def mech_variant(base: str = "catalog_kernel") -> str:
+    """0.176: ``base`` with the per-layer lump replaced by its mechanisms: per kernel the small-kernel latency floor +
+    the inter-kernel gap of the phase's launch runtime (TRACE_GAP_US); vector ops are kernels too (kernel_vec)."""
+    name = base + "+mech"
+    VARIANTS.setdefault(name, {**VARIANTS[base], "layer_us": 0, "kernel_vec": True, "cuda_only": True,
+                               "kernel_us": {ph: TRACE_KERNEL_FLOOR_US + TRACE_GAP_US[rt] for ph, rt in RUNTIME_BY_PHASE.items()}})
+    return name
+
+
+# 0.176: the reported catalog_kernel study variant with its fixed cost (mechanism-scoped, CUDA runtimes only: the trace
+# is a CUDA-graph / eager CUDA stack; no public ROCm / HIP-graph trace → MI300X rows keep no fixed cost).  The plain
+# "catalog_kernel" stays as the no-fixed-cost baseline the 0.66–0.105 studies pin.
+VARIANTS["catalog_kernel_fixed"] = dict(VARIANTS[mech_variant("catalog_kernel")])
 
 
 def overhead_variant(base: str, us: float) -> str:

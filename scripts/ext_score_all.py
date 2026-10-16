@@ -21,6 +21,7 @@ for v in vs:
     if '+S' in v: n = X.split_variant(n)
     for part in v.split('+')[1:]:
         if part.startswith('L'): n = X.overhead_variant(n, float(part[1:]))
+        if part == 'mech': n = X.mech_variant(n)
     vv.append(n)
 print('| group | n | ' + ' | '.join(vv) + ' |')
 for g, rs in A.items(): print(f'| {g} | {len(rs)} | ' + ' | '.join(st(rs, v) for v in vv) + ' |')

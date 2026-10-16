@@ -3920,3 +3920,56 @@ Sources: the evo2 inference yml files (layer pattern hcs / hcm / hcl / attn, fil
 - 音频：AutoEncoder 4 级（256/512/1024/2048，各 2 块：depthwise causal conv k7 + RMSNorm + GELU MLP×4），o_proj → 8192；60 s = 750 token、0.59 TFLOP（手算一致）。放置同视觉塔（stage 0 数据并行）。
 - DSpark：5 层稠密草稿（GQA 128/16×64 + o-gate，SWA 2048，SwiGLU 16384），fc 5·8192→8192，自有 lm_head，Markov 头 rank 512，置信头 8704→1，块 7；参数与 safetensors 头精确一致。目标层 hidden 是拼接（模板按 nt·h→h GEMM，同形状）。
 - 未建模：Muse 视频处理器（MuseGlimmerVideoProcessor 未公开）；图像缩放规则仍为假设。
+
+## §122 Mechanism-scoped per-layer fixed cost (0.176)
+
+**What the 62.3 µs is.** deepseek-ai/profile-data decode.json, compute stream 7: 1,734 small (non-GEMM / attention /
+communication) kernels take 7.55 ms over 61 layers × 2 micro-batches. Their durations are p10 2 / p50 3 / p90 7 µs. At
+64 requests per micro-batch the bytes they move need well under 1 µs, so at decode they are latency-bound. The lump
+does not include the idle gaps between kernels.
+
+**Second operating point.** prefill.json (16K tokens per GPU): the same kernel families take p50 116 µs. That time is
+work, which the model already charges as vector ops, so applying the lump at prefill counts it twice.
+
+**Gaps (launch runtime).** Idle time between consecutive kernels on the compute stream, counting gaps under 50 µs
+(longer gaps are all-to-all waits):
+
+| trace | runtime | mean gap per kernel | per layer-forward |
+|---|---|---|---|
+| decode | CUDA graph (182 cudaLaunchKernel for 3,711 kernels) | 1.025 µs | 31.1 µs |
+| prefill | eager | 2.404 µs | 67.5 µs |
+
+The runtime split (graph decode, eager context) is also the TRT-LLM PyTorch backend's documented behaviour
+(perf-host-analysis skill).
+
+**Model.** Per kernel the cost is floor (2.0 µs) + gap(runtime of the phase). Kernels are the model's own ops (GEMM,
+fused attention, stand-alone vector), so the cost follows the model, not DeepSeek's 30 kernels per layer. It applies to
+CUDA rows only.
+
+**Bands, catalog_kernel → catalog_kernel_fixed** (gmean ratio / mean abs error):
+
+| group | catalog_kernel | catalog_kernel_fixed |
+|---|---|---|
+| v1 static | 1.31 / 38 % | 1.23 / 32 % |
+| v1 TTFT | 1.75 / 76 % | 1.40 / 41 % |
+| v1 max-load | 1.12 / 21 % | 1.03 / 19 % |
+| MoE large-EP | 0.82 / 33 % | 0.81 / 32 % |
+| Mixtral TP8 | 1.34 / 47 % | 1.25 / 44 % |
+| MI300X lat | 3.33 / 233 % | unchanged (no ROCm trace) |
+| MI300X max-load | 2.32 / 132 % | unchanged |
+| B200 NVFP4 | 1.26 / 26 % | 1.11 / 13 % |
+
+For reference, the lump (+62.3 µs per layer, every phase and every vendor) scores 1.19 / 1.36 / 1.00 / 0.81 / 1.23 /
+1.40 / 2.18 / 1.05. It scores better because it stands in for kernels the op list omits (17.2 per layer modelled vs
+30.4 in the trace) and for unmodelled ROCm overhead, but it is not mechanism-scoped. The default keeps the lump: default
++ mech would be worse on 6 of 8 groups for the same op-count reason. The next fix is listing the missing ops (fp8 casts,
+split-K reduce, sampling), not tuning a constant.
+
+**128-token TTFT residual** (measured − catalog_kernel_fixed): 1.8–2.1 ms (H100 / H200 7B), 3.7–4.7 ms (A100 7B),
+7.3 ms (H 70B TP8), 15.0 ms (A100 70B TP8).
+
+Sources checked: TRT-LLM v0.8.0 docs/source/performance.md. TTFT is `gptSessionBenchmark --warm_up 1 --num_runs 5` with
+OSL 1 on one max-throughput engine build (max_batch 64, max_input 2048), without `--enable_cuda_graph` (eager TRT
+enqueue). The doc's command line uses batch 64 / 32 while its table says batch 1. Its footnote says the low-latency
+numbers "will soon be updated to reflect real time latency with inflight-batching". NVIDIA publishes no per-component
+host / framework time for GptSession, so the residual stays open; nothing is fitted.

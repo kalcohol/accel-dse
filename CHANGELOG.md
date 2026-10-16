@@ -3,6 +3,14 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.176.0] — Mechanism-scoped fixed cost for catalog_kernel; 128-token TTFT residual re-check
+
+- The 62.3 µs/layer lump (deepseek-ai/profile-data decode) split by mechanism from the public decode + prefill traces: per kernel = small-kernel latency floor (2.0 µs, p10) + inter-kernel gap of the launch runtime (CUDA-graph decode 1.025 µs, eager prefill 2.404 µs). The rest of the lump is size-dependent work the model already charges (prefill small kernels p50 116 µs) → not repeated.
+- New reported variant `catalog_kernel_fixed` (= `mech_variant("catalog_kernel")`, CUDA only; no ROCm trace → MI300X rows unchanged). `catalog_kernel` stays as the no-fixed-cost baseline. `data/ext_validation.json` regenerated with it.
+- Bands old → new (catalog_kernel → catalog_kernel_fixed, gmean ratio): v1 static 1.31 → 1.23, v1 TTFT 1.75 → 1.40, v1 max-load 1.12 → 1.03, MoE large-EP 0.82 → 0.81, Mixtral TP8 1.34 → 1.25, MI300X 3.33 / 2.32 (unchanged), B200 NVFP4 1.26 → 1.11.
+- Default unchanged (keeps the lump): default + mech would be worse on 6/8 groups because the model's op list has 17.2 kernels per DeepSeek decode layer vs 30.4 in the trace (casts, split-K reduce, sampling not listed).
+- 128-token TTFT: residual after the fixed cost 1.8–2.1 ms (Hopper 7B), 3.7–4.7 ms (A100 7B), 7.3 / 15.0 ms (70B TP8). No sourced framework-time breakdown for TRT-LLM 0.8 GptSession → left open (MODEL §122).
+
 ## [0.175.0] — Muse Spark Open follow-ups: NVFP4, NaViT block windows, audio encoder, DSpark draft
 
 - `muse-spark-open-nvfp4`（Meta 官方 NVFP4，仓库 gated → 推导）：release 格式支持 nvfp4（e2m1 + 每 16 个 e4m3 scale + 每张量 fp32，4.5 bit）；`summarize_release.py` 按 quantization_config 识别 NVFP4；专家 NVFP4、其余 bf16（假设，exclude 列表未公开）。bytes_llm 491.9 GB。
