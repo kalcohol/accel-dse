@@ -60,6 +60,8 @@ class Chip:
     attn_vec_overlap: bool = field(default=False, metadata={"omit_default": True})
     gemv_macs: int | None = None          # 「假设」 None → R·C·E / 8 (only used by mappings with a vector unit)
     sram_mib: float = 64.0                # 「假设」
+    # 0.209 (design variable): a dedicated on-chip recurrent-state buffer (MiB), filled before the shared SRAM; 0 = none
+    state_sram_mib: float = field(default=0.0, metadata={"omit_default": True})
     # 0.141: per-core default — every engine feeds its own R × C array: None → 4·(R + C)·2 B/cycle per engine
     # (≤ 0.140: 4·(R + C·E)·2 for the whole chip; saved ≤ 0.140 scenarios are migrated, scenario.upgrade_legacy)
     sram_port_Bpc: float | None = field(default=None, metadata={"omit_default": True})   # chip-wide absolute when set

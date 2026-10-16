@@ -698,7 +698,7 @@ function renderEval(r) {
     k.push(kpi('机器平衡 · machine balance', `${num(b.chip_flop_per_byte)} FLOP/B`,
       `负载 workload ${num(b.workload_flop_per_byte)} FLOP/B · 比值 ratio ${num(b.ratio)}× · 原始带宽 raw ${num(b.chip_flop_per_byte_raw)} FLOP/B`
       + (b.reachable !== null && b.reachable !== undefined
-        ? ` · 临界 batch critical batch ${b.critical_batch ?? '∞（KV 受限 KV-bound）'} · 上限 limit ${b.batch_limit}`
+        ? ` · 临界 batch critical batch ${b.critical_batch ?? `∞（${ASYM_ZH[b.asymptote_by] || b.asymptote_by || 'KV'} 受限 · saturation-bound）`} · 上限 limit ${b.batch_limit}`
           + (b.limited_by ? `（${LIMIT_ZH[b.limited_by] || b.limited_by}）` : '')
           + (b.asymptote_by ? ` · 饱和来源 ${ASYM_ZH[b.asymptote_by] || b.asymptote_by}` : '')
           + ` · 饱和强度 asymptote ${num(b.ai_asymptote)} FLOP/B` : '')
@@ -1940,7 +1940,7 @@ async function init() {
     const dm = S.cat.chips[v].default_mem || S.cat.mem_legacy_default || 'lpddr5x_4x64_8533_16g';
     if (!S.memInfo || S.memInfo.id !== dm) applyMem(dm); else schedule();
   });
-  for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us', 'dispatch_us']) {
+  for (const k of ['freq_ghz', 'sram_mib', 'state_sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us', 'dispatch_us']) {
     const nullable = k === 'sram_port_Bpc' || k === 'acc_kib' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine' || k === 'kernel_us' || k === 'dispatch_us';
     bindNumber('c-' + k, () => chipVal(k), (x) => { if (x === null) delete S.chipOver[k]; else S.chipOver[k] = x; if (k === 'freq_ghz') onPreset(); },
       { int: k === 'gemv_macs', nullable });

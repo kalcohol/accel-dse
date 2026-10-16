@@ -43,6 +43,7 @@
     <div class="row2">
       <label>频率 GHz<input type="number" id="c-freq_ghz" step="0.05" min="0.1"></label>
       <label>SRAM MiB<input type="number" id="c-sram_mib" step="8" min="0"></label>
+      <label title="0.209: 专用循环状态 SRAM（不与权重 / KV 共享）· dedicated recurrent-state buffer">状态 SRAM MiB<input type="number" id="c-state_sram_mib" step="64" min="0"></label>
       <label>SRAM 端口 B/cycle<input type="number" id="c-sram_port_Bpc" step="256" min="64" placeholder="默认"></label>
       <label title="0.96：按每个引擎给 SRAM 端口宽度，随引擎数缩放（扫引擎数 / 拆分 die 时不会把整芯片端口带过去）；与整芯片端口二选一">SRAM 端口 / 引擎 B/cycle<input type="number" id="c-sram_port_Bpc_per_engine" step="64" min="16" placeholder="不设"></label>
       <label title="0.96：注意力核心的计算格式。默认 bf16 计算、KV 缓存在向量通路上反量化；kv = 原生低精度注意力（Q / P 量化到 KV 格式，FlashAttention-3 FP8 做法），需 KV 格式为芯片原生格式">注意力计算<select id="c-attn_fmt"><option value="">bf16（KV 反量化）</option><option value="kv">原生 KV 格式</option></select></label>

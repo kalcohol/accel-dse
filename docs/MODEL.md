@@ -4772,3 +4772,23 @@ changed.
 
 **Decision readout.** One forward over prompt + options per decision. The batch of decisions has its own critical batch,
 limited by capacity and the TTFT SLO, which is used as the decision latency limit.
+
+
+## §156 Recurrent-state residency; adversarial review (0.209)
+- **Mechanism.**
+  - A recurrent state byte is read and written every step, so it saves 2 B of DRAM per step per byte of SRAM.
+  - `Chip.state_sram_mib` is a dedicated buffer. Shared SRAM follows STATE_FIRST (§ 0.192).
+  - Resident bytes per stream: state_sram = min(st, buf) + shared share. KV and state misses are computed separately (STATE_SPLIT).
+  - DRAM capacity still counts the full state, as a backing copy. This is conservative 「假设」.
+  - Area and power of the buffer are not modelled.
+- **Critical batch under partial residency.**
+  - AI(B) rises while extra sequences fit on chip, then drops at the knee where state spills.
+  - The monotone search can miss a window only one batch wide, so the knees are probed explicitly.
+- **RWKV-7 7.2B on 1P.**
+  - Per-sequence state is 33.0 MiB (fp32).
+  - Minimum dedicated buffer for balance: 10352 MiB (critical batch 315 ≤ 1664) 「推导」.
+  - bf16 state remains a separate what-if lever.
+- **Review findings.**
+  - The UI's ∞ label ignored `asymptote_by`.
+  - The open-window overlap replay cost O(tokens).
+  - Neither changed any result value. The fingerprint change comes from STATE_SPLIT only.

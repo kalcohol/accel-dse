@@ -212,10 +212,16 @@ class _Sim:
         """Everything that decides the future, relative to the compute clock."""
         c = self.c_end
         return (self.d_end - c, self.last - c, tuple((s, d - c) for s, d in self.win),
-                (self.s0 - c) if self.op else 0.0, self.hw)
+                0.0, self.hw)    # 0.209: an open window's start is absolute (see shift), not state
 
     def shift(self, dt: float) -> None:
-        self.d_end += dt; self.c_end += dt; self.last += dt; self.s0 += dt
+        # 0.209: s0 stays absolute — skipped time inside an open shared-expert window still accrues hide credit at
+        # "close" (hw += c_end − s0), exactly as replay would.  ≤ 0.208 s0 was in the state tuple and moved with the
+        # clock, so a long run inside an open window never matched and was replayed tile by tile (O(tokens): a
+        # 100k-batch prefill took minutes).
+        self.d_end += dt; self.c_end += dt; self.last += dt
+        if not self.op:
+            self.s0 += dt
         for w in self.win:
             w[1] += dt
 

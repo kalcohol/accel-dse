@@ -6,6 +6,22 @@
 
 
 
+## [0.209.0]
+- **Recurrent-state on-chip residency as a design variable.**
+  - New `Chip.state_sram_mib` (default 0): a dedicated state buffer, separate from the shared SRAM. `memplan.plan(state_buf=)` puts state in the buffer first. The remainder follows STATE_FIRST in the shared SRAM, then hot weights, experts and KV, and any SRAM left over takes more state. Partial residency is handled per byte.
+  - `memplan.STATE_SPLIT` (bug fix): KV and state now each miss DRAM by their own resident share. Before this, one pooled miss fraction meant a hybrid model's pinned state was still charged DRAM traffic. `LEGACY_0191` turns it off.
+  - The pipe-mode staging buffer no longer subtracts the dedicated buffer (`evaluate._shared_kv`). The per-op weight `f["kv"]` in pipe mode still uses the pooled fraction. That only affects how DRAM time is spread across ops; the step total is exact. 推导.
+  - `critical_batch`: AI(B) is non-monotone under partial residency, so when the monotone search finds nothing, it probes the residency knees (k−1, k, k+1) and bisects the rising side. `ai_asymptote` is still the B→∞ (spilled) value; with a finite buffer, AI peaks at the knee.
+  - What-if lever `state_sram` (when the saturation involves state): a buffer sized to hold N = the critical batch with unlimited state SRAM. The label reads "状态 SRAM X GiB（容纳 N 序列 × Y MiB）".
+  - UI: a "状态 SRAM MiB" chip input. Stage memory now includes `state_sram_MiB`.
+  - Answer: RWKV-7 7.2B (fp32 state, as released) on 1P reaches balance with a dedicated state SRAM of ≥ 10352 MiB ≈ 10.1 GiB. That is 315 sequences × 33.0 MiB; the critical batch is 315, below the 1664 limit. With the shared SRAM alone it needs ≈ 10.36 GiB. 推导 from the model's own byte counts; no tuning.
+- **Adversarial review of 0.203–0.208 (partial; the full review and broader fuzzers move to 0.210).**
+  - Bug: with the saturation unbounded, the UI's balance KPI always said "∞（KV 受限）", even for state, hybrid or weights saturation. It now uses `asymptote_by`.
+  - Bug (performance, exact): in overlap `_Sim`, while a shared-expert window was open, its start was part of the state and moved in `shift`, so long tile runs never matched and were replayed tile by tile. A 100k-batch prefill (StartLux, pp=2) took 127 s and now takes 0.34 s, with an identical result. s0 is now absolute.
+  - Fuzzers: `tests/test_core_209.py` covers edge inputs (batch 0/1, ctx 1 and 1M, TP=3, PP=3 with a MoE+state hybrid, no SLO, a tiny SLO, prefill labels) × every dispatch mode, plus a seeded random fuzz. It checks NaN, wall shares summing to 1, and reachable ⇒ critical batch ≤ limit. An API↔UI test confirms every balance / walls / what-if key the UI reads exists in the API response.
+  - Ad-hoc fuzz: 6 seeds × 60 cases over eval / memory / sensitivity. No NaN and no exceptions; the only inf is `goodput.ttft_ms` for an infeasible prefill, which `clean` turns into null by design.
+- Fingerprint re-baseline (STATE_SPLIT; hybrid models only): stage fp b47ec84b00fc0892 → cd25d689b7492f42; default (pipe) fp b4db8aea9e5680b6 → 62fd08857bc4c055; test_core_125 5b3efea75e12245d → dee4a1703e8fab85 and 8220364829b88de3 → a148b9cd855d95fc; test_core_171 Hyena ttft 0.37786546 → 0.37786053. StartLux / Qwen3-Next TPOT moves by −0.06 % to −0.63 %.
+
 ## [0.208.0]
 - **Machine-balance what-if** (`api.balance_whatif`, part of the `/api/sensitivity` response, rendered under the sensitivity table as "机器平衡 what-if"). It reuses the sensitivity scan's case loop, now factored out as `api._eval_cases` and shared with `sensitivity_report`.
   - Each lever changes one variable:

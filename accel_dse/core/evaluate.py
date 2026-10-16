@@ -215,6 +215,32 @@ class Result:
         slo_key = "ttft_slo" if self.scenario.serving.phase == "prefill" else "tpot_slo"   # 0.208: decision readout
         outs = [(x - 1, k) for x, k in ((kv_out, "kv_capacity"), (slo_out, slo_key)) if x is not None]
         blim, limit = min(outs) if outs else (BALANCE_BMAX, None)
+        if bstar is None and blim >= 2:
+            # 0.209: with partial on-chip residency (state / KV that fits a fixed buffer) AI(B) is not monotone: it
+            # rises while the batch's state / KV stays on chip, peaks at the residency knee (the largest batch that
+            # still fits) and falls back toward the streaming asymptote — the window can be one batch wide and sit
+            # between powers of two.  Probe the knees (dedicated state buffer; state buffer + shared SRAM; shared SRAM
+            # for KV), then bisect the rising side below the first knee that reaches balance.
+            sc = self.scenario
+            mem = self.stages[self.heaviest_stage].mem
+            b0 = max(1, sc.serving.batch)
+            st1, kv1 = mem.state_total / b0, mem.kv_total / b0
+            sb, sh = sc.chip.state_sram_mib * 2**20, sc.chip.sram_bytes
+            knees = set()
+            for per, caps in ((st1, (sb, sb + sh)), (kv1, (sh,))):
+                if per > 0:
+                    for cap in caps:
+                        k = int(cap // per)
+                        knees.update(x for x in (k - 1, k, k + 1) if 1 <= x <= blim)
+            for k in sorted(knees):
+                if at(k)[0] >= bal:
+                    lo, hit = 2 ** int(math.log2(k)) if k > 1 else 0, k
+                    lo = lo if lo < hit else hit // 2
+                    while hit - lo > 1:
+                        m_ = (lo + hit) // 2
+                        lo, hit = (lo, m_) if at(m_)[0] >= bal else (m_, hit)
+                    bstar = hit
+                    break
         # 0.208: what saturates AI — the per-sequence DRAM stream that grows most from batch 1 to BALANCE_BMAX: "kv"
         # (grows with ctx too), "state" (recurrent state: fixed per sequence, independent of ctx), "weights" (MoE:
         # more experts touched), "act" (activations spilled)
@@ -439,7 +465,7 @@ def model_flags(**kw):
     refhw_wide = kw.pop("REFHW_WIDE", None)      # 0.193: reference GPUs back on the ≤ 0.192 wide schedule
     cta_split = kw.pop("CTA_SPLIT_K", None)      # 0.193: mapping.SPLIT_K (cta split-K set)
     from . import ir as _ir, schedule as _sch
-    mods = {"ROCM_AR": _sch, "GPU_AR_ONLY": _sch, "CUSTOM_AR": _sch, "NCCL_AR_LAT": _sch, "FUSE_QKV": _ir, "WIDE_WAVES": _mp, "GPU_WAVES_ONLY": _mp, "STATE_FIRST": _mpl, "CTA_DRAM_FLOOR": _mp, "CTA_SMEM_BW": _mp, "CTA_OCC_FILL": _mp, "CTA_L2_ACT": _mp, "W_BITS_ZERO_FIX": _mp}   # 0.192: flags living in other modules
+    mods = {"ROCM_AR": _sch, "GPU_AR_ONLY": _sch, "CUSTOM_AR": _sch, "NCCL_AR_LAT": _sch, "FUSE_QKV": _ir, "WIDE_WAVES": _mp, "GPU_WAVES_ONLY": _mp, "STATE_FIRST": _mpl, "STATE_SPLIT": _mpl, "CTA_DRAM_FLOOR": _mp, "CTA_SMEM_BW": _mp, "CTA_OCC_FILL": _mp, "CTA_L2_ACT": _mp, "W_BITS_ZERO_FIX": _mp}   # 0.192: flags living in other modules
     tgt = {k: (vars(mods[k]) if k in mods else globals()) for k in kw}
     old = {k: tgt[k][k] for k in kw}
     for k, v in kw.items():
@@ -461,7 +487,7 @@ def model_flags(**kw):
 
 
 LEGACY_0171 = dict(ATTN_ORIENT=False, WIDE_GEMM_ORIENT=False, WIDE_GEMM_SPLIT=False, SPLIT_K=False)
-LEGACY_0191 = dict(WIDE_WAVES=False, STATE_FIRST=False)   # 0.192
+LEGACY_0191 = dict(WIDE_WAVES=False, STATE_FIRST=False, STATE_SPLIT=False)   # 0.192
 # 0.193: ≤ 0.192 reference GPUs (wide, padded) and cta split-K set
 LEGACY_0192 = dict(WIDE_WAVES=False, REFHW_WIDE=True, CTA_SPLIT_K=(1, 2, 4, 8, 16))
 LEGACY_0172 = dict(WIDE_GEMM_ORIENT=False, WIDE_GEMM_SPLIT=False, SPLIT_K=False)
@@ -948,7 +974,7 @@ def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, s
         segs.insert(0, ([(0.0, {"x": 1.0}, 0.0)], 1)); nb = 1.0
     spb = t_mem / nb if nb > 0 else 0.0
     ch = sys.chip            # the DMA issue limit (Chip.dma_*) is already in sys.dram_GBps (every overlap mode)
-    buf = max(mp.staging, ch.sram_bytes - mp.pinned_hot - mp.pinned_expert - mp.kv_sram)
+    buf = max(mp.staging, ch.sram_bytes - mp.pinned_hot - mp.pinned_expert - _shared_kv(mp))
     return _ovl.stage_pipe_time(segs, f, spb, buf, ch.pipe_cross_op, 1.0, tail_comm, hidden_link)
 
 
@@ -1028,7 +1054,7 @@ def _pipe_fused_(sd, sp, f, rr, t_mem):
         segs.insert(0, ([(0.0, {"x": 1.0}, 0.0)], 1)); nb = 1.0
     spb = t_mem / nb if nb > 0 else 0.0
     ch = sys.chip
-    buf = max(mp.staging, ch.sram_bytes - mp.pinned_hot - mp.pinned_expert - mp.kv_sram)
+    buf = max(mp.staging, ch.sram_bytes - mp.pinned_hot - mp.pinned_expert - _shared_kv(mp))
     return _ovl.stage_pipe_time(segs, fr, spb, buf, ch.pipe_cross_op, 1.0, tail, 0.0), t_arr, t_vec
 
 
@@ -1178,6 +1204,11 @@ def _pipe_repick(sys, agg, pre: tuple, extra: list, window: float, idx: int, so:
             lg["_stages"].pop()
         _stage_link(sys, agg, pre[0], pre[1], pre[2], pre[3], extra, window, idx, dict(pre[4]), sel=cur)
     return memo[cur], dict(zip(keys, cur))
+
+
+def _shared_kv(mp) -> float:
+    """0.209: KV + state bytes resident in the shared SRAM (the dedicated state buffer is not staging space)."""
+    return mp.kv_sram - (min(max(mp.state_sram, 0.0), mp.state_buf) if mp.state_buf > 0 else 0.0)
 
 
 _DRAM_KEYS = ("hot", "exp", "kv_read", "kv_write", "state", "lookup", "act", "w_extra")
@@ -1586,7 +1617,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             # a working set beyond the runtime reserve needs its excess in DRAM 「假设」
             mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=max(0.0, agg["max_act_tot"] - RUNTIME_RESERVE), stream=True,
-                      slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac)
+                      slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac,
+                      state_buf=sys.chip.state_sram_mib * 2**20)
             dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]
@@ -1896,7 +1928,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 store = store_memo[skey] = stage_storage(m, st.first, st.last, st.has_embed, st.has_head, sh, 0, 0)
             mp = plan(store, 0, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=agg["max_act_tot"] + resid, stream=True,
-                      slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac)
+                      slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac,
+                      state_buf=sys.chip.state_sram_mib * 2**20)
             dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]

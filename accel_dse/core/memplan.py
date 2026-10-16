@@ -222,6 +222,9 @@ class MemPlan:
     slc_kv: float = 0.0
     slc_all: bool = False   # lru: the whole off-SRAM working set fits → every read hits
     slc_residency: float = 0.0  # weights on chip incl. SLC / streamed weights (= residency without an SLC)
+    # 0.209: of kv_sram, the recurrent-state bytes (the rest is KV / indexer); -1 = not split (legacy plans)
+    state_sram: float = -1.0
+    state_buf: float = 0.0  # dedicated state-buffer capacity (Chip.state_sram_mib)
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
@@ -230,9 +233,12 @@ class MemPlan:
 STATE_FIRST = True        # 0.192 default
 
 
+STATE_SPLIT = True        # 0.209: separate KV / state on-chip shares (≤ 0.208: one pooled miss fraction for both)
+
+
 def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: float, max_act: float,
          act_need: float = 0.0, stream: bool = False, slc_bytes: float = 0.0, slc_policy: str = "pin",
-         kv_frac: float = 1.0) -> MemPlan:
+         kv_frac: float = 1.0, state_buf: float = 0.0) -> MemPlan:
     kv_t = (store.kv_per_seq + store.idx_per_seq) * batch_local
     st_t = store.state_per_seq * batch_local
     need = store.weights + kv_t + st_t + RUNTIME_RESERVE + act_need
@@ -243,17 +249,23 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     # 0.192: pin by DRAM bytes saved per step per byte of SRAM.  Recurrent state is read and written every step
     # (2 B / B), a weight byte is read once per pass (1 B / B), a KV byte once (+ the new row) — so state goes
     # first (STATE_FIRST; ≤ 0.191 weights → KV + state)
-    p_st = min(st_t, free) if STATE_FIRST else 0.0
-    free -= p_st
+    # 0.209: a dedicated state buffer (Chip.state_sram_mib) holds state first; the rest competes for the shared SRAM.
+    # Residency is per byte (partial: the resident share of the batch's state skips DRAM, the rest streams)
+    b_st = min(st_t, state_buf)
+    p_st = b_st + (min(st_t - b_st, free) if STATE_FIRST else 0.0)
+    free -= p_st - b_st
     p_hot = min(store.hot_w, free); free -= p_hot
     p_exp = min(store.expert_w, free); free -= p_exp
-    kv_s = p_st + min(kv_t + st_t - p_st, free)
+    p_kv = min(kv_t, free)                       # KV / indexer in what is left
+    free -= p_kv
+    p_st += min(st_t - p_st, free)               # STATE_FIRST off: state after the weights and KV
+    kv_s = p_st + p_kv
     strm = store.hot_w + store.expert_w            # 0.61.3: residency of the weights a step reads (cold bytes excluded)
     res = (p_hot + p_exp) / strm if strm else 1.0
     # 0.94: a runtime granting the cache only kv_frac of the post-weight free memory (default 1 = unchanged)
     fit = need <= dram_cap if kv_frac >= 1 else need - kv_t - st_t + (kv_t + st_t) / kv_frac <= dram_cap
     mp = MemPlan(store.weights, kv_t, st_t, need, dram_cap, fit, sram_bytes, staging,
-                 p_hot, p_exp, kv_s, res, act_need, slc_residency=res)
+                 p_hot, p_exp, kv_s, res, act_need, slc_residency=res, state_sram=p_st, state_buf=state_buf)
     if slc_bytes <= 0:
         return mp
     r_hot, r_exp, r_kv = store.hot_w - p_hot, store.expert_w - p_exp, kv_t + st_t - kv_s
@@ -391,7 +403,11 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: flo
     w = t["hot"] * miss_hot + t["exp"] * miss_exp
     kvst_total = mp.kv_total + mp.state_total
     kv_miss = 0.0 if kvst_total <= 0 else 1.0 - mp.kv_sram / kvst_total
-    kv_r, kv_w, st = t["kv_read"] * kv_miss, t["kv_write"] * kv_miss, t["state"] * kv_miss
+    st_miss = kv_miss
+    if STATE_SPLIT and mp.state_sram >= 0:       # 0.209: each stream misses by its own resident share
+        st_miss = 0.0 if mp.state_total <= 0 else 1.0 - mp.state_sram / mp.state_total
+        kv_miss = 0.0 if mp.kv_total <= 0 else 1.0 - (mp.kv_sram - mp.state_sram) / mp.kv_total
+    kv_r, kv_w, st = t["kv_read"] * kv_miss, t["kv_write"] * kv_miss, t["state"] * st_miss
     act, wx = t.get("act", 0.0), t.get("w_extra", 0.0)
     out = {"weights": w + wx, "kv_read": kv_r, "kv_write": kv_w, "state": st, "lookup": t["lookup"], "act": act,
            "total": w + wx + kv_r + kv_w + st + t["lookup"] + act, "w_touched": t["hot"] + t["exp"]}

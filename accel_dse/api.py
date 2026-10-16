@@ -40,7 +40,7 @@ SWEEP_PATHS = {
     "serving.batch": int, "serving.ctx": int, "serving.prompt": int, "serving.spec_k": int,
     "serving.images": int, "serving.image_w": int, "serving.image_h": int,
     "serving.videos": int, "serving.video_frames": int, "serving.audio_s": float,
-    "chip.sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
+    "chip.sram_mib": float, "chip.state_sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
     "serving.moe_skew": float, "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
     "d2d_units": int, "net.GBps": float, "net.alpha_us": float, "node_cards": int, "fabric.oversub": float,
@@ -220,7 +220,7 @@ def _stage_dict(s) -> dict:
             "mem": {"stored_w_GiB": s.mem.stored_w / 2**30, "kv_GiB": s.mem.kv_total / 2**30,
                     "state_GiB": s.mem.state_total / 2**30, "need_GiB": s.mem.dram_need / 2**30,
                     "cap_GiB": s.mem.dram_cap / 2**30, "fits": s.mem.fits, "residency": s.mem.residency,
-                    "kv_sram_MiB": s.mem.kv_sram / 2**20, "staging_MiB": s.mem.staging / 2**20,
+                    "kv_sram_MiB": s.mem.kv_sram / 2**20, "state_sram_MiB": max(s.mem.state_sram, 0.0) / 2**20, "staging_MiB": s.mem.staging / 2**20,
                     "pipe_w_GiB": s.mem.pipe_w / 2**30, "slc_MiB": s.mem.slc / 2**20,
                     "slc_policy": s.mem.slc_policy, "slc_residency": s.mem.slc_residency, "slc_all": s.mem.slc_all,
                     "slc_w_MiB": (s.mem.slc_hot + s.mem.slc_expert) / 2**20, "slc_kv_MiB": s.mem.slc_kv / 2**20},
@@ -537,6 +537,16 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
     if scn.serving.ctx > 1:
         cases.append(("ctx_half", f"ctx ÷2（{scn.serving.ctx} → {scn.serving.ctx // 2}）",
                       rp(scn, serving=rp(scn.serving, ctx=max(1, scn.serving.ctx // 2)))))
+    if "state" in (b0["asymptote_by"] or ""):
+        # 0.209: a dedicated state buffer sized to hold N sequences' recurrent state (Chip.state_sram_mib), N = the
+        # critical batch with all state on chip (probe: an unbounded buffer), capped at the batch limit
+        st1 = r.stages[r.heaviest_stage].mem.state_total / max(1, scn.serving.batch)
+        if st1 > 0:
+            big = evaluate(rp(scn, chip=rp(ch, state_sram_mib=1e9))).balance()
+            n_seq = big["critical_batch"] or big["batch_limit"] or 1
+            mib = math.ceil(n_seq * st1 / 2**20)
+            cases.append(("state_sram", f"状态 SRAM {mib / 1024:.2f} GiB（容纳 {n_seq} 序列 × {st1 / 2**20:.1f} MiB）",
+                          rp(scn, chip=rp(ch, state_sram_mib=mib))))
     cases.append(("sram_x2", f"SRAM ×2（{ch.sram_mib:g} → {2 * ch.sram_mib:g} MiB）", rp(scn, chip=rp(ch, sram_mib=2 * ch.sram_mib))))
     mx = _mem_x2(scn.mem_id)
     if mx:
