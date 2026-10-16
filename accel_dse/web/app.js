@@ -825,13 +825,14 @@ function renderEnergy(r) {
     ['SRAM 端口', c.sram, ' B', 'sram', 'pJ_bit_sram'],
     ...(c.slc ? [['SLC 命中', c.slc, ' B', 'slc', 'pJ_bit_slc']] : []),
     [c.slc ? 'DRAM 读写（SLC 未命中）' : 'DRAM 读写', c.dram, ' B', 'dram', e.dram_pJ_field || 'pJ_bit_dram'],
+    ...(e.phy_pJ_field ? [['DRAM PHY（芯片侧）', c.dram, ' B', 'dram_phy', e.phy_pJ_field]] : []),   // 0.188
     ...(c.d2d ? [['D2D 发送（封装内）', c.d2d, ' B', 'd2d', 'pJ_bit_d2d']] : []),
     [c.d2d || c.net ? '节点内 scale-up 发送' : '链路发送', c.link, ' B', 'link', 'pJ_bit_link'],
     ...(c.net ? [['跨节点网络发送', c.net, ' B', 'net', 'pJ_bit_net']] : []),
-    ...(c.host ? [['主机链路重载（卸载放置）', c.host, ' B', 'host', 'pJ_bit_host']] : []), ['卡·秒（静态）', c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
+    ...(c.host ? [['主机链路重载（卸载放置）', c.host, ' B', 'host', 'pJ_bit_host']] : []), ['卡·秒（静态）' + (e.idle_source && e.idle_source !== 'idle_W' ? `（${num(e.idle_W_used)} W = idle/TDP × TDP）` : ''), c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
   const head = h('tr', {}, h('th', {}, '动作'), h('th', {}, `次数 / ${u}`), h('th', {}, `能耗 J / ${u}`));
   const body = rows.map(([lab, n, sfx, k, key]) => h('tr', {}, h('td', {}, lab), h('td', { class: 'num' }, sci(n) + sfx),
-    h('td', { class: 'num' }, e.provided.includes(key) ? sci(j[k] || 0) : h('span', { class: 'muted' }, '未提供'))));
+    h('td', { class: 'num' }, (e.provided.includes(key) || k in j) ? sci(j[k] || 0) : h('span', { class: 'muted' }, '未提供'))));
   if (e.J_per_unit !== undefined) body.push(h('tr', {}, h('td', {}, h('b', {}, '合计')), h('td', { class: 'num' }, ''),
     h('td', { class: 'num' }, h('b', {}, sci(e.J_per_unit)), ` · 平均 ${num(e.avg_W_per_card)} W/卡`)));
   if (e.host_note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, e.host_note)));
@@ -1719,8 +1720,9 @@ function trafficCell(t) {
   const v = Object.values(t || {});
   if (!v.length) return '—';
   const mx = (k) => { const xs = v.map((e) => e[k]).filter((x) => x != null); return xs.length ? Math.max(...xs) : null; };
-  const d = mx('dram_B'), e = mx('J');
-  return `DRAM ×${d != null ? num(d) : '—'}` + (e != null ? ` · 能耗 ×${num(e)}${v.some((x) => x.J_partial) ? '（部分）' : ''}` : '');
+  const d = mx('dram_B'), e = mx('J'), ep = mx('J_prefill');
+  return `DRAM ×${d != null ? num(d) : '—'}` + (e != null ? ` · 能耗 ×${num(e)}${v.some((x) => x.J_partial) ? '（部分）' : ''}` : '')
+    + (ep != null ? ` · prefill ×${num(ep)}` : '');   // 0.188
 }
 /* 0.157: datapath sizing headroom */
 async function runInsightSizing() {
@@ -1832,7 +1834,8 @@ function paintInsightDetail(key) {
     h('thead', {}, h('tr', {}, ['模型', ...mkeys.map((q) => r.metrics[q].replace(/加速$/, '')), pw, 'ΔMAC/单位', '瓶颈', '瓶颈变化', '放得下'].map((x) => h('th', {}, x)))),
     h('tbody', {}, k.models.map((x) => x.error ? h('tr', {}, h('td', {}, x.model), h('td', { colspan: mkeys.length + 5 }, '错误：' + x.error))
       : h('tr', {}, h('td', {}, x.model), ...mkeys.map((q) => h('td', {}, insX(x[q]))),
-        h('td', {}, pct(r.energy_provided ? x.d_J_tok : x.d_dram_B_tok)), h('td', {}, pct(x.d_mac_tok)),
+        h('td', {}, pct(r.energy_provided ? x.d_J_tok : x.d_dram_B_tok)
+          + (r.energy_provided && x.d_J_prefill != null ? ` · prefill ${pct(x.d_J_prefill)}` : '')), h('td', {}, pct(x.d_mac_tok)),
         h('td', {}, r.domain === 'llm' ? `${x.bound_d} / ${x.bound_p}` : x.bound_d), h('td', {}, x.bound_flip ? '是' : ''), h('td', {}, x.fits ? '是' : '否')))));
 }
 
@@ -1900,7 +1903,7 @@ async function init() {
     'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2', 'mm2_per_dq_hbm', 'mm2_per_dq_lpddr', 'mm2_per_d2d_unit', 'mm2_per_GBps_c2c'])
     bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
       { nullable: true, int: k === 'cards' });
-  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr'])
+  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   initDensityPresets();
   initEnergyPresets();

@@ -267,10 +267,12 @@ def _point(s: Scenario, table: EnergyTable, domain: str = "llm") -> dict:
         d = evaluate(s.replace("serving.phase", "decode"))
         p = evaluate(s.replace("serving.phase", "prefill"))
         e = energy_report(d, table)
+        ep = energy_report(p, table)          # 0.188: prefill energy per prompt token, not decode only
         per = e["counts_per_unit"]
         return {"ttft": p.ttft, "tpot": d.tpot, "thr": d.per_card, "fits": bool(d.fits and p.fits),
                 "bound_d": d.bound, "bound_p": p.bound, "J_tok": e.get("J_per_unit"),
-                "J_partial": bool(e.get("J_per_unit") and e["missing"]),
+                "J_prefill": ep.get("J_per_unit"),
+                "J_partial": bool(e.get("J_per_unit") and (e["missing"] or ep["missing"])),
                 "dram_B_tok": per.get("dram"), "mac_tok": per.get("mac"), "sram_B_tok": per.get("sram")}
     r = evaluate(s)
     e = energy_report(r, table)
@@ -286,7 +288,7 @@ def _gain(m: str, base: dict, alt: dict) -> float | None:
     a, b = base[m], alt[m]
     if not a or not b:
         return None
-    return a / b if m in ("ttft", "tpot", "lat", "J_tok") else b / a   # speed-up, > 1 = better (J: less = better)
+    return a / b if m in ("ttft", "tpot", "lat", "J_tok", "J_prefill") else b / a   # speed-up, > 1 = better (J: less = better)
 
 
 def insight_report(base: Scenario, models=None, budget: Budget | None = None, table: EnergyTable | None = None) -> dict:
@@ -330,7 +332,7 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
                 row[m] = x
                 if x is not None:
                     g[m].append(x)
-            for c in ("J_tok", "dram_B_tok", "mac_tok", "sram_B_tok"):
+            for c in ("J_tok", "J_prefill", "dram_B_tok", "mac_tok", "sram_B_tok"):
                 row["d_" + c] = (hi[c] / lo[c] - 1) if hi.get(c) and lo.get(c) else None
             t_lo, t_hi = _tco_unit(lo, domain, budget), _tco_unit(hi, domain, budget)
             if t_lo and t_hi and t_hi["tco"] > 0:
@@ -682,7 +684,7 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
         raise ValueError("energy_tie needs an energy table (energy / energy_preset)")
     ref = {mid: _point(s, table, domain) for mid, s in scns.items()}
     if energy_tie:
-        metrics = tuple(metrics) + ("J_tok",)
+        metrics = tuple(metrics) + (("J_tok", "J_prefill") if domain == "llm" else ("J_tok",))   # 0.188: + prefill
 
     def check(key, v):
         """None if every model holds; else (model, metric | 'fits', gain)."""
@@ -763,7 +765,8 @@ def sizing_report(base: Scenario, models=None, budget: Budget | None = None, res
         if d is not None:
             row["mm2_saved"] = (cur - ok) * _unit_mm2(key, base, d)
         out.append(row)
-    rep = {"domain": domain, "models": models, "metrics": {**metric_labels(domain), **({"J_tok": "能耗 / 单位（越低越好）"} if energy_tie else {})},
+    rep = {"domain": domain, "models": models, "metrics": {**metric_labels(domain), **({"J_tok": "能耗 / 单位（越低越好）"} if energy_tie else {}),
+                                                         **({"J_prefill": "prefill 能耗 / prompt token（越低越好）"} if energy_tie and domain == "llm" else {})},
            "energy_tie": bool(energy_tie), "tie": TIE, "resources": out,
            "chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label,
             "basis": "逐项缩小（先减半再几何二分）× 现有引擎；每个模型的全部领域指标都在 ±1% 内且仍放得下才算可行；"
@@ -793,6 +796,8 @@ def _traffic_delta(scns, ref, setter, v, table, domain) -> dict:
         if r0.get("J_tok") and p.get("J_tok"):
             e["J"] = p["J_tok"] / r0["J_tok"]
             e["J_partial"] = bool(r0.get("J_partial"))
+        if r0.get("J_prefill") and p.get("J_prefill"):
+            e["J_prefill"] = p["J_prefill"] / r0["J_prefill"]     # 0.188
         out[mid] = e
     return out
 

@@ -363,6 +363,11 @@ def _energy_table(body: dict) -> EnergyTable:
         if isinstance(d, dict) and "energy_preset" in d:
             from .core.energy import apply_energy_preset
             d = apply_energy_preset(d)
+        # 0.188: the card TDP for idle_frac_tdp comes from the budget's tdp_W_card when the energy table has none
+        bud = body.get("budget")
+        if isinstance(d, dict) and d.get("tdp_W") is None and isinstance(bud, dict) \
+                and isinstance(bud.get("tdp_W_card"), (int, float)) and not isinstance(bud.get("tdp_W_card"), bool):
+            d = {**d, "tdp_W": float(bud["tdp_W_card"])}
         return EnergyTable.from_dict(d)
     except (ValueError, TypeError) as e:
         raise ApiError(str(e)) from None

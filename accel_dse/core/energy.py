@@ -64,6 +64,13 @@ class EnergyTable:
     # unset → pJ_bit_dram.  Lets an LPDDR ↔ HBM choice move J / token by mechanism (interface + array per bit).
     pJ_bit_dram_hbm: float | None = None
     pJ_bit_dram_lpddr: float | None = None
+    # 0.188: chip-side DRAM PHY (controller-side interface) per DRAM bit, by memory kind; a separate line "dram_phy"
+    # so DRAM energy = memory side + SoC side.  Unset → no PHY line (memory-side only, as ≤ 0.187).
+    pJ_bit_phy_hbm: float | None = None
+    pJ_bit_phy_lpddr: float | None = None
+    # 0.188: static power from a measured idle fraction of TDP: idle_W := idle_frac_tdp × tdp_W when idle_W is unset.
+    idle_frac_tdp: float | None = None
+    tdp_W: float | None = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -152,6 +159,16 @@ ENERGY_PRESETS: dict[str, dict] = {
                                 "(memory side); cross-check " + _FGDRAM + " HBM2 ≈ 3.97"),
             "pJ_bit_dram_lpddr": (16.0 / (500e9 * 8) * 1e12, "推导", _GRACE + ": LPDDR5X subsystem up to 500 GB/s in "
                                   "about 16 W → 4.0 pJ/bit at peak (memory side); 0.186 value 10 (PIM-AI, 二手) dropped"),
+            # 0.188: chip-side PHY and static power
+            "pJ_bit_phy_hbm": (0.29, "来源", "Chae et al. (Samsung), 'A 4-nm 1.15 TB/s HBM3 Interface…', ISSCC 2023 28.4 / "
+                               "JSSC 2023: 0.29 pJ/bit (controller-side interface); cross-check Mehta et al. VLSID 2025 "
+                               "HBM3 host PHY 0.5 pJ/bit"),
+            "pJ_bit_phy_lpddr": (0.65 * 2, "二手", "LPDDR4X controller PHY 0.65 pJ/b and 'LPDDR5X … halves the energy "
+                                 "efficiency compared to LPDDR4X' (SOCC 2025, 'A 4.266 Gbps/pin LPDDR4X PHY … 12nm', "
+                                 "citing its refs [5][6]) → ≈ 1.3 pJ/bit for LPDDR5X"),
+            "idle_frac_tdp": (71.8 / 700.0, "二手", "measured H100 SXM idle 71.8 W without a CUDA context (121.7 W with "
+                              "one) vs 700 W TDP (lo0 tech blog 'Measuring the power of a GPU', citing controlled runs) "
+                              "→ 0.103; static floor only — needs the card TDP (tdp_W, a product choice)"),
             "pJ_bit_d2d": (0.25, "来源", _UCIE),
             "pJ_bit_link": (1.3, "来源", _NVL),
             "pJ_bit_net": (5.0, "假设", "跨节点网卡 / 光模块量级，无单一公开数字 — 约数倍于 C2C（与 horowitz_45nm 预设相同）"),
@@ -268,6 +285,33 @@ def _counts(r) -> dict:
     return {"counts": c, "window_s": window, "units": units, "unit": unit}
 
 
+def _is_hbm(r) -> bool | None:
+    from .. import mem_catalog
+    try:
+        return "HBM" in mem_catalog.parse_mem_id(r.scenario.mem_id).mem_type.upper()
+    except Exception:                       # noqa: BLE001
+        return None
+
+
+def phy_pJ(r, table: EnergyTable):
+    """0.188: (field, value) of the chip-side DRAM PHY energy for this result's memory kind, or (None, None)."""
+    h = _is_hbm(r)
+    if h is None:
+        return None, None
+    f = "pJ_bit_phy_hbm" if h else "pJ_bit_phy_lpddr"
+    v = getattr(table, f)
+    return (f, v) if v is not None else (None, None)
+
+
+def idle_W_of(table: EnergyTable):
+    """0.188: explicit idle_W wins; else idle_frac_tdp × tdp_W when both are set; else None."""
+    if table.idle_W is not None:
+        return table.idle_W
+    if table.idle_frac_tdp is not None and table.tdp_W is not None:
+        return table.idle_frac_tdp * table.tdp_W
+    return None
+
+
 def dram_pJ_field(r, table: EnergyTable) -> str:
     """0.186: which field prices this result's DRAM bits: the per-kind field when set, else pJ_bit_dram."""
     from .. import mem_catalog
@@ -293,8 +337,12 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
     out = {"unit": a["unit"], "window_s": a["window_s"], "units_per_window": a["units"],
            "counts_per_unit": per, "provided": table.provided,
            "missing": [f.name for f in fields(EnergyTable) if getattr(table, f.name) is None
-                       and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr")
-                       and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")],
+                       and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
+                                          "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W")
+                       and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
+                       and not (f.name == "idle_W" and (idle_W_of(table) is not None or table.idle_frac_tdp is not None))]
+                      + (["tdp_W"] if table.idle_W is None and table.idle_frac_tdp is not None and table.tdp_W is None
+                         else []),
            "dram_pJ_field": dfield,
            "basis": "动作计数 × 用户提供的每动作能耗（Accelergy 式 ERT）；工具不内置任何能耗数值"}
     if not table.provided:
@@ -304,8 +352,15 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
         e = getattr(table, dfield if k == "dram" else attr)
         if e is not None:
             j[k] = per[k] * e * 1e-12 * (8 if k in _BITS else 1)
-    if table.idle_W is not None:
-        j["idle"] = table.idle_W * per["idle_card_s"]
+    pf, pv = phy_pJ(r, table)
+    if pv is not None:
+        j["dram_phy"] = per["dram"] * pv * 1e-12 * 8
+        out["phy_pJ_field"] = pf
+    iw = idle_W_of(table)
+    if iw is not None:
+        j["idle"] = iw * per["idle_card_s"]
+        out["idle_W_used"] = iw
+        out["idle_source"] = "idle_W" if table.idle_W is not None else "idle_frac_tdp × tdp_W"
     if per.get("host"):
         if table.pJ_bit_host is not None:
             j["host"] = per["host"] * table.pJ_bit_host * 1e-12 * 8

@@ -3,6 +3,12 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+
+## [0.188.0]
+### Added
+- Separate chip-side DRAM PHY energy line (`pJ_bit_phy_hbm` 0.29 来源 / `pJ_bit_phy_lpddr` 1.3 二手).
+- Static power from `idle_frac_tdp` × `tdp_W` (H100 measured idle 0.103 二手; TDP from the budget if unset).
+- Prefill energy (`J_prefill`) in insight/sizing; LLM `energy_tie` constrains both phases.
 ## [0.187.0] - 2026-10-16
 ### 变更（默认值，tpuv4i_7nm 能耗预设）
 - 一手来源与 0.186 的 PIM-AI 数值矛盾：一手数值约为它的一半，LPDDR/HBM 比值 1.16 而非 1.43。改为：
