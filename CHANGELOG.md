@@ -6,6 +6,18 @@
 
 
 
+## [0.210.0]
+- **Pipe-mode per-op KV / state split** (finishes STATE_SPLIT): overlap `items_of` now gives recurrent-state bytes their own `state` key, and `evaluate._kv_state_miss` weights each op by its own stream's miss share. These are the same shares as `memplan.step_dram_bytes`; the old pooled share returns when STATE_SPLIT is off. The step DRAM total is unchanged; only how it is spread across ops in pipe mode moves. Re-baselined: default (pipe) fingerprint 62fd08857bc4c055 → 99a72aef99a2e674; test_core_125 fpx({}) a148b9cd855d95fc → 9982d6b04e230874; test_core_171 Evo2 (Hyena) ttft 0.37786053 → 0.37785506.
+- **RWKV-7 7.2B state size, reconciled.** Both earlier numbers are correct but measure different things:
+  - 33.0 MiB = 34.6 MB per sequence is the *capacity* (fp32 state; what a buffer must hold).
+  - ≈ 69.2 MB per sequence per step is the DRAM *traffic* when the state is not resident: it is read and written every step, so 2 × 34.6 MB.
+  - Docs updated: the 0.208 entry, MODEL §155 and §156. The state SRAM what-if label now shows both: "每序列状态容量 33.0 MiB；未驻留时读+写 69.2 MB/步".
+- **Rest of the adversarial review of 0.203–0.208** (`tests/test_core_210.py`). No new bugs found.
+  - Multi-card PP (pp 2/3 × every dispatch mode × dense, MoE+state hybrid, RWKV): one stage per card; walls keys and shares sum to 1; the walls stage index is valid; stage ms ≤ step ms; exposed ms ≥ 0; no NaN; reachable ⇒ critical batch ≤ limit.
+  - Preset memory table: the catalog `default_mem`, `hardware.default_mem` and the API-resolved `mem_id` agree for every preset, and `/api/memory` resolves each one.
+  - Cross-route fuzz (eval / sensitivity / fit / sweep), seeded, with a per-request timing guard (20 s for eval, 80 s for multi-evaluation routes).
+  - Huge-batch timing guard: a 100k-batch prefill or decode with pp=2 must finish in under 20 s. This guards against a return of the overlap replay bug fixed in 0.209.
+
 ## [0.209.0]
 - **Recurrent-state on-chip residency as a design variable.**
   - New `Chip.state_sram_mib` (default 0): a dedicated state buffer, separate from the shared SRAM. `memplan.plan(state_buf=)` puts state in the buffer first. The remainder follows STATE_FIRST in the shared SRAM, then hot weights, experts and KV, and any SRAM left over takes more state. Partial residency is handled per byte.
@@ -36,7 +48,7 @@
 - **Saturation source** `balance.asymptote_by` ∈ kv / state / kv+state / weights / act: the per-sequence DRAM stream that grows most from batch 1 to 65536 (kv+state when both are ≥ 25 %).
   - Fixed-state models (RWKV-7) are labelled `state`. Their asymptote is independent of ctx, and the hint names the state levers (state bytes / SRAM-resident state), not context.
 - **RWKV-7 G1k 7.2B** (fp32 state, as the reference kernels keep it):
-  - The asymptote is 181 FLOP/B (state read + written every step, ≈ 69 MB per sequence per step). On 1P (318 FLOP/B) balance is **not reachable**; this is correct, because the fixed state is still a per-sequence DRAM stream.
+  - The asymptote is 181 FLOP/B (state read + written every step, ≈ 69.2 MB per sequence per step of read + write traffic = 2 × the 34.6 MB (33.0 MiB) capacity; 0.210 wording). On 1P (318 FLOP/B) balance is **not reachable**; this is correct, because the fixed state is still a per-sequence DRAM stream.
   - It becomes reachable when the chip balance is below the asymptote: 2× DRAM gives B* = 758 ≤ 2048, and bf16 state (asymptote 331) gives B* = 1541 ≤ 2092.
   - New `formats_override` role `state` (what-if).
 - **StartLux-Decision 35B-A3B** (hybrid GDN + full attention, MoE): `kv+state`, asymptote 29.8; every one of KV fp8, state bf16 and ctx ÷ 2 helps.

@@ -967,7 +967,7 @@ def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, s
     kvst = mp.kv_total + mp.state_total
     f = {"hot": 0.0 if store.hot_w <= 0 else 1.0 - mp.pinned_hot / store.hot_w,
          "exp": 0.0 if store.expert_w <= 0 else 1.0 - mp.pinned_expert / store.expert_w,
-         "kv": 0.0 if kvst <= 0 else 1.0 - mp.kv_sram / kvst, "lookup": 1.0, "act": 1.0}
+         **_kv_state_miss(mp), "lookup": 1.0, "act": 1.0}
     nb = sum(n * sum(x * f.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
     t_mem = max(_dram_t(sys, dram), _slc_time(sys, dram))
     if nb <= 0 and t_mem > 0:          # traffic the ops do not carry (e.g. FSDP copies): one leading DMA step
@@ -1048,7 +1048,7 @@ def _pipe_fused_(sd, sp, f, rr, t_mem):
     kvst = mp.kv_total + mp.state_total
     fr = {"hot": 0.0 if store.hot_w <= 0 else 1.0 - mp.pinned_hot / store.hot_w,
           "exp": 0.0 if store.expert_w <= 0 else 1.0 - mp.pinned_expert / store.expert_w,
-          "kv": 0.0 if kvst <= 0 else 1.0 - mp.kv_sram / kvst, "lookup": 1.0, "act": 1.0}
+          **_kv_state_miss(mp), "lookup": 1.0, "act": 1.0}
     nb = sum(n * sum(x * fr.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
     if nb <= 0 and t_mem > 0:
         segs.insert(0, ([(0.0, {"x": 1.0}, 0.0)], 1)); nb = 1.0
@@ -1204,6 +1204,18 @@ def _pipe_repick(sys, agg, pre: tuple, extra: list, window: float, idx: int, so:
             lg["_stages"].pop()
         _stage_link(sys, agg, pre[0], pre[1], pre[2], pre[3], extra, window, idx, dict(pre[4]), sel=cur)
     return memo[cur], dict(zip(keys, cur))
+
+
+def _kv_state_miss(mp) -> dict:
+    """0.210: pipe-mode per-op DRAM weights for KV and recurrent state — the same per-stream miss shares as
+    memplan.step_dram_bytes (STATE_SPLIT); pooled (≤ 0.209) otherwise."""
+    from . import memplan as _mp
+    kvst = mp.kv_total + mp.state_total
+    pooled = 0.0 if kvst <= 0 else 1.0 - mp.kv_sram / kvst
+    if not (_mp.STATE_SPLIT and mp.state_sram >= 0):
+        return {"kv": pooled, "state": pooled}
+    return {"kv": 0.0 if mp.kv_total <= 0 else 1.0 - (mp.kv_sram - mp.state_sram) / mp.kv_total,
+            "state": 0.0 if mp.state_total <= 0 else 1.0 - mp.state_sram / mp.state_total}
 
 
 def _shared_kv(mp) -> float:

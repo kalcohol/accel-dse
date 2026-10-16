@@ -545,7 +545,7 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
             big = evaluate(rp(scn, chip=rp(ch, state_sram_mib=1e9))).balance()
             n_seq = big["critical_batch"] or big["batch_limit"] or 1
             mib = math.ceil(n_seq * st1 / 2**20)
-            cases.append(("state_sram", f"状态 SRAM {mib / 1024:.2f} GiB（容纳 {n_seq} 序列 × {st1 / 2**20:.1f} MiB）",
+            cases.append(("state_sram", f"状态 SRAM {mib / 1024:.2f} GiB（容纳 {n_seq} 序列 × 每序列状态容量 {st1 / 2**20:.1f} MiB；未驻留时读+写 {2 * st1 / 1e6:.1f} MB/步）",
                           rp(scn, chip=rp(ch, state_sram_mib=mib))))
     cases.append(("sram_x2", f"SRAM ×2（{ch.sram_mib:g} → {2 * ch.sram_mib:g} MiB）", rp(scn, chip=rp(ch, sram_mib=2 * ch.sram_mib))))
     mx = _mem_x2(scn.mem_id)

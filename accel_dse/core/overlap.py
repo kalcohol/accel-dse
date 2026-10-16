@@ -74,8 +74,10 @@ def items_of(ops, op_secs, comm_secs, act_bytes) -> list[tuple]:
             b["exp" if o.role == "expert" else "hot"] = o.w_bytes * sc
         if o.kind == "lookup":
             b["lookup"] = o.kv_read * sc
-        elif o.kv_read or o.kv_write or o.state_rw or xkv:
-            b["kv"] = (o.kv_read + o.kv_write + o.state_rw) * sc + xkv
+        elif o.kv_read or o.kv_write or xkv:
+            b["kv"] = (o.kv_read + o.kv_write) * sc + xkv
+        if o.kind != "lookup" and o.state_rw:          # 0.210: recurrent state has its own miss share (f["state"])
+            b["state"] = o.state_rw * sc
         if o.stream:
             b["act"] = act_bytes(o) * sc
         if o.kind == "attn" or (o.name == "softmax" and fused is not None):

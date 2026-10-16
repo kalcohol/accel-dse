@@ -4765,7 +4765,7 @@ not applied).
 | DRAM × 2, same capacity | balance 159; TPOT 2.35 ms — works (TPOT) | **B* 758 ≤ 2048 — reachable** | TPOT 0.88 ms — works (TPOT) |
 
 **Fixed state.** RWKV's recurrent state does not grow with context, but it is read and written for every sequence on
-every step (fp32: ≈ 69 MB per sequence per step at 7.2B). AI(B) therefore saturates at FLOP per token ÷ state bytes
+every step (fp32: capacity 33.0 MiB = 34.6 MB per sequence; traffic read + write ≈ 69.2 MB per sequence per step at 7.2B). AI(B) therefore saturates at FLOP per token ÷ state bytes
 ≈ 181 FLOP/B, a ctx-independent constant (KV models: ∝ 1 / ctx). Balance is reachable exactly when the chip's FLOP/B is
 below that constant. The critical-batch logic needed no special case; only the label and hint (`asymptote_by`)
 changed.
@@ -4785,10 +4785,18 @@ limited by capacity and the TTFT SLO, which is used as the decision latency limi
   - AI(B) rises while extra sequences fit on chip, then drops at the knee where state spills.
   - The monotone search can miss a window only one batch wide, so the knees are probed explicitly.
 - **RWKV-7 7.2B on 1P.**
-  - Per-sequence state is 33.0 MiB (fp32).
+  - Per-sequence state capacity is 33.0 MiB = 34.6 MB (fp32); its DRAM traffic when not resident is 2× that, ≈ 69.2 MB per step (read + write).
   - Minimum dedicated buffer for balance: 10352 MiB (critical batch 315 ≤ 1664) 「推导」.
   - bf16 state remains a separate what-if lever.
 - **Review findings.**
   - The UI's ∞ label ignored `asymptote_by`.
   - The open-window overlap replay cost O(tokens).
   - Neither changed any result value. The fingerprint change comes from STATE_SPLIT only.
+
+
+## §157 Pipe-mode KV / state split; state capacity vs traffic; review closure (0.210)
+- **Pipe mode.** Each op's DRAM bytes are weighted by its own stream's miss share: KV ops use 1 − (kv_sram − state_sram)/kv_total, and state ops use 1 − state_sram/state_total. This matches the step totals in `step_dram_bytes`. It only changes which ops the DRAM time lands on, and therefore how much of it overlaps compute.
+- **State size.** Capacity per sequence (what SRAM must hold) is S. The DRAM traffic per step when not resident is 2S (read + write).
+  - RWKV-7 7.2B fp32: S = 33.0 MiB = 34.6 MB, so traffic is ≈ 69.2 MB per step.
+  - The balance asymptote uses 2S. Residency and the state SRAM lever use S.
+- **Review closure.** Multi-card PP, walls, the preset memory pairing, cross-route fuzz and the huge-batch timing guard are covered in `tests/test_core_210.py`. No new defects were found beyond those fixed in 0.209.
