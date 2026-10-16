@@ -55,3 +55,14 @@ def test_fuzz_smoke_no_hang():
     out = subprocess.run([sys.executable, str(ROOT / "scripts" / "fuzz_sizing.py"), "6", "7", "120"],
                          capture_output=True, text=True, timeout=900)
     assert out.returncode == 0 and "0 finding(s)" in out.stdout, out.stdout[-2000:] + out.stderr[-2000:]
+
+
+def test_hbm_phy_density_sourced_0185():
+    for p in DENSITY_PRESETS.values():
+        v, tag, src = p["fields"]["mm2_per_dq_hbm"]
+        assert v == 8 * 4 / 2048 and tag == "推导/二手" and "Hot Chips 2026" in src
+
+
+def test_ui_headless_smoke_script_compiles():
+    import py_compile
+    py_compile.compile(str(ROOT / "scripts" / "ui_headless_smoke.py"), doraise=True)

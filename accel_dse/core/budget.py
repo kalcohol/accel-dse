@@ -44,8 +44,14 @@ _TPUV4I = "Jouppi et al., 'Ten Lessons From Three Generations Shaped Google's TP
 _BITCELL = ("TSMC N7 HD 6T bitcell 0.027 µm² (Wu et al., IEDM 2016); N5 0.021 µm² (Yeap et al., IEDM 2019; "
             "WikiChip / SemiAnalysis); N5 logic density 1.8× N7 (TSMC, WikiChip 'TSMC Details 5 nm')")
 _PHY = {
-    "mm2_per_dq_hbm": (14.0 / 1024, "二手/假设", "≈ 14 mm² per 1024-bit HBM3 PHY: public H100 die-shot estimates (secondary, "
-                       "unverified); lower bound RX-only 0.0056 mm²/DQ (Chae et al., ISSCC 2023, 4 nm HBM3, secondary)"),
+    # 0.185: was 14/1024 「二手/假设」 (H100 die-shot estimates, unverified).  Now Samsung Hot Chips 2026 (S. Han, via
+    # Tom's Hardware 2026-08 report): on the 11 × 12.8 mm HBM4 base die the conventional PHY occupies "more than 8 × 4 mm"
+    # for the 2048-DQ interface (SF4), and the XPU-side interface mirrors it ("the matching interface on the XPU shrinks
+    # too").  Host-side = memory-side is the 推导 step; ">" makes it a lower bound.
+    "mm2_per_dq_hbm": (8 * 4 / 2048, "推导/二手", "Samsung Hot Chips 2026 HBM4 base die: conventional HBM PHY > 8 × 4 mm "
+                       "for 2048 DQ (SF4), reported by Tom's Hardware / ServeTheHome → ≥ 0.0156 mm²/DQ; host-side PHY taken "
+                       "equal to the memory-side one (推导, lower bound). Old: ≈14 mm²/1024-bit HBM3 from H100 die-shot "
+                       "estimates (0.0137)"),
     # 0.184: was 0.03 「假设」 (no public LPDDR5X PHY area).  Now the Samsung SF2 LPDDR6 PHY (ISSCC 2026 paper 37.3, as
     # reported by SemiAnalysis 2026-04-15: 0.695 mm², 2.32 mm shoreline, 55.3 GB/s/mm² ⇒ 38.4 GB/s = one x24 channel
     # at 14.4 Gb/s incl. the 32/36 BL24 payload) → 0.695 / 24 DQ.  Includes the channel's CA / clock overhead.

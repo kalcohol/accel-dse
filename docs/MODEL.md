@@ -4373,3 +4373,11 @@ UI: the sizing panel renders rows generically from the API (label, unit, `mm2_sa
 Fuzzer (scripts/fuzz_sizing.py): every sizing/headroom entry point (sizing per-resource, joint with unpriced last/free, upgrade_path, insight_report) over random small chips (engines 1–16, rows/cols down to 1, lanes/dequant down to 1, SRAM 0.25 MiB, 1–4 LPDDR packages or 1–2 HBM stacks) with a SIGALRM wall-clock limit per call and report invariants. 40 cases: no hang, no exception, no invariant break. The 0.183 integer-floor fix holds.
 
 LPDDR PHY density, old→new: 0.03 mm²/DQ 「假设」 → 0.695/24 = 0.02896 「推导/二手」. Source: Samsung SF2 LPDDR6 PHY, ISSCC 2026 paper 37.3, as reported by SemiAnalysis (2026-04-15): 0.695 mm², 2.32 mm shoreline, 55.3 Gb/s/mm² (the article's unit; ×0.695 = 38.4, equal to its own x24 @ 14.4 Gb/s payload GB/s figure). The x24 width is inferred from that identity. The area includes the channel's CA/clock lanes. Limits: 2 nm and LPDDR6; an LPDDR5X PHY on an older node is likely larger (no public number). The HBM density is unchanged: the Maia 200 floorplan shows 3 HBM3E PHYs per long edge, but no area figure is public.
+
+## §132 HBM PHY density from a vendor disclosure; headless UI smoke (0.185)
+
+HBM PHY, old→new: 14/1024 = 0.0137 mm²/DQ 「二手/假设」 → 32/2048 = 0.0156 「推导/二手」. Source: Samsung, Hot Chips 2026 (S. Han), as reported by Tom's Hardware (text checked): "On an 11 × 12.8mm HBM4 base die, the conventional PHY occupies more than 8 × 4mm … Because the matching interface on the XPU shrinks too …". That covers 2048 DQ (JESD270-4) on SF4 and is the memory-side PHY. The host-side PHY is taken as equal (推导); "more than" makes it a lower bound. The old die-shot estimate (0.0137) sits within 14 % of it.
+
+LPDDR5X on N5/N4/N3: no public area. Synopsys and Cadence product pages give only rates (8533, and 9600 overclocked on 3 nm). The 0.184 LPDDR6 SF2 figure is kept.
+
+UI: scripts/ui_headless_smoke.py (opt-in). Every control change must issue a fresh API POST and bring the KPI cards back. It fails on page errors, console errors and HTTP ≥ 400/500. First run: 31 steps, 0 errors.

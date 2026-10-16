@@ -3,6 +3,13 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.185.0] - 2026-10-16
+### 变更（默认值）
+- 密度预设 mm2_per_dq_hbm：14/1024 = 0.0137「二手/假设」（H100 die-shot 估算，未核实）→ 8×4/2048 = 0.0156「推导/二手」：Samsung Hot Chips 2026（S. Han）HBM4 base die 上传统 PHY「超过 8×4 mm」对应 2048 DQ（SF4），由 Tom's Hardware / ServeTheHome 报道（原文已核对）；XPU 侧 PHY 取与内存侧相同（推导，下界）。HBM 的 dram_units / phy_area 面积 +14%。
+- LPDDR5X N5/N4/N3 PHY 面积：仍无公开数字（Synopsys/Cadence 只给速率），保留 0.184 的 LPDDR6 SF2 值。
+### 新增
+- scripts/ui_headless_smoke.py（选用，不在 run_tests 内）：自起服务器，用 Playwright + Chrome 依次切换模型、阶段、芯片预设、映射、DRAM 数量/类型、密度预设、卡数/TP、D2D，每次都要求触发 API POST（<400）且 KPI 卡片重新出现；然后跑缩减余量（单项 + 联合）和升级路径。监听 pageerror、console error 和 5xx。首轮：31 步，0 错误，无需修复。
+
 ## [0.184.0] - 2026-10-16
 ### 修复（UI）
 - 缩减余量面板：整数资源（核数、DRAM 封装/堆栈数）显示整数（旧 "4.00 个" / "16.0 核"）；已到 1 的整数资源显示「已是最小值 1」而不是「≤ 100% · 到搜索下限」。API 每行新增 `integer`、`unit_floor`。已用真实浏览器（Playwright + Chrome）跑过该面板，无 JS 错误。
