@@ -4542,3 +4542,20 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - Rows: 128/128 1.651 → 1.216, 2048/128 1.496 → 1.108, 5000/500 1.281 → 1.086, 1000/1000 1.225 → 1.087. Group 1.125 / 22.82 % → 1.008 / 13.52 %; other groups unchanged.
   - Attention (FA4 / cuDNN) is not the issue at these contexts: the chunk is GEMM-dominated. Activation FP4 quantisation is already charged as conversion work on the vector path.
 - `default_0194` keeps the previous default.
+
+## §143 GEMM DRAM roofline under tile I/O; occupancy fill; SMEM-bound tiles (0.196)
+
+- **DRAM floor (`mapping.CTA_DRAM_FLOOR`).** With tile I/O the array term includes the GEMM kernel's DRAM traffic, so cycles ≥ (M·K·a + K·N·w + M·N·o)·count / tile_io_Bpc 「推导」.
+  - Before: the prologue and epilogue went at each SM's DRAM share, and the main loop was fed from the SRAM port as if operands were already on chip. Occupancy then divided the I/O by k, as if each SM had its own DRAM.
+  - Effect on the H100 MLA absorbed bmm under occupancy: 2.93 µs → 7.60 µs, its byte floor.
+  - Without tile I/O ("legacy"/wide), DRAM is a stage-level term: max(Σ array, Σ vector, DRAM).
+  - Invariant: tests/test_core_196 fuzzes GEMM shapes × formats × 4 GPUs × {default, default_occ, default_tioauto, default_0194, default_0192}.
+- **Occupancy fill (`CTA_OCC_FILL`).** The k resident CTAs start together. Their k first prologues and the final epilogue have no main loop to hide under, so the model adds k·prologue + epilogue once per SM.
+- **SMEM-bound tiles (`CTA_SMEM_BW`, `smem_Bpc_sm`).** In SS-mode MMA both operands stream through SMEM at 128 B/clk/SM. Sources: CUDA guide, 32 banks × 4 B 「来源」; B200 measured, 64×64 tiles ≈ 50 % of FP16 peak (SemiAnalysis 「二手」); CDNA 3 LDS 128 B/clk.
+  - So feed ≥ (BM·a + BN·b)·K / 128.
+  - It binds 64×64 tiles on B200 (bf16) and on Hopper (fp8). It does not change the GEMM check points: B200 2048³ picks 128×128 at k = 2.
+- **Result.**
+  - default_occ GEMM points: H100 4096³ 709 (measured 716); B200 2048³ 1129 (1006); 4096³ 1478 (1532).
+  - Default for comparison: 695 / 1034 / 1446.
+  - Validation, default vs occupancy (MAE %): static 22.2 vs 25.7, TTFT 29.9 vs 36.2, Mixtral 18.8 vs 24.9.
+  - Occupancy stays opt-in.

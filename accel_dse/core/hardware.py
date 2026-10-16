@@ -125,6 +125,7 @@ class Chip:
     occ_smem_kib: float = field(default=0.0, metadata={"omit_default": True})
     occ_reg_kib: float = field(default=0.0, metadata={"omit_default": True})
     occ_threads: int = field(default=0, metadata={"omit_default": True})
+    smem_Bpc_sm: float = field(default=0.0, metadata={"omit_default": True})   # 0.196: SMEM B/clk per SM (cta main loop)
     # 0.193: GEMM fmt_ceiling applied as a multiplicative achieved-peak fraction on top of the tile/wave-quantised
     # time (instance_sched "cta"), instead of a floor (max(t, ideal / cap)).  The fraction must already have the
     # wave quantisation of its measured shape divided out (extval.net_ceiling)

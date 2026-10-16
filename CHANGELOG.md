@@ -6,6 +6,13 @@
 
 
 
+## [0.196.0]
+- Fix: under tile I/O, GEMM array time is bounded below by the unique operand + output bytes / aggregate DRAM bandwidth (`mapping.CTA_DRAM_FLOOR`). ≤ 0.195 every tile-I/O mode could run below the roofline: the main loop was fed from the SRAM port, and occupancy divided the I/O by k. Fuzz: 690 / 788 / 684 of 1200 shapes were below it (worst 0.10×); now 0. The DeepSeek-V3 kv_b.uk bmm on H100 with occupancy goes 2.93 → 7.60 µs (= its byte floor).
+- Default old → new MAE: static 22.76 → 22.22, TTFT 32.86 → 29.92, max-load 19.11 → 19.83, MoE 7.74 → 8.08, Mixtral 22.23 → 18.77, MI300X latency 21.07 → 21.74, B200 13.52 → 14.10.
+- Occupancy: pipeline fill / drain is exposed once per SM: k prologues plus the last epilogue (`CTA_OCC_FILL`).
+- SMEM-bound small tiles: `smem_Bpc_sm` is 128 B/clk/SM (`CTA_SMEM_BW`).
+- `default_occ` is now built on the current default; the old one is kept as `default_occ_0195`. It stays opt-in: B200 2048³ 1129 vs 1006 measured (default 1034), and validation is worse.
+- New roofline invariant fuzzer over all variants (tests/test_core_196).
 ## [0.195.0]
 - tile_io "occupancy" (opt-in, `default_occ`): resident CTAs per SM from documented smem / register (TMEM) / thread limits vs CUTLASS sm80 default tile configs (3 stages × 128 B of K, 256 threads); a tile costs max(main, (main + I/O)/k). Not default: B200 2048³ 1034 → 1214 TF (meas 1006), v1 TTFT 32.9 → 42.1 %.
 - B200 NVFP4: TRT-LLM rows use TRT-LLM's FP4 GEMM rates (PR #7943, CUTLASS default backend, 8192×8192×K: 2397–4535 TF), not the cuDNN library best (6220). B200 group 1.125 / 22.8 % → 1.008 / 13.5 %; 128/128 1.651 → 1.216, 2048/128 1.496 → 1.108. Other groups unchanged.

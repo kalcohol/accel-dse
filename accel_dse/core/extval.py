@@ -702,6 +702,8 @@ VARIANTS["default"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="dra
 VARIANTS["default_0194"] = dict(VARIANTS["default"])
 VARIANTS["default"] = dict(VARIANTS["default_0194"], trtllm_fp4=True)   # 0.195: TRT-LLM B200 NVFP4 kernel rates
 VARIANTS["default_occ"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="occupancy")   # 0.195
+VARIANTS["default_occ_0195"] = VARIANTS["default_occ"]
+VARIANTS["default_occ"] = dict(VARIANTS["default"], tile_io="occupancy")   # 0.196: on top of the current default
 VARIANTS["default_tioauto"] = dict(VARIANTS["default_0192"], ceil_mul=True, tile_io="auto")   # 0.194 diagnostic (TILE_IO_BY_HW)
 
 

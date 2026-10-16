@@ -277,7 +277,7 @@ def model_flags(**kw):
     kw = dict(kw)
     refhw_wide = kw.pop("REFHW_WIDE", None)      # 0.193: reference GPUs back on the ≤ 0.192 wide schedule
     cta_split = kw.pop("CTA_SPLIT_K", None)      # 0.193: mapping.SPLIT_K (cta split-K set)
-    mods = {"WIDE_WAVES": _mp, "STATE_FIRST": _mpl}   # 0.192: flags living in other modules
+    mods = {"WIDE_WAVES": _mp, "STATE_FIRST": _mpl, "CTA_DRAM_FLOOR": _mp, "CTA_SMEM_BW": _mp, "CTA_OCC_FILL": _mp}   # 0.192: flags living in other modules
     tgt = {k: (vars(mods[k]) if k in mods else globals()) for k in kw}
     old = {k: tgt[k][k] for k in kw}
     for k, v in kw.items():

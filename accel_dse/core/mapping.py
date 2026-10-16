@@ -226,6 +226,9 @@ SPLIT_K = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
 # 「二手」; accumulator = BM × BN fp32 in registers (Hopper) / TMEM (Blackwell).  Max 32 resident CTAs per SM (CUDA
 # Programming Guide, compute capability table).
 OCC_STAGES, OCC_K_BYTES, OCC_CTA_THREADS, OCC_MAX_CTAS = 3, 128, 256, 32
+CTA_DRAM_FLOOR = True   # 0.196 (False = ≤ 0.195)
+CTA_SMEM_BW = True      # 0.196 (False = ≤ 0.195)
+CTA_OCC_FILL = True     # 0.196 (False = ≤ 0.195)
 
 
 def cta_occupancy(ch: Chip, tm: int, tn: int, ab: float, wb: float) -> int:
@@ -262,12 +265,19 @@ def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost
             kk = _cd(k, s)
             mac_t = tm * tn * kk / macs
             feed_t = (tm * ab + tn * wb) * kk / port
+            if ch.smem_Bpc_sm and CTA_SMEM_BW:
+                # 0.196: both operands stream through the SM's shared memory once per K step (SS-mode MMA), at
+                # smem_Bpc_sm — a tm × tn tile does tm·tn MACs per (tm·a + tn·b) bytes, so small tiles run SMEM-bound
+                # (B200 bf16: 64×64 needs 256 B/clk for 4096 MAC/clk → 50 %, 128×256 needs 96 → MAC-bound)
+                feed_t = max(feed_t, (tm * ab + tn * wb) * kk / ch.smem_Bpc_sm)
             epi = tm * tn * (ob if s == 1 else 4.0) / port
             once = 0.0
             if ch.tile_io_Bpc > 0:       # 0.135 opt-in: prologue stage + C writeback at the SM's DRAM share
                 io = ch.tile_io_Bpc / E
                 bk = min(kk, max(1, int(128 / max(ab, wb, 0.5))))
-                t_io = max(epi, tm * tn * (ob if s == 1 else 4.0) / io) + bk * (tm * ab + tn * wb) / io
+                t_epi = max(epi, tm * tn * (ob if s == 1 else 4.0) / io)
+                t_pro = bk * (tm * ab + tn * wb) / io
+                t_io = t_epi + t_pro
                 if ch.tile_io == "occupancy" and ch.occ_smem_kib:
                     # 0.195: k resident CTAs per SM (cta_occupancy); one tile's I/O runs under the others' main loops,
                     # so a tile costs max(main, (main + I/O) / k) in steady state.  A single tile per SM (waves = 1)
@@ -275,6 +285,12 @@ def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost
                     kw = min(cta_occupancy(ch, tm, tn, ab, wb), _cd(tiles * s, E))
                     main = max(mac_t, feed_t)
                     epi = max(main, (main + t_io) / kw) - main
+                    if CTA_OCC_FILL and kw > 1:
+                        # 0.196: steady state only after the pipe fills — the k resident CTAs start together, so their
+                        # k first prologues share the SM's DRAM share with no main loop to hide under, and the last
+                        # epilogue drains alone: k·prologue + epilogue once per SM.  ≤ 0.195 hid it (2 waves of
+                        # 128 × 128 at k = 2 lost all I/O)
+                        once = kw * t_pro + t_epi
                 elif ch.tile_io == "persistent":
                     # 0.138: persistent warp-specialised kernel (CUTLASS sm90 ping-pong): tile i's epilogue and tile
                     # i+1's prologue run under the neighbouring tile's main loop — exposed once per SM, and per tile
@@ -290,6 +306,14 @@ def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost
                 byt = tiles * s * (tm * ab + tn * wb) * kk
                 best = (cyc, cyc if mac_t >= feed_t else 0.0, byt / ch.port_Bpc)
     cyc, mac_c, feed_c = best
+    if ch.tile_io_Bpc > 0 and CTA_DRAM_FLOOR:
+        # 0.196: under tile I/O the array term carries the kernel's DRAM traffic, so it is bounded below by the unique
+        # operand + output bytes over the aggregate DRAM bandwidth (the roofline).  ≤ 0.195 the occupancy overlap
+        # (main + I/O) / k let co-resident CTAs hide every tile's I/O under each other's main loops as if each SM had its
+        # own DRAM channel — no aggregate bound (DeepSeek MLA absorbed bmm on H100: 8.1 µs vs 13 µs of bytes)
+        fl = (m * k * ab + k * n * wb + m * n * ob) * count / ch.tile_io_Bpc
+        if fl > cyc:
+            mac_c, cyc = 0.0, fl
     conv_elems = (k * n if flag & 1 else 0.0) + (m * k if flag & 2 else 0.0)
     return GemmCost(cyc, mac_c, feed_c, "cta", ex, conv,
                     conv_elems * count, (k * n * count) if flag & 1 else 0.0)

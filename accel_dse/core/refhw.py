@@ -65,7 +65,8 @@ def _chip(name, sms, mac_per_sm, peak_tflops, fmts, l2_mib, lanes):
     occ = next((v for k, v in OCC_RES.items() if name.startswith(k)), (0.0, 0.0, 0))
     return Chip(name, f, rows, cols, sms, formats=fmts, sram_mib=l2_mib, vector_lanes=lanes,
                 instance_sched="cta", tile_io="dram", gemm_ceil_mul=True,
-                occ_smem_kib=occ[0], occ_reg_kib=occ[1], occ_threads=occ[2])
+                occ_smem_kib=occ[0], occ_reg_kib=occ[1], occ_threads=occ[2],
+                smem_Bpc_sm=SMEM_BPC if occ[0] else 0.0)
 
 
 # 0.195: per-SM occupancy resources (shared memory KiB, accumulator storage KiB, max resident threads)
@@ -75,6 +76,14 @@ def _chip(name, sms, mac_per_sm, peak_tflops, fmts, l2_mib, lanes):
 #   MI300X 「来源」 AMD CDNA 3 white paper: 64 KB LDS / CU, 512 KB VGPR / CU; 2048 work-items (32 wave64) / CU.
 OCC_RES = {"A100": (164.0, 256.0, 2048), "H100": (228.0, 256.0, 2048), "H200": (228.0, 256.0, 2048),
            "H800": (228.0, 256.0, 2048), "B200": (228.0, 256.0, 2048), "MI300X": (64.0, 512.0, 2048)}
+
+# 0.196: shared-memory (LDS) bandwidth per SM / CU, bytes per clock — the main loop of a tile whose operands both come
+# from SMEM (wgmma / tcgen05 "SS" mode) cannot beat (BM·a + BN·b) bytes per K step at this rate.
+#   NVIDIA 「来源」 CUDA C++ Programming Guide, shared memory: 32 banks × 32 bit per clock = 128 B/clk/SM (cc 5.x–10.x);
+#   B200 measured 128 B/clk/SM, tcgen05 SS-mode MMA SMEM-bound below N = 256 at M = 128, 64×64 ≈ 50 % of peak FP16
+#   (SemiAnalysis, "Dissecting Nvidia Blackwell — Tensor Cores", 2025 「二手」).  MI300X 「来源」 CDNA 3 white paper:
+#   LDS 128 B/clk/CU.
+SMEM_BPC = 128.0
 
 
 _NV_SFU = 16.0
