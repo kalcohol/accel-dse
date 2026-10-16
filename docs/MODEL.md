@@ -4559,3 +4559,25 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - Default for comparison: 695 / 1034 / 1446.
   - Validation, default vs occupancy (MAE %): static 22.2 vs 25.7, TTFT 29.9 vs 36.2, Mixtral 18.8 vs 24.9.
   - Occupancy stays opt-in.
+
+## §144 L2-resident activations in the GEMM floor; w_bits 0 = unset (0.197)
+
+- **L2 discount (`CTA_L2_ACT`).** The §143 floor charges (max(0, activation bytes − L2) + weight bytes) / DRAM BW 「推导」.
+  - The input was just written by the previous kernel and the output is read by the next. While both fit in the write-back L2 (refhw `sram_mib` 「来源」) they stay on chip, which matches memplan (stage `dram["act"]` = 0).
+  - Weights stay in the floor: each is read once per step and the model is much larger than L2.
+  - Tile reuse was never double-counted: the floor counts unique bytes.
+- **Remaining regression vs 0.195.** The floor is applied per kernel: Σ max(compute_i, bytes_i) ≥ max(Σ compute, Σ bytes).
+  - Small kernels such as MI300X b1 attn.k / attn.v (2.9 µs vs 0.56 µs of weights) add about 0.37 ms per 70B step.
+  - That is a real effect of kernels running one after another. The missing piece is QKV fusion (vLLM QKVParallelLinear), which the IR does not model.
+- **`W_BITS_ZERO_FIX`.** An `Op.w_bits` of 0.0 means "use the format's bits". Before, the extval ceiling bisection (`_model_tflops`), the GEMM check points and attention ops treated the B operand as 0 bytes.
+- **GEMM points** (default / occupancy / persistent vs measured):
+
+  | Point | default | occupancy | persistent | measured |
+  |---|---|---|---|---|
+  | H100 4096³ | 686 | 703 | 712 | 716 |
+  | B200 2048³ | 959 | 945 | 991 | 1006 |
+  | B200 4096³ | 1401 | 1469 | 1481 | 1532 |
+  | B200 8192³ | 1551 | 1551 | 1551 | — |
+
+  The B200 2048³ overshoot came from the 0-byte operand. The wave tail (256 tiles on 148 SMs) is already modelled, and no throttle term is needed.
+- **Occupancy stays opt-in.**

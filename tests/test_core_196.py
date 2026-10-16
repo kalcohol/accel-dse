@@ -40,8 +40,10 @@ def violations(n=120, seed=196):
                 r = E._op_seconds(o, s, "reconf", md)
                 t, ideal = r[0], r[5]
                 ab = M._fmt(af).bytes
-                fl = (m * k * ab + k * nn * wbits / 8 + m * nn * max(2.0, ab)) * c / (s.dram_GBps * 1e9) \
-                    if s.chip.tile_io_Bpc else 0.0
+                act = (m * k * ab + m * nn * max(2.0, ab)) * c
+                if M.CTA_L2_ACT:            # 0.197: activations resident in L2 up to its capacity
+                    act = max(0.0, act - s.chip.sram_mib * 2 ** 20)
+                fl = (act + k * nn * wbits / 8 * c) / (s.dram_GBps * 1e9) if s.chip.tile_io_Bpc else 0.0
                 if t < max(ideal, fl) * (1 - 1e-9):
                     bad.append((v, hn, m, k, nn, c, af, round(t / max(ideal, fl), 3)))
     return bad
@@ -54,7 +56,7 @@ def test_roofline_every_variant():
 
 def test_pre_196_bypass_caught():
     """≤ 0.195: tile-I/O variants ran below the DRAM roofline (occupancy worst, ~0.1×)."""
-    with E.model_flags(CTA_DRAM_FLOOR=False, CTA_OCC_FILL=False, CTA_SMEM_BW=False):
+    with E.model_flags(CTA_DRAM_FLOOR=False, CTA_OCC_FILL=False, CTA_SMEM_BW=False, CTA_L2_ACT=False):
         bad = violations(n=40)
     vs = {b[0] for b in bad}
     assert {"default", "default_occ"} <= vs
@@ -70,8 +72,8 @@ def test_mla_absorbed_bmm_h100():
     s = _sys(rows["H100-SXM"], "default_occ")
     t = E._op_seconds(o, s, "reconf", m)[0]
     ab, wb = M._fmt(o.a_fmt).bytes, o.w_bits / 8
-    fl = (o.m * o.k * ab + o.k * o.n * wb + o.m * o.n * max(2.0, ab)) * o.count / (s.dram_GBps * 1e9)
-    assert t >= fl * (1 - 1e-9) and t < 1.05 * fl
+    fl = o.k * o.n * wb * o.count / (s.dram_GBps * 1e9)   # 0.197: the 9 MB of activations sit in L2 (50 MB)
+    assert t >= fl * (1 - 1e-9) and t > 5e-6   # 7.05 µs (≤ 0.195: 2.93)
 
 
 def test_smem_bound_small_tiles():

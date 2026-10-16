@@ -134,7 +134,7 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
     if m <= 0 or k <= 0 or n <= 0 or count <= 0:
         return GemmCost(0.0, 0.0, 0.0, "none", a_fmt, "none", 0.0)
     ex, rate, conv, flag = gemm_exec(w_fmt, a_fmt, ch.formats)
-    wb = (w_bits if w_bits is not None else _fmt(w_fmt).bits) / 8.0
+    wb = (w_bits if w_bits or not W_BITS_ZERO_FIX else _fmt(w_fmt).bits) / 8.0   # 0.197: 0 = unset (Op default)
     ab = _fmt(a_fmt).bytes
     ob = max(2.0, ab)       # outputs leave in bf16 (fp32 when the activations are fp32)
     if ch.instance_sched == "cta":
@@ -229,6 +229,8 @@ OCC_STAGES, OCC_K_BYTES, OCC_CTA_THREADS, OCC_MAX_CTAS = 3, 128, 256, 32
 CTA_DRAM_FLOOR = True   # 0.196 (False = ≤ 0.195)
 CTA_SMEM_BW = True      # 0.196 (False = ≤ 0.195)
 CTA_OCC_FILL = True     # 0.196 (False = ≤ 0.195)
+CTA_L2_ACT = True       # 0.197 (False = ≤ 0.196)
+W_BITS_ZERO_FIX = True  # 0.197 (False = ≤ 0.196: w_bits 0.0 → 0-byte B operand)
 
 
 def cta_occupancy(ch: Chip, tm: int, tn: int, ab: float, wb: float) -> int:
@@ -311,7 +313,15 @@ def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost
         # operand + output bytes over the aggregate DRAM bandwidth (the roofline).  ≤ 0.195 the occupancy overlap
         # (main + I/O) / k let co-resident CTAs hide every tile's I/O under each other's main loops as if each SM had its
         # own DRAM channel — no aggregate bound (DeepSeek MLA absorbed bmm on H100: 8.1 µs vs 13 µs of bytes)
-        fl = (m * k * ab + k * n * wb + m * n * ob) * count / ch.tile_io_Bpc
+        act = (m * k * ab + m * n * ob) * count
+        if CTA_L2_ACT and ch.sram_mib:
+            # 0.197: the activation operand was just written by the previous kernel and the output is read by the next;
+            # while they fit in L2 (write-back, sram_mib 「来源」 refhw) they never reach DRAM — the stage DRAM term
+            # (memplan) already keeps them on chip (dram["act"] = 0).  Only the excess over L2 streams.  Weights are
+            # streamed once per step (whole model ≫ L2) and stay in the floor.  Reuse across tiles is already
+            # excluded: the floor counts unique bytes.
+            act = max(0.0, act - ch.sram_mib * 2 ** 20)
+        fl = (act + k * n * wb * count) / ch.tile_io_Bpc
         if fl > cyc:
             mac_c, cyc = 0.0, fl
     conv_elems = (k * n if flag & 1 else 0.0) + (m * k if flag & 2 else 0.0)

@@ -6,6 +6,14 @@
 
 
 
+## [0.197.0]
+- GEMM DRAM floor: activation bytes count only beyond L2 (`CTA_L2_ACT`, L2 = refhw `sram_mib`). Before, the floor counted activations that memplan already keeps on chip (stage `dram["act"]` = 0), so they were counted twice. Example: H100 70B decode batch 256, attn.q 31.3 µs vs 28.6 µs of weights.
+  - Reuse across tiles was never double-counted: the floor counts unique bytes.
+  - The MI300X latency regression is not an L2 effect: small attn.k / attn.v kernels sit above their byte floor and kernels run one after another. Engines fuse QKV, but the IR keeps q, k and v as separate GEMMs. Not changed.
+- Fix: `Op.w_bits` 0.0 (the default) now means "use the format's bits" (`W_BITS_ZERO_FIX`). Before, synthetic GEMMs, the extval ceiling bisection and attention ops got a free 0-byte B operand.
+  - This, not throttling or the wave tail, was why the B200 2048³ occupancy point read 123 TF over measured: it is now 945 vs 1006.
+- Default MAE % (0.196 → 0.197): static 22.22 → 22.48, TTFT 29.92 → 31.57, max-load 19.83 → 19.34, MoE 8.08 → 7.88, Mixtral 18.77 → 20.23, MI300X latency 21.74 → 21.86, MI300X max-load 68.16 → 68.32, B200 14.10 → 13.55.
+- `default_occ` stays opt-in: at B200 2048³ its error is 61 TF vs 47 TF for the default, and validation is worse (TTFT 37.7 vs 31.6 %).
 ## [0.196.0]
 - Fix: under tile I/O, GEMM array time is bounded below by the unique operand + output bytes / aggregate DRAM bandwidth (`mapping.CTA_DRAM_FLOOR`). ≤ 0.195 every tile-I/O mode could run below the roofline: the main loop was fed from the SRAM port, and occupancy divided the I/O by k. Fuzz: 690 / 788 / 684 of 1200 shapes were below it (worst 0.10×); now 0. The DeepSeek-V3 kv_b.uk bmm on H100 with occupancy goes 2.93 → 7.60 µs (= its byte floor).
 - Default old → new MAE: static 22.76 → 22.22, TTFT 32.86 → 29.92, max-load 19.11 → 19.83, MoE 7.74 → 8.08, Mixtral 22.23 → 18.77, MI300X latency 21.07 → 21.74, B200 13.52 → 14.10.
