@@ -6,6 +6,23 @@
 
 
 
+## [0.206.0]
+- Machine-balance verdict reworked around the **critical batch** (`Result.critical_batch`, `balance()`).
+  - AI(B) is the model's own per-step flops ÷ DRAM bytes at each batch, so the KV reads that grow with batch are included. B* is the smallest batch with AI ≥ chip FLOP/B (at effective bandwidth). B_lim is the largest batch that fits the KV capacity and the TPOT SLO. Search: powers of two up to `BALANCE_BMAX = 65536` (假设), then bisection.
+  - Warning only when balance cannot be reached within the limits:
+    - (a) B* exists but is above B_lim (says whether KV capacity or the TPOT SLO binds);
+    - (b) AI saturates below the chip balance (KV-bound) **and** the chip balance is above the public class top `BALANCE_CLASS_MAX = 918/1.638 = 560` FLOP/B (TPU v6e, 来源).
+  - Otherwise there is a hint, not a warning: "raise batch to ≥ B*", or "KV-bound: the lever is KV bytes, not compute".
+  - Default qwen3-8b at ctx 4096: 1P and H100-like are KV-bound (asymptote ≈ 28.7 FLOP/B; B_lim 141 / 113, KV capacity) and get a hint, no warning. The legacy `*-lp4x64` presets still warn.
+  - At ctx 64: 1P B* = 396 (≤ B_lim 2816, reachable); 100T B* = 900 but the TPOT SLO allows 0, so it warns.
+  - The bandwidth-idle side (prefill) keeps the 0.205 10× rule.
+  - API `balance` adds `batch`, `critical_batch`, `batch_limit`, `limited_by`, `ai_asymptote`, `ai_at_limit`, `reachable`, `hint`. The UI KPI shows the critical batch, limit and asymptote.
+- MI300X max-load residual (1.59–1.85×, MAE 65 %) broken down row by row (MODEL §153). No sourced fix exists, so there is **no default change** and scores are unchanged.
+  - Prefill share is 2–32 %, all rows fit KV, and README flags were re-read (`--gpu-memory-utilization 0.9`, `--max-model-len 8192`, `--max-num-batched-tokens 131072`, one wave). Scheduling, chunked prefill and the measurement reading do not account for it.
+  - The same README's latency table localises it: the measured decode-step slope in batch (b64→128) is 3.9× the model's, and in ctx (isl 128→2048 at b128) 3.2× the model's (effective KV stream ≈ 1.0 TB/s vs 3.1 modelled). At b1 the model is 40 % slow (dispatch), so the latency group's 21.6 % MAE hides opposite-sign errors.
+  - The missing cost is per sequence (ROCm decode GEMM at mid M, paged attention with fp8 KV). Neither has a public absolute figure, so it is documented and pinned by a test, not fitted.
+- New `tests/test_core_206.py`; the UI smoke checks the critical batch in the KPI and no balance warning on 1P. Fingerprints are unchanged.
+
 ## [0.205.0]
 - Default memory pairing of the NPU presets changed (a mechanism-justified default change; 推导). The old pairing gave 1P 3840 FLOP/B and H100-like 3514 FLOP/B, against a public class range of about 200–560 FLOP/B.
   - Class (bf16 dense TFLOPS ÷ HBM TB/s):

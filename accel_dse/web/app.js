@@ -697,8 +697,13 @@ function renderEval(r) {
     const b = r.balance;
     k.push(kpi('机器平衡 · machine balance', `${num(b.chip_flop_per_byte)} FLOP/B`,
       `负载 workload ${num(b.workload_flop_per_byte)} FLOP/B · 比值 ratio ${num(b.ratio)}× · 原始带宽 raw ${num(b.chip_flop_per_byte_raw)} FLOP/B`
-      + (b.idle ? ` · ${b.idle === 'compute' ? '算力闲置 compute idle' : '带宽闲置 bandwidth idle'}` : ''), b.idle ? 'warn' : ''));
-    if (b.warning) $('warns').append(h('div', { class: 'warn balance-warn' }, b.warning));
+      + (b.reachable !== null && b.reachable !== undefined
+        ? ` · 临界 batch critical batch ${b.critical_batch ?? '∞（KV 受限 KV-bound）'} · 上限 limit ${b.batch_limit}`
+          + (b.limited_by ? `（${b.limited_by === 'kv_capacity' ? 'KV 容量 KV capacity' : 'TPOT SLO'}）` : '')
+          + ` · 饱和强度 asymptote ${num(b.ai_asymptote)} FLOP/B` : '')
+      + (b.idle ? ` · ${b.idle === 'compute' ? '算力闲置 compute idle' : '带宽闲置 bandwidth idle'}` : '')
+      + (b.hint ? ` · ${b.hint}` : ''), b.warning ? 'warn' : ''));
+    if (b.warning) $('warns').append(h('div', { class: 'warn balance-warn' }, b.warning));   // 0.206: only when balance is unreachable within the limits
   }
   if (s.host) {
     const hh = s.host;

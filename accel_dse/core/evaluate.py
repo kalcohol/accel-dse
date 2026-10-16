@@ -170,29 +170,104 @@ class Result:
             **({"decision": self.decision()} if s.serving.labels else {}),
         }
 
+    def _ai_at(self, b: int):
+        """0.206: (arithmetic intensity, fits, slo_ok) of the same scenario at decode batch ``b``."""
+        from dataclasses import replace as _rp
+        sc = self.scenario
+        r = evaluate(_rp(sc, serving=_rp(sc.serving, batch=b)), self.model)
+        t = r.stages[r.heaviest_stage].time
+        return (t.flops / t.dram_bytes if t.dram_bytes > 0 else float("inf")), r.fits, r.slo_ok
+
+    def critical_batch(self, bal: float) -> dict:
+        """0.206: the decode batch at which the step's arithmetic intensity reaches the chip balance ``bal``
+        (the critical batch B*), and the largest batch the KV capacity and the TPOT SLO allow (B_lim).  AI(B) is
+        evaluated by the model itself at each batch, so the KV reads that grow with B (and everything else that
+        grows: activations, collectives) are in it; weights are read once per step.  AI(B) rises and saturates at
+        the KV-bound asymptote (FLOP per token ÷ KV bytes per token); if that is below ``bal``, B* does not exist.
+        Search: powers of two to BALANCE_BMAX, then bisection (AI, KV use and TPOT are monotone in B)."""
+        cache: dict = {}
+
+        def at(b):
+            if b not in cache:
+                cache[b] = self._ai_at(b)
+            return cache[b]
+
+        def first(pred, hi_cap=BALANCE_BMAX):          # smallest b in [1, hi_cap] with pred(b), else None
+            b = 1
+            while b <= hi_cap and not pred(b):
+                b *= 2
+            if b > hi_cap:
+                return None
+            lo = b // 2
+            while b - lo > 1:
+                m = (lo + b) // 2
+                lo, b = (lo, m) if pred(m) else (m, b)
+            return b
+
+        bstar = first(lambda b: at(b)[0] >= bal)
+        kv_out = first(lambda b: not at(b)[1])
+        slo_out = first(lambda b: not at(b)[2])
+        outs = [(x - 1, k) for x, k in ((kv_out, "kv_capacity"), (slo_out, "tpot_slo")) if x is not None]
+        blim, limit = min(outs) if outs else (BALANCE_BMAX, None)
+        return {"critical_batch": bstar, "batch_limit": blim if blim >= 1 else 0, "limited_by": limit,
+                "ai_asymptote": at(BALANCE_BMAX)[0], "ai_at_limit": at(blim)[0] if blim >= 1 else None,
+                "reachable": bstar is not None and bstar <= blim}
+
     def balance(self) -> dict:
         """0.205: machine balance vs workload arithmetic intensity.  Chip: bf16 peak FLOP/s ÷ DRAM bytes/s (raw, and
-        at the scenario's effective bandwidth).  Workload: FLOPs ÷ DRAM bytes of the heaviest stage's step (what the
-        roofline sees).  Warn when they differ by more than BALANCE_WARN× and say which side idles."""
+        at the scenario's effective bandwidth).  Workload: FLOPs ÷ DRAM bytes of the heaviest stage's step.
+        0.206: for decode the compute-idle verdict comes from the critical batch (critical_batch): warn only when the
+        configured scenario cannot reach the balance point at any batch within the KV capacity / TPOT SLO; a batch
+        below a reachable B* is a hint (raise the batch), not a warning.  The bandwidth-idle side (prefill-like
+        steps, workload intensity > BALANCE_WARN × chip) keeps the 0.205 rule."""
         from .hardware import System
-        sysm = System(self.scenario.chip, self.scenario.mem_id, self.scenario.mem_eff)
-        peak = self.scenario.chip.peak_tflops_bf16 * 1e12
+        sc = self.scenario
+        sysm = System(sc.chip, sc.mem_id, sc.mem_eff)
+        peak = sc.chip.peak_tflops_bf16 * 1e12
         raw, eff = sysm.mem.raw_GBps * 1e9, sysm.dram_GBps * 1e9
         t = self.stages[self.heaviest_stage].time
         ai = t.flops / t.dram_bytes if t.dram_bytes > 0 else float("inf")
         bal = peak / eff if eff > 0 else float("inf")
         r = bal / ai if ai > 0 else float("inf")
-        warn = None
-        if r > BALANCE_WARN:
-            warn = (f"算力闲置 compute idle：芯片 {bal:.0f} FLOP/B（有效带宽）比负载算术强度 {ai:.1f} FLOP/B 高 {r:.0f}×，"
-                    f"步受 DRAM 限制，多余算力浪费 · chip balance {r:.0f}× the workload's intensity — compute is wasted"
-                    + ("（小 batch decode 的常态 · expected for small-batch decode）" if self.scenario.serving.phase == "decode" else ""))
+        warn = hint = idle = None
+        cb = None
+        b = sc.serving.batch
+        if sc.serving.phase == "decode" and self.model.domain in ("llm", "vlm") and r > 1:
+            cb = self.critical_batch(bal)
+            if cb["critical_batch"] is None:
+                # KV-bound: no batch reaches balance — a property of the workload (KV bytes per token), shared by every
+                # chip whose balance exceeds the asymptote.  Warn only when the chip is out of the public class
+                # (balance > BALANCE_CLASS_MAX): then compute is oversized for this workload at any batch.
+                idle = "compute"
+                hint = (f"KV 受限：KV 读随 batch 增长，强度饱和于 {cb['ai_asymptote']:.1f} FLOP/B < 芯片 {bal:.0f}，任何 batch 都到不了平衡点；"
+                        f"杠杆是 KV 字节（fp8 KV / MLA / 短 ctx）而不是算力 · KV-bound: intensity saturates at "
+                        f"{cb['ai_asymptote']:.1f} FLOP/B below the chip's {bal:.0f}; the lever is KV bytes, not compute")
+                if bal > BALANCE_CLASS_MAX:
+                    warn = (f"算力闲置 compute idle：芯片 {bal:.0f} FLOP/B 超出公开同级上限 {BALANCE_CLASS_MAX:.0f}，"
+                            f"本负载任何 batch 都到不了平衡点（饱和 {cb['ai_asymptote']:.1f} FLOP/B）；减算力或加带宽 · chip balance "
+                            f"above the public class ({BALANCE_CLASS_MAX:.0f}) and unreachable at any batch — rebalance")
+            elif not cb["reachable"]:
+                idle = "compute"
+                lim = {"kv_capacity": "KV 容量 KV capacity", "tpot_slo": "TPOT SLO"}.get(cb["limited_by"], cb["limited_by"])
+                warn = (f"算力闲置 compute idle：需 batch ≥ {cb['critical_batch']} 才到平衡点 {bal:.0f} FLOP/B，但 {lim} 只允许 ≤ "
+                        f"{cb['batch_limit']}；加容量 / 带宽或放宽 SLO · needs batch ≥ {cb['critical_batch']} to reach balance, "
+                        f"{lim} allows ≤ {cb['batch_limit']} — add capacity / bandwidth or relax the SLO")
+            elif b < cb["critical_batch"]:
+                hint = (f"batch {b} < 临界 batch {cb['critical_batch']}（限制内可达，上限 {cb['batch_limit']}）：加大 batch 即可用满算力 · "
+                        f"raise batch to ≥ {cb['critical_batch']} to reach the balance point")
+        elif r > BALANCE_WARN and sc.serving.phase != "decode":
+            idle = "compute"
+            warn = (f"算力闲置 compute idle：芯片 {bal:.0f} FLOP/B 比负载算术强度 {ai:.1f} FLOP/B 高 {r:.0f}× · "
+                    f"chip balance {r:.0f}× the workload's intensity — compute is wasted")
         elif r < 1 / BALANCE_WARN:
+            idle = "bandwidth"
             warn = (f"带宽闲置 bandwidth idle：负载算术强度 {ai:.0f} FLOP/B 比芯片 {bal:.0f} FLOP/B 高 {1 / r:.0f}×，"
                     f"步受算力限制，DRAM 带宽浪费 · workload intensity {1 / r:.0f}× the chip balance — bandwidth is wasted")
         return {"chip_flop_per_byte_raw": peak / raw if raw > 0 else None, "chip_flop_per_byte": bal,
-                "workload_flop_per_byte": ai, "ratio": r, "threshold": BALANCE_WARN,
-                "idle": "compute" if r > BALANCE_WARN else "bandwidth" if r < 1 / BALANCE_WARN else None, "warning": warn,
+                "workload_flop_per_byte": ai, "ratio": r, "threshold": BALANCE_WARN, "batch": b,
+                **({k: cb[k] for k in cb} if cb else {"critical_batch": None, "batch_limit": None, "limited_by": None,
+                                                       "ai_asymptote": None, "ai_at_limit": None, "reachable": None}),
+                "idle": idle, "warning": warn, "hint": hint,
                 "peak_tflops_bf16": peak / 1e12, "dram_GBps_raw": raw / 1e9, "dram_GBps_eff": eff / 1e9}
 
     def walls(self) -> dict:
@@ -531,6 +606,9 @@ def _tail_ops(model, has_head, ph, sh, spec_k, glue: bool = False):
 
 
 BALANCE_WARN = 10.0    # 0.205: machine balance vs arithmetic intensity warning ratio 「假设」
+BALANCE_BMAX = 65536   # 0.206: critical-batch search ceiling, sequences per replica 「假设」
+# 0.206: top of the public same-class machine balance (TPU v6e 918 TF / 1.638 TB/s = 560 FLOP/B, 来源 MODEL §152)
+BALANCE_CLASS_MAX = 918 / 1.638
 
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",

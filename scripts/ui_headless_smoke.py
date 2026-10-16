@@ -139,6 +139,9 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 k = p.inner_text("#kpis")
                 bcheck("1P pairs with HBM (≈4710 GB/s)", "4,710" in mf or "4710" in mf, mf)
                 bcheck("balance KPI", "machine balance" in k, k[-300:])
+                # 0.206: critical batch in the KPI; balanced-class 1P at the default ctx gets a hint, not a warning
+                bcheck("critical batch shown", "critical batch" in k, k[-300:])
+                bcheck("no balance warning on 1P", p.query_selector("#warns .balance-warn") is None, p.inner_text("#warns")[:300])
                 act("preset 1P-lp4x64", lambda: p.query_selector_all("#chip-preset button")[names.index("1P-lp4x64")].click())
                 mf2 = p.inner_text("#mem-facts")
                 bcheck("legacy pairs with LPDDR 273 GB/s", "273" in mf2, mf2)

@@ -4672,3 +4672,47 @@ Machine balance is peak bf16 FLOPS ÷ DRAM bytes/s. Public chips sit at about 20
 - 1P defaults to 4 HBM3E stacks at 9.2 Gb/s (4.71 TB/s, 223 FLOP/B; 推导: the B200/MI300X-class ratio for this compute). H100-like defaults to the H100 memory. 100T keeps LPDDR (368 FLOP/B, in class).
 - The defaults are in `PRESET_MEM`, keyed by chip name; the legacy `*-lp4x64` presets keep the old pairing.
 - `Result.balance()` compares the chip's FLOP/B at effective bandwidth with the workload intensity (the heaviest stage's flops ÷ DRAM bytes). Beyond a 10× gap (假设), the side named idle is the wasted one. Decode at small batch (≈1 FLOP/B) always warns that compute is idle; this is a property of the workload, not a model defect.
+
+
+## §153 Critical batch; MI300X max-load residual by row (0.206)
+**Critical batch.** Per-step decode intensity AI(B) = flops / DRAM bytes of the heaviest stage, evaluated by the model at batch B:
+weights are read once per step, while KV reads, activations and collectives grow with B. AI(B) rises and saturates at the
+KV-bound asymptote ≈ FLOP per token ÷ KV bytes per token (qwen3-8b at ctx 4096: ≈ 28.7 FLOP/B; at ctx 64: ≈ 1000).
+- B* = min B with AI(B) ≥ chip FLOP/B (effective bandwidth).
+- B_lim = max B that fits the KV capacity and the TPOT SLO.
+
+The verdict:
+
+| case | output |
+|---|---|
+| B* ≤ B_lim, B < B* | hint: raise batch to B* |
+| B* ≤ B_lim, B ≥ B* | balanced |
+| B* > B_lim | warning: names the binding limit (KV capacity or TPOT SLO) |
+| no B* (KV-bound), chip ≤ class top 560 FLOP/B (TPU v6e, 来源) | hint: the lever is KV bytes (fp8 KV / MLA / shorter ctx), not compute; every public chip idles the same way here |
+| no B*, chip > 560 | warning: compute oversized for this workload at any batch |
+
+`BALANCE_BMAX = 65536` and `BALANCE_WARN = 10` (bandwidth side) are 假设.
+
+**MI300X max-load, row by row** (ROCm vLLM 0.11.2 README, 来源; predicted / measured, output tokens/s):
+
+| ISL/OSL | B | pred | meas | ratio | prefill share | model step | implied step |
+|---|---|---|---|---|---|---|---|
+| 128/2048 | 3200 | 25106 | 13562 | 1.85 | 0.04 | 122 ms | 231 ms |
+| 128/4096 | 1500 | 20133 | 11801 | 1.71 | 0.02 | 73 ms | 126 ms |
+| 500/2000 | 2000 | 20415 | 11250 | 1.81 | 0.13 | 85 ms | 165 ms |
+| 2048/2048 | 1500 | 12339 | 7753 | 1.59 | 0.32 | 82 ms | 154 ms |
+
+The error is in the decode step, not in prefill or scheduling.
+- Re-read README flags: `--gpu-memory-utilization 0.9`, `--max-model-len 8192`, `--max-num-batched-tokens 131072`, Num Prompts = Max Num Seqs (one wave), "192GiB" GPUs.
+- KV at the last step: 143 GB per GPU of ≈ 165 GB available, so no preemption (推导).
+- Chunked prefill takes 4 iterations of 131072 tokens at 128/2048.
+
+The same README's latency table (vllm bench latency, 70B FP8 TP8) separates the step into parts (推导):
+
+| quantity | measured | model |
+|---|---|---|
+| step at b1 | 7.8 ms | 10.9 ms (dispatch 6.25) |
+| step slope b64→128, isl 128 | 0.10 ms / seq | 0.026 ms / seq |
+| KV slope (isl 2048 − 128, b128) | 5.26 ms → ≈ 1.0 TB/s effective | 1.62 ms → 3.1 TB/s |
+
+So the model is too slow at b1 and too fast per sequence; the MI300X latency group's 21.6 % MAE averages opposite-sign errors. At max-load batches the per-sequence term dominates, which gives 1.6–1.85×. Candidates are hipBLASLt FP8 GEMM efficiency at decode M (the MAF ceiling is a large-square figure) and ROCm paged-attention throughput with fp8 KV. §127 has only relative kernel speedups, and no public absolute figure was found, so **nothing is applied**. Fitting the per-sequence slope to this README would be tuning on the validation source. `test_core_206` pins the localisation.
