@@ -138,6 +138,9 @@ def summarize(repo: str) -> dict:
     tc = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else {}
     qc = cfg.get("quantization_config") or tc.get("quantization_config")
     fp4 = _fp4_hint(qc) or "fp4" in json.dumps(cfg.get("expert_dtype") or tc.get("expert_dtype") or "")
+    # 0.175: NVFP4 (ModelOpt quant_algo NVFP4 / compressed-tensors nvfp4-pack-quantized): e2m1 + e4m3 per 16 + fp32 per tensor
+    _q = json.dumps(qc or {}).lower()
+    nv4 = "nvfp4" in _q
     tensors = {}
     subs = sorted({k.split("/", 1)[0] for k in headers if "/" in k})
     for key, h in headers.items():
@@ -165,7 +168,7 @@ def summarize(repo: str) -> dict:
             scale_bytes[_base(name)] = scale_bytes.get(_base(name), 0) + nb
             continue
         if is_blocks or (dt in ("U8", "I8") and (fp4 or name.endswith("weight_packed"))):
-            fmt, params = "mxfp4", n * 2
+            fmt, params = ("nvfp4" if nv4 else "mxfp4"), n * 2
         elif dt == "I32" and re.search(r"(weight_packed|qweight)$", name):
             fmt, params = "int4", n * 8
         elif dt == "I8":

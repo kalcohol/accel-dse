@@ -67,6 +67,8 @@ class Serving:
     video_w: int = field(default=1280, metadata={"omit_default": True})
     video_h: int = field(default=720, metadata={"omit_default": True})
     video_cap: bool = field(default=False, metadata={"omit_default": True})
+    # 0.175 — seconds of audio per request (models with an audio encoder: Muse Spark, 1920 samples @ 24 kHz per token)
+    audio_s: float = field(default=0.0, metadata={"omit_default": True})
     # internal: image (and 0.165 video) tokens already added to prompt / ctx by vision.expand_images (never serialised or accepted)
     image_tokens: int = field(default=0, metadata={"internal": True})
 
@@ -97,6 +99,9 @@ class Serving:
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                 raise ValueError(f"serving.{k} must be an integer in [{lo}, {hi}]")
+        if isinstance(self.audio_s, bool) or not isinstance(self.audio_s, (int, float)) \
+                or not (0.0 <= self.audio_s <= 36000.0):
+            raise ValueError("serving.audio_s must be in [0, 36000]")
         if not isinstance(self.video_cap, bool):
             raise ValueError("serving.video_cap must be a boolean")
         if max(self.video_w, self.video_h) > 200 * min(self.video_w, self.video_h):

@@ -63,10 +63,12 @@ EXTRA_TAIL = [
     ("evo2-1b", "arcinstitute/evo2_1b_base"),
     # 0.174 Meta Muse Spark Open (2026-10-15).  meta-models/* is gated: the BF16 entry is derived from the public AMD
     # release headers (same tensors; release JSON "derived"); AMD FP8 (PTPC) / MXFP4 releases read as published.
-    # NVFP4 (Meta) not listed: gated, and release-role formats have no nvfp4 (see MODEL §120)
     ("muse-spark-open", "meta-models/Muse-Spark-Open-816B-A42B"),
     ("muse-spark-open-fp8", "amd/Muse-Spark-Open-816B-A42B-Quark-PTPC-FP8"),
     ("muse-spark-open-mxfp4", "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4"),
+    ("muse-spark-open-nvfp4", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4"),   # 0.175 推导 (gated; see release "derived")
+    # 0.175: the blog's serve command (NVFP4 target + Inferact DSpark draft, num_speculative_tokens 7)
+    ("muse-spark-open-nvfp4-dspark", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4+Inferact/Muse-Spark-Open-DSpark"),
 ]
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors",
            "NousResearch/": "meta-llama (gated) → public mirror NousResearch/*, same safetensors"}

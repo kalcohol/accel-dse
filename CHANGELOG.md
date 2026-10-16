@@ -3,6 +3,14 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.175.0] — Muse Spark Open follow-ups: NVFP4, NaViT block windows, audio encoder, DSpark draft
+
+- `muse-spark-open-nvfp4`（Meta 官方 NVFP4，仓库 gated → 推导）：release 格式支持 nvfp4（e2m1 + 每 16 个 e4m3 scale + 每张量 fp32，4.5 bit）；`summarize_release.py` 按 quantization_config 识别 NVFP4；专家 NVFP4、其余 bf16（假设，exclude 列表未公开）。bytes_llm 491.9 GB。
+- 视觉：NaViT 37 个窗口层按 32×32 patch 块内注意力计（PR `_get_sparse_attention_perm`），13 层全注意力；进出各一次重排。
+- 音频：PR `audio.py` AutoEncoder 前向（117.84M 参数，4 级 patchify 16·6·5·4 = 1920 样本 / token @ 24 kHz）；新增 `serving.audio_s`（默认 0，不序列化）。
+- DSpark：`muse-spark-open-nvfp4-dspark` = NVFP4 目标 + Inferact/Muse-Spark-Open-DSpark（公开 config + safetensors 头，5,301,633,537 bf16 参数精确对上）；复用 dspark 模板，新增 `draft_kv`（上下文 K/V 投影宽度）。
+- Re-baseline：仅 Muse 的图像 prefill（窗口层 attention 由全注意力上界改为块内）；其他模型不变。
+
 ## [0.174.0] — Meta Muse Spark Open (816B-A42B)
 
 - 新增 `muse-spark-open`（BF16，由 FP8 header 推导）、`muse-spark-open-fp8`（amd PTPC-FP8）、`muse-spark-open-mxfp4`（amd Quark MXFP4）。形状来源：AMD 公开 config.json + vLLM PR #61879 @ 6cc692b5；Meta 仓库 gated。

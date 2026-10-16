@@ -63,7 +63,7 @@ _PREPROC = {
     # budget 4096·28²; min_px = one merged token 「假设」 (MuseGlimmerImageProcessor resize code not public)
     **{k: {"min_px": 784, "max_px": 4096 * 784} for k in (
         "meta-models/Muse-Spark-Open-816B-A42B", "amd/Muse-Spark-Open-816B-A42B-Quark-PTPC-FP8",
-        "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4")},
+        "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4")},
 }
 
 # 0.165 — video input.  「来源」 each repo's video_preprocessor_config.json (Qwen3VLVideoProcessor): size shortest_edge
@@ -111,6 +111,10 @@ class VisionSpec:
     full_idx: tuple[int, ...] = ()
     sink: bool = False
     perm: int = 0
+    # 0.175 Muse Spark NaViT (vLLM PR #61879 vision.py _get_sparse_attention_perm): blocks not in ``full_idx`` attend only
+    # within tile × tile patch tiles of the per-image patch grid (tile = pos_emb_height = 32; edge tiles are partial)
+    tile: int = 0
+    audio: "AudioSpec | None" = None    # 0.175 Muse Spark audio encoder (costed when serving.audio_s > 0)
 
     @property
     def head_dim(self) -> int:
@@ -121,6 +125,67 @@ class VisionSpec:
         return dict(self.pre)
 
 
+@dataclass(frozen=True)
+class AudioSpec:
+    """0.175 Muse Spark audio encoder (vLLM PR #61879 audio.py AutoEncoder): raw 24 kHz mono → 4 stages of
+    [Patchifier (patchify p, Linear+bias, RMSNorm) + n × Block (depthwise causal conv k, RMSNorm, Linear d→4d GELU →
+    d)], RMSNorm, o_proj → out (+ dual RMSNorm).  One LLM token per Π patch_sizes samples (1920 = 80 ms)."""
+    rate: int
+    patches: tuple[int, ...]
+    dims: tuple[int, ...]
+    depths: tuple[int, ...]
+    kernel: int
+    mlp: float
+    out: int
+    params: int
+
+    @property
+    def samples_per_token(self) -> int:
+        return math.prod(self.patches)
+
+    def tokens(self, seconds: float) -> int:
+        return math.ceil(round(seconds * self.rate) / self.samples_per_token)
+
+
+def audio_spec(cfg: dict) -> AudioSpec | None:
+    ac = cfg.get("audio_config") or {}
+    if ac.get("model_type") != "muse_spark_audio":
+        return None
+    pt, dm, dp, k, r = tuple(ac["patch_sizes"]), tuple(ac["hidden_sizes"]), tuple(ac["depths"]), ac["conv_kernel_size"], ac["mlp_ratio"]
+    out = ac["out_hidden_size"]
+    fe = cfg.get("_feature_extractor") or {}
+    din = (1,) + dm[:-1]
+    params = 0
+    for i in range(len(dm)):
+        d, hd = dm[i], int(dm[i] * r)
+        params += _lin(din[i] * pt[i], d) + d + dp[i] * (d * k + d + d + _lin(d, hd) + _lin(hd, d))
+    params += dm[-1] + _lin(dm[-1], out) + out
+    return AudioSpec(fe.get("sampling_rate", 24000), pt, dm, dp, k, r, out, params)
+
+
+def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> list[Op]:
+    from .dtypes import fmt as _fmt
+    ab = _fmt(af).bytes
+    t = a.tokens(seconds) * a.samples_per_token * clips       # padded samples (all clips)
+    ops: list[Op] = []
+    din = 1
+    for i, (pt, d, n) in enumerate(zip(a.patches, a.dims, a.depths)):
+        t //= pt
+        k_, hd = din * pt, int(d * a.mlp)
+        ops.append(Op(f"aud.{i}.patch", "gemm", 0, m=t, k=k_, n=d, role="vision", w_params=k_ * d, w_bits=16.0, w_fmt="bf16",
+                      a_fmt=af, act_bytes=t * (k_ + d) * ab, stream=True, vec=t * d * VEC_PER_OUT))
+        for j in range(n):
+            ops.append(Op(f"aud.{i}.{j}.conv", "vector", 0, vec=t * d * 2 * a.kernel, act_bytes=2 * t * d * ab))
+            ops.append(Op(f"aud.{i}.{j}.fc1", "gemm", 0, m=t, k=d, n=hd, role="vision", w_params=d * hd, w_bits=16.0,
+                          w_fmt="bf16", a_fmt=af, act_bytes=t * (d + hd) * ab, stream=True, vec=t * hd * VEC_PER_OUT))
+            ops.append(Op(f"aud.{i}.{j}.fc2", "gemm", 0, m=t, k=hd, n=d, role="vision", w_params=d * hd, w_bits=16.0,
+                          w_fmt="bf16", a_fmt=af, act_bytes=t * (d + hd) * ab, stream=True, vec=t * d * VEC_PER_OUT))
+        din = d
+    ops.append(Op("aud.o_proj", "gemm", 0, m=t, k=din, n=a.out, role="vision", w_params=din * a.out, w_bits=16.0,
+                  w_fmt="bf16", a_fmt=af, act_bytes=t * (din + a.out) * ab, stream=True, vec=t * a.out * VEC_PER_OUT))
+    return ops
+
+
 def _lin(i: int, o: int, b: bool = True) -> int:
     return i * o + (o if b else 0)
 
@@ -128,6 +193,7 @@ def _lin(i: int, o: int, b: bool = True) -> int:
 def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
     """VisionSpec from the release's full config (``vision_config`` + text hidden size), or None."""
     vc = cfg.get("vision_config")
+    hf_id = hf_id.split("+", 1)[0]              # 0.175: "<target>+<draft repo>" entries use the target's processor
     if not vc or hf_id not in _PREPROC:
         return None
     pre = dict(_PREPROC[hf_id])
@@ -219,12 +285,14 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                   + L * (4 * h + _lin(h, 3 * h) + _lin(h, h) + _lin(h, inter) + _lin(inter, h))
                   + _lin(hm, ph, False) + _lin(ph, ph, False))
         pre["factor"] = p * mk
-        nwin = sum(1 for x in vc.get("layer_types", ()) if x == "window_attention")
+        lt = list(vc.get("layer_types") or ["full_attention"] * L)
+        full = tuple(i for i, x in enumerate(lt) if x != "window_attention")
+        tile = vc["pos_emb_height"] if len(full) < L else 0
+        au = audio_spec(cfg)
         return VisionSpec("qwen", "Muse Spark NaViT (Perception Encoder)", p, t, h, inter, L, nh, h, False, mk,
-                          ((hm, ph), (ph, ph)), params, tuple(sorted(pre.items())),
-                          approx=f"视觉：{nwin}/{L} 层为 {vc['pos_emb_height']}×{vc['pos_emb_width']} 块内窗口注意力，按全注意力计（上界）；"
-                                 "缩放按 4096 token 像素预算的 smart-resize 「假设」（MuseGlimmerImageProcessor 未公开）；"
-                                 "音频编码器（24 kHz，1920 样本/token）只计存储")
+                          ((hm, ph), (ph, ph)), params, tuple(sorted(pre.items())), full_idx=full, tile=tile,
+                          perm=2 if tile else 0, audio=au,
+                          approx="视觉：缩放按 4096 token 像素预算的 smart-resize 「假设」（MuseGlimmerImageProcessor 未公开）")
     if vc.get("model_type") == "perception_encoder":          # 0.144 Step-5 PE + 2× stride-2 3×3 downsamplers
         h, L, nh, p, side = vc["width"], vc["layers"], vc["heads"], vc["patch_size"], vc["image_size"]
         inter = 8960 if h == 1536 else int(h * vc.get("mlp_ratio", 8960 / 1536))
@@ -412,6 +480,13 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
 
 
 # ------------------------------------------------------------------ op graph
+def tile_keys(ph: int, pw: int, t: int) -> int:
+    """Σ over tiles of (patches in tile)² for a ph × pw grid cut into t × t tiles (edge tiles partial)."""
+    rows = [min(t, ph - i) for i in range(0, ph, t)]
+    cols = [min(t, pw - j) for j in range(0, pw, t)]
+    return sum((r * c) ** 2 for r in rows for c in cols)
+
+
 def band_keys(n: int, w: int) -> int:
     """Σ over queries of unmasked keys under |i − j| ≤ w in a sequence of n (w ≤ 0: full n²)."""
     if w <= 0 or w >= n - 1:
@@ -439,11 +514,12 @@ def vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str = "bf16") -> li
     ops: list[Op] = []
     for gi, (ph, pw, cnt) in enumerate(groups):
         mrows = images * g.merged if len(groups) == 1 else None
-        ops += _tower_ops(v, ph * pw, images * cnt, mrows, "vis." if gi == 0 else f"vis.v{gi}.", af)
+        ops += _tower_ops(v, ph * pw, images * cnt, mrows, "vis." if gi == 0 else f"vis.v{gi}.", af, (ph, pw))
     return ops
 
 
-def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, af: str) -> list[Op]:
+def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, af: str,
+               grid: tuple[int, int] | None = None) -> list[Op]:
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
     N0 = N
@@ -480,6 +556,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         ops += [gemm(f"{li}.qkv", rows, h, qkv_n, li), gemm(f"{li}.o", rows, q, h, li)]
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
         ops.append(gemm(f"{li}.mlp_out", rows, v.inter, h, li))
+        if v.tile and grid is not None and li not in v.full_idx:
+            ops += attn(str(li), li, N, tile_keys(grid[0], grid[1], v.tile), False)
+            continue
         windowed = bool(v.win) and li not in v.full_idx
         ops += attn(str(li), li, N, band_keys(N, v.win) if windowed else N * N, windowed and v.sink)
     for i, kn in enumerate(v.post):
@@ -512,14 +591,16 @@ def expand_images(scn, m):
     serving.image_tokens).  Everything downstream (prefill length, KV, PD lengths / capacity, goodput) then sees the
     image positions as prompt tokens; the encoder itself is costed by evaluate at prefill."""
     sv = scn.serving
-    if not (sv.images or getattr(sv, "videos", 0)) or sv.image_tokens:
+    if not (sv.images or getattr(sv, "videos", 0) or getattr(sv, "audio_s", 0)) or sv.image_tokens:
         return scn
     g = image_grid_of(m, sv)
     vg = video_grid_of(m, sv) if getattr(m, "vision", None) is not None else None
-    if g is None and vg is None:
+    au = getattr(getattr(m, "vision", None), "audio", None) if getattr(sv, "audio_s", 0) else None
+    if g is None and vg is None and au is None:
         return scn
     import dataclasses
-    t = (sv.images * g.llm_tokens if g is not None else 0) + (sv.videos * vg.llm_tokens if vg is not None else 0)
+    t = (sv.images * g.llm_tokens if g is not None else 0) + (sv.videos * vg.llm_tokens if vg is not None else 0) \
+        + (au.tokens(sv.audio_s) if au is not None else 0)
     return dataclasses.replace(scn, serving=dataclasses.replace(sv, prompt=sv.prompt + t, ctx=sv.ctx + t, image_tokens=t))
 
 

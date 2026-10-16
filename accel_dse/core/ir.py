@@ -1034,7 +1034,7 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
         lj = li + j
         c = L.core
         # main_x KV: wkv + kv_norm (4/elem) + RoPE + quant (2/elem), written into the ring buffer
-        ops.append(gemm(model, "dspark.main_wkv", lj, m_rows, h, hd, "mtp", replicated=tp))
+        ops.append(gemm(model, "dspark.main_wkv", lj, m_rows, h, model.draft_kv or hd, "mtp", replicated=tp))
         ops.append(Op("dspark_main_kv", "vector", lj, replicated=tp, vec=m_rows * (6 * hd + 3 * c.rope_n),
                       kv_write=m_rows * min(c.window, m_rows // max(b_loc, 1)) / max(m_rows // max(b_loc, 1), 1)
                       * c.win_bytes))

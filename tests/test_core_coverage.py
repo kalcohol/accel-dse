@@ -78,7 +78,8 @@ IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")
 # 0.144 VLMs whose vision side is approximated (LLM side exact): Step-5 overview only, MiniCPM one 448² view, MiMo window
 # attention as full + audio encoder storage-only
 VISION_PARTIAL = ("step-5-preview",   # 0.145: MiniCPM slicing + MiMo band windows modelled → full
-                  "muse-spark-open", "muse-spark-open-fp8", "muse-spark-open-mxfp4")   # 0.174: vision windows + resize 假设, audio storage only
+                  "muse-spark-open", "muse-spark-open-fp8", "muse-spark-open-mxfp4",
+                  "muse-spark-open-nvfp4", "muse-spark-open-nvfp4-dspark")   # 0.174: vision windows + resize 假设, audio storage only
 
 
 from accel_dse.core.evaluate import attn_orient   # noqa: E402

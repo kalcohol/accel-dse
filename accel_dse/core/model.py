@@ -407,6 +407,7 @@ class ModelSpec:
     draft_block: int = 0
     draft_targets: int = 0                   # target layers whose stream means feed main_proj
     draft_markov: int = 0                    # markov head rank
+    draft_kv: int = 0                        # 0.175: context K/V projection width per draft layer (0 = head_dim, V4.1)
     formats: tuple[tuple[str, RoleFormat], ...] = ()
     act_fmt: str = "bf16"
     kv_fmt: str = "bf16"
@@ -1288,8 +1289,31 @@ def _build_muse_spark(c: dict) -> tuple[list[Layer], list[Layer], list[str], str
     notes = [f"Muse Spark Open：{L} 层全 MoE（{E} 专家 top-{k}，latent {h}→{lat}，专家 {lat}×{de}，无共享专家）；"
              f"注意力 GQA {H}/{KV}×{hd} + 输出门；{L - nf} 层 SWA（窗口 {win}）+ {nf} 层全注意力（NoPE）；"
              "三明治 norm、门控残差、logit soft-cap 计入向量开销",
-             "部分覆盖：Perception Encoder（视觉塔）与音频编码器（24 kHz，1920 样本 / token）只计参数，不计算前向"]
+             "部分覆盖：视觉塔（NaViT，32×32 块窗口 + 13 全注意力层）与音频编码器（24 kHz，1920 样本 / token）已计前向；"
+             "图像缩放规则与视频处理器未公开（假设 / 未建模）"]
     return layers, [], notes, "partial"
+
+
+def _attach_muse_dspark(spec: ModelSpec, d: dict) -> ModelSpec:
+    """0.175 Inferact/Muse-Spark-Open-DSpark (vLLM PR #61879 dspark.py MuseSparkDSparkModel, DFlash-style): fc over the
+    concatenated hidden states of target_layer_ids → hidden, num_hidden_layers dense decoder layers (GQA + o-gate,
+    sliding window, SwiGLU intermediate_size), own lm_head, Markov head (rank markov_rank: w1 embed + w2 head), confidence
+    head on [hidden, rank]; block_size draft positions per pass; token embedding shared with the target."""
+    c = d["config"]
+    h, H, KV, hd = c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
+    nl, r, V = c["num_hidden_layers"], c["markov_rank"], c.get("draft_vocab_size") or c["vocab_size"]
+    win = c.get("sliding_window") if c.get("use_sliding_window") else None
+    mtp = []
+    for _ in range(nl):
+        alin, core = _gqa(h, H, KV, hd, out_gate=bool(c.get("use_attn_o_gate")), window=win)
+        ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        mtp.append(Layer(alin, core, ffn, flin, 5 * h))          # pre_qkv / pre_ffn / post_ffn norms + 2 residual gates
+    nt = len(c["target_layer_ids"])
+    extra = nt * h * h + V * h + 2 * V * r + (h + r + 1) + 2 * h   # fc, lm_head, markov w1 / w2, confidence, norms
+    return replace(spec, mtp_layers=tuple(mtp), mtp_extra_params=extra // nl, draft="dspark",
+                   draft_block=c["block_size"], draft_targets=nt, draft_markov=r, draft_kv=2 * KV * hd,
+                   notes=spec.notes + (f"DSpark 草稿模型（{d['repo']}，bf16 {d['params'] / 1e9:.2f}B，独立仓库）：{nl} 层稠密，"
+                                       f"块 {c['block_size']}；目标层 hidden 拼接（模板按均值 + fc 计，同 GEMM 形状）",))
 
 
 def _builder(c: dict):
@@ -1335,7 +1359,7 @@ def _release_formats(rel: dict) -> dict[str, RoleFormat]:
         b = sum(x["bytes"] for x in v.values())
         if p:
             name = {"uint8": "int8", "int32": "int4"}.get(fmt, fmt)
-            out[role] = RoleFormat(name if name in ("fp32", "bf16", "fp16", "fp8", "mxfp4", "int8", "int4") else "bf16",
+            out[role] = RoleFormat(name if name in ("fp32", "bf16", "fp16", "fp8", "mxfp4", "nvfp4", "int8", "int4") else "bf16",
                                    8.0 * b / p)
     return out
 
@@ -1367,6 +1391,18 @@ def release_path(hf_id: str) -> Path:
 
 @lru_cache(maxsize=None)
 def load_release(hf_id: str) -> dict | None:
+    if "+" in hf_id:
+        # 0.175: "<target release>+<draft repo>" = the target as released, served with a separate draft model
+        # (accel_dse/data/drafts/*.json: public config + safetensors header of the draft repo)
+        import copy
+        base, draft = hf_id.split("+", 1)
+        rel, dp = load_release(base), RELEASES.parent / "drafts" / (draft.replace("/", "__") + ".json")
+        if rel is None or not dp.exists():
+            return None
+        rel, d = copy.deepcopy(rel), json.loads(dp.read_text())
+        rel.update(repo=hf_id, params_mtp=d["params"], bytes_mtp=d["bytes"], dspark=d)
+        rel["roles"]["mtp"] = {"bf16": {"params": d["params"], "bytes": d["bytes"]}}
+        return rel
     p = release_path(hf_id)
     return json.loads(p.read_text()) if p.exists() else None
 
@@ -1448,6 +1484,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                            draft_block=c.get("dspark_block_size") or 0,
                            draft_targets=len(_list(c.get("dspark_target_layer_ids")) or []),
                            draft_markov=c.get("dspark_markov_rank") or 0)
+        if rel.get("dspark") and (c.get("model_type") or "").startswith("muse_spark"):
+            spec = _attach_muse_dspark(spec, rel["dspark"])
         exotic = [k for k in ("hc_mult", "hc_count", "mhc") if c.get(k)] \
             if not any(l.hc or l.gres_n for l in spec.layers) else []
         lk_open = spec.lookup_params and not spec.lookup_bits and not any(l.ple_rows for l in spec.layers)

@@ -3912,3 +3912,11 @@ Sources: the evo2 inference yml files (layer pattern hcs / hcm / hcl / attn, fil
 - TPU v7 sanity（不拟合）：MXFP4 release 每 token 激活字节 53.6 GB（假设 megakernel 用类似 4-bit 专家 + bf16 attn/latent）；HBM 7380 GB/s/芯片（来源：Google Cloud TPU7x 文档）→ 屋顶线 550 / 1101 tok/s（4 / 8 芯片）。博客无投机 270 / 350 tok/s = 0.49 / 0.32 屋顶线；DSpark（接受长度 6）650 / 960 tok/s。仅作量级检查。
 - 视觉：PR NaViT（50 层，13 全注意力）+ adapter = 1.89B（博客 1.9B）；37 窗口层按全注意力计（上界）；缩放用 4096 token 像素预算 smart-resize（假设）。
 - 未做：audio 编码器（24 kHz，1920 samples/token，来源 processor_config）仅计存储；NVFP4；catalog_kernel 62.3 µs/层固定开销（推迟）。
+
+## §121 Muse Spark Open 跟进（0.175）
+
+- NVFP4（推导）：来源 = 博客（Meta 发布 BF16 + NVFP4）、PR #61879（ModelOptNvFp4Config；MegaMoE 支持 BF16 / NVFP4；pooler/unpooler quant_config=None）。字节 = 0.5 + 1/16 B/参数 + 每张量 2×fp32。假设：仅路由专家量化；若注意力也量化则 −19.4 GB。
+- NaViT 窗口：每个窗口层 key 数 = Σ_块 (块内 patch 数)²，块 = pos_emb 32×32；1920×1080（78×138 patch）时窗口层 attention 降到全注意力的约 0.12。
+- 音频：AutoEncoder 4 级（256/512/1024/2048，各 2 块：depthwise causal conv k7 + RMSNorm + GELU MLP×4），o_proj → 8192；60 s = 750 token、0.59 TFLOP（手算一致）。放置同视觉塔（stage 0 数据并行）。
+- DSpark：5 层稠密草稿（GQA 128/16×64 + o-gate，SWA 2048，SwiGLU 16384），fc 5·8192→8192，自有 lm_head，Markov 头 rank 512，置信头 8704→1，块 7；参数与 safetensors 头精确一致。目标层 hidden 是拼接（模板按 nt·h→h GEMM，同形状）。
+- 未建模：Muse 视频处理器（MuseGlimmerVideoProcessor 未公开）；图像缩放规则仍为假设。

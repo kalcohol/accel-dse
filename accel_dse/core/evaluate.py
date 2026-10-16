@@ -26,7 +26,7 @@ from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages, plan_stages_balanced
 from .pipeline import TILING, pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
 from .scenario import Scenario
-from .vision import expand_images, image_grid, video_grid_of, vision_act_peak, vision_ops
+from .vision import audio_ops, expand_images, image_grid, video_grid_of, vision_act_peak, vision_ops
 from .ir import dspark_ops, red_bytes, skew_from_load
 from . import fabric
 from . import overlap as _ovl
@@ -1109,8 +1109,8 @@ def _cp_check(m: ModelSpec, sv) -> None:
         raise ValueError("layout.cp（上下文并行）只用于 prefill；decode 的 KV 分片未建模（PD 时把 CP 放在 prefill_layout）")
     if sv.prefix_cached:
         raise ValueError("layout.cp 与 serving.prefix_cached 不能同时使用（分块 + 前缀缓存的 zigzag 划分未建模）")
-    if sv.images or sv.videos:
-        raise ValueError("layout.cp 与 serving.images / videos 不能同时使用")
+    if sv.images or sv.videos or sv.audio_s:
+        raise ValueError("layout.cp 与 serving.images / videos / audio_s 不能同时使用")
     for L in m.layers:
         c = L.core
         if c is None:
@@ -1189,9 +1189,12 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             m = hp[scn.hyena_prefill]
             if scn.hyena_prefill == "fused":
                 warnings.append("hyena_prefill = fused（what-if）：MR / LR 的 FFT 卷积按单个片上内核计，频谱放不下时按四步 FFT 多遍")
-    if (scn.serving.images or scn.serving.videos) and not scn.serving.image_tokens:
+    if scn.serving.audio_s and not scn.serving.image_tokens and getattr(m.vision, "audio", None) is None:
+        warnings.append("serving.audio_s 已忽略：该模型没有音频编码器")
+    if (scn.serving.images or scn.serving.videos or scn.serving.audio_s) and not scn.serving.image_tokens:
         if m.vision is None:
-            warnings.append(("serving.images 已忽略" if scn.serving.images else "serving.videos 已忽略")
+            if scn.serving.images or scn.serving.videos:
+                warnings.append(("serving.images 已忽略" if scn.serving.images else "serving.videos 已忽略")
                             + "：该模型没有视觉编码器（只有 VLM 计图像 / 视频）")
         else:
             scn = expand_images(scn, m)     # 0.62: image positions join prompt / ctx (KV, prefill length)
@@ -1422,7 +1425,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                                  embed_ops(m, ph, sh), _tail_ops(m, True, ph, sh, spec_k),
                                  ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m))
     stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
-    vis = _vision_cost(scn, m, sys, stages) if (m.vision is not None and (sv.images or sv.videos) and sv.image_tokens) else None
+    vis = _vision_cost(scn, m, sys, stages) if (m.vision is not None and (sv.images or sv.videos or sv.audio_s)
+                                                 and sv.image_tokens) else None
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
     _pp_imbalance_warn(stages, tick, warnings, scn.pp_split)
@@ -1534,6 +1538,20 @@ def _vision_cost(scn: Scenario, m: ModelSpec, sys: System, stages: list) -> dict
                 ov = out["video"]
                 ov.update(s=ov.get("s", 0.0) + c["s"], tflop=ov.get("tflop", 0.0) + c["tflop"] * k_w,
                           slices_per_card=max(ov.get("slices_per_card", 0), per_card))
+        au = v.audio if sv.audio_s else None
+        if au is not None:
+            # 0.175 audio encoder: same placement as the vision tower (each rank's requests split over its stage-0 cards)
+            per_rank = _cdiv(sv.batch, lay.dp)
+            per_card = _cdiv(per_rank, max(1, lay.tp * lay.sp))
+            c = _component_time([(audio_ops(au, sv.audio_s, per_card), 1)], sys, scn.mapping, "bf16")
+            k_w = sv.batch / per_card
+            out["audio"] = {"seconds": sv.audio_s, "tokens": au.tokens(sv.audio_s), "params_M": au.params / 1e6,
+                            "s": c["s"], "tflop": c["tflop"] * k_w, "clips_per_card": per_card}
+            if tot is None:
+                tot = dict(s=c["s"], tflop=c["tflop"] * k_w, per_card=0, cards=per_card and _cdiv(per_rank, per_card),
+                           bound=c["bound"], dram_GB=c["dram_GB"], acts=dict(c["acts"]))
+            else:
+                tot.update(s=tot["s"] + c["s"], tflop=tot["tflop"] + c["tflop"] * k_w)
         if tot is not None:
             out.update(tot)
     mp = stages[0].mem
