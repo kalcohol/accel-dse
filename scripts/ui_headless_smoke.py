@@ -59,7 +59,9 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             def act(label, fn, timeout=90000):
                 """Run a control change; it must trigger a fresh API POST that answers < 500, then KPIs settle."""
                 try:
-                    with p.expect_response(lambda r: "/api/" in r.url and r.request.method == "POST",
+                    # 0.186: wait for the eval answer itself — a memory change first POSTs /api/memory, and
+                    # reading the cards on that answer reads the previous render (false "stale" alarm)
+                    with p.expect_response(lambda r: "/api/eval" in r.url and r.request.method == "POST",
                                            timeout=timeout) as ri:
                         fn()
                     if ri.value.status >= 400:
@@ -67,6 +69,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 except Exception as e:                       # noqa: BLE001
                     errs.append(f"{label}: no API request after the change ({type(e).__name__})")
                 p.wait_for_load_state("networkidle")
+                time.sleep(0.2)                              # render after the response resolves
                 settle(label)
 
             def opts(sel):
@@ -104,6 +107,67 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 act("tp=1", lambda: p.fill("#l-tp", "1"))
             if p.is_visible("#l-cards"):
                 act("cards=1", lambda: p.fill("#l-cards", "1"))
+            # 0.186: directional checks — a control that must move a metric has to move the rendered value
+            import re
+
+            def kpi(label):
+                for k in p.query_selector_all("#kpis .kpi"):
+                    if k.query_selector(".l").inner_text().strip().startswith(label):
+                        return k.inner_text()
+                return ""
+
+            def num(txt, pat):
+                m = re.search(pat, txt)
+                return float(m.group(1)) if m else None
+
+            def expect(label, before, after, cmp):
+                steps.append((f"dir {label}", before, after))
+                if before is None or after is None or not cmp(before, after):
+                    errs.append(f"stale/wrong direction: {label}: {before} -> {after}")
+
+            def mem_bw():
+                return num(p.inner_text("#mem-facts"), r"带宽\s+([\d.]+)\s*GB/s")
+
+            def tpot():
+                return num(kpi("TPOT"), r"TPOT\s*([\d.]+)\s*ms")
+
+            def total_tok():
+                return num(kpi("吞吐"), r"共\s*([\d.]+)\s*tok/s")
+
+            def dram_cap():
+                return num(kpi("DRAM 需求"), r"/\s*([\d.]+)\s*GiB")
+
+            if p.is_visible("#best-batch") and p.is_checked("#best-batch"):
+                act("fixed batch", lambda: p.uncheck("#best-batch"))
+            act("batch=1", lambda: p.fill("#s-batch", "1"))
+            t1 = tpot()
+            act("batch=16", lambda: p.fill("#s-batch", "16"))
+            expect("batch 1→16 raises TPOT", t1, tpot(), lambda a, b: b > a)
+            tot = total_tok()
+            act("cards=2 (dir)", lambda: p.fill("#l-cards", "2"))
+            act("tp=2 (dir)", lambda: p.fill("#l-tp", "2"))
+            t2 = tpot()
+            act("tp=1 (dir)", lambda: p.fill("#l-tp", "1"))
+            act("cards=1 (dir)", lambda: p.fill("#l-cards", "1"))
+            t16 = tpot()
+            expect("TP2 (2 cards) lowers TPOT vs TP1 at batch 16", t16, t2, lambda a, b: b < a)
+            bw0, cap0 = mem_bw(), dram_cap()
+            cur = p.input_value("#m-count")
+            fewer = [v for v in opts("#m-count") if v and float(v) < float(cur)]
+            if fewer:
+                act(f"m-count {cur}→{fewer[-1]} (dir)", lambda: p.select_option("#m-count", fewer[-1]))
+                expect("fewer DRAM packages lowers bandwidth", bw0, mem_bw(), lambda a, b: b < a)
+                expect("fewer DRAM packages lowers capacity", cap0, dram_cap(), lambda a, b: b < a)
+                act("m-count restore", lambda: p.select_option("#m-count", cur))
+                expect("restore DRAM count restores bandwidth", bw0, mem_bw(), lambda a, b: abs(a - b) < 1e-9)
+            k0 = kpi("TPOT")
+            act("phase=prefill (dir)", lambda: p.click("#phase button[data-v=prefill]"))
+            if "TTFT" not in p.inner_text("#kpis"):
+                errs.append("prefill phase: TTFT card not rendered")
+            act("phase=decode (dir)", lambda: p.click("#phase button[data-v=decode]"))
+            expect("decode card restored", 1.0, 1.0 if kpi("TPOT") else None, lambda a, b: True)
+            act("best batch back", lambda: p.check("#best-batch"))
+
             # design insight: sizing (+ joint) and upgrade path
             p.click("button[data-tab=insight]")
             p.fill("#ins-models", "qwen3-8b")

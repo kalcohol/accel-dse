@@ -141,6 +141,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     for flag, dest, hlp in (("--pJ-mac", "pJ_mac", "per bf16-equivalent MAC"), ("--pJ-vec", "pJ_vec", "per vector op"),
                             ("--pJ-bit-sram", "pJ_bit_sram", "per SRAM-port bit"),
                             ("--pJ-bit-dram", "pJ_bit_dram", "per DRAM bit"),
+                            ("--pJ-bit-dram-hbm", "pJ_bit_dram_hbm", "per DRAM bit when the memory is HBM (else --pJ-bit-dram)"),
+                            ("--pJ-bit-dram-lpddr", "pJ_bit_dram_lpddr", "per DRAM bit for non-HBM memory (else --pJ-bit-dram)"),
                             ("--pJ-bit-link", "pJ_bit_link", "per in-node scale-up link bit"),
                             ("--idle-W", "idle_W", "W per card"),
                             ("--idle-W-prefill", "idle_W_prefill", "W per card of the PD prefill pool (default --idle-W)"),
@@ -514,7 +516,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
             else {"chip_preset": a.chip, "scenario": x}
     en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
                                      "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net", "idle_W_prefill",
-                                     "pJ_bit_host")
+                                     "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr")
           if getattr(a, k, None) is not None}
     if en:
         body["energy"] = en

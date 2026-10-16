@@ -60,6 +60,10 @@ class EnergyTable:
     idle_W_prefill: float | None = None  # PD report: static power per card of the prefill pool's chip (0.56; null = idle_W)
     pJ_bit_host: float | None = None   # per bit on the host link (PCIe class): PD kv_policy=swap transfers (0.61.4),
     #                                    video offload weight reloads (0.62)
+    # 0.186: DRAM energy by memory kind — the scenario's mem_id picks one (HBM stack vs any other package/module);
+    # unset → pJ_bit_dram.  Lets an LPDDR ↔ HBM choice move J / token by mechanism (interface + array per bit).
+    pJ_bit_dram_hbm: float | None = None
+    pJ_bit_dram_lpddr: float | None = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -107,6 +111,10 @@ _UCIE = ("UCIe Consortium Hot Chips 2023 tutorial / UCIe 2.0 overview: Advanced-
 _NVL = ("NVIDIA Grace Hopper Superchip Architecture whitepaper: NVLink-C2C 1.3 pJ/bit "
         "(already in core/d2d_catalog.py as the NVLink-C2C reference)")
 
+_FGDRAM = ("O'Connor, Chatterjee et al. (NVIDIA), 'Fine-Grained DRAM: Energy-Efficient DRAM for Extreme Bandwidth "
+           "Systems', MICRO 2017, §1 / Fig. 1b")
+_PIMAI = "Ortega et al., 'PIM-AI: A Novel Architecture for High-Efficiency LLM Inference', arXiv 2411.17309 (2024), Table 1"
+
 ENERGY_PRESETS: dict[str, dict] = {
     "horowitz_45nm": {
         "label": "45 nm（Horowitz ISSCC 2014）",
@@ -133,6 +141,13 @@ ENERGY_PRESETS: dict[str, dict] = {
             "pJ_bit_slc": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "假设", "= SRAM after 7 nm scale"),
             "pJ_bit_dram": ((640.0 / 32) / 6.3, "推导", _TPUV4I + "; DRAM 6.3× via HBM packaging "
                             "→ ≈ 3.2 pJ/bit（I/O+阵列量级；HBM3 接口 alone 0.29 pJ/bit, Chae et al. JSSC 2023, 仅 PHY）"),
+            # 0.186: per-kind DRAM (new fields; generic pJ_bit_dram above unchanged and still used when unset)
+            "pJ_bit_dram_hbm": (7.0, "二手", _PIMAI + ": HBM (DGX-H100) 7 pJ/bit incl. SoC- and memory-side interfaces "
+                                "(same 2× convention as the LPDDR value — both from one table on purpose); cross-check: "
+                                + _FGDRAM + " HBM2 ≈ 3.97 pJ/bit memory side only"),
+            "pJ_bit_dram_lpddr": (10.0, "二手", _PIMAI + ": LPDDR5X (Snapdragon 8 Gen 3) 10 pJ/bit incl. SoC- and "
+                                  "memory-side interfaces (their 2× factor); LPDDR5 (A17 Pro) 20 — the authors' derived "
+                                  "profile, not a measurement"),
             "pJ_bit_d2d": (0.25, "来源", _UCIE),
             "pJ_bit_link": (1.3, "来源", _NVL),
             "pJ_bit_net": (5.0, "假设", "跨节点网卡 / 光模块量级，无单一公开数字 — 约数倍于 C2C（与 horowitz_45nm 预设相同）"),
@@ -249,6 +264,17 @@ def _counts(r) -> dict:
     return {"counts": c, "window_s": window, "units": units, "unit": unit}
 
 
+def dram_pJ_field(r, table: EnergyTable) -> str:
+    """0.186: which field prices this result's DRAM bits: the per-kind field when set, else pJ_bit_dram."""
+    from .. import mem_catalog
+    try:
+        hbm = "HBM" in mem_catalog.parse_mem_id(r.scenario.mem_id).mem_type.upper()
+    except Exception:                       # noqa: BLE001 — unknown id: generic field
+        return "pJ_bit_dram"
+    f = "pJ_bit_dram_hbm" if hbm else "pJ_bit_dram_lpddr"
+    return f if getattr(table, f) is not None else "pJ_bit_dram"
+
+
 def energy_report(r, table: EnergyTable | None = None) -> dict:
     """Action counts per output unit; energy (J / unit, by action) only for the entries the user supplied."""
     table = table or EnergyTable()
@@ -259,16 +285,19 @@ def energy_report(r, table: EnergyTable | None = None) -> dict:
     host_b = (getattr(r, "pipeline", None) or {}).get("load_bytes", 0.0)
     if host_b:              # 0.62: video sequential offload -- weights re-read over the host link every window
         per["host"] = host_b / u
+    dfield = dram_pJ_field(r, table)
     out = {"unit": a["unit"], "window_s": a["window_s"], "units_per_window": a["units"],
            "counts_per_unit": per, "provided": table.provided,
            "missing": [f.name for f in fields(EnergyTable) if getattr(table, f.name) is None
-                       and f.name not in ("idle_W_prefill", "pJ_bit_host")],
+                       and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr")
+                       and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")],
+           "dram_pJ_field": dfield,
            "basis": "动作计数 × 用户提供的每动作能耗（Accelergy 式 ERT）；工具不内置任何能耗数值"}
     if not table.provided:
         return out
     j = {}
     for k, attr in _UNIT_PJ.items():
-        e = getattr(table, attr)
+        e = getattr(table, dfield if k == "dram" else attr)
         if e is not None:
             j[k] = per[k] * e * 1e-12 * (8 if k in _BITS else 1)
     if table.idle_W is not None:

@@ -3,6 +3,14 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.186.0] - 2026-10-16
+### UI 冒烟（选用脚本）加方向断言
+- scripts/ui_headless_smoke.py 现在检查渲染值确实变化且方向正确：固定 batch 1→16 TPOT 上升；2 卡 TP2 比 TP1 TPOT 低；DRAM 颗数减少则带宽、容量都降，恢复后带宽复原；prefill 显示 TTFT 卡。每次改动都等到 /api/eval 返回（不是任意 POST）。
+- 首轮唯一告警「颗数 8→6 容量仍 128 GiB」查明是脚本误报：存储器改动先 POST /api/memory，脚本在那时读卡片，读到的是上一次渲染。UI 本身会在 /api/eval 返回后重渲染（96 GiB）。已修脚本，UI 无需改。终轮 0 错误。
+### 新增：DRAM 能耗按存储类型区分
+- EnergyTable 新增 pJ_bit_dram_hbm / pJ_bit_dram_lpddr（按场景 mem_id 选；未填回退 pJ_bit_dram）。报告给出 dram_pJ_field；只填按类型字段时 pJ_bit_dram 不再列为缺失；HBM 值不会给 LPDDR 定价。UI 能耗组、CLI（--pJ-bit-dram-hbm/-lpddr）、API 均可用。
+- 预设 tpuv4i_7nm 新增（默认值变化：DRAM 能耗原先不分类型，一律 3.17 pJ/bit）：HBM 7、LPDDR 10 pJ/bit「二手」，二者都取自 Ortega et al.（UPMEM）PIM-AI arXiv 2411.17309 表 1，同一 2× 接口口径；交叉核对 O'Connor et al. MICRO 2017 HBM2 ≈ 3.97 pJ/bit（仅内存侧）。horowitz_45nm 预设不变。使用 tpuv4i_7nm 预设时，默认芯片 + qwen3-8b 的 DRAM 能耗：LPDDR5X 1.254 J/token（原 0.397），HBM3E 0.878（原 0.397）。MODEL §133。
+
 ## [0.185.0] - 2026-10-16
 ### 变更（默认值）
 - 密度预设 mm2_per_dq_hbm：14/1024 = 0.0137「二手/假设」（H100 die-shot 估算，未核实）→ 8×4/2048 = 0.0156「推导/二手」：Samsung Hot Chips 2026（S. Han）HBM4 base die 上传统 PHY「超过 8×4 mm」对应 2048 DQ（SF4），由 Tom's Hardware / ServeTheHome 报道（原文已核对）；XPU 侧 PHY 取与内存侧相同（推导，下界）。HBM 的 dram_units / phy_area 面积 +14%。

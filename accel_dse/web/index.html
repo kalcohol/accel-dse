@@ -354,6 +354,8 @@
       <label title="每个向量元素操作（范数、softmax、激活、反量化）的能耗，pJ">pJ / 向量操作<input type="number" id="e-pJ_vec" min="0" step="0.1"></label>
       <label title="经 SRAM ↔ 数据通路端口每 bit 的能耗，pJ">pJ / bit SRAM<input type="number" id="e-pJ_bit_sram" min="0" step="0.05"></label>
       <label title="外部存储读写每 bit 的能耗（含接口），pJ">pJ / bit DRAM<input type="number" id="e-pJ_bit_dram" min="0" step="0.5"></label>
+      <label title="0.186：HBM 时用此值（不填 = 上面的通用 DRAM 值）">pJ / bit DRAM·HBM<input type="number" id="e-pJ_bit_dram_hbm" min="0" step="0.1"></label>
+      <label title="0.186：非 HBM（LPDDR 等）时用此值（不填 = 上面的通用 DRAM 值）">pJ / bit DRAM·LPDDR<input type="number" id="e-pJ_bit_dram_lpddr" min="0" step="0.5"></label>
       <label title="节点内 scale-up 层（封装之间）每发送 bit 的能耗，pJ">pJ / bit 节点内<input type="number" id="e-pJ_bit_link" min="0" step="0.5"></label>
       <label title="封装内 die-to-die 层每发送 bit 的能耗，pJ（D2D 开且每封装 die 数 > 1 时才有流量）">pJ / bit D2D<input type="number" id="e-pJ_bit_d2d" min="0" step="0.1"></label>
       <label title="跨节点网络每发送 bit 的能耗，pJ（每节点卡数 > 0 且通信组跨节点时才有流量）">pJ / bit 跨节点<input type="number" id="e-pJ_bit_net" min="0" step="0.1"></label>

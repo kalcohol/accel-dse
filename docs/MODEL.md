@@ -4381,3 +4381,11 @@ HBM PHY, old→new: 14/1024 = 0.0137 mm²/DQ 「二手/假设」 → 32/2048 = 0
 LPDDR5X on N5/N4/N3: no public area. Synopsys and Cadence product pages give only rates (8533, and 9600 overclocked on 3 nm). The 0.184 LPDDR6 SF2 figure is kept.
 
 UI: scripts/ui_headless_smoke.py (opt-in). Every control change must issue a fresh API POST and bring the KPI cards back. It fails on page errors, console errors and HTTP ≥ 400/500. First run: 31 steps, 0 errors.
+
+## §133 Directional UI smoke; DRAM energy by memory kind (0.186)
+
+UI smoke: directional assertions (batch↑ → TPOT↑, TP2 → TPOT↓, fewer packages → bandwidth↓ and capacity↓, restore → bandwidth back). Each step waits for the /api/eval answer. The one alarm (capacity unchanged after 8→6 packages) was a harness timing artefact: the memory change answers /api/memory first, and the KPIs re-render only after /api/eval. No UI defect.
+
+Why this item: energy per token had a single pJ/bit for every DRAM type, so the LPDDR ↔ HBM choice (one of the largest chip-design decisions in the tool) moved energy only through bytes, never through the per-bit cost. Mechanism: E_dram = bytes × 8 × pJ_bit(kind). kind = HBM stack vs any other package (mem_catalog); a field left unset falls back to the generic value, so every old table is unchanged.
+
+Numbers (preset tpuv4i_7nm only), old→new: generic 3.17 (推导, TPUv4i 6.3× on Horowitz) for every kind → HBM 7.0 and LPDDR 10.0 「二手」. Both come from the same table (PIM-AI, arXiv 2411.17309, Table 1: DGX-H100 HBM 7, Snapdragon 8 Gen 3 LPDDR5X 10, A17 Pro LPDDR5 20, each including the SoC- and memory-side interfaces). They are the authors' derived profile parameters, not measurements, hence 二手. Cross-check: O'Connor et al. MICRO 2017 measure HBM2 at ≈ 3.97 pJ/bit memory side only, so ×2 for both sides lands at ≈ 7.9, consistent with 7. The generic pJ_bit_dram of the preset is left at 3.17 for unknown ids.
