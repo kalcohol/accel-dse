@@ -388,6 +388,7 @@ class _Replica:
         self.restoring: Req | None = None    # 0.57: the sequence being restored holds its KV + slot (vLLM allocates
                                              # the blocks when it schedules the recompute / swap-in)
         self.n_preempt = 0
+        self.kv_blocked = 0                # 0.200: admissions refused by the KV cap (a binding cap)
         # 0.56: admission order — after_prefill (0.55: prefilled requests wait in joinq) | before_prefill (vLLM: slot
         # and KV are taken first; ``pending`` holds admitted requests still prefilling / pulling their KV)
         self.kv_admit = "after_prefill"
@@ -447,8 +448,11 @@ class _Replica:
         if cap is None or not (self.running or self.pending or self.restoring is not None):   # one sequence always runs (no deadlock)
             return True
         if self.kv_policy == "wait":
-            return self.kv_res + r.S + r.out <= cap
-        return not self.reprefq and self._kv_used() + r.S <= cap
+            ok = self.kv_res + r.S + r.out <= cap
+        else:
+            ok = not self.reprefq and self._kv_used() + r.S <= cap
+        self.kv_blocked += not ok
+        return ok
 
     def _reserve(self, r: Req):
         if self.kv_policy == "wait" and self.kv_cap is not None:
@@ -1110,6 +1114,7 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
         st["slot_wait"] = _stats([r.admit_t - r.ready_t for r in done])
         st["preempt_per_req"] = sum(r.preempts for r in done) / max(1, len(done))
         st["preempted_frac"] = sum(1 for r in done if r.preempts) / max(1, len(done))
+        st["kv_blocked"] = sum(rp.kv_blocked for rp in (decs if mode == "pd" else reps))   # 0.200: cap binding count
     for k in ("ttft", "tpot", "itl_max"):
         st[k + "_ms"] = {q: v * 1e3 for q, v in st[k].items()}
     return st

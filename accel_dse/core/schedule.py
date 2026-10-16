@@ -48,6 +48,14 @@ from .hardware import Link
 # 「假设」: the engines' collectives run at the NCCL latency — vLLM / SGLang custom all-reduce and TRT-LLM's
 # all-reduce plugin can be faster for small messages; no per-engine measurement is applied.
 NCCL_AR_LAT = True
+# 0.200: the engines behind the validation rows run TP all-reduce on a custom one-/two-shot kernel inside an NVLink node
+# (≤ 8 GPUs), not NCCL 「来源」: TensorRT-LLM v0.8.0 tensorrt_llm/plugin/plugin.py PluginConfig.use_custom_all_reduce =
+# True (the 0.8 perf-doc builds do not override it); vLLM disable_custom_all_reduce = False (csrc/custom_all_reduce.cuh,
+# PR #2192: kernels "very similar to TensorRT-LLM's customAllReduceKernels"); SGLang the same kernel.  Latency floor:
+# 6.8 µs at 2 KB on 8 × H100 with CUDA graphs (vLLM PR #33839, benchmark_device_communicators.py) 「二手」; the same
+# floor is used for TP 2 / 4 and A100 「假设」.  Larger messages keep the bandwidth term.  CUSTOM_AR False = 0.199 (NCCL).
+CUSTOM_AR = True
+CUSTOM_AR_US = 6.8
 NCCL_BASE_LAT_US, NCCL_NVL_HW_LAT_US = 6.6, 0.6
 
 
@@ -62,7 +70,7 @@ def collective_seconds(kind: str, payload: float, group: int, link: Link) -> tup
     beta = link.GBps * 1e9
     a = link.alpha_us * 1e-6
     if kind == "allreduce" and NCCL_AR_LAT and link.topology == "switch":
-        a = max(a, nccl_ring_ll_us(group) * 1e-6)
+        a = max(a, (CUSTOM_AR_US if CUSTOM_AR and group <= 8 else nccl_ring_ll_us(group)) * 1e-6)
     if kind == "allreduce":
         bw = 2 * (group - 1) / group * payload / beta
     elif kind == "alltoall":

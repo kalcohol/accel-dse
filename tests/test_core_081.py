@@ -109,7 +109,8 @@ def test_spec_decode_energy_per_token():
     u2, m2, d2 = per_tok(2, 0.7)
     assert abs(u2 / u0 - (1 + 0.7 + 0.49)) < 1e-9          # units = accepted tokens: E = Σ a^i
     uz, mz, _ = per_tok(2, 0.0)
-    assert uz == u0 and 2.9 < mz / m0 < 3.4                 # nothing accepted: 3 verified positions + drafts
+    # 0.200: isclose — units are a float sum (31.999999999999996 vs 32.0 after the custom all-reduce α moved timings)
+    assert abs(uz - u0) <= 1e-12 * u0 and 2.9 < mz / m0 < 3.4   # nothing accepted: 3 verified positions + drafts
     assert d2 < d0                                          # weights amortised over E tokens
     try:                                                    # no MTP head → warned and ignored
         w = evaluate(Scenario(model="qwen3-8b", chip=CHIPS["1P"], mem_id="hbm3e_8s_12h24g_9200",
@@ -123,17 +124,21 @@ def test_des_nonbinding_kv_cap_equals_cap_off():
     # 0.81: before_prefill KV-arrived requests join at the iteration boundary — a cap that never binds must measure
     # the same TPOT / worst gap as no cap (was: worst-gap p99 +43 %, TPOT inflated by the in-flight remainder)
     from accel_dse.core.pdsim import capture_ctx, simulate
-    s0 = replace(v4_scenario(0.3, 0.0, False, "moe30b"), pd=replace(v4_scenario(0.3, 0.0, False, "moe30b").pd,
-                 kv_policy="recompute", kv_capacity_GB=8.0, kv_admit="before_prefill"))
-    s1 = replace(s0, pd=replace(s0.pd, kv_policy="off", kv_capacity_GB=None))
-    out = []
-    for s in (s0, s1):
+    # 0.200: 8 GB was non-binding only under the flat 3 µs all-reduce α; with the 0.199 NCCL latency the decode step
+    # is slower, more KV is resident, and the 8 GB cap refused 57 admissions (no preemptions) — the 2 % p99 gap was a
+    # binding cap, not a simulator bug.  12 GB never binds (kv_blocked = 0) and is bit-identical to cap off; the
+    # binding case is asserted separately so the premise is checked, not assumed.
+    base = v4_scenario(0.3, 0.0, False, "moe30b")
+    s1 = replace(base, pd=replace(base.pd, kv_policy="off", kv_capacity_GB=None))
+    def run(s):
         rep, ctx = capture_ctx(s)
-        d = simulate(ctx, rep["queue"]["lambda_rps"], "pd", n_req=1500, warmup=300, seed=3)
-        out.append((d["itl_max"], d["tpot"], d.get("preempt_per_req", 0.0)))
-    assert out[0][2] == 0.0
-    assert out[0][0] == out[1][0] and out[0][1] == out[1][1], out
+        return simulate(ctx, rep["queue"]["lambda_rps"], "pd", n_req=1500, warmup=300, seed=3)
+    d1 = run(s1)
+    for cap, binding in ((12.0, False), (8.0, True)):
+        s0 = replace(base, pd=replace(base.pd, kv_policy="recompute", kv_capacity_GB=cap, kv_admit="before_prefill"))
+        d0 = run(s0)
+        assert d0["preempt_per_req"] == 0.0
+        assert (d0["kv_blocked"] > 0) == binding, (cap, d0["kv_blocked"])
+        if not binding:
+            assert d0["itl_max"] == d1["itl_max"] and d0["tpot"] == d1["tpot"], (d0["itl_max"], d1["itl_max"])
 
-
-from tests.pin_legacy import pin_module_flat_alpha  # noqa: E402  (0.199: α-β / bit-for-bit checks on the flat α)
-pin_module_flat_alpha(globals(), only={'test_des_nonbinding_kv_cap_equals_cap_off'})

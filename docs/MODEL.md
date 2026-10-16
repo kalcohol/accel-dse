@@ -4614,3 +4614,14 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - (c) Eager prefill launch gaps were already charged in §123.
   - (b) Tokenizer / HTTP / scheduler cost doesn't apply to gptSessionBenchmark rows. The server rows have no sourced figure.
   - The remaining gap, including about 20 % on 2048-token rows, is not explained by a sourced mechanism. Candidates are TRT-LLM 0.8's context-phase kernel efficiency and session host overhead; both are unsourced and not fitted.
+
+## §147 Custom all-reduce latency; KV-cap binding check; TRT-LLM 0.8 prefill sources (0.200)
+
+- **All-reduce α in an NVLink node (≤ 8 GPUs).** α = 6.8 µs, the custom all-reduce floor (vLLM PR #33839: 8 × H100, 2 KB, CUDA graphs 「二手」).
+  - Engines that use it: TRT-LLM v0.8 `use_custom_all_reduce` defaults to True; vLLM / SGLang default to custom AR 「来源」.
+  - Groups over 8 GPUs, or engines without a custom AR (CUSTOM_AR False), use the §146 NCCL Ring-LL model.
+- **DES KV-cap binding.** `simulate()` reports `kv_blocked`, the number of admissions refused by the cap. A cap counts as non-binding only when kv_blocked = 0, and then the run is bit-identical to cap off (same seed).
+- **TRT-LLM 0.8 TTFT rows.** From the 0.8 performance.md and plugin.py v0.8 sources:
+  - context FMHA on, TensorRT-native GEMMs (no gemm plugin), custom AR, gptSessionBenchmark, which has no tokenizer or HTTP.
+  - Attention is ≤ 7 % of prefill at ≤ 2048 tokens.
+  - The remaining ≈ 20 % too-fast bias has no sourced mechanism; TensorRT-native GEMM efficiency is unpublished. Not fitted.

@@ -6,6 +6,21 @@
 
 
 
+## [0.200.0]
+- test_core_081: the 2 % p99 gap in "non-binding KV cap = cap off" was a cap that binds, not a simulator bug.
+  - Under the 0.199 all-reduce α, decode steps are slower and more KV stays resident, so the 8 GB cap refused 57 admissions (0 preemptions).
+  - Proof with the same seed: 12 / 16 / 64 GB caps never block, and the result is bit-identical to cap off. The flat α at 8 GB never blocks either.
+  - New `pdsim` counter `kv_blocked` in the simulate output. The test now checks 12 GB is non-binding and identical, and that 8 GB binds; the flat-α pin is removed.
+  - test_spec_decode_energy_per_token: an exact float equality became isclose (31.999999999999996 vs 32.0).
+- Correction to 0.199: the validation engines run TP all-reduce on a custom one/two-shot kernel, not NCCL (`schedule.CUSTOM_AR`).
+  - Sources: TRT-LLM v0.8.0 plugin.py `use_custom_all_reduce = True`, not overridden by the 0.8 perf-doc builds 「来源」; vLLM `disable_custom_all_reduce = False`, with kernels derived from TRT-LLM's (PR #2192); SGLang uses the same kernel.
+  - α = 6.8 µs: 8 × H100 at 2 KB with CUDA graphs (vLLM PR #33839) 「二手」. Using it for TP 2 / 4 and A100 is 「假设」. Groups over 8 GPUs keep the NCCL model.
+- TRT-LLM 0.8 prefill, from the sources:
+  - Builds: `--context_fmha enable` (TRT-LLM fused MHA, plugin default), no `--gemm_plugin` (TensorRT-native GEMM tactics), gptSessionBenchmark.
+  - Attention is ≤ 7 % of prefill at ≤ 2048 tokens, so FMHA vs FlashAttention-2 can't explain a 20 % bias.
+  - No published efficiency figure exists for the TensorRT-native GEMMs, so nothing was added.
+- Default MAE % (0.199 → 0.200): static 22.89 → 23.04, TTFT 33.16 → 35.61, max-load 18.91 → 18.86, MoE 7.88 → 7.88, Mixtral 18.88 → 20.54, MI300X latency 24.15 → 21.60, MI300X max-load 63.94 → 67.24, B200 13.13 → 13.13.
+- Fingerprints re-baselined: `_fp` be3e00dcc13fcdda / 7d5cdb465b922571, test_core_125 ba49c208f61b306c / 9bb4812eed9b116a.
 ## [0.199.0]
 - Small-message all-reduce latency now follows NCCL's own cost model (`schedule.NCCL_AR_LAT`): Ring + LL = 6.6 + 2(n−1)·0.6 µs on NVLink (src/graph/tuning.cc v2.19.3 「来源」). That is 7.8 / 10.2 / 15.0 µs at TP 2 / 4 / 8; ≤ 0.198 it was a flat 3 µs.
   - Cross-check: nccl-tests issue #123 measured ≈ 21 µs on 8 × A100 「二手」.

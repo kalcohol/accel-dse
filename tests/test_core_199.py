@@ -12,9 +12,13 @@ def test_nccl_ring_ll_values():
 
 def test_allreduce_alpha_grows_with_group():
     L = Link(450.0, 3.0, "switch")
-    a2 = S.collective_seconds("allreduce", 1024, 2, L)[1]
-    a8 = S.collective_seconds("allreduce", 1024, 8, L)[1]
+    with E.model_flags(CUSTOM_AR=False):           # 0.200: NCCL path (no custom all-reduce)
+        a2 = S.collective_seconds("allreduce", 1024, 2, L)[1]
+        a8 = S.collective_seconds("allreduce", 1024, 8, L)[1]
+        a16 = S.collective_seconds("allreduce", 1024, 16, L)[1]
     assert abs(a8 - 15e-6) < 1e-12 and a8 > a2
+    assert abs(S.collective_seconds("allreduce", 1024, 8, L)[1] - 6.8e-6) < 1e-12   # custom AR floor (default)
+    assert abs(S.collective_seconds("allreduce", 1024, 16, L)[1] - a16) < 1e-12      # > 8 GPUs: NCCL
     assert S.collective_seconds("alltoall", 1024, 8, L)[1] == 3e-6      # other collectives unchanged
     with E.model_flags(NCCL_AR_LAT=False):
         assert S.collective_seconds("allreduce", 1024, 8, L)[1] == 3e-6
