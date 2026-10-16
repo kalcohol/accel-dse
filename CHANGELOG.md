@@ -3,6 +3,13 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.180.0] — MI300X max-load: tokens/s definition settled by ratio test; host and attention mechanisms bounded
+
+- vLLM 0.11.2 `benchmarks/throughput.py` prints total and output tokens/s (JSON `tokens_per_second` = total); the README column is unspecified.
+- Cross-length ratio test: output reading sd(log) 0.068 vs total 0.22 → output kept. Rows tagged `tok_def: "output"`.
+- Host scheduler cost (vLLM PRs #40459 / #46112, ≈ 1.9 µs/seq → ≈ 6 ms/step at 3200 seqs, ≈ 5 % of the step) and ROCm paged-attention (relative speedups only) were documented, not applied (MODEL §127).
+- Scores unchanged (MI300X max-load 1.76 / 76 %); no default change. New `test_core_180`.
+
 ## [0.179.0] — MI300X max-load: one-wave batch + AMD MAF GEMM ceilings; ROCm source re-verified
 
 - ROCm per-kernel source (MODEL §125) re-verified live, verbatim. The exact URL is now recorded; MI300X decode is kept.

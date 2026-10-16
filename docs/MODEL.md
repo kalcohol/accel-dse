@@ -4138,3 +4138,56 @@ appears:
 - KV preemption.
 
 This remains documented as a residual, not fitted.
+
+## §127 MI300X max-load: tokens/s definition, host overhead, ROCm paged attention (0.180)
+
+**(1) Total or output tokens/s.**
+
+The README table gives a single column, "Throughput (tokens/s)", for `vllm bench throughput`. The vLLM 0.11.2 script
+(<https://raw.githubusercontent.com/vllm-project/vllm/v0.11.2/vllm/benchmarks/throughput.py>) does two things:
+- it prints `Throughput: {req/s} requests/s, {total_num_tokens/elapsed} total tokens/s, {total_output_tokens/elapsed} output tokens/s`;
+- `--output-json` writes `tokens_per_second` = **total** tokens/s.
+
+AMD's MAD harness (`ROCm/MAD scripts/vllm/run_vllm.py`) records both `throughput_tot` and `throughput_gen`. The README
+command has no `--output-json`, and none of its 31 versions (commit history at the pinned SHA) says which number the
+column holds. **The source does not settle it.**
+
+**Cross-length ratio test** (推导, using the 0.179 model):
+
+| reading | predicted / measured per row | spread, sd(log) |
+|---|---|---|
+| output | 2.00, 1.79, 1.93, 1.67 | 0.068 |
+| total | 2.12, 1.85, 2.41, 3.35 | 0.22 |
+
+Under the total reading the 2048/2048 row diverges by about 2×. Read model-free: the measured 2048/2048 output rate would
+be 3876 tok/s, against 12764 at 128/2048 with the same output length and batch size of the same order. Prefill is only
+about a third of the work in the model.
+
+**Output tokens/s is the interpretation kept** (the 0.179 behaviour). Rows carry `tok_def: "output"`. The score is
+unchanged.
+
+**(2) Host / scheduler per-step time.** The existing mechanism (`Scenario.host_step_us` / `host_seq_us`, §0.164) is
+opt-in and is **not** applied to any validation row. Sourced magnitudes:
+- vLLM PR #40459: scheduler microbenchmark ≈ 194 µs per loop at 256 requests and ≈ 396 µs at 512, i.e. ≈ 0.77 µs per
+  sequence (H100 host).
+- vLLM PR #46112: `update_from_output` 0.289 ms at 256 decode sequences, ≈ 1.1 µs per sequence (RTX 5090 host).
+
+Together that is ≈ 1.9 µs per sequence, about 6 ms per step at 3200 sequences: ≈ 5 % of the modelled 113 ms step, against
+a residual of ≈ 120 ms. Both sources use different CPUs and vLLM versions, so the mechanism stays without a default
+value. This does not explain the residual.
+
+**(3) ROCm paged attention with FP8 KV.** Sources found:
+- vLLM ROCm attention-backend blog (2026-02-27): AITER FA gives 2.8–4.6× faster TPOT than legacy `ROCM_ATTN`.
+- vLLM PR #12348 (custom paged attention v2): +10 % to +54 % end-to-end on MI300X.
+
+These are end-to-end ratios between kernels, with no absolute bandwidth or efficiency. The 0.11.2 README names AITER
+optimisations for Llama but not which attention backend was used.
+
+The residual can be bounded: a pure bandwidth bound for attention is 75 GB of KV at 4.3 TB/s ≈ 17 ms per step. Closing
+the ≈ 120 ms gap through attention alone would need it to run about 7× slower than that bound, which no source supports.
+**Documented, not applied.**
+
+**Residual unchanged:** 1.76 / 76 %. The remaining sourced-mechanism candidates are KV preemption (vLLM's activation
+reserve for the 131072-token profiling pass is unpublished) and absolute ROCm attention-kernel throughput.
+
+**Re-score:** identical to 0.179 for every group. No default change.
