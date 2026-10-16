@@ -35,13 +35,13 @@ SCALE_RE = re.compile(r"(\.weight_scale_inv$|\.scale_inv$|\.weight_scale(_2)?$|\
 ROLE = [
     ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.|^linear_proj\.)"),
     ("mtp", r"(^mtp\.|\.mtp\.|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),
-    ("embed", r"(embed_tokens|\bwte\b|tok_embeddings|word_embeddings|^embed\.|\.embed\.weight|ple_embedding)"),
+    ("embed", r"(embed_tokens|\bwte\b|tok_embeddings|word_embeddings|^embed\.|\.embed\.weight|ple_embedding|^rwkv7\.emb\.weight$)"),
     ("lm_head", r"(lm_head|^output\.weight$|embed_out|^head\.weight$)"),
     ("norm", r"(norm\.|norm$|_norm|ln_|layernorm|\.ln\d)"),
     ("router", r"(\.gate\.weight$|\.router\.|gate\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid)"),
     ("shared_expert", r"(shared_expert|\.share_expert\.)"),
     ("expert", r"(\.experts\.|block_sparse_moe\.experts|routed_expert|\.moe\.(gate|up|down)_proj\.)"),
-    ("attn", r"(self_attn|attention|\.attn\.|linear_attn|\.mixer\.|\.attn_|\.conv\.(in_proj|out_proj|conv)\.)"),  # 0.114 LFM2 short conv
+    ("attn", r"(self_attn|attention|\.attn\.|linear_attn|\.mixer\.|\.attn_|\.conv\.(in_proj|out_proj|conv)\.|^rwkv7\.blocks\.\d+\.att\.)"),  # 0.114 LFM2 short conv; 0.191 RWKV-7
     ("mlp", r"(\.mlp\.|feed_forward|\.ffn\.)"),
 ]
 

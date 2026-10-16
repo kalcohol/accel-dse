@@ -1,0 +1,76 @@
+{
+ "bytes_llm": 3055337472,
+ "bytes_mtp": 0,
+ "bytes_total": 3055337472,
+ "config": {
+  "a_low_rank_dim": 96,
+  "architectures": [
+   "Rwkv7ForCausalLM"
+  ],
+  "auto_map": {
+   "AutoConfig": "configuration_rwkv7.Rwkv7Config",
+   "AutoModel": "modeling_rwkv7.Rwkv7Model",
+   "AutoModelForCausalLM": "modeling_rwkv7.Rwkv7ForCausalLM"
+  },
+  "bos_token_id": 0,
+  "decay_low_rank_dim": 96,
+  "dtype": "bfloat16",
+  "eos_token_id": 0,
+  "gate_low_rank_dim": 256,
+  "head_dim": 64,
+  "hidden_size": 2048,
+  "intermediate_size": 8192,
+  "model_type": "rwkv7",
+  "norm_bias": true,
+  "norm_eps": 1e-05,
+  "num_heads": 32,
+  "num_hidden_layers": 24,
+  "pad_token_id": 0,
+  "tie_word_embeddings": false,
+  "use_cache": true,
+  "v_low_rank_dim": 64,
+  "vocab_size": 65536,
+  "wkv_implementation": "chunked",
+  "wkv_state_dtype": "float32"
+ },
+ "fetched": "2026-10-16",
+ "n_tensors": 798,
+ "params_llm": 1527668736,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "RWKV/RWKV7-G1k-1.5B-20260930",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 907149312,
+    "params": 453574656
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 268435456,
+    "params": 134217728
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 268435456,
+    "params": 134217728
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 1610711040,
+    "params": 805355520
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 606208,
+    "params": 303104
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

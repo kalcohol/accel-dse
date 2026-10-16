@@ -6,6 +6,11 @@
 
 
 
+## [0.191.0]
+- Decision workload (`serving.labels` 1..1024, prefill only; CLI `--labels`): one forward, label-row readout at the last position, no decode/KV write at ctx 0; reports decisions/s and latency per decision.
+- StartLux-Decision v1 (0.8B/2B/4B/9B/27B/35B-A3B) and v1.1 (Instant/AutoThink) from live HF configs; Instant `jev_prompt_attention: bidirectional` → non-causal full-attention layers. Base Qwen/Qwen3.5-9B added.
+- Microsoft-Decision-1 as an architecture proxy (Qwen3.5-9B config, coverage proxy, 推导). Jev not added (closed, no architecture).
+- RWKV-7 G1k 1.5B/2.9B/7.2B/13.3B: new `rwkv7` family, exact param counts, fp32 H·64×64 state, context-invariant decode, chunk-64 prefill (paper equations).
 ## [0.190.0]
 - UI smoke covers energy controls incl. a binding power cap; fixed preset idle fraction losing its citation after UI rounding, and share display rounding.
 - CLI `eval --power-cap`.

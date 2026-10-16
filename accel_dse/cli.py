@@ -95,6 +95,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--out-len", dest="out_len", type=int, default=None, help="output tokens per request (goodput / PD)")
     p.add_argument("--prefix-cached", dest="prefix_cached", type=int, default=None,
                    help="prefill: prompt tokens already in the KV cache (prefix-cache hit, 0.52)")
+    p.add_argument("--labels", type=int, default=None,
+                   help="0.191 decision readout: logits over N option tokens, one forward (needs --phase prefill)")
     for k, hlp in (("frames", "video frames"), ("height", "video height px"), ("width", "video width px"),
                    ("steps", "denoise steps (structure models: diffusion steps)"), ("cfg", "forwards per step (2 = CFG)"),
                    ("seq-len", "protein residues"), ("msa", "MSA rows (structure models)"),
@@ -356,7 +358,8 @@ def _parse_tree(text: str) -> list:
 def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     sv = {"phase": a.phase, "batch": a.batch, "spec_k": a.spec_k}
     for k, attr in (("ctx", "ctx"), ("prompt", "prompt"), ("spec_accept", "spec_accept"), ("tpot_slo_ms", "tpot_slo"),
-                    ("ttft_slo_ms", "ttft_slo"), ("out_len", "out_len"), ("prefix_cached", "prefix_cached")):
+                    ("ttft_slo_ms", "ttft_slo"), ("out_len", "out_len"), ("prefix_cached", "prefix_cached"),
+                    ("labels", "labels")):
         if getattr(a, attr) is not None:
             sv[k] = getattr(a, attr)
     if getattr(a, "images", None) is not None:
@@ -676,6 +679,9 @@ def cmd_eval(a) -> dict:
             print("  power cap: " + (pc["error"] if pc.get("error") else
                   f"need {pc['P_needed_W']:.1f} W / TDP {pc['tdp_W']:g} W → throughput ×{pc['throughput_factor']:.3g}"
                   + (f", J/{e['unit']} {pc['J_per_unit_capped']:.4g}" if pc["capped"] else " (not capped)")))
+    if d := out.get("summary", {}).get("decision"):
+        print(f"decision: {d['labels']} labels, {d['latency_ms']:.2f} ms / forward, {d['decisions_per_s']:.4g} decisions/s "
+              f"({d['decisions_per_s_card']:.4g} / card)")
     if b := out.get("budget"):
         mark = {True: "OK", False: "OVER", None: "?"}
         def val(i):

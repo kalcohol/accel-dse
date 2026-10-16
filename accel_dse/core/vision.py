@@ -64,6 +64,13 @@ _PREPROC = {
     **{k: {"min_px": 784, "max_px": 4096 * 784} for k in (
         "meta-models/Muse-Spark-Open-816B-A42B", "amd/Muse-Spark-Open-816B-A42B-Quark-PTPC-FP8",
         "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4")},
+    # 0.191 Qwen3.5-9B and the StartLux-Decision fine-tunes: preprocessor_config.json Qwen2VLImageProcessorFast size
+    # shortest 65536 / longest 16777216 px, patch 16, merge 2 (each repo checked)
+    **{k: {"min_px": 65536, "max_px": 16777216} for k in ("Qwen/Qwen3.5-9B",) + tuple(
+        f"startlux-models/StartLux-Decision-{v}" for v in (
+            "v1-27B", "v1-9B", "v1-4B", "v1-2B", "v1-0.8B", "v1-35B-A3B", "v1.1-27B-Instant", "v1.1-27B-AutoThink",
+            "v1.1-9B-Instant", "v1.1-9B-AutoThink", "v1.1-4B-Instant", "v1.1-4B-AutoThink", "v1.1-2B-Instant",
+            "v1.1-0.8B-Instant"))},
 }
 
 # 0.165 — video input.  「来源」 each repo's video_preprocessor_config.json (Qwen3VLVideoProcessor): size shortest_edge
@@ -217,7 +224,7 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
             (2 * h + _lin(hm, hm) + _lin(hm, text_h))
         return VisionSpec("kimi", "MoonViT" + (" v2" if v2 else ""), p, 1, h, inter, L, nh, q, False, mk,
                           ((hm, hm), (hm, text_h)), params, tuple(sorted(pre.items())), abias)
-    if mt in ("qwen3_5", "qwen3_5_moe", "qwen4_exp"):
+    if mt in ("qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen3_5_vision"):   # 0.191: transformers 5 names it *_vision
         h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["depth"], vc["num_heads"]
         p, t, mk, out = vc["patch_size"], vc["temporal_patch_size"], vc["spatial_merge_size"], vc["out_hidden_size"]
         if vc.get("deepstack_visual_indexes"):

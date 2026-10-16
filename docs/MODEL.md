@@ -4418,3 +4418,17 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
 - `scripts/ui_headless_smoke.py` (opt-in) now drives the energy panel with the tpuv4i_7nm preset. It checks the PHY / idle_frac_tdp / tdp_W inputs and that the preset fills PHY values. At TDP 175 W it checks the DRAM PHY row, that the static source names H100, that the share line is shown, and that the warning appears iff the share is > 50 %. With idle_frac_tdp 0.001 the warning is gone, the note says user-entered, and total J falls. With power_cap on, the cap does not bind at 175 W; at 2 W it binds and the throughput factor is < 1. With power_cap off, the cap line is gone. Result: 0 errors.
 - Found and fixed: the UI sends the preset-filled idle_frac_tdp rounded (0.1026), so the report called it "用户填写" and dropped the H100 citation. Preset match is now within 0.5 %. The static share was displayed as "50%（> 50%）" at 50.05 %; it is now shown to 0.1 %.
 - CLI: `eval --power-cap` (needs --tdp-W, else the error line). It prints the static source note, the warning, and the power-cap line.
+
+## §138 Decision models and RWKV-7 (0.191)
+
+- Decision readout (`serving.labels` = N, 1..1024, phase prefill). Source: startlux_decision/model.py. The output-head rows for the N labels are index_selected (fp32), and logits = h_last · W_labelᵀ. use_cache=False. Modelled as prefill of the prompt + final norm + a GEMM with n=N + softmax over N; no lm_head over the vocabulary, no decode, no KV write when ctx = 0. Metrics: latency_ms = step, decisions_per_s = batch / step. Multiple questions sharing a prefix (the chunked KV path) are not modelled; each decision is its own forward.
+- StartLux-Decision v1 / v1.1: configs read live from HF (coverage 完整). The 27B has full attention every 4th layer; the 35B-A3B is MoE. v1.1 Instant sets `jev_prompt_attention: bidirectional`: full-attention layers are bidirectional inside the prompt (core causal=False; linear layers stay causal). v1.1 AutoThink can emit up to 4096 thought tokens before the readout (596 on average at gate 0.9, 来源 model card). That is a decode run, so model it as a separate decode phase; the readout alone is shown here.
+- Cross-check, H200 (vLLM BF16, 1 request, 来源 model card): 9B 256/1024/4096/8192 prompt → 30/39/109/214 ms. Simulation 5.2/21.6/84/126 ms. The gap at short prompts is fixed serving overhead, which is not modelled. This is a comparison only; nothing was fitted.
+- Microsoft-Decision-1: closed. The announcement names a Qwen3.5-9B base, so the 9B config is used as a proxy (coverage proxy, 推导).
+- Jev (TypeSafe AI): closed, with no published architecture, so it is not added.
+- ReaDy-Qwen3.8-27B draft: not added. It does not fit the spec-decoding draft catalog naturally.
+- RWKV-7 (Peng et al. 2025, "Goose", eq. for the generalized delta rule; release rwkv7 configs):
+  - Per layer: r/k/v/o C×C, plus the LoRAs w, a, g and v (v not on layer 0), and a non-gated FFN with d_ff = 4C.
+  - State: H×64×64 fp32 plus 2 token-shift vectors of C fp32. Decode per token: 38·C + 9·H·N² vector ops, 4C transcendentals, and read+write of the state, independent of ctx (an adversarial invariant, tested at 4k/128k/1M).
+  - Prefill uses chunk-64 WY form GEMMs, linear in the prompt.
+  - State residency uses the existing SRAM order: weights first, then KV and state. State-first could be better, because state is read and written every token (open).

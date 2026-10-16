@@ -104,6 +104,8 @@ class Phase:
     ep_nodes: int = 1    # 0.134: nodes the EP group spans when the all-to-all sends a token once per node (else 1)
     kvpre: int = 0       # 0.116 full: cached text-prefix tokens (prefix K/V reuse); q then holds the image tokens only
     kvx: bool = False    # 0.116 full: extract step of the prefix K/V reuse (writes the cache)
+    labels: int = 0      # 0.191 decision readout (prefill only): logits of ≤ labels option tokens at the last
+                         # position, no KV cache kept (StartLux use_cache=False path) when nothing is prefix-shared
 
     def __post_init__(self):
         if self.kind not in ("decode", "prefill", "full"):
@@ -527,6 +529,48 @@ def _hyena_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
                fft_n=N if fft_rows else 0, fft_rows=fft_rows)] + comm
 
 
+def _rwkv7_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, b_loc: int) -> list[Op]:
+    """0.191 RWKV-7 time-mix core per layer (heads split over TP; the GEMMs are in the layer's linears).
+
+    Recurrent step (release rwkv7_recurrent; paper eq. for the generalised delta rule), per token per head, N = 64:
+      S·diag(w)            N²   (multiply)
+      S·(−κ̂)               2N²  (matrix-vector)        then ⊗ (κ̂·a) and add: 2N²
+      v·kᵀ added           2N²
+      out = S·r            2N²                         → 9N² vector ops (fp32 state, read + written once)
+    Per token per channel outside the state: token-shift delta + 6 lerps (13), channel-mix shift + lerp (3), κ̂ =
+    L2-normalise(k·k_k) (4), k·(1 + (a − 1)·k_a) (3), κ̂·a (1), value-residual mix (3), bonus r·k·r_k summed ·v (4),
+    GroupNorm ln_x (5), (y + bonus)·g (2) → 38; transcendental: exp(w_log), sigmoid of w / a / v-gate, tanh of the
+    w chain, sigmoid of the g chain → ≈ 4 per channel + the low-rank widths.
+    Prefill (release rwkv7_chunked, chunk C = 64): per chunk and head, with Q̃ = κ̂·c, B̃ = b/c, K̃ = k/c, R̃ = r·c:
+      Q̃B̃ᵀ, Q̃K̃ᵀ, R̃K̃ᵀ, R̃B̃ᵀ  [C,N,C];  unit-lower-triangular solve for U  [C,C,N] (½);  tril(Q̃K̃ᵀ)V, tril(R̃K̃ᵀ)V,
+      tril(R̃B̃ᵀ)U  [C,C,N];  Q̃P₀, R̃P₀  [C,N,N];  K̃ᵀV, B̃ᵀU  [N,C,N]; cumulative decay + 4 rescales (5·C·N),
+      3 masks (3·C²), state add (N²)."""
+    tp = sh.tp
+    h_loc = _cdiv(core.n_state_heads, tp)
+    N = core.state_dk
+    q = ph.q
+    t = b_loc * q
+    c_loc = h_loc * N
+    st_bytes = h_loc * N * N * _fmt(model.state_fmt).bytes + _cdiv(core.conv_channels, tp) * _fmt(model.state_fmt).bytes
+    tok_vec = 38 * c_loc
+    sfu = t * 4 * c_loc
+    ops: list[Op] = []
+    if ph.kind == "prefill" and core.lin_chunk:
+        C = core.lin_chunk
+        nc = _cdiv(q, C)
+        cnt = b_loc * h_loc * nc
+        g = lambda nm, m_, k_, n_, cz=1.0: Op(nm, "attn", li, m=m_, k=k_, n=n_, count=cnt, causal=cz,
+                                              w_fmt="bf16", a_fmt="bf16", act_bytes=cnt * (m_ * k_ + m_ * n_) * 2)
+        ops += [g("rwkv_qb", C, N, C), g("rwkv_qk", C, N, C), g("rwkv_rk", C, N, C), g("rwkv_rb", C, N, C),
+                g("rwkv_ut_solve", C, C, N, 0.5), g("rwkv_qkv", C, C, N), g("rwkv_rkv", C, C, N), g("rwkv_rbu", C, C, N),
+                g("rwkv_qp0", C, N, N), g("rwkv_rp0", C, N, N), g("rwkv_kv", N, C, N), g("rwkv_bu", N, C, N)]
+        vec = t * tok_vec + cnt * (5 * C * N + 3 * C * C + N * N)
+    else:
+        vec = t * (tok_vec + h_loc * 9 * N * N)
+    ops.append(Op("state_update", "state", li, vec=vec, sfu=sfu, state_rw=2 * st_bytes * b_loc, kv_read=0.0))
+    return ops
+
+
 # ------------------------------------------------------------------ attention core
 def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, b_loc: int) -> list[Op]:
     ops: list[Op] = []
@@ -535,6 +579,8 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
     q, tp = ph.q, sh.tp
     if core.kind == "linear" and core.lin == "hyena":
         return _hyena_ops(model, li, core, ph, sh, b_loc)
+    if core.kind == "linear" and core.lin == "rwkv7":
+        return _rwkv7_ops(model, li, core, ph, sh, b_loc)
     if core.kind == "linear":
         h_loc = _cdiv(core.n_state_heads, tp)
         t = b_loc * q
@@ -778,6 +824,8 @@ def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), la
     0.177: ``glue`` adds the GPU-runtime kernels of glue_ops."""
     ops = rank_shares(_rank_ops(model, li, ph, sh, layer), sh,
                       lambda: _rank_ops(model, li, ph, Shard(), layer))
+    if ph.labels and ph.kind == "prefill" and ph.ctx == 0:
+        ops = [replace(o, kv_write=0.0) if o.kv_write else o for o in ops]   # 0.191: one forward, nothing cached
     return ops + glue_ops(ops, li, ph) if glue else ops
 
 
@@ -1061,6 +1109,15 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
     m = b_loc if ph.kind == "prefill" else b_loc * ph.q
     n = _cdiv(model.vocab, sh.tp)
     role = "embed" if model.tie_embeddings else "lm_head"
+    if ph.labels and ph.kind == "prefill":
+        # 0.191 decision readout (StartLux-Decision inference model.py): hidden at the last prompt position @ the
+        # option-letter rows of the output head (index_select, replicated) → softmax over ≤ labels; nothing sampled,
+        # no vocab-wide logits, no logits gather
+        L = ph.labels
+        return [Op("final_norm", "vector", model.n_layers,
+                   vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
+                gemm(model, "label_head", model.n_layers, m, model.hidden, L, role, stream=True),
+                Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
     ops = [Op("final_norm", "vector", model.n_layers,
               vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
            gemm(model, "lm_head", model.n_layers, m, model.hidden, n, role, stream=True),

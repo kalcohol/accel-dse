@@ -26,6 +26,9 @@ from .parallel import ATTN_MODES, EXEC_OVERLAPS, INDEXER_MODES, PP_SPLITS, Layou
 SERVING_MAX = 1 << 24          # 0.61.1: upper bound of serving.batch / prompt / ctx / out_len / microbatches (16.7 M)
 
 
+DECISION_MAX_LABELS = 1024     # 0.191: option tokens read at the last position (StartLux: ≤ 26 letters per row)
+
+
 @dataclass(frozen=True)
 class Serving:
     phase: str = "decode"          # decode | prefill
@@ -69,6 +72,9 @@ class Serving:
     video_cap: bool = field(default=False, metadata={"omit_default": True})
     # 0.175 — seconds of audio per request (models with an audio encoder: Muse Spark, 1920 samples @ 24 kHz per token)
     audio_s: float = field(default=0.0, metadata={"omit_default": True})
+    # 0.191 decision models ("System One"): one forward over prompt + options, logits over ≤ labels option tokens at
+    # the last position; no decode loop.  0 = off.  Needs phase = prefill.  Metric: decisions / s, latency / decision.
+    labels: int = field(default=0, metadata={"omit_default": True})
     # internal: image (and 0.165 video) tokens already added to prompt / ctx by vision.expand_images (never serialised or accepted)
     image_tokens: int = field(default=0, metadata={"internal": True})
 
@@ -102,6 +108,10 @@ class Serving:
         if isinstance(self.audio_s, bool) or not isinstance(self.audio_s, (int, float)) \
                 or not (0.0 <= self.audio_s <= 36000.0):
             raise ValueError("serving.audio_s must be in [0, 36000]")
+        if isinstance(self.labels, bool) or not isinstance(self.labels, int) or not 0 <= self.labels <= DECISION_MAX_LABELS:
+            raise ValueError(f"serving.labels must be an integer in [0, {DECISION_MAX_LABELS}]")
+        if self.labels and self.phase != "prefill":
+            raise ValueError("serving.labels (decision readout) needs serving.phase = prefill: one forward, no decode")
         if not isinstance(self.video_cap, bool):
             raise ValueError("serving.video_cap must be a boolean")
         if max(self.video_w, self.video_h) > 200 * min(self.video_w, self.video_h):

@@ -166,7 +166,17 @@ class Result:
             **({"moe_skew": self.moe_skew} if self.moe_skew != 1.0 else {}),
             **({"vision": {k: v for k, v in self.vision.items() if k != "acts"}} if self.vision else {}),
             **({"host": dict(self.host)} if self.host else {}),
+            **({"decision": self.decision()} if s.serving.labels else {}),
         }
+
+    def decision(self) -> dict:
+        """0.191 decision readout: one forward per question (prefill of prompt + options), no decode loop."""
+        sv = self.scenario.serving
+        dps = sv.batch / self.step if self.step > 0 else 0.0
+        return {"labels": sv.labels, "latency_ms": self.step * 1e3, "decisions_per_s": dps,
+                "decisions_per_s_card": dps / self.scenario.layout.cards, "prompt": sv.prompt,
+                "basis": "每个决策 = 一次前向（prompt + 选项）+ 末位置对 ≤ labels 个选项 token 的 logits（输出头按行取），"
+                         "无解码循环；批内各行即各问题（StartLux-Decision 推理包同一前向内多问题）"}
 
 
 @lru_cache(maxsize=64)
@@ -1290,7 +1300,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
         ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=rskew,
-                   ep_nodes=ep_nodes)
+                   ep_nodes=ep_nodes, labels=sv.labels)
         ctx_cap = sv.prompt
     cp_ring = None
     if lay.cp > 1:
@@ -1307,7 +1317,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             # 0.107: attn_mode = bidir — no mask, every rank's q queries see all S keys (was the causal S²/(2cp):
             # CP silently removed up to half of the bidirectional attention work)
             c_eq = S - q_loc
-        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=rskew, cp=cp, cp_len=S, ep_nodes=ep_nodes)
+        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=rskew, cp=cp, cp_len=S, ep_nodes=ep_nodes,
+                   labels=sv.labels)
         ctx_cap = q_loc
         cp_ring = (cp, lay.tp, _cdiv(sv.batch, mb) * q_loc / lay.dp)   # tokens of this rank's block per step
         lay = Layout(lay.pp, lay.tp, lay.dp * cp, lay.ep, lay.etp, 1)   # internal: CP ranks as attention replicas

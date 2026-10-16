@@ -69,7 +69,38 @@ EXTRA_TAIL = [
     ("muse-spark-open-nvfp4", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4"),   # 0.175 推导 (gated; see release "derived")
     # 0.175: the blog's serve command (NVFP4 target + Inferact DSpark draft, num_speculative_tokens 7)
     ("muse-spark-open-nvfp4-dspark", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4+Inferact/Muse-Spark-Open-DSpark"),
+    # 0.191 decision models ("System One": one forward, letter logits over the listed options; serving.labels).
+    # StartLux Labs, CC BY-NC-4.0, Qwen3.5 fine-tunes, bf16 as released (public config.json + safetensors headers)
+    ("qwen3.5-9b", "Qwen/Qwen3.5-9B"),
+    ("startlux-decision-v1-27b", "startlux-models/StartLux-Decision-v1-27B"),
+    ("startlux-decision-v1-9b", "startlux-models/StartLux-Decision-v1-9B"),
+    ("startlux-decision-v1-4b", "startlux-models/StartLux-Decision-v1-4B"),
+    ("startlux-decision-v1-2b", "startlux-models/StartLux-Decision-v1-2B"),
+    ("startlux-decision-v1-0.8b", "startlux-models/StartLux-Decision-v1-0.8B"),
+    ("startlux-decision-v1-35b-a3b", "startlux-models/StartLux-Decision-v1-35B-A3B"),
+    ("startlux-decision-v1.1-27b-instant", "startlux-models/StartLux-Decision-v1.1-27B-Instant"),
+    ("startlux-decision-v1.1-27b-autothink", "startlux-models/StartLux-Decision-v1.1-27B-AutoThink"),
+    ("startlux-decision-v1.1-9b-instant", "startlux-models/StartLux-Decision-v1.1-9B-Instant"),
+    ("startlux-decision-v1.1-9b-autothink", "startlux-models/StartLux-Decision-v1.1-9B-AutoThink"),
+    ("startlux-decision-v1.1-4b-instant", "startlux-models/StartLux-Decision-v1.1-4B-Instant"),
+    ("startlux-decision-v1.1-4b-autothink", "startlux-models/StartLux-Decision-v1.1-4B-AutoThink"),
+    ("startlux-decision-v1.1-2b-instant", "startlux-models/StartLux-Decision-v1.1-2B-Instant"),
+    ("startlux-decision-v1.1-0.8b-instant", "startlux-models/StartLux-Decision-v1.1-0.8B-Instant"),
+    # 0.191 RWKV-7 G1k (BlinkDL, Apache-2.0, 2026-09-30): rwkv7 linear recurrence, no KV cache
+    ("rwkv7-g1k-13.3b", "RWKV/RWKV7-G1k-13.3B-20260930"),
+    ("rwkv7-g1k-7.2b", "RWKV/RWKV7-G1k-7.2B-20260930"),
+    ("rwkv7-g1k-2.9b", "RWKV/RWKV7-G1k-2.9B-20260930"),
+    ("rwkv7-g1k-1.5b", "RWKV/RWKV7-G1k-1.5B-20260930"),
 ]
+# 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
+# (id, config release, provider key, label, note)
+PROXIES = [
+    ("microsoft-decision-1", "Qwen/Qwen3.5-9B", "microsoft", "Microsoft-Decision-1（架构代理 · Qwen3.5-9B）",
+     "「架构代理」：Microsoft-Decision-1（2026-10-09，闭源）仅公开说明由 Qwen3.5-9B 后训练"
+     "（commandline.microsoft.com/microsoft-decision-1-model-foundry/）→ 按 Qwen3.5-9B 发布配置与 bf16 推断；"
+     "实际部署精度 / 结构改动未公开"),
+]
+DECISION_IDS = {"microsoft-decision-1"}     # + every startlux-decision-* id (decision readout, serving.labels)
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors",
            "NousResearch/": "meta-llama (gated) → public mirror NousResearch/*, same safetensors"}
 
@@ -200,6 +231,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("bfl", "Black Forest Labs（FLUX）", ("black-forest-labs/",)),
     ("stepfun", "阶跃星辰（Step）", ("stepfun-ai/",)), ("xiaomi", "小米（MiMo）", ("XiaomiMiMo/",)),
     ("openbmb", "面壁智能 / OpenBMB（MiniCPM）", ("openbmb/",)), ("robbyant", "Robbyant（LingBot-Video）", ("robbyant/",)),
+    ("startlux", "StartLux Labs（决策模型）", ("startlux-models/",)), ("rwkv", "RWKV（BlinkDL）", ("RWKV/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
@@ -223,6 +255,8 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),
     ("stepfun", "Step-5", ("step-5",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),
     ("openbmb", "MiniCPM-V 4.7", ("minicpm-v-4.7",)), ("robbyant", "LingBot-Video", ("lingbot-video",)),
+    ("startlux", "StartLux-Decision v1.1", ("startlux-decision-v1.1",)), ("startlux", "StartLux-Decision v1", ("startlux-decision-v1-",)),
+    ("microsoft", "Microsoft-Decision", ("microsoft-decision",)), ("rwkv", "RWKV-7 G1k", ("rwkv7-",)),
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.
@@ -282,10 +316,16 @@ def entries() -> list[dict]:
         out.append({"id": i, "hf_id": h, "aliases": al, "builder": b, "workload": wl})
     for i, h in EXTRA_TAIL:
         out.append({"id": i, "hf_id": h, "aliases": (h,)})
+    for i, h, prov, lab, note in PROXIES:
+        out.append({"id": i, "hf_id": h, "aliases": (), "proxy_note": note, "proxy_label": lab, "proxy_provider": prov})
     out = [e for e in out if load_release(e["hf_id"]) is not None]
     for e in out:
-        e["label"] = DOMAIN_LABELS.get(e["id"]) or _repo_name(e["hf_id"])
+        e["label"] = e.get("proxy_label") or DOMAIN_LABELS.get(e["id"]) or _repo_name(e["hf_id"])
         e["provider"], e["provider_label"] = provider_of(e["hf_id"])
+        if e.get("proxy_provider"):
+            e["provider"] = e["proxy_provider"]
+            e["provider_label"] = next(l for k, l, _ in PROVIDERS if k == e["provider"])
+        e["decision"] = e["id"] in DECISION_IDS or e["id"].startswith("startlux-decision")
         e["family_rank"], e["family"] = family_of(e["provider"], e["id"])
         if e.get("builder"):
             e["domain"] = e["workload"].kind
@@ -363,7 +403,12 @@ def get_model(model_id: str) -> ModelSpec:
         raise KeyError(f"unknown model {model_id!r}")
     if e.get("builder"):
         return from_domain_release(e["id"], e["hf_id"], e["builder"], e["workload"])
-    return from_release(e["id"], e["hf_id"])
+    spec = from_release(e["id"], e["hf_id"])
+    if e.get("proxy_note"):
+        from dataclasses import replace as _rp
+        spec = _rp(spec, coverage="proxy", notes=spec.notes + (e["proxy_note"],),
+                   coverage_reasons=spec.coverage_reasons + ("架构代理：按所述基座的公开配置推断",))
+    return spec
 
 
 def provenance(spec: ModelSpec) -> str:

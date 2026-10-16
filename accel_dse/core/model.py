@@ -1316,10 +1316,45 @@ def _attach_muse_dspark(spec: ModelSpec, d: dict) -> ModelSpec:
                                        f"块 {c['block_size']}；目标层 hidden 拼接（模板按均值 + fc 计，同 GEMM 形状）",))
 
 
+def _build_rwkv7(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.191 RWKV-7 "Goose" (arXiv 2503.14456; release modeling_rwkv7.py).  No attention, no KV cache.
+    Time mix: token shift → 6 lerps (r, w, k, v, a, g); receptance / key / value / output C×C; four low-rank chains
+    w (tanh), a (sigmoid), g (sigmoid between), v (value residual, not run on layer 0 although stored); per head
+    (H = C/64) the generalised delta rule on an fp32 64×64 state S ← S·diag(w) + S·(−κ̂)(κ̂·a)ᵀ + v·kᵀ, out = S·r;
+    GroupNorm ln_x, bonus (r·k·r_k)·v, × g.  Channel mix: token shift, squared-ReLU C → 4C → C (2 mats).
+    Per-sequence state per layer: H·64·64 wkv (fp32, config wkv_state_dtype) + two C-wide shift vectors (modelled as
+    conv_channels = 2C, kernel 2 — one stored column each)."""
+    h, L = c["hidden_size"], c["num_hidden_layers"]
+    N = c.get("head_dim") or 64
+    H = c.get("num_heads") or h // N
+    dw, da, dv, dg = c["decay_low_rank_dim"], c["a_low_rank_dim"], c["v_low_rank_dim"], c["gate_low_rank_dim"]
+    layers = []
+    for i in range(L):
+        alin = (Linear("rwkv_r", h, h, "col"), Linear("rwkv_k", h, h, "col"), Linear("rwkv_v", h, h, "col"),
+                Linear("rwkv_w1", h, dw, "rep"), Linear("rwkv_w2", dw, h, "col"),
+                Linear("rwkv_a1", h, da, "rep"), Linear("rwkv_a2", da, h, "col"),
+                Linear("rwkv_g1", h, dg, "rep"), Linear("rwkv_g2", dg, h, "col")) + (
+                () if i == 0 else (Linear("rwkv_v1", h, dv, "rep"), Linear("rwkv_v2", dv, h, "col"))) + (
+                Linear("rwkv_o", h, h, "row"),)
+        core = AttnCore("linear", n_state_heads=H, state_dk=N, state_dv=N, conv_channels=2 * h, conv_kernel=2,
+                        lin="rwkv7", lin_chunk=64)     # release rwkv7_chunked(chunk_size=64)
+        # x_r..x_g (6C), w0 a0 v0 (3C), k_k k_a (2C), r_k (H·N), ln_x w+b (2C), ffn x_k (C), ln1 + ln2 (4C);
+        # layer 0: ln0 (2C) and the stored-but-unused v LoRA (2·C·dv + C)
+        misc = 6 * h + 3 * h + 2 * h + H * N + 2 * h + h + 4 * h + ((2 * h + 2 * h * dv) if i == 0 else 0)
+        ffn, flin = _ffn_dense(h, c["intermediate_size"], gated=False)
+        layers.append(Layer(alin, core, ffn, flin, misc))
+    notes = ["RWKV-7：无 KV 缓存；每层每序列状态 = H×64×64 fp32 WKV + 2 个 C 宽 token-shift 向量（按 fp32 计，"
+             "发布实现为激活 dtype，偏保守 2C×2 B/层）",
+             "解码代价与上下文长度无关（状态大小固定）；prefill 按发布 rwkv7_chunked（chunk 64）的矩阵乘逐项计"]
+    return layers, [], notes, "full"
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
     if mt in ("muse_spark", "muse_spark_text"):
         return _build_muse_spark, "GQA（SWA + full，输出门）latent MoE"
+    if mt == "rwkv7":
+        return _build_rwkv7, "RWKV-7（广义 delta 规则线性循环，无 KV）"
     if mt == "stripedhyena2":
         return _build_hyena, "StripedHyena 2（Hyena SE / MR / LR + MHA）"
     if mt == "mimo_v2":
@@ -1476,7 +1511,17 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             extra = max(0, (rmtp - n_eff * per) // n_eff)
             spec = replace(spec, mtp_layers=spec.mtp_layers[:n_eff], mtp_extra_params=extra)
         if (c.get("model_type") or "").startswith("qwen4_exp"):
-            spec = replace(spec, final_norm_params=0)    # the final hyper_connection_mixer replaces the last norm
+            spec = replace(spec, final_norm_params=0)
+        if (c.get("model_type") or "") == "rwkv7":
+            spec = replace(spec, final_norm_params=2 * h)      # ln_out LayerNorm (weight + bias)
+        if cfg.get("jev_prompt_attention", c.get("jev_prompt_attention")) == "bidirectional":
+            # 0.191 StartLux-Decision v1.1 Instant (model card): in the full-attention layers prompt tokens also attend to
+            # later prompt tokens; linear-attention layers stay causal → the release's full-attention cores non-causal
+            spec = replace(spec, layers=tuple(replace(L, core=replace(L.core, causal=False))
+                                              if L.core is not None and L.core.kind in ("gqa", "mla") else L
+                                              for L in spec.layers),
+                           notes=spec.notes + ("jev_prompt_attention = bidirectional：全注意力层（1/4）prompt 内双向"
+                                               "（发布 config / 模型卡），线性注意力层保持因果",))    # the final hyper_connection_mixer replaces the last norm
         if (c.get("model_type") or "").startswith("deepseek_v41"):
             # Engram tables stay fp8 with an e8m0 scale per 32 (ParallelEngramEmbedding) → 8.25 bits / param stored
             spec = replace(spec, lookup_bits=8 + 8 / 32, engram_ngram=c.get("engram_max_ngram_size") or 0,

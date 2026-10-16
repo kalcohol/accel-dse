@@ -71,7 +71,7 @@ CLOSED = ("gpt-oss-120b", "gpt-oss-20b", "deepseek-v3.2", "glm-5", "glm-5.2", "g
           "qwen3.8-27b", "qwen3.5-397b-a17b", "qwen3-next-80b-a3b", "minimax-text-01", "minimax-m1-80k",
           "glm-5.3-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash",
           "qwen3.8-flash-next")
-PROXY = ()
+PROXY = ("microsoft-decision-1",)   # 0.191 architecture proxy (closed; stated Qwen3.5-9B base)
 PROTEIN_PARTIAL = ("openfold", "alphafold2", "boltz-1", "protenix")
 # 0.115 image DiTs were DiT-only (partial); 0.116 adds their text encoder + VAE pipelines → full
 IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")
