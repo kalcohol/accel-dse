@@ -376,10 +376,10 @@ def candidate_variant(base: str = "catalog_kernel") -> str:
 #       max_num_batched_tokens 16384 and max_num_seqs 1024 on H100 / MI300X (vllm/engine/arg_utils.py,
 #       get_batch_defaults, UsageContext.LLM_CLASS)
 SOURCE_ESTIMATOR = {
-    "trtllm-0.17": dict(kind="cb", chunk=8192, max_seqs=None),
-    "trtllm-0.21": dict(kind="cb", chunk=8192, max_seqs=None),
-    "trtllm-0.21-b200": dict(kind="cb", chunk=8192, max_seqs=None),
-    "trtllm-1.2.0": dict(kind="cb", chunk=8192, max_seqs=None),
+    "trtllm-0.17": dict(kind="cb", chunk=8192, max_seqs=2048),   # 0.181: max_batch_size default 2048 binds once prompts pack
+    "trtllm-0.21": dict(kind="cb", chunk=8192, max_seqs=2048),   # 0.181: max_batch_size default 2048 binds once prompts pack
+    "trtllm-0.21-b200": dict(kind="cb", chunk=8192, max_seqs=2048),   # 0.181: max_batch_size default 2048 binds once prompts pack
+    "trtllm-1.2.0": dict(kind="cb", chunk=8192, max_seqs=2048),   # 0.181: max_batch_size default 2048 binds once prompts pack
     "rocm-vllm-0.11.2": dict(kind="cb", chunk=131072, max_seqs=1024),   # 0.179: README sets --max-num-batched-tokens 131072
 }
 
@@ -628,6 +628,10 @@ def _fused(dec, pre1, f: float, rr: float) -> float:
     return _fused_step(dec, pre1, f, rr)
 
 
+PACK_DEFAULT = True    # 0.181: pack ⌊C/isl⌋ prompts per prefill iteration (False = the ≤ 0.180 one-prompt rule)
+PACK_PROMPTS: dict = {}
+
+
 def _cb_at(r: dict, b: int, eff: str, C: int = CB_CHUNK):
     """Fluid in-flight batching at max load with running batch b: each request needs n chunk iterations (C tokens)
     and osl decode steps; a share x = n·b/osl of iterations carries a chunk (x ≤ 1), else prefill limits the batch to
@@ -636,19 +640,23 @@ def _cb_at(r: dict, b: int, eff: str, C: int = CB_CHUNK):
     isl, osl = r["isl"], max(1, r["osl"])
     n, f, rr = _chunk_plan(isl, 0, C)
     lf = max(0.0, isl - (n - 1) * C) / isl
-    pre1 = evaluate(scenario(r, eff, phase="prefill", batch=1, prompt=isl, out_len=osl), _spec(r["model"], True))
+    # 0.181: the chunk budget C is per iteration across requests (TRT-LLM max_num_tokens / vLLM max_num_batched_tokens:
+    # "maximum number of batched input tokens … in each batch"), so q = ⌊C / isl⌋ short prompts share one prefill
+    # iteration; ≤ 0.180 packed one prompt per iteration, capping the running batch at osl for isl ≪ C (MODEL §128)
+    q = max(1, C // isl) if PACK_PROMPTS.get(eff, PACK_DEFAULT) else 1
+    pre1 = evaluate(scenario(r, eff, phase="prefill", batch=q, prompt=isl, out_len=osl), _spec(r["model"], True))
 
     def at(k):
         dec = evaluate(scenario(r, eff, phase="decode", batch=k, ctx=isl + osl // 2, out_len=osl), _spec(r["model"], True))
         full = evaluate(scenario(r, eff, phase="decode", batch=k, ctx=isl + osl, out_len=osl), _spec(r["model"], True))
         t1 = ((n - 1) * _fused(dec, pre1, f, rr) + _fused(dec, pre1, lf, rr)) / n
         return dec, t1, full.fits and pre1.fits
-    x = n * b / osl
+    x = n * b / (osl * q)
     if x <= 1:
         dec, t1, fits = at(b)
         t = (1 - x) * dec.step + x * t1
         return b / t, fits
-    k = max(1, int(osl / n))
+    k = max(1, int(osl * q / n))
     dec, t1, fits = at(k)
     return k / t1, fits
 
@@ -656,6 +664,8 @@ def _cb_at(r: dict, b: int, eff: str, C: int = CB_CHUNK):
 def predict_cb(r: dict, eff: str = DEFAULT, max_seqs: int | None = None) -> dict:
     """max_tok_s_total (and 0.91 max_tok_s_gpu, ÷ cards) rows under the continuous-batching proxy: best power-of-two running batch that fits."""
     best = None
+    if max_seqs is None:                      # 0.181: the source's engine cap (SOURCE_ESTIMATOR) unless given
+        max_seqs = r.get("max_seqs") or SOURCE_ESTIMATOR.get(r.get("src"), {}).get("max_seqs")
     for k in range(0, 14):
         if max_seqs and 2 ** k > max_seqs:    # 0.105: the engine's running-sequence cap
             break

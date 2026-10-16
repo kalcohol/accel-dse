@@ -3,6 +3,16 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.181.0] — Continuous batching packs short prompts per prefill iteration; per-row TTFT / Mixtral residuals
+
+- **Packing.** `_cb_at` packs ⌊C / isl⌋ prompts per prefill iteration (TRT-LLM `max_num_tokens` packs tokens from different sequences, 来源). ≤ 0.180 put one prompt per iteration, which capped the running batch at osl.
+- **Running cap.** `predict_cb` now applies the source's engine cap by default (`SOURCE_ESTIMATOR`); TRT-LLM changes from none to 2048 (max_batch_size default). `PACK_PROMPTS[variant] = False` restores the old rule.
+- **Default old → new** (speed ratio): v1 max-load 0.92 / 19 % → 0.99 / 21 %, Mixtral TP8 1.12 / 32 % → 1.29 / 30 %, B200 1.01 / 14 % → 1.06 / 17 %, MI300X max-load 1.76 / 76 % → 1.73 / 73 %. Other groups unchanged.
+- **Per-row diagnosis** (MODEL §128).
+  - v1 TTFT error scales with TP: all-reduce at prefill message sizes explains most of it, but only multi-node NCCL tables were found, so it is documented, not applied.
+  - The Mixtral residual is uniform, about 1.24–1.36 per GPU; documented.
+- New `test_core_181`; `ext_validation.json` regenerated.
+
 ## [0.180.0] — MI300X max-load: tokens/s definition settled by ratio test; host and attention mechanisms bounded
 
 - vLLM 0.11.2 `benchmarks/throughput.py` prints total and output tokens/s (JSON `tokens_per_second` = total); the README column is unspecified.

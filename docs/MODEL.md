@@ -4191,3 +4191,78 @@ the ≈ 120 ms gap through attention alone would need it to run about 7× slower
 reserve for the 131072-token profiling pass is unpublished) and absolute ROCm attention-kernel throughput.
 
 **Re-score:** identical to 0.179 for every group. No default change.
+
+## §128 Per-row residuals for v1 TTFT and Mixtral TP8; packing prompts into prefill iterations (0.181)
+
+**Mixtral TP8, per row** (TRT-LLM 0.17, continuous-batching proxy, predicted / measured).
+
+The ≤ 0.180 proxy put one prompt per chunk iteration, so a short prompt (isl ≪ chunk budget C) capped the running batch
+at osl. The 128/128 rows therefore ran at batch 128 and came out 0.39–0.62, the only too-slow rows, which made the group
+spread look larger than it was.
+
+TensorRT-LLM defines the budget across requests:
+- "`max_num_tokens` defines the maximum number of batched input tokens after padding is removed in each batch … the
+  tokens from different sequences are packed together" (docs/source/features/paged-attention-ifb-scheduler.md, 来源).
+
+**Mechanism.** `_cb_at` now packs q = ⌊C / isl⌋ prompts per prefill iteration (prefill evaluated at batch q), so each
+request needs 1/q prefill iterations. Prompts longer than C are unchanged. With packing, the running-sequence cap binds:
+`predict_cb` now takes the source's engine cap by default (`SOURCE_ESTIMATOR`). For TRT-LLM that is max_batch_size 2048
+(the build default, previously recorded as "not binding" 假设; it now binds at 128/128). `PACK_PROMPTS[variant] = False`
+restores the ≤ 0.180 rule.
+
+| row | old | new |
+|---|---|---|
+| H200 Mixtral 128/128 | 0.45 | 1.32 |
+| H100 Mixtral 128/128 | 0.39 | 1.37 |
+| A100 Mixtral 128/128 | 0.62 | 1.48 |
+
+After the fix the Mixtral residual is uniformly optimistic (gmean per GPU: H200 1.24, H100 1.28, A100 1.36). It does not
+scale with input length (128 → 20000) or output length, which points to a per-token decode-step factor rather than
+prefill.
+
+| mechanism | source | why not applied |
+|---|---|---|
+| expert imbalance | — | TP8 shards every expert over all ranks: no rank-level imbalance |
+| grouped-GEMM efficiency | no sourced figure for TRT-LLM 0.17 Mixtral MoE kernels by M | — |
+
+Documented, not applied.
+
+**v1 TTFT, per row** (speed ratio measured / predicted).
+
+| slice | ratio |
+|---|---|
+| TP1 7B, isl 2048 | 0.91–1.13 (≈ right) |
+| TP1 7B, isl 128 | 1.26–1.40 |
+| TP8 70B, isl 128 | 1.47–1.67 |
+| TP8 70B, isl 2048 | 1.17–1.51 |
+| A100-40GB 70B, isl 512 (Databricks 2023) | 1.64–1.93 |
+
+The error scales with **TP** and is largest at short prompts. Example, H100 70B TP8 isl 2048: measured 84.4 ms against
+56.0 modelled. The model's 160 all-reduces of 33.5 MB take 20.9 ms; NCCL busbw ≈ 235–240 GB/s at 32 MiB would give
+≈ 43 ms, about +22 ms, most of the gap.
+
+The only 32/64 MiB H100 tables found are multi-node runs:
+- nccl-tests issue #309 (2 × HGX H100, NCCL 2.26);
+- crusoecloud/crusoe-ml-rke2 (2 nodes).
+
+No single-node table was found. TRT-LLM 0.8 can also use its own custom all-reduce plugin rather than NCCL, depending on
+build flags the rows do not state. So the all-reduce-at-prefill-message-size mechanism is **documented, not applied**,
+until a single-node NCCL (or TRT-LLM custom all-reduce) table at the TRT-LLM 0.8 software level is found. The short-prompt
+residual on TP1 (≈ 1.3 at isl 128) is the §122 framework residual.
+
+**Re-score** (speed ratio, §124; gmean / mean abs error):
+
+| group | 0.180 | 0.181 |
+|---|---|---|
+| v1 static | 1.15 / 25 % | 1.15 / 25 % |
+| v1 TTFT | 1.31 / 33 % | 1.31 / 33 % |
+| v1 max-load | 0.92 / 19 % | 0.99 / 21 % |
+| MoE large-EP | 0.96 / 7 % | 0.96 / 7 % |
+| Mixtral TP8 | 1.12 / 32 % | 1.29 / 30 % |
+| MI300X lat | 1.12 / 22 % | 1.12 / 22 % |
+| MI300X max-load | 1.76 / 76 % | 1.73 / 73 % |
+| B200 NVFP4 | 1.01 / 14 % | 1.06 / 17 % |
+
+The Mixtral gmean moves away from 1 because the too-slow 128/128 rows no longer offset the too-fast ones; its error falls
+32 → 30 %. v1 max-load (19 → 21 %) and B200 (14 → 17 %) get slightly worse for the same reason: rows where the one-prompt
+cap had hidden optimism. This is a mechanism-justified default change.
