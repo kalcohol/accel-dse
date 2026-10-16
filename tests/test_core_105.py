@@ -9,7 +9,7 @@ def test_every_max_source_has_a_documented_estimator():
                 e = X.estimator(r)
                 assert e["kind"] == "cb", r["src"]
     assert X.estimator({"src": "unknown"})["kind"] == "static"
-    assert X.SOURCE_ESTIMATOR["rocm-vllm-0.11.2"] == dict(kind="cb", chunk=16384, max_seqs=1024)
+    assert X.SOURCE_ESTIMATOR["rocm-vllm-0.11.2"] == dict(kind="cb", chunk=131072, max_seqs=1024)   # 0.179: README --max-num-batched-tokens
 
 
 def test_est_variant_uses_cb_and_cap():

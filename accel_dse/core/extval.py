@@ -239,8 +239,13 @@ def predict(r: dict, eff: str = DEFAULT) -> dict:
     if m in ("max_tok_s_total", "max_tok_s_gpu") and VARIANTS.get(eff, {}).get("est"):
         est = estimator(r)                 # 0.105: per-source batching estimator (methodology, not fitted)
         if est["kind"] == "cb":
-            best = predict_cb({**r, "cb_chunk": est["chunk"]}, eff, max_seqs=est["max_seqs"])
+            best = predict_cb({**r, "cb_chunk": est["chunk"]}, eff, max_seqs=r.get("max_seqs") or est["max_seqs"])
             return best                     # predict_cb already divides max_tok_s_gpu by the cards
+    if m == "max_tok_s_total" and r.get("max_seqs") and r.get("num_prompts") == r["max_seqs"]:
+        # 0.179: the source runs exactly one wave — num_prompts = max_num_seqs (ROCm vLLM README throughput table), so
+        # the running batch is that number, not the best power of two (MODEL §126)
+        v, fits, det = _static(r, r["max_seqs"], eff, inflight=True)
+        return {"pred": v, "fits": fits, "batch": r["max_seqs"], **det}
     if m == "max_tok_s_total":
         best = None
         for k in range(0, 14):
@@ -375,7 +380,7 @@ SOURCE_ESTIMATOR = {
     "trtllm-0.21": dict(kind="cb", chunk=8192, max_seqs=None),
     "trtllm-0.21-b200": dict(kind="cb", chunk=8192, max_seqs=None),
     "trtllm-1.2.0": dict(kind="cb", chunk=8192, max_seqs=None),
-    "rocm-vllm-0.11.2": dict(kind="cb", chunk=16384, max_seqs=1024),
+    "rocm-vllm-0.11.2": dict(kind="cb", chunk=131072, max_seqs=1024),   # 0.179: README sets --max-num-batched-tokens 131072
 }
 
 
@@ -390,12 +395,15 @@ def estimator(r: dict) -> dict:
 #   Hopper bf16: cuBLAS ≈ 744 TFLOPS at 8192³ (same repo: a CuTe kernel at 728.8 = 98 % of cuBLAS) / 989.5 → 0.752
 #   B200 bf16: cuBLAS 1551 TFLOPS at 8192³ (paulwillchan.com, outperforming-cublas-b200) / 2250 → 0.689
 #   B200 fp4: cuBLASLt via cuDNN 6220 TFLOPS at 8192³ (flashinfer-ai/flashinfer#1732) / 9000 → 0.691
-# Hopper fp8 stays HOPPER_FP8_CEIL (DeepGEMM).  No public B200 fp8 / MI300X figure was found: those stay at peak.
+# Hopper fp8 stays HOPPER_FP8_CEIL (DeepGEMM).  No public B200 fp8 figure was found: that stays at peak.  MI300X: 0.179.
 _HB = 744.0 / 989.5
 GEMM_CEILING = {
     "A100": (("gemm:fp16", 263.4 / 312), ("gemm:bf16", 263.4 / 312)),
     "H100": (("gemm:bf16", _HB), ("gemm:fp16", _HB)), "H200": (("gemm:bf16", _HB), ("gemm:fp16", _HB)),
     "H800": (("gemm:bf16", _HB), ("gemm:fp16", _HB)),
+    # 0.179 「来源」 AMD ROCm blog "Measuring Max-Achievable FLOPs – Part 2" (MI300X 750 W, ROCm 6.3.0, hipBLASLt):
+    # FP8 1223.6 TFLOPS (M=4096, N=3648, K=32896), BF16 708, FP16 654 (M=4096, N=4864, K=32896) / datasheet peaks
+    "MI300X": (("gemm:fp8", 1223.6 / 2614.9), ("gemm:bf16", 708 / 1307.4), ("gemm:fp16", 654 / 1307.4)),
     "B200": (("gemm:bf16", 1551 / 2250), ("gemm:fp16", 1551 / 2250), ("gemm:nvfp4", 6220 / 9000),
              ("gemm:mxfp4", 6220 / 9000)),
 }

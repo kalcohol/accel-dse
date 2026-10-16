@@ -3,6 +3,16 @@
 本项目的重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（1.0 之前次版本号可能包含不兼容变更）。
 0.31.0 及更早版本以 `npu-inference-dse`（包名 `npu_dse`）发布。
 
+## [0.179.0] — MI300X max-load: one-wave batch + AMD MAF GEMM ceilings; ROCm source re-verified
+
+- ROCm per-kernel source (MODEL §125) re-verified live, verbatim. The exact URL is now recorded; MI300X decode is kept.
+- MI300X max-load rows now carry the README's Num Prompts = Max Num Seqs (3200 / 1500 / 2000 / 1500), and `predict` runs exactly that one-wave batch (old: best power of two, 4096 / 2048).
+- The `rocm-vllm-0.11.2` estimator's chunk changed 16384 → 131072 (the README flag), and its cap now comes from the row.
+- `GEMM_CEILING["MI300X"]` changed from peak (no figure) to the AMD MAF numbers: FP8 1223.6 / 2614.9 = 0.468, BF16 708 / 1307.4 = 0.542, FP16 654 / 1307.4 = 0.500.
+- Default old → new (speed ratio): MI300X max-load 2.02 / 102 % → 1.76 / 76 %, MI300X lat 1.13 / 23 % → 1.12 / 22 %. Other groups unchanged.
+- The residual (1.7–2.0×) is documented in MODEL §126. HBM (4.3 TB/s measured), RCCL (295–318 GB/s busbw) and KV capacity do not explain it.
+- `ext_validation.json` regenerated; `test_core_105` updated; new `test_core_179`.
+
 ## [0.178.0] — Default = per-layer mechanism (per-kernel cost + glue); ROCm decode sourced; lump only as fallback
 
 - **Default change** (mechanism-justified; MODEL §125).

@@ -4054,7 +4054,7 @@ the same AMD treatment. `catalog_kernel` (no fixed cost) is still the pinned stu
 | AMD decode | per kernel `ROCM_KERNEL_US` = 5.8 ms / 1200 + 0.04 ms / 1970 = 4.85 µs, glue kernels | 来源 / 推导, below |
 | AMD prefill | flat lump 62.3 µs per layer (`fallback_us`) | **假设** fallback: no public ROCm eager trace |
 
-**ROCm source.** ryanzhou/deepseek-v4-flash-mi300x, `DECODE-OPTIMIZATION-20260815.md`: MI300X, vLLM ROCm + AITER,
+**ROCm source.** <https://github.com/ryanzhou/deepseek-v4-flash-mi300x/blob/main/DECODE-OPTIMIZATION-20260815.md> (raw: <https://raw.githubusercontent.com/ryanzhou/deepseek-v4-flash-mi300x/main/DECODE-OPTIMIZATION-20260815.md>; re-verified live 2026-10-16 in 0.179; the "1,970 kernels with only 0.04 ms intra-graph idle" sentence is on line 43–44 and "~1,200 launch-floor kernels (quant 430, …) — ~5.8 ms" on lines 191–193, under "Remaining headroom"): MI300X, vLLM ROCm + AITER,
 DeepSeek V4 Flash, HIP-graph decode at M = 1.
 - "1,970 kernels with only 0.04 ms intra-graph idle" → gap 0.020 µs per kernel.
 - "~1,200 launch-floor kernels … ~5.8 ms" → floor 4.83 µs per kernel.
@@ -4080,3 +4080,61 @@ decode.
 The new default is better or equal on 7 of 8 groups and loses 1 point on v1 static (noise, per the decision). MI300X
 latency improves most: 40 % → 23 %, from the sourced ROCm per-kernel cost. `data/ext_validation.json` is
 regenerated.
+
+## §126 MI300X max-load: sourced mechanisms and the remaining residual (0.179)
+
+**Source.** The four MI300X max-load rows come from the ROCm vLLM dev-docker README (pinned commit
+`2026250877c4…`, vLLM 0.11.2 / ROCm 7.0.0, amd/Llama-3.1-70B-Instruct-FP8-KV). Re-read in 0.179.
+
+**Fixes applied** (both are sourced and change the default):
+
+1. **One wave at max_num_seqs.** The README table gives Num Prompts = Max Num Seqs per row: 3200 / 1500 / 2000 / 1500.
+   - With `--max-num-batched-tokens 131072`, the run admits every prompt at once and decodes them together.
+   - Rows now carry `max_seqs` / `num_prompts`. `predict` evaluates exactly that batch instead of the best power of two
+     (old: 4096 / 2048, above the source's cap).
+   - The `est` estimator's chunk changed 16384 → 131072 (the README's flag), and its cap now comes from the row.
+2. **MI300X GEMM ceiling** (`GEMM_CEILING["MI300X"]`). Old: peak, because no figure had been found. New: the AMD MAF
+   numbers from <https://rocm.blogs.amd.com/software-tools-optimization/measuring-max-achievable-flops-part2/README.html>
+   (MI300X 750 W, ROCm 6.3, hipBLASLt):
+
+   | format | measured | / peak | ceiling |
+   |---|---|---|---|
+   | FP8 | 1223.6 TFLOPS | 2614.9 | 0.468 |
+   | BF16 | 708 | 1307.4 | 0.542 |
+   | FP16 | 654 | 1307.4 | 0.500 |
+
+   The cause is clock throttling to about 1.2 GHz under GEMM load, not the library. The blog's own table lists FP8 at
+   1273 TFLOPS; the footnote measurement (1223.6) is used.
+
+**Checked, not the cause** (all 来源):
+
+| mechanism | source | measured | model | verdict |
+|---|---|---|---|---|
+| HBM bandwidth | BabelStream, arXiv 2510.27583 | 4.3 TB/s (81 % of 5.3) | ≈ 3.7 TB/s effective at the decode point | model already lower; can't explain an optimistic model |
+| RCCL all-reduce | AMD rocm.blogs `mi300x-rccl-xgmi` (busbw 295 GB/s at 128 MB, 318 GB/s at 16 GB); AMD acceptance ≥ 304 GB/s | 295–318 GB/s busbw | ≈ 256 GB/s effective | model already lower |
+| KV capacity | — | 3200 × 2176 tokens × 20 KiB/GPU (fp8 KV, 1 KV head per GPU at TP8) = 143 GB per GPU | — | fits 0.9 × 192 GB minus weights in the model |
+
+The KV check may be marginal in reality: vLLM reserves activation memory for the 131072-token profiling pass, so
+preemption is possible. That reserve has no public number, so it is not modelled (假设-only).
+
+**Tokens/s definition.** `vllm bench throughput` prints both total and output tokens/s, and the README does not say
+which one the table uses. The model predicts output tokens/s; if the table is total tokens/s, the residual grows by
+(isl + osl) / osl, i.e. 1.06–2.0×.
+
+**Score** (speed ratio predicted / measured, §124; gmean / mean abs error):
+
+| group | 0.178 | 0.179 |
+|---|---|---|
+| MI300X max-load | 2.02 / 102 % | 1.76 / 76 % |
+| MI300X lat | 1.13 / 23 % | 1.12 / 22 % |
+
+All other groups are unchanged.
+
+**Residual.** The model is still 1.67–2.00× optimistic per row: at 128/2048 it implies about 236 ms per decode step at
+batch 3200, against about 113 ms modelled. No sourced mechanism was found for the rest. Candidates for when a source
+appears:
+- a per-step vLLM V1 scheduler/CPU cost at thousands of sequences;
+- ROCm paged-attention efficiency with fp8 KV at large batch;
+- KV preemption.
+
+This remains documented as a residual, not fitted.

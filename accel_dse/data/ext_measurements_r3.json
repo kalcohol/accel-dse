@@ -14,7 +14,9 @@
    "osl": 2048,
    "value": 13562.4,
    "cb_chunk": 131072,
-   "note": "Throughput measurements (vllm bench throughput, max-num-batched-tokens 131072); vLLM 0.11.2 / ROCm 7.0.0, amd/Llama-3.1-70B-Instruct-FP8-KV (FP8 weights + KV); modelled with llama-3.3-70b (identical architecture)"
+   "note": "Throughput measurements (vllm bench throughput, max-num-batched-tokens 131072); vLLM 0.11.2 / ROCm 7.0.0, amd/Llama-3.1-70B-Instruct-FP8-KV (FP8 weights + KV); modelled with llama-3.3-70b (identical architecture); 0.179: Num Prompts = Max Num Seqs (README table columns) — one wave of max_seqs requests",
+   "max_seqs": 3200,
+   "num_prompts": 3200
   },
   {
    "id": "amd-mi300x-70b-tput-128-4096",
@@ -29,7 +31,9 @@
    "osl": 4096,
    "value": 11800.9,
    "cb_chunk": 131072,
-   "note": "Throughput measurements (vllm bench throughput, max-num-batched-tokens 131072); vLLM 0.11.2 / ROCm 7.0.0, amd/Llama-3.1-70B-Instruct-FP8-KV (FP8 weights + KV); modelled with llama-3.3-70b (identical architecture)"
+   "note": "Throughput measurements (vllm bench throughput, max-num-batched-tokens 131072); vLLM 0.11.2 / ROCm 7.0.0, amd/Llama-3.1-70B-Instruct-FP8-KV (FP8 weights + KV); modelled with llama-3.3-70b (identical architecture); 0.179: Num Prompts = Max Num Seqs (README table columns) — one wave of max_seqs requests",
+   "max_seqs": 1500,
+   "num_prompts": 1500
   },
   {
    "id": "amd-mi300x-70b-tput-500-2000",
@@ -44,7 +48,9 @@
    "osl": 2000,
    "value": 11249.5,
    "cb_chunk": 131072,
-   "note": "Throughput measurements (vllm bench throughput, max-num-batched-tokens 131072); vLLM 0.11.2 / ROCm 7.0.0, amd/Llama-3.1-70B-Instruct-FP8-KV (FP8 weights + KV); modelled with llama-3.3-70b (identical architecture)"
+   "note": "Throughput measurements (vllm bench throughput, max-num-batched-tokens 131072); vLLM 0.11.2 / ROCm 7.0.0, amd/Llama-3.1-70B-Instruct-FP8-KV (FP8 weights + KV); modelled with llama-3.3-70b (identical architecture); 0.179: Num Prompts = Max Num Seqs (README table columns) — one wave of max_seqs requests",
+   "max_seqs": 2000,
+   "num_prompts": 2000
   },
   {
    "id": "amd-mi300x-70b-tput-2048-2048",
@@ -59,7 +65,9 @@
    "osl": 2048,
    "value": 7753.1,
    "cb_chunk": 131072,
-   "note": "Throughput measurements (vllm bench throughput, max-num-batched-tokens 131072); vLLM 0.11.2 / ROCm 7.0.0, amd/Llama-3.1-70B-Instruct-FP8-KV (FP8 weights + KV); modelled with llama-3.3-70b (identical architecture)"
+   "note": "Throughput measurements (vllm bench throughput, max-num-batched-tokens 131072); vLLM 0.11.2 / ROCm 7.0.0, amd/Llama-3.1-70B-Instruct-FP8-KV (FP8 weights + KV); modelled with llama-3.3-70b (identical architecture); 0.179: Num Prompts = Max Num Seqs (README table columns) — one wave of max_seqs requests",
+   "max_seqs": 1500,
+   "num_prompts": 1500
   },
   {
    "id": "amd-mi300x-70b-lat-128-b1",
