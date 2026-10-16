@@ -170,6 +170,31 @@ class Result:
             **({"decision": self.decision()} if s.serving.labels else {}),
         }
 
+    def balance(self) -> dict:
+        """0.205: machine balance vs workload arithmetic intensity.  Chip: bf16 peak FLOP/s ÷ DRAM bytes/s (raw, and
+        at the scenario's effective bandwidth).  Workload: FLOPs ÷ DRAM bytes of the heaviest stage's step (what the
+        roofline sees).  Warn when they differ by more than BALANCE_WARN× and say which side idles."""
+        from .hardware import System
+        sysm = System(self.scenario.chip, self.scenario.mem_id, self.scenario.mem_eff)
+        peak = self.scenario.chip.peak_tflops_bf16 * 1e12
+        raw, eff = sysm.mem.raw_GBps * 1e9, sysm.dram_GBps * 1e9
+        t = self.stages[self.heaviest_stage].time
+        ai = t.flops / t.dram_bytes if t.dram_bytes > 0 else float("inf")
+        bal = peak / eff if eff > 0 else float("inf")
+        r = bal / ai if ai > 0 else float("inf")
+        warn = None
+        if r > BALANCE_WARN:
+            warn = (f"算力闲置 compute idle：芯片 {bal:.0f} FLOP/B（有效带宽）比负载算术强度 {ai:.1f} FLOP/B 高 {r:.0f}×，"
+                    f"步受 DRAM 限制，多余算力浪费 · chip balance {r:.0f}× the workload's intensity — compute is wasted"
+                    + ("（小 batch decode 的常态 · expected for small-batch decode）" if self.scenario.serving.phase == "decode" else ""))
+        elif r < 1 / BALANCE_WARN:
+            warn = (f"带宽闲置 bandwidth idle：负载算术强度 {ai:.0f} FLOP/B 比芯片 {bal:.0f} FLOP/B 高 {1 / r:.0f}×，"
+                    f"步受算力限制，DRAM 带宽浪费 · workload intensity {1 / r:.0f}× the chip balance — bandwidth is wasted")
+        return {"chip_flop_per_byte_raw": peak / raw if raw > 0 else None, "chip_flop_per_byte": bal,
+                "workload_flop_per_byte": ai, "ratio": r, "threshold": BALANCE_WARN,
+                "idle": "compute" if r > BALANCE_WARN else "bandwidth" if r < 1 / BALANCE_WARN else None, "warning": warn,
+                "peak_tflops_bf16": peak / 1e12, "dram_GBps_raw": raw / 1e9, "dram_GBps_eff": eff / 1e9}
+
     def walls(self) -> dict:
         """0.203: which wall one step hits — the heaviest stage's time split into compute / DRAM / collective
         (bandwidth, latency) / dispatch / fixed overhead.  0.204: "fixed_overhead" (was "static") = the fixed
@@ -504,6 +529,8 @@ def _tail_ops(model, has_head, ph, sh, spec_k, glue: bool = False):
                 ops += mtp_ops(model, dph, sh, depth=d)
     return ops
 
+
+BALANCE_WARN = 10.0    # 0.205: machine balance vs arithmetic intensity warning ratio 「假设」
 
 _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "link_bw", "sync", "link_bytes",
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",

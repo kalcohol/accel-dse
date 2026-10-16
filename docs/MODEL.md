@@ -4665,3 +4665,10 @@ Sizing energy (why this item: SRAM / dequant shrinks can hold speed while moving
   - 100T: 15.675 GB / 191.2 GB/s = 82.0 ms; 1P: 15.474 GB = 81.0 ms.
   - Compute is hidden: an M=1 GEMV on a 56-row output-stationary array uses 1/56 of the rows, so 8.9 ms raw vs 82 ms DRAM.
   - 1P is only 1.3 % faster because both presets use the same memory default; the only difference is 192 MiB more SRAM-resident weight. That is the correct DRAM-bound result.
+
+
+## §152 NPU preset memory pairing; machine balance (0.205)
+Machine balance is peak bf16 FLOPS ÷ DRAM bytes/s. Public chips sit at about 200–560 FLOP/B: H100 295, B200 281, MI300X 247, TPU v5e 229, v6e 560, Gaudi 3 496/453 (来源), Ascend 910B/C 200–250 (二手). With 4×64-bit LPDDR5X (273 GB/s), 1P (≈1.05 PF) sat at 3840 FLOP/B and was DRAM-bound at batch 1, so about 94 % of its compute was idle.
+- 1P defaults to 4 HBM3E stacks at 9.2 Gb/s (4.71 TB/s, 223 FLOP/B; 推导: the B200/MI300X-class ratio for this compute). H100-like defaults to the H100 memory. 100T keeps LPDDR (368 FLOP/B, in class).
+- The defaults are in `PRESET_MEM`, keyed by chip name; the legacy `*-lp4x64` presets keep the old pairing.
+- `Result.balance()` compares the chip's FLOP/B at effective bandwidth with the workload intensity (the heaviest stage's flops ÷ DRAM bytes). Beyond a 10× gap (假设), the side named idle is the wasted one. Decode at small batch (≈1 FLOP/B) always warns that compute is idle; this is a property of the workload, not a model defect.

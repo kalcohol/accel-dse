@@ -28,8 +28,8 @@ def test_npu_preset_tpot_back_of_envelope():
     # LPDDR5X 4 × 64 bit @ 8533 MT/s = 273.1 GB/s × mem_eff 0.7; bytes = streamed bf16 weights (8.19 B − 0.62 B
     # embedding rows, looked up not streamed) − SRAM-resident share + KV read (4096 ctx × 36 layers × 8 kv × 128 × 2 × 2 B)
     bw = 4 * 64 / 8 * 8533e6 * 0.7
-    for n in ("100T", "1P"):
-        r = evaluate(Scenario(chip=CHIPS[n]))
+    for n in ("100T", "1P"):     # 0.205: 1P defaults to HBM3E; pin the ≤ 0.204 LPDDR pairing this check is about
+        r = evaluate(Scenario(chip=CHIPS[n], mem_id="lpddr5x_4x64_8533_16g"))
         st = r.stages[0]
         kv = 4097 * 36 * 8 * 128 * 2 * 2      # ctx 4096 + the new token
         assert abs(st.dram["kv_read"] - kv) / kv < 1e-9

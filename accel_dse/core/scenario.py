@@ -437,7 +437,7 @@ class PDConfig:
 class Scenario:
     model: str = "qwen3-8b"
     chip: Chip = CHIPS["100T"]
-    mem_id: str = "lpddr5x_4x64_8533_16g"
+    mem_id: str | None = None      # 0.205: None = the chip preset's default memory (hardware.PRESET_MEM, else lpddr5x_4x64_8533_16g)
     mem_eff: float | None = None
     # 0.108 (opt-in): DRAM efficiency of the KV-cache read / write streams (long sequential page reads of the decode
     # attention kernels); None = mem_eff for every byte (bit-identical)
@@ -492,6 +492,9 @@ class Scenario:
         object.__setattr__(self, "chip", _resolve_chip(self.chip, "chip"))
         if not isinstance(self.chip, Chip):
             raise ValueError("chip must be a chip preset name or a chip object")
+        if self.mem_id is None:
+            from .hardware import default_mem
+            object.__setattr__(self, "mem_id", default_mem(self.chip))
         if self.mapping not in ORGS:
             raise ValueError(f"mapping must be one of {ORGS}")
         if self.pp_split not in PP_SPLITS:

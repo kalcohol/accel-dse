@@ -693,6 +693,13 @@ function renderEval(r) {
       + (vv.cap ? ' · 逐帧上限' : '') + (vv.s ? ` · ${num(vv.tflop)} TFLOP · 每卡 ${vv.slices_per_card} 片` : ' · decode 不跑编码器，视频 token 在 KV 中')
       + (v.images ? '' : ` · ${v.label} 权重 ${num(v.weights_GB)} GB 在首级`)));
   }
+  if (r.balance) {     // 0.205: machine balance vs workload arithmetic intensity
+    const b = r.balance;
+    k.push(kpi('机器平衡 · machine balance', `${num(b.chip_flop_per_byte)} FLOP/B`,
+      `负载 workload ${num(b.workload_flop_per_byte)} FLOP/B · 比值 ratio ${num(b.ratio)}× · 原始带宽 raw ${num(b.chip_flop_per_byte_raw)} FLOP/B`
+      + (b.idle ? ` · ${b.idle === 'compute' ? '算力闲置 compute idle' : '带宽闲置 bandwidth idle'}` : ''), b.idle ? 'warn' : ''));
+    if (b.warning) $('warns').append(h('div', { class: 'warn balance-warn' }, b.warning));
+  }
   if (s.host) {
     const hh = s.host;
     k.push(kpi('主机开销', num(hh.exposed_s * 1e3) + ' ms 暴露', `${hh.overlap} · 每 ${hh.steps} 步 · ${num(hh.s * 1e3)} ms 主机 / ${num(hh.device_s * 1e3)} ms 设备`
@@ -1900,7 +1907,13 @@ async function init() {
   } catch (e) { showErr('初始化失败：' + e.message); return; }
 
   fillModels();
-  seg('chip-preset', Object.keys(S.cat.chips).map((k) => [k, k]), () => S.preset, (v) => { S.preset = v; S.chipOver = {}; S.mixed = []; onPreset(); syncInputs(); schedule(); });
+  // 0.205: a preset carries its default memory pairing (chip.default_mem) — switching presets applies it (one eval,
+  // scheduled by applyMem after the memory resolves, so no eval runs on the old pairing)
+  seg('chip-preset', Object.keys(S.cat.chips).map((k) => [k, k]), () => S.preset, (v) => {
+    S.preset = v; S.chipOver = {}; S.mixed = []; onPreset(); syncInputs();
+    const dm = S.cat.chips[v].default_mem || S.cat.mem_legacy_default || 'lpddr5x_4x64_8533_16g';
+    if (!S.memInfo || S.memInfo.id !== dm) applyMem(dm); else schedule();
+  });
   for (const k of ['freq_ghz', 'sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us', 'dispatch_us']) {
     const nullable = k === 'sram_port_Bpc' || k === 'acc_kib' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine' || k === 'kernel_us' || k === 'dispatch_us';
     bindNumber('c-' + k, () => chipVal(k), (x) => { if (x === null) delete S.chipOver[k]; else S.chipOver[k] = x; if (k === 'freq_ghz') onPreset(); },

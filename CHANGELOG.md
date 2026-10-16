@@ -6,6 +6,30 @@
 
 
 
+## [0.205.0]
+- Default memory pairing of the NPU presets changed (a mechanism-justified default change; 推导). The old pairing gave 1P 3840 FLOP/B and H100-like 3514 FLOP/B, against a public class range of about 200–560 FLOP/B.
+  - Class (bf16 dense TFLOPS ÷ HBM TB/s):
+
+    | Chip | FLOP/B | Source |
+    |---|---|---|
+    | H100 SXM | 295 | 来源 |
+    | B200 | 281 | 来源 |
+    | MI300X | 247 | 来源 |
+    | TPU v5e | 229 | 来源 |
+    | TPU v6e | 560 | 来源 |
+    | Gaudi 3 | 496 (453 in a later whitepaper revision) | 来源 |
+    | Ascend 910B | 200–250 | 二手 |
+    | Ascend 910C | 250 | 二手 |
+
+  - 1P: lpddr5x_4x64_8533_16g → hbm3e_4s_8h24g_9200 (4 stacks, 4.71 TB/s, 223 FLOP/B; 推导). Default qwen3-8b TPOT 80.96 → 4.69 ms; TTFT 126.06 → 60.2 ms.
+  - H100-like: → hbm3_5s_8h16g_5234 (the H100 SXM memory; 286 FLOP/B; 来源). TPOT 82.09 → 6.69 ms; TTFT 284.62 → 65.47 ms.
+  - 100T is unchanged (368 FLOP/B, already in the class range).
+  - The defaults live in `hardware.PRESET_MEM` and are keyed by chip name. Chip objects and chip hashes are unchanged. `Scenario.mem_id = None` resolves through the preset; an explicit `mem_id` always wins. A preset name given as `scenario.chip` in the API brings its own pairing.
+  - Legacy presets `1P-lp4x64` and `H100-like-lp4x64` keep the ≤ 0.204 pairing.
+  - The fingerprints are 100T-based and unchanged.
+- Machine-balance KPI and warning: `Result.balance()` and `balance` in `/api/eval`, plus a UI KPI. The warning fires when the chip's FLOP/B at effective bandwidth and the workload's arithmetic intensity differ by more than `BALANCE_WARN = 10` (假设), and names the idle side (compute or bandwidth). It notes that this is expected for small-batch decode.
+- Tests: `tests/test_core_205.py`; UI smoke adds the preset switch and the balance checks. `test_core_204` pins the LPDDR pairing explicitly.
+
 ## [0.204.0]
 - Web UI: new "每步时间分解 · Per-step time split" panel under the stage table, built from `walls` in the same `/api/eval` response (no extra request, so no race).
   - Exposed-share bar: compute / DRAM / collective BW / collective latency / dispatch / fixed overhead.

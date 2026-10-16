@@ -473,9 +473,27 @@ def _mem_spec(mem_id: str, eff: float | None) -> mem_catalog.MemSpec:
 
 
 # Presets (geometry from the 0.3x SKU templates; all 「假设」)
+# 0.205 machine balance (bf16 FLOP per DRAM byte, raw bandwidth) — MODEL §152.  Same-class public chips span ≈ 200–560
+# (H100 SXM 295, B200 281, MI300X 247, TPU v5e 229, v6e 560, Ascend 910B 200–250, 910C 250, Gaudi 3 496).  ≤ 0.204
+# every preset defaulted to LPDDR5X 4 × 64 bit (273 GB/s): 100T 368 (in class, kept); 1P 3850 and H100-like 3510
+# (7–15× above the class: the extra compute idles on DRAM).  New defaults 「推导」: 1P → 4 × HBM3E 8-high @ 9.2 Gb/s
+# (4.71 TB/s, 223 FLOP/B: the class median ≈ 250–280 at the nearest whole stack count — 3 stacks 297 / 4 stacks 223;
+# 4 kept for a B200-like half: half the compute of a B200 on half its 8 stacks); H100-like → the H100 SXM memory
+# (5 × HBM3 @ 5.2 Gb/s, 3.35 TB/s, H100 datasheet 「来源」 — the preset is named after it).  The ≤ 0.204 pairings stay as
+# legacy presets "1P-lp4x64" / "H100-like-lp4x64".
+MEM_LEGACY_0204 = "lpddr5x_4x64_8533_16g"
 CHIP_100T = Chip("100T", 1.0, 56, 56, 16)            # 100.35 TFLOPS bf16
 CHIP_1P = Chip("1P", 1.0, 128, 128, 32, sram_mib=256.0)   # 1048.6 TFLOPS bf16
 CHIP_H100_LIKE = Chip("H100-like", 1.83, 128, 128, 16,      # ≈ 959 TFLOPS dense bf16
                       formats=FormatSupport(rates=(("bf16", 1.0), ("fp16", 1.0), ("fp8", 2.0), ("int8", 2.0))),
                       sram_mib=50.0, vector_lanes=16384, sram_port_Bpc=None)
-CHIPS = {c.name: c for c in (CHIP_100T, CHIP_1P, CHIP_H100_LIKE)}
+CHIP_1P_L = replace(CHIP_1P, name="1P-lp4x64")
+CHIP_H100_LIKE_L = replace(CHIP_H100_LIKE, name="H100-like-lp4x64")
+CHIPS = {c.name: c for c in (CHIP_100T, CHIP_1P, CHIP_H100_LIKE, CHIP_1P_L, CHIP_H100_LIKE_L)}
+# default memory per chip name (not a Chip field: the chip object and its hash stay what they were)
+PRESET_MEM = {"1P": "hbm3e_4s_8h24g_9200", "H100-like": "hbm3_5s_8h16g_5234"}
+
+
+def default_mem(chip) -> str:
+    """0.205: the default memory of a chip (by preset name); anything else → the ≤ 0.204 global default."""
+    return PRESET_MEM.get(getattr(chip, "name", chip), MEM_LEGACY_0204)

@@ -127,6 +127,23 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 wcheck("burst ends on ideal", "dispatch：ideal" in note()
                        and p.query_selector("#walls-bar i[data-k=dispatch]") is None, note())
                 wcheck("approx note iff not stage", ("近似" in note()) == ("exec_overlap = stage" not in note()), note())
+            # 0.205: presets carry their memory pairing; machine-balance KPI + warning
+            names = [b_.inner_text() for b_ in p.query_selector_all("#chip-preset button")]
+            if "1P" in names and "1P-lp4x64" in names:
+                def bcheck(label, ok, extra=""):
+                    steps.append((label, bool(ok)))
+                    if not ok:
+                        errs.append(f"{label}: {extra[:300]}")
+                act("preset 1P", lambda: p.query_selector_all("#chip-preset button")[names.index("1P")].click())
+                mf = p.inner_text("#mem-facts")
+                k = p.inner_text("#kpis")
+                bcheck("1P pairs with HBM (≈4710 GB/s)", "4,710" in mf or "4710" in mf, mf)
+                bcheck("balance KPI", "machine balance" in k, k[-300:])
+                act("preset 1P-lp4x64", lambda: p.query_selector_all("#chip-preset button")[names.index("1P-lp4x64")].click())
+                mf2 = p.inner_text("#mem-facts")
+                bcheck("legacy pairs with LPDDR 273 GB/s", "273" in mf2, mf2)
+                bcheck("balance warning shown", p.query_selector("#warns .balance-warn") is not None, p.inner_text("#warns")[:300])
+                act("preset 100T", lambda: p.query_selector_all("#chip-preset button")[names.index("100T")].click())
             # 0.186: directional checks — a control that must move a metric has to move the rendered value
             import re
 

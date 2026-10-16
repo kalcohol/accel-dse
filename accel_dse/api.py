@@ -168,7 +168,11 @@ def scenario_from_body(body: dict) -> Scenario:
         raise ApiError(f"chip_preset must be one of {sorted(CHIPS)}")
     base = Scenario(chip=CHIPS[preset]).to_dict(full=True)
     try:
-        d = _merge(base, upgrade_legacy(sc))
+        sc = upgrade_legacy(sc)
+        if isinstance(sc.get("chip"), str) and sc["chip"] in CHIPS and "mem_id" not in sc:
+            from .core.hardware import default_mem
+            sc = {**sc, "mem_id": default_mem(sc["chip"])}     # 0.205: a preset name brings its memory pairing
+        d = _merge(base, sc)
         scn = Scenario.from_dict(d)
         get_model(scn.model)
         mem_catalog.parse_mem_id(scn.mem_id)
@@ -242,7 +246,7 @@ def _api_summary(r: Result) -> dict:
 
 def result_dict(r: Result, *, with_goodput: bool = False) -> dict:
     s = r.scenario
-    out = {"summary": _api_summary(r), "stages": [_stage_dict(x) for x in r.stages], "walls": r.walls(),
+    out = {"summary": _api_summary(r), "stages": [_stage_dict(x) for x in r.stages], "walls": r.walls(), "balance": r.balance(),
            "model": {"id": r.model.id, "hf_id": r.model.hf_id, **labels(r.model)},
            "hash": text_view(s).hash(), "scenario": text_view(s).to_dict()}   # 0.62: as entered (image tokens not folded in)
     if with_goodput and s.serving.phase == "decode" and r.workload is None:
@@ -309,14 +313,16 @@ def _electricity_presets() -> dict:
 
 
 def api_catalog() -> dict:
+    from .core.hardware import MEM_LEGACY_0204, default_mem
     from .core.dtypes import MIXED_PRESETS
     chips = {k: {**c.__dict__, "formats": [list(x) for x in c.formats.rates], "mixed": [list(x) for x in c.formats.mixed], "peak_tflops_bf16": c.peak_tflops_bf16,
                  "port_GBps": c.port_GBps, "gemv": c.gemv, "lanes": c.lanes,
-                 "acc_total_kib": c.acc_total_kib, "acc_kib_per_engine_default": ACC_KIB_PER_ENGINE}
+                 "acc_total_kib": c.acc_total_kib, "acc_kib_per_engine_default": ACC_KIB_PER_ENGINE,
+                 "default_mem": default_mem(c)}
              for k, c in CHIPS.items()}
     return {"chips": chips, "mappings": [{"id": o, "label": ORG_LABEL[o]} for o in ORGS],
             "memory": mem_catalog.catalog_dict(), "defaults": Scenario().to_dict(full=True), "honesty": HONESTY,
-            "sweep_paths": sorted(SWEEP_PATHS), "max_cards": MAX_CARDS,
+            "sweep_paths": sorted(SWEEP_PATHS), "max_cards": MAX_CARDS, "mem_legacy_default": MEM_LEGACY_0204,
             "d2d_standards": [{"id": k, **v} for k, v in D2D_STANDARDS.items()], "d2d_default_std": D2D_DEFAULT_STD,
             "d2d_default_units": D2D_DEFAULT_UNITS,
             "density_presets": _density_presets(),
