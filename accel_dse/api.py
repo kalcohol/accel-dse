@@ -535,7 +535,7 @@ def _lever_cost(q) -> dict:
     e = energy_report(q, t)
     from .core.budget import shoreline_check
     return {"area_mm2": a.get("mm2"), "J_per_tok": e.get("J_per_unit"), "W_card": e.get("avg_W_per_card"),
-            "leak_W": e.get("sram_leak_W_card"), "shoreline": shoreline_check(q.scenario, a.get("mm2")),
+            "leak_W": e.get("sram_leak_W_card"), "hbm_W": e.get("hbm_static_W_card"), "shoreline": shoreline_check(q.scenario, a.get("mm2")),
             # 0.214: the D2D share (two-die lever): PHY area per die, energy per token, exposed collective latency
             "d2d_phy_mm2": a["terms"].get("d2d_phy"), "d2d_J_per_tok": (e.get("J_by_action") or {}).get("d2d"),
             "dies": q.scenario.layout.cards if q.scenario.d2d_enabled else 1,
@@ -642,6 +642,8 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
         x["d_J_per_tok"] = None if c["J_per_tok"] is None or cb["J_per_tok"] is None else c["J_per_tok"] - cb["J_per_tok"]
         x["over_reticle"] = bool(c["area_mm2"] and c["area_mm2"] > RETICLE_MM2)
         x["d_leak_W"] = None if c["leak_W"] is None and c0["leak_W"] is None else (c["leak_W"] or 0.0) - (c0["leak_W"] or 0.0)
+        # 0.216: HBM standby + refresh (static, per stack × die), vs the base
+        x["d_hbm_W"] = None if c["hbm_W"] is None and c0["hbm_W"] is None else (c["hbm_W"] or 0.0) - (c0["hbm_W"] or 0.0)
 
     def row(q):
         x = pick(q, q.balance())
@@ -655,10 +657,10 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
     return {"base": base, "rows": rows, "gain": WHATIF_GAIN, "works": [x["key"] for x in rows if x.get("works")],
             "cost_basis": {"density_preset": WHATIF_DENSITY, "energy_preset": WHATIF_ENERGY, "reticle_mm2": RETICLE_MM2,
                            "note": ("面积 = SRAM（含专用状态 SRAM，同宏密度）+ DRAM PHY 引脚（budget.full_area，n5_derived 密度 「推导」）；"
-                                    "能耗 = 动态 J/token + SRAM 泄漏（tpuv4i_7nm 预设，不含 idle_W），在各杠杆自己的临界 batch 与基线同 batch 比较；"
+                                    "能耗 = 动态 J/token + SRAM 泄漏 + HBM 待机/刷新（tpuv4i_7nm 预设，不含 idle_W），在各杠杆自己的临界 batch 与基线同 batch 比较；"
                                     "HBM 岸线按面积代理的方形晶粒 · area = SRAM incl. the state buffer + DRAM PHY pins; dynamic J/token at the "
                                     "lever's critical batch vs the base at the same batch; SRAM leakage 230.7 µW/MiB (3 nm, 25 °C, lower bound) "
-                                    "in W/卡 and Δ泄漏; HBM shoreline 11 mm/stack on a square die of the area proxy, 2 sides typical")}}
+                                    "in W/卡 and Δ泄漏; HBM standby 48 mW/die + refresh 1.95 mW/Gb (DRAMsim3 HBM2 IDD proxy, 二手/推导) in Δ HBM; HBM shoreline 11 mm/stack on a square die of the area proxy, 2 sides typical")}}
 
 
 SENS_BASE_LABEL = {"stage": "stage 全重叠（吞吐上界）", "pipe": "pipe 硬件推导（现实估计）", "serial": "serial 无重叠（吞吐下界）"}

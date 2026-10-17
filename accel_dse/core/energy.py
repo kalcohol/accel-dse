@@ -75,6 +75,10 @@ class EnergyTable:
     # in any measured base-card idle figure) and for the shared SRAM only when no idle figure (idle_W / idle_frac_tdp)
     # is set — a measured card idle already contains its SRAM leakage, so no double counting.
     uW_per_mib_sram_leak: float | None = None
+    # 0.216: HBM background (standby) + refresh power, static, per DRAM die and per Gb.  Charged per stack × height
+    # only when no idle figure is set (a measured card idle already contains its DRAM background) — like SRAM leakage.
+    mW_hbm_die_standby: float | None = None
+    mW_hbm_Gb_refresh: float | None = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -114,6 +118,7 @@ def scaleup_bytes(t) -> float:
 # preset (static power is product-specific).  Insight ΔJ / rank_per_J light up once a preset or a user table is set.
 _HOROWITZ = ("Horowitz, 'Computing's Energy Problem (and What We Can Do About It)', ISSCC 2014, Fig. 1.1.9 "
              "(45 nm, 0.9 V); table values as widely cited, e.g. National Academies / MIT 6.S983 lecture notes")
+_DRAMSIM3_HBM2 = "DRAMsim3 (umd-memsys/DRAMsim3) configs/HBM2_8Gb_x128.ini"
 _TPUV4I = ("Jouppi et al., 'Ten Lessons From Three Generations Shaped Google's TPUv4i', ISCA 2021, Table 2 / §1: "
            "45 nm → 7 nm average energy gain 2.6×, SRAM access 1.3–2.4×, DRAM access 6.3× (HBM packaging); "
            "'SRAM is 20× more energy efficient than DRAM'")
@@ -155,6 +160,11 @@ ENERGY_PRESETS: dict[str, dict] = {
                                      "(doi 10.1109/JSSC.2025.3639747; VLSI 2025): HD 6T macro standby leakage 27.5 µW/Mbit "
                                      "at 25 °C → 230.7 µW/MiB.  25 °C: leakage at operating temperature is several× higher "
                                      "(40 nm: 17.3 µW/Mbit at 25 °C vs 2518 at 170 °C, Yokoyama thesis) — a lower bound"),
+            # 0.216: HBM2 8Gb per-channel IDD values (DRAMsim3 configs/HBM2_8Gb_x128.ini, VDD 1.2 V, 8 ch × 1 GiB stack):
+            # standby IDD2N 40 mA × 1.2 V = 48 mW per channel-die; refresh (IDD5AB − IDD3N)·VDD·tRFC/tREFI =
+            # 195 mA·1.2 V·260/3900 = 15.6 mW per 8 Gb → 1.95 mW/Gb.  HBM2-era, 1.2 V (HBM3 core 1.1 V): an upper-side proxy
+            "mW_hbm_die_standby": (40 * 1.2, "二手", _DRAMSIM3_HBM2 + ": IDD2N 40 mA × VDD 1.2 V per die（HBM2 代理，非 HBM3E 数据手册）"),
+            "mW_hbm_Gb_refresh": (195 * 1.2 * 260 / 3900 / 8, "推导", _DRAMSIM3_HBM2 + ": (IDD5AB 250 − IDD3N 55) mA × 1.2 V × tRFC 260 / tREFI 3900 ÷ 8 Gb；按容量线性外推到 24/32 Gb 晶粒「假设」"),
             "pJ_mac": (1.1 / 2.6, "推导", _TPUV4I + "; base 16b FP mult 1.1 pJ / 2.6"),
             "pJ_vec": (0.4 / 2.6, "推导", _TPUV4I + "; base 16b FP add 0.4 pJ / 2.6"),
             "pJ_bit_sram": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "推导", _TPUV4I + "; SRAM 1.3–2.4× (geom. mean)"),
@@ -351,7 +361,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
            "missing": [f.name for f in fields(EnergyTable) if getattr(table, f.name) is None
                        and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
                                           "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W",
-                                          "uW_per_mib_sram_leak")
+                                          "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
                        and not (f.name == "idle_W" and (idle_W_of(table) is not None or table.idle_frac_tdp is not None))]
                       + (["tdp_W"] if table.idle_W is None and table.idle_frac_tdp is not None and table.tdp_W is None
@@ -388,6 +398,12 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
             j["sram_leak"] = leak_W * per["idle_card_s"]
             out["sram_leak_W_card"] = leak_W
             out["sram_leak_scope"] = "state_sram + sram" if iw is None else "state_sram（共享 SRAM 泄漏已含于 idle 数值）"
+    if iw is None and (table.mW_hbm_die_standby is not None or table.mW_hbm_Gb_refresh is not None):
+        hs = hbm_static_W(r.scenario.mem_id, table)      # 0.216: HBM standby + refresh (static)
+        if hs:
+            j["hbm_static"] = hs["W"] * per["idle_card_s"]
+            out["hbm_static_W_card"] = hs["W"]
+            out["hbm_static"] = hs
     if per.get("host"):
         if table.pJ_bit_host is not None:
             j["host"] = per["host"] * table.pJ_bit_host * 1e-12 * 8
@@ -399,8 +415,8 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
     tot = sum(j.values())
     out.update(J_per_unit=tot, J_by_action=j,
                avg_W_per_card=tot * u / a["window_s"] / r.scenario.layout.cards if a["window_s"] > 0 else 0.0)
-    stat = j.get("idle", 0.0) + j.get("sram_leak", 0.0)      # 0.212: SRAM leakage is static too
-    if ("idle" in j or "sram_leak" in j) and tot > 0:       # 0.189: static share + dominant-term warning
+    stat = j.get("idle", 0.0) + j.get("sram_leak", 0.0) + j.get("hbm_static", 0.0)    # 0.212/0.216: static too
+    if ("idle" in j or "sram_leak" in j or "hbm_static" in j) and tot > 0:       # 0.189: static share + dominant-term warning
         out["static_share"] = stat / tot
         out["J_dynamic_per_unit"] = tot - stat
         if out["static_share"] > STATIC_WARN:
@@ -431,3 +447,20 @@ def _power_cap(out, j, iw, table, cards, u, win) -> dict:
             "capped": slow > 1.0, "slowdown": slow, "throughput_factor": 1.0 / slow, "J_per_unit_capped": J,
             "basis": "每动作能耗不随频率变（不计 DVFS 的 V² 收益，「假设」，偏保守）；超 TDP 时窗口拉长到 "
                      "E_dyn / (TDP − P_static)"}
+
+
+def hbm_static_W(mem_id: str | None, table: "EnergyTable") -> dict | None:
+    """0.216: HBM background + refresh power of the card's stacks: stacks × height × standby/die + total Gb × refresh/Gb."""
+    if not mem_id:
+        return None
+    from .. import mem_catalog
+    try:
+        sp = mem_catalog.parse_mem_id(mem_id)
+    except Exception:
+        return None
+    if getattr(sp, "kind", None) != "HBM" or not getattr(sp, "hbm_height", None):
+        return None
+    dies = sp.n_units * sp.hbm_height
+    stb = dies * (table.mW_hbm_die_standby or 0.0) * 1e-3
+    ref = dies * sp.hbm_die_Gb * (table.mW_hbm_Gb_refresh or 0.0) * 1e-3
+    return {"W": stb + ref, "standby_W": stb, "refresh_W": ref, "stacks": sp.n_units, "dies": dies}

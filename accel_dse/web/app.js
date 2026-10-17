@@ -1037,11 +1037,12 @@ function renderBalanceWhatif(w) {
     h('td', {}, base || x.J_per_tok == null ? '—' : `${num(x.J_per_tok * 1e3)} mJ @B${x.cost_batch}`
       + (x.base_J_per_tok_at_cost_batch != null ? `（基线 ${num(x.base_J_per_tok_at_cost_batch * 1e3)}）` : '')),
     h('td', {}, (x.W_card != null ? num(x.W_card) + ' W' : '—')
-      + (x.d_leak_W ? `（泄漏 ${x.d_leak_W > 0 ? '+' : ''}${num(x.d_leak_W)} W）` : (base && x.leak_W ? `（泄漏 ${num(x.leak_W)} W）` : ''))),
+      + (x.d_leak_W ? `（泄漏 ${x.d_leak_W > 0 ? '+' : ''}${num(x.d_leak_W)} W）` : (base && x.leak_W ? `（泄漏 ${num(x.leak_W)} W）` : ''))
+      + (x.d_hbm_W ? `（HBM ${x.d_hbm_W > 0 ? '+' : ''}${num(x.d_hbm_W)} W）` : (base && x.hbm_W ? `（HBM ${num(x.hbm_W)} W）` : ''))),
     h('td', { class: 'l small' }, base ? '当前' : (x.error ? x.error : (x.works ? '有效 · works' : '无效 · no effect'))));
   put(box, h('h4', {}, '机器平衡 what-if · balance levers（每次只改一个变量 · one variable each）'),
     h('table', { class: 'tbl', id: 'bal-whatif-tbl' },
-      h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', 'Δ面积 area', 'J/token @临界 batch', '功耗 W/卡（含 SRAM 泄漏）', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
+      h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', 'Δ面积 area', 'J/token @临界 batch', '功耗 W/卡（含 SRAM 泄漏 + HBM 待机/刷新）', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
       h('tbody', {}, tr('当前 base', w.base, true), ...w.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 9, class: 'l small' }, x.error)) : tr(x.label, x, false)))),
     w.cost_basis ? h('div', { class: 'small' }, w.cost_basis.note) : '',
     h('div', { class: 'small' }, w.works.length ? `有效杠杆 · levers that work：${w.works.join('、')}（阈值 ${pct(w.gain)}）` : '没有单一杠杆有效 · no single lever works'));

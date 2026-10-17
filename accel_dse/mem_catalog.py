@@ -357,6 +357,15 @@ HBM_CATALOG: dict[str, dict[str, Any]] = {
 }
 HBM_DEFAULT_STACKS = 8
 
+# 0.216: sources behind the HBM cap_tags (re-fetched 2026-10-17)
+HBM_CAP_SOURCES: dict[tuple[str, int, int], str] = {
+    ("HBM3E", 12, 24): "SK hynix 2024-09-26 12-layer HBM3E 36GB volume production; Samsung 2024-02-27 developed; Micron 2024-09-05 production-capable for qualification",
+    ("HBM3E", 16, 24): "SK hynix 2024-11-04 (SK AI Summit) 48GB 16-layer HBM3E announced, samples planned early 2025",
+    ("HBM4", 12, 24): "Samsung 2026-02-12 HBM4 mass production 24-36GB 12H; Micron 2026-03-16 HBM4 36GB 12H volume shipment",
+    ("HBM4", 16, 24): "Micron 2026-03-16 HBM4 48GB 16H samples; SK hynix CES 2026 unveil, volume unconfirmed (Korea Herald)",
+    ("HBM4", 16, 32): "JEDEC JESD270-4 PR 2025-04-16: 64GB max (32Gb 16-high), no product",
+}
+
 # Bus width above which an on-board (discrete) LPDDR config is flagged
 # "beyond typical SoC beachfront" (research: >8 × x64 or >6 × x96).
 LPDDR_BEACHFRONT_WARN_BITS = 576

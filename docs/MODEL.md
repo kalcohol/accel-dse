@@ -4838,5 +4838,19 @@ limited by capacity and the TTFT SLO, which is used as the decision latency limi
 - **Finding for RWKV-7 7.2B and qwen3-8b on 1P.** Two dies match the 8-stack single die within 3 % on TPOT and 6 % on critical batch, at +1.6 mm² of D2D PHY per die. The packaging trade is real but cheap in model terms. The remaining blocker is per-die shoreline (4 stacks on a 333 mm² die take three edges), not D2D bandwidth or energy. 「推导」
 
 ## §162 HBM stack height as a capacity lever (0.215)
-Taller stacks (8H→12H→16H, 24/32 Gb dies) multiply the capacity per stack, but bandwidth stays the same: it is set by the 1024/2048-bit interface × rate. JEDEC JESD238 (HBM3/3E) fixes the stack height at 720 µm and JESD270-4 (HBM4) at 775 µm with up to 16-Hi/64 GB, so the footprint and shoreline are unchanged (二手). Vendor status: HBM3E 12H 36 GB is in volume production (SK hynix, Samsung, Micron; 二手); HBM3E 16H 48 GB is announced (SK hynix); HBM4 12H 36 GB / 16H 48–64 GB are listed per the catalog tags. Energy per bit is unchanged (假设); refresh/standby of the extra dies is not modelled.
+Taller stacks (8H→12H→16H, 24/32 Gb dies) multiply the capacity per stack, but bandwidth stays the same: it is set by the 1024/2048-bit interface × rate. The package height is fixed: SK hynix's 12-Hi HBM3E keeps "the same thickness as the previous 8-layer product" (来源, SK hynix 2024-09-26). The 720 µm (HBM3/3E) → 775 µm (HBM4 12/16-Hi) relaxation is reported by TrendForce 2025-04-21 / ZDNet Korea (二手). So the footprint and shoreline are unchanged. Vendor status (re-verified in 0.216, see §163): HBM3E 12H 36 GB is in volume production at SK hynix (来源, 2024-09-26) and was developed by Samsung (来源, 2024-02-27). Micron is shipping production-capable units for qualification (来源, Micron 2024-09-05; product page: designed into AMD MI350), not a volume claim. HBM3E 16H 48 GB was announced by SK hynix (来源, 2024-11-04). The HBM4 tags are in §163. Energy per bit is unchanged (假设); standby/refresh is added in 0.216 (§163).
 In KV-bound decode the arithmetic intensity asymptote = FLOP/token ÷ KV bytes/token, which does not depend on capacity (推导). Capacity only raises the batch limit until the TPOT SLO binds, and the throughput ceiling ≈ BW ÷ KV bytes/token. So qwen3-8b at ctx 4096 can never reach balance (asymptote 28.8 FLOP/B with bf16 KV, 57.0 with fp8, chip 318), and with fp8 KV, bandwidth (more stacks) beats height.
+
+## §163 HBM availability re-check and standby/refresh power (0.216)
+Sources (fetched 2026-10-17):
+- JEDEC HBM3 press release (2022-01-27): JESD238 supports 4/8/12-high, with provision for a future 16-high; 8–32 Gb/layer, up to 64 GB.
+- JEDEC JESD270-4 press release (2025-04-16): HBM4 4/8/12/16-high with 24/32 Gb dies, 64 GB max (16H × 32 Gb).
+- HBM4 12H 36 GB is in volume: Samsung (2026-02-12) and Micron (2026-03-16, "volume shipment … Q1 2026"); SK hynix mass supply from Q2 2026 (Korea Herald, 二手).
+- HBM4 16H 48 GB is sampling: Micron "shipping samples"; SK hynix unveiled it at CES 2026, and its volume shipments are reported but not confirmed by the company (二手); Samsung is "ready" but says demand is limited.
+
+Catalog tags after the check: HBM3E (12,24) shipping; (16,24) announced. HBM4 (12,24) shipping; (16,24) sampling; (16,32) none. No tag changed; every tag now carries its source in `HBM_CAP_SOURCES`.
+
+Standby + refresh (static) per die: 48 mW (IDD2N 40 mA × 1.2 V) + 1.95 mW/Gb (refresh = (IDD5AB − IDD3N) · VDD · tRFC / tREFI per 8 Gb). Source: DRAMsim3 HBM2_8Gb_x128 config (二手 / 推导). These are HBM2-era 1.2 V values (HBM3 uses 1.1 V), so the estimate is high-side. Scaling refresh linearly to 24/32 Gb dies is 假设.
+P = stacks × height × (48 + die_Gb × 1.95) mW, so a 4 × 8H24g base is 3.03 W/card.
+To avoid double counting, it is charged only when no card idle figure (idle_W / idle_frac_tdp) is set, the same rule as the 0.212 SRAM leakage; the what-if strips idle_W, so the levers show it.
+qwen3-8b on 1P with fp8 KV: 12H +1.52 W, 16H +3.03 W, 8 stacks (dram_bw_x2) +3.03 W. This is about 1–3 % of the ~105 W card average.

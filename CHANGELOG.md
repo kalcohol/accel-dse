@@ -6,6 +6,12 @@
 
 
 
+## [0.216.0]
+- Sources re-verified for HBM capacity and status (JEDEC HBM3/HBM4 press releases; SK hynix, Samsung and Micron releases), recorded in `mem_catalog.HBM_CAP_SOURCES`. No cap tag changed. MODEL §162: the unsupported Micron HBM3E 12H "volume production" claim is corrected to "production-capable, in qualification" (来源).
+- HBM standby + refresh static power: EnergyTable `mW_hbm_die_standby` / `mW_hbm_Gb_refresh` (tpuv4i_7nm preset: 48 mW/die, 1.95 mW/Gb, DRAMsim3 HBM2 IDD proxy, 二手/推导). Charged per stack × die only when no idle figure is set (no double counting, as with the 0.212 SRAM leakage).
+- What-if: `hbm_W` / `d_hbm_W` per lever, shown in the power column. qwen3-8b 1P fp8: 12H +1.52 W, 16H +3.03 W, 8 stacks +3.03 W.
+- tests/test_core_216.py.
+
 ## [0.215.0]
 - balance_whatif: capacity lever `hbm_{H}h{D}g` (taller HBM stacks, same stack count / rate → same bandwidth), offered only when the base is kv_capacity-bound and no mem_cap override is set; the 2 largest catalog height×density options above the current one, with the catalog availability tag.
 - Cost: JEDEC fixes the package height (720 µm HBM3/3E, 775 µm HBM4), so footprint and shoreline are unchanged (二手); DRAM pJ/bit is unchanged (假设); refresh/standby of the extra dies is not modelled.

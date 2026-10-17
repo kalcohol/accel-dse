@@ -30,7 +30,8 @@ def test_whatif_cost_columns_rwkv_1p():
     assert abs(bw["d_area_mm2"] - 64.0 / 0.77) < 1.0 and not bw["over_reticle"]      # 0.213: 64 → 83.1 mm² with uncore
     # state on chip cuts DRAM energy per token at its balance batch; 2× bandwidth moves no extra bits per token
     # 0.212: J/token now includes SRAM leakage over the time window, so 2× bandwidth moves it slightly (< 0.1 %)
-    assert st["d_J_per_tok"] < 0 and abs(bw["d_J_per_tok"]) < 1e-3 * bw["J_per_tok"]
+    # 0.216: + HBM standby/refresh of the 4 extra stacks (+3.03 W static) → +0.7 % J/token, < 1 %
+    assert st["d_J_per_tok"] < 0 and 0 < bw["d_J_per_tok"] < 1e-2 * bw["J_per_tok"] and abs(bw["d_hbm_W"] - 3.0336) < 1e-6
     assert st["cost_batch"] == st["critical_batch"] and bw["cost_batch"] == bw["critical_batch"]
     assert w["base"]["area_mm2"] > 0 and all(x.get("W_card", 1) > 0 for x in w["rows"])
 
