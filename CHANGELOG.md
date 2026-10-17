@@ -6,6 +6,43 @@
 
 
 
+## [0.228.0]
+
+### Added (default energy change in the `tpuv4i_7nm` preset)
+- **Per-cycle dynamic energy** `EnergyTable.pJ_clk_mac_cycle`: energy per MAC slot per core cycle, for the clock tree, always-clocked pipeline registers and control. It is paid on every cycle the card is clocked, busy or stalled: P_clk = MACs × f × pJ.
+  - Gap it closes: before 0.228 every dynamic term was per action. With a memory-set op rate and fixed V, no modelled power fell with the clock, so under clock-only DFS decode needed s ≈ 0.36 to shed 10 %.
+  - Under DVFS it is on the core rail: × V(f)², and f via the re-evaluation (`powercap.CORE_ACTIONS`). It is dynamic, not static: not in `static_share`, and duty cycling (clock gated in the off-period) does not save it, so dfs ≥ duty.
+  - Energy report: `J_by_action.clock`, `counts_per_unit.clock` (MAC-slot·cycles per unit), `clock_W_card`. UI: input "pJ / MAC槽·周期" and an energy-table row with W/card. J/unit × units/s/card = W/card still holds (tested, fuzzed).
+  - What-if `lever_power_cap`: dfs is now re-evaluated (`dvfs_cap`) when the term is set (it was the analytic duty ratio, exact only without the term); `s_dfs` added.
+- **Preset value 0.1009 pJ** 「推导/二手」: H100 SXM idle power with a CUDA context (P0 clocks, no work) 121.7 W − without one 71.8 W = 49.9 W (the same measurement as `idle_frac_tdp`), ÷ 270,336 bf16 MAC slots (132 SM × 2048) ÷ 1.83 GHz (989.4 TFLOPS dense). Upper-side proxy (the Δ also holds the HBM P-state step and a GPU's non-tensor logic).
+  - Cross-checks, not fitted: at full MAC load it is ≈ 19 % of MAC + clock power. That falls between a clock-gated 65 nm DNN accelerator's clocking at 5.5 % of active power (NSF PAR 10300339) and ungated CPUs, where clock distribution is 28 % and latches 46 % (Bose/Martonosi/Brooks, HC17 tutorial), or ≈ ½ of an Intel CPU (Brooks et al., IEEE Micro 2000). AccelWattch (MICRO'21) shows GV100 NANOSLEEP power rising with f (Fig. 2): clocked-idle power exists on GPUs. Its constant power, 32.5 W at f → 0, is static and not this term.
+  - Not in `horowitz_45nm` (no 45 nm source).
+
+### Changed (re-baselined, old → new; 1P, tpuv4i_7nm + idle 20 W unless noted)
+- Clock power on 1P: 52.9 W/card at 1.0 f. This is 28 % of decode b64 J/token and 17 % of prefill b8.
+- qwen3-8b decode b64: 135.5 → 188.3 W, 34.4 → 47.8 mJ/token. qwen3-8b prefill b8: 258 → 311 W. qwen3-32b decode b128: 153 → 206 W.
+- RWKV-7 7.2B what-if (no idle; 0.211/0.217): base B1 0.432 → 0.651 J/token. state_sram at B314 4.46 → 5.59 mJ against base 6.50 → 8.32 mJ, so the ordering holds. **`dram_bw_x2` d_J +0.7 % → −6.3 %**: a faster step now saves clock energy per token. two_die +1.9 % → −4.7 %.
+- Performance fingerprints unchanged (energy only).
+
+**Power cap (0.227) re-checked: throughput factor dfs / V–f, old → new**
+
+| Case | Cap 0.9 P | Cap 0.7 P | Cap 0.5 P |
+|---|---|---|---|
+| qwen3-8b decode b64 (DRAM) | 0.883 (s 0.36) / 0.976 → **1.000 (s 0.64) / 1.000** | 0.648 / 0.717 → 0.816 / 0.996 | 0.413 / 0.457 → 0.541 / 0.662 |
+| qwen3-8b prefill b8 (MAC) | 0.892 / 0.962 → 0.893 / 0.962 | 0.675 / 0.874 → 0.679 / 0.877 | 0.458 / 0.765 → 0.465 / 0.771 |
+| qwen3-32b decode b128 (DRAM) | 0.885 / 1.000 → **1.000 / 1.000** | 0.655 / 0.788 → 0.794 / 1.000 | 0.425 / 0.511 → 0.531 / 0.698 |
+
+- Conclusion shift: memory-bound decode now sheds 10 % power by clock alone at ≈ 0.6 f with no throughput loss (0.227: s ≈ 0.36 and −12 %). Compute-bound prefill is unchanged: clock energy per unit is fixed there, so dfs ≈ duty.
+- What-if under a cap:
+  - qwen3-8b b64, cap 120 W: the base now binds itself (171 W; dfs ×0.852, V–f ×1.0). `dram_bw_x2` V–f gain ×1.07 → ×1.015; hbm_12h/16h dfs ×1.04/1.03 → ×1.05/1.045. `works_capped` unchanged (kv_fp8, ctx_half).
+  - qwen3-32b b64, cap 150 W: the base now binds (181 W). **`dram_bw_x2` gain ×1.22 / ×1.35 → ×1.03 / ×1.25 and it leaves `works_capped`**; the HBM-height levers stay.
+
+### Deferred
+- Chunked-prefill prefill/decode interference in the main evaluation. The PD report already has `coloc_chunked` with `pd.chunk_tokens` 512 「假设」. Sources were collected for the next version: vLLM default `max_num_batched_tokens` 2048, with decode tokens counted in the budget and decode first (docs v0.7.3/v0.8.3; stable docs recommend > 8192 for throughput); SGLang `chunked_prefill_size` 8192 (2048 below 25 GB), `max_prefill_tokens` 16384, mixed chunk off by default.
+- Per-cycle term in the PD report's energy (`pdqueue._energy`, which also lacks SRAM leakage and HBM static).
+- An NPU-specific clock-power measurement.
+- Clock gating of idle MAC arrays (would lower the stalled share).
+
 ## [0.227.0]
 
 ### Added

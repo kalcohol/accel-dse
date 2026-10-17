@@ -888,7 +888,9 @@ function renderEnergy(r) {
     ...(c.d2d ? [['D2D 发送（封装内）', c.d2d, ' B', 'd2d', 'pJ_bit_d2d']] : []),
     [c.d2d || c.net ? '节点内 scale-up 发送' : '链路发送', c.link, ' B', 'link', 'pJ_bit_link'],
     ...(c.net ? [['跨节点网络发送', c.net, ' B', 'net', 'pJ_bit_net']] : []),
-    ...(c.host ? [['主机链路重载（卸载放置）', c.host, ' B', 'host', 'pJ_bit_host']] : []), ['卡·秒（静态）' + (e.idle_source && e.idle_source !== 'idle_W' ? `（${num(e.idle_W_used)} W = idle/TDP × TDP）` : ''), c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
+    ...(c.host ? [['主机链路重载（卸载放置）', c.host, ' B', 'host', 'pJ_bit_host']] : []),
+    ...(c.clock != null ? [['时钟（MAC 槽·周期，忙或停顿）' + (e.clock_W_card != null ? `（${num(e.clock_W_card)} W/卡）` : ''), c.clock, '', 'clock', 'pJ_clk_mac_cycle']] : []),   // 0.228
+    ['卡·秒（静态）' + (e.idle_source && e.idle_source !== 'idle_W' ? `（${num(e.idle_W_used)} W = idle/TDP × TDP）` : ''), c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
   const head = h('tr', {}, h('th', {}, '动作'), h('th', {}, `次数 / ${u}`), h('th', {}, `能耗 J / ${u}`));
   const body = rows.map(([lab, n, sfx, k, key]) => h('tr', {}, h('td', {}, lab), h('td', { class: 'num' }, sci(n) + sfx),
     h('td', { class: 'num' }, (e.provided.includes(key) || k in j) ? sci(j[k] || 0) : h('span', { class: 'muted' }, '未提供'))));
@@ -2064,7 +2066,7 @@ async function init() {
     'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2', 'mm2_per_dq_hbm', 'mm2_per_dq_lpddr', 'mm2_per_d2d_unit', 'mm2_per_GBps_c2c', 'uncore_frac', 'mm2_host_io', 'mm2_per_unit_mc'])
     bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
       { nullable: true, int: k === 'cards' });
-  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W'])
+  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W', 'pJ_clk_mac_cycle'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   $('e-power_cap').addEventListener('change', (e) => { S.powerCap = e.target.checked; schedule(); });   // 0.189
   initDensityPresets();

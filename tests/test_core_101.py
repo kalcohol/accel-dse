@@ -29,6 +29,7 @@ def test_energy_counts_overlap_independent():
         a, b = (energy_report(evaluate(Scenario(chip=CHIPS["1P"], exec_overlap=ov, **kw)))["counts_per_unit"]
                 for ov in ("stage", "pipe"))
         for k in a:
-            if k != "idle_card_s":
+            if k not in ("idle_card_s", "clock"):      # 0.228: clock (MAC-slot·cycles) is time-proportional too
                 assert math.isclose(a[k], b[k], rel_tol=1e-9, abs_tol=1e-12), (kw["model"], k)
         assert b["idle_card_s"] >= a["idle_card_s"] * (1 - 1e-12)   # static energy: the slower step idles longer
+        assert b["clock"] >= a["clock"] * (1 - 1e-12)               # 0.228: … and stays clocked longer

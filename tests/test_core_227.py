@@ -49,11 +49,14 @@ def test_static_fix():
 
 # ---- dvfs
 def test_dfs_equals_duty_and_vf_better():
+    # 0.228: dfs ≡ duty cycling only without the per-cycle term (pJ_clk_mac_cycle); with it dfs ≥ duty (test_core_228)
+    from dataclasses import replace
+    nc = lambda **kw: replace(_t(**kw), pJ_clk_mac_cycle=None)      # noqa: E731
     for sc in (_sc(), _sc(phase="prefill", b=8), _sc("qwen3-32b", b=128)):
         r = evaluate(sc)
-        P = energy_report(r, _t())["avg_W_per_card"]
+        P = energy_report(r, nc())["avg_W_per_card"]
         for frac in (0.95, 0.7, 0.5):
-            pc = energy_report(r, _t(tdp_W=frac * P), power_cap=True)["power_cap"]
+            pc = energy_report(r, nc(tdp_W=frac * P), power_cap=True)["power_cap"]
             d, v = pc["dvfs"]["dfs"], pc["dvfs"]["rx5700xt_n7"]
             assert abs(d["throughput_factor"] - pc["throughput_factor"]) < 2e-4, (sc.model, frac)
             assert v["throughput_factor"] >= d["throughput_factor"] - 1e-6
@@ -80,7 +83,8 @@ def test_memory_bound_keeps_throughput_with_voltage():
     P = energy_report(r, _t())["avg_W_per_card"]
     v = dvfs_cap(r, _t(), 0.9 * P, "rx5700xt_n7")
     d = dvfs_cap(r, _t(), 0.9 * P, "dfs")
-    assert v["throughput_factor"] > 0.99 and v["bound"] == "DRAM" and d["throughput_factor"] < 0.9
+    # 0.228: with the per-cycle term, clock-only DFS sheds 10 % too (was tf < 0.9 without it — see test_core_228)
+    assert v["throughput_factor"] > 0.99 and v["bound"] == "DRAM" and d["throughput_factor"] > 0.99
 
 
 def test_invariant_at_capped_point():

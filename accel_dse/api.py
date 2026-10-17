@@ -538,7 +538,8 @@ def _whatif_table() -> EnergyTable:
 
 def lever_power_cap(q, c: dict, cap_W: float) -> dict:
     """0.227: does a cap bind at this operating point (W/card of the what-if energy basis), and what is left of the
-    throughput: dfs (clock only — analytic, = (cap − P_static) / P_dynamic, the headline) and the rx5700xt_n7 V–f
+    throughput: dfs (clock only — analytic (cap − P_static) / P_dynamic without a per-cycle term; re-evaluated with
+    one, 0.228 — the headline) and the rx5700xt_n7 V–f
     curve (re-evaluated, only when the cap binds) — core/powercap.py."""
     from .core.powercap import dvfs_cap
     W = c.get("W_card")
@@ -553,6 +554,12 @@ def lever_power_cap(q, c: dict, cap_W: float) -> dict:
     tf = min(1.0, (cap_W - ps) / (W - ps)) if W > ps else 1.0
     out = {"cap_W": cap_W, "W_card": W, "P_static_W": ps, "binds": binds, "feasible": True,
            "tf_dfs": tf, "tok_s_card_dfs": tok * tf, "tf_vf": 1.0, "tok_s_card_vf": tok, "s_vf": 1.0}
+    if binds and _whatif_table().pJ_clk_mac_cycle is not None:
+        # 0.228: with a per-cycle term the clock-only point is no longer the duty-cycle ratio (clocked power falls with
+        # f while a memory-set op rate does not) — re-evaluate it too
+        d = dvfs_cap(q, _whatif_table(), cap_W, "dfs")
+        if not d.get("error"):
+            out.update(tf_dfs=d["throughput_factor"], tok_s_card_dfs=tok * d["throughput_factor"], s_dfs=d["s"])
     if binds:
         d = dvfs_cap(q, _whatif_table(), cap_W, "rx5700xt_n7")
         if not d.get("error"):

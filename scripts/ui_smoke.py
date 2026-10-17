@@ -135,7 +135,7 @@ with sync_playwright() as pw:
         if "仅降频" in p.inner_text("#energy-tbl"): break
         time.sleep(0.5)
     et = p.inner_text("#energy-tbl")
-    assert "仅降频" in et and "V–f" in et, et[-600:]
+    assert "仅降频" in et and "V–f" in et and "时钟（MAC 槽·周期" in et, et[-600:]      # 0.228: per-cycle row
     for _ in range(600):
         if p.is_visible("#whatif-cap"): break
         time.sleep(0.5)

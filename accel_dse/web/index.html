@@ -371,6 +371,7 @@
       <label title="0.186：非 HBM（LPDDR 等）时用此值（不填 = 上面的通用 DRAM 值）">pJ / bit DRAM·LPDDR<input type="number" id="e-pJ_bit_dram_lpddr" min="0" step="0.5"></label>
       <label title="0.188：芯片侧 DRAM PHY（HBM）每 bit，单列 dram_phy">pJ / bit PHY·HBM<input type="number" id="e-pJ_bit_phy_hbm" min="0" step="0.05"></label>
       <label title="0.188：芯片侧 DRAM PHY（LPDDR）每 bit，单列 dram_phy">pJ / bit PHY·LPDDR<input type="number" id="e-pJ_bit_phy_lpddr" min="0" step="0.05"></label>
+      <label title="0.228：每 MAC 槽每个核心时钟周期的能耗（时钟树 / 常开流水寄存器），忙或停顿都付：P = MAC 槽 × f × 此值；降频时随 f 下降">pJ / MAC槽·周期<input type="number" id="e-pJ_clk_mac_cycle" min="0" step="0.01"></label>
       <label title="0.188：空闲功耗 / TDP（idle_W 未填时 idle_W = 此值 × TDP）">idle / TDP<input type="number" id="e-idle_frac_tdp" min="0" max="1" step="0.01"></label>
       <label title="0.188：每卡 TDP（W），不填时取预算面板的 TDP">TDP W / 卡<input type="number" id="e-tdp_W" min="0" step="10"></label>
       <label title="0.189：平均功耗（动态+静态）超过 TDP 时按功耗封顶降吞吐（需 TDP）"><input type="checkbox" id="e-power_cap"> 按 TDP 封顶吞吐</label>

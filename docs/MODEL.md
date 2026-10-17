@@ -5270,3 +5270,31 @@ Deferred to 0.225:
 - A per-chip V–f curve field.
 - (b) prefill/decode interference.
 - (c) residuals: no new sources found.
+
+## §175 Per-cycle dynamic energy: clock tree / always-clocked registers (0.228)
+
+**Gap.** Up to 0.227 every dynamic energy term was per action (MAC, vector op, SRAM/DRAM/link bit). Static terms were per card-second: idle, SRAM leakage and HBM standby. At fixed V a clock-only frequency cut leaves energy per action unchanged. When the op rate is set by memory (decode), it also leaves the action rate unchanged. So no modelled power fell with f, and 0.227's dfs needed s ≈ 0.36 to shed 10 %. Real chips pay frequency-proportional power every cycle, even when stalled: the clock tree, ungated pipeline registers and control.
+
+**Model.** `pJ_clk_mac_cycle` is energy per MAC slot per core cycle. P_clk = macs × f × pJ per card, charged over the whole window, busy or stalled: J_clk/unit = P_clk × cards × window / units. It is dynamic: under DVFS it scales with V² (core rail) and with f through the re-evaluated chip. It is not static, so it is left out of `static_share` and of the duty-cycle cap's static. Duty cycling gates the clock in its off-period, so clock energy per unit is unchanged there. Clock-only DFS cuts the number of cycles per unit when the step time is memory-set. Hence dfs ≥ duty, with equality when compute-bound.
+
+**Value (`tpuv4i_7nm` preset), 0.1009 pJ 「推导/二手」.**
+- H100 SXM measured idle power: 121.7 W with a CUDA context (P0 clocks, no work) and 71.8 W without one. The second figure is already the source of `idle_frac_tdp`, which is why the two terms do not overlap: idle_frac_tdp is the idle-clock floor.
+- The difference is 49.9 W. Divided by 989.4e12 / 2 MAC/s (132 SM × 2048 MAC/clk × 1.83 GHz), that gives 0.1009 pJ per MAC-slot-cycle.
+- This is an upper-side proxy. The difference also includes the HBM P-state step and the GPU's non-tensor logic per slot (CUDA cores, register file, L1), which an NPU of the same MAC count has less of.
+- At full MAC load the term is ≈ 19 % of MAC + clock power.
+- Cross-checks (not fitted):
+  - 65 nm DNN accelerator, with clocking (incl. DLL) at 5.5 % of active power and phase distribution at 1.2 %. This is clock-gated and does not count local trees separately (NSF PAR 10300339).
+  - CPU clock distribution at 28 % and latches at 46 % with no gating (Bose/Martonosi/Brooks, HC17 tutorial), and clock-related power ≈ ½ of an Intel CPU (Brooks et al., IEEE Micro 2000).
+  - AccelWattch (MICRO'21) GV100 NANOSLEEP power rises with f (Fig. 2). Its P_const of 32.5 W at f → 0 is static and is not this term.
+
+**Effect (1P).** P_clk is 52.9 W/card at nominal f. qwen3-8b decode b64 goes from 135.5 to 188.3 W, with clock at 28 % of J/token.
+
+Under a cap, memory-bound decode keeps full throughput down to 0.9 P on clock alone (s ≈ 0.64), against 0.883 at s 0.36 before. At 0.7 P it gives ×0.816 dfs and ×0.996 V–f. Compute-bound prefill is unchanged.
+
+What-if: faster-step levers now save energy per token. RWKV `dram_bw_x2` moves from +0.7 % to −6.3 %. Under a cap the base binds earlier, so cap gains of bandwidth levers shrink: qwen3-32b `dram_bw_x2` goes from ×1.22 to ×1.03 under dfs.
+
+**Limits.**
+- The value is a GPU proxy.
+- Idle MAC arrays are treated as clocked. Fine-grained clock gating would lower the stalled share; that is left out.
+- The PD report's energy (`pdqueue._energy`) does not yet carry the term.
+- The memory clock is held.

@@ -5,9 +5,10 @@ clocked work (MAC / vector / SFU / SRAM-port time; DRAM, links and host keep the
 re-evaluated at chip.freq_ghz · s.  Core-rail action energies (mac, vec, sram, slc) scale with V(f)² (P ∝ C·V²·f,
 「来源」 arXiv 2607.00819 eq. 1); DRAM array / PHY, D2D / link / network bits and static power are held (static held =
 conservative: leakage also falls with V).  Curves (V/V_max against f/f_max):
-  dfs          clock only at nominal voltage — energy per action unchanged, so the capped throughput equals the 0.189
-               duty-cycle model (t = E_dyn / (cap − P_static)); adds the clock and the bound at the capped point.
-               Headline (conservative: no voltage benefit).
+  dfs          clock only at nominal voltage — energy per action unchanged.  Without a per-cycle term the capped
+               throughput equals the 0.189 duty-cycle model (t = E_dyn / (cap − P_static)); 0.228: with pJ_clk_mac_cycle
+               the clocked power macs·f·pJ falls with f even when the op rate is memory-set, so dfs ≥ duty cycling
+               (duty cycling gates the clock off-period: clock energy per unit unchanged).  Headline (no voltage benefit).
   rx5700xt_n7  AMD RX 5700 XT (TSMC N7) default OD_VDDC_CURVE 800 MHz 704 mV, 1409 MHz 819 mV, 2019 MHz 1185 mV
                「二手」 (amdgpu pp_od_clk_voltage dump, sibradzic/amdgpu-clocks issue #39); flat below the first point.
                Cross-check (not used): H100 power turns superlinear at f_t ≈ 0.51 f_max (2607.00819, FIRESTARTER).
@@ -25,7 +26,8 @@ VF_CURVES = {
 }
 CAP_CURVES = ("dfs", "rx5700xt_n7")
 F_MIN = 0.15
-CORE_ACTIONS = {"mac": "pJ_mac", "vec": "pJ_vec", "sram": "pJ_bit_sram", "slc": "pJ_bit_slc"}
+CORE_ACTIONS = {"mac": "pJ_mac", "vec": "pJ_vec", "sram": "pJ_bit_sram", "slc": "pJ_bit_slc",
+                "clock": "pJ_clk_mac_cycle"}      # 0.228: per-cycle term on the core rail (V²; f via the re-evaluation)
 
 
 def volt(curve: str, s: float) -> float:

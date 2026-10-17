@@ -79,6 +79,11 @@ class EnergyTable:
     # only when no idle figure is set (a measured card idle already contains its DRAM background) — like SRAM leakage.
     mW_hbm_die_standby: float | None = None
     mW_hbm_Gb_refresh: float | None = None
+    # 0.228: per-cycle dynamic energy per MAC slot (pJ per MAC-slot per core cycle) — clock tree / distribution,
+    # always-clocked pipeline registers and control: paid every core cycle the card is clocked, busy or stalled, so
+    # P_clk = macs × f × pJ (scales with f and, under DVFS, with V²).  The only dynamic power that falls with the clock
+    # when the op rate is set by memory.  Distinct from idle_W (a measured *idle-clock* floor) — not double counted.
+    pJ_clk_mac_cycle: float | None = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -189,6 +194,16 @@ ENERGY_PRESETS: dict[str, dict] = {
                               "one) vs 700 W TDP (lo0 tech blog 'Measuring the power of a GPU', citing controlled runs) "
                               "→ 0.103; static floor only — needs the card TDP (tdp_W, a product choice)"),
             "pJ_bit_d2d": (0.25, "来源", _UCIE),
+            # 0.228: clocked-but-idle power of the same H100 measurement: 121.7 W (CUDA context, P0 clocks, no work)
+            # − 71.8 W (no context, idle clocks) = 49.9 W, spread over 132 SM × 2048 bf16 MAC/clk = 270,336 MAC slots at
+            # 1.830 GHz (989.4 TFLOPS dense / (2 × 270,336)) → 0.101 pJ per MAC-slot-cycle.  Upper-side proxy: the Δ also
+            # holds the HBM P-state step and a GPU's non-tensor logic per slot.  Cross-checks (not fitted): at full MAC
+            # load it is 0.101 / (0.101 + 0.423) ≈ 19 % of MAC+clock power, between a gated 65 nm DNN accelerator's
+            # clocking 5.5 % of active power (elastic-clock chain, NSF PAR 10300339) and CPU clock 28 % + latches 46 %
+            # ungated (Bose/Martonosi/Brooks, HC17 tutorial) / ≈ ½ of an Intel CPU (Brooks et al., IEEE Micro 2000)
+            "pJ_clk_mac_cycle": (49.9 / (989.4e12 / 2) * 1e12, "推导/二手",
+                                 "H100 SXM 有 / 无 CUDA 上下文空闲功耗差 121.7 − 71.8 = 49.9 W（lo0 tech blog，同 idle_frac_tdp 来源）"
+                                 "÷ 270,336 MAC 槽 ÷ 1.83 GHz → 0.101 pJ/槽·周期；偏上限（含 HBM 档位切换与 GPU 非张量逻辑）"),
             "pJ_bit_link": (1.3, "来源", _NVL),
             "pJ_bit_net": (5.0, "假设", "跨节点网卡 / 光模块量级，无单一公开数字 — 约数倍于 C2C（与 horowitz_45nm 预设相同）"),
             "pJ_bit_host": (10.0, "假设", "PCIe 类主机链路代理（与 horowitz_45nm 预设相同；Horowitz 文中 DRAM I/O ~20 pJ/bit 量级的一半）"),
@@ -355,6 +370,8 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
     u = a["units"] or 1.0
     per = {k: v / u for k, v in a["counts"].items() if k != "idle"}
     per["idle_card_s"] = r.scenario.layout.cards * a["window_s"] / u
+    # 0.228: MAC-slot · core cycles per unit (the per-cycle term's count): every card clocked for the whole window
+    per["clock"] = per["idle_card_s"] * r.scenario.chip.macs * r.scenario.chip.freq_ghz * 1e9
     host_b = (getattr(r, "pipeline", None) or {}).get("load_bytes", 0.0)
     if host_b:              # 0.62: video sequential offload -- weights re-read over the host link every window
         per["host"] = host_b / u
@@ -364,7 +381,8 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
            "missing": [f.name for f in fields(EnergyTable) if getattr(table, f.name) is None
                        and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
                                           "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W",
-                                          "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh")
+                                          "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh",
+                                          "pJ_clk_mac_cycle")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
                        and not (f.name == "idle_W" and (idle_W_of(table) is not None or table.idle_frac_tdp is not None))]
                       + (["tdp_W"] if table.idle_W is None and table.idle_frac_tdp is not None and table.tdp_W is None
@@ -382,6 +400,9 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
     if pv is not None:
         j["dram_phy"] = per["dram"] * pv * 1e-12 * 8
         out["phy_pJ_field"] = pf
+    if table.pJ_clk_mac_cycle is not None:      # 0.228: per-cycle dynamic (clock tree / always-clocked registers)
+        j["clock"] = per["clock"] * table.pJ_clk_mac_cycle * 1e-12
+        out["clock_W_card"] = r.scenario.chip.macs * r.scenario.chip.freq_ghz * 1e9 * table.pJ_clk_mac_cycle * 1e-12
     iw = idle_W_of(table)
     if iw is not None:
         j["idle"] = iw * per["idle_card_s"]
