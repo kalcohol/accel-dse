@@ -5153,3 +5153,59 @@ Deferred to 0.225:
   - acceptance: needs a confidence → acceptance calibration, which EAGLE-2 Fig. 6 shows only as a plot.
 - EAGLE-3: multi-layer feature fusion plus a training-time test. For this cost model it changes acceptance only; the
   draft head cost is about one decoder layer, as in EAGLE-1/2.
+
+## §173 Tree acceptance: chain headline, band, Sequoia rank model (0.226)
+
+**Default.** `serving.spec_tree_accept_model` changes from `indep` to `chain`.
+- `chain` is a guaranteed lower bound. The tree contains the same-depth top-1 chain: EAGLE `choices.py` and the SGLang selection always keep the top-1 child.
+- Every tree evaluation reports the band [chain, indep] and the rank value as τ and TPOT at the same step time. The headline is the selected model.
+- Re-baseline: the default fingerprints do not move, because no default preset uses `spec_topk` > 1. Tree scenarios move from the indep values to the chain values (CHANGELOG 0.226).
+
+**Rank model.**
+- Positional acceptance (Sequoia, arXiv 2402.12374, Def. 3.1, 「来源」 as an assumption of that paper): the acceptance of a child depends only on its rank among the siblings.
+- Vector (App. E, Llama3-70B-Instruct target, Llama3-8B-Instruct draft, CNN DailyMail, temperature not stated): P = 0.7732, 0.1039, 0.0402, 0.0206, 0.0128, …, 31 entries.
+- Scaling to the scenario's top-1 acceptance a 「推导」: p₁ = a and p_j = P_j · min(a/P₁, (1−a)/(1−P₁)).
+  - The first term scales every rank with a. The second keeps the shape of the miss mass.
+  - The minimum keeps Σp ≤ 1 for every a, and at a = P₁ it equals the published vector.
+  - Taken alone, the first form exceeds the indep bound at a ≥ 0.8, and the second exceeds it at low a.
+- Tree, following SGLang `select_top_k_tokens` 「来源」:
+  1. The first step expands topk children of the root.
+  2. Each later step expands the topk best leaves by topk children each and keeps the topk best.
+  3. The verified tree is the N−1 best-scoring candidates.
+  - Under positional acceptance the draft's confidence order is the same as the acceptance order 「假设」.
+- τ = 1 + Σ_v f(v), where f(v) is the product of rank acceptances along the path (Sequoia Prop. 3.4).
+- The result is clamped to [chain, indep]. It is ≥ chain by construction: the selection maximises Σf, and the chain is a candidate subtree.
+
+**Check against the EAGLE-1 matched pairs** (no fit, tree k5 / topk 4 / N26):
+
+| Model | Error vs published |
+|---|---|
+| chain | −19.3 … −17.1 % |
+| **rank** | **+0.8 … +3.6 %** |
+| indep | +49.1 … +62.8 % |
+
+- On EAGLE's actual static tree (`mc_sim_7b_63`, scratch `sd221/rank226.py`), Sequoia's F(T) with the same vector gives −2.6 … +0.1 %.
+- Applying the rank vector through the old depth-width approximation (w = min(topk, (N−1)/k) children under every accepted node) gives +14 … +18 %. Tree structure, not only the per-rank vector, drives the 0.224 overestimate.
+- Why `rank` is not the default:
+  - It rests on one vector, measured with a standalone 8B draft rather than an EAGLE head, on CNN DailyMail rather than MT-bench, at an unstated temperature.
+  - The scaling to a is 推导.
+  - It is offered as an option and always shown inside the band.
+
+**Conclusions (1P, ctx 4096, a = 0.7; TPOT in ms as chain-k3 | tree k3 / topk 4 / N16 at chain / rank / indep):**
+
+| Model | Batch 1 | Batch 8 | Batch 32 |
+|---|---|---|---|
+| qwen3-32b + 0.6b draft | 8.257 \| 8.597 / 7.166 / 5.511 | 10.345 \| 13.064 / 10.89 / 8.374 | 17.502 \| 32.163 / 26.811 / 20.616 |
+| qwen3.8-27b | 7.479 \| 7.716 / 6.432 / 4.946 | 8.672 \| 10.498 / 8.751 / 6.729 | 12.762 \| 22.809 / 19.013 / 14.621 |
+| glm-5.3-flash | 6.315 \| 16.058 / 13.386 / 10.293 | 25.569 \| 41.9 / 34.927 / 26.858 | 43.64 \| 53.482 / 44.581 / 34.282 |
+
+- Headline (chain): a tree never beats the same-depth chain. It has the same τ and more verify and draft work.
+- Rank:
+  - The tree wins only at batch 1 for qwen3-32b + draft (−13 %) and qwen3.8-27b (−14 %; −20 % for k5 / topk 8 / N32).
+  - It ties or loses from batch 8 (qwen3.8-27b +0.9 %), so the crossover lies between batch 1 and batch 8.
+  - glm-5.3-flash never wins (+2 % at batch 32). The 0.224 "tree wins at batch 32 for glm" disappears.
+- Indep: the 0.224 conclusions, kept as the upper bound only.
+
+**Deferred.**
+- A per-depth acceptance matrix (Sequoia Algorithm 4 for EAGLE-like drafts, whose acceptance decays with depth). No published matrix values were found.
+- EAGLE-2 dynamic-tree confidence calibration.

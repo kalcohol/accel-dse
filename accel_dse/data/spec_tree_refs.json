@@ -10,6 +10,8 @@
   ],
   "matched_tree": {"src": "EAGLE repo eagle/model/choices.py mc_sim_7b_63 (all EAGLE-1 experiments; chain ablation: same 5 draft passes)",
                    "steps": 5, "topk": 4, "draft_tokens": 26, "nodes_per_depth": [4, 8, 8, 3, 2], "contains_top1_chain": true},
+  "rank_vector": {"src": "Sequoia arXiv 2402.12374 Appendix E (Llama3-70B-Instruct target, Llama3-8B-Instruct draft, CNN DailyMail; temperature not stated); positional acceptance assumption Def. 3.1",
+                  "use": "schedule.SEQUOIA_ACCEPT_VECTOR (0.226 spec_tree_accept_model = rank); scaled to the scenario's top-1 acceptance, never fitted to the matched pairs"},
   "unmatched": [
     {"src": "EAGLE-2 arXiv 2406.16858 Table 1 (MT-bench, T=0; dynamic tree, depth 6, top-10 expansion, 60 draft tokens)", "target": "Vicuna 7B", "steps": 6, "topk": 10, "draft_tokens": 60, "tau": 4.98},
     {"src": "EAGLE-2 arXiv 2406.16858 Table 2 (MT-bench, T=0; depth 6, 60 draft tokens)", "target": "LLaMA3-Instruct 8B", "steps": 6, "topk": 10, "draft_tokens": 60, "tau": 4.53},

@@ -6,6 +6,38 @@
 
 
 
+## [0.226.0]
+
+### Changed (default, re-baselined)
+- `serving.spec_tree_accept_model` default changed from `indep` to **`chain`**.
+  - `chain` is the guaranteed lower bound: the tree contains the same-depth top-1 chain.
+  - `indep` overestimates the published EAGLE-1 chain/tree pairs by +49…+63 %, so it no longer sets the headline.
+- Tree configurations now report TPOT and τ at the chain bound. Old→new at 1P, ctx 4096, a = 0.7, k3 / topk 4 / N16:
+
+  | Model | Batch 1 TPOT (ms) | Batch 8 TPOT (ms) | Batch 32 TPOT (ms) |
+  |---|---|---|---|
+  | qwen3.8-27b | 4.946 → 7.716 | 6.729 → 10.498 | 14.621 → 22.809 |
+  | qwen3-32b + qwen3-0.6b draft | 5.511 → 8.597 | — | 20.616 → 32.163 |
+  | glm-5.3-flash | — | — | 34.282 → 53.482 |
+
+- Default fingerprints are unchanged because no default preset or catalog scenario uses a tree (`spec_topk` > 1).
+
+### Added
+- Third acceptance model `rank`.
+  - Source: Sequoia (arXiv 2402.12374) positional acceptance vector, App. E. Its first entry is p₁ = 0.7732.
+  - Scaling 「推导」: rank j gets P_j · min(a/P₁, (1−a)/(1−P₁)).
+  - The tree follows SGLang-style construction: topk expansion of the topk best leaves per step, then the N−1 best by score.
+  - τ = 1 + Σ f(v) (Sequoia Prop. 3.4), held within [chain, indep].
+  - Error against the EAGLE-1 pairs: **+0.8…+3.6 %**, not fitted. It is not the default because it rests on one vector.
+  - CLI `--spec-tree-accept-model chain|rank|indep`.
+- Every tree evaluation reports the band: `spec.tau_{chain,rank,indep}`, `spec.tpot_ms_{chain,rank,indep}`, and the check against the published pairs for all three models. The warning names the headline model.
+- UI: new KPI card `#kpi-tree-band`. It shows the headline model, the TPOT band, τ for each model, and the upper-bound TPOT labelled as a secondary value.
+- What-if row and `spec_tree_compare`:
+  - The tree side now covers chain, rank and indep.
+  - `headline` and `crossover` follow the scenario's model (default chain).
+  - Per-model crossovers are reported.
+  - The lever row itself is evaluated, and therefore ranked, at the headline model.
+
 ## [0.225.0]
 
 ### Added

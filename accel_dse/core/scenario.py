@@ -56,7 +56,8 @@ class Serving:
     spec_draft_tokens: int = field(default=0, metadata={"omit_default": True})
     # 0.225: tree per-depth acceptance model — "indep" (0.224 「假设」 i.i.d. siblings, upper bound; +49…+63 % vs the
     # published EAGLE-1 tree τ) | "chain" (lower bound: the tree's top-1 path is the chain; −17…−19 %)
-    spec_tree_accept_model: str = field(default="indep", metadata={"omit_default": True})
+    # 0.226: default chain (was indep); "rank" = Sequoia positional-acceptance vector on an SGLang-style tree (+1…+4 %)
+    spec_tree_accept_model: str = field(default="chain", metadata={"omit_default": True})
     tpot_slo_ms: float = 50.0
     ttft_slo_ms: float = 2000.0
     moe_skew: float = 1.0          # MoE: busiest EP rank's token-expert pairs / mean (0.49; 1 = uniform) 「假设」
@@ -130,8 +131,8 @@ class Serving:
             v = getattr(self, nm)
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                 raise ValueError(f"serving.{nm} must be an integer in [{lo}, {hi}]")
-        if self.spec_tree_accept_model not in ("indep", "chain"):
-            raise ValueError("serving.spec_tree_accept_model must be indep|chain")
+        if self.spec_tree_accept_model not in ("chain", "rank", "indep"):
+            raise ValueError("serving.spec_tree_accept_model must be chain|rank|indep")
         if self.spec_draft_tokens == 1:
             raise ValueError("serving.spec_draft_tokens must be 0 (auto) or ≥ 2")
         for k, lo, hi in (("images", 0, 64), ("image_w", 1, 16384), ("image_h", 1, 16384), ("image_tokens", 0, SERVING_MAX)):

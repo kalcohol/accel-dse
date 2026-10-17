@@ -96,8 +96,9 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--spec-topk", type=int, default=None, help="tree drafting: branches per draft step (1 = chain) (0.224)")
     p.add_argument("--spec-draft-tokens", type=int, default=None,
                    help="tree drafting: verified tree tokens incl. root (0 = 1 + k·topk) (0.224)")
-    p.add_argument("--spec-tree-accept-model", default=None, choices=["indep", "chain"],
-                   help="tree per-depth acceptance: indep (i.i.d. siblings, upper bound) | chain (lower bound) (0.225)")
+    p.add_argument("--spec-tree-accept-model", default=None, choices=["chain", "rank", "indep"],
+                   help="tree acceptance: chain (lower bound, default 0.226) | rank (Sequoia positional vector) | "
+                        "indep (i.i.d. siblings, upper bound) (0.225)")
     p.add_argument("--spec-rollback", default=None, choices=["snapshot", "replay"],
                    help="hybrid-layer spec verify rollback: snapshot (SGLang default) | replay (ReplaySSM) (0.223)")
     p.add_argument("--tpot-slo", type=float, default=None, help="TPOT SLO ms")

@@ -575,17 +575,21 @@ SPEC_TREE_TOPK = 4                  # 0.225: tree offered when the scenario is a
 
 def spec_tree_alt(sv) -> dict:
     """0.225: the other drafting shape — a chain becomes a topk-4 tree with auto draft tokens (1 + k·topk, ≤ 64);
-    a tree becomes the chain of the same depth."""
+    a tree becomes the chain of the same depth.  0.226: the tree keeps the scenario's acceptance model (default
+    chain, the headline); the chain resets it to the default."""
     if sv.spec_topk > 1:
-        return {"spec_topk": 1, "spec_draft_tokens": 0, "spec_tree_accept_model": "indep"}
+        return {"spec_topk": 1, "spec_draft_tokens": 0, "spec_tree_accept_model": "chain"}
     return {"spec_topk": SPEC_TREE_TOPK, "spec_draft_tokens": 0}
 
 
+TREE_MODELS = ("chain", "rank", "indep")
+
+
 def spec_tree_compare(scn: Scenario) -> dict:
-    """0.225: chain vs tree (same depth spec_k) per batch: TPOT of the chain, of the tree with the upper-bound
-    acceptance model (indep, 0.224 「假设」) and the lower bound (chain: τ_tree = τ_chain), and the crossover — the
-    batch intervals where the winner flips under each bound (rows carry tree_wins_indep / tree_wins_chain).  The published EAGLE-1
-    matched pairs sit between the bounds (spec_refs.tree_check); nothing is fitted."""
+    """0.225: chain vs tree (same depth spec_k) per batch.  0.226: the headline is the scenario's acceptance model
+    (default chain = guaranteed lower bound); every row also carries the tree under chain / rank / indep — the band
+    [chain, indep] — and the crossover per model (batch intervals where the winner flips; rows carry
+    tree_wins_<model>).  The published EAGLE-1 matched pairs: spec_refs.tree_check; nothing is fitted."""
     from dataclasses import replace as rp
     sv0 = scn.serving
     tree = {"spec_topk": sv0.spec_topk, "spec_draft_tokens": sv0.spec_draft_tokens} if sv0.spec_topk > 1 \
@@ -594,9 +598,8 @@ def spec_tree_compare(scn: Scenario) -> dict:
     rows = []
     for b in SPEC_TREE_BATCHES:
         x = {"batch": b}
-        variants = (("chain", {"spec_topk": 1, "spec_draft_tokens": 0, "spec_tree_accept_model": "indep"}),
-                    ("tree_indep", {**tree, "spec_tree_accept_model": "indep"}),
-                    ("tree_chain", {**tree, "spec_tree_accept_model": "chain"}))
+        variants = [("chain", {"spec_topk": 1, "spec_draft_tokens": 0, "spec_tree_accept_model": "chain"})]
+        variants += [("tree_" + mm, {**tree, "spec_tree_accept_model": mm}) for mm in TREE_MODELS]
         for name, kw in variants:
             try:
                 q = evaluate(rp(scn, serving=rp(sv0, batch=b, **kw)))
@@ -621,13 +624,16 @@ def spec_tree_compare(scn: Scenario) -> dict:
             prev = (x["batch"], win)
         return out
     from .core.spec_refs import tree_check
-    ci, cc = tree_check("indep"), tree_check("chain")
-    return {"k": sv0.spec_k, "topk": tree["spec_topk"],
-            "draft_tokens": tree_tokens(sv0.spec_k, tree["spec_topk"], tree["spec_draft_tokens"]),
-            "rows": rows, "crossover_indep": cross("tree_indep"), "crossover_chain": cross("tree_chain"),
-            "check": {"indep": [ci["err_min"], ci["err_max"]], "chain": [cc["err_min"], cc["err_max"]],
-                      "gain_published": [min(ci["gain_published"]), max(ci["gain_published"])],
-                      "src": ci["rows"][0]["src"]}}
+    chk = {mm: tree_check(mm) for mm in TREE_MODELS}
+    out = {"k": sv0.spec_k, "topk": tree["spec_topk"], "headline": sv0.spec_tree_accept_model,
+           "draft_tokens": tree_tokens(sv0.spec_k, tree["spec_topk"], tree["spec_draft_tokens"]), "rows": rows,
+           "check": {**{mm: [c["err_min"], c["err_max"]] for mm, c in chk.items()},
+                     "gain_published": [min(chk["chain"]["gain_published"]), max(chk["chain"]["gain_published"])],
+                     "src": chk["chain"]["rows"][0]["src"]}}
+    for mm in TREE_MODELS:
+        out["crossover_" + mm] = cross("tree_" + mm)
+    out["crossover"] = out["crossover_" + sv0.spec_tree_accept_model]
+    return out
 
 
 def balance_whatif(scn: Scenario, r: Result) -> dict | None:
@@ -723,7 +729,8 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
         alt_t = spec_tree_alt(sv0)
         tree_key = "spec_tree_chain" if alt_t["spec_topk"] == 1 else "spec_tree_tree"
         lab = ("树 → 线性链（同深度 k）" if alt_t["spec_topk"] == 1
-               else f"线性链 → 树（topk {alt_t['spec_topk']}，N = {tree_tokens(sv0.spec_k, alt_t['spec_topk'], 0)}；接受率「假设」{sv0.spec_tree_accept_model}）")
+               else f"线性链 → 树（topk {alt_t['spec_topk']}，N = {tree_tokens(sv0.spec_k, alt_t['spec_topk'], 0)}；"
+                    f"主值接受率 {sv0.spec_tree_accept_model}，区间 [chain, indep] 见对比）")
         cases.append((tree_key, f"投机草稿形状 {lab} · EAGLE / SGLang 「来源」", rp(scn, serving=rp(sv0, **alt_t))))
 
     def pick(q, b):

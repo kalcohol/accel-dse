@@ -28,8 +28,8 @@ def iid_accept(tau: float, k: int) -> float:
     return (lo + hi) / 2
 
 
-@functools.lru_cache(maxsize=4)
-def tree_check(model: str = "indep") -> dict:
+@functools.lru_cache(maxsize=8)
+def tree_check(model: str = "chain") -> dict:
     """Each matched chain / tree pair: a from the chain τ at the tree's depth, the model's tree τ at the published tree
     shape (steps, topk, draft tokens) vs the published tree τ.  err = model / published − 1."""
     d = tree_refs()

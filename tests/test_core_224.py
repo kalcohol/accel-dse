@@ -117,7 +117,7 @@ def test_tree_tokens_and_acceptance():
 
 def test_tree_verify_cost_and_tokens():
     ch = evaluate(_sc("qwen3.8-27b", 1, 3))
-    tr = evaluate(_sc("qwen3.8-27b", 1, 3, topk=4, n=16))
+    tr = evaluate(_sc("qwen3.8-27b", 1, 3, topk=4, n=16).replace("serving.spec_tree_accept_model", "indep"))  # 0.226
     assert tr.step > ch.step and tr.tokens_per_step > ch.tokens_per_step
     assert abs(tr.tokens_per_step - spec_expected_tokens(3, spec_tree_accept(0.7, 3, 4, 16))) < 1e-12
     assert _need(tr) > _need(ch)                       # hybrid: N intermediate states (SGLang num_draft_tokens)

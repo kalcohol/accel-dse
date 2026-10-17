@@ -243,7 +243,8 @@ function treeWarn() {     // 0.225: client-side checks of the tree fields (the s
     if (sv.spec_rollback === 'replay') out.push('⚠ 树形验证不支持 ReplaySSM，按快照计');
     const m = S.byId[S.sc.model];
     if (m && m.draft === 'dspark' && !sv.draft_model) out.push('⚠ DSpark 是块草稿，topk 被忽略');
-    out.push(`树接受率「假设」${sv.spec_tree_accept_model || 'indep'}：对照 EAGLE-1 ${sv.spec_tree_accept_model === 'chain' ? '−17…−19 %' : '+49…+63 %'}`);
+    const am = sv.spec_tree_accept_model || 'chain';
+    out.push(`树接受率主值 ${am}：对照 EAGLE-1 ${{ chain: '−17…−19 %（下界）', rank: '+1…+4 %（Sequoia 位次向量）', indep: '+49…+63 %（上界）' }[am]}`);
   } else if (n && k) out.push('线性链（topk 1）：树 token 被忽略');
   if (!k && (t > 1 || n)) out.push('spec_k = 0：未启用投机解码');
   w.textContent = out.join('；');
@@ -256,7 +257,7 @@ function syncInputs() {
   if ($('h-host_overlap')) $('h-host_overlap').value = S.sc.host_overlap || 'serial';
   if ($('s-spec_rollback')) $('s-spec_rollback').value = S.sc.serving.spec_rollback || 'snapshot';
   if ($('s-draft_model')) { fillDrafts(); $('s-draft_model').value = S.sc.serving.draft_model || ''; draftWarn(); }
-  if ($('s-spec_tree_accept_model')) $('s-spec_tree_accept_model').value = S.sc.serving.spec_tree_accept_model || 'indep';
+  if ($('s-spec_tree_accept_model')) $('s-spec_tree_accept_model').value = S.sc.serving.spec_tree_accept_model || 'chain';
   treeWarn();
   if ($('pd-length_mix') && $('pd-length_mix')._sync) $('pd-length_mix')._sync();
   if ($('pd-prefix_tree') && $('pd-prefix_tree')._sync) $('pd-prefix_tree')._sync();
@@ -697,6 +698,12 @@ function renderEval(r) {
     const over = s.tpot_ms > sv.tpot_slo_ms;
     k.push(kpi('TPOT', num(s.tpot_ms) + ' ms', `batch ${s.batch}${auto} · SLO ${sv.tpot_slo_ms} ms${over ? ' · 超出' : ''}`, over ? 'warn' : ''));
     k.push(kpi('吞吐 / 卡', num(s.tok_s_card) + ' tok/s', `共 ${num(s.tok_s)} tok/s · ${s.cards} 卡 · ${s.layout}`));
+    // 0.226: tree drafting — headline TPOT uses the chain lower bound by default; the band and the upper bound are secondary
+    const sp = r.spec;
+    if (sp && sp.tau_indep !== undefined)
+      k.push(h('div', { class: 'kpi', id: 'kpi-tree-band' }, h('div', { class: 'l' }, `树 TPOT 区间（主值 ${sp.accept_model}）`),
+        h('div', { class: 'v' }, `${num(sp.tpot_ms_chain)} … ${num(sp.tpot_ms_indep)} ms`),
+        h('div', { class: 's' }, `τ chain ${num(sp.tau_chain)} · rank ${num(sp.tau_rank)} · indep ${num(sp.tau_indep)}；上界 TPOT ${num(sp.tpot_ms_indep)} ms 仅供参考（EAGLE-1 对照：indep ${pct(sp.check.indep[0])}…${pct(sp.check.indep[1])}，rank ${pct(sp.check.rank[0])}…${pct(sp.check.rank[1])}，chain ${pct(sp.check.chain[0])}…${pct(sp.check.chain[1])}）`)));
   } else {
     const over = s.ttft_ms > sv.ttft_slo_ms;
     const vz = s.vision;
@@ -1088,12 +1095,14 @@ function renderBalanceWhatif(w) {
     h('div', { class: 'small' }, w.works.length ? `有效杠杆 · levers that work：${w.works.join('、')}（阈值 ${pct(w.gain)}）` : '没有单一杠杆有效 · no single lever works'));
 }
 function treeCmp(t) {
-  const one = (v) => v.error ? v.error : `${num(v.tpot_ms)} ms（τ ${num(v.tau)}）${v.fits ? '' : ' ⚠ 放不下'}`;
-  const fl = (a) => a.length ? a.map(([p, q]) => `B${p}→B${q}`).join('、') : '无翻转';
+  // 0.226: headline = the scenario's acceptance model (default chain); the band [chain, indep] and rank alongside
+  const one = (v) => !v ? '—' : v.error ? v.error : `${num(v.tpot_ms)} ms（τ ${num(v.tau)}）${v.fits ? '' : ' ⚠ 放不下'}`;
+  const fl = (a) => !a ? '—' : a.length ? a.map(([p, q]) => `B${p}→B${q}`).join('、') : '无翻转';
+  const hd = t.headline || 'chain';
   return h('div', { class: 'small', id: 'spec-tree-cmp' },
-    `链 vs 树（k ${t.k}，topk ${t.topk}，N ${t.draft_tokens}）：`,
-    ...t.rows.map((x) => h('div', {}, `B${x.batch} 链 ${one(x.chain)} · 树 indep ${one(x.tree_indep)} · 树 chain 下界 ${one(x.tree_chain)}`)),
-    h('div', {}, `胜负翻转 · crossover：indep ${fl(t.crossover_indep)}；chain 下界 ${fl(t.crossover_chain)}。对照 EAGLE-1 已发表链/树配对：indep ${pct(t.check.indep[0])}…${pct(t.check.indep[1])}，chain ${pct(t.check.chain[0])}…${pct(t.check.chain[1])}；已发表树增益 ${pct(t.check.gain_published[0])}…${pct(t.check.gain_published[1])}（不拟合）`));
+    `链 vs 树（k ${t.k}，topk ${t.topk}，N ${t.draft_tokens}；主值 ${hd}）：`,
+    ...t.rows.map((x) => h('div', {}, `B${x.batch} 链 ${one(x.chain)} · 树（${hd}）${one(x['tree_' + hd])} · 区间 [chain ${one(x.tree_chain)}, indep ${one(x.tree_indep)}] · rank ${one(x.tree_rank)}`)),
+    h('div', {}, `胜负翻转 · crossover（主值 ${hd}）：${fl(t.crossover)}；chain ${fl(t.crossover_chain)}；rank ${fl(t.crossover_rank)}；indep ${fl(t.crossover_indep)}。对照 EAGLE-1 已发表链/树配对：chain ${pct(t.check.chain[0])}…${pct(t.check.chain[1])}，rank ${pct(t.check.rank[0])}…${pct(t.check.rank[1])}，indep ${pct(t.check.indep[0])}…${pct(t.check.indep[1])}；已发表树增益 ${pct(t.check.gain_published[0])}…${pct(t.check.gain_published[1])}（不拟合）`));
 }
 function renderSensitivity(r) {
   const s = r.sensitivity;
@@ -2122,7 +2131,7 @@ async function init() {
     bindNumber('s-' + k, () => S.sc.serving[k] ?? d, (x) => { if (x === d) delete S.sc.serving[k]; else S.sc.serving[k] = x; treeWarn(); },
       { int: true, check: (x) => x >= lo && x <= hi && !(k === 'spec_draft_tokens' && x === 1) });
   }
-  $('s-spec_tree_accept_model').addEventListener('change', (e) => { if (e.target.value === 'indep') delete S.sc.serving.spec_tree_accept_model; else S.sc.serving.spec_tree_accept_model = e.target.value; treeWarn(); schedule(); });
+  $('s-spec_tree_accept_model').addEventListener('change', (e) => { if (e.target.value === 'chain') delete S.sc.serving.spec_tree_accept_model; else S.sc.serving.spec_tree_accept_model = e.target.value; treeWarn(); schedule(); });
   $('s-draft_model').addEventListener('change', (e) => { if (e.target.value) S.sc.serving.draft_model = e.target.value; else delete S.sc.serving.draft_model; draftWarn(); schedule(); });
   $('h-host_overlap').addEventListener('change', (e) => { if (e.target.value === 'serial') delete S.sc.host_overlap; else S.sc.host_overlap = e.target.value; schedule(); });
   for (const k of ['pp', 'tp', 'dp', 'ep', 'etp'])

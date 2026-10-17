@@ -68,19 +68,20 @@ def test_tree_depth_capped_by_draft_tokens():
 
 # ---- 2. bounds in the evaluation
 def test_accept_model_bounds_and_default():
-    up = evaluate(_sc("qwen3.8-27b", 8, 3, 0.7, topk=4, n=16))
-    up2 = evaluate(_sc("qwen3.8-27b", 8, 3, 0.7, topk=4, n=16, am="indep"))
+    dflt = evaluate(_sc("qwen3.8-27b", 8, 3, 0.7, topk=4, n=16))             # 0.226: default = chain (was indep)
+    up = evaluate(_sc("qwen3.8-27b", 8, 3, 0.7, topk=4, n=16, am="indep"))
     lo = evaluate(_sc("qwen3.8-27b", 8, 3, 0.7, topk=4, n=16, am="chain"))
     ch = evaluate(_sc("qwen3.8-27b", 8, 3, 0.7))
-    assert up.tpot == up2.tpot and up.tokens_per_step > lo.tokens_per_step
+    assert dflt.tpot == lo.tpot and dflt.spec["accept_model"] == "chain" and up.tokens_per_step > lo.tokens_per_step
     assert abs(lo.tokens_per_step - ch.tokens_per_step) < 1e-12
     assert abs(lo.step - up.step) < 1e-15                         # the model changes τ, not the step cost
     assert up.spec["tau_indep"] == up.tokens_per_step and up.spec["tau_chain"] == lo.tokens_per_step
-    assert up.spec["check"]["err_max"] > 0.45 and lo.spec["check"]["err_max"] < 0
+    assert up.spec["check"]["indep"][1] > 0.45 and lo.spec["check"]["chain"][1] < 0
     assert any("EAGLE-1" in w for w in up.warnings)
     assert ch.spec and "tau_indep" not in ch.spec and not any("EAGLE-1" in w for w in ch.warnings)
-    c2 = evaluate(_sc("qwen3.8-27b", 8, 3, 0.7, am="chain"))
+    c2 = evaluate(_sc("qwen3.8-27b", 8, 3, 0.7, am="indep"))
     assert c2.tpot == ch.tpot and any("spec_tree_accept_model 已忽略" in w for w in c2.warnings)
+    assert not any("spec_tree_accept_model 已忽略" in w for w in ch.warnings)
 
 
 def test_accept_model_validation_and_cli():
@@ -99,7 +100,7 @@ def test_accept_model_validation_and_cli():
 def test_result_dict_spec():
     r = evaluate(_sc("qwen3.8-27b", 8, 3, 0.7, topk=4, n=16))
     d = api.result_dict(r)
-    assert d["spec"]["topk"] == 4 and d["spec"]["n"] == 16 and d["spec"]["accept_model"] == "indep"
+    assert d["spec"]["topk"] == 4 and d["spec"]["n"] == 16 and d["spec"]["accept_model"] == "chain"
     assert "spec" not in api.result_dict(evaluate(_sc("qwen3.8-27b", 8)))
 
 

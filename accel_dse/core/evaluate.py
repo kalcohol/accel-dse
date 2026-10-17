@@ -1589,7 +1589,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         topk_ = 1
     if sv.spec_draft_tokens and topk_ <= 1 and spec_k:
         warnings.append(f"spec_draft_tokens 已忽略：线性链（spec_topk = 1）验证 1 + k = {1 + spec_k} 个 token")
-    if sv.spec_tree_accept_model != "indep" and topk_ <= 1 and spec_k:
+    if sv.spec_tree_accept_model != "chain" and topk_ <= 1 and spec_k:
         warnings.append("spec_tree_accept_model 已忽略：线性链（spec_topk = 1）没有树")
     if topk_ > 1:
         nt = tree_tokens(spec_k, topk_, sv.spec_draft_tokens)
@@ -1848,15 +1848,21 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             spec_info = {"k": spec_k, "topk": topk_, "accept": sv.spec_accept, "accept_model": sv.spec_tree_accept_model,
                          "n": tree_tokens(spec_k, topk_, sv.spec_draft_tokens) if topk_ > 1 else 1 + spec_k, "tau": e_tok}
             if topk_ > 1:
-                for mm in ("indep", "chain"):
-                    spec_info["tau_" + mm] = spec_tree_tau(sv.spec_accept, spec_k, topk_, sv.spec_draft_tokens, mm)
+                # 0.226: the band [chain, indep] (+ rank) is always reported; TPOT at each τ (same step)
+                for mm in ("chain", "rank", "indep"):
+                    t_ = spec_tree_tau(sv.spec_accept, spec_k, topk_, sv.spec_draft_tokens, mm)
+                    spec_info["tau_" + mm] = t_
+                    spec_info["tpot_ms_" + mm] = step / t_ * 1e3
                 from .spec_refs import tree_check
+                spec_info["check"] = {mm: [c["err_min"], c["err_max"]] for mm in ("chain", "rank", "indep")
+                                      for c in (tree_check(mm),)}
+                spec_info["check"]["src"] = tree_check("chain")["rows"][0]["src"]
                 c = tree_check(sv.spec_tree_accept_model)
-                spec_info["check"] = {"err_min": c["err_min"], "err_max": c["err_max"], "src": c["rows"][0]["src"]}
                 warnings.append(
-                    f"树形接受率「假设」（{sv.spec_tree_accept_model}）：τ = {e_tok:.2f}，区间 [chain 下界 "
-                    f"{spec_info['tau_chain']:.2f}, indep 上界 {spec_info['tau_indep']:.2f}]；对照 EAGLE-1 已发表链/树配对，"
-                    f"该模型误差 {c['err_min'] * 100:+.0f} … {c['err_max'] * 100:+.0f} %（不拟合，仅报告）")
+                    f"树形接受率（{sv.spec_tree_accept_model}，主值）：τ = {e_tok:.2f}；区间 [chain 下界 "
+                    f"{spec_info['tau_chain']:.2f}, indep 上界 {spec_info['tau_indep']:.2f}]，rank {spec_info['tau_rank']:.2f}；"
+                    f"TPOT {spec_info['tpot_ms_chain']:.2f} … {spec_info['tpot_ms_indep']:.2f} ms。对照 EAGLE-1 已发表链/树配对，"
+                    f"{sv.spec_tree_accept_model} 误差 {c['err_min'] * 100:+.0f} … {c['err_max'] * 100:+.0f} %（不拟合，仅报告）")
         tpot = step / e_tok
         thr = sv.batch * e_tok / step
         ttft = 0.0

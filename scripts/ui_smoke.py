@@ -105,18 +105,24 @@ with sync_playwright() as pw:
     p.fill("#s-spec_draft_tokens", "16"); time.sleep(3)
     assert "bad" not in (p.get_attribute("#s-spec_draft_tokens", "class") or "")
     k3 = kpis(p)
-    p.select_option("#s-spec_tree_accept_model", "chain")
+    # 0.226: default chain headline + band KPI; switching to indep changes the headline
+    for _ in range(60):
+        if p.is_visible("#kpi-tree-band"): break
+        time.sleep(0.5)
+    assert "chain" in p.inner_text("#kpi-tree-band") and "rank" in p.inner_text("#kpi-tree-band"), p.inner_text("#kpi-tree-band")
+    p.select_option("#s-spec_tree_accept_model", "indep")
     for _ in range(120):
         if kpis(p) != k3: break
         time.sleep(0.5)
     assert kpis(p) != k3, "spec_tree_accept_model did not change KPIs"
+    p.select_option("#s-spec_tree_accept_model", "chain"); time.sleep(3)
     p.fill("#s-mamba_track_interval", "256"); time.sleep(3)
     assert "bad" not in (p.get_attribute("#s-mamba_track_interval", "class") or "")
     for _ in range(400):
-        if p.is_visible("#spec-tree-cmp"): break
+        if p.is_visible("#spec-tree-cmp") and "主值 chain" in p.inner_text("#spec-tree-cmp"): break
         time.sleep(0.5)
     t = p.inner_text("#spec-tree-cmp")
-    assert "B1" in t and "B32" in t and "crossover" in t, t[:400]
+    assert "B1" in t and "B32" in t and "crossover" in t and "主值 chain" in t, t[:400]
     print("TREE ok", t[:200].replace("\n", " "))
     p.screenshot(path="/workspace/smoke/ui166.png", full_page=False)
     b.close()

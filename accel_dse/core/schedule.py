@@ -34,6 +34,8 @@ Speculative decode (k drafts, acceptance a, i.i.d. 「假设」):
 
 from __future__ import annotations
 
+import functools
+
 import math
 from dataclasses import dataclass
 
@@ -281,7 +283,41 @@ def tree_tokens(k: int, topk: int, n: int) -> int:
     return n if n else min(64, 1 + k * topk)
 
 
-TREE_ACCEPT_MODELS = ("indep", "chain")
+TREE_ACCEPT_MODELS = ("chain", "rank", "indep")      # 0.226: default chain (lower bound); band [chain, indep]
+
+# 0.226: Sequoia (arXiv 2402.12374) App. E acceptance vector — probability that the j-th ranked child of an accepted
+# token is accepted (positional acceptance assumption, Def. 3.1); Llama3-70B-Instruct target, Llama3-8B-Instruct draft,
+# CNN DailyMail 「来源」 (temperature not stated)
+SEQUOIA_ACCEPT_VECTOR = (0.7732, 0.1039, 0.0402, 0.0206, 0.0128, 0.0081, 0.0064, 0.0043, 0.0035, 0.0026, 0.0025, 0.0021,
+                         0.0016, 0.0014, 0.0010, 0.0010, 0.0010, 0.0007, 0.0007, 0.0006, 0.0007, 0.0006, 0.0004, 0.0004,
+                         0.0005, 0.0006, 0.0004, 0.0003, 0.0002, 0.0004, 0.0001)
+
+
+def rank_accept(a: float, j: int) -> float:
+    """0.226: acceptance of the j-th ranked child (0-based) for a top-1 acceptance a 「推导」: p_0 = a, p_j = P_j ·
+    min(a / P_0, (1 − a) / (1 − P_0)) — the smaller of "scale every rank with a" and "keep the shape of the miss mass",
+    so Σ p ≤ 1 at any a; at a = P_0 both equal the published vector."""
+    P = SEQUOIA_ACCEPT_VECTOR
+    if j == 0:
+        return a
+    if j >= len(P):
+        return 0.0
+    return P[j] * min(a / P[0], (1.0 - a) / (1.0 - P[0]))
+
+
+@functools.lru_cache(maxsize=4096)
+def rank_tree_tau(a: float, k: int, topk: int, n: int) -> float:
+    """0.226: τ of an EAGLE-2 / SGLang-style draft tree under positional acceptance: each of k draft steps expands the
+    topk best leaves with topk children each and keeps the topk best (SGLang eagle_utils select_top_k_tokens 「来源」);
+    the verified tree is the n − 1 best-scoring candidates (score f(v) = Π child-rank acceptance on the path, which
+    under positional acceptance equals the draft-confidence order 「假设」); τ = 1 + Σ f(v) (Sequoia Prop. 3.4)."""
+    cands, front = [], [1.0]
+    for d in range(k):
+        nxt = sorted(((f * rank_accept(a, r), d) for f in front for r in range(topk)), key=lambda x: -x[0])
+        cands += nxt
+        front = [x[0] for x in nxt[:topk]]
+    cands.sort(key=lambda x: (-x[0], x[1]))
+    return 1.0 + sum(x[0] for x in cands[:n - 1])
 
 
 def spec_tree_accept(a: float, k: int, topk: int, n: int, model: str = "indep") -> float:
@@ -300,9 +336,13 @@ def spec_tree_accept(a: float, k: int, topk: int, n: int, model: str = "indep") 
 
 def spec_tree_tau(a: float, k: int, topk: int, n: int, model: str = "indep") -> float:
     """0.225: expected tokens per verify of a chain / tree.  A tree of n verified tokens is at most n − 1 deep, so its
-    accepted path is capped at min(k, n − 1) drafts (0.224 counted k depths even when n − 1 < k)."""
+    accepted path is capped at min(k, n − 1) drafts (0.224 counted k depths even when n − 1 < k).
+    0.226 "rank": the positional-acceptance tree (rank_tree_tau), held inside the band [chain, indep]."""
     d = min(k, tree_tokens(k, topk, n) - 1) if topk > 1 else k
-    return spec_expected_tokens(d, spec_tree_accept(a, k, topk, n, model))
+    if model == "rank" and topk > 1 and k > 0:
+        lo, hi = spec_tree_tau(a, k, topk, n, "chain"), spec_tree_tau(a, k, topk, n, "indep")
+        return min(hi, max(lo, rank_tree_tau(a, k, topk, tree_tokens(k, topk, n))))
+    return spec_expected_tokens(d, spec_tree_accept(a, k, topk, n, "chain" if model == "rank" else model))
 
 
 @dataclass(frozen=True)
