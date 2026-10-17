@@ -65,6 +65,20 @@ with sync_playwright() as pw:
     t = p.inner_text("#pdpc-basis")
     assert "主机 L2 200 GB" in t and "write_back" in t, t[:400]
     print("HOST L2 ok")
+    # 0.231 chunked-prefill engine profile: default vllm (budget − decodes), legacy_512 selectable
+    for _ in range(240):
+        if "vllm ·" in (p.inner_text("#pdq-tbl") if p.is_visible("#pdq-tbl") else ""): break
+        time.sleep(0.5)
+    t = p.inner_text("#pdq-tbl")
+    assert "分块 prefill（vllm ·" in t and "预算" in t, t[:400]
+    assert p.is_disabled("#pd-chunk_tokens") and not p.is_disabled("#pd-chunk_budget")
+    p.select_option("#pd-chunk_profile", "legacy_512")
+    for _ in range(240):
+        if "legacy_512 · 512 tok" in p.inner_text("#pdq-tbl"): break
+        time.sleep(0.5)
+    assert "legacy_512 · 512 tok" in p.inner_text("#pdq-tbl"), p.inner_text("#pdq-tbl")[:400]
+    p.select_option("#pd-chunk_profile", "vllm"); time.sleep(2)
+    print("CHUNK PROFILE ok")
     # 0.223 independent draft model picker + spec rollback select
     p.uncheck("#pd-enabled"); time.sleep(2)
     p.select_option("#model", "qwen3-32b"); time.sleep(3)

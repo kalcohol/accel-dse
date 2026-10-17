@@ -149,12 +149,15 @@ V4_FAMILIES = {
 V4_SCHED = "wide"
 
 
-def v4_scenario(load: float, cv: float = 0.0, prefix: bool = False, family: str = "dense8b") -> Scenario:
+def v4_scenario(load: float, cv: float = 0.0, prefix: bool = False, family: str = "dense8b",
+                chunk_profile: str = "legacy_512") -> Scenario:
     from .hardware import CHIPS
     from .scenario import PDConfig
     model, lay, pc, dc, ttft_slo, tpot_slo = V4_FAMILIES[family]
     pd = dict(enabled=True, prefill_layout=Layout(**lay), prefill_cards=pc, decode_cards=dc, load=load,
-              prompt_cv=cv, out_cv=cv)
+              prompt_cv=cv, out_cv=cv, chunk_profile=chunk_profile)
+    # 0.231: the stored grid (data/v4_serving.json) was produced with 512-token chunks → pinned to legacy_512;
+    # v4_serving (live) checks the default vllm profile as well
     if prefix:
         pd.update(prefix_len=2048, prefix_count=20000)
     return Scenario(model=model, chip=replace(CHIPS["1P"], instance_sched=V4_SCHED), mem_id=HBM_6600, layout=Layout(**lay),
@@ -274,7 +277,7 @@ def v4_serving(n_req: int = 1000) -> list[dict]:
     from .pdsim import compare
     rows = []
     for load, cv, prefix in ((0.6, 0.0, False), (0.6, 1.0, False), (0.6, 0.0, True)):
-        r = compare(v4_scenario(load, cv, prefix), n_req=n_req, warmup=n_req // 4, seed=11)
+        r = compare(v4_scenario(load, cv, prefix, chunk_profile="vllm"), n_req=n_req, warmup=n_req // 4, seed=11)
         for mode, x in r.get("modes", {}).items():
             for metric, e in x["err"].items():
                 band = V4_BANDS.get(metric)

@@ -17,7 +17,7 @@ import random
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 
-from .pdqueue import B_CAPS, _Pool, _chunk_plan, _fused_step
+from .pdqueue import B_CAPS, _Pool, _chunk_plan, _fused_step, chunk_at
 
 # --------------------------------------------------------------------------- helpers
 
@@ -645,9 +645,10 @@ class ColocChunked(_Replica):
     """Colocated, Sarathi / vLLM chunked prefill: every iteration = running decodes + ≤ C tokens of the head-of-line
     prompt (FCFS, one prompt at a time); step = the engine's stage-level fused iteration (pdqueue._fused_step)."""
 
-    def __init__(self, eng: Engine, costs: Costs, slots: int, C: int):
+    def __init__(self, eng: Engine, costs: Costs, slots: int, C: int, spec: dict | None = None):
         super().__init__(eng, costs, slots)
         self.C = max(1, C)
+        self.spec = spec          # 0.231: engine profile (pdqueue.chunk_spec); vLLM: chunk = budget − running decodes
         self.pq: deque[Req] = deque()
         self.cur: Req | None = None
         self.cur_left = 0
@@ -682,10 +683,15 @@ class ColocChunked(_Replica):
             if self.running:
                 self._decode_iter()
             return
+        C = chunk_at(self.spec, len(self.running)) if self.spec else self.C
+        if C <= 0 and self.running:   # 0.231 vLLM decode-first: the decodes fill the budget — decode-only iteration
+            self._decode_iter()
+            return
+        C = max(1, C)
         stall = self._preempt()
         new = max(1, self.cur.S - self.cur.p)
-        take = min(self.C, self.cur_left)
-        _, _, rr = _chunk_plan(self.cur.S, self.cur.p, self.C)
+        take = min(C, self.cur_left)
+        _, _, rr = _chunk_plan(self.cur.S, self.cur.p, C)
         pre1 = self._p1(self.cur.S, self.cur.p)
         dec = self.costs.pool.run("decode", max(1, len(self.running)))
         step = _fused_step(dec, pre1, take / new, rr)
@@ -1055,7 +1061,7 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
             done_kinds = {"rep_dec_done": "dec_done", "rep_pf_done": "pf_done", "rep_recompute_done": "recompute_done"}
         elif mode == "coloc_chunked":
             cap = None
-            reps = [ColocChunked(eng, costs, B, C) for _ in range(r_c)]
+            reps = [ColocChunked(eng, costs, B, C, ctx.get("chunk")) for _ in range(r_c)]
             done_kinds = {"rep_dec_done": "dec_done", "rep_chunk_done": "chunk_done",
                           "rep_recompute_done": "recompute_done"}
         else:

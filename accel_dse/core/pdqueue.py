@@ -1192,6 +1192,50 @@ def _fused_step(dec: Result, pre1: Result, f: float, reread_frac: float) -> floa
     return dec.step * worst / dec.tick if dec.tick > 0 else math.inf
 
 
+# 0.231: engine profiles of the colocated chunked mode.  vLLM (vllm/engine/arg_utils.py, OPENAI_API_SERVER defaults
+# by device memory; docs 'Optimization and Tuning': decode-first, the budget includes the running decodes, the last
+# pending prefill is chunked) 「来源」; legacy_512 = the ≤ 0.230 「假设」.
+VLLM_BUDGET_TIERS = ((160, 16384), (70, 8192), (0, 2048))       # (≥ card GiB, max_num_batched_tokens)
+CHUNK_PROFILES = {
+    "vllm": {"tag": "来源", "label": "vLLM：迭代 token 预算含运行中 decode，decode 优先，prefill 块 = 预算 − 运行 batch"},
+    "vllm_v0": {"tag": "来源", "label": "vLLM V0 文档默认：迭代 token 预算 2048（含 decode），decode 优先"},
+    "legacy_512": {"tag": "假设", "label": "≤ 0.230：每次迭代 decode 之外再加 512 prompt token"},
+    "fixed": {"tag": "用户", "label": "每次迭代 decode 之外再加 chunk_tokens 个 prompt token"},
+}
+
+
+def vllm_budget(card_gib: float) -> int:
+    for lo, b in VLLM_BUDGET_TIERS:
+        if card_gib >= lo:
+            return b
+    return VLLM_BUDGET_TIERS[-1][1]
+
+
+def chunk_spec(pd, card_gib: float | None) -> dict:
+    """0.231: the colocated chunked mode's chunk rule: {profile, tag, budget | C, source}."""
+    prof = getattr(pd, "chunk_profile", "legacy_512")
+    if prof == "vllm":
+        if pd.chunk_budget is not None:
+            return {"profile": prof, "tag": "用户", "budget": pd.chunk_budget, "source": "pd.chunk_budget"}
+        b = vllm_budget(card_gib or 0.0)
+        return {"profile": prof, "tag": "来源", "budget": b, "card_GiB": card_gib,
+                "source": f"vLLM arg_utils OPENAI_API_SERVER 默认（每卡 {card_gib or 0:.0f} GiB → {b}）"}
+    if prof == "vllm_v0":
+        b = pd.chunk_budget or 2048
+        return {"profile": prof, "tag": "来源" if pd.chunk_budget is None else "用户", "budget": b,
+                "source": "vLLM V0 docs (v0.7.3/v0.8.3) max_num_batched_tokens 默认 2048"}
+    if prof == "legacy_512":
+        return {"profile": prof, "tag": "假设", "C": 512, "source": "≤ 0.230 默认 512「假设」"}
+    return {"profile": prof, "tag": "用户", "C": pd.chunk_tokens, "source": "pd.chunk_tokens"}
+
+
+def chunk_at(spec: dict, k: float) -> int:
+    """Prompt tokens an iteration carries at running batch k (0 = the budget is used up by the decodes)."""
+    if "budget" in spec:
+        return max(0, int(spec["budget"] - math.ceil(k)))
+    return spec["C"]
+
+
 def _chunk_plan(S: int, p: int, C: int) -> tuple[int, float, float]:
     """(chunks, f = share of the (uncached) prefill per chunk, KV re-read per chunk / the prefill's KV write)."""
     new = S - p
@@ -1202,25 +1246,39 @@ def _chunk_plan(S: int, p: int, C: int) -> tuple[int, float, float]:
 
 
 def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
-    cp, r_c, pts, out, B, C = ctx["cpool"], ctx["r_c"], ctx.get("pts_c", ctx["pts"]), ctx["out"], ctx["B"], ctx["C"]
+    cp, r_c, pts, out, B = ctx["cpool"], ctx["r_c"], ctx.get("pts_c", ctx["pts"]), ctx["out"], ctx["B"]
+    spec = ctx.get("chunk") or {"profile": "fixed", "C": ctx["C"]}       # 0.231: engine profile (chunk_spec)
     lam_c = lam / r_c
     ws = [w for w, _, _ in pts]
-    res = {"lambda_rps": lam, "stable": False, "chunk_tokens": C}
+    res = {"lambda_rps": lam, "stable": False, "chunk_tokens": chunk_at(spec, B), "chunk_profile": spec}
     pre1 = [cp.run("prefill", 1, S, p) for _, S, p in pts]
     if not all(r.fits for r in pre1):
         return {**res, "why": "单条 prefill 放不下"}
-    plans = [_chunk_plan(S, p, C) for _, S, p in pts]
-    ns = [n for n, _, _ in plans]
-    nu = lam_c * _wsum(ws, ns)                  # chunk iterations / s
-    lasts = [max(0.0, (S - p) - (n - 1) * C) / max(1, S - p) for (_, S, p), n in zip(pts, ns)]
+    if chunk_at(spec, B) <= 0:
+        # vLLM decode-first: at the batch limit the running decodes use the whole token budget — no prompt progress
+        return {**res, "why": f"token 预算 {spec.get('budget')} ≤ 运行 batch {B}：decode 占满预算，prefill 无进展"}
+
+    pmemo: dict = {}
+
+    def plans_at(k: int):
+        """0.231: chunk plans at running batch k — (plans, chunks per prompt, last-chunk shares, C)."""
+        C = chunk_at(spec, k)
+        if C not in pmemo:
+            pl = [_chunk_plan(S, p, C) for _, S, p in pts]
+            n_ = [n for n, _, _ in pl]
+            pmemo[C] = (pl, n_, [max(0.0, (S - p) - (n - 1) * C) / max(1, S - p) for (_, S, p), n in zip(pts, n_)], C)
+        return pmemo[C]
 
     # Mean iteration at running batch k: a share x of iterations carries a chunk (ν chunk iterations / s) →
     # tbar = T₀ / (1 − ν·(T₁ − T₀)), x = ν·tbar (0.52 per-iteration mean); birth–death uses tbar as step(k).
+    # 0.231: ν and the chunk plans are those of batch k (vLLM: the chunk shrinks as the running batch grows)
     memo: dict = {}
 
     def mean_step(k: int):
         if k not in memo:
             r = cp.run("decode", k)
+            plans, ns, lasts, _ = plans_at(k)
+            nu = lam_c * _wsum(ws, ns)                  # chunk iterations / s
             t1 = [_fused_step(r, p1, f, rr) for p1, (_, f, rr) in zip(pre1, plans)]
             # 0.55: per-prompt chunk sum — n−1 full chunks + the partial last one (as the engine runs it)
             tsum = [(m - 1) * t + _fused_step(r, p1, lf, rr) for p1, m, t, lf, rr in
@@ -1228,7 +1286,7 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
             t1m = _wsum(ws, tsum) / _wsum(ws, ns)
             den = 1 - nu * (t1m - r.step)
             tbar = r.step / den if den > 0 else math.inf
-            memo[k] = (tbar, r, t1, min(1.0, nu * tbar), t1m, tsum)
+            memo[k] = (tbar, r, t1, min(1.0, nu * tbar), t1m, tsum, ns)
         return memo[k]
 
     def frac_step(kf: float):
@@ -1238,13 +1296,13 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         a = min(1.0, max(0.0, kf - lo)) if hi > lo else 0.0
         L_ = mean_step(lo)
         if a == 0:
-            return L_[1].step, ((1.0, L_[1]),), L_[2], L_[3], L_[4], L_[5]
+            return L_[1].step, ((1.0, L_[1]),), L_[2], L_[3], L_[4], L_[5], L_[6]
         H_ = mean_step(hi)
         mixv = lambda u, v: [(1 - a) * x_ + a * y_ for x_, y_ in zip(u, v)]
         return ((1 - a) * L_[1].step + a * H_[1].step, ((1 - a, L_[1]), (a, H_[1])), mixv(L_[2], H_[2]),
-                (1 - a) * L_[3] + a * H_[3], (1 - a) * L_[4] + a * H_[4], mixv(L_[5], H_[5]))
+                (1 - a) * L_[3] + a * H_[3], (1 - a) * L_[4] + a * H_[4], mixv(L_[5], H_[5]), mixv(L_[6], H_[6]))
 
-    tB, rB, _, xB, _, _ = mean_step(B)
+    tB, rB, _, xB, _, _, _ = mean_step(B)
     if not rB.fits or not math.isfinite(tB) or xB >= 1:
         return {**res, "why": "分块 prefill + decode 在此负载下不稳定"}
     dec0 = _decode_birth_death(cp, lam_c, out, B, step_fn=lambda k: mean_step(k)[:2])
@@ -1258,7 +1316,7 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     kappa = _pair_kappa([(w_, o_) for w_, _, o_ in ctx["len"].points])
     dec = None
     for _ in range(2):
-        T0, mixr, t1, x, t1m, tsum = frac_step(k_s)
+        T0, mixr, t1, x, t1m, tsum, ns = frac_step(k_s)
         serv = tsum
         exc = [t - m * T0 for m, t in zip(ns, tsum)]
         rho_s, f = lam_c * _wsum(ws, serv), lam_c * _wsum(ws, exc)
@@ -1277,8 +1335,9 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         k_s = max(1.0, min(float(B), dec["seen_mean"]))
     if dec is None:
         return {**res, "why": "分块 prefill + decode 在此负载下不稳定"}
-    T0, mixr, t1, x, t1m, tsum = frac_step(k_s)
+    T0, mixr, t1, x, t1m, tsum, ns = frac_step(k_s)
     serv = tsum                                     # prefill service = Σ fused chunk iterations
+    plans_s, _, _, C_s = plans_at(max(1, round(k_s)))
     # TTFT: the chunk server's speed follows the running batch, which drifts slowly — mix the service over the
     # time-weighted batch law (8 equal-mass bins; 0.55, V4 showed the single seen-batch service misses the tail)
     run_w = dec["run_w"]
@@ -1331,14 +1390,14 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
             "tpot_p90": req_q[0.9], "tpot_p99": req_q[0.99],
             "itl_max": max(t1_99) / dec["e"],
             "e2e_mean": ttft["mean"] + slot["mean"] + out * dec["tpot"],
-            "prefill": {"chunk_tokens": C, "chunks": _wsum(ws, ns), "iter_ms": t1m * 1e3,
+            "prefill": {"chunk_tokens": C_s, "chunks": _wsum(ws, ns), "iter_ms": t1m * 1e3,
                         "iter_ms_env": [min(mean_step(max(1, k_))[4] for k_ in kbins) * 1e3,
                                         max(mean_step(max(1, k_))[4] for k_ in kbins) * 1e3],
                         "rho": lam_c * _wsum(ws, serv), "chunk_share": x, "wait_ms": _ms(w)},
             "decode": {"running_batch": dec["k"], "occupancy": dec["occupancy"], "slots": B,
                        "iter_ms_no_chunk": T0 * 1e3, "slot_wait_ms": _ms(slot), "excess_share": f,
                        "batch_pair": a_thin},
-            "_dec_r": mixr, "_pre1": pre1, "_plans": plans, "_dec": dec}
+            "chunk_tokens": C_s, "_dec_r": mixr, "_pre1": pre1, "_plans": plans_s, "_dec": dec}
 
 
 def _kv_slots(ctx: dict, B: int) -> tuple[int, dict | None]:
@@ -2189,7 +2248,9 @@ def _restore_extra(x: dict, extra: dict) -> dict:
 
 def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None = None) -> dict:
     lam = pd.rate_rps if pd.rate_rps else pd.load * lam_fluid
-    out = {"lambda_rps": lam, "load": None if pd.rate_rps else pd.load, "chunk_tokens": pd.chunk_tokens,
+    sp = ctx.get("chunk") or {"profile": "fixed", "C": pd.chunk_tokens}
+    out = {"lambda_rps": lam, "load": None if pd.rate_rps else pd.load, "chunk_tokens": chunk_at(sp, ctx["B"]),
+           "chunk_profile": sp,
            "basis": "排队与连续批处理的解析近似「假设」：泊松到达、" + ("请求长度固定" if ctx["len"].trivial else
                     "请求长度按离散分布（M/G/1）") + ("、前缀缓存命中率 " + f"{pd.prefix_hit:.0%}" if pd.prefix_hit else "")
                     + ("、前缀缓存容量模型（LRU / Che：PD prefill 命中 {:.0%}、合并 {:.0%}；命中 / 未命中两类请求按 M/G/1）"

@@ -158,7 +158,10 @@ def test_prefix_cache_effects():
     qb, qh = base["queue"]["modes"], h["queue"]["modes"]
     for k in qb:
         assert qh[k]["ttft_ms"]["p90"] < qb[k]["ttft_ms"]["p90"]
-    assert qh["coloc_chunked"]["prefill"]["chunks"] == 4 == _chunk_plan(4096, 2048, 512)[0]
+    # 0.231: 512-token chunks = the legacy_512 profile (the default vllm budget covers the 2048 new tokens at once)
+    ql = _rep(prefix_hit=0.5, chunk_profile="legacy_512")["queue"]["modes"]
+    assert ql["coloc_chunked"]["prefill"]["chunks"] == 4 == _chunk_plan(4096, 2048, 512)[0]
+    assert qh["coloc_chunked"]["prefill"]["chunks"] == _chunk_plan(4096, 2048, qh["coloc_chunked"]["chunk_tokens"])[0]
     n, f, rr = _chunk_plan(4096, 0, 512)
     assert n == 8 and _close(f, 1 / 8) and _close(rr, (4096 - 512) / (2 * 4096))     # 0.51 re-read when no prefix
     assert prefix_tokens(10, 0.99) == 9 and prefix_tokens(100, 0) == 0

@@ -267,6 +267,12 @@ function syncInputs() {
   for (const k of ['dit_fsdp', 'te_cpu', 'vae_parallel', 'overlap']) if ($('w-' + k)) $('w-' + k).checked = !!S.sc.workload[k];
   if ($('w-sample_split')) $('w-sample_split').checked = S.sc.workload.sample_split !== false;
   if ($('w-tri_attn')) $('w-tri_attn').value = S.sc.workload.tri_attn || 'fused';
+  if ($('pd-chunk_profile')) {   // 0.231
+    const cp = S.sc.pd.chunk_profile || 'vllm';
+    $('pd-chunk_profile').value = cp;
+    $('pd-chunk_budget').disabled = !cp.startsWith('vllm');
+    $('pd-chunk_tokens').disabled = cp !== 'fixed';
+  }
   if ($('pd-prefix_host_policy')) $('pd-prefix_host_policy').value = S.sc.pd.prefix_host_policy || 'write_through';
   if ($('w-step_cache')) $('w-step_cache').value = S.sc.workload.step_cache || 'teacache';
   if ($('w-tri_chunk')) { $('w-tri_chunk').value = S.sc.workload.tri_chunk || ''; $('w-tri_chunk').disabled = (S.sc.workload.tri_attn || 'fused') !== 'chunked'; }
@@ -1003,7 +1009,7 @@ function renderPDQueue(q, cards, L) {
   if (!q || q.error || !q.modes) { put($('pdq-tbl')); $('pdq-basis').textContent = ''; $('pdq-note').textContent = q && q.error ? q.error : ''; return; }
   $('pdq-basis').textContent = `到达率 ${num(q.lambda_rps)} req/s${q.load ? `（PD 容量的 ${pct(q.load)}）` : ''}；${q.basis}`;
   const sci = (x) => (x === 0 ? '0' : x.toExponential(3));
-  const names = { pd: 'PD 分离', coloc_prefill_first: '合并 · prefill 优先', coloc_chunked: `合并 · 分块 prefill（${q.chunk_tokens} tok）` };
+  const names = { pd: 'PD 分离', coloc_prefill_first: '合并 · prefill 优先', coloc_chunked: `合并 · 分块 prefill（${(q.chunk_profile || {}).profile || 'fixed'} · ${q.chunk_tokens} tok${(q.chunk_profile || {}).budget ? ' · 预算 ' + q.chunk_profile.budget : ''}）` };
   const ok = (b) => b === false ? 'color:var(--danger)' : '';
   const E = q.energy || {};
   const hasJ = Object.values(E).some((e) => e.J_per_token !== undefined);
@@ -2166,6 +2172,13 @@ async function init() {
   bindNumber('pd-kv_GBps', () => S.sc.pd.kv_GBps, (x) => (S.sc.pd.kv_GBps = x), { nullable: true });
   bindNumber('pd-load', () => S.sc.pd.load ?? 0.8, (x) => (S.sc.pd.load = x), { check: (x) => x > 0 && x < 1 });
   bindNumber('pd-rate_rps', () => S.sc.pd.rate_rps ?? null, (x) => (S.sc.pd.rate_rps = x), { nullable: true, check: (x) => x > 0 });
+  bindNumber('pd-chunk_budget', () => S.sc.pd.chunk_budget ?? null, (x) => { if (x === null) delete S.sc.pd.chunk_budget; else S.sc.pd.chunk_budget = x; }, { int: true, nullable: true, check: (x) => x >= 16 && x <= 1048576 });
+  $('pd-chunk_profile').addEventListener('change', (e) => {
+    if (e.target.value === 'vllm') delete S.sc.pd.chunk_profile; else S.sc.pd.chunk_profile = e.target.value;
+    $('pd-chunk_budget').disabled = !e.target.value.startsWith('vllm');
+    $('pd-chunk_tokens').disabled = e.target.value !== 'fixed';
+    schedule();
+  });
   bindNumber('pd-chunk_tokens', () => S.sc.pd.chunk_tokens ?? 512, (x) => (S.sc.pd.chunk_tokens = x), { int: true, check: (x) => x >= 16 });
   for (const k of ['prompt_cv', 'out_cv'])
     bindNumber('pd-' + k, () => S.sc.pd[k] ?? 0, (x) => (S.sc.pd[k] = x), { check: (x) => x >= 0 && x <= 4 });

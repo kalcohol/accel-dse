@@ -55,11 +55,19 @@ from .scenario import PDConfig, Scenario
 from .energy import EnergyTable
 from .lengths import lengths_of
 from .vision import expand_images
-from .pdqueue import _Pool, _pd_mode, _slo_rate, prefix_tokens, queue_report
+from .pdqueue import _Pool, _pd_mode, _slo_rate, chunk_spec, prefix_tokens, queue_report
 from .prefixcache import (both_hit, capacity, hit_of, per_card_bytes, pool_hits, tree_both_tail, tree_cum_tokens,
                           tree_depth_law, tree_depth_tail, tree_groups, tree_resident, turn_both_tail,
                           turn_depth_tail, turn_resident, turn_session_tail, turn_tree, zipf_groups)
 from .serving import Goodput, best_prefill, goodput
+
+
+def _card_gib(scn: Scenario) -> float:
+    """0.231: memory per card (GiB) — the engine-default tier key (vLLM / SGLang size their defaults by device memory)."""
+    from .hardware import System
+    if scn.mem_cap_GB:
+        return scn.mem_cap_GB * 1e9 / 2**30
+    return System(scn.chip, scn.mem_id, scn.mem_eff).dram_bytes / 2**30
 
 # 0.63: pdsim.capture_ctx collects the live queueing ctx here (per context; was a monkey-patch of queue_report, which
 # leaked across threads of the HTTP server)
@@ -497,6 +505,7 @@ def disagg_report(scn: Scenario, decode: Result | None = None, energy: EnergyTab
         ctx = {"ppool": ppool, "dpool": dpool, "cpool": cpool, "r_p": r_p, "r_d": r_d, "n_p": n_p,
                "n_d": n_d, "r_c": reps, "out": out, "B": sv.batch, "tier": kv_tier, "beta": beta,
                "alpha": alpha, "pair": min(c_p, c_d), "layerwise": pd.kv_layerwise, "L": L, "C": pd.chunk_tokens,
+               "chunk": chunk_spec(pd, _card_gib(dscn)),
                "shared": pd.kv_GBps is None, "len": lens, "pts": pts, "rep": (S_rep, p_rep), "kv_xfer": kv_xfer,
                "kv_new": kv_new, "kv_full": kv_full, "out_cs2": lens.out_cs2, "pts_c": pts_c,
                **({"prefix_hits": (H_p, H_c)} if cap_mode else {})}

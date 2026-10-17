@@ -5348,3 +5348,29 @@ Lowering g is a design claim (fine-grained gating of the array clock tree). It i
 **Invariant.** A single operating point priced with card-seconds per unit = cards·window/units reproduces `energy_report` term by term, and J/token × tok/s/card = W/card holds.
 
 **Effect.** PD-report J/token rises ×1.5–2.1 for qwen3-8b 1P (see CHANGELOG 0.230): mostly the clock term, plus the idle fraction × TDP that was previously dropped. The ranking between modes is unchanged.
+
+## §178 Chunked-prefill engine profiles for the colocated chunked mode (0.231)
+
+The colocated chunked mode is a fused, decode-first iteration scheduler (Sarathi-Serve / vLLM). The prompt tokens one iteration carries now follow `pd.chunk_profile`.
+
+**Profiles.**
+- **`vllm` (default, 「来源」).** A token budget b (`max_num_batched_tokens`) covers the running decodes first, and the remainder goes to the head-of-line prompt. So C(k) = max(0, b − k) at running batch k.
+  - b comes from the card memory, as the vLLM API-server defaults in `engine/arg_utils.py`: < 70 GiB → 2048, ≥ 70 GiB → 8192, ≥ 160 GiB → 16384.
+  - `pd.chunk_budget` overrides b.
+- **`vllm_v0`.** b = 2048, the V0 docs default.
+- **`legacy_512`.** C = 512, the ≤ 0.230 「假设」.
+- **`fixed`.** C = `chunk_tokens`.
+
+**Analytic model.** In `_coloc_chunked_base`, every quantity that depends on C is evaluated at the batch k of the birth-death chain:
+- the chunk plan (n chunks, the last chunk's share, the prefix re-read) and the chunk-iteration rate ν(k) = λ·Σw·n(k);
+- the fused iteration time and the mean step T̄(k) = T₀/(1 − ν(k)(T₁(k) − T₀)).
+
+The chunk count and the prompt's excess service follow the operating batch k_s by interpolation. If C(B) ≤ 0, the decodes fill the budget at the batch limit, prompts make no progress, and the mode is reported unstable.
+
+**DES.** `pdsim.ColocChunked` reads C(len(running)) at each iteration. If C = 0 with decodes running, it runs a decode-only iteration.
+
+**Why vllm is the default.** The mechanism fixes C as an engine setting with a documented default. A larger C means fewer fused iterations per prompt and less re-reading of the prompt's own KV (each chunk re-reads the earlier chunks). That lowers TTFT. TPOT moves little, because a decode iteration still pays the chunk's compute once per prompt.
+
+**Approximation (「近似」).** One prompt per chunk iteration; packing several short prompts into one budget is not modelled.
+
+**Deferred.** SGLang's default (no mixed chunk) runs prefill-only chunk iterations that pause decodes. That needs a separate non-fused mode.

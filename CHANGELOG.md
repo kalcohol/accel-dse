@@ -6,6 +6,45 @@
 
 
 
+## [0.231.0]
+
+### Changed (colocated chunked prefill: engine profiles replace the 512-token 「假设」; default = vllm; re-baselined)
+- New `pd.chunk_profile` (omit-default; the default scenario hash is unchanged) and `pd.chunk_budget`; CLI `--pd-chunk-profile`, `--pd-chunk-budget`; UI 「分块配置」/「token 预算」.
+  - **`vllm` (default, 「来源」).** vLLM's iteration token budget `max_num_batched_tokens` includes the running decodes and is filled decode-first; the last pending prompt is chunked. So prompt tokens per iteration = budget − running batch k, computed per batch k (analytic: per-k chunk plans and chunk-iteration rate; DES: per iteration).
+    - Budget by card memory, from vLLM `engine/arg_utils.py` (API server defaults): < 70 GiB → 2048, ≥ 70 GiB → 8192, ≥ 160 GiB → 16384. `chunk_budget` overrides it.
+    - Budget ≤ batch is infeasible: the decodes fill the budget, so the mode is reported unstable with the reason. Decodes are never starved; in the DES an iteration with no budget left is decode-only.
+  - **`vllm_v0` (「来源」).** The V0 docs default: budget 2048 regardless of memory.
+  - **`legacy_512` (「假设」).** The ≤ 0.230 behaviour: 512 prompt tokens per iteration on top of the decodes.
+  - **`fixed`.** `chunk_tokens` per iteration. A ≤ 0.230 scenario dict with `chunk_tokens` ≠ 512 and no profile is upgraded to `fixed`, and so is CLI `--pd-chunk` without a profile.
+- **Why vllm is the default (mechanism).** The colocated chunked mode is the fused decode-first scheduler (Sarathi-Serve / vLLM). Its chunk size is an engine setting with a documented default, and the 512 figure was unsourced.
+  - At 4096-token prompts, the 8192/16384 tiers run the whole prompt in one fused iteration. The 2048 tier runs it in 2–3 iterations.
+  - The 512-token chunks cost 8 fused iterations, each re-reading the prompt's earlier KV.
+- **Not modelled (「近似」).** Several prompts packed into one iteration: one prompt per chunk iteration, as before.
+- **Validation.**
+  - The V4 stored grid (`data/v4_serving.json`, 512-token runs) is pinned to `legacy_512` via `v4_scenario(chunk_profile=…)`. The live `validate` V4 subset now runs the vllm profile.
+  - The coloc_chunked analytic-vs-DES errors stay within the same range as legacy_512 (load 0.6 CV 1: ttft_p90 −0.213 → −0.207; prefix: ttft_p99 +0.065 → +0.124, inside its band).
+  - External validation (extval) uses its own chunk settings and is unaffected.
+
+**Old → new KPIs, coloc_chunked, legacy_512 → vllm** (qwen3-8b, 1P, TP 2, 2P + 6D, load 0.6, tpuv4i_7nm + idle_W 20; `sd221/kpi231.py`):
+
+| Case | C | TPOT p99 ms | TTFT mean / p99 ms | SLO goodput / card | J/token |
+|---|---|---|---|---|---|
+| A 4096/512 B64, 288 GiB (16384 tier) | 512 → 16379 | 2.357 → 2.338 | 55.2 / 118.7 → 42.1 / 82.9 | 3532 → 3658 | 0.2020 → 0.2019 |
+| B = A with SLO TTFT 300 / TPOT 2.5 ms | 512 → 16379 | 2.356 → 2.337 | 55.2 / 118.7 → 42.1 / 82.9 | 1437 → 1459 | 0.2021 → 0.2020 |
+| C 16384/256 B32 | 512 → 16382 | 2.852 → 2.776 | 243.9 / 519 → 190.4 / 373 | 479 → 633 | 1.238 → 1.235 |
+| D = A with cap 48 GB (2048 tier) | 512 → 2043 | 2.357 → 2.291 | 55.2 / 118.7 → 43.1 / 85.8 | 3532 → 3711 | 0.2020 → 0.2031 |
+
+- **Conclusion shifts.**
+  - By SLO goodput/card, colocated chunked now ≥ colocated prefill-first in A (3658 vs 3631) and D (3711 vs 3631); it was below in all cases. In C it is still below (633 vs 656).
+  - PD vs colocated: unchanged at the default. PD remains best under the tight SLO (B: PD 1501 vs chunked 1459) and colocated remains best under the loose SLO.
+  - With `vllm_v0` (2048), B flips: chunked 1518 > PD 1501.
+  - J/token: in D, coloc_chunked moves from between pd and prefill-first to the highest (0.2031 vs pf 0.2027): fewer, larger fused iterations re-read less KV but run at lower MAC utilisation per iteration. These are ±1 % effects.
+- **Tests.** test_core_051 and 052 pin `legacy_512` / `fixed` for the 512-chunk mechanics. New test_core_231 covers the tiers, validation and upgrade, default vs legacy, infeasible budget, DES parity at a tiny budget (decodes not starved), and a fuzz (seed 231) over all profiles: chunk ≥ 0, decode-first budget split, TTFT monotone in prompt length, J/token × tok/s = W.
+
+### Deferred
+- **SGLang profile.** Main `chunked_prefill_size` is tiered by GPU memory (2048 / 4096 / 8192 / 16384; v0.3.6: 8192, ÷4 under 25 GB), with `enable_mixed_chunk = False` by default. Without mixing, a chunk iteration is prefill-only and pauses the decodes. It needs a new non-fused mode, close to prefill-first with a per-iteration prompt-token cap, with its own analytic, DES, energy and UI paths.
+- **Full V4 grid re-run** under the vllm profile (hours).
+
 ## [0.230.0]
 
 ### Changed (PD report energy brought up to the main energy report; re-baselined)

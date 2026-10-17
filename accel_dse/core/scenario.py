@@ -282,6 +282,9 @@ def _resolve_chip(v, where: str):
     return v
 
 
+CHUNK_PROFILE_IDS = ("vllm", "vllm_v0", "legacy_512", "fixed")      # 0.231: pdqueue.CHUNK_PROFILES
+
+
 @dataclass(frozen=True)
 class PDConfig:
     """Prefill / decode disaggregation (0.50; core/disagg.py).  Off by default = colocated serving (unchanged).
@@ -296,6 +299,14 @@ class PDConfig:
     load: float = 0.8               # offered load for the queueing estimate, × the PD fluid capacity (0.51) 「假设」
     rate_rps: float | None = None   # absolute offered load, requests/s (overrides load)
     chunk_tokens: int = 512         # colocated chunked-prefill token budget per iteration (comparison only) 「假设」
+    # 0.231: engine profile of the colocated chunked mode (pdqueue.CHUNK_PROFILES).  "vllm" (default, 来源): the
+    # iteration token budget max_num_batched_tokens includes the running decodes, filled decode-first → prompt
+    # tokens per iteration = budget − running batch; budget by card memory (vLLM arg_utils, API server: < 70 GiB
+    # 2048, ≥ 70 GiB 8192, ≥ 160 GiB 16384) unless chunk_budget is set.  "vllm_v0" = the V0 docs default
+    # budget 2048 (来源).  "legacy_512" = ≤ 0.230 (512 prompt tokens
+    # per iteration on top of the decodes, 「假设」).  "fixed" = chunk_tokens prompt tokens per iteration.
+    chunk_profile: str = field(default="vllm", metadata={"omit_default": True})
+    chunk_budget: int | None = field(default=None, metadata={"omit_default": True})
     # 0.52 — request-length spread and prefix caching (queueing + capacity; all 「假设」; defaults = 0.51 behaviour)
     prompt_cv: float = 0.0          # prompt-length coefficient of variation (lognormal, mean = serving.prompt)
     out_cv: float = 0.0             # output-length coefficient of variation (lognormal, mean = serving.out_len)
@@ -368,6 +379,11 @@ class PDConfig:
         if isinstance(self.chunk_tokens, bool) or not isinstance(self.chunk_tokens, int) \
                 or not 16 <= self.chunk_tokens <= 1 << 20:
             raise ValueError("pd.chunk_tokens must be an integer in [16, 1048576]")
+        if self.chunk_profile not in CHUNK_PROFILE_IDS:
+            raise ValueError("pd.chunk_profile must be one of " + " | ".join(CHUNK_PROFILE_IDS))
+        if self.chunk_budget is not None and (isinstance(self.chunk_budget, bool) or not isinstance(self.chunk_budget, int)
+                                              or not 16 <= self.chunk_budget <= 1 << 20):
+            raise ValueError("pd.chunk_budget must be an integer in [16, 1048576] or null")
         if not isinstance(self.enabled, bool) or not isinstance(self.kv_layerwise, bool):
             raise ValueError("pd.enabled / pd.kv_layerwise must be booleans")
         for k in ("prompt_cv", "out_cv"):
@@ -624,6 +640,9 @@ def upgrade_legacy(d: dict) -> dict:
         if isinstance(out.get(key), dict):
             out[key] = upgrade_chip_0141(out[key])
     pd = out.get("pd")
+    # 0.231: an explicit non-default chunk_tokens without a chunk_profile meant a fixed per-iteration chunk (≤ 0.230)
+    if isinstance(pd, dict) and "chunk_profile" not in pd and pd.get("chunk_tokens") not in (None, 512):
+        pd = out["pd"] = {**pd, "chunk_profile": "fixed"}
     if isinstance(pd, dict) and isinstance(pd.get("prefill_chip"), dict):
         out["pd"] = {**pd, "prefill_chip": upgrade_chip_0141(pd["prefill_chip"])}
     return out

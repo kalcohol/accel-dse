@@ -281,8 +281,14 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="PD queueing: offered load as a fraction of the PD fluid capacity (0.51; default 0.8 「假设」)")
     p.add_argument("--pd-rate", dest="pd_rate", type=float, default=None,
                    help="PD queueing: absolute offered load, requests/s (overrides --pd-load)")
+    p.add_argument("--pd-chunk-profile", dest="pd_chunk_profile", default=None,
+                   choices=("vllm", "vllm_v0", "legacy_512", "fixed"),
+                   help="0.231: colocated chunked-prefill engine profile (default vllm: budget − running decodes, budget "
+                        "by card memory 2048/8192/16384 「来源」; vllm_v0 = 2048; legacy_512 = ≤ 0.230 「假设」; fixed = --pd-chunk)")
+    p.add_argument("--pd-chunk-budget", dest="pd_chunk_budget", type=int, default=None,
+                   help="0.231: vLLM token budget per iteration (max_num_batched_tokens) override")
     p.add_argument("--pd-chunk", dest="pd_chunk", type=int, default=None,
-                   help="colocated chunked-prefill token budget per iteration (comparison; default 512 「假设」)")
+                   help="colocated chunked-prefill prompt tokens per iteration (implies --pd-chunk-profile fixed; 0.231)")
     p.add_argument("--pd-prompt-cv", dest="pd_prompt_cv", type=float, default=None,
                    help="PD: prompt-length coefficient of variation (lognormal, 8 bins; 0.52 「假设」)")
     p.add_argument("--pd-out-cv", dest="pd_out_cv", type=float, default=None,
@@ -511,7 +517,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["pd"] = {"enabled": True, "prefill_layout": {k: getattr(a, f"pd_prefill_{k}") for k in ("pp", "tp", "dp", "ep", "etp")},
                     "prefill_cards": a.pd_prefill_cards, "decode_cards": a.pd_decode_cards,
                     "kv_GBps": a.pd_kv_GBps, "kv_layerwise": a.pd_layerwise}
-        for k, dest in (("load", "pd_load"), ("rate_rps", "pd_rate"), ("chunk_tokens", "pd_chunk"),
+        for k, dest in (("load", "pd_load"), ("rate_rps", "pd_rate"), ("chunk_tokens", "pd_chunk"), ("chunk_profile", "pd_chunk_profile"),
+                        ("chunk_budget", "pd_chunk_budget"),
                         ("prompt_cv", "pd_prompt_cv"), ("out_cv", "pd_out_cv"), ("prefix_hit", "pd_prefix_hit"),
                         ("prefill_chip", "pd_prefill_chip"), ("prefill_mem_id", "pd_prefill_mem"),
                         ("prefix_len", "pd_prefix_len"), ("prefix_count", "pd_prefix_count"),
@@ -524,6 +531,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                         ("prefix_sessions", "pd_sessions"), ("prefix_turn_prompt", "pd_turn_prompt")):
             if getattr(a, dest, None) is not None:
                 sc["pd"][k] = getattr(a, dest)
+        if getattr(a, "pd_chunk", None) is not None and getattr(a, "pd_chunk_profile", None) is None:
+            sc["pd"]["chunk_profile"] = "fixed"          # 0.231: an explicit chunk size = the fixed profile
         if getattr(a, "pd_mix", None):
             sc["pd"]["length_mix"] = _parse_mix(a.pd_mix)
         if getattr(a, "pd_prefix_tree", None):
@@ -771,7 +780,7 @@ def cmd_eval(a) -> dict:
                   + (f" ({q['load']:.0%} of PD capacity)" if q.get("load") else "") + "  「假设」 Poisson, " + ("M/D/1" if (pd.get("lengths") or {}).get("source", "fixed") == "fixed" and not pd.get("prefix_cache") else "M/G/1")
                   + ", Erlang C")
             names = {"pd": "PD", "coloc_prefill_first": "colocated prefill-first", "coloc_chunked":
-                     f"colocated chunked ({q['chunk_tokens']} tok)"}
+                     f"colocated chunked ({(q.get('chunk_profile') or {}).get('profile', 'fixed')} {q['chunk_tokens']} tok)"}
             for k, x in q["modes"].items():
                 if not x["stable"]:
                     print(f"    {names[k]:<28} unstable: {x.get('why', '')}   SLO rate {x['slo_rate_rps']:.3g} req/s")
