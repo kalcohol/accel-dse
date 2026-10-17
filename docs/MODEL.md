@@ -5483,3 +5483,37 @@ A fused chunked-prefill iteration at running batch k carries the k decodes plus 
 - itl_max uses the head wall when P(full)·h·(chunk iterations per life) reaches 1 %.
 
 **Slots.** The DES caps running + prefilling at max_num_seqs, matching b ≤ B − k in the analytic. V1 has no max_num_partial_prefills, so FCFS gives at most one partial prompt.
+
+## §183 The follower's head start (phase chain) and the bulk head moving work (0.236)
+
+**Phase chain.** Under FCFS packing (vLLM V1 waiting loop, SGLang PrefillAdder), prompt tokens are cut into C-token iterations as one continuous stream.
+- A prompt that starts inside its predecessor's topped-up last iteration starts at phase φ = the predecessor's prompt tokens in that iteration.
+- Its pieces are then C − φ tokens, followed by C-sized chunks, with the last one carrying `used(φ)` tokens. The next prompt's phase is `used` when somebody is waiting at its last-iteration start (probability π), and 0 otherwise.
+- **Shares:** a piece in a full or topped-up iteration takes tokens/C of the wall. The prompt that ends an iteration without a head takes the remainder (the unused budget is its own).
+- **Own latency** runs from its share start, which is the predecessor's part of the first iteration, to the end of its last iteration.
+- **π:** π(φ, i) = 1 − (1 − ρ)/E[e^{−λS}]·e^{−λ·pre(φ, i)}, the P-K LST rule of §181/§182. It is solved jointly with the stationary phase law.
+- The predecessor's and next prompt's pieces take the prompt's own shape (「近似」; exact for one prompt type).
+- **Cost limits (「近似」):**
+  - fused running-batch bins k ≥ 1 keep followers at φ = 0, because C(k) and the walls change with k; the chain runs at k = 0 and on the SGLang prefill-only path;
+  - phases met by < 0.2 % of prompts fold into φ = 0;
+  - mixtures use a C/16 lattice;
+  - with more than 2 prompt types (length bins), followers stay at φ = 0 (the §182 rows);
+  - at most max(4, 32/types) latency-quantile atoms per type.
+- **Multiples of C:** used = C, so there is no sharing and everything matches §181.
+- **The credit.** At 6000 tokens and C 4096 the phases run 0 → 1904 → 3808 → 1616.
+  - The φ = 1904 follower leaves a 288-token head, against the leader's 2192, so its topped-up overshoot is far smaller.
+  - The DES follower share matches within 0.01 (0.149 vs 0.155 at load 0.85).
+- **TTFT impact.** The impact on the TTFT quantiles is ≤ 0.012. The 0.235 "+2–3 % p90 pessimism" was n800×2 sampling noise; at n1500×3 the error is +0.01 … +0.03.
+
+**Bulk head moves work** (b ≥ 2, §182).
+- **Head batch.** The (b+1)-th prompt's head L = C − b·new goes into the head batch's wall, so D_b is two-point at probability h. h = P(n > b | n ≥ b at a service start) is taken from the bulk chain by fixed point.
+- **Next batch.** The next full batch starts with the head-started remainder new − L plus (b − 1) whole prompts, at probability g = h (「近似」: independent of h).
+- Its leftover 2L is capped below one more whole prompt, so a batch still has b completions.
+- O = D: each prompt's own wall is its batch's.
+- **Slot-bound.** No head when k + b = max_num_seqs; this matches pdsim admission.
+- **itl_max:** the head wall counts when P(full)·h reaches the ≥ 1 % criterion; the remainder + head wall uses P(full)·h².
+
+**Deferred.**
+1. **Per-class b.** M/G^[b]/1 has a single batch cap. Under FCFS token packing, per-class caps depend on the sequence of queued types, which is variable-capacity bin packing with no embedded chain on the queue length. The DES covers it.
+2. **Slot-bound b = 1 sharing** (k ≥ B − 1) is still modelled, because the itl_max k = B bin relies on that iteration.
+3. **Phase chain for fused k ≥ 1 bins and length-bin mixtures** (cost).

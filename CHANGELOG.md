@@ -6,6 +6,93 @@
 
 
 
+## [0.236.0]
+
+### Changed (the 0.235 deferred packing mechanisms)
+- **Head-start credit for the next prompt: the follower's phase chain** (`_phase_iters` / `_phase_law`, MODEL §183).
+  - Under FCFS packing, prompts are packed into C-token iterations as one continuous stream. A prompt that starts inside its predecessor's topped-up last iteration begins at phase φ, the predecessor's tokens in that iteration. That φ fixes the prompt's own pieces, its tail, and the head it leaves for the next prompt. Example, 6000 tokens at C 4096: phases 0 → 1904 → 3808 → 1616 …
+  - A leader (nobody waiting at the predecessor's last-iteration start) starts at φ = 0.
+  - π(φ, i) uses the 0.235 Pollaczek–Khinchine LST rule with S′ = the time from its share start to its last iteration. It is solved jointly with the stationary phase law (phases exact for one prompt type, on a C/64 lattice for mixtures).
+  - **Shares:** a piece in a full or topped-up iteration takes its tokens/C of the wall. The prompt that ends an iteration without a head takes the rest. Own latency runs from its share start to the end of its last iteration.
+  - The φ = 0 atoms are the 0.235 rows, so multiples of C are unchanged.
+  - **Used in:** the SGLang prefill-only tail split (`_coloc_prefill_first_base`) and the k = 0 bin of the fused b = 1 environments (`pack_at`). Report fields: `prefill.tail_share.follower` and `prefill.pack.follower_env`.
+  - **Cost limits (「近似」):**
+    - fused bins with k ≥ 1 keep followers at φ = 0 (the 0.235 rows), because C(k) and the walls change with k and every phase would cost fresh walls at every k (KPI case D took over 30 min before this limit);
+    - with more than 2 prompt types (length bins), followers stay at φ = 0;
+    - phases met by < 0.2 % of prompts fold into φ = 0;
+    - mixtures use a C/16 lattice;
+    - at most max(4, 32/types) latency-quantile atoms per type.
+
+    test_core_052 had been hanging (71 s → over 22 min); with these limits its CLI test takes 34 s.
+  - The longest iteration (itl) counts the leader phase plus phases met by ≥ 1 % of requests.
+  - **DES check (share of prompt starts that are followers), analytic vs DES:**
+    - SGLang 6000 at load 0.85: 0.149 vs 0.155;
+    - SGLang 6000 at load 0.6: 0.103 vs 0.108.
+
+    Before the k ≥ 1 cost limit the fused chain also matched: vllm 3000 at 0.8 gave 0.146 vs 0.155, and sglang_mixed 6000 at 0.85 gave 0.150 vs 0.156.
+- **The bulk head moves work: the smaller later batch** (b ≥ 2, `pack_at`).
+  - The (b+1)-th prompt's head of L = C − b·new tokens now goes into the head batch's wall: D_b is two-point. In 0.235 only the own-wall law O_b was two-point and D was kept.
+  - The next full batch starts with the head-started prompt's remainder new − L and keeps (b − 1) whole prompts. Its own leftover, 2L, is capped below one more whole prompt (b completions 「近似」).
+  - P(full batch after a head batch) = h, the head probability, assumed independent (「近似」). Fixed point with the bulk chain; O = D.
+  - No head when the batch is slot-bound (k + b = max_num_seqs; pdsim admits none).
+  - itl_max: the head wall at P(full)·h, and the remainder + head wall at P(full)·h².
+- **Tests (test_core_236).**
+  - Leader rows equal `_tail_rows`.
+  - Follower credit: φ = 1904 leaves a 288-token head, so the overshoot is smaller than the leader's.
+  - Multiples give a single phase.
+  - DES follower share is within 0.03 (SGLang at loads 0.85 and 0.6).
+  - No head when slot-bound.
+  - Phase-law fuzzer (seed 236): phase law sums to 1, atom mass is conserved, latency ≥ share, follower ≤ π.
+  - The 0.235 packing fuzzer and the adversarial parity set stay green.
+- **Re-pinned:** test_core_233, case A coloc_chunked TTFT mean 42.4832 → 42.4807. The head's work moved into D_b; p50/p90 are unchanged and p99 goes 99.461 → 99.387.
+
+### Findings
+- **The 0.235 "+2–3 % p90 TTFT pessimism" was sampling noise** from n800 × 2 seeds. At n1500 × 3 seeds the 0.235 code already gave:
+  - sglang 6000 at load 0.85: p90 +0.011;
+  - at 0.6: −0.015;
+  - sglang 2500 at 0.85: +0.015;
+  - sglang 3000 at 0.85: +0.010.
+- **Effect of 0.236 on that parity** (p90/p99, 0.235 → 0.236, n1500 × 3; measured before the fused k ≥ 1 cost limit, so the vllm 3000 and sglang_mixed rows are now back at 0.235 values):
+
+  | Case | 0.235 | 0.236 |
+  |---|---|---|
+  | sglang 6000 / 0.85 | +.011 / −.055 | +.014 / −.050 |
+  | sglang 6000 / 0.6 | −.015 / −.010 | −.011 / −.009 |
+  | sglang 2500 / 0.85 | +.015 / −.172 | +.027 / −.166 |
+  | sglang 3000 / 0.85 | +.010 / −.130 | +.019 / −.127 |
+  | sglang_mixed 6000 / 0.85 | — | +.016 / −.054 |
+  | vllm 3000 / 0.8 | +.022 / −.051 | +.022 / −.051 |
+  | vllm 6000 / 0.85 | −.018 / −.029 | −.017 / −.028 |
+  | vllm 700 / 0.9 | −.080 / +.008 | −.081 / +.001 |
+  | vllm 5000 / 0.85 | +.001 / −.039 | +.001 / −.040 |
+  | vllm 5000 / 0.95 | .000 / −.068 | .000 / −.069 |
+
+  TPOT mean/p90 are unchanged (about −0.01 / −0.05). Everything is inside the V4 bands except the open residuals below.
+- **Open residuals (pre-existing, not from the 0.236 mechanisms):**
+  - SGLang short-prompt TTFT p99 is optimistic: 2500 at −0.166 and 3000 at −0.127 (load 0.85; DES seed noise about 0.06).
+  - vllm 900 at load 0.9 has TTFT p99 −0.566, but the DES seed spread is 0.99 there: one seed has a long excursion.
+  - itl_max lattice: vllm 5000 at 0.85 is −0.33 and at 0.95 is +0.13.
+
+**Old → new (KPI, SLO goodput/card · TTFT mean/p99 ms · TPOT p99 ms):**
+- **A:** vllm = sglang_mixed 3649 · 42.48/99.46 → 3648 · 42.48/99.39. The others are unchanged; the ranking is unchanged.
+- **B:** vllm = sglang_mixed TTFT p99 99.43 → 99.36 (goodput/card 1460 unchanged).
+- **C, D, E:** unchanged; ranking unchanged.
+- **F (6000/512, 48 GB):**
+  - sglang 2871 · 63.41/127.0 · 2.304 → 2839 · 63.47/127.1 · 2.308. The follower phases make the server share slightly larger: a follower's chunks start mid-iteration.
+  - vllm / vllm_v0 2945 · 62.66 → 62.67 TTFT mean. The others are unchanged.
+  - **Ranking:** sglang falls back below prefill-first (2839 < 2869; in 0.235 it was 2871 > 2869).
+  - New F order: vllm = vllm_v0 2945 > sglang_mixed 2936 > prefill-first 2869 > sglang 2839 > legacy_512 2416 > PD 1130.
+- **G (5000/512, HBM):**
+  - vllm = sglang_mixed 3249 → 3246, from the head work moving into D_b.
+  - **Ranking unchanged:** vllm_v0 3303 > vllm = sglang_mixed 3246 > prefill-first 3205 > sglang 3204 > legacy_512 2905 > PD 1383.
+
+### Deferred to 0.237
+- **Per-class b for mixed prompt types.** M/G^[b]/1 has a single batch cap. Per-class caps under FCFS token packing depend on the sequence of queued types: variable-capacity bin packing, with no embedded chain on the queue length. The DES covers it.
+- **The phase chain for fused k ≥ 1 bins and for length-bin mixtures** (cost: fresh walls per phase per k).
+- **Slot-bound b = 1 sharing** (k ≥ B − 1) is still modelled, because the itl_max k = B bin relies on it.
+- **Open residuals:** SGLang short-prompt TTFT p99 (−0.13 … −0.17), vllm 900 at load 0.9 p99 (−0.57, DES p99 seed noise 0.99), and the itl_max lattice heuristic.
+- **Full V4 grid re-run.**
+
 ## [0.235.0]
 
 ### Changed (the 0.234 packing gaps closed in the analytic; adversarial parity + fuzzer)

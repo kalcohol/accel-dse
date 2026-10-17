@@ -1082,23 +1082,25 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     C_t = ctx.get("_tail_split")
     tail_info = None
     if C_t and pre["b"] == 1:
-        rows = _tail_rows(cp.pool if hasattr(cp, "pool") else cp, 0, pts, C_t)
-        for r_, (_, S, p) in zip(rows, pts):
-            if 2 * (S - p) <= C_t:          # a second whole prompt fits: the bulk caps model that packing
-                r_.update(packd=r_["solo"], latpk=r_["solo"], pre=math.inf)
-        pis, rho_t = _tail_pi(lam_c, pre["ws"], rows)
-        if rho_t < 1 and any(q_ > 0 for q_ in pis):
+        pool_t = cp.pool if hasattr(cp, "pool") else cp
+        # a second whole prompt fits (2·new ≤ C): the bulk caps model that packing
+        elig = [2 * (S - p) > C_t for _, S, p in pts]
+        # 0.236: the follower's phase (head start) — _phase_law; φ = 0 atoms = the 0.235 two-point rows
+        ph = _phase_law(pool_t, 0, [(w_, S, p) for w_, (_, S, p) in zip(pre["ws"], pts)], C_t, lam_c, elig)
+        if ph["rho"] < 1 and ph["pi"] > 0:
+            solo0 = [_phase_iters(pool_t, 0, S, p, C_t, 0, False)["share"] for _, S, p in pts]
             ws_x, taus_x, lats_x = [], [], []
-            for w_, q_, r_, t_ in zip(pre["ws"], pis, rows, pre["taus"]):
-                sc_ = t_ / r_["solo"] if r_["solo"] > 0 else 1.0     # the pool's own scaling (KV contention)
-                ws_x += [w_ * (1 - q_), w_ * q_]
-                taus_x += [t_, r_["packd"] * sc_]
-                lats_x += [t_, r_["latpk"] * sc_]
+            for m_, sh_, la_, i_ in ph["atoms"]:
+                t_ = pre["taus"][i_]
+                sc_ = t_ / solo0[i_] if solo0[i_] > 0 else 1.0       # the pool's own scaling (KV contention)
+                ws_x.append(m_)
+                taus_x.append(sh_ * sc_)
+                lats_x.append(la_ * sc_)
             wq = mg1(lam_c, taus_x, ws_x, QS)
             if not wq["stable"]:
                 return {**res, "stable": False, "why": "prefill 在此负载下不稳定"}
             pre = {**pre, "wait": wq}
-            tail_info = {"pi": pis, "C": C_t}
+            tail_info = {"pi": [r_["pi"] for r_ in ph["per"]], "C": C_t, "follower": ph["follower"]}
     rho = pre["wait"]["rho"]
     share = 1 - rho
     # 0.55: decode in the reduced clock (prefill time left out) with batch arrivals — each prefill busy period hands
@@ -1470,6 +1472,172 @@ def _tail_pi(lam: float, ws, rows) -> tuple:
     return pis, rho
 
 
+def _phase_iters(pool, k: int, S: int, p: int, C: int, phi: int, head: bool) -> dict:
+    """0.236: one prompt's iterations when it starts at phase φ (the first φ tokens of its first iteration belong to
+    the predecessor's tail; φ = 0: a fresh iteration) and, when ``head``, its last iteration is topped up with the
+    next prompt's head (C − used tokens).  The predecessor's / next prompt's pieces are taken of the same shape
+    「近似」 (exact for one prompt type).  → share (its tokens' part of each iteration), lat (its share start to the
+    end of its last iteration), pre (share start → its last iteration's start), used (prompt tokens in its last
+    iteration before any head = the next prompt's phase), n (iterations it spans), t1 (longest)."""
+    new = max(1, S - p)
+    first = min(new, C - phi)
+    bounds = [(p, p + first)]
+    q = p + first
+    while q < S:
+        e = min(S, q + C)
+        bounds.append((q, e))
+        q = e
+    n = len(bounds)
+    # shares: a piece in a full or topped-up iteration takes its tokens / C of the wall; the prompt that ends an
+    # iteration without a head takes the rest (the unused budget is its own)
+    share = lat = pre = 0.0
+    t1 = 0.0
+    used = 0
+    for j, (q, e) in enumerate(bounds):
+        own = e - q
+        pieces = [(S, p, q, e)]
+        tot = own
+        if j == 0 and phi > 0:
+            pieces.append((S, p, max(p, S - phi), S))
+            tot += phi
+        last = j == n - 1
+        topped = False
+        if last:
+            used = tot
+            if head and tot < C:
+                pieces.append((S, p, p, p + min(new, C - tot)))
+                topped = True
+        T = _packed_fused(pool, k, pieces)
+        t1 = max(t1, T)
+        before = phi / C * T if (j == 0 and phi > 0) else 0.0      # the predecessor's part, ahead of us
+        sh = own / C * T if (not last or topped) else T - before
+        share += sh
+        lat += T - before
+        if not last:
+            pre += T - before
+    return {"share": share, "lat": lat, "pre": pre, "used": used, "n": float(n), "t1": t1}
+
+
+def _phase_law(pool, k: int, pts, C: int, lam: float, eligible=None, grid: int = 16, max_atoms: int = 32,
+               chain: bool = True) -> dict:
+    """0.236 follower head start (FCFS token stream).  A prompt that starts while its predecessor's last iteration
+    is topped up begins at phase φ = the predecessor's tokens in that iteration, so its own pieces, tail τ_eff and the
+    head it leaves to the next prompt depend on φ (DES: pack_fill continues the stream in C-token iterations).
+    Phase chain: a leader (empty queue at its predecessor's last-iteration start) has φ = 0; else φ' = used(φ, i).
+    π(φ, i) = 1 − (1 − ρ)/E[e^{−λS}]·e^{−λ·pre(φ, i)} (P-K LST, as 0.235); stationary phase law × π fixed point
+    (phases on a C/16 lattice for mixtures; phases below 0.2 % folded into φ = 0).  → atoms [(w, share, lat)], per-type mean share / iterations / π."""
+    tot = sum(w for w, _, _ in pts)
+    ty = [(w / tot, S, p) for w, S, p in pts]
+    el = eligible or [True] * len(ty)
+    q_ = max(1, C // grid)
+    memo: dict = {}
+
+    def it(phi, i, hd):
+        key = (phi, i, hd)
+        if key not in memo:
+            _, S, p = ty[i]
+            memo[key] = _phase_iters(pool, k, S, p, C, phi, hd)
+        return memo[key]
+
+    def qz(u):
+        return 0 if u >= C else (u if len(ty) == 1 else int(round(u / q_)) * q_ % C)
+
+    stat = {0: 1.0}
+    pis: dict = {}
+    rho = 0.0
+    for _ in range(200):
+        # services under the current (stat, π)
+        atoms = []
+        for phi, sp in stat.items():
+            for i, (w, S, p) in enumerate(ty):
+                pi = pis.get((phi, i), 0.0)
+                a = it(phi, i, False)
+                atoms.append((sp * w * (1 - pi), a["share"], a["lat"], phi, i, False))
+                if pi > 0:
+                    b = it(phi, i, True)
+                    atoms.append((sp * w * pi, b["share"], b["lat"], phi, i, True))
+        rho = lam * sum(m * s for m, s, *_ in atoms)
+        if rho >= 1:
+            break
+        lst = sum(m * math.exp(-lam * s) for m, s, *_ in atoms)
+        newpi = {}
+        for phi in stat:
+            for i in range(len(ty)):
+                a = it(phi, i, False)
+                ok = el[i] and qz(a["used"]) != 0
+                newpi[(phi, i)] = (min(1.0, max(0.0, 1 - (1 - rho) / lst * math.exp(-lam * a["pre"]))) if ok else 0.0)
+        # stationary phase law: φ → used(φ, i) w.p. w_i·π, else → 0
+        nstat: dict = {}
+        for phi, sp in stat.items():
+            for i, (w, _, _) in enumerate(ty):
+                pi = newpi[(phi, i)]
+                # > 2 prompt types (length bins): followers stay at φ = 0 (the 0.235 rows) — each phase costs fresh
+                # iteration walls per type at every running batch k (deferred)
+                nxt = qz(it(phi, i, False)["used"]) if chain and len(ty) <= 2 else 0
+                nstat[0] = nstat.get(0, 0.0) + sp * w * (1 - pi)
+                if pi > 0:
+                    nstat[nxt] = nstat.get(nxt, 0.0) + sp * w * pi
+        # phases met by < 0.2 % of prompts are folded into the leader phase (each phase costs fresh iteration walls
+        # at every running batch k; length-bin mixtures otherwise visit hundreds) 「近似」
+        nstat = {f: v for f, v in nstat.items() if v > 2e-3 or f == 0}
+        z = sum(nstat.values())
+        nstat = {f: v / z for f, v in nstat.items()}
+        done = (set(nstat) == set(stat) and max(abs(nstat[f] - stat[f]) for f in stat) < 1e-10
+                and all(abs(newpi.get(x, 0) - pis.get(x, 0)) < 1e-10 for x in newpi))
+        stat, pis = nstat, newpi
+        if done:
+            break
+    atoms, per = [], [{"m": 0.0, "share": 0.0, "lat": 0.0, "n": 0.0, "pi": 0.0, "t1": 0.0} for _ in ty]
+    for phi, sp in stat.items():
+        for i, (w, S, p) in enumerate(ty):
+            pi = pis.get((phi, i), 0.0)
+            for hd, m in ((False, sp * w * (1 - pi)), (True, sp * w * pi)):
+                if m <= 0:
+                    continue
+                a = it(phi, i, hd)
+                atoms.append((m * tot, a["share"], a["lat"], i))
+                r = per[i]
+                r["m"] += m
+                r["share"] += m * a["share"]
+                r["lat"] += m * a["lat"]
+                r["n"] += m * (a["n"] - (phi / C if phi > 0 else 0.0) - ((C - a["used"]) / C if hd else 0.0))
+                if phi == 0 or m >= 0.01 * w:     # the longest iteration: the leader's, or a phase met ≥ 1 %
+                    r["t1"] = max(r["t1"], a["t1"])
+    cap = max(4, max_atoms // len(ty))
+    if len(atoms) > max_atoms:
+        # per prompt type, quantile slices by own latency keeping each slice's mass and mean share / latency (the
+        # M/G/1 mixture and mg1_mix_sum_quantile cost ∝ atoms; length bins × phases reach thousands) 「近似」
+        red = []
+        for i in range(len(ty)):
+            ai = sorted((a_ for a_ in atoms if a_[3] == i), key=lambda a_: a_[2])
+            if len(ai) <= cap:
+                red += ai
+                continue
+            mt = sum(a_[0] for a_ in ai)
+            cur, edge, acc = [0.0, 0.0, 0.0], 1, 0.0
+            for m_, sh_, la_, _ in ai:
+                cur[0] += m_
+                cur[1] += m_ * sh_
+                cur[2] += m_ * la_
+                acc += m_
+                if acc >= edge * mt / cap - 1e-15 and cur[0] > 0:
+                    red.append((cur[0], cur[1] / cur[0], cur[2] / cur[0], i))
+                    cur = [0.0, 0.0, 0.0]
+                    edge += 1
+            if cur[0] > 0:
+                red.append((cur[0], cur[1] / cur[0], cur[2] / cur[0], i))
+        atoms = red
+    for i, r in enumerate(per):
+        m = r["m"] or 1.0
+        for key_ in ("share", "lat", "n"):
+            r[key_] /= m
+        # P(its last iteration is topped up) for the type
+        r["pi"] = sum(sp * pis.get((phi, i), 0.0) for phi, sp in stat.items())
+    return {"atoms": atoms, "per": per, "rho": rho, "phases": stat,
+            "pi": sum(w * r["pi"] for (w, _, _), r in zip(ty, per)),
+            "follower": 1.0 - stat.get(0, 0.0)}
+
+
 def _law_mix(laws, qs) -> dict:
     """0.234: mean and quantiles of a mixture Σ w·(bulk_law ⊕ U(0, v)) (v = 0: none) — the uniform shift by 8
     midpoints; one sorted sweep over the piecewise-linear mixture CDF."""
@@ -1584,33 +1752,59 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
                         break
                 # 0.235: the (b+1)-th prompt's head.  With more than b waiting when a full batch starts (h, from the
                 # bulk chain at service starts) the iteration also carries L = C − b·new tokens of the next prompt
-                # (vLLM waiting loop / PrefillAdder truncation): the b finishing prompts see the longer wall (own law
-                # O_b two-point); the server work is token-conserving (the head leaves the later batch), so D is kept
-                # 「近似」.
+                # (vLLM waiting loop / PrefillAdder truncation) — only when a slot is left (k + b < max_num_seqs;
+                # 0.236: a slot-bound batch takes no head, as pdsim).
+                # 0.236: the head moves work: the head batch's wall carries it (D_b two-point, was O_b only) and the
+                # next full batch starts with the head-started prompt's remainder new − L (its smaller batch), whose
+                # own leftover is 2L (capped below one more whole prompt: b completions per batch 「近似」).  P(a full
+                # batch follows a head batch) = h (the head leaves ≥ 1 waiting at > b; independent of h 「近似」);
+                # fixed point with the chain.  O = D (each prompt's own wall = its batch's).
                 Lh = C - b * max(news)
-                if Lh > 0:
+                if Lh > 0 and k + b < B:
                     from .bulkq import _chain
-                    pis_s = _chain(lam_c, b, out["D"])[0]
-                    full = sum(pis_s[n - 1] for n in range(b, len(pis_s) + 1))
-                    over = sum(pis_s[n - 1] for n in range(b + 1, len(pis_s) + 1))
-                    h = over / full if full > 0 else 0.0
-                    wh = [_packed_fused(cp, kk, [(S, p, p, S)] * b + [(S, p, p, p + min(Lh, S - p))])
-                          for _, S, p in pts]
-                    Ob = tuple(merge_atoms([(t, (1 - h) * w_) for t, w_ in out["D"][b - 1]]
-                                           + [(t, h * w / tot) for t, w in zip(wh, ws)]))
-                    out["O"] = out["D"][:-1] + (Ob,)
-                    out.update(head_p=h, head_tokens=Lh, walls_head=wh)
+                    nw = [S - p for _, S, p in pts]
+                    wh = [_packed_fused(cp, kk, [(S, p, p, S)] * b + [(S, p, p, p + min(Lh, n_ - 1))])
+                          for (_, S, p), n_ in zip(pts, nw)]
+                    wr, wrh = [], []
+                    for (_, S, p), n_ in zip(pts, nw):
+                        rem = [(S, p, p + min(Lh, n_ - 1), S)] + [(S, p, p, S)] * (b - 1)
+                        l2 = C - (n_ - min(Lh, n_ - 1)) - (b - 1) * n_
+                        wr.append(_packed_fused(cp, kk, rem))
+                        wrh.append(_packed_fused(cp, kk, rem + [(S, p, p, p + max(1, min(l2, n_ - 1)))]))
+                    D0, h = out["D"], 0.0
+                    for _ in range(3):
+                        pis_s = _chain(lam_c, b, out["D"])[0]
+                        full = sum(pis_s[n - 1] for n in range(b, len(pis_s) + 1))
+                        over = sum(pis_s[n - 1] for n in range(b + 1, len(pis_s) + 1))
+                        h = over / full if full > 0 else 0.0
+                        g = h
+                        Db = merge_atoms([(t, (1 - g) * (1 - h) * w_) for t, w_ in D0[b - 1]]
+                                         + [(t, (1 - g) * h * w / tot) for t, w in zip(wh, ws)]
+                                         + [(t, g * (1 - h) * w / tot) for t, w in zip(wr, ws)]
+                                         + [(t, g * h * w / tot) for t, w in zip(wrh, ws)])
+                        out["D"] = D0[:-1] + (tuple(Db),)
+                    if bulk_mean(lam_c, b, out["D"]) is None:
+                        out["D"] = D0
+                    else:
+                        rho = bulk_busy(lam_c, b, out["D"])
+                        tau = rho / lam_c
+                        bm = max(1.0, bulk_mean(lam_c, b, out["D"])["batch_mean"])
+                        ok = bulk_own_k(lam_c, b, out["D"])
+                        out.update(head_p=h, head_tokens=Lh, walls_head=wh, walls_red_head=wrh)
                 out.update(stable=True, rho=rho, batch_mean=bm, ns=[1.0 / bm] * len(pts),
                            tsum=[tau * t / ms for t in solo], t1=walls[j99 - 1], own_k=ok)
         else:
-            rows = _tail_rows(cp, kk, pts, C)
-            pis, rho = _tail_pi(lam_c, ws, rows)
-            pi = _wsum(ws, pis) / sum(ws)
-            out.update(stable=rho < 1, pi=pi, pis=pis, solo=[r_["solo"] for r_ in rows],
-                       packd=[r_["packd"] for r_ in rows], latpk=[r_["latpk"] for r_ in rows],
-                       ns=[(1 - q_) * r_["n"] + q_ * r_["npk"] for q_, r_ in zip(pis, rows)],
-                       tsum=[(1 - q_) * r_["solo"] + q_ * r_["packd"] for q_, r_ in zip(pis, rows)],
-                       t1=[r_["t1"] for r_ in rows])
+            # 0.236: tail sharing with the follower's phase (head start) — _phase_law atoms (w, share, latency)
+            # (a follower needs a slot of its own, k + 2 ≤ max_num_seqs in pdsim; at the slot-bound bins the closed
+            # form keeps sharing — the itl_max bin k = B relies on that iteration, deferred with the itl lattice)
+            # fused running-batch bins k ≥ 1: C(k) and the walls change with k, so each phase would cost fresh walls at
+            # every k (KPI case D: > 30 min) → followers at φ = 0 there (the 0.235 rows); the chain runs at k = 0 and
+            # on the SGLang prefill-only path (deferred)
+            ph = _phase_law(cp, kk, pts, C, lam_c, chain=(k == 0))
+            per = ph["per"]
+            out.update(stable=ph["rho"] < 1, pi=ph["pi"], pis=[r_["pi"] for r_ in per], follower=ph["follower"],
+                       atoms=[(m_, sh_, la_) for m_, sh_, la_, _ in ph["atoms"]],
+                       ns=[r_["n"] for r_ in per], tsum=[r_["share"] for r_ in per], t1=[r_["t1"] for r_ in per])
         pkmemo[k] = out
         return out
 
@@ -1711,10 +1905,7 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         if pack and pack_at(kraw)["b"] == 1 and pack_at(kraw)["pi"] > 0:
             # 0.234 tail sharing: each prompt type is a two-point service (alone / topped up by the next head)
             pa = pack_at(kraw)
-            pts_b = []
-            for w_, q_, a, c, l_ in zip(ws, pa["pis"], pa["solo"], pa["packd"], pa["latpk"]):
-                pts_b += [(w_ * (1 - q_), a, a), (w_ * q_, c, l_)]
-            envs.append((1 / 8, [x_ for x_ in pts_b if x_[0] > 0], vac))
+            envs.append((1 / 8, [x_ for x_ in pa["atoms"] if x_[0] > 0], vac))
         else:
             # no running decode (k = 0) → no decode-only iteration to wait out
             envs.append((1 / 8, [(w_, t, t) for w_, t in zip(ws, tb)], vac))
@@ -1780,6 +1971,9 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
             if jw == pa["b"] and 1 - (1 - pb_ * pa.get("head_p", 0.0)) ** max(1.0, n_life) >= 0.01:
                 # 0.235: a full batch that also carries the next prompt's head, met by ≥ 1 % of requests
                 t1_99 = [max(a_, w_) for a_, w_ in zip(t1_99, pa["walls_head"])]
+                if 1 - (1 - pb_ * pa["head_p"] ** 2) ** max(1.0, n_life) >= 0.01:
+                    # 0.236: a full batch that starts with a head-started remainder and takes a head itself (g·h, g = h)
+                    t1_99 = [max(a_, w_) for a_, w_ in zip(t1_99, pa["walls_red_head"])]
     slot = mdc_wait(lam_c, out * dec["tpot"], B, QS, cs2=ctx["out_cs2"])
     # request-average TPOT spread: occupancy deviation (stretched) ⊕ the chunk excess met over its life
     exc = [t - m * T0 for m, t in zip(ns, tsum)]
@@ -1802,7 +1996,9 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
                         "rho": lam_c * _wsum(ws, serv), "chunk_share": x, "wait_ms": _ms(w),
                         **({"pack": {"b_env": [pack_at(k_)["b"] for k_ in kbins],
                                      "pi_env": [pack_at(k_).get("pi") for k_ in kbins],
-                                     "batch_mean_env": [pack_at(k_).get("batch_mean") for k_ in kbins]}}
+                                     "batch_mean_env": [pack_at(k_).get("batch_mean") for k_ in kbins],
+                                     "follower_env": [pack_at(k_).get("follower") for k_ in kbins],
+                                     "head_p_env": [pack_at(k_).get("head_p") for k_ in kbins]}}
                            if pack else {})},
             "decode": {"running_batch": dec["k"], "occupancy": dec["occupancy"], "slots": B,
                        "iter_ms_no_chunk": T0 * 1e3, "slot_wait_ms": _ms(slot), "excess_share": f,
