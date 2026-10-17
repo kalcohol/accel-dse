@@ -1226,6 +1226,48 @@ def _shared_kv(mp) -> float:
 _DRAM_KEYS = ("hot", "exp", "kv_read", "kv_write", "state", "lookup", "act", "w_extra")
 
 
+def _draft_model(sv, m: ModelSpec, warnings: list) -> ModelSpec | None:
+    """0.222: the independent draft model of a decode step (serving.draft_model), validated."""
+    if not sv.draft_model:
+        return None
+    if sv.phase != "decode":
+        return None
+    d = get_model(sv.draft_model)
+    if d.domain != "llm" or not d.kv_cache and not any(L.core is not None and L.core.kind == "linear" for L in d.layers):
+        raise ValueError(f"serving.draft_model {sv.draft_model!r} must be a text LLM")
+    if d.vocab != m.vocab:
+        warnings.append(f"草稿模型词表 {d.vocab} 与目标 {m.vocab} 不同：投机解码需要同一分词器（按给定计算，接受率「假设」）")
+    if m.mtp_layers:
+        warnings.append("设置了独立草稿模型：目标自带的 MTP / DSpark 模块不运行（仍存储）")
+    return d
+
+
+def _draft_cost(scn: Scenario, d: ModelSpec, k: int) -> dict:
+    """0.222 independent draft model (vLLM / SGLang draft-model speculative decoding).  Placement 「假设」: the draft runs
+    on the target's head-stage cards with the target's TP (and DP), pp = 1, bf16 as released; it keeps its own KV of
+    the same context.  Per step: k sequential draft decode passes at the step's batch (each proposes one token from the
+    previous one; ≤ 0.221 not modelled) — the first pass also ingests the tokens accepted in the last verify, taken at
+    q = 1 cost 「假设」 (weight-bound at small batch) — serial with the target's verify of 1 + k tokens.  Memory: the
+    draft's weights + KV / state for its batch share are added to the head stage.  Acceptance = serving.spec_accept
+    「假设」 lever."""
+    from dataclasses import replace as _rp
+    sv, lay = scn.serving, scn.layout
+    ds = _rp(scn, model=sv.draft_model, layout=Layout(tp=lay.tp, dp=lay.dp), formats_override=(),
+             serving=_rp(sv, spec_k=0, draft_model="", microbatches=0))
+    rd = evaluate(ds, d)
+    mp = rd.stages[0].mem
+    by = sum(s_.mem.stored_w + s_.mem.kv_total + s_.mem.state_total for s_ in rd.stages)
+    return {"s": k * rd.step, "pass_s": rd.step, "bytes": by, "model": d.id, "fits_alone": rd.fits,
+            "params_B": d.active_params() / 1e9, "kv_state_bytes": mp.kv_total + mp.state_total}
+
+
+def _spec_q(ph) -> int:
+    """0.222: verify tokens per sequence of a speculative decode step (q = 1 + k), 0 otherwise — the hybrid-layer
+    intermediate-state scratch (memplan.stage_storage spec_q)."""
+    from .ir import SPEC_STATE_SNAPSHOT
+    return ph.q if (SPEC_STATE_SNAPSHOT and ph.kind == "decode" and ph.q > 1) else 0
+
+
 def _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx, n_mtp, b_rank, first_ops, last_ops,
                   p2p_payload, repeat: bool = False):
     """0.62 PP split (``scn.pp_split``): "cost" (default) balances the per-stage time of the stage rule over layers,
@@ -1263,11 +1305,13 @@ def _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx
     def static(st_):
         return st_.weights + (st_.kv_per_seq + st_.idx_per_seq + st_.state_per_seq) * b_rank
 
+    sq = _spec_q(ph)
+
     def stor(first_, last_, e, h, nm):
-        key = (first_, last_, e, h, sh, ctx, nm)
+        key = (first_, last_, e, h, sh, ctx, nm, sq)
         x = store_memo.get(key)
         if x is None:
-            x = store_memo[key] = stage_storage(m, first_, last_, e, h, sh, ctx, nm)
+            x = store_memo[key] = stage_storage(m, first_, last_, e, h, sh, ctx, nm, sq)
         return x
 
     L = m.n_layers
@@ -1507,8 +1551,9 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         return _evaluate_full(scn, m, sys, warnings)
     if scn.workload.step_skip:
         warnings.append("workload.step_skip 已忽略：只用于视频 / 图像生成（去噪步）")
-    spec_k = sv.spec_k if (sv.phase == "decode" and m.mtp_layers) else 0
-    if m.draft == "dspark" and sv.spec_k:
+    dm = _draft_model(sv, m, warnings)          # 0.222: independent draft model (None = target's own MTP / DSpark)
+    spec_k = sv.spec_k if (sv.phase == "decode" and (m.mtp_layers or dm is not None)) else 0
+    if m.draft == "dspark" and sv.spec_k and dm is None:
         if sv.phase == "decode" and spec_k > m.draft_block:
             warnings.append(f"spec_k {spec_k} 超过 DSpark 草稿块 {m.draft_block}：按 {m.draft_block} 计")
             spec_k = m.draft_block
@@ -1518,8 +1563,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if m.max_ctx and need_ctx > m.max_ctx:    # 0.61.4: evaluated as asked, but say the release does not cover it
         warnings.append(f"上下文 {need_ctx} 超过发布 config 的 max_position_embeddings {m.max_ctx}"
                         "（需要 RoPE 外推 / YaRN 等，发布未必支持；KV 与注意力仍按所给长度计）")
-    if sv.spec_k and not m.mtp_layers and sv.phase == "decode":
-        warnings.append("spec_k 已忽略：该模型没有 MTP 模块（独立草稿模型的投机解码未建模）")
+    if sv.spec_k and not m.mtp_layers and sv.phase == "decode" and dm is None:
+        warnings.append("spec_k 已忽略：该模型没有 MTP 模块，也没有设置独立草稿模型（serving.draft_model）")
     pp = lay.pp
     skew = _moe_skew(m, sv, lay, warnings)
     rskew = skew                     # 0.132: what the phases route with (SkewSpec carries the busiest rank's shape)
@@ -1581,7 +1626,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                         "无事可做（长上下文单请求 prefill 请用 TP / indexer = key_split，或增大 batch）")
     sh = lay.shard
     stages = []
-    n_mtp = (len(m.mtp_layers) if m.draft == "dspark" else min(spec_k, len(m.mtp_layers))) if spec_k else 0
+    n_mtp = (len(m.mtp_layers) if m.draft == "dspark" else min(spec_k, len(m.mtp_layers))) if (spec_k and dm is None) else 0
+    tail_k = 0 if dm is not None else spec_k     # the target's own draft modules stay idle under an independent draft
     b_rank = _cdiv(sv.batch, scn.layout.dp)   # sequences whose KV lives on one rank (all micro-batches; CP: a shard each)
     cache: dict = {}
     groups = layer_groups(m)
@@ -1617,14 +1663,14 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 _acc(agg, cache[g], n)
             if cp_ring is not None:
                 _acc(agg, _sum_ops(_cp_ring_ops(m, st.first, st.last, cp_ring), sys, scn.mapping, m, mm))
-            tail = _tail_ops(m, st.has_head, ph, sh, spec_k, scn.chip.gpu_glue)
+            tail = _tail_ops(m, st.has_head, ph, sh, tail_k, scn.chip.gpu_glue)
             if tail:                        # 0.61: non-head stages have no tail ops (summing zeros is a no-op)
                 _acc(agg, _sum_ops(tail, sys, scn.mapping, m, mm))
-            skey = (st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap, n_mtp)
+            skey = (st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap, n_mtp, _spec_q(ph))
             store = store_memo.get(skey)
             if store is None:
                 store = store_memo[skey] = stage_storage(m, st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap,
-                                                         n_mtp)
+                                                         n_mtp, _spec_q(ph))
             # 0.63: activations streamed (stream=True: staging ≤ the SRAM's activation half, spills in agg["act"]);
             # a working set beyond the runtime reserve needs its excess in DRAM 「假设」
             mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
@@ -1657,6 +1703,11 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 agg["kern"] += s_add
             agg["fixed"] = s_add
             _ps = sys.chip.dispatch_s()[0]
+            if _ps and spec_k and st.has_head and ph.kind == "decode":
+                # 0.222: the draft is its own program after the target verify (engines run the draft model on its own
+                # graph runner — SGLang dspark_draft.py draft_model_runner.decode_cuda_graph_runner 「来源」); on a static
+                # schedule that is a second launch per step on the head stage 「假设」 that the NPU compiler keeps them apart
+                _ps *= 2
             if _ps:                        # 0.203: static-graph launch + token sync, once per step per stage
                 s_add += _ps
                 sync += _ps
@@ -1699,11 +1750,17 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         return stages
 
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx_cap, n_mtp, b_rank,
-                                 embed_ops(m, ph, sh), _tail_ops(m, True, ph, sh, spec_k, scn.chip.gpu_glue),
+                                 embed_ops(m, ph, sh), _tail_ops(m, True, ph, sh, tail_k, scn.chip.gpu_glue),
                                  ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m))
     stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
     vis = _vision_cost(scn, m, sys, stages) if (m.vision is not None and (sv.images or sv.videos or sv.audio_s)
                                                  and sv.image_tokens) else None
+    draft = None
+    if dm is not None and spec_k:
+        draft = _draft_cost(scn, dm, spec_k)
+        st_l = stages[-1]          # the draft lives on the head (last) stage's cards 「假设」
+        need = st_l.mem.dram_need + draft["bytes"]
+        stages[-1] = replace(st_l, mem=replace(st_l.mem, dram_need=need, fits=need <= st_l.mem.dram_cap))
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
     _pp_imbalance_warn(stages, tick, warnings, scn.pp_split)
@@ -1726,7 +1783,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         host = {"s": h, "overlap": scn.host_overlap, "steps": scn.host_steps if sv.phase == "decode" else 1,
                 "seqs_per_rank": seqs}
     if sv.phase == "decode":
-        step = max(mb, pp) * tick
+        step = max(mb, pp) * tick + (draft["s"] if draft else 0.0)     # 0.222: k draft passes, serial with the verify
         if host:
             dev = step
             step = dev + host["s"] if scn.host_overlap == "serial" else max(dev, host["s"])

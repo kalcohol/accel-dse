@@ -4964,3 +4964,52 @@ the UI fallback / placeholders, and every catalog type/form/width default.
 
 Conclusions: no preset KPI changed.
 
+
+## §169 Spec-decode verify-step audit; independent draft model (0.222)
+
+Question: the modelled verify step was +12.6% over plain decode (ReaDy, B200, b1, ctx 2048), while the ReaDy paper
+implies ~43%. The model gave 4.03× against the paper's 3.16×. Each mechanism was checked against code, not against
+the paper.
+
+| Mechanism | Status | Source |
+|---|---|---|
+| (a) k+1-token attention vs full KV, causal block | Already charged (reads ctx+q keys; causal 1.0 slightly over-charges) | — |
+| (b) Draft dispatch | GPU kernel_us already applies per draft op. Static dispatch now ×2 on spec head stage | SGLang separate draft CUDA-graph runner (来源); NPU compiler 假设 |
+| (c) Sampling / bookkeeping | DSpark Markov head is now B sequential head GEMM + sample steps | SGLang dsc/dspark_draft.py `draft_markov_block` (来源) |
+| (d) Recurrent-state snapshot | State traffic (q+3)× per sequence (read 1, write q intermediates, scatter read+write); scratch q × state in memory | SGLang memory_pool `intermediate_ssm_state_cache` [layers, slots, num_draft_tokens, HV, V, K] + `fused_mamba_state_scatter` (来源) |
+| (e) GEMM tile at M=k+1 | No change: the cta M-tile is the same for M=1 and M=8 | — |
+
+Notes:
+- ReplaySSM (opt-in, which skips the scratch) is not modelled.
+- That the pinned SGLang rev 2948168 takes the same path is 假设.
+
+Gap movement (B200, b1, ctx 2048):
+
+| Metric | Before | After | Paper |
+|---|---|---|---|
+| Step ratio | 1.126 | 1.165 | 1.433 |
+| Speedup | 4.02× | 3.89× | 3.16× |
+| Verify extra | 0.067 ms | 0.334 ms | — |
+| Draft | 1.353 ms | 1.528 ms | — |
+
+The remaining ≈ 0.27 step-ratio gap is a residual. Engine host and scheduling time between draft and verify has no
+sourced figure, so it is not modelled. Nothing was fitted.
+
+Independent draft model (`serving.draft_model`; designed in §168):
+- The draft's own scenario is evaluated with the target's TP/DP, pp = 1, as-released formats, and spec off.
+- Its stored weights + KV + state are added to the target's last-stage DRAM need.
+- Step = target verify (q = 1+k) + k × draft pass.
+- Acceptance a is a 假设 lever; tokens per step = (1−a^(k+1))/(1−a).
+- Placement on the same cards is 假设. An MTP target keeps its MTP weights but does not run them.
+- Example (1P, b8, ctx 4096), qwen3-32b alone vs + qwen3-0.6b (k=4, a=0.7):
+
+  | Metric | qwen3-32b alone | + qwen3-0.6b |
+  |---|---|---|
+  | TPOT | 21.93 ms | 9.96 ms |
+  | DRAM need | 70.0 GiB | 74.6 GiB |
+
+Deferred: draft energy in J/token; UI field for draft_model; tree drafting.
+
+Conclusions that shifted: speculation on hybrid (linear-attention) targets at large batch is much less attractive
+than before. ReaDy at b32 drops from 6032 to 3815 tok/s, and needs +37 GiB scratch. Conclusions at b1 are
+essentially unchanged.

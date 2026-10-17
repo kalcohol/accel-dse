@@ -1019,7 +1019,7 @@ def _sweep_inapplicable(path: str, r) -> str | None:
         return "仅适用于 LLM / VLM（该模型为固定工作负载）"
     if path == "serving.prompt" and sc.serving.phase == "decode" and not sc.pd.enabled:
         return "decode 阶段的结果不读取 prompt 长度（改 ctx，或切到 prefill 阶段）"
-    if path == "serving.spec_k" and not (m.mtp_layers or m.draft):
+    if path == "serving.spec_k" and not (m.mtp_layers or m.draft or sc.serving.draft_model):
         return "该模型没有 MTP / 草稿模块（spec_k 被忽略）"
     w = m.workload
     if r.workload is not None and w is not None and path.startswith("workload."):     # 0.130: per workload kind (frames on an image DiT, …)

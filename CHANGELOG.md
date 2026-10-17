@@ -6,6 +6,42 @@
 
 
 
+## [0.222.0]
+- Spec-decode verify-step mechanism audit (MODEL §169). Three items were missing and sourced, so they are now modelled:
+  - Hybrid-layer state snapshot (`ir.SPEC_STATE_SNAPSHOT`, 来源 SGLang memory_pool `intermediate_ssm_state_cache`
+    + `update_mamba_state_after_mtp_verify`). A verify step with q = 1+k tokens now moves (q+3)× the recurrent
+    state per sequence (was 2×). memplan reserves q × state per sequence as scratch (`stage_storage(spec_q=)`).
+  - DSpark Markov head is sequential (`ir.DSPARK_SEQ_MARKOV`, 来源 SGLang `draft_markov_block`): B dependent
+    head GEMMs plus B samples, replacing one batched GEMM.
+  - Static dispatch: when a spec step is on the head stage, it is charged as two programs (draft + verify;
+    来源 SGLang separate draft graph runner; NPU compiler doing the same is 假设).
+  - Already correct, no change: k+1-token attention against the full KV (causal block), and the GEMM M-tile at
+    M = k+1.
+- ReaDy B200 like-for-like, before → after:
+
+  | Metric | Before | After | Paper |
+  |---|---|---|---|
+  | Step ratio vs AR | 1.126 | 1.165 | 1.433 |
+  | Speedup | 4.02× | 3.89× | 3.16× |
+
+  The remainder is a residual (engine host/scheduling, not sourced). Nothing was fitted to the paper.
+- New: generic independent draft model, `serving.draft_model` (CLI `--draft-model`).
+  - Own weights and KV live on the target's head-stage cards, at the same TP/DP (假设).
+  - Step = target verify + k × draft decode pass.
+  - Tokens per step = (1−a^(k+1))/(1−a); acceptance is a 假设 lever.
+  - Warnings for vocab mismatch, and for a target MTP that is stored but not run.
+  - Limitation: draft energy is not yet in J/token.
+- `tests/test_core_222.py`: mechanism tests plus a seed-222 fuzzer over target/draft/k/a/batch/tp.
+- KPI deltas (1P, ctx 4096). Non-speculative presets and ext_validate are unchanged.
+
+  | Case | TPOT before → after | DRAM need before → after |
+  |---|---|---|
+  | qwen3.8-27b k=1, b32 | 13.10 → 15.80 ms | 65.1 → 74.4 GiB |
+  | ReaDy k=7, b32 | 5.31 → 8.39 ms | 69.8 → 107.2 GiB |
+  | ReaDy k=7, b1 | 3.88 → 4.02 ms | |
+  | DeepSeek-V4.1-flash k=7, b1 | 3.850 → 3.857 ms | |
+  | Muse DSpark k=7, b1 | 18.89 → 19.01 ms | |
+
 ## [0.221.0]
 - Default memory realism: every default now resolves to a shipping, sourced part, or is an explicit what-if.
   - LPDDR5 discrete x32 default capacity 6 GB → 8 GB per package (6 GB has had no product since 0.220; 8 GB = Samsung

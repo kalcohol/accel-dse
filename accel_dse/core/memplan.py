@@ -134,7 +134,9 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
 
 
 def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_head: bool, sh: Shard,
-                  ctx: int, n_mtp: int = 0) -> StageStorage:
+                  ctx: int, n_mtp: int = 0, spec_q: int = 0) -> StageStorage:
+    """``spec_q`` (0.222): tokens of a speculative verify pass (1 + k, decode) — hybrid / linear layers keep one
+    intermediate recurrent state per draft token (ir.SPEC_STATE_SNAPSHOT; SGLang intermediate_ssm_state_cache)."""
     hot = exp = kv = idx = st = 0.0
     kvb = _fmt(model.kv_fmt).bytes
     stb = _fmt(model.state_fmt).bytes
@@ -159,6 +161,8 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             st += (L.ple_conv - 1) * L.ple_dil * L.gres_n * model.hidden * 2
         if c.kind == "linear":
             st += c.state_bytes(sh.tp, stb)
+            if spec_q > 1 and c.lin not in ("hyena", "rwkv7"):
+                st += spec_q * c.state_bytes(sh.tp, stb)
         if c.idx_heads and c.dual:
             idx += (ctx // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
         elif c.idx_heads and c.idx_sum and c.qsa:     # 0.145: Step-5 fp32 + fp8 summary per completed region

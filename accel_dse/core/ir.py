@@ -223,6 +223,22 @@ def gqa_local(n_q: int, n_kv: int, tp: int) -> tuple[int, int]:
 # Same FLOPs / weight bytes; one kernel instead of three (≤ 0.197: three GEMMs, each paying its own tile / wave /
 # DRAM-floor cost — MI300X 70B b1 attn.k / attn.v 2.9 µs each vs 0.56 µs of weights).  False = ≤ 0.197.
 FUSE_QKV = True
+# 0.222: speculative verify on hybrid / linear-attention layers (decode with q = 1 + k > 1).  The verify pass cannot
+# overwrite the committed recurrent state (rejected tokens would corrupt it): it writes one intermediate SSM state per
+# draft token and the accepted one is scattered back after verification 「来源」 SGLang main 9c7b338
+# mem_cache/memory_pool.py ("Cache intermediate SSM states per draft token during target verify", shape [layers, slots,
+# speculative_num_draft_tokens, HV, V, K], ssm dtype) + hybrid_linear_attn_backend.update_mamba_state_after_mtp_verify
+# → fused_mamba_state_scatter (read the accepted intermediate, write the committed state).  Per layer per sequence:
+# read 1 + q intermediate writes + commit read 1 + write 1 = (q + 3) states (≤ 0.221: 2 — the AR read + write).  The
+# opt-in ReplaySSM path (no per-draft writes) is not the default and is not modelled 「假设」 that the ReaDy-pinned SGLang
+# (2948168) uses the same default path.  Memory: q intermediate states per sequence (memplan, spec_q).
+SPEC_STATE_SNAPSHOT = True
+# 0.222: the DSpark Markov head is semi-autoregressive: draft position j adds markov_w2·markov_w1[token_{j−1}] to its
+# base logits and samples, and token_{j−1} is position j−1's sample — gamma sequential steps, each a w2 GEMV (or GEMM
+# over the batch) reading the whole V × r w2, + add + argmax / sample 「来源」 SGLang main 9c7b338
+# speculative/dspark_components/dspark_draft.py draft_markov_block (`for step in range(gamma)`, _draft_step:
+# MarkovGreedyStep / step_bias + MarkovSampleStep).  ≤ 0.221: one GEMM over b·B rows (w2 read once).  False = ≤ 0.221.
+DSPARK_SEQ_MARKOV = True
 _QKV_NAMES = ("attn.q", "attn.k", "attn.v", "attn.qkv")
 
 
@@ -643,8 +659,10 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         if core.lin == "conv":
             # 0.114 LFM2 gated short conv: B·x before and C·y after the depthwise conv (1 op / element each)
             vec += t * _cdiv(core.conv_channels, tp) * 2
+        # 0.222 spec verify (decode, q > 1): per-draft-token intermediate states + accepted-state commit (SPEC_STATE_SNAPSHOT)
+        n_st = (q + 3) if (SPEC_STATE_SNAPSHOT and ph.kind == "decode" and q > 1) else 2
         ops.append(Op("state_update", "state", li, vec=vec + conv,
-                      state_rw=2 * st_bytes * b_loc, kv_read=0.0))
+                      state_rw=n_st * st_bytes * b_loc, kv_read=0.0))
         return ops
     if core.kind == "none":
         return ops
@@ -1225,9 +1243,16 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
     r = model.draft_markov
     ops += [Op("dspark_hc_pre", "vector", li, vec=b_loc * B * (2 * N * h + 4 * h), replicated=tp),
             gemm(model, "dspark.head", li, b_loc * B, h, V, "lm_head", stream=True),
-            Op("dspark_markov_embed", "lookup", li, kv_read=b_loc * B * r * 2, vec=b_loc * B * r),
-            gemm(model, "dspark.markov_head", li, b_loc * B, r, V, "mtp", stream=True),
-            Op("dspark_sample", "vector", li, vec=b_loc * B * V * 3),
+            Op("dspark_markov_embed", "lookup", li, kv_read=b_loc * B * r * 2, vec=b_loc * B * r)]
+    if DSPARK_SEQ_MARKOV:
+        # 0.222: gamma sequential Markov steps (each re-reads w2; its own kernel)
+        for j in range(B):
+            ops += [gemm(model, f"dspark.markov_head.{j}", li, b_loc, r, V, "mtp", stream=True),
+                    Op(f"dspark_sample.{j}", "vector", li, vec=b_loc * V * 3)]
+    else:
+        ops += [gemm(model, "dspark.markov_head", li, b_loc * B, r, V, "mtp", stream=True),
+                Op("dspark_sample", "vector", li, vec=b_loc * B * V * 3)]
+    ops += [
             gemm(model, "dspark.confidence", li, b_loc * B, h + r, 1, "mtp", replicated=tp)]
     return ops
 
