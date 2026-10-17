@@ -1075,13 +1075,37 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     res = {"lambda_rps": lam, "stable": pre is not None}
     if pre is None:
         return {**res, "why": "prefill 在此负载下不稳定"}
+    # 0.235: SGLang non-mixed tail sharing (PrefillAdder: the chunked request's last chunk is topped up with the next
+    # waiting prompt's head) — cap 1 only (cap ≥ 2 = whole prompts packed, b·new ≤ C); each prompt type becomes a
+    # two-point service (alone w.p. 1 − π_i / shared w.p. π_i: server share and own latency, _tail_rows/_tail_pi)
+    ws_x, taus_x, lats_x = pre["ws"], pre["taus"], pre["lats"]
+    C_t = ctx.get("_tail_split")
+    tail_info = None
+    if C_t and pre["b"] == 1:
+        rows = _tail_rows(cp.pool if hasattr(cp, "pool") else cp, 0, pts, C_t)
+        for r_, (_, S, p) in zip(rows, pts):
+            if 2 * (S - p) <= C_t:          # a second whole prompt fits: the bulk caps model that packing
+                r_.update(packd=r_["solo"], latpk=r_["solo"], pre=math.inf)
+        pis, rho_t = _tail_pi(lam_c, pre["ws"], rows)
+        if rho_t < 1 and any(q_ > 0 for q_ in pis):
+            ws_x, taus_x, lats_x = [], [], []
+            for w_, q_, r_, t_ in zip(pre["ws"], pis, rows, pre["taus"]):
+                sc_ = t_ / r_["solo"] if r_["solo"] > 0 else 1.0     # the pool's own scaling (KV contention)
+                ws_x += [w_ * (1 - q_), w_ * q_]
+                taus_x += [t_, r_["packd"] * sc_]
+                lats_x += [t_, r_["latpk"] * sc_]
+            wq = mg1(lam_c, taus_x, ws_x, QS)
+            if not wq["stable"]:
+                return {**res, "stable": False, "why": "prefill 在此负载下不稳定"}
+            pre = {**pre, "wait": wq}
+            tail_info = {"pi": pis, "C": C_t}
     rho = pre["wait"]["rho"]
     share = 1 - rho
     # 0.55: decode in the reduced clock (prefill time left out) with batch arrivals — each prefill busy period hands
     # its X requests (M/G/1 busy-period count over the per-request prefill service, Takács) to decode at once.
     # Busy periods start at λ(1 − ρ) in wall time = λ per reduced second.  0.54 used Poisson arrivals with
     # step/(1 − ρ), which misses this burstiness (DES: mean TPOT −10 %, p90 −13 … −43 %).
-    svc = list(zip(pre["ws"], pre["taus"]))
+    svc = list(zip(ws_x, taus_x))
     X, _ = _mg1_busy(lam_c, svc)
     dec = None
     if X is not None and share > 0:
@@ -1093,8 +1117,8 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
         return {**res, "stable": False, "why": "decode 在此负载下不稳定（prefill 占用后剩余时间不够）"}
     tp = dec["step"] / dec["r"].tokens_per_step      # 0.64: fractional seen batch (two-point mixture)
     resid = dec["step"]
-    lats_w = list(zip(pre["ws"], pre["lats"]))
-    ttft = _ttft(pre["wait"], lats_w, conv=(pre["lam"], pre["taus"]),
+    lats_w = list(zip(ws_x, lats_x))
+    ttft = _ttft(pre["wait"], lats_w, conv=(pre["lam"], taus_x),
                  law=_bulk_ttft_law(pre) if pre["b"] > 1 else None)
     if ctx.get("resid_busy", _RESID_BUSY):
         # 0.111: an arrival meets an in-flight decode iteration only when the prefill server is idle (else it queues
@@ -1115,7 +1139,7 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     # sees (stretched) and the stall time it meets — busy periods arrive at λ(1 − ρ) over its life and each adds V,
     # E[V²] = E[S²]/(1 − ρ)³ for cap 1 (clustered: 0.54 counted single batches, E[V²] = lat²).
     if pre["b"] <= 1:
-        ev2 = _excess_var(lam_c, lats_w, 1.0, rho)
+        ev2 = _excess_var(lam_c, svc, 1.0, rho)
     else:
         c = -math.expm1(-lam_c * pre["lat"])
         if 1 - c < 1e-12:     # 0.60: c rounds to 1 at extreme λ (stable-rate bisection at large card counts) → was 1/0
@@ -1133,14 +1157,15 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     # period met in its life.  Cap 1: exact M/G/1 busy-period duration (Takács, 0.55); cap > 1: batch count
     # geometric × latency mix (0.54).
     if pre["b"] <= 1:
-        _, dur = _mg1_busy(lam_c, lats_w, want_dur=True)
+        _, dur = _mg1_busy(lam_c, svc, want_dur=True)
         d99 = _busy_q_from(dur, n_bp, 0.99) if dur else math.inf
     else:
         d99 = _busy_dur_max_q(lam_c, lats_w, pre["b"], life, rho, 0.99)
     return {**res, "ttft": ttft, "tpot_mean": dec["tpot"], "tpot_p90": req_q[0.9], "tpot_p99": req_q[0.99],
             "itl_max": dec["step_seen_mean"] / dec["e"] + d99,
             "e2e_mean": ttft["mean"] + slot["mean"] + out * dec["tpot"],
-            "prefill": {"batch_cap": pre["b"], "ttft_b_ms": pre["lat"] * 1e3, "wait_ms": _ms(pre["wait"])},
+            "prefill": {"batch_cap": pre["b"], "ttft_b_ms": pre["lat"] * 1e3, "wait_ms": _ms(pre["wait"]),
+                        **({"tail_share": tail_info} if tail_info else {})},
             "decode": {"running_batch": dec["k"], "occupancy": dec["occupancy"], "slots": B, "share": share,
                        "tpot_pure_ms": tp * 1e3, "slot_wait_ms": _ms(slot),
                        "burst_mean": sum((i + 1) * x for i, x in enumerate(X))},
@@ -1400,6 +1425,51 @@ def _chunk_plan(S: int, p: int, C: int) -> tuple[int, float, float]:
     return n, f, reread
 
 
+def _tail_rows(pool, k: int, pts, C: int) -> list:
+    """0.234/0.235 tail sharing, per prompt type: alone (Σ chunk iterations), the server share and own latency when
+    the last iteration (τ tail tokens, τ < C) is topped up with the next prompt's head, and S′ = the time before the
+    last iteration.  k ≥ 1: fused with k decodes (vLLM / sglang_mixed); k = 0: prefill-only iterations (SGLang)."""
+    rows = []
+    for _, S, p in pts:
+        bd = _chunk_bounds(S, p, C)
+        it = [_chunk_fused(pool, k, S, p, q, e) for q, e in bd]
+        tail = bd[-1][1] - bd[-1][0]
+        r = {"solo": sum(it), "n": float(len(bd)), "tail": tail}
+        if tail < C:
+            head = min(S - p, C - tail)
+            tsh = _packed_fused(pool, k, [(S, p, bd[-1][0], S), (S, p, p, p + head)])
+            r.update(packd=sum(it[:-1]) + tail / C * tsh, npk=len(bd) - 1 + tail / C,
+                     latpk=sum(it[:-1]) + tsh, t1=max(it + [tsh]), pre=sum(it[:-1]), tsh=tsh)
+        else:
+            r.update(packd=sum(it), npk=float(len(bd)), latpk=sum(it), t1=max(it), pre=math.inf, tsh=0.0)
+        rows.append(r)
+    return rows
+
+
+def _tail_pi(lam: float, ws, rows) -> tuple:
+    """π_i = P(someone waits behind the prompt when its last iteration starts) = 1 − P(no arrival during its wait W
+    and its first n − 1 iterations S′_i) = 1 − E[e^{−λW}]·e^{−λS′_i}; M/G/1: E[e^{−λW}] = (1 − ρ)/E[e^{−λS}]
+    (Pollaczek–Khinchine LST at s = λ) 「近似」: an idle server's decode-only iterations are left out.  n ≥ 2 with a
+    short tail → ≈ ρ; one-iteration prompts → ≈ ρ².  Fixed point with ρ.  → (π_i, ρ)."""
+    pis = [0.0] * len(rows)
+    tot = sum(ws)
+    rho = 0.0
+    for _ in range(60):
+        srv = [(1 - q_) * r["solo"] + q_ * r["packd"] for q_, r in zip(pis, rows)]
+        rho = lam * _wsum(ws, srv)
+        if rho >= 1:
+            break
+        lst = sum(w_ / tot * ((1 - q_) * math.exp(-lam * r["solo"]) + q_ * math.exp(-lam * r["packd"]))
+                  for w_, q_, r in zip(ws, pis, rows))
+        new = [min(1.0, max(0.0, 1 - (1 - rho) / lst * math.exp(-lam * r["pre"]))) if math.isfinite(r["pre"])
+               else 0.0 for r in rows]
+        done = max(abs(x_ - y_) for x_, y_ in zip(new, pis)) < 1e-10
+        pis = new
+        if done:
+            break
+    return pis, rho
+
+
 def _law_mix(laws, qs) -> dict:
     """0.234: mean and quantiles of a mixture Σ w·(bulk_law ⊕ U(0, v)) (v = 0: none) — the uniform shift by 8
     midpoints; one sorted sweep over the piecewise-linear mixture CDF."""
@@ -1512,53 +1582,35 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
                     j99 = j
                     if acc >= 0.99:
                         break
+                # 0.235: the (b+1)-th prompt's head.  With more than b waiting when a full batch starts (h, from the
+                # bulk chain at service starts) the iteration also carries L = C − b·new tokens of the next prompt
+                # (vLLM waiting loop / PrefillAdder truncation): the b finishing prompts see the longer wall (own law
+                # O_b two-point); the server work is token-conserving (the head leaves the later batch), so D is kept
+                # 「近似」.
+                Lh = C - b * max(news)
+                if Lh > 0:
+                    from .bulkq import _chain
+                    pis_s = _chain(lam_c, b, out["D"])[0]
+                    full = sum(pis_s[n - 1] for n in range(b, len(pis_s) + 1))
+                    over = sum(pis_s[n - 1] for n in range(b + 1, len(pis_s) + 1))
+                    h = over / full if full > 0 else 0.0
+                    wh = [_packed_fused(cp, kk, [(S, p, p, S)] * b + [(S, p, p, p + min(Lh, S - p))])
+                          for _, S, p in pts]
+                    Ob = tuple(merge_atoms([(t, (1 - h) * w_) for t, w_ in out["D"][b - 1]]
+                                           + [(t, h * w / tot) for t, w in zip(wh, ws)]))
+                    out["O"] = out["D"][:-1] + (Ob,)
+                    out.update(head_p=h, head_tokens=Lh, walls_head=wh)
                 out.update(stable=True, rho=rho, batch_mean=bm, ns=[1.0 / bm] * len(pts),
                            tsum=[tau * t / ms for t in solo], t1=walls[j99 - 1], own_k=ok)
         else:
-            solo, packd, nsolo, npk, t1, latpk, pre = [], [], [], [], [], [], []
-            for _, S, p in pts:
-                bd = _chunk_bounds(S, p, C)
-                it = [_chunk_fused(cp, kk, S, p, q, e) for q, e in bd]
-                tail = bd[-1][1] - bd[-1][0]
-                solo.append(sum(it))
-                nsolo.append(float(len(bd)))
-                pre.append(sum(it[:-1]) if tail < C else math.inf)   # no room in the last iteration → never shared
-                if tail < C:
-                    head = min(S - p, C - tail)
-                    tsh = _packed_fused(cp, kk, [(S, p, bd[-1][0], S), (S, p, p, p + head)])
-                    packd.append(sum(it[:-1]) + tail / C * tsh)
-                    npk.append(len(bd) - 1 + tail / C)
-                    latpk.append(sum(it[:-1]) + tsh)       # its last iteration runs to the end of the shared one
-                    t1.append(max(it + [tsh]))
-                else:
-                    packd.append(sum(it))
-                    npk.append(float(len(bd)))
-                    latpk.append(sum(it))
-                    t1.append(max(it))
-            # π_i = P(someone waits behind the prompt when its last iteration starts) = 1 − P(no arrival during its
-            # wait W and its first n − 1 iterations S'_i) = 1 − E[e^{−λW}]·e^{−λS'_i}; M/G/1: E[e^{−λW}] =
-            # (1 − ρ)/E[e^{−λS}] (Pollaczek–Khinchine LST at s = λ) 「近似」: the decode-only iterations an idle
-            # server runs are left out.  n ≥ 2 with a short tail → ≈ ρ; one-iteration prompts → ≈ ρ².  Fixed point.
-            pis = [0.0] * len(pts)
-            tot = sum(ws)
-            rho = 0.0
-            for _ in range(60):
-                srv = [(1 - q_) * a + q_ * c for q_, a, c in zip(pis, solo, packd)]
-                rho = lam_c * _wsum(ws, srv)
-                if rho >= 1:
-                    break
-                lst = sum(w_ / tot * ((1 - q_) * math.exp(-lam_c * a) + q_ * math.exp(-lam_c * c))
-                          for w_, q_, a, c in zip(ws, pis, solo, packd))
-                new = [min(1.0, max(0.0, 1 - (1 - rho) / lst * math.exp(-lam_c * pr))) if math.isfinite(pr) else 0.0
-                       for pr in pre]
-                if max(abs(x_ - y_) for x_, y_ in zip(new, pis)) < 1e-10:
-                    pis = new
-                    break
-                pis = new
-            pi = _wsum(ws, pis) / tot
-            out.update(stable=rho < 1, pi=pi, pis=pis, solo=solo, packd=packd, latpk=latpk,
-                       ns=[(1 - q_) * a + q_ * c for q_, a, c in zip(pis, nsolo, npk)],
-                       tsum=[(1 - q_) * a + q_ * c for q_, a, c in zip(pis, solo, packd)], t1=t1)
+            rows = _tail_rows(cp, kk, pts, C)
+            pis, rho = _tail_pi(lam_c, ws, rows)
+            pi = _wsum(ws, pis) / sum(ws)
+            out.update(stable=rho < 1, pi=pi, pis=pis, solo=[r_["solo"] for r_ in rows],
+                       packd=[r_["packd"] for r_ in rows], latpk=[r_["latpk"] for r_ in rows],
+                       ns=[(1 - q_) * r_["n"] + q_ * r_["npk"] for q_, r_ in zip(pis, rows)],
+                       tsum=[(1 - q_) * r_["solo"] + q_ * r_["packd"] for q_, r_ in zip(pis, rows)],
+                       t1=[r_["t1"] for r_ in rows])
         pkmemo[k] = out
         return out
 
@@ -1686,7 +1738,7 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         for kraw, (_, pts_b, vac) in zip(kbins, envs):
             pa = pack_at(kraw)
             if pa["b"] >= 2:
-                L = bulk_law(lam_c, pa["b"], pa["D"])
+                L = bulk_law(lam_c, pa["b"], pa["D"], pa.get("O"))
             else:
                 tot_b = sum(x_[0] for x_ in pts_b)
                 D1 = (tuple((t, w_ / tot_b) for w_, t, _ in pts_b),)
@@ -1724,6 +1776,10 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
                     jw = j
                     break
             t1_99 = [max(a_, w_) for a_, w_ in zip(t1_99, pa["walls"][jw - 1])]
+            pb_ = sum(v for j, v in ps if j == pa["b"]) / tot_s           # per-service P(full batch)
+            if jw == pa["b"] and 1 - (1 - pb_ * pa.get("head_p", 0.0)) ** max(1.0, n_life) >= 0.01:
+                # 0.235: a full batch that also carries the next prompt's head, met by ≥ 1 % of requests
+                t1_99 = [max(a_, w_) for a_, w_ in zip(t1_99, pa["walls_head"])]
     slot = mdc_wait(lam_c, out * dec["tpot"], B, QS, cs2=ctx["out_cs2"])
     # request-average TPOT spread: occupancy deviation (stretched) ⊕ the chunk excess met over its life
     exc = [t - m * T0 for m, t in zip(ns, tsum)]
@@ -2151,6 +2207,8 @@ def _coloc_chunked(ctx: dict, lam: float) -> dict:
     if sp.get("nonfused"):
         # 0.232 SGLang (no mixed chunk): the prefill-first machinery on a pool whose prefill = the chunk iterations
         sc = sglang_ctx(ctx)
+        if sp.get("pack"):
+            sc["_tail_split"] = sp["C"]      # 0.235: PrefillAdder tail sharing in the analytic (cap 1)
         x = _slo_select(lambda c, l: _kv_wrap(_coloc_prefill_first_base, c, l, "cpool", "r_c"), sc, lam,
                         try_unstable=True)
         x["chunk_tokens"], x["chunk_profile"] = sp["C"], sp

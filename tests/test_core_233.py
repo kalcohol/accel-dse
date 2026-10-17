@@ -71,7 +71,8 @@ def test_report_single_chunk_cases_unchanged_and_multi_chunk_costlier():
     q = disagg_report(_pd(), energy=_t(idle_W=20.0))["queue"]
     c = q["modes"]["coloc_chunked"]
     # 0.234: budget packing (up to 3–4 whole prompts per iteration) moved the TTFT mean 42.0556 → 42.4804; energy unchanged
-    assert abs(c["ttft_ms"]["mean"] - 42.4804) < 1e-3 and abs(q["energy"]["coloc_chunked"]["J_per_token"] - 0.20190) < 2e-5
+    # 0.235: the (b+1)-th prompt's head in the leftover budget (b = 3, P(head) tiny) → 42.4832; p50/p90/p99 unchanged
+    assert abs(c["ttft_ms"]["mean"] - 42.4832) < 1e-3 and abs(q["energy"]["coloc_chunked"]["J_per_token"] - 0.20190) < 2e-5
     # D (48 GB → budget 2048): 2–3 chunks; a chunk with its prefix costs more than its token share of the prompt
     d = disagg_report(_pd(cap=48.0))["queue"]["modes"]["coloc_chunked"]
     assert d["stable"] and d["ttft_ms"]["mean"] > c["ttft_ms"]["mean"]

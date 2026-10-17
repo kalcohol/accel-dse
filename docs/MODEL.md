@@ -5463,3 +5463,23 @@ A fused chunked-prefill iteration at running batch k carries the k decodes plus 
 - Packing cannot close prefill-first's lead in C/E: a 16384-token prompt fills the budget, so only the k-token tail is shared.
 
 **Known gap (→ 0.235).** The SGLang non-mixed analytic still uses the prefill-first bulk caps without tail sharing. The DES has tail sharing, so the two differ when new mod C ≠ 0 and the prompt has more than one chunk. Cases A–E are aligned and unaffected.
+
+## §182 Tail sharing for SGLang non-mixed, and the bulk regime's extra head (0.235)
+
+**SGLang non-mixed** (prefill-first machinery on the `_ChunkPool` view, §179). PrefillAdder fills a prefill-only iteration with C tokens FCFS, so a chunked prompt's last chunk (τ = new − (n−1)C tokens, τ < C) shares its iteration with the next waiting prompt's head (§181).
+- At batch cap 1, each prompt type with 2·new > C becomes a two-point service:
+  - **alone** (1 − π_i): share = latency = Σ chunks;
+  - **shared** (π_i): share = Σ_{j<n} t_j + τ/C·T_sh, latency = Σ_{j<n} t_j + T_sh.
+- T_sh is the prefill-only iteration of the tail plus a head of C − τ tokens, k = 0, from `_packed_fused`.
+- π_i = 1 − (1−ρ)/E[e^{−λS}]·e^{−λS′_i}, where S′_i = Σ_{j<n} t_j (§181, now shared as `_tail_rows` / `_tail_pi`).
+- Cap ≥ 2 (whole prompts packed, b·new ≤ C) keeps the bulk caps.
+- The expanded share law drives the M/G/1 wait, the busy-period batches handed to decode, the TPOT excess variance and the itl busy duration. TTFT = W ⊕ the latency atoms (`mg1_sum_quantile`).
+- 「近似」: the follower's head start is not credited to its latency. Parity is in band but +2–3 % at p90 off multiples.
+
+**vLLM bulk regime, the (b+1)-th head.** At b = ⌊C/new⌋ ≥ 2 the leftover is L = C − b·new.
+- A full batch that starts with more than b waiting also carries L tokens of the next prompt. Its probability is h = P(n > b | n ≥ b) from the bulk chain at service starts.
+- The finishing prompts' own wall O_b becomes two-point (wall_b, wall_{b+head}).
+- D is kept: the work is token-conserving, since the head leaves the later batch (「近似」).
+- itl_max uses the head wall when P(full)·h·(chunk iterations per life) reaches 1 %.
+
+**Slots.** The DES caps running + prefilling at max_num_seqs, matching b ≤ B − k in the analytic. V1 has no max_num_partial_prefills, so FCFS gives at most one partial prompt.

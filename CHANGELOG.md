@@ -6,6 +6,42 @@
 
 
 
+## [0.235.0]
+
+### Changed (the 0.234 packing gaps closed in the analytic; adversarial parity + fuzzer)
+- **SGLang non-mixed tail sharing, analytic** (`_coloc_prefill_first_base` with `ctx["_tail_split"]`; sglang with `pack`).
+  - Source (「来源」): SGLang `PrefillAdder` truncates the first request that does not fit; the chunked request is re-admitted first.
+  - Model: at batch cap 1, each prompt type with 2·new > C becomes a two-point service. With probability 1 − π_i it runs alone. With probability π_i its last prefill-only iteration (τ tail tokens) is topped up with the next prompt's head; then the server share is Σ earlier chunks + τ/C·T_sh, and its own latency runs to the end of the shared iteration.
+  - π_i comes from the 0.234 Pollaczek–Khinchine LST rule, now shared as `_tail_rows` / `_tail_pi` with the fused path.
+  - The wait, busy-period batches, excess variance and itl busy duration use the expanded (share) law; TTFT uses (share, latency).
+  - Check: π matches the DES (6000 tokens, C 4096, load 0.85: 0.156 vs measured 0.148).
+  - Report field: `prefill.tail_share`.
+- **vLLM bulk regime, the (b+1)-th prompt's head** (`pack_at`, b ≥ 2).
+  - L = C − b·new. With probability h = P(more than b waiting | a full batch starts), taken from the bulk chain at service starts, the full batch also carries L tokens of the next prompt.
+  - The b finishing prompts' own-wall law O_b becomes two-point. D is unchanged, because the work is token-conserving: the head leaves a later batch (「近似」).
+  - itl_max takes the full-batch-plus-head wall when P(full batch)·h is met by ≥ 1 % of requests.
+- **DES.** `ColocChunked._packed` now admits a prompt only while running + prefilling < slots (`max_num_seqs` counts the prefilling requests, vLLM V1 RUNNING / SGLang max_running_requests). Before this, the after_prefill admission path did not cap it.
+- **Sources (unchanged from 0.234).** `max_num_partial_prefills` / `max_long_partial_prefills` do not exist in vLLM V1 main, and `long_prefill_token_threshold` defaults to 0 (off). The per-iteration invariants are therefore pieces + running decodes ≤ max_num_seqs, and at most one partial prompt (FCFS, 「推导」).
+- **Tests (test_core_235).**
+  - `_tail_rows` / `_tail_pi` units: multiples of C never share; one-iteration prompts have π below that of two-chunk prompts.
+  - Cases D and E sglang are unchanged.
+  - Adversarial non-multiple parity in the V4 bands for TTFT p50/p90/p99 and TPOT mean/p90: sglang 6000 (4096 + 1904) and 2500 (C/2 < new < C) at 0.85; vllm 3000 at budget 2048; vllm 700 (b = 2 + head) at 0.9; vllm 5000 (b = 3 + head) at 0.85. itl_max is a lattice atom and is not banded (MODEL §74).
+  - Fuzzer (seed 235) over profile, prompt 300–9000, chunk budget 1024–6000, max_num_seqs 8/16/32 and load 0.7–0.95. Per iteration: tokens ≤ budget (including the decodes), running + pieces ≤ max_num_seqs, at most one partial prompt, decodes credited (vLLM) or paused (SGLang).
+
+**Old → new.**
+- **Cases A–E:** identical at reported precision (KPI table) for every profile and mode, so the rankings are unchanged. The only visible move is A coloc_chunked (vllm, b = 3 with leftover budget): TTFT mean 42.4804 → 42.4832 ms because the head probability is tiny; p50/p90/p99 and J/token are unchanged (the test_core_233 pin was updated).
+- **New case F** (qwen3-8b 6000/512 B64, 48 GB card: sglang 4096 + 1904, vllm 3 chunks). sglang goes from 2856 · 61.28 / 120.5 · 2.306 · 0.2835 to 2871 · 63.41 / 127.0 · 2.304 · 0.2835 (SLO goodput/card · TTFT mean/p99 ms · TPOT p99 ms · J/token). Other profiles are unchanged.
+  - **Ranking:** vllm = vllm_v0 2945 > sglang_mixed 2936 > prefill-first 2869 > sglang 2856 becomes vllm = vllm_v0 2945 > sglang_mixed 2936 > sglang 2871 > prefill-first 2869. sglang overtakes prefill-first by 0.07 %: the shared tail saves an iteration at the SLO rate, while the TTFT tail grows.
+  - PD (1130) is still last of the colocated-or-PD options; legacy_512 is 2416.
+- **New case G** (5000/512, HBM, vllm b = 3 + head): unchanged at load 0.6, because the head probability is ≈ 0. Ranking: vllm_v0 3303 > vllm = sglang_mixed 3249 > prefill-first 3205 > sglang 3204 > legacy_512 2905 > PD 1383.
+- **Parity cost.** The sglang off-multiple TTFT p90/p99 error moves from −0.001/+0.038 to +0.024/+0.094 at load 0.6, and from +0.006/+0.062 to +0.037/+0.088 at load 0.85, inside the bands. The model now carries the shared prompt's longer latency but not the follower's head-start credit.
+
+### Deferred to 0.236
+- **Follower head-start latency credit** in tail sharing (the residual +2–3 % p90 pessimism for SGLang off-multiples).
+- **itl_max lattice heuristic.** vllm 5000 at load 0.95 puts the 3-batch atom at +0.5; sglang off-multiples are at about +0.31.
+- **Full V4 grid re-run.**
+
+
 ## [0.234.0]
 
 ### Changed (multi-prompt packing within one iteration budget; re-baselined)

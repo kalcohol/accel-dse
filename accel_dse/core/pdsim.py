@@ -721,7 +721,9 @@ class ColocChunked(_Replica):
         rem = max(1, C)
         for r, left in self.curs:
             rem -= min(left, rem)
-        while rem > 0 and self.pq and (not self.before or self._can_admit(self.pq[0])):
+        # max_num_seqs counts the prefilling requests too (vLLM V1 RUNNING; SGLang max_running_requests)
+        while (rem > 0 and self.pq and len(self.running) + len(self.curs) < self.slots
+               and (not self.before or self._can_admit(self.pq[0]))):
             r = self.pq.popleft()
             if self.before:
                 self._reserve(r)
