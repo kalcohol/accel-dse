@@ -889,7 +889,7 @@ function renderEnergy(r) {
     [c.d2d || c.net ? '节点内 scale-up 发送' : '链路发送', c.link, ' B', 'link', 'pJ_bit_link'],
     ...(c.net ? [['跨节点网络发送', c.net, ' B', 'net', 'pJ_bit_net']] : []),
     ...(c.host ? [['主机链路重载（卸载放置）', c.host, ' B', 'host', 'pJ_bit_host']] : []),
-    ...(c.clock != null ? [['时钟（MAC 槽·周期，忙或停顿）' + (e.clock_W_card != null ? `（${num(e.clock_W_card)} W/卡）` : ''), c.clock, '', 'clock', 'pJ_clk_mac_cycle']] : []),   // 0.228
+    ...(c.clock != null ? [['时钟（MAC 槽·周期，忙或停顿）' + (e.clock_W_card != null ? `（${num(e.clock_W_card)} W/卡` + (e.clock_gating && e.clock_gating.ungated_share < 1 ? `，门控：未门控 ${num(e.clock_gating.ungated_share)} · 利用率 ${num(e.clock_gating.mac_util)}` : '') + '）' : ''), c.clock, '', 'clock', 'pJ_clk_mac_cycle']] : []),   // 0.228
     ['卡·秒（静态）' + (e.idle_source && e.idle_source !== 'idle_W' ? `（${num(e.idle_W_used)} W = idle/TDP × TDP）` : ''), c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
   const head = h('tr', {}, h('th', {}, '动作'), h('th', {}, `次数 / ${u}`), h('th', {}, `能耗 J / ${u}`));
   const body = rows.map(([lab, n, sfx, k, key]) => h('tr', {}, h('td', {}, lab), h('td', { class: 'num' }, sci(n) + sfx),
@@ -2035,8 +2035,8 @@ async function init() {
     const dm = S.cat.chips[v].default_mem || S.cat.mem_legacy_default || 'lpddr5x_4x64_8533_16g';
     if (!S.memInfo || S.memInfo.id !== dm) applyMem(dm); else schedule();
   });
-  for (const k of ['freq_ghz', 'sram_mib', 'state_sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us', 'dispatch_us']) {
-    const nullable = k === 'sram_port_Bpc' || k === 'acc_kib' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine' || k === 'kernel_us' || k === 'dispatch_us';
+  for (const k of ['freq_ghz', 'sram_mib', 'state_sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us', 'dispatch_us', 'clk_ungated_share']) {
+    const nullable = k === 'sram_port_Bpc' || k === 'acc_kib' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine' || k === 'kernel_us' || k === 'dispatch_us' || k === 'clk_ungated_share';
     bindNumber('c-' + k, () => chipVal(k), (x) => { if (x === null) delete S.chipOver[k]; else S.chipOver[k] = x; if (k === 'freq_ghz') onPreset(); },
       { int: k === 'gemv_macs', nullable });
   }

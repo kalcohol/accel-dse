@@ -6,6 +6,45 @@
 
 
 
+## [0.229.0]
+
+### Added
+- **Clock gating of idle MAC arrays** (design lever `Chip.clk_ungated_share` = g, in [0, 1]). The 0.228 per-cycle term becomes P_clk = MACs × f × `pJ_clk_mac_cycle` × (g + (1 − g) · u), where u is MAC utilisation over the window: useful MAC slot-cycles ÷ clocked slot-cycles.
+  - The energy report adds `clock_gating` {ungated_share, mac_util, factor}.
+  - UI: chip input "时钟未门控份额"; the energy row shows the utilisation and the gating when g < 1.
+  - Sweep path `chip.clk_ungated_share`.
+  - The power-cap re-evaluation keeps the lever. J/unit × units/s/card = W/card still holds (tested, fuzzed).
+- **Sources for g:**
+  - Eyeriss v1 (JSSC 2017 Fig. 16 / Table V, 65 nm; post-P&R on the measured AlexNet workloads; zero-ifmap cycles and unused PEs clock-gated) 「推导」: clock network 32.9 % of 332 mW (CONV1, 0 % zeros) = 109.2 mW, against 45.0 % of 236 mW (CONV5, 77.6 % zeros) = 106.2 mW. Clock power is almost flat (−2.7 %) while multiplier/adder power falls ×0.24. Solving 106.2 / 109.2 = g + (1 − g) · 0.24 gives **g ≈ 0.96**.
+  - Eyeriss v2 (JETCAS 2019 Fig. 22) 「二手」: the clock-network share rises from about 21 % on a high-utilisation layer to about 55 % on a bandwidth-limited layer (sparse FC8). Clock power stays when the PEs stall.
+  - Bose/Martonosi/Brooks (HC17 tutorial; POWER5-like, pre-silicon, fine-grained latch gating) 「推导」: maximum clock-power saving is 60 % at 20 % pipeline utilisation, so 0.4 = g + (1 − g) · 0.2 gives **g ≈ 0.25**. This is the aggressive-gating reference.
+
+### Decision (default unchanged, g = 1.0; no re-baseline)
+- The `tpuv4i_7nm` value of 0.1009 pJ is H100 power with a context and no work, i.e. at u ≈ 0. That is already the stalled floor of a GPU with its own gating; applying g < 1 on top would push stalled clock power below the measured floor.
+- The one accelerator measurement with gating active (Eyeriss v1) shows clock power flat under gating (g ≈ 0.96).
+- So the sources do not support lowering the default. Gating is shown as a lever: g = 0.25 means the design's clock tree is finely gated, a CPU-class design point not shown for NPUs.
+- All 0.228 numbers are reproduced exactly at g = 1. Performance fingerprints are unchanged; the field is omit-default, so scenario hashes are stable.
+
+### Lever results (1P, tpuv4i_7nm + idle 20 W; g 1.0 → 0.25)
+- qwen3-8b decode b64 (u = 0.066): clock 52.9 → 15.8 W/card; 188.3 → 151.3 W; 47.8 → 38.4 mJ/token. Prefill b8 (u = 0.985): unchanged (311.1 → 310.5 W).
+- qwen3-32b decode b128 (u = 0.145): 206.0 → 172.1 W.
+
+| Cap throughput factor, dfs / V–f | 0.9 P | 0.7 P | 0.5 P |
+|---|---|---|---|
+| qwen3-8b decode b64, g 1 → 0.25 | 1.000/1.000 → 0.941/1.000 | 0.816/0.996 → 0.696/0.801 | 0.541/0.662 → 0.451/0.519 |
+| qwen3-32b decode b128, g 1 → 0.25 | 1.000/1.000 → 0.932/1.000 | 0.794/1.000 → 0.694/0.876 | 0.531/0.698 → 0.456/0.576 |
+
+- With gating, less of the clock power is frequency-proportional at a stalled point, so clock-only DFS sheds less: the 0.228 "decode sheds 10 % for free" result needs ungated clocks. Prefill is unchanged.
+- RWKV-7 what-if: base 0.651 → 0.487 J/token at B1. `dram_bw_x2` d_J −6.2 % → −1.3 %; `two_die` −4.7 % → +0.1 %; `state_sram` −32.8 % → −29.6 % (ordering unchanged).
+- Levers under a cap:
+  - qwen3-8b at 120 W: the base still binds (134 W, dfs ×0.947); `works_capped` unchanged.
+  - qwen3-32b at 150 W: the base no longer binds (146 W). `dram_bw_x2` gain ×1.03 / ×1.25 → ×1.14 / ×1.31, and it returns to `works_capped`.
+
+### Deferred
+- PD report energy (`pdqueue._energy`): clock term, SRAM leakage, HBM static.
+- Chunked-prefill interference and re-sourcing the PD colocated 512-token chunk. Sources: vLLM `max_num_batched_tokens` 2048, decode-first, decodes counted in the budget; SGLang `chunked_prefill_size` 8192 (2048 below 25 GB), no mixing by default.
+- Gating of the vector lanes and SRAM ports (u is MAC utilisation only).
+
 ## [0.228.0]
 
 ### Added (default energy change in the `tpuv4i_7nm` preset)

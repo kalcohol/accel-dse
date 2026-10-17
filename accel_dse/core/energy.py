@@ -401,8 +401,13 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
         j["dram_phy"] = per["dram"] * pv * 1e-12 * 8
         out["phy_pJ_field"] = pf
     if table.pJ_clk_mac_cycle is not None:      # 0.228: per-cycle dynamic (clock tree / always-clocked registers)
-        j["clock"] = per["clock"] * table.pJ_clk_mac_cycle * 1e-12
-        out["clock_W_card"] = r.scenario.chip.macs * r.scenario.chip.freq_ghz * 1e9 * table.pJ_clk_mac_cycle * 1e-12
+        # 0.229: clock gating of idle arrays — ungated share g always, the rest in proportion to MAC utilisation u
+        g = getattr(r.scenario.chip, "clk_ungated_share", 1.0)
+        util = min(1.0, per["mac"] / per["clock"]) if per["clock"] > 0 else 0.0
+        k = g + (1.0 - g) * util
+        j["clock"] = per["clock"] * table.pJ_clk_mac_cycle * 1e-12 * k
+        out["clock_W_card"] = r.scenario.chip.macs * r.scenario.chip.freq_ghz * 1e9 * table.pJ_clk_mac_cycle * 1e-12 * k
+        out["clock_gating"] = {"ungated_share": g, "mac_util": util, "factor": k}
     iw = idle_W_of(table)
     if iw is not None:
         j["idle"] = iw * per["idle_card_s"]

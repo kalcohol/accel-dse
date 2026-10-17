@@ -42,7 +42,7 @@ SWEEP_PATHS = {
     "serving.batch": int, "serving.ctx": int, "serving.prompt": int, "serving.spec_k": int,
     "serving.images": int, "serving.image_w": int, "serving.image_h": int,
     "serving.videos": int, "serving.video_frames": int, "serving.audio_s": float,
-    "chip.sram_mib": float, "chip.state_sram_mib": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
+    "chip.sram_mib": float, "chip.state_sram_mib": float, "chip.clk_ungated_share": float, "chip.sram_port_Bpc": float, "chip.freq_ghz": float, "chip.mac_eff": float,
     "chip.gemv_macs": int, "mem_eff": float, "link.GBps": float, "link.alpha_us": float,
     "serving.moe_skew": float, "chip.slc_mib": float, "chip.slc_GBps": float, "d2d.GBps": float, "d2d.alpha_us": float, "package_cards": int,
     "d2d_units": int, "net.GBps": float, "net.alpha_us": float, "node_cards": int, "fabric.oversub": float,

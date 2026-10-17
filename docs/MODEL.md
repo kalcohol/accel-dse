@@ -5298,3 +5298,31 @@ What-if: faster-step levers now save energy per token. RWKV `dram_bw_x2` moves f
 - Idle MAC arrays are treated as clocked. Fine-grained clock gating would lower the stalled share; that is left out.
 - The PD report's energy (`pdqueue._energy`) does not yet carry the term.
 - The memory clock is held.
+
+## §176 Clock gating of idle MAC arrays (0.229)
+
+**Model.** P_clk = macs × f × pJ_clk_mac_cycle × (g + (1 − g)·u). Here g = `Chip.clk_ungated_share`, the share of clock power that is never gated: the global tree, gating cells and control. u is MAC utilisation over the window, computed as useful MAC count ÷ (macs × f × window × cards) and clamped to [0, 1].
+
+The term stays dynamic. Under DVFS it scales with V² and f, and the re-evaluated chip keeps g. At u = 1 it equals the 0.228 term. At u = 0 it is g times that.
+
+**Sources for g.**
+- **Eyeriss v1** (JSSC 2017, Fig. 16 and Table V; 65 nm, post-P&R on the measured workloads) 「推导」. The chip clock-gates zero-ifmap cycles and unused PEs.
+  - CONV1: clock network 109.2 mW, multipliers and adders 29.5 mW.
+  - CONV5: clock network 106.2 mW, multipliers and adders 7.1 mW.
+  - Arithmetic activity falls ×0.24 while clock power falls only 2.7 %, which gives g ≈ 0.96.
+- **Eyeriss v2** (JETCAS 2019, Fig. 22) 「二手」: the clock share is about 21 % at high utilisation and about 55 % on a bandwidth-limited layer.
+- **Bose/Martonosi/Brooks** (HC17) 「推导」: a 60 % saving at 20 % utilisation implies g ≈ 0.25 under aggressive fine-grained gating (CPU, pre-silicon).
+
+**Default g = 1.**
+- The `tpuv4i_7nm` value is H100 clocked power at u ≈ 0, so it already is the stalled floor of a gated chip.
+- The accelerator evidence (Eyeriss) shows that clock power does not follow activity.
+
+Lowering g is a design claim (fine-grained gating of the array clock tree). It is exposed as a lever, not a default. Effects at g = 0.25 are listed in CHANGELOG 0.229. In short:
+- memory-bound decode power drops about 20 % (1P qwen3-8b b64: 188 → 151 W);
+- clock-only DFS loses part of its 0.228 advantage (0.9 P: ×1.000 → ×0.941);
+- the RWKV bandwidth lever's energy saving shrinks (−6.2 % → −1.3 %).
+
+**Limits.**
+- u counts MAC work only; vector lanes and SRAM ports are not gated separately.
+- The model is linear in u. Measured data show only the two end points.
+- The PD report energy path does not carry the clock term yet (deferred).
