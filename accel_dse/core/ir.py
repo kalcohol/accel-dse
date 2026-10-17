@@ -105,7 +105,9 @@ class Phase:
     kvpre: int = 0       # 0.116 full: cached text-prefix tokens (prefix K/V reuse); q then holds the image tokens only
     kvx: bool = False    # 0.116 full: extract step of the prefix K/V reuse (writes the cache)
     roll: str = ""       # 0.223 spec verify on linear layers: "" = intermediate-state snapshot (default), "replay" = ReplaySSM
-    acc: float = 0.0     # 0.223 per-draft acceptance (replay only: the ring advances by the expected accepted tokens)
+    acc: float = 0.0     # 0.223 per-draft acceptance (replay / track: the ring advances by the expected accepted tokens)
+    topk: int = 0        # 0.224 tree drafting: branches per draft step (0 / 1 = chain); q = verified tree tokens
+    track: int = 0       # 0.224 radix-track interval (tokens) of hybrid-layer states; 0 = off
     labels: int = 0      # 0.191 decision readout (prefill only): logits of ≤ labels option tokens at the last
                          # position, no KV cache kept (StartLux use_cache=False path) when nothing is prefix-shared
 
@@ -235,25 +237,58 @@ FUSE_QKV = True
 # opt-in ReplaySSM path (no per-draft writes) is not the default and is not modelled 「假设」 that the ReaDy-pinned SGLang
 # (2948168) uses the same default path.  Memory: q intermediate states per sequence (memplan, spec_q).
 SPEC_STATE_SNAPSHOT = True
-# 0.223: opt-in ReplaySSM spec verify (serving.spec_rollback = "replay"; SGLang --enable-linear-replayssm-spec) 「来源」
-# SGLang main gdn_backend._replayssm_target_verify ("Reconstructs the verify output for the whole draft window from the
-# frozen checkpoint (temporal) + the per-slot circular (d, k, g) ring, and appends this window's drafts to the compact
-# (d, k, g) rings … The cursors advance once per accepted step"; "Capacity folds are committed once across every GDN
-# layer after acceptance") + mem_cache/memory_pool.py (ring [layers, slots, HV, L, V] / [.., H, L, K] in the activation
-# dtype + low parts rawv / rawk for bf16 checkpoints + g [.., HV, L] fp32; intermediate_ssm_state_cache = None — "the
-# dominant spec scratch … is dead weight there and is skipped"; linear_replayssm_cache_len = 16).  Per verify step, per
-# sequence per linear layer: read the checkpoint once (no per-draft state writes, rejected tokens cost nothing — their
-# ring entries are never committed); replay the ring history h̄ = (L − q)/2 entries 「假设」 uniform fill; write q ring
-# entries; fold the ring into the checkpoint every (L − q) / E steps (read + write the state + read the ring), E =
-# expected tokens committed per step at acceptance a.  Compute: (h̄ + E) extra recurrent token updates (replay + fold).
-# Ring length L = max(16, 2·q) 「来源」 cache_len default 16, the KDA backstop L ≥ 2 · draft tokens — applied to GDN too
-# 「假设」.  Entry bytes per head ≈ (K + V) × 4 (hi + lo bf16) + 4 (fp32 gate) 「近似」 (H ≤ HV: K counted per HV head).
+# 0.223 / 0.224: opt-in ReplaySSM spec verify (serving.spec_rollback = "replay"; SGLang --enable-linear-replayssm-spec)
+# 「来源」 SGLang main kernels/ops/attention/fla/gdn_replayssm_spec_decode.py + kda_replayssm_spec_decode.py,
+# gdn_backend._replayssm_target_verify / _replayssm_fold_target_verify, mem_cache/memory_pool.py:
+#  GDN (circular ring): the verify reconstructs the window output-only from the frozen checkpoint h0 + the committed
+#   (d, k, g) records (no state write; rejected drafts roll back by a cursor move).  Cursor rule
+#   _advance_gdn_spec_cursors_kernel: on a flush step the exact-fold kernel sequentially replays the write_pos committed
+#   records into the fp32 checkpoint (launched first) and write_pos := accepted; else write_pos += accepted; the next
+#   step flushes when write_pos + 2·max_spec_len > L (early flush).  0.224: the history / fold rate per step come from
+#   that rule at the expected acceptance E (replay_cycle, mean-field 「推导」) — 0.223 used h̄ = (L − q)/2 「假设」.
+#   Ring entry per head: d, k (bf16) + their low parts rawv / rawk (bf16, activation-dtype rings) + g fp32.
+#  KDA (fold-every-commit, replayssm_spec_fold = spec ∧ is_kda): the recurrent verify kernel runs with
+#   disable_state_update and stores the raw window (rawk, rawv bf16, g fp32 per K, beta fp32 + d, k rings); the
+#   commit (commit_kda_replayssm_after_verify) replays the accepted prefix into the checkpoint every step.
+#  Ring length L: power of two (assert) and ≥ 2 · draft tokens ("Config enforces max_cache_len >= 2 * max_spec_len",
+#   GDN and KDA) with linear_replayssm_cache_len default 16 → L = pow2 ≥ max(16, 2q) 「来源」 (0.223: KDA rule applied to
+#   GDN 「假设」, not a power of two).
+#  Linear chains only (topk ≤ 1): "Tree verify (topk > 1), KDA, and NPU/CPU fall back to the recurrent verify
+#   kernel"; other recurrences (lightning, conv) have no ReplaySSM path → snapshot (evaluate warns).
+# 0.224 radix tracking (Phase.track = serving.mamba_track_interval, SGLang default 256 「来源」 server_args; 0 = off):
+# the accepted state is also written to a track slot every `interval` tokens (snapshot: scatter to mamba_track_indices;
+# GDN replay: the materialize kernel replays history up to the boundary — "Materialize circular history only at
+# capacity or radix-track boundaries"; KDA: the per-step fold writes it).  Whether a deployment tracks (radix cache on
+# for hybrid models) is the lever 「假设」.
 REPLAY_RING_DEFAULT = 16
 
 
 def replay_ring_len(q: int) -> int:
-    """0.223 ReplaySSM ring length L for a verify window of q tokens (see REPLAY_RING_DEFAULT)."""
-    return max(REPLAY_RING_DEFAULT, 2 * q)
+    """ReplaySSM ring length L for a verify window of q tokens (power of two ≥ max(16, 2q))."""
+    n = max(REPLAY_RING_DEFAULT, 2 * q)
+    return 1 << (n - 1).bit_length()
+
+
+@functools.lru_cache(maxsize=4096)
+def _replay_cycle(L: int, q: int, E6: int) -> tuple:
+    E = E6 / 1e6
+    wp, flag, hist, folds, fold_n, n = 0.0, False, 0.0, 0, 0.0, 2048
+    for _ in range(n):
+        if flag:
+            folds += 1
+            fold_n += wp
+            wp = E
+        else:
+            hist += wp
+            wp += E
+        flag = wp + 2 * q > L
+    return hist / n, folds / n, fold_n / n
+
+
+def replay_cycle(L: int, q: int, E: float) -> tuple:
+    """0.224 GDN ReplaySSM cursor cycle (SGLang _advance_gdn_spec_cursors_kernel) at a mean committed E tokens per
+    step: (history records read per verify, flush steps per step, records folded per step)."""
+    return _replay_cycle(L, q, int(round(E * 1e6)))
 
 
 def spec_expected(q: int, a: float) -> float:
@@ -686,19 +721,34 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
             # 0.114 LFM2 gated short conv: B·x before and C·y after the depthwise conv (1 op / element each)
             vec += t * _cdiv(core.conv_channels, tp) * 2
         # 0.222 spec verify (decode, q > 1): per-draft-token intermediate states + accepted-state commit (SPEC_STATE_SNAPSHOT)
-        if ph.roll == "replay" and ph.kind == "decode" and q > 1:
-            # 0.223 ReplaySSM verify (REPLAY_RING_DEFAULT note): checkpoint read, ring history replay, q ring writes,
-            # amortized fold (state read + write + ring read)
+        upd = (7 if delta else 5) * dk * dv            # one sequential recurrent token update per head (vec ops)
+        if ph.kind == "decode":
+            E = spec_expected(q, ph.acc) if q > 1 else 1.0
+            tr = E / ph.track if ph.track else 0.0     # 0.224: radix-track boundaries crossed per step (TRACK note)
+        if ph.roll == "replay" and ph.kind == "decode" and q > 1 and core.lin in ("gdn", "kda"):
+            # 0.224 ReplaySSM verify (REPLAY_RING_DEFAULT note): GDN circular ring with early flush, KDA fold-every-commit
             L_r = replay_ring_len(q)
-            E = spec_expected(q, ph.acc)
-            hbar = (L_r - q) / 2.0
-            f = E / max(1, L_r - q)
-            ent = h_loc * ((dk + dv) * 4.0 + 4.0)
-            vec += b_loc * h_loc * (hbar + E) * (7 if delta else 5) * dk * dv
-            rw = b_loc * (st_bytes * (1.0 + 2.0 * f) + ent * (hbar + q + f * (L_r - q)))
+            if core.lin == "gdn":
+                hbar, fpos, fold_n = replay_cycle(L_r, q, E)
+                ent = h_loc * ((dk + dv) * 4.0 + 4.0)
+                # verify: output-only reconstruction of the window against hbar history records (Q·K / decay / D
+                # accumulate per record and window token 「推导」) + exact sequential fold of fold_n entries on flush steps
+                vec += b_loc * h_loc * (hbar * q * (dk + dv) * 2 + fold_n * upd)
+                rw = b_loc * (st_bytes * (1.0 + 2.0 * fpos) + ent * (hbar + q + fold_n))
+                # radix track: materialize the checkpoint + history up to the boundary into the track slot
+                vec += b_loc * h_loc * tr * hbar * upd
+                rw += b_loc * tr * (2.0 * st_bytes + ent * hbar)
+            else:
+                # KDA fold-every-commit: recurrent verify (state read, no write), raw window written; the commit replays
+                # the E accepted records into the checkpoint (read + write)
+                ent = h_loc * (4.0 * dv + 8.0 * dk + 4.0)
+                vec += b_loc * h_loc * E * upd
+                rw = b_loc * (3.0 * st_bytes + ent * (q + E) + tr * st_bytes)
             ops.append(Op("state_update", "state", li, vec=vec + conv, state_rw=rw, kv_read=0.0))
             return ops
         n_st = (q + 3) if (SPEC_STATE_SNAPSHOT and ph.kind == "decode" and q > 1) else 2
+        if ph.kind == "decode" and ph.track:
+            n_st += tr                                 # 0.224: accepted state copied to the radix track slot
         ops.append(Op("state_update", "state", li, vec=vec + conv,
                       state_rw=n_st * st_bytes * b_loc, kv_read=0.0))
         return ops

@@ -32,7 +32,7 @@ from . import fabric
 from . import overlap as _ovl
 from . import mapping as _mapping
 from .schedule import (StageTime, collective_seconds, collective_wire, fabric_collective, p2p_tier,
-                       spec_expected_tokens, wire_single)
+                       spec_expected_tokens, spec_tree_accept, tree_tokens, wire_single)
 
 
 @dataclass
@@ -662,7 +662,9 @@ def _tail_ops(model, has_head, ph, sh, spec_k, glue: bool = False):
         elif spec_k and model.mtp_layers and ph.kind == "decode":
             dph = Phase("decode", ph.batch, 1, ph.ctx, skew=ph.skew)
             for d in range(spec_k):
-                ops += mtp_ops(model, dph, sh, depth=d)
+                # 0.224 tree drafting: after the first step each draft step extends topk branches per sequence
+                # (SGLang EAGLE draft_forward: topk tokens per request per step) 「来源」
+                ops += mtp_ops(model, dph if d == 0 or ph.topk <= 1 else replace(dph, q=ph.topk), sh, depth=d)
     return ops
 
 
@@ -1243,7 +1245,7 @@ def _draft_model(sv, m: ModelSpec, warnings: list) -> ModelSpec | None:
     return d
 
 
-def _draft_cost(scn: Scenario, d: ModelSpec, k: int) -> dict:
+def _draft_cost(scn: Scenario, d: ModelSpec, k: int, topk: int = 1) -> dict:
     """0.222 independent draft model (vLLM / SGLang draft-model speculative decoding).  Placement 「假设」: the draft runs
     on the target's head-stage cards with the target's TP (and DP), pp = 1, bf16 as released; it keeps its own KV of
     the same context.  Per step: k sequential draft decode passes at the step's batch (each proposes one token from the
@@ -1256,6 +1258,11 @@ def _draft_cost(scn: Scenario, d: ModelSpec, k: int) -> dict:
     ds = _rp(scn, model=sv.draft_model, layout=Layout(tp=lay.tp, dp=lay.dp), formats_override=(),
              serving=_rp(sv, spec_k=0, draft_model="", microbatches=0))
     rd = evaluate(ds, d)
+    rt = rd
+    if topk > 1 and k > 1:
+        # 0.224 tree drafting: steps 2..k extend topk branches per sequence (topk × batch draft rows; the branches share
+        # the prefix KV — memory from the batch-b evaluation) 「来源」 SGLang EAGLE draft_forward
+        rt = evaluate(_rp(ds, serving=_rp(ds.serving, batch=ds.serving.batch * topk)), d)
     mp = rd.stages[0].mem
     by = sum(s_.mem.stored_w + s_.mem.kv_total + s_.mem.state_total for s_ in rd.stages)
     # 0.223: energy — the draft's action counts of one pass (all its cards, energy.action_counts) × k passes per step;
@@ -1263,17 +1270,16 @@ def _draft_cost(scn: Scenario, d: ModelSpec, k: int) -> dict:
     # holds its time
     from .energy import action_counts
     ac = action_counts(rd)["counts"]
-    return {"s": k * rd.step, "pass_s": rd.step, "bytes": by, "model": d.id, "fits_alone": rd.fits,
+    at = action_counts(rt)["counts"] if rt is not rd else ac
+    return {"s": rd.step + (k - 1) * rt.step, "pass_s": rd.step, "bytes": by, "model": d.id, "fits_alone": rd.fits,
             "params_B": d.active_params() / 1e9, "kv_state_bytes": mp.kv_total + mp.state_total,
-            "acts": {a: k * v for a, v in ac.items()}}
+            "acts": {a: v + (k - 1) * at.get(a, 0.0) for a, v in ac.items()}}
 
 
 def _spec_q(ph) -> int:
     """0.222: verify tokens per sequence of a speculative decode step (q = 1 + k), 0 otherwise — the hybrid-layer
     intermediate-state scratch (memplan.stage_storage spec_q)."""
     from .ir import SPEC_STATE_SNAPSHOT
-    if ph.roll == "replay":
-        return 0
     return ph.q if (SPEC_STATE_SNAPSHOT and ph.kind == "decode" and ph.q > 1) else 0
 
 
@@ -1574,6 +1580,18 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             spec_k = m.draft_block
         if sv.phase == "prefill":
             spec_k = sv.spec_k          # prefill seeds the DSpark draft windows (no draft tokens)
+    # 0.224 tree drafting (EAGLE-style): MTP draft modules or an independent draft model; DSpark drafts a block (no tree)
+    topk_ = sv.spec_topk if (spec_k and sv.phase == "decode") else 1
+    if topk_ > 1 and m.draft == "dspark" and dm is None:
+        warnings.append("spec_topk 已忽略：DSpark 草稿是块草稿，不是树")
+        topk_ = 1
+    if sv.spec_draft_tokens and topk_ <= 1 and spec_k:
+        warnings.append(f"spec_draft_tokens 已忽略：线性链（spec_topk = 1）验证 1 + k = {1 + spec_k} 个 token")
+    if topk_ > 1:
+        nt = tree_tokens(spec_k, topk_, sv.spec_draft_tokens)
+        cap_n = 1 + topk_ + (spec_k - 1) * topk_ * topk_
+        if nt - 1 > cap_n:
+            raise ValueError(f"serving.spec_draft_tokens {nt} 超过 k = {spec_k}、topk = {topk_} 的候选树节点数 + 1（{cap_n + 1}）")
     need_ctx = sv.ctx + 1 + spec_k if sv.phase == "decode" else sv.prompt
     if m.max_ctx and need_ctx > m.max_ctx:    # 0.61.4: evaluated as asked, but say the release does not cover it
         warnings.append(f"上下文 {need_ctx} 超过发布 config 的 max_position_embeddings {m.max_ctx}"
@@ -1608,9 +1626,23 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
         q = 1 + spec_k
+        if topk_ > 1:
+            q = tree_tokens(spec_k, topk_, sv.spec_draft_tokens)
         rr = sv.spec_rollback == "replay" and q > 1      # 0.223 ReplaySSM verify (ir.REPLAY_RING_DEFAULT)
+        if rr and topk_ > 1:
+            # SGLang: ReplaySSM is linear-chain only ("Tree verify (topk > 1) … fall back to the recurrent verify
+            # kernel"; fold asserts retrieve_parent_token is None) 「来源」
+            warnings.append("spec_rollback = replay：树形验证（spec_topk > 1）不支持 ReplaySSM（SGLang 只支持线性链），按快照计")
+            rr = False
+        lins = {L.core.lin for L in m.layers if L.core is not None and L.core.kind == "linear"}
+        if rr and lins - {"gdn", "kda"}:
+            warnings.append(f"spec_rollback = replay：SGLang ReplaySSM 只有 GDN / KDA 路径，{'/'.join(sorted(lins - {'gdn', 'kda'}))} 层按快照（snapshot）计")
+        if rr and not lins:
+            warnings.append("spec_rollback = replay：模型没有线性注意力 / 循环层，回滚方式不影响结果")
+        trk = sv.mamba_track_interval if lins else 0     # 0.224 radix-track state copies (ir TRACK note)
         ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=rskew, ep_nodes=ep_nodes,
-                   roll="replay" if rr else "", acc=sv.spec_accept if rr else 0.0)
+                   roll="replay" if rr else "", acc=sv.spec_accept if (rr or (trk and q > 1)) else 0.0, track=trk,
+                   topk=topk_ if topk_ > 1 else 0)
         ctx_cap = sv.ctx + q
     else:
         mb = sv.microbatches or min(pp, sv.batch)
@@ -1775,7 +1807,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                                                  and sv.image_tokens) else None
     draft = None
     if dm is not None and spec_k:
-        draft = _draft_cost(scn, dm, spec_k)
+        draft = _draft_cost(scn, dm, spec_k, topk_)
         st_l = stages[-1]          # the draft lives on the head (last) stage's cards 「假设」
         need = st_l.mem.dram_need + draft["bytes"]
         stages[-1] = replace(st_l, mem=replace(st_l.mem, dram_need=need, fits=need <= st_l.mem.dram_cap))
@@ -1806,7 +1838,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             dev = step
             step = dev + host["s"] if scn.host_overlap == "serial" else max(dev, host["s"])
             host.update(device_s=dev, exposed_s=step - dev, host_bound=host["s"] > dev)
-        e_tok = spec_expected_tokens(spec_k, sv.spec_accept) if spec_k else 1.0
+        e_tok = (spec_expected_tokens(spec_k, spec_tree_accept(sv.spec_accept, spec_k, topk_, sv.spec_draft_tokens))
+                 if spec_k else 1.0)
         tpot = step / e_tok
         thr = sv.batch * e_tok / step
         ttft = 0.0

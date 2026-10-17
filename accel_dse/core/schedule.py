@@ -274,6 +274,22 @@ def spec_expected_tokens(k: int, a: float) -> float:
     return (1.0 - a ** (k + 1)) / (1.0 - a)
 
 
+def tree_tokens(k: int, topk: int, n: int) -> int:
+    """0.224: verified tokens per sequence of a draft tree (root + nodes); chain (topk 1): 1 + k."""
+    if topk <= 1:
+        return 1 + k
+    return n if n else min(64, 1 + k * topk)
+
+
+def spec_tree_accept(a: float, k: int, topk: int, n: int) -> float:
+    """0.224 「假设」 per-depth acceptance of a draft tree: the accepted path at each depth has
+    w = min(topk, (n − 1) / k) candidate children, each accepted i.i.d. with probability a → 1 − (1 − a)^w."""
+    if topk <= 1 or k <= 0:
+        return a
+    w = min(float(topk), (tree_tokens(k, topk, n) - 1) / k)
+    return 1.0 - (1.0 - a) ** max(1.0, w)
+
+
 @dataclass(frozen=True)
 class StageTime:
     t_array: float

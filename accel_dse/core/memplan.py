@@ -161,12 +161,13 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             st += (L.ple_conv - 1) * L.ple_dil * L.gres_n * model.hidden * 2
         if c.kind == "linear":
             st += c.state_bytes(sh.tp, stb)
-            if spec_q > 1 and c.lin not in ("hyena", "rwkv7"):
+            if spec_ring and c.lin in ("gdn", "kda"):
+                # 0.223 / 0.224 ReplaySSM (ir.REPLAY_RING_DEFAULT): compact ring of spec_ring entries per head instead
+                # of the q intermediate states (GDN d, k + low parts + g; KDA + raw window, g per K, beta)
+                ent = ((c.state_dk + c.state_dv) * 4.0 + 4.0) if c.lin == "gdn" else (4.0 * c.state_dv + 8.0 * c.state_dk + 4.0)
+                st += spec_ring * -(-c.n_state_heads // sh.tp) * ent
+            elif spec_q > 1 and c.lin not in ("hyena", "rwkv7"):
                 st += spec_q * c.state_bytes(sh.tp, stb)
-            if spec_ring and c.lin not in ("hyena", "rwkv7"):
-                # 0.223 ReplaySSM (ir.REPLAY_RING_DEFAULT): compact (d, k, g) ring of spec_ring entries per head
-                # instead of the q intermediate states
-                st += spec_ring * -(-c.n_state_heads // sh.tp) * ((c.state_dk + c.state_dv) * 4.0 + 4.0)
         if c.idx_heads and c.dual:
             idx += (ctx // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
         elif c.idx_heads and c.idx_sum and c.qsa:     # 0.145: Step-5 fp32 + fp8 summary per completed region

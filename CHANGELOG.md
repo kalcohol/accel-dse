@@ -6,6 +6,50 @@
 
 
 
+## [0.224.0]
+- ReplaySSM, sourced from SGLang main (`gdn_replayssm_spec_decode.py`, `kda_replayssm_spec_decode.py`, gdn_backend,
+  memory_pool):
+  - GDN uses a circular ring. The history read per verify and the fold rate now follow SGLang's cursor rule
+    (`_advance_gdn_spec_cursors_kernel`: early flush when write_pos + 2·q > L; on a flush step an exact sequential fold
+    of write_pos records), evaluated at the expected acceptance E (`ir.replay_cycle`, 推导). This replaces the 0.223 假设
+    h̄ = (L−q)/2.
+  - Verify history cost is now output-only reconstruction, ∝ history·q·(dk+dv) (推导), instead of full state updates.
+  - KDA: fold-every-commit (`replayssm_spec_fold`). The recurrent verify does not write state and stores the raw
+    window; each commit replays the E accepted records. Ring entry is 4V+8K+4 B per head.
+  - Ring length is a power of two ≥ max(16, 2q). SGLang asserts the power of two and its config enforces
+    L ≥ 2·max_spec_len for GDN too, so the 0.223 假设 is now 来源. For q ≤ 8 nothing changes; for q = 9 L is 32
+    (was 18).
+  - Lightning / conv layers have no ReplaySSM path. They fall back to snapshot, with a warning.
+- Radix-track lever `serving.mamba_track_interval` (CLI `--mamba-track-interval`; SGLang default 256 when tracking
+  runs, 来源; 0 = off, the default). It adds a state copy at every boundary:
+  - snapshot: scatter to the track slot;
+  - GDN replay: materialize history up to the boundary;
+  - KDA: write from the per-step fold.
+  Whether a deployment tracks is 假设.
+- Tree drafting (EAGLE-style): `serving.spec_topk` and `serving.spec_draft_tokens` (CLI `--spec-topk`,
+  `--spec-draft-tokens`).
+  - Verify covers N tree tokens. The tree attention mask is charged as ctx+N keys per query.
+  - Hybrid targets use the snapshot path with N intermediate states. SGLang ReplaySSM is linear-chain only, so
+    replay falls back to snapshot, with a warning.
+  - MTP draft steps 2..k run topk rows per sequence; an independent draft runs them at batch·topk.
+  - Acceptance 假设: per-depth a_t = 1−(1−a)^w with w = min(topk, (N−1)/k).
+  - Bound check: N−1 ≤ topk + (k−1)·topk².
+  - DSpark ignores topk, with a warning.
+- Tests:
+  - `tests/test_core_224.py`: cursor cycle, KDA fold, track, tree, and a seed-224 fuzzer over every spec mode with
+    the J/token × tok/s = W invariant.
+  - `test_core_223` ring_len(9): 18 → 32.
+- KPI deltas: defaults unchanged (fingerprints and ext_validate identical). Replay-mode TPOT, 1P ctx 4096,
+  0.223 → 0.224:
+
+  | Case | Batch 1 | Batch 32 |
+  |---|---|---|
+  | ReaDy k=7 | 3.960 → 3.945 ms | 6.273 → 5.817 ms |
+  | qwen3.8-27b k=1 | 9.876 → 9.810 ms | 14.112 → 12.585 ms |
+  | qwen3.8-27b k=3 | 7.450 → 7.412 ms | 10.425 → 9.550 ms |
+
+  Snapshot results and all memory figures are unchanged.
+
 ## [0.223.0]
 - Independent draft energy. `Result.draft["acts"]` holds k × the draft pass's action counts, and `energy._counts`
   adds them. J/token and W/card now include the draft.

@@ -54,7 +54,7 @@ def _st(m, li, q, roll="", acc=0.0):
 
 
 def test_replay_ring_len_and_expected():
-    assert ir.replay_ring_len(2) == 16 and ir.replay_ring_len(8) == 16 and ir.replay_ring_len(9) == 18
+    assert ir.replay_ring_len(2) == 16 and ir.replay_ring_len(8) == 16 and ir.replay_ring_len(9) == 32      # 0.224: power of two (SGLang assert); was 18
     assert ir.spec_expected(5, 0.0) == 1.0 and ir.spec_expected(5, 1.0) == 5.0
     assert abs(ir.spec_expected(5, 0.7) - (1 - 0.7 ** 5) / 0.3) < 1e-12
 

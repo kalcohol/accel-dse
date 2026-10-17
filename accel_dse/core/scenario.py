@@ -46,6 +46,14 @@ class Serving:
     # 0.223: spec verify on hybrid / linear layers — "snapshot" (SGLang default intermediate_ssm_state_cache: q states
     # per sequence) | "replay" (SGLang --enable-linear-replayssm-spec: compact ring, replay + fold compute)
     spec_rollback: str = field(default="snapshot", metadata={"omit_default": True})
+    # 0.224: radix prefix-cache tracking of hybrid-layer states every N tokens (SGLang --mamba-track-interval, default
+    # 256 when tracking runs); 0 = off (whether a deployment tracks is 「假设」)
+    mamba_track_interval: int = field(default=0, metadata={"omit_default": True})
+    # 0.224: tree drafting (EAGLE-style; SGLang --speculative-eagle-topk / --speculative-num-draft-tokens): spec_k =
+    # draft steps (tree depth), spec_topk = branches kept per step (1 = chain), spec_draft_tokens = verified tree
+    # tokens incl. the root (0 = 1 + spec_k · spec_topk 「假设」)
+    spec_topk: int = field(default=1, metadata={"omit_default": True})
+    spec_draft_tokens: int = field(default=0, metadata={"omit_default": True})
     tpot_slo_ms: float = 50.0
     ttft_slo_ms: float = 2000.0
     moe_skew: float = 1.0          # MoE: busiest EP rank's token-expert pairs / mean (0.49; 1 = uniform) 「假设」
@@ -112,6 +120,15 @@ class Serving:
             raise ValueError("serving.draft_model must be a model id string")
         if self.spec_rollback not in ("snapshot", "replay"):
             raise ValueError("serving.spec_rollback must be snapshot|replay")
+        if isinstance(self.mamba_track_interval, bool) or not isinstance(self.mamba_track_interval, int) \
+                or not 0 <= self.mamba_track_interval <= 1 << 20:
+            raise ValueError("serving.mamba_track_interval must be an integer in [0, 1048576]")
+        for nm, lo, hi in (("spec_topk", 1, 10), ("spec_draft_tokens", 0, 64)):
+            v = getattr(self, nm)
+            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                raise ValueError(f"serving.{nm} must be an integer in [{lo}, {hi}]")
+        if self.spec_draft_tokens == 1:
+            raise ValueError("serving.spec_draft_tokens must be 0 (auto) or ≥ 2")
         for k, lo, hi in (("images", 0, 64), ("image_w", 1, 16384), ("image_h", 1, 16384), ("image_tokens", 0, SERVING_MAX)):
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:

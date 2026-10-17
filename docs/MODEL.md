@@ -5057,3 +5057,45 @@ Deferred:
 - ReplaySSM KDA fold variant (`replayssm_spec_fold`) details.
 - Radix-track forced flushes.
 - Tree drafting.
+
+## §171 ReplaySSM from SGLang code (GDN cycle, KDA fold), radix tracking, tree drafting (0.224)
+
+**ReplaySSM.** Re-sourced from SGLang main, `kernels/ops/attention/fla/gdn_replayssm_spec_decode.py` and
+`kda_replayssm_spec_decode.py`.
+
+| Item | 0.223 | 0.224 | Basis |
+|---|---|---|---|
+| GDN history per verify | (L−q)/2 假设 | mean-field run of `_advance_gdn_spec_cursors_kernel` at E (`ir.replay_cycle`) | 来源 rule, 推导 mean |
+| GDN fold | E/(L−q) per step | flush steps × write_pos records; exact sequential fold | 来源 |
+| History cost in verify | full state update per record | output-only reconstruction ∝ hist·q·(dk+dv) | 推导 from the kernel structure |
+| KDA | same as GDN | fold-every-commit: state read + read/write, raw ring, E replays | 来源 (`replayssm_spec_fold`, `commit_kda_replayssm_after_verify`) |
+| Ring length | max(16, 2q) | pow2 ≥ max(16, 2q) | 来源 (assert + config) |
+| Other recurrences | replay | snapshot + warning | 来源 ("fall back to the recurrent verify kernel") |
+
+**Radix tracking** (`mamba_track_interval`, SGLang default 256) adds a state copy every interval tokens. Its effect
+is small, under 0.2% at 256. It is off by default because whether tracking runs in a given deployment is 假设.
+
+**Tree drafting.** Verify covers N tokens. The tree mask computes N × (ctx+N), the same as a causal kernel over N.
+- Draft steps: MTP and independent drafts extend topk branches after step 1, following SGLang EAGLE draft_forward.
+- Hybrid layers use the snapshot path with N intermediate states, because SGLang ReplaySSM is linear-chain only.
+- Acceptance is a 假设 lever: a_t = 1 − (1−a)^min(topk, (N−1)/k).
+
+Results at 1P, ctx 4096, a = 0.7, TPOT in ms, chain k3 → tree k3/t4/N16 → tree k5/t8/N32:
+
+| Target | Batch 1 | Batch 32 |
+|---|---|---|
+| qwen3-32b + 0.6b draft | 8.26 → 5.51 → 4.30 | 17.50 → 20.62 → 37.36 |
+| qwen3.8-27b (GDN, MTP) | 7.48 → 4.95 → 3.74 | 12.76 → 14.62 → 18.36 (memory 83.8 → 139.9 → 214.8 GiB) |
+| glm-5.3-flash (MoE, KDA, MTP) | 6.32 → 10.29 → 10.89 | 43.64 → 34.28 → 29.07 |
+
+Conclusions:
+- Trees win at batch 1 on dense and hybrid targets, but only under the 假设 acceptance model.
+- Trees lose at batch 32 on dense and hybrid targets. Verify of N tokens is no longer weight-bound, and hybrid
+  layers pay N state copies.
+- MoE reverses the picture: tree verify of N tokens touches many more experts, so trees lose at batch 1 and win at
+  batch 32.
+
+Deferred to 0.225:
+- UI fields for tree and radix tracking.
+- Sourced tree acceptance data.
+- Dynamic tree / EAGLE-3 draft structures.
