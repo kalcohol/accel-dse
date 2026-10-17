@@ -1196,9 +1196,14 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
         c = L.core
         # main_x KV: wkv + kv_norm (4/elem) + RoPE + quant (2/elem), written into the ring buffer
         ops.append(gemm(model, "dspark.main_wkv", lj, m_rows, h, model.draft_kv or hd, "mtp", replicated=tp))
+        if c.window is None:
+            # 0.221 full-attention draft layer (ReaDy): the step's main_x K/V rows are appended to the draft's own KV
+            # cache in the KV format (2·KV·hd per row, draft_kv)
+            kvw = m_rows * (model.draft_kv or 2 * hd) * model.fmt("kv").bits / 8
+        else:
+            kvw = (m_rows * min(c.window, m_rows // max(b_loc, 1)) / max(m_rows // max(b_loc, 1), 1) * c.win_bytes)
         ops.append(Op("dspark_main_kv", "vector", lj, replicated=tp, vec=m_rows * (6 * hd + 3 * c.rope_n),
-                      kv_write=m_rows * min(c.window, m_rows // max(b_loc, 1)) / max(m_rows // max(b_loc, 1), 1)
-                      * c.win_bytes))
+                      kv_write=kvw))
     if ph.kind == "prefill":
         return ops
     B = model.draft_block
@@ -1214,6 +1219,8 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
             lops.append(Op(nm, "attn", lj, m=B * hq, k=hd, n=B, count=b_loc, w_fmt="bf16", a_fmt="bf16"))
         lops.append(Op("dspark_block_softmax", "vector", lj, vec=b_loc * B * hq * B * 5, sfu=b_loc * B * hq * B))
         ops += lops
+        if model.draft_reader and j == model.draft_reader[6]:
+            ops += _ready_reader_ops(model, lj, b_loc, B, sh)
     V = _cdiv(model.vocab, tp)
     r = model.draft_markov
     ops += [Op("dspark_hc_pre", "vector", li, vec=b_loc * B * (2 * N * h + 4 * h), replicated=tp),
@@ -1223,6 +1230,32 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
             Op("dspark_sample", "vector", li, vec=b_loc * B * V * 3),
             gemm(model, "dspark.confidence", li, b_loc * B, h + r, 1, "mtp", replicated=tp)]
     return ops
+
+
+def _ready_reader_ops(model: ModelSpec, lj: int, b_loc: int, B: int, sh: Shard) -> list[Op]:
+    """0.221 ReaDy recurrent-state reader (MODEL_SPEC.txt / reader_config.json), one decode proposal of B positions.
+    Per sequence the committed state of ``nl`` target layers × ``Hs`` heads (dk × dv, state format — fp32) is gathered
+    into a CUDA-graph buffer (read + write), RMS-normalised and value-mapped dv → r per head (read again): state DRAM
+    bytes = 3 × nl·Hs·dk·dv·bytes 「推导」 (release: 'read the current committed state into stable CUDA-graph buffers for
+    every proposal'; the Triton backend fuses gather + normalisation, matrix products stay separate).  Per position: a
+    rank-r query per head (h → nl·Hs·r), lifted r → dk, read against the value-mapped state (dk × r), + per-head log
+    magnitude → nl·Hs·(r + 1) features → down (→ bn) → SiLU → up (→ h) residual.  State heads are TP-sharded like the
+    target's linear-attention layers; the small GEMMs are replicated."""
+    r, nl, Hs, dk, dv, bn, _ = model.draft_reader
+    tp, h = sh.tp, model.hidden
+    hs = nl * _cdiv(Hs, tp)                   # state heads on this rank
+    sb = _fmt(model.state_fmt).bytes
+    rows = b_loc * B
+    return [Op("ready_state_gather", "vector", lj, state_rw=3 * b_loc * hs * dk * dv * sb, vec=b_loc * hs * dk * dv * 4),
+            Op("ready_value_map", "attn", lj, m=dk, k=dv, n=r, count=b_loc * hs, w_fmt="fp32", a_fmt="fp32"),
+            gemm(model, "ready.query", lj, rows, h, nl * Hs * r, "mtp", replicated=tp),
+            Op("ready_query_up", "attn", lj, m=B, k=r, n=dk, count=b_loc * hs, w_fmt="bf16", a_fmt="bf16"),
+            Op("ready_state_read", "attn", lj, m=B, k=dk, n=r, count=b_loc * hs, w_fmt="fp32", a_fmt="fp32"),
+            Op("ready_norm", "vector", lj, vec=rows * nl * Hs * (r + 1) * 6 + b_loc * hs * 4, sfu=b_loc * hs,
+               replicated=tp),
+            gemm(model, "ready.down", lj, rows, nl * Hs * (r + 1), bn, "mtp", replicated=tp),
+            gemm(model, "ready.up", lj, rows, bn, h, "mtp", replicated=tp),
+            Op("ready_residual", "vector", lj, vec=rows * (bn * 4 + h), sfu=rows * bn, replicated=tp)]
 
 
 def _mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) -> list[Op]:

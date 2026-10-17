@@ -13,7 +13,7 @@ import json
 from functools import lru_cache
 
 from .domain import from_domain_release
-from .model import DATA, ModelSpec, NativeWorkload, from_release, load_release
+from .model import DATA, ModelSpec, NativeWorkload, from_release, load_release, spec_accept_from_tau
 
 EXTRA = [
     # id, hf_id  (listing label = official repo name)
@@ -69,6 +69,8 @@ EXTRA_TAIL = [
     ("muse-spark-open-nvfp4", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4"),   # 0.175 推导 (gated; see release "derived")
     # 0.175: the blog's serve command (NVFP4 target + Inferact DSpark draft, num_speculative_tokens 7)
     ("muse-spark-open-nvfp4-dspark", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4+Inferact/Muse-Spark-Open-DSpark"),
+    # 0.221: Qwen3.8-27B target + StartLux ReaDy DSpark draft with the recurrent-state reader (both public, 2026-10-17)
+    ("qwen3.8-27b-ready", "Qwen/Qwen3.8-27B+startlux-models/ReaDy-Qwen3.8-27B"),
     # 0.191 decision models ("System One": one forward, letter logits over the listed options; serving.labels).
     # StartLux Labs, CC BY-NC-4.0, Qwen3.5 fine-tunes, bf16 as released (public config.json + safetensors headers)
     ("qwen3.5-9b", "Qwen/Qwen3.5-9B"),
@@ -462,6 +464,10 @@ def labels(spec: ModelSpec) -> dict:
         "is_pair": spec.is_pair,
         "mtp_layers": len(spec.mtp_layers),
         "draft": spec.draft,
+        # 0.221: published acceptance → the i.i.d. spec_accept it implies (a lever value, not a default)
+        "spec_published": ({"tau": spec.spec_published[0], "k": spec.spec_published[1],
+                            "accept_iid": round(spec_accept_from_tau(*spec.spec_published), 4)}
+                           if spec.spec_published else None),
         "n_layers": spec.n_layers,
         "model_domain": spec.domain,
         "kv_cache": spec.kv_cache,

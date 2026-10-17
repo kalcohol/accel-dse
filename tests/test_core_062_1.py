@@ -25,7 +25,7 @@ def test_release_count_and_param_error():
     doms = [json.load(open(f)).get("domain", "llm") for f in files]
     assert len(files) == 118 and doms.count("llm") == 96   # 0.191: + Qwen3.5-9B, 14 StartLux-Decision, 4 RWKV-7 G1k
     listed = {x["id"]: x for x in list_models()}
-    assert len(listed) + len(unlisted_models()) == 120   # 0.191: + 19 releases + microsoft-decision-1 proxy
+    assert len(listed) + len(unlisted_models()) == 121   # 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft)
     assert all(abs(x["param_err"]) <= 0.005 for x in listed.values())
     assert all(abs(x["param_err"]) < 1e-5 for x in listed.values() if get_model(x["id"]).domain in ("gen", "protein", "genomics"))
 

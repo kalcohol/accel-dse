@@ -205,7 +205,9 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
                 # x32 12 GB not verified (audit L5-3) → JEDEC 允许 · 无产品
                 # 0.220: x32 3/6 GB and x64 3 GB: no vendor part found → JEDEC-allowed, no product (was shipping)
                 "caps": {32: {3: _JN, 6: _JN, 8: _JS, 12: _JN}, 64: {3: _JN, 6: _JS, 8: _JS, 12: _JS}},
-                "default_cap": {32: 6, 64: 12},
+                # 0.221: x32 default 6 GB (no product since 0.220) → 8 GB, the nearest shipping x32 part
+                # (Samsung K3LKCKC0BM-MGCP 64 Gb x32 6400, mass production)
+                "default_cap": {32: 8, 64: 12},
             },
         },
     },
@@ -372,6 +374,14 @@ def lpddr_source(t: str, form: str, kind: str, *key) -> str:
     return "假设: catalog configuration, no product" if st and st[1] == "none" else _LP_R
 
 
+# 0.221: catalog defaults that are what-ifs by construction (the whole width / form has no product) — the only
+# defaults allowed to resolve to product status 'none' (tests/test_core_221.py).  key = (type, form, width)
+WHATIF_DEFAULTS: dict[tuple[str, str, int], str] = {
+    ("LPDDR6", "discrete", 48): "假设: x48 LPDDR6 package — no public part number (width itself is a what-if)",
+    ("LPDDR6", "LPCAMM2", 192): "假设: LPDDR6 CAMM2 — JEDEC standard in development, no product (whole form is a what-if)",
+}
+
+
 HBM_STACK_COUNTS: tuple[int, ...] = (1, 2, 4, 5, 6, 8, 12, 16)
 HBM_MAX_KNOWN_STACKS = 12  # MI455X
 
@@ -380,7 +390,9 @@ HBM_CATALOG: dict[str, dict[str, Any]] = {
         "jedec_doc": "JESD238 / JESD238B.01",
         "stack_width": 1024,
         "width_status": _JS,
-        "rates": {6400: _JS},
+        # 0.221: 5234 = the H100 SXM operating point (H100-like preset memory) — below the JESD238 6.4 maximum,
+        # speed bin not public → 疑似 JEDEC; shipping in H100 SXM5
+        "rates": {5234: _LS, 6400: _JS},
         "default_rate": 6400,
         "heights": (8, 12),
         "default_height": 12,
@@ -458,6 +470,8 @@ HBM_CAP_SOURCES: dict[tuple[str, int, int], str] = {
 # 0.218: sources behind every catalog pin rate
 HBM_RATE_SOURCES: dict[tuple[str, int], str] = {
     ("HBM3", 6400): "来源: JEDEC HBM3 PR 2022-01-27 (6.4 Gb/s, 1024-bit, 819 GB/s)",
+    ("HBM3", 5234): "来源/推导: NVIDIA H100 SXM product page 3.35 TB/s; Hopper whitepaper '80 GB HBM3, 5 HBM3 stacks', 5120-bit, "
+                    "2619 MHz DDR (3352 GB/s) → 3.35 TB/s ÷ 640 B = 5.234 Gb/s per pin (0.221; whitepaper 5.238, 0.08 % apart)",
     ("HBM3E", 8000): "推导: system-level run rate (B200 8 TB/s ÷ 8 stacks ÷ 1024 bit ≈ 7.8 Gb/s)",
     ("HBM3E", 9200): "来源: Micron 2024-09-05 HBM3E 12-high 'pin speed greater than 9.2 Gb/s'",
     ("HBM3E", 9600): "来源: Samsung 2026-02-12 'maximum pin speed of 9.6Gbps of its predecessor, HBM3E'; SK hynix 2024-09-26 12-layer HBM3E 9.6 Gbps",

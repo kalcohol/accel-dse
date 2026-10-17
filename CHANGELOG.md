@@ -6,6 +6,28 @@
 
 
 
+## [0.221.0]
+- Default memory realism: every default now resolves to a shipping, sourced part, or is an explicit what-if.
+  - LPDDR5 discrete x32 default capacity 6 GB → 8 GB per package (6 GB has had no product since 0.220; 8 GB = Samsung
+    K3LKCKC0BM-MGCP, 来源). KPI: bandwidth unchanged, so TPOT and throughput are unchanged; capacity 4 × x32 24 → 32 GB
+    (qwen3-8b, 100T, batch 8, ctx 8192: fits False → True; TPOT 345.149 ms and 23.18 tok/s/card unchanged).
+  - H100-like preset memory `hbm3_5s_8h16g_5234` was tagged unspecified / no product because 5234 was not a catalog grade.
+    It is the H100 SXM memory, so the HBM3 catalog gains rate 5234 (疑似 JEDEC · shipping; 来源/推导: H100 product page
+    3.35 TB/s, Hopper whitepaper 5 stacks / 5120-bit / 2619 MHz DDR). No number changes; preset KPIs and hashes unchanged.
+  - `mem_catalog.WHATIF_DEFAULTS` flags the two defaults that are what-ifs by construction (LPDDR6 x48, LPDDR6 LPCAMM2).
+  - New test: no preset, legacy preset, System / scenario / UI default, or catalog type/form/width default may resolve to
+    product status `none` unless flagged.
+- Speculative decoding: new `qwen3.8-27b-ready` = Qwen3.8-27B target + StartLux ReaDy-Qwen3.8-27B DSpark draft (separate
+  repo; both configs public 2026-10-17). The draft shares the target's embedding / lm_head (1.862 B params, matches the
+  header). The recurrent-state reader is modelled at draft layer 4: fp32 state of target layers 30 / 62, gather + buffer +
+  read, rank-8 query and value map, 864 → 128 → 5120. Full-attention draft layers now charge their K/V append.
+  - The published acceptance length τ 4.5285 (arXiv 2610.20503, k 7, temperature 0) implies i.i.d. a = 0.828 (推导).
+    It is exposed as `model.spec_published`; the `spec_accept` default stays 0.7 「假设」.
+  - Modelled on 1P, batch 1: AR 64.1 → 258.1 tok/s (4.03×; paper B200 3.16×, residual = engine overhead not modelled).
+  - Generic independent small-LM drafts are still not modelled (design in MODEL §168, deferred).
+- Adversarial fuzzer on the separate-draft path (seed 221).
+- Muse-Spark DSpark, qwen3.8-27b and every preset produce unchanged results.
+
 ## [0.220.0]
 - LPDDR per-entry sourcing is complete: no entry is left on the research-doc citation.
   - The 24 remaining entries now cite Samsung product pages (K3LK4K40CM-JHCP, K3LKCKC0BM-MGCP, K3KL3L30EM-JUCV, K3KL9L90DM-MGCU), Micron datasheets (LPDDR5 MT62F512M64D4 / MT62F1G64D8; LPDDR5X Y5BP MT62F768M64D4 / MT62F1536M64D8) and the Micron LPDDR5X page (1γ 6/12/24 GB, 16 GB).

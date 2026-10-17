@@ -4912,3 +4912,55 @@ No bandwidth or capacity number changed, so no model result moved.
 - DRAM × 2: TPOT ≤ base.
 
 The fuzzer checks physical direction only, so it is not a calibration.
+
+## §168 Default memory realism; separate DSpark draft + state reader (ReaDy); draft-path fuzzer (0.221)
+**Default audit.** Defaults checked (2026-10-17): PRESET_MEM, MEM_LEGACY_0204, `System.mem_id`, the scenario default,
+the UI fallback / placeholders, and every catalog type/form/width default.
+- Only two defaults pointed at a no-product configuration:
+  - LPDDR5 x32 default capacity 6 GB → **8 GB**. This is the nearest shipping x32 part (Samsung K3LKCKC0BM-MGCP 64 Gb x32
+    6400, 来源). Same rate and width, so the bandwidth is the same and only the capacity grows: 4 × x32 24 → 32 GB.
+  - The H100-like rate 5234. This is the H100 SXM operating point: 3.35 TB/s ÷ 5120 bit (来源/推导). The Hopper whitepaper
+    gives 2619 MHz DDR = 5238, 0.08 % apart. It is now a catalog grade (疑似 JEDEC: below the JESD238 6.4 maximum, bin
+    table not public · shipping). The number is unchanged.
+- LPDDR6 x48 and LPDDR6 LPCAMM2 have no shipping alternative of the same intent. They are flagged what-ifs
+  (`WHATIF_DEFAULTS`, 假设).
+- Reference / validation hardware rows (refhw, e.g. HBM3 2430 / 3186) model measured products, not defaults. Tagging
+  their rates is deferred.
+
+**Speculative decoding coverage.**
+- Covered: MTP self-speculation (k sequential module passes). DSpark block drafts, built in (V4.1) or as a separate draft
+  repo attached to a released target (`<target>+<draft>`).
+- Not covered: an independent autoregressive draft LM (its own KV, k sequential q = 1 passes, then target verify q = 1+k).
+  Design (deferred):
+  - `Serving.draft_model` holds a second ModelSpec placed on the same cards.
+  - Step = k × draft step(b, ctx) + target step(q = 1 + k).
+  - Memory = both weights + both KV caches.
+  - The acceptance lever stays 「假设」.
+
+**ReaDy-Qwen3.8-27B.** A DSpark drafter for a separate Qwen3.8-27B target.
+- Structure (config + safetensors headers): 5 dense GQA full-attention layers, fc over 5 target layers, Markov rank 256,
+  confidence head; no own lm_head (shared).
+- The recurrent-state reader (reader_config + MODEL_SPEC) runs per proposal and per sequence:
+  - It reads the committed fp32 state [2, 48, 128, 128] of target layers 30 / 62.
+  - It is copied into CUDA-graph buffers, so 3 × 6.29 MB of state traffic is charged (推导).
+  - Then: RMS norm, value map 128 → 8, rank-8 query lifted to 128, read, + log magnitude → 864 → 128 → 5120 residual
+    at draft layer 4.
+- Published τ 4.5285 (block 7) ⇒ a = 0.828 under the i.i.d. model (推导, `spec_accept_from_tau`). DSpark τ 4.1739 ⇒ 0.801.
+- Mechanism check (no fitting):
+
+  | Quantity | Modelled | Paper |
+  |---|---|---|
+  | ReaDy / DSpark throughput | 1.085× (reader 0.02 % of the step) | 1.0797× |
+  | Speed-up over AR (1P, batch 1) | 4.03× | 3.16× (B200) |
+
+  The second gap is a residual: the modelled verify step is only +12.6 % over an AR step, while the paper implies
+  τ / speed-up ≈ 1.43. Engine scheduling and draft-launch overheads are not modelled. Not tuned.
+
+**Fuzzer (seed 221, separate-draft path).**
+- Tokens per step = E(min(k, block), a).
+- Acceptance changes neither the step time nor raises TPOT.
+- Turning speculation on never shortens a step.
+- The reader only adds work.
+
+Conclusions: no preset KPI changed.
+

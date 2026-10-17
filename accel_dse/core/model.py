@@ -408,6 +408,9 @@ class ModelSpec:
     draft_targets: int = 0                   # target layers whose stream means feed main_proj
     draft_markov: int = 0                    # markov head rank
     draft_kv: int = 0                        # 0.175: context K/V projection width per draft layer (0 = head_dim, V4.1)
+    draft_reader: tuple[int, ...] = ()       # 0.221 ReaDy recurrent-state reader: (rank, state layers, heads, key dim,
+                                             # value dim, bottleneck, draft injection layer); () = none
+    spec_published: tuple[float, int] = ()   # 0.221: published acceptance length τ and draft block k (「来源」), () = none
     formats: tuple[tuple[str, RoleFormat], ...] = ()
     act_fmt: str = "bf16"
     kv_fmt: str = "bf16"
@@ -1316,6 +1319,56 @@ def _attach_muse_dspark(spec: ModelSpec, d: dict) -> ModelSpec:
                                        f"块 {c['block_size']}；目标层 hidden 拼接（模板按均值 + fc 计，同 GEMM 形状）",))
 
 
+def _attach_ready_dspark(spec: ModelSpec, d: dict) -> ModelSpec:
+    """0.221 StartLux ReaDy-Qwen3.8-27B: a DSpark draft (SGLang native DSparkDraftModel; config.json + safetensors header)
+    for a separate Qwen3.8-27B target.  fc over the concatenated hidden states of the 5 target_layer_ids → hidden_norm,
+    num_hidden_layers dense GQA layers (q/k norm, full attention — no sliding window), final norm, Markov head (rank
+    markov_rank: w1 + w2 over the vocab), confidence head on [hidden + rank]; NO own lm_head / embedding (the release has
+    neither tensor → shared with the target).  Plus the recurrent-state reader (reader_config.json, MODEL_SPEC.txt): per
+    proposal it reads the committed fp32 state [layers, heads, 128, 128] of target layers 30 / 62, RMS-normalises it,
+    maps the value axis 128 → rank, reads it with a per-position rank query lifted to the key axis, appends per-head log
+    state magnitude (heads × (rank + 1) = 864 features), then down (→ bottleneck) / up (→ hidden) SiLU residual at draft
+    layer 4."""
+    c, rc = d["config"], d.get("reader") or {}
+    h, H, KV, hd = c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
+    nl, r, V = c["num_hidden_layers"], c["markov_rank"], c.get("draft_vocab_size") or c["vocab_size"]
+    win = c.get("sliding_window") if c.get("use_sliding_window") else None
+    mtp = []
+    for _ in range(nl):
+        alin, core = _gqa(h, H, KV, hd, out_gate=bool(c.get("use_attn_o_gate")), window=win)
+        ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        mtp.append(Layer(alin, core, ffn, flin, 2 * h + 2 * hd))     # input / post-attention norms + q / k norms
+    nt = len(c["target_layer_ids"])
+    extra = (nt * h * h + 2 * h + (V * h if d.get("own_lm_head") else 0) + 2 * V * r + (h + r + 1)
+             + int(d.get("params_reader") or 0))                    # fc, hidden_norm + norm, markov w1/w2, confidence, reader
+    rd = ((rc["rank"], len(rc["state_layers"]), rc["heads"], rc["key_dim"], rc["value_dim"], rc["bottleneck"],
+           rc["draft_layer"]) if rc else ())
+    acc = d.get("acceptance") or {}
+    return replace(spec, mtp_layers=tuple(mtp), mtp_extra_params=extra // nl, draft="dspark",
+                   draft_block=c["block_size"], draft_targets=nt, draft_markov=r, draft_kv=2 * KV * hd, draft_reader=rd,
+                   spec_published=(float(acc["tau"]), int(acc["block"])) if acc else (),
+                   notes=spec.notes + (f"DSpark 草稿模型（{d['repo']}，bf16 {d['params'] / 1e9:.2f}B，独立仓库，共享目标 "
+                                       f"embedding / lm_head）：{nl} 层稠密全注意力，块 {c['block_size']}；目标层 hidden 拼接 + fc"
+                                       + (f"；ReaDy 状态读取器（目标层 {rc['state_layers']} 的 fp32 循环状态，秩 {rc['rank']}，"
+                                          f"注入草稿层 {rc['draft_layer']}）" if rc else "")
+                                       + (f"；公开接受长度 τ {acc['tau']}（块 {acc['block']}，温度 0）→ i.i.d. 接受率 "
+                                          f"{spec_accept_from_tau(acc['tau'], acc['block']):.3f}「推导」，spec_accept 默认仍为「假设」杠杆"
+                                          if acc else ""),))
+
+
+def spec_accept_from_tau(tau: float, k: int) -> float:
+    """0.221: the i.i.d. per-draft acceptance a with E[tokens / verify] = (1 − a^(k+1)) / (1 − a) = τ (bisection).
+    τ counts committed tokens per verification including the target's own token (the schedule.py convention)."""
+    if not 1.0 <= tau <= k + 1:
+        raise ValueError(f"tau must be in [1, {k + 1}]")
+    lo, hi = 0.0, 1.0
+    for _ in range(80):
+        a = (lo + hi) / 2
+        e = (k + 1) if a >= 1 else (1 - a ** (k + 1)) / (1 - a)
+        lo, hi = (a, hi) if e < tau else (lo, a)
+    return (lo + hi) / 2
+
+
 def _build_rwkv7(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """0.191 RWKV-7 "Goose" (arXiv 2503.14456; release modeling_rwkv7.py).  No attention, no KV cache.
     Time mix: token shift → 6 lerps (r, w, k, v, a, g); receptance / key / value / output C×C; four low-rank chains
@@ -1531,6 +1584,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                            draft_markov=c.get("dspark_markov_rank") or 0)
         if rel.get("dspark") and (c.get("model_type") or "").startswith("muse_spark"):
             spec = _attach_muse_dspark(spec, rel["dspark"])
+        elif rel.get("dspark"):
+            spec = _attach_ready_dspark(spec, rel["dspark"])      # 0.221: DSpark-format draft for any other target
         exotic = [k for k in ("hc_mult", "hc_count", "mhc") if c.get(k)] \
             if not any(l.hc or l.gres_n for l in spec.layers) else []
         lk_open = spec.lookup_params and not spec.lookup_bits and not any(l.ple_rows for l in spec.layers)
