@@ -233,6 +233,21 @@ function draftWarn() {
   const d = S.byId[S.sc.serving.draft_model || ''], t = S.byId[S.sc.model];
   w.textContent = d && t && d.vocab && t.vocab && d.vocab !== t.vocab ? ` ⚠ 词表 ${d.vocab} ≠ 目标 ${t.vocab}（需同一分词器）` : '';
 }
+function treeWarn() {     // 0.225: client-side checks of the tree fields (the server's warnings show in #warns)
+  const w = $('s-tree-warn');
+  if (!w) return;
+  const sv = S.sc.serving, k = sv.spec_k || 0, t = sv.spec_topk || 1, n = sv.spec_draft_tokens || 0, out = [];
+  if (t > 1 && k) {
+    const cap = 1 + t + (k - 1) * t * t;
+    if (n && n - 1 > cap) out.push(`⚠ 树 token ${n} 超过 k = ${k}、topk = ${t} 的候选节点数 + 1（${cap + 1}）`);
+    if (sv.spec_rollback === 'replay') out.push('⚠ 树形验证不支持 ReplaySSM，按快照计');
+    const m = S.byId[S.sc.model];
+    if (m && m.draft === 'dspark' && !sv.draft_model) out.push('⚠ DSpark 是块草稿，topk 被忽略');
+    out.push(`树接受率「假设」${sv.spec_tree_accept_model || 'indep'}：对照 EAGLE-1 ${sv.spec_tree_accept_model === 'chain' ? '−17…−19 %' : '+49…+63 %'}`);
+  } else if (n && k) out.push('线性链（topk 1）：树 token 被忽略');
+  if (!k && (t > 1 || n)) out.push('spec_k = 0：未启用投机解码');
+  w.textContent = out.join('；');
+}
 function syncInputs() {
   document.querySelectorAll('input[type=number]').forEach((i) => i._sync && i._sync());
   if ($('l-pp_split')) $('l-pp_split').value = S.sc.pp_split || 'cost';
@@ -241,6 +256,8 @@ function syncInputs() {
   if ($('h-host_overlap')) $('h-host_overlap').value = S.sc.host_overlap || 'serial';
   if ($('s-spec_rollback')) $('s-spec_rollback').value = S.sc.serving.spec_rollback || 'snapshot';
   if ($('s-draft_model')) { fillDrafts(); $('s-draft_model').value = S.sc.serving.draft_model || ''; draftWarn(); }
+  if ($('s-spec_tree_accept_model')) $('s-spec_tree_accept_model').value = S.sc.serving.spec_tree_accept_model || 'indep';
+  treeWarn();
   if ($('pd-length_mix') && $('pd-length_mix')._sync) $('pd-length_mix')._sync();
   if ($('pd-prefix_tree') && $('pd-prefix_tree')._sync) $('pd-prefix_tree')._sync();
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
@@ -1060,13 +1077,23 @@ function renderBalanceWhatif(w) {
       // 0.223: spec rollback lever — both modes at batch 1 / 32
       x.spec_rollback_compare ? h('div', { class: 'small', id: 'spec-roll-cmp' }, x.spec_rollback_compare.map((c) => c.error
         ? `B${c.batch} ${c.mode}: ${c.error}`
-        : `B${c.batch} ${c.mode}: ${num(c.tpot_ms)} ms · ${num(c.tok_s_card)} tok/s/卡 · ${num(c.dram_need_GiB)} GiB${c.fits ? '' : ' ⚠ 放不下'}`).join('；')) : ''));
+        : `B${c.batch} ${c.mode}: ${num(c.tpot_ms)} ms · ${num(c.tok_s_card)} tok/s/卡 · ${num(c.dram_need_GiB)} GiB${c.fits ? '' : ' ⚠ 放不下'}`).join('；')) : '',
+      // 0.225: drafting shape lever — chain vs tree (both acceptance bounds) per batch + crossover
+      x.spec_tree_compare ? treeCmp(x.spec_tree_compare) : ''));
   put(box, h('h4', {}, '机器平衡 what-if · balance levers（每次只改一个变量 · one variable each）'),
     h('table', { class: 'tbl', id: 'bal-whatif-tbl' },
       h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', 'Δ面积 area', 'J/token @计价 batch（临界 / 上限 / 配置）', '功耗 W/卡（含 SRAM 泄漏 + HBM 待机/刷新）', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
       h('tbody', {}, tr('当前 base', w.base, true), ...w.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 9, class: 'l small' }, x.error)) : tr(x.label, x, false)))),
     w.cost_basis ? h('div', { class: 'small' }, w.cost_basis.note) : '',
     h('div', { class: 'small' }, w.works.length ? `有效杠杆 · levers that work：${w.works.join('、')}（阈值 ${pct(w.gain)}）` : '没有单一杠杆有效 · no single lever works'));
+}
+function treeCmp(t) {
+  const one = (v) => v.error ? v.error : `${num(v.tpot_ms)} ms（τ ${num(v.tau)}）${v.fits ? '' : ' ⚠ 放不下'}`;
+  const fl = (a) => a.length ? a.map(([p, q]) => `B${p}→B${q}`).join('、') : '无翻转';
+  return h('div', { class: 'small', id: 'spec-tree-cmp' },
+    `链 vs 树（k ${t.k}，topk ${t.topk}，N ${t.draft_tokens}）：`,
+    ...t.rows.map((x) => h('div', {}, `B${x.batch} 链 ${one(x.chain)} · 树 indep ${one(x.tree_indep)} · 树 chain 下界 ${one(x.tree_chain)}`)),
+    h('div', {}, `胜负翻转 · crossover：indep ${fl(t.crossover_indep)}；chain 下界 ${fl(t.crossover_chain)}。对照 EAGLE-1 已发表链/树配对：indep ${pct(t.check.indep[0])}…${pct(t.check.indep[1])}，chain ${pct(t.check.chain[0])}…${pct(t.check.chain[1])}；已发表树增益 ${pct(t.check.gain_published[0])}…${pct(t.check.gain_published[1])}（不拟合）`));
 }
 function renderSensitivity(r) {
   const s = r.sensitivity;
@@ -2087,7 +2114,15 @@ async function init() {
   const HDEF = { host_step_us: 0, host_seq_us: 0, host_steps: 1 };              // 0.164 host / runtime overhead
   for (const k of Object.keys(HDEF))
     bindNumber('h-' + k, () => S.sc[k] ?? HDEF[k], (x) => { if (x === HDEF[k]) delete S.sc[k]; else S.sc[k] = x; }, { int: k === 'host_steps' });
-  $('s-spec_rollback').addEventListener('change', (e) => { if (e.target.value === 'snapshot') delete S.sc.serving.spec_rollback; else S.sc.serving.spec_rollback = e.target.value; schedule(); });
+  $('s-spec_rollback').addEventListener('change', (e) => { if (e.target.value === 'snapshot') delete S.sc.serving.spec_rollback; else S.sc.serving.spec_rollback = e.target.value; treeWarn(); schedule(); });
+  // 0.225: tree drafting + radix tracking fields (defaults omitted from the scenario)
+  const TDEF = { spec_topk: [1, 1, 10], spec_draft_tokens: [0, 0, 64], mamba_track_interval: [0, 0, 1048576] };
+  for (const k of Object.keys(TDEF)) {
+    const [d, lo, hi] = TDEF[k];
+    bindNumber('s-' + k, () => S.sc.serving[k] ?? d, (x) => { if (x === d) delete S.sc.serving[k]; else S.sc.serving[k] = x; treeWarn(); },
+      { int: true, check: (x) => x >= lo && x <= hi && !(k === 'spec_draft_tokens' && x === 1) });
+  }
+  $('s-spec_tree_accept_model').addEventListener('change', (e) => { if (e.target.value === 'indep') delete S.sc.serving.spec_tree_accept_model; else S.sc.serving.spec_tree_accept_model = e.target.value; treeWarn(); schedule(); });
   $('s-draft_model').addEventListener('change', (e) => { if (e.target.value) S.sc.serving.draft_model = e.target.value; else delete S.sc.serving.draft_model; draftWarn(); schedule(); });
   $('h-host_overlap').addEventListener('change', (e) => { if (e.target.value === 'serial') delete S.sc.host_overlap; else S.sc.host_overlap = e.target.value; schedule(); });
   for (const k of ['pp', 'tp', 'dp', 'ep', 'etp'])

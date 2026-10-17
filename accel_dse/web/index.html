@@ -231,6 +231,11 @@
       <label class="llm-only">接受率<input type="number" id="s-spec_accept" min="0" max="1" step="0.05"></label>
       <label class="llm-only" title="0.222：独立草稿模型（自己的权重 + KV，同卡、同 TP）：每步 k 次草稿解码 + 目标验证 1 + k 个 token。空 = 用目标自带的 MTP / DSpark。接受率为「假设」杠杆">草稿模型 <span class="tag assume">假设</span><select id="s-draft_model"><option value="">（目标自带 MTP / DSpark）</option></select><span class="small warn" id="s-draft-warn"></span></label>
       <label class="llm-only" title="0.223：混合 / 线性注意力层的投机验证回滚。snapshot = SGLang 默认（每个草稿 token 一个中间状态，q× 状态显存）；replay = SGLang ReplaySSM（--enable-linear-replayssm-spec：紧凑环形缓冲，重放 + 折叠计算，无 q× 中间状态）">投机回滚<select id="s-spec_rollback"><option value="snapshot">snapshot（默认）</option><option value="replay">replay（ReplaySSM）</option></select></label>
+      <label class="llm-only" title="0.224：树形草稿（EAGLE / SGLang --speculative-eagle-topk）：每步保留的分支数，1 = 线性链">树 topk<input type="number" id="s-spec_topk" min="1" max="10" step="1"></label>
+      <label class="llm-only" title="0.224：树形验证 token 数（含根，SGLang --speculative-num-draft-tokens）；0 = 自动 1 + k·topk（≤ 64）">树 token<input type="number" id="s-spec_draft_tokens" min="0" max="64" step="1"></label>
+      <label class="llm-only" title="0.225：树的逐层接受率模型。indep = 兄弟节点独立同分布（0.224「假设」，上界；对照 EAGLE-1 已发表链/树配对高估 +49…+63 %）；chain = 下界（树的 top-1 路径即同深度链，τ 不增；低估 −17…−19 %）">树接受率 <span class="tag assume">假设</span><select id="s-spec_tree_accept_model"><option value="indep">indep（上界，默认）</option><option value="chain">chain（下界）</option></select></label>
+      <label class="llm-only" title="0.224：radix 前缀缓存每 N token 追踪一次混合层状态（SGLang --mamba-track-interval，开启时默认 256）；0 = 关">状态追踪间隔<input type="number" id="s-mamba_track_interval" min="0" max="1048576" step="1"></label>
+      <span class="small warn" id="s-tree-warn"></span>
       <label class="llm-only">TPOT SLO ms<input type="number" id="s-tpot_slo_ms" min="1" step="5"></label>
       <label class="llm-only">TTFT SLO ms<input type="number" id="s-ttft_slo_ms" min="1" step="100"></label>
       <label>微批数<input type="number" id="s-microbatches" min="0" step="1" title="0 = 自动（= PP）"></label>

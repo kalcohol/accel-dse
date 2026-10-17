@@ -96,6 +96,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--spec-topk", type=int, default=None, help="tree drafting: branches per draft step (1 = chain) (0.224)")
     p.add_argument("--spec-draft-tokens", type=int, default=None,
                    help="tree drafting: verified tree tokens incl. root (0 = 1 + k·topk) (0.224)")
+    p.add_argument("--spec-tree-accept-model", default=None, choices=["indep", "chain"],
+                   help="tree per-depth acceptance: indep (i.i.d. siblings, upper bound) | chain (lower bound) (0.225)")
     p.add_argument("--spec-rollback", default=None, choices=["snapshot", "replay"],
                    help="hybrid-layer spec verify rollback: snapshot (SGLang default) | replay (ReplaySSM) (0.223)")
     p.add_argument("--tpot-slo", type=float, default=None, help="TPOT SLO ms")
@@ -378,7 +380,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                     ("ttft_slo_ms", "ttft_slo"), ("out_len", "out_len"), ("prefix_cached", "prefix_cached"),
                     ("labels", "labels"), ("draft_model", "draft_model"), ("spec_rollback", "spec_rollback"),
                     ("mamba_track_interval", "mamba_track_interval"), ("spec_topk", "spec_topk"),
-                    ("spec_draft_tokens", "spec_draft_tokens")):
+                    ("spec_draft_tokens", "spec_draft_tokens"),
+                    ("spec_tree_accept_model", "spec_tree_accept_model")):
         if getattr(a, attr) is not None:
             sv[k] = getattr(a, attr)
     if getattr(a, "think", None) is not None:

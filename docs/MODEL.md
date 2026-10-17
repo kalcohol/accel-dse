@@ -5099,3 +5099,57 @@ Deferred to 0.225:
 - UI fields for tree and radix tracking.
 - Sourced tree acceptance data.
 - Dynamic tree / EAGLE-3 draft structures.
+
+## §172 Tree-drafting acceptance: published references, bounds, chain-vs-tree what-if (0.225)
+
+**References (来源, `data/spec_tree_refs.json`).**
+- Matched pairs (same draft model, chain vs tree): EAGLE-1 arXiv 2401.15077v3 Table 5, MT-bench, T=0.
+  - Vicuna 7B / 13B / 33B: τ 3.20→3.94, 3.23→3.98, 2.97→3.68.
+  - LLaMA2-Chat 7B / 13B / 70B: τ 3.00→3.62, 3.18→3.90, 3.12→3.81.
+  - Tree: `mc_sim_7b_63` (EAGLE `choices.py`), 5 deep, nodes per depth 4/8/8/3/2, 26 verified tokens. It contains the
+    top-1 chain.
+  - The published tree gain is +20.7…+23.9 % τ.
+- Unmatched points (reference only):
+  - EAGLE-2 dynamic tree (depth 6, top-10, 60 tokens): τ 4.98 (Vicuna 7B), 4.53 (LLaMA3 8B).
+  - SGLang PR #4247 EAGLE-3 on Llama-3.1-8B: steps 5 / topk 8 / N 64 τ 4.68; steps 8 τ 5.39.
+
+**Check (no fit).**
+- a is the i.i.d. per-draft acceptance that reproduces the chain τ at k = 5.
+- The model tree τ is evaluated at the published tree shape (k 5, topk 4, N 26) and compared with the published tree τ.
+- `indep`, 1 − (1 − a)^min(topk, (N−1)/k) (0.224 「假设」): **+49 … +63 %**.
+  - Why it is optimistic: greedy verification accepts at most one child, and lower-ranked candidates match less often.
+    Siblings are therefore neither independent nor equally likely.
+- `chain`, τ_tree = τ_chain (structural lower bound, 「来源」 because the tree keeps the top-1 child): **−17 … −19 %**.
+- Every published pair lies inside the [chain, indep] band.
+- The default stays `indep`: changing it would move every tree KPI. Each tree evaluation now carries the band and a
+  warning, and `serving.spec_tree_accept_model = chain` selects the lower bound.
+- A rank-dependent sibling model (p_j for the j-th candidate, with Σ p_j ≤ 1) would be the mechanism fix. No per-rank
+  source was found, so it is deferred.
+
+**Depth cap (fix).** A tree with N verified tokens is at most N − 1 deep, so τ uses min(k, N − 1) drafts.
+
+**Chain-vs-tree, 1P, ctx 4096, a = 0.7, chain k3 vs tree k3 / topk 4 / N 16. TPOT in ms as chain | tree indep / tree chain-bound:**
+
+| Model | Batch 1 | Batch 8 | Batch 32 |
+|---|---|---|---|
+| qwen3-32b + 0.6b draft | 8.257 \| 5.511 / 8.597 | 10.345 \| 8.374 / 13.064 | 17.502 \| 20.616 / 32.163 |
+| qwen3.8-27b | 7.479 \| 4.946 / 7.716 | 8.672 \| 6.729 / 10.498 | 12.762 \| 14.621 / 22.809 |
+| glm-5.3-flash | 6.315 \| 10.293 / 16.058 | 25.569 \| 26.858 / 41.9 | 43.64 \| 34.282 / 53.482 |
+
+- Under the lower bound the tree never wins: it has the same τ and more verify and draft work.
+- The 0.224 conclusions held only under the upper bound:
+  - "Tree wins at batch 1–8 for the dense / hybrid targets."
+  - "Tree wins at batch 32 for glm-5.3-flash."
+- With the published EAGLE-1 gain (≈ +22 %, 推导, illustration only, not in the model):
+  - qwen3.8-27b: the tree still wins at batch 1 (≈ 6.3 vs 7.48 ms), ties at batch 8, and loses at batch 32.
+  - qwen3-32b + draft: wins at batch 1 and loses from batch 8.
+  - glm-5.3-flash: ties at batch 32 (≈ 43.8 vs 43.64).
+- So the crossover moves from between batches 8 and 32 to about batch 8 or lower.
+
+**Design only (deferred).**
+- EAGLE-2 dynamic trees: the per-request tree is reranked by draft confidence. Cost model:
+  - draft: k passes of topk candidates;
+  - verify: N tokens;
+  - acceptance: needs a confidence → acceptance calibration, which EAGLE-2 Fig. 6 shows only as a plot.
+- EAGLE-3: multi-layer feature fusion plus a training-time test. For this cost model it changes acceptance only; the
+  draft head cost is about one decoder layer, as in EAGLE-1/2.

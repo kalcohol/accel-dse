@@ -281,13 +281,28 @@ def tree_tokens(k: int, topk: int, n: int) -> int:
     return n if n else min(64, 1 + k * topk)
 
 
-def spec_tree_accept(a: float, k: int, topk: int, n: int) -> float:
-    """0.224 「假设」 per-depth acceptance of a draft tree: the accepted path at each depth has
-    w = min(topk, (n − 1) / k) candidate children, each accepted i.i.d. with probability a → 1 − (1 − a)^w."""
-    if topk <= 1 or k <= 0:
+TREE_ACCEPT_MODELS = ("indep", "chain")
+
+
+def spec_tree_accept(a: float, k: int, topk: int, n: int, model: str = "indep") -> float:
+    """Per-depth acceptance of a draft tree (serving.spec_tree_accept_model):
+    "indep" (0.224 「假设」, upper bound): the accepted path at each depth has w = min(topk, (n − 1) / k) candidate
+      children, each accepted i.i.d. with probability a → 1 − (1 − a)^w.  0.225 check vs the published matched
+      chain / tree pairs (core/spec_refs.py, EAGLE-1 Table 5): +49 … +63 % over the published tree τ — siblings are
+      neither independent nor equally likely (greedy verify accepts at most one, lower-ranked candidates match less).
+    "chain" (lower bound): the tree's top-1 path is the chain of the same depth (EAGLE / SGLang trees keep the top-1
+      child at every expanded node 「来源」 EAGLE choices.py), so τ_tree ≥ τ_chain → a.  Published: −17 … −19 %."""
+    if topk <= 1 or k <= 0 or model == "chain":
         return a
     w = min(float(topk), (tree_tokens(k, topk, n) - 1) / k)
     return 1.0 - (1.0 - a) ** max(1.0, w)
+
+
+def spec_tree_tau(a: float, k: int, topk: int, n: int, model: str = "indep") -> float:
+    """0.225: expected tokens per verify of a chain / tree.  A tree of n verified tokens is at most n − 1 deep, so its
+    accepted path is capped at min(k, n − 1) drafts (0.224 counted k depths even when n − 1 < k)."""
+    d = min(k, tree_tokens(k, topk, n) - 1) if topk > 1 else k
+    return spec_expected_tokens(d, spec_tree_accept(a, k, topk, n, model))
 
 
 @dataclass(frozen=True)

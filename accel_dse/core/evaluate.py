@@ -32,7 +32,7 @@ from . import fabric
 from . import overlap as _ovl
 from . import mapping as _mapping
 from .schedule import (StageTime, collective_seconds, collective_wire, fabric_collective, p2p_tier,
-                       spec_expected_tokens, spec_tree_accept, tree_tokens, wire_single)
+                       spec_tree_tau, tree_tokens, wire_single)
 
 
 @dataclass
@@ -79,6 +79,7 @@ class Result:
     host: dict | None = None       # 0.164 (opt-in): host / runtime step time {s, device_s, exposed_s, host_bound, …}
     step_cache: dict | None = None  # gen (0.167): TeaCache-style skipped steps
     prefix_kv: dict | None = None  # gen (0.116): text-prefix K/V reuse — extract / cached step times and FLOP, cache size
+    spec: dict | None = None       # 0.225: decode spec step {k, topk, n, accept_model, tau, tau_indep, tau_chain}
     draft: dict | None = None      # 0.223: independent draft model of a spec step {s, pass_s, bytes, acts (per step), …}
 
     @property
@@ -1581,12 +1582,15 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         if sv.phase == "prefill":
             spec_k = sv.spec_k          # prefill seeds the DSpark draft windows (no draft tokens)
     # 0.224 tree drafting (EAGLE-style): MTP draft modules or an independent draft model; DSpark drafts a block (no tree)
+    spec_info = None
     topk_ = sv.spec_topk if (spec_k and sv.phase == "decode") else 1
     if topk_ > 1 and m.draft == "dspark" and dm is None:
         warnings.append("spec_topk 已忽略：DSpark 草稿是块草稿，不是树")
         topk_ = 1
     if sv.spec_draft_tokens and topk_ <= 1 and spec_k:
         warnings.append(f"spec_draft_tokens 已忽略：线性链（spec_topk = 1）验证 1 + k = {1 + spec_k} 个 token")
+    if sv.spec_tree_accept_model != "indep" and topk_ <= 1 and spec_k:
+        warnings.append("spec_tree_accept_model 已忽略：线性链（spec_topk = 1）没有树")
     if topk_ > 1:
         nt = tree_tokens(spec_k, topk_, sv.spec_draft_tokens)
         cap_n = 1 + topk_ + (spec_k - 1) * topk_ * topk_
@@ -1838,8 +1842,21 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             dev = step
             step = dev + host["s"] if scn.host_overlap == "serial" else max(dev, host["s"])
             host.update(device_s=dev, exposed_s=step - dev, host_bound=host["s"] > dev)
-        e_tok = (spec_expected_tokens(spec_k, spec_tree_accept(sv.spec_accept, spec_k, topk_, sv.spec_draft_tokens))
+        e_tok = (spec_tree_tau(sv.spec_accept, spec_k, topk_, sv.spec_draft_tokens, sv.spec_tree_accept_model)
                  if spec_k else 1.0)
+        if spec_k:
+            spec_info = {"k": spec_k, "topk": topk_, "accept": sv.spec_accept, "accept_model": sv.spec_tree_accept_model,
+                         "n": tree_tokens(spec_k, topk_, sv.spec_draft_tokens) if topk_ > 1 else 1 + spec_k, "tau": e_tok}
+            if topk_ > 1:
+                for mm in ("indep", "chain"):
+                    spec_info["tau_" + mm] = spec_tree_tau(sv.spec_accept, spec_k, topk_, sv.spec_draft_tokens, mm)
+                from .spec_refs import tree_check
+                c = tree_check(sv.spec_tree_accept_model)
+                spec_info["check"] = {"err_min": c["err_min"], "err_max": c["err_max"], "src": c["rows"][0]["src"]}
+                warnings.append(
+                    f"树形接受率「假设」（{sv.spec_tree_accept_model}）：τ = {e_tok:.2f}，区间 [chain 下界 "
+                    f"{spec_info['tau_chain']:.2f}, indep 上界 {spec_info['tau_indep']:.2f}]；对照 EAGLE-1 已发表链/树配对，"
+                    f"该模型误差 {c['err_min'] * 100:+.0f} … {c['err_max'] * 100:+.0f} %（不拟合，仅报告）")
         tpot = step / e_tok
         thr = sv.batch * e_tok / step
         ttft = 0.0
@@ -1856,7 +1873,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         thr = sv.batch * sv.prompt / step
     return Result(scn, m, stages, tick, step, e_tok, tpot, ttft, thr, thr / lay.cards, fits,
                   stages[heavy].time.bound, heavy, warnings, mb, moe_skew=skew, vision=vis, host=host,
-                  draft=draft)
+                  draft=draft, spec=spec_info)
 
 
 

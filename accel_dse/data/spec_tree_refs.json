@@ -1,0 +1,19 @@
+{
+  "note": "0.225: published tree-drafting acceptance (average acceptance length τ, tokens per target forward incl. the bonus token). Matched pairs (same draft model, chain vs tree) check the tree-acceptance 「假设」 model; unmatched points are reference only. Never fitted.",
+  "matched": [
+    {"src": "EAGLE-1 arXiv 2401.15077v3 Table 5 (MT-bench, T=0)", "target": "Vicuna 7B", "chain_tau": 3.20, "tree_tau": 3.94},
+    {"src": "EAGLE-1 arXiv 2401.15077v3 Table 5 (MT-bench, T=0)", "target": "Vicuna 13B", "chain_tau": 3.23, "tree_tau": 3.98},
+    {"src": "EAGLE-1 arXiv 2401.15077v3 Table 5 (MT-bench, T=0)", "target": "Vicuna 33B", "chain_tau": 2.97, "tree_tau": 3.68},
+    {"src": "EAGLE-1 arXiv 2401.15077v3 Table 5 (MT-bench, T=0)", "target": "LLaMA2-Chat 7B", "chain_tau": 3.00, "tree_tau": 3.62},
+    {"src": "EAGLE-1 arXiv 2401.15077v3 Table 5 (MT-bench, T=0)", "target": "LLaMA2-Chat 13B", "chain_tau": 3.18, "tree_tau": 3.90},
+    {"src": "EAGLE-1 arXiv 2401.15077v3 Table 5 (MT-bench, T=0)", "target": "LLaMA2-Chat 70B", "chain_tau": 3.12, "tree_tau": 3.81}
+  ],
+  "matched_tree": {"src": "EAGLE repo eagle/model/choices.py mc_sim_7b_63 (all EAGLE-1 experiments; chain ablation: same 5 draft passes)",
+                   "steps": 5, "topk": 4, "draft_tokens": 26, "nodes_per_depth": [4, 8, 8, 3, 2], "contains_top1_chain": true},
+  "unmatched": [
+    {"src": "EAGLE-2 arXiv 2406.16858 Table 1 (MT-bench, T=0; dynamic tree, depth 6, top-10 expansion, 60 draft tokens)", "target": "Vicuna 7B", "steps": 6, "topk": 10, "draft_tokens": 60, "tau": 4.98},
+    {"src": "EAGLE-2 arXiv 2406.16858 Table 2 (MT-bench, T=0; depth 6, 60 draft tokens)", "target": "LLaMA3-Instruct 8B", "steps": 6, "topk": 10, "draft_tokens": 60, "tau": 4.53},
+    {"src": "SGLang PR #4247 (EAGLE-3, Llama-3.1-8B-Instruct, MT-bench, bsz 1)", "target": "Llama-3.1-8B-Instruct", "steps": 5, "topk": 8, "draft_tokens": 64, "tau": 4.68},
+    {"src": "SGLang PR #4247 (EAGLE-3, Llama-3.1-8B-Instruct, MT-bench, bsz 1)", "target": "Llama-3.1-8B-Instruct", "steps": 8, "topk": 8, "draft_tokens": 64, "tau": 5.39}
+  ]
+}

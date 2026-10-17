@@ -89,6 +89,35 @@ with sync_playwright() as pw:
         time.sleep(0.5)
     assert kpis(p) != k1, "spec_rollback did not change KPIs"
     print("DRAFT/ROLLBACK ok")
+    # 0.225 tree fields (topk / draft tokens / acceptance model / track interval) + chain-vs-tree what-if row
+    p.select_option("#s-spec_rollback", "snapshot"); time.sleep(3)
+    k2 = kpis(p)
+    p.fill("#s-spec_topk", "4")
+    for _ in range(120):
+        if kpis(p) != k2: break
+        time.sleep(0.5)
+    assert kpis(p) != k2, "spec_topk did not change KPIs"
+    assert "EAGLE-1" in p.inner_text("#s-tree-warn"), p.inner_text("#s-tree-warn")
+    p.fill("#s-spec_draft_tokens", "99"); time.sleep(2)
+    assert "bad" in (p.get_attribute("#s-spec_draft_tokens", "class") or "")
+    p.fill("#s-spec_draft_tokens", "1"); time.sleep(2)
+    assert "bad" in (p.get_attribute("#s-spec_draft_tokens", "class") or "")
+    p.fill("#s-spec_draft_tokens", "16"); time.sleep(3)
+    assert "bad" not in (p.get_attribute("#s-spec_draft_tokens", "class") or "")
+    k3 = kpis(p)
+    p.select_option("#s-spec_tree_accept_model", "chain")
+    for _ in range(120):
+        if kpis(p) != k3: break
+        time.sleep(0.5)
+    assert kpis(p) != k3, "spec_tree_accept_model did not change KPIs"
+    p.fill("#s-mamba_track_interval", "256"); time.sleep(3)
+    assert "bad" not in (p.get_attribute("#s-mamba_track_interval", "class") or "")
+    for _ in range(400):
+        if p.is_visible("#spec-tree-cmp"): break
+        time.sleep(0.5)
+    t = p.inner_text("#spec-tree-cmp")
+    assert "B1" in t and "B32" in t and "crossover" in t, t[:400]
+    print("TREE ok", t[:200].replace("\n", " "))
     p.screenshot(path="/workspace/smoke/ui166.png", full_page=False)
     b.close()
 print("ERRORS:", errs)

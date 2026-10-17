@@ -6,6 +6,30 @@
 
 
 
+## [0.225.0]
+
+### Added
+- Published tree-drafting acceptance references (`accel_dse/data/spec_tree_refs.json`): six EAGLE-1 matched
+  chain/tree pairs (arXiv 2401.15077v3 Table 5, MT-bench, T=0, tree `mc_sim_7b_63`: depth 5, topk 4, 26 tokens)
+  and four unmatched points (EAGLE-2 Tables 1–2; SGLang PR #4247 EAGLE-3). `core/spec_refs.tree_check` reports the
+  error of the acceptance model against them. Nothing is fitted.
+- `serving.spec_tree_accept_model`: `indep` (default; the 0.224 「假设」 i.i.d.-sibling model, now labelled as the
+  upper bound, +49…+63 % vs published tree τ) | `chain` (lower bound: the tree's top-1 path is the same-depth chain,
+  −17…−19 %). CLI `--spec-tree-accept-model`.
+- `Result.spec` / eval JSON `spec`: τ, the [chain, indep] band and the reference check; a warning on every tree
+  evaluation states the band and the error.
+- What-if row `spec_tree_tree` / `spec_tree_chain` (chain ↔ topk-4 tree of the same depth) with `spec_tree_compare`:
+  chain, tree-indep and tree-chain TPOT / τ / memory at batch 1, 8 and 32, plus the batch intervals where the winner
+  flips under each bound.
+- UI: tree topk, tree tokens, tree acceptance model and state-tracking interval fields, with range checks and a client
+  warning line. The what-if table shows the chain-vs-tree comparison (`#spec-tree-cmp`).
+
+### Fixed
+- Tree τ is capped at depth min(k, N − 1). 0.224 counted k depths even when the tree had fewer than k + 1 tokens.
+
+### Unchanged
+- Default fingerprints. `indep` remains the default, so no KPI changes unless N − 1 < k.
+
 ## [0.224.0]
 - ReplaySSM, sourced from SGLang main (`gdn_replayssm_spec_decode.py`, `kda_replayssm_spec_decode.py`, gdn_backend,
   memory_pool):
