@@ -5517,3 +5517,31 @@ A fused chunked-prefill iteration at running batch k carries the k decodes plus 
 1. **Per-class b.** M/G^[b]/1 has a single batch cap. Under FCFS token packing, per-class caps depend on the sequence of queued types, which is variable-capacity bin packing with no embedded chain on the queue length. The DES covers it.
 2. **Slot-bound b = 1 sharing** (k ≥ B − 1) is still modelled, because the itl_max k = B bin relies on that iteration.
 3. **Phase chain for fused k ≥ 1 bins and length-bin mixtures** (cost).
+
+## §184 Wait-correlated tail sharing in the TTFT law (0.237)
+
+§182–§183 combined the prefill wait W and the prompt's own latency L as independent variables: P(T > t) = Σ w_i P(W > t − L_i). With tail sharing, two parts of L depend on W itself.
+
+**1. Topping.** The prompt's last iteration is topped up with the next head iff an arrival came behind it before that iteration started, i.e. during W + S′ (FCFS: later arrivals wait behind it).
+- Given W = w: π(w) = 1 − e^{−λ(w+S′)}.
+- E_W[π(W)] = 1 − E[e^{−λW}]·e^{−λS′} = the §182 π, by P-K: E[e^{−λW}] = (1−ρ)/E[e^{−λS}].
+- The marginal (and so the mean) is unchanged.
+
+**2. Follower status.** A prompt starts inside its predecessor's last iteration (phase φ > 0, §183) iff that iteration had not started at its arrival.
+- That means a prompt was waiting ahead of it (n_q ≥ 1), or the one in service was still before its last iteration.
+- In share accounting this is W > θ, the predecessor's last-piece share. It is exact for deterministic shares; for M/D/1, P(W > D) = P(N ≥ 2).
+- θ is the topped classes' last-piece share, weighted by m·π.
+
+**The law.**
+- P(T > t) = Σ_i w_i Σ_{r∈i} ∫ dF_W(w) g_r(w) [e^{−λ(w+S′_r)} 1{w + a_r > t} + (1 − e^{−λ(w+S′_r)}) 1{w + c_r > t}].
+  - g_r(w) = 1{w ≤ θ}·m_r/L_i for leader rows, and 1{w > θ}·m_r/F_i for follower rows.
+  - A type without follower rows keeps g = m_r/L_i.
+  - a_r and c_r are the latency alone and topped; L_i and F_i are type i's leader and follower masses.
+- W is the exact P-K law (`_pk_surv`) on a 1500-point grid. Suffix sums of P(W ≥ x) and E[e^{−λW}; W ≥ x] make each survival evaluation O(rows).
+
+**Evidence.**
+- DES top-1 % TTFT is 88 % followers (sglang 2500, load 0.85).
+- A Lindley Monte Carlo of the topped model matches the closed form (p99 62.5 vs 62.7); the independent convolution gives 57.0.
+- sglang 2500 / 3000 p99: −0.149 / −0.118 → +0.007 / −0.001 (n4000 × 10).
+
+**Scope.** The SGLang prefill-only path. Fused b = 1 environments (vLLM, sglang_mixed: mg1_mix_sum_quantile over batch bins) keep the independent form (deferred; vllm 3000 p99 −0.051, sglang_mixed 6000 p99 −0.056).

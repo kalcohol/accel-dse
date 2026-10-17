@@ -6,6 +6,60 @@
 
 
 
+## [0.237.0]
+
+### Fixed — SGLang short-prompt TTFT p99 optimism (mechanism: wait correlation)
+- **Diagnosis.**
+  - The DES p99 is stable: n4000 × 10 seeds gives sglang 2500 at 69.87 ± 1.22 ms (standard error) and sglang 3000 at 79.66 ± 1.34, while p50/p90 agreed within ±0.01. The −0.15 / −0.12 errors were a real model gap.
+  - Slot blocking is ruled out (0 blocked boundaries). The follower share agrees (DES 0.0305 vs analytic 0.031).
+  - **Anatomy:** followers (prompts that start inside their predecessor's 4096-token iteration) are 3 % of requests but 88 % of the DES top 1 %. The follower median TTFT is 54.8 ms, about the leader p99.
+  - The analytic convolved the wait W with the latency atoms independently.
+- **Mechanism 1: topping depends on the prompt's own wait.** A prompt's last iteration is topped up iff someone arrived behind it before that iteration started, i.e. during its wait W and its first iterations S′ (FCFS).
+  - Given W = w, π(w) = 1 − e^{−λ(w+S′)}.
+  - Its mean over the M/G/1 wait law is exactly the 0.235 P-K LST π, E[e^{−λW}] = (1−ρ)/E[e^{−λS}]. The marginals and the TTFT mean are therefore unchanged; only the correlation is added.
+  - Implemented as `queueing.mg1_corr_sum_quantile`, on the P-K wait law grid with suffix sums.
+- **Mechanism 2: being a follower depends on the prompt's own wait.** A prompt starts inside its predecessor's last iteration iff that iteration had not started when it arrived. That holds when ≥ 1 prompt was waiting, or the one in service was still before its last iteration, i.e. W (share accounting) > θ, the predecessor's last-piece share.
+  - θ is the topped classes' last-piece share, weighted by how often each is topped.
+  - For deterministic shares this is exact. M/D/1 check: P(W > D) = P(N ≥ 2) = 0.028, vs DES follower share 0.0305.
+  - Given W = w, a prompt uses its φ = 0 rows for w ≤ θ and its φ > 0 rows (stationary phase mix) for w > θ.
+- **Scope:** the SGLang prefill-only path (`_coloc_prefill_first_base`, tail sharing active). Fused b = 1 environments (vLLM, sglang_mixed) are unchanged and deferred. Multiples of C are unchanged.
+- **Parity (analytic vs DES, TTFT p90 / p99):**
+
+  | Case (sglang) | 0.236 p90 / p99 | 0.237 p90 / p99 |
+  |---|---|---|
+  | 2500, load 0.85 (n4000 × 10) | +.005 / −.149 | +.011 / +.007 |
+  | 3000, load 0.85 (n4000 × 10) | +.001 / −.118 | +.009 / −.001 |
+  | 6000, load 0.85 (n4000 × 10) | +.007 / −.051 | +.008 / −.050 |
+  | 4096, load 0.85 (multiple, n4000 × 10) | unchanged | +.005 / +.008 |
+  | 2500, load 0.85 (n1500 × 3) | +.027 / −.166 | +.033 / −.013 |
+  | 3000, load 0.85 (n1500 × 3) | +.019 / −.127 | +.027 / −.010 |
+  | 6000, load 0.85 (n1500 × 3) | +.014 / −.050 | +.015 / −.050 |
+  | 6000, load 0.6 (n1500 × 3) | −.011 / −.009 | +.012 / −.027 |
+
+  p50 and TPOT are unchanged.
+- **Tests (test_core_237).**
+  - Reduction to the independent sum.
+  - A Lindley Monte Carlo of exactly this model: p99 62.5 vs closed form 62.7 vs the independent convolution 57.0.
+  - DES p99 parity, 6 seeds trimmed, within ±0.08.
+  - The mean is unchanged.
+  - A runtime guard: four phase-law cases (sglang_mixed 4096 at 48 GB, sglang 6000, vllm_v0 6000, vllm prompt CV 0.5) each under 60 s.
+
+### Findings
+- **vllm 900 at load 0.9, TTFT p99 is DES noise.** Per-seed p99 at n4000 × 10:
+  - eight seeds are 26.2–28.1 ms; the analytic gives 28.0, +0.01 vs the median 27.8;
+  - two seeds show metastable excursions: 46.8 and 605.1 ms.
+
+  The earlier −0.57 was the mean over 3 seeds, one of them an excursion. This is not a model gap.
+
+**Old → new (KPI A–G).** 48 of 49 rows are identical.
+- F sglang TTFT p99 goes 127.1 → 124.8 ms; goodput/card stays 2839, TTFT mean 63.47 and J/token 0.2834 are unchanged.
+- The SLO uses TTFT p90, so no ranking moves.
+
+### Deferred to 0.238
+- **Wait correlation for the fused b = 1 environments** (vLLM, sglang_mixed; mg1_mix_sum_quantile over the batch bins): vllm 3000 p99 −0.051, sglang_mixed 6000 p99 −0.056.
+- **sglang 6000 p99 at −0.050** (n4000 × 10; follower phases of multi-iteration prompts carry a smaller overshoot): within band.
+- **From 0.236:** per-class b, the phase chain at fused k ≥ 1 / length-bin mixtures, slot-bound b = 1 sharing, the itl_max lattice, and a full V4 grid re-run.
+
 ## [0.236.0]
 
 ### Changed (the 0.235 deferred packing mechanisms)

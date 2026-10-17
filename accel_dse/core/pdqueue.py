@@ -107,7 +107,7 @@ from dataclasses import replace
 from .energy import ACTIONS, EnergyTable, _BITS, _UNIT_PJ, action_counts, scaleup_bytes
 from .evaluate import Result, evaluate
 from .bulkq import batch_wall_law, bulk_busy, bulk_law, bulk_mean, bulk_own_k, law_quantile, merge_atoms
-from .queueing import mg1_mix_sum_quantile, dquantile, erlang_c, mdc_wait, mg1, mg1_sum_quantile
+from .queueing import mg1_mix_sum_quantile, dquantile, erlang_c, mdc_wait, mg1, mg1_sum_quantile, mg1_corr_sum_quantile
 from .scenario import Scenario
 
 QS = (0.5, 0.9, 0.99)
@@ -1080,7 +1080,7 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     # two-point service (alone w.p. 1 − π_i / shared w.p. π_i: server share and own latency, _tail_rows/_tail_pi)
     ws_x, taus_x, lats_x = pre["ws"], pre["taus"], pre["lats"]
     C_t = ctx.get("_tail_split")
-    tail_info = None
+    tail_info, corr_rows, corr_theta = None, None, math.inf
     if C_t and pre["b"] == 1:
         pool_t = cp.pool if hasattr(cp, "pool") else cp
         # a second whole prompt fits (2·new ≤ C): the bulk caps model that packing
@@ -1101,6 +1101,17 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
                 return {**res, "stable": False, "why": "prefill 在此负载下不稳定"}
             pre = {**pre, "wait": wq}
             tail_info = {"pi": [r_["pi"] for r_ in ph["per"]], "C": C_t, "follower": ph["follower"]}
+            # 0.237: the topped-up latency is correlated with the prompt's own wait (π(w) = 1 − e^{−λ(w + S′)})
+            # and so is being a follower: a prompt starts inside its predecessor's last iteration iff that iteration
+            # had not started at its arrival ⟺ its wait (share accounting) exceeds the predecessor's last-piece share
+            # θ (n_q ≥ 1 waiting, or the one in service still before its last iteration); θ = the topped rows'
+            # last-piece share, weighted by how often each is topped
+            scl = [pre["taus"][i_] / solo0[i_] if solo0[i_] > 0 else 1.0 for i_ in range(len(pts))]
+            corr_rows = [(m_, la_ * scl[i_], lc_ * scl[i_], sp_, i_, fol_)
+                         for m_, la_, lc_, sp_, i_, fol_, _, _ in ph["rows"]]
+            wt_ = sum(m_ * q_ for m_, *_, q_ in ph["rows"])
+            corr_theta = (sum(m_ * q_ * sl_ * scl[i_] for m_, _, _, _, i_, _, sl_, q_ in ph["rows"]) / wt_
+                          if wt_ > 0 else math.inf)
     rho = pre["wait"]["rho"]
     share = 1 - rho
     # 0.55: decode in the reduced clock (prefill time left out) with batch arrivals — each prefill busy period hands
@@ -1122,6 +1133,12 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     lats_w = list(zip(ws_x, lats_x))
     ttft = _ttft(pre["wait"], lats_w, conv=(pre["lam"], taus_x),
                  law=_bulk_ttft_law(pre) if pre["b"] > 1 else None)
+    if tail_info is not None and corr_rows:
+        # 0.237: wait-correlated topping (the mean is unchanged: the marginal π is the same)
+        for q in QS:
+            v = mg1_corr_sum_quantile(pre["lam"], list(zip(ws_x, taus_x)), corr_rows, q, corr_theta)
+            if v is not None:
+                ttft[f"p{q * 100:g}"] = v
     if ctx.get("resid_busy", _RESID_BUSY):
         # 0.111: an arrival meets an in-flight decode iteration only when the prefill server is idle (else it queues
         # and the next prefill starts at the boundary) and decode holds a request: p = (1 − ρ)·(1 − π₀) (PASTA,
@@ -1633,7 +1650,17 @@ def _phase_law(pool, k: int, pts, C: int, lam: float, eligible=None, grid: int =
             r[key_] /= m
         # P(its last iteration is topped up) for the type
         r["pi"] = sum(sp * pis.get((phi, i), 0.0) for phi, sp in stat.items())
-    return {"atoms": atoms, "per": per, "rho": rho, "phases": stat,
+    # 0.237: per (phase, type) class: mass, latency alone / topped up, S′ (∞ when never topped) — for the
+    # wait-correlated TTFT (queueing.mg1_corr_sum_quantile)
+    rows = []
+    for phi, sp in stat.items():
+        for i, (w, S, p) in enumerate(ty):
+            a = it(phi, i, False)
+            ok = el[i] and qz(a["used"]) != 0
+            b = it(phi, i, True) if ok else a
+            rows.append((sp * w * tot, a["lat"], b["lat"], a["pre"] if ok else math.inf, i, phi > 0,
+                         b["share"] - b["pre"] if ok else 0.0, pis.get((phi, i), 0.0)))
+    return {"rows": rows, "atoms": atoms, "per": per, "rho": rho, "phases": stat,
             "pi": sum(w * r["pi"] for (w, _, _), r in zip(ty, per)),
             "follower": 1.0 - stat.get(0, 0.0)}
 

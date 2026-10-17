@@ -251,6 +251,120 @@ def mg1_sum_quantile(lam: float, taus, weights, lats, q: float) -> float | None:
     return b
 
 
+def mg1_corr_sum_quantile(lam: float, svc, rows, q: float, theta: float = math.inf) -> float | None:
+    """0.237: q-quantile of W + L when the request's own latency depends on its own wait.  A prompt's last iteration
+    is topped up with the next prompt's head iff someone arrived behind it before that iteration starts — during its
+    wait W and its first iterations S′ (FCFS: everyone arriving after it waits behind it) — so given W = w the shared
+    latency has probability π(w) = 1 − e^{−λ(w + S′)} (Poisson arrivals).  Its mean over the M/G/1 wait law is the
+    0.235 P-K LST π, E[e^{−λW}] = (1 − ρ)/E[e^{−λS}], so the marginals are unchanged — only the correlation is added
+    (independent convolution, mg1_sum_quantile, puts the long shared latencies on short waits as often as on long).
+    Followers (a prompt that starts inside its predecessor's last iteration) are those whose wait exceeds the
+    predecessor's last-piece share ``theta``: given W = w a prompt of type i is a leader (its φ = 0 rows) for w ≤ θ
+    and a follower (its φ > 0 rows, in their stationary proportions) for w > θ; a type without follower rows keeps
+    its leader rows at every w.
+    ``svc`` = [(w, τ)] the server-share law (the wait), ``rows`` = [(m, a, c, S′, type, follower)] per class: mass,
+    latency alone, latency topped up, S′ (∞: never topped), prompt type, phase > 0.  None when unstable."""
+    pts = [(w, t) for w, t in svc if w > 0]
+    tot = sum(w for w, _ in pts)
+    pts = [(w / tot, t) for w, t in pts]
+    rho = lam * sum(w * t for w, t in pts)
+    if lam <= 0 or rho >= 1:
+        return None
+    rows = [r if len(r) >= 6 else (*r, 0, False) for r in rows]
+    mt = sum(r[0] for r in rows)
+    ty_m, lead_m, fol_m = {}, {}, {}
+    for m, a, c, sp, i, fo in rows:
+        ty_m[i] = ty_m.get(i, 0.0) + m
+        (fol_m if fo else lead_m)[i] = (fol_m if fo else lead_m).get(i, 0.0) + m
+    # per class: (weight within its W-region, a, c, S′, region) — region 0: all w, 1: w ≤ θ, 2: w > θ
+    rs = []
+    for m, a, c, sp, i, fo in rows:
+        if m <= 0:
+            continue
+        wi = ty_m[i] / mt
+        if not fol_m.get(i) or not math.isfinite(theta):
+            if fo:
+                continue
+            rs.append((wi * m / lead_m[i], a, c, sp, 0))
+        elif fo:
+            rs.append((wi * m / fol_m[i], a, c, sp, 2))
+        else:
+            rs.append((wi * m / lead_m[i], a, c, sp, 1))
+    if len({t for _, t in pts}) == 1:
+        pk = None
+    else:
+        pk = _pk_surv(lam, pts)
+        if pk is None:
+            return None
+    # discrete wait law: the atom 1 − ρ at 0 + grid masses out to P(W > x) < 1e-8
+    if pk is None:
+        tau = pts[0][1]
+
+        def sw(x: float) -> float:
+            return 1.0 - md1_cdf(lam, tau, x) if x >= 0 else 1.0
+        th = None
+        x_hi = tau * 4
+        while sw(x_hi) > 1e-8 and x_hi < tau * 400:
+            x_hi *= 1.5
+    else:
+        sw, x_end, th = pk
+        tail = sw(x_end)
+        x_hi = x_end + (math.log(tail / 1e-8) / th if tail > 1e-8 else 0.0)
+    n = 1500
+    h = x_hi / n
+    xs, mw = [0.0], [1.0 - rho]                  # the atom at 0, then cell midpoints
+    prev = rho
+    for k in range(1, n + 1):
+        cur = sw(k * h)
+        xs.append((k - 0.5) * h)
+        mw.append(max(0.0, prev - cur))
+        prev = cur
+    # suffix sums: S1[j] = P(W ≥ xs[j]) on the grid, SE[j] = E[e^{−λW}; W ≥ xs[j]]
+    S1, SE = [0.0] * (n + 2), [0.0] * (n + 2)
+    for j in range(n, -1, -1):
+        S1[j] = S1[j + 1] + mw[j]
+        SE[j] = SE[j + 1] + mw[j] * math.exp(-lam * xs[j])
+
+    def idx(y: float) -> int:                    # first grid point with x > y
+        if y < 0:
+            return 0
+        return min(n + 1, int(y / h + 0.5) + 1)
+
+    jt = idx(theta) if math.isfinite(theta) else n + 1     # grid points with x > θ start at jt
+
+    def part(arr, j, region):                # Σ over grid points ≥ j inside the class's W-region
+        if region == 1:
+            return arr[min(j, jt)] - arr[jt]
+        if region == 2:
+            return arr[max(j, jt)]
+        return arr[j]
+
+    def surv(t: float) -> float:
+        acc = 0.0
+        for m, a, c, sp, rg in rs:
+            ja = idx(t - a)
+            if not math.isfinite(sp):
+                acc += m * part(S1, ja, rg)
+                continue
+            e_sp = math.exp(-lam * sp)
+            jc = idx(t - c)
+            acc += m * (e_sp * part(SE, ja, rg) + part(S1, jc, rg) - e_sp * part(SE, jc, rg))
+        return acc
+    a0 = min(min(a, c) for _, a, c, _, _ in rs)
+    b0 = max(max(a, c) for _, a, c, _, _ in rs) + x_hi + 1e-9
+    if surv(a0) <= 1 - q:
+        return a0
+    for _ in range(80):
+        mid = 0.5 * (a0 + b0)
+        if surv(mid) > 1 - q:
+            a0 = mid
+        else:
+            b0 = mid
+        if b0 - a0 < 1e-9 * max(b0, 1e-12):
+            break
+    return b0
+
+
 def _cl_params(lam: float, pts) -> tuple[float, float, float] | None:
     """(ρ, θ, c) of the M/G/1 Cramér–Lundberg wait tail P(W > x) ≈ c·e^{−θx} for service law [(w, τ)]."""
     m1 = sum(w * t for w, t in pts)
