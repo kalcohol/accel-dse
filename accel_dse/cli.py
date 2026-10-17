@@ -704,6 +704,10 @@ def cmd_eval(a) -> dict:
             print("  power cap: " + (pc["error"] if pc.get("error") else
                   f"need {pc['P_needed_W']:.1f} W / TDP {pc['tdp_W']:g} W → throughput ×{pc['throughput_factor']:.3g}"
                   + (f", J/{e['unit']} {pc['J_per_unit_capped']:.4g}" if pc["capped"] else " (not capped)")))
+            for d in (pc.get("dvfs") or {}).values():      # 0.227: clock / voltage at the cap
+                if not d.get("error"):
+                    print(f"    {d['curve']} ({d['tag']}): f {d['f_ghz']:.3g} GHz (x{d['s']:.3f}), V x{d['v']:.3f}"
+                          f" -> throughput x{d['throughput_factor']:.3g}, {d['bound']}-bound")
     if d := out.get("summary", {}).get("decision"):
         print(f"decision: {d['labels']} labels, {d['latency_ms']:.2f} ms / decision, {d['decisions_per_s']:.4g} decisions/s "
               f"({d['decisions_per_s_card']:.4g} / card)"

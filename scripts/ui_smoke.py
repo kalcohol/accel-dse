@@ -124,6 +124,25 @@ with sync_playwright() as pw:
     t = p.inner_text("#spec-tree-cmp")
     assert "B1" in t and "B32" in t and "crossover" in t and "主值 chain" in t, t[:400]
     print("TREE ok", t[:200].replace("\n", " "))
+    # 0.227 power cap: clock / voltage line in the energy panel + per-lever cap binding in the what-if
+    p.fill("#s-spec_topk", "1"); p.fill("#s-spec_draft_tokens", "0"); p.fill("#s-mamba_track_interval", "0")
+    p.select_option("#model", "qwen3-8b"); time.sleep(3)
+    p.fill("#s-spec_k", "0"); time.sleep(2)
+    p.select_option("#e-preset", "tpuv4i_7nm"); time.sleep(2)
+    p.fill("#e-tdp_W", "8"); time.sleep(1)
+    p.check("#e-power_cap")
+    for _ in range(240):
+        if "仅降频" in p.inner_text("#energy-tbl"): break
+        time.sleep(0.5)
+    et = p.inner_text("#energy-tbl")
+    assert "仅降频" in et and "V–f" in et, et[-600:]
+    for _ in range(600):
+        if p.is_visible("#whatif-cap"): break
+        time.sleep(0.5)
+    wc = p.inner_text("#whatif-cap")
+    assert "功耗封顶 8" in wc and "封顶生效" in wc, wc[:300]
+    print("POWER CAP ok", wc[:160].replace("\n", " "))
+    p.uncheck("#e-power_cap"); time.sleep(2)
     p.screenshot(path="/workspace/smoke/ui166.png", full_page=False)
     b.close()
 print("ERRORS:", errs)

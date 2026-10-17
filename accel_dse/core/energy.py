@@ -427,6 +427,11 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                      "结论主要由空闲功耗假设决定，而非动态动作")
     if power_cap:
         out["power_cap"] = _power_cap(out, j, iw, table, r.scenario.layout.cards, u, a["window_s"])
+        if not out["power_cap"].get("error") and out["power_cap"].get("capped"):
+            # 0.227: the clock / voltage the cap implies (core/powercap.py) — dfs (headline, ≡ the duty-cycle throughput)
+            # and a measured V–f curve (voltage benefit, 「二手」)
+            from .powercap import CAP_CURVES, dvfs_cap
+            out["power_cap"]["dvfs"] = {c: dvfs_cap(r, table, table.tdp_W, c) for c in CAP_CURVES}
     return out
 
 
@@ -437,15 +442,18 @@ def _power_cap(out, j, iw, table, cards, u, win) -> dict:
     """0.189: TDP-capped sustained throughput (opt-in).  Needs tdp_W.  See EnergyTable.power_cap."""
     if table.tdp_W is None or win <= 0:
         return {"error": "power_cap 需要 tdp_W（每卡 TDP，产品决策，无默认值）"}
-    p_stat = iw or 0.0
-    e_dyn_card = sum(v for k, v in j.items() if k != "idle") * u / cards        # J per card per window
+    # 0.227 fix: SRAM leakage (0.212) and HBM standby / refresh (0.216) are static too — they were counted as
+    # dynamic energy that shrinks with the slowdown (under-slowed the capped point)
+    st_keys = ("idle", "sram_leak", "hbm_static")
+    p_stat = (iw or 0.0) + (out.get("sram_leak_W_card") or 0.0) + (out.get("hbm_static_W_card") or 0.0)
+    e_dyn_card = sum(v for k, v in j.items() if k not in st_keys) * u / cards        # J per card per window
     p_dyn = e_dyn_card / win
     need = p_dyn + p_stat
     if p_stat >= table.tdp_W:
         return {"P_needed_W": need, "tdp_W": table.tdp_W, "feasible": False,
                 "error": "静态功耗 ≥ TDP：任何吞吐都超功耗"}
     slow = max(1.0, p_dyn / (table.tdp_W - p_stat))
-    J = out["J_per_unit"] + (j.get("idle", 0.0) * (slow - 1.0))
+    J = out["J_per_unit"] + (sum(j.get(k, 0.0) for k in st_keys) * (slow - 1.0))
     return {"P_needed_W": need, "P_dyn_W": p_dyn, "P_static_W": p_stat, "tdp_W": table.tdp_W, "feasible": True,
             "capped": slow > 1.0, "slowdown": slow, "throughput_factor": 1.0 / slow, "J_per_unit_capped": J,
             "basis": "每动作能耗不随频率变（不计 DVFS 的 V² 收益，「假设」，偏保守）；超 TDP 时窗口拉长到 "

@@ -5209,3 +5209,64 @@ Deferred to 0.225:
 **Deferred.**
 - A per-depth acceptance matrix (Sequoia Algorithm 4 for EAGLE-like drafts, whose acceptance decays with depth). No published matrix values were found.
 - EAGLE-2 dynamic-tree confidence calibration.
+
+## §174 Power-capped operation: clock / voltage scaling and per-lever cap binding (0.227)
+
+**Why.** A TDP decides whether a bandwidth or capacity lever pays off. A lever that lifts throughput by moving more DRAM bytes also lifts W/card, and under a cap that gain can vanish.
+- 0.189 throttled by duty cycling and said nothing about clock or voltage.
+- The what-if never said whether a cap binds.
+
+**Mechanism.** P(f) = E_core(V)/t(f) + E_other/t(f) + P_static, with W ∝ C·V(f)²·f (arXiv 2607.00819 eq. 1, 「来源」).
+- **Time.** The step is re-evaluated at chip.freq_ghz·s.
+  - Compute, vector, SFU and SRAM-port time scale as 1/s.
+  - DRAM bandwidth (from mem_id), links and host do not.
+  - So a DRAM-bound decode must drop its clock a long way before time stretches.
+- **Energy.**
+  - Core-rail actions (mac, vec, sram, slc) scale with v².
+  - DRAM array, PHY, D2D, link, network and host bits are held.
+  - Static power (idle, SRAM leakage, HBM standby/refresh) is held. This is conservative, because leakage also falls with V.
+- **Search.** Bisection on s ∈ [0.15, 1].
+  - 0.15 is the settable minimum clock of A100 (0.21/1.41 GHz) and H100 (0.345/1.98 GHz), 2607.00819 Table 2, 「来源」.
+  - If P(0.15) still exceeds the cap, the 0.189 duty cycle removes the rest.
+  - If static power ≥ cap, the point is infeasible.
+
+**Curves.**
+- `dfs` (V fixed, headline).
+  - Energy per action is unchanged, so the time that fits the cap is E_dyn/(cap − P_static). That is exactly the 0.189 duty-cycle throughput.
+  - DFS on its own therefore buys no throughput. All of the DVFS gain comes from voltage.
+- `rx5700xt_n7` 「二手」.
+  - Source: AMD RX 5700 XT (TSMC N7) default OD_VDDC_CURVE from an amdgpu `pp_od_clk_voltage` dump (sibradzic/amdgpu-clocks issue #39): 800 MHz 704 mV, 1409 MHz 819 mV, 2019 MHz 1185 mV.
+  - As V/V_max against f/f_max: (0.396, 0.594), (0.698, 0.691), (1, 1); flat below the first point.
+  - Cross-check, not used: H100 board power turns superlinear at f_t ≈ 1005 MHz ≈ 0.51 f_max (2607.00819, FIRESTARTER). The curve is nearly flat over 0.40–0.70 and steep above, which is consistent with a voltage floor around mid-clock.
+  - No second modern V–f table was found; H100 and Jetson expose none. It stays a secondary estimate next to the dfs headline.
+
+**Results** (1P, tpuv4i_7nm preset + idle 20 W; cap as a fraction of nominal P):
+
+| Case | Nominal | Cap 0.9 P: dfs / V–f | Cap 0.7 P: dfs / V–f | Cap 0.5 P: dfs / V–f |
+|---|---|---|---|---|
+| qwen3-8b decode b64 | DRAM-bound, 135.5 W | ×0.883 (s 0.36) / ×0.976 (s 0.40) | ×0.648 / ×0.717 | ×0.413 / ×0.457 |
+| qwen3-8b prefill b8 | MAC-bound, 258 W | ×0.892 / ×0.962 | ×0.675 / ×0.874 | ×0.458 / ×0.765 |
+| qwen3-32b decode b128 | DRAM-bound, 153 W | ×0.885 / **×1.000** (s 0.75, still DRAM-bound) | ×0.655 / ×0.788 | ×0.425 / ×0.511 |
+
+- Compute-bound prefill gains most from voltage (×0.765 vs ×0.458 at half power).
+- Memory-bound decode keeps full throughput under a mild cap if the core voltage can drop.
+- Under dfs, the clock must fall to about 0.3–0.4 before power drops 10 %, because DRAM energy per byte does not scale.
+
+**What-if under a cap** (`power_cap_W`; lever energy basis is the tpuv4i_7nm preset at each lever's cost batch; base under the same cap at the same batch):
+- qwen3-32b b64, cap 150 W:
+  - Only `dram_bw_x2` binds (241 W): gain ×1.22 under dfs and ×1.35 under V–f. It still works.
+- qwen3-8b b64, cap 120 W:
+  - `dram_bw_x2` binds at 228 W: gain ×0.974 under dfs and ×1.07 under V–f. **It stops working under the cap.**
+  - `hbm_12h24g` and `hbm_16h24g` drop to ×1.04 and ×1.03, and `two_die` to ×0.94.
+  - `works_capped` = kv_fp8 and ctx_half only.
+- Conclusion shift: without a cap, six of seven levers "work". Under a 120 W cap, the bandwidth and capacity levers lose their value, and only the levers that cut bytes (fp8 KV, shorter context) still pay.
+
+**Fix.** The 0.189 cap now treats SRAM leakage and HBM standby/refresh as static (static was idle only). This is a small effect at 1P (3.09 W): throughput ×0.700 → ×0.692 at 0.7 P.
+
+**Deferred.**
+- A second independent V–f source.
+- Leakage scaling with V.
+- HBM / PHY DVFS: the memory clock is held.
+- A per-chip V–f curve field.
+- (b) prefill/decode interference.
+- (c) residuals: no new sources found.

@@ -6,6 +6,28 @@
 
 
 
+## [0.227.0]
+
+### Added
+- **Power-capped operation by clock and voltage scaling** (`core/powercap.py`, opt-in). There is still no default cap; the TDP is the user's decision (AGENTS §73).
+  - Each candidate point is the step re-evaluated at `chip.freq_ghz × s`. Only clocked work stretches (MAC, vector, SFU, SRAM port). DRAM, links and host keep their own clocks.
+  - Core-rail action energies (mac, vec, sram, slc) scale with V(f)². DRAM, PHY, D2D, link, network and static power are held. Holding static power is conservative.
+  - Bisection finds the highest clock that fits the cap. The lowest clock is 0.15 of nominal (A100 and H100 settable ranges, arXiv 2607.00819 Table 2, 「来源」). Below that, the 0.189 duty cycling applies on top.
+  - Curves:
+    - `dfs` (headline): clock only at nominal voltage. Its throughput equals the 0.189 duty-cycle model by construction; it adds the clock and the bound at the capped point.
+    - `rx5700xt_n7` 「二手」: AMD RX 5700 XT default V–f curve (800 MHz 704 mV, 1409 MHz 819 mV, 2019 MHz 1185 mV; TSMC N7).
+  - The energy report's `power_cap.dvfs` carries both curves. The CLI prints a line per curve. The UI energy panel shows clock, voltage, throughput and bound.
+- **Per-lever cap binding in the balance what-if.** `/api/sensitivity` accepts `power_cap_W`; the UI sends the energy TDP when "按 TDP 封顶吞吐" is on.
+  - The base row and every lever row carry `power_cap`: binds, W/card, dfs and V–f throughput factors, and the gain over the base under the same cap at the same batch.
+  - New lists `works_capped` and `binds`.
+
+### Fixed
+- The 0.189 power cap counted SRAM leakage (0.212) and HBM standby/refresh (0.216) as dynamic energy that shrinks with the slowdown. They are now static.
+  - Example: qwen3-8b decode b64, 1P, tpuv4i_7nm preset without idle, cap = 0.7 × P. Throughput ×0.700 → ×0.692 (3.09 W static).
+
+### Unchanged
+- Default fingerprints are identical, because the cap is opt-in.
+
 ## [0.226.0]
 
 ### Changed (default, re-baselined)

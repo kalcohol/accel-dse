@@ -178,7 +178,8 @@ def test_ui_keys_exist_in_api():
         assert k in r["balance"], k
     for k in set(re.findall(r"\bw\.(\w+)", js[js.index("function renderWalls"):js.index("function renderStages")])):
         assert k in r["walls"], k
-    s = api.api_sensitivity({"chip_preset": "1P", "scenario": {"model": RWKV}})["sensitivity"]["balance_whatif"]
+    # 0.227: with a power cap the what-if adds power_cap_W / works_capped / binds / cap_basis (UI reads them only then)
+    s = api.api_sensitivity({"chip_preset": "1P", "scenario": {"model": RWKV}, "power_cap_W": 100.0})["sensitivity"]["balance_whatif"]
     for k in set(re.findall(r"\bw\.(\w+)", js[js.index("function renderBalanceWhatif"):js.index("function renderSensitivity")])):
         assert k in s, k
     assert 'id="c-state_sram_mib"' in (Path(api.__file__).parent / "web" / "index.html").read_text()

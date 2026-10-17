@@ -648,6 +648,9 @@ function markEvalStale(on) {
 async function runSensitivity(r) {
   const b = body();
   if (S.best) b.scenario.serving = { ...b.scenario.serving, batch: r.summary.batch };
+  // 0.227: the what-if checks the cap only when the user turned the cap on and gave a TDP (no default value)
+  const capW = S.powerCap ? ((S.energy || {}).tdp_W ?? (S.budget || {}).tdp_W_card) : null;
+  if (capW) b.power_cap_W = capW;
   $('sens-note').textContent = '敏感度计算中…';
   try {
     const x = await req('sens', '/api/sensitivity', b);
@@ -896,7 +899,10 @@ function renderEnergy(r) {
     e.static_warning || `静态能耗占 ${(e.static_share * 100).toFixed(1)}%`)));
   const pc = e.power_cap;
   if (pc) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small' }, pc.error ? '功耗封顶：' + pc.error
-    : `功耗封顶：需 ${num(pc.P_needed_W)} W / TDP ${num(pc.tdp_W)} W → ` + (pc.capped ? `吞吐 ×${num(pc.throughput_factor)}，J/单位 ${sci(pc.J_per_unit_capped)}` : '未超 TDP'))));
+    : `功耗封顶：需 ${num(pc.P_needed_W)} W / TDP ${num(pc.tdp_W)} W → ` + (pc.capped ? `吞吐 ×${num(pc.throughput_factor)}，J/单位 ${sci(pc.J_per_unit_capped)}` : '未超 TDP')
+      // 0.227: the clock / voltage the cap implies
+      + (pc.dvfs ? '；' + Object.values(pc.dvfs).map((d) => d.error ? d.error
+        : `${d.curve === 'dfs' ? '仅降频' : 'V–f（' + d.tag + '）'} f ${num(d.f_ghz)} GHz（×${num(d.s)}）V ×${num(d.v)} → 吞吐 ×${num(d.throughput_factor)}，${d.bound}`).join('；') : ''))));
   if (e.host_note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, e.host_note)));
   if (e.note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, e.note)));   // 0.131
   put($('energy-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
@@ -1058,6 +1064,16 @@ const SENS_ZH = { exec_overlap: '重叠上下界（stage / serial）', pipe: '�
 const LIMIT_ZH = { kv_capacity: '内存容量 capacity', tpot_slo: 'TPOT SLO', ttft_slo: 'TTFT SLO' };
 const ASYM_ZH = { kv: 'KV（随 ctx 增长）', state: '循环状态（每序列固定）', 'kv+state': 'KV + 状态（混合）', weights: '权重（MoE 专家）', act: '激活' };
 // 0.208: machine-balance what-if (one lever each), from the same /api/sensitivity response — no extra request
+// 0.227: does the user's power cap bind at this lever's operating point — dfs (clock only, headline) / V–f curve (二手)
+function capCell(pc, base) {
+  if (!pc) return '';
+  if (pc.error) return h('div', { class: 'small' }, '封顶：' + pc.error);
+  const g = (v) => v == null ? '—' : num(v) + '×';
+  return h('div', { class: 'small cap-cell' + (pc.binds ? ' warn' : ''), style: pc.binds ? 'color:var(--danger)' : '' },
+    !pc.feasible ? `封顶 ${num(pc.cap_W)} W：静态功耗已超`
+      : pc.binds ? `封顶 ${num(pc.cap_W)} W 生效：吞吐 dfs ×${num(pc.tf_dfs)} · V–f ×${num(pc.tf_vf)}` + (base ? '' : `；对基线 dfs ${g(pc.gain_dfs)} · V–f ${g(pc.gain_vf)}`)
+      : `封顶 ${num(pc.cap_W)} W 未生效` + (base ? '' : `；对基线 dfs ${g(pc.gain_dfs)}`));
+}
 function renderBalanceWhatif(w) {
   let box = $('bal-whatif');
   if (!box) { box = h('div', { id: 'bal-whatif' }); $('sens-tbl').after(box); }
@@ -1079,7 +1095,8 @@ function renderBalanceWhatif(w) {
       + (x.base_J_per_tok_at_cost_batch != null ? `（基线 ${num(x.base_J_per_tok_at_cost_batch * 1e3)}${x.base_cost_batch != null && x.base_cost_batch !== x.cost_batch ? ' @B' + x.base_cost_batch : ''}）` : '')),
     h('td', {}, (x.W_card != null ? num(x.W_card) + ' W' + (x.cost_batch != null ? ` @B${x.cost_batch}` : '') : '—')
       + (x.d_leak_W ? `（泄漏 ${x.d_leak_W > 0 ? '+' : ''}${num(x.d_leak_W)} W）` : (base && x.leak_W ? `（泄漏 ${num(x.leak_W)} W）` : ''))
-      + (x.d_hbm_W ? `（HBM ${x.d_hbm_W > 0 ? '+' : ''}${num(x.d_hbm_W)} W）` : (base && x.hbm_W ? `（HBM ${num(x.hbm_W)} W）` : ''))),
+      + (x.d_hbm_W ? `（HBM ${x.d_hbm_W > 0 ? '+' : ''}${num(x.d_hbm_W)} W）` : (base && x.hbm_W ? `（HBM ${num(x.hbm_W)} W）` : '')),
+      capCell(x.power_cap, base)),
     h('td', { class: 'l small' }, base ? '当前' : (x.error ? x.error : (x.works ? '有效 · works' : '无效 · no effect')),
       // 0.223: spec rollback lever — both modes at batch 1 / 32
       x.spec_rollback_compare ? h('div', { class: 'small', id: 'spec-roll-cmp' }, x.spec_rollback_compare.map((c) => c.error
@@ -1092,7 +1109,8 @@ function renderBalanceWhatif(w) {
       h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', 'Δ面积 area', 'J/token @计价 batch（临界 / 上限 / 配置）', '功耗 W/卡（含 SRAM 泄漏 + HBM 待机/刷新）', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
       h('tbody', {}, tr('当前 base', w.base, true), ...w.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 9, class: 'l small' }, x.error)) : tr(x.label, x, false)))),
     w.cost_basis ? h('div', { class: 'small' }, w.cost_basis.note) : '',
-    h('div', { class: 'small' }, w.works.length ? `有效杠杆 · levers that work：${w.works.join('、')}（阈值 ${pct(w.gain)}）` : '没有单一杠杆有效 · no single lever works'));
+    h('div', { class: 'small' }, w.works.length ? `有效杠杆 · levers that work：${w.works.join('、')}（阈值 ${pct(w.gain)}）` : '没有单一杠杆有效 · no single lever works'),
+    w.power_cap_W ? h('div', { class: 'small', id: 'whatif-cap' }, `功耗封顶 ${num(w.power_cap_W)} W/卡下仍有效 · works under the cap（dfs 主值）：${w.works_capped.length ? w.works_capped.join('、') : '无'}；封顶生效：${w.binds.length ? w.binds.join('、') : '无'}。${w.cap_basis}`) : '');
 }
 function treeCmp(t) {
   // 0.226: headline = the scenario's acceptance model (default chain); the band [chain, indep] and rank alongside

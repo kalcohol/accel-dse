@@ -143,7 +143,7 @@ def _finite(x: Any, where: str = "body") -> None:
 _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
 _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
-               "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": set(),
+               "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": {"power_cap_W"},
                "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
                "insight_sizing": {"models", "resources", "joint", "unpriced", "energy_tie"}}
 
@@ -458,7 +458,7 @@ SENS_CASES = (("pipe", "pipe（现实估计）", lambda s: None if s.exec_overla
 SENS_SWEEP_SKIP = {"exec_overlap": "exec_overlap", "mem_eff": "mem_eff", "chip.vector_lanes": "vector_lanes"}
 
 
-def sensitivity_report(scn: Scenario, r: Result) -> dict:
+def sensitivity_report(scn: Scenario, r: Result, power_cap_W: float | None = None) -> dict:
     """0.96: the same scenario under the three 「假设」 constants that drive NPU design conclusions (MODEL §41):
     no compute / memory / link overlap, DRAM efficiency 0.5 / 0.9, a quarter of the vector lanes."""
     eff = scn.mem_eff if scn.mem_eff is not None else evaluate_mem_eff(scn)
@@ -492,7 +492,7 @@ def sensitivity_report(scn: Scenario, r: Result) -> dict:
             "domain": r.model.domain,
             # 0.97: what was re-evaluated (PD pools / budgets are not)
             "scope": "合并部署（PD 池未复核）" if scn.pd.enabled and r.model.kv_cache else "本场景",
-            "balance_whatif": balance_whatif(scn, r)}
+            "balance_whatif": balance_whatif(scn, r, power_cap_W)}
 
 
 def _eval_cases(cases, row_fn) -> list:
@@ -530,17 +530,45 @@ def _tok_s_card(q) -> float | None:
     return q.scenario.serving.batch / q.tpot / q.scenario.layout.cards if q.tpot else None
 
 
+def _whatif_table() -> EnergyTable:
+    from .core.energy import ENERGY_PRESETS
+    return EnergyTable.from_dict({k: v for k, (v, _, _) in ENERGY_PRESETS[WHATIF_ENERGY]["fields"].items()
+                                  if k in EnergyTable.__dataclass_fields__ and k not in ("idle_W", "idle_frac_tdp", "tdp_W")})
+
+
+def lever_power_cap(q, c: dict, cap_W: float) -> dict:
+    """0.227: does a cap bind at this operating point (W/card of the what-if energy basis), and what is left of the
+    throughput: dfs (clock only — analytic, = (cap − P_static) / P_dynamic, the headline) and the rx5700xt_n7 V–f
+    curve (re-evaluated, only when the cap binds) — core/powercap.py."""
+    from .core.powercap import dvfs_cap
+    W = c.get("W_card")
+    if W is None:
+        return {"error": "无能耗"}
+    ps = (c.get("leak_W") or 0.0) + (c.get("hbm_W") or 0.0)
+    tok = _tok_s_card(q)
+    if ps >= cap_W:
+        return {"cap_W": cap_W, "W_card": W, "P_static_W": ps, "binds": True, "feasible": False,
+                "tf_dfs": 0.0, "tok_s_card_dfs": 0.0, "tf_vf": 0.0, "tok_s_card_vf": 0.0}
+    binds = W > cap_W
+    tf = min(1.0, (cap_W - ps) / (W - ps)) if W > ps else 1.0
+    out = {"cap_W": cap_W, "W_card": W, "P_static_W": ps, "binds": binds, "feasible": True,
+           "tf_dfs": tf, "tok_s_card_dfs": tok * tf, "tf_vf": 1.0, "tok_s_card_vf": tok, "s_vf": 1.0}
+    if binds:
+        d = dvfs_cap(q, _whatif_table(), cap_W, "rx5700xt_n7")
+        if not d.get("error"):
+            out.update(tf_vf=d["throughput_factor"], tok_s_card_vf=tok * d["throughput_factor"], s_vf=d["s"],
+                       bound_vf=d["bound"])
+    return out
+
+
 def _lever_cost(q) -> dict:
     """Die area (budget.full_area: SRAM incl. the state buffer + DRAM PHY pins) and energy per output token / average
     card power (energy_report, dynamic only: no idle_W).  SRAM leakage is not modelled (static power is idle_W, a
     product figure) — reported in cost_basis.note."""
     from .core.budget import DENSITY_PRESETS, Budget, full_area
-    from .core.energy import ENERGY_PRESETS
     b = Budget(**{k: v for k, (v, _, _) in DENSITY_PRESETS[WHATIF_DENSITY]["fields"].items() if k in Budget.__dataclass_fields__})
     a = full_area(q.scenario, b)
-    t = EnergyTable.from_dict({k: v for k, (v, _, _) in ENERGY_PRESETS[WHATIF_ENERGY]["fields"].items()
-                               if k in EnergyTable.__dataclass_fields__ and k not in ("idle_W", "idle_frac_tdp", "tdp_W")})
-    e = energy_report(q, t)
+    e = energy_report(q, _whatif_table())
     from .core.budget import shoreline_check
     return {"area_mm2": a.get("mm2"), "J_per_tok": e.get("J_per_unit"), "W_card": e.get("avg_W_per_card"),
             "leak_W": e.get("sram_leak_W_card"), "hbm_W": e.get("hbm_static_W_card"), "shoreline": shoreline_check(q.scenario, a.get("mm2")),
@@ -636,7 +664,7 @@ def spec_tree_compare(scn: Scenario) -> dict:
     return out
 
 
-def balance_whatif(scn: Scenario, r: Result) -> dict | None:
+def balance_whatif(scn: Scenario, r: Result, power_cap_W: float | None = None) -> dict | None:
     """0.208: the machine-balance levers, one variable each, on the sensitivity scan's case loop: fp8 KV, bf16
     recurrent state, half the context, 2× SRAM, 2× DRAM bandwidth (twice the channels / stacks at the SAME capacity,
     Scenario.mem_cap_GB).  Each row: critical batch, batch limit (KV capacity / TPOT SLO), saturation intensity and
@@ -742,6 +770,8 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
     base.update(c0)
     # 0.218: the base row is priced at the configured batch — stated, like every lever row's cost_batch
     base.update(cost_batch=scn.serving.batch, cost_basis="configured", tok_s_card_at_cost_batch=_tok_s_card(r))
+    if power_cap_W:     # 0.227: does the user's cap bind at the base point
+        base["power_cap"] = lever_power_cap(r, c0, power_cap_W)
 
     def cost(x, q):
         # 0.211: compare at the lever's balance point — its critical batch when reachable, else the configured
@@ -775,6 +805,14 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
         x["d_leak_W"] = None if c["leak_W"] is None and c0["leak_W"] is None else (c["leak_W"] or 0.0) - (c0["leak_W"] or 0.0)
         # 0.216: HBM standby + refresh (static, per stack × die), vs the base
         x["d_hbm_W"] = None if c["hbm_W"] is None and c0["hbm_W"] is None else (c["hbm_W"] or 0.0) - (c0["hbm_W"] or 0.0)
+        if power_cap_W:     # 0.227: the lever under the cap — vs the base under the same cap at the same batch
+            pc, pb = lever_power_cap(qb, c, power_cap_W), lever_power_cap(rb, cb, power_cap_W)
+            if not pc.get("error") and not pb.get("error"):
+                pc["base_tok_s_card_dfs"], pc["base_tok_s_card_vf"] = pb["tok_s_card_dfs"], pb["tok_s_card_vf"]
+                pc["base_binds"] = pb["binds"]
+                pc["gain_dfs"] = pc["tok_s_card_dfs"] / pb["tok_s_card_dfs"] if pb["tok_s_card_dfs"] else None
+                pc["gain_vf"] = pc["tok_s_card_vf"] / pb["tok_s_card_vf"] if pb["tok_s_card_vf"] else None
+            x["power_cap"] = pc
 
     def row(q):
         x = pick(q, q.balance())
@@ -793,7 +831,15 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
         for x in rows:
             if x["key"] == tree_key and not x.get("error"):
                 x["spec_tree_compare"] = spec_tree_compare(scn)
-    return {"base": base, "rows": rows, "gain": WHATIF_GAIN, "works": [x["key"] for x in rows if x.get("works")],
+    capd = {}
+    if power_cap_W:
+        capd = {"power_cap_W": power_cap_W,
+                "works_capped": [x["key"] for x in rows if (x.get("power_cap") or {}).get("gain_dfs") is not None
+                                 and x["power_cap"]["gain_dfs"] > 1 + WHATIF_GAIN],
+                "binds": [x["key"] for x in rows if (x.get("power_cap") or {}).get("binds")],
+                "cap_basis": ("封顶判定用 what-if 能耗基准（tpuv4i_7nm 预设）在各杠杆计价 batch 的 W/卡；主值 dfs = 仅降频"
+                              "（电压不变，≡ 0.189 占空比吞吐，偏保守）；vf = RX 5700 XT（N7）V–f 曲线「二手」；静态功耗不随电压降（偏保守）")}
+    return {"base": base, "rows": rows, "gain": WHATIF_GAIN, "works": [x["key"] for x in rows if x.get("works")], **capd,
             "cost_basis": {"density_preset": WHATIF_DENSITY, "energy_preset": WHATIF_ENERGY, "reticle_mm2": RETICLE_MM2,
                            "note": ("面积 = SRAM（含专用状态 SRAM，同宏密度）+ DRAM PHY 引脚（budget.full_area，n5_derived 密度 「推导」）；"
                                     "能耗 = 动态 J/token + SRAM 泄漏 + HBM 待机/刷新（tpuv4i_7nm 预设，不含 idle_W），在各杠杆自己的临界 batch 与基线同 batch 比较；"
@@ -927,7 +973,7 @@ def api_eval(body: dict) -> dict:
         raise ApiError("power_cap must be true or false")
     out["energy"] = energy_report(r, table, power_cap=pc)      # 0.47.1: action counts always; J only for user-supplied entries
     if body.get("sensitivity", True):
-        out["sensitivity"] = sensitivity_report(scn, r)
+        out["sensitivity"] = sensitivity_report(scn, r, table.tdp_W if pc and table.tdp_W else None)   # 0.227
     if bud is not None:
         out["budget"] = budget_report(r, bud, out["energy"])
     if scn.fabric.enabled:  # 0.59: per-collective algorithm / topology breakdown
@@ -1206,11 +1252,14 @@ def api_sensitivity(body: dict) -> dict:
     panel afterwards (DiT points cost ≈ 5× the plain eval)."""
     _check_keys(body, "sensitivity")
     scn = scenario_from_body(body)
+    cap = body.get("power_cap_W")      # 0.227: user's per-card power cap (no default — the TDP is a product decision)
+    if cap is not None and (isinstance(cap, bool) or not isinstance(cap, (int, float)) or not 0 < cap < 1e5):
+        raise ApiError("power_cap_W must be a number in (0, 100000) W")
     try:
         r = evaluate(scn)
     except ValueError as e:
         raise ApiError(str(e)) from None
-    return {"sensitivity": sensitivity_report(scn, r), "hash": scn.hash()}
+    return {"sensitivity": sensitivity_report(scn, r, float(cap) if cap is not None else None), "hash": scn.hash()}
 
 
 def _insight_models(body: dict) -> list:
