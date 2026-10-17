@@ -17,7 +17,7 @@ import random
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 
-from .pdqueue import B_CAPS, _Pool, _chunk_plan, _fused_step, chunk_at
+from .pdqueue import B_CAPS, _Pool, _chunk_fused, _chunk_plan, _fused_step, chunk_at
 
 # --------------------------------------------------------------------------- helpers
 
@@ -691,10 +691,10 @@ class ColocChunked(_Replica):
         stall = self._preempt()
         new = max(1, self.cur.S - self.cur.p)
         take = min(C, self.cur_left)
-        _, _, rr = _chunk_plan(self.cur.S, self.cur.p, C)
-        pre1 = self._p1(self.cur.S, self.cur.p)
         dec = self.costs.pool.run("decode", max(1, len(self.running)))
-        step = _fused_step(dec, pre1, take / new, rr)
+        # 0.233: the chunk [q, q + take) evaluated as itself, fused with the running decodes (pdqueue._chunk_fused)
+        q0 = self.cur.S - self.cur_left
+        step = _chunk_fused(self.costs.pool, max(1, len(self.running)), self.cur.S, self.cur.p, q0, q0 + take)
         e = dec.tokens_per_step
         self.cur_left -= take
         fin = self.cur if self.cur_left <= 0 else None

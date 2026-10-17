@@ -6,6 +6,46 @@
 
 
 
+## [0.233.0]
+
+### Changed (fused chunked-prefill iteration evaluated per chunk; re-baselined)
+- **What changed.** `pdqueue._chunk_fused` now evaluates each fused chunk iteration (vllm / vllm_v0 / sglang_mixed / legacy_512 / fixed) as the engine runs it:
+  - the chunk [q, e) is a prefill of e tokens with the first q cached (`_chunk_res`), carrying its own activation footprint and spill and the earlier tokens' KV re-read;
+  - it is fused with the k running decodes (`_fused_step(dec, chunk, 1, 0)`), memoised per (k, S, p, q, e).
+  - Up to 0.232 it was an f = C/new share of the whole prompt plus an averaged re-read term, which carried the whole prompt's activation spill into every chunk.
+  - Used by the analytic mean step (Σ chunks per prompt; the longest chunk iteration sets the worst gap), the DES (`ColocChunked`, chunk [S − left, S − left + take)) and energy (`_chunk_counts`: the chunk evaluations' counts, each chunk's weight DRAM shared with the decode iteration; the separate re-read term is gone because it is inside each chunk's kv_read).
+  - A bilinear token-grid interpolation of chunk boundaries was tried and dropped: it was 4–6 % off at GEMM tile boundaries. Chunks are evaluated exactly.
+- **External-validation proxy.** The opt-in continuous-batching proxy (`extval._cb_at`) evaluates prompts longer than the chunk budget per chunk in the same way. The default external validation does not use it and is unchanged (stamp only).
+  - The 7 TRT-LLM 1.2.0 rows with 32768-token prompts > 8192 change in prediction / measured: gpt-oss-120b 0.853 → 0.805, gpt-oss-20b 1.254 → 1.196, the others −0.001 … −0.005.
+- **Invariants (test_core_233).**
+  - A prompt that fits one chunk costs exactly its plain prefill, and the ≤ 0.232 formula coincides with the new one there.
+  - Without activation spill, the summed chunk time and DRAM are ≥ the one-shot prefill. With spill (8192 and 16384 tokens on 1P), every chunk spills less, and summed DRAM can be below one-shot.
+  - DES parity in the 2048-budget case D is inside the V4 bands. A fuzz (seed 233) over the fused profiles checks J/token × tok/s = W.
+
+**Old → new, coloc_chunked** (0.232 cases, qwen3-8b 1P TP 2, 2P + 6D, load 0.6). Cells are SLO goodput/card · TTFT mean / p99 ms · TPOT p99 ms · J/token:
+
+| Case / profile | 0.232 | 0.233 |
+|---|---|---|
+| A, B (one chunk per prompt), every profile | — | unchanged |
+| C vllm = sglang_mixed (16382 + 2-token tail) | 633.2 · 190.4 / 373.2 · 2.776 · 1.235 | 632.7 · 190.7 / 373.8 · 2.778 · 1.235 |
+| C legacy_512 | 479.2 · 243.9 / 519 · 2.852 · 1.238 | 486.5 · 242.9 / 516.4 · 2.842 · 1.226 |
+| D vllm (2043) | 3711 · 43.1 / 85.79 · 2.291 · 0.2031 | 3707 · 43.14 / 85.92 · 2.292 · 0.2031 |
+| D sglang_mixed (4091) | 3702 · 42.5 / 84.14 · 2.313 · 0.2025 | 3700 · 42.55 / 84.29 · 2.314 · 0.2025 |
+| E vllm (2046) | 606.6 · 194.4 / 384.1 · 2.725 · 1.241 | 615.7 · 193.7 / 382.1 · 2.717 · 1.229 |
+| E sglang_mixed (4094) | 624.3 · 192.6 / 379.2 · 2.759 · 1.237 | 636.9 · 191.9 / 377.4 · 2.752 · 1.225 |
+| E legacy_512 | 479 · 243.9 / 519 · 2.852 · 1.238 | 486.5 · 242.9 / 516.4 · 2.842 · 1.226 |
+
+The sglang profile (non-fused, already per chunk) and prefill-first are unchanged.
+
+- **Conclusion shifts.**
+  - **E SLO goodput:** prefill-first > sglang > sglang_mixed > vllm becomes prefill-first 656.3 > sglang_mixed 636.9 > sglang 633.3 > vllm 615.7. sglang and sglang_mixed swap; prefill-first stays first and vllm stays last.
+  - **E energy:** sglang (1.228) is no longer the lowest. New order: sglang_mixed 1.225 < legacy_512 1.226 < sglang 1.228 < vllm 1.229 < prefill-first 1.236. Every chunked profile now avoids the 16384-token activation spill, so all are below prefill-first.
+  - **D and A–C:** rankings unchanged. PD vs colocated unchanged (PD best only in B).
+
+### Deferred to 0.234
+- **Multi-prompt packing within one budget.** A bulk-service chunk server (M/G^[q]/1 with q(k) = ⌊C(k)/new⌋ plus the carried partial chunk), the per-k quasi-static mixture, a DES filler, and SGLang partial-prompt packing. Design is in NOTES_0233.
+- **Full V4 grid re-run.**
+
 ## [0.232.0]
 
 ### Added (SGLang chunked-prefill profiles for the colocated chunked mode)

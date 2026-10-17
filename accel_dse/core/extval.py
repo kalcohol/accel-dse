@@ -810,11 +810,20 @@ def _cb_at(r: dict, b: int, eff: str, C: int = CB_CHUNK):
     # iteration; ≤ 0.180 packed one prompt per iteration, capping the running batch at osl for isl ≪ C (MODEL §128)
     q = max(1, C // isl) if PACK_PROMPTS.get(eff, PACK_DEFAULT) else 1
     pre1 = evaluate(scenario(r, eff, phase="prefill", batch=q, prompt=isl, out_len=osl), _spec(r["model"], True))
+    # 0.233: a prompt longer than C runs as n chunks, each evaluated as itself (a prefill of e tokens with the earlier
+    # q cached: its own activations / spill and the prefix-KV re-read) — was an f-share of the whole prompt, which
+    # carried the full prompt's activation spill (pdqueue §180).  n = 1 is the plain prefill (unchanged).
+    chunks = [evaluate(scenario(r, eff, phase="prefill", batch=1, prompt=e, prefix_cached=q0, out_len=osl),
+                       _spec(r["model"], True)) for q0, e in ((q0, min(isl, q0 + C)) for q0 in range(0, isl, C))] \
+        if n > 1 else None
 
     def at(k):
         dec = _eval(r, eff, _spec(r["model"], True), phase="decode", batch=k, ctx=isl + osl // 2, out_len=osl)
         full = _eval(r, eff, _spec(r["model"], True), phase="decode", batch=k, ctx=isl + osl, out_len=osl)
-        t1 = ((n - 1) * _fused(dec, pre1, f, rr) + _fused(dec, pre1, lf, rr)) / n
+        if chunks:
+            t1 = sum(_fused(dec, c, 1.0, 0.0) for c in chunks) / n
+        else:
+            t1 = ((n - 1) * _fused(dec, pre1, f, rr) + _fused(dec, pre1, lf, rr)) / n
         return dec, t1, full.fits and pre1.fits
     x = n * b / (osl * q)
     if x <= 1:

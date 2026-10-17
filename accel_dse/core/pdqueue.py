@@ -1265,6 +1265,31 @@ def chunk_at(spec: dict, k: float) -> int:
     return spec["C"]
 
 
+def _chunk_res(pool, S: int, p: int, q: int, e: int):
+    """0.233: the chunk [q, e) of an (S, p) prompt as the engine runs it — a prefill of e tokens with q cached (its
+    own activation footprint / spill, the earlier tokens' KV re-read).  The whole prompt (q = p, e = S) is the plain
+    prefill."""
+    return pool.run("prefill", 1, e, q)
+
+
+def _chunk_fused(pool, k: int, S: int, p: int, q: float, e: float) -> float:
+    """0.233: one fused iteration — the k running decodes + the prompt chunk [q, e) evaluated as itself
+    (_chunk_res: own activations / spill, the earlier tokens' KV re-read), not an f-share of the whole prompt.
+    Exact per chunk (a bilinear token-grid interpolation was tried: ±4–6 % off at tile boundaries); memoised."""
+    qi, ei = int(round(q)), int(round(e))
+    ei = max(qi + 1, ei)
+    key = ("fz", k, S, p, qi, ei)
+    m = pool.memo.get(key)
+    if m is None:
+        c = _chunk_res(pool, S, p, qi, ei)
+        m = pool.memo[key] = _fused_step(pool.run("decode", k), c, 1.0, 0.0) if k > 0 else c.ttft
+    return m
+
+
+def _chunk_bounds(S: int, p: int, C: int) -> list[tuple[int, int]]:
+    return [(q, min(S, q + C)) for q in range(p, S, max(1, C))]
+
+
 def _chunk_plan(S: int, p: int, C: int) -> tuple[int, float, float]:
     """(chunks, f = share of the (uncached) prefill per chunk, KV re-read per chunk / the prefill's KV write)."""
     new = S - p
@@ -1306,12 +1331,13 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     def mean_step(k: int):
         if k not in memo:
             r = cp.run("decode", k)
-            plans, ns, lasts, _ = plans_at(k)
+            plans, ns, lasts, C = plans_at(k)
             nu = lam_c * _wsum(ws, ns)                  # chunk iterations / s
-            t1 = [_fused_step(r, p1, f, rr) for p1, (_, f, rr) in zip(pre1, plans)]
-            # 0.55: per-prompt chunk sum — n−1 full chunks + the partial last one (as the engine runs it)
-            tsum = [(m - 1) * t + _fused_step(r, p1, lf, rr) for p1, m, t, lf, rr in
-                    zip(pre1, ns, t1, lasts, [pl[2] for pl in plans])]
+            # 0.233: every chunk evaluated as itself (own activations / spill, the earlier tokens' KV re-read) and
+            # fused with the k decodes; t1 = the longest chunk iteration (the last, most prefix)
+            its = [[_chunk_fused(cp, k, S, p, q, e) for q, e in _chunk_bounds(S, p, C)] for _, S, p in pts]
+            t1 = [max(v) for v in its]
+            tsum = [sum(v) for v in its]
             t1m = _wsum(ws, tsum) / _wsum(ws, ns)
             den = 1 - nu * (t1m - r.step)
             tbar = r.step / den if den > 0 else math.inf
@@ -1426,7 +1452,8 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
             "decode": {"running_batch": dec["k"], "occupancy": dec["occupancy"], "slots": B,
                        "iter_ms_no_chunk": T0 * 1e3, "slot_wait_ms": _ms(slot), "excess_share": f,
                        "batch_pair": a_thin},
-            "chunk_tokens": C_s, "_dec_r": mixr, "_pre1": pre1, "_plans": plans_s, "_dec": dec}
+            "chunk_tokens": C_s, "_dec_r": mixr, "_pre1": pre1, "_plans": plans_s, "_dec": dec,
+            "_chunks": [[_chunk_res(cp, S, p, q, e) for q, e in _chunk_bounds(S, p, C_s)] for _, S, p in pts]}
 
 
 def _kv_slots(ctx: dict, B: int) -> tuple[int, dict | None]:
@@ -2312,8 +2339,8 @@ def _mix(pres, pts, dec: Result, out: float, extra: dict, shared_weights: bool =
             d[k] = d.get(k, 0.0) + w_ * v
     c = {k: d[k] * out for k in d}
     for r, (w, S, _) in zip(pres, pts):
-        p = _per_unit(r)
-        if shared_weights:      # chunked prefill piggybacks on the decode iteration's weight read
+        p = dict(r) if isinstance(r, dict) else _per_unit(r)      # 0.233: a dict = counts per prompt token already
+        if shared_weights and not isinstance(r, dict):      # chunked prefill piggybacks on the decode iteration's weight read
             wt = sum(st.dram["weights"] for st in r.stages)
             tot = sum(st.dram["total"] for st in r.stages)
             p["dram"] *= (1 - wt / tot) if tot > 0 else 1.0
@@ -2323,6 +2350,24 @@ def _mix(pres, pts, dec: Result, out: float, extra: dict, shared_weights: bool =
     for k, v in extra.items():
         c[k] = c.get(k, 0.0) + v / out
     return c
+
+
+def _chunk_counts(chunks, S: int) -> dict:
+    """0.233: counts per prompt token of a prompt run as ``chunks`` (Results) fused into decode iterations — each
+    chunk's own counts, its weights' DRAM share removed (read once per iteration for the decodes)."""
+    tot: dict = {}
+    for c in chunks:
+        a = action_counts(c)
+        wt = sum(st.dram["weights"] for st in c.stages)
+        dt = sum(st.dram["total"] for st in c.stages)
+        for k in ACTIONS:
+            if k == "idle":
+                continue
+            v = a["counts"][k]
+            if k == "dram":
+                v *= (1 - wt / dt) if dt > 0 else 1.0
+            tot[k] = tot.get(k, 0.0) + v
+    return {k: v / S for k, v in tot.items()}
 
 
 def _restore_extra(x: dict, extra: dict) -> dict:
@@ -2434,9 +2479,10 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
         en["coloc_chunked"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["mix"], o, _restore_extra(y, {})),
                                       cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),))
     elif y and y["stable"]:
-        reread = _wsum(ws, [n * rr * ctx["kv_new"][(S, p)] for (n, _, rr), (_, S, p) in zip(y["_plans"], pts)])
-        en["coloc_chunked"] = _energy(_mix(y["_pre1"], pts, y["_dec_r"], o, _restore_extra(y, {"dram": reread}),
-                                           shared_weights=True),
+        # 0.233: Σ the chunk evaluations' counts (each with its own activations and prefix-KV re-read); a chunk's
+        # weight read is shared with the decode iteration it rides on
+        pres = [_chunk_counts(ch, S) for ch, (_, S, _) in zip(y["_chunks"], pts)]
+        en["coloc_chunked"] = _energy(_mix(pres, pts, y["_dec_r"], o, _restore_extra(y, {})),
                                       cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),))
     out["modes"] = {k: _public(v) for k, v in modes.items()}
     out["energy"] = en

@@ -5395,3 +5395,27 @@ SGLang without mixed chunk (`enable_mixed_chunk = False`, the default) runs a pr
 **Approximation (「近似」).** A prompt's tail chunk is not packed with the next prompt.
 
 **Known gap (→ 0.233).** The fused path's chunk iteration scales the full prompt's non-weight DRAM by f. For long prompts that spill activations this overstates chunk cost relative to the per-chunk evaluation used here.
+
+## §180 Fused chunk iterations evaluated per chunk (0.233)
+
+A fused chunked-prefill iteration at running batch k carries the k decodes plus the prompt tokens [q, e).
+
+**Before (≤ 0.232).** T = fuse(dec_k, f·prefill(S, p)) with f = C/new, plus a re-read of the earlier chunks' KV averaged over the prompt. The whole prompt's non-weight DRAM was scaled by f, and that included its activation spill. A long prompt that spills activations at full length therefore charged a share of that spill to every chunk, even though a C-token chunk fits on chip.
+
+**Now.** T = fuse(dec_k, prefill(e, cached q)) (`pdqueue._chunk_fused`). The chunk is a prefill in its own right:
+- its GEMMs and attention cover C tokens against q + C keys, and its activation footprint is that of C tokens;
+- its kv_read is the prefix KV;
+- its weights are read in the same iteration as the decodes (stage-level fusion, as before).
+
+**Where it is used.**
+- Prompt service: Σ_j T(dec_k, chunk_j).
+- Worst gap: the longest chunk iteration (the last, with the most prefix).
+- Energy: Σ the chunk evaluations' counts, each with its weight DRAM removed (shared with the decode iteration).
+- DES and analytic use the same function, memoised per (k, S, p, q, e).
+
+**Invariants.**
+- C ≥ new gives one chunk equal to the plain prefill, the same as the ≤ 0.232 formula (f = 1, re-read 0).
+- Without spill, the summed chunk cost is ≥ the one-shot cost (weight and prefix re-reads).
+- With spill, chunking can lower DRAM traffic and energy.
+
+**Considered and dropped.** Interpolating chunk boundaries on a 256-token grid was 4–6 % off at GEMM tile boundaries.
