@@ -52,7 +52,7 @@ def test_decision_critical_batch():
 def test_whatif_levers_single_variable():
     w = api.api_sensitivity({"chip_preset": "1P"})["sensitivity"]["balance_whatif"]
     keys = [x["key"] for x in w["rows"]]
-    assert keys == ["kv_fp8", "ctx_half", "sram_x2", "dram_bw_x2"]
+    assert keys == ["kv_fp8", "ctx_half", "sram_x2", "dram_bw_x2", "two_die"]      # 0.214: + two-die package
     by = {x["key"]: x for x in w["rows"]}
     assert by["kv_fp8"]["ai_asymptote"] > 1.9 * w["base"]["ai_asymptote"] and by["kv_fp8"]["works"]
     assert not by["sram_x2"]["works"]

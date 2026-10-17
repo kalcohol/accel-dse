@@ -6,6 +6,29 @@
 
 
 
+## [0.214.0]
+- **What-if lever "two-die package" (`two_die`, B200 approach)** on the existing multi-card + D2D model, with no new model. It has the same totals as DRAM ×2:
+  - Each die has half the engines, SRAM and state SRAM.
+  - Each die keeps the base memory (half of the 2× stacks), at half the capacity.
+  - TP doubles across the dies, which sets the cross-die traffic: the existing TP collectives on the D2D tier.
+  - D2D uses the scenario's grade and unit count: default UCIe-A x64 48 GT/s × 4, 0.25 pJ/bit. NV-HBI (B200, 10 TB/s) stays out of the selector as vendor-specific.
+  - Costs come from the existing models: D2D PHY area per die (`phy_area`, UCIe x64 module 0.41 mm²), D2D energy (`pJ_bit_d2d`) and collective latency.
+- **Shoreline:** a die in a multi-die package gives one edge to D2D, so the maximum is 3 sides; the typical budget stays 2 long sides.
+- **What-if row fields:** `dies`, `d2d_phy_mm2`, `d2d_J_per_tok`, `coll_lat_ms`. The UI shows them as a per-die line under Δ area.
+- **1P results** (n5_derived area including uncore; tpuv4i_7nm energy):
+
+  | Model | Option | Area per die | Shoreline | TPOT at B = 1 | Critical batch (limit) | J/token at that batch |
+  |---|---|---|---|---|---|---|
+  | RWKV-7 7.2B | 1 die, 4 stacks | 571 mm² | ok (44 / 48 mm) | 4.13 ms | unreachable (state-bound) | — |
+  | RWKV-7 7.2B | 1 die, 8 stacks | 654 mm² | tight (88 / 51 mm; 102 mm on 4 sides) | 2.07 ms | 758 (2048) | 5.63 mJ |
+  | RWKV-7 7.2B | 2 dies × 4 stacks | 333 mm² | tight (44 / 36.5 mm; 54.8 mm on 3 sides) | 2.13 ms | 716 (2048) | 5.73 mJ |
+  | qwen3-8b | 1 die, 4 stacks | 571 mm² | ok | 4.69 ms | unreachable (KV-bound) | — |
+  | qwen3-8b | 1 die, 8 stacks | 654 mm² | tight | 2.35 ms | unreachable (limit 141) | — |
+  | qwen3-8b | 2 dies × 4 stacks | 333 mm² | tight | 2.38 ms | unreachable (limit 139) | — |
+
+  - The D2D cost is small: PHY 1.6 mm² per die, energy 0.002 mJ/token (< 0.1 %), collective latency 0.03 ms per step (TPOT +1.6–3 %).
+  - Shoreline is per die. Splitting the same area raises the total edge only by √2: 2 × 36.5 = 73 mm on the long sides, still short of the 88 mm the 8 stacks need. A two-die package at this area therefore still uses the third side. It reaches two sides only with larger dies; B200's dies are reticle-class.
+
 ## [0.213.0]
 - **Uncore area in the die proxy.** Default change, justified by mechanism: before this the proxy had no area for control, NoC, routing or host IO, so die and shoreline results were lower bounds.
   - New `Budget` fields:

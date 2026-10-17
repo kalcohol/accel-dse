@@ -248,14 +248,17 @@ def shoreline_check(scn, die_mm2: float | None) -> dict | None:
         return None
     side = die_mm2 ** 0.5
     need = spec.n_units * HBM_STACK_EDGE_MM
-    typ, mx = HBM_SIDES_TYPICAL * side, HBM_SIDES_MAX * side
+    # 0.214: a die in a multi-die package gives one edge to the D2D link (B200: the inner edge to NV-HBI)
+    d2d_edges = 1 if (getattr(scn, "d2d_enabled", False) and getattr(scn, "package_cards", 1) > 1) else 0
+    sides_max = HBM_SIDES_MAX - d2d_edges
+    typ, mx = min(HBM_SIDES_TYPICAL, sides_max) * side, sides_max * side
     status = "ok" if need <= typ else ("tight" if need <= mx else "over")
     out = {"stacks": spec.n_units, "need_mm": need, "edge_typical_mm": typ, "edge_max_mm": mx, "die_mm2": die_mm2,
            "status": status, "fit_typical": int(typ // HBM_STACK_EDGE_MM), "fit_max": int(mx // HBM_STACK_EDGE_MM),
-           "known_max_stacks": KNOWN_MAX_STACKS}
+           "known_max_stacks": KNOWN_MAX_STACKS, "d2d_edges": d2d_edges, "sides_max": sides_max}
     if status != "ok":
         out["warning"] = (f"HBM 岸线：{spec.n_units} 堆栈需 {need:.0f} mm 晶粒边缘，方形晶粒 {die_mm2:.0f} mm² 两长边仅 "
-                          f"{typ:.0f} mm（四边 {mx:.0f} mm）" + ("；四边也放不下 — 需多晶粒封装（如 B200 2 晶粒 8 堆栈）"
+                          f"{typ:.0f} mm（{'四' if sides_max == 4 else '三'}边 {mx:.0f} mm）" + ("；四边也放不下 — 需多晶粒封装（如 B200 2 晶粒 8 堆栈）"
                                                               if status == "over" else "；需占用第三、四边")
                           + f" · HBM shoreline: {spec.n_units} stacks need {need:.0f} mm of die edge")
     return out

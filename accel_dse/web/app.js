@@ -1029,6 +1029,8 @@ function renderBalanceWhatif(w) {
     h('td', { class: x.over_reticle ? 'warn' : '' }, base ? (x.area_mm2 != null ? num(x.area_mm2) + ' mm²' : '—')
       : (x.d_area_mm2 != null ? (x.d_area_mm2 >= 0 ? '+' : '') + num(x.d_area_mm2) + ' mm²' + (x.over_reticle ? ' ⚠ 超光罩' : '') : '—'),
       // 0.212: HBM shoreline (stacks × 11 mm vs the square die's two long sides / four sides)
+      x.dies > 1 ? h('div', { class: 'small' }, `每晶粒 per die × ${x.dies}；D2D PHY ${num(x.d2d_phy_mm2 || 0)} mm²/晶粒`
+        + (x.d2d_J_per_tok != null ? ` · D2D ${num(x.d2d_J_per_tok * 1e3)} mJ/tok` : '') + (x.coll_lat_ms ? ` · 集合延迟 ${num(x.coll_lat_ms)} ms/步` : '')) : '',   // 0.214
       x.shoreline ? h('div', { class: 'small' + (x.shoreline.status !== 'ok' ? ' warn' : ''), title: x.shoreline.warning || '' },
         `岸线 ${x.shoreline.stacks} 堆栈 ${num(x.shoreline.need_mm)} / ${num(x.shoreline.edge_typical_mm)} mm（两边）`
         + (x.shoreline.status === 'tight' ? ' ⚠ 需三、四边' : x.shoreline.status === 'over' ? ' ⚠ 超出四边 · 需多晶粒' : '')) : ''),

@@ -534,7 +534,11 @@ def _lever_cost(q) -> dict:
     e = energy_report(q, t)
     from .core.budget import shoreline_check
     return {"area_mm2": a.get("mm2"), "J_per_tok": e.get("J_per_unit"), "W_card": e.get("avg_W_per_card"),
-            "leak_W": e.get("sram_leak_W_card"), "shoreline": shoreline_check(q.scenario, a.get("mm2"))}
+            "leak_W": e.get("sram_leak_W_card"), "shoreline": shoreline_check(q.scenario, a.get("mm2")),
+            # 0.214: the D2D share (two-die lever): PHY area per die, energy per token, exposed collective latency
+            "d2d_phy_mm2": a["terms"].get("d2d_phy"), "d2d_J_per_tok": (e.get("J_by_action") or {}).get("d2d"),
+            "dies": q.scenario.layout.cards if q.scenario.d2d_enabled else 1,
+            "coll_lat_ms": q.walls()["exposed_ms"].get("collective_lat") if q.walls() else None}
 
 
 def balance_whatif(scn: Scenario, r: Result) -> dict | None:
@@ -575,6 +579,19 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
         from .core.hardware import System
         cap = scn.mem_cap_GB or System(ch, scn.mem_id, scn.mem_eff).dram_bytes / 1e9
         cases.append(("dram_bw_x2", f"DRAM 带宽 ×2（{scn.mem_id} → {mx}，容量不变）", rp(scn, mem_id=mx, mem_cap_GB=cap)))
+        # 0.214: the same total (compute, SRAM, 2× stacks, capacity) as two dies in one package (B200 approach): each die
+        # has half the engines / SRAM / state SRAM and the base memory (half of the 2× stacks) at half the capacity,
+        # TP ×2 across the dies over the D2D tier (the scenario's d2d_std / d2d_units; default UCIe-A 48G × 4) — the
+        # existing multi-card + D2D model, not a new one
+        if ch.engines >= 2 and scn.layout.cards * 2 <= 64:
+            try:        # a scenario that cannot take TP ×2 (e.g. PD decode_cards not a multiple) has no two-die row
+                half = rp(ch, engines=ch.engines // 2, sram_mib=ch.sram_mib / 2, state_sram_mib=ch.state_sram_mib / 2)
+                two = rp(scn, chip=half, mem_cap_GB=cap / 2, layout=rp(scn.layout, tp=scn.layout.tp * 2),
+                         package_cards=max(2, scn.package_cards), d2d_enabled=True)
+            except ValueError:
+                two = None
+            if two is not None:
+                cases.append(("two_die", f"双晶粒封装（2 × 半算力，各 {scn.mem_id}，TP×2 经 D2D {two.d2d_std}×{two.d2d_units}）", two))
 
     def pick(q, b):
         return {"critical_batch": b["critical_batch"], "batch_limit": b["batch_limit"], "limited_by": b["limited_by"],

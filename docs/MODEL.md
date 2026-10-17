@@ -4830,3 +4830,9 @@ limited by capacity and the TTFT SLO, which is used as the decision latency limi
   - MC: no preset, because no public per-stack figure was found.
 - **Why a share.** NoC, routing and white space grow with the blocks they connect. Control is near-fixed, but it is 2 %, so a share is adequate.
 - **Effect.** All die and shoreline results grow by ÷ 0.77 plus 6 mm². 1P base: shoreline tight → ok. DRAM ×2: still tight, because 8 stacks need edges beyond the two long sides even at 654 mm². State SRAM: 9729 mm². Area conclusions are unchanged, and the bandwidth lever is still the cheaper one.
+
+
+## §161 Two-die package lever (0.214)
+- **Construction.** Two dies, each with half the compute and SRAM and half the stacks of the 2× option. They are joined by the existing D2D tier: `package_cards` = 2, `d2d_enabled`, TP × 2. TP all-reduces cross the D2D link, and their bytes, energy (0.25 pJ/bit, UCIe-A 「来源」) and latency come from the multi-card model.
+- **Shoreline per die.** Typical: min(2, 4 − d2d edges) long sides. Maximum: 4 − d2d edges. Splitting area A into two dies raises the total edge by √2.
+- **Finding for RWKV-7 7.2B and qwen3-8b on 1P.** Two dies match the 8-stack single die within 3 % on TPOT and 6 % on critical batch, at +1.6 mm² of D2D PHY per die. The packaging trade is real but cheap in model terms. The remaining blocker is per-die shoreline (4 stacks on a 333 mm² die take three edges), not D2D bandwidth or energy. 「推导」
