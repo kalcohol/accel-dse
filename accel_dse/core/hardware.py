@@ -496,6 +496,21 @@ CHIPS = {c.name: c for c in (CHIP_100T, CHIP_1P, CHIP_H100_LIKE, CHIP_1P_L, CHIP
 PRESET_MEM = {"1P": "hbm3e_4s_8h24g_9200", "H100-like": "hbm3_5s_8h16g_5234"}
 
 
+# 0.218: provenance of every preset number (catalog audit).  Chip geometries are design points, not products.
+CHIP_SOURCES: dict[str, tuple[str, str]] = {
+    "100T": ("假设", "0.3x SKU template geometry (56×56 MAC, 16 cores, 1 GHz); design point, not a product"),
+    "1P": ("假设", "0.3x SKU template (128×128 MAC, 32 cores, 1 GHz, 256 MiB SRAM); memory 4 × HBM3E 8H @ 9.2 推导 (MODEL §152)"),
+    "H100-like": ("推导/来源", "1.83 GHz × 128² × 16 ≈ 959 TFLOPS dense bf16 matched to H100 SXM 来源; 50 MiB L2 + 5 × HBM3 @ 5.2 Gb/s from the H100 datasheet 来源; MAC geometry 假设"),
+    "1P-lp4x64": ("假设", "1P with the ≤ 0.204 LPDDR5X 4 × 64 default"),
+    "H100-like-lp4x64": ("假设", "H100-like with the ≤ 0.204 LPDDR5X 4 × 64 default"),
+}
+LINK_SOURCES: dict[str, tuple[str, str]] = {
+    "D2D_DEFAULT": ("来源/假设", "UCIe-A x64 @ 48 GT/s × 4 modules = 1536 GB/s (d2d_catalog, 来源); 4 modules and α 0.5 µs 假设"),
+    "NET_DEFAULT": ("二手/假设", "one 400 Gb/s IB NDR / 400GbE NIC per card = 50 GB/s (IEEE 802.3 / IBTA line rate, 二手); α 5 µs 假设"),
+    "Link()": ("假设", "in-node scale-up default"),
+}
+
+
 def default_mem(chip) -> str:
     """0.205: the default memory of a chip (by preset name); anything else → the ≤ 0.204 global default."""
     return PRESET_MEM.get(getattr(chip, "name", chip), MEM_LEGACY_0204)

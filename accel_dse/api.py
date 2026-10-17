@@ -628,6 +628,8 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
     base = pick(r, b0)
     c0 = _lever_cost(r)
     base.update(c0)
+    # 0.218: the base row is priced at the configured batch — stated, like every lever row's cost_batch
+    base.update(cost_batch=scn.serving.batch, cost_basis="configured", tok_s_card_at_cost_batch=_tok_s_card(r))
 
     def cost(x, q):
         # 0.211: compare at the lever's balance point — its critical batch when reachable, else the configured
@@ -641,6 +643,8 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
             bb, basis = int(x["batch_limit"]), "batch_limit"
         else:
             bb, basis = scn.serving.batch, "configured"
+        if x.get("batch_limit") and bb > int(x["batch_limit"]):     # 0.218 invariant: never price past the limit
+            bb, basis = int(x["batch_limit"]), "batch_limit"
         b_base = min(bb, int(base["batch_limit"])) if basis == "batch_limit" and base.get("batch_limit") else bb
         x["cost_batch"], x["cost_basis"], x["base_cost_batch"] = bb, basis, b_base
         try:

@@ -6,6 +6,22 @@
 
 
 
+## [0.218.0]
+- Samsung HBM4 24 GB: HBM4 densities (24, 32) → (16, 24, 32). New tags: (12, 16) custom·shipping, from the Samsung newsroom 2026-02-12 ("12-layer … 24 GB to 36 GB"); the 16 Gb die density is 推导 (Samsung doesn't state it), and it is outside the JESD270-4 PR density list (24/32 Gb). (8, 16) and (16, 16) are unspecified·none. Default density is still 24, so no default changed.
+- SK hynix / Micron HBM4 re-checked against primary sources:
+  - SK hynix: 12H 36 GB samples 2025-03; mass-production ready 2025-09-12 at > 10 Gb/s.
+  - Micron: 12H 36 GB volume 2026-03-16 at > 11 Gb/s; 16H 48 GB samples.
+  - Samsung: 11.7 Gb/s shipping, 13 Gb/s capable.
+  - No tag changed.
+- Provenance audit:
+  - `HBM_CAP_SOURCES` values now start with a provenance tag and cover every product-claiming cap tag (HBM3 8/12H, HBM3E 8H, HBM4E added).
+  - New `HBM_RATE_SOURCES` covers every catalog pin rate (HBM4E rates and 9.8 Gb/s HBM3E are 假设 / 二手).
+  - LPDDR types get `src`; D2D standards get `src`.
+  - New `hardware.CHIP_SOURCES` / `LINK_SOURCES`: chip geometries are 假设 design points; H100-like is 推导/来源.
+  - Test: every catalog entry carries a valid tag and a note.
+- What-if: the base row states its priced batch (`cost_batch`, `cost_basis` = "configured"). Lever rows are clamped so the priced batch never exceeds their own batch limit (no case violated it before the clamp). The UI shows the batch and its basis (临界 / 上限 / 配置) in the J/token and W columns.
+- Deferred: the MI300X max-load and TRT-LLM 0.8 prefill residuals.
+
 ## [0.217.0]
 - Fix: a what-if lever that cannot reach balance was costed at the configured batch (default 1). qwen3-8b showed 0.48 J/token at batch 1 next to its throughput at the batch limit. The energy accounting itself was consistent (J/token × tok/s/card = W/card held at batch 1). Unreachable levers are now costed at their own batch limit (`cost_basis` = "batch_limit"), and the base at the same batch capped at its own limit (`base_cost_batch`). New field `tok_s_card_at_cost_batch`.
 - Reachable rows are unchanged: the RWKV state SRAM / DRAM×2 / two-die energy conclusions of 0.211–0.216 stand.

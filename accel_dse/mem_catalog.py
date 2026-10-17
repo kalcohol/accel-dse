@@ -189,6 +189,7 @@ _UN = ("unspecified", "none")      # = legacy 推测
 LPDDR_CATALOG: dict[str, dict[str, Any]] = {
     "LPDDR5": {
         "jedec_doc": "JESD209-5 / 5C",
+        "src": "二手: docs/research/memory_specs_2026-10.json §6 (vendor pages + JESD209 public summaries), audit 2026-10-08",
         "payload_factor": 1.0,
         "clock": "lp5",
         "forms": {
@@ -208,6 +209,7 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
     },
     "LPDDR5X": {
         "jedec_doc": "JESD209-5C (≤8533 明文；9600/10667 疑似)；LPDDR5T = LPDDR5X-9600",
+        "src": "二手: docs/research/memory_specs_2026-10.json §6 (vendor pages + JESD209 public summaries), audit 2026-10-08",
         "payload_factor": 1.0,
         "clock": "lp5",
         "forms": {
@@ -255,6 +257,7 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
     },
     "LPDDR6": {
         "jedec_doc": "JESD209-6 (2025-07)",
+        "src": "二手: docs/research/memory_specs_2026-10.json §6 (JEDEC JESD209-6 PR 2025-07 + vendor pages), audit 2026-10-08",
         "payload_factor": LPDDR6_PAYLOAD,
         "clock": "lp6",
         "forms": {
@@ -334,10 +337,13 @@ HBM_CATALOG: dict[str, dict[str, Any]] = {
         "default_rate": 8000,
         "heights": (8, 12, 16),
         "default_height": 12,
-        "densities": (24, 32),
+        "densities": (16, 24, 32),
         "default_density": 24,
         # 48 GB samples are 16-high × 24 Gb; 12-high × 32 Gb is JEDEC-allowed only (audit H4-5)
-        "cap_tags": {(8, 24): _JN, (8, 32): _JN, (12, 24): _JS,
+        # 0.218: Samsung "12-layer … 24 GB to 36 GB" (2026-02-12) → 24 GB = 12 × 16 Gb 「推导」; 16 Gb is outside the
+        # JESD270-4 press-release density list (24 / 32 Gb) → custom; 8 / 16-high × 16 Gb: no product, no JEDEC
+        "cap_tags": {(8, 16): _UN, (12, 16): _CS, (16, 16): _UN,
+                     (8, 24): _JN, (8, 32): _JN, (12, 24): _JS,
                      (12, 32): _JN, (16, 24): _JM, (16, 32): _JN},
         "cap_default": _JN,
     },
@@ -357,13 +363,38 @@ HBM_CATALOG: dict[str, dict[str, Any]] = {
 }
 HBM_DEFAULT_STACKS = 8
 
-# 0.216: sources behind the HBM cap_tags (re-fetched 2026-10-17)
+# 0.216/0.218: sources behind every HBM cap_tag that claims a product (shipping / sampling / announced) or a JEDEC
+# limit.  Each value starts with a provenance tag (core/provenance.py) then ": ".  Re-fetched 2026-10-17.
 HBM_CAP_SOURCES: dict[tuple[str, int, int], str] = {
-    ("HBM3E", 12, 24): "SK hynix 2024-09-26 12-layer HBM3E 36GB volume production; Samsung 2024-02-27 developed; Micron 2024-09-05 production-capable for qualification",
-    ("HBM3E", 16, 24): "SK hynix 2024-11-04 (SK AI Summit) 48GB 16-layer HBM3E announced, samples planned early 2025",
-    ("HBM4", 12, 24): "Samsung 2026-02-12 HBM4 mass production 24-36GB 12H; Micron 2026-03-16 HBM4 36GB 12H volume shipment",
-    ("HBM4", 16, 24): "Micron 2026-03-16 HBM4 48GB 16H samples; SK hynix CES 2026 unveil, volume unconfirmed (Korea Herald)",
-    ("HBM4", 16, 32): "JEDEC JESD270-4 PR 2025-04-16: 64GB max (32Gb 16-high), no product",
+    ("HBM3", 8, 16): "二手: H100 SXM 80 GB = 5 × 16 GB HBM3 stacks (NVIDIA H100 datasheet); 8 × 16 Gb per stack 推导",
+    ("HBM3", 12, 16): "二手: SK hynix 2023-04 12-layer 24 GB HBM3 (press coverage; not re-fetched in 0.218)",
+    ("HBM3E", 8, 24): "来源: SK hynix 2024-09-26 PR footnote 'maximum capacity of HBM3E was 24GB from eight 3GB DRAM chips'; Micron HBM3E 24GB 8-high in H200 (micron.com product page)",
+    ("HBM3E", 12, 24): "来源: SK hynix 2024-09-26 12-layer HBM3E 36GB volume production; Samsung 2024-02-27 developed; Micron 2024-09-05 production-capable for qualification",
+    ("HBM3E", 16, 24): "来源: SK hynix 2024-11-04 (SK AI Summit) 48GB 16-layer HBM3E announced, samples planned early 2025",
+    ("HBM4", 12, 16): "推导: Samsung 2026-02-12 newsroom 'Through 12-layer stacking … HBM4 in capacities ranging from 24 GB to 36 GB' → 24 GB / 12 dies = 16 Gb; die density not stated by Samsung",
+    ("HBM4", 12, 24): "来源: Samsung 2026-02-12 HBM4 mass production 24-36GB 12H; Micron 2026-03-16 HBM4 36GB 12H volume shipment; SK hynix 2025-03 12-layer 36GB samples, 2025-09-12 mass-production ready",
+    ("HBM4", 16, 24): "来源: Micron 2026-03-16 HBM4 48GB 16H samples; Samsung 2026-02-12 '16-layer … up to 48GB' planned; SK hynix CES 2026 unveil, volume unconfirmed (Korea Herald, 二手)",
+    ("HBM4", 16, 32): "来源: JEDEC JESD270-4 PR 2025-04-16: 64GB max (32Gb 16-high), no product",
+    ("HBM4E", 12, 32): "二手/假设: Samsung 2026-02-12 'sampling for HBM4E is expected to begin in 2H 2026'; 12 × 32 Gb configuration 假设",
+    ("HBM4E", 8, 32): "假设: vendor roadmap configuration, no primary source",
+    ("HBM4E", 16, 32): "假设: vendor roadmap configuration, no primary source",
+}
+
+# 0.218: sources behind every catalog pin rate
+HBM_RATE_SOURCES: dict[tuple[str, int], str] = {
+    ("HBM3", 6400): "来源: JEDEC HBM3 PR 2022-01-27 (6.4 Gb/s, 1024-bit, 819 GB/s)",
+    ("HBM3E", 8000): "推导: system-level run rate (B200 8 TB/s ÷ 8 stacks ÷ 1024 bit ≈ 7.8 Gb/s)",
+    ("HBM3E", 9200): "来源: Micron 2024-09-05 HBM3E 12-high 'pin speed greater than 9.2 Gb/s'",
+    ("HBM3E", 9600): "来源: Samsung 2026-02-12 'maximum pin speed of 9.6Gbps of its predecessor, HBM3E'; SK hynix 2024-09-26 12-layer HBM3E 9.6 Gbps",
+    ("HBM3E", 9800): "二手: Samsung HBM3E 'Shinebolt' 9.8 Gb/s announcement (2023-10, press coverage; not re-fetched)",
+    ("HBM4", 8000): "来源: JEDEC JESD270-4 PR 2025-04-16 'up to 8 Gb/s across a 2048-bit interface'",
+    ("HBM4", 10000): "来源: SK hynix 2025-09-12 HBM4 'over 10Gbps operating speed'",
+    ("HBM4", 11000): "来源: Micron 2026-03-16 HBM4 'over 11 Gb/s pin speeds'",
+    ("HBM4", 11700): "来源: Samsung 2026-02-12 HBM4 'consistent transfer speed of 11.7Gbps'",
+    ("HBM4", 13000): "来源: Samsung 2026-02-12 HBM4 'capable of up to 13Gbps' (announced, not the shipping rate)",
+    ("HBM4E", 12800): "假设: vendor roadmap rate, no primary source",
+    ("HBM4E", 14000): "假设: vendor roadmap rate, no primary source",
+    ("HBM4E", 16000): "假设: vendor roadmap rate, no primary source",
 }
 
 # Bus width above which an on-board (discrete) LPDDR config is flagged

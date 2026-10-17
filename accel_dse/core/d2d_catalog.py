@@ -25,21 +25,21 @@ TSMC LIPINCON (VLSI 2019 test chip, 8 Gb/s/pin, 320 GB/s, 0.56 pJ/bit).  Use d2d
 from __future__ import annotations
 
 D2D_STANDARDS: dict[str, dict] = {      # the user-approved selector (0.50); order = UI order
-    "ucie-a-48": dict(label="UCIe-A x64 @ 48 GT/s（UCIe 3.0 Advanced 2.5D）· 常用", family="UCIe", unit="x64 module",
+    "ucie-a-48": dict(src="来源/假设", label="UCIe-A x64 @ 48 GT/s（UCIe 3.0 Advanced 2.5D）· 常用", family="UCIe", unit="x64 module",
                       per_unit_GBps=384.0, pJ_bit=0.25, reach_mm=2, pitch_um="25–55", open=True,
                       note="48 GT/s × 64 lanes ÷ 8；1 bit/transfer「假设」；pJ/bit 为 UCIe 2.0 目标（3.0 目标未公开）"),
-    "ucie-a-64": dict(label="UCIe-A x64 @ 64 GT/s（UCIe 3.0 Advanced 2.5D）", family="UCIe", unit="x64 module",
+    "ucie-a-64": dict(src="来源/假设", label="UCIe-A x64 @ 64 GT/s（UCIe 3.0 Advanced 2.5D）", family="UCIe", unit="x64 module",
                       per_unit_GBps=512.0, pJ_bit=0.25, reach_mm=2, pitch_um="25–55", open=True,
                       note="1 bit/transfer「假设」；64 GT/s BER 目标 1e-12（48 GT/s 为 1e-15）；pJ/bit 为 UCIe 2.0 目标"),
-    "ucie-s-32": dict(label="UCIe-S x16 @ 32 GT/s（Standard 2D 有机基板）", family="UCIe", unit="x16 module",
+    "ucie-s-32": dict(src="来源", label="UCIe-S x16 @ 32 GT/s（Standard 2D 有机基板）", family="UCIe", unit="x16 module",
                       per_unit_GBps=64.0, pJ_bit=0.5, reach_mm=25, pitch_um="100–130", open=True,
                       note="64 GB/s 每模块每方向（UCIe 联盟教程原值）"),
-    "bow-256": dict(label="BoW-256（OCP Bunch of Wires 2.0，16 Gb/s/wire）", family="BoW", unit="16-wire slice",
+    "bow-256": dict(src="来源", label="BoW-256（OCP Bunch of Wires 2.0，16 Gb/s/wire）", family="BoW", unit="16-wire slice",
                     per_unit_GBps=32.0, pJ_bit=0.5, reach_mm=25, pitch_um="—", open=True,
                     note="pJ/bit：双端端接 < 0.5–1，非端接 < 0.25–0.5（列 0.5 作参考）"),
-    "bow-512": dict(label="BoW-512（OCP Bunch of Wires 2.0，32 Gb/s/wire）", family="BoW", unit="16-wire slice",
+    "bow-512": dict(src="来源", label="BoW-512（OCP Bunch of Wires 2.0，32 Gb/s/wire）", family="BoW", unit="16-wire slice",
                     per_unit_GBps=64.0, pJ_bit=0.5, reach_mm=25, pitch_um="—", open=True, note="同上"),
-    "nvlink-c2c": dict(label="NVIDIA NVLink-C2C（厂商专有，Grace Hopper）", family="vendor", unit="link",
+    "nvlink-c2c": dict(src="来源", label="NVIDIA NVLink-C2C（厂商专有，Grace Hopper）", family="vendor", unit="link",
                        per_unit_GBps=450.0, pJ_bit=1.3, reach_mm=None, pitch_um="—", open=False,
                        note="900 GB/s 双向合计 = 450 GB/s 每方向（NVIDIA 白皮书）；厂商专有接口，仅作参照"),
 }

@@ -4858,3 +4858,8 @@ qwen3-8b on 1P with fp8 KV: 12H +1.52 W, 16H +3.03 W, 8 stacks (dram_bw_x2) +3.0
 ## §164 What-if cost batch for unreachable levers (0.217)
 Cost is compared at the lever's critical batch when it reaches balance; otherwise at its batch limit (the operating point it unlocks). The base is evaluated at min(that batch, base batch limit). Before 0.217 the fallback was the configured batch (1), which priced the lever at batch 1: for qwen3-8b that was 0.48 J/token (105 W × 4.6 ms). Invariant: J/token × (batch / TPOT / cards) = W/card (推导, tested).
 qwen3-8b 1P, fp8 KV, at the batch limits: base 15.1 mJ/tok @283; 12H 14.65 @453; 16H 14.74 @479; DRAM×2 15.35 @283; ctx÷2 9.22 @566.
+
+## §165 Catalog provenance audit, Samsung HBM4 24 GB, priced batch (0.218)
+Samsung (newsroom 2026-02-12, 来源) offers 12-layer HBM4 at 24–36 GB, so 24 GB means 16 Gb dies (推导). JESD270-4's press release lists 24/32 Gb only, so this entry is tagged custom·shipping.
+Every HBM product/limit tag and pin rate now carries a provenance-tagged source string. LPDDR, D2D, chip and link presets carry tags too; chip geometries are 假设 design points. A test enforces this.
+What-if rows state the batch they are priced at: critical batch, else batch limit, else configured. The priced batch is ≤ the row's batch limit (invariant).
