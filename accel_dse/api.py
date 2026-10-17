@@ -547,6 +547,25 @@ def _lever_cost(q) -> dict:
             "coll_lat_ms": q.walls()["exposed_ms"].get("collective_lat") if q.walls() else None}
 
 
+SPEC_ROLLBACK_BATCHES = (1, 32)     # 0.223: what-if comparison batches (user-requested design points)
+
+
+def spec_rollback_compare(scn: Scenario) -> list:
+    """0.223: TPOT / tok/s per card / DRAM need of both spec rollback modes (snapshot, replay) at batch 1 and 32."""
+    from dataclasses import replace as rp
+    out = []
+    for b in SPEC_ROLLBACK_BATCHES:
+        for mode in ("snapshot", "replay"):
+            try:
+                q = evaluate(rp(scn, serving=rp(scn.serving, batch=b, spec_rollback=mode)))
+            except ValueError as e:
+                out.append({"batch": b, "mode": mode, "error": str(e)})
+                continue
+            out.append({"batch": b, "mode": mode, "tpot_ms": q.tpot * 1e3, "tok_s_card": _tok_s_card(q),
+                        "dram_need_GiB": max(st.mem.dram_need for st in q.stages) / 2**30, "fits": q.fits})
+    return out
+
+
 def balance_whatif(scn: Scenario, r: Result) -> dict | None:
     """0.208: the machine-balance levers, one variable each, on the sensitivity scan's case loop: fp8 KV, bf16
     recurrent state, half the context, 2× SRAM, 2× DRAM bandwidth (twice the channels / stacks at the SAME capacity,
@@ -621,6 +640,18 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
                 cases.append((f"hbm_{hh}h{dd}g", f"HBM 堆栈加高（{spec.hbm_height}H×{spec.hbm_die_Gb}Gb → {hh}H×{dd}Gb，"
                               f"{spec.capacity_GB:g} → {hs.capacity_GB:g} GB，带宽不变 · {hs.tag_zh}）", rp(scn, mem_id=hs.id)))
 
+    # 0.223: spec-verify rollback strategy on hybrid / linear layers — snapshot (SGLang default) ↔ ReplaySSM (opt-in);
+    # the row also carries both modes at batch 1 and 32 (spec_rollback_compare)
+    sv0 = scn.serving
+    spec_on = sv0.spec_k > 0 and (m.mtp_layers or sv0.draft_model)
+    has_lin = any(L.core is not None and L.core.kind == "linear" and L.core.lin not in ("hyena", "rwkv7") for L in m.layers)
+    roll_key = None
+    if spec_on and has_lin:
+        alt = "snapshot" if sv0.spec_rollback == "replay" else "replay"
+        roll_key = f"spec_rollback_{alt}"
+        cases.append((roll_key, f"投机回滚 {sv0.spec_rollback} → {alt}（{'ReplaySSM 环形缓冲重放，无 q× 中间状态' if alt == 'replay' else '逐草稿中间状态快照'} · SGLang 「来源」）",
+                       rp(scn, serving=rp(sv0, spec_rollback=alt))))
+
     def pick(q, b):
         return {"critical_batch": b["critical_batch"], "batch_limit": b["batch_limit"], "limited_by": b["limited_by"],
                 "reachable": b["reachable"], "ai_asymptote": b["ai_asymptote"], "asymptote_by": b["asymptote_by"],
@@ -673,6 +704,10 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
                           or (x["tpot_ratio"] is not None and x["tpot_ratio"] < 1 - WHATIF_GAIN))
         return x
     rows = _eval_cases(cases, row)
+    if roll_key:
+        for x in rows:
+            if x["key"] == roll_key and not x.get("error"):
+                x["spec_rollback_compare"] = spec_rollback_compare(scn)
     return {"base": base, "rows": rows, "gain": WHATIF_GAIN, "works": [x["key"] for x in rows if x.get("works")],
             "cost_basis": {"density_preset": WHATIF_DENSITY, "energy_preset": WHATIF_ENERGY, "reticle_mm2": RETICLE_MM2,
                            "note": ("面积 = SRAM（含专用状态 SRAM，同宏密度）+ DRAM PHY 引脚（budget.full_area，n5_derived 密度 「推导」）；"

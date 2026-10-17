@@ -6,6 +6,42 @@
 
 
 
+## [0.223.0]
+- Independent draft energy. `Result.draft["acts"]` holds k × the draft pass's action counts, and `energy._counts`
+  adds them. J/token and W/card now include the draft.
+  - The invariant J/token × tok/s per card = W per card still holds; there is a new test,
+    `test_core_217::test_main_eval_invariant_with_draft`.
+  - qwen3-32b on 1P, batch 8, k=4, a=0.7:
+
+    | Draft | J/token | W/card |
+    |---|---|---|
+    | qwen3-0.6b | 0.1314 → 0.1579 | 105.5 → 126.8 |
+    | qwen3-8b | 0.1339 → 0.2479 | 64.8 → 119.9 |
+
+- Speculative rollback strategy, `serving.spec_rollback` = `snapshot` (default, unchanged) | `replay`.
+  - `replay` is SGLang ReplaySSM (`--enable-linear-replayssm-spec`; 来源 gdn_backend `_replayssm_target_verify`,
+    memory_pool rings).
+  - It has no q × intermediate-state scratch. It keeps a compact (d, k, g) ring of L = max(16, 2q) entries.
+  - Per step, per sequence, per linear layer it costs:
+    - one checkpoint read;
+    - a replay of h̄ = (L−q)/2 ring entries (假设);
+    - q ring writes;
+    - a fold every (L−q)/E steps, where E is the expected number of accepted tokens.
+  - Replay compute is (h̄ + E) extra recurrent token updates.
+- New what-if row `spec_rollback_<alt>` on hybrid targets with speculation on. It carries `spec_rollback_compare`
+  (both modes at batch 1 and batch 32), and the UI shows it.
+- UI:
+  - Draft-model dropdown (catalog LLMs). A vocab mismatch is flagged next to it; `/api/models` now carries `vocab`.
+  - Spec rollback select.
+  - The spec_k sweep is now offered whenever a draft model is set.
+  - ui_smoke covers both new controls.
+- Fix (0.222): static dispatch charged the independent draft twice. The ×2 now applies only to the target's own
+  MTP / DSpark draft. A draft model's k passes carry their own dispatch, so the total is 1 + k programs.
+- Tests: `tests/test_core_223.py` (9 tests, including a seed-223 fuzzer over model / draft / k / a / batch / mode),
+  plus the static-dispatch ×2 unit test.
+- KPI deltas: defaults unchanged. Preset fingerprints and ext_validate are identical. Only scenarios with a draft
+  model set gain draft energy.
+
 ## [0.222.0]
 - Spec-decode verify-step mechanism audit (MODEL §169). Three items were missing and sourced, so they are now modelled:
   - Hybrid-layer state snapshot (`ir.SPEC_STATE_SNAPSHOT`, 来源 SGLang memory_pool `intermediate_ssm_state_cache`

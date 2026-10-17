@@ -5013,3 +5013,47 @@ Deferred: draft energy in J/token; UI field for draft_model; tree drafting.
 Conclusions that shifted: speculation on hybrid (linear-attention) targets at large batch is much less attractive
 than before. ReaDy at b32 drops from 6032 to 3815 tok/s, and needs +37 GiB scratch. Conclusions at b1 are
 essentially unchanged.
+
+## §170 Draft energy; spec rollback strategy (snapshot vs ReplaySSM) (0.223)
+
+**Draft energy.** The independent draft model's action counts are added to the step's counts:
+- They are taken over all of the draft's cards, using `energy.action_counts` of one pass, × k passes.
+- The step window already contained the draft's time, so W/card = J/step ÷ window.
+- The invariant J/token × tok/s/card = W/card holds by construction and is tested.
+
+**Rollback strategy.** For hybrid / linear-attention layers, two SGLang paths are modelled:
+
+| Mode | Source | Verify per sequence per layer | Memory |
+|---|---|---|---|
+| snapshot (default) | `intermediate_ssm_state_cache` + `fused_mamba_state_scatter` (来源) | (q+3) state traffic | q states scratch |
+| replay | ReplaySSM `_replayssm_target_verify`, `--enable-linear-replayssm-spec` (来源) | 1 checkpoint read; replay h̄ = (L−q)/2 ring entries (假设, uniform fill); q ring writes; fold every (L−q)/E steps (state read + write + ring read); compute + (h̄+E) recurrent updates | ring L·HV·((K+V)·4 + 4) B |
+
+- L = max(16, 2q): SGLang's default cache_len is 16, and the KDA backstop requires L ≥ 2 × draft tokens. Applying
+  that backstop to GDN is 假设.
+- Ring entry size is 近似: hi + lo bf16 parts, an fp32 gate, and K counted per HV head.
+- Under replay, rejected tokens cost nothing: their ring entries are never committed.
+
+Comparison at 1P, ctx 4096 (also returned as the what-if row's `spec_rollback_compare`):
+
+| Model | k | Batch | Snapshot TPOT / need | Replay TPOT / need |
+|---|---|---|---|---|
+| ReaDy (a = 0.828) | 7 | 1 | 4.021 ms / 56.2 GiB | 3.960 ms / 55.1 GiB |
+| ReaDy | 7 | 32 | 8.388 ms / 107.2 GiB (**does not fit**) | 6.273 ms / 70.9 GiB |
+| qwen3.8-27b (a = 0.7) | 1 | 1 | 9.859 / 52.6 | 9.876 / 52.3 |
+| qwen3.8-27b | 1 | 32 | 15.795 / 74.4 | 14.112 / 66.2 |
+| qwen3.8-27b | 3 | 32 | 12.762 / 83.8 | 10.425 / 66.2 |
+
+For reference, plain decode (AR) at batch 32 is 21.052 ms / 63.8 GiB.
+
+Conclusion: at batch 1 the modes are within about 1.5%. At batch 32, replay recovers most of the speculation loss
+that 0.222 introduced: ReaDy goes from 3815 to 5101 tok/s and fits on 1P again. So the 0.222 conclusion "hybrid
+spec at large batch is unattractive" holds only for the default snapshot path. The rollback strategy is a
+first-order design lever for hybrid targets.
+
+**Static dispatch.** The ×2 applies only to the target's own draft modules. An independent draft model's passes
+are separate programs, charged by its own evaluation, so a step is 1 + k programs.
+
+Deferred:
+- ReplaySSM KDA fold variant (`replayssm_spec_fold`) details.
+- Radix-track forced flushes.
+- Tree drafting.

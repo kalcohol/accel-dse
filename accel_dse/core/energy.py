@@ -280,6 +280,9 @@ def _counts(r) -> dict:
             c["d2d"] += t.wire_d2d * n
             c["net"] += t.wire_net * n
             c["link"] += t.wire_link * n
+    dr = getattr(r, "draft", None) or {}
+    for k, v in dr.get("acts", {}).items():           # 0.223: independent draft model's k passes of the step
+        c[k] = c.get(k, 0.0) + v
     if w is None:
         window = r.step
         unit = "token" if r.scenario.serving.phase == "decode" else "prompt token"

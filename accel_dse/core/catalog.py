@@ -464,6 +464,7 @@ def labels(spec: ModelSpec) -> dict:
         "is_pair": spec.is_pair,
         "mtp_layers": len(spec.mtp_layers),
         "draft": spec.draft,
+        "vocab": spec.vocab,        # 0.223: UI draft-model picker (same tokenizer check)
         # 0.221: published acceptance → the i.i.d. spec_accept it implies (a lever value, not a default)
         "spec_published": ({"tau": spec.spec_published[0], "k": spec.spec_published[1],
                             "accept_iid": round(spec_accept_from_tau(*spec.spec_published), 4)}

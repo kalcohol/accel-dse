@@ -79,6 +79,7 @@ class Result:
     host: dict | None = None       # 0.164 (opt-in): host / runtime step time {s, device_s, exposed_s, host_bound, …}
     step_cache: dict | None = None  # gen (0.167): TeaCache-style skipped steps
     prefix_kv: dict | None = None  # gen (0.116): text-prefix K/V reuse — extract / cached step times and FLOP, cache size
+    draft: dict | None = None      # 0.223: independent draft model of a spec step {s, pass_s, bytes, acts (per step), …}
 
     @property
     def domain(self) -> str:
@@ -1257,15 +1258,29 @@ def _draft_cost(scn: Scenario, d: ModelSpec, k: int) -> dict:
     rd = evaluate(ds, d)
     mp = rd.stages[0].mem
     by = sum(s_.mem.stored_w + s_.mem.kv_total + s_.mem.state_total for s_ in rd.stages)
+    # 0.223: energy — the draft's action counts of one pass (all its cards, energy.action_counts) × k passes per step;
+    # charged with the target's step (energy._counts), so J/token and W include the draft and the window (step) already
+    # holds its time
+    from .energy import action_counts
+    ac = action_counts(rd)["counts"]
     return {"s": k * rd.step, "pass_s": rd.step, "bytes": by, "model": d.id, "fits_alone": rd.fits,
-            "params_B": d.active_params() / 1e9, "kv_state_bytes": mp.kv_total + mp.state_total}
+            "params_B": d.active_params() / 1e9, "kv_state_bytes": mp.kv_total + mp.state_total,
+            "acts": {a: k * v for a, v in ac.items()}}
 
 
 def _spec_q(ph) -> int:
     """0.222: verify tokens per sequence of a speculative decode step (q = 1 + k), 0 otherwise — the hybrid-layer
     intermediate-state scratch (memplan.stage_storage spec_q)."""
     from .ir import SPEC_STATE_SNAPSHOT
+    if ph.roll == "replay":
+        return 0
     return ph.q if (SPEC_STATE_SNAPSHOT and ph.kind == "decode" and ph.q > 1) else 0
+
+
+def _spec_ring(ph) -> int:
+    """0.223: ReplaySSM ring length per sequence (serving.spec_rollback = "replay"), 0 otherwise."""
+    from .ir import replay_ring_len
+    return replay_ring_len(ph.q) if (ph.roll == "replay" and ph.kind == "decode" and ph.q > 1) else 0
 
 
 def _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx, n_mtp, b_rank, first_ops, last_ops,
@@ -1305,13 +1320,13 @@ def _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx
     def static(st_):
         return st_.weights + (st_.kv_per_seq + st_.idx_per_seq + st_.state_per_seq) * b_rank
 
-    sq = _spec_q(ph)
+    sq, sr = _spec_q(ph), _spec_ring(ph)
 
     def stor(first_, last_, e, h, nm):
-        key = (first_, last_, e, h, sh, ctx, nm, sq)
+        key = (first_, last_, e, h, sh, ctx, nm, sq, sr)
         x = store_memo.get(key)
         if x is None:
-            x = store_memo[key] = stage_storage(m, first_, last_, e, h, sh, ctx, nm, sq)
+            x = store_memo[key] = stage_storage(m, first_, last_, e, h, sh, ctx, nm, sq, sr)
         return x
 
     L = m.n_layers
@@ -1593,7 +1608,9 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
         q = 1 + spec_k
-        ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=rskew, ep_nodes=ep_nodes)
+        rr = sv.spec_rollback == "replay" and q > 1      # 0.223 ReplaySSM verify (ir.REPLAY_RING_DEFAULT)
+        ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=rskew, ep_nodes=ep_nodes,
+                   roll="replay" if rr else "", acc=sv.spec_accept if rr else 0.0)
         ctx_cap = sv.ctx + q
     else:
         mb = sv.microbatches or min(pp, sv.batch)
@@ -1666,11 +1683,11 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             tail = _tail_ops(m, st.has_head, ph, sh, tail_k, scn.chip.gpu_glue)
             if tail:                        # 0.61: non-head stages have no tail ops (summing zeros is a no-op)
                 _acc(agg, _sum_ops(tail, sys, scn.mapping, m, mm))
-            skey = (st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap, n_mtp, _spec_q(ph))
+            skey = (st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap, n_mtp, _spec_q(ph), _spec_ring(ph))
             store = store_memo.get(skey)
             if store is None:
                 store = store_memo[skey] = stage_storage(m, st.first, st.last, st.has_embed, st.has_head, sh, ctx_cap,
-                                                         n_mtp, _spec_q(ph))
+                                                         n_mtp, _spec_q(ph), _spec_ring(ph))
             # 0.63: activations streamed (stream=True: staging ≤ the SRAM's activation half, spills in agg["act"]);
             # a working set beyond the runtime reserve needs its excess in DRAM 「假设」
             mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
@@ -1703,7 +1720,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 agg["kern"] += s_add
             agg["fixed"] = s_add
             _ps = sys.chip.dispatch_s()[0]
-            if _ps and spec_k and st.has_head and ph.kind == "decode":
+            if _ps and spec_k and st.has_head and ph.kind == "decode" and dm is None:   # 0.223: an independent
+                # draft is evaluated as its own scenario (its passes carry their own dispatch) — no second charge here
                 # 0.222: the draft is its own program after the target verify (engines run the draft model on its own
                 # graph runner — SGLang dspark_draft.py draft_model_runner.decode_cuda_graph_runner 「来源」); on a static
                 # schedule that is a second launch per step on the head stage 「假设」 that the NPU compiler keeps them apart
@@ -1804,7 +1822,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         ttft = step
         thr = sv.batch * sv.prompt / step
     return Result(scn, m, stages, tick, step, e_tok, tpot, ttft, thr, thr / lay.cards, fits,
-                  stages[heavy].time.bound, heavy, warnings, mb, moe_skew=skew, vision=vis, host=host)
+                  stages[heavy].time.bound, heavy, warnings, mb, moe_skew=skew, vision=vis, host=host,
+                  draft=draft)
 
 
 

@@ -64,3 +64,20 @@ def test_qwen_jtok_order_of_magnitude():
     rows = {x["key"]: x for x in w["sensitivity"]["balance_whatif"]["rows"]}
     x = rows["hbm_12h24g"]
     assert x["cost_batch"] == 453 and 5e-3 < x["J_per_tok"] < 3e-2     # ~14.7 mJ, not 0.48 J (batch 1)
+
+
+def test_main_eval_invariant_with_draft():
+    """0.223: an independent draft model's k passes are in J/token and W — the invariant still holds."""
+    rnd, t, n = random.Random(2172), _table(), 0
+    for _ in range(8):
+        m, d = rnd.choice(["qwen3-32b", "qwen3-8b", "qwen3.8-27b"]), rnd.choice(["qwen3-0.6b", "qwen3-1.7b"])
+        b, k = rnd.choice([1, 4, 16]), rnd.randint(1, 6)
+        s = (Scenario(chip=CHIPS["1P"], model=m).replace("serving.batch", b).replace("serving.spec_k", k)
+             .replace("serving.draft_model", d))
+        r = evaluate(s)
+        e = energy_report(r, t)
+        assert r.draft and e.get("J_per_unit")
+        tok_s_card = b / r.tpot / r.scenario.layout.cards
+        assert abs(e["J_per_unit"] * tok_s_card / e["avg_W_per_card"] - 1) < 1e-3, (m, d, b, k)
+        n += 1
+    assert n == 8

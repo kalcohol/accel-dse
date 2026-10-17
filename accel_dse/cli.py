@@ -91,6 +91,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="VLM: qwen-vl-utils per-frame pixel cap (transformers cap_pixels_per_frame)")
     p.add_argument("--spec-accept", type=float, default=None)
     p.add_argument("--draft-model", default=None, help="independent draft model id for --spec-k (0.222)")
+    p.add_argument("--spec-rollback", default=None, choices=["snapshot", "replay"],
+                   help="hybrid-layer spec verify rollback: snapshot (SGLang default) | replay (ReplaySSM) (0.223)")
     p.add_argument("--tpot-slo", type=float, default=None, help="TPOT SLO ms")
     p.add_argument("--ttft-slo", type=float, default=None, help="TTFT SLO ms")
     p.add_argument("--out-len", dest="out_len", type=int, default=None, help="output tokens per request (goodput / PD)")
@@ -369,7 +371,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     sv = {"phase": a.phase, "batch": a.batch, "spec_k": a.spec_k}
     for k, attr in (("ctx", "ctx"), ("prompt", "prompt"), ("spec_accept", "spec_accept"), ("tpot_slo_ms", "tpot_slo"),
                     ("ttft_slo_ms", "ttft_slo"), ("out_len", "out_len"), ("prefix_cached", "prefix_cached"),
-                    ("labels", "labels"), ("draft_model", "draft_model")):
+                    ("labels", "labels"), ("draft_model", "draft_model"), ("spec_rollback", "spec_rollback")):
         if getattr(a, attr) is not None:
             sv[k] = getattr(a, attr)
     if getattr(a, "think", None) is not None:

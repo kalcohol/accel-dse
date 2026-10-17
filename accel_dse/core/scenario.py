@@ -43,6 +43,9 @@ class Serving:
     # 0.222: an independent draft model (catalog id) for spec_k — its own weights + KV on the same cards, k sequential
     # draft decode passes, then the target verifies 1 + k tokens.  "" = MTP / DSpark of the target itself.
     draft_model: str = field(default="", metadata={"omit_default": True})
+    # 0.223: spec verify on hybrid / linear layers — "snapshot" (SGLang default intermediate_ssm_state_cache: q states
+    # per sequence) | "replay" (SGLang --enable-linear-replayssm-spec: compact ring, replay + fold compute)
+    spec_rollback: str = field(default="snapshot", metadata={"omit_default": True})
     tpot_slo_ms: float = 50.0
     ttft_slo_ms: float = 2000.0
     moe_skew: float = 1.0          # MoE: busiest EP rank's token-expert pairs / mean (0.49; 1 = uniform) 「假设」
@@ -107,6 +110,8 @@ class Serving:
             raise ValueError("serving.spec_accept must be in [0, 1]")
         if not isinstance(self.draft_model, str) or len(self.draft_model) > 200:
             raise ValueError("serving.draft_model must be a model id string")
+        if self.spec_rollback not in ("snapshot", "replay"):
+            raise ValueError("serving.spec_rollback must be snapshot|replay")
         for k, lo, hi in (("images", 0, 64), ("image_w", 1, 16384), ("image_h", 1, 16384), ("image_tokens", 0, SERVING_MAX)):
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:

@@ -218,12 +218,29 @@ function renderFabric(r) {
     h('td', { class: 'l small' }, Object.entries(x.cands).filter(([k]) => k !== x.algo).map(([k, v]) => `${k} ${num(v.bw_us + v.alpha_us)}`).join(' · ') || '—')));
   put($('fab-tbl'), h('thead', {}, head), h('tbody', {}, ...rows));
 }
+// 0.223: independent draft model picker — catalog LLMs; a different vocabulary (tokenizer) is flagged here and by the server
+function fillDrafts() {
+  const sel = $('s-draft_model');
+  if (!sel || sel._filled === S.sc.model) return;
+  sel._filled = S.sc.model;
+  const opts = [h('option', { value: '' }, '（目标自带 MTP / DSpark）')];
+  for (const m of S.models || []) if (m.domain === 'llm' && m.id !== S.sc.model) opts.push(h('option', { value: m.id }, m.label || m.id));
+  put(sel, ...opts);
+}
+function draftWarn() {
+  const w = $('s-draft-warn');
+  if (!w) return;
+  const d = S.byId[S.sc.serving.draft_model || ''], t = S.byId[S.sc.model];
+  w.textContent = d && t && d.vocab && t.vocab && d.vocab !== t.vocab ? ` ⚠ 词表 ${d.vocab} ≠ 目标 ${t.vocab}（需同一分词器）` : '';
+}
 function syncInputs() {
   document.querySelectorAll('input[type=number]').forEach((i) => i._sync && i._sync());
   if ($('l-pp_split')) $('l-pp_split').value = S.sc.pp_split || 'cost';
   if ($('l-indexer')) $('l-indexer').value = S.sc.indexer || 'reference';
   if ($('l-attn_mode')) $('l-attn_mode').value = S.sc.attn_mode || 'reference';
   if ($('h-host_overlap')) $('h-host_overlap').value = S.sc.host_overlap || 'serial';
+  if ($('s-spec_rollback')) $('s-spec_rollback').value = S.sc.serving.spec_rollback || 'snapshot';
+  if ($('s-draft_model')) { fillDrafts(); $('s-draft_model').value = S.sc.serving.draft_model || ''; draftWarn(); }
   if ($('pd-length_mix') && $('pd-length_mix')._sync) $('pd-length_mix')._sync();
   if ($('pd-prefix_tree') && $('pd-prefix_tree')._sync) $('pd-prefix_tree')._sync();
   if ($('w-pipeline')) $('w-pipeline').checked = S.sc.workload.pipeline !== false;
@@ -1039,7 +1056,11 @@ function renderBalanceWhatif(w) {
     h('td', {}, (x.W_card != null ? num(x.W_card) + ' W' + (x.cost_batch != null ? ` @B${x.cost_batch}` : '') : '—')
       + (x.d_leak_W ? `（泄漏 ${x.d_leak_W > 0 ? '+' : ''}${num(x.d_leak_W)} W）` : (base && x.leak_W ? `（泄漏 ${num(x.leak_W)} W）` : ''))
       + (x.d_hbm_W ? `（HBM ${x.d_hbm_W > 0 ? '+' : ''}${num(x.d_hbm_W)} W）` : (base && x.hbm_W ? `（HBM ${num(x.hbm_W)} W）` : ''))),
-    h('td', { class: 'l small' }, base ? '当前' : (x.error ? x.error : (x.works ? '有效 · works' : '无效 · no effect'))));
+    h('td', { class: 'l small' }, base ? '当前' : (x.error ? x.error : (x.works ? '有效 · works' : '无效 · no effect')),
+      // 0.223: spec rollback lever — both modes at batch 1 / 32
+      x.spec_rollback_compare ? h('div', { class: 'small', id: 'spec-roll-cmp' }, x.spec_rollback_compare.map((c) => c.error
+        ? `B${c.batch} ${c.mode}: ${c.error}`
+        : `B${c.batch} ${c.mode}: ${num(c.tpot_ms)} ms · ${num(c.tok_s_card)} tok/s/卡 · ${num(c.dram_need_GiB)} GiB${c.fits ? '' : ' ⚠ 放不下'}`).join('；')) : ''));
   put(box, h('h4', {}, '机器平衡 what-if · balance levers（每次只改一个变量 · one variable each）'),
     h('table', { class: 'tbl', id: 'bal-whatif-tbl' },
       h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', 'Δ面积 area', 'J/token @计价 batch（临界 / 上限 / 配置）', '功耗 W/卡（含 SRAM 泄漏 + HBM 待机/刷新）', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
@@ -1459,7 +1480,7 @@ function fillSweepPaths() {
     || (SWEEP_DOMAIN[p] === 'vlm' && !!m.vision))
     // 0.130: knobs the model does not read (server answers 400 since 0.129): MoE skew on dense, spec_k without
     // MTP / draft, frames on an image DiT
-    .filter((p) => !(p === 'serving.moe_skew' && !m.is_moe) && !(p === 'serving.spec_k' && !(m.mtp_layers || m.draft))
+    .filter((p) => !(p === 'serving.moe_skew' && !m.is_moe) && !(p === 'serving.spec_k' && !(m.mtp_layers || m.draft || S.sc.serving.draft_model))
       && !(p === 'workload.frames' && m.workload && m.workload.image));
   opts($('sw-path'), list.map((p) => [p, SWEEP_ZH[p] || p]), list.includes(cur) ? cur : 'serving.batch');
   if (!list.includes(cur)) $('sw-values').value = SWEEP_DEFAULT[$('sw-path').value] || '';
@@ -2066,6 +2087,8 @@ async function init() {
   const HDEF = { host_step_us: 0, host_seq_us: 0, host_steps: 1 };              // 0.164 host / runtime overhead
   for (const k of Object.keys(HDEF))
     bindNumber('h-' + k, () => S.sc[k] ?? HDEF[k], (x) => { if (x === HDEF[k]) delete S.sc[k]; else S.sc[k] = x; }, { int: k === 'host_steps' });
+  $('s-spec_rollback').addEventListener('change', (e) => { if (e.target.value === 'snapshot') delete S.sc.serving.spec_rollback; else S.sc.serving.spec_rollback = e.target.value; schedule(); });
+  $('s-draft_model').addEventListener('change', (e) => { if (e.target.value) S.sc.serving.draft_model = e.target.value; else delete S.sc.serving.draft_model; draftWarn(); schedule(); });
   $('h-host_overlap').addEventListener('change', (e) => { if (e.target.value === 'serial') delete S.sc.host_overlap; else S.sc.host_overlap = e.target.value; schedule(); });
   for (const k of ['pp', 'tp', 'dp', 'ep', 'etp'])
     bindNumber('pd-' + k, () => S.sc.pd.prefill_layout[k], (x) => (S.sc.pd.prefill_layout[k] = x), { int: true });

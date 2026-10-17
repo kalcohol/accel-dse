@@ -229,6 +229,8 @@
       <label class="llm-only">输出长度<input type="number" id="s-out_len" min="1" step="128"></label>
       <label class="llm-only">投机 k<input type="number" id="s-spec_k" min="0" max="8" step="1"></label>
       <label class="llm-only">接受率<input type="number" id="s-spec_accept" min="0" max="1" step="0.05"></label>
+      <label class="llm-only" title="0.222：独立草稿模型（自己的权重 + KV，同卡、同 TP）：每步 k 次草稿解码 + 目标验证 1 + k 个 token。空 = 用目标自带的 MTP / DSpark。接受率为「假设」杠杆">草稿模型 <span class="tag assume">假设</span><select id="s-draft_model"><option value="">（目标自带 MTP / DSpark）</option></select><span class="small warn" id="s-draft-warn"></span></label>
+      <label class="llm-only" title="0.223：混合 / 线性注意力层的投机验证回滚。snapshot = SGLang 默认（每个草稿 token 一个中间状态，q× 状态显存）；replay = SGLang ReplaySSM（--enable-linear-replayssm-spec：紧凑环形缓冲，重放 + 折叠计算，无 q× 中间状态）">投机回滚<select id="s-spec_rollback"><option value="snapshot">snapshot（默认）</option><option value="replay">replay（ReplaySSM）</option></select></label>
       <label class="llm-only">TPOT SLO ms<input type="number" id="s-tpot_slo_ms" min="1" step="5"></label>
       <label class="llm-only">TTFT SLO ms<input type="number" id="s-ttft_slo_ms" min="1" step="100"></label>
       <label>微批数<input type="number" id="s-microbatches" min="0" step="1" title="0 = 自动（= PP）"></label>

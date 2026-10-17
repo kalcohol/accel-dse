@@ -65,6 +65,30 @@ with sync_playwright() as pw:
     t = p.inner_text("#pdpc-basis")
     assert "主机 L2 200 GB" in t and "write_back" in t, t[:400]
     print("HOST L2 ok")
+    # 0.223 independent draft model picker + spec rollback select
+    p.uncheck("#pd-enabled"); time.sleep(2)
+    p.select_option("#model", "qwen3-32b"); time.sleep(3)
+    p.click("#phase button[data-v=decode]"); time.sleep(2)
+    p.fill("#s-spec_k", "4"); time.sleep(3)
+    k0 = kpis(p)
+    p.select_option("#s-draft_model", "qwen3-0.6b")
+    for _ in range(120):
+        if kpis(p) != k0: break
+        time.sleep(0.5)
+    assert kpis(p) != k0, "draft model did not change KPIs"
+    assert p.inner_text("#s-draft-warn").strip() == ""
+    p.select_option("#s-draft_model", "llama-3.2-1b"); time.sleep(3)
+    assert "词表" in p.inner_text("#s-draft-warn"), p.inner_text("#s-draft-warn")
+    p.select_option("#s-draft_model", ""); time.sleep(2)
+    p.select_option("#model", "qwen3.8-27b"); time.sleep(3)
+    p.fill("#s-spec_k", "3"); time.sleep(3)
+    k1 = kpis(p)
+    p.select_option("#s-spec_rollback", "replay")
+    for _ in range(120):
+        if kpis(p) != k1: break
+        time.sleep(0.5)
+    assert kpis(p) != k1, "spec_rollback did not change KPIs"
+    print("DRAFT/ROLLBACK ok")
     p.screenshot(path="/workspace/smoke/ui166.png", full_page=False)
     b.close()
 print("ERRORS:", errs)

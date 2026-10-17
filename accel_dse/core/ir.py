@@ -104,6 +104,8 @@ class Phase:
     ep_nodes: int = 1    # 0.134: nodes the EP group spans when the all-to-all sends a token once per node (else 1)
     kvpre: int = 0       # 0.116 full: cached text-prefix tokens (prefix K/V reuse); q then holds the image tokens only
     kvx: bool = False    # 0.116 full: extract step of the prefix K/V reuse (writes the cache)
+    roll: str = ""       # 0.223 spec verify on linear layers: "" = intermediate-state snapshot (default), "replay" = ReplaySSM
+    acc: float = 0.0     # 0.223 per-draft acceptance (replay only: the ring advances by the expected accepted tokens)
     labels: int = 0      # 0.191 decision readout (prefill only): logits of ≤ labels option tokens at the last
                          # position, no KV cache kept (StartLux use_cache=False path) when nothing is prefix-shared
 
@@ -233,6 +235,30 @@ FUSE_QKV = True
 # opt-in ReplaySSM path (no per-draft writes) is not the default and is not modelled 「假设」 that the ReaDy-pinned SGLang
 # (2948168) uses the same default path.  Memory: q intermediate states per sequence (memplan, spec_q).
 SPEC_STATE_SNAPSHOT = True
+# 0.223: opt-in ReplaySSM spec verify (serving.spec_rollback = "replay"; SGLang --enable-linear-replayssm-spec) 「来源」
+# SGLang main gdn_backend._replayssm_target_verify ("Reconstructs the verify output for the whole draft window from the
+# frozen checkpoint (temporal) + the per-slot circular (d, k, g) ring, and appends this window's drafts to the compact
+# (d, k, g) rings … The cursors advance once per accepted step"; "Capacity folds are committed once across every GDN
+# layer after acceptance") + mem_cache/memory_pool.py (ring [layers, slots, HV, L, V] / [.., H, L, K] in the activation
+# dtype + low parts rawv / rawk for bf16 checkpoints + g [.., HV, L] fp32; intermediate_ssm_state_cache = None — "the
+# dominant spec scratch … is dead weight there and is skipped"; linear_replayssm_cache_len = 16).  Per verify step, per
+# sequence per linear layer: read the checkpoint once (no per-draft state writes, rejected tokens cost nothing — their
+# ring entries are never committed); replay the ring history h̄ = (L − q)/2 entries 「假设」 uniform fill; write q ring
+# entries; fold the ring into the checkpoint every (L − q) / E steps (read + write the state + read the ring), E =
+# expected tokens committed per step at acceptance a.  Compute: (h̄ + E) extra recurrent token updates (replay + fold).
+# Ring length L = max(16, 2·q) 「来源」 cache_len default 16, the KDA backstop L ≥ 2 · draft tokens — applied to GDN too
+# 「假设」.  Entry bytes per head ≈ (K + V) × 4 (hi + lo bf16) + 4 (fp32 gate) 「近似」 (H ≤ HV: K counted per HV head).
+REPLAY_RING_DEFAULT = 16
+
+
+def replay_ring_len(q: int) -> int:
+    """0.223 ReplaySSM ring length L for a verify window of q tokens (see REPLAY_RING_DEFAULT)."""
+    return max(REPLAY_RING_DEFAULT, 2 * q)
+
+
+def spec_expected(q: int, a: float) -> float:
+    """Expected tokens committed per verify of q = 1 + k tokens at per-draft acceptance a."""
+    return float(q) if a >= 1.0 else (1.0 - a ** q) / (1.0 - a)
 # 0.222: the DSpark Markov head is semi-autoregressive: draft position j adds markov_w2·markov_w1[token_{j−1}] to its
 # base logits and samples, and token_{j−1} is position j−1's sample — gamma sequential steps, each a w2 GEMV (or GEMM
 # over the batch) reading the whole V × r w2, + add + argmax / sample 「来源」 SGLang main 9c7b338
@@ -660,6 +686,18 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
             # 0.114 LFM2 gated short conv: B·x before and C·y after the depthwise conv (1 op / element each)
             vec += t * _cdiv(core.conv_channels, tp) * 2
         # 0.222 spec verify (decode, q > 1): per-draft-token intermediate states + accepted-state commit (SPEC_STATE_SNAPSHOT)
+        if ph.roll == "replay" and ph.kind == "decode" and q > 1:
+            # 0.223 ReplaySSM verify (REPLAY_RING_DEFAULT note): checkpoint read, ring history replay, q ring writes,
+            # amortized fold (state read + write + ring read)
+            L_r = replay_ring_len(q)
+            E = spec_expected(q, ph.acc)
+            hbar = (L_r - q) / 2.0
+            f = E / max(1, L_r - q)
+            ent = h_loc * ((dk + dv) * 4.0 + 4.0)
+            vec += b_loc * h_loc * (hbar + E) * (7 if delta else 5) * dk * dv
+            rw = b_loc * (st_bytes * (1.0 + 2.0 * f) + ent * (hbar + q + f * (L_r - q)))
+            ops.append(Op("state_update", "state", li, vec=vec + conv, state_rw=rw, kv_read=0.0))
+            return ops
         n_st = (q + 3) if (SPEC_STATE_SNAPSHOT and ph.kind == "decode" and q > 1) else 2
         ops.append(Op("state_update", "state", li, vec=vec + conv,
                       state_rw=n_st * st_bytes * b_loc, kv_read=0.0))
