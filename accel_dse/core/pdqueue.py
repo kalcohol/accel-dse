@@ -2047,38 +2047,101 @@ def _per_unit(r: Result) -> dict:
     return {k: a["counts"][k] / u for k in ACTIONS if k != "idle"}
 
 
-def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, prefill_card_s_tok: float = 0.0) -> dict:
+def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, prefill_card_s_tok: float = 0.0,
+            pools: tuple = ()) -> dict:
     """Dynamic energy = action counts × the table; static energy = W × card-seconds per output token at this load
     (wall-clock, busy or idle — the cards are provisioned either way).  ``prefill_card_s_tok``: the PD prefill pool's
-    share of ``card_s_tok``, charged at ``idle_W_prefill`` when given (its chip may differ, 0.56); nothing defaulted."""
+    share of ``card_s_tok``, charged at ``idle_W_prefill`` when given (its chip may differ, 0.56); nothing defaulted.
+
+    0.230 — brought up to the main report (energy.energy_report): ``pools`` = ((scenario, card_s_per_token), ...)
+    (PD: prefill + decode pools; colocated: one), first entry's memory = the DRAM bytes' memory kind 「近似」 for
+    heterogeneous PD memory.  Adds: per-kind DRAM pJ (dram_pJ_field) + chip-side PHY (dram_phy); idle via idle_W_of
+    (idle_frac_tdp × tdp_W too); SRAM leakage (state SRAM always, shared SRAM only without an idle figure); HBM
+    standby / refresh (only without an idle figure); the per-cycle clock term over every provisioned card-second
+    (a provisioned card idles at serving clocks — the H100 'context, no work' state the preset is measured in), × the
+    chip's gating g + (1 − g)·u, u = MAC slot-cycles used / clocked over all pools 「近似」 (one pooled utilisation)."""
+    from .energy import hbm_static_W, idle_W_of
     out = {"counts_per_token": counts_tok, "card_s_per_token": card_s_tok}
     if table is None or not table.provided:
         return out
+    mem_scn = pools[0][0] if pools else None
     j = {}
     for k, attr in _UNIT_PJ.items():
+        if k == "dram" and mem_scn is not None:
+            attr = _dram_field(mem_scn, table)
         e = getattr(table, attr)
         if e is not None:
             j[k] = counts_tok.get(k, 0.0) * e * 1e-12 * (8 if k in _BITS else 1)
+    if mem_scn is not None:
+        pv = _phy_pJ(mem_scn, table)
+        if pv is not None:
+            j["dram_phy"] = counts_tok.get("dram", 0.0) * pv * 1e-12 * 8
     if counts_tok.get("host", 0.0) > 0:
         if table.pJ_bit_host is not None:
             j["host"] = counts_tok["host"] * table.pJ_bit_host * 1e-12 * 8
         else:
             out["host_note"] = "换出 / 换入经主机链路的字节未计能耗：未填 pJ_bit_host"
+    iw = idle_W_of(table)
     split = prefill_card_s_tok > 0 and table.idle_W_prefill is not None     # else one rate for every card (0.51)
     if split:
         j["idle_prefill"] = table.idle_W_prefill * prefill_card_s_tok
-    if table.idle_W is not None:
-        j["idle"] = table.idle_W * (card_s_tok - (prefill_card_s_tok if split else 0.0))
-    if table.idle_W is None and table.idle_W_prefill is not None:
+    if iw is not None:
+        j["idle"] = iw * (card_s_tok - (prefill_card_s_tok if split else 0.0))
+    if iw is None and table.idle_W_prefill is not None:
         out["static_note"] = ("只计 PD prefill 池的静态能耗：未给 idle_W，decode 池未计" if prefill_card_s_tok > 0 else
                               "未给 idle_W（idle_W_prefill 只用于 PD prefill 池），静态能耗未计")
+    has_idle = iw is not None or table.idle_W_prefill is not None
+    if pools:
+        leak = hbm = clk = slots = 0.0
+        for sc, cs in pools:
+            ch = sc.chip
+            if table.uW_per_mib_sram_leak is not None:
+                mib = getattr(ch, "state_sram_mib", 0.0) + (ch.sram_mib if not has_idle else 0.0)
+                leak += mib * table.uW_per_mib_sram_leak * 1e-6 * cs
+            if not has_idle and (table.mW_hbm_die_standby is not None or table.mW_hbm_Gb_refresh is not None):
+                hs = hbm_static_W(sc.mem_id, table)
+                if hs:
+                    hbm += hs["W"] * cs
+            cyc = ch.macs * ch.freq_ghz * 1e9 * cs
+            slots += cyc
+            if table.pJ_clk_mac_cycle is not None:
+                clk += cyc * table.pJ_clk_mac_cycle * 1e-12
+        if leak > 0:
+            j["sram_leak"] = leak
+        if hbm > 0:
+            j["hbm_static"] = hbm
+        if table.pJ_clk_mac_cycle is not None and slots > 0:
+            util = min(1.0, counts_tok.get("mac", 0.0) / slots)
+            jc = 0.0
+            for sc, cs in pools:
+                g = getattr(sc.chip, "clk_ungated_share", 1.0)
+                jc += sc.chip.macs * sc.chip.freq_ghz * 1e9 * cs * table.pJ_clk_mac_cycle * 1e-12 * (g + (1 - g) * util)
+            j["clock"] = jc
+            out["clock_gating"] = {"mac_util": util}
     if not j:
         return out
     tot = sum(j.values())
-    idle = j.get("idle", 0.0) + j.get("idle_prefill", 0.0)
+    idle = sum(j.get(k, 0.0) for k in ("idle", "idle_prefill", "sram_leak", "hbm_static"))
     out.update(J_per_token=tot, J_by_action=j, tok_per_J=1 / tot if tot > 0 else None,
                static_share=idle / tot if tot > 0 else None)
     return out
+
+
+def _dram_field(scn, table: EnergyTable) -> str:
+    """0.230: energy.dram_pJ_field for a scenario (per memory kind)."""
+    from .energy import dram_pJ_field
+
+    class _R:
+        scenario = scn
+    return dram_pJ_field(_R, table)
+
+
+def _phy_pJ(scn, table: EnergyTable):
+    from .energy import phy_pJ
+
+    class _R:
+        scenario = scn
+    return phy_pJ(_R, table)[1]
 
 
 def _mix(pres, pts, dec: Result, out: float, extra: dict, shared_weights: bool = False) -> dict:
@@ -2197,19 +2260,20 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
         kv = _wsum(ws, [ctx["kv_xfer"][(S, p)] for _, S, p in pts])
         en["pd"] = _energy(_mix(x["_pre"]["rs"], pts, x["_dec"]["mix"], o,
                                 _restore_extra(x, {ctx["tier"] if ctx["tier"] == "net" else "link": kv})),
-                           cards / lam / o, table, ctx["n_p"] / lam / o)
+                           cards / lam / o, table, ctx["n_p"] / lam / o,
+                           pools=((ctx["dpool"].scn, ctx["n_d"] / lam / o), (ctx["ppool"].scn, ctx["n_p"] / lam / o)))
     pts = ctx.get("pts_c", pts)                 # colocated replicas: their own prefix-cache hit mix (0.53)
     ws = [w for w, _, _ in pts]
     y = modes.get("coloc_prefill_first")
     if y and y["stable"]:
         en["coloc_prefill_first"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["mix"], o, _restore_extra(y, {})),
-                                            cards / lam / o, table)
+                                            cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),))
     y = modes.get("coloc_chunked")
     if y and y["stable"]:
         reread = _wsum(ws, [n * rr * ctx["kv_new"][(S, p)] for (n, _, rr), (_, S, p) in zip(y["_plans"], pts)])
         en["coloc_chunked"] = _energy(_mix(y["_pre1"], pts, y["_dec_r"], o, _restore_extra(y, {"dram": reread}),
                                            shared_weights=True),
-                                      cards / lam / o, table)
+                                      cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),))
     out["modes"] = {k: _public(v) for k, v in modes.items()}
     out["energy"] = en
     return out

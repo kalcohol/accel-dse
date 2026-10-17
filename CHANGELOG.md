@@ -6,6 +6,34 @@
 
 
 
+## [0.230.0]
+
+### Changed (PD report energy brought up to the main energy report; re-baselined)
+- `pdqueue._energy` prices each operating point with the same terms as `energy.energy_report`. It now takes the pools' scenarios: PD = decode pool + prefill pool; colocated = the replica pool.
+  - **Per-kind DRAM energy plus the chip-side PHY line** (`dram_phy`), like 0.186/0.188 in the main report. The DRAM bytes are priced with the first pool's memory kind; for heterogeneous PD memory this is 「近似」.
+  - **`idle_frac_tdp × tdp_W` is now honoured.** Up to 0.229 the PD path read only an explicit `idle_W`, so the preset's H100 idle fraction was silently dropped.
+  - **SRAM leakage** (state SRAM always; shared SRAM only without an idle figure) and **HBM standby/refresh** (only without an idle figure), per pool × card-seconds. Both count as static in `static_share`.
+  - **Per-cycle clock term** (0.228) over every provisioned card-second, with the chip's gating g + (1 − g)·u (0.229). A provisioned card idles at serving clocks, which is the H100 "context, no work" state the preset value is measured in. u = MAC slot-cycles used ÷ clocked, pooled over all pools (「近似」, one utilisation). `clock_gating.mac_util` is reported.
+- **Invariant (new test):** a single-phase operating point priced by `_energy` with its own card-seconds per unit equals `energy_report`. This holds to 1e-9 across idle / TDP / no-idle tables, g ∈ {1, 0.3}, decode/prefill, an LPDDR RWKV case with a state SRAM, and term by term. J/token × tok/s/card = W/card is fuzzed on the PD report (seed 230).
+
+**PD J/token, old → new** (qwen3-8b, 1P, TP 2, PD 2 prefill + 6 decode cards, B 64, prompt 4096 / out 512, load 0.6, tpuv4i_7nm preset):
+
+| Table | pd | coloc_prefill_first | coloc_chunked |
+|---|---|---|---|
+| + idle_W 20 | 0.1358 → 0.2004 | 0.1378 → 0.2027 | 0.1372 → 0.2020 (+48 %) |
+| no idle | 0.1170 → 0.1902 | 0.1189 → 0.1925 | 0.1184 → 0.1918 (+63 %) |
+| + tdp_W 700 | 0.1170 → 0.2492 | 0.1189 → 0.2514 | 0.1184 → 0.2508 (+113 %: the 71.8 W idle is now charged) |
+
+- Conclusion shift: PD energy per token rises 1.5–2.1× and the static share is now non-zero without an explicit idle_W. The mode ranking is unchanged: pd < coloc_chunked < coloc_prefill_first. The clock term adds the same card-second cost to every mode, so the ~1–2 % gaps between modes shrink in relative terms.
+- Performance, queueing and SLO results are unchanged (energy only).
+
+### Deferred to 0.231
+- **Chunked-prefill engine profiles.** The PD colocated `chunk_tokens` 512 「假设」 is unchanged. Planned design:
+  - `vllm`: the budget `max_num_batched_tokens` 2048 includes the running decodes and is filled decode-first, so the chunk at batch k is 2048 − k. This needs per-batch chunk plans.
+  - `sglang`: `chunked_prefill_size` 8192 (2048 below 25 GB). Mixed chunk is off by default, so a chunk iteration pauses the decodes; this is a non-fused iteration, i.e. a new mode rather than a parameter.
+  - Deferred because 13 test files and the ext-validation V4 modes use `coloc_chunked`, so a default change needs its own re-baseline.
+- Per-pool utilisation for the clock gating in heterogeneous PD; per-pool DRAM kind.
+
 ## [0.229.0]
 
 ### Added

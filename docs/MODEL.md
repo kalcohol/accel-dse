@@ -5326,3 +5326,25 @@ Lowering g is a design claim (fine-grained gating of the array clock tree). It i
 - u counts MAC work only; vector lanes and SRAM ports are not gated separately.
 - The model is linear in u. Measured data show only the two end points.
 - The PD report energy path does not carry the clock term yet (deferred).
+
+## §177 PD report energy at parity with the main report (0.230)
+
+`pdqueue._energy` prices a mode's action counts per output token, together with the card-seconds per output token at the load: cards / λ / out_len, wall-clock, busy or idle. It now applies the same terms as `energy_report`, each pool with its own chip and memory.
+
+**Dynamic terms.**
+- Per-kind DRAM energy plus the chip-side PHY line.
+- The per-cycle clock term, charged over every provisioned card-second. A serving card is clocked whether or not a request is in flight, which is the H100 "context, no work" state the preset value was measured in.
+- Gating: g + (1 − g)·u, with u = MAC count ÷ Σ_pools(macs·f·card-seconds).
+
+**Static terms.**
+- `idle_W`, otherwise `idle_frac_tdp × tdp_W`. `idle_W_prefill` still applies to the PD prefill pool.
+- SRAM leakage: the state SRAM always, and the shared SRAM only without an idle figure.
+- HBM standby/refresh, only without an idle figure.
+
+**Approximations.**
+- Heterogeneous PD memory: all DRAM bytes are priced with the decode pool's memory kind.
+- One pooled utilisation is used for gating across pools.
+
+**Invariant.** A single operating point priced with card-seconds per unit = cards·window/units reproduces `energy_report` term by term, and J/token × tok/s/card = W/card holds.
+
+**Effect.** PD-report J/token rises ×1.5–2.1 for qwen3-8b 1P (see CHANGELOG 0.230): mostly the clock term, plus the idle fraction × TDP that was previously dropped. The ranking between modes is unchanged.
