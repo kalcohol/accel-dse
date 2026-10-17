@@ -171,7 +171,8 @@ def test_chunked_iteration_mean_fix():
     r = _rep()
     c = r["queue"]["modes"]["coloc_chunked"]
     lam_c = c["lambda_rps"] / r["coloc"]["replicas"]
-    nu = lam_c * c["prefill"]["chunks"]
+    # 0.234: with budget packing ν counts the chunk iterations per prompt as packed (iters_per_prompt ≤ chunks)
+    nu = lam_c * c["prefill"].get("iters_per_prompt", c["prefill"]["chunks"])
     t0, rho = c["decode"]["iter_ms_no_chunk"] / 1e3, c["prefill"]["rho"]
     t1 = c["prefill"]["iter_ms"] / 1e3
     # 0.54: tbar = T₀/(1−ν(T₁−T₀)), x = ν·tbar; ρ_prefill = ν·T₁.  Mean TPOT is birth–death E[k]/(λ out), not tbar.

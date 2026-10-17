@@ -5419,3 +5419,47 @@ A fused chunked-prefill iteration at running batch k carries the k decodes plus 
 - With spill, chunking can lower DRAM traffic and energy.
 
 **Considered and dropped.** Interpolating chunk boundaries on a 256-token grid was 4–6 % off at GEMM tile boundaries.
+
+## §181 Multi-prompt packing within one iteration budget (0.234)
+
+**Source (「来源」, `sd221/v234`, vLLM main `v1/core/sched/scheduler.py` and `config/scheduler.py`; SGLang `schedule_policy.py`).**
+- **vLLM V1 `schedule()`.** `token_budget = max_num_scheduled_tokens`, which defaults to `max_num_batched_tokens` (the §178 tiers).
+  - The running requests go first: a decode takes 1 token, a running partial prefill takes min(left, budget).
+  - Then the waiting queue is served FCFS `while token_budget > 0`. It breaks at `len(running) ≥ max_num_active_reqs`, which defaults to `max_num_seqs` (modelled as the slot count B, including the requests that are prefilling).
+  - Every admitted request takes min(new, budget), so the last one is chunked.
+  - `long_prefill_token_threshold` defaults to 0, which disables the cap; it is not modelled.
+  - `max_num_partial_prefills` / `max_long_partial_prefills` were V0-only and do not exist in V1 main (n/a).
+- **SGLang `PrefillAdder`.** The chunked request first; then whole requests while they fit `rem_chunk_tokens`; the first one that does not fit is truncated (`_select_prefill_admission`) and becomes the next `chunked_req`. Bounded by max_running_requests; page alignment is ignored (「近似」).
+- **One rule for both engines** (`pack_fill`): an FCFS fill of the iteration's prompt budget R, where R = budget − k for vLLM / sglang_mixed and R = C for sglang with the decodes paused. Under FCFS at most one prompt is partial (「推导」).
+
+**Iteration cost.**
+- `_fused_multi`: the k decodes (or, with none, the largest piece) plus several prompt pieces. Compute, non-weight DRAM and link add; the weights are read once; sync = max.
+  - Exact in the stage and serial modes.
+  - pipe: the one-piece op replay (§ 0.102) × the stage/serial bracket ratio of all pieces to that piece (「近似」, exact for one piece).
+- `_packed_fused`: whole same-shape prompts run as one batched prefill (as prefill-first batches them). A partial piece is its own chunk with its prefix cached (§180).
+- legacy_512 and fixed do not pack.
+
+**Analytic chunk server at running batch k** (`pack_at`). C(k) = budget − k; k = 0 has the full budget, as in the DES. b = min(⌊C/new⌋, B − k).
+- **b ≥ 2.** The greedy bulk queue M/G^[b]/1 (§ 0.65 `bulkq`), with D_j = the packed iteration of the k decodes + j prompts.
+  - Busy share per request = bulk_busy/λ. Iterations per request = 1/E[batch].
+  - itl_max = the largest packed batch met by ≥ 1 % of requests over the ν·life chunk iterations.
+  - The truncated head of a (b+1)-th prompt in the leftover is not modelled (「近似」).
+- **b = 1 (tail sharing).** A prompt's last iteration (τ tail tokens, τ < C) is topped up with the next prompt's head if one waits when the iteration starts.
+  - π_i = 1 − E[e^{−λW}]·e^{−λS′_i} with E[e^{−λW}] = (1 − ρ)/E[e^{−λS}] (Pollaczek–Khinchine LST at s = λ), where S′_i = the iterations before the tail. Solved as a fixed point with ρ (「近似」: idle decode-only iterations are left out).
+  - This gives ≈ ρ for multi-chunk prompts and ≈ ρ² for one-iteration prompts. π = ρ was tried and overstated sharing 2.4× (C: 0.151 vs DES 0.064, before the k = 0 fix).
+  - Server share when shared = Σ full chunks + τ/C·T_sh. Own latency = Σ full chunks + T_sh: the prompt finishes at the end of the shared iteration, because the head is processed in the same iteration. Using the token share as latency was 27 % optimistic at p90 (D sglang_mixed).
+- **TTFT.** The 8 quasi-static batch bins.
+  - Bins with b ≥ 2: mixture of bulk_law ⊕ U(0, decode step) (`_law_mix`).
+  - Otherwise: the M/G/1 mixture with a two-point (share, latency) service per prompt type.
+  - The decode birth–death uses the effective share and iteration count per request.
+
+**DES.** `ColocChunked._packed` applies the same fill (slot admission = max_num_seqs). sglang now runs its own packed prefill-only replica.
+- Invariants (test_core_234): fill ≤ budget (including the k decodes), and every running decode is credited in every vLLM iteration (decode-first, never starved). At most one partial prompt. Packing occurs at load 0.85.
+- Parity is inside the V4 bands for A, D (vllm, sglang_mixed), A at 0.85 and a fuzzed misaligned case. C, E: see CHANGELOG 0.234.
+
+**Effect.** Prefill is compute-bound, so a packed iteration of j prompts takes ≈ j × as long, and the first prompt finishes later.
+- The TTFT tail grows: A p99 82.9 → 99.5 ms; D sglang_mixed 84.3 → 103.7 ms.
+- SLO goodput moves ≤ ±1.1 %.
+- Packing cannot close prefill-first's lead in C/E: a 16384-token prompt fills the budget, so only the k-token tail is shared.
+
+**Known gap (→ 0.235).** The SGLang non-mixed analytic still uses the prefill-first bulk caps without tail sharing. The DES has tail sharing, so the two differ when new mod C ≠ 0 and the prompt has more than one chunk. Cases A–E are aligned and unaffected.

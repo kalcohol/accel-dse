@@ -17,7 +17,7 @@ import random
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 
-from .pdqueue import B_CAPS, _Pool, _chunk_fused, _chunk_plan, _fused_step, chunk_at
+from .pdqueue import B_CAPS, _Pool, _chunk_fused, _chunk_plan, _fused_step, _packed_fused, chunk_at, pack_fill
 
 # --------------------------------------------------------------------------- helpers
 
@@ -652,6 +652,7 @@ class ColocChunked(_Replica):
         self.pq: deque[Req] = deque()
         self.cur: Req | None = None
         self.cur_left = 0
+        self.curs: list = []      # 0.234 packing: [[req, tokens left]] FCFS
         self._pre1: dict = {}
 
     def _p1(self, S: int, p: int):
@@ -672,6 +673,9 @@ class ColocChunked(_Replica):
         if self._try_recompute():
             return
         self._admit()
+        if self.spec and self.spec.get("pack"):
+            self._packed()
+            return
         if self.cur is None and self.pq and (not self.before or self._can_admit(self.pq[0])):
             self.cur = self.pq.popleft()
             if self.before:
@@ -702,11 +706,60 @@ class ColocChunked(_Replica):
             self.cur = None
         self._start(step + stall, "rep_chunk_done", (list(self.running), e, fin))
 
+    def _packed(self):
+        """0.234 budget packing (vLLM V1 Scheduler.schedule: running first, then the waiting queue FCFS while
+        token_budget > 0 and len(running) < max_num_seqs, the last admitted request truncated to the budget left;
+        SGLang PrefillAdder: the chunked request first, then whole requests, the first that does not fit truncated).
+        At most one prompt is partial at a time.  nonfused (SGLang default): a prefill-only iteration (the decodes
+        pause) whenever a prompt waits; else the k decodes + the pieces in one fused iteration."""
+        nonfused = bool(self.spec.get("nonfused"))
+        k = len(self.running)
+        C = self.spec["C"] if nonfused else chunk_at(self.spec, k)
+        if C <= 0 and self.running:   # decode-first: the decodes fill the budget
+            self._decode_iter()
+            return
+        rem = max(1, C)
+        for r, left in self.curs:
+            rem -= min(left, rem)
+        while rem > 0 and self.pq and (not self.before or self._can_admit(self.pq[0])):
+            r = self.pq.popleft()
+            if self.before:
+                self._reserve(r)
+                self.pending.append(r)
+            r.prefill_start = self.eng.t
+            self.curs.append([r, r.S - r.p])
+            rem -= min(r.S - r.p, rem)
+        if not self.curs:
+            if self.running:
+                self._decode_iter()
+            return
+        stall = self._preempt()
+        fill = pack_fill(max(1, C), [left for _, left in self.curs])
+        pieces, fins = [], []
+        for i, take in fill:
+            r, left = self.curs[i]
+            q0 = r.S - left
+            pieces.append((r.S, r.p, q0, q0 + take))
+            self.curs[i][1] -= take
+            if self.curs[i][1] <= 0:
+                fins.append(r)
+        self.curs = [c for c in self.curs if c[1] > 0]
+        self.max_tokens = max(getattr(self, "max_tokens", 0), sum(e - q for _, _, q, e in pieces) + (0 if nonfused else k))
+        if nonfused:
+            step = _packed_fused(self.costs.pool, 0, pieces)
+            self._start(step + stall, "rep_chunk_done", ([], 1.0, fins))
+            return
+        e = self.costs.pool.run("decode", max(1, k)).tokens_per_step
+        step = _packed_fused(self.costs.pool, max(1, k), pieces)
+        self._start(step + stall, "rep_chunk_done", (list(self.running), e, fins))
+
     def chunk_done(self, payload):
         members, e, fin = payload
         self.in_flight = False
         self._credit(members, e)
-        if fin is not None:
+        for fin in (fin if isinstance(fin, list) else [fin]):
+            if fin is None:
+                continue
             fin.prefill_done = fin.kv_done = self.eng.t
             fin.tokens_left = fin.out
             if self.before:
@@ -1059,6 +1112,13 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
             cap = _cap_of(ctx["cpool"], x)
             reps = [ColocPrefillFirst(eng, costs, cap, B) for _ in range(r_c)]
             done_kinds = {"rep_dec_done": "dec_done", "rep_pf_done": "pf_done", "rep_recompute_done": "recompute_done"}
+        elif mode == "coloc_chunked" and (ctx.get("chunk") or {}).get("nonfused") and (ctx.get("chunk") or {}).get("pack"):
+            # 0.234 SGLang non-mixed with PrefillAdder packing: prefill-only iterations filled FCFS to C tokens
+            # (the chunked request first, whole requests, the first that does not fit truncated); decodes pause
+            cap = None
+            reps = [ColocChunked(eng, costs, B, ctx["chunk"]["C"], ctx.get("chunk")) for _ in range(r_c)]
+            done_kinds = {"rep_dec_done": "dec_done", "rep_chunk_done": "chunk_done",
+                          "rep_recompute_done": "recompute_done"}
         elif mode == "coloc_chunked" and (ctx.get("chunk") or {}).get("nonfused"):
             # 0.232 SGLang non-mixed: prefill-first replicas whose prefill = consecutive prefill-only chunk iterations
             from .pdqueue import _coloc_chunked, sglang_ctx
