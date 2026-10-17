@@ -6,6 +6,25 @@
 
 
 
+## [0.220.0]
+- LPDDR per-entry sourcing is complete: no entry is left on the research-doc citation.
+  - The 24 remaining entries now cite Samsung product pages (K3LK4K40CM-JHCP, K3LKCKC0BM-MGCP, K3KL3L30EM-JUCV, K3KL9L90DM-MGCU), Micron datasheets (LPDDR5 MT62F512M64D4 / MT62F1G64D8; LPDDR5X Y5BP MT62F768M64D4 / MT62F1536M64D8) and the Micron LPDDR5X page (1γ 6/12/24 GB, 16 GB).
+  - Five entries are 二手: four rest on a distributor list (glochip.com), and one, LPDDR5X x32 32 GB, is inferred (推导) from SOCAMM2 192 GB.
+  - Entries with no product found are tagged 假设.
+- Corrected availability tags (old → new):
+  - LPDDR5X SOCAMM2 192 GB: sampling → shipping. SK hynix newsroom 2026-04-20 reports mass production; this reverts the 0.219 change, which relied on Micron's 2025-10-22 sampling release only.
+  - SOCAMM2 48 / 64 / 96 / 128 GB: shipping → JEDEC-allowed, no product. No SOCAMM2 product source was found; Samsung lists "up to 256 GB", SK hynix 192 GB, Micron 192 / 256 GB.
+  - LPDDR5 x32 3 GB, x32 6 GB, x64 3 GB: shipping → JEDEC-allowed, no product. No Samsung or Micron part was found.
+  - Default capacities are unchanged: LPDDR5 x32 6 GB (now tagged no-product), x64 12 GB; SOCAMM2 192 GB.
+- Other source updates:
+  - CXMT LPDDR6 12.8 Gb/s and 16 GB now cite CXMT's own newsroom post (2026-09-07: 16 Gb dies, 1295-ball, 10667 with the SoC) instead of the TrendForce summary.
+  - LPCAMM2 9600 stays 来源/假设: Micron's brief names a 2026 grade, and Samsung's LPCAMM2 page lists 8533 and up to 64 GB.
+- Model catalog check (2026-10-17): nothing added.
+  - RWKV: the newest release is RWKV7-G1k-20260930, already in the catalog.
+  - StartLux: v1.1 is already in the catalog. The new ReaDy-Qwen3.8-27B is a speculative-decoding draft model, not a decision model, so it is not added (it would need a spec-decode path).
+  - Microsoft-Decision-1 and Jev: no official public release.
+- New adversarial fuzzer: what-if lever monotonicity (tests/test_core_220.py).
+
 ## [0.219.0]
 - HBM: the two remaining 二手 entries are now 来源.
   - HBM3E 9.8 Gb/s: Samsung newsroom 2023-10-20 (Memory Tech Day), Shinebolt "9.8 Gbps per pin … samples … shipping". Rate tag corrected from custom·announced to custom·sampling.

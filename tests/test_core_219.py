@@ -45,7 +45,8 @@ def test_lpddr_every_entry_sourced():
 
 
 def test_lpddr_corrections():
-    assert m.LPDDR_CATALOG["LPDDR5X"]["forms"]["SOCAMM2"]["caps"][128][192] == ("jedec", "sampling")
+    # 0.220: back to shipping (SK hynix mass production 2026-04-20), see test_core_220
+    assert m.LPDDR_CATALOG["LPDDR5X"]["forms"]["SOCAMM2"]["caps"][128][192] == ("jedec", "shipping")
     for k in (("LPDDR5", "discrete", "rate", 6400), ("LPDDR5X", "discrete", "rate", 8533),
               ("LPDDR6", "discrete", "rate", 10667), ("LPDDR6", "discrete", "rate", 14400)):
         assert _tag(m.LPDDR_SOURCES[k]) == "来源" and "JEDEC" in m.LPDDR_SOURCES[k], k

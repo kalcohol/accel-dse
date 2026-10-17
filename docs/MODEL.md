@@ -4889,3 +4889,26 @@ What-if rows state the batch they are priced at: critical batch, else batch limi
 - Ruled out: a scheduler-only explanation of the whole residual.
 
 **TRT-LLM 0.8 prefill, about 20 % fast.** No new public source for TensorRT-native GEMM efficiency or GptSession host setup was found. The §146–148 conclusions stand. Nothing fitted.
+
+## §167 LPDDR sourcing complete; model check; what-if monotonicity fuzzer (0.220)
+**LPDDR sources.** All 66 LPDDR entries now carry a per-entry source: JEDEC press releases, Samsung product pages, Micron datasheets and pages, SK hynix / CXMT newsrooms, or a 二手 distributor list where no vendor page was found. Entries with no part found are 假设 and tagged JEDEC-allowed · no product.
+
+Corrections:
+- SOCAMM2 192 GB: back to shipping (SK hynix mass production, 2026-04-20; the 0.219 downgrade used Micron's sampling release only).
+- SOCAMM2 48–128 GB: shipping → none.
+- LPDDR5 x32 3/6 GB and x64 3 GB: shipping → none.
+
+No bandwidth or capacity number changed, so no model result moved.
+
+**Models (checked 2026-10-17).**
+- RWKV: the newest release is RWKV7-G1k-20260930, already in the catalog.
+- StartLux: Decision v1 / v1.1 are in the catalog. ReaDy-Qwen3.8-27B (2026-10-14) is a 5-layer DSpark speculative draft that reads two target recurrent states (rank 8). It needs its target model and speculative decoding, which this tool does not model, so it is not added.
+- Microsoft-Decision-1 (still the 0.191 proxy) and Jev: no official public config.
+
+**Fuzzer.** Seeded random models × chips × batch × ctx × KV format. Levers that only add a resource must not worsen their own axis:
+- KV fp8 / ctx ÷ 2: batch limit and KV asymptote ≥ base.
+- Taller HBM: batch limit ≥ base, chip FLOP/B unchanged.
+- SRAM × 2: batch limit ≥ base.
+- DRAM × 2: TPOT ≤ base.
+
+The fuzzer checks physical direction only, so it is not a calibration.

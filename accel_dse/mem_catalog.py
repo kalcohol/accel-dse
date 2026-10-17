@@ -203,7 +203,8 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
                 "counts": (1, 2, 4, 6, 8),
                 "default_count": 4,
                 # x32 12 GB not verified (audit L5-3) → JEDEC 允许 · 无产品
-                "caps": {32: {3: _JS, 6: _JS, 8: _JS, 12: _JN}, 64: {3: _JS, 6: _JS, 8: _JS, 12: _JS}},
+                # 0.220: x32 3/6 GB and x64 3 GB: no vendor part found → JEDEC-allowed, no product (was shipping)
+                "caps": {32: {3: _JN, 6: _JN, 8: _JS, 12: _JN}, 64: {3: _JN, 6: _JS, 8: _JS, 12: _JS}},
                 "default_cap": {32: 6, 64: 12},
             },
         },
@@ -239,7 +240,8 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
                 "counts": (1, 2, 4, 6, 8),
                 "default_count": 8,
                 # 256 GB: Micron sampling 2026-03; mass production unconfirmed (audit S-4)
-                "caps": {128: {48: _JS, 64: _JS, 96: _JS, 128: _JS, 192: _JM, 256: _JM}},   # 0.219: 192 shipping → sampling (Micron 2025-10-22)
+                # 0.220: 192 sampling → shipping (SK hynix MP 2026-04-20); 48–128: no SOCAMM2 product source → none
+                "caps": {128: {48: _JN, 64: _JN, 96: _JN, 128: _JN, 192: _JS, 256: _JM}},
                 "default_cap": {128: 192},
             },
             "LPCAMM2": {
@@ -312,7 +314,7 @@ LPDDR_SOURCES: dict[tuple, str] = {
     ("LPDDR5X", "discrete", "cap", 32, 64): "来源: Micron 2026-03-03 256 GB SOCAMM2 from monolithic 32 Gb LPDDR5X dies (samples) → 64 GB x32 component 推导",
     ("LPDDR5X", "SOCAMM2", "rate", 9600): "来源: Micron 2025-10-22 SOCAMM2 up to 9.6 Gbps (customer sampling)",
     ("LPDDR5X", "SOCAMM2", "rate", 8533): "来源: JEDEC JESD209-5B PR 2021-07-28 (LPDDR5X extension up to 8533 Mbps)",
-    ("LPDDR5X", "SOCAMM2", "cap", 128, 192): "来源: Micron 2025-10-22 'customer sampling of SOCAMM2 … up to 192GB' (was tagged shipping ≤ 0.218)",
+    ("LPDDR5X", "SOCAMM2", "cap", 128, 192): "来源: SK hynix newsroom 2026-04-20 '192GB SOCAMM2 … mass production' (Vera Rubin); Micron 2025-10-22 sampling (0.219 sampling → 0.220 shipping)",
     ("LPDDR5X", "SOCAMM2", "cap", 128, 256): "来源: Micron 2026-03-03 world's first 256 GB SOCAMM2 samples",
     ("LPDDR5X", "SOCAMM2", "width", 128): "二手: JEDEC JESD328 SOCAMM2 (2026-06, research doc)",
     ("LPDDR5X", "LPCAMM2", "rate", 7500): "来源: Micron 2024-05-07 Crucial LPCAMM2 32/64 GB up to 7500 MT/s",
@@ -326,10 +328,35 @@ LPDDR_SOURCES: dict[tuple, str] = {
     ("LPDDR6", "discrete", "rate", 10667): "来源: JEDEC JESD209-6 PR 2025-07-09 + JEDEC Mobile Forum 2024 (Murdock) slides: introductory 10.667, highest defined 14.4 Gb/s, x24 channel (2 × 12-bit sub-channels)",
     ("LPDDR6", "discrete", "rate", 14400): "来源: JEDEC JESD209-6 PR 2025-07-09 + JEDEC Mobile Forum 2024 (Murdock) slides: introductory 10.667, highest defined 14.4 Gb/s, x24 channel (2 × 12-bit sub-channels)",
     ("LPDDR6", "discrete", "rate", 11733): "推导: WCK 5866 MHz grade between the JEDEC 10.667 / 12.8 bins (JEDEC LPDDR6 workshop, Takahashi 2025)",
-    ("LPDDR6", "discrete", "rate", 12800): "来源: CXMT newsroom 2026 LPDDR6 mass production up to 12,800 Mbps (TrendForce 2026-09-08, 二手 summary)",
-    ("LPDDR6", "discrete", "cap", 96, 16): "来源: CXMT LPDDR6 mass production 16 GB (CXMT newsroom 2026); Samsung 16 GB LPDDR6 validated (二手)",
+    ("LPDDR6", "discrete", "rate", 12800): "来源: CXMT newsroom 2026-09-07 'LPDDR6 … mass production … maximum data rate of 12800 Mbps, 10667 Mbps when operating with the SoC'",
+    ("LPDDR6", "discrete", "cap", 96, 16): "来源: CXMT newsroom 2026-09-07 '16GB … based on 16Gb single dies … 1295-ball FBGA' (package width not stated: x96 推导)",
     ("LPDDR6", "discrete", "width", 96): "二手: CXMT 1295-ball PoP, Samsung PDBEREAGY0B1, Synopsys 'up to 96 bits per package' (research doc)",
     ("LPDDR6", "discrete", "width", 48): "假设: no public part number",
+    # 0.220: the 24 entries still on the research doc in 0.219
+    ("LPDDR5", "discrete", "width", 32): "来源: Samsung product page K3LKCKC0BM-MGCP (LPDDR5, x32, 64 Gb, 6400, mass production)",
+    ("LPDDR5", "discrete", "width", 64): "来源: Samsung product page K3LK4K40CM-JHCP (LPDDR5, x64, 96 Gb, 6400, mass production); Micron LPDDR5 datasheet MT62F512M64D4 / MT62F1G64D8 (x64)",
+    ("LPDDR5", "discrete", "cap", 32, 8): "来源: Samsung product page K3LKCKC0BM-MGCP — 64 Gb (8 GB) x32, mass production",
+    ("LPDDR5", "discrete", "cap", 32, 3): "假设: no x32 24 Gb LPDDR5 part found (Samsung / Micron, 2026-10-17) — JEDEC-allowed only (was shipping)",
+    ("LPDDR5", "discrete", "cap", 32, 6): "假设: no x32 48 Gb LPDDR5 part found (Samsung / Micron, 2026-10-17) — JEDEC-allowed only (was shipping)",
+    ("LPDDR5", "discrete", "cap", 64, 3): "假设: no x64 24 Gb LPDDR5 part found (Samsung / Micron, 2026-10-17) — JEDEC-allowed only (was shipping)",
+    ("LPDDR5", "discrete", "cap", 64, 6): "二手: Samsung K3LK2K20CM-JFCP 48 Gb x64 6400 mass production (distributor list glochip.com; not on Samsung's site in this check)",
+    ("LPDDR5", "discrete", "cap", 64, 8): "来源: Micron automotive LPDDR5 datasheet MT62F1G64D8EK-031 '8GB (64Gb)' x64 6400",
+    ("LPDDR5", "discrete", "cap", 64, 12): "来源: Samsung product page K3LK4K40CM-JHCP 96 Gb (12 GB) x64 mass production; Micron MT62F1536M64D8WT-031 (1536M × 64)",
+    ("LPDDR5X", "discrete", "width", 32): "来源: Samsung product page K3KL9L90DM-MGCU (LPDDR5X, x32, 16 Gb, 8533, mass production)",
+    ("LPDDR5X", "discrete", "width", 64): "来源: Samsung product page K3KL3L30EM-JUCV (LPDDR5X, x64, 64 Gb, 9600); Micron LPDDR5X datasheet Y5BP (441-ball x64)",
+    ("LPDDR5X", "discrete", "cap", 32, 8): "二手: Samsung K3KL9L90CM-MGCT 64 Gb x32 mass production (distributor list glochip.com; Samsung's site lists K3KL9L90DM as 16 Gb)",
+    ("LPDDR5X", "discrete", "cap", 32, 16): "二手: Samsung K3KLALA0CM-MGCT 128 Gb x32 (distributor list glochip.com, 'Sample')",
+    ("LPDDR5X", "discrete", "cap", 32, 32): "推导/来源: SK hynix 2026-04-20 192 GB SOCAMM2 mass production (128-bit module = 4 × x32 packages → 48 GB each); 32 GB x32 inside that range — no explicit part",
+    ("LPDDR5X", "discrete", "cap", 64, 4): "二手: Samsung K3KL1L10GM-JFCT 32 Gb x64 7500 mass production (distributor list glochip.com)",
+    ("LPDDR5X", "discrete", "cap", 64, 6): "来源: Micron LPDDR5X datasheet Y5BP MT62F768M64D4 '6GB (48Gb)' x64 8533; Micron LPDDR5X page: 1γ non-binary 6 / 12 / 24 GB",
+    ("LPDDR5X", "discrete", "cap", 64, 8): "来源: Samsung product page K3KL3L30EM-JUCV 64 Gb (8 GB) x64 (sample); 二手: K3KL3L30DM-BGCU mass production (glochip.com)",
+    ("LPDDR5X", "discrete", "cap", 64, 12): "来源: Micron LPDDR5X datasheet Y5BP MT62F1536M64D8 '12GB (96Gb)' x64 8533; Micron 1γ 12 GB",
+    ("LPDDR5X", "discrete", "cap", 64, 16): "来源: Micron LPDDR5X page 'ships the world's first 1γ … 16GB LPDDR5X' (mobile x64 推导)",
+    ("LPDDR5X", "discrete", "cap", 64, 24): "来源: Micron LPDDR5X page '1γ non-binary LPDDR5X … 6GB, 12GB and 24GB' (x64 推导)",
+    ("LPDDR5X", "SOCAMM2", "cap", 128, 48): "假设: no SOCAMM2 48 GB product source (Samsung page 'up to 256 GB'; SK hynix / Micron list 192 / 256) — was shipping",
+    ("LPDDR5X", "SOCAMM2", "cap", 128, 64): "假设: no SOCAMM2 64 GB product source — was shipping",
+    ("LPDDR5X", "SOCAMM2", "cap", 128, 96): "假设: no SOCAMM2 96 GB product source — was shipping",
+    ("LPDDR5X", "SOCAMM2", "cap", 128, 128): "假设: no SOCAMM2 128 GB product source (SK hynix 128 GB is first-gen SOCAMM, COMPUTEX 2025) — was shipping",
 }
 
 
