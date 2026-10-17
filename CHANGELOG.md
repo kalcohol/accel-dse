@@ -6,6 +6,12 @@
 
 
 
+## [0.215.0]
+- balance_whatif: capacity lever `hbm_{H}h{D}g` (taller HBM stacks, same stack count / rate → same bandwidth), offered only when the base is kv_capacity-bound and no mem_cap override is set; the 2 largest catalog height×density options above the current one, with the catalog availability tag.
+- Cost: JEDEC fixes the package height (720 µm HBM3/3E, 775 µm HBM4), so footprint and shoreline are unchanged (二手); DRAM pJ/bit is unchanged (假设); refresh/standby of the extra dies is not modelled.
+- qwen3-8b 1P ctx 4096: 12H 144 GB batch limit 141→227 (fp8 KV 283→453); 16H 192 GB 247/479, now TPOT-SLO bound. The KV asymptote (28.8 / 57.0 FLOP/B) does not depend on capacity, so it never reaches chip balance (318).
+- tests/test_core_215.py; test_core_208 key list extended.
+
 ## [0.214.0]
 - **What-if lever "two-die package" (`two_die`, B200 approach)** on the existing multi-card + D2D model, with no new model. It has the same totals as DRAM ×2:
   - Each die has half the engines, SRAM and state SRAM.

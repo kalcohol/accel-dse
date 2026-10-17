@@ -18,6 +18,7 @@ from . import __version__, mem_catalog
 from .core.catalog import DOMAINS, catalog_listing, get_model, labels, list_models, offline_entries, unlisted_models
 from .core.budget import Budget, budget_report
 from .core.disagg import disagg_report
+from . import mem_catalog
 from .core.energy import EnergyTable, energy_report, scaleup_bytes
 from dataclasses import replace
 
@@ -592,6 +593,28 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
                 two = None
             if two is not None:
                 cases.append(("two_die", f"双晶粒封装（2 × 半算力，各 {scn.mem_id}，TP×2 经 D2D {two.d2d_std}×{two.d2d_units}）", two))
+
+    # 0.215: capacity at the same bandwidth — taller HBM stacks (same stack count, rate, width).  The catalog's
+    # heights / densities carry the JEDEC / shipping status (HBM3E 12-Hi 36 GB shipping, 16-Hi JEDEC-allowed;
+    # HBM4 16-Hi × 24 Gb = 48 GB sampling).  Stack height is fixed by JEDEC (720 µm HBM3/3E, 775 µm HBM4) and the
+    # footprint is the same, so shoreline / PHY area do not change 「二手」; DRAM pJ/bit unchanged 「假设」;
+    # refresh / standby of the extra dies is not modelled.  Only when capacity binds the batch.
+    if b0.get("limited_by") == "kv_capacity" and not scn.mem_cap_GB:       # no capacity override (0 / None)
+        try:
+            spec = mem_catalog.parse_mem_id(scn.mem_id)
+        except ValueError:
+            spec = None
+        if spec is not None and spec.kind == "HBM":
+            cat = mem_catalog.HBM_CATALOG[spec.mem_type]
+            opts = sorted({(h * d, h, d) for h in cat["heights"] for d in cat["densities"]
+                           if h * d > spec.hbm_height * spec.hbm_die_Gb and h >= spec.hbm_height})
+            for _, hh, dd in opts[-2:] if len(opts) > 2 else opts:
+                try:
+                    hs = mem_catalog.make_spec(spec.mem_type, count=spec.n_units, height=hh, die_Gb=dd, rate=spec.rate_MTps)
+                except ValueError:
+                    continue
+                cases.append((f"hbm_{hh}h{dd}g", f"HBM 堆栈加高（{spec.hbm_height}H×{spec.hbm_die_Gb}Gb → {hh}H×{dd}Gb，"
+                              f"{spec.capacity_GB:g} → {hs.capacity_GB:g} GB，带宽不变 · {hs.tag_zh}）", rp(scn, mem_id=hs.id)))
 
     def pick(q, b):
         return {"critical_batch": b["critical_batch"], "batch_limit": b["batch_limit"], "limited_by": b["limited_by"],
