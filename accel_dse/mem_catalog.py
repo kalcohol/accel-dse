@@ -177,6 +177,7 @@ _LM = ("jedec_likely", "sampling")
 _LA = ("jedec_likely", "announced")
 _LN = ("jedec_likely", "none")
 _CS = ("custom", "shipping")
+_CM = ("custom", "sampling")      # 0.219
 _CA = ("custom", "announced")
 _UM = ("unspecified", "sampling")
 _UA = ("unspecified", "announced")
@@ -189,7 +190,7 @@ _UN = ("unspecified", "none")      # = legacy 推测
 LPDDR_CATALOG: dict[str, dict[str, Any]] = {
     "LPDDR5": {
         "jedec_doc": "JESD209-5 / 5C",
-        "src": "二手: docs/research/memory_specs_2026-10.json §6 (vendor pages + JESD209 public summaries), audit 2026-10-08",
+        "src": "来源/二手: per entry — LPDDR_SOURCES / lpddr_source() (0.219); research-doc entries 二手",
         "payload_factor": 1.0,
         "clock": "lp5",
         "forms": {
@@ -209,7 +210,7 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
     },
     "LPDDR5X": {
         "jedec_doc": "JESD209-5C (≤8533 明文；9600/10667 疑似)；LPDDR5T = LPDDR5X-9600",
-        "src": "二手: docs/research/memory_specs_2026-10.json §6 (vendor pages + JESD209 public summaries), audit 2026-10-08",
+        "src": "来源/二手: per entry — LPDDR_SOURCES / lpddr_source() (0.219); research-doc entries 二手",
         "payload_factor": 1.0,
         "clock": "lp5",
         "forms": {
@@ -238,7 +239,7 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
                 "counts": (1, 2, 4, 6, 8),
                 "default_count": 8,
                 # 256 GB: Micron sampling 2026-03; mass production unconfirmed (audit S-4)
-                "caps": {128: {48: _JS, 64: _JS, 96: _JS, 128: _JS, 192: _JS, 256: _JM}},
+                "caps": {128: {48: _JS, 64: _JS, 96: _JS, 128: _JS, 192: _JM, 256: _JM}},   # 0.219: 192 shipping → sampling (Micron 2025-10-22)
                 "default_cap": {128: 192},
             },
             "LPCAMM2": {
@@ -257,7 +258,7 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
     },
     "LPDDR6": {
         "jedec_doc": "JESD209-6 (2025-07)",
-        "src": "二手: docs/research/memory_specs_2026-10.json §6 (JEDEC JESD209-6 PR 2025-07 + vendor pages), audit 2026-10-08",
+        "src": "来源/二手: per entry — LPDDR_SOURCES / lpddr_source() (0.219); research-doc entries 二手",
         "payload_factor": LPDDR6_PAYLOAD,
         "clock": "lp6",
         "forms": {
@@ -297,6 +298,53 @@ LPDDR_CATALOG: dict[str, dict[str, Any]] = {
     },
 }
 
+# 0.219: per-entry LPDDR sources (rate / width / capacity).  Value = "<provenance tag>: <source>".  Entries not
+# re-fetched in 0.219 keep the research-doc citation labelled 二手 per entry (no blanket per-type tag).
+_LP_R = "二手: docs/research/memory_specs_2026-10.json §6 (audit 2026-10-08); not re-fetched in 0.219"
+LPDDR_SOURCES: dict[tuple, str] = {
+    ("LPDDR5", "discrete", "rate", 6400): "来源: JEDEC JESD209-5 PR 2019-02-19 (LPDDR5 up to 6400 MT/s)",
+    ("LPDDR5", "discrete", "rate", 5500): "二手: JESD209-5 speed bin below the 6400 maximum (bin table in the paid standard; research doc)",
+    ("LPDDR5X", "discrete", "rate", 8533): "来源: JEDEC JESD209-5B PR 2021-07-28 (LPDDR5X extension up to 8533 Mbps)",
+    ("LPDDR5X", "discrete", "rate", 7500): "来源: Micron LPCAMM2 product brief (7500 MT/s 2024 grade, LPDDR5X components)",
+    ("LPDDR5X", "discrete", "rate", 9600): "来源: SK hynix newsroom 2023-01 LPDDR5T 9.6 Gbps, commercialized 2023-11 (16 GB packages, vivo X100); Micron 2023-10-24 9.6 Gbps LPDDR5X production samples",
+    ("LPDDR5X", "discrete", "rate", 10667): "来源: Samsung newsroom 2024-04-17 LPDDR5X 10.7 Gbps (MP planned 2H 2024); Micron 2025-06-03 1γ LPDDR5X 10.7 Gbps shipping",
+    ("LPDDR5X", "discrete", "cap", 64, 32): "来源: Samsung newsroom 2024-04-17 'single package capacity … up to 32 GB' (development; volume not confirmed → announced)",
+    ("LPDDR5X", "discrete", "cap", 32, 64): "来源: Micron 2026-03-03 256 GB SOCAMM2 from monolithic 32 Gb LPDDR5X dies (samples) → 64 GB x32 component 推导",
+    ("LPDDR5X", "SOCAMM2", "rate", 9600): "来源: Micron 2025-10-22 SOCAMM2 up to 9.6 Gbps (customer sampling)",
+    ("LPDDR5X", "SOCAMM2", "rate", 8533): "来源: JEDEC JESD209-5B PR 2021-07-28 (LPDDR5X extension up to 8533 Mbps)",
+    ("LPDDR5X", "SOCAMM2", "cap", 128, 192): "来源: Micron 2025-10-22 'customer sampling of SOCAMM2 … up to 192GB' (was tagged shipping ≤ 0.218)",
+    ("LPDDR5X", "SOCAMM2", "cap", 128, 256): "来源: Micron 2026-03-03 world's first 256 GB SOCAMM2 samples",
+    ("LPDDR5X", "SOCAMM2", "width", 128): "二手: JEDEC JESD328 SOCAMM2 (2026-06, research doc)",
+    ("LPDDR5X", "LPCAMM2", "rate", 7500): "来源: Micron 2024-05-07 Crucial LPCAMM2 32/64 GB up to 7500 MT/s",
+    ("LPDDR5X", "LPCAMM2", "rate", 8533): "来源: JEDEC JESD209-5B PR 2021-07-28 (LPDDR5X extension up to 8533 Mbps)",
+    ("LPDDR5X", "LPCAMM2", "rate", 9600): "来源/假设: Micron LPCAMM2 brief lists 9600 MT/s as the 2026 grade; shipping status not confirmed (假设)",
+    ("LPDDR5X", "LPCAMM2", "cap", 128, 16): "来源: Micron 2024-01-09 LPCAMM2 16/32/64 GB",
+    ("LPDDR5X", "LPCAMM2", "cap", 128, 32): "来源: Micron 2024-01-09 LPCAMM2 16/32/64 GB; Crucial 2024-05-07 shipping",
+    ("LPDDR5X", "LPCAMM2", "cap", 128, 64): "来源: Micron 2024-01-09 LPCAMM2 16/32/64 GB; Crucial 2024-05-07 shipping",
+    ("LPDDR5X", "LPCAMM2", "cap", 128, 96): "二手: Samsung 96 GB LPCAMM2 LPDDR5X-9600 pictured, not yet in mass production (TechSpot / Wccftech 2026)",
+    ("LPDDR5X", "LPCAMM2", "width", 128): "二手: JEDEC JESD318 CAMM2 (research doc)",
+    ("LPDDR6", "discrete", "rate", 10667): "来源: JEDEC JESD209-6 PR 2025-07-09 + JEDEC Mobile Forum 2024 (Murdock) slides: introductory 10.667, highest defined 14.4 Gb/s, x24 channel (2 × 12-bit sub-channels)",
+    ("LPDDR6", "discrete", "rate", 14400): "来源: JEDEC JESD209-6 PR 2025-07-09 + JEDEC Mobile Forum 2024 (Murdock) slides: introductory 10.667, highest defined 14.4 Gb/s, x24 channel (2 × 12-bit sub-channels)",
+    ("LPDDR6", "discrete", "rate", 11733): "推导: WCK 5866 MHz grade between the JEDEC 10.667 / 12.8 bins (JEDEC LPDDR6 workshop, Takahashi 2025)",
+    ("LPDDR6", "discrete", "rate", 12800): "来源: CXMT newsroom 2026 LPDDR6 mass production up to 12,800 Mbps (TrendForce 2026-09-08, 二手 summary)",
+    ("LPDDR6", "discrete", "cap", 96, 16): "来源: CXMT LPDDR6 mass production 16 GB (CXMT newsroom 2026); Samsung 16 GB LPDDR6 validated (二手)",
+    ("LPDDR6", "discrete", "width", 96): "二手: CXMT 1295-ball PoP, Samsung PDBEREAGY0B1, Synopsys 'up to 96 bits per package' (research doc)",
+    ("LPDDR6", "discrete", "width", 48): "假设: no public part number",
+}
+
+
+def lpddr_source(t: str, form: str, kind: str, *key) -> str:
+    """Source string of one LPDDR catalog entry; entries without a 0.219 citation return the research-doc 二手 one
+    (or 假设 for configurations the catalog marks as no product)."""
+    v = LPDDR_SOURCES.get((t, form, kind) + tuple(key))
+    if v:
+        return v
+    f = LPDDR_CATALOG[t]["forms"][form]
+    st = (f["rates"].get(key[0]) if kind == "rate" else f["widths"].get(key[0]) if kind == "width"
+          else f["caps"].get(key[0], {}).get(key[1]))
+    return "假设: catalog configuration, no product" if st and st[1] == "none" else _LP_R
+
+
 HBM_STACK_COUNTS: tuple[int, ...] = (1, 2, 4, 5, 6, 8, 12, 16)
 HBM_MAX_KNOWN_STACKS = 12  # MI455X
 
@@ -320,7 +368,7 @@ HBM_CATALOG: dict[str, dict[str, Any]] = {
         "stack_width": 1024,
         "width_status": _JS,
         # speeds beyond JESD238's 6.4 Gb/s → 超规格定制; 8000 = system-level run rate
-        "rates": {8000: _CS, 9200: _CS, 9600: _CS, 9800: _CA},
+        "rates": {8000: _CS, 9200: _CS, 9600: _CS, 9800: _CM},   # 0.219: 9800 announced → sampling (Samsung 2023-10-20)
         "default_rate": 9200,
         "heights": (8, 12, 16),
         "default_height": 12,
@@ -366,8 +414,8 @@ HBM_DEFAULT_STACKS = 8
 # 0.216/0.218: sources behind every HBM cap_tag that claims a product (shipping / sampling / announced) or a JEDEC
 # limit.  Each value starts with a provenance tag (core/provenance.py) then ": ".  Re-fetched 2026-10-17.
 HBM_CAP_SOURCES: dict[tuple[str, int, int], str] = {
-    ("HBM3", 8, 16): "二手: H100 SXM 80 GB = 5 × 16 GB HBM3 stacks (NVIDIA H100 datasheet); 8 × 16 Gb per stack 推导",
-    ("HBM3", 12, 16): "二手: SK hynix 2023-04 12-layer 24 GB HBM3 (press coverage; not re-fetched in 0.218)",
+    ("HBM3", 8, 16): "来源: Samsung Memory Tech Day 2023-10-20 newsroom 'Samsung's 8H and 12H HBM3 products are currently in mass production'; SK hynix 2023-04-20 'previous [HBM3] 16GB' product; 16 GB / 8 dies = 16 Gb 推导",
+    ("HBM3", 12, 16): "来源: SK hynix newsroom 2023-04-20 'industry's first 12-layer HBM3 … 24 GB', samples, supply from 2H 2023; Samsung 2023-10-20 '12H HBM3 … in mass production'",
     ("HBM3E", 8, 24): "来源: SK hynix 2024-09-26 PR footnote 'maximum capacity of HBM3E was 24GB from eight 3GB DRAM chips'; Micron HBM3E 24GB 8-high in H200 (micron.com product page)",
     ("HBM3E", 12, 24): "来源: SK hynix 2024-09-26 12-layer HBM3E 36GB volume production; Samsung 2024-02-27 developed; Micron 2024-09-05 production-capable for qualification",
     ("HBM3E", 16, 24): "来源: SK hynix 2024-11-04 (SK AI Summit) 48GB 16-layer HBM3E announced, samples planned early 2025",
@@ -386,7 +434,7 @@ HBM_RATE_SOURCES: dict[tuple[str, int], str] = {
     ("HBM3E", 8000): "推导: system-level run rate (B200 8 TB/s ÷ 8 stacks ÷ 1024 bit ≈ 7.8 Gb/s)",
     ("HBM3E", 9200): "来源: Micron 2024-09-05 HBM3E 12-high 'pin speed greater than 9.2 Gb/s'",
     ("HBM3E", 9600): "来源: Samsung 2026-02-12 'maximum pin speed of 9.6Gbps of its predecessor, HBM3E'; SK hynix 2024-09-26 12-layer HBM3E 9.6 Gbps",
-    ("HBM3E", 9800): "二手: Samsung HBM3E 'Shinebolt' 9.8 Gb/s announcement (2023-10, press coverage; not re-fetched)",
+    ("HBM3E", 9800): "来源: Samsung newsroom 2023-10-20 (Memory Tech Day) HBM3E Shinebolt '9.8 Gbps per pin … samples for Shinebolt are shipping to customers'",
     ("HBM4", 8000): "来源: JEDEC JESD270-4 PR 2025-04-16 'up to 8 Gb/s across a 2048-bit interface'",
     ("HBM4", 10000): "来源: SK hynix 2025-09-12 HBM4 'over 10Gbps operating speed'",
     ("HBM4", 11000): "来源: Micron 2026-03-16 HBM4 'over 11 Gb/s pin speeds'",

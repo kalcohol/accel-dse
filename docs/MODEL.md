@@ -4863,3 +4863,29 @@ qwen3-8b 1P, fp8 KV, at the batch limits: base 15.1 mJ/tok @283; 12H 14.65 @453;
 Samsung (newsroom 2026-02-12, 来源) offers 12-layer HBM4 at 24–36 GB, so 24 GB means 16 Gb dies (推导). JESD270-4's press release lists 24/32 Gb only, so this entry is tagged custom·shipping.
 Every HBM product/limit tag and pin rate now carries a provenance-tagged source string. LPDDR, D2D, chip and link presets carry tags too; chip geometries are 假设 design points. A test enforces this.
 What-if rows state the batch they are priced at: critical batch, else batch limit, else configured. The priced batch is ≤ the row's batch limit (invariant).
+
+## §166 Source upgrades, LPDDR per-entry sourcing, residual review (0.219)
+**HBM.**
+- Samsung newsroom 2023-10-20 (来源): HBM3E Shinebolt at 9.8 Gb/s with samples shipping, so the tag changes from custom·announced to custom·sampling. Samsung's 8H and 12H HBM3 are in mass production.
+- SK hynix newsroom 2023-04-20 (来源): 12-layer HBM3 at 24 GB, sampling, with supply from 2H 2023.
+
+**LPDDR.** Sources are per entry (`lpddr_source`).
+- JEDEC: JESD209-5 PR 2019-02-19 (6400 MT/s), JESD209-5B PR 2021-07-28 (8533), JESD209-6 PR 2025-07-09 plus the JEDEC Mobile Forum slides (10.667 intro, 14.4 max, x24 channel).
+- Vendors:
+  - Samsung 10.7 Gb/s LPDDR5X, 32 GB package (2024-04-17).
+  - Micron 1γ 10.7 (2025-06-03).
+  - SK hynix LPDDR5T 9.6 (2023).
+  - Micron SOCAMM2 192 GB sampling (2025-10-22) and 256 GB samples (2026-03-03).
+  - Micron LPCAMM2 16/32/64 GB (2024-01-09), 7500 (2024-05-07).
+  - CXMT LPDDR6 12.8 Gb/s, 16 GB mass production (2026; TrendForce summary).
+- Correction: SOCAMM2 192 GB, shipping → sampling. 24 entries still carry the research-doc citation (二手); deferred.
+
+**MI300X max-load residual (1.43–1.70×).**
+- New quantitative source: vLLM PR #40459 (RFC; vLLM 0.19, H100, Qwen3-0.6B, 256 sequences, eager).
+  - The scheduler takes `schedule()` 907 ms + `update_from_output` 572 ms of a 12.68 s wall.
+  - That is about 940 steps, so about 1.57 ms per step, or about 6 µs per sequence (推导). The update loop alone is 0.76 µs/seq (microbench).
+- At max-load batches of 1500–3200 this is 9–20 ms per step, against an implied per-step gap of 53–109 ms (§153). It explains at most about 20 %.
+- Not applied: different vLLM version (0.19 vs the README's 0.11.2), different host CPU, and enforce_eager; §127's 1.9 µs/seq stays unapplied too.
+- Ruled out: a scheduler-only explanation of the whole residual.
+
+**TRT-LLM 0.8 prefill, about 20 % fast.** No new public source for TensorRT-native GEMM efficiency or GptSession host setup was found. The §146–148 conclusions stand. Nothing fitted.

@@ -33,7 +33,7 @@ def test_hbm_every_claim_sourced():
 
 def test_catalog_wide_provenance():
     for t, c in mem_catalog.LPDDR_CATALOG.items():
-        assert valid_tag(_tag(c["src"])) and len(c["src"]) > 20, t
+        assert valid_tag(_tag(c["src"])) and len(c["src"]) > 20, t      # 0.219: per entry, see test_core_219
     for k, d in D2D_STANDARDS.items():
         assert valid_tag(d["src"]) and d.get("note"), k
     for n in CHIPS:

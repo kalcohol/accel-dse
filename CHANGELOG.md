@@ -6,6 +6,18 @@
 
 
 
+## [0.219.0]
+- HBM: the two remaining 二手 entries are now 来源.
+  - HBM3E 9.8 Gb/s: Samsung newsroom 2023-10-20 (Memory Tech Day), Shinebolt "9.8 Gbps per pin … samples … shipping". Rate tag corrected from custom·announced to custom·sampling.
+  - HBM3 12-Hi 24 GB: SK hynix newsroom 2023-04-20. HBM3 8-Hi/12-Hi mass production: Samsung 2023-10-20.
+- LPDDR: per-entry `LPDDR_SOURCES` / `lpddr_source()` replace the blanket per-type 二手.
+  - Of 66 entries, 28 now cite JEDEC press releases (JESD209-5 6400; JESD209-5B 8533; JESD209-6 10.667 / 14.4 Gb/s) or vendor releases (Samsung, SK hynix, Micron, CXMT).
+  - 14 configurations with no product are tagged 假设.
+  - 24 keep the research-doc citation, labelled 二手 per entry (deferred).
+- Corrections:
+  - SOCAMM2 192 GB: jedec·shipping → jedec·sampling. Micron 2025-10-22 says "customer sampling … up to 192 GB"; no volume source was found. The default cap stays 192.
+- Residual review: no new sourced mechanism was applied; see MODEL §166.
+
 ## [0.218.0]
 - Samsung HBM4 24 GB: HBM4 densities (24, 32) → (16, 24, 32). New tags: (12, 16) custom·shipping, from the Samsung newsroom 2026-02-12 ("12-layer … 24 GB to 36 GB"); the 16 Gb die density is 推导 (Samsung doesn't state it), and it is outside the JESD270-4 PR density list (24/32 Gb). (8, 16) and (16, 16) are unspecified·none. Default density is still 24, so no default changed.
 - SK hynix / Micron HBM4 re-checked against primary sources:
