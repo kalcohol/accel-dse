@@ -282,7 +282,7 @@ def _resolve_chip(v, where: str):
     return v
 
 
-CHUNK_PROFILE_IDS = ("vllm", "vllm_v0", "legacy_512", "fixed")      # 0.231: pdqueue.CHUNK_PROFILES
+CHUNK_PROFILE_IDS = ("vllm", "vllm_v0", "sglang", "sglang_mixed", "legacy_512", "fixed")      # 0.231: pdqueue.CHUNK_PROFILES
 
 
 @dataclass(frozen=True)
@@ -305,6 +305,10 @@ class PDConfig:
     # 2048, ≥ 70 GiB 8192, ≥ 160 GiB 16384) unless chunk_budget is set.  "vllm_v0" = the V0 docs default
     # budget 2048 (来源).  "legacy_512" = ≤ 0.230 (512 prompt tokens
     # per iteration on top of the decodes, 「假设」).  "fixed" = chunk_tokens prompt tokens per iteration.
+    # 0.232: "sglang" (来源) = SGLang default (no mixed chunk): prefill-first, a long prompt runs as consecutive
+    # prefill-only chunks of chunked_prefill_size (by card memory: < 20 GiB 2048, < 60 4096, < 160 8192, else 16384;
+    # chunk_budget overrides) while the decodes pause; "sglang_mixed" = --enable-mixed-chunk (the vllm fused rule with
+    # budget = chunked_prefill_size).
     chunk_profile: str = field(default="vllm", metadata={"omit_default": True})
     chunk_budget: int | None = field(default=None, metadata={"omit_default": True})
     # 0.52 — request-length spread and prefix caching (queueing + capacity; all 「假设」; defaults = 0.51 behaviour)

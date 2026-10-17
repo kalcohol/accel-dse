@@ -5374,3 +5374,24 @@ The chunk count and the prompt's excess service follow the operating batch k_s b
 **Approximation (「近似」).** One prompt per chunk iteration; packing several short prompts into one budget is not modelled.
 
 **Deferred.** SGLang's default (no mixed chunk) runs prefill-only chunk iterations that pause decodes. That needs a separate non-fused mode.
+
+## §179 SGLang chunked prefill: the non-fused profile (0.232)
+
+SGLang without mixed chunk (`enable_mixed_chunk = False`, the default) runs a prefill batch whenever one can be formed, and re-admits a partly prefilled request first. A prompt of n new tokens therefore runs as ⌈n/C⌉ consecutive prefill-only iterations, and no decode iteration runs between them. The queue is the prefill-first queue (§ prefill-first: an M/G/1 or bulk prefill server, decode in the reduced clock with batch arrivals); only the prefill service changes.
+
+**Prefill service.**
+- T(1, S, p) = Σ_j T_prefill(S_j = min(S, p + (j+1)C), cached prefix p + jC).
+- Each chunk is an engine prefill with the earlier chunks as cached prefix. So it re-reads all weights and the earlier KV, and its activations are those of a C-token pass. Activations that spill at the full prompt length can stay on chip.
+- A batch packs b prompts only if b·(S − p) ≤ C.
+
+**Decode pause.** Prefill-first's stall (the prefill busy period) now contains the chunk iterations. The decode share is 1 − ρ_prefill with ρ computed on the chunked service, and itl_max ≥ the stall.
+
+**Energy.** The summed action counts of the chunk evaluations.
+
+**Chunk size C.** chunked_prefill_size by memory per card (`memory_hook.py`): < 20 GiB 2048, < 60 GiB 4096, < 160 GiB 8192, ≥ 160 GiB 16384. `pd.chunk_budget` overrides it.
+
+**`sglang_mixed`.** `--enable-mixed-chunk` subtracts the running batch from the chunk budget and fuses the decodes in. This is the §178 vLLM rule with budget = chunked_prefill_size.
+
+**Approximation (「近似」).** A prompt's tail chunk is not packed with the next prompt.
+
+**Known gap (→ 0.233).** The fused path's chunk iteration scales the full prompt's non-weight DRAM by f. For long prompts that spill activations this overstates chunk cost relative to the per-chunk evaluation used here.

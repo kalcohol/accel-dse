@@ -37,7 +37,7 @@ def test_tiers_and_spec():
 
 
 def test_config_validation_and_legacy():
-    for bad in (dict(chunk_profile="sglang"), dict(chunk_budget=8), dict(chunk_budget=1.5), dict(chunk_budget=True)):
+    for bad in (dict(chunk_profile="trtllm"), dict(chunk_budget=8), dict(chunk_budget=1.5), dict(chunk_budget=True)):
         try:
             PDConfig(**bad)
         except ValueError:

@@ -1059,6 +1059,15 @@ def simulate(ctx: dict, lam: float, mode: str = "pd", n_req: int = 2000, warmup:
             cap = _cap_of(ctx["cpool"], x)
             reps = [ColocPrefillFirst(eng, costs, cap, B) for _ in range(r_c)]
             done_kinds = {"rep_dec_done": "dec_done", "rep_pf_done": "pf_done", "rep_recompute_done": "recompute_done"}
+        elif mode == "coloc_chunked" and (ctx.get("chunk") or {}).get("nonfused"):
+            # 0.232 SGLang non-mixed: prefill-first replicas whose prefill = consecutive prefill-only chunk iterations
+            from .pdqueue import _coloc_chunked, sglang_ctx
+            sc = sglang_ctx(ctx)
+            costs = Costs(sc["cpool"])
+            x = _coloc_chunked(ctx, lam)
+            cap = _cap_of(sc["cpool"], x)
+            reps = [ColocPrefillFirst(eng, costs, cap, B) for _ in range(r_c)]
+            done_kinds = {"rep_dec_done": "dec_done", "rep_pf_done": "pf_done", "rep_recompute_done": "recompute_done"}
         elif mode == "coloc_chunked":
             cap = None
             reps = [ColocChunked(eng, costs, B, C, ctx.get("chunk")) for _ in range(r_c)]

@@ -6,6 +6,45 @@
 
 
 
+## [0.232.0]
+
+### Added (SGLang chunked-prefill profiles for the colocated chunked mode)
+- **`pd.chunk_profile = "sglang"` (「来源」, non-fused).** This is SGLang's default, with `enable_mixed_chunk = False` (`arg_groups/fields/schedule.py`).
+  - The scheduler runs a prefill batch whenever one can be formed ("Run prefill first if possible", `scheduler.get_next_batch_to_run`) and re-admits the chunked request first.
+  - So a long prompt runs as consecutive prefill-only chunk iterations, and every running decode pauses until the prompt finishes.
+  - **Model.** The prefill-first queue and decode machinery (analytic and DES `ColocPrefillFirst`) runs on a chunked view of the pool (`pdqueue._ChunkPool`). A prompt longer than C costs Σ_j prefill(tokens [p+jC, p+(j+1)C), earlier tokens as cached prefix). The engine model therefore carries each chunk's weight re-read, prefix-KV re-read and on-chip activations.
+  - **Packing.** b prompts share one iteration only if b·new ≤ C.
+  - **Energy.** The chunk iterations' own action counts are summed.
+  - **Not modelled (「近似」).** A prompt's tail chunk is not packed together with the next prompt's head.
+- **C = chunked_prefill_size by memory per card** (`arg_groups/memory_hook.py`, gpu_mem in MiB): < 20 GiB → 2048, < 35 → 4096, < 60 → 4096, < 90 → 8192, < 160 → 8192, otherwise 16384. `pd.chunk_budget` overrides it.
+- **`"sglang_mixed"` (`--enable-mixed-chunk`, 「来源」).** PrefillAdder takes `running_bs` off `rem_chunk_tokens`, and `mix_with_running` fuses the decodes into the batch. This maps exactly onto the vLLM fused, decode-first rule with budget = chunked_prefill_size (test: identical to `vllm` at the same budget).
+- **UI, CLI and smoke.** New profile options and a mode note for the non-fused profile ("SGLang 不混合 … decode 暂停"). UI smoke checks it.
+- **Simulator parity** (sglang, C = 1024, 4096/512, load 0.6, n 1000, seeds 11/12). Analytic − DES: TTFT p50 −0.001, p90 +0.048, p99 +0.004; TPOT mean +0.004, p90 −0.028. Prefill-first on the same run: +0.054 / +0.010 / +0.004 / −0.028.
+  - itl_max is −0.199. This is the single-prompt-length lattice atom of the busy-period p99 (MODEL §74); prefill-first shows −0.111.
+
+**KPIs vs vllm and prefill-first** (qwen3-8b, 1P, TP 2, 2P + 6D, load 0.6, tpuv4i_7nm + idle_W 20; `sd221/kpi232.py`). SLO goodput is per card, TTFT is mean / p99 in ms, TPOT is p99 in ms:
+
+| Case | Prefill-first | vllm | sglang | sglang_mixed |
+|---|---|---|---|---|
+| A 4096/512 B64, 288 GiB (C 16384) | 3631, 40.5 / 79.4, 2.339, 0.2027 | 3658, 42.1 / 82.9, 2.338, 0.2019 | = prefill-first | = vllm |
+| B = A with SLO 300 / 2.5 ms (PD 1501) | 1458 | 1459 | 1458 | 1459 |
+| C 16384/256 B32, 288 GiB | 656, 189.3 / 370, 2.786, 1.236 | 633, 190.4 / 373, 2.776, 1.235 | 637, = prefill-first per request | = vllm |
+| D = A with cap 48 GB (vllm 2048 / sglang 4096) | 3631 | 3711, 43.1 / 85.8, 2.291, 0.2031 | 3628, = prefill-first | 3702, 42.5 / 84.1, 2.313, 0.2025 |
+| E = C with cap 48 GB | 656, 189.3 / 370, 2.786, 1.236 | 607, 194.4 / 384, 2.725, 1.241 | 633, 190.3 / 373, 2.795, 1.228 | 624, 192.6 / 379, 2.759, 1.237 |
+
+- **Conclusion shifts.**
+  - **Whole prompt fits one chunk** (A, B, C on 288 GiB): SGLang is prefill-first per request. Its SLO-goodput loss (C: 637 vs 656; D: 3628 vs 3631) comes from packing: at higher λ prefill-first batches two prompts, which SGLang cannot fit into one chunk.
+  - **Long prompts on smaller cards (E):** ranking by SLO goodput is prefill-first > sglang > sglang_mixed > vllm. The fused vLLM rule with a 2048 budget is now last.
+  - **E energy:** sglang has the lowest J/token (1.228). The unchunked 16384-token prefill spills 53 GB of activations to DRAM; 4096-token chunks keep them on chip and pay only 4 × 7.4 GB of weight re-reads and 0.3–0.9 GB of KV re-reads.
+  - **D:** vllm (3711) > sglang_mixed (3702) > prefill-first (3631) ≈ sglang (3628).
+  - **PD vs colocated:** unchanged. Colocated is best in A and C–E; PD is best in B (1501).
+
+### Deferred to 0.233
+- **Fused-path activation spill.** `_fused_step` and the coloc_chunked energy scale the full prompt's non-weight DRAM (including activation spill) by the chunk share f. For long prompts this overstates vLLM chunk time and energy relative to the per-chunk engine evaluation used by `sglang`.
+  - Mechanism fix: evaluate the chunk itself, as `_ChunkPool` does. This will move E's vllm figures.
+- **Packing several prompts within one budget** (vllm fused path, and SGLang partial-prompt packing): needs a bulk-service chunk server.
+- **Full V4 grid re-run** (still deferred).
+
 ## [0.231.0]
 
 ### Changed (colocated chunked prefill: engine profiles replace the 512-token 「假设」; default = vllm; re-baselined)

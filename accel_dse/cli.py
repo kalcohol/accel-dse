@@ -282,11 +282,11 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--pd-rate", dest="pd_rate", type=float, default=None,
                    help="PD queueing: absolute offered load, requests/s (overrides --pd-load)")
     p.add_argument("--pd-chunk-profile", dest="pd_chunk_profile", default=None,
-                   choices=("vllm", "vllm_v0", "legacy_512", "fixed"),
+                   choices=("vllm", "vllm_v0", "sglang", "sglang_mixed", "legacy_512", "fixed"),
                    help="0.231: colocated chunked-prefill engine profile (default vllm: budget − running decodes, budget "
-                        "by card memory 2048/8192/16384 「来源」; vllm_v0 = 2048; legacy_512 = ≤ 0.230 「假设」; fixed = --pd-chunk)")
+                        "by card memory 2048/8192/16384 「来源」; vllm_v0 = 2048; sglang = SGLang non-mixed: prefill-first, chunked_prefill_size by memory, decodes paused (0.232); sglang_mixed = --enable-mixed-chunk; legacy_512 = ≤ 0.230 「假设」; fixed = --pd-chunk)")
     p.add_argument("--pd-chunk-budget", dest="pd_chunk_budget", type=int, default=None,
-                   help="0.231: vLLM token budget per iteration (max_num_batched_tokens) override")
+                   help="0.231: vLLM token budget per iteration (max_num_batched_tokens) / SGLang chunked_prefill_size override")
     p.add_argument("--pd-chunk", dest="pd_chunk", type=int, default=None,
                    help="colocated chunked-prefill prompt tokens per iteration (implies --pd-chunk-profile fixed; 0.231)")
     p.add_argument("--pd-prompt-cv", dest="pd_prompt_cv", type=float, default=None,

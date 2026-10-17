@@ -1204,6 +1204,27 @@ CHUNK_PROFILES = {
 }
 
 
+# 0.232: SGLang (sgl-project/sglang main, python/sglang/srt/arg_groups/memory_hook.py handle_gpu_memory_settings, gpu_mem
+# in MiB): < 20 GiB 2048, < 35 4096, < 60 4096, < 90 8192, < 160 8192, else 16384; unknown memory 4096 「来源」.
+# fields/schedule.py enable_mixed_chunk = False: without mixing the scheduler runs a prefill batch whenever one can be
+# formed ("Run prefill first if possible") and re-admits the chunked request first → a long prompt's chunks run as
+# consecutive prefill-only iterations and the decodes pause for all of them.  With enable_mixed_chunk the PrefillAdder
+# takes running_bs off rem_chunk_tokens and mixes the running decodes in → the vLLM fused rule with budget =
+# chunked_prefill_size.
+SGLANG_CHUNK_TIERS = ((160, 16384), (90, 8192), (60, 8192), (35, 4096), (20, 4096), (0, 2048))
+CHUNK_PROFILES.update({
+    "sglang": {"tag": "来源", "label": "SGLang 默认（不混合）：prefill 优先，长 prompt 按 chunked_prefill_size 分块连续执行，期间 decode 暂停"},
+    "sglang_mixed": {"tag": "来源", "label": "SGLang --enable-mixed-chunk：块预算 = chunked_prefill_size − 运行 batch，与 decode 融合"},
+})
+
+
+def sglang_chunk(card_gib: float) -> int:
+    for lo, c in SGLANG_CHUNK_TIERS:
+        if card_gib >= lo:
+            return c
+    return SGLANG_CHUNK_TIERS[-1][1]
+
+
 def vllm_budget(card_gib: float) -> int:
     for lo, b in VLLM_BUDGET_TIERS:
         if card_gib >= lo:
@@ -1224,6 +1245,14 @@ def chunk_spec(pd, card_gib: float | None) -> dict:
         b = pd.chunk_budget or 2048
         return {"profile": prof, "tag": "来源" if pd.chunk_budget is None else "用户", "budget": b,
                 "source": "vLLM V0 docs (v0.7.3/v0.8.3) max_num_batched_tokens 默认 2048"}
+    if prof in ("sglang", "sglang_mixed"):
+        c = pd.chunk_budget or sglang_chunk(card_gib or 0.0)
+        src = ("pd.chunk_budget" if pd.chunk_budget else
+               f"SGLang memory_hook chunked_prefill_size 默认（每卡 {card_gib or 0:.0f} GiB → {c}）")
+        tag = "用户" if pd.chunk_budget else "来源"
+        if prof == "sglang":
+            return {"profile": prof, "tag": tag, "C": c, "nonfused": True, "source": src}
+        return {"profile": prof, "tag": tag, "budget": c, "source": src + "；enable_mixed_chunk：预算含运行 batch"}
     if prof == "legacy_512":
         return {"profile": prof, "tag": "假设", "C": 512, "source": "≤ 0.230 默认 512「假设」"}
     return {"profile": prof, "tag": "用户", "C": pd.chunk_tokens, "source": "pd.chunk_tokens"}
@@ -1792,7 +1821,67 @@ def _coloc_prefill_first(ctx: dict, lam: float) -> dict:
 
 
 def _coloc_chunked(ctx: dict, lam: float) -> dict:
+    sp = ctx.get("chunk") or {}
+    if sp.get("nonfused"):
+        # 0.232 SGLang (no mixed chunk): the prefill-first machinery on a pool whose prefill = the chunk iterations
+        sc = sglang_ctx(ctx)
+        x = _slo_select(lambda c, l: _kv_wrap(_coloc_prefill_first_base, c, l, "cpool", "r_c"), sc, lam,
+                        try_unstable=True)
+        x["chunk_tokens"], x["chunk_profile"] = sp["C"], sp
+        if x.get("_pre"):
+            n = [x_ for x_ in (_chunk_plan(S, p, sp["C"])[0] for _, S, p in sc.get("pts_c", sc["pts"]))]
+            x["prefill"] = {**x.get("prefill", {}), "chunks": _wsum([w for w, _, _ in sc.get("pts_c", sc["pts"])], n),
+                            "nonfused": True}
+        return x
     return _kv_wrap(_coloc_chunked_base, ctx, lam, "cpool", "r_c")
+
+
+class _ChunkPool:
+    """0.232: a colocated pool seen through SGLang's non-mixed chunked prefill (cap C prompt tokens per iteration).
+    prefill(b, S, p): b·(S − p) ≤ C → one packed iteration (the pool's own prefill); else the prompts run one after
+    another, each as ⌈(S − p)/C⌉ prefill-only iterations, chunk j = a prefill of tokens [p + jC, p + (j + 1)C) with the
+    earlier tokens as cached prefix (its attention re-reads their KV, every chunk re-reads the weights) — b > 1 is then
+    reported as not fitting (a batch cannot pack more than C tokens).  「近似」: a prompt's tail chunk is not packed
+    with the next prompt's head.  Decode runs are the pool's."""
+
+    def __init__(self, pool, C: int):
+        self.pool, self.C, self.scn, self.memo = pool, max(1, int(C)), pool.scn, {}
+
+    def run(self, phase: str, b: int, S: int | None = None, p: int = 0):
+        if phase != "prefill":
+            return self.pool.run(phase, b, S, p)
+        k = (b, S, p)
+        if k in self.memo:
+            return self.memo[k]
+        r0 = self.pool.run("prefill", b, S, p)
+        S_ = S if S is not None else r0.scenario.serving.prompt
+        new = max(1, S_ - p)
+        if b * new <= self.C:
+            self.memo[k] = r0
+            return r0
+        ch, t, q = [], 0.0, p
+        while q < S_:
+            e = min(S_, q + self.C)
+            c = self.pool.run("prefill", 1, e, q)
+            ch.append(c)
+            t += c.ttft
+            q = e
+        r = replace(r0, ttft=t * b, step=t * b, latency=t * b, fits=all(c.fits for c in ch) and b == 1,
+                    throughput=b * new / (t * b) if t > 0 else 0.0)
+        r.scenario = r0.scenario
+        r._chunks = ch * b
+        self.memo[k] = r
+        return r
+
+
+def sglang_ctx(ctx: dict) -> dict:
+    """ctx with the colocated pool replaced by its SGLang chunked view (the view memoised on the pool)."""
+    cp = ctx["cpool"]
+    C = ctx["chunk"]["C"]
+    views = cp.__dict__.setdefault("_chunk_views", {})
+    if C not in views:
+        views[C] = _ChunkPool(cp, C)
+    return {**ctx, "cpool": views[C]}
 
 
 SLO_SCAN = 24       # 0.63: grid points of the SLO-rate scan below the stability limit (4 % of λ_s apart)
@@ -2101,6 +2190,16 @@ def _public(x: dict) -> dict:
 
 
 def _per_unit(r: Result) -> dict:
+    ch = getattr(r, "_chunks", None)
+    if ch:      # 0.232 SGLang non-fused chunked prefill: Σ the chunk iterations' counts per unit of the whole batch
+        tot: dict = {}
+        for c in ch:
+            a = action_counts(c)
+            for k in ACTIONS:
+                if k != "idle":
+                    tot[k] = tot.get(k, 0.0) + a["counts"][k]
+        u = r.scenario.serving.batch * r.scenario.serving.prompt or 1.0
+        return {k: v / u for k, v in tot.items()}
     a = action_counts(r)
     u = a["units"] or 1.0
     return {k: a["counts"][k] / u for k in ACTIONS if k != "idle"}
@@ -2330,7 +2429,11 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
         en["coloc_prefill_first"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["mix"], o, _restore_extra(y, {})),
                                             cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),))
     y = modes.get("coloc_chunked")
-    if y and y["stable"]:
+    if y and y["stable"] and (y.get("chunk_profile") or {}).get("nonfused"):
+        # 0.232 SGLang non-fused: prefill-first accounting with the chunk iterations' own counts (_per_unit)
+        en["coloc_chunked"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["mix"], o, _restore_extra(y, {})),
+                                      cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),))
+    elif y and y["stable"]:
         reread = _wsum(ws, [n * rr * ctx["kv_new"][(S, p)] for (n, _, rr), (_, S, p) in zip(y["_plans"], pts)])
         en["coloc_chunked"] = _energy(_mix(y["_pre1"], pts, y["_dec_r"], o, _restore_extra(y, {"dram": reread}),
                                            shared_weights=True),

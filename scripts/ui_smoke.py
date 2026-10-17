@@ -77,6 +77,13 @@ with sync_playwright() as pw:
         if "legacy_512 · 512 tok" in p.inner_text("#pdq-tbl"): break
         time.sleep(0.5)
     assert "legacy_512 · 512 tok" in p.inner_text("#pdq-tbl"), p.inner_text("#pdq-tbl")[:400]
+    # 0.232 SGLang non-mixed profile: prefill-only chunks, decodes paused (note in the mode row)
+    p.select_option("#pd-chunk_profile", "sglang")
+    for _ in range(240):
+        if "SGLang 不混合" in p.inner_text("#pdq-tbl"): break
+        time.sleep(0.5)
+    t = p.inner_text("#pdq-tbl")
+    assert "SGLang 不混合" in t and "分块 prefill（sglang ·" in t, t[:600]
     p.select_option("#pd-chunk_profile", "vllm"); time.sleep(2)
     print("CHUNK PROFILE ok")
     # 0.223 independent draft model picker + spec rollback select

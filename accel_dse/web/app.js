@@ -270,7 +270,7 @@ function syncInputs() {
   if ($('pd-chunk_profile')) {   // 0.231
     const cp = S.sc.pd.chunk_profile || 'vllm';
     $('pd-chunk_profile').value = cp;
-    $('pd-chunk_budget').disabled = !cp.startsWith('vllm');
+    $('pd-chunk_budget').disabled = !(cp.startsWith('vllm') || cp.startsWith('sglang'));
     $('pd-chunk_tokens').disabled = cp !== 'fixed';
   }
   if ($('pd-prefix_host_policy')) $('pd-prefix_host_policy').value = S.sc.pd.prefix_host_policy || 'write_through';
@@ -1024,6 +1024,7 @@ function renderPDQueue(q, cards, L) {
     if (!x.stable) note = '不稳定：' + (x.why || '');
     else if (k === 'pd') note = `prefill batch 上限 ${x.prefill.batch_cap}，排队均值 ${num(x.prefill.wait_ms.mean)} ms；decode 运行 batch ≈ ${num(x.decode.occupancy)}（p90 ${x.decode.running_p90}）/ ${x.decode.slots} 槽；KV 链路被集合通信占用 ${pct(x.kv.u_coll)}`;
     else if (k === 'coloc_prefill_first') note = `decode 时间占比 ${pct(x.decode.share)}，运行 batch ≈ ${num(x.decode.occupancy)}；新请求 prefill 时整批 decode 停顿`;
+    else if (x.prefill && x.prefill.nonfused) note = `SGLang 不混合：每请求 ${num(x.prefill.chunks)} 个 prefill-only 块连续执行，期间整批 decode 暂停；decode 时间占比 ${pct(x.decode.share)}，运行 batch ≈ ${num(x.decode.occupancy)}`;
     else note = `每请求 ${Number.isInteger(x.prefill.chunks) ? x.prefill.chunks : num(x.prefill.chunks)} 块，融合迭代 ${num(x.prefill.iter_ms)} ms（无分块 ${num(x.decode.iter_ms_no_chunk)} ms），prefill 占用 ${pct(x.prefill.rho)}`;
     if (x.stable && x.kv_cap) {
       const c = x.kv_cap;
@@ -2175,7 +2176,7 @@ async function init() {
   bindNumber('pd-chunk_budget', () => S.sc.pd.chunk_budget ?? null, (x) => { if (x === null) delete S.sc.pd.chunk_budget; else S.sc.pd.chunk_budget = x; }, { int: true, nullable: true, check: (x) => x >= 16 && x <= 1048576 });
   $('pd-chunk_profile').addEventListener('change', (e) => {
     if (e.target.value === 'vllm') delete S.sc.pd.chunk_profile; else S.sc.pd.chunk_profile = e.target.value;
-    $('pd-chunk_budget').disabled = !e.target.value.startsWith('vllm');
+    $('pd-chunk_budget').disabled = !(e.target.value.startsWith('vllm') || e.target.value.startsWith('sglang'));
     $('pd-chunk_tokens').disabled = e.target.value !== 'fixed';
     schedule();
   });
