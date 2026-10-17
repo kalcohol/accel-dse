@@ -4821,3 +4821,12 @@ limited by capacity and the TTFT SLO, which is used as the decision latency limi
   - The scope avoids double counting: the state buffer is always charged; the shared SRAM is charged only without a measured idle figure.
   - It enters J/token through the time window, like idle.
 - **RWKV-7 7.2B on 1P.** The 2× DRAM lever reaches balance at +64 mm² of PHY, but 8 stacks exceed two die sides even at the reticle, so it needs a multi-die package (B200-class). The state SRAM is +7052 mm², with leakage ≥ 2.4 W. Bandwidth is still the cheaper lever, but its real cost is packaging (CoWoS-L / 2 dies), not PHY area.
+
+
+## §160 Uncore area (0.213)
+- **Die proxy.** die = (SRAM incl. state buffer + SLC + MAC + DRAM / D2D / C2C PHY + host IO + MC) / (1 − uncore_frac).
+  - uncore_frac = 0.23: TPUv1 control 2 % + unlabelled 21 %, ISCA 2017 「来源/推导」, used for every node 「假设」.
+  - host IO = 6.0 mm²: PCIe, 1.8 % of TPUv1 per NeuroMeter 「二手」.
+  - MC: no preset, because no public per-stack figure was found.
+- **Why a share.** NoC, routing and white space grow with the blocks they connect. Control is near-fixed, but it is 2 %, so a share is adequate.
+- **Effect.** All die and shoreline results grow by ÷ 0.77 plus 6 mm². 1P base: shoreline tight → ok. DRAM ×2: still tight, because 8 stacks need edges beyond the two long sides even at 654 mm². State SRAM: 9729 mm². Area conclusions are unchanged, and the bandwidth lever is still the cheaper one.

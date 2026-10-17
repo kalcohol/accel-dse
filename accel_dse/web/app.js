@@ -1983,7 +1983,7 @@ async function init() {
     if ((S.sc.workload.step_skip || 0) > skipCap()) { S.sc.workload.step_skip = skipCap(); $('w-step_skip')._sync(); } schedule(); });
   bindNumber('w-host_TFLOPS', () => S.sc.workload.host_TFLOPS, (x) => (S.sc.workload.host_TFLOPS = x));
   for (const k of ['sram_mib', 'macs', 'tflops', 'cards', 'power_W_card', 'usd_per_kWh', 'tdp_W_card', 'card_usd', 'amort_years', 'pue', 'dram_GiB', 'die_mm2', 'mm2_per_mib_sram', 'mm2_per_kmac',
-    'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2', 'mm2_per_dq_hbm', 'mm2_per_dq_lpddr', 'mm2_per_d2d_unit', 'mm2_per_GBps_c2c'])
+    'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2', 'mm2_per_dq_hbm', 'mm2_per_dq_lpddr', 'mm2_per_d2d_unit', 'mm2_per_GBps_c2c', 'uncore_frac', 'mm2_host_io', 'mm2_per_unit_mc'])
     bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
       { nullable: true, int: k === 'cards' });
   for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W'])

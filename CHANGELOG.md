@@ -6,6 +6,28 @@
 
 
 
+## [0.213.0]
+- **Uncore area in the die proxy.** Default change, justified by mechanism: before this the proxy had no area for control, NoC, routing or host IO, so die and shoreline results were lower bounds.
+  - New `Budget` fields:
+    - `uncore_frac`: share of the *final* die, so die = (core + PHY + host IO + MC) / (1 − f).
+    - `mm2_host_io`: fixed area of the host interface (PCIe x16 class, including its PHY).
+    - `mm2_per_unit_mc`: memory controller per DRAM unit (HBM stack / package). No public figure, so no preset.
+  - All three density presets now carry:
+    - `uncore_frac` = 0.23 「来源/推导」. TPUv1 floor plan (Jouppi et al., ISCA 2017 Fig. 2): buffers 37 %, compute 30 %, I/O 10 %, control 2 %, leaving 21 % unlabelled. I/O is modelled separately, so uncore = 2 % + 21 %. NeuroMeter (MICRO 2021) also leaves ≈ 21 % of TPUv1 unknown. One design's share is used for every node 「假设」.
+    - `mm2_host_io` = 6.0 mm² 「二手」. NeuroMeter's TPUv1 die-shot breakdown puts the PCIe interface at 1.8 % of 331 mm². It is not scaled by node because analog shrinks little 「假设」.
+  - Not added when the user gives `mm2_fixed`, which already means "everything else". A note says so.
+  - Budget panel inputs added for all three fields.
+- **Re-evaluated RWKV-7 7.2B on 1P** (n5_derived, old → new):
+
+  | Case | Die area | Shoreline (stacks × 11 mm vs edge on 2 sides / 4 sides) | Fits reticle? |
+  |---|---|---|---|
+  | 1P base | 434 → 571 mm² | 44 mm vs 41.7 → 47.8 mm: tight → **ok** | Yes |
+  | DRAM ×2 | 498 → 654 mm² | 88 mm vs 51.2 / 102.3 mm: **tight** (needs the third and fourth side) | Yes; Δ area +64 → +83.1 mm² |
+  | State SRAM 10.1 GiB | 7486 → 9729 mm² | — | No, 11.3× the reticle; Δ area +7052 → +9158 mm² |
+
+  - The reticle flag and the shoreline check use the same die area. A test enforces this.
+- Re-baselined: test_core_211 area bounds (state Δ 7052 → 9158; DRAM ×2 Δ 64 → 83.1). Performance fingerprints are unchanged, because the area proxy is not part of evaluation.
+
 ## [0.212.0]
 - **HBM die-shoreline check** (`budget.shoreline_check`; in `budget_report.shoreline`, the budget panel and every what-if row).
   - Each stack needs ≥ 11 mm of die edge: the HBM4 base die is 11 × 12.8 mm (Samsung HC2026) 「二手」.

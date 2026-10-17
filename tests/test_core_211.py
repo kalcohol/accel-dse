@@ -25,8 +25,9 @@ def test_whatif_cost_columns_rwkv_1p():
     rows = {x["key"]: x for x in w["rows"]}
     st, bw = rows["state_sram"], rows["dram_bw_x2"]
     # ~10.1 GiB × 0.68 mm²/MiB ≈ 7 000 mm²: beyond one reticle; 2× HBM PHY pins: 4096 × 1/64 mm² = 64 mm²
-    assert 6500 < st["d_area_mm2"] < 7600 and st["over_reticle"]
-    assert abs(bw["d_area_mm2"] - 64.0) < 1.0 and not bw["over_reticle"]
+    # 0.213: Δ area now includes the uncore share (÷ 0.77) and host IO: 7052 → 9158 mm²
+    assert 8800 < st["d_area_mm2"] < 9500 and st["over_reticle"]
+    assert abs(bw["d_area_mm2"] - 64.0 / 0.77) < 1.0 and not bw["over_reticle"]      # 0.213: 64 → 83.1 mm² with uncore
     # state on chip cuts DRAM energy per token at its balance batch; 2× bandwidth moves no extra bits per token
     # 0.212: J/token now includes SRAM leakage over the time window, so 2× bandwidth moves it slightly (< 0.1 %)
     assert st["d_J_per_tok"] < 0 and abs(bw["d_J_per_tok"]) < 1e-3 * bw["J_per_tok"]

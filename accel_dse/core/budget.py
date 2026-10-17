@@ -33,7 +33,8 @@ _LIMITS = {   # key → (label, unit)
     "system_mm2": ("硅面积代理 / 副本", "mm²"),
 }
 _DENS = ("mm2_per_mib_sram", "mm2_per_mib_slc", "mm2_per_kmac", "mm2_fixed")
-_PHY_DENS = ("mm2_per_dq_hbm", "mm2_per_dq_lpddr", "mm2_per_d2d_unit", "mm2_per_GBps_c2c")
+_PHY_DENS = ("mm2_per_dq_hbm", "mm2_per_dq_lpddr", "mm2_per_d2d_unit", "mm2_per_GBps_c2c",
+             "uncore_frac", "mm2_host_io", "mm2_per_unit_mc")      # 0.213: uncore goes through full_area too
 
 # 0.149: cited density presets per process node.  Each value: (number, status, source).  status 「来源」 = read from
 # the cited text; 「推导」 = arithmetic on cited figures (the scaling step itself is an assumption); 「二手」 = number
@@ -86,6 +87,17 @@ def _vec(kmac: float, node_src: str) -> dict:
                             f" = 1676/5824 µm² per dequant element/cycle, {_HZ}; datapath only (lower bound)")}
 
 
+_UNCORE = {
+    # 0.213: TPUv1 floor plan (Jouppi et al., ISCA 2017, Fig. 2 caption): data buffers 37 %, compute 30 %, I/O 10 %,
+    # control 2 % — the remaining 21 % is unlabelled (routing / white space; NeuroMeter, MICRO 2021, also leaves ≈ 21 %
+    # of TPUv1 "unknown").  I/O is modelled separately (DRAM PHY pins + host IO), so uncore = control 2 % + 21 %.
+    "uncore_frac": (0.23, "来源/推导", "TPUv1 floor plan (Jouppi et al., ISCA 2017 Fig. 2): control 2 % + unlabelled "
+                    "21 % (100 − 37 buffers − 30 compute − 10 I/O − 2 control); one design's share used for all 「假设」"),
+    "mm2_host_io": (0.018 * 331, "二手", "NeuroMeter (Shao et al., MICRO 2021) TPUv1 die-shot breakdown: PCIe interface "
+                    "1.8 % of a < 331 mm² 28 nm die ≈ 6.0 mm²; not scaled by node (analog PHY shrinks little) 「假设」"),
+}
+
+
 DENSITY_PRESETS: dict[str, dict] = {
     "n28_tpuv1": {"label": "28 nm（TPUv1 平面图）", "fields": {
         "mm2_per_mib_sram": (330 / 3 / 24, "来源", _TPUV1 + ": 24 MiB Unified Buffer ≈ 1/3 of the die (upper bound)"),
@@ -93,20 +105,20 @@ DENSITY_PRESETS: dict[str, dict] = {
         "mm2_per_kmac": (330 / 4 / 64, "来源", _TPUV1 + ": 256×256 int8 MXU = 1/4 of the die (upper bound; int8 MAC — a "
                          "bf16 MAC unit is larger, so for a bf16 array this is optimistic)"),
         **_vec(330 / 4 / 64, "TPUv1 (int8 MAC — ratio is for bf16, so optimistic)"),
-        **_PHY}},
+        **_PHY, **_UNCORE}},
     "n7_tpuv4i": {"label": "7 nm（TPUv4i 平面图）", "fields": {
         "mm2_per_mib_sram": (400 * 0.28 / 128, "来源", _TPUV4I + ": 128 MiB CMEM = 28 % of a < 400 mm² die (upper bound)"),
         "mm2_per_mib_slc": (400 * 0.28 / 128, "来源", "= CMEM density (" + _TPUV4I + ")"),
         "mm2_per_kmac": (400 * 0.11 / 64, "来源", _TPUV4I + ": 4 × 128×128 bf16 MXUs = 11 % of a < 400 mm² die (upper bound)"),
         **_vec(400 * 0.11 / 64, "TPUv4i"),
-        **_PHY}},
+        **_PHY, **_UNCORE}},
     "n5_derived": {"label": "5 nm / N3E（由 7 nm 推导）", "fields": {
         "mm2_per_mib_sram": (400 * 0.28 / 128 * 0.021 / 0.027, "推导", "TPUv4i CMEM × bitcell 0.021/0.027 (paper says 128 MB; taken as MiB, ≤ 5 %); " + _BITCELL
                              + "; array-only lower bound 31.8 Mib/mm² = 0.25 mm²/MiB (WikiChip, IEDM 2022 N3E)"),
         "mm2_per_mib_slc": (400 * 0.28 / 128 * 0.021 / 0.027, "推导", "= SRAM density (TPUv4i CMEM × bitcell ratio)"),
         "mm2_per_kmac": (400 * 0.11 / 64 / 1.8, "推导", "TPUv4i MXU ÷ 1.8 logic density; " + _BITCELL),
         **_vec(400 * 0.11 / 64 / 1.8, "N5 (TPUv4i ÷ 1.8)"),
-        **_PHY}},
+        **_PHY, **_UNCORE}},
 }
 
 
@@ -253,8 +265,26 @@ def full_area(scn, b: Budget) -> dict:
     """Die area proxy incl. interface PHYs (0.149): area_estimate(chip) + phy_area(scenario)."""
     a = area_estimate(scn.chip, b)
     p = phy_area(scn, b)
-    return {**a, "mm2": None if a["mm2"] is None else a["mm2"] + p["mm2"], "terms": {**a["terms"], **p["terms"]},
-            "phy_notes": p["notes"]}
+    terms = {**a["terms"], **p["terms"]}
+    notes = list(p["notes"])
+    mm2 = None if a["mm2"] is None else a["mm2"] + p["mm2"]
+    # 0.213: uncore — only when the user gave no mm2_fixed (which already means "everything else")
+    if b.mm2_fixed is None and mm2 is not None:
+        if b.mm2_host_io is not None:
+            terms["host_io"] = b.mm2_host_io
+            mm2 += b.mm2_host_io
+        if b.mm2_per_unit_mc is not None:
+            from .. import mem_catalog
+            spec = mem_catalog.parse_mem_id(scn.mem_id)
+            terms["mem_ctrl"] = spec.n_units * b.mm2_per_unit_mc
+            mm2 += terms["mem_ctrl"]
+        if b.uncore_frac:
+            u = mm2 * b.uncore_frac / (1 - b.uncore_frac)      # share of the final die
+            terms["uncore"] = u
+            mm2 += u
+    elif b.mm2_fixed is not None and (b.uncore_frac or b.mm2_host_io or b.mm2_per_unit_mc):
+        notes.append("已填固定面积 mm2_fixed：uncore 项不再另计（避免重复）")
+    return {**a, "mm2": mm2, "terms": terms, "phy_notes": notes}
 
 
 @dataclass(frozen=True)
@@ -281,6 +311,12 @@ class Budget:
     mm2_per_dq_lpddr: float | None = None     # per data pin of any non-HBM DRAM interface (LPDDR / DDR / GDDR)
     mm2_per_d2d_unit: float | None = None     # per D2D unit (UCIe module / BoW slice) on the die
     mm2_per_GBps_c2c: float | None = None     # per GB/s (per direction) of card-to-card SerDes link
+    # 0.213: uncore (not counted elsewhere): control / NoC / routing / white space as a share of the die, host IO
+    # (PCIe) as a fixed area, memory controllers per DRAM channel.  Not added when mm2_fixed is set (it already
+    # covers "everything else").
+    uncore_frac: float | None = None          # share of the final die, 0 ≤ f < 1
+    mm2_host_io: float | None = None          # host interface (PCIe x16 class) incl. its PHY
+    mm2_per_unit_mc: float | None = None   # memory controller per DRAM unit (HBM stack / DRAM package; no public figure: no preset)
     # 0.153: absolute operating cost (optional; None = insight does not rank by $).
     usd_per_kWh: float | None = None           # electricity rate; presets in ELECTRICITY_PRESETS
     tdp_W_card: float | None = None            # nameplate / design TDP for J≈W·t when energy table has no J
@@ -298,6 +334,8 @@ class Budget:
                 raise ValueError(f"budget.{f.name} must be a finite number in [0, 1e9) or null")
             if f.name in _LIMITS and v <= 0:
                 raise ValueError(f"budget.{f.name} must be > 0")
+        if self.uncore_frac is not None and not self.uncore_frac < 1:
+            raise ValueError("budget.uncore_frac must be < 1")
         if self.pue is not None and self.pue < 1:
             raise ValueError("budget.pue must be ≥ 1")
         if self.amort_years is not None and self.amort_years <= 0:
