@@ -4854,3 +4854,7 @@ Standby + refresh (static) per die: 48 mW (IDD2N 40 mA × 1.2 V) + 1.95 mW/Gb (r
 P = stacks × height × (48 + die_Gb × 1.95) mW, so a 4 × 8H24g base is 3.03 W/card.
 To avoid double counting, it is charged only when no card idle figure (idle_W / idle_frac_tdp) is set, the same rule as the 0.212 SRAM leakage; the what-if strips idle_W, so the levers show it.
 qwen3-8b on 1P with fp8 KV: 12H +1.52 W, 16H +3.03 W, 8 stacks (dram_bw_x2) +3.03 W. This is about 1–3 % of the ~105 W card average.
+
+## §164 What-if cost batch for unreachable levers (0.217)
+Cost is compared at the lever's critical batch when it reaches balance; otherwise at its batch limit (the operating point it unlocks). The base is evaluated at min(that batch, base batch limit). Before 0.217 the fallback was the configured batch (1), which priced the lever at batch 1: for qwen3-8b that was 0.48 J/token (105 W × 4.6 ms). Invariant: J/token × (batch / TPOT / cards) = W/card (推导, tested).
+qwen3-8b 1P, fp8 KV, at the batch limits: base 15.1 mJ/tok @283; 12H 14.65 @453; 16H 14.74 @479; DRAM×2 15.35 @283; ctx÷2 9.22 @566.

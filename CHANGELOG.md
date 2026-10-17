@@ -6,6 +6,11 @@
 
 
 
+## [0.217.0]
+- Fix: a what-if lever that cannot reach balance was costed at the configured batch (default 1). qwen3-8b showed 0.48 J/token at batch 1 next to its throughput at the batch limit. The energy accounting itself was consistent (J/token × tok/s/card = W/card held at batch 1). Unreachable levers are now costed at their own batch limit (`cost_basis` = "batch_limit"), and the base at the same batch capped at its own limit (`base_cost_batch`). New field `tok_s_card_at_cost_batch`.
+- Reachable rows are unchanged: the RWKV state SRAM / DRAM×2 / two-die energy conclusions of 0.211–0.216 stand.
+- tests/test_core_217.py: J/token × tok/s/card = W/card on the main eval (fuzzed models × chips × batch) and on every what-if row.
+
 ## [0.216.0]
 - Sources re-verified for HBM capacity and status (JEDEC HBM3/HBM4 press releases; SK hynix, Samsung and Micron releases), recorded in `mem_catalog.HBM_CAP_SOURCES`. No cap tag changed. MODEL §162: the unsupported Micron HBM3E 12H "volume production" claim is corrected to "production-capable, in qualification" (来源).
 - HBM standby + refresh static power: EnergyTable `mW_hbm_die_standby` / `mW_hbm_Gb_refresh` (tpuv4i_7nm preset: 48 mW/die, 1.95 mW/Gb, DRAMsim3 HBM2 IDD proxy, 二手/推导). Charged per stack × die only when no idle figure is set (no double counting, as with the 0.212 SRAM leakage).

@@ -1035,7 +1035,7 @@ function renderBalanceWhatif(w) {
         `岸线 ${x.shoreline.stacks} 堆栈 ${num(x.shoreline.need_mm)} / ${num(x.shoreline.edge_typical_mm)} mm（两边）`
         + (x.shoreline.status === 'tight' ? ' ⚠ 需三、四边' : x.shoreline.status === 'over' ? ' ⚠ 超出四边 · 需多晶粒' : '')) : ''),
     h('td', {}, base || x.J_per_tok == null ? '—' : `${num(x.J_per_tok * 1e3)} mJ @B${x.cost_batch}`
-      + (x.base_J_per_tok_at_cost_batch != null ? `（基线 ${num(x.base_J_per_tok_at_cost_batch * 1e3)}）` : '')),
+      + (x.base_J_per_tok_at_cost_batch != null ? `（基线 ${num(x.base_J_per_tok_at_cost_batch * 1e3)}${x.base_cost_batch != null && x.base_cost_batch !== x.cost_batch ? ' @B' + x.base_cost_batch : ''}）` : '')),
     h('td', {}, (x.W_card != null ? num(x.W_card) + ' W' : '—')
       + (x.d_leak_W ? `（泄漏 ${x.d_leak_W > 0 ? '+' : ''}${num(x.d_leak_W)} W）` : (base && x.leak_W ? `（泄漏 ${num(x.leak_W)} W）` : ''))
       + (x.d_hbm_W ? `（HBM ${x.d_hbm_W > 0 ? '+' : ''}${num(x.d_hbm_W)} W）` : (base && x.hbm_W ? `（HBM ${num(x.hbm_W)} W）` : ''))),

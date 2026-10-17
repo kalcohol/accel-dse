@@ -522,6 +522,11 @@ WHATIF_ENERGY = "tpuv4i_7nm"       # newest energy preset (推导 / 来源 per f
 RETICLE_MM2 = 26 * 33              # 858 mm² single-exposure reticle field (26 × 33 mm, ASML / industry standard) 「来源」
 
 
+def _tok_s_card(q) -> float | None:
+    """0.217: decode output tokens / s per card (batch / TPOT / cards) — J/token × this ≈ W_card."""
+    return q.scenario.serving.batch / q.tpot / q.scenario.layout.cards if q.tpot else None
+
+
 def _lever_cost(q) -> dict:
     """Die area (budget.full_area: SRAM incl. the state buffer + DRAM PHY pins) and energy per output token / average
     card power (energy_report, dynamic only: no idle_W).  SRAM leakage is not modelled (static power is idle_W, a
@@ -627,16 +632,26 @@ def balance_whatif(scn: Scenario, r: Result) -> dict | None:
     def cost(x, q):
         # 0.211: compare at the lever's balance point — its critical batch when reachable, else the configured
         # batch — with the base chip at that same batch (a lever's value shows at the batch it unlocks)
-        bb = x["critical_batch"] if x["reachable"] and x["critical_batch"] else scn.serving.batch
-        x["cost_batch"] = bb
+        # 0.217: an unreachable lever was costed at the configured batch (default 1) — J/token at batch 1 (0.48 J for
+        # qwen3-8b) next to a batch-limit throughput read as an energy error.  Now: its batch limit (the operating
+        # point it unlocks); the base at the same batch, capped at the base's own limit (it cannot hold more KV)
+        if x["reachable"] and x["critical_batch"]:
+            bb, basis = x["critical_batch"], "critical_batch"
+        elif x.get("batch_limit"):
+            bb, basis = int(x["batch_limit"]), "batch_limit"
+        else:
+            bb, basis = scn.serving.batch, "configured"
+        b_base = min(bb, int(base["batch_limit"])) if basis == "batch_limit" and base.get("batch_limit") else bb
+        x["cost_batch"], x["cost_basis"], x["base_cost_batch"] = bb, basis, b_base
         try:
-            qb = q if bb == scn.serving.batch else evaluate(q.scenario.replace("serving.batch", bb))
-            rb = r if bb == scn.serving.batch else evaluate(scn.replace("serving.batch", bb))
+            qb = q if bb == q.scenario.serving.batch else evaluate(q.scenario.replace("serving.batch", bb))
+            rb = r if b_base == scn.serving.batch else evaluate(scn.replace("serving.batch", b_base))
         except ValueError:
             return
         c, cb = _lever_cost(qb), _lever_cost(rb)
         x.update(c)
         x["tpot_ms_at_cost_batch"] = qb.tpot * 1e3
+        x["tok_s_card_at_cost_batch"] = _tok_s_card(qb)
         x["base_J_per_tok_at_cost_batch"] = cb["J_per_tok"]
         x["d_area_mm2"] = None if c["area_mm2"] is None or c0["area_mm2"] is None else c["area_mm2"] - c0["area_mm2"]
         x["d_J_per_tok"] = None if c["J_per_tok"] is None or cb["J_per_tok"] is None else c["J_per_tok"] - cb["J_per_tok"]
