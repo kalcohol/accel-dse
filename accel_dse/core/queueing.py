@@ -208,7 +208,7 @@ def _pk_surv(lam: float, pts):
         if x >= x_end:
             return tail * math.exp(-th * (x - x_end))
         y = x / h
-        j = int(y)
+        j = min(int(y), n - 1)            # 0.238: x just below x_end can round to y = n
         return max(0.0, 1.0 - (G[j] + (G[j + 1] - G[j]) * (y - j))) if x > 0 else rho
     out = (surv, x_end, th)
     if len(_PK_CACHE) > 4096:
@@ -251,19 +251,9 @@ def mg1_sum_quantile(lam: float, taus, weights, lats, q: float) -> float | None:
     return b
 
 
-def mg1_corr_sum_quantile(lam: float, svc, rows, q: float, theta: float = math.inf) -> float | None:
-    """0.237: q-quantile of W + L when the request's own latency depends on its own wait.  A prompt's last iteration
-    is topped up with the next prompt's head iff someone arrived behind it before that iteration starts — during its
-    wait W and its first iterations S′ (FCFS: everyone arriving after it waits behind it) — so given W = w the shared
-    latency has probability π(w) = 1 − e^{−λ(w + S′)} (Poisson arrivals).  Its mean over the M/G/1 wait law is the
-    0.235 P-K LST π, E[e^{−λW}] = (1 − ρ)/E[e^{−λS}], so the marginals are unchanged — only the correlation is added
-    (independent convolution, mg1_sum_quantile, puts the long shared latencies on short waits as often as on long).
-    Followers (a prompt that starts inside its predecessor's last iteration) are those whose wait exceeds the
-    predecessor's last-piece share ``theta``: given W = w a prompt of type i is a leader (its φ = 0 rows) for w ≤ θ
-    and a follower (its φ > 0 rows, in their stationary proportions) for w > θ; a type without follower rows keeps
-    its leader rows at every w.
-    ``svc`` = [(w, τ)] the server-share law (the wait), ``rows`` = [(m, a, c, S′, type, follower)] per class: mass,
-    latency alone, latency topped up, S′ (∞: never topped), prompt type, phase > 0.  None when unstable."""
+def _corr_surv(lam: float, svc, rows, theta: float = math.inf):
+    """0.238: the survival P(W + L > t) of mg1_corr_sum_quantile as a function (and its bracket) — shared by the
+    single-environment and the drifting-batch mixture forms.  → (surv(t, u), lo, hi) or None when unstable."""
     pts = [(w, t) for w, t in svc if w > 0]
     tot = sum(w for w, _ in pts)
     pts = [(w / tot, t) for w, t in pts]
@@ -300,8 +290,16 @@ def mg1_corr_sum_quantile(lam: float, svc, rows, q: float, theta: float = math.i
     if pk is None:
         tau = pts[0][1]
 
+        cl_md1 = _cl_params(lam, pts)
+
         def sw(x: float) -> float:
-            return 1.0 - md1_cdf(lam, tau, x) if x >= 0 else 1.0
+            if x < 0:
+                return 1.0
+            try:
+                return 1.0 - md1_cdf(lam, tau, x)
+            except OverflowError:         # 0.238: Erlang's series overflows past ~170 τ → Cramér–Lundberg tail
+                r_, t_, c_ = cl_md1
+                return min(r_, c_ * math.exp(-t_ * x))
         th = None
         x_hi = tau * 4
         while sw(x_hi) > 1e-8 and x_hi < tau * 400:
@@ -339,19 +337,41 @@ def mg1_corr_sum_quantile(lam: float, svc, rows, q: float, theta: float = math.i
             return arr[max(j, jt)]
         return arr[j]
 
-    def surv(t: float) -> float:
+    def surv(t: float, u: float = 0.0) -> float:
+        # u: a vacation residual added to the wait (it counts for topping, not for follower status)
+        t -= u
         acc = 0.0
         for m, a, c, sp, rg in rs:
             ja = idx(t - a)
             if not math.isfinite(sp):
                 acc += m * part(S1, ja, rg)
                 continue
-            e_sp = math.exp(-lam * sp)
+            e_sp = math.exp(-lam * (sp + u))
             jc = idx(t - c)
             acc += m * (e_sp * part(SE, ja, rg) + part(S1, jc, rg) - e_sp * part(SE, jc, rg))
         return acc
-    a0 = min(min(a, c) for _, a, c, _, _ in rs)
-    b0 = max(max(a, c) for _, a, c, _, _ in rs) + x_hi + 1e-9
+    lo = min(min(a, c) for _, a, c, _, _ in rs)
+    hi = max(max(a, c) for _, a, c, _, _ in rs) + x_hi + 1e-9
+    return surv, lo, hi
+
+
+def mg1_corr_sum_quantile(lam: float, svc, rows, q: float, theta: float = math.inf) -> float | None:
+    """0.237: q-quantile of W + L when the request's own latency depends on its own wait.  A prompt's last iteration
+    is topped up with the next prompt's head iff someone arrived behind it before that iteration starts — during its
+    wait W and its first iterations S′ (FCFS: everyone arriving after it waits behind it) — so given W = w the shared
+    latency has probability π(w) = 1 − e^{−λ(w + S′)} (Poisson arrivals).  Its mean over the M/G/1 wait law is the
+    0.235 P-K LST π, E[e^{−λW}] = (1 − ρ)/E[e^{−λS}], so the marginals are unchanged — only the correlation is added
+    (independent convolution, mg1_sum_quantile, puts the long shared latencies on short waits as often as on long).
+    Followers (a prompt that starts inside its predecessor's last iteration) are those whose wait exceeds the
+    predecessor's last-piece share ``theta``: given W = w a prompt of type i is a leader (its φ = 0 rows) for w ≤ θ
+    and a follower (its φ > 0 rows, in their stationary proportions) for w > θ; a type without follower rows keeps
+    its leader rows at every w.
+    ``svc`` = [(w, τ)] the server-share law (the wait), ``rows`` = [(m, a, c, S′, type, follower)] per class: mass,
+    latency alone, latency topped up, S′ (∞: never topped), prompt type, phase > 0.  None when unstable."""
+    built = _corr_surv(lam, svc, rows, theta)
+    if built is None:
+        return None
+    surv, a0, b0 = built
     if surv(a0) <= 1 - q:
         return a0
     for _ in range(80):
@@ -363,6 +383,48 @@ def mg1_corr_sum_quantile(lam: float, svc, rows, q: float, theta: float = math.i
         if b0 - a0 < 1e-9 * max(b0, 1e-12):
             break
     return b0
+
+
+def mg1_corr_mix_sum_quantile(lam: float, bins, q: float) -> float | None:
+    """0.238: the wait-correlated TTFT under a slowly drifting running batch (fused chunked prefill: vLLM,
+    sglang_mixed) — the quasi-static mixture of mg1_mix_sum_quantile with each environment's survival from
+    _corr_surv.  ``bins`` = [(w_b, svc, rows, θ, v_b)]; the vacation residual U(0, v_b) (a decode-only iteration in
+    flight when the prompt queue is empty, Fuhrmann–Cooper) adds to the wait for topping (arrivals during it queue
+    behind the prompt) but not to the follower test (an empty queue makes a leader) 「近似」."""
+    envs = []
+    for wb, svc, rows, theta, v in bins:
+        if wb <= 0:
+            continue
+        built = _corr_surv(lam, svc, rows, theta)
+        if built is None:
+            return None
+        envs.append((wb, built, v))
+    if not envs:
+        return None
+    wtot = sum(e[0] for e in envs)
+    U = 8
+
+    def surv(t: float) -> float:
+        acc = 0.0
+        for wb, (sf, _, _), v in envs:
+            if v > 0:
+                acc += wb * sum(sf(t, v * (j + 0.5) / U) for j in range(U)) / U
+            else:
+                acc += wb * sf(t)
+        return acc / wtot
+    a = min(e[1][1] for e in envs)
+    b = max(e[1][2] for e in envs) + max(e[2] for e in envs)
+    if surv(a) <= 1 - q:
+        return a
+    for _ in range(80):
+        mid = 0.5 * (a + b)
+        if surv(mid) > 1 - q:
+            a = mid
+        else:
+            b = mid
+        if b - a < 1e-9 * max(b, 1e-12):
+            break
+    return b
 
 
 def _cl_params(lam: float, pts) -> tuple[float, float, float] | None:

@@ -107,7 +107,8 @@ from dataclasses import replace
 from .energy import ACTIONS, EnergyTable, _BITS, _UNIT_PJ, action_counts, scaleup_bytes
 from .evaluate import Result, evaluate
 from .bulkq import batch_wall_law, bulk_busy, bulk_law, bulk_mean, bulk_own_k, law_quantile, merge_atoms
-from .queueing import mg1_mix_sum_quantile, dquantile, erlang_c, mdc_wait, mg1, mg1_sum_quantile, mg1_corr_sum_quantile
+from .queueing import mg1_mix_sum_quantile, dquantile, erlang_c, mdc_wait, mg1, mg1_sum_quantile, mg1_corr_sum_quantile, \
+    mg1_corr_mix_sum_quantile
 from .scenario import Scenario
 
 QS = (0.5, 0.9, 0.99)
@@ -1829,7 +1830,7 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
             # on the SGLang prefill-only path (deferred)
             ph = _phase_law(cp, kk, pts, C, lam_c, chain=(k == 0))
             per = ph["per"]
-            out.update(stable=ph["rho"] < 1, pi=ph["pi"], pis=[r_["pi"] for r_ in per], follower=ph["follower"],
+            out.update(stable=ph["rho"] < 1, pi=ph["pi"], pis=[r_["pi"] for r_ in per], follower=ph["follower"], ph=ph,
                        atoms=[(m_, sh_, la_) for m_, sh_, la_, _ in ph["atoms"]],
                        ns=[r_["n"] for r_ in per], tsum=[r_["share"] for r_ in per], t1=[r_["t1"] for r_ in per])
         pkmemo[k] = out
@@ -1922,7 +1923,24 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
             ei += 1
     while len(kbins) < 8:
         kbins.append(len(run_w) - 1)
-    serv_mix, ws_mix, envs = [], [], []
+    serv_mix, ws_mix, envs, cbins = [], [], [], []
+    phmemo: dict = {}
+
+    def phase_at(kraw: int):
+        """0.238: the follower phase law for the TTFT bin at running batch kraw (pack_at keeps followers at φ = 0
+        for k ≥ 1 — cost).  k is rounded to a multiple of 8 so the walls are shared across bins and arrival rates
+        (C(k) = budget − k moves < 1 % per step of 8 at the budgets in use 「近似」)."""
+        if kraw == 0:
+            return pack_at(0).get("ph")
+        kr = max(1, min(B, 8 * round(kraw / 8)))
+        if kr not in phmemo:
+            phmemo[kr] = _phase_law(cp, kr, pts, chunk_at(spec, kr), lam_c, chain=True)
+        return phmemo[kr]
+
+    def theta_of(ph_):
+        wt_ = sum(r_[0] * r_[7] for r_ in ph_["rows"])
+        return sum(r_[0] * r_[7] * r_[6] for r_ in ph_["rows"]) / wt_ if wt_ > 0 else math.inf
+
     for kraw in kbins:
         kb = max(1, kraw)
         tb = mean_step(kb)[5]
@@ -1932,10 +1950,23 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         if pack and pack_at(kraw)["b"] == 1 and pack_at(kraw)["pi"] > 0:
             # 0.234 tail sharing: each prompt type is a two-point service (alone / topped up by the next head)
             pa = pack_at(kraw)
-            envs.append((1 / 8, [x_ for x_ in pa["atoms"] if x_[0] > 0], vac))
+            ph_ = phase_at(kraw)
+            if ph_ is not None and ph_["rho"] < 1:
+                # 0.238: wait-correlated topping and follower status in the fused bins as in 0.237 (§185): the
+                # bin's phase law at its (rounded) running batch gives the share atoms, the rows and θ
+                envs.append((1 / 8, [(m_, sh_, la_) for m_, sh_, la_, _ in ph_["atoms"] if m_ > 0], vac))
+                cbins.append((1 / 8, [(m_, sh_) for m_, sh_, _, _ in ph_["atoms"] if m_ > 0],
+                              [r_[:6] for r_ in ph_["rows"]], theta_of(ph_), vac))
+            else:
+                envs.append((1 / 8, [x_ for x_ in pa["atoms"] if x_[0] > 0], vac))
+                cbins.append((1 / 8, [(x_[0], x_[1]) for x_ in pa["atoms"] if x_[0] > 0],
+                              [(x_[0], x_[2], x_[2], math.inf, 0, False) for x_ in pa["atoms"] if x_[0] > 0],
+                              math.inf, vac))
         else:
             # no running decode (k = 0) → no decode-only iteration to wait out
             envs.append((1 / 8, [(w_, t, t) for w_, t in zip(ws, tb)], vac))
+            cbins.append((1 / 8, [(w_, t) for w_, t in zip(ws, tb)],
+                          [(w_, t, t, math.inf, i_, False) for i_, (w_, t) in enumerate(zip(ws, tb))], math.inf, vac))
         for w_, t in zip(ws, tb):
             serv_mix.append(t)
             ws_mix.append(w_ / 8)
@@ -1947,6 +1978,11 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     # 0.55: the batch drifts far slower than a prefill busy period (τ_int ≫ E[S]/(1 − ρ)) → quasi-static mixture of
     # per-batch M/G/1 queues (a slow batch is a slow server for a whole busy period), not one M/G/1 over the mix
     qmix = {q: mg1_mix_sum_quantile(lam_c, envs, q) for q in QS} if not bulk_bins else {}
+    if qmix and any(math.isfinite(cb[3]) or any(math.isfinite(r_[3]) for r_ in cb[2]) for cb in cbins):
+        # 0.238: some bin shares tails → the wait-correlated mixture (same marginal atoms as envs)
+        qc = {q: mg1_corr_mix_sum_quantile(lam_c, cbins, q) for q in QS}
+        if all(v is not None for v in qc.values()):
+            qmix = qc
     if bulk_bins:
         # 0.234: some batch environments pack ≥ 2 whole prompts → per environment the bulk-queue TTFT law
         # (b = 1 environments: the same law with the tail-sharing service atoms), ⊕ U(0, decode step) for the

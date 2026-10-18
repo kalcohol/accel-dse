@@ -66,10 +66,37 @@ def test_sglang_short_prompt_p99_parity_and_mean_unchanged():
 
 
 def test_runtime_guard_phase_law_paths():
-    # 0.236 perf limits keep these well under a minute each (they reached > 22 min / > 30 min without them)
+    # 0.236 perf limits keep these well under a minute each (they reached > 22 min / > 30 min without them).
+    # 0.238: CPU time, not wall (the suite runs files in parallel: 66.95 s wall under load vs 57.6 s alone), and the
+    # phase-law paths (the colocated modes) are guarded on their own at 45 s (24.4 s alone, 30.0 under suite load) — the rest of the vllm 4096 cv 0.5
+    # report is the disaggregated bulk law (≈ 60 % of its 52.6 s already in 0.237), kept under a 90 s gross bound.
+    from accel_dse.core import pdqueue
+    spent = [0.0]
+
+    def timed(fn):
+        def run(*a, **k):
+            c0 = time.process_time()
+            try:
+                return fn(*a, **k)
+            finally:
+                spent[0] += time.process_time() - c0
+        return run
+    saved = (pdqueue._coloc_chunked, pdqueue._coloc_prefill_first)
+    pdqueue._coloc_chunked, pdqueue._coloc_prefill_first = timed(saved[0]), timed(saved[1])
+    try:
+        _guard_cases(spent)
+    finally:
+        pdqueue._coloc_chunked, pdqueue._coloc_prefill_first = saved
+
+
+def _guard_cases(spent):
     for kw in (dict(prompt=4096, cap=48.0, chunk_profile="sglang_mixed"), dict(prompt=6000, cap=48.0, chunk_profile="sglang"),
                dict(prompt=6000, cap=48.0, chunk_profile="vllm_v0"), dict(prompt=4096, chunk_profile="vllm", prompt_cv=0.5)):
-        t0 = time.time()
+        spent[0] = 0.0
+        c0 = time.process_time()
         q = disagg_report(_pd(**kw))["queue"]
+        total = time.process_time() - c0
         assert q["modes"]["coloc_chunked"].get("stable") is not None
-        assert time.time() - t0 < 60, (kw, time.time() - t0)
+        assert spent[0] > 0, kw
+        assert spent[0] < 45, (kw, spent[0])
+        assert total < 90, (kw, total)

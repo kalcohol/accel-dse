@@ -6,6 +6,44 @@
 
 
 
+## [0.238.0]
+
+### Fixed — fused chunked TTFT tail (vLLM, sglang_mixed): wait correlation + followers at k ≥ 1
+- **Mechanism (the 0.237 one, extended).** In the fused paths the running decodes take k tokens of the budget, C(k) = budget − k, so at k ≥ 1 even "multiples" (4096 at budget 2048 / 4096) are off-multiple and every prompt's tail shares its iteration with the next head.
+  - Topping depends on the prompt's own wait: π(w) = 1 − e^{−λ(w + u + S′)}, where u is the decode-only iteration residual U(0, v_b) the arrival waits out (Fuhrmann–Cooper vacation; arrivals during it queue behind the prompt, so it counts for topping) 「推导 / 近似」.
+  - Follower iff W > θ (predecessor's last-piece share) on the M/G/1 part of the wait only (an empty prompt queue makes a leader) 「近似」.
+  - Per batch bin (8 quasi-static bins, 0.55): the bin's follower phase law (0.236 `_phase_law`, chain on) at the bin's running batch rounded to a multiple of 8, which gives the share atoms, the rows and θ; quasi-static mixture of the per-bin correlated survivals (`queueing.mg1_corr_mix_sum_quantile`, built on the 0.237 survival factored out as `_corr_surv`).
+  - **Cheaper form (cost):** the phase chain at k ≥ 1 is used only for the 8 TTFT bins at k rounded to a multiple of 8 (C(k) moves < 1 % per step of 8); the birth–death mean step (`pack_at` over all k) keeps followers at φ = 0 as in 0.236. Runtime: each fused off-multiple case ≈ 12–14 s (guard < 60 s).
+  - TTFT mean now uses the same bin atoms (followers at k ≥ 1 included), so mean and quantiles come from one law.
+- **Parity (analytic vs DES, n4000 × 10 seeds, TTFT p90 / p99):**
+
+  | Case (load) | DES p99 (± se) | 0.237 p90 / p99 | 0.238 p90 / p99 |
+  |---|---|---|---|
+  | vllm 4096 (0.85) | 111.15 ± 1.64 | −.028 / −.052 | +.010 / +.002 |
+  | sglang_mixed 4096 (0.85) | 122.85 ± 2.01 | −.005 / −.082 | +.002 / +.006 |
+  | vllm 6000 (0.85) | 149.51 ± 2.14 | −.029 / −.032 | −.018 / −.021 |
+  | vllm 3000 (0.80) | 75.69 ± 1.29 | +.011 / −.044 | +.007 / −.044 |
+  | sglang_mixed 6000 (0.85) | 153.12 ± 2.51 | +.003 / −.052 | −.000 / −.052 |
+
+  p50 within ±0.004 everywhere. The SGLang prefill-only path (0.237) is untouched.
+- **Findings.**
+  - The big 0.237 residuals in the fused paths were at the "multiples": followers exist at every k ≥ 1 there, and 0.236 had cut the follower chain to k = 0 for cost.
+  - vllm 3000 / sglang_mixed 6000: the correlation is real but its two parts cancel (at vllm 3000 λ = 7.68: topping correlation alone 75.0 ms, with the follower correlation 72.4, independent 72.4 / alone-latency 71.2). Their −0.044 / −0.052 p99 residual has the size of sglang 6000's −0.05, which 0.237 showed is not this mechanism either. Deferred, not tuned.
+- **Fixed:** `_pk_surv` could index past its grid for x just below x_end (floating-point rounding); reached by the new path in test_core_052.
+- **Fixed:** `_corr_surv` single-service wait: Erlang's M/D/1 series overflows beyond ≈ 170 τ (ρ ≈ 0.65 in test_core_088), so it falls back to the Cramér–Lundberg tail there. No change where the series is finite.
+- **Runtime guard (test_core_237):** now measured in CPU time, because parallel suite load had inflated wall time to 66.95 s. The colocated phase-law paths are guarded at < 45 s per case (max 24.4 s alone, 30.0 s under suite load, vllm 4096 cv 0.5), and the whole report at < 90 s gross. The rest of that case is the disaggregated bulk law: ≈ 60 % of its runtime, 52.6 s wall in 0.237 and 57.6 s now.
+- **Tests:** `tests/test_core_238.py` (reduction to the single-environment and the independent drifting-batch forms; Lindley Monte Carlo with a vacation residual; DES-referenced p90/p99 parity for vllm 4096, sglang_mixed 4096, vllm 6000 with the < 60 s guard; vllm 3000 unchanged).
+- **KPI A–G old → new:** 34 of 49 rows unchanged; TPOT and J/token unchanged everywhere. TTFT changes only in fused profiles whose chunk is off-multiple at k ≥ 1:
+  - A / B / D vllm_v0 (and D vllm, C = 2043): TTFT p99 92.19 → 95.25, mean 45.81 → 45.96. SLO rate unchanged.
+  - D sglang_mixed: p99 103.7 → 110.1, rate unchanged.
+  - C vllm / sglang_mixed (C = 16382): p99 410.9 → 428.9, rate unchanged.
+  - C vllm_v0 and E vllm / vllm_v0 (C = 2046): p99 402.4 → 403.4, SLO rate 19.44 → 19.32 (goodput/card 622.2 → 618.3).
+  - E sglang_mixed: p99 386.9 → 388.4, SLO rate 19.76 → 17.37 (goodput/card 632.4 → 555.8). Near the SLO-limited arrival rate the correlation adds more (follower and topped-latency mass sits on long waits).
+  - F vllm / vllm_v0: p99 123.6 → 124.4. F sglang_mixed: 126.6 → 124.2.
+  - G vllm_v0: p99 105.3 → 105.6.
+  - **Ranking shift (E, chunked profiles, SLO goodput):** sglang 633.3 > vllm / vllm_v0 618.3 > sglang_mixed 555.8; previously sglang > sglang_mixed > vllm. Every other case keeps its ranking.
+- **Deferred:** a DES check of the fused correlation at SLO-limited arrival rates (E sglang_mixed rate −12 %); the ≈ −0.05 p99 residual at long-prompt / 3000 fused cases (sglang 6000, sglang_mixed 6000, vllm 3000) — a wait-tail mechanism other than sharing; per-k (unrounded) phase chain in the mean step; mixed prompt classes per-class b (0.236).
+
 ## [0.237.0]
 
 ### Fixed — SGLang short-prompt TTFT p99 optimism (mechanism: wait correlation)

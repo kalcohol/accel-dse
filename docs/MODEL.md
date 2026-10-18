@@ -5545,3 +5545,18 @@ A fused chunked-prefill iteration at running batch k carries the k decodes plus 
 - sglang 2500 / 3000 p99: −0.149 / −0.118 → +0.007 / −0.001 (n4000 × 10).
 
 **Scope.** The SGLang prefill-only path. Fused b = 1 environments (vLLM, sglang_mixed: mg1_mix_sum_quantile over batch bins) keep the independent form (deferred; vllm 3000 p99 −0.051, sglang_mixed 6000 p99 −0.056).
+
+## §185 Wait-correlated TTFT in the fused chunked paths (0.238)
+
+Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM, sglang_mixed: `_coloc_chunked_base`, b = 1 tail-sharing environments).
+
+- **Why the fused paths need it most.** The running decodes take k tokens: C(k) = budget − k 「来源: vLLM / SGLang mixed-chunk scheduler」. At k ≥ 1 a prompt of 4096 tokens (a multiple of the nominal budget) is off-multiple, so its tail always shares an iteration with the next head and a follower can start inside it. 0.236 kept the follower phase chain only at k = 0 for cost (§183), so at the "multiples" the analytic tail missed both correlations.
+- **Per batch bin b (the 8 quasi-static bins of 0.55):**
+  - The follower phase law at the bin's running batch k_b, rounded to a multiple of 8 (≥ 1) 「近似: C(k) changes < 1 % per 8 tokens of 2048」. It gives the server-share atoms (the wait law), the rows (mass, latency alone, latency topped, S′, type, follower) and θ_b (the topped classes' last-piece share).
+  - The wait is W_b ⊕ U(0, v_b) (decode-only iteration in flight when the prompt queue is empty, Fuhrmann–Cooper as in 0.55).
+  - Topping given W = w and U = u: π = 1 − e^{−λ(w + u + S′)} 「推导: arrivals during the vacation residual also queue behind the prompt」.
+  - Follower iff W > θ_b, on the M/G/1 part only 「近似: an arrival that waits out only a vacation found an empty prompt queue, so it is a leader」.
+- **Mixture:** P(T > t) = Σ_b ⅛ · E_u[surv_b(t; u)], with u at 8 midpoints. `surv_b` is §184's survival (`queueing._corr_surv`) with S′ + u and t − u. Bins without sharing reduce exactly to the 0.55 independent form.
+- **Mean:** taken from the same bin atoms, so followers at k ≥ 1 are included.
+- **Cost:** ≤ B/8 phase laws per arrival rate, with walls memoized across rates. The birth–death mean step keeps the 0.236 φ = 0 approximation at k ≥ 1. Fused off-multiple KPI-type cases take 12–14 s.
+- **Evidence (DES n4000 × 10, p99):** vllm 4096 −0.052 → +0.002; sglang_mixed 4096 −0.082 → +0.006; vllm 6000 −0.032 → −0.021. vllm 3000 and sglang_mixed 6000 stay at −0.044 / −0.052. There the topping correlation (+) and the follower correlation (−, followers' topped latency is shorter than leaders') cancel, and the residual matches the sglang 6000 one that §184 showed is not a sharing effect. Open.
