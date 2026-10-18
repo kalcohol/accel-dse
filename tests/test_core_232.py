@@ -67,7 +67,11 @@ def test_report_sglang_vs_prefill_first_and_mixed_vs_vllm():
     # 288 GiB card → chunked_prefill_size 16384 ≥ prompt: SGLang = prefill-first exactly
     q = _q(chunk_profile="sglang")
     x, pf = q["modes"]["coloc_chunked"], q["modes"]["coloc_prefill_first"]
-    assert q["chunk_tokens"] == 16384 and x["ttft_ms"] == pf["ttft_ms"] and x["tpot_mean_ms"] == pf["tpot_mean_ms"]
+    # 0.244: no longer TTFT-identical — SGLang counts the prefilling requests in max_running_requests (_slot_backlog;
+    # prefill-first does not): at the operating point p_sat ≈ 1e-3, TTFT within 2 % (p99 79.35 → 78.50 ms)
+    assert q["chunk_tokens"] == 16384 and x["tpot_mean_ms"] == pf["tpot_mean_ms"]
+    assert x["prefill"]["slot_backlog"]["p_sat"] < 0.01 and "slot_backlog" not in pf["prefill"]
+    assert all(abs(x["ttft_ms"][k] / pf["ttft_ms"][k] - 1) < 0.02 for k in pf["ttft_ms"])
     assert abs(q["energy"]["coloc_chunked"]["J_per_token"] - q["energy"]["coloc_prefill_first"]["J_per_token"]) < 1e-12
     # C = 1024 < prompt: 4 prefill-only chunks per prompt, slower prefill, longer decode pauses, more energy
     q1 = _q(chunk_profile="sglang", chunk_budget=1024)

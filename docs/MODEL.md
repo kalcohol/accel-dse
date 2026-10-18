@@ -5623,3 +5623,27 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
 - **Open.**
   - sglang non-fused: prefilling counts in max_running_requests, so admission blocks at a full batch with β = (out/e)·T_d(B)/B per admission. That is absent from the prefill-first machinery, which leaves the TTFT ≈ 0.1 s up to λ_s; the analytic is +1.8–3.5 % too optimistic.
   - Idle-time starting batch: derived k0 ≈ DES, but the mean-field fill then under-predicts.
+
+## §191 SGLang non-mixed admission: the slot account in a backlog (0.244)
+
+**Rule (来源).** SGLang `scheduler._get_new_batch_prefill_raw` admits a waiting prompt only while len(running_batch) + len(can_run_list) < max_running_requests, so the prefilling requests hold slots. The prefill-only iteration pauses the decodes. The DES `ColocChunked._packed` applies the same rule.
+
+**Cost per admission (推导).** In a backlog with a full batch, each admission waits for a death. In the saturated cycle one death comes per admission, after β = out·T_d(B)/(e·B) of decode time. So the admission server is S = τ + β, ρ′ = λ_c(τ̄ + β̄), and λ_s = r_c/(τ̄ + β̄), which is the decode limit. The time-average P(n ≥ B) is the wrong weight (0.243 iid try): the blocking happens exactly when there is a backlog.
+
+**Slot account (推导; diffusion 近似).** Define U = (τ + β)·q − β·f.
+- **Moves.** A prefill lowers U at rate 1. Decoding at batch k lowers it at rate c(k) = k·T_d(B)·e(k)/(B·T_d(k)·e(B)). An arrival adds S.
+- **Drift.** −δ = −(1 − ρ′) for U > 0. For U ≤ 0 it is λβ̄ − (1 − ρ_p)·c(B − f), which turns positive a few slots below full: the soft floor.
+- **Variance rate.** λE[S²] above 0: arrivals only, since the deaths replay the births (M/D/c heavy traffic). λE[S²] + λβ̄² below 0, adding the deaths' count noise (M/G/∞).
+- **Stationary law.** The density ∝ exp(∫2μ/σ²)/σ² on [−Bβ̄, ∞) gives p_sat = P(U > 0) and U | U > 0 ~ Exp(θ = 2δ/σ²).
+- **TTFT.** An arrival at U > 0 waits U + β (its q·τ prefills and q − f + 1 deaths), then its own prefill. So TTFT = (1 − p_sat)·T₀ + p_sat·(lat + β + Exp(θ)), applied after the 0.237 wait-correlated tail rows; this is why F now moves.
+
+**Checks.**
+- DES A λ53.5: P(U > 0) at arrivals is 0.282 (model 0.276); the batch at arrival has mean 48 and sd 14.3.
+- Long-run DES SLO rates: A 55.05 (analytic 55.04), D 54.95 (55.01), F 42.66 (42.80).
+- Below ≈ 1 s the TTFT p90 is under-predicted (A 52: 196 vs 434 ms).
+
+**DES run length.** Near saturation the DES relaxation σ²/δ² (≈ 83 s at A 55.06) is comparable to an n4000 run, so those rates are transient (A vllm 55.95 there, 55.28 long-run). DES rate checks now use 6 seeds × n64000 (`sd244/lbr.py`).
+
+**Open (0.245).**
+- Fused vllm/mixed are over the long-run DES in A (56.20 vs 55.28, +1.7 %) and G (49.99 vs 49.02, +2.0 %). The A order of v0 vs vllm/mixed (DES v0 > vllm = mixed > sglang; analytic vllm = mixed > v0 > sglang) is a near-tie and is flagged, not fixed.
+- The sglang mixture body at small p_sat.

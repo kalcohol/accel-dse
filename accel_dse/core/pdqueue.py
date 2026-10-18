@@ -1069,6 +1069,117 @@ def _busy_q_from(dur, m: float, q: float) -> float:
     return dur[-1][0] if dur else 0.0
 
 
+def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, out_cs2: float, B: int):
+    """0.244: SGLang non-mixed admission (scheduler.get_new_batch_prefill: a waiting prompt is admitted only while
+    len(running_batch) + len(can_run_list) < max_running_requests — the prefilling requests count; the decodes pause
+    in the prefill-only iteration).  With the batch full every admission waits for a death, and in a full batch of B
+    a death comes every β = out·T_d(B)/(e·B) of decode time (one per admission in the saturated cycle), so in a
+    backlog the admission server costs S = τ + β per request (λ_s = 1/(τ̄ + β̄) — the decode stability limit).
+    Account U = (τ + β)·q − β·f (q prompts waiting, f free slots): a prefill lowers U at rate 1 (−(τ + β) + β per τ),
+    a decode iteration at batch k = B − f at rate c(k) = k·T_d(B)·e(k)/(B·T_d(k)·e(B)) (deaths k/out per token,
+    β each), an arrival adds S.  An arrival at U > 0 waits U + β (its q·τ prefills ahead + (q − f + 1) deaths) then
+    its own prefill; at U ≤ 0 it meets the plain prefill queue.  So the blocking is the backlog itself — not iid
+    per prompt (0.243's P(n ≥ B) atom gave A 0.52 s vs DES 2 s at λ55.7): the same clustering as the 0.242 queue
+    weights.  Heavy-traffic diffusion of U 「推导; 近似」: drift −δ = −(1 − λ(τ̄ + β̄)) above 0,
+    λβ̄ − (1 − ρ_p)·c(B − f) below (prefill share ρ_p, decode the rest; the drift turns positive a few slots below
+    full — the soft floor), variance rate σ² = λ·E[S²] above 0 (M/D/c heavy traffic: arrivals only — the deaths
+    replay the births), λE[S²] + λβ̄² below (+ the deaths' count noise, M/G/∞); density ∝ exp(∫ 2μ/σ²)/σ² on
+    [−Bβ̄, ∞) → P(U > 0) and U | U > 0 ~ Exp(θ = 2δ/σ²).
+    → {"p_sat", "theta", "base", "beta", "rho_adm"} or None when ρ′ ≥ 1."""
+    if B <= 0 or lam <= 0:
+        return None
+    dB = cp.run("decode", B)
+    eB = dB.tokens_per_step
+    beta = out * dB.step / (eB * B) if eB > 0 else math.inf
+    tau = rho_p / lam
+    rp = lam * (tau + beta)
+    if not rp < 1:
+        return None
+    tw = sum(ws)
+    e_t2 = (sum(w * t * t for w, t in zip(ws, taus)) / tw) if (taus and tw > 0) else tau * tau
+    e_s2 = e_t2 + 2 * tau * beta + beta * beta * (1 + max(0.0, out_cs2))
+    sig2 = lam * e_s2
+    delta = 1 - rp
+    theta = 2 * delta / sig2
+    # c(k) on a coarse grid of batches (linear in between)
+    kg = sorted({B} | {max(1, round(B * i / 16)) for i in range(1, 17)})
+    cg = []
+    for k in kg:
+        d = cp.run("decode", k)
+        cg.append(k * dB.step * d.tokens_per_step / (B * d.step * eB) if d.step > 0 and eB > 0 else 0.0)
+
+    def c_of(k: float) -> float:
+        if k <= kg[0]:
+            return cg[0] * k / kg[0]
+        for i in range(1, len(kg)):
+            if k <= kg[i]:
+                return cg[i - 1] + (cg[i] - cg[i - 1]) * (k - kg[i - 1]) / (kg[i] - kg[i - 1])
+        return cg[-1]
+    # below 0 an arrival still jumps U by S (a slot β + the τ it pauses the decodes for), and the deaths — no longer
+    # paced by admissions — add their own count noise (M/G/∞: λ per unit time in slots) → σ_b² = λE[S²] + λβ̄²
+    # (DES A λ53.5: P(U > 0) 0.282 vs 0.276, batch sd 14 — the prefill pauses amplify it; births only: 0.229);
+    # density ∝ exp(Φ(u))/σ²(u), Φ(u) = −∫_u^0 2μ/σ_b² below 0; trapezoid in free slots f = −u/β
+    sig2b = sig2 + lam * beta * beta
+    nf = 4 * B
+    df = B / nf
+    phi, z_neg, prev = 0.0, 0.0, 1.0
+    mu_prev = lam * beta - (1 - rho_p) * c_of(B)
+    for i in range(1, nf + 1):
+        f = i * df
+        mu = lam * beta - (1 - rho_p) * c_of(B - f)
+        phi += -(mu_prev + mu) * df * beta / sig2b     # going down: Φ(u − du) = Φ(u) − 2μ̄·du/σ²
+        mu_prev = mu
+        cur = math.exp(min(phi, 700.0))
+        z_neg += 0.5 * (prev + cur) * df * beta / sig2b
+        prev = cur
+        if phi < -50:
+            break
+    z_pos = 1 / (theta * sig2)
+    p_sat = z_pos / (z_pos + z_neg)
+    lat = _wsum([w for w, _ in lats_w], [x for _, x in lats_w])
+    return {"p_sat": p_sat, "theta": theta, "base": lat + beta, "beta": beta, "rho_adm": rp,
+            "tau": tau, "sigma2": sig2}
+
+
+def _sat_mix_q(tq: dict, p: float, base: float, theta: float) -> dict:
+    """0.244: TTFT law = (1 − p)·T₀ + p·(base + Exp(θ)) — the plain-queue law T₀ (rebuilt from its quantiles as in
+    _wait_mix_sum_q) for arrivals at U ≤ 0, the backlog branch for U > 0 (_slot_backlog)."""
+    if p <= 0:
+        return dict(tq)
+    p50, p90, p99 = tq["p50"], tq["p90"], tq["p99"]
+    lo = 0.6 * p50
+
+    def Q(u: float) -> float:
+        if u <= 0.5:
+            return lo + (p50 - lo) * u / 0.5
+        ls = -math.log(1 - u)
+        a, b = math.log(2), math.log(10)
+        if ls <= b:
+            return p50 + (p90 - p50) * (ls - a) / (b - a)
+        return p90 + (p99 - p90) * (ls - b) / (math.log(100) - b)
+    n = 64
+    pts = [(1.0 / n, Q((k + 0.5) / n)) for k in range(n - 1)]
+    pts += [(1.0 / n / 8, Q(1 - (1.0 / n) * (k + 0.5) / 8)) for k in range(8)]
+
+    def surv(t: float) -> float:
+        s0 = sum(w for w, x in pts if x > t)
+        s1 = 1.0 if t <= base else math.exp(-theta * (t - base))
+        return (1 - p) * s0 + p * s1
+    out = {"mean": (1 - p) * tq["mean"] + p * (base + 1 / theta)}
+    for q in QS:
+        a, b = 0.0, max(max(x for _, x in pts), base) + (1 + math.log(1 / (1 - q))) / theta + 1e-9
+        while surv(b) > 1 - q:
+            b *= 2
+        for _ in range(100):
+            mid = 0.5 * (a + b)
+            if surv(mid) > 1 - q:
+                a = mid
+            else:
+                b = mid
+        out[f"p{q * 100:g}"] = b
+    return out
+
+
 def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     cp, r_c, pts, out, B = ctx["cpool"], ctx["r_c"], ctx.get("pts_c", ctx["pts"]), ctx["out"], ctx["B"]
     lam_c = lam / r_c
@@ -1153,6 +1264,14 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
         ttft["p50"] += resid / 2
         ttft["p90"] += resid
         ttft["p99"] += resid
+    slot_adm = None
+    if ctx.get("_slot_prefill"):
+        # 0.244: SGLang counts prefilling requests in max_running_requests (_slot_backlog) — the backlog blocks
+        slot_adm = _slot_backlog(cp, lam_c, rho, lats_w, ws_x, taus_x if pre["b"] <= 1 else None, out,
+                                 ctx.get("out_cs2", 0.0), B)
+        if slot_adm is None:
+            return {**res, "stable": False, "why": "满批阻塞下准入服务 τ + β 饱和（ρ′ ≥ 1）"}
+        ttft = _sat_mix_q(ttft, slot_adm["p_sat"], slot_adm["base"], slot_adm["theta"])
     stall_share = min(1.0, lam_c / pre.get("_bm", {}).get("batch_mean", pre["b"]) * dec["tpot"])   # 0.65: batches/s
     life = out * dec["tpot"]
     # request-average TPOT spread (root-sum-square of independent parts): the occupancy deviation of the steps it
@@ -1185,7 +1304,8 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
             "itl_max": dec["step_seen_mean"] / dec["e"] + d99,
             "e2e_mean": ttft["mean"] + slot["mean"] + out * dec["tpot"],
             "prefill": {"batch_cap": pre["b"], "ttft_b_ms": pre["lat"] * 1e3, "wait_ms": _ms(pre["wait"]),
-                        **({"tail_share": tail_info} if tail_info else {})},
+                        **({"tail_share": tail_info} if tail_info else {}),
+                        **({"slot_backlog": {k_: v_ for k_, v_ in slot_adm.items()}} if slot_adm else {})},
             "decode": {"running_batch": dec["k"], "occupancy": dec["occupancy"], "slots": B, "share": share,
                        "tpot_pure_ms": tp * 1e3, "slot_wait_ms": _ms(slot),
                        "burst_mean": sum((i + 1) * x for i, x in enumerate(X))},
@@ -2670,6 +2790,7 @@ def _coloc_chunked(ctx: dict, lam: float) -> dict:
         sc = sglang_ctx(ctx)
         if sp.get("pack"):
             sc["_tail_split"] = sp["C"]      # 0.235: PrefillAdder tail sharing in the analytic (cap 1)
+            sc["_slot_prefill"] = True        # 0.244: prefilling counted in max_running_requests
         x = _slo_select(lambda c, l: _kv_wrap(_coloc_prefill_first_base, c, l, "cpool", "r_c"), sc, lam,
                         try_unstable=True)
         x["chunk_tokens"], x["chunk_profile"] = sp["C"], sp

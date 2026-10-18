@@ -6,6 +6,77 @@
 
 
 
+## [0.244.0]
+
+### Fixed — SGLang non-mixed admission: prefilling requests count in max_running_requests (`_slot_backlog`)
+- **Source rule** (`sd221/sgl232/scheduler.py`, `_get_new_batch_prefill_raw`). The admission loop stops at `len(can_run_list) >= get_num_allocatable_reqs(running_bs)` = max_running_requests − len(running_batch). So the prefilling requests count with the running batch, and `batch_is_full` clears only when a request leaves. The DES (`ColocChunked._packed`: running + curs < slots) applies the same rule.
+- **Mechanism.** In a backlog every admission waits for a death. In the saturated cycle a death comes every β = out·T_d(B)/(e·B) of decode time (A: 512·4.262/64 = 34.1 ms), because the decodes pause in the prefill-only iterations. The admission server therefore costs S = τ + β (A: τ = 36.45 ms), and ρ′ = λ_c(τ̄ + β̄) gives λ_s = r_c/(τ + β) = 56.73, the old decode limit.
+  - The blocking is the backlog itself. 0.243's iid atom used the time-average P(n ≥ B) = 0.74, which gave ρ_eff 0.86 and A TTFT p90 0.52 s vs DES 2 s.
+- **Model 「推导; heavy-traffic diffusion 近似」.**
+  - Slot account U = (τ + β)·q − β·f (q prompts waiting, f free slots).
+  - Drift: −δ = −(1 − ρ′) above 0. Below 0 it is λβ̄ − (1 − ρ_p)·c(B − f), where c(k) = k·T_d(B)·e(k)/(B·T_d(k)·e(B)) is the decode credit rate. c is flat (c(48) = 0.91), so the soft floor is wide.
+  - Variance: λE[S²] above 0 (the deaths replay the births). Below 0 it is λE[S²] + λβ̄², adding the deaths' own count noise (M/G/∞).
+  - Density ∝ exp(∫2μ/σ²)/σ² on [−Bβ̄, ∞) gives p_sat = P(U > 0) and U | U > 0 ~ Exp(2δ/σ²).
+  - TTFT = (1 − p_sat)·T₀ + p_sat·(lat + β + Exp). T₀ is the plain prefill-queue law, applied after the tail-sharing correlated rows.
+  - That last step is why F moves now: the 0.243 iid atom went into the service mix, and the 0.237 correlated-row override then replaced it.
+- **Floor check** (DES A λ53.5, n64000). P(U > 0) at arrivals is 0.282 vs 0.276 in the model, and the batch at arrival is mean 48, sd 14.3. The batch sd is far above Poisson(λH) because the prefill pauses amplify it. With births-only noise the model gives 0.229.
+- **Long-run DES TTFT p90** (ms, 6 seeds × n64000) vs analytic:
+
+  | λ | A DES | A ana | λ | F DES | F ana |
+  |---|---|---|---|---|---|
+  | 52 | 434 | 196 | 40.5 | 552 | 269 |
+  | 53.5 | 867 | 675 | 41.5 | 978 | 634 |
+  | 54.3 | 1267 | 1170 | 42.4 | 1657 | 1386 |
+  | 55.06 | 2019 | 2075 | 43.06 | 2850 | 2583 |
+  | 55.7 | 3344 | 3894 | 43.7 | 5772 | 6003 |
+
+  It is good near the 2 s crossing. Below ≈1 s it under-predicts (the mixture body when p_sat is small; deferred). D equals A within se.
+
+### Found — the n4000 DES rates of 0.243 are transient near saturation
+- The relaxation time σ²/δ² is ≈ 83 s at A λ55.06, comparable to the run (≈ 72 s per replica). The window means drift, which is why the drift flag fired.
+- Example: A vllm n4000 put the crossing at 55.95; long runs give 55.2 → 1874 ms and 55.95 → 3359 ms.
+- The ranking was re-checked with long runs (`sd244/lbr.py`: 6 seeds × n64000, TTFT crossing, 1 % steps). prefill_first's TTFT stays ≈ 95 ms past λ_s (its decode backlog is not in TTFT), so it stays stability-limited (0.243 values).
+
+  | case | long-run DES | analytic 0.244 |
+  |---|---|---|
+  | A | pf ≈56.7–57.4 > v0 55.45 > vllm = mixed 55.28 > sglang 55.05 | pf 56.73 > vllm = mixed 56.20 > v0 55.96 > sglang 55.04 |
+  | D | pf > vllm = v0 55.45 > mixed 55.13 > sglang 54.95 | pf 56.73 > vllm = v0 55.96 > mixed 55.41 > sglang 55.01 |
+  | F | pf ≈44.8–45.3 > vllm 43.75 > mixed 43.64 > sglang 42.66 | pf 44.83 > vllm 43.89 > mixed 43.73 > sglang 42.80 |
+  | G | v0 49.42 > vllm 49.02 | vllm 49.99 > v0 49.37 |
+
+- **sglang (non-fused):** analytic − DES is +0.0 / +0.1 / +0.3 % in A/D/F (0.243: +1.8 / +1.9 / +3.5 %). It is now last among the chunked engines in A/D/F, as in the DES.
+- **Fused vs long-run DES:** D vllm +0.9 %, mixed +0.5 %; F vllm +0.3 %, mixed +0.2 %; A v0 +0.9 %, G v0 −0.1 %.
+  - **Flagged for 0.245 (not fixed):** A vllm/mixed 56.20 vs 55.28 (+1.7 %) and G vllm 49.99 vs 49.02 (+2.0 %) are over the long-run DES.
+  - So the A order of v0 vs vllm/mixed is inverted: DES v0 > vllm = mixed > sglang, analytic vllm = mixed > v0 > sglang. These rates are within ≈ 0.6 % (DES) and 0.9 % (analytic) of each other, a near-tie. G vllm vs v0 is likewise inverted.
+  - The 0.243 test pins (A 55.95, G 49.42) were the transient n4000 references.
+
+### KPI (7 of 49 rows changed, sglang only)
+- SLO rate:
+
+  | case | 0.243 | 0.244 |
+  |---|---|---|
+  | A | 56.73 | 55.04 |
+  | C | 19.89 | 18.67 |
+  | D | 56.69 | 55.01 |
+  | E | 19.79 | 18.58 |
+  | F | 44.36 | 42.80 |
+  | G | 50.06 | 48.43 |
+  | B (strict SLO) | 22.78 | 22.78 |
+
+- Operating-point TTFT p99 is −1 % (A 79.35 → 78.5): the backlog branch (lat + β) mixes in with p_sat ≈ 1e-3. TTFT mean and TPOT are unchanged.
+- C/E sglang are not DES-checked; there sglang falls from first among the chunked engines to between vllm and v0.
+
+### Tests
+- test_core_244 (3 tests): A monotone TTFT in λ, mechanism identities, and p_sat → 0 at low load; sglang SLO rates within 1.5 % of the long-run DES and below the fused engines in A/D/F; prefill_first/fused untouched.
+- test_core_232: the "sglang with C ≥ prompt = prefill_first exactly" TTFT identity no longer holds by design (SGLang counts prefilling in max_running_requests, prefill_first does not). It is now TPOT/energy-identical with TTFT within 2 % (p99 79.35 → 78.50 ms, p_sat ≈ 1e-3): a changed premise, not a broken invariant.
+
+### Deferred
+- Fused A/G over the long-run DES (+1.7 / +2.0 %) and the A v0-vs-vllm near-tie (0.245).
+- Re-pin the 0.243 tests to long-run DES references.
+- sglang TTFT p90 below ≈1 s (body of the mixture at small p_sat).
+- C/E sglang DES check.
+- E mixed −7 … −12 %; idle k0; the 0.238 list.
+
 ## [0.243.0]
 
 ### Checked — 0.242 ranking shifts against the DES (A, D, F, G)
