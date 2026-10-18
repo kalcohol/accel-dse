@@ -6,6 +6,44 @@
 
 
 
+## [0.241.0]
+
+### Fixed — near-saturation TTFT in fused paths: max_num_seqs blocking of the chunk server (partial, derived)
+- **Hypothesis tested and refuted: queue–service correlation.** Instrumented DES (E sglang_mixed, seed 1): per-prompt chunk-server share 177.8 / 180.0 ms (cv 0.013 / 0.016) at λ15 / 18.6; vs queue length at arrival 176.9 → 182.0 ms (+2.7 %). But P-K with the DES's own service law gives a wait of 178 / 463 ms vs DES 193 / 635 ms: the DES prompt queue is not work-conserving.
+- **Counterfactual DES (slots lifted to ∞, 3 seeds, n4000).**
+  - sglang_mixed λ18.6: wait 743 → 524 ms, TTFT p90 2148 → 1597, TPOT p90 23.4 → 45.7. λ15: 191 → 183. ⇒ the max_num_seqs cap is the TTFT mechanism (it moves backlog from TPOT into TTFT; 0.240's "slot blocking is not the cause" was wrong — its *average* is small, but it is lumped).
+  - vllm λ18.6: wait 642 vs 636, p90 1849 vs 1836 ⇒ cap inactive in vllm.
+- **Mechanism 「推导」 (`pdqueue._slot_block`).** In a backlog every admission rides n_B fused iterations, so the busy period's decodes are n_B tokens apart and none dies before out tokens; the k0 decodes present at its start (PASTA: time-average batch) have uniform residual lives. k_j = j + k0·(1 − j·n_B/out)^+ reaches B after J* admissions; the next prompt then waits for the oldest decode, V = (out − B·n_B)·T_d(B) (≈ 232 ms in E), after which one prompt is admitted per death for B admissions with no further block ⇒ one V per B admissions beyond index J*. Busy-period index ~ Borel(ρ′) (deterministic share, M/D/1) with ρ′ = ρ + λφV/B (fixed point); φ = E[(N − J*)^+]/E[N]. Applied as a lumped vacation (τ + V w.p. φ/B) on the chunk-server share atoms (wait, not own latency). No block when B·n_B ≥ out (vllm E: 32·8.23 = 263 ≥ 256 — matches the counterfactual). Report key `slot_block` {V, p, J, phi}.
+- **E sweep, TTFT p90 ms (0.240 → 0.241 vs DES n4000×10):**
+
+  | λ | sglang_mixed 0.240 | 0.241 | DES | vllm 0.240 = 0.241 | DES |
+  |---|---|---|---|---|---|
+  | 15 | 677 | 679 | — | 702 | — |
+  | 17.37 | 976 | 1008 | 1219 | 1057 | 1158 |
+  | 18.0 | 1124 | 1199 | 1603 | 1219 | 1436 |
+  | 18.6 | 1298 | 1461 | 2163 | 1488 | 1883 |
+  | 19.32 | 1641 | 2110 | 3353 | 1992 | 2748 |
+  | 19.76 | 1974 | 3000 | 4559 | 2707 | — |
+
+  Every point moves toward the DES, none overshoots; λ15 unchanged. Remaining gap: the no-cap DES (p90 1597 at 18.6) is ~25 % above the no-block analytic (1298) in both profiles — a common non-cap mechanism (deferred).
+- **TPOT unchanged** (0.240 cap still matches DES p90).
+
+### KPI old → new (49 rows, 11 changed — SLO rates only; operating-point TTFT/TPOT unchanged)
+- A vllm_v0 57.95 → 57.20 (still first).
+- C vllm / sglang_mixed 20.12 → 18.98 — **ranking reverts**: sglang 19.89 > vllm_v0 19.32 > vllm / sglang_mixed 18.98 (0.240's C lead was the flagged TTFT-bound upper bound).
+- D vllm / vllm_v0 57.95 → 57.20, sglang_mixed 57.58 → 56.91 (order unchanged).
+- E sglang_mixed 19.79 → 19.23: now vllm 19.32 > sglang_mixed 19.23, the DES order (18.70 > 18.43); vllm unchanged (cap inactive). sglang (non-fused) 19.79 unchanged.
+- F vllm / vllm_v0 46.01 → 45.25, sglang_mixed 45.88 → 45.09 (order unchanged).
+- G vllm_v0 51.61 → 50.74 (still first, margin 0.02).
+
+### Deferred
+- Common ~25 % non-cap TTFT gap near saturation (both profiles; vllm entirely).
+- TPOT mean birth-in-busy-period residual (needs the slot cap jointly; not cheap).
+- Joint phase–wait chain; the 0.238 list.
+
+### Tests
+- `tests/test_core_241.py`: `_slot_block` reductions (no block when B·n_B ≥ out / unstable, J* fill, monotonicity), E sglang_mixed TTFT p90 strictly between 0.240 and DES at λ 17.37–19.32, blocking negligible at the operating point.
+
 ## [0.240.0]
 
 ### Fixed — fused TPOT quantiles near saturation: max_num_seqs caps a request's fused time

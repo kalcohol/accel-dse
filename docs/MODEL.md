@@ -5579,3 +5579,12 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
 - **Open.**
   - Near-saturation TTFT is optimistic ×1.2–1.4. Slot-blocking time is only 2–3 %. The DES chunk iterations see a batch of 18 vs the analytic 13.2, i.e. the batch grows while prompts queue.
   - Mean TPOT misses the birth-in-busy-period residual R: E[R] = L·E[BP] (DES 0.647 s vs 0.68 at λ = 15). It needs the slot cap and the queue–service correlation at high load.
+
+## §188 max_num_seqs blocks the chunk server in a backlog (0.241)
+
+- **Evidence.** Per-prompt chunk-server share is ≈ deterministic and rises only +2.7 % with the queue (no queue–service correlation), yet the DES wait exceeds P-K on its own service law by +37 % at λ18.6 (E sglang_mixed). Lifting the slot cap in the DES removes most of it (wait 743 → 524 ms); in vllm E lifting it changes nothing (642 vs 636).
+- **Fill 「推导; mean-field」.** In a busy period each admission rides n_B fused iterations, so its decodes are n_B tokens apart and none of them dies before out tokens; the k0 decodes running at its start (PASTA: the time-average batch) have uniform residual lives. After j admissions k_j = j + k0·(1 − j·n_B/out)^+; the batch is full after J* admissions.
+- **Block.** The next prompt waits for the oldest decode: V = (out − B·n_B)·T_d(B). Then one prompt is admitted per death, all B lives spaced n_B apart, so the next block is B admissions later ⇒ one V per B admissions (same mean as spreading (out/B − n_B)·T_d over each admission, but lumped — the lump is what drives the wait). No block when B·n_B ≥ out.
+- **Who meets it 「近似: iid」.** A prompt beyond index J* of its busy period, w.p. 1/B. Index law: Borel(ρ′) (M/D/1, deterministic share), customer-weighted φ = E[(N − J*)^+]/E[N]; ρ′ = ρ + λφV/B by fixed point. Applied as an extra atom τ + V with weight φ/B on every chunk-server share atom (envs, cbins, serv_mix); own-latency rows unchanged. Reported as `slot_block`.
+- **Result.** E sglang_mixed TTFT p90 at λ18.6: 1298 → 1461 ms (DES 2163); 19.32: 1641 → 2110 (3353); λ15 unchanged; SLO rate 19.79 → 19.23 (DES 18.43). vllm E unchanged.
+- **Open.** The no-cap DES is still ~25 % above the no-block analytic in both profiles (sglang_mixed lift p90 1597 vs 1298; vllm 1849 vs 1488): a second, non-cap mechanism. The iid lump also ignores that blocks cluster in long busy periods. Mean TPOT birth-in-busy residual still open.

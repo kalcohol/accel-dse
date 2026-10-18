@@ -1711,6 +1711,41 @@ def _law_mix(laws, qs) -> dict:
     return out
 
 
+def _slot_block(lam: float, rho: float, k0: float, B: int, n_B: float, out: float, T_d: float):
+    """0.241: max_num_seqs blocking of the chunk server in a backlog → (V, p): a lumped vacation V before an
+    admission, met by a fraction p of the prompts.  In a busy period every admission rides n_B fused iterations, so
+    the decodes admitted in it are n_B tokens apart and the batch after j admissions is k_j = j + k0·(1 − j·n_B/out)^+ —
+    the busy period's own decodes are younger than out tokens, the k0 present at its start (PASTA: the time-average
+    batch) have uniform residual lives 「推导; mean-field, deterministic aging」.  Once it reaches
+    B (after J* admissions) the next prompt waits until the oldest decode — (B − 1)·n_B tokens old — finishes:
+    V = (out − B·n_B)·T_d(B) of decode-only iterations; then one prompt is admitted per death with no further block
+    for B admissions (saturated cycle).  So beyond index J* of its busy period one prompt in B meets V.  The busy-period
+    index is Borel(ρ′) for deterministic shares (M/D/1); ρ′ includes the blocks (fixed point).  None when the batch
+    never fills (B·n_B ≥ out: the fixed point out/n_B ≤ B) or the server is unstable."""
+    if B * n_B >= out or rho >= 1:
+        return None
+    V = (out - B * n_B) * T_d
+    # fill: the j decodes admitted in the busy period are < out tokens old, none dies; the k0 decodes running at its start
+    # have residual lives ~ uniform on [0, out] tokens (ages uniform), a fraction j·n_B/out of them gone after j admissions
+    k0, J = max(0.0, k0), 0
+    while J + k0 * max(0.0, 1 - J * n_B / out) < B - 1e-9 and J < 10000:
+        J += 1
+    r = rho
+    for _ in range(4):
+        if r >= 1:
+            return None
+        # customer-weighted P(index > J) = E[(N − J)^+]/E[N], N ~ Borel(r)
+        EN = 1 / (1 - r)
+        acc, tail = 0.0, 1.0
+        for n in range(1, J + 1):
+            pn = math.exp(-r * n + (n - 1) * math.log(r * n) - math.lgamma(n + 1)) if r > 0 else (1.0 if n == 1 else 0.0)
+            acc += n * pn
+            tail -= pn
+        phi = max(0.0, (EN - acc - J * max(0.0, tail)) / EN)
+        r = rho + lam * phi * V / B
+    return V, phi / B, J, phi
+
+
 def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     cp, r_c, pts, out, B = ctx["cpool"], ctx["r_c"], ctx.get("pts_c", ctx["pts"]), ctx["out"], ctx["B"]
     spec = ctx.get("chunk") or {"profile": "fixed", "C": ctx["C"]}       # 0.231: engine profile (chunk_spec)
@@ -1941,6 +1976,11 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         wt_ = sum(r_[0] * r_[7] for r_ in ph_["rows"])
         return sum(r_[0] * r_[7] * r_[6] for r_ in ph_["rows"]) / wt_ if wt_ > 0 else math.inf
 
+    # 0.241: max_num_seqs blocking in a backlog (see _slot_block) — a lumped vacation in the chunk server's share
+    _, rBb, _, _, _, tsBb, nsBb = mean_step(B)
+    rho_c = lam_c * _wsum(ws, serv) / sum(ws)
+    k0_c = sum(k_ * p_ for k_, p_ in enumerate(dec["run_w"]))
+    blk = _slot_block(lam_c, rho_c, k0_c, B, _wsum(ws, nsBb) / sum(ws), out, rBb.step)
     for kraw in kbins:
         kb = max(1, kraw)
         tb = mean_step(kb)[5]
@@ -1970,6 +2010,14 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         for w_, t in zip(ws, tb):
             serv_mix.append(t)
             ws_mix.append(w_ / 8)
+    if blk is not None and blk[1] > 1e-6:
+        Vb, pv = blk[0], blk[1]
+        sp2 = lambda pts_: [x_ for w_, t_, l_ in pts_ for x_ in ((w_ * (1 - pv), t_, l_), (w_ * pv, t_ + Vb, l_))]
+        envs = [(wb_, sp2(pts_), v_) for wb_, pts_, v_ in envs]
+        cbins = [(wb_, [x_ for m_, t_ in svc_ for x_ in ((m_ * (1 - pv), t_), (m_ * pv, t_ + Vb))], rows_, th_, v_)
+                 for wb_, svc_, rows_, th_, v_ in cbins]
+        serv_mix, ws_mix = ([x_ for t_ in serv_mix for x_ in (t_, t_ + Vb)],
+                            [x_ for w_ in ws_mix for x_ in (w_ * (1 - pv), w_ * pv)])
     w = mg1(lam_c, serv_mix, ws_mix, QS)
     if not w["stable"]:
         return {**res, "why": "分块 prefill 队列不稳定"}
@@ -2061,6 +2109,7 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     capped = {q: v > tp_cap for q, v in req_q.items()}
     req_q = {q: min(v, tp_cap) for q, v in req_q.items()}
     return {**res, "stable": True, "ttft": ttft, "tpot_mean": dec["tpot"], "tpot_cap": tp_cap, "tpot_capped": capped[0.9],
+            "slot_block": None if blk is None else {"V": blk[0], "p": blk[1], "J": blk[2], "phi": blk[3]},
             "tpot_p90": req_q[0.9], "tpot_p99": req_q[0.99],
             "itl_max": max(t1_99) / dec["e"],
             "e2e_mean": ttft["mean"] + slot["mean"] + out * dec["tpot"],
