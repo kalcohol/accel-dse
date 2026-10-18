@@ -5607,3 +5607,19 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
   - sglang_mixed: 1125 / 1400 / 1856 / 2992 vs 1219 / 1603 / 2163 / 3353.
   - C operating-point p99: −12 % → −5 % vs DES.
 - **Open.** The slot block is still an iid lump (sglang_mixed −8 … −14 %). The idle-time k0 law is not yet modelled.
+
+## §190 Decode fixed point near the capacity limit; clustered slot block (0.243)
+
+- **Fixed point.** The fused path refines the decode-seen batch with two passes, k ← seen(k). Near λ_s the map overshoots: A vllm λ56.8 went 57.2 → 63.2 → 52.3.
+  - The TTFT law was then non-monotone in λ, and the SLO-rate scan found a false feasible window.
+  - When the two passes oscillate (sign change, |Δ| > 0.5), the fixed point is bisected between the first two iterates. A decode-unstable pass inside the bracket makes the load unstable.
+- **Clustered block 「推导」.** The §188 block V = (out − B n_B)·T_d(B) is met only at a full batch, i.e. only in the quasi-static bins at k = B of the §189 queue-weighted law.
+  - In the full regime a cycle is B admissions per out decode tokens. The fill leaves J* busy-period decodes n_B apart and m = B − J* survivors with uniform residual lives, all of which die before the cohort.
+  - So m of the B admissions wait V/m each. The atom is τ + V/m w.p. m/B in the full bins only.
+  - m = 1 recovers §188's lump. Large m (A vllm) gives small, frequent blocks.
+- **Evidence.**
+  - DES SLO rates (TTFT p90 2 s crossing, 8 seeds): fused analytic within ±1.4 % in A/D/E/F/G (A vllm 0.242 +1.9 % → +0.4 %; G vllm +2.6 % → +1.2 %).
+  - E sglang_mixed TTFT p90 at 18.6: 1856 → 1935 (DES 2163).
+- **Open.**
+  - sglang non-fused: prefilling counts in max_running_requests, so admission blocks at a full batch with β = (out/e)·T_d(B)/B per admission. That is absent from the prefill-first machinery, which leaves the TTFT ≈ 0.1 s up to λ_s; the analytic is +1.8–3.5 % too optimistic.
+  - Idle-time starting batch: derived k0 ≈ DES, but the mean-field fill then under-predicts.

@@ -6,6 +6,79 @@
 
 
 
+## [0.243.0]
+
+### Checked — 0.242 ranking shifts against the DES (A, D, F, G)
+- **Method (`sd243/br.py`).** The DES SLO rate is found by λ bracketing in 1.5 % steps, 8 seeds × n4000, at the TTFT p90 2 s crossing (TPOT p90 ≪ 50 ms everywhere), with log interpolation. The p90 se is ≈ 10 %, so λ resolves to ≈ ±0.5 %.
+  - prefill_first is limited by stability in the DES: 3/8 seeds are unstable at the analytic λ_s and 8/8 at +1.5 %. Its TTFT stays ≈ 0.12–0.24 s.
+  - The DES drift flag fires on 4–7/8 seeds of fused and sglang runs near saturation, at TTFT p90 of only 1–2 s. That is window-mean noise, so the criterion stays TTFT-only, as for E.
+- **SLO rates (rps):**
+
+  | case | DES | analytic 0.242 | analytic 0.243 |
+  |---|---|---|---|
+  | A | pf ≈56.7–57.4 > vllm_v0 56.11 ≈ vllm 55.95 > sglang 55.71 | vllm 57.00 > pf = sglang 56.73 > v0 56.23 | pf = sglang 56.73 > vllm 56.20 > v0 55.96 |
+  | D | pf ≈56.7–57.4 > vllm = v0 56.11 > mixed 55.77 ≈ sglang 55.65 | pf 56.73 > sglang 56.69 > vllm = v0 56.23 > mixed 56.01 | pf 56.73 > sglang 56.69 > vllm = v0 55.96 > mixed 55.41 |
+  | F | pf ≈44.8–45.3 > vllm 43.96 ≈ mixed 43.82 > sglang 42.84 | pf 44.83 > sglang 44.36 > vllm = v0 44.18 ≈ mixed 44.17 | pf 44.83 > sglang 44.36 > vllm = v0 43.89 > mixed 43.73 |
+  | G | vllm_v0 49.82 > vllm 49.42 | vllm 50.72 > v0 49.77 | vllm 49.99 > v0 49.37 |
+
+- **What the DES confirms.**
+  - prefill_first first in A/D/F (0.242 had vllm first in A: wrong; fixed).
+  - Fused order in D/F (vllm ≥ mixed).
+  - vllm vs vllm_v0 in A is a tie (DES 0.16 apart, analytic 0.24 apart; both inside ±0.5 %).
+- **What it does not confirm.**
+  - sglang (non-fused) above the fused profiles in A/D/F. The analytic is +1.8 / +1.9 / +3.5 % too optimistic there (mechanism below, deferred).
+  - G vllm above vllm_v0: analytic +1.2 % / −0.9 % vs DES, a 0.8 % DES gap in the other direction.
+- **Fused accuracy, analytic − DES.**
+  - 0.242: A vllm +1.9 %, G vllm +2.6 %; the rest ≤ ±0.8 %.
+  - 0.243: within ±1.4 % everywhere (A vllm +0.4, v0 −0.3; D vllm −0.3, mixed −0.6; F vllm −0.2, mixed −0.2; G vllm +1.2, v0 −0.9; E vllm +0.6, mixed +1.4).
+
+### Fixed — false feasible window at the decode-capacity limit (fused decode fixed point)
+- **Symptom.** Near λ_s the two fixed-point passes on the decode-seen batch oscillated: A vllm λ56.8 went k 57.2 → 63.2 → 52.3.
+  - The TTFT law was non-monotone in λ: 56.0 → 16.7 s, 56.5 → 31 s, 56.8 → 0.14 s.
+  - `_slo_rate`'s top-down scan took the false feasible window, so the SLO rate became the stability limit: A vllm 57.00 (DES 55.95), G vllm 50.72 (DES 49.42).
+- **Fix.** When the passes oscillate (sign change, |Δ| > 0.5), bisect the fixed point k = seen(k) between the first two iterates. A decode-unstable pass inside the bracket makes the load unstable. Converged cases are untouched.
+  - A vllm TTFT p90 is now monotone. SLO rate A 57.00 → 56.20, G 50.72 → 49.99.
+
+### Changed — the slot block clusters on the full-batch bins (sglang_mixed residual)
+- **Derivation 「推导」.** The block falls only on prompts served at a full batch: the quasi-static bins at k = B of the 0.242 queue-weighted law, deep in busy periods. 0.242 spread it iid over every bin (φ/B), which dilutes the full bins' load λ(S_B + V/B); the quasi-static mixture is convex in the bin load.
+  - In the full regime one cycle is B admissions and out decode tokens.
+  - The fill leaves J* busy-period decodes n_B tokens apart, with no block between them. It also leaves m = B − J* survivors of the starting batch, with residual lives uniform on [0, out − J*n_B]; all of them die before the cohort.
+  - So m admissions wait V/m each (Σ = V = (out − B n_B)·T_d(B)), and the age pattern repeats every cycle.
+  - m = 1 is the 0.241 lump. A vllm (k0 ≈ 52 of 64) gets small blocks at most admissions. With the 0.241 lump it was far too pessimistic (TTFT p90 8 s at λ54).
+- **E sglang_mixed TTFT p90 (0.242 → 0.243 / DES):** 17.37 1125 → 1130 / 1219; 18.0 1400 → 1401 / 1603; 18.6 1856 → 1935 / 2163; 19.32 2992 → 3003 / 3353; 19.76 4595 → 4590 / 4559.
+  - The residual narrows only at 18.6 (−14 → −10.5 %). It stays at ≈ −7 … −12 % elsewhere.
+  - SLO rate 18.75 → 18.68 (DES 18.43). vllm E is unchanged (no block).
+
+### Investigated, not shipped
+- **Idle-time starting batch (scope 3).** k0 = k̄·E[(W − A)⁺]/W, where the current idle stretch (A ~ Exp of mean 1/(λT_d) decode iterations) holds no births. E mixed 18.6 gives k0 13.2 → 7.0, close to the DES's 7.6 for arrivals to an empty queue.
+  - But the deterministic mean-field fill from the lower k0 under-predicts the queue batch. E got worse everywhere (mixed 18.6: 1935 → 1717; vllm 1833 → 1770; DES 2163 / 1883) and A moved to +1.3 %. Reverted and deferred.
+- **sglang non-fused admission (deferred).** SGLang (and pdsim) count the prefilling request in max_running_requests. At a full batch a prompt waits for a death, and decodes advance only in decode-only iterations, so the wait is β = (out/e)·T_d(B)/B ≈ 34 ms in A. The analytic prefill-first machinery instead admits to decode after the prefill.
+  - So the analytic TTFT stays ≈ 0.1 s up to the decode λ_s, while the DES p90 reaches 2 s at 55.7. P(n ≥ B) is 0.74 there.
+  - An iid atom τ + β w.p. P(n ≥ B) raised the A/D TTFT p90 at 55.7 only from 97 to 520 ms (crossing ≈ 56.5 vs DES 55.7), and it misses F's tail-sharing rows.
+  - It needs the queue-weighted / clustered treatment the fused path has, so it was not small and was reverted.
+
+### KPI old → new (49 rows; 15 changed, SLO rates only; operating-point TTFT/TPOT unchanged)
+- A vllm / sglang_mixed 57.00 → 56.20, vllm_v0 56.23 → 55.96. **Ranking:** prefill_first / sglang 56.73 now lead (0.242: vllm first).
+- C vllm / sglang_mixed 18.32 → 18.49 (order unchanged).
+- D vllm / vllm_v0 56.23 → 55.96, sglang_mixed 56.01 → 55.41 (order unchanged).
+- E sglang_mixed 18.75 → 18.68 (order unchanged).
+- F vllm / vllm_v0 44.18 → 43.89, sglang_mixed 44.17 → 43.73 (order unchanged).
+- G vllm / sglang_mixed 50.72 → 49.99, vllm_v0 49.77 → 49.37. **Ranking:** prefill_first 50.08 / sglang 50.06 now lead.
+
+### Tests
+- `tests/test_core_243.py`:
+  - A vllm TTFT p90 monotone in λ 54–57 (the bisection guard), and the A vllm SLO rate within 1.5 % of the DES 55.95.
+  - G vllm within 1.5 % of the DES 49.42.
+  - E sglang_mixed TTFT p90 at 18.6 between 0.242 and the DES, and the SLO rate in [18.43, 18.75).
+- test_core_239: E sglang_mixed SLO rate 18.75 → 18.68.
+
+### Deferred
+- sglang non-fused admission block (A/D/F ranking).
+- sglang_mixed E residual ≈ −7 … −12 %.
+- Idle-time k0 together with a better fill law.
+- G vllm vs vllm_v0 (+1.2 / −0.9 %).
+- TPOT-mean birth-in-busy residual; joint phase–wait chain; the 0.238 list.
+
 ## [0.242.0]
 
 ### Fixed — near-saturation TTFT in fused paths: the share grows along a busy period (order effect), queue-weighted batch law

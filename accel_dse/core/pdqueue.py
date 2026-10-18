@@ -2000,25 +2000,63 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     # T₁ − T₀ is evaluated at the batch the decodes see (two fixed-point passes from the 0.54 mean-iteration chain).
     k_s = max(1.0, min(float(B), dec0["seen_mean"]))
     kappa = _pair_kappa([(w_, o_) for w_, _, o_ in ctx["len"].points])
-    dec = None
-    for _ in range(2):
-        T0, mixr, t1, x, t1m, tsum, ns = frac_step(k_s)
+    def pass_at(ks):
+        """One fixed-point pass at the decode-seen batch ks → the batch-arrival decode chain, None (decode unstable)
+        or "prefill" (prefill queue unstable)."""
+        T0, mixr, t1, x, t1m, tsum, ns = frac_step(ks)
         serv = tsum
         exc = [t - m * T0 for m, t in zip(ns, tsum)]
         rho_s, f = lam_c * _wsum(ws, serv), lam_c * _wsum(ws, exc)
         if rho_s >= 1 or f >= 1:
-            return {**res, "why": "分块 prefill 队列不稳定"}
+            return "prefill"
         X, _ = _mg1_busy(lam_c, list(zip(ws, serv)))
-        d = None
-        if X is not None:
-            lam_b = lam_c * (1 - rho_s) / (1 - f)
-            a_thin = kappa * _busy_spread(lam_c, [(w_, sv, sv - ex) for w_, sv, ex in zip(ws, serv, exc)], X, lam_b)
-            nu_b, Xb = _shape_batch(lam_b, X, lam_c / (1 - f), a_thin)
-            d = _decode_birth_death(cp, lam_c, out, B, batch=(nu_b, Xb, 1 / (1 - f)))
+        if X is None:
+            return None
+        lam_b = lam_c * (1 - rho_s) / (1 - f)
+        a_thin = kappa * _busy_spread(lam_c, [(w_, sv, sv - ex) for w_, sv, ex in zip(ws, serv, exc)], X, lam_b)
+        nu_b, Xb = _shape_batch(lam_b, X, lam_c / (1 - f), a_thin)
+        d_ = _decode_birth_death(cp, lam_c, out, B, batch=(nu_b, Xb, 1 / (1 - f)))
+        if d_ is not None:
+            thin_of[id(d_)] = a_thin
+        return d_
+
+    thin_of: dict = {}
+    dec = None
+    ks_hist = [k_s]
+    for _ in range(2):
+        d = pass_at(k_s)
+        if d == "prefill":
+            return {**res, "why": "分块 prefill 队列不稳定"}
         if d is None:
             break
         dec = d
         k_s = max(1.0, min(float(B), dec["seen_mean"]))
+        ks_hist.append(k_s)
+    if dec is not None and len(ks_hist) == 3 and abs(ks_hist[2] - ks_hist[1]) > 0.5 \
+            and (ks_hist[1] - ks_hist[0]) * (ks_hist[2] - ks_hist[1]) < 0:
+        # 0.243: the two passes oscillate (near the slot bound the seen batch overshoots: A vllm λ56.8 k 57.2 → 63.2
+        # → 52.3, and the TTFT law fell from 31 s to 0.14 s — a false feasible window above the real SLO rate).  The
+        # fixed point k = seen(k) lies between the first two iterates (g = seen − k changes sign) → bisection; a
+        # decode-unstable pass inside the bracket makes the load unstable.
+        lo, hi = sorted(ks_hist[:2])
+        g_lo = ks_hist[1] - ks_hist[0] if lo == ks_hist[0] else ks_hist[2] - ks_hist[1]
+        dmid = None
+        for _ in range(8):
+            mid = 0.5 * (lo + hi)
+            dmid = pass_at(mid)
+            if dmid == "prefill":
+                return {**res, "why": "分块 prefill 队列不稳定"}
+            if dmid is None:
+                return {**res, "why": "分块 prefill + decode 在此负载下不稳定"}
+            g = max(1.0, min(float(B), dmid["seen_mean"])) - mid
+            if (g > 0) == (g_lo > 0):
+                lo = mid
+            else:
+                hi = mid
+            if hi - lo < 0.25:
+                break
+        dec, k_s = dmid, max(1.0, min(float(B), dmid["seen_mean"]))
+    a_thin = thin_of.get(id(dec), 0.0) if dec is not None else 0.0
     if dec is None:
         return {**res, "why": "分块 prefill + decode 在此负载下不稳定"}
     T0, mixr, t1, x, t1m, tsum, ns = frac_step(k_s)
@@ -2093,13 +2131,34 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
             serv_mix.append(t)
             ws_mix.append(w_ / 8)
     if blk is not None and blk[1] > 1e-6:
-        Vb, pv = blk[0], blk[1]
-        sp2 = lambda pts_: [x_ for w_, t_, l_ in pts_ for x_ in ((w_ * (1 - pv), t_, l_), (w_ * pv, t_ + Vb, l_))]
-        envs = [(wb_, sp2(pts_), v_) for wb_, pts_, v_ in envs]
-        cbins = [(wb_, [x_ for m_, t_ in svc_ for x_ in ((m_ * (1 - pv), t_), (m_ * pv, t_ + Vb))], rows_, th_, v_)
-                 for wb_, svc_, rows_, th_, v_ in cbins]
-        serv_mix, ws_mix = ([x_ for t_ in serv_mix for x_ in (t_, t_ + Vb)],
-                            [x_ for w_ in ws_mix for x_ in (w_ * (1 - pv), w_ * pv)])
+        # 0.243: the block clusters — it falls only on prompts served at a full batch (the quasi-static bins at k = B of
+        # the queue-weighted law, deep in busy periods); the bins below B never meet it (0.241/0.242 spread it iid
+        # over every bin, diluting the full bins' load — the quasi-static mixture is convex in the bin load).  In the
+        # full regime one cycle = B admissions and out tokens of decode: the fill leaves J* busy-period decodes
+        # n_B tokens apart (no block between them) and m = B − J* survivors of the k0 present at the start with
+        # residual lives uniform on [0, out − J*·n_B] — all die before the cohort, m deaths spread evenly, so m
+        # admissions wait V/m each (Σ = V = (out − B·n_B)·T_d(B)); the age pattern then repeats every cycle.  m = 1
+        # (k0 = 0): the 0.241 lump V once per B; m large (A vllm: k0 ≈ 52 of 64): small blocks at most admissions.
+        # 「推导; mean-field fill from the mean k0」
+        m_ = max(1, B - blk[2])
+        Vb, pb = blk[0] / m_, m_ / B
+        nw = len(ws)
+        full = [kraw >= B for kraw in kbins]
+        sp2 = lambda pts_, pv: [x_ for w_, t_, l_ in pts_ for x_ in ((w_ * (1 - pv), t_, l_), (w_ * pv, t_ + Vb, l_))]
+        envs = [(wb_, sp2(pts_, pb), v_) if fl_ else (wb_, pts_, v_) for (wb_, pts_, v_), fl_ in zip(envs, full)]
+        cbins = [(wb_, [x_ for a_, t_ in svc_ for x_ in ((a_ * (1 - pb), t_), (a_ * pb, t_ + Vb))], rows_, th_, v_)
+                 if fl_ else (wb_, svc_, rows_, th_, v_) for (wb_, svc_, rows_, th_, v_), fl_ in zip(cbins, full)]
+        sm2, wm2 = [], []
+        for i_, (t_, w_) in enumerate(zip(serv_mix, ws_mix)):
+            if full[min(len(full) - 1, i_ // nw)]:
+                sm2 += [t_, t_ + Vb]
+                wm2 += [w_ * (1 - pb), w_ * pb]
+            else:
+                sm2.append(t_)
+                wm2.append(w_)
+        serv_mix, ws_mix = sm2, wm2
+        fm = sum(full) / len(full)
+        blk = (blk[0], fm * pb, blk[2], fm)
     w = mg1(lam_c, serv_mix, ws_mix, QS)
     if not w["stable"]:
         return {**res, "why": "分块 prefill 队列不稳定"}
