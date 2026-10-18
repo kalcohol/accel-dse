@@ -295,11 +295,12 @@ def _corr_surv(lam: float, svc, rows, theta: float = math.inf):
         def sw(x: float) -> float:
             if x < 0:
                 return 1.0
-            try:
+            if x <= MD1_EXACT_SPAN * tau:
                 return 1.0 - md1_cdf(lam, tau, x)
-            except OverflowError:         # 0.238: Erlang's series overflows past ~170 τ → Cramér–Lundberg tail
-                r_, t_, c_ = cl_md1
-                return min(r_, c_ * math.exp(-t_ * x))
+            # 0.239: beyond 6 τ Erlang's alternating series loses all precision (P(W > 40τ) came out 1.0 at ρ = 0.95,
+            # long before the 0.238 overflow) → the Cramér–Lundberg tail, as mg1_mix_sum_quantile does
+            r_, t_, c_ = cl_md1
+            return min(r_, c_ * math.exp(-t_ * x))
         th = None
         x_hi = tau * 4
         while sw(x_hi) > 1e-8 and x_hi < tau * 400:

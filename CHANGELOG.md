@@ -6,6 +6,42 @@
 
 
 
+## [0.239.0]
+
+### Fixed — the 0.238 case-E KPI shift was a numerical artefact
+- **Symptom.** E (16384/256, cap 48 GB) sglang_mixed SLO rate went 19.76 → 17.37 in 0.238. An analytic sweep of the fused TTFT law near saturation showed broken quantiles: at λ = 17.37 the mean was 505 ms but p50 was 12 295 ms and p90 = p99 = 12 393 ms. The quantiles were erratic in λ (λ = 18: p90 1372). vllm showed the same.
+- **Cause.** The single-service (M/D/1) branch of the wait-correlated survival (`queueing._corr_surv`, 0.237) evaluated Erlang's alternating series out to 400 τ. Past ≈ 6 τ the series loses every digit at high ρ: at ρ = 0.95, P(W > 40 τ) comes out 0 or 1 against a true 0.0165. The 0.238 overflow fallback caught only the overflow itself. A garbage wait grid made the quantile search return its upper bracket.
+- **Fix.** Use the exact series only within `MD1_EXACT_SPAN` (6) τ and the Cramér–Lundberg tail beyond, the convention `mg1_mix_sum_quantile` has used since 0.55 「推导: CL is the asymptotically exact M/G/1 tail」. After the fix the sweep is smooth and monotone. E SLO rates are back to sglang_mixed 19.76 (TPOT-bound) and vllm 19.32 (TTFT-bound), which restores the pre-0.238 E ranking.
+- **DES check (n4000 × 10, E, TTFT p90 ms; DES TPOT p90 stays flat at 22.5–23.4 ms):**
+
+  | λ (rps) | sglang_mixed DES (ana) | vllm DES (ana) |
+  |---|---|---|
+  | 17.37 | 1219 ± 40 (977) | 1158 ± 33 (1057) |
+  | 18.0 | 1603 ± 70 (1124) | 1436 ± 54 (1219) |
+  | 18.6 | 2163 ± 116 (1298) | 1883 ± 87 (1488) |
+  | 19.32 | 3353 ± 244 (1641) | 2748 ± 178 (1992) |
+
+  DES SLO rates (TTFT p90 = 2 s, interpolated) are sglang_mixed ≈ 18.43 and vllm ≈ 18.70. The DES ranks vllm ahead of sglang_mixed by ≈ 1.5 %, about 1–2 standard errors. The analytic model is 4–7 % optimistic for both near saturation, a pre-existing gap: its TPOT p90 climbs 19.5 → 50 ms between λ = 17.37 and 19.76, while the DES stays at 23 ms and its TTFT grows instead. Recorded, not fixed (see deferred).
+
+### Investigated — the ≈ −5 % TTFT p99 residual (sglang 6000, sglang_mixed 6000, vllm 3000)
+- **Ruled out.**
+  - Batch-bin discretization: 32 bins instead of 8 move p99 by ≤ 0.2 %.
+  - Decode-k growth within a burst: in the DES, the running batch at arrival rises only 3.8 → 5.1 from short to top-1 % waits.
+- **Evidence for the mechanism (DES sglang 6000, n4000 × 3).**
+  - A prompt's own prefill service rises with its own wait: mean 58.5 ms (wait < p50), 61.5, 79.2 (p90–p99), 86.7 ms (top 1 %). The topping correlation (0.237) explains only a few ms of that.
+  - The top 1 % TTFT are 100 % followers.
+  - The followers' phase mix depends on their wait. Below the median wait, 89 % are the first follower of a chain (head 2192 tokens, 2 iterations). In the top 5 % of waits only 6 % are, and the rest sit deeper in the chain (heads of 288 / 576 / 2480 / 2768 tokens, often 3 iterations, service 88.6 vs 78.7 ms).
+  - The analytic model gives every follower with W > θ the stationary phase mix, so it misses the correlation between chain depth and wait.
+- **Derived fix (deferred):** a joint (phase, W) Markov chain over successive prompts (the Lindley recursion with the 0.236 phase chain). This is a larger change with runtime cost, so it is documented here rather than shipped in this version.
+- **Tests:** `tests/test_core_239.py`. It checks that the series failure exists and that the corrected tail matches the drifting-batch form at ρ = 0.95 within 2 %. It also checks that E's fused quantiles stay ordered and monotone in λ near saturation and that the E sglang_mixed SLO rate is 19.76.
+- **KPI A–G old → new:** 48 of 49 rows are unchanged against 0.238. Only E sglang_mixed changes: SLO rate 17.37 → 19.76 and goodput/card 555.8 → 632.4, which is exactly the 0.237 value. Its TTFT p99 (388.4) and mean are unchanged, because the operating point (λ = 3.47) is far from saturation.
+  - E ranking (chunked, analytic SLO goodput): sglang 633.3 > sglang_mixed 632.4 > vllm / vllm_v0 618.3, the pre-0.238 order. vllm stays at 19.32 rather than the 0.237 value of 19.44, because its 0.238 sweep was smooth and that move was real.
+  - **E verdict against the DES (TTFT p90 = 2 s):** vllm ≈ 18.70, sglang_mixed ≈ 18.43, against analytic 19.32 / 19.76. The DES puts vllm slightly ahead, by ≈ 1.5 % or 1–2 standard errors. The analytic sglang_mixed rate is TPOT-bound because of the pre-existing near-saturation TPOT pessimism, so the order of these two profiles at E is within model error.
+- **Deferred:**
+  - The near-saturation fused regime: analytic TPOT p90 is pessimistic and TTFT p90 optimistic against the DES, and the SLO rate is 4–7 % optimistic at E.
+  - The joint phase–wait chain for the −5 % p99 residual.
+  - The 0.238 list.
+
 ## [0.238.0]
 
 ### Fixed — fused chunked TTFT tail (vLLM, sglang_mixed): wait correlation + followers at k ≥ 1

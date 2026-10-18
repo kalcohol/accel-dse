@@ -5560,3 +5560,11 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
 - **Mean:** taken from the same bin atoms, so followers at k ≥ 1 are included.
 - **Cost:** ≤ B/8 phase laws per arrival rate, with walls memoized across rates. The birth–death mean step keeps the 0.236 φ = 0 approximation at k ≥ 1. Fused off-multiple KPI-type cases take 12–14 s.
 - **Evidence (DES n4000 × 10, p99):** vllm 4096 −0.052 → +0.002; sglang_mixed 4096 −0.082 → +0.006; vllm 6000 −0.032 → −0.021. vllm 3000 and sglang_mixed 6000 stay at −0.044 / −0.052. There the topping correlation (+) and the follower correlation (−, followers' topped latency is shorter than leaders') cancel, and the residual matches the sglang 6000 one that §184 showed is not a sharing effect. Open.
+
+## §186 Numerics of the correlated M/D/1 wait; chain depth vs wait (0.239)
+
+- **M/D/1 in `_corr_surv`.** Erlang's alternating series is used only for waits ≤ `MD1_EXACT_SPAN` = 6 τ. Beyond that the Cramér–Lundberg tail c·e^{−θx} is used (capped at ρ) 「推导」, as in `mg1_mix_sum_quantile` (0.55). At ρ = 0.95 the series has no correct digit left at 40 τ (true P(W > 40τ) = 0.0165). In 0.237–0.238 this corrupted the fused TTFT quantiles near saturation: case E's SLO rate came out 17.37 in 0.238 instead of 19.76.
+- **Near saturation (E, DES n4000 × 10).** The DES holds TPOT p90 at ≈ 23 ms, and TTFT absorbs the load. The analytic decode birth–death lets TPOT p90 climb to 50 ms instead, so the analytic SLO rate is 4–7 % optimistic (DES ≈ 18.43 sglang_mixed, ≈ 18.70 vllm). Open.
+- **Chain depth vs wait (open, evidence).** A follower's phase is the residue of the chain of followers before it. Long waits sit deep in a busy period, where the phases are deep-chain ones: small first pieces and three iterations. In the DES (sglang 6000), the first-follower phase is 89 % of followers below the median wait but 6 % in the top 5 %. §184 uses the stationary phase mix for every W > θ.
+  - This explains the ≈ −5 % p99 residual at sglang / sglang_mixed 6000 and vllm 3000.
+  - The derived remedy is the joint (phase, W) Lindley chain over successive prompts. Not implemented yet.
