@@ -30,15 +30,21 @@ def test_fused_account_packed_cases():
         sb = r["slot_backlog"]
         assert abs(sb["tau"] / tau_des - 1) < 0.01, (prompt, sb["tau"])
         assert 0.7 < sb["n_B"] < 0.95
-        # β = d − n_B·T_d(B): the chunk iterations' own deaths
+        # β = d − n_B·T_d(B)·k̄/B: the chunk iterations' own deaths (0.246: k̄ decodes ride them, not B)
         tdB = ctx["cpool"].run("decode", ctx["B"]).step
-        assert abs(sb["beta"] - (sb["d"] - sb["n_B"] * tdB)) < 1e-12
+        assert abs(sb["beta"] - (sb["d"] - sb["n_B"] * tdB * sb["k_bar"] / ctx["B"])) < 1e-12
         assert 0.8 * p90_des < r["ttft"]["p90"] < 1.15 * p90_des, (prompt, r["ttft"]["p90"])   # 0.244: 1.32 / 1.30 s
 
 
 def test_budget_chunked_keeps_clustered_block():
+    # 0.246: budget-chunked cases moved to the account (test_core_246); the 0.243 block stays behind the flag
     _, ctx = _ctx(4096, "vllm", cap=48.0)
-    r = pdqueue._coloc_chunked({**ctx, "slo": (2.0, 0.05)}, 55.45)
+    old = pdqueue._FUSED_BACKLOG_CHUNKED
+    pdqueue._FUSED_BACKLOG_CHUNKED = False
+    try:
+        r = pdqueue._coloc_chunked({**ctx, "slo": (2.0, 0.05)}, 55.45)
+    finally:
+        pdqueue._FUSED_BACKLOG_CHUNKED = old
     assert "slot_backlog" not in r and r["slot_block"] is not None
 
 

@@ -40,6 +40,16 @@ def test_slot_block_reductions():
 
 
 def test_slot_block_moves_ttft_toward_des():
+    # 0.246: E mixed moved to the slot account (test_core_246); the 0.241–0.243 block is checked behind its flag
+    flag = pdqueue._FUSED_BACKLOG_CHUNKED
+    pdqueue._FUSED_BACKLOG_CHUNKED = False
+    try:
+        _slot_block_moves_ttft_toward_des()
+    finally:
+        pdqueue._FUSED_BACKLOG_CHUNKED = flag
+
+
+def _slot_block_moves_ttft_toward_des():
     for prof, pts in DES_TTFT90.items():
         rep, ctx = _ctx(prof)
         for lam, des in pts.items():

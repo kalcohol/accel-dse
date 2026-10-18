@@ -6,6 +6,86 @@
 
 
 
+## [0.246.0]
+
+### Fixed — budget-chunked fused cases (D/F/E, A/G vllm_v0) move from the 0.243 block to the slot account
+- **What the DES full-slot iteration contains** (`sd246/probe7.py`, D vllm λ55.4 / F vllm λ43.7; iterations with every slot held and a prompt waiting, by pieces and running decodes k):
+
+  | kind | D share | D wall | F share | F wall |
+  |---|---|---|---|---|
+  | resumed middle chunk, k 63 | 42 % | 21.56 ms | 62 % | 22.20 ms |
+  | tail + follower head, k 62 | 26 % | 21.95 | 22 % | 22.00 |
+  | tail alone, k 63 | 16 % | 7.23 | 8 % | 5.70 |
+  | fresh head chunk, k 63 | 16 % | 20.57 | 8 % | 20.57 |
+
+- **What pack_at(B) omitted 「推导」.**
+  - The partial prompt holds a slot, because max_num_seqs counts prefilling requests (§192). Its chunks therefore ride B − 1 decodes at budget C(B − 1), not B. A follower head joins the tail only in a slot that a death freed, so that two-prompt iteration runs B − 2 decodes. This is the new `k_top` argument of `_phase_iters` / `_phase_law`.
+  - The follower starts at phase φ = the predecessor's tail. Its next chunk is a resumed one, which re-reads the head's KV (D 21.56 vs 20.57 ms fresh), and its own tail grows (D 126 → 255 tokens). pack_at puts followers at φ = 0 at k ≥ 1, because the phase chain costs fresh walls at every bin. The account needs one bin, so it runs the chain there.
+  - Result: τ D 45.27 → 45.78 ms (DES 45.7–45.8), F 66.84 → 67.55 (DES 67.5). n_B D 2.43 → 2.39 (DES 2.35–2.38), F 3.29 → 3.27 (DES 3.26). E mixed τ 182.9 (DES 182.5). The tail-share probability stays pack_at's M/G/1 π: D 0.61, F 0.73 vs DES 0.62 / 0.74 「近似」.
+- **k̄: deaths in the admission's chunk iterations 「推导」.** Those iterations carry k̄ = B − (prompts in flight) decodes, not B. By Little's law over chunk-iteration time, the number of prompts in flight is lat/τ. So β = d − n_B·T_d(B)·k̄/B, with the same form below 0. k̄: D 62.75, A 62.73 (DES running k in saturated iterations 62.7 / 62.8). 0.245 used B, overstating the chunk iterations' death credit by ≈ 2 %.
+- **SLO rates (analytic vs long-run DES, 6 × n64000):**
+
+  | case | DES | 0.245 | 0.246 |
+  |---|---|---|---|
+  | A vllm / mixed | 55.28 | 55.42 | 55.36 |
+  | A vllm_v0 | 55.45 | 55.96 | 55.56 |
+  | D vllm (= v0) | 55.45 | 55.96 | 55.56 |
+  | D mixed | 55.13 | 55.41 | 55.27 |
+  | F vllm | 43.75 | 43.89 | 43.91 |
+  | F mixed | 43.64 | 43.73 | 43.70 |
+  | G vllm | 49.02 | 49.18 | 49.14 |
+  | G vllm_v0 | 49.42 | 49.37 | 49.49 |
+  | E mixed | 18.59 | 18.68 | 18.73 |
+
+  Mean |error| falls from 0.50 % to 0.27 %. The 0.245 block had mixed signs and was right only by compensation. Now every case is +0.1 to +0.4 %, except E mixed at +0.77 % (see Deferred). Every ranking still matches the DES. TTFT p90 at the DES crossing: A 1873, G 1807, D 1821, F 1710, D mixed 1768, F mixed 1886, G v0 1870 ms (DES ≈ 2000; 0.245 A 1792 / G 1742, block D 1402 / F 1844). p_sat D 0.498 / F 0.420 vs DES 0.517 / 0.474.
+- The 0.243 clustered block is kept behind `_FUSED_BACKLOG_CHUNKED = False`, and k̄ behind `_KBAR`. `_slot_backlog` also returns `free_cdf`, the model's free-slot law below 0 (diagnostic).
+
+### Checked — sub-1 s TTFT p90 in slot-account cases (not fixed)
+- A vllm λ52 (`sd246/probe4/8.py`, n64000): DES p90 324–329 ms vs analytic 181. DES P(U > 0) is 0.153 vs model 0.114.
+  - Where it agrees: U | U > 0 has mean 398 vs 1/θ 358 ms. At the boundary, P(U > 0)/density(0⁻) is 11.3 vs 11.5 slots.
+  - Where it fails: the density below 0. The DES density is flat near 0 (×1.25 from f = 1 to 16, peak near f ≈ 28), while the model rises ×2.2 over the same span. The model therefore puts too much mass deep in the floor.
+  - Below the crossing, p90 falls at the bottom of the backlog branch and is very sensitive to p_sat. The floor drift and variance below 0 are the open item.
+
+### E vllm long-run DES
+- Run in seed chunks (`sd246/lbs.py`, one (λ, seed) per process, ≈ 18 min and 5 GB each, results appended to `sd246/lbs_E_vllm.txt`). See Deferred for the finished points.
+
+### The 0.243 clustered block: kept, for the non-packing path only
+- `_slot_block_q` is still used where the account does not apply: fused profiles without budget packing (`chunk_profile="fixed"` / `pd.chunk_tokens`, legacy_512).
+  - Example: a fixed C = 4096 profile in case A at its SLO rate 55.27 gets slot_block V 1.91 s, φ 0.625.
+  - For legacy_512 in the KPI cases it is None anyway, since B·n_B ≥ out.
+- `_FUSED_BACKLOG_CHUNKED = False` remains only as the hook that test_core_241 / test_core_245 use to check the block on its old cases (E mixed vs DES n4000, D vllm).
+### KPI (19 of 49 rows changed; TTFT mean and TPOT unchanged everywhere)
+- SLO rates:
+  - A vllm / mixed 55.42 → 55.36.
+  - A v0, D vllm and D v0 55.96 → 55.56.
+  - D mixed 55.41 → 55.27.
+  - F vllm / v0 43.89 → 43.91; F mixed 43.73 → 43.70.
+  - G vllm / mixed 49.18 → 49.14; G v0 49.37 → 49.49.
+  - C vllm / mixed 18.49 → 18.53; C v0, E vllm and E v0 18.82 → 18.75.
+  - E mixed 18.68 → 18.73.
+- Operating-point TTFT p99 falls about 1 %, because the account replaces the block at a small p_sat: A/B/D v0 95.25 → 94.16, D mixed 110.1 → 109.0, F 125.1 → 123.8, G v0 104.8 → 103.7, C 466.2 → 462.0, E mixed 389.2 → 384.9.
+
+### Tests
+- New test_core_246 (2 tests):
+  - D/F account τ within 0.5 % and n_B within 2 % of the DES full-slot iteration, k̄ in (62.5, 63), no slot_block, and TTFT p90 at the DES crossing in (1.6, 2.3) s.
+  - `_phase_iters` k_top identities.
+- test_core_245: the β identity now carries k̄/B, and the budget-chunked block check runs behind `_FUSED_BACKLOG_CHUNKED = False`.
+- test_core_243: E mixed is now on the account (p_sat in (0, 1), β > 0). The rate pin 18.59 ± 1.5 % holds at 18.73.
+- test_core_241: the block-vs-DES check runs behind the flag.
+- test_core_239: case E mixed SLO-rate pin 18.68 → 18.73 (moved pin; long-run DES 18.59).
+- test_core_238: the vllm prompt-3000 case (cap 48, load 0.8) is budget-chunked, so it now goes through the account. TTFT p99 72.39 → 71.61 ms, mean 34.02 → 34.03; this is the intended account change. vl4096 / mx4096 / vl6000 p90 and p99 stay within the test's 3 % of the 0.238 DES (vl4096 72.14 / 110.61 vs DES 71.48 / 111.15).
+- Runtime: the vl4096 `disagg_report` takes 19.6 s in 0.245 and 22.8 s now, standalone.
+  - The profile shows no new hot loop. The account's chain at B − 1 is not in the top costs, and its λ-independent `_phase_iters` are now memoised on the pool across the SLO bisection.
+  - The extra time comes from the decode fixed point being bisected more often as the SLO rate moves (pass_at 35 → 48 calls, same 29 `_coloc_chunked` calls).
+  - In rt246 the case took 361.7 s against the 60 s guard because of memory pressure on the box: a 5–6 GB E vllm long-run DES seed was running beside the 8 suite workers, and the OOM killer fired during that suite. Run alone, test_core_238 passes with the three guarded cases at 71 s together.
+
+### Deferred
+- Sub-1 s TTFT p90: the free-slot density below 0 (see Checked), planned for 0.247.
+- E mixed residual (+0.77 %): τ matches the DES, but the DES tail-share π is 0.89 vs the model's 0.84 (short run).
+- Uniform +0.1 to +0.4 % over-rating: the account's p_sat at the crossing is low, e.g. F 0.420 vs DES 0.474.
+- E vllm long-run DES: at λ18.45 only seeds 1, 2 and 5 finished (TTFT p90 1606 / 1660 / 1758 ms, all under 2 s, so the crossing is above 18.45; analytic 18.75). Seeds 3, 4 and 6 hit the 25-min per-seed timeout and λ18.65 was not run; the bracket is deferred.
+- Idle k0; the 0.238 list.
+
 ## [0.245.0]
 
 ### Fixed — fused vLLM / SGLang-mixed over-rating in A and G: the 0.244 slot account carried over (`_slot_backlog` with n_B)

@@ -39,6 +39,6 @@ def test_case_e_quantiles_monotone_near_saturation():
         prev = t["p90"]
     # 0.238 had 19.76 → 17.37 here (numerical artefact); 0.239 fixed value 19.76 (0.240: 19.79, TTFT-bound);
     # 0.241 slot-cap blocking: 19.23; 0.242 queue-weighted batch law + block: 18.75; 0.243 clustered block: 18.68
-    # (DES ≈ 18.43)
+    # (DES ≈ 18.43); 0.246 slot account (budget-chunked, phase chain + k̄): 18.73 (long-run DES 18.59)
     c = rep["queue"]["modes"]["coloc_chunked"]
-    assert abs(c["slo_rate_rps"] - 18.68) < 0.05, c["slo_rate_rps"]
+    assert abs(c["slo_rate_rps"] - 18.73) < 0.05, c["slo_rate_rps"]

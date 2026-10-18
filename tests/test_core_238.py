@@ -69,4 +69,7 @@ def test_fused_off_multiple_p99_parity_and_runtime():
 def test_vllm_3000_unchanged_residual():
     # the −0.044 p99 residual at vllm 3000 is not this mechanism (topping and follower correlations cancel)
     c = disagg_report(_pd(prompt=3000, cap=48.0, load=0.8, chunk_profile="vllm"))["queue"]["modes"]["coloc_chunked"]
-    assert abs(c["ttft_ms"]["p99"] - 72.39) < 0.5 and abs(c["ttft_ms"]["mean"] - 34.02) < 0.1
+    # 0.246: prompt 3000 at cap 48 is budget-chunked (C(B) = 1984 < 2 prompts) → the slot account replaces the 0.243
+    # block (phase chain at B − 1, k̄): p99 72.39 → 71.61 ms, mean 34.02 → 34.03 (the account's backlog branch at small
+    # p_sat; DES p99 ≈ 72.39 / (1 − 0.044) = 75.7 per 0.238, residual −0.044 → −0.054, same sign, not this mechanism)
+    assert abs(c["ttft_ms"]["p99"] - 71.61) < 0.5 and abs(c["ttft_ms"]["mean"] - 34.03) < 0.1

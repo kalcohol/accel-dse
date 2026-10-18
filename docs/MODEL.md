@@ -5666,3 +5666,32 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
 **Scope and why.** The account applies where C(B) fits ≥ 2 whole prompts. The budget-chunked cases (D/F/E, vllm_v0) keep the §190 clustered block because the account needs τ to ≈ 0.3 %: ρ′ = λ(τ + β) near the crossing makes the SLO rate ≈ 30× as sensitive as τ. The full-batch b = 1 tail-shared iteration is priced ≈ 1 % low (D 45.3 vs 45.8 ms, F 66.8 vs 67.5), which would put D/F at +1.4 / +1.6 % against the block's +0.9 / +0.3 %. With the DES τ the account reproduces D/F (p_sat 0.475 / 0.393 vs 0.517 / 0.474; 1/θ 1.02 / 1.04 vs 1.03 / 1.06 s).
 
 **Open.** Pricing of the tail-shared iteration; E vllm long-run DES.
+
+## §193 The full-slot iteration for budget-chunked fused engines; k̄ (0.246)
+
+**Problem.** §192 kept the budget-chunked cases (C(B) < 2 prompts) on the §190 block. pack_at(B) priced their full-batch iteration ≈ 1 % low (D 45.3 vs DES 45.8 ms, F 66.8 vs 67.5), and the account's ρ′ = λ(τ + β) multiplies that error ≈ 30× in the SLO rate.
+
+**What the DES iteration contains (probe, slots full, queue waiting).**
+- Resumed middle chunks, tails topped up with the follower's head, tails alone, and fresh heads.
+- The running decodes are 63 for single-prompt iterations and 62 for two-prompt ones (B = 64). See the table in CHANGELOG 0.246.
+
+**Mechanism (推导).**
+1. The partial prompt holds a slot (max_num_seqs counts it, §192). Its chunks therefore ride B − 1 decodes at budget C(B − 1). A follower head can only join in a slot that a death freed, so the two-prompt iteration runs B − 2 decodes (`_phase_iters(k_top=B − 2)`).
+2. The follower starts at phase φ = the predecessor's tail. Its next chunk is a resumed one (the head's KV is re-read), and its own tail is longer. The account evaluates `_phase_law(chain=True)` at that single bin. pack_at keeps followers at φ = 0 at k ≥ 1 because the chain there costs fresh walls per bin.
+3. The tail-share probability is the M/G/1 π, as in pack_at 「近似」. D 0.61 / F 0.73 vs DES 0.62 / 0.74.
+
+τ: D 45.78, F 67.55, E mixed 182.9 ms (DES 45.7–45.8 / 67.5 / 182.5). n_B: D 2.39, F 3.27 (DES 2.35–2.38 / 3.26).
+
+**k̄ (推导).** An admission's chunk iterations at a full slot cap carry k̄ = B − n̄ decodes, where n̄ is the number of prompts in flight. Little's law over chunk-iteration time gives n̄ = λ·lat/(λ·τ) = lat/τ. Hence β = d − n_B·T_d(B)·k̄/B, and the floor term below 0 is unchanged in form. k̄: D 62.75, A 62.73 (DES running k in saturated iterations 62.7 / 62.8).
+
+**Result (long-run DES, 6 × n64000).**
+- SLO rate errors are now +0.1 to +0.4 % in A/D/F/G for vllm, sglang_mixed and vllm_v0, and +0.77 % for E mixed. Mean |err| 0.27 % (0.245: 0.50 %, mixed signs). All rankings are kept.
+- TTFT p90 at the DES crossing is 1.71–1.89 s (DES ≈ 2.0).
+- The §190 block stays only for the non-packing fixed-C path.
+
+**KPI-adjacent pins.** vllm prompt 3000, cap 48, load 0.8 (test_core_238): TTFT p99 72.39 → 71.61 ms, mean 34.02 → 34.03, because the backlog branch replaces the block at small p_sat.
+
+**Open.**
+- The free-slot density below 0 (A λ52: DES flat near U = 0, model rising ×2.2 over 16 slots → p_sat 0.114 vs 0.153, sub-1 s p90 low). Planned for 0.247.
+- The E mixed residual.
+- E vllm DES.

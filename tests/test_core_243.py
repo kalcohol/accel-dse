@@ -43,9 +43,11 @@ def test_g_vllm_slo_rate_vs_des():
 def test_clustered_block_e_mixed():
     rep, ctx = _ctx(16384, "sglang_mixed", cap=48.0, batch=32, out=256)
     r = pdqueue._coloc_chunked({**ctx, "slo": (2.0, 0.05)}, 18.6)
-    sb = r["slot_block"]
-    assert sb is not None and 0 < sb["phi"] <= 1 and sb["p"] <= sb["phi"]
+    # 0.246: E mixed is budget-chunked → the slot account (was the 0.243 clustered block; phi 0 < φ ≤ 1)
+    assert r.get("slot_block") is None
+    sb = r["slot_backlog"]
+    assert 0 < sb["p_sat"] < 1 and sb["beta"] > 0
     # 0.245: long-run DES (6 seeds × n64000) TTFT p90 at 18.6 ≈ 2015 ms (18.483 → 1902, 18.668 → 2081; n4000: 2163)
     assert 0.85 * 2015 < r["ttft"]["p90"] * 1e3 < 1.15 * 2015                # 0.242 1856, 0.243 1935
     rate = rep["queue"]["modes"]["coloc_chunked"]["slo_rate_rps"]
-    assert abs(rate - 18.59) / 18.59 < 0.015, rate                           # long-run DES 18.59 (n4000 18.43); 0.242 18.75
+    assert abs(rate - 18.59) / 18.59 < 0.015, rate    # long-run DES 18.59 (n4000 18.43); 0.242 18.75, 0.245 18.68, 0.246 18.73

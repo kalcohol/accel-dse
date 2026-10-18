@@ -1069,11 +1069,13 @@ def _busy_q_from(dur, m: float, q: float) -> float:
     return dur[-1][0] if dur else 0.0
 
 
+_KBAR = True   # 0.246: deaths in the admission's chunk iterations at k̄ = B − b decodes (False: B)
+_FUSED_BACKLOG_CHUNKED = True   # 0.246: the account also for budget-chunked fused cases (False: 0.243 block there)
 _FUSED_BACKLOG = True     # 0.245: fused max_num_seqs blocking by the slot account (False: 0.243 clustered block)
 
 
 def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, out_cs2: float, B: int,
-                  tau: float | None = None, n_B: float = 0.0):
+                  tau: float | None = None, n_B: float = 0.0, k_bar: float | None = None):
     """0.244: SGLang non-mixed admission (scheduler.get_new_batch_prefill: a waiting prompt is admitted only while
     len(running_batch) + len(can_run_list) < max_running_requests — the prefilling requests count; the decodes pause
     in the prefill-only iteration).  With the batch full every admission waits for a death, and in a full batch of B
@@ -1102,11 +1104,14 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     dB = cp.run("decode", B)
     eB = dB.tokens_per_step
     d_slot = out * dB.step / (eB * B) if eB > 0 else math.inf
-    beta = d_slot - n_B * dB.step
+    # 0.246: the admission's chunk iterations at a full slot cap carry k̄ decodes, not B — the prefilling requests
+    # hold the other slots (b = 1: B − 1; packed b: B − b) — so they give n_B·k̄·e/out deaths
+    kb = B if k_bar is None else k_bar
+    beta = d_slot - n_B * dB.step * kb / B
     tau = rho_p / lam if tau is None else tau
     if beta <= 0:
         return {"p_sat": 0.0, "theta": math.inf, "base": 0.0, "beta": 0.0, "rho_adm": lam * tau, "tau": tau,
-                "sigma2": 0.0, "d": d_slot, "n_B": n_B}
+                "sigma2": 0.0, "d": d_slot, "n_B": n_B, "k_bar": kb}
     rp = lam * (tau + beta)
     if not rp < 1:
         return None
@@ -1138,6 +1143,7 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     nf = 4 * B
     df = B / nf
     phi, z_neg, prev = 0.0, 0.0, 1.0
+    zf = []                       # (f, ∫ density over [0, f]) — the free-slot law below 0 (diagnostic)
     # fused: an admission's n_B chunk iterations at batch k = B − f give only n_B·k·e/out deaths, so below 0 each
     # arrival nets β + n_B·T_d(B)·f/B (0 for SGLang non-mixed, n_B = 0) — the floor is shallower when the decodes ride
     # many chunk iterations (D/F: n_B 2.4 / 3.3 vs A/G 0.8; DES P(U > 0) 0.52 / 0.47 at their crossings)
@@ -1151,13 +1157,17 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
         cur = math.exp(min(phi, 700.0))
         z_neg += 0.5 * (prev + cur) * df * d_slot / sig2b
         prev = cur
+        if i % 4 == 0:
+            zf.append((f, z_neg))
         if phi < -50:
             break
     z_pos = 1 / (theta * sig2)
     p_sat = z_pos / (z_pos + z_neg)
     lat = _wsum([w for w, _ in lats_w], [x for _, x in lats_w])
+    zt = z_pos + z_neg
     return {"p_sat": p_sat, "theta": theta, "base": lat + beta, "beta": beta, "rho_adm": rp,
-            "tau": tau, "sigma2": sig2, "d": d_slot, "n_B": n_B}
+            "tau": tau, "sigma2": sig2, "d": d_slot, "n_B": n_B, "k_bar": kb,
+            "free_cdf": tuple((round(f_, 3), (z_pos + z_) / zt) for f_, z_ in zf[:16])}
 
 
 def _sat_mix_q(tq: dict, p: float, base: float, theta: float) -> dict:
@@ -1629,13 +1639,15 @@ def _tail_pi(lam: float, ws, rows) -> tuple:
     return pis, rho
 
 
-def _phase_iters(pool, k: int, S: int, p: int, C: int, phi: int, head: bool) -> dict:
+def _phase_iters(pool, k: int, S: int, p: int, C: int, phi: int, head: bool, k_top: int | None = None) -> dict:
     """0.236: one prompt's iterations when it starts at phase φ (the first φ tokens of its first iteration belong to
     the predecessor's tail; φ = 0: a fresh iteration) and, when ``head``, its last iteration is topped up with the
     next prompt's head (C − used tokens).  The predecessor's / next prompt's pieces are taken of the same shape
     「近似」 (exact for one prompt type).  → share (its tokens' part of each iteration), lat (its share start to the
     end of its last iteration), pre (share start → its last iteration's start), used (prompt tokens in its last
-    iteration before any head = the next prompt's phase), n (iterations it spans), t1 (longest)."""
+    iteration before any head = the next prompt's phase), n (iterations it spans), t1 (longest).
+    0.246 ``k_top``: the decode batch of the two-prompt iteration (the topped last / the phase-φ first; None = k) —
+    at a full slot cap the follower's head holds a slot freed by a death, so that iteration runs B − 2 decodes."""
     new = max(1, S - p)
     first = min(new, C - phi)
     bounds = [(p, p + first)]
@@ -1664,7 +1676,7 @@ def _phase_iters(pool, k: int, S: int, p: int, C: int, phi: int, head: bool) -> 
             if head and tot < C:
                 pieces.append((S, p, p, p + min(new, C - tot)))
                 topped = True
-        T = _packed_fused(pool, k, pieces)
+        T = _packed_fused(pool, k if (k_top is None or len(pieces) == 1) else k_top, pieces)
         t1 = max(t1, T)
         before = phi / C * T if (j == 0 and phi > 0) else 0.0      # the predecessor's part, ahead of us
         sh = own / C * T if (not last or topped) else T - before
@@ -1676,7 +1688,7 @@ def _phase_iters(pool, k: int, S: int, p: int, C: int, phi: int, head: bool) -> 
 
 
 def _phase_law(pool, k: int, pts, C: int, lam: float, eligible=None, grid: int = 16, max_atoms: int = 32,
-               chain: bool = True) -> dict:
+               chain: bool = True, k_top: int | None = None) -> dict:
     """0.236 follower head start (FCFS token stream).  A prompt that starts while its predecessor's last iteration
     is topped up begins at phase φ = the predecessor's tokens in that iteration, so its own pieces, tail τ_eff and the
     head it leaves to the next prompt depend on φ (DES: pack_fill continues the stream in C-token iterations).
@@ -1693,7 +1705,13 @@ def _phase_law(pool, k: int, pts, C: int, lam: float, eligible=None, grid: int =
         key = (phi, i, hd)
         if key not in memo:
             _, S, p = ty[i]
-            memo[key] = _phase_iters(pool, k, S, p, C, phi, hd)
+            # 0.246: λ-independent → memoised on the pool across calls (the SLO bisection re-evaluates the account's
+            # chain at B − 1 at every λ; vl4096 report 23.6 → see CHANGELOG)
+            pk = ("phit", k, S, p, C, phi, hd, k_top)
+            v = pool.memo.get(pk)
+            if v is None:
+                v = pool.memo[pk] = _phase_iters(pool, k, S, p, C, phi, hd, k_top)
+            memo[key] = v
         return memo[key]
 
     def qz(u):
@@ -2269,11 +2287,14 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         for w_, t in zip(ws, tb):
             serv_mix.append(t)
             ws_mix.append(w_ / 8)
-    # 0.245: the slot account (_slot_backlog) where its admission share is the queue law's own — the budget fits ≥ 2
+    # 0.245 (0.246: all budget-packing cases): the slot account (_slot_backlog) — the budget fits ≥ 2
     # whole prompts at a full batch (A/G: DES saturated τ 39.5 / 48.0 vs 39.4 / 47.9 ms); budget-chunked (C(B) < one
     # more prompt: D/F/E) keeps the 0.243 clustered block until the full-batch tail-shared iteration is priced (the
     # account needs τ to ≈ 0.3 %: D 45.3 vs DES 45.8 ms moves the SLO rate +1.4 %; MODEL §192)
-    acct = _FUSED_BACKLOG and pack and chunk_at(spec, B) // max(max(1, S - p) for _, S, p in pts) >= 2
+    # 0.246: extended to the budget-chunked cases (C(B) < 2 prompts: D/F/E, A vllm_v0) — their full-batch iteration law
+    # is the follower phase chain at B − 1 decodes (_phase_law chain, k_top = B − 2), DES τ D 45.8 / F 67.5 ms
+    b_mx = chunk_at(spec, B) // max(max(1, S - p) for _, S, p in pts)
+    acct = _FUSED_BACKLOG and pack and (b_mx >= 2 or _FUSED_BACKLOG_CHUNKED)
     if blk is not None and blk[1] > 1e-6 and not acct:
         # 0.243: the block clusters — it falls only on prompts served at a full batch (the quasi-static bins at k = B of
         # the queue-weighted law, deep in busy periods); the bins below B never meet it (0.241/0.242 spread it iid
@@ -2358,11 +2379,30 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         # caps b at B − k).  Not ρ_c/λ: its bins at k = B carry pack_at's b = 1 tail-sharing share (36.1 ms in A, a
         # follower head that has no slot), so it jumped with the decode fixed point (A λ56.6 → 56.8: 39.5 → 36.2 ms,
         # TTFT p90 7.7 → 0.75 s).  DES saturated τ A 39.5, G 48.0 ms 「推导; 近似」
-        b_mx = chunk_at(spec, B) // max(max(1, S - p) for _, S, p in pts)
-        kq = max(0, B - b_mx)
-        tau_s, nB_s = _wsum(ws, pack_at(kq)["tsum"]) / sum(ws), _wsum(ws, pack_at(kq)["ns"]) / sum(ws)
+        if b_mx >= 2:
+            kq = max(0, B - b_mx)
+            tau_s, nB_s = _wsum(ws, pack_at(kq)["tsum"]) / sum(ws), _wsum(ws, pack_at(kq)["ns"]) / sum(ws)
+            lat_s = latB
+        else:
+            # 0.246 budget-chunked (b = 1): the full-batch iteration is not pack_at(B)'s.  (i) The partial prompt holds
+            # a slot (max_num_seqs counts it), so its chunks ride B − 1 decodes (C(B − 1)), and a follower head joins
+            # the tail only in a slot a death freed — that two-prompt iteration runs B − 2 decodes (DES D: 'M'/'H' at
+            # k 63, 'TH' at 62).  (ii) The follower starts at phase φ = the tail: its next chunk is a resumed one (the
+            # head's KV re-read, D 21.56 vs 20.57 ms fresh) and its own tail grows (D 126 → 255 tokens) — pack_at
+            # puts followers at φ = 0 at k ≥ 1 (the phase chain costs fresh walls at every bin; here it is one bin).
+            # D τ 45.27 → 45.78 ms (DES 45.7–45.8), n_B 2.43 → 2.39 (DES 2.35–2.38) 「推导; π: the M/G/1 tail-share
+            # probability as pack_at (DES D 0.62 vs 0.61)」
+            kf = max(1, B - 1)
+            phs = _phase_law(cp, kf, pts, max(1, chunk_at(spec, kf)), lam_c, chain=True, k_top=max(1, B - 2))
+            tau_s = _wsum(ws, [r_["share"] for r_ in phs["per"]]) / sum(ws)
+            nB_s = _wsum(ws, [r_["n"] for r_ in phs["per"]]) / sum(ws)
+            lat_s = _wsum(ws, [r_["lat"] for r_ in phs["per"]]) / sum(ws)
+        # 0.246 k̄: the decodes riding the admission's chunk iterations at a full slot cap = B − the prompts in flight;
+        # Little over the chunk-iteration time: λ·lat prompts in flight per λ·τ of chunk time → n̄ = lat/τ
+        # (D: 1 + the two-prompt share ≈ 1.26, DES k 62.7; A DES k 62.8)
+        n_fl = min(float(B - 1), max(1.0, lat_s / tau_s)) if tau_s > 0 else 1.0
         bkl = _slot_backlog(cp, lam_c, rho_c, [(1.0, latB)], ws, None, out, ctx.get("out_cs2", 0.0), B,
-                            tau=tau_s, n_B=nB_s)
+                            tau=tau_s, n_B=nB_s, k_bar=(B - n_fl) if _KBAR else None)
         if bkl is None:
             return {**res, "why": "满批阻塞下准入服务 τ + β 饱和（ρ′ ≥ 1）"}
         if bkl["p_sat"] > 0:
