@@ -6,6 +6,52 @@
 
 
 
+## [0.247.0]
+
+### Investigated — slot-account TTFT p90 below ≈ 1 s (mechanism found; model unchanged, fix deferred)
+- **Long-run DES TTFT p90, fused vllm** (`sd247/drv.sh`, n64000; A/D λ ≤ 53.5 seeds 1–2, the rest seed 1; `sd247/lr_{A,D,G}_vllm.txt`) against analytic 0.246:
+
+  | case | λ | DES p90 (ms) | analytic | ratio |
+  |---|---|---|---|---|
+  | A | 50 / 52 / 53.5 / 54.3 | 143 / 341 / 734 / 1035 | 124 / 181 / 545 / 937 | 1.15 / 1.88 / 1.35 / 1.10 |
+  | D | 50 / 52 / 53.5 / 54.3 | 146 / 283 / 660 / 952 | 136 / 165 / 385 / 753 | 1.07 / 1.71 / 1.71 / 1.26 |
+  | G | 44.5 / 46.5 / 47.5 / 48.3 | 182 / 457 / 797 / 1179 | 165 / 260 / 560 / 1034 | 1.10 / 1.76 / 1.42 / 1.14 |
+
+  The gap peaks where p90 is 0.2–0.6 s and closes toward the crossing (≈ 2 s), which is why the 0.246 SLO rates hold.
+- **Floor law** (A λ52, `sd247/md.py` vs `sd246/probe8`). Below U = 0 the model's free-slot law has the DES mean and spread (f mean 24.6 / sd 12.4 vs 25.3 / 13.3). Its shape differs: the model peaks and falls ×2.2 toward f = 0, while the DES is flat near full. As a result p_sat is 0.114 vs DES 0.153.
+- **Mechanism 1: age structure of the batch 「来源: DES」** (`sd247/probe11.py`, deaths per second by the running batch k, with the DES's own decode-only shares).
+
+  | k | DES deaths/s | uniform-age (the model's c(k)) |
+  |---|---|---|
+  | 63 | 14.5 | 15.3 |
+  | 50 | 13.3 | 14.6 |
+  | 34.5 | 12.8 | 12.6 |
+  | 14.7 | 9.4 | 8.0 |
+
+  A full batch is young, because it was filled by a recent burst. A thin batch is old, its remaining requests left over from the busy period before. Deaths therefore regress toward the replay rate λ (≈ 0.65 weight on uniform-age at both ends). The model's death credit c(k) assumes uniform ages, which overstates the floor's restoring drift near U = 0: the Kramers–Moyal DES drift at f 0–8 is −0.02 to −0.05 U-s/s against the model's −0.09 to −0.08 (`sd247/probe9.py`).
+  - The same probe shows a state-dependent variance below 0: 0.11–0.12 s near full, falling to 2λd² ≈ 0.03 deep (model constant 0.079).
+- **Mechanism 2: the prefill bulk-queue tail near full** (`sd247/probe10.py`, DES arrival state of slow requests).
+  - Requests with TTFT 0.2–0.4 s (5.8 %) arrive with a queue (q = 0 only 9 %) but with free slots (mean f 5.4). They wait 209 ms for the budget to reach them; only 36 % have the slots full. This is the plain-queue (T₀) branch in near-full, slow-iteration states, not the slot backlog.
+  - Requests ≥ 0.4 s (8.6 %) are the backlog (f ≈ 0.7).
+  - The model's backlog branch starts at base 80 ms, plus Exp(1/θ).
+- **Hook check, not shipped.** `_FLOOR_W` (default 1.0) scales the floor drift, since the death credit is w·uniform-age + (1 − w)·λ replay, so μ → w·μ. w = 0.65 gives A λ52 p_sat 0.140 (DES ≈ 0.15) but p90 only 219 ms (DES 341), and moves the crossing's p90 1873 → 1827 ms. Mechanism 1 alone does not close the sub-1 s gap; both mechanisms need a derived form (deferred). w is a DES-read weight, not derived, so the default stays 1.0 and the KPI is unchanged.
+- **Diagnostics.** `_slot_backlog` now returns the full `free_cdf`, the drift grid `mu_f` and `sigma2b`.
+
+### KPI
+- Unchanged: no default model change. The A vllm SLO rate is 55.363 as in 0.246.
+
+### Tests
+- New test_core_247: floor diagnostics (free_cdf monotone, μ(f) increasing, σ_b² > σ²), `_FLOOR_W` = 1.0 by default, and w < 1 scales μ(f) and raises p_sat with θ unchanged.
+
+### Deferred
+- **Derived floor law.**
+  - Age-structured death credit (the regression of deaths toward λ replay, from the k-process correlation time vs the life L).
+  - State-dependent σ²(f).
+  - The T₀ prefill bulk-queue tail in near-full states.
+  - Then re-validate p90 at λ 50–55 (A/D/G tables above) and the crossings.
+- E vllm λ18.65 bracket: not run, because the DES slot went to the floor probes and the A/D/G sweep. 0.246 had λ18.45 seeds 1, 2 and 5 at 1606 / 1660 / 1758 ms.
+- E mixed residual; idle k0; the 0.238 list.
+
 ## [0.246.0]
 
 ### Fixed — budget-chunked fused cases (D/F/E, A/G vllm_v0) move from the 0.243 block to the slot account

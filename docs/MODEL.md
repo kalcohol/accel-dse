@@ -5695,3 +5695,15 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
 - The free-slot density below 0 (A λ52: DES flat near U = 0, model rising ×2.2 over 16 slots → p_sat 0.114 vs 0.153, sub-1 s p90 low). Planned for 0.247.
 - The E mixed residual.
 - E vllm DES.
+
+## §194 The floor below U = 0: age structure and the near-full prefill tail (0.247, open)
+
+**Observation.** Below ≈ 1 s the slot account's TTFT p90 is 1.1–1.9× low (A λ52: 181 vs DES 341 ms). The gap peaks at p90 0.2–0.6 s and closes at the crossing. The model's free-slot law has the right mean and spread but the wrong shape near full (p_sat 0.114 vs 0.153).
+
+**Mechanism (来源: DES probes; 推导 pending).**
+1. *Age structure.* The uniform-age death credit c(k) overstates deaths in a full batch, which is young, and understates them in a thin one, which is old. DES deaths per second at k 63 / 34.5 / 14.7 are 14.5 / 12.8 / 9.4 against 15.3 / 12.6 / 8.0. The restoring drift near U = 0 is therefore weaker than modelled (Kramers–Moyal: −0.02 to −0.05 vs −0.09 to −0.08 U-s/s), and the variance is state-dependent (≈ 0.12 s near full, 2λd² deep).
+2. *Near-full prefill tail.* Many 0.2–0.4 s requests wait for the token budget with free slots (q > 0, f ≈ 5). This is a T₀-branch tail in slow-iteration states that the plain-queue law misses.
+
+**Hook.** `_FLOOR_W` scales μ below 0 (death credit w·uniform + (1 − w)·λ). w = 0.65 fixes p_sat (0.140) but not p90 (219 ms), so it is not shipped.
+
+**Next.** Derive the conditional death rate from the k-process correlation time vs the life, and σ²(f). Then derive the near-full T₀ tail. Validate against the λ 50–55 tables (CHANGELOG 0.247).

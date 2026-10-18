@@ -1069,6 +1069,7 @@ def _busy_q_from(dur, m: float, q: float) -> float:
     return dur[-1][0] if dur else 0.0
 
 
+_FLOOR_W = 1.0   # 0.247 experiment hook: death-credit weight on the uniform-age rate below 0 (1 − w: replay λ); 1.0 = model
 _KBAR = True   # 0.246: deaths in the admission's chunk iterations at k̄ = B − b decodes (False: B)
 _FUSED_BACKLOG_CHUNKED = True   # 0.246: the account also for budget-chunked fused cases (False: 0.243 block there)
 _FUSED_BACKLOG = True     # 0.245: fused max_num_seqs blocking by the slot account (False: 0.243 clustered block)
@@ -1144,14 +1145,15 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     df = B / nf
     phi, z_neg, prev = 0.0, 0.0, 1.0
     zf = []                       # (f, ∫ density over [0, f]) — the free-slot law below 0 (diagnostic)
+    mug = []                      # (f, drift μ(f)) below 0 (diagnostic)
     # fused: an admission's n_B chunk iterations at batch k = B − f give only n_B·k·e/out deaths, so below 0 each
     # arrival nets β + n_B·T_d(B)·f/B (0 for SGLang non-mixed, n_B = 0) — the floor is shallower when the decodes ride
     # many chunk iterations (D/F: n_B 2.4 / 3.3 vs A/G 0.8; DES P(U > 0) 0.52 / 0.47 at their crossings)
     tdB = dB.step
-    mu_prev = lam * beta - (1 - rho_p) * c_of(B)
+    mu_prev = _FLOOR_W * (lam * beta - (1 - rho_p) * c_of(B))
     for i in range(1, nf + 1):
         f = i * df
-        mu = lam * (beta + n_B * tdB * f / B) - (1 - rho_p) * c_of(B - f)
+        mu = _FLOOR_W * (lam * (beta + n_B * tdB * f / B) - (1 - rho_p) * c_of(B - f))
         phi += -(mu_prev + mu) * df * d_slot / sig2b   # going down: Φ(u − du) = Φ(u) − 2μ̄·du/σ²; u = −d·f
         mu_prev = mu
         cur = math.exp(min(phi, 700.0))
@@ -1159,6 +1161,8 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
         prev = cur
         if i % 4 == 0:
             zf.append((f, z_neg))
+            if i % 16 == 0:
+                mug.append((f, mu))
         if phi < -50:
             break
     z_pos = 1 / (theta * sig2)
@@ -1167,7 +1171,7 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     zt = z_pos + z_neg
     return {"p_sat": p_sat, "theta": theta, "base": lat + beta, "beta": beta, "rho_adm": rp,
             "tau": tau, "sigma2": sig2, "d": d_slot, "n_B": n_B, "k_bar": kb,
-            "free_cdf": tuple((round(f_, 3), (z_pos + z_) / zt) for f_, z_ in zf[:16])}
+            "free_cdf": tuple((round(f_, 3), (z_pos + z_) / zt) for f_, z_ in zf), "mu_f": tuple(mug), "sigma2b": sig2b}
 
 
 def _sat_mix_q(tq: dict, p: float, base: float, theta: float) -> dict:
