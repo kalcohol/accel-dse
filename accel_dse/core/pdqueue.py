@@ -1069,7 +1069,11 @@ def _busy_q_from(dur, m: float, q: float) -> float:
     return dur[-1][0] if dur else 0.0
 
 
-def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, out_cs2: float, B: int):
+_FUSED_BACKLOG = True     # 0.245: fused max_num_seqs blocking by the slot account (False: 0.243 clustered block)
+
+
+def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, out_cs2: float, B: int,
+                  tau: float | None = None, n_B: float = 0.0):
     """0.244: SGLang non-mixed admission (scheduler.get_new_batch_prefill: a waiting prompt is admitted only while
     len(running_batch) + len(can_run_list) < max_running_requests — the prefilling requests count; the decodes pause
     in the prefill-only iteration).  With the batch full every admission waits for a death, and in a full batch of B
@@ -1085,13 +1089,24 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     full — the soft floor), variance rate σ² = λ·E[S²] above 0 (M/D/c heavy traffic: arrivals only — the deaths
     replay the births), λE[S²] + λβ̄² below (+ the deaths' count noise, M/G/∞); density ∝ exp(∫ 2μ/σ²)/σ² on
     [−Bβ̄, ∞) → P(U > 0) and U | U > 0 ~ Exp(θ = 2δ/σ²).
+    0.245 fused (vLLM V1 / SGLang mixed: the decodes ride the chunk iterations, max_num_seqs counts the prefilling
+    requests — vllm/v1/core/sched/scheduler.py schedule(): the waiting loop breaks at len(running) >=
+    max_num_running_reqs): an admission's n_B chunk iterations at a full batch already give n_B·B·e/out deaths, so
+    its decode-only wait is β = d − n_B·T_d(B), d = out·T_d(B)/(e·B) the decode time per death at a full batch (= the
+    U credit of a free slot); τ = its share of the chunk iterations at a full batch (decodes included).  The rest of
+    the account is unchanged (a chunk iteration lowers U at rate 1: −(τ + β) + d − n_B·T_d(B) per τ).  β ≤ 0
+    (B·n_B ≥ out/e): no backlog block.
     → {"p_sat", "theta", "base", "beta", "rho_adm"} or None when ρ′ ≥ 1."""
     if B <= 0 or lam <= 0:
         return None
     dB = cp.run("decode", B)
     eB = dB.tokens_per_step
-    beta = out * dB.step / (eB * B) if eB > 0 else math.inf
-    tau = rho_p / lam
+    d_slot = out * dB.step / (eB * B) if eB > 0 else math.inf
+    beta = d_slot - n_B * dB.step
+    tau = rho_p / lam if tau is None else tau
+    if beta <= 0:
+        return {"p_sat": 0.0, "theta": math.inf, "base": 0.0, "beta": 0.0, "rho_adm": lam * tau, "tau": tau,
+                "sigma2": 0.0, "d": d_slot, "n_B": n_B}
     rp = lam * (tau + beta)
     if not rp < 1:
         return None
@@ -1119,18 +1134,22 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     # paced by admissions — add their own count noise (M/G/∞: λ per unit time in slots) → σ_b² = λE[S²] + λβ̄²
     # (DES A λ53.5: P(U > 0) 0.282 vs 0.276, batch sd 14 — the prefill pauses amplify it; births only: 0.229);
     # density ∝ exp(Φ(u))/σ²(u), Φ(u) = −∫_u^0 2μ/σ_b² below 0; trapezoid in free slots f = −u/β
-    sig2b = sig2 + lam * beta * beta
+    sig2b = sig2 + lam * d_slot * d_slot
     nf = 4 * B
     df = B / nf
     phi, z_neg, prev = 0.0, 0.0, 1.0
+    # fused: an admission's n_B chunk iterations at batch k = B − f give only n_B·k·e/out deaths, so below 0 each
+    # arrival nets β + n_B·T_d(B)·f/B (0 for SGLang non-mixed, n_B = 0) — the floor is shallower when the decodes ride
+    # many chunk iterations (D/F: n_B 2.4 / 3.3 vs A/G 0.8; DES P(U > 0) 0.52 / 0.47 at their crossings)
+    tdB = dB.step
     mu_prev = lam * beta - (1 - rho_p) * c_of(B)
     for i in range(1, nf + 1):
         f = i * df
-        mu = lam * beta - (1 - rho_p) * c_of(B - f)
-        phi += -(mu_prev + mu) * df * beta / sig2b     # going down: Φ(u − du) = Φ(u) − 2μ̄·du/σ²
+        mu = lam * (beta + n_B * tdB * f / B) - (1 - rho_p) * c_of(B - f)
+        phi += -(mu_prev + mu) * df * d_slot / sig2b   # going down: Φ(u − du) = Φ(u) − 2μ̄·du/σ²; u = −d·f
         mu_prev = mu
         cur = math.exp(min(phi, 700.0))
-        z_neg += 0.5 * (prev + cur) * df * beta / sig2b
+        z_neg += 0.5 * (prev + cur) * df * d_slot / sig2b
         prev = cur
         if phi < -50:
             break
@@ -1138,7 +1157,7 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     p_sat = z_pos / (z_pos + z_neg)
     lat = _wsum([w for w, _ in lats_w], [x for _, x in lats_w])
     return {"p_sat": p_sat, "theta": theta, "base": lat + beta, "beta": beta, "rho_adm": rp,
-            "tau": tau, "sigma2": sig2}
+            "tau": tau, "sigma2": sig2, "d": d_slot, "n_B": n_B}
 
 
 def _sat_mix_q(tq: dict, p: float, base: float, theta: float) -> dict:
@@ -2250,7 +2269,12 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         for w_, t in zip(ws, tb):
             serv_mix.append(t)
             ws_mix.append(w_ / 8)
-    if blk is not None and blk[1] > 1e-6:
+    # 0.245: the slot account (_slot_backlog) where its admission share is the queue law's own — the budget fits ≥ 2
+    # whole prompts at a full batch (A/G: DES saturated τ 39.5 / 48.0 vs 39.4 / 47.9 ms); budget-chunked (C(B) < one
+    # more prompt: D/F/E) keeps the 0.243 clustered block until the full-batch tail-shared iteration is priced (the
+    # account needs τ to ≈ 0.3 %: D 45.3 vs DES 45.8 ms moves the SLO rate +1.4 %; MODEL §192)
+    acct = _FUSED_BACKLOG and pack and chunk_at(spec, B) // max(max(1, S - p) for _, S, p in pts) >= 2
+    if blk is not None and blk[1] > 1e-6 and not acct:
         # 0.243: the block clusters — it falls only on prompts served at a full batch (the quasi-static bins at k = B of
         # the queue-weighted law, deep in busy periods); the bins below B never meet it (0.241/0.242 spread it iid
         # over every bin, diluting the full bins' load — the quasi-static mixture is convex in the bin load).  In the
@@ -2320,6 +2344,30 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
             l1b = sum(w_ * l_ for w_, _, l_ in pts_b)      # 0.234: own latency (≠ the server share when packed)
             mean_mix += (lam_c * m2b / (2 * (1 - lam_c * m1b)) + l1b + vac / 2) / 8
         ttft = {"mean": mean_mix, **{f"p{q * 100:g}": v for q, v in qmix.items()}}
+    bkl = None
+    if acct:
+        # 0.245: max_num_seqs blocking as the slot account in a backlog (_slot_backlog, as SGLang non-mixed 0.244)
+        # replaces the 0.241–0.243 lumped / clustered block: τ = ρ_c/λ (the chunk server's own time share per prompt,
+        # packing as the queue law has it), n_B = its chunk iterations per prompt, own latency = the full-batch bin's
+        _, ptsB, _ = envs[kbins.index(max(kbins))]
+        wB = sum(x_[0] for x_ in ptsB)
+        latB = sum(x_[0] * x_[2] for x_ in ptsB) / wB if wB > 0 else rho_c / lam_c
+        # τ, n_B where the backlog lives (iterations with every slot held): admissions follow the deaths, which come
+        # in clumps (the replayed birth cohorts), so a packed iteration needs b free slots — priced as the bulk queue's
+        # realised share at k = B − b_max, the fullest batch at which the budget's packing is slot-feasible (pack_at
+        # caps b at B − k).  Not ρ_c/λ: its bins at k = B carry pack_at's b = 1 tail-sharing share (36.1 ms in A, a
+        # follower head that has no slot), so it jumped with the decode fixed point (A λ56.6 → 56.8: 39.5 → 36.2 ms,
+        # TTFT p90 7.7 → 0.75 s).  DES saturated τ A 39.5, G 48.0 ms 「推导; 近似」
+        b_mx = chunk_at(spec, B) // max(max(1, S - p) for _, S, p in pts)
+        kq = max(0, B - b_mx)
+        tau_s, nB_s = _wsum(ws, pack_at(kq)["tsum"]) / sum(ws), _wsum(ws, pack_at(kq)["ns"]) / sum(ws)
+        bkl = _slot_backlog(cp, lam_c, rho_c, [(1.0, latB)], ws, None, out, ctx.get("out_cs2", 0.0), B,
+                            tau=tau_s, n_B=nB_s)
+        if bkl is None:
+            return {**res, "why": "满批阻塞下准入服务 τ + β 饱和（ρ′ ≥ 1）"}
+        if bkl["p_sat"] > 0:
+            ttft = _sat_mix_q(ttft, bkl["p_sat"], bkl["base"], bkl["theta"])
+        blk = None
     # worst single gap: the chunk iteration at the largest batch met over the life (0.99 point, up-crossing clumping)
     t1_99 = mean_step(max(1, _kmax_life_q(dec, 0.99)))[2]
     if pack:
@@ -2371,6 +2419,7 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     req_q = {q: min(v, tp_cap) for q, v in req_q.items()}
     return {**res, "stable": True, "ttft": ttft, "tpot_mean": dec["tpot"], "tpot_cap": tp_cap, "tpot_capped": capped[0.9],
             "slot_block": None if blk is None else {"V": blk[0], "p": blk[1], "J": blk[2], "phi": blk[3]},
+            **({"slot_backlog": bkl} if bkl is not None else {}),
             "tpot_p90": req_q[0.9], "tpot_p99": req_q[0.99],
             "itl_max": max(t1_99) / dec["e"],
             "e2e_mean": ttft["mean"] + slot["mean"] + out * dec["tpot"],

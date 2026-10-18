@@ -6,6 +6,65 @@
 
 
 
+## [0.245.0]
+
+### Fixed — fused vLLM / SGLang-mixed over-rating in A and G: the 0.244 slot account carried over (`_slot_backlog` with n_B)
+- **Source rule** (vLLM V1 `vllm/v1/core/sched/scheduler.py`, main, sha256 ed407c3d…). `schedule()` breaks its waiting loop at `len(running) >= max_num_running_reqs`, and `running` holds the partial prefills. So prefilling requests count in max_num_seqs, as in SGLang and the DES `ColocChunked._packed`.
+- **Long-run DES state at arrivals** (n64000, at the long-run crossings; `sd245/probe*.py`).
+  - Fraction of arrivals at P(U > 0): A 0.520, D 0.517, F 0.474 (A sglang 0.501).
+  - U | U > 0 has mean ≈ 1.0 s in every case, and TTFT ≈ U + β + own latency.
+  - So all fused cases share the backlog mechanism. 0.243's clustered block gave TTFT p90 at the DES crossing of A 1319, G 1303, D 1402, F 1844 ms against ≈ 2000. D/F came out right only because the block compensated; A/G were low, which caused the +1.7 / +2.0 % SLO-rate excess.
+- **Fused account 「推导」.**
+  - An admission's n_B chunk iterations at a full batch already give n_B·B·e/out deaths. Its decode-only wait is therefore β = d − n_B·T_d(B), with d = out·T_d(B)/(e·B) the U credit of a free slot. β ≤ 0 means no block.
+  - Below 0 each arrival nets β + n_B·T_d(B)·f/B, because chunk iterations at batch B − f give only (B − f)/B of those deaths. Without this term D/F P(U > 0) comes out 0.21 / 0.14 instead of 0.52 / 0.47.
+  - τ, n_B are the bulk queue's realised share at k = B − b_max, the fullest batch at which the budget's packing is slot-feasible. Admissions follow death clumps (the replayed birth cohorts), and a packed iteration needs b free slots. This gives A 39.5 ms (DES saturated 39.5) and G 48.1 (DES 48.0).
+  - ρ_c/λ is not used for τ. Its bins at k = B carry pack_at's b = 1 tail-sharing share (36.1 ms in A, assuming a follower head that has no free slot), so it jumped with the decode fixed point: A λ56.6 → 56.8 went 39.5 → 36.2 ms and TTFT p90 7.7 → 0.75 s, which the test_core_243 monotone guard caught.
+- **Scope: budget ≥ 2 whole prompts at a full batch (A/G, vllm and sglang_mixed).** A TTFT p90 at 55.28 is 1792 ms, G at 49.02 is 1742 ms (DES ≈ 2000). SLO rates:
+
+  | case | DES (long run) | 0.244 | 0.245 |
+  |---|---|---|---|
+  | A vllm / mixed | 55.28 | 56.20 | 55.42 |
+  | G vllm / mixed | 49.02 | 49.99 | 49.18 |
+
+- **Why D/F (and E, A/G vllm_v0) stay on the 0.243 block.** The account is ≈ 30× sensitive to the admission share through ρ′ = λ(τ + β). In the budget-chunked regime τ is the full-batch b = 1 tail-shared chunk iteration (pack_at(B)), which is priced ≈ 1 % low: D 45.3 vs DES 45.8 ms, F 66.8 vs 67.5. That moves the SLO rate by +1.4 / +1.6 % (D ≈ 56.25 vs DES 55.45, F ≈ 44.45 vs 43.75), worse than the 0.243 block's +0.9 / +0.3 %.
+  - With the DES τ, n_B the account reproduces D/F: p_sat 0.475 / 0.393, 1/θ 1.02 / 1.04 s, p90 1668 / 1525 ms. So the structure holds; the gap is the iteration pricing (deferred).
+
+### Ranking (long-run DES vs analytic)
+
+| case | long-run DES | analytic 0.245 |
+|---|---|---|
+| A | pf > v0 55.45 > vllm = mixed 55.28 > sglang 55.05 | pf 56.73 > v0 55.96 > vllm = mixed 55.42 > sglang 55.04 |
+| G | v0 49.42 > vllm 49.02 | v0 49.37 > vllm 49.18 |
+| D | vllm = v0 55.45 > mixed 55.13 > sglang 54.95 | 55.96 > 55.41 > 55.01 (same order, unchanged) |
+| F | vllm 43.75 > mixed 43.64 > sglang 42.66 | 43.89 > 43.73 > 42.80 (same order, unchanged) |
+
+The A order now matches the DES (0.244 flagged vllm > v0), and so does G.
+
+### Checked — C/E against long-run DES (6 seeds × n64000)
+- C sglang: 18.47 (analytic 18.67, +1.1 %).
+- E sglang: 18.38 (18.58, +1.1 %).
+- E sglang_mixed: 18.59 (18.68, +0.5 %); TTFT p90 at 18.6 ≈ 2015 ms (analytic 1935).
+- E vllm did not finish in time (killed after 31 min without a bracket point); deferred.
+
+### KPI (6 of 49 rows changed)
+- SLO rate: A vllm and sglang_mixed 56.20 → 55.42; G vllm and sglang_mixed 49.99 → 49.18.
+- Operating-point TTFT p99 −1.4 % in those rows and in B vllm / mixed (99.43 → 98.05; SLO unchanged 22.8): the backlog branch mixes in at small p_sat. TTFT mean and TPOT are unchanged.
+
+### Tests
+- test_core_245 (3 tests):
+  - A/G account τ within 1 % of the DES saturated share, the β = d − n_B·T_d(B) identity, and TTFT p90 at the DES crossing within −20 / +15 %.
+  - The budget-chunked case keeps the clustered block.
+  - β ≤ 0 → no block; n_B = 0 reproduces the 0.244 account.
+- test_core_243 re-pinned to the long-run DES (the n4000 references were transient):
+  - A vllm 55.95 → 55.28, G 49.42 → 49.02.
+  - E mixed SLO rate → 18.59 (±1.5 %); TTFT p90 at 18.6 → 2015 ms ± 15 %.
+
+### Deferred
+- Price the full-batch b = 1 tail-shared iteration (≈ 1 % low), then move D/F/E/vllm_v0 to the account.
+- E vllm long-run DES.
+- sglang TTFT p90 below 1 s.
+- E mixed body; idle k0; the 0.238 list.
+
 ## [0.244.0]
 
 ### Fixed — SGLang non-mixed admission: prefilling requests count in max_running_requests (`_slot_backlog`)

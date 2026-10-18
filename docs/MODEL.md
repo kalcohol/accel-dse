@@ -5647,3 +5647,22 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
 **Open (0.245).**
 - Fused vllm/mixed are over the long-run DES in A (56.20 vs 55.28, +1.7 %) and G (49.99 vs 49.02, +2.0 %). The A order of v0 vs vllm/mixed (DES v0 > vllm = mixed > sglang; analytic vllm = mixed > v0 > sglang) is a near-tie and is flagged, not fixed.
 - The sglang mixture body at small p_sat.
+
+## §192 The slot account for the fused engines (0.245)
+
+**Rule (来源).** vLLM V1 `Scheduler.schedule()` stops admitting at len(running) ≥ max_num_running_reqs, and the partial prefills are in `running`. So, as in SGLang (§191), prefilling requests hold slots.
+
+**Fused account (推导).** U = (τ + β)·q − d·f, where d = out·T_d(B)/(e·B) is the decode time per death at a full batch.
+- An admission's n_B chunk iterations at a full batch carry the decodes, giving n_B·B·e/out deaths. Its decode-only wait is β = d − n_B·T_d(B); β ≤ 0 means no block.
+- A chunk iteration lowers U at rate 1. Below 0, the iterations run at batch B − f and give fewer deaths, so each arrival nets β + n_B·T_d(B)·f/B. This makes the floor shallower when n_B is large.
+- The diffusion, the noise terms and the TTFT mixture are those of §191.
+
+**Admission share where the backlog lives.** Admissions follow death clumps, so a packed iteration needs b free slots. τ and n_B are therefore the bulk queue's realised share at k = B − b_max (pack_at). A gives 39.5 ms and G 48.1, against DES saturated iterations of 39.5 and 48.0. ρ_c/λ is unusable: its k = B bins carry a b = 1 tail-sharing share with no slot for the follower, so it jumps with the decode fixed point.
+
+**DES (n64000 × 6).**
+- Every fused case at its crossing has P(U > 0) ≈ 0.5 and U | U > 0 ≈ 1 s, with TTFT ≈ U + β + lat.
+- A/G SLO rates: 55.42 / 49.18 against DES 55.28 / 49.02 (0.244: 56.20 / 49.99).
+
+**Scope and why.** The account applies where C(B) fits ≥ 2 whole prompts. The budget-chunked cases (D/F/E, vllm_v0) keep the §190 clustered block because the account needs τ to ≈ 0.3 %: ρ′ = λ(τ + β) near the crossing makes the SLO rate ≈ 30× as sensitive as τ. The full-batch b = 1 tail-shared iteration is priced ≈ 1 % low (D 45.3 vs 45.8 ms, F 66.8 vs 67.5), which would put D/F at +1.4 / +1.6 % against the block's +0.9 / +0.3 %. With the DES τ the account reproduces D/F (p_sat 0.475 / 0.393 vs 0.517 / 0.474; 1/θ 1.02 / 1.04 vs 1.03 / 1.06 s).
+
+**Open.** Pricing of the tail-shared iteration; E vllm long-run DES.

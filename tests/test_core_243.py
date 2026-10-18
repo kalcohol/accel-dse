@@ -30,13 +30,14 @@ def test_fused_ttft_monotone_near_capacity_and_slo_rate_vs_des():
         assert r["ttft"]["p90"] >= prev, (lam, r["ttft"]["p90"], prev)     # 0.242: 56.5 → 31 s, 56.8 → 0.14 s
         prev = r["ttft"]["p90"]
     rate = rep["queue"]["modes"]["coloc_chunked"]["slo_rate_rps"]
-    assert abs(rate - 55.95) / 55.95 < 0.015, rate                          # 0.242: 57.00 (= stability limit)
+    # 0.245: long-run DES (6 seeds × n64000) 55.28 — the n4000 reference 55.95 was transient near saturation
+    assert abs(rate - 55.28) / 55.28 < 0.015, rate                          # 0.242: 57.00, 0.244: 56.20
 
 
 def test_g_vllm_slo_rate_vs_des():
     rep, _ = _ctx(5000, "vllm")
     rate = rep["queue"]["modes"]["coloc_chunked"]["slo_rate_rps"]
-    assert abs(rate - 49.42) / 49.42 < 0.015, rate                          # 0.242: 50.72
+    assert abs(rate - 49.02) / 49.02 < 0.015, rate                          # long-run DES (n4000: 49.42); 0.244: 49.99
 
 
 def test_clustered_block_e_mixed():
@@ -44,6 +45,7 @@ def test_clustered_block_e_mixed():
     r = pdqueue._coloc_chunked({**ctx, "slo": (2.0, 0.05)}, 18.6)
     sb = r["slot_block"]
     assert sb is not None and 0 < sb["phi"] <= 1 and sb["p"] <= sb["phi"]
-    assert 1856 < r["ttft"]["p90"] * 1e3 < 2163                              # 0.242 1856, DES 2163
+    # 0.245: long-run DES (6 seeds × n64000) TTFT p90 at 18.6 ≈ 2015 ms (18.483 → 1902, 18.668 → 2081; n4000: 2163)
+    assert 0.85 * 2015 < r["ttft"]["p90"] * 1e3 < 1.15 * 2015                # 0.242 1856, 0.243 1935
     rate = rep["queue"]["modes"]["coloc_chunked"]["slo_rate_rps"]
-    assert 18.43 <= rate < 18.75, rate                                       # DES 18.43, 0.242 18.75
+    assert abs(rate - 18.59) / 18.59 < 0.015, rate                           # long-run DES 18.59 (n4000 18.43); 0.242 18.75
