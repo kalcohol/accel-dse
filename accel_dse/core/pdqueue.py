@@ -1711,6 +1711,84 @@ def _law_mix(laws, qs) -> dict:
     return out
 
 
+def _queue_weights(a: float, jn: int, xmax: int = 400):
+    """0.242: embedded M/D/1 chain at departures (a = ρ = λS): weight of busy-period customer j = 1..jn — the prompts
+    that wait out its share, (x_prev − 1)⁺ queued at its start + a/2 arriving during it — per customer; rest = the
+    weight of j > jn (closed form total L_q + ρ/2 minus the listed).  → (w[0..jn-1], rest, total)."""
+    from math import exp, lgamma, log
+    pois = []
+    for i in range(xmax + 1):
+        v = exp(-a + i * log(a) - lgamma(i + 1))
+        if v < 1e-15 and i > a:
+            break
+        pois.append(v)
+    wj = [(1 - a) * a / 2]                       # index 1: nobody queued at its start
+    g = [(1 - a) * v for v in pois]
+    for _ in range(1, jn):
+        wj.append(sum(gx * (x - 1 + a / 2) for x, gx in enumerate(g) if x >= 1))
+        ng = [0.0] * min(xmax + 1, len(g) + len(pois))
+        for x, gx in enumerate(g):
+            if x >= 1 and gx > 1e-300:
+                for i, pv in enumerate(pois):
+                    y = x - 1 + i
+                    if y < len(ng):
+                        ng[y] += gx * pv
+        g = ng
+    tot = a * a / (2 * (1 - a)) + a / 2          # M/D/1: E[(X − 1)⁺] + a/2 = L_q + ρ/2
+    return wj, max(0.0, tot - sum(wj)), tot
+
+
+def _slot_block_q(lam: float, rho: float, k0: float, B: int, n_B: float, out: float, T_d: float):
+    """0.242: _slot_block with the block weighted by the queue behind it.  A block V is waited out by every prompt
+    queued during it, and it only falls deep in a busy period (index > J*), where the queue is long — the same
+    order effect as _queue_k_law.  φ_q = the queue weight of the customers past J* (_queue_weights) replaces the
+    customer-weighted Borel tail φ; ρ′ = ρ + λφ_qV/B by fixed point.  → (V, φ_q/B, J*, φ_q) or None."""
+    b = _slot_block(lam, rho, k0, B, n_B, out, T_d)
+    if b is None:
+        return None
+    V, _, J, _ = b
+    r, phi = rho, 0.0
+    for _ in range(6):
+        if r >= 1:
+            return None
+        wj, rest, tot = _queue_weights(r, J + 1)
+        phi = (rest + sum(wj[J:])) / tot if tot > 0 else 0.0
+        r = rho + lam * phi * V / B
+    return V, phi / B, J, phi
+
+
+def _queue_k_law(lam: float, S: float, k0_law, n_B: float, out: float, B: int, xmax: int = 400):
+    """0.242: law of the running batch k under which the chunk server serves the work a waiting prompt queues behind.
+    The DES prompt queue is work-conserving (a Lindley replay of its own (arrival, share) sequence reproduces its
+    waits to ±2 %), but the order of the shares matters: in a busy period every finished prompt adds a decode, so the
+    share grows along it (vllm E λ18.6: k 7 → 27.5, share 180.5 → 189.0 ms) and the long waits sit behind the
+    large-k shares (replay / shuffled-share p90 ≈ 1.18).  The time-average batch law (0.55 kbins) misses that.
+    Embedded M/D/1 chain at departures (share ≈ S 「近似」): customer j of a busy period leaves x behind,
+    g₁ = (1 − ρ)·Poisson(a), g_{j+1}(x′) = Σ_{x≥1} g_j(x)·Poisson(x′ − x + 1), a = λS.  Its share is waited out by
+    the (x_prev − 1)⁺ prompts queued at its start plus a/2 arriving during it (Little: Σ weight = L_q + ρ/2 per
+    customer) → weight.  Its batch is the 0.241 deterministic-aging fill after j − 1 admissions,
+    k = min(j − 1, out/n_B) + k0·(1 − (j − 1)·n_B/out)⁺ ≤ B, k0 ~ the time-average law 「推导; mean-field」.  Beyond
+    j − 1 ≥ out/n_B the batch no longer depends on j: the rest of the weight (closed form) goes there.
+    → [(k, weight)] normalised; None if unstable."""
+    a = lam * S
+    if not (0 < a < 1) or n_B <= 0:
+        return None
+    jsat = max(1, int(math.ceil(out / n_B)))
+    k_of = lambda jm1, k0: min(float(B), min(jm1, out / n_B) + k0 * max(0.0, 1 - jm1 * n_B / out))
+    wj, rest, _ = _queue_weights(a, jsat, xmax)
+    law: dict = {}
+    for k0, p0 in k0_law:
+        if p0 <= 0:
+            continue
+        for jm1, w_ in enumerate(wj):
+            kk = k_of(jm1, k0)
+            law[kk] = law.get(kk, 0.0) + p0 * w_
+        kk = k_of(jsat, k0)
+        law[kk] = law.get(kk, 0.0) + p0 * rest
+    z = sum(law.values())
+    return sorted((k_, w_ / z) for k_, w_ in law.items()) if z > 0 else None
+
+
 def _slot_block(lam: float, rho: float, k0: float, B: int, n_B: float, out: float, T_d: float):
     """0.241: max_num_seqs blocking of the chunk server in a backlog → (V, p): a lumped vacation V before an
     admission, met by a fraction p of the prompts.  In a busy period every admission rides n_B fused iterations, so
@@ -1949,15 +2027,19 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     # TTFT: the chunk server's speed follows the running batch, which drifts slowly — mix the service over the
     # time-weighted batch law (8 equal-mass bins; 0.55, V4 showed the single seen-batch service misses the tail)
     run_w = dec["run_w"]
+    # 0.242: the bins follow the batch the queued work is served under (_queue_k_law), not the time-average law
+    _, _, _, _, _, _, nsBq = mean_step(B)
+    qlaw = _queue_k_law(lam_c, _wsum(ws, serv) / sum(ws), list(enumerate(run_w)), _wsum(ws, nsBq) / sum(ws), out, B)
+    klaw = qlaw if qlaw is not None else list(enumerate(run_w))
     kbins, acc_w, edges = [], 0.0, [(j + 0.5) / 8 for j in range(8)]
     ei = 0
-    for k, pk in enumerate(run_w):
+    for k, pk in klaw:
         acc_w += pk
         while ei < 8 and acc_w >= edges[ei] - 1e-12:
-            kbins.append(k)
+            kbins.append(max(0, min(B, int(round(k)))))
             ei += 1
     while len(kbins) < 8:
-        kbins.append(len(run_w) - 1)
+        kbins.append(max(0, min(B, int(round(klaw[-1][0])))))
     serv_mix, ws_mix, envs, cbins = [], [], [], []
     phmemo: dict = {}
 
@@ -1980,7 +2062,7 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     _, rBb, _, _, _, tsBb, nsBb = mean_step(B)
     rho_c = lam_c * _wsum(ws, serv) / sum(ws)
     k0_c = sum(k_ * p_ for k_, p_ in enumerate(dec["run_w"]))
-    blk = _slot_block(lam_c, rho_c, k0_c, B, _wsum(ws, nsBb) / sum(ws), out, rBb.step)
+    blk = _slot_block_q(lam_c, rho_c, k0_c, B, _wsum(ws, nsBb) / sum(ws), out, rBb.step)
     for kraw in kbins:
         kb = max(1, kraw)
         tb = mean_step(kb)[5]

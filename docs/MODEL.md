@@ -5588,3 +5588,22 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
 - **Who meets it 「近似: iid」.** A prompt beyond index J* of its busy period, w.p. 1/B. Index law: Borel(ρ′) (M/D/1, deterministic share), customer-weighted φ = E[(N − J*)^+]/E[N]; ρ′ = ρ + λφV/B by fixed point. Applied as an extra atom τ + V with weight φ/B on every chunk-server share atom (envs, cbins, serv_mix); own-latency rows unchanged. Reported as `slot_block`.
 - **Result.** E sglang_mixed TTFT p90 at λ18.6: 1298 → 1461 ms (DES 2163); 19.32: 1641 → 2110 (3353); λ15 unchanged; SLO rate 19.79 → 19.23 (DES 18.43). vllm E unchanged.
 - **Open.** The no-cap DES is still ~25 % above the no-block analytic in both profiles (sglang_mixed lift p90 1597 vs 1298; vllm 1849 vs 1488): a second, non-cap mechanism. The iid lump also ignores that blocks cluster in long busy periods. Mean TPOT birth-in-busy residual still open.
+
+## §189 The fused share grows along a busy period: queue-weighted batch law (0.242)
+
+- **Evidence.** Without the slot cap the DES prompt queue is work-conserving: a Lindley replay of its own (arrival, share) sequence matches its wait to ±2 %. The order of the shares still matters: a shuffled replay is ×1.10–1.30 lower at p90.
+  - In a busy period every finished prompt adds a decode, so the share grows (vllm E λ18.6: k 7 → 27.5, share 180.5 → 189.0 ms).
+  - The long waits queue behind the large-k shares.
+  - The analytic share mean is right (ρ 0.857 vs 0.859); the time-average batch law used for the TTFT bins is not.
+- **Weight 「推导」.** A share is waited out by every prompt queued during it. In the embedded M/D/1 departure chain (a = λS):
+  - g₁ = (1 − a)·Poisson(a), and g_{j+1}(x′) = Σ_{x≥1} g_j(x)·Poisson(x′ − x + 1).
+  - Customer j's weight is (x_prev − 1)⁺ + a/2. Index 1 has weight a/2, and the total is L_q + ρ/2.
+- **Batch 「推导; mean-field」.** The batch follows §188's deterministic-aging fill after j − 1 admissions: k = min(j − 1, out/n_B) + k0·(1 − (j − 1)n_B/out)⁺ ≤ B. Here k0 follows the time-average law 「近似」.
+  - Beyond j − 1 ≥ out/n_B, k no longer depends on j, so the remaining weight is assigned there in closed form.
+  - The TTFT quasi-static bins are 8 equal-mass bins of this law (`_queue_k_law`).
+- **Slot block (§188) re-weighted the same way.** The block falls only past J*, where queues are long, so φ_q is the queue weight past J* (`_slot_block_q`). ρ′ is a fixed point.
+- **Result (E, TTFT p90 vs DES n4000×10).**
+  - vllm 17.37–19.32: 1180 / 1440 / 1833 / 2657 vs 1158 / 1436 / 1883 / 2748.
+  - sglang_mixed: 1125 / 1400 / 1856 / 2992 vs 1219 / 1603 / 2163 / 3353.
+  - C operating-point p99: −12 % → −5 % vs DES.
+- **Open.** The slot block is still an iid lump (sglang_mixed −8 … −14 %). The idle-time k0 law is not yet modelled.

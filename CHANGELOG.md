@@ -6,6 +6,66 @@
 
 
 
+## [0.242.0]
+
+### Fixed — near-saturation TTFT in fused paths: the share grows along a busy period (order effect), queue-weighted batch law
+- **What the DES does.** With the slot cap lifted (sglang_mixed) and in vllm (cap inactive), the DES prompt queue **is work-conserving**. This is real scheduler behaviour, not a DES artefact.
+  - A Lindley replay of the DES's own per-replica (arrival, chunk-server share) sequence reproduces the DES wait to ±2 %. vllm λ18.6 seed 2, wait mean/p90/p99 ms: DES 756/1926/3078 vs replay 744/1884/2986.
+  - Decode-only iterations while a prompt waits take ≤ 0.1 % of busy time.
+  - 0.241's "not work-conserving" was the slot cap alone.
+- **The mechanism: order.** Shuffling the same shares (iid, same law) drops the wait p90 by ×1.10–1.30 (mean ×1.18 over 6 seeds, vllm 18.6).
+  - Each finished prompt adds a decode, so k grows along a busy period: k_seen 7 → 27.5 and share 180.5 → 189.0 ms from arrival-queue 0 to ≥ 4.
+  - The long waits sit behind the large-k shares, amplified by 1/(1 − ρ).
+  - The analytic share mean was already right: ρ 0.857 vs DES 0.859, and an M/D/1 at the analytic share matches the shuffled replay per seed.
+  - The 0.55 TTFT bins used the time-average batch law (mean k 11.6), whose shares are 177–191 ms.
+- **Derivation 「推导」 (`pdqueue._queue_k_law`, `_queue_weights`).**
+  - A share delays every prompt queued during it. Embedded M/D/1 departure chain: customer j of a busy period with x left behind gets weight (x_prev − 1)⁺ + a/2. The total is L_q + ρ/2 in closed form.
+  - Its batch is the 0.241 deterministic-aging fill, k = min(j − 1, out/n_B) + k0·(1 − (j − 1)n_B/out)⁺ ≤ B, with k0 from the time-average law.
+  - The 8 quasi-static TTFT bins are now equal-mass bins of this queue-weighted k law.
+- **Slot block re-weighted the same way (`_slot_block_q`).** The 0.241 lump V hits only prompts deep in a busy period (index > J*), where the queue is long.
+  - φ is now the queue weight past J* (sglang_mixed 18.6: 0.547) instead of the customer-weighted Borel tail (0.259).
+  - 0.241's `_slot_block` is kept as the building block.
+- **E sweep, TTFT p90 ms (0.241 → 0.242 vs DES n4000×10):**
+
+  | λ | vllm 0.241 | 0.242 | DES | sglang_mixed 0.241 | 0.242 | DES |
+  |---|---|---|---|---|---|---|
+  | 15 | 702 | 717 | — | 679 | 699 | (≈740, 3 seeds) |
+  | 17.37 | 1057 | 1180 | 1158 | 1008 | 1125 | 1219 |
+  | 18.0 | 1219 | 1440 | 1436 | 1199 | 1400 | 1603 |
+  | 18.6 | 1488 | 1833 | 1883 | 1461 | 1856 | 2163 |
+  | 19.32 | 1992 | 2657 | 2748 | 2110 | 2992 | 3353 |
+  | 19.76 | 2707 | 3695 | — | 3000 | 4595 | 4559 |
+
+  - vllm is now within −3.3 … +1.9 %.
+  - sglang_mixed is within −14 … +1 %. The rest is the iid lumped slot block (deferred).
+  - SLO rate E: vllm 19.32 → 18.82 (DES 18.70); sglang_mixed 19.23 → 18.75 (DES 18.43).
+- **Away from saturation.** Case C operating point (vllm, λ 3.47, DES n4000×5): TTFT mean 201.3 / p99 488.7 ms. Analytic 196.9 / 428.9 → 203.7 / 466.2 (p99 −12.2 % → −4.6 %).
+- TPOT unchanged.
+
+### KPI old → new (49 rows; 28 changed, operating-point TTFT within ±1 % except C fused)
+- **TTFT at the operating point.** A/B/D/F/G fused move ≤ +0.9 % (legacy_512 +0.6–0.9 %).
+  - C vllm / sglang_mixed: TTFT mean 196.9 → 203.7, p99 428.9 → 466.2 (DES-checked, see above).
+  - C/E vllm_v0: 201.4 → 199.9, p99 403.4 → 398.2.
+- **SLO rates (near saturation, fused only):**
+  - A: vllm_v0 57.20 → 56.23, legacy_512 55.18 → 54.77. **Ranking:** vllm / sglang_mixed 57.0 now lead; vllm_v0 falls below prefill_first / sglang (56.73).
+  - C: vllm / sglang_mixed 18.98 → 18.32, vllm_v0 19.32 → 18.82 (order unchanged: sglang 19.89 first).
+  - D: vllm / vllm_v0 57.20 → 56.23, sglang_mixed 56.91 → 56.01. **Ranking:** prefill_first 56.73 / sglang 56.69 now ahead of the fused profiles.
+  - E: vllm / vllm_v0 19.32 → 18.82, sglang_mixed 19.23 → 18.75 (order unchanged; matches the DES order).
+  - F: vllm / vllm_v0 45.25 → 44.18, sglang_mixed 45.09 → 44.17. **Ranking:** prefill_first 44.83 > sglang 44.36 > fused.
+  - G: vllm_v0 50.74 → 49.77 (now behind vllm / sglang_mixed 50.72), legacy_512 45.39 → 45.76.
+  - The D/F/G SLO-rate shifts are not DES-checked; E is.
+
+### Deferred
+- sglang_mixed residual −8 … −14 % near saturation: the slot block is still an iid lump; blocks cluster in long busy periods.
+- k0 at a busy-period start is taken from the time-average law; an idle-time law would be lower.
+- TPOT-mean birth-in-busy residual.
+- Joint phase–wait chain; the 0.238 list.
+
+### Tests
+- `tests/test_core_242.py`: `_queue_weights` closed form; `_queue_k_law` normalisation / light-load limit / instability; `_slot_block_q` ≥ the customer-weighted block; E vllm TTFT p90 within 6 % of the DES, sglang_mixed strictly between 0.241 and the DES (λ 17.37–19.32).
+- test_core_239: E sglang_mixed SLO rate 19.23 → 18.75.
+- test_core_233: case A (single chunk per prompt) pinned TTFT mean 42.4807 → 42.5230 ms (+0.1 %; a single-chunk fused share still grows with k — the decodes ride in the iteration — so the queue-weighted law applies there too); energy unchanged; the invariant (multi-chunk D 45.97 > single-chunk A) holds.
+
 ## [0.241.0]
 
 ### Fixed — near-saturation TTFT in fused paths: max_num_seqs blocking of the chunk server (partial, derived)
