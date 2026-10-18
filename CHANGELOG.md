@@ -6,6 +6,44 @@
 
 
 
+## [0.240.0]
+
+### Fixed — fused TPOT quantiles near saturation: max_num_seqs caps a request's fused time
+- **DES evidence (case E, n4000 × 10).** TPOT p90 stays flat at 23.3–23.4 ms (sglang_mixed) and 22.5–23.0 ms (vllm) from λ = 17.37 to 19.76. The 0.239 analytic TPOT p90 climbed 19.5 → 50 ms (sglang_mixed) and 19.3 → 52.7 ms (vllm).
+  - Instrumented DES at λ = 18.6 (sglang_mixed): slots are full 25 % of the time. When running + prefilling = B (32), no prompt is admitted until a decode finishes.
+- **Mechanism 「推导」.** A prompt is admitted only while running + prefilling < B. During one decode life a request therefore sees at most B admissions: the ≤ B − k free slots at its birth, plus one per death of the ≤ k requests older than it. Its decodes ride along at most B prompts' chunk iterations: t_on ≤ B·S_B, with n_on ≤ B·n_B fused tokens. Hence TPOT_req ≤ (B·S_B + (out − B·n_B)·T_d)/out, or S_B/n_B when B·n_B ≥ out.
+  - Case E: B·n_B = 32 · 4 = 128 of 256 tokens, so the cap is ≈ (4·43 + 4·1.8)/8.
+  - Any further load can only wait as prompts.
+- **The cap.** Applied to the request TPOT p90/p99 of `_coloc_chunked_base`, and reported as `tpot_cap` / `tpot_capped`.
+  - sglang_mixed 24.0 ms vs DES 23.3–23.4 (+2.6 %).
+  - vllm 22.9–23.1 ms vs DES 22.9–23.0.
+- **Effect on E.**
+  - sglang_mixed is now TTFT-bound instead of TPOT-bound: SLO rate 19.76 → 19.79, goodput/card 632.4 → 633.3.
+  - vllm unchanged at 19.32.
+
+### Investigated, not fixed — near-saturation TTFT optimism and the SLO-rate gap (case E)
+- **Status.** DES SLO rates (0.239) are vllm ≈ 18.70 and sglang_mixed ≈ 18.43; analytic is 19.32 / 19.79. The TPOT cap does not change this gap, because TTFT binds in the DES.
+- **Slot blocking is not the TTFT cause.** Decode-only iterations while slots are full and prompts wait take only 2–3 % of the time, ≈ 7 ms per admission in the saturated cycle.
+- **What the DES shows at λ = 18.6 (sglang_mixed).**
+  - Prompt wait mean 635 ms; analytic TTFT mean 645 vs DES 848.
+  - Chunk-server busy share 0.845 vs analytic 0.834.
+  - Iteration time agrees: 43.0 vs 42.8 ms.
+  - The batch seen by chunk iterations is 18.0 vs the analytic time-average 13.2: the batch grows while prompts queue.
+  - The working hypothesis is queue–service correlation within prefill busy periods. Not derived yet.
+- **TPOT mean is also optimistic away from the cap** (λ = 15: 5.0 vs DES 7.3).
+  - Derived mechanism: a request starts decoding at its own prefill completion, i.e. inside a prefill busy period with probability ρ (DES 0.661 vs ρ 0.664). It spends the residual R = Σ over the N it leaves behind of busy periods in fused iterations: DES E[R] 0.647 s vs model L·E[BP] 0.68 s.
+  - Together with Poisson arrivals during its decode-only time this gives TPOT 6.8 at λ = 15 (DES 7.3).
+  - At λ = 18.6 the M/D/1 busy-period form overshoots (t_on 4.7 vs DES 3.4 s). The slot cap and the queue–service correlation interact there, so this is deferred too.
+- **Tests:** `tests/test_core_240.py`. It checks the cap within 4 % of the DES TPOT p90 at λ = 18.0–19.76 for both profiles, and that the cap is inactive at E's operating point.
+- **KPI A–G old → new:** 46 of 49 rows unchanged against 0.239; TTFT, TPOT mean/p99 at the operating points and J/token are unchanged everywhere (the cap is inactive at load 0.6). Only SLO-limited rates move, where the 0.239 TPOT p90 bound wrongly:
+  - C vllm / sglang_mixed (C = 16382): SLO rate 19.88 → 20.12, goodput/card 636.1 → 643.8. **C ranking shift:** vllm / sglang_mixed 643.8 > sglang 636.5 > vllm_v0 622.2 (was sglang 636.5 ≳ vllm / sglang_mixed 636.1). The new rate is TTFT-bound, and near-saturation TTFT is known to be optimistic (E: 4–7 %), so this gain is an upper bound. Not DES-checked at C.
+  - E sglang_mixed: 19.76 → 19.79 (632.4 → 633.3), now level with sglang (633.3) > vllm (618.3). The DES puts vllm ≈ 18.70 ahead of sglang_mixed ≈ 18.43 (0.239), so the E order of these three remains within model error.
+- **Deferred:**
+  - Near-saturation TTFT (queue–service correlation within busy periods).
+  - The birth-in-busy-period TPOT mean together with the slot cap.
+  - The joint phase–wait chain (0.239).
+  - The 0.238 list.
+
 ## [0.239.0]
 
 ### Fixed — the 0.238 case-E KPI shift was a numerical artefact

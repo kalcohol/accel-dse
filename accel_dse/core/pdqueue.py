@@ -2048,7 +2048,19 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
     pure = {q: (_tpot_req_q(dec, q) - _tpot_req_q(dec, 0.5)) for q in (0.9, 0.99)}
     req_q = {q: dec["tpot"] + math.sqrt(pure[q] ** 2 + (_Z[q] * math.sqrt(n_bp * ev2) / out) ** 2)
              for q in (0.9, 0.99)}
-    return {**res, "stable": True, "ttft": ttft, "tpot_mean": dec["tpot"],
+    # 0.240: max_num_seqs bounds a request's fused (prefill-carrying) time.  A prompt is admitted only while
+    # running + prefilling < B, so during one decode life at most B prompts are admitted (the ≤ B − k free slots at its
+    # birth plus one per death of the ≤ k older requests) and its decodes ride along at most B prompts' chunk
+    # iterations: t_on ≤ B·S_B, n_on ≤ B·n_B tokens 「推导」.  So TPOT_req ≤ (B·S_B + (out − B·n_B)·T_d)/out, or the
+    # mean fused iteration S_B/n_B when B·n_B ≥ out (every iteration carries a chunk).  The extra load waits as
+    # prompts (DES: TPOT p90 flat at this value near saturation, case E 23.3 ms vs 22.8 here).
+    _, rB_, _, _, _, tsB, nsB = mean_step(B)
+    S_B, n_B = _wsum(ws, tsB), _wsum(ws, nsB)
+    tp_cap = S_B / n_B if B * n_B >= out else (B * S_B + (out - B * n_B) * rB_.step) / out
+    tp_cap = max(tp_cap, dec["tpot"])
+    capped = {q: v > tp_cap for q, v in req_q.items()}
+    req_q = {q: min(v, tp_cap) for q, v in req_q.items()}
+    return {**res, "stable": True, "ttft": ttft, "tpot_mean": dec["tpot"], "tpot_cap": tp_cap, "tpot_capped": capped[0.9],
             "tpot_p90": req_q[0.9], "tpot_p99": req_q[0.99],
             "itl_max": max(t1_99) / dec["e"],
             "e2e_mean": ttft["mean"] + slot["mean"] + out * dec["tpot"],

@@ -5568,3 +5568,14 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
 - **Chain depth vs wait (open, evidence).** A follower's phase is the residue of the chain of followers before it. Long waits sit deep in a busy period, where the phases are deep-chain ones: small first pieces and three iterations. In the DES (sglang 6000), the first-follower phase is 89 % of followers below the median wait but 6 % in the top 5 %. §184 uses the stationary phase mix for every W > θ.
   - This explains the ≈ −5 % p99 residual at sglang / sglang_mixed 6000 and vllm 3000.
   - The derived remedy is the joint (phase, W) Lindley chain over successive prompts. Not implemented yet.
+
+## §187 max_num_seqs caps a request's fused time (0.240)
+
+- **Bound.** Prompts are admitted only while running + prefilling < B 「来源: vLLM V1 max_num_seqs counts RUNNING incl. prefilling; SGLang max_running_requests」. In one decode life a request sees at most B admissions: the ≤ B − k free slots at its birth, plus one per death of the ≤ k older requests (equal-length lives finish in order).
+  - Fused time in its life: t_on ≤ B·S_B, carrying n_on ≤ B·n_B tokens. S_B and n_B are the chunk server's per-prompt busy time and iterations at batch B.
+  - TPOT_req ≤ (B·S_B + (out − B·n_B)·T_d(B))/out, or S_B/n_B when B·n_B ≥ out 「推导; mixed prompt types: weighted S_B, n_B and mean out 近似」.
+- **Use.** Caps the request TPOT p90/p99 (`tpot_cap`). The mean is untouched: it is never above the cap.
+- **Evidence.** Case E DES n4000 × 10: TPOT p90 is flat at 23.3–23.4 ms (sglang_mixed) and 22.9–23.0 (vllm) from λ = 18 to 19.76. The cap gives 24.0 / 22.9–23.1.
+- **Open.**
+  - Near-saturation TTFT is optimistic ×1.2–1.4. Slot-blocking time is only 2–3 %. The DES chunk iterations see a batch of 18 vs the analytic 13.2, i.e. the batch grows while prompts queue.
+  - Mean TPOT misses the birth-in-busy-period residual R: E[R] = L·E[BP] (DES 0.647 s vs 0.68 at λ = 15). It needs the slot cap and the queue–service correlation at high load.
