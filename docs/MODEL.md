@@ -6641,11 +6641,25 @@ Closes the 0.261 hot-die finding as a chip-design decision tool.
 | 25 °C | 64 (0.0507 J) | none | 64 | larger SLC always wins on both |
 | 85 °C | 0 (0.257 J) | 4 GiB | 32 (62.2 ms) | any SLC costs energy; still buys TPOT |
 
-The SLC decision is therefore an energy-vs-time trade that the temperature decides. Filling `idle_W` hides the leak (notes say so) and the cold-die ranking returns.
+The SLC decision is therefore an energy-vs-time trade that the temperature decides. Filling `idle_W` used to hide the leak (≤ 0.262); 0.263 charges SLC leakage as an increment on top of idle (§208.1).
 
 ### §207.2 granite-switch (ibm-granite, 10-14) — deferred
 `ibm-granite/granite-switch-4.1-8b` / `-30b` (`GraniteSwitchForCausalLM`): public `config.json` exposes a granite-like dense base (8b: 42 L, 4096 d, GQA 32/8, intermediate 12800, vocab 100355, tie_word_embeddings) plus `adapter_names` / `adapter_ranks` (guardian-core r16, decision r64) and ASR fields. Safetensors are published. Without a public description of how the control-token-switched LoRA adapters fold into the serve path (loaded always? swapped per token? counted in the checkpoint total?), an honest `param_check` against the release weight total is not possible from config alone. Left out of the catalog; revisit when the serve path is documented.
 
 ### §207.3 Freshness
 `freshness_sweep.py 2026-10-19` again: only the already-noted Hy-Memory GGUF repack. Inferact / stabilityai errored in the sweep (network); no new architecture releases in window.
+
+## §208 Idle-aware SLC leak; 25/85 °C one-click compare; load-aware pin (0.263)
+
+### §208.1 Incremental SLC leakage under a measured idle
+A measured `idle_W` / `idle_frac_tdp` is of a card that does not include a *speculative* SLC the designer is sizing. Shared SRAM leakage stays suppressed by idle (already in the measurement); **SLC MiB is always charged** when `uW_per_mib_sram_leak` is set 「假设」. Scope string: `state_sram + slc（共享 SRAM 泄漏已含于 idle；SLC 按增量计「假设」)`. Same rule in the PD ledger. The SLC energy insight's `leak_charged` is now true whenever the leak field is set, so a one-click hot-die compare works with a typical idle-filled energy panel.
+
+### §208.2 One-click 25 °C vs 85 °C compare
+`slc_energy_report(..., temps=(25, 85))` / API `temps: [25, 85]` / Insight button「25/85 °C 对比」: runs the GiB sweep at each die temperature and returns `summary` (opt_J / opt_time / crossover per T) plus `by_temp`. Example (qwen3-30b-a3b, B8, dip, no idle, grid to 32 GiB): 25 °C → opt J 32 GiB, no crossover; 85 °C → opt J 0 GiB, crossover at 4 GiB.
+
+### §208.3 Load-aware `pin`
+With `serving.moe_expert_load`, the pin / pin_bw SLC path now treats the pinned expert bytes as the most-read ones (A0 order, same `dip_exp_hit` helper as §206.4). `slc_frac_exp` = read-hit share; `slc_frac_exp_bytes` = retained byte share. Uniform load unchanged. Example: qwen3-30b-a3b, 16 GiB pin, Zipf-1 load 「假设」: TPOT 108.7 → 80.1 ms (read share 0.487 vs bytes 0.255).
+
+### §208.4 Freshness
+`freshness_sweep.py 2026-10-20` (74 orgs): nothing new.
 

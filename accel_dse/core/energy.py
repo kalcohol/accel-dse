@@ -454,8 +454,11 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                           if abs(table.idle_frac_tdp - pre[0]) <= 5e-3 * pre[0] else "用户填写"))
     if table.uW_per_mib_sram_leak is not None:      # 0.212: SRAM leakage (static), see the field note
         ch = r.scenario.chip
-        slc = getattr(ch, "slc_mib", 0.0) or 0.0     # 0.260: the SLC is on-die SRAM too (same macro class as pJ_bit_slc 「假设」)
-        mib = getattr(ch, "state_sram_mib", 0.0) + ((ch.sram_mib + slc) if iw is None else 0.0)
+        slc = getattr(ch, "slc_mib", 0.0) or 0.0     # 0.260: on-die SRAM (same macro class as pJ_bit_slc 「假设」)
+        # 0.263: SLC leakage is always charged when the field is set — a measured idle is of a card without this
+        # (speculative) SLC, or treats the SLC as a separate macro 「假设」. Shared sram still suppressed by idle.
+        mib = (getattr(ch, "state_sram_mib", 0.0) + slc
+               + (ch.sram_mib if iw is None else 0.0))
         if mib > 0:
             leak_W = mib * sram_leak_uW_per_mib(table) * 1e-6
             j["sram_leak"] = leak_W * per["idle_card_s"]
@@ -463,8 +466,11 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
             # 0.261: temperature used and the hot-die band (85 °C, same macro) next to the charged value
             out["sram_leak_temp_C"] = table.sram_temp_C if table.sram_temp_C is not None else SRAM_LEAK_T["t_ref_C"]
             out["sram_leak_W_card_85C"] = mib * table.uW_per_mib_sram_leak * SRAM_LEAK_T["ratio_hot"] * 1e-6
-            out["sram_leak_scope"] = (("state_sram + sram" + (" + slc" if slc > 0 else "")) if iw is None
-                                      else "state_sram（共享 SRAM / SLC 泄漏已含于 idle 数值）")
+            if iw is None:
+                out["sram_leak_scope"] = "state_sram + sram" + (" + slc" if slc > 0 else "")
+            else:
+                out["sram_leak_scope"] = ("state_sram + slc（共享 SRAM 泄漏已含于 idle；SLC 按增量计「假设」)"
+                                          if slc > 0 else "state_sram（共享 SRAM 泄漏已含于 idle 数值）")
     if iw is None and (table.mW_hbm_die_standby is not None or table.mW_hbm_Gb_refresh is not None):
         hs = hbm_static_W(r.scenario.mem_id, table)      # 0.216: HBM standby + refresh (static)
         if hs:

@@ -1962,14 +1962,30 @@ function trafficCell(t) {
     + (ep != null ? ` · prefill ×${num(ep)}` : '');   // 0.188
 }
 
-/* 0.262: J/token-optimal SLC size under energy.sram_temp_C */
-async function runInsightSlc() {
-  $('ins-slc-status').textContent = '计算中（逐 GiB × 每个模型）…';
+/* 0.262/0.263: J/token-optimal SLC size under energy.sram_temp_C; optional 25/85 °C compare */
+async function runInsightSlc(cmp) {
+  $('ins-slc-status').textContent = cmp ? '计算中（25 °C + 85 °C × 逐 GiB）…' : '计算中（逐 GiB × 每个模型）…';
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
-    const r = await track(req('insight_slc', '/api/insight_slc', body({
-      ...(ms.length ? { models: ms } : { models: [S.sc.model] }), policy: $('ins-slc-pol').value })));
+    const payload = { ...(ms.length ? { models: ms } : { models: [S.sc.model] }), policy: $('ins-slc-pol').value };
+    if (cmp) payload.temps = [25, 85];
+    const r = await track(req('insight_slc', '/api/insight_slc', body(payload)));
     if (!r) return;
+    if (r.compare) {
+      const notes = (r.notes || []).join('；');
+      $('ins-slc-summary').textContent = `策略 ${r.policy} · 漏电计入 ${r.leak_charged ? '是' : '否'} · 结温对比 ${r.temps.join('/')} °C`
+        + (notes ? ' · ' + notes : '');
+      put($('ins-slc-tbl'), h('thead', {}, h('tr', {},
+        ['结温 °C', '模型', 'J 最优 GiB', 'J/单位', '时间最优 GiB', 'J 交叉 GiB'].map((x) => h('th', {}, x)))),
+        h('tbody', {}, (r.summary || []).map((row) => row.error
+          ? h('tr', {}, h('td', {}, num(row.temp_C)), h('td', {}, row.model), h('td', { colspan: 4 }, row.error))
+          : h('tr', {}, h('td', {}, num(row.temp_C)), h('td', {}, row.model),
+              h('td', {}, String(row.opt_J_gib)), h('td', {}, sci(row.opt_J)),
+              h('td', {}, String(row.opt_time_gib)),
+              h('td', {}, row.crossover_gib != null ? String(row.crossover_gib) : '无')))));
+      $('ins-slc-status').textContent = `完成 · 对比 · ${r.domain} · ${r.chip}`;
+      return;
+    }
     const m0 = (r.models || []).find((x) => !x.error) || r.models[0];
     const notes = (r.notes || []).join('；');
     $('ins-slc-summary').textContent = (!m0 || m0.error) ? ('错误：' + ((m0 && m0.error) || '无结果'))
@@ -2479,7 +2495,8 @@ async function init() {
   $('ins-run').addEventListener('click', runInsight);
   $('ins-path-run').addEventListener('click', runInsightPath);
   $('ins-size-run').addEventListener('click', runInsightSizing);
-  $('ins-slc-run').addEventListener('click', runInsightSlc);
+  $('ins-slc-run').addEventListener('click', () => runInsightSlc(false));
+  $('ins-slc-cmp').addEventListener('click', () => runInsightSlc(true));
   for (const f of ['csv', 'json']) { $('ins-exp-' + f).addEventListener('click', () => doExport('ins', f)); $('ins-path-exp-' + f).addEventListener('click', () => doExport('ins-path', f)); }
   fillSweepPaths();
   renderModels();

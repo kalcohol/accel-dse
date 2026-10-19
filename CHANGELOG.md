@@ -6,6 +6,18 @@
 
 
 
+## [0.263.0]
+
+### Changed — idle-aware incremental SLC leakage; 25/85 °C one-click compare (MODEL §208.1–208.2)
+- With a measured idle, shared SRAM leak stays suppressed; **SLC MiB is always charged** (idle is assumed without this speculative SLC 「假设」). PD ledger matches. SLC energy insight now shows the hot-die crossover even when the energy panel has idle filled.
+- `slc_energy_report(temps=(25,85))` / API `temps` / Insight「25/85 °C 对比」: side-by-side opt J / time / crossover.
+
+### Changed — load-aware `pin` under a measured expert load (MODEL §208.3)
+- pin / pin_bw keep the most-read experts (A0, same helper as dip). Uniform unchanged. qwen3-30b-a3b 16 GiB pin, Zipf-1: 108.7 → 80.1 ms.
+
+### Freshness
+- Sweep since 10-20: nothing new.
+
 ## [0.262.0]
 
 ### Added — J/token-optimal SLC size under die temperature (MODEL §207.1)

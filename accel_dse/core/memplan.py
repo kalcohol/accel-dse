@@ -321,8 +321,14 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     s_exp = min(r_exp, free); free -= s_exp
     s_kv = min(r_kv, free)
     sres = (p_hot + p_exp + s_hot + s_exp) / strm if strm else 1.0
-    return replace(mp, slc=slc_bytes, slc_policy="pin_bw" if slc_policy == "pin_bw" else "pin", slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv,
-                   slc_residency=sres)
+    # 0.263: load-aware pin — with a measured expert load, the pinned expert bytes are the most-read ones (A0),
+    # so the share of expert *reads* served exceeds the byte share (uniform: equal). Same helper as dip.
+    fe = (s_exp / r_exp) if r_exp > 0 else 1.0
+    e = r_exp if exp_read is None else min(r_exp, exp_read * (r_exp / store.expert_w if store.expert_w else 0.0))
+    he = dip_exp_hit(exp_p, e / r_exp, fe) if (exp_p and r_exp > 0 and e > 0 and s_exp > 0) else fe
+    return replace(mp, slc=slc_bytes, slc_policy="pin_bw" if slc_policy == "pin_bw" else "pin",
+                   slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv, slc_residency=sres,
+                   slc_frac_exp=he, slc_frac_exp_bytes=fe)
 
 
 DIP_EPS = 1 / 32     # 0.258: BIP bimodal throttle ε (Qureshi et al. ISCA 2007, "ε = 1/32 for all experiments")
@@ -531,7 +537,13 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: flo
                "act": act * f} if f > 0 or fe > 0 else {}
     else:
         f_hot = 0.0 if store.hot_w <= 0 else mp.slc_hot / store.hot_w
-        f_exp = 0.0 if store.expert_w <= 0 else mp.slc_expert / store.expert_w
+        f_exp_bytes = 0.0 if store.expert_w <= 0 else mp.slc_expert / store.expert_w
+        # 0.263: load-aware pin — read-hit share may exceed the byte share (slc_frac_exp)
+        f_exp = mp.slc_frac_exp if (mp.slc_frac_exp > 0 or mp.slc_frac_exp_bytes > 0) else f_exp_bytes
+        if mp.slc_frac_exp_bytes > 0:
+            f_exp = mp.slc_frac_exp
+        else:
+            f_exp = f_exp_bytes
         r_kv = kvst_total - mp.kv_sram
         f_kv = 0.0 if r_kv <= 0 else min(1.0, mp.slc_kv / r_kv)
         w_hit = t["hot"] * f_hot + t["exp"] * f_exp

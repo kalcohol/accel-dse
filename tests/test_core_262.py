@@ -39,11 +39,14 @@ def test_hot_die_crossover_and_time_trade():
     assert c4["J_tok"] > m["J0"] and c4["leak_W"] > 1.0
 
 
-def test_idle_suppresses_leak_charge():
-    r = slc_energy_report(_base(), _t(idle_W=20.0, sram_temp_C=85), [M], gibs=(0, 32))
-    assert not r["leak_charged"] and any("idle" in n for n in r["notes"])
+def test_idle_still_charges_slc_leak():
+    r = slc_energy_report(_base(), _t(idle_W=20.0, sram_temp_C=85), [M], gibs=(0, 1, 32))
+    assert r["leak_charged"] and any("idle" in n or "增量" in n for n in r["notes"])
     m = r["models"][0]
-    assert m["opt_J_gib"] == 32.0 and m["crossover_gib"] is None         # DRAM saving wins when leak is not charged
+    assert m["crossover_gib"] == 1.0
+    c0 = next(c for c in m["curve"] if c["gib"] == 0)
+    c1 = next(c for c in m["curve"] if c["gib"] == 1)
+    assert c1["J_tok"] > c0["J_tok"] and (c1.get("leak_W") or 0) > 0
 
 
 def test_api_and_route():

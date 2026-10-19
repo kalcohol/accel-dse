@@ -973,7 +973,7 @@ SLC_GIB_GRID = (0, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64)     # capacity probe poin
 
 
 def slc_energy_report(base: Scenario, table: EnergyTable | None = None, models=None, *,
-                      policy: str = "dip", gibs=None) -> dict:
+                      policy: str = "dip", gibs=None, temps=None) -> dict:
     """Sweep SLC capacity and pick the size that minimises energy per unit at the table's die temperature.
 
     Closes the 0.261 hot-die finding: at a high ``energy.sram_temp_C`` a GiB-scale SRAM SLC can cost more J/token than
@@ -981,8 +981,9 @@ def slc_energy_report(base: Scenario, table: EnergyTable | None = None, models=N
     J-optimal capacity (and the time-optimal one), so the SLC decision is an energy-vs-time trade under a temperature.
 
     Mechanism: for each GiB in ``gibs`` (default ``SLC_GIB_GRID``), set ``chip.slc_mib`` / ``slc_policy`` and evaluate
-    via ``_point``.  Leakage is charged only when the table has ``uW_per_mib_sram_leak`` and no measured idle — the
-    same scope as §205.4 / §206.1.  Needs an energy table with the SRAM-leak field (or a full preset)."""
+    via ``_point``.  Leakage uses §205.4 / §206.1 / §208.1: with ``uW_per_mib_sram_leak``, SLC MiB is always charged
+    (even when idle is set — idle is assumed without this speculative SLC); shared SRAM still suppressed by idle.
+    ``temps`` (e.g. (25, 85)) runs the sweep at each die temperature and returns a side-by-side compare."""
     from .energy import idle_W_of, sram_leak_uW_per_mib
     from .hardware import SLC_POLICIES
     table = table or EnergyTable()
@@ -1003,10 +1004,33 @@ def slc_energy_report(base: Scenario, table: EnergyTable | None = None, models=N
     if leak_uW is None:
         notes.append("无 uW_per_mib_sram_leak：曲线只有 DRAM 流量变化，漏电不计入（填能耗预设 tpuv4i_7nm 可打开）")
     elif idle is not None:
-        notes.append("已填 idle_W / idle_frac_tdp：共享 SRAM/SLC 漏电视为已含于 idle，曲线只反映 DRAM 流量（去 idle 才见热模交叉）")
+        notes.append("已填 idle_W / idle_frac_tdp：共享 SRAM 漏电视为已含于 idle；SLC 仍按增量计漏电（0.263，idle 不含该 SLC）")
     t_C = table.sram_temp_C if table.sram_temp_C is not None else 25.0
-    if leak_uW is not None and idle is None and t_C <= 25.0 + 1e-9:
-        notes.append("sram_temp_C 未填或 = 25 °C（下界）；热模交叉请设 55–105")
+    if leak_uW is not None and t_C <= 25.0 + 1e-9 and not temps:
+        notes.append("sram_temp_C 未填或 = 25 °C（下界）；热模对比请点 25/85 °C 或设 sram_temp_C")
+    if temps is not None:
+        if not isinstance(temps, (list, tuple)) or not 2 <= len(temps) <= 4:
+            raise ValueError("temps: 2..4 die temperatures in C")
+        for t in temps:
+            if not isinstance(t, (int, float)) or not 0 <= float(t) <= 125:
+                raise ValueError("temps: each entry in [0, 125] C")
+        by, rows = {}, []
+        for t in temps:
+            sub = slc_energy_report(base, replace(table, sram_temp_C=float(t)), models,
+                                    policy=policy, gibs=gibs, temps=None)
+            by[str(float(t))] = sub
+            for m in sub["models"]:
+                if m.get("error"):
+                    rows.append({"temp_C": float(t), "model": m["model"], "error": m["error"]})
+                else:
+                    rows.append({"temp_C": float(t), "model": m["model"], "opt_J_gib": m["opt_J_gib"],
+                                 "opt_J": m["opt_J"], "opt_time_gib": m["opt_time_gib"], "opt_time": m["opt_time"],
+                                 "crossover_gib": m["crossover_gib"], "J0": m["J0"]})
+        return {"compare": True, "temps": [float(t) for t in temps], "by_temp": by, "summary": rows,
+                "policy": policy, "gibs": list(grid), "chip": base.chip.name, "mem_id": base.mem_id,
+                "layout": base.layout.label, "leak_charged": leak_uW is not None,
+                "notes": notes + ["multi-T compare: one curve per T, see summary"],
+                "domain": domain, "basis": "slc_energy_report x each T in temps (0.263)"}
     per_model = []
     for mid in models:
         try:
@@ -1053,7 +1077,7 @@ def slc_energy_report(base: Scenario, table: EnergyTable | None = None, models=N
                           "opt_time": best_t.get(time_key) if best_t else None,
                           "crossover_gib": cross, "time_metric": time_key})
     return {"domain": domain, "models": per_model, "policy": policy, "gibs": list(grid),
-            "sram_temp_C": t_C, "leak_charged": leak_uW is not None and idle is None,
+            "sram_temp_C": t_C, "leak_charged": leak_uW is not None,
             "chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label, "notes": notes,
             "basis": "逐 GiB 探针 × evaluate + energy_report；J 最优 = argmin J/单位；时间最优 = argmin TPOT/延迟；"
-                     "交叉点 = 最小正容量使 J > 无 SLC。漏电仅在无实测 idle 且表含 uW_per_mib_sram_leak 时计入（§205.4）。"}
+                     "交叉点 = 最小正容量使 J > 无 SLC。SLC 漏电在有 uW_per_mib_sram_leak 时始终计入（0.263；idle 不含该 SLC）。"}

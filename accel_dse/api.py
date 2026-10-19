@@ -146,7 +146,7 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap"}, "f
                "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": {"power_cap_W"},
                "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
                "insight_sizing": {"models", "resources", "joint", "unpriced", "energy_tie"},
-               "insight_slc": {"models", "policy", "gibs"}}
+               "insight_slc": {"models", "policy", "gibs", "temps"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1331,12 +1331,16 @@ def api_insight_slc(body: dict) -> dict:
     gibs = body.get("gibs")
     if gibs is not None and (not isinstance(gibs, list) or not all(isinstance(x, (int, float)) for x in gibs)):
         raise ApiError("gibs must be a list of numbers")
+    temps = body.get("temps")
+    if temps is not None and (not isinstance(temps, list) or not all(isinstance(x, (int, float)) for x in temps)):
+        raise ApiError("temps must be a list of numbers")
     pol = body.get("policy", "dip")
     if not isinstance(pol, str):
         raise ApiError("policy must be a string")
     try:
         return {**slc_energy_report(scn, _energy_table(body), models, policy=pol,
-                                    gibs=tuple(gibs) if gibs is not None else None), "hash": scn.hash()}
+                                    gibs=tuple(gibs) if gibs is not None else None,
+                                    temps=tuple(temps) if temps is not None else None), "hash": scn.hash()}
     except ValueError as e:
         raise ApiError(str(e)) from None
 

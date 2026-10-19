@@ -89,7 +89,10 @@ def test_slc_leakage_charged():
         assert abs(e["sram_leak_W_card"] - e0["sram_leak_W_card"] - gib * 1024 * T.uW_per_mib_sram_leak * 1e-6) < 1e-9
         assert e["sram_leak_scope"].endswith("+ slc")
     ti = EnergyTable(**apply_energy_preset({"energy_preset": "tpuv4i_7nm", "idle_W": 20.0}))
-    assert "sram_leak_W_card" not in energy_report(_moe("dip", 8), ti)            # measured idle already holds it
+    # 0.263: shared SRAM suppressed by idle; SLC still charged as an increment
+    ei = energy_report(_moe("dip", 8), ti)
+    assert abs(ei["sram_leak_W_card"] - 8 * 1024 * ti.uW_per_mib_sram_leak * 1e-6) < 1e-9
+    assert "增量" in ei["sram_leak_scope"] or "slc" in ei["sram_leak_scope"]
 
 
 def test_leakage_scales_with_v_under_dvfs():
