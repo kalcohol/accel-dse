@@ -287,6 +287,9 @@ class Ffn:
     n_shared: int = 0
     d_shared: int = 0
     latent: int = 0              # latent MoE: experts operate in this width (Kimi-K3)
+    # 0.255 group-limited routing (DeepSeek-V3 MoEGate / vLLM grouped_topk / Beam / Bailing): (n_group, topk_group) —
+    # a token's top-k experts come from topk_group of n_group contiguous expert groups; () = unrestricted
+    groups: tuple[int, ...] = ()
 
     @property
     def mats(self) -> int:
@@ -1328,9 +1331,10 @@ def _build_muse_spark(c: dict) -> tuple[list[Layer], list[Layer], list[str], str
     notes = [f"Muse Spark Open：{L} 层全 MoE（{E} 专家 top-{k}，latent {h}→{lat}，专家 {lat}×{de}，无共享专家）；"
              f"注意力 GQA {H}/{KV}×{hd} + 输出门；{L - nf} 层 SWA（窗口 {win}）+ {nf} 层全注意力（NoPE）；"
              "三明治 norm、门控残差、logit soft-cap 计入向量开销",
-             "部分覆盖：视觉塔（NaViT，32×32 块窗口 + 13 全注意力层）与音频编码器（24 kHz，1920 样本 / token）已计前向；"
-             "图像缩放规则与视频处理器未公开（假设 / 未建模）"]
-    return layers, [], notes, "partial"
+             "视觉塔（NaViT，32×32 块窗口 + 13 全注意力层）与音频编码器（24 kHz，1920 样本 / token）已计前向；"
+             "图像 / 视频缩放按 transformers MuseGlimmerImageProcessor / MuseGlimmerVideoProcessor smart_resize"
+             "（0.255，「来源」）"]
+    return layers, [], notes, "full"
 
 
 def _attach_muse_dspark(spec: ModelSpec, d: dict) -> ModelSpec:
@@ -1754,6 +1758,18 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     return tuple(r)
 
 
+def _moe_groups(c: dict) -> tuple[int, ...]:
+    """0.255: (n_group, topk_group) when the router is group-limited — transformers DeepseekV3TopkRouter /
+    BeamTopKRouter, vLLM grouped_topk (bailing_moe use_grouped_topk = both set) 「来源」: group scores = sum of the top-2
+    (bias-corrected) expert scores per group, keep topk_group groups, then top-k over their experts.  n_group ≤ 1 or
+    topk_group ≥ n_group is unrestricted → ()."""
+    G, g = c.get("n_group"), c.get("topk_group")
+    E = _g(c, "n_routed_experts", "num_experts", "num_local_experts", default=0) or 0
+    if not G or not g or G <= 1 or g >= G or not E or E % G:
+        return ()
+    return (int(G), int(g))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -1763,6 +1779,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
     c = _tc(cfg)
     build, arch = _builder(c)
     layers, mtp, notes, cov = build(c)
+    gl = _moe_groups(c)
+    if gl:
+        layers = [replace(L, ffn=replace(L.ffn, groups=gl)) if L.ffn.kind == "moe" else L for L in layers]
+        mtp = [replace(L, ffn=replace(L.ffn, groups=gl)) if L.ffn.kind == "moe" else L for L in mtp]
+        notes = list(notes) + [f"分组限制路由：每个 token 只从 {gl[0]} 组中的 {gl[1]} 组选专家（n_group / topk_group）——"
+                               "EP 各 rank 负载方差与节点去重 all-to-all 的扇出按此计「推导」"]
     h = c["hidden_size"]
     tie = bool(c.get("tie_word_embeddings", cfg.get("tie_word_embeddings", False)))
     spec = ModelSpec(

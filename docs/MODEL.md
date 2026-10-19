@@ -6245,3 +6245,172 @@ The draft is exact at 4,384,162,432 params. The §200.4 deferral rested on a wro
   - On chips without a native NVFP4 MAC (the default 100T), (nvfp4, nvfp4) runs as bf16 like the old (nvfp4, bf16) dequant, so the numbers are unchanged. On Blackwell-class rates the expert GEMMs run at the NVFP4 rate.
   - "W4A16_NVFP4" (Dory) stays weight-only.
 
+
+## §202 Group-limited MoE routing; Muse / Step-5 image processors; FLUX 3 mode-stream reuse; "no public code" audit (0.255)
+
+### §202.1 Group-limited routing (n_group / topk_group)
+
+**Sources 「来源」.**
+- transformers `DeepseekV3TopkRouter` and `BeamTopKRouter` (models/beam/modular_beam.py), and vLLM `grouped_topk`. `bailing_moe.py` sets `use_grouped_topk` when both fields are set.
+- How the router works:
+  - Each group is scored by the sum of its top-2 (bias-corrected) sigmoid scores.
+  - It keeps `topk_group` of the `n_group` groups.
+  - It masks the other groups, then takes top-k over the remaining experts.
+- Groups are contiguous expert ranges. EP placement is contiguous as well (vLLM / SGLang default).
+
+**Applies to.**
+- `model._moe_groups(c)` returns (G, g) when 1 < g < G and E % G = 0. That gives 8 / 4 for:
+  - DeepSeek-V3 / R1 / V3.1 / V3.2;
+  - Ling-3.1-flash and Ling-3.0-flash-VL;
+  - Beam-1.0.
+- Kimi-K2.5 and the GLM-5 family use 1 / 1, which is unrestricted.
+- The value is stored on `Ffn.groups` for both the layers and the MTP layers.
+
+**Model 「推导」** (symmetric-routing 「假设」, as in `moe_routing`):
+- A token picks g of G groups uniformly, then k distinct experts uniformly among the g·S experts (S = E/G).
+- **Marginals.** Each expert is hit with probability (g/G)·k/(gS) = k/E, so mean hits and mean pairs are unchanged.
+- **Pairs on a rank** (per token, i.i.d. over tokens):
+  - When ep ≥ G (G | ep), a rank holds n_r = E/ep experts of one group, and X = 1[group chosen]·Hyp(gS, n_r, k).
+  - When ep < G (ep | G), a rank holds a = G/ep groups. J ~ Hyp(G, a, g) of them are chosen, and X | J ~ Hyp(gS, J·S, k).
+  - Var(pairs) = T·Var X.
+- **Distinct experts D.** Var D = N·e1(1 − e1) + Σ_pairs (e2 − e1²).
+  - Single expert: e1 = (1 − p + p·x)^T, with p = g/G and x = 1 − k/(gS).
+  - Same-group pair: e2 = (1 − p + p·y)^T, with y = (gS − k)(gS − k − 1)/(gS(gS − 1)).
+  - Cross-group pair: e2 = (P0 + P1·x + P2·y)^T, where P0 / P1 / P2 are the probabilities that neither / one / both groups are chosen.
+- If the groups do not tile the ranks, the ungrouped rule is used.
+- `_rank_max` feeds these moments into its normal-max rule. That rule is unchanged; only the moments change.
+
+**Check (Monte-Carlo, 4000 runs, 256 / 8 / 4, T = 16).**
+
+| ep | E D, sd D (model / MC) | E pairs, sd pairs (model / MC) | expected max D, pairs (model / MC / ungrouped model) |
+|---|---|---|---|
+| 8 | 12.75, 3.50 / 12.71, 3.47 | 16, 5.23 / 15.9, 5.21 | 17.77, 23.50 / 17.99, 24.4 / 16.72, 21.29 |
+| 4 | 25.49, 4.64 / 25.52, 4.63 | 32, 6.85 / 32.1, 6.88 | 30.36, 39.18 / 30.86, 40.22 / 29.60, 37.07 |
+| 16 | 6.37, 2.22 / 6.39, 2.19 | 8, 3.26 / 8.0, 3.23 | 10.31, 13.76 / 10.41, 14.46 / 9.84, 12.78 |
+
+- The moments are exact.
+- The normal-max rule under-reads the true maximum by 1–5 %. That is the existing 「假设」, not tuned.
+
+**Node-deduplicated all-to-all.**
+- `node_dedup_factor(E, k, N, groups)` gives the expected destination nodes per token divided by k.
+  - When N | G, a node holds G/N groups: the nodes touched are those holding a chosen group that receives ≥ 1 expert.
+  - When G | N, a group spans N/G nodes, and the per-node hit probability applies only within the chosen groups.
+- 256 / 8 / 4: at N = 8, 0.662 → 0.454 (MC 0.455); at N = 4, 0.452 → 0.366 (MC 0.367).
+- This is the DeepSeek-V3 report §2.1.2 mechanism ("node-limited routing" bounds network fan-out), now expressed through the group limit.
+
+**Effects** (default chip, decode batch 64, TP 8, EP 8, `moe_rank_max` expected = default):
+- Ling-3.1-flash TPOT: 313.59 → 319.19 ms.
+- DeepSeek-V3 (527.66 ms) and Beam (645.97 ms) are unchanged: their expert phase is not the binding term at this point.
+- Prefill changes by ≤ 0.03 %.
+
+### §202.2 Image / video processors that are now public
+
+**Muse Spark Open.**
+- **Sources.** transformers main `models/muse_glimmer/image_processing_muse_glimmer.py` and `video_processing_muse_glimmer.py`.
+  - `auto/image_processing_auto.py` maps muse_spark → MuseGlimmerImageProcessor; `video_processing_auto` maps it → MuseGlimmerVideoProcessor.
+  - `processing_muse_spark.py` gives the token layout.
+  - The repo `processor_config.json` was read from the public amd/…-Quark-MXFP4 mirror, because the meta-models repo is gated. Values:
+    - image: `max_image_tokens` 4096, patch 14, merge 2;
+    - video: `max_video_frame_tokens` 256, `num_frames` 600, fps 2, temporal patch 2.
+- **Resize (`smart_resize`, verbatim → `vision._muse_resize`).**
+  - Ideal grid = (h/28, w/28). If it exceeds the cap, it is scaled to the cap at the same aspect.
+  - Candidates are the floor / ceil combinations ≥ 1 that fit under the cap. The one closest to h/w in aspect is chosen.
+  - There is no lower bound and no rounding to the nearest multiple.
+  - Upstream `min` over a set breaks ties in set order; here ties break ascending. Ties are rare.
+- **Image tokens.** `<|image_start|>` + merged `<|patch|>` + `<|image_end|>`.
+- **Video (`vision._muse_video`).**
+  - `sample_frames`: n = max(2, ⌊min(F, 600)/2⌋·2).
+  - Per-frame grid with a cap of 256.
+  - `grid_t` = n/2. The tower attends per temporal slice (`get_vision_cu_seqlens`, `merge_temporal` False).
+  - LLM tokens = t·merged + `<|vid_start|>` + (t − 1) separators + `<|vid_end|>`. The "Time: x.xxs" text is not counted (same as Qwen video).
+- **Coverage.** The builder now returns `full`. The six Muse entries are no longer vision-partial.
+
+**Step-5-Preview crops.**
+- **Search.** Directory-wide over vLLM, SGLang and transformers main. There is no step5 processor or model. vLLM has `step3_vl` / `step_vl` / `step3p5` / `step3p7`.
+- **Closest source.** transformers `models/step3p7` (Step-3.7-Flash). Its config `vision_config` is identical to Step-5's: perception_encoder, 47 × 1536, 16 heads, 728 / 14, quick_gelu, ls 0.1. It also has the same `image_token_len` 169, `patch_token_len` 81 and `image_token_id` 128001.
+- **Link to Step-5.** Step-5's `inference/validate_vision.py` loads its reference encoder through a `configuration_step3p7` module. Its README orders tokens crops-first, then the overview, exactly as `Step3p7Processor.replace_image_token` does.
+- **Plan (`vision.step_crops`, verbatim from `_plan_patches`).**
+  - Normalise:
+    - Extreme aspect (min side < 32 and ratio > 4) is padded to a square.
+    - A long side over 3024 is scaled down.
+  - Choose the window:
+    - long side ≤ 728: the short side if the ratio is > 1.5, otherwise no crops;
+    - ratio > 4: min(short side, 504);
+    - otherwise: 504.
+  - Snap each side to a window multiple, rounding up when the remainder is > 20 %.
+- **Tokens.**
+  - Per crop: `<patch_start>` + 81 + `<patch_end>`.
+  - `<patch_newline>` after each crop row except the last.
+  - Then `<im_start>` + 169 + `<im_end>`.
+- **Tower.** `ImageGrid.views` = ((52, 52, 1), (36, 36, n)).
+- **Examples.**
+  - 1024×768 → 2×2 crops, 504 tokens (was 169).
+  - 1920×1080 → 4×2 crops, 836 tokens.
+  - 4000×3000 → 6×5 crops, 2665 tokens.
+- **Coverage.** Step-5 stays `partial`. The algorithm is sourced, but applying it to Step-5 is a 「假设」.
+
+### §202.3 FLUX 3 Base static mode-stream reuse
+
+**Sources 「来源」.** SGLang `multimodal_gen/runtime/models/dits/flux3_image.py`:
+- `Packed.static: StaticStreams` holds an "eager-only reuse of invariant text/reference computation".
+- `_forward_packed` computes `vec`, early modulations, single modulations and embeddings only for the modes not in `static.hidden`.
+- `_packed_blocks` skips the cached modes' mode blocks. After step 1 it stores `x[TEXT]`, `x["image_cond"]` and their single-stream modulation tuples.
+- The single (joint) blocks run every step on all rows.
+
+**When SGLang enables it.** `stages/model_specific_stages/flux3_image.py` sets `packed.static` only when all of these hold:
+- not the flow map;
+- no breakable CUDA graph, no torch.compile, no attention-backend autotune;
+- no layer-wise offload;
+- no CFG-parallel and no sequential CFG;
+- no skip-softmax;
+- `can_reuse_mode_blocks()`, which requires Ulysses SP world 1 and an FA / SDPA backend.
+
+**Why it is exact on Base 「推导」.** Text and references run at timestep 0 and attend only within their own mode. On the flow map, the target-time embedding is added to every mode, so they change each step.
+
+**IR.**
+- `Phase.mreuse` applies on reused steps:
+  - `txt` / `ref` rows → 0, for io (txt_in, ref embed, their early / single modulations) and for the mode-block GEMMs;
+  - the per-token time MLP covers image rows only;
+  - mode attention covers the image group only, with QK-norm / RoPE on image rows;
+  - mode-layer vector ops cover image rows.
+- `evaluate`:
+  - With `workload.mode_cache = on`, step 1 is a full forward and steps 2…n are `mreuse` forwards, the same two-tick structure as `prefix_kv`.
+  - Resident cache = 4 · (text + ref rows) · hidden · act bytes per sequence on the DP rank. SGLang holds tensor references, so there is no copy op.
+  - Result field `mode_cache` = {rows, cache_GiB_card, first_ms / reused_ms, extract / cached TFLOP per sequence, fits}.
+- Distilled, SP > 1, PP > 1 or steps < 2 → ignored with a warning.
+- The default is `off`, matching the BFL / diffusers reference (no reuse). The knob is an engine choice, not a default change.
+
+**Numbers** (default chip, 1024², Base 50 steps, CFG 2):
+
+| references | TFLOP / step-seq off → on | latency off → on |
+|---|---|---|
+| 0 | 44.30 → 43.81 | 47.23 → 47.10 s |
+| 1 | 97.26 → 90.17 | 103.27 → 96.50 s |
+| 3 | 244.01 → 217.53 | 265.44 → 238.12 s |
+
+Per reused step, 5 of 33 blocks drop the text and reference rows. The single blocks keep everything.
+
+### §202.4 Audit of "no public code" deferrals (vLLM / SGLang / transformers / diffusers main, full git trees)
+
+**Method.**
+- Fetched the full recursive git trees.
+- Matched paths against muse|glimmer|step|flux3|dory|loop|recurren, across every directory, including `vllm/models/<arch>/`.
+- Read the matching files.
+
+| deferred item | where | result |
+|---|---|---|
+| Muse image resize (「假设」 since 0.174) | transformers muse_glimmer image processor | implemented (§202.2) |
+| Muse video processor | transformers MuseGlimmerVideoProcessor (+ vLLM `transformers_utils/processors/muse_glimmer.py`) | implemented (§202.2) |
+| Step-5 crop algorithm (0.153) | transformers step3p7 (sibling model) | implemented, applicability 「假设」 (§202.2) |
+| FLUX 3 reference mode-output cache (0.252) | SGLang flux3_image DiT StaticStreams | implemented as an opt-in engine knob (§202.3) |
+| Dory TP > 1 (0.253) | vLLM PR #60149 (open, head 5507695, updated 2026-10-19) `dory.py:294` still raises for TP ≠ 1; no dory in vLLM / SGLang / transformers main | still deferred |
+| FLUX 3 "no public modeling code" (§198, 0.251) | superseded since 0.252 (BFL reference + diffusers `transformer_flux3.py`); SGLang also has `flux3_image.py` now | historical note only |
+| MAI-Base GGUF hyperparameters, hardware figures | not code | n/a |
+
+**Not changed.** SGLang skips an empty content mode (image_cond in text-to-image) entirely. The model already ignored that mode's one phantom row, which matches.
+
+### §202.5 Freshness
+
+- 75 vendor orgs plus the HF trending list, created on or after 2026-10-17.
+- Only DeepSeek-V4.1-Flash-1017 (already an alias since 0.248) and third-party repacks / fine-tunes were found: unsloth, dealignai, LibertAIDAI, lodestones Kromoss, orcarouter OrcaCyber-Nano.
+- Noted for a later sweep: OpenMOSS-Team/MOSS-Image-Base / -SFT (diffusers, 2026-10-11, new DiT). It predates this window, and its org was missing from earlier sweeps.

@@ -148,6 +148,9 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--prefix-kv", dest="prefix_kv", choices=("auto", "on", "off"), default=None,
                    help="image/video gen: reuse the text-prefix K/V across denoise steps (auto = as the model declares; "
                         "Qwen-Image-2.1 causal_condition)")
+    p.add_argument("--mode-cache", dest="mode_cache", choices=("on", "off"), default=None,
+                   help="FLUX 3 Base: reuse the text / reference mode-stream outputs across denoise steps (SGLang "
+                        "StaticStreams; off = reference)")
     p.add_argument("--vae-tiling", action="store_true",
                    help="video: diffusers enable_tiling() decode (CogVideoX / Mochi / Wan / LTX; HunyuanVideo and "
                         "MiniMax-H3 always tile)")
@@ -459,6 +462,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         wl["tri_chunk"] = a.tri_chunk
     if getattr(a, "prefix_kv", None):
         wl["prefix_kv"] = a.prefix_kv
+    if getattr(a, "mode_cache", None):
+        wl["mode_cache"] = a.mode_cache
     if getattr(a, "step_skip", None) is not None:
         wl["step_skip"] = a.step_skip
     if getattr(a, "step_cache", None):

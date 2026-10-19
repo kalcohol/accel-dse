@@ -6,6 +6,64 @@
 
 
 
+## [0.255.0]
+
+### Added — group-limited MoE routing load model (MODEL §202.1)
+- **Source 「来源」.** transformers `DeepseekV3TopkRouter` / `BeamTopKRouter` and vLLM `grouped_topk` (`bailing_moe.py` `use_grouped_topk`). Each group is scored by the sum of its top-2 (bias-corrected) expert scores. The router keeps `topk_group` of the `n_group` groups, then takes top-k over the experts of those groups.
+- **Which models.** `Ffn.groups = (n_group, topk_group)` is set from config when 1 < topk_group < n_group and E % n_group = 0. That covers DeepSeek-V3 / R1 / V3.1 / V3.2, Ling-3.1-flash, Ling-3.0-flash-VL and Beam-1.0, all at 8 / 4. Kimi and GLM use 1 / 1, so they are unrestricted and unchanged.
+- **Mechanism 「推导」** (under the existing symmetric-routing 「假设」):
+  - Each token picks g of the G contiguous groups uniformly, then k experts among their g·S experts. Expert marginals stay k/E, so mean hits and mean pairs are unchanged.
+  - The per-rank spread is now exact for both EP layouts (ep ≥ G: a rank sits inside one group; ep < G: a rank holds G/ep groups). Distinct experts use within-group and cross-group pair terms; pairs are hypergeometric mixtures.
+  - Monte-Carlo agreement for 256 / 8 / 4, T = 16, ep = 4 / 8 / 16: means within 0.5 % and sd within 1.5 %.
+- **Default change (mechanism-justified).** The `serving.moe_rank_max = expected` per-rank maximum (default on) uses the grouped spread.
+  - At 256 / 8 / 4, T = 16, EP 8, the expected max distinct experts per rank goes from 16.72 to 17.77 and the max pairs from 21.29 to 23.50. A Monte-Carlo run gives 17.99 / 24.4.
+  - Ling-3.1-flash decode (batch 64, TP 8, EP 8, default chip): TPOT 313.59 → 319.19 ms.
+  - DeepSeek-V3 and Beam decode are unchanged. Prefill moves by ≤ 0.03 %.
+- **Node-deduplicated all-to-all.** `node_dedup_factor` accounts for groups: it is fewer destination nodes per token, as in the DeepSeek-V3 report §2.1.2 node-limited routing.
+  - 256 / 8 / 4: 0.662 → 0.454 at 8 nodes, 0.452 → 0.366 at 4 nodes. Monte-Carlo gives 0.455 / 0.367.
+
+### Added — FLUX 3 Base static mode-stream reuse (`workload.mode_cache`, MODEL §202.3)
+- **Source 「来源」.** SGLang `multimodal_gen/runtime/models/dits/flux3_image.py` (`StaticStreams`, `_packed_blocks`) and `stages/model_specific_stages/flux3_image.py`.
+  - Step 1 keeps the text and reference (image_cond) mode-block outputs and their single-stream (shift, scale, gate) modulations.
+  - Steps 2…n run only the image mode block. `txt_in`, the reference embedder and the text / reference modulations are skipped.
+- **When it applies.** SGLang enables it only when all of these hold: Base (no flow map), Ulysses SP 1, no CFG-parallel or sequential CFG, no compile / CUDA graph / layer-wise offload.
+- **Knob.** `workload.mode_cache = on` (CLI `--mode-cache`). The default stays `off` = the BFL / diffusers reference, which recomputes every step. With `on`, the model ignores it with a warning on the distilled model, for SP > 1 and for PP > 1.
+- **Cache.** 4 · (text + reference rows) · hidden per sequence.
+- **Numbers** (Base, 1 reference, default chip): 97.26 → 90.17 TFLOP per reused step-sequence; latency 103.27 → 96.50 s.
+- This closes the 0.252 deferred "reference mode-output cache".
+
+### Changed — Muse Spark Open image / video resize now sourced (MODEL §202.2)
+- **Source.** transformers main `models/muse_glimmer/image_processing_muse_glimmer.py` and `video_processing_muse_glimmer.py`. The auto map sends `muse_spark` to `MuseGlimmerImageProcessor` / `MuseGlimmerVideoProcessor`. The repo `processor_config.json` (amd Quark mirrors) gives image `max_image_tokens` 4096 and video `max_video_frame_tokens` 256, `num_frames` 600, fps 2.
+- **Image resize.** `smart_resize`, verbatim: the integer 28-px grid closest in aspect among the floor / ceil of the ideal grid, under the token cap, with no rounding to the nearest multiple and no minimum.
+  - LLM tokens = merged + `<|image_start|>` / `<|image_end|>`.
+  - 1024² → 1008² px, 1298 tokens. Until 0.254 the assumed Qwen-style rounding gave 1036² px, 1369 tokens. At 1920×1080 both give 2691 merged tokens, plus 2 now.
+- **New video path.** Frames are capped at 600 and rounded down to a multiple of 2. Each frame is resized to ≤ 256 merged tokens, and attention runs per temporal slice. Tokens = t·merged + t + 1.
+- **Coverage.** The six Muse Spark entries go from `partial` to `full`.
+
+### Changed — Step-5-Preview crops (MODEL §202.2)
+- **Source.** No Step-5 processor exists in vLLM / SGLang / transformers.
+  - transformers `step3p7` `Step3p7ImageProcessor._plan_patches` belongs to StepFun Step-3.7-Flash, which has an identical `vision_config` (PE 47 × 1536, 728 / 14), the same 169 / 81 token lengths and the same `image_token_id`.
+  - Step-5's own `inference/validate_vision.py` loads its reference encoder through `configuration_step3p7`.
+- **What is modelled.** That 728² overview + 504² sliding-window crop plan (max side 3024, 20 % snap-up), with per-crop `<patch_start>` / `<patch_end>`, row newlines, then `<im_start>` 169 `<im_end>`.
+  - 1024×768 → 504 tokens (was 169, overview only).
+- **Coverage.** Applying it to Step-5 is the remaining 「假设」, so Step-5 stays `partial` with that reason.
+
+### Audit — "no public code" deferrals (directory-wide search of vLLM / SGLang / transformers / diffusers main, MODEL §202.4)
+- Resolved: Muse resize / video, FLUX 3 reference reuse, Step-5 crops (as above).
+- Still deferred: Dory TP > 1. vLLM PR #60149 (`models/dory.py`, open, updated 2026-10-19) still raises for TP ≠ 1, and Dory is in none of the three main trees.
+
+### Freshness check
+- HF orgs (75) plus trending, created on or after 2026-10-17: only DeepSeek-V4.1-Flash-1017 (already an alias since 0.248) and third-party repacks / fine-tunes. No additions.
+- Noted for a later sweep: OpenMOSS-Team MOSS-Image (10-11) is outside this window, and its org is not in the list.
+
+### Tests
+- New `test_core_255`.
+- Re-pins:
+  - 144 (Step-5 1024×768 tokens 169 → 504);
+  - 153 (Step-5 reason now names Step3p7ImageProcessor);
+  - 174 (Muse vision no longer approximate);
+  - coverage (Muse leaves VISION_PARTIAL).
+
 ## [0.254.0]
 
 ### Added — Reflection Beam-1.0 and DFlash2 drafts (MODEL §201)

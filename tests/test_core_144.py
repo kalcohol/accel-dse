@@ -86,8 +86,9 @@ def test_fingerprints_unchanged():
 def test_new_vision_encoders_exact_and_tokens():
     """Vision towers + projectors from the released headers: params exact (MiMo: + audio encoder stored only)."""
     from accel_dse.core.vision import image_grid, vision_ops
+    # 0.255: Step-5 1024×768 → Step3p7 crops 2×2 of 504² (81 + 2 each) + 1 row newline + overview 169 + 2 = 504 (was 169)
     # 0.145: MiniCPM 1024×768 = 448²-class overview + 2×2 slices, 63 tokens each + 14 special (was one 448² view, 64)
-    want = {"intern-s2-397b": (456_010_480, 768), "step-5-preview": (1_981_014_784, 169),
+    want = {"intern-s2-397b": (456_010_480, 768), "step-5-preview": (1_981_014_784, 504),
             "minicpm-v-4.7-35b-a3b": (552_986_032, 329), "mimo-v2.6-flash": (989_721_600, 768)}
     for mid, (p, tok) in want.items():
         m = get_model(mid)

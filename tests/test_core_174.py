@@ -92,4 +92,4 @@ def test_vision_tower_matches_blog():
     """PR vision.py NaViT + adapter = 1.89B (blog 1.9B vision); header remainder (audio + embeds) is storage only."""
     v = get_model("muse-spark-open").vision
     assert abs((v.params - v.extra) / 1e9 - 1.9) < 0.02
-    assert v.depth == 50 and v.patch == 14 and v.merge == 2 and v.approx
+    assert v.depth == 50 and v.patch == 14 and v.merge == 2 and not v.approx   # 0.255: resize sourced

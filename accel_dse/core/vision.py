@@ -54,15 +54,17 @@ _PREPROC = {
     # 0.144
     "internlm/Intern-S2-397B": {"min_px": 65536, "max_px": 16777216},          # Qwen2VLImageProcessorFast size
     "XiaomiMiMo/MiMo-V2.6-Flash-RL": {"min_px": 8192, "max_px": 8388608},      # processor_config image_min/max_pixels
-    "stepfun-ai/Step-5-Preview": {"side": 728},                                # Step5VisionConfig image_size (overview)
-    "stepfun-ai/Step-5-Preview-NVFP4": {"side": 728},                          # 0.251: config identical but quantization
+    # Step5VisionConfig image_size (overview); 0.255: + Step3p7ImageProcessor crops (patch_size 504, max_image_size 3024)
+    "stepfun-ai/Step-5-Preview": {"side": 728, "crop": 504, "max_img": 3024},
+    "stepfun-ai/Step-5-Preview-NVFP4": {"side": 728, "crop": 504, "max_img": 3024},   # 0.251: config identical but quantization
     "openbmb/MiniCPM-V-4.7-35B-A3B": {"side": 448, "max_slice": 9},           # MiniCPMV4_6ImageProcessor defaults
     # 0.145
     "XiaomiMiMo/MiMo-V2.6-Pro-RL": {"min_px": 8192, "max_px": 8388608},        # processor_config image_min/max_pixels
     "inclusionAI/Ling-3.0-flash-VL": {"min_px": 4096, "max_px": 4194304},      # preprocessor_config min/max_pixels
-    # 0.174 Muse Spark Open: processor_config image_processor max_image_tokens 4096 (merged), patch 14, merge 2 → pixel
-    # budget 4096·28²; min_px = one merged token 「假设」 (MuseGlimmerImageProcessor resize code not public)
-    **{k: {"min_px": 784, "max_px": 4096 * 784} for k in (
+    # 0.174 Muse Spark Open: processor_config image_processor max_image_tokens 4096 (merged), patch 14, merge 2.
+    # 0.255: resize = transformers muse_glimmer/image_processing_muse_glimmer.py smart_resize (auto map muse_spark →
+    # MuseGlimmerImageProcessor; amd/…-Quark-MXFP4 processor_config.json image_processor_type MuseGlimmerImageProcessor)
+    **{k: {"muse_tok": 4096} for k in (
         "meta-models/Muse-Spark-Open-816B-A42B", "amd/Muse-Spark-Open-816B-A42B-Quark-PTPC-FP8",
         "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4")},
     # 0.191 Qwen3.5-9B and the StartLux-Decision fine-tunes: preprocessor_config.json Qwen2VLImageProcessorFast size
@@ -86,6 +88,11 @@ _VIDEO = {k: {"min_px": 4096, "max_px": 25165824} for k in (
 # config.json vision_config video_attn_type spatial_temporal, merge_type sd2_tpool (modeling_kimi_k25 identical vision code).
 _VIDEO.update({k: {"chunk": 4, "frame_lim": 4096, "total": t} for k, t in (
     ("moonshotai/Kimi-K2.5", None), ("moonshotai/Kimi-K2.7-Code", 655360))})
+# 0.255 Muse Spark Open video.  「来源」 processor_config.json video_processor (MuseGlimmerVideoProcessor):
+# max_video_frame_tokens 256, num_frames 600, fps 2, temporal_patch 2; per-frame smart_resize to ≤ 256 merged tokens
+_VIDEO.update({k: {"muse_frame_tok": 256, "num_frames": 600} for k in (
+    "meta-models/Muse-Spark-Open-816B-A42B", "amd/Muse-Spark-Open-816B-A42B-Quark-PTPC-FP8",
+    "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4")})
 # 「来源」 transformers qwen3_vl/video_processing_qwen3_vl.py: fps 2, min_frames 4, max_frames 768, max_video_tokens 768
 VIDEO_FPS, VIDEO_MIN_FRAMES, VIDEO_MAX_FRAMES, VIDEO_MAX_TOK = 2, 4, 768, 768
 
@@ -302,8 +309,7 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         au = audio_spec(cfg)
         return VisionSpec("qwen", "Muse Spark NaViT (Perception Encoder)", p, t, h, inter, L, nh, h, False, mk,
                           ((hm, ph), (ph, ph)), params, tuple(sorted(pre.items())), full_idx=full, tile=tile,
-                          perm=2 if tile else 0, audio=au,
-                          approx="视觉：缩放按 4096 token 像素预算的 smart-resize 「假设」（MuseGlimmerImageProcessor 未公开）")
+                          perm=2 if tile else 0, audio=au)
     if vc.get("model_type") == "perception_encoder":          # 0.144 Step-5 PE + 2× stride-2 3×3 downsamplers
         h, L, nh, p, side = vc["width"], vc["layers"], vc["heads"], vc["patch_size"], vc["image_size"]
         inter = 8960 if h == 1536 else int(h * vc.get("mlp_ratio", 8960 / 1536))
@@ -314,7 +320,9 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return VisionSpec("fixed", "Perception Encoder + 下采样卷积", p, 1, h, inter, L, nh, h, False, 4,
                           ((9 * h, 2 * h, 4), (9 * 2 * h, 4 * h, 16), (4 * h, text_h, 16)), params,
                           tuple(sorted(pre.items())),
-                          approx=f"视觉：每图只计 {side}² 概览（config.image_token_len=169 token）；开放权重 inference 接受外部预处理的 504² 裁剪（patch_token_len=81/块，num_patches），但裁剪块数算法未随 Step-5-Preview 发布（model.py: external image preprocessing）；平台 API 仅给 detail low/high 的最长边缩放建议（728 / 504 倍数），无公开 crop/overview 处理器 → 仍 partial")
+                          approx="视觉：裁剪规划取自同厂同塔 Step-3.7-Flash 的 transformers Step3p7ImageProcessor（728² 概览 + 504² 滑窗裁剪，"
+                                 "「来源」代码）；Step-5-Preview 未随附处理器，套用于 Step-5 为「假设」（vision_config / 169 / 81 / "
+                                 "image_token_id 全同，inference/validate_vision.py 以 configuration_step3p7 加载参考编码器）")
     if vc.get("model_type") == "minicpmv4_7_vision":          # 0.144 SigLIP + in-tower merger (insert_layer_id) + merger
         h, inter, L, nh, p = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"], vc["patch_size"]
         ins = cfg.get("insert_layer_id") or 0
@@ -332,6 +340,24 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
 
 
 # ------------------------------------------------------------------ image → patch grid / LLM tokens
+def _muse_resize(h: int, w: int, f: int, max_tok: int) -> tuple[int, int]:
+    """0.255 transformers muse_glimmer image_processing / video_processing ``smart_resize``, verbatim: the integer
+    (f-px) grid closest to the input aspect ratio among floor/ceil of the ideal grid, scaled down to ≤ max_tok cells
+    (no lower bound, no rounding to the nearest multiple); f = patch·merge so one cell = one merged token."""
+    ih, iw = h / f, w / f
+    ratio = iw / ih if ih > 0 else 1.0
+    if ih * iw > max_tok:
+        ih = (max_tok / ratio) ** 0.5
+        iw = ih * ratio
+    cand = [(a, b) for a in {math.floor(ih), math.ceil(ih)} for b in {math.floor(iw), math.ceil(iw)}
+            if a >= 1 and b >= 1 and a * b <= max_tok]
+    if not cand:
+        cand = [(max(1, round(ih)), max(1, round(iw)))]
+    # min() keeps the first of equal keys; set order is unspecified upstream, so ties break (a, b) ascending here
+    a, b = min(sorted(cand), key=lambda g: abs(g[0] / g[1] - h / w))
+    return a * f, b * f
+
+
 def _qwen_resize(h: int, w: int, f: int, lo: int, hi: int) -> tuple[int, int]:
     hb, wb = round(h / f) * f, round(w / f) * f
     if hb * wb > hi:
@@ -426,6 +452,29 @@ def _cpm_grid(h: int, w: int, max_slices: int, side: int) -> tuple[int, int] | N
     return best
 
 
+def step_crops(width: int, height: int, side: int, crop: int, max_img: int) -> tuple[int, int]:
+    """0.255 transformers step3p7/image_processing_step3p7.py Step3p7ImageProcessor._plan_patches, verbatim → (crops
+    along width, along height); (0, 0) = overview only.  Extreme aspect (min side < 32 and ratio > 4) pads to a square;
+    images over max_img on the long side scale down; window = short side if long ≤ side and ratio > 1.5 (else none),
+    min(short, crop) if ratio > 4, else crop; each side snaps to a window multiple (up when the remainder > 20 %)."""
+    if min(width, height) < 32 and max(width / height, height / width) > 4:
+        width = height = max(width, height)
+    if max(height, width) > max_img:
+        sc = max_img / max(height, width)
+        width, height = int(width * sc), int(height * sc)
+    short, long_ = min(height, width), max(height, width)
+    if long_ <= side:
+        win = short if long_ / short > 1.5 else 0
+    elif long_ / short > 4:
+        win = min(short, crop)
+    else:
+        win = crop
+    if win == 0:
+        return 0, 0
+    cw, ch = ((win * (d // win + (d % win > 0.2 * win)) if d >= win else d) for d in (width, height))
+    return max(1, cw // win), max(1, ch // win)
+
+
 def minicpm_views(width: int, height: int, side: int, p: int, max_slices: int):
     """(overview (ph, pw), slice (ph, pw) or None, (rows, cols)) as MiniCPMV4_6ImageProcessor._preprocess."""
     grid = _cpm_grid(height, width, max_slices, side)
@@ -452,6 +501,12 @@ class ImageGrid:
 
 def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
     pr = v.rz
+    if v.family == "qwen" and "muse_tok" in pr:
+        # 0.255 MuseSparkProcessor.replace_image_token: <|image_start|> + merged <|patch|> tokens + <|image_end|>
+        hb, wb = _muse_resize(height, width, pr["factor"], pr["muse_tok"])
+        ph, pw = hb // v.patch, wb // v.patch
+        m = ph * pw // (v.merge * v.merge)
+        return ImageGrid(ph, pw, m, m + 2, (wb, hb))
     if v.family == "qwen":
         hb, wb = _qwen_resize(height, width, pr["factor"], pr["min_px"], pr["max_px"])
         ph, pw = hb // v.patch, wb // v.patch
@@ -470,7 +525,17 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
     if v.family == "fixed":                       # 0.144: one square view resized to ``side`` (overview only)
         ph = pw = pr["side"] // v.patch
         m = ph * pw // (v.merge * v.merge)
-        return ImageGrid(ph, pw, m, m, (pr["side"], pr["side"]))
+        if "crop" not in pr:
+            return ImageGrid(ph, pw, m, m, (pr["side"], pr["side"]))
+        # 0.255 Step3p7Processor.replace_image_token: per crop <patch_start> 81 <patch_end>, <patch_newline> after each
+        # crop row but the last, then <im_start> 169 <im_end>
+        nx, ny = step_crops(width, height, pr["side"], pr["crop"], pr["max_img"])
+        cp = pr["crop"] // v.patch
+        mc = cp * cp // (v.merge * v.merge)
+        n = nx * ny
+        views = ((ph, pw, 1),) + (((cp, cp, n),) if n else ())
+        tok = m + 2 + n * (mc + 2) + (ny - 1 if n else 0)
+        return ImageGrid(ph, pw, m + n * mc, tok, (pr["side"], pr["side"]), views)
     if v.family == "minicpm":
         # 0.145: overview + rows × cols slices; tokens = patches / 16 per view (MiniCPMV4_7Processor.replace_image_token)
         # + <image>/</image> + per-slice <slice>/</slice> + "\n" between slice rows + <image_id>0</image_id> (3,
@@ -616,7 +681,8 @@ def expand_images(scn, m):
 
 
 def video_pre(m) -> dict | None:
-    """Video processor settings of a model with a modelled video path (Qwen3VLVideoProcessor; 0.166 Kimi chunks)."""
+    """Video processor settings of a model with a modelled video path (Qwen3VLVideoProcessor; 0.166 Kimi chunks;
+    0.255 MuseGlimmerVideoProcessor)."""
     v = getattr(m, "vision", None)
     pre = _VIDEO.get(getattr(m, "hf_id", "")) if v is not None else None
     if pre is None or v.family != ("kimi" if "chunk" in pre else "qwen"):
@@ -639,6 +705,8 @@ def video_grid(v: VisionSpec, pre: dict, frames: int, width: int, height: int, c
     min(768·f², longest/F), floored at 1.05·shortest)."""
     if "chunk" in pre:
         return _kimi_video(v, pre, frames, width, height)
+    if "muse_frame_tok" in pre:
+        return _muse_video(v, pre, frames, width, height)
     tp, f = max(1, v.tpatch), v.patch * v.merge
     lo, hi = pre["min_px"], pre["max_px"]
     if frames < tp:
@@ -661,6 +729,24 @@ def video_grid(v: VisionSpec, pre: dict, frames: int, width: int, height: int, c
     mg = ph * pw // (v.merge * v.merge)
     t = -(-frames // tp)
     return VideoGrid(frames, t, ImageGrid(ph, pw, mg, mg, (wb, hb)), t * mg)
+
+
+def _muse_video(v: VisionSpec, pre: dict, frames: int, width: int, height: int) -> VideoGrid:
+    """0.255 transformers MuseGlimmerVideoProcessor, verbatim: sample_frames caps the count at num_frames and rounds
+    down to a multiple of temporal_patch (≥ temporal_patch); each frame is smart_resized to ≤ max_video_frame_tokens
+    merged tokens; grid_t = frames / temporal_patch and the tower attends per temporal slice (vision_utils
+    get_vision_cu_seqlens, merge_temporal False).  LLM tokens (MuseSparkProcessor.replace_video_token):
+    <|vid_start|> + per slice [timestamp text + h·w/4 <|video|>] joined by <|vid_frame_separator|> + <|vid_end|>;
+    the "Time: x.xxs" text is not counted (as for Qwen video)."""
+    tp = max(1, v.tpatch)
+    if frames < tp:
+        raise ValueError(f"serving.video_frames must be ≥ temporal_patch_size {tp}")
+    n = max(tp, (min(frames, pre["num_frames"]) // tp) * tp)
+    hb, wb = _muse_resize(height, width, v.patch * v.merge, pre["muse_frame_tok"])
+    ph, pw = hb // v.patch, wb // v.patch
+    mg = ph * pw // (v.merge * v.merge)
+    t = n // tp
+    return VideoGrid(n, t, ImageGrid(ph, pw, mg, mg, (wb, hb)), t * mg + t + 1)
 
 
 def _kimi_video(v: VisionSpec, pre: dict, frames: int, width: int, height: int) -> VideoGrid:
@@ -689,7 +775,7 @@ def video_grid_of(m, sv) -> VideoGrid | None:
     pre = video_pre(m)
     if pre is None:
         raise ValueError("serving.videos：该模型没有已建模的视频处理器（Qwen3VLVideoProcessor 系：Qwen3.5-397B / "
-                         "Qwen3.8 / Intern-S2；0.166 Kimi K2.5 / K2.7-Code 4 帧块）")
+                         "Qwen3.8 / Intern-S2；0.166 Kimi K2.5 / K2.7-Code 4 帧块；0.255 Muse Spark Open）")
     return video_grid(m.vision, pre, sv.video_frames, sv.video_w, sv.video_h, sv.video_cap)
 
 

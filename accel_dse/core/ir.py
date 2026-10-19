@@ -105,6 +105,7 @@ class Phase:
     ep_nodes: int = 1    # 0.134: nodes the EP group spans when the all-to-all sends a token once per node (else 1)
     kvpre: int = 0       # 0.116 full: cached text-prefix tokens (prefix K/V reuse); q then holds the image tokens only
     kvx: bool = False    # 0.116 full: extract step of the prefix K/V reuse (writes the cache)
+    mreuse: bool = False  # 0.255 full: FLUX 3 reused step — text / reference mode rows come from step 1 (SGLang StaticStreams)
     roll: str = ""       # 0.223 spec verify on linear layers: "" = intermediate-state snapshot (default), "replay" = ReplaySSM
     acc: float = 0.0     # 0.223 per-draft acceptance (replay / track: the ring advances by the expected accepted tokens)
     topk: int = 0        # 0.224 tree drafting: branches per draft step (0 / 1 = chain); q = verified tree tokens
@@ -399,7 +400,7 @@ class SkewSpec:
         return float(self.skew)
 
 
-def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int, skew=1.0) -> Routing:
+def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int, skew=1.0, groups: tuple = ()) -> Routing:
     """Uniform-routing expectation (「假设」).  E_hit = n·(1−(1−k/E)^T).
 
     ``skew`` (0.49, default 1 = uniform): the busiest EP rank receives skew × the mean T·k/EP token-expert pairs
@@ -410,7 +411,10 @@ def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int, skew=1.0) -> R
     0.132 (``SkewSpec``): with a measured per-expert load the busiest rank's distinct experts are the occupancy
     max over ranks of Σ_e 1 − (1 − p_e)^T over the rank's experts (p_e = k · load_e / Σ load, a token's inclusion probability; Monte-Carlo
     routing: mean error 1.6 % vs 22 % for the popular-expert rule, MODEL §78).  Opt-in ``spread = "uniform"`` for a
-    scalar skew: p = k · skew / E on every local expert."""
+    scalar skew: p = k · skew / E on every local expert.
+
+    0.255 ``groups`` = (n_group, topk_group) of a group-limited router: every expert keeps the marginal k / E, so the
+    mean hits / pairs are unchanged; only the per-rank spread (``_rank_max``) widens."""
     spec = skew if isinstance(skew, SkewSpec) else None
     skew = float(skew)
     n_local = _cdiv(n_experts, ep)
@@ -433,7 +437,7 @@ def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int, skew=1.0) -> R
             hit = math.ceil(n_local * (1.0 - (1.0 - min(1.0, top_k * skew / n_experts)) ** tokens) - 1e-9)
         hit = min(n_local, max(1, hit, math.ceil(pairs_local / tokens - 1e-9)))
     if spec is not None and spec.rank_max == "expected" and ep > 1:
-        d_max, p_max = _rank_max(n_experts, top_k, tokens, ep, spec.hot_p, skew)
+        d_max, p_max = _rank_max(n_experts, top_k, tokens, ep, spec.hot_p, skew, tuple(groups))
         pairs_local = min(max(pairs_local, p_max), float(tokens * top_k), float(n_local * tokens))
         hit = min(n_local, max(1, hit, math.ceil(d_max - 1e-9), math.ceil(pairs_local / tokens - 1e-9)))
     m_e = max(1, math.ceil(pairs_local / hit))
@@ -467,7 +471,7 @@ def _emax_normal(ms: tuple) -> float:
 
 
 @functools.lru_cache(maxsize=4096)
-def _rank_max(n_experts: int, top_k: int, tokens: int, ep: int, hot_p: tuple, skew: float) -> tuple:
+def _rank_max(n_experts: int, top_k: int, tokens: int, ep: int, hot_p: tuple, skew: float, groups: tuple = ()) -> tuple:
     """0.133 opt-in (serving.moe_rank_max = "expected"): the stage waits for the slowest EP rank, and under random
     routing the per-step maxima over ranks of distinct experts read and token-expert pairs exceed their means even
     with uniform popularity.  Per rank: distinct experts D = Σ_e 1[e hit], mean Σ q_e, var Σ q_e(1 − q_e) with
@@ -480,6 +484,13 @@ def _rank_max(n_experts: int, top_k: int, tokens: int, ep: int, hot_p: tuple, sk
         ranks = hot_p if isinstance(hot_p[0], tuple) else None
     else:
         ranks = None
+    gm = None if (ranks is not None or not groups) else _group_rank_moments(n_experts, top_k, tokens, ep, groups)
+    if gm is not None:
+        dm, pm = [gm[0]] * ep, [gm[1]] * ep
+        p_max = _emax_normal(tuple(pm))
+        if skew > 1.0:
+            p_max = max(p_max, tokens * top_k / ep * skew)
+        return _emax_normal(tuple(dm)), p_max
     if ranks is None:
         ranks = tuple((top_k / n_experts,) * max(0, min(n_local, n_experts - r * n_local)) for r in range(ep))
     dm, pm = [], []
@@ -495,13 +506,89 @@ def _rank_max(n_experts: int, top_k: int, tokens: int, ep: int, hot_p: tuple, sk
     return _emax_normal(tuple(dm)), p_max
 
 
-def node_dedup_factor(n_experts: int, top_k: int, nodes: int) -> float:
+def _hyp_pmf(N: int, K: int, n: int) -> list[tuple[int, float]]:
+    """Hypergeometric pmf: j successes in n draws without replacement from N items of which K are successes."""
+    out = []
+    for j in range(max(0, n - (N - K)), min(n, K) + 1):
+        out.append((j, math.comb(K, j) * math.comb(N - K, n - j) / math.comb(N, n)))
+    return out
+
+
+def _group_rank_moments(E: int, k: int, T: int, ep: int, groups: tuple):
+    """0.255 group-limited routing (「推导」 under the symmetric-routing 「假设」 of moe_routing): per token, topk_group = g
+    of n_group = G contiguous groups (S = E/G experts each) are chosen uniformly, then the k experts uniformly among
+    the g·S experts of those groups (DeepseekV3TopkRouter / BeamTopKRouter / vLLM grouped_topk select groups by the sum
+    of their top-2 scores; the expert marginal stays k / E).  Contiguous EP placement (vLLM / SGLang default).
+      * ep ≥ G (G | ep): a rank holds n_r = S·G/ep experts of ONE group, chosen with p = g/G → per-token pairs
+        X = 1[chosen]·Y, Y ~ Hyp(gS, n_r, k);
+      * ep < G (ep | G): a rank holds a = G/ep whole groups, J ~ Hyp(G, a, g) of them chosen, X | J ~ Hyp(gS, J·S, k).
+    Distinct experts over T tokens, exact (tokens i.i.d.): an expert stays unhit by one token w.p. q1 = 1 − pg + pg·x
+    (pg = g/G, x = 1 − k/(gS)); two experts of the same group w.p. 1 − pg + pg·y, y = (gS − k)(gS − k − 1)/(gS(gS − 1))
+    (k drawn without replacement); of two different groups w.p. P0 + P1·x + P2·y (P0 / P1 / P2 = neither / one / both
+    groups chosen, hypergeometric over G).  Var D = N·e1(1 − e1) + Σ_pairs (e2 − e1²), e = per-token probability ^ T.
+    Returns ((E D, sd D), (E pairs, sd pairs)) per rank, or None when the groups do not tile the EP ranks (or g = G:
+    the ungrouped rule applies)."""
+    G, g = groups
+    if not (G > 1 and 0 < g < G and E % G == 0) or ep <= 1:
+        return None
+    S = E // G
+    gS = g * S
+    if k > gS:
+        return None
+    if ep >= G and ep % G == 0 and E % ep == 0:     # (E % ep ≠ 0, e.g. 256 on EP 72: ranks straddle groups → ungrouped)
+        nr = E // ep
+        p = g / G
+        mY = k * nr / gS
+        vY = k * (nr / gS) * (1 - nr / gS) * (gS - k) / max(1, gS - 1)
+        ex, ex2 = p * mY, p * (vY + mY * mY)
+        n_grp, a = nr, 1
+    elif ep < G and G % ep == 0:
+        a = G // ep
+        ex = ex2 = 0.0
+        for j, pj in _hyp_pmf(G, a, g):
+            pi = j * S / gS
+            m_ = k * pi
+            v_ = k * pi * (1 - pi) * (gS - k) / max(1, gS - 1)
+            ex += pj * m_
+            ex2 += pj * (v_ + m_ * m_)
+        n_grp = S
+    else:
+        return None
+    pairs = (T * ex, math.sqrt(max(0.0, T * (ex2 - ex * ex))))
+    x = 1.0 - k / gS
+    y = (gS - k) * (gS - k - 1) / (gS * max(1, gS - 1))
+    pg = g / G
+    p2 = g * (g - 1) / (G * (G - 1))
+    p0 = (G - g) * (G - g - 1) / (G * (G - 1))
+    e1 = (1 - pg + pg * x) ** T
+    e2s = (1 - pg + pg * y) ** T                       # two experts of one group both unhit
+    e2d = (p0 + (1 - p0 - p2) * x + p2 * y) ** T        # two experts of different groups both unhit
+    N = a * n_grp
+    var = N * e1 * (1 - e1) + a * n_grp * (n_grp - 1) * (e2s - e1 * e1) + a * (a - 1) * n_grp * n_grp * (e2d - e1 * e1)
+    dist = (N * (1 - e1), math.sqrt(max(0.0, var)))
+    return (round(dist[0], 9), round(dist[1], 9)), (round(pairs[0], 9), round(pairs[1], 9))
+
+
+def node_dedup_factor(n_experts: int, top_k: int, nodes: int, groups: tuple = ()) -> float:
     """0.134: network bytes of a node-deduplicating EP all-to-all (DeepEP normal kernels, DeepSeek-V3 report §3.2: a
     token crosses the scale-out network once per destination node, then NVLink forwards it to the node's experts) /
     those of per-pair sends.  With k distinct experts drawn uniformly from E, spread evenly over N nodes:
     E[remote nodes] = (N − 1)(1 − C(E − E/N, k)/C(E, k)) vs E[remote pairs] = k(N − 1)/N, ratio N(1 − miss)/k."""
     if nodes <= 1 or top_k <= 1:
         return 1.0
+    if groups:
+        # 0.255 group-limited routing (DeepSeek-V3 report §2.1.2 node-limited routing: "each token will be sent to at
+        # most M nodes"; the groups tile the nodes): P(a remote node is hit) under the grouped symmetric draw
+        G, g = groups
+        S = n_experts // G
+        gS = g * S
+        if G > 1 and 0 < g < G and n_experts % G == 0 and top_k <= gS:
+            miss = lambda n: math.comb(gS - n, top_k) / math.comb(gS, top_k) if gS - n >= top_k else 0.0
+            if G % nodes == 0:                       # a node holds G / N whole groups
+                hit = sum(pj * (1.0 - miss(j * S)) for j, pj in _hyp_pmf(G, G // nodes, g))
+                return min(1.0, nodes * hit / top_k)
+            if nodes % G == 0 and n_experts % nodes == 0:   # a node holds n = E / N experts of one group
+                return min(1.0, nodes * (g / G) * (1.0 - miss(n_experts // nodes)) / top_k)
     per = n_experts / nodes
     miss = 1.0
     for i in range(top_k):
@@ -1179,7 +1266,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             role = "router" if l.name.startswith(("router", "shared_expert_gate")) else (
                 "shared_expert" if l.name.startswith("shared") else "mlp")
             ops.append(gemm(model, f"moe.{l.name}", li, t, k, n, role, replicated=_repl(l, tp)))
-        r = moe_routing(f.n_experts, f.top_k, T, sh.ep, ph.skew)
+        r = moe_routing(f.n_experts, f.top_k, T, sh.ep, ph.skew, f.groups)
         d_loc = _cdiv(f.d_expert, sh.etp)
         ein = f.expert_in(h)
         if r.hit:
@@ -1192,7 +1279,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(Op("expert_act", "vector", li, vec=r.pairs_local * d_loc * 4, sfu=r.pairs_local * d_loc * 2))
         if sh.ep > 1:
             pay = r.pairs_local * ein * ab
-            fn = node_dedup_factor(f.n_experts, f.top_k, ph.ep_nodes)
+            fn = node_dedup_factor(f.n_experts, f.top_k, ph.ep_nodes, f.groups)
             ops.append(Op("moe_dispatch", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay,
                           comm_stride=sh.etp, comm_net=fn))
             ops.append(Op("moe_combine", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay * rb / ab,
@@ -1494,6 +1581,8 @@ def _rows(model: ModelSpec, l: Linear, ph: Phase, b: int, sp: int) -> int:
         return b
     if l.rows == "img":
         return b * _cdiv(_video_rows(model, ph), sp)
+    if ph.mreuse and l.rows in ("txt", "ref"):    # 0.255: reused text / reference streams run no rows
+        return 0
     if l.rows == "txt":         # 0.116: a cached prefix runs no text rows
         return 0 if ph.kvpre else b * _cdiv(_prefix(model), sp)
     if l.rows == "aud":
@@ -1519,12 +1608,15 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
             # Flux3ModeTransformerBlock "self-attention restricted to a single token mode"): text, noisy image and the
             # reference images (all references of a sample jointly) each attend within themselves only
             ops = []
-            for g in (_prefix(model), _video_rows(model, ph), ph.ref):
+            gs = (_video_rows(model, ph),) if ph.mreuse else (_prefix(model), _video_rows(model, ph), ph.ref)
+            for g in gs:
                 if g > 0:
                     ops += _full_attn(model, li, replace(core, span="full"), replace(ph, q=g, aux=0, ref=0, kvpre=0),
                                       sh, b, cross)
+            # 0.255 reused step (SGLang StaticStreams): only the image mode block runs (QK-norm / RoPE on its rows)
+            tail = replace(ph, q=gs[0], aux=0, ref=0, kvpre=0, mreuse=False) if ph.mreuse else ph
             return [o for o in ops if o.name != "qk_norm_rope" and not o.name.startswith("sp_a2a")] + \
-                [o for o in _full_attn(model, li, replace(core, span="full"), ph, sh, b, cross)
+                [o for o in _full_attn(model, li, replace(core, span="full"), tail, sh, b, cross)
                  if o.name == "qk_norm_rope" or o.name.startswith("sp_a2a")]
         if core.span != "full" and ph.frames:
             # factorized ST attention over the video grid: spatial = one group per latent frame (H·W tokens),
@@ -1744,6 +1836,8 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
     tp, sp = sh.tp, sh.sp
     b = _cdiv(ph.batch, sh.dp)
     t = b * _cdiv(ph.q, sp)                    # tokens through this rank's GEMMs
+    if ph.mreuse and L.core.span == "mode":    # 0.255: only the image mode block runs on a reused step
+        t = b * _cdiv(_video_rows(model, ph), sp)
     mod = 4 if model.adaln else 0              # AdaLN: x·(1+scale)+shift, gate (element-ops per element)
     ops: list[Op] = [Op("attn_norm", "vector", li, vec=t * h * (4 + mod))]
 
@@ -1814,6 +1908,8 @@ def _full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
     for l in (model.io_pre if side == "pre" else model.io_post):
         k, n = _lin_local(l, sh.tp)
         m = _rows(model, l, ph, b, sh.sp)
+        if ph.mreuse and l.rows == "tok":     # 0.255: per-token time MLP only for the active (image) mode
+            m = b * _cdiv(_video_rows(model, ph), sh.sp)
         ops.append(gemm(model, "io." + l.name, li, m, k, n, l.role or "io", stream=True,
                         replicated=_repl_full(l, sh.tp, sh.sp)))
         if sh.tp > 1:

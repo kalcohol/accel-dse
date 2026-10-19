@@ -79,6 +79,7 @@ class Result:
     host: dict | None = None       # 0.164 (opt-in): host / runtime step time {s, device_s, exposed_s, host_bound, …}
     step_cache: dict | None = None  # gen (0.167): TeaCache-style skipped steps
     prefix_kv: dict | None = None  # gen (0.116): text-prefix K/V reuse — extract / cached step times and FLOP, cache size
+    mode_cache: dict | None = None  # gen (0.255): FLUX 3 static mode-stream reuse — first / reused step times, FLOP, cache
     spec: dict | None = None       # 0.225: decode spec step {k, topk, n, accept_model, tau, tau_indep, tau_chain}
     draft: dict | None = None      # 0.223: independent draft model of a spec step {s, pass_s, bytes, acts (per step), …}
 
@@ -107,8 +108,8 @@ class Result:
         w, lay = self.workload, self.scenario.layout
         # 0.63: flops_u is the mean rank's useful work (Op.share) → × all TP·SP·DP ranks / sequences of the micro-batch
         b_mb = _cdiv(self.scenario.serving.batch * w.seqs_per_request, self.microbatches)
-        if self.prefix_kv:      # 0.116: one extract step + (steps − 1) cached steps
-            pk = self.prefix_kv
+        if self.prefix_kv or self.mode_cache:   # 0.116 / 0.255: one full first step + (steps − 1) reduced steps
+            pk = self.prefix_kv or self.mode_cache
             return (pk["extract_tflop_seq"] + (w.steps - 1) * pk["cached_tflop_seq"]) * w.seqs_per_request
         per_seq = sum(st.flops_u for st in self.stages) * lay.tp * lay.sp * lay.dp * lay.cp / b_mb
         if self.step_cache:     # 0.167: skipped steps run embed + head + residual add only
@@ -139,6 +140,8 @@ class Result:
             d.update(pipeline=pl, denoise_s=denoise)
             if self.prefix_kv:          # 0.116 (key only present when the reuse is active)
                 d["prefix_kv"] = self.prefix_kv
+            if self.mode_cache:         # 0.255 (key only present when the reuse is active)
+                d["mode_cache"] = self.mode_cache
             if self.step_cache:         # 0.167 (key only present when step skipping is active)
                 d["step_cache"] = self.step_cache
             d.update(clip_s=self.latency, s_per_frame=self.latency / w.units, step_ms=denoise / w.steps * 1e3,
@@ -396,9 +399,10 @@ def union_routing(sd, sp, f: float):
     if not sd.exp_route or not sp.exp_route:
         return None
     from .ir import moe_routing
-    E, k, td, ep, sk = sd.exp_route
+    E, k, td, ep, sk = sd.exp_route[:5]
+    gr = sd.exp_route[5] if len(sd.exp_route) > 5 else ()
     tu = td + max(1, round(f * sp.exp_route[2]))
-    return moe_routing(E, k, td, ep, sk), moe_routing(E, k, tu, ep, sk)
+    return moe_routing(E, k, td, ep, sk, gr), moe_routing(E, k, tu, ep, sk, gr)
 
 
 def extra_expert_bytes(sd, sp, f: float) -> float:
@@ -414,7 +418,7 @@ def _exp_route(m, ph, sh) -> tuple:
     if not m.is_moe:
         return ()
     f = next(L.ffn for L in m.layers if L.ffn.kind == "moe")
-    return (f.n_experts, f.top_k, ph.tokens, sh.ep, ph.skew)
+    return (f.n_experts, f.top_k, ph.tokens, sh.ep, ph.skew, f.groups)
 
 
 def _vec_seconds(ch, op) -> float:
@@ -2215,6 +2219,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     # 0.116: text-prefix K/V reuse (model-declared, workload.prefix_kv) — step 1 extracts the prefix K/V, steps 2…n run
     # the image tokens only against the cached prefix (diffusers QwenImage21 kv_cache "extract" / "cached")
     pkv = _prefix_kv(scn, m, wl, warnings)
+    mcache = False if pkv else _mode_cache(scn, m, wl, pp, warnings)
     stages_x = None
     if pkv:
         T = m.workload.prefix_tokens
@@ -2231,6 +2236,21 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         stages_x = _pick_split(_run_x, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run_x(plan_)
         stages = _run(chosen[id(stages_x)], ph_c, _cdiv(seqs, lay.dp) * _cdiv(wl.tokens - T, lay.sp) * m.hidden * ab
                       + cache)
+    elif mcache:
+        # 0.255 SGLang flux3_image StaticStreams: step 1 runs every stream and keeps the text / reference mode-block
+        # outputs + their single-stream (shift, scale, gate) — 4 tensors of rows × hidden per sequence, references held
+        # (no copy); steps 2…n run the image mode block only (txt_in / ref embed / their modulations skipped)
+        R = (m.workload.prefix_tokens if m.workload else 0) + wl.ref
+        cache = 4 * R * m.hidden * ab * _cdiv(seqs, lay.dp)
+        mcache = {"rows": R, "cache_GiB_card": cache / 2**30}
+        chosen = {}
+
+        def _run_m(pl):
+            r_ = _run(pl, ph, resid + cache)
+            chosen[id(r_)] = pl
+            return r_
+        stages_x = _pick_split(_run_m, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run_m(plan_)
+        stages = _run(chosen[id(stages_x)], replace(ph, mreuse=True), resid + cache)
     else:
         stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
     pipe = None
@@ -2256,19 +2276,22 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         # sits in one microbatch).  Was max(mb, pp): cond / uncond in different microbatches ran as independent.
         k_chain = _cfg_chain(seqs, mb, wl.seqs_per_request)
         per_step = max(mb, k_chain + pp - 1) if k_chain > 1 else max(mb, pp)
-        if pkv:
+        if pkv or mcache:
             tick_x = max(st.time.total for st in stages_x)
             denoise = per_step * (tick_x + (wl.steps - 1) * tick)
             b_mb = _cdiv(seqs, mb)
             n_r = lay.tp * lay.sp * lay.dp * lay.cp
-            pkv.update(extract_ms=tick_x * 1e3, cached_ms=tick * 1e3,
+            two = pkv or mcache
+            if mcache:
+                two.update(first_ms=tick_x * 1e3, reused_ms=tick * 1e3)
+            two.update(extract_ms=tick_x * 1e3, cached_ms=tick * 1e3,
                        extract_tflop_seq=sum(st.flops_u for st in stages_x) * n_r / b_mb / 1e12,
                        cached_tflop_seq=sum(st.flops_u for st in stages) * n_r / b_mb / 1e12,
                        fits=all(st.mem.fits for st in stages_x))
-            fits = fits and pkv["fits"]
+            fits = fits and two["fits"]
         else:
             denoise = wl.steps * per_step * tick
-        sc_ = _step_cache(scn, m, wl, sys, ph, sh, stages, seqs, mb, pp, pkv, warnings)
+        sc_ = _step_cache(scn, m, wl, sys, ph, sh, stages, seqs, mb, pp, pkv or mcache, warnings)
         if sc_:
             # skipped steps: every microbatch runs embed + head + residual add instead of the blocks (pp = 1 only)
             denoise -= sc_["skip"] * per_step * (tick - sc_["t_skip"])
@@ -2301,6 +2324,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                stages[heavy].time.bound, heavy, warnings, mb, latency, wl, pipe)
     if pkv:
         r.prefix_kv = pkv
+    if mcache:
+        r.mode_cache = mcache
     if wl.kind == "gen" and sc_:
         r.step_cache = sc_
     return r
@@ -2321,7 +2346,7 @@ def _step_cache(scn, m, wl, sys, ph, sh, stages, seqs, mb, pp, pkv, warnings):
         return None
     if pp > 1 or pkv:
         warnings.append("workload.step_skip 已忽略：" + ("流水并行（PP > 1）下跳步的级间行为未建模" if pp > 1 else
-                                                       "与 prefix_kv 同用未建模"))
+                                                       "与 prefix_kv / mode_cache 同用未建模"))
         return None
     first, last = STEP_CACHE_FORCED[scn.workload.step_cache]
     cap = max(0, wl.steps - min(wl.steps, first + last))
@@ -2346,6 +2371,31 @@ def _step_cache(scn, m, wl, sys, ph, sh, stages, seqs, mb, pp, pkv, warnings):
     return {"skip": k, "mode": scn.workload.step_cache, "computed": wl.steps - k, "steps": wl.steps,
             "t_skip": c["s"], "tflop_seq_skip": tf_skip, "buffer_GiB_card": buf / 2**30, "fits": need <= mp.dram_cap,
             "label": "跳步数取决于阈值与内容系数，由用户给出；固定步规则「来源」TeaCache4Wan2.1"}
+
+
+def _mode_cache(scn: Scenario, m: ModelSpec, wl, pp: int, warnings: list[str]) -> bool:
+    """0.255: FLUX 3 static mode-stream reuse (SGLang multimodal_gen flux3_image.py, 「来源」): the denoise stage sets
+    ``packed.static`` only off the flow map (Base), without cfg-parallel / sequential CFG / compile / CUDA graph /
+    layer-wise offload, and when ``can_reuse_mode_blocks`` (Ulysses SP world 1); PP is not offered there → PP 1.
+    Exact on Base: text and references run at timestep 0 and attend within their own mode, so their mode-block
+    outputs and modulations are step-invariant 「推导」."""
+    if scn.workload.mode_cache != "on" or wl.kind != "gen":
+        return False
+    why = []
+    if not any(l.core is not None and l.core.span == "mode" for l in m.layers):
+        why.append("该模型没有分模态块（仅 FLUX 3）")
+    elif any(l.name == "target_time_1" for l in m.io_pre):
+        why.append("蒸馏版（flow map）每个模态都加目标时间嵌入，文本 / 参考流随步变化，SGLang 也不启用")
+    if scn.layout.sp > 1:
+        why.append("SGLang can_reuse_mode_blocks 要求 Ulysses SP = 1")
+    if pp > 1:
+        why.append("PP > 1 未建模")
+    if wl.steps < 2:
+        why.append("步数 < 2")
+    if why:
+        warnings.append("workload.mode_cache = on 已忽略：" + "；".join(why))
+        return False
+    return True
 
 
 def _prefix_kv(scn: Scenario, m: ModelSpec, wl, warnings: list[str]) -> bool:

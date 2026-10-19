@@ -61,8 +61,8 @@ def test_step5_vision_still_partial_documented():
     m = get_model("step-5-preview")
     assert m.coverage == "partial"
     reason = " ".join(m.coverage_reasons)
-    assert "728" in reason and "504" in reason and ("外部" in reason or "external" in reason.lower())
-    assert "未" in reason  # unpublished / not counted
+    # 0.255: crops now planned by Step3p7ImageProcessor (Step-3.7-Flash, same tower); its use for Step-5 is the 「假设」
+    assert "728" in reason and "504" in reason and "Step3p7ImageProcessor" in reason and "假设" in reason
 
 
 def test_ui_cost_and_elec_preset_wiring():
