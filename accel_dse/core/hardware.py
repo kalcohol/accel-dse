@@ -158,6 +158,10 @@ class Chip:
     # floor), and Eyeriss v1 (JSSC 2017 Fig. 16) keeps its clock-network power flat (g ≈ 0.96, 推导) while zero-gating
     # cuts MAC activity ×0.24.  Aggressive fine-grained latch gating: g ≈ 0.25 (POWER5-like, HC17 tutorial, 推导)
     clk_ungated_share: float = field(default=1.0, metadata={"omit_default": True})
+    # 0.265 (design lever): when True, the gated share (1−g) of P_clk tracks mean(u_mac, u_vec, u_sram_port)
+    # instead of u_mac alone — closes MODEL §176 "vector / SRAM ports not gated separately". Equal domain weight
+    # 「假设」; default False keeps 0.229 fingerprints.
+    clk_datapath_gate: bool = field(default=False, metadata={"omit_default": True})
 
     def dispatch_s(self) -> tuple[float, float]:
         """0.203: (seconds per step per stage, seconds per op) of the dispatch model."""
@@ -189,6 +193,8 @@ class Chip:
         g = self.clk_ungated_share
         if isinstance(g, bool) or not isinstance(g, (int, float)) or not (0.0 <= g <= 1.0):
             raise ValueError(f"chip.clk_ungated_share must be in [0, 1] (got {g})")
+        if not isinstance(self.clk_datapath_gate, bool):
+            raise ValueError(f"chip.clk_datapath_gate must be bool (got {self.clk_datapath_gate!r})")
         if self.mac_eff > 1.0:      # 0.129: sustained / peak utilisation above 1 was accepted (silently ≈ 1)
             raise ValueError(f"chip.mac_eff must be in (0, 1] (got {self.mac_eff})")
         for k, lo in (("slc_mib", 0.0), ("slc_GBps", 1e-9)):

@@ -6674,3 +6674,19 @@ The 0.262/0.263 SLC energy sweep stayed behind a dedicated button. Chip-design u
 ### §209.3 Freshness
 `freshness_sweep.py 2026-10-20` (74 orgs): nothing new.
 
+## §210 Datapath clock gating; PD SLC leak parity (0.265)
+
+### §210.1 Vector / SRAM-port util in P_clk
+§176 left vector lanes and SRAM ports out of the gating util. `Chip.clk_datapath_gate` (default False, omit) switches the gated share to u = mean(u_mac, u_vec, u_sram_port), with:
+- u_mac = MAC slot-cycles / (macs·f·card_s)
+- u_vec = vector element-ops / (lanes·f·card_s)
+- u_sram = SRAM-port bytes / (port_Bpc·f·card_s)
+
+Equal weight across the three domains is 「假设」 (no measured clock-tree split for this NPU class). g = `clk_ungated_share` is unchanged. Default False keeps 0.229 fingerprints. Example (qwen3-8b decode B64, g=0.25): mac util ≈ 0.066, mean ≈ 0.042 → clock W/card 15.8 → 14.9.
+
+### §210.2 PD SLC leak under idle
+`pdqueue._energy` had kept the 0.260 rule (SLC suppressed by idle). Aligned with §208.1: SLC MiB always charged; shared SRAM idle-gated.
+
+### §210.3 Freshness
+`freshness_sweep.py 2026-10-20`: nothing new.
+

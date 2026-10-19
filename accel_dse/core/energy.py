@@ -393,6 +393,28 @@ def dram_pJ_field(r, table: EnergyTable) -> str:
     return f if getattr(table, f) is not None else "pJ_bit_dram"
 
 
+
+def clock_util(chip, mac: float, vec: float, sram_B: float, card_s: float) -> dict:
+    """0.265: utilisation(s) for the gated share of P_clk.
+
+    u_mac = useful MAC slot-cycles / (macs·f·card_s); u_vec = vec element-ops / (lanes·f·card_s);
+    u_sram = SRAM-port bytes / (port_Bpc·f·card_s).  Default (clk_datapath_gate False): u = u_mac (0.229).
+    With clk_datapath_gate: u = mean(u_mac, u_vec, u_sram) 「假设」 equal share of the *gated* clock-tree
+    portion across the three datapath domains (closes §176 limit).
+    """
+    f = chip.freq_ghz * 1e9
+    c_mac = chip.macs * f * card_s
+    c_vec = chip.lanes * f * card_s
+    c_sram = chip.port_Bpc * f * card_s
+    u_mac = min(1.0, mac / c_mac) if c_mac > 0 else 0.0
+    u_vec = min(1.0, vec / c_vec) if c_vec > 0 else 0.0
+    u_sram = min(1.0, sram_B / c_sram) if c_sram > 0 else 0.0
+    datapath = bool(getattr(chip, "clk_datapath_gate", False))
+    u = (u_mac + u_vec + u_sram) / 3.0 if datapath else u_mac
+    return {"mac_util": u_mac, "vec_util": u_vec, "sram_port_util": u_sram, "util": u,
+            "datapath_gate": datapath, "basis": ("mean(mac,vec,sram_port)" if datapath else "mac")}
+
+
 def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) -> dict:
     """0.189 power_cap (opt-in): when average card power (dynamic + static) exceeds table.tdp_W, sustained throughput
     is cut to fit.  Energy per action held constant (no DVFS V² saving, 「假设」, conservative), so the window stretches
@@ -434,13 +456,18 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
         j["dram_phy"] = per["dram"] * pv * 1e-12 * 8
         out["phy_pJ_field"] = pf
     if table.pJ_clk_mac_cycle is not None:      # 0.228: per-cycle dynamic (clock tree / always-clocked registers)
-        # 0.229: clock gating of idle arrays — ungated share g always, the rest in proportion to MAC utilisation u
-        g = getattr(r.scenario.chip, "clk_ungated_share", 1.0)
-        util = min(1.0, per["mac"] / per["clock"]) if per["clock"] > 0 else 0.0
+        # 0.229/0.265: ungated share g always; gated share tracks MAC util, or mean(mac,vec,sram_port) when
+        # chip.clk_datapath_gate (closes §176 "vector/SRAM ports not gated separately")
+        ch = r.scenario.chip
+        g = getattr(ch, "clk_ungated_share", 1.0)
+        cu = clock_util(ch, per["mac"], per.get("vec", 0.0), per.get("sram", 0.0), per["idle_card_s"])
+        util = cu["util"]
         k = g + (1.0 - g) * util
         j["clock"] = per["clock"] * table.pJ_clk_mac_cycle * 1e-12 * k
-        out["clock_W_card"] = r.scenario.chip.macs * r.scenario.chip.freq_ghz * 1e9 * table.pJ_clk_mac_cycle * 1e-12 * k
-        out["clock_gating"] = {"ungated_share": g, "mac_util": util, "factor": k}
+        out["clock_W_card"] = ch.macs * ch.freq_ghz * 1e9 * table.pJ_clk_mac_cycle * 1e-12 * k
+        out["clock_gating"] = {"ungated_share": g, "mac_util": cu["mac_util"], "vec_util": cu["vec_util"],
+                               "sram_port_util": cu["sram_port_util"], "util": util, "factor": k,
+                               "datapath_gate": cu["datapath_gate"], "basis": cu["basis"]}
     iw = idle_W_of(table)
     if iw is not None:
         j["idle"] = iw * per["idle_card_s"]

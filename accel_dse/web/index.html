@@ -319,6 +319,7 @@
       <summary><h4>高级芯片参数</h4><span class="sec-sum" id="sec-chip-adv-sum"></span></summary>
       <div class="row2">
         <label title="0.229：时钟功耗中不被门控的份额 g（MAC 阵列空闲时仍付）：P_clk = 满载 × (g + (1−g)·利用率)。默认 1 = 不计门控收益（H100 无负载实测已是停顿下限；Eyeriss v1 时钟网络功耗基本不随活动变，g≈0.96「推导」）；细粒度门控参考 0.25（POWER5 类，HC17「推导」）">时钟未门控份额<input type="number" id="c-clk_ungated_share" step="0.05" min="0" max="1" placeholder="1"></label>
+        <label title="0.265：门控份额按 mean(u_MAC, u_向量, u_SRAM口) 计，而非仅 MAC（关闭 §176 限制；等权「假设」）。默认关 = 0.229 指纹不变">数据通路门控<input type="checkbox" id="c-clk_datapath_gate"></label>
         <label title="0.209: 专用循环状态 SRAM（不与权重 / KV 共享）· dedicated recurrent-state buffer">状态 SRAM MiB<input type="number" id="c-state_sram_mib" step="64" min="0"></label>
         <label>SRAM 端口 B/cycle<input type="number" id="c-sram_port_Bpc" step="256" min="64" placeholder="默认"></label>
         <label title="0.96：按每个引擎给 SRAM 端口宽度，随引擎数缩放（扫引擎数 / 拆分 die 时不会把整芯片端口带过去）；与整芯片端口二选一">SRAM 端口 / 引擎 B/cycle<input type="number" id="c-sram_port_Bpc_per_engine" step="64" min="16" placeholder="不设"></label>

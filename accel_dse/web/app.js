@@ -339,6 +339,7 @@ function syncInputs() {
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
   if ($('c-attn_fmt') && S.cat) $('c-attn_fmt').value = chipVal('attn_fmt') || '';
   if ($('c-dispatch') && S.cat) $('c-dispatch').value = chipVal('dispatch') || '';
+  if ($('c-clk_datapath_gate')) $('c-clk_datapath_gate').checked = !!chipVal('clk_datapath_gate');
   if ($('fab-enabled') && S.sc && S.cat) fabPaint();
   if ($('d2d-enabled') && S.sc) { $('d2d-enabled').checked = !!S.sc.d2d_enabled; if (S.cat) $('d2d-std').value = S.sc.d2d_std; d2dPaint(); }
   if ($('pd-enabled') && S.sc) { $('pd-enabled').checked = !!S.sc.pd.enabled; $('pd-inputs').hidden = !S.sc.pd.enabled; $('pd-kv_layerwise').checked = !!S.sc.pd.kv_layerwise;
@@ -971,7 +972,7 @@ function renderEnergy(r) {
     [c.d2d || c.net ? '节点内 scale-up 发送' : '链路发送', c.link, ' B', 'link', 'pJ_bit_link'],
     ...(c.net ? [['跨节点网络发送', c.net, ' B', 'net', 'pJ_bit_net']] : []),
     ...(c.host ? [['主机链路重载（卸载放置）', c.host, ' B', 'host', 'pJ_bit_host']] : []),
-    ...(c.clock != null ? [['时钟（MAC 槽·周期，忙或停顿）' + (e.clock_W_card != null ? `（${num(e.clock_W_card)} W/卡` + (e.clock_gating && e.clock_gating.ungated_share < 1 ? `，门控：未门控 ${num(e.clock_gating.ungated_share)} · 利用率 ${num(e.clock_gating.mac_util)}` : '') + '）' : ''), c.clock, '', 'clock', 'pJ_clk_mac_cycle']] : []),   // 0.228
+    ...(c.clock != null ? [['时钟（MAC 槽·周期，忙或停顿）' + (e.clock_W_card != null ? `（${num(e.clock_W_card)} W/卡` + (e.clock_gating && e.clock_gating.ungated_share < 1 ? `，门控：未门控 ${num(e.clock_gating.ungated_share)} · 利用率 ${num(e.clock_gating.util != null ? e.clock_gating.util : e.clock_gating.mac_util)}` + (e.clock_gating.datapath_gate ? `（数据通路 mean MAC/向量/SRAM口）` : '') : '') + '）' : ''), c.clock, '', 'clock', 'pJ_clk_mac_cycle']] : []),   // 0.228/0.265
     ['卡·秒（静态）' + (e.idle_source && e.idle_source !== 'idle_W' ? `（${num(e.idle_W_used)} W = idle/TDP × TDP）` : ''), c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
   const head = h('tr', {}, h('th', {}, '动作'), h('th', {}, `次数 / ${u}`), h('th', {}, `能耗 J / ${u}`));
   const body = rows.map(([lab, n, sfx, k, key]) => h('tr', {}, h('td', {}, lab), h('td', { class: 'num' }, sci(n) + sfx),
@@ -2388,6 +2389,7 @@ async function init() {
   $('c-slc_policy').addEventListener('change', (e) => { S.chipOver.slc_policy = e.target.value; schedule(); });
   $('c-attn_fmt').addEventListener('change', (e) => { if (e.target.value) S.chipOver.attn_fmt = e.target.value; else delete S.chipOver.attn_fmt; schedule(); });
   $('c-dispatch').addEventListener('change', (e) => { if (e.target.value) S.chipOver.dispatch = e.target.value; else delete S.chipOver.dispatch; schedule(); });
+  $('c-clk_datapath_gate').addEventListener('change', (e) => { if (e.target.checked) S.chipOver.clk_datapath_gate = true; else delete S.chipOver.clk_datapath_gate; schedule(); });
   $('l-pp_split').addEventListener('change', (e) => { S.sc.pp_split = e.target.value; schedule(); });
   $('l-indexer').addEventListener('change', (e) => { S.sc.indexer = e.target.value; schedule(); });
   $('l-attn_mode').addEventListener('change', (e) => { if (e.target.value === 'reference') delete S.sc.attn_mode; else S.sc.attn_mode = e.target.value; schedule(); });

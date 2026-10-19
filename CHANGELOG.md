@@ -6,6 +6,18 @@
 
 
 
+## [0.265.0]
+
+### Added — vector / SRAM-port datapath clock gating (MODEL §210.1)
+- `Chip.clk_datapath_gate` (default False): gated share of P_clk uses `mean(u_mac, u_vec, u_sram_port)` instead of MAC util alone — closes §176 limit. Equal domain weight 「假设」. UI checkbox; energy row notes the basis.
+- `energy.clock_util` helper; `clock_gating` now reports `vec_util` / `sram_port_util` / `util` / `basis`.
+
+### Fixed — PD ledger SLC leak under idle (MODEL §210.2)
+- `pdqueue._energy` now matches `energy_report` 0.263: SLC MiB always charged when the leak field is set; shared SRAM still idle-gated.
+
+### Freshness
+- Sweep since 10-20: nothing new.
+
 ## [0.264.0]
 
 ### Changed — 25/85 °C SLC energy in the default design-insight path (MODEL §209.1)

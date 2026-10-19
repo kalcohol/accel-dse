@@ -3458,29 +3458,43 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
     has_idle = iw is not None or table.idle_W_prefill is not None
     utils = []
     if pools:
+        from .energy import clock_util as _clock_util
         cyc = [sc.chip.macs * sc.chip.freq_ghz * 1e9 * cs for sc, cs in pools]
         slots = sum(cyc)
-        util = min(1.0, counts_tok.get("mac", 0.0) / slots) if slots > 0 else 0.0
+        # pooled util (non-psplit): same basis as energy_report over Σ card-s
+        _pc = counts_tok
+        _ch0 = pools[0][0].chip
+        _cu0 = _clock_util(_ch0, _pc.get("mac", 0.0), _pc.get("vec", 0.0), _pc.get("sram", 0.0), sum(cs for _, cs in pools))
+        util = _cu0["util"]
         for i, (sc, cs) in enumerate(pools):
             ch = sc.chip
             if table.uW_per_mib_sram_leak is not None:
-                mib = getattr(ch, "state_sram_mib", 0.0) + ((ch.sram_mib + (getattr(ch, "slc_mib", 0.0) or 0.0))
-                                                             if not has_idle else 0.0)     # 0.260: + SLC
+                # 0.263/0.265: SLC always charged (idle assumed without speculative SLC); shared sram idle-gated
+                slc = getattr(ch, "slc_mib", 0.0) or 0.0
+                mib = getattr(ch, "state_sram_mib", 0.0) + slc + (0.0 if has_idle else ch.sram_mib)
                 if mib > 0:
                     add("sram_leak", mib * sram_leak_uW_per_mib(table) * 1e-6 * cs, i)     # 0.261: × T factor
             if not has_idle and (table.mW_hbm_die_standby is not None or table.mW_hbm_Gb_refresh is not None):
                 hs = hbm_static_W(sc.mem_id, table)
                 if hs and hs["W"] > 0:
                     add("hbm_static", hs["W"] * cs, i)
-            u = min(1.0, pool_counts[i].get("mac", 0.0) / cyc[i]) if psplit and cyc[i] > 0 else util
+            if psplit and cyc[i] > 0:
+                pc = pool_counts[i]
+                cu = _clock_util(ch, pc.get("mac", 0.0), pc.get("vec", 0.0), pc.get("sram", 0.0), cs)
+                u = cu["util"]
+            else:
+                u = util
+                cu = _cu0
             utils.append(u)
             if table.pJ_clk_mac_cycle is not None and slots > 0:
                 g = getattr(ch, "clk_ungated_share", 1.0)
                 add("clock", cyc[i] * table.pJ_clk_mac_cycle * 1e-12 * (g + (1 - g) * u), i)
         if table.pJ_clk_mac_cycle is not None and slots > 0:
-            out["clock_gating"] = {"mac_util": util}
+            out["clock_gating"] = {"mac_util": _cu0["mac_util"], "vec_util": _cu0["vec_util"],
+                                   "sram_port_util": _cu0["sram_port_util"], "util": util,
+                                   "datapath_gate": _cu0["datapath_gate"], "basis": _cu0["basis"]}
             if psplit:
-                out["clock_gating"]["pool_mac_util"] = dict(zip(pool_names, utils))
+                out["clock_gating"]["pool_mac_util"] = dict(zip(pool_names, utils))  # name kept; values follow util basis (0.265)
     if not j:
         return out
     tot = sum(j.values())
