@@ -258,6 +258,9 @@ function syncInputs() {
   if ($('s-spec_rollback')) $('s-spec_rollback').value = S.sc.serving.spec_rollback || 'snapshot';
   if ($('s-draft_model')) { fillDrafts(); $('s-draft_model').value = S.sc.serving.draft_model || ''; draftWarn(); }
   if ($('s-spec_tree_accept_model')) $('s-spec_tree_accept_model').value = S.sc.serving.spec_tree_accept_model || 'chain';
+  if ($('s-spec_sampling')) $('s-spec_sampling').value = S.sc.serving.spec_sampling || 'greedy';      // 0.253
+  if ($('s-spec_accept_src')) $('s-spec_accept_src').value = S.sc.serving.spec_accept_src || 'manual';
+  if ($('w-loop_kv')) $('w-loop_kv').value = (S.sc.workload && S.sc.workload.loop_kv) || 'per_loop';
   treeWarn();
   if ($('pd-length_mix') && $('pd-length_mix')._sync) $('pd-length_mix')._sync();
   if ($('pd-prefix_tree') && $('pd-prefix_tree')._sync) $('pd-prefix_tree')._sync();
@@ -374,6 +377,9 @@ function paintDomain(m) {
   const refs = m.domain === 'gen' && !!(m.workload && m.workload.max_refs);     // 0.252: FLUX 3 reference images
   document.querySelectorAll('.ref-only').forEach((e) => (e.hidden = !refs));
   if (!refs && S.sc && S.sc.workload) for (const k of ['ref_images', 'ref_width', 'ref_height']) delete S.sc.workload[k];
+  const loops = !!m.loop_default;                                              // 0.253: Dory looped LM
+  document.querySelectorAll('.loop-only').forEach((e) => (e.hidden = !loops));
+  if (!loops && S.sc && S.sc.workload) for (const k of ['loops', 'loop_kv']) delete S.sc.workload[k];
   document.querySelectorAll('.seq-slo').forEach((e) => (e.hidden = !!m.is_pair));
   document.querySelectorAll('.diff-only').forEach((e) => (e.hidden = !(m.is_pair && m.workload && m.workload.diff_steps)));
   document.querySelectorAll('.tp-in').forEach((e) => (e.hidden = !!m.is_pair));   // structure models: PP × DP × DAP, no TP
@@ -2157,6 +2163,10 @@ async function init() {
   const HDEF = { host_step_us: 0, host_seq_us: 0, host_steps: 1 };              // 0.164 host / runtime overhead
   for (const k of Object.keys(HDEF))
     bindNumber('h-' + k, () => S.sc[k] ?? HDEF[k], (x) => { if (x === HDEF[k]) delete S.sc[k]; else S.sc[k] = x; }, { int: k === 'host_steps' });
+  for (const [id, dflt] of [['s-spec_sampling', 'greedy'], ['s-spec_accept_src', 'manual']])   // 0.253
+    $(id).addEventListener('change', (e) => { const k = id.slice(2); if (e.target.value === dflt) delete S.sc.serving[k]; else S.sc.serving[k] = e.target.value; schedule(); });
+  bindNumber('w-loops', () => S.sc.workload.loops || null, (x) => { if (x) S.sc.workload.loops = x; else delete S.sc.workload.loops; }, { int: true, nullable: true });
+  $('w-loop_kv').addEventListener('change', (e) => { if (e.target.value === 'per_loop') delete S.sc.workload.loop_kv; else S.sc.workload.loop_kv = e.target.value; schedule(); });
   $('s-spec_rollback').addEventListener('change', (e) => { if (e.target.value === 'snapshot') delete S.sc.serving.spec_rollback; else S.sc.serving.spec_rollback = e.target.value; treeWarn(); schedule(); });
   // 0.225: tree drafting + radix tracking fields (defaults omitted from the scenario)
   const TDEF = { spec_topk: [1, 1, 10], spec_draft_tokens: [0, 0, 64], mamba_track_interval: [0, 0, 1048576] };

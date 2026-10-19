@@ -71,6 +71,8 @@ class StageStorage:
 
 
 def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]:
+    if L.loop:          # 0.253 looped LM: later loops reuse the stored recurrent weights
+        return 0.0, 0.0
     hot = 0.0
     a = model.fmt("attn").bits / 8
     for l in L.attn_linears + L.cross_linears:
@@ -108,6 +110,8 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
     new = S - p
     for L in model.layers:
         c = L.core
+        if L.kv_shared:
+            continue
         if c.kind == "gqa":
             n = min(c.window, new) if (c.window and c.compress == 1) else new
             kv += n * c.n_kv * (c.qk_dim + c.v_dim) / c.compress * kvb
@@ -148,7 +152,7 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         hot += h_; exp += e_
         c = L.core
         ce = min(ctx, c.window) if (c.window and c.compress == 1) else ctx
-        if not model.kv_cache:
+        if not model.kv_cache or L.kv_shared:
             continue
         if c.kind == "gqa":
             kv += ce * _cdiv(c.n_kv, sh.tp) * (c.qk_dim + c.v_dim) / c.compress * kvb

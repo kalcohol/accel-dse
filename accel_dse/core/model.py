@@ -328,6 +328,11 @@ class Layer:
                                              # module, pair conditioning shared) | all (every grid; confidence head)
     misc_role: str = ""                      # format role of misc_params ("" = attn; structure trunks: pair)
     stack: str = ""                          # display label of the stack (esm / trunk / msa / pairformer / diffusion …)
+    # 0.253 looped LM (Dory): loop > 0 = a later application of a shared recurrent layer — same weights (stored once,
+    # counted once, but streamed again by every execution); kv_shared = its KV cache is the loop-0 layer's (last-loop
+    # caching: each loop overwrites the step's rows) → no own KV storage, same KV reads / writes
+    loop: int = 0
+    kv_shared: bool = False
 
     def expert_params(self, hidden: int) -> int:
         f = self.ffn
@@ -336,6 +341,8 @@ class Layer:
         return f.n_experts * f.mats * f.expert_in(hidden) * f.d_expert
 
     def params(self, hidden: int) -> int:
+        if self.loop:
+            return 0
         return (sum(l.params for l in self.attn_linears) + sum(l.params for l in self.ffn_linears)
                 + sum(l.params for l in self.cross_linears) + sum(l.params for l in self.pair_linears)
                 + self.expert_params(hidden) + self.misc_params)
@@ -418,7 +425,12 @@ class ModelSpec:
     draft_bridge: tuple[int, ...] = ()
     draft_cold_params: int = 0
     draft_table_bytes: float = 0.0
+    # 0.253 looped LM (Dory): (input layers, recurrent layers, loops, kv mode) and the physical layer list the loops
+    # expand (``with_loops``); layers = input + recurrent × loops + output
+    loop_spec: tuple = ()
+    loop_phys: tuple = ()
     spec_published: tuple[float, int] = ()   # 0.221: published acceptance length τ and draft block k (「来源」), () = none
+    spec_published_t1: float = 0.0          # 0.253: published τ at temperature 1 (sampled rounds), same block; 0 = none
     formats: tuple[tuple[str, RoleFormat], ...] = ()
     act_fmt: str = "bf16"
     kv_fmt: str = "bf16"
@@ -1406,13 +1418,16 @@ def _attach_dspine(spec: ModelSpec, d: dict) -> ModelSpec:
     extra = nt * h * h + 2 * h + bridge
     scal = sum(1 for v in (d.get("shapes") or {}).values() if not v)  # I64 version scalars (stored, 1 param each)
     cold = V * C + scal                                                # codebook: anchor rows + load-time tables only
-    tables = V * 3 * R * 2                                             # TG [V, R] + TSV [V, 2R] bf16
+    # TG [V, R] + TSV [V, 2R] bf16; 0.253: + the fp32 copies DSpineDraftSampler.__init__ makes for the sampling table
+    # (predecessor_gate, prev [R, C] each, gate bias [R], last write [H, R], norm [H]) 「来源」 worker.py
+    tables = V * 3 * R * 2 + (2 * R * C + R + h * R + h) * 4
     acc = d.get("acceptance") or {}
     left = extra - (extra // nl) * nl                                  # integer remainder kept with the cold params
     return replace(spec, mtp_layers=tuple(mtp), mtp_extra_params=extra // nl, draft="dspark", draft_anchor=True,
                    draft_block=c["block_size"], draft_targets=nt, draft_markov=0, draft_kv=2 * KV * hd,
                    draft_bridge=(C, R, K) + act, draft_cold_params=cold + left, draft_table_bytes=float(tables),
                    spec_published=(float(acc["tau"]), int(acc["block"])) if acc else (),
+                   spec_published_t1=float(acc.get("tau_t1") or 0.0),
                    notes=spec.notes + (f"DSpine 草稿模型（{d['repo']}，bf16 {d['params'] / 1e9:.2f}B，独立仓库，共享目标 "
                                        f"embedding / lm_head）：DFlash 块草稿 {nl} 层（块内因果），块 {c['block_size']} = 锚行 + "
                                        f"{c['block_size'] - 1} 个草稿；目标层 {dc['target_layer_ids']} hidden 拼接 + fc；每层后 code-bridge 写入"
@@ -1420,7 +1435,7 @@ def _attach_dspine(spec: ModelSpec, d: dict) -> ModelSpec:
                                        "参考实现只支持 TP = 1、块大小固定"
                                        + (f"；公开接受长度 τ {acc['tau']}（T = 0）/ {acc.get('tau_t1')}（T = 1），"
                                           f"{acc['block']} 个草稿 → i.i.d. 接受率 {spec_accept_from_tau(acc['tau'], acc['block']):.3f}"
-                                          "「推导」，spec_accept 默认仍为「假设」杠杆" if acc else ""),))
+                                          "「推导」；serving.spec_accept_src = published 按发布 τ（spec_sampling 选 T = 0 / 1）取接受率，默认仍为「假设」杠杆" if acc else ""),))
 
 
 def spec_accept_from_tau(tau: float, k: int) -> float:
@@ -1469,8 +1484,49 @@ def _build_rwkv7(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, [], notes, "full"
 
 
+def _build_dory(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.253 NVIDIA Nemotron-Labs Dory (DoryForCausalLM; vLLM PR #60149 models/dory.py 「来源」): normalized-GPT looped
+    LM.  ``num_hidden_layers`` physical layers, each ONE sublayer — attention (layer_types sliding / full) or SwiGLU
+    MLP — with an nGPT slerp residual (justnorm, per-channel alpha); GQA with nGPT qk-norm after RoPE, a sigmoid output
+    gate (g_proj h → H·hd, fused here into q as out_gate) and justnorm before o_proj; MLP with suv scales and justnorm
+    before down_proj.  Returns the PHYSICAL layers; from_release expands input + recurrent × loops + output."""
+    h, H, KV = c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"]
+    hd = c.get("head_dim") or h // H
+    types = _list(c.get("layer_types"))
+    layers = []
+    for i in range(c["num_hidden_layers"]):
+        t = types[i]
+        if t == "mlp":
+            ffn, flin = _ffn_dense(h, c["intermediate_size"])
+            layers.append(Layer((), AttnCore("none"), ffn, flin, 2 * c["intermediate_size"] + h))   # suv_gate/up, mlp_alpha
+        else:
+            alin, core = _gqa(h, H, KV, hd, out_gate=True, window=c.get("sliding_window") if t == "sliding_attention" else None)
+            layers.append(Layer(alin, core, Ffn("none"), (), 2 * H * hd + h))                   # sqk, s_gate, attn_alpha
+    notes = [f"Dory 循环 LM：输入 {c['n_input_layers']} / 循环 {c['n_recurrent_layers']} / 输出 {c['n_output_layers']} 个子层"
+             "（每个物理层只有注意力或 MLP），循环块权重共享、每次循环重读（vLLM PR #60149「来源」）",
+             f"滑窗 {c.get('sliding_window')} 已建模；nGPT justnorm / slerp 残差按向量运算计「近似」"]
+    return layers, [], notes, "full"
+
+
+def with_loops(spec: ModelSpec, loops: int, mode: str) -> ModelSpec:
+    """0.253 Dory: expand the physical layers for ``loops`` applications of the recurrent block (n_recurrent_loops)
+    and the KV mode (recurrent_kv_cache_mode: per_loop = one cache per loop (reference default) | last_loop = one cache
+    per recurrent attention layer, every loop overwriting the step's rows)."""
+    n_in, n_rec = spec.loop_spec[0], spec.loop_spec[1]
+    ph = spec.loop_phys
+    rec = ph[n_in:n_in + n_rec]
+    ls = list(ph[:n_in])
+    for i in range(loops):
+        ls += [L if i == 0 else replace(L, loop=i, kv_shared=(mode == "last_loop" and L.core.kind != "none"))
+               for L in rec]
+    ls += list(ph[n_in + n_rec:])
+    return replace(spec, layers=tuple(ls), loop_spec=(n_in, n_rec, loops, mode))
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if mt == "dory":
+        return _build_dory, "nGPT 循环 LM（SWA + full GQA，输出门）"
     if mt in ("muse_spark", "muse_spark_text"):
         return _build_muse_spark, "GQA（SWA + full，输出门）latent MoE"
     if mt == "rwkv7":
@@ -1600,6 +1656,10 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         id=model_id, hf_id=hf_id, arch=arch, hidden=h, vocab=c["vocab_size"], layers=tuple(layers),
         tie_embeddings=tie, mtp_layers=tuple(mtp), mtp_extra_params=2 * h * h if mtp else 0,
         coverage=cov, notes=tuple(notes))
+    if (c.get("model_type") or "") == "dory":
+        # release default: config n_recurrent_loops, per-loop KV (vLLM DoryConfig default / README serve command)
+        spec = with_loops(replace(spec, loop_spec=(c["n_input_layers"], c["n_recurrent_layers"]), loop_phys=spec.layers),
+                          c.get("n_recurrent_loops") or 1, "per_loop")
     if rel is not None:
         fm = _release_formats(rel)
         spec = replace(spec, formats=tuple(sorted(fm.items())), kv_fmt=_kv_fmt(rel), act_fmt=_act_fmt(rel),
@@ -1631,8 +1691,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             n_eff = max(1, min(len(spec.mtp_layers), round(rmtp / max(per, 1))))
             extra = max(0, (rmtp - n_eff * per) // n_eff)
             spec = replace(spec, mtp_layers=spec.mtp_layers[:n_eff], mtp_extra_params=extra)
-        if (c.get("model_type") or "").startswith("qwen4_exp"):
-            spec = replace(spec, final_norm_params=0)
+        if (c.get("model_type") or "").startswith("qwen4_exp") or (c.get("model_type") or "") == "dory":
+            spec = replace(spec, final_norm_params=0)       # 0.253 Dory: nGPT, final state justnorm (no weight)
         if (c.get("model_type") or "") == "rwkv7":
             spec = replace(spec, final_norm_params=2 * h)      # ln_out LayerNorm (weight + bias)
         if cfg.get("jev_prompt_attention", c.get("jev_prompt_attention")) == "bidirectional":

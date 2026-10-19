@@ -90,7 +90,8 @@ def test_dspine_draft():
     assert pc["rel_err"] == 0.0 and pc["mtp_ours"] == pc["mtp_release"] == 1237763844
     assert m.draft == "dspark" and m.draft_anchor and m.draft_block == 16 and m.draft_markov == 0
     assert m.draft_bridge == (1024, 512, 16, 0, 1, 2, 3, 4) and m.spec_published == (7.83, 15)
-    assert m.draft_table_bytes == 151936 * 3 * 512 * 2 and 0 <= m.draft_cold_params - (151936 * 1024 + 4) < 5   # + integer remainder of extra // layers
+    assert m.draft_table_bytes == 151936 * 3 * 512 * 2 + (2 * 512 * 1024 + 512 + 4096 * 512 + 4096) * 4   # 0.253: + fp32 sampler copies
+    assert 0 <= m.draft_cold_params - (151936 * 1024 + 4) < 5   # + integer remainder of extra // layers
     assert len(m.mtp_layers) == 5 and m.mtp_layers[0].core.n_kv == 8
     ops = dspark_ops(m, Phase("decode", 1, 1, 4096))
     names = [o.name for o in ops]

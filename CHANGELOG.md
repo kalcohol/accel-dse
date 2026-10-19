@@ -6,6 +6,34 @@
 
 
 
+## [0.253.0]
+
+### Added — freshness sweep from 2026-10-15 (MODEL §200)
+| id | source | what | coverage |
+|---|---|---|---|
+| `dory1.0-4b` / `-mxfp8` / `-nvfp4` | https://huggingface.co/nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16 (+ -MXFP8, -NVFP4) | NVIDIA Nemotron-Labs Dory: looped normalized-GPT 3.98B (8 input / 20 recurrent × loops / 8 output layers, SWA + full GQA with output gate); MXFP8 = W8A16, NVFP4 = W4A16 | full (param_check exact) |
+| `mai-gym-9b` (merged → qwen3.5-9b) | https://huggingface.co/Tongyi-MAI/MAI-Gym-9B | GUI-agent Qwen3.5-9B fine-tune, no MTP head | full |
+
+- **Looped LMs.**
+  - `workload.loops` (0 = the release config, 2) and `workload.loop_kv` (`per_loop` default | `last_loop`). CLI: `--loops` / `--loop-kv`. UI: loop row, shown for Dory only.
+  - The recurrent weights are stored once and re-read on every loop. `last_loop` keeps the one-loop KV size at any loop count.
+  - The model warns for TP / PP > 1, because the reference is TP = 1 only.
+- **DSpine sampled rounds.**
+  - `serving.spec_sampling` = greedy (default) | sampled. A sampled round adds the eager fp32 `serial_rs_table` (K·(2RC + HR + KH) MACs per draft row) and the sample chain.
+  - `serving.spec_accept_src` = manual (default, the 「假设」 lever) | published (the draft's card τ at that temperature → i.i.d. acceptance 「推导」).
+  - CLI: `--spec-sampling` / `--spec-accept-src`. UI: two selects next to the speculative-decoding knobs.
+
+### Changed
+- DSpine resident draft tables now include the fp32 sampler copies (sglang_dspine `DSpineDraftSampler.__init__` 「来源」): 466.8 → 479.3 MB.
+- `scripts/summarize_release.py`: `.mixer.{gate,up,down}_proj` / `suv_*` / `mlp_alpha` → the mlp role, and `backbone.embeddings` → embed. This affects the new Dory summaries only; existing releases were not re-summarised.
+
+### Deferred
+- nvidia Muse-Spark-Open DFlash2 draft: there is no public modeling code for its conv projector or path selector (design in MODEL §200.4).
+- reflection Beam-1.0-501B-A23B: pre-window.
+
+### Tests
+New test_core_253. Re-pins: 062_1 (release / catalog counts), test_core_252 (DSpine table bytes), test_core_125 (looped models re-read the recurrent weights per loop). DeepSeek-V4.1-Flash-1017 was already aliased onto deepseek-v4.1-flash in 0.248, so it is not re-added.
+
 ## [0.252.0]
 
 ### Added — the 0.251 coverage gaps closed (MODEL §199)

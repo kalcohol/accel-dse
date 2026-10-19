@@ -96,6 +96,13 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--spec-topk", type=int, default=None, help="tree drafting: branches per draft step (1 = chain) (0.224)")
     p.add_argument("--spec-draft-tokens", type=int, default=None,
                    help="tree drafting: verified tree tokens incl. root (0 = 1 + k·topk) (0.224)")
+    p.add_argument("--spec-sampling", default=None, choices=["greedy", "sampled"],
+                   help="0.253: draft-round sampling (sampled adds DSpine's fp32 serial_rs_table)")
+    p.add_argument("--spec-accept-src", default=None, choices=["manual", "published"],
+                   help="0.253: acceptance from --spec-accept (manual) or the draft's published τ (published)")
+    p.add_argument("--loops", type=int, default=None, help="0.253 looped LM (Dory): recurrent-block loops per token")
+    p.add_argument("--loop-kv", dest="loop_kv", default=None, choices=["per_loop", "last_loop"],
+                   help="0.253 looped LM: recurrent KV cache mode (default per_loop)")
     p.add_argument("--spec-tree-accept-model", default=None, choices=["chain", "rank", "indep"],
                    help="tree acceptance: chain (lower bound, default 0.226) | rank (Sequoia positional vector) | "
                         "indep (i.i.d. siblings, upper bound) (0.225)")
@@ -392,8 +399,9 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
                     ("labels", "labels"), ("draft_model", "draft_model"), ("spec_rollback", "spec_rollback"),
                     ("mamba_track_interval", "mamba_track_interval"), ("spec_topk", "spec_topk"),
                     ("spec_draft_tokens", "spec_draft_tokens"),
-                    ("spec_tree_accept_model", "spec_tree_accept_model")):
-        if getattr(a, attr) is not None:
+                    ("spec_tree_accept_model", "spec_tree_accept_model"), ("spec_sampling", "spec_sampling"),
+                    ("spec_accept_src", "spec_accept_src")):
+        if getattr(a, attr, None) is not None:
             sv[k] = getattr(a, attr)
     if getattr(a, "think", None) is not None:
         sv["think"], sv["think_tokens"] = True, a.think
@@ -457,6 +465,10 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         wl["step_cache"] = a.step_cache
     if getattr(a, "ref_images", None) is not None:
         wl["ref_images"] = a.ref_images
+    if getattr(a, "loops", None) is not None:
+        wl["loops"] = a.loops
+    if getattr(a, "loop_kv", None):
+        wl["loop_kv"] = a.loop_kv
     if getattr(a, "ref_size", None):
         rw, rh = (int(x) for x in a.ref_size.lower().split("x"))
         wl["ref_width"], wl["ref_height"] = rw, rh

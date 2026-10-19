@@ -102,6 +102,11 @@ EXTRA_TAIL = [
     # same architecture as a catalog entry (merged: resolvable + validated, not listed separately)
     ("userrepgen-4b", "microsoft/UserRepGen-4B"),
     ("flux-3-image-klein-pup", "black-forest-labs/flux-3-image-klein-pup"),
+    # 0.253 freshness sweep (official releases 2026-10-15 … 17)
+    ("dory1.0-4b", "nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16"),
+    ("dory1.0-4b-mxfp8", "nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-MXFP8"),
+    ("dory1.0-4b-nvfp4", "nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4"),
+    ("mai-gym-9b", "Tongyi-MAI/MAI-Gym-9B"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -231,7 +236,7 @@ DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态：语言主干 + �
            "genomics": "基因组（DNA 编码器）"}
 OFFLINE_DOMAINS = {"video": "gen", "protein": "protein"}     # series_catalog domain → listing domain (not on core v2)
 PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only releases) — listing order
-    ("alibaba", "阿里（Qwen · Wan）", ("Qwen/", "Wan-AI/")), ("deepseek", "DeepSeek（深度求索）", ("deepseek-ai/",)),
+    ("alibaba", "阿里（Qwen · Wan · 通义）", ("Qwen/", "Wan-AI/", "Tongyi-MAI/")), ("deepseek", "DeepSeek（深度求索）", ("deepseek-ai/",)),
     ("kimi", "Kimi（月之暗面）", ("moonshotai/",)), ("zhipu", "智谱（GLM · CogVideoX）", ("zai-org/", "THUDM/")),
     ("minimax", "MiniMax（稀宇）", ("MiniMaxAI/",)),
     ("meta", "Meta（Llama · ESM · Muse）", ("unsloth/", "meta-llama/", "facebook/", "meta-models/", "amd/Muse-Spark")),
@@ -251,6 +256,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("stepfun", "阶跃星辰（Step）", ("stepfun-ai/",)), ("xiaomi", "小米（MiMo）", ("XiaomiMiMo/",)),
     ("openbmb", "面壁智能 / OpenBMB（MiniCPM）", ("openbmb/",)), ("robbyant", "Robbyant（LingBot-Video）", ("robbyant/",)),
     ("startlux", "StartLux Labs（决策模型）", ("startlux-models/",)), ("rwkv", "RWKV（BlinkDL）", ("RWKV/",)),
+    ("nvidia", "NVIDIA（Nemotron-Labs）", ("nvidia/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
@@ -278,13 +284,16 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("microsoft", "Microsoft-Decision", ("microsoft-decision",)), ("rwkv", "RWKV-7 G1k", ("rwkv7-",)),
     ("tencent", "Hy-Memory（Hy3 MoE）", ("hy-memory",)), ("bfl", "FLUX 3", ("flux-3",)),
     ("microsoft", "UserRepGen", ("userrepgen",)),
+    ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.
 MERGED = {"deepseek-v3.1": "deepseek-v3", "deepseek-r1": "deepseek-v3", "kimi-k2.7-code": "kimi-k2.5",
           "glm-4.5": "glm-4.6", "minimax-text-01": "minimax-m1-80k",
           # 0.251: Qwen3.5 fine-tunes, config identical to a listed entry except the MTP head they do not ship
-          "userrepgen-4b": "startlux-decision-v1-4b", "flux-3-image-klein-pup": "qwen3.5-9b"}
+          "userrepgen-4b": "startlux-decision-v1-4b", "flux-3-image-klein-pup": "qwen3.5-9b",
+          # 0.253: MAI-Gym-9B (GUI-agent Qwen3.5-9B fine-tune, no MTP head)
+          "mai-gym-9b": "qwen3.5-9b"}
 # Generic dense GQA models whose sizes are already covered by Qwen3 / Llama 3: no extra design insight.
 UNLISTED = {"yi-1.5-34b": "与 Qwen3-32B 同类（稠密 GQA）", "internlm3-8b": "与 Qwen3-8B / Llama-3.1-8B 同类",
             "internlm2-5-20b": "与 Qwen3-32B / Magistral-Small 同类", "qwen2.5-3b": "与 Qwen3-4B 同类",
@@ -490,6 +499,10 @@ def labels(spec: ModelSpec) -> dict:
         "spec_published": ({"tau": spec.spec_published[0], "k": spec.spec_published[1],
                             "accept_iid": round(spec_accept_from_tau(*spec.spec_published), 4)}
                            if spec.spec_published else None),
+        # 0.253: published τ at temperature 1 (DSpine) → serving.spec_accept_src = published with spec_sampling = sampled
+        "spec_published_t1": spec.spec_published_t1 or None,
+        # 0.253 looped LM (Dory): release loop count (0 = not a looped model) → UI workload.loops / loop_kv
+        "loop_default": spec.loop_spec[2] if spec.loop_spec else 0,
         "n_layers": spec.n_layers,
         "model_domain": spec.domain,
         "kv_cache": spec.kv_cache,

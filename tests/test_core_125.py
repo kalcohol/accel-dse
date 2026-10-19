@@ -47,7 +47,10 @@ def test_llm_weight_reads_match_active_params():
                 assert o.k * o.n * o.count == o.w_params, (e["id"], o.name)
         wp = sum(o.w_params for o in ops if o.kind != "lookup")
         tied = m.embed_params if m.head_params == 0 else 0
-        r = (wp - tied + m.embed_params) / m.active_params() - 1
+        # 0.253 looped LMs (Dory): every later loop re-reads the shared recurrent weights (stored once)
+        from dataclasses import replace as _rp
+        reread = sum(_rp(L, loop=0).params(m.hidden) for L in m.layers if L.loop)
+        r = (wp - tied + m.embed_params) / (m.active_params() + reread) - 1
         assert -0.01 < r < 1e-9, (e["id"], r)
 
 

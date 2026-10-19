@@ -1489,6 +1489,34 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             wi[key] = with_formats(m, dict(scn.formats_override))
         m = wi[key]
     warnings: list[str] = []
+    wk = scn.workload
+    if m.loop_spec:
+        # 0.253 looped LM (Dory): expand the recurrent block for the requested loops / KV mode
+        n_l, mode = wk.loops or m.loop_spec[2], wk.loop_kv
+        if (n_l, mode) != tuple(m.loop_spec[2:4]):
+            from .model import with_loops
+            lc = model_cache(m).setdefault("loops", {})
+            if (n_l, mode) not in lc:
+                lc[(n_l, mode)] = with_loops(m, n_l, mode)
+            m = lc[(n_l, mode)]
+        if scn.layout.tp > 1 or scn.layout.pp > 1:
+            warnings.append("Dory 参考实现（vLLM PR #60149）只支持 TP = 1、不支持流水并行；此处按所设并行方式估算")
+    elif wk.loops or wk.loop_kv != "per_loop":
+        warnings.append("workload.loops / loop_kv 只用于循环 LM（Dory），已忽略")
+    if scn.serving.spec_accept_src == "published":
+        # 0.253: the draft's published acceptance length at the round's temperature → i.i.d. per-draft acceptance 「推导」
+        from .model import spec_accept_from_tau
+        sv_ = scn.serving
+        tau = (m.spec_published_t1 if sv_.spec_sampling == "sampled" else
+               (m.spec_published[0] if m.spec_published else 0.0))
+        if m.spec_published and tau:
+            a_pub = round(spec_accept_from_tau(tau, m.spec_published[1]), 4)
+            scn = scn.replace("serving.spec_accept", a_pub)
+        else:
+            warnings.append("spec_accept_src = published：该草稿没有" + ("T = 1 " if sv_.spec_sampling == "sampled" else "")
+                            + f"公开接受长度，按 spec_accept {sv_.spec_accept}「假设」计")
+    if scn.serving.spec_sampling == "sampled" and scn.serving.spec_k and not m.draft_bridge:
+        pass        # other drafts: sampling changes acceptance only (no extra sampled-round kernel modelled)
     if not m.is_pair and m.domain in ("llm", "vlm") and (scn.workload.tri_attn != "fused" or scn.workload.tri_chunk):
         warnings.append("workload.tri_attn / tri_chunk 只用于带三角注意力的结构模型，已忽略")   # 0.119
     if scn.indexer != "reference":
@@ -1654,7 +1682,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         trk = sv.mamba_track_interval if lins else 0     # 0.224 radix-track state copies (ir TRACK note)
         ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=rskew, ep_nodes=ep_nodes,
                    roll="replay" if rr else "", acc=sv.spec_accept if (rr or (trk and q > 1)) else 0.0, track=trk,
-                   topk=topk_ if topk_ > 1 else 0)
+                   topk=topk_ if topk_ > 1 else 0, samp=bool(spec_k) and sv.spec_sampling == "sampled")
         ctx_cap = sv.ctx + q
     else:
         mb = sv.microbatches or min(pp, sv.batch)

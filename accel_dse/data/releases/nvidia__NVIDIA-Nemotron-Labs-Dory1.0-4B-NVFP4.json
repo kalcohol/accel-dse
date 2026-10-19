@@ -1,0 +1,215 @@
+{
+ "bytes_llm": 3202114688,
+ "bytes_mtp": 0,
+ "bytes_total": 3202376832,
+ "config": {
+  "architectures": [
+   "DoryForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_output_gate_logit_scale_init": null,
+  "dtype": "bfloat16",
+  "head_dim": 256,
+  "hidden_act": "silu",
+  "hidden_size": 2560,
+  "initializer_range": 0.0177,
+  "intermediate_size": 7168,
+  "layer_types": [
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "full_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "full_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "full_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "full_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "full_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "full_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "full_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "full_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "sliding_attention",
+   "mlp",
+   "full_attention",
+   "mlp"
+  ],
+  "max_position_embeddings": 262144,
+  "mlp_bias": false,
+  "model_type": "dory",
+  "n_input_layers": 16,
+  "n_output_layers": 16,
+  "n_recurrent_layers": 40,
+  "n_recurrent_loops": 2,
+  "ngpt_alpha_init": 0.05,
+  "num_attention_heads": 16,
+  "num_hidden_layers": 72,
+  "num_key_value_heads": 4,
+  "quantization_config": {
+   "config_groups": {
+    "group_0": {
+     "targets": [
+      "Linear"
+     ],
+     "weights": {
+      "dynamic": false,
+      "group_size": 16,
+      "num_bits": 4,
+      "type": "float"
+     }
+    }
+   },
+   "ignore": [
+    "backbone.embeddings",
+    "lm_head"
+   ],
+   "producer": {
+    "name": "modelopt",
+    "version": "0.0.0"
+   },
+   "quant_algo": "W4A16_NVFP4",
+   "quant_method": "modelopt"
+  },
+  "rope_parameters": {
+   "full_attention": {
+    "partial_rotary_factor": 1.0,
+    "rope_theta": 10000000,
+    "rope_type": "default"
+   },
+   "sliding_attention": {
+    "partial_rotary_factor": 1.0,
+    "rope_theta": 10000,
+    "rope_type": "default"
+   }
+  },
+  "sliding_window": 1024,
+  "tie_word_embeddings": false,
+  "vocab_size": 131072
+ },
+ "fetched": "2026-10-19",
+ "n_tensors": 1083,
+ "params_llm": 3975098368,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": {
+  "config_groups": {
+   "group_0": {
+    "targets": [
+     "Linear"
+    ],
+    "weights": {
+     "dynamic": false,
+     "group_size": 16,
+     "num_bits": 4,
+     "type": "float"
+    }
+   }
+  },
+  "ignore": [
+   "backbone.embeddings",
+   "lm_head"
+  ],
+  "producer": {
+   "name": "modelopt",
+   "version": "0.0.0"
+  },
+  "quant_algo": "W4A16_NVFP4",
+  "quant_method": "modelopt"
+ },
+ "repo": "nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 774144,
+    "params": 387072
+   },
+   "nvfp4": {
+    "bytes": 743178960,
+    "params": 1321205760
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 671088640,
+    "params": 335544320
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 671088640,
+    "params": 335544320
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 1216512,
+    "params": 608256
+   },
+   "nvfp4": {
+    "bytes": 1114767792,
+    "params": 1981808640
+   }
+  },
+  "scale": {
+   "scale": {
+    "bytes": 262144,
+    "params": 0
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

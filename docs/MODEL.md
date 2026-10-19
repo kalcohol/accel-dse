@@ -6021,3 +6021,116 @@ DES check at A λ52 (`sd248/raw2_A52.npy`, f corrected for in-flight prompts):
 - The phantom token of an empty FLUX 3 mode is ignored.
 - `ffn_norm` is still double-counted for parallel blocks (negligible).
 - The FLUX 3 reference mode-output cache (what-if above).
+
+## §200 Freshness sweep from 2026-10-15; looped LM; DSpine sampled rounds (0.253)
+
+### §200.1 Sweep
+
+**Method.** Same as §198, with a wider org list (≈ 80 orgs, adding nvidia, Tongyi-MAI and reflection). Window: created on or after 2026-10-15.
+
+| release | created | verdict |
+|---|---|---|
+| nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16 / -MXFP8 / -NVFP4 | 10-16 | **added** (`dory1.0-4b`, `-mxfp8`, `-nvfp4`), new mechanism §200.2 |
+| deepseek-ai/DeepSeek-V4.1-Flash-1017 | 10-17 | already an alias of deepseek-v4.1-flash since 0.248 (config identical; index total_size = stored bytes); unchanged |
+| Tongyi-MAI/MAI-Gym-9B | 10-16 | merged → qwen3.5-9b (GUI-agent fine-tune; config identical, no MTP head, same image-processor values) |
+| nvidia/Muse-Spark-Open-816B-A42B-DFlash2 | 10-16 | deferred (§200.4) |
+| nvidia/Nemotron-3.5-Rerank-8B, microsoft/scFM-dataselection | 10-15/16 | out of domain (ranking, single-cell) |
+| unsloth/* (FP8 / NVFP4 / GGUF repacks) | 10-15…17 | third-party, not added |
+
+- **Pre-window.** reflection/Beam-1.0-501B-A23B (10-07, + FP8 / NVFP4 10-10, DFlash2 10-13) is a candidate for a later sweep.
+- **Decision models.** Jev and Microsoft-Decision-1 still have no official weights. startlux, RWKV and BlinkDL have nothing new.
+
+### §200.2 NVIDIA Nemotron-Labs Dory (looped normalized-GPT)
+
+**Sources 「来源」.** HF config and safetensors headers (BF16 / MXFP8 / NVFP4), the model card, and vLLM PR #60149 (`models/dory.py`, `configs/dory.py`).
+
+**Structure.**
+- 72 physical layers, each holding **one** sublayer:
+  - attention (`layer_types` sliding 1024 / full every 4th attention layer), or
+  - SwiGLU MLP (7168).
+- The layers are grouped 16 / 40 / 16 sublayers = 8 / 20 / 8 layers (input / recurrent / output).
+- Attention: GQA 16 / 4 × 256. A `g_proj` sigmoid output gate is fused into q (out_gate). nGPT qk-norm is applied after RoPE, and justnorm before `o_proj`.
+- MLP: `suv` scales, with justnorm before `down_proj`.
+- Residual: nGPT slerp with per-channel alpha.
+- No final norm. `lm_head.logit_scale` (131072) is stored but not counted in the release params.
+
+**Looping.**
+- The recurrent block runs `n_recurrent_loops` times per token (config: 2), and the input is reinjected each loop: `justnorm(state + input)`.
+- The weights are stored once but **re-read on every loop**.
+- Implementation: `with_loops` expands input + recurrent × loops + output. The copies set `Layer.loop > 0`, so their params are 0 and they have no storage, but their ops still run and stream weights.
+- **KV.**
+  - `per_loop` (vLLM default): one cache per loop.
+  - `last_loop`: `kv_shared` copies own no KV storage, while KV reads and writes are unchanged.
+  - With `last_loop`, the KV equals the one-loop size at any loop count, as the card states.
+- **Knobs.** `workload.loops` (0 = config) and `workload.loop_kv`. The UI shows them only for Dory.
+- **Parallelism.** vLLM raises on TP ≠ 1 and Dory has no PP support, so the model warns.
+- **Formats.** MXFP8 is W8A16 (e8m0 per 32 → 8.25 b). NVFP4 is W4A16 (4.5 b). The embedding and lm_head stay bf16. Activations are bf16.
+- **Exactness.** param_check is exact: 3,975,098,368.
+
+**Numbers 「推导」** (default scenario, bf16, batch 1, ctx 4096):
+
+| loops | 1 | 2 | 4 |
+|---|---|---|---|
+| decode TPOT | 39.1 ms | 58.9 ms | 98.5 ms |
+| KV, per_loop | 0.264 GB | 0.411 GB | 0.705 GB |
+| KV, last_loop | 0.264 GB | 0.264 GB | 0.264 GB |
+
+- The weights are 7.95 GB at every loop count.
+
+**Approximation 「近似」.** nGPT justnorm and slerp count as the generic per-layer vector work. They are elementwise, so their FLOPs and bytes are negligible next to the GEMMs.
+
+### §200.3 DSpine sampled rounds and published acceptance (closes the §199.2 deferral)
+
+**Sampled rounds 「来源」.** sglang_dspine `worker.py` `DSpineDraftSampler.sample` plus `kernels.serial_rs_table` / `serial_sample_chain`. A round where any request samples (temperature > 0, top_k > 1) runs, eagerly after the graph:
+- per draft row, for each of the K senders: e = √C·codebook[sender] → `pred_gate`, `prev` (R × C) → gated message → write (H × R) → refined state → RMS-norm → dot with the K candidates' lm_head rows.
+- Cost: K·(2RC + HR + KH) MACs per row in true fp32 (TF32 off); 51.4 M per row for Qwen3-8B-DSpine.
+- The K codebook rows and K lm_head rows are gathered per row.
+- Then the K × K sample chain runs (temperature, top-k / top-p / min-p).
+- The greedy chain still runs inside the graph.
+
+**Knobs and memory.**
+- `serving.spec_sampling` = greedy (default) | sampled.
+- **Default change (mechanism, 「来源」 `DSpineDraftSampler.__init__`).** The fp32 copies made at init (`pred_gate`, `prev`, `gate` bias, last write, norm) are resident: (2RC + R + HR + H)·4 = 12.6 MB. DSpine resident tables go from **466.8 → 479.3 MB**.
+
+**Published acceptance.**
+- `serving.spec_accept_src` = manual (default; `spec_accept` stays the 「假设」 lever) | published.
+- With published, the draft's card τ is used at the round temperature: T = 0 7.83 → a 0.8933; T = 1 6.98 → a 0.8731 「推导」, giving τ 7.83 / 6.98 back.
+- Drafts without a published τ at that temperature keep `spec_accept`, with a warning. ReaDy has only a T = 0 τ.
+
+**Numbers.** Default chip, b1, k = 15:
+
+| setting | TPOT |
+|---|---|
+| greedy, a 0.7 | 30.354 ms |
+| sampled, a 0.7 | 30.378 ms |
+| published T = 0 | 12.877 ms |
+| published T = 1 | 14.456 ms |
+
+### §200.4 Deferred: Muse-Spark-Open DFlash2 draft (nvidia)
+
+**Header (「来源」).** 4,384,162,432 params, bf16:
+- `fc` 40960 → 8192 over target layers [3, 19, 31, 47, 59];
+- 5 non-causal SWA-2048 Qwen3-style layers (128 / 16 × 64, q/k norm, SwiGLU 24576);
+- per layer, `attention_conv` and `mlp_conv`: `base_kernel` [2, 2, 8192] plus `kernel_projection` 8192 → 2048, i.e. an input-dependent kernel-2 conv over block positions, `conv_group_size` 16;
+- `candidate_selector`: `hidden_projection` 8192 → 256, and predecessor / successor codebooks [V, 256] — the "pairwise path selector over each position's top-k" (selector_top_k 16);
+- block 8 (7 drafts), final logit softcap 20, `output_multiplier` 0.177.
+
+**Published acceptance (card; k = 7, vLLM, NVFP4 target, GB300 TP4 + EP4, concurrency 32, T = 0 / 1).**
+
+| benchmark | T = 0 | T = 1 |
+|---|---|---|
+| MT-Bench | 3.87 | 3.49 |
+| SPEED-Bench qualitative | 3.84 | 3.47 |
+| SPEED-Bench 32k | 3.35 | 3.03 |
+
+**Why deferred.** There is no public modeling code for the conv projector or the selector: vLLM main `qwen3_dflash.py` has neither, and the card points to ModelOpt. Their ops cannot be derived mechanism-first.
+
+**Design when the code lands.**
+- Base it on the DSpark block path, the same as DSpine:
+  - non-causal block, B = 8;
+  - fc over the 5 target layers;
+  - SWA draft layers.
+- Add to that path:
+  - per-layer conv ops: kernel_projection GEMM h → 2048 per block row, then a depthwise kernel-2 conv;
+  - the selector, with an analogue of serial_table: hidden_projection, then a pairwise K × K score over the codebooks;
+  - the codebooks, as cold storage.

@@ -110,6 +110,7 @@ class Phase:
     topk: int = 0        # 0.224 tree drafting: branches per draft step (0 / 1 = chain); q = verified tree tokens
     track: int = 0       # 0.224 radix-track interval (tokens) of hybrid-layer states; 0 = off
     labels: int = 0      # 0.191 decision readout (prefill only): logits of ≤ labels option tokens at the last
+    samp: bool = False   # 0.253 decode verify: sampled draft rounds (DSpine eager serial_rs_table; serving.spec_sampling)
                          # position, no KV cache kept (StartLux use_cache=False path) when nothing is prefix-shared
 
     def __post_init__(self):
@@ -1347,6 +1348,19 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
             ops += [Op("dspine_serial_table", "lookup", li, kv_read=n * K_ * (h + 3 * R_) * 2,
                        vec=n * (K_ * h + K_ * K_ * R_) * 2, replicated=tp),
                     Op("dspine_serial_chain", "vector", li, vec=n * K_ * K_, replicated=tp)]
+            if ph.samp:
+                # 0.253 sampled round (DSpineDraftSampler.sample, kernels.serial_rs_table 「来源」): per draft row and each
+                # of the K senders, e = √C·codebook[sender] → pred_gate / prev (R × C each) → message → write (H × R) →
+                # refined state, RMS-normed, dotted with the K candidates' lm_head rows: K·(2RC + HR + KH) MACs per row in
+                # true fp32 (TF32 off); gathers K codebook + K lm_head rows per row; then serial_sample_chain (temperature,
+                # top-k / top-p / min-p over the K × K table).  Eager, outside the draft graph; the greedy chain still runs
+                f32 = dict(w_fmt="fp32", a_fmt="fp32", replicated=tp)
+                ops += [Op("dspine_rs_gather", "lookup", li, kv_read=n * K_ * (C_ + h) * 2, vec=n * K_ * (C_ + h)),
+                        Op("dspine_rs_bridge", "gemm", li, m=n * K_, k=C_, n=2 * R_, w_params=2 * R_ * C_, w_bits=32,
+                           **f32),
+                        Op("dspine_rs_write", "gemm", li, m=n * K_, k=R_, n=h, w_params=h * R_, w_bits=32, **f32),
+                        Op("dspine_rs_logits", "attn", li, m=K_, k=h, n=K_, count=n, **f32),
+                        Op("dspine_rs_sample", "vector", li, vec=n * K_ * K_ * 8, sfu=n * K_ * K_, replicated=tp)]
         return ops
     ops += [Op("dspark_hc_pre", "vector", li, vec=b_loc * B * (2 * N * h + 4 * h), replicated=tp),
             gemm(model, "dspark.head", li, b_loc * B, h, V, "lm_head", stream=True),

@@ -103,3 +103,7 @@ tencent/Hy-Memory-30B-A3B-FP8
 stepfun-ai/Step-5-Preview-NVFP4
 microsoft/UserRepGen-4B
 black-forest-labs/flux-3-image-klein-pup
+Tongyi-MAI/MAI-Gym-9B
+nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16
+nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-MXFP8
+nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4

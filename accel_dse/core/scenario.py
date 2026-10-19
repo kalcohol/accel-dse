@@ -58,6 +58,12 @@ class Serving:
     # published EAGLE-1 tree τ) | "chain" (lower bound: the tree's top-1 path is the chain; −17…−19 %)
     # 0.226: default chain (was indep); "rank" = Sequoia positional-acceptance vector on an SGLang-style tree (+1…+4 %)
     spec_tree_accept_model: str = field(default="chain", metadata={"omit_default": True})
+    # 0.253: draft rounds' sampling — greedy (temperature 0 / top_k 1, default) | sampled (temperature > 0: DSpine adds
+    # the eager fp32 serial_rs_table + serial_sample_chain, sglang_dspine worker.py DSpineDraftSampler.sample 「来源」);
+    # spec_accept_src = manual (spec_accept, 「假设」 lever, default) | published (the draft's published acceptance length
+    # at that temperature → i.i.d. per-draft acceptance 「推导」; drafts without a published τ keep spec_accept)
+    spec_sampling: str = field(default="greedy", metadata={"omit_default": True})
+    spec_accept_src: str = field(default="manual", metadata={"omit_default": True})
     tpot_slo_ms: float = 50.0
     ttft_slo_ms: float = 2000.0
     moe_skew: float = 1.0          # MoE: busiest EP rank's token-expert pairs / mean (0.49; 1 = uniform) 「假设」
@@ -131,6 +137,10 @@ class Serving:
             v = getattr(self, nm)
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                 raise ValueError(f"serving.{nm} must be an integer in [{lo}, {hi}]")
+        if self.spec_sampling not in ("greedy", "sampled"):
+            raise ValueError("serving.spec_sampling must be greedy | sampled")
+        if self.spec_accept_src not in ("manual", "published"):
+            raise ValueError("serving.spec_accept_src must be manual | published")
         if self.spec_tree_accept_model not in ("chain", "rank", "indep"):
             raise ValueError("serving.spec_tree_accept_model must be chain|rank|indep")
         if self.spec_draft_tokens == 1:
@@ -236,8 +246,18 @@ class Workload:
     ref_images: int = field(default=0, metadata={"omit_default": True})
     ref_height: int = field(default=0, metadata={"omit_default": True})
     ref_width: int = field(default=0, metadata={"omit_default": True})
+    # 0.253 — looped LMs (NVIDIA Nemotron-Labs Dory): applications of the shared recurrent block per token
+    # (n_recurrent_loops; 0 = the release config, 2) and its KV cache (recurrent_kv_cache_mode: per_loop = one cache per
+    # loop, the reference default | last_loop = one cache per recurrent attention layer, each loop overwriting the step's
+    # rows).  LLM-only knobs; ignored with a warning elsewhere
+    loops: int = field(default=0, metadata={"omit_default": True})
+    loop_kv: str = field(default="per_loop", metadata={"omit_default": True})
 
     def __post_init__(self):
+        if not isinstance(self.loops, int) or isinstance(self.loops, bool) or not 0 <= self.loops <= 16:
+            raise ValueError("workload.loops must be an integer in [0, 16]")
+        if self.loop_kv not in ("per_loop", "last_loop"):
+            raise ValueError("workload.loop_kv must be per_loop | last_loop")
         for k, hi in (("ref_images", 64), ("ref_height", 8192), ("ref_width", 8192)):
             v = getattr(self, k)
             if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= hi:
