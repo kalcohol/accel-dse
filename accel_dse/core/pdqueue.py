@@ -1072,6 +1072,7 @@ def _busy_q_from(dur, m: float, q: float) -> float:
     return dur[-1][0] if dur else 0.0
 
 
+_SIG2_F = True       # 0.249: state-dependent σ_b²(f) below 0 (False: 0.248 constant λE[S²] + λd²)
 _SAT_ENTRY = True    # 0.248: queue-ful entry overshoot S̄ + in-service residual in the U > 0 base (False: 0.247)
 _AGE_DEATHS = True   # 0.248: age-structured death credit below 0 (False: uniform age, 0.247)
 _FLOOR_W = 1.0   # 0.247 experiment hook: death-credit weight on the uniform-age rate below 0 (1 − w: replay λ); 1.0 = model
@@ -1183,20 +1184,49 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
             w_age = min(1.0, max(0.0, 1 - (1 - min(0.99, max(0.0, g_d))) * max(0.0, Is - I0) / (2 * Is)))
     a_of = (lambda k_: 1.0) if w_age >= 1.0 else (lambda k_: w_age + (1 - w_age) * m_k / max(1.0, k_))
     kb0 = kb
+    # 0.249 state-dependent σ_b²(f) below 0 (MODEL §196) 「推导」.  Coarse-grain U over times ≫ one admission: with
+    # A(t) arrivals the decode-only time is t − τ_p·A(t) (τ_p = ρ_p/λ, the prefill share an admission takes), so
+    # U(t) = d·A − (chunk deaths) − c·a·(t − τ_p·A) − noise: each arrival moves U by J(k) = d − n_B·T_d·k̄_f·a/B +
+    # τ_p·c(k)·a(k) — its slot, minus the deaths its chunk iterations carry, plus the decode-only deaths its pause
+    # removes (near full J → β + τ = S̄: the 1/(1 − ρ_p) batch-count amplification of the 0.244 note; deep, c → 0,
+    # J → d).  The deaths around that conditional mean are the replay of births clustered in token time (Fano I_s =
+    # 1/(1 − η)², §195): σ_b²(f) = λ·E[J²] + d·R(k)·I_s, R(k) = λn_B·T_d·k̄_f·a/B + (1 − ρ_p)·c(k)·a(k) the death
+    # rate in U.  A λ52: 0.106 near full → 0.03 deep (DES true-f KM 0.13 / 0.11 → 0.026–0.036; 0.248 const 0.079).
+    if _SIG2_F:
+        eta_s = lam * max(0.0, tau - n_B * tdB)
+        I_d = 1 / (1 - eta_s) ** 2 if 0 <= eta_s < 1 else 1.0
+        tau_p = rho_p / lam
+        vt = max(0.0, e_t2 / (tau * tau) - 1.0) if tau > 0 else 0.0     # relative variance of the admission's share
+
+        def s2_of(f_):
+            kc_ = max(0.0, kb0 - f_)
+            ch = n_B * tdB * kc_ * a_of(kc_) / B
+            ca = c_of(B - f_) * a_of(B - f_)
+            j0, j1 = d_slot - ch, tau_p * ca
+            return lam * (j0 * j0 + 2 * j0 * j1 + j1 * j1 * (1 + vt)) + d_slot * (lam * ch + (1 - rho_p) * ca) * I_d
+    else:
+        def s2_of(f_):
+            return sig2b
+    s_prev = s2_of(0.0)
+    s2g = [(0.0, s_prev)]
+    sig2b0 = s_prev
     mu_prev = _FLOOR_W * (lam * (d_slot - n_B * tdB * kb0 * a_of(kb0) / B) - (1 - rho_p) * c_of(B) * a_of(B))
+    prev = 1.0 / s_prev            # density exp(Φ)/σ_b²(u), Φ(0) = 0
     for i in range(1, nf + 1):
         f = i * df
         kc = max(0.0, kb0 - f)
         mu = _FLOOR_W * (lam * (d_slot - n_B * tdB * kc * a_of(kc) / B) - (1 - rho_p) * c_of(B - f) * a_of(B - f))
-        phi += -(mu_prev + mu) * df * d_slot / sig2b   # going down: Φ(u − du) = Φ(u) − 2μ̄·du/σ²; u = −d·f
-        mu_prev = mu
-        cur = math.exp(min(phi, 700.0))
-        z_neg += 0.5 * (prev + cur) * df * d_slot / sig2b
+        s_cur = s2_of(f)
+        phi += -(mu_prev / s_prev + mu / s_cur) * df * d_slot   # going down: Φ(u − du) = Φ(u) − 2μ̄/σ²·du; u = −d·f
+        mu_prev, s_prev = mu, s_cur
+        cur = math.exp(min(phi, 700.0)) / s_cur
+        z_neg += 0.5 * (prev + cur) * df * d_slot
         prev = cur
         if i % 4 == 0:
             zf.append((f, z_neg))
             if i % 16 == 0:
                 mug.append((f, mu))
+                s2g.append((f, s_cur))
         if phi < -50:
             break
     z_pos = 1 / (theta * sig2)
@@ -1220,7 +1250,7 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     base = lat + beta + ((slot_bound * (s_bar + e_s2 / (2 * s_bar))) if _SAT_ENTRY else 0.0)
     return {"p_sat": p_sat, "theta": theta, "base": base, "beta": beta, "rho_adm": rp,
             "tau": tau, "sigma2": sig2, "d": d_slot, "n_B": n_B, "k_bar": kb,
-            "free_cdf": tuple((round(f_, 3), (z_pos + z_) / zt) for f_, z_ in zf), "mu_f": tuple(mug), "sigma2b": sig2b, "w_age": w_age, "slot_bound": slot_bound}
+            "free_cdf": tuple((round(f_, 3), (z_pos + z_) / zt) for f_, z_ in zf), "mu_f": tuple(mug), "sigma2b": sig2b0, "sigma2_f": tuple(s2g), "w_age": w_age, "slot_bound": slot_bound}
 
 
 def _sat_mix_q(tq: dict, p: float, base: float, theta: float) -> dict:

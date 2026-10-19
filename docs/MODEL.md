@@ -5761,3 +5761,49 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
 | G | 44.5 / 46.5 / 47.5 / 48.3 | 182 / 457 / 797 / 1179 | 165 / 260 / 560 / 1034 | 177 / 349 / 662 / 1106 |
 
 The crossings (0.246 long-run table) moved from mean |err| 0.27 % to 0.15 % (`sd248/xr_sb.txt`). E mixed went from +0.77 % to +0.14 %.
+
+## §196 State-dependent σ_b²(f) below U = 0 (0.249)
+
+**Derivation 「推导」** (`_SIG2_F`, default on). Coarse-grain U over times much longer than one admission.
+- With A(t) arrivals, the decode-only time is t − τ_p·A(t), where τ_p = ρ_p/λ is the prefill share one admission takes. So U(t) = d·A − (deaths carried by chunk iterations) − c·a·(t − τ_p·A) − noise.
+- Each arrival therefore moves U by J(k) = d − n_B·T_d·k̄_f·a/B + τ_p·c(k)·a(k): its slot, minus the deaths its own chunk iterations carry, plus the decode-only deaths its pause removes.
+  - Near full, J → β + τ = S̄. For non-fused engines this is the 1/(1 − ρ_p) amplification of the batch count by the prefill pauses (0.244 note).
+  - Deep, c → 0 and J → d.
+- The deaths around that conditional mean replay births that were clustered in token time, with Fano factor I_s = 1/(1 − η)² (§195).
+- Result: σ_b²(f) = λ·E[J²] + d·R(k)·I_s, where R(k) = λn_B·T_d·k̄_f·a/B + (1 − ρ_p)·c(k)·a(k) is the death rate in U. E[J²] carries the relative variance of τ.
+- Mean drift is unchanged: λJ − c·a reproduces the 0.248 μ(f).
+- The density exp(Φ)/σ_b²(u) is integrated with σ² inside the Φ trapezoid. The diagnostic `sigma2_f` is returned.
+
+**Check, A λ52 (per replica λ 13).**
+
+| f | model σ_b² | DES true-f KM (dt 77 ms) |
+|---|---|---|
+| 0 | 0.122 | 0.131 |
+| 12 | 0.116 | 0.109 |
+| 24 | 0.109 | 0.086 |
+| 36 | 0.098 | 0.071 |
+| 48 | 0.082 | 0.049 |
+| 60 / 56 | 0.056 | 0.026 |
+
+The 0.248 constant was 0.079. Near full matches; deep the model is high, because a(k) > 1 and c(k) has the shape it has.
+
+**Effect.** TTFT p90 (ms) against DES (`sd247/lr_*`):
+
+| case | λ | DES | 0.248 | 0.249 |
+|---|---|---|---|---|
+| A | 50 / 52 / 53.5 / 54.3 | 143 / 341 / 734 / 1035 | 133 / 258 / 633 / 1003 | 176 / 399 / 781 / 1152 |
+| D | 50 / 52 / 53.5 / 54.3 | 146 / 283 / 660 / 952 | 143 / 201 / 489 / 835 | 165 / 289 / 660 / 1006 |
+| G | 44.5 / 46.5 / 47.5 / 48.3 | 182 / 457 / 797 / 1179 | 177 / 349 / 662 / 1106 | 217 / 509 / 834 / 1281 |
+
+- Mean |err| over the 12 points goes from 13.9 % (all low) to 10.2 % (now high, so conservative).
+- P(U > 0) at A λ52: 0.124 → 0.188, against DES 0.155.
+- Crossings: mean |err| 0.148 → 0.152 % (`sd249/xr_s2.txt`). The fused vllm crossings are now within −0.01 to −0.09 %.
+- E (16k): vllm p90 is within −2.4 to +1.3 % of DES. sglang_mixed is optimistic again at −4 to −13 %.
+
+**Residual: the near-full lattice (open).** DES `sd248/raw2_A52.npy` shows:
+- P(q = 0, f = 0) = 0.0143. Per slot given U ≤ 0 that is 0.0169, against ≈ 0.013 at f 1–4, so there is a pile at f = 0.
+- 97 % of arrivals in that state queue.
+- With p = λ·π₀·S̄/(1 − ρ′), which is one M/G/1 busy period per entry, the DES π₀ gives 0.147 against the DES P(U > 0) of 0.155. So the jump entry is right.
+- The model's continuous law has no pile (0.0118 at f = 0); with it the jump-entry form gives 0.107.
+- The diffusion interface (z_pos = 1/(θσ²), density continuous at 0) gives 0.188.
+- Next step: a lattice treatment of the last few slots (π₀ from the f = 0 ↔ 1 balance including excursion returns) with the jump entry.

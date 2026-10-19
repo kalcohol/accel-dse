@@ -6,6 +6,80 @@
 
 
 
+## [0.249.0]
+
+### Changed — state-dependent σ_b²(f) below U = 0 (MODEL §196)
+- **Derived from the admission/death counting process 「推导」** (`_SIG2_F`, default on). Over times much longer than one admission, the decode-only time is t − τ_p·A(t). Each arrival therefore moves U by J(k) = d − n_B·T_d·k̄_f·a/B + τ_p·c(k)·a(k): its slot, minus the deaths its chunk iterations carry, plus the decode-only deaths its pause removes.
+  - Near full J → S̄ = β + τ, which is the 0.244 1/(1 − ρ_p) batch-count amplification. Deep J → d.
+  - The deaths around that mean replay clustered births (Fano I_s, §195).
+  - Result: σ_b²(f) = λE[J²] + d·R(k)·I_s. The mean drift is unchanged.
+- **A λ52 check.** σ_b² is 0.122 / 0.116 / 0.109 / 0.098 / 0.082 / 0.056 at f 0 / 12 / 24 / 36 / 48 / 60. DES true-f KM gives 0.131 / 0.109 / 0.086 / 0.071 / 0.049 / 0.026 at f 0 / 12 / 24–28 / 36 / 48 / 56. The 0.248 constant was 0.079.
+- New diagnostic `sigma2_f`; `sigma2b` is now σ_b²(0).
+
+### Validation
+TTFT p90 (ms) against long-run DES (`sd247/lr_*`; `sd249/ana_s2.txt`):
+
+| case | λ | DES | 0.248 | 0.249 |
+|---|---|---|---|---|
+| A | 50 / 52 / 53.5 / 54.3 | 143 / 341 / 734 / 1035 | 133 / 258 / 633 / 1003 | 176 / 399 / 781 / 1152 |
+| D | 50 / 52 / 53.5 / 54.3 | 146 / 283 / 660 / 952 | 143 / 201 / 489 / 835 | 165 / 289 / 660 / 1006 |
+| G | 44.5 / 46.5 / 47.5 / 48.3 | 182 / 457 / 797 / 1179 | 177 / 349 / 662 / 1106 | 217 / 509 / 834 / 1281 |
+
+- Mean |err| goes from 13.9 % (all low) to 10.2 % (high, conservative).
+- P(U > 0) at A λ52: 0.124 → 0.188, against DES 0.155. The gap is overshot rather than closed; see Deferred.
+
+Crossings vs the 0.246 long-run DES table (`sd249/xr_s2.txt`): mean |err| 0.148 → 0.152 % (≤ 0.2 %).
+
+| case | 0.248 → 0.249 | DES | err |
+|---|---|---|---|
+| A vllm / mixed | 55.34 → 55.23 | 55.28 | −0.09 % |
+| A v0 | 55.53 → 55.42 | 55.45 | −0.05 % |
+| D vllm | 55.53 → 55.42 | 55.45 | −0.05 % |
+| D mixed | 55.25 → 55.13 | 55.13 | +0.01 % |
+| F vllm | 43.88 → 43.75 | 43.75 | −0.01 % |
+| F mixed | 43.66 → 43.53 | 43.64 | −0.26 % |
+| G vllm | 49.11 → 49.00 | 49.02 | −0.05 % |
+| G v0 | 49.47 → 49.35 | 49.42 | −0.15 % |
+| E mixed | 18.62 → 18.73 | 18.59 | +0.77 % |
+| A sglang | 55.01 → 54.90 | 55.05 | −0.27 % |
+| D sglang | 54.99 → 54.88 | 54.95 | −0.13 % |
+| F sglang | 42.77 → 42.64 | 42.66 | −0.04 % |
+
+E (16k prompts, test_core_242), TTFT p90 (ms):
+
+| profile | λ17.37 / 18 / 18.6 / 19.32 | DES | err |
+|---|---|---|---|
+| vllm | 1173 / 1432 / 1837 / 2710 | 1158 / 1436 / 1883 / 2748 | +1.3 / −0.3 / −2.4 / −1.4 % (0.248: +4 / +3 / 0 / 0) |
+| sglang_mixed | 1167 / 1437 / 1882 / 2979 | 1219 / 1603 / 2163 / 3353 | −4.3 / −10.4 / −13.0 / −11.2 % (0.248: +3.7 / −3.8 / −8.4 / −6.1) |
+
+The test_core_242 sglang_mixed band is back to "0.241 < model < DES".
+
+### KPI (`sd249/kpi249.txt` vs `sd248/kpi248b.txt`)
+24 of 49 rows changed, all SLO rates.
+
+| rows | change |
+|---|---|
+| A / D / F / G | −0.11 to −0.13 rps (e.g. A vllm 55.34 → 55.23, F vllm 43.88 → 43.75) |
+| C vllm / mixed | 18.29 → 18.49 |
+| C sglang | 18.43 → 18.61 |
+| C / E v0, E vllm | 18.74 → 18.78 |
+| E sglang | 18.33 → 18.51 |
+| E mixed | 18.62 → 18.73 |
+
+### Tests
+- New test_core_249: the σ²(f) shape (falls with f; near full above λS̄²; deep below 0.6× the near-full value); the flag off gives the 0.248 constant; p_sat rises; θ and the base are unchanged.
+- test_core_239: E mixed pin 18.62 → 18.73.
+- test_core_242: the sglang_mixed band goes back to 0.241 < model < DES.
+
+### Deferred
+- **Near-full lattice at U = 0.** DES has a pile at f = 0: P(q = 0, f = 0) = 0.0143, and per slot 0.0169 vs ≈ 0.013 at f 1–4.
+  - Entry into U > 0 is a jump. p = λπ₀S̄/(1 − ρ′) with the DES π₀ gives 0.147, against DES 0.155.
+  - The model's smooth law (0.0118 at f = 0) with the jump entry gives 0.107. The diffusion interface gives 0.188.
+  - Needs a lattice treatment of the last slots. This is the remaining P(U > 0) / p90 residual.
+- **σ_b² deep is high** (0.056 vs KM 0.026 at f ≈ 56–60).
+- **(2) sglang_mixed E TTFT p90**, −4 to −13 %. Not attempted.
+- E mixed crossing +0.77 %; E vllm λ18.65 bracket; idle k0; the 0.238 list.
+
 ## [0.248.0]
 
 ### Changed — slot-account floor law, derived in part (MODEL §195)

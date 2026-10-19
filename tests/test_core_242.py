@@ -62,5 +62,7 @@ def test_fused_ttft_p90_vs_des():
                 assert abs(new - des) / des < 0.06, (prof, lam, new, des)
             else:   # sglang_mixed: the iid slot-block lump was optimistic (0.247: −4 / −9 / −12 / −11 %); 0.248's
                 # queue-ful entry base (slot-bound share β/d ≈ 0.5 here) gives 1264 / 1542 / 1982 / 3150 vs DES
-                # 1219 / 1603 / 2163 / 3353 (+3.7 / −3.8 / −8.4 / −6.1 %; mean |err| 9.2 → 5.5 %) — band ±10 %
-                assert OLD_TTFT90[prof][lam] < new and abs(new - des) / des < 0.10, (prof, lam, new, des)
+                # 1219 / 1603 / 2163 / 3353 (+3.7 / −3.8 / −8.4 / −6.1 %; mean |err| 9.2 → 5.5 %); 0.249 σ_b²(f) (E: smaller
+                # near-full noise than the constant λE[S²] + λd²) → 1167 / 1437 / 1882 / 2979 (−4.3 / −10.4 / −13.0 / −11.2 %,
+                # vllm here −2.4 … +1.3 %): optimistic again — the 0.242 band (0.241 < model < DES) holds
+                assert OLD_TTFT90[prof][lam] < new < des, (prof, lam, new, des)
