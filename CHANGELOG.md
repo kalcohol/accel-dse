@@ -6,6 +6,15 @@
 
 
 
+## [0.267.0]
+
+### Added — distance-based SLC wire energy (MODEL §212.1)
+- `energy.pJ_bit_mm_onchip` (+ optional `slc_mm2_per_mib`): SLC pJ/bit = `pJ_bit_slc + pJ_bit_mm_onchip × ½√(slc_mib · mm²/MiB)` (mean Manhattan distance from a centre port over a square array). Keckler et al. IEEE Micro 2011: 256 bit × 10 mm = 310 pJ at 40 nm (0.121 pJ/bit/mm), 200 pJ projected at 10 nm (0.078) 「来源/推导」; default density = Aoyagi 3 nm HD macro 35.5 Mbit/mm² (array only, distance lower bound). Mutually exclusive with 0.266 `slc_access_ref_mib`. Report `slc_access.wire_mm / array_mm2 / over_reticle`; insight curve `slc_pJ_bit / slc_wire_mm`; UI fields; PD ledger via the same helper. Unset = flat (fingerprints unchanged).
+- qwen3-30b-a3b 100T + LPDDR5X B8 dip, 25 °C: 32 GiB stays J-optimal but the saving shrinks −35 % → −11.5 % (0.078 pJ/bit/mm, 44 mm); the 0.266 √C anchor at 1 MiB flips it to 0 GiB (45 nm small-cache extrapolation — too punitive).
+
+### Freshness
+- Sweep since 10-20: nothing new (inclusionAI / allenai / hpcai-tech errored in the sweep, rechecked by API: newest pre-window).
+
 ## [0.266.0]
 
 ### Added — SLC access energy vs capacity (√C wire scale) (MODEL §211.1)

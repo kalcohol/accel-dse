@@ -6702,3 +6702,29 @@ Until 0.265, `pJ_bit_slc` was a flat 「假设」 equal to SRAM array energy. Re
 ### §211.2 Freshness
 `freshness_sweep.py 2026-10-20`: nothing new.
 
+## §212 Distance-based SLC wire energy (0.267)
+
+### §212.1 Model
+§211's √C rule extrapolates Horowitz's 8 KB–1 MB points to GiB; for a banked SLC the access goes to one bank, so the extra cost is the wire to it, set by distance, not capacity per se. `energy.pJ_bit_mm_onchip` turns on the distance model:
+
+pJ/bit(SLC) = `pJ_bit_slc` (array, = SRAM 「假设」) + `pJ_bit_mm_onchip` · d, d = ½·√(slc_mib · `slc_mm2_per_mib`)
+
+d is the mean Manhattan distance from a die-centre port to a uniform point of a square array of side L (E|x| + E|y| = L/4 + L/4).
+- **Wire energy** 「来源/推导」: Keckler, Dally, Khailany, Garland, Glasco, "GPUs and the Future of Parallel Computing", IEEE Micro 2011, table of energy: moving 256 bits across 10 mm = 310 pJ at 40 nm (0.121 pJ/bit/mm, 50 % toggle), projected 200 pJ at 10 nm / 0.75 V (0.078 pJ/bit/mm). Wires scale little with node; the 10 nm figure is the suggested value (UI placeholder). Not preset (would move every SLC energy number).
+- **Density** default `SLC_MM2_PER_MIB_DEFAULT` = 8.388608 / 35.5 = 0.236 mm²/MiB, the Aoyagi 3 nm HD macro (VLSI 2025, same source as the leakage). Array only → distance is a lower bound 「近似」.
+- `slc_access` reports `wire_mm`, `array_mm2`, `over_reticle` (> 858 mm²: a GiB SLC on one die is physically implausible; read as a multi-die / 3D-stacked proxy).
+- Mutually exclusive with `slc_access_ref_mib` (ValueError).
+
+### §212.2 Effect (qwen3-30b-a3b, 100T + LPDDR5X, B8, dip, tpuv4i_7nm, 25 °C, no idle)
+
+| GiB | flat J/tok | distance (0.078) | √C (ref 1 MiB) |
+|---|---|---|---|
+| 0 | 0.2561 | 0.2561 | 0.2561 |
+| 8 | 0.2281 | 0.2393 (22 mm, 1.80 pJ/b) | 0.2801 |
+| 32 | 0.1673 | 0.2267 (44 mm, 3.52 pJ/b) | 0.4427 |
+
+Distance keeps 32 GiB J-optimal at 25 °C with the saving cut from −35 % to −11.5 %; √C reverses the conclusion. SLC access stays below LPDDR5X memory + PHY (4.0 + 1.3 pJ/bit) up to ≈ 60 mm, which is why the distance model still favours a large SLC on a cool die. At 85 °C leakage dominates either way (opt 0 GiB).
+
+### §212.3 Freshness
+`freshness_sweep.py 2026-10-20`: nothing new; errored orgs (inclusionAI, allenai, hpcai-tech) rechecked by API — newest releases pre-window (inclusionAI Ling-3.1-flash 10-13, Ming-3.0-asr-tiny 10-14; allenai HiRO-ACEv2 10-12).
+

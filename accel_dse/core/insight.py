@@ -1092,6 +1092,9 @@ def slc_energy_report(base: Scenario, table: EnergyTable | None = None, models=N
                     "leak_W": e.get("sram_leak_W_card"), "leak_W_85C": e.get("sram_leak_W_card_85C"),
                     "slc_frac": (m0.slc_frac if m0 and g > 0 else 0.0),
                     "slc_frac_exp": (getattr(m0, "slc_frac_exp", 0.0) if m0 and g > 0 else 0.0),
+                    # 0.267: effective SLC pJ/bit at this capacity (flat / √C / distance model)
+                    "slc_pJ_bit": (e.get("slc_access") or {}).get("pJ_bit", table.pJ_bit_slc) if g > 0 else None,
+                    "slc_wire_mm": (e.get("slc_access") or {}).get("wire_mm") if g > 0 else None,
                 })
             except ValueError as err:
                 curve.append({"gib": float(g), "error": str(err)})

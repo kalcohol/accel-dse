@@ -116,6 +116,13 @@ class EnergyTable:
     # Fig. 1.1.9: 8 KB / 32 KB / 1 MB SRAM accesses 10 / 20 / 100 pJ (64-bit) ⇒ E ∝ √C 「推导」; H-tree dominates
     # large-cache energy (CACTI / ISQED 2023).  C_ref = 1.0 matches the 1 MB Horowitz point as the wire-scale anchor.
     slc_access_ref_mib: float | None = None
+    # 0.267: distance-based SLC wire energy (mechanism; replaces the √C heuristic when set).  Effective pJ/bit =
+    # pJ_bit_slc + pJ_bit_mm_onchip · d, d = mean Manhattan distance from the die-centre port to a uniform point of
+    # the square SLC array = ½·√(slc_mib · slc_mm2_per_mib).  Keckler et al. IEEE Micro 2011 Table: 256 bits over 10 mm
+    # = 310 pJ at 40 nm (0.121 pJ/bit/mm), 200 pJ projected at 10 nm / 0.75 V (0.078 pJ/bit/mm) 「来源/推导」.
+    pJ_bit_mm_onchip: float | None = None
+    # SLC array density for the distance (mm² / MiB).  None = SLC_MM2_PER_MIB_DEFAULT (Aoyagi 3 nm macro, array only).
+    slc_mm2_per_mib: float | None = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -128,6 +135,10 @@ class EnergyTable:
             raise ValueError(f"energy.sram_temp_C must be in [0, {SRAM_LEAK_T['t_max_C']:g}] °C or null")
         if self.slc_access_ref_mib is not None and not (0 < self.slc_access_ref_mib < 1e6):
             raise ValueError("energy.slc_access_ref_mib must be in (0, 1e6) MiB or null")
+        if self.slc_mm2_per_mib is not None and not self.slc_mm2_per_mib > 0:
+            raise ValueError("energy.slc_mm2_per_mib must be > 0 or null")
+        if self.pJ_bit_mm_onchip is not None and self.slc_access_ref_mib is not None:
+            raise ValueError("energy: set either pJ_bit_mm_onchip (distance model) or slc_access_ref_mib (√C), not both")
 
     @property
     def provided(self) -> list[str]:
@@ -423,12 +434,27 @@ def clock_util(chip, mac: float, vec: float, sram_B: float, card_s: float) -> di
 
 
 
+# 0.267: Aoyagi et al. (TSMC) VLSI 2025 3 nm HD macro 35.5 Mbit/mm² → 8.388608 / 35.5 mm² per MiB (array only, so the
+# distance is a lower bound; periphery / banking overhead makes a real SLC larger) 「来源」
+SLC_MM2_PER_MIB_DEFAULT = 8.388608 / 35.5
+RETICLE_MM2 = 858.0
+
+
+def slc_wire_mm(table: EnergyTable, slc_mib: float) -> float:
+    """0.267: mean Manhattan distance (mm) from a centre port to a uniform point of a square SLC array: L/2."""
+    dens = table.slc_mm2_per_mib if table.slc_mm2_per_mib is not None else SLC_MM2_PER_MIB_DEFAULT
+    return 0.5 * math.sqrt(max(0.0, float(slc_mib)) * dens)
+
+
 def slc_pJ_bit(table: EnergyTable, slc_mib: float) -> float | None:
     """0.266: effective pJ/bit for SLC traffic.  Flat ``pJ_bit_slc`` unless ``slc_access_ref_mib`` is set, then
-    × max(1, √(slc_mib / ref)) — Horowitz ISSCC 2014 √C fit; H-tree dominated large caches (CACTI)."""
+    × max(1, √(slc_mib / ref)) — Horowitz ISSCC 2014 √C fit; H-tree dominated large caches (CACTI).
+    0.267: with ``pJ_bit_mm_onchip`` → pJ_bit_slc + pJ_bit_mm_onchip · slc_wire_mm (distance model)."""
     e = table.pJ_bit_slc
     if e is None:
         return None
+    if table.pJ_bit_mm_onchip is not None:
+        return e + table.pJ_bit_mm_onchip * slc_wire_mm(table, slc_mib) if slc_mib > 0 else e
     ref = table.slc_access_ref_mib
     if ref is None or not (slc_mib > 0):
         return e
@@ -457,7 +483,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                        and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
                                           "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W",
                                           "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh",
-                                          "pJ_clk_mac_cycle", "sram_temp_C", "slc_access_ref_mib")
+                                          "pJ_clk_mac_cycle", "sram_temp_C", "slc_access_ref_mib", "pJ_bit_mm_onchip", "slc_mm2_per_mib")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
                        and not (f.name == "idle_W" and (idle_W_of(table) is not None or table.idle_frac_tdp is not None))]
                       + (["tdp_W"] if table.idle_W is None and table.idle_frac_tdp is not None and table.tdp_W is None
@@ -476,6 +502,14 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                      "ref_mib": table.slc_access_ref_mib, "slc_mib": slc_mib,
                                      "scale": e / table.pJ_bit_slc if table.pJ_bit_slc else None,
                                      "basis": "pJ_bit_slc × max(1, √(slc_mib/ref)) (Horowitz √C, 0.266)"}
+            elif e is not None and table.pJ_bit_mm_onchip is not None and slc_mib > 0:
+                d = slc_wire_mm(table, slc_mib)
+                dens = table.slc_mm2_per_mib if table.slc_mm2_per_mib is not None else SLC_MM2_PER_MIB_DEFAULT
+                out["slc_access"] = {"pJ_bit": e, "pJ_bit_base": table.pJ_bit_slc, "slc_mib": slc_mib,
+                                     "wire_mm": d, "pJ_bit_mm": table.pJ_bit_mm_onchip, "mm2_per_mib": dens,
+                                     "array_mm2": slc_mib * dens, "over_reticle": slc_mib * dens > RETICLE_MM2,
+                                     "scale": e / table.pJ_bit_slc if table.pJ_bit_slc else None,
+                                     "basis": "pJ_bit_slc + pJ_bit_mm_onchip × ½√(slc_mib·mm²/MiB) (Keckler 2011, 0.267)"}
         else:
             e = getattr(table, dfield if k == "dram" else attr)
         if e is not None:
