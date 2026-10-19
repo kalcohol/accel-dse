@@ -32,9 +32,10 @@ def test_release_count_and_param_error():
     # 0.269: + Ming-3.0-tts-tiny (llm release, listing domain tts)  135 → 136, llm 110
     # 0.270: + Whisper-large-v3 / -turbo, Qwen2-Audio-7B-Instruct, Qwen3-ASR-1.7B (llm releases, listing domain asr)  136 → 140, llm 114
     # 0.271: + Qwen2.5-Omni-7B (listing domain omni), CosyVoice2-0.5B, Fun-CosyVoice3-0.5B-2512 (tts)  140 → 143, llm 117
-    assert len(files) == 143 and doms.count("llm") == 117
+    # 0.272: + Fun-ASR-Nano-2512-hf, Step-Audio-2-mini (llm releases, listing domain asr)  143 → 145, llm 119
+    assert len(files) == 145 and doms.count("llm") == 119
     listed = {x["id"]: x for x in list_models()}
-    assert len(listed) + len(unlisted_models()) == 149   # 0.271: + qwen2.5-omni-7b, cosyvoice2-0.5b, fun-cosyvoice3-0.5b-2512; 0.270: + 4 speech (whisper ×2, qwen2-audio, qwen3-asr); 0.269: + ming-3.0-tts-tiny; 0.268: + ming-3.0-asr-tiny; 0.257: + moss-image-base, moss-image-sft (merged); 0.254: + 3 Beam + 2 DFlash2 pairs; 0.253: + 4; 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7; 0.252: + qwen3-8b-dspine
+    assert len(listed) + len(unlisted_models()) == 151   # 0.272: + fun-asr-nano-2512, step-audio-2-mini; 0.271: + qwen2.5-omni-7b, cosyvoice2-0.5b, fun-cosyvoice3-0.5b-2512; 0.270: + 4 speech (whisper ×2, qwen2-audio, qwen3-asr); 0.269: + ming-3.0-tts-tiny; 0.268: + ming-3.0-asr-tiny; 0.257: + moss-image-base, moss-image-sft (merged); 0.254: + 3 Beam + 2 DFlash2 pairs; 0.253: + 4; 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7; 0.252: + qwen3-8b-dspine
     assert all(abs(x["param_err"]) <= 0.005 for x in listed.values())
     assert all(abs(x["param_err"]) < 1e-5 for x in listed.values() if get_model(x["id"]).domain in ("gen", "protein", "genomics"))
 

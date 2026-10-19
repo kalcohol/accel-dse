@@ -125,3 +125,7 @@ Qwen/Qwen3-ASR-1.7B
 # 0.271 speech round 2: Qwen2.5-Omni-7B (Talker + token2wav)
 Qwen/Qwen2.5-Omni-7B
 # 0.271 CosyVoice2-0.5B / Fun-CosyVoice3-0.5B-2512 ship torch .pt only → scripts/fetch_pt_release.py (not listed here)
+# 0.272 speech round 3: Fun-ASR-Nano-2512-hf (SAN-M encoder + adaptor + Qwen3-0.6B)
+FunAudioLLM/Fun-ASR-Nano-2512-hf
+# 0.272: Step-Audio-2-mini (audio in; encoder / adapter roles via summarize_release._step_audio_role)
+stepfun-ai/Step-Audio-2-mini

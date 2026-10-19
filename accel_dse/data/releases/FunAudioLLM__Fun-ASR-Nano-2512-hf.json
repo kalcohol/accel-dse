@@ -1,0 +1,148 @@
+{
+ "bytes_llm": 1192099840,
+ "bytes_mtp": 0,
+ "bytes_total": 1659583680,
+ "config": {
+  "adaptor_config": {
+   "attention_dropout": 0.0,
+   "hidden_act": "relu",
+   "hidden_dropout": 0.0,
+   "hidden_size": 1024,
+   "intermediate_size": 256,
+   "layer_norm_eps": 1e-05,
+   "model_type": "",
+   "num_attention_heads": 8,
+   "num_hidden_layers": 2,
+   "projector_hidden_act": "relu",
+   "projector_hidden_size": 2048
+  },
+  "architectures": [
+   "FunAsrNanoForConditionalGeneration"
+  ],
+  "audio_config": {
+   "activation_dropout": 0.1,
+   "attention_dropout": 0.1,
+   "fsmn_kernel_size": 11,
+   "hidden_act": "relu",
+   "hidden_dropout": 0.1,
+   "hidden_size": 512,
+   "intermediate_size": 2048,
+   "layer_norm_eps": 1e-05,
+   "max_position_embeddings": 2049,
+   "model_type": "fun_asr_nano_encoder",
+   "num_attention_heads": 4,
+   "num_hidden_layers": 70,
+   "num_mel_bins": 80,
+   "num_stacked_frames": 7,
+   "num_timestamp_prediction_layers": 20
+  },
+  "audio_token_id": 151646,
+  "dtype": "bfloat16",
+  "initializer_range": 0.02,
+  "model_type": "fun_asr_nano",
+  "text_config": {
+   "architectures": [
+    "Qwen3ForCausalLM"
+   ],
+   "attention_bias": false,
+   "attention_dropout": 0.0,
+   "bos_token_id": 151643,
+   "dtype": "bfloat16",
+   "eos_token_id": 151645,
+   "head_dim": 128,
+   "hidden_act": "silu",
+   "hidden_size": 1024,
+   "initializer_range": 0.02,
+   "intermediate_size": 3072,
+   "layer_types": [
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention",
+    "full_attention"
+   ],
+   "max_position_embeddings": 40960,
+   "max_window_layers": 28,
+   "model_type": "qwen3",
+   "num_attention_heads": 16,
+   "num_hidden_layers": 28,
+   "num_key_value_heads": 8,
+   "pad_token_id": null,
+   "rms_norm_eps": 1e-06,
+   "rope_parameters": {
+    "rope_theta": 1000000,
+    "rope_type": "default"
+   },
+   "sliding_window": null,
+   "tie_word_embeddings": true,
+   "use_cache": true,
+   "use_sliding_window": false,
+   "vocab_size": 151936
+  },
+  "tie_word_embeddings": true,
+  "transformers_version": "5.17.0.dev0"
+ },
+ "fetched": "2026-10-20",
+ "n_tensors": 1540,
+ "params_llm": 596049920,
+ "params_mtp": 0,
+ "params_vision": 233741920,
+ "quantization_config": null,
+ "repo": "FunAudioLLM/Fun-ASR-Nano-2512-hf",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 352321536,
+    "params": 176160768
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 311164928,
+    "params": 155582464
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 528482304,
+    "params": 264241152
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 131072,
+    "params": 65536
+   }
+  },
+  "vision": {
+   "bf16": {
+    "bytes": 467483840,
+    "params": 233741920
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

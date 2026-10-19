@@ -6853,7 +6853,7 @@ Findings: (1) Whisper-v3 decode at batch is bound by the cross K/V, not the weig
 | speech-card RTF | 1.03 | 2.05 |
 | DiT re-read miss | 0.95 (64 MiB SRAM vs 1.32 GB) | |
 
-Finding: the Talker (1.33 GB bf16 read per codec token, 50 per second) costs as much as the whole DiT path. On a bandwidth-poor card, Omni speech output is not real time for even one stream; the lever is Talker weight bandwidth, or batching streams (t_step barely grows with b). The DiT is weight-re-read bound at 36 evaluations per chunk, so a ≥ 1.3 GB SRAM / SLC pin would cut its 0.24 s per chunk (test: 4 GiB SRAM → miss 0, chunk faster).
+Finding: the Talker (2.64 GB bf16 = 1.32 B streamed params read per codec token, 50 per second; 0.272 fix: was misprinted as 1.33 GB) costs as much as the whole DiT path. On a bandwidth-poor card, Omni speech output is not real time for even one stream; the lever is Talker weight bandwidth, or batching streams (t_step barely grows with b). The DiT is weight-re-read bound at 36 evaluations per chunk, so a ≥ 1.3 GB SRAM / SLC pin would cut its 0.24 s per chunk (test: 4 GiB SRAM → miss 0, chunk faster).
 
 ### §216.3 CosyVoice2-0.5B / Fun-CosyVoice3-0.5B-2512 (`core/cosyvoice.py`)
 「来源」 github FunAudioLLM/CosyVoice (cli/model.py, flow/flow.py, flow_matching.py, decoder.py, DiT/dit.py, hifigan/generator.py), cosyvoice2.yaml / cosyvoice3.yaml.
@@ -6907,3 +6907,74 @@ Deferred, with public configs noted:
 - **fishaudio/drama-3**: FishOmniModel, about 40 GB bf16, with a `codebook_mtp_shared` audio decoder (10 codebooks) and codec.pth.
 - **IndexTeam Index-Echo-S2ST 2B / 9B**: a bridge mapper plus a vendored CosyVoice pipeline.
 - **FireRedTTS3**: custom (base / instruct 8.5 GB + ReDAE 3.8 GB).
+
+## §217 Speech round 3: Fun-ASR-Nano, Step-Audio-2-mini, Omni speech-card SLC pin (0.272)
+
+### §217.1 Fun-ASR-Nano-2512 (`AudioSpec.kind = "sanm"`)
+「来源」 transformers `models/fun_asr_nano` (modeling / configuration / feature_extraction / processing, main); FunAudioLLM/Fun-ASR-Nano-2512-hf config.json, processor_config.json, safetensors header (sha 7ef6caf, Apache-2.0).
+- **Front end**:
+  - Kaldi fbank: 80 mel, 25 ms window, 10 ms hop, snip_edges, so frames = 1 + (N − 400) // 160.
+  - LFR: stack 7 frames, stride 6. That gives ⌈frames / 6⌉ positions of 560 features, about 16.7 / s.
+  - Audio tokens = the mask sum, one LLM token per LFR frame: 500 per 30 s.
+- **Encoder** (SenseVoice SAN-M):
+  - Inputs are scaled by √d, plus sinusoid positions counted from 1. The table has 2049 rows, so at most 2048 positions (≈ 122.9 s); longer audio is reported as `truncated_s` 「来源/推导」.
+  - 70 pre-LN blocks d512 / 4 heads:
+    - q / k / v / o with bias; layer 0 maps 560 → 512 and has no residual.
+    - FSMN: a depthwise Conv1d k11 without bias on the unsplit values, added to the attention output.
+    - ReLU MLP 2048.
+  - Final LayerNorm only on layers 49 and 69. All 70 layers run in forward, including the 20 timestamp-prediction layers.
+  - Attention is bidirectional over the whole utterance (no chunking).
+- **Projector**: Linear 512 → 2048, ReLU, Linear 2048 → 1024, then 2 adaptor blocks (d1024 / 8 heads, ReLU MLP 256, no FSMN).
+- **LLM**: Qwen3-0.6B (tied).
+- **Params** (exact): LLM 596,049,920; tower 233,741,920.
+- **Ops**: every layer runs on all T positions. FSMN costs 2 · 11 vector ops per element. Weight reads = params minus LayerNorms. 30 s ≈ 0.27 TFLOP, versus 2.28 for a Whisper-v3 window.
+
+### §217.2 Step-Audio-2-mini (audio in)
+「来源」 stepfun-ai/Step-Audio-2-mini `modeling_step_audio_2.py`, config.json, safetensors header (sha e36fdd5, Apache-2.0).
+- **LLM**: transformers Qwen2Model(text_config): 28 × h3584, GQA 28 / 4, SwiGLU 18944, q / k / v bias, vocab 158720, untied lm_head. 7,663,326,720 params, exact.
+- **Encoder**:
+  - Front end: log-mel 128 on audio padded by 479 samples; L = (N + 479) // 160 mel frames.
+  - conv1 k3 + conv2 k3 s2 (GELU), then learned positions Embedding(1500, 1280), which is stored.
+  - 32 Whisper blocks (key without bias), then AvgPool1d(2) and LayerNorm.
+  - Adaptor: Conv1d k3 s2 p1 + GELU, Linear 1280 → 2048, ReLU, Linear 2048 → 3584.
+  - 651,852,544 params, exact (`summarize_release._step_audio_role`: encoder.* / adapter.* → vision).
+  - The whole clip goes through in one pass with full attention. Conv2 positions are capped by the 1500-row table, so L ≤ 2999 (≈ 29.99 s); the rest is reported as `truncated_s` 「近似」. The official app's long-audio segmentation is not modelled.
+- **Tokens**: from the forward pass, ((L + 1)//2//2 − 1)//2 + 1, which is 12.5 / s (375 per 30 s).
+- **Not modelled**: speech output. token2wav ships as `.pt`: a CosyVoice2 UpsampleConformerEncoderV2 + a DiT estimator (16 × d512) + HiFT. That combination differs from both 0.271 CosyVoice flows, so it is deferred.
+
+| 30 s in, 100 tokens out, 100T + LPDDR5X | B1 RTF | B32 RTF | B32 audio-s / s / card |
+|---|---|---|---|
+| fun-asr-nano-2512 | 0.021 | 0.068 | 473 |
+| step-audio-2-mini | 0.250 | 0.346 | 92 |
+| qwen2-audio-7b-instruct (0.270) | 0.259 | 0.634 | 51 |
+| qwen3-asr-1.7b (0.270) | 0.061 | 0.108 | 296 |
+
+Finding: Step-Audio-2-mini and Qwen2-Audio share a decoder of the same size, but Step-Audio-2 puts half as many audio positions in the prompt (375 vs 750 per 30 s, from the adaptor's stride 2). That cuts its B32 first token from 4.26 s to 2.54 s and its TPOT from 147 to 78 ms (K/V reads), so B32 throughput is 1.8×. Fun-ASR-Nano's 70-layer encoder is cheap per second (16.7 positions / s, d512): its B32 first token is 0.31 s, of which the encoder is 0.12 s.
+
+### §217.3 Omni speech card: SLC pin (DiT re-read first, then the Talker)
+- **Rule** (`omni.omni_slc_plan`, the 0.192 / 0.269 rule): fill the SLC by DRAM bytes saved per audio second per byte, counting only the bytes SRAM does not already hold.
+  - DiT weights: read 36 × 100/72 × b = 50 · b times / s (token2wav batch 1).
+  - Talker weights (2.64 GB bf16): read once per batched step, 50 times / s whatever b.
+  - The DiT therefore goes first, including on the b = 1 tie (re-read class). DiT bytes already in SRAM and BigVGAN are left out 「假设」.
+- **Timing**: hits come from `slc_GBps` on a port parallel to DRAM, so t = max(component time on the DRAM share, SLC bytes / slc_GBps) 「近似」. Only `slc_policy` "pin" applies. With no SLC or another policy, the numbers are identical to 0.271 (test).
+
+| 100T + LPDDR5X, slc_GBps 2000 「假设」, 10 s out | B1 RTF | B4 RTF | B8 RTF | Talker step B1 | real-time streams |
+|---|---|---|---|---|---|
+| no SLC | 1.03 | 2.05 | 3.40 | 14.0 ms | 0 |
+| 1 GiB (DiT 86 %) | 0.79 | 1.07 | 1.45 | 14.0 ms | 3 |
+| 2 GiB (DiT 100 %, Talker 34 %) | 0.55 | 0.84 | 1.21 | 9.3 ms | 5 |
+| 4 GiB (both) | 0.17 | 0.46 | 0.85 | 1.7 ms | 9 |
+
+Findings:
+1. Batching alone does not help. The Talker step barely grows (14.0 → 15.0 ms from B1 to B8), but token2wav runs at batch 1, so DiT time per audio second grows with b (0.33 → 2.63 s). The speech card is not real time at any b without an SLC.
+2. A 1 GiB pin of the DiT re-read weights already gives 3 streams.
+3. Holding both the DiT (1.27 GB miss share) and the Talker (2.64 GB) needs about 3.9 GB of SLC. That cuts the Talker step 8× and gives 9 real-time streams.
+4. The design lever for Omni speech output is SLC capacity of at least the DiT + Talker weight set, not more MACs. Bandwidth-poor cards stay Talker-bound without it.
+
+### §217.4 Freshness and deferred
+- `freshness_sweep.py 2026-10-20` (88 orgs): nothing. HF trending, created on or after 10-18: nothing.
+- **Deferred**:
+  - fishaudio/drama-3: FishOmni. Qwen3.5-style hybrid text model: 40 layers, 30 GDN + 10 full, 256 experts top-8, fp8 experts, 35.9 B stored. Plus a 4-layer, 10-codebook MTP audio decoder and codec.pth. The modeling code is not in the repo.
+  - IndexTeam Index-Echo-S2ST: STLM omni (15 shards) + distcp checkpoint + bridge mapper + vendored CosyVoice3.
+  - FireRedTTS3: custom FireRedTTS3BaseCore (patch encoder 8 × 1024, DiT 11 × 1024, ReDAE); the HF repo has configs + weights only, no modeling code.
+  - Kimi-Audio-7B; Step-Audio-2 token2wav.

@@ -353,6 +353,37 @@ def omni_pin(o: OmniSpec, sram_bytes: float, max_act: float = 0.0) -> float:
     return 1.0 - min(W, free) / W
 
 
+def talker_weight_bytes(o: OmniSpec) -> float:
+    """Talker weight bytes streamed per step (GEMMs; the codec-embedding lookup is a per-row gather, not streamed)."""
+    return sum(x.w_bytes for x in talker_ops(o, 1, 1, 1) if x.kind == "gemm")
+
+
+def omni_slc_plan(o: OmniSpec, miss: float, slc_bytes: float, b: int) -> tuple[float, float]:
+    """0.272 SLC pin on the speech card (``slc_policy`` "pin"): the 0.192 / 0.269 rule — fill the SLC by DRAM bytes saved
+    per audio second per byte.  DiT weights still missing SRAM are read ``evals`` times per chunk for each of the b
+    streams (token2wav batch 1): b · evals · mel_per_s / chunk per s (50 · b); the Talker weights once per batched step:
+    codec_per_s (50) per s, whatever b.  The DiT goes first on ties (re-read class, §214.2).  The DiT weights SRAM
+    already holds and BigVGAN (≈ b · 1.4 reads / s) are left out 「假设」.  Returns (hit share of the DiT SRAM-miss
+    bytes, hit share of the Talker weight bytes)."""
+    if slc_bytes <= 0:
+        return 0.0, 0.0
+    wd, wt = o.dit_run_params * 4.0 * miss, talker_weight_bytes(o)
+    rate_d, rate_t = b * o.evals * o.mel_per_s / o.chunk, o.codec_per_s
+    left, h = slc_bytes, {}
+    for k, w, r in sorted((("dit", wd, rate_d), ("talker", wt, rate_t)), key=lambda x: -x[2] + (0 if x[0] == "dit" else 1e-9)):
+        take = min(w, left) if w > 0 else 0.0
+        h[k] = take / w if w > 0 else 0.0
+        left -= take
+    return h["dit"], h["talker"]
+
+
+def scale_weights(ops: list[Op], s: float) -> list[Op]:
+    """GEMM weight reads × s (the share still served by DRAM)."""
+    if s == 1.0:
+        return ops
+    return [replace(x, w_params=int(round(x.w_params * s))) if x.kind == "gemm" else x for x in ops]
+
+
 def chunk_flops(o: OmniSpec, T: int, M: int) -> dict:
     f = lambda ops: sum(x.flops for x in ops if x.kind in ("gemm", "attn"))
     return {"dit_eval": f(dit_eval_ops(o, T)), "dit_chunk": o.evals * f(dit_eval_ops(o, T)), "voc": f(bigvgan_ops(o, M))}

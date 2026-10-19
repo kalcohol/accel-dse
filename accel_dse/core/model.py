@@ -576,6 +576,10 @@ def _tc(cfg: dict) -> dict:
         cv = cfg.get("cosyvoice") or {}
         tc = {**cfg["llm_config"], "vocab_size": cv.get("speech_vocab") or cfg["llm_config"]["vocab_size"],
               "tie_word_embeddings": False}
+    if mt == "step_audio_2" and isinstance(tc, dict):
+        # 0.272 Step-Audio-2-mini: transformers Qwen2Model(text_config) — Qwen2 attention has q / k / v bias; untied
+        # lm_head (modeling_step_audio_2.py 「来源」)
+        tc = {**tc, "attention_bias": True, "tie_word_embeddings": False}
     if mt == "qwen2_audio" and isinstance(tc, dict) and not tc.get("hidden_size"):
         tc = {**_QWEN2_DEFAULTS, **tc}
     if mt == "whisper":

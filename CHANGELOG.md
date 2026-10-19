@@ -6,6 +6,43 @@
 
 
 
+## [0.272.0]
+
+### Added: Fun-ASR-Nano-2512 (MODEL §217.1)
+- `FunAudioLLM/Fun-ASR-Nano-2512-hf` (transformers `fun_asr_nano`, bf16, listing domain `asr`, family Fun-ASR-Nano).
+- New audio kind `sanm` (`vision._sanm_spec / _sanm_ops`):
+  - Front end: Kaldi fbank, then LFR stacking of 7 frames at stride 6, giving 16.7 positions / s. Audio tokens = LFR frames.
+  - Encoder: 70 SAN-M blocks (d512, FSMN depthwise k11, ReLU MLP), bidirectional over the whole utterance. All 70 layers run, including the 20 timestamp-prediction layers.
+  - Projector 512 → 2048 → 1024, then 2 adaptor blocks.
+  - Positions are capped at 2048 (≈ 122.9 s); longer audio is reported as `truncated_s`.
+- Params exact vs the header: Qwen3-0.6B 596,049,920; tower 233,741,920. 30 s ≈ 0.27 TFLOP in the encoder.
+
+### Added: Step-Audio-2-mini, audio in (MODEL §217.2)
+- `stepfun-ai/Step-Audio-2-mini` (listing domain `asr`, family Step-Audio-2).
+- Qwen2Model LLM with q/k/v bias and an untied 158720-token head: 7,663,326,720 params.
+- Whisper-style encoder (learned positions 1500 × 1280; one pass per clip, ≤ 29.99 s) + AvgPool(2) + Adaptor (conv k3 s2 + GELU, then Linear 1280 → 2048 → 3584): 651,852,544 params. Both exact.
+- Tokens follow the forward formula: 12.5 / s.
+- `summarize_release._step_audio_role`.
+- Speech output (token2wav: CosyVoice2 encoder + DiT estimator + HiFT, `.pt`) is not modelled; deferred.
+
+### Added: Omni speech-card SLC pin (MODEL §217.3)
+- `omni.omni_slc_plan`, `talker_weight_bytes` and `scale_weights`; `speech._omni_kpis` honours `chip.slc_mib` with `slc_policy` "pin".
+  - DiT weights that miss SRAM are pinned first (50·b reads / s per byte), then the Talker (50 / s, 2.64 GB bf16).
+  - Hits are served at `slc_GBps` on a parallel port.
+  - New result block `speech.slc` (hit shares, Talker / DiT seconds per audio second).
+  - No SLC → unchanged.
+- Finding (100T + LPDDR5X, slc_GBps 2000 「假设」):
+  - Batching alone never reaches real time, because token2wav runs at batch 1 and DiT time grows with b.
+  - 1 GiB of SLC (DiT) gives 3 real-time streams.
+  - 4 GiB (DiT + Talker) cuts the Talker step 14 → 1.7 ms: RTF 1.03 → 0.17, 9 streams.
+
+### Fixed
+- MODEL §216.2: the Talker weight bytes per codec token are 2.64 GB (1.32 B streamed params, bf16), not "1.33 GB".
+
+### Freshness
+- Sweep since 10-20: nothing new (88 orgs). HF trending created on or after 10-18: nothing.
+- Deferred, with reasons in MODEL §217.4: fishaudio drama-3 (FishOmni hybrid MoE + 10-codebook decoder; no code in the repo), Index-Echo S2ST, FireRedTTS3, Kimi-Audio-7B, Step-Audio-2 token2wav.
+
 ## [0.271.0]
 
 ### Added — Qwen2.5-Omni-7B, speech in + speech out (MODEL §216.1–216.2)

@@ -140,6 +140,14 @@ def _whisper_role(name: str) -> str:
     return "other"
 
 
+def _step_audio_role(name: str, n_layers: int | None) -> str:
+    """0.272 Step-Audio-2-mini (modeling_step_audio_2.py StepAudio2ForCausalLM): Whisper-style audio encoder
+    (encoder.*) and its Adaptor (adapter.*) → vision; Qwen2Model (model.*) + untied lm_head → the LLM."""
+    if name.startswith(("encoder.", "adapter.")):
+        return "vision"
+    return classify(name, n_layers)
+
+
 def _omni_role(name: str, n_layers: int | None) -> str:
     """0.271 Qwen2.5-Omni (Qwen2_5OmniModel): the Thinker (thinker.model / thinker.lm_head) is the LLM, its audio tower
     and ViT → vision; the speech-output Talker (talker.*) and token2wav (DiT + BigVGAN, token2wav.*) are separate
@@ -230,6 +238,7 @@ def summarize(repo: str) -> dict:
         b = _base(name) if is_blocks else re.sub(r"\.(weight_packed|qweight)$", ".weight", name)
         role = (_whisper_role(name) if cfg.get("model_type") == "whisper" else
                 _omni_role(name, nl) if cfg.get("model_type") == "qwen2_5_omni" else
+                _step_audio_role(name, nl) if cfg.get("model_type") == "step_audio_2" else
                 _cosy_role(name, nl) if cfg.get("model_type") in ("cosyvoice2", "cosyvoice3") else
                 classify(name, nl) if domain == "llm" else classify_domain(name, domain))
         if role == "buffer":

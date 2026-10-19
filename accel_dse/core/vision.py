@@ -187,15 +187,36 @@ class AudioSpec:
     # extractor's ⌈samples / hop⌉ frame count; ``stored``: params kept in the release but not run (audio_bos_eos_token)
     maxf: int = 0
     stored: int = 0
+    # 0.272 Fun-ASR-Nano (kind "sanm"): Kaldi fbank (25 ms / 10 ms, snip_edges) → LFR stacking ``lfr`` = (m, n): m
+    # frames stacked, stride n (80 × 7 = 560 inputs, 16.7 LFR frames / s); ``ad`` = adaptor (layers, d, heads, ffn)
+    # after the projector Linears; ``kernel`` = FSMN depthwise kernel; ``maxf`` (sanm) = LFR positions available
+    # (positional_embedding rows − 1: positions counted from one)
+    lfr: tuple[int, int] = ()
+    ad: tuple[int, int, int, int] = ()
+    # 0.272 Step-Audio-2-mini: ``mpad`` samples appended before the STFT (log_mel_spectrogram padding=479; frames =
+    # (samples + mpad) // hop); ``ds`` + ``lin`` together = AvgPool → Adaptor conv (GELU) → Linear, ReLU, Linear
+    mpad: int = 0
 
     @property
     def samples_per_token(self) -> int:
         return math.prod(self.patches)
 
+    def lfr_frames(self, seconds: float) -> int:
+        """0.272 sanm: LFR frames = ⌈fbank frames / n⌉, fbank frames = 1 + (samples − 400) // 160 (kaldi snip_edges)
+        — FunAsrNanoFeatureExtractor._apply_lfr 「来源」; capped at ``maxf`` (the sinusoid table)."""
+        n = round(seconds * self.rate)
+        fb = max(1, 1 + (n - 400) // self.patches[0]) if n >= 400 else 1
+        t = -(-fb // self.lfr[1])
+        return min(t, self.maxf) if self.maxf else t
+
     def mel_frames(self, seconds: float) -> int:
         """Mel frames of the clip.  Whisper STFT (center=True, last frame dropped) → ⌊samples / hop⌋; the padded
         extractors count the attention mask rescaled by hop → ⌈samples / hop⌉ (≤ one window when truncating)."""
         n = round(seconds * self.rate)
+        if self.kind == "sanm":
+            return self.lfr_frames(seconds) * self.lfr[1]      # fbank frames actually encoded (after the cap)
+        if self.mpad:
+            return max(1, min(self.maxf or 10 ** 9, (n + self.mpad) // self.patches[0]))
         if self.maxf:
             return max(1, min(self.maxf, -(-n // self.patches[0])))
         if self.pad:
@@ -225,6 +246,8 @@ class AudioSpec:
         """0.270 encoder output positions per clip (Whisper: 1500 per 30 s window — the decoder cross-attention keys)."""
         if self.kind == "aut":
             return sum(self.aut_len(n) for n in self.chunks(seconds))
+        if self.kind == "sanm":
+            return self.lfr_frames(seconds)
         if self.kind != "whisper":
             return self.tokens(seconds)        # Muse Spark: one output position per token (no chunking)
         return sum(self.chunk_len(n)[0] for n in self.chunks(seconds))
@@ -236,12 +259,14 @@ class AudioSpec:
     def chunk_len(self, n: int) -> tuple[int, int]:
         """(encoder positions after conv2, projector tokens) of an n-frame chunk (MingAudioSpec.embedding_length)."""
         t = (n + 1) // 2
-        o = t
+        o = t // self.pool if self.ds and self.pool > 1 else t      # 0.272 Step-Audio-2: AvgPool before the adaptor conv
         for k, st, pd in self.ds:
             o = (o + 2 * pd - k) // st + 1
         return t, o
 
     def tokens(self, seconds: float) -> int:
+        if self.kind == "sanm":
+            return self.lfr_frames(seconds)     # processor: num_audio_tokens = input_features_mask.sum (one per LFR frame)
         if self.kind == "aut":
             return self.enc_positions(seconds)
         if self.kind == "whisper" and self.pad:
@@ -252,6 +277,9 @@ class AudioSpec:
             L = min(self.mel_frames(seconds), self.chunk)
             t = (L - 1) // 2 + 1
             return (t - 2) // self.pool + 1 if self.pool > 1 else t
+        if self.kind == "whisper" and self.ds and self.pool > 1:
+            # 0.272 Step-Audio-2 forward: feat_lens = ((L + 1)//2//2 − 1)//2 + 1 (conv2, AvgPool 2, adaptor conv s2)
+            return sum(self.chunk_len(n)[1] for n in self.chunks(seconds))
         if self.kind == "whisper" and self.pool > 1:
             # 0.271 Qwen2.5-Omni processor: (((L − 1)//2 + 1) − 2)//2 + 1 over the valid frames L (conv2 stride 2,
             # stride-2 average pool over the clip's concatenated chunk outputs) 「来源」 processing_qwen2_5_omni.py
@@ -278,6 +306,11 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
     tk = cfg.get("thinker_config") or {}
     if mt == "qwen2_5_omni" and (tk.get("audio_config") or {}).get("model_type") == "qwen2_5_omni_audio_encoder":
         return _omni_audio_spec(tk["audio_config"])
+    sa = cfg.get("audio_encoder_config") or {}
+    if mt == "step_audio_2" and sa.get("n_audio_state"):
+        return _step_audio_spec(sa)
+    if mt == "fun_asr_nano" and ac.get("model_type") == "fun_asr_nano_encoder":
+        return _sanm_spec(ac, cfg.get("adaptor_config") or {})
     if mt == "qwen3_asr" and (tk.get("audio_config") or {}).get("model_type") == "qwen3_asr_audio_encoder":
         return _aut_spec(tk["audio_config"])
     if ac.get("model_type") != "muse_spark_audio":
@@ -362,6 +395,83 @@ def _aut_spec(ac: dict) -> AudioSpec:
     return replace(a, win=a.aut_len(2 * nw) * (ac["n_window_infer"] // (2 * nw)))
 
 
+def _step_audio_spec(sa: dict) -> AudioSpec:
+    """0.272 Step-Audio-2-mini audio encoder (modeling_step_audio_2.py AudioEncoder + Adaptor 「来源」): log-mel 128
+    (audio padded by 479 samples, hop 160), conv1 k3 + conv2 k3 s2 (GELU), learned positions Embedding(n_audio_ctx,
+    d) (stored), L Whisper blocks (query / value / out with bias, key without; GELU MLP 4d), AvgPool1d(2, 2), LayerNorm;
+    Adaptor: Conv1d(d, d, k, stride, padding 1) + GELU, Linear d → 2048, ReLU, Linear 2048 → llm_dim.  One pass over
+    the whole clip (no chunking, full attention); conv2 positions ≤ n_audio_ctx → at most 2·n_ctx − 1 mel frames."""
+    d, L, nh, mel, ctx = sa["n_audio_state"], sa["n_audio_layer"], sa["n_audio_head"], sa["n_mels"], sa["n_audio_ctx"]
+    k, st = sa.get("kernel_size", 3), sa.get("adapter_stride", 2)
+    lin = ((d, 2048), (2048, sa["llm_dim"]))
+    a = _whisper_v3_spec({"d_model": d}, L, nh, 4 * d, mel, ctx, pool=2, lin=lin)
+    return replace(a, params=a.params + _lin(k * d, d), pad=False, chunk=2 * ctx - 1, maxf=2 * ctx - 1,
+                   ds=((k, st, 1),), mpad=479)
+
+
+def _sanm_spec(ac: dict, ad: dict) -> AudioSpec:
+    """0.272 Fun-ASR-Nano audio tower (transformers FunAsrNanoEncoder / FunAsrNanoMultiModalProjector,
+    modeling_fun_asr_nano.py 「来源」; SenseVoice SAN-M): input = LFR features (80 mel × 7 stacked = 560, stride 6),
+    × √d + sinusoid positions (buffer, from position 1); L pre-LN blocks [LayerNorm, q / k / v / o Linear with bias
+    (layer 0 maps 560 → d, no residual), FSMN depthwise Conv1d k (no bias) on the unsplit values added to the attention
+    output, LayerNorm, ReLU MLP fc1 / fc2 with bias]; bidirectional attention over the whole utterance (no chunking);
+    final LayerNorm on layers L − n_tp − 1 and L − 1 only.  All L layers (incl. the n_tp timestamp-prediction layers)
+    run in forward.  Projector: Linear d → P, ReLU, Linear P → D, then the adaptor's n blocks (d = D, no FSMN, ReLU MLP
+    D/4).  One LLM token per LFR frame.  Header: 233,741,920 params."""
+    d, L, nh, ffn, k = ac["hidden_size"], ac["num_hidden_layers"], ac["num_attention_heads"], ac["intermediate_size"], ac["fsmn_kernel_size"]
+    m = ac.get("num_stacked_frames", 7)
+    din = ac["num_mel_bins"] * m
+    D, P, nl = ad["hidden_size"], ad["projector_hidden_size"], ad["num_hidden_layers"]
+    adh, adf = ad["num_attention_heads"], ad["intermediate_size"]
+
+    def blk(i: int, dd: int, f: int, fsmn: bool) -> int:
+        return 2 * i + 3 * _lin(i, dd) + _lin(dd, dd) + (dd * k if fsmn else 0) + 2 * dd + _lin(dd, f) + _lin(f, dd)
+    params = (blk(din, d, ffn, True) + (L - 1) * blk(d, d, ffn, True) + 2 * 2 * d
+              + _lin(d, P) + _lin(P, D) + nl * blk(D, D, adf, False))
+    return AudioSpec(16000, (160,), (d,), (L,), k, ffn / d, D, params, kind="sanm", heads=nh, n_mels=din,
+                     lin=((d, P), (P, D)), maxf=ac["max_position_embeddings"] - 1, lfr=(m, 6), ad=(nl, D, adh, adf))
+
+
+def _sanm_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
+    """0.272 Fun-ASR-Nano SAN-M encoder + projector + adaptor ops (see _sanm_spec): every layer on all T LFR positions
+    of a clip (one pass per clip, bidirectional attention T × T per head); FSMN as a depthwise conv (2·k per output
+    element); final LayerNorms folded into the vector ops."""
+    d, dh = a.dims[0], a.dims[0] // a.heads
+    T = a.lfr_frames(seconds)
+    R = T * clips
+    ops: list[Op] = []
+
+    def gemm(name: str, m: int, k: int, n: int, li: int = 0) -> Op:
+        return Op(name, "gemm", li, m=m, k=k, n=n, role="vision", w_params=k * n + n, w_bits=16.0, w_fmt="bf16",
+                  a_fmt=af, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+
+    def attn(p: str, li: int, heads: int, hd: int) -> list[Op]:
+        cnt = clips * heads
+        return [Op(f"{p}{li}.qk", "attn", li, m=T, k=hd, n=T, count=cnt, causal=1.0, act_bytes=cnt * T * hd * ab,
+                   stream=True, orient=True),
+                Op(f"{p}{li}.pv", "attn", li, m=T, k=T, n=hd, count=cnt, causal=1.0, act_bytes=cnt * T * hd * ab,
+                   orient=True),
+                Op(f"{p}{li}.softmax", "vector", li, vec=cnt * T * T * 5.0)]
+    ff = int(a.mlp * d)
+    for li in range(a.depths[0]):
+        i = a.n_mels if li == 0 else d
+        ops += [gemm(f"aud.{li}.qkv", R, i, 3 * d, li), gemm(f"aud.{li}.o", R, d, d, li),
+                Op(f"aud.{li}.fsmn", "vector", li, vec=R * d * 2.0 * a.kernel, act_bytes=2 * R * d * ab,
+                   w_params=d * a.kernel, w_bits=16.0),
+                gemm(f"aud.{li}.fc1", R, d, ff, li), gemm(f"aud.{li}.fc2", R, ff, d, li)]
+        ops += attn("aud.", li, a.heads, dh)
+    L = a.depths[0]
+    for j, (k, n) in enumerate(a.lin):
+        ops.append(gemm(f"aud.proj.linear{j}", R, k, n, L))
+    nl, D, h2, f2 = a.ad
+    for j in range(nl):
+        li = L + 1 + j
+        ops += [gemm(f"aud.ad{j}.qkv", R, D, 3 * D, li), gemm(f"aud.ad{j}.o", R, D, D, li),
+                gemm(f"aud.ad{j}.fc1", R, D, f2, li), gemm(f"aud.ad{j}.fc2", R, f2, D, li)]
+        ops += attn(f"aud.ad{j}.", li, h2, D // h2)
+    return ops
+
+
 def _aut_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
     """0.270 Qwen3-ASR AuT encoder ops (see _aut_spec): Conv2d as implicit GEMMs over every padded chunk; blocks on
     the valid positions; attention per window (full windows + the tail window)."""
@@ -424,6 +534,14 @@ def _whisper_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -
                     Op(f"{p}{li}.pv", "attn", li, m=t, k=t, n=dh, count=ch, causal=1.0, act_bytes=ch * t * dh * ab,
                        orient=True),
                     Op(f"{p}{li}.softmax", "vector", li, vec=ch * t * t * 5.0)]
+        if a.lin and a.ds:
+            # 0.272 Step-Audio-2: AvgPool1d(pool) → Adaptor conv (k, s) d → d as an implicit GEMM → Linears
+            ops.append(Op(f"{p}pool", "vector", a.depths[0], vec=rows * d * 1.0))
+            (kk, _, _), = a.ds
+            ops.append(gemm(f"{p}proj.conv0", cnt * o, kk * d, d, a.depths[0]))
+            for i, (k, n_) in enumerate(a.lin):
+                ops.append(gemm(f"{p}proj.linear{i}", cnt * o, k, n_, a.depths[0]))
+            continue
         if a.lin is not None:
             # 0.270 Whisper-v3 family: AvgPool1d(pool) (Qwen2-Audio; ½ add per pooled input) then the projector Linears
             # on every padded position (the processor's mask selects the valid ones afterwards)
@@ -449,6 +567,8 @@ def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> lis
         return _whisper_ops(a, seconds, clips, ab, af)
     if a.kind == "aut":
         return _aut_ops(a, seconds, clips, ab, af)
+    if a.kind == "sanm":
+        return _sanm_ops(a, seconds, clips, ab, af)
     t = a.tokens(seconds) * a.samples_per_token * clips       # padded samples (all clips)
     ops: list[Op] = []
     din = 1
@@ -489,13 +609,15 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return None
     if not vc:
         au = audio_spec(cfg)
-        if au is not None and au.kind in ("whisper", "aut"):
+        if au is not None and au.kind in ("whisper", "aut", "sanm"):
             # 0.268 audio-only release (Ming-3.0-asr-tiny): an encoder container with no image path (family "audio":
             # image_grid_of → None, serving.images ignored with a warning); costed when serving.audio_s > 0
             # 0.270: Whisper-large-v3 (encoder-decoder), Qwen2-Audio (Whisper-v3 encoder + pool + projector), Qwen3-ASR (AuT)
-            lab = ("Whisper-v3 音频编码器（30 s 填充窗，交叉注意力输入）" if au.cross else
+            lab = ("Whisper 式音频编码器（整段一次、≤ 30 s）+ 平均池化 + 卷积适配器（s2）+ MLP 投影" if au.ds and au.lin else
+                   "Whisper-v3 音频编码器（30 s 填充窗，交叉注意力输入）" if au.cross else
                    "Whisper-v3 音频编码器（30 s 填充）+ 平均池化 + 线性投影" if au.lin is not None and au.kind == "whisper" else
                    "AuT 音频编码器（Conv2d ×3 下采样 8×，窗口注意力）+ MLP 投影" if au.kind == "aut" else
+                   "SAN-M 音频编码器（LFR 7/6 帧堆叠，70 层 FSMN 自注意力，整段双向）+ 投影 + 2 层适配器" if au.kind == "sanm" else
                    "Whisper 音频编码器 + 卷积下采样投影")
             return VisionSpec("audio", lab, 0, 1, au.dims[0], int(au.mlp * au.dims[0]),
                               au.depths[0], au.heads, au.dims[0], False, 1, (), au.params, (), audio=au)

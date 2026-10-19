@@ -41,7 +41,7 @@ def _omni_time(ops: list, sys, org: str, af: str) -> float:
 def _omni_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     from .hardware import System
     from .ir import _cdiv
-    from .omni import bigvgan_ops, dit_eval_ops, omni_pin, talker_ops
+    from .omni import bigvgan_ops, dit_eval_ops, omni_pin, omni_slc_plan, scale_weights, talker_ops, talker_weight_bytes
     sv, lay, m = scn.serving, scn.layout, pre.model
     o = m.omni
     sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
@@ -53,14 +53,26 @@ def _omni_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     n_codec = max(1, math.ceil(audio_out_s * o.codec_per_s - 1e-9))
     t_pre = _omni_time(talker_ops(o, b, P, 0), sys, org, "bf16")
 
-    def t_step(bb: int) -> float:
-        return _omni_time(talker_ops(o, bb, 1, P + n_codec // 2), sys, org, "bf16")
-
     miss = omni_pin(o, sys.chip.sram_bytes)
+    # 0.272: an SLC with slc_policy "pin" holds the DiT SRAM-miss weights, then the Talker weights (omni_slc_plan);
+    # hits are served at slc_GBps on a port parallel to DRAM (schedule.t_slc): t = max(component time with the DRAM
+    # share of the weights, SLC bytes / slc_GBps) 「近似」.  No SLC (or another policy) → identical to 0.271.
+    slc = sys.chip.slc_bytes if sys.chip.slc_policy == "pin" else 0.0
+    slc_bw = sys.chip.slc_GBps * 1e9
+    wt, wd = talker_weight_bytes(o), o.dit_run_params * 4.0
 
-    def t_dit(T: int) -> float:
-        return (_omni_time(dit_eval_ops(o, T), sys, org, "fp32")
-                + (o.evals - 1) * _omni_time(dit_eval_ops(o, T, miss), sys, org, "fp32"))
+    def t_step(bb: int) -> float:
+        h = omni_slc_plan(o, miss, slc, bb)[1]
+        c = _omni_time(scale_weights(talker_ops(o, bb, 1, P + n_codec // 2), 1.0 - h), sys, org, "bf16")
+        return max(c, h * wt / slc_bw) if h else c
+
+    def t_dit(T: int, bb: int = b) -> float:
+        h = omni_slc_plan(o, miss, slc, bb)[0]
+        first = _omni_time(dit_eval_ops(o, T, 1.0 - miss * h), sys, org, "fp32")
+        rr = _omni_time(dit_eval_ops(o, T, miss * (1.0 - h)), sys, org, "fp32")
+        if h:
+            first, rr = max(first, miss * h * wd / slc_bw), max(rr, miss * h * wd / slc_bw)
+        return first + (o.evals - 1) * rr
     ts = t_step(b)
     d0, d1 = t_dit(o.dit_window(0)), t_dit(o.dit_window(1))
     v0, v1 = (_omni_time(bigvgan_ops(o, o.voc_frames(i)), sys, org, "fp32") for i in (0, 1))
@@ -70,7 +82,7 @@ def _omni_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     busy = o.codec_per_s * ts + b * chunks_per_s * per_chunk
     rt = 0
     lo, hi = 0, 1
-    f = lambda bb: o.codec_per_s * t_step(bb) + bb * chunks_per_s * per_chunk <= 1.0
+    f = lambda bb: o.codec_per_s * t_step(bb) + bb * chunks_per_s * ((t_dit(o.dit_window(1), bb) if slc else d1) + v1) <= 1.0
     while hi <= 4096 and f(hi):
         lo, hi = hi, hi * 2
     while hi - lo > 1 and lo < 4096:
@@ -86,7 +98,11 @@ def _omni_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
            "split_first": {"thinker_ttft_s": pre.ttft, "thinker_tpot_s": dec.tpot, "talker_prefill_s": t_pre,
                            "talker_steps_s": o.first_codec * ts, "dit_chunk0_s": d0, "voc_chunk0_s": v0},
            "ttft_s": pre.ttft, "tpot_s": dec.tpot, "talker_step_s": ts, "dit_chunk_s": d1, "voc_chunk_s": v1,
-           "dit_pin_miss": miss, "speech_card_s_per_audio_s": busy, "rtf": busy, "streams_per_card": b,
+           "dit_pin_miss": miss,
+           "slc": {"mib": slc / 2 ** 20, "dit_hit": omni_slc_plan(o, miss, slc, b)[0],
+                   "talker_hit": omni_slc_plan(o, miss, slc, b)[1], "talker_weight_GB": wt / 1e9,
+                   "talker_s_per_audio_s": o.codec_per_s * ts, "dit_s_per_audio_s": b * chunks_per_s * d1},
+           "speech_card_s_per_audio_s": busy, "rtf": busy, "streams_per_card": b,
            "streams_realtime": rt, "total_s": tot, "speech_cards": lay.dp,
            "audio_out_s_per_s_card": sv.batch * audio_out_s / tot / (pre.scenario.layout.cards + lay.dp),
            "speech_card_GB": need / 1e9, "speech_card_fits": need <= sys.dram_bytes,
