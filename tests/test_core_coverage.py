@@ -79,7 +79,7 @@ IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b",
               "flux-3-image-klein", "flux-3-image-klein-base")   # 0.252: + FLUX 3 (reference stream modelled)
 # 0.144 VLMs whose vision side is approximated (LLM side exact): Step-5 overview only, MiniCPM one 448² view, MiMo window
 # attention as full + audio encoder storage-only
-VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4",)   # 0.145: MiniCPM slicing + MiMo band windows modelled → full; 0.251 NVFP4 = same vision
+VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4", "qwen2.5-omni-7b",)   # 0.271 Omni: ViT stored only   # 0.145: MiniCPM slicing + MiMo band windows modelled → full; 0.251 NVFP4 = same vision
 # 0.255: Muse Spark Open (+ fp8 / mxfp4 / nvfp4 / dspark / dflash2 pairs) → full: MuseGlimmerImageProcessor smart_resize now
 # public in transformers (was the only reason since 0.175 audio)
 

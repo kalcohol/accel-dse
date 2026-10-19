@@ -46,7 +46,7 @@ function coverBadge(m) {
   return h('span', { class: 'badge cov ' + m.coverage, title: coverTip(m) }, h('span', { class: 'ax' }, '覆盖'), COVER_ZH[m.coverage]);
 }
 const PROV_ZH = { official: '官方', mirror: '镜像' };
-const DOMAIN_ZH = { gen: '视频生成', protein: '蛋白质', genomics: '基因组', asr: '语音识别', tts: '语音合成' };
+const DOMAIN_ZH = { gen: '视频生成', protein: '蛋白质', genomics: '基因组', asr: '语音识别', tts: '语音合成', omni: '全模态' };
 const isFull = (m) => !!m && (m.domain === 'gen' || m.domain === 'protein' || m.domain === 'genomics');   // non-autoregressive full-sequence forward
 const UNIT_ZH = { frame: '帧', seq: '序列', token: 'tok', window: '窗口' };
 // 0.119: throughput unit of a full-forward model — image DiT 张, video 帧, genomics 窗口, protein 序列
@@ -71,7 +71,9 @@ function domainBadge(m) {
   if (m.domain === 'protein') return h('span', { class: 'badge vlm', title: coverTip(m) }, m.is_pair ? '蛋白质 · 结构预测' : '蛋白质 · 编码器前向');
   if (m.domain === 'genomics') return h('span', { class: 'badge vlm', title: coverTip(m) }, '基因组 · 双向编码器前向（逐 token 分类）');
   // 0.268: audio-only release (Ming-3.0-asr-tiny) — the encoder is costed via serving.audio_s (API / CLI --audio-s)
+  if (m.domain === 'tts' && /CosyVoice/.test(m.hf_id || '')) return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · LM 每秒 25 个语音 token → 分块流匹配 → HiFT 声码器（按输出音频秒计）');   // 0.271
   if (m.domain === 'tts') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · 每 token = 1 帧潜变量（流匹配头 + AudioVAE 解码）');
+  if (m.domain === 'omni') return h('span', { class: 'badge vlm', title: coverTip(m) }, '全模态 · Thinker（+ 音频编码器）→ Talker → token2wav 语音输出（按输出音频秒计）');   // 0.271
   if (m.domain === 'asr') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音识别 · 含音频编码器（serving.audio_s，按音频秒计）');
   return null;
 }
@@ -841,6 +843,14 @@ function renderEval(r) {
     if (p.kind === 'asr') k.push(kpi('语音端到端 · ASR', `RTF ${num(p.rtf)}`,
       `${num(p.audio_s)} s 音频 → ${p.out_len} token · 首 token ${num(p.first_token_s * 1e3)} ms · 共 ${num(p.total_s)} s · ${num(p.audio_s_per_s_card)} 音频秒/秒/卡（静态 batch，两阶段串行「近似」）`,
       p.rtf > 1 ? 'warn' : ''));
+    else if (p.kind === 'cosyvoice') k.push(kpi(`语音端到端 · CosyVoice${p.version}`, `首音频 ${num(p.first_audio_s * 1e3)} ms`,   // 0.271
+      `${num(p.audio_out_s)} s 输出音频 = ${p.speech_tokens} 语音 token（LM RTF ${num(p.lm_rtf)}）· 分块 ${p.hops.join('/')} token，每块 flow 从头重算（Euler ${p.flow_steps} 步 × CFG ${p.cfg}）`
+      + ` · 语音卡 RTF ${num(p.rtf)}（${p.streams_per_card} 路）· 实时路数 ${p.streams_realtime} · 常驻实例首音频 ${num(p.first_audio_warm_s * 1e3)} ms（hop 不复位）· ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`,
+      p.rtf > 1 || p.lm_rtf > 1 ? 'warn' : ''));
+    else if (p.kind === 'omni') k.push(kpi('语音端到端 · Omni 语音输出', `首音频 ${num(p.first_audio_s * 1e3)} ms`,   // 0.271
+      `${num(p.audio_out_s)} s 输出音频 = ${p.codec_tokens} codec token（Talker 每步 ${num(p.talker_step_s * 1e3)} ms）· DiT 每 ${num(p.chunk_s)} s 分块 ${num(p.dit_chunk_s * 1e3)} ms（RK4 ${p.dit_evals} 次 × CFG ${p.cfg}）`
+      + ` · 语音卡 RTF ${num(p.rtf)}（${p.streams_per_card} 路）· 实时路数 ${p.streams_realtime} · 共 ${num(p.total_s)} s · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡（含 ${p.speech_cards} 张语音卡「假设」）`
+      + (p.speech_card_fits ? '' : ' · 语音卡放不下'), p.rtf > 1 || !p.speech_card_fits ? 'warn' : ''));
     else k.push(kpi('语音端到端 · TTS', `RTF ${num(p.rtf)}`,
       `${num(p.audio_out_s)} s 音频输出 = ${p.steps} 步 · 首音频 ${num(p.first_audio_s * 1e3)} ms · 共 ${num(p.total_s)} s · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`,
       p.rtf > 1 ? 'warn' : ''));

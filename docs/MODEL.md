@@ -6806,3 +6806,104 @@ Findings: (1) Whisper-v3 decode at batch is bound by the cross K/V, not the weig
 ### §215.4 Freshness
 `freshness_sweep.py 2026-10-20`: nothing new (74 orgs). 14 speech orgs added to `EXTRA_ORGS`; nothing since 10-20 there. Seen earlier (candidates for 0.271): fishaudio/drama-3 (10-01), IndexTeam Index-Echo S2ST / S2TT (10-03), FunAudioLLM Fun-ASR-Nano-2512, FireRedTTS3.
 
+
+## §216 Speech round 2: Qwen2.5-Omni speech out, CosyVoice2 / Fun-CosyVoice3 (0.271)
+
+### §216.1 Qwen2.5-Omni-7B: Thinker and audio tower
+「来源」 transformers `modeling_qwen2_5_omni.py` / `configuration_qwen2_5_omni.py` / `processing_qwen2_5_omni.py`; Qwen/Qwen2.5-Omni-7B config.json + safetensors header.
+- **Thinker**: Qwen2.5-7B (h3584, 28 layers, GQA 28/4, SwiGLU 18944, vocab 152064, untied, q/k/v bias), from `thinker_config.text_config`. 7,615,616,512, exact. This is the catalog LLM.
+- **Audio tower**:
+  - Structure: Qwen2_5OmniAudioEncoder = Whisper-v3 (conv1 + conv2 s2, 32 × d1280 / 20 heads, k without bias). The encoder runs only the valid frames, in chunks of 2 · n_window = 200 frames with attention inside a chunk (cu_seqlens). Then ln_post, AvgPool1d(2, 2) and proj 1280 → 3584.
+  - Params: the sinusoid positions are a buffer, not in the checkpoint; `audio_bos_eos_token` (2 × 3584) is stored. 639,647,232, exact.
+  - Tokens: the processor pads to 30 s with truncation, and feature_lens = ⌈samples / 160⌉ ≤ 3000. Tokens = (((L − 1)//2 + 1) − 2)//2 + 1, which is 25 / s and 750 at 30 s.
+  - Code: `AudioSpec.maxf / stored`, `_omni_audio_spec`; the whisper ops are run with `pad = False`.
+- **ViT**: the Qwen2.5-VL ViT (`thinker.visual`, 676,550,144) is stored only (`VisionSpec.extra`). Image and video prompts are not costed, and that is the coverage reason (partial).
+- **Release roles**: `talker.*` and `token2wav.*` are their own roles (`params_talker` 1,351,360,256 bf16; `params_token2wav` 449,051,296 fp32). LLM + vision + talker + token2wav = the header total.
+
+### §216.2 Qwen2.5-Omni speech output: Talker → DiT → BigVGAN (`core/omni.py`)
+「来源」 the same transformers code, plus vLLM-Omni `qwen2_5_omni_token2wav.py` for streaming. All parameter formulas match the header exactly.
+- **Talker** (bf16): 24 layers, h896, 12 heads × 128 (q 1536), kv 4 × 128, SwiGLU 18944, q/k/v bias, codec vocab 8448.
+  - Input per position = codec embedding (8448 × 3584, looked up) + Thinker embedding / hidden, passed through thinker_to_talker_proj 3584 → 896.
+  - It prefills over the Thinker prompt (text + audio positions), then runs one step per codec token.
+  - Per-layer params 54,595,840; total 1,351,360,256.
+- **Rates** 「推导」: BigVGAN hop = Π(5, 3, 2, 2, 2, 2) = 240 samples at 24 kHz (README sf.write samplerate 24000), so 100 mel/s. DiT `repeats` 2 gives 50 codec tokens/s.
+- **DiT** (fp32; the reference forces fp32):
+  - Blocks: 22 blocks d1024, 16 × 64 heads. AdaLayerNormZero Linear d → 6d on the time embedding (per row-batch, not per frame). GELU-tanh MLP 2048. Block mask (24 frames; layer 10 looks one block ahead, layers 0 and 20 one block back) is applied as a masked SDPA, so scores are dense T × T.
+  - Input: Linear 912 → 1024 over [noisy mel 80, ECAPA vector 128, codec embedding 512 ×2 repeat, speaker embedding 192].
+  - ECAPA-TDNN: res2net scale 2, SE 64, ASP 64; 1,729,280 params. It re-runs on the reference mel in every evaluation; the reference length of 300 frames (3 s) is an assumption 「假设」.
+  - Sampler: RK4 over linspace(0, 1, 10) with sway −1 gives 9 intervals × 4 = 36 evaluations, each one batch with CFG (cond + uncond, guidance 0.5).
+  - Params: 333,607,792.
+- **BigVGAN** (fp32): conv_pre k7 80 → 1536, then 6 × [ConvTranspose (k 11, 7, 4, 4, 4, 4; channels halve) + 3 AMPBlocks (k 3/7/11 × dilations 1, 3, 5, two convs each)], then SnakeBeta and conv_post k7 without bias. 115,443,504 params.
+  - Anti-aliased SnakeBeta is costed at 56 vector ops per element 「近似」.
+- **Streaming** (vLLM-Omni Qwen2_5OmniToken2WavModel, "aligned with Qwen2Code2wav"):
+  - Geometry: bs_mel 24, chunk 72 mel (0.72 s), past 48, future 24.
+  - DiT window of chunk i = [72i − 48, 72(i + 1) + 24): 96 frames for the first chunk, 144 after that.
+  - Vocoder input: 72 frames for the first chunk, then 72 + 2 · future_size 20 = 112.
+  - The first chunk emits (72 − 20) · 240 samples = 0.52 s. token2wav supports batch 1 only.
+- **KPIs** (`speech._omni_kpis`):
+  - Placement assumption 「假设」: Talker + token2wav on one extra card of the same chip per replica (vLLM-Omni runs them as separate pipeline stages).
+  - First audio = T_ft(Thinker, incl. audio tower) + one Thinker TPOT 「假设」 + Talker prefill + 48 Talker steps (the codec of DiT window 0) + DiT chunk 0 + vocoder chunk 0.
+  - Speech-card s per audio second for b streams = 50 · t_step(b) + b · (100 / 72) · (t_DiT,144 + t_voc,112). This is each stream's RTF; streams_realtime is the largest b with RTF ≤ 1.
+  - DiT weights: the 0.269 re-read rule applies (R = 36 > 2 B/B, so pinned first). The first evaluation reads all weights; the other 35 read the miss share 1 − min(W, SRAM − staging) / W.
+  - The Talker K/V reads are added to the component path, which otherwise ignores K/V.
+
+| 100T + LPDDR5X, 64-token prompt + 10 s audio in, 10 s out | B1 | B4 |
+|---|---|---|
+| first audio (s) | 1.08 (Thinker 0.08 + 0.07, Talker 0.01 + 48 × 14 ms = 0.67, DiT 0.24, voc 0.002) | 1.24 (last stream 1.96) |
+| speech-card RTF | 1.03 | 2.05 |
+| DiT re-read miss | 0.95 (64 MiB SRAM vs 1.32 GB) | |
+
+Finding: the Talker (1.33 GB bf16 read per codec token, 50 per second) costs as much as the whole DiT path. On a bandwidth-poor card, Omni speech output is not real time for even one stream; the lever is Talker weight bandwidth, or batching streams (t_step barely grows with b). The DiT is weight-re-read bound at 36 evaluations per chunk, so a ≥ 1.3 GB SRAM / SLC pin would cut its 0.24 s per chunk (test: 4 GiB SRAM → miss 0, chunk faster).
+
+### §216.3 CosyVoice2-0.5B / Fun-CosyVoice3-0.5B-2512 (`core/cosyvoice.py`)
+「来源」 github FunAudioLLM/CosyVoice (cli/model.py, flow/flow.py, flow_matching.py, decoder.py, DiT/dit.py, hifigan/generator.py), cosyvoice2.yaml / cosyvoice3.yaml.
+- **Release metadata**: the releases ship torch `.pt` checkpoints only. `scripts/fetch_pt_release.py` reads each state dict's tensor names, shapes and dtypes from the pickled data.pkl, located through the zip central directory with HTTP Range requests (no download, no torch).
+  - llm.pt: 641,938,468 / 642,283,136.
+  - flow.pt: 112,549,360 / 332,257,120.
+  - hift.pt: 20,821,295 / 20,779,887.
+  - All fp32. `summarize_release._cosy_role` assigns roles; flow and hift shapes are kept as `speech_tensors`.
+- **LM**: the Qwen2.5-0.5B backbone (CosyVoice-BlankEN config, q/k/v bias) decodes speech tokens at 25 per audio second.
+  - Vocab = the speech table / `llm_decoder` rows: 6564 for v2 (+ bias), 6761 for v3.
+  - The text embedding and the stored text `lm_head` (unused in the TTS loop) are fp32 lookup tables (`lookup_bits` 32).
+  - Exact, except the 6564-param llm_decoder bias of v2. Activations stay bf16 under the tool's release rule; CosyVoice's default is fp32 「近似」.
+- **Flow** (batch 1): every streamed chunk calls flow.inference from scratch on [prompt tokens + all tokens so far (+3 look-ahead)].
+  - CosyVoice2: UpsampleConformerEncoder (6 blocks at 25 Hz, up conv, 4 blocks at 50 Hz, rel-pos attention with linear_pos over 2T − 1 positions and an extra q · posᵀ) + U-Net estimator (256 channels, ResNet1D blocks + 1 + 12 + 1 groups of transformer blocks, attention 8 × 64).
+  - CosyVoice3: pre-look-ahead conv + DiT (22 × d1024, the Omni block, plus grouped conv positional embedding).
+  - CFM: 10 Euler steps (cosine t), CFG as batch 2 (inference_cfg_rate 0.7).
+  - Ops are header-driven: one GEMM per weight at its module's rate.
+    - Encoder: token rate or mel rate.
+    - Estimator: B · M rows per evaluation; time MLP / AdaLN / ResNet time projection on B rows.
+    - Biases and weight-norm gains are folded in, and leftover 1-D tensors go to a read-only op, so weight reads equal the release exactly.
+  - The estimator re-read pin is the same 0.269 rule (R = 10).
+- **HiFT**: f0 predictor and conv_pre at the mel rate; upsample stages ×8 / ×40 / ×120. v2 uses ConvTranspose per input position; v3 uses causal upsample + Conv1d per output position. ResBlocks and source branches run at their stage rate, conv_post at ×120, and the iSTFT (n_fft 16, hop 4) gives 24 kHz.
+  - CosyVoice2 vocodes the new mel + an 8-frame cache.
+  - CosyVoice3 re-vocodes the whole generated mel every chunk (hift_cache 'mel' grows) 「来源」.
+- **Streaming hops** (cli/model.py):
+  - token_hop_len 25, plus the prompt padded to a multiple of 25 on the first chunk; the hop doubles per chunk up to 100.
+  - The first chunk waits for hop + 3 look-ahead tokens.
+  - `self.token_hop_len` is an instance attribute that is never reset, so on a long-lived model object every later request starts at 100 tokens. This is reported as the warm first audio.
+- **KPIs** (`speech._cosy_kpis`), same placement assumption as Omni:
+  - First audio = T_ft + (hop₀ + 3) · TPOT + flow(chunk 0) + HiFT(chunk 0).
+  - Speech-card RTF = b · Σ_chunks (flow + HiFT) / audio_out_s.
+  - LM RTF = 25 · TPOT.
+  - The zero-shot prompt is 75 speech tokens (3 s) 「假设」.
+
+| 100T + LPDDR5X B1, 10 s out | first audio | warm first audio | LM RTF | speech-card RTF | real-time streams / card |
+|---|---|---|---|---|---|
+| CosyVoice2 | 0.22 s | 0.78 s | 0.18 | 0.012 | 86 |
+| Fun-CosyVoice3 | 0.28 s | 0.83 s | 0.18 | 0.033 | 30 |
+
+Findings:
+1. First audio is LM-paced: 28 tokens × 7.3 ms. The fp32 LM reads 2.0 GB per token.
+2. The hop that is never reset makes the warm first audio ≈ 3.5× the cold one.
+3. Fun-CosyVoice3's fp32 DiT is weight-bound, at 66 ms per chunk independent of length; CosyVoice2's U-Net grows with the recomputed length (13 → 36 ms).
+4. CosyVoice3 re-vocoding grows linearly with the utterance (0.6 → 33 ms).
+
+### §216.4 Freshness and deferred pre-window speech releases
+`freshness_sweep.py 2026-10-17` (88 orgs): only DeepSeek-V4.1-Flash-1017 (an alias since 0.248) and repacks / GGUFs (unsloth, tencent Hy-Memory GGUF). Nothing since 10-20.
+
+Deferred, with public configs noted:
+- **FunAudioLLM/Fun-ASR-Nano-2512-hf**: transformers `fun_asr_nano`. SAN-M encoder: 70 layers d512, FSMN k11, LFR 7, 80 mel. Adaptor: 2 layers. LLM: Qwen3-0.6B.
+- **fishaudio/drama-3**: FishOmniModel, about 40 GB bf16, with a `codebook_mtp_shared` audio decoder (10 codebooks) and codec.pth.
+- **IndexTeam Index-Echo-S2ST 2B / 9B**: a bridge mapper plus a vendored CosyVoice pipeline.
+- **FireRedTTS3**: custom (base / instruct 8.5 GB + ReDAE 3.8 GB).

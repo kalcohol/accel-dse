@@ -140,6 +140,32 @@ def _whisper_role(name: str) -> str:
     return "other"
 
 
+def _omni_role(name: str, n_layers: int | None) -> str:
+    """0.271 Qwen2.5-Omni (Qwen2_5OmniModel): the Thinker (thinker.model / thinker.lm_head) is the LLM, its audio tower
+    and ViT → vision; the speech-output Talker (talker.*) and token2wav (DiT + BigVGAN, token2wav.*) are separate
+    non-LLM roles (params_talker / params_token2wav), modelled by core/omni.py."""
+    if name.startswith("talker."):
+        return "talker"
+    if name.startswith("token2wav."):
+        return "token2wav"
+    return classify(name, n_layers)
+
+
+def _cosy_role(name: str, n_layers: int | None) -> str:
+    """0.271 CosyVoice2 / Fun-CosyVoice3 (scripts/fetch_pt_release.py): the Qwen2.5-0.5B backbone is the LLM; its text
+    embedding, the stored text lm_head (unused by the TTS loop) and the speech-token embedding are tables (embed role —
+    looked up / stored); ``llm_decoder`` (hidden → speech tokens) is the decode head; flow.* / hift.* → flow / vocoder."""
+    if name.startswith("flow."):
+        return "flow"
+    if name.startswith("hift."):
+        return "vocoder"
+    if name.startswith("llm_decoder."):
+        return "lm_head"
+    if name.startswith(("speech_embedding.", "llm_embedding.", "llm.model.lm_head.")):
+        return "embed"
+    return classify(name, n_layers)
+
+
 def _fp4_hint(qc) -> bool:
     s = json.dumps(qc or {}).lower()
     return any(k in s for k in ("mxfp4", "fp4", "e2m1", "nvfp4"))
@@ -203,6 +229,8 @@ def summarize(repo: str) -> dict:
             fmt, params = {"BF16": "bf16", "F16": "fp16", "F32": "fp32", "U8": "uint8", "I32": "int32"}.get(dt, dt.lower()), n
         b = _base(name) if is_blocks else re.sub(r"\.(weight_packed|qweight)$", ".weight", name)
         role = (_whisper_role(name) if cfg.get("model_type") == "whisper" else
+                _omni_role(name, nl) if cfg.get("model_type") == "qwen2_5_omni" else
+                _cosy_role(name, nl) if cfg.get("model_type") in ("cosyvoice2", "cosyvoice3") else
                 classify(name, nl) if domain == "llm" else classify_domain(name, domain))
         if role == "buffer":
             buffers += nb
@@ -225,9 +253,15 @@ def summarize(repo: str) -> dict:
         e["bytes"] += w["bytes"]
     if buffers:
         roles["buffer"] = {"int64": {"params": 0, "bytes": buffers}}
-    llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale")]
+    llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "flow", "vocoder")]
     tot = lambda rs, k: sum(v[k] for r in rs for v in roles.get(r, {}).values())
     extra = {}
+    for r in ("talker", "token2wav", "flow", "vocoder"):   # 0.271 speech output (Omni / CosyVoice; absent → no key)
+        if r in roles:
+            extra[f"params_{r}"] = tot([r], "params")
+            extra[f"bytes_{r}"] = tot([r], "bytes")
+    if "flow" in roles:                        # 0.271 CosyVoice: flow / HiFT tensor shapes drive core/cosyvoice.py
+        extra["speech_tensors"] = {n: t[1] for n, t in tensors.items() if n.startswith(("flow.", "hift."))}
     if domain != "llm":
         # tensor shapes outside the repeated blocks + of block 0 (io / conditioning dims come from the header)
         extra["domain"] = domain

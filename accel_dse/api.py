@@ -990,11 +990,12 @@ def api_eval(body: dict) -> dict:
     if scn.fabric.enabled:  # 0.59: per-collective algorithm / topology breakdown
         out["fabric"] = fabric_report(scn, r)
     # 0.270 speech serving convention (core/speech.py): end-to-end per audio second — ASR when audio_s > 0 on a model
-    # with an audio encoder; TTS for a TTS head (audio_out_s seconds out, default 10 「假设」)
+    # with an audio encoder; TTS for a TTS head (audio_out_s seconds out, default 10 「假设」); 0.271 Omni (Talker +
+    # token2wav speech output, core/omni.py) always
     aos = body.get("audio_out_s", 10.0)
     if isinstance(aos, bool) or not isinstance(aos, (int, float)) or not 0 < aos <= 3600:
         raise ApiError("audio_out_s must be a number in (0, 3600]")
-    if r.tts is not None or (scn.serving.audio_s and getattr(getattr(r.model, "vision", None), "audio", None) is not None):
+    if r.tts is not None or getattr(r.model, "omni", None) is not None or getattr(r.model, "cosy", None) is not None or (scn.serving.audio_s and getattr(getattr(r.model, "vision", None), "audio", None) is not None):
         try:
             out["speech"] = speech_kpis(scn, float(aos))
         except ValueError as e:

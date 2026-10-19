@@ -124,6 +124,12 @@ EXTRA_TAIL = [
     ("whisper-large-v3-turbo", "openai/whisper-large-v3-turbo"),
     ("qwen2-audio-7b-instruct", "Qwen/Qwen2-Audio-7B-Instruct"),
     ("qwen3-asr-1.7b", "Qwen/Qwen3-ASR-1.7B"),
+    # 0.271 speech round 2: Qwen2.5-Omni-7B (Thinker Qwen2.5-7B + Whisper-v3 audio tower; Talker + token2wav speech out)
+    ("qwen2.5-omni-7b", "Qwen/Qwen2.5-Omni-7B"),
+    # 0.271: CosyVoice2-0.5B / Fun-CosyVoice3-0.5B-2512 (Qwen2.5-0.5B LM → 25 Hz tokens → chunked flow matching → HiFT;
+    # torch .pt checkpoints read by scripts/fetch_pt_release.py)
+    ("cosyvoice2-0.5b", "FunAudioLLM/CosyVoice2-0.5B"),
+    ("fun-cosyvoice3-0.5b-2512", "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -259,11 +265,12 @@ OFFLINE_REASONS = {
 
 # ---------------------------------------------------------------- listing: vendor (厂商) → family; domain is only a badge
 DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态：语言主干 + 视觉编码器）", "asr": "语音识别（语言主干 + 音频编码器）",
-           "tts": "语音合成（语言主干 + 流匹配头 + 音频 VAE 解码）", "gen": "图像 / 视频生成（DiT）", "protein": "蛋白质",
+           "tts": "语音合成（语言主干 + 流匹配 + 音频 VAE / 声码器）",
+           "omni": "全模态（Thinker 语言主干 + 音频编码器；Talker + token2wav 语音输出）", "gen": "图像 / 视频生成（DiT）", "protein": "蛋白质",
            "genomics": "基因组（DNA 编码器）"}
 OFFLINE_DOMAINS = {"video": "gen", "protein": "protein"}     # series_catalog domain → listing domain (not on core v2)
 PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only releases) — listing order
-    ("alibaba", "阿里（Qwen · Wan · 通义）", ("Qwen/", "Wan-AI/", "Tongyi-MAI/")), ("deepseek", "DeepSeek（深度求索）", ("deepseek-ai/",)),
+    ("alibaba", "阿里（Qwen · Wan · 通义）", ("Qwen/", "Wan-AI/", "Tongyi-MAI/", "FunAudioLLM/")), ("deepseek", "DeepSeek（深度求索）", ("deepseek-ai/",)),
     ("kimi", "Kimi（月之暗面）", ("moonshotai/",)), ("zhipu", "智谱（GLM · CogVideoX）", ("zai-org/", "THUDM/")),
     ("minimax", "MiniMax（稀宇）", ("MiniMaxAI/",)),
     ("meta", "Meta（Llama · ESM · Muse）", ("unsloth/", "meta-llama/", "facebook/", "meta-models/", "amd/Muse-Spark")),
@@ -288,7 +295,9 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("openmoss", "复旦 OpenMOSS（MOSS）", ("OpenMOSS-Team/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
-    ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2-Audio", ("qwen2-audio",)),
+    ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2.5-Omni", ("qwen2.5-omni",)),
+    ("alibaba", "Fun-CosyVoice3", ("fun-cosyvoice3",)), ("alibaba", "CosyVoice2", ("cosyvoice2",)),
+    ("alibaba", "Qwen2-Audio", ("qwen2-audio",)),
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
     ("alibaba", "Qwen3 MoE", ("qwen3-235b", "qwen3-30b")), ("alibaba", "Qwen3 稠密", ("qwen3-",)),
     ("alibaba", "Qwen2.5", ("qwen2.5",)), ("alibaba", "Wan2.2", ("wan2.2",)), ("alibaba", "Wan2.1", ("wan2.1",)),
@@ -402,7 +411,8 @@ def entries() -> list[dict]:
             # 0.268: an audio-only release (audio_config, no vision_config) is speech recognition, not a VLM
             # 0.270: any release with a modelled audio encoder and no vision tower (Whisper keeps it outside audio_config)
             from .vision import audio_spec
-            e["domain"] = "tts" if cf.get("model_type") == "lingv3_tts" else \
+            # 0.271: Qwen2.5-Omni (speech in + speech out) → omni
+            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3") else "omni" if cf.get("model_type") == "qwen2_5_omni" else \
                 ("asr" if (cf.get("audio_config") or audio_spec(cf) is not None) and not cf.get("vision_config")
                  else "vlm") if (rel.get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])

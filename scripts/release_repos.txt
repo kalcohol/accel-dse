@@ -122,3 +122,6 @@ openai/whisper-large-v3
 openai/whisper-large-v3-turbo
 Qwen/Qwen2-Audio-7B-Instruct
 Qwen/Qwen3-ASR-1.7B
+# 0.271 speech round 2: Qwen2.5-Omni-7B (Talker + token2wav)
+Qwen/Qwen2.5-Omni-7B
+# 0.271 CosyVoice2-0.5B / Fun-CosyVoice3-0.5B-2512 ship torch .pt only → scripts/fetch_pt_release.py (not listed here)

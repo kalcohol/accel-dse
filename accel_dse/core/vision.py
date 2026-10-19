@@ -182,6 +182,11 @@ class AudioSpec:
     lin: tuple[tuple[int, int], ...] | None = None
     win: int = 0
     ch: int = 0
+    # 0.271 Qwen2.5-Omni: the processor pads to 30 s (padding="max_length", truncation) but the encoder runs only the
+    # valid frames in 2·n_window chunks — ``maxf`` = the truncation cap in mel frames (0 = none) with the padded
+    # extractor's ⌈samples / hop⌉ frame count; ``stored``: params kept in the release but not run (audio_bos_eos_token)
+    maxf: int = 0
+    stored: int = 0
 
     @property
     def samples_per_token(self) -> int:
@@ -191,6 +196,8 @@ class AudioSpec:
         """Mel frames of the clip.  Whisper STFT (center=True, last frame dropped) → ⌊samples / hop⌋; the padded
         extractors count the attention mask rescaled by hop → ⌈samples / hop⌉ (≤ one window when truncating)."""
         n = round(seconds * self.rate)
+        if self.maxf:
+            return max(1, min(self.maxf, -(-n // self.patches[0])))
         if self.pad:
             return max(1, -(-n // self.patches[0]))
         return max(1, n // self.patches[0])
@@ -245,6 +252,11 @@ class AudioSpec:
             L = min(self.mel_frames(seconds), self.chunk)
             t = (L - 1) // 2 + 1
             return (t - 2) // self.pool + 1 if self.pool > 1 else t
+        if self.kind == "whisper" and self.pool > 1:
+            # 0.271 Qwen2.5-Omni processor: (((L − 1)//2 + 1) − 2)//2 + 1 over the valid frames L (conv2 stride 2,
+            # stride-2 average pool over the clip's concatenated chunk outputs) 「来源」 processing_qwen2_5_omni.py
+            t = (self.mel_frames(seconds) - 1) // 2 + 1
+            return (t - 2) // self.pool + 1
         if self.kind == "whisper":
             return sum(self.chunk_len(n)[1] for n in self.chunks(seconds))
         return math.ceil(round(seconds * self.rate) / self.samples_per_token)
@@ -264,6 +276,8 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
                                 ac["encoder_ffn_dim"], ac["num_mel_bins"], ac["max_source_positions"], pool=2,
                                 trunc=True, lin=((ac["d_model"], out),))
     tk = cfg.get("thinker_config") or {}
+    if mt == "qwen2_5_omni" and (tk.get("audio_config") or {}).get("model_type") == "qwen2_5_omni_audio_encoder":
+        return _omni_audio_spec(tk["audio_config"])
     if mt == "qwen3_asr" and (tk.get("audio_config") or {}).get("model_type") == "qwen3_asr_audio_encoder":
         return _aut_spec(tk["audio_config"])
     if ac.get("model_type") != "muse_spark_audio":
@@ -314,6 +328,19 @@ def _whisper_v3_spec(cfg: dict, L: int, nh: int, ffn: int, mel: int, pos: int, *
     out = lin[-1][1] if lin else d
     return AudioSpec(16000, (160,), (d,), (L,), 3, ffn / d, out, params, kind="whisper", heads=nh, n_mels=mel,
                      chunk=2 * pos, pad=True, trunc=trunc, cross=cross, pool=pool, lin=tuple(lin))
+
+
+def _omni_audio_spec(ac: dict) -> AudioSpec:
+    """0.271 Qwen2.5-Omni audio tower (transformers Qwen2_5OmniAudioEncoder, modeling_qwen2_5_omni.py 「来源」): the
+    Whisper-v3 encoder (conv1 k3 + conv2 k3 s2, GELU; L pre-LN blocks, k without bias) run per chunk of 2·n_window =
+    200 mel frames (chunk_and_pad_features; attention within a chunk, cu_seqlens); sinusoid positions are a buffer (not
+    in the checkpoint); ln_post, AvgPool1d(2, 2), proj d → output_dim; audio_bos_eos_token Embedding(2, output_dim)
+    stored (looked up for the two marker positions).  Header: 639,647,232 params."""
+    d, out = ac["d_model"], ac["output_dim"]
+    a = _whisper_v3_spec({"d_model": d}, ac["encoder_layers"], ac["encoder_attention_heads"], ac["encoder_ffn_dim"],
+                         ac["num_mel_bins"], 0, pool=2, lin=((d, out),))
+    return replace(a, params=a.params + 2 * out, chunk=2 * ac["n_window"], pad=False,
+                   maxf=2 * ac["max_source_positions"], stored=2 * out)
 
 
 def _aut_spec(ac: dict) -> AudioSpec:
@@ -450,6 +477,16 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
     """VisionSpec from the release's full config (``vision_config`` + text hidden size), or None."""
     vc = cfg.get("vision_config")
     hf_id = hf_id.split("+", 1)[0]              # 0.175: "<target>+<draft repo>" entries use the target's processor
+    if cfg.get("model_type") == "qwen2_5_omni":
+        # 0.271 Qwen2.5-Omni: the audio tower is modelled; the Qwen2.5-VL ViT (thinker.visual) is stored only (the
+        # release params_vision surplus → VisionSpec.extra in from_release) — image / video prompts are not costed
+        au = audio_spec(cfg)
+        if au is not None:
+            return VisionSpec("audio", "Qwen2.5-Omni 音频编码器（Whisper-v3，200 帧分块、只跑有效帧）+ 平均池化 + 线性投影",
+                              0, 1, au.dims[0], int(au.mlp * au.dims[0]), au.depths[0], au.heads, au.dims[0], False, 1,
+                              (), au.params, (), audio=au,
+                              approx="视觉塔（Qwen2.5-VL ViT，thinker.visual）只计存储：图像 / 视频输入未建模")
+        return None
     if not vc:
         au = audio_spec(cfg)
         if au is not None and au.kind in ("whisper", "aut"):

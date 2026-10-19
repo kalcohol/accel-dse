@@ -1,0 +1,5350 @@
+{
+ "bytes_flow": 450197440,
+ "bytes_llm": 2567753872,
+ "bytes_mtp": 0,
+ "bytes_total": 3101236492,
+ "bytes_vocoder": 83285180,
+ "config": {
+  "_source_yaml": "cosyvoice2.yaml",
+  "architectures": [
+   "Qwen2LM"
+  ],
+  "cosyvoice": {
+   "attention_head_dim": 64,
+   "attention_heads_flow": 8,
+   "base_channels": 512,
+   "chunk_size": 25,
+   "flow": "CausalMaskedDiffWithXvec",
+   "hift": "HiFTGenerator",
+   "inference_cfg_rate": 0.7,
+   "istft_hop": 4,
+   "istft_n_fft": 16,
+   "llm": "Qwen2LM",
+   "nb_harmonics": 8,
+   "pre_lookahead_len": 3,
+   "sample_rate": 24000,
+   "speech_token_size": 6561,
+   "speech_vocab": 6564,
+   "token_frame_rate": 25,
+   "token_mel_ratio": 2,
+   "upsample_rates": [
+    8,
+    5,
+    3
+   ]
+  },
+  "llm_config": {
+   "architectures": [
+    "Qwen2ForCausalLM"
+   ],
+   "attention_dropout": 0.0,
+   "bos_token_id": 151643,
+   "eos_token_id": 151645,
+   "hidden_act": "silu",
+   "hidden_size": 896,
+   "initializer_range": 0.02,
+   "intermediate_size": 4864,
+   "max_position_embeddings": 32768,
+   "max_window_layers": 24,
+   "model_type": "qwen2",
+   "num_attention_heads": 14,
+   "num_hidden_layers": 24,
+   "num_key_value_heads": 2,
+   "rms_norm_eps": 1e-06,
+   "rope_theta": 1000000.0,
+   "sliding_window": 32768,
+   "tie_word_embeddings": true,
+   "torch_dtype": "bfloat16",
+   "transformers_version": "4.40.1",
+   "use_cache": true,
+   "use_sliding_window": false,
+   "vocab_size": 151936
+  },
+  "model_type": "cosyvoice2",
+  "torch_dtype": "float32"
+ },
+ "fetched": "2026-10-20",
+ "n_tensors": 1744,
+ "params_flow": 112549360,
+ "params_llm": 641938468,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "params_vocoder": 20821295,
+ "quantization_config": null,
+ "repo": "FunAudioLLM/CosyVoice2-0.5B",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 176271360,
+    "params": 44067840
+   }
+  },
+  "embed": {
+   "fp32": {
+    "bytes": 1112609792,
+    "params": 278152448
+   }
+  },
+  "flow": {
+   "fp32": {
+    "bytes": 450197440,
+    "params": 112549360
+   }
+  },
+  "lm_head": {
+   "fp32": {
+    "bytes": 23551632,
+    "params": 5887908
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 1255145472,
+    "params": 313786368
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 175616,
+    "params": 43904
+   }
+  },
+  "vocoder": {
+   "fp32": {
+    "bytes": 83285180,
+    "params": 20821295
+   }
+  }
+ },
+ "speech_tensors": {
+  "flow.decoder.estimator.down_blocks.0.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.block1.block.0.weight": [
+   256,
+   320,
+   3
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.0.res_conv.weight": [
+   256,
+   320,
+   1
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.down_blocks.0.2.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.final_block.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.final_block.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.final_block.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.final_block.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.final_proj.bias": [
+   80
+  ],
+  "flow.decoder.estimator.final_proj.weight": [
+   80,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.0.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.1.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.10.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.11.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.2.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.3.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.4.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.5.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.6.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.7.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.8.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.block1.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.0.res_conv.weight": [
+   256,
+   256,
+   1
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.mid_blocks.9.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.time_mlp.linear_1.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.time_mlp.linear_1.weight": [
+   1024,
+   320
+  ],
+  "flow.decoder.estimator.time_mlp.linear_2.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.time_mlp.linear_2.weight": [
+   1024,
+   1024
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.block1.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.block1.block.0.weight": [
+   256,
+   512,
+   3
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.block1.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.block1.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.block2.block.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.block2.block.0.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.block2.block.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.block2.block.2.weight": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.mlp.1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.mlp.1.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.res_conv.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.0.res_conv.weight": [
+   256,
+   512,
+   1
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.0.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.1.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.2.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.attn1.to_k.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.attn1.to_out.0.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.attn1.to_out.0.weight": [
+   256,
+   512
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.attn1.to_q.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.attn1.to_v.weight": [
+   512,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.ff.net.0.proj.bias": [
+   1024
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.ff.net.0.proj.weight": [
+   1024,
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.ff.net.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.ff.net.2.weight": [
+   256,
+   1024
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.norm1.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.norm1.weight": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.norm3.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.1.3.norm3.weight": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.2.bias": [
+   256
+  ],
+  "flow.decoder.estimator.up_blocks.0.2.weight": [
+   256,
+   256,
+   3
+  ],
+  "flow.encoder.after_norm.bias": [
+   512
+  ],
+  "flow.encoder.after_norm.weight": [
+   512
+  ],
+  "flow.encoder.embed.out.0.bias": [
+   512
+  ],
+  "flow.encoder.embed.out.0.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.embed.out.1.bias": [
+   512
+  ],
+  "flow.encoder.embed.out.1.weight": [
+   512
+  ],
+  "flow.encoder.encoders.0.feed_forward.w_1.bias": [
+   2048
+  ],
+  "flow.encoder.encoders.0.feed_forward.w_1.weight": [
+   2048,
+   512
+  ],
+  "flow.encoder.encoders.0.feed_forward.w_2.bias": [
+   512
+  ],
+  "flow.encoder.encoders.0.feed_forward.w_2.weight": [
+   512,
+   2048
+  ],
+  "flow.encoder.encoders.0.norm_ff.bias": [
+   512
+  ],
+  "flow.encoder.encoders.0.norm_ff.weight": [
+   512
+  ],
+  "flow.encoder.encoders.0.norm_mha.bias": [
+   512
+  ],
+  "flow.encoder.encoders.0.norm_mha.weight": [
+   512
+  ],
+  "flow.encoder.encoders.0.self_attn.linear_k.bias": [
+   512
+  ],
+  "flow.encoder.encoders.0.self_attn.linear_k.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.0.self_attn.linear_out.bias": [
+   512
+  ],
+  "flow.encoder.encoders.0.self_attn.linear_out.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.0.self_attn.linear_pos.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.0.self_attn.linear_q.bias": [
+   512
+  ],
+  "flow.encoder.encoders.0.self_attn.linear_q.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.0.self_attn.linear_v.bias": [
+   512
+  ],
+  "flow.encoder.encoders.0.self_attn.linear_v.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.0.self_attn.pos_bias_u": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.0.self_attn.pos_bias_v": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.1.feed_forward.w_1.bias": [
+   2048
+  ],
+  "flow.encoder.encoders.1.feed_forward.w_1.weight": [
+   2048,
+   512
+  ],
+  "flow.encoder.encoders.1.feed_forward.w_2.bias": [
+   512
+  ],
+  "flow.encoder.encoders.1.feed_forward.w_2.weight": [
+   512,
+   2048
+  ],
+  "flow.encoder.encoders.1.norm_ff.bias": [
+   512
+  ],
+  "flow.encoder.encoders.1.norm_ff.weight": [
+   512
+  ],
+  "flow.encoder.encoders.1.norm_mha.bias": [
+   512
+  ],
+  "flow.encoder.encoders.1.norm_mha.weight": [
+   512
+  ],
+  "flow.encoder.encoders.1.self_attn.linear_k.bias": [
+   512
+  ],
+  "flow.encoder.encoders.1.self_attn.linear_k.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.1.self_attn.linear_out.bias": [
+   512
+  ],
+  "flow.encoder.encoders.1.self_attn.linear_out.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.1.self_attn.linear_pos.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.1.self_attn.linear_q.bias": [
+   512
+  ],
+  "flow.encoder.encoders.1.self_attn.linear_q.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.1.self_attn.linear_v.bias": [
+   512
+  ],
+  "flow.encoder.encoders.1.self_attn.linear_v.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.1.self_attn.pos_bias_u": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.1.self_attn.pos_bias_v": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.2.feed_forward.w_1.bias": [
+   2048
+  ],
+  "flow.encoder.encoders.2.feed_forward.w_1.weight": [
+   2048,
+   512
+  ],
+  "flow.encoder.encoders.2.feed_forward.w_2.bias": [
+   512
+  ],
+  "flow.encoder.encoders.2.feed_forward.w_2.weight": [
+   512,
+   2048
+  ],
+  "flow.encoder.encoders.2.norm_ff.bias": [
+   512
+  ],
+  "flow.encoder.encoders.2.norm_ff.weight": [
+   512
+  ],
+  "flow.encoder.encoders.2.norm_mha.bias": [
+   512
+  ],
+  "flow.encoder.encoders.2.norm_mha.weight": [
+   512
+  ],
+  "flow.encoder.encoders.2.self_attn.linear_k.bias": [
+   512
+  ],
+  "flow.encoder.encoders.2.self_attn.linear_k.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.2.self_attn.linear_out.bias": [
+   512
+  ],
+  "flow.encoder.encoders.2.self_attn.linear_out.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.2.self_attn.linear_pos.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.2.self_attn.linear_q.bias": [
+   512
+  ],
+  "flow.encoder.encoders.2.self_attn.linear_q.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.2.self_attn.linear_v.bias": [
+   512
+  ],
+  "flow.encoder.encoders.2.self_attn.linear_v.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.2.self_attn.pos_bias_u": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.2.self_attn.pos_bias_v": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.3.feed_forward.w_1.bias": [
+   2048
+  ],
+  "flow.encoder.encoders.3.feed_forward.w_1.weight": [
+   2048,
+   512
+  ],
+  "flow.encoder.encoders.3.feed_forward.w_2.bias": [
+   512
+  ],
+  "flow.encoder.encoders.3.feed_forward.w_2.weight": [
+   512,
+   2048
+  ],
+  "flow.encoder.encoders.3.norm_ff.bias": [
+   512
+  ],
+  "flow.encoder.encoders.3.norm_ff.weight": [
+   512
+  ],
+  "flow.encoder.encoders.3.norm_mha.bias": [
+   512
+  ],
+  "flow.encoder.encoders.3.norm_mha.weight": [
+   512
+  ],
+  "flow.encoder.encoders.3.self_attn.linear_k.bias": [
+   512
+  ],
+  "flow.encoder.encoders.3.self_attn.linear_k.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.3.self_attn.linear_out.bias": [
+   512
+  ],
+  "flow.encoder.encoders.3.self_attn.linear_out.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.3.self_attn.linear_pos.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.3.self_attn.linear_q.bias": [
+   512
+  ],
+  "flow.encoder.encoders.3.self_attn.linear_q.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.3.self_attn.linear_v.bias": [
+   512
+  ],
+  "flow.encoder.encoders.3.self_attn.linear_v.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.3.self_attn.pos_bias_u": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.3.self_attn.pos_bias_v": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.4.feed_forward.w_1.bias": [
+   2048
+  ],
+  "flow.encoder.encoders.4.feed_forward.w_1.weight": [
+   2048,
+   512
+  ],
+  "flow.encoder.encoders.4.feed_forward.w_2.bias": [
+   512
+  ],
+  "flow.encoder.encoders.4.feed_forward.w_2.weight": [
+   512,
+   2048
+  ],
+  "flow.encoder.encoders.4.norm_ff.bias": [
+   512
+  ],
+  "flow.encoder.encoders.4.norm_ff.weight": [
+   512
+  ],
+  "flow.encoder.encoders.4.norm_mha.bias": [
+   512
+  ],
+  "flow.encoder.encoders.4.norm_mha.weight": [
+   512
+  ],
+  "flow.encoder.encoders.4.self_attn.linear_k.bias": [
+   512
+  ],
+  "flow.encoder.encoders.4.self_attn.linear_k.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.4.self_attn.linear_out.bias": [
+   512
+  ],
+  "flow.encoder.encoders.4.self_attn.linear_out.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.4.self_attn.linear_pos.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.4.self_attn.linear_q.bias": [
+   512
+  ],
+  "flow.encoder.encoders.4.self_attn.linear_q.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.4.self_attn.linear_v.bias": [
+   512
+  ],
+  "flow.encoder.encoders.4.self_attn.linear_v.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.4.self_attn.pos_bias_u": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.4.self_attn.pos_bias_v": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.5.feed_forward.w_1.bias": [
+   2048
+  ],
+  "flow.encoder.encoders.5.feed_forward.w_1.weight": [
+   2048,
+   512
+  ],
+  "flow.encoder.encoders.5.feed_forward.w_2.bias": [
+   512
+  ],
+  "flow.encoder.encoders.5.feed_forward.w_2.weight": [
+   512,
+   2048
+  ],
+  "flow.encoder.encoders.5.norm_ff.bias": [
+   512
+  ],
+  "flow.encoder.encoders.5.norm_ff.weight": [
+   512
+  ],
+  "flow.encoder.encoders.5.norm_mha.bias": [
+   512
+  ],
+  "flow.encoder.encoders.5.norm_mha.weight": [
+   512
+  ],
+  "flow.encoder.encoders.5.self_attn.linear_k.bias": [
+   512
+  ],
+  "flow.encoder.encoders.5.self_attn.linear_k.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.5.self_attn.linear_out.bias": [
+   512
+  ],
+  "flow.encoder.encoders.5.self_attn.linear_out.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.5.self_attn.linear_pos.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.5.self_attn.linear_q.bias": [
+   512
+  ],
+  "flow.encoder.encoders.5.self_attn.linear_q.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.5.self_attn.linear_v.bias": [
+   512
+  ],
+  "flow.encoder.encoders.5.self_attn.linear_v.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.encoders.5.self_attn.pos_bias_u": [
+   8,
+   64
+  ],
+  "flow.encoder.encoders.5.self_attn.pos_bias_v": [
+   8,
+   64
+  ],
+  "flow.encoder.pre_lookahead_layer.conv1.bias": [
+   512
+  ],
+  "flow.encoder.pre_lookahead_layer.conv1.weight": [
+   512,
+   512,
+   4
+  ],
+  "flow.encoder.pre_lookahead_layer.conv2.bias": [
+   512
+  ],
+  "flow.encoder.pre_lookahead_layer.conv2.weight": [
+   512,
+   512,
+   3
+  ],
+  "flow.encoder.up_embed.out.0.bias": [
+   512
+  ],
+  "flow.encoder.up_embed.out.0.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_embed.out.1.bias": [
+   512
+  ],
+  "flow.encoder.up_embed.out.1.weight": [
+   512
+  ],
+  "flow.encoder.up_encoders.0.feed_forward.w_1.bias": [
+   2048
+  ],
+  "flow.encoder.up_encoders.0.feed_forward.w_1.weight": [
+   2048,
+   512
+  ],
+  "flow.encoder.up_encoders.0.feed_forward.w_2.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.0.feed_forward.w_2.weight": [
+   512,
+   2048
+  ],
+  "flow.encoder.up_encoders.0.norm_ff.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.0.norm_ff.weight": [
+   512
+  ],
+  "flow.encoder.up_encoders.0.norm_mha.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.0.norm_mha.weight": [
+   512
+  ],
+  "flow.encoder.up_encoders.0.self_attn.linear_k.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.0.self_attn.linear_k.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.0.self_attn.linear_out.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.0.self_attn.linear_out.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.0.self_attn.linear_pos.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.0.self_attn.linear_q.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.0.self_attn.linear_q.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.0.self_attn.linear_v.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.0.self_attn.linear_v.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.0.self_attn.pos_bias_u": [
+   8,
+   64
+  ],
+  "flow.encoder.up_encoders.0.self_attn.pos_bias_v": [
+   8,
+   64
+  ],
+  "flow.encoder.up_encoders.1.feed_forward.w_1.bias": [
+   2048
+  ],
+  "flow.encoder.up_encoders.1.feed_forward.w_1.weight": [
+   2048,
+   512
+  ],
+  "flow.encoder.up_encoders.1.feed_forward.w_2.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.1.feed_forward.w_2.weight": [
+   512,
+   2048
+  ],
+  "flow.encoder.up_encoders.1.norm_ff.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.1.norm_ff.weight": [
+   512
+  ],
+  "flow.encoder.up_encoders.1.norm_mha.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.1.norm_mha.weight": [
+   512
+  ],
+  "flow.encoder.up_encoders.1.self_attn.linear_k.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.1.self_attn.linear_k.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.1.self_attn.linear_out.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.1.self_attn.linear_out.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.1.self_attn.linear_pos.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.1.self_attn.linear_q.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.1.self_attn.linear_q.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.1.self_attn.linear_v.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.1.self_attn.linear_v.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.1.self_attn.pos_bias_u": [
+   8,
+   64
+  ],
+  "flow.encoder.up_encoders.1.self_attn.pos_bias_v": [
+   8,
+   64
+  ],
+  "flow.encoder.up_encoders.2.feed_forward.w_1.bias": [
+   2048
+  ],
+  "flow.encoder.up_encoders.2.feed_forward.w_1.weight": [
+   2048,
+   512
+  ],
+  "flow.encoder.up_encoders.2.feed_forward.w_2.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.2.feed_forward.w_2.weight": [
+   512,
+   2048
+  ],
+  "flow.encoder.up_encoders.2.norm_ff.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.2.norm_ff.weight": [
+   512
+  ],
+  "flow.encoder.up_encoders.2.norm_mha.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.2.norm_mha.weight": [
+   512
+  ],
+  "flow.encoder.up_encoders.2.self_attn.linear_k.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.2.self_attn.linear_k.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.2.self_attn.linear_out.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.2.self_attn.linear_out.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.2.self_attn.linear_pos.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.2.self_attn.linear_q.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.2.self_attn.linear_q.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.2.self_attn.linear_v.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.2.self_attn.linear_v.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.2.self_attn.pos_bias_u": [
+   8,
+   64
+  ],
+  "flow.encoder.up_encoders.2.self_attn.pos_bias_v": [
+   8,
+   64
+  ],
+  "flow.encoder.up_encoders.3.feed_forward.w_1.bias": [
+   2048
+  ],
+  "flow.encoder.up_encoders.3.feed_forward.w_1.weight": [
+   2048,
+   512
+  ],
+  "flow.encoder.up_encoders.3.feed_forward.w_2.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.3.feed_forward.w_2.weight": [
+   512,
+   2048
+  ],
+  "flow.encoder.up_encoders.3.norm_ff.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.3.norm_ff.weight": [
+   512
+  ],
+  "flow.encoder.up_encoders.3.norm_mha.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.3.norm_mha.weight": [
+   512
+  ],
+  "flow.encoder.up_encoders.3.self_attn.linear_k.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.3.self_attn.linear_k.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.3.self_attn.linear_out.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.3.self_attn.linear_out.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.3.self_attn.linear_pos.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.3.self_attn.linear_q.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.3.self_attn.linear_q.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.3.self_attn.linear_v.bias": [
+   512
+  ],
+  "flow.encoder.up_encoders.3.self_attn.linear_v.weight": [
+   512,
+   512
+  ],
+  "flow.encoder.up_encoders.3.self_attn.pos_bias_u": [
+   8,
+   64
+  ],
+  "flow.encoder.up_encoders.3.self_attn.pos_bias_v": [
+   8,
+   64
+  ],
+  "flow.encoder.up_layer.conv.bias": [
+   512
+  ],
+  "flow.encoder.up_layer.conv.weight": [
+   512,
+   512,
+   5
+  ],
+  "flow.encoder_proj.bias": [
+   80
+  ],
+  "flow.encoder_proj.weight": [
+   80,
+   512
+  ],
+  "flow.input_embedding.weight": [
+   6561,
+   512
+  ],
+  "flow.spk_embed_affine_layer.bias": [
+   80
+  ],
+  "flow.spk_embed_affine_layer.weight": [
+   80,
+   192
+  ],
+  "hift.conv_post.bias": [
+   18
+  ],
+  "hift.conv_post.parametrizations.weight.original0": [
+   18,
+   1,
+   1
+  ],
+  "hift.conv_post.parametrizations.weight.original1": [
+   18,
+   64,
+   7
+  ],
+  "hift.conv_pre.bias": [
+   512
+  ],
+  "hift.conv_pre.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "hift.conv_pre.parametrizations.weight.original1": [
+   512,
+   80,
+   7
+  ],
+  "hift.f0_predictor.classifier.bias": [
+   1
+  ],
+  "hift.f0_predictor.classifier.weight": [
+   1,
+   512
+  ],
+  "hift.f0_predictor.condnet.0.bias": [
+   512
+  ],
+  "hift.f0_predictor.condnet.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "hift.f0_predictor.condnet.0.parametrizations.weight.original1": [
+   512,
+   80,
+   3
+  ],
+  "hift.f0_predictor.condnet.2.bias": [
+   512
+  ],
+  "hift.f0_predictor.condnet.2.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "hift.f0_predictor.condnet.2.parametrizations.weight.original1": [
+   512,
+   512,
+   3
+  ],
+  "hift.f0_predictor.condnet.4.bias": [
+   512
+  ],
+  "hift.f0_predictor.condnet.4.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "hift.f0_predictor.condnet.4.parametrizations.weight.original1": [
+   512,
+   512,
+   3
+  ],
+  "hift.f0_predictor.condnet.6.bias": [
+   512
+  ],
+  "hift.f0_predictor.condnet.6.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "hift.f0_predictor.condnet.6.parametrizations.weight.original1": [
+   512,
+   512,
+   3
+  ],
+  "hift.f0_predictor.condnet.8.bias": [
+   512
+  ],
+  "hift.f0_predictor.condnet.8.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "hift.f0_predictor.condnet.8.parametrizations.weight.original1": [
+   512,
+   512,
+   3
+  ],
+  "hift.m_source.l_linear.bias": [
+   1
+  ],
+  "hift.m_source.l_linear.weight": [
+   1,
+   9
+  ],
+  "hift.resblocks.0.activations1.0.alpha": [
+   256
+  ],
+  "hift.resblocks.0.activations1.1.alpha": [
+   256
+  ],
+  "hift.resblocks.0.activations1.2.alpha": [
+   256
+  ],
+  "hift.resblocks.0.activations2.0.alpha": [
+   256
+  ],
+  "hift.resblocks.0.activations2.1.alpha": [
+   256
+  ],
+  "hift.resblocks.0.activations2.2.alpha": [
+   256
+  ],
+  "hift.resblocks.0.convs1.0.bias": [
+   256
+  ],
+  "hift.resblocks.0.convs1.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.0.convs1.0.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "hift.resblocks.0.convs1.1.bias": [
+   256
+  ],
+  "hift.resblocks.0.convs1.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.0.convs1.1.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "hift.resblocks.0.convs1.2.bias": [
+   256
+  ],
+  "hift.resblocks.0.convs1.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.0.convs1.2.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "hift.resblocks.0.convs2.0.bias": [
+   256
+  ],
+  "hift.resblocks.0.convs2.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.0.convs2.0.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "hift.resblocks.0.convs2.1.bias": [
+   256
+  ],
+  "hift.resblocks.0.convs2.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.0.convs2.1.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "hift.resblocks.0.convs2.2.bias": [
+   256
+  ],
+  "hift.resblocks.0.convs2.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.0.convs2.2.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "hift.resblocks.1.activations1.0.alpha": [
+   256
+  ],
+  "hift.resblocks.1.activations1.1.alpha": [
+   256
+  ],
+  "hift.resblocks.1.activations1.2.alpha": [
+   256
+  ],
+  "hift.resblocks.1.activations2.0.alpha": [
+   256
+  ],
+  "hift.resblocks.1.activations2.1.alpha": [
+   256
+  ],
+  "hift.resblocks.1.activations2.2.alpha": [
+   256
+  ],
+  "hift.resblocks.1.convs1.0.bias": [
+   256
+  ],
+  "hift.resblocks.1.convs1.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.1.convs1.0.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.resblocks.1.convs1.1.bias": [
+   256
+  ],
+  "hift.resblocks.1.convs1.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.1.convs1.1.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.resblocks.1.convs1.2.bias": [
+   256
+  ],
+  "hift.resblocks.1.convs1.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.1.convs1.2.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.resblocks.1.convs2.0.bias": [
+   256
+  ],
+  "hift.resblocks.1.convs2.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.1.convs2.0.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.resblocks.1.convs2.1.bias": [
+   256
+  ],
+  "hift.resblocks.1.convs2.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.1.convs2.1.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.resblocks.1.convs2.2.bias": [
+   256
+  ],
+  "hift.resblocks.1.convs2.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.1.convs2.2.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.resblocks.2.activations1.0.alpha": [
+   256
+  ],
+  "hift.resblocks.2.activations1.1.alpha": [
+   256
+  ],
+  "hift.resblocks.2.activations1.2.alpha": [
+   256
+  ],
+  "hift.resblocks.2.activations2.0.alpha": [
+   256
+  ],
+  "hift.resblocks.2.activations2.1.alpha": [
+   256
+  ],
+  "hift.resblocks.2.activations2.2.alpha": [
+   256
+  ],
+  "hift.resblocks.2.convs1.0.bias": [
+   256
+  ],
+  "hift.resblocks.2.convs1.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.2.convs1.0.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "hift.resblocks.2.convs1.1.bias": [
+   256
+  ],
+  "hift.resblocks.2.convs1.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.2.convs1.1.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "hift.resblocks.2.convs1.2.bias": [
+   256
+  ],
+  "hift.resblocks.2.convs1.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.2.convs1.2.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "hift.resblocks.2.convs2.0.bias": [
+   256
+  ],
+  "hift.resblocks.2.convs2.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.2.convs2.0.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "hift.resblocks.2.convs2.1.bias": [
+   256
+  ],
+  "hift.resblocks.2.convs2.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.2.convs2.1.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "hift.resblocks.2.convs2.2.bias": [
+   256
+  ],
+  "hift.resblocks.2.convs2.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.resblocks.2.convs2.2.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "hift.resblocks.3.activations1.0.alpha": [
+   128
+  ],
+  "hift.resblocks.3.activations1.1.alpha": [
+   128
+  ],
+  "hift.resblocks.3.activations1.2.alpha": [
+   128
+  ],
+  "hift.resblocks.3.activations2.0.alpha": [
+   128
+  ],
+  "hift.resblocks.3.activations2.1.alpha": [
+   128
+  ],
+  "hift.resblocks.3.activations2.2.alpha": [
+   128
+  ],
+  "hift.resblocks.3.convs1.0.bias": [
+   128
+  ],
+  "hift.resblocks.3.convs1.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.3.convs1.0.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "hift.resblocks.3.convs1.1.bias": [
+   128
+  ],
+  "hift.resblocks.3.convs1.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.3.convs1.1.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "hift.resblocks.3.convs1.2.bias": [
+   128
+  ],
+  "hift.resblocks.3.convs1.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.3.convs1.2.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "hift.resblocks.3.convs2.0.bias": [
+   128
+  ],
+  "hift.resblocks.3.convs2.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.3.convs2.0.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "hift.resblocks.3.convs2.1.bias": [
+   128
+  ],
+  "hift.resblocks.3.convs2.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.3.convs2.1.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "hift.resblocks.3.convs2.2.bias": [
+   128
+  ],
+  "hift.resblocks.3.convs2.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.3.convs2.2.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "hift.resblocks.4.activations1.0.alpha": [
+   128
+  ],
+  "hift.resblocks.4.activations1.1.alpha": [
+   128
+  ],
+  "hift.resblocks.4.activations1.2.alpha": [
+   128
+  ],
+  "hift.resblocks.4.activations2.0.alpha": [
+   128
+  ],
+  "hift.resblocks.4.activations2.1.alpha": [
+   128
+  ],
+  "hift.resblocks.4.activations2.2.alpha": [
+   128
+  ],
+  "hift.resblocks.4.convs1.0.bias": [
+   128
+  ],
+  "hift.resblocks.4.convs1.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.4.convs1.0.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.resblocks.4.convs1.1.bias": [
+   128
+  ],
+  "hift.resblocks.4.convs1.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.4.convs1.1.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.resblocks.4.convs1.2.bias": [
+   128
+  ],
+  "hift.resblocks.4.convs1.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.4.convs1.2.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.resblocks.4.convs2.0.bias": [
+   128
+  ],
+  "hift.resblocks.4.convs2.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.4.convs2.0.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.resblocks.4.convs2.1.bias": [
+   128
+  ],
+  "hift.resblocks.4.convs2.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.4.convs2.1.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.resblocks.4.convs2.2.bias": [
+   128
+  ],
+  "hift.resblocks.4.convs2.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.4.convs2.2.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.resblocks.5.activations1.0.alpha": [
+   128
+  ],
+  "hift.resblocks.5.activations1.1.alpha": [
+   128
+  ],
+  "hift.resblocks.5.activations1.2.alpha": [
+   128
+  ],
+  "hift.resblocks.5.activations2.0.alpha": [
+   128
+  ],
+  "hift.resblocks.5.activations2.1.alpha": [
+   128
+  ],
+  "hift.resblocks.5.activations2.2.alpha": [
+   128
+  ],
+  "hift.resblocks.5.convs1.0.bias": [
+   128
+  ],
+  "hift.resblocks.5.convs1.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.5.convs1.0.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "hift.resblocks.5.convs1.1.bias": [
+   128
+  ],
+  "hift.resblocks.5.convs1.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.5.convs1.1.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "hift.resblocks.5.convs1.2.bias": [
+   128
+  ],
+  "hift.resblocks.5.convs1.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.5.convs1.2.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "hift.resblocks.5.convs2.0.bias": [
+   128
+  ],
+  "hift.resblocks.5.convs2.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.5.convs2.0.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "hift.resblocks.5.convs2.1.bias": [
+   128
+  ],
+  "hift.resblocks.5.convs2.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.5.convs2.1.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "hift.resblocks.5.convs2.2.bias": [
+   128
+  ],
+  "hift.resblocks.5.convs2.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.resblocks.5.convs2.2.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "hift.resblocks.6.activations1.0.alpha": [
+   64
+  ],
+  "hift.resblocks.6.activations1.1.alpha": [
+   64
+  ],
+  "hift.resblocks.6.activations1.2.alpha": [
+   64
+  ],
+  "hift.resblocks.6.activations2.0.alpha": [
+   64
+  ],
+  "hift.resblocks.6.activations2.1.alpha": [
+   64
+  ],
+  "hift.resblocks.6.activations2.2.alpha": [
+   64
+  ],
+  "hift.resblocks.6.convs1.0.bias": [
+   64
+  ],
+  "hift.resblocks.6.convs1.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.6.convs1.0.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "hift.resblocks.6.convs1.1.bias": [
+   64
+  ],
+  "hift.resblocks.6.convs1.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.6.convs1.1.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "hift.resblocks.6.convs1.2.bias": [
+   64
+  ],
+  "hift.resblocks.6.convs1.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.6.convs1.2.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "hift.resblocks.6.convs2.0.bias": [
+   64
+  ],
+  "hift.resblocks.6.convs2.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.6.convs2.0.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "hift.resblocks.6.convs2.1.bias": [
+   64
+  ],
+  "hift.resblocks.6.convs2.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.6.convs2.1.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "hift.resblocks.6.convs2.2.bias": [
+   64
+  ],
+  "hift.resblocks.6.convs2.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.6.convs2.2.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "hift.resblocks.7.activations1.0.alpha": [
+   64
+  ],
+  "hift.resblocks.7.activations1.1.alpha": [
+   64
+  ],
+  "hift.resblocks.7.activations1.2.alpha": [
+   64
+  ],
+  "hift.resblocks.7.activations2.0.alpha": [
+   64
+  ],
+  "hift.resblocks.7.activations2.1.alpha": [
+   64
+  ],
+  "hift.resblocks.7.activations2.2.alpha": [
+   64
+  ],
+  "hift.resblocks.7.convs1.0.bias": [
+   64
+  ],
+  "hift.resblocks.7.convs1.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.7.convs1.0.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "hift.resblocks.7.convs1.1.bias": [
+   64
+  ],
+  "hift.resblocks.7.convs1.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.7.convs1.1.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "hift.resblocks.7.convs1.2.bias": [
+   64
+  ],
+  "hift.resblocks.7.convs1.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.7.convs1.2.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "hift.resblocks.7.convs2.0.bias": [
+   64
+  ],
+  "hift.resblocks.7.convs2.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.7.convs2.0.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "hift.resblocks.7.convs2.1.bias": [
+   64
+  ],
+  "hift.resblocks.7.convs2.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.7.convs2.1.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "hift.resblocks.7.convs2.2.bias": [
+   64
+  ],
+  "hift.resblocks.7.convs2.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.7.convs2.2.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "hift.resblocks.8.activations1.0.alpha": [
+   64
+  ],
+  "hift.resblocks.8.activations1.1.alpha": [
+   64
+  ],
+  "hift.resblocks.8.activations1.2.alpha": [
+   64
+  ],
+  "hift.resblocks.8.activations2.0.alpha": [
+   64
+  ],
+  "hift.resblocks.8.activations2.1.alpha": [
+   64
+  ],
+  "hift.resblocks.8.activations2.2.alpha": [
+   64
+  ],
+  "hift.resblocks.8.convs1.0.bias": [
+   64
+  ],
+  "hift.resblocks.8.convs1.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.8.convs1.0.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.resblocks.8.convs1.1.bias": [
+   64
+  ],
+  "hift.resblocks.8.convs1.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.8.convs1.1.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.resblocks.8.convs1.2.bias": [
+   64
+  ],
+  "hift.resblocks.8.convs1.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.8.convs1.2.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.resblocks.8.convs2.0.bias": [
+   64
+  ],
+  "hift.resblocks.8.convs2.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.8.convs2.0.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.resblocks.8.convs2.1.bias": [
+   64
+  ],
+  "hift.resblocks.8.convs2.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.8.convs2.1.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.resblocks.8.convs2.2.bias": [
+   64
+  ],
+  "hift.resblocks.8.convs2.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.resblocks.8.convs2.2.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.source_downs.0.bias": [
+   256
+  ],
+  "hift.source_downs.0.weight": [
+   256,
+   18,
+   30
+  ],
+  "hift.source_downs.1.bias": [
+   128
+  ],
+  "hift.source_downs.1.weight": [
+   128,
+   18,
+   6
+  ],
+  "hift.source_downs.2.bias": [
+   64
+  ],
+  "hift.source_downs.2.weight": [
+   64,
+   18,
+   1
+  ],
+  "hift.source_resblocks.0.activations1.0.alpha": [
+   256
+  ],
+  "hift.source_resblocks.0.activations1.1.alpha": [
+   256
+  ],
+  "hift.source_resblocks.0.activations1.2.alpha": [
+   256
+  ],
+  "hift.source_resblocks.0.activations2.0.alpha": [
+   256
+  ],
+  "hift.source_resblocks.0.activations2.1.alpha": [
+   256
+  ],
+  "hift.source_resblocks.0.activations2.2.alpha": [
+   256
+  ],
+  "hift.source_resblocks.0.convs1.0.bias": [
+   256
+  ],
+  "hift.source_resblocks.0.convs1.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.source_resblocks.0.convs1.0.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.source_resblocks.0.convs1.1.bias": [
+   256
+  ],
+  "hift.source_resblocks.0.convs1.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.source_resblocks.0.convs1.1.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.source_resblocks.0.convs1.2.bias": [
+   256
+  ],
+  "hift.source_resblocks.0.convs1.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.source_resblocks.0.convs1.2.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.source_resblocks.0.convs2.0.bias": [
+   256
+  ],
+  "hift.source_resblocks.0.convs2.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.source_resblocks.0.convs2.0.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.source_resblocks.0.convs2.1.bias": [
+   256
+  ],
+  "hift.source_resblocks.0.convs2.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.source_resblocks.0.convs2.1.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.source_resblocks.0.convs2.2.bias": [
+   256
+  ],
+  "hift.source_resblocks.0.convs2.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.source_resblocks.0.convs2.2.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "hift.source_resblocks.1.activations1.0.alpha": [
+   128
+  ],
+  "hift.source_resblocks.1.activations1.1.alpha": [
+   128
+  ],
+  "hift.source_resblocks.1.activations1.2.alpha": [
+   128
+  ],
+  "hift.source_resblocks.1.activations2.0.alpha": [
+   128
+  ],
+  "hift.source_resblocks.1.activations2.1.alpha": [
+   128
+  ],
+  "hift.source_resblocks.1.activations2.2.alpha": [
+   128
+  ],
+  "hift.source_resblocks.1.convs1.0.bias": [
+   128
+  ],
+  "hift.source_resblocks.1.convs1.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.source_resblocks.1.convs1.0.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.source_resblocks.1.convs1.1.bias": [
+   128
+  ],
+  "hift.source_resblocks.1.convs1.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.source_resblocks.1.convs1.1.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.source_resblocks.1.convs1.2.bias": [
+   128
+  ],
+  "hift.source_resblocks.1.convs1.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.source_resblocks.1.convs1.2.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.source_resblocks.1.convs2.0.bias": [
+   128
+  ],
+  "hift.source_resblocks.1.convs2.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.source_resblocks.1.convs2.0.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.source_resblocks.1.convs2.1.bias": [
+   128
+  ],
+  "hift.source_resblocks.1.convs2.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.source_resblocks.1.convs2.1.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.source_resblocks.1.convs2.2.bias": [
+   128
+  ],
+  "hift.source_resblocks.1.convs2.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.source_resblocks.1.convs2.2.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "hift.source_resblocks.2.activations1.0.alpha": [
+   64
+  ],
+  "hift.source_resblocks.2.activations1.1.alpha": [
+   64
+  ],
+  "hift.source_resblocks.2.activations1.2.alpha": [
+   64
+  ],
+  "hift.source_resblocks.2.activations2.0.alpha": [
+   64
+  ],
+  "hift.source_resblocks.2.activations2.1.alpha": [
+   64
+  ],
+  "hift.source_resblocks.2.activations2.2.alpha": [
+   64
+  ],
+  "hift.source_resblocks.2.convs1.0.bias": [
+   64
+  ],
+  "hift.source_resblocks.2.convs1.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.source_resblocks.2.convs1.0.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.source_resblocks.2.convs1.1.bias": [
+   64
+  ],
+  "hift.source_resblocks.2.convs1.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.source_resblocks.2.convs1.1.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.source_resblocks.2.convs1.2.bias": [
+   64
+  ],
+  "hift.source_resblocks.2.convs1.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.source_resblocks.2.convs1.2.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.source_resblocks.2.convs2.0.bias": [
+   64
+  ],
+  "hift.source_resblocks.2.convs2.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.source_resblocks.2.convs2.0.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.source_resblocks.2.convs2.1.bias": [
+   64
+  ],
+  "hift.source_resblocks.2.convs2.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.source_resblocks.2.convs2.1.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.source_resblocks.2.convs2.2.bias": [
+   64
+  ],
+  "hift.source_resblocks.2.convs2.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "hift.source_resblocks.2.convs2.2.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "hift.ups.0.bias": [
+   256
+  ],
+  "hift.ups.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "hift.ups.0.parametrizations.weight.original1": [
+   512,
+   256,
+   16
+  ],
+  "hift.ups.1.bias": [
+   128
+  ],
+  "hift.ups.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "hift.ups.1.parametrizations.weight.original1": [
+   256,
+   128,
+   11
+  ],
+  "hift.ups.2.bias": [
+   64
+  ],
+  "hift.ups.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "hift.ups.2.parametrizations.weight.original1": [
+   128,
+   64,
+   7
+  ]
+ },
+ "torch_dtype": "float32"
+}

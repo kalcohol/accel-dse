@@ -473,6 +473,8 @@ class ModelSpec:
     standby_params: int = 0                  # stored but idle per forward (Wan2.2 A14B: the other noise-level expert)
     cached_params: int = 0                   # in the release but not loaded for inference (MiniMax-H3 AdaLN branches:
                                              # modulation outputs precomputed per timestep, README)
+    cosy: object = None                      # 0.271 core.cosyvoice.CosySpec: CosyVoice2 / 3 flow + HiFT (speech output)
+    omni: object = None                      # 0.271 core.omni.OmniSpec: Qwen2.5-Omni Talker + token2wav (speech output)
     tts: object = None                       # 0.269 core.tts.TtsSpec: speech-synthesis decode head (replaces the LM head)
     # 0.270 encoder-decoder (Whisper): encoder positions each decoder sequence cross-attends to (1500 per 30 s window);
     # the cross K/V of every layer is computed at prefill and kept per sequence (fixed size, like recurrent state)
@@ -563,6 +565,17 @@ def _tc(cfg: dict) -> dict:
         tc = cfg["llm_config"]      # 0.269 Ming-3.0-tts-tiny: the BailingMoeV3 decoder config sits in llm_config
     if mt == "qwen3_asr" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
         tc = cfg["thinker_config"]["text_config"]      # 0.270 Qwen3-ASR: thinker_config.text_config (Qwen3)
+    if mt == "qwen2_5_omni" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
+        # 0.271 Qwen2.5-Omni: the Thinker's text_config (Qwen2.5-7B shape; Qwen2 attention: q / k / v with bias —
+        # transformers Qwen2_5OmniAttention 「来源」); talker / token2wav → core/omni.py
+        tc = {**cfg["thinker_config"]["text_config"], "attention_bias": True}
+    if mt in ("cosyvoice2", "cosyvoice3") and isinstance(cfg.get("llm_config"), dict):
+        # 0.271 CosyVoice2 / Fun-CosyVoice3: the Qwen2.5-0.5B backbone (CosyVoice-BlankEN/config.json) decodes speech
+        # tokens — vocab = the speech-token table / llm_decoder rows (header: 6564 / 6761); the text embedding and the
+        # stored text lm_head become lookup tables (from_release)
+        cv = cfg.get("cosyvoice") or {}
+        tc = {**cfg["llm_config"], "vocab_size": cv.get("speech_vocab") or cfg["llm_config"]["vocab_size"],
+              "tie_word_embeddings": False}
     if mt == "qwen2_audio" and isinstance(tc, dict) and not tc.get("hidden_size"):
         tc = {**_QWEN2_DEFAULTS, **tc}
     if mt == "whisper":
@@ -1803,7 +1816,8 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
     if hc and not any(l.hc or l.gres_n for l in spec.layers):
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
-    if spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers) and mt != "whisper":
+    if spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers) and mt != "whisper" \
+            and not c.get("cosyvoice"):
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
     if abs(gap) > 0.02:
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
@@ -1855,7 +1869,14 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                        release_bytes=rel.get("bytes_llm"), quantized_release=_quant_release(rel))
         # lookup-only tables (n-gram / engram embeddings): stored, read a few rows per token
         emb_rel = sum(v["params"] for v in rel.get("roles", {}).get("embed", {}).values())
-        if emb_rel > 1.05 * spec.embed_params:
+        cosy = (cfg.get("model_type") or "") in ("cosyvoice2", "cosyvoice3")
+        if emb_rel > 1.05 * spec.embed_params and cosy:
+            # 0.271 CosyVoice: text embedding (prompt text, a few rows / token) + the stored text lm_head (never read by
+            # the speech-token loop) — stored in fp32 as released
+            spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=32.0,
+                           notes=spec.notes + (f"文本 embedding + 文本 lm_head（{(emb_rel - spec.embed_params) / 1e9:.3f}B，"
+                                               "fp32）：只存储 / 按行查表；解码头为 llm_decoder（语音 token 表）",))
+        elif emb_rel > 1.05 * spec.embed_params:
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params,
                            notes=spec.notes + (f"查表 {(emb_rel - spec.embed_params) / 1e9:.1f}B 参数（n-gram / engram），"
                                                "按发布 safetensors 头计入存储；每 token 只读少量行",))
@@ -1943,6 +1964,25 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                f"语音合成（TTS）：每步 = LLM 1 token + 流匹配 DiT 头 {ts.flow_steps} 步 Euler × CFG {ts.cfg_mult} "
                                f"+ 聚合器 + 流式 AudioVAE 解码；每步 {ts.s_per_step * 1e3:.0f} ms 音频（44.1 kHz）；"
                                "lm_head 只存储（TTS 循环不用）",))
+        from .cosyvoice import cosy_spec
+        cs = cosy_spec(cfg, rel)
+        if cs is not None:
+            # 0.271 CosyVoice2 / 3: flow + HiFT (release roles flow / vocoder, outside params_llm) costed per output-audio
+            # second by core/speech.py on a speech card 「假设」; the LM decodes 25 speech tokens per audio second
+            spec = replace(spec, cosy=cs, notes=spec.notes + (
+                f"语音输出：LM 每音频秒 {cs.token_rate} 个语音 token → flow（{cs.flow_params / 1e6:.1f}M，fp32，"
+                f"{'Conformer 编码器 + U-Net' if cs.version == 2 else 'DiT'} 估计器，Euler {cs.steps} 步 × CFG {cs.cfg_mult}，"
+                f"每块从头重算全部已生成 token）+ HiFT（{cs.hift_params / 1e6:.1f}M，fp32，24 kHz）；放在每个副本一张额外卡上「假设」",))
+        from .omni import omni_spec
+        om = omni_spec(cfg)
+        if om is not None:
+            # 0.271 Qwen2.5-Omni: Talker (bf16) + token2wav DiT / BigVGAN (fp32) — release roles talker / token2wav
+            # (outside params_llm); costed per output-audio second by core/speech.py on a speech card 「假设」
+            spec = replace(spec, omni=om, notes=spec.notes + (
+                f"语音输出：Talker（{om.talker_params / 1e9:.3f}B，bf16，每音频秒 {om.codec_per_s:.0f} 个 codec token）+ "
+                f"token2wav DiT（{om.dit_params / 1e6:.1f}M，fp32，RK4 {om.evals} 次 × CFG {om.cfg_mult}，"
+                f"{om.chunk} 帧分块流式）+ BigVGAN（{om.bigvgan_params / 1e6:.1f}M，fp32，24 kHz）；"
+                "按每输出音频秒计（core/speech.py），放在每个副本一张额外卡上「假设」",))
         rel_gap = (spec.release_params - spec.params()) / spec.release_params if spec.release_params else 0.0
         mp = c.get("max_position_embeddings")
         from .vision import vision_spec

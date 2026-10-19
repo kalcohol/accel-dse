@@ -6,6 +6,50 @@
 
 
 
+## [0.271.0]
+
+### Added — Qwen2.5-Omni-7B, speech in + speech out (MODEL §216.1–216.2)
+- `Qwen/Qwen2.5-Omni-7B` (listing domain `omni`, family Qwen2.5-Omni, coverage partial). The params match the safetensors header exactly, component by component:
+  - Thinker = Qwen2.5-7B (`_tc`: `thinker_config.text_config`, q/k/v bias): 7,615,616,512.
+  - Audio tower: 639,647,232.
+  - Talker: 1,351,360,256.
+  - token2wav DiT: 333,607,792 (includes ECAPA 1,729,280).
+  - BigVGAN: 115,443,504.
+  - The Qwen2.5-VL ViT (676,550,144) is stored only. Image and video input are not modelled; this is the coverage reason.
+- Audio tower (`vision._omni_audio_spec`): Whisper-v3 run on the valid frames only, in 200-frame chunks with attention inside each chunk, then AvgPool(2) and Linear 1280→3584. That gives 25 tokens/s, using the processor formula. There is no 30 s padding, but audio past 30 s is truncated (`AudioSpec.maxf`; `asr.truncated_s`).
+- `scripts/summarize_release.py`: Omni roles `talker` / `token2wav` (`params_talker`, `params_token2wav`, kept outside `params_llm`).
+- Speech output (`core/omni.py`, `ModelSpec.omni`):
+  - Talker: 24 layers × h896, 12×128 heads, GQA kv 4, SwiGLU 18944, codec head 8448. It emits 50 codec tokens per audio second.
+  - DiT (fp32): 22 × d1024, AdaLN-Zero, block-masked SDPA. RK4 over 10 time points gives 36 evaluations, each with CFG ×2. The ECAPA speaker encoder re-runs on the reference mel in every evaluation.
+  - BigVGAN (fp32): 6 upsample stages ×240 with AMP blocks and anti-aliased SnakeBeta, 24 kHz.
+  - Streaming follows vLLM-Omni: 72-mel chunks (0.72 s); DiT window 96 frames for the first chunk and 144 steady; vocoder on 72 / 112 frames; token2wav batch 1.
+  - The DiT re-read share uses the 0.269 pin rule (`omni_pin`).
+
+### Added — CosyVoice2-0.5B / Fun-CosyVoice3-0.5B-2512 (MODEL §216.3)
+- `scripts/fetch_pt_release.py`: these releases ship torch `.pt` checkpoints only. Tensor names, shapes and dtypes are read from each checkpoint's pickled state dict over HTTP Range (zip central directory, then data.pkl), with no weights downloaded and no torch needed. The yaml fields go into `config.cosyvoice`.
+- LM: the Qwen2.5-0.5B backbone, with vocab = the speech-token table / `llm_decoder` (6564 / 6761). The text embedding and the stored text lm_head are fp32 lookup tables. `params_llm` matches exactly, except the 6564-param `llm_decoder` bias of v2.
+- `core/cosyvoice.py` (`ModelSpec.cosy`) builds one GEMM per released weight at its module's rate:
+  - CosyVoice2 flow: Conformer encoder (25 Hz / 50 Hz, rel-pos attention) + U-Net estimator.
+  - CosyVoice3 flow: DiT, the same block as the Omni DiT.
+  - CFM: 10 Euler steps × CFG 2.
+  - HiFT at ×8 / ×40 / ×120 the mel rate, then iSTFT.
+  - Flow 112,549,360 / 332,257,120 and HiFT 20,821,295 / 20,779,887 are read exactly once per pass.
+- Streaming follows cli/model.py:
+  - Hops are 25 → 50 → 100 tokens (+3 look-ahead).
+  - Every chunk re-runs the flow over the prompt plus all tokens generated so far.
+  - CosyVoice3 re-vocodes all the mel generated so far; CosyVoice2 vocodes only the new mel (+ an 8-frame cache).
+  - `token_hop_len` is never reset, so a long-lived instance starts later requests at a 100-token hop. This is reported as `first_audio_warm_s`.
+
+### Added — speech-out KPIs
+- `speech_kpis` kinds `omni` and `cosyvoice`: first-audio latency with its split, Talker step / DiT chunk / flow and HiFT per chunk, speech-card RTF for b streams, real-time streams per card, and output audio s / s per card (counting the speech card). Placement assumption 「假设」: one extra speech card per replica. `/api/eval` returns `speech` for these models; UI KPIs and badges.
+- Finding (100T + LPDDR5X, 10 s out):
+  - Omni is not real time even for one stream (speech-card RTF 1.03). Talker 50 × 14 ms = 0.70 s plus DiT 0.33 s per audio second. First audio 1.08 s, of which 0.67 s is the 48 Talker steps.
+  - CosyVoice2 first audio is 0.22 s (0.78 s warm), RTF 0.012. CosyVoice3: 0.28 s (0.83 s warm), with the fp32 DiT weight-bound at 66 ms per chunk.
+
+### Freshness
+- Sweep of 88 orgs since 10-17: only DeepSeek-V4.1-Flash-1017 (an alias since 0.248) and repacks / GGUFs. Nothing new since 10-20.
+- Pre-window speech gaps are deferred, with notes in MODEL §216.4: Fun-ASR-Nano-2512-hf (transformers config: SAN-M 70-layer encoder + adaptor + Qwen3-0.6B), fishaudio drama-3 (FishOmni, 40 GB + codec.pth), Index-Echo S2ST, FireRedTTS3.
+
 ## [0.270.0]
 
 ### Added — speech round: encoder-decoder ASR (MODEL §215.1–215.2)
