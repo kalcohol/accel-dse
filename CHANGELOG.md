@@ -6,6 +6,15 @@
 
 
 
+## [0.264.0]
+
+### Changed — 25/85 °C SLC energy in the default design-insight path (MODEL §209.1)
+- `insight_report` / `POST /api/insight` attaches `slc_temp` whenever `uW_per_mib_sram_leak` is set: compact 25/85 °C J-opt / crossover / time-opt per model (grid `INSIGHT_SLC_GIB`), plus `recommend[].hot_cuts_J_opt`.
+- Insight UI `#ins-slc-temp`: table + one-click「应用 25/85 °C J 最优」writes `#c-slc_mib`. No second click on「25/85 °C 对比」required for the headline trade-off.
+
+### Freshness
+- Sweep since 10-20: nothing new.
+
 ## [0.263.0]
 
 ### Changed — idle-aware incremental SLC leakage; 25/85 °C one-click compare (MODEL §208.1–208.2)

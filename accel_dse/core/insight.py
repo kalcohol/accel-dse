@@ -386,14 +386,49 @@ def insight_report(base: Scenario, models=None, budget: Budget | None = None, ta
         if budget.usd_per_kWh is None:
             notes.append("未填电价：TCO 只含 CapEx")
     j_src = ("能耗表" if table.provided else ("TDP×时间" if tdp_W is not None else None))
+    # 0.264: package 25/85 °C SLC energy into the default insight path when leakage is modellable
+    slc_temp = None
+    from .energy import sram_leak_uW_per_mib as _leak_uW
+    if _leak_uW(table) is not None:
+        pol = base.chip.slc_policy or "dip"
+        try:
+            cmp = slc_energy_report(base, table, [r["model"] for r in mrows if "error" not in r] or models,
+                                    policy=pol, gibs=INSIGHT_SLC_GIB, temps=(25, 85))
+            # compact: drop by_temp curves (UI / API consumers use summary + recommend)
+            by_model = {}
+            for row in cmp["summary"]:
+                by_model.setdefault(row["model"], {})[row["temp_C"]] = row
+            recommend = []
+            for mid, ts in by_model.items():
+                c25, c85 = ts.get(25.0), ts.get(85.0)
+                if not c25 or not c85 or c25.get("error") or c85.get("error"):
+                    continue
+                recommend.append({
+                    "model": mid,
+                    "opt_J_gib_25C": c25.get("opt_J_gib"), "crossover_gib_25C": c25.get("crossover_gib"),
+                    "opt_J_gib_85C": c85.get("opt_J_gib"), "crossover_gib_85C": c85.get("crossover_gib"),
+                    "opt_time_gib_25C": c25.get("opt_time_gib"), "opt_time_gib_85C": c85.get("opt_time_gib"),
+                    "hot_cuts_J_opt": (c25.get("opt_J_gib") or 0) > (c85.get("opt_J_gib") or 0),
+                })
+            slc_temp = {"policy": pol, "temps": [25.0, 85.0], "gibs": list(INSIGHT_SLC_GIB),
+                        "leak_charged": True, "summary": cmp["summary"], "recommend": recommend,
+                        "notes": cmp.get("notes") or [],
+                        "basis": "insight_report embeds slc_energy_report(temps=(25,85)) (0.264)"}
+            if any(x.get("hot_cuts_J_opt") for x in recommend):
+                notes.append("SLC：85 °C 下 J 最优容量低于 25 °C（漏电交叉；见 slc_temp）")
+            else:
+                notes.append("SLC：已附 25/85 °C J 最优对比（slc_temp）")
+        except ValueError as e:
+            notes.append(f"SLC 25/85 °C 对比跳过：{e}")
     return {"chip": base.chip.name, "mem_id": base.mem_id, "layout": base.layout.label, "notes": notes,
             "serving": {"batch": base.serving.batch, "prompt": base.serving.prompt, "ctx": base.serving.ctx},
             "models": mrows, "knobs": krows, "rank": rank, "rank_per_mm2": rank_mm2, "rank_per_J": rank_J,
             "rank_per_usd": rank_usd, "rank_tco": rank_tco, "tco": tco0, "hurts": hurts, "tie": TIE, "domain": domain, "metrics": metric_labels(domain),
             "default_metric": DEFAULT_METRIC[domain],
             "area": area0, "energy_provided": table.provided,
-            "usd_per_kWh": usd_kwh, "tdp_W_card": tdp_W, "j_source": j_src,
+            "usd_per_kWh": usd_kwh, "tdp_W_card": tdp_W, "j_source": j_src, "slc_temp": slc_temp,
             "basis": "单变量探针 × 现有引擎（evaluate）；面积只用用户密度（budget.area_estimate / full_area），功耗只用用户能耗表或动作计数；"
+                     "有漏电场时附带 slc_temp（25/85 °C J 最优，0.264）；"
                      "探针幅度（×2、下一档）不是成本结论。指标随领域：LLM = TTFT/TPOT/tok/s；视频/图像 = 延迟/帧/s；"
                      "蛋白质 = 延迟/序列/s；基因组 = 延迟/窗口/s。能耗预设（0.152）或用户表点亮 ΔJ / 每焦耳排序；"
                      "idle_W 不进预设。0.153：$/kWh（电价预设或手填）+ 能耗 ΔJ（或 tdp_W_card × 时间）→ Δ$ / 每美元排序；"
@@ -970,6 +1005,8 @@ def _joint_shrink(base: Scenario, rows: list, budget, worst, unpriced: str = "la
 
 # ------------------------------------------------------------------ 0.262: J/token-optimal SLC size under temperature
 SLC_GIB_GRID = (0, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64)     # capacity probe points (GiB); 0 = no SLC
+# 0.264: coarser grid embedded in insight_report (default design path) so 25/85 °C lands without a second click
+INSIGHT_SLC_GIB = (0, 1, 2, 4, 8, 16, 32)
 
 
 def slc_energy_report(base: Scenario, table: EnergyTable | None = None, models=None, *,

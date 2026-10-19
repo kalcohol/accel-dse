@@ -1804,7 +1804,9 @@ async function runInsight() {
     paintInsMetric(r);
     paintInsight();
     setInsightExport();
-    $('ins-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout} · batch ${r.serving.batch}`;
+    const st = r.slc_temp, tip = (st && st.recommend && st.recommend.some((x) => x.hot_cuts_J_opt))
+      ? ' · SLC 85 °C 削减 J 最优' : (st ? ' · 含 SLC 25/85 °C' : '');
+    $('ins-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout} · batch ${r.serving.batch}${tip}`;
   } catch (e) {
     $('ins-status').textContent = '错误：' + e.message;
   }
@@ -2110,7 +2112,42 @@ function paintInsight() {
       h('td', {}, k.label), h('td', {}, INS_COST_ZH[k.cost]), ...mkeys.map((q) => h('td', { class: q === m ? 'b' : '' }, insX(k.score[q]))),
       h('td', {}, k.d_mm2 === null ? '—' : num(k.d_mm2)), h('td', {}, k.gain_per_mm2[m] === null ? '—' : pct(k.gain_per_mm2[m]))))));
   paintInsightDetail(ks[0] && ks[0].key);
+  paintInsightSlcTemp(r);
   setInsightExport();
+}
+function paintInsightSlcTemp(r) {
+  const box = $('ins-slc-temp'); if (!box) return;
+  const st = r && r.slc_temp;
+  if (!st || !st.recommend || !st.recommend.length) { box.hidden = true; put(box); return; }
+  box.hidden = false;
+  const rows = st.recommend;
+  const apply = (gib, label) => {
+    const b = h('button', { class: 'btn ghost', type: 'button', title: '写入左侧 SLC MiB（' + label + '）' },
+                `应用 ${label} ${gib == null ? '—' : gib + ' GiB'}`);
+    b.disabled = gib == null;
+    b.addEventListener('click', () => {
+      if (gib == null) return;
+      const inp = $('c-slc_mib');
+      if (inp) { inp.value = String(gib * 1024); inp.dispatchEvent(new Event('input', { bubbles: true })); }
+      if (typeof schedule === 'function') schedule();
+    });
+    return b;
+  };
+  put(box,
+    h('div', {}, h('b', {}, 'SLC 25/85 °C（随设计洞察）'), ` · 策略 ${st.policy} · 漏电计入`),
+    h('div', { class: 'scroll' }, h('table', { class: 'tbl tight' },
+      h('thead', {}, h('tr', {}, ['模型', 'J 最优 25 °C', '交叉 25 °C', 'J 最优 85 °C', '交叉 85 °C', '时间最优 25/85'].map((x) => h('th', {}, x)))),
+      h('tbody', {}, rows.map((x) => h('tr', {},
+        h('td', {}, x.model),
+        h('td', {}, x.opt_J_gib_25C == null ? '—' : x.opt_J_gib_25C + ' GiB'),
+        h('td', {}, x.crossover_gib_25C == null ? '—' : x.crossover_gib_25C + ' GiB'),
+        h('td', {}, x.opt_J_gib_85C == null ? '—' : x.opt_J_gib_85C + ' GiB'),
+        h('td', {}, x.crossover_gib_85C == null ? '—' : x.crossover_gib_85C + ' GiB'),
+        h('td', {}, `${x.opt_time_gib_25C ?? '—'} / ${x.opt_time_gib_85C ?? '—'} GiB`)))))),
+    h('div', { class: 'row' },
+      apply(rows[0].opt_J_gib_25C, '25 °C J 最优'),
+      apply(rows[0].opt_J_gib_85C, '85 °C J 最优'),
+      h('span', { class: 'small muted' }, '写入第一个模型的推荐容量；完整曲线见下方「SLC 能耗最优」。')));
 }
 function paintInsightDetail(key) {
   const r = S.insight, k = r && r.knobs.find((x) => x.key === key);

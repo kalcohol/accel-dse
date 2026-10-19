@@ -537,8 +537,9 @@
       <span id="ins-exp" hidden><button class="btn ghost" id="ins-exp-csv" title="导出旋钮排名表（CSV，UTF-8 带 BOM）">导出 CSV</button> <button class="btn ghost" id="ins-exp-json" title="导出洞察报告（JSON：场景快照、列定义、逐行与原始响应）">导出 JSON</button></span>
       <span class="small muted" id="ins-status"></span>
     </div>
-    <p class="small muted">对左侧芯片 / 外存 / 卡数 / 服务设置，逐个只改一个硬件旋钮，用现有引擎重算模型集的领域原生指标并按几何平均加速排序。模型集须同属一个领域：LLM（TTFT / TPOT / tok/s）、视频/图像（延迟 / 帧/s）、蛋白质（延迟 / 序列/s）、基因组（延迟 / 窗口/s）。面积只用「预算」密度（或密度预设）；功耗用能耗表，否则给动作计数变化；填了电价+$/能耗或 TDP 时另给每美元排序。探针幅度不是成本结论。</p>
+    <p class="small muted">对左侧芯片 / 外存 / 卡数 / 服务设置，逐个只改一个硬件旋钮，用现有引擎重算模型集的领域原生指标并按几何平均加速排序。模型集须同属一个领域：LLM（TTFT / TPOT / tok/s）、视频/图像（延迟 / 帧/s）、蛋白质（延迟 / 序列/s）、基因组（延迟 / 窗口/s）。面积只用「预算」密度（或密度预设）；功耗用能耗表，否则给动作计数变化；填了电价+$/能耗或 TDP 时另给每美元排序。探针幅度不是成本结论。有漏电场（能耗预设）时自动附带 25/85 °C SLC J 最优对比（0.264）。</p>
     <div class="note small" id="ins-summary"></div>
+    <div class="note small" id="ins-slc-temp" hidden title="0.264：有漏电场时设计洞察自动附带 25/85 °C SLC J 最优（无需另点对比）"></div>
     <div class="scroll"><table class="tbl tight" id="ins-models-tbl"></table></div>
     <div class="scroll"><table class="tbl tight" id="ins-tbl"></table></div>
     <div class="scroll"><table class="tbl tight" id="ins-detail"></table></div>

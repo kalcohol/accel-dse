@@ -6663,3 +6663,14 @@ With `serving.moe_expert_load`, the pin / pin_bw SLC path now treats the pinned 
 ### §208.4 Freshness
 `freshness_sweep.py 2026-10-20` (74 orgs): nothing new.
 
+## §209 25/85 °C SLC in the default insight path (0.264)
+
+### §209.1 Packaged into `insight_report`
+The 0.262/0.263 SLC energy sweep stayed behind a dedicated button. Chip-design users who already click「运行设计洞察」now get the same 25/85 °C J-optimal / crossover summary when the energy table has `uW_per_mib_sram_leak` (preset or hand-filled). Field: `slc_temp` `{policy, temps, gibs, summary, recommend, notes}`. Grid: `INSIGHT_SLC_GIB = (0,1,2,4,8,16,32)` (coarser than the full curve). Policy = `chip.slc_policy` (else dip). Without a leak field, `slc_temp` is null (no silent assumption).
+
+### §209.2 UI apply
+`#ins-slc-temp` paints the compare and offers「应用 25 °C / 85 °C J 最优」→ `#c-slc_mib`. Status line notes when the hot die cuts J-opt. Full per-GiB curve remains under「SLC 能耗最优」.
+
+### §209.3 Freshness
+`freshness_sweep.py 2026-10-20` (74 orgs): nothing new.
+
