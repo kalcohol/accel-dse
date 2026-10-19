@@ -6,6 +6,43 @@
 
 
 
+## [0.257.0]
+
+### Added — freshness sweep script; MOSS-Image Base / SFT (MODEL §203.1–203.2)
+- **`scripts/freshness_sweep.py`** (stdlib). It lists the models every tracked org created since a date: every Hugging Face org in `catalog.PROVIDERS` plus `EXTRA_ORGS`, 74 orgs in total. OpenMOSS-Team is now in the list.
+  - Since 2026-10-17 the only finds are DeepSeek-V4.1-Flash-1017 (an alias since 0.248) and third-party repacks / GGUFs (unsloth and others).
+  - mistralai Timestral (10-14) is a time-series model, out of domain.
+- **MOSS-Image-Base / -SFT** (OpenMOSS-Team, diffusers, 2026-10-11), `moss-image-base` / `moss-image-sft`. SFT has the same architecture and is merged into Base.
+  - **Architecture:** single-stream DiT `MOSSImageTransformer`, 42 blocks, d 3072, 24 × 128 heads, SwiGLU 8192 (fused gate_up), text refiner (2 blocks), shared modulation.
+  - **Checks:** param_check exact (5,082,308,624, bf16 + the fp32 RoPE bands); coverage full.
+  - **Workload:** 1024², 50 steps (shift 5 still gives 50 timesteps, 「推导」), CFG 3 = two forwards per step, text 256 tokens 「假设」.
+    - The unconditional branch skips block 22 and uses an empty negative prompt. It is modelled at the conditional shape 「近似」 (+3–4 %).
+    - `_situ` activation costed as SwiGLU 「近似」.
+  - **Pipeline:**
+    - Qwen3.5-9B text tower from the release headers, with 8 full-attention layers (3, 7, …, 31) and 24 Gated DeltaNet layers. GDN uses the LLM IR's chunked form (`pipeline._gdn_ops`), not softmax attention on every layer.
+    - VAE = AutoencoderKLFlux2 with the FLUX.2 small decoder (new family `os_s384`, attention width 384), fp32 as released.
+  - **Default chip:** 54.6 s per 1024² image (FLUX 3 Base 47.2 s), 5144 TFLOP per request.
+
+### Changed — PD report energy is a per-pool ledger (MODEL §203.3, closes the two §177 approximations)
+- `pdqueue._energy` takes each pool's own action counts (`pool_counts`; PD: decode = its iterations plus the KV receive / restore extras 「约定」, prefill = the rest). Three things follow:
+  - **DRAM kind.** Each pool's DRAM bytes are priced with that pool's memory kind (pJ/bit + chip-side PHY). Before, everything used the decode pool's kind.
+  - **Clock gating.** Each pool uses its own MAC utilisation, u_p = its MACs / its slot-cycles. Before, one utilisation was pooled over both pools.
+  - **`J_by_pool`.** Every term is booked to the pool that spends it (decode / prefill: J / token, J by action, card-s, DRAM field, MAC utilisation). The pools sum exactly to `J_per_token`.
+- **Identical chips, memory and gating:** unchanged to rounding. Every term is linear in the counts, so the pooled form was already exact there (tested).
+- **Effect** on qwen3-8b, 1P tp2, 2P + 6D, B64, 4096 / 512, load 0.6, tpuv4i_7nm, J / token before → after:
+  - prefill pool on LPDDR: .20480 → .20518;
+  - decode 1P g .25 HBM / prefill 100T LPDDR: .56077 → .55749 (clock −4.4 %);
+  - decode LPDDR / prefill HBM: .62410 → .62372;
+  - decode g .25 / prefill g 1, both HBM: .16610 → .16284 (clock −12.7 %).
+  - Pool utilisations: decode 0.021, prefill 0.433 (pooled 0.124).
+  - Ledger, prefill on LPDDR: decode pool 0.163 J / token (DRAM 61 %), prefill pool 0.042 J / token (MAC 61 %).
+- Colocated modes (one pool) and callers without `pool_counts` are unchanged.
+
+### Deferred
+- MOSS asymmetric CFG branches (the skipped block and the short negative prompt).
+- MOSS refiner attention core.
+- GitHub-only providers (`gh:` prefixes) are not in the Hugging Face sweep.
+
 ## [0.256.0]
 
 ### Changed — UI layout (knob panel and metric cards)

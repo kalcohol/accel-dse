@@ -73,6 +73,14 @@ SPECS = {
     "flux3-vae": ("f3_vae.json", "black-forest-labs/flux-3-image-klein · vae", None, "fp32",
                   "AutoencoderKLFlux2（与 FLUX.2 VAE 同形状）按发布 fp32（config.json vae.dtype float32）；"
                   "int64 张量为 BatchNorm 计数"),
+    # 0.257 MOSS-Image (OpenMOSS-Team/MOSS-Image-Base, public): text_encoder/ = Qwen3_5Model (Qwen3.5-9B language
+    # model + vision tower, no lm_head / MTP), vae/ = AutoencoderKLFlux2 with the FLUX.2 small decoder, fp32
+    "qwen3.5-9b.moss": ("moss_te.json", "OpenMOSS-Team/MOSS-Image-Base · text_encoder",
+                        lambda k: k.startswith("language_model."), None,
+                        "视觉塔随 text_encoder 加载、计入存储（Qwen3_5Model 无 lm_head / MTP），文生图不经过它"),
+    "moss-vae": ("moss_vae.json", "OpenMOSS-Team/MOSS-Image-Base · vae", None, "fp32",
+                 "AutoencoderKLFlux2 + FLUX.2 small decoder（decoder 96 / 192 / 384 / 384）按发布 fp32；"
+                 "int64 张量为 BatchNorm 计数"),
 }
 
 

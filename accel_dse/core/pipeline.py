@@ -57,6 +57,10 @@ class TextEnc:
     head_dim: int
     causal: bool = False
     note: str = ""
+    # 0.257 hybrid text towers (Qwen3.5: Gated DeltaNet + full attention): the softmax-attention layer indices (() =
+    # every layer) and, for the other layers, the GDN core (value heads, dk, dv, conv channels, conv kernel, chunk)
+    full_layers: tuple[int, ...] = ()
+    gdn: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,14 @@ _WAN_VAE = Vae("wan-vae", "wan", "Wan-VAE", act="fp32",
                note="参考实现 WanVAE 以 float32 运行（diffusers 示例亦 torch_dtype=float32）：激活按 fp32")
 _COG_NOTE = "CogVideoX 默认不开 VAE tiling（文档示例开启以省显存）：按整段 causal 解码（frame_batch_size = 2 潜帧）计"
 
+_MOSS_TE = TextEnc("qwen3.5-9b.moss", "Qwen3.5-9B 文本塔", 256, 16, 256, causal=True,
+                   note="聊天模板 + enable_thinking，逐样本真实长度（不补齐，上限 4096）≈ 256 token「假设」；取末层隐状态"
+                        "（use_cache=False）；8 层全注意力（16 头 × 256，门控输出）+ 24 层 Gated DeltaNet（32 值头，"
+                        "dk = dv = 128，chunk 64 分块形式，同 LLM IR）；CFG 时空负提示另编码一次（实际约 10 token，"
+                        "按同长计「近似」）",
+                   full_layers=tuple(range(3, 32, 4)), gdn=(32, 128, 128, 8192, 4, 64))
+_MOSS_PL = Pipeline((_MOSS_TE,), Vae("moss-vae", "os_s384", "MOSS-Image VAE（AutoencoderKLFlux2 + FLUX.2 small decoder，×8；"
+                                                "DiT 侧 2×2 打包）", act="fp32"))
 PIPELINES: dict[str, Pipeline] = {
     "wan2.1-14b": Pipeline((_UMT5,), _WAN_VAE),
     "wan2.1-1.3b": Pipeline((_UMT5,), _WAN_VAE),
@@ -152,6 +164,10 @@ PIPELINES: dict[str, Pipeline] = {
         (TextEnc("qwen3-vl-4b.flux3", "Qwen3-VL-4B 文本塔", 320, 32, 128, causal=True,
                  note="同 klein；真 CFG 时负提示另编码一次"),),
         Vae("flux3-vae", "os_s", "FLUX 3 VAE（AutoencoderKLFlux2，×8；DiT 侧 2×2 打包）", act="fp32")),
+    # 0.257 MOSS-Image: release text_encoder/ (Qwen3_5Model = Qwen3.5-9B without lm_head / MTP: 24 Gated DeltaNet + 8
+    # full-attention layers) + vae/ (AutoencoderKLFlux2 with the FLUX.2 small decoder, fp32 — README)
+    "moss-image-base": _MOSS_PL,
+    "moss-image-sft": _MOSS_PL,
 }
 
 
@@ -193,12 +209,37 @@ def text_ops(te: TextEnc, prompts: int, af: str) -> tuple[list[Op], float]:
     cnt = prompts * te.heads
     T, dh = te.tokens, te.head_dim
     for li in sorted(layers):
+        if te.full_layers and li not in te.full_layers:
+            ops += _gdn_ops(te, li, prompts)
+            continue
         ops += [Op(f"te.{li}.qk", "attn", li, m=T, k=dh, n=T, count=cnt, causal=causal,
                    act_bytes=cnt * T * dh * ab, stream=True, orient=True),
                 Op(f"te.{li}.pv", "attn", li, m=T, k=T, n=dh, count=cnt, causal=causal,
                    act_bytes=cnt * T * dh * ab, orient=True),
                 Op(f"te.{li}.softmax", "vector", li, vec=cnt * T * T * causal * 5)]
     return ops, peak
+
+
+def _gdn_ops(te: TextEnc, li: int, prompts: int) -> list[Op]:
+    """0.257: one Gated DeltaNet layer of a hybrid text tower over ``prompts`` prompts of te.tokens tokens — the chunked
+    prefill form the LLM IR uses (ir._attn_core_ops, kind linear / lin gdn: transformers torch_chunk_gated_delta_rule,
+    chunk 64, bf16 operands), plus the causal depthwise conv and the per-token / per-chunk vector work.  No state is
+    kept (encoder forward, use_cache=False)."""
+    hv, dk, dv, conv_ch, kern, C = te.gdn
+    T = te.tokens
+    nc = -(-T // C)
+    cnt = prompts * hv * nc
+
+    def g(nm, m_, k_, n_, cz=1.0):
+        return Op(f"te.{li}.{nm}", "attn", li, m=m_, k=k_, n=n_, count=cnt, causal=cz, w_fmt="bf16", a_fmt="bf16",
+                  act_bytes=cnt * (m_ * k_ + m_ * n_) * 2)
+    ops = [g("lin_akk", C, dk, C), g("lin_ut_solve", C, C, dv + dk, 0.5), g("lin_vprime", C, dk, dv),
+           g("lin_aqk", C, dk, C), g("lin_intra", C, C, dv), g("lin_inter", C, dk, dv), g("lin_state", dk, C, dv)]
+    t = prompts * T
+    tok_vec = (dk + dv) + 6 * dk + 2 * dk + 2 * dv
+    ch_vec = 5 * C * C + C * dv + dk * dv
+    ops.append(Op(f"te.{li}.lin_vec", "vector", li, vec=t * hv * tok_vec + cnt * ch_vec + conv_ch * kern * t * 2))
+    return ops
 
 
 def te_layers(te: TextEnc) -> tuple[int, float]:
@@ -251,6 +292,10 @@ FAMILIES = {
                  pre=("conv_blocks",), trule="double", chunk="whole", shift=("conv_blocks", 1)),
     "os_s": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (1, 2), 1: (1, 2), 2: (1, 2)}, attn="frame",
                  attn_dim=512),
+    # 0.257 FLUX.2 small decoder (MOSS-Image vae/: decoder_block_out_channels 96 / 192 / 384 / 384): same schedule,
+    # 384-wide mid attention
+    "os_s384": _Fam(r"up_blocks\.(\d+)\.", (0, 1, 2, 3), {0: (1, 2), 1: (1, 2), 2: (1, 2)}, attn="frame",
+                    attn_dim=384),
     # 0.116 image VAEs.  Qwen-Image = the Wan-VAE decoder (family "wan"); FLUX.2 = SD-VAE-style 2-D decoder ("os_s"
     # schedule, 512-wide mid attention); Qwen-Image-2.1 (AutoencoderKLQwenImage21): 5 up blocks, the first four upsample
     # ×2 spatially (×16), time_conv in blocks 0–2 (temporal, input resolution), 1152-wide mid attention per frame

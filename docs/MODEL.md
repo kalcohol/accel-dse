@@ -5344,6 +5344,7 @@ Lowering g is a design claim (fine-grained gating of the array clock tree). It i
 **Approximations.**
 - Heterogeneous PD memory: all DRAM bytes are priced with the decode pool's memory kind.
 - One pooled utilisation is used for gating across pools.
+- Both closed in 0.257 (§203.3): per-pool counts, memory kind and gating utilisation, plus the `J_by_pool` ledger.
 
 **Invariant.** A single operating point priced with card-seconds per unit = cards·window/units reproduces `energy_report` term by term, and J/token × tok/s/card = W/card holds.
 
@@ -6414,3 +6415,41 @@ Per reused step, 5 of 33 blocks drop the text and reference rows. The single blo
 - 75 vendor orgs plus the HF trending list, created on or after 2026-10-17.
 - Only DeepSeek-V4.1-Flash-1017 (already an alias since 0.248) and third-party repacks / fine-tunes were found: unsloth, dealignai, LibertAIDAI, lodestones Kromoss, orcarouter OrcaCyber-Nano.
 - Noted for a later sweep: OpenMOSS-Team/MOSS-Image-Base / -SFT (diffusers, 2026-10-11, new DiT). It predates this window, and its org was missing from earlier sweeps.
+
+## §203 Freshness sweep script; MOSS-Image; PD per-pool energy ledger (0.257)
+
+### §203.1 Sweep
+`scripts/freshness_sweep.py <since> [out.json]` queries the Hugging Face API (`api/models?author=<org>&sort=createdAt`) for every HF org prefix in `catalog.PROVIDERS` plus `EXTRA_ORGS` (OpenMOSS-Team first): 74 orgs. Window 2026-10-17 onward: DeepSeek-V4.1-Flash-1017 (alias since 0.248) and repacks only. Timestral (mistralai, 10-14) is a time-series model, out of domain.
+
+### §203.2 MOSS-Image Base / SFT (OpenMOSS-Team, 2026-10-11)
+**Source 「来源」.** Public diffusers repos: transformer `config.json` + safetensors headers (`MOSSImageTransformer`), the text-encoder and VAE headers.
+
+**DiT** (`domain.build_moss`, builder "moss"):
+- 42 single-stream blocks: q / k / v / o, fused gate_up 3072 → 2·8192, down; 24 heads × 128; RoPE over the full head.
+- io_pre: `video_embedder` (image rows); `text_embedder.proj` + 2 refiner blocks (text rows; refiner attention core ignored 「近似」, < 0.1 % of FLOPs); `time_embedding` (sequence); `shared_block_modulation` (sequence).
+- io_post: `video_head_modulation`, `final_linear_video`.
+- param_check exact (5,082,308,624); coverage full. Sequence 1024² / 8 / 2² = 4096 image + 256 text tokens 「假设」 = 4352.
+
+**Workload.** 50 steps (shift 5 rescales, still 50 timesteps 「推导」); CFG 3 → 2 forwards per step. The reference skips block 22 in the unconditional pass and uses an empty negative prompt (~10 tokens); modelled at the conditional shape 「近似」 (+3–4 %). Per-sample loop 「近似」. The `_situ` activation is costed as SwiGLU 「近似」.
+
+**Pipeline.**
+- Text tower Qwen3.5-9B (`language_model.` tensors, 7.94 B used of 8.39 B stored, bf16). `TextEnc.full_layers` = (3, 7, …, 31) get softmax attention; the other 24 are Gated DeltaNet (`TextEnc.gdn` = (heads 32, d_k 128, d_v 128, conv channels 8192, kernel 4, chunk 64)), costed by `pipeline._gdn_ops` with the LLM IR's chunked form (ir._attn_core_ops): akk / ut_solve / vprime / aqk / intra / inter / state + per-token and per-chunk vector work + the causal conv. No state is kept (encoder pass).
+- VAE: AutoencoderKLFlux2 with the FLUX.2 small decoder, family `os_s384` (mid / up attention width 384), fp32 as released (62.4 M parameters).
+
+**Numbers** (default chip, 1024²): 54.61 s per image, 5143.5 TFLOP per request; text tower 0.083 s, VAE decode 0.078 s. FLUX 3 Base: 47.23 s.
+
+### §203.3 PD energy per pool (closes §177's two approximations)
+`pdqueue._energy(..., pools, pool_counts, pool_names)`. The PD mode passes:
+- decode = the decode iteration mix × out_len + the KV receive (link / net) and preemption-restore extras, booked to decode 「约定」;
+- prefill = all counts − decode (exact subtraction, so Σ pools = total).
+
+Per pool p, with its scenario (chip, memory) and card-seconds per output token cs_p:
+- DRAM J = bytes_p · 8 · pJ(kind_p) + PHY_p; every other dynamic action = counts_p × the table.
+- Clock = macs·f·cs_p · pJ_clk · (g_p + (1 − g_p)·u_p), u_p = MAC_p / (macs·f·cs_p).
+- Idle: `idle_W_prefill` on the prefill pool when given, else `idle_W` (or idle_frac_tdp × TDP); leakage and HBM standby per pool as before.
+
+Output: `J_by_pool` {decode, prefill} → J_per_token, J_by_action, card_s_per_token, dram_field, mac_util; `clock_gating.pool_mac_util`.
+
+**Invariant.** With identical chips, memory and g, the result equals the pooled 0.230 form (all terms linear in counts; Σ_p cyc_p·u_p = MAC total). Σ_pools J = J_per_token, per action too.
+
+**Why it matters for chip design.** A heterogeneous PD design (compute-dense prefill chip with cheaper memory, bandwidth-dense decode chip with aggressive gating) was mispriced: the prefill pool's DRAM took the decode memory's pJ/bit, and the decode pool's low utilisation (≈ 0.02) was averaged with the prefill pool's (≈ 0.43). The ledger also shows which pool to optimise. In the qwen3-8b example ~80 % of PD J / token is the decode pool, mostly DRAM. Numbers: CHANGELOG 0.257.

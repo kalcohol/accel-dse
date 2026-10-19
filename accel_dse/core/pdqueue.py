@@ -3377,7 +3377,7 @@ def _per_unit(r: Result) -> dict:
 
 
 def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, prefill_card_s_tok: float = 0.0,
-            pools: tuple = ()) -> dict:
+            pools: tuple = (), pool_counts: tuple = (), pool_names: tuple = ()) -> dict:
     """Dynamic energy = action counts × the table; static energy = W × card-seconds per output token at this load
     (wall-clock, busy or idle — the cards are provisioned either way).  ``prefill_card_s_tok``: the PD prefill pool's
     share of ``card_s_tok``, charged at ``idle_W_prefill`` when given (its chip may differ, 0.56); nothing defaulted.
@@ -3388,71 +3388,109 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
     (idle_frac_tdp × tdp_W too); SRAM leakage (state SRAM always, shared SRAM only without an idle figure); HBM
     standby / refresh (only without an idle figure); the per-cycle clock term over every provisioned card-second
     (a provisioned card idles at serving clocks — the H100 'context, no work' state the preset is measured in), × the
-    chip's gating g + (1 − g)·u, u = MAC slot-cycles used / clocked over all pools 「近似」 (one pooled utilisation)."""
+    chip's gating g + (1 − g)·u, u = MAC slot-cycles used / clocked over all pools 「近似」 (one pooled utilisation).
+
+    0.257 — per-pool ledger.  ``pool_counts`` (aligned with ``pools``; PD: each pool's own action counts per output
+    token, summing to ``counts_tok``) and ``pool_names`` remove both 0.230 approximations: each pool's DRAM bytes
+    are priced with that pool's memory kind (pJ/bit + chip-side PHY), and each pool's clock gating uses its own MAC
+    utilisation u_p = its MAC count / its slot-cycles.  Every term is booked to the pool that spends it
+    (``J_by_pool``; Σ pools = J_per_token).  Without it (colocated modes: one pool) nothing changes."""
     from .energy import hbm_static_W, idle_W_of
     out = {"counts_per_token": counts_tok, "card_s_per_token": card_s_tok}
     if table is None or not table.provided:
         return out
     mem_scn = pools[0][0] if pools else None
-    j = {}
+    psplit = bool(pool_counts) and len(pool_counts) == len(pools) == len(pool_names) > 1
+    j: dict = {}
+    jp = [{} for _ in pools] if psplit else None
+
+    def add(k: str, v: float, i: int | None = None) -> None:
+        j[k] = j.get(k, 0.0) + v
+        if jp is not None and i is not None:
+            jp[i][k] = jp[i].get(k, 0.0) + v
+
     for k, attr in _UNIT_PJ.items():
+        if psplit:
+            for i, ((sc, _), pc) in enumerate(zip(pools, pool_counts)):
+                e = getattr(table, _dram_field(sc, table) if k == "dram" else attr)
+                if e is not None:
+                    add(k, pc.get(k, 0.0) * e * 1e-12 * (8 if k in _BITS else 1), i)
+            continue
         if k == "dram" and mem_scn is not None:
             attr = _dram_field(mem_scn, table)
         e = getattr(table, attr)
         if e is not None:
-            j[k] = counts_tok.get(k, 0.0) * e * 1e-12 * (8 if k in _BITS else 1)
-    if mem_scn is not None:
+            add(k, counts_tok.get(k, 0.0) * e * 1e-12 * (8 if k in _BITS else 1))
+    if psplit:
+        for i, ((sc, _), pc) in enumerate(zip(pools, pool_counts)):
+            pv = _phy_pJ(sc, table)
+            if pv is not None:
+                add("dram_phy", pc.get("dram", 0.0) * pv * 1e-12 * 8, i)
+    elif mem_scn is not None:
         pv = _phy_pJ(mem_scn, table)
         if pv is not None:
-            j["dram_phy"] = counts_tok.get("dram", 0.0) * pv * 1e-12 * 8
+            add("dram_phy", counts_tok.get("dram", 0.0) * pv * 1e-12 * 8)
     if counts_tok.get("host", 0.0) > 0:
         if table.pJ_bit_host is not None:
-            j["host"] = counts_tok["host"] * table.pJ_bit_host * 1e-12 * 8
+            if psplit:
+                for i, pc in enumerate(pool_counts):
+                    add("host", pc.get("host", 0.0) * table.pJ_bit_host * 1e-12 * 8, i)
+            else:
+                add("host", counts_tok["host"] * table.pJ_bit_host * 1e-12 * 8)
         else:
             out["host_note"] = "换出 / 换入经主机链路的字节未计能耗：未填 pJ_bit_host"
     iw = idle_W_of(table)
     split = prefill_card_s_tok > 0 and table.idle_W_prefill is not None     # else one rate for every card (0.51)
-    if split:
-        j["idle_prefill"] = table.idle_W_prefill * prefill_card_s_tok
-    if iw is not None:
-        j["idle"] = iw * (card_s_tok - (prefill_card_s_tok if split else 0.0))
+    if psplit:
+        for i, (_, cs) in enumerate(pools):
+            if split and pool_names[i] == "prefill":
+                add("idle_prefill", table.idle_W_prefill * cs, i)
+            elif iw is not None:
+                add("idle", iw * cs, i)
+    else:
+        if split:
+            add("idle_prefill", table.idle_W_prefill * prefill_card_s_tok)
+        if iw is not None:
+            add("idle", iw * (card_s_tok - (prefill_card_s_tok if split else 0.0)))
     if iw is None and table.idle_W_prefill is not None:
         out["static_note"] = ("只计 PD prefill 池的静态能耗：未给 idle_W，decode 池未计" if prefill_card_s_tok > 0 else
                               "未给 idle_W（idle_W_prefill 只用于 PD prefill 池），静态能耗未计")
     has_idle = iw is not None or table.idle_W_prefill is not None
+    utils = []
     if pools:
-        leak = hbm = clk = slots = 0.0
-        for sc, cs in pools:
+        cyc = [sc.chip.macs * sc.chip.freq_ghz * 1e9 * cs for sc, cs in pools]
+        slots = sum(cyc)
+        util = min(1.0, counts_tok.get("mac", 0.0) / slots) if slots > 0 else 0.0
+        for i, (sc, cs) in enumerate(pools):
             ch = sc.chip
             if table.uW_per_mib_sram_leak is not None:
                 mib = getattr(ch, "state_sram_mib", 0.0) + (ch.sram_mib if not has_idle else 0.0)
-                leak += mib * table.uW_per_mib_sram_leak * 1e-6 * cs
+                if mib > 0:
+                    add("sram_leak", mib * table.uW_per_mib_sram_leak * 1e-6 * cs, i)
             if not has_idle and (table.mW_hbm_die_standby is not None or table.mW_hbm_Gb_refresh is not None):
                 hs = hbm_static_W(sc.mem_id, table)
-                if hs:
-                    hbm += hs["W"] * cs
-            cyc = ch.macs * ch.freq_ghz * 1e9 * cs
-            slots += cyc
-            if table.pJ_clk_mac_cycle is not None:
-                clk += cyc * table.pJ_clk_mac_cycle * 1e-12
-        if leak > 0:
-            j["sram_leak"] = leak
-        if hbm > 0:
-            j["hbm_static"] = hbm
+                if hs and hs["W"] > 0:
+                    add("hbm_static", hs["W"] * cs, i)
+            u = min(1.0, pool_counts[i].get("mac", 0.0) / cyc[i]) if psplit and cyc[i] > 0 else util
+            utils.append(u)
+            if table.pJ_clk_mac_cycle is not None and slots > 0:
+                g = getattr(ch, "clk_ungated_share", 1.0)
+                add("clock", cyc[i] * table.pJ_clk_mac_cycle * 1e-12 * (g + (1 - g) * u), i)
         if table.pJ_clk_mac_cycle is not None and slots > 0:
-            util = min(1.0, counts_tok.get("mac", 0.0) / slots)
-            jc = 0.0
-            for sc, cs in pools:
-                g = getattr(sc.chip, "clk_ungated_share", 1.0)
-                jc += sc.chip.macs * sc.chip.freq_ghz * 1e9 * cs * table.pJ_clk_mac_cycle * 1e-12 * (g + (1 - g) * util)
-            j["clock"] = jc
             out["clock_gating"] = {"mac_util": util}
+            if psplit:
+                out["clock_gating"]["pool_mac_util"] = dict(zip(pool_names, utils))
     if not j:
         return out
     tot = sum(j.values())
     idle = sum(j.get(k, 0.0) for k in ("idle", "idle_prefill", "sram_leak", "hbm_static"))
     out.update(J_per_token=tot, J_by_action=j, tok_per_J=1 / tot if tot > 0 else None,
                static_share=idle / tot if tot > 0 else None)
+    if psplit:
+        out["J_by_pool"] = {nm: {"J_per_token": sum(jp[i].values()), "J_by_action": jp[i],
+                                 "card_s_per_token": pools[i][1], "dram_field": _dram_field(pools[i][0], table),
+                                 "mac_util": utils[i] if utils else None}
+                            for i, nm in enumerate(pool_names)}
     return out
 
 
@@ -3607,10 +3645,15 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
     x = modes["pd"]
     if x["stable"]:
         kv = _wsum(ws, [ctx["kv_xfer"][(S, p)] for _, S, p in pts])
-        en["pd"] = _energy(_mix(x["_pre"]["rs"], pts, x["_dec"]["mix"], o,
-                                _restore_extra(x, {ctx["tier"] if ctx["tier"] == "net" else "link": kv})),
-                           cards / lam / o, table, ctx["n_p"] / lam / o,
-                           pools=((ctx["dpool"].scn, ctx["n_d"] / lam / o), (ctx["ppool"].scn, ctx["n_p"] / lam / o)))
+        c_all = _mix(x["_pre"]["rs"], pts, x["_dec"]["mix"], o,
+                     _restore_extra(x, {ctx["tier"] if ctx["tier"] == "net" else "link": kv}))
+        # 0.257: the decode pool's own counts (its iterations + the KV receive / restore extras: link / net / host bytes,
+        # booked to decode 「约定」) and the prefill pool's = the rest → per-pool memory kind, gating and ledger
+        c_dec = _mix([], [], x["_dec"]["mix"], o, _restore_extra(x, {ctx["tier"] if ctx["tier"] == "net" else "link": kv}))
+        c_pre = {k: c_all[k] - c_dec.get(k, 0.0) for k in c_all}
+        en["pd"] = _energy(c_all, cards / lam / o, table, ctx["n_p"] / lam / o,
+                           pools=((ctx["dpool"].scn, ctx["n_d"] / lam / o), (ctx["ppool"].scn, ctx["n_p"] / lam / o)),
+                           pool_counts=(c_dec, c_pre), pool_names=("decode", "prefill"))
     pts = ctx.get("pts_c", pts)                 # colocated replicas: their own prefix-cache hit mix (0.53)
     ws = [w for w, _, _ in pts]
     y = modes.get("coloc_prefill_first")

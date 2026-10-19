@@ -648,6 +648,72 @@ def build_flux3(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Mod
     return spec
 
 
+
+# ---------------------------------------------------------------- 0.257 MOSS-Image (OpenMOSS, single-stream joint DiT)
+def build_moss(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
+    """MOSS-Image (MOSSImageTransformer, the release's pipeline_moss_image.py, 「来源」):
+      video_embedder Linear(128 → d) on the 2×2-packed FLUX.2 latents (×8 VAE → 128 channels per token);
+      text_embedder = Linear(4096 → d) on the Qwen3.5-9B last hidden state + 2 text-only refiner blocks (fused qkv +
+      proj with biases, RMS QK-norm, soft-capped gated MLP ``_situ``) — run every forward, on the text rows only;
+      time_embedding MLP (freq 256 → d → d) → ONE shared_block_modulation (d → 6d: shift / scale / gate for attention
+      and MLP) used by every block, and video_head_modulation (d → 2d) for the head;
+      num_layers single-stream blocks over [image ‖ text] (bias-free q / k / v / o, RMS QK-norm, 4-axis RoPE over the
+      whole head, ffn_up_gate d → 2·ffn, ffn_down) with the shared AdaLN; final RMSNorm + head on the image rows only.
+    Each sample of a batch runs at its own text length (loop over the batch); CFG = two transformer calls per step
+    (cond, then uncond with block 22 skipped — the release default ``uncond_skip_layers=(22,)``)."""
+    c, sh = rel["config"], rel["shapes"]
+    d, H, L, f = c["dim"], c["num_heads"], c["num_layers"], c["ffn_dim"]
+    hd = d // H
+    core = AttnCore("gqa", n_q=H, n_kv=H, qk_dim=hd, v_dim=hd, rope_dim=hd, causal=False)
+    p = "layers.0."
+    a = [("proj.q", "q", "col"), ("proj.k", "k", "col"), ("proj.v", "v", "col"), ("proj.o", "o", "row")]
+    fl = [("proj.ffn_up_gate", "gate_up", "col"), ("proj.ffn_down", "down", "row")]
+    if sh[p + "proj.ffn_up_gate.weight"][0] != 2 * f or sh[p + "proj.ffn_down.weight"][1] != f:
+        raise ValueError("MOSS-Image: ffn_up_gate / ffn_down do not match ffn_dim")
+    misc, _ = _misc(sh, p, [n for n, *_ in a + fl])
+    layer = Layer(tuple(_lin(sh, p + n, s_, sp) for n, s_, sp in a), core, Ffn("dense", d_ff=f, gated=True),
+                  tuple(_lin(sh, p + n, s_, sp) for n, s_, sp in fl), misc)
+    blocks = sorted({int(t.split(".")[1]) for t in sh if t.startswith("layers.")})
+    if blocks[-1] != L - 1:
+        raise ValueError(f"layers: last block {blocks[-1]} ≠ num_layers {L} − 1")
+    refs = sorted({int(t.split(".")[2]) for t in sh if t.startswith("text_embedder.blocks.")})
+    specs = [("video_embedder", "patch_embed", "img"), ("text_embedder.proj", "text_in", "txt", "cond")]
+    for i in refs:
+        r = f"text_embedder.blocks.{i}."
+        specs += [(r + n, f"refiner{i}.{n}", "txt", "cond") for n in ("qkv", "proj", "ffn_gate", "ffn_up", "ffn_down")]
+    specs += [("time_embedding.0", "time_1", "seq"), ("time_embedding.2", "time_2", "seq"),
+              ("shared_block_modulation", "block_mod", "seq", "cond")]
+    io_pre, used = _io(sh, specs)
+    io_post, used2 = _io(sh, [("video_head_modulation", "norm_out_mod", "seq", "cond"),
+                              ("final_linear_video", "head", "img")])
+    # every non-block tensor that is not an io GEMM weight (refiner biases / norms, embedder biases, the final norm,
+    # the fp32 RoPE band buffer) → io_misc; an unmodelled 2-D weight ≥ 256 raises (BLOCK_RE would also skip the
+    # refiner's text_embedder.blocks.N tensors, so the walk is explicit here, as in build_flux3)
+    used_set = {n + ".weight" for n in used + used2}
+    io_misc = 0
+    for t, v in sh.items():
+        if t.startswith("layers.") or t in used_set:
+            continue
+        if t.endswith(".weight") and len(v) >= 2 and min(v[0], _n(v[1:])) >= 256:
+            raise ValueError(f"unmodelled io GEMM weight {t} {v}")
+        io_misc += _n(v)
+    # the header summary keeps blocks 0 and 1 of the refiner (both) — 2 refiner blocks of block 0's shapes
+    wl = _image_wl(wl, 2 if sh["video_embedder.weight"][1] == 4 * 32 else 1, wl.text_tokens or 256)
+    return _finish(model_id, hf_id, rel, f"MOSS-Image 单流 DiT（{L} 层，[图像 ‖ 文本] 共享权重联合注意力，共享 AdaLN 调制；"
+                   "单帧 2D 潜空间）", d, 0, [layer] * L, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
+                       f"图像 = 1 个潜帧（FLUX.2 VAE ×{wl.vae_s} + 2×2 打包 = 每 token {2 * wl.vae_s}×{2 * wl.vae_s} px；无时间维）",
+                       f"文本：Qwen3.5-9B 末层隐状态（聊天模板 + enable_thinking，逐样本真实长度、不补齐，上限 4096）"
+                       f"按 {wl.text_tokens} token 计入联合序列「假设」；2 层文本 refiner 每次前向都跑（参考实现不缓存），"
+                       "其 GEMM 计入、文本自注意力核（256² 量级）忽略不计",
+                       "50 步 flow-matching Euler（shift 5，吸附到 1000 步训练网格后仍为 50 个时间步「推导」）、CFG 3 → 每步 cond + "
+                       "uncond 两次 transformer 调用（README 默认）",
+                       "uncond 分支按发布默认跳过第 22 块（41 块）、负提示为空串（模板约 10 token）：按与 cond 同形状计"
+                       "「近似」——偏保守，DiT 计算约多 3–4 %",
+                       "参考实现逐样本循环（batch 内每张图单独前向）：batch > 1 时按打包批计、权重读一次「近似」"
+                       "（1024² 时 4096 + 文本行，计算受限，影响可忽略）",
+                       "MLP 激活 _situ = 4·tanh(g/4)·σ(g) · 25·tanh(h/25)（软截断门控）：向量开销按 SwiGLU 计「近似」"))
+
+
 # ---------------------------------------------------------------- ESM-2
 def build_esm(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
     c, sh = rel["config"], rel["shapes"]
@@ -815,7 +881,7 @@ def build_lingbot(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> M
 BUILDERS = {"wan": build_wan, "wan22": build_wan22, "cogvideox": build_cogvideox, "hunyuan": build_hunyuan,
             "ltx": build_ltx, "mochi": build_mochi, "stdit": build_stdit, "h3": build_h3, "esm": build_esm,
             "generanno": build_generanno, "qwenimage": build_qwenimage, "qwenimage21": build_qwenimage21,
-            "flux2": build_flux2, "lingbot": build_lingbot, "flux3": build_flux3}
+            "flux2": build_flux2, "lingbot": build_lingbot, "flux3": build_flux3, "moss": build_moss}
 from .structure import BUILDERS as _STRUCTURE_BUILDERS  # noqa: E402  (0.43 protein structure models)
 BUILDERS.update(_STRUCTURE_BUILDERS)
 

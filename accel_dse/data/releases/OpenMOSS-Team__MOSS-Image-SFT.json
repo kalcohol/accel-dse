@@ -1,0 +1,301 @@
+{
+ "bytes_llm": 10164617280,
+ "bytes_mtp": 0,
+ "bytes_total": 10164617280,
+ "config": {
+  "_class_name": "MOSSImageTransformer",
+  "_diffusers_version": "0.38.0",
+  "dim": 3072,
+  "ffn_dim": 8192,
+  "freq_dim": 256,
+  "latent_channels": 128,
+  "num_heads": 24,
+  "num_layers": 42,
+  "rope_base": 10000.0,
+  "text_dim": 4096
+ },
+ "domain": "video",
+ "fetched": "2026-10-19",
+ "n_tensors": 463,
+ "params_llm": 5082308624,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "OpenMOSS-Team/MOSS-Image-SFT",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 3170893824,
+    "params": 1585446912
+   }
+  },
+  "cond": {
+   "bf16": {
+    "bytes": 649812992,
+    "params": 324906496
+   }
+  },
+  "io": {
+   "bf16": {
+    "bytes": 1579008,
+    "params": 789504
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 6341787648,
+    "params": 3170893824
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 543744,
+    "params": 271872
+   }
+  },
+  "other": {
+   "fp32": {
+    "bytes": 64,
+    "params": 16
+   }
+  }
+ },
+ "shapes": {
+  "final_linear_video.weight": [
+   128,
+   3072
+  ],
+  "final_norm_video.weight": [
+   3072
+  ],
+  "layers.0.k_norm.weight": [
+   128
+  ],
+  "layers.0.norm1.weight": [
+   3072
+  ],
+  "layers.0.norm2.weight": [
+   3072
+  ],
+  "layers.0.proj.ffn_down.weight": [
+   3072,
+   8192
+  ],
+  "layers.0.proj.ffn_up_gate.weight": [
+   16384,
+   3072
+  ],
+  "layers.0.proj.k.weight": [
+   3072,
+   3072
+  ],
+  "layers.0.proj.o.weight": [
+   3072,
+   3072
+  ],
+  "layers.0.proj.q.weight": [
+   3072,
+   3072
+  ],
+  "layers.0.proj.v.weight": [
+   3072,
+   3072
+  ],
+  "layers.0.q_norm.weight": [
+   128
+  ],
+  "layers.41.k_norm.weight": [
+   128
+  ],
+  "layers.41.norm1.weight": [
+   3072
+  ],
+  "layers.41.norm2.weight": [
+   3072
+  ],
+  "layers.41.proj.ffn_down.weight": [
+   3072,
+   8192
+  ],
+  "layers.41.proj.ffn_up_gate.weight": [
+   16384,
+   3072
+  ],
+  "layers.41.proj.k.weight": [
+   3072,
+   3072
+  ],
+  "layers.41.proj.o.weight": [
+   3072,
+   3072
+  ],
+  "layers.41.proj.q.weight": [
+   3072,
+   3072
+  ],
+  "layers.41.proj.v.weight": [
+   3072,
+   3072
+  ],
+  "layers.41.q_norm.weight": [
+   128
+  ],
+  "rope.bands": [
+   16
+  ],
+  "shared_block_modulation.bias": [
+   18432
+  ],
+  "shared_block_modulation.weight": [
+   18432,
+   3072
+  ],
+  "text_embedder.blocks.0.ffn_down.bias": [
+   3072
+  ],
+  "text_embedder.blocks.0.ffn_down.weight": [
+   3072,
+   8192
+  ],
+  "text_embedder.blocks.0.ffn_gate.bias": [
+   8192
+  ],
+  "text_embedder.blocks.0.ffn_gate.weight": [
+   8192,
+   3072
+  ],
+  "text_embedder.blocks.0.ffn_up.bias": [
+   8192
+  ],
+  "text_embedder.blocks.0.ffn_up.weight": [
+   8192,
+   3072
+  ],
+  "text_embedder.blocks.0.k_norm.weight": [
+   128
+  ],
+  "text_embedder.blocks.0.norm1.weight": [
+   3072
+  ],
+  "text_embedder.blocks.0.norm2.weight": [
+   3072
+  ],
+  "text_embedder.blocks.0.proj.bias": [
+   3072
+  ],
+  "text_embedder.blocks.0.proj.weight": [
+   3072,
+   3072
+  ],
+  "text_embedder.blocks.0.q_norm.weight": [
+   128
+  ],
+  "text_embedder.blocks.0.qkv.bias": [
+   9216
+  ],
+  "text_embedder.blocks.0.qkv.weight": [
+   9216,
+   3072
+  ],
+  "text_embedder.blocks.1.ffn_down.bias": [
+   3072
+  ],
+  "text_embedder.blocks.1.ffn_down.weight": [
+   3072,
+   8192
+  ],
+  "text_embedder.blocks.1.ffn_gate.bias": [
+   8192
+  ],
+  "text_embedder.blocks.1.ffn_gate.weight": [
+   8192,
+   3072
+  ],
+  "text_embedder.blocks.1.ffn_up.bias": [
+   8192
+  ],
+  "text_embedder.blocks.1.ffn_up.weight": [
+   8192,
+   3072
+  ],
+  "text_embedder.blocks.1.k_norm.weight": [
+   128
+  ],
+  "text_embedder.blocks.1.norm1.weight": [
+   3072
+  ],
+  "text_embedder.blocks.1.norm2.weight": [
+   3072
+  ],
+  "text_embedder.blocks.1.proj.bias": [
+   3072
+  ],
+  "text_embedder.blocks.1.proj.weight": [
+   3072,
+   3072
+  ],
+  "text_embedder.blocks.1.q_norm.weight": [
+   128
+  ],
+  "text_embedder.blocks.1.qkv.bias": [
+   9216
+  ],
+  "text_embedder.blocks.1.qkv.weight": [
+   9216,
+   3072
+  ],
+  "text_embedder.proj.bias": [
+   3072
+  ],
+  "text_embedder.proj.weight": [
+   3072,
+   4096
+  ],
+  "time_embedding.0.bias": [
+   3072
+  ],
+  "time_embedding.0.weight": [
+   3072,
+   256
+  ],
+  "time_embedding.2.bias": [
+   3072
+  ],
+  "time_embedding.2.weight": [
+   3072,
+   3072
+  ],
+  "video_embedder.bias": [
+   3072
+  ],
+  "video_embedder.weight": [
+   3072,
+   128
+  ],
+  "video_head_modulation.bias": [
+   6144
+  ],
+  "video_head_modulation.weight": [
+   6144,
+   3072
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "text_encoder/model-00001-of-00004.safetensors": 4973910744,
+   "text_encoder/model-00002-of-00004.safetensors": 4988364288,
+   "text_encoder/model-00003-of-00004.safetensors": 4954202112,
+   "text_encoder/model-00004-of-00004.safetensors": 1869001848,
+   "transformer/diffusion_pytorch_model-00001-of-00003.safetensors": 4991978016,
+   "transformer/diffusion_pytorch_model-00002-of-00003.safetensors": 4983137016,
+   "transformer/diffusion_pytorch_model-00003-of-00003.safetensors": 189549184,
+   "vae/diffusion_pytorch_model.safetensors": 249521372
+  },
+  "revision": "main",
+  "spec": "OpenMOSS-Team/MOSS-Image-SFT:transformer",
+  "subfolder": "transformer",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}

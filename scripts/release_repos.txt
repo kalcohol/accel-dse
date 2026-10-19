@@ -110,3 +110,6 @@ nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4
 reflection/Beam-1.0-501B-A23B
 reflection/Beam-1.0-501B-A23B-FP8
 reflection/Beam-1.0-501B-A23B-NVFP4
+# 0.257 freshness sweep: OpenMOSS-Team MOSS-Image (public diffusers repo; SFT merged into Base)
+OpenMOSS-Team/MOSS-Image-Base:transformer
+OpenMOSS-Team/MOSS-Image-SFT:transformer

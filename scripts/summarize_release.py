@@ -55,14 +55,14 @@ ROLE_DOMAIN = {
                  r"adaln_proj|norm1_context\.linear|\.norm\.linear|scale_shift_table|token_refiner|_mod\.\d|stream_modulation|"
                  r"time_guidance_embed|text_embedder)"),  # 0.115 image DiT: Qwen-Image img_/txt_mod, FLUX.2 shared modulation
         ("norm", r"(norm_post_|norm_[qk]\.|norm_added_[qk]|[qk]_norm\.|norm\d?\.(weight|bias)$|norm_final|norm_out\.norm|"
-                 r"\.norm\.(weight|bias)$)"),
-        ("attn", r"(self_attn|cross_attn|attn1|attn2|\.attn\.)"),
+                 r"\.norm\.(weight|bias)$|^final_norm_video\.)"),   # 0.257 MOSS-Image final norm
+        ("attn", r"(self_attn|cross_attn|attn1|attn2|\.attn\.|\.proj\.[qkvo]\.)"),   # 0.257 MOSS-Image layers.N.proj.{q,k,v,o}
         # 0.144 MoE DiT (LingBot-Video): routed / shared experts and the router keep their LLM roles
         ("router", r"\.ffn\.router\."),
         ("shared_expert", r"\.ffn\.shared_experts\."),
         ("expert", r"\.ffn\.experts\."),
-        ("mlp", r"(\.ffn\.|\.ff\.|ff_context|\.mlp\.|proj_mlp|single_transformer_blocks\.\d+\.proj_out|_mlp\.)"),
-        ("io", r"(patch_embed|^proj_out|^head\.|x_embedder|^proj_in|audio_proj|final_layer\.linear|^img_in|^txt_in|^txt_norm)"),
+        ("mlp", r"(\.ffn\.|\.ff\.|ff_context|\.mlp\.|proj_mlp|single_transformer_blocks\.\d+\.proj_out|_mlp\.|\.proj\.ffn_)"),
+        ("io", r"(^video_embedder|^final_linear_video|patch_embed|^proj_out|^head\.|x_embedder|^proj_in|audio_proj|final_layer\.linear|^img_in|^txt_in|^txt_norm)"),
     ],
     "protein": [
         ("buffer", r"(inv_freq$|position_ids$)"),
@@ -93,7 +93,7 @@ def domain_of(cfg: dict) -> str:
     if cls in ("WanModel", "WanTransformer3DModel", "CogVideoXTransformer3DModel", "HunyuanVideoTransformer3DModel",
                "LTXVideoTransformer3DModel", "MochiTransformer3DModel", "MiniMaxH3Transformer3DModel",
                "QwenImageTransformer2DModel", "QwenImage21Transformer2DModel", "Flux2Transformer2DModel", "Flux3Transformer2DModel",
-               "LingBotVideoTransformer3DModel") \
+               "LingBotVideoTransformer3DModel", "MOSSImageTransformer") \
             or cfg.get("model_type") == "STDiT3":
         return "video"
     if cfg.get("model_type") == "esm":

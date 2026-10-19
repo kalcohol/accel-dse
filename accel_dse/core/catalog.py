@@ -171,6 +171,9 @@ _LBV_SRC = ("Robbyant/lingbot-video README（MoE-DMD）：--scheduler dmd_studen
 _FLUX3_SRC = ("black-forest-labs/flux-3-image-klein README / config.json：sampler 1024×1024、steps 16、guidance null（flow-map 蒸馏）；"
               "Base：50 步、guidance 3.5；Qwen3-VL-4B 文本（8 层隐状态拼接、pad_multiple 80，提示上采样后的完整描述 ≈ 320 token「假设」）；"
               "AutoencoderKLFlux2 ×8 + 2×2 打包")
+_MOSS_SRC = ("OpenMOSS-Team/MOSS-Image-Base README / pipeline_moss_image.py：1024×1024、num_inference_steps 50、guidance_scale 3"
+             "（CFG，两次前向；uncond 跳过第 22 块）、shift 5；Qwen3.5-9B 文本（末层隐状态，逐样本真实长度，≈ 256 token「假设」）；"
+             "AutoencoderKLFlux2 ×8（FLUX.2 small decoder，fp32）+ 2×2 打包")
 DOMAIN_RELEASES = [
     ("wan2.1-14b", "Wan-AI/Wan2.1-T2V-14B", "wan",
      NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, vae_frames="wan", source=_WAN_SRC.format(res="720P（1280×720）"))),
@@ -227,6 +230,12 @@ DOMAIN_RELEASES = [
      NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=16, cfg=1, text_tokens=320, source=_FLUX3_SRC)),
     ("flux-3-image-klein-base", "black-forest-labs/flux-3-image-klein-base", "flux3",
      NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=50, cfg=2, text_tokens=320, source=_FLUX3_SRC)),
+    # 0.257 MOSS-Image (OpenMOSS-Team, 2026-10-11, public diffusers repo + custom pipeline); SFT = same transformer
+    # shapes / dtypes and the same pipeline (README: "same architecture and inference pipeline") → merged into Base
+    ("moss-image-base", "OpenMOSS-Team/MOSS-Image-Base", "moss",
+     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=50, cfg=2, text_tokens=256, source=_MOSS_SRC)),
+    ("moss-image-sft", "OpenMOSS-Team/MOSS-Image-SFT", "moss",
+     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=50, cfg=2, text_tokens=256, source=_MOSS_SRC)),
 ]
 _DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
 # GitHub-only releases: the repo name alone does not say which checkpoint is evaluated
@@ -265,6 +274,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("startlux", "StartLux Labs（决策模型）", ("startlux-models/",)), ("rwkv", "RWKV（BlinkDL）", ("RWKV/",)),
     ("nvidia", "NVIDIA（Nemotron-Labs）", ("nvidia/",)),
     ("reflection", "Reflection AI（Beam）", ("reflection/",)),
+    ("openmoss", "复旦 OpenMOSS（MOSS）", ("OpenMOSS-Team/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
@@ -294,6 +304,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("microsoft", "UserRepGen", ("userrepgen",)),
     ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
     ("reflection", "Beam-1.0", ("beam-",)),
+    ("openmoss", "MOSS-Image", ("moss-image",)),
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.
@@ -302,7 +313,9 @@ MERGED = {"deepseek-v3.1": "deepseek-v3", "deepseek-r1": "deepseek-v3", "kimi-k2
           # 0.251: Qwen3.5 fine-tunes, config identical to a listed entry except the MTP head they do not ship
           "userrepgen-4b": "startlux-decision-v1-4b", "flux-3-image-klein-pup": "qwen3.5-9b",
           # 0.253: MAI-Gym-9B (GUI-agent Qwen3.5-9B fine-tune, no MTP head)
-          "mai-gym-9b": "qwen3.5-9b"}
+          "mai-gym-9b": "qwen3.5-9b",
+          # 0.257: MOSS-Image-SFT (fine-tune of MOSS-Image-Base: identical header shapes / dtypes and pipeline)
+          "moss-image-sft": "moss-image-base"}
 # Generic dense GQA models whose sizes are already covered by Qwen3 / Llama 3: no extra design insight.
 UNLISTED = {"yi-1.5-34b": "与 Qwen3-32B 同类（稠密 GQA）", "internlm3-8b": "与 Qwen3-8B / Llama-3.1-8B 同类",
             "internlm2-5-20b": "与 Qwen3-32B / Magistral-Small 同类", "qwen2.5-3b": "与 Qwen3-4B 同类",
