@@ -5852,3 +5852,55 @@ DES check at A λ52 (`sd248/raw2_A52.npy`, f corrected for in-flight prompts):
 - The deep σ_b² is ≈ 0.06, against KM 0.026, and the deep drift is ~25 % weak.
 - So the near-full level is 0.0121 per slot against DES 0.013. The correct jump entry from a level that is too low under-shoots.
 - A death Fano of 1 would fix the deep σ² (0.033) but would break near-full σ² (0.079 vs KM 0.11–0.13). The Fano I_s should therefore be state-dependent; this is the next step, after which `_LATTICE0` can be re-enabled.
+
+## §198 Catalog freshness sweep 2026-10-19 (0.251)
+
+**Method.**
+- `api/models?author=<org>&sort=lastModified` over every catalog vendor org, plus tencent, BlinkDL, Inferact, the unsloth mirrors and TypeSafe variants.
+- The window is releases created on or after 2026-10-14 that are not in `releases/`.
+- Each candidate's config.json is compared with the nearest entry:
+  - **identical architecture** → merged entry (resolvable and validated, not listed);
+  - **new fields** → the IR, if they can be expressed mechanism-first; otherwise coverage partial, with the unmodelled fields listed.
+- Params must match the safetensors headers exactly.
+- A gated repo is read from a public mirror only if every git LFS pointer oid matches (byte-identical).
+
+**Tencent Hy3 (`hy_v3`, Hy-Memory-30B-A3B).** The architecture is a Llama-type GQA decoder, 48 layers:
+
+| part | detail |
+|---|---|
+| attention | 32 q / 4 kv heads × 128, q/k RMSNorm |
+| layer 0 | dense SwiGLU 6912 |
+| layers 1–47 | MoE: 128 experts top-8, sigmoid router with fp32 selection bias (`expert_bias`), route_norm, scale 2.826, plus 1 shared expert |
+
+- The expert width is `expert_hidden_dim` = 768 (header). The config's `moe_intermediate_size` = 1536 equals gate + up, so reading it as the width double-counts the experts: 58.2B vs 30.1B.
+- The FP8 release is static W8A8 (per-tensor input scales), so activations are fp8 (`_act_fmt`); the KV cache is fp8 per tensor.
+
+**FLUX 3 Image Klein (`Flux3Transformer2DModel`).** Read from the header; no public modeling code yet.
+- **Early blocks.** `num_layers` = 5 per-modality blocks. Each stream (text, image, reference image) has its own q/k/v/out projections, QK-norm and SwiGLU (3072 → 9216), and attention is joint over the streams. This generalises FLUX.2's dual-stream block to three streams.
+- **Single blocks.** `num_single_layers` = 28 shared blocks, with separate q/k/v/out projections and SwiGLU.
+- **Modulation.** Per-modality tables for early and single blocks, plus norm_out.
+- **Flow-map distillation.** The distilled checkpoint adds `target_timestep_embedder` (the jump end time). Base lacks it.
+- **Text conditioning.** Qwen3-VL-4B hidden states of layers 4, 8, …, 32 are concatenated (8 × 2560 = 20480 → context_embedder).
+- **Text-to-image** runs the text and image streams. The reference stream (0.62B params) holds no tokens, so it is storage only.
+- **Workload** (README / config):
+  - 1024², VAE ×8 with 2×2 packing → 4096 image tokens;
+  - distilled: 16 steps, no guidance;
+  - Base: 50 steps; guidance 3.5 with no guidance embedder ⇒ true CFG 「推导」;
+  - text 320 tokens 「假设」.
+- **Coverage partial.** The edit / multi-reference stream (≤ 10 reference images) is not modelled. Single blocks are counted as serial attention → MLP; this does not affect FLOPs or bytes.
+
+**Muse Spark Open NVFP4 (§175 update).** The public mirror's `hf_quant_config.json` excludes layers 0 and 61 (and attention and lm_head) from NVFP4.
+- 2 × 256 experts stay bf16 (25.8B params).
+- Bytes: 533.0 GB, against the 0.175 推导 of 496.0 GB.
+- Expert effective bits: 4.87, against 4.50.
+
+**Same architecture, merged.**
+- UserRepGen-4B is the Qwen3.5-4B architecture (= StartLux-Decision-v1-4B). It publishes no MTP head and no preprocessor_config.json, so images use the Qwen3.5 base processor 「假设」.
+- flux-3-image-klein-pup is the Qwen3.5-9B architecture, with no MTP head.
+
+**Not added.**
+- Timestral (time series).
+- scFM-dataselection (single-cell ablations).
+- Qwen3-8B-DSpine-b16 (DFlash draft: block-diffusion drafting plus a selected-prefix code bridge, not expressible on the DSpark draft path; deferred).
+- GGUF-only repos and third-party repacks.
+- Jev and Microsoft-Decision-1 have no official weights.

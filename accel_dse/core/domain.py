@@ -553,6 +553,77 @@ def build_flux2(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Mod
                        "klein：4 步蒸馏，guidance_scale 1.0（无 CFG，README）"))
 
 
+def build_flux3(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
+    """0.251 FLUX 3 Image Klein (Flux3Transformer2DModel; read from the safetensors header, no public modeling code yet).
+    Early blocks = per-modality weights ("mode blocks": txt_mode_blocks / mode_blocks.image / mode_blocks.image_cond, each
+    with its own q/k/v/out + QK-norm + SwiGLU, joint attention over the streams) — FLUX.2's dual-stream block with a third
+    stream for reference images; then shared single-stream blocks (separate q/k/v/out and SwiGLU, no fused projection);
+    per-modality modulation tables; flow-map sampling (distilled: target_timestep_embedder for the jump end time)."""
+    c, sh = rel["config"], rel["shapes"]
+    H, hd = c["num_attention_heads"], c["attention_head_dim"]
+    d, Ld, Ls = H * hd, c["num_layers"], c["num_single_layers"]
+    core = AttnCore("gqa", n_q=H, n_kv=H, qk_dim=hd, v_dim=hd, rope_dim=hd, causal=False)
+    streams = {"img": "mode_blocks.image.0.", "txt": "txt_mode_blocks.0."}
+    a, f = [], []
+    for r, p in streams.items():
+        a += [_lin(sh, p + "attn.to_q", f"{r}_q", "col", r), _lin(sh, p + "attn.to_k", f"{r}_k", "col", r),
+              _lin(sh, p + "attn.to_v", f"{r}_v", "col", r), _lin(sh, p + "attn.to_out.0", f"{r}_o", "row", r)]
+        f += [_lin(sh, p + "ff.linear_in", f"{r}_gate_up", "col", r), _lin(sh, p + "ff.linear_out", f"{r}_down", "row", r)]
+    dff = sh["mode_blocks.image.0.ff.linear_out.weight"][1]
+    blk = ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0", "ff.linear_in", "ff.linear_out"]
+    misc = sum(_misc(sh, p, blk)[0] for p in streams.values())
+    double = Layer(tuple(a), core, Ffn("dense", d_ff=dff, gated=True), tuple(f), misc)
+    p = "single_transformer_blocks.0."
+    sff = sh[p + "ff.linear_out.weight"][1]
+    misc, _ = _misc(sh, p, blk)
+    single = Layer((_lin(sh, p + "attn.to_q", "q"), _lin(sh, p + "attn.to_k", "k"), _lin(sh, p + "attn.to_v", "v"),
+                    _lin(sh, p + "attn.to_out.0", "o", "row")), core, Ffn("dense", d_ff=sff, gated=True),
+                   (_lin(sh, p + "ff.linear_in", "gate_up"), _lin(sh, p + "ff.linear_out", "down", "row")), misc)
+    io_spec = [("x_embedders.image", "patch_embed", "img"), ("context_embedder", "text_in", "txt", "cond"),
+               ("timestep_embedder.linear_1", "time_1", "seq"), ("timestep_embedder.linear_2", "time_2", "seq"),
+               ("early_stream_modulations.image.linear", "img_mod", "seq", "cond"),
+               ("early_stream_modulations.txt.linear", "txt_mod", "seq", "cond"),
+               ("single_stream_modulations.image.linear", "single_img_mod", "seq", "cond"),
+               ("single_stream_modulations.txt.linear", "single_txt_mod", "seq", "cond")]
+    flow_map = "target_timestep_embedder.linear_1.weight" in sh
+    if flow_map:
+        io_spec += [("target_timestep_embedder.linear_1", "target_time_1", "seq"),
+                    ("target_timestep_embedder.linear_2", "target_time_2", "seq")]
+    io_pre, used = _io(sh, io_spec)
+    io_post, used2 = _io(sh, [("norm_out.linear", "norm_out_mod", "seq", "cond"), ("proj_out", "head", "img")])
+    # every tensor outside the modelled blocks / io GEMMs: the reference-image stream (mode_blocks.image_cond.*, its
+    # x_embedder and modulation tables — no tokens at text-to-image → stored, not run), norms, biases
+    blocks = ("mode_blocks.image.", "txt_mode_blocks.", "single_transformer_blocks.")
+    used_set = {n + ".weight" for n in used + used2}
+    cond_stream = sum(_n(v) for t, v in sh.items() if "image_cond" in t)
+    io_misc = 0
+    for t, v in sh.items():
+        if t.startswith(blocks) or t in used_set:
+            continue
+        if "image_cond" not in t and t.endswith(".weight") and len(v) >= 2 and min(v[0], _n(v[1:])) >= 256:
+            raise ValueError(f"unmodelled io GEMM weight {t} {v}")
+        io_misc += _n(v)
+    # header keeps block 0 only for the single blocks (BLOCK_RE); the per-modality early blocks are listed in full
+    # (mode_blocks.<stream>.<i> does not match BLOCK_RE) → the cond stream's 5 blocks are all in cond_stream above
+    wl = _image_wl(wl, 2 if sh["x_embedders.image.weight"][1] == 4 * 32 else 1, wl.text_tokens or 320)
+    steps_note = (f"distilled（flow map）：{wl.steps} 步、无 guidance（config sampler.steps 16、guidance null；README）"
+                  if flow_map else f"Base（未蒸馏）：{wl.steps} 步、guidance 3.5（README）→ 无 guidance 嵌入张量 = 真 CFG，"
+                  "每步条件 / 无条件 2 次前向「推导」")
+    spec = _finish(model_id, hf_id, rel, f"FLUX 3 MMDiT（{Ld} 分模态块 + {Ls} 单流，[文本 ‖ 图像] 联合注意力；单帧 2D 潜空间）",
+                   d, 0, [double] * Ld + [single] * Ls, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
+                       f"图像 = 1 个潜帧（VAE ×{wl.vae_s} + 2×2 打包 = 每 token {2 * wl.vae_s}×{2 * wl.vae_s} px；无时间维）",
+                       f"文本：Qwen3-VL-4B 第 4/8/…/32 层隐状态拼接（config text_encoder.layers，8 × 2560 = 20480 = "
+                       f"context_embedder 输入）；pad_multiple 80 → 按 {wl.text_tokens} token（4 × 80，提示上采样后的完整场景描述）"
+                       "计入联合序列「假设」",
+                       steps_note,
+                       f"参考图流（mode_blocks.image_cond.* + x_embedders / 调制表，{cond_stream / 1e9:.3f}B 参数）：文生图无参考图 "
+                       "token → 只计存储；编辑 / 多参考（≤ 10 张）时参考图 token 走该流——未建模"))
+    return replace(spec, coverage="partial",
+                   coverage_reasons=spec.coverage_reasons + (
+                       "参考图编辑流（image_cond，≤ 10 张参考图）未建模：只计文生图（无参考图 token）",
+                       "单流块按串行 attn → SwiGLU 计（发布张量未融合；无公开建模代码，并行 / 串行不影响 FLOPs / 字节）"))
+
+
 # ---------------------------------------------------------------- ESM-2
 def build_esm(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
     c, sh = rel["config"], rel["shapes"]
@@ -720,7 +791,7 @@ def build_lingbot(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> M
 BUILDERS = {"wan": build_wan, "wan22": build_wan22, "cogvideox": build_cogvideox, "hunyuan": build_hunyuan,
             "ltx": build_ltx, "mochi": build_mochi, "stdit": build_stdit, "h3": build_h3, "esm": build_esm,
             "generanno": build_generanno, "qwenimage": build_qwenimage, "qwenimage21": build_qwenimage21,
-            "flux2": build_flux2, "lingbot": build_lingbot}
+            "flux2": build_flux2, "lingbot": build_lingbot, "flux3": build_flux3}
 from .structure import BUILDERS as _STRUCTURE_BUILDERS  # noqa: E402  (0.43 protein structure models)
 BUILDERS.update(_STRUCTURE_BUILDERS)
 

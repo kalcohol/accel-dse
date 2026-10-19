@@ -93,6 +93,13 @@ EXTRA_TAIL = [
     ("rwkv7-g1k-7.2b", "RWKV/RWKV7-G1k-7.2B-20260930"),
     ("rwkv7-g1k-2.9b", "RWKV/RWKV7-G1k-2.9B-20260930"),
     ("rwkv7-g1k-1.5b", "RWKV/RWKV7-G1k-1.5B-20260930"),
+    # 0.251 catalog freshness sweep (official releases 2026-10-14 … 16; public config.json + safetensors headers, as released)
+    ("hy-memory-30b-a3b", "tencent/Hy-Memory-30B-A3B"),
+    ("hy-memory-30b-a3b-fp8", "tencent/Hy-Memory-30B-A3B-FP8"),
+    ("step-5-preview-nvfp4", "stepfun-ai/Step-5-Preview-NVFP4"),
+    # same architecture as a catalog entry (merged: resolvable + validated, not listed separately)
+    ("userrepgen-4b", "microsoft/UserRepGen-4B"),
+    ("flux-3-image-klein-pup", "black-forest-labs/flux-3-image-klein-pup"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -147,6 +154,9 @@ _FLUX2K_SRC = ("black-forest-labs/FLUX.2-klein-4B README：1024×1024、num_infe
 _LBV_SRC = ("Robbyant/lingbot-video README（MoE-DMD）：--scheduler dmd_student --steps 8 --guidance_scale 1、832×480、"
             "121 帧、24 fps；pipeline_lingbot_video.py：VAE ×4 时间 / ×8 空间（AutoencoderKLWan），文本 = Qwen3-VL 隐状态"
             "（裁掉系统模板，padding=longest），按示例结构化 JSON 提示 ≈ 1k token 计「假设」")
+_FLUX3_SRC = ("black-forest-labs/flux-3-image-klein README / config.json：sampler 1024×1024、steps 16、guidance null（flow-map 蒸馏）；"
+              "Base：50 步、guidance 3.5；Qwen3-VL-4B 文本（8 层隐状态拼接、pad_multiple 80，提示上采样后的完整描述 ≈ 320 token「假设」）；"
+              "AutoencoderKLFlux2 ×8 + 2×2 打包")
 DOMAIN_RELEASES = [
     ("wan2.1-14b", "Wan-AI/Wan2.1-T2V-14B", "wan",
      NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, vae_frames="wan", source=_WAN_SRC.format(res="720P（1280×720）"))),
@@ -198,6 +208,11 @@ DOMAIN_RELEASES = [
     ("lingbot-video-moe-dmd", "robbyant/lingbot-video-moe-dmd-30b-a3b", "lingbot",
      NativeWorkload("gen", frames=121, height=480, width=832, fps=24, vae_frames="wan", steps=8, cfg=1,
                     text_tokens=1024, source=_LBV_SRC)),
+    # 0.251 FLUX 3 Image Klein (2026-10-13, gated "auto" → read from the byte-identical public mirror unsloth/*, 2026-10-16)
+    ("flux-3-image-klein", "black-forest-labs/flux-3-image-klein", "flux3",
+     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=16, cfg=1, text_tokens=320, source=_FLUX3_SRC)),
+    ("flux-3-image-klein-base", "black-forest-labs/flux-3-image-klein-base", "flux3",
+     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=50, cfg=2, text_tokens=320, source=_FLUX3_SRC)),
 ]
 _DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
 # GitHub-only releases: the repo name alone does not say which checkpoint is evaluated
@@ -223,7 +238,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("bytedance", "字节跳动（Seed · Protenix）", ("ByteDance-Seed/", "gh:bytedance/")),
     ("yi", "零一万物（Yi）", ("01-ai/",)), ("internlm", "上海 AI 实验室（InternLM）", ("internlm/",)),
     # vendors with catalog-only (not yet on core v2) releases
-    ("tencent", "腾讯（HunyuanVideo）", ("hunyuanvideo-community/",)), ("lightricks", "Lightricks（LTX-Video）", ("Lightricks/",)),
+    ("tencent", "腾讯（HunyuanVideo · Hy）", ("hunyuanvideo-community/", "tencent/")), ("lightricks", "Lightricks（LTX-Video）", ("Lightricks/",)),
     ("genmo", "Genmo（Mochi）", ("genmo/",)), ("hpcai", "HPC-AI Tech（Open-Sora）", ("hpcai-tech/",)),
     ("deepmind", "Google DeepMind（AlphaFold）", ("gh:google-deepmind/",)), ("boltz", "Boltz（MIT）", ("gh:jwohlwend/", "boltz-community/")),
     ("openfold", "OpenFold（aqlaboratory）", ("gh:aqlaboratory/",)),
@@ -259,11 +274,15 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("openbmb", "MiniCPM-V 4.7", ("minicpm-v-4.7",)), ("robbyant", "LingBot-Video", ("lingbot-video",)),
     ("startlux", "StartLux-Decision v1.1", ("startlux-decision-v1.1",)), ("startlux", "StartLux-Decision v1", ("startlux-decision-v1-",)),
     ("microsoft", "Microsoft-Decision", ("microsoft-decision",)), ("rwkv", "RWKV-7 G1k", ("rwkv7-",)),
+    ("tencent", "Hy-Memory（Hy3 MoE）", ("hy-memory",)), ("bfl", "FLUX 3", ("flux-3",)),
+    ("microsoft", "UserRepGen", ("userrepgen",)),
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.
 MERGED = {"deepseek-v3.1": "deepseek-v3", "deepseek-r1": "deepseek-v3", "kimi-k2.7-code": "kimi-k2.5",
-          "glm-4.5": "glm-4.6", "minimax-text-01": "minimax-m1-80k"}
+          "glm-4.5": "glm-4.6", "minimax-text-01": "minimax-m1-80k",
+          # 0.251: Qwen3.5 fine-tunes, config identical to a listed entry except the MTP head they do not ship
+          "userrepgen-4b": "startlux-decision-v1-4b", "flux-3-image-klein-pup": "qwen3.5-9b"}
 # Generic dense GQA models whose sizes are already covered by Qwen3 / Llama 3: no extra design insight.
 UNLISTED = {"yi-1.5-34b": "与 Qwen3-32B 同类（稠密 GQA）", "internlm3-8b": "与 Qwen3-8B / Llama-3.1-8B 同类",
             "internlm2-5-20b": "与 Qwen3-32B / Magistral-Small 同类", "qwen2.5-3b": "与 Qwen3-4B 同类",

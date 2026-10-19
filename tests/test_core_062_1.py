@@ -23,9 +23,11 @@ def test_release_count_and_param_error():
     """MODEL §2 / §9 V1: 99 releases (77 LLM / VLM incl. 3 validation-only Llama-2-7B/70B + Mistral-7B (0.66), Carbon 500M/3B/8B (0.106), LFM2.5-24B-A2B (+FP8) and Ling-3.1-flash (0.114), Step-5-Preview, MiMo-V2.6-Flash, Intern-S2-397B, MiniCPM-V-4.7 (0.144), MiMo-V2.6-Pro, Ling-3.0-flash-VL (0.145), Evo 2 40B / 7B / 1B (0.170), Muse Spark Open BF16 / FP8 / MXFP4 (0.174) + NVFP4 (0.175) + 22 image / video / protein / genomics incl. Qwen-Image-2.1-Turbo, Qwen-Image, FLUX.2-klein-4B (0.115), LingBot-Video MoE-DMD (0.144)), all within ±0.5 %."""
     files = glob.glob(os.path.join(os.path.dirname(__file__), "..", "accel_dse", "data", "releases", "*.json"))
     doms = [json.load(open(f)).get("domain", "llm") for f in files]
-    assert len(files) == 118 and doms.count("llm") == 96   # 0.191: + Qwen3.5-9B, 14 StartLux-Decision, 4 RWKV-7 G1k
+    # 0.191: + Qwen3.5-9B, 14 StartLux-Decision, 4 RWKV-7 G1k; 0.251: + Hy-Memory-30B-A3B (+FP8), Step-5-Preview-NVFP4,
+    # UserRepGen-4B, flux-3-image-klein-pup (llm) + FLUX 3 Image Klein / Klein Base (gen)  118 → 125, llm 96 → 101
+    assert len(files) == 125 and doms.count("llm") == 101
     listed = {x["id"]: x for x in list_models()}
-    assert len(listed) + len(unlisted_models()) == 121   # 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft)
+    assert len(listed) + len(unlisted_models()) == 128   # 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7
     assert all(abs(x["param_err"]) <= 0.005 for x in listed.values())
     assert all(abs(x["param_err"]) < 1e-5 for x in listed.values() if get_model(x["id"]).domain in ("gen", "protein", "genomics"))
 

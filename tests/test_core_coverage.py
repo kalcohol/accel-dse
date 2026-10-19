@@ -72,12 +72,13 @@ CLOSED = ("gpt-oss-120b", "gpt-oss-20b", "deepseek-v3.2", "glm-5", "glm-5.2", "g
           "glm-5.3-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash",
           "qwen3.8-flash-next")
 PROXY = ("microsoft-decision-1",)   # 0.191 architecture proxy (closed; stated Qwen3.5-9B base)
-PROTEIN_PARTIAL = ("openfold", "alphafold2", "boltz-1", "protenix")
+PROTEIN_PARTIAL = ("openfold", "alphafold2", "boltz-1", "protenix",
+                   "flux-3-image-klein", "flux-3-image-klein-base")   # 0.251 (gen, not protein): reference-image stream unmodelled
 # 0.115 image DiTs were DiT-only (partial); 0.116 adds their text encoder + VAE pipelines → full
 IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")
 # 0.144 VLMs whose vision side is approximated (LLM side exact): Step-5 overview only, MiniCPM one 448² view, MiMo window
 # attention as full + audio encoder storage-only
-VISION_PARTIAL = ("step-5-preview",   # 0.145: MiniCPM slicing + MiMo band windows modelled → full
+VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4",   # 0.145: MiniCPM slicing + MiMo band windows modelled → full; 0.251 NVFP4 = same vision
                   "muse-spark-open", "muse-spark-open-fp8", "muse-spark-open-mxfp4",
                   "muse-spark-open-nvfp4", "muse-spark-open-nvfp4-dspark")   # 0.174: vision windows + resize 假设, audio storage only
 

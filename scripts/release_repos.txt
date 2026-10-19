@@ -96,3 +96,10 @@ openbmb/MiniCPM-V-4.7-35B-A3B
 robbyant/lingbot-video-moe-dmd-30b-a3b:transformer
 XiaomiMiMo/MiMo-V2.6-Pro-RL
 inclusionAI/Ling-3.0-flash-VL
+# 0.251 catalog freshness sweep (gated BFL / meta repos: headers read from the byte-identical public unsloth/* mirrors,
+# release JSON renamed to the official id with a "mirror" note)
+tencent/Hy-Memory-30B-A3B
+tencent/Hy-Memory-30B-A3B-FP8
+stepfun-ai/Step-5-Preview-NVFP4
+microsoft/UserRepGen-4B
+black-forest-labs/flux-3-image-klein-pup

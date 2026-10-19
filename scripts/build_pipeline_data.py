@@ -65,6 +65,14 @@ SPECS = {
                             "视觉塔与 lm_head 随 text_encoder 加载、计入存储，文生视频不经过它们"),
     "flux2-vae": ("fk_vae.json", "black-forest-labs/FLUX.2-klein-4B · vae", None, "bf16",
                   "int64 张量为 BatchNorm 计数（num_batches_tracked），权重均为 bf16"),
+    # 0.251 FLUX 3 Image Klein (headers of the byte-identical public mirror unsloth/flux-3-image-klein): the text encoder is
+    # Qwen3-VL-4B-Instruct (header-identical to the LingBot one), the VAE is AutoencoderKLFlux2 (FLUX.2 shapes) in fp32
+    "qwen3-vl-4b.flux3": ("f3_te.json", "black-forest-labs/flux-3-image-klein · text_encoder",
+                          lambda k: k.startswith("model.language_model."), None,
+                          "视觉塔与 lm_head 随 text_encoder 加载、计入存储，文生图不经过它们"),
+    "flux3-vae": ("f3_vae.json", "black-forest-labs/flux-3-image-klein · vae", None, "fp32",
+                  "AutoencoderKLFlux2（与 FLUX.2 VAE 同形状）按发布 fp32（config.json vae.dtype float32）；"
+                  "int64 张量为 BatchNorm 计数"),
 }
 
 

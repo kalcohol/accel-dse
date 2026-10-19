@@ -140,6 +140,18 @@ PIPELINES: dict[str, Pipeline] = {
                       "取最后一层隐状态（HIDDEN_STATE_SKIP_LAYER 0）"),),
         _WAN_VAE, neg_prompt=False,
         note="DMD 学生 guidance 1：无 uncond 分支，每请求只编码 1 条提示"),
+    # 0.251 FLUX 3 Image Klein: release text_encoder/ (Qwen3-VL-4B-Instruct) + vae/ (AutoencoderKLFlux2, fp32)
+    "flux-3-image-klein": Pipeline(
+        (TextEnc("qwen3-vl-4b.flux3", "Qwen3-VL-4B 文本塔", 320, 32, 128, causal=True,
+                 note="提示上采样后的完整场景描述，pad_multiple 80 → 320 token「假设」；取第 4/8/…/32 层隐状态"
+                      "（HF 前向跑满 36 层）"),),
+        Vae("flux3-vae", "os_s", "FLUX 3 VAE（AutoencoderKLFlux2，×8；DiT 侧 2×2 打包）", act="fp32"), neg_prompt=False,
+        note="distilled：无 guidance → 每请求只编码 1 条提示；提示上采样器 flux-3-image-klein-pup（Qwen3.5-9B，"
+             "README 默认开）是单独的 LLM 解码，不计入本 pipeline"),
+    "flux-3-image-klein-base": Pipeline(
+        (TextEnc("qwen3-vl-4b.flux3", "Qwen3-VL-4B 文本塔", 320, 32, 128, causal=True,
+                 note="同 klein；真 CFG 时负提示另编码一次"),),
+        Vae("flux3-vae", "os_s", "FLUX 3 VAE（AutoencoderKLFlux2，×8；DiT 侧 2×2 打包）", act="fp32")),
 }
 
 

@@ -55,6 +55,7 @@ _PREPROC = {
     "internlm/Intern-S2-397B": {"min_px": 65536, "max_px": 16777216},          # Qwen2VLImageProcessorFast size
     "XiaomiMiMo/MiMo-V2.6-Flash-RL": {"min_px": 8192, "max_px": 8388608},      # processor_config image_min/max_pixels
     "stepfun-ai/Step-5-Preview": {"side": 728},                                # Step5VisionConfig image_size (overview)
+    "stepfun-ai/Step-5-Preview-NVFP4": {"side": 728},                          # 0.251: config identical but quantization
     "openbmb/MiniCPM-V-4.7-35B-A3B": {"side": 448, "max_slice": 9},           # MiniCPMV4_6ImageProcessor defaults
     # 0.145
     "XiaomiMiMo/MiMo-V2.6-Pro-RL": {"min_px": 8192, "max_px": 8388608},        # processor_config image_min/max_pixels
@@ -66,7 +67,10 @@ _PREPROC = {
         "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4")},
     # 0.191 Qwen3.5-9B and the StartLux-Decision fine-tunes: preprocessor_config.json Qwen2VLImageProcessorFast size
     # shortest 65536 / longest 16777216 px, patch 16, merge 2 (each repo checked)
-    **{k: {"min_px": 65536, "max_px": 16777216} for k in ("Qwen/Qwen3.5-9B",) + tuple(
+    # 0.251 black-forest-labs/flux-3-image-klein-pup: same preprocessor_config.json (prompt upsampler, Qwen3.5-9B fine-tune);
+    # microsoft/UserRepGen-4B ships the Qwen3.5-4B vision tower but no preprocessor_config.json → base-model processor 「假设」
+    **{k: {"min_px": 65536, "max_px": 16777216} for k in ("Qwen/Qwen3.5-9B", "black-forest-labs/flux-3-image-klein-pup",
+                                                         "microsoft/UserRepGen-4B") + tuple(
         f"startlux-models/StartLux-Decision-{v}" for v in (
             "v1-27B", "v1-9B", "v1-4B", "v1-2B", "v1-0.8B", "v1-35B-A3B", "v1.1-27B-Instant", "v1.1-27B-AutoThink",
             "v1.1-9B-Instant", "v1.1-9B-AutoThink", "v1.1-4B-Instant", "v1.1-4B-AutoThink", "v1.1-2B-Instant",

@@ -91,7 +91,7 @@ def domain_of(cfg: dict) -> str:
     cls = cfg.get("_class_name") or ""
     if cls in ("WanModel", "WanTransformer3DModel", "CogVideoXTransformer3DModel", "HunyuanVideoTransformer3DModel",
                "LTXVideoTransformer3DModel", "MochiTransformer3DModel", "MiniMaxH3Transformer3DModel",
-               "QwenImageTransformer2DModel", "QwenImage21Transformer2DModel", "Flux2Transformer2DModel",
+               "QwenImageTransformer2DModel", "QwenImage21Transformer2DModel", "Flux2Transformer2DModel", "Flux3Transformer2DModel",
                "LingBotVideoTransformer3DModel") \
             or cfg.get("model_type") == "STDiT3":
         return "video"

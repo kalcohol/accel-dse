@@ -19,15 +19,20 @@ def _ev(mid, hw="B200", **kw):
 
 
 def test_nvfp4_release_bytes_and_format():
-    """NVFP4 = e2m1 (0.5 B) + e4m3 scale per 16 (1/16 B) per param + 2 fp32 per tensor; experts only (假设)."""
+    """NVFP4 = e2m1 (0.5 B) + e4m3 scale per 16 (1/16 B) per param + 2 fp32 per tensor.  0.251: read from the
+    byte-identical public mirror unsloth/Muse-Spark-Open-816B-A42B-NVFP4 (was 推导 from the BF16 headers): exclude_modules
+    layers.0. / layers.61. / self_attn / lm_head → the experts of layers 0 and 61 stay bf16 (0.175 假设 "experts only")."""
     assert FORMATS["nvfp4"].bits == 4.5
     d = json.load(open("accel_dse/data/releases/meta-models__Muse-Spark-Open-816B-A42B-NVFP4.json"))
-    e = d["roles"]["expert"]["nvfp4"]
-    assert e["bytes"] == e["params"] // 2 + e["params"] // 16 + 256 * 3 * 62 * 8
-    assert "推导" in d["derived"] and "假设" in d["derived"]
+    ex = d["roles"]["expert"]
+    assert ex["nvfp4"]["bytes"] == ex["nvfp4"]["params"] // 2                     # packed e2m1
+    assert ex["bf16"]["params"] == 25769803776                                     # layers 0 + 61 experts, bf16
+    assert "derived" not in d and d["mirror"]["repo"] == "unsloth/Muse-Spark-Open-816B-A42B-NVFP4"
+    assert d["bytes_total"] == 533010718720                                       # 0.175 推导 495966638080 (−7.0 %)
     m = get_model("muse-spark-open-nvfp4")
     f = dict(m.formats)
-    assert f["expert"].fmt == "nvfp4" and abs(f["expert"].bits - 4.5) < 1e-3 and f["attn"].fmt == "bf16"
+    # per-role effective bits: nvfp4 experts + two bf16 expert layers + e4m3 scales → 4.87 b (0.175: 4.50)
+    assert f["expert"].fmt == "nvfp4" and abs(f["expert"].bits - 4.871) < 2e-3 and f["attn"].fmt == "bf16"
     assert abs(m.param_check()["rel_err"]) < 1e-5
     # 4-bit experts: fits 8×B200 where BF16 does not; decode faster than FP8-expert on the same chips
     assert _ev("muse-spark-open-nvfp4", phase="decode", batch=1, ctx=8192).fits

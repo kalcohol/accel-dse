@@ -6,6 +6,76 @@
 
 
 
+## [0.251.0]
+
+### Added — catalog freshness sweep (Hugging Face, through 2026-10-19; MODEL §198)
+Every vendor org of the catalog was swept with `api/models?author=…&sort=lastModified` (44 orgs, including tencent, the unsloth mirrors, BlinkDL, Inferact and TypeSafe variants).
+- **Window:** created on or after 2026-10-14, which is two days before the catalog's latest fetch on 2026-10-16, and not already in `releases/`.
+- **Rules:** a model needs a public config.json; it runs as released, with its official dtypes; params are checked exactly against the safetensors headers.
+
+| id | source | what | coverage |
+|---|---|---|---|
+| `hy-memory-30b-a3b` | https://huggingface.co/tencent/Hy-Memory-30B-A3B | Tencent Hy3 MoE (hy_v3, 30.06B / A3B, bf16), long-term-memory writer | full |
+| `hy-memory-30b-a3b-fp8` | https://huggingface.co/tencent/Hy-Memory-30B-A3B-FP8 | official FP8: static W8A8 + fp8 KV | full |
+| `step-5-preview-nvfp4` | https://huggingface.co/stepfun-ai/Step-5-Preview-NVFP4 | official NVFP4 of Step-5-Preview (config identical except quantization; 394.2 GB vs 641.4 GB) | partial (same vision as Step-5-Preview) |
+| `flux-3-image-klein` | https://huggingface.co/black-forest-labs/flux-3-image-klein (gated; headers from https://huggingface.co/unsloth/flux-3-image-klein) | FLUX 3 image DiT 5.55B, distilled, 16 steps | partial |
+| `flux-3-image-klein-base` | https://huggingface.co/black-forest-labs/flux-3-image-klein-base (gated; headers from https://huggingface.co/unsloth/flux-3-image-klein-base) | undistilled, 50 steps, true CFG | partial |
+| `userrepgen-4b` (merged → startlux-decision-v1-4b) | https://huggingface.co/microsoft/UserRepGen-4B | Qwen3.5-4B fine-tune, same architecture, no MTP head (image processor: Qwen3.5 base 「假设」) | full |
+| `flux-3-image-klein-pup` (merged → qwen3.5-9b) | https://huggingface.co/black-forest-labs/flux-3-image-klein-pup | FLUX 3 prompt upsampler, Qwen3.5-9B fine-tune, no MTP head | full |
+
+- **Hy3 in `_build_std`, mechanism-first, exact params.**
+  - The routed and shared experts are `expert_hidden_dim` (768) wide, as the header shows (experts.*.gate_proj is [768, 2048]); `moe_intermediate_size` (1536) is not the expert width.
+  - `num_shared_experts` shared experts.
+  - `mlp_layer_types` dense layer 0.
+  - q/k RMSNorm.
+  - fp32 `expert_bias` for the sigmoid router.
+  - Before this change the template counted 58.23B against the release's 30.06B.
+- **`_act_fmt`:** FP8 releases with `activation_scheme: static` (per-tensor input_scale) now run fp8 activations, like the dynamic ones. Only Hy-Memory-FP8 uses this.
+- **`build_flux3`** (`Flux3Transformer2DModel`). There is no public modeling code yet, so the structure was read from the header:
+  - 5 early per-modality blocks (txt / image / image_cond, each with its own q/k/v/out, QK-norm and SwiGLU), which is FLUX.2's dual-stream block plus a reference-image stream;
+  - 28 shared single blocks (unfused);
+  - per-modality modulation tables;
+  - a flow-map target-time embedder (distilled checkpoint only).
+  - Text-to-image is modelled. The image_cond stream (0.62B params) has no tokens at T2I, so it is stored and not run.
+  - Pipeline: Qwen3-VL-4B text encoder (layers 4…32 concatenated = 20480 = context_embedder input) and the AutoencoderKLFlux2 VAE in fp32 (new pipeline keys `qwen3-vl-4b.flux3`, `flux3-vae`).
+  - Text length is 320 tokens 「假设」 (pad_multiple 80, full upsampled caption).
+  - The Base checkpoint has guidance 3.5 but no guidance embedder, so it uses true CFG (2 passes per step) 「推导」.
+  - **Unmodelled fields:** the reference-image edit / multi-reference stream (`mode_blocks.image_cond`, `x_embedders.image_cond`, `*_modulations.image_cond`, `cond_in_channels`, `image_rope_scale`) and the prompt upsampler as a separate LLM decode.
+- **Gated releases with a public byte-identical mirror** are read from the mirror. The check: every file's git LFS pointer oid matches; only the README differs. The release JSON keeps the official id and adds a `"mirror"` note.
+
+### Changed
+- **Muse Spark Open NVFP4 is now read, not derived** (0.175 推导 → 来源, via the public mirror https://huggingface.co/unsloth/Muse-Spark-Open-816B-A42B-NVFP4).
+  - hf_quant_config `exclude_modules` is layers.0., layers.61., self_attn and lm_head, so the experts of layers 0 and 61 stay bf16 (25.77B params).
+  - Stored bytes rise from 495.97 to 533.01 GB (+7.5 %). Params are unchanged.
+  - The expert effective bits rise from 4.50 to 4.87.
+  - It still fits 8×B200 at TP8/EP8.
+- Provider tencent now also covers the `tencent/` org. New families: Hy-Memory, FLUX 3, UserRepGen.
+
+### Skipped (and why)
+- mistralai Timestral-5M / 28M / 123M / 209M: time-series forecasting, a domain the catalog does not model.
+- microsoft/scFM-dataselection: about 1000 single-cell Geneformer ablation checkpoints, not a model release in a modelled domain.
+- tencent/Qwen3-8B-DSpine-b16: a DFlash block-diffusion draft for Qwen3-8B with a selected-prefix code bridge. The IR's draft path (DSpark) cannot express this mechanism-first, and a draft is not a standalone model. Deferred.
+- GGUF-only repos, which have no config.json or safetensors index: openbmb MiniCPM-V-4.7-{35B-A3B,1B}-DSpark-gguf and unsloth GGUF repacks.
+- unsloth FP8 / NVFP4 repacks that the vendor did not make.
+- NVIDIA Nemotron-3.5 and Beam-1.0 (unsloth repacks): the vendor is not in the catalog.
+- amd/Mixtral-8x7B w8a8: a third-party quant of a model not in the catalog.
+- black-forest-labs/flux-3-image-klein-comfy: gated ComfyUI packaging of the same weights.
+- DeepSeek-V4.1-Flash-1017: already added in 0.248.
+- **API-only or no official open weights:** Jev (TypeSafe AI) and Microsoft-Decision-1 (still the 0.191 proxy). HF only has community "jev-style" fine-tunes and the openjev/* community reproduction. Recorded in AGENTS.
+
+### Tests
+- New test_core_251, with 4 tests:
+  - every new entry loads, builds the IR and evaluates on the default chip with finite values;
+  - Hy3 mechanisms;
+  - FLUX 3 structure and steps;
+  - merged-entry equality and Step-5 NVFP4 vs FP8.
+- test_core_062_1: release counts 118 → 125 (llm 96 → 101), entries 121 → 128.
+- test_core_coverage: + step-5-preview-nvfp4 (vision partial), + flux-3-image-klein(-base) (partial).
+- test_core_175: NVFP4 bytes and bits now from the real headers.
+- test_core_pipeline: + the two FLUX 3 pipelines; stored sizes `qwen3-vl-4b.flux3` 8.88 GB and `flux3-vae` 0.336 GB.
+- test_core_062 (every catalog VLM has an encoder): UserRepGen-4B ships the Qwen3.5-4B vision tower but no preprocessor_config.json, so it uses the base-model processor (65536–16777216 px) 「假设」.
+
+
 ## [0.250.0]
 
 ### Added — the near-full lattice at U = 0, derived, **off by default** (MODEL §197)

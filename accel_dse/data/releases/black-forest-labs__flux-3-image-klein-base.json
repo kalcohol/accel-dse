@@ -1,0 +1,569 @@
+{
+ "bytes_llm": 11076916736,
+ "bytes_mtp": 0,
+ "bytes_total": 11076916736,
+ "config": {
+  "_class_name": "Flux3Transformer2DModel",
+  "_diffusers_version": "0.41.0.dev0",
+  "attention_head_dim": 128,
+  "axes_dims_rope": [
+   32,
+   32,
+   32,
+   32
+  ],
+  "cond_in_channels": 128,
+  "eps": 1e-06,
+  "in_channels": 128,
+  "joint_attention_dim": 20480,
+  "mlp_ratio": 3.0,
+  "num_attention_heads": 24,
+  "num_layers": 5,
+  "num_single_layers": 28,
+  "rope_theta": 10000,
+  "timestep_channels": 256
+ },
+ "domain": "video",
+ "fetched": "2026-10-19",
+ "mirror": {
+  "note": "byte-identical public mirror: every file's git LFS pointer oid equals the gated official repo's (README only differs; HF tree API 2026-10-19) \u2192 safetensors headers read from the mirror",
+  "repo": "unsloth/flux-3-image-klein-base"
+ },
+ "n_tensors": 357,
+ "params_llm": 5538458368,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "black-forest-labs/flux-3-image-klein-base",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 3246391296,
+    "params": 1623195648
+   }
+  },
+  "cond": {
+   "bf16": {
+    "bytes": 503316480,
+    "params": 251658240
+   }
+  },
+  "io": {
+   "bf16": {
+    "bytes": 2359296,
+    "params": 1179648
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 7304380416,
+    "params": 3652190208
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 22016,
+    "params": 11008
+   }
+  },
+  "other": {
+   "bf16": {
+    "bytes": 20447232,
+    "params": 10223616
+   }
+  }
+ },
+ "shapes": {
+  "context_embedder.weight": [
+   3072,
+   20480
+  ],
+  "early_stream_modulations.image.linear.weight": [
+   9216,
+   3072
+  ],
+  "early_stream_modulations.image_cond.linear.weight": [
+   9216,
+   3072
+  ],
+  "early_stream_modulations.txt.linear.weight": [
+   9216,
+   3072
+  ],
+  "mode_blocks.image.0.attn.norm_k.weight": [
+   128
+  ],
+  "mode_blocks.image.0.attn.norm_q.weight": [
+   128
+  ],
+  "mode_blocks.image.0.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.0.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.0.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.0.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.0.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "mode_blocks.image.0.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "mode_blocks.image.1.attn.norm_k.weight": [
+   128
+  ],
+  "mode_blocks.image.1.attn.norm_q.weight": [
+   128
+  ],
+  "mode_blocks.image.1.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.1.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.1.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.1.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.1.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "mode_blocks.image.1.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "mode_blocks.image.2.attn.norm_k.weight": [
+   128
+  ],
+  "mode_blocks.image.2.attn.norm_q.weight": [
+   128
+  ],
+  "mode_blocks.image.2.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.2.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.2.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.2.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.2.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "mode_blocks.image.2.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "mode_blocks.image.3.attn.norm_k.weight": [
+   128
+  ],
+  "mode_blocks.image.3.attn.norm_q.weight": [
+   128
+  ],
+  "mode_blocks.image.3.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.3.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.3.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.3.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.3.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "mode_blocks.image.3.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "mode_blocks.image.4.attn.norm_k.weight": [
+   128
+  ],
+  "mode_blocks.image.4.attn.norm_q.weight": [
+   128
+  ],
+  "mode_blocks.image.4.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.4.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.4.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.4.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image.4.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "mode_blocks.image.4.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "mode_blocks.image_cond.0.attn.norm_k.weight": [
+   128
+  ],
+  "mode_blocks.image_cond.0.attn.norm_q.weight": [
+   128
+  ],
+  "mode_blocks.image_cond.0.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.0.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.0.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.0.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.0.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "mode_blocks.image_cond.0.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "mode_blocks.image_cond.1.attn.norm_k.weight": [
+   128
+  ],
+  "mode_blocks.image_cond.1.attn.norm_q.weight": [
+   128
+  ],
+  "mode_blocks.image_cond.1.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.1.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.1.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.1.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.1.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "mode_blocks.image_cond.1.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "mode_blocks.image_cond.2.attn.norm_k.weight": [
+   128
+  ],
+  "mode_blocks.image_cond.2.attn.norm_q.weight": [
+   128
+  ],
+  "mode_blocks.image_cond.2.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.2.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.2.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.2.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.2.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "mode_blocks.image_cond.2.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "mode_blocks.image_cond.3.attn.norm_k.weight": [
+   128
+  ],
+  "mode_blocks.image_cond.3.attn.norm_q.weight": [
+   128
+  ],
+  "mode_blocks.image_cond.3.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.3.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.3.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.3.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.3.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "mode_blocks.image_cond.3.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "mode_blocks.image_cond.4.attn.norm_k.weight": [
+   128
+  ],
+  "mode_blocks.image_cond.4.attn.norm_q.weight": [
+   128
+  ],
+  "mode_blocks.image_cond.4.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.4.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.4.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.4.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "mode_blocks.image_cond.4.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "mode_blocks.image_cond.4.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "norm_out.linear.weight": [
+   6144,
+   3072
+  ],
+  "proj_out.weight": [
+   128,
+   3072
+  ],
+  "single_stream_modulations.image.linear.weight": [
+   9216,
+   3072
+  ],
+  "single_stream_modulations.image_cond.linear.weight": [
+   9216,
+   3072
+  ],
+  "single_stream_modulations.txt.linear.weight": [
+   9216,
+   3072
+  ],
+  "single_transformer_blocks.0.attn.norm_k.weight": [
+   128
+  ],
+  "single_transformer_blocks.0.attn.norm_q.weight": [
+   128
+  ],
+  "single_transformer_blocks.0.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.0.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.0.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.0.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.0.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "single_transformer_blocks.0.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "single_transformer_blocks.27.attn.norm_k.weight": [
+   128
+  ],
+  "single_transformer_blocks.27.attn.norm_q.weight": [
+   128
+  ],
+  "single_transformer_blocks.27.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.27.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.27.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.27.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "single_transformer_blocks.27.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "single_transformer_blocks.27.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "timestep_embedder.linear_1.weight": [
+   3072,
+   256
+  ],
+  "timestep_embedder.linear_2.weight": [
+   3072,
+   3072
+  ],
+  "txt_mode_blocks.0.attn.norm_k.weight": [
+   128
+  ],
+  "txt_mode_blocks.0.attn.norm_q.weight": [
+   128
+  ],
+  "txt_mode_blocks.0.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "txt_mode_blocks.0.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "txt_mode_blocks.0.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "txt_mode_blocks.0.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "txt_mode_blocks.0.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "txt_mode_blocks.0.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "txt_mode_blocks.4.attn.norm_k.weight": [
+   128
+  ],
+  "txt_mode_blocks.4.attn.norm_q.weight": [
+   128
+  ],
+  "txt_mode_blocks.4.attn.to_k.weight": [
+   3072,
+   3072
+  ],
+  "txt_mode_blocks.4.attn.to_out.0.weight": [
+   3072,
+   3072
+  ],
+  "txt_mode_blocks.4.attn.to_q.weight": [
+   3072,
+   3072
+  ],
+  "txt_mode_blocks.4.attn.to_v.weight": [
+   3072,
+   3072
+  ],
+  "txt_mode_blocks.4.ff.linear_in.weight": [
+   18432,
+   3072
+  ],
+  "txt_mode_blocks.4.ff.linear_out.weight": [
+   3072,
+   9216
+  ],
+  "x_embedders.image.weight": [
+   3072,
+   128
+  ],
+  "x_embedders.image_cond.weight": [
+   3072,
+   128
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "ae.safetensors": 336211292,
+   "model.safetensors": 11076957072,
+   "text_encoder/model-00001-of-00002.safetensors": 4967229296,
+   "text_encoder/model-00002-of-00002.safetensors": 3908490048,
+   "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": 9887081880,
+   "transformer/diffusion_pytorch_model-00002-of-00002.safetensors": 1189878064,
+   "vae/diffusion_pytorch_model.safetensors": 336213556,
+   "variants/fp8r/model.safetensors": 6250501712,
+   "variants/nvfp4/model.safetensors": 5257226696
+  },
+  "revision": "main",
+  "spec": "black-forest-labs/flux-3-image-klein-base:transformer",
+  "subfolder": "transformer",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}

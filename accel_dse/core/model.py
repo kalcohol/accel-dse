@@ -615,6 +615,14 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     de = _g(c, "moe_intermediate_size", "intermediate_size")
     n_sh = c.get("n_shared_experts") or (1 if c.get("shared_expert_intermediate_size") else 0)
     d_sh = c.get("shared_expert_intermediate_size") or (de if c.get("n_shared_experts") else 0)
+    hy3 = mt == "hy_v3"
+    if hy3:
+        # 0.251 Tencent Hy3 (HYV3ForCausalLM, Hy-Memory-30B-A3B): the routed and shared experts are expert_hidden_dim wide
+        # (safetensors experts.*.gate_proj [768, 2048]; moe_intermediate_size 1536 = gate+up), num_shared_experts shared
+        # experts of the same width, sigmoid router + fp32 expert_bias, q/k RMSNorm, dense layers from mlp_layer_types
+        de = c.get("expert_hidden_dim") or de
+        n_sh = c.get("num_shared_experts") or 0
+        d_sh = de if n_sh else 0
     first_dense = c.get("first_k_dense_replace") or 0
     mlp_only = set(c.get("mlp_only_layers") or [])
     types = _list(c.get("layer_types")) or []
@@ -629,11 +637,14 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         alin, core = _gqa(h, H, KV, hd, window=w)
         if mt == "gpt_oss":
             core = replace(core, sink=True)
-        if E and i >= first_dense and i not in mlp_only:
+        hy_dense = hy3 and i < len(c.get("mlp_layer_types") or ()) and c["mlp_layer_types"][i] == "dense"
+        if E and i >= first_dense and i not in mlp_only and not hy_dense:
             ffn, flin = _ffn_moe(h, E, k, de, n_sh, d_sh, shared_gate=bool(c.get("shared_expert_intermediate_size")))
         else:
             ffn, flin = _ffn_dense(h, c["intermediate_size"])
-        misc = 2 * h + (2 * hd if mt.startswith("qwen3") else 0)
+        misc = 2 * h + (2 * hd if mt.startswith("qwen3") or (hy3 and c.get("qk_norm")) else 0)
+        if hy3 and ffn.kind == "moe" and c.get("moe_router_enable_expert_bias"):
+            misc += E                                      # fp32 expert_bias (sigmoid router selection bias)
         if c.get("attention_bias") or mt == "qwen2" or mt == "gpt_oss":
             misc += H * hd + 2 * KV * hd + (h if mt == "gpt_oss" else 0)
         if mt == "gpt_oss":
@@ -1465,9 +1476,10 @@ def _quant_release(rel: dict) -> bool:
 
 def _act_fmt(rel: dict) -> str:
     """Activation format: W8A8 block-FP8 releases with dynamic activation scaling
-    run activations in fp8 (DeepSeek reference inference); all else bf16."""
+    run activations in fp8 (DeepSeek reference inference); 0.251: static per-tensor activation scales
+    (Hy-Memory-30B-A3B-FP8: input_scale per linear) quantise activations to fp8 the same way; all else bf16."""
     qc = rel.get("quantization_config") or {}
-    if isinstance(qc, dict) and qc.get("quant_method") == "fp8" and qc.get("activation_scheme") == "dynamic":
+    if isinstance(qc, dict) and qc.get("quant_method") == "fp8" and qc.get("activation_scheme") in ("dynamic", "static"):
         return "fp8"
     return "bf16"
 
