@@ -6,6 +6,108 @@
 
 
 
+## [0.248.0]
+
+### Changed — slot-account floor law, derived in part (MODEL §195)
+- **Age-structured death credit below U = 0 「推导」** (`_AGE_DEATHS`, default on). An admission adds Δ of slow-iteration wall time (fused: τ − n_B·T_d(B); SGLang non-mixed: τ). More births land in that time, so births cluster in token time with branching ratio η = λΔ, and the dying (oldest) request covaries less with the batch count.
+  - Per-step deaths regress toward the mean batch m with w = 1 − (1 − g)(I_s − I₀)/(2 I_s), where I_s = 1/(1 − η)², I₀ = 1 + λ²p(1 − p)δ²/m_b, and g is the T_d(k) elasticity at m.
+  - The death credit becomes c(k)·a(k) with a(k) = w + (1 − w)·m/k, and the chunk-iteration credit is scaled the same way. Above 0 nothing changes.
+  - Checks: the token-time micro-model gives w 0.87 against the formula's 0.84–0.87, and its pieces I_s, I₀ and 1/(1 − g) match within 2 %. DES A λ52 per-step w ≈ 0.88; the model gives 0.867.
+  - New `_slot_backlog(m_k=…)`; `w_age` is returned. The 0.247 w ≈ 0.65 was a misreading of the per-second blend.
+- **Queue-ful entry law 「推导; 来源: DES」** (`_SAT_ENTRY`, default on). The U > 0 TTFT base becomes lat + β + (β/d)·(S̄ + E[S²]/(2S̄)); for A λ52 that is 79.5 → 173 ms.
+  - U > 0 means q ≥ 1 prompts wait with the slots full. U enters that state by a whole S̄ (it is a lattice), and the admission in service is not counted in U.
+  - DES P(U > 0.3 / 0.5 / 0.8 | U > 0) is 0.520 / 0.297 / 0.122, against 0.526 / 0.301 / 0.130 for S̄ + Exp(θ). DES wait − U is about 65 ms, which equals β + S_e.
+  - DES TTFT | U > 0 p50 / p90 is 434 / 968 ms; at full weight the model gives 433 / 1009 (before: 328 / 905).
+- **Slot-bound share β/d 「近似」.** The lattice entry needs f = 0. When the admission's own chunk iterations free its slot (β → 0), the queue-ful state is the budget FCFS queue at any f. The M/G/1 diffusion and T₀ already price that queue, so S̄ + S_e would double-count.
+  - The suite caught this in test_core_242 (E vllm, 16k prompts, n_B 8.2, β 0.1 ms of d 22 ms).
+  - The entry term is weighted by β/d: A 0.89, D ≈ 0.8, E 0.004.
+  - E vllm TTFT p90 (ms):
+
+    | λ | full entry term (before the fix) | shipped | DES (n4000×10) | flags off |
+    |---|---|---|---|---|
+    | 17.37 | 1346 | 1204 | 1158 | 1189 |
+    | 18 | 1646 | 1481 | 1436 | 1469 |
+    | 18.6 | 2045 | 1879 | 1883 | 1870 |
+    | 19.32 | 2905 | 2736 | 2748 | 2730 |
+
+    The test_core_242 vllm pin (±6 %) holds unchanged.
+  - E sglang_mixed (β/d ≈ 0.5) TTFT p90 at λ17.37 / 18 / 18.6 / 19.32: 1167 / 1455 / 1897 / 2992 → 1264 / 1542 / 1982 / 3150 ms, against DES 1219 / 1603 / 2163 / 3353 (n4000×10 seeds). The error was −4 / −9 / −12 / −11 % and is now +3.7 / −3.8 / −8.4 / −6.1 %, so mean |err| goes 9.2 → 5.5 %. The test_core_242 band "0.241 < model < DES" becomes "0.241 < model and |err| < 10 %", because λ17.37 now sits 3.7 % above DES. Not re-checked with a long run.
+- **Correction to 0.247.** The "T₀ near-full bulk-queue tail" was a probe artefact. The DES drops the in-flight iteration's prompts from `curs` before the iteration ends, so the probe over-counted free slots by 0.67 on average. With true f, U ≤ 0 arrivals have TTFT p90 115 ms and no tail; the 0.2–0.4 s band is the U ∈ (0, 0.3] s queue-ful state.
+
+### Performance
+- `_occ_tau`: the dot-product (`math.sumprod`) path is now used at any B when N·L > `FAST_NL_OCC` = 2000. Before, only B ≥ 256 used it. Same sums; rounding differs by ~1e-16.
+- `_queue_weights`: the inner convolution is a slice update, bit-identical (checked on 16 (a, jn) pairs).
+- test_core_237 guard cases, CPU seconds in the colocated paths, sequential and warm:
+
+  | case | before | after |
+  |---|---|---|
+  | sglang_mixed | 19.4 | 14.9 |
+  | sglang 6000 | 5.9 | 3.7 |
+  | vllm_v0 6000 | 22.8 | 16.6 |
+
+- The rt248 guard failure (vllm_v0 156.8 s CPU) was not a 0.248 regression. 056dd03 times the same case identically (cold 85.3 vs 86.0 s, warm 22.5 vs 22.8 s), and the file passes alone. rt248 ran the file at slot 64/223, beside the slow-first modules (wall 1143 s vs 1402–1861 s in earlier runs). The guard is unchanged.
+
+### Added
+- **DeepSeek-V4.1-Flash-1017** (`deepseek-ai/DeepSeek-V4.1-Flash-1017`, released 2026-10-17, HF sha 1bae0e10, MIT, fp8 + fp4 experts). Added as an alias and a `releases` note on `deepseek-v4.1-flash` in series_catalog.json.
+  - Note: "config identical to V4.1-Flash; RLSF post-train update".
+  - The sorted config.json diff is empty. The safetensors index total_size is 510286023000, equal to the stored bytes_total, so no separate release file was added.
+
+### Validation — TTFT p90 (ms) vs long-run DES (`sd247/lr_*`; `sd248/ana_sb.txt`)
+
+| case | λ | DES | 0.247 | 0.248 |
+|---|---|---|---|---|
+| A | 50 / 52 / 53.5 / 54.3 | 143 / 341 / 734 / 1035 | 124 / 181 / 545 / 937 | 133 / 258 / 633 / 1003 |
+| D | 50 / 52 / 53.5 / 54.3 | 146 / 283 / 660 / 952 | 136 / 165 / 385 / 753 | 143 / 201 / 489 / 835 |
+| G | 44.5 / 46.5 / 47.5 / 48.3 | 182 / 457 / 797 / 1179 | 165 / 260 / 560 / 1034 | 177 / 349 / 662 / 1106 |
+
+The model is still low everywhere. The honest residual is P(U > 0): A λ52 gives 0.124 against DES 0.155, which is item (2), deferred.
+
+Crossings vs the 0.246 long-run DES table (`sd248/xr_sb.txt`): mean |err| 0.27 % → 0.15 % (0.148 % over 13 rows).
+
+| case | analytic (0.247 → 0.248) | DES | err |
+|---|---|---|---|
+| A vllm / mixed | 55.36 → 55.34 | 55.28 | +0.11 % |
+| A v0 | 55.56 → 55.53 | 55.45 | +0.15 % |
+| D vllm | 55.56 → 55.53 | 55.45 | +0.15 % |
+| D mixed | 55.27 → 55.25 | 55.13 | +0.22 % |
+| F vllm | 43.91 → 43.88 | 43.75 | +0.30 % |
+| F mixed | 43.70 → 43.66 | 43.64 | +0.05 % |
+| G vllm | 49.14 → 49.11 | 49.02 | +0.19 % |
+| G v0 | 49.49 → 49.47 | 49.42 | +0.10 % |
+| E mixed | 18.73 → 18.62 | 18.59 | +0.14 % |
+| A sglang | 55.04 → 55.01 | 55.05 | −0.07 % |
+| D sglang | 55.01 → 54.99 | 54.95 | +0.07 % |
+| F sglang | 42.80 → 42.77 | 42.66 | +0.26 % |
+
+### KPI (`sd248/kpi248b.txt` vs `sd246/kpi246_new.txt`)
+24 of 49 rows changed, all SLO rates; operating-point TTFT/TPOT are unchanged.
+- A/D/F/G: −0.02 to −0.06 rps.
+- E vllm / v0 and C v0 are budget-bound (β/d ≈ 0), so they barely move.
+- C vllm / mixed (−1.3 %) and the C/E SGLang non-mixed rows (−1.3 %) are slot-bound. SGLang non-mixed has no fused deaths, so β = d and the full entry term applies there.
+
+| row | 0.247 → 0.248 |
+|---|---|
+| C vllm | 18.53 → 18.29 |
+| C v0 | 18.75 → 18.74 |
+| C sglang | 18.67 → 18.43 |
+| C mixed | 18.53 → 18.29 |
+| E vllm / v0 | 18.75 → 18.74 |
+| E sglang | 18.58 → 18.33 |
+| E mixed | 18.73 → 18.62 |
+
+### Tests
+- New test_core_248:
+  - w within (0.80, 0.92), θ unchanged, p_sat up, and the flag-off value equal to 0.247.
+  - The base equals lat + β + (β/d)(S̄ + S_e) with β/d in (0.8, 0.95) for A.
+  - The 1017 alias resolves to the same ModelSpec, with no release file.
+- test_core_239: E mixed pin 18.73 → 18.62.
+
+### Deferred
+- **(2) State-dependent σ²(f) below 0.** The true-f KM estimate (dt 77 ms) falls from 0.13 near full to 0.03 deep. A decomposition into arrival jumps and clustered deaths gives 0.088 / 0.052, the wrong shape. Plugging the KM μ, σ² straight into the floor gives p_sat 0.208 against DES 0.155, because sub-dt budget-queue transients inflate the coefficients. A coarse-grained derivation is needed.
+- The large-U per-prompt cost: DES slope is 0.89·S̄ at U > 0.8 s.
+- The β/d share is an interpolation. A derivation would come from the entry-state law P(f = 0 | entry).
+- E vllm λ18.65 bracket; idle k0; the 0.238 list.
+
 ## [0.247.0]
 
 ### Investigated — slot-account TTFT p90 below ≈ 1 s (mechanism found; model unchanged, fix deferred)

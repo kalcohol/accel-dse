@@ -116,6 +116,7 @@ B_CAPS = (1, 2, 4, 8, 16, 32, 64)
 VICTIM_WAIT = "blend"       # 0.83: P(W>x) = (1−c²)·resid + c²·exp, c² = lifetime CV² (MODEL §29); "exp" = ≤ 0.82
 SPLIT_EXACT = 32    # 0.60: PD SLO split search evaluates every split up to this many candidates, else coarse → fine
 INTERP_B = 1024     # 0.60: decode batch above which the birth–death chain interpolates step(k) (see _decode_birth_death)
+FAST_NL_OCC = 2000   # 0.248: _occ_tau uses the dot products above this N·L at any B
 FAST_B, FAST_NL = 256, 20000   # 0.61: chains with B ≥ FAST_B and N·L > FAST_NL use C-level dot products
                     # (math.sumprod) for the batch-arrival convolutions in _pi / _occ_tau (same sums, rounding differs
                     # ~1e-16 rel); other chains keep the 0.60 loops bit-for-bit
@@ -608,7 +609,9 @@ def _occ_tau(pi: list, B: int, arr, mu_of) -> float | None:
                 d[n] = G[n] / (pi[n] * mu)
             sig += d[n] * G[n]
         return sig / var if sig > 0 else None
-    if B >= FAST_B and N * L > FAST_NL:     # 0.61: the two O(L) sums as C-level dot products on slices (hand-vectorized)
+    # 0.248: the dot-product form for every chain with N·L > FAST_NL_OCC (was B ≥ FAST_B only): the cap-48 phase-law
+    # paths (test_core_237 guard) spent ~30 % of their CPU in the generator sums below; same sums, rounding ~1e-16 rel
+    if (B >= FAST_B and N * L > FAST_NL) or N * L > FAST_NL_OCC:
         rt = tail[L + 1::-1]     # rt[j] = tail[L + 1 − j]
         for n in range(N - 1, 0, -1):
             if n < N - 1:
@@ -1069,6 +1072,8 @@ def _busy_q_from(dur, m: float, q: float) -> float:
     return dur[-1][0] if dur else 0.0
 
 
+_SAT_ENTRY = True    # 0.248: queue-ful entry overshoot S̄ + in-service residual in the U > 0 base (False: 0.247)
+_AGE_DEATHS = True   # 0.248: age-structured death credit below 0 (False: uniform age, 0.247)
 _FLOOR_W = 1.0   # 0.247 experiment hook: death-credit weight on the uniform-age rate below 0 (1 − w: replay λ); 1.0 = model
 _KBAR = True   # 0.246: deaths in the admission's chunk iterations at k̄ = B − b decodes (False: B)
 _FUSED_BACKLOG_CHUNKED = True   # 0.246: the account also for budget-chunked fused cases (False: 0.243 block there)
@@ -1076,7 +1081,7 @@ _FUSED_BACKLOG = True     # 0.245: fused max_num_seqs blocking by the slot accou
 
 
 def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, out_cs2: float, B: int,
-                  tau: float | None = None, n_B: float = 0.0, k_bar: float | None = None):
+                  tau: float | None = None, n_B: float = 0.0, k_bar: float | None = None, m_k: float | None = None):
     """0.244: SGLang non-mixed admission (scheduler.get_new_batch_prefill: a waiting prompt is admitted only while
     len(running_batch) + len(can_run_list) < max_running_requests — the prefilling requests count; the decodes pause
     in the prefill-only iteration).  With the batch full every admission waits for a death, and in a full batch of B
@@ -1150,10 +1155,39 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     # arrival nets β + n_B·T_d(B)·f/B (0 for SGLang non-mixed, n_B = 0) — the floor is shallower when the decodes ride
     # many chunk iterations (D/F: n_B 2.4 / 3.3 vs A/G 0.8; DES P(U > 0) 0.52 / 0.47 at their crossings)
     tdB = dB.step
-    mu_prev = _FLOOR_W * (lam * beta - (1 - rho_p) * c_of(B))
+    # 0.248 age-structured death credit below 0 (MODEL §195).  Admissions trigger slow iterations (chunk / prefill
+    # pause: Δ extra wall time each) in which further births land, so births cluster in token time (branching ratio
+    # η = λΔ; a Hawkes cluster process is not time-reversible): the oldest (dying) member of the running window has
+    # neighbours on one side only and covaries less with the count — per-step deaths given k regress toward the mean
+    # m/n with weight w = 1 − (1 − g)(I_s − I₀)/(2 I_s): I_s = 1/(1 − η)² the cluster Fano factor, I₀ = 1 + λ²p(1 − p)δ²/m_b
+    # the per-step one (δ = Δ/n_s on p = n_s·m_b of the steps, m_b = λT_d(m)/(1 − η) births per step), and the long-
+    # range k-feedback (decode-step elasticity g of T_d at m, A_L = 1/(1 − g)) adds window variance at w = 1.  Token-
+    # time micro-model (sd248/br.py): w 0.87 vs formula 0.84–0.87; DES A λ52 per-step w ≈ 0.88 「推导」.  Below 0 only:
+    # in a backlog births are paced by deaths (uniform age; d, β unchanged).  a(k) = w + (1 − w)·m/k.
+    w_age = 1.0
+    if _AGE_DEATHS and m_k is not None and m_k >= 1:
+        n_s = max(1.0, n_B)
+        dm = cp.run("decode", max(1, int(round(m_k))))
+        dl = cp.run("decode", max(1, int(round(m_k * 0.9))))
+        dh = cp.run("decode", max(1, int(round(m_k * 1.1))))
+        g_d = (math.log(dh.step / dl.step) / math.log(max(1.0, round(m_k * 1.1)) / max(1.0, round(m_k * 0.9)))
+               if dl.step > 0 and round(m_k * 1.1) > round(m_k * 0.9) else 0.0)
+        Delta = max(0.0, tau - n_B * tdB)
+        eta = lam * Delta
+        if 0 < eta < 1:
+            m_b = lam * dm.step / (1 - eta)
+            p_c = min(1.0, n_s * m_b)
+            dlt = Delta / n_s
+            I0 = 1 + lam * lam * p_c * (1 - p_c) * dlt * dlt / max(1e-12, m_b)
+            Is = 1 / (1 - eta) ** 2
+            w_age = min(1.0, max(0.0, 1 - (1 - min(0.99, max(0.0, g_d))) * max(0.0, Is - I0) / (2 * Is)))
+    a_of = (lambda k_: 1.0) if w_age >= 1.0 else (lambda k_: w_age + (1 - w_age) * m_k / max(1.0, k_))
+    kb0 = kb
+    mu_prev = _FLOOR_W * (lam * (d_slot - n_B * tdB * kb0 * a_of(kb0) / B) - (1 - rho_p) * c_of(B) * a_of(B))
     for i in range(1, nf + 1):
         f = i * df
-        mu = _FLOOR_W * (lam * (beta + n_B * tdB * f / B) - (1 - rho_p) * c_of(B - f))
+        kc = max(0.0, kb0 - f)
+        mu = _FLOOR_W * (lam * (d_slot - n_B * tdB * kc * a_of(kc) / B) - (1 - rho_p) * c_of(B - f) * a_of(B - f))
         phi += -(mu_prev + mu) * df * d_slot / sig2b   # going down: Φ(u − du) = Φ(u) − 2μ̄·du/σ²; u = −d·f
         mu_prev = mu
         cur = math.exp(min(phi, 700.0))
@@ -1169,9 +1203,24 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     p_sat = z_pos / (z_pos + z_neg)
     lat = _wsum([w for w, _ in lats_w], [x for _, x in lats_w])
     zt = z_pos + z_neg
-    return {"p_sat": p_sat, "theta": theta, "base": lat + beta, "beta": beta, "rho_adm": rp,
+    # 0.248 queue-ful entry (MODEL §195; DES sd248/probe14 A λ52): U > 0 means q ≥ 1 prompts wait with the slots
+    # full, and U = (τ + β)·q − d·f is the queued work only.  (i) U enters the queue-ful state by a whole S̄ = τ + β
+    # (q: 0 → 1 at f = 0 — U is a lattice, not a creep through 0+), so the diffusion's U | U > 0 ~ Exp(θ) is U − S̄
+    # (DES P(U > 0.3 / 0.5 / 0.8 | U > 0) 0.520 / 0.297 / 0.122 vs S̄ + Exp: 0.526 / 0.301 / 0.130; Exp alone 0.433 /
+    # 0.248 / 0.107).  (ii) The admission in service is not in U: an arrival waits its residual E[S²]/(2S̄) (M/G/1
+    # S_e) before the q queued ones (DES wait − U 55–73 ms at U < 0.2 s vs β + S_e 30.5 + 35 = 65.5).  So the queue-
+    # ful TTFT base is lat + β + S̄ + E[S²]/(2S̄) (A λ52: 79.5 → 184.5 ms) 「推导」.
+    # Slot-bound only: the lattice entry needs f = 0 (a free slot would admit the prompt at the next boundary).  When
+    # the admission's own chunk iterations free its slot (β → 0: E 16k prompts, n_B 8.2, β 0.1 ms of d 22 ms) the
+    # queue-ful state is the budget FCFS queue at any f, which the M/G/1 diffusion (θ from λE[S²], P–K) and T₀
+    # already price — adding S̄ + S_e there double-counts (test_core_242 E vllm λ17.37: 1346 vs DES 1158; off: 1189).
+    # Share of a slot's credit d that must come from decode-only time = β/d (A 0.89, D 0.80, E 0.004) 「近似」.
+    s_bar = tau + beta
+    slot_bound = min(1.0, max(0.0, beta / d_slot)) if d_slot > 0 else 0.0
+    base = lat + beta + ((slot_bound * (s_bar + e_s2 / (2 * s_bar))) if _SAT_ENTRY else 0.0)
+    return {"p_sat": p_sat, "theta": theta, "base": base, "beta": beta, "rho_adm": rp,
             "tau": tau, "sigma2": sig2, "d": d_slot, "n_B": n_B, "k_bar": kb,
-            "free_cdf": tuple((round(f_, 3), (z_pos + z_) / zt) for f_, z_ in zf), "mu_f": tuple(mug), "sigma2b": sig2b}
+            "free_cdf": tuple((round(f_, 3), (z_pos + z_) / zt) for f_, z_ in zf), "mu_f": tuple(mug), "sigma2b": sig2b, "w_age": w_age, "slot_bound": slot_bound}
 
 
 def _sat_mix_q(tq: dict, p: float, base: float, theta: float) -> dict:
@@ -1301,7 +1350,8 @@ def _coloc_prefill_first_base(ctx: dict, lam: float) -> dict:
     if ctx.get("_slot_prefill"):
         # 0.244: SGLang counts prefilling requests in max_running_requests (_slot_backlog) — the backlog blocks
         slot_adm = _slot_backlog(cp, lam_c, rho, lats_w, ws_x, taus_x if pre["b"] <= 1 else None, out,
-                                 ctx.get("out_cs2", 0.0), B)
+                                 ctx.get("out_cs2", 0.0), B,
+                                 m_k=sum(k_ * p_ for k_, p_ in enumerate(dec.get("run_w") or ())) or None)
         if slot_adm is None:
             return {**res, "stable": False, "why": "满批阻塞下准入服务 τ + β 饱和（ρ′ ≥ 1）"}
         ttft = _sat_mix_q(ttft, slot_adm["p_sat"], slot_adm["base"], slot_adm["theta"])
@@ -1888,12 +1938,12 @@ def _queue_weights(a: float, jn: int, xmax: int = 400):
     for _ in range(1, jn):
         wj.append(sum(gx * (x - 1 + a / 2) for x, gx in enumerate(g) if x >= 1))
         ng = [0.0] * min(xmax + 1, len(g) + len(pois))
+        nn = len(ng)
         for x, gx in enumerate(g):
-            if x >= 1 and gx > 1e-300:
-                for i, pv in enumerate(pois):
-                    y = x - 1 + i
-                    if y < len(ng):
-                        ng[y] += gx * pv
+            if x >= 1 and gx > 1e-300:   # 0.248: slice update (same products, same order per y — bit-identical)
+                s0 = x - 1
+                e0 = min(nn, s0 + len(pois))
+                ng[s0:e0] = [u + gx * pv for u, pv in zip(ng[s0:e0], pois)]
         g = ng
     tot = a * a / (2 * (1 - a)) + a / 2          # M/D/1: E[(X − 1)⁺] + a/2 = L_q + ρ/2
     return wj, max(0.0, tot - sum(wj)), tot
@@ -2406,7 +2456,7 @@ def _coloc_chunked_base(ctx: dict, lam: float) -> dict:
         # (D: 1 + the two-prompt share ≈ 1.26, DES k 62.7; A DES k 62.8)
         n_fl = min(float(B - 1), max(1.0, lat_s / tau_s)) if tau_s > 0 else 1.0
         bkl = _slot_backlog(cp, lam_c, rho_c, [(1.0, latB)], ws, None, out, ctx.get("out_cs2", 0.0), B,
-                            tau=tau_s, n_B=nB_s, k_bar=(B - n_fl) if _KBAR else None)
+                            tau=tau_s, n_B=nB_s, k_bar=(B - n_fl) if _KBAR else None, m_k=k0_c)
         if bkl is None:
             return {**res, "why": "满批阻塞下准入服务 τ + β 饱和（ρ′ ≥ 1）"}
         if bkl["p_sat"] > 0:

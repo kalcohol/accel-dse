@@ -98,7 +98,9 @@
         "deepseek-4-1-flash",
         "series/deepseek-v4.1-flash",
         "deepseek-4.1-flash",
-        "ds-v4.1-flash"
+        "ds-v4.1-flash",
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        "deepseek-v4.1-flash-1017"
       ],
       "metadata": "hf:deepseek-ai/DeepSeek-V4.1-Flash | source:https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/raw/main/config.json | status:found | arch:MoE+MLA multimodal (DeepseekV41) | claimed:552B backbone; 8B prefill / 16B decode active | extras:engram+DSA/indexer | FLOPs/BW uncalibrated (DSE accounting only)",
       "hf_id": "deepseek-ai/DeepSeek-V4.1-Flash",
@@ -128,7 +130,19 @@
         "weight_bits": 16,
         "act_bits": 16,
         "kv_bits": 16
-      }
+      },
+      "releases": [
+        {
+          "hf_id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+          "source": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/raw/main/config.json",
+          "released": "2026-10-17",
+          "hf_sha": "1bae0e10",
+          "license": "MIT",
+          "dtype": "fp8 + fp4 experts",
+          "bytes_total": 510286023000,
+          "note": "config identical to V4.1-Flash; RLSF post-train update (sorted config.json diff empty; safetensors index total_size 510286023000 = stored bytes_total \u2192 no separate release file)"
+        }
+      ]
     },
     {
       "id": "deepseek-v4-pro",

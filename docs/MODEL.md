@@ -5707,3 +5707,57 @@ Extends §184 (0.237) from the SGLang prefill-only path to the fused paths (vLLM
 **Hook.** `_FLOOR_W` scales μ below 0 (death credit w·uniform + (1 − w)·λ). w = 0.65 fixes p_sat (0.140) but not p90 (219 ms), so it is not shipped.
 
 **Next.** Derive the conditional death rate from the k-process correlation time vs the life, and σ²(f). Then derive the near-full T₀ tail. Validate against the λ 50–55 tables (CHANGELOG 0.247).
+
+## §195 The floor below U = 0, derived: age-structured deaths and the queue-ful entry (0.248)
+
+**1. Age-structured death credit 「推导」** (`_AGE_DEATHS`, default on; below 0 only).
+- In token time (iterations), births are Poisson(λ·T_step) and a request dies `out` steps after its birth.
+- If the step time depended only on k (a mean clock), deaths per step would be exactly k/n (uniform age, w = 1). The long-range k-feedback keeps the ages uniform (micro-model `sd248/br.py`, mean clock: w = 1.00).
+- The real clock is arrival-driven. An admission adds Δ of slow-iteration wall time: fused engines Δ = τ − n_B·T_d(B); SGLang non-mixed Δ = τ, the prefill pause. More births land in that time, so births form short clusters with branching ratio η = λΔ (a Hawkes process, which is not time-reversible). The dying (oldest) member of the running window has cluster neighbours on one side only, so it covaries less with the count. Per-step deaths given k therefore regress toward the mean:
+  - w = 1 − (1 − g)(I_s − I₀)/(2 I_s)
+  - I_s = 1/(1 − η)² is the cluster Fano factor.
+  - I₀ = 1 + λ²p(1 − p)δ²/m_b is the per-step Fano factor, with δ = Δ/n_s on p = n_s·m_b of the steps and m_b = λT_d(m)/(1 − η) births per step.
+  - g is the elasticity of T_d(k) at the mean batch m. The long-range feedback amplifies the window variance by 1/(1 − g) at w = 1; the cluster gain 1/(1 − η) cancels against λnT_d/m = 1 − η.
+- Checks against the micro-model:
+  - Constant T_d/T_c: I_s 2.97 vs 2.91, I₀ 1.185 vs 1.19, w 0.694 vs 0.699.
+  - Full micro-model: w 0.87 vs formula 0.84–0.87; I/I_s 1.91 vs 1/(1 − g) 1.92.
+  - DES A λ52: per-step w ≈ 0.88; the model gives 0.867.
+- Below 0 the death credit becomes c(k)·a(k) with a(k) = w + (1 − w)·m/k, and the chunk-iteration credit n_B·T_d·(k̄ − f)/B is scaled the same way. Above 0 nothing changes, because in a backlog births are paced by deaths and the ages stay uniform. Model w is 0.84–0.88 for A/D/G.
+- The effect is small: A λ52 p_sat 0.114 → 0.124 (DES 0.155). At high λ, where m → B, the floor gets slightly deeper. The 0.247 value w ≈ 0.65 was a misreading of the per-second blend.
+
+**2. Queue-ful entry law 「推导; 来源: DES sd248/probe14」** (`_SAT_ENTRY`, default on). This replaces the "T₀ near-full tail" reading of 0.247.
+- The 0.247 probe over-counted free slots by the prompts in the in-flight iteration. The DES removes them from `curs` before the iteration ends, a mean of 0.67 prompts. With true f:
+  - U ≤ 0 arrivals have TTFT p90 115 ms and p99 218 ms, so the T₀ branch has no tail.
+  - The 0.2–0.4 s band is U ∈ (0, 0.3] s.
+  - At U > 0 the slots are full (f ≈ 0), so U = S̄·q is a lattice.
+- (i) The system enters the queue-ful state with a whole jump S̄ = τ + β (q goes 0 → 1 at f = 0), not by creeping through 0+. So the diffusion's Exp(θ) is the law of U − S̄. DES P(U > 0.3 / 0.5 / 0.8 | U > 0) is 0.520 / 0.297 / 0.122; S̄ + Exp(2.79) gives 0.526 / 0.301 / 0.130, while Exp alone gives 0.433 / 0.248 / 0.107.
+- (ii) U counts only queued work. The admission in service is not in U, so an arrival first waits its residual E[S²]/(2S̄) (the M/G/1 S_e). DES wait − U is 43–73 ms at U < 0.2 s, against β + S_e = 30.5 + 35 = 65.5 ms.
+- The U > 0 base is therefore lat + β + S̄ + E[S²]/(2S̄) when the entry is slot-bound (A λ52: 79.5 → 184.5 ms). TTFT | U > 0 for A λ52:
+
+  | | p50 (ms) | p90 (ms) |
+  |---|---|---|
+  | DES | 434 | 968 |
+  | model, new base | 433 | 1009 |
+  | model, old base | 328 | 905 |
+
+- Not modelled: at U > 0.8 s the DES per-prompt cost is 0.89·S̄.
+- *Slot-bound share 「近似」.* The lattice entry needs f = 0: with a free slot, a packed prompt is admitted at the next boundary. When the admission's own chunk iterations free its slot (β → 0), the queue-ful state is the budget FCFS queue at any f, and the M/G/1 diffusion (θ from λE[S²], P–K) and T₀ already price it.
+  - In that case S̄ + S_e double-counts. E vllm (16k prompts, n_B 8.2, β 0.1 ms of d 22 ms) gave p90 1346 ms at λ17.37 vs DES 1158.
+  - The entry term is weighted by β/d, the share of a slot's credit that must come from decode-only time: A 0.89, D ≈ 0.8, E 0.004. The shipped base is lat + β + (β/d)(S̄ + S_e); A λ52 gives 173 ms.
+  - E p90 at λ17.37 / 18 / 18.6 / 19.32: 1204 / 1481 / 1879 / 2736 ms vs DES 1158 / 1436 / 1883 / 2748.
+
+**3. σ²(f) below 0 (open).**
+- The true-f Kramers–Moyal estimate (dt 77 ms) is σ² 0.13 near full falling to 0.03 deep, with drift −0.005 at f 0 and −0.04 at f 4–16, crossing 0 at f ≈ 21.
+- Arrival jumps (d, or S while the budget is busy) plus deaths at the actual rate with cluster Fano I_s give 0.088 near full and 0.052 deep, which is the wrong shape.
+- Plugging the DES KM μ(f), σ²(f) directly into the floor integral gives p_sat 0.208 vs DES 0.155. The coefficients at dt = 77 ms are inflated by sub-dt budget-queue transients, so they are not the diffusion's coefficients either.
+- A coarse-grained derivation is needed. Residual at A λ52: p_sat 0.124 vs 0.155.
+
+**Validation (p90 ms; DES `sd247/lr_*`):**
+
+| case | λ | DES | 0.247 | 0.248 |
+|---|---|---|---|---|
+| A | 50 / 52 / 53.5 / 54.3 | 143 / 341 / 734 / 1035 | 124 / 181 / 545 / 937 | 133 / 258 / 633 / 1003 |
+| D | 50 / 52 / 53.5 / 54.3 | 146 / 283 / 660 / 952 | 136 / 165 / 385 / 753 | 143 / 201 / 489 / 835 |
+| G | 44.5 / 46.5 / 47.5 / 48.3 | 182 / 457 / 797 / 1179 | 165 / 260 / 560 / 1034 | 177 / 349 / 662 / 1106 |
+
+The crossings (0.246 long-run table) moved from mean |err| 0.27 % to 0.15 % (`sd248/xr_sb.txt`). E mixed went from +0.77 % to +0.14 %.

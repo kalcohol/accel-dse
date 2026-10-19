@@ -60,5 +60,7 @@ def test_fused_ttft_p90_vs_des():
             new = pdqueue._coloc_chunked({**ctx, "slo": (2.0, 0.05)}, lam)["ttft"]["p90"] * 1e3
             if prof == "vllm":
                 assert abs(new - des) / des < 0.06, (prof, lam, new, des)
-            else:   # sglang_mixed: the iid slot-block lump stays optimistic (≈ −8 … −14 %)
-                assert OLD_TTFT90[prof][lam] < new < des, (prof, lam, new, des)
+            else:   # sglang_mixed: the iid slot-block lump was optimistic (0.247: −4 / −9 / −12 / −11 %); 0.248's
+                # queue-ful entry base (slot-bound share β/d ≈ 0.5 here) gives 1264 / 1542 / 1982 / 3150 vs DES
+                # 1219 / 1603 / 2163 / 3353 (+3.7 / −3.8 / −8.4 / −6.1 %; mean |err| 9.2 → 5.5 %) — band ±10 %
+                assert OLD_TTFT90[prof][lam] < new and abs(new - des) / des < 0.10, (prof, lam, new, des)
