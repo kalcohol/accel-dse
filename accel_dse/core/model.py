@@ -592,7 +592,7 @@ def _gqa(h: int, H: int, KV: int, hd: int, *, vd: int | None = None, out_gate: b
     return lin, AttnCore("gqa", n_q=H, n_kv=KV, qk_dim=hd, v_dim=vd, window=window)
 
 
-_LING = ("bailing_hybrid", "bailing_moe_v3_vl")    # 0.145: Ling-3.1 (text) / Ling-3.0-VL (text_config flattened)
+_LING = ("bailing_hybrid", "bailing_moe_v3_vl", "ming_v3_asr")    # 0.145: Ling-3.1 (text) / Ling-3.0-VL (text_config flattened); 0.268: Ming-3.0-asr-tiny (BailingMoeV3 decoder)
 
 
 def _mla(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore]:
@@ -1647,7 +1647,7 @@ def _builder(c: dict):
         return _build_dsv4_ref, "DeepSeek-V4 (CSA/MQA-512)"
     if mt.startswith("deepseek_v4"):
         return _build_dsv4, "DeepSeek-V4 (CSA/MQA-512)"
-    if mt in ("kimi_linear", "bailing_hybrid", "bailing_moe_v3_vl", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
+    if mt in ("kimi_linear", "bailing_hybrid", "bailing_moe_v3_vl", "ming_v3_asr", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
               "qwen4_exp", "qwen4_exp_text", "minimax_text_01", "minimax_m1", "minimax") or mt.startswith("glm5_next"):
         return _build_hybrid, "混合注意力（linear + full）"
     if c.get("kv_lora_rank"):

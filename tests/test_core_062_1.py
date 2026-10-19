@@ -28,9 +28,10 @@ def test_release_count_and_param_error():
     # 0.253: + Dory1.0-4B BF16 / MXFP8 / NVFP4, MAI-Gym-9B (llm)  125 → 129, llm 101 → 105
     # 0.254: + Beam-1.0-501B-A23B BF16 / FP8 / NVFP4 (llm)  129 → 132, llm 105 → 108
     # 0.257: + MOSS-Image-Base / -SFT (gen)  132 → 134, llm 108
-    assert len(files) == 134 and doms.count("llm") == 108
+    # 0.268: + Ming-3.0-asr-tiny (llm release, listing domain asr)  134 → 135, llm 109
+    assert len(files) == 135 and doms.count("llm") == 109
     listed = {x["id"]: x for x in list_models()}
-    assert len(listed) + len(unlisted_models()) == 140   # 0.257: + moss-image-base, moss-image-sft (merged); 0.254: + 3 Beam + 2 DFlash2 pairs; 0.253: + 4; 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7; 0.252: + qwen3-8b-dspine
+    assert len(listed) + len(unlisted_models()) == 141   # 0.268: + ming-3.0-asr-tiny; 0.257: + moss-image-base, moss-image-sft (merged); 0.254: + 3 Beam + 2 DFlash2 pairs; 0.253: + 4; 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7; 0.252: + qwen3-8b-dspine
     assert all(abs(x["param_err"]) <= 0.005 for x in listed.values())
     assert all(abs(x["param_err"]) < 1e-5 for x in listed.values() if get_model(x["id"]).domain in ("gen", "protein", "genomics"))
 

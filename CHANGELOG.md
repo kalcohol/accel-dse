@@ -6,6 +6,19 @@
 
 
 
+## [0.268.0]
+
+### Deprecated — √C SLC access scaling (MODEL §213.1)
+- `energy.slc_access_ref_mib` (0.266 √C) is deprecated: it extrapolates Horowitz's 8 KB–1 MB points to GiB SLCs and flips the J-optimal SLC to 0 GiB (§212.2). Behaviour unchanged for back-compat; `slc_access` now carries `deprecated: true` + `note` (`energy.SLC_SQRTC_DEPRECATION`), `insight.slc_energy_report` adds the note, UI field tagged 「已弃用」 and the SLC KPI line says so. Use `pJ_bit_mm_onchip` (distance model, §212).
+
+### Added — Ming-3.0-asr-tiny (MODEL §213.2)
+- `inclusionAI/Ming-3.0-asr-tiny` (2026-10-14, bf16): `ming_v3_asr` decoder = BailingMoeV3 (24 layers, groups of 4: 3 KDA + 1 MLA, 128 experts top-8 + 1 shared, first layer dense, MTP 1) via the Ling-3.x path — 7,893,392,800 + MTP 316,604,800 params, exact vs the safetensors header.
+- Whisper audio encoder (`AudioSpec.kind = "whisper"`, MingAudioSpec / modeling_whisper_encoder.py 「来源」): 128-mel 16 kHz, 32 × d1280 / 20 heads, 3000-frame chunks each encoded separately, projector Conv1d k3 s2 + Linear → 25 tokens/s; 647,149,568 run params + 8,653,824 stored-only `linear_proj` (ignored on load) = released 655,803,392. Costed via `serving.audio_s` (≈ 2.29 TFLOP per 30 s chunk).
+- Listing domain `asr`（语音识别）for audio-only releases; audio-only encoders (VisionSpec family `audio`) ignore `serving.images` with a warning.
+
+### Freshness
+- Sweep since 10-20: nothing new. inclusionAI / allenai / hpcai-tech rechecked by API: Ming-3.0-asr-tiny added (above); Ling-3.1-flash was already in the catalog (0.145); allenai HiRO-ACEv2 (10-12) is a climate emulator, out of scope; hpcai-tech nothing since 2025-03.
+
 ## [0.267.0]
 
 ### Added — distance-based SLC wire energy (MODEL §212.1)

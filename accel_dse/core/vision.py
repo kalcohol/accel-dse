@@ -156,17 +156,46 @@ class AudioSpec:
     mlp: float
     out: int
     params: int
+    # 0.268 Ming-3.0-asr-tiny (kind "whisper"; defaults keep Muse Spark unchanged): 16 kHz log-mel (hop = patches[0]
+    # = 160 samples, n_mels bins) → Whisper encoder [conv1 k3 s1 + GELU, conv2 k3 s2 + GELU, sinusoid pos, depths[0] ×
+    # pre-LN block (heads, bidirectional MHA, GELU MLP mlp·d), ln_post] → projector [Conv1d (k, s, p) per ``ds`` + GELU,
+    # Linear out → out].  The feature extractor never pads to 30 s; mel frames are split into ``chunk``-frame chunks
+    # and each chunk runs its own encoder pass (attention within a chunk) — modeling_ming_v3_asr_encoder.py
+    # encode_audio_clips / audio_spec.py MingAudioSpec.token_count 「来源」
+    kind: str = "muse"
+    heads: int = 0
+    n_mels: int = 0
+    chunk: int = 0
+    ds: tuple[tuple[int, int, int], ...] = ()
 
     @property
     def samples_per_token(self) -> int:
         return math.prod(self.patches)
 
+    def chunks(self, seconds: float) -> tuple[int, ...]:
+        """0.268 whisper: mel frames per encoder pass (torch.stft center=True drops the last frame → ⌊samples / hop⌋)."""
+        mel = max(1, round(seconds * self.rate) // self.patches[0])
+        full, rem = divmod(mel, self.chunk)
+        return (self.chunk,) * full + ((rem,) if rem else ())
+
+    def chunk_len(self, n: int) -> tuple[int, int]:
+        """(encoder positions after conv2, projector tokens) of an n-frame chunk (MingAudioSpec.embedding_length)."""
+        t = (n + 1) // 2
+        o = t
+        for k, st, pd in self.ds:
+            o = (o + 2 * pd - k) // st + 1
+        return t, o
+
     def tokens(self, seconds: float) -> int:
+        if self.kind == "whisper":
+            return sum(self.chunk_len(n)[1] for n in self.chunks(seconds))
         return math.ceil(round(seconds * self.rate) / self.samples_per_token)
 
 
 def audio_spec(cfg: dict) -> AudioSpec | None:
     ac = cfg.get("audio_config") or {}
+    if cfg.get("model_type") == "ming_v3_asr" and ac.get("n_audio_state"):
+        return _whisper_audio_spec(cfg, ac)
     if ac.get("model_type") != "muse_spark_audio":
         return None
     pt, dm, dp, k, r = tuple(ac["patch_sizes"]), tuple(ac["hidden_sizes"]), tuple(ac["depths"]), ac["conv_kernel_size"], ac["mlp_ratio"]
@@ -181,9 +210,65 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
     return AudioSpec(fe.get("sampling_rate", 24000), pt, dm, dp, k, r, out, params)
 
 
+def _whisper_audio_spec(cfg: dict, ac: dict) -> AudioSpec:
+    """0.268 Ming-3.0-asr-tiny audio tower + linear_proj_audio (released header: conv1 [1280, 128, 3], conv2
+    [1280, 1280, 3], positional_embedding [3000, 1280] stored, key without bias, projector conv [1536, 1280, 3] +
+    Linear [1536, 1536]).  The checkpoint's second projector ``linear_proj`` (4096 → 1536 → 1536) is ignored on load
+    (_keys_to_ignore_on_load_unexpected) → storage only (``VisionSpec.extra``)."""
+    d, L, nh, mel = ac["n_audio_state"], ac["n_audio_layer"], ac["n_audio_head"], ac.get("n_mels", 128)
+    out = (cfg.get("text_config") or {}).get("hidden_size") or cfg.get("hidden_size")
+    ks = list(ac.get("downsampler_kernel_size_list") or [3])
+    ss = list(ac.get("downsampler_stride_list") or [2])
+    ps = list(ac.get("downsampler_padding_list") or [k // 2 for k in ks])
+    blk = 4 * d * d + 3 * d + 2 * d + _lin(d, 4 * d) + _lin(4 * d, d) + 2 * d
+    params = _lin(3 * mel, d) + _lin(3 * d, d) + ac.get("n_audio_ctx", 3000) * d + L * blk + 2 * d
+    din = d
+    for k in ks:
+        params += _lin(k * din, out)
+        din = out
+    params += _lin(out, out)
+    return AudioSpec(16000, (160,), (d,), (L,), 3, 4.0, out, params, kind="whisper", heads=nh, n_mels=mel,
+                     chunk=ac.get("chunk_frames", 3000), ds=tuple(zip(ks, ss, ps)))
+
+
+def _whisper_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
+    d, dh = a.dims[0], a.dims[0] // a.heads
+    ops: list[Op] = []
+
+    def gemm(name: str, m: int, k: int, n: int, li: int = 0) -> Op:
+        return Op(name, "gemm", li, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=16.0, w_fmt="bf16", a_fmt=af,
+                  act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+
+    groups: dict[int, int] = {}
+    for n in a.chunks(seconds):
+        groups[n] = groups.get(n, 0) + clips
+    for gi, (n, cnt) in enumerate(sorted(groups.items(), reverse=True)):
+        t, o = a.chunk_len(n)
+        p = f"aud.c{gi}." if gi else "aud."
+        rows, ch = cnt * t, cnt * a.heads
+        ops += [gemm(p + "conv1", cnt * n, 3 * a.n_mels, d), gemm(p + "conv2", rows, 3 * d, d)]
+        for li in range(a.depths[0]):
+            ops += [gemm(f"{p}{li}.qkv", rows, d, 3 * d, li), gemm(f"{p}{li}.o", rows, d, d, li),
+                    gemm(f"{p}{li}.fc1", rows, d, int(a.mlp * d), li), gemm(f"{p}{li}.fc2", rows, int(a.mlp * d), d, li),
+                    Op(f"{p}{li}.qk", "attn", li, m=t, k=dh, n=t, count=ch, causal=1.0, act_bytes=ch * t * dh * ab,
+                       stream=True, orient=True),
+                    Op(f"{p}{li}.pv", "attn", li, m=t, k=t, n=dh, count=ch, causal=1.0, act_bytes=ch * t * dh * ab,
+                       orient=True),
+                    Op(f"{p}{li}.softmax", "vector", li, vec=ch * t * t * 5.0)]
+        din, m_ = d, rows
+        for i, (k, st, pd) in enumerate(a.ds):
+            m_ = cnt * o if i == len(a.ds) - 1 else m_      # single-stage downsampler in the release
+            ops.append(gemm(f"{p}proj.conv{i}", m_, k * din, a.out, a.depths[0]))
+            din = a.out
+        ops.append(gemm(f"{p}proj.linear", cnt * o, a.out, a.out, a.depths[0]))
+    return ops
+
+
 def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> list[Op]:
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
+    if a.kind == "whisper":
+        return _whisper_ops(a, seconds, clips, ab, af)
     t = a.tokens(seconds) * a.samples_per_token * clips       # padded samples (all clips)
     ops: list[Op] = []
     din = 1
@@ -212,7 +297,15 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
     """VisionSpec from the release's full config (``vision_config`` + text hidden size), or None."""
     vc = cfg.get("vision_config")
     hf_id = hf_id.split("+", 1)[0]              # 0.175: "<target>+<draft repo>" entries use the target's processor
-    if not vc or hf_id not in _PREPROC:
+    if not vc:
+        au = audio_spec(cfg)
+        if au is not None and au.kind == "whisper":
+            # 0.268 audio-only release (Ming-3.0-asr-tiny): an encoder container with no image path (family "audio":
+            # image_grid_of → None, serving.images ignored with a warning); costed when serving.audio_s > 0
+            return VisionSpec("audio", "Whisper 音频编码器 + 卷积下采样投影", 0, 1, au.dims[0], int(au.mlp * au.dims[0]),
+                              au.depths[0], au.heads, au.dims[0], False, 1, (), au.params, (), audio=au)
+        return None
+    if hf_id not in _PREPROC:
         return None
     pre = dict(_PREPROC[hf_id])
     text_h = (cfg.get("text_config") or {}).get("hidden_size") or cfg.get("hidden_size")
@@ -500,6 +593,8 @@ class ImageGrid:
 
 
 def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
+    if v.family == "audio":                       # 0.268 audio-only encoder: no image path
+        return ImageGrid(0, 0, 0, 0, (0, 0))
     pr = v.rz
     if v.family == "qwen" and "muse_tok" in pr:
         # 0.255 MuseSparkProcessor.replace_image_token: <|image_start|> + merged <|patch|> tokens + <|image_end|>
@@ -659,7 +754,7 @@ def vision_act_peak(v: VisionSpec, g: ImageGrid, images: int, af: str = "bf16") 
 # ------------------------------------------------------------------ scenario expansion
 def image_grid_of(m, sv) -> ImageGrid | None:
     v = getattr(m, "vision", None)
-    return image_grid(v, sv.image_w, sv.image_h) if v is not None and sv.images else None
+    return image_grid(v, sv.image_w, sv.image_h) if v is not None and v.family != "audio" and sv.images else None
 
 
 def expand_images(scn, m):

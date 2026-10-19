@@ -6728,3 +6728,17 @@ Distance keeps 32 GiB J-optimal at 25 °C with the saving cut from −35 % to �
 ### §212.3 Freshness
 `freshness_sweep.py 2026-10-20`: nothing new; errored orgs (inclusionAI, allenai, hpcai-tech) rechecked by API — newest releases pre-window (inclusionAI Ling-3.1-flash 10-13, Ming-3.0-asr-tiny 10-14; allenai HiRO-ACEv2 10-12).
 
+## §213 √C SLC deprecation; Ming-3.0-asr-tiny (0.268)
+
+### §213.1 √C `slc_access_ref_mib` deprecated
+§212.2 showed the √C rule (Horowitz 8 KB / 32 KB / 1 MB, §211) reverses the SLC-size conclusion when extrapolated three decades up to GiB, while the distance model (§212, Keckler 2011 wire energy × mean Manhattan distance) keeps it. Retired softly: behaviour unchanged (configs and fingerprints keep working), but `slc_access` carries `deprecated: true` and `note` = `energy.SLC_SQRTC_DEPRECATION`, the SLC insight report lists the note, and the UI field / KPI are tagged 「已弃用」. Re-anchoring was rejected: any anchor ≥ 1 MiB still applies a capacity law outside its data range; the distance model is the mechanism the √C rule was standing in for.
+
+### §213.2 Ming-3.0-asr-tiny
+- **Decoder** 「来源」 config + header: `text_config` of the BailingMoeV3 family (as Ling-3.x): h 1536, 24 layers, `layer_group_size` 4 (3 KDA, full-rank `f_proj` (`no_kda_lora`), short conv 4; 1 MLA q_lora 256 / kv_lora 512 / rope 64 / nope 128 / v 128, head-wise output gate), 128 experts top-8 (d 512) + 1 shared (512), first layer dense (4608), vocab 157,184, MTP 1. Routed via `_LING`; params 7,893,392,800 (+ MTP 316,604,800) = header exactly.
+- **Audio encoder** 「来源」 `modeling_whisper_encoder.py`, `modeling_ming_v3_asr_encoder.py`, `audio_spec.py`: log-mel 128 bins, 16 kHz, hop 160 (torch.stft center, last frame dropped → ⌊samples/160⌋ frames); clips are never padded to 30 s; frames split into 3000-frame chunks, each encoded separately (attention within a chunk). conv1 (k3) + conv2 (k3 s2) + GELU, sinusoid positions (stored buffer 3000 × 1280), 32 pre-LN blocks (d 1280, 20 heads, bidirectional, GELU MLP 5120, key without bias), ln_post; projector Conv1d 1280→1536 k3 s2 p1 + GELU + Linear 1536→1536. Tokens per chunk n: t = ⌈n/2⌉, o = ⌊(t − 1)/2⌋ + 1 → 25 tokens/s (30 s → 750; 30.5 s → 763). Run params 647,149,568; `linear_proj` (4096 → 1536 → 1536, listed in `_keys_to_ignore_on_load_unexpected`) 8,653,824 stored only; total 655,803,392 = `params_vision` exactly.
+- **Cost** per 30 s chunk: 1.918 TFLOP GEMM + 0.369 TFLOP attention = 2.286 TFLOP (hand count = model). Placement as the Muse Spark audio encoder (§175: data-parallel on the first stage, before prefill). B200 bf16, 1 card: 30 s clip ≈ 1.8 ms encoder; TTFT (64-token prompt) 2.8 → 5.4 ms with the 750 audio tokens.
+- **Limits.** Listing domain `asr` (audio_config without vision_config). The encoder rides in a `VisionSpec` of family `audio` (no image path; `serving.images` ignored with a warning). Encoder activation peak is not added to stage-0 memory (same as Muse audio). The decoder's ASR output format/prompt template is not modelled (prompt = user-set text tokens + audio tokens).
+
+### §213.3 Freshness
+`freshness_sweep.py 2026-10-20`: nothing new, no errors. inclusionAI rechecked: Ming-3.0-asr-tiny (10-14) added; Ling-3.1-flash (10-13) was already in the catalog (§217 listing it as a gap was wrong). allenai newest HiRO-ACEv2 (10-12, climate emulator — out of scope); hpcai-tech newest 2025-03.
+

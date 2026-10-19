@@ -117,14 +117,14 @@ def test_catalog_listing_grouping_coverage_and_merges():
     for m in ms:
         assert m["coverage"] in ("full", "partial", "proxy")
         assert (m["coverage"] == "full") == (not m["coverage_reasons"]), m["id"]
-        assert (m["domain"] == "vlm") == (m["vision_params_B"] > 0), m["id"]
+        assert (m["domain"] in ("vlm", "asr")) == (m["vision_params_B"] > 0), m["id"]   # 0.268: asr = audio-only encoder
         if m["provider"] != (prev and prev["provider"]):
             assert m["provider"] not in seen, m["provider"]      # each vendor group is contiguous
             seen.append(m["provider"])
         elif prev["family"] == m["family"]:
             assert m["params_B"] <= prev["params_B"] + 1e-9, (prev["id"], m["id"])
         prev = m
-    assert {"llm", "vlm", "gen", "protein", "genomics"} == {m["domain"] for m in ms}
+    assert {"llm", "vlm", "asr", "gen", "protein", "genomics"} == {m["domain"] for m in ms}   # 0.268: + asr
     for v in ("alibaba", "deepseek", "kimi", "zhipu"):                # text + VLM releases share one vendor group
         assert {"llm", "vlm"} <= {m["domain"] for m in ms if m["provider"] == v}, v
     listed = {m["id"] for m in ms}

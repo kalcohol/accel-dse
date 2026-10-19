@@ -113,3 +113,5 @@ reflection/Beam-1.0-501B-A23B-NVFP4
 # 0.257 freshness sweep: OpenMOSS-Team MOSS-Image (public diffusers repo; SFT merged into Base)
 OpenMOSS-Team/MOSS-Image-Base:transformer
 OpenMOSS-Team/MOSS-Image-SFT:transformer
+# 0.268 freshness sweep: inclusionAI Ming-3.0-asr-tiny (BailingMoeV3 decoder + Whisper encoder)
+inclusionAI/Ming-3.0-asr-tiny

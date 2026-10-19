@@ -114,6 +114,8 @@ EXTRA_TAIL = [
     ("beam-1.0-501b-a23b-nvfp4-dflash2", "reflection/Beam-1.0-501B-A23B-NVFP4+reflection/Beam-1.0-501B-A23B-DFlash2"),
     # 0.254: closes the 0.253 deferral (§200.4) — the conv / selector code is public (vLLM qwen3_dflash2.py)
     ("muse-spark-open-nvfp4-dflash2", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4+nvidia/Muse-Spark-Open-816B-A42B-DFlash2"),
+    # 0.268 freshness: inclusionAI Ming-3.0-asr-tiny (2026-10-14; BailingMoeV3 KDA/MLA decoder + Whisper encoder, bf16)
+    ("ming-3.0-asr-tiny", "inclusionAI/Ming-3.0-asr-tiny"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -248,7 +250,7 @@ OFFLINE_REASONS = {
 }
 
 # ---------------------------------------------------------------- listing: vendor (厂商) → family; domain is only a badge
-DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态：语言主干 + 视觉编码器）", "gen": "图像 / 视频生成（DiT）", "protein": "蛋白质",
+DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态：语言主干 + 视觉编码器）", "asr": "语音识别（语言主干 + 音频编码器）", "gen": "图像 / 视频生成（DiT）", "protein": "蛋白质",
            "genomics": "基因组（DNA 编码器）"}
 OFFLINE_DOMAINS = {"video": "gen", "protein": "protein"}     # series_catalog domain → listing domain (not on core v2)
 PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only releases) — listing order
@@ -295,6 +297,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("arc", "Evo 2（StripedHyena 2 DNA 语言模型）", ("evo2-",)),
     ("meta", "Muse Spark Open", ("muse-spark",)),
     ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)), ("ant", "Ling-3.0-VL", ("ling-3.0",)),
+    ("ant", "Ming-3.0-ASR", ("ming-3.0",)),
     ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),
     ("stepfun", "Step-5", ("step-5",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),
     ("openbmb", "MiniCPM-V 4.7", ("minicpm-v-4.7",)), ("robbyant", "LingBot-Video", ("lingbot-video",)),
@@ -384,7 +387,11 @@ def entries() -> list[dict]:
         if e.get("builder"):
             e["domain"] = e["workload"].kind
         else:
-            e["domain"] = "vlm" if (load_release(e["hf_id"]).get("params_vision") or 0) > 0 else "llm"
+            rel = load_release(e["hf_id"])
+            cf = rel.get("config") or {}
+            # 0.268: an audio-only release (audio_config, no vision_config) is speech recognition, not a VLM
+            e["domain"] = ("asr" if cf.get("audio_config") and not cf.get("vision_config") else "vlm") \
+                if (rel.get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])
         e["unlisted"] = UNLISTED.get(e["id"])
         e["listed"] = not e["merged_into"] and not e["unlisted"]

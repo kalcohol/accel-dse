@@ -1567,11 +1567,11 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if scn.serving.audio_s and not scn.serving.image_tokens and getattr(m.vision, "audio", None) is None:
         warnings.append("serving.audio_s 已忽略：该模型没有音频编码器")
     if (scn.serving.images or scn.serving.videos or scn.serving.audio_s) and not scn.serving.image_tokens:
-        if m.vision is None:
+        if m.vision is None or m.vision.family == "audio":
             if scn.serving.images or scn.serving.videos:
                 warnings.append(("serving.images 已忽略" if scn.serving.images else "serving.videos 已忽略")
                             + "：该模型没有视觉编码器（只有 VLM 计图像 / 视频）")
-        else:
+        if m.vision is not None:
             scn = expand_images(scn, m)     # 0.62: image positions join prompt / ctx (KV, prefill length)
     sv, lay = scn.serving, scn.layout
     if lay.cp > 1 and not m.kv_cache:     # 0.90: say why, not just "layout invalid"
@@ -1966,7 +1966,7 @@ def _vision_cost(scn: Scenario, m: ModelSpec, sys: System, stages: list) -> dict
     v = m.vision
     g = image_grid(v, sv.image_w, sv.image_h)
     w = v.params * 2.0
-    out = {"images": sv.images, "px": [sv.image_w, sv.image_h], "resized_px": list(g.px), "patches": [g.ph, g.pw],
+    out = {"images": sv.images if v.family != "audio" else 0, "px": [sv.image_w, sv.image_h], "resized_px": list(g.px), "patches": [g.ph, g.pw],
            "merged": g.merged, "tokens_per_image": g.llm_tokens, "image_tokens": sv.image_tokens,
            "text_prompt": sv.prompt - sv.image_tokens, "label": v.label, "params_B": v.params / 1e9,
            "weights_GB": w / 1e9, "s": 0.0, "tflop": 0.0, "per_card": 0, "cards": 0}
@@ -1980,7 +1980,7 @@ def _vision_cost(scn: Scenario, m: ModelSpec, sys: System, stages: list) -> dict
     if sv.phase == "prefill":
         # 0.165: encoder passes = images (one grid each) + video temporal slices (the tower's cu_seqlens split a clip
         # per t: attention within a slice, Conv3d patch-embed over temporal_patch frames — the same pass as a still)
-        units = [(g, sv.images)] if sv.images else []
+        units = [(g, sv.images)] if sv.images and v.family != "audio" else []
         if vg is not None:
             units.append((vg.slice, sv.videos * (vg.t - (1 if vg.tail is not None else 0))))
             if vg.tail is not None:                               # 0.166 Kimi: shorter last chunk

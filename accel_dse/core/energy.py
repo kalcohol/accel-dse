@@ -111,7 +111,7 @@ class EnergyTable:
     # 0.261: die (junction) temperature for SRAM / SLC leakage, °C.  uW_per_mib_sram_leak is a 25 °C figure; the charged
     # value is × leak_temp_factor(T) (same macro measured at 25 and 85 °C, see SRAM_LEAK_T).  None = 25 °C (lower bound).
     sram_temp_C: float | None = None
-    # 0.266: capacity-dependent SLC access energy.  None = flat pJ_bit_slc (legacy 「假设」= SRAM).  When set to a
+    # 0.266 (DEPRECATED 0.268 — use pJ_bit_mm_onchip): capacity-dependent SLC access energy.  None = flat pJ_bit_slc.  When set to a
     # reference capacity C_ref (MiB), effective pJ/bit = pJ_bit_slc · max(1, √(slc_mib / C_ref)).  Horowitz ISSCC 2014
     # Fig. 1.1.9: 8 KB / 32 KB / 1 MB SRAM accesses 10 / 20 / 100 pJ (64-bit) ⇒ E ∝ √C 「推导」; H-tree dominates
     # large-cache energy (CACTI / ISQED 2023).  C_ref = 1.0 matches the 1 MB Horowitz point as the wire-scale anchor.
@@ -438,6 +438,9 @@ def clock_util(chip, mac: float, vec: float, sram_B: float, card_s: float) -> di
 # distance is a lower bound; periphery / banking overhead makes a real SLC larger) 「来源」
 SLC_MM2_PER_MIB_DEFAULT = 8.388608 / 35.5
 RETICLE_MM2 = 858.0
+# 0.268: the 0.266 √C option is kept for reproducibility but deprecated (MODEL §213.1)
+SLC_SQRTC_DEPRECATION = ("slc_access_ref_mib（√C）已弃用：把 8 KB–1 MB 缓存数据外推到 GiB 级 SLC，过于悲观（MODEL §212.2）；"
+                         "请改用 pJ_bit_mm_onchip（距离模型，Keckler 2011）")
 
 
 def slc_wire_mm(table: EnergyTable, slc_mib: float) -> float:
@@ -501,7 +504,10 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                 out["slc_access"] = {"pJ_bit": e, "pJ_bit_base": table.pJ_bit_slc,
                                      "ref_mib": table.slc_access_ref_mib, "slc_mib": slc_mib,
                                      "scale": e / table.pJ_bit_slc if table.pJ_bit_slc else None,
-                                     "basis": "pJ_bit_slc × max(1, √(slc_mib/ref)) (Horowitz √C, 0.266)"}
+                                     "basis": "pJ_bit_slc × max(1, √(slc_mib/ref)) (Horowitz √C, 0.266)",
+                                     # 0.268: deprecated — extrapolates 8 KB–1 MB cache points to GiB (MODEL §212.2)
+                                     "deprecated": True,
+                                     "note": SLC_SQRTC_DEPRECATION}
             elif e is not None and table.pJ_bit_mm_onchip is not None and slc_mib > 0:
                 d = slc_wire_mm(table, slc_mib)
                 dens = table.slc_mm2_per_mib if table.slc_mm2_per_mib is not None else SLC_MM2_PER_MIB_DEFAULT

@@ -1042,6 +1042,9 @@ def slc_energy_report(base: Scenario, table: EnergyTable | None = None, models=N
         notes.append("无 uW_per_mib_sram_leak：曲线只有 DRAM 流量变化，漏电不计入（填能耗预设 tpuv4i_7nm 可打开）")
     elif idle is not None:
         notes.append("已填 idle_W / idle_frac_tdp：共享 SRAM 漏电视为已含于 idle；SLC 仍按增量计漏电（0.263，idle 不含该 SLC）")
+    if table.slc_access_ref_mib is not None:     # 0.268: deprecated √C option
+        from .energy import SLC_SQRTC_DEPRECATION
+        notes.append(SLC_SQRTC_DEPRECATION)
     t_C = table.sram_temp_C if table.sram_temp_C is not None else 25.0
     if leak_uW is not None and t_C <= 25.0 + 1e-9 and not temps:
         notes.append("sram_temp_C 未填或 = 25 °C（下界）；热模对比请点 25/85 °C 或设 sram_temp_C")

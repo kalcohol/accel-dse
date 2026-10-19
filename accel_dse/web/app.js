@@ -46,7 +46,7 @@ function coverBadge(m) {
   return h('span', { class: 'badge cov ' + m.coverage, title: coverTip(m) }, h('span', { class: 'ax' }, '覆盖'), COVER_ZH[m.coverage]);
 }
 const PROV_ZH = { official: '官方', mirror: '镜像' };
-const DOMAIN_ZH = { gen: '视频生成', protein: '蛋白质', genomics: '基因组' };
+const DOMAIN_ZH = { gen: '视频生成', protein: '蛋白质', genomics: '基因组', asr: '语音识别' };
 const isFull = (m) => !!m && (m.domain === 'gen' || m.domain === 'protein' || m.domain === 'genomics');   // non-autoregressive full-sequence forward
 const UNIT_ZH = { frame: '帧', seq: '序列', token: 'tok', window: '窗口' };
 // 0.119: throughput unit of a full-forward model — image DiT 张, video 帧, genomics 窗口, protein 序列
@@ -70,6 +70,8 @@ function domainBadge(m) {
     return h('span', { class: 'badge vlm', title: coverTip(m) }, '基因组 · DNA 自回归语言模型（按 LLM 解码评估）');
   if (m.domain === 'protein') return h('span', { class: 'badge vlm', title: coverTip(m) }, m.is_pair ? '蛋白质 · 结构预测' : '蛋白质 · 编码器前向');
   if (m.domain === 'genomics') return h('span', { class: 'badge vlm', title: coverTip(m) }, '基因组 · 双向编码器前向（逐 token 分类）');
+  // 0.268: audio-only release (Ming-3.0-asr-tiny) — the encoder is costed via serving.audio_s (API / CLI --audio-s)
+  if (m.domain === 'asr') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音识别 · 含 Whisper 音频编码器（serving.audio_s）');
   return null;
 }
 const BOUND_ZH = { MAC: 'MAC 算力', FEED: 'FEED 供数', VECTOR: 'VECTOR 向量', DRAM: 'DRAM 带宽', SLC: 'SLC 系统级缓存', LINK: 'LINK 互连', SYNC: 'SYNC 同步' };
@@ -965,7 +967,7 @@ function renderEnergy(r) {
   const sci = (x) => (x === 0 ? '0' : x.toExponential(3));
   const rows = [['MAC（bf16 等效）', c.mac, '', 'mac', 'pJ_mac'], ['向量操作', c.vec, '', 'vec', 'pJ_vec'],
     ['SRAM 端口', c.sram, ' B', 'sram', 'pJ_bit_sram'],
-    ...(c.slc ? [['SLC 命中' + (e.slc_access && e.slc_access.scale > 1 ? `（线缆 ×${num(e.slc_access.scale)} @ ${num(e.slc_access.slc_mib)} MiB` + (e.slc_access.wire_mm != null ? ` · ${num(e.slc_access.wire_mm)} mm` + (e.slc_access.over_reticle ? ' · 超光罩' : '') : '') + '）' : ''), c.slc, ' B', 'slc', 'pJ_bit_slc']] : []),
+    ...(c.slc ? [['SLC 命中' + (e.slc_access && e.slc_access.scale > 1 ? `（${e.slc_access.deprecated ? '√C 已弃用 · ' : ''}线缆 ×${num(e.slc_access.scale)} @ ${num(e.slc_access.slc_mib)} MiB` + (e.slc_access.wire_mm != null ? ` · ${num(e.slc_access.wire_mm)} mm` + (e.slc_access.over_reticle ? ' · 超光罩' : '') : '') + '）' : ''), c.slc, ' B', 'slc', 'pJ_bit_slc']] : []),
     [c.slc ? 'DRAM 读写（SLC 未命中）' : 'DRAM 读写', c.dram, ' B', 'dram', e.dram_pJ_field || 'pJ_bit_dram'],
     ...(e.phy_pJ_field ? [['DRAM PHY（芯片侧）', c.dram, ' B', 'dram_phy', e.phy_pJ_field]] : []),   // 0.188
     ...(c.d2d ? [['D2D 发送（封装内）', c.d2d, ' B', 'd2d', 'pJ_bit_d2d']] : []),

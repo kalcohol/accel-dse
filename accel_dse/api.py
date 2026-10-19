@@ -1177,7 +1177,7 @@ def _sweep_inapplicable(path: str, r) -> str | None:
     m = r.model
     if path.startswith("workload.") and r.workload is None:
         return "仅适用于视频 / 蛋白质 / 基因组工作负载模型（该模型为 LLM）"
-    if path in ("serving.images", "serving.image_w", "serving.image_h") and m.vision is None:
+    if path in ("serving.images", "serving.image_w", "serving.image_h") and (m.vision is None or m.vision.family == "audio"):
         return "该模型没有视觉塔（纯文本）"
     if path == "serving.audio_s" and getattr(m.vision, "audio", None) is None:
         return "该模型没有音频编码器"

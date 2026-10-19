@@ -1,0 +1,170 @@
+{
+ "bytes_llm": 15786791488,
+ "bytes_mtp": 633209856,
+ "bytes_total": 17731608128,
+ "config": {
+  "architectures": [
+   "MingV3ASRForConditionalGeneration"
+  ],
+  "asr_output_format": "plain",
+  "audio_config": {
+   "downsampler_kernel_size_list": [
+    3
+   ],
+   "downsampler_stride_list": [
+    2
+   ],
+   "n_audio_ctx": 3000,
+   "n_audio_head": 20,
+   "n_audio_layer": 32,
+   "n_audio_state": 1280,
+   "n_mels": 128
+  },
+  "audio_token_id": 157168,
+  "auto_map": {
+   "AutoConfig": "configuration_ming_v3_asr.MingV3ASRConfig",
+   "AutoModelForCausalLM": "modeling_ming_v3_asr.MingV3ASRForConditionalGeneration",
+   "AutoProcessor": "processing_ming_v3_asr.MingV3ASRProcessor"
+  },
+  "dtype": "bfloat16",
+  "model_type": "ming_v3_asr",
+  "supported_modalities": [
+   "audio"
+  ],
+  "text_config": {
+   "attention_dropout": 0.0,
+   "embedding_dropout": 0.0,
+   "eos_token_id": 156892,
+   "first_k_dense_replace": 1,
+   "gated_attention_proj_granularity_type": "head_wise",
+   "head_dim": 128,
+   "hidden_act": "silu",
+   "hidden_size": 1536,
+   "initializer_range": 0.02,
+   "intermediate_size": 4608,
+   "kda_lower_bound": -5.0,
+   "kda_safe_gate": true,
+   "kv_lora_rank": 512,
+   "layer_group_size": 4,
+   "max_position_embeddings": 8192,
+   "max_window_layers": 20,
+   "moe_intermediate_size": 512,
+   "moe_router_enable_expert_bias": true,
+   "moe_shared_expert_intermediate_size": 512,
+   "mtp_loss_scaling_factor": 0,
+   "n_group": 8,
+   "no_kda_lora": true,
+   "num_attention_heads": 16,
+   "num_experts": 128,
+   "num_experts_per_tok": 8,
+   "num_hidden_layers": 24,
+   "num_key_value_heads": 16,
+   "num_nextn_predict_layers": 1,
+   "num_shared_experts": 1,
+   "output_dropout": 0.0,
+   "output_router_logits": false,
+   "pad_token_id": 156892,
+   "q_lora_rank": 256,
+   "qk_nope_head_dim": 128,
+   "qk_rope_head_dim": 64,
+   "rms_norm_eps": 1e-06,
+   "rope_interleave": true,
+   "rope_scaling": null,
+   "rope_theta": 10000,
+   "routed_scaling_factor": 2.5,
+   "router_dtype": "fp32",
+   "score_function": "sigmoid",
+   "scoring_func": "sigmoid",
+   "seq_aux": true,
+   "short_conv_kernel_size": 4,
+   "tie_word_embeddings": false,
+   "topk_group": 4,
+   "topk_method": "noaux_tc",
+   "use_bias": false,
+   "use_cache": true,
+   "use_qk_norm": true,
+   "use_qkv_bias": false,
+   "v_head_dim": 128,
+   "vocab_size": 157184
+  },
+  "tie_word_embeddings": false
+ },
+ "fetched": "2026-10-20",
+ "n_tensors": 10181,
+ "params_llm": 7893392800,
+ "params_mtp": 316604800,
+ "params_vision": 655803392,
+ "quantization_config": null,
+ "repo": "inclusionAI/Ming-3.0-asr-tiny",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 769303104,
+    "params": 384651552
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 482869248,
+    "params": 241434624
+   }
+  },
+  "expert": {
+   "bf16": {
+    "bytes": 13891534848,
+    "params": 6945767424
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 482869248,
+    "params": 241434624
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 42467328,
+    "params": 21233664
+   },
+   "fp32": {
+    "bytes": 11776,
+    "params": 2944
+   }
+  },
+  "mtp": {
+   "bf16": {
+    "bytes": 633209344,
+    "params": 316604672
+   },
+   "fp32": {
+    "bytes": 512,
+    "params": 128
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 164352,
+    "params": 82176
+   }
+  },
+  "router": {
+   "bf16": {
+    "bytes": 9043968,
+    "params": 4521984
+   }
+  },
+  "shared_expert": {
+   "bf16": {
+    "bytes": 108527616,
+    "params": 54263808
+   }
+  },
+  "vision": {
+   "bf16": {
+    "bytes": 1311606784,
+    "params": 655803392
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}
