@@ -6,6 +6,48 @@
 
 
 
+## [0.250.0]
+
+### Added — the near-full lattice at U = 0, derived, **off by default** (MODEL §197)
+- **The f = 0 boundary state 「推导」** (`_LATTICE0`, default `False`). The state f = 0 (q = 0, all slots full) is entered by an admission, whose prefill is in flight for one phase τ. It is left by a death, released one at a time.
+  - An arrival at f = 0 opens a U > 0 excursion. The excursion takes the rest of the phase and returns with a fresh admission in flight.
+  - Sojourn: x = (1 + (r_do − r_ch)m)/(r_do − (r_do − r_ch)λm), with m = (1 − e^{−λτ})/λ, r_do = c(B)a(B)/d and r_ch = n_B·T_d·k̄·a/(B·d)/τ.
+  - Balance: π₀ = λx·π₁.
+  - **Checked against DES A λ52** (`sd248/raw2_A52.npy`): λx is 1.32 (DES π₀/π₁ 1.30), and the in-flight share at f = 0 is 0.71 (DES 0.71).
+- **The jump entry.** P(U > 0) = λπ₀S̄/(1 − ρ′), one M/G/1 busy period per entry. It replaces the diffusion interface 1/(θσ²), weighted by the slot-bound share β/d (the same share as `_SAT_ENTRY`). With the DES π₀ it gives 0.147, against DES 0.155.
+- New diagnostic `x0`: the f = 0 sojourn, or `None` when the flag is off.
+
+### Why it is off
+With `_LATTICE0` on (`sd250/ana_l1.txt`, `xr_l1.txt`), neither goal is met:
+
+| case | λ | DES | 0.249 (= 0.250 default) | lattice on |
+|---|---|---|---|---|
+| A | 50 / 52 / 53.5 / 54.3 | 143 / 341 / 734 / 1035 | 176 / 399 / 781 / 1152 | 145 / 294 / 646 / 1001 |
+| D | 50 / 52 / 53.5 / 54.3 | 146 / 283 / 660 / 952 | 165 / 289 / 660 / 1006 | 153 / 231 / 556 / 887 |
+| G | 44.5 / 46.5 / 47.5 / 48.3 | 182 / 457 / 797 / 1179 | 217 / 509 / 834 / 1281 | 193 / 367 / 658 / 1078 |
+
+- **p90:** mean |err| is 10.7 % low, against 10.2 % high for 0.249. The goal was ~5 %.
+- **p_sat at A λ52:** 0.138, against DES 0.155 (0.249: 0.188).
+- **Crossings:** mean |err| is 0.260 %, above the 0.2 % goal (0.249: 0.152 %). The worst points are E mixed +1.38 % and F sglang +0.46 %.
+  - Without the β/d weighting (`sd250/xr_l0.txt`), crossings were 0.411 % and E mixed +2.47 %.
+- **What remains wrong** is the continuum below 0, not the boundary. Against DES (true-f, A λ52):
+  - The modelled continuum is too wide and too deep: mean/sd 27.5/14.8 slots, against DES 24.8/13.1.
+  - The deep log-slope is 0.11 per slot, against DES 0.29.
+  - The deep σ_b² is about 2× the DES KM value (0.056–0.066 vs 0.026), and the deep drift is about 25 % weak.
+  - As a result, the near-full level per slot is too low (0.0121 vs DES 0.013), and the correct jump entry from it under-shoots p_sat.
+
+### Unchanged
+- With the flag off, the code path is identical to 0.249 (atom z = 0). The KPI is unchanged: the A vllm slo_rate check gives 55.2329, the same as 0.249.
+- sglang_mixed E is unchanged from 0.249: −4 to −13 % (1167 / 1437 / 1882 / 2979 vs DES 1219 / 1603 / 2163 / 3353). With the lattice on, it moves by the β/d share only.
+
+### Tests
+- New test_core_250: flag off by default, `x0` is `None` when off, and with it on λx falls in 1.1–1.6 and the in-flight share in 0.6–0.8, p_sat drops, and θ/base are unchanged.
+
+### Deferred
+- **The deep continuum.** The death Fano I_s is probably state-dependent: with Fano 1, the deep σ² would be 0.033 (≈ KM), but near full σ² would drop to 0.079 (KM 0.11–0.13). There is also a deep drift / pause term.
+- Once the continuum matches, re-enable `_LATTICE0`.
+
+
 ## [0.249.0]
 
 ### Changed — state-dependent σ_b²(f) below U = 0 (MODEL §196)

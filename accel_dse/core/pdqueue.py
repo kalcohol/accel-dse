@@ -1072,6 +1072,7 @@ def _busy_q_from(dur, m: float, q: float) -> float:
     return dur[-1][0] if dur else 0.0
 
 
+_LATTICE0 = False    # 0.250: f = 0 lattice state + jump entry into U > 0 — derived, OFF by default (crossings 0.26 % > 0.2 %; MODEL §197)
 _SIG2_F = True       # 0.249: state-dependent σ_b²(f) below 0 (False: 0.248 constant λE[S²] + λd²)
 _SAT_ENTRY = True    # 0.248: queue-ful entry overshoot S̄ + in-service residual in the U > 0 base (False: 0.247)
 _AGE_DEATHS = True   # 0.248: age-structured death credit below 0 (False: uniform age, 0.247)
@@ -1229,10 +1230,41 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
                 s2g.append((f, s_cur))
         if phi < -50:
             break
-    z_pos = 1 / (theta * sig2)
-    p_sat = z_pos / (z_pos + z_neg)
+    # 0.250 near-full lattice at U = 0 (MODEL §197) 「推导」.  The diffusion interface (density continuous at 0,
+    # z_pos = 1/(θσ²)) is replaced by the f = 0 state of the free-slot lattice and the jump entry from it.
+    # (i) f = 0 (q = 0, slots full) is entered by an admission taking the last slot — its prefill is in flight for a
+    # phase τ — and left by a death.  An arrival at f = 0 opens a U > 0 excursion that takes the rest of the current
+    # phase and returns (q → 0 at an admission) with a fresh admission in flight.  In the reduced process (excursions
+    # removed) the in-flight time per phase is m = (1 − e^{−λτ})/λ and there are 1 + λx phases per sojourn x; death
+    # hazard r_ch = n_B·T_d·k̄·a/(B·d)/τ in a phase, r_do = c(B)·a(B)/d outside →
+    # x = (1 + (r_do − r_ch)·m)/(r_do − (r_do − r_ch)·λm), and the f = 0 ↔ 1 balance π₀ = λx·π₁ (admission at f = 1).
+    # DES A λ52 (sd248/raw2_A52): π₀/π₁ 1.30 vs λx 1.32; in-flight share at f = 0 0.71 vs (1 + λx)m/x 0.71.
+    # (ii) Every arrival at f = 0 enters U > 0 (DES 97 %) by a whole S̄ and starts an M/G/1 busy period of the
+    # admission server, E = S̄/(1 − ρ′): P(U > 0) = λ·π₀·S̄/δ (DES π₀ → 0.147 vs DES 0.155).  With π₁ the continuum's
+    # per-slot density at the boundary, d/(σ_b²(0)·z_neg): atom z₀ = λx·d/σ_b²(0) (relative to z_neg) and
+    # z_pos = z₀·λS̄/δ.  The law of U | U > 0 is unchanged (S̄ + Exp(θ), §195).
+    lat_x = None
+    if _LATTICE0:
+        r_do = c_of(B) * a_of(B) / d_slot
+        r_ch = (n_B * tdB * kb0 * a_of(kb0) / (B * d_slot)) / tau if tau > 0 else 0.0
+        m_ph = (1 - math.exp(-lam * tau)) / lam
+        den = r_do - (r_do - r_ch) * lam * m_ph
+        if den > 0:
+            lat_x = (1 + (r_do - r_ch) * m_ph) / den
+    # Slot-bound only (as the §195 entry term): the f = 0 entry needs the slot constraint to bind.  When the
+    # admission's own chunk iterations free its slot (β → 0, E 16k prompts) the queue-ful state is the budget FCFS
+    # queue entered from any f — the diffusion interface; weight the lattice by the slot-bound share β/d 「近似」.
+    sb_share = min(1.0, max(0.0, beta / d_slot)) if d_slot > 0 else 0.0
+    if lat_x is not None and sb_share > 0:
+        z_at = sb_share * lam * lat_x * d_slot / sig2b0
+        z_pos = z_at * lam * (tau + beta) / delta + (1 - sb_share) / (theta * sig2)
+    else:
+        z_at = 0.0
+        z_pos = 1 / (theta * sig2)
+    p_sat = z_pos / (z_pos + z_neg + z_at)
     lat = _wsum([w for w, _ in lats_w], [x for _, x in lats_w])
-    zt = z_pos + z_neg
+    zt = z_pos + z_neg + z_at
+    z_pos += z_at                 # free_cdf below starts with the f = 0 atom
     # 0.248 queue-ful entry (MODEL §195; DES sd248/probe14 A λ52): U > 0 means q ≥ 1 prompts wait with the slots
     # full, and U = (τ + β)·q − d·f is the queued work only.  (i) U enters the queue-ful state by a whole S̄ = τ + β
     # (q: 0 → 1 at f = 0 — U is a lattice, not a creep through 0+), so the diffusion's U | U > 0 ~ Exp(θ) is U − S̄
@@ -1250,7 +1282,7 @@ def _slot_backlog(cp, lam: float, rho_p: float, lats_w, ws, taus, out: float, ou
     base = lat + beta + ((slot_bound * (s_bar + e_s2 / (2 * s_bar))) if _SAT_ENTRY else 0.0)
     return {"p_sat": p_sat, "theta": theta, "base": base, "beta": beta, "rho_adm": rp,
             "tau": tau, "sigma2": sig2, "d": d_slot, "n_B": n_B, "k_bar": kb,
-            "free_cdf": tuple((round(f_, 3), (z_pos + z_) / zt) for f_, z_ in zf), "mu_f": tuple(mug), "sigma2b": sig2b0, "sigma2_f": tuple(s2g), "w_age": w_age, "slot_bound": slot_bound}
+            "free_cdf": tuple((round(f_, 3), (z_pos + z_) / zt) for f_, z_ in zf), "mu_f": tuple(mug), "sigma2b": sig2b0, "sigma2_f": tuple(s2g), "x0": lat_x, "w_age": w_age, "slot_bound": slot_bound}
 
 
 def _sat_mix_q(tq: dict, p: float, base: float, theta: float) -> dict:

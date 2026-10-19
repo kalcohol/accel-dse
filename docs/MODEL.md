@@ -5807,3 +5807,48 @@ The 0.248 constant was 0.079. Near full matches; deep the model is high, because
 - The model's continuous law has no pile (0.0118 at f = 0); with it the jump-entry form gives 0.107.
 - The diffusion interface (z_pos = 1/(θσ²), density continuous at 0) gives 0.188.
 - Next step: a lattice treatment of the last few slots (π₀ from the f = 0 ↔ 1 balance including excursion returns) with the jump entry.
+
+## §197 The near-full lattice at U = 0: f = 0 boundary state and jump entry (0.250, flag off)
+
+**Boundary state 「推导」.** The free-slot process stops at f = 0 (q = 0, slots full) in a sticky way.
+- It is entered by an admission, whose prefill is in flight for one phase τ.
+- It is left by a death; deaths release slots one at a time.
+- An arrival at f = 0 starts a U > 0 excursion. The excursion uses up the rest of the phase and returns with a fresh admission in flight.
+
+The hazards are:
+- outside the phase, decode-only deaths: r_do = c(B)a(B)/d;
+- during the phase, chunk-carried deaths: r_ch = n_B·T_d·k̄·a/(B·d)/τ.
+
+The reduced in-flight time per phase is m = (1 − e^{−λτ})/λ. The sojourn per entry is
+
+x = (1 + (r_do − r_ch)m) / (r_do − (r_do − r_ch)λm),
+
+and the f = 0 ↔ 1 balance gives π₀ = λx·π₁.
+
+DES check at A λ52 (`sd248/raw2_A52.npy`, f corrected for in-flight prompts):
+
+| quantity | model | DES |
+|---|---|---|
+| λx = π₀/π₁ | 1.32 | 1.30 |
+| in-flight share at f = 0 | 0.71 | 0.71 |
+| in-flight share at f = 1 / 2 / 3 | — | 0.54 / 0.48 / 0.46 |
+
+**Jump entry.** Every arrival at f = 0 opens one M/G/1 busy period, so P(U > 0) = λπ₀S̄/(1 − ρ′). With the DES π₀ this gives 0.147, against DES 0.155.
+
+**Implementation** (`_LATTICE0`):
+- atom z₀ = λx·d/σ_b²(0) relative to the continuum density;
+- z_pos = z₀·λS̄/δ in place of the diffusion interface 1/(θσ²);
+- both are weighted by the slot-bound share β/d, as in §195 (the budget-bound E case has no slot lattice);
+- the remainder keeps the diffusion interface.
+
+**Result: not the default.**
+- A/D/G p90 mean |err| is 10.7 % low (0.249: 10.2 % high).
+- A λ52 p_sat is 0.138, against DES 0.155.
+- Crossings mean |err| is 0.260 %, above the 0.2 % goal. E mixed is +1.38 %; without the β/d weight it was +2.47 % (0.411 % overall).
+
+**Residual: the continuum below 0.** The boundary is right; the continuum is not.
+- The model's law given U ≤ 0 has mean/sd 27.5/14.8 slots, against DES 24.8/13.1.
+- The deep log-slope is 0.11 per slot, against DES 0.29.
+- The deep σ_b² is ≈ 0.06, against KM 0.026, and the deep drift is ~25 % weak.
+- So the near-full level is 0.0121 per slot against DES 0.013. The correct jump entry from a level that is too low under-shoots.
+- A death Fano of 1 would fix the deep σ² (0.033) but would break near-full σ² (0.079 vs KM 0.11–0.13). The Fano I_s should therefore be state-dependent; this is the next step, after which `_LATTICE0` can be re-enabled.
