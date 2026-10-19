@@ -6,6 +6,30 @@
 
 
 
+## [0.256.0]
+
+### Changed — UI layout (knob panel and metric cards)
+- **Knob panel grouped by concern** into collapsible sections: 模型 / 工作负载 / 投机解码 / 服务调度（主机开销 · PD 分离 · 排队）/ 卡数、并行与互连 / 芯片与存储器 / 资源 · 面积预算 / 能耗.
+  - Each header shows a one-line summary (e.g. `decode · batch 自动 · ctx 4096`, `k 4 · 树 topk 2 · sampled`, `1 卡 · PP1 TP1 DP1`, `已填 3 项`). The open / closed state is kept in the browser; 「全部展开 / 全部折叠」 at the top.
+  - Budget and energy (no built-in values, low-frequency) start collapsed.
+  - Workload shape (phase, batch, ctx / prompt / output, SLOs, Dory loops / loop KV, VLM image / video inputs, auto-batch) now sits right below the model instead of after the interconnect knobs.
+- **Conditional knobs.** The speculative-decoding section is LLM-only. Draft sampling, acceptance source, rollback and tree knobs appear once 投机 k ≥ 1; the tree acceptance model appears only for a tree (topk > 1 or tree tokens set).
+- **No more 3-line captions.** The panel widens on wide screens (360 → 500 px). Knob grids auto-fit (≥ 140 px per control) instead of fixed 3 / 5 columns. Tags (假设 / what-if) stay on the caption line, and controls line up across a row.
+- **Metric cards** use a responsive grid (≥ 230 px per card) instead of a fixed 5 columns. Long notes (machine balance, tree TPOT band) clamp to 3 lines; click the card to expand, or hover for the full text.
+- All element ids and behaviour are unchanged. `scripts/ui_smoke.py` and `scripts/ui_headless_smoke.py` click 「全部展开」 first because budget and energy start collapsed.
+
+### Added — UI controls for 0.255, nested chip fold
+- **FLUX 3 模态流复用.** `workload.mode_cache` (0.255, SGLang StaticStreams) has a select in the workload → reference-image row, shown only for FLUX 3. Off = reference implementation, and off is not written to the scenario.
+  - When it is active, a 「模态流复用」 metric card shows first-step → reused-step time, the reused rows, TFLOP per step and the cache size.
+  - Muse Spark Open video inputs need no new control: 0.255 gave Muse a modelled video processor, so the existing VLM video inputs in 工作负载 now appear for it.
+- **Nested 「高级芯片参数」 fold.** Inside 芯片与存储器, the main row keeps 频率 / SRAM MiB / MAC 效率. Everything else moves into a fold, collapsed by default: clock gating, state SRAM, SRAM ports, attention format, GEMV, accumulator, kernel launch, dispatch, dispatch µs and the SLC row.
+  - Its header summarises dispatch / kernel launch / SLC / attention format.
+  - 「全部展开」 opens nested folds too.
+  - At 1440×900 the panel depth goes from 3.73 to 3.22 screens (llm-spec) and from 4.17 to 3.66 (flux3), with 53 / 57 visible controls instead of 66 / 69. There are still no 3-line captions or misaligned rows.
+
+### Fixed
+- The video DiT frame count (`w-frames`) was hidden for every video-generation model. It shared the `video-only` class with the VLM video inputs, so it was hidden whenever the model had no VLM video processor.
+- The chip preset bar clipped its last preset (`H100-like-lp4x64`) at panel width. It now wraps.
 ## [0.255.0]
 
 ### Added — group-limited MoE routing load model (MODEL §202.1)

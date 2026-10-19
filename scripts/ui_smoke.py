@@ -9,6 +9,7 @@ with sync_playwright() as pw:
     p.on("response", lambda r: "/api/" in r.url and r.request.method=="POST" and print("RESP", r.status, r.url[-15:], "glm" in (r.request.post_data or ""), r.text()[:300] if "eval" in r.url and "glm" in (r.request.post_data or "") else ""))
     p.on("pageerror", lambda e: errs.append("pageerror: " + str(e)))
     p.goto(URL); p.wait_for_selector("#kpis .kpi", timeout=30000)
+    p.click("#sec-open-all")      # 0.256: budget / energy knob groups start collapsed
     p.select_option("#model", "qwen3.8-27b"); time.sleep(2)
     p.click("#phase button[data-v=prefill]"); time.sleep(1.5)
     assert p.is_visible("#s-videos"), "video input hidden on qwen3.8-27b"

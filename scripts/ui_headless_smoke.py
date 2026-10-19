@@ -41,6 +41,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             p.on("response", lambda r: "/api/" in r.url and r.status >= 500 and errs.append(f"HTTP {r.status} {r.url}"))
             p.goto(f"http://127.0.0.1:{port}/")
             p.wait_for_selector("#kpis .kpi", timeout=60000)
+            p.click("#sec-open-all")      # 0.256: budget / energy knob groups start collapsed
 
             def settle(label, timeout=60.0):
                 """KPI cards present, nothing pending, status not an error."""

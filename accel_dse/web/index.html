@@ -18,8 +18,10 @@
 
 <div class="shell">
 <aside class="panel" id="panel">
-  <section class="grp">
-    <h3>模型</h3>
+  <div class="panel-tools small muted"><span title="点击分组标题折叠 / 展开；折叠状态保存在本机浏览器">参数分组 · 点标题折叠</span><span class="spacer"></span><button class="btn ghost xs" id="sec-open-all" type="button">全部展开</button><button class="btn ghost xs" id="sec-close-all" type="button">全部折叠</button></div>
+
+  <details class="grp sec" id="sec-model" open>
+    <summary><h3>模型</h3><span class="sec-sum" id="sec-model-sum"></span></summary>
     <select id="model" aria-label="模型"></select>
     <div class="badges" id="model-badges"></div>
     <div class="kv small" id="model-facts"></div>
@@ -34,221 +36,23 @@
       <label class="full-only" title="激活 dtype：fp32 时激活的存储 / DRAM 流式 / SRAM 端口流量按 4 B 计；芯片无 fp32 MAC，计算仍在 bf16 阵列上并计转换开销（数值上不等价于 fp32 矩阵乘）">激活 dtype <span class="tag whatif">what-if</span>
         <select id="wi-act"><option value="">按发布</option><option>fp32</option><option>bf16</option></select></label>
     </div>
-  </section>
+  </details>
 
-  <section class="grp">
-    <h3>芯片 <span class="tag assume">假设</span></h3>
-    <div class="seg" id="chip-preset"></div>
-    <div class="kv small" id="chip-facts"></div>
-    <div class="row2">
-      <label>频率 GHz<input type="number" id="c-freq_ghz" step="0.05" min="0.1"></label>
-      <label>SRAM MiB<input type="number" id="c-sram_mib" step="8" min="0"></label>
-      <label title="0.229：时钟功耗中不被门控的份额 g（MAC 阵列空闲时仍付）：P_clk = 满载 × (g + (1−g)·利用率)。默认 1 = 不计门控收益（H100 无负载实测已是停顿下限；Eyeriss v1 时钟网络功耗基本不随活动变，g≈0.96「推导」）；细粒度门控参考 0.25（POWER5 类，HC17「推导」）">时钟未门控份额<input type="number" id="c-clk_ungated_share" step="0.05" min="0" max="1" placeholder="1"></label>
-      <label title="0.209: 专用循环状态 SRAM（不与权重 / KV 共享）· dedicated recurrent-state buffer">状态 SRAM MiB<input type="number" id="c-state_sram_mib" step="64" min="0"></label>
-      <label>SRAM 端口 B/cycle<input type="number" id="c-sram_port_Bpc" step="256" min="64" placeholder="默认"></label>
-      <label title="0.96：按每个引擎给 SRAM 端口宽度，随引擎数缩放（扫引擎数 / 拆分 die 时不会把整芯片端口带过去）；与整芯片端口二选一">SRAM 端口 / 引擎 B/cycle<input type="number" id="c-sram_port_Bpc_per_engine" step="64" min="16" placeholder="不设"></label>
-      <label title="0.96：注意力核心的计算格式。默认 bf16 计算、KV 缓存在向量通路上反量化；kv = 原生低精度注意力（Q / P 量化到 KV 格式，FlashAttention-3 FP8 做法），需 KV 格式为芯片原生格式">注意力计算<select id="c-attn_fmt"><option value="">bf16（KV 反量化）</option><option value="kv">原生 KV 格式</option></select></label>
-      <label>GEMV MAC/cycle<input type="number" id="c-gemv_macs" step="256" min="1" placeholder="默认"></label>
-      <label>MAC 效率<input type="number" id="c-mac_eff" step="0.05" min="0.05" max="1"></label>
-      <label>累加器 KiB<input type="number" id="c-acc_kib" step="128" min="0"></label>
-      <label title="0.120：每个 kernel 的启动 / 调度固定开销（µs，默认 0 = 不计）。每个 GEMM、融合注意力、结构模型算子各一次；分块三角注意力每块 3 次（QKᵀ、softmax、·V）">kernel 启动 µs <span class="tag assume">假设</span><input type="number" id="c-kernel_us" step="0.5" min="0" placeholder="0"></label>
-      <label title="0.203 NPU 派发模型 · NPU dispatch model。空 = 理想（0 开销，「假设」）；static-graph = 每步一次静态图启动 + token 同步（10 µs，JAX jit 派发，仅主机路径 「二手」）；trace = 设备回放命令流，每算子 1.5 µs（tt-metal #20681 「二手」）；host = 主机逐算子派发，每算子 20 µs（vllm-ascend #13021，910B 实测 「二手」）">派发 dispatch <span class="tag assume">二手</span><select id="c-dispatch"><option value="">理想 ideal</option><option value="static">静态图 static-graph</option><option value="trace">设备回放 trace</option><option value="host">主机逐算子 host</option></select></label>
-      <label title="0.203：覆盖所选派发模式的 µs（static-graph = 每步，trace / host = 每算子）· override the mode's µs (per step / per op)">派发 µs dispatch_us<input type="number" id="c-dispatch_us" step="0.5" min="0" placeholder="默认 default"></label>
-    </div>
-    <div class="row3" id="slc-row">
-      <label title="系统级缓存（SLC, system-level cache）：位于 SRAM 与 DRAM 之间，每卡容量；0 = 无（默认）。不增加容量（包含式）">SLC MiB <span class="tag assume">假设</span><input type="number" id="c-slc_mib" step="64" min="0"></label>
-      <label title="SLC 命中时的带宽（与 DRAM 并行的端口）">SLC GB/s <span class="tag assume">假设</span><input type="number" id="c-slc_GBps" step="250" min="1"></label>
-      <label title="pin：软件按 SRAM 同样顺序把剩余热权重 / 专家 / KV 钉在 SLC，流式激活绕过；lru：硬件替换，按循环访问的全有或全无上界（工作集放得下才全部命中，否则 0 命中）；pin_bw（0.91）：同 pin 钉住，但 SLC 作为第二条读路径（包含式，数据在 DRAM 也有）只服务按带宽均衡的那部分命中（类似 CUDA accessPolicyWindow 的 hitRatio 取最优），SLC 比 DRAM 慢时也不会更慢">SLC 策略<select id="c-slc_policy"><option value="pin">pin 钉住</option><option value="lru">lru 替换</option><option value="pin_bw">pin_bw 钉住 · 带宽均衡</option></select></label>
-    </div>
-    <div class="small muted" id="chip-formats"></div>
-    <div class="small" id="chip-mixed" title="0.147：权重 × 激活混合精度原生 MAC；仅当该 (W, A) 组合原生时权重反量化开销才消失"></div>
-  </section>
-
-  <section class="grp">
-    <h3>映射 <span class="tag dv">设计变量</span></h3>
-    <div class="seg wrap" id="mapping"></div>
-    <div class="small muted" id="mapping-desc"></div>
-  </section>
-
-  <section class="grp">
-    <h3>存储器</h3>
-    <div class="row3">
-      <label>类型<select id="m-type"></select></label>
-      <label>形态<select id="m-form"></select></label>
-      <label>位宽<select id="m-width"></select></label>
-      <label>速率 MT/s<select id="m-rate"></select></label>
-      <label>数量<select id="m-count"></select></label>
-      <label id="m-cap-wrap">容量/颗<select id="m-cap"></select></label>
-      <label id="m-height-wrap">堆叠高度<select id="m-height"></select></label>
-    </div>
-    <div class="kv small" id="mem-facts"></div>
-    <label class="inline">DRAM 效率 <span class="tag assume">假设</span><input type="number" id="mem_eff" step="0.05" min="0.05" max="1" placeholder="0.7"></label>
-    <label class="inline" id="m-meta-wrap" hidden>LPDDR6 meta 模式 <span class="tag assume">假设</span><input type="checkbox" id="m-meta"></label>
-  </section>
-
-  <section class="grp">
-    <h3>卡数与并行布局</h3>
-    <div class="row3">
-      <label>卡数（每副本）<input type="number" id="l-cards" min="1" max="8192" step="1"></label>
-      <div class="span2 small muted" id="cards-note"></div>
-    </div>
-    <div class="row5" id="layout-row">
-      <label>PP<input type="number" id="l-pp" min="1" step="1"></label>
-      <label class="tp-in">TP<input type="number" id="l-tp" min="1" step="1"></label>
-      <label class="dp-in">DP<input type="number" id="l-dp" min="1" step="1"></label>
-      <label class="moe-only">EP<input type="number" id="l-ep" min="1" step="1"></label>
-      <label class="moe-only">ETP<input type="number" id="l-etp" min="1" step="1"></label>
-      <label class="cp-in" title="0.88：上下文并行（环形注意力，zigzag 负载均衡），只用于 LLM prefill：每张 CP 卡持有每条序列 1/CP 的 token 与其 KV 分片，KV 块在 CP 组内环形传递（每层一次 all-gather）；权重在 CP 卡间复制。MoE：EP·ETP = TP·DP·CP。decode 不支持（PD 时放在 prefill 布局）；线性 / 滑窗 / 压缩 KV 模型不支持">CP <span class="tag assume">假设</span><input type="number" id="l-cp" min="1" step="1"></label>
-      <label class="full-only sp-in" id="l-sp-lab" title="Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all（每 rank 算 heads/SP 个头的完整序列）"><span id="l-sp-name">SP</span><input type="number" id="l-sp" min="1" step="1"></label>
-    </div>
-    <label class="inline" title="0.62：流水级怎样切层。cost（默认）= 按每层代价（含嵌入 / 输出头 / MTP / 级间传递，按级时间规则 max(阵列, 向量, DRAM, 链路) + 同步）找使最慢级最快的连续切分，再与按层数均分的结果在完整模型上比较，取更快且放得下的；layers = 按层数均分（0.61 及以前）">PP 切分<select id="l-pp_split"><option value="cost">按代价平衡（默认）</option><option value="layers">按层数均分</option></select></label>
-    <label class="inline" title="0.87：稀疏注意力 indexer（DeepSeek-V3.2 / V4、GLM-5 类 DSA）在注意力 TP 上怎样部署。按发布（默认）= V3.2 / GLM-5 每个 TP rank 重复算全部 indexer 头，V4 按头切分；重复 = 每个 rank 都算全部头；按头切分 = 头按 TP 列切分 + fp32 打分矩阵 all-reduce（长 prefill 时通信很大）；按键切分 = 缓存的 index 键按 TP 分片，各 rank 局部 top-k 后 all-gather TP·k 个候选再合并（精确，indexer 缓存按 TP 分摊）。没有 indexer 的模型忽略此项">indexer 部署 <span class="tag assume">假设</span><select id="l-indexer"><option value="reference">按发布（默认）</option><option value="replicated">每个 TP rank 重复</option><option value="tp_split">按头切分 + 打分 all-reduce</option><option value="key_split">按键切分 + top-k 汇集</option></select></label>
-    <label class="inline llm-only" title="0.106：注意力掩码 what-if。按发布（默认）= 因果 LLM / 双向编码器保持原样；双向 = 所有自注意力不加因果掩码（整 S² 打分，注意力 FLOP 为因果的 2 倍），prefill 不写 KV cache（编码器式整序列前向）。只用于 prefill；编码器 / DiT 本身已是双向，忽略此项">注意力掩码 <span class="tag assume">what-if</span><select id="l-attn_mode"><option value="reference">按发布（默认）</option><option value="bidir">双向（无因果、无 KV cache）</option></select></label>
-    <div class="small muted moe-only">MoE 约束 EP·ETP = TP·DP（注意力按 TP、DP 切分，专家按 EP、ETP 切分）；修改时自动补齐 ETP。</div>
-    <div class="small muted full-only">视频 / 蛋白质：卡数 = PP·TP·DP·SP。DP 切分前向 batch（视频含 CFG 的 cond / uncond 两路 = CFG 并行）；SP = Ulysses 序列并行，权重在 SP 组内复制。蛋白质结构模型：SP 位置为 DAP（pair / MSA 网格按残基轴切分，FastFold 动态轴并行），无 TP。</div>
-    <button class="btn ghost sm" id="best-layout">搜索当前卡数的最优布局并应用</button>
-    <div class="small muted tier-h">三层互连（0.50）：封装内 D2D（可选）→ 节点内 scale-up → 跨节点网络</div>
-    <label class="inline" title="关（默认）= 单片大 die：每卡一个封装，没有 D2D 层。开 = 芯粒（chiplet）堆叠：每封装若干 die 经 die-to-die 互连"><input type="checkbox" id="d2d-enabled"> D2D 芯粒堆叠（关 = 单片大 die）</label>
-    <div id="d2d-inputs" hidden>
-      <label title="D2D 标准 / 档位（公开数据，见 docs/MODEL.md §9.6）。UCIe-A 48G 为常用默认；NVLink-C2C 为厂商专有接口，仅作参照">D2D 档位<select id="d2d-std"></select></label>
-      <div class="row3">
-        <label title="每个封装内的 die 数；封装内走 D2D，封装之间走节点内 scale-up。卡按 TP → SP → DP → PP 顺序编号">每封装 die 数<input type="number" id="p-package_cards" step="1" min="1"></label>
-        <label title="每个 die 面向封装一侧的 D2D 单元数（UCIe 模块 / BoW slice / 链路）——布图选择">单元数 <span class="tag assume">假设</span><input type="number" id="d2d-units" step="1" min="1" max="64"></label>
-        <label title="D2D 带宽（每 die 单向，原始速率，未扣 flit / 协议开销）= 档位 × 单元数；选「自定义」时可直接输入">D2D GB/s <span class="tag assume">假设</span><input type="number" id="d-GBps" step="64" min="1"></label>
-      </div>
-      <div class="row2">
-        <label title="封装内每次集合通信的同步延迟">D2D α µs <span class="tag assume">假设</span><input type="number" id="d-alpha_us" step="0.1" min="0"></label>
-        <span class="small muted" id="d2d-note"></span>
-      </div>
-    </div>
-    <div class="row2">
-      <label title="节点内 scale-up（封装之间），每 rank 单向带宽">节点内 GB/s <span class="tag assume">假设</span><input type="number" id="k-GBps" step="50" min="1"></label>
-      <label title="节点内每次集合通信的同步 + 启动延迟">节点内 α µs <span class="tag assume">假设</span><input type="number" id="k-alpha_us" step="0.5" min="0"></label>
-    </div>
-    <div class="row3">
-      <label title="每个节点的卡数；节点之间走跨节点网络（IB / RoCEv2）。0 = 整个系统一个节点（默认，跨节点层不用）">每节点卡数<input type="number" id="n-node_cards" step="1" min="0"></label>
-      <label title="跨节点网络每卡单向带宽（默认 50 GB/s = 一张 400 Gb/s NIC）">跨节点 GB/s <span class="tag assume">假设</span><input type="number" id="n-GBps" step="25" min="1"></label>
-      <label title="跨节点每次集合通信的同步延迟">跨节点 α µs <span class="tag assume">假设</span><input type="number" id="n-alpha_us" step="1" min="0"></label>
-    </div>
-    <div class="small muted" id="tier-note"></div>
-    <label class="inline" title="0.59：按拓扑与算法计算集合通信（ring / tree / 分层，α-β + 每步时延）、跨节点 fat-tree 收敛比 / rail-optimized、节点内 scale-up 拓扑、网内归约、PD KV 传输与集合通信争用。关（默认）= 0.50 三层 α-β 模型，结果逐位不变"><input type="checkbox" id="fab-enabled"> 拓扑感知集合通信（0.59） <span class="tag assume">假设</span></label>
-    <div id="fab-inputs" hidden>
-      <div class="row3">
-        <label title="节点内 scale-up 物理拓扑：switch = 非阻塞交换；full_mesh = 全互连（每卡 n−1 条直连，k 个成员只能用其间的 k−1 条）；ring = 双向环（每卡 2 端口，组不绕满环时退化为链）；torus2d = 二维环面（每卡 4 端口）">节点内拓扑<select id="fab-link_topology"></select></label>
-        <label title="跨节点拓扑：fat-tree / leaf-spine（每个 leaf 下若干整节点，上行收敛）或 rail-optimized（每节点第 j 张 NIC 接第 j 个 rail 交换机，跨 rail 流量先走节点内 scale-up，即 PXN）">跨节点拓扑<select id="fab-net_topology"></select></label>
-        <label title="leaf 上行收敛比（下行 : 上行）；1 = 非阻塞。离开 leaf 的流量份额 f 按 max(1, r·f) 变慢">收敛比 r:1 <span class="tag assume">假设</span><input type="number" id="fab-oversub" step="1" min="1" max="64"></label>
-      </div>
-      <div class="row3">
-        <label title="auto = 每次集合通信取 ring / tree / hier 中最快者（按 带宽时间 + 时延）；也可强制某一种（all-to-all 固定为直接交换，allgather 无 tree）">集合通信算法<select id="fab-algo"></select></label>
-        <label title="每个 leaf（fat-tree）/ 每个 rail 交换机（rail）下的节点数；0 = 由交换机端口数与收敛比推出（下行端口 = 端口数·r/(1+r)）">每 leaf 节点数 <span class="tag assume">假设</span><input type="number" id="fab-leaf_nodes" step="1" min="0"></label>
-        <label title="leaf / rail 交换机端口数（只在每 leaf 节点数 = 0 时用）">交换机端口数 <span class="tag assume">假设</span><input type="number" id="fab-switch_radix" step="8" min="4"></label>
-      </div>
-      <div class="row3">
-        <label title="网内归约（厂商选项）：net = 跨节点交换机内聚合（SHARP / CollNet 类，allreduce），net+link 另含节点内交换式 scale-up（NVLS 类）：allreduce 每 rank 只收发一次数据；0.61 起 allgather / reduce-scatter 在该层也可走交换机多播 / 归约（字节不变，一次交换机往返代替 n − 1 步）">网内归约 <span class="tag assume">假设</span><select id="fab-innet_reduce"></select></label>
-        <label title="torus2d 的 X 维长度；0 = 取最接近 √n 的因数">torus X<input type="number" id="fab-torus_x" step="1" min="0"></label>
-        <label class="inline" title="PD KV 传输与两池自身的跨节点集合通信共用 NIC：KV 可用带宽 × (1 − 集合通信占用率)"><input type="checkbox" id="fab-contention"> KV 与集合通信争用 <span class="tag assume">假设</span></label>
-      </div>
-      <div class="row2">
-        <label title="每步时延 µs：D2D / 节点内（ring、tree 每一步）；默认节点内 0.6 µs 取 NCCL tuner 的 NVLink LL 默认值作数量级参考">每步时延 D2D / 节点内 µs <span class="tag assume">假设</span><span class="row2"><input type="number" id="fab-hop_d2d_us" step="0.1" min="0"><input type="number" id="fab-hop_link_us" step="0.1" min="0"></span></label>
-        <label title="跨节点每步时延 µs：ring 步 / tree 步；默认 2.7 / 5.0 µs 取 NCCL tuner 的 NET LL 默认值作数量级参考">每步时延 网络 ring / tree µs <span class="tag assume">假设</span><span class="row2"><input type="number" id="fab-hop_net_us" step="0.5" min="0"><input type="number" id="fab-hop_net_tree_us" step="0.5" min="0"></span></label>
-        <label title="0.124：每个集合通信拆成 N 个 channel（NCCL nChannels），每个 channel 由一个拷贝引擎（SM / DMA 队列）驱动、上限 X GB/s；节点内 / 跨节点层的有效带宽 = min(链路, N × X)。两项都填才生效，空 = 关">通道数 × 每通道 GB/s <span class="tag assume">假设</span><span class="row2"><input type="number" id="fab-channels" step="1" min="0"><input type="number" id="fab-channel_GBps" step="1" min="0"></span></label>
-      </div>
-      <div class="row3">
-        <label title="0.60：跨节点 fat-tree 层数。2 = leaf-spine（0.59）；3 = leaf / spine / core：每个 pod 若干 leaf，spine → core 上行再收敛 r₂。离开 pod 的流量份额 f_pod 按 r·r₂·f_pod 变慢（rail 拓扑保持两层）">网络层数 <span class="tag assume">假设</span><select id="fab-net_tiers"></select></label>
-        <label title="0.60（三层）：每个 pod 的节点数；0 = 每 leaf 节点数 × spine 下行端口数（端口数·r₂/(1+r₂)）。须为每 leaf 节点数的整数倍">每 pod 节点数 <span class="tag assume">假设</span><input type="number" id="fab-pod_nodes" step="1" min="0"></label>
-        <label title="0.60（三层）：spine → core 上行收敛比 r₂（下行 : 上行），叠加在 leaf 收敛比 r 之上；1 = 非阻塞">spine 收敛比 r₂:1 <span class="tag assume">假设</span><input type="number" id="fab-oversub_spine" step="1" min="1" max="64"></label>
-      </div>
-      <div class="row3">
-        <label title="0.60：同一流水级内各集合通信的链路时间如何合成。sum = 相加（0.59）；ports = D2D PHY、scale-up 端口、NIC 是不同物理端口可同时工作，同端口串行：级链路时间 = 最忙端口的忙时之和（不低于最长的单次集合通信）">层间重叠 <span class="tag assume">假设</span><select id="fab-overlap"></select></label>
-        <label class="inline" title="0.60（PD）：KV 流占 decode 池 NIC 的份额 u_kv 反馈到 decode 池的跨节点集合通信（网络带宽 × (1 − u_kv)），decode TPOT 重算（不动点迭代）"><input type="checkbox" id="fab-kv_feedback"> KV 争用回馈 decode TPOT <span class="tag assume">假设</span></label>
-        <label class="inline" title="0.121（PD，需先勾选上一项）：同一 KV 份额也占 prefill 池（发送端）NIC，prefill 池跨节点集合通信带宽 × (1 − u_kv)，prefill TTFT 与请求速率在同一不动点内重算"><input type="checkbox" id="fab-kv_feedback_prefill"> 回馈 prefill TTFT <span class="tag assume">假设</span></label>
-      </div>
-      <div class="row3">
-        <label title="0.61：跨节点每一步若离开 leaf（leaf → spine → leaf，多经过两级交换）额外增加的时延 µs，叠加在网络 ring / tree 每步时延上；tree 只有跨 leaf 的层（相距 2^j ≥ 每 leaf 组内节点数）计入；0 = 不计（0.60）">跨 leaf 每步附加 µs <span class="tag assume">假设</span><input type="number" id="fab-hop_spine_us" step="0.1" min="0"></label>
-        <label title="0.61（三层）：每一步若离开 pod（spine → core → spine）再额外增加的时延 µs；0 = 不计">跨 pod 每步附加 µs <span class="tag assume">假设</span><input type="number" id="fab-hop_core_us" step="0.1" min="0"></label>
-        <label title="0.61：NCCL 类传输协议。off = 0.60（LL 时延 + 满带宽，偏乐观）；auto = 每次集合通信取最快：LL 带宽效率 ½（每 8 B 含 4 B 标志）、LL128 120/128、Simple 1；每步时延按 NCCL tuner 的协议比例放大（每步时延输入视为 LL 值）——小消息选 LL，大消息选 Simple / LL128">传输协议 <span class="tag assume">假设</span><select id="fab-protocol"></select></label>
-      </div>
-    </div>
-  </section>
-
-  <section class="grp full-only" id="wl-grp">
-    <h3>工作负载 <span class="small muted" id="wl-kind"></span></h3>
-    <div class="row3 gen-only">
-      <label class="video-only">帧数<input type="number" id="w-frames" min="1" max="1024" step="4"></label>
-      <label>高 px<input type="number" id="w-height" min="16" max="4096" step="16"></label>
-      <label>宽 px<input type="number" id="w-width" min="16" max="4096" step="16"></label>
-      <label>去噪步数<input type="number" id="w-steps" min="1" max="1000" step="1"></label>
-      <label title="每个去噪步的前向次数：2 = classifier-free guidance（cond + uncond），1 = 关闭 CFG / 蒸馏">CFG 前向 / 步<input type="number" id="w-cfg" min="1" max="2" step="1"></label>
-      <label title="TeaCache 式跳步（0.167）：跳过的去噪步只跑嵌入与输出头，加上缓存的残差。跳几步取决于阈值和内容，请按实测填写（默认 0 = 关）">跳步数 <span class="tag assume">假设</span><input type="number" id="w-step_skip" min="0" max="1000" step="1"></label>
-      <label title="固定计算的步（来源 TeaCache4Wan2.1）：teacache = 第一步与最后一步；teacache_ret = 前 5 步">跳步规则<select id="w-step_cache"><option value="teacache">teacache</option><option value="teacache_ret">teacache_ret</option></select></label>
-      <label><span id="w-clip_slo_s-name">单段 SLO s</span> <span class="tag assume">假设</span><input type="number" id="w-clip_slo_s" min="1" step="60"></label>
-    </div>
-    <div class="row3 gen-only ref-only" hidden>
-      <label title="参考图编辑 / 多参考（FLUX 3 image_cond 流，发布上限 10 张）：每张参考图 VAE 编码后作为 (宽/16)(高/16) 个 token 进入序列——先走自己的分模态块，再与文本、图像 token 一起进入联合单流块；每个去噪步重算（BFL 参考实现无跨步缓存）。0 = 文生图">参考图张数<input type="number" id="w-ref_images" min="0" max="10" step="1" placeholder="0 = 文生图"></label>
-      <label title="参考图原始尺寸（留空 = 与输出同尺寸「假设」）；按发布规则缩放：1 张 → ≤ 4 MP 画布（16 px 网格），≥ 2 张 → 每张 ≤ 1 MP">参考图宽 px<input type="number" id="w-ref_width" min="16" max="8192" step="16" placeholder="同输出"></label>
-      <label title="参考图原始尺寸（留空 = 与输出同尺寸「假设」）">参考图高 px<input type="number" id="w-ref_height" min="16" max="8192" step="16" placeholder="同输出"></label>
-    </div>
-    <label class="inline gen-only" title="默认计入：文本编码器（每请求一次）与 VAE 解码（每段一次）的时间串行加在去噪前后，权重计入首 / 末流水级卡的存储。取消 = 只看 DiT 去噪主干（相当于把它们卸载到别处）"><input type="checkbox" id="w-pipeline" checked> 计入文本编码器与 VAE 解码（时间 + 存储）</label>
-    <div class="row3 gen-only">
-      <label title="文本编码器 / VAE 放在哪里：常驻 = 编码器在首级卡、VAE 在末级卡，与 DiT 同时常驻；分片 = 文本编码器权重按 FSDP 切到本副本全部卡（Wan --t5_fsdp），逐层 all-gather；卸载 = 组件与 DiT 分时占用显存（diffusers enable_model_cpu_offload / Wan --offload_model），每请求从主机重载权重；自动 = 依次取第一个放得下的">组件放置 <span class="tag assume">假设</span>
-        <select id="w-placement"><option value="auto">自动</option><option value="resident">常驻</option><option value="shard">文本编码器分片</option><option value="offload">顺序卸载</option><option value="shard+offload">分片 + 卸载</option></select></label>
-      <label title="卸载时每卡主机 → 卡带宽（「假设」PCIe 5.0 x16 有效约 50 GB/s）">主机带宽 GB/s <span class="tag assume">假设</span><input type="number" id="w-host_GBps" min="1" step="8"></label>
-      <label class="inline" title="diffusers enable_tiling()：CogVideoX（240×360 px tile，重叠 1/6、1/5）与 Mochi（256 px tile，stride 192）与 Wan（diffusers AutoencoderKLWan，256 px tile，stride 192；官方仓库不分块）与 LTX-Video（512 px tile，stride 448）空间分块解码，重叠区重复计算、激活峰值按 tile；HunyuanVideo 与 MiniMax-H3 按发布总是分块；Open-Sora 发布版没有空间分块"><input type="checkbox" id="w-vae_tiling"> VAE 分块解码</label>
-    </div>
-    <div class="row3 gen-only">
-      <label class="inline" title="DiT 权重按 FSDP 在同一流水级的 SP·DP 卡之间分片（Wan --dit_fsdp）：每卡存 1/(SP·DP) + 2 层预取缓冲，每次前向逐层 all-gather（与计算重叠，每层一次 α），gather 结果写入 DRAM 再读；需要 SP·DP > 1"><input type="checkbox" id="w-dit_fsdp"> DiT 权重 FSDP 分片</label>
-      <label class="inline" title="文本编码器在主机 CPU 上运行（Wan --t5_cpu）：卡上不放编码器权重与激活；编码时间 = 编码器 FLOPs / 主机有效算力（「假设」，请按实测填写）"><input type="checkbox" id="w-te_cpu"> 文本编码器放主机 CPU</label>
-      <label title="--t5_cpu 时主机 CPU 跑文本编码器的有效算力（「假设」，默认 2 TFLOPS；请按实测填写）">主机 TFLOPS <span class="tag assume">假设</span><input type="number" id="w-host_TFLOPS" min="0.1" step="0.5"></label>
-    </div>
-    <div class="row3 gen-only">
-      <label class="inline" title="分块 VAE 解码拆到本副本全部 PP·TP·SP 卡（MiniMax-H3 发布配置 vae_parallel_tiling：每个分块调用内 rank r 解 r、r+N、… 号 tile，再 all-gather 解码后的像素 tile）：tile 互相独立、算术不变；时间 = 最慢卡的 tile + 每轮一次 all-gather；VAE 权重每卡一份。需分块解码（HunyuanVideo / H3 总是分块，其余开「VAE 分块解码」）；H3 以外为设计选项"><input type="checkbox" id="w-vae_parallel"> VAE 多卡分块并行解码</label>
-      <label class="inline" title="跨请求重叠：文本编码器在主机 CPU（需同时勾选「文本编码器放主机 CPU」）时，主机编码下一请求与卡上去噪 / 解码当前请求并行；稳态周期 = max(卡忙, 主机忙)，单段延迟不变、吞吐按周期计。组件同卡时没有独立资源，按串行计"><input type="checkbox" id="w-overlap"> 跨请求重叠（主机编码 ∥ 去噪）</label>
-    </div>
-    <div class="row3 protein-only">
-      <label><span id="w-seq_len-name">序列长度（残基）</span><input type="number" id="w-seq_len" min="1" max="65536" step="64"></label>
-      <label class="seq-slo">批延迟 SLO ms <span class="tag assume">假设</span><input type="number" id="w-seq_slo_ms" min="1" step="50"></label>
-      <label class="pair-only">批延迟 SLO s <span class="tag assume">假设</span><input type="number" id="w-fold_slo_s" min="1" step="10"></label>
-    </div>
-    <div class="row3 pair-only">
-      <label title="MSA 行数（AF2 / OpenFold 为 MSA 聚类行；无聚类 MSA 的模型为 extra MSA 行）；单序列模型无此项">MSA 行数<input type="number" id="w-msa" min="1" max="65536" step="64"></label>
-      <label title="主干（trunk）前向遍数，含第一遍：recycle 次数 + 1">主干遍数<input type="number" id="w-recycles" min="1" max="64" step="1"></label>
-      <label class="diff-only" title="扩散模块去噪步数（每步扩散 transformer 一次前向）">扩散步数<input type="number" id="w-psteps" min="1" max="1000" step="10"></label>
-      <label class="diff-only" title="每条序列采样的结构数（扩散 + 置信度头按样本数成倍；pair 条件共享）">扩散样本数<input type="number" id="w-samples" min="1" max="64" step="1"></label>
-      <label class="inline diff-only" title="DAP > 1 时把扩散样本分到 DAP 各卡（每卡 ⌈样本 / DAP⌉ 条轨迹；样本间独立、条件已在每卡上 → 精确、无额外通信）；取消 = 每卡重复全部样本"><input type="checkbox" id="w-sample_split" checked> DAP 时扩散样本分卡</label>
-    </div>
-    <div class="row3 pair-only">
-      <label title="三角注意力内核：融合 = flash 式（不物化 logits，默认）；物化 = 参考 PyTorch 实现整块写出 H·N³ logits；分块 = chunk_layer 每次 chunk 行；参考实现 = 发布代码在该 N 下的做法（ESMFold 不分块、OpenFold / AF2 chunk 4、Boltz-1 N>384 → 128 否则 512、Protenix 按 N 阈值）">三角注意力内核<select id="w-tri_attn">
-        <option value="fused">融合（flash 式）</option><option value="reference">参考实现</option>
-        <option value="materialized">物化 logits</option><option value="chunked">分块</option></select></label>
-      <label title="分块时每块的行数（0 = 参考实现的默认块大小）">分块行数<input type="number" id="w-tri_chunk" min="0" max="65536" step="1" placeholder="参考默认"></label>
-    </div>
-    <div class="small muted" id="wl-note"></div>
-  </section>
-
-  <section class="grp">
-    <h3>服务</h3>
+  <details class="grp sec" id="sec-workload" open>
+    <summary><h3>工作负载</h3><span class="sec-sum" id="sec-workload-sum"></span></summary>
+    <div class="small muted wl-kind" id="wl-kind"></div>
     <div class="seg llm-only" id="phase"><button data-v="decode">decode</button><button data-v="prefill">prefill</button></div>
     <div class="row3">
       <label><span id="batch-label">batch</span><input type="number" id="s-batch" min="1" step="1"></label>
       <label class="llm-only">上下文<input type="number" id="s-ctx" min="1" step="512"></label>
       <label class="llm-only">prompt 长度<input type="number" id="s-prompt" min="1" step="512"></label>
       <label class="llm-only">输出长度<input type="number" id="s-out_len" min="1" step="128"></label>
-      <label class="llm-only">投机 k<input type="number" id="s-spec_k" min="0" max="16" step="1"></label>
-      <label class="llm-only">接受率<input type="number" id="s-spec_accept" min="0" max="1" step="0.05"></label>
-      <label class="llm-only" title="0.222：独立草稿模型（自己的权重 + KV，同卡、同 TP）：每步 k 次草稿解码 + 目标验证 1 + k 个 token。空 = 用目标自带的 MTP / DSpark。接受率为「假设」杠杆">草稿模型 <span class="tag assume">假设</span><select id="s-draft_model"><option value="">（目标自带 MTP / DSpark）</option></select><span class="small warn" id="s-draft-warn"></span></label>
-      <label class="llm-only" title="0.223：混合 / 线性注意力层的投机验证回滚。snapshot = SGLang 默认（每个草稿 token 一个中间状态，q× 状态显存）；replay = SGLang ReplaySSM（--enable-linear-replayssm-spec：紧凑环形缓冲，重放 + 折叠计算，无 q× 中间状态）">投机回滚<select id="s-spec_rollback"><option value="snapshot">snapshot（默认）</option><option value="replay">replay（ReplaySSM）</option></select></label>
-      <label class="llm-only" title="0.224：树形草稿（EAGLE / SGLang --speculative-eagle-topk）：每步保留的分支数，1 = 线性链">树 topk<input type="number" id="s-spec_topk" min="1" max="10" step="1"></label>
-      <label class="llm-only" title="0.224：树形验证 token 数（含根，SGLang --speculative-num-draft-tokens）；0 = 自动 1 + k·topk（≤ 64）">树 token<input type="number" id="s-spec_draft_tokens" min="0" max="64" step="1"></label>
-      <label class="llm-only" title="0.226：树的接受率模型（主值）。chain = 下界，默认（树的 top-1 路径即同深度链，τ 不增；对照 EAGLE-1 已发表链/树配对低估 −17…−19 %）；rank = Sequoia 位次接受向量 + SGLang 式树选择（+1…+4 %，单一来源向量）；indep = 兄弟节点独立同分布（0.224「假设」，上界，高估 +49…+63 %）。区间 [chain, indep] 始终显示">树接受率 <span class="tag assume">假设</span><select id="s-spec_tree_accept_model"><option value="chain">chain（下界，默认）</option><option value="rank">rank（Sequoia 位次向量）</option><option value="indep">indep（上界）</option></select></label>
-      <label class="llm-only" title="0.224：radix 前缀缓存每 N token 追踪一次混合层状态（SGLang --mamba-track-interval，开启时默认 256）；0 = 关">状态追踪间隔<input type="number" id="s-mamba_track_interval" min="0" max="1048576" step="1"></label>
-      <label class="llm-only" title="0.253：草稿轮的采样方式。greedy = 温度 0（默认）；sampled = 温度 &gt; 0：DSpine 另跑一次 fp32 serial_rs_table（每个草稿行 K 个发送者 × 桥接 + K 个候选 logits）+ 采样链（sglang_dspine DSpineDraftSampler.sample「来源」）">草稿采样<select id="s-spec_sampling"><option value="greedy">greedy（T = 0，默认）</option><option value="sampled">sampled（T &gt; 0）</option></select></label>
-      <label class="llm-only" title="0.253：接受率来源。manual = 上面的接受率（「假设」杠杆，默认）；published = 草稿模型卡公布的接受长度 τ（按草稿采样选 T = 0 / T = 1）反推的 i.i.d. 接受率「推导」；没有公开 τ 的草稿仍用手填值">接受率来源<select id="s-spec_accept_src"><option value="manual">manual（手填，默认）</option><option value="published">published（公开 τ）</option></select></label>
       <label class="llm-only loop-only" hidden title="0.253：循环 LM（NVIDIA Nemotron-Labs Dory）共享循环块每个 token 的执行次数（n_recurrent_loops，空 = 发布 config 的 2）。循环块权重只存一份，但每次循环重读；模型卡推荐 1 / 2 / 4">循环次数<input type="number" id="w-loops" min="1" max="16" step="1" placeholder="2（发布）"></label>
       <label class="llm-only loop-only" hidden title="0.253：循环块的 KV 缓存（recurrent_kv_cache_mode）。per_loop = 每次循环一份（vLLM 默认，KV 随循环次数增长）；last_loop = 每个循环注意力层一份，各次循环覆盖本步行（KV 与 1 次循环相同，读写量不变）">循环 KV<select id="w-loop_kv"><option value="per_loop">per_loop（默认）</option><option value="last_loop">last_loop</option></select></label>
-      <span class="small warn" id="s-tree-warn"></span>
       <label class="llm-only">TPOT SLO ms<input type="number" id="s-tpot_slo_ms" min="1" step="5"></label>
       <label class="llm-only">TTFT SLO ms<input type="number" id="s-ttft_slo_ms" min="1" step="100"></label>
-      <label>微批数<input type="number" id="s-microbatches" min="0" step="1" title="0 = 自动（= PP）"></label>
+    </div>
+    <div class="row3 llm-only">
       <label class="vlm-only" title="每请求图像数（VLM）：视觉编码器在 prefill 时运行（与语言 prefill 串行），图像 token 加进 prompt 与 KV。默认 0 = 只算文本">图像 / 请求<input type="number" id="s-images" min="0" max="64" step="1"></label>
       <label class="vlm-only" title="图像宽（像素），按各模型发布的预处理器缩放 / 切块；默认 1024×1024 「假设」">图像宽 px <span class="tag assume">假设</span><input type="number" id="s-image_w" min="1" max="16384" step="64"></label>
       <label class="vlm-only" title="图像高（像素）">图像高 px<input type="number" id="s-image_h" min="1" max="16384" step="64"></label>
@@ -256,13 +60,90 @@
       <label class="video-only" title="每段采样帧数（处理器默认 2 fps，4…768；默认 32 「假设」）">视频帧数 <span class="tag assume">假设</span><input type="number" id="s-video_frames" min="2" max="768" step="2"></label>
       <label class="video-only" title="视频源宽（像素，默认 1280 「假设」）">视频宽 px<input type="number" id="s-video_w" min="1" max="16384" step="64"></label>
       <label class="video-only" title="视频源高（像素，默认 720 「假设」）">视频高 px<input type="number" id="s-video_h" min="1" max="16384" step="64"></label>
+    </div>
+    <label class="inline"><input type="checkbox" id="best-batch"> <span id="best-batch-label">自动取满足 TPOT SLO 的最大 batch</span></label>
+    <div class="full-only" id="wl-grp">
+      <div class="row3 gen-only">
+        <label class="vgen-only">帧数<input type="number" id="w-frames" min="1" max="1024" step="4"></label>
+        <label>高 px<input type="number" id="w-height" min="16" max="4096" step="16"></label>
+        <label>宽 px<input type="number" id="w-width" min="16" max="4096" step="16"></label>
+        <label>去噪步数<input type="number" id="w-steps" min="1" max="1000" step="1"></label>
+        <label title="每个去噪步的前向次数：2 = classifier-free guidance（cond + uncond），1 = 关闭 CFG / 蒸馏">CFG 前向 / 步<input type="number" id="w-cfg" min="1" max="2" step="1"></label>
+        <label title="TeaCache 式跳步（0.167）：跳过的去噪步只跑嵌入与输出头，加上缓存的残差。跳几步取决于阈值和内容，请按实测填写（默认 0 = 关）">跳步数 <span class="tag assume">假设</span><input type="number" id="w-step_skip" min="0" max="1000" step="1"></label>
+        <label title="固定计算的步（来源 TeaCache4Wan2.1）：teacache = 第一步与最后一步；teacache_ret = 前 5 步">跳步规则<select id="w-step_cache"><option value="teacache">teacache</option><option value="teacache_ret">teacache_ret</option></select></label>
+        <label><span id="w-clip_slo_s-name">单段 SLO s</span> <span class="tag assume">假设</span><input type="number" id="w-clip_slo_s" min="1" step="60"></label>
+      </div>
+      <div class="row3 gen-only ref-only" hidden>
+        <label title="参考图编辑 / 多参考（FLUX 3 image_cond 流，发布上限 10 张）：每张参考图 VAE 编码后作为 (宽/16)(高/16) 个 token 进入序列——先走自己的分模态块，再与文本、图像 token 一起进入联合单流块；每个去噪步重算（BFL 参考实现无跨步缓存）。0 = 文生图">参考图张数<input type="number" id="w-ref_images" min="0" max="10" step="1" placeholder="0 = 文生图"></label>
+        <label title="参考图原始尺寸（留空 = 与输出同尺寸「假设」）；按发布规则缩放：1 张 → ≤ 4 MP 画布（16 px 网格），≥ 2 张 → 每张 ≤ 1 MP">参考图宽 px<input type="number" id="w-ref_width" min="16" max="8192" step="16" placeholder="同输出"></label>
+        <label title="参考图原始尺寸（留空 = 与输出同尺寸「假设」）">参考图高 px<input type="number" id="w-ref_height" min="16" max="8192" step="16" placeholder="同输出"></label>
+        <label title="0.255 模态流复用（SGLang flux3_image StaticStreams）：第 1 步保留文本与参考图分模态块的输出及其单流调制，第 2…n 步只跑图像分模态块；仅 Base（非 flow map）、SP = 1、PP = 1 时生效。关 = BFL / diffusers 参考实现（每步重算）">模态流复用 <span class="tag whatif">what-if</span><select id="w-mode_cache"><option value="off">关（参考实现）</option><option value="on">开（SGLang）</option></select></label>
+      </div>
+      <label class="inline gen-only" title="默认计入：文本编码器（每请求一次）与 VAE 解码（每段一次）的时间串行加在去噪前后，权重计入首 / 末流水级卡的存储。取消 = 只看 DiT 去噪主干（相当于把它们卸载到别处）"><input type="checkbox" id="w-pipeline" checked> 计入文本编码器与 VAE 解码（时间 + 存储）</label>
+      <div class="row3 gen-only">
+        <label title="文本编码器 / VAE 放在哪里：常驻 = 编码器在首级卡、VAE 在末级卡，与 DiT 同时常驻；分片 = 文本编码器权重按 FSDP 切到本副本全部卡（Wan --t5_fsdp），逐层 all-gather；卸载 = 组件与 DiT 分时占用显存（diffusers enable_model_cpu_offload / Wan --offload_model），每请求从主机重载权重；自动 = 依次取第一个放得下的">组件放置 <span class="tag assume">假设</span>
+          <select id="w-placement"><option value="auto">自动</option><option value="resident">常驻</option><option value="shard">文本编码器分片</option><option value="offload">顺序卸载</option><option value="shard+offload">分片 + 卸载</option></select></label>
+        <label title="卸载时每卡主机 → 卡带宽（「假设」PCIe 5.0 x16 有效约 50 GB/s）">主机带宽 GB/s <span class="tag assume">假设</span><input type="number" id="w-host_GBps" min="1" step="8"></label>
+        <label class="inline" title="diffusers enable_tiling()：CogVideoX（240×360 px tile，重叠 1/6、1/5）与 Mochi（256 px tile，stride 192）与 Wan（diffusers AutoencoderKLWan，256 px tile，stride 192；官方仓库不分块）与 LTX-Video（512 px tile，stride 448）空间分块解码，重叠区重复计算、激活峰值按 tile；HunyuanVideo 与 MiniMax-H3 按发布总是分块；Open-Sora 发布版没有空间分块"><input type="checkbox" id="w-vae_tiling"> VAE 分块解码</label>
+      </div>
+      <div class="row3 gen-only">
+        <label class="inline" title="DiT 权重按 FSDP 在同一流水级的 SP·DP 卡之间分片（Wan --dit_fsdp）：每卡存 1/(SP·DP) + 2 层预取缓冲，每次前向逐层 all-gather（与计算重叠，每层一次 α），gather 结果写入 DRAM 再读；需要 SP·DP > 1"><input type="checkbox" id="w-dit_fsdp"> DiT 权重 FSDP 分片</label>
+        <label class="inline" title="文本编码器在主机 CPU 上运行（Wan --t5_cpu）：卡上不放编码器权重与激活；编码时间 = 编码器 FLOPs / 主机有效算力（「假设」，请按实测填写）"><input type="checkbox" id="w-te_cpu"> 文本编码器放主机 CPU</label>
+        <label title="--t5_cpu 时主机 CPU 跑文本编码器的有效算力（「假设」，默认 2 TFLOPS；请按实测填写）">主机 TFLOPS <span class="tag assume">假设</span><input type="number" id="w-host_TFLOPS" min="0.1" step="0.5"></label>
+      </div>
+      <div class="row3 gen-only">
+        <label class="inline" title="分块 VAE 解码拆到本副本全部 PP·TP·SP 卡（MiniMax-H3 发布配置 vae_parallel_tiling：每个分块调用内 rank r 解 r、r+N、… 号 tile，再 all-gather 解码后的像素 tile）：tile 互相独立、算术不变；时间 = 最慢卡的 tile + 每轮一次 all-gather；VAE 权重每卡一份。需分块解码（HunyuanVideo / H3 总是分块，其余开「VAE 分块解码」）；H3 以外为设计选项"><input type="checkbox" id="w-vae_parallel"> VAE 多卡分块并行解码</label>
+        <label class="inline" title="跨请求重叠：文本编码器在主机 CPU（需同时勾选「文本编码器放主机 CPU」）时，主机编码下一请求与卡上去噪 / 解码当前请求并行；稳态周期 = max(卡忙, 主机忙)，单段延迟不变、吞吐按周期计。组件同卡时没有独立资源，按串行计"><input type="checkbox" id="w-overlap"> 跨请求重叠（主机编码 ∥ 去噪）</label>
+      </div>
+      <div class="row3 protein-only">
+        <label><span id="w-seq_len-name">序列长度（残基）</span><input type="number" id="w-seq_len" min="1" max="65536" step="64"></label>
+        <label class="seq-slo">批延迟 SLO ms <span class="tag assume">假设</span><input type="number" id="w-seq_slo_ms" min="1" step="50"></label>
+        <label class="pair-only">批延迟 SLO s <span class="tag assume">假设</span><input type="number" id="w-fold_slo_s" min="1" step="10"></label>
+      </div>
+      <div class="row3 pair-only">
+        <label title="MSA 行数（AF2 / OpenFold 为 MSA 聚类行；无聚类 MSA 的模型为 extra MSA 行）；单序列模型无此项">MSA 行数<input type="number" id="w-msa" min="1" max="65536" step="64"></label>
+        <label title="主干（trunk）前向遍数，含第一遍：recycle 次数 + 1">主干遍数<input type="number" id="w-recycles" min="1" max="64" step="1"></label>
+        <label class="diff-only" title="扩散模块去噪步数（每步扩散 transformer 一次前向）">扩散步数<input type="number" id="w-psteps" min="1" max="1000" step="10"></label>
+        <label class="diff-only" title="每条序列采样的结构数（扩散 + 置信度头按样本数成倍；pair 条件共享）">扩散样本数<input type="number" id="w-samples" min="1" max="64" step="1"></label>
+        <label class="inline diff-only" title="DAP > 1 时把扩散样本分到 DAP 各卡（每卡 ⌈样本 / DAP⌉ 条轨迹；样本间独立、条件已在每卡上 → 精确、无额外通信）；取消 = 每卡重复全部样本"><input type="checkbox" id="w-sample_split" checked> DAP 时扩散样本分卡</label>
+      </div>
+      <div class="row3 pair-only">
+        <label title="三角注意力内核：融合 = flash 式（不物化 logits，默认）；物化 = 参考 PyTorch 实现整块写出 H·N³ logits；分块 = chunk_layer 每次 chunk 行；参考实现 = 发布代码在该 N 下的做法（ESMFold 不分块、OpenFold / AF2 chunk 4、Boltz-1 N>384 → 128 否则 512、Protenix 按 N 阈值）">三角注意力内核<select id="w-tri_attn">
+          <option value="fused">融合（flash 式）</option><option value="reference">参考实现</option>
+          <option value="materialized">物化 logits</option><option value="chunked">分块</option></select></label>
+        <label title="分块时每块的行数（0 = 参考实现的默认块大小）">分块行数<input type="number" id="w-tri_chunk" min="0" max="65536" step="1" placeholder="参考默认"></label>
+      </div>
+      <div class="small muted" id="wl-note"></div>
+    </div>
+  </details>
+
+  <details class="grp sec llm-only" id="sec-spec" open>
+    <summary><h3>投机解码</h3><span class="sec-sum" id="sec-spec-sum"></span></summary>
+    <div class="row3">
+      <label>投机 k<input type="number" id="s-spec_k" min="0" max="16" step="1"></label>
+      <label class="spec-adv">接受率<input type="number" id="s-spec_accept" min="0" max="1" step="0.05"></label>
+      <label title="0.222：独立草稿模型（自己的权重 + KV，同卡、同 TP）：每步 k 次草稿解码 + 目标验证 1 + k 个 token。空 = 用目标自带的 MTP / DSpark。接受率为「假设」杠杆">草稿模型 <span class="tag assume">假设</span><select id="s-draft_model"><option value="">（目标自带 MTP / DSpark）</option></select><span class="small warn" id="s-draft-warn"></span></label>
+      <label class="spec-adv" title="0.223：混合 / 线性注意力层的投机验证回滚。snapshot = SGLang 默认（每个草稿 token 一个中间状态，q× 状态显存）；replay = SGLang ReplaySSM（--enable-linear-replayssm-spec：紧凑环形缓冲，重放 + 折叠计算，无 q× 中间状态）">投机回滚<select id="s-spec_rollback"><option value="snapshot">snapshot（默认）</option><option value="replay">replay（ReplaySSM）</option></select></label>
+      <label class="spec-adv" title="0.224：树形草稿（EAGLE / SGLang --speculative-eagle-topk）：每步保留的分支数，1 = 线性链">树 topk<input type="number" id="s-spec_topk" min="1" max="10" step="1"></label>
+      <label class="spec-adv" title="0.224：树形验证 token 数（含根，SGLang --speculative-num-draft-tokens）；0 = 自动 1 + k·topk（≤ 64）">树 token<input type="number" id="s-spec_draft_tokens" min="0" max="64" step="1"></label>
+      <label class="spec-adv spec-tree" title="0.226：树的接受率模型（主值）。chain = 下界，默认（树的 top-1 路径即同深度链，τ 不增；对照 EAGLE-1 已发表链/树配对低估 −17…−19 %）；rank = Sequoia 位次接受向量 + SGLang 式树选择（+1…+4 %，单一来源向量）；indep = 兄弟节点独立同分布（0.224「假设」，上界，高估 +49…+63 %）。区间 [chain, indep] 始终显示">树接受率 <span class="tag assume">假设</span><select id="s-spec_tree_accept_model"><option value="chain">chain（下界，默认）</option><option value="rank">rank（Sequoia 位次向量）</option><option value="indep">indep（上界）</option></select></label>
+      <label class="spec-adv" title="0.253：草稿轮的采样方式。greedy = 温度 0（默认）；sampled = 温度 &gt; 0：DSpine 另跑一次 fp32 serial_rs_table（每个草稿行 K 个发送者 × 桥接 + K 个候选 logits）+ 采样链（sglang_dspine DSpineDraftSampler.sample「来源」）">草稿采样<select id="s-spec_sampling"><option value="greedy">greedy（T = 0，默认）</option><option value="sampled">sampled（T &gt; 0）</option></select></label>
+      <label class="spec-adv" title="0.253：接受率来源。manual = 上面的接受率（「假设」杠杆，默认）；published = 草稿模型卡公布的接受长度 τ（按草稿采样选 T = 0 / T = 1）反推的 i.i.d. 接受率「推导」；没有公开 τ 的草稿仍用手填值">接受率来源<select id="s-spec_accept_src"><option value="manual">manual（手填，默认）</option><option value="published">published（公开 τ）</option></select></label>
+    </div>
+      <span class="small warn" id="s-tree-warn"></span>
+    <div class="small muted" id="spec-off-note">投机 k = 0（关）：设 k ≥ 1 后显示草稿采样、接受率来源、回滚、树形草稿等参数。</div>
+  </details>
+
+  <details class="grp sec" id="sec-serve" open>
+    <summary><h3>服务调度（主机开销 · PD 分离 · 排队）</h3><span class="sec-sum" id="sec-serve-sum"></span></summary>
+    <div class="row3">
       <label title="主机 / 运行时每步开销（0.164，µs，「假设」，默认 0 = 不计；来源只有定性描述，请按实测填）">主机 µs/步 <span class="tag assume">假设</span><input type="number" id="h-host_step_us" min="0" step="50"></label>
       <label title="主机每序列每步开销（µs，「假设」，默认 0）">主机 µs/序列 <span class="tag assume">假设</span><input type="number" id="h-host_seq_us" min="0" step="5"></label>
       <label title="serial = 主机时间加在设备步上；async = 与设备步重叠，只暴露超出部分">主机重叠<select id="h-host_overlap"><option value="serial">serial</option><option value="async">async</option></select></label>
       <label title="decode 多步调度：主机开销摊到 N 步（1…64）">多步调度<input type="number" id="h-host_steps" min="1" max="64" step="1"></label>
       <label class="moe-only" title="MoE 负载倾斜：最忙的 EP rank 收到的 token-专家对 / 平均值。1 = 均匀路由（默认）。最忙 rank 决定级时间；all-to-all 按最忙 rank 的载荷计；能耗计数不变（倾斜只在 rank 间搬工作）。实测每专家 token 分布可经 API / CLI 的 moe_expert_load 给出">MoE 倾斜 <span class="tag assume">假设</span><input type="number" id="s-moe_skew" min="1" max="64" step="0.05"></label>
+      <label class="llm-only" title="0.224：radix 前缀缓存每 N token 追踪一次混合层状态（SGLang --mamba-track-interval，开启时默认 256）；0 = 关">状态追踪间隔<input type="number" id="s-mamba_track_interval" min="0" max="1048576" step="1"></label>
     </div>
-    <label class="inline"><input type="checkbox" id="best-batch"> <span id="best-batch-label">自动取满足 TPOT SLO 的最大 batch</span></label>
     <div class="llm-only" id="pd-grp">
       <label class="inline" title="prefill / decode 分离（PD）：prefill 池与 decode 池用不同的卡（布局可不同），每个请求的 KV 从 prefill 池传到 decode 池（设了每节点卡数则走跨节点网络，否则走节点内 scale-up）。上面的布局 = decode 池布局。稳态流体模型「假设」；排队 / 尾延迟 / 连续批处理 / 分块 prefill 见结果里的「排队与尾延迟」表（解析近似「假设」）"><input type="checkbox" id="pd-enabled"> PD 分离（prefill / decode 分池）</label>
       <div id="pd-inputs" hidden>
@@ -332,10 +213,147 @@
         </div>
       </div>
     </div>
-  </section>
+  </details>
 
-  <section class="grp">
-    <h3>资源 / 面积预算 <span class="tag assume">用户提供</span></h3>
+  <details class="grp sec" id="sec-par" open>
+    <summary><h3>卡数、并行与互连</h3><span class="sec-sum" id="sec-par-sum"></span></summary>
+    <div class="row3">
+      <label>卡数（每副本）<input type="number" id="l-cards" min="1" max="8192" step="1"></label>
+      <div class="span2 small muted" id="cards-note"></div>
+    </div>
+    <div class="row5" id="layout-row">
+      <label>PP<input type="number" id="l-pp" min="1" step="1"></label>
+      <label class="tp-in">TP<input type="number" id="l-tp" min="1" step="1"></label>
+      <label class="dp-in">DP<input type="number" id="l-dp" min="1" step="1"></label>
+      <label class="moe-only">EP<input type="number" id="l-ep" min="1" step="1"></label>
+      <label class="moe-only">ETP<input type="number" id="l-etp" min="1" step="1"></label>
+      <label class="cp-in" title="0.88：上下文并行（环形注意力，zigzag 负载均衡），只用于 LLM prefill：每张 CP 卡持有每条序列 1/CP 的 token 与其 KV 分片，KV 块在 CP 组内环形传递（每层一次 all-gather）；权重在 CP 卡间复制。MoE：EP·ETP = TP·DP·CP。decode 不支持（PD 时放在 prefill 布局）；线性 / 滑窗 / 压缩 KV 模型不支持">CP <span class="tag assume">假设</span><input type="number" id="l-cp" min="1" step="1"></label>
+      <label class="full-only sp-in" id="l-sp-lab" title="Ulysses 序列并行：token 按 SP 切分，注意力前后各一次 all-to-all（每 rank 算 heads/SP 个头的完整序列）"><span id="l-sp-name">SP</span><input type="number" id="l-sp" min="1" step="1"></label>
+    </div>
+    <label class="inline" title="0.62：流水级怎样切层。cost（默认）= 按每层代价（含嵌入 / 输出头 / MTP / 级间传递，按级时间规则 max(阵列, 向量, DRAM, 链路) + 同步）找使最慢级最快的连续切分，再与按层数均分的结果在完整模型上比较，取更快且放得下的；layers = 按层数均分（0.61 及以前）">PP 切分<select id="l-pp_split"><option value="cost">按代价平衡（默认）</option><option value="layers">按层数均分</option></select></label>
+    <div class="row3">
+        <label>微批数<input type="number" id="s-microbatches" min="0" step="1" title="0 = 自动（= PP）"></label>
+    </div>
+    <label class="inline" title="0.87：稀疏注意力 indexer（DeepSeek-V3.2 / V4、GLM-5 类 DSA）在注意力 TP 上怎样部署。按发布（默认）= V3.2 / GLM-5 每个 TP rank 重复算全部 indexer 头，V4 按头切分；重复 = 每个 rank 都算全部头；按头切分 = 头按 TP 列切分 + fp32 打分矩阵 all-reduce（长 prefill 时通信很大）；按键切分 = 缓存的 index 键按 TP 分片，各 rank 局部 top-k 后 all-gather TP·k 个候选再合并（精确，indexer 缓存按 TP 分摊）。没有 indexer 的模型忽略此项">indexer 部署 <span class="tag assume">假设</span><select id="l-indexer"><option value="reference">按发布（默认）</option><option value="replicated">每个 TP rank 重复</option><option value="tp_split">按头切分 + 打分 all-reduce</option><option value="key_split">按键切分 + top-k 汇集</option></select></label>
+    <label class="inline llm-only" title="0.106：注意力掩码 what-if。按发布（默认）= 因果 LLM / 双向编码器保持原样；双向 = 所有自注意力不加因果掩码（整 S² 打分，注意力 FLOP 为因果的 2 倍），prefill 不写 KV cache（编码器式整序列前向）。只用于 prefill；编码器 / DiT 本身已是双向，忽略此项">注意力掩码 <span class="tag assume">what-if</span><select id="l-attn_mode"><option value="reference">按发布（默认）</option><option value="bidir">双向（无因果、无 KV cache）</option></select></label>
+    <div class="small muted moe-only">MoE 约束 EP·ETP = TP·DP（注意力按 TP、DP 切分，专家按 EP、ETP 切分）；修改时自动补齐 ETP。</div>
+    <div class="small muted full-only">视频 / 蛋白质：卡数 = PP·TP·DP·SP。DP 切分前向 batch（视频含 CFG 的 cond / uncond 两路 = CFG 并行）；SP = Ulysses 序列并行，权重在 SP 组内复制。蛋白质结构模型：SP 位置为 DAP（pair / MSA 网格按残基轴切分，FastFold 动态轴并行），无 TP。</div>
+    <button class="btn ghost sm" id="best-layout">搜索当前卡数的最优布局并应用</button>
+    <div class="small muted tier-h">三层互连（0.50）：封装内 D2D（可选）→ 节点内 scale-up → 跨节点网络</div>
+    <label class="inline" title="关（默认）= 单片大 die：每卡一个封装，没有 D2D 层。开 = 芯粒（chiplet）堆叠：每封装若干 die 经 die-to-die 互连"><input type="checkbox" id="d2d-enabled"> D2D 芯粒堆叠（关 = 单片大 die）</label>
+    <div id="d2d-inputs" hidden>
+      <label title="D2D 标准 / 档位（公开数据，见 docs/MODEL.md §9.6）。UCIe-A 48G 为常用默认；NVLink-C2C 为厂商专有接口，仅作参照">D2D 档位<select id="d2d-std"></select></label>
+      <div class="row3">
+        <label title="每个封装内的 die 数；封装内走 D2D，封装之间走节点内 scale-up。卡按 TP → SP → DP → PP 顺序编号">每封装 die 数<input type="number" id="p-package_cards" step="1" min="1"></label>
+        <label title="每个 die 面向封装一侧的 D2D 单元数（UCIe 模块 / BoW slice / 链路）——布图选择">单元数 <span class="tag assume">假设</span><input type="number" id="d2d-units" step="1" min="1" max="64"></label>
+        <label title="D2D 带宽（每 die 单向，原始速率，未扣 flit / 协议开销）= 档位 × 单元数；选「自定义」时可直接输入">D2D GB/s <span class="tag assume">假设</span><input type="number" id="d-GBps" step="64" min="1"></label>
+      </div>
+      <div class="row2">
+        <label title="封装内每次集合通信的同步延迟">D2D α µs <span class="tag assume">假设</span><input type="number" id="d-alpha_us" step="0.1" min="0"></label>
+        <span class="small muted" id="d2d-note"></span>
+      </div>
+    </div>
+    <div class="row2">
+      <label title="节点内 scale-up（封装之间），每 rank 单向带宽">节点内 GB/s <span class="tag assume">假设</span><input type="number" id="k-GBps" step="50" min="1"></label>
+      <label title="节点内每次集合通信的同步 + 启动延迟">节点内 α µs <span class="tag assume">假设</span><input type="number" id="k-alpha_us" step="0.5" min="0"></label>
+    </div>
+    <div class="row3">
+      <label title="每个节点的卡数；节点之间走跨节点网络（IB / RoCEv2）。0 = 整个系统一个节点（默认，跨节点层不用）">每节点卡数<input type="number" id="n-node_cards" step="1" min="0"></label>
+      <label title="跨节点网络每卡单向带宽（默认 50 GB/s = 一张 400 Gb/s NIC）">跨节点 GB/s <span class="tag assume">假设</span><input type="number" id="n-GBps" step="25" min="1"></label>
+      <label title="跨节点每次集合通信的同步延迟">跨节点 α µs <span class="tag assume">假设</span><input type="number" id="n-alpha_us" step="1" min="0"></label>
+    </div>
+    <div class="small muted" id="tier-note"></div>
+    <label class="inline" title="0.59：按拓扑与算法计算集合通信（ring / tree / 分层，α-β + 每步时延）、跨节点 fat-tree 收敛比 / rail-optimized、节点内 scale-up 拓扑、网内归约、PD KV 传输与集合通信争用。关（默认）= 0.50 三层 α-β 模型，结果逐位不变"><input type="checkbox" id="fab-enabled"> 拓扑感知集合通信（0.59） <span class="tag assume">假设</span></label>
+    <div id="fab-inputs" hidden>
+      <div class="row3">
+        <label title="节点内 scale-up 物理拓扑：switch = 非阻塞交换；full_mesh = 全互连（每卡 n−1 条直连，k 个成员只能用其间的 k−1 条）；ring = 双向环（每卡 2 端口，组不绕满环时退化为链）；torus2d = 二维环面（每卡 4 端口）">节点内拓扑<select id="fab-link_topology"></select></label>
+        <label title="跨节点拓扑：fat-tree / leaf-spine（每个 leaf 下若干整节点，上行收敛）或 rail-optimized（每节点第 j 张 NIC 接第 j 个 rail 交换机，跨 rail 流量先走节点内 scale-up，即 PXN）">跨节点拓扑<select id="fab-net_topology"></select></label>
+        <label title="leaf 上行收敛比（下行 : 上行）；1 = 非阻塞。离开 leaf 的流量份额 f 按 max(1, r·f) 变慢">收敛比 r:1 <span class="tag assume">假设</span><input type="number" id="fab-oversub" step="1" min="1" max="64"></label>
+      </div>
+      <div class="row3">
+        <label title="auto = 每次集合通信取 ring / tree / hier 中最快者（按 带宽时间 + 时延）；也可强制某一种（all-to-all 固定为直接交换，allgather 无 tree）">集合通信算法<select id="fab-algo"></select></label>
+        <label title="每个 leaf（fat-tree）/ 每个 rail 交换机（rail）下的节点数；0 = 由交换机端口数与收敛比推出（下行端口 = 端口数·r/(1+r)）">每 leaf 节点数 <span class="tag assume">假设</span><input type="number" id="fab-leaf_nodes" step="1" min="0"></label>
+        <label title="leaf / rail 交换机端口数（只在每 leaf 节点数 = 0 时用）">交换机端口数 <span class="tag assume">假设</span><input type="number" id="fab-switch_radix" step="8" min="4"></label>
+      </div>
+      <div class="row3">
+        <label title="网内归约（厂商选项）：net = 跨节点交换机内聚合（SHARP / CollNet 类，allreduce），net+link 另含节点内交换式 scale-up（NVLS 类）：allreduce 每 rank 只收发一次数据；0.61 起 allgather / reduce-scatter 在该层也可走交换机多播 / 归约（字节不变，一次交换机往返代替 n − 1 步）">网内归约 <span class="tag assume">假设</span><select id="fab-innet_reduce"></select></label>
+        <label title="torus2d 的 X 维长度；0 = 取最接近 √n 的因数">torus X<input type="number" id="fab-torus_x" step="1" min="0"></label>
+        <label class="inline" title="PD KV 传输与两池自身的跨节点集合通信共用 NIC：KV 可用带宽 × (1 − 集合通信占用率)"><input type="checkbox" id="fab-contention"> KV 与集合通信争用 <span class="tag assume">假设</span></label>
+      </div>
+      <div class="row2">
+        <label title="每步时延 µs：D2D / 节点内（ring、tree 每一步）；默认节点内 0.6 µs 取 NCCL tuner 的 NVLink LL 默认值作数量级参考">每步时延 D2D / 节点内 µs <span class="tag assume">假设</span><span class="row2"><input type="number" id="fab-hop_d2d_us" step="0.1" min="0"><input type="number" id="fab-hop_link_us" step="0.1" min="0"></span></label>
+        <label title="跨节点每步时延 µs：ring 步 / tree 步；默认 2.7 / 5.0 µs 取 NCCL tuner 的 NET LL 默认值作数量级参考">每步时延 网络 ring / tree µs <span class="tag assume">假设</span><span class="row2"><input type="number" id="fab-hop_net_us" step="0.5" min="0"><input type="number" id="fab-hop_net_tree_us" step="0.5" min="0"></span></label>
+        <label title="0.124：每个集合通信拆成 N 个 channel（NCCL nChannels），每个 channel 由一个拷贝引擎（SM / DMA 队列）驱动、上限 X GB/s；节点内 / 跨节点层的有效带宽 = min(链路, N × X)。两项都填才生效，空 = 关">通道数 × 每通道 GB/s <span class="tag assume">假设</span><span class="row2"><input type="number" id="fab-channels" step="1" min="0"><input type="number" id="fab-channel_GBps" step="1" min="0"></span></label>
+      </div>
+      <div class="row3">
+        <label title="0.60：跨节点 fat-tree 层数。2 = leaf-spine（0.59）；3 = leaf / spine / core：每个 pod 若干 leaf，spine → core 上行再收敛 r₂。离开 pod 的流量份额 f_pod 按 r·r₂·f_pod 变慢（rail 拓扑保持两层）">网络层数 <span class="tag assume">假设</span><select id="fab-net_tiers"></select></label>
+        <label title="0.60（三层）：每个 pod 的节点数；0 = 每 leaf 节点数 × spine 下行端口数（端口数·r₂/(1+r₂)）。须为每 leaf 节点数的整数倍">每 pod 节点数 <span class="tag assume">假设</span><input type="number" id="fab-pod_nodes" step="1" min="0"></label>
+        <label title="0.60（三层）：spine → core 上行收敛比 r₂（下行 : 上行），叠加在 leaf 收敛比 r 之上；1 = 非阻塞">spine 收敛比 r₂:1 <span class="tag assume">假设</span><input type="number" id="fab-oversub_spine" step="1" min="1" max="64"></label>
+      </div>
+      <div class="row3">
+        <label title="0.60：同一流水级内各集合通信的链路时间如何合成。sum = 相加（0.59）；ports = D2D PHY、scale-up 端口、NIC 是不同物理端口可同时工作，同端口串行：级链路时间 = 最忙端口的忙时之和（不低于最长的单次集合通信）">层间重叠 <span class="tag assume">假设</span><select id="fab-overlap"></select></label>
+        <label class="inline" title="0.60（PD）：KV 流占 decode 池 NIC 的份额 u_kv 反馈到 decode 池的跨节点集合通信（网络带宽 × (1 − u_kv)），decode TPOT 重算（不动点迭代）"><input type="checkbox" id="fab-kv_feedback"> KV 争用回馈 decode TPOT <span class="tag assume">假设</span></label>
+        <label class="inline" title="0.121（PD，需先勾选上一项）：同一 KV 份额也占 prefill 池（发送端）NIC，prefill 池跨节点集合通信带宽 × (1 − u_kv)，prefill TTFT 与请求速率在同一不动点内重算"><input type="checkbox" id="fab-kv_feedback_prefill"> 回馈 prefill TTFT <span class="tag assume">假设</span></label>
+      </div>
+      <div class="row3">
+        <label title="0.61：跨节点每一步若离开 leaf（leaf → spine → leaf，多经过两级交换）额外增加的时延 µs，叠加在网络 ring / tree 每步时延上；tree 只有跨 leaf 的层（相距 2^j ≥ 每 leaf 组内节点数）计入；0 = 不计（0.60）">跨 leaf 每步附加 µs <span class="tag assume">假设</span><input type="number" id="fab-hop_spine_us" step="0.1" min="0"></label>
+        <label title="0.61（三层）：每一步若离开 pod（spine → core → spine）再额外增加的时延 µs；0 = 不计">跨 pod 每步附加 µs <span class="tag assume">假设</span><input type="number" id="fab-hop_core_us" step="0.1" min="0"></label>
+        <label title="0.61：NCCL 类传输协议。off = 0.60（LL 时延 + 满带宽，偏乐观）；auto = 每次集合通信取最快：LL 带宽效率 ½（每 8 B 含 4 B 标志）、LL128 120/128、Simple 1；每步时延按 NCCL tuner 的协议比例放大（每步时延输入视为 LL 值）——小消息选 LL，大消息选 Simple / LL128">传输协议 <span class="tag assume">假设</span><select id="fab-protocol"></select></label>
+      </div>
+    </div>
+  </details>
+
+  <details class="grp sec" id="sec-chip" open>
+    <summary><h3>芯片与存储器 <span class="tag assume">假设</span></h3><span class="sec-sum" id="sec-chip-sum"></span></summary>
+    <div class="seg wrap" id="chip-preset"></div>
+    <div class="kv small" id="chip-facts"></div>
+    <div class="row2">
+      <label>频率 GHz<input type="number" id="c-freq_ghz" step="0.05" min="0.1"></label>
+      <label>SRAM MiB<input type="number" id="c-sram_mib" step="8" min="0"></label>
+      <label>MAC 效率<input type="number" id="c-mac_eff" step="0.05" min="0.05" max="1"></label>
+    </div>
+    <details class="grp sec sub" id="sec-chip-adv">
+      <summary><h4>高级芯片参数</h4><span class="sec-sum" id="sec-chip-adv-sum"></span></summary>
+      <div class="row2">
+        <label title="0.229：时钟功耗中不被门控的份额 g（MAC 阵列空闲时仍付）：P_clk = 满载 × (g + (1−g)·利用率)。默认 1 = 不计门控收益（H100 无负载实测已是停顿下限；Eyeriss v1 时钟网络功耗基本不随活动变，g≈0.96「推导」）；细粒度门控参考 0.25（POWER5 类，HC17「推导」）">时钟未门控份额<input type="number" id="c-clk_ungated_share" step="0.05" min="0" max="1" placeholder="1"></label>
+        <label title="0.209: 专用循环状态 SRAM（不与权重 / KV 共享）· dedicated recurrent-state buffer">状态 SRAM MiB<input type="number" id="c-state_sram_mib" step="64" min="0"></label>
+        <label>SRAM 端口 B/cycle<input type="number" id="c-sram_port_Bpc" step="256" min="64" placeholder="默认"></label>
+        <label title="0.96：按每个引擎给 SRAM 端口宽度，随引擎数缩放（扫引擎数 / 拆分 die 时不会把整芯片端口带过去）；与整芯片端口二选一">SRAM 端口 / 引擎 B/cycle<input type="number" id="c-sram_port_Bpc_per_engine" step="64" min="16" placeholder="不设"></label>
+        <label title="0.96：注意力核心的计算格式。默认 bf16 计算、KV 缓存在向量通路上反量化；kv = 原生低精度注意力（Q / P 量化到 KV 格式，FlashAttention-3 FP8 做法），需 KV 格式为芯片原生格式">注意力计算<select id="c-attn_fmt"><option value="">bf16（KV 反量化）</option><option value="kv">原生 KV 格式</option></select></label>
+        <label>GEMV MAC/cycle<input type="number" id="c-gemv_macs" step="256" min="1" placeholder="默认"></label>
+        <label>累加器 KiB<input type="number" id="c-acc_kib" step="128" min="0"></label>
+        <label title="0.120：每个 kernel 的启动 / 调度固定开销（µs，默认 0 = 不计）。每个 GEMM、融合注意力、结构模型算子各一次；分块三角注意力每块 3 次（QKᵀ、softmax、·V）">kernel 启动 µs <span class="tag assume">假设</span><input type="number" id="c-kernel_us" step="0.5" min="0" placeholder="0"></label>
+        <label title="0.203 NPU 派发模型 · NPU dispatch model。空 = 理想（0 开销，「假设」）；static-graph = 每步一次静态图启动 + token 同步（10 µs，JAX jit 派发，仅主机路径 「二手」）；trace = 设备回放命令流，每算子 1.5 µs（tt-metal #20681 「二手」）；host = 主机逐算子派发，每算子 20 µs（vllm-ascend #13021，910B 实测 「二手」）">派发 dispatch <span class="tag assume">二手</span><select id="c-dispatch"><option value="">理想 ideal</option><option value="static">静态图 static-graph</option><option value="trace">设备回放 trace</option><option value="host">主机逐算子 host</option></select></label>
+        <label title="0.203：覆盖所选派发模式的 µs（static-graph = 每步，trace / host = 每算子）· override the mode's µs (per step / per op)">派发 µs dispatch_us<input type="number" id="c-dispatch_us" step="0.5" min="0" placeholder="默认 default"></label>
+      </div>
+      <div class="row3" id="slc-row">
+        <label title="系统级缓存（SLC, system-level cache）：位于 SRAM 与 DRAM 之间，每卡容量；0 = 无（默认）。不增加容量（包含式）">SLC MiB <span class="tag assume">假设</span><input type="number" id="c-slc_mib" step="64" min="0"></label>
+        <label title="SLC 命中时的带宽（与 DRAM 并行的端口）">SLC GB/s <span class="tag assume">假设</span><input type="number" id="c-slc_GBps" step="250" min="1"></label>
+        <label title="pin：软件按 SRAM 同样顺序把剩余热权重 / 专家 / KV 钉在 SLC，流式激活绕过；lru：硬件替换，按循环访问的全有或全无上界（工作集放得下才全部命中，否则 0 命中）；pin_bw（0.91）：同 pin 钉住，但 SLC 作为第二条读路径（包含式，数据在 DRAM 也有）只服务按带宽均衡的那部分命中（类似 CUDA accessPolicyWindow 的 hitRatio 取最优），SLC 比 DRAM 慢时也不会更慢">SLC 策略<select id="c-slc_policy"><option value="pin">pin 钉住</option><option value="lru">lru 替换</option><option value="pin_bw">pin_bw 钉住 · 带宽均衡</option></select></label>
+      </div>
+    </details>
+    <div class="small muted" id="chip-formats"></div>
+    <div class="small" id="chip-mixed" title="0.147：权重 × 激活混合精度原生 MAC；仅当该 (W, A) 组合原生时权重反量化开销才消失"></div>
+    <div class="sub-h">映射 <span class="tag dv">设计变量</span></div>
+    <div class="seg wrap" id="mapping"></div>
+    <div class="small muted" id="mapping-desc"></div>
+    <div class="sub-h">存储器</div>
+    <div class="row3">
+      <label>类型<select id="m-type"></select></label>
+      <label>形态<select id="m-form"></select></label>
+      <label>位宽<select id="m-width"></select></label>
+      <label>速率 MT/s<select id="m-rate"></select></label>
+      <label>数量<select id="m-count"></select></label>
+      <label id="m-cap-wrap">容量/颗<select id="m-cap"></select></label>
+      <label id="m-height-wrap">堆叠高度<select id="m-height"></select></label>
+    </div>
+    <div class="kv small" id="mem-facts"></div>
+    <label class="inline">DRAM 效率 <span class="tag assume">假设</span><input type="number" id="mem_eff" step="0.05" min="0.05" max="1" placeholder="0.7"></label>
+    <label class="inline" id="m-meta-wrap" hidden>LPDDR6 meta 模式 <span class="tag assume">假设</span><input type="checkbox" id="m-meta"></label>
+  </details>
+
+  <details class="grp sec" id="sec-budget">
+    <summary><h3>资源 / 面积预算 <span class="tag assume">用户提供</span></h3><span class="sec-sum" id="sec-budget-sum"></span></summary>
     <div class="small muted">可选设计约束：只报告余量、标出超限；搜索本身不受影响，超预算的布局排在后面。面积按你填的密度估算（0.149 起可选「密度预设」：有出处的按节点密度，标注 来源/推导/二手/假设，仍可改写），缺密度或缺固定面积时只给下界。</div>
     <div class="row3">
       <label title="每卡片上 SRAM 上限">SRAM MiB / 卡<input type="number" id="b-sram_mib" min="0" step="16"></label>
@@ -369,10 +387,10 @@
       <span class="small muted" id="b-elec-preset-note"></span></div>
     <div class="row"><label title="0.154：有出处的 PUE（来源见悬停；卡价 / 摊销无公开口径，需自填）">PUE 预设<select id="b-tco-preset"><option value="">（不用预设）</option></select></label>
       <span class="small muted" id="b-tco-preset-note"></span></div>
-  </section>
+  </details>
 
-  <section class="grp">
-    <h3>能耗 <span class="tag assume">用户提供</span></h3>
+  <details class="grp sec" id="sec-energy">
+    <summary><h3>能耗 <span class="tag assume">用户提供</span></h3><span class="sec-sum" id="sec-energy-sum"></span></summary>
     <div class="small muted">动作计数 × 每动作能耗（Accelergy 式能耗表）。工具不内置任何能耗数值：留空 = 不计该项；全部留空时只给动作计数。</div>
     <div class="row3">
       <label title="每个 bf16 等效 MAC（低精度格式按速率倍数折算：fp8 2× 速率 = ½ 个）的能耗，pJ">pJ / MAC<input type="number" id="e-pJ_mac" min="0" step="0.05"></label>
@@ -397,7 +415,8 @@
       <label title="0.152：按文献填入有出处的动作能耗（来源见悬停；idle_W 不进预设；仍可逐项改写）">能耗预设<select id="e-preset"><option value="">（不用预设）</option></select></label>
       <span class="small muted" id="e-preset-note"></span>
     </div>
-  </section>
+  </details>
+
 </aside>
 
 <main class="main">

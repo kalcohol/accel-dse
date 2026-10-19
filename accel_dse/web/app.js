@@ -278,6 +278,7 @@ function syncInputs() {
   }
   if ($('pd-prefix_host_policy')) $('pd-prefix_host_policy').value = S.sc.pd.prefix_host_policy || 'write_through';
   if ($('w-step_cache')) $('w-step_cache').value = S.sc.workload.step_cache || 'teacache';
+  if ($('w-mode_cache')) $('w-mode_cache').value = S.sc.workload.mode_cache || 'off';   // 0.255 FLUX 3 mode-stream reuse
   if ($('w-tri_chunk')) { $('w-tri_chunk').value = S.sc.workload.tri_chunk || ''; $('w-tri_chunk').disabled = (S.sc.workload.tri_attn || 'fused') !== 'chunked'; }
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
   if ($('c-attn_fmt') && S.cat) $('c-attn_fmt').value = chipVal('attn_fmt') || '';
@@ -298,6 +299,7 @@ function syncInputs() {
       sel.value = typeof pc === 'string' ? pc : (pc && pc.name && S.cat.chips[pc.name] ? pc.name : '');
     }
     $('pd-prefill_mem_id').value = S.sc.pd.prefill_mem_id || ''; }
+  paintPanel();
 }
 
 function seg(id, items, get, set) {
@@ -372,11 +374,11 @@ function paintDomain(m) {
   document.querySelectorAll('.dp-in').forEach((e) => (e.hidden = !(m.is_moe || full)));
   document.querySelectorAll('.pair-only').forEach((e) => (e.hidden = !m.is_pair));
   const img = m.domain === 'gen' && !!(m.workload && m.workload.image);      // 0.119: image DiT — no frame axis
-  document.querySelectorAll('.video-only').forEach((e) => (e.hidden = img));
+  document.querySelectorAll('.vgen-only').forEach((e) => (e.hidden = img));     // 0.256: own class (was 'video-only', which the VLM video toggle then hid)
   if ($('w-clip_slo_s-name')) $('w-clip_slo_s-name').textContent = img ? '单张 SLO s' : '单段 SLO s';
   const refs = m.domain === 'gen' && !!(m.workload && m.workload.max_refs);     // 0.252: FLUX 3 reference images
   document.querySelectorAll('.ref-only').forEach((e) => (e.hidden = !refs));
-  if (!refs && S.sc && S.sc.workload) for (const k of ['ref_images', 'ref_width', 'ref_height']) delete S.sc.workload[k];
+  if (!refs && S.sc && S.sc.workload) for (const k of ['ref_images', 'ref_width', 'ref_height', 'mode_cache']) delete S.sc.workload[k];
   const loops = !!m.loop_default;                                              // 0.253: Dory looped LM
   document.querySelectorAll('.loop-only').forEach((e) => (e.hidden = !loops));
   if (!loops && S.sc && S.sc.workload) for (const k of ['loops', 'loop_kv']) delete S.sc.workload[k];
@@ -605,7 +607,7 @@ function bindMem() {
 
 /* ------------------------------------------------------------------ evaluation */
 let timer = null;
-function schedule() { clearTimeout(timer); timer = setTimeout(runEval, 120); invalidate(); swHint(); }
+function schedule() { clearTimeout(timer); timer = setTimeout(runEval, 120); invalidate(); swHint(); paintPanel(); }
 // 0.90: fabric algo = auto picks each collective's algorithm alone (bw + α, like a runtime tuner) — with D2D chiplets a
 // faster link can switch to a higher-α algorithm whose bandwidth hides under compute (≤ 0.4 % non-monotone, 0.89
 // audit, MODEL §35); auto_overlap minimises the stage time and is monotone
@@ -800,6 +802,9 @@ function domainKpis(s, cap, auto) {
     const sc = g.step_cache;
     if (sc) k.push(kpi('跳步缓存', `${sc.skip} / ${sc.steps} 步跳过`,
       `${sc.mode} · 跳过的步 ${fmtDur(sc.t_skip_ms / 1e3)}（只跑嵌入 + 输出头 + 残差加）· 省去噪 ${fmtDur(sc.denoise_saved_s)} · 残差缓存 ${num(sc.buffer_GiB_card)} GiB/卡`));
+    const mc = g.mode_cache;      // 0.255 FLUX 3 Base mode-stream reuse (SGLang StaticStreams)
+    if (mc) k.push(kpi('模态流复用', `${fmtDur(mc.first_ms / 1e3)} → ${fmtDur(mc.reused_ms / 1e3)}`,
+      `第 1 步全算，之后每步只跑图像分模态块 · 复用 ${num(mc.rows)} 行（文本 + 参考图）· ${num(mc.extract_tflop_seq)} → ${num(mc.cached_tflop_seq)} TFLOP/步/序列 · 缓存 ${num(mc.cache_GiB_card)} GiB/卡`));
     if (im) k.push(kpi('每去噪步', fmtDur(g.step_ms / 1e3), `${num(w.seq_tokens)} token / 前向 · ${w.steps} 步 × CFG ${w.cfg}`));
     else k.push(kpi('每帧延迟', fmtDur(g.s_per_frame),
       `每去噪步 ${fmtDur(g.step_ms / 1e3)} · ${num(w.seq_tokens)} token / 前向${w.audio_tokens ? `（含音频 ${num(w.audio_tokens)}）` : ''}${w.attention === 'factorized' ? ' · 分解注意力' : ''} · 视频 ${num(w.video_s)} s${g.realtime_x ? ` · 实时倍率 ${num(g.realtime_x)}×` : ''}`));
@@ -2022,7 +2027,94 @@ function activate(tab) {
 }
 
 /* ------------------------------------------------------------------ init */
+/* ------------------------------------------------------------------ 0.256 panel layout */
+// Each label's caption (text + tags, everything before its first control) goes into one block so tags stay inline and
+// controls bottom-align across a grid row; a label whose only control is a checkbox lays out as a row.
+function wrapCaps() {
+  for (const l of document.querySelectorAll('#panel label')) {
+    if (l.classList.contains('inline') || l.querySelector(':scope > .cap')) continue;
+    const ctrls = l.querySelectorAll('input, select');
+    if (ctrls.length && [...ctrls].every((c) => c.type === 'checkbox')) { l.classList.add('chk'); continue; }
+    const cap = document.createElement('span'); cap.className = 'cap';
+    for (const n of [...l.childNodes]) {
+      if (n.nodeType === 1 && (n.matches('input, select') || n.querySelector('input, select'))) break;
+      cap.append(n);
+    }
+    if (cap.textContent.trim()) l.prepend(cap);
+  }
+}
+const SEC_KEY = 'accel-dse.ui.sections';
+function secState() { try { return JSON.parse(localStorage.getItem(SEC_KEY) || '{}'); } catch (e) { return {}; } }
+function initSections() {
+  const st = secState();
+  for (const d of document.querySelectorAll('#panel details.sec')) {
+    if (d.id in st) d.open = !!st[d.id];
+    d.addEventListener('toggle', () => { const x = secState(); x[d.id] = d.open; try { localStorage.setItem(SEC_KEY, JSON.stringify(x)); } catch (e) { /* private mode */ } });
+  }
+  const all = (open) => document.querySelectorAll('#panel details.sec').forEach((d) => { d.open = open; });
+  $('sec-open-all').addEventListener('click', () => all(true));
+  $('sec-close-all').addEventListener('click', () => all(false));
+}
+function filledIn(id) {      // fields the user filled in a section (budget / energy have no defaults: empty = not counted)
+  let n = 0;
+  for (const c of $(id).querySelectorAll('input, select')) {
+    if (c.type === 'checkbox') n += c.checked ? 1 : 0;
+    else if (c.value !== '' && !(c.tagName === 'SELECT' && c.closest('.seg'))) n += 1;
+  }
+  return n;
+}
+function paintPanel() {
+  if (!S.sc || !S.cat) return;
+  const sv = S.sc.serving, k = sv.spec_k || 0, L = S.sc.layout, m = model();
+  // speculative decoding: the draft / acceptance / tree knobs only matter once k ≥ 1; the tree acceptance model only for a tree
+  document.querySelectorAll('#sec-spec .spec-adv').forEach((e) => (e.hidden = !k));
+  document.querySelectorAll('#sec-spec .spec-tree').forEach((e) => (e.hidden = !k || !((sv.spec_topk || 1) > 1 || sv.spec_draft_tokens)));
+  $('spec-off-note').hidden = !!k;
+  const set = (id, t) => { const e = $(id); if (e) e.textContent = t; };
+  if (m) {
+    const full = isFull(m), w = S.sc.workload || {};
+    set('sec-model-sum', m.id + (S.wiW || S.wiKV ? ' · what-if dtype' : ''));
+    const bt = S.best ? 'batch 自动' : `batch ${sv.batch}`;
+    set('sec-workload-sum', full ? bt
+      : `${sv.phase} · ${bt} · ${sv.phase === 'prefill' ? 'prompt ' + sv.prompt : 'ctx ' + sv.ctx}${m.loop_default ? ` · 循环 ${w.loops || m.loop_default}` : ''}`);
+    set('sec-spec-sum', k ? `k ${k}${sv.draft_model ? ' · 草稿 ' + sv.draft_model : ''}${(sv.spec_topk || 1) > 1 ? ' · 树 topk ' + sv.spec_topk : ''}${sv.spec_sampling === 'sampled' ? ' · sampled' : ''}` : '关');
+  }
+  set('sec-serve-sum', [S.sc.pd && S.sc.pd.enabled ? 'PD 分离' : '合并', S.sc.host_step_us || S.sc.host_seq_us ? '主机开销' : ''].filter(Boolean).join(' · '));
+  set('sec-par-sum', `${cards()} 卡 · PP${L.pp} TP${L.tp} DP${L.dp}${L.ep > 1 ? ' EP' + L.ep : ''}${(L.sp || 1) > 1 ? ' SP' + L.sp : ''}${(L.cp || 1) > 1 ? ' CP' + L.cp : ''}${S.sc.d2d_enabled ? ' · D2D' : ''}${S.sc.node_cards ? ` · ${S.sc.node_cards} 卡/节点` : ''}`);
+  set('sec-chip-sum', `${S.preset} · ${S.sc.mem_id || ''} · ${S.sc.mapping || ''}`);
+  {   // 0.256 nested 高级芯片参数 fold: dispatch / kernel launch / SLC / attention format at a glance
+    const v = (id) => ($(id) ? $(id).value : ''), opt = (id) => { const e = $(id); return e && e.selectedIndex >= 0 ? e.options[e.selectedIndex].text : ''; };
+    const kus = +v('c-kernel_us') || 0, slc = +v('c-slc_mib') || 0;
+    set('sec-chip-adv-sum', [`派发 ${v('c-dispatch') ? opt('c-dispatch').split(' ')[0] : '理想'}`, kus ? `kernel ${kus} µs` : '',
+      slc ? `SLC ${slc} MiB` : 'SLC 无', v('c-attn_fmt') ? '原生 KV 注意力' : ''].filter(Boolean).join(' · '));
+  }
+  for (const id of ['sec-budget', 'sec-energy']) { const n = filledIn(id); set(id + '-sum', n ? `已填 ${n} 项` : '未填（不计）'); }
+}
+// metric cards: notes clamp to 3 lines; a card whose note overflows gets an expand toggle (full text also on hover)
+function markKpis() {
+  for (const c of document.querySelectorAll('#kpis .kpi')) {
+    const s = c.querySelector('.s');
+    if (!s) continue;
+    const more = c.classList.contains('open') || s.scrollHeight > s.clientHeight + 2;
+    c.classList.toggle('more', more);
+    if (more) s.title = s.textContent; else s.removeAttribute('title');
+  }
+}
+function initKpis() {
+  const k = $('kpis');
+  new MutationObserver(() => requestAnimationFrame(markKpis)).observe(k, { childList: true });
+  window.addEventListener('resize', () => requestAnimationFrame(markKpis));
+  k.addEventListener('click', (e) => {
+    const c = e.target.closest('.kpi.more');
+    if (c && !getSelection().toString()) { c.classList.toggle('open'); S.kpiOpen = S.kpiOpen || {}; S.kpiOpen[c.querySelector('.l').textContent] = c.classList.contains('open'); }
+  });
+  // keep a card the user expanded open across re-evaluations
+  new MutationObserver(() => {
+    for (const c of k.querySelectorAll('.kpi')) { const l = c.querySelector('.l'); if (l && S.kpiOpen && S.kpiOpen[l.textContent]) c.classList.add('open'); }
+  }).observe(k, { childList: true });
+}
 async function init() {
+  wrapCaps(); initSections(); initKpis();
   try {
     const [health, cat, models] = await Promise.all([req('h', '/api/health'), req('c', '/api/catalog'), req('m', '/api/models')]);
     S.cat = cat;
@@ -2079,6 +2171,8 @@ async function init() {
     return Math.max(0, st - (S.sc.workload.step_cache === 'teacache_ret' ? 5 : 2)); };
   bindNumber('w-step_skip', () => S.sc.workload.step_skip || 0, (x) => { if (x) S.sc.workload.step_skip = x; else delete S.sc.workload.step_skip; },
     { int: true, check: (x) => x >= 0 && x <= skipCap() });
+  $('w-mode_cache').addEventListener('change', (e) => {     // 0.255: off = reference (omitted from the scenario)
+    if (e.target.value === 'on') S.sc.workload.mode_cache = 'on'; else delete S.sc.workload.mode_cache; schedule(); });
   $('w-step_cache').addEventListener('change', (e) => { if (e.target.value === 'teacache') delete S.sc.workload.step_cache; else S.sc.workload.step_cache = e.target.value;
     if ((S.sc.workload.step_skip || 0) > skipCap()) { S.sc.workload.step_skip = skipCap(); $('w-step_skip')._sync(); } schedule(); });
   bindNumber('w-host_TFLOPS', () => S.sc.workload.host_TFLOPS, (x) => (S.sc.workload.host_TFLOPS = x));
