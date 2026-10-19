@@ -6774,3 +6774,35 @@ The flow DiT is read 10 × per step but stored once, so the ≤ 0.268 uniform mi
 ### §214.3 Freshness
 `freshness_sweep.py 2026-10-20`: nothing new, no errors (74 orgs).
 
+## §215 Speech round: encoder-decoder ASR, audio-seconds convention (0.270)
+
+### §215.1 Whisper-large-v3 / -turbo
+「来源」 transformers `modeling_whisper.py` (WhisperEncoder, WhisperDecoderLayer with `encoder_attn`, EncoderDecoderCache), `feature_extraction_whisper.py` (padding="max_length", n_samples 480000); openai/whisper-large-v3(-turbo) config.json + safetensors header.
+- **Encoder** (both): 128 mel, conv1 k3 + conv2 k3 s2 (GELU), sinusoid positions [1500, 1280] saved in the checkpoint, 32 pre-LN blocks d1280 / 20 heads (q / v / o biased, k not), GELU 5120, final LayerNorm. 636,968,960 params, exact. Every pass is padded to 30 s: 3000 frames → 1500 positions, whatever the clip length; a clip > 30 s is sequential windows (long-form), each a full pass. One window ≈ 2.28 TFLOP (hand count = ops, test).
+- **Decoder**: per layer self-attention (MHA 20 × 64) + cross-attention over the encoder output + GELU MLP; learned positions [448, 1280] (lookup); final LayerNorm; proj_out tied to embed_tokens (51866). v3 32 layers = 906,521,600, turbo 4 layers = 171,909,120, exact (16d² + 17d per layer). `max_target_positions` 448 = `max_ctx`.
+- **Cross-attention decode path** 「推导」 from EncoderDecoderCache: the first prefill pass (ctx = 0) runs `cross.k / cross.v` on 1500 rows per sequence and writes the cache; every later forward runs only `cross.q`, QKᵀ / PV against 1500 keys (non-causal), `cross.o` (+ TP all-reduce), reading the cached K/V. Cross K/V per sequence = L · 1500 · 2 · d · 2 B (v3 245.76 MB, turbo 30.72 MB) is fixed state per request (memplan `state`), also counted in the PD hand-off (`cache_new_bytes`).
+- **Limits** 「近似」: decoder re-prompting with previous-window text (long-form condition_on_prev_tokens) not modelled — each window's decode is the request's `out_len` share; the RoPE vector op is still charged on self-attention (Whisper has none; a small per-token vector op); GELU costed as SiLU per element.
+
+### §215.2 Qwen2-Audio-7B-Instruct, Qwen3-ASR-1.7B
+- **Qwen2-Audio** (transformers `modeling_qwen2_audio.py`, `processing_qwen2_audio.py` 「来源」): Whisper-v3 encoder + AvgPool1d(2, 2) before the final LayerNorm + Linear(1280 → 4096) = 642,215,936, exact. Processor pads to 30 s and truncates longer audio (`truncation=True`): the encoder always runs 1500 positions, the projector 750 rows; prompt audio tokens = (((L − 1)//2 + 1) − 2)//2 + 1 over the unpadded frames L (750 per 30 s). LLM = Qwen-7B (text_config lists only overrides; the rest from Qwen2Config defaults: 4096, 32 layers, MHA 32, vocab 156032, untied), 7,754,878,976, exact.
+- **Qwen3-ASR** (transformers `modeling_qwen3_asr.py` 「来源」): AuT encoder — frames in 100-frame chunks (2 · n_window), three Conv2d k3 s2 p1 (1 → 480 → 480 → 480) over (mel, time) → 16 × 13 per chunk, conv_out Linear 7680 → 1024 (no bias), sinusoid positions, only valid positions (13 per full chunk, the tail chunk by three ⌊(n − 1)/2⌋ + 1) go through 24 blocks d1024 / 16 heads (all of q / k / v / o biased) with attention inside windows of 13 · n_window_infer / 100 = 104 positions, ln_post, projector Linear 1024 → 1024 → GELU → 2048. 317,477,504, exact. Audio tokens = encoder positions (13 / s). LLM = Qwen3-1.7B (thinker_config.text_config; the release stores a tied lm_head copy, deduped), 1,720,574,976, exact.
+
+### §215.3 Audio-seconds serving convention
+Speech workloads are reported per audio second (`core/speech.py`, `Result.asr`):
+- **ASR**: request = `audio_s` s of audio + `prompt` text tokens → `out_len` text tokens. First-token latency T_ft = encoder windows + prefill (prefill phase); TPOT at the mid-generation context; T = T_ft + out_len · TPOT (static batch, phases serial 「近似」); RTF = T / audio_s; audio s / s / card = batch · audio_s / T / cards. Per phase (`Result.asr`): prefill audio s / s = batch · audio_s / step; decode RTF_decode = out_len · TPOT / audio_s.
+- **TTS**: `audio_out_s` s out = ⌈audio_out_s / s_per_step⌉ steps (Ming: 80 ms / step); first audio = T_ft + one step (streaming decoder emits each step's chunk); RTF = steps · TPOT / audio_out_s.
+- `out_len` and `audio_out_s` are the caller's workload assumption 「假设」; nothing is fitted.
+
+| 30 s in, 100 tokens out | 100T + LPDDR5X B1 RTF | B32 RTF | B32 audio-s/s/card | H100-like B32 RTF |
+|---|---|---|---|---|
+| whisper-large-v3 | 0.034 | 0.218 | 147 | 0.022 |
+| whisper-large-v3-turbo | 0.0064 | 0.052 | 615 | 0.0054 |
+| qwen2-audio-7b-instruct | 0.259 | 0.624 | 51 | 0.054 |
+| qwen3-asr-1.7b | 0.061 | 0.106 | 303 | 0.009 |
+| ming-3.0-asr-tiny | 0.043 | 0.305 | 105 | — |
+
+Findings: (1) Whisper-v3 decode at batch is bound by the cross K/V, not the weights — B32 reads 7.9 GB of cross K/V per step vs 1.8 GB of weights (TPOT 9.7 → 56 ms). (2) Turbo removes 7/8 of both, after which the unchanged 32-layer encoder dominates (B32: 779 of 798 ms to first token): for turbo-class ASR, encoder FLOPs per audio second are the lever. (3) The AuT encoder's 13 positions / s (vs 50 for the Whisper encoder) makes Qwen3-ASR's encoder ~6× cheaper per audio second.
+
+### §215.4 Freshness
+`freshness_sweep.py 2026-10-20`: nothing new (74 orgs). 14 speech orgs added to `EXTRA_ORGS`; nothing since 10-20 there. Seen earlier (candidates for 0.271): fishaudio/drama-3 (10-01), IndexTeam Index-Echo S2ST / S2TT (10-03), FunAudioLLM Fun-ASR-Nano-2512, FireRedTTS3.
+

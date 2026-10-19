@@ -1232,6 +1232,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
     if tp > 1:
         ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
+    if L.cross is not None and model.enc_ctx:
+        ops += _cross_decode_ops(model, li, L, ph, sh, b_loc)
     if L.hc:
         ops += _hc_ops(model, li, L, t, tp, "ffn")
         if L.hc_head == "mix":
@@ -1293,6 +1295,45 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(Op("shared_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     ops.append(Op("residual", "vector", li, vec=t * h * 2))
     return _llm_stream(ops, ph)
+
+
+def _cross_decode_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard, b_loc: int) -> list[Op]:
+    """0.270 encoder-decoder cross-attention in the autoregressive phases (transformers WhisperAttention with
+    ``key_value_states`` + EncoderDecoderCache 「来源」): every step projects q from the new tokens and attends to all
+    ``enc_ctx`` encoder positions (no causal mask); the cross K/V are projected once per request — at the first
+    prefill pass (ctx = 0) from the encoder output (rows = enc_ctx per sequence) and written to the cache — and only
+    read afterwards (decode, chunked-prefill continuations).  TP: heads column-split like self-attention, o row-split
+    + all-reduce."""
+    c, E, h, tp = L.cross, model.enc_ctx, model.hidden, sh.tp
+    ab, kvb, rb = _fmt(model.act_fmt).bytes, _fmt(model.kv_fmt).bytes, red_bytes(model)
+    t, q = b_loc * ph.q, ph.q
+    first = ph.kind == "prefill" and ph.ctx == 0
+    ops = [Op("cross_norm", "vector", li, vec=t * h * 4, sfu=t)]
+    for l in L.cross_linears:
+        if l.name in ("k", "v") and not first:
+            continue
+        k, n = _lin_local(l, tp, c)
+        m = b_loc * E if l.name in ("k", "v") else t
+        if l.name == "o":
+            continue
+        ops.append(gemm(model, f"cross.{l.name}", li, m, k, n, "attn", params=k * n, replicated=_repl(l, tp)))
+    kv_loc, hq_loc = gqa_local(c.n_q, c.n_kv, tp)
+    g = max(1, _cdiv(hq_loc, kv_loc))
+    cnt = b_loc * kv_loc
+    ops.append(Op("cross_qk", "attn", li, m=q * g, k=c.qk_dim, n=E, count=cnt, causal=1.0,
+                  act_bytes=cnt * q * g * c.qk_dim * ab))
+    ops.append(Op("cross_pv", "attn", li, m=q * g, k=E, n=c.v_dim, count=cnt, causal=1.0,
+                  act_bytes=cnt * q * g * c.v_dim * ab))
+    ent = b_loc * E * kv_loc * (c.qk_dim + c.v_dim) * kvb
+    sm = cnt * q * g * E
+    ops.append(Op("cross_softmax", "vector", li, vec=sm * 5, sfu=sm, kv_read=0.0 if first else ent,
+                  kv_write=ent if first else 0.0))
+    o = next(l for l in L.cross_linears if l.name == "o")
+    k, n = _lin_local(o, tp, c)
+    ops.append(gemm(model, "cross.o", li, t, k, n, "attn", params=k * n, replicated=_repl(o, tp)))
+    if tp > 1:
+        ops.append(Op("cross_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
+    return ops
 
 
 def _llm_stream(ops: list[Op], ph: Phase) -> list[Op]:

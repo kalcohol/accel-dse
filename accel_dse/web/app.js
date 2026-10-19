@@ -72,7 +72,7 @@ function domainBadge(m) {
   if (m.domain === 'genomics') return h('span', { class: 'badge vlm', title: coverTip(m) }, '基因组 · 双向编码器前向（逐 token 分类）');
   // 0.268: audio-only release (Ming-3.0-asr-tiny) — the encoder is costed via serving.audio_s (API / CLI --audio-s)
   if (m.domain === 'tts') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · 每 token = 1 帧潜变量（流匹配头 + AudioVAE 解码）');
-  if (m.domain === 'asr') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音识别 · 含 Whisper 音频编码器（serving.audio_s）');
+  if (m.domain === 'asr') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音识别 · 含音频编码器（serving.audio_s，按音频秒计）');
   return null;
 }
 const BOUND_ZH = { MAC: 'MAC 算力', FEED: 'FEED 供数', VECTOR: 'VECTOR 向量', DRAM: 'DRAM 带宽', SLC: 'SLC 系统级缓存', LINK: 'LINK 互连', SYNC: 'SYNC 同步' };
@@ -826,6 +826,24 @@ function renderEval(r) {
       + (t.audio_s_per_s != null ? ` · ${num(t.audio_s_per_s)} 音频秒/秒 · 实时流 ${t.streams_realtime}` : '')
       + ` · 每步 GFLOP：头 ${num(g.total)}（流 ${num(g.flow)} · VAE ${num(g.vae)}）vs LLM ≈ ${num(g.llm_approx)}`
       + ` · 头权重每步读 ${num(t.head_w_GB_per_step)} GB（存 ${num(t.head_w_GB_stored)} GB）`, t.rtf != null && t.rtf > 1 ? 'warn' : ''));
+  }
+  if (s.asr) {         // 0.270: speech input — cost per audio second (this phase)
+    const a = s.asr;
+    k.push(kpi('语音识别 ASR（本阶段）', a.audio_s_per_s_card != null ? `${num(a.audio_s_per_s_card)} 音频秒/秒/卡` : '—',
+      `${num(a.audio_s)} s 音频 → 编码器 ${a.enc_positions} 位置` + (a.windows ? `（${a.windows} 个 30 s 填充窗）` : '')
+      + (a.cross ? ` · 交叉注意力（解码器 prompt 不含音频 token）· 交叉 K/V ${num(a.cross_kv_MB_per_seq)} MB/序列` : ` · prompt 音频 token ${a.prompt_audio_tokens}`)
+      + (a.truncated_s ? ` · 超过 30 s 的 ${num(a.truncated_s)} s 被处理器截断` : '')
+      + (a.first_token_s != null ? ` · 首 token ${num(a.first_token_s * 1e3)} ms（编码器 ${num(a.encoder_s * 1e3)} ms）` : '')
+      + (a.rtf_decode != null ? ` · 解码 RTF ${num(a.rtf_decode)}` : '')));
+  }
+  if (r.speech && !r.speech.error) {   // 0.270: end to end over both phases (core/speech.py)
+    const p = r.speech;
+    if (p.kind === 'asr') k.push(kpi('语音端到端 · ASR', `RTF ${num(p.rtf)}`,
+      `${num(p.audio_s)} s 音频 → ${p.out_len} token · 首 token ${num(p.first_token_s * 1e3)} ms · 共 ${num(p.total_s)} s · ${num(p.audio_s_per_s_card)} 音频秒/秒/卡（静态 batch，两阶段串行「近似」）`,
+      p.rtf > 1 ? 'warn' : ''));
+    else k.push(kpi('语音端到端 · TTS', `RTF ${num(p.rtf)}`,
+      `${num(p.audio_out_s)} s 音频输出 = ${p.steps} 步 · 首音频 ${num(p.first_audio_s * 1e3)} ms · 共 ${num(p.total_s)} s · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`,
+      p.rtf > 1 ? 'warn' : ''));
   }
   if (r.balance) {     // 0.205: machine balance vs workload arithmetic intensity
     const b = r.balance;

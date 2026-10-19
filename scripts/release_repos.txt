@@ -117,3 +117,8 @@ OpenMOSS-Team/MOSS-Image-SFT:transformer
 inclusionAI/Ming-3.0-asr-tiny
 # 0.269: Ming-3.0-tts-tiny (TTS decode head)
 inclusionAI/Ming-3.0-tts-tiny
+# 0.270 speech round: Whisper-large-v3 / turbo, Qwen2-Audio-7B-Instruct, Qwen3-ASR-1.7B
+openai/whisper-large-v3
+openai/whisper-large-v3-turbo
+Qwen/Qwen2-Audio-7B-Instruct
+Qwen/Qwen3-ASR-1.7B

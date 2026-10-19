@@ -85,6 +85,7 @@ class Result:
     stages_u: list | None = field(default=None, repr=False, compare=False)   # 0.258: the negative branch's stages
     spec: dict | None = None       # 0.225: decode spec step {k, topk, n, accept_model, tau, tau_indep, tau_chain}
     tts: dict | None = None        # 0.269 speech synthesis: s / step, RTF, audio s / s, per-step GFLOP split
+    asr: dict | None = None        # 0.270 speech input (audio_s per request): audio seconds / s, RTF, first-token latency
     draft: dict | None = None      # 0.223: independent draft model of a spec step {s, pass_s, bytes, acts (per step), …}
 
     @property
@@ -184,6 +185,7 @@ class Result:
             **({"host": dict(self.host)} if self.host else {}),
             **({"decision": self.decision()} if s.serving.labels else {}),
             **({"tts": dict(self.tts)} if self.tts else {}),
+            **({"asr": dict(self.asr)} if self.asr else {}),
         }
 
     def _ai_at(self, b: int, dram: bool = False):
@@ -1884,8 +1886,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                                  embed_ops(m, ph, sh), _tail_ops(m, True, ph, sh, tail_k, scn.chip.gpu_glue),
                                  ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m))
     stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
+    # 0.270: an encoder-decoder (Whisper) adds no prompt positions — its encoder is costed whenever audio is given
+    au_x = sv.audio_s and getattr(getattr(m.vision, "audio", None), "cross", False)
     vis = _vision_cost(scn, m, sys, stages) if (m.vision is not None and (sv.images or sv.videos or sv.audio_s)
-                                                 and sv.image_tokens) else None
+                                                 and (sv.image_tokens or au_x)) else None
     draft = None
     if dm is not None and spec_k:
         draft = _draft_cost(scn, dm, spec_k, topk_)
@@ -1959,7 +1963,32 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                draft=draft, spec=spec_info)
     if getattr(m, "tts", None) is not None:
         r.tts = _tts_info(m, sv, tpot, thr)
+    if sv.audio_s and getattr(m.vision, "audio", None) is not None:
+        r.asr = _asr_info(m, sv, vis, step, tpot, thr, lay.cards)
     return r
+
+
+def _asr_info(m: ModelSpec, sv, vis: dict | None, step: float, tpot: float, thr: float, cards: int) -> dict:
+    """0.270 speech-input serving convention (MODEL §215): a request carries ``audio_s`` seconds of audio; cost is
+    reported per audio second.  prefill (encoder + prompt): first-token latency = the step, audio s / s = batch ·
+    audio_s / step; decode: the request's ``out_len`` text tokens at this step's TPOT (one context — 「近似」), RTF_decode =
+    out_len · TPOT / audio_s, audio s / s = requests / s · audio_s.  End to end (both phases): core/speech.py."""
+    au = m.vision.audio
+    out = {"audio_s": sv.audio_s, "enc_positions": au.enc_positions(sv.audio_s), "prompt_audio_tokens": au.prompt_tokens(sv.audio_s),
+           "windows": len(au.chunks(sv.audio_s)) if au.pad else 0, "cross": au.cross,
+           "truncated_s": max(0.0, sv.audio_s - au.chunk * au.patches[0] / au.rate) if au.trunc else 0.0}
+    if m.enc_ctx:
+        out["cross_kv_MB_per_seq"] = sum(m.enc_ctx * L.cross.n_kv * (L.cross.qk_dim + L.cross.v_dim)
+                                         for L in m.layers if L.cross is not None) * _fmt(m.kv_fmt).bytes / 1e6
+    if sv.phase == "prefill":
+        a = (vis or {}).get("audio") or {}
+        out.update(first_token_s=step, encoder_s=a.get("s", 0.0), audio_s_per_s=sv.batch * sv.audio_s / step)
+    elif tpot > 0:
+        dec = sv.out_len * tpot
+        out.update(decode_s=dec, rtf_decode=dec / sv.audio_s, audio_s_per_s=thr / sv.out_len * sv.audio_s)
+    if "audio_s_per_s" in out:
+        out["audio_s_per_s_card"] = out["audio_s_per_s"] / cards
+    return out
 
 
 def _tts_info(m: ModelSpec, sv, tpot: float, thr: float) -> dict:

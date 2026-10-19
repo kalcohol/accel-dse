@@ -118,6 +118,12 @@ EXTRA_TAIL = [
     ("ming-3.0-asr-tiny", "inclusionAI/Ming-3.0-asr-tiny"),
     # 0.269: inclusionAI Ming-3.0-tts-tiny (2026-09-22; same decoder + flow-matching DiT head + streaming AudioVAE)
     ("ming-3.0-tts-tiny", "inclusionAI/Ming-3.0-tts-tiny"),
+    # 0.270 speech round: Whisper-large-v3 / -turbo (encoder-decoder, cross-attention decode, 30 s padded windows),
+    # Qwen2-Audio-7B-Instruct (Whisper-v3 encoder + pool + Qwen-7B), Qwen3-ASR-1.7B (AuT encoder + Qwen3-1.7B)
+    ("whisper-large-v3", "openai/whisper-large-v3"),
+    ("whisper-large-v3-turbo", "openai/whisper-large-v3-turbo"),
+    ("qwen2-audio-7b-instruct", "Qwen/Qwen2-Audio-7B-Instruct"),
+    ("qwen3-asr-1.7b", "Qwen/Qwen3-ASR-1.7B"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -261,7 +267,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("kimi", "Kimi（月之暗面）", ("moonshotai/",)), ("zhipu", "智谱（GLM · CogVideoX）", ("zai-org/", "THUDM/")),
     ("minimax", "MiniMax（稀宇）", ("MiniMaxAI/",)),
     ("meta", "Meta（Llama · ESM · Muse）", ("unsloth/", "meta-llama/", "facebook/", "meta-models/", "amd/Muse-Spark")),
-    ("openai", "OpenAI（gpt-oss）", ("openai/",)), ("mistral", "Mistral AI", ("mistralai/",)),
+    ("openai", "OpenAI（gpt-oss · Whisper）", ("openai/",)), ("mistral", "Mistral AI", ("mistralai/",)),
     ("microsoft", "微软（Phi）", ("microsoft/",)),
     ("bytedance", "字节跳动（Seed · Protenix）", ("ByteDance-Seed/", "gh:bytedance/")),
     ("yi", "零一万物（Yi）", ("01-ai/",)), ("internlm", "上海 AI 实验室（InternLM）", ("internlm/",)),
@@ -282,6 +288,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("openmoss", "复旦 OpenMOSS（MOSS）", ("OpenMOSS-Team/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
+    ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2-Audio", ("qwen2-audio",)),
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
     ("alibaba", "Qwen3 MoE", ("qwen3-235b", "qwen3-30b")), ("alibaba", "Qwen3 稠密", ("qwen3-",)),
     ("alibaba", "Qwen2.5", ("qwen2.5",)), ("alibaba", "Wan2.2", ("wan2.2",)), ("alibaba", "Wan2.1", ("wan2.1",)),
@@ -290,7 +297,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("zhipu", "GLM-5", ("glm-5",)), ("zhipu", "GLM-4.5 / 4.6", ("glm-4",)), ("zhipu", "CogVideoX", ("cogvideox",)),
     ("minimax", "MiniMax-M1 / Text-01", ("minimax-m1", "minimax-text")), ("minimax", "MiniMax-H", ("minimax-h",)),
     ("meta", "Llama 3", ("llama-3",)), ("meta", "ESM-2", ("esm2",)), ("meta", "ESMFold", ("esmfold",)),
-    ("openai", "gpt-oss", ("gpt-oss",)),
+    ("openai", "gpt-oss", ("gpt-oss",)), ("openai", "Whisper", ("whisper",)),
     ("mistral", "Mistral Large", ("mistral-large",)), ("mistral", "Mixtral", ("mixtral",)), ("mistral", "Magistral", ("magistral",)),
     ("microsoft", "Phi-4", ("phi-4",)), ("bytedance", "Seed-OSS", ("seed-oss",)), ("bytedance", "Protenix", ("protenix",)),
     ("tencent", "HunyuanVideo", ("hunyuanvideo",)), ("lightricks", "LTX-Video", ("ltx-video",)),
@@ -393,9 +400,11 @@ def entries() -> list[dict]:
             rel = load_release(e["hf_id"])
             cf = rel.get("config") or {}
             # 0.268: an audio-only release (audio_config, no vision_config) is speech recognition, not a VLM
+            # 0.270: any release with a modelled audio encoder and no vision tower (Whisper keeps it outside audio_config)
+            from .vision import audio_spec
             e["domain"] = "tts" if cf.get("model_type") == "lingv3_tts" else \
-                ("asr" if cf.get("audio_config") and not cf.get("vision_config") else "vlm") \
-                if (rel.get("params_vision") or 0) > 0 else "llm"
+                ("asr" if (cf.get("audio_config") or audio_spec(cf) is not None) and not cf.get("vision_config")
+                 else "vlm") if (rel.get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])
         e["unlisted"] = UNLISTED.get(e["id"])
         e["listed"] = not e["merged_into"] and not e["unlisted"]

@@ -6,6 +6,23 @@
 
 
 
+## [0.270.0]
+
+### Added — speech round: encoder-decoder ASR (MODEL §215.1–215.2)
+- `openai/whisper-large-v3` / `-turbo` (fp16): Whisper as a real encoder-decoder. Decoder (`model._build_whisper`): MHA self-attention + cross-attention (`Layer.cross`) + GELU MLP, learned positions (lookup), tied head; `ModelSpec.enc_ctx` = 1500 encoder positions per 30 s window. New cross-attention decode path (`ir._cross_decode_ops`): q / o every step over all 1500 keys; cross K/V projected once at the first prefill pass from the encoder output and written to the cache, read by decode and chunked-prefill continuations; TP head split + all-reduce. Cross K/V is per-sequence fixed state in memplan (245.76 MB / request for v3, 30.72 MB for turbo) and in PD hand-off bytes.
+- Whisper-v3 encoder (`vision._whisper_v3_spec`, `AudioSpec.pad / trunc / cross / pool / lin`): every pass padded to 30 s (3000 frames → 1500 positions); long-form = sequential windows; no audio positions in the decoder prompt (`AudioSpec.prompt_tokens`), encoder costed whenever `audio_s` > 0.
+- `Qwen/Qwen2-Audio-7B-Instruct`: Whisper-v3 encoder + AvgPool1d(2) + Linear → Qwen-7B (text_config completed from transformers Qwen2Config defaults); prompt tokens per the processor formula (750 per 30 s), audio past 30 s truncated (reported).
+- `Qwen/Qwen3-ASR-1.7B`: AuT encoder (`AudioSpec.kind = "aut"`: 100-frame chunks, Conv2d ×3 stride 2 → 13 positions / s, window attention of 104 positions, MLP projector) + Qwen3-1.7B (`thinker_config.text_config`).
+- Params exact vs the safetensors headers for all four (decoder / LLM and encoder separately); `scripts/summarize_release.py` gained Whisper tensor roles. Listing domain `asr`, families Whisper / Qwen2-Audio / Qwen3-ASR.
+
+### Added — audio-seconds serving convention (MODEL §215.3)
+- `Result.asr` / summary `asr` (per phase): audio s, encoder positions, prompt audio tokens, windows, cross K/V MB per sequence, first-token latency + encoder time (prefill), decode RTF (decode), audio s / s (per replica and per card).
+- `core/speech.py` `speech_kpis(scn, audio_out_s)`: end to end over both phases — ASR: first token, total = T_ft + out_len · TPOT, RTF, audio s / s / card; TTS (Ming-3.0-tts-tiny): first audio = T_ft + one step, RTF, output audio s / s / card. `/api/eval` returns it as `speech` (new body key `audio_out_s`, default 10 s); UI KPIs.
+- Finding (100T + LPDDR5X, 30 s, 100 tokens): Whisper-v3 decode at B32 is cross-K/V bound (7.9 GB / step vs 1.8 GB weights; TPOT 9.7 → 56 ms); turbo cuts both 8× and is then encoder bound (779 of 798 ms first token at B32).
+
+### Freshness
+- Sweep since 10-20: nothing new (74 orgs). `freshness_sweep.EXTRA_ORGS` += 14 speech orgs (FunAudioLLM, funasr, kyutai, bosonai, SparkAudio, IndexTeam, fishaudio, SWivid, FireRedTeam, hexgrad, ResembleAI, nari-labs, canopylabs, sesame): nothing since 10-20 there either.
+
 ## [0.269.0]
 
 ### Added — speech synthesis: Ming-3.0-tts-tiny (MODEL §214.1)

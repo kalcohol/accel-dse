@@ -18,6 +18,9 @@ EXTRA_ORGS = (
     "ai-sage", "swiss-ai", "CohereLabs", "Motif-Technologies", "LGAI-EXAONE", "naver-hyperclovax", "kakaocorp",
     "upstage", "sarvamai", "stabilityai", "HiDream-ai", "Alpha-VLLM", "lmms-lab", "OpenGVLab", "Skywork",
     "jdopensource", "kuaishou", "Kwai-Kolors", "KwaiVGI", "ant-research",
+    # 0.270 speech round: speech-model orgs (NOTES_0269 candidate list) — ASR / TTS / speech dialogue
+    "FunAudioLLM", "funasr", "kyutai", "bosonai", "SparkAudio", "IndexTeam", "fishaudio", "SWivid", "FireRedTeam",
+    "hexgrad", "ResembleAI", "nari-labs", "canopylabs", "sesame",
 )
 
 

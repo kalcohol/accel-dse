@@ -34,7 +34,7 @@ tokens of the prompt.  The encoder weights are bf16 as released; activations bf1
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .ir import Op
 
@@ -167,16 +167,64 @@ class AudioSpec:
     n_mels: int = 0
     chunk: int = 0
     ds: tuple[tuple[int, int, int], ...] = ()
+    # 0.270 speech round.  ``pad``: the feature extractor pads every pass to a 30 s window of ``chunk`` frames
+    # (WhisperFeatureExtractor padding="max_length", n_samples 480000) — the encoder always runs 1500 positions;
+    # ``trunc``: audio past the first window is dropped (Qwen2-Audio processor, truncation=True) instead of encoded as
+    # further windows (Whisper long-form: sequential 30 s windows); ``cross``: encoder-decoder (Whisper) — the encoder
+    # output feeds decoder cross-attention, no audio positions in the decoder prompt; ``pool``: AvgPool1d(pool) after
+    # the encoder layers (Qwen2-Audio); ``lin``: projector Linears after the encoder (None = the Ming conv projector
+    # path, () = none); ``win``: kind "aut" (Qwen3-ASR AuT) attention window in post-CNN positions; ``ch``: AuT conv2d
+    # channels (downsample_hidden_size)
+    pad: bool = False
+    trunc: bool = False
+    cross: bool = False
+    pool: int = 1
+    lin: tuple[tuple[int, int], ...] | None = None
+    win: int = 0
+    ch: int = 0
 
     @property
     def samples_per_token(self) -> int:
         return math.prod(self.patches)
 
+    def mel_frames(self, seconds: float) -> int:
+        """Mel frames of the clip.  Whisper STFT (center=True, last frame dropped) → ⌊samples / hop⌋; the padded
+        extractors count the attention mask rescaled by hop → ⌈samples / hop⌉ (≤ one window when truncating)."""
+        n = round(seconds * self.rate)
+        if self.pad:
+            return max(1, -(-n // self.patches[0]))
+        return max(1, n // self.patches[0])
+
+    def windows(self, seconds: float) -> int:
+        """0.270 padded 30 s windows per clip (Whisper long-form: sequential windows; truncating processors: one)."""
+        return 1 if self.trunc else max(1, -(-self.mel_frames(seconds) // self.chunk))
+
     def chunks(self, seconds: float) -> tuple[int, ...]:
-        """0.268 whisper: mel frames per encoder pass (torch.stft center=True drops the last frame → ⌊samples / hop⌋)."""
-        mel = max(1, round(seconds * self.rate) // self.patches[0])
+        """0.268 whisper: mel frames per encoder pass (torch.stft center=True drops the last frame → ⌊samples / hop⌋).
+        0.270 padded kinds: ``windows`` passes of the full ``chunk`` frames; AuT: ``chunk``-frame CNN chunks."""
+        if self.pad:
+            return (self.chunk,) * self.windows(seconds)
+        mel = self.mel_frames(seconds)
         full, rem = divmod(mel, self.chunk)
         return (self.chunk,) * full + ((rem,) if rem else ())
+
+    def aut_len(self, n: int) -> int:
+        """0.270 Qwen3-ASR post-CNN positions of an n-frame chunk: three (k3, s2, p1) convs (_post_cnn_length)."""
+        for _ in range(3):
+            n = (n - 1) // 2 + 1 if n > 0 else 0
+        return n
+
+    def enc_positions(self, seconds: float) -> int:
+        """0.270 encoder output positions per clip (Whisper: 1500 per 30 s window — the decoder cross-attention keys)."""
+        if self.kind == "aut":
+            return sum(self.aut_len(n) for n in self.chunks(seconds))
+        if self.kind != "whisper":
+            return self.tokens(seconds)        # Muse Spark: one output position per token (no chunking)
+        return sum(self.chunk_len(n)[0] for n in self.chunks(seconds))
+
+    def prompt_tokens(self, seconds: float) -> int:
+        """0.270 audio positions inserted into the LLM prompt (0 for an encoder-decoder: cross-attention instead)."""
+        return 0 if self.cross else self.tokens(seconds)
 
     def chunk_len(self, n: int) -> tuple[int, int]:
         """(encoder positions after conv2, projector tokens) of an n-frame chunk (MingAudioSpec.embedding_length)."""
@@ -187,6 +235,16 @@ class AudioSpec:
         return t, o
 
     def tokens(self, seconds: float) -> int:
+        if self.kind == "aut":
+            return self.enc_positions(seconds)
+        if self.kind == "whisper" and self.pad:
+            # Qwen2-Audio processor: num_audio_tokens = (((L − 1)//2 + 1) − 2)//2 + 1 over the unpadded frames L
+            # (conv2 stride 2, AvgPool1d 2); Whisper (cross): encoder positions of every window
+            if self.cross:
+                return self.enc_positions(seconds)
+            L = min(self.mel_frames(seconds), self.chunk)
+            t = (L - 1) // 2 + 1
+            return (t - 2) // self.pool + 1 if self.pool > 1 else t
         if self.kind == "whisper":
             return sum(self.chunk_len(n)[1] for n in self.chunks(seconds))
         return math.ceil(round(seconds * self.rate) / self.samples_per_token)
@@ -194,8 +252,20 @@ class AudioSpec:
 
 def audio_spec(cfg: dict) -> AudioSpec | None:
     ac = cfg.get("audio_config") or {}
-    if cfg.get("model_type") == "ming_v3_asr" and ac.get("n_audio_state"):
+    mt = cfg.get("model_type")
+    if mt == "ming_v3_asr" and ac.get("n_audio_state"):
         return _whisper_audio_spec(cfg, ac)
+    if mt == "whisper":
+        return _whisper_v3_spec(cfg, cfg["encoder_layers"], cfg["encoder_attention_heads"], cfg["encoder_ffn_dim"],
+                                cfg["num_mel_bins"], cfg["max_source_positions"], cross=True)
+    if mt == "qwen2_audio" and ac.get("model_type") == "qwen2_audio_encoder":
+        out = (cfg.get("text_config") or {}).get("hidden_size") or 4096     # Qwen2Config default (text_config omits it)
+        return _whisper_v3_spec({"d_model": ac["d_model"]}, ac["encoder_layers"], ac["encoder_attention_heads"],
+                                ac["encoder_ffn_dim"], ac["num_mel_bins"], ac["max_source_positions"], pool=2,
+                                trunc=True, lin=((ac["d_model"], out),))
+    tk = cfg.get("thinker_config") or {}
+    if mt == "qwen3_asr" and (tk.get("audio_config") or {}).get("model_type") == "qwen3_asr_audio_encoder":
+        return _aut_spec(tk["audio_config"])
     if ac.get("model_type") != "muse_spark_audio":
         return None
     pt, dm, dp, k, r = tuple(ac["patch_sizes"]), tuple(ac["hidden_sizes"]), tuple(ac["depths"]), ac["conv_kernel_size"], ac["mlp_ratio"]
@@ -231,6 +301,78 @@ def _whisper_audio_spec(cfg: dict, ac: dict) -> AudioSpec:
                      chunk=ac.get("chunk_frames", 3000), ds=tuple(zip(ks, ss, ps)))
 
 
+def _whisper_v3_spec(cfg: dict, L: int, nh: int, ffn: int, mel: int, pos: int, *, cross: bool = False, pool: int = 1,
+                     trunc: bool = False, lin: tuple = ()) -> AudioSpec:
+    """0.270 Whisper-large-v3 encoder (transformers WhisperEncoder; Qwen2AudioEncoder = the same + AvgPool1d(2, 2)
+    before layer_norm): conv1 [d, mel, 3] + conv2 [d, d, 3, stride 2] (GELU), positions [max_source_positions, d]
+    (Whisper: sinusoid buffer saved in the checkpoint; Qwen2-Audio: nn.Embedding), L pre-LN blocks (q / v / o with bias,
+    k without, GELU fc1 / fc2 with bias), final layer_norm; optional projector Linears with bias.  Inputs padded to 30 s
+    (3000 frames → 1500 positions) by the feature extractor 「来源」."""
+    d = cfg["d_model"]
+    blk = 4 * d * d + 3 * d + 2 * d + _lin(d, ffn) + _lin(ffn, d) + 2 * d
+    params = _lin(3 * mel, d) + _lin(3 * d, d) + pos * d + L * blk + 2 * d + sum(_lin(k, n) for k, n in lin)
+    out = lin[-1][1] if lin else d
+    return AudioSpec(16000, (160,), (d,), (L,), 3, ffn / d, out, params, kind="whisper", heads=nh, n_mels=mel,
+                     chunk=2 * pos, pad=True, trunc=trunc, cross=cross, pool=pool, lin=tuple(lin))
+
+
+def _aut_spec(ac: dict) -> AudioSpec:
+    """0.270 Qwen3-ASR audio encoder (transformers Qwen3ASREncoder, modeling_qwen3_asr.py 「来源」): mel frames padded to
+    chunks of 2·n_window (100 frames = 1 s); per chunk three Conv2d (k3, s2, p1; 1 → C → C → C channels, GELU) over
+    (mel, time), conv_out Linear C·⌈⌈⌈mel/2⌉/2⌉/2⌉ → d (no bias), sinusoid positions; only the valid post-CNN positions
+    (13 per full chunk) enter the L blocks (q / k / v / o with bias, GELU fc1 / fc2), attention within windows of
+    13 · n_window_infer / (2·n_window) positions (cu_seqlens), ln_post; projector Linear d → d, GELU, Linear d → out."""
+    d, L, nh, ffn, mel = ac["d_model"], ac["encoder_layers"], ac["encoder_attention_heads"], ac["encoder_ffn_dim"], ac["num_mel_bins"]
+    C, nw = ac["downsample_hidden_size"], ac["n_window"]
+    f = mel
+    for _ in range(3):
+        f = (f + 1) // 2
+    blk = 4 * d * d + 4 * d + 2 * d + _lin(d, ffn) + _lin(ffn, d) + 2 * d
+    lin = ((d, d), (d, ac["output_dim"]))
+    params = (_lin(9, C) + 2 * _lin(9 * C, C) + C * f * d + L * blk + 2 * d + sum(_lin(k, n) for k, n in lin))
+    a = AudioSpec(16000, (160,), (d,), (L,), 3, ffn / d, ac["output_dim"], params, kind="aut", heads=nh, n_mels=mel,
+                  chunk=2 * nw, lin=lin, ch=C)
+    return replace(a, win=a.aut_len(2 * nw) * (ac["n_window_infer"] // (2 * nw)))
+
+
+def _aut_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
+    """0.270 Qwen3-ASR AuT encoder ops (see _aut_spec): Conv2d as implicit GEMMs over every padded chunk; blocks on
+    the valid positions; attention per window (full windows + the tail window)."""
+    d, dh, C = a.dims[0], a.dims[0] // a.heads, a.ch
+    ops: list[Op] = []
+
+    def gemm(name: str, m: int, k: int, n: int, li: int = 0, w: int | None = None) -> Op:
+        return Op(name, "gemm", li, m=m, k=k, n=n, role="vision", w_params=k * n if w is None else w, w_bits=16.0,
+                  w_fmt="bf16", a_fmt=af, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+    nch = len(a.chunks(seconds)) * clips
+    f, t = a.n_mels, a.chunk
+    k_in = 1
+    for i in range(3):
+        f, t = (f + 1) // 2, (t + 1) // 2
+        ops.append(gemm(f"aud.conv2d{i + 1}", nch * f * t, 9 * k_in, C))
+        k_in = C
+    P = a.enc_positions(seconds) * clips
+    ops.append(gemm("aud.conv_out", nch * t, C * f, d))
+    wins = []
+    for _ in range(clips):
+        full, rem = divmod(a.enc_positions(seconds), a.win)
+        wins += [a.win] * full + ([rem] if rem else [])
+    for li in range(a.depths[0]):
+        ops += [gemm(f"aud.{li}.qkv", P, d, 3 * d, li), gemm(f"aud.{li}.o", P, d, d, li),
+                gemm(f"aud.{li}.fc1", P, d, int(a.mlp * d), li), gemm(f"aud.{li}.fc2", P, int(a.mlp * d), d, li)]
+        for wi, w in enumerate(sorted(set(wins), reverse=True)):
+            cnt = wins.count(w) * a.heads
+            sfx = f".w{wi}" if wi else ""
+            ops += [Op(f"aud.{li}.qk{sfx}", "attn", li, m=w, k=dh, n=w, count=cnt, causal=1.0, act_bytes=cnt * w * dh * ab,
+                       stream=True, orient=True),
+                    Op(f"aud.{li}.pv{sfx}", "attn", li, m=w, k=w, n=dh, count=cnt, causal=1.0, act_bytes=cnt * w * dh * ab,
+                       orient=True),
+                    Op(f"aud.{li}.softmax{sfx}", "vector", li, vec=cnt * w * w * 5.0)]
+    for i, (k, n) in enumerate(a.lin):
+        ops.append(gemm(f"aud.proj.linear{i}", P, k, n, a.depths[0]))
+    return ops
+
+
 def _whisper_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
     d, dh = a.dims[0], a.dims[0] // a.heads
     ops: list[Op] = []
@@ -255,6 +397,15 @@ def _whisper_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -
                     Op(f"{p}{li}.pv", "attn", li, m=t, k=t, n=dh, count=ch, causal=1.0, act_bytes=ch * t * dh * ab,
                        orient=True),
                     Op(f"{p}{li}.softmax", "vector", li, vec=ch * t * t * 5.0)]
+        if a.lin is not None:
+            # 0.270 Whisper-v3 family: AvgPool1d(pool) (Qwen2-Audio; ½ add per pooled input) then the projector Linears
+            # on every padded position (the processor's mask selects the valid ones afterwards)
+            rp = rows // a.pool
+            if a.pool > 1:
+                ops.append(Op(f"{p}pool", "vector", a.depths[0], vec=rows * d * 1.0))
+            for i, (k, n_) in enumerate(a.lin):
+                ops.append(gemm(f"{p}proj.linear{i}", rp, k, n_, a.depths[0]))
+            continue
         din, m_ = d, rows
         for i, (k, st, pd) in enumerate(a.ds):
             m_ = cnt * o if i == len(a.ds) - 1 else m_      # single-stage downsampler in the release
@@ -269,6 +420,8 @@ def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> lis
     ab = _fmt(af).bytes
     if a.kind == "whisper":
         return _whisper_ops(a, seconds, clips, ab, af)
+    if a.kind == "aut":
+        return _aut_ops(a, seconds, clips, ab, af)
     t = a.tokens(seconds) * a.samples_per_token * clips       # padded samples (all clips)
     ops: list[Op] = []
     din = 1
@@ -299,10 +452,15 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
     hf_id = hf_id.split("+", 1)[0]              # 0.175: "<target>+<draft repo>" entries use the target's processor
     if not vc:
         au = audio_spec(cfg)
-        if au is not None and au.kind == "whisper":
+        if au is not None and au.kind in ("whisper", "aut"):
             # 0.268 audio-only release (Ming-3.0-asr-tiny): an encoder container with no image path (family "audio":
             # image_grid_of → None, serving.images ignored with a warning); costed when serving.audio_s > 0
-            return VisionSpec("audio", "Whisper 音频编码器 + 卷积下采样投影", 0, 1, au.dims[0], int(au.mlp * au.dims[0]),
+            # 0.270: Whisper-large-v3 (encoder-decoder), Qwen2-Audio (Whisper-v3 encoder + pool + projector), Qwen3-ASR (AuT)
+            lab = ("Whisper-v3 音频编码器（30 s 填充窗，交叉注意力输入）" if au.cross else
+                   "Whisper-v3 音频编码器（30 s 填充）+ 平均池化 + 线性投影" if au.lin is not None and au.kind == "whisper" else
+                   "AuT 音频编码器（Conv2d ×3 下采样 8×，窗口注意力）+ MLP 投影" if au.kind == "aut" else
+                   "Whisper 音频编码器 + 卷积下采样投影")
+            return VisionSpec("audio", lab, 0, 1, au.dims[0], int(au.mlp * au.dims[0]),
                               au.depths[0], au.heads, au.dims[0], False, 1, (), au.params, (), audio=au)
         return None
     if hf_id not in _PREPROC:
@@ -771,7 +929,7 @@ def expand_images(scn, m):
         return scn
     import dataclasses
     t = (sv.images * g.llm_tokens if g is not None else 0) + (sv.videos * vg.llm_tokens if vg is not None else 0) \
-        + (au.tokens(sv.audio_s) if au is not None else 0)
+        + (au.prompt_tokens(sv.audio_s) if au is not None else 0)
     return dataclasses.replace(scn, serving=dataclasses.replace(sv, prompt=sv.prompt + t, ctx=sv.ctx + t, image_tokens=t))
 
 

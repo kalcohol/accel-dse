@@ -474,6 +474,9 @@ class ModelSpec:
     cached_params: int = 0                   # in the release but not loaded for inference (MiniMax-H3 AdaLN branches:
                                              # modulation outputs precomputed per timestep, README)
     tts: object = None                       # 0.269 core.tts.TtsSpec: speech-synthesis decode head (replaces the LM head)
+    # 0.270 encoder-decoder (Whisper): encoder positions each decoder sequence cross-attends to (1500 per 30 s window);
+    # the cross K/V of every layer is computed at prefill and kept per sequence (fixed size, like recurrent state)
+    enc_ctx: int = 0
 
     # ----- derived
     @property
@@ -546,10 +549,27 @@ class ModelSpec:
 
 
 # ---------------------------------------------------------------- helpers
+# 0.270 Qwen2-Audio: the released text_config lists only the fields that differ from transformers Qwen2Config, whose
+# defaults (configuration_qwen2.py 「来源」) fill the rest — Qwen-7B shape, MHA
+_QWEN2_DEFAULTS = {"vocab_size": 151936, "hidden_size": 4096, "intermediate_size": 22016, "num_hidden_layers": 32,
+                   "num_attention_heads": 32, "num_key_value_heads": 32, "max_position_embeddings": 32768,
+                   "tie_word_embeddings": False}
+
+
 def _tc(cfg: dict) -> dict:
     tc = cfg.get("text_config")
-    if cfg.get("model_type") == "lingv3_tts" and isinstance(cfg.get("llm_config"), dict):
+    mt = cfg.get("model_type")
+    if mt == "lingv3_tts" and isinstance(cfg.get("llm_config"), dict):
         tc = cfg["llm_config"]      # 0.269 Ming-3.0-tts-tiny: the BailingMoeV3 decoder config sits in llm_config
+    if mt == "qwen3_asr" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
+        tc = cfg["thinker_config"]["text_config"]      # 0.270 Qwen3-ASR: thinker_config.text_config (Qwen3)
+    if mt == "qwen2_audio" and isinstance(tc, dict) and not tc.get("hidden_size"):
+        tc = {**_QWEN2_DEFAULTS, **tc}
+    if mt == "whisper":
+        # 0.270 Whisper: the autoregressive part is the text decoder (the encoder is the audio tower, core/vision.py)
+        return {**cfg, "hidden_size": cfg["d_model"], "num_hidden_layers": cfg["decoder_layers"],
+                "num_attention_heads": cfg["decoder_attention_heads"], "intermediate_size": cfg["decoder_ffn_dim"],
+                "max_position_embeddings": cfg["max_target_positions"], "tie_word_embeddings": True}
     if isinstance(tc, dict) and tc.get("hidden_size"):
         return {**{k: v for k, v in cfg.items() if k != "text_config"}, **tc}
     return cfg
@@ -1552,6 +1572,27 @@ def spec_accept_from_tau(tau: float, k: int) -> float:
     return (lo + hi) / 2
 
 
+def _build_whisper(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.270 Whisper text decoder (transformers WhisperDecoderLayer 「来源」): pre-LN blocks of self-attention (MHA,
+    q / v / o with bias, k without), cross-attention ``encoder_attn`` over the encoder output (same projections; k / v
+    applied once per request to the encoder positions and cached), GELU fc1 / fc2 with bias; learned positions
+    [max_target_positions, d]; final LayerNorm; proj_out tied to embed_tokens."""
+    h, H, L, ff = c["hidden_size"], c["num_attention_heads"], c["num_hidden_layers"], c["intermediate_size"]
+    hd = h // H
+    layers = []
+    for _ in range(L):
+        alin, core = _gqa(h, H, H, hd)
+        clin, ccore = _gqa(h, H, H, hd)
+        ffn, flin = _ffn_dense(h, ff, gated=False)
+        misc = 3 * h + 3 * h + (ff + h) + 3 * 2 * h      # self / cross q,v,o biases; fc1 / fc2 biases; 3 LayerNorms
+        layers.append(Layer(alin, core, ffn, flin, misc, cross_linears=clin,
+                            cross=replace(ccore, causal=False, cross=True)))
+    notes = [f"编码器-解码器（Whisper）：解码器每层自注意力 + 交叉注意力（{L} 层），交叉 K/V 每请求在 prefill 时由编码器"
+             f"输出算一次并缓存（每 30 s 窗 {c.get('max_source_positions', 1500)} 个位置），解码每步只读不写「来源」",
+             "无 RoPE（学习的绝对位置表，查表）；GELU 激活按 SiLU 的逐元素开销计「近似」"]
+    return layers, [], notes, "full"
+
+
 def _build_rwkv7(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """0.191 RWKV-7 "Goose" (arXiv 2503.14456; release modeling_rwkv7.py).  No attention, no KV cache.
     Time mix: token shift → 6 lerps (r, w, k, v, a, g); receptance / key / value / output C×C; four low-rank chains
@@ -1634,6 +1675,8 @@ def _builder(c: dict):
         return _build_muse_spark, "GQA（SWA + full，输出门）latent MoE"
     if mt == "rwkv7":
         return _build_rwkv7, "RWKV-7（广义 delta 规则线性循环，无 KV）"
+    if mt == "whisper":
+        return _build_whisper, "编码器-解码器（MHA 自注意力 + 交叉注意力）稠密"
     if mt == "stripedhyena2":
         return _build_hyena, "StripedHyena 2（Hyena SE / MR / LR + MHA）"
     if mt == "mimo_v2":
@@ -1760,7 +1803,7 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
     if hc and not any(l.hc or l.gres_n for l in spec.layers):
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
-    if spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers):
+    if spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers) and mt != "whisper":
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
     if abs(gap) > 0.02:
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
@@ -1840,6 +1883,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             spec = replace(spec, final_norm_params=0)       # 0.253 Dory: nGPT, final state justnorm (no weight)
         if (c.get("model_type") or "") == "rwkv7":
             spec = replace(spec, final_norm_params=2 * h)      # ln_out LayerNorm (weight + bias)
+        if (c.get("model_type") or "") == "whisper":
+            # 0.270: decoder learned positions (looked up, one row per token) + final LayerNorm (weight + bias); the
+            # encoder output length per 30 s window = max_source_positions (conv2 stride 2 over 3000 mel frames)
+            spec = replace(spec, final_norm_params=2 * h, lookup_params=c["max_target_positions"] * h,
+                           lookup_bits=spec.fmt("embed").bits, enc_ctx=c["max_source_positions"])
         if cfg.get("jev_prompt_attention", c.get("jev_prompt_attention")) == "bidirectional":
             # 0.191 StartLux-Decision v1.1 Instant (model card): in the full-attention layers prompt tokens also attend to
             # later prompt tokens; linear-attention layers stay causal → the release's full-attention cores non-causal

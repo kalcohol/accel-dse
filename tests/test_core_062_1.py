@@ -30,9 +30,10 @@ def test_release_count_and_param_error():
     # 0.257: + MOSS-Image-Base / -SFT (gen)  132 → 134, llm 108
     # 0.268: + Ming-3.0-asr-tiny (llm release, listing domain asr)  134 → 135, llm 109
     # 0.269: + Ming-3.0-tts-tiny (llm release, listing domain tts)  135 → 136, llm 110
-    assert len(files) == 136 and doms.count("llm") == 110
+    # 0.270: + Whisper-large-v3 / -turbo, Qwen2-Audio-7B-Instruct, Qwen3-ASR-1.7B (llm releases, listing domain asr)  136 → 140, llm 114
+    assert len(files) == 140 and doms.count("llm") == 114
     listed = {x["id"]: x for x in list_models()}
-    assert len(listed) + len(unlisted_models()) == 142   # 0.269: + ming-3.0-tts-tiny; 0.268: + ming-3.0-asr-tiny; 0.257: + moss-image-base, moss-image-sft (merged); 0.254: + 3 Beam + 2 DFlash2 pairs; 0.253: + 4; 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7; 0.252: + qwen3-8b-dspine
+    assert len(listed) + len(unlisted_models()) == 146   # 0.270: + 4 speech (whisper ×2, qwen2-audio, qwen3-asr); 0.269: + ming-3.0-tts-tiny; 0.268: + ming-3.0-asr-tiny; 0.257: + moss-image-base, moss-image-sft (merged); 0.254: + 3 Beam + 2 DFlash2 pairs; 0.253: + 4; 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7; 0.252: + qwen3-8b-dspine
     assert all(abs(x["param_err"]) <= 0.005 for x in listed.values())
     assert all(abs(x["param_err"]) < 1e-5 for x in listed.values() if get_model(x["id"]).domain in ("gen", "protein", "genomics"))
 

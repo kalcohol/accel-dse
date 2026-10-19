@@ -145,6 +145,8 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
             kv += n * (c.kv_lora + c.rope_dim) * kvb
         if L.ple_rows:
             st += (L.ple_conv - 1) * L.ple_dil * L.gres_n * model.hidden * 2
+        if L.cross is not None and model.enc_ctx:   # 0.270: the whole cross K/V (made at the first prefill pass)
+            st += model.enc_ctx * L.cross.n_kv * (L.cross.qk_dim + L.cross.v_dim) * kvb
         if c.kind == "linear":
             st += c.state_bytes(1, stb)
         if c.idx_heads and c.dual:
@@ -180,6 +182,10 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         elif c.kind == "mla":
             # 0.61.1: a sliding-window-only latent layer (compress 1) keeps min(ctx, window) entries (was ctx)
             kv += ((math.ceil(ctx / c.compress) + (c.window or 0)) if c.compress > 1 else ce) * (c.kv_lora + c.rope_dim) * kvb
+        if L.cross is not None and model.enc_ctx:
+            # 0.270 encoder-decoder: cross K/V of the encoder positions, fixed per sequence (EncoderDecoderCache)
+            cc = L.cross
+            st += model.enc_ctx * _cdiv(cc.n_kv, sh.tp) * (cc.qk_dim + cc.v_dim) * kvb
         if L.ple_rows:      # Qwen4Exp PLE dilated conv state, bf16 (kernel − 1)·dilation columns of N·h
             st += (L.ple_conv - 1) * L.ple_dil * L.gres_n * model.hidden * 2
         if c.kind == "linear":

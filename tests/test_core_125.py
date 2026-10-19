@@ -52,7 +52,10 @@ def test_llm_weight_reads_match_active_params():
         # 0.253 looped LMs (Dory): every later loop re-reads the shared recurrent weights (stored once)
         from dataclasses import replace as _rp
         reread = sum(_rp(L, loop=0).params(m.hidden) for L in m.layers if L.loop)
-        r = (wp - tied + m.embed_params) / (m.active_params() + reread) - 1
+        # 0.270 encoder-decoder (Whisper): cross-attention k / v run once per request at prefill on the encoder output
+        # (cached), never in decode
+        xkv = sum(l.params for L in m.layers for l in L.cross_linears if l.name in ("k", "v")) if m.enc_ctx else 0
+        r = (wp - tied + m.embed_params) / (m.active_params() + reread - xkv) - 1
         assert -0.01 < r < 1e-9, (e["id"], r)
 
 

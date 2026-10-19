@@ -120,6 +120,26 @@ def classify(name: str, n_layers: int | None = None) -> str:
     return "other"
 
 
+def _whisper_role(name: str) -> str:
+    """0.270 Whisper encoder-decoder (WhisperForConditionalGeneration): the audio encoder → vision (encoder side);
+    decoder self-attention + cross-attention (encoder_attn) → attn, fc1 / fc2 → mlp, learned positions → pos_embed."""
+    if name.startswith(("model.encoder.", "encoder.")):
+        return "vision"
+    if "embed_positions" in name:
+        return "pos_embed"
+    if "embed_tokens" in name:
+        return "embed"
+    if name.startswith("proj_out"):
+        return "lm_head"
+    if "layer_norm" in name:
+        return "norm"
+    if "self_attn." in name or "encoder_attn." in name:
+        return "attn"
+    if ".fc1." in name or ".fc2." in name:
+        return "mlp"
+    return "other"
+
+
 def _fp4_hint(qc) -> bool:
     s = json.dumps(qc or {}).lower()
     return any(k in s for k in ("mxfp4", "fp4", "e2m1", "nvfp4"))
@@ -182,7 +202,8 @@ def summarize(repo: str) -> dict:
         else:
             fmt, params = {"BF16": "bf16", "F16": "fp16", "F32": "fp32", "U8": "uint8", "I32": "int32"}.get(dt, dt.lower()), n
         b = _base(name) if is_blocks else re.sub(r"\.(weight_packed|qweight)$", ".weight", name)
-        role = classify(name, nl) if domain == "llm" else classify_domain(name, domain)
+        role = (_whisper_role(name) if cfg.get("model_type") == "whisper" else
+                classify(name, nl) if domain == "llm" else classify_domain(name, domain))
         if role == "buffer":
             buffers += nb
             continue

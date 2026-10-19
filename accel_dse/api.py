@@ -141,7 +141,7 @@ def _finite(x: Any, where: str = "body") -> None:
 
 
 _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
-_ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap"}, "fit": set(), "layouts": {"cards", "objective"},
+_ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "audio_out_s"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
                "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": {"power_cap_W"},
                "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
@@ -962,6 +962,7 @@ def evaluate_mem_eff(scn: Scenario) -> float:
 
 
 def api_eval(body: dict) -> dict:
+    from .core.speech import speech_kpis
     _check_keys(body, "eval")
     scn = scenario_from_body(body)
     bud = _budget(body)
@@ -988,6 +989,16 @@ def api_eval(body: dict) -> dict:
         out["budget"] = budget_report(r, bud, out["energy"])
     if scn.fabric.enabled:  # 0.59: per-collective algorithm / topology breakdown
         out["fabric"] = fabric_report(scn, r)
+    # 0.270 speech serving convention (core/speech.py): end-to-end per audio second — ASR when audio_s > 0 on a model
+    # with an audio encoder; TTS for a TTS head (audio_out_s seconds out, default 10 「假设」)
+    aos = body.get("audio_out_s", 10.0)
+    if isinstance(aos, bool) or not isinstance(aos, (int, float)) or not 0 < aos <= 3600:
+        raise ApiError("audio_out_s must be a number in (0, 3600]")
+    if r.tts is not None or (scn.serving.audio_s and getattr(getattr(r.model, "vision", None), "audio", None) is not None):
+        try:
+            out["speech"] = speech_kpis(scn, float(aos))
+        except ValueError as e:
+            out["speech"] = {"error": str(e)}
     if scn.pd.enabled and r.model.kv_cache:   # 0.50 PD next to colocated; 0.90: video / protein → warning only (no pd block)
         try:
             out["pd"] = disagg_report(scn, r, _energy_table(body))
