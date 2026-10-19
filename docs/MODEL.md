@@ -348,6 +348,7 @@ pair 残差 / 在途激活与跨 stage 传输按 ⌈N / D⌉ × N × c_z。100T 
 - **时间**：命中字节 / `slc_GBps` 作为与 DRAM 端口并行的一项 `t_slc` 进入级时间 `max(t_compute, t_dram, t_slc, t_link) + t_sync`；DRAM 只计未命中字节。SLC 带宽太低时瓶颈标为 SLC。
 - **pin（软件钉住，默认）**：与 SRAM 规划同一顺序——SRAM 放不下的热权重 → 路由专家 → KV / 线性注意力状态依次钉在 SLC；每步读到钉住部分即命中（命中比例 = 钉住字节 / 该类存储字节，路由专家按存储比例）。流式激活、FSDP gather 写入、embedding 查表行、KV 写入都绕过 SLC（write-through）。全序列前向里的权重分块重读按权重的 SLC 份额命中。
 - **lru（硬件替换）**：一步 decode / 去噪的访问是循环重复的，LRU 要么装下整个工作集、要么反复抖动。规则：SRAM 之外的全部数据（权重 + KV / 状态 + DRAM 中的激活工作集）放得下 → 所有读命中（KV 写仍进 DRAM）；放不下 → 0 命中（循环访问的抖动下界）。真实替换策略介于 lru 与 pin 之间。
+- **dip（硬件替换 + 防抖插入，0.258，§204.3）**：放得下 → 同 lru 全部命中；放不下 → 每类读按 (K − ε(T − K)) / T 命中（DIP / BIP，Qureshi et al. ISCA 2007，ε = 1/32，「来源」）。
 - **不覆盖**：视频 pipeline 组件（文本编码器、VAE）不用 SLC；多卡共享 SLC、一致性流量、写回策略差异、SLC 分 bank / 冲突、标签开销都不建模。
 - **能耗**：动作 `slc`（命中字节，`pJ_bit_slc`），DRAM 只计未命中；SLC + DRAM = 无 SLC 时的 DRAM 字节（测试守恒）。
 - **结果字段**：`StageTime.t_slc / slc_bytes`，`MemPlan.slc / slc_policy / slc_hot / slc_expert / slc_kv / slc_all / slc_residency`，`dram` 字典增加 `slc` 与 `slc_parts`；API 每级 `t_ms.slc`、`slc_GB`、`mem.slc_*`。CLI `--slc-mib --slc-GBps --slc-policy`；Web 芯片组「SLC MiB / GB/s / 策略」，级表与存储表在有 SLC 时多出 SLC 列；扫描可选 `chip.slc_mib`、`chip.slc_GBps`。
@@ -6430,7 +6431,7 @@ Per reused step, 5 of 33 blocks drop the text and reference rows. The single blo
 - io_post: `video_head_modulation`, `final_linear_video`.
 - param_check exact (5,082,308,624); coverage full. Sequence 1024² / 8 / 2² = 4096 image + 256 text tokens 「假设」 = 4352.
 
-**Workload.** 50 steps (shift 5 rescales, still 50 timesteps 「推导」); CFG 3 → 2 forwards per step. The reference skips block 22 in the unconditional pass and uses an empty negative prompt (~10 tokens); modelled at the conditional shape 「近似」 (+3–4 %). Per-sample loop 「近似」. The `_situ` activation is costed as SwiGLU 「近似」.
+**Workload.** 50 steps (shift 5 rescales, still 50 timesteps 「推导」); CFG 3 → 2 forwards per step. The reference skips block 22 in the unconditional pass and uses an empty negative prompt (~10 tokens); modelled at the conditional shape 「近似」 (+3–4 %). Since 0.258 the negative branch runs at its own shape (§204.1); the refiner attention core is counted (§204.2). Per-sample loop 「近似」. The `_situ` activation is costed as SwiGLU 「近似」.
 
 **Pipeline.**
 - Text tower Qwen3.5-9B (`language_model.` tensors, 7.94 B used of 8.39 B stored, bf16). `TextEnc.full_layers` = (3, 7, …, 31) get softmax attention; the other 24 are Gated DeltaNet (`TextEnc.gdn` = (heads 32, d_k 128, d_v 128, conv channels 8192, kernel 4, chunk 64)), costed by `pipeline._gdn_ops` with the LLM IR's chunked form (ir._attn_core_ops): akk / ut_solve / vprime / aqk / intra / inter / state + per-token and per-chunk vector work + the causal conv. No state is kept (encoder pass).
@@ -6453,3 +6454,86 @@ Output: `J_by_pool` {decode, prefill} → J_per_token, J_by_action, card_s_per_t
 **Invariant.** With identical chips, memory and g, the result equals the pooled 0.230 form (all terms linear in counts; Σ_p cyc_p·u_p = MAC total). Σ_pools J = J_per_token, per action too.
 
 **Why it matters for chip design.** A heterogeneous PD design (compute-dense prefill chip with cheaper memory, bandwidth-dense decode chip with aggressive gating) was mispriced: the prefill pool's DRAM took the decode memory's pJ/bit, and the decode pool's low utilisation (≈ 0.02) was averaged with the prefill pool's (≈ 0.43). The ledger also shows which pool to optimise. In the qwen3-8b example ~80 % of PD J / token is the decode pool, mostly DRAM. Numbers: CHANGELOG 0.257.
+
+## §204 MOSS-Image CFG branches and refiner attention; SLC thrash-resistant insertion (0.258)
+
+### §204.1 CFG negative branch at its own shape (closes the §203.2 「近似」)
+**Source 「来源」.** `pipeline_moss_image.py` `MOSSImagePipeline.__call__` defaults: `guidance_scale=3.0`, `negative_prompt=''`, `uncond_skip_layers=(22,)`, `slg_start=0.0`, `slg_stop=1.0`.
+- Per step it makes one transformer call on the prompt, then one on the negative prompt with `skip_layers=(22,)`, because `skip_active` holds at every step.
+- `encode_prompt` runs one unpadded text-encoder forward per prompt, after the chat template (`add_generation_prompt`, `enable_thinking=True`).
+
+**Negative prompt length 「推导」.**
+- The template renders `<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n<think>\n`.
+- That is 4 special tokens (`<|im_start|>` × 2, `<|im_end|>`, `<think>`) + `user` + `assistant` + 4 newlines. The Qwen pre-tokenizer splits letters from newlines, so the total is **10 tokens**.
+
+**Mechanism.**
+- `NativeWorkload.uncond = (text tokens, skipped blocks)` is model-declared; `build_moss` sets (10, (22,)).
+- `Phase.txt` overrides the joint text rows of a forward (`ir._prefix(model, ph)`). `Phase.skip` lists blocks the forward skips; `_evaluate_full._run` drops them from the stage's layer counts.
+- `evaluate._cfg_asym` turns it on when the workload is gen, CFG = 2 and `workload.cfg_branches = ref` (the default).
+  - The cond phase has B sequences and the release's shape.
+  - The uncond phase has B sequences, q = video rows + 10, txt = 10, skip = (22,).
+  - Both use the same stage plan.
+  - Per step = cond tick + uncond tick: two serial calls, each streaming the weights. `Result.microbatches` = 2.
+- Not modelled → falls back to the packed, symmetric forward with a warning: PP > 1, `serving.microbatches` ∉ {0, 2}, or `step_skip`.
+- **Accounting:**
+  - `_tflop_per_request` = (cond + uncond TFLOP per sequence) × steps.
+  - `energy._counts` runs both stage sets × steps.
+  - `domain_summary.forward_ms` = the step time.
+  - The text encoder runs the negative prompt at 10 tokens in its own call (`_pipeline_cost(neg_tokens)`).
+- `cfg_branches = same` gives the pre-0.258 result (plus §204.2).
+
+**Numbers** (default chip, 1024², 50 steps), `same` → `ref`:
+
+| | same | ref |
+|---|---|---|
+| per step | 1089.1 ms (one packed forward of 2 sequences) | 545.9 + 512.2 ms |
+| DiT TFLOP / request | 5130.5 | 4953.8 (−3.4 %) |
+| text encoder | 0.083 s | 0.145 s |
+| latency | 54.62 s | 53.13 s (−2.7 %) |
+
+The packed forward reads the weights once for both branches. The serial calls read them twice, but the work is compute-bound at 4352 rows, so the smaller uncond shape wins.
+
+### §204.2 Text-refiner attention core
+`ModelSpec.io_attn = ((name, rows, heads, head_dim, blocks), …)`; `ir._io_attn_ops` adds, on the first stage:
+- the qk / pv attention GEMMs and the softmax;
+- the QK-norm + RoPE vector work over the text rows of the forward.
+
+Heads are split over TP and then SP, like the block attention; the SP all-to-all of these few rows is not added 「近似」. A cached step (kvpre) or a reused step (mreuse) runs none.
+
+MOSS: 2 refiner blocks × 24 heads × 128 (`_TextBlock`: SDPA, bidirectional, RMS QK-norm, RoPE). The cost is negligible at 256 rows (< 0.01 s per image); the term is there so the count is complete. HunyuanVideo / MiniMax-H3 token refiners could use the same field (not switched on).
+
+### §204.3 SLC policy `dip`: thrash-resistant insertion
+**Source 「来源」.** Qureshi, Jaleel, Patt, Steely, Emer, "Adaptive Insertion Policies for High Performance Caching", ISCA 2007, §4.1, Table 3.
+- Cyclic reference (a1…aT)^N through a fully associative K-line cache, K < T:
+  - LRU hit rate 0;
+  - OPT (K − 1)/T;
+  - BIP (K − 1 − ε·(T − K))/T, where ε is the bimodal throttle. The paper uses ε = 1/32 for all experiments.
+- DIP set dueling picks between LRU and BIP, so a working set that fits gets LRU's all-hit behaviour.
+
+**Model** (`memplan.dip_hit`, `DIP_EPS`):
+- T = the stage's off-SRAM working set (hot + expert weights not in SRAM, KV / state not in SRAM, the activation working set), the same T the `lru` rule uses; K = `slc_mib`.
+- T ≤ K → `slc_all`, every read hits.
+- Otherwise `slc_frac` = max(0, (K − ε(T − K)))/T. The one-line term is dropped (K ≫ a line).
+- The retained lines are an arbitrary subset of the sweep, so every read class (weights + streamed re-reads, KV, state, activations, idle-rank expert reads) hits by the same share 「推导」. KV writes go to DRAM as for `lru`.
+- Fully associative, or set-associative with addresses spread evenly over the sets 「近似」.
+- Conservation is unchanged: SLC + DRAM bytes = the DRAM bytes without an SLC.
+
+**Limits.**
+- One cyclic sweep per step: MoE routed experts that a step does not read are still counted in T 「近似」, as for `lru`.
+- No per-class reuse distance; no RRIP variant (BRRIP behaves like BIP on cyclic sweeps).
+
+**Example: why it matters for SLC sizing** (100T + LPDDR5X 4×64 8533, qwen3-8b decode B8, TPOT 104.2 ms without SLC):
+
+| SLC | pin | lru | dip (hit share) |
+|---|---|---|---|
+| 1 GiB | 98.5 | 104.2 | 101.6 (2 %) |
+| 4 GiB | 81.7 | 104.2 | 84.2 (19 %) |
+| 8 GiB | 59.2 | 104.2 | 61.1 (41 %) |
+| 12 GiB | 36.7 | 104.2 | 37.9 (64 %) |
+| 16 GiB | 14.3 | 104.2 | 14.7 (86 %) |
+| 32 GiB | 11.7 | 11.7 | 11.7 (100 %) |
+
+`lru` says an SLC is worthless until it holds the whole working set. A hardware SLC with thrash-resistant replacement gains in proportion to its size, within ~3–4 % of software pinning. The sizing decision should not rest on the LRU bound.
+
+### §204.4 Freshness
+`freshness_sweep.py 2026-10-19` (74 orgs) found nothing new. HF trending (≥ 10-18) shows only a DeepSeek-V4.1-Flash-1017 repack.

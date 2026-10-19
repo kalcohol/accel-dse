@@ -398,6 +398,9 @@ class NativeWorkload:
                                    # 0 = no reference stream (workload.ref_images refused)
     prefix_kv: bool = False        # 0.116: the reference caches the text-prefix K/V at step 1 and runs later steps on the
                                    # image tokens only (needs cond_causal: the prefix is timestep-independent)
+    uncond: tuple = ()             # 0.258: the CFG negative branch's own shape when the reference runs it differently:
+                                   # (text tokens, skipped block indices) — e.g. MOSS-Image: empty negative prompt, block 22
+                                   # skipped (uncond_skip_layers default); () = same shape as the conditional branch
     source: str = ""
 
 
@@ -459,6 +462,9 @@ class ModelSpec:
     io_pre: tuple[Linear, ...] = ()          # input-side GEMMs on the first stage (patch / text / timestep embedders)
     io_post: tuple[Linear, ...] = ()         # output-side GEMMs on the last stage (un-patchify head, LM-head dense)
     io_misc_params: int = 0                  # io biases / unused stored tables (counted in storage, no GEMM)
+    # 0.258: self-attention cores of io blocks (text refiners): ((name, rows, heads, head_dim, blocks), ...); rows "txt"
+    # = the joint text rows of the forward — the refiner GEMMs are io_pre Linears, this adds their attention core
+    io_attn: tuple = ()
     final_norm_params: int | None = None     # None → hidden (LLM RMSNorm)
     adaln: bool = False                      # AdaLN modulation (shift/scale/gate) around each norm
     workload: NativeWorkload | None = None

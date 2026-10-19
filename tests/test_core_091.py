@@ -21,7 +21,7 @@ def _ev(mib, pol, gb=2000.0, model="esm2-650m", ov="serial"):
 
 
 def test_pin_bw_never_worse_and_monotone():
-    assert SLC_POLICIES == ("pin", "lru", "pin_bw")
+    assert SLC_POLICIES == ("pin", "lru", "pin_bw", "dip")        # 0.258: + dip
     for gb in (500.0, 2000.0, 6595.0, 20000.0):
         none = _ev(0, "pin", gb).step
         prev = none

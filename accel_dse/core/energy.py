@@ -267,7 +267,11 @@ def _counts(r) -> dict:
     ranks = lay.tp * lay.sp * dp_act
     passes = r.microbatches * (w.steps if w is not None and w.kind == "gen" else 1)
     c = dict.fromkeys(ACTIONS, 0.0)
-    for st in r.stages:
+    # 0.258: CFG negative branch at its own shape — the conditional and the negative-branch forwards each run once
+    # per step (micro-batches = the 2 serial calls, B sequences each)
+    sets = ([(st, w.steps) for st in r.stages] + [(st, w.steps) for st in r.stages_u]
+            if getattr(r, "cfg_asym", None) else [(st, passes) for st in r.stages])
+    for st, passes in sets:
         t = st.time
         n = passes * ranks
         nw = passes * lay.tp * lay.sp * lay.dp * mb_fill

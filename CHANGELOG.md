@@ -6,6 +6,57 @@
 
 
 
+## [0.258.0]
+
+### Changed — MOSS-Image CFG negative branch at its own shape; text-refiner attention core (MODEL §204.1–204.2)
+- **Source 「来源」:** the release's `pipeline_moss_image.py` `__call__` defaults: `negative_prompt=''`, `uncond_skip_layers=(22,)` active at every step (`slg_start` 0 / `slg_stop` 1), and two transformer calls per step (cond, then uncond).
+- **Negative branch** (`NativeWorkload.uncond = (10, (22,))`, new `workload.cfg_branches`, `ref` by default):
+  - The empty negative prompt is chat-templated to 10 tokens 「推导」 (template + Qwen pre-tokenizer). It is encoded unpadded, in its own text-encoder call.
+  - The uncond forward skips block 22 and runs on 4096 + 10 rows. Before, it ran 42 blocks over 4352 rows.
+  - The two calls run in series, B sequences each, and each call streams the weights.
+  - `cfg_branches = same` restores the pre-0.258 packed, symmetric forward.
+  - Falls back with a warning for PP > 1, `serving.microbatches` ∉ {0, 2}, or `step_skip`.
+- **Refiner attention core** (`ModelSpec.io_attn`, `ir._io_attn_ops`): the 2 text-refiner blocks' bidirectional SDPA over the text rows (24 × 128, QK-norm + RoPE) is now counted. Before, only their GEMMs were.
+- **Numbers** (default chip, 1024²), `same` → `ref`:
+  - latency 54.62 → 53.13 s (−2.7 %);
+  - DiT 5130.5 → 4953.8 TFLOP per request (−3.4 %);
+  - per step 1089.1 ms packed → 545.9 (cond) + 512.2 (uncond) ms;
+  - text encoder 0.083 → 0.145 s (two per-prompt calls, each streaming the 9B tower);
+  - J / image (tpuv4i_7nm) 1613 → 1558.
+  - The refiner core adds < 0.01 s.
+- **New result fields:** `Result.cfg_asym` (cond / uncond ms, TFLOP per sequence, shapes) and `domain_summary.cfg_asym`. The energy counts include both branches. CLI `--cfg-branches`.
+
+### Added — SLC policy `dip`: thrash-resistant insertion (MODEL §204.3)
+- **Source 「来源」:** Qureshi, Jaleel, Patt, Steely, Emer, ISCA 2007 (DIP / BIP), §4.1 Table 3.
+  - On a cyclic sweep of T lines through a K-line cache, BIP keeps a hit rate of (K − 1 − ε·(T − K)) / T, with ε = 1/32 (the paper's setting). LRU gets 0.
+  - DIP set dueling picks LRU when the working set fits.
+- **`chip.slc_policy = "dip"`:**
+  - If the off-SRAM working set fits, every read hits (as `lru`).
+  - Otherwise each read class (weights, KV / state, activations) hits by the share (K − ε·(T − K)) / T 「推导」.
+  - KV writes go to DRAM.
+  - New field `MemPlan.slc_frac` (API `mem.slc_frac`). CLI `--slc-policy dip`; UI option 「dip 防抖替换」.
+- **Why it matters for SLC sizing:**
+  - `lru` (the cyclic-thrash bound) shows no gain until the whole working set fits.
+  - A hardware SLC with thrash-resistant replacement gains in proportion to its size, close to software pinning.
+  - Example: 100T + LPDDR5X 4×64, qwen3-8b decode B8, TPOT 104.2 ms without SLC. At SLC 1 / 4 / 8 / 12 / 16 / 32 GiB:
+
+    | policy | TPOT (ms) at 1 / 4 / 8 / 12 / 16 / 32 GiB |
+    |---|---|
+    | pin | 98.5 / 81.7 / 59.2 / 36.7 / 14.3 / 11.7 |
+    | lru | 104.2 / 104.2 / 104.2 / 104.2 / 104.2 / 11.7 |
+    | dip | 101.6 / 84.2 / 61.1 / 37.9 / 14.7 / 11.7 (hit share 2 / 19 / 41 / 64 / 86 / 100 %) |
+
+- Defaults are unchanged (`pin`).
+
+### Freshness
+- `scripts/freshness_sweep.py 2026-10-19`: nothing new across the 74 orgs. The MiniMaxAI retry found nothing either.
+- HF trending (≥ 10-18): only a third-party repack of DeepSeek-V4.1-Flash-1017.
+
+### Deferred
+- A UI control for `workload.cfg_branches` (API / CLI only).
+- Token-refiner attention cores of HunyuanVideo and MiniMax-H3 (same mechanism, not switched on).
+- SLC `dip` with per-class reuse distances (MoE routed experts are not read every step; the whole working set is taken as one cyclic sweep 「近似」).
+
 ## [0.257.0]
 
 ### Added — freshness sweep script; MOSS-Image Base / SFT (MODEL §203.1–203.2)

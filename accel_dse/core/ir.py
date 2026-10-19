@@ -112,6 +112,8 @@ class Phase:
     track: int = 0       # 0.224 radix-track interval (tokens) of hybrid-layer states; 0 = off
     labels: int = 0      # 0.191 decision readout (prefill only): logits of ≤ labels option tokens at the last
     samp: bool = False   # 0.253 decode verify: sampled draft rounds (DSpine eager serial_rs_table; serving.spec_sampling)
+    txt: int = 0         # 0.258 full: joint text rows of this forward (0 = the model's prefix_tokens) — CFG negative branch
+    skip: tuple = ()     # 0.258 full: block indices this forward skips (MOSS-Image uncond_skip_layers)
                          # position, no KV cache kept (StartLux use_cache=False path) when nothing is prefix-shared
 
     def __post_init__(self):
@@ -1562,13 +1564,16 @@ def _mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) -
 
 
 # ------------------------------------------------------------------ full (non-autoregressive) forward
-def _prefix(model: ModelSpec) -> int:
+def _prefix(model: ModelSpec, ph: Phase | None = None) -> int:
+    """Joint text rows of a full forward: the phase's own (0.258: CFG negative branch) else the model's prefix."""
+    if ph is not None and ph.txt:
+        return ph.txt
     return model.workload.prefix_tokens if model.workload else 0
 
 
 def _video_rows(model: ModelSpec, ph: Phase) -> int:
     """Video tokens of the sequence (minus the joint text prefix and the joint audio rows)."""
-    return ph.q - ph.aux - ph.ref if ph.kvpre else ph.q - _prefix(model) - ph.aux - ph.ref
+    return ph.q - ph.aux - ph.ref if ph.kvpre else ph.q - _prefix(model, ph) - ph.aux - ph.ref
 
 
 def _rows(model: ModelSpec, l: Linear, ph: Phase, b: int, sp: int) -> int:
@@ -1584,7 +1589,7 @@ def _rows(model: ModelSpec, l: Linear, ph: Phase, b: int, sp: int) -> int:
     if ph.mreuse and l.rows in ("txt", "ref"):    # 0.255: reused text / reference streams run no rows
         return 0
     if l.rows == "txt":         # 0.116: a cached prefix runs no text rows
-        return 0 if ph.kvpre else b * _cdiv(_prefix(model), sp)
+        return 0 if ph.kvpre else b * _cdiv(_prefix(model, ph), sp)
     if l.rows == "aud":
         return b * _cdiv(ph.aux, sp)
     if l.rows == "ref":         # 0.252 FLUX 3 reference-image rows (image_cond stream)
@@ -1608,7 +1613,7 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
             # Flux3ModeTransformerBlock "self-attention restricted to a single token mode"): text, noisy image and the
             # reference images (all references of a sample jointly) each attend within themselves only
             ops = []
-            gs = (_video_rows(model, ph),) if ph.mreuse else (_prefix(model), _video_rows(model, ph), ph.ref)
+            gs = (_video_rows(model, ph),) if ph.mreuse else (_prefix(model, ph), _video_rows(model, ph), ph.ref)
             for g in gs:
                 if g > 0:
                     ops += _full_attn(model, li, replace(core, span="full"), replace(ph, q=g, aux=0, ref=0, kvpre=0),
@@ -1629,7 +1634,7 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
     kv_r = kv_w = 0.0
     wl = model.workload
     if not cross and wl is not None and wl.cond_causal and groups == 1:
-        T = _prefix(model)
+        T = _prefix(model, ph)
         if ph.kvpre:
             # 0.116 cached step (QwenImage21 kv_cache_mode "cached"): image queries over [cached prefix ‖ image];
             # the prefix K/V (post-RoPE) are read from the cache
@@ -1914,10 +1919,36 @@ def _full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
                         replicated=_repl_full(l, sh.tp, sh.sp)))
         if sh.tp > 1:
             ops.append(Op("io_allgather", "comm", li, comm_kind="allgather", comm_group=sh.tp, comm_bytes=m * n * ab))
+    if side == "pre":
+        ops += _io_attn_ops(model, ph, sh, b, li)
     if side == "post" and model.vocab and model.vocab_head:     # MLM logits for every token (tied decoder)
         n = _cdiv(model.vocab, sh.tp)
         ops.append(gemm(model, "mlm_decoder", li, t, model.hidden, n, "embed", stream=True))
         ops.append(Op("act", "vector", li, vec=t * model.hidden * 8 + t * n * 3))
+    return ops
+
+
+def _io_attn_ops(model: ModelSpec, ph: Phase, sh: Shard, b: int, li: int) -> list[Op]:
+    """0.258: attention cores of io blocks (``ModelSpec.io_attn``; MOSS-Image text refiner: SDPA over the sample's text
+    rows, bidirectional, RMS QK-norm + RoPE — pipeline_moss_image.py _TextBlock, 「来源」).  Heads split over TP, then
+    over SP like the block attention (the text rows are SP-split in the refiner GEMMs; the all-to-all of these few
+    rows is not added 「近似」).  No rows on a cached / reused step (the text stream does not run)."""
+    ops: list[Op] = []
+    if not model.io_attn or ph.kvpre or ph.mreuse:
+        return ops
+    ab = _fmt(model.act_fmt).bytes
+    for name, rows, heads, dh, blocks in model.io_attn:
+        T = _prefix(model, ph) if rows == "txt" else 0
+        if T <= 0:
+            continue
+        h_loc = _cdiv(_cdiv(heads, sh.tp), sh.sp)
+        cnt = b * h_loc * blocks
+        ops += [Op(f"io.{name}.qk", "attn", li, m=T, k=dh, n=T, count=cnt, act_bytes=cnt * T * dh * ab, stream=True,
+                   orient=True),
+                Op(f"io.{name}.pv", "attn", li, m=T, k=T, n=dh, count=cnt, act_bytes=cnt * T * dh * ab, orient=True),
+                Op(f"io.{name}.softmax", "vector", li, vec=cnt * T * T * 5, sfu=cnt * T * T),
+                Op(f"io.{name}.qk_norm_rope", "vector", li,
+                   vec=b * _cdiv(T, sh.sp) * _cdiv(heads, sh.tp) * blocks * (dh * 2 * 3 + dh * 2 * 3))]
     return ops
 
 

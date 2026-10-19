@@ -699,19 +699,29 @@ def build_moss(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Mode
         io_misc += _n(v)
     # the header summary keeps blocks 0 and 1 of the refiner (both) — 2 refiner blocks of block 0's shapes
     wl = _image_wl(wl, 2 if sh["video_embedder.weight"][1] == 4 * 32 else 1, wl.text_tokens or 256)
-    return _finish(model_id, hf_id, rel, f"MOSS-Image 单流 DiT（{L} 层，[图像 ‖ 文本] 共享权重联合注意力，共享 AdaLN 调制；"
+    # 0.258: the CFG negative branch as the release runs it (pipeline __call__ defaults, 「来源」): negative_prompt '' →
+    # chat template '<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n<think>\n' = 10 tokens (4 special tokens +
+    # user / assistant / 4 × '\n'; the Qwen pre-tokenizer splits letters from newlines, 「推导」), unpadded; and
+    # uncond_skip_layers = (22,) with slg_start 0 / slg_stop 1 → block 22 skipped at every step
+    if wl.cfg == 2 and not wl.uncond:
+        wl = replace(wl, uncond=(_MOSS_NEG_TOKENS, (22,) if L > 22 else ()))
+    spec = _finish(model_id, hf_id, rel, f"MOSS-Image 单流 DiT（{L} 层，[图像 ‖ 文本] 共享权重联合注意力，共享 AdaLN 调制；"
                    "单帧 2D 潜空间）", d, 0, [layer] * L, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
                        f"图像 = 1 个潜帧（FLUX.2 VAE ×{wl.vae_s} + 2×2 打包 = 每 token {2 * wl.vae_s}×{2 * wl.vae_s} px；无时间维）",
                        f"文本：Qwen3.5-9B 末层隐状态（聊天模板 + enable_thinking，逐样本真实长度、不补齐，上限 4096）"
                        f"按 {wl.text_tokens} token 计入联合序列「假设」；2 层文本 refiner 每次前向都跑（参考实现不缓存），"
-                       "其 GEMM 计入、文本自注意力核（256² 量级）忽略不计",
+                       "GEMM 与文本自注意力核（24 头 × 128，双向，QK-norm + RoPE）都计入",
                        "50 步 flow-matching Euler（shift 5，吸附到 1000 步训练网格后仍为 50 个时间步「推导」）、CFG 3 → 每步 cond + "
-                       "uncond 两次 transformer 调用（README 默认）",
-                       "uncond 分支按发布默认跳过第 22 块（41 块）、负提示为空串（模板约 10 token）：按与 cond 同形状计"
-                       "「近似」——偏保守，DiT 计算约多 3–4 %",
+                       "uncond 两次 transformer 调用（README 默认），先后串行（两次调用，各读一遍权重）",
+                       f"uncond 分支按发布默认：负提示为空串 → 聊天模板 {_MOSS_NEG_TOKENS} token「推导」、跳过第 22 块（41 块）；"
+                       "两分支各按自己的形状计（workload.cfg_branches = same 回到同形状、一次打包前向的旧口径）",
                        "参考实现逐样本循环（batch 内每张图单独前向）：batch > 1 时按打包批计、权重读一次「近似」"
                        "（1024² 时 4096 + 文本行，计算受限，影响可忽略）",
                        "MLP 激活 _situ = 4·tanh(g/4)·σ(g) · 25·tanh(h/25)（软截断门控）：向量开销按 SwiGLU 计「近似」"))
+    return replace(spec, io_attn=tuple((f"refiner{i}", "txt", H, hd, 1) for i in refs))
+
+
+_MOSS_NEG_TOKENS = 10      # chat-templated empty negative prompt (see build_moss)
 
 
 # ---------------------------------------------------------------- ESM-2

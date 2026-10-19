@@ -225,6 +225,7 @@ def _stage_dict(s) -> dict:
                     "kv_sram_MiB": s.mem.kv_sram / 2**20, "state_sram_MiB": max(s.mem.state_sram, 0.0) / 2**20, "staging_MiB": s.mem.staging / 2**20,
                     "pipe_w_GiB": s.mem.pipe_w / 2**30, "slc_MiB": s.mem.slc / 2**20,
                     "slc_policy": s.mem.slc_policy, "slc_residency": s.mem.slc_residency, "slc_all": s.mem.slc_all,
+                    "slc_frac": s.mem.slc_frac,
                     "slc_w_MiB": (s.mem.slc_hot + s.mem.slc_expert) / 2**20, "slc_kv_MiB": s.mem.slc_kv / 2**20},
             "convert_Melems": s.convert_elems / 1e6, "tflops": t.flops / 1e12}
 

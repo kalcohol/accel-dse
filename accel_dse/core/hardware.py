@@ -15,6 +15,9 @@ Chip
                          (hot weights → routed experts → KV / state), served at slc_GBps; streamed activations bypass
                          "lru": hardware cache under the per-step cyclic sweep of an inference step — everything hits if
                          the step's DRAM working set fits, otherwise nothing does (LRU thrash bound)
+                         "dip" (0.258): hardware cache with thrash-resistant insertion (DIP / BIP, Qureshi et al. ISCA
+                         2007): everything hits if the working set fits, otherwise the cyclic-sweep hit rate
+                         (K − ε·(T − K)) / T of the retained share, ε = 1/32
 System = Chip + external memory (mem_catalog.MemSpec) + a three-tier interconnect (0.50):
   d2d    optional die-to-die tier between the ``package_cards`` dies of one package (chiplet stacking); off (the
          default) = monolithic die, every card its own package.  Default grade when on: UCIe-A x64 @ 48 GT/s × 4
@@ -34,7 +37,7 @@ from .. import mem_catalog
 from .dtypes import FormatSupport
 
 
-SLC_POLICIES = ("pin", "lru", "pin_bw")   # 0.91 pin_bw: pin + bandwidth-balanced hit ratio (opt-in)
+SLC_POLICIES = ("pin", "lru", "pin_bw", "dip")   # 0.91 pin_bw: pin + bandwidth-balanced hit ratio; 0.258 dip
 
 
 ACC_KIB_PER_ENGINE = 64.0     # 0.141: = the ≤ 0.140 1024 KiB chip default / 16 engines 「假设」
@@ -71,7 +74,7 @@ class Chip:
     acc_kib: float | None = field(default=None, metadata={"omit_default": True})
     slc_mib: float = 0.0                  # system-level cache (0.48) 「假设」; 0 = none
     slc_GBps: float = 2000.0              # SLC bandwidth 「假设」 (used only when slc_mib > 0)
-    slc_policy: str = "pin"               # pin | lru (see module doc) 「假设」
+    slc_policy: str = "pin"               # pin | lru | pin_bw | dip (see module doc) 「假设」
     # 0.70: engines may each run an independent GEMM instance (batched attention heads / requests, grouped experts):
     # a ``count``-instance op then also costs ceil(count / engines) waves on one R×C engine each (cheaper of that and
     # the chip-wide array).  GPU-like (SMs are independent); False = the 0.69 chip-wide array only 「假设」

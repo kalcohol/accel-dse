@@ -28,6 +28,7 @@ from .pipeline import TILING, has_encoder, pipeline_for, stored_bytes, te_layers
 from .scenario import Scenario
 from .vision import audio_ops, expand_images, image_grid, video_grid_of, vision_act_peak, vision_ops
 from .ir import dspark_ops, red_bytes, skew_from_load
+from .ir import _prefix as _ir_prefix
 from . import fabric
 from . import overlap as _ovl
 from . import mapping as _mapping
@@ -80,6 +81,8 @@ class Result:
     step_cache: dict | None = None  # gen (0.167): TeaCache-style skipped steps
     prefix_kv: dict | None = None  # gen (0.116): text-prefix K/V reuse — extract / cached step times and FLOP, cache size
     mode_cache: dict | None = None  # gen (0.255): FLUX 3 static mode-stream reuse — first / reused step times, FLOP, cache
+    cfg_asym: dict | None = None   # gen (0.258): CFG negative branch at its own shape — cond / uncond times, FLOP, shape
+    stages_u: list | None = field(default=None, repr=False, compare=False)   # 0.258: the negative branch's stages
     spec: dict | None = None       # 0.225: decode spec step {k, topk, n, accept_model, tau, tau_indep, tau_chain}
     draft: dict | None = None      # 0.223: independent draft model of a spec step {s, pass_s, bytes, acts (per step), …}
 
@@ -111,6 +114,9 @@ class Result:
         if self.prefix_kv or self.mode_cache:   # 0.116 / 0.255: one full first step + (steps − 1) reduced steps
             pk = self.prefix_kv or self.mode_cache
             return (pk["extract_tflop_seq"] + (w.steps - 1) * pk["cached_tflop_seq"]) * w.seqs_per_request
+        if self.cfg_asym:       # 0.258: one conditional + one negative-branch forward per step, each its own shape
+            ca = self.cfg_asym
+            return (ca["cond_tflop_seq"] + ca["uncond_tflop_seq"]) * w.steps
         per_seq = sum(st.flops_u for st in self.stages) * lay.tp * lay.sp * lay.dp * lay.cp / b_mb
         if self.step_cache:     # 0.167: skipped steps run embed + head + residual add only
             sc = self.step_cache
@@ -128,7 +134,8 @@ class Result:
         period = (self.pipeline or {}).get("period_s", self.latency)   # 0.47 overlap: steady-state request period
         d = {"unit": w.unit, "latency_s": self.latency, "requests_per_s": b / period, "period_s": period,
              "units_per_s": self.throughput, "units_per_s_card": self.per_card, "workload": w.info,
-             "forward_ms": self.tick * max(self.microbatches, self.scenario.layout.pp) * 1e3,
+             "forward_ms": (self.cfg_asym["step_ms"] if self.cfg_asym else
+                            self.tick * max(self.microbatches, self.scenario.layout.pp) * 1e3),
              "seqs_per_forward": b * w.seqs_per_request, "act_GiB": heavy.mem.act_total / 2**30,
              "tflop_per_request": self._tflop_per_request()}
         if w.kind == "gen":
@@ -142,6 +149,8 @@ class Result:
                 d["prefix_kv"] = self.prefix_kv
             if self.mode_cache:         # 0.255 (key only present when the reuse is active)
                 d["mode_cache"] = self.mode_cache
+            if self.cfg_asym:           # 0.258 (key only present when the negative branch has its own shape)
+                d["cfg_asym"] = self.cfg_asym
             if self.step_cache:         # 0.167 (key only present when step skipping is active)
                 d["step_cache"] = self.step_cache
             d.update(clip_s=self.latency, s_per_frame=self.latency / w.units, step_ms=denoise / w.steps * 1e3,
@@ -1596,7 +1605,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         warnings.append(f"node_cards = {sys.node_cards} 不整除总卡数 {lay.cards}：末尾节点未满，"
                         "按每个通信组的整除部分近似分层")
     # 0.90 (0.91: pin_bw; 0.108 audit: lru too — its hits are also served at slc_GBps, previously silent)
-    if scn.chip.slc_bytes and scn.chip.slc_policy in ("pin", "lru") and scn.chip.slc_GBps < sys.dram_GBps:
+    if scn.chip.slc_bytes and scn.chip.slc_policy in ("pin", "lru", "dip") and scn.chip.slc_GBps < sys.dram_GBps:
         warnings.append(f"SLC 带宽 {scn.chip.slc_GBps:.0f} GB/s 低于 DRAM {sys.dram_GBps:.0f} GB/s：{scn.chip.slc_policy} 策略把热数据放在更慢的 "
                         "SLC 上，读得反而更慢（与计算重叠时可能被掩盖；serial / kernel 下可见）——提高 slc_GBps，或改用 pin_bw（按带宽均衡分流）" + (" / lru" if scn.chip.slc_policy == "pin" else ""))
     if not m.kv_cache:
@@ -1755,6 +1764,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 _acc(agg, _sum_ops(embed_ops(m, ph, sh), sys, scn.mapping, m, mm))
             counts: dict = {}
             for li in range(st.first, st.last):
+                if li in ph.skip:      # 0.258: a block this forward skips (MOSS-Image uncond_skip_layers)
+                    continue
                 g = groups[li]
                 first_li, n = counts.get(g, (li, 0))
                 counts[g] = (first_li, n + 1)
@@ -2220,7 +2231,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     # the image tokens only against the cached prefix (diffusers QwenImage21 kv_cache "extract" / "cached")
     pkv = _prefix_kv(scn, m, wl, warnings)
     mcache = False if pkv else _mode_cache(scn, m, wl, pp, warnings)
-    stages_x = None
+    asym = None if pkv or mcache else _cfg_asym(scn, m, wl, pp, warnings)
+    stages_x = stages_u = None
     if pkv:
         T = m.workload.prefix_tokens
         ph_x = replace(ph, kvx=True)
@@ -2251,18 +2263,31 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             return r_
         stages_x = _pick_split(_run_m, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run_m(plan_)
         stages = _run(chosen[id(stages_x)], replace(ph, mreuse=True), resid + cache)
+    elif asym:
+        # 0.258: the release's CFG (MOSS-Image pipeline __call__, 「来源」): per step one transformer call on the prompt,
+        # then one on the negative prompt at its own text length with the declared blocks skipped — two serial
+        # forwards of the batch's B sequences each (cond_ms + uncond_ms per step; weights streamed by each call)
+        t_u, skip = asym
+        B = sv.batch
+        ph_c = replace(ph, batch=B)
+        q_u = wl.tokens - _ir_prefix(m) + t_u
+        ph_u = replace(ph_c, q=q_u, txt=t_u, skip=tuple(skip))
+        stages = _run(plan_, ph_c, _cdiv(B, lay.dp) * _cdiv(wl.tokens, lay.sp) * m.hidden * ab)
+        stages_u = _run(plan_, ph_u, _cdiv(B, lay.dp) * _cdiv(q_u, lay.sp) * m.hidden * ab)
+        mb = 2
+        asym = {"uncond_text_tokens": t_u, "skip_layers": list(skip), "cond_tokens": wl.tokens, "uncond_tokens": q_u}
     else:
         stages = _pick_split(_run, plan_, plan_stages(m.n_layers, pp)) if pinfo else _run(plan_)
     pipe = None
     if wl.kind == "gen":
-        pipe = _pipeline_cost(scn, m, wl, sys, warnings)
+        pipe = _pipeline_cost(scn, m, wl, sys, warnings, neg_tokens=asym["uncond_text_tokens"] if asym else 0)
         if pipe:
             pipe = _place_components(scn, m, pipe, stages, sys, warnings)
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
     _pp_imbalance_warn(stages, tick, warnings, scn.pp_split)
     cap_heavy = max(range(len(stages)), key=lambda i: stages[i].mem.dram_need)
-    fits = all(s.mem.fits for s in stages)
+    fits = all(s.mem.fits for s in stages) and all(s.mem.fits for s in (stages_u or ()))
     if not fits:
         warnings.append(f"容量不足：流水级 {cap_heavy} 每卡需要 {stages[cap_heavy].mem.dram_need / 2**30:.1f} GiB，"
                         f"超过每卡 {sys.dram_bytes / 2**30:.0f} GiB"
@@ -2276,7 +2301,14 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         # sits in one microbatch).  Was max(mb, pp): cond / uncond in different microbatches ran as independent.
         k_chain = _cfg_chain(seqs, mb, wl.seqs_per_request)
         per_step = max(mb, k_chain + pp - 1) if k_chain > 1 else max(mb, pp)
-        if pkv or mcache:
+        if asym:
+            tick_u = max(st.time.total for st in stages_u)
+            n_r = lay.tp * lay.sp * lay.dp * lay.cp
+            asym.update(cond_ms=tick * 1e3, uncond_ms=tick_u * 1e3, step_ms=(tick + tick_u) * 1e3,
+                        cond_tflop_seq=sum(st.flops_u for st in stages) * n_r / sv.batch / 1e12,
+                        uncond_tflop_seq=sum(st.flops_u for st in stages_u) * n_r / sv.batch / 1e12)
+            denoise = wl.steps * (tick + tick_u)
+        elif pkv or mcache:
             tick_x = max(st.time.total for st in stages_x)
             denoise = per_step * (tick_x + (wl.steps - 1) * tick)
             b_mb = _cdiv(seqs, mb)
@@ -2326,6 +2358,8 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         r.prefix_kv = pkv
     if mcache:
         r.mode_cache = mcache
+    if asym:
+        r.cfg_asym, r.stages_u = asym, stages_u
     if wl.kind == "gen" and sc_:
         r.step_cache = sc_
     return r
@@ -2371,6 +2405,28 @@ def _step_cache(scn, m, wl, sys, ph, sh, stages, seqs, mb, pp, pkv, warnings):
     return {"skip": k, "mode": scn.workload.step_cache, "computed": wl.steps - k, "steps": wl.steps,
             "t_skip": c["s"], "tflop_seq_skip": tf_skip, "buffer_GiB_card": buf / 2**30, "fits": need <= mp.dram_cap,
             "label": "跳步数取决于阈值与内容系数，由用户给出；固定步规则「来源」TeaCache4Wan2.1"}
+
+
+def _cfg_asym(scn: Scenario, m: ModelSpec, wl, pp: int, warnings: list[str]) -> tuple | None:
+    """0.258: the model-declared CFG negative branch (NativeWorkload.uncond = (text tokens, skipped blocks)) when the
+    scenario runs the release's two-forward CFG; ``workload.cfg_branches = same`` keeps the pre-0.258 symmetric packed
+    forward.  Not modelled with PP > 1, explicit micro-batches ≠ 2 or step skipping (falls back, with a warning)."""
+    nw = m.workload
+    if wl.kind != "gen" or nw is None or not nw.uncond or wl.seqs_per_request != 2:
+        return None
+    if scn.workload.cfg_branches == "same":
+        return None
+    why = []
+    if pp > 1:
+        why.append("PP > 1")
+    if scn.serving.microbatches not in (0, 2):
+        why.append(f"serving.microbatches = {scn.serving.microbatches}")
+    if scn.workload.step_skip:
+        why.append("workload.step_skip")
+    if why:
+        warnings.append("CFG 负分支按与正分支同形状计（未建模：" + "、".join(why) + "）")
+        return None
+    return nw.uncond
 
 
 def _mode_cache(scn: Scenario, m: ModelSpec, wl, pp: int, warnings: list[str]) -> bool:
@@ -2446,7 +2502,8 @@ def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, a
                      "sram": d["sram"], "dram": dram, "link": 0.0, "d2d": 0.0, "net": 0.0}}
 
 
-def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: System, warnings: list[str]) -> dict | None:
+def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: System, warnings: list[str],
+                   neg_tokens: int = 0) -> dict | None:
     """Text encoder(s) + VAE decode of one request batch (0.44; ``core/pipeline.py``).  Runs on one card of each data-
     parallel replica (its share of the batch), serially with the denoise loop 「假设」."""
     pl = pipeline_for(m.id)
@@ -2466,23 +2523,32 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
         warnings.append("workload.vae_parallel：每副本只有 1 张卡，VAE 解码不拆分")
     key = (b, tuple(info["latent"]), info["frames"], info["cfg"], wl.aux, wl.ref, tuple(info.get("ref_px") or ()),
            scn.mapping, scn.chip, scn.mem_id,
-           scn.mem_eff, tiling, par, _links(scn), lay.dp if par > 1 else 1)
+           scn.mem_eff, tiling, par, _links(scn), lay.dp if par > 1 else 1, neg_tokens)
     memo = model_cache(m).setdefault("pipeline", {})
     if key in memo:
         return memo[key]
     prompts = b * (info["cfg"] if pl.neg_prompt else 1)
+    # 0.258: a negative prompt of its own length (MOSS-Image: the chat-templated empty string) is encoded at that
+    # length — the reference encodes each prompt unpadded
+    neg = bool(neg_tokens) and pl.neg_prompt and info["cfg"] == 2
     parts = []
     te_s = te_w = te_act = te_lw = 0.0
     te_nl = 0
     for te in pl.text:
         nl, lw = te_layers(te)
         te_nl += nl; te_lw = max(te_lw, lw)
-        ops, peak = text_ops(te, prompts, m.act_fmt)
-        c = _component_time([(ops, 1)], sys, scn.mapping, m.act_fmt)
+        if neg:
+            ops, peak = text_ops(te, b, m.act_fmt)
+            ops_n, _ = text_ops(replace(te, tokens=neg_tokens), b, m.act_fmt)
+            c = _component_time([(ops, 1), (ops_n, 1)], sys, scn.mapping, m.act_fmt)
+        else:
+            ops, peak = text_ops(te, prompts, m.act_fmt)
+            c = _component_time([(ops, 1)], sys, scn.mapping, m.act_fmt)
         w = stored_bytes(te.key)
         te_s += c["s"]; te_w += w; te_act = max(te_act, peak)
         parts.append({"role": "text_encoder", "label": te.label, "key": te.key, "prompts": prompts,
-                      "tokens": te.tokens, "stored_GB": w / 1e9, "note": te.note, **c})
+                      "tokens": te.tokens, **({"neg_tokens": neg_tokens} if neg else {}), "stored_GB": w / 1e9,
+                      "note": te.note, **c})
     dec_s = vae_w = vae_act = enc_s = 0.0
     vae_par = 1
     lat = tuple(info["latent"])

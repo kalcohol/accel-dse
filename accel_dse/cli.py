@@ -151,6 +151,9 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--mode-cache", dest="mode_cache", choices=("on", "off"), default=None,
                    help="FLUX 3 Base: reuse the text / reference mode-stream outputs across denoise steps (SGLang "
                         "StaticStreams; off = reference)")
+    p.add_argument("--cfg-branches", dest="cfg_branches", choices=("ref", "same"), default=None,
+                   help="image gen: CFG negative branch as the release runs it (ref: MOSS-Image empty negative prompt + "
+                        "skipped block, two serial calls) or at the conditional shape (same)")
     p.add_argument("--vae-tiling", action="store_true",
                    help="video: diffusers enable_tiling() decode (CogVideoX / Mochi / Wan / LTX; HunyuanVideo and "
                         "MiniMax-H3 always tile)")
@@ -187,8 +190,9 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--slc-mib", dest="slc_mib", type=float, default=None,
                    help="system-level cache per card, MiB (0.48; default 0 = none) 「假设」")
     p.add_argument("--slc-GBps", dest="slc_GBps", type=float, default=None, help="SLC bandwidth (default 2000 「假设」)")
-    p.add_argument("--slc-policy", dest="slc_policy", default=None, choices=["pin", "lru", "pin_bw"],
-                   help="SLC policy: pin (software-pinned like SRAM) | lru (all-or-nothing cyclic bound)")
+    p.add_argument("--slc-policy", dest="slc_policy", default=None, choices=["pin", "lru", "pin_bw", "dip"],
+                   help="SLC policy: pin (software-pinned like SRAM) | lru (all-or-nothing cyclic bound) | pin_bw | "
+                        "dip (thrash-resistant insertion, Qureshi ISCA 2007: (K − ε(T − K)) / T of a cyclic sweep)")
     p.add_argument("--attn-fmt", dest="attn_fmt", default=None, choices=["", "kv"],
                    help="attention core: '' = bf16 + KV up-cast (default) | kv = native KV-format attention (0.96)")
     p.add_argument("--sram-port-per-engine", dest="sram_port_Bpc_per_engine", type=float, default=None,
@@ -464,6 +468,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         wl["prefix_kv"] = a.prefix_kv
     if getattr(a, "mode_cache", None):
         wl["mode_cache"] = a.mode_cache
+    if getattr(a, "cfg_branches", None):
+        wl["cfg_branches"] = a.cfg_branches
     if getattr(a, "step_skip", None) is not None:
         wl["step_skip"] = a.step_skip
     if getattr(a, "step_cache", None):

@@ -236,6 +236,10 @@ class Workload:
     # 0.255: FLUX 3 static mode-stream reuse (SGLang multimodal_gen flux3_image.py StaticStreams: steps 2…n skip the
     # text / reference mode blocks and modulations, reusing step 1's outputs) — off = reference (BFL / diffusers), on
     mode_cache: str = field(default="off", metadata={"omit_default": True})
+    # 0.258: CFG branch shapes — ref = as the release runs them (a model-declared negative branch with its own text
+    # length / skipped blocks: two serial transformer calls per step, MOSS-Image), same = both branches at the
+    # conditional shape in one packed forward (pre-0.258)
+    cfg_branches: str = field(default="ref", metadata={"omit_default": True})
     tri_chunk: int = field(default=0, metadata={"omit_default": True})
     # 0.167 — TeaCache-style step caching (ali-vilab/TeaCache, TeaCache4Wan2.1 teacache_generate.py): on a skipped
     # denoise step the transformer blocks are replaced by "x += previous residual"; embeddings and head still run.
@@ -289,6 +293,8 @@ class Workload:
             raise ValueError("workload.prefix_kv must be auto | on | off")
         if self.mode_cache not in ("on", "off"):
             raise ValueError("workload.mode_cache must be on | off")
+        if self.cfg_branches not in ("ref", "same"):
+            raise ValueError("workload.cfg_branches must be ref | same")
         for k in ("vae_tiling", "sample_split", "dit_fsdp", "te_cpu", "vae_parallel", "overlap"):
             if not isinstance(getattr(self, k), bool):
                 raise ValueError(f"workload.{k} must be true or false")

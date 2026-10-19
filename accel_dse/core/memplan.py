@@ -39,6 +39,14 @@ DRAM home) and is per card.  Policies:
         working set or thrashes: if everything that is not in SRAM (weights + KV / state + the activation working
         set) fits, every read hits (KV writes still go to DRAM); otherwise nothing hits (the cyclic-thrash bound —
         real replacement sits between this and pin).
+  dip   (0.258) hardware-managed with thrash-resistant insertion — DIP set dueling between LRU and BIP (Qureshi,
+        Jaleel, Patt, Steely, Emer, ISCA 2007, §4.1 Table 3, 「来源」): on a cyclic sweep of T lines through a K-line
+        cache (K < T) BIP keeps K − 1 lines resident and inserts ε·(T − K) lines per sweep at MRU → hit rate
+        (K − 1 − ε·(T − K)) / T, ε = 1/32 (the paper's setting); when the working set fits, set dueling picks LRU
+        and every read hits, as lru.  The retained lines are an arbitrary subset of the sweep → each read class
+        (weights, KV / state, activations) hits by the same share 「推导」; the one-line term is dropped (K ≫ a line),
+        the cache is taken as fully associative (set-associative with addresses spread over the sets 「近似」).  KV
+        writes go to DRAM as for lru.
 Video pipeline components (text encoder, VAE) do not use the SLC.
 """
 
@@ -236,6 +244,7 @@ class MemPlan:
     slc_expert: float = 0.0
     slc_kv: float = 0.0
     slc_all: bool = False   # lru: the whole off-SRAM working set fits → every read hits
+    slc_frac: float = 0.0   # 0.258 dip: share of the step's off-SRAM reads served by the SLC
     slc_residency: float = 0.0  # weights on chip incl. SLC / streamed weights (= residency without an SLC)
     # 0.209: of kv_sram, the recurrent-state bytes (the rest is KV / indexer); -1 = not split (legacy plans)
     state_sram: float = -1.0
@@ -287,6 +296,11 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     if slc_policy == "lru":
         fits = r_hot + r_exp + r_kv + act_need <= slc_bytes
         return replace(mp, slc=slc_bytes, slc_policy="lru", slc_all=fits, slc_residency=1.0 if fits else res)
+    if slc_policy == "dip":
+        T = r_hot + r_exp + r_kv + act_need
+        f = 1.0 if T <= slc_bytes else dip_hit(slc_bytes, T)
+        sres = (p_hot + p_exp + f * (r_hot + r_exp)) / strm if strm else 1.0
+        return replace(mp, slc=slc_bytes, slc_policy="dip", slc_all=f >= 1.0, slc_frac=f, slc_residency=sres)
     free = slc_bytes
     s_hot = min(r_hot, free); free -= s_hot
     s_exp = min(r_exp, free); free -= s_exp
@@ -294,6 +308,19 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     sres = (p_hot + p_exp + s_hot + s_exp) / strm if strm else 1.0
     return replace(mp, slc=slc_bytes, slc_policy="pin_bw" if slc_policy == "pin_bw" else "pin", slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv,
                    slc_residency=sres)
+
+
+DIP_EPS = 1 / 32     # 0.258: BIP bimodal throttle ε (Qureshi et al. ISCA 2007, "ε = 1/32 for all experiments")
+
+
+def dip_hit(K: float, T: float, eps: float = DIP_EPS) -> float:
+    """0.258: steady-state hit share of a cyclic sweep of T bytes through a K-byte BIP / DIP cache (K < T):
+    (K − ε·(T − K)) / T, clipped to [0, 1] (Qureshi et al. 2007, Table 3, line term dropped)."""
+    if T <= 0:
+        return 1.0
+    if T <= K:
+        return 1.0
+    return max(0.0, min(1.0, (K - eps * (T - K)) / T))
 
 
 ACC_BYTES = 4.0     # 0.64: output-tile partial sums held on chip in fp32 「假设」
@@ -434,6 +461,9 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: flo
         return out
     if mp.slc_policy == "lru":
         hit = {"weights": w + wx, "kv_read": kv_r, "state": st, "act": act} if mp.slc_all else {}
+    elif mp.slc_policy == "dip":
+        f = mp.slc_frac
+        hit = {"weights": (w + wx) * f, "kv_read": kv_r * f, "state": st * f, "act": act * f} if f > 0 else {}
     else:
         f_hot = 0.0 if store.hot_w <= 0 else mp.slc_hot / store.hot_w
         f_exp = 0.0 if store.expert_w <= 0 else mp.slc_expert / store.expert_w
@@ -444,6 +474,8 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: flo
         hit = {"weights": w_hit + wx_hit, "kv_read": kv_r * f_kv, "state": st * f_kv}
     if mp.slc_policy == "lru":
         e_hit = w_e if mp.slc_all else 0.0
+    elif mp.slc_policy == "dip":
+        e_hit = w_e * mp.slc_frac
     else:
         e_hit = t["exp"] * f_exp
     if mp.slc_policy == "pin_bw" and slc_bw_ratio > 0:
