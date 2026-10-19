@@ -93,6 +93,19 @@ def handle(method: str, path: str, raw: bytes = b"") -> tuple[int, dict]:
     return 404, {"error": "not found"}
 
 
+def respond(method: str, path: str, raw: bytes = b"") -> tuple[int, bytes]:
+    """One /api call as the server puts it on the wire: (status, UTF-8 JSON bytes); never raises.  Transport-free,
+    so the static build (scripts/build_static.py: the UI on Pyodide in the browser) calls it directly."""
+    path = path.split("?", 1)[0]
+    try:
+        status, out = handle(method, path, raw)
+        payload = json.dumps(api.clean(out), ensure_ascii=False, allow_nan=False).encode()
+    except Exception as e:  # unexpected: report, never crash the server
+        status = 500
+        payload = json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=False).encode()
+    return status, payload
+
+
 class Handler(BaseHTTPRequestHandler):
     timeout = 30      # 0.88: socket read / write timeout — a client that never sends its body no longer holds a thread
     server_version = f"accel-dse/{__version__}"
@@ -110,13 +123,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _api(self, method: str, raw: bytes = b"") -> None:
-        path = self.path.split("?", 1)[0]
-        try:
-            status, out = handle(method, path, raw)
-            payload = json.dumps(api.clean(out), ensure_ascii=False, allow_nan=False).encode()
-        except Exception as e:  # unexpected: report, never crash the server
-            status = 500
-            payload = json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=False).encode()
+        status, payload = respond(method, self.path, raw)
         self._send(status, payload, "application/json")
 
     def do_GET(self):

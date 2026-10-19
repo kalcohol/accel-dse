@@ -2,7 +2,7 @@
 
 > 推理加速器设计空间探索（LLM · 视频生成 DiT · 蛋白质）· Analytical design-space exploration for inference accelerators
 
-[English](README.en.md) · [建模说明](docs/MODEL.md) · [更新日志](CHANGELOG.md) · [MIT](LICENSE)
+[在线版](https://kalcohol.github.io/accel-dse/) · [English](README.en.md) · [建模说明](docs/MODEL.md) · [更新日志](CHANGELOG.md) · [MIT](LICENSE)
 
 **accel-dse** 用可核对的解析模型回答流片前的问题：给定一个模型（LLM / VLM，或视频生成 DiT、蛋白质语言模型；按官方发布的权重与 dtype）、一种数据通路映射、片上 SRAM、存储器（HBM / LPDDR）和卡数，最好的并行布局与 batch 是什么，瓶颈在哪里，结论对假设有多敏感。零第三方依赖，Python ≥ 3.10。
 

@@ -98,6 +98,7 @@ async function req(chan, path, body) {
   const c = (ctl[chan] = new AbortController());
   const opt = body === undefined ? { signal: c.signal }
     : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: c.signal };
+  const pid = PROG.start(chan, path);
   let r, j;
   try {
     r = await fetch(path, opt);
@@ -106,12 +107,66 @@ async function req(chan, path, body) {
   } catch (e) {
     if (e.name === 'AbortError' || my !== seq[chan]) return null;
     throw e;
-  }
+  } finally { PROG.end(pid); }
   if (my !== seq[chan]) return null;
   if (j === null) throw new Error(`HTTP ${r.status}：响应不是 JSON`);
   if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
 }
+// a scenario edit makes an in-flight request of this channel stale: drop its reply (and, in the static build, free
+// its worker — a running slow-lane search is terminated)
+function cancel(chan) {
+  seq[chan] = (seq[chan] || 0) + 1;
+  if (ctl[chan]) { ctl[chan].abort(); ctl[chan] = null; }
+}
+
+/* ------------------------------------------------------------------ progress (non-blocking: never disables or dims
+   inputs; overlay parts are pointer-events: none).  A thin animated bar at the top of the results area + a floating
+   pill near the metric cards ("计算中… 3.2 s · 阶段"), shown only after 150 ms so fast evals don't flicker.  The static
+   (Pyodide) build also reports its first-load phases here (download / init / package). */
+const STAGE = { eval: 'eval 评估', sensitivity: 'sensitivity 敏感度', fit: 'fit 容量修正搜索', memory: 'memory 内存',
+  compare: 'compare 映射对比', layouts: 'layouts 布局搜索', stability: 'stability 排名稳定性', sweep: 'sweep 扫描',
+  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量',
+  health: 'catalog 载入目录', catalog: 'catalog 载入目录', models: 'catalog 载入目录' };
+const LOAD_ZH = { download: '下载 Python 运行时', init: '初始化 Pyodide', package: '载入 accel_dse 包', ready: '就绪', error: '静态版加载失败' };
+const PROG = {
+  act: new Map(), n: 0, timer: null, load: null, DELAY: 150,
+  start(chan, path) {
+    const id = ++this.n;
+    this.act.set(id, { chan, stage: path.replace(/^\/api\//, '').split('?')[0], t0: performance.now() });
+    this.tick();
+    return id;
+  },
+  end(id) { this.act.delete(id); this.tick(); },
+  setLoad(st) { this.load = st && st.phase !== 'ready' ? { ...st, t0: (this.load && this.load.t0) || performance.now() } : null; this.tick(); },
+  tick() {
+    const el = $('busy');
+    if (!el) return;
+    const now = performance.now();
+    const shown = [...this.act.values()].filter((a) => now - a.t0 >= this.DELAY).sort((a, b) => a.t0 - b.t0);
+    const on = shown.length > 0 || !!this.load;
+    el.classList.toggle('on', on);
+    const ev = shown.some((a) => a.stage === 'eval' || a.stage === 'sensitivity' || a.stage === 'fit');
+    $('kpis').classList.toggle('updating', ev);
+    let txt = '';
+    if (this.load) {
+      const l = this.load;
+      txt = l.phase === 'error' ? `${LOAD_ZH.error}：${l.msg || ''}`
+        : `${LOAD_ZH[l.phase] || l.phase}… ${((now - l.t0) / 1000).toFixed(1)} s` + (l.mb ? ` · ${l.mb.toFixed(1)} MB` : '') + ' · 静态版首次加载';
+    } else if (shown.length) {
+      const a = shown[0];
+      txt = `计算中… ${((now - a.t0) / 1000).toFixed(1)} s · ${STAGE[a.stage] || a.stage}` + (shown.length > 1 ? ` (+${shown.length - 1})` : '');
+    }
+    $('busy-pill').textContent = txt;
+    el.dataset.stage = this.load ? 'load' : (shown[0] ? shown[0].stage : '');
+    const want = this.act.size > 0 || !!this.load;
+    if (want && !this.timer) this.timer = setInterval(() => this.tick(), 100);
+    if (!want && this.timer) { clearInterval(this.timer); this.timer = null; }
+  },
+};
+window.addEventListener('accel-static-progress', (e) => PROG.setLoad(e.detail));
+if (window.__accelStatic && window.__accelStatic.progress) PROG.setLoad(window.__accelStatic.progress);   // phases before app.js loaded
+
 let busy = 0;
 function status(msg, cls = '') {
   const s = $('status');
@@ -607,7 +662,7 @@ function bindMem() {
 
 /* ------------------------------------------------------------------ evaluation */
 let timer = null;
-function schedule() { clearTimeout(timer); timer = setTimeout(runEval, 120); invalidate(); swHint(); paintPanel(); }
+function schedule() { clearTimeout(timer); timer = setTimeout(runEval, 120); invalidate(); cancel('fit'); cancel('sens'); swHint(); paintPanel(); }
 // 0.90: fabric algo = auto picks each collective's algorithm alone (bw + α, like a runtime tuner) — with D2D chiplets a
 // faster link can switch to a higher-α algorithm whose bandwidth hides under compute (≤ 0.4 % non-monotone, 0.89
 // audit, MODEL §35); auto_overlap minimises the stage time and is monotone
@@ -845,11 +900,12 @@ function placeText(pl, sc) {
 }
 async function runFit() {
   const box = $('fit');
+  const v0 = S.ver;
   box.hidden = false;
   put(box, h('div', { class: 'muted' }, '容量不足，正在计算可行的修正方案…'));
   try {
     const f = await track(req('fit', '/api/fit', body()));
-    if (!f) return;
+    if (!f || S.ver !== v0) return;      // an edit during the search: its own eval decides (and refits if needed)
     const m = model();
     const lines = [h('div', { class: 'fit-title' }, h('b', {}, '放不下：'),
       `${m.label} 在当前 ${f.cards} 卡上，最重流水级每卡需要 ${num(f.need_GiB)} GiB（其中权重 ${num(f.weights_GiB)} GiB${f.pipe_w_GiB ? `，含文本编码器 / VAE ${num(f.pipe_w_GiB)} GiB` : ''}），每卡容量 ${num(f.cap_GiB)} GiB。`)];
@@ -1376,7 +1432,6 @@ const snap = (b) => JSON.parse(JSON.stringify(b.scenario));
 async function runCompare() {
   paintScope();
   const btn = $('cmp-run');
-  btn.disabled = true;
   $('cmp-status').textContent = '搜索中（5 种映射 × 全部布局）…';
   delete $('cmp-status').dataset.done;
   const t0 = performance.now();
@@ -1437,7 +1492,7 @@ async function runCompare() {
     if (res.some((x) => !x)) return;
     $('cmp-status').textContent = `完成 · ${((performance.now() - t0) / 1000).toFixed(1)} s${staleTag(v0)}`;
   } catch (e) { $('cmp-status').textContent = '错误：' + e.message; $('cmp-status').dataset.done = '1'; }   // 0.85: stale-flag errors too
-  finally { btn.disabled = false; }
+
 }
 function latCell(x) { return x.unit === 'token' || !x.unit ? num(x.tpot_ms) : fmtDur(x.latency_ms / 1e3); }
 function paintCompare(r, stab, m = model()) {
@@ -1476,8 +1531,7 @@ function applyRow(x) {
 }
 async function bestLayout() {
   const btn = $('best-layout');
-  btn.disabled = true;
-  const old = btn.textContent;
+  const old = btn.dataset.label || (btn.dataset.label = btn.textContent);   // re-clicking restarts the search (no disabled button)
   btn.textContent = '搜索中…';
   const v0 = S.ver;
   try {
@@ -1489,7 +1543,7 @@ async function bestLayout() {
     if (!top || !top.batch) { showErr(`${cards()} 卡下没有满足容量和 SLO 的布局`); return; }
     applyLayout(top.layout_obj, top.batch);
   } catch (e) { showErr('布局搜索：' + e.message); }
-  finally { btn.disabled = false; btn.textContent = old; }
+  finally { btn.textContent = old; }
 }
 
 /* ------------------------------------------------------------------ layouts + stability */
@@ -1736,7 +1790,6 @@ const INS_COST_ZH = { die: '片上（面积代理）', offdie: '片外 / PHY（�
 const insX = (x) => (x === null || x === undefined ? '—' : '×' + x.toFixed(3));
 async function runInsight() {
   const btn = $('ins-run');
-  btn.disabled = true;
   $('ins-status').textContent = '计算中（每个模型 × 每个旋钮 × prefill + decode）…';
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
@@ -1750,7 +1803,7 @@ async function runInsight() {
     $('ins-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout} · batch ${r.serving.batch}`;
   } catch (e) {
     $('ins-status').textContent = '错误：' + e.message;
-  } finally { btn.disabled = false; }
+  }
 }
 /* 0.149: cited density presets per process node — fill the budget densities (still editable), sources on hover */
 function initDensityPresets() {
@@ -1907,7 +1960,6 @@ function trafficCell(t) {
 /* 0.157: datapath sizing headroom */
 async function runInsightSizing() {
   const btn = $('ins-size-run');
-  btn.disabled = true;
   $('ins-size-status').textContent = '计算中（每个资源逐次减半再二分 × 每个模型）…';
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
@@ -1929,12 +1981,11 @@ async function runInsightSizing() {
     $('ins-size-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout}`;
   } catch (e) {
     $('ins-size-status').textContent = '错误：' + e.message;
-  } finally { btn.disabled = false; }
+  }
 }
 /* 0.148: greedy multi-step upgrade path */
 async function runInsightPath() {
   const btn = $('ins-path-run');
-  btn.disabled = true;
   $('ins-path-status').textContent = '计算中（每步 × 每个旋钮 × 每个模型）…';
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
@@ -1949,7 +2000,7 @@ async function runInsightPath() {
     $('ins-path-status').textContent = `完成 · ${r.path.length} 步 · ${r.search} · 成本 = ${r.cost_unit}`;
   } catch (e) {
     $('ins-path-status').textContent = '错误：' + e.message;
-  } finally { btn.disabled = false; }
+  }
 }
 function paintInsightPath() {
   const r = S.insPath;

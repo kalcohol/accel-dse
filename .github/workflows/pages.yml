@@ -1,0 +1,44 @@
+# Static web UI (accel_dse on Pyodide in the browser) → GitHub Pages: https://kalcohol.github.io/accel-dse/
+# One-time repo setting: Settings → Pages → Source = "GitHub Actions"
+#   (gh api -X POST repos/kalcohol/accel-dse/pages -f build_type=workflow   — or -X PUT if Pages already exists)
+# Pyodide is pinned in scripts/build_static.py (PYODIDE_VERSION); the build is stdlib-only.
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read      # checkout
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"      # same CPython minor as the pinned Pyodide 0.29.5 (3.13.2)
+      - name: Static-build tests (stdlib only)
+        run: python3 tests/run_tests.py --one tests/test_static_build.py
+      - name: Build dist-static
+        run: python3 scripts/build_static.py --out dist-static --pyodide 0.29.5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist-static
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

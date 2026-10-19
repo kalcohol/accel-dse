@@ -21,3 +21,4 @@ AGENTS.md
 local/
 scripts/.run_status.json
 scripts/.run_status.tmp
+dist-static/

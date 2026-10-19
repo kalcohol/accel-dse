@@ -2,7 +2,7 @@
 
 > Analytical design-space exploration for inference accelerators (LLM · video-generation DiT · protein)
 
-[中文](README.md) · [Model notes (Chinese)](docs/MODEL.md) · [Changelog](CHANGELOG.md) · [MIT](LICENSE)
+[Online version](https://kalcohol.github.io/accel-dse/) · [中文](README.md) · [Model notes (Chinese)](docs/MODEL.md) · [Changelog](CHANGELOG.md) · [MIT](LICENSE)
 
 **accel-dse** answers pre-silicon questions with a checkable analytical model: given a model (an LLM / VLM, or a video-generation DiT or protein language model; weights and dtypes as officially released), a datapath mapping, on-chip SRAM, a memory system (HBM / LPDDR) and a card count, which parallel layout and batch are best, what binds, and how sensitive the answer is to the assumptions. No third-party dependencies, Python ≥ 3.10.
 

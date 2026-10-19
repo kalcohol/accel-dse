@@ -6,6 +6,36 @@
 
 
 
+## [0.259.0]
+
+### Added — online static version (GitHub Pages, accel_dse on Pyodide in the browser); non-blocking progress UI
+- **Static build** (`scripts/build_static.py`, stdlib only) writes `dist-static/`:
+  - the unchanged web UI;
+  - `web-static/pyodide-shim.js`, a `fetch` wrapper for `/api/*`;
+  - `web-static/pyodide-worker.js`, which runs Pyodide 0.29.5 (pinned, jsdelivr CDN, CPython 3.13) in Web Workers;
+  - a deterministic `accel_dse-<hash>.zip` with the package `.py` files and `data/**/*.json`.
+- **Same answers as the server.** Requests go through **`serve.respond(method, path, raw)`**, the server's own dispatch and JSON serialisation, now factored out of `Handler._api` and transport-free. Responses are byte-identical to `accel_dse serve`.
+- **Two interpreters in the browser:**
+  - *fast*: eval / sensitivity / memory / sweep / pareto / catalog;
+  - *slow*: fit / compare / layouts / stability / insight*.
+  - A capacity search never blocks evaluation. A stale running slow-lane search terminates its worker, and a fresh one starts.
+- **Deploy:** `.github/workflows/pages.yml` builds and deploys to https://kalcohol.github.io/accel-dse/ on push to main (and on manual runs). One-time setting: Pages source = GitHub Actions.
+- **Progress UI** (server and static modes). It never blocks the interface.
+  - A thin animated bar at the top of the results area, plus a floating pill near the metric cards: 「计算中… 3.2 s · 阶段」.
+  - Both appear only after 150 ms, use `pointer-events: none`, and never dim or disable inputs. Metric cards being recomputed get a subtle 「updating」 style.
+  - On the first static load, the pill shows the Pyodide download / init / package phases.
+  - Respects `prefers-reduced-motion`.
+- **Edits during a calculation.** Any edit starts a new calculation and drops stale replies:
+  - a scenario edit cancels the in-flight fit and sensitivity requests;
+  - a fit reply that lands after an edit is discarded;
+  - the search buttons (映射对比, 最佳布局, 设计洞察, 升级路径, 缩减余量) stay clickable, and clicking again restarts the search.
+- **Fix: scrollbars covered text.** Overlay scrollbars (Chromium Fluent / macOS, Firefox GTK / macOS) take no layout space. On hover they appeared over the last line of a horizontally scrollable block, for example the notes just above 「本次评估的「假设」」.
+  - Every `.scroll` container now keeps a 14 px bottom strip (`--sb-gap`) clear of text.
+  - The parameter panel gets `scrollbar-gutter: stable` plus the same right padding.
+  - Scrollbars are thin and muted.
+  - Checked in Chromium (overlay on) and Firefox (GTK overlay on), on hover.
+- `tests/test_static_build.py` checks `respond` and the bundle. `scripts/static_parity_check.py` (opt-in, Playwright) replays browser calls on the server and compares the bytes.
+
 ## [0.258.0]
 
 ### Changed — MOSS-Image CFG negative branch at its own shape; text-refiner attention core (MODEL §204.1–204.2)
