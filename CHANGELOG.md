@@ -6,6 +6,16 @@
 
 
 
+## [0.262.0]
+
+### Added — J/token-optimal SLC size under die temperature (MODEL §207.1)
+- `insight.slc_energy_report` / `POST /api/insight_slc` / Insight tab「SLC 能耗最优」: sweeps SLC GiB under `energy.sram_temp_C`, reports the J-optimal and time-optimal capacities and the hot-die crossover (J > no-SLC).
+- qwen3-30b-a3b, 100T + LPDDR5X, B8, `dip`, no idle: at 25 °C opt J = 64 GiB; at 85 °C opt J = 0 GiB with crossover at 4 GiB, while time-opt stays 32 GiB.
+
+### Notes — granite-switch deferred; freshness (MODEL §207.2–207.3)
+- ibm-granite granite-switch-4.1: public config is not enough for an honest param_check (control-token LoRA adapters, serve path undocumented).
+- Sweep since 10-19: nothing new.
+
 ## [0.261.0]
 
 ### Added — SRAM / SLC leakage vs die temperature (MODEL §206.1)

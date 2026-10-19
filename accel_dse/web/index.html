@@ -559,6 +559,14 @@
     <div class="note small" id="ins-size-binding"></div>
     <div class="note small" id="ins-size-joint-sum"></div>
     <div class="scroll"><table class="tbl tight" id="ins-size-joint-tbl"></table></div>
+    <h4 title="0.262：在能耗表的结温下扫 SLC 容量，找 J/单位最优与时间最优，并标出 J 超过无 SLC 的交叉点（热模漏电）">SLC 能耗最优</h4>
+    <div class="row">
+      <label title="dip / pin / lru / pin_bw">策略<select id="ins-slc-pol"><option value="dip">dip</option><option value="pin">pin</option><option value="lru">lru</option><option value="pin_bw">pin_bw</option></select></label>
+      <button class="btn" id="ins-slc-run">计算 SLC 能耗曲线</button>
+      <span class="small muted" id="ins-slc-status"></span>
+    </div>
+    <div class="note small" id="ins-slc-summary"></div>
+    <div class="scroll"><table class="tbl tight" id="ins-slc-tbl"></table></div>
   </section>
 
   <section class="tab" id="tab-models" hidden>

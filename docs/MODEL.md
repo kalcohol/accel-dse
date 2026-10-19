@@ -6626,3 +6626,26 @@ diffusers main `transformer_minimax_h3.py` (last change 2026-10-01): `MiniMaxH3T
 ### §206.5 Freshness
 `freshness_sweep.py 2026-10-19` (74 orgs): only `tencent/Hy-Memory-30B-A3B-GGUF` (a repack of the catalogued Hy-Memory). ibm-granite errored in the sweep and was rechecked by the API: its newest repos (granite-switch-4.1-8b / 30b, 10-14, `GraniteSwitchForCausalLM`: control-token-switched LoRA adapters + ASR) predate the window and are deferred.
 
+## §207 J/token-optimal SLC size under die temperature; granite-switch deferred (0.262)
+
+### §207.1 SLC energy curve (`insight.slc_energy_report`, `/api/insight_slc`)
+Closes the 0.261 hot-die finding as a chip-design decision tool.
+- **Probe.** For each capacity in a GiB grid (default 0, 1, 2, 4, 8, 12, 16, 24, 32, 48, 64), set `chip.slc_mib` / `slc_policy` (default `dip`) and re-evaluate via the existing engine. Leakage is charged under the same scope as §205.4 / §206.1 (table has `uW_per_mib_sram_leak`, no measured idle).
+- **Outputs per model.** The J/token curve; `opt_J_gib` = argmin J; `opt_time_gib` = argmin TPOT (LLM) or latency (gen); `crossover_gib` = smallest positive capacity whose J exceeds the no-SLC point (leakage dominates the DRAM saving). Report `sram_temp_C`, `leak_charged`, and notes when idle or a missing leak field suppresses the hot-die signal.
+- **UI.** Insight tab →「SLC 能耗最优」; uses the energy panel's preset / `sram_temp_C`. Default model = the scenario's model (a GiB × N sweep is expensive).
+
+**Example** (qwen3-30b-a3b, 100T + LPDDR5X, B8, `dip`, tpuv4i_7nm, no idle):
+
+| Die T | opt J GiB | crossover | opt time GiB | reading |
+|---|---|---|---|---|
+| 25 °C | 64 (0.0507 J) | none | 64 | larger SLC always wins on both |
+| 85 °C | 0 (0.257 J) | 4 GiB | 32 (62.2 ms) | any SLC costs energy; still buys TPOT |
+
+The SLC decision is therefore an energy-vs-time trade that the temperature decides. Filling `idle_W` hides the leak (notes say so) and the cold-die ranking returns.
+
+### §207.2 granite-switch (ibm-granite, 10-14) — deferred
+`ibm-granite/granite-switch-4.1-8b` / `-30b` (`GraniteSwitchForCausalLM`): public `config.json` exposes a granite-like dense base (8b: 42 L, 4096 d, GQA 32/8, intermediate 12800, vocab 100355, tie_word_embeddings) plus `adapter_names` / `adapter_ranks` (guardian-core r16, decision r64) and ASR fields. Safetensors are published. Without a public description of how the control-token-switched LoRA adapters fold into the serve path (loaded always? swapped per token? counted in the checkpoint total?), an honest `param_check` against the release weight total is not possible from config alone. Left out of the catalog; revisit when the serve path is documented.
+
+### §207.3 Freshness
+`freshness_sweep.py 2026-10-19` again: only the already-noted Hy-Memory GGUF repack. Inferact / stabilityai errored in the sweep (network); no new architecture releases in window.
+

@@ -126,7 +126,7 @@ function cancel(chan) {
    (Pyodide) build also reports its first-load phases here (download / init / package). */
 const STAGE = { eval: 'eval 评估', sensitivity: 'sensitivity 敏感度', fit: 'fit 容量修正搜索', memory: 'memory 内存',
   compare: 'compare 映射对比', layouts: 'layouts 布局搜索', stability: 'stability 排名稳定性', sweep: 'sweep 扫描',
-  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量',
+  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优',
   health: 'catalog 载入目录', catalog: 'catalog 载入目录', models: 'catalog 载入目录' };
 const LOAD_ZH = { download: '下载 Python 运行时', init: '初始化 Pyodide', package: '载入 accel_dse 包', ready: '就绪', error: '静态版加载失败' };
 const PROG = {
@@ -1961,6 +1961,42 @@ function trafficCell(t) {
   return `DRAM ×${d != null ? num(d) : '—'}` + (e != null ? ` · 能耗 ×${num(e)}${v.some((x) => x.J_partial) ? '（部分）' : ''}` : '')
     + (ep != null ? ` · prefill ×${num(ep)}` : '');   // 0.188
 }
+
+/* 0.262: J/token-optimal SLC size under energy.sram_temp_C */
+async function runInsightSlc() {
+  $('ins-slc-status').textContent = '计算中（逐 GiB × 每个模型）…';
+  try {
+    const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
+    const r = await track(req('insight_slc', '/api/insight_slc', body({
+      ...(ms.length ? { models: ms } : { models: [S.sc.model] }), policy: $('ins-slc-pol').value })));
+    if (!r) return;
+    const m0 = (r.models || []).find((x) => !x.error) || r.models[0];
+    const notes = (r.notes || []).join('；');
+    $('ins-slc-summary').textContent = (!m0 || m0.error) ? ('错误：' + ((m0 && m0.error) || '无结果'))
+      : (`结温 ${num(r.sram_temp_C)} °C · 策略 ${r.policy} · 漏电计入 ${r.leak_charged ? '是' : '否'} · `
+        + `J 最优 ${m0.opt_J_gib} GiB（${sci(m0.opt_J)} J）· 时间最优 ${m0.opt_time_gib} GiB`
+        + (m0.crossover_gib != null ? ` · J 交叉（>无 SLC）自 ${m0.crossover_gib} GiB` : ' · 无 J 交叉')
+        + (notes ? ' · ' + notes : ''));
+    const rows = (m0 && m0.curve) ? m0.curve : [];
+    const timeH = r.domain === 'llm' ? 'TPOT ms' : '延迟 s';
+    put($('ins-slc-tbl'), h('thead', {}, h('tr', {},
+      ['GiB', 'J/单位', timeH, '漏电 W', 'SLC 命中', '放得下'].map((x) => h('th', {}, x)))),
+      h('tbody', {}, rows.map((c) => {
+        if (c.error) return h('tr', {}, h('td', {}, String(c.gib)), h('td', { colspan: 5 }, c.error));
+        const mark = (c.gib === m0.opt_J_gib ? ' ←J' : '') + (c.gib === m0.opt_time_gib ? ' ←时' : '')
+          + (m0.crossover_gib != null && c.gib === m0.crossover_gib ? ' ←交叉' : '');
+        return h('tr', {}, h('td', {}, String(c.gib) + mark), h('td', {}, sci(c.J_tok)),
+          h('td', {}, r.domain === 'llm' ? num(c.tpot_ms) : num(c.lat_s)),
+          h('td', {}, c.leak_W != null ? num(c.leak_W) : '—'),
+          h('td', {}, c.slc_frac != null ? num(c.slc_frac * 100) + '%' : '—'),
+          h('td', {}, c.fits ? '是' : '否'));
+      })));
+    $('ins-slc-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${(r.models || []).length} 模型`;
+  } catch (e) {
+    $('ins-slc-status').textContent = '错误：' + e.message;
+  }
+}
+
 /* 0.157: datapath sizing headroom */
 async function runInsightSizing() {
   const btn = $('ins-size-run');
@@ -2443,6 +2479,7 @@ async function init() {
   $('ins-run').addEventListener('click', runInsight);
   $('ins-path-run').addEventListener('click', runInsightPath);
   $('ins-size-run').addEventListener('click', runInsightSizing);
+  $('ins-slc-run').addEventListener('click', runInsightSlc);
   for (const f of ['csv', 'json']) { $('ins-exp-' + f).addEventListener('click', () => doExport('ins', f)); $('ins-path-exp-' + f).addEventListener('click', () => doExport('ins-path', f)); }
   fillSweepPaths();
   renderModels();
