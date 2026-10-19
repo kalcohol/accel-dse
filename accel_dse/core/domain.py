@@ -279,11 +279,14 @@ def build_hunyuan(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> M
     spec = _finish(model_id, hf_id, rel, f"HunyuanVideo MMDiT（{Ld} 双流 + {Ls} 单流，[视频 ‖ 文本] 联合全 3D 注意力）",
                    d, 0, [double] * Ld + [single] * Ls, io_pre, io_post, io_misc, 0, wl, "",
                    skip=(), extra_notes=(
-                       f"token refiner（{nref} 层，文本 {wl.text_tokens} token 上的自注意力 Transformer）的 GEMM 计入，"
-                       "其 256×256 注意力核忽略不计",
+                       f"token refiner（{nref} 层，文本 {wl.text_tokens} token 上的自注意力 Transformer）的 GEMM 与"
+                       f"注意力核（{H} 头 × {hd}，双向，无 QK-norm / RoPE：diffusers HunyuanVideoIndividualTokenRefinerBlock）都计入；"
+                       "参考实现按文本 mask 屏蔽 padding，按全长计「假设」",
                        "guidance 强度作为嵌入输入（embedded guidance 6.0，官方 sample_video.py 默认）",
                        f"文本按 {wl.text_tokens} token（text_len）计入联合序列；参考实现按 mask 跳过 padding「假设」全长"))
-    return spec
+    # 0.260: the token refiner's self-attention core (heads from the refiner's to_q width / head dim, 「推导」)
+    rh = sh["context_embedder.token_refiner.refiner_blocks.0.attn.to_q.weight"][0] // hd if nref else 0
+    return replace(spec, io_attn=tuple((f"refiner{i}", "txt", rh, hd, 1, "") for i in range(nref)))
 
 
 # ---------------------------------------------------------------- LTX-Video
@@ -433,8 +436,14 @@ def build_h3(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelS
                        f"文本按 {wl.text_tokens} token 计入打包序列「假设」（H3-Context-IR 提示词长度不定）；"
                        f"立体声音频按 {wl.audio_per_s} latent/s × {wl.audio_channels} 声道计入序列",
                        "开源版只提供全注意力推理（稀疏注意力未发布）：按全注意力建模",
-                       f"token refiner（{nref} 层整宽 Transformer）的 GEMM 计入，其文本自注意力核忽略不计"))
-    return _recheck(replace(spec, cached_params=cached * L))
+                       f"token refiner（{nref} 层整宽 Transformer）的 GEMM 与文本自注意力核（to_q 宽 / norm_q 头维 → "
+                       "头数「推导」，QK-norm）都计入"))
+    # 0.260: refiner attention core — heads = to_q width / the per-head norm_q size (7168 / 128 = 56), 「推导」
+    rp = "token_refiner.refiner_blocks.0.attn."
+    rd = sh[rp + "norm_q.weight"][0] if rp + "norm_q.weight" in sh else hd
+    io_attn = tuple((f"refiner{i}", "txt", sh[rp + "to_q.weight"][0] // rd, rd, 1,
+                     "qknorm" if rp + "norm_q.weight" in sh else "") for i in range(nref)) if nref else ()
+    return _recheck(replace(spec, cached_params=cached * L, io_attn=io_attn))
 
 
 # ---------------------------------------------------------------- 0.115 image DiT (single 2-D latent frame)

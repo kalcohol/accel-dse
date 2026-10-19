@@ -3464,7 +3464,8 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
         for i, (sc, cs) in enumerate(pools):
             ch = sc.chip
             if table.uW_per_mib_sram_leak is not None:
-                mib = getattr(ch, "state_sram_mib", 0.0) + (ch.sram_mib if not has_idle else 0.0)
+                mib = getattr(ch, "state_sram_mib", 0.0) + ((ch.sram_mib + (getattr(ch, "slc_mib", 0.0) or 0.0))
+                                                             if not has_idle else 0.0)     # 0.260: + SLC
                 if mib > 0:
                     add("sram_leak", mib * table.uW_per_mib_sram_leak * 1e-6 * cs, i)
             if not has_idle and (table.mW_hbm_die_standby is not None or table.mW_hbm_Gb_refresh is not None):

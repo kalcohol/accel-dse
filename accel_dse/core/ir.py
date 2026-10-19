@@ -1932,12 +1932,18 @@ def _io_attn_ops(model: ModelSpec, ph: Phase, sh: Shard, b: int, li: int) -> lis
     """0.258: attention cores of io blocks (``ModelSpec.io_attn``; MOSS-Image text refiner: SDPA over the sample's text
     rows, bidirectional, RMS QK-norm + RoPE — pipeline_moss_image.py _TextBlock, 「来源」).  Heads split over TP, then
     over SP like the block attention (the text rows are SP-split in the refiner GEMMs; the all-to-all of these few
-    rows is not added 「近似」).  No rows on a cached / reused step (the text stream does not run)."""
+    rows is not added 「近似」).  No rows on a cached / reused step (the text stream does not run).
+    0.260: an optional 6th field names the per-token vector work: "qknorm_rope" (default, MOSS), "qknorm"
+    (MiniMax-H3 token refiner: norm_q / norm_k tensors present; whether the refiner applies RoPE is not visible in the
+    weights → not counted 「假设」, a vector-only term), "" (HunyuanVideo
+    token refiner: diffusers HunyuanVideoIndividualTokenRefinerBlock — plain Attention, no QK-norm, no RoPE)."""
     ops: list[Op] = []
     if not model.io_attn or ph.kvpre or ph.mreuse:
         return ops
     ab = _fmt(model.act_fmt).bytes
-    for name, rows, heads, dh, blocks in model.io_attn:
+    for ent in model.io_attn:
+        name, rows, heads, dh, blocks = ent[:5]
+        norm = ent[5] if len(ent) > 5 else "qknorm_rope"
         T = _prefix(model, ph) if rows == "txt" else 0
         if T <= 0:
             continue
@@ -1946,9 +1952,11 @@ def _io_attn_ops(model: ModelSpec, ph: Phase, sh: Shard, b: int, li: int) -> lis
         ops += [Op(f"io.{name}.qk", "attn", li, m=T, k=dh, n=T, count=cnt, act_bytes=cnt * T * dh * ab, stream=True,
                    orient=True),
                 Op(f"io.{name}.pv", "attn", li, m=T, k=T, n=dh, count=cnt, act_bytes=cnt * T * dh * ab, orient=True),
-                Op(f"io.{name}.softmax", "vector", li, vec=cnt * T * T * 5, sfu=cnt * T * T),
-                Op(f"io.{name}.qk_norm_rope", "vector", li,
-                   vec=b * _cdiv(T, sh.sp) * _cdiv(heads, sh.tp) * blocks * (dh * 2 * 3 + dh * 2 * 3))]
+                Op(f"io.{name}.softmax", "vector", li, vec=cnt * T * T * 5, sfu=cnt * T * T)]
+        per = (dh * 2 * 3 if "qknorm" in norm else 0) + (dh * 2 * 3 if "rope" in norm else 0)
+        if per:
+            ops.append(Op(f"io.{name}.qk_norm_rope", "vector", li,
+                          vec=b * _cdiv(T, sh.sp) * _cdiv(heads, sh.tp) * blocks * per))
     return ops
 
 

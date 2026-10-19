@@ -79,6 +79,9 @@
         <label title="参考图原始尺寸（留空 = 与输出同尺寸「假设」）">参考图高 px<input type="number" id="w-ref_height" min="16" max="8192" step="16" placeholder="同输出"></label>
         <label title="0.255 模态流复用（SGLang flux3_image StaticStreams）：第 1 步保留文本与参考图分模态块的输出及其单流调制，第 2…n 步只跑图像分模态块；仅 Base（非 flow map）、SP = 1、PP = 1 时生效。关 = BFL / diffusers 参考实现（每步重算）">模态流复用 <span class="tag whatif">what-if</span><select id="w-mode_cache"><option value="off">关（参考实现）</option><option value="on">开（SGLang）</option></select></label>
       </div>
+      <div class="row3 gen-only uncond-only" hidden>
+        <label title="0.258 CFG 负分支形状：参考实现 = 按发布代码（MOSS-Image：空负提示经聊天模板 10 token、跳过第 22 块，每步 cond / uncond 两次串行调用）；同形状 = 负分支按正分支形状、与之打包一次前向（0.258 前的口径）">CFG 负分支<select id="w-cfg_branches"><option value="ref">参考实现</option><option value="same">同形状打包</option></select></label>
+      </div>
       <label class="inline gen-only" title="默认计入：文本编码器（每请求一次）与 VAE 解码（每段一次）的时间串行加在去噪前后，权重计入首 / 末流水级卡的存储。取消 = 只看 DiT 去噪主干（相当于把它们卸载到别处）"><input type="checkbox" id="w-pipeline" checked> 计入文本编码器与 VAE 解码（时间 + 存储）</label>
       <div class="row3 gen-only">
         <label title="文本编码器 / VAE 放在哪里：常驻 = 编码器在首级卡、VAE 在末级卡，与 DiT 同时常驻；分片 = 文本编码器权重按 FSDP 切到本副本全部卡（Wan --t5_fsdp），逐层 all-gather；卸载 = 组件与 DiT 分时占用显存（diffusers enable_model_cpu_offload / Wan --offload_model），每请求从主机重载权重；自动 = 依次取第一个放得下的">组件放置 <span class="tag assume">假设</span>

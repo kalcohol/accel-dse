@@ -558,6 +558,7 @@ def _workload_dict(spec: ModelSpec) -> dict | None:
                 "attention": ("factorized" if any(l.core.span in ("spatial", "temporal") for l in spec.layers)
                               else "per_mode" if any(l.core.span == "mode" for l in spec.layers) else "full"),
                 "max_refs": w.max_refs,
+                "uncond": ({"text_tokens": w.uncond[0], "skip_layers": list(w.uncond[1])} if w.uncond else None),   # 0.260
                 "cfg_distilled": w.cfg == 1, "pipeline": _pipeline_dict(spec.id)}
     if w.kind == "genomics":
         return {"kind": "genomics", "seq_len": w.seq_len, "max_seq": w.max_seq, "kmer": w.kmer, "overlap": w.overlap,

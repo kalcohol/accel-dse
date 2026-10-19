@@ -334,6 +334,7 @@ function syncInputs() {
   if ($('pd-prefix_host_policy')) $('pd-prefix_host_policy').value = S.sc.pd.prefix_host_policy || 'write_through';
   if ($('w-step_cache')) $('w-step_cache').value = S.sc.workload.step_cache || 'teacache';
   if ($('w-mode_cache')) $('w-mode_cache').value = S.sc.workload.mode_cache || 'off';   // 0.255 FLUX 3 mode-stream reuse
+  if ($('w-cfg_branches')) $('w-cfg_branches').value = S.sc.workload.cfg_branches || 'ref';   // 0.260 CFG negative branch
   if ($('w-tri_chunk')) { $('w-tri_chunk').value = S.sc.workload.tri_chunk || ''; $('w-tri_chunk').disabled = (S.sc.workload.tri_attn || 'fused') !== 'chunked'; }
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
   if ($('c-attn_fmt') && S.cat) $('c-attn_fmt').value = chipVal('attn_fmt') || '';
@@ -434,6 +435,9 @@ function paintDomain(m) {
   const refs = m.domain === 'gen' && !!(m.workload && m.workload.max_refs);     // 0.252: FLUX 3 reference images
   document.querySelectorAll('.ref-only').forEach((e) => (e.hidden = !refs));
   if (!refs && S.sc && S.sc.workload) for (const k of ['ref_images', 'ref_width', 'ref_height', 'mode_cache']) delete S.sc.workload[k];
+  const unc = m.domain === 'gen' && !!(m.workload && m.workload.uncond);       // 0.260: model-declared CFG negative branch
+  document.querySelectorAll('.uncond-only').forEach((e) => (e.hidden = !unc));
+  if (!unc && S.sc && S.sc.workload) delete S.sc.workload.cfg_branches;
   const loops = !!m.loop_default;                                              // 0.253: Dory looped LM
   document.querySelectorAll('.loop-only').forEach((e) => (e.hidden = !loops));
   if (!loops && S.sc && S.sc.workload) for (const k of ['loops', 'loop_kv']) delete S.sc.workload[k];
@@ -2224,6 +2228,8 @@ async function init() {
     { int: true, check: (x) => x >= 0 && x <= skipCap() });
   $('w-mode_cache').addEventListener('change', (e) => {     // 0.255: off = reference (omitted from the scenario)
     if (e.target.value === 'on') S.sc.workload.mode_cache = 'on'; else delete S.sc.workload.mode_cache; schedule(); });
+  $('w-cfg_branches').addEventListener('change', (e) => {   // 0.260: ref = default (omitted from the scenario)
+    if (e.target.value === 'same') S.sc.workload.cfg_branches = 'same'; else delete S.sc.workload.cfg_branches; schedule(); });
   $('w-step_cache').addEventListener('change', (e) => { if (e.target.value === 'teacache') delete S.sc.workload.step_cache; else S.sc.workload.step_cache = e.target.value;
     if ((S.sc.workload.step_skip || 0) > skipCap()) { S.sc.workload.step_skip = skipCap(); $('w-step_skip')._sync(); } schedule(); });
   bindNumber('w-host_TFLOPS', () => S.sc.workload.host_TFLOPS, (x) => (S.sc.workload.host_TFLOPS = x));

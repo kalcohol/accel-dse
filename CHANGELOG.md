@@ -6,6 +6,25 @@
 
 
 
+## [0.260.0]
+
+### Added — token-refiner attention for HunyuanVideo and MiniMax-H3 (MODEL §205.1)
+- `ModelSpec.io_attn` takes an optional per-token vector field (`qknorm_rope` default, `qknorm`, `""`).
+- HunyuanVideo: 24 × 128 heads, no QK-norm / RoPE 「来源」 (diffusers `HunyuanVideoIndividualTokenRefinerBlock`), full-length mask 「假设」. MiniMax-H3: 56 × 128, QK-norm 「推导」, RoPE not counted 「假设」.
+- Negligible effect: hunyuanvideo 6908.7231 → 6908.7246 s, minimax-h3 1937.7807 → 1937.7929 s.
+
+### Changed — SLC `dip`: every-step classes retained before routed experts (MODEL §205.2)
+- `memplan.dip_split(K, C, E, e)`: hot weights, KV / state and activations (read every step) are kept first, routed experts get the rest (A0 frequency order, Aho–Denning–Ullman 1971, 「近似」); BIP churn ε·max(0, C + e − K) uses the per-step expert reads e. Dense models unchanged.
+- New `MemPlan.slc_frac_exp` / API `mem.slc_frac_exp`.
+- qwen3-30b-a3b, 100T + LPDDR5X, B8, TPOT ms at 4 / 16 / 32 GiB: 146.8 / 114.9 / 72.4 → 134.2 / 99.5 / 62.2 (pin 136.1 / 108.7 / 72.2).
+
+### Added — UI control for `workload.cfg_branches` (MODEL §205.3)
+- `CFG 负分支` select in the gen workload group, shown only for models with a declared negative branch (model info `workload.uncond`; MOSS-Image).
+
+### Changed — SLC leakage charged; core-rail leakage ∝ V under DVFS (MODEL §205.4)
+- The SLC's SRAM leakage is charged with the SRAM term (when no measured idle figure is given), in the main report and the PD ledger. qwen3-30b-a3b 32 GiB `dip`: J/token 0.1086 → 0.1673 (the SLC saving vs none shrinks from −58 % to −35 %, 7.57 W at the 25 °C lower bound).
+- Power cap: SRAM / SLC / state-buffer leakage scales with V (AccelWattch, MICRO 2021, eq. 2 「来源」; linear = conservative 「近似」). The idle floor and HBM standby stay held 「假设」.
+
 ## [0.259.0]
 
 ### Added — online static version (GitHub Pages, accel_dse on Pyodide in the browser); non-blocking progress UI

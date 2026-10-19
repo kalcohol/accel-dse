@@ -1796,7 +1796,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=max(0.0, agg["max_act_tot"] - RUNTIME_RESERVE), stream=True,
                       slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac,
-                      state_buf=sys.chip.state_sram_mib * 2**20)
+                      state_buf=sys.chip.state_sram_mib * 2**20, exp_read=agg["exp"])
             dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]
@@ -2140,7 +2140,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             mp = plan(store, 0, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=agg["max_act_tot"] + resid, stream=True,
                       slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac,
-                      state_buf=sys.chip.state_sram_mib * 2**20)
+                      state_buf=sys.chip.state_sram_mib * 2**20, exp_read=agg["exp"])
             dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]

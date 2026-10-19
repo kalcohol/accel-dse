@@ -5225,7 +5225,7 @@ Deferred to 0.225:
 - **Energy.**
   - Core-rail actions (mac, vec, sram, slc) scale with v².
   - DRAM array, PHY, D2D, link, network and host bits are held.
-  - Static power (idle, SRAM leakage, HBM standby/refresh) is held. This is conservative, because leakage also falls with V.
+  - Static power (idle, SRAM leakage, HBM standby/refresh) is held. This is conservative, because leakage also falls with V. (SRAM / SLC leakage now ∝ V, §205.4.)
 - **Search.** Bisection on s ∈ [0.15, 1].
   - 0.15 is the settable minimum clock of A100 (0.21/1.41 GHz) and H100 (0.345/1.98 GHz), 2607.00819 Table 2, 「来源」.
   - If P(0.15) still exceeds the cap, the 0.189 duty cycle removes the rest.
@@ -6519,8 +6519,8 @@ MOSS: 2 refiner blocks × 24 heads × 128 (`_TextBlock`: SDPA, bidirectional, RM
 - Conservation is unchanged: SLC + DRAM bytes = the DRAM bytes without an SLC.
 
 **Limits.**
-- One cyclic sweep per step: MoE routed experts that a step does not read are still counted in T 「近似」, as for `lru`.
-- No per-class reuse distance; no RRIP variant (BRRIP behaves like BIP on cyclic sweeps).
+- One cyclic sweep per step: MoE routed experts that a step does not read are still counted in T 「近似」, as for `lru`. (0.260: replaced by the per-class split, §205.2.)
+- No per-class reuse distance (0.260: §205.2); no RRIP variant (BRRIP behaves like BIP on cyclic sweeps).
 
 **Example: why it matters for SLC sizing** (100T + LPDDR5X 4×64 8533, qwen3-8b decode B8, TPOT 104.2 ms without SLC):
 
@@ -6537,3 +6537,57 @@ MOSS: 2 refiner blocks × 24 heads × 128 (`_TextBlock`: SDPA, bidirectional, RM
 
 ### §204.4 Freshness
 `freshness_sweep.py 2026-10-19` (74 orgs) found nothing new. HF trending (≥ 10-18) shows only a DeepSeek-V4.1-Flash-1017 repack.
+
+## §205 Token-refiner attention (HunyuanVideo, MiniMax-H3); `dip` per-class reuse; cfg_branches UI; SLC leakage and leakage ∝ V (0.260)
+
+### §205.1 Token-refiner attention cores
+- `ModelSpec.io_attn` entries take an optional 6th field for the per-token vector work: `"qknorm_rope"` (default, MOSS), `"qknorm"`, `""`.
+- **HunyuanVideo** (`domain.build_hunyuan`): the individual token refiner blocks run bidirectional SDPA over the text rows, 24 heads × 128 (heads = `to_q` width ÷ 128), with no QK-norm and no RoPE 「来源」 (diffusers `HunyuanVideoIndividualTokenRefinerBlock`). The attention mask is taken as full length 「假设」.
+- **MiniMax-H3** (`build_h3`): 56 heads × 128 (`to_q` 7168 ÷ `norm_q` 128), QK-norm 「推导」 from the weights. Whether the refiner applies RoPE is not visible in the weights, so it is not counted 「假设」 (a vector-only term).
+- Effect is negligible: hunyuanvideo 6908.7231 → 6908.7246 s, minimax-h3 1937.7807 → 1937.7929 s; MOSS unchanged. No weights added (param_check unchanged).
+
+### §205.2 `dip` per-class reuse (closes the §204.3 MoE 「近似」)
+- **Why.** One cyclic sweep per step put every routed expert in T, but a decode step reads only the routed share e of the off-SRAM expert bytes E, while the hot weights, KV / state and activations (C bytes) are read every step.
+- **Model** (`memplan.dip_split(K, C, E, e)`):
+  - C + E ≤ K → all hit (as before).
+  - Otherwise the every-step classes are retained before the experts: the A0 order of Aho, Denning, Ullman (J. ACM 1971), optimal under the independent reference model 「近似」 (a DIP cache only approximates frequency order).
+  - BIP churn shrinks the retained capacity by the bytes that stream through per step: K′ = K − ε·max(0, C + e − K), ε = 1/32 (§204.3).
+  - Every-step share f_c = min(1, K′/C); expert share f_e = clip((K′ − C)/E, 0, 1). Expert reads hit by f_e (uniform routing 「近似」).
+  - E = 0 reduces to the 0.258 `dip_hit` formula, so dense models are unchanged.
+- `plan(..., exp_read=agg["exp"])` passes the per-step expert reads; `MemPlan.slc_frac_exp` and API `mem.slc_frac_exp` report f_e. Conservation holds (SLC + DRAM = DRAM without an SLC).
+- The Che approximation (`prefixcache`) was considered and not used: a cyclic LRU-like sweep is not IRM.
+
+**Example** (qwen3-30b-a3b, 100T + LPDDR5X 4×64 8533, decode B8, TPOT ms; 152.64 without SLC):
+
+| SLC GiB | pin | lru | dip 0.258 | dip 0.260 | f_c | f_e |
+|---|---|---|---|---|---|---|
+| 2 | 141.4 | 152.6 | 152.1 | 145.8 | 0.23 | 0 |
+| 4 | 136.1 | 152.6 | 146.8 | 134.2 | 0.63 | 0 |
+| 8 | 126.9 | 152.6 | 136.2 | 118.3 | 1 | 0.04 |
+| 16 | 108.7 | 152.6 | 114.9 | 99.5 | 1 | 0.19 |
+| 32 | 72.2 | 152.6 | 72.4 | 62.2 | 1 | 0.50 |
+| 64 | 17.2 | 17.2 | 17.2 | 17.2 | 1 | 1 |
+
+From 4 GiB `dip` beats `pin`: pin's static order places expert weights before KV, while a frequency-ordered cache keeps the every-step KV.
+
+### §205.3 UI: `cfg_branches`
+The gen workload group shows a `CFG 负分支` select (`w-cfg_branches`: ref 参考实现 / same 同形状打包) only when the model declares a negative branch (`workload.uncond` in the model info; MOSS-Image today). The key is dropped from the scenario otherwise. Three small hunks in `app.js`, one row in `index.html`; `serve.py` untouched.
+
+### §205.4 SLC leakage; core-rail leakage ∝ V under DVFS
+- **SLC leakage.** The SLC is on-die SRAM (its area already uses `mm2_per_mib_slc` = SRAM density, and `pJ_bit_slc` = SRAM). Its leakage is now charged with the SRAM term: P = (state_sram + sram + slc) MiB × `uW_per_mib_sram_leak` (230.7 µW/MiB, 3 nm HD at 25 °C, a lower bound 「来源」), when no measured idle figure is given. A measured idle figure already contains it (scope note `共享 SRAM / SLC 泄漏已含于 idle 数值`). Same in the PD ledger (`pdqueue._energy`).
+- **Leakage vs V.** Under the power cap's V–f curve, core-rail leakage scales linearly with V: static power n·V, AccelWattch eq. 2 (Kandiah et al., MICRO 2021, §4.2: chip and memory static terms b·V + b′·V) 「来源」. Linear is conservative 「近似」: sub-threshold / DIBL leakage falls faster than V. The idle floor (measured at the idle P-state, already at low V) and HBM standby / refresh (memory rail; memory clock held) stay held 「假设」. Closes the 0.227 "static held" limit and the 0.228 "leakage-vs-V" deferral.
+
+**Effect — SLC sizing on energy** (qwen3-30b-a3b, 100T + LPDDR5X, B8, `dip`, tpuv4i_7nm without idle_W; J/token):
+
+| SLC | before | after | leakage W/card |
+|---|---|---|---|
+| none | 0.2561 | 0.2561 | 0.015 |
+| 8 GiB | 0.2001 | 0.2281 | 1.905 |
+| 32 GiB | 0.1086 | 0.1673 | 7.574 |
+
+The SLC's energy saving at 32 GiB shrinks from −58 % to −35 %, and that uses the 25 °C lower bound (at operating temperature leakage is several × higher). A large SRAM SLC sized for bandwidth pays a static cost that grows with capacity, not with use.
+
+Leakage ∝ V: RWKV-7 G1k 7.2B on 1P with a 7200 MiB state buffer (1.72 W leakage), cap 0.5 P, rx5700xt_n7: throughput ×0.7888 → ×0.7946; dfs unchanged (V = 1).
+
+**Limits.** No temperature model (no advanced-node leakage-vs-T source; the 40 nm data in §159 is not transferred). The leakage of SRAM and SLC uses the same HD macro density.
+

@@ -3,8 +3,11 @@
 Mechanism: card power P(f) = E_core(V)/t(f) + E_other/t(f) + P_static.  Lowering the core clock f stretches only the
 clocked work (MAC / vector / SFU / SRAM-port time; DRAM, links and host keep their own clocks), so the step is
 re-evaluated at chip.freq_ghz · s.  Core-rail action energies (mac, vec, sram, slc) scale with V(f)² (P ∝ C·V²·f,
-「来源」 arXiv 2607.00819 eq. 1); DRAM array / PHY, D2D / link / network bits and static power are held (static held =
-conservative: leakage also falls with V).  Curves (V/V_max against f/f_max):
+「来源」 arXiv 2607.00819 eq. 1); DRAM array / PHY, D2D / link / network bits are held.  Static power (0.260): the
+core-rail leakage term (SRAM macro leakage, `uW_per_mib_sram_leak`) scales linearly with V — P_static = n·V
+(Kandiah et al., 'AccelWattch', MICRO 2021, §4.2 eq. 2: chip and memory static b·V + b′·V, 「来源」); linear is the
+conservative 「近似」 (sub-threshold / DIBL leakage falls faster than V).  The idle floor (measured at the idle P-state,
+i.e. already at low V) and HBM standby / refresh (memory rail, its clock is held) stay held 「假设」.  Curves (V/V_max against f/f_max):
   dfs          clock only at nominal voltage — energy per action unchanged.  Without a per-cycle term the capped
                throughput equals the 0.189 duty-cycle model (t = E_dyn / (cap − P_static)); 0.228: with pJ_clk_mac_cycle
                the clocked power macs·f·pJ falls with f even when the op rate is memory-set, so dfs ≥ duty cycling
@@ -55,8 +58,10 @@ def _point(r, table, curve: str, s: float):
     from .evaluate import evaluate
     scn = r.scenario
     q = r if s == 1.0 else evaluate(scn.replace("chip", replace(scn.chip, freq_ghz=scn.chip.freq_ghz * s)))
-    v2 = volt(curve, s) ** 2
-    t = replace(table, **{f: getattr(table, f) * v2 for f in CORE_ACTIONS.values() if getattr(table, f) is not None})
+    v = volt(curve, s)
+    t = replace(table, **{f: getattr(table, f) * v * v for f in CORE_ACTIONS.values() if getattr(table, f) is not None})
+    if t.uW_per_mib_sram_leak is not None and v != 1.0:     # 0.260: core-rail leakage ∝ V (AccelWattch eq. 2)
+        t = replace(t, uW_per_mib_sram_leak=t.uW_per_mib_sram_leak * v)
     return q, energy_report(q, t)
 
 

@@ -425,12 +425,14 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                           if abs(table.idle_frac_tdp - pre[0]) <= 5e-3 * pre[0] else "用户填写"))
     if table.uW_per_mib_sram_leak is not None:      # 0.212: SRAM leakage (static), see the field note
         ch = r.scenario.chip
-        mib = getattr(ch, "state_sram_mib", 0.0) + (ch.sram_mib if iw is None else 0.0)
+        slc = getattr(ch, "slc_mib", 0.0) or 0.0     # 0.260: the SLC is on-die SRAM too (same macro class as pJ_bit_slc 「假设」)
+        mib = getattr(ch, "state_sram_mib", 0.0) + ((ch.sram_mib + slc) if iw is None else 0.0)
         if mib > 0:
             leak_W = mib * table.uW_per_mib_sram_leak * 1e-6
             j["sram_leak"] = leak_W * per["idle_card_s"]
             out["sram_leak_W_card"] = leak_W
-            out["sram_leak_scope"] = "state_sram + sram" if iw is None else "state_sram（共享 SRAM 泄漏已含于 idle 数值）"
+            out["sram_leak_scope"] = (("state_sram + sram" + (" + slc" if slc > 0 else "")) if iw is None
+                                      else "state_sram（共享 SRAM / SLC 泄漏已含于 idle 数值）")
     if iw is None and (table.mW_hbm_die_standby is not None or table.mW_hbm_Gb_refresh is not None):
         hs = hbm_static_W(r.scenario.mem_id, table)      # 0.216: HBM standby + refresh (static)
         if hs:

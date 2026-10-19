@@ -47,6 +47,13 @@ DRAM home) and is per card.  Policies:
         (weights, KV / state, activations) hits by the same share 「推导」; the one-line term is dropped (K ≫ a line),
         the cache is taken as fully associative (set-associative with addresses spread over the sets 「近似」).  KV
         writes go to DRAM as for lru.
+        0.260 per-class reuse: routed-expert weights are not all read every step.  The every-step classes (hot
+        weights, KV / state, activation working set: C bytes) are re-referenced each step, an off-SRAM expert byte
+        with probability e / E (e = expert bytes read per step, E = expert bytes off SRAM).  BIP promotes a line on
+        a hit, so the retained set fills by reference frequency — the A0 rule, optimal under the independent
+        reference model (Aho, Denning, Ullman, J. ACM 1971) 「近似」: every-step bytes first, then experts.  With
+        K' = K − ε·max(0, C + e − K) (BIP churn over the step's distinct reads): every-step share min(1, K'/C), expert
+        share clip((K' − C)/E, 0, 1).  E = 0 reduces to the 0.258 formula; everything fitting (C + E ≤ K) hits.
 Video pipeline components (text encoder, VAE) do not use the SLC.
 """
 
@@ -244,7 +251,8 @@ class MemPlan:
     slc_expert: float = 0.0
     slc_kv: float = 0.0
     slc_all: bool = False   # lru: the whole off-SRAM working set fits → every read hits
-    slc_frac: float = 0.0   # 0.258 dip: share of the step's off-SRAM reads served by the SLC
+    slc_frac: float = 0.0   # 0.258 dip: share of the step's off-SRAM reads served by the SLC (0.260: every-step classes)
+    slc_frac_exp: float = 0.0  # 0.260 dip: share of the routed-expert reads served by the SLC
     slc_residency: float = 0.0  # weights on chip incl. SLC / streamed weights (= residency without an SLC)
     # 0.209: of kv_sram, the recurrent-state bytes (the rest is KV / indexer); -1 = not split (legacy plans)
     state_sram: float = -1.0
@@ -262,7 +270,7 @@ STATE_SPLIT = True        # 0.209: separate KV / state on-chip shares (≤ 0.208
 
 def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: float, max_act: float,
          act_need: float = 0.0, stream: bool = False, slc_bytes: float = 0.0, slc_policy: str = "pin",
-         kv_frac: float = 1.0, state_buf: float = 0.0) -> MemPlan:
+         kv_frac: float = 1.0, state_buf: float = 0.0, exp_read: float | None = None) -> MemPlan:
     kv_t = (store.kv_per_seq + store.idx_per_seq) * batch_local
     st_t = store.state_per_seq * batch_local
     need = store.weights + kv_t + st_t + RUNTIME_RESERVE + act_need
@@ -297,10 +305,12 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
         fits = r_hot + r_exp + r_kv + act_need <= slc_bytes
         return replace(mp, slc=slc_bytes, slc_policy="lru", slc_all=fits, slc_residency=1.0 if fits else res)
     if slc_policy == "dip":
-        T = r_hot + r_exp + r_kv + act_need
-        f = 1.0 if T <= slc_bytes else dip_hit(slc_bytes, T)
-        sres = (p_hot + p_exp + f * (r_hot + r_exp)) / strm if strm else 1.0
-        return replace(mp, slc=slc_bytes, slc_policy="dip", slc_all=f >= 1.0, slc_frac=f, slc_residency=sres)
+        # 0.260: expert bytes read per step off SRAM (exp_read = touched expert bytes of the stage step; None → all)
+        e = r_exp if exp_read is None else min(r_exp, exp_read * (r_exp / store.expert_w if store.expert_w else 0.0))
+        fc, fe = dip_split(slc_bytes, r_hot + r_kv + act_need, r_exp, e)
+        sres = (p_hot + p_exp + fc * r_hot + fe * r_exp) / strm if strm else 1.0
+        return replace(mp, slc=slc_bytes, slc_policy="dip", slc_all=fc >= 1.0 and fe >= 1.0, slc_frac=fc,
+                       slc_frac_exp=fe, slc_residency=sres)
     free = slc_bytes
     s_hot = min(r_hot, free); free -= s_hot
     s_exp = min(r_exp, free); free -= s_exp
@@ -321,6 +331,17 @@ def dip_hit(K: float, T: float, eps: float = DIP_EPS) -> float:
     if T <= K:
         return 1.0
     return max(0.0, min(1.0, (K - eps * (T - K)) / T))
+
+
+def dip_split(K: float, C: float, E: float, e: float, eps: float = DIP_EPS) -> tuple[float, float]:
+    """0.260: (every-step share, expert share) of a dip SLC of K bytes — C every-step bytes, E off-SRAM expert bytes of
+    which e are read per step (see the module doc).  E = 0 → (dip_hit(K, C), 1)."""
+    if C + E <= K:
+        return 1.0, 1.0
+    Kp = max(0.0, K - eps * max(0.0, C + e - K))
+    fc = min(1.0, Kp / C) if C > 0 else 1.0
+    fe = min(1.0, max(0.0, (Kp - C) / E)) if E > 0 else 1.0
+    return fc, fe
 
 
 ACC_BYTES = 4.0     # 0.64: output-tile partial sums held on chip in fp32 「假设」
@@ -462,8 +483,10 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: flo
     if mp.slc_policy == "lru":
         hit = {"weights": w + wx, "kv_read": kv_r, "state": st, "act": act} if mp.slc_all else {}
     elif mp.slc_policy == "dip":
-        f = mp.slc_frac
-        hit = {"weights": (w + wx) * f, "kv_read": kv_r * f, "state": st * f, "act": act * f} if f > 0 else {}
+        f, fe = mp.slc_frac, mp.slc_frac_exp
+        w_d = w - t["exp"] * miss_exp                     # non-expert weight reads (+ streamed re-reads at that share)
+        hit = {"weights": (w_d + wx) * f + t["exp"] * miss_exp * fe, "kv_read": kv_r * f, "state": st * f,
+               "act": act * f} if f > 0 or fe > 0 else {}
     else:
         f_hot = 0.0 if store.hot_w <= 0 else mp.slc_hot / store.hot_w
         f_exp = 0.0 if store.expert_w <= 0 else mp.slc_expert / store.expert_w
@@ -475,7 +498,7 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: flo
     if mp.slc_policy == "lru":
         e_hit = w_e if mp.slc_all else 0.0
     elif mp.slc_policy == "dip":
-        e_hit = w_e * mp.slc_frac
+        e_hit = w_e * mp.slc_frac_exp
     else:
         e_hit = t["exp"] * f_exp
     if mp.slc_policy == "pin_bw" and slc_bw_ratio > 0:
