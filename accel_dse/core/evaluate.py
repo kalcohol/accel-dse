@@ -1683,6 +1683,12 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         hp = hot_rank_probs(tuple(sv.moe_expert_load), lay.ep, f_.top_k) if sv.moe_expert_load else ()
         sp = rskew.spread if isinstance(rskew, SkewSpec) else "popular"
         rskew = SkewSpec(skew, hp, sp, sv.moe_rank_max)
+    # 0.261: per-expert inclusion probabilities of the busiest-load rank (measured load) for the dip SLC's expert order
+    exp_p = None
+    if sv.moe_expert_load and any(L.ffn.kind == "moe" for L in m.layers):
+        from .ir import hot_rank_probs
+        f_ = next(L.ffn for L in m.layers if L.ffn.kind == "moe")
+        exp_p = max(hot_rank_probs(tuple(sv.moe_expert_load), lay.ep, f_.top_k), key=sum)
     # 0.134: node-deduplicating EP all-to-all (DeepEP normal kernels) — serving.moe_a2a; "auto" = prefill only (decode
     # runs the low-latency kernels, which send every token-expert pair over RDMA)
     ep_nodes = 1
@@ -1796,7 +1802,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=max(0.0, agg["max_act_tot"] - RUNTIME_RESERVE), stream=True,
                       slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac,
-                      state_buf=sys.chip.state_sram_mib * 2**20, exp_read=agg["exp"])
+                      state_buf=sys.chip.state_sram_mib * 2**20, exp_read=agg["exp"], exp_p=exp_p)
             dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]

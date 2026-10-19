@@ -6543,7 +6543,7 @@ MOSS: 2 refiner blocks × 24 heads × 128 (`_TextBlock`: SDPA, bidirectional, RM
 ### §205.1 Token-refiner attention cores
 - `ModelSpec.io_attn` entries take an optional 6th field for the per-token vector work: `"qknorm_rope"` (default, MOSS), `"qknorm"`, `""`.
 - **HunyuanVideo** (`domain.build_hunyuan`): the individual token refiner blocks run bidirectional SDPA over the text rows, 24 heads × 128 (heads = `to_q` width ÷ 128), with no QK-norm and no RoPE 「来源」 (diffusers `HunyuanVideoIndividualTokenRefinerBlock`). The attention mask is taken as full length 「假设」.
-- **MiniMax-H3** (`build_h3`): 56 heads × 128 (`to_q` 7168 ÷ `norm_q` 128), QK-norm 「推导」 from the weights. Whether the refiner applies RoPE is not visible in the weights, so it is not counted 「假设」 (a vector-only term).
+- **MiniMax-H3** (`build_h3`): 56 heads × 128 (`to_q` 7168 ÷ `norm_q` 128), QK-norm 「推导」 from the weights. Whether the refiner applies RoPE is not visible in the weights, so it is not counted 「假设」 (a vector-only term). (0.261: no RoPE is now 「来源」, §206.2.)
 - Effect is negligible: hunyuanvideo 6908.7231 → 6908.7246 s, minimax-h3 1937.7807 → 1937.7929 s; MOSS unchanged. No weights added (param_check unchanged).
 
 ### §205.2 `dip` per-class reuse (closes the §204.3 MoE 「近似」)
@@ -6589,5 +6589,40 @@ The SLC's energy saving at 32 GiB shrinks from −58 % to −35 %, and that uses
 
 Leakage ∝ V: RWKV-7 G1k 7.2B on 1P with a 7200 MiB state buffer (1.72 W leakage), cap 0.5 P, rx5700xt_n7: throughput ×0.7888 → ×0.7946; dfs unchanged (V = 1).
 
-**Limits.** No temperature model (no advanced-node leakage-vs-T source; the 40 nm data in §159 is not transferred). The leakage of SRAM and SLC uses the same HD macro density.
+**Limits.** No temperature model (no advanced-node leakage-vs-T source; the 40 nm data in §159 is not transferred). The leakage of SRAM and SLC uses the same HD macro density. (0.261: temperature knob, §206.1.)
+
+## §206 SRAM / SLC leakage vs die temperature; H3 refiner RoPE sourced; static-site guards; dip expert popularity (0.261)
+
+### §206.1 SRAM / SLC leakage vs die temperature
+- **Source 「来源」.** Aoyagi et al. (TSMC), "A 3-nm FinFET 563-kbit 35.5-Mbit/mm² Dual-Rail SRAM…", VLSI 2025 / JSSC 2025 — the same macro the 25 °C figure (27.5 µW/Mbit) comes from. Its measured mean standby leakage (Fig. 7 text, 0.563 Mbit, low-leak mode) is 15.5 µW at 25 °C and 73.5 µW at 85 °C: ×4.742 over 60 °C.
+- **Model** (`energy.SRAM_LEAK_T`, `leak_temp_factor`, `sram_leak_uW_per_mib`): `uW_per_mib_sram_leak` stays the 25 °C figure; the charged value is × 4.742^((T − 25)/60), exponential in T (the sub-threshold form; doubling every 26.7 °C) 「推导」 between 25 and 85 °C, 「近似」 outside (0–125 °C allowed).
+- **Knob** `energy.sram_temp_C` (UI 能耗组「SRAM 结温 °C」, API `energy.sram_temp_C`). Unset = 25 °C, the measured lower bound, so default results are unchanged. The report adds `sram_leak_temp_C` and the hot-die band `sram_leak_W_card_85C`. The PD ledger uses the same factor; under the power cap the V scaling (§205.4) multiplies on top.
+- The macro is a mobile HD macro in its low-leak mode, so a datacenter macro at the same T is not lower 「假设」.
+
+**Effect — SLC sizing on energy** (qwen3-30b-a3b, 100T + LPDDR5X, B8, `dip`, tpuv4i_7nm without idle; J/token for no SLC / 8 GiB / 32 GiB):
+
+| Die T | none | 8 GiB | 32 GiB | leak @32 GiB |
+|---|---|---|---|---|
+| 25 °C | 0.2561 | 0.2281 | 0.1673 | 7.6 W |
+| 55 °C | 0.2565 | 0.2612 | 0.2366 | 16.5 W |
+| 85 °C | 0.2572 | 0.3335 | 0.3875 | 35.9 W |
+| 105 °C | 0.2581 | 0.4243 | 0.5773 | 60.3 W |
+
+On a hot die an SRAM SLC sized in GiB costs more energy per token than it saves in DRAM traffic (8 GiB already loses at 55 °C). It still buys TPOT (62.2 vs 152.6 ms at 32 GiB). The SLC decision is a time-vs-energy trade, and the temperature decides which side wins.
+
+### §206.2 MiniMax-H3 token refiner: no RoPE 「来源」
+diffusers main `transformer_minimax_h3.py` (last change 2026-10-01): `MiniMaxH3TokenRefinerBlock` — "Plain pre-norm transformer block … No AdaLN and no rotary embedding"; its attention is called without `rotary_emb` and without a mask; `MiniMaxH3Attention` has RMS `norm_q` / `norm_k`. The model is unchanged (RoPE was already not counted); the label moves from 「假设」 to 「来源」.
+
+### §206.3 Static site (GitHub Pages) guards
+- `tests/test_static_routes.py`: every `req(chan, '/api/…'[, body])` in app.js (GET without a body, POST with one) is a `serve.GET_ROUTES` / `POST_ROUTES` entry answered by `serve.respond` (≠ 404); no other `/api` literal or direct `fetch('/api…')`; the shim's slow-lane list names real routes; the package zip contains every git-tracked `accel_dse/` file outside `web/`; and the API answers from the unpacked zip alone (`python -I`, cwd = the temp dir: health, catalog, models, memory, eval default / MOSS / tree + draft, sensitivity all 200). Dropping `spec_tree_refs.json` or `series_catalog.json` from the zip makes it fail.
+- `build_static.package_zip` packs every package file outside `web/` (it was `*.py` / `*.json` only, so a future non-JSON data file would have been silently dropped).
+
+### §206.4 `dip` expert order under a measured expert load
+- **Why.** §205.2 retained a byte share f_e of the off-SRAM experts and hit expert reads by the same share — exact for uniform routing. With a measured, skewed load (`serving.moe_expert_load`), a frequency-ordered cache keeps the most-read experts, so the read share served exceeds f_e.
+- **Model** (`memplan.dip_exp_hit(p, ρ, f)`): p_e = k·load_e/Σload (busiest-load rank, `ir.hot_rank_probs`); per step expert e is read with q_e = 1 − (1 − p_e)^T, with T solved so that mean q = ρ = e/E (the op graph's read share, so read bytes are unchanged). The top f·n experts by q are retained (A0 order under IRM, 「近似」); hit share h = Σ_top q / Σ q ≥ f. Off-SRAM experts are a load-neutral subset 「近似」. `MemPlan.slc_frac_exp` is now the read-hit share; the new `slc_frac_exp_bytes` (API `mem.slc_frac_exp_bytes`) is the retained byte share. Uniform or flat loads: unchanged.
+- **Example** (input loads Zipf 「假设」, not a measurement; qwen3-30b-a3b, 100T + LPDDR5X, B8, TPOT ms at 8 / 16 / 32 GiB): uniform 118.3 / 99.5 / 62.2; Zipf 0.5: 112.4 / 84.0 / 46.0; Zipf 1: 111.1 / 73.9 / 34.4 (read share 0.099 / 0.401 / 0.721 against byte share 0.04 / 0.193 / 0.496).
+- **Limits.** `pin` stays load-unaware (it pins bytes, not chosen experts); per-layer loads are not distinguished (one load vector for every MoE layer).
+
+### §206.5 Freshness
+`freshness_sweep.py 2026-10-19` (74 orgs): only `tencent/Hy-Memory-30B-A3B-GGUF` (a repack of the catalogued Hy-Memory). ibm-granite errored in the sweep and was rechecked by the API: its newest repos (granite-switch-4.1-8b / 30b, 10-14, `GraniteSwitchForCausalLM`: control-token-switched LoRA adapters + ASR) predate the window and are deferred.
 

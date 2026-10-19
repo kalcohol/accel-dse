@@ -4,7 +4,7 @@ accel_dse running on Pyodide in a Web Worker.  No server needed: `python3 -m htt
     python3 scripts/build_static.py [--out dist-static] [--pyodide 0.29.5]
 
 Output: index.html (app's, plus the shim), app.js / style.css (verbatim), pyodide-shim.js, pyodide-worker.js,
-static-config.js, accel_dse-<hash>.zip (the package .py + data/*.json; web/ and CLI-only parts excluded).
+static-config.js, accel_dse-<hash>.zip (every package file outside web/; caches excluded).
 Pyodide itself is loaded from the official jsdelivr CDN at a pinned version.  Stdlib only."""
 
 from __future__ import annotations
@@ -27,9 +27,10 @@ CDN = "https://cdn.jsdelivr.net/pyodide/v{v}/full/"
 
 
 def package_zip() -> bytes:
-    """accel_dse/**/*.py + data/**/*.json, deterministic (sorted, fixed timestamps) so the hash is stable."""
+    """Every package file outside web/ (code + data, whatever its suffix — 0.261: was *.py / *.json only, so a future
+    non-JSON data file would have been silently dropped), deterministic (sorted, fixed timestamps) so the hash is stable."""
     files = sorted(p for p in PKG.rglob("*") if p.is_file() and "__pycache__" not in p.parts
-                   and p.suffix in (".py", ".json") and WEB not in p.parents)
+                   and p.suffix not in (".pyc", ".pyo") and WEB not in p.parents)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for p in files:

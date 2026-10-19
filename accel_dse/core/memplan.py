@@ -253,6 +253,7 @@ class MemPlan:
     slc_all: bool = False   # lru: the whole off-SRAM working set fits → every read hits
     slc_frac: float = 0.0   # 0.258 dip: share of the step's off-SRAM reads served by the SLC (0.260: every-step classes)
     slc_frac_exp: float = 0.0  # 0.260 dip: share of the routed-expert reads served by the SLC
+    slc_frac_exp_bytes: float = 0.0  # 0.261 dip: share of the off-SRAM expert bytes retained (= slc_frac_exp if uniform)
     slc_residency: float = 0.0  # weights on chip incl. SLC / streamed weights (= residency without an SLC)
     # 0.209: of kv_sram, the recurrent-state bytes (the rest is KV / indexer); -1 = not split (legacy plans)
     state_sram: float = -1.0
@@ -270,7 +271,8 @@ STATE_SPLIT = True        # 0.209: separate KV / state on-chip shares (≤ 0.208
 
 def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: float, max_act: float,
          act_need: float = 0.0, stream: bool = False, slc_bytes: float = 0.0, slc_policy: str = "pin",
-         kv_frac: float = 1.0, state_buf: float = 0.0, exp_read: float | None = None) -> MemPlan:
+         kv_frac: float = 1.0, state_buf: float = 0.0, exp_read: float | None = None,
+         exp_p: tuple | None = None) -> MemPlan:
     kv_t = (store.kv_per_seq + store.idx_per_seq) * batch_local
     st_t = store.state_per_seq * batch_local
     need = store.weights + kv_t + st_t + RUNTIME_RESERVE + act_need
@@ -309,8 +311,11 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
         e = r_exp if exp_read is None else min(r_exp, exp_read * (r_exp / store.expert_w if store.expert_w else 0.0))
         fc, fe = dip_split(slc_bytes, r_hot + r_kv + act_need, r_exp, e)
         sres = (p_hot + p_exp + fc * r_hot + fe * r_exp) / strm if strm else 1.0
+        # 0.261: with a measured expert load the retained experts are the most-read ones (A0 order), so the share of
+        # expert *reads* served exceeds the retained byte share fe (uniform load: equal)
+        he = dip_exp_hit(exp_p, e / r_exp, fe) if (exp_p and r_exp > 0 and e > 0) else fe
         return replace(mp, slc=slc_bytes, slc_policy="dip", slc_all=fc >= 1.0 and fe >= 1.0, slc_frac=fc,
-                       slc_frac_exp=fe, slc_residency=sres)
+                       slc_frac_exp=he, slc_frac_exp_bytes=fe, slc_residency=sres)
     free = slc_bytes
     s_hot = min(r_hot, free); free -= s_hot
     s_exp = min(r_exp, free); free -= s_exp
@@ -342,6 +347,43 @@ def dip_split(K: float, C: float, E: float, e: float, eps: float = DIP_EPS) -> t
     fc = min(1.0, Kp / C) if C > 0 else 1.0
     fe = min(1.0, max(0.0, (Kp - C) / E)) if E > 0 else 1.0
     return fc, fe
+
+
+def dip_exp_hit(p: tuple, rho: float, f: float) -> float:
+    """0.261: share of routed-expert reads served when the SLC retains the most-read fraction f of the off-SRAM experts
+    (A0 frequency order under the independent reference model, Aho–Denning–Ullman 1971 「近似」).  p = per-expert
+    inclusion probability per token (k·load_e/Σload, ir.hot_rank_probs, measured load); per step an expert is read with
+    q_e = 1 − (1 − p_e)^T, T solved so that mean q = rho (the step's read share e / E, so the read bytes stay those of
+    the op graph).  Off-SRAM experts are taken as a load-neutral subset 「近似」.  Uniform p → exactly f."""
+    if f <= 0.0:
+        return 0.0
+    if f >= 1.0:
+        return 1.0
+    ps = [min(1.0, max(0.0, x)) for x in p]
+    if not ps or max(ps) <= 0.0:
+        return f
+
+    def mean_q(T):
+        return sum(1.0 - (1.0 - x) ** T for x in ps) / len(ps)
+    lo, hi = 0.0, 1.0
+    top = mean_q(1e12)
+    rho = min(rho, top)
+    while mean_q(hi) < rho and hi < 1e12:
+        hi *= 2.0
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if mean_q(mid) < rho:
+            lo = mid
+        else:
+            hi = mid
+    q = sorted((1.0 - (1.0 - x) ** hi for x in ps), reverse=True)
+    tot = sum(q)
+    if tot <= 0:
+        return f
+    x = f * len(q)
+    n = int(x)
+    got = sum(q[:n]) + (x - n) * (q[n] if n < len(q) else 0.0)
+    return max(f, min(1.0, got / tot))
 
 
 ACC_BYTES = 4.0     # 0.64: output-tile partial sums held on chip in fp32 「假设」

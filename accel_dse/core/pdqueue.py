@@ -3395,7 +3395,7 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
     are priced with that pool's memory kind (pJ/bit + chip-side PHY), and each pool's clock gating uses its own MAC
     utilisation u_p = its MAC count / its slot-cycles.  Every term is booked to the pool that spends it
     (``J_by_pool``; Σ pools = J_per_token).  Without it (colocated modes: one pool) nothing changes."""
-    from .energy import hbm_static_W, idle_W_of
+    from .energy import hbm_static_W, idle_W_of, sram_leak_uW_per_mib
     out = {"counts_per_token": counts_tok, "card_s_per_token": card_s_tok}
     if table is None or not table.provided:
         return out
@@ -3467,7 +3467,7 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
                 mib = getattr(ch, "state_sram_mib", 0.0) + ((ch.sram_mib + (getattr(ch, "slc_mib", 0.0) or 0.0))
                                                              if not has_idle else 0.0)     # 0.260: + SLC
                 if mib > 0:
-                    add("sram_leak", mib * table.uW_per_mib_sram_leak * 1e-6 * cs, i)
+                    add("sram_leak", mib * sram_leak_uW_per_mib(table) * 1e-6 * cs, i)     # 0.261: × T factor
             if not has_idle and (table.mW_hbm_die_standby is not None or table.mW_hbm_Gb_refresh is not None):
                 hs = hbm_static_W(sc.mem_id, table)
                 if hs and hs["W"] > 0:

@@ -1934,8 +1934,8 @@ def _io_attn_ops(model: ModelSpec, ph: Phase, sh: Shard, b: int, li: int) -> lis
     over SP like the block attention (the text rows are SP-split in the refiner GEMMs; the all-to-all of these few
     rows is not added 「近似」).  No rows on a cached / reused step (the text stream does not run).
     0.260: an optional 6th field names the per-token vector work: "qknorm_rope" (default, MOSS), "qknorm"
-    (MiniMax-H3 token refiner: norm_q / norm_k tensors present; whether the refiner applies RoPE is not visible in the
-    weights → not counted 「假设」, a vector-only term), "" (HunyuanVideo
+    (MiniMax-H3 token refiner: RMS QK-norm, no RoPE, no mask 「来源」 — diffusers transformer_minimax_h3.py
+    MiniMaxH3TokenRefinerBlock, "No AdaLN and no rotary embedding"; 0.261, was 「假设」), "" (HunyuanVideo
     token refiner: diffusers HunyuanVideoIndividualTokenRefinerBlock — plain Attention, no QK-norm, no RoPE)."""
     ops: list[Op] = []
     if not model.io_attn or ph.kvpre or ph.mreuse:

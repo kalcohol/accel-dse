@@ -437,7 +437,8 @@ def build_h3(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelS
                        f"立体声音频按 {wl.audio_per_s} latent/s × {wl.audio_channels} 声道计入序列",
                        "开源版只提供全注意力推理（稀疏注意力未发布）：按全注意力建模",
                        f"token refiner（{nref} 层整宽 Transformer）的 GEMM 与文本自注意力核（to_q 宽 / norm_q 头维 → "
-                       "头数「推导」，QK-norm）都计入"))
+                       "头数「推导」，QK-norm）都计入；无 RoPE、无 mask「来源」：diffusers transformer_minimax_h3.py "
+                       "MiniMaxH3TokenRefinerBlock（'No AdaLN and no rotary embedding'，attn 不传 rotary_emb）"))
     # 0.260: refiner attention core — heads = to_q width / the per-head norm_q size (7168 / 128 = 56), 「推导」
     rp = "token_refiner.refiner_blocks.0.attn."
     rd = sh[rp + "norm_q.weight"][0] if rp + "norm_q.weight" in sh else hd

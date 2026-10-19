@@ -45,6 +45,30 @@ _UNIT_PJ = {"mac": "pJ_mac", "vec": "pJ_vec", "sram": "pJ_bit_sram", "slc": "pJ_
 _BITS = ("sram", "slc", "dram", "d2d", "link", "net")
 
 
+# 0.261: SRAM leakage vs die temperature.  Aoyagi et al. (TSMC), 'A 3-nm FinFET 563-kbit 35.5-Mbit/mm² Dual-Rail
+# SRAM…', VLSI 2025 / JSSC 2025, Fig. 7 text: mean standby leakage of the 0.563-Mbit HD macro (low-leak mode) 15.5 µW at
+# 25 °C and 73.5 µW at 85 °C 「来源」 → ×4.742 over 60 °C.  Between / beyond the two points: exponential in T (the
+# sub-threshold form, doubling every 60·ln2/ln4.742 = 26.7 °C) 「推导」 inside 25–85 °C, 「近似」 outside (to 125 °C).
+SRAM_LEAK_T = {"t_ref_C": 25.0, "t_hot_C": 85.0, "ratio_hot": 73.5 / 15.5, "t_max_C": 125.0,
+               "src": "Aoyagi et al. (TSMC) VLSI 2025 / JSSC 2025: 3 nm HD 6T macro standby leakage 15.5 µW @25 °C, "
+                      "73.5 µW @85 °C (0.563 Mbit, low-leak mode)"}
+
+
+def leak_temp_factor(t_C: float | None) -> float:
+    """Leakage multiplier vs the 25 °C figure at die temperature t_C (None → 1)."""
+    if t_C is None:
+        return 1.0
+    L = SRAM_LEAK_T
+    return L["ratio_hot"] ** ((t_C - L["t_ref_C"]) / (L["t_hot_C"] - L["t_ref_C"]))
+
+
+def sram_leak_uW_per_mib(table) -> float | None:
+    """Charged SRAM leakage per MiB: the 25 °C field × the temperature factor (0.261)."""
+    if table.uW_per_mib_sram_leak is None:
+        return None
+    return table.uW_per_mib_sram_leak * leak_temp_factor(getattr(table, "sram_temp_C", None))
+
+
 @dataclass(frozen=True)
 class EnergyTable:
     """Energy per action (all user-supplied; ``None`` = not provided)."""
@@ -84,6 +108,9 @@ class EnergyTable:
     # P_clk = macs × f × pJ (scales with f and, under DVFS, with V²).  The only dynamic power that falls with the clock
     # when the op rate is set by memory.  Distinct from idle_W (a measured *idle-clock* floor) — not double counted.
     pJ_clk_mac_cycle: float | None = None
+    # 0.261: die (junction) temperature for SRAM / SLC leakage, °C.  uW_per_mib_sram_leak is a 25 °C figure; the charged
+    # value is × leak_temp_factor(T) (same macro measured at 25 and 85 °C, see SRAM_LEAK_T).  None = 25 °C (lower bound).
+    sram_temp_C: float | None = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -92,6 +119,8 @@ class EnergyTable:
                 continue
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v < 1e6:
                 raise ValueError(f"energy.{f.name} must be a finite number in [0, 1e6) or null")
+        if self.sram_temp_C is not None and not 0 <= self.sram_temp_C <= SRAM_LEAK_T["t_max_C"]:
+            raise ValueError(f"energy.sram_temp_C must be in [0, {SRAM_LEAK_T['t_max_C']:g}] °C or null")
 
     @property
     def provided(self) -> list[str]:
@@ -163,8 +192,8 @@ ENERGY_PRESETS: dict[str, dict] = {
             "uW_per_mib_sram_leak": (27.5 * 8 * 2**20 / 1e6, "来源",
                                      "3 nm proxy, lower bound — Aoyagi et al., 'A 3-nm FinFET 563-kbit 35.5-Mbit/mm² Dual-Rail SRAM…', IEEE JSSC 2025 "
                                      "(doi 10.1109/JSSC.2025.3639747; VLSI 2025): HD 6T macro standby leakage 27.5 µW/Mbit "
-                                     "at 25 °C → 230.7 µW/MiB.  25 °C: leakage at operating temperature is several× higher "
-                                     "(40 nm: 17.3 µW/Mbit at 25 °C vs 2518 at 170 °C, Yokoyama thesis) — a lower bound"),
+                                     "at 25 °C → 230.7 µW/MiB.  25 °C figure; the same macro measures 73.5 µW at 85 °C vs 15.5 µW at 25 °C "
+                                     "(×4.74) — energy.sram_temp_C scales it (0.261)"),
             # 0.216: HBM2 8Gb per-channel IDD values (DRAMsim3 configs/HBM2_8Gb_x128.ini, VDD 1.2 V, 8 ch × 1 GiB stack):
             # standby IDD2N 40 mA × 1.2 V = 48 mW per channel-die; refresh (IDD5AB − IDD3N)·VDD·tRFC/tREFI =
             # 195 mA·1.2 V·260/3900 = 15.6 mW per 8 Gb → 1.95 mW/Gb.  HBM2-era, 1.2 V (HBM3 core 1.1 V): an upper-side proxy
@@ -386,7 +415,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                        and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
                                           "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W",
                                           "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh",
-                                          "pJ_clk_mac_cycle")
+                                          "pJ_clk_mac_cycle", "sram_temp_C")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
                        and not (f.name == "idle_W" and (idle_W_of(table) is not None or table.idle_frac_tdp is not None))]
                       + (["tdp_W"] if table.idle_W is None and table.idle_frac_tdp is not None and table.tdp_W is None
@@ -428,9 +457,12 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
         slc = getattr(ch, "slc_mib", 0.0) or 0.0     # 0.260: the SLC is on-die SRAM too (same macro class as pJ_bit_slc 「假设」)
         mib = getattr(ch, "state_sram_mib", 0.0) + ((ch.sram_mib + slc) if iw is None else 0.0)
         if mib > 0:
-            leak_W = mib * table.uW_per_mib_sram_leak * 1e-6
+            leak_W = mib * sram_leak_uW_per_mib(table) * 1e-6
             j["sram_leak"] = leak_W * per["idle_card_s"]
             out["sram_leak_W_card"] = leak_W
+            # 0.261: temperature used and the hot-die band (85 °C, same macro) next to the charged value
+            out["sram_leak_temp_C"] = table.sram_temp_C if table.sram_temp_C is not None else SRAM_LEAK_T["t_ref_C"]
+            out["sram_leak_W_card_85C"] = mib * table.uW_per_mib_sram_leak * SRAM_LEAK_T["ratio_hot"] * 1e-6
             out["sram_leak_scope"] = (("state_sram + sram" + (" + slc" if slc > 0 else "")) if iw is None
                                       else "state_sram（共享 SRAM / SLC 泄漏已含于 idle 数值）")
     if iw is None and (table.mW_hbm_die_standby is not None or table.mW_hbm_Gb_refresh is not None):

@@ -6,6 +6,26 @@
 
 
 
+## [0.261.0]
+
+### Added — SRAM / SLC leakage vs die temperature (MODEL §206.1)
+- `energy.sram_temp_C` (UI 能耗组「SRAM 结温 °C」): leakage × 4.742^((T − 25)/60) from the same 3 nm TSMC macro measured at 25 °C (15.5 µW) and 85 °C (73.5 µW) 「来源」, exponential in T 「推导」 (「近似」 outside 25–85 °C). Unset = 25 °C, so defaults are unchanged. The report adds `sram_leak_temp_C` and the 85 °C band `sram_leak_W_card_85C`; the PD ledger uses the same factor.
+- qwen3-30b-a3b, 100T + LPDDR5X, B8, `dip`, 32 GiB SLC: J/token 0.1673 at 25 °C → 0.3875 at 85 °C (no SLC: 0.2572). On a hot die a GiB-scale SRAM SLC costs more energy than it saves.
+
+### Changed — MiniMax-H3 token refiner: no RoPE now sourced (MODEL §206.2)
+- diffusers `MiniMaxH3TokenRefinerBlock` ("No AdaLN and no rotary embedding", no mask). Numbers unchanged; label 「假设」 → 「来源」.
+
+### Added — static-site guards (MODEL §206.3)
+- `tests/test_static_routes.py`: every `/api` call in app.js is routed by `serve.respond` with its method; the shim's slow-lane routes exist; the package zip holds every tracked package file; the API answers from the unpacked zip alone.
+- `scripts/build_static.py` packs every package file outside `web/` (was `*.py` / `*.json` only).
+
+### Changed — `dip` SLC expert hits follow a measured expert load (MODEL §206.4)
+- With `serving.moe_expert_load`, the retained experts are the most-read ones (A0 order, 「近似」): the read share served exceeds the byte share. New `MemPlan.slc_frac_exp_bytes` / API `mem.slc_frac_exp_bytes`. Uniform load unchanged.
+- Example (Zipf-1 load 「假设」): qwen3-30b-a3b 32 GiB TPOT 62.2 → 34.4 ms.
+
+### Freshness
+- Sweep since 10-19: nothing new (Hy-Memory GGUF repack only).
+
 ## [0.260.0]
 
 ### Added — token-refiner attention for HunyuanVideo and MiniMax-H3 (MODEL §205.1)
