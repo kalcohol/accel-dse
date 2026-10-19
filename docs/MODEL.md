@@ -6690,3 +6690,15 @@ Equal weight across the three domains is 「假设」 (no measured clock-tree sp
 ### §210.3 Freshness
 `freshness_sweep.py 2026-10-20`: nothing new.
 
+## §211 SLC access energy vs capacity (0.266)
+
+### §211.1 Wire / H-tree term ∝ √C
+Until 0.265, `pJ_bit_slc` was a flat 「假设」 equal to SRAM array energy. Real large SRAMs pay interconnect energy that grows with capacity: Horowitz ISSCC 2014 Fig. 1.1.9 (45 nm) lists 64-bit SRAM accesses at 8 KB / 32 KB / 1 MB as 10 / 20 / 100 pJ — E ∝ √C 「推导」. CACTI-based LLC studies (ISQED 2023 / TED 2022) find H-tree energy dominates at cache scale.
+
+**Model.** `energy.slc_access_ref_mib = C_ref` (MiB). Effective pJ/bit = `pJ_bit_slc · max(1, √(slc_mib / C_ref))`. `C_ref = 1` anchors at Horowitz's 1 MB point. Below `C_ref` the factor stays 1 (wire does not get cheaper than the array term). Unset = flat (default; catalog fingerprints unchanged). Report field `slc_access`. PD `_energy` uses the same helper per pool chip.
+
+**Effect** (qwen3-8b, 100T, 8 GiB SLC, tpuv4i_7nm, `C_ref = 1`): scale ≈ 90.5; SLC action J/token rises ~90× vs flat — a GiB-scale SLC can lose on *dynamic* access energy as well as leakage (§206–§208).
+
+### §211.2 Freshness
+`freshness_sweep.py 2026-10-20`: nothing new.
+

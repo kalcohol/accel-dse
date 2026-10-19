@@ -6,6 +6,14 @@
 
 
 
+## [0.266.0]
+
+### Added — SLC access energy vs capacity (√C wire scale) (MODEL §211.1)
+- `energy.slc_access_ref_mib` (opt-in): effective `pJ_bit_slc × max(1, √(slc_mib / ref))`. Horowitz ISSCC 2014 8 KB / 32 KB / 1 MB ⇒ E ∝ √C 「推导」; large-cache H-tree dominance (CACTI / ISQED 2023). Unset = flat (= SRAM array 「假设」, fingerprints unchanged). UI「SLC 线缆锚点 MiB」; report `slc_access` {scale, pJ_bit, …}. Same in the PD ledger.
+
+### Freshness
+- Sweep since 10-20: nothing new.
+
 ## [0.265.0]
 
 ### Added — vector / SRAM-port datapath clock gating (MODEL §210.1)

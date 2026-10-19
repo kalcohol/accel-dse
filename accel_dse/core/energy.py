@@ -111,6 +111,11 @@ class EnergyTable:
     # 0.261: die (junction) temperature for SRAM / SLC leakage, °C.  uW_per_mib_sram_leak is a 25 °C figure; the charged
     # value is × leak_temp_factor(T) (same macro measured at 25 and 85 °C, see SRAM_LEAK_T).  None = 25 °C (lower bound).
     sram_temp_C: float | None = None
+    # 0.266: capacity-dependent SLC access energy.  None = flat pJ_bit_slc (legacy 「假设」= SRAM).  When set to a
+    # reference capacity C_ref (MiB), effective pJ/bit = pJ_bit_slc · max(1, √(slc_mib / C_ref)).  Horowitz ISSCC 2014
+    # Fig. 1.1.9: 8 KB / 32 KB / 1 MB SRAM accesses 10 / 20 / 100 pJ (64-bit) ⇒ E ∝ √C 「推导」; H-tree dominates
+    # large-cache energy (CACTI / ISQED 2023).  C_ref = 1.0 matches the 1 MB Horowitz point as the wire-scale anchor.
+    slc_access_ref_mib: float | None = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -121,6 +126,8 @@ class EnergyTable:
                 raise ValueError(f"energy.{f.name} must be a finite number in [0, 1e6) or null")
         if self.sram_temp_C is not None and not 0 <= self.sram_temp_C <= SRAM_LEAK_T["t_max_C"]:
             raise ValueError(f"energy.sram_temp_C must be in [0, {SRAM_LEAK_T['t_max_C']:g}] °C or null")
+        if self.slc_access_ref_mib is not None and not (0 < self.slc_access_ref_mib < 1e6):
+            raise ValueError("energy.slc_access_ref_mib must be in (0, 1e6) MiB or null")
 
     @property
     def provided(self) -> list[str]:
@@ -177,7 +184,7 @@ ENERGY_PRESETS: dict[str, dict] = {
             "pJ_mac": (1.1, "来源", _HOROWITZ + ": 16-bit FP multiply 1.1 pJ"),
             "pJ_vec": (0.4, "来源", _HOROWITZ + ": 16-bit FP add 0.4 pJ（向量操作代理）"),
             "pJ_bit_sram": (5.0 / 32, "来源", _HOROWITZ + ": 32-bit SRAM cache read 5 pJ → 5/32 pJ/bit"),
-            "pJ_bit_slc": (5.0 / 32, "假设", "= SRAM（同宏类）on " + _HOROWITZ),
+            "pJ_bit_slc": (5.0 / 32, "假设", "= SRAM array（同宏类）on " + _HOROWITZ + "; wire vs capacity: set slc_access_ref_mib"),
             "pJ_bit_dram": (640.0 / 32, "来源", _HOROWITZ + ": 32-bit DRAM read 640 pJ → 20 pJ/bit（DDR 类接口时代；含 I/O）"),
             "pJ_bit_d2d": (0.25, "来源", _UCIE + "（Advanced）"),
             "pJ_bit_link": (1.3, "来源", _NVL + "（节点内 scale-up 代理）"),
@@ -202,7 +209,7 @@ ENERGY_PRESETS: dict[str, dict] = {
             "pJ_mac": (1.1 / 2.6, "推导", _TPUV4I + "; base 16b FP mult 1.1 pJ / 2.6"),
             "pJ_vec": (0.4 / 2.6, "推导", _TPUV4I + "; base 16b FP add 0.4 pJ / 2.6"),
             "pJ_bit_sram": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "推导", _TPUV4I + "; SRAM 1.3–2.4× (geom. mean)"),
-            "pJ_bit_slc": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "假设", "= SRAM after 7 nm scale"),
+            "pJ_bit_slc": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "假设", "= SRAM array after 7 nm scale; wire vs capacity: set slc_access_ref_mib"),
             "pJ_bit_dram": ((640.0 / 32) / 6.3, "推导", _TPUV4I + "; DRAM 6.3× via HBM packaging "
                             "→ ≈ 3.2 pJ/bit（I/O+阵列量级；HBM3 接口 alone 0.29 pJ/bit, Chae et al. JSSC 2023, 仅 PHY）"),
             # 0.187: per-kind DRAM from primary vendor figures (0.186 used PIM-AI's derived profile, HBM 7 / LPDDR 10,
@@ -415,6 +422,19 @@ def clock_util(chip, mac: float, vec: float, sram_B: float, card_s: float) -> di
             "datapath_gate": datapath, "basis": ("mean(mac,vec,sram_port)" if datapath else "mac")}
 
 
+
+def slc_pJ_bit(table: EnergyTable, slc_mib: float) -> float | None:
+    """0.266: effective pJ/bit for SLC traffic.  Flat ``pJ_bit_slc`` unless ``slc_access_ref_mib`` is set, then
+    × max(1, √(slc_mib / ref)) — Horowitz ISSCC 2014 √C fit; H-tree dominated large caches (CACTI)."""
+    e = table.pJ_bit_slc
+    if e is None:
+        return None
+    ref = table.slc_access_ref_mib
+    if ref is None or not (slc_mib > 0):
+        return e
+    return e * max(1.0, math.sqrt(float(slc_mib) / float(ref)))
+
+
 def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) -> dict:
     """0.189 power_cap (opt-in): when average card power (dynamic + static) exceeds table.tdp_W, sustained throughput
     is cut to fit.  Energy per action held constant (no DVFS V² saving, 「假设」, conservative), so the window stretches
@@ -437,7 +457,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                        and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
                                           "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W",
                                           "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh",
-                                          "pJ_clk_mac_cycle", "sram_temp_C")
+                                          "pJ_clk_mac_cycle", "sram_temp_C", "slc_access_ref_mib")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
                        and not (f.name == "idle_W" and (idle_W_of(table) is not None or table.idle_frac_tdp is not None))]
                       + (["tdp_W"] if table.idle_W is None and table.idle_frac_tdp is not None and table.tdp_W is None
@@ -447,8 +467,17 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
     if not table.provided:
         return out
     j = {}
+    slc_mib = float(getattr(r.scenario.chip, "slc_mib", 0.0) or 0.0)
     for k, attr in _UNIT_PJ.items():
-        e = getattr(table, dfield if k == "dram" else attr)
+        if k == "slc":
+            e = slc_pJ_bit(table, slc_mib)
+            if e is not None and table.slc_access_ref_mib is not None and slc_mib > 0:
+                out["slc_access"] = {"pJ_bit": e, "pJ_bit_base": table.pJ_bit_slc,
+                                     "ref_mib": table.slc_access_ref_mib, "slc_mib": slc_mib,
+                                     "scale": e / table.pJ_bit_slc if table.pJ_bit_slc else None,
+                                     "basis": "pJ_bit_slc × max(1, √(slc_mib/ref)) (Horowitz √C, 0.266)"}
+        else:
+            e = getattr(table, dfield if k == "dram" else attr)
         if e is not None:
             j[k] = per[k] * e * 1e-12 * (8 if k in _BITS else 1)
     pf, pv = phy_pJ(r, table)

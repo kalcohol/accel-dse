@@ -3395,7 +3395,7 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
     are priced with that pool's memory kind (pJ/bit + chip-side PHY), and each pool's clock gating uses its own MAC
     utilisation u_p = its MAC count / its slot-cycles.  Every term is booked to the pool that spends it
     (``J_by_pool``; Σ pools = J_per_token).  Without it (colocated modes: one pool) nothing changes."""
-    from .energy import hbm_static_W, idle_W_of, sram_leak_uW_per_mib
+    from .energy import hbm_static_W, idle_W_of, slc_pJ_bit, sram_leak_uW_per_mib
     out = {"counts_per_token": counts_tok, "card_s_per_token": card_s_tok}
     if table is None or not table.provided:
         return out
@@ -3409,16 +3409,24 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
         if jp is not None and i is not None:
             jp[i][k] = jp[i].get(k, 0.0) + v
 
+    def _slc_e(sc) -> float | None:
+        return slc_pJ_bit(table, float(getattr(sc.chip, "slc_mib", 0.0) or 0.0))
+
     for k, attr in _UNIT_PJ.items():
         if psplit:
             for i, ((sc, _), pc) in enumerate(zip(pools, pool_counts)):
-                e = getattr(table, _dram_field(sc, table) if k == "dram" else attr)
+                e = (_slc_e(sc) if k == "slc" else
+                     getattr(table, _dram_field(sc, table) if k == "dram" else attr))
                 if e is not None:
                     add(k, pc.get(k, 0.0) * e * 1e-12 * (8 if k in _BITS else 1), i)
             continue
-        if k == "dram" and mem_scn is not None:
+        if k == "slc":
+            e = _slc_e(mem_scn) if mem_scn is not None else table.pJ_bit_slc
+        elif k == "dram" and mem_scn is not None:
             attr = _dram_field(mem_scn, table)
-        e = getattr(table, attr)
+            e = getattr(table, attr)
+        else:
+            e = getattr(table, attr)
         if e is not None:
             add(k, counts_tok.get(k, 0.0) * e * 1e-12 * (8 if k in _BITS else 1))
     if psplit:
