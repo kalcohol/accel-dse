@@ -205,6 +205,8 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             hot += table          # tied head on a different stage keeps its own copy
         if n_mtp:
             hot += n_mtp * model.mtp_extra_params * model.fmt("mtp").bits / 8 / sh.tp
+            # 0.252 DSpine: codebook (only anchor rows read) + the serial tables built at load — resident, not streamed
+            store_extra += model.draft_cold_params * model.fmt("mtp").bits / 8 + model.draft_table_bytes
     return StageStorage(hot, exp, kv, idx, st, store_extra)
 
 

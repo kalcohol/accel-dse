@@ -384,6 +384,8 @@ class NativeWorkload:
     overlap: int = 0               # genomics: tokens shared by consecutive windows of a long record
     cond_causal: bool = False      # 0.116 image DiT: block-causal condition mask — text attends causally to text only,
                                    # image tokens to [text ‖ image] (Qwen-Image-2.1 causal_condition)
+    max_refs: int = 0              # 0.252 image edit: reference images the release accepts (FLUX 3: MAX_REFERENCES 10);
+                                   # 0 = no reference stream (workload.ref_images refused)
     prefix_kv: bool = False        # 0.116: the reference caches the text-prefix K/V at step 1 and runs later steps on the
                                    # image tokens only (needs cond_causal: the prefix is timestep-independent)
     source: str = ""
@@ -410,6 +412,12 @@ class ModelSpec:
     draft_kv: int = 0                        # 0.175: context K/V projection width per draft layer (0 = head_dim, V4.1)
     draft_reader: tuple[int, ...] = ()       # 0.221 ReaDy recurrent-state reader: (rank, state layers, heads, key dim,
                                              # value dim, bottleneck, draft injection layer); () = none
+    # 0.252 DSpine (tencent, DFlash anchor-row block draft + selected-prefix code bridge): anchor-row semantics (block B =
+    # anchor + B − 1 drafts, causal block attention, no Markov / confidence head); bridge = (code_size, rank, head_topk, *active draft layers 0-based); cold = codebook params (only anchor rows read); table_bytes = load-time serial tables
+    draft_anchor: bool = False
+    draft_bridge: tuple[int, ...] = ()
+    draft_cold_params: int = 0
+    draft_table_bytes: float = 0.0
     spec_published: tuple[float, int] = ()   # 0.221: published acceptance length τ and draft block k (「来源」), () = none
     formats: tuple[tuple[str, RoleFormat], ...] = ()
     act_fmt: str = "bf16"
@@ -487,7 +495,8 @@ class ModelSpec:
         return p
 
     def mtp_params(self) -> int:
-        return sum(l.params(self.hidden) for l in self.mtp_layers) + self.mtp_extra_params * len(self.mtp_layers)
+        return (sum(l.params(self.hidden) for l in self.mtp_layers) + self.mtp_extra_params * len(self.mtp_layers)
+                + self.draft_cold_params)
 
     def active_params(self) -> int:
         """Params touched per token (routed experts: top_k of n; lookup tables excluded — a few rows/token)."""
@@ -1367,6 +1376,53 @@ def _attach_ready_dspark(spec: ModelSpec, d: dict) -> ModelSpec:
                                           if acc else ""),))
 
 
+def _attach_dspine(spec: ModelSpec, d: dict) -> ModelSpec:
+    """0.252 tencent DSpine (Qwen3-8B-DSpine-b16; github tencent/dspine sglang_dspine, 「来源」): an SGLang DFlash draft —
+    fc over the concatenated hidden states of the 5 target_layer_ids → hidden_norm, num_hidden_layers Qwen3 decoder
+    layers (GQA + q/k norm, SwiGLU, full attention, CAUSAL inside the block: draft_block_causal), final norm, NO embedding
+    / lm_head (input_embeds = the target embedding; the target lm_head scores the drafts).  Block = anchor row (last
+    committed token) + block_size − 1 mask rows → block_size − 1 drafts (DFlash anchor-row semantics).  After every
+    active layer (selected_prefix_feature_layers) a code-bridge write: read GEMM h → code_size (early_read_weights[l] /
+    read_weight), L2-normalised codes (anchor row: codebook[anchor]), packed GEMM code_size → 3·rank, gated predecessor
+    message, write GEMM rank → h (feature_write_weights[l]); bridge out.weight is zero (terminal disabled) → stored only.
+    Tail: lm_head on the drafts → top-head_topk → serial_table (vocab tables TG [V, rank] + TSV [V, 2·rank], bf16,
+    built at load) → greedy serial chain."""
+    c = d["config"]
+    dc = c.get("dflash_config") or {}
+    br = dc["selected_prefix_code_bridge"]
+    h, H, KV, hd = c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
+    nl, V = c["num_hidden_layers"], c.get("draft_vocab_size") or c["vocab_size"]
+    C, R = br["code_size"], br["rank"]
+    act = tuple(int(i) - 1 for i in (dc.get("selected_prefix_feature_layers") or range(1, nl + 1)))   # 1-based → 0
+    K = (dc.get("selected_prefix_last_write_refine") or {}).get("head_topk", 16)
+    mtp = []
+    for _ in range(nl):
+        alin, core = _gqa(h, H, KV, hd)
+        ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        mtp.append(Layer(alin, core, ffn, flin, 2 * h + 2 * hd))     # input / post-attention norms + q / k norms
+    nt = len(dc["target_layer_ids"])
+    # fc, hidden_norm + norm, bridge reads (nl − 1 early + last) / writes / gate·pred·prev / gate bias / zero out
+    bridge = nl * C * h + nl * h * R + 3 * R * C + R + C * R
+    extra = nt * h * h + 2 * h + bridge
+    scal = sum(1 for v in (d.get("shapes") or {}).values() if not v)  # I64 version scalars (stored, 1 param each)
+    cold = V * C + scal                                                # codebook: anchor rows + load-time tables only
+    tables = V * 3 * R * 2                                             # TG [V, R] + TSV [V, 2R] bf16
+    acc = d.get("acceptance") or {}
+    left = extra - (extra // nl) * nl                                  # integer remainder kept with the cold params
+    return replace(spec, mtp_layers=tuple(mtp), mtp_extra_params=extra // nl, draft="dspark", draft_anchor=True,
+                   draft_block=c["block_size"], draft_targets=nt, draft_markov=0, draft_kv=2 * KV * hd,
+                   draft_bridge=(C, R, K) + act, draft_cold_params=cold + left, draft_table_bytes=float(tables),
+                   spec_published=(float(acc["tau"]), int(acc["block"])) if acc else (),
+                   notes=spec.notes + (f"DSpine 草稿模型（{d['repo']}，bf16 {d['params'] / 1e9:.2f}B，独立仓库，共享目标 "
+                                       f"embedding / lm_head）：DFlash 块草稿 {nl} 层（块内因果），块 {c['block_size']} = 锚行 + "
+                                       f"{c['block_size'] - 1} 个草稿；目标层 {dc['target_layer_ids']} hidden 拼接 + fc；每层后 code-bridge 写入"
+                                       f"（code {C}，秩 {R}）；尾部 top-{K} + 串行表（加载时建表 {tables / 1e6:.0f} MB 常驻「推导」）；"
+                                       "参考实现只支持 TP = 1、块大小固定"
+                                       + (f"；公开接受长度 τ {acc['tau']}（T = 0）/ {acc.get('tau_t1')}（T = 1），"
+                                          f"{acc['block']} 个草稿 → i.i.d. 接受率 {spec_accept_from_tau(acc['tau'], acc['block']):.3f}"
+                                          "「推导」，spec_accept 默认仍为「假设」杠杆" if acc else ""),))
+
+
 def spec_accept_from_tau(tau: float, k: int) -> float:
     """0.221: the i.i.d. per-draft acceptance a with E[tokens / verify] = (1 − a^(k+1)) / (1 − a) = τ (bisection).
     τ counts committed tokens per verification including the target's own token (the schedule.py convention)."""
@@ -1596,6 +1652,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                            draft_markov=c.get("dspark_markov_rank") or 0)
         if rel.get("dspark") and (c.get("model_type") or "").startswith("muse_spark"):
             spec = _attach_muse_dspark(spec, rel["dspark"])
+        elif rel.get("dspark") and rel["dspark"].get("kind") == "dspine":
+            spec = _attach_dspine(spec, rel["dspark"])            # 0.252: DFlash anchor-row draft + code bridge
         elif rel.get("dspark"):
             spec = _attach_ready_dspark(spec, rel["dspark"])      # 0.221: DSpark-format draft for any other target
         exotic = [k for k in ("hc_mult", "hc_count", "mhc") if c.get(k)] \

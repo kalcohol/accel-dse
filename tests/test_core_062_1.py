@@ -27,7 +27,7 @@ def test_release_count_and_param_error():
     # UserRepGen-4B, flux-3-image-klein-pup (llm) + FLUX 3 Image Klein / Klein Base (gen)  118 → 125, llm 96 → 101
     assert len(files) == 125 and doms.count("llm") == 101
     listed = {x["id"]: x for x in list_models()}
-    assert len(listed) + len(unlisted_models()) == 128   # 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7
+    assert len(listed) + len(unlisted_models()) == 129   # 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7; 0.252: + qwen3-8b-dspine
     assert all(abs(x["param_err"]) <= 0.005 for x in listed.values())
     assert all(abs(x["param_err"]) < 1e-5 for x in listed.values() if get_model(x["id"]).domain in ("gen", "protein", "genomics"))
 

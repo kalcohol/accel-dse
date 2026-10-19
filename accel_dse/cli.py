@@ -132,6 +132,10 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="structure models, --tri-attn chunked: rows per chunk (0 → reference default)")
     p.add_argument("--step-skip", dest="step_skip", type=int, default=None,
                    help="video/image gen (0.167): TeaCache-skipped denoise steps per request (blocks → cached residual)")
+    p.add_argument("--ref-images", dest="ref_images", type=int, default=None,
+                   help="image gen (0.252, FLUX 3): reference images per request (0 = text-to-image)")
+    p.add_argument("--ref-size", dest="ref_size", default=None,
+                   help="image gen: reference size WxH px (default = the output size, fitted by the release rules)")
     p.add_argument("--step-cache", dest="step_cache", choices=("teacache", "teacache_ret"), default=None,
                    help="step cache rule: teacache (first + last step computed) | teacache_ret (first 5 computed)")
     p.add_argument("--prefix-kv", dest="prefix_kv", choices=("auto", "on", "off"), default=None,
@@ -451,6 +455,11 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         wl["step_skip"] = a.step_skip
     if getattr(a, "step_cache", None):
         wl["step_cache"] = a.step_cache
+    if getattr(a, "ref_images", None) is not None:
+        wl["ref_images"] = a.ref_images
+    if getattr(a, "ref_size", None):
+        rw, rh = (int(x) for x in a.ref_size.lower().split("x"))
+        wl["ref_width"], wl["ref_height"] = rw, rh
     if getattr(a, "dit_fsdp", False):
         wl["dit_fsdp"] = True
     if getattr(a, "te_cpu", False):

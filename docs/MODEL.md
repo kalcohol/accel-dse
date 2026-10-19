@@ -5904,3 +5904,120 @@ DES check at A λ52 (`sd248/raw2_A52.npy`, f corrected for in-flight prompts):
 - Qwen3-8B-DSpine-b16 (DFlash draft: block-diffusion drafting plus a selected-prefix code bridge, not expressible on the DSpark draft path; deferred).
 - GGUF-only repos and third-party repacks.
 - Jev and Microsoft-Decision-1 have no official weights.
+
+## §199 Closing the 0.251 coverage gaps: FLUX 3 reference images, DSpine draft (0.252)
+
+### §199.1 FLUX 3 Image Klein reference-image edit / multi-reference
+
+**Sources 「来源」.**
+- BFL reference code, github.com/black-forest-labs/flux-3-image-klein, `src/flux3/{dit.py, pipeline.py, sampling.py, generate.py, autoencoder.py}`.
+- diffusers main, `src/diffusers/models/transformers/transformer_flux3.py`.
+- The 0.251 header reading is corrected in two places:
+  1. The early ("mode") blocks are **per-mode self-attention**, not joint attention. Text attends to text, the image to the image, and the reference images (all references of one sample together) to themselves.
+  2. Every block is a **parallel block**: `x + gate·(attn_out(attn(x_mod)) + mlp_out(SwiGLU(mlp_in(x_mod))))`, with one LayerNorm + modulation.
+
+**Reference stream.**
+- **Encoding.** Each reference is VAE-encoded once per request by the fp32 AutoEncoder (`encode_references`, one image per call), then 2×2 packed (16 px per token) and embedded by `x_embedders.image_cond` (128 → 3072).
+- **Timestep and RoPE.** The reference timestep is 0. `image_rope_scale` 0.5 halves the h/w position ids of the image and of the references, and the 4th RoPE axis is −(1 + reference index). Both are RoPE only and change no FLOPs.
+- **Mode blocks.** `mode_blocks.image_cond` runs per-mode attention over the reference tokens of a sample.
+- **Single blocks.** Joint attention over [image, image_cond, text], with `single_stream_modulations.image_cond` applied to the reference rows.
+- **Modulation per token** (as in the BFL reference; diffusers uses a per-sample time MLP):
+  - the `time_in` MLP runs on the per-token timesteps;
+  - the mode modulation is applied per token;
+  - `ref_time_in` runs per sample;
+  - the final adaLN covers image tokens only.
+- **Flow map.** On the distilled model, the target-timestep embedding is added to every mode.
+- **Reference sizes 「来源」 (pipeline.py).**
+  - `MAX_REFERENCES` = 10.
+  - One reference: fitted to a ≤ 4 MiB-pixel canvas on a 16-px grid, sides 64–4096 (padded canvas encoded).
+  - Two or more references: each is ≤ 1 MiB pixels, with sides floored to 16.
+  - Examples: 3 × 3000×2000 → 1248×832 each; 1 × 4000×3000 → 2352×1760.
+
+**Caching.**
+- **Not cached 「来源」.** `denoise` / `denoise_flow_map` call the DiT on the full pack every step, and diffusers Flux3 has no KV-cache argument (the `kv_cache_mode` matches belong to FLUX.2 / Qwen-Image). The reference rows are therefore recomputed at every step.
+- **CFG on Base.** Base true CFG packs [uncond, cond], each with the references, so the references count twice per step. They are still encoded only once.
+- **No cache knob.** Because "no caching" is sourced, there is no cache knob.
+- **Deferred what-if design 「推导」.**
+  - On Base, the image_cond mode-block outputs are step-invariant (t = 0, attention within the references only), so they could be cached exactly. That removes 5 of the 33 blocks for the reference rows.
+  - On the distilled model the target-time embedding modulates them, so a cache would not be exact.
+  - The reference rows in the single blocks attend to the noisy image and are never exactly cacheable.
+
+**Implementation.**
+- **IR.**
+  - `Phase.ref` with row tag `"ref"`.
+  - AttnCore `span="mode"`: separate attention per group, with a single QK-norm/RoPE and SP all-to-all over all tokens.
+  - `Layer.fused_out`: the parallel block uses one TP all-reduce 「推导」.
+- **`build_flux3`.**
+  - Three streams in the mode layer and a fused single layer.
+  - IO terms: `ref_embed` / `ref_mod` / `single_ref_mod`; `time_1` / `time_2` per token; `norm_out_mod` per image token.
+  - `io_misc` raises on any unmodelled GEMM.
+  - Every header tensor is accounted for (param_check is exact: 5,548,681,984, and 5,538,458,368 for Base), so **coverage is full**.
+- **Workload.**
+  - `workload.ref_images`: 0 = T2I; at most 10, otherwise an error.
+  - `ref_width` / `ref_height`: 0 = the output size.
+  - CLI: `--ref-images` and `--ref-size WxH`.
+  - UI: a reference row shown only for FLUX 3.
+- **Pipeline.** `vae_encode` adds encoder ops from the encoder tensors (`flux3-vae.json` `enc_tensors`: 111 tensors, 34.4M params). It costs 4.89 TFLOP and 56 ms per 1-MP image, serial, and is added to the request latency (`enc_s`, emitted only when > 0).
+
+**Numbers** (default chip, output 1024², references 1024² 「推导」):
+
+| refs | 0 (T2I) | 1 | 2 | 4 | 10 |
+|---|---|---|---|---|---|
+| distilled, 16 steps | 7.79 s | 16.82 s | 28.70 s | 59.52 s | 212.24 s |
+| Base, 50 steps, CFG | 47.23 s | 103.27 s | 177.38 s | 368.67 s | 1320.79 s |
+
+- T2I against 0.251 (7.61 s / 46.45 s): FLOPs are +1.3 %. Per-token modulation adds FLOPs, and per-mode early attention removes some.
+- Attention grows with seq², and seq is 4416 → 8512 with one reference.
+
+### §199.2 tencent/Qwen3-8B-DSpine-b16 (`qwen3-8b-dspine`)
+
+**Sources 「来源」.**
+- HF tencent/Qwen3-8B-DSpine-b16 (sha 9fc2ab3, 2026-10-16): config.json plus the safetensors header. It has 71 tensors, 1,237,763,844 params (bf16 + 4 I64 scalars) and is 2,475,527,712 B. Embeddings and the lm_head are shared with the target.
+- github tencent/dspine, `sglang_dspine/{models/dspine.py, worker.py, kernels.py}`.
+- arXiv 2609.36173.
+- The 0.251 verdict ("not expressible") is withdrawn: DSpine fits the DSpark block-draft path.
+
+**Mechanism.**
+- **Draft input.** `fc` over the concatenated hiddens of target layers [1, 9, 17, 25, 33] (20480 → 4096), then `hidden_norm`.
+- **Draft layers.** 5 Qwen3 layers (GQA 32/8 × 128, q/k norm, SwiGLU 12288). Attention is **causal within the block** (`causal = (B+1)/(2B)` of full).
+- **Block.** B = 16 = one anchor row + 15 drafts, so k = 15 is forced. The reference implementation rejects other block sizes, and the model warns if a different k is set.
+- **Code bridge,** after each active layer:
+  1. RMSNorm, then the read GEMM h → C = 1024, then L2-normalise. The anchor row takes `codebook[anchor]·√C`.
+  2. The packed GEMM C → 3R = 1536.
+  3. The gated message `sigmoid(q_i + s_{i−1} + b)·v_{i−1}`.
+  4. The write GEMM R = 512 → h, added to the residual.
+  5. `out.weight` is all zeros (the terminal is disabled), so it is stored and never run.
+- **Tail.**
+  - The target lm_head runs on the 15 draft rows, followed by top-K (K = 16).
+  - `serial_table` gathers K·(h + 3R) bf16 per row, with K·h + K²·R MACs.
+  - The greedy `serial_chain` follows.
+  - There is no Markov or confidence head.
+- **Resident memory.**
+  - Cold codebook V·C = 311 MB.
+  - Load-time tables TG + TSV = V·3R·2 B = 466.8 MB 「推导」 (`build_serial_tables`).
+  - Both sit in the memory plan as draft storage.
+- **TP.** TP = 1 only (reference); a warning is raised for TP > 1.
+- **Acceptance.**
+  - The model card reports τ 7.83 (T = 0) and 6.98 (T = 1) with 15 drafts, averaged over 7 benchmarks. The τ convention is committed tokens per verify, as for ReaDy.
+  - The i.i.d. per-token values are a = 0.893 and 0.873 「推导」.
+  - `spec_accept` stays a 「假设」 lever (default unchanged). Setting it to 0.893 reproduces τ 7.82.
+
+**Numbers** (default chip, decode, batch 1, ctx 4096):
+- Qwen3-8B TPOT: 82.0 ms.
+- DSpine, k = 15:
+
+| a | TPOT | τ |
+|---|---|---|
+| 0.8 | 20.75 ms | 4.86 |
+| 0.873 | 14.45 ms | 6.98 |
+| 0.893 | 12.90 ms | 7.82 |
+
+- The draft pass is ≈ 56 GF per sequence; the bridge + tail is 1.26 GF (2 %).
+- `serving.spec_k` is now capped at 16 (was 8).
+
+**Deferred.**
+- The sampled-round `serial_rs_table` (fp32, K·(2RC + HR + KH) MACs per row) is not modelled; only the greedy path is.
+- DFlash context rows written per step are taken as ≈ 1, as for ReaDy.
+- The phantom token of an empty FLUX 3 mode is ignored.
+- `ffn_norm` is still double-counted for parallel blocks (negligible).
+- The FLUX 3 reference mode-output cache (what-if above).

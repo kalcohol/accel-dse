@@ -71,6 +71,8 @@ EXTRA_TAIL = [
     ("muse-spark-open-nvfp4-dspark", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4+Inferact/Muse-Spark-Open-DSpark"),
     # 0.221: Qwen3.8-27B target + StartLux ReaDy DSpark draft with the recurrent-state reader (both public, 2026-10-17)
     ("qwen3.8-27b-ready", "Qwen/Qwen3.8-27B+startlux-models/ReaDy-Qwen3.8-27B"),
+    # 0.252: Qwen3-8B target + tencent DSpine (DFlash anchor-row block draft + selected-prefix code bridge, 2026-10-16)
+    ("qwen3-8b-dspine", "Qwen/Qwen3-8B+tencent/Qwen3-8B-DSpine-b16"),
     # 0.191 decision models ("System One": one forward, letter logits over the listed options; serving.labels).
     # StartLux Labs, CC BY-NC-4.0, Qwen3.5 fine-tunes, bf16 as released (public config.json + safetensors headers)
     ("qwen3.5-9b", "Qwen/Qwen3.5-9B"),
@@ -518,7 +520,9 @@ def _workload_dict(spec: ModelSpec) -> dict | None:
                 "steps": w.steps, "cfg": w.cfg, "patch": list(w.patch), "vae": [w.vae_t, w.vae_s, w.vae_s],
                 "text_tokens": w.text_tokens, "joint_text": bool(w.prefix_tokens), "source": w.source,
                 "vae_frames": w.vae_frames, "audio_per_s": w.audio_per_s, "audio_channels": w.audio_channels,
-                "attention": "factorized" if any(l.core.span != "full" for l in spec.layers) else "full",
+                "attention": ("factorized" if any(l.core.span in ("spatial", "temporal") for l in spec.layers)
+                              else "per_mode" if any(l.core.span == "mode" for l in spec.layers) else "full"),
+                "max_refs": w.max_refs,
                 "cfg_distilled": w.cfg == 1, "pipeline": _pipeline_dict(spec.id)}
     if w.kind == "genomics":
         return {"kind": "genomics", "seq_len": w.seq_len, "max_seq": w.max_seq, "kmer": w.kmer, "overlap": w.overlap,

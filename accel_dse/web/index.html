@@ -183,6 +183,11 @@
       <label title="固定计算的步（来源 TeaCache4Wan2.1）：teacache = 第一步与最后一步；teacache_ret = 前 5 步">跳步规则<select id="w-step_cache"><option value="teacache">teacache</option><option value="teacache_ret">teacache_ret</option></select></label>
       <label><span id="w-clip_slo_s-name">单段 SLO s</span> <span class="tag assume">假设</span><input type="number" id="w-clip_slo_s" min="1" step="60"></label>
     </div>
+    <div class="row3 gen-only ref-only" hidden>
+      <label title="参考图编辑 / 多参考（FLUX 3 image_cond 流，发布上限 10 张）：每张参考图 VAE 编码后作为 (宽/16)(高/16) 个 token 进入序列——先走自己的分模态块，再与文本、图像 token 一起进入联合单流块；每个去噪步重算（BFL 参考实现无跨步缓存）。0 = 文生图">参考图张数<input type="number" id="w-ref_images" min="0" max="10" step="1" placeholder="0 = 文生图"></label>
+      <label title="参考图原始尺寸（留空 = 与输出同尺寸「假设」）；按发布规则缩放：1 张 → ≤ 4 MP 画布（16 px 网格），≥ 2 张 → 每张 ≤ 1 MP">参考图宽 px<input type="number" id="w-ref_width" min="16" max="8192" step="16" placeholder="同输出"></label>
+      <label title="参考图原始尺寸（留空 = 与输出同尺寸「假设」）">参考图高 px<input type="number" id="w-ref_height" min="16" max="8192" step="16" placeholder="同输出"></label>
+    </div>
     <label class="inline gen-only" title="默认计入：文本编码器（每请求一次）与 VAE 解码（每段一次）的时间串行加在去噪前后，权重计入首 / 末流水级卡的存储。取消 = 只看 DiT 去噪主干（相当于把它们卸载到别处）"><input type="checkbox" id="w-pipeline" checked> 计入文本编码器与 VAE 解码（时间 + 存储）</label>
     <div class="row3 gen-only">
       <label title="文本编码器 / VAE 放在哪里：常驻 = 编码器在首级卡、VAE 在末级卡，与 DiT 同时常驻；分片 = 文本编码器权重按 FSDP 切到本副本全部卡（Wan --t5_fsdp），逐层 all-gather；卸载 = 组件与 DiT 分时占用显存（diffusers enable_model_cpu_offload / Wan --offload_model），每请求从主机重载权重；自动 = 依次取第一个放得下的">组件放置 <span class="tag assume">假设</span>
@@ -228,7 +233,7 @@
       <label class="llm-only">上下文<input type="number" id="s-ctx" min="1" step="512"></label>
       <label class="llm-only">prompt 长度<input type="number" id="s-prompt" min="1" step="512"></label>
       <label class="llm-only">输出长度<input type="number" id="s-out_len" min="1" step="128"></label>
-      <label class="llm-only">投机 k<input type="number" id="s-spec_k" min="0" max="8" step="1"></label>
+      <label class="llm-only">投机 k<input type="number" id="s-spec_k" min="0" max="16" step="1"></label>
       <label class="llm-only">接受率<input type="number" id="s-spec_accept" min="0" max="1" step="0.05"></label>
       <label class="llm-only" title="0.222：独立草稿模型（自己的权重 + KV，同卡、同 TP）：每步 k 次草稿解码 + 目标验证 1 + k 个 token。空 = 用目标自带的 MTP / DSpark。接受率为「假设」杠杆">草稿模型 <span class="tag assume">假设</span><select id="s-draft_model"><option value="">（目标自带 MTP / DSpark）</option></select><span class="small warn" id="s-draft-warn"></span></label>
       <label class="llm-only" title="0.223：混合 / 线性注意力层的投机验证回滚。snapshot = SGLang 默认（每个草稿 token 一个中间状态，q× 状态显存）；replay = SGLang ReplaySSM（--enable-linear-replayssm-spec：紧凑环形缓冲，重放 + 折叠计算，无 q× 中间状态）">投机回滚<select id="s-spec_rollback"><option value="snapshot">snapshot（默认）</option><option value="replay">replay（ReplaySSM）</option></select></label>

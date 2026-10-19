@@ -6,6 +6,26 @@
 
 
 
+## [0.252.0]
+
+### Added — the 0.251 coverage gaps closed (MODEL §199)
+- **FLUX 3 Image Klein (+ Base): reference-image edit / multi-reference.** Coverage partial → **full** (every header tensor modelled; param_check exact).
+  - `workload.ref_images` (0 = T2I, ≤ 10 = BFL `MAX_REFERENCES`), `ref_width` / `ref_height` (0 = output size); CLI `--ref-images`, `--ref-size WxH`; UI reference row (FLUX 3 only).
+  - Reference sizing follows the release rules (1 ref → ≤ 4 MiB-pixel canvas, ≥ 2 → each ≤ 1 MiB pixels, 16-px grid).
+  - References are VAE-encoded once per request, one image per call (new `vae_encode` pipeline part, `enc_s`), then run through `mode_blocks.image_cond` and the joint single blocks **every step** — the BFL reference and diffusers have no reference KV cache 「来源」. Base CFG carries the references in both halves.
+- **`qwen3-8b-dspine`** = Qwen/Qwen3-8B + tencent/Qwen3-8B-DSpine-b16 (DFlash block draft with a selected-prefix code bridge), on the DSpark block path: anchor row + 15 drafts (k fixed at 15), causal block attention, per-layer code-bridge GEMMs, top-K serial-table tail, resident codebook + tables (778 MB). Published τ 7.83 / 6.98 → a = 0.893 / 0.873 「推导」; `spec_accept` stays a lever. TP > 1 warns.
+
+### Changed
+- FLUX 3 mode blocks are per-mode self-attention (0.251: joint) and all blocks are parallel (one LN + modulation, one TP all-reduce 「推导」); modulation and time MLP per token (BFL reference). T2I latency +2.4 % (distilled 7.61 → 7.79 s; Base 46.45 → 47.23 s).
+- `serving.spec_k` cap 8 → 16.
+
+### Deferred
+- FLUX 3 reference mode-output cache what-if (exact on Base only; design in MODEL §199.1).
+- DSpine sampled-round `serial_rs_table` cost (greedy tail only).
+
+### Tests
+New test_core_252. Re-pins: 062_1 catalog total (+1), coverage list (FLUX 3 → full), test_core_251 FLUX 3.
+
 ## [0.251.0]
 
 ### Added — catalog freshness sweep (Hugging Face, through 2026-10-19; MODEL §198)

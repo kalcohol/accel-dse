@@ -97,6 +97,7 @@ class Phase:
     ctx: int = 0
     frames: int = 0      # full: latent frames of the video grid (factorized spatial / temporal attention)
     aux: int = 0         # full: joint audio rows in the sequence (MiniMax-H3)
+    ref: int = 0         # 0.252 full: reference-image rows in the sequence (FLUX 3 image_cond tokens, own weights)
     pair: PairDims | None = None   # full: structure-model grids (AlphaFold-family / ESMFold trunks)
     skew: float = 1.0    # MoE: token-expert pairs on the busiest EP rank / the mean (0.49; 1 = uniform routing)
     cp: int = 1          # 0.89: context-parallel chunk phase (evaluate) — cp ranks, true prompt length cp_len
@@ -1321,14 +1322,32 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
         # the draft block's own KV is temporary (not written to the ring); the block keys are attended non-causally
         lops = [replace(o, kv_write=0.0) if o.name == "softmax" else o for o in lops]
         hq = _cdiv(L.core.n_q, tp)
+        # 0.252 DSpine / DFlash draft_block_causal: row i attends block rows ≤ i → (B + 1) / 2B of the B × B scores
+        cz = (B + 1) / (2 * B) if model.draft_anchor else 1.0
         for nm in ("dspark_block_qk", "dspark_block_pv"):
-            lops.append(Op(nm, "attn", lj, m=B * hq, k=hd, n=B, count=b_loc, w_fmt="bf16", a_fmt="bf16"))
-        lops.append(Op("dspark_block_softmax", "vector", lj, vec=b_loc * B * hq * B * 5, sfu=b_loc * B * hq * B))
+            lops.append(Op(nm, "attn", lj, m=B * hq, k=hd, n=B, count=b_loc, causal=cz, w_fmt="bf16", a_fmt="bf16"))
+        lops.append(Op("dspark_block_softmax", "vector", lj, vec=b_loc * B * hq * B * 5 * cz, sfu=b_loc * B * hq * B * cz))
         ops += lops
+        if model.draft_bridge and j in model.draft_bridge[3:]:
+            ops += _dspine_bridge_ops(model, lj, b_loc * B, sh)
         if model.draft_reader and j == model.draft_reader[6]:
             ops += _ready_reader_ops(model, lj, b_loc, B, sh)
     V = _cdiv(model.vocab, tp)
     r = model.draft_markov
+    if model.draft_anchor:
+        # 0.252 DSpine (sglang_dspine worker.py DSpineDraftSampler): the target lm_head on the B − 1 draft rows (the
+        # anchor row is the committed token), top-K candidates, serial_table (per row: K lm_head rows + 2K TSV rows +
+        # K TG rows gathered, K·h + K²·rank MACs, fp32 accumulate), greedy serial chain; no Markov / confidence head
+        n = b_loc * (B - 1)
+        C_, R_, K_ = model.draft_bridge[:3] if model.draft_bridge else (0, 0, 1)
+        ops += [Op("dspark_hc_pre", "vector", li, vec=b_loc * B * 4 * h, replicated=tp),
+                gemm(model, "dspark.head", li, n, h, V, "lm_head", stream=True),
+                Op("dspine_topk", "vector", li, vec=n * V * 2)]
+        if model.draft_bridge:
+            ops += [Op("dspine_serial_table", "lookup", li, kv_read=n * K_ * (h + 3 * R_) * 2,
+                       vec=n * (K_ * h + K_ * K_ * R_) * 2, replicated=tp),
+                    Op("dspine_serial_chain", "vector", li, vec=n * K_ * K_, replicated=tp)]
+        return ops
     ops += [Op("dspark_hc_pre", "vector", li, vec=b_loc * B * (2 * N * h + 4 * h), replicated=tp),
             gemm(model, "dspark.head", li, b_loc * B, h, V, "lm_head", stream=True),
             Op("dspark_markov_embed", "lookup", li, kv_read=b_loc * B * r * 2, vec=b_loc * B * r)]
@@ -1343,6 +1362,24 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
     ops += [
             gemm(model, "dspark.confidence", li, b_loc * B, h + r, 1, "mtp", replicated=tp)]
     return ops
+
+
+def _dspine_bridge_ops(model: ModelSpec, lj: int, m: int, sh: Shard) -> list[Op]:
+    """0.252 one DSpine code-bridge write over the m = batch · B block rows (sglang_dspine models/dspine.py
+    DSpineCodeBridge._forward_fused): prepare_read (residual add + RMS), read GEMM h → C, normalize_codes (L2 + the
+    anchor row's codebook row), packed GEMM C → 3R ([gate; pred_gate; prev]), feature_message (sigmoid gate of the
+    predecessor), write GEMM R → h, feature_finish (rms-scaled residual add + the next RMSNorm).  TP = 1 in the reference
+    (DSpineWorkerV2 refuses tp > 1) → the GEMMs are replicated on every TP rank."""
+    C, R = model.draft_bridge[:2]
+    h, tp = model.hidden, sh.tp
+    b = max(1, m // max(model.draft_block, 1))
+    return [Op("dspine_read_prep", "vector", lj, vec=m * h * 6, replicated=tp),
+            gemm(model, "dspine.read", lj, m, h, C, "mtp", replicated=tp),
+            Op("dspine_codes", "lookup", lj, kv_read=b * C * 2, vec=m * C * 4, replicated=tp),
+            gemm(model, "dspine.packed", lj, m, C, 3 * R, "mtp", replicated=tp),
+            Op("dspine_message", "vector", lj, vec=m * R * 4, sfu=m * R, replicated=tp),
+            gemm(model, "dspine.write", lj, m, R, h, "mtp", replicated=tp),
+            Op("dspine_finish", "vector", lj, vec=m * h * 8, replicated=tp)]
 
 
 def _ready_reader_ops(model: ModelSpec, lj: int, b_loc: int, B: int, sh: Shard) -> list[Op]:
@@ -1400,7 +1437,7 @@ def _prefix(model: ModelSpec) -> int:
 
 def _video_rows(model: ModelSpec, ph: Phase) -> int:
     """Video tokens of the sequence (minus the joint text prefix and the joint audio rows)."""
-    return ph.q - ph.aux if ph.kvpre else ph.q - _prefix(model) - ph.aux
+    return ph.q - ph.aux - ph.ref if ph.kvpre else ph.q - _prefix(model) - ph.aux - ph.ref
 
 
 def _rows(model: ModelSpec, l: Linear, ph: Phase, b: int, sp: int) -> int:
@@ -1417,6 +1454,8 @@ def _rows(model: ModelSpec, l: Linear, ph: Phase, b: int, sp: int) -> int:
         return 0 if ph.kvpre else b * _cdiv(_prefix(model), sp)
     if l.rows == "aud":
         return b * _cdiv(ph.aux, sp)
+    if l.rows == "ref":         # 0.252 FLUX 3 reference-image rows (image_cond stream)
+        return b * _cdiv(ph.ref, sp)
     return b * _cdiv(ph.q, sp)
 
 
@@ -1431,6 +1470,18 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
         h_loc, nq, nk, tag = heads_tp, _cdiv(ph.q, sh.sp), ph.ctx, "x"
     else:
         h_loc, nq, nk, tag = _cdiv(heads_tp, sh.sp), ph.q, ph.q, ""
+        if core.span == "mode":
+            # 0.252 FLUX 3 per-mode blocks (BFL flux3/dit.py content_mode_blocks / txt_mode_blocks; diffusers
+            # Flux3ModeTransformerBlock "self-attention restricted to a single token mode"): text, noisy image and the
+            # reference images (all references of a sample jointly) each attend within themselves only
+            ops = []
+            for g in (_prefix(model), _video_rows(model, ph), ph.ref):
+                if g > 0:
+                    ops += _full_attn(model, li, replace(core, span="full"), replace(ph, q=g, aux=0, ref=0, kvpre=0),
+                                      sh, b, cross)
+            return [o for o in ops if o.name != "qk_norm_rope" and not o.name.startswith("sp_a2a")] + \
+                [o for o in _full_attn(model, li, replace(core, span="full"), ph, sh, b, cross)
+                 if o.name == "qk_norm_rope" or o.name.startswith("sp_a2a")]
         if core.span != "full" and ph.frames:
             # factorized ST attention over the video grid: spatial = one group per latent frame (H·W tokens),
             # temporal = one group per spatial position (T tokens)

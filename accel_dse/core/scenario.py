@@ -113,8 +113,8 @@ class Serving:
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= SERVING_MAX:
                 raise ValueError(f"serving.{k} must be an integer in [0, {SERVING_MAX}]")
-        if self.spec_k > 8:
-            raise ValueError("serving.spec_k must be ≤ 8")
+        if self.spec_k > 16:     # 0.252: was ≤ 8; DFlash / DSpine block 16 = anchor + 15 drafts
+            raise ValueError("serving.spec_k must be ≤ 16")
         if isinstance(self.prefix_cached, bool) or not isinstance(self.prefix_cached, int) \
                 or not 0 <= self.prefix_cached < self.prompt:
             raise ValueError("serving.prefix_cached must be an integer in [0, prompt)")
@@ -230,8 +230,18 @@ class Workload:
     # step always computed) | teacache_ret (use_ret_steps: first 5 steps computed, no forced last step)
     step_skip: int = field(default=0, metadata={"omit_default": True})
     step_cache: str = field(default="teacache", metadata={"omit_default": True})
+    # 0.252 — reference-image editing (FLUX 3 Image Klein image_cond stream): reference images per request (0 = text-to-
+    # image) and their size in px (0 = the output size; the release pipeline then fits one reference to ≤ 4 MP, each
+    # of ≥ 2 references to ≤ 1 MP — flux3/pipeline.py reference_canvas / prepare_multi_reference)
+    ref_images: int = field(default=0, metadata={"omit_default": True})
+    ref_height: int = field(default=0, metadata={"omit_default": True})
+    ref_width: int = field(default=0, metadata={"omit_default": True})
 
     def __post_init__(self):
+        for k, hi in (("ref_images", 64), ("ref_height", 8192), ("ref_width", 8192)):
+            v = getattr(self, k)
+            if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= hi:
+                raise ValueError(f"workload.{k} must be an integer in [0, {hi}]")
         if not isinstance(self.step_skip, int) or isinstance(self.step_skip, bool) or not 0 <= self.step_skip <= 1000:
             raise ValueError("workload.step_skip must be an integer in [0, 1000]")
         if self.step_cache not in ("teacache", "teacache_ret"):

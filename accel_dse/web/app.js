@@ -371,6 +371,9 @@ function paintDomain(m) {
   const img = m.domain === 'gen' && !!(m.workload && m.workload.image);      // 0.119: image DiT — no frame axis
   document.querySelectorAll('.video-only').forEach((e) => (e.hidden = img));
   if ($('w-clip_slo_s-name')) $('w-clip_slo_s-name').textContent = img ? '单张 SLO s' : '单段 SLO s';
+  const refs = m.domain === 'gen' && !!(m.workload && m.workload.max_refs);     // 0.252: FLUX 3 reference images
+  document.querySelectorAll('.ref-only').forEach((e) => (e.hidden = !refs));
+  if (!refs && S.sc && S.sc.workload) for (const k of ['ref_images', 'ref_width', 'ref_height']) delete S.sc.workload[k];
   document.querySelectorAll('.seq-slo').forEach((e) => (e.hidden = !!m.is_pair));
   document.querySelectorAll('.diff-only').forEach((e) => (e.hidden = !(m.is_pair && m.workload && m.workload.diff_steps)));
   document.querySelectorAll('.tp-in').forEach((e) => (e.hidden = !!m.is_pair));   // structure models: PP × DP × DAP, no TP
@@ -406,7 +409,9 @@ function paintDomain(m) {
     $('wl-note').textContent = '留空 = 按发布默认（' + w.source + '）。' + (m.domain === 'gen'
       ? `token 数 = 潜空间网格（${fr}，像素 /${w.vae[1]}，patch ${w.patch.join('×')}）${w.joint_text ? ` + ${w.text_tokens} 个文本 token（联合注意力）` : `；文本 ${w.text_tokens} token 走跨注意力`}`
         + (w.audio_per_s ? ` + 音频 ${w.audio_per_s}/s × ${w.audio_channels} 声道 token（同一序列）` : '')
-        + (w.attention === 'factorized' ? '；注意力按发布结构分解：空间块在潜帧内、时间块沿时间轴' : '；全 3D 注意力')
+        + (w.attention === 'factorized' ? '；注意力按发布结构分解：空间块在潜帧内、时间块沿时间轴'
+          : w.attention === 'per_mode' ? '；分模态块在各模态（文本 / 图像 / 参考图）内自注意力，单流块联合注意力' : '；全 3D 注意力')
+        + (w.max_refs ? `；参考图 ≤ ${w.max_refs} 张（每张 VAE 编码 → (宽/16)(高/16) token，每步重算）` : '')
         + (w.pipeline ? `；pipeline 组件：${w.pipeline.map((p) => `${p.label}（${num(p.GB)} GB ${p.dtype}${p.tokens ? `，${p.tokens} token` : ''}）`).join('、')}` : '') + '。'
       : w.structure ? `N 残基 → pair 表示 N² × ${w.pair_dim} 维（三角乘法 / 三角注意力 ∝ N³）`
         + (w.msa || w.xmsa ? '；MSA 表示 行数 × N（行 / 列注意力、外积均值 ∝ 行数 · N²）' : '')
@@ -785,7 +790,7 @@ function domainKpis(s, cap, auto) {
     const im = !!w.image;           // 0.119: image DiT — per-image wording, no frame / fps axis
     k.push(kpi(im ? '单张延迟' : '单段延迟（clip）', fmtDur(g.clip_s),
       `${w.width}×${w.height}${im ? '' : ` · ${w.frames} 帧`} · ${w.steps} 步 × CFG ${w.cfg} · batch ${s.batch}${auto} · SLO ${fmtDur(g.slo_s)}${over ? ' · 超出' : ''}`
-      + (pl ? ` · 文本编码 ${fmtDur(pl.te_s)} + 去噪 ${fmtDur(g.denoise_s)} + 解码 ${fmtDur(pl.decode_s)}${pl.load_s ? ` + 主机重载 ${fmtDur(pl.load_s)}` : ''} · 组件${pl.placement === 'auto' ? '（自动）' : ''}${pl.place_label}` : ' · 只计 DiT 去噪（文本编码器 / VAE 未计）'), over ? 'warn' : ''));
+      + (pl ? ` · 文本编码 ${fmtDur(pl.te_s)}${pl.enc_s ? ` + 参考图编码 ${fmtDur(pl.enc_s)}` : ''} + 去噪 ${fmtDur(g.denoise_s)} + 解码 ${fmtDur(pl.decode_s)}${pl.load_s ? ` + 主机重载 ${fmtDur(pl.load_s)}` : ''} · 组件${pl.placement === 'auto' ? '（自动）' : ''}${pl.place_label}` : ' · 只计 DiT 去噪（文本编码器 / VAE 未计）'), over ? 'warn' : ''));
     const sc = g.step_cache;
     if (sc) k.push(kpi('跳步缓存', `${sc.skip} / ${sc.steps} 步跳过`,
       `${sc.mode} · 跳过的步 ${fmtDur(sc.t_skip_ms / 1e3)}（只跑嵌入 + 输出头 + 残差加）· 省去噪 ${fmtDur(sc.denoise_saved_s)} · 残差缓存 ${num(sc.buffer_GiB_card)} GiB/卡`));
@@ -2058,6 +2063,8 @@ async function init() {
   bindNumber('l-cards', cards, (x) => { setCards(x); for (const k of ['pp', 'tp', 'dp', 'ep', 'etp', 'sp', 'cp']) $('l-' + k)._sync(); cardsNote(); }, { int: true });
   for (const k of ['frames', 'height', 'width', 'steps', 'cfg', 'seq_len', 'msa', 'recycles', 'samples'])   // empty = release default (0)
     bindNumber('w-' + k, () => S.sc.workload[k] || null, (x) => (S.sc.workload[k] = x === null ? 0 : x), { int: true, nullable: true });
+  for (const k of ['ref_images', 'ref_width', 'ref_height'])   // 0.252: 0 / empty = text-to-image / the output size
+    bindNumber('w-' + k, () => S.sc.workload[k] || null, (x) => { if (x) S.sc.workload[k] = x; else delete S.sc.workload[k]; }, { int: true, nullable: true });
   bindNumber('w-psteps', () => S.sc.workload.steps || null, (x) => (S.sc.workload.steps = x === null ? 0 : x), { int: true, nullable: true });
   for (const k of ['clip_slo_s', 'seq_slo_ms', 'fold_slo_s']) bindNumber('w-' + k, () => S.sc.workload[k], (x) => (S.sc.workload[k] = x));
   bindNumber('w-host_GBps', () => S.sc.workload.host_GBps, (x) => (S.sc.workload.host_GBps = x));

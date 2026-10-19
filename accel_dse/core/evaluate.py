@@ -24,7 +24,7 @@ from .memo import layer_groups, model_cache
 from .memplan import RUNTIME_RESERVE, MemPlan, act_stream, plan, stage_storage, step_dram_bytes, touched
 from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages, plan_stages_balanced
-from .pipeline import TILING, pipeline_for, stored_bytes, te_layers, text_ops, vae_ops
+from .pipeline import TILING, has_encoder, pipeline_for, stored_bytes, te_layers, text_ops, vae_encode_ops, vae_ops
 from .scenario import Scenario
 from .vision import audio_ops, expand_images, image_grid, video_grid_of, vision_act_peak, vision_ops
 from .ir import dspark_ops, red_bytes, skew_from_load
@@ -1576,9 +1576,17 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     dm = _draft_model(sv, m, warnings)          # 0.222: independent draft model (None = target's own MTP / DSpark)
     spec_k = sv.spec_k if (sv.phase == "decode" and (m.mtp_layers or dm is not None)) else 0
     if m.draft == "dspark" and sv.spec_k and dm is None:
-        if sv.phase == "decode" and spec_k > m.draft_block:
+        if sv.phase == "decode" and m.draft_anchor and spec_k != m.draft_block - 1:
+            # 0.252 DSpine: block = anchor + B − 1 drafts, and the reference serves only the checkpoint's block size
+            # (DSpineDraftModel.set_block_size raises; worker needs --speculative-num-draft-tokens == block)
+            warnings.append(f"spec_k {spec_k}：DSpine 块大小固定为 {m.draft_block}（锚行 + {m.draft_block - 1} 个草稿，"
+                            f"参考实现拒绝其他块大小）→ 按 k = {m.draft_block - 1} 计")
+            spec_k = m.draft_block - 1
+        elif sv.phase == "decode" and spec_k > m.draft_block:
             warnings.append(f"spec_k {spec_k} 超过 DSpark 草稿块 {m.draft_block}：按 {m.draft_block} 计")
             spec_k = m.draft_block
+        if m.draft_bridge and lay.tp > 1:
+            warnings.append("DSpine 参考实现只支持 TP = 1（DSpineWorkerV2）：TP > 1 按草稿 GEMM 在每个 TP rank 重复计算评估")
         if sv.phase == "prefill":
             spec_k = sv.spec_k          # prefill seeds the DSpark draft windows (no draft tokens)
     # 0.224 tree drafting (EAGLE-style): MTP draft modules or an independent draft model; DSpark drafts a block (no tree)
@@ -2014,7 +2022,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     pd = wl.pair
     if pd is not None and lay.sp > 1 and scn.workload.sample_split and pd.samples > 1:
         pd = replace(pd, split=True)
-    ph = Phase("full", _cdiv(seqs, mb), wl.tokens, wl.ctx, frames=wl.frames, aux=wl.aux, pair=pd)
+    ph = Phase("full", _cdiv(seqs, mb), wl.tokens, wl.ctx, frames=wl.frames, aux=wl.aux, pair=pd, ref=wl.ref)
     sh = lay.shard
     ab = _fmt(m.act_fmt).bytes
     groups = layer_groups(m)
@@ -2167,7 +2175,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
     if pkv:
         T = m.workload.prefix_tokens
         ph_x = replace(ph, kvx=True)
-        ph_c = Phase("full", ph.batch, wl.tokens - T, wl.ctx, frames=wl.frames, aux=wl.aux, pair=pd, kvpre=T)
+        ph_c = Phase("full", ph.batch, wl.tokens - T, wl.ctx, frames=wl.frames, aux=wl.aux, pair=pd, kvpre=T, ref=wl.ref)
         cache = _prefix_cache_bytes(m, T, lay, ab) * _cdiv(seqs, lay.dp)
         pkv = {"tokens": T, "cache_GiB_card": cache / 2**30}
         chosen: dict = {}
@@ -2223,7 +2231,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             sc_["denoise_saved_s"] = sc_["skip"] * per_step * (tick - sc_["t_skip"])
             sc_["t_skip_ms"] = sc_.pop("t_skip") * 1e3
             fits = fits and sc_["fits"]
-        latency = denoise + (pipe["te_s"] + pipe["decode_s"] + pipe["load_s"] if pipe else 0.0)
+        latency = denoise + (pipe["te_s"] + pipe.get("enc_s", 0.0) + pipe["decode_s"] + pipe["load_s"] if pipe else 0.0)
         if pipe:
             # 0.61.4: tflop_replica is one DP rank's share ⌈B/dp⌉ of the requests → × B / share (was × dp, which
             # counted idle ranks: batch 1 on DP 2 showed the text encoder + VAE twice per request)
@@ -2362,7 +2370,8 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
     par = lay.pp * lay.tp * lay.sp if scn.workload.vae_parallel else 1
     if scn.workload.vae_parallel and par == 1:
         warnings.append("workload.vae_parallel：每副本只有 1 张卡，VAE 解码不拆分")
-    key = (b, tuple(info["latent"]), info["frames"], info["cfg"], wl.aux, scn.mapping, scn.chip, scn.mem_id,
+    key = (b, tuple(info["latent"]), info["frames"], info["cfg"], wl.aux, wl.ref, tuple(info.get("ref_px") or ()),
+           scn.mapping, scn.chip, scn.mem_id,
            scn.mem_eff, tiling, par, _links(scn), lay.dp if par > 1 else 1)
     memo = model_cache(m).setdefault("pipeline", {})
     if key in memo:
@@ -2380,9 +2389,25 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
         te_s += c["s"]; te_w += w; te_act = max(te_act, peak)
         parts.append({"role": "text_encoder", "label": te.label, "key": te.key, "prompts": prompts,
                       "tokens": te.tokens, "stored_GB": w / 1e9, "note": te.note, **c})
-    dec_s = vae_w = vae_act = 0.0
+    dec_s = vae_w = vae_act = enc_s = 0.0
     vae_par = 1
     lat = tuple(info["latent"])
+    nref = info.get("ref_images") or 0
+    if nref and has_encoder(pl.vae):
+        # 0.252 reference images: each VAE-encoded once per request before the denoise loop (BFL encode_references —
+        # the CFG samples share the encoded references), on the VAE's card, serially 「来源」 pipeline.py
+        # one image per encode call (encode_references loops) → one image's op list executed nref·b times
+        ops, peak = vae_encode_ops(pl.vae, tuple(info["ref_px"]), 1, m.act_fmt)
+        act = pl.vae.act or m.act_fmt
+        c = _component_time([(ops, nref * b)], sys, scn.mapping, act)
+        enc_s = c["s"]
+        vae_act = max(vae_act, peak)
+        parts.append({"role": "vae_encode", "label": pl.vae.label + " · 编码参考图", "key": pl.vae.key,
+                      "stored_GB": 0.0, "images": nref * b, "px": list(info["ref_px"]), "act": act,
+                      "note": f"{nref} 张参考图 × {b} 请求，每张 {info['ref_px'][0]}×{info['ref_px'][1]} px（权重与解码共用同一 VAE 检查点）",
+                      **c})
+    elif nref:
+        warnings.append(f"参考图 VAE 编码未计：{pl.vae.label} 的组件数据没有编码器张量")
     for v, rows in ((pl.vae, 0), (pl.audio, wl.aux)):
         if v is None:
             continue
@@ -2406,7 +2431,7 @@ def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: Syste
         parts.append({"role": "audio_vae" if v is pl.audio else "vae", "label": v.label, "key": v.key,
                       "stored_GB": w / 1e9, "note": v.note, "act": vi["act"],
                       **{k: vi[k] for k in ("tiles", "overlap", "chunks", "tiling") if k in vi}, **extra, **c})
-    out = {"te_s": te_s, "decode_s": dec_s, "tflop_replica": sum(p["tflop"] for p in parts),
+    out = {"te_s": te_s, "decode_s": dec_s, **({"enc_s": enc_s} if enc_s else {}), "tflop_replica": sum(p["tflop"] for p in parts),
            "te_w": te_w, "vae_w": vae_w, "te_act": te_act, "vae_act": vae_act, "parts": parts,
            "te_layers": te_nl, "te_layer_w": te_lw, "vae_par": vae_par,
            "batch_per_replica": b, "note": pl.note}

@@ -423,6 +423,52 @@ def _tile_info(info: dict, rounds: list, groups: list, by: dict, lat: tuple) -> 
     return info
 
 
+def has_encoder(v: Vae | None) -> bool:
+    """0.252: the component data carries the encoder half (scripts/build_pipeline_data.py ENCODE)."""
+    return v is not None and bool(component_data(v.key).get("enc_tensors"))
+
+
+def vae_encode_ops(v: Vae, px: tuple[int, int], images: int, af: str) -> tuple[list[Op], float]:
+    """0.252 reference-image encode (FLUX 3: BFL flux3/autoencoder.py Encoder, fp32 AutoEncoder, one image at a time in
+    encode_references): conv_in at full resolution; down level i's ResnetBlocks at 1/2^i, its stride-2 Downsample conv
+    (pad (0, 1, 0, 1)) at the output 1/2^(i+1); mid ResnetBlocks + single-head AttnBlock over the (h/8)(w/8) latent
+    positions; conv_out + quant_conv at 1/8 (only the mean half is used, the conv computes both); then 2×2 packing +
+    latent BatchNorm (vector).  ``images`` = references × requests; (ops, activation peak bytes of one image)."""
+    d = component_data(v.key)
+    ten, wf = d["enc_tensors"], d["dtype"]
+    af = v.act or af
+    wb, ab = _fmt(wf).bits, _fmt(af).bytes
+    W, H = px
+    lv = re.compile(r"down_blocks\.(\d+)\.")
+    n_down = len({int(mm.group(1)) for k in ten for mm in [lv.search(k)] if mm and "downsamplers" in k})
+    ops: list[Op] = []
+    peak = 0.0
+    for name, sh in sorted(ten.items()):
+        if len(sh) < 2 or not name.endswith("weight") or ("norm" in name and "conv" not in name):
+            continue
+        mm = lv.search(name)
+        if "conv_in" in name:
+            f = 1
+        elif mm:
+            f = 2 ** (int(mm.group(1)) + (1 if "downsamplers" in name else 0))
+        else:                                   # mid block, conv_out, quant_conv: latent resolution
+            f = 2 ** n_down
+        vox = (H // f) * (W // f)
+        n, k, cin = sh[0], math.prod(sh[1:]), sh[1]
+        ops.append(Op(f"vae_enc.{name}", "gemm", 0, m=vox, k=k, n=n, count=images, role="vae", w_params=k * n,
+                      w_bits=wb, w_fmt=wf, a_fmt=af, act_bytes=vox * (cin + n) * images * ab, stream=True,
+                      vec=vox * n * images * VEC_PER_OUT, in_elems=vox * cin * images))
+        peak = max(peak, vox * (cin + n) * ab)
+    L = (H // 2 ** n_down) * (W // 2 ** n_down)
+    dd = max(sh[0] for nm, sh in ten.items() if "attentions" in nm and len(sh) == 2)
+    ops += [Op("vae_enc.mid.qk", "attn", 0, m=L, k=dd, n=L, count=images, act_bytes=images * L * dd * ab, stream=True,
+               orient=True),
+            Op("vae_enc.mid.pv", "attn", 0, m=L, k=L, n=dd, count=images, act_bytes=images * L * dd * ab, orient=True),
+            Op("vae_enc.mid.softmax", "vector", 0, vec=images * L * L * 5),
+            Op("vae_enc.bn_pack", "vector", 0, vec=images * L * 4 * 4)]
+    return ops, max(peak, 4 * L * dd * ab)
+
+
 def vae_ops(v: Vae, lat: tuple[int, int, int], frames: int, batch: int, af: str,
             audio_rows: int = 0, tiling: bool = False) -> tuple[list[Op], float, dict]:
     """Decode ops of one request batch; (ops, activation peak bytes, info).  A tiled decode returns its ops as

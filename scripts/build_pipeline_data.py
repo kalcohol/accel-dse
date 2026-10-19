@@ -82,6 +82,15 @@ def _vae_used(k: str) -> bool:
             or k.startswith("decoder"))
 
 
+# 0.252: VAEs whose encoder runs in the modelled pipeline (FLUX 3 reference images are VAE-encoded) — their encoder
+# half (+ quant_conv, latent BatchNorm) is kept as "enc_tensors"
+ENCODE = {"flux3-vae"}
+
+
+def _vae_enc(k: str) -> bool:
+    return k.startswith(("encoder.", "quant_conv", "bn."))
+
+
 def build(key: str) -> dict:
     fn, src, used, dt_over, note = SPECS[key]
     d = json.load(open(os.path.join(SRC, fn)))
@@ -97,6 +106,8 @@ def build(key: str) -> dict:
            "config": {k: v for k, v in (d.get("config") or {}).items()
                       if not (isinstance(v, list) and len(v) > 16) and not k.startswith("_")},
            "tensors": keep}
+    if key in ENCODE:
+        out["enc_tensors"] = {k: v["shape"] for k, v in t.items() if _vae_enc(k)}
     if note:
         out["note"] = note
     return out

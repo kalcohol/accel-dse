@@ -73,9 +73,10 @@ CLOSED = ("gpt-oss-120b", "gpt-oss-20b", "deepseek-v3.2", "glm-5", "glm-5.2", "g
           "qwen3.8-flash-next")
 PROXY = ("microsoft-decision-1",)   # 0.191 architecture proxy (closed; stated Qwen3.5-9B base)
 PROTEIN_PARTIAL = ("openfold", "alphafold2", "boltz-1", "protenix",
-                   "flux-3-image-klein", "flux-3-image-klein-base")   # 0.251 (gen, not protein): reference-image stream unmodelled
+                   )   # 0.252: FLUX 3 Image Klein (+ Base) → full (reference-image stream modelled)
 # 0.115 image DiTs were DiT-only (partial); 0.116 adds their text encoder + VAE pipelines → full
-IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b")
+IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b",
+              "flux-3-image-klein", "flux-3-image-klein-base")   # 0.252: + FLUX 3 (reference stream modelled)
 # 0.144 VLMs whose vision side is approximated (LLM side exact): Step-5 overview only, MiniCPM one 448² view, MiMo window
 # attention as full + audio encoder storage-only
 VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4",   # 0.145: MiniCPM slicing + MiMo band windows modelled → full; 0.251 NVFP4 = same vision

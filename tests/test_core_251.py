@@ -57,16 +57,13 @@ def test_hy3_moe_mechanisms():
 
 
 def test_flux3_klein():
-    """Flux3Transformer2DModel from the header: 5 per-modality early blocks (txt / image run at text-to-image; the
-    image_cond reference stream is stored only) + 28 shared single blocks; distilled 16 steps no guidance, Base 50 × CFG."""
+    """Flux3Transformer2DModel: 5 per-mode blocks (txt / image / image_cond) + 28 shared single blocks; distilled 16 steps
+    no guidance, Base 50 × CFG.  0.252: the image_cond reference stream is modelled (coverage full, test_core_252)."""
     k, kb = C.get_model("flux-3-image-klein"), C.get_model("flux-3-image-klein-base")
-    assert len(k.layers) == 33 and k.hidden == 3072 and k.coverage == "partial"
-    assert any("image_cond" in r for r in k.coverage_reasons)
+    assert len(k.layers) == 33 and k.hidden == 3072 and k.coverage == "full"
     names = {l.name for l in k.layers[0].attn_linears}
-    assert {"img_q", "txt_q", "img_o", "txt_o"} <= names and not any("cond" in n for n in names)
+    assert {"img_q", "txt_q", "img_o", "txt_o", "ref_q", "ref_o"} <= names
     assert k.layers[0].ffn.d_ff == 9216 and k.layers[5].ffn.d_ff == 9216
-    cond = 5 * (4 * 3072 * 3072 + 3 * 3072 * 9216 + 2 * 128) + 3072 * 128 + 2 * 9216 * 3072
-    assert k.io_misc_params >= cond                                    # reference stream: storage only
     assert kb.release_params == k.release_params - (3072 * 256 + 3072 * 3072)   # Base has no flow-map target embedder
     assert (k.workload.steps, k.workload.cfg, kb.workload.steps, kb.workload.cfg) == (16, 1, 50, 2)
     t, tb = (evaluate(Scenario().replace("model", i)).latency for i in ("flux-3-image-klein", "flux-3-image-klein-base"))

@@ -554,16 +554,25 @@ def build_flux2(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Mod
 
 
 def build_flux3(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
-    """0.251 FLUX 3 Image Klein (Flux3Transformer2DModel; read from the safetensors header, no public modeling code yet).
-    Early blocks = per-modality weights ("mode blocks": txt_mode_blocks / mode_blocks.image / mode_blocks.image_cond, each
-    with its own q/k/v/out + QK-norm + SwiGLU, joint attention over the streams) — FLUX.2's dual-stream block with a third
-    stream for reference images; then shared single-stream blocks (separate q/k/v/out and SwiGLU, no fused projection);
-    per-modality modulation tables; flow-map sampling (distilled: target_timestep_embedder for the jump end time)."""
+    """FLUX 3 Image Klein (Flux3Transformer2DModel).  0.251 read it from the safetensors header; 0.252 from the BFL
+    reference code (github black-forest-labs/flux-3-image-klein src/flux3/dit.py, pipeline.py, sampling.py) and diffusers
+    main (models/transformers/transformer_flux3.py), 「来源」:
+      three token modes — noisy image, reference images (image_cond: VAE-encoded clean references, 2×2 packed latents,
+      x_embedders.image_cond 128 → 3072) and text (context_embedder 20480 → 3072);
+      5 PER-MODE blocks (mode_blocks.image / mode_blocks.image_cond / txt_mode_blocks): each mode self-attends WITHIN
+      ITSELF only (all references of a sample jointly) — parallel block x + gate·(attn_out(attn) + mlp_out(SwiGLU)) from
+      one LayerNorm + per-mode shift / scale / gate (early_stream_modulations.<mode>);
+      28 single blocks: joint attention over [image ‖ image_cond ‖ text] per sample, same parallel block, per-token
+      modulation by mode (single_stream_modulations.<mode>);
+      modulation per token: time_in MLP on every token's timestep (image t, text and references 0), both ModeModulation
+      tables per token, ref_time_in (flow map) per sample, final adaLN on the image tokens; only image tokens reach
+      the head.  No cache of reference tokens across steps: sampling.py runs dit(packed) every step with the references
+      in the pack (Base CFG: [uncond, cond] samples each carry them)."""
     c, sh = rel["config"], rel["shapes"]
     H, hd = c["num_attention_heads"], c["attention_head_dim"]
     d, Ld, Ls = H * hd, c["num_layers"], c["num_single_layers"]
     core = AttnCore("gqa", n_q=H, n_kv=H, qk_dim=hd, v_dim=hd, rope_dim=hd, causal=False)
-    streams = {"img": "mode_blocks.image.0.", "txt": "txt_mode_blocks.0."}
+    streams = {"img": "mode_blocks.image.0.", "ref": "mode_blocks.image_cond.0.", "txt": "txt_mode_blocks.0."}
     a, f = [], []
     for r, p in streams.items():
         a += [_lin(sh, p + "attn.to_q", f"{r}_q", "col", r), _lin(sh, p + "attn.to_k", f"{r}_k", "col", r),
@@ -572,56 +581,71 @@ def build_flux3(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Mod
     dff = sh["mode_blocks.image.0.ff.linear_out.weight"][1]
     blk = ["attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0", "ff.linear_in", "ff.linear_out"]
     misc = sum(_misc(sh, p, blk)[0] for p in streams.values())
-    double = Layer(tuple(a), core, Ffn("dense", d_ff=dff, gated=True), tuple(f), misc)
+    # parallel attention + MLP: the two row-parallel outputs are summed before the gated residual → one TP all-reduce
+    # per block (fused_out) 「推导」 (the reference itself runs on one GPU)
+    mode = Layer(tuple(a), replace(core, span="mode"), Ffn("dense", d_ff=dff, gated=True), tuple(f), misc,
+                 fused_out=True)
     p = "single_transformer_blocks.0."
     sff = sh[p + "ff.linear_out.weight"][1]
     misc, _ = _misc(sh, p, blk)
     single = Layer((_lin(sh, p + "attn.to_q", "q"), _lin(sh, p + "attn.to_k", "k"), _lin(sh, p + "attn.to_v", "v"),
                     _lin(sh, p + "attn.to_out.0", "o", "row")), core, Ffn("dense", d_ff=sff, gated=True),
-                   (_lin(sh, p + "ff.linear_in", "gate_up"), _lin(sh, p + "ff.linear_out", "down", "row")), misc)
-    io_spec = [("x_embedders.image", "patch_embed", "img"), ("context_embedder", "text_in", "txt", "cond"),
-               ("timestep_embedder.linear_1", "time_1", "seq"), ("timestep_embedder.linear_2", "time_2", "seq"),
-               ("early_stream_modulations.image.linear", "img_mod", "seq", "cond"),
-               ("early_stream_modulations.txt.linear", "txt_mod", "seq", "cond"),
-               ("single_stream_modulations.image.linear", "single_img_mod", "seq", "cond"),
-               ("single_stream_modulations.txt.linear", "single_txt_mod", "seq", "cond")]
+                   (_lin(sh, p + "ff.linear_in", "gate_up"), _lin(sh, p + "ff.linear_out", "down", "row")), misc,
+                   fused_out=True)
+    io_spec = [("x_embedders.image", "patch_embed", "img"), ("x_embedders.image_cond", "ref_embed", "ref"),
+               ("context_embedder", "text_in", "txt", "cond"),
+               # BFL dit.py: vec[m] = time_in(timestep_embedding(timesteps[m])) — timesteps are per token, every mode
+               ("timestep_embedder.linear_1", "time_1", "tok"), ("timestep_embedder.linear_2", "time_2", "tok"),
+               ("early_stream_modulations.image.linear", "img_mod", "img", "cond"),
+               ("early_stream_modulations.image_cond.linear", "ref_mod", "ref", "cond"),
+               ("early_stream_modulations.txt.linear", "txt_mod", "txt", "cond"),
+               ("single_stream_modulations.image.linear", "single_img_mod", "img", "cond"),
+               ("single_stream_modulations.image_cond.linear", "single_ref_mod", "ref", "cond"),
+               ("single_stream_modulations.txt.linear", "single_txt_mod", "txt", "cond")]
     flow_map = "target_timestep_embedder.linear_1.weight" in sh
-    if flow_map:
+    if flow_map:      # ref_time_in(timesteps_ref) per sample, then expanded over every token of the sample
         io_spec += [("target_timestep_embedder.linear_1", "target_time_1", "seq"),
                     ("target_timestep_embedder.linear_2", "target_time_2", "seq")]
     io_pre, used = _io(sh, io_spec)
-    io_post, used2 = _io(sh, [("norm_out.linear", "norm_out_mod", "seq", "cond"), ("proj_out", "head", "img")])
-    # every tensor outside the modelled blocks / io GEMMs: the reference-image stream (mode_blocks.image_cond.*, its
-    # x_embedder and modulation tables — no tokens at text-to-image → stored, not run), norms, biases
-    blocks = ("mode_blocks.image.", "txt_mode_blocks.", "single_transformer_blocks.")
+    io_post, used2 = _io(sh, [("norm_out.linear", "norm_out_mod", "img", "cond"), ("proj_out", "head", "img")])
+    # every remaining tensor (QK-norm scales of the blocks are in misc; norms / biases outside the blocks) → io_misc;
+    # an unmodelled 2-D weight ≥ 256 raises, so coverage "full" means every header GEMM is in the op graph
+    blocks = ("mode_blocks.image.", "mode_blocks.image_cond.", "txt_mode_blocks.", "single_transformer_blocks.")
     used_set = {n + ".weight" for n in used + used2}
-    cond_stream = sum(_n(v) for t, v in sh.items() if "image_cond" in t)
     io_misc = 0
     for t, v in sh.items():
         if t.startswith(blocks) or t in used_set:
             continue
-        if "image_cond" not in t and t.endswith(".weight") and len(v) >= 2 and min(v[0], _n(v[1:])) >= 256:
+        if t.endswith(".weight") and len(v) >= 2 and min(v[0], _n(v[1:])) >= 256:
             raise ValueError(f"unmodelled io GEMM weight {t} {v}")
         io_misc += _n(v)
-    # header keeps block 0 only for the single blocks (BLOCK_RE); the per-modality early blocks are listed in full
-    # (mode_blocks.<stream>.<i> does not match BLOCK_RE) → the cond stream's 5 blocks are all in cond_stream above
-    wl = _image_wl(wl, 2 if sh["x_embedders.image.weight"][1] == 4 * 32 else 1, wl.text_tokens or 320)
+    # the summarised header keeps first / last block of BLOCK_RE stacks (single_transformer_blocks, txt_mode_blocks);
+    # mode_blocks.<mode>.<i> does not match BLOCK_RE and is listed in full — all per-mode blocks share block 0's shapes
+    for m_ in ("mode_blocks.image.", "mode_blocks.image_cond.", "txt_mode_blocks."):
+        ids = {int(t[len(m_):].split(".")[0]) for t in sh if t.startswith(m_)}
+        if max(ids) != Ld - 1:
+            raise ValueError(f"{m_}: last block {max(ids)} ≠ num_layers {Ld} − 1")
+    wl = replace(_image_wl(wl, 2 if sh["x_embedders.image.weight"][1] == 4 * 32 else 1, wl.text_tokens or 320),
+                 max_refs=wl.max_refs or 10)
     steps_note = (f"distilled（flow map）：{wl.steps} 步、无 guidance（config sampler.steps 16、guidance null；README）"
-                  if flow_map else f"Base（未蒸馏）：{wl.steps} 步、guidance 3.5（README）→ 无 guidance 嵌入张量 = 真 CFG，"
-                  "每步条件 / 无条件 2 次前向「推导」")
-    spec = _finish(model_id, hf_id, rel, f"FLUX 3 MMDiT（{Ld} 分模态块 + {Ls} 单流，[文本 ‖ 图像] 联合注意力；单帧 2D 潜空间）",
-                   d, 0, [double] * Ld + [single] * Ls, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
+                  if flow_map else f"Base（未蒸馏）：{wl.steps} 步、真 CFG（BFL pipeline.py MODELS base guidance 4.0）→ "
+                  "每步 [无条件 ‖ 条件] 两个样本打包前向，两样本都带参考图 token")
+    spec = _finish(model_id, hf_id, rel, f"FLUX 3 DiT（{Ld} 分模态块：图像 / 参考图 / 文本各自模态内自注意力；{Ls} 单流块："
+                   "[图像 ‖ 参考图 ‖ 文本] 联合注意力；并行 attn + SwiGLU；单帧 2D 潜空间）",
+                   d, 0, [mode] * Ld + [single] * Ls, io_pre, io_post, io_misc, 0, wl, "", extra_notes=(
                        f"图像 = 1 个潜帧（VAE ×{wl.vae_s} + 2×2 打包 = 每 token {2 * wl.vae_s}×{2 * wl.vae_s} px；无时间维）",
                        f"文本：Qwen3-VL-4B 第 4/8/…/32 层隐状态拼接（config text_encoder.layers，8 × 2560 = 20480 = "
                        f"context_embedder 输入）；pad_multiple 80 → 按 {wl.text_tokens} token（4 × 80，提示上采样后的完整场景描述）"
                        "计入联合序列「假设」",
                        steps_note,
-                       f"参考图流（mode_blocks.image_cond.* + x_embedders / 调制表，{cond_stream / 1e9:.3f}B 参数）：文生图无参考图 "
-                       "token → 只计存储；编辑 / 多参考（≤ 10 张）时参考图 token 走该流——未建模"))
-    return replace(spec, coverage="partial",
-                   coverage_reasons=spec.coverage_reasons + (
-                       "参考图编辑流（image_cond，≤ 10 张参考图）未建模：只计文生图（无参考图 token）",
-                       "单流块按串行 attn → SwiGLU 计（发布张量未融合；无公开建模代码，并行 / 串行不影响 FLOPs / 字节）"))
+                       "参考图（编辑 / 多参考，workload.ref_images ≤ 10，「来源」BFL flux3/pipeline.py）：每张 VAE 编码（fp32 AE，"
+                       "编码器计入 pipeline）→ (w/16)(h/16) 个 token；1 张按 ≤ 4 MP 画布（16 px 网格，边 64–4096），≥ 2 张每张 "
+                       "≤ 1 MP；尺寸默认 = 输出尺寸（发布默认输出尺寸取第一张参考图）「假设」，可设 ref_width / ref_height",
+                       "参考图 token 每步重算（「来源」sampling.py 每步 dit(packed)；diffusers Flux3 无 KV 缓存参数）；时间步 0 调制；"
+                       "RoPE (t, h, w, l)：h / w × image_rope_scale 0.5，l = −(1 + 序号) 区分参考图——只改位置编码，不改算量",
+                       "调制按 token 计（BFL 参考实现：time_in 与两张 ModeModulation 表逐 token；diffusers 时间 MLP 按样本、"
+                       "调制逐 token）；空模态补 1 个占位 token（文生图时参考图流跑 1 行，可忽略，未计）"))
+    return spec
 
 
 # ---------------------------------------------------------------- ESM-2
@@ -818,6 +842,7 @@ class ResolvedWorkload:
     frames: int = 0          # latent frames of the video grid (factorized attention)
     aux: int = 0             # joint audio rows in the sequence
     pair: object = None      # structure models: ir.PairDims (grids, recycles, diffusion steps, samples)
+    ref: int = 0             # 0.252 reference-image rows in the sequence (FLUX 3 image_cond tokens)
 
 
 def _latent_frames(d: NativeWorkload, F: int, warns: list[str]) -> int:
@@ -846,6 +871,30 @@ def _latent_frames(d: NativeWorkload, F: int, warns: list[str]) -> int:
     if (F - 1) % d.vae_t:
         warns.append(f"帧数 {F} 不满足 {d.vae_t}k+1：潜空间按 {lt} 帧计")
     return lt
+
+
+_REF_MATCH_PX = 4 * 1024 * 1024      # flux3/pipeline.py MATCH_MAX_PIXELS (first / single reference, padded canvas)
+_REF_MULTI_PX = 1024 * 1024          # MULTI_REFERENCE_MAX_PIXELS (each reference of a multi-reference edit)
+
+
+def flux3_ref_size(n: int, w: int, h: int, px: int = 16) -> tuple[int, int]:
+    """0.252: the size (w, h) px one reference reaches the DiT at, by the BFL release rules (flux3/pipeline.py, 「来源」):
+      n = 1  reference_canvas: scale = min(1, √(4 MiB / wh), 4096 / max side); fitted = round(side · scale); canvas =
+             fitted rounded up to 16 px, sides clamped to [64, 4096], area ≤ 4 MiB (else scale ·= 0.995) — the padded
+             canvas is encoded
+      n ≥ 2  prepare_multi_reference: wh > 1 MiB → sides int(side · √(1 MiB / wh)); centre-crop to the 16-px grid"""
+    if n == 1:
+        scale = min(1.0, math.sqrt(_REF_MATCH_PX / (w * h)), 4096 / max(w, h))
+        while True:
+            fit = (max(1, round(w * scale)), max(1, round(h * scale)))
+            cv = tuple(min(4096, max(64, -(-v // px) * px)) for v in fit)
+            if cv[0] * cv[1] <= _REF_MATCH_PX:
+                return cv
+            scale *= 0.995
+    if w * h > _REF_MULTI_PX:
+        s_ = math.sqrt(_REF_MULTI_PX / (w * h))
+        w, h = int(w * s_), int(h * s_)
+    return w // px * px, h // px * px
 
 
 def tri_reference_chunk(model_id: str, n: int) -> int:
@@ -901,20 +950,42 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
         if (F, Hh, Ww) != (d.frames, d.height, d.width):
             warns.append(f"工作负载偏离发布默认（{d.width}×{d.height}，{d.frames} 帧）")
         aud = round(F / d.fps * d.audio_per_s) * d.audio_channels if d.audio_per_s and d.fps else 0
+        # 0.252 reference images (FLUX 3 edit / multi-reference): VAE-encoded, 2×2 packed latents → (w / 16)(h / 16) rows
+        # each, joined to the sequence (own per-mode blocks, then the joint single blocks); size = workload ref_width /
+        # ref_height (0 → the output size — the release's default output size is the first reference's) fitted by
+        # flux3_ref_size
+        nref = getattr(w, "ref_images", 0) or 0
+        ref_rows, ref_px = 0, []
+        if nref and not d.max_refs:
+            warns.append("workload.ref_images 已忽略：该模型没有参考图输入流")
+            nref = 0
+        if nref > d.max_refs > 0:
+            raise ValueError(f"workload.ref_images {nref} 超过发布上限 {d.max_refs} 张（MAX_REFERENCES）")
+        if (getattr(w, "ref_width", 0) or getattr(w, "ref_height", 0)) and not nref:
+            warns.append("workload.ref_width / ref_height 已忽略：没有参考图（ref_images = 0）")
+        if nref:
+            rw, rh = (getattr(w, "ref_width", 0) or Ww), (getattr(w, "ref_height", 0) or Hh)
+            fw, fh = flux3_ref_size(nref, rw, rh, d.vae_s * 2)
+            if not (fw and fh):
+                raise ValueError(f"reference {rw}×{rh} px is below one latent patch")
+            ref_px = [fw, fh]
+            ref_rows = nref * (fw // (d.vae_s * 2)) * (fh // (d.vae_s * 2))
         spans = {l.core.span for l in spec.layers}
-        attn = "factorized" if spans - {"full"} else "full"
+        attn = "factorized" if spans - {"full", "mode"} else "per_mode" if "mode" in spans else "full"
         info = {"frames": F, "height": Hh, "width": Ww, "fps": d.fps, "video_s": F / d.fps if d.fps else None,
                 "latent": [lt, lh, lw], "grid": [gt, gh, gw], "video_tokens": vid, "text_tokens": d.text_tokens,
                 "joint_text": d.prefix_tokens, "audio_tokens": aud, "attention": attn,
-                "seq_tokens": vid + d.prefix_tokens + aud, "steps": steps, "cfg": cfg,
+                "seq_tokens": vid + d.prefix_tokens + aud + ref_rows, "steps": steps, "cfg": cfg,
                 "default": {"frames": d.frames, "height": d.height, "width": d.width, "steps": d.steps, "cfg": d.cfg},
                 "source": d.source}
         if image:                                   # only image models carry the key (video summaries unchanged)
             info["image"] = True
+        if d.max_refs:                              # 0.252 only models with a reference stream carry the keys
+            info.update(ref_images=nref, ref_px=ref_px, ref_tokens=ref_rows, max_refs=d.max_refs)
         if attn == "factorized":
             info["attn_groups"] = {"spatial": [gt, gh * gw], "temporal": [gh * gw, gt]}
-        return ResolvedWorkload("gen", vid + d.prefix_tokens + aud, d.text_tokens, cfg,
-                                steps, float(F), "frame", info, tuple(warns), frames=gt, aux=aud)
+        return ResolvedWorkload("gen", vid + d.prefix_tokens + aud + ref_rows, d.text_tokens, cfg,
+                                steps, float(F), "frame", info, tuple(warns), frames=gt, aux=aud, ref=ref_rows)
     if spec.domain == "genomics":                       # 0.106: one window of k-mer tokens per sequence
         L = w.seq_len or d.seq_len
         if d.max_seq and L > d.max_seq:
