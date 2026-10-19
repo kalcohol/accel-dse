@@ -21,7 +21,7 @@ from .ir import (Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, full_io_ops
                  mtp_ops)
 from .mapping import gemm_cost, vector_seconds
 from .memo import layer_groups, model_cache
-from .memplan import RUNTIME_RESERVE, MemPlan, act_stream, plan, stage_storage, step_dram_bytes, touched
+from .memplan import RUNTIME_RESERVE, MemPlan, act_stream, hot_miss, plan, stage_storage, step_dram_bytes, touched
 from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages, plan_stages_balanced
 from .pipeline import TILING, has_encoder, pipeline_for, stored_bytes, te_layers, text_ops, vae_encode_ops, vae_ops
@@ -84,6 +84,7 @@ class Result:
     cfg_asym: dict | None = None   # gen (0.258): CFG negative branch at its own shape — cond / uncond times, FLOP, shape
     stages_u: list | None = field(default=None, repr=False, compare=False)   # 0.258: the negative branch's stages
     spec: dict | None = None       # 0.225: decode spec step {k, topk, n, accept_model, tau, tau_indep, tau_chain}
+    tts: dict | None = None        # 0.269 speech synthesis: s / step, RTF, audio s / s, per-step GFLOP split
     draft: dict | None = None      # 0.223: independent draft model of a spec step {s, pass_s, bytes, acts (per step), …}
 
     @property
@@ -182,6 +183,7 @@ class Result:
             **({"vision": {k: v for k, v in self.vision.items() if k != "acts"}} if self.vision else {}),
             **({"host": dict(self.host)} if self.host else {}),
             **({"decision": self.decision()} if s.serving.labels else {}),
+            **({"tts": dict(self.tts)} if self.tts else {}),
         }
 
     def _ai_at(self, b: int, dram: bool = False):
@@ -691,7 +693,7 @@ _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "l
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
              "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
              "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e", "t_arr_attn", "t_vec_attn",
-             "wire_d2d", "wire_link", "wire_net", "kern", "disp")
+             "wire_d2d", "wire_link", "wire_net", "kern", "disp", "hot_rr")
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _EP_COMM = ("moe_dispatch", "moe_combine", "expert_allreduce")
 _TIERS = ("d2d", "link", "net")
@@ -982,7 +984,8 @@ def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, s
         return a + wx
     segs = [(_ovl.items_of(ops, op_secs, comm_secs, act_b), n) for ops, n in segments]
     kvst = mp.kv_total + mp.state_total
-    f = {"hot": 0.0 if store.hot_w <= 0 else 1.0 - mp.pinned_hot / store.hot_w,
+    _mh, _mr = hot_miss(mp, store)
+    f = {"hot": _mh, "hot_rr": _mr,
          "exp": 0.0 if store.expert_w <= 0 else 1.0 - mp.pinned_expert / store.expert_w,
          **_kv_state_miss(mp), "lookup": 1.0, "act": 1.0}
     nb = sum(n * sum(x * f.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
@@ -1063,7 +1066,8 @@ def _pipe_fused_(sd, sp, f, rr, t_mem):
                 r_ = op_secs(o)
                 t_arr += n * sc * r_[0]; t_vec += n * sc * r_[3]
     kvst = mp.kv_total + mp.state_total
-    fr = {"hot": 0.0 if store.hot_w <= 0 else 1.0 - mp.pinned_hot / store.hot_w,
+    _mh, _mr = hot_miss(mp, store)
+    fr = {"hot": _mh, "hot_rr": _mr,
           "exp": 0.0 if store.expert_w <= 0 else 1.0 - mp.pinned_expert / store.expert_w,
           **_kv_state_miss(mp), "lookup": 1.0, "act": 1.0}
     nb = sum(n * sum(x * fr.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
@@ -1950,9 +1954,28 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         tpot = 0.0
         ttft = step
         thr = sv.batch * sv.prompt / step
-    return Result(scn, m, stages, tick, step, e_tok, tpot, ttft, thr, thr / lay.cards, fits,
-                  stages[heavy].time.bound, heavy, warnings, mb, moe_skew=skew, vision=vis, host=host,
-                  draft=draft, spec=spec_info)
+    r = Result(scn, m, stages, tick, step, e_tok, tpot, ttft, thr, thr / lay.cards, fits,
+               stages[heavy].time.bound, heavy, warnings, mb, moe_skew=skew, vision=vis, host=host,
+               draft=draft, spec=spec_info)
+    if getattr(m, "tts", None) is not None:
+        r.tts = _tts_info(m, sv, tpot, thr)
+    return r
+
+
+def _tts_info(m: ModelSpec, sv, tpot: float, thr: float) -> dict:
+    """0.269 TTS KPIs: one decode step = one latent = ``s_per_step`` of audio (Ming: 80 ms)."""
+    from .tts import tts_step_flops
+    ts = m.tts
+    f = tts_step_flops(ts)
+    llm = 2.0 * m.active_params()
+    out = {"s_per_step": ts.s_per_step, "flow_steps": ts.flow_steps, "cfg": ts.cfg_mult, "rate": ts.rate,
+           "gflop_per_step": {"llm_approx": llm / 1e9, **{k: v / 1e9 for k, v in f.items()}},
+           "head_w_GB_per_step": (ts.flow_steps * ts.flow_params + ts.agg_params + ts.dec_params + ts.stop_params) * 2 / 1e9,
+           "head_w_GB_stored": ts.run_params * 2 / 1e9}
+    if sv.phase == "decode" and tpot > 0:
+        out.update(rtf=tpot / ts.s_per_step, audio_s_per_s=thr * ts.s_per_step,
+                   streams_realtime=int(sv.batch) if tpot <= ts.s_per_step else 0)
+    return out
 
 
 

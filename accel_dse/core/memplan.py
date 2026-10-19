@@ -79,6 +79,10 @@ class StageStorage:
     state_per_seq: float  # recurrent state bytes per sequence (per rank)
     cold_w: float = 0.0   # stored, never streamed (looked-up embedding rows, standby expert, unused io tables) —
     #                       0.61.3: kept apart so the SRAM / SLC plans do not pin bytes no step reads in bulk
+    # 0.269: hot weights read ``rr_reads`` times per step (TTS flow DiT: once per solver step), part of hot_w.  The
+    # 0.192 pin rule (DRAM bytes saved per step per byte) puts them first; their reads miss at their own share
+    rr_w: float = 0.0
+    rr_reads: float = 1.0
 
     @property
     def weights(self) -> float:
@@ -218,7 +222,16 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             store_extra += table
         store_extra += model.lookup_params * ((model.lookup_bits / 8) if model.lookup_bits else emb_b) / sh.tp
     if has_head:
-        if not model.tie_embeddings:
+        ts = getattr(model, "tts", None)
+        if ts is not None:
+            # 0.269 TTS head (replicated on the head stage's ranks, bf16): flow DiT / aggregator / stop / AudioVAE
+            # decoder read every step; AudioVAE encoder + spk_head stored only; the LM head is stored, never read
+            hot += ts.run_params * 2.0
+            store_extra += ts.stored_params * 2.0
+            st += ts.dec_kv_bytes        # per-sequence AudioVAE decoder sliding-window K/V ring (fixed size)
+            if not model.tie_embeddings:
+                store_extra += _cdiv(model.vocab, sh.tp) * model.hidden * model.fmt("lm_head").bits / 8
+        elif not model.tie_embeddings:
             hot += _cdiv(model.vocab, sh.tp) * model.hidden * model.fmt("lm_head").bits / 8
         elif not has_embed:
             hot += table          # tied head on a different stage keeps its own copy
@@ -226,7 +239,11 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             hot += n_mtp * model.mtp_extra_params * model.fmt("mtp").bits / 8 / sh.tp
             # 0.252 DSpine: codebook (only anchor rows read) + the serial tables built at load — resident, not streamed
             store_extra += model.draft_cold_params * model.fmt("mtp").bits / 8 + model.draft_table_bytes
-    return StageStorage(hot, exp, kv, idx, st, store_extra)
+    rr = 0.0
+    ts = getattr(model, "tts", None) if has_head else None
+    if ts is not None and ts.flow_steps > 1:
+        rr = ts.flow_params * 2.0
+    return StageStorage(hot, exp, kv, idx, st, store_extra, rr, float(ts.flow_steps) if rr else 1.0)
 
 
 @dataclass(frozen=True)
@@ -255,6 +272,8 @@ class MemPlan:
     slc_frac_exp: float = 0.0  # 0.260 dip: share of the routed-expert reads served by the SLC
     slc_frac_exp_bytes: float = 0.0  # 0.261 dip: share of the off-SRAM expert bytes retained (= slc_frac_exp if uniform)
     slc_residency: float = 0.0  # weights on chip incl. SLC / streamed weights (= residency without an SLC)
+    pinned_rr: float = 0.0  # 0.269: re-read hot bytes resident in SRAM (part of pinned_hot)
+    slc_rr: float = 0.0     # 0.269 pin: re-read hot bytes held in the SLC (part of slc_hot)
     # 0.209: of kv_sram, the recurrent-state bytes (the rest is KV / indexer); -1 = not split (legacy plans)
     state_sram: float = -1.0
     state_buf: float = 0.0  # dedicated state-buffer capacity (Chip.state_sram_mib)
@@ -286,9 +305,15 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     # 0.209: a dedicated state buffer (Chip.state_sram_mib) holds state first; the rest competes for the shared SRAM.
     # Residency is per byte (partial: the resident share of the batch's state skips DRAM, the rest streams)
     b_st = min(st_t, state_buf)
+    rr_w = min(store.rr_w, store.hot_w)
+    p_rr = 0.0
+    if rr_w > 0 and store.rr_reads > 2.0:           # 0.269: R B/B saved beats state's 2 B/B
+        p_rr = min(rr_w, free); free -= p_rr
     p_st = b_st + (min(st_t - b_st, free) if STATE_FIRST else 0.0)
     free -= p_st - b_st
-    p_hot = min(store.hot_w, free); free -= p_hot
+    if rr_w > 0 and store.rr_reads <= 2.0:
+        p_rr = min(rr_w, free); free -= p_rr
+    p_hot = p_rr + min(store.hot_w - rr_w, free); free -= p_hot - p_rr
     p_exp = min(store.expert_w, free); free -= p_exp
     p_kv = min(kv_t, free)                       # KV / indexer in what is left
     free -= p_kv
@@ -299,7 +324,8 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     # 0.94: a runtime granting the cache only kv_frac of the post-weight free memory (default 1 = unchanged)
     fit = need <= dram_cap if kv_frac >= 1 else need - kv_t - st_t + (kv_t + st_t) / kv_frac <= dram_cap
     mp = MemPlan(store.weights, kv_t, st_t, need, dram_cap, fit, sram_bytes, staging,
-                 p_hot, p_exp, kv_s, res, act_need, slc_residency=res, state_sram=p_st, state_buf=state_buf)
+                 p_hot, p_exp, kv_s, res, act_need, slc_residency=res, state_sram=p_st, state_buf=state_buf,
+                 pinned_rr=p_rr)
     if slc_bytes <= 0:
         return mp
     r_hot, r_exp, r_kv = store.hot_w - p_hot, store.expert_w - p_exp, kv_t + st_t - kv_s
@@ -317,7 +343,8 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
         return replace(mp, slc=slc_bytes, slc_policy="dip", slc_all=fc >= 1.0 and fe >= 1.0, slc_frac=fc,
                        slc_frac_exp=he, slc_frac_exp_bytes=fe, slc_residency=sres)
     free = slc_bytes
-    s_hot = min(r_hot, free); free -= s_hot
+    s_rr = min(rr_w - p_rr, free); free -= s_rr      # 0.269: re-read hot bytes first
+    s_hot = s_rr + min(r_hot - s_rr, free); free -= s_hot - s_rr
     s_exp = min(r_exp, free); free -= s_exp
     s_kv = min(r_kv, free)
     sres = (p_hot + p_exp + s_hot + s_exp) / strm if strm else 1.0
@@ -327,7 +354,7 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     e = r_exp if exp_read is None else min(r_exp, exp_read * (r_exp / store.expert_w if store.expert_w else 0.0))
     he = dip_exp_hit(exp_p, e / r_exp, fe) if (exp_p and r_exp > 0 and e > 0 and s_exp > 0) else fe
     return replace(mp, slc=slc_bytes, slc_policy="pin_bw" if slc_policy == "pin_bw" else "pin",
-                   slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv, slc_residency=sres,
+                   slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv, slc_residency=sres, slc_rr=s_rr,
                    slc_frac_exp=he, slc_frac_exp_bytes=fe)
 
 
@@ -491,12 +518,35 @@ def act_stream(op: Op, ab: float, sram_bytes: float, engines: int = 1) -> tuple[
     return 0.0, 0.0
 
 
+RR_PREFIX = ("tts.flow",)       # 0.269: ops whose weights are the re-read hot class (StageStorage.rr_w)
+
+
+def is_rr(o) -> bool:
+    return o.name.startswith(RR_PREFIX)
+
+
+def hot_miss(mp: "MemPlan", store: StageStorage) -> tuple[float, float]:
+    """0.269: (miss share of ordinary hot weight reads, miss share of re-read hot reads) after SRAM pinning.  Without a
+    re-read class: (1 − pinned_hot / hot_w, same) — the ≤ 0.268 uniform rule."""
+    if store.hot_w <= 0:
+        return 0.0, 0.0
+    rr = min(store.rr_w, store.hot_w)
+    if rr <= 0:
+        m = 1.0 - mp.pinned_hot / store.hot_w
+        return m, m
+    rest = store.hot_w - rr
+    m_rest = 0.0 if rest <= 0 else 1.0 - (mp.pinned_hot - mp.pinned_rr) / rest
+    return m_rest, 1.0 - mp.pinned_rr / rr
+
+
 def touched(ops: list[Op]) -> dict:
     """Per-step byte sums of an op list (independent of the plan)."""
-    d = {"hot": 0.0, "exp": 0.0, "kv_read": 0.0, "kv_write": 0.0, "state": 0.0, "lookup": 0.0}
+    d = {"hot": 0.0, "exp": 0.0, "kv_read": 0.0, "kv_write": 0.0, "state": 0.0, "lookup": 0.0, "hot_rr": 0.0}
     for o in ops:
         if o.kind == "gemm":
             d["exp" if o.role == "expert" else "hot"] += o.w_bytes
+            if is_rr(o):
+                d["hot_rr"] += o.w_bytes
         if o.kind == "lookup":
             d["lookup"] += o.kv_read
         else:
@@ -509,9 +559,10 @@ def touched(ops: list[Op]) -> dict:
 def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: float = 0.0) -> dict:
     """DRAM bytes moved in one stage step given the plan and touched-byte sums.  With an SLC the entries are the
     DRAM (miss) bytes and ``slc`` holds the bytes served by the SLC (split in ``slc_parts``)."""
-    miss_hot = 0.0 if store.hot_w <= 0 else (1.0 - mp.pinned_hot / store.hot_w)
+    miss_hot, miss_rr = hot_miss(mp, store)
     miss_exp = 0.0 if store.expert_w <= 0 else (1.0 - mp.pinned_expert / store.expert_w)
-    w = t["hot"] * miss_hot + t["exp"] * miss_exp
+    t_rr = t.get("hot_rr", 0.0) if store.rr_w > 0 else 0.0
+    w = (t["hot"] - t_rr) * miss_hot + t_rr * miss_rr + t["exp"] * miss_exp
     kvst_total = mp.kv_total + mp.state_total
     kv_miss = 0.0 if kvst_total <= 0 else 1.0 - mp.kv_sram / kvst_total
     st_miss = kv_miss
@@ -537,6 +588,11 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: flo
                "act": act * f} if f > 0 or fe > 0 else {}
     else:
         f_hot = 0.0 if store.hot_w <= 0 else mp.slc_hot / store.hot_w
+        f_rr = f_hot
+        if t_rr > 0:        # 0.269: the re-read class hits at its own SLC share
+            rr = min(store.rr_w, store.hot_w)
+            f_rr = mp.slc_rr / rr if rr > 0 else 0.0
+            f_hot = (mp.slc_hot - mp.slc_rr) / (store.hot_w - rr) if store.hot_w > rr else 0.0
         f_exp_bytes = 0.0 if store.expert_w <= 0 else mp.slc_expert / store.expert_w
         # 0.263: load-aware pin — read-hit share may exceed the byte share (slc_frac_exp)
         f_exp = mp.slc_frac_exp if (mp.slc_frac_exp > 0 or mp.slc_frac_exp_bytes > 0) else f_exp_bytes
@@ -546,7 +602,7 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: flo
             f_exp = f_exp_bytes
         r_kv = kvst_total - mp.kv_sram
         f_kv = 0.0 if r_kv <= 0 else min(1.0, mp.slc_kv / r_kv)
-        w_hit = t["hot"] * f_hot + t["exp"] * f_exp
+        w_hit = (t["hot"] - t_rr) * f_hot + t_rr * f_rr + t["exp"] * f_exp
         wx_hit = wx * (w_hit / w) if w > 0 else 0.0     # streamed weight re-reads follow the weights' SLC share
         hit = {"weights": w_hit + wx_hit, "kv_read": kv_r * f_kv, "state": st * f_kv}
     if mp.slc_policy == "lru":

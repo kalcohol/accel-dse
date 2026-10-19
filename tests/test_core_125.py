@@ -40,6 +40,8 @@ def test_llm_weight_reads_match_active_params():
     for e in C.list_models():
         if not e["evaluable"] or e["model_domain"] not in (None, "llm"):
             continue
+        if e["domain"] == "tts":     # 0.269: TTS head re-reads the flow DiT per Euler step; conserved in test_core_269
+            continue
         m = C.get_model(e["id"])
         ops = _ops(m, Phase("decode", 1, 1, 64))
         for o in ops:

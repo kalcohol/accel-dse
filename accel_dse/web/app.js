@@ -46,7 +46,7 @@ function coverBadge(m) {
   return h('span', { class: 'badge cov ' + m.coverage, title: coverTip(m) }, h('span', { class: 'ax' }, '覆盖'), COVER_ZH[m.coverage]);
 }
 const PROV_ZH = { official: '官方', mirror: '镜像' };
-const DOMAIN_ZH = { gen: '视频生成', protein: '蛋白质', genomics: '基因组', asr: '语音识别' };
+const DOMAIN_ZH = { gen: '视频生成', protein: '蛋白质', genomics: '基因组', asr: '语音识别', tts: '语音合成' };
 const isFull = (m) => !!m && (m.domain === 'gen' || m.domain === 'protein' || m.domain === 'genomics');   // non-autoregressive full-sequence forward
 const UNIT_ZH = { frame: '帧', seq: '序列', token: 'tok', window: '窗口' };
 // 0.119: throughput unit of a full-forward model — image DiT 张, video 帧, genomics 窗口, protein 序列
@@ -71,6 +71,7 @@ function domainBadge(m) {
   if (m.domain === 'protein') return h('span', { class: 'badge vlm', title: coverTip(m) }, m.is_pair ? '蛋白质 · 结构预测' : '蛋白质 · 编码器前向');
   if (m.domain === 'genomics') return h('span', { class: 'badge vlm', title: coverTip(m) }, '基因组 · 双向编码器前向（逐 token 分类）');
   // 0.268: audio-only release (Ming-3.0-asr-tiny) — the encoder is costed via serving.audio_s (API / CLI --audio-s)
+  if (m.domain === 'tts') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · 每 token = 1 帧潜变量（流匹配头 + AudioVAE 解码）');
   if (m.domain === 'asr') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音识别 · 含 Whisper 音频编码器（serving.audio_s）');
   return null;
 }
@@ -817,6 +818,14 @@ function renderEval(r) {
       `${vv.videos} 段/请求 · ${vv.frames} 帧 → ${vv.slices} 时间片 · ${vv.px[0]}×${vv.px[1]} → ${vv.resized_px[0]}×${vv.resized_px[1]} · ${vv.tokens_per_video} token/段`
       + (vv.cap ? ' · 逐帧上限' : '') + (vv.s ? ` · ${num(vv.tflop)} TFLOP · 每卡 ${vv.slices_per_card} 片` : ' · decode 不跑编码器，视频 token 在 KV 中')
       + (v.images ? '' : ` · ${v.label} 权重 ${num(v.weights_GB)} GB 在首级`)));
+  }
+  if (s.tts) {         // 0.269: TTS — one decode step = one latent = s_per_step of audio
+    const t = s.tts, g = t.gflop_per_step || {};
+    k.push(kpi('语音合成 TTS', t.rtf != null ? `RTF ${num(t.rtf)}` : '—',
+      `每步 ${num(t.s_per_step * 1e3)} ms 音频 · 流匹配 ${t.flow_steps} 步 × CFG ${t.cfg}`
+      + (t.audio_s_per_s != null ? ` · ${num(t.audio_s_per_s)} 音频秒/秒 · 实时流 ${t.streams_realtime}` : '')
+      + ` · 每步 GFLOP：头 ${num(g.total)}（流 ${num(g.flow)} · VAE ${num(g.vae)}）vs LLM ≈ ${num(g.llm_approx)}`
+      + ` · 头权重每步读 ${num(t.head_w_GB_per_step)} GB（存 ${num(t.head_w_GB_stored)} GB）`, t.rtf != null && t.rtf > 1 ? 'warn' : ''));
   }
   if (r.balance) {     // 0.205: machine balance vs workload arithmetic intensity
     const b = r.balance;

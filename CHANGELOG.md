@@ -6,6 +6,22 @@
 
 
 
+## [0.269.0]
+
+### Added — speech synthesis: Ming-3.0-tts-tiny (MODEL §214.1)
+- `inclusionAI/Ming-3.0-tts-tiny` (`lingv3_tts`, bf16): the Ming-3.0-asr decoder (BailingMoeV3 KDA/MLA MoE, `llm_config`) plus a TTS decode head that replaces the vocab head (`core/tts.py`, `ModelSpec.tts`, `ir._head_ops`). One decode step = one latent = 80 ms of 44.1 kHz audio: stop head, CFM flow DiT (16 × d1024) × 10 Euler steps × CFG 2 on 3 tokens, aggregator (8 × d1024) → next input embedding, streaming AudioVAE decoder (Qwen2 24 × d896, GQA 14/2, sliding window 64) + ISTFT head (n_fft 3528). Params exact vs the header component by component; total 8,981,004,468 = HF. AudioVAE encoder / spk_head stored only; lm_head stored, never read. AudioVAE decoder K/V ring as per-sequence state.
+- Result / summary `tts`: `rtf`, `audio_s_per_s`, `streams_realtime`, per-step GFLOP split (flow 24.3 / VAE 2.9 vs LLM ≈ 2.8), head weight GB read per step (5.0) vs stored (1.34). Listing domain `tts`（语音合成）; UI badge + KPI.
+
+### Added — re-read hot weight class (MODEL §214.2)
+- `StageStorage.rr_w / rr_reads`: hot weights read R times per step (the flow DiT, R = flow_steps). By the 0.192 rule (DRAM bytes saved per step per byte) they are pinned before state (2 B/B) and ordinary weights in SRAM and in the `pin` SLC, and miss at their own share (`memplan.hot_miss`, `slc_rr`, `pinned_rr`; overlap modes too). No re-read class → identical to ≤ 0.268.
+- Finding (100T + LPDDR5X, B1): the TTS head triples the step vs the same decoder alone (32.5 vs 11.7 ms); a 0.5 GiB SLC holding the 409 MB flow DiT cuts it to 13.5 ms (RTF 0.41 → 0.17).
+
+### Fixed
+- `/api/health` `domains` is now `catalog.DOMAINS` (the hard-coded list missed `asr` / `tts`); test guards health domains == DOMAINS ⊇ every listed model's domain.
+
+### Freshness
+- Sweep since 10-20: nothing new, no errors.
+
 ## [0.268.0]
 
 ### Deprecated — √C SLC access scaling (MODEL §213.1)

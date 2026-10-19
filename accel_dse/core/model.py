@@ -473,6 +473,7 @@ class ModelSpec:
     standby_params: int = 0                  # stored but idle per forward (Wan2.2 A14B: the other noise-level expert)
     cached_params: int = 0                   # in the release but not loaded for inference (MiniMax-H3 AdaLN branches:
                                              # modulation outputs precomputed per timestep, README)
+    tts: object = None                       # 0.269 core.tts.TtsSpec: speech-synthesis decode head (replaces the LM head)
 
     # ----- derived
     @property
@@ -547,6 +548,8 @@ class ModelSpec:
 # ---------------------------------------------------------------- helpers
 def _tc(cfg: dict) -> dict:
     tc = cfg.get("text_config")
+    if cfg.get("model_type") == "lingv3_tts" and isinstance(cfg.get("llm_config"), dict):
+        tc = cfg["llm_config"]      # 0.269 Ming-3.0-tts-tiny: the BailingMoeV3 decoder config sits in llm_config
     if isinstance(tc, dict) and tc.get("hidden_size"):
         return {**{k: v for k, v in cfg.items() if k != "text_config"}, **tc}
     return cfg
@@ -592,7 +595,7 @@ def _gqa(h: int, H: int, KV: int, hd: int, *, vd: int | None = None, out_gate: b
     return lin, AttnCore("gqa", n_q=H, n_kv=KV, qk_dim=hd, v_dim=vd, window=window)
 
 
-_LING = ("bailing_hybrid", "bailing_moe_v3_vl", "ming_v3_asr")    # 0.145: Ling-3.1 (text) / Ling-3.0-VL (text_config flattened); 0.268: Ming-3.0-asr-tiny (BailingMoeV3 decoder)
+_LING = ("bailing_hybrid", "bailing_moe_v3_vl", "ming_v3_asr", "bailing_moe_v3")    # 0.145: Ling-3.1 (text) / Ling-3.0-VL (text_config flattened); 0.268: Ming-3.0-asr-tiny (BailingMoeV3 decoder)
 
 
 def _mla(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore]:
@@ -1647,7 +1650,7 @@ def _builder(c: dict):
         return _build_dsv4_ref, "DeepSeek-V4 (CSA/MQA-512)"
     if mt.startswith("deepseek_v4"):
         return _build_dsv4, "DeepSeek-V4 (CSA/MQA-512)"
-    if mt in ("kimi_linear", "bailing_hybrid", "bailing_moe_v3_vl", "ming_v3_asr", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
+    if mt in ("kimi_linear", "bailing_hybrid", "bailing_moe_v3_vl", "ming_v3_asr", "bailing_moe_v3", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
               "qwen4_exp", "qwen4_exp_text", "minimax_text_01", "minimax_m1", "minimax") or mt.startswith("glm5_next"):
         return _build_hybrid, "混合注意力（linear + full）"
     if c.get("kv_lora_rank"):
@@ -1881,17 +1884,28 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 spec = replace(spec, coverage="proxy" if cov != "full" or abs(gap) / spec.release_params > 0.05 else cov,
                                notes=spec.notes + (f"参数与发布相差 {gap / 1e9:+.2f}B "
                                                    f"（{gap / spec.release_params:+.1%}），见 docs/MODEL.md",))
+        from .tts import tts_spec
+        ts = tts_spec(cfg)
+        if ts is not None:
+            # 0.269: the release summary files flow DiT / stop / spk heads under params_llm (no "audio" in the name)
+            # and the AudioVAE + aggregator under params_vision; the TTS spec carries all of them (exact, header)
+            spec = replace(spec, tts=ts, release_params=spec.release_params - ts.llm_side_params,
+                           release_bytes=(spec.release_bytes or 0) - 2 * ts.llm_side_params or None,
+                           notes=spec.notes + (
+                               f"语音合成（TTS）：每步 = LLM 1 token + 流匹配 DiT 头 {ts.flow_steps} 步 Euler × CFG {ts.cfg_mult} "
+                               f"+ 聚合器 + 流式 AudioVAE 解码；每步 {ts.s_per_step * 1e3:.0f} ms 音频（44.1 kHz）；"
+                               "lm_head 只存储（TTS 循环不用）",))
         rel_gap = (spec.release_params - spec.params()) / spec.release_params if spec.release_params else 0.0
         mp = c.get("max_position_embeddings")
         from .vision import vision_spec
         vs = vision_spec(hf_id, cfg)
-        rv = rel.get("params_vision") or 0
+        rv = (rel.get("params_vision") or 0) if ts is None else 0
         if vs is not None and rv > vs.params:
             # 0.144: multimodal parts stored with the release but not run for images (MiMo audio encoder + speech
             # embeddings) → storage only
             vs = replace(vs, extra=rv - vs.params, params=rv)
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ()),
-                       vision=vs, vision_params=vs.params if vs is not None else (rel.get("params_vision") or 0),
+                       vision=vs, vision_params=vs.params if vs is not None else rv,
                        max_ctx=int(mp) if isinstance(mp, (int, float)) and not isinstance(mp, bool) and mp > 0 else 0)
         if spec.coverage == "full" and spec.coverage_reasons:
             spec = replace(spec, coverage="partial")

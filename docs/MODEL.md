@@ -6742,3 +6742,35 @@ Distance keeps 32 GiB J-optimal at 25 °C with the saving cut from −35 % to �
 ### §213.3 Freshness
 `freshness_sweep.py 2026-10-20`: nothing new, no errors. inclusionAI rechecked: Ming-3.0-asr-tiny (10-14) added; Ling-3.1-flash (10-13) was already in the catalog (§217 listing it as a gap was wrong). allenai newest HiRO-ACEv2 (10-12, climate emulator — out of scope); hpcai-tech newest 2025-03.
 
+## §214 Speech synthesis decode head (Ming-3.0-tts-tiny); re-read hot weights (0.269)
+
+### §214.1 TTS head
+「来源」 inclusionAI/Ming-3.0-tts-tiny: modeling_lingv3_tts.py `generate_speech`, CFM.py, dit.py, aggregator.py, modules.py, vae_modules.py, istft.py, config.json; safetensors header.
+- **Decoder** = `llm_config` (BailingMoeV3, identical to Ming-3.0-asr-tiny's decoder, §213.2), no MTP: 7,893,392,800 params exact. The release summary files flow / stop / spk heads under `params_llm` (no "audio" in their names); `release_params` subtracts them.
+- **One step** (default `generate`: cfg_scale 2.0, flow_steps 10, EPSS timesteps, Euler + noise): LLM token → last hidden h →
+  1. stop_head Linear(1536 → 2);
+  2. flow: 10 DiT evaluations, batch × 2 (CFG cond + zeroed cond), sequence 3 = [t-emb + c-emb, x-emb(history 1), x-emb(patch 1)]; 16 pre-RMSNorm blocks d1024 (biased q/k/v/out, GELU-tanh MLP 4096), final RMSNorm + Linear(1024 → 64) on all tokens; t_embedder (256 → 1024 → 1024) and c_embedder (1536 → 1024) re-run per evaluation (not cached in the reference);
+  3. aggregator: [cls, x-emb(latent)] → 8 blocks d1024 → Linear(1024 → 1536) = next input embedding;
+  4. streaming AudioVAE decode: fc1 (64 → 896), ×4 linear upsample, Qwen2 decoder 24 layers (GQA 14/2, head 64, SwiGLU 4864, sliding window 64, KV cache), ISTFT head Linear(896 → 3530), irfft n_fft = 4 · hop = 3528 + overlap-add. 4 frames × 882 samples / 44.1 kHz = 80 ms per step (max 250 steps = 20 s).
+- **Params (header, exact)**: flow 204,526,688; aggregator 102,396,448; AudioVAE decoder 361,127,186; stop 3,074 — read every step (1.34 GB bf16). Stored only: AudioVAE encoder + its aggregator 419,261,824 (voice-prompt latents), spk_head 296,448 (once per request), lm_head 241,434,624 (unused by the TTS loop). Total 8,981,004,468 = HF.
+- **Per step, one request**: flow 24.30 GFLOP (10 × 6 rows × 16 × 2 · 12 · 1024²), VAE 2.91, aggregator 0.41, LLM ≈ 2 × active params ≈ 2.8 (incl. the embedding / lm_head tables active_params counts). Weights read 5.02 GB (flow 10×).
+- **Placement** 「假设」: the head runs on the head stage, replicated on its TP ranks (vLLM-style small heads), after the final norm; prefill ends with the first step.
+- **Limits**: plain TTS only (no voice-prompt encode, no podcast multi-speaker); stop decided per step (no early-exit batching model); EPSS / sway timesteps change no cost; the AudioVAE decoder K/V ring (786 KB / request) is per-sequence state.
+
+### §214.2 Re-read hot weights
+The flow DiT is read 10 × per step but stored once, so the ≤ 0.268 uniform miss rule (every hot byte misses at 1 − pinned/hot) undervalues pinning it. Following the 0.192 rule (pin by DRAM bytes saved per step per SRAM byte): a byte read R times saves R B/B, so the re-read class (`StageStorage.rr_w`, `rr_reads` = R) goes before state (2 B/B, when R > 2) and ordinary hot weights in SRAM, and first in the `pin` SLC; its reads miss at their own share (`memplan.hot_miss`, `MemPlan.pinned_rr / slc_rr`). `dip` / `lru` keep the uniform rule. Nothing else declares a re-read class → all earlier results unchanged.
+
+| 100T + LPDDR5X, B1, pin | TPOT ms | RTF |
+|---|---|---|
+| asr decoder alone, no SLC | 11.7 | — |
+| TTS, no SLC | 32.5 | 0.41 |
+| TTS, SLC 0.5 GiB | 13.5 | 0.17 |
+| TTS, SLC 2 GiB | 5.1 | 0.06 |
+
+(Uniform rule, for comparison: 1 GiB → 20.3 ms.) Finding: for flow-matching TTS heads, a sub-GiB SLC sized to the flow DiT is the lever; B200 (HBM3e) is already 1.6 ms.
+
+`/api/health` `domains` now returns `catalog.DOMAINS` (was hard-coded without asr / tts).
+
+### §214.3 Freshness
+`freshness_sweep.py 2026-10-20`: nothing new, no errors (74 orgs).
+

@@ -71,7 +71,8 @@ def items_of(ops, op_secs, comm_secs, act_bytes) -> list[tuple]:
         a, v = a * sc, v * sc
         b = {}
         if o.kind == "gemm":
-            b["exp" if o.role == "expert" else "hot"] = o.w_bytes * sc
+            # 0.269: re-read hot weights (TTS flow DiT) miss at their own share (memplan.hot_miss)
+            b["exp" if o.role == "expert" else ("hot_rr" if o.name.startswith("tts.flow") else "hot")] = o.w_bytes * sc
         if o.kind == "lookup":
             b["lookup"] = o.kv_read * sc
         elif o.kv_read or o.kv_write or xkv:

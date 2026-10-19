@@ -1339,6 +1339,14 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
     m = b_loc if ph.kind == "prefill" else b_loc * ph.q
     n = _cdiv(model.vocab, sh.tp)
     role = "embed" if model.tie_embeddings else "lm_head"
+    ts = getattr(model, "tts", None)
+    if ts is not None:
+        # 0.269 TTS: the last hidden state drives stop head + flow DiT + aggregator + streaming AudioVAE decode
+        # (core/tts.py) instead of the vocab head; one latent step per sequence (prefill: the first step)
+        from .tts import tts_head_ops
+        return [Op("final_norm", "vector", model.n_layers,
+                   vec=0 if model.final_norm_params == 0 else b_loc * model.hidden * 4)] + \
+            tts_head_ops(ts, b_loc, model.n_layers, replicated=sh.tp, af=model.act_fmt)
     if ph.labels and ph.kind == "prefill":
         # 0.191 decision readout (StartLux-Decision inference model.py): hidden at the last prompt position @ the
         # option-letter rows of the output head (index_select, replicated) → softmax over ≤ labels; nothing sampled,

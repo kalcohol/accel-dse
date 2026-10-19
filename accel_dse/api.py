@@ -279,7 +279,8 @@ def _row(r, objective: str) -> dict:
 
 # ------------------------------------------------------------------ endpoints
 def api_health() -> dict:
-    return {"ok": True, "version": __version__, "core": "v2", "domains": ["llm", "vlm", "gen", "protein", "genomics"]}
+    # 0.269: derived from the shared catalog.DOMAINS (was a hard-coded list that missed asr / tts)
+    return {"ok": True, "version": __version__, "core": "v2", "domains": list(DOMAINS)}
 
 
 def api_models() -> dict:
