@@ -6,6 +6,44 @@
 
 
 
+## [0.254.0]
+
+### Added — Reflection Beam-1.0 and DFlash2 drafts (MODEL §201)
+| id | source | what | coverage |
+|---|---|---|---|
+| `beam-1.0-501b-a23b` / `-fp8` / `-nvfp4` | https://huggingface.co/reflection/Beam-1.0-501B-A23B (+ -FP8, -NVFP4) | Reflection Beam-1.0 501B-A23B MoE: 52 layers (3 dense + 49 MoE, 256 experts top-8, group-limited sigmoid router, no shared expert), GQA 48/8×128 with a per-head sigmoid output gate, 43 SWA-512 (RoPE) + 9 full NoPE layers; FP8 = compressed-tensors W8A8 (per-channel weights, dynamic per-token activations), NVFP4 = ModelOpt W4A4 on the experts only | full (param_check exact, 501,267,612,352) |
+| `beam-1.0-501b-a23b-nvfp4-dflash2` | https://huggingface.co/reflection/Beam-1.0-501B-A23B-DFlash2 | Beam NVFP4 + its DFlash2 block draft (1.93B: 5 non-causal SWA-4096 layers, grouped dynamic convs, candidate selector) | full (draft exact) |
+| `muse-spark-open-nvfp4-dflash2` | https://huggingface.co/nvidia/Muse-Spark-Open-816B-A42B-DFlash2 | Muse-Spark-Open NVFP4 + the nvidia DFlash2 draft (4.38B); closes the 0.253 deferral | partial (same vision as Muse NVFP4; draft exact) |
+
+- **DFlash2 on the DSpark block path** (vLLM main `qwen3_dflash2.py` DFlashGroupedConv / CandidateSelector, `models/beam/nvidia/dflash2.py`, `spec_decode/dflash2/speculator.py` 「来源」):
+  - The block is anchor + `spec_k` drafts. Any size up to the trained block (Beam 16, Muse 8) is allowed; larger values warn and are capped.
+  - Block attention is non-causal. Context K/V come from one stacked GEMM into a sliding-window draft cache (KV rows are now written for windowed GQA drafts).
+  - Each draft layer runs two `kernel_projection` GEMMs (h → 2·taps·groups) and the 2-tap convolutions on both sides of attention and of the MLP.
+  - The tail runs the target lm_head on the draft rows, then top-16, the `hidden_projection` (h → 256), K × K × 256 edge scores over the gathered codebook rows, and the walk.
+  - The codebooks are cold storage. The conv, selector and fc GEMMs are replicated on every TP rank.
+- **Published acceptance.** `serving.spec_accept_src = published` uses the card τ:
+  - Beam: 4.876 greedy / 4.67 sampled. The sampled run is T = 0.7, not T = 1, so it is labelled 「二手」.
+  - Muse: 3.687 / 3.33.
+  - Both are at 7 drafts and convert to an i.i.d. acceptance of 0.852 / 0.758 「推导」.
+
+### Changed — as-released activation formats (mechanism: vLLM quantisation methods 「来源」)
+- **compressed-tensors W8A8 float** (8-bit float `input_activations`: FP8_DYNAMIC per-token, FP8_BLOCK per-group-128) now runs fp8 activations; until 0.253 they were bf16.
+  - Affects `lfm2.5-24b-a2b-fp8` (prefill, default scenario, TP 8: 33.19 → 24.38 ms; decode unchanged) and the new `beam-1.0-501b-a23b-fp8`.
+- **ModelOpt NVFP4 (quant_algo `NVFP4` = W4A4)** now carries `act_expert = nvfp4` on its NVFP4 roles. Excluded modules (attention, dense layers, router, lm_head) keep bf16 inputs. Until 0.253 every role used bf16 inputs.
+  - Affects `muse-spark-open-nvfp4` (+ -dspark), `step-5-preview-nvfp4` and the Beam NVFP4 entries.
+  - Results change only on chips with a native NVFP4 MAC. The default 100T has none, so its numbers are unchanged.
+  - `W4A16_NVFP4` (Dory) stays weight-only.
+
+### Fixed
+- MODEL §200.4 said vLLM had no code for the DFlash2 conv projector / selector. That was wrong: `qwen3_dflash2.py` has had both since PR #52816 (2026-08-21), and 0.253 had looked only at `qwen3_dflash.py`.
+
+### Tests
+- New test_core_254.
+- Re-pins:
+  - 062_1: releases 129 → 132, llm 105 → 108, catalog 133 → 138.
+  - test_core_093: act_ formats are now allowed for W4A4 releases.
+  - coverage: the Muse DFlash2 pair is vision-partial.
+
 ## [0.253.0]
 
 ### Added — freshness sweep from 2026-10-15 (MODEL §200)

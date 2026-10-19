@@ -1304,7 +1304,9 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
         c = L.core
         # main_x KV: wkv + kv_norm (4/elem) + RoPE + quant (2/elem), written into the ring buffer
         ops.append(gemm(model, "dspark.main_wkv", lj, m_rows, h, model.draft_kv or hd, "mtp", replicated=tp))
-        if c.window is None:
+        if c.window is None or (model.draft_dflash2 and not c.win_bytes):
+            # 0.254 DFlash2: a paged sliding-window GQA draft cache (per_layer_sliding_window) — rows appended like a
+            # full cache; storage keeps min(ctx, window) (memplan)
             # 0.221 full-attention draft layer (ReaDy): the step's main_x K/V rows are appended to the draft's own KV
             # cache in the KV format (2·KV·hd per row, draft_kv)
             kvw = m_rows * (model.draft_kv or 2 * hd) * model.fmt("kv").bits / 8
@@ -1324,11 +1326,13 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
         lops = [replace(o, kv_write=0.0) if o.name == "softmax" else o for o in lops]
         hq = _cdiv(L.core.n_q, tp)
         # 0.252 DSpine / DFlash draft_block_causal: row i attends block rows ≤ i → (B + 1) / 2B of the B × B scores
-        cz = (B + 1) / (2 * B) if model.draft_anchor else 1.0
+        cz = (B + 1) / (2 * B) if model.draft_anchor and not model.draft_dflash2 else 1.0   # 0.254 DFlash2: non-causal
         for nm in ("dspark_block_qk", "dspark_block_pv"):
             lops.append(Op(nm, "attn", lj, m=B * hq, k=hd, n=B, count=b_loc, causal=cz, w_fmt="bf16", a_fmt="bf16"))
         lops.append(Op("dspark_block_softmax", "vector", lj, vec=b_loc * B * hq * B * 5 * cz, sfu=b_loc * B * hq * B * cz))
         ops += lops
+        if model.draft_dflash2:
+            ops += _dflash2_conv_ops(model, lj, b_loc * B, sh)
         if model.draft_bridge and j in model.draft_bridge[3:]:
             ops += _dspine_bridge_ops(model, lj, b_loc * B, sh)
         if model.draft_reader and j == model.draft_reader[6]:
@@ -1361,6 +1365,18 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
                         Op("dspine_rs_write", "gemm", li, m=n * K_, k=R_, n=h, w_params=h * R_, w_bits=32, **f32),
                         Op("dspine_rs_logits", "attn", li, m=K_, k=h, n=K_, count=n, **f32),
                         Op("dspine_rs_sample", "vector", li, vec=n * K_ * K_ * 8, sfu=n * K_ * K_, replicated=tp)]
+        if model.draft_dflash2:
+            # 0.254 DFlash2 candidate selector (models/beam/nvidia/dflash2_ops.candidate_edges + speculator.py
+            # _selector_walk_kernel 「来源」): hidden_projection h → R on the draft rows; per row and each of the K
+            # predecessors (anchor token for the first row) one predecessor codebook row ⊙ h_p, dotted with the K
+            # candidates' successor rows (K·K·R MACs, fp32 accumulate) + the unary logits; then the walk: per row one
+            # gumbel-noised argmax over K (greedy: no noise — the same kernel either way, so no extra sampled-round op)
+            _, _, R2, K2, _ = model.draft_dflash2
+            ops += [gemm(model, "dflash2.selector_proj", li, n, h, R2, "mtp", replicated=tp),
+                    Op("dflash2_codebooks", "lookup", li, kv_read=n * 2 * K2 * R2 * 2, vec=n * K2 * R2, replicated=tp),
+                    Op("dflash2_edges", "attn", li, m=K2, k=R2, n=K2, count=n, w_fmt="bf16", a_fmt="bf16",
+                       replicated=tp),
+                    Op("dflash2_walk", "vector", li, vec=n * K2 * 8, sfu=n * K2, replicated=tp)]
         return ops
     ops += [Op("dspark_hc_pre", "vector", li, vec=b_loc * B * (2 * N * h + 4 * h), replicated=tp),
             gemm(model, "dspark.head", li, b_loc * B, h, V, "lm_head", stream=True),
@@ -1376,6 +1392,20 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
     ops += [
             gemm(model, "dspark.confidence", li, b_loc * B, h + r, 1, "mtp", replicated=tp)]
     return ops
+
+
+def _dflash2_conv_ops(model: ModelSpec, lj: int, m: int, sh: Shard) -> list[Op]:
+    """0.254 the two DFlash2 grouped dynamic convolutions of one draft layer over the m = batch · B block rows
+    (qwen3_dflash2.DFlashGroupedConv; models/beam/nvidia/dflash2.py fuses side 1 into the residual norm): per conv a
+    kernel_projection GEMM h → 2·taps·groups (ReplicatedLinear → every TP rank), then side 0 before and side 1 after
+    the sub-block — per channel taps coefficient loads (base + group delta) and taps MACs (fp32), causal inside the
+    block.  Per layer: 2 convs × 2 sides × taps × (mul + add + coefficient add) per element of the m × h rows."""
+    taps, grp = model.draft_dflash2[:2]
+    h, tp = model.hidden, sh.tp
+    G = h // grp
+    return [gemm(model, "dflash2.attn_conv_proj", lj, m, h, 2 * taps * G, "mtp", replicated=tp),
+            gemm(model, "dflash2.mlp_conv_proj", lj, m, h, 2 * taps * G, "mtp", replicated=tp),
+            Op("dflash2_conv", "vector", lj, vec=m * h * 2 * 2 * taps * 3, replicated=tp)]
 
 
 def _dspine_bridge_ops(model: ModelSpec, lj: int, m: int, sh: Shard) -> list[Op]:

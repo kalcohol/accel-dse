@@ -107,3 +107,6 @@ Tongyi-MAI/MAI-Gym-9B
 nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16
 nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-MXFP8
 nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4
+reflection/Beam-1.0-501B-A23B
+reflection/Beam-1.0-501B-A23B-FP8
+reflection/Beam-1.0-501B-A23B-NVFP4

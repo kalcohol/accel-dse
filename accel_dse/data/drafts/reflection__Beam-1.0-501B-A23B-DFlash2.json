@@ -1,0 +1,391 @@
+{
+ "acceptance": {
+  "block": 7,
+  "source": "来源: model card Evaluation — acceptance length (tokens per verification, max 8) on Beam NVFP4, TP 4, B300, serving block size 8 (= anchor + 7 drafts), up to 4096 new tokens; mean of GSM8K / MATH-500 / HumanEval / MBPP / MT-Bench: greedy 5.88/5.39/4.68/4.32/4.11 → 4.876, sampled (temperature 0.7, top-p 0.99 — Beam's recommended settings, NOT T = 1) 5.60/5.05/4.58/4.19/3.93 → 4.670; long-context DeepSWE replay (sampled) 4.82 overall, 5.72 at 0–2k → 4.23 at 64k–128k",
+  "t_sampled": 0.7,
+  "tau": 4.876,
+  "tau_t1": 4.67
+ },
+ "bytes": 3854969344,
+ "config": {
+  "architectures": [
+   "DFlash2BeamDraftModel"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "dflash_config": {
+   "block_size": 16,
+   "conv_group_size": 16,
+   "conv_kernel_size": 2,
+   "final_logit_softcapping": 30,
+   "mask_token_id": 151669,
+   "selector_rank": 256,
+   "selector_top_k": 16,
+   "target_layer_ids": [
+    4,
+    16,
+    28,
+    40,
+    46
+   ]
+  },
+  "draft_vocab_size": 151936,
+  "dtype": "bfloat16",
+  "eos_token_id": 151674,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 5120,
+  "initializer_range": 0.02,
+  "intermediate_size": 17408,
+  "is_causal": false,
+  "layer_types": [
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention"
+  ],
+  "max_position_embeddings": 1048576,
+  "max_window_layers": 5,
+  "model_type": "qwen3",
+  "num_attention_heads": 40,
+  "num_hidden_layers": 5,
+  "num_key_value_heads": 8,
+  "num_target_layers": 52,
+  "pad_token_id": 151643,
+  "rms_norm_eps": 1e-06,
+  "rope_parameters": {
+   "rope_theta": 10000,
+   "rope_type": "default"
+  },
+  "rope_scaling": null,
+  "rope_theta": 10000.0,
+  "sliding_window": 4096,
+  "tie_word_embeddings": false,
+  "use_cache": true,
+  "use_sliding_window": true,
+  "vocab_size": 151936
+ },
+ "fetched": "2026-10-19",
+ "kind": "dflash2",
+ "n_tensors": 81,
+ "own_lm_head": false,
+ "params": 1927484672,
+ "repo": "reflection/Beam-1.0-501B-A23B-DFlash2",
+ "revision": "163b276be744c8ce2b8385ea85de54edb3088211",
+ "shapes": {
+  "candidate_selector.hidden_projection.weight": [
+   256,
+   5120
+  ],
+  "candidate_selector.predecessor_codebook": [
+   151936,
+   256
+  ],
+  "candidate_selector.successor_codebook": [
+   151936,
+   256
+  ],
+  "fc.weight": [
+   5120,
+   25600
+  ],
+  "hidden_norm.weight": [
+   5120
+  ],
+  "layers.0.attention_conv.base_kernel": [
+   2,
+   2,
+   5120
+  ],
+  "layers.0.attention_conv.kernel_projection.weight": [
+   1280,
+   5120
+  ],
+  "layers.0.input_layernorm.weight": [
+   5120
+  ],
+  "layers.0.mlp.down_proj.weight": [
+   5120,
+   17408
+  ],
+  "layers.0.mlp.gate_proj.weight": [
+   17408,
+   5120
+  ],
+  "layers.0.mlp.up_proj.weight": [
+   17408,
+   5120
+  ],
+  "layers.0.mlp_conv.base_kernel": [
+   2,
+   2,
+   5120
+  ],
+  "layers.0.mlp_conv.kernel_projection.weight": [
+   1280,
+   5120
+  ],
+  "layers.0.post_attention_layernorm.weight": [
+   5120
+  ],
+  "layers.0.self_attn.k_norm.weight": [
+   128
+  ],
+  "layers.0.self_attn.k_proj.weight": [
+   1024,
+   5120
+  ],
+  "layers.0.self_attn.o_proj.weight": [
+   5120,
+   5120
+  ],
+  "layers.0.self_attn.q_norm.weight": [
+   128
+  ],
+  "layers.0.self_attn.q_proj.weight": [
+   5120,
+   5120
+  ],
+  "layers.0.self_attn.v_proj.weight": [
+   1024,
+   5120
+  ],
+  "layers.1.attention_conv.base_kernel": [
+   2,
+   2,
+   5120
+  ],
+  "layers.1.attention_conv.kernel_projection.weight": [
+   1280,
+   5120
+  ],
+  "layers.1.input_layernorm.weight": [
+   5120
+  ],
+  "layers.1.mlp.down_proj.weight": [
+   5120,
+   17408
+  ],
+  "layers.1.mlp.gate_proj.weight": [
+   17408,
+   5120
+  ],
+  "layers.1.mlp.up_proj.weight": [
+   17408,
+   5120
+  ],
+  "layers.1.mlp_conv.base_kernel": [
+   2,
+   2,
+   5120
+  ],
+  "layers.1.mlp_conv.kernel_projection.weight": [
+   1280,
+   5120
+  ],
+  "layers.1.post_attention_layernorm.weight": [
+   5120
+  ],
+  "layers.1.self_attn.k_norm.weight": [
+   128
+  ],
+  "layers.1.self_attn.k_proj.weight": [
+   1024,
+   5120
+  ],
+  "layers.1.self_attn.o_proj.weight": [
+   5120,
+   5120
+  ],
+  "layers.1.self_attn.q_norm.weight": [
+   128
+  ],
+  "layers.1.self_attn.q_proj.weight": [
+   5120,
+   5120
+  ],
+  "layers.1.self_attn.v_proj.weight": [
+   1024,
+   5120
+  ],
+  "layers.2.attention_conv.base_kernel": [
+   2,
+   2,
+   5120
+  ],
+  "layers.2.attention_conv.kernel_projection.weight": [
+   1280,
+   5120
+  ],
+  "layers.2.input_layernorm.weight": [
+   5120
+  ],
+  "layers.2.mlp.down_proj.weight": [
+   5120,
+   17408
+  ],
+  "layers.2.mlp.gate_proj.weight": [
+   17408,
+   5120
+  ],
+  "layers.2.mlp.up_proj.weight": [
+   17408,
+   5120
+  ],
+  "layers.2.mlp_conv.base_kernel": [
+   2,
+   2,
+   5120
+  ],
+  "layers.2.mlp_conv.kernel_projection.weight": [
+   1280,
+   5120
+  ],
+  "layers.2.post_attention_layernorm.weight": [
+   5120
+  ],
+  "layers.2.self_attn.k_norm.weight": [
+   128
+  ],
+  "layers.2.self_attn.k_proj.weight": [
+   1024,
+   5120
+  ],
+  "layers.2.self_attn.o_proj.weight": [
+   5120,
+   5120
+  ],
+  "layers.2.self_attn.q_norm.weight": [
+   128
+  ],
+  "layers.2.self_attn.q_proj.weight": [
+   5120,
+   5120
+  ],
+  "layers.2.self_attn.v_proj.weight": [
+   1024,
+   5120
+  ],
+  "layers.3.attention_conv.base_kernel": [
+   2,
+   2,
+   5120
+  ],
+  "layers.3.attention_conv.kernel_projection.weight": [
+   1280,
+   5120
+  ],
+  "layers.3.input_layernorm.weight": [
+   5120
+  ],
+  "layers.3.mlp.down_proj.weight": [
+   5120,
+   17408
+  ],
+  "layers.3.mlp.gate_proj.weight": [
+   17408,
+   5120
+  ],
+  "layers.3.mlp.up_proj.weight": [
+   17408,
+   5120
+  ],
+  "layers.3.mlp_conv.base_kernel": [
+   2,
+   2,
+   5120
+  ],
+  "layers.3.mlp_conv.kernel_projection.weight": [
+   1280,
+   5120
+  ],
+  "layers.3.post_attention_layernorm.weight": [
+   5120
+  ],
+  "layers.3.self_attn.k_norm.weight": [
+   128
+  ],
+  "layers.3.self_attn.k_proj.weight": [
+   1024,
+   5120
+  ],
+  "layers.3.self_attn.o_proj.weight": [
+   5120,
+   5120
+  ],
+  "layers.3.self_attn.q_norm.weight": [
+   128
+  ],
+  "layers.3.self_attn.q_proj.weight": [
+   5120,
+   5120
+  ],
+  "layers.3.self_attn.v_proj.weight": [
+   1024,
+   5120
+  ],
+  "layers.4.attention_conv.base_kernel": [
+   2,
+   2,
+   5120
+  ],
+  "layers.4.attention_conv.kernel_projection.weight": [
+   1280,
+   5120
+  ],
+  "layers.4.input_layernorm.weight": [
+   5120
+  ],
+  "layers.4.mlp.down_proj.weight": [
+   5120,
+   17408
+  ],
+  "layers.4.mlp.gate_proj.weight": [
+   17408,
+   5120
+  ],
+  "layers.4.mlp.up_proj.weight": [
+   17408,
+   5120
+  ],
+  "layers.4.mlp_conv.base_kernel": [
+   2,
+   2,
+   5120
+  ],
+  "layers.4.mlp_conv.kernel_projection.weight": [
+   1280,
+   5120
+  ],
+  "layers.4.post_attention_layernorm.weight": [
+   5120
+  ],
+  "layers.4.self_attn.k_norm.weight": [
+   128
+  ],
+  "layers.4.self_attn.k_proj.weight": [
+   1024,
+   5120
+  ],
+  "layers.4.self_attn.o_proj.weight": [
+   5120,
+   5120
+  ],
+  "layers.4.self_attn.q_norm.weight": [
+   128
+  ],
+  "layers.4.self_attn.q_proj.weight": [
+   5120,
+   5120
+  ],
+  "layers.4.self_attn.v_proj.weight": [
+   1024,
+   5120
+  ],
+  "norm.weight": [
+   5120
+  ]
+ },
+ "source": "来源: public config.json + model.safetensors header (HTTP range read) of huggingface.co/reflection/Beam-1.0-501B-A23B-DFlash2 (created 2026-10-13); inference code vLLM main vllm/models/beam/nvidia/dflash2.py (PR #62074, DFlash2BeamForCausalLM) + vllm/model_executor/models/qwen3_dflash2.py (PR #52816 DFlashGroupedConv / CandidateSelector, PR #55960 fused grouped conv) + vllm/v1/worker/gpu/spec_decode/dflash2/speculator.py (selector walk)"
+}

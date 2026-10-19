@@ -17,8 +17,10 @@ def _row(rid):
 def test_act_fmt_for_default_and_override():
     for e in entries():
         m = get_model(e["id"])
-        assert not any(k.startswith("act_") for k, _ in m.formats)        # catalog unchanged → bit-identical
-        assert m.act_fmt_for("expert") == m.act_fmt
+        acts = {k: v.fmt for k, v in m.formats if k.startswith("act_")}
+        # 0.254: ModelOpt NVFP4 (W4A4) releases carry act_<role> = nvfp4 on their NVFP4 roles; all others unchanged
+        assert acts in ({}, {"act_expert": "nvfp4"}), (e["id"], acts)
+        assert m.act_fmt_for("expert") == ("nvfp4" if acts else m.act_fmt)
     m = with_formats(get_model("gpt-oss-20b"), dict(X.MXFP4_BLACKWELL))
     ops = build_rank_ops(m, 0, Phase("prefill", 1, 512, 512))
     ex = [o for o in ops if o.role == "expert"]

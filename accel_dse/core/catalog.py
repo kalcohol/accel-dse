@@ -107,6 +107,13 @@ EXTRA_TAIL = [
     ("dory1.0-4b-mxfp8", "nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-MXFP8"),
     ("dory1.0-4b-nvfp4", "nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-NVFP4"),
     ("mai-gym-9b", "Tongyi-MAI/MAI-Gym-9B"),
+    # 0.254 Reflection Beam-1.0 (2026-10-07 / 10-10; BF16 / FP8 / NVFP4 as released) + its DFlash2 draft (10-13)
+    ("beam-1.0-501b-a23b", "reflection/Beam-1.0-501B-A23B"),
+    ("beam-1.0-501b-a23b-fp8", "reflection/Beam-1.0-501B-A23B-FP8"),
+    ("beam-1.0-501b-a23b-nvfp4", "reflection/Beam-1.0-501B-A23B-NVFP4"),
+    ("beam-1.0-501b-a23b-nvfp4-dflash2", "reflection/Beam-1.0-501B-A23B-NVFP4+reflection/Beam-1.0-501B-A23B-DFlash2"),
+    # 0.254: closes the 0.253 deferral (§200.4) — the conv / selector code is public (vLLM qwen3_dflash2.py)
+    ("muse-spark-open-nvfp4-dflash2", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4+nvidia/Muse-Spark-Open-816B-A42B-DFlash2"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -257,6 +264,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("openbmb", "面壁智能 / OpenBMB（MiniCPM）", ("openbmb/",)), ("robbyant", "Robbyant（LingBot-Video）", ("robbyant/",)),
     ("startlux", "StartLux Labs（决策模型）", ("startlux-models/",)), ("rwkv", "RWKV（BlinkDL）", ("RWKV/",)),
     ("nvidia", "NVIDIA（Nemotron-Labs）", ("nvidia/",)),
+    ("reflection", "Reflection AI（Beam）", ("reflection/",)),
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
@@ -285,6 +293,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("tencent", "Hy-Memory（Hy3 MoE）", ("hy-memory",)), ("bfl", "FLUX 3", ("flux-3",)),
     ("microsoft", "UserRepGen", ("userrepgen",)),
     ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
+    ("reflection", "Beam-1.0", ("beam-",)),
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.

@@ -1,0 +1,388 @@
+{
+ "acceptance": {
+  "block": 7,
+  "source": "来源: model card Evaluation — acceptance length with draft length 7 (vLLM, Muse-Spark-Open-816B-A42B NVFP4 target, one GB300 node TP4 + EP4, concurrency 32, reasoning effort xhigh, 4096 output tokens); Overall Average of MT-Bench 3.87 / 3.49, SPEED-Bench qualitative 3.84 / 3.47, SPEED-Bench throughput 32k 3.35 / 3.03 (t = 0 greedy / t = 1, no top-p / top-k, draft_sample_method probabilistic) → mean 3.687 / 3.330",
+  "t_sampled": 1.0,
+  "tau": 3.687,
+  "tau_t1": 3.33
+ },
+ "bytes": 8768324864,
+ "config": {
+  "architectures": [
+   "DFlash2DraftModel"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "block_size": 8,
+  "dflash_config": {
+   "block_size": 8,
+   "causal": false,
+   "conv_group_size": 16,
+   "conv_kernel_size": 2,
+   "final_logit_softcapping": 20.0,
+   "mask_token_id": 201817,
+   "output_multiplier": 0.17677669529663687,
+   "projector_type": "dflash2",
+   "selector_rank": 256,
+   "selector_top_k": 16,
+   "swa_window_size": 2048,
+   "target_layer_ids": [
+    3,
+    19,
+    31,
+    47,
+    59
+   ],
+   "use_swa": true
+  },
+  "head_dim": 64,
+  "hidden_act": "silu",
+  "hidden_size": 8192,
+  "initializer_range": 0.02,
+  "intermediate_size": 24576,
+  "is_causal": false,
+  "layer_types": [
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention"
+  ],
+  "max_position_embeddings": 1048576,
+  "model_type": "qwen3",
+  "num_attention_heads": 128,
+  "num_hidden_layers": 5,
+  "num_key_value_heads": 16,
+  "num_target_layers": 62,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": null,
+  "rope_theta": 500000.0,
+  "sliding_window": 2048,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "use_sliding_window": true,
+  "vocab_size": 202048
+ },
+ "fetched": "2026-10-19",
+ "kind": "dflash2",
+ "n_tensors": 81,
+ "own_lm_head": false,
+ "params": 4384162432,
+ "repo": "nvidia/Muse-Spark-Open-816B-A42B-DFlash2",
+ "revision": "fbec887a79866e9ecff6c57adfd9fd02aa3cadea",
+ "shapes": {
+  "candidate_selector.hidden_projection.weight": [
+   256,
+   8192
+  ],
+  "candidate_selector.predecessor_codebook": [
+   202048,
+   256
+  ],
+  "candidate_selector.successor_codebook": [
+   202048,
+   256
+  ],
+  "fc.weight": [
+   8192,
+   40960
+  ],
+  "hidden_norm.weight": [
+   8192
+  ],
+  "layers.0.attention_conv.base_kernel": [
+   2,
+   2,
+   8192
+  ],
+  "layers.0.attention_conv.kernel_projection.weight": [
+   2048,
+   8192
+  ],
+  "layers.0.input_layernorm.weight": [
+   8192
+  ],
+  "layers.0.mlp.down_proj.weight": [
+   8192,
+   24576
+  ],
+  "layers.0.mlp.gate_proj.weight": [
+   24576,
+   8192
+  ],
+  "layers.0.mlp.up_proj.weight": [
+   24576,
+   8192
+  ],
+  "layers.0.mlp_conv.base_kernel": [
+   2,
+   2,
+   8192
+  ],
+  "layers.0.mlp_conv.kernel_projection.weight": [
+   2048,
+   8192
+  ],
+  "layers.0.post_attention_layernorm.weight": [
+   8192
+  ],
+  "layers.0.self_attn.k_norm.weight": [
+   64
+  ],
+  "layers.0.self_attn.k_proj.weight": [
+   1024,
+   8192
+  ],
+  "layers.0.self_attn.o_proj.weight": [
+   8192,
+   8192
+  ],
+  "layers.0.self_attn.q_norm.weight": [
+   64
+  ],
+  "layers.0.self_attn.q_proj.weight": [
+   8192,
+   8192
+  ],
+  "layers.0.self_attn.v_proj.weight": [
+   1024,
+   8192
+  ],
+  "layers.1.attention_conv.base_kernel": [
+   2,
+   2,
+   8192
+  ],
+  "layers.1.attention_conv.kernel_projection.weight": [
+   2048,
+   8192
+  ],
+  "layers.1.input_layernorm.weight": [
+   8192
+  ],
+  "layers.1.mlp.down_proj.weight": [
+   8192,
+   24576
+  ],
+  "layers.1.mlp.gate_proj.weight": [
+   24576,
+   8192
+  ],
+  "layers.1.mlp.up_proj.weight": [
+   24576,
+   8192
+  ],
+  "layers.1.mlp_conv.base_kernel": [
+   2,
+   2,
+   8192
+  ],
+  "layers.1.mlp_conv.kernel_projection.weight": [
+   2048,
+   8192
+  ],
+  "layers.1.post_attention_layernorm.weight": [
+   8192
+  ],
+  "layers.1.self_attn.k_norm.weight": [
+   64
+  ],
+  "layers.1.self_attn.k_proj.weight": [
+   1024,
+   8192
+  ],
+  "layers.1.self_attn.o_proj.weight": [
+   8192,
+   8192
+  ],
+  "layers.1.self_attn.q_norm.weight": [
+   64
+  ],
+  "layers.1.self_attn.q_proj.weight": [
+   8192,
+   8192
+  ],
+  "layers.1.self_attn.v_proj.weight": [
+   1024,
+   8192
+  ],
+  "layers.2.attention_conv.base_kernel": [
+   2,
+   2,
+   8192
+  ],
+  "layers.2.attention_conv.kernel_projection.weight": [
+   2048,
+   8192
+  ],
+  "layers.2.input_layernorm.weight": [
+   8192
+  ],
+  "layers.2.mlp.down_proj.weight": [
+   8192,
+   24576
+  ],
+  "layers.2.mlp.gate_proj.weight": [
+   24576,
+   8192
+  ],
+  "layers.2.mlp.up_proj.weight": [
+   24576,
+   8192
+  ],
+  "layers.2.mlp_conv.base_kernel": [
+   2,
+   2,
+   8192
+  ],
+  "layers.2.mlp_conv.kernel_projection.weight": [
+   2048,
+   8192
+  ],
+  "layers.2.post_attention_layernorm.weight": [
+   8192
+  ],
+  "layers.2.self_attn.k_norm.weight": [
+   64
+  ],
+  "layers.2.self_attn.k_proj.weight": [
+   1024,
+   8192
+  ],
+  "layers.2.self_attn.o_proj.weight": [
+   8192,
+   8192
+  ],
+  "layers.2.self_attn.q_norm.weight": [
+   64
+  ],
+  "layers.2.self_attn.q_proj.weight": [
+   8192,
+   8192
+  ],
+  "layers.2.self_attn.v_proj.weight": [
+   1024,
+   8192
+  ],
+  "layers.3.attention_conv.base_kernel": [
+   2,
+   2,
+   8192
+  ],
+  "layers.3.attention_conv.kernel_projection.weight": [
+   2048,
+   8192
+  ],
+  "layers.3.input_layernorm.weight": [
+   8192
+  ],
+  "layers.3.mlp.down_proj.weight": [
+   8192,
+   24576
+  ],
+  "layers.3.mlp.gate_proj.weight": [
+   24576,
+   8192
+  ],
+  "layers.3.mlp.up_proj.weight": [
+   24576,
+   8192
+  ],
+  "layers.3.mlp_conv.base_kernel": [
+   2,
+   2,
+   8192
+  ],
+  "layers.3.mlp_conv.kernel_projection.weight": [
+   2048,
+   8192
+  ],
+  "layers.3.post_attention_layernorm.weight": [
+   8192
+  ],
+  "layers.3.self_attn.k_norm.weight": [
+   64
+  ],
+  "layers.3.self_attn.k_proj.weight": [
+   1024,
+   8192
+  ],
+  "layers.3.self_attn.o_proj.weight": [
+   8192,
+   8192
+  ],
+  "layers.3.self_attn.q_norm.weight": [
+   64
+  ],
+  "layers.3.self_attn.q_proj.weight": [
+   8192,
+   8192
+  ],
+  "layers.3.self_attn.v_proj.weight": [
+   1024,
+   8192
+  ],
+  "layers.4.attention_conv.base_kernel": [
+   2,
+   2,
+   8192
+  ],
+  "layers.4.attention_conv.kernel_projection.weight": [
+   2048,
+   8192
+  ],
+  "layers.4.input_layernorm.weight": [
+   8192
+  ],
+  "layers.4.mlp.down_proj.weight": [
+   8192,
+   24576
+  ],
+  "layers.4.mlp.gate_proj.weight": [
+   24576,
+   8192
+  ],
+  "layers.4.mlp.up_proj.weight": [
+   24576,
+   8192
+  ],
+  "layers.4.mlp_conv.base_kernel": [
+   2,
+   2,
+   8192
+  ],
+  "layers.4.mlp_conv.kernel_projection.weight": [
+   2048,
+   8192
+  ],
+  "layers.4.post_attention_layernorm.weight": [
+   8192
+  ],
+  "layers.4.self_attn.k_norm.weight": [
+   64
+  ],
+  "layers.4.self_attn.k_proj.weight": [
+   1024,
+   8192
+  ],
+  "layers.4.self_attn.o_proj.weight": [
+   8192,
+   8192
+  ],
+  "layers.4.self_attn.q_norm.weight": [
+   64
+  ],
+  "layers.4.self_attn.q_proj.weight": [
+   8192,
+   8192
+  ],
+  "layers.4.self_attn.v_proj.weight": [
+   1024,
+   8192
+  ],
+  "norm.weight": [
+   8192
+  ]
+ },
+ "source": "来源: public config.json + model.safetensors header (HTTP range read) of huggingface.co/nvidia/Muse-Spark-Open-816B-A42B-DFlash2 (created 2026-10-16); inference code vLLM main vllm/model_executor/models/qwen3_dflash2.py (DFlash2DraftModel → DFlash2Qwen3ForCausalLM: PR #52816 DFlashGroupedConv / CandidateSelector, PR #55960 fused grouped conv) on qwen3_dflash.py (DFlash SWA / non-causal resolution) + vllm/v1/worker/gpu/spec_decode/dflash2/speculator.py (selector walk)"
+}

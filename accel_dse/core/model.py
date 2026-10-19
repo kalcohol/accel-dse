@@ -425,6 +425,10 @@ class ModelSpec:
     draft_bridge: tuple[int, ...] = ()
     draft_cold_params: int = 0
     draft_table_bytes: float = 0.0
+    # 0.254 DFlash2 (vLLM qwen3_dflash2 / models/beam dflash2): anchor-row block draft, NON-causal block attention,
+    # two grouped dynamic convolutions per draft layer + candidate selector; (taps, conv group, selector rank,
+    # selector top-k, trained block); the served block is 1 + spec_k (draft_block = the card's serving default)
+    draft_dflash2: tuple[int, ...] = ()
     # 0.253 looped LM (Dory): (input layers, recurrent layers, loops, kv mode) and the physical layer list the loops
     # expand (``with_loops``); layers = input + recurrent × loops + output
     loop_spec: tuple = ()
@@ -1388,6 +1392,40 @@ def _attach_ready_dspark(spec: ModelSpec, d: dict) -> ModelSpec:
                                           if acc else ""),))
 
 
+def _build_beam(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.254 Reflection Beam-1.0 (BeamForCausalLM; transformers main models/beam/modular_beam.py + vLLM main
+    vllm/models/beam/nvidia/model.py, 「来源」).  Every layer: GQA (num_attention_heads / num_key_value_heads × head_dim)
+    with q / k RMSNorm and a per-head sigmoid output gate (gate_proj h → H·head_dim, fused here into q as out_gate, +
+    gate_bias [H]); ``layer_types`` sliding_attention (sliding_window, RoPE) | full_attention (every 6th + the last;
+    NoPE with a position-dependent query scale (1 + pos/2048)^0.1 — a vector op).  ``mlp_layer_types`` dense (SwiGLU,
+    intermediate_size) | sparse (num_experts SwiGLU experts × moe_intermediate_size, top-k, fp32 sigmoid router with
+    e_score_correction_bias and n_group / topk_group group-limited selection, routed_scaling_factor after the combine;
+    no shared expert).  Sandwich norms (input, post_attention, pre_feedforward, post_feedforward), depth-scaled residual
+    adds (scalars), final logit soft-cap 30 (tanh, vector)."""
+    h, H, KV, hd, L = c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"], c["num_hidden_layers"]
+    E, k, de = c["num_experts"], c["num_experts_per_tok"], c["moe_intermediate_size"]
+    types = _list(c.get("layer_types")) or ["full_attention"] * L
+    mtypes = _list(c.get("mlp_layer_types")) or (["dense"] * 3 + ["sparse"] * (L - 3))
+    win = c.get("sliding_window")
+    layers = []
+    for i in range(L):
+        alin, core = _gqa(h, H, KV, hd, out_gate=True, window=win if types[i] == "sliding_attention" else None)
+        misc = 4 * h + 2 * hd + H                                  # 4 sandwich norms + q / k norms + gate_bias
+        if mtypes[i] == "sparse":
+            ffn, flin = _ffn_moe(h, E, k, de, 0, 0)
+            misc += E                                              # e_score_correction_bias (fp32)
+        else:
+            ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        layers.append(Layer(alin, core, ffn, flin, misc))
+    nf = sum(1 for t in types[:L] if t == "full_attention")
+    nd = sum(1 for t in mtypes[:L] if t == "dense")
+    notes = [f"Beam：{L} 层（{nd} 层稠密 SwiGLU + {L - nd} 层 MoE，{E} 专家 top-{k}（分组 {c.get('n_group')} 选 "
+             f"{c.get('topk_group')}，sigmoid + 校正偏置，fp32 router），无共享专家）；注意力 GQA {H}/{KV}×{hd} + 逐头 sigmoid "
+             f"输出门；{L - nf} 层 SWA（窗口 {win}，RoPE）+ {nf} 层全注意力（NoPE，查询按位置缩放）；三明治 norm、深度缩放残差、"
+             f"logit soft-cap {c.get('final_logit_softcapping')} 计入向量开销"]
+    return layers, [], notes, "full"
+
+
 def _attach_dspine(spec: ModelSpec, d: dict) -> ModelSpec:
     """0.252 tencent DSpine (Qwen3-8B-DSpine-b16; github tencent/dspine sglang_dspine, 「来源」): an SGLang DFlash draft —
     fc over the concatenated hidden states of the 5 target_layer_ids → hidden_norm, num_hidden_layers Qwen3 decoder
@@ -1436,6 +1474,56 @@ def _attach_dspine(spec: ModelSpec, d: dict) -> ModelSpec:
                                        + (f"；公开接受长度 τ {acc['tau']}（T = 0）/ {acc.get('tau_t1')}（T = 1），"
                                           f"{acc['block']} 个草稿 → i.i.d. 接受率 {spec_accept_from_tau(acc['tau'], acc['block']):.3f}"
                                           "「推导」；serving.spec_accept_src = published 按发布 τ（spec_sampling 选 T = 0 / 1）取接受率，默认仍为「假设」杠杆" if acc else ""),))
+
+
+def _attach_dflash2(spec: ModelSpec, d: dict) -> ModelSpec:
+    """0.254 DFlash2 draft (reflection/Beam-1.0-501B-A23B-DFlash2; vLLM main vllm/models/beam/nvidia/dflash2.py
+    DFlash2BeamForCausalLM + model_executor/models/qwen3_dflash2.py DFlashGroupedConv / CandidateSelector +
+    v1/worker/gpu/spec_decode/dflash2/speculator.py, 「来源」).  fc over the concatenated hidden states of the
+    target_layer_ids → hidden_norm; context K/V of every draft layer from ONE stacked GEMM (h → layers·2·KV·hd, k_norm +
+    RoPE) into a sliding-window (sliding_window) draft KV cache; num_hidden_layers decoder layers (GQA + q / k norm,
+    SwiGLU) over the query block = anchor (bonus) row + mask rows, NON-causal (is_causal false) over window context +
+    block; around attention and around the MLP a grouped dynamic convolution (kernel_projection GEMM h → 2·taps·groups
+    coefficients; base_kernel [2, taps, h] + per-group delta, taps-tap causal conv inside the block, before (side 0) and
+    after (side 1, fused into the residual norm) the sub-block).  No embedding / lm_head (the target's).  Tail: target
+    lm_head on the block − 1 draft rows → top-k (selector_top_k) → selector: hidden_projection h → rank, edge scores
+    unary + ⟨predecessor[q] ⊙ h_p, successor[c]⟩ for K × K (predecessor, candidate) pairs per row (codebooks [V, rank],
+    gathered rows only) → sequential walk (gumbel-noised argmax per row; greedy = no noise)."""
+    c = d["config"]
+    dc = c.get("dflash_config") or {}
+    h, H, KV, hd = c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
+    nl, V = c["num_hidden_layers"], c.get("draft_vocab_size") or c["vocab_size"]
+    taps, grp = int(dc["conv_kernel_size"]), int(dc["conv_group_size"])
+    R, K = int(dc["selector_rank"]), int(dc["selector_top_k"])
+    types = _list(c.get("layer_types")) or ["sliding_attention" if dc.get("use_swa") else "full_attention"] * nl
+    win = dc.get("swa_window_size") or c.get("sliding_window")         # qwen3_dflash._resolve_layer_attention
+    mtp = []
+    for i in range(nl):
+        alin, core = _gqa(h, H, KV, hd, window=win if types[i] == "sliding_attention" else None)
+        ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        mtp.append(Layer(alin, core, ffn, flin, 2 * h + 2 * hd))     # input / post-attention norms + q / k norms
+    nt = len(dc["target_layer_ids"])
+    G = h // grp
+    conv = 2 * (2 * taps * G * h + 2 * taps * h)                       # attention_conv + mlp_conv per layer
+    extra = nt * h * h + 2 * h + nl * conv + R * h                     # fc, hidden_norm + norm, convs, hidden_projection
+    cold = 2 * V * R                                                   # predecessor / successor codebooks (rows gathered)
+    acc = d.get("acceptance") or {}
+    left = extra - (extra // nl) * nl
+    tb = int(dc.get("block_size") or c.get("block_size") or 16)
+    serve = int(acc.get("block") or (tb - 1)) + 1                      # the card's serving block (anchor + drafts)
+    return replace(spec, mtp_layers=tuple(mtp), mtp_extra_params=extra // nl, draft="dspark", draft_anchor=True,
+                   draft_block=serve, draft_targets=nt, draft_markov=0, draft_kv=2 * KV * hd,
+                   draft_dflash2=(taps, grp, R, K, tb), draft_cold_params=cold + left,
+                   spec_published=(float(acc["tau"]), int(acc["block"])) if acc else (),
+                   spec_published_t1=float(acc.get("tau_t1") or 0.0),
+                   notes=spec.notes + (f"DFlash2 草稿模型（{d['repo']}，bf16 {d['params'] / 1e9:.2f}B，独立仓库，共享目标 "
+                                       f"embedding / lm_head）：{nl} 层块草稿（块内非因果，上下文 SWA {win}），目标层 "
+                                       f"{dc['target_layer_ids']} hidden 拼接 + fc；每层注意力 / MLP 前后各一个 {taps} 抽头分组动态卷积"
+                                       f"（组宽 {grp}）；尾部 top-{K} 候选 + 低秩（{R}）选择器逐行走路径；块 = 1 + spec_k（训练 {tb}，"
+                                       f"卡片服务块 {serve}）"
+                                       + (f"；公开接受长度 τ {acc['tau']}（贪心）/ {acc.get('tau_t1')}（采样 T = {acc.get('t_sampled', 1.0):g}{'' if acc.get('t_sampled', 1.0) == 1.0 else '，非 T = 1「二手」'}），"
+                                          f"{acc['block']} 个草稿 → i.i.d. 接受率 {spec_accept_from_tau(acc['tau'], acc['block']):.3f}"
+                                          "「推导」" if acc else ""),))
 
 
 def spec_accept_from_tau(tau: float, k: int) -> float:
@@ -1525,6 +1613,8 @@ def with_loops(spec: ModelSpec, loops: int, mode: str) -> ModelSpec:
 
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if mt == "beam":
+        return _build_beam, "GQA（SWA + full NoPE，输出门）MoE"
     if mt == "dory":
         return _build_dory, "nGPT 循环 LM（SWA + full GQA，输出门）"
     if mt in ("muse_spark", "muse_spark_text"):
@@ -1593,7 +1683,30 @@ def _act_fmt(rel: dict) -> str:
     qc = rel.get("quantization_config") or {}
     if isinstance(qc, dict) and qc.get("quant_method") == "fp8" and qc.get("activation_scheme") in ("dynamic", "static"):
         return "fp8"
+    # 0.254: compressed-tensors W8A8 float (FP8_DYNAMIC per-token / FP8_BLOCK per-group-128 input_activations, num_bits 8,
+    # type float) — vLLM CompressedTensorsW8A8Fp8 quantises each GEMM input to fp8 「来源」 (was bf16 ≤ 0.253)
+    if isinstance(qc, dict) and qc.get("quant_method") == "compressed-tensors" and any(
+            (g.get("input_activations") or {}).get("num_bits") == 8 and (g.get("input_activations") or {}).get("type") == "float"
+            for g in (qc.get("config_groups") or {}).values() if isinstance(g, dict)):
+        return "fp8"
     return "bf16"
+
+
+def _w4a4_roles(rel: dict, fm: dict) -> dict:
+    """0.254: ModelOpt NVFP4 (hf_quant_config quant_algo "NVFP4"; config_groups input_activations num_bits 4) is W4A4 —
+    vLLM ModelOptNvFp4 / SGLang modelopt_fp4 quantise each NVFP4 GEMM's input to NVFP4 (global input_scale, e4m3 per 16)
+    「来源」; "W4A16_NVFP4" (Dory) stays weight-only.  The activation format applies only to the roles stored in NVFP4
+    (excluded modules — attention, dense layers, router, lm_head — keep bf16 inputs).  Was bf16 for all roles ≤ 0.253."""
+    qc = rel.get("quantization_config") or {}
+    if not isinstance(qc, dict) or qc.get("quant_method") != "modelopt":
+        return {}
+    a4 = qc.get("quant_algo") == "NVFP4" or any(
+        (g.get("input_activations") or {}).get("num_bits") == 4 for g in (qc.get("config_groups") or {}).values()
+        if isinstance(g, dict))
+    if not a4:
+        return {}
+    return {"act_" + r: RoleFormat("nvfp4", 4.5) for r, f in fm.items()
+            if f.fmt == "nvfp4" and r in ("attn", "mlp", "expert", "shared_expert")}
 
 
 # ---------------------------------------------------------------- public API
@@ -1662,6 +1775,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                           c.get("n_recurrent_loops") or 1, "per_loop")
     if rel is not None:
         fm = _release_formats(rel)
+        fm.update(_w4a4_roles(rel, fm))
         spec = replace(spec, formats=tuple(sorted(fm.items())), kv_fmt=_kv_fmt(rel), act_fmt=_act_fmt(rel),
                        release_params=rel.get("params_llm"), release_mtp_params=rel.get("params_mtp"),
                        release_bytes=rel.get("bytes_llm"), quantized_release=_quant_release(rel))
@@ -1710,7 +1824,9 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                            draft_block=c.get("dspark_block_size") or 0,
                            draft_targets=len(_list(c.get("dspark_target_layer_ids")) or []),
                            draft_markov=c.get("dspark_markov_rank") or 0)
-        if rel.get("dspark") and (c.get("model_type") or "").startswith("muse_spark"):
+        if rel.get("dspark") and rel["dspark"].get("kind") == "dflash2":
+            spec = _attach_dflash2(spec, rel["dspark"])           # 0.254: DFlash2 block draft (conv + selector)
+        elif rel.get("dspark") and (c.get("model_type") or "").startswith("muse_spark"):
             spec = _attach_muse_dspark(spec, rel["dspark"])
         elif rel.get("dspark") and rel["dspark"].get("kind") == "dspine":
             spec = _attach_dspine(spec, rel["dspark"])            # 0.252: DFlash anchor-row draft + code bridge

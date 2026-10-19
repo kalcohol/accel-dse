@@ -81,7 +81,8 @@ IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b",
 # attention as full + audio encoder storage-only
 VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4",   # 0.145: MiniCPM slicing + MiMo band windows modelled → full; 0.251 NVFP4 = same vision
                   "muse-spark-open", "muse-spark-open-fp8", "muse-spark-open-mxfp4",
-                  "muse-spark-open-nvfp4", "muse-spark-open-nvfp4-dspark")   # 0.174: vision windows + resize 假设, audio storage only
+                  "muse-spark-open-nvfp4", "muse-spark-open-nvfp4-dspark",
+                  "muse-spark-open-nvfp4-dflash2")   # 0.254 DFlash2 pair = same vision; 0.174: vision windows + resize 假设, audio storage only
 
 
 from accel_dse.core.evaluate import attn_orient   # noqa: E402

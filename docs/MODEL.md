@@ -6125,6 +6125,8 @@ DES check at A λ52 (`sd248/raw2_A52.npy`, f corrected for in-flight prompts):
 
 **Why deferred.** There is no public modeling code for the conv projector or the selector: vLLM main `qwen3_dflash.py` has neither, and the card points to ModelOpt. Their ops cannot be derived mechanism-first.
 
+> **Correction (0.254, §201.3).** This was wrong. vLLM main `vllm/model_executor/models/qwen3_dflash2.py` has had both the conv projector (`DFlashGroupedConv`) and the selector (`CandidateSelector`) since PR #52816 (2026-08-21). 0.253 had searched only `qwen3_dflash.py`. The draft is now modelled to the design below (§201.3).
+
 **Design when the code lands.**
 - Base it on the DSpark block path, the same as DSpine:
   - non-causal block, B = 8;
@@ -6134,3 +6136,112 @@ DES check at A λ52 (`sd248/raw2_A52.npy`, f corrected for in-flight prompts):
   - per-layer conv ops: kernel_projection GEMM h → 2048 per block row, then a depthwise kernel-2 conv;
   - the selector, with an analogue of serial_table: hidden_projection, then a pairwise K × K score over the codebooks;
   - the codebooks, as cold storage.
+
+## §201 Reflection Beam-1.0; DFlash2 drafts; as-released activation formats (0.254)
+
+### §201.1 Beam-1.0-501B-A23B (BF16 / FP8 / NVFP4)
+
+**Sources 「来源」.**
+- The HF config and safetensors headers of all three releases.
+- The model card.
+- transformers main `models/beam/modular_beam.py` (`BeamForCausalLM`).
+- vLLM main `vllm/models/beam/nvidia/` (PR #62074, 2026-10-19).
+
+**Structure.**
+- 52 layers.
+- **Attention.**
+  - GQA 48 q / 8 kv × 128 with q / k RMSNorm.
+  - A per-head sigmoid output gate: `gate_proj` h → H·hd, plus `gate_bias` [H]. It is fused into q as `out_gate`.
+  - `layer_types`: SWA 512 with RoPE, except every 6th layer and the last, which are full-attention NoPE (9 layers). The NoPE layers scale the query by (1 + pos/2048)^0.1, a vector op.
+- **MLP.**
+  - `mlp_layer_types`: 3 dense SwiGLU layers (20480 wide), then 49 MoE layers.
+  - Each MoE layer has 256 SwiGLU experts × 2560, top-8, and no shared expert.
+  - The router is an fp32 sigmoid with `e_score_correction_bias` and group-limited selection (n_group 8, topk_group 4). `routed_scaling_factor` 2.5 is applied after the combine.
+- **Other.** Sandwich norms (4 per layer), depth-scaled residual adds (scalars), fp32 SwiGLU products, untied embeddings, and a final tanh soft-cap of 30. These are vector costs.
+- **Builder.** `_build_beam`.
+
+**Formats.**
+- **FP8** (compressed-tensors).
+  - Per-channel static fp8 weights and dynamic per-token fp8 activations (W8A8).
+  - Not quantised: embed, lm_head and router; the 48 per-layer gate_bias vectors stay bf16 (2,496 params).
+- **NVFP4** (ModelOpt).
+  - Only the experts are NVFP4 (4.5 b), as W4A4.
+  - Layers 0–2, every `self_attn` and every router are excluded and stay bf16 / fp32.
+
+**Exactness.** param_check is exact for all three: 501,267,612,352.
+
+**Numbers 「推导」** (default 100T scenario, TP 8 / EP 8, batch 1, ctx 4096):
+
+| | decode TPOT | prefill TTFT | weights / card |
+|---|---|---|---|
+| BF16 | 71.49 ms (does not fit, 118 GiB needed) | 746.7 ms | 116.9 GiB |
+| FP8 | 37.08 ms | 382.3 ms | 58.8 GiB |
+| NVFP4 | 28.02 ms | 311.3 ms | 34.4 GiB |
+
+**Not modelled.** Group-limited routing changes which experts are hit, but the EP load model stays uniform / skew-lever based 「假设」.
+
+### §201.2 DFlash2 drafts on the DSpark block path
+
+**Sources 「来源」.**
+- vLLM main `model_executor/models/qwen3_dflash2.py` (PR #52816 conv + selector, PR #55960 fused grouped conv) on `qwen3_dflash.py` (SWA / causality resolution).
+- `models/beam/nvidia/dflash2.py`, `dflash2_ops.py` and `dflash2_conv_ops.py`.
+- `v1/worker/gpu/spec_decode/dflash2/speculator.py` (`_selector_walk_kernel`).
+- The draft config and safetensors headers.
+
+**Mechanism.**
+- **Input.** `fc` over the concatenated hidden states of the 5 target layers (nt·h → h), then `hidden_norm`.
+- **Context K/V.** One stacked GEMM h → nl·2·KV·hd with k_norm and RoPE. The rows go into a **sliding-window** paged draft cache: `dspark_main_kv` now writes them for windowed GQA drafts, and storage keeps min(ctx, window).
+- **Block.** Anchor (bonus) row + `spec_k` mask rows; attention is **non-causal** (`is_causal` false).
+- **Per draft layer.** GQA + q/k norm, SwiGLU, and two grouped dynamic convolutions (`attention_conv`, `mlp_conv`). Each convolution has:
+  - a `kernel_projection` GEMM h → 2·taps·(h/16) (Beam 1280, Muse 2048);
+  - `base_kernel` [2, taps, h] plus a per-group delta;
+  - a taps-tap conv inside the block, side 0 before the sub-block and side 1 after it, fused into the residual norm.
+  - Vector cost: 2 convs × 2 sides × taps × 3 per element.
+- **Tail.**
+  - The target lm_head on the B − 1 draft rows, then top-K (16).
+  - `hidden_projection` h → R (256).
+  - Edge scores: unary + ⟨pred[q] ⊙ h_p, succ[c]⟩, i.e. K·K·R MACs per row, with 2K·R codebook-row gathers.
+  - The walk: one gumbel-noised argmax over K per row. It is the same kernel for greedy and sampled rounds, so a sampled round adds no op.
+- **Storage.**
+  - The codebooks (2·V·R) are cold: only gathered rows are read.
+  - The other draft weights are hot and streamed.
+  - The conv, selector and fc GEMMs are ReplicatedLinear (repeated on every TP rank). Attention and MLP shard normally (the reference allows TP).
+- **Block size.**
+  - The served block is 1 + `num_speculative_tokens`, so `spec_k` sets it, up to the trained block − 1 (Beam 15, Muse 7); a larger `spec_k` warns and is capped.
+  - Default `draft_block` = the card's serving block 8.
+- **Fields.** `ModelSpec.draft_dflash2` = (taps, group, rank, top-k, trained block). The attach function is `_attach_dflash2`, and draft json kind is `dflash2`.
+
+**Published acceptance 「来源」 → i.i.d. 「推导」.**
+
+| draft | card setting | τ greedy | τ sampled | a (k = 7) |
+|---|---|---|---|---|
+| Beam DFlash2 | NVFP4 target, TP 4, B300; mean of GSM8K / MATH-500 / HumanEval / MBPP / MT-Bench | 4.876 | 4.67 (T = 0.7, top-p 0.99 — not T = 1, 「二手」) | 0.852 |
+| Muse DFlash2 | NVFP4 target, GB300 TP4+EP4; mean of MT-Bench, SPEED-Bench qualitative and 32k | 3.687 | 3.33 (T = 1) | 0.758 |
+
+**Numbers 「推导」** (TP 8 / EP 8, k = 7, `spec_accept_src` published):
+
+| model | decode TPOT, no draft | greedy | sampled |
+|---|---|---|---|
+| Beam NVFP4 + DFlash2 | 28.02 ms | 16.24 ms | 16.95 ms |
+| Muse NVFP4 + DFlash2 | 96.58 ms | 51.37 ms | 56.88 ms |
+
+### §201.3 Muse-Spark-Open DFlash2 — closes §200.4
+
+Built with the same `_attach_dflash2`:
+- 5 non-causal SWA-2048 layers (`dflash_config.swa_window_size`), 128 / 16 × 64 heads, SwiGLU 24576;
+- trained block 8 (so `spec_k` ≤ 7);
+- `output_multiplier` 0.177 and soft-cap 20, both vector.
+
+The draft is exact at 4,384,162,432 params. The §200.4 deferral rested on a wrong code search (see the correction there).
+
+### §201.4 As-released activation formats (default change, mechanism-justified)
+
+- **compressed-tensors.** A `config_groups` entry with `input_activations` {num_bits 8, type float} (dynamic per-token, or per-group 128) is W8A8. vLLM `CompressedTensorsW8A8Fp8` quantises every GEMM input to fp8 「来源」.
+  - `_act_fmt` bf16 → **fp8**.
+  - LFM2.5-24B-A2B-FP8 prefill TP 8: 33.19 → 24.38 ms. Beam-FP8: 424.39 → 382.34 ms. Decode is unchanged (weight-bound).
+- **ModelOpt.**
+  - `quant_algo` "NVFP4" (or 4-bit `input_activations`) is W4A4. vLLM `ModelOptNvFp4` and SGLang `modelopt_fp4` quantise the input to NVFP4 (global input_scale, e4m3 per 16) 「来源」.
+  - `_w4a4_roles` adds `act_<role>` = nvfp4 for the roles stored in NVFP4. In practice that is the experts of Muse, Step-5 and Beam; their excluded modules keep bf16 inputs.
+  - On chips without a native NVFP4 MAC (the default 100T), (nvfp4, nvfp4) runs as bf16 like the old (nvfp4, bf16) dequant, so the numbers are unchanged. On Blackwell-class rates the expert GEMMs run at the NVFP4 rate.
+  - "W4A16_NVFP4" (Dory) stays weight-only.
+

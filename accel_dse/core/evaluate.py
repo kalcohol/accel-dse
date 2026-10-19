@@ -1604,7 +1604,19 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     dm = _draft_model(sv, m, warnings)          # 0.222: independent draft model (None = target's own MTP / DSpark)
     spec_k = sv.spec_k if (sv.phase == "decode" and (m.mtp_layers or dm is not None)) else 0
     if m.draft == "dspark" and sv.spec_k and dm is None:
-        if sv.phase == "decode" and m.draft_anchor and spec_k != m.draft_block - 1:
+        if sv.phase == "decode" and m.draft_dflash2:
+            # 0.254 DFlash2 (vLLM DFlash2BeamDecoderLayer): the served block is 1 + num_speculative_tokens, any size up
+            # to the trained block; the card recommends 8 (anchor + 7)
+            tb = m.draft_dflash2[4]
+            if spec_k > tb - 1:
+                warnings.append(f"spec_k {spec_k} 超过 DFlash2 训练块 {tb}（锚行 + {tb - 1} 个草稿）：按 k = {tb - 1} 计")
+                spec_k = tb - 1
+            if spec_k + 1 != m.draft_block:
+                dv = model_cache(m).setdefault("dflash2_block", {})
+                if spec_k not in dv:
+                    dv[spec_k] = replace(m, draft_block=spec_k + 1)
+                m = dv[spec_k]
+        elif sv.phase == "decode" and m.draft_anchor and spec_k != m.draft_block - 1:
             # 0.252 DSpine: block = anchor + B − 1 drafts, and the reference serves only the checkpoint's block size
             # (DSpineDraftModel.set_block_size raises; worker needs --speculative-num-draft-tokens == block)
             warnings.append(f"spec_k {spec_k}：DSpine 块大小固定为 {m.draft_block}（锚行 + {m.draft_block - 1} 个草稿，"
@@ -1613,6 +1625,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         elif sv.phase == "decode" and spec_k > m.draft_block:
             warnings.append(f"spec_k {spec_k} 超过 DSpark 草稿块 {m.draft_block}：按 {m.draft_block} 计")
             spec_k = m.draft_block
+        if m.draft_dflash2 and sv.phase == "decode" and sv.spec_k:
+            warnings.append(f"DFlash2 草稿：块 = 1 + spec_k = {spec_k + 1}（训练 {m.draft_dflash2[4]}"
+                            + (f"，公开接受长度按 {m.spec_published[1] + 1} 块" if m.spec_published else "") + "）；"
+                            "卷积 / 选择器 / fc 在每个 TP rank 重复计算（ReplicatedLinear）")
         if m.draft_bridge and lay.tp > 1:
             warnings.append("DSpine 参考实现只支持 TP = 1（DSpineWorkerV2）：TP > 1 按草稿 GEMM 在每个 TP rank 重复计算评估")
         if sv.phase == "prefill":
