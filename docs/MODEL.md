@@ -7767,3 +7767,26 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §234.5 Default behaviour, old → new
 - Existing models: unchanged (872 / 876 points identical across the default and two pin chips; the other 4 never finished on 0.288); speech KPIs 68 / 68 identical; ext_validate numbers unchanged. New: 5 listed Nemotron 3.5 entries (§234.1).
+
+## §235 IQ2_XXS codebook dequant cost; dequant-bound tag; queue hot paths (0.290)
+
+### §235.1 Dequant element-ops per format
+- `dtypes.DEQUANT_OPS` / `dequant_ops(fmt)`: vector element-ops per converted element; default 2 (the 0.40 convention: unpack / convert + scale multiply 「假设」).
+- IQ2_XXS 「推导」 from ggml `dequantize_row_iq2_xxs` (ggml-quants.c) and ggml-cuda `dequantize_iq2_xxs` (llama.cpp 839a572a4c): per weight 2 + 1 (sign select `ksigns_iq2xs[…] & kmask_iq2xs[j]`); per 8 weights 4 (grid lookup in `iq2xxs_grid` 256 × u64, sign lookup in `ksigns_iq2xs` 128 B, 2 index ops); per 32 weights 5 (db = d · (0.5 + (aux32[1] >> 28)) · 0.25). Σ = 2 + 1 + 4/8 + 5/32 = 3.65625. The fp16 d per 256 is not charged (as nvfp4 / int4 scales). A lookup = one lane op (tables in local memory 「假设」).
+- Q8_0 (`dequantize_row_q8_0`: qs · d) = 2. Block bytes incl. scales (ggml-common.h): IQ2_XXS 66 B / 256, Q8_0 34 B / 32 (§234.1).
+- `mapping.gemm_cost`: `convert_x` = Σ converted elements · (dequant_ops − 2), `convert_wx` its weight part; `_op_seconds` vector = convert_elems · 2 + convert_x, weight dequant = convert_w · 2 + convert_wx. `_wide_alt` / `_splitk_alt` / the swapped-orientation path carry both. A (fmt, act) pair in `FormatSupport.mixed` → `conversion` none, 0 ops.
+- 「近似」: the served kernels (vLLM b12x, llama.cpp MMQ) take dot products on packed values; the model charges the reference dequant to bf16 then a bf16 GEMM.
+
+### §235.2 Headroom and tag
+- `vecsanity.format_headroom(chip, bw, f)` = (dequant lanes · f_clk · 2 / dequant_ops(f)) / (bw / bytes(f)); int4 → `ratios()["dequant_headroom"]`. IQ2_XXS / int4 = (66/256)/0.5 · 2/3.65625 = 0.282.
+- `_dequant_warn(stages, sys, warnings, m)`: appends 「f 余量 x×」 for each weight format of m with headroom below int4.
+- `api.dequant_bound(s)`: bound VECTOR and conv_w ≥ 0.5 · t_vector; stage dict `dequant_ms`, `dequant_bound`; `api_catalog.dequant_ops`. app.js `boundTag(bound, dq)` → 「VECTOR · 反量化」; assumptions list the ops per format.
+- Bolt-24GB decode b8 on 1P: default lanes MAC-bound, TPOT 5.616 ms (unchanged; vector 2.52 → 3.95 ms); 4096 lanes VECTOR + dequant-bound, 10.38 → 16.11 ms.
+
+### §235.3 Queue hot paths (bit-identical)
+- `pdqueue._queue_weights` → `_queue_weights_c` (lru_cache 4096, tuple out; wrapper returns a list). Inner loops iterate x ≥ 1 directly; same products and summation order.
+- `bulkq.bulk_law` histogram update: first / middle / last split (the dropped terms are +0.0 on non-negative masses — exact). `r_surv`: o > r ⇔ o − r > 0.0 for finite floats.
+- Verified: 300 `_queue_weights`, 3 `bulk_law`, 2 `disagg_report` reprs identical to 0.289; 604 model points identical.
+
+### §235.4 Default behaviour, old → new
+- All 604 default points identical (Bolt TPOT included). Bolt-24GB vector / dequant ms up 1.83× on the IQ2_XXS share; the warning text and coverage note change.

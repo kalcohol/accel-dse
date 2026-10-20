@@ -21,6 +21,9 @@ EXTRA_ORGS = (
     # 0.270 speech round: speech-model orgs (NOTES_0269 candidate list) — ASR / TTS / speech dialogue
     "FunAudioLLM", "funasr", "kyutai", "bosonai", "SparkAudio", "IndexTeam", "fishaudio", "SWivid", "FireRedTeam",
     "hexgrad", "ResembleAI", "nari-labs", "canopylabs", "sesame",
+    # 0.290: orgs with official releases no sweep saw (NOTES_0290): IFM (Jais 3, 2026-10), JetBrains (Mellum2.1,
+    # 2026-09-20), perplexity-ai (pplx-decider, 2026-10)
+    "IFM", "JetBrains", "perplexity-ai",
 )
 # 0.287: ornith-ai is now a catalog provider (PROVIDERS) — it was untracked, so Ornith-1.0 / 1.5 (2026-06 / 08) were
 # never swept; found via the unsloth/Ornith-1.5-122B-GGUF re-upload.

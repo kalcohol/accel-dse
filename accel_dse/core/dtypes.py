@@ -47,6 +47,26 @@ FORMATS: dict[str, Format] = {f.name: f for f in (
 
 ACT_DEFAULT = "bf16"
 
+# 0.290: vector element-ops per converted element.  Every format is charged the 0.40 convention of 2 (unpack / convert
+# + one scale multiply 「假设」, evaluate._op_seconds) — except the ggml IQ2_XXS codebook format, whose reference dequant
+# does more per weight 「推导」 from ggml dequantize_row_iq2_xxs (ggml-quants.c) / dequantize_iq2_xxs (ggml-cuda
+# dequantize.cuh, llama.cpp master 839a572a4c, 2026-10-21 JST):
+#   per weight      2      the convention (grid byte → float, × the sub-block scale db)
+#                 + 1      sign: (ksigns_iq2xs[...] & kmask_iq2xs[j]) ? -1 : 1
+#   per 8 weights + 4 / 8  two table lookups (iq2xxs_grid: 256 × uint64 = 2 KiB; ksigns_iq2xs: 128 B) + two index ops
+#                          (sign index (aux32[1] >> 7·l) & 127; the grid index is a byte of the 32-bit word)
+#   per 32        + 5 / 32 sub-block scale db = d · (0.5 + (aux32[1] >> 28)) · 0.25: shift, int → float, add, 2 mul
+#   = 3.65625.  The fp16 block scale d (1 per 256) is not charged — the convention does not charge stored scales
+#   (nvfp4 e4m3 per 16, int4 fp16 per 128) either.  Q8_0 (y = qs[j] · d, ggml dequantize_row_q8_0) is the convention.
+#   A lookup is charged as one lane op (the 2 KiB + 128 B tables sit in each core's local memory「假设」).
+#   A chip that lists the (format, activation) pair in FormatSupport.mixed decodes in the MAC datapath: no dequant.
+DEQUANT_OPS = {"iq2_xxs": 2 + 1 + 4 / 8 + 5 / 32}
+
+
+def dequant_ops(name: str) -> float:
+    """0.290: vector element-ops to convert one element of ``name`` to the execution format (see DEQUANT_OPS)."""
+    return DEQUANT_OPS.get(name, 2.0)
+
 # 0.147: mixed-precision MAC presets (W, A, rate vs bf16) for the UI / insight knobs.  W4A8 at the FP8 rate is sourced
 # (NVIDIA PTX ISA 8.7, tcgen05.mma kind::f8f6f4: fp4 / fp6 / fp8 operand mixes at the f8f6f4 = FP8 rate); W4A16 / W8A16
 # at the bf16 rate are 「假设」 (the 16-bit operand sets the multiplier; the gain is the removed dequant only).

@@ -233,7 +233,15 @@ def _stage_dict(s) -> dict:
                     "slc_w_MiB": (s.mem.slc_hot + s.mem.slc_expert) / 2**20, "slc_kv_MiB": s.mem.slc_kv / 2**20,
                     # 0.286: with a measured expert load, the share of expert reads the SRAM-pinned experts serve
                     **({"sram_exp_hit": s.mem.sram_exp_hit} if s.mem.sram_exp_hit >= 0 else {})},
-            "convert_Melems": s.convert_elems / 1e6, "tflops": t.flops / 1e12}
+            "convert_Melems": s.convert_elems / 1e6, "tflops": t.flops / 1e12,
+            # 0.290: weight-dequant vector ms and whether it decides a VECTOR-bound stage (≥ half its vector time)
+            "dequant_ms": s.conv_w * 1e3, "dequant_bound": dequant_bound(s)}
+
+
+def dequant_bound(s) -> bool:
+    """0.290: a VECTOR-bound stage whose vector time is mostly weight dequant (conversion of packed / codebook weights
+    on the vector path, StageResult.conv_w) — the UI tags it 「反量化」."""
+    return s.time.bound == "VECTOR" and s.conv_w >= 0.5 * s.time.t_vector > 0
 
 
 def _api_summary(r: Result) -> dict:
@@ -327,7 +335,7 @@ def _electricity_presets() -> dict:
 
 def api_catalog() -> dict:
     from .core.hardware import MEM_LEGACY_0204, default_mem
-    from .core.dtypes import MIXED_PRESETS
+    from .core.dtypes import DEQUANT_OPS, MIXED_PRESETS
     chips = {k: {**c.__dict__, "formats": [list(x) for x in c.formats.rates], "mixed": [list(x) for x in c.formats.mixed], "peak_tflops_bf16": c.peak_tflops_bf16,
                  "port_GBps": c.port_GBps, "gemv": c.gemv, "lanes": c.lanes,
                  "acc_total_kib": c.acc_total_kib, "acc_kib_per_engine_default": ACC_KIB_PER_ENGINE,
@@ -342,7 +350,8 @@ def api_catalog() -> dict:
             "energy_presets": _energy_presets(),
             "electricity_presets": _electricity_presets(),
             "tco_presets": _tco_presets(),
-            "mixed_presets": {k: {"pairs": [list(p) for p in v[0]], "source": v[1]} for k, v in MIXED_PRESETS.items()}}
+            "mixed_presets": {k: {"pairs": [list(p) for p in v[0]], "source": v[1]} for k, v in MIXED_PRESETS.items()},
+            "dequant_ops": dict(DEQUANT_OPS)}
 
 
 def api_memory(body: dict) -> dict:

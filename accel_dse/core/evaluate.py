@@ -14,7 +14,7 @@ from functools import lru_cache
 from types import SimpleNamespace
 
 from .catalog import get_model
-from .dtypes import fmt as _fmt
+from .dtypes import FORMATS, fmt as _fmt
 from .hardware import System
 from .domain import ResolvedWorkload, resolve_workload
 from .ir import (Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, full_io_ops, head_ops, layer_repeat,
@@ -618,7 +618,7 @@ def _wide_alt(ch, org, op, c):
         # (w_bits above the format's) are dropped on the swapped side (≤ 10 %, feed term only)
         t = gemm_cost(ch, org, op.n, op.k, op.m, count=op.count, w_fmt=op.a_fmt, a_fmt=op.w_fmt)
         if t.cycles < c.cycles:
-            c = replace(t, convert_w=c.convert_w)
+            c = replace(t, convert_w=c.convert_w, convert_wx=c.convert_wx)
     if WIDE_GEMM_AUTO:
         t = gemm_cost(replace(ch, instance_sched="auto"), org, op.m, op.k, op.n, count=op.count, w_fmt=op.w_fmt,
                       a_fmt=op.a_fmt, w_bits=op.w_bits)
@@ -654,7 +654,8 @@ def _splitk_alt(ch, org, m, k, n, count, w_fmt, a_fmt, w_bits, c):
         if one.cycles + red < best.cycles:
             # conversion work is the operands' (every K slice converted once, by its own group): unchanged
             best = replace(one, cycles=one.cycles + red, mac_cycles=one.mac_cycles + red,
-                           convert_elems=c.convert_elems, convert_w=c.convert_w)
+                           convert_elems=c.convert_elems, convert_w=c.convert_w, convert_x=c.convert_x,
+                           convert_wx=c.convert_wx)
         s *= 2
     return best
 
@@ -708,7 +709,7 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
         t = min((gemm_cost(sp, org, a, op.k, b, count=op.count, w_fmt=wf, a_fmt=af)
                  for a, b in ((op.m, op.n), (op.n, op.m))), key=lambda x: x.cycles)
         if t.cycles < c.cycles:
-            c = replace(t, convert_elems=c.convert_elems)
+            c = replace(t, convert_elems=c.convert_elems, convert_x=c.convert_x)
     if SPLIT_K and ch.instance_sched != "cta":
         if op.kind == "gemm":
             c = _splitk_alt(ch, org, op.m, op.k, op.n, op.count, op.w_fmt, op.a_fmt, op.w_bits, c)
@@ -718,7 +719,8 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
             kf = model.act_fmt if op.orient else (op.w_fmt or model.kv_fmt)
             c = _splitk_alt(ch, org, op.m, op.k, op.n, op.count, kf, model.act_fmt if op.orient else op.a_fmt, None, c)
     t = c.cycles * op.causal / f
-    vec = _vec_seconds(ch, op) + _convert_seconds(ch, c.convert_elems * 2.0)   # 2 element-ops / element 「假设」
+    # 2 element-ops / element 「假设」; 0.290: + the codebook formats' extra ops (dtypes.DEQUANT_OPS), 0 for the others
+    vec = _vec_seconds(ch, op) + _convert_seconds(ch, c.convert_elems * 2.0 + c.convert_x)
     mac_share = t if c.bound == "mac" else 0.0
     rate = ch.formats.rate(c.exec_fmt) or 1.0
     ideal = op.flops / 2.0 / (ch.macs * rate * ch.freq_ghz * 1e9)   # 100 % array utilisation
@@ -734,7 +736,7 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
             d = ideal / cap - t
             t += d
             mac_share += d
-    vw = _convert_seconds(ch, c.convert_w * 2.0) if op.kind == "gemm" else 0.0   # weight dequant: per pass, not per token
+    vw = _convert_seconds(ch, c.convert_w * 2.0 + c.convert_wx) if op.kind == "gemm" else 0.0   # weight dequant: per pass, not per token
     return t, mac_share, t - mac_share, vec, c.convert_elems, ideal, c.feed_cycles * op.causal * ch.port_Bpc, vw
 
 
@@ -1523,16 +1525,23 @@ def _pick_split(run, cands: tuple, lc) -> list:
 PP_REFINE_STEPS = 8
 
 
-def _dequant_warn(stages, sys, warnings: list) -> None:
+def _dequant_warn(stages, sys, warnings: list, m: ModelSpec | None = None) -> None:
     """0.102: weight conversion on the vector / dequant path exceeds the stage's DRAM time — the dequant rate, a
     「假设」 constant (lanes or formats.dequant_elems_per_cycle), decides the step.  Public chips keep ≥ 1.7×
     int4 headroom (core/vecsanity.py)."""
     for st in stages:
         if st.conv_w > 0 and st.conv_w > st.time.t_dram:
             from .vecsanity import check
+            from .vecsanity import format_headroom
             h = check(sys.chip, sys.dram_GBps)["dequant_headroom"][0]
+            # 0.290: a weight format with less headroom than int4 (the 2-bit IQ2_XXS codebook: 1.9× the elements per
+            # byte at 1.8× the ops each) is named with its own headroom
+            low = sorted({(format_headroom(sys.chip, sys.dram_GBps, rf.fmt), rf.fmt) for k, rf in (m.formats if m else ())
+                          if not k.startswith("act_") and rf.fmt in FORMATS
+                          and format_headroom(sys.chip, sys.dram_GBps, rf.fmt) < h})
+            tail = "".join(f"；{f} 余量 {x:.2f}×" for x, f in low)
             warnings.append(f"权重格式转换（反量化）{st.conv_w * 1e3:.3g} ms 超过 DRAM 时间 {st.time.t_dram * 1e3:.3g} ms，"
-                            f"结果取决于反量化吞吐假设（int4 余量 {h:.2f}×，公开芯片 ≥ 1.7×；见 vecsanity）")
+                            f"结果取决于反量化吞吐假设（int4 余量 {h:.2f}×{tail}，公开芯片 ≥ 1.7×；见 vecsanity）")
             return
 
 
@@ -2024,7 +2033,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
     tick = stages[heavy].time.total
     _pp_imbalance_warn(stages, tick, warnings, scn.pp_split)
-    _dequant_warn(stages, sys, warnings)
+    _dequant_warn(stages, sys, warnings, m)
     cap_heavy = max(range(len(stages)), key=lambda i: stages[i].mem.dram_need)
     fits = all(s.mem.fits for s in stages)
     if not fits:

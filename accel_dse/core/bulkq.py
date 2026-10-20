@@ -540,8 +540,16 @@ def bulk_law(lam: float, b: int, D: tuple, O: tuple | None = None) -> dict | Non
             base = a + s0 - lo_i
             g0, g1 = wo * (1 - f), wo * f
             seg = hist[base:base + n + 1]
-            hist[base:base + n + 1] = [c + (arr[i] * g0 if i < n else 0.0) + (arr[i - 1] * g1 if i > 0 else 0.0)
-                                       for i, c in enumerate(seg)]
+            if n and len(seg) == n + 1:
+                # 0.290 perf: the three index ranges of the expression below split out — first (c + arr[0]·g0 + 0.0),
+                # middle, last (c + 0.0 + arr[n−1]·g1).  Every mass is ≥ 0, so the +0.0 terms are exact no-ops:
+                # bit-identical values, no per-element branches
+                hist[base:base + n + 1] = ([seg[0] + arr[0] * g0]
+                                           + [c + a0 * g0 + a1 * g1 for c, a0, a1 in zip(seg[1:n], arr[1:n], arr)]
+                                           + [seg[n] + arr[n - 1] * g1])
+            else:
+                hist[base:base + n + 1] = [c + (arr[i] * g0 if i < n else 0.0) + (arr[i - 1] * g1 if i > 0 else 0.0)
+                                           for i, c in enumerate(seg)]
     atoms = tuple((t, f_idle * w) for t, w in O[0])
     hz = tuple((lo_i + i, v) for i, v in enumerate(hist) if v > 0)
     return {"mean": mean, "p_wait": 1 - f_idle, "wait_mean": wq, "own_mean": own, "batch_mean": bm,

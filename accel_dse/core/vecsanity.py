@@ -44,6 +44,16 @@ def ratios(macs: float, lanes: float, ghz: float, dram_GBps: float, conv_lanes: 
     return {"mac_per_lane": macs / lanes, "dequant_headroom": conv / (dram_GBps * 1e9 * 2)}
 
 
+def format_headroom(chip, dram_GBps: float, name: str) -> float:
+    """0.290: ``dequant_headroom`` for the weights of format ``name``: conversions / s (at dtypes.dequant_ops element-ops
+    each, 2 = the int4 convention) ÷ weight elements streamed / s (DRAM bytes / s ÷ the format's stored bytes incl.
+    scales).  int4 at 0.5 B and 2 ops = ``ratios()["dequant_headroom"]``; IQ2_XXS (66 B / 256, 3.66 ops) ≈ 0.28× of
+    that — a 2-bit codebook format streams 1.9× the elements per byte and costs 1.8× the ops per element."""
+    from .dtypes import dequant_ops, fmt
+    conv = (chip.formats.dequant_elems_per_cycle or chip.lanes) * chip.freq_ghz * 1e9 * 2.0 / dequant_ops(name)
+    return conv / (dram_GBps * 1e9 / fmt(name).bytes)
+
+
 def public_band() -> dict:
     """min / max of each ratio over the public datapoints."""
     rs = [ratios(*v[:4]) for v in PUBLIC.values()]

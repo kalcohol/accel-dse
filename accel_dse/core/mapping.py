@@ -36,7 +36,7 @@ import math
 from dataclasses import dataclass, replace
 from functools import lru_cache
 
-from .dtypes import FormatSupport, fmt as _fmt, gemm_exec
+from .dtypes import FormatSupport, dequant_ops, fmt as _fmt, gemm_exec
 from .hardware import Chip
 
 ORGS = ("os", "ws_edge", "ws_broad", "os_vec", "reconf")
@@ -59,6 +59,10 @@ class GemmCost:
     conversion: str        # none | dequant_w | upcast_both | downcast
     convert_elems: float   # elements converted on the vector path
     convert_w: float = 0.0  # of which second-operand (weight) elements: once per pass, independent of tokens (0.63)
+    # 0.290: element-ops above the 2-per-element convention (dtypes.DEQUANT_OPS: IQ2_XXS codebook dequant); 0 for every
+    # other format, so the conversion seconds of those are unchanged
+    convert_x: float = 0.0
+    convert_wx: float = 0.0  # of which on the second operand (weights)
 
     @property
     def bound(self) -> str:
@@ -154,7 +158,7 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
     ab = _fmt(a_fmt).bytes
     ob = max(2.0, ab)       # outputs leave in bf16 (fp32 when the activations are fp32)
     if ch.instance_sched == "cta":
-        return _cta(ch, m, k, n, count, rate, wb, ab, ob, ex, conv, flag)
+        return _cta(ch, m, k, n, count, rate, wb, ab, ob, ex, conv, flag, w_fmt, a_fmt)
     best = None
     for df in _candidates(org):
         if df == "os":
@@ -180,7 +184,9 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
         # max(array, conversion) cycles, so a wider SRAM port can never select a split whose replicated conversion
         # outweighs the array cycles it saves
         conv_rate = ch.formats.dequant_elems_per_cycle or ch.lanes
-        base_conv = ((k * n if flag & 1 else 0.0) + (m * k if flag & 2 else 0.0)) * count * 2.0 / conv_rate
+        xw, xa = _conv_extra(m, k, n, w_fmt, a_fmt, flag)
+        base_conv = (((k * n if flag & 1 else 0.0) + (m * k if flag & 2 else 0.0)) * count * 2.0
+                     + (xw + xa) * count) / conv_rate
         best_s = max(best_c, base_conv)
         for g in (_groups(ch.engines) if sched == "auto" else (1,)):
             par = ch.engines // g
@@ -203,7 +209,8 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
                     # 0.72: ≥ 2 active groups advance in lock-step waves → a barrier per extra wave; one active group
                     # (wide on a subset of cores) streams back to back like wide
                     c1 = one.cycles + ((waves - 1) * ch.wave_overhead_cycles if act > 1 else 0.0)
-                    sc = max(c1, one.convert_elems * count * sp / waves * 2.0 / conv_rate) if flag else c1
+                    sc = max(c1, (one.convert_elems * count * sp / waves * 2.0
+                                  + one.convert_x * count * sp / waves) / conv_rate) if flag else c1
                     if sc < best_s:
                         best_s, best_c, alt = sc, c1, (one, count * sp / waves, c1 - one.cycles)
         if alt is not None:
@@ -211,19 +218,29 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
             one, per, extra = alt
             if not extra:
                 return GemmCost(one.cycles, one.mac_cycles, one.feed_cycles, one.dataflow, one.exec_fmt, one.conversion,
-                                one.convert_elems * per, one.convert_w * per)
+                                one.convert_elems * per, one.convert_w * per, one.convert_x * per, one.convert_wx * per)
             return GemmCost(one.cycles + extra, one.mac_cycles + extra, one.feed_cycles, one.dataflow, one.exec_fmt,
-                            one.conversion, one.convert_elems * per, one.convert_w * per)
+                            one.conversion, one.convert_elems * per, one.convert_w * per, one.convert_x * per,
+                            one.convert_wx * per)
     conv_elems = 0.0
     if flag & 1:
         conv_elems += k * n
     if flag & 2:
         conv_elems += m * k
+    xw, xa = _conv_extra(m, k, n, w_fmt, a_fmt, flag)
     if lat:
         return GemmCost(max(mac * count + fill, feed * count) + lat, mac * count + fill + lat, feed * count, df, ex,
-                        conv, conv_elems * count, (k * n * count) if flag & 1 else 0.0)
+                        conv, conv_elems * count, (k * n * count) if flag & 1 else 0.0, (xw + xa) * count, xw * count)
     return GemmCost(max(mac * count + fill, feed * count), mac * count + fill, feed * count, df, ex, conv,
-                    conv_elems * count, (k * n * count) if flag & 1 else 0.0)
+                    conv_elems * count, (k * n * count) if flag & 1 else 0.0, (xw + xa) * count, xw * count)
+
+
+def _conv_extra(m, k, n, w_fmt, a_fmt, flag) -> tuple[float, float]:
+    """0.290: conversion element-ops above the 2-per-element convention, (second operand, first operand) — nonzero
+    only for formats in dtypes.DEQUANT_OPS (IQ2_XXS)."""
+    xw = k * n * (dequant_ops(w_fmt) - 2.0) if flag & 1 else 0.0
+    xa = m * k * (dequant_ops(a_fmt) - 2.0) if flag & 2 else 0.0
+    return xw, xa
 
 
 # 0.92: NVIDIA "Matrix Multiplication Background" user guide — cuBLAS thread-block tiles (most → least efficient)
@@ -257,7 +274,7 @@ def cta_occupancy(ch: Chip, tm: int, tn: int, ab: float, wb: float) -> int:
     return max(1, k)
 
 
-def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost:
+def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag, w_fmt="bf16", a_fmt="bf16") -> GemmCost:
     """0.92 instance_sched "cta" (GPU reference hardware): the output is cut into thread-block tiles tm × tn (the
     guide's tile set; the library picks the fastest, optionally split-K), one tile per SM (engine) at a time →
     tile quantization (partial tiles do full work) and wave quantization (ceil(tiles / SMs) waves, the tail wave
@@ -339,8 +356,9 @@ def _cta(ch: Chip, m, k, n, count, rate, wb, ab, ob, ex, conv, flag) -> GemmCost
         if fl > cyc:
             mac_c, cyc = 0.0, fl
     conv_elems = (k * n if flag & 1 else 0.0) + (m * k if flag & 2 else 0.0)
+    xw, xa = _conv_extra(m, k, n, w_fmt, a_fmt, flag)
     return GemmCost(cyc, mac_c, feed_c, "cta", ex, conv,
-                    conv_elems * count, (k * n * count) if flag & 1 else 0.0)
+                    conv_elems * count, (k * n * count) if flag & 1 else 0.0, (xw + xa) * count, xw * count)
 
 
 def gemm_seconds(ch: Chip, org: str, m, k, n, **kw) -> float:

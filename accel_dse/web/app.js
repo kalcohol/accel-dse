@@ -763,7 +763,13 @@ async function runSensitivity(r) {
 function kpi(label, value, sub, cls = '') {
   return h('div', { class: 'kpi ' + cls }, h('div', { class: 'l' }, label), h('div', { class: 'v' }, value), h('div', { class: 's' }, sub));
 }
-function boundTag(b) { return b ? h('span', { class: 'bound ' + b, title: BOUND_ZH[b] }, b) : '—'; }
+function boundTag(b, dq) {
+  // 0.290: dq = the VECTOR-bound stage's vector time is mostly weight dequant (api.dequant_bound)
+  if (!b) return '—';
+  const t = h('span', { class: 'bound ' + b, title: BOUND_ZH[b] + (dq ? ' · 主要是权重反量化' : '') }, b);
+  return dq ? h('span', {}, t, h('span', { class: 'small', title: '向量时间过半是权重反量化（码本 / 打包格式在向量单元解码）' }, ' 反量化')) : t;
+}
+const DQ_ZH = ' · 向量时间过半为权重反量化';
 function ttftFlag(ok, ms) {
   if (ok === null || ok === undefined) return h('span', { class: 'flag pend' }, '—');
   return h('span', { class: 'flag ' + (ok ? 'ok' : 'no'), title: 'DP 组内 prefill 的 TTFT 与 SLO 比较' },
@@ -771,6 +777,8 @@ function ttftFlag(ok, ms) {
 }
 function renderEval(r) {
   const s = r.summary, sv = r.scenario.serving, g = r.goodput;
+  const hv = (r.stages || [])[s.heaviest_stage];
+  S.dq = !!(hv && hv.dequant_bound);
   const m = model();
   put($('model-badges'), ...badges(m, r.model.what_if));
   put($('warns'), ...s.warnings.filter((w) => !w.startsWith('容量不足')).map((w) => h('div', {}, w)),
@@ -816,8 +824,8 @@ function renderEval(r) {
     k.push(kpi('prefill 吞吐 / 卡', num(s.tok_s_card) + ' tok/s', `共 ${num(s.tok_s)} tok/s · ${s.cards} 卡 · ${s.layout}`));
   }
   k.push(h('div', { class: 'kpi' }, h('div', { class: 'l' }, '绑定瓶颈 · 有效 MAC'),
-    h('div', { class: 'v' }, boundTag(s.bound), ' ', pct(s.array_util)),
-    h('div', { class: 's' }, `${BOUND_ZH[s.bound] || ''} · 最重流水级 ${s.heaviest_stage}`)));
+    h('div', { class: 'v' }, boundTag(s.bound, S.dq), ' ', pct(s.array_util)),
+    h('div', { class: 's' }, `${BOUND_ZH[s.bound] || ''}${S.dq ? DQ_ZH : ''} · 最重流水级 ${s.heaviest_stage}`)));
   if (g) k.push(h('div', { class: 'kpi ' + (g.ttft_ok ? '' : 'warn') }, h('div', { class: 'l' }, 'goodput / 卡（含 prefill）'),
     h('div', { class: 'v' }, num(g.tok_s_card) + ' tok/s'),
     h('div', { class: 's' }, 'DP prefill TTFT ', ttftFlag(g.ttft_ok, g.ttft_ms), g.prefill_batch ? ` · prefill batch ${g.prefill_batch}` : '')));
@@ -970,8 +978,8 @@ function memKpi(s, cap) {
 }
 function boundKpi(s) {
   return h('div', { class: 'kpi' }, h('div', { class: 'l' }, '绑定瓶颈 · 有效 MAC'),
-    h('div', { class: 'v' }, boundTag(s.bound), ' ', pct(s.array_util)),
-    h('div', { class: 's' }, `${BOUND_ZH[s.bound] || ''} · 最重流水级 ${s.heaviest_stage}`));
+    h('div', { class: 'v' }, boundTag(s.bound, S.dq), ' ', pct(s.array_util)),
+    h('div', { class: 's' }, `${BOUND_ZH[s.bound] || ''}${S.dq ? DQ_ZH : ''} · 最重流水级 ${s.heaviest_stage}`));
 }
 function domainKpis(s, cap, auto) {
   // video: clip latency, per-frame latency, frames/s/card; protein: batch latency, sequences/s/card, residues/s/card
@@ -1441,7 +1449,7 @@ function renderStages(r) {
   const rows = r.stages.map((st) => {
     const comp = { mac: st.t_ms.mac, feed: st.t_ms.feed, vector: st.t_ms.vector, dram: st.t_ms.dram, slc: st.t_ms.slc || 0, link: st.t_ms.link, sync: st.t_ms.sync };
     return h('tr', { class: st.index === r.summary.heaviest_stage ? 'best' : '' },
-      h('td', { class: 'l' }, st.index), h('td', { class: 'l' }, `${st.layers[0]}–${st.layers[1] - 1}`), h('td', {}, boundTag(st.bound)),
+      h('td', { class: 'l' }, st.index), h('td', { class: 'l' }, `${st.layers[0]}–${st.layers[1] - 1}`), h('td', {}, boundTag(st.bound, st.dequant_bound)),
       ...COMPS.map((c) => h('td', { style: c.toUpperCase() === st.bound ? 'color:var(--b-' + c + ');font-weight:700' : '' }, num(comp[c]))),
       h('td', {}, num(st.t_ms.total)),
       h('td', { class: 'l' }, h('span', { class: 'ubar' }, h('i', { style: `width:${Math.min(100, st.array_util * 100)}%` })), pct(st.array_util)),
@@ -1476,7 +1484,7 @@ function renderAssumptions(r) {
     c.slc_mib > 0
       ? `系统级缓存 SLC ${c.slc_mib} MiB @ ${c.slc_GBps} GB/s，策略 ${c.slc_policy === 'lru' ? 'lru（循环访问：片外工作集放得下全部读命中，否则 0 命中——上界 / 下界之间）' : c.slc_policy === 'dip' ? 'dip（防抖插入 DIP / BIP：放得下全部命中，否则循环访问命中 (K − ε(T − K)) / T，ε = 1/32，各类读同比例）' : c.slc_policy === 'pin_bw' ? 'pin_bw（同 pin 钉住，读命中按 SLC / DRAM 带宽均衡分流：两条路径同时读完，SLC 慢于 DRAM 也不变慢）' : 'pin（SRAM 之后按热权重 → 专家 → KV / 状态钉住，流式激活与 KV 写入绕过）'}；不增加容量；文本编码器 / VAE 不用 SLC`
       : '无系统级缓存（SLC MiB = 0）',
-    '芯片不支持的权重格式：反量化每元素 2 次向量操作',
+    `芯片不支持的权重格式：反量化每元素 2 次向量操作「假设」${Object.entries(S.cat.dequant_ops || {}).map(([f, n]) => `；${f} ${num(n)} 次（码本查表 + 符号 + 子块缩放，按 ggml 参考反量化「推导」）`).join('')}`,
   ];
   if (r.summary.gen) {
     const g = r.summary.gen;

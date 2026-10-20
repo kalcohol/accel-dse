@@ -6,6 +6,35 @@
 
 
 
+## [0.290.0]
+
+### Changed: IQ2_XXS dequant cost from the ggml reference dequant (Bolt-24GB)
+- `dtypes.DEQUANT_OPS` / `dequant_ops`: vector element-ops per converted element. Every format keeps the 0.40 convention of 2 (unpack / convert + scale multiply). IQ2_XXS is now 3.65625, derived from ggml `dequantize_row_iq2_xxs` (ggml-quants.c) and `dequantize_iq2_xxs` (ggml-cuda dequantize.cuh, llama.cpp master 839a572a4c): + 1 sign per weight, + 4 / 8 (two table lookups, `iq2xxs_grid` 2 KiB and `ksigns_iq2xs` 128 B, plus two index ops per 8 weights), + 5 / 32 (sub-block scale d · (0.5 + s) · 0.25 per 32). The fp16 block scale is not charged, same as the nvfp4 / int4 scales. Q8_0 (qs · d) is the convention: 2.
+- Block bytes, scales included, are unchanged and match the release: IQ2_XXS 66 B / 256 = 2.0625 b, Q8_0 34 B / 32 = 8.5 b (ggml-common.h).
+- `gemm_cost`: `convert_x` / `convert_wx` carry the extra ops; the vector seconds and the per-pass weight-dequant seconds include them. A chip that lists (iq2_xxs, act) in `FormatSupport.mixed` decodes in the MAC datapath and pays no dequant. No public chip lists it.
+- `vecsanity.format_headroom(chip, dram_GBps, fmt)`: dequant headroom of one weight format. IQ2_XXS is about 0.28× the int4 headroom: it streams 1.9× the elements per byte and costs 1.8× the ops per element.
+- The dequant warning now names every weight format whose headroom is below int4 (for example 「iq2_xxs 余量 …×」). Models without such a format keep the old text.
+- API: each stage reports `dequant_ms` and `dequant_bound` (VECTOR-bound with weight dequant ≥ half the vector time); `api_catalog` has `dequant_ops`. UI: the bound tag reads 「VECTOR · 反量化」 on such stages, and the assumptions list the per-format op counts. The coverage note for ggml formats states the ops (IQ2_XXS 3.66, Q8_0 2) and that the served fused kernels are not modelled per format.
+- Effect on Bolt-24GB, decode b8: on the default chips the vector time rises but stays hidden, so TPOT is unchanged (100T 54.27 ms, 1P 5.616 ms). On 1P with 4096 vector lanes the stage is VECTOR-bound and dequant-bound, and TPOT goes from 10.38 to 16.11 ms.
+
+### Performance: queue model hot paths (test suite)
+- Profile (py-spy, cProfile) of the slowest files: test_core_053 / 057 / 234 / 049 spend most of their time in PD queue reports (`pdqueue._queue_weights`, `_victim_wait_law_raw.r_surv`, `bulkq.bulk_law`).
+  - `_queue_weights` is memoised. About 25 % of its calls in a PD report repeat their arguments: 053 has 397 of 1 495 calls, 234 has 464 of 2 269. The caller still gets its own list.
+  - The x ≥ 1 loops no longer test the index per element.
+  - `bulk_law` splits the histogram update into first / middle / last ranges, so the exact +0.0 terms are dropped.
+  - `r_surv` tests o > r instead of o − r > 0.0.
+- Suite wall alone (-j 8): 1473 s (0.289) → 1468 s. That is within noise; one PD report took 124.9 s before and 116.7 s after, under the same concurrent load. The suite is still bounded by the PD-report files, and structural fixes (sharing reports across tests) are deferred.
+- Results are bit-identical: 300 random `_queue_weights` cases, 3 `bulk_law` laws and 2 full `disagg_report`s (repr) match 0.289 exactly. All evaluable models × decode / prefill on 3 chips = 604 points, 0 differ.
+
+### Freshness
+- HF sweep since 2026-10-20 (92 orgs): only the Ornith 122B siblings (0.288) and unsloth re-uploads.
+- `freshness_sweep.EXTRA_ORGS` += IFM, JetBrains, perplexity-ai. These orgs publish official releases that no earlier sweep watched: Jais 3, Mellum2.1, pplx-decider. They are not catalogued yet (AGENTS §240 deferred).
+
+### Default behaviour, old → new
+- Every default-chip result is unchanged (604 / 604 points, including Bolt-24GB TPOT 25.91 ms at 100T b1). What changed for Bolt-24GB: its vector / dequant time (100T b1: 5.02 → 6.62 ms, hidden behind DRAM), its warning text on chips where dequant exceeds DRAM (now names iq2_xxs headroom), and the coverage note.
+- ext_validate: only the version stamp changed (0.289.0 → 0.290.0).
+
+
 ## [0.289.0]
 
 ### Added: the NVIDIA Nemotron 3.5 family (nvidia, OpenMDW-1.1)

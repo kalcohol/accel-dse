@@ -2003,7 +2003,15 @@ def _law_mix(laws, qs) -> dict:
 def _queue_weights(a: float, jn: int, xmax: int = 400):
     """0.242: embedded M/D/1 chain at departures (a = ρ = λS): weight of busy-period customer j = 1..jn — the prompts
     that wait out its share, (x_prev − 1)⁺ queued at its start + a/2 arriving during it — per customer; rest = the
-    weight of j > jn (closed form total L_q + ρ/2 minus the listed).  → (w[0..jn-1], rest, total)."""
+    weight of j > jn (closed form total L_q + ρ/2 minus the listed).  → (w[0..jn-1], rest, total).
+    0.290 perf: memoised (pure; ~25 % of the calls of a PD report repeat their arguments — the _slot_block_q fixed
+    point and _queue_k_law revisit the same ρ), the caller gets its own list."""
+    wj, rest, tot = _queue_weights_c(a, jn, xmax)
+    return list(wj), rest, tot
+
+
+@functools.lru_cache(maxsize=1 << 12)
+def _queue_weights_c(a: float, jn: int, xmax: int):
     from math import exp, lgamma, log
     pois = []
     for i in range(xmax + 1):
@@ -2013,18 +2021,21 @@ def _queue_weights(a: float, jn: int, xmax: int = 400):
         pois.append(v)
     wj = [(1 - a) * a / 2]                       # index 1: nobody queued at its start
     g = [(1 - a) * v for v in pois]
+    ha = a / 2
     for _ in range(1, jn):
-        wj.append(sum(gx * (x - 1 + a / 2) for x, gx in enumerate(g) if x >= 1))
+        # 0.290 perf: the same products summed in the same order (x ≥ 1 ascending) — list sum, a / 2 hoisted
+        wj.append(sum([gx * (x - 1 + ha) for x, gx in enumerate(g[1:], 1)]))
         ng = [0.0] * min(xmax + 1, len(g) + len(pois))
         nn = len(ng)
-        for x, gx in enumerate(g):
-            if x >= 1 and gx > 1e-300:   # 0.248: slice update (same products, same order per y — bit-identical)
+        for x in range(1, len(g)):
+            gx = g[x]
+            if gx > 1e-300:              # 0.248: slice update (same products, same order per y — bit-identical)
                 s0 = x - 1
                 e0 = min(nn, s0 + len(pois))
                 ng[s0:e0] = [u + gx * pv for u, pv in zip(ng[s0:e0], pois)]
         g = ng
     tot = a * a / (2 * (1 - a)) + a / 2          # M/D/1: E[(X − 1)⁺] + a/2 = L_q + ρ/2
-    return wj, max(0.0, tot - sum(wj)), tot
+    return tuple(wj), max(0.0, tot - sum(wj)), tot
 
 
 def _slot_block_q(lam: float, rho: float, k0: float, B: int, n_B: float, out: float, T_d: float):
@@ -3332,7 +3343,9 @@ def _victim_wait_law_raw(ctx, nu_k: dict, nu_sat: float, K: float, kvi: dict, tp
 
     def r_surv(r):           # equilibrium residual law P(R > r) = Σ w (o − r)⁺ / Σ w o
         # 0.112: zero terms skipped (adding +0.0 to a non-negative partial sum is exact) — bit-identical, ~2× faster
-        return sum([w * (o - r) for w, o in wo if o - r > 0.0]) / Z
+        # 0.290: o > r ⇔ o − r > 0.0 for finite floats (gradual underflow: o − r = 0 only when o = r) — one
+        # subtraction less per point, same terms, same order
+        return sum([w * (o - r) for w, o in wo if o > r]) / Z
 
     s_memo: dict = {}
 

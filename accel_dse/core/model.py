@@ -2023,7 +2023,10 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
             r.append("Drama 3：Stage 1 的 Fish DAC 解码器（codec.pth，torch pickle）未读、未计时")     # 0.276
     gg = sorted({f.fmt for _, f in spec.formats if f.fmt in ("iq2_xxs", "q8_0")})
     if gg:     # 0.289 ggml block formats (Nemotron-3.5-Bolt-24GB): weight-only; the served kernels (vLLM b12x linear / MoE backends) are not modelled per format
-        r.append(f"ggml 块格式（{' / '.join(gg)}）：按仅权重量化计（反量化到 bf16 GEMM，每元素一次向量转换）「近似」")
+        # 0.290: the dequant op count is the ggml reference dequant's (dtypes.DEQUANT_OPS); the served fused kernels
+        # (vLLM b12x / llama.cpp MMQ: dot products on the packed values) are not modelled per format
+        r.append(f"ggml 块格式（{' / '.join(gg)}）：按仅权重量化计，反量化到 bf16 GEMM（IQ2_XXS 每元素 3.66 次向量操作、"
+                 f"Q8_0 2 次，按 ggml 参考反量化「推导」）；服务端融合内核未逐格式建模「近似」")
     if abs(gap) > 0.02:
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
     return tuple(r)
