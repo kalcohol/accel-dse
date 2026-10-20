@@ -135,12 +135,14 @@ class _Sim:
     """Two-engine flow shop, fed tile by tile: the DMA loads tiles in order, at most ``buf`` bytes ahead of compute;
     compute runs tiles in order once loaded.  cross_op False: an op's first load waits for the previous op's compute
     (kernel boundary).  Tile sizes are whole bytes (rounded up), so the window sums are exact."""
-    __slots__ = ("buf", "cross_op", "d_end", "c_end", "last", "win", "wsum", "s0", "hw", "op")
+    __slots__ = ("buf", "cross_op", "d_end", "c_end", "last", "log", "h", "wsum", "s0", "hw", "op")
 
     def __init__(self, buf: float, cross_op: bool = True):
         self.buf, self.cross_op = math.floor(buf), cross_op
         self.d_end = self.c_end = self.last = 0.0      # last = compute end of the newest tile that left the window
-        self.win = []                                  # [size, compute end] of tiles still holding buffer space
+        # [size, compute end] of tiles still holding buffer space = log[h:] (0.289: a head index instead of
+        # ``del win[:h]``; a list object is never mutated in place once a state snapshot may reference it — see state)
+        self.log, self.h = [], 0
         self.wsum = 0
         self.op = False
         self.s0 = self.hw = 0.0                        # 0.139: open shared-expert window start / unused hide credit
@@ -152,7 +154,7 @@ class _Sim:
         for t, k in runs:
             prev = prev_dt = None
             i = 0
-            if k < 8 * (len(self.win) + 8):         # short run vs the window: replaying is cheaper than comparing
+            if k < 8 * (len(self.log) - self.h + 8):   # short run vs the window: replaying is cheaper than comparing
                 self.feed([t], first); first = False
                 if k > 1:
                     self.feed([t] * (k - 1))
@@ -174,7 +176,7 @@ class _Sim:
 
     def feed(self, tiles, op_start: bool = False) -> None:
         # 0.112: attributes held in locals for the loop (same operations in the same order — bit-identical)
-        win, buf = self.win, self.buf
+        log, buf, hd = self.log, self.buf, self.h
         first = op_start and not self.cross_op
         d_end, c_end, last, wsum = self.d_end, self.c_end, self.last, self.wsum
         ceil = math.ceil
@@ -193,12 +195,10 @@ class _Sim:
             if sz > 0:
                 sz = ceil(sz)
                 if wsum + sz > buf:
-                    h, nw = 0, len(win)
-                    while wsum + sz > buf and h < nw:    # tiles before must have been consumed
-                        w = win[h]
-                        wsum -= w[0]; last = w[1]; h += 1
-                    if h:
-                        del win[:h]
+                    nw = len(log)
+                    while wsum + sz > buf and hd < nw:   # tiles before must have been consumed
+                        w = log[hd]
+                        wsum -= w[0]; last = w[1]; hd += 1
                 if last > start:
                     start = last
                 if first and c_end > start:
@@ -208,13 +208,22 @@ class _Sim:
             if sz > 0 and d_end > c_end:
                 c_end = d_end
             c_end += c
-            win.append([sz, c_end]); wsum += sz
+            log.append([sz, c_end]); wsum += sz
         self.d_end, self.c_end, self.last, self.wsum = d_end, c_end, last, wsum
+        if hd > 4096 and 2 * hd > len(log):
+            self.log, self.h = log[hd:], 0             # compact into a new list (snapshots keep the old one)
+        else:
+            self.h = hd
 
     def state(self):
-        """Everything that decides the future, relative to the compute clock."""
+        """Everything that decides the future, relative to the compute clock.  0.289: the window part is a lazy view
+        (log list, head, end, clock) — ``_same`` reads (size, compute end − clock) per entry only when everything
+        cheaper matched, with the same float expressions.  ≤ 0.288 every call built the full tuple: with a large
+        buffer (4 GiB SRAM) the window never evicts and holds every tile fed so far, so each layer repeat cost
+        O(tiles so far) — protenix on SRAM 4 GiB + SLC 4 GiB did not finish in 700 s.  Valid because no list object
+        is mutated once referenced: ``shift`` rebuilds the window into a new list, and compaction copies."""
         c = self.c_end
-        return (self.d_end - c, self.last - c, tuple((s, d - c) for s, d in self.win),
+        return (self.d_end - c, self.last - c, (self.log, self.h, len(self.log), c),
                 0.0, self.hw)    # 0.209: an open window's start is absolute (see shift), not state
 
     def shift(self, dt: float) -> None:
@@ -225,8 +234,8 @@ class _Sim:
         self.d_end += dt; self.c_end += dt; self.last += dt
         if not self.op:
             self.s0 += dt
-        for w in self.win:
-            w[1] += dt
+        self.log = [[w[0], w[1] + dt] for w in self.log[self.h:]]     # 0.289: new list (snapshots keep the old)
+        self.h = 0
 
 
 def makespan(tiles: list[tuple], buf: float, cross_op: bool = True, op_starts: set | None = None) -> float:
@@ -241,11 +250,18 @@ def makespan(tiles: list[tuple], buf: float, cross_op: bool = True, op_starts: s
 
 def _same(a, b, scale: float) -> bool:
     tol = 1e-12 * max(scale, 1e-30)
-    if len(a[2]) != len(b[2]) or abs(a[0] - b[0]) > tol or abs(a[1] - b[1]) > tol:
+    la, ha, na, ca = a[2]
+    lb, hb, nb, cb = b[2]
+    if na - ha != nb - hb or abs(a[0] - b[0]) > tol or abs(a[1] - b[1]) > tol:
         return False
     if abs(a[3] - b[3]) > tol or abs(a[4] - b[4]) > tol:
         return False
-    return all(x[0] == y[0] and abs(x[1] - y[1]) <= tol for x, y in zip(a[2], b[2]))
+    # entry-wise (size, compute end − clock), the 0.288 tuple's values (same subtraction, same order)
+    for i in range(na - ha):
+        x, y = la[ha + i], lb[hb + i]
+        if x[0] != y[0] or abs((x[1] - ca) - (y[1] - cb)) > tol:
+            return False
+    return True
 
 
 def stage_pipe_time(segments, f: dict, sec_per_byte: float, buf: float, cross_op: bool = True,
@@ -317,7 +333,8 @@ def merge_chunk(ops_d, ops_p, f: float, rr: float, route=None):
         if od.kind == "gemm":
             if od.role == "expert" and route is not None and op is not None:
                 # 0.103: routed experts — the union of decode + chunk tokens hits more distinct experts
-                rd, ru = route
+                # (0.289: ``route`` may be a function of the op — per-layer expert shapes)
+                rd, ru = route(od) if callable(route) else route
                 out.append(_rep(od, m=ru.m_e, count=ru.hit, w_params=od.w_params * ru.hit / max(od.count, 1)))
             elif op is not None and op.kind == "gemm":
                 out.append(_rep(od, m=od.m + max(1, round(f * op.m))))

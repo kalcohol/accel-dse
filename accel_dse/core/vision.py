@@ -49,6 +49,9 @@ ORNITH_REPOS = ("1.5-122B-FP8", "1.5-397B-FP8", "1.5-35B-A3B-FP8", "1.5-397B", "
 _PREPROC = {
     # 0.278 Nemotron-3.5-Super-VL (preprocessor_config.json; NemotronH_Omni_Reasoning_V3ImageProcessor)
     "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4": {"min_patches": 1024, "max_patches": 13312, "max_len": 16384},
+    # 0.289 Bolt 74B-A9B (24GB / BF16) and Super-VL BF16: identical preprocessor_config.json
+    **{f"nvidia/NVIDIA-Nemotron-3.5-{r}": {"min_patches": 1024, "max_patches": 13312, "max_len": 16384}
+       for r in ("Bolt-74B-A9B-24GB", "Bolt-74B-A9B-BF16", "Super-VL-120B-A12B-BF16")},
     "Qwen/Qwen3.8-Flash-Next": {"min_px": 65536, "max_px": 16777216},
     "nvidia/Qwen3.8-Flash-Next-FP4-Local": {"min_px": 65536, "max_px": 16777216},   # 0.280: same preprocessor_config
     "Qwen/Qwen3.8-27B": {"min_px": 65536, "max_px": 16777216},
@@ -108,6 +111,8 @@ _VIDEO.update({k: {"muse_frame_tok": 256, "num_frames": 600} for k in (
 # 0.279 Nemotron-3.5-Super-VL video.  「来源」 preprocessor_config.json video_target_num_patches 1024 (aspect kept);
 # config.json video_temporal_patch_size 2, video_pruning_rate 0.7 (EVS, modeling_nemotron_h_omni.compute_retention_mask)
 _VIDEO["nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"] = {"radio_frame": 1024, "tp": 2, "evs": 0.7}
+for _r in ("Bolt-74B-A9B-24GB", "Bolt-74B-A9B-BF16", "Super-VL-120B-A12B-BF16"):    # 0.289 same video fields
+    _VIDEO[f"nvidia/NVIDIA-Nemotron-3.5-{_r}"] = {"radio_frame": 1024, "tp": 2, "evs": 0.7}
 # 「来源」 transformers qwen3_vl/video_processing_qwen3_vl.py: fps 2, min_frames 4, max_frames 768, max_video_tokens 768
 VIDEO_FPS, VIDEO_MIN_FRAMES, VIDEO_MAX_FRAMES, VIDEO_MAX_TOK = 2, 4, 768, 768
 

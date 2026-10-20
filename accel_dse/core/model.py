@@ -1737,11 +1737,15 @@ def _build_nemotron_h(c: dict) -> tuple[list[Layer], list[Layer], list[str], str
     fc1_latent_proj / fc2_latent_proj, one relu² shared expert at full width) | mlp (relu² up / down); one pre-norm
     each.  MTP (num_nextn_predict_layers, mtp_layers_block_type): eh_proj 2h → h + enorm / hnorm + one block per type."""
     h = c["hidden_size"]
-    types = list(c["layers_block_type"])
-    E, k = c.get("n_routed_experts") or 0, c.get("num_experts_per_tok") or 0
+    # 0.289 Nemotron-H Puzzle (Nemotron-3.5-Bolt, configuration_nemotron_h_puzzle.py 「来源」): ``block_configs[i]`` updates
+    # the global config for layer i (get_nemotron_h_config_for_layer) — per-layer routed experts, MoE width and top-k
+    bcs = list(c.get("block_configs") or ())
+    types = [b["block_type"] for b in bcs] if bcs else list(c["layers_block_type"])
     lat = c.get("moe_latent_size") or 0
 
-    def block(t: str):
+    def block(t: str, i: int = -1, mtp_cfg: dict | None = None):
+        cc = {**c, **(mtp_cfg if mtp_cfg is not None else bcs[i] if 0 <= i < len(bcs) else {})}
+        E, k = cc.get("n_routed_experts") or 0, cc.get("num_experts_per_tok") or 0
         if t == "mamba":
             alin, core, misc = _mamba2(c, h)
             return Layer(alin, core, Ffn("none"), (), misc + h)
@@ -1750,16 +1754,18 @@ def _build_nemotron_h(c: dict) -> tuple[list[Layer], list[Layer], list[str], str
             alin, core = _gqa(h, H, KV, c.get("head_dim") or h // H)
             return Layer(alin, core, Ffn("none"), (), h)
         if t == "moe":
-            ffn, flin = _ffn_moe(h, E, k, c["moe_intermediate_size"], c.get("n_shared_experts") or 0,
+            ffn, flin = _ffn_moe(h, E, k, cc["moe_intermediate_size"], c.get("n_shared_experts") or 0,
                                  c.get("moe_shared_expert_intermediate_size") or 0, gated=False, latent=lat)
             return Layer((), AttnCore("none"), ffn, flin, h + E)          # norm + e_score_correction_bias
         if t == "mlp":
             ffn, flin = _ffn_dense(h, c["intermediate_size"], gated=False)
             return Layer((), AttnCore("none"), ffn, flin, h)
         raise ValueError(f"nemotron_h: unknown block type {t}")
-    layers = [block(t) for t in types]
+    layers = [block(t, i) for i, t in enumerate(types)]
     mtp = []
-    for _ in range(c.get("num_nextn_predict_layers") or 0):
+    if bcs and c.get("mtp_block_configs"):
+        raise ValueError("nemotron_h_puzzle: per-block MTP configs are not modelled (no release has them)")
+    for _ in range(0 if bcs else c.get("num_nextn_predict_layers") or 0):
         # one MTP module = its blocks in sequence ([attention, moe]) → one decoder layer (attention core + MoE FFN);
         # eh_proj / enorm / hnorm / final norm → mtp_extra_params (from_release: release params_mtp − the layer)
         parts = [block(t) for t in (c.get("mtp_layers_block_type") or [])]
@@ -1768,9 +1774,13 @@ def _build_nemotron_h(c: dict) -> tuple[list[Layer], list[Layer], list[str], str
         if at is not None and ff is not None and len(parts) == 2:
             mtp.append(Layer(at.attn_linears, at.core, ff.ffn, ff.ffn_linears, at.misc_params + ff.misc_params))
     n = {t: types.count(t) for t in dict.fromkeys(types)}
+    mf = [L.ffn for L in layers if L.ffn.kind == "moe"]
+    rng = lambda xs: f"{min(xs)}" if min(xs) == max(xs) else f"{min(xs)}–{max(xs)}"
+    es = (f"{rng([f.n_experts for f in mf])} 专家 top-{rng([f.top_k for f in mf])}"
+          + (f"，宽 {rng([f.d_expert for f in mf])}（逐层异构，Puzzle block_configs）" if bcs else "")) if mf else "无"
     notes = [f"Nemotron-H 混合：{n.get('mamba', 0)} 层 Mamba-2（SSD，{c['mamba_num_heads']} 头 × {c['mamba_head_dim']}，"
              f"状态 {c['ssm_state_size']}，B/C 按 {c['n_groups']} 组共享，chunk {c.get('chunk_size') or 128}，状态 fp32）+ "
-             f"{n.get('attention', 0)} 层 GQA + {n.get('moe', 0)} 层 latent MoE（{E} 专家 top-{k}，relu² 非门控，"
+             f"{n.get('attention', 0)} 层 GQA + {n.get('moe', 0)} 层 latent MoE（{es}，relu² 非门控，"
              f"latent {lat}，共享专家 {c.get('moe_shared_expert_intermediate_size')}）；每层只有一个 mixer"]
     return layers, mtp, notes, "full"
 
@@ -1796,6 +1806,8 @@ def _builder(c: dict):
         return _build_beam, "GQA（SWA + full NoPE，输出门）MoE"
     if mt == "nemotron_h":
         return _build_nemotron_h, "Nemotron-H 混合（Mamba-2 + GQA）latent MoE"
+    if mt == "nemotron_h_puzzle":       # 0.289 Nemotron-3.5-Bolt: per-layer heterogeneous MoE (block_configs)
+        return _build_nemotron_h, "Nemotron-H Puzzle 混合（Mamba-2 + GQA）异构 latent MoE"
     if mt == "dory":
         return _build_dory, "nGPT 循环 LM（SWA + full GQA，输出门）"
     if mt in ("muse_spark", "muse_spark_text"):
@@ -1843,7 +1855,8 @@ def _release_formats(rel: dict) -> dict[str, RoleFormat]:
         b = sum(x["bytes"] for x in v.values())
         if p:
             name = {"uint8": "int8", "int32": "int4"}.get(fmt, fmt)
-            out[role] = RoleFormat(name if name in ("fp32", "bf16", "fp16", "fp8", "mxfp4", "nvfp4", "int8", "int4") else "bf16",
+            out[role] = RoleFormat(name if name in ("fp32", "bf16", "fp16", "fp8", "mxfp4", "nvfp4", "int8", "int4",
+                                                    "iq2_xxs", "q8_0") else "bf16",     # 0.289 ggml block formats
                                    8.0 * b / p)
     return out
 
@@ -2008,6 +2021,9 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     if spec.fish is not None:
         if not spec.fish.codec:
             r.append("Drama 3：Stage 1 的 Fish DAC 解码器（codec.pth，torch pickle）未读、未计时")     # 0.276
+    gg = sorted({f.fmt for _, f in spec.formats if f.fmt in ("iq2_xxs", "q8_0")})
+    if gg:     # 0.289 ggml block formats (Nemotron-3.5-Bolt-24GB): weight-only; the served kernels (vLLM b12x linear / MoE backends) are not modelled per format
+        r.append(f"ggml 块格式（{' / '.join(gg)}）：按仅权重量化计（反量化到 bf16 GEMM，每元素一次向量转换）「近似」")
     if abs(gap) > 0.02:
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
     return tuple(r)

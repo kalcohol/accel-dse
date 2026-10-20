@@ -26,7 +26,9 @@ def test_act_fmt_for_default_and_override():
                  # 0.281: Quark W8A8 PTPC FP8 / W4A4 MXFP4 and Drama-3 bsgemm-moe (block-FP8 experts, dynamic activations)
                  "muse-spark-open-fp8": {"act_attn": "fp8", "act_expert": "fp8"},
                  "muse-spark-open-mxfp4": {"act_expert": "mxfp4"},
-                 "drama-3": {"act_expert": "fp8"}}
+                 "drama-3": {"act_expert": "fp8"},
+                 # 0.289: Nemotron 3.5 Lightning NVFP4 (MIXED_PRECISION: FP8 attention → fp8 inputs; W4A16 experts)
+                 "nemotron-3.5-lightning-30b-a3b-nvfp4": {"act_attn": "fp8"}}
         if e["id"] in mixed:
             assert acts == mixed[e["id"]], (e["id"], acts)
             continue

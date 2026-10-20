@@ -39,6 +39,10 @@ FORMATS: dict[str, Format] = {f.name: f for f in (
     Format("int8", 8, "int", 8),
     # AWQ / GPTQ / compressed-tensors int4: group 128, fp16 scale (+ 4-bit zero)
     Format("int4", 4 + (16 + 4) / 128, "int", 4, "group-128 scale+zero"),
+    # 0.289 ggml block formats (ggml-common.h 「来源」), weight-only (dequantised to the activation format in the kernel):
+    # IQ2_XXS = fp16 scale + 32 × uint16 (E8-lattice grid index + signs) per 256 weights = 66 B; Q8_0 = fp16 scale + 32 int8
+    Format("iq2_xxs", 66 * 8 / 256, "int", 2, "ggml IQ2_XXS: 66 B per 256 (fp16 d + 8×grid/sign words)"),
+    Format("q8_0", 34 * 8 / 32, "int", 8, "ggml Q8_0: fp16 d + 32 int8"),
 )}
 
 ACT_DEFAULT = "bf16"

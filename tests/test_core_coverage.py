@@ -79,9 +79,11 @@ IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b",
               "flux-3-image-klein", "flux-3-image-klein-base")   # 0.252: + FLUX 3 (reference stream modelled)
 # 0.144 VLMs whose vision side is approximated (LLM side exact): Step-5 overview only, MiniCPM one 448² view, MiMo window
 # attention as full + audio encoder storage-only
+GGML_PARTIAL = ("nemotron-3.5-bolt-74b-a9b-24gb",)   # 0.289
 VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4", "qwen2.5-omni-7b",
                   "kimi-audio-7b-instruct",
                   "nemotron-3.5-super-vl-120b-a12b-nvfp4",
+                  "nemotron-3.5-super-vl-120b-a12b-bf16", "nemotron-3.5-bolt-74b-a9b-bf16",   # 0.289 RADIO ≈ only
                   "index-echo-s2st-2b", "index-echo-s2st-9b",)   # 0.279 Index-Echo: speech_tokenizer_v3 / CampPlus ONNX not costed   # 0.279 Nemotron VL video costed (tubelet embed ≈); 0.278 RADIO cls tokens ≈   # 0.277 Drama 3 DAC costed → full (0.276: partial)   # 0.273 Kimi-Audio: GLM-4-Voice input tokenizer (other repo) not costed   # 0.271 Omni: ViT stored only   # 0.145: MiniCPM slicing + MiMo band windows modelled → full; 0.251 NVFP4 = same vision
 # 0.255: Muse Spark Open (+ fp8 / mxfp4 / nvfp4 / dspark / dflash2 pairs) → full: MuseGlimmerImageProcessor smart_resize now
 # public in transformers (was the only reason since 0.175 audio)
@@ -116,7 +118,10 @@ def test_coverage_list():
     assert all(cov[i] == "partial" for i in PROTEIN_PARTIAL)
     assert all(cov[i] == "full" and not get_model(i).coverage_reasons for i in IMAGE_FULL)
     assert all(cov[i] == "partial" and len(get_model(i).coverage_reasons) == 1 for i in VISION_PARTIAL)
-    assert sorted(i for i, c in cov.items() if c != "full") == sorted(PROXY + PROTEIN_PARTIAL + VISION_PARTIAL)
+    # 0.289: Bolt-24GB = RADIO ≈ + ggml block formats ≈ (two reasons)
+    assert all(cov[i] == "partial" and len(get_model(i).coverage_reasons) == 2 for i in GGML_PARTIAL)
+    assert sorted(i for i, c in cov.items() if c != "full") == sorted(PROXY + PROTEIN_PARTIAL + VISION_PARTIAL
+                                                                       + GGML_PARTIAL)
     assert [o["id"] for o in offline_entries()] == ["alphafold3"]
 
 

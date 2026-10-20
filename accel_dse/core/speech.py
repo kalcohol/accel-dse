@@ -229,10 +229,9 @@ def _kimi_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) ->
 
     def t_eval(T: int, kv: int, first: bool) -> float:
         ops = dit_eval_ops(k, T, kv)
-        # K/V of the cached frames re-read by every evaluation (bf16, 16 blocks) 「推导」
-        # 0.288: inside the component roofline (≤ 0.287 added after it: + kv_bytes / BW)
-        return _component_time([(ops if first else scaled(ops, miss), 1)], sys, org, "bf16",
-                               extra_dram=k.kv_bytes(kv))["s"]
+        # K/V of the cached frames re-read by every evaluation: 0.289 on the DiT attention ops (kimi_audio.dit_eval_ops);
+        # 0.288 extra_dram = kv_bytes(kv); ≤ 0.287 added after the roofline (+ kv_bytes / BW)
+        return _component_time([(ops if first else scaled(ops, miss), 1)], sys, org, "bf16")["s"]
 
     def t_voc(M: int) -> float:
         return _component_time([(voc_ops(k, M), 1)], sys, org, "bf16")["s"]

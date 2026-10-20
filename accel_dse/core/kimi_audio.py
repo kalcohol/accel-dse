@@ -139,7 +139,11 @@ def dit_eval_ops(k: KimiSpec, T: int, kv: int) -> list[Op]:
     ops = _gemms(k, "detok.", rows)
     hd = k.d // k.heads
     for li in range(k.depth):
-        ops += _attn(f"detok.blocks.{li}.attn", T, kv + T, hd, k.heads)
+        a = _attn(f"detok.blocks.{li}.attn", T, kv + T, hd, k.heads)
+        # 0.289: the block's K / V of the kv cached frames (bf16, all heads) re-read by the evaluation 「推导」 — on the
+        # attention op (≤ 0.288: speech.py passed Σ blocks as extra_dram = kv_bytes(kv); same bytes)
+        a[0] = replace(a[0], kv_read=2 * kv * k.d * 2.0)
+        ops += a
         ops.append(Op(f"detok.blocks.{li}.norm_mod_rope", "vector", li, vec=T * k.d * 16.0))
     ops.append(Op("detok.semantic_embed", "lookup", 0, kv_read=T * k.d * 2.0, vec=T * k.d * 2.0))
     ops.append(Op("detok.euler", "vector", 0, vec=T * k.mel * 3.0))

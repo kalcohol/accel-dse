@@ -7740,3 +7740,30 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §233.4 Insight panels stale-tagged
 - `invalidate()` now also tags `ins-status`, `ins-slc-status`, `ins-size-status` and `ins-path-status`. Each run snapshots `S.ver` at click time and appends `staleTag` to its result, and the success and catch paths both set `dataset.done` (the §231.1 structural guard).
+
+## §234 Nemotron 3.5 family; heterogeneous MoE routing; pipe flow-shop state view (0.289)
+
+### §234.1 Nemotron 3.5 (nvidia)
+- Bolt 74B-A9B = `nemotron_h_omni` with `llm_config.model_type` `nemotron_h_puzzle` 「来源」 configuration_nemotron_h_puzzle.py: `block_configs[i]` updates the global config for layer i (`get_nemotron_h_config_for_layer`); blockwise fields (`n_routed_experts`, `moe_intermediate_size`, `num_experts_per_tok`) are set on every MoE block. `_build_nemotron_h` builds each layer from its merged config; per-block MTP configs are refused (no release has them).
+  - 40 MoE layers: E ∈ {240, 304, 368, 432, 496}, width ∈ {1536, 2048, 2304, 2560}, top-9, latent 1024, shared expert 5376. LLM params 74 042 720 768 (exact).
+- 24GB checkpoint (ModelOpt MIXED_PRECISION, `quantized_layers_by_algo` IQ2_XXS/g256 27 728, Q8_0/g32 113, W4A16_NVFP4/g16 80): ggml blocks stored as U8 `[out, in / QK, block bytes]` 「来源」 ggml-common.h — IQ2_XXS 66 B / 256 (fp16 d + 32 uint16 grid / sign words) = 2.0625 b, Q8_0 34 B / 32 = 8.5 b. Formats `iq2_xxs` (compute bits 2) and `q8_0` (8), weight-only: `gemm_exec` dequantises to the bf16 path (「近似」: the served b12x kernels are not modelled per format; coverage note).
+  - Roles as released: experts / shared IQ2_XXS 2.0625 b; Mamba in / out NVFP4 (attn role, bytes-weighted 4.749 b with the Q8_0 GQA projections); latent fc1 / fc2 and lm_head Q8_0 8.5 b; embeddings, router, norms, conv, ViT bf16. No `act_` role: inputs bf16. KV bf16 (no kv_cache_scheme), state fp32 (`mamba_ssm_cache_dtype`).
+- Lightning 30B-A3B: plain `nemotron_h` (52 layers, 128 experts top-6, no latent, 1 MTP). NVFP4 = MIXED_PRECISION (W4A16 NVFP4 experts / shared / lm_head, FP8 attention → fp8 inputs via the 0.280 rule, fp8 KV).
+- Catalog: Bolt-24GB and Lightning-NVFP4 listed (the as-served releases); Bolt-BF16, Lightning-BF16 and Super-VL-BF16 are listed too: same architecture as those entries, but MERGED requires identical params and dtypes (test_core_model). Defaults (100T, b1, 4096): Bolt-24GB TPOT 25.91 ms / TTFT 0.817 s; Bolt-BF16 96.03 ms / 1.330 s (does not fit); Lightning-NVFP4 12.72 ms / 0.239 s; Lightning-BF16 33.82 ms / 0.455 s; Super-VL-BF16 129.28 ms / 1.827 s (does not fit).
+
+### §234.2 MoE layers of different expert counts
+- `evaluate._moe_groups(m, first, last)`: distinct (E, k, groups, width, mats, input width) of the stage's MoE layers → summed per-expert params. `_exp_route` returns the 0.103 tuple when all layers share (E, k, groups), else `("het", ((E, k, groups, w), …), tokens, EP, skew)`.
+- `union_routing` then returns {(E, k, groups): (decode routing, decode + chunk routing)}; `extra_expert_bytes` = exp_dram · Σ_g w_g (hit′_g − hit_g) / Σ_g w_g hit_g (exp_dram = Σ_g w_g hit_g × bytes); the fused pipe merge routes each expert op with its own layer (`m.layers[op.layer].ffn`).
+- `_moe_skew`: `moe_expert_load` refused when E differs across layers; the skew cap is min over layers of EP · min(k, ⌈E / EP⌉) / k.
+- Uniform models: identical (one group = the old tuple).
+
+### §234.3 Pipe flow shop: state as a view
+- `overlap._Sim` window = `log[h:]` (append-only list + head index). `state()` = (d_end − c, last − c, (log, h, len(log), c), 0, hw); `_same` compares lengths and scalars first, then entries as (size, compute end − clock) with the 0.288 expressions. `shift` writes the shifted window into a new list, compaction (h > 4096 and > half the log) copies — a stored view never observes a later change, so every comparison sees exactly the 0.288 tuple's values.
+- Bit identity: 600 random cases vs the 0.288 simulator (test), 872 evaluation points. Cost: O(1) per state; entry-wise work only when the window lengths match (protenix pin: 0 entries; boltz-1: 242 699).
+- ≤ 0.288 a large buffer (SRAM 4 GiB) never evicts, so the window held every tile so far and each repeat's state cost O(tiles): protenix pin > 700 s → 2.4 s.
+
+### §234.4 Kimi-Audio DiT cached-frame K/V
+- `kimi_audio.dit_eval_ops`: each block's attention op reads its K / V of the cached frames (`kv_read` = 2 · frames · d · 2 B; Σ blocks = `kv_bytes(frames)`). speech.py no longer passes `extra_dram`. Speech KPIs bit-identical.
+
+### §234.5 Default behaviour, old → new
+- Existing models: unchanged (872 / 876 points identical across the default and two pin chips; the other 4 never finished on 0.288); speech KPIs 68 / 68 identical; ext_validate numbers unchanged. New: 5 listed Nemotron 3.5 entries (§234.1).

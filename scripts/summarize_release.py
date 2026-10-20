@@ -11,6 +11,8 @@ Packed formats (logical params per stored element):
   * I32 ``weight_packed`` / ``qweight`` (compressed-tensors pack-quantized,
     AWQ, GPTQ)                                 -> x8   (format int4)
   * I8 otherwise                               -> x1   (format int8)
+  * U8 [out, in/QK, 66 | 34] with IQ2_XXS / Q8_0 in quantization_config (ggml blocks, 0.289)
+                                               -> x QK·nb/bytes (format iq2_xxs / q8_0)
 Scale / zero-point / shape tensors are not parameters: their bytes are
 attributed to the weight they belong to.  I64 tensors are index buffers
 (e.g. hash-routing tables) and are excluded from params, counted as bytes
@@ -315,6 +317,12 @@ def _base(name: str) -> str:
     return b
 
 
+# 0.289 ggml block layouts 「来源」 ggml-common.h: block_iq2_xxs = fp16 d + uint16 qs[QK_K / 8] (QK_K 256) = 66 bytes / 256
+# weights (2.0625 b, the Bolt-24GB model card's "2.0625 bits per element"); block_q8_0 = fp16 d + int8 qs[32] = 34 bytes / 32
+# (8.5 b).  The scale sits inside the block, so the stored bytes are the whole tensor.
+_GGML_BLOCK = {66: ("iq2_xxs", 256), 34: ("q8_0", 32)}
+
+
 def summarize(repo: str) -> dict:
     d = CACHE / repo.replace("/", "__")
     cfg = json.loads((d / "config.json").read_text())
@@ -327,6 +335,8 @@ def summarize(repo: str) -> dict:
     # 0.175: NVFP4 (ModelOpt quant_algo NVFP4 / compressed-tensors nvfp4-pack-quantized): e2m1 + e4m3 per 16 + fp32 per tensor
     _q = json.dumps(qc or {}).lower()
     nv4 = "nvfp4" in _q
+    # 0.289: ggml block-quantized weights (ModelOpt MIXED_PRECISION "IQ2_XXS/g256", "Q8_0/g32") — U8 [out, in / QK, bytes]
+    ggml = any(k in _q for k in ("iq2_xxs", "q8_0"))
     tensors = {}
     subs = sorted({k.split("/", 1)[0] for k in headers if "/" in k})
     for key, h in headers.items():
@@ -377,7 +387,11 @@ def summarize(repo: str) -> dict:
                 and not NOT_SCALE_RE.search(name):
             scale_bytes[_base(name)] = scale_bytes.get(_base(name), 0) + nb
             continue
-        if is_blocks or (dt in ("U8", "I8") and (fp4 or name.endswith("weight_packed"))):
+        if dt == "U8" and ggml and len(shape) == 3 and int(shape[2]) in _GGML_BLOCK:
+            # 0.289 ggml block formats inside ModelOpt safetensors (Nemotron-3.5-Bolt-24GB): [out, in / QK, block bytes]
+            fmt, qk = _GGML_BLOCK[int(shape[2])]
+            params = int(shape[0]) * int(shape[1]) * qk
+        elif is_blocks or (dt in ("U8", "I8") and (fp4 or name.endswith("weight_packed"))):
             fmt, params = ("nvfp4" if nv4 else "mxfp4"), n * 2
         elif dt == "I32" and re.search(r"(weight_packed|qweight)$", name):
             fmt, params = "int4", n * 8

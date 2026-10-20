@@ -426,6 +426,10 @@ def union_routing(sd, sp, f: float):
     if not sd.exp_route or not sp.exp_route:
         return None
     from .ir import moe_routing
+    if sd.exp_route[0] == "het":      # 0.289: {(E, k, groups): (decode, union)} per expert shape of the stage
+        _, gs, td, ep, sk = sd.exp_route
+        tu = td + max(1, round(f * sp.exp_route[2]))
+        return {(E, k, gr): (moe_routing(E, k, td, ep, sk, gr), moe_routing(E, k, tu, ep, sk, gr)) for E, k, gr, _ in gs}
     E, k, td, ep, sk = sd.exp_route[:5]
     gr = sd.exp_route[5] if len(sd.exp_route) > 5 else ()
     tu = td + max(1, round(f * sp.exp_route[2]))
@@ -467,17 +471,46 @@ def chunk_mem_bytes(sd, sp, f: float, reread_frac: float = 0.0) -> tuple[float, 
 def extra_expert_bytes(sd, sp, f: float) -> float:
     """0.103: DRAM bytes of the experts the chunk's tokens touch beyond the decode batch's (per stage)."""
     ru = union_routing(sd, sp, f)
+    if isinstance(ru, dict):
+        # 0.289 per expert shape: the stage's expert DRAM is Σ_g w_g · hit_g (w_g = per-expert params of the shape's
+        # layers), so the chunk adds Σ_g w_g (hit'_g − hit_g) / Σ_g w_g hit_g of it
+        w = {(E, k, gr): x for E, k, gr, x in sd.exp_route[1]}
+        base = sum(w[g] * r[0].hit for g, r in ru.items())
+        return sd.dram.get("exp_dram", 0.0) * sum(w[g] * (r[1].hit - r[0].hit) for g, r in ru.items()) / base if base else 0.0
     if ru is None or not ru[0].hit:
         return 0.0
     return sd.dram.get("exp_dram", 0.0) * (ru[1].hit / ru[0].hit - 1.0)
 
 
-def _exp_route(m, ph, sh) -> tuple:
-    """0.103: routing inputs of the stage's MoE layers (for the co-located chunk's extra experts)."""
+def _moe_groups(m, first: int = 0, last: int | None = None) -> dict:
+    """0.289: the distinct routed-expert shapes among layers first … last → summed per-expert weight params of those
+    layers.  Key (E, top-k, groups, d_expert, mats, expert-in width); one entry for every catalogued MoE except
+    Nemotron-H Puzzle (Bolt: per-layer E / width)."""
+    out = {}
+    for L in m.layers[first:(len(m.layers) if last is None else last + 1)]:
+        f = L.ffn
+        if f.kind == "moe":
+            key = (f.n_experts, f.top_k, f.groups, f.d_expert, f.mats, f.expert_in(m.hidden))
+            out[key] = out.get(key, 0) + f.mats * f.expert_in(m.hidden) * f.d_expert
+    return out
+
+
+def _exp_route(m, ph, sh, first: int = 0, last: int | None = None) -> tuple:
+    """0.103: routing inputs of the stage's MoE layers (for the co-located chunk's extra experts).
+    0.289: layers of different expert counts (Nemotron-H Puzzle) → ("het", ((E, k, groups, per-expert params × layers),
+    …), tokens, EP, skew); ≤ 0.288 the first MoE layer's E stood for all of them."""
     if not m.is_moe:
         return ()
-    f = next(L.ffn for L in m.layers if L.ffn.kind == "moe")
-    return (f.n_experts, f.top_k, ph.tokens, sh.ep, ph.skew, f.groups)
+    g = _moe_groups(m, first, last)
+    if not g:
+        return ()
+    rs = {}
+    for (E, k, gr, *_), w in g.items():
+        rs[(E, k, gr)] = rs.get((E, k, gr), 0) + w
+    if len(rs) == 1:
+        E, k, gr = next(iter(rs))
+        return (E, k, ph.tokens, sh.ep, ph.skew, gr)
+    return ("het", tuple((E, k, gr, w) for (E, k, gr), w in sorted(rs.items())), ph.tokens, sh.ep, ph.skew)
 
 
 def _vec_seconds(ch, op) -> float:
@@ -873,17 +906,23 @@ def _moe_skew(m: ModelSpec, sv, lay: Layout, warnings: list[str]) -> float:
     if not m.is_moe or lay.ep <= 1:
         warnings.append("MoE 负载倾斜已忽略：" + ("非 MoE 模型" if not m.is_moe else "EP = 1（专家全在每个 rank 上，无跨 rank 不均衡）"))
         return 1.0
+    ns = sorted({L.ffn.n_experts for L in m.layers if L.ffn.kind == "moe"})
     if sv.moe_expert_load:
-        n = next(L.ffn.n_experts for L in m.layers if L.ffn.kind == "moe")
+        if len(ns) > 1:       # 0.289 Nemotron-H Puzzle: one load vector cannot describe layers of different E
+            raise ValueError(f"serving.moe_expert_load: the MoE layers have different expert counts ({ns[0]}–{ns[-1]}); "
+                             "a per-expert load needs one expert count — use serving.moe_skew")
+        n = ns[0]
         if len(sv.moe_expert_load) != n:
             raise ValueError(f"serving.moe_expert_load needs {n} entries (one per routed expert), got "
                              f"{len(sv.moe_expert_load)}")
         return skew_from_load(sv.moe_expert_load, lay.ep)
     # 0.74: physical cap — a token sends its top-k pairs to distinct experts, at most min(k, E/EP) of them to one
     # rank, so the busiest rank holds ≤ min(k, E/EP)/k of all pairs: skew ≤ EP · min(k, E/EP) / k (≤ EP)
-    f = next(L.ffn for L in m.layers if L.ffn.kind == "moe")
+    # 0.289: one skew applies to every MoE layer → the strictest layer's cap (layers may differ in E / k)
+    caps = [(lay.ep * min(max(1, L.ffn.top_k), -(-L.ffn.n_experts // lay.ep)) / max(1, L.ffn.top_k), L.ffn)
+            for L in m.layers if L.ffn.kind == "moe"]
+    cap, f = min(caps, key=lambda x: x[0])
     k = max(1, f.top_k)
-    cap = lay.ep * min(k, -(-f.n_experts // lay.ep)) / k
     if sv.moe_skew > cap * (1 + 1e-12):
         warnings.append(f"serving.moe_skew = {sv.moe_skew:g} 超过物理上限 {cap:g}（EP {lay.ep}、top-{k}、"
                         f"{f.n_experts} 专家：最忙 rank 至多承担全部 token-专家对的 min(k, E/EP)/k），按上限计")
@@ -1078,6 +1117,9 @@ def _pipe_fused_(sd, sp, f, rr, t_mem):
     sys, org, m, mm, segs_d, mp, store, tail = sd.pipe_ctx[:8]
     segs_p = sp.pipe_ctx[4]
     ru = union_routing(sd, sp, f)
+    if isinstance(ru, dict):        # 0.289: each expert op routes with its own layer's expert shape
+        _ru = ru
+        ru = lambda od: _ru[(m.layers[od.layer].ffn.n_experts, m.layers[od.layer].ffn.top_k, m.layers[od.layer].ffn.groups)]
     if len(segs_d) != len(segs_p):
         return None
     merged = []
@@ -1938,7 +1980,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg), pipe_ctx=pctx,
-                                      exp_route=_exp_route(m, ph, sh),
+                                      exp_route=_exp_route(m, ph, sh, st.first, st.last),
                                       ledger=(store, {k: agg[k] for k in _DRAM_KEYS + ("hot_rr",) if k in agg},
                                               sys.chip.slc_GBps / sys.dram_GBps, sys.chip.slc_GBps * 1e9)))
         return stages

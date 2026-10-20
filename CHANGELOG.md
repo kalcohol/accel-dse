@@ -6,6 +6,47 @@
 
 
 
+## [0.289.0]
+
+### Added: the NVIDIA Nemotron 3.5 family (nvidia, OpenMDW-1.1)
+- Read from config.json, the safetensors headers, preprocessor_config.json and the model cards; parameter counts are exact (param_err 0).
+- **Bolt 74B-A9B** (repo created 2026-10-08 JST; model card release date 10/15). The card says it is a Star Elastic compression of Super-VL 120B-A12B. Architecture `nemotron_h_puzzle`: the same 88-layer layout (40 Mamba-2, 8 GQA, 40 latent-MoE), but each MoE layer has its own routed-expert count (240–496) and width (1536–2560) from `block_configs`, top-9 (parent: 512 experts, top-22), no MTP. Same RADIO ViT-H and processor (1024–13 312 patches). LLM 74 042 720 768 params, vision 842 360 326 (card: 74B total, 9B active).
+  - Listed, as served: `nemotron-3.5-bolt-74b-a9b-24gb`, a ModelOpt MIXED_PRECISION checkpoint. Routed and shared experts are IQ2_XXS (ggml block, 66 B per 256 weights = 2.0625 b; the card calls it native 2-bit). Mamba in / out are NVFP4 W4A16. Attention q/k/v/o, the latent projections and lm_head are Q8_0 (34 B per 32 = 8.5 b). Embeddings, router, norms and the ViT are bf16. Every quantized role is weight-only, so GEMM inputs stay bf16. KV is bf16 and SSM state fp32, from config.json; the card's vLLM recipe chooses fp8 KV and a bf16 SSM cache.
+  - Also listed: `-bf16` (same config and header shapes as the 24GB entry; listed separately because MERGED requires identical params and dtypes).
+  - Defaults (100T, b1, ctx / prompt 4096): 24GB TPOT 25.91 ms, TTFT 0.817 s, fits; BF16 TPOT 96.03 ms, does not fit.
+- **Lightning 30B-A3B** (repo created 2026-08-05 JST; predates every sweep window, never catalogued). `nemotron_h`: 52 layers, 128 experts top-6, no latent space, 1 MTP layer; text only. Listed: `-nvfp4` (MIXED_PRECISION: W4A16 NVFP4 experts / shared / lm_head, FP8 attention with fp8 inputs, fp8 KV); `-bf16` also listed. LLM 31 577 940 288, MTP 1 335 325 952. Defaults: NVFP4 TPOT 12.72 ms, TTFT 0.239 s; BF16 33.82 ms / 0.455 s.
+- **Super-VL 120B-A12B BF16**: listed next to the NVFP4 entry (same architecture, different dtypes). Defaults: TPOT 129.28 ms, TTFT 1.827 s, does not fit.
+- `summarize_release`: ggml block tensors (U8 `[out, in / QK, 66 | 34]` when the quantization config names IQ2_XXS / Q8_0) count QK weights per block. `dtypes`: formats `iq2_xxs` (2.0625 b) and `q8_0` (8.5 b), weight-only. Coverage note on those models: the dequant cost of the served b12x kernels is approximated as one vector conversion per element.
+- Not added: Bolt GGUF and LiLiCorr / DSpark / DFlash drafts; Lightning Base; Nemotron 3.5 Embed / Rerank (retrieval models).
+
+### Fixed: MoE routing with per-layer expert counts
+- Each layer already built its own experts. Three places took the first MoE layer for the whole model:
+  - Co-located chunk extra experts (`extra_expert_bytes`, the fused pipe merge). Now routed per expert shape: extra = exp_dram · Σ_g w_g (hit′_g − hit_g) / Σ_g w_g hit_g, with w_g the per-expert params of the stage's layers of that shape. Bolt, TP2·EP2 b4 + 1/32 of a 4096 prefill: the first layer's E (240) would under-count it.
+  - `serving.moe_expert_load` now refuses models whose MoE layers differ in expert count (one vector cannot describe them; was silently applied to every layer).
+  - The `moe_skew` physical cap takes the strictest layer (Bolt EP 64: 28.44, from the 240-expert layers).
+- Every other model is uniform, so their results are unchanged (all-model compare below).
+
+### Performance: pipe flow-shop state (protenix on a large-SRAM chip)
+- protenix on SRAM 4 GiB + SLC 4 GiB pin did not finish in 700 s (0.288). Profile (cProfile, 240 s): > 99 % in `overlap._Sim.state` and its tuple build. With a buffer that large the window never evicts, so it holds every tile fed so far, and every layer repeat built a tuple of all of them (1 409 states in the first 240 s, ~0.5 M entries each; the whole evaluation takes 6 415).
+- Now `state()` is an O(1) view (window list, head, end, clock); `_same` rejects on length and the cheap fields first and reads entries only when those match, with the same float expressions. The window is a head index into an append-only list (was `del win[:h]`); `shift` and compaction build new lists, so a view never sees a later change.
+- Results are bit-identical: 600 random flow-shop cases against the 0.288 simulator kept verbatim in the test; all evaluable models × decode / prefill × {default, SRAM 4 GiB + SLC 4 GiB pin, SRAM 1 GiB + SLC 16 GiB pin} = 876 points, 872 identical, 0 differ. The other 4 (protenix and boltz-1, pin 4 GiB) hit the 60 s cap on 0.288 under load; boltz-1 matches its 0.288 value (4.532921773781235 s).
+- Wall time (6 parallel workers, so slower than alone): protenix pin 4 GiB > 700 s → 3.2 s (2.4 s alone; step 8.7720 s); boltz-1 pin 4 GiB > 60 s → 1.4 s; protenix SRAM 1 GiB + SLC 16 GiB 50.4 → 1.1 s; boltz-1 32.1 → 0.9 s; alphafold2 / openfold pin 4 GiB 6.9 / 6.6 → 0.2 / 0.4 s.
+- Sweep for other slow configs (batch 8; SRAM 16 GiB pin, and SRAM 4 GiB + SLC 64 GiB lru; every evaluable model): slowest 3.2 s (protenix). No other pathological case.
+- Guard (test_core_289, like test_core_237): deterministic work of the protenix / boltz-1 pin cases (tiles fed, window entries compared, compare calls) ≤ 1.5 × their 0.289 counts, plus a CPU bound (20 s alone, 60 s under the parallel runner).
+
+### Changed: Kimi-Audio cached-frame K/V on the DiT attention ops (AGENTS §238 deferred)
+- The K/V of the cached frames is now `kv_read` on each block's attention op (2 · frames · d · 2 B), not `extra_dram` passed by speech.py. Same bytes, same roofline: all 68 speech KPI rows (`speech_kpis`, default and 100T + SLC 4 GiB pin, b1 / b4) are bit-identical.
+
+### Default behaviour, old → new
+- No change for any model already in the catalog: 872 / 876 points identical (above), the 4 others did not finish before; 68 / 68 speech KPI rows identical.
+- New entries only (numbers above): the catalog lists 5 more models (146 → 151 listed; 176 listed + unlisted).
+- ext_validate: only the version stamp changed (0.288.0 → 0.289.0).
+
+### Freshness
+- HF sweep since 2026-10-20 (89 orgs): only the Ornith 122B siblings (0.288) and unsloth re-uploads. Web check: nothing new; DeepSeek-V4.1-Flash-1017 is the 0.248 alias.
+- The nvidia org listing showed the pre-window misses added above (Bolt, Lightning, Super-VL BF16).
+
+
 ## [0.288.0]
 
 ### Added: the Ornith family (ornith-ai, MIT)

@@ -177,6 +177,18 @@ EXTRA_TAIL = [
     ("ornith-1.0-35b", "ornith-ai/Ornith-1.0-35B"),
     ("ornith-1.0-35b-fp8", "ornith-ai/Ornith-1.0-35B-FP8"),
     ("ornith-1.0-9b", "ornith-ai/Ornith-1.0-9B"),
+    # 0.289: NVIDIA Nemotron 3.5 family (nvidia, OpenMDW-1.1).  Bolt 74B-A9B (repos 2026-10-07 / 09, model card release
+    # 10/15) = Star-Elastic compression of Super-VL 120B-A12B: nemotron_h_puzzle — same 88-layer Mamba-2 / GQA / latent-MoE
+    # layout, per-layer routed experts 240–496 and widths 1536–2560 (block_configs), top-9, no MTP; same RADIO ViT-H.
+    # 24GB = as served (vLLM): ModelOpt MIXED_PRECISION — IQ2_XXS routed + shared experts, NVFP4 W4A16 Mamba in / out,
+    # Q8_0 attention q/k/v/o, latent projections and lm_head, bf16 embeddings / router / norms / ViT.
+    ("nemotron-3.5-bolt-74b-a9b-24gb", "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB"),
+    ("nemotron-3.5-bolt-74b-a9b-bf16", "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16"),
+    # Lightning 30B-A3B (2026-08-01 / 04): nemotron_h text-only, 52 layers, 128 experts top-6 (no latent), 1 MTP layer;
+    # NVFP4 = ModelOpt MIXED_PRECISION (W4A16 NVFP4 experts / shared / lm_head, FP8 attention, fp8 KV)
+    ("nemotron-3.5-lightning-30b-a3b-nvfp4", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"),
+    ("nemotron-3.5-lightning-30b-a3b-bf16", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"),
+    ("nemotron-3.5-super-vl-120b-a12b-bf16", "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -376,7 +388,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("microsoft", "Microsoft-Decision", ("microsoft-decision",)), ("rwkv", "RWKV-7 G1k", ("rwkv7-",)),
     ("tencent", "Hy-Memory（Hy3 MoE）", ("hy-memory",)), ("bfl", "FLUX 3", ("flux-3",)),
     ("microsoft", "UserRepGen", ("userrepgen",)),
-    ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("nvidia", "Nemotron-3.5 Super VL", ("nemotron-3.5",)), ("nvidia", "Qwen3.8（NVIDIA 量化）", ("qwen3.8",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
+    ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("nvidia", "Nemotron-3.5（Super VL · Bolt · Lightning）", ("nemotron-3.5",)), ("nvidia", "Qwen3.8（NVIDIA 量化）", ("qwen3.8",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
     ("reflection", "Beam-1.0", ("beam-",)),
     ("openmoss", "MOSS-Image", ("moss-image",)),
     ("kyutai", "Moshi", ("moshi",)),     # 0.274
@@ -401,6 +413,8 @@ MERGED = {"deepseek-v3.1": "deepseek-v3", "deepseek-r1": "deepseek-v3", "kimi-k2
           "ornith-1.5-9b": "qwen3.5-9b", "ornith-1.0-397b": "qwen3.5-397b-a17b",
           "ornith-1.0-35b": "startlux-decision-v1-35b-a3b", "ornith-1.0-9b": "qwen3.5-9b",
           "ornith-1.0-397b-fp8": "ornith-1.5-397b-fp8", "ornith-1.0-35b-fp8": "ornith-1.5-35b-a3b-fp8"}
+# 0.289: the Nemotron 3.5 bf16 releases (Bolt, Lightning, Super-VL) are listed, not merged — MERGED needs identical
+# params and dtypes, and they differ in dtype from the as-served 24GB / NVFP4 releases
 # Generic dense GQA models whose sizes are already covered by Qwen3 / Llama 3: no extra design insight.
 UNLISTED = {"yi-1.5-34b": "与 Qwen3-32B 同类（稠密 GQA）", "internlm3-8b": "与 Qwen3-8B / Llama-3.1-8B 同类",
             "internlm2-5-20b": "与 Qwen3-32B / Magistral-Small 同类", "qwen2.5-3b": "与 Qwen3-4B 同类",
