@@ -72,4 +72,4 @@ def test_ui_progressive_and_model_lists():
         lists[name] = re.findall(r"'([^']+)'", m.group(1))
     assert set(lists["SPS_OUT"]) | set(lists["SPS_ASR"]) == set(SPEECH_MODELS)
     assert not set(lists["SPS_OUT"]) & set(lists["SPS_ASR"])
-    assert "body({ models: [models[i]], slc_gib: slc })" in js and "run !== spsRun" in js and "staleTag(v0)" in js
+    assert "const b0 = body({ slc_gib: slc })" in js and "{ ...b0, models: [models[i]] }" in js and "run !== spsRun" in js and "staleTag(v0)" in js

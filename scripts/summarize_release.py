@@ -416,6 +416,24 @@ def summarize(repo: str) -> dict:
             weights.setdefault("_orphan_scales", {"role": "scale", "fmt": "scale", "params": 0, "bytes": 0})["bytes"] += sb
         else:
             weights[key]["bytes"] += sb
+    # 0.285: quantized vision tower — per-linear-kind weight formats (attention / MLP / merger / patch embed), so the
+    # encoder GEMMs run at the release's formats (Qwen3.8-Flash-Next-FP4-Local: attention MXFP8, MLP + merger
+    # W4A16 NVFP4).  Emitted only when a vision weight is quantized (every other release unchanged).
+    vq: dict[str, dict] = {}
+    for b_, w in weights.items():
+        if w["role"] != "vision" or not w["params"] or len(tensors.get(b_, (None, [0]))[1]) < 2:
+            continue                                   # matrices / convs only (biases, norms stay with the tower)
+        k = ("merger" if re.search(r"(merger|projector|aligner)", b_) else "patch" if "patch_embed" in b_ else
+             "attn" if re.search(r"\.(attn|self_attn|attention)\.", b_) else "mlp" if re.search(r"\.(mlp|ffn)\.", b_) else None)
+        if k is None:
+            continue
+        e = vq.setdefault(k, {}).setdefault(w["fmt"], {"params": 0, "bytes": 0})
+        e["params"] += w["params"]
+        e["bytes"] += w["bytes"]
+    vfmt = None
+    if any(f not in ("bf16", "fp16", "fp32") for e in vq.values() for f in e):
+        vfmt = {k: {f: {**x, "bits": round(8 * x["bytes"] / x["params"], 4)} for f, x in e.items()}
+                               for k, e in sorted(vq.items())}
     roles: dict[str, dict[str, dict[str, int]]] = {}
     for w in weights.values():
         e = roles.setdefault(w["role"], {}).setdefault(w["fmt"], {"params": 0, "bytes": 0})
@@ -425,7 +443,7 @@ def summarize(repo: str) -> dict:
         roles["buffer"] = {"int64": {"params": 0, "bytes": buffers}}
     llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge")]
     tot = lambda rs, k: sum(v[k] for r in rs for v in roles.get(r, {}).values())
-    extra = {}
+    extra = {"vision_fmt": vfmt} if vfmt else {}
     for r in ("talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge"):   # 0.271 speech output (Omni / CosyVoice; absent → no key)
         if r in roles:
             extra[f"params_{r}"] = tot([r], "params")

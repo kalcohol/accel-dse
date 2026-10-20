@@ -7610,3 +7610,31 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 - Reading for chip architects: small dense models and small-active MoE at batch 1 tolerate only 2–8 µs per op before TPOT degrades by 10 %. A host-launched runtime (≈ 20 µs per op) costs them 30–90 %. Graph-trace dispatch (≈ 1.5 µs) costs ≤ 7 %.
 
+## §230 Static-build route classification; quantized vision tower (0.285)
+
+### §230.1 Static (Pyodide) build
+- Every `/api` call goes through `app.js req(chan, path, body)` → the shim → a Pyodide worker → `accel_dse.serve.respond`. Routing is therefore by the server's own table; the shim only picks the lane:
+  - fast: eval / sensitivity / memory / sweep / pareto / catalog;
+  - slow: searches and insights. Requests here are abortable: a running request is terminated together with its worker.
+- 0.285: both lane lists are explicit (`fastRoutes` / `slowRoutes`). Tests require UI calls ⊆ fast ∪ slow, the two lists disjoint, every insight route in slow, and both lists ⊆ the server routes. An unknown route runs on the slow lane with a console warning.
+- Stale results:
+  - `req` aborts the previous request of the same channel and drops replies with an old sequence number;
+  - a scenario edit (`invalidate`) tags the compare / layouts / sweep statuses, and (0.285) the speech, streams and dispatch insight statuses;
+  - long panels compare the scenario version at start (`staleTag(v0)`);
+  - the streams panel sends one scenario snapshot for all rows.
+- `scripts/ui_static_smoke.py` checks all of this live on a built dist-static. At 0.285: cold load 4 s, 19 endpoints answered, speech insight 17 rows, streams 11 rows, dispatch panel 4 rows with the superseded request killed.
+
+### §230.2 Quantized vision tower
+- 「来源」 nvidia/Qwen3.8-Flash-Next-FP4-Local safetensors headers (local/hf_cache), 27 blocks:
+  - `attn.qkv.weight` F8_E4M3 (3456, 1152) + `weight_scale` U8 (3456, 36);
+  - `attn.proj` F8_E4M3 (1152, 1152) + U8 (1152, 36);
+  - → MXFP8, e8m0 per 32: 8 + 8/32 = 8.25 bits.
+  - `mlp.linear_fc1` U8 (4304, 576) + F8_E4M3 scale (4304, 72) + F32 `weight_scale_2`; `linear_fc2` U8 (1152, 2152); `merger.linear_fc{1,2}` alike;
+  - → NVFP4, e4m3 per 16: 4.5 bits. `patch_embed` is bf16.
+  - hf_quant_config `algo_by_role.vision` = [MXFP8, W4A16_NVFP4].
+- Activation rule, as for LLM roles 「来源」 ModelOpt algorithm names:
+  - FP8 / MXFP8 = W8A8 → fp8 GEMM inputs (e8m0 scales ≈ fp8 bytes 「近似」);
+  - W4A16_NVFP4 = weight-only → bf16 inputs.
+- Stored weights = release vision bytes / params × tower params (0.7276 B/param; was 2.0).
+- 100T (fp8 at 2× bf16), 1 image at 1024², prompt 2048: encode 64.1 → 57.9 ms; tower weights 0.898 → 0.327 GB; TTFT 648 → 642 ms. The attention GEMMs (≈ 1/3 of tower FLOPs) run fp8. MLP / merger dequantise to bf16 MACs, with 3.6× fewer weight bytes.
+

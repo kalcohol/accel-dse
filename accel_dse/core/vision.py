@@ -140,6 +140,11 @@ class VisionSpec:
     # within tile × tile patch tiles of the per-image patch grid (tile = pos_emb_height = 32; edge tiles are partial)
     tile: int = 0
     audio: "AudioSpec | None" = None    # 0.175 Muse Spark audio encoder (costed when serving.audio_s > 0)
+    # 0.285 quantized vision tower (release ``vision_fmt``; default () = bf16 everywhere, every earlier encoder
+    # unchanged): ((kind, w_fmt, w_bits, a_fmt), …) per tower linear kind attn (qkv / o), mlp, merger (post GEMMs),
+    # patch (patch embed).  ``w_Bpp`` = stored bytes per tower parameter (release vision bytes / params; 2.0 = bf16).
+    wfmt: tuple = ()
+    w_Bpp: float = 2.0
 
     @property
     def head_dim(self) -> int:
@@ -1113,10 +1118,16 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     rows = images * N
     wf, wb = "bf16", 16.0
     ops: list[Op] = []
+    qf = {k: (f, b, a) for k, f, b, a in v.wfmt}       # 0.285 quantized tower: per-kind formats (empty = bf16)
+
+    def kind(name: str) -> str:
+        return ("patch" if name == "patch_embed" else "merger" if name.startswith(("merger", "vit_merger")) else
+                "attn" if name.endswith((".qkv", ".o")) else "mlp")
 
     def gemm(name: str, m: int, k: int, n: int, layer: int = 0) -> Op:
-        return Op(pfx + name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=wb, w_fmt=wf,
-                  a_fmt=af, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+        f, b, a = qf.get(kind(name), (wf, wb, af)) if qf else (wf, wb, af)
+        return Op(pfx + name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=b, w_fmt=f,
+                  a_fmt=a, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
 
     def attn(tag: str, li: int, N: int, keys: int, sink: bool) -> list[Op]:
         fr = keys / (N * N)

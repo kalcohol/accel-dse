@@ -110,3 +110,35 @@ def test_unpacked_zip_answers_alone():
         res = json.loads(r.stdout)
     for k, (st, head) in res.items():
         assert st == 200, (k, st, head)
+
+
+def _shim_lane(key: str) -> set[str]:
+    m = re.search(key + r" \|\| \[([^\]]*)\]", SHIM)
+    return set(re.findall(r"'(/api/[a-z_]+)'", m.group(1)))
+
+
+def test_every_ui_call_classified_in_shim():
+    """0.285: a new endpoint the UI calls must be put in a lane (fastRoutes / slowRoutes) — searches and insights in
+    the slow (abortable, separate interpreter) lane — so it cannot silently miss the Pages build."""
+    fast, slow = _shim_lane("fastRoutes"), _shim_lane("slowRoutes")
+    paths = {p for _, p in ui_calls()}
+    assert not fast & slow
+    assert paths <= fast | slow, sorted(paths - fast - slow)
+    assert (fast | slow) <= set(serve.GET_ROUTES) | set(serve.POST_ROUTES)
+    assert {p for p in paths if p.startswith("/api/insight")} <= slow
+    assert {"/api/fit", "/api/compare", "/api/layouts", "/api/stability"} <= slow
+    assert "console.warn" in SHIM and "unclassified" in SHIM          # unknown routes still work (slow lane)
+    smoke = (ROOT / "scripts/ui_static_smoke.py").read_text()
+    assert "fastRoutes" in smoke and "ui_calls" in smoke
+
+
+def test_insight_panels_stale_handling():
+    """0.285: speech / streams / dispatch panels are tagged stale by a scenario edit, and the streams loop sends one
+    scenario snapshot for every row."""
+    inv = APP[APP.index("function invalidate()"):APP.index("function showErr(")]
+    for i in ("ins-sp-status", "ins-sps-status", "ins-dp-status"):
+        assert i in inv
+    assert "const b0 = body({ slc_gib: slc })" in APP and "{ ...b0, models: [models[i]] }" in APP
+    for fn in ("async function runInsightSpeech()", "async function runInsightDispatch()"):
+        seg = APP[APP.index(fn):APP.index(fn) + 2500]
+        assert "const v0 = S.ver" in seg and "staleTag(v0)" in seg and "dataset.done = '1'" in seg

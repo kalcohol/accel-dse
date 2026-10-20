@@ -710,6 +710,11 @@ function invalidate() {
   if (S.cat) paintScope();
   for (const id of ['cmp-status', 'lay-status', 'sw-status'])
     if ($(id).dataset.done) $(id).textContent = STALE;
+  // 0.285: speech / streams / dispatch insight panels keep their text and gain the stale tag once
+  for (const id of ['ins-sp-status', 'ins-sps-status', 'ins-dp-status']) {
+    const el = $(id);
+    if (el && el.dataset.done && !el.textContent.includes(STALE)) el.textContent += ` · ${STALE}`;
+  }
   // 0.78: the stability verdict was only tagged at render time — later edits left it looking current
   const sb = $('stab-box');
   if (sb && sb.dataset.done && !sb.querySelector('.stale')) {
@@ -2114,7 +2119,9 @@ function speechDispCell(d) {
     + ` · x@trace ${num(d.x_at.trace)} / host ${num(d.x_at.host)} · 首音频 +${num(d.first_audio_ms_per_us)} ms/(µs/op)`;
 }
 async function runInsightSpeech() {
+  const v0 = S.ver;      // 0.285: an edit during the run tags the result stale (invalidate tags it afterwards)
   $('ins-sp-status').textContent = '计算中（每个语音模型 batch 1）…';
+  delete $('ins-sp-status').dataset.done;
   try {
     const a = Number($('ins-sp-audio').value) || 10;
     const r = await track(req('insight_speech', '/api/insight_speech', body({ audio_s: a, verify: $('ins-sp-verify').checked, dispatch: $('ins-sp-disp').checked })));
@@ -2126,15 +2133,19 @@ async function runInsightSpeech() {
       ['模型', '类型', '瓶颈阶段', 'x（忙碌秒/音频秒）', '实时', '首音频 / 首 token（主导）', '所需有效带宽 GB/s', '或 SLC 钉住', '各阶段 x',
         ...((r.rows || []).some((y) => y.dispatch) ? ['op 调度敏感度（每 op 延迟 u）'] : [])]
         .map((x) => h('th', {}, x)))), h('tbody', {}, speechInsightRows(r)));
-    $('ins-sp-status').textContent = `完成 · ${(r.rows || []).length} 模型`;
+    $('ins-sp-status').textContent = `完成 · ${(r.rows || []).length} 模型${staleTag(v0)}`;
+    $('ins-sp-status').dataset.done = '1';
   } catch (e) {
     $('ins-sp-status').textContent = '错误：' + e.message;
+    $('ins-sp-status').dataset.done = '1';
   }
 }
 
 /* 0.284: LLM decode per-op dispatch sensitivity (/api/insight_dispatch, core/dispatch_insight.py) */
 async function runInsightDispatch() {
+  const v0 = S.ver;
   $('ins-dp-status').textContent = '计算中…';
+  delete $('ins-dp-status').dataset.done;
   try {
     const models = $('ins-dp-models').value.split(/[\s,]+/).filter(Boolean);
     const batches = $('ins-dp-batches').value.split(/[\s,]+/).filter(Boolean).map(Number);
@@ -2149,9 +2160,11 @@ async function runInsightDispatch() {
     put($('ins-dp-tbl'), h('thead', {}, h('tr', {}, ['模型', 'batch', 'TPOT ms（理想）', '瓶颈', 'op / 步', 'op / token',
       'TPOT +10 % 的 µs/op', '派发 = 其余时间的 µs/op', `trace ${r.us_at.trace} µs`, `static ${r.us_at.static} µs/步`, `host ${r.us_at.host} µs`]
       .map((x) => h('th', {}, x)))), h('tbody', {}, ...rows));
-    $('ins-dp-status').textContent = `完成 · ${(r.rows || []).length} 行`;
+    $('ins-dp-status').textContent = `完成 · ${(r.rows || []).length} 行${staleTag(v0)}`;
+    $('ins-dp-status').dataset.done = '1';
   } catch (e) {
     $('ins-dp-status').textContent = '错误：' + e.message;
+    $('ins-dp-status').dataset.done = '1';
   }
 }
 
@@ -2179,11 +2192,12 @@ async function runInsightSpeechStreams() {
   st.textContent = `计算中（0/${models.length} 模型 × ${slc.length} 档，逐点重算）…`;
   delete st.dataset.done;
   const tb = h('tbody', {});
+  const b0 = body({ slc_gib: slc });     // 0.285: one scenario snapshot for every row (an edit mid-run must not mix chips)
   put($('ins-sps-tbl'), h('thead', {}, h('tr', {}, h('th', {}, '模型'), h('th', {}, '类型'),
     ...slc.map((g) => h('th', {}, `SLC ${num(g)} GiB`)), h('th', {}, '首次实时'))), tb);
   try {
     for (let i = 0; i < models.length; i++) {
-      const r = await track(req('insight_speech_streams', '/api/insight_speech_streams', body({ models: [models[i]], slc_gib: slc })));
+      const r = await track(req('insight_speech_streams', '/api/insight_speech_streams', { ...b0, models: [models[i]] }));
       if (!r || run !== spsRun) return;          // superseded (new click / cancelled): the newer run owns the panel
       if (i === 0) $('ins-sps-summary').textContent = `${r.chip} · ${r.mem_id} · 单元格 = 实时路数 / 卡（LM 卡 + 所需语音卡；悬停看 LM / 语音卡路数）`
         + ` · 上限 ${r.max_streams} 路（+）· ${r.method}`;

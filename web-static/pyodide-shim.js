@@ -15,9 +15,13 @@
   const SLOW = new Set(CFG.slowRoutes || ['/api/fit', '/api/compare', '/api/layouts', '/api/stability',
     '/api/insight', '/api/insight_path', '/api/insight_sizing', '/api/insight_slc', '/api/insight_speech',
     '/api/insight_speech_streams', '/api/insight_dispatch']);
+  // 0.285: every route the UI calls is classified explicitly (tests/test_static_routes.py: UI calls ⊆ FAST ∪ SLOW);
+  // an unclassified /api route still works — it goes to the slow (abortable) lane with a console warning
+  const FAST = new Set(CFG.fastRoutes || ['/api/health', '/api/catalog', '/api/models', '/api/memory', '/api/eval',
+    '/api/sensitivity', '/api/sweep', '/api/pareto']);
   let nextId = 1, readyResolve, readyReject;
   const ready = new Promise((res, rej) => { readyResolve = res; readyReject = rej; });
-  const T = (window.__accelStatic = { log: [], ready, t0: performance.now(), loadMs: null, error: null, restarts: 0,
+  const T = (window.__accelStatic = { log: [], ready, t0: performance.now(), loadMs: null, error: null, restarts: 0, unclassified: new Set(),
     capture: !!window.__accelCapture, busy: () => lanes.reduce((n, l) => n + l.queue.length + (l.running ? 1 : 0), 0) });
 
   // first-load phases → the app's progress strip (app.js listens; it also reads __accelStatic.progress on start)
@@ -97,7 +101,9 @@
     init = init || {};
     const method = (init.method || 'GET').toUpperCase();
     const body = typeof init.body === 'string' ? init.body : '';
-    const lane = SLOW.has(url.split('?', 1)[0]) ? slow : fast;
+    const route = url.split('?', 1)[0];
+    if (!SLOW.has(route) && !FAST.has(route) && !T.unclassified.has(route)) { T.unclassified.add(route); console.warn('accel static: unclassified route ' + route + ' → slow lane'); }
+    const lane = SLOW.has(route) || !FAST.has(route) ? slow : fast;
     return new Promise((resolve, reject) => {
       const p = { id: nextId++, method, path: url, body, resolve, reject, aborted: false, t: performance.now() };
       const sig = init.signal;

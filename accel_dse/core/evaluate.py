@@ -2044,7 +2044,7 @@ def _vision_cost(scn: Scenario, m: ModelSpec, sys: System, stages: list) -> dict
     sv, lay = scn.serving, scn.layout
     v = m.vision
     g = image_grid(v, sv.image_w, sv.image_h)
-    w = v.params * 2.0
+    w = v.params * v.w_Bpp          # 0.285: release bytes per tower param (2.0 = bf16; quantized towers less)
     out = {"images": sv.images if v.family != "audio" else 0, "px": [sv.image_w, sv.image_h], "resized_px": list(g.px), "patches": [g.ph, g.pw],
            "merged": g.merged, "tokens_per_image": g.llm_tokens, "image_tokens": sv.image_tokens,
            "text_prompt": sv.prompt - sv.image_tokens, "label": v.label, "params_B": v.params / 1e9,

@@ -331,5 +331,35 @@
    }
   }
  },
- "torch_dtype": "bfloat16"
+ "torch_dtype": "bfloat16",
+ "vision_fmt": {
+  "attn": {
+   "fp8": {
+    "bits": 8.25,
+    "bytes": 147806208,
+    "params": 143327232
+   }
+  },
+  "merger": {
+   "nvfp4": {
+    "bits": 4.5,
+    "bytes": 18579464,
+    "params": 33030144
+   }
+  },
+  "mlp": {
+   "nvfp4": {
+    "bits": 4.5,
+    "bytes": 150605784,
+    "params": 267743232
+   }
+  },
+  "patch": {
+   "bf16": {
+    "bits": 16.0,
+    "bytes": 3538944,
+    "params": 1769472
+   }
+  }
+ }
 }

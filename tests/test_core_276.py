@@ -59,7 +59,7 @@ def test_api_route_ui_and_shim():
         raise AssertionError(bad)
     js = (ROOT / "accel_dse/web/app.js").read_text()
     html = (ROOT / "accel_dse/web/index.html").read_text()
-    assert "req('insight_speech_streams', '/api/insight_speech_streams', body(" in js
+    assert "req('insight_speech_streams', '/api/insight_speech_streams', { ...b0, models: [models[i]] })" in js and "const b0 = body({ slc_gib: slc })" in js
     for i in ("ins-sps-run", "ins-sps-gib", "ins-sps-tbl", "ins-sps-asr"):
         assert f'id="{i}"' in html
     shim = (ROOT / "web-static/pyodide-shim.js").read_text()

@@ -335,6 +335,14 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             if "派发敏感度" not in (p.text_content("#walls-note") or ""):
                 errs.append("walls note: no dispatch sensitivity")
             b.close()
+        # 0.285: the same features on the static (Pages / Pyodide) build — every UI endpoint routed in the shim
+        r = subprocess.run([sys.executable, str(ROOT / "scripts/ui_static_smoke.py"), chrome], cwd=ROOT,
+                           capture_output=True, text=True, timeout=1500)
+        tail = (r.stdout.strip().splitlines() or [""])[-1]
+        steps.append(("static build smoke", tail))
+        if r.returncode != 0:
+            errs.append("static build: " + " | ".join(l for l in r.stdout.splitlines() if l.startswith("ERR"))[:600]
+                        + (r.stderr[-300:] if not r.stdout else ""))
     finally:
         srv.terminate()
         try:

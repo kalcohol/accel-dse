@@ -648,7 +648,7 @@ def cmd_eval(a) -> dict:
     sc0 = out["scenario"].get("serving", {})
     print(f"{m['id']}  [{m['provenance']} · {m['coverage']} · {m['dtype']}{' · what-if' if m.get('what_if') else ''}]"
           f"{'  「架构代理」' if m['proxy_badge'] else ''}"
-          + (f"  VLM：视觉编码器 {m['vision']['label']}（{m['vision_params_B']:.2f}B，bf16）已建模，"
+          + (f"  VLM：视觉编码器 {m['vision']['label']}（{m['vision_params_B']:.2f}B，按发布格式）已建模，"
              f"{'本场景 ' + str(sc0.get('images', 0)) + ' 张图/请求' if sc0.get('images') else '本场景无图像（--images 0）'}"
              if m.get("vision") else
              f"  VLM：视觉编码器（{m['vision_params_B']:.2f}B）未建模，只评估语言主干" if m.get("vision_params_B") else ""))

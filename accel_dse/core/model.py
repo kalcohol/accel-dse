@@ -1897,6 +1897,31 @@ def _quark_act_roles(qc: dict, fm: dict) -> dict:
             if f.fmt == w_fmt and r in ("attn", "mlp", "expert", "shared_expert", "lm_head")}
 
 
+def _vision_formats(rel: dict, vs) -> dict:
+    """0.285 quantized vision tower (release ``vision_fmt``, scripts/summarize_release.py): per tower-linear kind the
+    stored weight format and bits (dominant format by params), and the GEMM input format from ModelOpt's per-role
+    algorithms 「来源」 (as in ``_w4a4_roles``): FP8 / MXFP8 = W8A8 → fp8 inputs (MXFP8 e8m0 / 32 scales ≈ fp8 bytes
+    「近似」); NVFP4 = W4A4 → nvfp4 inputs unless the role also lists W4A16_NVFP4 (weight-only) → bf16.  Stored bytes per
+    tower parameter from the release's vision role.  Up to 0.284 the tower ran bf16 weights and inputs and was stored
+    at 2 bytes / param."""
+    qc = rel.get("quantization_config") or {}
+    algos = set(((qc.get("algo_by_role") or {}) if isinstance(qc, dict) else {}).get("vision") or ())
+    out = []
+    for k, fs in sorted(rel["vision_fmt"].items()):
+        f, x = max(fs.items(), key=lambda kv: kv[1]["params"])
+        bits = 8.0 * sum(y["bytes"] for y in fs.values()) / sum(y["params"] for y in fs.values())
+        if f == "fp8" and algos & {"FP8", "MXFP8"}:
+            a = "fp8"
+        elif f == "nvfp4" and "NVFP4" in algos and "W4A16_NVFP4" not in algos:
+            a = "nvfp4"
+        else:
+            a = "bf16"
+        out.append((k, f, bits, a))
+    vr = (rel.get("roles") or {}).get("vision") or {}
+    p, b = sum(x["params"] for x in vr.values()), sum(x["bytes"] for x in vr.values())
+    return {"wfmt": tuple(out), "w_Bpp": b / p if p else 2.0}
+
+
 def _w4a4_roles(rel: dict, fm: dict) -> dict:
     """0.254: ModelOpt NVFP4 (hf_quant_config quant_algo "NVFP4"; config_groups input_activations num_bits 4) is W4A4 —
     vLLM ModelOptNvFp4 / SGLang modelopt_fp4 quantise each NVFP4 GEMM's input to NVFP4 (global input_scale, e4m3 per 16)
@@ -2236,6 +2261,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             # 0.144: multimodal parts stored with the release but not run for images (MiMo audio encoder + speech
             # embeddings) → storage only
             vs = replace(vs, extra=rv - vs.params, params=rv)
+        if vs is not None and rel.get("vision_fmt"):
+            vs = replace(vs, **_vision_formats(rel, vs))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),

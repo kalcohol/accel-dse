@@ -6,6 +6,42 @@
 
 
 
+## [0.285.0]
+
+### Fixed: static (GitHub Pages / Pyodide) build — every UI endpoint classified, insight panels stale-safe (MODEL §230.1)
+- Audit of the features added since 0.270 on the static build: speech insight with the op-dispatch column, speech streams vs SLC, the LLM dispatch panel (`/api/insight_dispatch`), and `dispatch_sens` in eval. All of them already reach `accel_dse.serve.respond` in the Pyodide worker, and the slow-lane list named every insight route.
+- Gaps found and fixed:
+  - **Unclassified routes.** The shim only listed slow routes, and anything else silently ran on the fast lane. The shim now also lists the fast routes. A UI call in neither list fails a new test (`test_every_ui_call_classified_in_shim`). At runtime an unknown route still works: it goes to the abortable slow lane with a console warning.
+  - **Mixed scenarios in speech streams.** The panel rebuilt the request body for every model row, so an edit mid-run mixed chips across rows. It now sends one scenario snapshot for all rows.
+  - **Stale panels.** Speech insight and the LLM dispatch panel had no stale handling. They now record the scenario version when they start; a result that lands after an edit, or a panel already shown when an edit happens, gets "场景已改变，需重新运行" appended. Speech streams gets the same tag.
+- New `scripts/ui_static_smoke.py` (opt-in; Playwright + Chrome + the Pyodide CDN; prints SKIP if the CDN is unreachable). It builds dist-static into a temp dir, serves it, and in headless Chromium:
+  1. checks every endpoint app.js calls is classified in the shim, answered by the Pyodide worker, and sent to the expected lane;
+  2. drives the eval walls note with `dispatch_sens`, the dispatch panel, speech insight with the dispatch column, and streams vs SLC;
+  3. checks that a re-click kills or drops the running slow-lane request, that a scenario edit tags the panel stale, that the progress pill shows, and that inputs stay enabled while a request runs.
+- `scripts/ui_headless_smoke.py` now runs it at the end.
+
+### Changed: quantized vision tower runs and is stored at the release's formats (MODEL §230.2)
+- Picked as this release's next highest-value open item. It is the only remaining one that breaks the as-released-dtypes rule, and it changes the encoder's MAC format on fp8-capable chips. Of the other open items:
+  - the colocated vocoder, host CPU model and TTFA queueing each need an external measurement;
+  - MXFP8 activation scales are ≤ 1/32 of activation bytes;
+  - the CosyVoice speech tokenizer is 1.6 % of first audio.
+- `summarize_release` writes `vision_fmt` (weight format, params, bytes and bits per tower-linear kind: attn / mlp / merger / patch) only when a vision weight is quantized. Of all releases, only Qwen3.8-Flash-Next-FP4-Local has one, and its JSON gained that key alone.
+  - Per the safetensors headers 「来源」: `visual.blocks.*.attn.{qkv,proj}` are F8_E4M3 with U8 e8m0 per-32 scales, i.e. MXFP8, 8.25 bits. `mlp.linear_fc{1,2}` and `merger.linear_fc{1,2}` are U8-packed e2m1 with e4m3 per-16 scales, i.e. W4A16 NVFP4, 4.5 bits. `patch_embed` is bf16.
+- `VisionSpec.wfmt` / `w_Bpp` (defaults: () = bf16 everywhere, and 2.0 bytes per param). `model._vision_formats` takes the GEMM input format from ModelOpt's per-role algorithms (`algo_by_role.vision` = [MXFP8, W4A16_NVFP4]): attention gets fp8 inputs (W8A8); MLP and merger keep bf16 inputs (weight-only).
+- Stored tower weights now come from the release's vision bytes per param. The CLI VLM line says "按发布格式" instead of "bf16".
+- **Default behaviour, old → new:**
+  - Every other model: unchanged. Their default-scenario summaries are bit-identical, and every other VLM tower keeps `wfmt` () and 2.0 bytes per param.
+  - Qwen3.8-Flash-Next-FP4-Local, measured on 100T with 1 image and a 2048-token prompt:
+
+    | | old | new |
+    |---|---|---|
+    | tower weights | 0.898 GB | 0.327 GB |
+    | vision encode | 64.1 ms | 57.9 ms (−10 %) |
+    | TTFT | 648 ms | 642 ms |
+
+### Freshness
+- HF sweep since 2026-10-20 (88 orgs) and a web check: only unsloth/sam3.1 (re-upload) and community uploads. Nothing new and official in scope.
+
 ## [0.284.0]
 
 ### Decided: NPU presets keep ideal dispatch by default (MODEL §229.1; AGENTS §233 deferred item)
