@@ -19,6 +19,13 @@ def test_act_fmt_for_default_and_override():
         m = get_model(e["id"])
         acts = {k: v.fmt for k, v in m.formats if k.startswith("act_")}
         # 0.254: ModelOpt NVFP4 (W4A4) releases carry act_<role> = nvfp4 on their NVFP4 roles; all others unchanged
+        # 0.280: ModelOpt MIXED_PRECISION releases carry act_<role> per algo_by_role (NVFP4→nvfp4, FP8/MXFP8→fp8)
+        mixed = {"nemotron-3.5-super-vl-120b-a12b-nvfp4": {"act_attn": "fp8", "act_expert": "nvfp4",
+                                                           "act_lm_head": "fp8", "act_shared_expert": "nvfp4"},
+                 "qwen3.8-flash-next-fp4-local": {"act_attn": "fp8", "act_expert": "nvfp4", "act_shared_expert": "fp8"}}
+        if e["id"] in mixed:
+            assert acts == mixed[e["id"]], (e["id"], acts)
+            continue
         assert acts in ({}, {"act_expert": "nvfp4"}), (e["id"], acts)
         assert m.act_fmt_for("expert") == ("nvfp4" if acts else m.act_fmt)
     m = with_formats(get_model("gpt-oss-20b"), dict(X.MXFP4_BLACKWELL))

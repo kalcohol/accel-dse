@@ -1050,9 +1050,11 @@ def _build_qwen4exp(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
              f"（每 token {prow} 行 × {ped // max(prow, 1)}，膨胀 conv {pk}）"]
 
     def gres(tag: str, combine: bool = True):
-        lin = (Linear(f"gr_{tag}_down", Nh, r, "rep"), Linear(f"gr_{tag}_up", r, Nh, "rep"))
+        # 0.280: role "other" = the release's gated-residual / PLE projection dtype (bf16 in both releases; the FP4-Local
+        # quantization leaves them out while attention goes MXFP8)
+        lin = (Linear(f"gr_{tag}_down", Nh, r, "rep", role="other"), Linear(f"gr_{tag}_up", r, Nh, "rep", role="other"))
         if combine:
-            lin += (Linear(f"gr_{tag}_inj", Nh, N, "rep"),)
+            lin += (Linear(f"gr_{tag}_inj", Nh, N, "rep", role="other"),)
         return lin, Nh                                # + hc_norm weight
 
     def full(i: int):
@@ -1070,7 +1072,7 @@ def _build_qwen4exp(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         ffn, flin = _ffn_moe(h, E, k, de, 1, c["shared_expert_intermediate_size"], shared_gate=True)
         kw = {}
         if i + 1 in ple_ids:
-            alin += (Linear("ple_key", ped, Nh, "rep"), Linear("ple_value", ped, h, "rep"))
+            alin += (Linear("ple_key", ped, Nh, "rep", role="other"), Linear("ple_value", ped, h, "rep", role="other"))
             misc += 3 * Nh + Nh * pk
             kw = dict(ple_rows=prow, ple_row_dim=ped // prow, ple_conv=pk, ple_dil=ng)
         if last:
@@ -1827,7 +1829,7 @@ def _builder(c: dict):
 
 
 # ---------------------------------------------------------------- release formats
-_ROLE_KEYS = ("attn", "mlp", "expert", "shared_expert", "router", "embed", "lm_head", "mtp")
+_ROLE_KEYS = ("attn", "mlp", "expert", "shared_expert", "router", "embed", "lm_head", "mtp", "other")
 
 
 def _release_formats(rel: dict) -> dict[str, RoleFormat]:
@@ -1879,6 +1881,22 @@ def _w4a4_roles(rel: dict, fm: dict) -> dict:
     「来源」; "W4A16_NVFP4" (Dory) stays weight-only.  The activation format applies only to the roles stored in NVFP4
     (excluded modules — attention, dense layers, router, lm_head — keep bf16 inputs).  Was bf16 for all roles ≤ 0.253."""
     qc = rel.get("quantization_config") or {}
+    abr = qc.get("algo_by_role") if isinstance(qc, dict) else None
+    if isinstance(abr, dict) and qc.get("quant_algo") == "MIXED_PRECISION":
+        # 0.280 ModelOpt MIXED_PRECISION (modelopt / modelopt_mixed): the activation format follows each role's per-layer
+        # algorithm 「来源」 ModelOpt quant_algo names: "NVFP4" = W4A4 (input_scale per linear in the release),
+        # "W4A16_NVFP4" = weight-only, "FP8" / "MXFP8" = W8A8 (MXFP8 activation e8m0 per-32 scales ≈ fp8 bytes 「近似」).
+        # Applies to roles stored in that format only; ≤ 0.279 every mixed role kept bf16 inputs.
+        out = {}
+        for r, al in abr.items():
+            f = fm.get(r)
+            if f is None or r not in ("attn", "mlp", "expert", "shared_expert", "lm_head"):
+                continue
+            if set(al) == {"NVFP4"} and f.fmt == "nvfp4":
+                out["act_" + r] = RoleFormat("nvfp4", 4.5)
+            elif set(al) <= {"FP8", "MXFP8"} and f.fmt == "fp8":
+                out["act_" + r] = RoleFormat("fp8", 8.0)
+        return out
     if not isinstance(qc, dict) or qc.get("quant_method") != "modelopt":
         return {}
     a4 = qc.get("quant_algo") == "NVFP4" or any(
@@ -1984,6 +2002,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                           c.get("n_recurrent_loops") or 1, "per_loop")
     if rel is not None:
         fm = _release_formats(rel)
+        if not any(l.role == "other" for L in spec.layers + spec.mtp_layers for l in L.attn_linears):
+            fm.pop("other", None)             # 0.280: only models with role-"other" Linears (Qwen4Exp) carry it
         fm.update(_w4a4_roles(rel, fm))
         spec = replace(spec, formats=tuple(sorted(fm.items())), kv_fmt=_kv_fmt(rel), act_fmt=_act_fmt(rel),
                        release_params=rel.get("params_llm"), release_mtp_params=rel.get("params_mtp"),

@@ -193,6 +193,20 @@
   "projector_hidden_size": 20480,
   "ps_version": "v2",
   "quantization_config": {
+   "algo_by_role": {
+    "attn": [
+     "FP8"
+    ],
+    "expert": [
+     "NVFP4"
+    ],
+    "lm_head": [
+     "FP8"
+    ],
+    "shared_expert": [
+     "NVFP4"
+    ]
+   },
    "ignore_count": 172,
    "kv_cache_scheme": {
     "dynamic": false,
@@ -291,6 +305,20 @@
  "params_mtp": 2942325248,
  "params_vision": 842362886,
  "quantization_config": {
+  "algo_by_role": {
+   "attn": [
+    "FP8"
+   ],
+   "expert": [
+    "NVFP4"
+   ],
+   "lm_head": [
+    "FP8"
+   ],
+   "shared_expert": [
+    "NVFP4"
+   ]
+  },
   "ignore_count": 172,
   "kv_cache_scheme": {
    "dynamic": false,

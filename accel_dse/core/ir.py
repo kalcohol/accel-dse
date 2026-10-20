@@ -1173,7 +1173,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         hpn = L.ple_rows // max(ng - 1, 1)
         hv = ng + sum(n + (n - 1) + 2 * hpn for n in range(2, ng + 1))
         st = (L.ple_conv - 1) * L.ple_dil * Nh * 2               # conv state (bf16), read + written each step
-        ops.append(Op("ple_lookup", "lookup", li, kv_read=t * L.ple_rows * L.ple_row_dim * _fmt("bf16").bytes,
+        # 0.280: row bytes at the release's table dtype (embed role: bf16 Qwen; ≈ nvfp4 e2m1 + e4m3 / 16 FP4-Local)
+        ops.append(Op("ple_lookup", "lookup", li, kv_read=t * L.ple_rows * L.ple_row_dim * model.fmt("embed").bits / 8,
                       vec=t * hv, replicated=tp))
         ops.append(Op("ple_mix", "state", li, replicated=tp,
                       vec=t * (Nh * (4 + 4 + 2 + 1 + 4 + 2 * L.ple_conv + 4 + 1 + 1) + 6 * L.gres_n),
@@ -1222,7 +1223,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                             params=hq * c.kv_lora * c.v_dim, replicated=_repl(l, tp)))
             continue
         gc = groups_local(l, tp)[0] if l.groups > 1 else 1
-        ops.append(gemm(model, f"attn.{l.name}", li, m, k, n, "attn", count=gc, params=k * n * gc,
+        ops.append(gemm(model, f"attn.{l.name}", li, m, k, n, l.role or "attn", count=gc, params=k * n * gc,
                         replicated=_repl(l, tp)))
     ops.extend(_attn_core_ops(model, li, L.core, ph, sh, b_loc))
     if L.core.kind in ("gqa", "mla"):
@@ -1921,7 +1922,7 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         return gemm(model, f"{prefix}.{l.name}", li, _rows(model, l, ph, b, sp), k, n, role, stream=True,
                     replicated=_repl_full(l, tp, sp))
 
-    ops += [lin("attn", l, "attn") for l in L.attn_linears]
+    ops += [lin("attn", l, l.role or "attn") for l in L.attn_linears]
     ops += _full_attn(model, li, L.core, ph, sh, b, cross=False)
     if tp > 1 and not L.fused_out:
         ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))

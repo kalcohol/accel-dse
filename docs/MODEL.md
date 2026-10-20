@@ -7424,3 +7424,47 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 - 「近似」: the tubelet embed is costed with the single-frame patch embed K (3·16²; < 0.1 % of tower FLOPs), and frame-label text tokens are not counted.
 - 32 frames at 1280×720 → 16 tubelets, 4032 → 1209 video tokens + 32 tags = 1241 LLM tokens. TTFT at TP2·EP2 goes from 0.615 s to 0.901 s.
 
+
+## §225 Qwen3.8-Flash-Next-FP4-Local, Index-Echo speech views, CosyVoice3 ONNX frontend (0.280)
+
+### §225.1 nvidia/Qwen3.8-Flash-Next-FP4-Local
+- 「来源」 HF config.json: qwen4_exp, identical to Qwen/Qwen3.8-Flash-Next except `ple_embedding_dtype` nvfp4 and the quantization config. The pre/video processor configs are identical. The quantization config is ModelOpt `quant_method` modelopt, `quant_algo` MIXED_PRECISION, with per-module algorithms:
+  - NVFP4 g16 csf (48 routed-expert groups);
+  - MXFP8 g32 (438: linear attention, attention, shared experts);
+  - NVFP4 g16 (the layer-1 PLE n-gram table);
+  - W4A16_NVFP4 (MTP experts, vision MLPs / merger).
+- Headers: 375,487 tensors, since experts are stored per expert. NVFP4 weights are u8 packed e2m1. Expert scales are `weight_scale.nvfp4_csf_fixed` (u8) plus `nvfp4_csf_exceptions` (u32); MXFP8 scales are `weight_scale` (u8 e8m0 per 32).
+  - Treating all scales as non-parameters gives LLM 176,943,899,520, MTP 2,607,150,848 and vision 448,931,056 — the same as the BF16 release.
+  - Bits per weight 「推导」 bytes / params: experts 4.263; attention 8.254 (MXFP8 + BF16 conv / A_log); shared experts 8.25.
+- Activations 「来源」 ModelOpt algorithm names: NVFP4 = W4A4 (the release stores an `input_scale` per expert linear), W4A16_NVFP4 = weight-only, FP8 / MXFP8 = W8A8. `algo_by_role` (per-module algorithm sets mapped by `classify`) decides per role. 「近似」 MXFP8 activation bytes are taken as fp8 (the e8m0 / 32 scales are left out).
+- Nemotron-3.5-Super-VL (modelopt_mixed, FP8 + NVFP4) gets the same rule: act_attn fp8, act_expert / act_shared_expert nvfp4, act_lm_head fp8. TTFT at 4096 tokens on 100T TP2·EP2:
+  - text prompt: 0.615 → 0.516 s;
+  - + one 1024² image: 0.792 → 0.669 s;
+  - + one 32-frame 720p video: 0.901 → 0.775 s.
+- **Roles:** `attn_` / `mlp_hyper_connection` → `other` (they used to fall under attn through the `.attn_` pattern). The Qwen4Exp gated-residual and PLE key / value Linears use role `other`, which resolves to the release's `other` dtype (BF16 in both releases). `ir` honours `Linear.role` for attention-block Linears. The PLE lookup reads rows at `fmt("embed")` bits 「近似」: that figure mixes the BF16 token embedding with the NVFP4 table, 4.64 against the table's 4.5.
+- 「近似」 the vision tower is still costed with BF16 weights (stored as MXFP8 / NVFP4 in this release).
+
+### §225.2 Index-Echo in the speech views
+- Stage `pipeline`: x = Σ split / output audio seconds (one card, serial, non-streaming). r (re-reads per output second) is that of the dominant decode stage: ST text tokens n_out / out_s, or CV3 speech tokens / out_s 「近似」.
+- Concurrent clips 「假设」 (`dub` itself is batch 1): b clips per replica, ST / CV3 LM steps batched over b, mapper / flow / HiFT / speech tokenizer per clip.
+- `repin_s` 「推导」: each ST / CV3 evaluation pins its own hot set in SRAM / SLC. On one card the two phases alternate, so per round both pinned sets are re-read once: (pinned_hot + slc_hot)(ST decode) + (same)(CV3 decode), divided by DRAM bandwidth. Staggered clips across phases are not modelled 「假设」.
+- On 100T + LPDDR5X, streams for 10 s → 10 s at SLC 0 / 0.5 / 1 / 2 / 4 / 8 GiB:
+  - 2B: 38 / 43 / 48 / 53 / 57 / 58;
+  - 9B: 12 / 15 / 19 / 22 / 24 / 30.
+  - All are real-time limited.
+
+### §225.3 CosyVoice3 frontend (ONNX)
+- 「来源」 CosyVoice `cosyvoice/cli/frontend.py`:
+  - speech tokenizer session on CUDAExecutionProvider (if CUDA), input whisper log-mel 128 at 100 frames / s, asserted ≤ 30 s;
+  - CampPlus session on CPUExecutionProvider, input kaldi fbank 80 bins.
+- `fetch_onnx_graph.py` walks the protobuf (onnx.proto field numbers) over Range requests: 79 requests for the 969 MB tokenizer, 25 for CampPlus.
+- `frontend_ops` divisor propagation 「推导」:
+  - Conv multiplies dt by the time stride (and df by the frequency stride for 2-D);
+  - Shape-derived tensors are not activations;
+  - ReduceMean with keepdims 0 over time → one position;
+  - CAM++ context / segment pooling counts as passthrough 「近似」.
+- speech_tokenizer_v3: conv1 128→1280 k3 s2, conv2 1280→1280 k3 s2 (25 Hz), 12 × [LN, q / k / v 1280², rotary, FSMN depthwise k31 on v, full attention 20 heads × 64 (head count from the rotary table width), o 1280², LN, MLP 1280→5120→1280 GELU], FSQ project_in 1280 → 8.
+  - 10 s: 2·384·1280·500 + 2·3840·1280·250 + 12·(8·1280²·250 + 4·1280·5120·250 + 4·250²·1280) + 2·1280·8·250 = 124.76 GFLOP, exact against the graph (test).
+- CampPlus: 2-D conv head (80 bins; frequency strides 2 ×3 → 10), TDNN k5 s2 → 50 Hz, 3 dense CAM blocks (12 / 24 / 16 layers), statistics pooling → 192-d. 11.26 GFLOP per 10 s, on the host CPU and not on the card.
+- 「近似」: biases / norms are read once with no extra vector work beyond 2 per GEMM output.
+

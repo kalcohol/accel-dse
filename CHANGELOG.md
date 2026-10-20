@@ -6,6 +6,49 @@
 
 
 
+## [0.280.0]
+
+### Added: nvidia Qwen3.8-Flash-Next-FP4-Local (MODEL §225.1)
+- New catalog entry `qwen3.8-flash-next-fp4-local` (2026-10-08). It is NVIDIA's ModelOpt MIXED_PRECISION build of the catalogued Qwen3.8-Flash-Next, with dtypes as released. Family "Qwen3.8（NVIDIA 量化）", listing domain vlm. The config is identical to the base model apart from `ple_embedding_dtype` and the quantization config, and so are the image / video preprocessors.
+- Formats, from the safetensors headers (375,487 tensors; LLM 176,943,899,520 parameters, exact; MTP and vision exact):
+  - routed experts: NVFP4 with compressed scales ("csf": u8 fixed part + u32 exceptions), 4.26 bit / weight;
+  - attention, linear attention and shared experts: MXFP8 (e4m3 + e8m0 per 32), 8.25 bit;
+  - PLE n-gram table: NVFP4;
+  - MTP experts and vision MLPs: W4A16 NVFP4;
+  - gated-residual mixers, PLE projections, router and lm_head: BF16.
+- `summarize_release`:
+  - the csf scale tensors are scales, not parameters;
+  - `attn_` / `mlp_hyper_connection` → role `other`. The base Qwen3.8-Flash-Next release is re-summarised; its numbers are unchanged because everything is BF16.
+  - `_compact_qc` also handles quant_method `modelopt` + quant_algo MIXED_PRECISION, adds a csf suffix to the per-algorithm counts, and writes `algo_by_role`.
+- Activation formats for ModelOpt MIXED_PRECISION now follow each role's per-layer algorithm (`model._w4a4_roles`):
+  - "NVFP4" = W4A4, "W4A16_NVFP4" = weight-only, "FP8" / "MXFP8" = W8A8.
+  - This also changes **Nemotron-3.5-Super-VL**: its FP8 attention / Mamba projections and lm_head now take fp8 inputs, and its NVFP4 experts take nvfp4 inputs; up to 0.279 every input was bf16. TTFT at a 4096-token prompt on 100T TP2·EP2 goes from 0.615 s to 0.516 s; TPOT is unchanged at 29.9 ms.
+- Qwen4Exp gated-residual and PLE Linears carry role `other` (`Linear.role` is now honoured for attention-block Linears), so in the FP4 build they stay BF16 while attention is MXFP8. The PLE row lookup reads at the table's stored dtype.
+- On 100T + LPDDR5X (64 GB cards), FP4-Local vs BF16:
+  - TP2: fits (47.9 GiB), TPOT 24.3 ms; the BF16 model needs TP8.
+  - TP4: TPOT 17.2 ms (the BF16 model does not fit).
+  - TP8: 13.0 vs 20.6 ms.
+- The catalog dtype label shows per-role activations (e.g. `A fp8/专家 nvfp4`).
+
+### Added: Index-Echo in the speech bottleneck and streams-vs-SLC views (MODEL §225.2)
+- `speech_insight.SPEECH_MODELS` and the UI's speech-output list now include `index-echo-s2st-2b` / `-9b`.
+  - New stage `pipeline`: the whole serial, non-streaming S2ST pipeline, with x = total / output audio seconds.
+  - The SLC estimate uses the re-read rate of the dominant decode stage.
+- `speech._echo_kpis`:
+  - b = serving.batch concurrent clips share the card. The ST / CV3 LM steps are batched; mapper, flow, HiFT and the speech tokenizer run per clip. b = 1 is the 0.279 result plus the new terms below.
+  - `lm_only` is supported.
+  - New `repin_s`: the ST and CV3 phases time-share SRAM / SLC, so each round re-loads both pinned sets once.
+- Streams on 100T (no SLC → 8 GiB SLC): 2B 38 → 58, 9B 12 → 30.
+
+### Added: CosyVoice3 frontend from its ONNX graphs (MODEL §225.3)
+- `scripts/fetch_onnx_graph.py`: a stdlib protobuf walker over HTTP Range reads the graph structure (nodes, attributes, initializer shapes) and skips the weights. `frontend_ops` tracks each activation's time / frequency divisor through the convolution strides. `--release` writes the descriptors into the release key `onnx_frontend`.
+- speech_tokenizer_v3 (242,009,608 F32):
+  - two stride-2 convolutions → 12 blocks (q / k / v / o 1280², FSMN depthwise k31, full attention 20 × 64, GELU MLP 5120) → FSQ projection;
+  - 124.8 GFLOP per 10 s;
+  - costed on the card (`core/onnxfront.py`; onnxruntime CUDA EP in the reference frontend), 5.1 ms per 10 s clip on 100T.
+- CampPlus (6,907,680 F32; CAM++): runs on the host CPU in the reference frontend (CPUExecutionProvider). Its 11.3 GFLOP per 10 s are reported and not charged to the card.
+- Index-Echo coverage stays partial, with one reason: CampPlus on the host CPU and the CPU feature extraction.
+
 ## [0.279.0]
 
 ### Changed: test_core_237 phase-law guard (MODEL §224.1)

@@ -153,6 +153,9 @@ EXTRA_TAIL = [
     # Qwen3.5 ST decoder (2B / 9B) → Hidden2CV mapper (fp32) → CosyVoice3 (= Fun-CosyVoice3-0.5B-2512 files)
     ("index-echo-s2st-2b", "IndexTeam/Index-Echo-S2ST-2B"),
     ("index-echo-s2st-9b", "IndexTeam/Index-Echo-S2ST-9B"),
+    # 0.280: nvidia Qwen3.8-Flash-Next-FP4-Local (2026-10-08, ModelOpt MIXED_PRECISION as released: NVFP4 W4A4 routed
+    # experts with compressed (csf) scales, MXFP8 attention / linear-attention / shared experts, W4A16 NVFP4 MTP experts)
+    ("qwen3.8-flash-next-fp4-local", "nvidia/Qwen3.8-Flash-Next-FP4-Local"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -351,7 +354,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("microsoft", "Microsoft-Decision", ("microsoft-decision",)), ("rwkv", "RWKV-7 G1k", ("rwkv7-",)),
     ("tencent", "Hy-Memory（Hy3 MoE）", ("hy-memory",)), ("bfl", "FLUX 3", ("flux-3",)),
     ("microsoft", "UserRepGen", ("userrepgen",)),
-    ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("nvidia", "Nemotron-3.5 Super VL", ("nemotron-3.5",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
+    ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("nvidia", "Nemotron-3.5 Super VL", ("nemotron-3.5",)), ("nvidia", "Qwen3.8（NVIDIA 量化）", ("qwen3.8",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
     ("reflection", "Beam-1.0", ("beam-",)),
     ("openmoss", "MOSS-Image", ("moss-image",)),
     ("kyutai", "Moshi", ("moshi",)),     # 0.274
@@ -541,7 +544,9 @@ def dtype_label(spec: ModelSpec) -> str:
         parts.append(f"W {f['attn'].fmt}/专家 {f['expert'].fmt}")
     elif w:
         parts.append(f"W {w.fmt}")
-    parts.append(f"A {spec.act_fmt}")
+    aa, ae = spec.act_fmt_for("attn"), spec.act_fmt_for("expert")
+    # 0.280: per-role activation formats (W4A4 NVFP4 experts, W8A8 MXFP8 / FP8 attention) shown like the weights
+    parts.append(f"A {aa}/专家 {ae}" if "expert" in f and ae != aa else f"A {aa}")
     if spec.kv_cache:
         parts.append(f"KV {spec.kv_fmt}")
     return " · ".join(parts)

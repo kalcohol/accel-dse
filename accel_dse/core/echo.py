@@ -28,8 +28,10 @@ COSY3_ID = "fun-cosyvoice3-0.5b-2512"
 TEXT_TOK_PER_S = 3.0      # text tokens per second of speech (transcript and translation) 「假设」 (~150 words / min × 1.2)
 ST_PROMPT = 36            # chat template + instruction + empty think skeleton, tokens 「假设」 (instruction ≈ 22)
 CV3_INSTRUCT = 8
-ECHO_REASON = ("S2ST：CosyVoice3 前端的 speech_tokenizer_v3（源音频 → 提示语音 token）与 CampPlus 说话人向量（ONNX）未计入；"
-               "文本 token / 语音秒按假设值（TEXT_TOK_PER_S）")          # 'You are a helpful assistant.<|endofprompt|>' tokens 「假设」
+# 0.280: speech_tokenizer_v3 costed from its ONNX graph (core/onnxfront.py); CampPlus runs on the host CPU in the
+# reference frontend (CPUExecutionProvider) — reported, not charged to the card
+ECHO_REASON = ("S2ST：CampPlus 说话人向量在主机 CPU 上运行（参考 frontend：CPUExecutionProvider），只报 FLOP、不计入卡时间；"
+               "log-mel / fbank 特征提取（CPU）未计入；文本 token / 语音秒按假设值（TEXT_TOK_PER_S）")          # 'You are a helpful assistant.<|endofprompt|>' tokens 「假设」
 
 
 @dataclass(frozen=True)

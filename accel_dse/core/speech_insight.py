@@ -10,6 +10,8 @@ x (x ≤ 1 ⇔ the stage keeps up; an ASR stage per *input* audio second, a spee
   kimi       LM tokens (12.5 / s), detokenizer card (DiT + vocoder)
   omni       Thinker reply (out_len tokens), speech card (Talker 50 / s + DiT + BigVGAN, serial on one card)
   moshi      frame (Mimi encode + temporal step + 8 depformer steps + Mimi decode, serial, 12.5 frames / s)
+  s2st       pipeline (0.280 Index-Echo: AuT + ST prefill / decode / hidden pass + mapper + CV3 LM + flow + HiFT, serial
+             on one card, non-streaming — x = total / output audio s; r = tokens / s of the dominant decode stage)
 
 The binding stage is the one with the largest x.  When it misses real time (x > 1) and is bound by weight re-reads
 from DRAM (the decode-type stages here: every token / frame re-reads the stage's weights — evaluate reports the
@@ -38,7 +40,8 @@ from .scenario import Scenario
 
 SPEECH_MODELS = ("moshiko-7b", "kimi-audio-7b-instruct", "step-audio-2-mini", "qwen2.5-omni-7b", "cosyvoice2-0.5b",
                  "fun-cosyvoice3-0.5b-2512", "fireredtts3-base", "drama-3", "ming-3.0-tts-tiny", "qwen2-audio-7b-instruct", "qwen3-asr-1.7b",
-                 "fun-asr-nano-2512", "whisper-large-v3", "whisper-large-v3-turbo", "ming-3.0-asr-tiny")
+                 "fun-asr-nano-2512", "whisper-large-v3", "whisper-large-v3-turbo", "ming-3.0-asr-tiny",
+                 "index-echo-s2st-2b", "index-echo-s2st-9b")   # 0.280 S2ST
 OUT_LEN = 64            # reply / transcript tokens 「假设」 (same default as the UI speech panel)
 PROMPT = 64             # text prompt tokens 「假设」
 
@@ -63,6 +66,11 @@ def _stages(k: dict, audio_s: float) -> tuple[dict, float, str, float]:
                 dom, k["first_audio_s"])
     if kind == "moshi":
         return ({"frame": k["rtf"]}, 1.0 / (k["frame_ms"] / 1e3), dom, k["first_audio_s"])
+    if kind == "s2st":
+        sp = k["split"]
+        # re-reads / output audio s of the dominant decode stage (ST: text tokens, CV3: speech tokens) 「近似」
+        r = (k["st_out_tokens"] if sp["st_decode_s"] >= sp["cv3_decode_s"] else k["speech_tokens"]) / k["audio_out_s"]
+        return ({"pipeline": k["rtf"]}, r, k["dominant"], k["first_audio_s"])
     raise ValueError(f"speech insight: unknown speech kind {kind}")
 
 

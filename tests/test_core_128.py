@@ -34,7 +34,7 @@ def test_catalog_labels_consistent():
         lab = C.labels(s)
         assert lab["coverage"] in ("full", "partial", "proxy")
         assert bool(lab["coverage_reasons"]) == (lab["coverage"] != "full"), e["id"]
-        assert re.match(r"^W \S+(/专家 \S+)? · A \S+( · KV \S+)?$", lab["dtype"]), (e["id"], lab["dtype"])
+        assert re.match(r"^W \S+(/专家 \S+)? · A \S+(/专家 \S+)?( · KV \S+)?$", lab["dtype"]), (e["id"], lab["dtype"])   # 0.280 per-role A
         assert (" · KV " in lab["dtype"]) == bool(s.kv_cache)
         f = dict(s.formats)
         if "expert" in f and "attn" in f:

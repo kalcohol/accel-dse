@@ -871,6 +871,9 @@ function renderEval(r) {
         `${num(p.audio_s)} s 源音频 → 原文 ${p.src_tokens} + 译文 ${p.tgt_tokens} token → ${p.speech_tokens} 语音 token → ${num(p.audio_out_s)} s 输出（非流式：首音频 = 全程 ${ms(p.total_s)} ms）`
         + ` · 编码器 ${ms(f.encoder_s)} · ST 预填充 ${ms(f.st_prefill_s)} + 解码 ${ms(f.st_decode_s)} + 隐状态前向 ${ms(f.st_hidden_pass_s)} · 映射器 ${ms(f.mapper_s)}`
         + ` · CV3 预填充 ${ms(f.cv3_prefill_s)} + 解码 ${ms(f.cv3_decode_s)} · flow ${ms(f.flow_s)} · HiFT ${ms(f.hift_s)} ms · 单卡 ${num(p.card_GB)} GB`
+        + (f.speech_tokenizer_s !== undefined ? ` · 语音分词器 ${ms(f.speech_tokenizer_s)} ms · 重载固定权重 ${ms(f.repin_s)} ms` : '')   // 0.280
+        + (p.frontend && p.frontend.campplus_gflop_host ? ` · CampPlus 主机 CPU ${num(p.frontend.campplus_gflop_host)} GFLOP（不计卡时间）` : '')
+        + (p.clips > 1 ? ` · 并发 ${p.clips} 段` : '')
         + (p.fits ? '' : ' · 放不下'), p.rtf > 1 || !p.fits ? 'warn' : ''));
     }
     if (p.kind === 'omni') k.push(kpi('语音端到端 · Omni 语音输出', `首音频 ${num(p.first_audio_s * 1e3)} ms`,   // 0.271
@@ -2081,7 +2084,7 @@ function trafficCell(t) {
 }
 
 /* 0.275: speech bottleneck panel (/api/insight_speech, core/speech_insight.py) */
-const SP_STAGE = { lm: 'LM', speech_card: '语音卡', thinker: 'Thinker', frame: '帧（串行）', encoder: '编码器' };
+const SP_STAGE = { lm: 'LM', speech_card: '语音卡', thinker: 'Thinker', frame: '帧（串行）', encoder: '编码器', pipeline: 'S2ST 全流程（串行）' };   // 0.280 pipeline
 function speechInsightRows(r) {
   return (r.rows || []).map((x) => {
     const st = Object.entries(x.stages || {}).map(([k, v]) => `${SP_STAGE[k] || k} ${num(v)}`).join(' · ');
@@ -2115,7 +2118,7 @@ async function runInsightSpeech() {
 
 /* 0.276: real-time streams per card vs SLC size (/api/insight_speech_streams) */
 const SPS_OUT = ['moshiko-7b', 'kimi-audio-7b-instruct', 'step-audio-2-mini', 'qwen2.5-omni-7b', 'cosyvoice2-0.5b',
-  'fun-cosyvoice3-0.5b-2512', 'fireredtts3-base', 'drama-3', 'ming-3.0-tts-tiny'];
+  'fun-cosyvoice3-0.5b-2512', 'fireredtts3-base', 'drama-3', 'ming-3.0-tts-tiny', 'index-echo-s2st-2b', 'index-echo-s2st-9b'];
 function speechStreamsCell(c) {
   const lim = { realtime: '实时', memory: '容量', cap: '上限' }[c.lm_limit] || c.lm_limit;
   const tip = `LM 卡 ${c.streams_lm} 路（线性预测 ${c.streams_lm_pred}，止于${lim}）`

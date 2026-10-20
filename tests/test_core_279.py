@@ -61,7 +61,7 @@ def test_s2st_kpis_split_and_fit():
         assert abs(p["rtf"] - p["total_s"] / 10.0) < 1e-12
         assert all(v >= 0 for v in p["split"].values())
         assert p["speech_tokens"] == 250 and p["tgt_tokens"] == 30
-    assert "speech_tokenizer_v3" in ECHO_REASON and "CampPlus" in ECHO_REASON
+    assert "CampPlus" in ECHO_REASON          # 0.280: speech_tokenizer_v3 now costed from its ONNX graph (test_core_280)
 
 
 def test_echo_catalog_listing():

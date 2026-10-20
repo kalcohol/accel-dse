@@ -46,6 +46,7 @@ _PREPROC = {
     # 0.278 Nemotron-3.5-Super-VL (preprocessor_config.json; NemotronH_Omni_Reasoning_V3ImageProcessor)
     "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4": {"min_patches": 1024, "max_patches": 13312, "max_len": 16384},
     "Qwen/Qwen3.8-Flash-Next": {"min_px": 65536, "max_px": 16777216},
+    "nvidia/Qwen3.8-Flash-Next-FP4-Local": {"min_px": 65536, "max_px": 16777216},   # 0.280: same preprocessor_config
     "Qwen/Qwen3.8-27B": {"min_px": 65536, "max_px": 16777216},
     "Qwen/Qwen3.5-397B-A17B": {"min_px": 65536, "max_px": 16777216},
     "zai-org/GLM-5.3-Flash": {"min_tok": 16, "max_tok": 8000},
@@ -84,7 +85,8 @@ _PREPROC = {
 # 0.165 — video input.  「来源」 each repo's video_preprocessor_config.json (Qwen3VLVideoProcessor): size shortest_edge
 # 4096 / longest_edge 25165824 (a pixel budget over t_bar·h·w of the whole clip), patch 16, temporal_patch 2, merge 2.
 _VIDEO = {k: {"min_px": 4096, "max_px": 25165824} for k in (
-    "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-Flash-Next", "internlm/Intern-S2-397B")}
+    "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-Flash-Next", "internlm/Intern-S2-397B",
+    "nvidia/Qwen3.8-Flash-Next-FP4-Local")}
 # 0.166 — Kimi K2.5 / K2.7-Code video chunks.  「来源」 preprocessor_config.json media_proc_cfg: temporal_merge_kernel_size 4,
 # in_patch_limit_each_frame 4096, in_patch_limit_video null (K2.5) / 655360 (K2.7-Code), patch_limit_on_one_side 512;
 # config.json vision_config video_attn_type spatial_temporal, merge_type sd2_tpool (modeling_kimi_k25 identical vision code).

@@ -32,13 +32,15 @@ OUT = ROOT / "accel_dse" / "data" / "releases"
 
 SCALE_RE = re.compile(r"(\.weight_scale_inv$|\.scale_inv$|\.weight_scale(_2)?$|\.scale$|_scales$|\.scales$|"
                       r"\.qzeros$|\.g_idx$|\.weight_shape$|\.input_scale$|\.weight_global_scale$|"
-                      r"\.input_global_scale$|\.weight_zero_point$|_scale$)")
+                      r"\.input_global_scale$|\.weight_zero_point$|_scale$|"
+                      r"\.weight_scale\.nvfp4_csf_(fixed|exceptions)$)")   # 0.280 ModelOpt NVFP4 compressed scale format
 ROLE = [
     ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.|^linear_proj\.)"),
     ("mtp", r"(^mtp\.|\.mtp\.|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),
     ("embed", r"(embed_tokens|\bwte\b|tok_embeddings|word_embeddings|^embed\.|\.embed\.weight|ple_embedding|^rwkv7\.emb\.weight$|^backbone\.embeddings\.)"),
     ("lm_head", r"(lm_head|^output\.weight$|embed_out|^head\.weight$)"),
     ("norm", r"(norm\.|norm$|_norm|ln_|layernorm|\.ln\d)"),
+    ("other", r"_hyper_connection\."),   # 0.280 Qwen4Exp gated-residual mixers (attn_ / mlp_; bf16, outside quantization)
     ("router", r"(\.gate\.weight$|\.router\.|gate\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid)"),
     ("shared_expert", r"(shared_expert|\.share_expert\.)"),
     ("expert", r"(\.experts\.|block_sparse_moe\.experts|routed_expert|\.moe\.(gate|up|down)_proj\.)"),
@@ -257,14 +259,23 @@ def _echo_role(name: str, n_layers: int | None) -> str:
 def _compact_qc(qc):
     """0.278 ModelOpt MIXED_PRECISION configs list every quantized module (the Nemotron-3.5-Super-VL config.json is
     8.7 MB): keep the scheme keys, replace the per-module lists by counts per algorithm."""
-    if not isinstance(qc, dict) or qc.get("quant_method") != "modelopt_mixed":
+    # 0.280: also quant_method "modelopt" + quant_algo MIXED_PRECISION (nvidia/Qwen3.8-Flash-Next-FP4-Local, 134 kB → compact)
+    if not isinstance(qc, dict) or not (qc.get("quant_method") == "modelopt_mixed" or (
+            qc.get("quant_method") == "modelopt" and qc.get("quant_algo") == "MIXED_PRECISION")):
         return qc
     out = {k: v for k, v in qc.items() if k not in ("quantized_layers", "config_groups", "ignore")}
     algos: dict[str, int] = {}
     for v in (qc.get("quantized_layers") or {}).values():
         a = v.get("quant_algo", "?") + (f"/g{v['group_size']}" if v.get("group_size") else "")
+        a += f"/{v['weight_scale_encoding']}" if v.get("weight_scale_encoding") else ""   # 0.280 NVFP4 csf scales
         algos[a] = algos.get(a, 0) + 1
     out["quantized_layers_by_algo"] = dict(sorted(algos.items()))
+    # 0.280: per-role algorithm set (classify on the module name) — the activation format follows the per-layer algo
+    # (ModelOpt "NVFP4" = W4A4, "W4A16_NVFP4" weight-only, "FP8" / "MXFP8" = W8A8; core.model._w4a4_roles)
+    by_role: dict[str, set] = {}
+    for k, v in (qc.get("quantized_layers") or {}).items():
+        by_role.setdefault(classify(k + ".weight"), set()).add(v.get("quant_algo", "?"))
+    out["algo_by_role"] = {r: sorted(a) for r, a in sorted(by_role.items())}
     out["ignore_count"] = len(qc.get("ignore") or [])
     return out
 
