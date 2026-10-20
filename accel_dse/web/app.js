@@ -141,7 +141,7 @@ function cancel(chan) {
    (Pyodide) build also reports its first-load phases here (download / init / package). */
 const STAGE = { eval: 'eval 评估', sensitivity: 'sensitivity 敏感度', fit: 'fit 容量修正搜索', memory: 'memory 内存',
   compare: 'compare 映射对比', layouts: 'layouts 布局搜索', stability: 'stability 排名稳定性', sweep: 'sweep 扫描',
-  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC',
+  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC', insight_dispatch: 'LLM 派发敏感度',
   health: 'catalog 载入目录', catalog: 'catalog 载入目录', models: 'catalog 载入目录' };
 const LOAD_ZH = { download: '下载 Python 运行时', init: '初始化 Pyodide', package: '载入 accel_dse 包', ready: '就绪', error: '静态版加载失败' };
 const PROG = {
@@ -1414,9 +1414,16 @@ function renderWalls(r) {
     h('i', { class: `wk-${k}` }), h('b', {}, `${WALL_LBL[k][0]} ${WALL_LBL[k][1]}`), ` ${num(w.exposed_ms[k])} ms · ${pct(w.share[k])}`)));
   const lb = WALL_LBL[w.wall] || [w.wall, w.wall];
   $('walls-note').textContent = `墙 wall：${lb[0]} · ${lb[1]} · 流水级 stage ${w.stage} ${num(w.stage_ms)} ms / 步 step ${num(w.step_ms)} ms`
-    + ` · 派发 dispatch：${w.dispatch_mode}`
+    + ` · 派发 dispatch：${w.dispatch_mode}` + dispSensNote(r.dispatch_sens)
     + (w.exact ? '' : ` · 近似：exec_overlap = ${w.overlap} 下重叠窗口按主导资源归因 · approximate: overlapped window attributed to the dominant resource under exec_overlap = ${w.overlap}`)
     + ' · 固定开销 = 每层固定开销时间（layer_overhead_us），非静态功耗 · fixed overhead = per-layer fixed time, not static power';
+}
+/* 0.284: per-op dispatch sensitivity of the step (Result.dispatch_sens) — where the dispatch knob lives and what it costs */
+function dispSensNote(d) {
+  if (!d || !(d.ops_per_step > 0)) return '';
+  return ` · 派发敏感度 dispatch sensitivity：${num(d.ops_per_step)} op/步，每 op ${d.us_10 != null ? num(d.us_10) : '—'} µs 时步长 +10 %`
+    + `（trace ${num(d.us_at.trace)} µs → ×${num(d.slowdown_at.trace)}，host ${num(d.us_at.host)} µs → ×${num(d.slowdown_at.host)}${d.exact ? '' : '，流水线近似'}）`
+    + ' — 在芯片面板 › 高级芯片参数 › 派发 dispatch 中设置';
 }
 function renderStages(r) {
   const hasSlc = r.stages.some((st) => st.mem.slc_MiB > 0);
@@ -2125,6 +2132,29 @@ async function runInsightSpeech() {
   }
 }
 
+/* 0.284: LLM decode per-op dispatch sensitivity (/api/insight_dispatch, core/dispatch_insight.py) */
+async function runInsightDispatch() {
+  $('ins-dp-status').textContent = '计算中…';
+  try {
+    const models = $('ins-dp-models').value.split(/[\s,]+/).filter(Boolean);
+    const batches = $('ins-dp-batches').value.split(/[\s,]+/).filter(Boolean).map(Number);
+    const r = await track(req('insight_dispatch', '/api/insight_dispatch', body({ models, batches })));
+    if (!r) return;
+    $('ins-dp-summary').textContent = `${r.chip} · ${r.mem_id} · ctx ${r.ctx} · 芯片当前派发 ${r.chip_dispatch} · ${r.method}`;
+    const rows = (r.rows || []).map((x) => h('tr', { style: x.us_10 != null && x.us_10 < r.us_at.host ? 'color:var(--warn)' : '' },
+      h('td', {}, x.model), h('td', {}, String(x.batch)), h('td', {}, num(x.tpot_ms)), h('td', {}, x.bound + (x.fits ? '' : ' ✗放不下')),
+      h('td', {}, num(x.ops_per_step)), h('td', {}, num(x.ops_per_token)), h('td', {}, x.us_10 != null ? num(x.us_10) : '—'),
+      h('td', {}, x.us_eq != null ? num(x.us_eq) : '—'),
+      ...['trace', 'static', 'host'].map((m) => h('td', {}, `${num(x.tpot_ms_at[m])}（×${num(x.slowdown_at[m])}）`))));
+    put($('ins-dp-tbl'), h('thead', {}, h('tr', {}, ['模型', 'batch', 'TPOT ms（理想）', '瓶颈', 'op / 步', 'op / token',
+      'TPOT +10 % 的 µs/op', '派发 = 其余时间的 µs/op', `trace ${r.us_at.trace} µs`, `static ${r.us_at.static} µs/步`, `host ${r.us_at.host} µs`]
+      .map((x) => h('th', {}, x)))), h('tbody', {}, ...rows));
+    $('ins-dp-status').textContent = `完成 · ${(r.rows || []).length} 行`;
+  } catch (e) {
+    $('ins-dp-status').textContent = '错误：' + e.message;
+  }
+}
+
 /* 0.276: real-time streams per card vs SLC size (/api/insight_speech_streams) */
 const SPS_OUT = ['moshiko-7b', 'kimi-audio-7b-instruct', 'step-audio-2-mini', 'qwen2.5-omni-7b', 'cosyvoice2-0.5b',
   'fun-cosyvoice3-0.5b-2512', 'fireredtts3-base', 'drama-3', 'ming-3.0-tts-tiny', 'index-echo-s2st-2b', 'index-echo-s2st-9b'];
@@ -2741,6 +2771,7 @@ async function init() {
   $('ins-slc-run').addEventListener('click', () => runInsightSlc(false));
   $('ins-sp-run').addEventListener('click', runInsightSpeech);
   $('ins-sps-run').addEventListener('click', runInsightSpeechStreams);
+  $('ins-dp-run').addEventListener('click', runInsightDispatch);
   $('ins-slc-cmp').addEventListener('click', () => runInsightSlc(true));
   for (const f of ['csv', 'json']) { $('ins-exp-' + f).addEventListener('click', () => doExport('ins', f)); $('ins-path-exp-' + f).addEventListener('click', () => doExport('ins-path', f)); }
   fillSweepPaths();

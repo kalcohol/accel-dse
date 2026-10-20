@@ -375,6 +375,16 @@ class Result:
                 "wall": top, "overlap": t.overlap, "exact": t.overlap == "stage",
                 "dispatch_mode": self.scenario.chip.dispatch or ("gpu_kernel" if self.scenario.chip.kernel_us else "ideal")}
 
+    def dispatch_sens(self) -> dict | None:
+        """0.284: per-op dispatch sensitivity of this step (core/dispatch_insight.step_sensitivity): dispatched ops
+        per step, the per-op latency at which the step degrades by 10 % (u_10) / doubles its non-dispatch time (u_eq),
+        and the slowdown at the sourced trace / host defaults.  Not part of summary() (fingerprints unchanged)."""
+        from .dispatch_insight import step_sensitivity
+        try:
+            return step_sensitivity(self.scenario, None if self.scenario.chip.dispatch else self)
+        except Exception:  # noqa: BLE001 — a read-out must never break an evaluation
+            return None
+
     def decision(self) -> dict:
         """0.191 decision readout: one forward per question (prefill of prompt + options), no decode loop."""
         sv = self.scenario.serving

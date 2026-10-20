@@ -6,6 +6,52 @@
 
 
 
+## [0.284.0]
+
+### Decided: NPU presets keep ideal dispatch by default (MODEL §229.1; AGENTS §233 deferred item)
+- Picked as this release's top open item: it is the only one that moves every small-batch decode number on every NPU preset. The other open items were measured as small:
+  - the CosyVoice3 speech tokenizer is 5 ms of 319 ms first audio (1.6 %);
+  - MXFP8 activation scales add ≤ 1/32 of activation bytes, in one release;
+  - a quantized vision tower exists in one release (Qwen3.8-Flash-Next-FP4-Local).
+- Evidence: all 41 catalog LLMs that fit on 100T + LPDDR5X 4×64-8533, decode at batch 1, ctx 1024:
+
+  | dispatch | TPOT slowdown, median | worst | rows above +10 % |
+  |---|---|---|---|
+  | trace (1.5 µs per op 「二手」) | +1.7 % | +8 % (carbon-500m) | — |
+  | host (20 µs per op 「二手」) | +23 % | — | 29 / 41 |
+
+  - The per-op latency that degrades TPOT by 10 % (u_10) has a median of 8.9 µs, ranging from 1.9 to 60 µs.
+- Decision: **no default change (old = new = ideal).** The sourced runtime with the lowest per-op cost (trace) moves the median by less than the model's other approximations. Host-launched dispatch is a software-stack choice, not a chip property. Making either the default for a hypothetical chip would be an assumption. Instead the sensitivity is now shown everywhere (below).
+
+### Added: per-op dispatch sensitivity for every evaluation and for LLM decode (MODEL §229.2)
+- `Result.dispatch_sens()` (via `core/dispatch_insight.step_sensitivity`): two engine runs, at ideal and at 1 µs per op. It reports:
+  - dispatched ops per step;
+  - u_10, the per-op latency at which the step slows by 10 %;
+  - u_eq, the latency at which dispatch equals all other step time;
+  - the slowdown at the trace / host defaults;
+  - `exact` = single stage, one microbatch.
+- The chip's own dispatch is stripped for the reference. It is returned by `/api/eval` as `dispatch_sens`, not in `summary()`, so fingerprints are unchanged. The UI walls note now reads "派发敏感度 …" and points to where the knob lives (芯片面板 › 高级芯片参数 › 派发 dispatch).
+- `core/dispatch_insight.dispatch_sensitivity`, `/api/insight_dispatch` {models, batches, ctx}, and a new insight panel "LLM decode 派发敏感度". Per model × batch it shows:
+  - TPOT when ideal and the bound;
+  - ops per step and per token;
+  - u_10 and u_eq;
+  - TPOT at trace 1.5 µs, static 10 µs per step and host 20 µs, each evaluated by the engine.
+  - Default set: qwen3-0.6b, llama-3.2-1b, qwen3-1.7b, qwen3-8b, llama-3.1-8b, qwen3-30b-a3b, gpt-oss-20b at batch 1 / 8 / 32.
+- On 100T at batch 1:
+
+  | model | ops per step | u_10 | slowdown at host 20 µs |
+  |---|---|---|---|
+  | qwen3-0.6b | 283 | 2.3 µs | ×1.87 |
+  | qwen3-30b-a3b | 531 | 6.0 µs | ×1.33 |
+  | gpt-oss-20b | 267 | 7.2 µs | ×1.28 |
+  | qwen3-8b | 363 | 22 µs | ×1.09 |
+
+  - u_10 grows with batch, because TPOT grows while the op count does not.
+- The hardware panel already had the dispatch mode and µs (since 0.203 / 0.256, inside the "高级芯片参数" fold). It is unchanged apart from the new pointer in the walls note.
+
+### Freshness
+- HF sweep since 2026-10-20 (88 orgs) and a web check: only unsloth/sam3.1 (re-upload) and Tess-4.5-27B (community fine-tune). Nothing new and official in scope.
+
 ## [0.283.0]
 
 ### Changed: components pay the per-op dispatch / kernel cost (MODEL §228.1)

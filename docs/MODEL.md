@@ -7576,3 +7576,37 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
   - Neither padding nor fp16 (cheaper than our fp32) closes the gap.
 - The measured split implies vocoder ≈ 0.70 × (prefill + decode) ≈ 20 ms per request against the modelled 6.4 ms. The remaining candidate is two-process time-slicing on one GPU without MPS, which needs a kernel trace. Not fitted; documented.
 
+## §229 Dispatch default decision; per-op dispatch sensitivity beyond speech (0.284)
+
+### §229.1 Default dispatch for NPU presets (kept ideal)
+- Design variable (0.203): `Chip.dispatch` ∈ {"", static, trace, host}, `DISPATCH_US`:
+  - static 10 µs per step 「二手」 JAX jit dispatch;
+  - trace 1.5 µs per op 「二手」 tt-metal #20681;
+  - host 20 µs per op 「二手」 vllm-ascend #13021.
+- Survey: all catalog LLMs that fit on 100T + LPDDR5X 4×64-8533 (41), decode batch 1, ctx 1024.
+  - trace: median TPOT +1.7 %, max +8 % (carbon-500m).
+  - host: median +23 %, 29 / 41 above +10 %.
+  - u_10 median 8.9 µs (1.9–60).
+- Decision 「假设」 kept: catalog presets are runtime-agnostic design points. The lowest-cost sourced runtime moves the median by less than the model's other approximations, and host dispatch is a software choice, so a non-ideal default would be an unsourced assumption about the chip. Old = new = ideal. Sensitivity is reported instead (§229.2).
+
+### §229.2 Step sensitivity (`core/dispatch_insight.py`)
+- Dispatch is a serial term of every stage, so a single-stage, one-microbatch step is exactly linear in the per-op latency u:
+  - step(u) = step(0) + n·u 「推导」;
+  - n = (step(1 µs) − step(0)) / 1 µs (engine-measured dispatched ops per step; the chip's own dispatch is stripped for step(0)).
+- u_10 = 0.1·step(0)/n; u_eq = step(0)/n.
+- A pipelined step is a max over stages, so the line is a 「近似」 there (`exact` false). The LLM insight table therefore evaluates TPOT at trace / static / host directly.
+- Tested: the host run matches the line to 1e-9, and step(u_10) = 1.1·step(0).
+- 100T, decode, ctx 1024:
+
+  | model | b | TPOT ms | ops / step | u_10 µs | ×trace | ×host |
+  |---|---|---|---|---|---|---|
+  | qwen3-0.6b | 1 | 6.5 | 283 | 2.3 | 1.065 | 1.87 |
+  | qwen3-0.6b | 32 | 25.7 | 283 | 9.1 | 1.017 | 1.22 |
+  | llama-3.2-1b | 1 | 12.8 | 163 | 7.8 | 1.019 | 1.26 |
+  | qwen3-8b | 1 | 79.6 | 363 | 21.9 | 1.007 | 1.09 |
+  | qwen3-30b-a3b | 1 | 32.0 | 531 | 6.0 | 1.025 | 1.33 |
+  | qwen3-30b-a3b | 32 | 294.9 | 531 | 55.5 | 1.003 | 1.04 |
+  | gpt-oss-20b | 1 | 19.2 | 267 | 7.2 | 1.021 | 1.28 |
+
+- Reading for chip architects: small dense models and small-active MoE at batch 1 tolerate only 2–8 µs per op before TPOT degrades by 10 %. A host-launched runtime (≈ 20 µs per op) costs them 30–90 %. Graph-trace dispatch (≈ 1.5 µs) costs ≤ 7 %.
+

@@ -148,7 +148,8 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight_sizing": {"models", "resources", "joint", "unpriced", "energy_tie"},
                "insight_slc": {"models", "policy", "gibs", "temps"},
                "insight_speech": {"models", "audio_s", "verify", "dispatch"},
-               "insight_speech_streams": {"models", "audio_s", "slc_gib"}}
+               "insight_speech_streams": {"models", "audio_s", "slc_gib"},
+               "insight_dispatch": {"models", "batches", "ctx"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -253,6 +254,7 @@ def _api_summary(r: Result) -> dict:
 def result_dict(r: Result, *, with_goodput: bool = False) -> dict:
     s = r.scenario
     out = {"summary": _api_summary(r), "stages": [_stage_dict(x) for x in r.stages], "walls": r.walls(), "balance": r.balance(),
+           "dispatch_sens": r.dispatch_sens(),     # 0.284 per-op dispatch sensitivity of the step
            "model": {"id": r.model.id, "hf_id": r.model.hf_id, **labels(r.model)},
            "hash": text_view(s).hash(), "scenario": text_view(s).to_dict()}   # 0.62: as entered (image tokens not folded in)
     if r.spec:
@@ -1380,6 +1382,27 @@ def api_insight_speech(body: dict) -> dict:
         raise ApiError("dispatch must be true or false")
     try:
         return {**speech_bounds(scn, models, float(a), verify=v, dispatch=dp), "hash": scn.hash()}
+    except (KeyError, ValueError) as e:
+        raise ApiError(str(e)) from None
+
+
+def api_insight_dispatch(body: dict) -> dict:
+    """0.284: per-op dispatch sensitivity of LLM decode at small batch (core/dispatch_insight.dispatch_sensitivity)."""
+    from .core.dispatch_insight import BATCHES, CTX, LLM_MODELS, dispatch_sensitivity
+    _check_keys(body, "insight_dispatch")
+    scn = scenario_from_body(body)
+    models = body.get("models", list(LLM_MODELS))
+    if not isinstance(models, list) or not models or len(models) > 24 or not all(isinstance(x, str) for x in models):
+        raise ApiError("models must be a list of 1–24 model ids")
+    bs = body.get("batches", list(BATCHES))
+    if not isinstance(bs, list) or not 0 < len(bs) <= 8 or not all(
+            isinstance(x, int) and not isinstance(x, bool) and 1 <= x <= 4096 for x in bs):
+        raise ApiError("batches must be a list of 1–8 integers in [1, 4096]")
+    ctx = body.get("ctx", CTX)
+    if isinstance(ctx, bool) or not isinstance(ctx, int) or not 1 <= ctx <= 1 << 20:
+        raise ApiError("ctx must be an integer in [1, 1048576]")
+    try:
+        return {**dispatch_sensitivity(scn, models, tuple(bs), ctx), "hash": scn.hash()}
     except (KeyError, ValueError) as e:
         raise ApiError(str(e)) from None
 

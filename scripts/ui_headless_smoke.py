@@ -322,6 +322,18 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             steps.append(("speech streams", rows, st[:40]))
             if not st.startswith("完成") or rows < 8:
                 errs.append(f"speech streams: {st[:200]} rows={rows}")
+            # 0.284: LLM decode dispatch sensitivity (two models keep the smoke short)
+            p.fill("#ins-dp-models", "qwen3-0.6b, qwen3-30b-a3b")
+            p.click("#ins-dp-run")
+            p.wait_for_function("(() => { const t = document.getElementById('ins-dp-status').textContent;"
+                                " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
+            st = p.inner_text("#ins-dp-status")
+            rows = len(p.query_selector_all("#ins-dp-tbl tbody tr"))
+            steps.append(("dispatch insight", rows, st[:40]))
+            if not st.startswith("完成") or rows != 6:
+                errs.append(f"dispatch insight: {st[:200]} rows={rows}")
+            if "派发敏感度" not in (p.text_content("#walls-note") or ""):
+                errs.append("walls note: no dispatch sensitivity")
             b.close()
     finally:
         srv.terminate()

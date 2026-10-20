@@ -591,6 +591,15 @@
     </div>
     <div class="note small" id="ins-sps-summary"></div>
     <div class="scroll"><table class="tbl tight" id="ins-sps-tbl"></table></div>
+    <h4 title="0.284：小 batch 下 LLM decode 对每 op 下发 / 同步延迟（芯片面板 › 高级芯片参数 › 派发 dispatch）的敏感度：每步下发 op 数、TPOT 劣化 10 % 的每 op 延迟、trace 1.5 / static 10 / host 20 µs 时的 TPOT（引擎实算）">LLM decode 派发敏感度</h4>
+    <div class="row">
+      <label>模型<input type="text" id="ins-dp-models" value="qwen3-0.6b, llama-3.2-1b, qwen3-1.7b, qwen3-8b, llama-3.1-8b, qwen3-30b-a3b, gpt-oss-20b" style="width:28em"></label>
+      <label>batch<input type="text" id="ins-dp-batches" value="1, 8, 32" style="width:6em"></label>
+      <button class="btn" id="ins-dp-run">计算派发敏感度</button>
+      <span class="small muted" id="ins-dp-status"></span>
+    </div>
+    <div class="note small" id="ins-dp-summary"></div>
+    <div class="scroll"><table class="tbl tight" id="ins-dp-tbl"></table></div>
   </section>
 
   <section class="tab" id="tab-models" hidden>
