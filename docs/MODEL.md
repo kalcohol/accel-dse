@@ -7060,3 +7060,92 @@ Formulas:
 - Design lever: batching streams through the DiT would be nearly free (rows are tiny next to the weights), but the released detokenizer asserts batch 1. On-chip SRAM / SLC capacity for the 3.1 GB DiT is the other lever.
 
 **Deferred.** Moshi (Temporal + Depth transformer, Mimi codec), FireRedTTS3 (no modeling code), drama-3, Index-Echo; the GLM-4-Voice tokenizer cost.
+
+## §219 Speech round 5: Kyutai Moshi, cross-model speech insight (0.274)
+
+### §219.1 Release and config
+Sources 「来源」:
+- github kyutai-labs/moshi@e6a55d2: `moshi/models/loaders.py` (`_lm_kwargs`, `_mimi_config`, `get_mimi`), `models/lm.py`, `modules/transformer.py`, `models/compression.py`, `modules/seanet.py`, `quantization/vq.py`, `server.py`.
+- HF `kyutai/moshiko-pytorch-bf16`: model.safetensors and tokenizer-e351c8d8-checkpoint125.safetensors (Mimi) headers.
+
+Config:
+- The repo has no config.json. `fetch_pt_release.py --moshi` transcribes `lm` / `mimi` from loaders.py into `local/hf_cache/.../config.json` (`_source` cites the file and commit).
+- test_core_274 checks every number used against the header shapes.
+
+Temporal transformer (bf16), the catalog LLM `moshiko-7b`:
+- d4096, 32 layers, 32 MHA heads; gated SiLU with hidden_scale 4.125, so 2·4.125·4096/3 = 11264.
+- Text vocab 32000, untied head.
+- Context 3000 is a KV ring buffer, modelled as a sliding window of 3000 「近似」.
+- The input is the sum of the text embedding and 16 audio embeddings (8 user + 8 Moshi), modelled as lookups of h + 16 · 2049 · h.
+
+Depformer (bf16):
+- d1024, 6 layers, 16 heads, dep_q 8.
+- `weights_per_step`: in_proj [24576, 1024] = 8 slices of 3·1024; out_proj [8192, 1024]; gating.0..7 (linear_in [5632, 1024] / linear_out [1024, 2816]).
+- depformer_in × 8 [1024, 4096]; linears × 8 [2048, 1024]; embedding tables depformer_emb × 7 [2049, 1024] and text_emb [32001, 1024].
+
+Mimi (fp32: `get_mimi` passes no dtype):
+- 24 kHz, 12.5 Hz frames (1920 samples).
+- SEANet ratios [8, 6, 5, 4]; the encoder applies them reversed.
+- 8-layer transformer: d512, 8 heads, ffn 2048, context 250, at 25 Hz (2 positions per frame).
+- Stride-2 conv; split RVQ (rvq_first + rvq_rest, 32 stored, 8 used), 2048 × 256.
+- The decoder mirrors the encoder with depthwise ConvTranspose upsampling.
+
+Params exact: 6,973,366,272 / 714,362,880 / 96,151,393. Depformer GEMM weights = 666,906,624; the rest are embedding tables (lookups).
+
+### §219.2 Per-frame cost (`core/moshi.py`, `speech._moshi_kpis`)
+`server.py` runs one conversation (`streaming_forever(1)`, a lock per connection) with Mimi and the LM on one device 「来源」. Each 80 ms frame runs serially 「假设」:
+
+    t_frame = t_mimi_enc(b) + TPOT(b, ctx = min(serving.ctx or 3000, 3000)) + t_depformer(b) + t_mimi_dec(b)
+    RTF = t_frame / 80 ms ;  real time ⇔ t_frame ≤ 80 ms ;  response latency = (1 + max delay) · 80 ms + t_frame
+
+Kyutai's "160 ms theoretical" is the latency floor. The temporal step uses `evaluate` decode. The other parts use `evaluate._component_time` (an op roofline at the module rate: bf16 depformer, fp32 Mimi).
+
+Depformer re-read pattern:
+- Step k (one per Moshi codebook) runs its own weight slices over one row, with attention over the k + 1 positions of this frame.
+- Every frame therefore reads all 667 M depformer GEMM weights once (1.33 GB), i.e. 12.5 times per second. Mimi encode + decode reads 0.33 GB fp32 per frame.
+- Per-op launch overhead of the 48 serial one-row layer passes is not modelled 「近似」.
+
+`streams_realtime` is the largest batch with t_frame ≤ 80 ms. That is a design question; the released server runs batch 1.
+
+**Finding** (100T + LPDDR5X, full ring buffer):
+- t_frame = 0.91 + 78.1 + 7.0 + 0.84 = 86.8 ms, so RTF 1.085 and latency 247 ms.
+- Re-read bytes per frame: temporal 13.4 + KV 1.57 + depformer 1.33 + Mimi 0.33 = 16.7 GB, which needs 208 GB/s effective (191 available).
+- Real time holds up to a 518-frame KV (the first ~41 s of a conversation). At 100 frames, 5 streams fit, because the weights are shared across the batch.
+- Each weight is read exactly once per frame, so every GB pinned in an SLC saves 12.5 GB/s whatever it holds. The depformer + Mimi (1.67 GB) is the natural pin set: it is ≥ the 1.30 GB that §219.3 says unlocks real time.
+
+### §219.3 Cross-model speech insight (`core/speech_insight.py`, `POST /api/insight_speech`)
+Method:
+- Each catalog speech model is evaluated at batch 1: prompt 64, reply 64 tokens, 10 s audio (in for ASR, out for TTS).
+- Every audio-clock stage is reported as x = busy seconds per audio second: ASR encoder / LM; TTS LM; CosyVoice and Kimi LM / speech card; Omni Thinker / speech card; Moshi frame.
+- The binding stage is argmax x. If x > 1 and the stage is bound by weight re-reads 「推导」:
+
+      BW_need = BW_eff · x ;   or pin S = (x − 1) · BW_eff / r in an SLC (r = re-reads / audio s = token / frame rate),
+      SLC read bandwidth ≥ S · r
+
+- `verify` re-runs the KPIs with the chip's SLC = S rounded up to 64 MiB (policy pin), through the engine's own SLC path.
+- Nothing is tuned.
+
+100T + LPDDR5X (BW_eff 191 GB/s):
+
+| Model | Binding stage | x | First audio / token (dominant part) | Unlock: BW_eff | or SLC S (verified x) |
+|---|---|---|---|---|---|
+| moshiko-7b | frame (temporal 90 %) | 1.085 | 247 ms (temporal step; floor 160 ms) | 207 GB/s | 1.30 GB (0.997) |
+| kimi-audio-7b-instruct | LM, 12.5 tok/s | 1.19 | 3.94 s (35 LM steps) | 228 GB/s | 2.92 GB (0.984) |
+| step-audio-2-mini | LM, 25 tok/s | 1.85 | 2.18 s (28 LM steps) | 354 GB/s | 6.5 GB (0.998) |
+| qwen2.5-omni-7b | speech card (Talker 50/s + DiT) | 1.03 | 1.08 s (48 Talker steps) | 197 GB/s | 0.11 GB (0.995) |
+| cosyvoice2 / fun-cosyvoice3 | LM | 0.18 | 0.22 / 0.28 s (LM tokens) | — | — |
+| ming-3.0-tts-tiny | LM | 0.41 | 0.13 s | — | — |
+| ASR (qwen2-audio, qwen3-asr, fun-asr-nano, whisper ×2, ming-asr) | LM decode | 0.01–0.49 | 9–101 ms | — | — |
+
+Reading the table for chip design:
+- On a ~190 GB/s LPDDR5X card, every speech model that misses real time misses it on weight re-reads in a token- or frame-clocked stage. No stage is compute-bound.
+- The fix is bytes per audio second. A few GB of SLC (0.1–6.5 GB) or +8 % to +85 % bandwidth.
+- Moshi and Omni are within 10 % of real time; Step-Audio-2 needs the most (it emits 25 speech tokens / s through a 7B LM).
+- First audio is LM-step bound for the token2wav-style models (chunk size × TPOT). Pinning shortens it in proportion.
+
+### §219.4 FireRedTTS3 (deferred)
+HF `FireRedTeam/FireRedTTS3` (2026-08):
+- `fireredtts3_base/config.json` lists only the DiT (11 × d1024, mlp 3), the patch encoder (8 × d1024), patch_size 4 and redae_dim 64. `redae/config.json` describes the RedAE codec (18 + 18 layers d896, 480-sample patches → 50 Hz).
+- The base header (fp32, 2,120,632,897 params) has a `backbone_llm` of 28 × d2048 with vocab 151,936. That is Qwen3-1.7B-shaped 「推导」 from shapes, but it has no config.
+- DiT sampling steps, CFG and the AR loop exist only in the code (github FireRedTeam/FireRedTTS3).
+- The configs do not suffice. This is next-round work that requires reading the code.

@@ -146,7 +146,8 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": {"power_cap_W"},
                "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
                "insight_sizing": {"models", "resources", "joint", "unpriced", "energy_tie"},
-               "insight_slc": {"models", "policy", "gibs", "temps"}}
+               "insight_slc": {"models", "policy", "gibs", "temps"},
+               "insight_speech": {"models", "audio_s", "verify"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -995,7 +996,7 @@ def api_eval(body: dict) -> dict:
     aos = body.get("audio_out_s", 10.0)
     if isinstance(aos, bool) or not isinstance(aos, (int, float)) or not 0 < aos <= 3600:
         raise ApiError("audio_out_s must be a number in (0, 3600]")
-    if r.tts is not None or getattr(r.model, "omni", None) is not None or getattr(r.model, "cosy", None) is not None or (scn.serving.audio_s and getattr(getattr(r.model, "vision", None), "audio", None) is not None):
+    if r.tts is not None or getattr(r.model, "omni", None) is not None or getattr(r.model, "cosy", None) is not None or getattr(r.model, "kimi", None) is not None or getattr(r.model, "moshi", None) is not None or (scn.serving.audio_s and getattr(getattr(r.model, "vision", None), "audio", None) is not None):
         try:
             out["speech"] = speech_kpis(scn, float(aos))
         except ValueError as e:
@@ -1355,6 +1356,27 @@ def api_insight_slc(body: dict) -> dict:
                                     gibs=tuple(gibs) if gibs is not None else None,
                                     temps=tuple(temps) if temps is not None else None), "hash": scn.hash()}
     except ValueError as e:
+        raise ApiError(str(e)) from None
+
+
+def api_insight_speech(body: dict) -> dict:
+    """0.274: which stage bounds real time / first audio for each catalog speech model on the scenario's chip + memory,
+    and the DRAM bandwidth or pinned SLC that would unlock real time (core/speech_insight.py)."""
+    from .core.speech_insight import SPEECH_MODELS, speech_bounds
+    _check_keys(body, "insight_speech")
+    scn = scenario_from_body(body)
+    models = body.get("models", list(SPEECH_MODELS))
+    if not isinstance(models, list) or not models or not all(isinstance(x, str) for x in models):
+        raise ApiError("models must be a non-empty list of model ids")
+    a = body.get("audio_s", 10.0)
+    if isinstance(a, bool) or not isinstance(a, (int, float)) or not 0 < a <= 600:
+        raise ApiError("audio_s must be a number in (0, 600]")
+    v = body.get("verify", True)
+    if not isinstance(v, bool):
+        raise ApiError("verify must be true or false")
+    try:
+        return {**speech_bounds(scn, models, float(a), verify=v), "hash": scn.hash()}
+    except (KeyError, ValueError) as e:
         raise ApiError(str(e)) from None
 
 

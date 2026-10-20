@@ -73,6 +73,8 @@ function domainBadge(m) {
   // 0.268: audio-only release (Ming-3.0-asr-tiny) — the encoder is costed via serving.audio_s (API / CLI --audio-s)
   if (m.domain === 'tts' && /CosyVoice/.test(m.hf_id || '')) return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · LM 每秒 25 个语音 token → 分块流匹配 → HiFT 声码器（按输出音频秒计）');   // 0.271
   if (m.domain === 'tts') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · 每 token = 1 帧潜变量（流匹配头 + AudioVAE 解码）');
+  if (m.domain === 'omni' && m.family === 'Moshi') return h('span', { class: 'badge vlm', title: coverTip(m) },   // 0.274
+    '全双工语音 · 每 80 ms 帧：Mimi 编码 → 时间 Transformer 7B 一步 → 深度 Transformer 8 步（每步独立权重切片，每帧复读）→ Mimi 解码');
   if (m.domain === 'omni' && m.family === 'Kimi-Audio') return h('span', { class: 'badge vlm', title: coverTip(m) },   // 0.273
     '全模态 · Whisper 编码器 → LLM（每步文本 token + 12.5 Hz 音频 token 并行两头）→ 流匹配 DiT 去分词器 → BigVGAN（按输出音频秒计）');
   if (m.domain === 'omni') return h('span', { class: 'badge vlm', title: coverTip(m) }, m.family === 'Step-Audio-2'   // 0.273
@@ -891,6 +893,16 @@ function renderEval(r) {
         + ` · DiT 权重 SRAM 未命中 ${num(p.dit_pin_miss * 100)}%`));
       if (p.audio_in) k.push(kpi(`${p.label.split(' ')[0]} 音频输入`, `${p.audio_in.prompt_audio_tokens} token`,
         `${num(p.audio_in.audio_s)} s 音频 · Whisper 编码器 + 适配器 ${num(p.audio_in.encoder_s * 1e3)} ms`));
+    }
+    if (p.kind === 'moshi') {     // 0.274 Moshi: per 80 ms frame, serial on one card
+      const f = p.split_frame || {}, b = p.bytes_per_frame || {};
+      k.push(kpi(`语音端到端 · ${p.label}`, `帧 ${num(p.frame_s * 1e3)} ms / ${num(p.frame_ms)} ms`,
+        `RTF ${num(p.rtf)}（${p.streams_per_card} 路）· Mimi 编码 ${num(f.mimi_encode_s * 1e3)} + 时间步 ${num(f.temporal_s * 1e3)}（KV ${p.ctx_frames} 帧）`
+        + ` + 深度 ${p.depformer_steps} 步 × ${p.depformer_layer_passes / p.depformer_steps} 层 ${num(f.depformer_s * 1e3)} + Mimi 解码 ${num(f.mimi_decode_s * 1e3)} ms`
+        + ` · 响应延迟 ${num(p.first_audio_s * 1e3)} ms（下限 ${num(p.latency_floor_s * 1e3)} ms）· 实时路数 ${p.streams_realtime}`, p.rtf > 1 || !p.fits ? 'warn' : ''));
+      k.push(kpi('Moshi 每帧复读字节', `${num(p.bytes_per_frame_GB)} GB`,
+        `时间 Transformer ${num(b.temporal_GB)} + KV ${num(b.kv_GB)} + 深度 Transformer ${num(b.depformer_GB)} + Mimi ${num(b.mimi_GB)} GB`
+        + ` · 实时需有效 DRAM ${num(p.dram_GBps_for_realtime)} GB/s（当前 ${num(p.dram_GBps)}）· 每帧全部权重读一遍 → SLC 每钉住 1 GB 省 12.5 GB/s`));
     }
     if (p.kind === 'tts') k.push(kpi('语音端到端 · TTS', `RTF ${num(p.rtf)}`,
       `${num(p.audio_out_s)} s 音频输出 = ${p.steps} 步 · 首音频 ${num(p.first_audio_s * 1e3)} ms · 共 ${num(p.total_s)} s · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`,

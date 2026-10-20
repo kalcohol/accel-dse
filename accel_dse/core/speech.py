@@ -261,6 +261,56 @@ def _kimi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     return out
 
 
+def _moshi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
+    """0.274 Moshi (core/moshi.py): per 80 ms frame, serially on the replica's card 「假设」 (server.py runs Mimi and
+    the LM on one device): Mimi encode (user frame) → temporal step (the catalog model's decode at batch b, context =
+    the KV ring buffer: min(serving.ctx or 3000, 3000) frames) → 8 depformer steps → Mimi decode.
+        frame time = t_enc + TPOT + t_depformer + t_dec ;  real time ⇔ frame time ≤ 80 ms ;  RTF = frame / 80 ms
+        response latency = (1 + delay) frames + one frame's compute (Kyutai: 160 ms theoretical)"""
+    from .evaluate import _component_time
+    from .hardware import System
+    from .ir import _cdiv
+    from .moshi import FRAME_S, depformer_ops, depth_weight_bytes, mimi_decode_ops, mimi_encode_ops, mimi_weight_bytes
+    sv, lay, m = scn.serving, scn.layout, pre.model
+    k = m.moshi
+    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
+                 scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
+    org = scn.mapping
+    ctx = min(k.context, sv.ctx or k.context)
+
+    def frame(bb: int) -> dict:
+        dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.ctx", ctx).replace("serving.batch", bb * lay.dp))
+        t = {"temporal_s": dec.tpot,
+             "depformer_s": _component_time([(depformer_ops(k, bb), 1)], sys, org, "bf16")["s"],
+             "mimi_encode_s": _component_time([(mimi_encode_ops(k, bb), 1)], sys, org, "fp32")["s"],
+             "mimi_decode_s": _component_time([(mimi_decode_ops(k, bb), 1)], sys, org, "fp32")["s"]}
+        t["frame_s"] = sum(t.values())
+        t["fits"] = dec.fits
+        return t
+    b = _cdiv(sv.batch, lay.dp)
+    f = frame(b)
+    lo, hi = 0, 1
+    while hi <= 1024 and frame(hi)["frame_s"] <= FRAME_S:
+        lo, hi = hi, hi * 2
+    while hi - lo > 1 and lo < 1024:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if frame(mid)["frame_s"] <= FRAME_S else (lo, mid)
+    wb = {"temporal_GB": (m.params() - m.lookup_params - m.embed_params) * m.fmt("attn").bits / 8 / 1e9,
+          "kv_GB": m.n_layers * 2 * ctx * m.hidden * 2 / 1e9,
+          "depformer_GB": depth_weight_bytes(k) / 1e9, "mimi_GB": mimi_weight_bytes(k) / 1e9}
+    tot = sum(wb.values())
+    lat = (1 + k.delay_frames) * FRAME_S + f["frame_s"]
+    return {"kind": "moshi", "label": "Moshi 全双工", "frame_ms": FRAME_S * 1e3, "streams_per_card": b, "ctx_frames": ctx,
+            "split_frame": {x: f[x] for x in ("mimi_encode_s", "temporal_s", "depformer_s", "mimi_decode_s")},
+            "frame_s": f["frame_s"], "rtf": f["frame_s"] / FRAME_S, "realtime": f["frame_s"] <= FRAME_S,
+            "first_audio_s": lat, "latency_floor_s": (1 + k.delay_frames) * FRAME_S,
+            "streams_realtime": lo, "bytes_per_frame": wb, "bytes_per_frame_GB": tot,
+            "dram_GBps_for_realtime": tot / FRAME_S, "dram_GBps": sys.dram_GBps,
+            "depformer_steps": k.dep_q, "depformer_layer_passes": k.dep_q * k.dep_layers,
+            "audio_out_s_per_s_card": (b if f["frame_s"] <= FRAME_S else b * FRAME_S / f["frame_s"]) / pre.scenario.layout.cards,
+            "fits": f["fits"] and pre.fits}
+
+
 def speech_kpis(scn: Scenario, audio_out_s: float = 10.0) -> dict:
     sv = scn.serving
     pre = evaluate(scn.replace("serving.phase", "prefill"))
@@ -271,6 +321,8 @@ def speech_kpis(scn: Scenario, audio_out_s: float = 10.0) -> dict:
         return _cosy_kpis(scn, pre, audio_out_s)
     if getattr(m, "kimi", None) is not None:
         return _kimi_kpis(scn, pre, audio_out_s)
+    if getattr(m, "moshi", None) is not None:
+        return _moshi_kpis(scn, pre, audio_out_s)
     ts = getattr(m, "tts", None)
     au = getattr(getattr(m, "vision", None), "audio", None)
     if ts is not None:

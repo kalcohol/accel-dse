@@ -248,11 +248,56 @@ def fetch_kimi(repo: str) -> None:
     print(repo, len(tensors), cfg)
 
 
+MOSHI_SRC = "github kyutai-labs/moshi@e6a55d2 moshi/models/loaders.py (_seanet_kwargs, _quantizer_kwargs, _transformer_kwargs, _mimi_config, _lm_kwargs)"
+
+
+def fetch_moshi(repo: str) -> None:
+    """0.274 Kyutai Moshi (moshiko / moshika-pytorch-bf16): the HF repo has model.safetensors (LMModel: temporal
+    transformer + depformer) and the Mimi codec safetensors but no config.json — the architecture lives in the moshi
+    package's loaders.py defaults, transcribed here 「来源」 (MOSHI_SRC; checked against the header shapes by
+    tests/test_core_274.py).  Writes local/hf_cache/<repo>/config.json (model_type "moshi", lm + mimi dicts) +
+    headers.json (model.safetensors, the layout summarize_release.py reads) + moshi_audio.json (Mimi tensors:
+    mimi.<name>: [dtype, shape])."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fhr", str(ROOT / "scripts" / "fetch_hf_release.py"))
+    fhr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fhr)
+    d = CACHE / repo.replace("/", "__")
+    d.mkdir(parents=True, exist_ok=True)
+    base = f"{HF}/{repo}/resolve/main"
+    seanet = {"dimension": 512, "channels": 1, "causal": True, "n_filters": 64, "n_residual_layers": 1,
+              "activation": "ELU", "compress": 2, "dilation_base": 2, "kernel_size": 7, "residual_kernel_size": 3,
+              "last_kernel_size": 3, "ratios": [8, 6, 5, 4], "true_skip": True}
+    mimi = {"sample_rate": 24000, "channels": 1, "frame_rate": 12.5, "seanet": seanet,
+            "quantizer": {"dimension": 256, "n_q": 32, "bins": 2048, "input_dimension": 512, "output_dimension": 512},
+            "transformer": {"d_model": 512, "num_heads": 8, "num_layers": 8, "causal": True, "layer_scale": 0.01,
+                            "context": 250, "gating": "none", "norm": "layer_norm", "positional_embedding": "rope",
+                            "dim_feedforward": 2048}}
+    lm = {"dim": 4096, "text_card": 32000, "existing_text_padding_id": 3, "n_q": 16, "dep_q": 8, "card": 2048,
+          "num_heads": 32, "num_layers": 32, "hidden_scale": 4.125, "causal": True, "context": 3000,
+          "max_period": 10000, "gating": "silu", "norm": "rms_norm_f32", "positional_embedding": "rope",
+          "depformer_dim": 1024, "depformer_dim_feedforward": int(4.125 * 1024), "depformer_num_heads": 16,
+          "depformer_num_layers": 6, "depformer_multi_linear": True, "depformer_context": 8,
+          "depformer_gating": "silu", "depformer_pos_emb": "none", "depformer_weights_per_step": True,
+          "delays": [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1]}
+    cfg = {"model_type": "moshi", "architectures": ["MoshiLMModel"], "_source": MOSHI_SRC, "torch_dtype": "bfloat16",
+           "lm": lm, "mimi": mimi, "mimi_file": "tokenizer-e351c8d8-checkpoint125.safetensors"}
+    (d / "config.json").write_text(json.dumps(cfg, indent=1))
+    (d / "headers.json").write_text(json.dumps({"model.safetensors": fhr.st_header_url(f"{base}/model.safetensors")}))
+    t = {"mimi." + n: [h["dtype"], h["shape"]] for n, h in fhr.st_header_url(f"{base}/{cfg['mimi_file']}").items()
+         if n != "__metadata__"}
+    (d / "moshi_audio.json").write_text(json.dumps({"tensors": t}))
+    print(repo, len(t))
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args and args[0] == "--token2wav":         # 0.273: python3 scripts/fetch_pt_release.py --token2wav <repo>
         for r in args[1:]:
             fetch_token2wav(r)
+    elif args and args[0] == "--moshi":           # 0.274: python3 scripts/fetch_pt_release.py --moshi <repo>
+        for r in args[1:]:
+            fetch_moshi(r)
     elif args and args[0] == "--kimi":            # 0.273: python3 scripts/fetch_pt_release.py --kimi <repo>
         for r in args[1:]:
             fetch_kimi(r)

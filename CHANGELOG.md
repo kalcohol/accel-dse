@@ -6,6 +6,54 @@
 
 
 
+## [0.274.0]
+
+### Added: Kyutai Moshi (MODEL §219.1–219.2)
+- `kyutai/moshiko-pytorch-bf16` as `moshiko-7b` (provider Kyutai, family Moshi, listing domain `omni`, coverage `full`).
+- The HF repo ships no config. `scripts/fetch_pt_release.py --moshi` transcribes the `lm` / `mimi` blocks from moshi@e6a55d2 `loaders.py` (cited in `_source`) and reads the model.safetensors and Mimi tokenizer headers over HTTP Range. Tests check every transcribed number against the released tensor shapes.
+- Params exact:
+  - temporal transformer 6,973,366,272 (`params_llm`, bf16);
+  - depth transformer 714,362,880 (`params_depth`, bf16);
+  - Mimi 96,151,393 (`params_codec`, fp32).
+- `core/moshi.py` costs each 80 ms frame:
+  - Mimi encode: SEANet convs at 1920 / 480 / 96 / 16 / 2 positions, an 8-layer d512 transformer, a stride-2 conv and 8 codebook searches.
+  - Depformer: 8 steps × 6 layers. `weights_per_step` gives each step its own weight slice, so every frame reads all 667 M GEMM weights once.
+  - Mimi decode.
+- `speech._moshi_kpis` (kind `moshi`):
+  - frame time = Mimi encode + temporal step (KV ring buffer ≤ 3000 frames) + depformer + Mimi decode, serial on one card;
+  - RTF = frame / 80 ms; response latency = 160 ms + frame;
+  - also reports real-time streams and re-read bytes per frame.
+- 100T + LPDDR5X at a full 3000-frame context:
+  - frame 86.8 ms (temporal 78.1, depformer 7.0, Mimi 0.9 + 0.8), RTF 1.085;
+  - 16.7 GB re-read per frame, which needs 208 GB/s effective against 191 available;
+  - real time only while the KV ring buffer holds ≤ 518 frames (the first ~41 s of a conversation). At 100 frames, 5 streams fit real time, because weights are shared across the batch.
+- UI: Moshi badge plus frame and bytes KPIs. `ui_headless_smoke` also loads moshiko-7b.
+
+### Added: cross-model speech insight (MODEL §219.3)
+- `core/speech_insight.py` and `POST /api/insight_speech` (`models`, `audio_s`, `verify`). For each catalog speech model at batch 1, every audio-clock stage is reported as busy seconds per audio second x. The output gives:
+  - the binding stage;
+  - the dominant first-audio component;
+  - for x > 1: the effective DRAM bandwidth needed (BW · x), or the SLC needed to pin re-read weights: S = (x − 1) · BW / r, where r = tokens or frames per audio second.
+- `verify` re-runs the KPIs with that SLC through the engine's own pin path.
+- On 100T + LPDDR5X (191 GB/s effective), four models miss real time; all are bound by weight re-reads, and every predicted SLC verifies:
+
+  | Model | Bound by | x | Fix: SLC | or bandwidth |
+  |---|---|---|---|---|
+  | Moshi | frame | 1.085 | 1.30 GB | 207 GB/s |
+  | Kimi-Audio | LM | 1.19 | 2.92 GB | 228 GB/s |
+  | Step-Audio-2-mini | LM | 1.85 | 6.5 GB | 354 GB/s |
+  | Qwen2.5-Omni | speech card (Talker) | 1.03 | 0.11 GB | — |
+
+- CosyVoice2/3, Ming TTS and all ASR models are real time.
+
+### Changed
+- `api_eval` attaches `speech` for Kimi and Moshi models too.
+- Count tests: 147 release files, llm 121, 153 listed + unlisted.
+
+### Deferred
+- FireRedTTS3. Its configs describe only the DiT / patch encoder / RedAE. The backbone LLM, DiT sampling steps and CFG live in code (MODEL §219.4).
+- drama-3, Index-Echo.
+
 ## [0.273.0]
 
 ### Added: UI surfaces the speech API blocks (MODEL §218.1)

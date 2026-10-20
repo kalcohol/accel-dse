@@ -178,6 +178,25 @@ def _kimi_role(name: str, n_layers: int | None) -> str:
     return classify(name, n_layers)
 
 
+def _moshi_role(name: str, n_layers: int | None) -> str:
+    """0.274 Kyutai Moshi (moshi.models.lm.LMModel): temporal transformer (transformer.*, out_norm) + text_emb / 16
+    audio emb tables + text_linear → the LLM; the depth transformer (depformer*, linears.*) → depth; Mimi codec
+    (mimi.*, from moshi_audio.json) → codec."""
+    if name.startswith("mimi."):
+        return "codec"
+    if name.startswith(("depformer", "linears.")):
+        return "depth"
+    if name.startswith(("emb.", "text_emb.")):
+        return "embed"
+    if name.startswith("text_linear."):
+        return "lm_head"
+    if ".self_attn." in name:
+        return "attn"
+    if ".gating." in name:
+        return "mlp"
+    return "norm" if name.endswith(".alpha") else "other"
+
+
 def _cosy_role(name: str, n_layers: int | None) -> str:
     """0.271 CosyVoice2 / Fun-CosyVoice3 (scripts/fetch_pt_release.py): the Qwen2.5-0.5B backbone is the LLM; its text
     embedding, the stored text lm_head (unused by the TTS loop) and the speech-token embedding are tables (embed role —
@@ -234,6 +253,11 @@ def summarize(repo: str) -> dict:
         for name, (dt, shape) in kj["tensors"].items():
             n = math.prod(shape)
             tensors[name] = (dt, shape, n, n * {"F32": 4, "F16": 2, "BF16": 2}[dt])
+    mo = d / "moshi_audio.json"
+    if mo.exists():       # 0.274 Moshi: Mimi codec safetensors (fp32), outside model.safetensors
+        for name, (dt, shape) in json.loads(mo.read_text())["tensors"].items():
+            n = math.prod(shape)
+            tensors[name] = (dt, shape, n, n * {"F32": 4, "F16": 2, "BF16": 2}[dt])
     nl = tc.get("num_hidden_layers") or cfg.get("num_hidden_layers") or cfg.get("num_layers")
     domain = domain_of(cfg)
     weights: dict[str, dict] = {}   # base name -> {role, fmt, params, bytes}
@@ -244,7 +268,7 @@ def summarize(repo: str) -> dict:
         if dt == "I64":
             buffers += nb
             continue
-        if not is_blocks and SCALE_RE.search(name) and _base(name) != name:
+        if not is_blocks and SCALE_RE.search(name) and _base(name) != name and not name.startswith("mimi."):
             scale_bytes[_base(name)] = scale_bytes.get(_base(name), 0) + nb
             continue
         if is_blocks or (dt in ("U8", "I8") and (fp4 or name.endswith("weight_packed"))):
@@ -264,6 +288,7 @@ def summarize(repo: str) -> dict:
         role = (_whisper_role(name) if cfg.get("model_type") == "whisper" else
                 _omni_role(name, nl) if cfg.get("model_type") == "qwen2_5_omni" else
                 _step_audio_role(name, nl) if cfg.get("model_type") == "step_audio_2" else
+                _moshi_role(name, nl) if cfg.get("model_type") == "moshi" else
                 _kimi_role(name, nl) if "MoonshotKimiaForCausalLM" in (cfg.get("architectures") or []) else
                 _cosy_role(name, nl) if cfg.get("model_type") in ("cosyvoice2", "cosyvoice3") else
                 classify(name, nl) if domain == "llm" else classify_domain(name, domain))
@@ -288,15 +313,18 @@ def summarize(repo: str) -> dict:
         e["bytes"] += w["bytes"]
     if buffers:
         roles["buffer"] = {"int64": {"params": 0, "bytes": buffers}}
-    llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "flow", "vocoder")]
+    llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "flow", "vocoder", "depth", "codec")]
     tot = lambda rs, k: sum(v[k] for r in rs for v in roles.get(r, {}).values())
     extra = {}
-    for r in ("talker", "token2wav", "flow", "vocoder"):   # 0.271 speech output (Omni / CosyVoice; absent → no key)
+    for r in ("talker", "token2wav", "flow", "vocoder", "depth", "codec"):   # 0.271 speech output (Omni / CosyVoice; absent → no key)
         if r in roles:
             extra[f"params_{r}"] = tot([r], "params")
             extra[f"bytes_{r}"] = tot([r], "bytes")
     if "flow" in roles:                        # 0.271 CosyVoice: flow / HiFT tensor shapes drive core/cosyvoice.py
         extra["speech_tensors"] = {n: t[1] for n, t in tensors.items() if n.startswith(("flow.", "hift."))}
+    if mo.exists():
+        # 0.274 Moshi: depformer + Mimi tensor shapes drive core/moshi.py
+        extra["speech_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith(("depformer", "linears.", "mimi."))}
     if ka.exists():
         extra["speech_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith(("detok.", "voc."))}
         extra["kimi_audio"] = kj["config"]

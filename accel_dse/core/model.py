@@ -474,6 +474,7 @@ class ModelSpec:
     cached_params: int = 0                   # in the release but not loaded for inference (MiniMax-H3 AdaLN branches:
                                              # modulation outputs precomputed per timestep, README)
     cosy: object = None                      # 0.271 core.cosyvoice.CosySpec: CosyVoice2 / 3 flow + HiFT (speech output)
+    moshi: object = None                     # 0.274 core.moshi.MoshiSpec: Moshi depformer + Mimi codec (per 80 ms frame)
     kimi: object = None                      # 0.273 core.kimi_audio.KimiSpec: Kimi-Audio detokenizer DiT + BigVGAN
     omni: object = None                      # 0.271 core.omni.OmniSpec: Qwen2.5-Omni Talker + token2wav (speech output)
     tts: object = None                       # 0.269 core.tts.TtsSpec: speech-synthesis decode head (replaces the LM head)
@@ -585,6 +586,18 @@ def _tc(cfg: dict) -> dict:
         # 0.272 Step-Audio-2-mini: transformers Qwen2Model(text_config) — Qwen2 attention has q / k / v bias; untied
         # lm_head (modeling_step_audio_2.py 「来源」)
         tc = {**tc, "attention_bias": True, "tie_word_embeddings": False}
+    if mt == "moshi" and isinstance(cfg.get("lm"), dict):
+        # 0.274 Kyutai Moshi (moshi.models.lm.LMModel; loaders.py _lm_kwargs 「来源」 — the HF repo has no config.json):
+        # the temporal transformer is a 32-layer MHA (in_proj q / k / v, no bias), SiLU-gated MLP of
+        # 2/3 · hidden_scale · dim = 11264, RMSNorm, RoPE, causal with context 3000 frames (a KV ring buffer = sliding
+        # window); text head text_linear (untied, 32000); the inputs (text_emb 32001 rows + 16 audio emb tables) are
+        # looked up and summed per 12.5 Hz frame (from_release lookup_params).  Depformer + Mimi → core/moshi.py
+        lm = cfg["lm"]
+        d, L = lm["dim"], lm["num_layers"]
+        return {"model_type": "moshi", "hidden_size": d, "num_hidden_layers": L, "num_attention_heads": lm["num_heads"],
+                "num_key_value_heads": lm["num_heads"], "intermediate_size": int(2 * lm["hidden_scale"] * d / 3),
+                "vocab_size": lm["text_card"], "tie_word_embeddings": False, "max_position_embeddings": 10 ** 6,
+                "layer_types": ["sliding_attention"] * L, "sliding_window": lm["context"], "torch_dtype": "bfloat16"}
     if _is_kimi(cfg):
         # 0.273 Kimi-Audio-7B-Instruct (modeling_moonshot_kimia.py 「来源」; KimiAudioConfig(Qwen2Config) — no model_type
         # of its own): 28 Qwen2 layers (q / k / v bias) + kimia_mimo_layers 6 more of the same shape that branch off
@@ -1833,8 +1846,8 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
     if hc and not any(l.hc or l.gres_n for l in spec.layers):
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
-    if spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers) and mt != "whisper" \
-            and not c.get("cosyvoice"):
+    if spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers) and mt not in ("whisper", "moshi") \
+            and not c.get("cosyvoice"):     # 0.274 Moshi: per-frame input tables, a few rows each (exact)
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
     if abs(gap) > 0.02:
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
@@ -1926,6 +1939,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             # encoder output length per 30 s window = max_source_positions (conv2 stride 2 over 3000 mel frames)
             spec = replace(spec, final_norm_params=2 * h, lookup_params=c["max_target_positions"] * h,
                            lookup_bits=spec.fmt("embed").bits, enc_ctx=c["max_source_positions"])
+        if (cfg.get("model_type") or "") == "moshi" and isinstance(cfg.get("lm"), dict):
+            # 0.274 Moshi: extra embedding rows looked up per frame — text_emb's padding row (text_card + 1) and the
+            # n_q audio tables of card + 1 rows (summed into the frame input) 「来源」
+            lm = cfg["lm"]
+            spec = replace(spec, lookup_params=h + lm["n_q"] * (lm["card"] + 1) * h, lookup_bits=spec.fmt("embed").bits)
         if _is_kimi(cfg):
             # 0.273 Kimi-Audio: the audio head mimo_output [vocab, hidden] after mimo_norm — one row per sequence and
             # step like the lm_head (prefill: last position only 「推导」); final norm = norm + mimo_norm
@@ -2005,6 +2023,13 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 f"token2wav DiT（{om.dit_params / 1e6:.1f}M，fp32，RK4 {om.evals} 次 × CFG {om.cfg_mult}，"
                 f"{om.chunk} 帧分块流式）+ BigVGAN（{om.bigvgan_params / 1e6:.1f}M，fp32，24 kHz）；"
                 "按每输出音频秒计（core/speech.py），放在每个副本一张额外卡上「假设」",))
+        from .moshi import moshi_spec
+        ms = moshi_spec(cfg, rel)
+        if ms is not None:
+            spec = replace(spec, moshi=ms, notes=spec.notes + (
+                f"全双工语音：每 80 ms 帧 = Mimi 编码（用户音频，fp32）+ 时间 Transformer 1 步（本模型，KV 环形缓存 {ms.context} 帧）"
+                f"+ 深度 Transformer {ms.dep_q} 步 × {ms.dep_layers} 层（{ms.depth_params / 1e6:.0f}M，bf16，每步独立权重切片）"
+                f"+ Mimi 解码（{ms.mimi_params / 1e6:.0f}M，fp32）；全部串行在同一张卡上「假设」",))
         from .kimi_audio import kimi_spec
         ks = kimi_spec(cfg, rel)
         if ks is not None:

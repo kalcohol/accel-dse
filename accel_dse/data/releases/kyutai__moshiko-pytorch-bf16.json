@@ -1,0 +1,1867 @@
+{
+ "bytes_codec": 384605572,
+ "bytes_depth": 1428725760,
+ "bytes_llm": 13946732544,
+ "bytes_mtp": 0,
+ "bytes_total": 15760063876,
+ "config": {
+  "_source": "github kyutai-labs/moshi@e6a55d2 moshi/models/loaders.py (_seanet_kwargs, _quantizer_kwargs, _transformer_kwargs, _mimi_config, _lm_kwargs)",
+  "architectures": [
+   "MoshiLMModel"
+  ],
+  "lm": {
+   "card": 2048,
+   "causal": true,
+   "context": 3000,
+   "delays": [
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "dep_q": 8,
+   "depformer_context": 8,
+   "depformer_dim": 1024,
+   "depformer_dim_feedforward": 4224,
+   "depformer_gating": "silu",
+   "depformer_multi_linear": true,
+   "depformer_num_heads": 16,
+   "depformer_num_layers": 6,
+   "depformer_pos_emb": "none",
+   "depformer_weights_per_step": true,
+   "dim": 4096,
+   "existing_text_padding_id": 3,
+   "gating": "silu",
+   "hidden_scale": 4.125,
+   "max_period": 10000,
+   "n_q": 16,
+   "norm": "rms_norm_f32",
+   "num_heads": 32,
+   "num_layers": 32,
+   "positional_embedding": "rope",
+   "text_card": 32000
+  },
+  "mimi": {
+   "channels": 1,
+   "frame_rate": 12.5,
+   "quantizer": {
+    "bins": 2048,
+    "dimension": 256,
+    "input_dimension": 512,
+    "n_q": 32,
+    "output_dimension": 512
+   },
+   "sample_rate": 24000,
+   "seanet": {
+    "activation": "ELU",
+    "causal": true,
+    "channels": 1,
+    "compress": 2,
+    "dilation_base": 2,
+    "dimension": 512,
+    "kernel_size": 7,
+    "last_kernel_size": 3,
+    "n_filters": 64,
+    "n_residual_layers": 1,
+    "ratios": [
+     8,
+     6,
+     5,
+     4
+    ],
+    "residual_kernel_size": 3,
+    "true_skip": true
+   },
+   "transformer": {
+    "causal": true,
+    "context": 250,
+    "d_model": 512,
+    "dim_feedforward": 2048,
+    "gating": "none",
+    "layer_scale": 0.01,
+    "norm": "layer_norm",
+    "num_heads": 8,
+    "num_layers": 8,
+    "positional_embedding": "rope"
+   }
+  },
+  "mimi_file": "tokenizer-e351c8d8-checkpoint125.safetensors",
+  "model_type": "moshi",
+  "torch_dtype": "bfloat16"
+ },
+ "fetched": "2026-10-20",
+ "n_tensors": 673,
+ "params_codec": 96151393,
+ "params_depth": 714362880,
+ "params_llm": 6973366272,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "kyutai/moshiko-pytorch-bf16",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 4294967296,
+    "params": 2147483648
+   }
+  },
+  "codec": {
+   "fp32": {
+    "bytes": 384605572,
+    "params": 96151393
+   }
+  },
+  "depth": {
+   "bf16": {
+    "bytes": 1428725760,
+    "params": 714362880
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 530718720,
+    "params": 265359360
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 262144000,
+    "params": 131072000
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 8858370048,
+    "params": 4429185024
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 532480,
+    "params": 266240
+   }
+  }
+ },
+ "speech_tensors": {
+  "depformer.layers.0.gating.0.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.0.gating.0.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.0.gating.1.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.0.gating.1.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.0.gating.2.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.0.gating.2.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.0.gating.3.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.0.gating.3.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.0.gating.4.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.0.gating.4.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.0.gating.5.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.0.gating.5.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.0.gating.6.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.0.gating.6.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.0.gating.7.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.0.gating.7.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.0.norm1.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.0.norm2.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.0.self_attn.in_proj_weight": [
+   24576,
+   1024
+  ],
+  "depformer.layers.0.self_attn.out_proj.weight": [
+   8192,
+   1024
+  ],
+  "depformer.layers.1.gating.0.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.1.gating.0.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.1.gating.1.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.1.gating.1.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.1.gating.2.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.1.gating.2.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.1.gating.3.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.1.gating.3.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.1.gating.4.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.1.gating.4.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.1.gating.5.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.1.gating.5.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.1.gating.6.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.1.gating.6.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.1.gating.7.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.1.gating.7.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.1.norm1.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.1.norm2.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.1.self_attn.in_proj_weight": [
+   24576,
+   1024
+  ],
+  "depformer.layers.1.self_attn.out_proj.weight": [
+   8192,
+   1024
+  ],
+  "depformer.layers.2.gating.0.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.2.gating.0.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.2.gating.1.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.2.gating.1.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.2.gating.2.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.2.gating.2.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.2.gating.3.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.2.gating.3.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.2.gating.4.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.2.gating.4.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.2.gating.5.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.2.gating.5.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.2.gating.6.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.2.gating.6.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.2.gating.7.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.2.gating.7.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.2.norm1.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.2.norm2.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.2.self_attn.in_proj_weight": [
+   24576,
+   1024
+  ],
+  "depformer.layers.2.self_attn.out_proj.weight": [
+   8192,
+   1024
+  ],
+  "depformer.layers.3.gating.0.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.3.gating.0.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.3.gating.1.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.3.gating.1.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.3.gating.2.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.3.gating.2.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.3.gating.3.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.3.gating.3.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.3.gating.4.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.3.gating.4.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.3.gating.5.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.3.gating.5.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.3.gating.6.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.3.gating.6.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.3.gating.7.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.3.gating.7.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.3.norm1.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.3.norm2.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.3.self_attn.in_proj_weight": [
+   24576,
+   1024
+  ],
+  "depformer.layers.3.self_attn.out_proj.weight": [
+   8192,
+   1024
+  ],
+  "depformer.layers.4.gating.0.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.4.gating.0.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.4.gating.1.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.4.gating.1.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.4.gating.2.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.4.gating.2.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.4.gating.3.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.4.gating.3.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.4.gating.4.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.4.gating.4.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.4.gating.5.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.4.gating.5.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.4.gating.6.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.4.gating.6.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.4.gating.7.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.4.gating.7.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.4.norm1.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.4.norm2.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.4.self_attn.in_proj_weight": [
+   24576,
+   1024
+  ],
+  "depformer.layers.4.self_attn.out_proj.weight": [
+   8192,
+   1024
+  ],
+  "depformer.layers.5.gating.0.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.5.gating.0.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.5.gating.1.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.5.gating.1.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.5.gating.2.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.5.gating.2.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.5.gating.3.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.5.gating.3.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.5.gating.4.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.5.gating.4.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.5.gating.5.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.5.gating.5.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.5.gating.6.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.5.gating.6.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.5.gating.7.linear_in.weight": [
+   5632,
+   1024
+  ],
+  "depformer.layers.5.gating.7.linear_out.weight": [
+   1024,
+   2816
+  ],
+  "depformer.layers.5.norm1.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.5.norm2.alpha": [
+   1,
+   1,
+   1024
+  ],
+  "depformer.layers.5.self_attn.in_proj_weight": [
+   24576,
+   1024
+  ],
+  "depformer.layers.5.self_attn.out_proj.weight": [
+   8192,
+   1024
+  ],
+  "depformer_emb.0.weight": [
+   2049,
+   1024
+  ],
+  "depformer_emb.1.weight": [
+   2049,
+   1024
+  ],
+  "depformer_emb.2.weight": [
+   2049,
+   1024
+  ],
+  "depformer_emb.3.weight": [
+   2049,
+   1024
+  ],
+  "depformer_emb.4.weight": [
+   2049,
+   1024
+  ],
+  "depformer_emb.5.weight": [
+   2049,
+   1024
+  ],
+  "depformer_emb.6.weight": [
+   2049,
+   1024
+  ],
+  "depformer_in.0.weight": [
+   1024,
+   4096
+  ],
+  "depformer_in.1.weight": [
+   1024,
+   4096
+  ],
+  "depformer_in.2.weight": [
+   1024,
+   4096
+  ],
+  "depformer_in.3.weight": [
+   1024,
+   4096
+  ],
+  "depformer_in.4.weight": [
+   1024,
+   4096
+  ],
+  "depformer_in.5.weight": [
+   1024,
+   4096
+  ],
+  "depformer_in.6.weight": [
+   1024,
+   4096
+  ],
+  "depformer_in.7.weight": [
+   1024,
+   4096
+  ],
+  "depformer_text_emb.weight": [
+   32001,
+   1024
+  ],
+  "linears.0.weight": [
+   2048,
+   1024
+  ],
+  "linears.1.weight": [
+   2048,
+   1024
+  ],
+  "linears.2.weight": [
+   2048,
+   1024
+  ],
+  "linears.3.weight": [
+   2048,
+   1024
+  ],
+  "linears.4.weight": [
+   2048,
+   1024
+  ],
+  "linears.5.weight": [
+   2048,
+   1024
+  ],
+  "linears.6.weight": [
+   2048,
+   1024
+  ],
+  "linears.7.weight": [
+   2048,
+   1024
+  ],
+  "mimi.decoder.model.0.conv.conv.bias": [
+   1024
+  ],
+  "mimi.decoder.model.0.conv.conv.weight": [
+   1024,
+   512,
+   7
+  ],
+  "mimi.decoder.model.11.convtr.convtr.bias": [
+   64
+  ],
+  "mimi.decoder.model.11.convtr.convtr.weight": [
+   128,
+   64,
+   8
+  ],
+  "mimi.decoder.model.12.block.1.conv.conv.bias": [
+   32
+  ],
+  "mimi.decoder.model.12.block.1.conv.conv.weight": [
+   32,
+   64,
+   3
+  ],
+  "mimi.decoder.model.12.block.3.conv.conv.bias": [
+   64
+  ],
+  "mimi.decoder.model.12.block.3.conv.conv.weight": [
+   64,
+   32,
+   1
+  ],
+  "mimi.decoder.model.14.conv.conv.bias": [
+   1
+  ],
+  "mimi.decoder.model.14.conv.conv.weight": [
+   1,
+   64,
+   3
+  ],
+  "mimi.decoder.model.2.convtr.convtr.bias": [
+   512
+  ],
+  "mimi.decoder.model.2.convtr.convtr.weight": [
+   1024,
+   512,
+   16
+  ],
+  "mimi.decoder.model.3.block.1.conv.conv.bias": [
+   256
+  ],
+  "mimi.decoder.model.3.block.1.conv.conv.weight": [
+   256,
+   512,
+   3
+  ],
+  "mimi.decoder.model.3.block.3.conv.conv.bias": [
+   512
+  ],
+  "mimi.decoder.model.3.block.3.conv.conv.weight": [
+   512,
+   256,
+   1
+  ],
+  "mimi.decoder.model.5.convtr.convtr.bias": [
+   256
+  ],
+  "mimi.decoder.model.5.convtr.convtr.weight": [
+   512,
+   256,
+   12
+  ],
+  "mimi.decoder.model.6.block.1.conv.conv.bias": [
+   128
+  ],
+  "mimi.decoder.model.6.block.1.conv.conv.weight": [
+   128,
+   256,
+   3
+  ],
+  "mimi.decoder.model.6.block.3.conv.conv.bias": [
+   256
+  ],
+  "mimi.decoder.model.6.block.3.conv.conv.weight": [
+   256,
+   128,
+   1
+  ],
+  "mimi.decoder.model.8.convtr.convtr.bias": [
+   128
+  ],
+  "mimi.decoder.model.8.convtr.convtr.weight": [
+   256,
+   128,
+   10
+  ],
+  "mimi.decoder.model.9.block.1.conv.conv.bias": [
+   64
+  ],
+  "mimi.decoder.model.9.block.1.conv.conv.weight": [
+   64,
+   128,
+   3
+  ],
+  "mimi.decoder.model.9.block.3.conv.conv.bias": [
+   128
+  ],
+  "mimi.decoder.model.9.block.3.conv.conv.weight": [
+   128,
+   64,
+   1
+  ],
+  "mimi.decoder_transformer.transformer.layers.0.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.0.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.0.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.0.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.decoder_transformer.transformer.layers.0.norm1.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.0.norm1.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.0.norm2.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.0.norm2.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.0.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.0.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.1.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.1.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.1.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.1.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.decoder_transformer.transformer.layers.1.norm1.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.1.norm1.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.1.norm2.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.1.norm2.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.1.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.1.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.2.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.2.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.2.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.2.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.decoder_transformer.transformer.layers.2.norm1.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.2.norm1.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.2.norm2.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.2.norm2.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.2.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.2.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.3.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.3.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.3.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.3.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.decoder_transformer.transformer.layers.3.norm1.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.3.norm1.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.3.norm2.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.3.norm2.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.3.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.3.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.4.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.4.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.4.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.4.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.decoder_transformer.transformer.layers.4.norm1.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.4.norm1.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.4.norm2.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.4.norm2.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.4.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.4.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.5.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.5.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.5.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.5.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.decoder_transformer.transformer.layers.5.norm1.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.5.norm1.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.5.norm2.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.5.norm2.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.5.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.5.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.6.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.6.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.6.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.6.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.decoder_transformer.transformer.layers.6.norm1.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.6.norm1.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.6.norm2.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.6.norm2.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.6.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.6.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.7.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.7.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.7.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.7.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.decoder_transformer.transformer.layers.7.norm1.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.7.norm1.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.7.norm2.bias": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.7.norm2.weight": [
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.7.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.decoder_transformer.transformer.layers.7.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.downsample.conv.conv.conv.weight": [
+   512,
+   512,
+   4
+  ],
+  "mimi.encoder.model.0.conv.conv.bias": [
+   64
+  ],
+  "mimi.encoder.model.0.conv.conv.weight": [
+   64,
+   1,
+   7
+  ],
+  "mimi.encoder.model.1.block.1.conv.conv.bias": [
+   32
+  ],
+  "mimi.encoder.model.1.block.1.conv.conv.weight": [
+   32,
+   64,
+   3
+  ],
+  "mimi.encoder.model.1.block.3.conv.conv.bias": [
+   64
+  ],
+  "mimi.encoder.model.1.block.3.conv.conv.weight": [
+   64,
+   32,
+   1
+  ],
+  "mimi.encoder.model.10.block.1.conv.conv.bias": [
+   256
+  ],
+  "mimi.encoder.model.10.block.1.conv.conv.weight": [
+   256,
+   512,
+   3
+  ],
+  "mimi.encoder.model.10.block.3.conv.conv.bias": [
+   512
+  ],
+  "mimi.encoder.model.10.block.3.conv.conv.weight": [
+   512,
+   256,
+   1
+  ],
+  "mimi.encoder.model.12.conv.conv.bias": [
+   1024
+  ],
+  "mimi.encoder.model.12.conv.conv.weight": [
+   1024,
+   512,
+   16
+  ],
+  "mimi.encoder.model.14.conv.conv.bias": [
+   512
+  ],
+  "mimi.encoder.model.14.conv.conv.weight": [
+   512,
+   1024,
+   3
+  ],
+  "mimi.encoder.model.3.conv.conv.bias": [
+   128
+  ],
+  "mimi.encoder.model.3.conv.conv.weight": [
+   128,
+   64,
+   8
+  ],
+  "mimi.encoder.model.4.block.1.conv.conv.bias": [
+   64
+  ],
+  "mimi.encoder.model.4.block.1.conv.conv.weight": [
+   64,
+   128,
+   3
+  ],
+  "mimi.encoder.model.4.block.3.conv.conv.bias": [
+   128
+  ],
+  "mimi.encoder.model.4.block.3.conv.conv.weight": [
+   128,
+   64,
+   1
+  ],
+  "mimi.encoder.model.6.conv.conv.bias": [
+   256
+  ],
+  "mimi.encoder.model.6.conv.conv.weight": [
+   256,
+   128,
+   10
+  ],
+  "mimi.encoder.model.7.block.1.conv.conv.bias": [
+   128
+  ],
+  "mimi.encoder.model.7.block.1.conv.conv.weight": [
+   128,
+   256,
+   3
+  ],
+  "mimi.encoder.model.7.block.3.conv.conv.bias": [
+   256
+  ],
+  "mimi.encoder.model.7.block.3.conv.conv.weight": [
+   256,
+   128,
+   1
+  ],
+  "mimi.encoder.model.9.conv.conv.bias": [
+   512
+  ],
+  "mimi.encoder.model.9.conv.conv.weight": [
+   512,
+   256,
+   12
+  ],
+  "mimi.encoder_transformer.transformer.layers.0.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.0.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.0.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.0.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.encoder_transformer.transformer.layers.0.norm1.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.0.norm1.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.0.norm2.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.0.norm2.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.0.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.0.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.1.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.1.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.1.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.1.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.encoder_transformer.transformer.layers.1.norm1.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.1.norm1.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.1.norm2.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.1.norm2.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.1.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.1.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.2.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.2.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.2.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.2.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.encoder_transformer.transformer.layers.2.norm1.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.2.norm1.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.2.norm2.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.2.norm2.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.2.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.2.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.3.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.3.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.3.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.3.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.encoder_transformer.transformer.layers.3.norm1.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.3.norm1.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.3.norm2.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.3.norm2.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.3.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.3.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.4.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.4.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.4.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.4.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.encoder_transformer.transformer.layers.4.norm1.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.4.norm1.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.4.norm2.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.4.norm2.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.4.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.4.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.5.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.5.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.5.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.5.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.encoder_transformer.transformer.layers.5.norm1.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.5.norm1.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.5.norm2.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.5.norm2.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.5.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.5.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.6.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.6.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.6.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.6.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.encoder_transformer.transformer.layers.6.norm1.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.6.norm1.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.6.norm2.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.6.norm2.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.6.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.6.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.7.layer_scale_1.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.7.layer_scale_2.scale": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.7.linear1.weight": [
+   2048,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.7.linear2.weight": [
+   512,
+   2048
+  ],
+  "mimi.encoder_transformer.transformer.layers.7.norm1.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.7.norm1.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.7.norm2.bias": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.7.norm2.weight": [
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.7.self_attn.in_proj_weight": [
+   1536,
+   512
+  ],
+  "mimi.encoder_transformer.transformer.layers.7.self_attn.out_proj.weight": [
+   512,
+   512
+  ],
+  "mimi.quantizer.rvq_first.input_proj.weight": [
+   256,
+   512,
+   1
+  ],
+  "mimi.quantizer.rvq_first.output_proj.weight": [
+   512,
+   256,
+   1
+  ],
+  "mimi.quantizer.rvq_first.vq.layers.0._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_first.vq.layers.0._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_first.vq.layers.0._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.input_proj.weight": [
+   256,
+   512,
+   1
+  ],
+  "mimi.quantizer.rvq_rest.output_proj.weight": [
+   512,
+   256,
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.0._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.0._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.0._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.1._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.1._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.1._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.10._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.10._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.10._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.11._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.11._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.11._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.12._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.12._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.12._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.13._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.13._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.13._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.14._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.14._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.14._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.15._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.15._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.15._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.16._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.16._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.16._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.17._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.17._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.17._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.18._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.18._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.18._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.19._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.19._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.19._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.2._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.2._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.2._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.20._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.20._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.20._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.21._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.21._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.21._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.22._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.22._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.22._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.23._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.23._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.23._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.24._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.24._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.24._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.25._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.25._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.25._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.26._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.26._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.26._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.27._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.27._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.27._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.28._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.28._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.28._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.29._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.29._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.29._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.3._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.3._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.3._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.30._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.30._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.30._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.4._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.4._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.4._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.5._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.5._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.5._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.6._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.6._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.6._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.7._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.7._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.7._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.8._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.8._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.8._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.9._codebook._initialized": [
+   1
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.9._codebook.cluster_usage": [
+   2048
+  ],
+  "mimi.quantizer.rvq_rest.vq.layers.9._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "mimi.upsample.convtr.convtr.convtr.weight": [
+   512,
+   1,
+   4
+  ]
+ },
+ "torch_dtype": "bfloat16"
+}

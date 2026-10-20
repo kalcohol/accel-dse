@@ -78,7 +78,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
 
             settle("load")
             # 0.273: + the speech-out kinds (Omni: split / SLC / audio-in KPIs; CosyVoice: split / per-chunk)
-            for m in ("gpt-oss-120b", "wan2.1-1.3b", "esm2-650m", "qwen2.5-omni-7b", "cosyvoice2-0.5b", "kimi-audio-7b-instruct", "step-audio-2-mini", "qwen3-8b"):
+            for m in ("gpt-oss-120b", "wan2.1-1.3b", "esm2-650m", "qwen2.5-omni-7b", "cosyvoice2-0.5b", "kimi-audio-7b-instruct", "step-audio-2-mini", "moshiko-7b", "qwen3-8b"):
                 if m in opts("#model"):
                     act(f"model={m}", lambda m=m: p.select_option("#model", m))
             for ph in ("prefill", "decode"):
