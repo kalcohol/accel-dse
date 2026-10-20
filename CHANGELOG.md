@@ -6,6 +6,64 @@
 
 
 
+## [0.288.0]
+
+### Added: the Ornith family (ornith-ai, MIT)
+- All public Ornith repos were read: config.json, safetensors headers, and the image and video preprocessor configs (all the same as Qwen3.5: 65 536–16 777 216 px, patch 16, merge 2; video 4 096–25 165 824).
+- **Listed, as released:**
+  - `ornith-1.5-122b-fp8`, `ornith-1.5-397b-fp8` and `ornith-1.5-35b-a3b-fp8`. These are official compressed-tensors W8A8 float: per-channel fp8 weights with dynamic per-token fp8 activations on the routed and shared experts and the full-attention projections. Linear attention, router, embeddings, head, MTP and ViT stay bf16.
+  - The 122B-FP8 config is now public (it was a 404 in 0.287).
+  - The catalog has no Qwen3.5 FP8 release, so these are new dtype points.
+  - Parameter counts match exactly (param_err 0), coverage is full, and the vision towers are exact.
+  - Defaults, TPOT at b8 / ctx 4096:
+    - 35B-A3B-FP8 at TP1: 64.83 ms (bf16: 105.06 ms);
+    - 122B-FP8 at TP2·EP2: 109.18 ms;
+    - 397B-FP8 at TP8·EP8: 71.41 ms.
+- **Merged (same config and header shapes as a listed entry; each keeps its own as-released dtypes):**
+  - Ornith-1.5-9B → qwen3.5-9b; Ornith-1.5-35B-A3B → startlux-decision-v1-35b-a3b; Ornith-1.5-397B → qwen3.5-397b-a17b.
+  - Ornith-1.0 9B / 35B / 397B are the 1.5 configs without the MTP head, merged into the same entries, the same way MAI-Gym-9B was.
+  - Ornith-1.0 35B-FP8 / 397B-FP8 → the 1.5 FP8 entries.
+  - The bf16 Ornith releases are all-bf16, where the Qwen base keeps a few fp32 norm / A_log tensors. For example, ornith-1.5-9b's TPOT is 8 ns below qwen3.5-9b's (92.45095 ms, b8, default chip).
+- Not added: the NVFP4 (1.5 9B / 35B-A3B / 397B), GGUF, MLX and DFlash draft repos.
+
+### Fixed: the memory-tier ledger beyond LLM stages (MODEL §233)
+- The 0.287 per-class ledger now covers every domain:
+  - **DiT / protein / genomics trunks** (`_evaluate_full`) now carry `StageResult.ledger`. That includes the cached-prefix (prefix_kv), mode-cache, CFG-asymmetric uncond and FSDP paths; the FSDP gather write counts as demand of its own.
+  - The ledger closes on all 146 fuzz scenarios that evaluated (150 drawn), across 25 domain models × 7 SRAM/SLC configs × layouts × FSDP / placement / overlap. No hit.
+- **Hit: components (text encoders, VAEs, vision / audio encoders, speech-card modules) dropped bytes.** `_component_time` counted only weights and activations.
+  - **Lookup bytes were charged to no tier.** Examples: Qwen2.5-Omni Talker codec-embedding gathers (21.8 MB per b4 prefill), Kimi-Audio DiT, Drama 3 DAC, Moshi, CosyVoice / Index-Echo flow.
+  - **K/V seconds sat outside the roofline.** The speech callers added them serially after it: Omni Talker K/V, CosyVoice / Index-Echo / Step-Audio flow chunk K/V, Kimi-Audio DiT cached-frame K/V.
+  - Now every touched byte (weights, activations, K/V, state, lookups, plus `extra_dram` for bytes not in the op list) is DRAM traffic inside the component's roofline. Components get no on-chip credit, so SRAM = SLC = 0 and DRAM = demand.
+  - Speech-card SRAM/SLC shares (omni_pin + omni_slc_plan; cosy_pin, kimi_pin) were checked by a property test (2000 random SRAM / SLC / batch): per re-read evaluation, SRAM + SLC + DRAM = 1, and the SLC holds at most its size. No hit.
+- **Default behaviour, old → new:**
+  - LLM / VLM / DiT / protein / genomics evaluations are unchanged: 143 evaluable models × decode / prefill × {default chip, SRAM 4 GiB + SLC 4 GiB pin} = 572 points, 570 identical; boltz-1 on the pin chip identical (step 4.5329 s, run separately). protenix on the pin chip did not finish in 700 s on either tree and was not compared (its default-chip points are identical).
+  - Speech KPIs (`speech_kpis`, 10 s of audio) change as follows:
+
+    | config | KPI | old | new |
+    |---|---|---|---|
+    | qwen2.5-omni-7b b4, 100T SLC 4 GiB pin | Talker step | 2.562 ms | 1.783 ms |
+    | same | RTF | 0.4775 | 0.4382 |
+    | same | first audio | 0.5832 s | 0.5451 s |
+    | qwen2.5-omni-7b b1, same chip | RTF | 0.1749 | 0.1651 |
+    | qwen2.5-omni-7b b4, default chip | first audio | 1.38140 s | 1.38081 s |
+    | kimi-audio-7b-instruct b4, default | RTF | 0.96747 | 0.96766 |
+    | drama-3 b4, default | RTF | 1.07719 | 1.07724 |
+    | cosyvoice2-0.5b b4, default | total | 1.893255 s | 1.893252 s |
+    | drama-3 100T b1 (diagnostic) | `dac.dram_act_GB` | 14.3114 | 14.3364 |
+    | drama-3 100T b8 (diagnostic) | `dac.dram_act_GB` | 126.2905 | 126.4903 |
+    | ext speech: drama-3 H200 stream c16 (default) | frames/s (ratio) | 1300.1 (1.402) | 1300.0 (1.401) |
+    | ext speech: c64 (default) | frames/s | 2177.1 | 2177.0 |
+    | ext speech T2: c256 voc-same (default / catalog) | frames/s | 3175.7 / 3990.5 | 3175.4 / 3990.0 |
+
+    The Omni Talker step is DRAM-bound at small batch. Its K/V reads now overlap its weight streaming inside the roofline instead of being added after it. Kimi, Drama 3 and Moshi rise slightly: their lookup bytes are now charged. The Drama 3 DAC causal-conv history (`kv_read`) and codebook lookups are now DRAM traffic, so `_dac_window_dram`'s activation share is every non-weight touched byte (was `act` only; it must sum to the costed DRAM, test_core_278); ext speech Drama 3 predictions drop ≤ 0.02 % (all 7 changed rows ≤ 0.5 frames/s, ratios ≤ 0.001). 31 of the 68 speech KPI rows changed, at most −8 % (Omni + SLC). The rest change by less than 0.03 %.
+
+### Fixed: design-insight panels tagged stale (AGENTS §236 deferred item)
+- After a scenario edit, the insight, SLC-size, sizing and upgrade-path panels (`ins-status`, `ins-slc-status`, `ins-size-status`, `ins-path-status`) kept showing old results untagged. They are now in `invalidate()`'s list, mark `dataset.done` on success and on error, and carry `staleTag` for a result computed from an older scenario version. This is the same mechanism as the 0.285 speech panels, and the 0.286 structural guard now covers them.
+
+### Freshness
+- HF sweep since 2026-10-20 (89 orgs, now including ornith-ai): only the Ornith 122B siblings (FP8 added above; GGUF / MLX not modelled), unsloth/Ornith-1.5-122B-GGUF and unsloth/sam3.1 (re-uploads).
+- Web check: NVIDIA Nemotron 3.5 Bolt 74B-A9B (nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB, created 2026-10-07; BF16 repo 2026-10-09) is missing from the catalog. It predates the window, so it is recorded as a candidate (AGENTS §238).
+
 ## [0.287.0]
 
 ### Fixed: `local` symlink ignored; tracked-tree guard

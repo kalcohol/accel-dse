@@ -2381,9 +2381,13 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             stt = mk(link_bw, sync, d2d_b, net_b, wire, t_pipe)
             if tpipe is not None and so:
                 stt, _ = _pipe_repick(sys, agg, pre, extra, win, st.index, so, s_add, tpipe, mk, stt)
+            # 0.288: the same ledger as the LLM stages (DiT / protein / genomics trunks); an FSDP gather write is
+            # demand of its own (dram["fsdp_gather"], charged to DRAM)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
-                                      conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg)))
+                                      conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg),
+                                      ledger=(store, {k: agg[k] for k in _DRAM_KEYS + ("hot_rr",) if k in agg},
+                                              sys.chip.slc_GBps / sys.dram_GBps, sys.chip.slc_GBps * 1e9)))
         return stages
 
     p2p_pay = ph.batch * (_cdiv(ph.q, lay.sp) * m.hidden * ab + pair_act) / lay.dp
@@ -2646,15 +2650,25 @@ def _prefix_cache_bytes(m: ModelSpec, T: int, lay, ab: float) -> float:
     return per * _cdiv(m.n_layers, lay.pp) / m.n_layers
 
 
-def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, af: str) -> dict:
+_COMP_KEYS = ("hot", "exp", "w_extra", "act", "kv_read", "kv_write", "state", "lookup")
+
+
+def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, af: str,
+                    extra_dram: float = 0.0) -> dict:
     """One pipeline component on one card: same op → mapping → streaming path as a stage; its weights are larger
     than SRAM, so every weight is read from DRAM once per op execution (tiles / chunks re-read).
-    ``groups``: [(ops, executions)] (a tiled VAE decode runs one op list per tile)."""
+    ``groups``: [(ops, executions)] (a tiled VAE decode runs one op list per tile).
+    0.288: a component has no on-chip credit, so every touched byte is DRAM traffic — weights, activations and the
+    K/V cache, recurrent-state and lookup bytes too, in the same roofline as the rest (``extra_dram``: bytes the
+    caller knows the op list does not carry, e.g. the Kimi-Audio DiT's cached-frame K/V).  ≤ 0.287 only weights +
+    activations were counted: lookup bytes went to no tier, and the speech callers added their K/V seconds serially
+    after the roofline.  ``dram_GB`` = every touched byte (the ledger: SRAM = SLC = 0 for a component)."""
     d = dict.fromkeys(_SUM_KEYS, 0.0)
     shim = SimpleNamespace(act_fmt=af, kv_fmt=af)
     for ops, n in groups:
         _acc(d, _sum_ops(ops, sys, org, shim), n)
-    dram = d["hot"] + d["exp"] + d["w_extra"] + d["act"]
+    dram = sum(d[k] for k in _COMP_KEYS) + extra_dram
+    kv_b = d["kv_read"] + d["kv_write"] + d["state"] + extra_dram
     # 0.283: a component pays the same serial per-op fixed costs as a stage — NPU dispatch (Chip.dispatch: per op for
     # trace / host, one program launch per execution for static) and GPU kernel_us (both in _sum_ops' "sync").  Before
     # 0.283 they were dropped here, so speech cards (flow / HiFT / DAC / Mimi …) and VAE / text encoders ran
@@ -2662,7 +2676,7 @@ def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, a
     disp = d["disp"] + sys.chip.dispatch_s()[0] * sum(n for _, n in groups)
     sync = d["sync"] + disp - d["disp"]
     stt = StageTime(d["t_arr"], d["t_mac"], d["t_feed"], d["t_vec"], dram / (sys.dram_GBps * 1e9), 0.0, sync, dram,
-                    0.0, d["flops"], d["t_ideal"], t_kern=d["kern"], t_disp=disp)
+                    0.0, d["flops"], d["t_ideal"], t_dram_kv=kv_b / (sys.dram_GBps * 1e9), t_kern=d["kern"], t_disp=disp)
     ch = sys.chip
     extra = {"sync_s": sync, "dispatch_s": disp} if sync else {}     # only when a knob is set (summaries unchanged)
     return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound, **extra,

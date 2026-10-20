@@ -135,3 +135,14 @@ stepfun-ai/Step-Audio-2-mini
 moonshotai/Kimi-Audio-7B-Instruct
 fishaudio/drama-3
 ornith-ai/Ornith-1.5-122B
+ornith-ai/Ornith-1.5-122B-FP8
+ornith-ai/Ornith-1.5-397B-FP8
+ornith-ai/Ornith-1.5-35B-A3B-FP8
+ornith-ai/Ornith-1.5-397B
+ornith-ai/Ornith-1.5-35B-A3B
+ornith-ai/Ornith-1.5-9B
+ornith-ai/Ornith-1.0-397B
+ornith-ai/Ornith-1.0-397B-FP8
+ornith-ai/Ornith-1.0-35B
+ornith-ai/Ornith-1.0-35B-FP8
+ornith-ai/Ornith-1.0-9B

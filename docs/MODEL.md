@@ -7706,3 +7706,37 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 ### §232.6 Ornith-1.5-122B
 - ornith-ai/Ornith-1.5-122B (MIT, public 2026-10-20): qwen3_5_moe as released bf16 — 48 layers in a 3 : 1 Gated-DeltaNet : gated-GQA pattern, 256 routed experts top-8 + shared expert, hidden 3072, partial rotary 0.25, untied head, 1 MTP layer; Qwen3.5 ViT (27 × 1152, patch 16, merge 2, out 3072). Params from safetensors headers: LLM 122 111 526 912, MTP 2 523 679 232, vision 451 290 864 (VisionSpec exact). Processor: min / max px 65 536 / 16 777 216 (image), video 4 096 / 25 165 824 — its own preprocessor configs.
 - `vision_spec` accepts `qwen3_5_moe_vision` (the transformers-5 model_type of the MoE ViT config; the dense one is `qwen3_5_vision`, 0.191).
+
+## §233 Ornith family; ledger beyond LLM stages; component bytes; insight stale tags (0.288)
+
+### §233.1 Ornith (ornith-ai)
+- Qwen3.5 post-trains (MIT). As released, from config.json and the safetensors headers:
+  - 1.5: 9B dense, 35B-A3B, 122B-A10B (§232.6) and 397B-A17B in bf16, each with one MTP layer. Official FP8 for 35B-A3B, 122B and 397B: compressed-tensors `float-quantized` with per-channel weights and dynamic per-token activations, targets Linear. The ignore list (lm_head, embed_tokens, mlp.gate, shared_expert_gate, linear_attn, visual, mtp) leaves those bf16, so the FP8 tensors are the routed / shared experts and the full-attention q/k/v/o (`act_fmt` fp8 on those roles, via the 0.281 compressed-tensors rule).
+  - 1.0 (9B / 35B / 397B, bf16 and FP8) is the same configs without the MTP head.
+- Catalog rule (MERGED = same architecture as a listed entry; the merged id still evaluates from its own release, so dtypes stay as released):
+  - 1.5 bf16 9B / 35B-A3B / 397B and 1.0 bf16 merge into qwen3.5-9b / startlux-decision-v1-35b-a3b / qwen3.5-397b-a17b (identical header shapes and text / vision config).
+  - 1.0 FP8 merges into the 1.5 FP8 entries.
+  - The 1.5 FP8 entries are listed: no Qwen3.5 FP8 release is catalogued.
+- Processor: all repos ship Qwen3.5's preprocessor and video-preprocessor configs (65 536–16 777 216 px; video 4 096–25 165 824; patch 16, temporal 2, merge 2).
+
+### §233.2 Ledger on the non-autoregressive trunks
+- `_evaluate_full` stages (video / image DiT, protein, genomics, and the prefix-extract, mode-cache and uncond variants) record `StageResult.ledger` like the LLM stages (§232.1). With `workload.dit_fsdp` the gathered copy written to DRAM, `dram["fsdp_gather"]` = act_w·(g−1)/g, is demand of its own on top of the touched bytes.
+- Audit: 146 random scenarios (25 models, 7 SRAM / SLC / policy sets, PP / SP / DP, FSDP, placement, tbo / pipe / kernel): every class closes. No hit — the trunk uses the same plan / step_dram_bytes path that 0.287 fixed.
+
+### §233.3 Components: every touched byte is DRAM traffic
+- A component (text encoder, VAE encode / decode, vision / audio encoder, speech-card module) runs off the stage plan with no on-chip credit (its weights are taken as larger than SRAM). Its DRAM bytes are now the sum of all touched classes:
+
+  DRAM = hot + experts + w_extra + act + kv_read + kv_write + state + lookup (+ extra_dram)
+
+  `t_dram` = DRAM / BW and `t_dram_kv` = (K/V + state + extra) / BW, timed with the stage roofline (max of compute and DRAM, plus sync).
+- ≤ 0.287: DRAM = hot + experts + w_extra + act only. Lookup bytes (codec / token embedding gathers) went to no tier. The speech callers added K/V seconds after the roofline (Omni `_omni_time`: + (kv_read + kv_write)/BW; CosyVoice / Index-Echo / Step-Audio flow: + chunk kv_read / BW; Kimi-Audio DiT: + kv_bytes(cached frames) / BW, now passed as `extra_dram`).
+  - Serial addition double-counts time whenever the component is compute-bound or weight-bound, since K/V streams through the same DRAM port as the weights. The stage path never did that.
+- Old → new (10 s audio):
+  - qwen2.5-omni-7b b4, 100T + SLC 4 GiB pin: Talker step 2.562 → 1.783 ms, RTF 0.4775 → 0.4382, first audio 0.5832 → 0.5451 s; b1: RTF 0.1749 → 0.1651.
+  - Default chip: Omni b4 first audio 1.38140 → 1.38081 s; Kimi-Audio b4 RTF 0.96747 → 0.96766 (its DiT lookups now charged); Drama 3 b4 RTF 1.07719 → 1.07724.
+  - Drama 3 DAC: conv-history K/V (`kv_read`) and codebook lookups now DRAM traffic; `dac.dram_act_GB` = all non-weight touched bytes (was `act` only): 100T b1 14.3114 → 14.3364 GB, b8 126.2905 → 126.4903 GB (weights 5.8976 GB unchanged). ext speech (H200 stream) frames/s: default c16 1300.1 → 1300.0, c64 2177.1 → 2177.0, T2 c256 3175.7 → 3175.4; catalog T2 c256 3990.5 → 3990.0.
+  - LLM / DiT / protein / genomics evaluations: unchanged (no K/V, state or lookup bytes in their pipeline components). Checked on 143 models × decode / prefill × {default, SRAM 4 GiB + SLC 4 GiB pin}: 570 of 572 points identical, boltz-1 pin identical separately; protenix pin not compared (> 700 s per tree).
+- Speech-card SRAM / SLC pins (§214, §216): per DiT re-read evaluation SRAM 1 − miss, SLC miss·h, DRAM miss·(1 − h); the first evaluation reads 1 − miss·h from DRAM and miss·h from the SLC; the Talker reads (1 − h_t) from DRAM and h_t from the SLC; h_d·miss·W_dit + h_t·W_talker ≤ SLC. Property-tested; no hit.
+
+### §233.4 Insight panels stale-tagged
+- `invalidate()` now also tags `ins-status`, `ins-slc-status`, `ins-size-status` and `ins-path-status`. Each run snapshots `S.ver` at click time and appends `staleTag` to its result, and the success and catch paths both set `dataset.done` (the §231.1 structural guard).

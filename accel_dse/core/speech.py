@@ -32,11 +32,10 @@ from .scenario import Scenario
 
 
 def _omni_time(ops: list, sys, org: str, af: str) -> float:
-    """evaluate._component_time + the K/V and lookup bytes the component path leaves out (Talker K/V cache)."""
+    """evaluate._component_time (0.288: it now charges the Talker K/V cache and lookup bytes itself, inside the
+    roofline; ≤ 0.287 their seconds were added here after it, and the lookup bytes were dropped)."""
     from .evaluate import _component_time
-    c = _component_time([(ops, 1)], sys, org, af)
-    kv = sum(o.kv_read + o.kv_write for o in ops)
-    return c["s"] + kv / (sys.dram_GBps * 1e9)
+    return _component_time([(ops, 1)], sys, org, af)["s"]
 
 
 def _omni_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) -> dict:
@@ -144,7 +143,7 @@ def _cosy_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) ->
     def t_flow(N: int) -> float:
         ch, ev = flow_ops(c, N)
         g = [(ch, 1), (ev, 1)] + ([(scaled(ev, miss), c.steps - 1)] if c.steps > 1 else [])
-        return _component_time(g, sys, org, "fp32")["s"] + sum(o.kv_read for o in ch) / (sys.dram_GBps * 1e9)
+        return _component_time(g, sys, org, "fp32")["s"]      # 0.288: chunk K/V inside (was + kv_read / BW)
 
     def t_hift(M: int) -> float:
         return _component_time([(hift_ops(c, M), 1)], sys, org, "fp32")["s"]
@@ -153,7 +152,7 @@ def _cosy_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) ->
         from .cosyvoice import flow_chunk_ops
         ch, ev = flow_chunk_ops(c, N, off, cache)
         g = [(ch, 1), (ev, 1)] + ([(scaled(ev, miss), c.steps - 1)] if c.steps > 1 else [])
-        return _component_time(g, sys, org, "fp32")["s"] + sum(o.kv_read for o in ch) / (sys.dram_GBps * 1e9)
+        return _component_time(g, sys, org, "fp32")["s"]      # 0.288: chunk K/V inside (was + kv_read / BW)
 
     def chunks(warm: bool) -> list[tuple[float, float, int]]:
         out = []
@@ -227,12 +226,13 @@ def _kimi_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) ->
         return {"kind": "kimi", "lm_stages": {"lm": k.token_rate * dec.tpot},
                 "fits": pre.fits and dec.fits and need <= sys.dram_bytes}
     miss = kimi_pin(k, sys.chip.sram_bytes)
-    bw = sys.dram_GBps * 1e9
 
     def t_eval(T: int, kv: int, first: bool) -> float:
         ops = dit_eval_ops(k, T, kv)
         # K/V of the cached frames re-read by every evaluation (bf16, 16 blocks) 「推导」
-        return _component_time([(ops if first else scaled(ops, miss), 1)], sys, org, "bf16")["s"] + k.kv_bytes(kv) / bw
+        # 0.288: inside the component roofline (≤ 0.287 added after it: + kv_bytes / BW)
+        return _component_time([(ops if first else scaled(ops, miss), 1)], sys, org, "bf16",
+                               extra_dram=k.kv_bytes(kv))["s"]
 
     def t_voc(M: int) -> float:
         return _component_time([(voc_ops(k, M), 1)], sys, org, "bf16")["s"]
@@ -419,12 +419,14 @@ def _dac_window(fs, new: int, ctx: int, hist: int, batch: int, sys, org: str) ->
 @lru_cache(maxsize=1024)
 def _dac_window_dram(fs, new: int, ctx: int, hist: int, batch: int, sys, org: str) -> tuple[float, float]:
     """0.278: DRAM bytes of one DAC window decode split (weights, activations) in GB — the same op sums as
-    ``_dac_window`` (evaluate._component_time: weights = hot + exp + w_extra, activations = act)."""
+    ``_dac_window`` (evaluate._component_time: weights = hot + exp + w_extra; activations = every other touched byte —
+    act + causal-conv history (kv_read / kv_write) + state + codebook lookups; 0.288, was act only)."""
     from types import SimpleNamespace
     from .drama3 import dac_ops
-    from .evaluate import _sum_ops
+    from .evaluate import _COMP_KEYS, _sum_ops
     d = _sum_ops(dac_ops(fs, new, ctx, hist, batch), sys, org, SimpleNamespace(act_fmt="fp32", kv_fmt="fp32"))
-    return (d["hot"] + d["exp"] + d["w_extra"]) / 1e9, d["act"] / 1e9
+    w = d["hot"] + d["exp"] + d["w_extra"]
+    return w / 1e9, (sum(d[k] for k in _COMP_KEYS) - w) / 1e9
 
 
 def _fish_kpis(scn: Scenario, fs, audio_out_s: float, lm_only: bool = False) -> dict:
@@ -557,7 +559,7 @@ def _echo_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) ->
     miss = cosy_pin(c, sys.chip.sram_bytes)
     ch, ev = flow_ops(c, psp + n_sp)
     g = [(ch, 1), (ev, 1)] + ([(scaled(ev, miss), c.steps - 1)] if c.steps > 1 else [])
-    t_flow = _component_time(g, sys, org, "fp32")["s"] + sum(o.kv_read for o in ch) / (sys.dram_GBps * 1e9)
+    t_flow = _component_time(g, sys, org, "fp32")["s"]      # 0.288: chunk K/V inside (was + kv_read / BW)
     t_hift = _component_time([(hift_ops(c, n_sp * c.mel_ratio), 1)], sys, org, "fp32")["s"]
     split = {"encoder_s": enc, "st_prefill_s": st_pre.ttft - enc, "st_decode_s": n_out * st_dec.tpot,
              "st_hidden_pass_s": t_hid, "mapper_s": b * t_map, "cv3_prefill_s": cv_pre.ttft,

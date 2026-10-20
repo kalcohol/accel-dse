@@ -1,5 +1,5 @@
 {
- "generated": "0.287.0",
+ "generated": "0.288.0",
  "variants": {
   "default": {
    "eff": "catalog",
@@ -6188,13 +6188,13 @@
      "c": 16,
      "vocoder_gpu": "same",
      "meas": 927.6,
-     "pred": 1300.1,
-     "ratio": 1.402,
+     "pred": 1300.0,
+     "ratio": 1.401,
      "ttfa_meas_ms": 210.1,
      "ttfa_pred_ms": 103.3,
      "shares": {
       "prefill": 0.193,
-      "decode": 0.72,
+      "decode": 0.719,
       "vocoder": 0.087
      }
     },
@@ -6203,7 +6203,7 @@
      "c": 32,
      "vocoder_gpu": "same",
      "meas": 1244.7,
-     "pred": 1700.8,
+     "pred": 1700.7,
      "ratio": 1.366,
      "ttfa_meas_ms": 304.6,
      "ttfa_pred_ms": 133.9,
@@ -6218,7 +6218,7 @@
      "c": 64,
      "vocoder_gpu": "same",
      "meas": 1687.3,
-     "pred": 2177.1,
+     "pred": 2177.0,
      "ratio": 1.29,
      "ttfa_meas_ms": 450.9,
      "ttfa_pred_ms": 170.7,
@@ -6235,7 +6235,7 @@
      "c": 128,
      "vocoder_gpu": "same",
      "meas": 2177,
-     "pred": 2737.5,
+     "pred": 2737.3,
      "ratio": 1.257,
      "ttfa_meas_ms": 685,
      "ttfa_pred_ms": 211.1,
@@ -6250,7 +6250,7 @@
      "c": 256,
      "vocoder_gpu": "same",
      "meas": 2422,
-     "pred": 3175.7,
+     "pred": 3175.4,
      "ratio": 1.311,
      "ttfa_meas_ms": 3403,
      "ttfa_pred_ms": 277.1,
@@ -6335,7 +6335,7 @@
      "c": 4,
      "vocoder_gpu": "same",
      "meas": 467.6,
-     "pred": 1172.6,
+     "pred": 1172.5,
      "ratio": 2.508,
      "ttfa_meas_ms": 108.2,
      "ttfa_pred_ms": 38.7,
@@ -6350,7 +6350,7 @@
      "c": 8,
      "vocoder_gpu": "same",
      "meas": 678.1,
-     "pred": 1519.9,
+     "pred": 1519.8,
      "ratio": 2.241,
      "ttfa_meas_ms": 153.2,
      "ttfa_pred_ms": 50.5,
@@ -6365,7 +6365,7 @@
      "c": 16,
      "vocoder_gpu": "same",
      "meas": 927.6,
-     "pred": 1861.8,
+     "pred": 1861.7,
      "ratio": 2.007,
      "ttfa_meas_ms": 210.1,
      "ttfa_pred_ms": 70.4,
@@ -6380,7 +6380,7 @@
      "c": 32,
      "vocoder_gpu": "same",
      "meas": 1244.7,
-     "pred": 2240.7,
+     "pred": 2240.6,
      "ratio": 1.8,
      "ttfa_meas_ms": 304.6,
      "ttfa_pred_ms": 100.3,
@@ -6395,14 +6395,14 @@
      "c": 64,
      "vocoder_gpu": "same",
      "meas": 1687.3,
-     "pred": 2756.1,
+     "pred": 2755.9,
      "ratio": 1.633,
      "ttfa_meas_ms": 450.9,
      "ttfa_pred_ms": 135.9,
      "shares": {
       "prefill": 0.318,
       "decode": 0.536,
-      "vocoder": 0.145
+      "vocoder": 0.146
      }
     }
    ],
@@ -6412,7 +6412,7 @@
      "c": 128,
      "vocoder_gpu": "same",
      "meas": 2177,
-     "pred": 3424.9,
+     "pred": 3424.6,
      "ratio": 1.573,
      "ttfa_meas_ms": 685,
      "ttfa_pred_ms": 173.7,
@@ -6427,14 +6427,14 @@
      "c": 256,
      "vocoder_gpu": "same",
      "meas": 2422,
-     "pred": 3990.5,
-     "ratio": 1.648,
+     "pred": 3990.0,
+     "ratio": 1.647,
      "ttfa_meas_ms": 3403,
      "ttfa_pred_ms": 228.9,
      "shares": {
       "prefill": 0.456,
       "decode": 0.336,
-      "vocoder": 0.208
+      "vocoder": 0.209
      }
     },
     {

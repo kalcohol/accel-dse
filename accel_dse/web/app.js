@@ -711,7 +711,9 @@ function invalidate() {
   for (const id of ['cmp-status', 'lay-status', 'sw-status'])
     if ($(id).dataset.done) $(id).textContent = STALE;
   // 0.285: speech / streams / dispatch insight panels keep their text and gain the stale tag once
-  for (const id of ['ins-sp-status', 'ins-sps-status', 'ins-dp-status']) {
+  // 0.288: + the design-insight panels (insight / SLC size / sizing / upgrade path) — they kept old results untagged
+  for (const id of ['ins-sp-status', 'ins-sps-status', 'ins-dp-status', 'ins-status', 'ins-slc-status', 'ins-size-status',
+    'ins-path-status']) {
     const el = $(id);
     if (el && el.dataset.done && !el.textContent.includes(STALE)) el.textContent += ` · ${STALE}`;
   }
@@ -1925,7 +1927,9 @@ const INS_COST_ZH = { die: '片上（面积代理）', offdie: '片外 / PHY（�
 const insX = (x) => (x === null || x === undefined ? '—' : '×' + x.toFixed(3));
 async function runInsight() {
   const btn = $('ins-run');
+  const v0 = S.ver;
   $('ins-status').textContent = '计算中（每个模型 × 每个旋钮 × prefill + decode）…';
+  delete $('ins-status').dataset.done;
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
     const r = await track(req('insight', '/api/insight', body(ms.length ? { models: ms } : {})));
@@ -1937,9 +1941,11 @@ async function runInsight() {
     setInsightExport();
     const st = r.slc_temp, tip = (st && st.recommend && st.recommend.some((x) => x.hot_cuts_J_opt))
       ? ' · SLC 85 °C 削减 J 最优' : (st ? ' · 含 SLC 25/85 °C' : '');
-    $('ins-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout} · batch ${r.serving.batch}${tip}`;
+    $('ins-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout} · batch ${r.serving.batch}${tip}${staleTag(v0)}`;
+    $('ins-status').dataset.done = '1';
   } catch (e) {
     $('ins-status').textContent = '错误：' + e.message;
+    $('ins-status').dataset.done = '1';
   }
 }
 /* 0.149: cited density presets per process node — fill the budget densities (still editable), sources on hover */
@@ -2215,7 +2221,9 @@ async function runInsightSpeechStreams() {
 
 /* 0.262/0.263: J/token-optimal SLC size under energy.sram_temp_C; optional 25/85 °C compare */
 async function runInsightSlc(cmp) {
+  const v0 = S.ver;
   $('ins-slc-status').textContent = cmp ? '计算中（25 °C + 85 °C × 逐 GiB）…' : '计算中（逐 GiB × 每个模型）…';
+  delete $('ins-slc-status').dataset.done;
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
     const payload = { ...(ms.length ? { models: ms } : { models: [S.sc.model] }), policy: $('ins-slc-pol').value };
@@ -2234,7 +2242,8 @@ async function runInsightSlc(cmp) {
               h('td', {}, String(row.opt_J_gib)), h('td', {}, sci(row.opt_J)),
               h('td', {}, String(row.opt_time_gib)),
               h('td', {}, row.crossover_gib != null ? String(row.crossover_gib) : '无')))));
-      $('ins-slc-status').textContent = `完成 · 对比 · ${r.domain} · ${r.chip}`;
+      $('ins-slc-status').textContent = `完成 · 对比 · ${r.domain} · ${r.chip}${staleTag(v0)}`;
+      $('ins-slc-status').dataset.done = '1';
       return;
     }
     const m0 = (r.models || []).find((x) => !x.error) || r.models[0];
@@ -2258,16 +2267,20 @@ async function runInsightSlc(cmp) {
           h('td', {}, c.slc_frac != null ? num(c.slc_frac * 100) + '%' : '—'),
           h('td', {}, c.fits ? '是' : '否'));
       })));
-    $('ins-slc-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${(r.models || []).length} 模型`;
+    $('ins-slc-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${(r.models || []).length} 模型${staleTag(v0)}`;
+    $('ins-slc-status').dataset.done = '1';
   } catch (e) {
     $('ins-slc-status').textContent = '错误：' + e.message;
+    $('ins-slc-status').dataset.done = '1';
   }
 }
 
 /* 0.157: datapath sizing headroom */
 async function runInsightSizing() {
   const btn = $('ins-size-run');
+  const v0 = S.ver;
   $('ins-size-status').textContent = '计算中（每个资源逐次减半再二分 × 每个模型）…';
+  delete $('ins-size-status').dataset.done;
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
     const r = await track(req('insight_sizing', '/api/insight_sizing', body({ ...(ms.length ? { models: ms } : {}), joint: $('ins-size-joint').checked, unpriced: $('ins-size-unpriced').value, energy_tie: $('ins-size-energy').checked })));
@@ -2285,15 +2298,19 @@ async function runInsightSizing() {
     $('ins-size-binding').textContent = bd ? `受限资源（无单项余量）：${bd.binding.map((x) => x.label).join('、') || '无'}；余量最大：${bd.most_slack.slice(0, 2).map((x) => `${x.label} ${num(x.frac * 100)}%`).join('、') || '—'}${bd.joint_only && bd.joint_only.length ? `；仅联合时受限：${bd.joint_only.join('、')}` : ''}` : '';
     put($('ins-size-joint-tbl'), j ? h('thead', {}, h('tr', {}, ['资源', '单项最小', '联合可行', '可缩到', '省 mm²'].map((x) => h('th', {}, x)))) : '',
       j ? h('tbody', {}, j.resources.map((e) => h('tr', {}, h('td', {}, e.key), h('td', {}, num(e.solo_min)), h('td', {}, num(e.joint)), h('td', {}, num(e.frac * 100) + '%'), h('td', {}, e.mm2_saved != null ? num(e.mm2_saved) : '—')))) : '');
-    $('ins-size-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout}`;
+    $('ins-size-status').textContent = `完成 · ${r.domain} · ${r.chip} · ${r.mem_id} · ${r.layout}${staleTag(v0)}`;
+    $('ins-size-status').dataset.done = '1';
   } catch (e) {
     $('ins-size-status').textContent = '错误：' + e.message;
+    $('ins-size-status').dataset.done = '1';
   }
 }
 /* 0.148: greedy multi-step upgrade path */
 async function runInsightPath() {
   const btn = $('ins-path-run');
+  const v0 = S.ver;
   $('ins-path-status').textContent = '计算中（每步 × 每个旋钮 × 每个模型）…';
+  delete $('ins-path-status').dataset.done;
   try {
     const ms = $('ins-models').value.split(',').map((x) => x.trim()).filter(Boolean);
     const extra = { metric: S.insMetric || (S.insight && S.insight.default_metric) || undefined, steps: Math.round(+$('ins-steps').value || 6), beam: $('ins-beam').checked ? 3 : 1 };
@@ -2304,9 +2321,11 @@ async function runInsightPath() {
     S.insPath = r;
     paintInsightPath();
     setInsightPathExport();
-    $('ins-path-status').textContent = `完成 · ${r.path.length} 步 · ${r.search} · 成本 = ${r.cost_unit}`;
+    $('ins-path-status').textContent = `完成 · ${r.path.length} 步 · ${r.search} · 成本 = ${r.cost_unit}${staleTag(v0)}`;
+    $('ins-path-status').dataset.done = '1';
   } catch (e) {
     $('ins-path-status').textContent = '错误：' + e.message;
+    $('ins-path-status').dataset.done = '1';
   }
 }
 function paintInsightPath() {

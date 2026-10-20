@@ -161,6 +161,22 @@ EXTRA_TAIL = [
     # top-8 + shared expert, hidden 3072, 1 MTP layer, Qwen3.5 ViT (27 blocks).  No Qwen3.5-122B-A10B entry exists, so
     # this is a new size point, not a merge.  The FP8 sibling ships no config.json / index yet (HTTP 404) → not added.
     ("ornith-1.5-122b", "ornith-ai/Ornith-1.5-122B"),
+    # 0.288: the rest of the Ornith family (ornith-ai, MIT; Qwen3.5 post-trains, public config.json + safetensors headers).
+    # Official FP8 = compressed-tensors W8A8 float (per-channel weights, dynamic per-token activations) on the routed /
+    # shared experts and full-attention projections; linear attention, router, embeddings, head, MTP, ViT stay bf16.
+    # No Qwen3.5 FP8 release is catalogued → listed (new as-released dtype points).
+    ("ornith-1.5-122b-fp8", "ornith-ai/Ornith-1.5-122B-FP8"),
+    ("ornith-1.5-397b-fp8", "ornith-ai/Ornith-1.5-397B-FP8"),
+    ("ornith-1.5-35b-a3b-fp8", "ornith-ai/Ornith-1.5-35B-A3B-FP8"),
+    # bf16 sizes: config and header shapes identical to a listed entry (MERGED); 1.0 = 1.5 without the MTP head
+    ("ornith-1.5-397b", "ornith-ai/Ornith-1.5-397B"),
+    ("ornith-1.5-35b-a3b", "ornith-ai/Ornith-1.5-35B-A3B"),
+    ("ornith-1.5-9b", "ornith-ai/Ornith-1.5-9B"),
+    ("ornith-1.0-397b", "ornith-ai/Ornith-1.0-397B"),
+    ("ornith-1.0-397b-fp8", "ornith-ai/Ornith-1.0-397B-FP8"),
+    ("ornith-1.0-35b", "ornith-ai/Ornith-1.0-35B"),
+    ("ornith-1.0-35b-fp8", "ornith-ai/Ornith-1.0-35B-FP8"),
+    ("ornith-1.0-9b", "ornith-ai/Ornith-1.0-9B"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -378,7 +394,13 @@ MERGED = {"deepseek-v3.1": "deepseek-v3", "deepseek-r1": "deepseek-v3", "kimi-k2
           # 0.253: MAI-Gym-9B (GUI-agent Qwen3.5-9B fine-tune, no MTP head)
           "mai-gym-9b": "qwen3.5-9b",
           # 0.257: MOSS-Image-SFT (fine-tune of MOSS-Image-Base: identical header shapes / dtypes and pipeline)
-          "moss-image-sft": "moss-image-base"}
+          "moss-image-sft": "moss-image-base",
+          # 0.288: Ornith (ornith-ai) Qwen3.5 post-trains — same config / header shapes as the listed entry (dtypes as
+          # released: all-bf16 where the Qwen base keeps a few fp32 norms / A_log); 1.0 ships no MTP head
+          "ornith-1.5-397b": "qwen3.5-397b-a17b", "ornith-1.5-35b-a3b": "startlux-decision-v1-35b-a3b",
+          "ornith-1.5-9b": "qwen3.5-9b", "ornith-1.0-397b": "qwen3.5-397b-a17b",
+          "ornith-1.0-35b": "startlux-decision-v1-35b-a3b", "ornith-1.0-9b": "qwen3.5-9b",
+          "ornith-1.0-397b-fp8": "ornith-1.5-397b-fp8", "ornith-1.0-35b-fp8": "ornith-1.5-35b-a3b-fp8"}
 # Generic dense GQA models whose sizes are already covered by Qwen3 / Llama 3: no extra design insight.
 UNLISTED = {"yi-1.5-34b": "与 Qwen3-32B 同类（稠密 GQA）", "internlm3-8b": "与 Qwen3-8B / Llama-3.1-8B 同类",
             "internlm2-5-20b": "与 Qwen3-32B / Magistral-Small 同类", "qwen2.5-3b": "与 Qwen3-4B 同类",

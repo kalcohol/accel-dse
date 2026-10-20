@@ -41,6 +41,10 @@ from .ir import Op
 VEC_PER_OUT = 3.0
 DEFAULT_PX = (1024, 1024)          # 「假设」 typical image when serving.images > 0 and no resolution is given
 
+# 0.288: Ornith repos besides 1.5-122B (image + video preprocessor configs identical to Qwen3.5's, each checked)
+ORNITH_REPOS = ("1.5-122B-FP8", "1.5-397B-FP8", "1.5-35B-A3B-FP8", "1.5-397B", "1.5-35B-A3B", "1.5-9B", "1.0-397B",
+                "1.0-397B-FP8", "1.0-35B", "1.0-35B-FP8", "1.0-9B")
+
 # released image-processor settings (preprocessor_config.json / processor_config.json / inference/config.json)
 _PREPROC = {
     # 0.278 Nemotron-3.5-Super-VL (preprocessor_config.json; NemotronH_Omni_Reasoning_V3ImageProcessor)
@@ -50,6 +54,8 @@ _PREPROC = {
     "Qwen/Qwen3.8-27B": {"min_px": 65536, "max_px": 16777216},
     "Qwen/Qwen3.5-397B-A17B": {"min_px": 65536, "max_px": 16777216},
     "ornith-ai/Ornith-1.5-122B": {"min_px": 65536, "max_px": 16777216},   # 0.287: preprocessor_config.json (Qwen2VLImageProcessorFast)
+    # 0.288: the other Ornith repos — each preprocessor_config.json checked (same size / patch 16 / merge 2)
+    **{f"ornith-ai/Ornith-{v}": {"min_px": 65536, "max_px": 16777216} for v in ORNITH_REPOS},
     "zai-org/GLM-5.3-Flash": {"min_tok": 16, "max_tok": 8000},
     "moonshotai/Kimi-K2.5": {"in_patch_limit": 16384, "side": 512},
     "moonshotai/Kimi-K2.7-Code": {"in_patch_limit": 16384, "side": 512},   # same vision_config / image processor as K2.5
@@ -88,7 +94,7 @@ _PREPROC = {
 _VIDEO = {k: {"min_px": 4096, "max_px": 25165824} for k in (
     "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-Flash-Next", "internlm/Intern-S2-397B",
     "nvidia/Qwen3.8-Flash-Next-FP4-Local",
-    "ornith-ai/Ornith-1.5-122B")}   # 0.287: video_preprocessor_config.json (Qwen3VLVideoProcessor, same size / patch / merge)
+    "ornith-ai/Ornith-1.5-122B") + tuple(f"ornith-ai/Ornith-{v}" for v in ORNITH_REPOS)}   # 0.287: video_preprocessor_config.json (Qwen3VLVideoProcessor, same size / patch / merge)
 # 0.166 — Kimi K2.5 / K2.7-Code video chunks.  「来源」 preprocessor_config.json media_proc_cfg: temporal_merge_kernel_size 4,
 # in_patch_limit_each_frame 4096, in_patch_limit_video null (K2.5) / 655360 (K2.7-Code), patch_limit_on_one_side 512;
 # config.json vision_config video_attn_type spatial_temporal, merge_type sd2_tpool (modeling_kimi_k25 identical vision code).
