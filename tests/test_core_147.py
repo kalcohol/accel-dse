@@ -6,6 +6,7 @@ from accel_dse.core.dtypes import MIXED_PRESETS, FormatSupport, gemm_exec
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.insight import knobs
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def _mx(s, *names, dq=256):
@@ -57,5 +58,5 @@ def test_insight_knobs_and_catalog():
 def test_ui_wiring():
     import pathlib
     web = pathlib.Path(A.__file__).parent / "web"
-    js, html = (web / "app.js").read_text(), (web / "index.html").read_text()
-    assert 'id="chip-mixed"' in html and "function paintMixed" in js and "mixed_presets" in js
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed
+    assert "chip-mixed" in W.html_ids(html) and "paintMixed" in W.functions(js) and W.has(js, "S.cat.mixed_presets")

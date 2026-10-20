@@ -9,6 +9,7 @@ from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.powercap import CORE_ACTIONS, _point, dvfs_cap, volt
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def _t(**kw):
@@ -97,8 +98,8 @@ def test_whatif_dfs_reevaluated():
 def test_ui_keys():
     from pathlib import Path
     web = Path(A.__file__).parent / "web"
-    js, html = (web / "app.js").read_text(), (web / "index.html").read_text()
-    assert "clock_W_card" in js and "'pJ_clk_mac_cycle'" in js and 'id="e-pJ_clk_mac_cycle"' in html
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed
+    assert W.mentions(js, "clock_W_card") and "pJ_clk_mac_cycle" in W.strings(js) and "e-pJ_clk_mac_cycle" in W.html_ids(html)
     out = A.api_eval({"chip_preset": "1P", "scenario": {"model": "qwen3-8b"},
                       "energy": {"energy_preset": "tpuv4i_7nm"}})
     e = out["energy"]

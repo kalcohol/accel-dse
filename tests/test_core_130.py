@@ -12,6 +12,7 @@ from accel_dse.core import catalog as C
 
 ROOT = Path(__file__).resolve().parents[1]
 JS = (ROOT / "accel_dse/web/app.js").read_text()
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def _sweep(path, values, **sc):
@@ -38,24 +39,30 @@ def test_inapplicable_sweeps_rejected_applicable_vary():
 
 
 def test_ui_rounding_tiers():
-    i, j = JS.index("function num("), JS.index("function put(e")
+    src = W.function_source(JS, "num")              # 0.286: the function itself, not a text window up to the next one
     if not shutil.which("node"):
-        assert "round first" in JS[i:j]
+        assert W.has(W.functions(JS)["num"], "toPrecision") or W.has(W.functions(JS)["num"], "Math.round")
         return
-    code = JS[i:j] + ";for (const x of [99.96, 9.999, 0.9996, 9999.6, 12345.4, 0.012345, -99.96, 555.5, 1]) console.log(num(x));"
+    code = src + ";for (const x of [99.96, 9.999, 0.9996, 9999.6, 12345.4, 0.012345, -99.96, 555.5, 1]) console.log(num(x));"
     out = subprocess.run(["node", "-e", code], capture_output=True, text=True, timeout=30).stdout.split()
     assert out == ["100", "10.0", "1.00", "10,000", "12,345", "0.012", "-100", "556", "1.00"], out
 
 
 def test_ui_static_fixes():
-    assert "function markEvalStale(on)" in JS and "markEvalStale(!!S.last)" in JS
-    assert ".stale-res" in (ROOT / "accel_dse/web/style.css").read_text()
-    assert "j = await r.json().catch(() => null);" in JS and "响应不是 JSON" in JS
-    for ln in JS.splitlines():          # latency column labels go through clipZh (image DiT → 单张延迟)
-        if "latL" in ln and "gen ?" in ln:
-            assert "clipZh(" in ln, ln
-    assert "unitZh(m) + '/s/卡'" in JS
-    assert "!(p === 'workload.frames' && m.workload && m.workload.image)" in JS
+    # 0.286: parsed (functions / token sequences / every latL initializer) instead of exact lines
+    fn = W.functions(JS)
+    assert "markEvalStale" in fn and W.has(fn["runEval"], "markEvalStale(!!S.last)")
+    assert re.search(r"\.stale-res\b", (ROOT / "accel_dse/web/style.css").read_text())
+    assert W.has(fn["req"], "j = await r.json().catch(() => null)") and W.any_string_contains(JS, "响应不是 JSON")
+    t, inits = W.tokens(JS), []
+    for i in range(len(t) - 2):                      # latency column labels go through clipZh (image DiT → 单张延迟)
+        if t[i] == ("id", "latL") and t[i + 1] == ("punct", "=") and t[i - 1] in (("id", "const"), ("id", "let")):
+            e = t[i + 2:W.index(t, ";", i)]
+            inits.append(e)
+            assert not W.has(e, "gen ?") or W.has(e, "clipZh("), e
+    assert len(inits) >= 2 and all(W.has(e, "gen ?") for e in inits)
+    assert W.has(JS, "unitZh(m) + '/s/卡'")
+    assert W.has(JS, "!(p === 'workload.frames' && m.workload && m.workload.image)")
     assert all("draft" in C.labels(C.get_model(m)) for m in ("deepseek-v4-flash", "llama-3.1-8b"))
 
 

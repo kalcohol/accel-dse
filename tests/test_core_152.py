@@ -7,6 +7,7 @@ from accel_dse.core.insight import DOMAIN_METRICS, upgrade_path, insight_report
 from accel_dse.core.scenario import Scenario
 
 from accel_dse.core.provenance import valid_tag as _vt
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 class _ProvTags:
@@ -78,6 +79,6 @@ def test_multidomain_path_never_worse():
 
 def test_ui_energy_preset_wiring():
     web = pathlib.Path(A.__file__).parent / "web"
-    js, html = (web / "app.js").read_text(), (web / "index.html").read_text()
-    assert 'id="e-preset"' in html and "function initEnergyPresets" in js and "energy_presets" in js
-    assert "rank_per_J" in js and "每焦耳" in js
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed
+    assert "e-preset" in W.html_ids(html) and "initEnergyPresets" in W.functions(js) and W.mentions(js, "energy_presets")
+    assert W.mentions(js, "rank_per_J") and W.any_string_contains(js, "每焦耳")

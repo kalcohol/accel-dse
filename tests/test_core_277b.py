@@ -9,6 +9,7 @@ from accel_dse.core.hardware import CHIPS
 from accel_dse.core.scenario import Scenario
 from accel_dse.core.speech import speech_kpis
 from accel_dse.core.speech_insight import _scn, _stages
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 REL = json.loads((ROOT / "accel_dse/data/releases/fishaudio__drama-3.json").read_text())
@@ -99,5 +100,5 @@ def test_codec_extra_and_summarize_hook():
 
 
 def test_ui_mentions_dac():
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert "DAC 首窗" in js and "p.dac.gflop_per_frame" in js and "（DAC 未计）" not in js
+    js = W.read()                                      # 0.286: parsed
+    assert W.any_string_contains(js, "DAC 首窗") and W.has(js, "p.dac.gflop_per_frame") and not W.any_string_contains(js, "（DAC 未计）")

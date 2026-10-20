@@ -7,6 +7,7 @@ from pathlib import Path
 
 from accel_dse import api as A
 from accel_dse.core.budget import DENSITY_PRESETS
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(A.__file__).resolve().parents[1]
 WEB = Path(A.__file__).parent / "web"
@@ -41,8 +42,8 @@ def test_payload_unit_floor_single_package():
 
 
 def test_frontend_handles_new_fields():
-    js = (WEB / "app.js").read_text()
-    assert "x.unit_floor" in js and "x.integer" in js and "x.mm2_saved != null" in js
+    js = W.read()                                      # 0.286: token match
+    assert W.has(js, "x.unit_floor") and W.has(js, "x.integer") and W.has(js, "x.mm2_saved != null")
 
 
 def test_lpddr_phy_density_sourced():

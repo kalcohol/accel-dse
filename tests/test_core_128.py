@@ -7,6 +7,7 @@ from pathlib import Path
 from accel_dse import api
 from accel_dse.core import catalog as C
 from accel_dse.core.pdqueue import _busy_q_from, _mg1_busy
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,7 +61,7 @@ def test_export_schema_stable():
         if "ratio" in r and r["ratio"] is not None:
             assert abs(r["ratio"] - r["tok_s"] / sens["base_tok_s"]) < 1e-12     # ratio = alternative / base (no sign flip)
             assert r["hinge"] == (abs(r["ratio"] - 1) > sens["threshold"] or r["bound_flip"])
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert re.search(r"const EXP_SCHEMA = 1;", js) and "schema: EXP_SCHEMA" in js
+    js = W.read()                                      # 0.286: token match (format-agnostic)
+    assert W.has(js, "const EXP_SCHEMA = 1;") and W.has(js, "schema: EXP_SCHEMA")
     # sweep sensitivity skips only cases tied to the swept knob
     assert set(api.SENS_SWEEP_SKIP.values()) <= {k for k, _, _ in api.SENS_CASES}

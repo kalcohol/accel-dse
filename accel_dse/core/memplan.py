@@ -280,6 +280,9 @@ class MemPlan:
     slc_frac_exp_bytes: float = 0.0  # 0.261 dip: share of the off-SRAM expert bytes retained (= slc_frac_exp if uniform)
     slc_residency: float = 0.0  # weights on chip incl. SLC / streamed weights (= residency without an SLC)
     pinned_rr: float = 0.0  # 0.269: re-read hot bytes resident in SRAM (part of pinned_hot)
+    # 0.286: share of the routed-expert *reads* served by the SRAM-pinned experts (-1 = the byte share
+    # pinned_expert / expert_w; with a measured expert load the pinned experts are the most-read ones)
+    sram_exp_hit: float = -1.0
     slc_rr: float = 0.0     # 0.269 pin: re-read hot bytes held in the SLC (part of slc_hot)
     # 0.209: of kv_sram, the recurrent-state bytes (the rest is KV / indexer); -1 = not split (legacy plans)
     state_sram: float = -1.0
@@ -330,9 +333,23 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     res = (p_hot + p_exp) / strm if strm else 1.0
     # 0.94: a runtime granting the cache only kv_frac of the post-weight free memory (default 1 = unchanged)
     fit = need <= dram_cap if kv_frac >= 1 else need - kv_t - st_t + (kv_t + st_t) / kv_frac <= dram_cap
+    # 0.286: expert residency in popularity order across the on-chip tiers.  The 0.192 pin rule (DRAM bytes saved per
+    # step per byte of SRAM) ranks an expert byte by its read probability, so with a measured load (exp_p) the SRAM
+    # holds the most-read experts and the SLC the next ones 「推导」; H(f) = share of expert reads served when the
+    # most-read byte fraction f is resident (dip_exp_hit, independent reference model 「近似」; uniform load: H(f) = f,
+    # i.e. unchanged).  ≤ 0.285: SRAM by byte share, and the SLC hit share was taken relative to the off-SRAM experts
+    # but applied to every expert read — over-crediting the SLC (negative DRAM bytes once the SRAM pinned experts).
+    E_w = store.expert_w
+    rho = 1.0 if (exp_read is None or E_w <= 0) else min(1.0, exp_read / E_w)
+    aware = bool(exp_p) and E_w > 0 and rho > 0
+
+    def H(f):
+        f = min(1.0, max(0.0, f))
+        return dip_exp_hit(exp_p, rho, f) if aware else f
+    h1 = H(p_exp / E_w) if E_w > 0 else 0.0
     mp = MemPlan(store.weights, kv_t, st_t, need, dram_cap, fit, sram_bytes, staging,
                  p_hot, p_exp, kv_s, res, act_need, slc_residency=res, state_sram=p_st, state_buf=state_buf,
-                 pinned_rr=p_rr)
+                 pinned_rr=p_rr, sram_exp_hit=h1 if aware else -1.0)
     if slc_bytes <= 0:
         return mp
     r_hot, r_exp, r_kv = store.hot_w - p_hot, store.expert_w - p_exp, kv_t + st_t - kv_s
@@ -345,8 +362,10 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
         fc, fe = dip_split(slc_bytes, r_hot + r_kv + act_need, r_exp, e)
         sres = (p_hot + p_exp + fc * r_hot + fe * r_exp) / strm if strm else 1.0
         # 0.261: with a measured expert load the retained experts are the most-read ones (A0 order), so the share of
-        # expert *reads* served exceeds the retained byte share fe (uniform load: equal)
-        he = dip_exp_hit(exp_p, e / r_exp, fe) if (exp_p and r_exp > 0 and e > 0) else fe
+        # expert *reads* served exceeds the retained byte share fe (uniform load: equal).  0.286: the off-SRAM experts
+        # are the less-read remainder after the SRAM pin (was: a load-neutral subset) — hit share of the off-SRAM reads
+        f1 = p_exp / E_w if E_w > 0 else 0.0
+        he = ((H(f1 + fe * (1.0 - f1)) - h1) / (1.0 - h1) if h1 < 1.0 else 0.0) if (aware and r_exp > 0 and e > 0) else fe
         return replace(mp, slc=slc_bytes, slc_policy="dip", slc_all=fc >= 1.0 and fe >= 1.0, slc_frac=fc,
                        slc_frac_exp=he, slc_frac_exp_bytes=fe, slc_residency=sres)
     free = slc_bytes
@@ -357,9 +376,11 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     sres = (p_hot + p_exp + s_hot + s_exp) / strm if strm else 1.0
     # 0.263: load-aware pin — with a measured expert load, the pinned expert bytes are the most-read ones (A0),
     # so the share of expert *reads* served exceeds the byte share (uniform: equal). Same helper as dip.
-    fe = (s_exp / r_exp) if r_exp > 0 else 1.0
-    e = r_exp if exp_read is None else min(r_exp, exp_read * (r_exp / store.expert_w if store.expert_w else 0.0))
-    he = dip_exp_hit(exp_p, e / r_exp, fe) if (exp_p and r_exp > 0 and e > 0 and s_exp > 0) else fe
+    # 0.286: both shares are of *all* expert bytes / reads (step_dram_bytes applies them to every expert read): bytes
+    # s_exp / E, reads H((p + s) / E) − H(p / E) — the SLC holds the experts ranked after the SRAM's.  ≤ 0.285 used
+    # s_exp / (E − p) for both, which exceeds the DRAM-side expert reads once the SRAM pins experts.
+    fe = (s_exp / E_w) if E_w > 0 else 1.0
+    he = (H((p_exp + s_exp) / E_w) - h1) if E_w > 0 else fe
     return replace(mp, slc=slc_bytes, slc_policy="pin_bw" if slc_policy == "pin_bw" else "pin",
                    slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv, slc_residency=sres, slc_rr=s_rr,
                    slc_frac_exp=he, slc_frac_exp_bytes=fe)
@@ -563,11 +584,19 @@ def touched(ops: list[Op]) -> dict:
     return d
 
 
+def exp_miss(mp: MemPlan, store: StageStorage) -> float:
+    """0.286: share of the routed-expert reads that miss the SRAM — 1 − the pinned experts' read share (a measured load
+    makes it smaller than the byte share; uniform load / no load: 1 − pinned_expert / expert_w, as ≤ 0.285)."""
+    if store.expert_w <= 0:
+        return 0.0
+    return 1.0 - (mp.sram_exp_hit if mp.sram_exp_hit >= 0 else mp.pinned_expert / store.expert_w)
+
+
 def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: float = 0.0) -> dict:
     """DRAM bytes moved in one stage step given the plan and touched-byte sums.  With an SLC the entries are the
     DRAM (miss) bytes and ``slc`` holds the bytes served by the SLC (split in ``slc_parts``)."""
     miss_hot, miss_rr = hot_miss(mp, store)
-    miss_exp = 0.0 if store.expert_w <= 0 else (1.0 - mp.pinned_expert / store.expert_w)
+    miss_exp = exp_miss(mp, store)
     t_rr = t.get("hot_rr", 0.0) if store.rr_w > 0 else 0.0
     w = (t["hot"] - t_rr) * miss_hot + t_rr * miss_rr + t["exp"] * miss_exp
     kvst_total = mp.kv_total + mp.state_total

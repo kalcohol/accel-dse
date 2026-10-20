@@ -5,6 +5,7 @@ from accel_dse import api as A
 from accel_dse.core.budget import Budget, DENSITY_PRESETS, apply_preset, area_estimate
 from accel_dse.core.insight import sizing_report
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def test_presets_carry_labelled_lane_and_dequant_densities():
@@ -52,4 +53,4 @@ def test_unpriced_modes():
     r = A.api_insight_sizing({"models": ["esm2-650m"], "joint": True, "unpriced": "free",
                               "budget": {"density_preset": "n5_derived"}})
     assert r["joint"]["unpriced_mode"] == "free"
-    assert "ins-size-unpriced" in (Path(A.__file__).parent / "web" / "index.html").read_text()
+    assert "ins-size-unpriced" in W.html_ids(W.read(W.INDEX_HTML))      # 0.286: parsed

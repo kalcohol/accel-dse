@@ -6,23 +6,24 @@ from accel_dse import api, serve
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.scenario import Scenario, Serving
 from accel_dse.core.speech_insight import _scn, speech_bounds
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
 
 
 def test_ui_panel_wired():
-    html = (ROOT / "accel_dse/web/index.html").read_text()
-    js = (ROOT / "accel_dse/web/app.js").read_text()
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed (call site, body builder, progress label)
+    ids = W.html_ids(html)
     for i in ("ins-sp-run", "ins-sp-tbl", "ins-sp-summary", "ins-sp-verify", "ins-sp-audio", "ins-sp-status"):
-        assert f'id="{i}"' in html, i
-    assert "req('insight_speech', '/api/insight_speech', body(" in js and "runInsightSpeech" in js
-    assert "insight_speech: '语音瓶颈'" in js
+        assert i in ids, i
+    c = [c for c in W.req_calls(js) if c["path"] == "/api/insight_speech"]
+    assert [x["fn"] for x in c] == ["runInsightSpeech"] and c[0]["body"][:2] == [("id", "body"), ("punct", "(")]
+    assert W.object_dict(W.literal(js, "STAGE"))["insight_speech"] == "语音瓶颈"
 
 
 def test_static_routes_and_slow_lane():
-    shim = (ROOT / "web-static/pyodide-shim.js").read_text()
-    slow = set(re.findall(r"'(/api/[a-z_]+)'", re.search(r"slowRoutes \|\| \[([^\]]*)\]", shim).group(1)))
+    slow = W.list_values(W.read(W.SHIM_JS), "slowRoutes")      # 0.286: parsed
     assert {"/api/insight_speech", "/api/insight_slc"} <= slow
     st, payload = serve.respond("POST", "/api/insight_speech",
                                 b'{"scenario": {"model": "qwen3-8b", "mem_id": "' + LP.encode() + b'", "chip": {"name": "100T"}},'

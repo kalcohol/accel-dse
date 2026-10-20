@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 from accel_dse import api, serve
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,7 +35,8 @@ def test_build_static_bundle():
         assert {"index.html", "app.js", "style.css", "pyodide-shim.js", "pyodide-worker.js", "static-config.js",
                 info["zip"]} <= names
         html = (out / "index.html").read_text(encoding="utf-8")
-        assert html.index("pyodide-shim.js") < html.index('src="app.js"')
+        srcs = [a["src"] for t, a in W.parse_html(html).attrs if t == "script" and a.get("src")]   # 0.286: parsed order
+        assert srcs.index("pyodide-shim.js") < srcs.index("app.js")
         cfg = (out / "static-config.js").read_text()
         assert f"/pyodide/v{m.PYODIDE_VERSION}/full/" in cfg and info["zip"] in cfg
         with zipfile.ZipFile(out / info["zip"]) as z:

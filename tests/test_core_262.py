@@ -6,6 +6,7 @@ from accel_dse.core.energy import EnergyTable, apply_energy_preset
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.insight import SLC_GIB_GRID, slc_energy_report
 from accel_dse.core.scenario import Scenario, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 LP = "lpddr5x_4x64_8533_16g"
 M = "qwen3-30b-a3b"
@@ -71,5 +72,6 @@ def test_grid_default_and_policy():
 def test_ui_hooks():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    html, js = (root / "accel_dse/web/index.html").read_text(), (root / "accel_dse/web/app.js").read_text()
-    assert 'id="ins-slc-run"' in html and "/api/insight_slc" in js and "runInsightSlc" in js
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed
+    assert "ins-slc-run" in W.html_ids(html)
+    assert [c["fn"] for c in W.req_calls(js) if c["path"] == "/api/insight_slc"] == ["runInsightSlc"]

@@ -5,6 +5,7 @@ from accel_dse.core.energy import ENERGY_PRESETS, EnergyTable, energy_report, ap
 from accel_dse.core.budget import DENSITY_PRESETS
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def _t(**kw):
@@ -62,8 +63,8 @@ def test_api_power_cap():
         A.api_eval({**b, "power_cap": "yes"}); assert False
     except A.ApiError:
         pass
-    h = open("accel_dse/web/index.html").read(); js = open("accel_dse/web/app.js").read()
-    assert 'id="e-power_cap"' in h and "power_cap: true" in js and "static_warning" in js
+    js = W.read()                                      # 0.286: parsed
+    assert "e-power_cap" in W.html_ids(W.read(W.INDEX_HTML)) and W.has(js, "power_cap: true") and W.mentions(js, "static_warning")
 
 
 def test_190_preset_fraction_rounded_still_cited():

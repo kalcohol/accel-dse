@@ -8,6 +8,7 @@ from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.insight import slc_energy_report
 from accel_dse.core.scenario import Scenario, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 LP = "lpddr5x_4x64_8533_16g"
 M = "qwen3-30b-a3b"
@@ -49,9 +50,8 @@ def test_api_temps_and_ui():
                                "energy": {"energy_preset": "tpuv4i_7nm"},
                                "gibs": [0, 4, 32], "temps": [25, 85]})
     assert out["compare"] and out["summary"][1]["crossover_gib"] == 4.0
-    html = (ROOT / "accel_dse/web/index.html").read_text()
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert 'id="ins-slc-cmp"' in html and "temps = [25, 85]" in js
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed
+    assert "ins-slc-cmp" in W.html_ids(html) and W.has(W.functions(js)["runInsightSlc"], "payload.temps = [25, 85]")
 
 
 def test_load_aware_pin():

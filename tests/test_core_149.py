@@ -8,6 +8,7 @@ from accel_dse.core.insight import knobs, upgrade_path
 from accel_dse.core.scenario import Scenario
 
 from accel_dse.core.provenance import valid_tag as _vt
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 class _ProvTags:
@@ -102,6 +103,6 @@ def test_api_beam_and_ui():
         raise AssertionError(bad)
     assert set(A.api_catalog()["density_presets"]) == set(DENSITY_PRESETS)
     web = pathlib.Path(A.__file__).parent / "web"
-    js, html = (web / "app.js").read_text(), (web / "index.html").read_text()
-    assert 'id="b-preset"' in html and 'id="ins-beam"' in html and "function initDensityPresets" in js
-    assert 'id="b-mm2_per_dq_hbm"' in html and "'mm2_per_GBps_c2c'" in js
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed
+    assert {"b-preset", "ins-beam", "b-mm2_per_dq_hbm"} <= W.html_ids(html) and "initDensityPresets" in W.functions(js)
+    assert "mm2_per_GBps_c2c" in W.strings(js)

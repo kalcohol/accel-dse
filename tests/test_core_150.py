@@ -5,6 +5,7 @@ from accel_dse import api as A
 from accel_dse.core.budget import DENSITY_PRESETS, Budget, apply_preset, area_estimate, full_area, phy_area
 from accel_dse.core.insight import knobs, upgrade_path
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 _PHY = Budget(mm2_per_dq_lpddr=0.03, mm2_per_d2d_unit=0.4, mm2_per_GBps_c2c=0.02, mm2_fixed=10.0,
               mm2_per_mib_sram=1.0, mm2_per_kmac=0.5)
@@ -66,5 +67,5 @@ def test_every_domain_area_and_budget():
 
 
 def test_ui_preset_keeps_user_values():
-    js = (pathlib.Path(A.__file__).parent / "web" / "app.js").read_text()
-    assert "S.presetFilled" in js and "保留你的输入" in js
+    js = W.read()                                      # 0.286: parsed
+    assert W.has(js, "S.presetFilled[f] !== cur") and W.any_string_contains(js, "保留你的输入")

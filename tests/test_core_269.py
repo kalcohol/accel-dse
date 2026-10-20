@@ -11,6 +11,7 @@ from accel_dse.core.ir import Phase, head_ops
 from accel_dse.core.memplan import StageStorage, plan
 from accel_dse.core.scenario import Scenario, Serving
 from accel_dse.core.tts import tts_step_flops
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
@@ -72,8 +73,8 @@ def test_plan_pins_reread_first_and_noop_without():
 
 
 def test_ui():
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert "s.tts" in js and "tts: '语音合成'" in js and "m.domain === 'tts'" in js
+    js = W.read()                                      # 0.286: token match
+    assert W.has(js, "s.tts") and W.has(js, "tts: '语音合成'") and W.has(js, "m.domain === 'tts'")
 
 
 def test_health_domains_follow_catalog():

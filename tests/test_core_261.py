@@ -14,6 +14,7 @@ from accel_dse.core.ir import Phase, Shard, full_io_ops
 from accel_dse.core.memplan import dip_exp_hit
 from accel_dse.core.powercap import _point, volt
 from accel_dse.core.scenario import Scenario, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 LP = "lpddr5x_4x64_8533_16g"
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,9 +62,8 @@ def test_hot_die_leakage_in_report_and_band():
 
 
 def test_ui_and_api_field():
-    html = (ROOT / "accel_dse" / "web" / "index.html").read_text(encoding="utf-8")
-    js = (ROOT / "accel_dse" / "web" / "app.js").read_text(encoding="utf-8")
-    assert 'id="e-sram_temp_C"' in html and "'sram_temp_C'" in js
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed
+    assert "e-sram_temp_C" in W.html_ids(html) and "sram_temp_C" in W.strings(js)
     assert EnergyTable.from_dict({"sram_temp_C": 70}).sram_temp_C == 70
 
 

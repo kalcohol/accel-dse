@@ -21,7 +21,7 @@ from .ir import (Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, full_io_ops
                  mtp_ops)
 from .mapping import gemm_cost, vector_seconds
 from .memo import layer_groups, model_cache
-from .memplan import RUNTIME_RESERVE, MemPlan, act_stream, hot_miss, plan, stage_storage, step_dram_bytes, touched
+from .memplan import RUNTIME_RESERVE, MemPlan, act_stream, exp_miss, hot_miss, plan, stage_storage, step_dram_bytes, touched
 from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages, plan_stages_balanced
 from .pipeline import TILING, has_encoder, pipeline_for, stored_bytes, te_layers, text_ops, vae_encode_ops, vae_ops
@@ -998,7 +998,7 @@ def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, s
     kvst = mp.kv_total + mp.state_total
     _mh, _mr = hot_miss(mp, store)
     f = {"hot": _mh, "hot_rr": _mr,
-         "exp": 0.0 if store.expert_w <= 0 else 1.0 - mp.pinned_expert / store.expert_w,
+         "exp": exp_miss(mp, store),       # 0.286: read share (load-aware pin)
          **_kv_state_miss(mp), "lookup": 1.0, "act": 1.0}
     nb = sum(n * sum(x * f.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
     t_mem = max(_dram_t(sys, dram), _slc_time(sys, dram))
@@ -1080,7 +1080,7 @@ def _pipe_fused_(sd, sp, f, rr, t_mem):
     kvst = mp.kv_total + mp.state_total
     _mh, _mr = hot_miss(mp, store)
     fr = {"hot": _mh, "hot_rr": _mr,
-          "exp": 0.0 if store.expert_w <= 0 else 1.0 - mp.pinned_expert / store.expert_w,
+          "exp": exp_miss(mp, store),       # 0.286: read share (load-aware pin)
           **_kv_state_miss(mp), "lookup": 1.0, "act": 1.0}
     nb = sum(n * sum(x * fr.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
     if nb <= 0 and t_mem > 0:

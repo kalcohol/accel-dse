@@ -47,12 +47,15 @@ def test_api_rejects_unknown_top_level_keys():
 
 
 def test_ui_verdict_and_error_branches_are_stale_flagged():
-    js = (Path(api.__file__).parent / "web" / "app.js").read_text()
-    assert re.search(r"if \(none\) \{ \$\('cmp-status'\)\.dataset\.done = '1'; return; \}", js)
+    # 0.286: parsed structure — the regexes matched one-line formatting only (a reflowed catch block made them vacuous)
+    js = W.read()
+    assert W.has(W.functions(js)["runCompare"], "if (none) { $('cmp-status').dataset.done = '1'; return; }")
+    cw = W.catch_status_writes(js)
     for sid in ("cmp-status", "lay-status", "sw-status"):
-        for m in re.finditer(r"catch \(e\) \{ \$\('" + sid + r"'\)\.textContent = '错误：' \+ e\.message;([^}]*)\}", js):
-            assert f"$('{sid}').dataset.done = '1'" in m.group(1), sid
+        hits = [(fn, d) for fn, t, d in cw if sid in t]
+        assert hits and all(sid in d for _, d in hits), (sid, hits)
 
 
 from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 pin_module(globals())

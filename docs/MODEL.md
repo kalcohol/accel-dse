@@ -7638,3 +7638,38 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 - Stored weights = release vision bytes / params × tower params (0.7276 B/param; was 2.0).
 - 100T (fp8 at 2× bf16), 1 image at 1024², prompt 2048: encode 64.1 → 57.9 ms; tower weights 0.898 → 0.327 GB; TTFT 648 → 642 ms. The attention GEMMs (≈ 1/3 of tower FLOPs) run fp8. MLP / merger dequantise to bf16 MACs, with 3.6× fewer weight bytes.
 
+
+## §231 Structural UI tests; expert residency across SRAM / SLC (0.286)
+
+### §231.1 UI wiring checked through parsed structure
+- `tests/webstruct.py` (stdlib) tokenizes app.js / pyodide-shim.js (comments and whitespace dropped, string literals decoded, template literals split into static parts and `${…}` expressions, regex literals recognised by the previous token) and parses index.html with `html.parser`.
+- A source assert becomes one of:
+  - a token-sequence match (`has`), where quote style, spacing, comments, line breaks and trailing commas don't matter but any identifier, operator or literal change does;
+  - a parsed set: ids, `<select>` options, string literals, identifiers, function names;
+  - a function-scoped check (`functions(js)[name]`), instead of a character window;
+  - call-site structure (`req_calls`: chan, path, enclosing function, body tokens).
+- Generalized guards (test_core_286):
+  - every literal `$('id')` resolves;
+  - every status `invalidate()` tags stale sets `dataset.done` on success and in each catch block that writes it;
+  - speech `kind`s from `core/speech.py` (AST) ⊆ the renderer's `p.kind === …` branches;
+  - every UI endpoint has a STAGE progress label;
+  - tests consume UI source only through webstruct (AST lint).
+- `snapshot_request(js, path)`: the request body is `{ ...SNAP, … }`, SNAP is bound once, from `body(…)`, before the first loop that issues the request. The headless smoke checks the same thing live: edit after the first streams row → one scenario across all requests and a stale tag.
+- `scripts/ui_pin_mutations.py`: 8 format-only edits must pass and 17 behaviour edits must fail, on a scratch copy of the tree. At 0.286: 25/25.
+
+### §231.2 Expert residency in popularity order across SRAM and SLC
+- E = expert bytes per rank, p = SRAM-pinned expert bytes, s = SLC-pinned expert bytes (0.192 pin order: hot → experts → KV; unchanged).
+- H(f) = share of expert reads served by the most-read byte fraction f (memplan.dip_exp_hit). It uses the per-expert inclusion probabilities from `serving.moe_expert_load`, with T set so that the mean per-step read probability equals the step's read share ρ = exp_read / E (independent reference model, A0 order 「近似」). Uniform or no load: H(f) = f.
+- Read shares 「推导」 (the pin rule ranks a byte by the DRAM reads it saves, i.e. by read probability; the SLC takes the next-ranked bytes after the SRAM):
+
+  | tier | share of expert reads |
+  |---|---|
+  | SRAM | h₁ = H(p/E) (`sram_exp_hit`) |
+  | SLC pin / pin_bw | H((p+s)/E) − h₁ |
+  | DRAM | 1 − H((p+s)/E) |
+
+  - dip: retained share fe of the off-SRAM expert bytes → SLC hit share of the off-SRAM reads = (H(f₁ + fe(1−f₁)) − h₁)/(1 − h₁), with f₁ = p/E.
+- ≤ 0.285, pin / pin_bw: slc_frac_exp = s/(E−p) (0.263 uniform) or H over a load-neutral off-SRAM subset, applied to every expert read in `step_dram_bytes`. That gave SLC hits > SRAM misses once p > 0, e.g. E = 10, p = 5.1, s = 4.9 GiB: DRAM expert bytes −5.1 GiB per step. Before 0.263 the uniform rule s/E was correct, and 0.286 restores it under uniform load.
+- 100T, sram_mib 4 / 16 GiB × SLC 1 / 4 / 16 GiB (8 TB/s), 29 MoE LLMs: 87 / 261 points changed, TPOT +0 … +83 %, and 8 crashes (division by zero) now evaluate. No change at 1 GiB SRAM or at any catalog preset (5 presets × 29 × SLC 0.25–16 GiB).
+  - Examples, old → new TPOT: lfm2.5-24b-a2b, SRAM 16 / SLC 16 GiB: 3.24 → 5.92 ms; hy-memory-30b-a3b-fp8, SRAM 16 / SLC 4 GiB: 2.82 → 4.34 ms (old values were optimistic).
+- Load-aware SRAM: qwen3-30b-a3b on 100T, sram_mib 4096, Zipf-1 load over 128 experts 「假设」: h₁ = 0.336 at byte share ≈ 0.032; TPOT 21.4 → 15.6 ms.

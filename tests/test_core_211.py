@@ -4,6 +4,7 @@ from dataclasses import replace
 from accel_dse import api
 from accel_dse.core.budget import DENSITY_PRESETS, Budget, area_estimate
 from accel_dse.core.hardware import CHIPS
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 RWKV = "rwkv7-g1k-7.2b"
 
@@ -40,6 +41,6 @@ def test_whatif_cost_columns_rwkv_1p():
 
 def test_ui_reads_cost_keys():
     from pathlib import Path
-    js = (Path(api.__file__).parent / "web" / "app.js").read_text()
+    js = W.read()                                      # 0.286: exact identifiers / keys, not substrings
     for k in ("d_area_mm2", "over_reticle", "J_per_tok", "cost_batch", "base_J_per_tok_at_cost_batch", "W_card", "cost_basis"):
-        assert k in js, k
+        assert W.mentions(js, k), k

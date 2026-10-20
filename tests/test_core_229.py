@@ -9,6 +9,7 @@ from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS, Chip
 from accel_dse.core.powercap import _point, dvfs_cap
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def _t(**kw):
@@ -80,9 +81,9 @@ def test_api_and_ui():
     assert A.SWEEP_PATHS["chip.clk_ungated_share"] is float
     from pathlib import Path
     web = Path(A.__file__).parent / "web"
-    assert 'id="c-clk_ungated_share"' in (web / "index.html").read_text()
-    js = (web / "app.js").read_text()
-    assert "'clk_ungated_share'" in js and "clock_gating" in js and "mac_util" in js
+    assert "c-clk_ungated_share" in W.html_ids(W.read(W.INDEX_HTML))      # 0.286: parsed
+    js = W.read()
+    assert "clk_ungated_share" in W.strings(js) and W.mentions(js, "clock_gating") and W.mentions(js, "mac_util")
 
 
 def test_fuzz_gating():

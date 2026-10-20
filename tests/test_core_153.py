@@ -8,6 +8,7 @@ from accel_dse.core.insight import insight_report
 from accel_dse.core.scenario import Scenario
 
 from accel_dse.core.provenance import valid_tag as _vt
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 class _ProvTags:
@@ -67,7 +68,7 @@ def test_step5_vision_still_partial_documented():
 
 def test_ui_cost_and_elec_preset_wiring():
     web = pathlib.Path(A.__file__).parent / "web"
-    js, html = (web / "app.js").read_text(), (web / "index.html").read_text()
-    assert 'id="b-elec-preset"' in html and 'id="b-usd_per_kWh"' in html and 'id="b-tdp_W_card"' in html
-    assert "function initElectricityPresets" in js and "rank_per_usd" in js and "每美元" in js
-    assert "不静默填电价" in html or "不静默" in html
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed
+    assert {"b-elec-preset", "b-usd_per_kWh", "b-tdp_W_card"} <= W.html_ids(html)
+    assert "initElectricityPresets" in W.functions(js) and W.mentions(js, "rank_per_usd") and W.any_string_contains(js, "每美元")
+    assert "不静默" in W.html_text(html)

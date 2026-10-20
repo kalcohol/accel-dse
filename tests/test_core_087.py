@@ -11,6 +11,7 @@ from accel_dse.core.ir import Phase, Shard, build_rank_ops
 from accel_dse.core.model import has_indexer, with_indexer
 from accel_dse.core.parallel import INDEXER_MODES, Layout
 from accel_dse.core.scenario import Scenario, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 H = "hbm3e_8s_12h24g_9200"
 
@@ -87,12 +88,10 @@ def test_attention_dp_idle_warning_and_long_prefill_dp():
 
 
 def test_ui_selector():
-    html = (Path(__file__).resolve().parents[1] / "accel_dse/web/index.html").read_text(encoding="utf-8")
-    js = (Path(__file__).resolve().parents[1] / "accel_dse/web/app.js").read_text(encoding="utf-8")
-    assert 'id="l-indexer"' in html and "indexer 部署" in html
-    for v in INDEXER_MODES:
-        assert f'<option value="{v}"' in html
-    assert "S.sc.indexer = e.target.value" in js
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed (ids / options of that select / tokens)
+    assert "l-indexer" in W.html_ids(html) and "indexer 部署" in W.html_text(html)
+    assert set(INDEXER_MODES) <= set(W.select_options(html, "l-indexer"))
+    assert W.has(js, "S.sc.indexer = e.target.value")
 
 
 def _leaf_fields():

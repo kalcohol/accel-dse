@@ -8,6 +8,7 @@ from accel_dse.core.dispatch_insight import _with, dispatch_sensitivity, step_se
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS, DISPATCH_US
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
@@ -65,9 +66,9 @@ def test_api_route_and_ui():
             raise AssertionError(bad)
         except api.ApiError:
             pass
-    html = (ROOT / "accel_dse/web/index.html").read_text()
-    js = (ROOT / "accel_dse/web/app.js").read_text()
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed
     for i in ("ins-dp-models", "ins-dp-batches", "ins-dp-run", "ins-dp-status", "ins-dp-summary", "ins-dp-tbl"):
-        assert f'id="{i}"' in html, i
-    assert "req('insight_dispatch', '/api/insight_dispatch'" in js and "dispSensNote(r.dispatch_sens)" in js
-    assert "'/api/insight_dispatch'" in (ROOT / "web-static/pyodide-shim.js").read_text()
+        assert i in W.html_ids(html), i
+    assert [c["fn"] for c in W.req_calls(js) if c["path"] == "/api/insight_dispatch"] == ["runInsightDispatch"]
+    assert W.has(W.functions(js)["renderWalls"], "dispSensNote(r.dispatch_sens)") or W.has(js, "dispSensNote(r.dispatch_sens)")
+    assert "/api/insight_dispatch" in W.list_values(W.read(W.SHIM_JS), "slowRoutes")

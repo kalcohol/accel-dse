@@ -7,6 +7,7 @@ from accel_dse.core.energy import EnergyTable, apply_energy_preset, energy_repor
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS, Chip
 from accel_dse.core.scenario import Scenario, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
@@ -74,7 +75,6 @@ def test_api_and_ui():
                                      "serving": {"phase": "decode", "batch": 64}},
                         "energy": {"energy_preset": "tpuv4i_7nm", "idle_W": 20}})
     # eval may nest energy differently
-    html = (ROOT / "accel_dse/web/index.html").read_text()
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert 'id="c-clk_datapath_gate"' in html and "clk_datapath_gate" in js
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed
+    assert "c-clk_datapath_gate" in W.html_ids(html) and W.mentions(js, "clk_datapath_gate")
     assert "/api/" in str(serve.POST_ROUTES) or True

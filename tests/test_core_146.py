@@ -6,6 +6,7 @@ from accel_dse.core.energy import EnergyTable
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.insight import DEFAULT_MODELS, insight_report, knobs, model_scenario
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 _B = Scenario().replace("layout.tp", 4).replace("serving.batch", 8)
 _R = insight_report(_B, ["qwen3-8b", "gpt-oss-120b", "mimo-v2.6-flash", "step-5-preview"],
@@ -71,7 +72,7 @@ def test_fingerprints_unchanged():
 def test_ui_tab_and_route_wired():
     from pathlib import Path
     root = Path(A.__file__).parent
-    html, js = (root / "web" / "index.html").read_text(), (root / "web" / "app.js").read_text()
-    assert 'data-tab="insight"' in html and 'id="tab-insight"' in html and 'id="ins-run"' in html
-    assert "'/api/insight'" in js and "paintInsight" in js
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed
+    assert "insight" in W.html_attr_values(html, "data-tab") and {"tab-insight", "ins-run"} <= W.html_ids(html)
+    assert any(c["path"] == "/api/insight" and c["fn"] == "runInsight" for c in W.req_calls(js)) and "paintInsight" in W.functions(js)
     assert '"/api/insight"' in (root / "serve.py").read_text()

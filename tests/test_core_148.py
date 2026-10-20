@@ -5,6 +5,7 @@ from accel_dse import api as A
 from accel_dse.core.budget import Budget
 from accel_dse.core.insight import REL_COST, upgrade_path
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 _B = Scenario().replace("layout.tp", 4).replace("serving.batch", 64).replace("chip.formats.dequant_elems_per_cycle", 256.0)
 _M = ["gpt-oss-120b", "mimo-v2.6-flash"]
@@ -68,7 +69,8 @@ def test_api_and_bad_inputs():
 
 def test_ui_wiring():
     web = pathlib.Path(A.__file__).parent / "web"
-    js, html = (web / "app.js").read_text(), (web / "index.html").read_text()
-    assert 'id="ins-path-tbl"' in html and "function runInsightPath" in js and "/api/insight_path" in js
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed
+    assert "ins-path-tbl" in W.html_ids(html)
+    assert [c["fn"] for c in W.req_calls(js) if c["path"] == "/api/insight_path"] == ["runInsightPath"]
     srv = (pathlib.Path(A.__file__).parent / "serve.py").read_text()
     assert '"/api/insight_path": api.api_insight_path' in srv

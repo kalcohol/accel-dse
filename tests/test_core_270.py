@@ -12,6 +12,7 @@ from accel_dse.core.ir import Phase, Shard
 from accel_dse.core.scenario import Scenario, Serving
 from accel_dse.core.speech import speech_kpis
 from accel_dse.core.vision import audio_ops
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
@@ -120,5 +121,5 @@ def test_api_and_ui():
         assert False
     except api.ApiError:
         pass
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert "s.asr" in js and "r.speech" in js
+    js = W.read()                                      # 0.286: token match
+    assert W.has(js, "s.asr") and W.has(js, "r.speech")

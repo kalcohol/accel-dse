@@ -14,7 +14,6 @@ from __future__ import annotations
 import functools
 import http.server
 import importlib.util
-import re
 import sys
 import tempfile
 import threading
@@ -32,16 +31,20 @@ def _mod(name, path):
     return m
 
 
+def _ws():
+    """0.286: the stdlib tests' parser (tests/webstruct.py) — one source of truth for call sites and shim lanes."""
+    return _mod("webstruct", ROOT / "tests/webstruct.py")
+
+
 def ui_calls() -> set[tuple[str, str]]:
-    app = (ROOT / "accel_dse/web/app.js").read_text(encoding="utf-8")
-    return {("POST" if m.group(2) == "," else "GET", m.group(1))
-            for m in re.finditer(r"\breq\(\s*[^,]+,\s*'(/api/[^'?]*)'\s*([,)])", app)}
+    W = _ws()
+    return {("POST" if c["body"] else "GET", c["path"]) for c in W.req_calls(W.read(W.APP_JS))}
 
 
 def shim_lanes() -> tuple[set[str], set[str]]:
-    shim = (ROOT / "web-static/pyodide-shim.js").read_text(encoding="utf-8")
-    get = lambda k: set(re.findall(r"'(/api/[a-z_]+)'", re.search(k + r" \|\| \[([^\]]*)\]", shim).group(1)))
-    return get("fastRoutes"), get("slowRoutes")
+    W = _ws()
+    shim = W.read(W.SHIM_JS)
+    return W.list_values(shim, "fastRoutes"), W.list_values(shim, "slowRoutes")
 
 
 def main(chrome="/usr/bin/google-chrome") -> int:

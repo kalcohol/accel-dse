@@ -12,6 +12,7 @@ from accel_dse.core.moshi import (FRAME_S, _seanet_rows, depformer_ops, depth_we
 from accel_dse.core.scenario import Scenario, Serving
 from accel_dse.core.speech import speech_kpis
 from accel_dse.core.speech_insight import _stages, speech_bounds
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
@@ -95,8 +96,8 @@ def test_api_eval_has_speech_and_ui():
     out = api.api_eval({"scenario": {"model": M, "mem_id": LP, "chip": {"name": "100T"},
                                      "serving": {"batch": 1, "prompt": 1, "out_len": 1}}, "sensitivity": False})
     assert out["speech"]["kind"] == "moshi"
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert "p.kind === 'moshi'" in js and "m.family === 'Moshi'" in js
+    js = W.read()                                      # 0.286: token match
+    assert W.has(js, "p.kind === 'moshi'") and W.has(js, "m.family === 'Moshi'")
     assert M in (ROOT / "scripts/ui_headless_smoke.py").read_text()
 
 

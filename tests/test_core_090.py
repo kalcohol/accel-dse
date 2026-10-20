@@ -10,6 +10,7 @@ from pathlib import Path
 from accel_dse.core.energy import EnergyTable, energy_report
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 H = "hbm3e_8s_12h24g_9200"
 T = EnergyTable(pJ_mac=0.5, pJ_vec=1.0, pJ_bit_sram=0.1, pJ_bit_dram=5.0, pJ_bit_link=10.0, idle_W=100.0,
@@ -90,8 +91,8 @@ def test_fixed_algo_protocol_pick_vs_auto_overlap_monotone():
 
 
 def test_sweep_hint_wiring():
-    root = Path(__file__).resolve().parents[1] / "accel_dse/web"
-    js, html = (root / "app.js").read_text(encoding="utf-8"), (root / "index.html").read_text(encoding="utf-8")
-    assert 'id="sw-hint"' in html and "function swHint()" in js and "f.algo !== 'auto_overlap'" in js
-    assert "S.sc.d2d_enabled" in js.split("function swHint()")[1][:600] and "sw-hint-fix" in js
-    assert "swHint();" in js.split("function schedule()")[1][:120]
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed function bodies instead of character windows
+    fn = W.functions(js)
+    assert "sw-hint" in W.html_ids(html) and W.has(fn["swHint"], "f.algo !== 'auto_overlap'")
+    assert W.has(fn["swHint"], "S.sc.d2d_enabled") and W.has(fn["swHint"], "id: 'sw-hint-fix'")
+    assert W.has(fn["schedule"], "swHint();")       # every input change re-evaluates the hint

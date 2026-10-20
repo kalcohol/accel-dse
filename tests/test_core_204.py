@@ -6,15 +6,16 @@ from accel_dse import api
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def test_ui_wiring():
     root = pathlib.Path(api.__file__).parent / "web"
-    js, html = (root / "app.js").read_text(), (root / "index.html").read_text()
-    for t in ('id="walls-bar"', 'id="walls-note"', 'id="c-dispatch"', 'id="c-dispatch_us"'):
-        assert t in html, t
-    assert "renderWalls(r);" in js and "fixed overhead" in js and "'dispatch_us'" in js
-    assert "static" not in js.split("const WALL_LBL")[1].split("};")[0]   # no 'static' label in the walls legend
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed
+    assert {"walls-bar", "walls-note", "c-dispatch", "c-dispatch_us"} <= W.html_ids(html)
+    assert W.has(js, "renderWalls(r)") and W.any_string_contains(js, "fixed overhead") and "dispatch_us" in W.strings(js)
+    lbl = W.literal(js, "WALL_LBL")                  # no 'static' label in the walls legend (keys or labels)
+    assert "fixed_overhead" in W.object_keys(lbl) and not any("static" in str(v) for _, v in lbl)
     smoke = (pathlib.Path(api.__file__).parents[1] / "scripts/ui_headless_smoke.py").read_text()
     assert "#walls-bar" in smoke and "burst ends on ideal" in smoke
 

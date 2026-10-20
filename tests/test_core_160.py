@@ -10,6 +10,7 @@ from accel_dse.core.budget import Budget, DENSITY_PRESETS
 from accel_dse.core.insight import SIZING, TIE, _JOINT_ORDER, _gain, _point, model_scenario, sizing_report
 from accel_dse.core.energy import EnergyTable
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def _worst(base, models, vals, domain, mets):
@@ -58,7 +59,7 @@ def test_joint_area_total_and_api():
     r = A.api_insight_sizing({"models": ["esm2-650m"], "joint": True})
     assert r["joint"]["holds"]
     web = Path(A.__file__).parent / "web"
-    assert "ins-size-joint" in (web / "index.html").read_text() and "all_minima_hold" in (web / "app.js").read_text()
+    assert "ins-size-joint" in W.html_ids(W.read(W.INDEX_HTML)) and W.has(W.read(), "j.all_minima_hold")   # 0.286: parsed
 
 
 def _runner():

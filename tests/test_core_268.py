@@ -11,6 +11,7 @@ from accel_dse.core.insight import slc_energy_report
 from accel_dse.core.refhw import REF_HW
 from accel_dse.core.scenario import Scenario, Serving
 from accel_dse.core.vision import audio_ops
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
@@ -36,11 +37,9 @@ def test_sqrtc_deprecated_flag_and_note():
 
 
 def test_sqrtc_ui_marked():
-    html = (ROOT / "accel_dse/web/index.html").read_text()
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    i = html.index('id="e-slc_access_ref_mib"')
-    assert "已弃用" in html[max(0, i - 1500):i + 200]
-    assert "slc_access.deprecated" in js
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: the control's own <label>, not a 1.5 kB text window
+    assert W.label_text(html, "e-slc_access_ref_mib").startswith("已弃用")
+    assert W.has(js, "slc_access.deprecated")
 
 
 def test_ming_asr_exact_params_and_listing():

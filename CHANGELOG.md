@@ -6,6 +6,52 @@
 
 
 
+## [0.286.0]
+
+### Changed: UI wiring tests check parsed structure instead of exact source text (MODEL §231.1)
+- Audit: 60 test files asserted exact app.js / index.html / pyodide-shim.js text (`"req('x', '/api/x', body(" in js`, a regex on a one-line catch block, a 1.5 kB character window around an id, `js.split(...)[:120]`). That breaks on harmless edits, which is what happened to test_core_276/277 in 0.285. Some checks were also silently weak: the 0.85 stale-flag regex matched nothing once a catch block was reflowed.
+- New `tests/webstruct.py` (stdlib only):
+  - a JS tokenizer that drops comments and whitespace, decodes string literals, and splits template literals into their text parts and `${…}` expressions;
+  - function bodies, `req(chan, path, body)` call sites with their enclosing function, string and identifier sets;
+  - object/array literals, shim route lists, catch blocks, element-id aliases and writes;
+  - HTML ids, `<select>` options, and the text of a control's own `<label>` (via `html.parser`).
+- Every exact-source assert in tests/ was converted (60 files): token-sequence matches (format-agnostic), parsed ids and options, function-scoped checks, and call-site structure. The 0.285 streams guard is now structural: one click-time `body(…)` snapshot bound once, before the request loop, spread into one-model requests. `scripts/ui_static_smoke.py` uses the same parser.
+- New generalized guards (test_core_286) replace families of one-off pins:
+  - every literal `$('id')` the UI looks up exists in index.html or is created by the UI (242 ids);
+  - every status that `invalidate()` tags stale sets `dataset.done` on its success path and in every catch block that writes it;
+  - every speech `kind` the evaluator emits has a `p.kind === …` KPI branch;
+  - every endpoint the UI calls has a progress label.
+- A lint test fails if a test reads UI source text and uses it other than through webstruct.
+- The headless smoke now also checks the 0.285 snapshot live: it changes the model after the first streams row and requires every request to carry the click-time scenario, one model per request, and the stale tag on the panel.
+- `scripts/ui_pin_mutations.py` (opt-in) applies edits to a scratch copy of the tree. The converted tests meet all 25 expectations: 8 format-only edits pass, 17 behaviour edits are caught. Against the same edits, the 0.285 tests failed 6 of the 8 format-only edits (false alarms). Of the 13 behaviour edits they cover they missed 3: an unflagged compare error, the fast-lane fallback, and a removed deprecation marker. They also missed an unflagged error in a reflowed catch block, and did not cover 4 more at all.
+
+### Fixed: expert residency across SRAM and SLC; load-aware SRAM pin (MODEL §231.2)
+- Bug (since 0.263): with `pin` / `pin_bw` and experts pinned in SRAM, the SLC expert hit share was computed relative to the off-SRAM experts, s/(E−p), but applied to every expert read. So the SLC was credited with more expert bytes than missed the SRAM: up to 2× when the SLC held part of the rest, and negative DRAM bytes (a division-by-zero crash) when it held all of it. This happened even under uniform load.
+- Now the experts are ranked by read probability across both on-chip tiers. That is the 0.192 pin rule (DRAM bytes saved per step per byte) 「推导」.
+  - The SRAM serves H(p/E) of expert reads; the SLC serves H((p+s)/E) − H(p/E); DRAM serves the rest.
+  - H is the share of expert reads hitting the most-read resident byte fraction (the 0.261 `dip_exp_hit`, independent reference model 「近似」). Under uniform load, H(f) = f.
+  - `dip` takes its off-SRAM experts as the less-read remainder after the SRAM pin (was: a load-neutral subset).
+- Closes the open AGENTS item "load-aware `pin`" for on-chip SRAM: with `serving.moe_expert_load`, the SRAM-pinned experts are the most-read ones. New `MemPlan.sram_exp_hit` and `memplan.exp_miss`; the API's `mem` gets `sram_exp_hit` only when a load is given.
+- `slc_frac_exp` / `slc_frac_exp_bytes` are now shares of all expert reads/bytes (were: of the off-SRAM experts).
+- Why this item: it is a wrong number, not a missing refinement. It decides SLC sizing on SRAM-rich designs, and the candidates named for this release move conclusions far less:
+  - MXFP8 activation scales only change the SRAM staging reserve (+3.1 % of one op's fp8 activation bytes; streams and collectives use the model act_fmt, which is bf16 for that release);
+  - no other release has a quantized vision tower (now a data test);
+  - there is no public kernel trace for the colocated vocoder (sglang-omni #581 only states that a DAC decode is ~30 launch-bound kernels).
+- **Default behaviour, old → new:**
+  - Catalog chip presets have no SLC, so default results are unchanged: 5 presets × 29 MoE LLMs × SLC 0.25–16 GiB give identical summaries, and fingerprints are unchanged.
+  - Changed: designs whose SRAM pins experts and that have an SLC. On 100T with sram_mib 4 / 16 GiB and SLC 1 / 4 / 16 GiB, 87 of 261 points moved; none moved at SRAM 1 GiB. TPOT went up by 0 to +83 % (old results were optimistic), e.g.:
+
+    | config | old TPOT | new TPOT |
+    |---|---|---|
+    | lfm2.5-24b-a2b, SRAM 16 / SLC 16 GiB | 3.24 ms | 5.92 ms |
+    | hy-memory-30b-a3b-fp8, SRAM 16 / SLC 4 GiB | 2.82 ms | 4.34 ms |
+
+    8 points that crashed with division by zero now evaluate.
+  - A measured expert load now also helps the SRAM. qwen3-30b-a3b on 100T with 4 GiB SRAM and a Zipf-1 load 「假设」: the SRAM serves 33.6 % of expert reads (byte share ≈ 3.2 %), and TPOT goes 21.4 → 15.6 ms.
+
+### Freshness
+- HF sweep since 2026-10-20 (88 orgs): only unsloth/sam3.1 (a community re-upload, mask generation). Web check: Beam and Muse Spark Open are already catalogued; the 10-20 news items were published before the window. Nothing new and official in scope.
+
 ## [0.285.0]
 
 ### Fixed: static (GitHub Pages / Pyodide) build — every UI endpoint classified, insight panels stale-safe (MODEL §230.1)

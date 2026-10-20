@@ -6,6 +6,7 @@ from accel_dse.core.energy import ENERGY_PRESETS
 from accel_dse.core.budget import DENSITY_PRESETS
 from accel_dse.core.hardware import CHIPS, CHIP_SOURCES, LINK_SOURCES
 from accel_dse.core.provenance import valid_tag
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def _tag(v):
@@ -63,5 +64,5 @@ def test_whatif_priced_batch_within_limit():
 
 def test_ui_states_priced_batch():
     from pathlib import Path
-    js = (Path(api.__file__).parent / "web" / "app.js").read_text()
-    assert "计价 batch" in js and "x.cost_basis" in js
+    js = W.read()                                      # 0.286: parsed
+    assert W.any_string_contains(js, "计价 batch") and W.has(js, "x.cost_basis")

@@ -8,6 +8,7 @@ from accel_dse.core.insight import (
     DEFAULT_MODELS_BY_DOMAIN, DOMAIN_METRICS, insight_domain, insight_report, upgrade_path,
 )
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 _B = Scenario().replace("layout.tp", 2)
 
@@ -56,12 +57,11 @@ def test_llm_unchanged_defaults():
 
 def test_export_wiring_and_schema():
     web = pathlib.Path(A.__file__).parent / "web"
-    js, html = (web / "app.js").read_text(), (web / "index.html").read_text()
-    assert re.search(r"const EXP_SCHEMA = 1;", js)          # envelope unchanged; new kinds under same schema
-    assert "kind: 'insight'" in js and "kind: 'insight_path'" in js
-    assert "function setInsightExport" in js and "function setInsightPathExport" in js
-    assert 'id="ins-exp-csv"' in html and 'id="ins-path-exp-json"' in html
-    assert "function paintInsMetric" in js
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed
+    assert W.has(js, "const EXP_SCHEMA = 1;")          # envelope unchanged; new kinds under same schema
+    assert W.has(js, "kind: 'insight'") and W.has(js, "kind: 'insight_path'")
+    assert {"setInsightExport", "setInsightPathExport", "paintInsMetric"} <= set(W.functions(js))
+    assert {"ins-exp-csv", "ins-path-exp-json"} <= W.html_ids(html)
     # README blurbs (no version bullets)
     root = pathlib.Path(A.__file__).resolve().parents[1]
     zh, en = (root / "README.md").read_text(), (root / "README.en.md").read_text()

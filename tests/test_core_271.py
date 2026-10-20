@@ -17,6 +17,7 @@ from accel_dse.core.omni import bigvgan_ops, dit_eval_ops, omni_pin, omni_spec, 
 from accel_dse.core.scenario import Scenario, Serving
 from accel_dse.core.speech import speech_kpis
 from accel_dse.core.vision import audio_ops
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
@@ -115,8 +116,8 @@ def test_catalog_api_ui():
     o = api.api_eval({"scenario": {"model": OM, "serving": {"prompt": 32, "out_len": 20, "ctx": 42}},
                       "audio_out_s": 2, "sensitivity": False, "goodput": False})
     assert o["speech"]["kind"] == "omni" and o["speech"]["codec_tokens"] == 100
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert "p.kind === 'omni'" in js and "omni: '全模态'" in js
+    js = W.read()                                      # 0.286: token match
+    assert W.has(js, "p.kind === 'omni'") and W.has(js, "omni: '全模态'")
     repos = (ROOT / "scripts/release_repos.txt").read_text().split()
     assert "Qwen/Qwen2.5-Omni-7B" in repos
 
@@ -175,8 +176,7 @@ def test_cosyvoice_speech_kpis():
     assert o["speech"]["kind"] == "cosyvoice" and o["speech"]["version"] == 2
     e = {x["id"]: x for x in list_models()}
     assert e[CV2]["domain"] == e[CV3]["domain"] == "tts" and e[CV3]["family"] == "Fun-CosyVoice3"
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert "p.kind === 'cosyvoice'" in js
+    assert W.has(W.read(), "p.kind === 'cosyvoice'")     # 0.286: token match
 
 
 def replace_prompt(c, n):

@@ -14,11 +14,14 @@ def _default_ids():
     ids = {"MEM_LEGACY_0204": hw.MEM_LEGACY_0204, "System.mem_id": hw.System(hw.CHIP_100T).mem_id}
     ids.update({f"PRESET_MEM[{k}]": v for k, v in hw.PRESET_MEM.items()})
     ids.update({f"default_mem({k})": hw.default_mem(c) for k, c in hw.CHIPS.items()})
-    js = (ROOT / "accel_dse/web/app.js").read_text(encoding="utf-8")
-    for i, x in enumerate(re.findall(r"\|\| '((?:lpddr|hbm)[0-9a-z_]+)'", js)):
+    t = W.tokens(W.read())                           # 0.286: `|| 'lpddr…'` fallbacks as tokens (any quote style)
+    fb = [t[i + 1][1] for i in range(len(t) - 1)
+          if t[i] == ("punct", "||") and t[i + 1][0] == "str" and re.match(r"(?:lpddr|hbm)[0-9a-z_]+$", t[i + 1][1])]
+    assert fb
+    for i, x in enumerate(fb):
         ids[f"app.js fallback {i}"] = x
-    html = (ROOT / "accel_dse/web/index.html").read_text(encoding="utf-8")
-    for x in re.findall(r"\b((?:lpddr5x?|lpddr6|hbm3e?|hbm4e?)_[0-9a-z_]+_[0-9.]+g?)\b", html):
+    page = " ".join(W.html_strings(W.read(W.INDEX_HTML)))      # 0.286: attribute values + text, not raw markup
+    for x in re.findall(r"\b((?:lpddr5x?|lpddr6|hbm3e?|hbm4e?)_[0-9a-z_]+_[0-9.]+g?)\b", page):
         ids[f"index.html {x}"] = x
     return ids
 
@@ -73,6 +76,7 @@ from accel_dse.core.evaluate import evaluate
 from accel_dse.core.model import spec_accept_from_tau
 from accel_dse.core.schedule import spec_expected_tokens
 from accel_dse.core.scenario import Layout, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 RD = "qwen3.8-27b-ready"
 

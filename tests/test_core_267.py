@@ -10,6 +10,7 @@ from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.insight import slc_energy_report
 from accel_dse.core.scenario import Scenario, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
@@ -65,7 +66,6 @@ def test_insight_curve_distance_vs_sqrtc():
 
 
 def test_ui():
-    html = (ROOT / "accel_dse/web/index.html").read_text()
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert 'id="e-pJ_bit_mm_onchip"' in html and 'id="e-slc_mm2_per_mib"' in html
-    assert "'pJ_bit_mm_onchip'" in js and "wire_mm" in js
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed
+    assert {"e-pJ_bit_mm_onchip", "e-slc_mm2_per_mib"} <= W.html_ids(html)
+    assert "pJ_bit_mm_onchip" in W.strings(js) and W.mentions(js, "wire_mm")

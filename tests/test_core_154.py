@@ -4,6 +4,7 @@ import pathlib
 from accel_dse import api as A
 from accel_dse.core.budget import TCO_PRESETS, Budget, apply_tco_preset
 from accel_dse.core.insight import _YEAR_S
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def test_tco_presets_and_validation():
@@ -43,7 +44,6 @@ def test_insight_tco_math_and_ranking():
 
 def test_ui_tco_wiring():
     web = pathlib.Path(A.__file__).parent / "web"
-    js, html = (web / "app.js").read_text(), (web / "index.html").read_text()
-    for i in ("b-card_usd", "b-amort_years", "b-pue", "b-tco-preset"):
-        assert f'id="{i}"' in html
-    assert "tco_presets" in js and "rank_tco" in js and "TCO" in js
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed
+    assert {"b-card_usd", "b-amort_years", "b-pue", "b-tco-preset"} <= W.html_ids(html)
+    assert W.mentions(js, "tco_presets") and W.mentions(js, "rank_tco") and W.any_string_contains(js, "TCO")

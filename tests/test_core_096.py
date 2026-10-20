@@ -4,6 +4,7 @@ from accel_dse import api
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.scenario import Scenario, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 C = CHIPS["1P"]
 HBM = "hbm3e_8s_12h24g_9200"
@@ -70,10 +71,10 @@ def test_sensitivity_block():
 def test_ui_and_cli_wiring():
     import pathlib
     root = pathlib.Path(api.__file__).parent
-    js, html = (root / "web/app.js").read_text(), (root / "web/index.html").read_text()
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed
     for t in ("sens-box", "sens-tbl", "c-attn_fmt", "c-sram_port_Bpc_per_engine"):
-        assert f'id="{t}"' in html
-    assert "renderSensitivity(r)" in js and "本结果取决于" in js
+        assert t in W.html_ids(html), t
+    assert W.has(js, "renderSensitivity(r)") and W.any_string_contains(js, "本结果取决于")
     from accel_dse import cli
     p = cli.build_parser() if hasattr(cli, "build_parser") else None
     src = (root / "cli.py").read_text()

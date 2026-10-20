@@ -12,6 +12,7 @@ from accel_dse.core.ir import Phase, Shard, full_io_ops
 from accel_dse.core.memplan import DIP_EPS, dip_hit, dip_split
 from accel_dse.core.powercap import _point, volt
 from accel_dse.core.scenario import Scenario, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 LP = "lpddr5x_4x64_8533_16g"
 WEB = Path(__file__).resolve().parent.parent / "accel_dse" / "web"
@@ -74,9 +75,10 @@ def test_cfg_branches_ui_control():
     w = C.model_info("moss-image-base")["workload"] if hasattr(C, "model_info") else C._workload_dict(C.get_model("moss-image-base"))
     assert w["uncond"] == {"text_tokens": 10, "skip_layers": [22]}
     assert C._workload_dict(C.get_model("hunyuanvideo"))["uncond"] is None
-    html, js = (WEB / "index.html").read_text(), (WEB / "app.js").read_text()
-    assert 'id="w-cfg_branches"' in html and "uncond-only" in html
-    assert "w-cfg_branches" in js and ".uncond-only" in js
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed (ids, class lists, string literals)
+    assert "w-cfg_branches" in W.html_ids(html)
+    assert any("uncond-only" in c.split() for c in W.html_attr_values(html, "class"))
+    assert "w-cfg_branches" in W.element_refs(js) and W.has(js, "document.querySelectorAll('.uncond-only')")
 
 
 T = EnergyTable(**apply_energy_preset({"energy_preset": "tpuv4i_7nm"}))

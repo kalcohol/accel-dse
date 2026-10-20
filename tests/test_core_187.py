@@ -3,6 +3,7 @@ from accel_dse import api as A
 from accel_dse.core.energy import ENERGY_PRESETS
 from accel_dse.core.insight import sizing_report
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 E = {"energy_preset": "tpuv4i_7nm"}
 
@@ -45,4 +46,4 @@ def test_api_rejects_non_bool_and_ui_wiring():
     r = A.api_insight_sizing({"models": ["qwen3-8b"], "resources": ["sram"], "energy_tie": "yes"})
     assert r["energy_tie"] is False                              # only literal true enables it
     web = Path(A.__file__).parent / "web"
-    assert "ins-size-energy" in (web / "index.html").read_text() and "trafficCell" in (web / "app.js").read_text()
+    assert "ins-size-energy" in W.html_ids(W.read(W.INDEX_HTML)) and "trafficCell" in W.functions(W.read())   # 0.286: parsed

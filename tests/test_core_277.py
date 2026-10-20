@@ -9,6 +9,7 @@ from accel_dse.core.scenario import Scenario
 from accel_dse.core.speech import speech_kpis
 from accel_dse.core.speech_insight import (MAX_STREAMS, SPEECH_CARD, SPEECH_MODELS, _lm_load, _max_streams, _scn,
                                            _stages, _with_slc, speech_streams)
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = Scenario(model="qwen3-8b", chip=CHIPS["100T"], mem_id="lpddr5x_4x64_8533_16g")
@@ -65,11 +66,11 @@ def test_near_search_exact():
 
 
 def test_ui_progressive_and_model_lists():
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    lists = {}
-    for name in ("SPS_OUT", "SPS_ASR"):
-        m = re.search(name + r" = \[([^\]]*)\]", js)
-        lists[name] = re.findall(r"'([^']+)'", m.group(1))
+    js = W.read()                                      # 0.286: parsed literals / function body
+    lists = {name: [v for k, v in W.literal(js, name) if k == "str"] for name in ("SPS_OUT", "SPS_ASR")}
     assert set(lists["SPS_OUT"]) | set(lists["SPS_ASR"]) == set(SPEECH_MODELS)
     assert not set(lists["SPS_OUT"]) & set(lists["SPS_ASR"])
-    assert "const b0 = body({ slc_gib: slc })" in js and "{ ...b0, models: [models[i]] }" in js and "run !== spsRun" in js and "staleTag(v0)" in js
+    fn = W.functions(js)[W.snapshot_request(js, "/api/insight_speech_streams")["fn"]]
+    assert W.has(fn, "const run = ++spsRun") and W.has(fn, "v0 = S.ver")          # supersede token + scenario version
+    after = fn[W.index(fn, "req('insight_speech_streams'"):]
+    assert W.has(after, "run !== spsRun) return") and W.has(after, "staleTag(v0)")   # checked after each awaited row

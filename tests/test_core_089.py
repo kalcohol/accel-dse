@@ -12,6 +12,7 @@ from accel_dse.core.evaluate import evaluate
 from accel_dse.core.ir import Phase, Shard, _cdiv, build_rank_ops
 from accel_dse.core.parallel import Layout
 from accel_dse.core.scenario import Scenario, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 H = "hbm3e_8s_12h24g_9200"
 
@@ -77,13 +78,14 @@ def test_fabric_auto_overlap_monotone_in_link_bw():
 
 
 def test_ui_export_wiring():
-    js = Path(__file__).resolve().parents[1].joinpath("accel_dse/web/app.js").read_text(encoding="utf-8")
-    html = Path(__file__).resolve().parents[1].joinpath("accel_dse/web/index.html").read_text(encoding="utf-8")
+    js, html = W.read(), W.read(W.INDEX_HTML)          # 0.286: parsed (ids / call sites / string literals)
+    ids = W.html_ids(html)
     for box in ("cmp", "sw"):
         for f in ("csv", "json"):
-            assert f'id="{box}-exp-{f}"' in html
-    assert js.count("setExport('cmp'") == 1 and js.count("setExport('sw'") == 2      # compare; sweep + Pareto
-    assert "'\\ufeff'" in js and "formula injection" in js
+            assert f"{box}-exp-{f}" in ids
+    assert W.count(js, "setExport('cmp'") == 1 and W.count(js, "setExport('sw'") == 2      # compare; sweep + Pareto
+    assert W.has(W.functions(js)["expCSV"], "return '\\ufeff' +")                      # BOM first (Excel reads UTF-8)
+    assert W.has(W.functions(js)["csvCell"], "if (/^[=+\\-@\\t\\r]/.test(t)) t = \"'\" + t;")   # formula-injection guard
     for lab in ("有效吞吐 goodput（tok/s/卡）", "TPOT（ms）", "有效 MAC 利用率（%）", "prefill TTFT（ms）"):
-        assert lab in js
-    assert re.search(r"clearExport\('cmp'\)", js) and js.count("clearExport('sw')") == 2  # no stale export mid-run
+        assert lab in W.strings(js), lab
+    assert W.count(js, "clearExport('cmp')") >= 1 and W.count(js, "clearExport('sw')") == 2  # no stale export mid-run

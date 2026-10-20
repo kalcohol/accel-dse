@@ -15,6 +15,7 @@ from accel_dse.core.onnxfront import front_flops, front_ops
 from accel_dse.core.scenario import Scenario
 from accel_dse.core.speech import speech_kpis
 from accel_dse.core.speech_insight import SPEECH_MODELS, _lm_load, _scn, _stages, speech_bounds
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 MEM = "lpddr5x_4x64_8533_16g"
@@ -107,8 +108,7 @@ def test_echo_in_speech_views():
     assert k1["total_s"] < k4["total_s"] < 4 * k1["total_s"]            # batched LM steps, per-clip flow / HiFT
     assert abs(k4["split"]["flow_s"] - 4 * k1["split"]["flow_s"]) < 1e-12
     assert abs(sum(k4["split"].values()) - k4["total_s"]) < 1e-12 and k1["split"]["repin_s"] > 0
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert "pipeline: 'S2ST 全流程（串行）'" in js
+    assert W.has(W.read(), "pipeline: 'S2ST 全流程（串行）'")     # 0.286: token match
 
 
 def test_speech_tokenizer_flops_from_graph():

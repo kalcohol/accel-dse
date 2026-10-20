@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 
 from accel_dse import serve
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "accel_dse" / "web" / "app.js").read_text(encoding="utf-8")
@@ -26,19 +27,19 @@ def _build_mod():
 
 
 def ui_calls() -> set[tuple[str, str]]:
-    """(method, path) of every req(chan, '/api/…'[, body]) in app.js — GET when no body argument (app.js req())."""
-    calls = set()
-    for m in re.finditer(r"\breq\(\s*[^,]+,\s*'(/api/[^'?]*)'\s*([,)])", APP):
-        calls.add(("POST" if m.group(2) == "," else "GET", m.group(1)))
-    return calls
+    """(method, path) of every req(chan, '/api/…'[, body]) in app.js — GET when no body argument (app.js req()).
+    0.286: parsed call sites (tests/webstruct.py), any quote style / line breaks."""
+    return {("POST" if c["body"] else "GET", c["path"]) for c in W.req_calls(APP)}
 
 
 def test_ui_calls_parsed_and_no_other_api_literals():
     calls = ui_calls()
     assert len(calls) >= 15 and ("GET", "/api/health") in calls and ("POST", "/api/eval") in calls
-    lits = set(re.findall(r"'(/api/[a-z_]+)", APP))
+    lits = {s.split("?", 1)[0] for s in W.strings(APP) if s.startswith("/api/")}
     assert lits == {p for _, p in calls}                     # no /api path reaches fetch some other way
-    assert "fetch(" in APP and not re.search(r"fetch\(\s*['`]/api", APP)   # all API traffic goes through req()
+    fetches = W.calls(APP, "fetch")
+    assert fetches and all(not (a and a[0] and a[0][0][0] == "str" and a[0][0][1].startswith("/api")) for a in fetches)
+    assert all(not s.startswith("/api") for s in W.strings(APP) if s not in lits and "/api/" not in s)
 
 
 def test_every_ui_call_is_routed_with_its_method():
@@ -52,8 +53,7 @@ def test_every_ui_call_is_routed_with_its_method():
 
 
 def test_shim_slow_lane_names_real_routes():
-    m = re.search(r"slowRoutes \|\| \[([^\]]*)\]", SHIM)
-    slow = set(re.findall(r"'(/api/[a-z_]+)'", m.group(1)))
+    slow = W.list_values(SHIM, "slowRoutes")
     assert slow and slow <= set(serve.POST_ROUTES)
 
 
@@ -113,8 +113,7 @@ def test_unpacked_zip_answers_alone():
 
 
 def _shim_lane(key: str) -> set[str]:
-    m = re.search(key + r" \|\| \[([^\]]*)\]", SHIM)
-    return set(re.findall(r"'(/api/[a-z_]+)'", m.group(1)))
+    return W.list_values(SHIM, key)
 
 
 def test_every_ui_call_classified_in_shim():
@@ -127,18 +126,23 @@ def test_every_ui_call_classified_in_shim():
     assert (fast | slow) <= set(serve.GET_ROUTES) | set(serve.POST_ROUTES)
     assert {p for p in paths if p.startswith("/api/insight")} <= slow
     assert {"/api/fit", "/api/compare", "/api/layouts", "/api/stability"} <= slow
-    assert "console.warn" in SHIM and "unclassified" in SHIM          # unknown routes still work (slow lane)
-    smoke = (ROOT / "scripts/ui_static_smoke.py").read_text()
-    assert "fastRoutes" in smoke and "ui_calls" in smoke
+    # unknown routes still work: slow lane, one console warning per route
+    assert W.has(SHIM, "SLOW.has(route) || !FAST.has(route) ? slow : fast") and W.has(SHIM, "console.warn(")
+    assert W.has(SHIM, "T.unclassified.add(route)")
+    # the live static smoke enumerates the same call sites and lanes through this parser (one source of truth)
+    import ast
+    tree = ast.parse((ROOT / "scripts/ui_static_smoke.py").read_text())
+    called = {n.func.attr for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+    assert {"req_calls", "list_values"} <= called
 
 
 def test_insight_panels_stale_handling():
     """0.285: speech / streams / dispatch panels are tagged stale by a scenario edit, and the streams loop sends one
     scenario snapshot for every row."""
-    inv = APP[APP.index("function invalidate()"):APP.index("function showErr(")]
-    for i in ("ins-sp-status", "ins-sps-status", "ins-dp-status"):
-        assert i in inv
-    assert "const b0 = body({ slc_gib: slc })" in APP and "{ ...b0, models: [models[i]] }" in APP
-    for fn in ("async function runInsightSpeech()", "async function runInsightDispatch()"):
-        seg = APP[APP.index(fn):APP.index(fn) + 2500]
-        assert "const v0 = S.ver" in seg and "staleTag(v0)" in seg and "dataset.done = '1'" in seg
+    # 0.286: parsed — invalidate()'s tracked ids, each panel's function body, and its catch block
+    assert {"ins-sp-status", "ins-sps-status", "ins-dp-status"} <= set(W.stale_tracked(APP))
+    W.snapshot_request(APP, "/api/insight_speech_streams")
+    fns = W.functions(APP)
+    for fn, sid in (("runInsightSpeech", "ins-sp-status"), ("runInsightDispatch", "ins-dp-status")):
+        assert W.has(fns[fn], "const v0 = S.ver") and W.has(fns[fn], "staleTag(v0)"), fn
+        assert sid in W.element_writes(fns[fn], "dataset.done", W.element_aliases(fns[fn])), fn

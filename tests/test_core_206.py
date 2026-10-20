@@ -6,6 +6,7 @@ from accel_dse.core import extval as X
 from accel_dse.core.evaluate import BALANCE_CLASS_MAX, evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 
 def _sc(n, ctx=4096, batch=1):
@@ -51,7 +52,7 @@ def test_warns_only_when_unreachable():
 def test_ui_wiring():
     import pathlib
     root = pathlib.Path(api.__file__).parent
-    assert "critical batch" in (root / "web/app.js").read_text()
+    assert W.any_string_contains(W.read(), "critical batch")      # 0.286: parsed
     assert "critical batch shown" in (root.parent / "scripts/ui_headless_smoke.py").read_text()
 
 

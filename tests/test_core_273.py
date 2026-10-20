@@ -9,6 +9,7 @@ from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.scenario import Scenario, Serving
 from accel_dse.core.speech import speech_kpis
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
@@ -19,7 +20,7 @@ def test_ui_surfaces_speech_blocks():
     js = (ROOT / "accel_dse/web/app.js").read_text()
     for key in ("p.slc", "c.talker_hit", "c.dit_hit", "Omni 首音频拆分", "p.audio_in", "split_first", "p.flow_s",
                 "a.max_audio_s", "p.stream === 'cache'", "p.label"):
-        assert key in js, key
+        assert W.mentions(js, key), key
     hl = (ROOT / "scripts/ui_headless_smoke.py").read_text()
     assert "qwen2.5-omni-7b" in hl and "cosyvoice2-0.5b" in hl
 
@@ -163,5 +164,5 @@ def test_kimi_speech_kpis():
     o = api.api_eval({"scenario": {"model": KA, "serving": {"audio_s": 10, "prompt": 64, "out_len": 60}},
                       "sensitivity": False, "goodput": False})
     assert o["speech"]["kind"] == "kimi"
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert "p.kind === 'kimi'" in js and "first_audio_released_s" in js
+    js = W.read()                                      # 0.286: token match
+    assert W.has(js, "p.kind === 'kimi'") and W.mentions(js, "first_audio_released_s")

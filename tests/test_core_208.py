@@ -6,6 +6,7 @@ from accel_dse import api
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 RWKV, LUX = "rwkv7-g1k-7.2b", "startlux-decision-v1-35b-a3b"
 
@@ -69,5 +70,5 @@ def test_shared_case_loop_and_ui():
     import pathlib
     assert "_eval_cases(" in inspect.getsource(api.sensitivity_report) and "_eval_cases(" in inspect.getsource(api.balance_whatif)
     root = pathlib.Path(api.__file__).parent
-    assert "renderBalanceWhatif" in (root / "web/app.js").read_text()
+    assert "renderBalanceWhatif" in W.functions(W.read())          # 0.286: parsed
     assert "balance what-if table" in (root.parent / "scripts/ui_headless_smoke.py").read_text()

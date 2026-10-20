@@ -6,6 +6,7 @@ from accel_dse.core.energy import EnergyTable, apply_energy_preset
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.insight import INSIGHT_SLC_GIB, insight_report
 from accel_dse.core.scenario import Scenario, Serving
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 LP = "lpddr5x_4x64_8533_16g"
 M = "qwen3-8b"
@@ -43,7 +44,6 @@ def test_api_insight_slc_temp_and_ui():
                            "energy": {"energy_preset": "tpuv4i_7nm"},
                            "models": [M]})
     assert out["slc_temp"] and out["slc_temp"]["recommend"][0]["hot_cuts_J_opt"]
-    html = (ROOT / "accel_dse/web/index.html").read_text()
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    assert 'id="ins-slc-temp"' in html and "paintInsightSlcTemp" in js
-    assert "应用" in js and "opt_J_gib_25C" in js
+    html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed
+    assert "ins-slc-temp" in W.html_ids(html) and "paintInsightSlcTemp" in W.functions(js)
+    assert W.any_string_contains(js, "应用") and W.mentions(js, "opt_J_gib_25C")

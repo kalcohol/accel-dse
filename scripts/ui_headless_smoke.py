@@ -5,6 +5,7 @@ no page errors / console errors / failed API calls, KPI cards populate after eac
 Usage: python3 scripts/ui_headless_smoke.py [--chrome /usr/bin/google-chrome]   exit 0 = clean."""
 from __future__ import annotations
 
+import json
 import socket
 import subprocess
 import sys
@@ -313,15 +314,37 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             if "实时临界" not in p.inner_text("#ins-sp-tbl"):     # 0.283 dispatch sensitivity column
                 errs.append("speech insight: no dispatch sensitivity column")
             # 0.276: streams per card vs SLC (two SLC sizes keep the smoke short)
+            # 0.286: behavioural form of the 0.285 snapshot guard — a scenario edit after the first row must not reach
+            # the remaining per-model requests (every request carries the click-time scenario) and must tag the panel stale
+            sps_bodies = []
+
+            def _sps_req(rq):
+                if rq.url.split("?", 1)[0].endswith("/api/insight_speech_streams") and rq.method == "POST":
+                    sps_bodies.append(json.loads(rq.post_data or "{}"))
+            p.on("request", _sps_req)
             p.fill("#ins-sps-gib", "0, 4")
+            m_before = p.eval_on_selector("#model", "e => e.value")
             p.click("#ins-sps-run")
+            p.wait_for_function("document.querySelectorAll('#ins-sps-tbl tbody tr').length >= 1", timeout=600000)
+            p.select_option("#model", "qwen3-1.7b" if m_before != "qwen3-1.7b" else "qwen3-0.6b")
             p.wait_for_function("(() => { const t = document.getElementById('ins-sps-status').textContent;"
                                 " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=900000)
+            p.remove_listener("request", _sps_req)
             st = p.inner_text("#ins-sps-status")
             rows = len(p.query_selector_all("#ins-sps-tbl tbody tr"))
             steps.append(("speech streams", rows, st[:40]))
             if not st.startswith("完成") or rows < 8:
                 errs.append(f"speech streams: {st[:200]} rows={rows}")
+            scen = {json.dumps(x.get("scenario"), sort_keys=True) for x in sps_bodies}
+            per = [x.get("models") for x in sps_bodies]
+            steps.append(("streams mid-run edit", len(sps_bodies), "one scenario" if len(scen) == 1 else f"{len(scen)} scenarios"))
+            if len(sps_bodies) != rows or len(scen) != 1 or any(not isinstance(m, list) or len(m) != 1 for m in per) \
+                    or json.loads(next(iter(scen)) if scen else "{}").get("model") != m_before:
+                errs.append(f"streams mid-run edit: {len(sps_bodies)} requests, {len(scen)} scenarios, models={per}")
+            if "场景已改变" not in st:
+                errs.append(f"streams mid-run edit: no stale tag: {st[:200]}")
+            p.select_option("#model", m_before)
+            settle("model restored")
             # 0.284: LLM decode dispatch sensitivity (two models keep the smoke short)
             p.fill("#ins-dp-models", "qwen3-0.6b, qwen3-30b-a3b")
             p.click("#ins-dp-run")

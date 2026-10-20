@@ -3,6 +3,7 @@ from accel_dse.core.energy import EnergyTable, energy_report, apply_energy_prese
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.scenario import Scenario
 from accel_dse.core.insight import sizing_report, _point
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 HBM, LP = "hbm3e_4s_12h24g_9600", "lpddr5x_4x64_8533_16g"
 
@@ -62,7 +63,7 @@ def test_prefill_energy_in_point_and_sizing():
 
 
 def test_ui_wiring():
-    h = open("accel_dse/web/index.html").read(); js = open("accel_dse/web/app.js").read()
+    ids, js = W.html_ids(W.read(W.INDEX_HTML)), W.read()      # 0.286: parsed
     for k in ("pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W"):
-        assert f'id="e-{k}"' in h and f"'{k}'" in js
-    assert "dram_phy" in js and "J_prefill" in js
+        assert f"e-{k}" in ids and k in W.strings(js), k
+    assert W.mentions(js, "dram_phy") and W.mentions(js, "J_prefill")

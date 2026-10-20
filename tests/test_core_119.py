@@ -6,6 +6,7 @@ from accel_dse.core.domain import tri_reference_chunk
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.parallel import Layout
 from accel_dse.core.scenario import Scenario, Workload
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 HBM = "hbm3e_8s_12h24g_9200"
 STRUCT = ("esmfold", "alphafold2", "openfold", "boltz-1", "protenix")
@@ -67,10 +68,10 @@ def test_ignored_outside_structure_models_and_validation():
 
 
 def test_workbench_labels():
-    js = (Path(__file__).resolve().parent.parent / "accel_dse" / "web" / "app.js").read_text()
-    for s in ("图像生成", "单张延迟", "w-tri_attn", "unitZh", "window: '窗口'", "DNA 自回归语言模型"):
-        assert s in js, s
-    assert "UNIT_ZH[m" not in js
+    js = W.read()                                      # 0.286: parsed (strings / functions / tokens)
+    for s in ("图像生成", "单张延迟", "w-tri_attn", "window: '窗口'", "DNA 自回归语言模型"):
+        assert W.mentions(js, s), s
+    assert "unitZh" in W.functions(js) and not W.has(js, "UNIT_ZH[m")
 
 
 def test_fingerprints_unchanged():

@@ -6,6 +6,7 @@ from accel_dse import api
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS, MEM_LEGACY_0204
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 # public same-class balance, bf16 dense FLOP / raw DRAM byte (MODEL §152)
 CLASS = {"H100 SXM": 989 / 3.35, "B200": 2250 / 8.0, "MI300X": 1307.4 / 5.3, "TPU v5e": 197 / (800 * 1.073741824 / 1e3),
@@ -48,6 +49,6 @@ def test_balance_warning_sides():
 def test_ui_wiring():
     import pathlib
     root = pathlib.Path(api.__file__).parent
-    js = (root / "web/app.js").read_text()
-    assert "machine balance" in js and "default_mem" in js and "balance-warn" in js
+    js = W.read()                                      # 0.286: parsed
+    assert W.any_string_contains(js, "machine balance") and W.mentions(js, "default_mem") and W.any_string_contains(js, "balance-warn")
     assert "1P-lp4x64" in (root.parent / "scripts/ui_headless_smoke.py").read_text()

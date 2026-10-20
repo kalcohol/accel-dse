@@ -12,6 +12,7 @@ from accel_dse.core import memplan
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS, DISPATCH_MODES
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 RWKV, LUX = "rwkv7-g1k-7.2b", "startlux-decision-v1-35b-a3b"
 
@@ -172,17 +173,22 @@ def test_ui_keys_exist_in_api():
     """API↔UI: every balance / walls / what-if key the UI reads is present in the API response."""
     import re
     from pathlib import Path
-    js = (Path(api.__file__).parent / "web" / "app.js").read_text()
+    js = W.read()                                    # 0.286: parsed (property reads in the block / function bodies)
+    fn = W.functions(js)
     r = api.api_eval({"chip_preset": "1P", "scenario": {"model": RWKV}, "sensitivity": False})
-    for k in set(re.findall(r"\bb\.(\w+)", js[js.index("if (r.balance)"):js.index("if (s.host)")])):
+    bal = W.blocks(js, "if (r.balance)")
+    assert len(bal) == 1 and W.props(bal[0][1], "b")
+    for k in W.props(bal[0][1], "b"):
         assert k in r["balance"], k
-    for k in set(re.findall(r"\bw\.(\w+)", js[js.index("function renderWalls"):js.index("function renderStages")])):
+    assert W.props(fn["renderWalls"], "w")
+    for k in W.props(fn["renderWalls"], "w"):
         assert k in r["walls"], k
     # 0.227: with a power cap the what-if adds power_cap_W / works_capped / binds / cap_basis (UI reads them only then)
     s = api.api_sensitivity({"chip_preset": "1P", "scenario": {"model": RWKV}, "power_cap_W": 100.0})["sensitivity"]["balance_whatif"]
-    for k in set(re.findall(r"\bw\.(\w+)", js[js.index("function renderBalanceWhatif"):js.index("function renderSensitivity")])):
+    assert W.props(fn["renderBalanceWhatif"], "w")
+    for k in W.props(fn["renderBalanceWhatif"], "w"):
         assert k in s, k
-    assert 'id="c-state_sram_mib"' in (Path(api.__file__).parent / "web" / "index.html").read_text()
+    assert "c-state_sram_mib" in W.html_ids(W.read(W.INDEX_HTML))
 
 
 def test_shared_sram_invariant_with_state_buffer():

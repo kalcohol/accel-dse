@@ -7,6 +7,7 @@ from accel_dse.core.energy import ENERGY_PRESETS, EnergyTable, energy_report
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 RWKV = "rwkv7-g1k-7.2b"
 
@@ -57,6 +58,6 @@ def test_whatif_shows_shoreline_and_leak():
 
 def test_ui_reads_new_keys():
     from pathlib import Path
-    js = (Path(api.__file__).parent / "web" / "app.js").read_text()
+    js = W.read()                                      # 0.286: exact identifiers / keys, not substrings
     for k in ("shoreline", "edge_typical_mm", "need_mm", "d_leak_W", "leak_W"):
-        assert k in js, k
+        assert W.mentions(js, k), k

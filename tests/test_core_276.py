@@ -7,6 +7,7 @@ from accel_dse.core.hardware import CHIPS
 from accel_dse.core.scenario import Scenario
 from accel_dse.core.speech import speech_kpis
 from accel_dse.core.speech_insight import MAX_STREAMS, _lm_ok, _max_streams, _scn, _stages, _with_slc, speech_streams
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 ROOT = Path(__file__).resolve().parents[1]
 LP = "lpddr5x_4x64_8533_16g"
@@ -57,13 +58,14 @@ def test_api_route_ui_and_shim():
         except api.ApiError:
             continue
         raise AssertionError(bad)
-    js = (ROOT / "accel_dse/web/app.js").read_text()
-    html = (ROOT / "accel_dse/web/index.html").read_text()
-    assert "req('insight_speech_streams', '/api/insight_speech_streams', { ...b0, models: [models[i]] })" in js and "const b0 = body({ slc_gib: slc })" in js
+    # 0.286: parsed structure (was exact source text); the headless smoke checks the same behaviour live (an edit
+    # after the first row leaves every request on the click-time scenario, and the panel is tagged stale)
+    js, html = W.read(), W.read(W.INDEX_HTML)
+    snap = W.snapshot_request(js, "/api/insight_speech_streams")     # one request per model, one click-time snapshot
+    assert snap["fn"] == "runInsightSpeechStreams" and W.has(snap["body"], "models: [models[i]]")
     for i in ("ins-sps-run", "ins-sps-gib", "ins-sps-tbl", "ins-sps-asr"):
-        assert f'id="{i}"' in html
-    shim = (ROOT / "web-static/pyodide-shim.js").read_text()
-    assert "/api/insight_speech_streams" in re.search(r"slowRoutes \|\| \[([^\]]*)\]", shim).group(1)
+        assert i in W.html_ids(html), i
+    assert "/api/insight_speech_streams" in W.list_values(W.read(W.SHIM_JS), "slowRoutes")
 
 
 def _fr(gib):

@@ -4,6 +4,7 @@ from accel_dse.core.budget import Budget
 from accel_dse.core.insight import SIZING, TIE, _point, _gain, model_scenario, sizing_report
 from accel_dse.core.energy import EnergyTable
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 MODELS = ["qwen3-8b", "gpt-oss-20b"]
 
@@ -55,4 +56,5 @@ def test_sizing_api_and_ui():
         pass
     from pathlib import Path
     web = Path(A.__file__).parent / "web"
-    assert "ins-size-run" in (web / "index.html").read_text() and "/api/insight_sizing" in (web / "app.js").read_text()
+    assert "ins-size-run" in W.html_ids(W.read(W.INDEX_HTML))      # 0.286: parsed
+    assert [c["fn"] for c in W.req_calls(W.read()) if c["path"] == "/api/insight_sizing"] == ["runInsightSizing"]

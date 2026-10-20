@@ -10,6 +10,7 @@ from accel_dse.core.hardware import SLC_POLICIES
 from accel_dse.core.mapping import gemm_cost
 from accel_dse.core.refhw import REF_HW
 from accel_dse.core.scenario import Scenario
+from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
 H = "hbm3e_8s_12h24g_9200"
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,10 +47,10 @@ def test_pin_bw_balances_paths_and_reduces_to_pin():
 
 
 def test_pin_bw_wiring():
-    html = (ROOT / "accel_dse/web/index.html").read_text(encoding="utf-8")
-    assert '<option value="pin_bw">' in html
-    js = (ROOT / "accel_dse/web/app.js").read_text(encoding="utf-8")
-    assert "slc_policy === 'pin_bw'" in js
+    html = W.read(W.INDEX_HTML)                        # 0.286: option of the SLC-policy select; token match
+    assert "pin_bw" in W.select_options(html, "c-slc_policy")
+    js = W.read()
+    assert W.has(js, "slc_policy === 'pin_bw'")
     cli = (ROOT / "accel_dse/cli.py").read_text(encoding="utf-8")
     assert '"pin_bw"' in cli
     w = _ev(512, "pin", 2000.0).warnings
