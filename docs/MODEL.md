@@ -7468,3 +7468,38 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 - CampPlus: 2-D conv head (80 bins; frequency strides 2 ×3 → 10), TDNN k5 s2 → 50 Hz, 3 dense CAM blocks (12 / 24 / 16 layers), statistics pooling → 192-d. 11.26 GFLOP per 10 s, on the host CPU and not on the card.
 - 「近似」: biases / norms are read once with no extra vector work beyond 2 per GEMM output.
 
+
+## §226 Activation-format audit of quantized releases; fused-expert scale suffix (0.281)
+
+### §226.1 Per-role GEMM input formats
+- Audit of the 38 quantized releases (`quantization_config` present), by quant method:
+  - `fp8` + `activation_scheme` dynamic / static (DeepSeek, Kimi K2, Qwen3 FP8, GLM-5.3, MiMo, Ling, Step-5, Hy-Memory): global act fp8 since 0.251 — unchanged.
+  - compressed-tensors W8A8 float (LFM2.5 FP8, Beam FP8): act fp8 since 0.254 — unchanged. compressed-tensors weight-only (Kimi K2.5 / K2.7 int4, Kimi K3 MXFP4, Dory MXFP8: `input_activations` null) — bf16 inputs, correct.
+  - ModelOpt NVFP4 (Muse NVFP4, Beam NVFP4, Step-5 NVFP4) W4A4 since 0.254; W4A16_NVFP4 (Dory NVFP4) weight-only; MIXED_PRECISION (Nemotron VL, Qwen3.8 FP4-Local) per role since 0.280 — unchanged.
+  - AWQ (Qwen3 AWQ), `mxfp4` (gpt-oss) — weight-only, bf16 inputs (Blackwell MXFP8 override from 0.93 stays a what-if).
+  - **Changed:** Quark (two Muse releases) and `bsgemm-moe` (Drama 3), below.
+- Quark 「来源」 vLLM `quantization/quark/quark.py` scheme selection and `schemes/quark_w8a8_fp8.py`: input_tensors `is_dynamic` + `qscheme` per_channel → `GroupShape.PER_TOKEN`, `Fp8LinearOp(act_quant_static=False)`. vLLM Quark docs: OCP MX schemes take dynamic MXFP4 inputs; MI355 runs them natively, MI300 / MI325 emulate by dequantising to half precision.
+  - PTPC-FP8 release: input fp8_e4m3 dynamic per_channel, weight fp8_e4m3 per_channel → act fp8 on the fp8 roles (attn, expert).
+  - MXFP4 release: input fp4 g32 e8m0 dynamic, weight fp4 g32 → act mxfp4 on the mxfp4 role (expert).
+  - Only `global_quant_config` is read. Releases with `layer_quant_config` / `layer_type_quant_config`, or with different weight / input families (W4A8 MXFP4 × FP8: vLLM `QuarkW4A8_MXFP4_FP8`), get no activation formats 「假设」 (none in the catalog).
+- Drama 3 「来源」 config `{"quant_method": "bsgemm-moe", "weight_block_size": [128, 128], "activation_scheme": "dynamic"}`; vllm-omni `recipes/fishaudio/Drama-3.md`: "block-FP8 routed experts" on vLLM's block-FP8 MoE path, which quantises inputs per token-group 128 to fp8 → act_expert fp8. Shared experts, attention and the codebook tower are bf16 and keep bf16 inputs.
+- Excluded modules keep bf16 inputs (per-role entries, not a global act_fmt), as in §225.1.
+- 「近似」 MXFP4 activation bytes 4.25 b (e2m1 + e8m0 / 32); fp8 activation scales are not counted.
+- Effect 「推导」 (4096-token prompt, TP8·EP8, TPOT unchanged):
+
+  | model | chip | TTFT ≤ 0.280 | TTFT 0.281 |
+  |---|---|---|---|
+  | muse-spark-open-fp8 | B200 | 76.2 ms | 70.8 ms |
+  | muse-spark-open-mxfp4 | B200 | 76.1 ms | 66.4 ms |
+  | muse-spark-open-fp8 | 100T TP8 / TP16 | 1.102 / 0.749 s | 1.026 / 0.716 s |
+  | muse-spark-open-mxfp4 | 100T | 0.926 / 0.666 s | unchanged (no fp4 MACs → bf16 both ways) |
+
+  Drama 3 on 100T: batch 1 unchanged (decode-bound); 32 clips, first audio 1.647 → 1.630 s.
+
+### §226.2 Fused-expert scale suffix
+- Two audits for the 0.280 csf bug class:
+  - every release JSON: effective bits per (role, format) against the format's range. Only Muse NVFP4 was off (nvfp4 4.0 b and an "fp32 expert" of 46,080 parameters holding 48.3 GB);
+  - the 93 cached header sets: tensors counted as weights whose last name component looks like a scale / zero / index / codebook. Only the DiT `scale_shift_table`s matched, and they are real parameters.
+- 「来源」 Muse NVFP4 headers (byte-identical public mirror unsloth/Muse-Spark-Open-816B-A42B-NVFP4, re-read 2026-10-20): fused experts `layers.N.mlp.experts.{gate_up_proj, down_proj}` (u8 e2m1) with `…_weight_scale` (e4m3 per 16), `…_weight_scale_2` (fp32 per expert) and `…_input_scale` (fp32 per expert). The old `_scale$` alternative left `_weight_scale_2` as a weight, and the base `…_weight` of `_weight_scale` matched it by prefix.
+- Fix: `SCALE_RE` first alternative `_(weight|input)_scale(_2)?$` (whole suffix stripped → base = the fused expert tensor). Expert nvfp4 bytes = params · 9/16 + 368,640 (60 layers × 2 projections × 384 experts × 2 fp32 scales). The per-role effective bits (4.871 b, incl. the bf16 experts of layers 0 / 61) were already right because role bytes include every format; no cost changes.
+- Reverse direction (parameters treated as scales), left as is: `hc_attn_scale` / `hc_ffn_scale` (3 values per layer, DeepSeek-V4 / GLM-5.3) and Dory `lm_head.logit_scale` (131,072 values; 3e-5 of the model).

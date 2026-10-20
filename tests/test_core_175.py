@@ -25,7 +25,10 @@ def test_nvfp4_release_bytes_and_format():
     assert FORMATS["nvfp4"].bits == 4.5
     d = json.load(open("accel_dse/data/releases/meta-models__Muse-Spark-Open-816B-A42B-NVFP4.json"))
     ex = d["roles"]["expert"]
-    assert ex["nvfp4"]["bytes"] == ex["nvfp4"]["params"] // 2                     # packed e2m1
+    # packed e2m1 + e4m3 per 16 + fp32 weight_scale_2 / input_scale per expert matrix (60 layers × 384 × 2 × 2 × 4 B);
+    # 0.281: the fused-expert "_weight_scale_2" suffix is a scale (≤ 0.280 an "fp32 expert" of 46,080 params held them)
+    assert ex["nvfp4"]["bytes"] == ex["nvfp4"]["params"] * 9 // 16 + 368_640 and set(ex) == {"bf16", "nvfp4"}
+    assert "scale" not in d["roles"] and d["params_llm"] == 819_990_552_064
     assert ex["bf16"]["params"] == 25769803776                                     # layers 0 + 61 experts, bf16
     assert "derived" not in d and d["mirror"]["repo"] == "unsloth/Muse-Spark-Open-816B-A42B-NVFP4"
     assert d["bytes_total"] == 533010718720                                       # 0.175 推导 495966638080 (−7.0 %)

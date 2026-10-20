@@ -6,6 +6,28 @@
 
 
 
+## [0.281.0]
+
+### Changed: per-role activation formats for the remaining quantized releases (MODEL §226.1)
+- Audit of every quantized release in the catalog (38) for GEMM input formats. ModelOpt NVFP4 / MIXED_PRECISION (0.254 / 0.280), `fp8` + dynamic / static activations, and compressed-tensors W8A8 float were already right. Three were not; up to 0.280 they used bf16 inputs everywhere:
+  - **AMD Quark PTPC-FP8** (`muse-spark-open-fp8`): `global_quant_config.input_tensors` = fp8_e4m3, dynamic, per_channel → vLLM `QuarkW8A8Fp8` quantises inputs per token to fp8. Now act_attn / act_expert fp8 (the roles stored in fp8). bf16 mlp / lm_head keep bf16 inputs.
+  - **AMD Quark MXFP4** (`muse-spark-open-mxfp4`): input fp4, group 32, e8m0, dynamic = W4A4 MXFP4 (native on MI355, emulated by dequantising elsewhere). Now act_expert mxfp4; `gemm_exec` picks native or bf16 from the chip's formats.
+  - **Drama 3 `bsgemm-moe`**: block-FP8 routed experts with `activation_scheme` dynamic, served by vLLM block-FP8 MoE kernels → act_expert fp8.
+- `model._quark_act_roles`: Quark layer / layer-type overrides and mixed W/A families (W4A8) return no activation formats; none of the catalog's Quark releases has them.
+- Effect (4096-token prompt, TP8·EP8; TPOT unchanged):
+  - B200: Muse FP8 TTFT 76.2 → 70.8 ms; Muse MXFP4 76.1 → 66.4 ms (native fp4).
+  - 100T + LPDDR5X: Muse FP8 TTFT 1.102 → 1.026 s (TP8), 0.749 → 0.716 s (TP16). Muse MXFP4 unchanged (no fp4 MACs; W4A4 emulated as bf16 either way).
+  - Drama 3, 100T: batch 1 unchanged (decode-bound); 32 clips first audio 1.647 → 1.630 s.
+
+### Fixed: fused-expert scale suffix (MODEL §226.2)
+- Audit of all 153 release JSONs (bits / weight per role and format) and the 93 cached header sets (names counted as weights that look like scales) for the 0.280 "csf" class of bug. One case: Muse-Spark-Open NVFP4 stores fused 3-D experts (`experts.gate_up_proj`) with `…_weight_scale`, `…_weight_scale_2` and `…_input_scale`. `_weight_scale_2` (fp32, one per expert) was counted as 46,080 parameters, and the per-16 e4m3 scales were attached to it by prefix match.
+  - Role bytes and the per-role effective bits were already right (4.871 b), so no throughput number changes. The role table now shows experts as nvfp4 at 4.5 b + the bf16 experts of layers 0 / 61. LLM params 819,990,598,144 → 819,990,552,064 (param check −1.2e-6), and bytes_llm +184,320 (input scales now attached to their experts).
+  - `SCALE_RE` gets `_(weight|input)_scale(_2)?$` as its first alternative, so the whole suffix is stripped. Re-summarising every other cached release changes nothing.
+- The reverse case (real parameters counted as scales) is negligible: DeepSeek-V4 / GLM-5.3 `hc_*_scale` (3 values per layer) and Dory `lm_head.logit_scale` (131,072). Left as is.
+
+### Freshness
+- HF sweep since 2026-10-19: nothing new and official in scope (Hy-Memory GGUF, a MiniCPM OCR processor stub, SAM 3.1).
+
 ## [0.280.0]
 
 ### Added: nvidia Qwen3.8-Flash-Next-FP4-Local (MODEL §225.1)

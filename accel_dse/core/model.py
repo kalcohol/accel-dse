@@ -1875,6 +1875,28 @@ def _act_fmt(rel: dict) -> str:
     return "bf16"
 
 
+_QUARK_IN = {"fp8_e4m3": ("fp8", "fp8", 8.0), "fp4": ("mxfp4", "mxfp4", 4.25)}
+
+
+def _quark_act_roles(qc: dict, fm: dict) -> dict:
+    """0.281 AMD Quark exports (quant_method "quark"): global_quant_config.input_tensors is the GEMM input scheme of every
+    quantized layer 「来源」 vLLM quark.py → QuarkW8A8Fp8 (input fp8_e4m3, is_dynamic, qscheme per_channel = per-token FP8,
+    Fp8LinearOp act_quant_group_shape PER_TOKEN) and the OCP MX scheme (input fp4 group 32 e8m0 dynamic = W4A4 MXFP4; native
+    on MI355 / gfx950, emulated by dequantising to bf16 elsewhere — gemm_exec picks the path from the chip's formats).
+    Applies to the roles stored in the weight format only (exclude list: attention / dense / lm_head stay bf16 with bf16
+    inputs); per-layer / per-type overrides (layer_quant_config, layer_type_quant_config) are not modelled — none of the
+    catalog's Quark releases set them.  ≤ 0.280 every Quark role kept bf16 inputs."""
+    g = qc.get("global_quant_config") or {}
+    inp, w = g.get("input_tensors") or {}, g.get("weight") or {}
+    if qc.get("layer_quant_config") or qc.get("layer_type_quant_config") or not inp.get("dtype") in _QUARK_IN:
+        return {}
+    a_fmt, w_fmt, bits = _QUARK_IN[inp["dtype"]]
+    if _QUARK_IN.get(w.get("dtype"), (None, None))[1] != w_fmt:
+        return {}                             # mixed W/A families (e.g. W4A8 MXFP4×FP8) not in the catalog
+    return {"act_" + r: RoleFormat(a_fmt, bits) for r, f in fm.items()
+            if f.fmt == w_fmt and r in ("attn", "mlp", "expert", "shared_expert", "lm_head")}
+
+
 def _w4a4_roles(rel: dict, fm: dict) -> dict:
     """0.254: ModelOpt NVFP4 (hf_quant_config quant_algo "NVFP4"; config_groups input_activations num_bits 4) is W4A4 —
     vLLM ModelOptNvFp4 / SGLang modelopt_fp4 quantise each NVFP4 GEMM's input to NVFP4 (global input_scale, e4m3 per 16)
@@ -1897,6 +1919,15 @@ def _w4a4_roles(rel: dict, fm: dict) -> dict:
             elif set(al) <= {"FP8", "MXFP8"} and f.fmt == "fp8":
                 out["act_" + r] = RoleFormat("fp8", 8.0)
         return out
+    if isinstance(qc, dict) and qc.get("quant_method") == "quark":
+        return _quark_act_roles(qc, fm)
+    if isinstance(qc, dict) and qc.get("quant_method") == "bsgemm-moe" and qc.get("activation_scheme") in ("dynamic", "static"):
+        # 0.281 Drama 3 "bsgemm-moe": block-FP8 (128×128) routed experts with dynamic activation scaling, served by vLLM
+        # block-FP8 MoE kernels (vllm-omni recipes/fishaudio/Drama-3.md: "block-FP8 routed experts") 「来源」 → the fp8
+        # expert GEMMs take fp8 inputs (per-token-group dynamic, same as quant_method "fp8" + activation_scheme dynamic);
+        # every other linear is bf16 and keeps bf16 inputs.  Was bf16 for all roles ≤ 0.280.
+        return {"act_" + r: RoleFormat("fp8", 8.0) for r, f in fm.items()
+                if f.fmt == "fp8" and r in ("attn", "mlp", "expert", "shared_expert", "lm_head")}
     if not isinstance(qc, dict) or qc.get("quant_method") != "modelopt":
         return {}
     a4 = qc.get("quant_algo") == "NVFP4" or any(

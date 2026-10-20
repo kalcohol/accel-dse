@@ -1,5 +1,5 @@
 {
- "bytes_llm": 528918579200,
+ "bytes_llm": 528918763520,
  "bytes_mtp": 0,
  "bytes_total": 533010718720,
  "config": {
@@ -1119,13 +1119,13 @@
    }
   }
  },
- "fetched": "2026-10-19",
+ "fetched": "2026-10-20",
  "mirror": {
   "note": "byte-identical public mirror: every file's git LFS pointer oid equals the gated official repo's (README only differs; HF tree API 2026-10-19) \u2192 safetensors headers read from the mirror",
   "repo": "unsloth/Muse-Spark-Open-816B-A42B-NVFP4"
  },
  "n_tensors": 2360,
- "params_llm": 819990598144,
+ "params_llm": 819990552064,
  "params_mtp": 0,
  "params_vision": 2045977600,
  "quantization_config": {
@@ -1922,12 +1922,8 @@
     "bytes": 51539607552,
     "params": 25769803776
    },
-   "fp32": {
-    "bytes": 48318566400,
-    "params": 46080
-   },
    "nvfp4": {
-    "bytes": 386547056640,
+    "bytes": 434865807360,
     "params": 773094113280
    }
   },
@@ -1959,12 +1955,6 @@
    "fp32": {
     "bytes": 520157184,
     "params": 130039296
-   }
-  },
-  "scale": {
-   "scale": {
-    "bytes": 184320,
-    "params": 0
    }
   },
   "vision": {

@@ -22,7 +22,11 @@ def test_act_fmt_for_default_and_override():
         # 0.280: ModelOpt MIXED_PRECISION releases carry act_<role> per algo_by_role (NVFP4→nvfp4, FP8/MXFP8→fp8)
         mixed = {"nemotron-3.5-super-vl-120b-a12b-nvfp4": {"act_attn": "fp8", "act_expert": "nvfp4",
                                                            "act_lm_head": "fp8", "act_shared_expert": "nvfp4"},
-                 "qwen3.8-flash-next-fp4-local": {"act_attn": "fp8", "act_expert": "nvfp4", "act_shared_expert": "fp8"}}
+                 "qwen3.8-flash-next-fp4-local": {"act_attn": "fp8", "act_expert": "nvfp4", "act_shared_expert": "fp8"},
+                 # 0.281: Quark W8A8 PTPC FP8 / W4A4 MXFP4 and Drama-3 bsgemm-moe (block-FP8 experts, dynamic activations)
+                 "muse-spark-open-fp8": {"act_attn": "fp8", "act_expert": "fp8"},
+                 "muse-spark-open-mxfp4": {"act_expert": "mxfp4"},
+                 "drama-3": {"act_expert": "fp8"}}
         if e["id"] in mixed:
             assert acts == mixed[e["id"]], (e["id"], acts)
             continue
