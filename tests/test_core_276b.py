@@ -39,8 +39,10 @@ def test_streaming_kpis():
     frame = 2048 / 44100
     assert k["steps"] == math.ceil(10.0 / frame) and abs(k["frame_ms"] - frame * 1e3) < 1e-9
     assert k["ref_rows"] == math.ceil(10.0 * 44100 / 2048) and k["prompt_rows"] == 64 + k["ref_rows"]
-    assert abs(k["rtf"] - k["tpot_s"] / frame) < 1e-12
-    assert abs(k["first_audio_s"] - k["ttft_s"] - 6 * k["tpot_s"]) < 1e-12 and k["dac_costed"] is False
+    assert abs(k["lm_rtf"] - k["tpot_s"] / frame) < 1e-12 and abs(k["rtf"] - k["lm_rtf"] - k["dac"]["load"]) < 1e-12   # 0.277
+    # 0.277: + the DAC's first 6-frame window (colocated; tests/test_core_277b.py)
+    assert abs(k["first_audio_s"] - k["ttft_s"] - 6 * k["tpot_s"] - k["split_first"]["dac_window0_s"]) < 1e-12
+    assert k["dac_costed"] is True
     st, r, dom, fa = _stages(k, 10.0)
     assert set(st) == {"lm"} and dom == "prefill_s" and fa == k["first_audio_s"]
     assert M in SPEECH_MODELS

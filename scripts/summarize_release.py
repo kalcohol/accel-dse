@@ -371,6 +371,12 @@ def summarize(repo: str) -> dict:
         extra["speech_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith(("detok.", "voc."))}
         extra["kimi_audio"] = kj["config"]
         extra["whisper_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith("whisper.")}
+    fc = d / "fish_codec.json"
+    if fc.exists():
+        # 0.277 Fish Audio Drama 3: DAC codec.pth shapes (scripts/fetch_fish_codec.py) drive drama3.dac_ops
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from fetch_fish_codec import codec_extra
+        extra.update(codec_extra(json.loads(fc.read_text())))
     t2w = d / "token2wav.json"
     if t2w.exists():
         # 0.273 Step-Audio-2-mini: CosyVoice2-style token2wav shipped as .pt (scripts/fetch_pt_release.py --token2wav):

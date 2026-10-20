@@ -6,6 +6,31 @@
 
 
 
+## [0.277.0]
+
+### Changed: faster streams-vs-SLC calculation, same results (MODEL §222.1)
+- `speech_insight.speech_streams` output is byte-identical to 0.276 for every model except Drama 3, whose DAC is now costed (below). Checked by `cmp` of the full 15 models × 6 SLC JSON and by `tests/test_core_277.py`, which runs the 0.276 algorithm verbatim on moshi / Fun-CosyVoice3 / Kimi.
+- Native full run (15 models × 6 SLC sizes): 128 s → 46 s on the box. Engine reruns went from 936 to 679. The savings come from:
+  - `speech_kpis(..., lm_only=True)`. Omni, CosyVoice, Kimi, Moshi and Drama 3 return only the LM-card stage loads and the fit verdict, using the same expressions as the full KPIs. That skips speech-card timing and Moshi's own streams search, which the LM-card search never reads.
+  - One memo of batch → verdict per SLC point, shared between the search and the b + 1 limit probe.
+  - A near search: from the previous SLC size's answer, step ±1, ±2, ±4, then bisect. It is exact because x(b) is monotone, which was already assumed.
+  - Memoised pure functions: `mapping._sub_chip` (core-group sub-chips), `evaluate._tts_step_flops`, and `speech._firered_fixed` (prompt encode + RedAE decode).
+- UI: the "实时路数 / 卡 vs SLC" table sends one request per model and appends rows as they arrive. Status reads "计算中 i/n 模型". The run token is checked, so a newer run discards older replies (the existing per-channel stale discard is kept). In the static (Pyodide) build one model takes about 3–12 s in the slow-lane worker.
+
+### Added: Fish Audio Drama 3 DAC decoder cost (MODEL §222.2)
+- `scripts/fetch_fish_codec.py` reads codec.pth (1.87 GB torch zip pickle) with `fetch_torch_ckpt`: 1.5 MB fetched, no torch needed. It writes the decode-path shapes into the release JSON (`codec_tensors`, `params_codec` 391.4 M, `params_codec_decode` 184.5 M, F32). `summarize_release.py` picks up the same keys from `fish_codec.json`.
+- `drama3.dac_ops(fs, new, ctx, hist, batch)` follows fish-speech `rvq.decode` + `modded_dac.Decoder`: codebook lookups → out_proj → 8-layer causal window transformer (dim 1024, window 128) → 2 × (ConvTranspose 2 + ConvNeXt) → conv7 1024 → 1536 → 4 DecoderBlocks (strides 8, 8, 4, 2, derived from the shapes) → conv7 → 1. That is 6.77 GFLOP per frame, matching an independent hand count (test). Windows follow the vllm-omni ramp of 6, 8, 12, 16, 24, 32, then 64 frames (`dac_windows`).
+- `_fish_kpis`: the DAC is colocated with the LM and time-shared. The recipe runs both stages on one GPU, so RTF = LM RTF + Σ DAC(window, b) / audio. The b streams batch each window (vllm-omni `per_step_batch`). Decoding is stateful; the re-decode of left context is reported as `dac.redecode_s_per_request`. First audio adds DAC window 0. The 0.74 GB of fp32 decode weights count toward the card's memory fit.
+- On 100T + LPDDR5X at batch 1:
+  - DAC load 0.0106 (LM RTF 0.660 → 0.671);
+  - first audio +5.0 ms;
+  - streams per card 3 / 3 / 4 / 5 / 7 / 8 at SLC 0 / 0.5 / 1 / 2 / 4 / 8 GiB, against 3 / 4 / 4 / 5 / 8 / 9 in 0.276.
+- Coverage: drama-3 goes from partial to full.
+
+### Changed: test_core_237 runtime guard
+- The primary guard now counts deterministic work per case (`_Pool.run` and `_chunk_fused` calls at ≤ 1.5 × the 0.277 counts), which does not depend on load.
+- The CPU-second bounds are kept: 45 s / 90 s when run alone, × 2 when `scripts/run_tests.py` runs files in parallel (new env var `ACCEL_TEST_JOBS`).
+
 ## [0.276.0]
 
 ### Added: real-time streams per card vs SLC size (MODEL §221.1)

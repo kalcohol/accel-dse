@@ -137,24 +137,58 @@ def _with_slc(base: Scenario, gib: float) -> Scenario:
     return base.replace("chip", chip)
 
 
-def _lm_ok(base: Scenario, mid: str, audio_s: float, b: int) -> tuple[bool, dict, dict]:
-    """b concurrent streams on the LM card(s): every stage except the separate speech card keeps up, and it fits."""
+def _lm_load(k: dict, audio_s: float) -> dict:
+    """LM-card stage loads {stage: x} of a speech-KPI dict (full or ``lm_only``) — every stage but the speech card."""
+    if "lm_stages" in k:
+        return dict(k["lm_stages"])
+    return {s: v for s, v in _stages(k, audio_s)[0].items() if s not in SPEECH_CARD}
+
+
+def _lm_ok(base: Scenario, mid: str, audio_s: float, b: int, lm_only: bool = False) -> tuple[bool, dict, dict]:
+    """b concurrent streams on the LM card(s): every stage except the separate speech card keeps up, and it fits.
+    ``lm_only`` (0.277): skip the speech-card timing the verdict does not read (speech.speech_kpis) — same verdict."""
     from .speech import speech_kpis
-    k = speech_kpis(_scn(base, mid, audio_s).replace("serving.batch", b), audio_s)
-    st = _stages(k, audio_s)[0]
-    lm = {s: v for s, v in st.items() if s not in SPEECH_CARD}
+    k = speech_kpis(_scn(base, mid, audio_s).replace("serving.batch", b), audio_s, lm_only=lm_only)
+    lm = _lm_load(k, audio_s)
     return (bool(k["fits"]) and max(lm.values()) <= 1.0), lm, k
 
 
-def _max_streams(ok, guess: int = 1) -> int:
-    """Largest b in [0, MAX_STREAMS] with ok(b) — engine reruns, ok assumed monotone in b.  Galloping search from
-    ``guess`` (the linear prediction): doubling up / halving down to a bracket, then bisection."""
-    memo: dict[int, bool] = {}
+def _max_streams(ok, guess: int = 1, memo: dict | None = None, near: bool = False) -> int:
+    """Largest b in [0, MAX_STREAMS] with ok(b) — engine reruns, ok assumed monotone in b, so the result does not depend
+    on ``guess`` (only the number of reruns does).  ``memo`` {b: bool} is shared with the caller (b = 1, 2 and the b + 1
+    limit probe are not rerun).  From ``guess``: ``near`` = False (a linear prediction, possibly far off) → doubling /
+    halving to a bracket; ``near`` = True (the previous SLC size's answer) → steps of +1, +2, +4 … (or −1, −2 …); then
+    bisection."""
+    memo = {} if memo is None else memo
     f = lambda b: memo[b] if b in memo else memo.setdefault(b, bool(ok(b)))
     if not f(1):
         return 0
     g = max(1, min(int(guess), MAX_STREAMS))
-    if f(g):
+    if near:
+        step = 1
+        if f(g):
+            lo = g
+            while True:
+                c = lo + step
+                if c > MAX_STREAMS:
+                    hi = MAX_STREAMS + 1
+                    break
+                if not f(c):
+                    hi = c
+                    break
+                lo, step = c, 2 * step
+        else:
+            hi = g
+            while True:
+                c = hi - step
+                if c <= 1:
+                    lo = 1
+                    break
+                if f(c):
+                    lo = c
+                    break
+                hi, step = c, 2 * step
+    elif f(g):
         lo, hi = g, min(2 * g, MAX_STREAMS + 1)
         while hi <= MAX_STREAMS and f(hi):
             lo, hi = hi, min(2 * hi, MAX_STREAMS + 1)
@@ -191,23 +225,34 @@ def speech_streams(base: Scenario, models=SPEECH_MODELS, audio_s: float = 10.0, 
     out_rows = []
     for mid in models:
         row = {"model": mid, "curve": []}
+        prev = 0                             # 0.277: the previous SLC size's N_lm — a near guess (search count only)
         for gib in slc_gib:
             sb = _with_slc(base, gib)
-            ok1, lm1, k1 = _lm_ok(sb, mid, audio_s, 1)
+            runs: dict[int, tuple] = {}      # 0.277: b → (ok, lm loads, kpis) — every engine rerun of this point, once
+
+            def run(b: int, sb=sb, runs=runs) -> tuple:
+                if b not in runs:
+                    runs[b] = _lm_ok(sb, mid, audio_s, b, lm_only=True)
+                return runs[b]
+            runs[1] = _lm_ok(sb, mid, audio_s, 1)        # full KPIs at b = 1 (the speech card's own streams)
+            ok1, lm1, k1 = runs[1]
             lm_cards = _scn(sb, mid, audio_s).layout.cards
             n_sc = None
             if "speech_card" in _stages(k1, audio_s)[0]:
                 n_sc = int(k1.get("streams_realtime") or 0)
-            _, lm2, _ = _lm_ok(sb, mid, audio_s, 2)
+            _, lm2, _ = run(2)
             x1, x2 = max(lm1.values()), max(lm2.values())
             d = x2 - x1
             pred = (max(0, math.floor((1.0 - (x1 - d)) / d + 1e-9)) if d > 1e-12 else (MAX_STREAMS if x1 <= 1 else 0)) \
                 if x1 <= 1 else 0
-            n_lm = _max_streams(lambda b: _lm_ok(sb, mid, audio_s, b)[0], max(1, pred)) if ok1 else 0
+            memo = {b: r[0] for b, r in runs.items()}
+            n_lm = (_max_streams(lambda b: run(b)[0], prev, memo, near=True) if prev
+                    else _max_streams(lambda b: run(b)[0], max(1, pred), memo)) if ok1 else 0
+            prev = n_lm
             if n_lm >= MAX_STREAMS:
                 limit = "cap"
             else:                            # what stops one more stream: real time or memory
-                _, lmn, kn = _lm_ok(sb, mid, audio_s, n_lm + 1)
+                _, lmn, kn = run(n_lm + 1)
                 limit = "realtime" if max(lmn.values()) > 1.0 else "memory" if not kn["fits"] else "realtime"
             if n_sc is None:
                 sc_cards, n = 0, n_lm

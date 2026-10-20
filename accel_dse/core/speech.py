@@ -25,6 +25,7 @@ defaults are the caller's workload assumption 「假设」.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 from .evaluate import evaluate
 from .scenario import Scenario
@@ -38,7 +39,7 @@ def _omni_time(ops: list, sys, org: str, af: str) -> float:
     return c["s"] + kv / (sys.dram_GBps * 1e9)
 
 
-def _omni_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
+def _omni_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) -> dict:
     from .hardware import System
     from .ir import _cdiv
     from .omni import bigvgan_ops, dit_eval_ops, omni_pin, omni_slc_plan, scale_weights, talker_ops, talker_weight_bytes
@@ -51,6 +52,10 @@ def _omni_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     b = _cdiv(sv.batch, lay.dp)
     P = pre.scenario.serving.prompt         # text + audio positions (expand_images); the Talker prefills over all of them
     n_codec = max(1, math.ceil(audio_out_s * o.codec_per_s - 1e-9))
+    if lm_only:              # 0.277: thinker load + fit verdict only (same expressions as below)
+        need = o.stored_bytes + b * o.talker_kv_bytes(P + n_codec)
+        return {"kind": "omni", "lm_stages": {"thinker": sv.out_len * dec.tpot / audio_out_s},
+                "fits": pre.fits and dec.fits and need <= sys.dram_bytes}
     t_pre = _omni_time(talker_ops(o, b, P, 0), sys, org, "bf16")
 
     miss = omni_pin(o, sys.chip.sram_bytes)
@@ -114,7 +119,7 @@ def _omni_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     return out
 
 
-def _cosy_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
+def _cosy_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) -> dict:
     """0.271 CosyVoice2 / 3 (core/cosyvoice.py): the LM (catalog model) decodes 25 speech tokens / s on the scenario's
     cards; flow + HiFT run per streamed chunk on a speech card per replica 「假设」, batch 1 (one stream after another).
         first audio = T_ft + (hop₀ + 3 look-ahead) · TPOT + flow(prompt + hop₀ + 3 tokens) + HiFT(chunk 0)
@@ -130,6 +135,9 @@ def _cosy_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     org = scn.mapping
     n_tok = max(1, math.ceil(audio_out_s * c.token_rate - 1e-9))
     dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.ctx", sv.prompt + n_tok // 2))
+    if lm_only:              # 0.277: LM load + fit verdict only
+        return {"kind": "cosyvoice", "lm_stages": {"lm": c.token_rate * dec.tpot},
+                "fits": pre.fits and dec.fits and c.stored_bytes <= sys.dram_bytes}
     miss = cosy_pin(c, sys.chip.sram_bytes)
     from .evaluate import _component_time
 
@@ -194,7 +202,7 @@ def _cosy_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
             "fits": pre.fits and dec.fits and c.stored_bytes <= sys.dram_bytes}
 
 
-def _kimi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
+def _kimi_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) -> dict:
     """0.273 Kimi-Audio (core/kimi_audio.py): the LM (catalog model, 28 + 6 layers, two heads) emits one audio token per
     step at 12.5 / s after ``delay`` blank steps; the detokenizer (DiT + BigVGAN) runs per chunk on a speech card per
     replica 「假设」, batch 1.
@@ -214,6 +222,10 @@ def _kimi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     org = scn.mapping
     n_tok = max(1, math.ceil(audio_out_s * k.token_rate - 1e-9))
     dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.ctx", sv.prompt + k.delay + n_tok // 2))
+    if lm_only:              # 0.277: LM load + fit verdict only
+        need = k.stored_bytes + _cdiv(sv.batch, lay.dp) * k.kv_bytes(k.max_kv)
+        return {"kind": "kimi", "lm_stages": {"lm": k.token_rate * dec.tpot},
+                "fits": pre.fits and dec.fits and need <= sys.dram_bytes}
     miss = kimi_pin(k, sys.chip.sram_bytes)
     bw = sys.dram_GBps * 1e9
 
@@ -261,7 +273,7 @@ def _kimi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     return out
 
 
-def _moshi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
+def _moshi_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) -> dict:
     """0.274 Moshi (core/moshi.py): per 80 ms frame, serially on the replica's card 「假设」 (server.py runs Mimi and
     the LM on one device): Mimi encode (user frame) → temporal step (the catalog model's decode at batch b, context =
     the KV ring buffer: min(serving.ctx or 3000, 3000) frames) → 8 depformer steps → Mimi decode.
@@ -298,6 +310,8 @@ def _moshi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
         return t
     b = _cdiv(sv.batch, lay.dp)
     f = frame(b)
+    if lm_only:              # 0.277: frame load + fit verdict only (no streams search)
+        return {"kind": "moshi", "lm_stages": {"frame": f["frame_s"] / FRAME_S}, "fits": f["fits"] and pre.fits}
     lo, hi = 0, 1
     while hi <= 1024 and frame(hi)["frame_s"] <= FRAME_S:
         lo, hi = hi, hi * 2
@@ -329,6 +343,16 @@ def _cv(x) -> int:
     return int(x() if callable(x) else x)
 
 
+@lru_cache(maxsize=256)
+def _firered_fixed(t, pa: float, steps: int, sys, org: str) -> tuple:
+    """0.277: per-request prompt encode seconds and the RedAE decode cost — batch-independent component times, memoised
+    (a pure function of the frozen spec / system), so a batch search does not rebuild them every rerun."""
+    from .evaluate import _component_time
+    from .fireredtts3 import prompt_ops, redae_decode_ops
+    return (_component_time([(prompt_ops(t, pa), 1)], sys, org, "fp32")["s"],
+            _component_time([(redae_decode_ops(t, steps * t.patch), 1)], sys, org, "fp32"))
+
+
 def _firered_kpis(scn: Scenario, t, audio_out_s: float) -> dict:
     """0.275 FireRedTTS3-Base (core/fireredtts3.py), one text segment, non-streaming 「来源」 (generate → redae.decode):
         prompt   = RedAE encoder (prompt audio) + patch encoder (prompt latents) + spk projections
@@ -351,8 +375,8 @@ def _firered_kpis(scn: Scenario, t, audio_out_s: float) -> dict:
     sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
                  scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
     b = max(1, sv.batch // max(1, scn.layout.dp))
-    t_prompt = _component_time([(prompt_ops(t, pa), 1)], sys, scn.mapping, "fp32")["s"] * b
-    dr = _component_time([(redae_decode_ops(t, steps * t.patch), 1)], sys, scn.mapping, "fp32")
+    t1, dr = _firered_fixed(t, pa, steps, sys, scn.mapping)
+    t_prompt = t1 * b
     t_dec = dr["s"] * b                   # one decode per request (RedAE.decode takes b = 1 「来源」)
     gen = steps * dec.tpot
     tot = t_prompt + pre.ttft + gen + t_dec
@@ -384,13 +408,30 @@ def _firered_kpis(scn: Scenario, t, audio_out_s: float) -> dict:
             "fits": pre.fits and dec.fits}
 
 
-def _fish_kpis(scn: Scenario, fs, audio_out_s: float) -> dict:
+@lru_cache(maxsize=1024)
+def _dac_window(fs, new: int, ctx: int, hist: int, batch: int, sys, org: str) -> float:
+    """0.277: seconds of one DAC window decode (``batch`` streams' windows in one forward, fp32) — memoised pure function."""
+    from .drama3 import dac_ops
+    from .evaluate import _component_time
+    return _component_time([(dac_ops(fs, new, ctx, hist, batch), 1)], sys, org, "fp32")["s"]
+
+
+def _fish_kpis(scn: Scenario, fs, audio_out_s: float, lm_only: bool = False) -> dict:
     """0.276 Fish Audio Drama 3 (core/drama3.py), streaming 「来源」 (vllm-omni fish_omni → dac_decoder async chunks):
         prompt  = text tokens + one row per voice-reference frame (serving.audio_s, default drama3.REF_S 「假设」)
         step    = one 10-codebook frame (2048 / 44.1 kHz = 46.4 ms) = backbone token + 13-layer codebook tower + heads
-        first audio = prefill + the first chunk of CHUNK_RAMP[0] = 6 frames (the DAC's own time not costed)
-        RTF = TPOT / frame (Stage 0 only)."""
-    from .drama3 import CHUNK_RAMP, REF_S
+        LM RTF  = TPOT / frame (Stage 0)
+    0.277 Stage 1 (DAC decode, drama3.dac_ops) on the same card(s) 「来源」 (recipe: both stages on one GPU; deploy memory
+    0.78 stage 0 / 0.1 codec), time-shared with the LM 「假设」 (no overlap: the two loads add).  Windows =
+    drama3.dac_windows (ramp 6 … 32, then 64); the b streams of a replica decode each window in one batched forward
+    (per_step_batch 「来源」; windows aligned 「近似」).  Stateful 「假设」 (fish_speech_dac_stateful: only new frames); the
+    module decoder's re-decode of the ≤ 32 left-context frames is reported as ``dac.redecode_s_per_request``.
+        DAC load  = Σ_windows DAC(window, b) / audio_out_s ;  RTF = LM RTF + DAC load
+        first audio = prefill + 6 decode steps + DAC(window 0, batch 1)
+        memory: the 0.74 GB fp32 decode weights on the LM card (last PP stage)
+    ``lm_only`` (speech_insight.speech_streams): only {kind, lm_stages, fits} — same expressions."""
+    from .drama3 import CHUNK_RAMP, REF_S, dac_gflop_per_frame, dac_params, dac_windows
+    from .hardware import System
     sv = scn.serving
     ref = sv.audio_s or REF_S
     rows = fs.ref_rows(ref)
@@ -399,31 +440,60 @@ def _fish_kpis(scn: Scenario, fs, audio_out_s: float) -> dict:
     steps = max(1, math.ceil(audio_out_s / fs.frame_s - 1e-9))
     dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.prompt", p_tok)
                    .replace("serving.ctx", p_tok + steps // 2).replace("serving.audio_s", 0))
+    lm_rtf = dec.tpot / fs.frame_s
+    fits = pre.fits and dec.fits
+    x_dac, gb = 0.0, 0.0
+    if fs.codec:
+        sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
+                     scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
+        b = max(1, sv.batch // max(1, scn.layout.dp))
+        win = dac_windows(steps)
+        tb = [_dac_window(fs, n, 0, done, b, sys, scn.mapping) for n, _, done in win]
+        x_dac = sum(tb) / audio_out_s
+        gb = dac_params(fs) * 4.0 / 1e9
+        mp = dec.stages[-1].mem
+        fits = fits and mp.dram_need + gb * 1e9 <= mp.dram_cap
+    if lm_only:
+        return {"kind": "tts", "lm_stages": {"lm": lm_rtf + x_dac}, "fits": fits}
     c0 = min(CHUNK_RAMP[0], steps)
     first = pre.ttft + c0 * dec.tpot
     tot = pre.ttft + steps * dec.tpot
-    return {"kind": "tts", "label": "Drama 3", "stream": "chunk", "audio_out_s": audio_out_s, "steps": steps,
-            "frame_ms": fs.frame_s * 1e3, "ref_audio_s": ref, "ref_rows": rows, "prompt_rows": p_tok,
-            "first_chunk_frames": c0, "first_audio_s": first, "ttft_s": pre.ttft, "tpot_s": dec.tpot, "total_s": tot,
-            "rtf": dec.tpot / fs.frame_s, "split_first": {"prefill_s": pre.ttft, "first_chunk_steps_s": c0 * dec.tpot},
-            "dac_costed": False, "audio_out_s_per_s_card": sv.batch * audio_out_s / tot / pre.scenario.layout.cards,
-            "fits": pre.fits and dec.fits}
+    split = {"prefill_s": pre.ttft, "first_chunk_steps_s": c0 * dec.tpot}
+    out = {"kind": "tts", "label": "Drama 3", "stream": "chunk", "audio_out_s": audio_out_s, "steps": steps,
+           "frame_ms": fs.frame_s * 1e3, "ref_audio_s": ref, "ref_rows": rows, "prompt_rows": p_tok,
+           "first_chunk_frames": c0, "ttft_s": pre.ttft, "tpot_s": dec.tpot, "lm_rtf": lm_rtf, "rtf": lm_rtf + x_dac,
+           "dac_costed": bool(fs.codec)}
+    if fs.codec:
+        t1 = [_dac_window(fs, n, 0, done, 1, sys, scn.mapping) for n, _, done in win]
+        tr = [_dac_window(fs, n, ctx, 0, 1, sys, scn.mapping) for n, ctx, _ in win]
+        first += t1[0]
+        tot += tb[-1]
+        split["dac_window0_s"] = t1[0]
+        out["dac"] = {"windows": [n for n, _, _ in win], "batch": b, "s": tb, "s_batch1": t1, "load": x_dac,
+                      "s_per_request_batch1": sum(t1), "redecode_s_per_request": sum(tr), "params": dac_params(fs),
+                      "GB": gb, "stateful": True, "colocated": True, "gflop_per_frame": dac_gflop_per_frame(fs)}
+    out.update({"first_audio_s": first, "total_s": tot, "split_first": split,
+                "audio_out_s_per_s_card": sv.batch * audio_out_s / tot / pre.scenario.layout.cards, "fits": fits})
+    return out
 
 
-def speech_kpis(scn: Scenario, audio_out_s: float = 10.0) -> dict:
+def speech_kpis(scn: Scenario, audio_out_s: float = 10.0, lm_only: bool = False) -> dict:
+    """``lm_only`` (0.277, speech_insight.speech_streams): omni / cosyvoice / kimi / moshi return only
+    {kind, lm_stages, fits} — the LM-card stage loads and the fit verdict by the same expressions as the full KPIs, without
+    the speech-card timing (or Moshi's own streams search) that the LM-card search never reads.  Other kinds ignore it."""
     sv = scn.serving
     pre = evaluate(scn.replace("serving.phase", "prefill"))
     m = pre.model
     if getattr(m, "omni", None) is not None:
-        return _omni_kpis(scn, pre, audio_out_s)
+        return _omni_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "cosy", None) is not None:
-        return _cosy_kpis(scn, pre, audio_out_s)
+        return _cosy_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "kimi", None) is not None:
-        return _kimi_kpis(scn, pre, audio_out_s)
+        return _kimi_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "moshi", None) is not None:
-        return _moshi_kpis(scn, pre, audio_out_s)
+        return _moshi_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "fish", None) is not None:
-        return _fish_kpis(scn, m.fish, audio_out_s)
+        return _fish_kpis(scn, m.fish, audio_out_s, lm_only)
     ts = getattr(m, "tts", None)
     au = getattr(getattr(m, "vision", None), "audio", None)
     if ts is not None and getattr(ts, "kind", "") == "firered":

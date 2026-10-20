@@ -70,8 +70,14 @@ def test_runtime_guard_phase_law_paths():
     # 0.238: CPU time, not wall (the suite runs files in parallel: 66.95 s wall under load vs 57.6 s alone), and the
     # phase-law paths (the colocated modes) are guarded on their own at 45 s (24.4 s alone, 30.0 under suite load) — the rest of the vllm 4096 cv 0.5
     # report is the disaggregated bulk law (≈ 60 % of its 52.6 s already in 0.237), kept under a 90 s gross bound.
+    # 0.277: CPU seconds still inflate under `run_tests.py -j 8` (62 s seen vs 29.3 s alone at 0.276 for the vllm cv 0.5
+    # case), so the primary guard is now deterministic work: engine reruns (_Pool.run) and chunk-fused step costs
+    # (_chunk_fused) per case, at ≤ 1.5 × their 0.277 counts — load-independent and tighter than either time bound for the
+    # regression class these limits exist for (exploding loops).  The CPU-time bounds stay: 45 s / 90 s run alone, × 2
+    # under the parallel runner (ACCEL_TEST_JOBS > 1), still far below the 22 min / 30 min regressions.
     from accel_dse.core import pdqueue
     spent = [0.0]
+    work = {"run": 0, "chunk": 0}
 
     def timed(fn):
         def run(*a, **k):
@@ -81,22 +87,41 @@ def test_runtime_guard_phase_law_paths():
             finally:
                 spent[0] += time.process_time() - c0
         return run
-    saved = (pdqueue._coloc_chunked, pdqueue._coloc_prefill_first)
+
+    def counted(key, fn):
+        def run(*a, **k):
+            work[key] += 1
+            return fn(*a, **k)
+        return run
+    saved = (pdqueue._coloc_chunked, pdqueue._coloc_prefill_first, pdqueue._Pool.run, pdqueue._chunk_fused)
     pdqueue._coloc_chunked, pdqueue._coloc_prefill_first = timed(saved[0]), timed(saved[1])
+    pdqueue._Pool.run, pdqueue._chunk_fused = counted("run", saved[2]), counted("chunk", saved[3])
     try:
-        _guard_cases(spent)
+        _guard_cases(spent, work)
     finally:
-        pdqueue._coloc_chunked, pdqueue._coloc_prefill_first = saved
+        pdqueue._coloc_chunked, pdqueue._coloc_prefill_first, pdqueue._Pool.run, pdqueue._chunk_fused = saved
 
 
-def _guard_cases(spent):
+# 0.277 work counts per case (fresh process, box): (_Pool.run calls, _chunk_fused calls)
+_WORK = {"sglang_mixed": (13710, 3360), "sglang": (9010, 106), "vllm_v0": (17105, 6341), "vllm": (37869, 24090)}
+
+
+def _guard_cases(spent, work=None):
+    import os
+    par = int(os.environ.get("ACCEL_TEST_JOBS", "1") or 1) > 1
+    lim = 2.0 if par else 1.0
     for kw in (dict(prompt=4096, cap=48.0, chunk_profile="sglang_mixed"), dict(prompt=6000, cap=48.0, chunk_profile="sglang"),
                dict(prompt=6000, cap=48.0, chunk_profile="vllm_v0"), dict(prompt=4096, chunk_profile="vllm", prompt_cv=0.5)):
         spent[0] = 0.0
+        if work is not None:
+            work.update(run=0, chunk=0)
         c0 = time.process_time()
         q = disagg_report(_pd(**kw))["queue"]
         total = time.process_time() - c0
         assert q["modes"]["coloc_chunked"].get("stable") is not None
         assert spent[0] > 0, kw
-        assert spent[0] < 45, (kw, spent[0])
-        assert total < 90, (kw, total)
+        if work is not None:
+            r0, c0_ = _WORK[kw["chunk_profile"]]
+            assert 0 < work["run"] <= 1.5 * r0 and work["chunk"] <= 1.5 * c0_ + 10, (kw, work)
+        assert spent[0] < 45 * lim, (kw, spent[0])
+        assert total < 90 * lim, (kw, total)

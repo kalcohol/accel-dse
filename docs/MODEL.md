@@ -7291,3 +7291,58 @@ Search: gallop (doubling) from max(1, pred), then bisection. The calls are memoi
 - 100T + LPDDR5X, b = 1: TPOT 30.7 ms (≈ 5.9 GB per step: bf16 attention / tower / shared 4.8 GB + 8 × 40 fp8 experts 1.0 GB, at effective bandwidth; test ±15 %), RTF 0.66, first audio 378 ms.
 - Streams per card: 3 at SLC 0 → 9 at 8 GiB.
 - External reference (not fitted, not in ext_validation): the README measures 166.7 frames/s at concurrency 1 on one H200 (6.0 ms per frame) and 1687 frames/s at 64. The engine on H100-like gives 2.5 ms (398 frames/s) at b = 1 and 3537 frames/s at 64, so it is ≈ 2.1–2.4× optimistic. Likely causes are per-step fixed costs (53 layers, 10 serial code samples, scheduler) and the DAC sharing the GPU. Left as a known gap; `layer_overhead_us` exists but is not set from this data.
+
+## §222 Speech round 8: faster streams vs SLC, Drama 3 DAC decoder (0.277)
+
+### §222.1 streams vs SLC: same results, fewer and cheaper reruns
+The §221.1 definition is unchanged:
+
+    streams_lm(S) = max b ≤ 1024 such that fits(b) and max_{stage ≠ speech_card} x_stage(b) ≤ 1
+
+Only the way it is evaluated changes:
+- **What a rerun computes.** The verdict reads only the LM-card stage loads and `fits`. `speech_kpis(lm_only=True)` returns exactly those for omni / cosyvoice / kimi / moshi / Drama 3, using the same expressions (「推导」: identical numbers, see `test_lm_only_matches_full_kpis`). The speech-card component times (flow / HiFT / DiT / BigVGAN / talker / Mimi) and Moshi's inner streams search are skipped.
+- **Which b are rerun.** One memo {b: verdict} per SLC point is shared by the search and the b + 1 limit probe. From S_{i−1}'s answer n, the search tries n ± 1, ± 2, ± 4 … until the verdict flips, then bisects. Because x(b) is monotone (the §221 assumption), the result does not depend on the start point; only the rerun count does (`test_near_search_exact`).
+- **Memoised pure functions** of frozen specs:
+  - `mapping._sub_chip(chip, engines, act)` (the core-group sub-chip of a split schedule);
+  - `evaluate._tts_step_flops(ts)`;
+  - `speech._firered_fixed(t, prompt_s, steps, sys, org)`;
+  - `speech._dac_window(fs, new, ctx, hist, batch, sys, org)`.
+
+Native timing, 15 models × 6 SLC sizes on the box: 128 s (0.276) → 46 s; 936 → 679 engine reruns. What remains is the generic evaluate path (overlap feed, GEMM cost), which this round leaves alone.
+
+The UI issues one request per model and appends rows as they arrive. The run token plus the per-channel stale discard keep it non-blocking and order-safe. In Pyodide one model takes about 3–12 s in the slow-lane worker.
+
+### §222.2 Drama 3 DAC decoder
+**Shapes and dtype.** These come from codec.pth via `scripts/fetch_fish_codec.py` 「来源」. The architecture comes from fish-speech `fish_speech/models/dac/rvq.py` (`DownsampleResidualVectorQuantize.decode`) and `modded_dac.py` (`Decoder`, `DecoderBlock`, `ResidualUnit`, `WindowLimitedTransformer`) 「来源」. codec.pth stores no hyper-parameters. The window of 128 and head_dim of 64 come from `configs/modded_dac_vq.yaml` 「假设」 (head_dim is consistent with freqs_cis [4096, 32, 2]).
+
+The decode path of one frame (2048 samples at 44.1 kHz):
+
+    lookups (1 semantic 4096×8 + 9 residual 1024×8) → out_proj 8→1024 (×10, summed)
+    → post_module: 8 × [GQA-free MHA 16×64 over ≤ 128 keys + SwiGLU 3072] at the frame rate
+    → upsample: [ConvT k=s=2 (1024→1024) + ConvNeXt(1024, 4×)] × 2   (×4 positions)
+    → decoder: conv7 1024→1536; DecoderBlock(s) for s = 8, 8, 4, 2: Snake, ConvT k=2s (C→C/2), 3 × ResidualUnit
+      (Snake, conv7 dil 1/3/9, Snake, conv1); Snake, conv7 96→1          (×2048 positions)
+
+- **Rates** 「推导」 from the shapes: ConvT weights are [in, out, k]. The quantizer has k = s and the decoder has k = 2s, giving 2·2 · 8·8·4·2 = 2048 = the codec hop.
+- **Cost model.** One fp32 GEMM per weight tensor, with rows = the positions it runs at; a ConvT is counted per input position with n = out·k. Snake costs 5 element ops + 1 sin per input element. Attention uses the last row's min(128, position) keys 「近似」 (an upper bound).
+- **Total:** 6.77 GFLOP / frame, of which the decoder is 6.43 and the transformer 0.22. `test_flops_per_frame_by_hand` reproduces this from a separate closed form.
+- **Weights:** 184.5 M fp32 = 0.74 GB, read once per window forward. `_component_time` streams them from DRAM; the SLC does not hold them 「近似」.
+
+**Windows** (vllm-omni `stage_input_processors/fish_omni.py` 「来源」): 6, 8, 12, 16, 24, 32, then 64 frames. Each window has min(32, emitted) left-context frames.
+- **Stateful** (the CUDA `fish_speech_dac_stateful` path, which keeps convolution history and window K/V) decodes only the new frames. This is the default 「假设」, since an accelerator port would keep that state.
+- **Module decoder** re-decodes the left context; that cost is reported as `redecode_s_per_request`. At batch 1 on 100T it is 0.174 s against 0.106 s stateful per 10 s of audio.
+
+**Placement** 「来源」: the recipe's measured and default deploy runs both stages on one GPU (memory 0.78 / 0.1). On a card the two stages are time-shared 「假设」 (their loads add):
+
+    RTF(b) = TPOT(b) / frame + Σ_windows DAC(window, batch b) / audio_s
+    first audio = TTFT + 6 · TPOT + DAC(window 0, batch 1)
+    fits = engine fits and dram_need(last stage) + 0.74 GB ≤ dram_cap
+
+The b streams' windows are decoded in one forward (`per_step_batch` 「来源」), with the windows taken as aligned 「近似」: rows × b, weights read once.
+
+**100T + LPDDR5X results:**
+- DAC load at b = 1: 0.0106 (1.6 % of the LM's 0.660).
+- First audio +5.0 ms (383 ms in total).
+- Streams per card vs SLC 0 / 0.5 / 1 / 2 / 4 / 8 GiB: 3 / 3 / 4 / 5 / 7 / 8 (0.276 without the DAC: 3 / 4 / 4 / 5 / 8 / 9).
+- At large SLC the LM step is cheap, so the fixed DAC share costs one stream.
+- The README H200 gap (§221.3) is not explained by the DAC.

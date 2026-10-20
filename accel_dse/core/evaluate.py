@@ -1998,13 +1998,20 @@ def _asr_info(m: ModelSpec, sv, vis: dict | None, step: float, tpot: float, thr:
     return out
 
 
-def _tts_info(m: ModelSpec, sv, tpot: float, thr: float) -> dict:
-    """0.269 TTS KPIs: one decode step = one latent = ``s_per_step`` of audio (Ming: 80 ms)."""
+@lru_cache(maxsize=64)
+def _tts_step_flops(ts) -> tuple:
+    """0.277: per-step TTS head FLOPs at b = 1 — a pure function of the (frozen) spec, memoised (it rebuilt the head's
+    op list on every evaluate)."""
     from .tts import tts_step_flops
-    ts = m.tts
     if getattr(ts, "kind", "") == "firered":          # 0.275 FireRedTTS3
         from .fireredtts3 import fire_step_flops as tts_step_flops
-    f = tts_step_flops(ts)
+    return tuple(tts_step_flops(ts).items())
+
+
+def _tts_info(m: ModelSpec, sv, tpot: float, thr: float) -> dict:
+    """0.269 TTS KPIs: one decode step = one latent = ``s_per_step`` of audio (Ming: 80 ms)."""
+    ts = m.tts
+    f = dict(_tts_step_flops(ts))
     wb = getattr(ts, "w_bytes", 2.0)
     llm = 2.0 * m.active_params()
     out = {"s_per_step": ts.s_per_step, "flow_steps": ts.flow_steps, "cfg": ts.cfg_mult, "rate": ts.rate,

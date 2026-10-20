@@ -73,7 +73,7 @@ function domainBadge(m) {
   // 0.268: audio-only release (Ming-3.0-asr-tiny) — the encoder is costed via serving.audio_s (API / CLI --audio-s)
   if (m.domain === 'tts' && /CosyVoice/.test(m.hf_id || '')) return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · LM 每秒 25 个语音 token → 分块流匹配 → HiFT 声码器（按输出音频秒计）');   // 0.271
   if (m.domain === 'tts' && m.family === 'Drama 3') return h('span', { class: 'badge vlm', title: coverTip(m) },   // 0.276
-    'TTS · Qwen3.5-MoE 主干 + 13 层码本塔 · 21.5 帧/s（DAC 未计）');
+    'TTS · Qwen3.5-MoE 主干 + 13 层码本塔 · 21.5 帧/s + DAC 解码（同卡）');
   if (m.domain === 'tts' && m.family === 'FireRedTTS3') return h('span', { class: 'badge vlm', title: coverTip(m) },   // 0.275
     '语音合成 · Qwen3-1.7B 每步 → DiT 流匹配头（10 步 × CFG 2）出 4 帧潜变量（160 ms）→ 整段生成完后 RedAE 一次解码（非流式）');
   if (m.domain === 'tts') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · 每 token = 1 帧潜变量（流匹配头 + AudioVAE 解码）');
@@ -915,7 +915,9 @@ function renderEval(r) {
       + (p.split_first && p.split_first.prompt_s != null ? ` · 非流式：提示音频 ${num(p.prompt_audio_s)} s 编码 ${num(p.split_first.prompt_s * 1e3)} + 预填充 ${num(p.split_first.prefill_s * 1e3)}`   // 0.275 FireRedTTS3
         + ` + ${p.steps} 步 ${num(p.split_first.steps_s * 1e3)}（每步 ${num(p.tpot_s * 1e3)} ms：主干 + DiT ${p.flow_steps} 步 × CFG ${p.cfg} + patch 编码器）+ RedAE 解码 ${num(p.split_first.redae_decode_s * 1e3)} ms` : '')
       + (p.first_chunk_frames ? ` · 流式：每步 1 帧 ${num(p.frame_ms)} ms（主干 + 13 层码本塔，TPOT ${num(p.tpot_s * 1e3)} ms）· 首音频 = 预填充 ${num(p.split_first.prefill_s * 1e3)}`   // 0.276 Drama 3
-        + `（文本 + 参考音频 ${p.ref_rows} 行）+ 首块 ${p.first_chunk_frames} 帧 ${num(p.split_first.first_chunk_steps_s * 1e3)} ms · DAC 解码未计` : '')
+        + `（文本 + 参考音频 ${p.ref_rows} 行）+ 首块 ${p.first_chunk_frames} 帧 ${num(p.split_first.first_chunk_steps_s * 1e3)} ms`
+        + (p.dac ? ` + DAC 首窗 ${num(p.split_first.dac_window0_s * 1e3)} ms · DAC 与 LM 同卡分时（fp32 ${num(p.dac.GB)} GB，${num(p.dac.gflop_per_frame)} GFLOP/帧，有状态，${p.dac.batch} 路同批）`   // 0.277
+          + `：RTF ${num(p.lm_rtf)}（LM）+ ${num(p.dac.load)}（DAC）· 无状态重解左上下文 ${num(p.dac.redecode_s_per_request * 1e3)} ms/请求（有状态 ${num(p.dac.s_per_request_batch1 * 1e3)}）` : ' · DAC 解码未计') : '')
       + (p.dit_pin ? ` · fp32 DiT ${num(p.dit_pin.dit_GB)} GB × ${p.dit_pin.reads_per_step} 读/步：SRAM ${num(p.dit_pin.sram_pinned_GB)} + SLC ${num(p.dit_pin.slc_GB)} GB，`   // 0.276
         + `DRAM ${num(p.dit_pin.dram_GB_per_step)} GB/步（全驻留需 SLC ≈ ${num(p.dit_pin.slc_full_GiB)} GiB）` : '')
       + (p.bf16_recast ? ` · 若按 GPU autocast 逐步重铸 bf16：+${num(p.bf16_recast.extra_GB_per_step)} GB/步 → 每步 ${num(p.bf16_recast.tpot_s * 1e3)} ms、RTF ${num(p.bf16_recast.rtf)}（未计入）` : ''),
@@ -2113,24 +2115,37 @@ function speechStreamsCell(c) {
   return h('td', { title: tip, style: c.streams ? '' : 'color:var(--warn)' },
     c.streams ? `${num(c.streams_per_card)}${c.capped ? '+' : ''}` : '0');
 }
+// 0.277: one request per model (rows render as they land; the slow lane stays interleavable between models); a new
+// click supersedes the run (req drops the old reply, the static build frees its worker); a scenario edit marks it stale
+const SPS_ASR = ['qwen2-audio-7b-instruct', 'qwen3-asr-1.7b', 'fun-asr-nano-2512', 'whisper-large-v3',
+  'whisper-large-v3-turbo', 'ming-3.0-asr-tiny'];
+let spsRun = 0;
 async function runInsightSpeechStreams() {
-  $('ins-sps-status').textContent = '计算中（每模型 × 每个 SLC 容量，逐点重算）…';
+  const run = ++spsRun, v0 = S.ver, t0 = performance.now();
+  const gib = $('ins-sps-gib').value.split(',').map((x) => Number(x.trim())).filter((x) => Number.isFinite(x) && x >= 0);
+  const slc = gib.length ? gib : [0, 1, 2, 4, 8];
+  const models = $('ins-sps-asr').checked ? SPS_OUT.concat(SPS_ASR) : SPS_OUT;
+  const st = $('ins-sps-status');
+  st.textContent = `计算中（0/${models.length} 模型 × ${slc.length} 档，逐点重算）…`;
+  delete st.dataset.done;
+  const tb = h('tbody', {});
+  put($('ins-sps-tbl'), h('thead', {}, h('tr', {}, h('th', {}, '模型'), h('th', {}, '类型'),
+    ...slc.map((g) => h('th', {}, `SLC ${num(g)} GiB`)), h('th', {}, '首次实时'))), tb);
   try {
-    const gib = $('ins-sps-gib').value.split(',').map((x) => Number(x.trim())).filter((x) => Number.isFinite(x) && x >= 0);
-    const payload = { slc_gib: gib.length ? gib : [0, 1, 2, 4, 8] };
-    if (!$('ins-sps-asr').checked) payload.models = SPS_OUT;
-    const r = await track(req('insight_speech_streams', '/api/insight_speech_streams', body(payload)));
-    if (!r) return;
-    $('ins-sps-summary').textContent = `${r.chip} · ${r.mem_id} · 单元格 = 实时路数 / 卡（LM 卡 + 所需语音卡；悬停看 LM / 语音卡路数）`
-      + ` · 上限 ${r.max_streams} 路（+）· ${r.method}`;
-    put($('ins-sps-tbl'), h('thead', {}, h('tr', {}, h('th', {}, '模型'), h('th', {}, '类型'),
-      ...r.slc_gib.map((g) => h('th', {}, `SLC ${num(g)} GiB`)), h('th', {}, '首次实时'))),
-      h('tbody', {}, (r.rows || []).map((x) => h('tr', {}, h('td', {}, x.model), h('td', {}, x.kind),
+    for (let i = 0; i < models.length; i++) {
+      const r = await track(req('insight_speech_streams', '/api/insight_speech_streams', body({ models: [models[i]], slc_gib: slc })));
+      if (!r || run !== spsRun) return;          // superseded (new click / cancelled): the newer run owns the panel
+      if (i === 0) $('ins-sps-summary').textContent = `${r.chip} · ${r.mem_id} · 单元格 = 实时路数 / 卡（LM 卡 + 所需语音卡；悬停看 LM / 语音卡路数）`
+        + ` · 上限 ${r.max_streams} 路（+）· ${r.method}`;
+      for (const x of r.rows || []) tb.appendChild(h('tr', {}, h('td', {}, x.model), h('td', {}, x.kind),
         ...x.curve.map(speechStreamsCell),
-        h('td', {}, x.first_realtime_slc_gib != null ? `${num(x.first_realtime_slc_gib)} GiB` : '—')))));
-    $('ins-sps-status').textContent = `完成 · ${(r.rows || []).length} 模型 × ${r.slc_gib.length} 档`;
+        h('td', {}, x.first_realtime_slc_gib != null ? `${num(x.first_realtime_slc_gib)} GiB` : '—')));
+      st.textContent = `${i + 1 < models.length ? '计算中' : '完成'} · ${i + 1}/${models.length} 模型 × ${slc.length} 档 · `
+        + `${((performance.now() - t0) / 1000).toFixed(1)} s${staleTag(v0)}`;
+    }
+    st.dataset.done = '1';
   } catch (e) {
-    $('ins-sps-status').textContent = '错误：' + e.message;
+    if (run === spsRun) { st.textContent = '错误：' + e.message; st.dataset.done = '1'; }
   }
 }
 

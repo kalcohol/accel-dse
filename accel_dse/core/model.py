@@ -1862,7 +1862,8 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
             and not c.get("cosyvoice") and spec.fish is None:     # 0.274 Moshi: per-frame input tables, a few rows each (exact)
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
     if spec.fish is not None:
-        r.append("Drama 3：Stage 1 的 Fish DAC 解码器（codec.pth，torch pickle）未读、未计时")     # 0.276
+        if not spec.fish.codec:
+            r.append("Drama 3：Stage 1 的 Fish DAC 解码器（codec.pth，torch pickle）未读、未计时")     # 0.276
     if abs(gap) > 0.02:
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
     return tuple(r)
@@ -1896,7 +1897,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         notes = list(notes) + [f"分组限制路由：每个 token 只从 {gl[0]} 组中的 {gl[1]} 组选专家（n_group / topk_group）——"
                                "EP 各 rank 负载方差与节点去重 all-to-all 的扇出按此计「推导」"]
     from .drama3 import fish_spec
-    fish = fish_spec(cfg)
+    fish = fish_spec(cfg, rel)
     if fish is not None:
         # 0.276 Drama 3: the codebook-MTP tower = 13 more decoder layers on every backbone row (core/drama3.py)
         from .drama3 import tower_layers
@@ -2025,7 +2026,9 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                f"语音合成（TTS）：每步 = 1 帧（{fish.n_codebooks} 码本，{fish.frame_s * 1e3:.1f} ms 音频，44.1 kHz / 2048）"
                                f"= Qwen3.5-MoE 主干 1 token + 码本 MTP 塔 {fish.tower_layers} 层（{fish.shared_layers} 共享 + "
                                f"{fish.n_codebooks - 1} 逐码本，每层对整段序列做因果注意力、自带 KV）+ {fish.n_codebooks - 1} 个码本头；"
-                               f"lm_head 只装 {fish.candidates} 个候选行；未装入的发布参数 {drop / 1e9:.3f}B 已扣除；DAC 解码器（codec.pth）未计",))
+                               f"lm_head 只装 {fish.candidates} 个候选行；未装入的发布参数 {drop / 1e9:.3f}B 已扣除；"
+                               + (f"DAC 解码器（codec.pth 解码路径 {sum(math.prod(t) for _, t in fish.codec) / 1e6:.0f} M 参数，fp32）"
+                                  "按流式窗口在语音卡上计时（core/drama3.dac_ops）" if fish.codec else "DAC 解码器（codec.pth）未计"),))
         if spec.release_params:
             gap = spec.release_params - spec.params()
             if abs(gap) / spec.release_params > 0.02:
