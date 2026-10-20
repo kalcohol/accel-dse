@@ -7149,3 +7149,61 @@ HF `FireRedTeam/FireRedTTS3` (2026-08):
 - The base header (fp32, 2,120,632,897 params) has a `backbone_llm` of 28 × d2048 with vocab 151,936. That is Qwen3-1.7B-shaped 「推导」 from shapes, but it has no config.
 - DiT sampling steps, CFG and the AR loop exist only in the code (github FireRedTeam/FireRedTTS3).
 - The configs do not suffice. This is next-round work that requires reading the code.
+
+## §220 Speech round 6: speech bottleneck panel, FireRedTTS3-Base, Moshi per-layer overhead (0.275)
+
+### §220.1 Speech bottleneck panel
+UI:
+- The Insight tab's "语音瓶颈" panel posts `/api/insight_speech` with the UI scenario (chip, memory, system knobs), `audio_s` and `verify`.
+- It renders the §219.3 table, with the per-stage x of every row.
+
+Static build:
+- app.js `req()` → `serve.respond` (test_static_routes). Slow lane (pyodide-shim.js) += `/api/insight_slc`, `/api/insight_speech`.
+- The unpacked-zip probe calls `insight_speech`.
+
+Row isolation:
+- `speech_insight._scn` keeps the scenario's hardware / system fields: chip, memory and efficiencies, link / D2D / net, mapping, overheads.
+- It resets the model-specific fields to their defaults: serving → batch 1, prompt 64, reply 64, audio_s; layout; format overrides; workload; PD; pp_split; indexer; attn_mode; hyena_prefill.
+- Before this, a draft model on the UI's qwen3-8b leaked into the Moshi row (x 0.61 instead of 1.085).
+- Verify uses SLC = the chip's existing SLC + S.
+
+### §220.2 FireRedTTS3-Base (`core/fireredtts3.py`)
+Sources 「来源」:
+- github FireRedTeam/FireRedTTS3@7a1f3a7: `llm/fireredtts3_base.py` (Qwen3_1_7B_ConfigDict, `generate`, `_flow_one_step`, `_backbone_one_step`), `llm/dit.py`, `llm/patch_encoder.py`, `llm/modules.py`, `redae/redae.py`, `core.py`.
+- HF headers: `fireredtts3_base/model.safetensors`, `redae/model.safetensors`, all fp32.
+
+Structure:
+- **Backbone:** transformers Qwen3Model, with the config dict from the code: 28 × d2048, GQA 16/8, head 128, SwiGLU 6144, vocab 151,936, tied embeddings (no lm_head is used).
+  - It runs under bf16 autocast while the weights are stored fp32. Each decorated call re-casts them 「推导」; modelled as the fp32 read only 「近似」.
+- **Step = 4 latents** (RedAE 25 Hz = 960 samples) = 160 ms of audio. In order:
+  - stop_head;
+  - dit_head over the last history_patches + 1 = 3 backbone outputs;
+  - 10 Euler evaluations (t = 1 − cos(π/2 · linspace(0, 1, 11))) × CFG 2 (`inference_cfg > 0` doubles the batch).
+    - DiT rows = 8 history + 4 noisy latents, input 64 + 1024 + 512.
+    - Per block: adaLN 9d from the timestep; RMSNorm; full attention over 12 positions (16 × 64); conv1d k3 ×2 (Mish); GELU-tanh MLP 3d.
+    - Then an adaLN FinalLayer. fp32: no autocast there 「来源」.
+  - Patch encoder: [cls + 4] through 8 plain blocks (MLP 4d), then RMSNorm + Linear(1024 → 2048) on all 5 rows. The cls row becomes the next input.
+- **RedAE decoder:** after generation, over all latents in one pass. in_proj 64 → 2 × 896 (50 Hz); Qwen3 18 × d896 (q 14 × 128, kv 2 × 128, SwiGLU 3584, sliding 64); ISTFT head 896 → 1922, irfft n_fft 1920, hop 480.
+- **Per request:** RedAE encoder on the prompt audio. Input patches of 480 samples; in_proj ×2; Qwen3 18 layers; 4-layer cls downsample over pairs; out 64. Then the patch encoder on the prompt latents and spk_proj ×2.
+  - The prompt patches join the backbone prefill: 1 + text + prompt patches.
+  - The campplus speaker encoder is not costed (pickled .bin).
+
+Params exact: 1,720,574,976 / 400,057,921 / 943,776,322. The stored RedAE embed_tokens (151,936 × 896 ×2) are unused (`inputs_embeds`).
+
+Formulas:
+
+    first audio (one segment, non-streaming 「来源」) = t_prompt + TTFT + steps · TPOT + t_RedAE(4 · steps latents)
+    RTF = (steps · TPOT + t_RedAE) / audio_out_s ;  steps = ⌈audio_out_s / 0.16⌉
+
+**Finding** (100T + LPDDR5X, 10 s out, 5 s prompt):
+- TPOT 89.8 ms. Standalone, the head is 63.7 ms (12.2 GB fp32 per step: the DiT's 1.17 GB × 10) and the backbone ≈ 36 ms (6.9 GB fp32).
+- RTF 0.57, so real time.
+- First audio 5.76 s = 63 steps; prompt encode 8 ms, RedAE decode 5 ms.
+- Chip levers:
+  - pinning the 1.17 GB DiT saves 9 of its 10 reads per step;
+  - running the backbone in bf16 storage halves 6.9 GB;
+  - first audio needs a streaming decode, which the release does not do.
+
+### §220.3 Moshi per-layer overhead
+- `Scenario.layer_overhead_us` (0.69; a fixed time per transformer layer pass, used by `evaluate` per stage; default 0) is reused for the serial passes per frame (`moshi.layer_passes`): depformer dep_q × layers = 48 one-row passes, and Mimi encoder / decoder transformer 8 + 8. SEANet convs are not counted 「近似」.
+- At 10 µs: +0.64 ms on these and +0.32 ms on the temporal step's 32 layers, so the frame grows from 86.8 to 87.8 ms. The bandwidth excess (6.8 ms) dominates unless the per-layer overhead approaches ~100 µs.

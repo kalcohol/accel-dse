@@ -1,0 +1,3091 @@
+{
+ "bytes_codec": 3775105288,
+ "bytes_llm": 6882299904,
+ "bytes_mtp": 0,
+ "bytes_total": 12257636876,
+ "bytes_tts": 1600231684,
+ "config": {
+  "_source": "github FireRedTeam/FireRedTTS3@7a1f3a7 fireredtts3/llm/fireredtts3_base.py (Qwen3_1_7B_ConfigDict, FireRedTTS3BaseCore.generate / _flow_one_step), llm/dit.py, llm/patch_encoder.py, llm/modules.py, redae/redae.py, core.py (n_timesteps 10, inference_cfg 2.0)",
+  "architectures": [
+   "FireRedTTS3BaseCore"
+  ],
+  "backbone": {
+   "architectures": [
+    "Qwen3ForCausalLM"
+   ],
+   "attention_bias": false,
+   "head_dim": 128,
+   "hidden_act": "silu",
+   "hidden_size": 2048,
+   "intermediate_size": 6144,
+   "max_position_embeddings": 40960,
+   "max_window_layers": 28,
+   "model_type": "qwen3",
+   "num_attention_heads": 16,
+   "num_hidden_layers": 28,
+   "num_key_value_heads": 8,
+   "rms_norm_eps": 1e-06,
+   "rope_theta": 1000000,
+   "sliding_window": null,
+   "tie_word_embeddings": true,
+   "use_sliding_window": false,
+   "vocab_size": 151936
+  },
+  "core": {
+   "architectures": [
+    "FireRedTTS3BaseCore"
+   ],
+   "dit_depth": 11,
+   "dit_hidden_size": 1024,
+   "dit_mlp_ratio": 3,
+   "dit_num_heads": 16,
+   "dtype": "float32",
+   "num_history_patches": 2,
+   "patch_encoder_depth": 8,
+   "patch_encoder_hidden_size": 1024,
+   "patch_encoder_mlp_ratio": 4,
+   "patch_encoder_num_heads": 16,
+   "patch_size": 4,
+   "redae_dim": 64,
+   "spk_in_dim": 512,
+   "transformers_version": "5.6.2"
+  },
+  "generate": {
+   "backbone_autocast": "bfloat16",
+   "inference_cfg": 2.0,
+   "max_gen_steps": 400,
+   "n_timesteps": 10,
+   "t_span": "1 - cos(linspace(0, 1, n + 1) \u00b7 \u03c0 / 2)"
+  },
+  "model_type": "fireredtts3",
+  "redae": {
+   "architectures": [
+    "RedAE"
+   ],
+   "audio_patch_size": 480,
+   "audio_sample_rate": 24000,
+   "bottleneck_dim": 64,
+   "dec_hidden_size": 896,
+   "dec_intermediate_size": 3584,
+   "dec_max_position_embeddings": 32768,
+   "dec_max_window_layers": 0,
+   "dec_num_attention_heads": 14,
+   "dec_num_hidden_layers": 18,
+   "dec_num_key_value_heads": 2,
+   "dec_sliding_window": 64,
+   "dec_use_sliding_window": true,
+   "dtype": "float32",
+   "enc_downsample_num_hidden_layers": 4,
+   "enc_extra_downsample_rate": 2,
+   "enc_hidden_size": 896,
+   "enc_intermediate_size": 3584,
+   "enc_max_position_embeddings": 32768,
+   "enc_max_window_layers": 0,
+   "enc_num_attention_heads": 14,
+   "enc_num_hidden_layers": 18,
+   "enc_num_key_value_heads": 2,
+   "enc_sliding_window": 64,
+   "enc_use_sliding_window": true,
+   "model_type": "redae",
+   "transformers_version": "5.6.2"
+  },
+  "torch_dtype": "float32"
+ },
+ "fetched": "2026-10-20",
+ "n_tensors": 1135,
+ "params_codec": 943776322,
+ "params_llm": 1720574976,
+ "params_mtp": 0,
+ "params_tts": 400057921,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "FireRedTeam/FireRedTTS3",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 1409286144,
+    "params": 352321536
+   }
+  },
+  "codec": {
+   "fp32": {
+    "bytes": 3775105288,
+    "params": 943776322
+   }
+  },
+  "embed": {
+   "fp32": {
+    "bytes": 1244659712,
+    "params": 311164928
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 4227858432,
+    "params": 1056964608
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 495616,
+    "params": 123904
+   }
+  },
+  "tts": {
+   "fp32": {
+    "bytes": 1600231684,
+    "params": 400057921
+   }
+  }
+ },
+ "speech_tensors": {
+  "dit.blocks.0.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.0.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.0.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.0.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.0.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.0.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.0.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.0.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.0.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.0.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.0.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.0.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.0.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.0.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.0.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.0.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.0.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.0.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.0.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.0.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.0.norm3.weight": [
+   1024
+  ],
+  "dit.blocks.1.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.1.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.1.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.1.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.1.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.1.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.1.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.1.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.1.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.1.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.1.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.1.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.1.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.1.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.1.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.1.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.1.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.1.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.1.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.1.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.1.norm3.weight": [
+   1024
+  ],
+  "dit.blocks.10.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.10.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.10.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.10.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.10.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.10.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.10.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.10.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.10.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.10.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.10.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.10.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.10.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.10.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.10.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.10.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.10.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.10.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.10.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.10.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.10.norm3.weight": [
+   1024
+  ],
+  "dit.blocks.2.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.2.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.2.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.2.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.2.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.2.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.2.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.2.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.2.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.2.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.2.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.2.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.2.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.2.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.2.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.2.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.2.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.2.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.2.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.2.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.2.norm3.weight": [
+   1024
+  ],
+  "dit.blocks.3.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.3.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.3.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.3.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.3.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.3.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.3.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.3.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.3.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.3.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.3.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.3.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.3.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.3.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.3.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.3.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.3.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.3.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.3.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.3.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.3.norm3.weight": [
+   1024
+  ],
+  "dit.blocks.4.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.4.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.4.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.4.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.4.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.4.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.4.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.4.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.4.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.4.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.4.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.4.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.4.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.4.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.4.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.4.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.4.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.4.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.4.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.4.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.4.norm3.weight": [
+   1024
+  ],
+  "dit.blocks.5.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.5.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.5.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.5.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.5.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.5.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.5.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.5.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.5.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.5.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.5.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.5.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.5.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.5.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.5.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.5.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.5.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.5.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.5.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.5.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.5.norm3.weight": [
+   1024
+  ],
+  "dit.blocks.6.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.6.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.6.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.6.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.6.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.6.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.6.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.6.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.6.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.6.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.6.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.6.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.6.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.6.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.6.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.6.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.6.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.6.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.6.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.6.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.6.norm3.weight": [
+   1024
+  ],
+  "dit.blocks.7.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.7.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.7.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.7.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.7.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.7.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.7.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.7.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.7.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.7.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.7.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.7.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.7.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.7.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.7.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.7.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.7.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.7.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.7.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.7.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.7.norm3.weight": [
+   1024
+  ],
+  "dit.blocks.8.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.8.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.8.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.8.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.8.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.8.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.8.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.8.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.8.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.8.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.8.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.8.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.8.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.8.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.8.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.8.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.8.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.8.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.8.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.8.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.8.norm3.weight": [
+   1024
+  ],
+  "dit.blocks.9.adaLN_modulation.1.bias": [
+   9216
+  ],
+  "dit.blocks.9.adaLN_modulation.1.weight": [
+   9216,
+   1024
+  ],
+  "dit.blocks.9.attn.to_k.bias": [
+   1024
+  ],
+  "dit.blocks.9.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.9.attn.to_out.0.bias": [
+   1024
+  ],
+  "dit.blocks.9.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.9.attn.to_q.bias": [
+   1024
+  ],
+  "dit.blocks.9.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.9.attn.to_v.bias": [
+   1024
+  ],
+  "dit.blocks.9.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "dit.blocks.9.conv.block.0.bias": [
+   1024
+  ],
+  "dit.blocks.9.conv.block.0.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.9.conv.block.2.bias": [
+   1024
+  ],
+  "dit.blocks.9.conv.block.2.weight": [
+   1024,
+   1024,
+   3
+  ],
+  "dit.blocks.9.mlp.ff.0.0.bias": [
+   3072
+  ],
+  "dit.blocks.9.mlp.ff.0.0.weight": [
+   3072,
+   1024
+  ],
+  "dit.blocks.9.mlp.ff.2.bias": [
+   1024
+  ],
+  "dit.blocks.9.mlp.ff.2.weight": [
+   1024,
+   3072
+  ],
+  "dit.blocks.9.norm1.weight": [
+   1024
+  ],
+  "dit.blocks.9.norm2.weight": [
+   1024
+  ],
+  "dit.blocks.9.norm3.weight": [
+   1024
+  ],
+  "dit.final_layer.adaLN_modulation.1.bias": [
+   2048
+  ],
+  "dit.final_layer.adaLN_modulation.1.weight": [
+   2048,
+   1024
+  ],
+  "dit.final_layer.linear.bias": [
+   64
+  ],
+  "dit.final_layer.linear.weight": [
+   64,
+   1024
+  ],
+  "dit.in_proj.bias": [
+   1024
+  ],
+  "dit.in_proj.weight": [
+   1024,
+   1600
+  ],
+  "dit.t_embedder.time_mlp.0.bias": [
+   1024
+  ],
+  "dit.t_embedder.time_mlp.0.weight": [
+   1024,
+   256
+  ],
+  "dit.t_embedder.time_mlp.2.bias": [
+   1024
+  ],
+  "dit.t_embedder.time_mlp.2.weight": [
+   1024,
+   1024
+  ],
+  "dit_head.bias": [
+   1024
+  ],
+  "dit_head.weight": [
+   1024,
+   2048
+  ],
+  "patch_encoder.blocks.0.attn.to_k.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.0.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.0.attn.to_out.0.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.0.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.0.attn.to_q.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.0.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.0.attn.to_v.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.0.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.0.mlp.ff.0.0.bias": [
+   4096
+  ],
+  "patch_encoder.blocks.0.mlp.ff.0.0.weight": [
+   4096,
+   1024
+  ],
+  "patch_encoder.blocks.0.mlp.ff.2.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.0.mlp.ff.2.weight": [
+   1024,
+   4096
+  ],
+  "patch_encoder.blocks.0.norm1.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.0.norm2.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.1.attn.to_k.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.1.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.1.attn.to_out.0.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.1.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.1.attn.to_q.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.1.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.1.attn.to_v.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.1.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.1.mlp.ff.0.0.bias": [
+   4096
+  ],
+  "patch_encoder.blocks.1.mlp.ff.0.0.weight": [
+   4096,
+   1024
+  ],
+  "patch_encoder.blocks.1.mlp.ff.2.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.1.mlp.ff.2.weight": [
+   1024,
+   4096
+  ],
+  "patch_encoder.blocks.1.norm1.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.1.norm2.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.2.attn.to_k.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.2.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.2.attn.to_out.0.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.2.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.2.attn.to_q.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.2.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.2.attn.to_v.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.2.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.2.mlp.ff.0.0.bias": [
+   4096
+  ],
+  "patch_encoder.blocks.2.mlp.ff.0.0.weight": [
+   4096,
+   1024
+  ],
+  "patch_encoder.blocks.2.mlp.ff.2.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.2.mlp.ff.2.weight": [
+   1024,
+   4096
+  ],
+  "patch_encoder.blocks.2.norm1.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.2.norm2.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.3.attn.to_k.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.3.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.3.attn.to_out.0.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.3.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.3.attn.to_q.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.3.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.3.attn.to_v.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.3.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.3.mlp.ff.0.0.bias": [
+   4096
+  ],
+  "patch_encoder.blocks.3.mlp.ff.0.0.weight": [
+   4096,
+   1024
+  ],
+  "patch_encoder.blocks.3.mlp.ff.2.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.3.mlp.ff.2.weight": [
+   1024,
+   4096
+  ],
+  "patch_encoder.blocks.3.norm1.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.3.norm2.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.4.attn.to_k.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.4.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.4.attn.to_out.0.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.4.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.4.attn.to_q.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.4.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.4.attn.to_v.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.4.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.4.mlp.ff.0.0.bias": [
+   4096
+  ],
+  "patch_encoder.blocks.4.mlp.ff.0.0.weight": [
+   4096,
+   1024
+  ],
+  "patch_encoder.blocks.4.mlp.ff.2.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.4.mlp.ff.2.weight": [
+   1024,
+   4096
+  ],
+  "patch_encoder.blocks.4.norm1.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.4.norm2.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.5.attn.to_k.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.5.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.5.attn.to_out.0.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.5.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.5.attn.to_q.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.5.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.5.attn.to_v.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.5.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.5.mlp.ff.0.0.bias": [
+   4096
+  ],
+  "patch_encoder.blocks.5.mlp.ff.0.0.weight": [
+   4096,
+   1024
+  ],
+  "patch_encoder.blocks.5.mlp.ff.2.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.5.mlp.ff.2.weight": [
+   1024,
+   4096
+  ],
+  "patch_encoder.blocks.5.norm1.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.5.norm2.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.6.attn.to_k.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.6.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.6.attn.to_out.0.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.6.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.6.attn.to_q.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.6.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.6.attn.to_v.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.6.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.6.mlp.ff.0.0.bias": [
+   4096
+  ],
+  "patch_encoder.blocks.6.mlp.ff.0.0.weight": [
+   4096,
+   1024
+  ],
+  "patch_encoder.blocks.6.mlp.ff.2.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.6.mlp.ff.2.weight": [
+   1024,
+   4096
+  ],
+  "patch_encoder.blocks.6.norm1.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.6.norm2.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.7.attn.to_k.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.7.attn.to_k.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.7.attn.to_out.0.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.7.attn.to_out.0.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.7.attn.to_q.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.7.attn.to_q.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.7.attn.to_v.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.7.attn.to_v.weight": [
+   1024,
+   1024
+  ],
+  "patch_encoder.blocks.7.mlp.ff.0.0.bias": [
+   4096
+  ],
+  "patch_encoder.blocks.7.mlp.ff.0.0.weight": [
+   4096,
+   1024
+  ],
+  "patch_encoder.blocks.7.mlp.ff.2.bias": [
+   1024
+  ],
+  "patch_encoder.blocks.7.mlp.ff.2.weight": [
+   1024,
+   4096
+  ],
+  "patch_encoder.blocks.7.norm1.weight": [
+   1024
+  ],
+  "patch_encoder.blocks.7.norm2.weight": [
+   1024
+  ],
+  "patch_encoder.cls_tok": [
+   1,
+   1,
+   1024
+  ],
+  "patch_encoder.in_proj.bias": [
+   1024
+  ],
+  "patch_encoder.in_proj.weight": [
+   1024,
+   64
+  ],
+  "patch_encoder.out_proj.linear.bias": [
+   2048
+  ],
+  "patch_encoder.out_proj.linear.weight": [
+   2048,
+   1024
+  ],
+  "patch_encoder.out_proj.norm_final.weight": [
+   1024
+  ],
+  "redae.decoder.in_proj.bias": [
+   1792
+  ],
+  "redae.decoder.in_proj.weight": [
+   1792,
+   64
+  ],
+  "redae.decoder.istft_head.istft.window": [
+   1920
+  ],
+  "redae.decoder.istft_head.out.bias": [
+   1922
+  ],
+  "redae.decoder.istft_head.out.weight": [
+   1922,
+   896
+  ],
+  "redae.decoder.qwen3.embed_tokens.weight": [
+   151936,
+   896
+  ],
+  "redae.decoder.qwen3.layers.0.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.0.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.0.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.0.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.0.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.0.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.0.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.0.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.0.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.0.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.0.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.1.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.1.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.1.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.1.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.1.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.1.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.1.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.1.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.1.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.1.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.1.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.10.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.10.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.10.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.10.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.10.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.10.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.10.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.10.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.10.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.10.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.10.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.11.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.11.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.11.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.11.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.11.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.11.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.11.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.11.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.11.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.11.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.11.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.12.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.12.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.12.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.12.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.12.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.12.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.12.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.12.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.12.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.12.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.12.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.13.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.13.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.13.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.13.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.13.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.13.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.13.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.13.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.13.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.13.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.13.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.14.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.14.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.14.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.14.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.14.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.14.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.14.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.14.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.14.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.14.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.14.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.15.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.15.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.15.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.15.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.15.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.15.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.15.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.15.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.15.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.15.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.15.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.16.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.16.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.16.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.16.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.16.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.16.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.16.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.16.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.16.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.16.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.16.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.17.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.17.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.17.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.17.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.17.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.17.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.17.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.17.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.17.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.17.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.17.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.2.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.2.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.2.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.2.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.2.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.2.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.2.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.2.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.2.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.2.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.2.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.3.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.3.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.3.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.3.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.3.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.3.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.3.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.3.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.3.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.3.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.3.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.4.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.4.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.4.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.4.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.4.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.4.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.4.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.4.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.4.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.4.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.4.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.5.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.5.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.5.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.5.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.5.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.5.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.5.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.5.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.5.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.5.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.5.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.6.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.6.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.6.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.6.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.6.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.6.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.6.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.6.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.6.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.6.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.6.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.7.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.7.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.7.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.7.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.7.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.7.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.7.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.7.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.7.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.7.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.7.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.8.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.8.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.8.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.8.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.8.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.8.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.8.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.8.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.8.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.8.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.8.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.9.input_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.9.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.decoder.qwen3.layers.9.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.9.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.decoder.qwen3.layers.9.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.decoder.qwen3.layers.9.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.9.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.layers.9.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.decoder.qwen3.layers.9.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.decoder.qwen3.layers.9.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.decoder.qwen3.layers.9.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.decoder.qwen3.norm.weight": [
+   896
+  ],
+  "redae.encoder.downsample.cls_tok": [
+   1,
+   1,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.embed_tokens.weight": [
+   151936,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.0.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.1.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.2.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.layers.3.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.downsample.qwen3.norm.weight": [
+   896
+  ],
+  "redae.encoder.in_proj.0.bias": [
+   896
+  ],
+  "redae.encoder.in_proj.0.weight": [
+   896,
+   480
+  ],
+  "redae.encoder.in_proj.1.bias": [
+   896
+  ],
+  "redae.encoder.in_proj.1.weight": [
+   896,
+   896
+  ],
+  "redae.encoder.out_proj.bias": [
+   64
+  ],
+  "redae.encoder.out_proj.weight": [
+   64,
+   896
+  ],
+  "redae.encoder.qwen3.embed_tokens.weight": [
+   151936,
+   896
+  ],
+  "redae.encoder.qwen3.layers.0.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.0.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.0.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.0.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.0.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.0.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.0.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.0.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.0.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.0.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.0.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.1.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.1.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.1.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.1.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.1.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.1.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.1.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.1.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.1.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.1.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.1.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.10.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.10.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.10.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.10.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.10.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.10.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.10.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.10.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.10.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.10.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.10.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.11.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.11.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.11.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.11.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.11.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.11.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.11.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.11.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.11.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.11.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.11.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.12.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.12.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.12.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.12.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.12.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.12.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.12.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.12.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.12.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.12.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.12.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.13.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.13.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.13.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.13.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.13.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.13.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.13.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.13.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.13.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.13.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.13.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.14.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.14.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.14.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.14.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.14.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.14.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.14.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.14.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.14.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.14.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.14.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.15.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.15.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.15.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.15.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.15.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.15.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.15.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.15.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.15.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.15.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.15.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.16.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.16.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.16.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.16.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.16.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.16.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.16.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.16.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.16.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.16.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.16.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.17.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.17.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.17.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.17.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.17.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.17.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.17.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.17.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.17.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.17.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.17.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.2.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.2.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.2.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.2.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.2.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.2.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.2.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.2.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.2.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.2.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.2.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.3.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.3.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.3.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.3.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.3.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.3.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.3.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.3.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.3.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.3.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.3.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.4.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.4.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.4.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.4.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.4.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.4.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.4.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.4.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.4.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.4.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.4.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.5.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.5.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.5.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.5.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.5.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.5.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.5.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.5.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.5.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.5.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.5.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.6.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.6.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.6.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.6.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.6.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.6.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.6.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.6.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.6.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.6.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.6.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.7.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.7.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.7.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.7.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.7.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.7.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.7.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.7.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.7.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.7.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.7.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.8.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.8.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.8.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.8.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.8.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.8.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.8.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.8.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.8.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.8.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.8.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.9.input_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.9.mlp.down_proj.weight": [
+   896,
+   3584
+  ],
+  "redae.encoder.qwen3.layers.9.mlp.gate_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.9.mlp.up_proj.weight": [
+   3584,
+   896
+  ],
+  "redae.encoder.qwen3.layers.9.post_attention_layernorm.weight": [
+   896
+  ],
+  "redae.encoder.qwen3.layers.9.self_attn.k_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.9.self_attn.k_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.layers.9.self_attn.o_proj.weight": [
+   896,
+   1792
+  ],
+  "redae.encoder.qwen3.layers.9.self_attn.q_norm.weight": [
+   128
+  ],
+  "redae.encoder.qwen3.layers.9.self_attn.q_proj.weight": [
+   1792,
+   896
+  ],
+  "redae.encoder.qwen3.layers.9.self_attn.v_proj.weight": [
+   256,
+   896
+  ],
+  "redae.encoder.qwen3.norm.weight": [
+   896
+  ],
+  "spk_proj_dit.bias": [
+   512
+  ],
+  "spk_proj_dit.weight": [
+   512,
+   512
+  ],
+  "spk_proj_llm.bias": [
+   2048
+  ],
+  "spk_proj_llm.weight": [
+   2048,
+   512
+  ],
+  "stop_head.bias": [
+   1
+  ],
+  "stop_head.weight": [
+   1,
+   2048
+  ]
+ },
+ "torch_dtype": "float32"
+}

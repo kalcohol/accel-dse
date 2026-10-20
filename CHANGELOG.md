@@ -6,6 +6,49 @@
 
 
 
+## [0.275.0]
+
+### Added: speech bottleneck panel (MODEL §220.1)
+- Insight tab, new "语音瓶颈" panel. It calls `POST /api/insight_speech` with the left-hand chip and memory, an audio-seconds input and a verify toggle. For each speech model the table shows:
+  - binding stage, x and real time;
+  - first audio and its dominant part;
+  - the bandwidth or SLC needed for real time, with the verified x;
+  - the per-stage x.
+- Static (Pages) build: `/api/insight_speech` goes through `serve.respond` like every UI call (`test_static_routes` parses app.js). It is now in the shim's slow lane, together with `/api/insight_slc`, which was missing. The unpacked-zip probe also calls it.
+- `ui_headless_smoke` clicks the panel and expects ≥ 10 rows.
+- Fix: speech-insight rows take only the scenario's hardware / system fields. The UI model's serving (batch, draft model, spec), layout, format overrides, workload and PD no longer leak into speech rows; a draft model used to make Moshi look like x = 0.61. Verify adds the derived SLC on top of any SLC the chip already has.
+
+### Added: FireRedTTS3-Base (MODEL §220.2)
+- `FireRedTeam/FireRedTTS3` as `fireredtts3-base` (provider FireRedTeam, family FireRedTTS3, listing domain `tts`, coverage `full`).
+- `fetch_pt_release.py --firered`:
+  - The backbone config (Qwen3-1.7B: 28 × d2048, GQA 16/8, head 128, vocab 151,936, no lm_head) is a dict in `fireredtts3_base.py`, transcribed with its source.
+  - `generate()` defaults: 10 Euler steps on a cosine schedule, CFG 2.0.
+  - It reads the base and RedAE headers.
+- Params exact (all fp32):
+  - backbone 1,720,574,976;
+  - speech head 400,057,921 (role `tts`: DiT 293.7 M, patch encoder 102.9 M, dit_head / stop / speaker projections);
+  - RedAE 943,776,322 (role `codec`).
+- `core/fireredtts3.py`:
+  - Per AR step (4 latents = 160 ms of audio): backbone step, stop_head, dit_head over 3 conditions, then the DiT flow head. It runs 10 evaluations × CFG 2 over 12 positions: 11 blocks with adaLN 9d, attention, two k3 convs and a 3d MLP. The patch encoder follows, over cls + 4 positions.
+  - RedAE decodes every latent once, after generation (non-streaming): Qwen3 18 × d896 with sliding window 64, then the ISTFT head.
+  - Per request: RedAE encoder plus patch encoder on the prompt audio.
+- The FireRedTTS3 path in `speech_kpis` (kind `tts`, label FireRedTTS3):
+  - first audio = prompt encode + TTFT + steps · TPOT + RedAE decode, i.e. the whole segment;
+  - `serving.audio_s` is the voice-prompt length (default 5 s 「假设」).
+- 100T + LPDDR5X, 10 s out:
+  - TPOT 89.8 ms per 160 ms step, so RTF 0.57: real time;
+  - first audio 5.76 s (63 steps), because nothing streams;
+  - the fp32 DiT (1.17 GB) is re-read 10 times per step (12.2 GB of head weights per step), the main SLC pin candidate.
+- Shared code: `memplan` / `evaluate._tts_info` use the spec's weight bytes (`w_bytes`, fp32 = 4) instead of a fixed 2; `ir._head_ops` dispatches to `fire_head_ops`. Ming TTS is unchanged.
+- UI: FireRedTTS3 badge and a non-streaming split in the TTS KPI. `ui_headless_smoke` also loads fireredtts3-base. The speech insight now includes fireredtts3-base.
+
+### Added: Moshi per-layer overhead (MODEL §220.3)
+- The existing `Scenario.layer_overhead_us` (0.69, off by default, so results are bit-identical) now also charges Moshi's serial layer passes per frame: 48 depformer one-row passes and 8 + 8 Mimi transformer layers. The temporal step already got it from `evaluate`.
+- KPI fields: `layer_passes`, `layer_overhead_s`. At 10 µs per layer the frame grows by 0.96 ms (64 passes plus the temporal step's 32 layers): small next to the 6.8 ms of bandwidth excess.
+
+### Changed
+- Count tests: 148 release files, llm 122, 154 listed + unlisted.
+
 ## [0.274.0]
 
 ### Added: Kyutai Moshi (MODEL §219.1–219.2)

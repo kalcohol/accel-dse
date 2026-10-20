@@ -270,13 +270,19 @@ def _moshi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     from .evaluate import _component_time
     from .hardware import System
     from .ir import _cdiv
-    from .moshi import FRAME_S, depformer_ops, depth_weight_bytes, mimi_decode_ops, mimi_encode_ops, mimi_weight_bytes
+    from .moshi import (FRAME_S, depformer_ops, depth_weight_bytes, layer_passes, mimi_decode_ops, mimi_encode_ops,
+                        mimi_weight_bytes)
     sv, lay, m = scn.serving, scn.layout, pre.model
     k = m.moshi
     sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
                  scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
     org = scn.mapping
     ctx = min(k.context, sv.ctx or k.context)
+    # 0.275: the existing per-layer fixed overhead (Scenario.layer_overhead_us, 0.69; off by default → bit-identical)
+    # also on the depformer's 48 serial one-row layer passes and the Mimi transformer layers; the temporal step gets it
+    # from evaluate as before
+    lp = layer_passes(k)
+    oh = scn.layer_overhead_us * 1e-6
 
     def frame(bb: int) -> dict:
         dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.ctx", ctx).replace("serving.batch", bb * lay.dp))
@@ -284,6 +290,9 @@ def _moshi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
              "depformer_s": _component_time([(depformer_ops(k, bb), 1)], sys, org, "bf16")["s"],
              "mimi_encode_s": _component_time([(mimi_encode_ops(k, bb), 1)], sys, org, "fp32")["s"],
              "mimi_decode_s": _component_time([(mimi_decode_ops(k, bb), 1)], sys, org, "fp32")["s"]}
+        if oh:
+            for key, n in lp.items():
+                t[key] += n * oh
         t["frame_s"] = sum(t.values())
         t["fits"] = dec.fits
         return t
@@ -307,8 +316,49 @@ def _moshi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
             "streams_realtime": lo, "bytes_per_frame": wb, "bytes_per_frame_GB": tot,
             "dram_GBps_for_realtime": tot / FRAME_S, "dram_GBps": sys.dram_GBps,
             "depformer_steps": k.dep_q, "depformer_layer_passes": k.dep_q * k.dep_layers,
+            "layer_passes": lp, "layer_overhead_us": scn.layer_overhead_us,
+            "layer_overhead_s": oh * sum(lp.values()),
             "audio_out_s_per_s_card": (b if f["frame_s"] <= FRAME_S else b * FRAME_S / f["frame_s"]) / pre.scenario.layout.cards,
             "fits": f["fits"] and pre.fits}
+
+
+FIRERED_PROMPT_S = 5.0      # voice-prompt seconds when serving.audio_s = 0 「假设」 (zero-shot cloning needs a prompt)
+
+
+def _firered_kpis(scn: Scenario, t, audio_out_s: float) -> dict:
+    """0.275 FireRedTTS3-Base (core/fireredtts3.py), one text segment, non-streaming 「来源」 (generate → redae.decode):
+        prompt   = RedAE encoder (prompt audio) + patch encoder (prompt latents) + spk projections
+        prefill  = backbone over 1 (speaker) + text tokens + prompt patches (+ the first head step)
+        steps    = ⌈audio_out_s / 0.16⌉ AR steps, each = backbone step + DiT head (10 × CFG 2) + patch encoder (TPOT)
+        decode   = RedAE decoder over all 4 · steps latents at once
+        first audio = prompt + TTFT + steps · TPOT + decode (= the whole segment) ;  RTF = (steps · TPOT + decode) / audio
+    ``serving.audio_s`` is the voice-prompt length (default FIRERED_PROMPT_S 「假设」)."""
+    from .evaluate import _component_time
+    from .fireredtts3 import prompt_ops, prompt_patches, redae_decode_ops
+    from .hardware import System
+    sv = scn.serving
+    pa = sv.audio_s or FIRERED_PROMPT_S
+    pp = prompt_patches(t, pa)
+    p_tok = sv.prompt + 1 + pp
+    pre = evaluate(scn.replace("serving.phase", "prefill").replace("serving.prompt", p_tok).replace("serving.audio_s", 0))
+    steps = max(1, math.ceil(audio_out_s / t.s_per_step - 1e-9))
+    dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.prompt", p_tok)
+                   .replace("serving.ctx", p_tok + steps // 2).replace("serving.audio_s", 0))
+    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
+                 scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
+    b = max(1, sv.batch // max(1, scn.layout.dp))
+    t_prompt = _component_time([(prompt_ops(t, pa), 1)], sys, scn.mapping, "fp32")["s"] * b
+    dr = _component_time([(redae_decode_ops(t, steps * t.patch), 1)], sys, scn.mapping, "fp32")
+    t_dec = dr["s"] * b                   # one decode per request (RedAE.decode takes b = 1 「来源」)
+    gen = steps * dec.tpot
+    tot = t_prompt + pre.ttft + gen + t_dec
+    return {"kind": "tts", "label": "FireRedTTS3", "stream": "none", "audio_out_s": audio_out_s, "steps": steps,
+            "prompt_audio_s": pa, "prompt_patches": pp, "first_audio_s": tot, "ttft_s": pre.ttft, "tpot_s": dec.tpot,
+            "total_s": tot, "rtf": (gen + t_dec) / audio_out_s, "lm_rtf": dec.tpot / t.s_per_step,
+            "split_first": {"prompt_s": t_prompt, "prefill_s": pre.ttft, "steps_s": gen, "redae_decode_s": t_dec},
+            "redae_decode_bound": dr["bound"], "flow_steps": t.flow_steps, "cfg": t.cfg_mult,
+            "audio_out_s_per_s_card": sv.batch * audio_out_s / tot / pre.scenario.layout.cards,
+            "fits": pre.fits and dec.fits}
 
 
 def speech_kpis(scn: Scenario, audio_out_s: float = 10.0) -> dict:
@@ -325,6 +375,8 @@ def speech_kpis(scn: Scenario, audio_out_s: float = 10.0) -> dict:
         return _moshi_kpis(scn, pre, audio_out_s)
     ts = getattr(m, "tts", None)
     au = getattr(getattr(m, "vision", None), "audio", None)
+    if ts is not None and getattr(ts, "kind", "") == "firered":
+        return _firered_kpis(scn, ts, audio_out_s)
     if ts is not None:
         steps = max(1, math.ceil(audio_out_s / ts.s_per_step - 1e-9))
         dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.ctx", sv.prompt + steps // 2))

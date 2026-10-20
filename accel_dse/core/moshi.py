@@ -222,6 +222,14 @@ def mimi_decode_ops(s: MoshiSpec, b: int) -> list[Op]:
     return ops + _codec_side(s, "decoder", b)
 
 
+def layer_passes(s: MoshiSpec) -> dict[str, int]:
+    """0.275: serial transformer-layer passes per frame — the unit of Scenario.layer_overhead_us (the same per-layer
+    fixed overhead evaluate charges the temporal transformer): depformer dep_q × layers (one-row passes, each with
+    its own weight slice), Mimi encoder / decoder transformer layers.  SEANet convs are not counted 「近似」."""
+    n = lambda side: len({nm.split(".")[4] for nm, _ in s.tensors if nm.startswith(f"mimi.{side}_transformer.transformer.layers.")})
+    return {"depformer_s": s.dep_q * s.dep_layers, "mimi_encode_s": n("encoder"), "mimi_decode_s": n("decoder")}
+
+
 def depth_weight_bytes(s: MoshiSpec) -> float:
     return sum(o.w_params for o in depformer_ops(s, 1) if o.kind == "gemm") * 2.0
 

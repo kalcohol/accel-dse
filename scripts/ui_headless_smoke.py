@@ -78,7 +78,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
 
             settle("load")
             # 0.273: + the speech-out kinds (Omni: split / SLC / audio-in KPIs; CosyVoice: split / per-chunk)
-            for m in ("gpt-oss-120b", "wan2.1-1.3b", "esm2-650m", "qwen2.5-omni-7b", "cosyvoice2-0.5b", "kimi-audio-7b-instruct", "step-audio-2-mini", "moshiko-7b", "qwen3-8b"):
+            for m in ("gpt-oss-120b", "wan2.1-1.3b", "esm2-650m", "qwen2.5-omni-7b", "cosyvoice2-0.5b", "kimi-audio-7b-instruct", "step-audio-2-mini", "moshiko-7b", "fireredtts3-base", "qwen3-8b"):
                 if m in opts("#model"):
                     act(f"model={m}", lambda m=m: p.select_option("#model", m))
             for ph in ("prefill", "decode"):
@@ -301,6 +301,15 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             steps.append(("path", p.inner_text("#ins-path-status")[:60]))
             if "错误" in p.inner_text("#ins-path-status"):
                 errs.append("path: " + p.inner_text("#ins-path-status")[:200])
+            # 0.275: speech bottleneck panel (/api/insight_speech)
+            p.click("#ins-sp-run")
+            p.wait_for_function("(() => { const t = document.getElementById('ins-sp-status').textContent;"
+                                " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
+            st = p.inner_text("#ins-sp-status")
+            rows = len(p.query_selector_all("#ins-sp-tbl tbody tr"))
+            steps.append(("speech insight", rows, st[:40]))
+            if not st.startswith("完成") or rows < 10:
+                errs.append(f"speech insight: {st[:200]} rows={rows}")
             b.close()
     finally:
         srv.terminate()

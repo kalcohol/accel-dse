@@ -573,6 +573,15 @@
     </div>
     <div class="note small" id="ins-slc-summary"></div>
     <div class="scroll"><table class="tbl tight" id="ins-slc-tbl"></table></div>
+    <h4 title="0.274/0.275：对左侧芯片 + 外存，目录中每个语音模型（batch 1）哪个阶段限制实时 / 首音频，以及解锁实时所需的有效 DRAM 带宽或 SLC 钉住容量（机理推导，并用引擎自身 SLC 路径复算）">语音瓶颈</h4>
+    <div class="row">
+      <label title="ASR 为输入音频秒，TTS / 语音输出为输出音频秒">音频秒<input type="number" id="ins-sp-audio" min="1" max="600" value="10" style="width:4em"></label>
+      <label class="small" title="用 SLC = 推导容量（向上取 64 MiB，策略 pin）重算一次"><input type="checkbox" id="ins-sp-verify" checked> 复算验证</label>
+      <button class="btn" id="ins-sp-run">计算语音瓶颈</button>
+      <span class="small muted" id="ins-sp-status"></span>
+    </div>
+    <div class="note small" id="ins-sp-summary"></div>
+    <div class="scroll"><table class="tbl tight" id="ins-sp-tbl"></table></div>
   </section>
 
   <section class="tab" id="tab-models" hidden>

@@ -586,6 +586,11 @@ def _tc(cfg: dict) -> dict:
         # 0.272 Step-Audio-2-mini: transformers Qwen2Model(text_config) — Qwen2 attention has q / k / v bias; untied
         # lm_head (modeling_step_audio_2.py 「来源」)
         tc = {**tc, "attention_bias": True, "tie_word_embeddings": False}
+    if mt == "fireredtts3" and isinstance(cfg.get("backbone"), dict):
+        # 0.275 FireRedTTS3-Base: the backbone is transformers Qwen3Model(Qwen3_1_7B_ConfigDict) — a dict in
+        # fireredtts3_base.py (the HF config.json carries only the DiT / patch-encoder fields) 「来源」; no lm_head (the
+        # step output drives stop_head + the DiT flow head, core/fireredtts3.py); weights stored fp32
+        tc = {**cfg["backbone"], "torch_dtype": "float32"}
     if mt == "moshi" and isinstance(cfg.get("lm"), dict):
         # 0.274 Kyutai Moshi (moshi.models.lm.LMModel; loaders.py _lm_kwargs 「来源」 — the HF repo has no config.json):
         # the temporal transformer is a 32-layer MHA (in_proj q / k / v, no bias), SiLU-gated MLP of
@@ -2004,6 +2009,16 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                f"语音合成（TTS）：每步 = LLM 1 token + 流匹配 DiT 头 {ts.flow_steps} 步 Euler × CFG {ts.cfg_mult} "
                                f"+ 聚合器 + 流式 AudioVAE 解码；每步 {ts.s_per_step * 1e3:.0f} ms 音频（44.1 kHz）；"
                                "lm_head 只存储（TTS 循环不用）",))
+        from .fireredtts3 import fire_spec
+        fs = fire_spec(cfg, rel)
+        if fs is not None:
+            # 0.275 FireRedTTS3: the speech head (release role tts) + RedAE (role codec) sit outside params_llm; the
+            # spec replaces the (absent) LM head with the per-step DiT flow head + patch encoder (core/fireredtts3.py)
+            ts = fs
+            spec = replace(spec, tts=fs, notes=spec.notes + (
+                f"语音合成（TTS）：每步 = Qwen3-1.7B 主干 1 步（bf16 autocast，权重 fp32 存储）+ DiT 流匹配头 {fs.flow_steps} 步 Euler × CFG {fs.cfg_mult}"
+                f"（{fs.flow_params / 1e6:.0f}M，fp32，12 位置）+ patch 编码器（{fs.agg_params / 1e6:.0f}M）；每步 {fs.s_per_step * 1e3:.0f} ms 音频（24 kHz）；"
+                f"整段生成完后 RedAE 一次解码（{fs.redae_dec_params / 1e6:.0f}M，fp32，非流式）；无 lm_head",))
         from .cosyvoice import cosy_spec
         cs = cosy_spec(cfg, rel)
         if cs is not None:

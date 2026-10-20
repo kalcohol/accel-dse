@@ -140,6 +140,9 @@ EXTRA_TAIL = [
     # 0.274 speech round 5: Kyutai Moshi (moshiko, bf16) — full-duplex: temporal 7B + depth transformer (8 codebooks
     # per 12.5 Hz frame) + Mimi codec; architecture from the moshi package loaders.py (no HF config)
     ("moshiko-7b", "kyutai/moshiko-pytorch-bf16"),
+    # 0.275: FireRedTTS3-Base (fp32) — Qwen3-1.7B backbone → per-step DiT flow head (10 steps × CFG 2) + patch encoder,
+    # RedAE decode after generation; backbone config from the code (fireredtts3_base.py), see core/fireredtts3.py
+    ("fireredtts3-base", "FireRedTeam/FireRedTTS3"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -304,6 +307,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("reflection", "Reflection AI（Beam）", ("reflection/",)),
     ("openmoss", "复旦 OpenMOSS（MOSS）", ("OpenMOSS-Team/",)),
     ("kyutai", "Kyutai（Moshi）", ("kyutai/",)),     # 0.274
+    ("firered", "小红书 FireRedTeam（FireRedTTS）", ("FireRedTeam/",)),     # 0.275
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Fun-ASR-Nano", ("fun-asr-nano",)), ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2.5-Omni", ("qwen2.5-omni",)),
@@ -339,6 +343,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("reflection", "Beam-1.0", ("beam-",)),
     ("openmoss", "MOSS-Image", ("moss-image",)),
     ("kyutai", "Moshi", ("moshi",)),     # 0.274
+    ("firered", "FireRedTTS3", ("fireredtts3",)),     # 0.275
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.
@@ -424,7 +429,7 @@ def entries() -> list[dict]:
             # 0.270: any release with a modelled audio encoder and no vision tower (Whisper keeps it outside audio_config)
             from .vision import audio_spec
             # 0.271: Qwen2.5-Omni (speech in + speech out) → omni; 0.273: Step-Audio-2-mini with its token2wav too
-            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3") else "omni" if cf.get("model_type") == "qwen2_5_omni" or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") == "moshi" else \
+            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3") else "omni" if cf.get("model_type") == "qwen2_5_omni" or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") == "moshi" else \
                 ("asr" if (cf.get("audio_config") or audio_spec(cf) is not None) and not cf.get("vision_config")
                  else "vlm") if (rel.get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])

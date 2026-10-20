@@ -290,11 +290,52 @@ def fetch_moshi(repo: str) -> None:
     print(repo, len(t))
 
 
+FIRERED_SRC = ("github FireRedTeam/FireRedTTS3@7a1f3a7 fireredtts3/llm/fireredtts3_base.py (Qwen3_1_7B_ConfigDict, "
+               "FireRedTTS3BaseCore.generate / _flow_one_step), llm/dit.py, llm/patch_encoder.py, llm/modules.py, "
+               "redae/redae.py, core.py (n_timesteps 10, inference_cfg 2.0)")
+
+
+def fetch_firered(repo: str) -> None:
+    """0.275 FireRedTTS3-Base: the HF repo has fireredtts3_base/{config.json, model.safetensors} (DiT / patch-encoder
+    fields only — the Qwen3-1.7B backbone config is a dict in the code) and redae/{config.json, model.safetensors}.
+    Writes local/hf_cache/<repo>/config.json (model_type "fireredtts3": backbone = Qwen3_1_7B_ConfigDict transcribed
+    from fireredtts3_base.py 「来源」 FIRERED_SRC, core = base config, redae = redae config, generate() defaults) +
+    headers.json (the base model.safetensors) + firered_audio.json (RedAE tensors: redae.<name>: [dtype, shape]).
+    The campplus speaker encoder (campp/campplus_voxceleb.bin, run once per request on the prompt audio) is not read."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fhr", str(ROOT / "scripts" / "fetch_hf_release.py"))
+    fhr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fhr)
+    d = CACHE / repo.replace("/", "__")
+    d.mkdir(parents=True, exist_ok=True)
+    base = f"{HF}/{repo}/resolve/main"
+    get = lambda f: json.loads(urllib.request.urlopen(f"{base}/{f}", timeout=60).read())
+    backbone = {"architectures": ["Qwen3ForCausalLM"], "attention_bias": False, "head_dim": 128, "hidden_act": "silu",
+                "hidden_size": 2048, "intermediate_size": 6144, "max_position_embeddings": 40960,
+                "max_window_layers": 28, "model_type": "qwen3", "num_attention_heads": 16, "num_hidden_layers": 28,
+                "num_key_value_heads": 8, "rms_norm_eps": 1e-06, "rope_theta": 1000000, "sliding_window": None,
+                "tie_word_embeddings": True, "use_sliding_window": False, "vocab_size": 151936}
+    cfg = {"model_type": "fireredtts3", "architectures": ["FireRedTTS3BaseCore"], "_source": FIRERED_SRC,
+           "torch_dtype": "float32", "backbone": backbone, "core": get("fireredtts3_base/config.json"),
+           "redae": get("redae/config.json"),
+           "generate": {"n_timesteps": 10, "inference_cfg": 2.0, "t_span": "1 - cos(linspace(0, 1, n + 1) · π / 2)",
+                        "backbone_autocast": "bfloat16", "max_gen_steps": 400}}
+    (d / "config.json").write_text(json.dumps(cfg, indent=1))
+    (d / "headers.json").write_text(json.dumps({"model.safetensors": fhr.st_header_url(f"{base}/fireredtts3_base/model.safetensors")}))
+    t = {"redae." + n: [h["dtype"], h["shape"]] for n, h in fhr.st_header_url(f"{base}/redae/model.safetensors").items()
+         if n != "__metadata__"}
+    (d / "firered_audio.json").write_text(json.dumps({"tensors": t}))
+    print(repo, len(t))
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args and args[0] == "--token2wav":         # 0.273: python3 scripts/fetch_pt_release.py --token2wav <repo>
         for r in args[1:]:
             fetch_token2wav(r)
+    elif args and args[0] == "--firered":         # 0.275: python3 scripts/fetch_pt_release.py --firered <repo>
+        for r in args[1:]:
+            fetch_firered(r)
     elif args and args[0] == "--moshi":           # 0.274: python3 scripts/fetch_pt_release.py --moshi <repo>
         for r in args[1:]:
             fetch_moshi(r)

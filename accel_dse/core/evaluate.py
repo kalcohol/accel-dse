@@ -2002,12 +2002,15 @@ def _tts_info(m: ModelSpec, sv, tpot: float, thr: float) -> dict:
     """0.269 TTS KPIs: one decode step = one latent = ``s_per_step`` of audio (Ming: 80 ms)."""
     from .tts import tts_step_flops
     ts = m.tts
+    if getattr(ts, "kind", "") == "firered":          # 0.275 FireRedTTS3
+        from .fireredtts3 import fire_step_flops as tts_step_flops
     f = tts_step_flops(ts)
+    wb = getattr(ts, "w_bytes", 2.0)
     llm = 2.0 * m.active_params()
     out = {"s_per_step": ts.s_per_step, "flow_steps": ts.flow_steps, "cfg": ts.cfg_mult, "rate": ts.rate,
            "gflop_per_step": {"llm_approx": llm / 1e9, **{k: v / 1e9 for k, v in f.items()}},
-           "head_w_GB_per_step": (ts.flow_steps * ts.flow_params + ts.agg_params + ts.dec_params + ts.stop_params) * 2 / 1e9,
-           "head_w_GB_stored": ts.run_params * 2 / 1e9}
+           "head_w_GB_per_step": (ts.flow_steps * ts.flow_params + ts.agg_params + ts.dec_params + ts.stop_params) * wb / 1e9,
+           "head_w_GB_stored": ts.run_params * wb / 1e9}
     if sv.phase == "decode" and tpot > 0:
         out.update(rtf=tpot / ts.s_per_step, audio_s_per_s=thr * ts.s_per_step,
                    streams_realtime=int(sv.batch) if tpot <= ts.s_per_step else 0)

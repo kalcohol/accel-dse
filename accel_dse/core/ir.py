@@ -1385,6 +1385,8 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
         # 0.269 TTS: the last hidden state drives stop head + flow DiT + aggregator + streaming AudioVAE decode
         # (core/tts.py) instead of the vocab head; one latent step per sequence (prefill: the first step)
         from .tts import tts_head_ops
+        if getattr(ts, "kind", "") == "firered":      # 0.275 FireRedTTS3 (core/fireredtts3.py)
+            from .fireredtts3 import fire_head_ops as tts_head_ops
         return [Op("final_norm", "vector", model.n_layers,
                    vec=0 if model.final_norm_params == 0 else b_loc * model.hidden * 4)] + \
             tts_head_ops(ts, b_loc, model.n_layers, replicated=sh.tp, af=model.act_fmt)

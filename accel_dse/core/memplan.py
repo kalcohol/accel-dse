@@ -232,8 +232,9 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         if ts is not None:
             # 0.269 TTS head (replicated on the head stage's ranks, bf16): flow DiT / aggregator / stop / AudioVAE
             # decoder read every step; AudioVAE encoder + spk_head stored only; the LM head is stored, never read
-            hot += ts.run_params * 2.0
-            store_extra += ts.stored_params * 2.0
+            wb = getattr(ts, "w_bytes", 2.0)       # 0.275: FireRedTTS3 head / RedAE stored fp32
+            hot += ts.run_params * wb
+            store_extra += ts.stored_params * wb
             st += ts.dec_kv_bytes        # per-sequence AudioVAE decoder sliding-window K/V ring (fixed size)
             if not model.tie_embeddings:
                 store_extra += _cdiv(model.vocab, sh.tp) * model.hidden * model.fmt("lm_head").bits / 8
@@ -248,7 +249,7 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
     rr = 0.0
     ts = getattr(model, "tts", None) if has_head else None
     if ts is not None and ts.flow_steps > 1:
-        rr = ts.flow_params * 2.0
+        rr = ts.flow_params * getattr(ts, "w_bytes", 2.0)
     return StageStorage(hot, exp, kv, idx, st, store_extra, rr, float(ts.flow_steps) if rr else 1.0)
 
 

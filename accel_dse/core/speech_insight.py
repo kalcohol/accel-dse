@@ -21,8 +21,12 @@ bound), the remedy follows from bytes, not from fitting 「推导」:
          (r = tokens / frames per audio second), saving S · r bytes:  S = Δ · BW_eff / r
          at an SLC read bandwidth ≥ S · r                                       「近似」 (stage stays memory bound)
 
-``verify`` re-runs the same KPIs with the chip's SLC = S (policy pin, next 64 MiB) so the claim is checked by the
-engine's own SLC path, not by the formula.  Nothing here is tuned to a measurement."""
+``verify`` re-runs the same KPIs with the chip's SLC = existing + S (policy pin, S rounded up to 64 MiB) so the claim is checked by the
+engine's own SLC path, not by the formula.  Nothing here is tuned to a measurement.
+
+0.275: each row is built from the scenario's hardware / system fields only — serving (batch 1, prompt 64, reply 64,
+audio_s), layout, format overrides, workload, PD and other model-specific fields are reset to their defaults, so the
+UI's current model settings (e.g. a draft model) never leak into a speech row."""
 from __future__ import annotations
 
 import math
@@ -33,7 +37,7 @@ from .hardware import System
 from .scenario import Scenario
 
 SPEECH_MODELS = ("moshiko-7b", "kimi-audio-7b-instruct", "step-audio-2-mini", "qwen2.5-omni-7b", "cosyvoice2-0.5b",
-                 "fun-cosyvoice3-0.5b-2512", "ming-3.0-tts-tiny", "qwen2-audio-7b-instruct", "qwen3-asr-1.7b",
+                 "fun-cosyvoice3-0.5b-2512", "fireredtts3-base", "ming-3.0-tts-tiny", "qwen2-audio-7b-instruct", "qwen3-asr-1.7b",
                  "fun-asr-nano-2512", "whisper-large-v3", "whisper-large-v3-turbo", "ming-3.0-asr-tiny")
 OUT_LEN = 64            # reply / transcript tokens 「假设」 (same default as the UI speech panel)
 PROMPT = 64             # text prompt tokens 「假设」
@@ -47,7 +51,9 @@ def _stages(k: dict, audio_s: float) -> tuple[dict, float, str, float]:
         return ({"encoder": enc / audio_s, "lm": (k["total_s"] - enc) / audio_s}, k["out_len"] / audio_s,
                 "lm_first_token" if k["first_token_s"] > 2 * enc else "encoder", k["first_token_s"])
     if kind == "tts":
-        return ({"lm": k["rtf"]}, k["steps"] / k["audio_out_s"], "lm_ttft", k["first_audio_s"])
+        sf = k.get("split_first")          # 0.275 FireRedTTS3: non-streaming → first audio = whole segment
+        return ({"lm": k["rtf"]}, k["steps"] / k["audio_out_s"], max(sf, key=sf.get) if sf else "lm_ttft",
+                k["first_audio_s"])
     sf = k.get("split_first") or k.get("split_frame") or {}
     dom = max(sf, key=sf.get) if sf else ""
     if kind in ("cosyvoice", "kimi"):
@@ -60,12 +66,22 @@ def _stages(k: dict, audio_s: float) -> tuple[dict, float, str, float]:
     raise ValueError(f"speech insight: unknown speech kind {kind}")
 
 
+# model-specific scenario fields reset to their defaults (a speech row must not inherit the UI model's spec decoding,
+# format overrides, PD, workload or layout); hardware / system / overhead fields are kept
+_MODEL_FIELDS = ("layout", "formats_override", "workload", "pd", "pp_split", "indexer", "attn_mode", "hyena_prefill")
+
+
 def _scn(base: Scenario, mid: str, audio_s: float) -> Scenario:
+    import dataclasses
+    from .scenario import Serving
     m = get_model(mid)
     au = getattr(getattr(m, "vision", None), "audio", None)
-    s = base.replace("model", mid).replace("serving.batch", 1).replace("serving.prompt", PROMPT)
-    s = s.replace("serving.out_len", OUT_LEN).replace("serving.audio_s", audio_s if au is not None else 0)
-    return s.replace("layout", type(base.layout)())
+    dflt = {}
+    for f in dataclasses.fields(Scenario):
+        if f.name in _MODEL_FIELDS:
+            dflt[f.name] = f.default_factory() if f.default_factory is not dataclasses.MISSING else f.default
+    sv = Serving(batch=1, prompt=PROMPT, out_len=OUT_LEN, audio_s=audio_s if au is not None else 0)
+    return dataclasses.replace(base, model=mid, serving=sv, **dflt)
 
 
 def speech_bounds(base: Scenario, models=SPEECH_MODELS, audio_s: float = 10.0, verify: bool = True) -> dict:
@@ -94,7 +110,8 @@ def speech_bounds(base: Scenario, models=SPEECH_MODELS, audio_s: float = 10.0, v
                 row["slc_GB_needed"] = s_gb
                 row["slc_GBps_needed"] = s_gb * r
                 if verify:
-                    mib = math.ceil(s_gb * 1e9 / 2 ** 20 / 64) * 64
+                    # on top of any SLC the chip already has (x was measured with it)
+                    mib = base.chip.slc_mib + math.ceil(s_gb * 1e9 / 2 ** 20 / 64) * 64
                     chip = base.chip.__class__(**{**base.chip.__dict__, "slc_mib": float(mib), "slc_policy": "pin"})
                     kv = speech_kpis(_scn(base.replace("chip", chip), mid, audio_s), audio_s)
                     xv = _stages(kv, audio_s)[0][bind]
