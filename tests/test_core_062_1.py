@@ -38,9 +38,10 @@ def test_release_count_and_param_error():
     # 0.275: + FireRedTTS3-Base (backbone = llm release, listing domain tts)  147 → 148, llm 122
     # 0.276: + Fish Audio Drama 3 (Qwen3.5-MoE backbone + codebook tower = llm release, listing domain tts)  148 → 149, llm 123
     # 0.278: + NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 (llm release, listing domain vlm)  149 → 150, llm 124
-    assert len(files) == 150 and doms.count("llm") == 124
+    # 0.279: + Index-Echo-S2ST-2B / -9B (ST LM = llm release, listing domain omni)  150 → 152, llm 126
+    assert len(files) == 152 and doms.count("llm") == 126
     listed = {x["id"]: x for x in list_models()}
-    assert len(listed) + len(unlisted_models()) == 156   # 0.278: + nemotron-3.5-super-vl-120b-a12b-nvfp4; 0.276: + drama-3; 0.275: + fireredtts3-base; 0.274: + moshiko-7b; 0.273: + kimi-audio-7b-instruct; 0.272: + fun-asr-nano-2512, step-audio-2-mini; 0.271: + qwen2.5-omni-7b, cosyvoice2-0.5b, fun-cosyvoice3-0.5b-2512; 0.270: + 4 speech (whisper ×2, qwen2-audio, qwen3-asr); 0.269: + ming-3.0-tts-tiny; 0.268: + ming-3.0-asr-tiny; 0.257: + moss-image-base, moss-image-sft (merged); 0.254: + 3 Beam + 2 DFlash2 pairs; 0.253: + 4; 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7; 0.252: + qwen3-8b-dspine
+    assert len(listed) + len(unlisted_models()) == 158   # 0.279: + index-echo-s2st-2b, -9b; 0.278: + nemotron-3.5-super-vl-120b-a12b-nvfp4; 0.276: + drama-3; 0.275: + fireredtts3-base; 0.274: + moshiko-7b; 0.273: + kimi-audio-7b-instruct; 0.272: + fun-asr-nano-2512, step-audio-2-mini; 0.271: + qwen2.5-omni-7b, cosyvoice2-0.5b, fun-cosyvoice3-0.5b-2512; 0.270: + 4 speech (whisper ×2, qwen2-audio, qwen3-asr); 0.269: + ming-3.0-tts-tiny; 0.268: + ming-3.0-asr-tiny; 0.257: + moss-image-base, moss-image-sft (merged); 0.254: + 3 Beam + 2 DFlash2 pairs; 0.253: + 4; 0.191: + 19 releases + microsoft-decision-1 proxy; 0.221: + qwen3.8-27b-ready (target + draft); 0.251: + 7; 0.252: + qwen3-8b-dspine
     assert all(abs(x["param_err"]) <= 0.005 for x in listed.values())
     assert all(abs(x["param_err"]) < 1e-5 for x in listed.values() if get_model(x["id"]).domain in ("gen", "protein", "genomics"))
 

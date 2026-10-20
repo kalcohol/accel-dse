@@ -243,6 +243,17 @@ def _nemotron_h_omni_role(name: str, n_layers: int | None) -> str:
     return classify(name, n_layers)
 
 
+def _echo_role(name: str, n_layers: int | None) -> str:
+    """0.279 Index-Echo S2ST: the Qwen3-Omni AuT tower and the ST connector feed the decoder's audio positions →
+    vision (the audio-encoder role of the ASR releases); the Hidden2CV mapper → bridge (outside the LLM); stlm_llm →
+    the LLM roles."""
+    if name.startswith(("audio_tower.", "connector.")):
+        return "vision"
+    if name.startswith("mapper."):
+        return "bridge"
+    return classify(name, n_layers)
+
+
 def _compact_qc(qc):
     """0.278 ModelOpt MIXED_PRECISION configs list every quantized module (the Nemotron-3.5-Super-VL config.json is
     8.7 MB): keep the scheme keys, replace the per-module lists by counts per algorithm."""
@@ -321,6 +332,11 @@ def summarize(repo: str) -> dict:
         for name, (dt, shape) in json.loads(mo.read_text())["tensors"].items():
             n = math.prod(shape)
             tensors[name] = (dt, shape, n, n * {"F32": 4, "F16": 2, "BF16": 2}[dt])
+    ec = d / "echo.json"
+    if ec.exists():       # 0.279 Index-Echo S2ST: AuT tower + connector + Hidden2CV mapper (outside stlm_llm)
+        for name, (dt, shape) in json.loads(ec.read_text())["tensors"].items():
+            n = math.prod(shape)
+            tensors[name] = (dt, shape, n, n * {"F32": 4, "F16": 2, "BF16": 2}[dt])
     fr = d / "firered_audio.json"
     if fr.exists():       # 0.275 FireRedTTS3: RedAE codec safetensors (fp32), outside the base model.safetensors
         for name, (dt, shape) in json.loads(fr.read_text())["tensors"].items():
@@ -362,6 +378,7 @@ def summarize(repo: str) -> dict:
                 _firered_role(name, nl) if cfg.get("model_type") == "fireredtts3" else
                 _fish_role(name, nl) if cfg.get("model_type") == "fish_omni" else
                 _nemotron_h_omni_role(name, nl) if cfg.get("model_type") == "nemotron_h_omni" else
+                _echo_role(name, nl) if cfg.get("model_type") == "index_echo_s2st" else
                 _kimi_role(name, nl) if "MoonshotKimiaForCausalLM" in (cfg.get("architectures") or []) else
                 _cosy_role(name, nl) if cfg.get("model_type") in ("cosyvoice2", "cosyvoice3") else
                 classify(name, nl) if domain == "llm" else classify_domain(name, domain))
@@ -386,10 +403,10 @@ def summarize(repo: str) -> dict:
         e["bytes"] += w["bytes"]
     if buffers:
         roles["buffer"] = {"int64": {"params": 0, "bytes": buffers}}
-    llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts")]
+    llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge")]
     tot = lambda rs, k: sum(v[k] for r in rs for v in roles.get(r, {}).values())
     extra = {}
-    for r in ("talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts"):   # 0.271 speech output (Omni / CosyVoice; absent → no key)
+    for r in ("talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge"):   # 0.271 speech output (Omni / CosyVoice; absent → no key)
         if r in roles:
             extra[f"params_{r}"] = tot([r], "params")
             extra[f"bytes_{r}"] = tot([r], "bytes")
@@ -405,6 +422,9 @@ def summarize(repo: str) -> dict:
         extra["speech_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith(("detok.", "voc."))}
         extra["kimi_audio"] = kj["config"]
         extra["whisper_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith("whisper.")}
+    if ec.exists():
+        # 0.279 Index-Echo: connector + mapper tensor shapes drive core/echo.py
+        extra["echo_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith(("connector.", "mapper."))}
     fc = d / "fish_codec.json"
     if fc.exists():
         # 0.277 Fish Audio Drama 3: DAC codec.pth shapes (scripts/fetch_fish_codec.py) drive drama3.dac_ops

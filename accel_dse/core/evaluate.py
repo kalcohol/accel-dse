@@ -2044,7 +2044,7 @@ def _vision_cost(scn: Scenario, m: ModelSpec, sys: System, stages: list) -> dict
         out["video"] = {"videos": sv.videos, "frames": vg.frames, "px": [sv.video_w, sv.video_h],
                         "resized_px": list(vg.slice.px), "slices": vg.t, "patches": [vg.slice.ph, vg.slice.pw],
                         "tokens_per_slice": vg.slice.llm_tokens, "tokens_per_video": vg.llm_tokens, "cap": sv.video_cap and vg.slice.tframes == 1,
-                        "frames_per_slice": vg.slice.tframes if vg.slice.tframes > 1 else m.vision.tpatch}
+                        "frames_per_slice": vg.slice.tframes if vg.slice.tframes > 1 else -(-vg.frames // vg.t)}   # 0.279: radio tubelet 2
     act = 0.0
     if sv.phase == "prefill":
         # 0.165: encoder passes = images (one grid each) + video temporal slices (the tower's cu_seqlens split a clip

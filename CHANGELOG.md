@@ -6,6 +6,34 @@
 
 
 
+## [0.279.0]
+
+### Changed: test_core_237 phase-law guard (MODEL §224.1)
+- `test_runtime_guard_phase_law_paths` now guards the deterministic work as its primary check: the call counts and summed result sizes of the eight phase-law kernels (`_phase_law`, `_phase_iters`, `_queue_weights`, `_queue_k_law`, `_decode_birth_death`, `_occ_tau`, `_mg1_busy`, `_slot_backlog`) per case, each ≤ 1.5 × the measured table + 10 (`_PHASE_WORK`).
+- The CPU bounds stay as they were when run alone (45 s / 90 s). Under the parallel runner they get × 6 headroom, because measured `process_time` inflated 9.5 × under -j 8 for identical work (vllm_v0: 14.3 s alone, 136 s in-suite). A real slowdown in work is still caught by the counters, independent of load.
+
+### Added: Index-Echo S2ST 2B / 9B (MODEL §224.2)
+- New catalog entries `index-echo-s2st-2b` and `index-echo-s2st-9b` (bilibili IndexTeam). Speech → translated, voice-preserved speech in one process, listing domain omni.
+- `scripts/fetch_pt_release.py --echo`: the ST LM shapes are read from the torch_dist `.metadata` (stub unpickler, no torch), and the AuT / connector / mapper shapes from the safetensors headers. Release JSONs:
+  - 2B: LLM 1,881,825,088 (tied), audio 656,315,778, bridge 24,586,624;
+  - 9B: LLM 8,953,803,264, audio 656,315,776, bridge 26,425,728.
+  - All exact.
+- Pipeline costed by `speech._echo_kpis` (kind `s2st`): AuT encoder (Qwen3-Omni audio tower) + connector → ST prefill → greedy decode (transcript + translation) → a second full forward for hidden states (no KV reuse) → Hidden2CVMapper (fp32, `core/echo.py`) → CosyVoice3 LM (fp32; speech tokens clipped to [2m, min(20m, 1500)]) → one flow pass + one HiFT pass (stream=False). CosyVoice3 reuses the catalog `fun-cosyvoice3-0.5b-2512`, whose files are byte-identical.
+- On 100T + LPDDR5X, a 10 s clip → 10 s output:
+  - 2B: 3.23 s, RTF 0.32, 11.3 GB, dominated by CV3 decode (1.83 s);
+  - 9B: 7.30 s, RTF 0.73, 25.5 GB, dominated by ST decode (5.15 s).
+- Coverage is partial: CosyVoice3's speech_tokenizer_v3 and CampPlus (ONNX) are not costed. Text tokens per second of speech (3.0) is an assumption.
+- Web: an S2ST KPI block. Counts: releases 152 (llm 126), listed + unlisted 158.
+
+### Added: Nemotron-3.5-Super-VL video (MODEL §224.3)
+- `serving.videos` now works for `nemotron-3.5-super-vl-120b-a12b-nvfp4` (`vision._radio_video`).
+  - Each frame follows the processor's video rule (`radio_video_patches`: ≈ 1024 patches with the aspect kept and even sides).
+  - Frames are grouped in tubelets of 2, one tower pass each.
+  - EVS pruning (video_pruning_rate 0.7) keeps max(one tubelet, ⌊t · h·w/4 · 0.3⌋) video tokens, plus `<img>` / `</img>` per tubelet.
+- Example: 32 frames at 1280×720 → 16 tubelets of 24×42 patches, 1241 LLM tokens, 24.5 TFLOP of vision. At TP2·EP2 on 100T, TTFT goes from 0.615 s to 0.901 s at a 4096-token prompt.
+- Coverage is still partial (one reason). The tubelet `video_embedder` (2 frames' patches) is costed as a single-frame patch embed, and cls tokens are still left out.
+- The `frames_per_slice` vision field is now frames / slices.
+
 ## [0.278.0]
 
 ### Added: NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 (MODEL §223.1–§223.3)

@@ -149,6 +149,10 @@ EXTRA_TAIL = [
     # 0.278: NVIDIA Nemotron-3.5-Super-VL (2026-10-12, as released NVFP4 / FP8 mixed) — Nemotron-H hybrid: 40 Mamba-2 +
     # 8 GQA + 40 latent-MoE layers (512 experts top-22, relu²), 1 MTP block pair, RADIO ViT-H vision
     ("nemotron-3.5-super-vl-120b-a12b-nvfp4", "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"),
+    # 0.279: bilibili Index-Echo S2ST (2026-10-12 v4.1) — speech → translated speech: Qwen3-Omni AuT + connector +
+    # Qwen3.5 ST decoder (2B / 9B) → Hidden2CV mapper (fp32) → CosyVoice3 (= Fun-CosyVoice3-0.5B-2512 files)
+    ("index-echo-s2st-2b", "IndexTeam/Index-Echo-S2ST-2B"),
+    ("index-echo-s2st-9b", "IndexTeam/Index-Echo-S2ST-9B"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -313,6 +317,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("reflection", "Reflection AI（Beam）", ("reflection/",)),
     ("openmoss", "复旦 OpenMOSS（MOSS）", ("OpenMOSS-Team/",)),
     ("kyutai", "Kyutai（Moshi）", ("kyutai/",)),     # 0.274
+    ("bilibili", "哔哩哔哩 Index（Index-Echo）", ("IndexTeam/",)),     # 0.279
     ("firered", "小红书 FireRedTeam（FireRedTTS）", ("FireRedTeam/",)),     # 0.275
     ("fishaudio", "Fish Audio（Drama）", ("fishaudio/",)),     # 0.276
 ]
@@ -350,6 +355,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("reflection", "Beam-1.0", ("beam-",)),
     ("openmoss", "MOSS-Image", ("moss-image",)),
     ("kyutai", "Moshi", ("moshi",)),     # 0.274
+    ("bilibili", "Index-Echo S2ST", ("index-echo",)),     # 0.279
     ("firered", "FireRedTTS3", ("fireredtts3",)),     # 0.275
     ("fishaudio", "Drama 3", ("drama-3",)),     # 0.276
 ]
@@ -437,7 +443,7 @@ def entries() -> list[dict]:
             # 0.270: any release with a modelled audio encoder and no vision tower (Whisper keeps it outside audio_config)
             from .vision import audio_spec
             # 0.271: Qwen2.5-Omni (speech in + speech out) → omni; 0.273: Step-Audio-2-mini with its token2wav too
-            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3", "fish_omni") else "omni" if cf.get("model_type") == "qwen2_5_omni" or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") == "moshi" else \
+            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3", "fish_omni") else "omni" if cf.get("model_type") == "qwen2_5_omni" or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") in ("moshi", "index_echo_s2st") else \
                 ("asr" if (cf.get("audio_config") or audio_spec(cf) is not None) and not cf.get("vision_config")
                  else "vlm") if (rel.get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])

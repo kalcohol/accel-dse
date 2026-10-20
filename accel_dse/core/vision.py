@@ -95,6 +95,9 @@ _VIDEO.update({k: {"chunk": 4, "frame_lim": 4096, "total": t} for k, t in (
 _VIDEO.update({k: {"muse_frame_tok": 256, "num_frames": 600} for k in (
     "meta-models/Muse-Spark-Open-816B-A42B", "amd/Muse-Spark-Open-816B-A42B-Quark-PTPC-FP8",
     "amd/Muse-Spark-Open-816B-A42B-Quark-MXFP4", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4")})
+# 0.279 Nemotron-3.5-Super-VL video.  「来源」 preprocessor_config.json video_target_num_patches 1024 (aspect kept);
+# config.json video_temporal_patch_size 2, video_pruning_rate 0.7 (EVS, modeling_nemotron_h_omni.compute_retention_mask)
+_VIDEO["nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"] = {"radio_frame": 1024, "tp": 2, "evs": 0.7}
 # 「来源」 transformers qwen3_vl/video_processing_qwen3_vl.py: fps 2, min_frames 4, max_frames 768, max_video_tokens 768
 VIDEO_FPS, VIDEO_MIN_FRAMES, VIDEO_MAX_FRAMES, VIDEO_MAX_TOK = 2, 4, 768, 768
 
@@ -329,6 +332,16 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
         return _sanm_spec(ac, cfg.get("adaptor_config") or {})
     if mt == "qwen3_asr" and (tk.get("audio_config") or {}).get("model_type") == "qwen3_asr_audio_encoder":
         return _aut_spec(tk["audio_config"])
+    if mt == "index_echo_s2st" and ac.get("model_type") == "qwen3_omni_moe_audio_encoder":
+        # 0.279 Index-Echo ST LM (code/stlm/audio_model.py 「来源」): the Qwen3-Omni AuT (same encoder as Qwen3-ASR:
+        # WhisperFeatureExtractor 128 mel with n_samples raised to 300 s, only the valid frames encoded) → connector:
+        # 2B h + β·W₂ GELU(W₁ h), scaled by exp(log α) (2 × Linear 2048 → 2048, no bias, + 2 scalars); 9B one Linear
+        # 2048 → 4096 (no bias) — shapes from the release (stlm_ckpt), costed as projector GEMMs
+        a = _aut_spec(ac)
+        ct = cfg.get("_echo_connector") or {}
+        mats = tuple((sh[1], sh[0]) for n_, sh in sorted(ct.items()) if len(sh) == 2)
+        return replace(a, lin=a.lin + mats, out=mats[-1][1] if mats else a.out,
+                       params=a.params + sum(math.prod(sh) for sh in ct.values()))
     if ac.get("model_type") != "muse_spark_audio":
         return None
     pt, dm, dp, k, r = tuple(ac["patch_sizes"]), tuple(ac["hidden_sizes"]), tuple(ac["depths"]), ac["conv_kernel_size"], ac["mlp_ratio"]
@@ -647,6 +660,7 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                    "Whisper 式音频编码器（整段一次、≤ 30 s）+ 平均池化 + 卷积适配器（s2）+ MLP 投影" if au.ds and au.lin else
                    "Whisper-v3 音频编码器（30 s 填充窗，交叉注意力输入）" if au.cross else
                    "Whisper-v3 音频编码器（30 s 填充）+ 平均池化 + 线性投影" if au.lin is not None and au.kind == "whisper" else
+                   "AuT 音频编码器（Qwen3-Omni，Conv2d ×3 下采样 8×，窗口注意力）+ MLP 投影 + ST 连接器" if au.kind == "aut" and cfg.get("model_type") == "index_echo_s2st" else
                    "AuT 音频编码器（Conv2d ×3 下采样 8×，窗口注意力）+ MLP 投影" if au.kind == "aut" else
                    "SAN-M 音频编码器（LFR 7/6 帧堆叠，70 层 FSMN 自注意力，整段双向）+ 投影 + 2 层适配器" if au.kind == "sanm" else
                    "Whisper 音频编码器 + 卷积下采样投影")
@@ -788,7 +802,7 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return VisionSpec("radio", "C-RADIO ViT-H/16（动态分辨率单图）+ 2×2 像素重排 + MLP 投影", p, 1, h, inter, L, nh, h,
                           False, r, ((r * r * h, ph_), (ph_, out)), params, tuple(sorted(pre.items())), extra=video,
                           approx="视觉：10 个 cls / register token 未计入注意力长度（≥ 1024 个 patch，< 1 %）「近似」；"
-                                 "视频路径（video_embedder，时间 tubelet 2）只计存储")
+                                 "视频 tubelet 的 video_embedder（2 帧 patch）按单帧 patch 嵌入计「近似」，EVS 剪枝按保留数公式计")
     if vc.get("model_type") == "minicpmv4_7_vision":          # 0.144 SigLIP + in-tower merger (insert_layer_id) + merger
         h, inter, L, nh, p = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"], vc["patch_size"]
         ins = cfg.get("insert_layer_id") or 0
@@ -1180,7 +1194,7 @@ def video_pre(m) -> dict | None:
     0.255 MuseGlimmerVideoProcessor)."""
     v = getattr(m, "vision", None)
     pre = _VIDEO.get(getattr(m, "hf_id", "")) if v is not None else None
-    if pre is None or v.family != ("kimi" if "chunk" in pre else "qwen"):
+    if pre is None or v.family != ("kimi" if "chunk" in pre else "radio" if "radio_frame" in pre else "qwen"):
         return None
     return pre
 
@@ -1202,6 +1216,8 @@ def video_grid(v: VisionSpec, pre: dict, frames: int, width: int, height: int, c
         return _kimi_video(v, pre, frames, width, height)
     if "muse_frame_tok" in pre:
         return _muse_video(v, pre, frames, width, height)
+    if "radio_frame" in pre:
+        return _radio_video(v, pre, frames, width, height)
     tp, f = max(1, v.tpatch), v.patch * v.merge
     lo, hi = pre["min_px"], pre["max_px"]
     if frames < tp:
@@ -1244,6 +1260,40 @@ def _muse_video(v: VisionSpec, pre: dict, frames: int, width: int, height: int) 
     return VideoGrid(n, t, ImageGrid(ph, pw, mg, mg, (wb, hb)), t * mg + t + 1)
 
 
+def radio_video_patches(width: int, height: int, target: int, r: int) -> tuple[int, int]:
+    """0.279 NemotronH_Omni_Reasoning_V3ImageProcessor._compute_target_patches_video, verbatim (aspect kept): ph =
+    round(√(target / aspect)), pw = round(√(target · aspect)), each rounded to a multiple of r — up if ph·pw stays ≤
+    target, else both down (≥ r).  → (w_patches, h_patches)."""
+    a = width / max(height, 1)
+    ph, pw = max(round(math.sqrt(target / a)), 1), max(round(math.sqrt(target * a)), 1)
+    if r > 1:
+        rh, rw = ph % r, pw % r
+        hu, wu = ph + (r - rh if rh else 0), pw + (r - rw if rw else 0)
+        if hu * wu <= target:
+            ph, pw = hu, wu
+        else:
+            ph, pw = max(r, ph - rh), max(r, pw - rw)
+    return pw, ph
+
+
+def _radio_video(v: VisionSpec, pre: dict, frames: int, width: int, height: int) -> VideoGrid:
+    """0.279 Nemotron-3.5-Super-VL video (processing / modeling_nemotron_h_omni.py 「来源」): every frame resized to the
+    video rule (radio_video_patches, ≈ 1024 patches); frames grouped in tubelets of 2 (last padded by repeating the
+    final frame) — each tubelet is one tower pass (video_embedder over 2 frames' patches) → final LN, pixel shuffle,
+    mlp1; prompt: per tubelet a frame label + <img> + h·w/4 tokens + </img>; EVS keeps max(one tubelet, ⌊t · h·w/4 ·
+    (1 − q)⌋) of the video tokens (q = video_pruning_rate; the encoder still runs on all).  Frame-label text tokens are
+    not counted (as for Qwen video)."""
+    tp = pre["tp"]
+    if frames < 1:
+        raise ValueError("serving.video_frames must be ≥ 1")
+    r = v.merge
+    pw, ph = radio_video_patches(width, height, pre["radio_frame"], r)
+    mg = ph * pw // (r * r)
+    t = -(-frames // tp)
+    keep = max(mg, int(t * mg * (1 - pre["evs"])))
+    return VideoGrid(frames, t, ImageGrid(ph, pw, mg, mg + 2, (pw * v.patch, ph * v.patch)), keep + 2 * t)
+
+
 def _kimi_video(v: VisionSpec, pre: dict, frames: int, width: int, height: int) -> VideoGrid:
     """kimi_k25_vision_processing.split_video_chunks + navit_resize_video, verbatim: frames are cut into chunks of
     ``chunk`` (last one shorter); each chunk is resized per frame with in_patch_limit_each_frame (lowered to
@@ -1270,7 +1320,7 @@ def video_grid_of(m, sv) -> VideoGrid | None:
     pre = video_pre(m)
     if pre is None:
         raise ValueError("serving.videos：该模型没有已建模的视频处理器（Qwen3VLVideoProcessor 系：Qwen3.5-397B / "
-                         "Qwen3.8 / Intern-S2；0.166 Kimi K2.5 / K2.7-Code 4 帧块；0.255 Muse Spark Open）")
+                         "Qwen3.8 / Intern-S2；0.166 Kimi K2.5 / K2.7-Code 4 帧块；0.255 Muse Spark Open；0.279 Nemotron-3.5-Super-VL RADIO tubelet）")
     return video_grid(m.vision, pre, sv.video_frames, sv.video_w, sv.video_h, sv.video_cap)
 
 

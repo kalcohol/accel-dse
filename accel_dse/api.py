@@ -997,7 +997,7 @@ def api_eval(body: dict) -> dict:
     aos = body.get("audio_out_s", 10.0)
     if isinstance(aos, bool) or not isinstance(aos, (int, float)) or not 0 < aos <= 3600:
         raise ApiError("audio_out_s must be a number in (0, 3600]")
-    if r.tts is not None or getattr(r.model, "omni", None) is not None or getattr(r.model, "cosy", None) is not None or getattr(r.model, "kimi", None) is not None or getattr(r.model, "moshi", None) is not None or (scn.serving.audio_s and getattr(getattr(r.model, "vision", None), "audio", None) is not None):
+    if r.tts is not None or getattr(r.model, "omni", None) is not None or getattr(r.model, "cosy", None) is not None or getattr(r.model, "echo", None) is not None or getattr(r.model, "kimi", None) is not None or getattr(r.model, "moshi", None) is not None or (scn.serving.audio_s and getattr(getattr(r.model, "vision", None), "audio", None) is not None):
         try:
             out["speech"] = speech_kpis(scn, float(aos))
         except ValueError as e:

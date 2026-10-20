@@ -15,6 +15,7 @@ from __future__ import annotations
 import collections
 import io
 import json
+import math
 import pickle
 import re
 import struct
@@ -328,9 +329,113 @@ def fetch_firered(repo: str) -> None:
     print(repo, len(t))
 
 
+ECHO_SRC = ("HF IndexTeam/Index-Echo-S2ST-{2B,9B}: config.json, modeling_dubbing.py, code/tts/pipeline.py (DubPipeline.extract "
+            "/ synth), code/stlm/audio_model.py (AuT + connector), code/stlm/stlm_api.py, code/bridge/hidden2cv.py "
+            "(Hidden2CVMapper), README.md (default inference settings)")
+COSY3 = "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
+
+
+def _distcp_shapes(url: str) -> dict:
+    """0.279 torch.distributed.checkpoint ``.metadata`` (a pickle of Metadata → state_dict_metadata {key:
+    TensorStorageMetadata(properties(dtype), size, chunks)}) read without torch: every foreign class is a stub that
+    keeps its state.  → {key: [dtype, shape]}."""
+    import builtins
+
+    class _Stub:
+        def __init__(self, *a, **k):
+            self.a = a
+
+        def __setstate__(self, st):
+            self.st = st
+
+    class _Size(tuple):
+        pass
+
+    class _U(pickle.Unpickler):
+        def find_class(self, mod, name):
+            if name == "Size":
+                return _Size
+            if mod.startswith("collections"):
+                return getattr(collections, name)
+            if mod == "builtins":
+                return getattr(builtins, name)
+            return type(name, (_Stub,), {})
+    raw = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60).read()
+    md = _U(io.BytesIO(raw)).load()
+    out = {}
+    for k, v in md.st["state_dict_metadata"].items():
+        st = getattr(v, "st", None)
+        if not isinstance(st, dict) or "size" not in st:
+            continue                                              # bytes entries (rng state)
+        props = getattr(st["properties"], "st", None)
+        dt = props.get("dtype") if isinstance(props, dict) else props[0] if isinstance(props, tuple) and props else None
+        name = dt.__name__ if isinstance(dt, type) else type(dt).__name__
+        out[k] = [{"bfloat16": "BF16", "float32": "F32", "float16": "F16"}.get(name, "BF16"), list(st["size"])]
+    return out
+
+
+def fetch_echo(repo: str) -> None:
+    """0.279 Index-Echo S2ST (2B / 9B) — speech → translated speech in one process 「来源」 ECHO_SRC:
+      ST LM  = Qwen3-Omni AuT audio encoder + connector + Qwen3.5 decoder (stlm_llm/, frozen);
+      bridge = Hidden2CVMapper (bridge/mapper.safetensors + mapper_config.json);
+      TTS    = CosyVoice3 (cosyvoice3/ — llm.pt / flow.pt / hift.pt are byte-identical (LFS sha256) to
+               FunAudioLLM/Fun-CosyVoice3-0.5B-2512, so the catalog's fun-cosyvoice3 release is reused).
+    Weights read at load: stlm_llm (AutoModelForCausalLM), the AuT tower of stlm_omni shard 1 (thinker.audio_tower.*,
+    shapes) overwritten by the trained audio_model.* / connector.* of stlm_ckpt (2B: torch_dist .metadata; 9B:
+    model.safetensors).  The stlm_ckpt LLM copy (2B decoder.*) and the rest of stlm_omni shard 1 are stored, not loaded.
+    Writes config.json (model_type index_echo_s2st: text_config, audio_config, echo), headers.json (stlm_llm) and
+    echo.json ({"tensors": audio_tower.* / connector.* / mapper.*: [dtype, shape]})."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fhr", str(ROOT / "scripts" / "fetch_hf_release.py"))
+    fhr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fhr)
+    d = CACHE / repo.replace("/", "__")
+    d.mkdir(parents=True, exist_ok=True)
+    base = f"{HF}/{repo}/resolve/main"
+    get = lambda f: json.loads(urllib.request.urlopen(urllib.request.Request(f"{base}/{f}", headers=UA), timeout=60).read())
+    top, llm, omni, mcfg = get("config.json"), get("stlm_llm/config.json"), get("stlm_omni/config.json"), get("bridge/mapper_config.json")
+    files = [s["rfilename"] for s in json.loads(urllib.request.urlopen(f"{HF}/api/models/{repo}", timeout=60).read())["siblings"]]
+    st_llm = [f for f in files if f.startswith("stlm_llm/") and f.endswith(".safetensors")]
+    tc = llm.get("text_config") or {k: v for k, v in llm.items() if k not in ("architectures",)}
+    cfg = {"model_type": "index_echo_s2st", "architectures": ["DubbingBridgeModel"], "_source": ECHO_SRC,
+           "torch_dtype": "bfloat16", "text_config": {**tc, "tie_word_embeddings": llm.get("tie_word_embeddings", tc.get("tie_word_embeddings"))},
+           "audio_config": {k: v for k, v in omni["thinker_config"]["audio_config"].items() if not k.startswith("_")},
+           "echo": {"pipeline": top.get("pipeline"), "version": top.get("version"), "dims": top.get("dims"),
+                    "langs": top.get("langs"), "directions": top.get("directions"), "sample_rate": top.get("sample_rate"),
+                    "mapper": mcfg, "cosyvoice": COSY3, "instruction": top.get("instruction", {}).get("en"),
+                    # README "Default inference settings" + pipeline.py 「来源」
+                    "max_new_tokens": 1024, "speech_max_tokens": 1500, "speech_cap_per_text": 20,
+                    "speech_min_per_text": 2, "cv3_llm_fp32": True, "stream": False}}
+    (d / "config.json").write_text(json.dumps(cfg, indent=1))
+    (d / "headers.json").write_text(json.dumps({f: fhr.st_header_url(f"{base}/{f}") for f in st_llm}))
+    t = {}
+    sh = fhr.st_header_url(f"{base}/stlm_omni/model-00001-of-00015.safetensors")
+    for n, h in sh.items():
+        if n.startswith("thinker.audio_tower."):
+            t["audio_tower." + n[len("thinker.audio_tower."):]] = [h["dtype"], h["shape"]]
+    if "stlm_ckpt/model.safetensors" in files:
+        ck = {n: [h["dtype"], h["shape"]] for n, h in fhr.st_header_url(f"{base}/stlm_ckpt/model.safetensors").items()
+              if n != "__metadata__"}
+    else:
+        ck = _distcp_shapes(f"{base}/stlm_ckpt/.metadata")
+    for n, v in ck.items():
+        if n.startswith("connector."):
+            t[n] = v
+    aud = sum(math.prod(v[1]) for n, v in ck.items() if n.startswith("audio_model."))
+    assert aud == sum(math.prod(v[1]) for n, v in t.items() if n.startswith("audio_tower.")), (aud, "trained AuT ≠ tower shapes")
+    for n, h in fhr.st_header_url(f"{base}/bridge/mapper.safetensors").items():
+        if n != "__metadata__":
+            t["mapper." + n] = [h["dtype"], h["shape"]]
+    (d / "echo.json").write_text(json.dumps({"tensors": t}))
+    print(repo, len(t), st_llm)
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if args and args[0] == "--token2wav":         # 0.273: python3 scripts/fetch_pt_release.py --token2wav <repo>
+    if args and args[0] == "--echo":              # 0.279: python3 scripts/fetch_pt_release.py --echo <repo>
+        for r in args[1:]:
+            fetch_echo(r)
+    elif args and args[0] == "--token2wav":         # 0.273: python3 scripts/fetch_pt_release.py --token2wav <repo>
         for r in args[1:]:
             fetch_token2wav(r)
     elif args and args[0] == "--firered":         # 0.275: python3 scripts/fetch_pt_release.py --firered <repo>

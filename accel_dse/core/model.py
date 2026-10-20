@@ -476,6 +476,7 @@ class ModelSpec:
     cached_params: int = 0                   # in the release but not loaded for inference (MiniMax-H3 AdaLN branches:
                                              # modulation outputs precomputed per timestep, README)
     cosy: object = None                      # 0.271 core.cosyvoice.CosySpec: CosyVoice2 / 3 flow + HiFT (speech output)
+    echo: object = None                      # 0.279 core.echo.EchoSpec: Index-Echo S2ST bridge (mapper → CosyVoice3)
     moshi: object = None                     # 0.274 core.moshi.MoshiSpec: Moshi depformer + Mimi codec (per 80 ms frame)
     kimi: object = None                      # 0.273 core.kimi_audio.KimiSpec: Kimi-Audio detokenizer DiT + BigVGAN
     omni: object = None                      # 0.271 core.omni.OmniSpec: Qwen2.5-Omni Talker + token2wav (speech output)
@@ -594,6 +595,8 @@ def _tc(cfg: dict) -> dict:
         # fireredtts3_base.py (the HF config.json carries only the DiT / patch-encoder fields) 「来源」; no lm_head (the
         # step output drives stop_head + the DiT flow head, core/fireredtts3.py); weights stored fp32
         tc = {**cfg["backbone"], "torch_dtype": "float32"}
+    if mt == "index_echo_s2st" and isinstance(tc, dict):
+        tc = {**tc, "model_type": tc.get("model_type") or "qwen3_5_text"}   # 0.279 Index-Echo: the ST decoder (stlm_llm)
     if mt == "nemotron_h_omni" and isinstance(cfg.get("llm_config"), dict):
         tc = cfg["llm_config"]      # 0.278 Nemotron-3.5-Super-VL: NemotronHForCausalLM(llm_config) 「来源」 modeling_nemotron_h_omni.py
     if mt == "fish_omni" and isinstance(tc, dict):
@@ -2124,6 +2127,15 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 f"语音合成（TTS）：每步 = Qwen3-1.7B 主干 1 步（bf16 autocast，权重 fp32 存储）+ DiT 流匹配头 {fs.flow_steps} 步 Euler × CFG {fs.cfg_mult}"
                 f"（{fs.flow_params / 1e6:.0f}M，fp32，12 位置）+ patch 编码器（{fs.agg_params / 1e6:.0f}M）；每步 {fs.s_per_step * 1e3:.0f} ms 音频（24 kHz）；"
                 f"整段生成完后 RedAE 一次解码（{fs.redae_dec_params / 1e6:.0f}M，fp32，非流式）；无 lm_head",))
+        from .echo import echo_spec
+        es = echo_spec(cfg, rel)
+        if es is not None:
+            # 0.279 Index-Echo S2ST: the ST LM is the catalog model; the Hidden2CV mapper (release role bridge, fp32) and
+            # the CosyVoice3 stage (the fun-cosyvoice3 catalog model, byte-identical files) are costed by core/speech.py
+            spec = replace(spec, echo=es, notes=spec.notes + (
+                f"语音翻译（S2ST，非流式，一张卡串行「来源」）：AuT 编码 → ST LM 贪心解码（原文 + 译文）→ 再整段前向一次取末层隐状态"
+                f" → Hidden2CV 映射器（{es.mapper_params / 1e6:.1f}M，fp32，{es.n_layer} 层 d{es.d_e}）→ CosyVoice3 LM（fp32）"
+                f"采样语音 token（2m … min(20m, {es.speech_max})）→ flow + HiFT 一次合成",))
         from .cosyvoice import cosy_spec
         cs = cosy_spec(cfg, rel)
         if cs is not None:
@@ -2163,6 +2175,9 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         rel_gap = (spec.release_params - spec.params()) / spec.release_params if spec.release_params else 0.0
         mp = c.get("max_position_embeddings")
         from .vision import vision_spec
+        if cfg.get("model_type") == "index_echo_s2st":      # 0.279: connector shapes (stlm_ckpt) for the audio spec
+            cfg = {**cfg, "_echo_connector": {n[len("connector."):]: v for n, v in (rel.get("echo_tensors") or {}).items()
+                                              if n.startswith("connector.")}}
         vs = vision_spec(hf_id, {**cfg, "_kimi_whisper": rel["kimi_audio"]["whisper"]}
                          if _is_kimi(cfg) and rel.get("kimi_audio") else cfg)     # 0.273: Kimi-Audio whisper config
         rv = (rel.get("params_vision") or 0) if ts is None else 0
@@ -2170,7 +2185,9 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             # 0.144: multimodal parts stored with the release but not run for images (MiMo audio encoder + speech
             # embeddings) → storage only
             vs = replace(vs, extra=rv - vs.params, params=rv)
-        spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ()),
+        from .echo import ECHO_REASON
+        spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
+                       + ((ECHO_REASON,) if spec.echo is not None else ()),
                        vision=vs, vision_params=vs.params if vs is not None else rv,
                        max_ctx=int(mp) if isinstance(mp, (int, float)) and not isinstance(mp, bool) and mp > 0 else 0)
         if spec.coverage == "full" and spec.coverage_reasons:

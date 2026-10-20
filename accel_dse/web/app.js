@@ -865,6 +865,14 @@ function renderEval(r) {
         `LM 首 token ${num(f.lm_ttft_s * 1e3)} ms + ${p.hops[0]}+3 token ${num(f.lm_tokens_s * 1e3)} ms + flow ${num(f.flow_chunk0_s * 1e3)} ms + HiFT ${num(f.hift_chunk0_s * 1e3)} ms`
         + ` · 每块 flow ${ms(p.flow_s)} ms · HiFT ${ms(p.hift_s)} ms · 估计器权重 SRAM 未命中 ${num(p.flow_pin_miss * 100)}%`));
     }
+    if (p.kind === 's2st') {     // 0.279 Index-Echo: speech → translated speech, serial, non-streaming
+      const f = p.split || {}, ms = (x) => num((x || 0) * 1e3);
+      k.push(kpi(`语音翻译端到端 · ${p.label}`, `RTF ${num(p.rtf)}`,
+        `${num(p.audio_s)} s 源音频 → 原文 ${p.src_tokens} + 译文 ${p.tgt_tokens} token → ${p.speech_tokens} 语音 token → ${num(p.audio_out_s)} s 输出（非流式：首音频 = 全程 ${ms(p.total_s)} ms）`
+        + ` · 编码器 ${ms(f.encoder_s)} · ST 预填充 ${ms(f.st_prefill_s)} + 解码 ${ms(f.st_decode_s)} + 隐状态前向 ${ms(f.st_hidden_pass_s)} · 映射器 ${ms(f.mapper_s)}`
+        + ` · CV3 预填充 ${ms(f.cv3_prefill_s)} + 解码 ${ms(f.cv3_decode_s)} · flow ${ms(f.flow_s)} · HiFT ${ms(f.hift_s)} ms · 单卡 ${num(p.card_GB)} GB`
+        + (p.fits ? '' : ' · 放不下'), p.rtf > 1 || !p.fits ? 'warn' : ''));
+    }
     if (p.kind === 'omni') k.push(kpi('语音端到端 · Omni 语音输出', `首音频 ${num(p.first_audio_s * 1e3)} ms`,   // 0.271
       `${num(p.audio_out_s)} s 输出音频 = ${p.codec_tokens} codec token（Talker 每步 ${num(p.talker_step_s * 1e3)} ms）· DiT 每 ${num(p.chunk_s)} s 分块 ${num(p.dit_chunk_s * 1e3)} ms（RK4 ${p.dit_evals} 次 × CFG ${p.cfg}）`
       + ` · 语音卡 RTF ${num(p.rtf)}（${p.streams_per_card} 路）· 实时路数 ${p.streams_realtime} · 共 ${num(p.total_s)} s · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡（含 ${p.speech_cards} 张语音卡「假设」）`

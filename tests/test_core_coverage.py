@@ -81,7 +81,8 @@ IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b",
 # attention as full + audio encoder storage-only
 VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4", "qwen2.5-omni-7b",
                   "kimi-audio-7b-instruct",
-                  "nemotron-3.5-super-vl-120b-a12b-nvfp4",)   # 0.278 Nemotron VL: RADIO cls tokens ≈ / video stored   # 0.277 Drama 3 DAC costed → full (0.276: partial)   # 0.273 Kimi-Audio: GLM-4-Voice input tokenizer (other repo) not costed   # 0.271 Omni: ViT stored only   # 0.145: MiniCPM slicing + MiMo band windows modelled → full; 0.251 NVFP4 = same vision
+                  "nemotron-3.5-super-vl-120b-a12b-nvfp4",
+                  "index-echo-s2st-2b", "index-echo-s2st-9b",)   # 0.279 Index-Echo: speech_tokenizer_v3 / CampPlus ONNX not costed   # 0.279 Nemotron VL video costed (tubelet embed ≈); 0.278 RADIO cls tokens ≈   # 0.277 Drama 3 DAC costed → full (0.276: partial)   # 0.273 Kimi-Audio: GLM-4-Voice input tokenizer (other repo) not costed   # 0.271 Omni: ViT stored only   # 0.145: MiniCPM slicing + MiMo band windows modelled → full; 0.251 NVFP4 = same vision
 # 0.255: Muse Spark Open (+ fp8 / mxfp4 / nvfp4 / dspark / dflash2 pairs) → full: MuseGlimmerImageProcessor smart_resize now
 # public in transformers (was the only reason since 0.175 audio)
 

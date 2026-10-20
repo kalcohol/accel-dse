@@ -7388,3 +7388,39 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
   - the DAC is read once per window (≈ 1 read per 6–64 frames), against the LM weights read every frame, so a GB of LM weights in SLC saves 64× more traffic in steady-state 64-frame windows, and ≈ 27× averaged over a 10 s request (216 frames / 8 windows);
   - the 0.277 loss of one stream at large SLC is the DAC's compute and activation share of a cheap LM step.
 - No model change.
+
+
+## §224 test_core_237 work guard, Index-Echo S2ST, Nemotron VL video (0.279)
+
+### §224.1 test_core_237 phase-law guard
+- 「来源」 measurement on the box: the same work takes vllm_v0 14.3 s of CPU when run alone and 136 s inside the -j 8 suite (× 9.5: SMT / frequency / cache contention inflate `process_time`). Neither CPU time nor wall time is a stable guard under load.
+- The primary guard is now deterministic: call counts and summed result sizes (`_size`, nested lengths) of the eight phase-law kernels per case, ≤ 1.5 × the table + 10. The table was measured in a fresh process at 0.279.
+- The CPU bounds are unchanged alone (45 / 90 s); under the parallel runner they are × 6 (backstop only).
+
+### §224.2 Index-Echo S2ST (IndexTeam/Index-Echo-S2ST-2B / -9B)
+- 「来源」 HF release: modeling_dubbing.py, code/tts/pipeline.py, code/stlm/audio_model.py + stlm_api.py, code/bridge/hidden2cv.py, README default inference settings.
+- **AuT + connector:** the Qwen3-Omni audio tower (d_model 1280, 32 layers, 20 heads, FFN 5120, output 2048; 647,927,168, the same as Qwen3-ASR `_aut_spec`).
+  - 2B connector: w1 / w2 2048² with no bias, plus scalars beta and log_alpha = 8,388,610.
+  - 9B connector: proj [4096, 2048] = 8,388,608.
+- **ST LM:** Qwen3.5 text. 2B 1,881,825,088 (tied); 9B 8,953,803,264. The config declares MTP but no MTP weights are released. The 2B checkpoint is torch_dist; its shapes come from the `.metadata` (stub unpickler).
+- **Per request** 「来源」: greedy decode of transcript + newline + translation (max_new_tokens 1024), then a second full forward over prompt + output for hidden states (no KV reuse; the audio embeddings are reused).
+- **Hidden2CVMapper** (fp32): d_h → 896, 3 pre-LN bidirectional layers, 8 heads, d_ff 2048, max_len 512, 5 languages, zero-init output, residual on the CV3 text embedding. 24,586,624 (2B) / 26,425,728 (9B), exact; the GEMM weight sum = params − pos − lang_emb.
+- **CosyVoice3** (fp32 LM): prompt = sos + text(INSTRUCT + source transcript) + mapped m + task + prompt speech tokens. Speech tokens are clip(25·out_s, 2m, min(20m, 1500)). token2wav runs non-streaming: flow once (CFM 10 × CFG) and HiFT once.
+- 「假设」 TEXT_TOK_PER_S 3.0, ST prompt 36 tokens, CV3 instruct 8 tokens. 「近似」 the ST and CV3 BPE counts of the translation are taken as equal.
+- Not costed (coverage partial): speech_tokenizer_v3 and CampPlus (ONNX frontend).
+- On 100T + LPDDR5X, 10 s → 10 s:
+  - 2B: 3.23 s (ST decode 1.21, CV3 decode 1.83, flow 0.11);
+  - 9B: 7.30 s (ST decode 5.15).
+
+### §224.3 Nemotron-3.5-Super-VL video
+- 「来源」 image_processing_nemotron_h_omni.py `_compute_target_patches_video`:
+  - ph = round(√(1024 / aspect)) and pw = round(√(1024 · aspect));
+  - each side is rounded to a multiple of 2: up if ph·pw stays ≤ 1024, else both down.
+  - Example: 1280×720 → 24 × 42.
+- processing_nemotron_h_omni.py: frames are grouped in tubelets of 2, with the last one padded. Each tubelet is one `<img>` chunk with a frame label.
+- modeling `forward_video`: video_embedder Linear(3·2·16², 1280) → RADIO → pixel shuffle → mlp1.
+- **EVS** (`compute_retention_mask`, q = video_pruning_rate 0.7, applied after the projector, so the encoder still runs on everything): keep max(h·w, ⌊T·h·w·(1 − q)⌋) tokens.
+  - 「近似」 we use this count formula. The HF reference reshapes with a square side int(√tokens), which matches only square tiles.
+- 「近似」: the tubelet embed is costed with the single-frame patch embed K (3·16²; < 0.1 % of tower FLOPs), and frame-label text tokens are not counted.
+- 32 frames at 1280×720 → 16 tubelets, 4032 → 1209 video tokens + 32 tags = 1241 LLM tokens. TTFT at TP2·EP2 goes from 0.615 s to 0.901 s.
+

@@ -75,6 +75,12 @@ def test_runtime_guard_phase_law_paths():
     # (_chunk_fused) per case, at ≤ 1.5 × their 0.277 counts — load-independent and tighter than either time bound for the
     # regression class these limits exist for (exploding loops).  The CPU-time bounds stay: 45 s / 90 s run alone, × 2
     # under the parallel runner (ACCEL_TEST_JOBS > 1), still far below the 22 min / 30 min regressions.
+    # 0.279: the phase-law sub-guard also counts deterministic work — calls of the colocated modes' inner solvers
+    # (_PHASE_FNS) and the summed size of what they return (law atoms, birth-death π, queue weights) at ≤ 1.5 × their
+    # 0.279 values — and that is now its primary guard.  CPU seconds measured under `-j 8` inflated 9.5 × for the same
+    # work (rt278b: vllm_v0 phase law 136 s CPU, 14.3 s alone, identical work counts), so under the parallel runner the
+    # CPU-time bounds are gross catastrophe bounds (× 6: 270 s / 540 s, still ≥ 4 × below the 22 min / 30 min
+    # regressions); run alone they stay 45 s / 90 s.
     from accel_dse.core import pdqueue
     spent = [0.0]
     work = {"run": 0, "chunk": 0}
@@ -93,28 +99,58 @@ def test_runtime_guard_phase_law_paths():
             work[key] += 1
             return fn(*a, **k)
         return run
+    def sized(i, fn):
+        def run(*a, **k):
+            r = fn(*a, **k)
+            work["calls"][i] += 1
+            work["size"][i] += _size(r)
+            return r
+        return run
     saved = (pdqueue._coloc_chunked, pdqueue._coloc_prefill_first, pdqueue._Pool.run, pdqueue._chunk_fused)
+    saved_fns = tuple(getattr(pdqueue, n) for n in _PHASE_FNS)
     pdqueue._coloc_chunked, pdqueue._coloc_prefill_first = timed(saved[0]), timed(saved[1])
     pdqueue._Pool.run, pdqueue._chunk_fused = counted("run", saved[2]), counted("chunk", saved[3])
+    for i, n in enumerate(_PHASE_FNS):
+        setattr(pdqueue, n, sized(i, saved_fns[i]))
     try:
         _guard_cases(spent, work)
     finally:
         pdqueue._coloc_chunked, pdqueue._coloc_prefill_first, pdqueue._Pool.run, pdqueue._chunk_fused = saved
+        for n, f in zip(_PHASE_FNS, saved_fns):
+            setattr(pdqueue, n, f)
+
+
+def _size(r) -> int:
+    """Deterministic size of a solver result: elements of every (nested) list / tuple / dict."""
+    if isinstance(r, dict):
+        return sum(_size(v) for v in r.values())
+    if isinstance(r, (list, tuple)):
+        return len(r) + sum(_size(v) for v in r if isinstance(v, (list, tuple, dict)))
+    return 0
 
 
 # 0.277 work counts per case (fresh process, box): (_Pool.run calls, _chunk_fused calls)
 _WORK = {"sglang_mixed": (13710, 3360), "sglang": (9010, 106), "vllm_v0": (17105, 6341), "vllm": (37869, 24090)}
+# 0.279 phase-law inner solvers: per case (calls, summed result sizes) in _PHASE_FNS order (fresh process, box)
+_PHASE_FNS = ("_phase_law", "_phase_iters", "_queue_weights", "_queue_k_law", "_decode_birth_death", "_occ_tau", "_mg1_busy",
+              "_slot_backlog")
+_PHASE_WORK = {
+    "sglang_mixed": ((1642, 286, 168, 24, 250, 159, 164, 24), (48757, 0, 11005, 96177, 350862, 0, 20284, 5529)),
+    "sglang": ((37, 69, 0, 0, 179, 103, 140, 19), (6117, 0, 0, 0, 185003, 0, 27831, 5529)),
+    "vllm_v0": ((1784, 352, 182, 26, 261, 202, 176, 26), (56422, 0, 7971, 114534, 396383, 0, 41897, 6111)),
+    "vllm": ((1628, 1950, 168, 24, 250, 151, 164, 24), (488325, 0, 16985, 93174, 356540, 0, 101211, 5820)),
+}
 
 
 def _guard_cases(spent, work=None):
     import os
     par = int(os.environ.get("ACCEL_TEST_JOBS", "1") or 1) > 1
-    lim = 2.0 if par else 1.0
+    lim = 6.0 if par else 1.0
     for kw in (dict(prompt=4096, cap=48.0, chunk_profile="sglang_mixed"), dict(prompt=6000, cap=48.0, chunk_profile="sglang"),
                dict(prompt=6000, cap=48.0, chunk_profile="vllm_v0"), dict(prompt=4096, chunk_profile="vllm", prompt_cv=0.5)):
         spent[0] = 0.0
         if work is not None:
-            work.update(run=0, chunk=0)
+            work.update(run=0, chunk=0, calls=[0] * len(_PHASE_FNS), size=[0] * len(_PHASE_FNS))
         c0 = time.process_time()
         q = disagg_report(_pd(**kw))["queue"]
         total = time.process_time() - c0
@@ -122,6 +158,10 @@ def _guard_cases(spent, work=None):
         assert spent[0] > 0, kw
         if work is not None:
             r0, c0_ = _WORK[kw["chunk_profile"]]
-            assert 0 < work["run"] <= 1.5 * r0 and work["chunk"] <= 1.5 * c0_ + 10, (kw, work)
+            assert 0 < work["run"] <= 1.5 * r0 and work["chunk"] <= 1.5 * c0_ + 10, (kw, work["run"], work["chunk"])
+            pc, ps = _PHASE_WORK[kw["chunk_profile"]]
+            for n, c, c_ref, z, z_ref in zip(_PHASE_FNS, work["calls"], pc, work["size"], ps):
+                assert c <= 1.5 * c_ref + 10 and z <= 1.5 * z_ref + 10, (kw, n, c, c_ref, z, z_ref)
+            assert work["calls"][0] > 0 and work["calls"][4] > 0, (kw, work["calls"])
         assert spent[0] < 45 * lim, (kw, spent[0])
         assert total < 90 * lim, (kw, total)

@@ -493,6 +493,73 @@ def _fish_kpis(scn: Scenario, fs, audio_out_s: float, lm_only: bool = False) -> 
     return out
 
 
+def _echo_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
+    """0.279 Index-Echo S2ST (core/echo.py): one source clip → translated speech, every stage serial on the scenario's
+    card(s) (README: one CUDA GPU; ``dub`` is batch 1 and non-streaming 「来源」):
+        ST    = AuT encoder + ST prefill (ST_PROMPT text + audio positions) + greedy decode of n_src + 1 + m + 1 tokens
+                + one more full forward over prompt + those tokens (``extract``, hidden states; the audio embeddings are
+                reused, so the encoder is not run again)
+        map   = Hidden2CVMapper over the m translation tokens (fp32)
+        CV3   = the fun-cosyvoice3 catalog LM on one card (fp32 as released): prefill sos + CV3_INSTRUCT + n_src + m + 1
+                + 25 · audio_s prompt speech tokens, then n_speech = clip(25 · audio_out_s, 2m, min(20m, 1500)) decode steps
+        audio = flow over prompt + n_speech tokens (CFM steps × CFG) + HiFT over the generated mel, once (stream=False)
+        first audio = total (non-streaming); RTF = total / audio_out_s
+    m = n_tgt ≈ TEXT_TOK_PER_S · audio_out_s and n_src ≈ TEXT_TOK_PER_S · audio_s 「假设」 (the ST and CV3 tokenizers are
+    both Qwen BPE — the same count for the translation 「近似」)."""
+    from .catalog import get_model
+    from .cosyvoice import cosy_pin, flow_ops, hift_ops, scaled
+    from .echo import CV3_INSTRUCT, ST_PROMPT, TEXT_TOK_PER_S, mapper_ops
+    from .evaluate import _component_time
+    from .hardware import System
+    m_ = pre.model
+    e = m_.echo
+    sv = scn.serving
+    a_s = sv.audio_s or 10.0
+    n_src = max(1, math.ceil(TEXT_TOK_PER_S * a_s - 1e-9))
+    m = max(1, min(e.max_len, math.ceil(TEXT_TOK_PER_S * audio_out_s - 1e-9)))
+    n_out = min(e.max_new_tokens, n_src + 1 + m + 1)
+    base = scn.replace("serving.batch", 1).replace("serving.audio_s", a_s)
+    st_pre = evaluate(base.replace("serving.phase", "prefill").replace("serving.prompt", ST_PROMPT))
+    enc = ((st_pre.vision or {}).get("audio") or {}).get("s", 0.0)
+    st_dec = evaluate(base.replace("serving.phase", "decode").replace("serving.prompt", ST_PROMPT)
+                      .replace("serving.ctx", ST_PROMPT + n_out // 2))
+    hid = evaluate(base.replace("serving.phase", "prefill").replace("serving.prompt", ST_PROMPT + n_out))
+    t_hid = hid.ttft - ((hid.vision or {}).get("audio") or {}).get("s", 0.0)
+    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
+                 scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
+    org = scn.mapping
+    t_map = _component_time([(mapper_ops(e, m), 1)], sys, org, "fp32")["s"]
+    cv = get_model(e.cosy_id)
+    c = cv.cosy
+    psp = math.ceil(c.token_rate * min(a_s, 30.0) - 1e-9)        # prompt speech tokens of the source clip (≤ 30 s)
+    n_sp = e.speech_tokens(m, math.ceil(c.token_rate * audio_out_s - 1e-9))
+    cv_p = 1 + CV3_INSTRUCT + n_src + m + 1 + psp
+    cbase = (Scenario(model=e.cosy_id, chip=scn.chip, mem_id=scn.mem_id)
+             .replace("mem_eff", scn.mem_eff).replace("mapping", scn.mapping).replace("serving.batch", 1))
+    cv_pre = evaluate(cbase.replace("serving.phase", "prefill").replace("serving.prompt", cv_p))
+    cv_dec = evaluate(cbase.replace("serving.phase", "decode").replace("serving.prompt", cv_p)
+                      .replace("serving.ctx", cv_p + n_sp // 2))
+    miss = cosy_pin(c, sys.chip.sram_bytes)
+    ch, ev = flow_ops(c, psp + n_sp)
+    g = [(ch, 1), (ev, 1)] + ([(scaled(ev, miss), c.steps - 1)] if c.steps > 1 else [])
+    t_flow = _component_time(g, sys, org, "fp32")["s"] + sum(o.kv_read for o in ch) / (sys.dram_GBps * 1e9)
+    t_hift = _component_time([(hift_ops(c, n_sp * c.mel_ratio), 1)], sys, org, "fp32")["s"]
+    split = {"encoder_s": enc, "st_prefill_s": st_pre.ttft - enc, "st_decode_s": n_out * st_dec.tpot,
+             "st_hidden_pass_s": t_hid, "mapper_s": t_map, "cv3_prefill_s": cv_pre.ttft, "cv3_decode_s": n_sp * cv_dec.tpot,
+             "flow_s": t_flow, "hift_s": t_hift}
+    tot = sum(split.values())
+    mem = st_pre.stages[-1].mem
+    extra_B = cv_dec.stages[-1].mem.dram_need + c.stored_bytes + e.mapper_params * 4.0
+    fits = st_pre.fits and st_dec.fits and hid.fits and cv_pre.fits and cv_dec.fits and mem.dram_need + extra_B <= mem.dram_cap
+    return {"kind": "s2st", "label": e.label, "audio_s": a_s, "audio_out_s": audio_out_s, "src_tokens": n_src,
+            "tgt_tokens": m, "st_out_tokens": n_out, "speech_tokens": n_sp, "prompt_speech_tokens": psp,
+            "cv3_prompt": cv_p, "flow_steps": c.steps, "cfg": c.cfg_mult, "split": split,
+            "dominant": max(split, key=split.get), "first_audio_s": tot, "total_s": tot, "rtf": tot / audio_out_s,
+            "ttft_s": st_pre.ttft, "st_tpot_s": st_dec.tpot, "cv3_tpot_s": cv_dec.tpot,
+            "audio_out_s_per_s_card": audio_out_s / tot / pre.scenario.layout.cards,
+            "card_GB": (mem.dram_need + extra_B) / 1e9, "fits": fits}
+
+
 def speech_kpis(scn: Scenario, audio_out_s: float = 10.0, lm_only: bool = False) -> dict:
     """``lm_only`` (0.277, speech_insight.speech_streams): omni / cosyvoice / kimi / moshi return only
     {kind, lm_stages, fits} — the LM-card stage loads and the fit verdict by the same expressions as the full KPIs, without
@@ -502,6 +569,8 @@ def speech_kpis(scn: Scenario, audio_out_s: float = 10.0, lm_only: bool = False)
     m = pre.model
     if getattr(m, "omni", None) is not None:
         return _omni_kpis(scn, pre, audio_out_s, lm_only)
+    if getattr(m, "echo", None) is not None:
+        return _echo_kpis(scn, pre, audio_out_s)
     if getattr(m, "cosy", None) is not None:
         return _cosy_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "kimi", None) is not None:

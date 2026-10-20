@@ -1,0 +1,438 @@
+{
+ "bytes_bridge": 98346496,
+ "bytes_llm": 3763650176,
+ "bytes_mtp": 0,
+ "bytes_total": 5174628228,
+ "config": {
+  "_source": "HF IndexTeam/Index-Echo-S2ST-{2B,9B}: config.json, modeling_dubbing.py, code/tts/pipeline.py (DubPipeline.extract / synth), code/stlm/audio_model.py (AuT + connector), code/stlm/stlm_api.py, code/bridge/hidden2cv.py (Hidden2CVMapper), README.md (default inference settings)",
+  "architectures": [
+   "DubbingBridgeModel"
+  ],
+  "audio_config": {
+   "activation_dropout": 0,
+   "activation_function": "gelu",
+   "add_cross_attention": false,
+   "architectures": null,
+   "attention_dropout": 0,
+   "bad_words_ids": null,
+   "begin_suppress_tokens": null,
+   "bos_token_id": null,
+   "chunk_size_feed_forward": 0,
+   "conv_chunksize": 500,
+   "cross_attention_hidden_size": null,
+   "d_model": 1280,
+   "decoder_start_token_id": null,
+   "diversity_penalty": 0.0,
+   "do_sample": false,
+   "downsample_hidden_size": 480,
+   "dropout": 0,
+   "dtype": null,
+   "early_stopping": false,
+   "encoder_attention_heads": 20,
+   "encoder_ffn_dim": 5120,
+   "encoder_layers": 32,
+   "encoder_no_repeat_ngram_size": 0,
+   "eos_token_id": null,
+   "exponential_decay_length_penalty": null,
+   "finetuning_task": null,
+   "forced_bos_token_id": null,
+   "forced_eos_token_id": null,
+   "id2label": {
+    "0": "LABEL_0",
+    "1": "LABEL_1"
+   },
+   "initializer_range": 0.02,
+   "is_decoder": false,
+   "is_encoder_decoder": false,
+   "label2id": {
+    "LABEL_0": 0,
+    "LABEL_1": 1
+   },
+   "length_penalty": 1.0,
+   "max_length": 20,
+   "max_source_positions": 1500,
+   "min_length": 0,
+   "model_type": "qwen3_omni_moe_audio_encoder",
+   "n_window": 50,
+   "n_window_infer": 800,
+   "no_repeat_ngram_size": 0,
+   "num_beam_groups": 1,
+   "num_beams": 1,
+   "num_hidden_layers": 32,
+   "num_mel_bins": 128,
+   "num_return_sequences": 1,
+   "output_attentions": false,
+   "output_dim": 2048,
+   "output_hidden_states": false,
+   "output_scores": false,
+   "pad_token_id": null,
+   "prefix": null,
+   "problem_type": null,
+   "pruned_heads": {},
+   "remove_invalid_values": false,
+   "repetition_penalty": 1.0,
+   "return_dict": true,
+   "return_dict_in_generate": false,
+   "scale_embedding": false,
+   "sep_token_id": null,
+   "suppress_tokens": null,
+   "task_specific_params": null,
+   "temperature": 1.0,
+   "tf_legacy_loss": false,
+   "tie_encoder_decoder": false,
+   "tie_word_embeddings": true,
+   "tokenizer_class": null,
+   "top_k": 50,
+   "top_p": 1.0,
+   "torchscript": false,
+   "typical_p": 1.0,
+   "use_bfloat16": false
+  },
+  "echo": {
+   "cosyvoice": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+   "cv3_llm_fp32": true,
+   "dims": {
+    "d_spk": 192,
+    "d_st": 2048,
+    "d_tts": 896
+   },
+   "directions": [
+    "zh->en",
+    "zh->es",
+    "zh->ja",
+    "zh->ko",
+    "ja->en",
+    "ja->es",
+    "ja->ko",
+    "ja->zh",
+    "en->zh",
+    "en->es",
+    "en->ja",
+    "en->ko"
+   ],
+   "instruction": "\u628a\u8fd9\u6bb5\u8bed\u97f3\u7ffb\u8bd1\u6210\u82f1\u6587\uff0c\u5148\u8f93\u51fa\u539f\u6587\uff0c\u6362\u884c\u8f93\u51fa\u82f1\u6587\u8bd1\u6587\u3002",
+   "langs": [
+    "en",
+    "es",
+    "ja",
+    "ko",
+    "zh"
+   ],
+   "mapper": {
+    "d_ff": 2048,
+    "d_h": 2048,
+    "dropout": 0.1,
+    "langs": [
+     "en",
+     "es",
+     "ja",
+     "ko",
+     "zh"
+    ],
+    "max_len": 512,
+    "n_head": 8,
+    "n_lang": 5,
+    "n_layer": 3
+   },
+   "max_new_tokens": 1024,
+   "pipeline": "ST LM (2B EXP-59, frozen) -> Hidden2CVMapper (26M, lang-conditioned 5-slot, runs/h2cv_ml_s2_full12_v4/mapper_best_5slot) -> CosyVoice3 (0.5B, frozen)",
+   "sample_rate": 24000,
+   "speech_cap_per_text": 20,
+   "speech_max_tokens": 1500,
+   "speech_min_per_text": 2,
+   "stream": false,
+   "version": "4.1.0-ml-s2full12-v4rft-stlm59"
+  },
+  "model_type": "index_echo_s2st",
+  "text_config": {
+   "attention_bias": false,
+   "attention_dropout": 0.0,
+   "attn_output_gate": true,
+   "dtype": "bfloat16",
+   "eos_token_id": 248044,
+   "full_attention_interval": 4,
+   "head_dim": 256,
+   "hidden_act": "silu",
+   "hidden_size": 2048,
+   "initializer_range": 0.02,
+   "intermediate_size": 6144,
+   "layer_types": [
+    "linear_attention",
+    "linear_attention",
+    "linear_attention",
+    "full_attention",
+    "linear_attention",
+    "linear_attention",
+    "linear_attention",
+    "full_attention",
+    "linear_attention",
+    "linear_attention",
+    "linear_attention",
+    "full_attention",
+    "linear_attention",
+    "linear_attention",
+    "linear_attention",
+    "full_attention",
+    "linear_attention",
+    "linear_attention",
+    "linear_attention",
+    "full_attention",
+    "linear_attention",
+    "linear_attention",
+    "linear_attention",
+    "full_attention"
+   ],
+   "linear_conv_kernel_dim": 4,
+   "linear_key_head_dim": 128,
+   "linear_num_key_heads": 16,
+   "linear_num_value_heads": 16,
+   "linear_value_head_dim": 128,
+   "mamba_ssm_dtype": "float32",
+   "max_position_embeddings": 262144,
+   "mlp_only_layers": [],
+   "model_type": "qwen3_5_text",
+   "mtp_num_hidden_layers": 1,
+   "mtp_use_dedicated_embeddings": false,
+   "num_attention_heads": 8,
+   "num_hidden_layers": 24,
+   "num_key_value_heads": 2,
+   "rms_norm_eps": 1e-06,
+   "rope_parameters": {
+    "mrope_interleaved": true,
+    "mrope_section": [
+     11,
+     11,
+     10
+    ],
+    "partial_rotary_factor": 0.25,
+    "rope_theta": 10000000,
+    "rope_type": "default"
+   },
+   "tie_word_embeddings": true,
+   "use_cache": true,
+   "vocab_size": 248320
+  },
+  "torch_dtype": "bfloat16"
+ },
+ "echo_tensors": {
+  "connector.beta": [],
+  "connector.log_alpha": [],
+  "connector.w1.weight": [
+   2048,
+   2048
+  ],
+  "connector.w2.weight": [
+   2048,
+   2048
+  ],
+  "mapper.e_norm.bias": [
+   896
+  ],
+  "mapper.e_norm.weight": [
+   896
+  ],
+  "mapper.e_proj.bias": [
+   896
+  ],
+  "mapper.e_proj.weight": [
+   896,
+   896
+  ],
+  "mapper.encoder.layers.0.linear1.bias": [
+   2048
+  ],
+  "mapper.encoder.layers.0.linear1.weight": [
+   2048,
+   896
+  ],
+  "mapper.encoder.layers.0.linear2.bias": [
+   896
+  ],
+  "mapper.encoder.layers.0.linear2.weight": [
+   896,
+   2048
+  ],
+  "mapper.encoder.layers.0.norm1.bias": [
+   896
+  ],
+  "mapper.encoder.layers.0.norm1.weight": [
+   896
+  ],
+  "mapper.encoder.layers.0.norm2.bias": [
+   896
+  ],
+  "mapper.encoder.layers.0.norm2.weight": [
+   896
+  ],
+  "mapper.encoder.layers.0.self_attn.in_proj_bias": [
+   2688
+  ],
+  "mapper.encoder.layers.0.self_attn.in_proj_weight": [
+   2688,
+   896
+  ],
+  "mapper.encoder.layers.0.self_attn.out_proj.bias": [
+   896
+  ],
+  "mapper.encoder.layers.0.self_attn.out_proj.weight": [
+   896,
+   896
+  ],
+  "mapper.encoder.layers.1.linear1.bias": [
+   2048
+  ],
+  "mapper.encoder.layers.1.linear1.weight": [
+   2048,
+   896
+  ],
+  "mapper.encoder.layers.1.linear2.bias": [
+   896
+  ],
+  "mapper.encoder.layers.1.linear2.weight": [
+   896,
+   2048
+  ],
+  "mapper.encoder.layers.1.norm1.bias": [
+   896
+  ],
+  "mapper.encoder.layers.1.norm1.weight": [
+   896
+  ],
+  "mapper.encoder.layers.1.norm2.bias": [
+   896
+  ],
+  "mapper.encoder.layers.1.norm2.weight": [
+   896
+  ],
+  "mapper.encoder.layers.1.self_attn.in_proj_bias": [
+   2688
+  ],
+  "mapper.encoder.layers.1.self_attn.in_proj_weight": [
+   2688,
+   896
+  ],
+  "mapper.encoder.layers.1.self_attn.out_proj.bias": [
+   896
+  ],
+  "mapper.encoder.layers.1.self_attn.out_proj.weight": [
+   896,
+   896
+  ],
+  "mapper.encoder.layers.2.linear1.bias": [
+   2048
+  ],
+  "mapper.encoder.layers.2.linear1.weight": [
+   2048,
+   896
+  ],
+  "mapper.encoder.layers.2.linear2.bias": [
+   896
+  ],
+  "mapper.encoder.layers.2.linear2.weight": [
+   896,
+   2048
+  ],
+  "mapper.encoder.layers.2.norm1.bias": [
+   896
+  ],
+  "mapper.encoder.layers.2.norm1.weight": [
+   896
+  ],
+  "mapper.encoder.layers.2.norm2.bias": [
+   896
+  ],
+  "mapper.encoder.layers.2.norm2.weight": [
+   896
+  ],
+  "mapper.encoder.layers.2.self_attn.in_proj_bias": [
+   2688
+  ],
+  "mapper.encoder.layers.2.self_attn.in_proj_weight": [
+   2688,
+   896
+  ],
+  "mapper.encoder.layers.2.self_attn.out_proj.bias": [
+   896
+  ],
+  "mapper.encoder.layers.2.self_attn.out_proj.weight": [
+   896,
+   896
+  ],
+  "mapper.h_norm.bias": [
+   2048
+  ],
+  "mapper.h_norm.weight": [
+   2048
+  ],
+  "mapper.h_proj.bias": [
+   896
+  ],
+  "mapper.h_proj.weight": [
+   896,
+   2048
+  ],
+  "mapper.lang_emb.weight": [
+   5,
+   896
+  ],
+  "mapper.out.bias": [
+   896
+  ],
+  "mapper.out.weight": [
+   896,
+   896
+  ],
+  "mapper.pos": [
+   1,
+   512,
+   896
+  ]
+ },
+ "fetched": "2026-10-20",
+ "n_tensors": 897,
+ "params_bridge": 24586624,
+ "params_llm": 1881825088,
+ "params_mtp": 0,
+ "params_vision": 656315778,
+ "quantization_config": null,
+ "repo": "IndexTeam/Index-Echo-S2ST-2B",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 934380672,
+    "params": 467190336
+   }
+  },
+  "bridge": {
+   "fp32": {
+    "bytes": 98346496,
+    "params": 24586624
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1017118720,
+    "params": 508559360
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 1811939328,
+    "params": 905969664
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 211456,
+    "params": 105728
+   }
+  },
+  "vision": {
+   "bf16": {
+    "bytes": 1312631556,
+    "params": 656315778
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}
