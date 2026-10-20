@@ -582,6 +582,14 @@
     </div>
     <div class="note small" id="ins-sp-summary"></div>
     <div class="scroll"><table class="tbl tight" id="ins-sp-tbl"></table></div>
+    <div class="row" title="0.276：每个语音模型在不同 SLC 容量下每卡能实时服务多少路（引擎逐点重算：倍增 + 二分；LM 卡 + 所需语音卡）">
+      <label>SLC GiB<input type="text" id="ins-sps-gib" value="0, 1, 2, 4, 8" style="width:9em"></label>
+      <label class="small"><input type="checkbox" id="ins-sps-asr"> 含 ASR 模型</label>
+      <button class="btn" id="ins-sps-run">实时路数 / 卡 vs SLC</button>
+      <span class="small muted" id="ins-sps-status"></span>
+    </div>
+    <div class="note small" id="ins-sps-summary"></div>
+    <div class="scroll"><table class="tbl tight" id="ins-sps-tbl"></table></div>
   </section>
 
   <section class="tab" id="tab-models" hidden>

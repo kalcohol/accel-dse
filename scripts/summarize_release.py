@@ -208,6 +208,25 @@ def _firered_role(name: str, n_layers: int | None) -> str:
     return "tts"
 
 
+def _fish_role(name: str, n_layers: int | None) -> str:
+    """0.276 Fish Audio Drama 3 (vllm-omni fish_omni_model.py / codebook_tower.py): the Qwen3.5-MoE backbone
+    (model.language_model.*) → the LLM; the 13 codebook-MTP tower layers run on every backbone row with their own KV
+    cache → LLM roles too (attention / dense MLP / norms; eh_proj with the attention); the 9 codebook heads and the
+    candidate-row lm_head → lm_head; the frame-input codebook embeddings and the tower's per-layer code tables → embed
+    (rows looked up).  The DAC codec ships as codec.pth (not read here)."""
+    if name.startswith("audio_decoder"):
+        if ".heads." in name:
+            return "lm_head"
+        if "embedding" in name:
+            return "embed"
+        if "feed_forward." in name:
+            return "mlp"
+        if name.endswith("norm.weight"):
+            return "norm"
+        return "attn"            # attention.wqkv / wo, eh_proj
+    return classify(name, n_layers)
+
+
 def _cosy_role(name: str, n_layers: int | None) -> str:
     """0.271 CosyVoice2 / Fun-CosyVoice3 (scripts/fetch_pt_release.py): the Qwen2.5-0.5B backbone is the LLM; its text
     embedding, the stored text lm_head (unused by the TTS loop) and the speech-token embedding are tables (embed role —
@@ -308,6 +327,7 @@ def summarize(repo: str) -> dict:
                 _step_audio_role(name, nl) if cfg.get("model_type") == "step_audio_2" else
                 _moshi_role(name, nl) if cfg.get("model_type") == "moshi" else
                 _firered_role(name, nl) if cfg.get("model_type") == "fireredtts3" else
+                _fish_role(name, nl) if cfg.get("model_type") == "fish_omni" else
                 _kimi_role(name, nl) if "MoonshotKimiaForCausalLM" in (cfg.get("architectures") or []) else
                 _cosy_role(name, nl) if cfg.get("model_type") in ("cosyvoice2", "cosyvoice3") else
                 classify(name, nl) if domain == "llm" else classify_domain(name, domain))

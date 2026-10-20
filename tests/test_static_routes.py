@@ -94,7 +94,8 @@ PROBES = [("GET", "/api/health", ""), ("GET", "/api/catalog", ""), ("GET", "/api
           ("POST", "/api/eval", '{"scenario": {"model": "qwen3-8b", "serving": {"spec_k": 3, "spec_topk": 4, '
                                 '"spec_tree_accept_model": "rank", "draft_model": "qwen3-0.6b"}}}'),
           ("POST", "/api/sensitivity", "{}"),
-          ("POST", "/api/insight_speech", '{"models": ["ming-3.0-tts-tiny"], "verify": false}')]   # 0.275
+          ("POST", "/api/insight_speech", '{"models": ["ming-3.0-tts-tiny"], "verify": false}'),   # 0.275
+          ("POST", "/api/insight_speech_streams", '{"models": ["whisper-large-v3-turbo"], "slc_gib": [0]}')]   # 0.276
 
 
 def test_unpacked_zip_answers_alone():

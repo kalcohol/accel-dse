@@ -13,7 +13,8 @@
   'use strict';
   const CFG = window.ACCEL_STATIC || {};
   const SLOW = new Set(CFG.slowRoutes || ['/api/fit', '/api/compare', '/api/layouts', '/api/stability',
-    '/api/insight', '/api/insight_path', '/api/insight_sizing', '/api/insight_slc', '/api/insight_speech']);
+    '/api/insight', '/api/insight_path', '/api/insight_sizing', '/api/insight_slc', '/api/insight_speech',
+    '/api/insight_speech_streams']);
   let nextId = 1, readyResolve, readyReject;
   const ready = new Promise((res, rej) => { readyResolve = res; readyReject = rej; });
   const T = (window.__accelStatic = { log: [], ready, t0: performance.now(), loadMs: null, error: null, restarts: 0,

@@ -37,7 +37,7 @@ from .hardware import System
 from .scenario import Scenario
 
 SPEECH_MODELS = ("moshiko-7b", "kimi-audio-7b-instruct", "step-audio-2-mini", "qwen2.5-omni-7b", "cosyvoice2-0.5b",
-                 "fun-cosyvoice3-0.5b-2512", "fireredtts3-base", "ming-3.0-tts-tiny", "qwen2-audio-7b-instruct", "qwen3-asr-1.7b",
+                 "fun-cosyvoice3-0.5b-2512", "fireredtts3-base", "drama-3", "ming-3.0-tts-tiny", "qwen2-audio-7b-instruct", "qwen3-asr-1.7b",
                  "fun-asr-nano-2512", "whisper-large-v3", "whisper-large-v3-turbo", "ming-3.0-asr-tiny")
 OUT_LEN = 64            # reply / transcript tokens 「假设」 (same default as the UI speech panel)
 PROMPT = 64             # text prompt tokens 「假设」
@@ -121,3 +121,113 @@ def speech_bounds(base: Scenario, models=SPEECH_MODELS, audio_s: float = 10.0, v
             "batch": 1, "out_len": OUT_LEN, "rows": rows,
             "method": "x = 忙碌秒 / 音频秒；x>1 时：所需有效 DRAM 带宽 = BW·x；或 SLC 固定 S = (x−1)·BW / r 字节的复读权重"
                       "（r = 每音频秒的 token / 帧数）「推导」；verify = 用引擎自身 SLC 路径复算「近似」"}
+
+
+# ---- 0.276: real-time streams per card vs SLC size ---------------------------------------------------------------
+SLC_GIB = (0.0, 0.5, 1.0, 2.0, 4.0, 8.0)
+SPEECH_CARD = ("speech_card",)
+MAX_STREAMS = 1024
+
+
+def _with_slc(base: Scenario, gib: float) -> Scenario:
+    """The chip with an SLC of ``gib`` GiB (policy pin; 0 → the chip's own SLC setting)."""
+    if not gib:
+        return base
+    chip = base.chip.__class__(**{**base.chip.__dict__, "slc_mib": float(gib * 1024), "slc_policy": "pin"})
+    return base.replace("chip", chip)
+
+
+def _lm_ok(base: Scenario, mid: str, audio_s: float, b: int) -> tuple[bool, dict, dict]:
+    """b concurrent streams on the LM card(s): every stage except the separate speech card keeps up, and it fits."""
+    from .speech import speech_kpis
+    k = speech_kpis(_scn(base, mid, audio_s).replace("serving.batch", b), audio_s)
+    st = _stages(k, audio_s)[0]
+    lm = {s: v for s, v in st.items() if s not in SPEECH_CARD}
+    return (bool(k["fits"]) and max(lm.values()) <= 1.0), lm, k
+
+
+def _max_streams(ok, guess: int = 1) -> int:
+    """Largest b in [0, MAX_STREAMS] with ok(b) — engine reruns, ok assumed monotone in b.  Galloping search from
+    ``guess`` (the linear prediction): doubling up / halving down to a bracket, then bisection."""
+    memo: dict[int, bool] = {}
+    f = lambda b: memo[b] if b in memo else memo.setdefault(b, bool(ok(b)))
+    if not f(1):
+        return 0
+    g = max(1, min(int(guess), MAX_STREAMS))
+    if f(g):
+        lo, hi = g, min(2 * g, MAX_STREAMS + 1)
+        while hi <= MAX_STREAMS and f(hi):
+            lo, hi = hi, min(2 * hi, MAX_STREAMS + 1)
+        if g == MAX_STREAMS:
+            return MAX_STREAMS
+    else:
+        lo, hi = 1, g
+        while hi // 2 > 1:
+            c = hi // 2
+            if f(c):
+                lo = c
+                break
+            hi = c
+    hi = min(hi, MAX_STREAMS + 1)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if f(mid) else (lo, mid)
+    return lo
+
+
+def speech_streams(base: Scenario, models=SPEECH_MODELS, audio_s: float = 10.0, slc_gib=SLC_GIB) -> dict:
+    """Real-time streams per card vs SLC size, per speech model (one replica = the LM card(s) + the speech cards it
+    needs).  Every number is an engine rerun:
+
+        N_lm   = largest b with every LM-card stage x(b) ≤ 1 and the replica fitting (doubling + bisection, ≤ 1024)
+        N_sc   = real-time streams of one speech card (the speech KPIs' own streams_realtime at batch 1; cosyvoice / kimi /
+                 omni — batch-1 detokenizers serve streams back to back, so x_sc(b) = b · x_sc(1))
+        speech cards = ⌈N_lm / N_sc⌉ ;  streams / card = N_lm / (LM cards + speech cards)
+
+    Mechanism read-out 「推导」: x_lm(b) ≈ x0 + d · b (weights read once per step for the whole batch, KV / per-stream work
+    per stream), fitted from b = 1, 2 → predicted N_lm = ⌊(1 − x0) / d⌋ — shown next to the searched value; a pinned SLC
+    lowers x0 (the shared weight read), so streams grow by ≈ Δx0 / d."""
+    from .speech import speech_kpis
+    out_rows = []
+    for mid in models:
+        row = {"model": mid, "curve": []}
+        for gib in slc_gib:
+            sb = _with_slc(base, gib)
+            ok1, lm1, k1 = _lm_ok(sb, mid, audio_s, 1)
+            lm_cards = _scn(sb, mid, audio_s).layout.cards
+            n_sc = None
+            if "speech_card" in _stages(k1, audio_s)[0]:
+                n_sc = int(k1.get("streams_realtime") or 0)
+            _, lm2, _ = _lm_ok(sb, mid, audio_s, 2)
+            x1, x2 = max(lm1.values()), max(lm2.values())
+            d = x2 - x1
+            pred = (max(0, math.floor((1.0 - (x1 - d)) / d + 1e-9)) if d > 1e-12 else (MAX_STREAMS if x1 <= 1 else 0)) \
+                if x1 <= 1 else 0
+            n_lm = _max_streams(lambda b: _lm_ok(sb, mid, audio_s, b)[0], max(1, pred)) if ok1 else 0
+            if n_lm >= MAX_STREAMS:
+                limit = "cap"
+            else:                            # what stops one more stream: real time or memory
+                _, lmn, kn = _lm_ok(sb, mid, audio_s, n_lm + 1)
+                limit = "realtime" if max(lmn.values()) > 1.0 else "memory" if not kn["fits"] else "realtime"
+            if n_sc is None:
+                sc_cards, n = 0, n_lm
+            elif n_sc == 0:
+                sc_cards, n = None, 0        # one speech card cannot carry even one stream in real time
+            else:
+                sc_cards, n = (math.ceil(n_lm / n_sc) if n_lm else 0), n_lm
+            cards = lm_cards + (sc_cards or 0)
+            row["kind"] = k1["kind"]
+            row["curve"].append({"slc_gib": gib, "x1": x1, "streams_lm": n_lm, "streams_lm_pred": min(pred, MAX_STREAMS),
+                                 "streams_speech_card": n_sc, "speech_cards": sc_cards, "cards": cards,
+                                 "streams": n, "streams_per_card": n / cards if cards and n else 0.0,
+                                 "lm_binding": max(lm1, key=lm1.get), "lm_limit": limit, "capped": n_lm >= MAX_STREAMS})
+        c0 = row["curve"][0]
+        row["first_realtime_slc_gib"] = next((c["slc_gib"] for c in row["curve"] if c["streams"] > 0), None)
+        row["gain_per_gib"] = [(c["streams_per_card"] - c0["streams_per_card"]) / c["slc_gib"] if c["slc_gib"] else 0.0
+                               for c in row["curve"]]
+        out_rows.append(row)
+    return {"chip": base.chip.name, "mem_id": base.mem_id, "audio_s": audio_s, "slc_gib": list(slc_gib),
+            "max_streams": MAX_STREAMS, "rows": out_rows,
+            "method": "N_lm = 最大 b（LM 卡上各阶段 x(b) ≤ 1 且放得下，引擎逐点重算：倍增 + 二分）；语音卡路数 = 语音 KPI 自身 batch-1 "
+                      "实时路数；语音卡数 = ⌈N_lm / N_sc⌉；每卡路数 = N_lm / (LM 卡 + 语音卡)；预测 = 由 b = 1, 2 线性外推 "
+                      "x(b) ≈ x0 + d·b 「推导」；SLC 以 pin 策略加在每张卡上「假设」"}

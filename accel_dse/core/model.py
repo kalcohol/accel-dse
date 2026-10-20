@@ -477,6 +477,7 @@ class ModelSpec:
     moshi: object = None                     # 0.274 core.moshi.MoshiSpec: Moshi depformer + Mimi codec (per 80 ms frame)
     kimi: object = None                      # 0.273 core.kimi_audio.KimiSpec: Kimi-Audio detokenizer DiT + BigVGAN
     omni: object = None                      # 0.271 core.omni.OmniSpec: Qwen2.5-Omni Talker + token2wav (speech output)
+    fish: object = None                      # 0.276 core.drama3.FishSpec: Drama 3 codebook-MTP tower (in layers) + frame timing
     tts: object = None                       # 0.269 core.tts.TtsSpec: speech-synthesis decode head (replaces the LM head)
     # 0.270 encoder-decoder (Whisper): encoder positions each decoder sequence cross-attends to (1500 per 30 s window);
     # the cross K/V of every layer is computed at prefill and kept per sequence (fixed size, like recurrent state)
@@ -591,6 +592,12 @@ def _tc(cfg: dict) -> dict:
         # fireredtts3_base.py (the HF config.json carries only the DiT / patch-encoder fields) 「来源」; no lm_head (the
         # step output drives stop_head + the DiT flow head, core/fireredtts3.py); weights stored fp32
         tc = {**cfg["backbone"], "torch_dtype": "float32"}
+    if mt == "fish_omni" and isinstance(tc, dict):
+        # 0.276 Fish Audio Drama 3: text_config is the Qwen3.5-MoE backbone (fish_omni_text = qwen3_5_moe_text shape);
+        # the decode head is the 4096 candidate lm_head rows (core/drama3.py) — vocab = candidates, the 252 288-row
+        # embedding is looked up (from_release lookup_params)
+        from .drama3 import n_candidates
+        tc = {**tc, "model_type": "qwen3_5_moe_text", "vocab_size": n_candidates(cfg), "tie_word_embeddings": False}
     if mt == "moshi" and isinstance(cfg.get("lm"), dict):
         # 0.274 Kyutai Moshi (moshi.models.lm.LMModel; loaders.py _lm_kwargs 「来源」 — the HF repo has no config.json):
         # the temporal transformer is a 32-layer MHA (in_proj q / k / v, no bias), SiLU-gated MLP of
@@ -1852,8 +1859,10 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     if hc and not any(l.hc or l.gres_n for l in spec.layers):
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
     if spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers) and mt not in ("whisper", "moshi") \
-            and not c.get("cosyvoice"):     # 0.274 Moshi: per-frame input tables, a few rows each (exact)
+            and not c.get("cosyvoice") and spec.fish is None:     # 0.274 Moshi: per-frame input tables, a few rows each (exact)
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
+    if spec.fish is not None:
+        r.append("Drama 3：Stage 1 的 Fish DAC 解码器（codec.pth，torch pickle）未读、未计时")     # 0.276
     if abs(gap) > 0.02:
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
     return tuple(r)
@@ -1886,6 +1895,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         mtp = [replace(L, ffn=replace(L.ffn, groups=gl)) if L.ffn.kind == "moe" else L for L in mtp]
         notes = list(notes) + [f"分组限制路由：每个 token 只从 {gl[0]} 组中的 {gl[1]} 组选专家（n_group / topk_group）——"
                                "EP 各 rank 负载方差与节点去重 all-to-all 的扇出按此计「推导」"]
+    from .drama3 import fish_spec
+    fish = fish_spec(cfg)
+    if fish is not None:
+        # 0.276 Drama 3: the codebook-MTP tower = 13 more decoder layers on every backbone row (core/drama3.py)
+        from .drama3 import tower_layers
+        layers = list(layers) + tower_layers(fish, Layer, Linear, _gqa, _ffn_dense)
     h = c["hidden_size"]
     tie = bool(c.get("tie_word_embeddings", cfg.get("tie_word_embeddings", False)))
     spec = ModelSpec(
@@ -1911,6 +1926,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=32.0,
                            notes=spec.notes + (f"文本 embedding + 文本 lm_head（{(emb_rel - spec.embed_params) / 1e9:.3f}B，"
                                                "fp32）：只存储 / 按行查表；解码头为 llm_decoder（语音 token 表）",))
+        elif emb_rel > 1.05 * spec.embed_params and fish is not None:
+            # 0.276 Drama 3: the 252 288-row text embedding + the frame-input codebook embeddings (10 × 4096) + the
+            # tower's code tables — a few rows per frame each
+            spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=spec.fmt("embed").bits,
+                           notes=spec.notes + (f"查表 {(emb_rel - spec.embed_params) / 1e9:.2f}B：文本 embedding（252 288 行）"
+                                               "+ 帧输入码本 embedding（10 × 4096）+ 塔层码表；每帧只读少量行",))
         elif emb_rel > 1.05 * spec.embed_params:
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params,
                            notes=spec.notes + (f"查表 {(emb_rel - spec.embed_params) / 1e9:.1f}B 参数（n-gram / engram），"
@@ -1991,6 +2012,20 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             spec = replace(spec, release_params=spec.release_params - head_copy,
                            notes=spec.notes + (f"发布另存了一份 tied lm_head（{head_copy / 1e9:.3f}B），"
                                                "已去重",))
+        if fish is not None:
+            # 0.276 Drama 3: 9 codebook heads (one row per sequence and step, like the lm_head); vllm-omni loads only the
+            # 4096 candidate lm_head rows and drops eh_proj's embedding half in tower layers ≥ 1 (folded into the code
+            # tables at load) 「来源」 → those release params are not resident
+            d = fish.dim
+            drop = (c.get("_full_vocab") or cfg["text_config"]["vocab_size"]) * h - spec.vocab * h \
+                + (fish.tower_layers - 1) * d * d
+            spec = replace(spec, io_post=spec.io_post + (Linear("codebook_heads", d, (fish.n_codebooks - 1) * fish.codebook_size,
+                                                                 "col", rows="seq", role="lm_head"),),
+                           release_params=spec.release_params - drop, fish=fish, notes=spec.notes + (
+                               f"语音合成（TTS）：每步 = 1 帧（{fish.n_codebooks} 码本，{fish.frame_s * 1e3:.1f} ms 音频，44.1 kHz / 2048）"
+                               f"= Qwen3.5-MoE 主干 1 token + 码本 MTP 塔 {fish.tower_layers} 层（{fish.shared_layers} 共享 + "
+                               f"{fish.n_codebooks - 1} 逐码本，每层对整段序列做因果注意力、自带 KV）+ {fish.n_codebooks - 1} 个码本头；"
+                               f"lm_head 只装 {fish.candidates} 个候选行；未装入的发布参数 {drop / 1e9:.3f}B 已扣除；DAC 解码器（codec.pth）未计",))
         if spec.release_params:
             gap = spec.release_params - spec.params()
             if abs(gap) / spec.release_params > 0.02:

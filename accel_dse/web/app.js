@@ -72,6 +72,8 @@ function domainBadge(m) {
   if (m.domain === 'genomics') return h('span', { class: 'badge vlm', title: coverTip(m) }, '基因组 · 双向编码器前向（逐 token 分类）');
   // 0.268: audio-only release (Ming-3.0-asr-tiny) — the encoder is costed via serving.audio_s (API / CLI --audio-s)
   if (m.domain === 'tts' && /CosyVoice/.test(m.hf_id || '')) return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · LM 每秒 25 个语音 token → 分块流匹配 → HiFT 声码器（按输出音频秒计）');   // 0.271
+  if (m.domain === 'tts' && m.family === 'Drama 3') return h('span', { class: 'badge vlm', title: coverTip(m) },   // 0.276
+    'TTS · Qwen3.5-MoE 主干 + 13 层码本塔 · 21.5 帧/s（DAC 未计）');
   if (m.domain === 'tts' && m.family === 'FireRedTTS3') return h('span', { class: 'badge vlm', title: coverTip(m) },   // 0.275
     '语音合成 · Qwen3-1.7B 每步 → DiT 流匹配头（10 步 × CFG 2）出 4 帧潜变量（160 ms）→ 整段生成完后 RedAE 一次解码（非流式）');
   if (m.domain === 'tts') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · 每 token = 1 帧潜变量（流匹配头 + AudioVAE 解码）');
@@ -139,7 +141,7 @@ function cancel(chan) {
    (Pyodide) build also reports its first-load phases here (download / init / package). */
 const STAGE = { eval: 'eval 评估', sensitivity: 'sensitivity 敏感度', fit: 'fit 容量修正搜索', memory: 'memory 内存',
   compare: 'compare 映射对比', layouts: 'layouts 布局搜索', stability: 'stability 排名稳定性', sweep: 'sweep 扫描',
-  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈',
+  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC',
   health: 'catalog 载入目录', catalog: 'catalog 载入目录', models: 'catalog 载入目录' };
 const LOAD_ZH = { download: '下载 Python 运行时', init: '初始化 Pyodide', package: '载入 accel_dse 包', ready: '就绪', error: '静态版加载失败' };
 const PROG = {
@@ -910,8 +912,13 @@ function renderEval(r) {
     }
     if (p.kind === 'tts') k.push(kpi(`语音端到端 · ${p.label || 'TTS'}`, `RTF ${num(p.rtf)}`,
       `${num(p.audio_out_s)} s 音频输出 = ${p.steps} 步 · 首音频 ${num(p.first_audio_s * 1e3)} ms · 共 ${num(p.total_s)} s · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`
-      + (p.split_first ? ` · 非流式：提示音频 ${num(p.prompt_audio_s)} s 编码 ${num(p.split_first.prompt_s * 1e3)} + 预填充 ${num(p.split_first.prefill_s * 1e3)}`   // 0.275 FireRedTTS3
-        + ` + ${p.steps} 步 ${num(p.split_first.steps_s * 1e3)}（每步 ${num(p.tpot_s * 1e3)} ms：主干 + DiT ${p.flow_steps} 步 × CFG ${p.cfg} + patch 编码器）+ RedAE 解码 ${num(p.split_first.redae_decode_s * 1e3)} ms` : ''),
+      + (p.split_first && p.split_first.prompt_s != null ? ` · 非流式：提示音频 ${num(p.prompt_audio_s)} s 编码 ${num(p.split_first.prompt_s * 1e3)} + 预填充 ${num(p.split_first.prefill_s * 1e3)}`   // 0.275 FireRedTTS3
+        + ` + ${p.steps} 步 ${num(p.split_first.steps_s * 1e3)}（每步 ${num(p.tpot_s * 1e3)} ms：主干 + DiT ${p.flow_steps} 步 × CFG ${p.cfg} + patch 编码器）+ RedAE 解码 ${num(p.split_first.redae_decode_s * 1e3)} ms` : '')
+      + (p.first_chunk_frames ? ` · 流式：每步 1 帧 ${num(p.frame_ms)} ms（主干 + 13 层码本塔，TPOT ${num(p.tpot_s * 1e3)} ms）· 首音频 = 预填充 ${num(p.split_first.prefill_s * 1e3)}`   // 0.276 Drama 3
+        + `（文本 + 参考音频 ${p.ref_rows} 行）+ 首块 ${p.first_chunk_frames} 帧 ${num(p.split_first.first_chunk_steps_s * 1e3)} ms · DAC 解码未计` : '')
+      + (p.dit_pin ? ` · fp32 DiT ${num(p.dit_pin.dit_GB)} GB × ${p.dit_pin.reads_per_step} 读/步：SRAM ${num(p.dit_pin.sram_pinned_GB)} + SLC ${num(p.dit_pin.slc_GB)} GB，`   // 0.276
+        + `DRAM ${num(p.dit_pin.dram_GB_per_step)} GB/步（全驻留需 SLC ≈ ${num(p.dit_pin.slc_full_GiB)} GiB）` : '')
+      + (p.bf16_recast ? ` · 若按 GPU autocast 逐步重铸 bf16：+${num(p.bf16_recast.extra_GB_per_step)} GB/步 → 每步 ${num(p.bf16_recast.tpot_s * 1e3)} ms、RTF ${num(p.bf16_recast.rtf)}（未计入）` : ''),
       p.rtf > 1 ? 'warn' : ''));
   }
   if (r.balance) {     // 0.205: machine balance vs workload arithmetic intensity
@@ -2096,6 +2103,37 @@ async function runInsightSpeech() {
   }
 }
 
+/* 0.276: real-time streams per card vs SLC size (/api/insight_speech_streams) */
+const SPS_OUT = ['moshiko-7b', 'kimi-audio-7b-instruct', 'step-audio-2-mini', 'qwen2.5-omni-7b', 'cosyvoice2-0.5b',
+  'fun-cosyvoice3-0.5b-2512', 'fireredtts3-base', 'drama-3', 'ming-3.0-tts-tiny'];
+function speechStreamsCell(c) {
+  const lim = { realtime: '实时', memory: '容量', cap: '上限' }[c.lm_limit] || c.lm_limit;
+  const tip = `LM 卡 ${c.streams_lm} 路（线性预测 ${c.streams_lm_pred}，止于${lim}）`
+    + (c.streams_speech_card != null ? ` · 语音卡 ${c.streams_speech_card} 路/卡 × ${c.speech_cards ?? '—'} 张` : '') + ` · 共 ${c.cards} 张卡`;
+  return h('td', { title: tip, style: c.streams ? '' : 'color:var(--warn)' },
+    c.streams ? `${num(c.streams_per_card)}${c.capped ? '+' : ''}` : '0');
+}
+async function runInsightSpeechStreams() {
+  $('ins-sps-status').textContent = '计算中（每模型 × 每个 SLC 容量，逐点重算）…';
+  try {
+    const gib = $('ins-sps-gib').value.split(',').map((x) => Number(x.trim())).filter((x) => Number.isFinite(x) && x >= 0);
+    const payload = { slc_gib: gib.length ? gib : [0, 1, 2, 4, 8] };
+    if (!$('ins-sps-asr').checked) payload.models = SPS_OUT;
+    const r = await track(req('insight_speech_streams', '/api/insight_speech_streams', body(payload)));
+    if (!r) return;
+    $('ins-sps-summary').textContent = `${r.chip} · ${r.mem_id} · 单元格 = 实时路数 / 卡（LM 卡 + 所需语音卡；悬停看 LM / 语音卡路数）`
+      + ` · 上限 ${r.max_streams} 路（+）· ${r.method}`;
+    put($('ins-sps-tbl'), h('thead', {}, h('tr', {}, h('th', {}, '模型'), h('th', {}, '类型'),
+      ...r.slc_gib.map((g) => h('th', {}, `SLC ${num(g)} GiB`)), h('th', {}, '首次实时'))),
+      h('tbody', {}, (r.rows || []).map((x) => h('tr', {}, h('td', {}, x.model), h('td', {}, x.kind),
+        ...x.curve.map(speechStreamsCell),
+        h('td', {}, x.first_realtime_slc_gib != null ? `${num(x.first_realtime_slc_gib)} GiB` : '—')))));
+    $('ins-sps-status').textContent = `完成 · ${(r.rows || []).length} 模型 × ${r.slc_gib.length} 档`;
+  } catch (e) {
+    $('ins-sps-status').textContent = '错误：' + e.message;
+  }
+}
+
 /* 0.262/0.263: J/token-optimal SLC size under energy.sram_temp_C; optional 25/85 °C compare */
 async function runInsightSlc(cmp) {
   $('ins-slc-status').textContent = cmp ? '计算中（25 °C + 85 °C × 逐 GiB）…' : '计算中（逐 GiB × 每个模型）…';
@@ -2667,6 +2705,7 @@ async function init() {
   $('ins-size-run').addEventListener('click', runInsightSizing);
   $('ins-slc-run').addEventListener('click', () => runInsightSlc(false));
   $('ins-sp-run').addEventListener('click', runInsightSpeech);
+  $('ins-sps-run').addEventListener('click', runInsightSpeechStreams);
   $('ins-slc-cmp').addEventListener('click', () => runInsightSlc(true));
   for (const f of ['csv', 'json']) { $('ins-exp-' + f).addEventListener('click', () => doExport('ins', f)); $('ins-path-exp-' + f).addEventListener('click', () => doExport('ins-path', f)); }
   fillSweepPaths();

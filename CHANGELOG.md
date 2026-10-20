@@ -6,6 +6,37 @@
 
 
 
+## [0.276.0]
+
+### Added: real-time streams per card vs SLC size (MODEL §221.1)
+- `core/speech_insight.speech_streams(base, models, audio_s, slc_gib)` and `POST /api/insight_speech_streams` (keys `models`, `audio_s`, `slc_gib`). For each speech model and each SLC size (pin policy, default 0 / 0.5 / 1 / 2 / 4 / 8 GiB), the engine is rerun at increasing batch:
+  - `streams_lm`: the largest batch whose non-speech-card stages stay real time (x ≤ 1) and fit. Found by a galloping search from the linear prediction, then bisection; capped at 1024.
+  - `lm_limit`: why batch + 1 fails (realtime / memory / cap).
+  - `streams_speech_card` (CosyVoice / Kimi / Step-Audio / Omni): the speech card's own real-time stream count. Speech cards = ⌈streams_lm / streams_speech_card⌉.
+  - `streams_per_card` = streams_lm / (LM cards + speech cards).
+  - `streams_lm_pred` = ⌊(1 − (x₁ − d)) / d⌋ with d = x₂ − x₁. This is the linear read-out from batch 1 and 2, valid only while the step stays weight-read bound. It is reported next to the engine result, never used in place of it.
+- Insight tab, speech panel: "实时路数 / 卡 vs SLC" table. One row per model, one column per SLC size; hover shows the LM / speech-card split. By default it covers the speech-output models, with an "含 ASR 模型" checkbox to add the rest. Static build: routed via `serve.respond`, in the shim slow lane, with an unpacked-zip probe. `ui_headless_smoke` clicks it with SLC 0, 4.
+
+### Added: FireRedTTS3 DiT SLC pin and bf16 re-cast option (MODEL §221.2)
+- `_firered_kpis` gains a `dit_pin` block that reports the existing 0.269 re-read rule (memplan `rr_w` / `rr_reads`). The fp32 DiT is 1.17 GB, read 10× per step. The block reports:
+  - SRAM-pinned and SLC-held bytes, the miss share and DRAM GB per step;
+  - `slc_full_GiB`, the SLC needed to hold the whole DiT: 1.03 GiB on 100T.
+  - Step time falls linearly with the pinned bytes (test). On 100T + LPDDR5X, TPOT goes 89.8 → 61.7 → 33.7 → 27.3 ms at SLC 0 / 0.5 / 1 / 2 GiB.
+- `bf16_recast` option, not counted in TPOT. `_backbone_one_step` runs under `torch.autocast(bf16)` over fp32 weights, and the cast cache is dropped every step. That costs +4 B per non-embedding backbone param per step on an eager GPU path: +5.64 GB, +29.5 ms per step, RTF 0.57 → 0.75. UI: one line in the TTS KPI.
+
+### Added: Fish Audio Drama 3 (MODEL §221.3)
+- `fishaudio/drama-3` as `drama-3` (provider Fish Audio, family Drama 3, listing domain `tts`).
+- Release headers: `summarize_release._fish_role`. The backbone and the 13-layer codebook-MTP tower are LLM roles; the 9 codebook heads are `lm_head`; code embeddings / tables are `embed`.
+- The tower (vllm-omni `codebook_tower.py`) runs on every backbone row with its own causal KV cache. It is modelled as 13 extra decoder layers: GQA 16/2, head 256, sigmoid output gate, SwiGLU 6144, eh_proj. The 9 heads are per-sequence rows.
+- The head reads only the 4096 candidate lm_head rows. The 252,288-row text embedding is looked up.
+- Resident params = release − non-candidate lm_head rows − the folded eh_proj halves = 35,341,014,144 (gap 0).
+- `speech._fish_kpis` (streaming): step = 1 frame of 46.4 ms. First audio = prefill (text + one row per reference frame) + 6 frames (the first chunk of the async-chunk ramp). The DAC decoder (codec.pth) is not costed.
+- Added to `SPEECH_MODELS`, the UI badge / KPI line and the headless model list.
+
+### Tests
+- New `test_core_276` (streams search, Moshi curve, speech-card sizing, route / UI / shim, FireRed pin / recast) and `test_core_276b` (Drama 3).
+- Listing count tests: 149 files / llm 123 / 155.
+
 ## [0.275.0]
 
 ### Added: speech bottleneck panel (MODEL §220.1)

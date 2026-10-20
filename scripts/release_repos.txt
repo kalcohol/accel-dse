@@ -133,3 +133,4 @@ stepfun-ai/Step-Audio-2-mini
 # 0.273: Kimi-Audio-7B-Instruct (LLM safetensors here; whisper-large-v3/ encoder + audio_detokenizer/ + vocoder/ via
 #        python3 scripts/fetch_pt_release.py --kimi moonshotai/Kimi-Audio-7B-Instruct)
 moonshotai/Kimi-Audio-7B-Instruct
+fishaudio/drama-3

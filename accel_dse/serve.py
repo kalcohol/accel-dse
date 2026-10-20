@@ -21,7 +21,8 @@ POST_ROUTES = {"/api/memory": api.api_memory, "/api/fit": api.api_fit, "/api/eva
                "/api/sensitivity": api.api_sensitivity, "/api/insight": api.api_insight,
                "/api/insight_path": api.api_insight_path,
                "/api/insight_sizing": api.api_insight_sizing, "/api/insight_slc": api.api_insight_slc,
-               "/api/insight_speech": api.api_insight_speech}
+               "/api/insight_speech": api.api_insight_speech,
+               "/api/insight_speech_streams": api.api_insight_speech_streams}
 CACHED = {"/api/compare", "/api/stability", "/api/layouts"}
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}

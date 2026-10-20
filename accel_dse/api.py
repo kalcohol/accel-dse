@@ -147,7 +147,8 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
                "insight_sizing": {"models", "resources", "joint", "unpriced", "energy_tie"},
                "insight_slc": {"models", "policy", "gibs", "temps"},
-               "insight_speech": {"models", "audio_s", "verify"}}
+               "insight_speech": {"models", "audio_s", "verify"},
+               "insight_speech_streams": {"models", "audio_s", "slc_gib"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1376,6 +1377,27 @@ def api_insight_speech(body: dict) -> dict:
         raise ApiError("verify must be true or false")
     try:
         return {**speech_bounds(scn, models, float(a), verify=v), "hash": scn.hash()}
+    except (KeyError, ValueError) as e:
+        raise ApiError(str(e)) from None
+
+
+def api_insight_speech_streams(body: dict) -> dict:
+    """0.276: real-time streams per card vs SLC size for catalog speech models (core/speech_insight.speech_streams)."""
+    from .core.speech_insight import SLC_GIB, SPEECH_MODELS, speech_streams
+    _check_keys(body, "insight_speech_streams")
+    scn = scenario_from_body(body)
+    models = body.get("models", list(SPEECH_MODELS))
+    if not isinstance(models, list) or not models or not all(isinstance(x, str) for x in models):
+        raise ApiError("models must be a non-empty list of model ids")
+    a = body.get("audio_s", 10.0)
+    if isinstance(a, bool) or not isinstance(a, (int, float)) or not 0 < a <= 600:
+        raise ApiError("audio_s must be a number in (0, 600]")
+    g = body.get("slc_gib", list(SLC_GIB))
+    if not isinstance(g, list) or not 0 < len(g) <= 12 or not all(
+            isinstance(x, (int, float)) and not isinstance(x, bool) and 0 <= x <= 64 for x in g):
+        raise ApiError("slc_gib must be a list of 1–12 numbers in [0, 64]")
+    try:
+        return {**speech_streams(scn, models, float(a), tuple(float(x) for x in g)), "hash": scn.hash()}
     except (KeyError, ValueError) as e:
         raise ApiError(str(e)) from None
 

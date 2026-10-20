@@ -325,6 +325,10 @@ def _moshi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
 FIRERED_PROMPT_S = 5.0      # voice-prompt seconds when serving.audio_s = 0 「假设」 (zero-shot cloning needs a prompt)
 
 
+def _cv(x) -> int:
+    return int(x() if callable(x) else x)
+
+
 def _firered_kpis(scn: Scenario, t, audio_out_s: float) -> dict:
     """0.275 FireRedTTS3-Base (core/fireredtts3.py), one text segment, non-streaming 「来源」 (generate → redae.decode):
         prompt   = RedAE encoder (prompt audio) + patch encoder (prompt latents) + spk projections
@@ -352,12 +356,57 @@ def _firered_kpis(scn: Scenario, t, audio_out_s: float) -> dict:
     t_dec = dr["s"] * b                   # one decode per request (RedAE.decode takes b = 1 「来源」)
     gen = steps * dec.tpot
     tot = t_prompt + pre.ttft + gen + t_dec
-    return {"kind": "tts", "label": "FireRedTTS3", "stream": "none", "audio_out_s": audio_out_s, "steps": steps,
+    # 0.276 DiT pin: the fp32 flow head (flow_params · 4 B) is read flow_steps times per AR step 「来源」 — the 0.269
+    # re-read class (memplan.StageStorage.rr_w / rr_reads).  memplan pins it SRAM-first, then SLC (policy pin), ahead of
+    # the once-read backbone; this block only reports that plan.  slc_full_GiB = the SLC that would hold all of it 「推导」.
+    mp = dec.stages[-1].mem
+    rr = t.flow_params * getattr(t, "w_bytes", 2.0)
+    miss = max(0.0, 1.0 - (mp.pinned_rr + mp.slc_rr) / rr) if rr else 0.0
+    pin = {"dit_GB": rr / 1e9, "reads_per_step": t.flow_steps, "sram_pinned_GB": mp.pinned_rr / 1e9,
+           "slc_GB": mp.slc_rr / 1e9, "miss": miss, "dram_GB_per_step": miss * rr * t.flow_steps / 1e9,
+           "slc_full_GiB": max(0.0, rr - mp.pinned_rr) / 2 ** 30,
+           "slc_policy": scn.chip.slc_policy, "slc_mib": scn.chip.slc_bytes / 2 ** 20}
+    # 0.276 bf16 re-cast (option, not in tpot_s): _backbone_one_step runs under torch.autocast(bf16) over fp32 weights
+    # 「来源」, and the autocast cast cache is dropped when the context exits each step, so every backbone Linear weight
+    # is read fp32 (4 B, counted) + written bf16 (2 B) + read bf16 (2 B) per step 「推导」 → +4 B/param of DRAM traffic on
+    # an eager GPU path.  Embedding lookups are not autocast ops and the DiT head runs outside the autocast region
+    # 「来源」.  Added serially at DRAM bandwidth (upper bound 「近似」); an engine that casts on load pays 0.
+    n_cast = max(0, _cv(dec.model.params) - _cv(dec.model.embed_params))
+    x_s = 4.0 * n_cast / (sys.dram_GBps * 1e9)
+    recast = {"params": n_cast, "extra_GB_per_step": 4.0 * n_cast / 1e9, "extra_s_per_step": x_s,
+              "tpot_s": dec.tpot + x_s, "rtf": (steps * (dec.tpot + x_s) + t_dec) / audio_out_s, "counted": False}
+    return {"kind": "tts", "label": "FireRedTTS3", "dit_pin": pin, "bf16_recast": recast, "stream": "none", "audio_out_s": audio_out_s, "steps": steps,
             "prompt_audio_s": pa, "prompt_patches": pp, "first_audio_s": tot, "ttft_s": pre.ttft, "tpot_s": dec.tpot,
             "total_s": tot, "rtf": (gen + t_dec) / audio_out_s, "lm_rtf": dec.tpot / t.s_per_step,
             "split_first": {"prompt_s": t_prompt, "prefill_s": pre.ttft, "steps_s": gen, "redae_decode_s": t_dec},
             "redae_decode_bound": dr["bound"], "flow_steps": t.flow_steps, "cfg": t.cfg_mult,
             "audio_out_s_per_s_card": sv.batch * audio_out_s / tot / pre.scenario.layout.cards,
+            "fits": pre.fits and dec.fits}
+
+
+def _fish_kpis(scn: Scenario, fs, audio_out_s: float) -> dict:
+    """0.276 Fish Audio Drama 3 (core/drama3.py), streaming 「来源」 (vllm-omni fish_omni → dac_decoder async chunks):
+        prompt  = text tokens + one row per voice-reference frame (serving.audio_s, default drama3.REF_S 「假设」)
+        step    = one 10-codebook frame (2048 / 44.1 kHz = 46.4 ms) = backbone token + 13-layer codebook tower + heads
+        first audio = prefill + the first chunk of CHUNK_RAMP[0] = 6 frames (the DAC's own time not costed)
+        RTF = TPOT / frame (Stage 0 only)."""
+    from .drama3 import CHUNK_RAMP, REF_S
+    sv = scn.serving
+    ref = sv.audio_s or REF_S
+    rows = fs.ref_rows(ref)
+    p_tok = sv.prompt + rows
+    pre = evaluate(scn.replace("serving.phase", "prefill").replace("serving.prompt", p_tok).replace("serving.audio_s", 0))
+    steps = max(1, math.ceil(audio_out_s / fs.frame_s - 1e-9))
+    dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.prompt", p_tok)
+                   .replace("serving.ctx", p_tok + steps // 2).replace("serving.audio_s", 0))
+    c0 = min(CHUNK_RAMP[0], steps)
+    first = pre.ttft + c0 * dec.tpot
+    tot = pre.ttft + steps * dec.tpot
+    return {"kind": "tts", "label": "Drama 3", "stream": "chunk", "audio_out_s": audio_out_s, "steps": steps,
+            "frame_ms": fs.frame_s * 1e3, "ref_audio_s": ref, "ref_rows": rows, "prompt_rows": p_tok,
+            "first_chunk_frames": c0, "first_audio_s": first, "ttft_s": pre.ttft, "tpot_s": dec.tpot, "total_s": tot,
+            "rtf": dec.tpot / fs.frame_s, "split_first": {"prefill_s": pre.ttft, "first_chunk_steps_s": c0 * dec.tpot},
+            "dac_costed": False, "audio_out_s_per_s_card": sv.batch * audio_out_s / tot / pre.scenario.layout.cards,
             "fits": pre.fits and dec.fits}
 
 
@@ -373,6 +422,8 @@ def speech_kpis(scn: Scenario, audio_out_s: float = 10.0) -> dict:
         return _kimi_kpis(scn, pre, audio_out_s)
     if getattr(m, "moshi", None) is not None:
         return _moshi_kpis(scn, pre, audio_out_s)
+    if getattr(m, "fish", None) is not None:
+        return _fish_kpis(scn, m.fish, audio_out_s)
     ts = getattr(m, "tts", None)
     au = getattr(getattr(m, "vision", None), "audio", None)
     if ts is not None and getattr(ts, "kind", "") == "firered":

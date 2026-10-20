@@ -78,7 +78,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
 
             settle("load")
             # 0.273: + the speech-out kinds (Omni: split / SLC / audio-in KPIs; CosyVoice: split / per-chunk)
-            for m in ("gpt-oss-120b", "wan2.1-1.3b", "esm2-650m", "qwen2.5-omni-7b", "cosyvoice2-0.5b", "kimi-audio-7b-instruct", "step-audio-2-mini", "moshiko-7b", "fireredtts3-base", "qwen3-8b"):
+            for m in ("gpt-oss-120b", "wan2.1-1.3b", "esm2-650m", "qwen2.5-omni-7b", "cosyvoice2-0.5b", "kimi-audio-7b-instruct", "step-audio-2-mini", "moshiko-7b", "fireredtts3-base", "drama-3", "qwen3-8b"):
                 if m in opts("#model"):
                     act(f"model={m}", lambda m=m: p.select_option("#model", m))
             for ph in ("prefill", "decode"):
@@ -310,6 +310,16 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             steps.append(("speech insight", rows, st[:40]))
             if not st.startswith("完成") or rows < 10:
                 errs.append(f"speech insight: {st[:200]} rows={rows}")
+            # 0.276: streams per card vs SLC (two SLC sizes keep the smoke short)
+            p.fill("#ins-sps-gib", "0, 4")
+            p.click("#ins-sps-run")
+            p.wait_for_function("(() => { const t = document.getElementById('ins-sps-status').textContent;"
+                                " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=900000)
+            st = p.inner_text("#ins-sps-status")
+            rows = len(p.query_selector_all("#ins-sps-tbl tbody tr"))
+            steps.append(("speech streams", rows, st[:40]))
+            if not st.startswith("完成") or rows < 8:
+                errs.append(f"speech streams: {st[:200]} rows={rows}")
             b.close()
     finally:
         srv.terminate()

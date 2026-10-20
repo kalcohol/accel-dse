@@ -7207,3 +7207,87 @@ Formulas:
 ### §220.3 Moshi per-layer overhead
 - `Scenario.layer_overhead_us` (0.69; a fixed time per transformer layer pass, used by `evaluate` per stage; default 0) is reused for the serial passes per frame (`moshi.layer_passes`): depformer dep_q × layers = 48 one-row passes, and Mimi encoder / decoder transformer 8 + 8. SEANet convs are not counted 「近似」.
 - At 10 µs: +0.64 ms on these and +0.32 ms on the temporal step's 32 layers, so the frame grows from 86.8 to 87.8 ms. The bandwidth excess (6.8 ms) dominates unless the per-layer overhead approaches ~100 µs.
+
+## §221 Speech round 7: streams per card vs SLC, FireRedTTS3 DiT pin, Fish Audio Drama 3 (0.276)
+
+### §221.1 Real-time streams per card vs SLC size
+`speech_insight.speech_streams` / `POST /api/insight_speech_streams`. For each speech model, at each SLC size S (pin policy; S is added on top of the chip as `slc_mib` = S · 1024), the result comes from rerunning `speech_kpis`. It is not extrapolated:
+
+    streams_lm(S) = max b ≤ 1024 such that fits(b) and max_{stage ≠ speech_card} x_stage(b) ≤ 1     (engine reruns)
+    lm_limit      = realtime | memory | cap   (why b + 1 fails)
+    N_sc          = streams_realtime of the batch-1 speech card (its own search, core/speech.py)
+    speech_cards  = ⌈streams_lm / N_sc⌉ ;  cards = LM cards (layout) + speech_cards
+    streams/card  = streams_lm / cards        (0 when N_sc = 0: the speech card alone is not real time)
+    pred          = ⌊(1 − (x₁ − d)) / d⌋, d = x₂ − x₁    「推导」 linear read-out, weight-read-bound regime only
+
+Search: gallop (doubling) from max(1, pred), then bisection. The calls are memoized, and the predicate is assumed monotone in b 「假设」 (more rows never make a step faster).
+
+**Finding** (100T + LPDDR5X, 10 s audio, prompt 64 / reply 64; streams per card at SLC 0 / 0.5 / 1 / 2 / 4 / 8 GiB):
+
+| model | streams / card | note |
+|---|---|---|
+| moshiko-7b | 0 / 0 / 0 / 1 / 2 / 5 | the ~1.3 GB per-frame working set must be pinned; pred exact |
+| kimi-audio-7b-instruct | 0 / 0 / 0 / 0 / 3.83 / 3.92 | LM 92 → 333; the detokenizer card carries only 4 streams, so speech cards dominate |
+| step-audio-2-mini | 0 ×5 / 28.0 | LM real time only at 8 GiB (112); token2wav 44 per card |
+| qwen2.5-omni-7b | 0 / 1.00 / 2.98 / 4.96 / 8.84 / 8.83 | Thinker 623–724; the Talker + DiT speech card is the limit (0 → 9 streams) |
+| cosyvoice2-0.5b / fun-cosyvoice3 | 78.8+ / 28.4+ flat | LM ≥ 1024 (cap); flow + HiFT 86 / 30 per card, not SLC-sensitive |
+| fireredtts3-base | 102 / 112 / 121 / 121 / 126 / 130 | pred 436–1024 is far off: as b grows the DiT head (10 × CFG 2 × 12 rows × b) turns compute-bound |
+| drama-3 | 3 / 4 / 4 / 5 / 8 / 9 | MoE: each extra stream touches new experts, so bytes per step grow with b; pred ≈ exact |
+| ming-3.0-tts-tiny | 16 / 32 / 36 / 41 / 56 / 89 | MoE expert union saturates, so pred (10–55) is low |
+| ASR (qwen3-asr, fun-asr-nano, whisper ×2, ming-asr, qwen2-audio) | +6 % … +59 % from 0 → 8 GiB | whisper-large-v3-turbo flat at 412 (encoder compute) |
+
+**Reading:**
+- For the 7B dialogue models (Moshi, Kimi, Step-Audio) the SLC decides whether one card serves anyone at all.
+- For Omni / CosyVoice-type models the speech card, not the LM, sets streams per card.
+- The batch-1/2 linear read-out is reliable only for dense weight-read-bound LMs. Use the engine column.
+
+### §221.2 FireRedTTS3 DiT SLC pin (0.269 re-read rule) and bf16 re-cast
+- The fp32 DiT (`flow_params` · 4 B = 1.175 GB) is already the memplan re-read class (`RR_PREFIX` "tts.flow", `rr_reads` = 10). It is pinned SRAM-first, then SLC (pin policy), ahead of the once-read backbone (0.269). `_firered_kpis` now reports the plan as `dit_pin`:
+  - `sram_pinned_GB`, `slc_GB`;
+  - miss = 1 − (pinned + slc) / rr;
+  - DRAM GB per step = miss · rr · 10;
+  - `slc_full_GiB` = (rr − SRAM-pinned) / 2³⁰.
+- 100T + LPDDR5X:
+  - SRAM holds 0.065 GB, so the miss is 0.945 and 11.1 GB of DRAM traffic per step comes from the DiT;
+  - SLC 0.5 → 5.73 GB; 1 GiB → 0.36 GB; 2 GiB → 0;
+  - TPOT 89.8 → 61.7 → 33.7 → 27.3 ms.
+  - ΔTPOT / ΔGB is constant (28.1 ms per 5.37 GB ≈ effective DRAM bandwidth), so the step is DRAM-bound until the DiT is resident 「推导」.
+  - 1.03 GiB of SLC takes FireRedTTS3 from RTF 0.57 to 0.21.
+- **bf16 re-cast** (option `bf16_recast`, `counted: false`):
+  - `_backbone_one_step` is decorated `@torch.autocast(cuda, bf16)` 「来源」. The weights are stored fp32, and the autocast cast cache is cleared when the context exits, so each step re-casts every Linear weight.
+  - Per non-embedding backbone param: read fp32 4 B (already counted) + write bf16 2 B + read bf16 2 B 「推导」, so +4 B per param.
+  - 1.409 B params give +5.64 GB per step, added serially at effective DRAM bandwidth (upper bound 「近似」): +29.5 ms per step, RTF 0.57 → 0.75.
+  - The DiT runs outside the autocast region and embeddings are not autocast ops, so they get no re-cast 「来源」.
+  - An accelerator that casts on load pays 0, which is why this is not in `tpot_s`.
+
+### §221.3 Fish Audio Drama 3 (`drama-3`)
+**Source** 「来源」: HF fishaudio/drama-3 (config.json, headers; README "35B parameters, 3B active, FP8 MoE experts, rest bf16"), and vllm-omni @ da572cd `model_executor/models/fish_omni/{fish_omni_model,codebook_tower,pipeline}.py` + `stage_input_processors/fish_omni.py`.
+
+**Backbone:** text_config = the Qwen3.5-MoE shape:
+- 40 layers: 30 Gated-DeltaNet + 10 gated full attention (GQA 16/2, head 256);
+- 256 experts, top-8, d 512, plus a gated shared expert of 512;
+- FP8 block-128 experts.
+- Built by the existing `qwen3_5_moe_text` builder, with vocab = 4096 candidate rows: `main_candidate_ids` = EOS + semantic 1..4095. vllm-omni keeps only these rows.
+
+**Tower:** 13 layers = 4 shared + 9 per codebook (`shared_enrichment_layers` + `num_codebooks` − 1). Each layer:
+- eh_proj (layer 0: [e; h] 4096 → 2048; layers ≥ 1: the h half 2048 → 2048, after folding the embedding half into a per-code table at load);
+- wqkv 2048 → 9216 (q ‖ gate 2 · 16 · 256 + k, v 2 · 2 · 256), o 4096 → 2048, SwiGLU 6144;
+- causal attention over the whole sequence with a paged KV, one row per backbone position.
+- Modelled as decoder layers 41–53 on every row 「推导」: same FLOPs, weights and KV, with 26.6 KB per position of extra KV (more than the backbone's 20.5 KB).
+- 9 codebook heads 2048 → 4096, one row per sequence per step. The serial sample between tower layers is not a separate latency 「近似」.
+
+**Params:**
+- Release 35,899,643,008 − (252,288 − 4,096) · 2048 non-candidate lm_head rows − 12 · 2048² folded eh_proj halves = 35,341,014,144 resident = spec (exact).
+- Lookup (embed role): 0.70 B = text embedding 252,288 rows + frame-input codebook embeddings 40,960 rows + tower code tables.
+
+**KPIs** (`_fish_kpis`, streaming):
+- frame = 2048 / 44,100 = 46.44 ms;
+- prompt = text + ⌈ref_s · 44,100 / 2048⌉ rows (ref 10 s 「假设」 → 216);
+- first audio = TTFT + 6 · TPOT (async-chunk ramp 6, 8, 12, 16, 24, 32, then 64; 32 frames left context);
+- RTF = TPOT / frame.
+- Stage 1, the DAC (codec.pth, a 1.87 GB torch pickle), is **not costed**. The README shows it can cap throughput at ≥ 128 streams on one GPU.
+
+**Finding:**
+- 100T + LPDDR5X, b = 1: TPOT 30.7 ms (≈ 5.9 GB per step: bf16 attention / tower / shared 4.8 GB + 8 × 40 fp8 experts 1.0 GB, at effective bandwidth; test ±15 %), RTF 0.66, first audio 378 ms.
+- Streams per card: 3 at SLC 0 → 9 at 8 GiB.
+- External reference (not fitted, not in ext_validation): the README measures 166.7 frames/s at concurrency 1 on one H200 (6.0 ms per frame) and 1687 frames/s at 64. The engine on H100-like gives 2.5 ms (398 frames/s) at b = 1 and 3537 frames/s at 64, so it is ≈ 2.1–2.4× optimistic. Likely causes are per-step fixed costs (53 layers, 10 serial code samples, scheduler) and the DAC sharing the GPU. Left as a known gap; `layer_overhead_us` exists but is not set from this data.
