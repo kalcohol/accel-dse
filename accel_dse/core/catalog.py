@@ -146,6 +146,9 @@ EXTRA_TAIL = [
     # 0.276: Fish Audio Drama 3 — Qwen3.5-35B-A3B-shaped MoE backbone (FP8 experts) + 13-layer codebook-MTP tower (one
     # row per backbone position, own KV) → 10-codebook frame per step @ 44.1 kHz / 2048; DAC codec not costed
     ("drama-3", "fishaudio/drama-3"),
+    # 0.278: NVIDIA Nemotron-3.5-Super-VL (2026-10-12, as released NVFP4 / FP8 mixed) — Nemotron-H hybrid: 40 Mamba-2 +
+    # 8 GQA + 40 latent-MoE layers (512 experts top-22, relu²), 1 MTP block pair, RADIO ViT-H vision
+    ("nemotron-3.5-super-vl-120b-a12b-nvfp4", "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -306,7 +309,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("stepfun", "阶跃星辰（Step）", ("stepfun-ai/",)), ("xiaomi", "小米（MiMo）", ("XiaomiMiMo/",)),
     ("openbmb", "面壁智能 / OpenBMB（MiniCPM）", ("openbmb/",)), ("robbyant", "Robbyant（LingBot-Video）", ("robbyant/",)),
     ("startlux", "StartLux Labs（决策模型）", ("startlux-models/",)), ("rwkv", "RWKV（BlinkDL）", ("RWKV/",)),
-    ("nvidia", "NVIDIA（Nemotron-Labs）", ("nvidia/",)),
+    ("nvidia", "NVIDIA（Nemotron）", ("nvidia/",)),
     ("reflection", "Reflection AI（Beam）", ("reflection/",)),
     ("openmoss", "复旦 OpenMOSS（MOSS）", ("OpenMOSS-Team/",)),
     ("kyutai", "Kyutai（Moshi）", ("kyutai/",)),     # 0.274
@@ -343,7 +346,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("microsoft", "Microsoft-Decision", ("microsoft-decision",)), ("rwkv", "RWKV-7 G1k", ("rwkv7-",)),
     ("tencent", "Hy-Memory（Hy3 MoE）", ("hy-memory",)), ("bfl", "FLUX 3", ("flux-3",)),
     ("microsoft", "UserRepGen", ("userrepgen",)),
-    ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
+    ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("nvidia", "Nemotron-3.5 Super VL", ("nemotron-3.5",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
     ("reflection", "Beam-1.0", ("beam-",)),
     ("openmoss", "MOSS-Image", ("moss-image",)),
     ("kyutai", "Moshi", ("moshi",)),     # 0.274

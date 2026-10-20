@@ -800,7 +800,16 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
                                                   w_fmt="bf16", a_fmt="bf16", act_bytes=cnt * (m_ * k_ + m_ * n_) * 2)
             if delta:
                 ops += [g("lin_akk", C, dk, C), g("lin_ut_solve", C, C, dv + dk, 0.5), g("lin_vprime", C, dk, dv)]
-            ops += [g("lin_aqk", C, dk, C), g("lin_intra", C, C, dv), g("lin_inter", C, dk, dv), g("lin_state", dk, C, dv)]
+            if core.lin == "ssd" and core.state_groups:
+                # 0.278 Mamba-2 SSD (mamba_chunk_scan_combined): C·Bᵀ per chunk is formed once per B / C group
+                # (n_groups) and shared by its heads 「来源」 ssd_bmm chunk_size × ngroups; the rest is per head
+                gl = _cdiv(core.state_groups, tp)
+                cg = b_loc * gl * nc
+                ops.append(Op("lin_aqk", "attn", li, m=C, k=dk, n=C, count=cg, w_fmt="bf16", a_fmt="bf16",
+                              act_bytes=cg * (C * dk + C * C) * 2))
+            else:
+                ops.append(g("lin_aqk", C, dk, C))
+            ops += [g("lin_intra", C, C, dv), g("lin_inter", C, dk, dv), g("lin_state", dk, C, dv)]
             # per chunk: decay masks (build 3/elem, apply to A_qk / A_kk); KDA per-channel gate exp on q, k, k·β
             # (FLA chunk_kda factorisation); v_new subtract; state decay
             ch_vec = (3 + (2 if delta else 1)) * C * C + (3 * C * dk if core.lin == "kda" else 0) + C * dv + dk * dv

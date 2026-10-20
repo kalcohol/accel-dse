@@ -122,6 +122,8 @@ class AttnCore:
     n_state_heads: int = 0
     state_dk: int = 0
     state_dv: int = 0
+    state_groups: int = 0      # 0.278 Mamba-2 SSD: B / C (the key / query side, dk wide) shared by heads in this many
+                               # groups (n_groups) — C·Bᵀ is formed per group, not per head; 0 = per head
     conv_channels: int = 0
     conv_kernel: int = 0
     causal: bool = True        # False: bidirectional (DiT / protein encoders)
@@ -592,6 +594,8 @@ def _tc(cfg: dict) -> dict:
         # fireredtts3_base.py (the HF config.json carries only the DiT / patch-encoder fields) 「来源」; no lm_head (the
         # step output drives stop_head + the DiT flow head, core/fireredtts3.py); weights stored fp32
         tc = {**cfg["backbone"], "torch_dtype": "float32"}
+    if mt == "nemotron_h_omni" and isinstance(cfg.get("llm_config"), dict):
+        tc = cfg["llm_config"]      # 0.278 Nemotron-3.5-Super-VL: NemotronHForCausalLM(llm_config) 「来源」 modeling_nemotron_h_omni.py
     if mt == "fish_omni" and isinstance(tc, dict):
         # 0.276 Fish Audio Drama 3: text_config is the Qwen3.5-MoE backbone (fish_omni_text = qwen3_5_moe_text shape);
         # the decode head is the 4096 candidate lm_head rows (core/drama3.py) — vocab = candidates, the 252 288-row
@@ -1705,6 +1709,67 @@ def _build_dory(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, [], notes, "full"
 
 
+def _mamba2(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
+    """0.278 Mamba-2 mixer (transformers NemotronHMamba2Mixer 「来源」): in_proj h → [z (d_in) | xBC (d_in + 2·G·N) | dt (H)],
+    causal depthwise conv1d (kernel 4, bias) over xBC, SSD scan (H heads of P = mamba_head_dim, state N, B / C shared per
+    group of H / G heads, scalar decay exp(dt·A) per head, D skip), gated RMSNorm (group size d_in / G) with z, out_proj
+    d_in → h.  Prefill = the chunked SSD of the reference kernel (mamba_chunk_scan_combined, chunk_size = 128)."""
+    H, P, N, G = c["mamba_num_heads"], c["mamba_head_dim"], c["ssm_state_size"], c["n_groups"]
+    d_in = H * P
+    conv = d_in + 2 * G * N
+    kern = c.get("conv_kernel") or 4
+    lin = (Linear("mamba_in", h, d_in + conv + H, "col"), Linear("mamba_out", d_in, h, "row"))
+    core = AttnCore("linear", n_state_heads=H, state_dk=N, state_dv=P, conv_channels=conv, conv_kernel=kern,
+                    lin="ssd", lin_chunk=c.get("chunk_size") or 128, state_groups=G)
+    misc = conv * kern + (conv if c.get("use_conv_bias", True) else 0) + 3 * H + d_in    # conv w (+ b), A_log / D / dt_bias, norm
+    return lin, core, misc
+
+
+def _build_nemotron_h(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.278 Nemotron-H (transformers NemotronHForCausalLM 「来源」): ``layers_block_type`` gives one mixer per layer —
+    mamba (Mamba-2, _mamba2) | attention (GQA, no RoPE in the reference attention path's cost) | moe (NemotronHMoE: sigmoid
+    top-k router with correction bias, relu² non-gated routed experts in the moe_latent_size space between
+    fc1_latent_proj / fc2_latent_proj, one relu² shared expert at full width) | mlp (relu² up / down); one pre-norm
+    each.  MTP (num_nextn_predict_layers, mtp_layers_block_type): eh_proj 2h → h + enorm / hnorm + one block per type."""
+    h = c["hidden_size"]
+    types = list(c["layers_block_type"])
+    E, k = c.get("n_routed_experts") or 0, c.get("num_experts_per_tok") or 0
+    lat = c.get("moe_latent_size") or 0
+
+    def block(t: str):
+        if t == "mamba":
+            alin, core, misc = _mamba2(c, h)
+            return Layer(alin, core, Ffn("none"), (), misc + h)
+        if t == "attention":
+            H, KV = c["num_attention_heads"], c["num_key_value_heads"]
+            alin, core = _gqa(h, H, KV, c.get("head_dim") or h // H)
+            return Layer(alin, core, Ffn("none"), (), h)
+        if t == "moe":
+            ffn, flin = _ffn_moe(h, E, k, c["moe_intermediate_size"], c.get("n_shared_experts") or 0,
+                                 c.get("moe_shared_expert_intermediate_size") or 0, gated=False, latent=lat)
+            return Layer((), AttnCore("none"), ffn, flin, h + E)          # norm + e_score_correction_bias
+        if t == "mlp":
+            ffn, flin = _ffn_dense(h, c["intermediate_size"], gated=False)
+            return Layer((), AttnCore("none"), ffn, flin, h)
+        raise ValueError(f"nemotron_h: unknown block type {t}")
+    layers = [block(t) for t in types]
+    mtp = []
+    for _ in range(c.get("num_nextn_predict_layers") or 0):
+        # one MTP module = its blocks in sequence ([attention, moe]) → one decoder layer (attention core + MoE FFN);
+        # eh_proj / enorm / hnorm / final norm → mtp_extra_params (from_release: release params_mtp − the layer)
+        parts = [block(t) for t in (c.get("mtp_layers_block_type") or [])]
+        at = next((p for p in parts if p.core.kind != "none"), None)
+        ff = next((p for p in parts if p.ffn.kind != "none"), None)
+        if at is not None and ff is not None and len(parts) == 2:
+            mtp.append(Layer(at.attn_linears, at.core, ff.ffn, ff.ffn_linears, at.misc_params + ff.misc_params))
+    n = {t: types.count(t) for t in dict.fromkeys(types)}
+    notes = [f"Nemotron-H 混合：{n.get('mamba', 0)} 层 Mamba-2（SSD，{c['mamba_num_heads']} 头 × {c['mamba_head_dim']}，"
+             f"状态 {c['ssm_state_size']}，B/C 按 {c['n_groups']} 组共享，chunk {c.get('chunk_size') or 128}，状态 fp32）+ "
+             f"{n.get('attention', 0)} 层 GQA + {n.get('moe', 0)} 层 latent MoE（{E} 专家 top-{k}，relu² 非门控，"
+             f"latent {lat}，共享专家 {c.get('moe_shared_expert_intermediate_size')}）；每层只有一个 mixer"]
+    return layers, mtp, notes, "full"
+
+
 def with_loops(spec: ModelSpec, loops: int, mode: str) -> ModelSpec:
     """0.253 Dory: expand the physical layers for ``loops`` applications of the recurrent block (n_recurrent_loops)
     and the KV mode (recurrent_kv_cache_mode: per_loop = one cache per loop (reference default) | last_loop = one cache
@@ -1724,6 +1789,8 @@ def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
     if mt == "beam":
         return _build_beam, "GQA（SWA + full NoPE，输出门）MoE"
+    if mt == "nemotron_h":
+        return _build_nemotron_h, "Nemotron-H 混合（Mamba-2 + GQA）latent MoE"
     if mt == "dory":
         return _build_dory, "nGPT 循环 LM（SWA + full GQA，输出门）"
     if mt in ("muse_spark", "muse_spark_text"):

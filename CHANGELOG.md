@@ -6,6 +6,29 @@
 
 
 
+## [0.278.0]
+
+### Added: NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 (MODEL §223.1–§223.3)
+- New catalog entry `nemotron-3.5-super-vl-120b-a12b-nvfp4` (2026-10-12, as released: ModelOpt mixed precision, KV cache FP8). Family "Nemotron-3.5 Super VL"; the NVIDIA provider label is now "NVIDIA（Nemotron）".
+- Release summary from the safetensors headers: LLM 120.669 B, MTP 2.942 B, vision 0.842 B, 74.99 GB.
+  - Formats: experts and shared experts NVFP4 (group 16); Mamba in/out, q/k/v/o and lm_head FP8; embeddings, latent projections, router, conv and norms BF16.
+  - `summarize_release._compact_qc`: the ModelOpt per-module lists (config.json is 8.7 MB) become counts per algorithm (`quantized_layers_by_algo`, `ignore_count`).
+  - `_nemotron_h_omni_role`: `language_model.` prefix stripped; RADIO / projector → vision; latent projections → mlp; `backbone.norm_f` → norm.
+- `model._build_nemotron_h` (Nemotron-H, one mixer per layer, from `layers_block_type`): 40 Mamba-2, 8 GQA (32 / 2 heads, head 128), 40 latent MoE (512 experts top-22, relu² non-gated, latent 1024, shared expert 5376). The one MTP module (attention + MoE) is one combined layer. Parameters match the release exactly (LLM and MTP).
+- Mamba-2 (`model._mamba2`): SSD linear core, 128 heads × 64, state 128, B / C shared by 8 groups, conv kernel 4, chunk 128. In `ir`, the chunked prefill forms C·Bᵀ once per (chunk, group) instead of per head (`AttnCore.state_groups`); the other chunk GEMMs stay per head.
+- Vision: new `radio` family in `core/vision.py`. C-RADIO ViT-H/16 (32 blocks, 1280, GELU MLP 5120, biased qkv) → final LayerNorm → 2×2 pixel shuffle → mlp1 (RMSNorm 5120 → 20480 → ReLU² → 4096).
+  - Image size follows the processor's dynamic single-tile rule (`vision.radio_patches`, from `_compute_target_patches`). The patch budget is min((16384 − 4)·4, 13312), with a floor of 1024 patches and even sides. An image adds patches / 4 + 2 tokens (`<img>` … `</img>`).
+  - The modelled tower + projector is 840.40 M. The remaining 1.97 M of the release (video_embedder + normalizer buffers) is stored only.
+  - Coverage is partial: the 10 cls / register tokens are left out of the attention length (< 1 %), and the video path is not modelled.
+- On 100T + LPDDR5X:
+  - one card does not fit (67.8 GiB > 64);
+  - at TP2·EP2: TTFT 0.615 s at a 4096-token prompt, 0.792 s with one 1024² image (1026 tokens, 8.3 TFLOP vision); TPOT 29.9 ms.
+
+### Added: Drama 3 DAC DRAM split (MODEL §223.4)
+- `speech_kpis` for drama-3 now reports `dac.dram_weights_GB` and `dac.dram_act_GB` (`speech._dac_window_dram`). They are the same op sums as the costed time.
+- Per 10 s request on 100T: weights 5.9 GB at both b = 1 and b = 8; activations 14.3 GB at b = 1 and 126.3 GB at b = 8.
+- SLC pinning of the DAC weights was **not** added. Activations dominate, and per GB the LM weights (read every step) are 27–64× more valuable to pin (10 s average to steady-state 64-frame windows). The stream lost at large SLC in 0.277 comes from DAC compute and activation traffic, not from weights.
+
 ## [0.277.0]
 
 ### Changed: faster streams-vs-SLC calculation, same results (MODEL §222.1)

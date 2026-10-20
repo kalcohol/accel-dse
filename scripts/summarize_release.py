@@ -227,6 +227,37 @@ def _fish_role(name: str, n_layers: int | None) -> str:
     return classify(name, n_layers)
 
 
+def _nemotron_h_omni_role(name: str, n_layers: int | None) -> str:
+    """0.278 NVIDIA Nemotron-3.5-Super-VL (NemotronH_Omni_Reasoning_V3): language_model.* is a NemotronHForCausalLM
+    (backbone.layers.N.mixer = Mamba-2 | GQA | latent MoE; mtp.*) → the LLM roles of the bare names; the latent MoE's
+    fc1 / fc2_latent_proj → mlp (the model's latent_up / latent_down GEMMs); the RADIO ViT (vision_model.*), its final
+    LayerNorm and the pixel-shuffle projector mlp1 (vision_projector) → vision."""
+    if name.startswith(("vision_model.", "vision_projector.", "mlp1.", "sound_")):
+        return "vision"
+    if name.startswith("language_model."):
+        name = name[len("language_model."):]
+    if name in ("backbone.norm_f.weight", "backbone.norm_f.bias"):
+        return "norm"
+    if "_latent_proj." in name and not name.startswith("mtp."):
+        return "mlp"
+    return classify(name, n_layers)
+
+
+def _compact_qc(qc):
+    """0.278 ModelOpt MIXED_PRECISION configs list every quantized module (the Nemotron-3.5-Super-VL config.json is
+    8.7 MB): keep the scheme keys, replace the per-module lists by counts per algorithm."""
+    if not isinstance(qc, dict) or qc.get("quant_method") != "modelopt_mixed":
+        return qc
+    out = {k: v for k, v in qc.items() if k not in ("quantized_layers", "config_groups", "ignore")}
+    algos: dict[str, int] = {}
+    for v in (qc.get("quantized_layers") or {}).values():
+        a = v.get("quant_algo", "?") + (f"/g{v['group_size']}" if v.get("group_size") else "")
+        algos[a] = algos.get(a, 0) + 1
+    out["quantized_layers_by_algo"] = dict(sorted(algos.items()))
+    out["ignore_count"] = len(qc.get("ignore") or [])
+    return out
+
+
 def _cosy_role(name: str, n_layers: int | None) -> str:
     """0.271 CosyVoice2 / Fun-CosyVoice3 (scripts/fetch_pt_release.py): the Qwen2.5-0.5B backbone is the LLM; its text
     embedding, the stored text lm_head (unused by the TTS loop) and the speech-token embedding are tables (embed role —
@@ -259,6 +290,8 @@ def summarize(repo: str) -> dict:
     cfg = json.loads((d / "config.json").read_text())
     headers = json.loads((d / "headers.json").read_text())
     tc = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else {}
+    if cfg.get("model_type") == "nemotron_h_omni" and isinstance(cfg.get("llm_config"), dict):
+        tc = cfg["llm_config"]                     # 0.278 Nemotron-3.5-Super-VL: the LLM lives in llm_config
     qc = cfg.get("quantization_config") or tc.get("quantization_config")
     fp4 = _fp4_hint(qc) or "fp4" in json.dumps(cfg.get("expert_dtype") or tc.get("expert_dtype") or "")
     # 0.175: NVFP4 (ModelOpt quant_algo NVFP4 / compressed-tensors nvfp4-pack-quantized): e2m1 + e4m3 per 16 + fp32 per tensor
@@ -328,6 +361,7 @@ def summarize(repo: str) -> dict:
                 _moshi_role(name, nl) if cfg.get("model_type") == "moshi" else
                 _firered_role(name, nl) if cfg.get("model_type") == "fireredtts3" else
                 _fish_role(name, nl) if cfg.get("model_type") == "fish_omni" else
+                _nemotron_h_omni_role(name, nl) if cfg.get("model_type") == "nemotron_h_omni" else
                 _kimi_role(name, nl) if "MoonshotKimiaForCausalLM" in (cfg.get("architectures") or []) else
                 _cosy_role(name, nl) if cfg.get("model_type") in ("cosyvoice2", "cosyvoice3") else
                 classify(name, nl) if domain == "llm" else classify_domain(name, domain))
@@ -409,7 +443,7 @@ def summarize(repo: str) -> dict:
         "repo": repo,
         "fetched": time.strftime("%Y-%m-%d"),
         "torch_dtype": cfg.get("torch_dtype") or cfg.get("dtype") or tc.get("torch_dtype") or tc.get("dtype"),
-        "quantization_config": qc,
+        "quantization_config": _compact_qc(qc),
         "n_tensors": len(tensors),
         "params_llm": tot(llm_roles, "params"),
         "params_mtp": tot(["mtp"], "params"),
@@ -418,7 +452,7 @@ def summarize(repo: str) -> dict:
         "bytes_mtp": tot(["mtp"], "bytes"),
         "bytes_total": sum(t[3] for t in tensors.values()),
         "roles": roles,
-        "config": cfg,
+        "config": {**cfg, "quantization_config": _compact_qc(cfg["quantization_config"])} if "quantization_config" in cfg else cfg,
     }
 
 

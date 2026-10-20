@@ -43,6 +43,8 @@ DEFAULT_PX = (1024, 1024)          # 「假设」 typical image when serving.ima
 
 # released image-processor settings (preprocessor_config.json / processor_config.json / inference/config.json)
 _PREPROC = {
+    # 0.278 Nemotron-3.5-Super-VL (preprocessor_config.json; NemotronH_Omni_Reasoning_V3ImageProcessor)
+    "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4": {"min_patches": 1024, "max_patches": 13312, "max_len": 16384},
     "Qwen/Qwen3.8-Flash-Next": {"min_px": 65536, "max_px": 16777216},
     "Qwen/Qwen3.8-27B": {"min_px": 65536, "max_px": 16777216},
     "Qwen/Qwen3.5-397B-A17B": {"min_px": 65536, "max_px": 16777216},
@@ -765,6 +767,28 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                           approx="视觉：裁剪规划取自同厂同塔 Step-3.7-Flash 的 transformers Step3p7ImageProcessor（728² 概览 + 504² 滑窗裁剪，"
                                  "「来源」代码）；Step-5-Preview 未随附处理器，套用于 Step-5 为「假设」（vision_config / 169 / 81 / "
                                  "image_token_id 全同，inference/validate_vision.py 以 configuration_step3p7 加载参考编码器）")
+    if mt == "radio" and cfg.get("model_type") == "nemotron_h_omni":
+        # 0.278 C-RADIO ViT-H/16 (modeling_radio.py 「来源」): conv-free patch embedder (Linear 768 → h, no bias) + CPE
+        # position grid (16384 × h) + 10 cls / register tokens, 32 pre-LN blocks (biased qkv / proj, GELU MLP 4h); then
+        # (MTP releases) a final LayerNorm, 2×2 pixel shuffle (downsample_ratio 0.5) and mlp1 = RMSNorm(4h) → Linear
+        # 4h → projector_hidden_size → ReLU² → Linear → text h (no bias) 「来源」 modeling_nemotron_h_omni.py
+        h, L, nh, p = vc["hidden_size"], vc["num_hidden_layers"], vc["num_attention_heads"], vc["patch_size"]
+        inter = int(h * vc.get("mlp_ratio", 4.0))
+        r = int(round(1 / cfg["downsample_ratio"]))
+        ph_ = cfg["projector_hidden_size"]
+        ncls = (vc.get("num_cls_tokens") or 0) + (vc.get("num_registers") or 0)
+        grid = (vc.get("cpe_max_size") or 2048) // p
+        fln = 2 * h if (tc_ := cfg.get("llm_config") or {}).get("num_nextn_predict_layers") else 0
+        video = 3 * (vc.get("video_temporal_patch_size") or 1) * p * p * h
+        params = (3 * p * p * h + grid * grid * h + ncls * h
+                  + L * (4 * h + _lin(h, 3 * h) + _lin(h, h) + _lin(h, inter) + _lin(inter, h))
+                  + fln + r * r * h + _lin(r * r * h, ph_, False) + _lin(ph_, text_h or tc_.get("hidden_size"), False))
+        pre.update(patch=p, ratio=r)
+        out = text_h or tc_.get("hidden_size")
+        return VisionSpec("radio", "C-RADIO ViT-H/16（动态分辨率单图）+ 2×2 像素重排 + MLP 投影", p, 1, h, inter, L, nh, h,
+                          False, r, ((r * r * h, ph_), (ph_, out)), params, tuple(sorted(pre.items())), extra=video,
+                          approx="视觉：10 个 cls / register token 未计入注意力长度（≥ 1024 个 patch，< 1 %）「近似」；"
+                                 "视频路径（video_embedder，时间 tubelet 2）只计存储")
     if vc.get("model_type") == "minicpmv4_7_vision":          # 0.144 SigLIP + in-tower merger (insert_layer_id) + merger
         h, inter, L, nh, p = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"], vc["patch_size"]
         ins = cfg.get("insert_layer_id") or 0
@@ -995,8 +1019,35 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
             tok += r * c * (ts + 2) + (r - 1)
             merged += r * c * ts
         return ImageGrid(oh, ow, merged, tok, (ow * v.patch, oh * v.patch), views)
+    if v.family == "radio":
+        # 0.278 one dynamic-resolution tile per image (NemotronH_Omni_Reasoning_V3ImageProcessor); prompt = <img> + tokens
+        # + </img> (processing_nemotron_h_omni.py)
+        wp, hp = radio_patches(width, height, pr["patch"], pr["ratio"], pr["min_patches"], pr["max_patches"], pr["max_len"])
+        m = hp * wp // (pr["ratio"] ** 2)
+        return ImageGrid(hp, wp, m, m + 2, (wp * pr["patch"], hp * pr["patch"]))
     ph, pw, gh, gw = _ds_grid(height, width, v.patch, pr["ratio"], pr["min_pixels"], pr["max_tok"])
     return ImageGrid(ph, pw, gh * gw, gh * (gw + 1) + 2, (pw * v.patch, ph * v.patch))
+
+
+def radio_patches(width: int, height: int, p: int, r: int, lo: int, hi: int, max_len: int, n_images: int = 1) -> tuple[int, int]:
+    """0.278 NemotronH_Omni_Reasoning_V3ImageProcessor._compute_target_patches (verbatim rule 「来源」): budget = max(min((
+    max_model_len − 4) · r², max_num_patches), min_num_patches); scale the ⌊side / p + ½⌉ grid down to the budget, up to
+    min_num_patches, then round each side to a multiple of r within the budget.  → (w_patches, h_patches)."""
+    budget = max((max_len - 4) * r * r, lo * n_images)
+    avail = max(min(budget, hi if hi and hi > 0 else budget), lo)
+    ch, cw = round(height / p + 0.5), round(width / p + 0.5)
+    f = min(math.sqrt(avail / (ch * cw)), 1.0)
+    th, tw = math.floor(f * ch), math.floor(f * cw)
+    if avail > lo and th * tw < lo:
+        up = math.sqrt(lo / (th * tw))
+        th, tw = math.ceil(up * th), math.ceil(up * tw)
+    rh = th % r
+    if rh:
+        th = th + (r - rh) if (th + r - rh) * tw <= avail else max(r, th - rh)
+    rw = tw % r
+    if rw:
+        tw = tw + (r - rw) if th * (tw + r - rw) <= avail else max(r, tw - rw)
+    return tw, th
 
 
 # ------------------------------------------------------------------ op graph

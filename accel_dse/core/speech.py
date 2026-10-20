@@ -416,6 +416,17 @@ def _dac_window(fs, new: int, ctx: int, hist: int, batch: int, sys, org: str) ->
     return _component_time([(dac_ops(fs, new, ctx, hist, batch), 1)], sys, org, "fp32")["s"]
 
 
+@lru_cache(maxsize=1024)
+def _dac_window_dram(fs, new: int, ctx: int, hist: int, batch: int, sys, org: str) -> tuple[float, float]:
+    """0.278: DRAM bytes of one DAC window decode split (weights, activations) in GB — the same op sums as
+    ``_dac_window`` (evaluate._component_time: weights = hot + exp + w_extra, activations = act)."""
+    from types import SimpleNamespace
+    from .drama3 import dac_ops
+    from .evaluate import _sum_ops
+    d = _sum_ops(dac_ops(fs, new, ctx, hist, batch), sys, org, SimpleNamespace(act_fmt="fp32", kv_fmt="fp32"))
+    return (d["hot"] + d["exp"] + d["w_extra"]) / 1e9, d["act"] / 1e9
+
+
 def _fish_kpis(scn: Scenario, fs, audio_out_s: float, lm_only: bool = False) -> dict:
     """0.276 Fish Audio Drama 3 (core/drama3.py), streaming 「来源」 (vllm-omni fish_omni → dac_decoder async chunks):
         prompt  = text tokens + one row per voice-reference frame (serving.audio_s, default drama3.REF_S 「假设」)
@@ -472,6 +483,11 @@ def _fish_kpis(scn: Scenario, fs, audio_out_s: float, lm_only: bool = False) -> 
         out["dac"] = {"windows": [n for n, _, _ in win], "batch": b, "s": tb, "s_batch1": t1, "load": x_dac,
                       "s_per_request_batch1": sum(t1), "redecode_s_per_request": sum(tr), "params": dac_params(fs),
                       "GB": gb, "stateful": True, "colocated": True, "gflop_per_frame": dac_gflop_per_frame(fs)}
+        # 0.278 DRAM traffic per replica step-window sweep (all windows of one request set, batch b): weights vs
+        # activations — the SLC-pinning argument (weights are read once per window; activations dominate)
+        dd = [_dac_window_dram(fs, n, 0, done, b, sys, scn.mapping) for n, _, done in win]
+        out["dac"]["dram_weights_GB"] = sum(w for w, _ in dd)
+        out["dac"]["dram_act_GB"] = sum(a for _, a in dd)
     out.update({"first_audio_s": first, "total_s": tot, "split_first": split,
                 "audio_out_s_per_s_card": sv.batch * audio_out_s / tot / pre.scenario.layout.cards, "fits": fits})
     return out

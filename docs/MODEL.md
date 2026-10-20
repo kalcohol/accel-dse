@@ -7346,3 +7346,45 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 - Streams per card vs SLC 0 / 0.5 / 1 / 2 / 4 / 8 GiB: 3 / 3 / 4 / 5 / 7 / 8 (0.276 without the DAC: 3 / 4 / 4 / 5 / 8 / 9).
 - At large SLC the LM step is cheap, so the fixed DAC share costs one stream.
 - The README H200 gap (§221.3) is not explained by the DAC.
+
+## §223 NVIDIA Nemotron-3.5-Super-VL (Nemotron-H hybrid + RADIO), Drama 3 DAC DRAM split (0.278)
+
+### §223.1 Release and formats
+- 「来源」 HF `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` (2026-10-12): config.json (`nemotron_h_omni`, `llm_config` = `nemotron_h`), hf_quant_config / `quantization_config` (`modelopt_mixed`), safetensors headers.
+- Header totals: LLM 120,668,707,840; MTP 2,942,325,248; vision 842,362,886; 74,986,817,096 bytes.
+- Formats: FP8 for Mamba in/out, q/k/v/o and lm_head; NVFP4 (g16) for routed and shared experts; BF16 for embeddings, latent projections, router, conv and norms. KV cache FP8 (`kv_cache_scheme` 8-bit float).
+- `_compact_qc` keeps the scheme keys and replaces the per-module lists with counts per algorithm. Otherwise the release JSON would be 16 MB.
+
+### §223.2 Nemotron-H language model
+「来源」 transformers `modeling_nemotron_h.py` and the release `modeling_nemotron_h_omni.py`.
+- Each of the 88 layers has ONE mixer, chosen by `layers_block_type`: 40 mamba, 8 attention, 40 moe. There is no FFN after Mamba or attention.
+- **Mamba-2:**
+  - `in_proj` h → 2·d_in + 2·G·N + H = 18560 (d_in = 128·64 = 8192, G = 8, N = 128);
+  - depthwise conv kernel 4 over d_in + 2GN channels;
+  - SSD scan, chunk 128; gated RMSNorm; `out_proj` d_in → h;
+  - decode state = H·P·N fp32 + conv history.
+- **SSD prefill** (`mamba_chunk_scan_combined` 「来源」): C·Bᵀ (`ssd_bmm`) is per (chunk, group). With n_groups = 8 the B / C projections are shared by 16 heads each, so `lin_aqk` has count b·⌈G/tp⌉·chunks. The intra-chunk (·X), inter-chunk (C·state) and state-update GEMMs stay per head 「推导」. Decode uses the plain recurrent update (no delta rule).
+- **Attention:** GQA 32 q / 2 kv, head 128, no RoPE parameters.
+- **MoE (latent):**
+  - router sigmoid with correction bias, 512 experts top-22;
+  - `fc1_latent_proj` h → 1024, experts relu² non-gated 1024 → I → 1024, `fc2_latent_proj` 1024 → h;
+  - shared expert relu² 5376 on h.
+- **MTP:** 1 module = [attention, moe] plus its projection and norms, modelled as one combined layer. Params are exact.
+
+### §223.3 C-RADIO vision
+「来源」 `modeling_radio.py`, `modeling_nemotron_h_omni.py`, `image_processing_nemotron_h_omni.py`.
+- **Tower:** patch embedder Linear(3·16², 1280) with no bias; CPE position grid 128² × 1280 (interpolated, vector work); 10 cls / register tokens; 32 pre-LN ViT blocks (biased qkv / proj, GELU MLP 5120).
+- **Projector:** final LayerNorm (present because the LLM has MTP), pixel shuffle 0.5 (2×2 → 5120), mlp1 = RMSNorm(5120) → Linear 5120 → 20480 → ReLU² → Linear 20480 → 4096 (no bias).
+- **Parameters:** the tower + projector formula gives 840,396,800. Release 842,362,886 = that + video_embedder (3·2·16²·1280 = 1,966,080) + 6 normalizer values (stored only). Exact.
+- **Image size** (`radio_patches`, the processor rule verbatim): the budget is max(min((16384 − 4)·4, 13312), 1024) patches. Patches per side are round(side / 16 + ½), scaled by min(√(budget / patches), 1) and floored; if the result is below 1024 it is scaled up; each side is then rounded to even, up if that stays within the budget, otherwise down.
+- **Tokens** = wp·hp / 4 + 2. A 1024² image gives 64 × 64 patches → 1026 tokens. 4000 × 3000 gives 132 × 100 → 3302 tokens.
+- 「近似」: the 10 cls / register tokens are left out of the attention length (≤ 1 % at ≥ 1024 patches). Video (tubelet 2, `video_embedder`) is not modelled, so coverage is partial.
+
+### §223.4 Drama 3 DAC: DRAM split and the SLC-pin question
+- `dac.dram_weights_GB` and `dac.dram_act_GB` (per request set, all windows): weights = hot + exp + w_extra, activations = act. These are the same `_sum_ops` terms as `_component_time` (test: they sum to `dram_GB`).
+- 100T, 10 s of audio: weights 5.9 GB (8 windows × 0.74 GB, independent of b); activations 14.3 GB at b = 1 and 126.3 GB at b = 8.
+- **Pinning the DAC weights in SLC is not mechanism-justified** 「推导」:
+  - at most 30 % of DAC traffic at b = 1, and 4.5 % at b = 8;
+  - the DAC is read once per window (≈ 1 read per 6–64 frames), against the LM weights read every frame, so a GB of LM weights in SLC saves 64× more traffic in steady-state 64-frame windows, and ≈ 27× averaged over a 10 s request (216 frames / 8 windows);
+  - the 0.277 loss of one stream at large SLC is the DAC's compute and activation share of a cheap LM step.
+- No model change.
