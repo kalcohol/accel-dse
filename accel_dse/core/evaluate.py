@@ -21,7 +21,8 @@ from .ir import (Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, full_io_ops
                  mtp_ops)
 from .mapping import gemm_cost, vector_seconds
 from .memo import layer_groups, model_cache
-from .memplan import RUNTIME_RESERVE, MemPlan, act_stream, exp_miss, hot_miss, plan, stage_storage, step_dram_bytes, touched
+from .memplan import (RUNTIME_RESERVE, MemPlan, act_stream, exp_miss, held, hot_miss, plan, stage_storage, step_dram_bytes,
+                      touched)
 from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages, plan_stages_balanced
 from .pipeline import TILING, has_encoder, pipeline_for, stored_bytes, te_layers, text_ops, vae_encode_ops, vae_ops
@@ -53,6 +54,9 @@ class StageResult:
     exp_acts: dict = field(default_factory=dict)  # 0.65: routed-expert part {sram, conv_w, link_frac} (idle EP ranks)
     pipe_ctx: tuple | None = field(default=None, repr=False, compare=False)   # 0.102: inputs of the pipe replay
     exp_route: tuple = field(default=(), repr=False, compare=False)  # 0.103: (E, top-k, tokens, EP, skew) of MoE layers
+    # 0.287: (StageStorage, touched-byte sums before the memory plan, SLC/DRAM bandwidth ratio, SLC B/s) — lets a fused
+    # iteration charge another piece's bytes under this stage's plan (chunk_mem_bytes)
+    ledger: tuple | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -426,6 +430,38 @@ def union_routing(sd, sp, f: float):
     gr = sd.exp_route[5] if len(sd.exp_route) > 5 else ()
     tu = td + max(1, round(f * sp.exp_route[2]))
     return moe_routing(E, k, td, ep, sk, gr), moe_routing(E, k, tu, ep, sk, gr)
+
+
+_CHUNK_KEYS = ("kv_read", "kv_write", "state", "lookup", "act")
+
+
+def _kv_offchip(mp) -> bool:
+    """No KV / state / activation byte of this plan is served on chip (SRAM, pinned SLC, lru / dip hits)."""
+    return (mp.kv_sram <= 0 and mp.slc_kv <= 0 and not (mp.slc_policy == "lru" and mp.slc_all)
+            and not (mp.slc_policy == "dip" and mp.slc_frac > 0))
+
+
+def chunk_mem_bytes(sd, sp, f: float, reread_frac: float = 0.0) -> tuple[float, float, float, float]:
+    """0.287: non-weight bytes of an ``f`` share of prefill stage ``sp`` run inside decode stage ``sd``'s iteration
+    (co-located / chunked prefill), plus ``reread_frac`` × the chunk's KV write re-read — charged under the *decode*
+    stage's memory plan.  The chunk's KV joins the decode batch's KV pool, which already holds the SRAM / SLC capacity
+    the decode plan gave it.  ≤ 0.286 used the prefill evaluation's own plan (sp.dram): the chunk's sequence was
+    planned on an empty chip, so with SRAM or SLC to spare its KV re-reads / writes landed on on-chip bytes the decode
+    batch already held (charged 0 DRAM), and the chunk's SLC hits were dropped from the iteration's SLC time.
+    Returns (DRAM bytes, SLC bytes, KV + state DRAM bytes, the same under the old rule) — equal when neither plan
+    holds KV / state on chip (the default chips)."""
+    old_kv = f * (sp.dram["kv_read"] + sp.dram["kv_write"] + sp.dram["state"]) + reread_frac * sp.dram["kv_write"]
+    old = f * (sp.dram["total"] - sp.dram["weights"]) + reread_frac * sp.dram["kv_write"]
+    if sd.ledger is None or sp.ledger is None or (_kv_offchip(sd.mem) and _kv_offchip(sp.mem)):
+        return old, 0.0, old_kv, old_kv       # both rules charge every KV / state / activation byte to DRAM
+    store, _, ratio, _ = sd.ledger
+    tp = sp.ledger[1]
+    t = {k: f * tp.get(k, 0.0) for k in _CHUNK_KEYS}
+    t["kv_read"] += reread_frac * tp.get("kv_write", 0.0)
+    t.update(hot=0.0, exp=0.0, hot_rr=0.0, w_extra=0.0)
+    d = step_dram_bytes(sd.mem, store, t, ratio)
+    dram = sum(d[k] for k in _CHUNK_KEYS)
+    return dram, d.get("slc", 0.0), d["kv_read"] + d["kv_write"] + d["state"], old_kv
 
 
 def extra_expert_bytes(sd, sp, f: float) -> float:
@@ -1006,7 +1042,7 @@ def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, s
         segs.insert(0, ([(0.0, {"x": 1.0}, 0.0)], 1)); nb = 1.0
     spb = t_mem / nb if nb > 0 else 0.0
     ch = sys.chip            # the DMA issue limit (Chip.dma_*) is already in sys.dram_GBps (every overlap mode)
-    buf = max(mp.staging, ch.sram_bytes - mp.pinned_hot - mp.pinned_expert - _shared_kv(mp))
+    buf = max(mp.staging, ch.sram_bytes - mp.pinned_hot - mp.pinned_expert - _shared_kv(mp) - mp.sram_resv)
     return _ovl.stage_pipe_time(segs, f, spb, buf, ch.pipe_cross_op, 1.0, tail_comm, hidden_link)
 
 
@@ -1087,7 +1123,7 @@ def _pipe_fused_(sd, sp, f, rr, t_mem):
         segs.insert(0, ([(0.0, {"x": 1.0}, 0.0)], 1)); nb = 1.0
     spb = t_mem / nb if nb > 0 else 0.0
     ch = sys.chip
-    buf = max(mp.staging, ch.sram_bytes - mp.pinned_hot - mp.pinned_expert - _shared_kv(mp))
+    buf = max(mp.staging, ch.sram_bytes - mp.pinned_hot - mp.pinned_expert - _shared_kv(mp) - mp.sram_resv)
     return _ovl.stage_pipe_time(segs, fr, spb, buf, ch.pipe_cross_op, 1.0, tail, 0.0), t_arr, t_vec
 
 
@@ -1243,12 +1279,8 @@ def _kv_state_miss(mp) -> dict:
     """0.210: pipe-mode per-op DRAM weights for KV and recurrent state — the same per-stream miss shares as
     memplan.step_dram_bytes (STATE_SPLIT); pooled (≤ 0.209) otherwise."""
     from . import memplan as _mp
-    kvst = mp.kv_total + mp.state_total
-    pooled = 0.0 if kvst <= 0 else 1.0 - mp.kv_sram / kvst
-    if not (_mp.STATE_SPLIT and mp.state_sram >= 0):
-        return {"kv": pooled, "state": pooled}
-    return {"kv": 0.0 if mp.kv_total <= 0 else 1.0 - (mp.kv_sram - mp.state_sram) / mp.kv_total,
-            "state": 0.0 if mp.state_total <= 0 else 1.0 - mp.state_sram / mp.state_total}
+    kv, st = _mp.kv_state_miss(mp)      # 0.287: one rule with step_dram_bytes (no planned storage → every byte misses)
+    return {"kv": kv, "state": st}
 
 
 def _shared_kv(mp) -> float:
@@ -1275,7 +1307,8 @@ def _draft_model(sv, m: ModelSpec, warnings: list) -> ModelSpec | None:
     return d
 
 
-def _draft_cost(scn: Scenario, d: ModelSpec, k: int, topk: int = 1) -> dict:
+def _draft_cost(scn: Scenario, d: ModelSpec, k: int, topk: int = 1, slc_off: bool = False, sram_cut: float = 0.0,
+                slc_cap: float | None = None) -> dict:
     """0.222 independent draft model (vLLM / SGLang draft-model speculative decoding).  Placement 「假设」: the draft runs
     on the target's head-stage cards with the target's TP (and DP), pp = 1, bf16 as released; it keeps its own KV of
     the same context.  Per step: k sequential draft decode passes at the step's batch (each proposes one token from the
@@ -1287,6 +1320,12 @@ def _draft_cost(scn: Scenario, d: ModelSpec, k: int, topk: int = 1) -> dict:
     sv, lay = scn.serving, scn.layout
     ds = _rp(scn, model=sv.draft_model, layout=Layout(tp=lay.tp, dp=lay.dp), formats_override=(),
              serving=_rp(sv, spec_k=0, draft_model="", microbatches=0))
+    if slc_off:         # 0.287: lru thrash with the target's sweep (evaluate) — no SLC hits for the draft
+        ds = _rp(ds, chip=_rp(ds.chip, slc_mib=0.0))
+    if sram_cut > 0:    # 0.287: the target's staging is larger than the draft's — the draft pins beside it (evaluate)
+        ds = _rp(ds, chip=_rp(ds.chip, sram_mib=max(0.0, ds.chip.sram_mib - sram_cut / 2**20)))
+    if slc_cap is not None and not slc_off:     # 0.287: the target was planned on SLC − this; the draft keeps within it
+        ds = _rp(ds, chip=_rp(ds.chip, slc_mib=min(ds.chip.slc_mib, slc_cap / 2**20)))
     rd = evaluate(ds, d)
     rt = rd
     if topk > 1 and k > 1:
@@ -1301,7 +1340,12 @@ def _draft_cost(scn: Scenario, d: ModelSpec, k: int, topk: int = 1) -> dict:
     from .energy import action_counts
     ac = action_counts(rd)["counts"]
     at = action_counts(rt)["counts"] if rt is not rd else ac
+    # 0.287: on-chip bytes the draft holds on the head-stage cards (largest of its own / tree evaluation)
+    hs = [held(r_.stages[0].mem) for r_ in ((rd, rt) if rt is not rd else (rd,))]
+    resv = {"sram_resv": max(h[0] for h in hs), "buf_resv": max(h[1] for h in hs), "slc_resv": max(h[2] for h in hs)}
+    stg = min(r_.stages[0].mem.staging for r_ in (rd, rt))
     return {"s": rd.step + (k - 1) * rt.step, "pass_s": rd.step, "bytes": by, "model": d.id, "fits_alone": rd.fits,
+            "resv": resv, "staging": stg,
             "params_B": d.active_params() / 1e9, "kv_state_bytes": mp.kv_total + mp.state_total,
             "acts": {a: v + (k - 1) * at.get(a, 0.0) for a, v in ac.items()}}
 
@@ -1818,7 +1862,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=max(0.0, agg["max_act_tot"] - RUNTIME_RESERVE), stream=True,
                       slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac,
-                      state_buf=sys.chip.state_sram_mib * 2**20, exp_read=agg["exp"], exp_p=exp_p)
+                      state_buf=sys.chip.state_sram_mib * 2**20, exp_read=agg["exp"], exp_p=exp_p,
+                      **(d_resv if st.has_head else {}))
             dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
             net_b = agg["net_bytes"]
@@ -1836,8 +1881,11 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             if sys.fabric.enabled:
                 link_bw, sync, d2d_b, net_b = _stage_link(sys, agg, link_bw, sync, d2d_b, net_b, extra, win, st.index,
                                                           wire, out=so)
+            t_slc_s = _slc_time(sys, dram)
             if scn.exec_overlap == "tbo":   # 0.70: two micro-batches each stream the stage's weights once
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
+                # 0.287: … the SLC-served weight bytes too (≤ 0.286 the second pass read them from no tier)
+                t_slc_s += dram.get("slc_parts", {}).get("weights", 0.0) / (sys.chip.slc_GBps * 1e9)
             s_add = 0.0
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
                 s_add = (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
@@ -1868,9 +1916,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                     return _pipe_time(sys, scn.mapping, m, mm, segs, mp, store, dram, sum(b for b, _ in extra))
                 t_pipe = tpipe()
 
-            def mk(link_bw, sync, d2d_b, net_b, wire, t_pipe, agg=agg, dram=dram, t_dram=t_dram, link_bytes=link_bytes):
+            def mk(link_bw, sync, d2d_b, net_b, wire, t_pipe, agg=agg, dram=dram, t_dram=t_dram, link_bytes=link_bytes,
+                   t_slc_s=t_slc_s):
                 stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
-                                dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
+                                dram["total"], link_bytes, agg["flops"], agg["t_ideal"], t_slc_s,
                                 dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
                                 ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
                                 scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),
@@ -1889,9 +1938,19 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg), pipe_ctx=pctx,
-                                      exp_route=_exp_route(m, ph, sh)))
+                                      exp_route=_exp_route(m, ph, sh),
+                                      ledger=(store, {k: agg[k] for k in _DRAM_KEYS + ("hot_rr",) if k in agg},
+                                              sys.chip.slc_GBps / sys.dram_GBps, sys.chip.slc_GBps * 1e9)))
         return stages
 
+    # 0.287: an independent draft model shares the head stage's cards.  Its weights / KV are read k times per step, so
+    # the 0.192 rule (DRAM bytes saved per step per byte) gives it the on-chip tiers first; the target's head stage
+    # plans the shared SRAM, state buffer and SLC the draft left (memplan.plan *_resv).  ≤ 0.286 both were planned on
+    # the whole chip — the same on-chip bytes credited to two programs.
+    draft, d_resv = None, {}
+    if dm is not None and spec_k:
+        draft = _draft_cost(scn, dm, spec_k, topk_)
+        d_resv = draft["resv"]
     plan_, pinfo = _plan_by_cost(scn, m, sys, pp, groups, ph, sh, mm, ops_memo, store_memo, ctx_cap, n_mtp, b_rank,
                                  embed_ops(m, ph, sh), _tail_ops(m, True, ph, sh, tail_k, scn.chip.gpu_glue),
                                  ph.batch * ph.q * m.hidden * red_bytes(m) / lay.dp * _streams(m))
@@ -1900,10 +1959,24 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     au_x = sv.audio_s and getattr(getattr(m.vision, "audio", None), "cross", False)
     vis = _vision_cost(scn, m, sys, stages) if (m.vision is not None and (sv.images or sv.videos or sv.audio_s)
                                                  and (sv.image_tokens or au_x)) else None
-    draft = None
-    if dm is not None and spec_k:
-        draft = _draft_cost(scn, dm, spec_k, topk_)
-        st_l = stages[-1]          # the draft lives on the head (last) stage's cards 「假设」
+    if draft is not None:
+        st_l = stages[-1]
+        if sys.chip.slc_policy == "lru" and draft["resv"]["slc_resv"] > 0 and not st_l.mem.slc_all \
+                and st_l.mem.slc_residency < 1.0:
+            # 0.287: lru serves a cyclic sweep only when everything swept fits.  The draft's working set fitted alone,
+            # the target's off-SRAM set does not fit beside it → the step's sweep (target + k draft passes) thrashes:
+            # the draft's SLC hits go too (the cyclic-thrash bound, as for the target)
+            draft = _draft_cost(scn, dm, spec_k, topk_, slc_off=True)
+        cut = st_l.mem.staging - draft["staging"]
+        if cut > 0 and draft["resv"]["sram_resv"] > sys.chip.sram_bytes - st_l.mem.staging + 1.0:
+            # 0.287: staging is shared (the programs run one after the other) but sized by the larger one — the draft
+            # pins in the SRAM beside the target's staging.  The target already had no free SRAM, so only the draft moves
+            # the target's plan already left the draft only its first SLC share: bytes the cut pushes off the SRAM
+            # may not grow it (≤ 0.287 WIP the re-run took up to 180 MB more SLC than the target left — fuzz)
+            draft = _draft_cost(scn, dm, spec_k, topk_, slc_off=draft["resv"]["slc_resv"] == 0.0
+                                and sys.chip.slc_policy == "lru" and sys.chip.slc_bytes > 0, sram_cut=cut,
+                                slc_cap=draft["resv"]["slc_resv"])
+            st_l = replace(st_l, mem=replace(st_l.mem, sram_resv=draft["resv"]["sram_resv"]))          # the draft lives on the head (last) stage's cards 「假设」
         need = st_l.mem.dram_need + draft["bytes"]
         stages[-1] = replace(st_l, mem=replace(st_l.mem, dram_need=need, fits=need <= st_l.mem.dram_cap))
     heavy = max(range(len(stages)), key=lambda i: stages[i].time.total)
@@ -2263,8 +2336,11 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             if sys.fabric.enabled:
                 link_bw, sync, d2d_b, net_b = _stage_link(sys, agg, link_bw, sync, d2d_b, net_b, extra, win, st.index,
                                                           wire, out=so)
+            t_slc_s = _slc_time(sys, dram)
             if scn.exec_overlap == "tbo":   # 0.70: two micro-batches each stream the stage's weights once
                 t_dram += dram["weights"] / (sys.dram_GBps * 1e9)
+                # 0.287: … the SLC-served weight bytes too (≤ 0.286 the second pass read them from no tier)
+                t_slc_s += dram.get("slc_parts", {}).get("weights", 0.0) / (sys.chip.slc_GBps * 1e9)
             s_add = 0.0
             if scn.layer_overhead_us:      # 0.69 (off by default: bit-identical)
                 s_add = (st.last - st.first) * scn.layer_overhead_us * 1e-6     # [first, last) layers
@@ -2289,9 +2365,10 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                     return _pipe_time(sys, scn.mapping, m, None, segs, mp, store, dram, max(0.0, pp_b), hid)
                 t_pipe = tpipe()
 
-            def mk(link_bw, sync, d2d_b, net_b, wire, t_pipe, agg=agg, dram=dram, t_dram=t_dram, link_bytes=link_bytes):
+            def mk(link_bw, sync, d2d_b, net_b, wire, t_pipe, agg=agg, dram=dram, t_dram=t_dram, link_bytes=link_bytes,
+                   t_slc_s=t_slc_s):
                 stt = StageTime(agg["t_arr"], agg["t_mac"], agg["t_feed"], agg["t_vec"], t_dram, link_bw, sync,
-                                dram["total"], link_bytes, agg["flops"], agg["t_ideal"], _slc_time(sys, dram),
+                                dram["total"], link_bytes, agg["flops"], agg["t_ideal"], t_slc_s,
                                 dram.get("slc", 0.0), d2d_b, net_b, agg["t_arr_attn"],
                                 ((dram["kv_read"] + dram["kv_write"]) * sys.kv_time_scale + dram["state"]) / (sys.dram_GBps * 1e9),
                                 scn.exec_overlap, max(0.0, wire["d2d"]), max(0.0, wire["link"]), max(0.0, wire["net"]),

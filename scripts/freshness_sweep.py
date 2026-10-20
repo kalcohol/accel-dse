@@ -22,6 +22,8 @@ EXTRA_ORGS = (
     "FunAudioLLM", "funasr", "kyutai", "bosonai", "SparkAudio", "IndexTeam", "fishaudio", "SWivid", "FireRedTeam",
     "hexgrad", "ResembleAI", "nari-labs", "canopylabs", "sesame",
 )
+# 0.287: ornith-ai is now a catalog provider (PROVIDERS) — it was untracked, so Ornith-1.0 / 1.5 (2026-06 / 08) were
+# never swept; found via the unsloth/Ornith-1.5-122B-GGUF re-upload.
 
 
 def sweep_orgs() -> list:

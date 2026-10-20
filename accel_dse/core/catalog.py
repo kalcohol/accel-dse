@@ -156,6 +156,11 @@ EXTRA_TAIL = [
     # 0.280: nvidia Qwen3.8-Flash-Next-FP4-Local (2026-10-08, ModelOpt MIXED_PRECISION as released: NVFP4 W4A4 routed
     # experts with compressed (csf) scales, MXFP8 attention / linear-attention / shared experts, W4A16 NVFP4 MTP experts)
     ("qwen3.8-flash-next-fp4-local", "nvidia/Qwen3.8-Flash-Next-FP4-Local"),
+    # 0.287: Ornith AI Ornith-1.5-122B (repo 2026-10-16, made public with its FP8 / GGUF / MLX siblings 2026-10-20; MIT)
+    # — Qwen3.5-based post-train, qwen3_5_moe as released bf16: 48 layers (3 Gated-DeltaNet : 1 gated GQA), 256 experts
+    # top-8 + shared expert, hidden 3072, 1 MTP layer, Qwen3.5 ViT (27 blocks).  No Qwen3.5-122B-A10B entry exists, so
+    # this is a new size point, not a merge.  The FP8 sibling ships no config.json / index yet (HTTP 404) → not added.
+    ("ornith-1.5-122b", "ornith-ai/Ornith-1.5-122B"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -323,6 +328,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("bilibili", "哔哩哔哩 Index（Index-Echo）", ("IndexTeam/",)),     # 0.279
     ("firered", "小红书 FireRedTeam（FireRedTTS）", ("FireRedTeam/",)),     # 0.275
     ("fishaudio", "Fish Audio（Drama）", ("fishaudio/",)),     # 0.276
+    ("ornith", "Ornith AI（Ornith）", ("ornith-ai/",)),     # 0.287
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Fun-ASR-Nano", ("fun-asr-nano",)), ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2.5-Omni", ("qwen2.5-omni",)),
@@ -361,6 +367,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("bilibili", "Index-Echo S2ST", ("index-echo",)),     # 0.279
     ("firered", "FireRedTTS3", ("fireredtts3",)),     # 0.275
     ("fishaudio", "Drama 3", ("drama-3",)),     # 0.276
+    ("ornith", "Ornith-1.5", ("ornith-",)),     # 0.287
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.

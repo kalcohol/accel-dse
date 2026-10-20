@@ -125,9 +125,13 @@ def test_tree_verify_cost_and_tokens():
     trr = evaluate(_sc("qwen3.8-27b", 1, 3, topk=4, n=16, roll="replay"))
     assert trr.step == tr.step and any("树形" in w for w in trr.warnings)
     # dense target + draft model: steps 2..k at topk × batch rows
-    d1 = evaluate(_sc("qwen3-32b", 4, 3, dm="qwen3-0.6b"))
-    d4 = evaluate(_sc("qwen3-32b", 4, 3, dm="qwen3-0.6b", topk=4, n=16))
+    # (0.287: SRAM uncontended — on 1P the draft pins beside the target's staging, which grows with the tree's
+    # verify tokens, so its single pass also slows: 0.854 → 0.863 ms)
+    s1, s4 = _sc("qwen3-32b", 4, 3, dm="qwen3-0.6b"), _sc("qwen3-32b", 4, 3, dm="qwen3-0.6b", topk=4, n=16)
+    d1, d4 = (evaluate(s.replace("chip.sram_mib", 65536.0)) for s in (s1, s4))
     assert d4.draft["s"] > d1.draft["s"] and d4.draft["pass_s"] == d1.draft["pass_s"]
+    p1, p4 = evaluate(s1), evaluate(s4)
+    assert p4.draft["s"] > p1.draft["s"] and p4.draft["pass_s"] >= p1.draft["pass_s"]
     # spec_draft_tokens beyond the candidate tree
     try:
         evaluate(_sc("qwen3.8-27b", 1, 2, topk=2, n=40))

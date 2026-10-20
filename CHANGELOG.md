@@ -6,6 +6,49 @@
 
 
 
+## [0.287.0]
+
+### Fixed: `local` symlink ignored; tracked-tree guard
+- `.gitignore` had `local/`, which only matches a directory. The per-worktree `local` symlink (to the shared local data) is not a directory to git, so `git add -A` picked it up (0.286 WIP). Now `/local` (no trailing slash: directory or symlink at the root).
+- test_core_287: the pattern has no trailing slash, `git check-ignore` reports `local`, and `git ls-files` has no `local` entry (skips without git).
+
+### Fixed: memory-hierarchy ledger audit — bytes credited to two tiers or to none (MODEL §232)
+- After the 0.286 expert-residency bug, every path that splits a step's bytes over SRAM / SLC / DRAM was audited adversarially. New ledger check: per demand class (weights, KV read / write, state, lookup, activations), SRAM-served + SLC-served + DRAM = touched bytes, every tier ≥ 0, no tier over capacity, nothing held on chip twice. The SRAM share is recomputed from the plan's resident bytes alone, independently of `step_dram_bytes`.
+  - Property test: 4000 random plans (storages, batches, SRAM / SLC sizes, all four SLC policies, state buffers, reservations, measured expert loads, re-read weights, touched sums).
+  - End to end: `StageResult.ledger` (storage, touched sums incl. `hot_rr`, SLC/DRAM bandwidth ratio) on every LLM stage; checked across policies, a state buffer, a measured load and re-read weights; plus a fuzzer over the catalog (5 200 random scenarios in the final rounds, 0 ledger / draft-capacity violations after the fixes; not in the suite).
+- **Hits (fixed mechanism-first):**
+  1. **Independent draft model planned on the whole chip.** The draft (0.222) runs on the head-stage cards, but its plan and the target's both used the full SRAM, state buffer and SLC: with SRAM 4 GiB the draft held 4091 MiB and the target 4076 MiB at once. Now the draft is planned first — its bytes are read k times per step, so the 0.192 rule (DRAM bytes saved per step per byte) ranks them first — and the head stage plans what it leaves (`memplan.plan(sram_resv, slc_resv, buf_resv)`, `memplan.held`). Staging is shared (the programs run one after the other) and sized by the larger: when the target's staging is larger, the draft is re-planned beside it, keeping its SLC share. With `lru`, if the target's off-SRAM set does not fit beside the draft, the step's sweep thrashes and the draft's SLC hits go too.
+     - Consequence: the draft's pass now depends on the target's staging, which grows with the 1 + k verify tokens. On 1P (256 MiB SRAM), qwen3-32b + qwen3-0.6b, a k = 4 pass reads more DRAM than a k = 1 pass, and a topk 4 / 16-token tree slows the single pass from 0.854 to 0.863 ms. With uncontended SRAM a pass is still k-independent. test_core_223 / 224 now check exact per-pass invariance at SRAM 64 GiB, and monotonicity on 1P.
+  2. **Co-located chunked prefill charged under the chunk's own plan.** `pdqueue._fused_step` / `_multi_bracket` took the prompt chunk's KV / state / activation DRAM bytes from the prefill-alone evaluation, whose plan has the chunk's KV on chip — on-chip bytes the decode batch already holds — and dropped the chunk's SLC hits from the iteration's SLC time. Now the chunk's touched bytes go through the decode plan (`evaluate.chunk_mem_bytes`); identical when neither plan holds KV / state on chip (all default chips).
+  3. **Touched bytes of an empty class charged to no tier.** `hot_miss` / `exp_miss` / the KV and state miss shares returned 0 when the class had no planned storage, so those bytes vanished. Seen on image DiTs with a cached text prefix (`prefix_kv`): the prefix K/V is kept in the activation reserve, not as KV storage. Now miss share 1 (`memplan.kv_state_miss`).
+  4. **Two-batch overlap (tbo) SLC time.** The second weight pass was charged to DRAM time but not SLC time; now `t_slc` includes it.
+  5. A full SLC hit could leave −4e-15 B of DRAM after subtraction (wan2.2 fuzz case); clamped at 0.
+- **Audited, no hit:** KV SRAM / SLC shares (pin, pin_bw, lru, dip); dense re-read pins (0.269); omni / speech components (separate cards or no SRAM credit; omni_slc_plan); TP / EP (per-rank plans, per-card SLC, busiest-rank expert share); PD disaggregation (new-KV bytes, free-KV clip, host-L2 hit_device + hit_host + miss = 1). FSDP pins against the full weights plus a gather write: conservative, left as is.
+- **Default behaviour, old → new:** catalog chip presets have no SLC and small SRAM, so default results are unchanged: 142 models × decode / prefill give identical summaries, fingerprints unchanged. Changed (opt-in features on large on-chip memories):
+
+  | config | old | new |
+  |---|---|---|
+  | draft qwen3-0.6b → qwen3-8b, 1P, b1 (TPOT) | 2.354 ms | 2.386 ms |
+  | draft qwen3-0.6b → qwen3-8b, 100T, b8, k 3 (TPOT) | 71.468 ms | 71.659 ms |
+  | draft, 100T SRAM 4 GiB, qwen3-8b b1 (TPOT) | 24.81 ms | 28.24 ms |
+  | draft, 100T SLC 4 GiB pin, qwen3-8b b1 (TPOT) | 24.67 ms | 28.10 ms |
+  | co-located chunk, qwen3-0.6b b64 ctx 4096, SRAM 4 GiB (iteration) | 171.49 ms | 173.58 ms |
+  | same, SLC 4 GiB pin | 169.55 ms | 170.57 ms |
+  | qwen-image-2.1-turbo cached step, b1 (t_dram; step compute-bound, unchanged) | 823.5 ms | 824.2 ms |
+  | tbo + SLC (DRAM-bound, TPOT unchanged): t_slc | 4.29 ms | 8.59 ms |
+
+  The chunk case: 470 MB of the chunk's KV had been charged 0 DRAM. The image case: 134 MB of K/V reads per cached step at b1 (1.07 GB at b8) were charged to no tier.
+
+### Added: Ornith-1.5-122B (freshness)
+- `ornith-1.5-122b` = ornith-ai/Ornith-1.5-122B (MIT; repo 2026-10-16, made public with its FP8 / GGUF / MLX siblings 2026-10-20). Qwen3.5-based post-train, `qwen3_5_moe` as released bf16: 48 layers (3 Gated-DeltaNet : 1 gated GQA), 256 experts top-8 + shared expert, hidden 3072, 1 MTP layer, Qwen3.5 ViT (27 blocks). Exact params from the safetensors headers (LLM 122.11 B, MTP 2.52 B, vision 451.3 M; param_err 0). Image / video processor sizes from its own preprocessor configs (same as Qwen3.5). New provider "Ornith AI" and family "Ornith-1.5"; ornith-ai is now swept.
+  - The catalog has no Qwen3.5-122B-A10B, so this is a new size point, not a merge.
+  - `vision.vision_spec` also accepts the transformers-5 name `qwen3_5_moe_vision` (no other release uses it).
+  - TP4·EP4 on the default chip: decode b8 ctx 4096 TPOT 105.07 ms (DRAM-bound); prefill 4096 tokens TTFT 434.4 ms.
+- Not added: Ornith-1.5-122B-FP8 ships no config.json / index yet (HTTP 404). The rest of the family (Ornith-1.0, 1.5 9B / 35B-A3B / 397B, 2026-06 / 08) predates the window; it was missed because ornith-ai was not swept (AGENTS §237).
+
+### Freshness
+- HF sweep since 2026-10-20 (88 orgs): unsloth/sam3.1 (community re-upload) and unsloth/Ornith-1.5-122B-GGUF, which led to the official ornith-ai release above.
+
 ## [0.286.0]
 
 ### Changed: UI wiring tests check parsed structure instead of exact source text (MODEL §231.1)

@@ -134,3 +134,4 @@ stepfun-ai/Step-Audio-2-mini
 #        python3 scripts/fetch_pt_release.py --kimi moonshotai/Kimi-Audio-7B-Instruct)
 moonshotai/Kimi-Audio-7B-Instruct
 fishaudio/drama-3
+ornith-ai/Ornith-1.5-122B

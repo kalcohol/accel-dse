@@ -7673,3 +7673,36 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 - 100T, sram_mib 4 / 16 GiB × SLC 1 / 4 / 16 GiB (8 TB/s), 29 MoE LLMs: 87 / 261 points changed, TPOT +0 … +83 %, and 8 crashes (division by zero) now evaluate. No change at 1 GiB SRAM or at any catalog preset (5 presets × 29 × SLC 0.25–16 GiB).
   - Examples, old → new TPOT: lfm2.5-24b-a2b, SRAM 16 / SLC 16 GiB: 3.24 → 5.92 ms; hy-memory-30b-a3b-fp8, SRAM 16 / SLC 4 GiB: 2.82 → 4.34 ms (old values were optimistic).
 - Load-aware SRAM: qwen3-30b-a3b on 100T, sram_mib 4096, Zipf-1 load over 128 experts 「假设」: h₁ = 0.336 at byte share ≈ 0.032; TPOT 21.4 → 15.6 ms.
+
+## §232 Memory-hierarchy ledger; draft / chunk / empty-class fixes; Ornith-1.5-122B (0.287)
+
+### §232.1 The ledger invariant
+- Per stage step and demand class c ∈ {weights (hot + re-read + experts + extra), KV read, KV write, state, lookup, activations}: SRAM_c + SLC_c + DRAM_c = touched_c, each ≥ 0.
+  - SRAM_c is derived from the plan alone: resident share of the class (hot: pinned / hot_w, split ordinary / re-read as 0.269; experts: `sram_exp_hit` or pinned / expert_w; KV: (kv_sram − state_sram) / kv_total; state: state_sram / state_total). SLC_c = `slc_parts[c]`, DRAM_c = `step_dram_bytes`[c].
+  - Capacity: pins ≤ SRAM − staging − sram_resv (+ state buffer); SLC pins and `slc_held` ≤ SLC; SRAM + SLC of a class ≤ its stored bytes.
+- `StageResult.ledger` = (StageStorage, touched sums incl. `hot_rr`, SLC/DRAM bandwidth ratio, SLC B/s) on every LLM stage; diagnostic, not serialised.
+- A class with no planned storage has nothing on chip: miss share 1 (`hot_miss`, `exp_miss`, `kv_state_miss`). ≤ 0.286: 0, so its touched bytes were charged to no tier. Case: image DiT cached-prefix K/V (`prefix_kv`, kept in the activation reserve): qwen-image-2.1-turbo b1, +134 MB DRAM per cached step (b8: 1.07 GB); t_dram 823.5 → 824.2 ms, step compute-bound (3975 ms) and unchanged.
+- After the SLC hit subtraction, DRAM bytes are clamped at 0 (full-hit round-off −4e-15 B).
+
+### §232.2 Independent draft model on the head-stage cards
+- The draft (0.222, 「假设」 placement on the target's head-stage cards) and the target share SRAM, the state buffer and the SLC. Rank by the 0.192 rule: a draft byte is read k times per step (k passes), a target byte once → the draft takes the on-chip tiers first 「推导」. `memplan.held(draft head plan)` = (shared-SRAM pins, state-buffer bytes, `slc_held`) becomes the target head stage's `plan(sram_resv, buf_resv, slc_resv)`: free SRAM = SRAM − staging − sram_resv; state buffer and SLC reduced likewise.
+  - `slc_held`: pin / pin_bw = pinned bytes; lru = the off-SRAM working set if it fits, else 0; dip = fc·(hot + KV + act off SRAM) + fe·experts off SRAM, ≤ SLC.
+  - Staging is transient and shared (the programs alternate), sized by the larger. If the target's staging exceeds the draft's and the draft's SRAM pins do not fit beside it, the draft is re-planned with SRAM reduced by the difference and its SLC capped at the share the target was planned around (fuzz: without the cap the re-run over-committed the SLC by exactly the staging difference, 7.5 MB … 181 MB; TPOT effect ≤ 0.001 ms in the hits found).
+  - The draft pass therefore depends on the target's staging (1 + k verify tokens, tree rows): 1P qwen3-32b + qwen3-0.6b b4 k 3, topk 4 / 16 tokens: pass 0.854 → 0.863 ms vs the chain; k-independent when the SRAM is not contended.
+  - lru: if the target's off-SRAM set does not fit beside the draft, the step's sweep (target + k draft passes) is cyclic and larger than the SLC → the draft's SLC hits go too (re-run with no SLC).
+- ≤ 0.286 both were planned on the whole chip (SRAM 4 GiB: draft 4091 MiB + target 4076 MiB resident). Old → new TPOT: 1P qwen3-8b + qwen3-0.6b b1 2.354 → 2.386 ms; 100T default b8 k 3 71.468 → 71.659 ms; 100T SRAM 4 GiB b1 24.81 → 28.24 ms; 100T SLC 4 GiB pin b1 24.67 → 28.10 ms.
+
+### §232.3 Co-located chunk bytes under the decode plan
+- A co-located (chunked-prefill) iteration runs the prompt chunk inside the decode batch's step, so the chunk's KV / state / activation bytes see the decode batch's plan. `evaluate.chunk_mem_bytes(sd, sp, f, reread)`: the prefill-alone touched sums (scaled by the chunk fraction f, plus the re-read of the chunk's own new KV) go through `step_dram_bytes(decode plan)`; returns DRAM bytes, SLC bytes, KV + state DRAM bytes, and the ≤ 0.286 KV bytes. `_fused_step` / `_multi_bracket`: t_dram += (chunk DRAM + extra experts) / BW, t_slc += chunk SLC / SLC B/s; the KV seconds of the bracket scale by new / old KV bytes.
+- ≤ 0.286 the chunk's bytes came from the prefill-alone plan, which holds the chunk's KV on chip — bytes the decode batch already occupies — and its SLC hits were not timed. Identical when neither plan holds KV / state on chip (every default chip). qwen3-0.6b b64 ctx 4096: SRAM 4 GiB 171.49 → 173.58 ms per iteration (470 MB of chunk KV had been charged 0); SLC 4 GiB pin 169.55 → 170.57 ms.
+
+### §232.4 Two-batch overlap SLC time
+- tbo reads the weights twice per step; the second pass was charged to DRAM time only. Now `t_slc` also adds the second pass's SLC bytes / SLC B/s. Example: t_slc 4.29 → 8.59 ms; TPOT unchanged (DRAM-bound).
+
+### §232.5 Audited without a hit
+- KV SRAM / SLC shares under pin / pin_bw / lru / dip; dense re-read (rr) pins; omni / speech components (separate cards, components get no SRAM credit; omni_slc_plan); TP / EP (per-rank plan, per-card SLC, `exp_p` from the busiest rank); PD disaggregation (`cache_new_bytes`, free-KV clip, host-L2 hit_device + hit_host + miss = 1). FSDP pins against the full weights and adds a gather write: conservative, unchanged.
+- Default results: 142 models × decode / prefill unchanged; fingerprints unchanged.
+
+### §232.6 Ornith-1.5-122B
+- ornith-ai/Ornith-1.5-122B (MIT, public 2026-10-20): qwen3_5_moe as released bf16 — 48 layers in a 3 : 1 Gated-DeltaNet : gated-GQA pattern, 256 routed experts top-8 + shared expert, hidden 3072, partial rotary 0.25, untied head, 1 MTP layer; Qwen3.5 ViT (27 × 1152, patch 16, merge 2, out 3072). Params from safetensors headers: LLM 122 111 526 912, MTP 2 523 679 232, vision 451 290 864 (VisionSpec exact). Processor: min / max px 65 536 / 16 777 216 (image), video 4 096 / 25 165 824 — its own preprocessor configs.
+- `vision_spec` accepts `qwen3_5_moe_vision` (the transformers-5 model_type of the MoE ViT config; the dense one is `qwen3_5_vision`, 0.191).

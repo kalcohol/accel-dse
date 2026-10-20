@@ -287,6 +287,12 @@ class MemPlan:
     # 0.209: of kv_sram, the recurrent-state bytes (the rest is KV / indexer); -1 = not split (legacy plans)
     state_sram: float = -1.0
     state_buf: float = 0.0  # dedicated state-buffer capacity (Chip.state_sram_mib)
+    # 0.287: on-chip bytes another program on the same cards holds first (an independent draft model on the head
+    # stage, read k times per step — memplan.plan sram_resv / slc_resv / buf_resv); 0 = the whole chip is this plan's
+    sram_resv: float = 0.0
+    # 0.287: bytes this plan keeps in the SLC (pin: pinned bytes; lru: the off-SRAM working set when it fits, else 0;
+    # dip: retained every-step + expert bytes) — what a co-resident program cannot use
+    slc_held: float = 0.0
 
     def to_dict(self) -> dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
@@ -301,14 +307,20 @@ STATE_SPLIT = True        # 0.209: separate KV / state on-chip shares (≤ 0.208
 def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: float, max_act: float,
          act_need: float = 0.0, stream: bool = False, slc_bytes: float = 0.0, slc_policy: str = "pin",
          kv_frac: float = 1.0, state_buf: float = 0.0, exp_read: float | None = None,
-         exp_p: tuple | None = None) -> MemPlan:
+         exp_p: tuple | None = None, sram_resv: float = 0.0, slc_resv: float = 0.0, buf_resv: float = 0.0) -> MemPlan:
+    """0.287 ``sram_resv`` / ``slc_resv`` / ``buf_resv``: shared-SRAM, SLC and state-buffer bytes already held by another
+    program on the same cards (an independent draft model, which the 0.192 rule ranks first: its bytes are read k
+    times per step).  Staging is transient and shared (programs run one after the other); pins, the state buffer
+    and the SLC are persistent, so they come out of this plan's capacity."""
     kv_t = (store.kv_per_seq + store.idx_per_seq) * batch_local
     st_t = store.state_per_seq * batch_local
     need = store.weights + kv_t + st_t + RUNTIME_RESERVE + act_need
     staging = max(2 * 2**20, 2 * max_act)
     if stream:      # streamed activations use at most the activation half of SRAM (act_stream)
         staging = min(staging, max(2 * 2**20, sram_bytes / 2))
-    free = max(0.0, sram_bytes - staging)
+    free = max(0.0, sram_bytes - staging - sram_resv)
+    state_buf = max(0.0, state_buf - buf_resv)
+    slc_bytes = max(0.0, slc_bytes - slc_resv)
     # 0.192: pin by DRAM bytes saved per step per byte of SRAM.  Recurrent state is read and written every step
     # (2 B / B), a weight byte is read once per pass (1 B / B), a KV byte once (+ the new row) — so state goes
     # first (STATE_FIRST; ≤ 0.191 weights → KV + state)
@@ -349,13 +361,14 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     h1 = H(p_exp / E_w) if E_w > 0 else 0.0
     mp = MemPlan(store.weights, kv_t, st_t, need, dram_cap, fit, sram_bytes, staging,
                  p_hot, p_exp, kv_s, res, act_need, slc_residency=res, state_sram=p_st, state_buf=state_buf,
-                 pinned_rr=p_rr, sram_exp_hit=h1 if aware else -1.0)
+                 pinned_rr=p_rr, sram_exp_hit=h1 if aware else -1.0, sram_resv=sram_resv)
     if slc_bytes <= 0:
         return mp
     r_hot, r_exp, r_kv = store.hot_w - p_hot, store.expert_w - p_exp, kv_t + st_t - kv_s
     if slc_policy == "lru":
         fits = r_hot + r_exp + r_kv + act_need <= slc_bytes
-        return replace(mp, slc=slc_bytes, slc_policy="lru", slc_all=fits, slc_residency=1.0 if fits else res)
+        return replace(mp, slc=slc_bytes, slc_policy="lru", slc_all=fits, slc_residency=1.0 if fits else res,
+                       slc_held=r_hot + r_exp + r_kv + act_need if fits else 0.0)
     if slc_policy == "dip":
         # 0.260: expert bytes read per step off SRAM (exp_read = touched expert bytes of the stage step; None → all)
         e = r_exp if exp_read is None else min(r_exp, exp_read * (r_exp / store.expert_w if store.expert_w else 0.0))
@@ -367,7 +380,8 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
         f1 = p_exp / E_w if E_w > 0 else 0.0
         he = ((H(f1 + fe * (1.0 - f1)) - h1) / (1.0 - h1) if h1 < 1.0 else 0.0) if (aware and r_exp > 0 and e > 0) else fe
         return replace(mp, slc=slc_bytes, slc_policy="dip", slc_all=fc >= 1.0 and fe >= 1.0, slc_frac=fc,
-                       slc_frac_exp=he, slc_frac_exp_bytes=fe, slc_residency=sres)
+                       slc_frac_exp=he, slc_frac_exp_bytes=fe, slc_residency=sres,
+                       slc_held=min(slc_bytes, fc * (r_hot + r_kv + act_need) + fe * r_exp))
     free = slc_bytes
     s_rr = min(rr_w - p_rr, free); free -= s_rr      # 0.269: re-read hot bytes first
     s_hot = s_rr + min(r_hot - s_rr, free); free -= s_hot - s_rr
@@ -383,7 +397,7 @@ def plan(store: StageStorage, batch_local: int, sram_bytes: float, dram_cap: flo
     he = (H((p_exp + s_exp) / E_w) - h1) if E_w > 0 else fe
     return replace(mp, slc=slc_bytes, slc_policy="pin_bw" if slc_policy == "pin_bw" else "pin",
                    slc_hot=s_hot, slc_expert=s_exp, slc_kv=s_kv, slc_residency=sres, slc_rr=s_rr,
-                   slc_frac_exp=he, slc_frac_exp_bytes=fe)
+                   slc_frac_exp=he, slc_frac_exp_bytes=fe, slc_held=s_hot + s_exp + s_kv)
 
 
 DIP_EPS = 1 / 32     # 0.258: BIP bimodal throttle ε (Qureshi et al. ISCA 2007, "ε = 1/32 for all experiments")
@@ -555,15 +569,16 @@ def is_rr(o) -> bool:
 
 def hot_miss(mp: "MemPlan", store: StageStorage) -> tuple[float, float]:
     """0.269: (miss share of ordinary hot weight reads, miss share of re-read hot reads) after SRAM pinning.  Without a
-    re-read class: (1 − pinned_hot / hot_w, same) — the ≤ 0.268 uniform rule."""
+    re-read class: (1 − pinned_hot / hot_w, same) — the ≤ 0.268 uniform rule.  0.287: a class with no stored bytes
+    has nothing on chip → miss share 1 (≤ 0.286: 0, so touched bytes of an empty class were charged to no tier)."""
     if store.hot_w <= 0:
-        return 0.0, 0.0
+        return 1.0, 1.0
     rr = min(store.rr_w, store.hot_w)
     if rr <= 0:
         m = 1.0 - mp.pinned_hot / store.hot_w
         return m, m
     rest = store.hot_w - rr
-    m_rest = 0.0 if rest <= 0 else 1.0 - (mp.pinned_hot - mp.pinned_rr) / rest
+    m_rest = 1.0 if rest <= 0 else 1.0 - (mp.pinned_hot - mp.pinned_rr) / rest
     return m_rest, 1.0 - mp.pinned_rr / rr
 
 
@@ -584,12 +599,32 @@ def touched(ops: list[Op]) -> dict:
     return d
 
 
+def held(mp: MemPlan) -> tuple[float, float, float]:
+    """0.287: (shared-SRAM bytes, state-buffer bytes, SLC bytes) this plan keeps on chip persistently — the reservation
+    a co-resident program (plan sram_resv / buf_resv / slc_resv) must leave alone.  Staging is not included."""
+    buf = min(max(mp.state_sram, 0.0), mp.state_buf) if mp.state_buf > 0 else 0.0
+    return mp.pinned_hot + mp.pinned_expert + mp.kv_sram - buf, buf, mp.slc_held
+
+
 def exp_miss(mp: MemPlan, store: StageStorage) -> float:
     """0.286: share of the routed-expert reads that miss the SRAM — 1 − the pinned experts' read share (a measured load
     makes it smaller than the byte share; uniform load / no load: 1 − pinned_expert / expert_w, as ≤ 0.285)."""
     if store.expert_w <= 0:
-        return 0.0
+        return 1.0      # 0.287: no stored experts → nothing on chip (≤ 0.286: 0)
     return 1.0 - (mp.sram_exp_hit if mp.sram_exp_hit >= 0 else mp.pinned_expert / store.expert_w)
+
+
+def kv_state_miss(mp: MemPlan) -> tuple[float, float]:
+    """(KV, recurrent-state) DRAM miss shares of the touched bytes: 1 − the resident share of each stream (0.209
+    STATE_SPLIT; pooled before).  0.287: a stream with no planned storage (kv_total / state_total = 0) has nothing on
+    chip, so every touched byte misses (≤ 0.286: 0 — e.g. the text-prefix K/V a cached image-DiT step reads, kept in
+    the activation reserve, was charged to no tier at all)."""
+    kvst = mp.kv_total + mp.state_total
+    pooled = 1.0 if kvst <= 0 else 1.0 - mp.kv_sram / kvst
+    if not (STATE_SPLIT and mp.state_sram >= 0):
+        return pooled, pooled
+    return (1.0 if mp.kv_total <= 0 else 1.0 - (mp.kv_sram - mp.state_sram) / mp.kv_total,
+            1.0 if mp.state_total <= 0 else 1.0 - mp.state_sram / mp.state_total)
 
 
 def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: float = 0.0) -> dict:
@@ -600,11 +635,7 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: flo
     t_rr = t.get("hot_rr", 0.0) if store.rr_w > 0 else 0.0
     w = (t["hot"] - t_rr) * miss_hot + t_rr * miss_rr + t["exp"] * miss_exp
     kvst_total = mp.kv_total + mp.state_total
-    kv_miss = 0.0 if kvst_total <= 0 else 1.0 - mp.kv_sram / kvst_total
-    st_miss = kv_miss
-    if STATE_SPLIT and mp.state_sram >= 0:       # 0.209: each stream misses by its own resident share
-        st_miss = 0.0 if mp.state_total <= 0 else 1.0 - mp.state_sram / mp.state_total
-        kv_miss = 0.0 if mp.kv_total <= 0 else 1.0 - (mp.kv_sram - mp.state_sram) / mp.kv_total
+    kv_miss, st_miss = kv_state_miss(mp)
     kv_r, kv_w, st = t["kv_read"] * kv_miss, t["kv_write"] * kv_miss, t["state"] * st_miss
     act, wx = t.get("act", 0.0), t.get("w_extra", 0.0)
     out = {"weights": w + wx, "kv_read": kv_r, "kv_write": kv_w, "state": st, "lookup": t["lookup"], "act": act,
@@ -658,11 +689,11 @@ def step_dram_bytes(mp: MemPlan, store: StageStorage, t: dict, slc_bw_ratio: flo
             g = min(1.0, out["total"] * slc_bw_ratio / (1.0 + slc_bw_ratio) / H)
             hit = {k: v * g for k, v in hit.items()}
             e_hit *= g
-    out["exp_dram"], out["exp_slc"] = w_e - e_hit, e_hit
-    for k, v in hit.items():
-        out[k] -= v
+    out["exp_dram"], out["exp_slc"] = max(0.0, w_e - e_hit), e_hit
+    for k, v in hit.items():       # 0.287: clamp the round-off of a full hit (−1e-15 B) at 0
+        out[k] = max(0.0, out[k] - v)
     s = sum(hit.values())
-    out["total"] -= s
+    out["total"] = max(0.0, out["total"] - s)
     out["slc"] = s
     out["slc_parts"] = hit
     return out

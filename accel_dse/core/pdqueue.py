@@ -1466,12 +1466,14 @@ def _fused_step(dec: Result, pre1: Result, f: float, reread_frac: float) -> floa
     for sd, sp in zip(dec.stages, pre1.stages):
         td, tp = sd.time, sp.time
         bw = td.dram_bytes / td.t_dram if td.t_dram > 0 else math.inf
-        nonw = sp.dram["total"] - sp.dram["weights"]
-        from .evaluate import extra_expert_bytes
+        from .evaluate import chunk_mem_bytes, extra_expert_bytes
         xe = extra_expert_bytes(sd, sp, f)   # 0.103: experts the chunk's tokens touch beyond the decode batch's
-        dram = td.t_dram + (f * nonw + reread_frac * sp.dram["kv_write"] + xe) / bw
+        # 0.287: the chunk's KV / state / activation bytes under the decode stage's memory plan (chunk_mem_bytes)
+        c_dram, c_slc, c_kv, o_kv = chunk_mem_bytes(sd, sp, f, reread_frac)
+        dram = td.t_dram + (c_dram + xe) / bw
+        t_slc = td.t_slc + (c_slc / sd.ledger[3] if c_slc > 0 else 0.0)
         if td.overlap == "stage":
-            t = max(td.t_compute + f * tp.t_compute, dram, td.t_slc, td.t_link + f * tp.t_link) + max(td.t_sync, tp.t_sync)
+            t = max(td.t_compute + f * tp.t_compute, dram, t_slc, td.t_link + f * tp.t_link) + max(td.t_sync, tp.t_sync)
         else:
             # 0.101: the iteration's own overlap mode (was: the stage rule for every mode — under the pipe default the
             # fused chunk iteration ignored the overlap and was mode-independent). Components add; the kernel-serial
@@ -1481,14 +1483,14 @@ def _fused_step(dec: Result, pre1: Result, f: float, reread_frac: float) -> floa
                         t_feed=td.t_feed + f * tp.t_feed, t_vector=td.t_vector + f * tp.t_vector,
                         t_arr_attn=td.t_arr_attn + f * tp.t_arr_attn, t_dram=dram,
                         t_vec_attn=td.t_vec_attn + f * tp.t_vec_attn,
-                        t_dram_kv=td.t_dram_kv + (f * tp.t_dram_kv if tp.t_dram > 0 else 0.0)
-                        + reread_frac * sp.dram["kv_write"] / bw,
-                        t_link=td.t_link + f * tp.t_link, t_sync=max(td.t_sync, tp.t_sync))
+                        t_dram_kv=td.t_dram_kv + _chunk_kv_s(f * tp.t_dram_kv if tp.t_dram > 0 else 0.0, c_kv, o_kv,
+                                                             reread_frac * sp.dram["kv_write"], bw),
+                        t_link=td.t_link + f * tp.t_link, t_sync=max(td.t_sync, tp.t_sync), t_slc=t_slc)
             if td.overlap == "pipe":
                 # 0.102: the combined iteration replayed op by op (evaluate.pipe_fused_time); the 0.101 bracket
                 # interpolation only when the op lists do not line up
                 from .evaluate import pipe_fused_time
-                tp_ = pipe_fused_time(sd, sp, f, reread_frac, max(dram, td.t_slc))
+                tp_ = pipe_fused_time(sd, sp, f, reread_frac, max(dram, t_slc))
                 if tp_ is None:
                     lo_d, hi_d = (replace(td, overlap=o).total for o in ("stage", "serial"))
                     g = (td.total - lo_d) / (hi_d - lo_d) if hi_d > lo_d else 0.0
@@ -1503,31 +1505,45 @@ def _fused_step(dec: Result, pre1: Result, f: float, reread_frac: float) -> floa
 
 
 
+def _chunk_kv_s(own_s: float, c_kv: float, o_kv: float, rr_b: float, bw: float) -> float:
+    """0.287: KV + state DRAM seconds a fused chunk adds — the ≤ 0.286 seconds (the prefill's own KV seconds with its
+    KV-efficiency scale + the re-read at the iteration's DRAM rate) rescaled to the bytes charged under the decode plan
+    (chunk_mem_bytes); at the iteration's DRAM rate when the old count was 0.  Old = new when the counts agree."""
+    old = own_s + rr_b / bw
+    if c_kv == o_kv:
+        return old
+    return old * (c_kv / o_kv) if (o_kv > 0 and old > 0) else c_kv / bw
+
+
 def _multi_bracket(base: Result, pres: list) -> float:
     """0.234: one iteration = base (decode batch, or the first prompt piece when no decode runs) + every Result in
     ``pres`` at full share, stage-level fusion generalised to several pieces: compute, non-weight DRAM and link add,
     the weights are read once (the base's), sync = the max.  stage / serial modes exact as in _fused_step; pipe takes
     the base's own position between the stage and serial bounds (the _fused_step fallback)."""
-    from .evaluate import extra_expert_bytes
+    from .evaluate import chunk_mem_bytes, extra_expert_bytes
     worst = 0.0
     for i, sd in enumerate(base.stages):
         td = sd.time
         sps = [r.stages[i] for r in pres]
         bw = td.dram_bytes / td.t_dram if td.t_dram > 0 else math.inf
-        nonw = sum(sp.dram["total"] - sp.dram["weights"] + extra_expert_bytes(sd, sp, 1.0) for sp in sps)
+        cm = [chunk_mem_bytes(sd, sp, 1.0) for sp in sps]      # 0.287: each piece under the base stage's plan
+        nonw = sum(c[0] + extra_expert_bytes(sd, sp, 1.0) for c, sp in zip(cm, sps))
         dram = td.t_dram + nonw / bw
+        c_slc = sum(c[1] for c in cm)
+        t_slc = td.t_slc + (c_slc / sd.ledger[3] if c_slc > 0 else 0.0)
         tps = [sp.time for sp in sps]
         add = lambda a: sum(getattr(t, a) for t in tps)
         sync = max([td.t_sync] + [t.t_sync for t in tps])
         if td.overlap == "stage":
-            t = max(td.t_compute + add("t_compute"), dram, td.t_slc, td.t_link + add("t_link")) + sync
+            t = max(td.t_compute + add("t_compute"), dram, t_slc, td.t_link + add("t_link")) + sync
         else:
             t = replace(td, t_array=td.t_array + add("t_array"), t_mac=td.t_mac + add("t_mac"),
                         t_feed=td.t_feed + add("t_feed"), t_vector=td.t_vector + add("t_vector"),
                         t_arr_attn=td.t_arr_attn + add("t_arr_attn"), t_dram=dram,
                         t_vec_attn=td.t_vec_attn + add("t_vec_attn"),
-                        t_dram_kv=td.t_dram_kv + sum(t.t_dram_kv for t in tps if t.t_dram > 0),
-                        t_link=td.t_link + add("t_link"), t_sync=sync)
+                        t_dram_kv=td.t_dram_kv + sum(_chunk_kv_s(t.t_dram_kv if t.t_dram > 0 else 0.0, c[2], c[3], 0.0, bw)
+                                                     for t, c in zip(tps, cm)),
+                        t_link=td.t_link + add("t_link"), t_sync=sync, t_slc=t_slc)
             if td.overlap == "pipe":
                 lo_d, hi_d = (replace(td, overlap=o).total for o in ("stage", "serial"))
                 g = (td.total - lo_d) / (hi_d - lo_d) if hi_d > lo_d else 0.0

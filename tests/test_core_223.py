@@ -31,8 +31,13 @@ def test_draft_acts_counted_once_per_pass():
     with_d, without = _counts(r)["counts"], _counts(rp(r, draft=None))["counts"]
     for a, v in r.draft["acts"].items():
         assert abs(with_d.get(a, 0.0) - without.get(a, 0.0) - v) <= 1e-6 * max(1.0, v)
+    # 0.287: the draft pins beside the target's staging, which grows with the 1 + k verify tokens → on 1P (256 MiB
+    # SRAM) a k = 4 draft pass reads more from DRAM than a k = 1 pass; exactly k passes when the SRAM is not contended
     one = evaluate(_sc("qwen3-32b", 8, 1, dm="qwen3-0.6b"))
-    assert abs(r.draft["acts"]["dram"] / one.draft["acts"]["dram"] - 4) < 1e-9
+    assert r.draft["acts"]["dram"] / one.draft["acts"]["dram"] > 4
+    big = rp(CHIPS["1P"], sram_mib=65536.0)
+    r4, r1 = (evaluate(_sc("qwen3-32b", 8, k, dm="qwen3-0.6b", chip=big)) for k in (4, 1))
+    assert abs(r4.draft["acts"]["dram"] / r1.draft["acts"]["dram"] - 4) < 1e-9
 
 
 def test_no_draft_energy_unchanged():
