@@ -7503,3 +7503,31 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 - 「来源」 Muse NVFP4 headers (byte-identical public mirror unsloth/Muse-Spark-Open-816B-A42B-NVFP4, re-read 2026-10-20): fused experts `layers.N.mlp.experts.{gate_up_proj, down_proj}` (u8 e2m1) with `…_weight_scale` (e4m3 per 16), `…_weight_scale_2` (fp32 per expert) and `…_input_scale` (fp32 per expert). The old `_scale$` alternative left `_weight_scale_2` as a weight, and the base `…_weight` of `_weight_scale` matched it by prefix.
 - Fix: `SCALE_RE` first alternative `_(weight|input)_scale(_2)?$` (whole suffix stripped → base = the fused expert tensor). Expert nvfp4 bytes = params · 9/16 + 368,640 (60 layers × 2 projections × 384 experts × 2 fp32 scales). The per-role effective bits (4.871 b, incl. the bf16 experts of layers 0 / 61) were already right because role bytes include every format; no cost changes.
 - Reverse direction (parameters treated as scales), left as is: `hc_attn_scale` / `hc_ffn_scale` (3 values per layer, DeepSeek-V4 / GLM-5.3) and Dory `lm_head.logit_scale` (131,072 values; 3e-5 of the model).
+
+## §227 Drama 3 on H200 as an external speech diagnostic; hyper-connection scales (0.282)
+
+### §227.1 Drama 3 H200 (SGLang-Omni cookbook)
+- 「来源」 https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html (last updated 2026-10-20). One H200; streaming; Seed-TTS English prompts, each cloning one pre-encoded reference; temperature 1.0, top_p 0.9, top_k 30, max_new_tokens 500. Tables 1–2 with `gpu_memory_fraction 0.85` and `max_running_requests 256`. Table 1 (frames/s): c 1 → 166.7, 2 → 287.0, 4 → 467.6, 8 → 678.1, 16 → 927.6, 32 → 1244.7, 64 → 1687.3. Table 2: 128 / 256 streams with the vocoder on the same GPU 2177 / 2422, on a second GPU 3692 / 4160. Table 3 (non-streaming, c = 8): latency mean 1.235 s, RTF mean 0.281.
+- 「来源」 sglang-omni @ 0029194 `models/fishaudio_drama3`: `config.py` stream_stride 10, followup ramp (10, 12, 32), followup stride 64, stream_overlap_tokens 32; `vocoder.py` window CUDA graphs captured at batch 1 (one stream per decode); `stream_windows.py` window length = stride + min(overlap, emitted).
+- Loop 「推导」: frames/s = c·N / (c·ttft₁ + N·tpot(c) + c·V), where V = Σ windows DAC(new + overlap, batch 1) from `speech._dac_window`. TTFA = ttft₁ + 10·tpot(c) + DAC(first window).
+  - 「近似」 prefills are serial at batch 1 (SGLang batches up to 16 first frames).
+  - 「假设」 vocoder and engine loads add (two processes on one GPU, no MPS by default).
+- Workload: N = ⌈4.395 s / 46.44 ms⌉ = 95 「推导」 (Table 3: 1.235 / 0.281); reference 3.9 s (the cookbook's clip) 「假设」; 64 text rows 「假设」. Engine: H200 reference chip, drama-3 as released (bf16 + fp8 experts, act_expert fp8).
+- Results (frames/s, predicted / measured):
+
+  | variant | c=1 | 2 | 4 | 8 | 16 | 32 | 64 | gmean |
+  |---|---|---|---|---|---|---|---|---|
+  | catalog (no kernel cost) | 3.13 | 2.87 | 2.51 | 2.24 | 2.01 | 1.80 | 1.63 | 2.26 |
+  | default (trace kernel floor) | 1.24 | 1.29 | 1.33 | 1.40 | 1.43 | 1.40 | 1.33 | 1.34 |
+
+  Table 2 under default: same GPU 1.31 (128) / 1.37 (256); second GPU 0.91 / 0.97.
+- Reading:
+  1. At low concurrency the frame step is dispatch-bound on a GPU: about 900 kernels (40 backbone + 13 tower layers + 10 code samples) at the trace floor (3.0 µs) = 2.7 ms against 1.75 ms of weight streaming. For a chip, per-op launch / sync latency matters as much as bandwidth for streaming TTS with deep frame steps.
+  2. At high concurrency, short utterances make request prefill a third of engine time (c = 64).
+  3. The remaining same-GPU gap is the vocoder: measured 1.70× from moving it to a second GPU, modelled 1.17×. Candidates are DAC cost on GPU (fp16 batch-1 convs and Snake vector work at 44.1 kHz) and process time-slicing; not resolved, not fitted.
+  4. TTFA: predicted 61 ms vs 89 ms at c = 1; the gap grows with queueing.
+- Diagnostic only: nothing here changes a default or any catalog number.
+
+### §227.2 Hyper-connection scales
+- 「来源」 DeepSeek-V4 inference `model.py` / GLM-5.3 modeling: `hc_attn_scale`, `hc_ffn_scale` (shape [3]) and `hc_head_scale` ([1]) are `nn.Parameter`s of the mHC mixing (the templates' `hc_p` / `head_p` already include them). `summarize_release` dropped them as scales through `_scale$`; `NOT_SCALE_RE` keeps them. Release LLM params now equal the templates for V4-Flash (+259), V4-Pro (+367), V4.1-Flash (+240) and GLM-5.3-Flash (+270); MTP +7 / +7 / +18 / 0, still exact.
+- Dory `lm_head.logit_scale` [131,072] stays excluded: the template has no logit-scale term, so counting it would open a 3e-5 gap.

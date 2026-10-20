@@ -38,6 +38,10 @@ SCALE_RE = re.compile(r"(_(weight|input)_scale(_2)?$|\.weight_scale_inv$|\.scale
 # experts.gate_up_proj_weight_scale / _weight_scale_2 / _input_scale) and strips the whole suffix so they attach to the
 # expert tensor; ≤ 0.280 "_weight_scale_2" (fp32, one per expert) was counted as a weight and the per-16 e4m3 scales were
 # attached to it by prefix match (role bytes right, role table showed an "fp32 expert" and nvfp4 at 4.0 b)
+# 0.282: learned parameters whose names end in "scale" but are not quantization scales — the manifold hyper-connection
+# mixing scales (DeepSeek-V4 / GLM-5.3 hc_attn_scale / hc_ffn_scale [3] per layer, hc_head_scale [1]; modeling code
+# nn.Parameter, counted by the templates) 「来源」.  ≤ 0.281 they were dropped as scales (V4-Flash −259 params etc.).
+NOT_SCALE_RE = re.compile(r"(^|\.)hc_(attn|ffn|head)_scale$")
 ROLE = [
     ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.|^linear_proj\.)"),
     ("mtp", r"(^mtp\.|\.mtp\.|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),
@@ -369,7 +373,8 @@ def summarize(repo: str) -> dict:
         if dt == "I64":
             buffers += nb
             continue
-        if not is_blocks and SCALE_RE.search(name) and _base(name) != name and not name.startswith(("mimi.", "redae.")):
+        if not is_blocks and SCALE_RE.search(name) and _base(name) != name and not name.startswith(("mimi.", "redae.")) \
+                and not NOT_SCALE_RE.search(name):
             scale_bytes[_base(name)] = scale_bytes.get(_base(name), 0) + nb
             continue
         if is_blocks or (dt in ("U8", "I8") and (fp4 or name.endswith("weight_packed"))):

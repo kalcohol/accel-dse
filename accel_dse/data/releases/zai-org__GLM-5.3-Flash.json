@@ -1,5 +1,5 @@
 {
- "bytes_llm": 319706117312,
+ "bytes_llm": 319706118392,
  "bytes_mtp": 7493399168,
  "bytes_total": 328326771576,
  "config": {
@@ -1814,7 +1814,7 @@
  },
  "fetched": "2026-10-08",
  "n_tensors": 76108,
- "params_llm": 313326811696,
+ "params_llm": 313326811966,
  "params_mtp": 7432592416,
  "params_vision": 563627008,
  "quantization_config": {
@@ -3403,8 +3403,8 @@
     "params": 35389440
    },
    "fp32": {
-    "bytes": 8640,
-    "params": 2160
+    "bytes": 9720,
+    "params": 2430
    }
   },
   "router": {
@@ -3415,12 +3415,6 @@
    "fp32": {
     "bytes": 48384,
     "params": 12096
-   }
-  },
-  "scale": {
-   "scale": {
-    "bytes": 1080,
-    "params": 0
    }
   },
   "shared_expert": {

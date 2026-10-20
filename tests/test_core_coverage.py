@@ -168,13 +168,12 @@ def test_lightning_block_256():
 
 
 def test_hc_and_v4_params_match_release_layers():
-    """GLM-5.3-Flash (transformers glm5_next) and DeepSeek-V4-Flash / -Pro (official inference/model.py): the only
-    difference to the release summary is the hc_*_scale tensors (3 per hyper-connection, + 1 for the V4 head), which
-    summarize_release files under quantisation scales."""
-    for i, extra in (("glm-5.3-flash", 45 * 6), ("deepseek-v4-flash", 43 * 6 + 1), ("deepseek-v4-pro", 61 * 6 + 1),
-                     ("deepseek-v4.1-flash", 40 * 6)):
+    """GLM-5.3-Flash (transformers glm5_next) and DeepSeek-V4-Flash / -Pro / V4.1-Flash (official inference/model.py):
+    ≤ 0.281 the only difference to the release summary was the hc_*_scale tensors (3 per hyper-connection, + 1 for the
+    V4 head), which summarize_release filed under quantisation scales; 0.282 NOT_SCALE_RE counts them → exact."""
+    for i in ("glm-5.3-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4.1-flash"):
         pc = get_model(i).param_check()
-        assert pc["ours"] - pc["release"] == extra and pc["mtp_ours"] == pc["mtp_release"], (i, pc)
+        assert pc["ours"] == pc["release"] and pc["mtp_ours"] == pc["mtp_release"], (i, pc)
 
 
 def test_hc_ops_reference_counts():

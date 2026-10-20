@@ -60,7 +60,7 @@ def test_every_catalog_vlm_has_an_encoder_and_k27_matches_k25():
 def test_deepseek_aligner_counted_as_vision():
     m = get_model("deepseek-v4.1-flash")
     pc = m.param_check()
-    assert pc["release"] == 748494684544 and abs(pc["rel_err"]) < 5e-4
+    assert pc["release"] == 748494684784 and pc["rel_err"] == 0      # 0.282: hc_*_scale counted (was 748494684544)
 
 
 def test_images_default_off_and_hash_unchanged():

@@ -20,8 +20,16 @@ for v in REPORT:
     res["summary"][v] = X.summary(t)
     res["rows"][v] = [{"id": x["id"], "pred": round(x["pred"], 4), "ratio": round(x["ratio"], 4), "fits": x["fits"],
                        **({"batch": x["batch"]} if x["metric"] == "max_tok_s_total" else {})} for x in t]
+# 0.282: speech diagnostic (core/extspeech.py) — Drama 3 on one H200, SGLang-Omni cookbook; not in the LLM summary
+from accel_dse.core import extspeech as XS
+res["speech"] = {}
+for v in ("default", "catalog"):
+    t1, t2 = XS.table(v), XS.table(v, t2=True)
+    res["speech"][v] = {"summary": XS.summary(t1), "rows": t1, "rows_t2": t2}
 if a.calib:
     res["calibration"] = json.load(open(a.calib))
 json.dump(res, open(a.out, "w"), indent=1)
 for v, s in res["summary"].items():
     print(v, {m: (x["n"], round(x["gmean_ratio"], 2), round(x["mean_abs_err_pct"], 1)) for m, x in s.items()})
+for v, s in res["speech"].items():
+    print("speech", v, s["summary"])

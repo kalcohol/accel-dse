@@ -1,5 +1,5 @@
 {
- "generated": "0.281.0",
+ "generated": "0.282.0",
  "variants": {
   "default": {
    "eff": "catalog",
@@ -6113,5 +6113,361 @@
     "batch": 8
    }
   ]
+ },
+ "speech": {
+  "default": {
+   "summary": {
+    "n": 7,
+    "gmean_ratio": 1.343,
+    "ratio_c1": 1.237,
+    "ratio_cmax": 1.332
+   },
+   "rows": [
+    {
+     "id": "sgo-h200-drama3-stream-c1",
+     "c": 1,
+     "vocoder_gpu": "same",
+     "meas": 166.7,
+     "pred": 206.2,
+     "ratio": 1.237,
+     "ttfa_meas_ms": 88.9,
+     "ttfa_pred_ms": 61.0,
+     "shares": {
+      "prefill": 0.031,
+      "decode": 0.958,
+      "vocoder": 0.011
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c2",
+     "c": 2,
+     "vocoder_gpu": "same",
+     "meas": 287.0,
+     "pred": 370.7,
+     "ratio": 1.292,
+     "ttfa_meas_ms": 96.2,
+     "ttfa_pred_ms": 64.4,
+     "shares": {
+      "prefill": 0.055,
+      "decode": 0.925,
+      "vocoder": 0.02
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c4",
+     "c": 4,
+     "vocoder_gpu": "same",
+     "meas": 467.6,
+     "pred": 620.0,
+     "ratio": 1.326,
+     "ttfa_meas_ms": 108.2,
+     "ttfa_pred_ms": 71.0,
+     "shares": {
+      "prefill": 0.092,
+      "decode": 0.875,
+      "vocoder": 0.033
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c8",
+     "c": 8,
+     "vocoder_gpu": "same",
+     "meas": 678.1,
+     "pred": 946.5,
+     "ratio": 1.396,
+     "ttfa_meas_ms": 153.2,
+     "ttfa_pred_ms": 82.9,
+     "shares": {
+      "prefill": 0.141,
+      "decode": 0.809,
+      "vocoder": 0.05
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c16",
+     "c": 16,
+     "vocoder_gpu": "same",
+     "meas": 927.6,
+     "pred": 1324.8,
+     "ratio": 1.428,
+     "ttfa_meas_ms": 210.1,
+     "ttfa_pred_ms": 103.0,
+     "shares": {
+      "prefill": 0.197,
+      "decode": 0.733,
+      "vocoder": 0.07
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c32",
+     "c": 32,
+     "vocoder_gpu": "same",
+     "meas": 1244.7,
+     "pred": 1743.3,
+     "ratio": 1.401,
+     "ttfa_meas_ms": 304.6,
+     "ttfa_pred_ms": 133.6,
+     "shares": {
+      "prefill": 0.259,
+      "decode": 0.649,
+      "vocoder": 0.092
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c64",
+     "c": 64,
+     "vocoder_gpu": "same",
+     "meas": 1687.3,
+     "pred": 2247.2,
+     "ratio": 1.332,
+     "ttfa_meas_ms": 450.9,
+     "ttfa_pred_ms": 170.4,
+     "shares": {
+      "prefill": 0.334,
+      "decode": 0.547,
+      "vocoder": 0.119
+     }
+    }
+   ],
+   "rows_t2": [
+    {
+     "id": "sgo-h200-drama3-stream-c128-voc-same",
+     "c": 128,
+     "vocoder_gpu": "same",
+     "meas": 2177,
+     "pred": 2848.1,
+     "ratio": 1.308,
+     "ttfa_meas_ms": 685,
+     "ttfa_pred_ms": 210.9,
+     "shares": {
+      "prefill": 0.419,
+      "decode": 0.432,
+      "vocoder": 0.149
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c256-voc-same",
+     "c": 256,
+     "vocoder_gpu": "same",
+     "meas": 2422,
+     "pred": 3325.4,
+     "ratio": 1.373,
+     "ttfa_meas_ms": 3403,
+     "ttfa_pred_ms": 276.8,
+     "shares": {
+      "prefill": 0.489,
+      "decode": 0.337,
+      "vocoder": 0.174
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c128-voc-second",
+     "c": 128,
+     "vocoder_gpu": "second",
+     "meas": 3692,
+     "pred": 3345.8,
+     "ratio": 0.906,
+     "ttfa_meas_ms": 401,
+     "ttfa_pred_ms": 210.5,
+     "shares": {
+      "prefill": 0.492,
+      "decode": 0.508,
+      "vocoder": 0.0
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c256-voc-second",
+     "c": 256,
+     "vocoder_gpu": "second",
+     "meas": 4160,
+     "pred": 4024.5,
+     "ratio": 0.967,
+     "ttfa_meas_ms": 2146,
+     "ttfa_pred_ms": 276.4,
+     "shares": {
+      "prefill": 0.592,
+      "decode": 0.408,
+      "vocoder": 0.0
+     }
+    }
+   ]
+  },
+  "catalog": {
+   "summary": {
+    "n": 7,
+    "gmean_ratio": 2.256,
+    "ratio_c1": 3.126,
+    "ratio_cmax": 1.633
+   },
+   "rows": [
+    {
+     "id": "sgo-h200-drama3-stream-c1",
+     "c": 1,
+     "vocoder_gpu": "same",
+     "meas": 166.7,
+     "pred": 521.1,
+     "ratio": 3.126,
+     "ttfa_meas_ms": 88.9,
+     "ttfa_pred_ms": 28.9,
+     "shares": {
+      "prefill": 0.06,
+      "decode": 0.912,
+      "vocoder": 0.028
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c2",
+     "c": 2,
+     "vocoder_gpu": "same",
+     "meas": 287.0,
+     "pred": 823.4,
+     "ratio": 2.869,
+     "ttfa_meas_ms": 96.2,
+     "ttfa_pred_ms": 32.3,
+     "shares": {
+      "prefill": 0.095,
+      "decode": 0.861,
+      "vocoder": 0.043
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c4",
+     "c": 4,
+     "vocoder_gpu": "same",
+     "meas": 467.6,
+     "pred": 1172.6,
+     "ratio": 2.508,
+     "ttfa_meas_ms": 108.2,
+     "ttfa_pred_ms": 38.7,
+     "shares": {
+      "prefill": 0.135,
+      "decode": 0.803,
+      "vocoder": 0.062
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c8",
+     "c": 8,
+     "vocoder_gpu": "same",
+     "meas": 678.1,
+     "pred": 1519.9,
+     "ratio": 2.241,
+     "ttfa_meas_ms": 153.2,
+     "ttfa_pred_ms": 50.5,
+     "shares": {
+      "prefill": 0.175,
+      "decode": 0.744,
+      "vocoder": 0.08
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c16",
+     "c": 16,
+     "vocoder_gpu": "same",
+     "meas": 927.6,
+     "pred": 1861.8,
+     "ratio": 2.007,
+     "ttfa_meas_ms": 210.1,
+     "ttfa_pred_ms": 70.4,
+     "shares": {
+      "prefill": 0.215,
+      "decode": 0.687,
+      "vocoder": 0.098
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c32",
+     "c": 32,
+     "vocoder_gpu": "same",
+     "meas": 1244.7,
+     "pred": 2240.7,
+     "ratio": 1.8,
+     "ttfa_meas_ms": 304.6,
+     "ttfa_pred_ms": 100.3,
+     "shares": {
+      "prefill": 0.259,
+      "decode": 0.623,
+      "vocoder": 0.118
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c64",
+     "c": 64,
+     "vocoder_gpu": "same",
+     "meas": 1687.3,
+     "pred": 2756.1,
+     "ratio": 1.633,
+     "ttfa_meas_ms": 450.9,
+     "ttfa_pred_ms": 135.9,
+     "shares": {
+      "prefill": 0.318,
+      "decode": 0.536,
+      "vocoder": 0.145
+     }
+    }
+   ],
+   "rows_t2": [
+    {
+     "id": "sgo-h200-drama3-stream-c128-voc-same",
+     "c": 128,
+     "vocoder_gpu": "same",
+     "meas": 2177,
+     "pred": 3424.9,
+     "ratio": 1.573,
+     "ttfa_meas_ms": 685,
+     "ttfa_pred_ms": 173.7,
+     "shares": {
+      "prefill": 0.391,
+      "decode": 0.43,
+      "vocoder": 0.179
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c256-voc-same",
+     "c": 256,
+     "vocoder_gpu": "same",
+     "meas": 2422,
+     "pred": 3990.5,
+     "ratio": 1.648,
+     "ttfa_meas_ms": 3403,
+     "ttfa_pred_ms": 228.9,
+     "shares": {
+      "prefill": 0.456,
+      "decode": 0.336,
+      "vocoder": 0.208
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c128-voc-second",
+     "c": 128,
+     "vocoder_gpu": "second",
+     "meas": 3692,
+     "pred": 4171.1,
+     "ratio": 1.13,
+     "ttfa_meas_ms": 401,
+     "ttfa_pred_ms": 173.3,
+     "shares": {
+      "prefill": 0.477,
+      "decode": 0.523,
+      "vocoder": 0.0
+     }
+    },
+    {
+     "id": "sgo-h200-drama3-stream-c256-voc-second",
+     "c": 256,
+     "vocoder_gpu": "second",
+     "meas": 4160,
+     "pred": 5041.3,
+     "ratio": 1.212,
+     "ttfa_meas_ms": 2146,
+     "ttfa_pred_ms": 228.5,
+     "shares": {
+      "prefill": 0.576,
+      "decode": 0.424,
+      "vocoder": 0.0
+     }
+    }
+   ]
+  }
  }
 }

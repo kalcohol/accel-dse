@@ -6,6 +6,30 @@
 
 
 
+## [0.282.0]
+
+### Added: Drama 3 on one H200 as an external speech measurement (MODEL §227.1)
+- New `data/ext_measurements_speech.json`: the SGLang-Omni Drama 3 cookbook (also the HF model card's "Production Serving"), Tables 1–3 on one H200. Table 1: streaming frames/s and TTFA at concurrency 1–64. Table 2: concurrency 128 / 256 with the vocoder on the engine's GPU or on a second GPU. Table 3: non-streaming latency and RTF at concurrency 8.
+- New `core/extspeech.py` (diagnostic; never fitted, never a cost-model default). It evaluates the engine on the H200 reference chip under an ext variant and replays the measured serving loop from sourced settings:
+  - closed loop at concurrency c: c prefills (batch 1, serial) + N decode steps at batch c + the vocoder, all time-sharing one GPU;
+  - N = 95 frames: 4.40 s of audio = Table 3 latency / RTF;
+  - SGLang-Omni vocoder windows (`config.py` / `vocoder.py`): strides 10, 10, 12, 32, then 64, each re-decoding up to 32 earlier frames, one stream per decode.
+- `scripts/ext_validate.py` writes a separate `speech` section (default and catalog variants). The LLM summary is unchanged.
+- What explains the 0.276 "≈ 2.2× optimistic" gap (frames/s, predicted / measured):
+  - catalog roofline (no GPU per-kernel cost): 3.13× at c = 1, 1.63× at c = 64;
+  - with the ext default variant (per-kernel floor from the DeepSeek decode trace, 0.136 / 0.176; not refitted): 1.24× at c = 1, 1.33× at c = 64, geometric mean 1.34×.
+  - At c = 1, per-kernel cost is 58 % of the 4.65 ms frame step (2.7 ms of fixed cost against 1.75 ms of DRAM time).
+  - At c = 64, request prefill (≈ 150 rows per 4.4 s utterance) is a third of engine time.
+- Table 2 isolates the rest. Vocoder on a second GPU: 0.91× / 0.97× at 128 / 256 streams. Vocoder on the same GPU: 1.31× / 1.37×. The measured same → second speed-up is 1.70×, the model gives 1.17×, so the colocated vocoder is the remaining gap (the codec on GPU is costed ~4× too cheap, or the two processes' time-slicing costs more than the sum).
+- TTFA is under-predicted by 1.5–2× (HTTP / process hops, queueing and `prefill_decode_interval` are not modelled).
+
+### Fixed: hyper-connection scales are parameters (MODEL §227.2)
+- `summarize_release.NOT_SCALE_RE`: `hc_attn_scale` / `hc_ffn_scale` (3 per layer) and `hc_head_scale` (1) are learned parameters of the manifold hyper-connections, not quantization scales. The templates already counted them, so DeepSeek-V4-Flash / V4-Pro / V4.1-Flash and GLM-5.3-Flash are now exact (gaps of 259 / 367 / 240 / 270 parameters → 0; MTP still exact).
+- Dory `lm_head.logit_scale` (131,072 values) is left as a scale: the template does not count it either, so switching would open a gap.
+
+### Freshness
+- HF sweep since 2026-10-20 (88 orgs) and a web check: nothing new and official in scope.
+
 ## [0.281.0]
 
 ### Changed: per-role activation formats for the remaining quantized releases (MODEL §226.1)

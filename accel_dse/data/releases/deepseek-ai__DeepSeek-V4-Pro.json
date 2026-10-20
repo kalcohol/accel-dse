@@ -1,6 +1,6 @@
 {
- "bytes_llm": 850729587216,
- "bytes_mtp": 13956587664,
+ "bytes_llm": 850729588684,
+ "bytes_mtp": 13956587692,
  "bytes_total": 864704792696,
  "config": {
   "architectures": [
@@ -134,8 +134,8 @@
  },
  "fetched": "2026-10-08",
  "n_tensors": 145116,
- "params_llm": 1572997201396,
- "params_mtp": 25840145972,
+ "params_llm": 1572997201763,
+ "params_mtp": 25840145979,
  "params_vision": 0,
  "quantization_config": {
   "activation_scheme": "dynamic",
@@ -193,8 +193,8 @@
     "params": 2790400
    },
    "fp32": {
-    "bytes": 5966032,
-    "params": 1491508
+    "bytes": 5966060,
+    "params": 1491515
    },
    "fp8": {
     "bytes": 468742080,
@@ -213,8 +213,8 @@
   },
   "other": {
    "fp32": {
-    "bytes": 336276944,
-    "params": 84069236
+    "bytes": 336278412,
+    "params": 84069603
    }
   },
   "router": {
@@ -225,12 +225,6 @@
    "fp32": {
     "bytes": 89088,
     "params": 22272
-   }
-  },
-  "scale": {
-   "scale": {
-    "bytes": 1496,
-    "params": 0
    }
   },
   "shared_expert": {
