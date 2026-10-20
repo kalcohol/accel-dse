@@ -147,7 +147,7 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
                "insight_sizing": {"models", "resources", "joint", "unpriced", "energy_tie"},
                "insight_slc": {"models", "policy", "gibs", "temps"},
-               "insight_speech": {"models", "audio_s", "verify"},
+               "insight_speech": {"models", "audio_s", "verify", "dispatch"},
                "insight_speech_streams": {"models", "audio_s", "slc_gib"}}
 
 
@@ -1375,8 +1375,11 @@ def api_insight_speech(body: dict) -> dict:
     v = body.get("verify", True)
     if not isinstance(v, bool):
         raise ApiError("verify must be true or false")
+    dp = body.get("dispatch", True)          # 0.283: per-op dispatch sensitivity
+    if not isinstance(dp, bool):
+        raise ApiError("dispatch must be true or false")
     try:
-        return {**speech_bounds(scn, models, float(a), verify=v), "hash": scn.hash()}
+        return {**speech_bounds(scn, models, float(a), verify=v, dispatch=dp), "hash": scn.hash()}
     except (KeyError, ValueError) as e:
         raise ApiError(str(e)) from None
 

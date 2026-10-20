@@ -28,7 +28,20 @@ engine's own SLC path, not by the formula.  Nothing here is tuned to a measureme
 
 0.275: each row is built from the scenario's hardware / system fields only — serving (batch 1, prompt 64, reply 64,
 audio_s), layout, format overrides, workload, PD and other model-specific fields are reset to their defaults, so the
-UI's current model settings (e.g. a draft model) never leak into a speech row."""
+UI's current model settings (e.g. a draft model) never leak into a speech row.
+
+0.283 op-dispatch sensitivity (``dispatch``): the decode-type stages here are many small ops per token / frame (a
+speech decoder or codec runs hundreds of kernels per step), so a per-op dispatch / sync latency u (Chip.dispatch
+"trace" / "host", 0.203) can bound real time before DRAM does.  Dispatch is a serial term of every stage (t_stage =
+max(compute, DRAM, …) + t_sync), so each stage's x is exactly linear in u 「推导」:
+
+    x_s(u) = x_s(0) + n_s · u          n_s = dispatched ops per audio second of stage s (measured by the engine:
+                                                 n_s = (x_s(1 µs) − x_s(0)) / 1 µs)
+    real-time limit   u_rt   = min over stages with x_s(0) < 1 of (1 − x_s(0)) / n_s
+    dispatch-bound    u_eq   = x_b(0) / n_b  (binding stage b: dispatch time = all its other time)
+
+and the binding x at the sourced per-op defaults (DISPATCH_US: trace 1.5 µs 「二手」, host 20 µs 「二手」) follows.
+Nothing is fitted; the slope comes from two engine runs (ideal and 1 µs/op)."""
 from __future__ import annotations
 
 import math
@@ -92,7 +105,35 @@ def _scn(base: Scenario, mid: str, audio_s: float) -> Scenario:
     return dataclasses.replace(base, model=mid, serving=sv, **dflt)
 
 
-def speech_bounds(base: Scenario, models=SPEECH_MODELS, audio_s: float = 10.0, verify: bool = True) -> dict:
+def _with_dispatch(base: Scenario, mode: str, us: float | None) -> Scenario:
+    import dataclasses
+    return base.replace("chip", dataclasses.replace(base.chip, dispatch=mode, dispatch_us=us))
+
+
+def _dispatch_row(base: Scenario, mid: str, audio_s: float, st: dict, first: float) -> dict:
+    """0.283: per-op dispatch sensitivity of one speech row (see the module doc)."""
+    from .hardware import DISPATCH_US
+    from .speech import speech_kpis
+    if base.chip.dispatch:                       # strip the chip's own dispatch → the ideal reference
+        k0 = speech_kpis(_scn(_with_dispatch(base, "", None), mid, audio_s), audio_s)
+        st0, _, _, first0 = _stages(k0, audio_s)
+    else:
+        st0, first0 = st, first
+    k1 = speech_kpis(_scn(_with_dispatch(base, "trace", 1.0), mid, audio_s), audio_s)
+    st1, _, _, first1 = _stages(k1, audio_s)
+    n = {s: max(0.0, (st1[s] - st0[s]) / 1e-6) for s in st0}          # dispatched ops / audio s
+    b = max(st0, key=st0.get)
+    x_at = {m: max(st0[s] + n[s] * DISPATCH_US[m] * 1e-6 for s in st0) for m in ("trace", "host")}
+    lim = [(1.0 - st0[s]) / (n[s] * 1e-6) for s in st0 if st0[s] < 1.0 and n[s] > 0]
+    return {"x_ideal": st0[b], "binding_ideal": b, "ops_per_audio_s": n,
+            "us_rt": (min(lim) if lim else None) if st0[b] < 1.0 else 0.0,
+            "us_eq": st0[b] / (n[b] * 1e-6) if n[b] > 0 else None,
+            "x_at": x_at, "us_at": {m: DISPATCH_US[m] for m in ("trace", "host")},
+            "first_audio_ms_per_us": (first1 - first0) * 1e3}
+
+
+def speech_bounds(base: Scenario, models=SPEECH_MODELS, audio_s: float = 10.0, verify: bool = True,
+                  dispatch: bool = True) -> dict:
     from .speech import speech_kpis
     sys = System(base.chip, base.mem_id, base.mem_eff)
     bw = sys.dram_GBps
@@ -109,6 +150,8 @@ def speech_bounds(base: Scenario, models=SPEECH_MODELS, audio_s: float = 10.0, v
                "lm_bound": dec.bound, "fits": k["fits"]}
         if k["kind"] == "moshi":
             row["latency_floor_s"] = k["latency_floor_s"]
+        if dispatch:
+            row["dispatch"] = _dispatch_row(base, mid, audio_s, st, first)
         if x > 1.0:
             row["dram_GBps_eff_needed"] = bw * x
             if bind == "speech_card" and k["kind"] in ("cosyvoice", "kimi"):
@@ -128,7 +171,10 @@ def speech_bounds(base: Scenario, models=SPEECH_MODELS, audio_s: float = 10.0, v
     return {"chip": base.chip.name, "mem_id": base.mem_id, "dram_GBps_eff": bw, "audio_s": audio_s,
             "batch": 1, "out_len": OUT_LEN, "rows": rows,
             "method": "x = 忙碌秒 / 音频秒；x>1 时：所需有效 DRAM 带宽 = BW·x；或 SLC 固定 S = (x−1)·BW / r 字节的复读权重"
-                      "（r = 每音频秒的 token / 帧数）「推导」；verify = 用引擎自身 SLC 路径复算「近似」"}
+                      "（r = 每音频秒的 token / 帧数）「推导」；verify = 用引擎自身 SLC 路径复算「近似」"
+                      + ("；调度：x(u) = x(0) + n·u（n = 每音频秒下发 op 数，引擎 0 / 1 µs·op⁻¹ 两次实算），"
+                         "u_rt = 实时临界每 op 调度延迟，u_eq = 调度时间 = 其余时间时的 u「推导」" if dispatch else ""),
+            "dispatch_chip": base.chip.dispatch or "ideal"}
 
 
 # ---- 0.276: real-time streams per card vs SLC size ---------------------------------------------------------------

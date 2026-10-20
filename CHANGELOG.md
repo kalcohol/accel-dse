@@ -6,6 +6,48 @@
 
 
 
+## [0.283.0]
+
+### Changed: components pay the per-op dispatch / kernel cost (MODEL §228.1)
+- Audit of the per-op dispatch design variable (`Chip.dispatch` / `dispatch_us`, 0.203: "static" 10 µs per step, "trace" 1.5 µs per op, "host" 20 µs per op; default "" = ideal). Every LLM / backbone stage already paid it, and so did speech decoders built from model layers (Drama 3 tower, Talker, depformer layers inside `evaluate`).
+- It was **not** applied to components costed by `evaluate._component_time`: speech cards (flow, HiFT, DiT detokenizer, BigVGAN), codecs (DAC, Mimi), the Index-Echo mapper / tokenizer, and VAE / text encoders. `_sum_ops` counted the per-op cost, but the component's `StageTime` dropped it. The same applied to the GPU per-kernel cost `kernel_us`.
+- Now a component adds that serial term like a stage: per op for trace / host, one program launch per execution for static, plus `kernel_us`. The result also carries `sync_s` / `dispatch_s` when non-zero.
+- Behaviour change, old → new:
+  - **Catalog chips: none.** Their dispatch is ideal and `kernel_us` is 0, so speech insight rows are bit-identical (checked over all 17 speech models on 100T).
+  - **Changes only when a knob is set.** Example: the ext default variant (H200, decode `kernel_us` 3.03 µs) now pays 93 kernels per DAC window (+0.27 ms per window). Drama 3 speech diagnostic, predicted / measured:
+    - gmean 1.343 → 1.323;
+    - c = 64: 1.332 → 1.290;
+    - Table 2, vocoder on the same GPU: 1.31 / 1.37 → 1.26 / 1.31.
+- **The default stays ideal (no change).** Catalog NPU presets are design points, and the right per-op cost depends on the runtime (graph capture vs host launch). A global default would move every fingerprint and hide the lever. Instead, the sensitivity is reported per speech model (below).
+
+### Added: op-dispatch sensitivity in the speech bottleneck insight (MODEL §228.2)
+- `speech_bounds(..., dispatch=True)`, `/api/insight_speech` `dispatch` (default true), and a new UI column "op 调度敏感度" (checkbox). Dispatch is a serial term, so each stage is exactly linear in the per-op latency u: x_s(u) = x_s(0) + n_s·u. The engine measures n_s (dispatched ops per audio second) from two runs at 0 and 1 µs/op. Each row reports:
+  - u_rt: the per-op latency where real time is lost;
+  - u_eq: the latency where dispatch equals all the other time of the binding stage;
+  - x at trace 1.5 / host 20 µs;
+  - first-audio ms per µs/op.
+- On 100T + LPDDR5X 4×64-8533 at batch 1, real time is lost at:
+
+  | model | u_rt (µs/op) | dispatched ops per audio second |
+  |---|---|---|
+  | Drama 3 | 21 | 15.3 k |
+  | Ming-TTS-tiny | 33 | 17.8 k |
+  | Index-Echo-9B | 32 | 8.4 k |
+  | FireRedTTS3 | 54 | 8.0 k |
+
+  - Ming-TTS-tiny is already dispatch-dominated (more dispatch time than DRAM time) above 23 µs/op.
+  - At host-style dispatch (20 µs), Drama 3 sits at x 0.98, against 0.67 when ideal.
+  - ASR rows are insensitive (u_rt > 240 µs).
+  - Rows not real time even when ideal (Moshi, Kimi-Audio, Step-Audio-2-mini, Qwen2.5-Omni) report u_rt = 0.
+
+### Investigated: colocated-vocoder gap (MODEL §228.3, unresolved)
+- Measured same → second GPU speed-up: 1.70× (128 streams) / 1.72× (256). Modelled: 1.17× / 1.21× before this release, 1.22× / 1.27× now (DAC kernel cost).
+- SGLang-Omni @ 0029194 `vocoder.py` / `stream_windows.py`: window graphs are captured at lengths 10 / 20 / 32 / 64 / 96. Every window decodes padded to the next captured length, and only the final partial window pads, so the extra work is negligible. The decoder runs fp16 channels-last, which is cheaper than the fp32 we cost, so that goes the wrong way.
+- The modelled vocoder is 6.4 ms per request. The measured split implies about 20 ms, 3.1× more. The unmodelled candidate is two-process GPU time-slicing without MPS (engine kernels wait for the vocoder's time slice). It cannot be checked without a kernel trace. Not fitted.
+
+### Freshness
+- HF sweep since 2026-10-20 (88 orgs) and a web check: only unsloth/sam3.1 (re-upload) and community fine-tunes. Nothing new and official in scope.
+
 ## [0.282.0]
 
 ### Added: Drama 3 on one H200 as an external speech measurement (MODEL §227.1)

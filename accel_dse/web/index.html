@@ -577,6 +577,7 @@
     <div class="row">
       <label title="ASR 为输入音频秒，TTS / 语音输出为输出音频秒">音频秒<input type="number" id="ins-sp-audio" min="1" max="600" value="10" style="width:4em"></label>
       <label class="small" title="用 SLC = 推导容量（向上取 64 MiB，策略 pin）重算一次"><input type="checkbox" id="ins-sp-verify" checked> 复算验证</label>
+      <label class="small" title="0.283：每 op 下发 / 同步延迟敏感度（Chip.dispatch trace / host）：实时临界 µs/op、调度主导阈值、trace 1.5 / host 20 µs 时的 x"><input type="checkbox" id="ins-sp-disp" checked> op 调度敏感度</label>
       <button class="btn" id="ins-sp-run">计算语音瓶颈</button>
       <span class="small muted" id="ins-sp-status"></span>
     </div>

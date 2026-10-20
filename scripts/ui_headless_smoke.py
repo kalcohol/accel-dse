@@ -310,6 +310,8 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             steps.append(("speech insight", rows, st[:40]))
             if not st.startswith("完成") or rows < 10:
                 errs.append(f"speech insight: {st[:200]} rows={rows}")
+            if "实时临界" not in p.inner_text("#ins-sp-tbl"):     # 0.283 dispatch sensitivity column
+                errs.append("speech insight: no dispatch sensitivity column")
             # 0.276: streams per card vs SLC (two SLC sizes keep the smoke short)
             p.fill("#ins-sps-gib", "0, 4")
             p.click("#ins-sps-run")

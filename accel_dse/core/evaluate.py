@@ -2568,10 +2568,17 @@ def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, a
     for ops, n in groups:
         _acc(d, _sum_ops(ops, sys, org, shim), n)
     dram = d["hot"] + d["exp"] + d["w_extra"] + d["act"]
-    stt = StageTime(d["t_arr"], d["t_mac"], d["t_feed"], d["t_vec"], dram / (sys.dram_GBps * 1e9), 0.0, 0.0, dram,
-                    0.0, d["flops"], d["t_ideal"])
+    # 0.283: a component pays the same serial per-op fixed costs as a stage — NPU dispatch (Chip.dispatch: per op for
+    # trace / host, one program launch per execution for static) and GPU kernel_us (both in _sum_ops' "sync").  Before
+    # 0.283 they were dropped here, so speech cards (flow / HiFT / DAC / Mimi …) and VAE / text encoders ran
+    # dispatch-free even with the knobs set.  Both knobs default to off → bit-identical by default.
+    disp = d["disp"] + sys.chip.dispatch_s()[0] * sum(n for _, n in groups)
+    sync = d["sync"] + disp - d["disp"]
+    stt = StageTime(d["t_arr"], d["t_mac"], d["t_feed"], d["t_vec"], dram / (sys.dram_GBps * 1e9), 0.0, sync, dram,
+                    0.0, d["flops"], d["t_ideal"], t_kern=d["kern"], t_disp=disp)
     ch = sys.chip
-    return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound,
+    extra = {"sync_s": sync, "dispatch_s": disp} if sync else {}     # only when a knob is set (summaries unchanged)
+    return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound, **extra,
             # action counts (0.47.1, core/energy.py): bf16-equivalent MAC slots, vector element-ops, SRAM-port bytes
             "acts": {"mac": d["t_ideal"] * ch.macs * ch.freq_ghz * 1e9, "vec": d["t_vec"] * ch.lanes * ch.freq_ghz * 1e9,
                      "sram": d["sram"], "dram": dram, "link": 0.0, "d2d": 0.0, "net": 0.0}}

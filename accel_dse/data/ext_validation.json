@@ -1,5 +1,5 @@
 {
- "generated": "0.282.0",
+ "generated": "0.283.0",
  "variants": {
   "default": {
    "eff": "catalog",
@@ -6118,9 +6118,9 @@
   "default": {
    "summary": {
     "n": 7,
-    "gmean_ratio": 1.343,
-    "ratio_c1": 1.237,
-    "ratio_cmax": 1.332
+    "gmean_ratio": 1.323,
+    "ratio_c1": 1.234,
+    "ratio_cmax": 1.29
    },
    "rows": [
     {
@@ -6128,14 +6128,14 @@
      "c": 1,
      "vocoder_gpu": "same",
      "meas": 166.7,
-     "pred": 206.2,
-     "ratio": 1.237,
+     "pred": 205.6,
+     "ratio": 1.234,
      "ttfa_meas_ms": 88.9,
-     "ttfa_pred_ms": 61.0,
+     "ttfa_pred_ms": 61.2,
      "shares": {
       "prefill": 0.031,
-      "decode": 0.958,
-      "vocoder": 0.011
+      "decode": 0.956,
+      "vocoder": 0.014
      }
     },
     {
@@ -6143,14 +6143,14 @@
      "c": 2,
      "vocoder_gpu": "same",
      "meas": 287.0,
-     "pred": 370.7,
-     "ratio": 1.292,
+     "pred": 368.7,
+     "ratio": 1.285,
      "ttfa_meas_ms": 96.2,
-     "ttfa_pred_ms": 64.4,
+     "ttfa_pred_ms": 64.7,
      "shares": {
       "prefill": 0.055,
-      "decode": 0.925,
-      "vocoder": 0.02
+      "decode": 0.92,
+      "vocoder": 0.025
      }
     },
     {
@@ -6158,14 +6158,14 @@
      "c": 4,
      "vocoder_gpu": "same",
      "meas": 467.6,
-     "pred": 620.0,
-     "ratio": 1.326,
+     "pred": 614.5,
+     "ratio": 1.314,
      "ttfa_meas_ms": 108.2,
-     "ttfa_pred_ms": 71.0,
+     "ttfa_pred_ms": 71.2,
      "shares": {
-      "prefill": 0.092,
-      "decode": 0.875,
-      "vocoder": 0.033
+      "prefill": 0.091,
+      "decode": 0.867,
+      "vocoder": 0.041
      }
     },
     {
@@ -6173,14 +6173,14 @@
      "c": 8,
      "vocoder_gpu": "same",
      "meas": 678.1,
-     "pred": 946.5,
-     "ratio": 1.396,
+     "pred": 933.9,
+     "ratio": 1.377,
      "ttfa_meas_ms": 153.2,
-     "ttfa_pred_ms": 82.9,
+     "ttfa_pred_ms": 83.2,
      "shares": {
-      "prefill": 0.141,
-      "decode": 0.809,
-      "vocoder": 0.05
+      "prefill": 0.139,
+      "decode": 0.799,
+      "vocoder": 0.063
      }
     },
     {
@@ -6188,14 +6188,14 @@
      "c": 16,
      "vocoder_gpu": "same",
      "meas": 927.6,
-     "pred": 1324.8,
-     "ratio": 1.428,
+     "pred": 1300.1,
+     "ratio": 1.402,
      "ttfa_meas_ms": 210.1,
-     "ttfa_pred_ms": 103.0,
+     "ttfa_pred_ms": 103.3,
      "shares": {
-      "prefill": 0.197,
-      "decode": 0.733,
-      "vocoder": 0.07
+      "prefill": 0.193,
+      "decode": 0.72,
+      "vocoder": 0.087
      }
     },
     {
@@ -6203,14 +6203,14 @@
      "c": 32,
      "vocoder_gpu": "same",
      "meas": 1244.7,
-     "pred": 1743.3,
-     "ratio": 1.401,
+     "pred": 1700.8,
+     "ratio": 1.366,
      "ttfa_meas_ms": 304.6,
-     "ttfa_pred_ms": 133.6,
+     "ttfa_pred_ms": 133.9,
      "shares": {
-      "prefill": 0.259,
-      "decode": 0.649,
-      "vocoder": 0.092
+      "prefill": 0.253,
+      "decode": 0.633,
+      "vocoder": 0.114
      }
     },
     {
@@ -6218,14 +6218,14 @@
      "c": 64,
      "vocoder_gpu": "same",
      "meas": 1687.3,
-     "pred": 2247.2,
-     "ratio": 1.332,
+     "pred": 2177.1,
+     "ratio": 1.29,
      "ttfa_meas_ms": 450.9,
-     "ttfa_pred_ms": 170.4,
+     "ttfa_pred_ms": 170.7,
      "shares": {
-      "prefill": 0.334,
-      "decode": 0.547,
-      "vocoder": 0.119
+      "prefill": 0.324,
+      "decode": 0.53,
+      "vocoder": 0.146
      }
     }
    ],
@@ -6235,14 +6235,14 @@
      "c": 128,
      "vocoder_gpu": "same",
      "meas": 2177,
-     "pred": 2848.1,
-     "ratio": 1.308,
+     "pred": 2737.5,
+     "ratio": 1.257,
      "ttfa_meas_ms": 685,
-     "ttfa_pred_ms": 210.9,
+     "ttfa_pred_ms": 211.1,
      "shares": {
-      "prefill": 0.419,
-      "decode": 0.432,
-      "vocoder": 0.149
+      "prefill": 0.403,
+      "decode": 0.416,
+      "vocoder": 0.182
      }
     },
     {
@@ -6250,14 +6250,14 @@
      "c": 256,
      "vocoder_gpu": "same",
      "meas": 2422,
-     "pred": 3325.4,
-     "ratio": 1.373,
+     "pred": 3175.7,
+     "ratio": 1.311,
      "ttfa_meas_ms": 3403,
-     "ttfa_pred_ms": 276.8,
+     "ttfa_pred_ms": 277.1,
      "shares": {
-      "prefill": 0.489,
-      "decode": 0.337,
-      "vocoder": 0.174
+      "prefill": 0.467,
+      "decode": 0.322,
+      "vocoder": 0.211
      }
     },
     {

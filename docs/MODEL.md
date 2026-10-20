@@ -7531,3 +7531,48 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 ### §227.2 Hyper-connection scales
 - 「来源」 DeepSeek-V4 inference `model.py` / GLM-5.3 modeling: `hc_attn_scale`, `hc_ffn_scale` (shape [3]) and `hc_head_scale` ([1]) are `nn.Parameter`s of the mHC mixing (the templates' `hc_p` / `head_p` already include them). `summarize_release` dropped them as scales through `_scale$`; `NOT_SCALE_RE` keeps them. Release LLM params now equal the templates for V4-Flash (+259), V4-Pro (+367), V4.1-Flash (+240) and GLM-5.3-Flash (+270); MTP +7 / +7 / +18 / 0, still exact.
 - Dory `lm_head.logit_scale` [131,072] stays excluded: the template has no logit-scale term, so counting it would open a 3e-5 gap.
+
+## §228 Per-op dispatch on components; speech op-dispatch sensitivity; colocated vocoder (0.283)
+
+### §228.1 Components pay dispatch / kernel cost
+- The existing design variable (0.203, `hardware.Chip`): `dispatch` ∈ {"", static, trace, host}, `dispatch_us` (None = mode default). `DISPATCH_US`:
+  - static 10 µs per step 「二手」 JAX jit dispatch 9.1–10.1 µs;
+  - trace 1.5 µs per op 「二手」 tt-metal #20681;
+  - host 20 µs per op 「二手」 vllm-ascend #13021.
+  - Default "" (ideal) — unchanged.
+- `evaluate._component_time` now builds its `StageTime` with t_sync = Σ per-op dispatch (trace / host) + static per-step cost × executions + `kernel_us` per kernel. t_disp and t_kern are split out the same way `_sum_ops` already counted them for stages 「推导」. Returns `sync_s` and `dispatch_s` only when non-zero (so default summaries and fingerprints are unchanged).
+- Applies to speech cards, codecs, mapper / tokenizers and VAE / text encoders. Bit-identical when both knobs are off (all catalog chips). Moved numbers: the ext speech default variant only (kernel_us set) — see CHANGELOG 0.283.
+
+### §228.2 Speech op-dispatch sensitivity (`speech_insight._dispatch_row`)
+- t_stage = max(compute, DRAM, SLC, link) + t_sync, so each stage's x is exactly linear in the per-op latency u:
+  - x_s(u) = x_s(0) + n_s·u 「推导」;
+  - n_s = (x_s(1 µs) − x_s(0)) / 1 µs (engine-measured dispatched ops per audio second; the chip's own dispatch is stripped for x(0)).
+- u_rt = min over stages with x_s(0) < 1 of (1 − x_s(0)) / n_s; it is 0 if the binding stage misses real time even when ideal.
+- u_eq = x_b(0) / n_b. Above u_eq, dispatch rather than bandwidth / compute dominates the binding stage.
+- x at trace / host is evaluated at the sourced per-op defaults. Exactness is tested: the engine run at host matches to 1e-9, and x(u_rt) = 1.
+- 100T + LPDDR5X 4×64-8533, batch 1, 10 s audio:
+
+  | model | x(0) | n (ops / audio s) | u_rt µs | u_eq µs | x@trace | x@host |
+  |---|---|---|---|---|---|---|
+  | drama-3 | 0.671 | 15.3 k | 21.5 | 43.8 | 0.694 | 0.977 |
+  | ming-3.0-tts-tiny | 0.406 | 17.8 k | 33.5 | 22.8 | 0.432 | 0.761 |
+  | index-echo-s2st-9b | 0.730 | 8.4 k | 32.3 | 87.3 | 0.743 | 0.898 |
+  | fireredtts3-base | 0.566 | 8.0 k | 54.3 | 71.0 | 0.578 | 0.726 |
+  | cosyvoice2-0.5b | 0.182 | 6.1 k (LM) + 1.7 k (card) | 134.6 | 30.0 | 0.191 | 0.304 |
+  | whisper-large-v3 | 0.063 | 2.7 k | 343 | 23.3 | 0.068 | 0.118 |
+  | moshiko-7b | 1.085 | 9.3 k | 0 | 116 | 1.099 | 1.272 |
+
+- Reading for chip architects:
+  - Streaming TTS decoders dispatch 8–18 k ops per audio second (frame / token step × layers × ops), against ≈ 2–3 k for ASR decoders.
+  - With graph-trace dispatch (≈ 1.5 µs) bandwidth still binds. Host-launched per-op dispatch (≈ 20 µs) is enough to put Drama 3 at the edge of real time and to make Ming-TTS-tiny dispatch-dominated.
+  - The per-op latency budget for real-time streaming TTS on this memory system is ≈ 20–35 µs/op.
+
+### §228.3 Colocated vocoder (Drama 3 H200), unresolved
+- After §228.1 the ext default variant's DAC pays 93 kernels per window × 3.03 µs (+0.27 ms per window). The modelled same → second-GPU speed-up rises from 1.17× / 1.21× to 1.22× / 1.27×; measured 1.70× / 1.72×.
+- 「来源」 sglang-omni @ 0029194:
+  - `stream_windows.stream_window_lengths` = {10, 20, 32, 64, 96};
+  - `vocoder.WindowGraphDecoder` pads each batch-1 window to the next captured length (only the final window pads);
+  - `stages.py` decodes `ChannelsLastDecoder(codec, dtype=float16)`.
+  - Neither padding nor fp16 (cheaper than our fp32) closes the gap.
+- The measured split implies vocoder ≈ 0.70 × (prefill + decode) ≈ 20 ms per request against the modelled 6.4 ms. The remaining candidate is two-process time-slicing on one GPU without MPS, which needs a kernel trace. Not fitted; documented.
+

@@ -2095,20 +2095,29 @@ function speechInsightRows(r) {
       h('td', {}, SP_STAGE[x.binding] || x.binding), h('td', {}, num(x.x)), h('td', {}, x.realtime ? '是' : '否'),
       h('td', {}, `${num(x.first_audio_s * 1e3)} ms（${x.first_audio_dominant}）`),
       h('td', {}, x.dram_GBps_eff_needed != null ? num(x.dram_GBps_eff_needed) : '—'), h('td', {}, unlock),
-      h('td', { class: 'small muted' }, st));
+      h('td', { class: 'small muted' }, st), ...(r.rows.some((y) => y.dispatch) ? [h('td', { class: 'small' }, speechDispCell(x.dispatch))] : []));
   });
+}
+/* 0.283: per-op dispatch sensitivity — x(u) = x(0) + n·u (core/speech_insight._dispatch_row) */
+function speechDispCell(d) {
+  if (!d) return '—';
+  const ops = Object.values(d.ops_per_audio_s || {}).reduce((a, b) => Math.max(a, b), 0);
+  const rt = d.us_rt == null ? '∞' : (d.us_rt === 0 ? '理想下已不实时' : `${num(d.us_rt)} µs/op`);
+  return `实时临界 ${rt} · 调度主导 > ${d.us_eq == null ? '—' : num(d.us_eq) + ' µs/op'} · ${num(ops)} op/音频秒`
+    + ` · x@trace ${num(d.x_at.trace)} / host ${num(d.x_at.host)} · 首音频 +${num(d.first_audio_ms_per_us)} ms/(µs/op)`;
 }
 async function runInsightSpeech() {
   $('ins-sp-status').textContent = '计算中（每个语音模型 batch 1）…';
   try {
     const a = Number($('ins-sp-audio').value) || 10;
-    const r = await track(req('insight_speech', '/api/insight_speech', body({ audio_s: a, verify: $('ins-sp-verify').checked })));
+    const r = await track(req('insight_speech', '/api/insight_speech', body({ audio_s: a, verify: $('ins-sp-verify').checked, dispatch: $('ins-sp-disp').checked })));
     if (!r) return;
     const miss = (r.rows || []).filter((x) => !x.realtime);
     $('ins-sp-summary').textContent = `${r.chip} · ${r.mem_id} · 有效 DRAM ${num(r.dram_GBps_eff)} GB/s · batch ${r.batch} · ${num(r.audio_s)} s 音频`
       + ` · ${miss.length}/${(r.rows || []).length} 个模型达不到实时` + (r.method ? ' · ' + r.method : '');
     put($('ins-sp-tbl'), h('thead', {}, h('tr', {},
-      ['模型', '类型', '瓶颈阶段', 'x（忙碌秒/音频秒）', '实时', '首音频 / 首 token（主导）', '所需有效带宽 GB/s', '或 SLC 钉住', '各阶段 x']
+      ['模型', '类型', '瓶颈阶段', 'x（忙碌秒/音频秒）', '实时', '首音频 / 首 token（主导）', '所需有效带宽 GB/s', '或 SLC 钉住', '各阶段 x',
+        ...((r.rows || []).some((y) => y.dispatch) ? ['op 调度敏感度（每 op 延迟 u）'] : [])]
         .map((x) => h('th', {}, x)))), h('tbody', {}, speechInsightRows(r)));
     $('ins-sp-status').textContent = `完成 · ${(r.rows || []).length} 模型`;
   } catch (e) {
