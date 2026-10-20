@@ -196,6 +196,9 @@ class AudioSpec:
     # 0.272 Step-Audio-2-mini: ``mpad`` samples appended before the STFT (log_mel_spectrogram padding=479; frames =
     # (samples + mpad) // hop); ``ds`` + ``lin`` together = AvgPool → Adaptor conv (GELU) → Linear, ReLU, Linear
     mpad: int = 0
+    # 0.273 Kimi-Audio: ``stack`` consecutive encoder positions concatenated (1280 × 4 = 5120) into one LLM position
+    # (12.5 Hz) before the adaptor Linears; sequential 30 s windows (pad, no truncation)
+    stack: int = 0
 
     @property
     def samples_per_token(self) -> int:
@@ -269,6 +272,14 @@ class AudioSpec:
             return self.lfr_frames(seconds)     # processor: num_audio_tokens = input_features_mask.sum (one per LFR frame)
         if self.kind == "aut":
             return self.enc_positions(seconds)
+        if self.kind == "whisper" and self.stack:
+            # 0.273 Kimi-Audio (kimia_infer whisper_Lv3/whisper.py): per 30 s segment of L samples token_len =
+            # (L − 1) // (160 · 8) + 1, the encoder output sliced to token_len · 4 positions → token_len LLM positions
+            n = max(1, round(seconds * self.rate))
+            seg = self.chunk * self.patches[0]
+            full, rem = divmod(n, seg)
+            step = self.patches[0] * 2 * self.stack
+            return full * ((seg - 1) // step + 1) + ((rem - 1) // step + 1 if rem else 0)
         if self.kind == "whisper" and self.pad:
             # Qwen2-Audio processor: num_audio_tokens = (((L − 1)//2 + 1) − 2)//2 + 1 over the unpadded frames L
             # (conv2 stride 2, AvgPool1d 2); Whisper (cross): encoder positions of every window
@@ -306,6 +317,9 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
     tk = cfg.get("thinker_config") or {}
     if mt == "qwen2_5_omni" and (tk.get("audio_config") or {}).get("model_type") == "qwen2_5_omni_audio_encoder":
         return _omni_audio_spec(tk["audio_config"])
+    kw = cfg.get("_kimi_whisper") or {}
+    if kw:
+        return _kimi_audio_spec(kw, cfg)
     sa = cfg.get("audio_encoder_config") or {}
     if mt == "step_audio_2" and sa.get("n_audio_state"):
         return _step_audio_spec(sa)
@@ -393,6 +407,20 @@ def _aut_spec(ac: dict) -> AudioSpec:
     a = AudioSpec(16000, (160,), (d,), (L,), 3, ffn / d, ac["output_dim"], params, kind="aut", heads=nh, n_mels=mel,
                   chunk=2 * nw, lin=lin, ch=C)
     return replace(a, win=a.aut_len(2 * nw) * (ac["n_window_infer"] // (2 * nw)))
+
+
+def _kimi_audio_spec(w: dict, cfg: dict) -> AudioSpec:
+    """0.273 Kimi-Audio-7B-Instruct audio input (kimia_infer whisper_Lv3/whisper.py + modeling_moonshot_kimia.py
+    VQAdaptor 「来源」): the repo's whisper-large-v3 encoder (WhisperModel.encoder, bf16) on every 30 s segment padded
+    to 3000 mel frames (1500 positions; sequential segments, no truncation); output sliced to 4 · token_len positions,
+    reshaped 4 × 1280 → 5120 per 12.5 Hz position; VQAdaptor = Linear 5120 → hidden + SiLU, Linear hidden → hidden,
+    LayerNorm (bias).  The continuous features are added to the discrete GLM-4-Voice semantic-token embeddings at the
+    same positions — that tokenizer (THUDM/glm-4-voice-tokenizer, a separate repo) is not costed (coverage reason)."""
+    d, h = w["d_model"], cfg["hidden_size"]
+    st = cfg.get("kimia_adaptor_input_dim", 4 * d) // d
+    a = _whisper_v3_spec({"d_model": d}, w["encoder_layers"], w["encoder_attention_heads"], w["encoder_ffn_dim"],
+                         w["num_mel_bins"], w["max_source_positions"], lin=((st * d, h), (h, h)))
+    return replace(a, params=a.params + 2 * h, stack=st)
 
 
 def _step_audio_spec(sa: dict) -> AudioSpec:
@@ -545,7 +573,7 @@ def _whisper_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -
         if a.lin is not None:
             # 0.270 Whisper-v3 family: AvgPool1d(pool) (Qwen2-Audio; ½ add per pooled input) then the projector Linears
             # on every padded position (the processor's mask selects the valid ones afterwards)
-            rp = rows // a.pool
+            rp = rows // (a.stack or a.pool)       # 0.273 Kimi-Audio: 4 positions stacked per adaptor row
             if a.pool > 1:
                 ops.append(Op(f"{p}pool", "vector", a.depths[0], vec=rows * d * 1.0))
             for i, (k, n_) in enumerate(a.lin):
@@ -613,14 +641,18 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
             # 0.268 audio-only release (Ming-3.0-asr-tiny): an encoder container with no image path (family "audio":
             # image_grid_of → None, serving.images ignored with a warning); costed when serving.audio_s > 0
             # 0.270: Whisper-large-v3 (encoder-decoder), Qwen2-Audio (Whisper-v3 encoder + pool + projector), Qwen3-ASR (AuT)
-            lab = ("Whisper 式音频编码器（整段一次、≤ 30 s）+ 平均池化 + 卷积适配器（s2）+ MLP 投影" if au.ds and au.lin else
+            lab = ("Whisper-large-v3 音频编码器（30 s 填充窗、逐窗）+ 4 帧拼接 → 适配器 MLP（12.5 Hz）" if au.stack else
+                   "Whisper 式音频编码器（整段一次、≤ 30 s）+ 平均池化 + 卷积适配器（s2）+ MLP 投影" if au.ds and au.lin else
                    "Whisper-v3 音频编码器（30 s 填充窗，交叉注意力输入）" if au.cross else
                    "Whisper-v3 音频编码器（30 s 填充）+ 平均池化 + 线性投影" if au.lin is not None and au.kind == "whisper" else
                    "AuT 音频编码器（Conv2d ×3 下采样 8×，窗口注意力）+ MLP 投影" if au.kind == "aut" else
                    "SAN-M 音频编码器（LFR 7/6 帧堆叠，70 层 FSMN 自注意力，整段双向）+ 投影 + 2 层适配器" if au.kind == "sanm" else
                    "Whisper 音频编码器 + 卷积下采样投影")
             return VisionSpec("audio", lab, 0, 1, au.dims[0], int(au.mlp * au.dims[0]),
-                              au.depths[0], au.heads, au.dims[0], False, 1, (), au.params, (), audio=au)
+                              au.depths[0], au.heads, au.dims[0], False, 1, (), au.params, (), audio=au,
+                              # 0.273 Kimi-Audio: the discrete input tokens come from a second encoder in another repo
+                              approx=("输入离散语义 token：GLM-4-Voice tokenizer（THUDM/glm-4-voice-tokenizer，Whisper-v3 "
+                                      "前 16 层 + 4× 池化 + VQ 16384，另一仓库）未计入音频编码耗时" if au.stack else ""))
         return None
     if hf_id not in _PREPROC:
         return None

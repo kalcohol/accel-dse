@@ -1401,6 +1401,16 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
               vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
            gemm(model, "lm_head", model.n_layers, m, model.hidden, n, role, stream=True),
            Op("sample", "vector", model.n_layers, vec=m * n * 3, sfu=m * n)]
+    if model.kv_cache:
+        # 0.273 extra output heads of an autoregressive model (Kimi-Audio mimo_output: the audio-token head, sampled
+        # every step next to the text head), vocab-parallel like the lm_head
+        for l in model.io_post:
+            nn_ = _cdiv(l.n, sh.tp)
+            ops += [gemm(model, "io." + l.name, model.n_layers, m, l.k, nn_, l.role or "lm_head", stream=True),
+                    Op("sample." + l.name, "vector", model.n_layers, vec=m * nn_ * 3, sfu=m * nn_)]
+            if sh.tp > 1:
+                ops.append(Op("logits_gather." + l.name, "comm", model.n_layers, comm_kind="allgather",
+                              comm_group=sh.tp, comm_bytes=m * 2 * 4))
     if glue:
         # 0.177: sampling passes over the logits (trace: apply_penalty, topk, mask_top_p, sort / gatherTopK) — fp32
         # logits read + written per pass

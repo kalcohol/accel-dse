@@ -6978,3 +6978,85 @@ Findings:
   - IndexTeam Index-Echo-S2ST: STLM omni (15 shards) + distcp checkpoint + bridge mapper + vendored CosyVoice3.
   - FireRedTTS3: custom FireRedTTS3BaseCore (patch encoder 8 × 1024, DiT 11 × 1024, ReDAE); the HF repo has configs + weights only, no modeling code.
   - Kimi-Audio-7B; Step-Audio-2 token2wav.
+
+## §218 Speech round 4: speech blocks in the UI, Step-Audio-2 token2wav, Kimi-Audio-7B-Instruct (0.273)
+
+### §218.1 UI
+The web client now renders every speech result block the API returns:
+- Omni: `split_first`, `slc` (0.272) and `audio_in`.
+- CosyVoice / Step-Audio-2: `split_first`, `flow_s` / `hift_s`, `flow_pin_miss`, `label` / `stream`.
+- Kimi-Audio: kind `kimi`.
+- ASR: `max_audio_s`, `encoder_s`, `prompt_audio_tokens`.
+
+`evaluate._asr_info` adds `max_audio_s`, the encoder cap in seconds (None = no cap), and the UI shows that instead of a hard-coded 30 s.
+
+### §218.2 Step-Audio-2-mini token2wav (`CosySpec.stream = "cache"`)
+Sources 「来源」 (github stepfun-ai/Step-Audio2): token2wav.py, examples-vllm-stream.py, cosyvoice2/flow/flow.py (`inference_chunk`, `setup_cache`), flow/decoder_dit.py, transformer/upsample_encoder_v2.py.
+
+Params 「来源」, the released .pt metadata read via HTTP Range:
+- flow 155,802,352 (fp32).
+- HiFT 20,821,295: flashcosyvoice `HiFTGenerator()` defaults (ups 8/5/3, iSTFT 16/4, 24 kHz), identical to CosyVoice2's.
+
+Per chunk 「来源」:
+- N = 25 new tokens (CHUNK_SIZE, fixed) plus 3 look-ahead into the pre-look-ahead conv.
+- Conformer:
+  - 6 blocks on N rows over enc_off + N keys. The att cache holds every token since `setup_cache` and is never trimmed.
+  - espnet rel-pos: `linear_pos` and q·posᵀ over 2·keys − 1 positions.
+  - Then the ×2 up conv, and 4 blocks on M = 2N rows over 2·enc_off + M keys.
+- Estimator: DiT with 16 blocks, d512, 8 × 64 heads, causal conv block k3 ×2 and adaLN 9d.
+  - Per Euler step: B·M rows (CFG B = 2). The t-embedding / adaLN run on B rows.
+  - Attention covers prompt mel + min(100, frames so far) cached frames + M.
+- 10 Euler steps. HiFT on M + 8 cache frames.
+- The voice prompt (`setup_cache`) is computed once per voice, not per request 「假设」.
+
+First audio = T_ft + 28 · TPOT + flow(chunk 0) + HiFT(chunk 0). LM RTF = 25 · TPOT.
+
+Text tokens interleaved with the speech tokens are not counted 「假设」, so the LM time is a lower bound.
+
+The listing domain becomes `omni` once the release carries `token2wav`.
+
+### §218.3 Kimi-Audio-7B-Instruct
+Sources 「来源」:
+- HF moonshotai/Kimi-Audio-7B-Instruct: config.json, modeling_moonshot_kimia.py, whisper-large-v3/, audio_detokenizer/config.yaml + model.pt, vocoder/config.json + model.pt.
+- github MoonshotAI/Kimi-Audio: kimia_infer/api/kimia.py, models/detokenizer/*, models/tokenizer/whisper_Lv3/whisper.py.
+
+`KimiAudioConfig` subclasses Qwen2Config without a model_type of its own, so it is recognised by `architectures` = MoonshotKimiaForCausalLM.
+
+**LLM.**
+- 28 Qwen2 layers (q/k/v bias, GQA 28/4, d3584, ffn 18944) plus `kimia_mimo_layers` = 6 layers of the same shape. The mimo layers take the hidden state after layer 21 and feed `mimo_norm` → `mimo_output` [168448, 3584].
+- Every step runs both branches and both heads, and each layer has its own KV cache. It is costed as one 34-layer stack 「推导」: identical FLOPs, weight bytes and KV bytes; the possible overlap of the two branches is not modelled.
+- `mimo_output` is an `io_post` Linear with rows "seq". In the autoregressive path, `ir._head_ops` now runs every `io_post` Linear of a KV-cache model next to the lm_head: vocab-parallel, with its own sample op and a TP logits gather. Prefill uses the last position only, like the lm_head 「推导」. Kimi is the only LLM with io_post.
+- 9,735,124,992 params, exact. The 34 × 64 `rotary_emb.inv_freq` bf16 buffers in the safetensors are classed as buffers.
+
+**Audio in.**
+- whisper-large-v3 encoder: 636,968,960 params.
+- Run per 30 s segment padded to 3000 mel frames. Output sliced to 4 · token_len positions, where token_len = (L − 1) // 1280 + 1 for a segment of L samples.
+- Every 4 × 1280 positions are concatenated to 5120 → VQAdaptor (Linear 5120 → 3584, SiLU, Linear, LayerNorm): 31,209,472 params. 12.5 positions / s.
+- The discrete GLM-4-Voice semantic tokens at the same positions come from THUDM/glm-4-voice-tokenizer: Whisper-v3 first 16 layers + 4× pooling + VQ 16384, in another repo. Not costed; this is the coverage reason (partial).
+
+**Speech out** (`core/kimi_audio.py`):
+- Each step emits a text token and an audio token. The first 6 audio slots are blank (`kimia_mimo_audiodelaytokens`).
+- Detokenizer (bf16 at run time: `.to(bfloat16)`):
+  - Tokens are repeat_interleaved ×4 to 50 Hz.
+  - `detokenize_audio` chunks are 30 tokens (the first one too). `look_ahead_tokens` = 12 carried in front, so T = 168 rows (chunk 0: 120). The last 48 frames are dropped and recomputed by the next chunk.
+  - t_span = linspace(0, 1, 30) through torchdyn Euler gives 29 evaluations. Then one evaluation at t = 0.999 over the kept frames writes their K/V (`infer_chunk`).
+  - DiT: 16 blocks, d2304, 18 × 128 heads, MLP 4d. adaLN-Zero 6d **per frame**: c = t-embedding + semantic-token embedding, (N, T, D), so the modulation GEMM runs on T rows. RoPE; LayerNorm without affine.
+  - Attention covers the cached kept frames (`max_kv_cache_tokens` 900, newest kept; the reserve stays 0) + T. The cached K/V is re-read every evaluation (16 × 2 × frames × 2304 × 2 bytes) 「推导」.
+  - The final chunk keeps everything and runs no commit evaluation.
+- BigVGAN (ups 5·2·2·2·2·3·2 = hop 480, 2048 initial channels, AMP resblocks k 3/5/7/11, anti-aliased SnakeBeta 「近似」 as §216): runs on held-back + new mel. `detokenize_streaming` returns half of chunk 0, then 2 × the held length (Hamming overlap); `KimiSpec.plan` follows it frame for frame (Σ returned = 4 · tokens).
+- 1,584,023,120 DiT + 241,118,777 vocoder params, exact.
+
+Formulas:
+- First audio (feeding the chunk API as tokens arrive 「假设」) = T_ft + (6 + 30 − 1) · TPOT + DiT chunk 0 + BigVGAN(72). That yields 0.72 s of audio.
+- The released kimia.py generates every token first and then detokenizes: `first_audio_released_s` = T_ft + (6 + n − 1) · TPOT + chunk 0.
+- LM RTF = 12.5 · TPOT. Speech card: batch 1 per stream, as released 「来源」, on one extra card per replica 「假设」.
+- DiT pin: the 0.269 re-read rule on the 3.09 GB bf16 weights.
+
+**Finding** (100T + LPDDR5X, 10 s out, prompt 120 + 10 s audio in):
+- TPOT 95 ms, so LM RTF 1.19.
+- Streaming first audio 3.94 s, of which 3.34 s is the 35 LM steps. Released flow: 13.0 s.
+- DiT ≈ 0.48 s per 2.4 s chunk, identical at 120 and 168 rows. It is weight-bound: 30 reads × 3.09 GB per chunk.
+- BigVGAN ≈ 4–9 ms per chunk. Speech-card RTF 0.24, 4 real-time streams.
+- Design lever: batching streams through the DiT would be nearly free (rows are tiny next to the weights), but the released detokenizer asserts batch 1. On-chip SRAM / SLC capacity for the 3.1 GB DiT is the other lever.
+
+**Deferred.** Moshi (Temporal + Depth transformer, Mimi codec), FireRedTTS3 (no modeling code), drama-3, Index-Echo; the GLM-4-Voice tokenizer cost.

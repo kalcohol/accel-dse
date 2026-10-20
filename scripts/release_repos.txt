@@ -129,3 +129,7 @@ Qwen/Qwen2.5-Omni-7B
 FunAudioLLM/Fun-ASR-Nano-2512-hf
 # 0.272: Step-Audio-2-mini (audio in; encoder / adapter roles via summarize_release._step_audio_role)
 stepfun-ai/Step-Audio-2-mini
+# 0.273: Step-Audio-2-mini speech output — token2wav/*.pt + flow.yaml: python3 scripts/fetch_pt_release.py --token2wav stepfun-ai/Step-Audio-2-mini
+# 0.273: Kimi-Audio-7B-Instruct (LLM safetensors here; whisper-large-v3/ encoder + audio_detokenizer/ + vocoder/ via
+#        python3 scripts/fetch_pt_release.py --kimi moonshotai/Kimi-Audio-7B-Instruct)
+moonshotai/Kimi-Audio-7B-Instruct

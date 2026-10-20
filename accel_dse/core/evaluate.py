@@ -1980,6 +1980,10 @@ def _asr_info(m: ModelSpec, sv, vis: dict | None, step: float, tpot: float, thr:
                            # 0.272 sanm: maxf counts LFR positions (lfr[1] fbank hops each)
                            max(0.0, sv.audio_s - au.maxf * au.lfr[1] * au.patches[0] / au.rate) if au.kind == "sanm" else
                            max(0.0, sv.audio_s - au.maxf * au.patches[0] / au.rate) if au.maxf else 0.0)}
+    # 0.273: the processor / model cap in seconds (UI truncation message; None = no cap)
+    cap = (au.chunk * au.patches[0] / au.rate if au.trunc else au.maxf * au.lfr[1] * au.patches[0] / au.rate
+           if au.kind == "sanm" else au.maxf * au.patches[0] / au.rate if au.maxf else None)
+    out["max_audio_s"] = cap
     if m.enc_ctx:
         out["cross_kv_MB_per_seq"] = sum(m.enc_ctx * L.cross.n_kv * (L.cross.qk_dim + L.cross.v_dim)
                                          for L in m.layers if L.cross is not None) * _fmt(m.kv_fmt).bytes / 1e6

@@ -73,7 +73,11 @@ function domainBadge(m) {
   // 0.268: audio-only release (Ming-3.0-asr-tiny) — the encoder is costed via serving.audio_s (API / CLI --audio-s)
   if (m.domain === 'tts' && /CosyVoice/.test(m.hf_id || '')) return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · LM 每秒 25 个语音 token → 分块流匹配 → HiFT 声码器（按输出音频秒计）');   // 0.271
   if (m.domain === 'tts') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音合成 · 每 token = 1 帧潜变量（流匹配头 + AudioVAE 解码）');
-  if (m.domain === 'omni') return h('span', { class: 'badge vlm', title: coverTip(m) }, '全模态 · Thinker（+ 音频编码器）→ Talker → token2wav 语音输出（按输出音频秒计）');   // 0.271
+  if (m.domain === 'omni' && m.family === 'Kimi-Audio') return h('span', { class: 'badge vlm', title: coverTip(m) },   // 0.273
+    '全模态 · Whisper 编码器 → LLM（每步文本 token + 12.5 Hz 音频 token 并行两头）→ 流匹配 DiT 去分词器 → BigVGAN（按输出音频秒计）');
+  if (m.domain === 'omni') return h('span', { class: 'badge vlm', title: coverTip(m) }, m.family === 'Step-Audio-2'   // 0.273
+    ? '全模态 · 音频编码器 → LLM（文本 + 25 Hz 语音 token）→ token2wav（缓存式分块 flow + HiFT）语音输出（按输出音频秒计）'
+    : '全模态 · Thinker（+ 音频编码器）→ Talker → token2wav 语音输出（按输出音频秒计）');   // 0.271
   if (m.domain === 'asr') return h('span', { class: 'badge vlm', title: coverTip(m) }, '语音识别 · 含音频编码器（serving.audio_s，按音频秒计）');
   return null;
 }
@@ -834,24 +838,61 @@ function renderEval(r) {
     k.push(kpi('语音识别 ASR（本阶段）', a.audio_s_per_s_card != null ? `${num(a.audio_s_per_s_card)} 音频秒/秒/卡` : '—',
       `${num(a.audio_s)} s 音频 → 编码器 ${a.enc_positions} 位置` + (a.windows ? `（${a.windows} 个 30 s 填充窗）` : '')
       + (a.cross ? ` · 交叉注意力（解码器 prompt 不含音频 token）· 交叉 K/V ${num(a.cross_kv_MB_per_seq)} MB/序列` : ` · prompt 音频 token ${a.prompt_audio_tokens}`)
-      + (a.truncated_s ? ` · 超过 30 s 的 ${num(a.truncated_s)} s 被处理器截断` : '')
+      + (a.truncated_s ? ` · 超过 ${num(a.max_audio_s)} s 的 ${num(a.truncated_s)} s 被截断（处理器 / 位置表上限）` : '')   // 0.273: per-model cap
       + (a.first_token_s != null ? ` · 首 token ${num(a.first_token_s * 1e3)} ms（编码器 ${num(a.encoder_s * 1e3)} ms）` : '')
       + (a.rtf_decode != null ? ` · 解码 RTF ${num(a.rtf_decode)}` : '')));
   }
   if (r.speech && !r.speech.error) {   // 0.270: end to end over both phases (core/speech.py)
     const p = r.speech;
     if (p.kind === 'asr') k.push(kpi('语音端到端 · ASR', `RTF ${num(p.rtf)}`,
-      `${num(p.audio_s)} s 音频 → ${p.out_len} token · 首 token ${num(p.first_token_s * 1e3)} ms · 共 ${num(p.total_s)} s · ${num(p.audio_s_per_s_card)} 音频秒/秒/卡（静态 batch，两阶段串行「近似」）`,
+      `${num(p.audio_s)} s 音频 → ${p.out_len} token · 首 token ${num(p.first_token_s * 1e3)} ms（编码器 ${num(p.encoder_s * 1e3)} ms · prompt 音频 token ${p.prompt_audio_tokens}）· 共 ${num(p.total_s)} s · ${num(p.audio_s_per_s_card)} 音频秒/秒/卡（静态 batch，两阶段串行「近似」）`,
       p.rtf > 1 ? 'warn' : ''));
-    else if (p.kind === 'cosyvoice') k.push(kpi(`语音端到端 · CosyVoice${p.version}`, `首音频 ${num(p.first_audio_s * 1e3)} ms`,   // 0.271
-      `${num(p.audio_out_s)} s 输出音频 = ${p.speech_tokens} 语音 token（LM RTF ${num(p.lm_rtf)}）· 分块 ${p.hops.join('/')} token，每块 flow 从头重算（Euler ${p.flow_steps} 步 × CFG ${p.cfg}）`
-      + ` · 语音卡 RTF ${num(p.rtf)}（${p.streams_per_card} 路）· 实时路数 ${p.streams_realtime} · 常驻实例首音频 ${num(p.first_audio_warm_s * 1e3)} ms（hop 不复位）· ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`,
+    else if (p.kind === 'cosyvoice') k.push(kpi(`语音端到端 · ${p.label || 'CosyVoice' + p.version}`, `首音频 ${num(p.first_audio_s * 1e3)} ms`,   // 0.271; 0.273 label
+      `${num(p.audio_out_s)} s 输出音频 = ${p.speech_tokens} 语音 token（LM RTF ${num(p.lm_rtf)}）· 分块 ${p.hops.length > 6 ? `${p.hops[0]} token × ${p.hops.length}` : p.hops.join('/') + ' token'}，`
+      + (p.stream === 'cache' ? '每块只算新 token（编码器 / 估计器 K/V 缓存）' : '每块 flow 从头重算') + `（Euler ${p.flow_steps} 步 × CFG ${p.cfg}）`
+      + ` · 语音卡 RTF ${num(p.rtf)}（${p.streams_per_card} 路）· 实时路数 ${p.streams_realtime} · 常驻实例首音频 ${num(p.first_audio_warm_s * 1e3)} ms（${p.stream === 'cache' ? '编码器缓存不裁剪' : 'hop 不复位'}）· ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`
+      + (p.audio_in ? ` · 输入 ${num(p.audio_in.audio_s)} s 音频 = ${p.audio_in.prompt_audio_tokens} token（编码器 ${num(p.audio_in.encoder_s * 1e3)} ms）` : ''),
       p.rtf > 1 || p.lm_rtf > 1 ? 'warn' : ''));
-    else if (p.kind === 'omni') k.push(kpi('语音端到端 · Omni 语音输出', `首音频 ${num(p.first_audio_s * 1e3)} ms`,   // 0.271
+    if (p.kind === 'cosyvoice' && p.split_first) {   // 0.273: first-audio split + per-chunk flow / HiFT
+      const f = p.split_first, ms = (a) => a.map((x) => num(x * 1e3)).join(' / ');
+      k.push(kpi(`${p.label || 'CosyVoice'} 首音频拆分`, `${num(p.first_audio_s * 1e3)} ms`,
+        `LM 首 token ${num(f.lm_ttft_s * 1e3)} ms + ${p.hops[0]}+3 token ${num(f.lm_tokens_s * 1e3)} ms + flow ${num(f.flow_chunk0_s * 1e3)} ms + HiFT ${num(f.hift_chunk0_s * 1e3)} ms`
+        + ` · 每块 flow ${ms(p.flow_s)} ms · HiFT ${ms(p.hift_s)} ms · 估计器权重 SRAM 未命中 ${num(p.flow_pin_miss * 100)}%`));
+    }
+    if (p.kind === 'omni') k.push(kpi('语音端到端 · Omni 语音输出', `首音频 ${num(p.first_audio_s * 1e3)} ms`,   // 0.271
       `${num(p.audio_out_s)} s 输出音频 = ${p.codec_tokens} codec token（Talker 每步 ${num(p.talker_step_s * 1e3)} ms）· DiT 每 ${num(p.chunk_s)} s 分块 ${num(p.dit_chunk_s * 1e3)} ms（RK4 ${p.dit_evals} 次 × CFG ${p.cfg}）`
       + ` · 语音卡 RTF ${num(p.rtf)}（${p.streams_per_card} 路）· 实时路数 ${p.streams_realtime} · 共 ${num(p.total_s)} s · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡（含 ${p.speech_cards} 张语音卡「假设」）`
       + (p.speech_card_fits ? '' : ' · 语音卡放不下'), p.rtf > 1 || !p.speech_card_fits ? 'warn' : ''));
-    else k.push(kpi('语音端到端 · TTS', `RTF ${num(p.rtf)}`,
+    if (p.kind === 'omni') {     // 0.273: first-audio split, speech-card SLC block (0.272), audio input
+      const f = p.split_first || {};
+      k.push(kpi('Omni 首音频拆分', `${num(p.first_audio_s * 1e3)} ms`,
+        `Thinker 首 token ${num(f.thinker_ttft_s * 1e3)} + 1 步 ${num(f.thinker_tpot_s * 1e3)} · Talker 预填充 ${num(f.talker_prefill_s * 1e3)} + 48 步 ${num(f.talker_steps_s * 1e3)}`
+        + ` · DiT 块 0 ${num(f.dit_chunk0_s * 1e3)} · 声码器 ${num(f.voc_chunk0_s * 1e3)} ms · 首块 ${num(p.first_chunk_audio_s)} s 音频`
+        + (p.streams_per_card > 1 ? ` · 最后一路 ${num(p.first_audio_last_s * 1e3)} ms（token2wav batch 1）` : '')));
+      const c = p.slc;
+      if (c) k.push(kpi('Omni 语音卡 · SLC 钉住', c.mib ? `SLC ${num(c.mib)} MiB` : 'SLC 无',
+        `每音频秒：Talker ${num(c.talker_s_per_audio_s)} s（权重 ${num(c.talker_weight_GB)} GB/步，命中 ${num(c.talker_hit * 100)}%）`
+        + ` · DiT ${num(c.dit_s_per_audio_s)} s（SRAM 未命中 ${num(p.dit_pin_miss * 100)}%，SLC 命中 ${num(c.dit_hit * 100)}%）`
+        + ' · 钉住顺序：DiT 复读权重 → Talker（芯片 slc_mib / slc_policy = pin）', p.rtf > 1 ? 'warn' : ''));
+      if (p.audio_in) k.push(kpi('Omni 音频输入', `${p.audio_in.prompt_audio_tokens} token`,
+        `${num(p.audio_in.audio_s)} s 音频 · 编码器 ${num(p.audio_in.encoder_s * 1e3)} ms`));
+    }
+    if (p.kind === 'kimi') {     // 0.273 Kimi-Audio: parallel text / audio heads → chunked DiT detokenizer → BigVGAN
+      const f = p.split_first || {}, ms = (a) => a.map((x) => num(x * 1e3)).join(' / ');
+      k.push(kpi(`语音端到端 · ${p.label}`, `首音频 ${num(p.first_audio_s * 1e3)} ms`,
+        `${num(p.audio_out_s)} s 输出音频 = ${p.audio_tokens} 音频 token（${p.token_rate} Hz，前 ${p.delay_steps} 步空，LM RTF ${num(p.lm_rtf)}）`
+        + ` · 分块 ${p.chunks.join('/')} token（+${p.look_ahead_tokens} 前瞻），DiT Euler ${p.dit_evals} 次 + 1 次 K/V 提交`
+        + ` · 语音卡 RTF ${num(p.rtf)}（${p.streams_per_card} 路）· 实时路数 ${p.streams_realtime}`
+        + ` · 发布版 kimia.py（先生成完再去分词）首音频 ${num(p.first_audio_released_s * 1e3)} ms · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`
+        + (p.speech_card_fits ? '' : ' · 语音卡放不下'), p.rtf > 1 || p.lm_rtf > 1 || !p.speech_card_fits ? 'warn' : ''));
+      k.push(kpi(`${p.label} 首音频拆分`, `${num(p.first_audio_s * 1e3)} ms`,
+        `LM 首 token ${num(f.lm_ttft_s * 1e3)} ms + ${p.delay_steps}+${p.chunks[0]}−1 步 ${num(f.lm_tokens_s * 1e3)} ms + DiT ${num(f.dit_chunk0_s * 1e3)} ms + BigVGAN ${num(f.voc_chunk0_s * 1e3)} ms`
+        + ` · 首块 ${num(p.first_chunk_audio_s)} s 音频 · 每块 DiT ${ms(p.dit_s)} ms（K/V 帧 ${p.dit_kv_frames.join('/')}）· BigVGAN ${ms(p.voc_s)} ms`
+        + ` · DiT 权重 SRAM 未命中 ${num(p.dit_pin_miss * 100)}%`));
+      if (p.audio_in) k.push(kpi(`${p.label.split(' ')[0]} 音频输入`, `${p.audio_in.prompt_audio_tokens} token`,
+        `${num(p.audio_in.audio_s)} s 音频 · Whisper 编码器 + 适配器 ${num(p.audio_in.encoder_s * 1e3)} ms`));
+    }
+    if (p.kind === 'tts') k.push(kpi('语音端到端 · TTS', `RTF ${num(p.rtf)}`,
       `${num(p.audio_out_s)} s 音频输出 = ${p.steps} 步 · 首音频 ${num(p.first_audio_s * 1e3)} ms · 共 ${num(p.total_s)} s · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`,
       p.rtf > 1 ? 'warn' : ''));
   }

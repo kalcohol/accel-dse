@@ -125,7 +125,7 @@ def test_step_audio_2_mini():
     assert (conv.m, conv.k, conv.n) == (125, 3 * 1280, 1280)
     assert [o.n for o in ops if o.name.startswith("aud.proj.linear")] == [2048, 3584]
     e = {x["id"]: x for x in list_models()}["step-audio-2-mini"]
-    assert e["domain"] == "asr" and e["family"] == "Step-Audio-2"
+    assert e["domain"] == "omni" and e["family"] == "Step-Audio-2"      # 0.273: + token2wav → omni
     r = evaluate(Scenario(model="step-audio-2-mini", chip=CHIPS["100T"], mem_id=LP,
                           serving=Serving(batch=1, prompt=8, ctx=58, audio_s=40.0)))
     assert r.asr["prompt_audio_tokens"] == a.tokens(40.0) == 375 and abs(r.asr["truncated_s"] - 10.01) < 1e-9

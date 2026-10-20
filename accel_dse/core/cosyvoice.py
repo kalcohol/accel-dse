@@ -57,6 +57,12 @@ class CosySpec:
     max_hop_mult: int = 4           # token_max_hop_len = 4 · token_hop_len
     mel_cache: int = 8              # CosyVoice2 hift mel cache frames
     prompt_tokens: int = 75         # zero-shot prompt speech (3 s at 25 Hz) 「假设」
+    # 0.273 Step-Audio-2-mini token2wav (stream "cache"): fixed 25-token chunks through flow.inference_chunk — the
+    # conformer and the DiT estimator keep K/V caches (the estimator's trimmed to prompt mel + 100 frames), so each
+    # chunk runs only its new tokens / frames; version stays 2 (HiFT with ConvTranspose, 8-frame mel cache)
+    stream: str = "recompute"
+    label: str = ""
+    est_keep: int = 100             # estimator att cache kept beyond the prompt mel (token2wav.stream) 「来源」
 
     @property
     def mel_rate(self) -> int:
@@ -82,7 +88,16 @@ class CosySpec:
         return (self.flow_params + self.hift_params) * 4.0
 
     def hops(self, n_tokens: int, warm: bool = False) -> list[tuple[int, int, bool]]:
-        """(token_offset, hop, finalize) per token2wav call for an utterance of n_tokens (cli/model.py tts loop)."""
+        """(token_offset, hop, finalize) per token2wav call for an utterance of n_tokens (cli/model.py tts loop).
+        0.273 stream "cache" (Step-Audio2 examples-vllm-stream.py): CHUNK_SIZE 25 + 3 look-ahead per call, no
+        prompt padding, no growth; the remainder on the last call."""
+        if self.stream == "cache":
+            out, off = [], 0
+            while n_tokens - off >= self.hop0 + self.lookahead:
+                out.append((off, self.hop0, False))
+                off += self.hop0
+            out.append((off, n_tokens - off, True))
+            return out
         pad = -(-self.prompt_tokens // self.hop0) * self.hop0 - self.prompt_tokens
         hop = self.hop0 * (self.max_hop_mult if warm else 1)
         out, off = [], 0
@@ -98,6 +113,12 @@ class CosySpec:
 
 
 def cosy_spec(cfg: dict, rel: dict | None) -> CosySpec | None:
+    if cfg.get("model_type") == "step_audio_2" and rel and rel.get("token2wav") and rel.get("speech_tensors"):
+        tw = rel["token2wav"]
+        return CosySpec(2, tuple((n, tuple(s)) for n, s in rel["speech_tensors"].items()), tw["token_frame_rate"],
+                        tw["token_mel_ratio"], tw["chunk_size"], tw["pre_lookahead_len"], tw["sample_rate"],
+                        tuple(tw["upsample_rates"]), tw["istft_n_fft"], tw["istft_hop"], tw["num_heads"], tw["head_dim"],
+                        tw["inference_cfg_rate"], mel_cache=tw["mel_cache"], stream="cache", label="Step-Audio-2 token2wav")
     if cfg.get("model_type") not in ("cosyvoice2", "cosyvoice3") or not rel or not rel.get("speech_tensors"):
         return None
     cv = cfg["cosyvoice"]
@@ -197,6 +218,54 @@ def flow_ops(c: CosySpec, n_tok: int) -> tuple[list[Op], list[Op]]:
     for n in blocks:
         q = dict(c.tensors)[n][0]
         ev += _attn(n[:-len(".to_q.weight")], M, M, hd, B * (q // hd))
+    ev.append(Op("flow.euler_cfg", "vector", 0, vec=M * 80 * 6))
+    ch += _rest(c, "flow.", ch + ev, "flow.vectors")
+    return ch, ev
+
+
+def flow_chunk_ops(c: CosySpec, N: int, enc_off: int, est_cache: int) -> tuple[list[Op], list[Op]]:
+    """0.273 Step-Audio-2 token2wav, one flow.inference_chunk (Step-Audio2 cosyvoice2/flow/flow.py, upsample_encoder_v2.py
+    forward_chunk, decoder_dit.py forward_chunk 「来源」): N new tokens (+3 look-ahead into the pre-look-ahead conv),
+    M = 2N new mel frames.  Conformer: 6 blocks on N rows over enc_off + N keys (att cache of every token since
+    setup_cache, never trimmed; espnet rel-pos: linear_pos / q·posᵀ over 2·keys − 1 positions), up conv, 4 blocks on
+    M rows over 2·enc_off + M keys.  Estimator (DiT 16 × d512, 8 × 64, causal conv block k3 ×2, adaLN 9d): per Euler
+    step B·M rows; attention over est_cache + M keys (K/V cache per step and block); t-embedding / adaLN on B rows."""
+    M, B = N * c.mel_ratio, c.cfg_mult
+    L = N + c.lookahead
+    est = "flow.decoder.estimator."
+    ko, ku = enc_off + N, 2 * enc_off + M
+
+    def chunk_rows(n):
+        if n.startswith(est) or n.startswith("flow.input_embedding"):
+            return None
+        if n.startswith("flow.spk_embed_affine_layer"):
+            return 1
+        if n.startswith("flow.encoder.pre_lookahead_layer"):
+            return N
+        up = n.startswith(("flow.encoder.up_", "flow.encoder_proj"))
+        if ".linear_pos." in n:
+            return 2 * (ku if up else ko) - 1
+        return M if up else N
+
+    def eval_rows(n):
+        if not n.startswith(est):
+            return None
+        return B if (".t_embedder." in n or "adaLN_modulation" in n) else B * M
+    ch = _gemms(c, "flow.", chunk_rows)
+    ch.append(Op("flow.input_embedding", "lookup", 0, kv_read=L * dict(c.tensors)["flow.input_embedding.weight"][1] * 4.0))
+    for n, s_ in c.tensors:
+        m_ = re.match(r"flow\.encoder\.(up_)?encoders\.(\d+)\.self_attn\.pos_bias_u$", n)
+        if m_:
+            T, K = (M, ku) if m_.group(1) else (N, ko)
+            h = s_[0]
+            ch += _attn(n[:-len(".pos_bias_u")], T, K, s_[1], h)
+            ch.append(Op(n[:-len(".pos_bias_u")] + ".bd", "attn", 0, m=T, k=s_[1], n=2 * K - 1, count=h, a_fmt="fp32",
+                         act_bytes=h * (T + 2 * K) * s_[1] * 4.0))
+    ev = _gemms(c, est, eval_rows)
+    hd = c.flow_hd
+    for n in [n for n, _ in c.tensors if n.startswith(est) and n.endswith("attn.to_q.weight")]:
+        q = dict(c.tensors)[n][0]
+        ev += _attn(n[:-len(".to_q.weight")], M, est_cache + M, hd, B * (q // hd))
     ev.append(Op("flow.euler_cfg", "vector", 0, vec=M * 80 * 6))
     ch += _rest(c, "flow.", ch + ev, "flow.vectors")
     return ch, ev

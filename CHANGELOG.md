@@ -6,6 +6,46 @@
 
 
 
+## [0.273.0]
+
+### Added: UI surfaces the speech API blocks (MODEL §218.1)
+- Omni: first-audio split (Thinker / Talker / DiT / vocoder, last stream), the 0.272 speech-card SLC block (`speech.slc`: hit shares, Talker / DiT seconds per audio second, DiT SRAM miss) and the audio-input block.
+- CosyVoice / Step-Audio-2: first-audio split, per-chunk flow / HiFT times, estimator pin miss; titles use `speech.label`; cached streaming is described as such.
+- ASR: the truncation note uses the cap in seconds (`asr.max_audio_s`, new in `evaluate._asr_info`); the e2e KPI shows encoder time and prompt audio tokens.
+- `ui_headless_smoke` also loads qwen2.5-omni-7b, cosyvoice2-0.5b, kimi-audio-7b-instruct and step-audio-2-mini.
+
+### Added: Step-Audio-2-mini speech output (MODEL §218.2)
+- `scripts/fetch_pt_release.py --token2wav` reads `token2wav/flow.yaml` and the flow.pt / hift.pt state dicts over HTTP Range. Params exact: flow 155,802,352 and HiFT 20,821,295 (both fp32).
+- `CosySpec.stream = "cache"`. Chunks are a fixed 25 tokens + 3 look-ahead through `flow.inference_chunk` (`cosyvoice.flow_chunk_ops`):
+  - The conformer runs only the new tokens, over an att cache that is never trimmed.
+  - The DiT estimator (16 × d512) runs only the new 50 frames, over prompt mel + ≤ 100 cached frames.
+  - CFG 2, 10 Euler steps; HiFT on new mel + 8 cache frames.
+- Listing domain becomes `omni` (speech in + out).
+- 100T + LPDDR5X, 10 s out:
+  - First audio 2.18 s, dominated by the LM (28 tokens × 74 ms).
+  - LM RTF 1.85: the 7B LM cannot emit 25 tokens / s on this memory.
+  - Speech card RTF 0.022, 44 real-time streams.
+
+### Added: Kimi-Audio-7B-Instruct (MODEL §218.3)
+- `moonshotai/Kimi-Audio-7B-Instruct` (listing domain `omni`, family Kimi-Audio, coverage `partial`).
+- LLM: 28 Qwen2 layers + 6 mimo layers (the audio branch off layer 21), costed as one 34-layer stack, plus two 168448-row heads (`io_post` mimo_output, one row per sequence; `ir._head_ops` runs io_post heads of KV-cache models in prefill / decode). 9,735,124,992 params, exact.
+- Audio in: the repo's whisper-large-v3 encoder (sequential 30 s padded windows) + 4-frame stacking + VQAdaptor at 12.5 positions / s. 668,178,432 params, exact. New `AudioSpec.stack`.
+- Not costed (coverage reason): the GLM-4-Voice input tokenizer, which lives in another repo.
+- Speech out (`core/kimi_audio.py`, `speech._kimi_kpis`, kind `kimi`):
+  - Audio tokens at 12.5 Hz, after 6 blank delay steps.
+  - Detokenizer DiT: 1,584,023,120 params, bf16 at run time, adaLN per frame. Each chunk is 30 tokens + 12 look-ahead (168 frames), runs 29 Euler evaluations plus 1 K/V commit, with a K/V cache of ≤ 900 frames.
+  - BigVGAN: 241,118,777 params, run with exact held-back / overlap frame bookkeeping.
+  - `scripts/fetch_pt_release.py --kimi` fetches these parts.
+- 100T + LPDDR5X, 10 s out:
+  - Streaming first audio 3.94 s; the released kimia.py, which generates everything first, gives 13.0 s.
+  - The DiT is weight-bound: 0.48 s per 2.4 s chunk (30 reads × 3.1 GB). Speech-card RTF 0.24, 4 real-time streams.
+  - LM RTF 1.19 (TPOT 95 ms).
+
+### Notes
+- Freshness sweep 2026-10-19/20: nothing new (only a GGUF repack).
+- Deferred: Moshi, FireRedTTS3.
+
+
 ## [0.272.0]
 
 ### Added: Fun-ASR-Nano-2512 (MODEL §217.1)

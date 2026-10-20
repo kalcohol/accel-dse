@@ -474,6 +474,7 @@ class ModelSpec:
     cached_params: int = 0                   # in the release but not loaded for inference (MiniMax-H3 AdaLN branches:
                                              # modulation outputs precomputed per timestep, README)
     cosy: object = None                      # 0.271 core.cosyvoice.CosySpec: CosyVoice2 / 3 flow + HiFT (speech output)
+    kimi: object = None                      # 0.273 core.kimi_audio.KimiSpec: Kimi-Audio detokenizer DiT + BigVGAN
     omni: object = None                      # 0.271 core.omni.OmniSpec: Qwen2.5-Omni Talker + token2wav (speech output)
     tts: object = None                       # 0.269 core.tts.TtsSpec: speech-synthesis decode head (replaces the LM head)
     # 0.270 encoder-decoder (Whisper): encoder positions each decoder sequence cross-attends to (1500 per 30 s window);
@@ -558,6 +559,10 @@ _QWEN2_DEFAULTS = {"vocab_size": 151936, "hidden_size": 4096, "intermediate_size
                    "tie_word_embeddings": False}
 
 
+def _is_kimi(cfg: dict) -> bool:
+    return "MoonshotKimiaForCausalLM" in (cfg.get("architectures") or [])
+
+
 def _tc(cfg: dict) -> dict:
     tc = cfg.get("text_config")
     mt = cfg.get("model_type")
@@ -580,6 +585,14 @@ def _tc(cfg: dict) -> dict:
         # 0.272 Step-Audio-2-mini: transformers Qwen2Model(text_config) — Qwen2 attention has q / k / v bias; untied
         # lm_head (modeling_step_audio_2.py 「来源」)
         tc = {**tc, "attention_bias": True, "tie_word_embeddings": False}
+    if _is_kimi(cfg):
+        # 0.273 Kimi-Audio-7B-Instruct (modeling_moonshot_kimia.py 「来源」; KimiAudioConfig(Qwen2Config) — no model_type
+        # of its own): 28 Qwen2 layers (q / k / v bias) + kimia_mimo_layers 6 more of the same shape that branch off
+        # the hidden state after layer kimia_mimo_transformer_from_layer_index (21) and feed the audio head.  Every
+        # step (prefill and decode) runs all 28 + 6 layers and both heads, each with its own KV cache → costed as one
+        # 34-layer stack 「推导」 (same FLOPs, weights and KV bytes; the two branches' overlap is not modelled); untied
+        return {**cfg, "num_hidden_layers": cfg["num_hidden_layers"] + cfg.get("kimia_mimo_layers", 0),
+                "attention_bias": True, "tie_word_embeddings": False}
     if mt == "qwen2_audio" and isinstance(tc, dict) and not tc.get("hidden_size"):
         tc = {**_QWEN2_DEFAULTS, **tc}
     if mt == "whisper":
@@ -1913,6 +1926,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             # encoder output length per 30 s window = max_source_positions (conv2 stride 2 over 3000 mel frames)
             spec = replace(spec, final_norm_params=2 * h, lookup_params=c["max_target_positions"] * h,
                            lookup_bits=spec.fmt("embed").bits, enc_ctx=c["max_source_positions"])
+        if _is_kimi(cfg):
+            # 0.273 Kimi-Audio: the audio head mimo_output [vocab, hidden] after mimo_norm — one row per sequence and
+            # step like the lm_head (prefill: last position only 「推导」); final norm = norm + mimo_norm
+            spec = replace(spec, io_post=spec.io_post + (Linear("mimo_output", h, c["vocab_size"], "col", rows="seq",
+                                                                 role="lm_head"),), final_norm_params=2 * h)
         if cfg.get("jev_prompt_attention", c.get("jev_prompt_attention")) == "bidirectional":
             # 0.191 StartLux-Decision v1.1 Instant (model card): in the full-attention layers prompt tokens also attend to
             # later prompt tokens; linear-attention layers stay causal → the release's full-attention cores non-causal
@@ -1975,8 +1993,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             # second by core/speech.py on a speech card 「假设」; the LM decodes 25 speech tokens per audio second
             spec = replace(spec, cosy=cs, notes=spec.notes + (
                 f"语音输出：LM 每音频秒 {cs.token_rate} 个语音 token → flow（{cs.flow_params / 1e6:.1f}M，fp32，"
-                f"{'Conformer 编码器 + U-Net' if cs.version == 2 else 'DiT'} 估计器，Euler {cs.steps} 步 × CFG {cs.cfg_mult}，"
-                f"每块从头重算全部已生成 token）+ HiFT（{cs.hift_params / 1e6:.1f}M，fp32，24 kHz）；放在每个副本一张额外卡上「假设」",))
+                f"{'Conformer 编码器 + DiT（K/V 缓存）' if cs.stream == 'cache' else 'Conformer 编码器 + U-Net' if cs.version == 2 else 'DiT'} 估计器，Euler {cs.steps} 步 × CFG {cs.cfg_mult}，"
+                f"{'每块只算新 token，注意力走缓存（Step-Audio2 token2wav.stream）' if cs.stream == 'cache' else '每块从头重算全部已生成 token'}）+ HiFT（{cs.hift_params / 1e6:.1f}M，fp32，24 kHz）；放在每个副本一张额外卡上「假设」",))
         from .omni import omni_spec
         om = omni_spec(cfg)
         if om is not None:
@@ -1987,10 +2005,21 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 f"token2wav DiT（{om.dit_params / 1e6:.1f}M，fp32，RK4 {om.evals} 次 × CFG {om.cfg_mult}，"
                 f"{om.chunk} 帧分块流式）+ BigVGAN（{om.bigvgan_params / 1e6:.1f}M，fp32，24 kHz）；"
                 "按每输出音频秒计（core/speech.py），放在每个副本一张额外卡上「假设」",))
+        from .kimi_audio import kimi_spec
+        ks = kimi_spec(cfg, rel)
+        if ks is not None:
+            # 0.273 Kimi-Audio: detokenizer DiT + BigVGAN (release roles flow / vocoder, outside params_llm), costed per
+            # output-audio second by core/speech.py on a speech card 「假设」
+            spec = replace(spec, kimi=ks, notes=spec.notes + (
+                f"语音输出：每步同时出 1 个文本 token（lm_head）+ 1 个音频 token（mimo_output，{ks.token_rate} Hz，前 {ks.delay} 步为空）"
+                f"→ 去分词器 DiT（{ks.dit_params / 1e9:.3f}B，bf16，{ks.depth} 层 d{ks.d}，每帧 adaLN；{ks.chunk} token 一块 + {ks.look_ahead} token 前瞻，"
+                f"Euler {ks.evals} 次 + 1 次 K/V 提交，K/V 缓存 ≤ {ks.max_kv} 帧）+ BigVGAN（{ks.voc_params / 1e6:.1f}M，bf16，24 kHz）；"
+                "放在每个副本一张额外卡上「假设」",))
         rel_gap = (spec.release_params - spec.params()) / spec.release_params if spec.release_params else 0.0
         mp = c.get("max_position_embeddings")
         from .vision import vision_spec
-        vs = vision_spec(hf_id, cfg)
+        vs = vision_spec(hf_id, {**cfg, "_kimi_whisper": rel["kimi_audio"]["whisper"]}
+                         if _is_kimi(cfg) and rel.get("kimi_audio") else cfg)     # 0.273: Kimi-Audio whisper config
         rv = (rel.get("params_vision") or 0) if ts is None else 0
         if vs is not None and rv > vs.params:
             # 0.144: multimodal parts stored with the release but not run for images (MiMo audio encoder + speech

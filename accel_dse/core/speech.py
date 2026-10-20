@@ -141,8 +141,25 @@ def _cosy_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     def t_hift(M: int) -> float:
         return _component_time([(hift_ops(c, M), 1)], sys, org, "fp32")["s"]
 
+    def t_flow_cached(N: int, off: int, cache: int) -> float:
+        from .cosyvoice import flow_chunk_ops
+        ch, ev = flow_chunk_ops(c, N, off, cache)
+        g = [(ch, 1), (ev, 1)] + ([(scaled(ev, miss), c.steps - 1)] if c.steps > 1 else [])
+        return _component_time(g, sys, org, "fp32")["s"] + sum(o.kv_read for o in ch) / (sys.dram_GBps * 1e9)
+
     def chunks(warm: bool) -> list[tuple[float, float, int]]:
         out = []
+        if c.stream == "cache":
+            # 0.273 Step-Audio-2: setup_cache on the prompt (+3) once per voice (not per request 「假设」); chunk i runs
+            # its own tokens over the conformer cache (prompt + earlier chunks; ``warm``: one earlier 10 s response
+            # already in it — the cache is never trimmed) and the estimator cache (prompt mel + ≤ est_keep frames)
+            base = c.prompt_tokens + (n_tok if warm else 0)
+            pm = c.prompt_tokens * c.mel_ratio
+            for i, (off, hop, fin) in enumerate(c.hops(n_tok)):
+                cache = pm + min(c.est_keep, (off + (n_tok if warm else 0)) * c.mel_ratio)
+                M = hop * c.mel_ratio + c.mel_cache
+                out.append((t_flow_cached(hop, base + off, cache), t_hift(M), hop))
+            return out
         for off, hop, fin in c.hops(n_tok, warm):
             N = c.prompt_tokens + off + hop + (0 if fin else c.lookahead)
             new_mel = hop * c.mel_ratio
@@ -158,7 +175,12 @@ def _cosy_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
     b = _cdiv(sv.batch, lay.dp)
     lm_s = pre.ttft + n_tok * dec.tpot
     tot = max(lm_s + cold[-1][0] + cold[-1][1], pre.ttft + (h0 + c.lookahead) * dec.tpot + b * busy)
-    return {"kind": "cosyvoice", "version": c.version, "audio_out_s": audio_out_s, "speech_tokens": n_tok,
+    au = getattr(getattr(m, "vision", None), "audio", None)
+    extra = {"label": c.label or f"CosyVoice{c.version}", "stream": c.stream}
+    if au is not None and sv.audio_s:          # 0.273 Step-Audio-2: speech in + speech out
+        extra["audio_in"] = {"audio_s": sv.audio_s, "prompt_audio_tokens": au.prompt_tokens(sv.audio_s),
+                             "encoder_s": ((pre.vision or {}).get("audio") or {}).get("s", 0.0)}
+    return {**extra, "kind": "cosyvoice", "version": c.version, "audio_out_s": audio_out_s, "speech_tokens": n_tok,
             "token_rate": c.token_rate, "prompt_speech_tokens": c.prompt_tokens, "flow_steps": c.steps, "cfg": c.cfg_mult,
             "hops": [hop for _, _, hop in cold], "first_audio_s": first, "first_audio_warm_s": first_w,
             "split_first": {"lm_ttft_s": pre.ttft, "lm_tokens_s": (h0 + c.lookahead) * dec.tpot,
@@ -172,6 +194,73 @@ def _cosy_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
             "fits": pre.fits and dec.fits and c.stored_bytes <= sys.dram_bytes}
 
 
+def _kimi_kpis(scn: Scenario, pre, audio_out_s: float) -> dict:
+    """0.273 Kimi-Audio (core/kimi_audio.py): the LM (catalog model, 28 + 6 layers, two heads) emits one audio token per
+    step at 12.5 / s after ``delay`` blank steps; the detokenizer (DiT + BigVGAN) runs per chunk on a speech card per
+    replica 「假设」, batch 1.
+        first audio (streaming the chunk API 「假设」) = T_ft + (delay + 30 − 1) · TPOT + DiT chunk 0 (29 evals on 120
+                      frames + 1 commit eval on 72) + BigVGAN(72 frames) — returns 36 frames = 0.72 s of audio
+        first audio (released kimia.py: generate everything, then detokenize) = T_ft + (delay + n − 1) · TPOT + chunk 0
+        speech-card s per request = Σ_chunks DiT (evals + commit) + BigVGAN ;  RTF = b · that / audio_out_s
+        LM RTF = 12.5 · TPOT"""
+    from .evaluate import _component_time
+    from .hardware import System
+    from .ir import _cdiv
+    from .kimi_audio import dit_eval_ops, kimi_pin, scaled, voc_ops
+    sv, lay, m = scn.serving, scn.layout, pre.model
+    k = m.kimi
+    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
+                 scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
+    org = scn.mapping
+    n_tok = max(1, math.ceil(audio_out_s * k.token_rate - 1e-9))
+    dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.ctx", sv.prompt + k.delay + n_tok // 2))
+    miss = kimi_pin(k, sys.chip.sram_bytes)
+    bw = sys.dram_GBps * 1e9
+
+    def t_eval(T: int, kv: int, first: bool) -> float:
+        ops = dit_eval_ops(k, T, kv)
+        # K/V of the cached frames re-read by every evaluation (bf16, 16 blocks) 「推导」
+        return _component_time([(ops if first else scaled(ops, miss), 1)], sys, org, "bf16")["s"] + k.kv_bytes(kv) / bw
+
+    def t_voc(M: int) -> float:
+        return _component_time([(voc_ops(k, M), 1)], sys, org, "bf16")["s"]
+    rows = []
+    for c in k.plan(n_tok):
+        dit = t_eval(c["T"], c["kv"], True) + (k.evals - 1) * t_eval(c["T"], c["kv"], False)
+        if c["commit"]:
+            dit += t_eval(c["keep"], c["kv"], False)
+        rows.append((dit, t_voc(c["voc"]), c))
+    busy = sum(d + v for d, v, _ in rows)
+    lead = k.delay + rows[0][2]["tokens"] - 1
+    first = pre.ttft + lead * dec.tpot + rows[0][0] + rows[0][1]
+    first_rel = pre.ttft + (k.delay + n_tok - 1) * dec.tpot + rows[0][0] + rows[0][1]
+    b = _cdiv(sv.batch, lay.dp)
+    lm_s = pre.ttft + (k.delay + n_tok - 1) * dec.tpot
+    tot = max(lm_s + rows[-1][0] + rows[-1][1], pre.ttft + lead * dec.tpot + b * busy)
+    need = k.stored_bytes + b * k.kv_bytes(k.max_kv)
+    out = {"kind": "kimi", "label": k.label, "audio_out_s": audio_out_s, "audio_tokens": n_tok,
+           "token_rate": k.token_rate, "delay_steps": k.delay, "dit_evals": k.evals, "chunk_tokens": k.chunk,
+           "look_ahead_tokens": k.look_ahead, "chunks": [c["tokens"] for _, _, c in rows],
+           "dit_rows": [c["T"] for _, _, c in rows], "dit_kv_frames": [c["kv"] for _, _, c in rows],
+           "voc_frames": [c["voc"] for _, _, c in rows], "ret_frames": [c["ret"] for _, _, c in rows],
+           "first_audio_s": first, "first_audio_released_s": first_rel,
+           "first_chunk_audio_s": rows[0][2]["ret"] / k.mel_rate,
+           "split_first": {"lm_ttft_s": pre.ttft, "lm_tokens_s": lead * dec.tpot, "dit_chunk0_s": rows[0][0],
+                           "voc_chunk0_s": rows[0][1]},
+           "ttft_s": pre.ttft, "tpot_s": dec.tpot, "lm_rtf": k.token_rate * dec.tpot,
+           "dit_s": [d for d, _, _ in rows], "voc_s": [v for _, v, _ in rows], "dit_pin_miss": miss,
+           "speech_card_s_per_request": busy, "rtf": b * busy / audio_out_s, "streams_per_card": b,
+           "streams_realtime": int(audio_out_s // busy) if busy > 0 else 0, "total_s": tot, "speech_cards": lay.dp,
+           "audio_out_s_per_s_card": sv.batch * audio_out_s / tot / (pre.scenario.layout.cards + lay.dp),
+           "speech_card_GB": need / 1e9, "speech_card_fits": need <= sys.dram_bytes,
+           "fits": pre.fits and dec.fits and need <= sys.dram_bytes}
+    au = getattr(getattr(m, "vision", None), "audio", None)
+    if au is not None and sv.audio_s:
+        out["audio_in"] = {"audio_s": sv.audio_s, "prompt_audio_tokens": au.prompt_tokens(sv.audio_s),
+                           "encoder_s": ((pre.vision or {}).get("audio") or {}).get("s", 0.0)}
+    return out
+
+
 def speech_kpis(scn: Scenario, audio_out_s: float = 10.0) -> dict:
     sv = scn.serving
     pre = evaluate(scn.replace("serving.phase", "prefill"))
@@ -180,6 +269,8 @@ def speech_kpis(scn: Scenario, audio_out_s: float = 10.0) -> dict:
         return _omni_kpis(scn, pre, audio_out_s)
     if getattr(m, "cosy", None) is not None:
         return _cosy_kpis(scn, pre, audio_out_s)
+    if getattr(m, "kimi", None) is not None:
+        return _kimi_kpis(scn, pre, audio_out_s)
     ts = getattr(m, "tts", None)
     au = getattr(getattr(m, "vision", None), "audio", None)
     if ts is not None:

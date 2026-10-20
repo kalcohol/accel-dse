@@ -134,6 +134,9 @@ EXTRA_TAIL = [
     ("fun-asr-nano-2512", "FunAudioLLM/Fun-ASR-Nano-2512-hf"),
     # 0.272: Step-Audio-2-mini (Whisper-style encoder + AvgPool + conv Adaptor → Qwen2.5-7B-shaped LLM; audio in)
     ("step-audio-2-mini", "stepfun-ai/Step-Audio-2-mini"),
+    # 0.273 speech round 4: Kimi-Audio-7B-Instruct (Whisper-large-v3 encoder + adaptor → Qwen2-7B trunk with a 6-layer
+    # audio branch; text + 12.5 Hz audio tokens per step → chunked flow-matching DiT detokenizer → BigVGAN)
+    ("kimi-audio-7b-instruct", "moonshotai/Kimi-Audio-7B-Instruct"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -270,7 +273,7 @@ OFFLINE_REASONS = {
 # ---------------------------------------------------------------- listing: vendor (厂商) → family; domain is only a badge
 DOMAINS = {"llm": "LLM（文本）", "vlm": "VLM（多模态：语言主干 + 视觉编码器）", "asr": "语音识别（语言主干 + 音频编码器）",
            "tts": "语音合成（语言主干 + 流匹配 + 音频 VAE / 声码器）",
-           "omni": "全模态（Thinker 语言主干 + 音频编码器；Talker + token2wav 语音输出）", "gen": "图像 / 视频生成（DiT）", "protein": "蛋白质",
+           "omni": "全模态（语言主干 + 音频编码器；语音输出：Omni Talker + token2wav / Step-Audio-2 token2wav）", "gen": "图像 / 视频生成（DiT）", "protein": "蛋白质",
            "genomics": "基因组（DNA 编码器）"}
 OFFLINE_DOMAINS = {"video": "gen", "protein": "protein"}     # series_catalog domain → listing domain (not on core v2)
 PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only releases) — listing order
@@ -306,7 +309,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("alibaba", "Qwen3 MoE", ("qwen3-235b", "qwen3-30b")), ("alibaba", "Qwen3 稠密", ("qwen3-",)),
     ("alibaba", "Qwen2.5", ("qwen2.5",)), ("alibaba", "Wan2.2", ("wan2.2",)), ("alibaba", "Wan2.1", ("wan2.1",)),
     ("deepseek", "DeepSeek-V4", ("deepseek-v4",)), ("deepseek", "DeepSeek-V3", ("deepseek-v3", "deepseek-r1")),
-    ("kimi", "Kimi-K3", ("kimi-k3",)), ("kimi", "Kimi-K2", ("kimi-k2",)),
+    ("kimi", "Kimi-Audio", ("kimi-audio",)), ("kimi", "Kimi-K3", ("kimi-k3",)), ("kimi", "Kimi-K2", ("kimi-k2",)),
     ("zhipu", "GLM-5", ("glm-5",)), ("zhipu", "GLM-4.5 / 4.6", ("glm-4",)), ("zhipu", "CogVideoX", ("cogvideox",)),
     ("minimax", "MiniMax-M1 / Text-01", ("minimax-m1", "minimax-text")), ("minimax", "MiniMax-H", ("minimax-h",)),
     ("meta", "Llama 3", ("llama-3",)), ("meta", "ESM-2", ("esm2",)), ("meta", "ESMFold", ("esmfold",)),
@@ -415,8 +418,8 @@ def entries() -> list[dict]:
             # 0.268: an audio-only release (audio_config, no vision_config) is speech recognition, not a VLM
             # 0.270: any release with a modelled audio encoder and no vision tower (Whisper keeps it outside audio_config)
             from .vision import audio_spec
-            # 0.271: Qwen2.5-Omni (speech in + speech out) → omni
-            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3") else "omni" if cf.get("model_type") == "qwen2_5_omni" else \
+            # 0.271: Qwen2.5-Omni (speech in + speech out) → omni; 0.273: Step-Audio-2-mini with its token2wav too
+            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3") else "omni" if cf.get("model_type") == "qwen2_5_omni" or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") else \
                 ("asr" if (cf.get("audio_config") or audio_spec(cf) is not None) and not cf.get("vision_config")
                  else "vlm") if (rel.get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])

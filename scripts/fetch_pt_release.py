@@ -168,6 +168,94 @@ def fetch(repo: str) -> None:
     print(repo, {k: len(v) for k, v in headers.items()})
 
 
+def fetch_token2wav(repo: str, sub: str = "token2wav") -> None:
+    """0.273 Step-Audio-2-mini: the safetensors release (LLM + audio encoder, scripts/fetch_hf_release.py) ships a
+    CosyVoice2-style token2wav as .pt: ``<sub>/flow.yaml`` (CausalMaskedDiffWithXvec: UpsampleConformerEncoderV2 +
+    CausalConditionalCFM over a DiT estimator) + flow.pt + hift.pt (flashcosyvoice HiFTGenerator defaults:
+    upsample 8 / 5 / 3, iSTFT 16 / 4, 24 kHz — Step-Audio2 token2wav.py 「来源」).  Writes token2wav.json next to the
+    safetensors headers: {"config": yaml fields, "tensors": {flow.* / hift.*: [dtype, shape]}}."""
+    d = CACHE / repo.replace("/", "__")
+    d.mkdir(parents=True, exist_ok=True)
+    base = f"{HF}/{repo}/resolve/main/{sub}"
+    y = urllib.request.urlopen(urllib.request.Request(f"{base}/flow.yaml", headers=UA), timeout=60).read().decode()
+    g = lambda pat, cast=int: cast(re.search(pat, y).group(1))
+    cfg = {"flow": re.search(r"flow: !new:[\w.]+\.(\w+)", y).group(1),
+           "encoder": re.search(r"encoder: !new:[\w.]+\.(\w+)", y).group(1),
+           "estimator": re.search(r"estimator: !new:[\w.]+\.(\w+)", y).group(1),
+           "vocab_size": g(r"vocab_size: (\d+)"), "pre_lookahead_len": g(r"pre_lookahead_len: (\d+)"),
+           "up_stride": g(r"up_stride: (\d+)"), "inference_cfg_rate": g(r"inference_cfg_rate: ([\d.]+)", float),
+           "num_heads": g(r"estimator:[\s\S]*?num_heads: (\d+)"), "head_dim": g(r"head_dim: (\d+)"),
+           # flashcosyvoice HiFTGenerator() defaults (token2wav.py builds it without arguments) 「来源」
+           "sample_rate": 24000, "upsample_rates": [8, 5, 3], "istft_n_fft": 16, "istft_hop": 4,
+           "token_frame_rate": 25, "token_mel_ratio": 2, "chunk_size": 25, "mel_cache": 8}
+    tensors = {}
+    for f, pre in (("flow.pt", "flow."), ("hift.pt", "hift.")):
+        for name, (st, shape) in pt_tensors(f"{base}/{f}").items():
+            tensors[pre + name] = [DT[st][0], list(shape)]
+    (d / "token2wav.json").write_text(json.dumps({"config": cfg, "tensors": tensors}))
+    print(repo, sub, len(tensors), cfg)
+
+
+def fetch_kimi(repo: str) -> None:
+    """0.273 Kimi-Audio-7B-Instruct: the safetensors index (scripts/fetch_hf_release.py) holds only the LLM (+ mimo
+    audio branch, vq_adaptor).  The rest of the release: ``whisper-large-v3/`` (transformers WhisperForConditionalGeneration safetensors, model.encoder.*;
+    Kimi-Audio runs its encoder only — kimia_infer/models/tokenizer/whisper_Lv3/whisper.py), ``audio_detokenizer/``
+    (config.yaml + model.pt: flow-matching DiT, state_dict.speech_model.*) and ``vocoder/`` (config.json + model.pt:
+    BigVGAN generator.*, weight norm).  Writes kimi_audio.json: {"config": {whisper, detokenizer yaml fields, vocoder,
+    streaming constants of kimia_infer (「来源」 api/kimia.py detokenize_audio, models/detokenizer/__init__.py)},
+    "tensors": {whisper.<encoder.*> / detok.* / voc.*: [dtype, shape]}}; weight norm (weight_v / weight_g) renamed to
+    parametrizations.weight.original1 / original0 (the CosyVoice reader's convention)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fhr", str(ROOT / "scripts" / "fetch_hf_release.py"))
+    fhr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fhr)
+    d = CACHE / repo.replace("/", "__")
+    d.mkdir(parents=True, exist_ok=True)
+    base = f"{HF}/{repo}/resolve/main"
+    get = lambda f: urllib.request.urlopen(urllib.request.Request(f"{base}/{f}", headers=UA), timeout=60).read().decode()
+    wc = json.loads(get("whisper-large-v3/config.json"))
+    vc = json.loads(get("vocoder/config.json"))
+    y = get("audio_detokenizer/config.yaml")
+    g = lambda pat, cast=int: cast(re.search(pat, y).group(1))
+    cfg = {"whisper": {k: wc[k] for k in ("d_model", "encoder_layers", "encoder_attention_heads", "encoder_ffn_dim",
+                                          "num_mel_bins", "max_source_positions")},
+           "dit": {"depth": g(r"\n    depth: (\d+)"), "hidden_size": g(r"\n    hidden_size: (\d+)"),
+                   "num_heads": g(r"\n    num_heads: (\d+)"), "mlp_ratio": g(r"mlp_ratio: ([\d.]+)", float),
+                   "input_size": g(r"\n    input_size: (\d+)"), "semantic_vocab_size": g(r"semantic_vocab_size: (\d+)"),
+                   "hz": g(r"hz: (\d+)")},
+           "vocoder": {k: vc[k] for k in ("upsample_rates", "upsample_initial_channel", "resblock_kernel_sizes",
+                                          "resblock_dilation_sizes", "hop_size", "sampling_rate", "num_mels")},
+           # kimia_infer 「来源」: detokenize_audio chunk_size = first_chunk_size = 30 tokens, upsample_factor 4
+           # (12.5 Hz tokens → 50 Hz mel), get_audio_detokenizer look_ahead_tokens 12, use_cfg False,
+           # detokenize_streaming ode_step 30 (Euler), max_kv_cache_tokens 900 (StreamingSemanticFMWrapper default),
+           # kimia_mimo_audiodelaytokens (config.json) blank audio steps before the first audio token
+           "token_rate": 12.5, "upsample": 4, "chunk": 30, "first_chunk": 30, "look_ahead": 12, "ode_steps": 30,
+           "cfg": False, "max_kv_frames": 900}
+    tensors = {}
+    for f, h in fhr.st_header_url(f"{base}/whisper-large-v3/model.safetensors").items():
+        if f.startswith("model.encoder."):       # WhisperForConditionalGeneration layout; decoder not run
+            tensors["whisper." + f[len("model."):]] = [h["dtype"], h["shape"]]
+
+    def norm(n: str) -> str:
+        return re.sub(r"\.weight_v$", ".parametrizations.weight.original1",
+                      re.sub(r"\.weight_g$", ".parametrizations.weight.original0", n))
+    for f, src, pre in (("audio_detokenizer/model.pt", "state_dict.speech_model.", "detok."),
+                        ("vocoder/model.pt", "generator.", "voc.")):
+        for name, (st, shape) in pt_tensors(f"{base}/{f}").items():
+            if name.startswith(src):
+                tensors[pre + norm(name[len(src):])] = [DT[st][0], list(shape)]
+    (d / "kimi_audio.json").write_text(json.dumps({"config": cfg, "tensors": tensors}))
+    print(repo, len(tensors), cfg)
+
+
 if __name__ == "__main__":
-    for r in sys.argv[1:]:
-        fetch(r)
+    args = sys.argv[1:]
+    if args and args[0] == "--token2wav":         # 0.273: python3 scripts/fetch_pt_release.py --token2wav <repo>
+        for r in args[1:]:
+            fetch_token2wav(r)
+    elif args and args[0] == "--kimi":            # 0.273: python3 scripts/fetch_pt_release.py --kimi <repo>
+        for r in args[1:]:
+            fetch_kimi(r)
+    else:
+        for r in args:
+            fetch(r)

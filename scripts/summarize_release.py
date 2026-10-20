@@ -20,6 +20,7 @@ separately and excluded from the LLM total.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 import time
@@ -159,6 +160,24 @@ def _omni_role(name: str, n_layers: int | None) -> str:
     return classify(name, n_layers)
 
 
+def _kimi_role(name: str, n_layers: int | None) -> str:
+    """0.273 Kimi-Audio-7B-Instruct (modeling_moonshot_kimia.py MoonshotKimiaForCausalLM): Whisper-large-v3 encoder
+    (whisper.*, from the repo's whisper-large-v3/ — scripts/fetch_pt_release.py --kimi) + vq_adaptor → vision; the
+    28-layer Qwen2 trunk, the 6 mimo layers (audio branch from layer 21), both heads (lm_head text / mimo_output
+    audio) → the LLM; audio detokenizer DiT (detok.*) → flow; BigVGAN (voc.*) → vocoder."""
+    if name.startswith(("whisper.", "model.vq_adaptor.")):
+        return "vision"
+    if name.startswith("detok."):
+        return "flow"
+    if name.startswith("voc."):
+        return "vocoder"
+    if name == "mimo_output.weight":
+        return "lm_head"
+    if name.endswith(".rotary_emb.inv_freq"):      # RoPE buffer saved in the checkpoint (bf16), not a parameter
+        return "buffer"
+    return classify(name, n_layers)
+
+
 def _cosy_role(name: str, n_layers: int | None) -> str:
     """0.271 CosyVoice2 / Fun-CosyVoice3 (scripts/fetch_pt_release.py): the Qwen2.5-0.5B backbone is the LLM; its text
     embedding, the stored text lm_head (unused by the TTS loop) and the speech-token embedding are tables (embed role —
@@ -209,6 +228,12 @@ def summarize(repo: str) -> dict:
                 for s in m["shape"]:
                     n *= int(s)
                 tensors[name] = (m["dtype"], m["shape"], n, m["data_offsets"][1] - m["data_offsets"][0])
+    ka = d / "kimi_audio.json"
+    if ka.exists():       # 0.273 Kimi-Audio: whisper encoder + detokenizer + vocoder (outside the safetensors index)
+        kj = json.loads(ka.read_text())
+        for name, (dt, shape) in kj["tensors"].items():
+            n = math.prod(shape)
+            tensors[name] = (dt, shape, n, n * {"F32": 4, "F16": 2, "BF16": 2}[dt])
     nl = tc.get("num_hidden_layers") or cfg.get("num_hidden_layers") or cfg.get("num_layers")
     domain = domain_of(cfg)
     weights: dict[str, dict] = {}   # base name -> {role, fmt, params, bytes}
@@ -239,6 +264,7 @@ def summarize(repo: str) -> dict:
         role = (_whisper_role(name) if cfg.get("model_type") == "whisper" else
                 _omni_role(name, nl) if cfg.get("model_type") == "qwen2_5_omni" else
                 _step_audio_role(name, nl) if cfg.get("model_type") == "step_audio_2" else
+                _kimi_role(name, nl) if "MoonshotKimiaForCausalLM" in (cfg.get("architectures") or []) else
                 _cosy_role(name, nl) if cfg.get("model_type") in ("cosyvoice2", "cosyvoice3") else
                 classify(name, nl) if domain == "llm" else classify_domain(name, domain))
         if role == "buffer":
@@ -271,6 +297,19 @@ def summarize(repo: str) -> dict:
             extra[f"bytes_{r}"] = tot([r], "bytes")
     if "flow" in roles:                        # 0.271 CosyVoice: flow / HiFT tensor shapes drive core/cosyvoice.py
         extra["speech_tensors"] = {n: t[1] for n, t in tensors.items() if n.startswith(("flow.", "hift."))}
+    if ka.exists():
+        extra["speech_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith(("detok.", "voc."))}
+        extra["kimi_audio"] = kj["config"]
+        extra["whisper_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith("whisper.")}
+    t2w = d / "token2wav.json"
+    if t2w.exists():
+        # 0.273 Step-Audio-2-mini: CosyVoice2-style token2wav shipped as .pt (scripts/fetch_pt_release.py --token2wav):
+        # flow / HiFT params (fp32) + tensor shapes + yaml fields, outside params_llm / params_vision
+        tw = json.loads(t2w.read_text())
+        sz = lambda pre: sum(math.prod(v[1]) for k, v in tw["tensors"].items() if k.startswith(pre))
+        extra.update(params_flow=sz("flow."), bytes_flow=4 * sz("flow."), params_vocoder=sz("hift."),
+                     bytes_vocoder=4 * sz("hift."), speech_tensors={k: v[1] for k, v in tw["tensors"].items()},
+                     token2wav=tw["config"])
     if domain != "llm":
         # tensor shapes outside the repeated blocks + of block 0 (io / conditioning dims come from the header)
         extra["domain"] = domain
