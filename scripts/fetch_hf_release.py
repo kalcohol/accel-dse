@@ -132,6 +132,20 @@ def fetch(spec: str) -> dict:
                               "pytorch_model.bin.index.json")["metadata"]["total_size"]
         except Exception:
             pass
+    # 0.291 decision checkpoints (perplexity-ai pplx-decider): the decision head ships as readout.safetensors (BF16
+    # [codes, hidden], not in the weight index) next to decision_config.json / joint_config.json — header + configs
+    # cached; the tensor is keyed "readout.weight" (summarize_release: the lm_head role)
+    if "readout.safetensors" not in headers:
+        try:
+            h = st_header_url(root + "readout.safetensors")
+            headers["readout.safetensors"] = {("readout." + k if k != "__metadata__" else k): v for k, v in h.items()}
+            for name in ("decision_config.json", "joint_config.json"):
+                try:
+                    (d / name).write_text(json.dumps(_json(root + name), indent=1))
+                except urllib.error.HTTPError:
+                    pass
+        except urllib.error.HTTPError:
+            pass
     hdr_path.write_text(json.dumps(headers))
     meta = {"spec": spec, "subfolder": sub, "subfolders": subs if len(subs) > 1 else None, "revision": rev,
             "main_bin_total_size": bin_total,

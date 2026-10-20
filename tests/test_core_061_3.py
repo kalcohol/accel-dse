@@ -111,6 +111,8 @@ def test_best_batch_none_warns():
 def test_pd_energy_counts_restores():
     """kv_policy recompute: the re-prefills add MAC energy per output token (was not counted)."""
     from accel_dse.core.disagg import disagg_report
+    from tests.runcache import cached   # 0.291: per-run report cache
+    disagg_report = cached(disagg_report)
     from accel_dse.core.energy import EnergyTable
     from accel_dse.core.scenario import PDConfig
     T = EnergyTable(pJ_mac=0.5, pJ_bit_dram=5.0, idle_W=100.0)

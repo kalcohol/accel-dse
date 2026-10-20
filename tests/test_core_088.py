@@ -90,6 +90,8 @@ def test_cp_energy_and_pd_prefill_layout():
     assert abs(e8["counts_per_unit"]["mac"] / e1["counts_per_unit"]["mac"] - 1) < 1e-5
     assert abs(sum(e8["J_by_action"].values()) - e8["J_per_unit"]) <= 1e-9 * e8["J_per_unit"]
     from accel_dse.core.disagg import disagg_report
+    from tests.runcache import cached   # 0.291: per-run report cache
+    disagg_report = cached(disagg_report)
     s = Scenario(model="qwen3-8b", mem_id=H, node_cards=8, serving=Serving(batch=16, prompt=32768, out_len=256),
                  pd=PDConfig(enabled=True, prefill_layout=Layout(cp=4), prefill_cards=4, decode_cards=4))
     r = disagg_report(s)

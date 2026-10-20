@@ -189,6 +189,29 @@ EXTRA_TAIL = [
     ("nemotron-3.5-lightning-30b-a3b-nvfp4", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"),
     ("nemotron-3.5-lightning-30b-a3b-bf16", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"),
     ("nemotron-3.5-super-vl-120b-a12b-bf16", "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16"),
+    # 0.291 Perplexity pplx-decider (Apache-2.0; decision models: Qwen3_5Model backbone + readout.safetensors [255, h],
+    # no lm_head).  v1 (2026-10-02 JST) causal, last-token readout; v1.1 (10-05) noncausal full attention; v1.2 / Flash
+    # v1.2 (10-15 / 10-16) noncausal + joint requests (one readout per question marker, serving.questions)
+    ("pplx-decider-v1.2", "perplexity-ai/pplx-decider-v1.2"),
+    ("pplx-decider-flash-v1.2", "perplexity-ai/pplx-decider-flash-v1.2"),
+    ("pplx-decider-v1.1-27b", "perplexity-ai/pplx-decider-v1.1-27b"),
+    ("pplx-decider-v1-27b", "perplexity-ai/pplx-decider-v1-27b"),
+    # 0.291 Jais 3 (Inception / MBZUAI IFM, Apache-2.0; k2_horizon, 2026-09-29 JST): BF16 originals (inception42/*) and
+    # IFM's FP8 releases (compressed-tensors W8A8 float, 128×128 block weights + dynamic per-group-128 activations; the
+    # 375B-A23B keeps attention, shared experts, routers and the first 3 dense layers bf16).  Not added: MoVA-36B-A4B
+    # (mixture-of-values attention: routed V projections, not modelled), the 0.9B FP8 (no such release), Uno adapters
+    ("jais-3-375b-a23b", "inception42/Jais-3-375B-A23B"),
+    ("jais-3-32b", "inception42/Jais-3-32B"),
+    ("jais-3-7b", "inception42/Jais-3-7B"),
+    ("jais-3-3.7b", "inception42/Jais-3-3.7B"),
+    ("jais-3-0.9b", "inception42/Jais-3-0.9B"),
+    ("jais-3-375b-a23b-fp8", "IFM/Jais-3-375B-A23B-FP8"),
+    ("jais-3-32b-fp8", "IFM/Jais-3-32B-FP8"),
+    ("jais-3-7b-fp8", "IFM/Jais-3-7B-FP8"),
+    ("jais-3-3.7b-fp8", "IFM/Jais-3-3.7B-FP8"),
+    # 0.291 JetBrains Mellum2.1 Thinking (Apache-2.0, 2026-09-20 JST): transformers mellum (Qwen3-MoE attention with
+    # q / k norm, 3:1 sliding 1024 / full, 64 experts top-8), bf16; the card's MTP head is not released yet
+    ("mellum2.1-12b-a2.5b-thinking", "JetBrains/Mellum2.1-12B-A2.5B-Thinking"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -198,7 +221,8 @@ PROXIES = [
      "（commandline.microsoft.com/microsoft-decision-1-model-foundry/）→ 按 Qwen3.5-9B 发布配置与 bf16 推断；"
      "实际部署精度 / 结构改动未公开"),
 ]
-DECISION_IDS = {"microsoft-decision-1"}     # + every startlux-decision-* id (decision readout, serving.labels)
+DECISION_IDS = {"microsoft-decision-1",      # + every startlux-decision-* id (decision readout, serving.labels)
+                "pplx-decider-v1.2", "pplx-decider-flash-v1.2", "pplx-decider-v1.1-27b", "pplx-decider-v1-27b"}   # 0.291
 MIRRORS = {"unsloth/": "meta-llama (gated) → public mirror unsloth/*, same safetensors",
            "NousResearch/": "meta-llama (gated) → public mirror NousResearch/*, same safetensors"}
 
@@ -357,6 +381,9 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("firered", "小红书 FireRedTeam（FireRedTTS）", ("FireRedTeam/",)),     # 0.275
     ("fishaudio", "Fish Audio（Drama）", ("fishaudio/",)),     # 0.276
     ("ornith", "Ornith AI（Ornith）", ("ornith-ai/",)),     # 0.287
+    ("perplexity", "Perplexity（决策模型）", ("perplexity-ai/",)),     # 0.291
+    ("inception", "Inception / MBZUAI IFM（Jais）", ("inception42/", "IFM/")),     # 0.291
+    ("jetbrains", "JetBrains（Mellum）", ("JetBrains/",)),     # 0.291
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Fun-ASR-Nano", ("fun-asr-nano",)), ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2.5-Omni", ("qwen2.5-omni",)),
@@ -396,6 +423,9 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("firered", "FireRedTTS3", ("fireredtts3",)),     # 0.275
     ("fishaudio", "Drama 3", ("drama-3",)),     # 0.276
     ("ornith", "Ornith-1.5", ("ornith-",)),     # 0.287
+    ("perplexity", "pplx-decider v1.2", ("pplx-decider-v1.2", "pplx-decider-flash-v1.2")),     # 0.291
+    ("perplexity", "pplx-decider v1 / v1.1", ("pplx-decider-v1",)),
+    ("inception", "Jais 3", ("jais-3-",)), ("jetbrains", "Mellum2.1", ("mellum2.1",)),
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.

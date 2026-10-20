@@ -67,6 +67,8 @@ def test_swap_host_link_energy_needs_user_value():
     """kv_policy=swap moves the preempted KV out and back over the host link: charged only with a user pJ_bit_host."""
     from dataclasses import replace
     from accel_dse.core.disagg import disagg_report
+    from tests.runcache import cached   # 0.291: per-run report cache
+    disagg_report = cached(disagg_report)
     from accel_dse.core.energy import EnergyTable
     from accel_dse.core.scenario import PDConfig, Scenario, Serving
     T = EnergyTable(pJ_mac=0.5, pJ_vec=1.0, pJ_bit_sram=0.1, pJ_bit_dram=5.0, pJ_bit_link=10.0, idle_W=100.0)

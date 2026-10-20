@@ -84,6 +84,12 @@ def main(argv=None) -> int:
     todo = [f for f in files if f.name not in done_prev]
     os.environ['ACCEL_TEST_JOBS'] = str(min(a.j, len(todo)))    # 0.277: CPU-second bounds know files run in parallel
     todo.sort(key=lambda f: -dur.get(f.name, 1e9))          # unknown files first (assume slow)
+    own_cache = "ACCEL_DSE_TEST_RUNCACHE" not in os.environ   # 0.291: per-run dir for tests/runcache.py (removed at exit)
+    if own_cache:
+        import shutil, tempfile
+        os.environ["ACCEL_DSE_TEST_RUNCACHE"] = tempfile.mkdtemp(prefix="accel-dse-runcache-")
+        import atexit
+        atexit.register(shutil.rmtree, os.environ["ACCEL_DSE_TEST_RUNCACHE"], True)
     status = {"state": "running", "pid": os.getpid(), "started": time.strftime("%Y-%m-%d %H:%M:%S %z"),
               "total": len(files), "files": [f.name for f in files], "done": dict(done_prev)}
     _write_status(status)

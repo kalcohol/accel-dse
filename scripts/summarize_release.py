@@ -48,7 +48,7 @@ ROLE = [
     ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.|^linear_proj\.)"),
     ("mtp", r"(^mtp\.|\.mtp\.|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),
     ("embed", r"(embed_tokens|\bwte\b|tok_embeddings|word_embeddings|^embed\.|\.embed\.weight|ple_embedding|^rwkv7\.emb\.weight$|^backbone\.embeddings\.)"),
-    ("lm_head", r"(lm_head|^output\.weight$|embed_out|^head\.weight$)"),
+    ("lm_head", r"(lm_head|^output\.weight$|embed_out|^head\.weight$|^readout\.weight$)"),   # 0.291 decision readout
     ("norm", r"(norm\.|norm$|_norm|ln_|layernorm|\.ln\d)"),
     ("other", r"_hyper_connection\."),   # 0.280 Qwen4Exp gated-residual mixers (attn_ / mlp_; bf16, outside quantization)
     ("router", r"(\.gate\.weight$|\.router\.|gate\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid)"),
@@ -477,6 +477,17 @@ def summarize(repo: str) -> dict:
     if ec.exists():
         # 0.279 Index-Echo: connector + mapper tensor shapes drive core/echo.py
         extra["echo_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith(("connector.", "mapper."))}
+    dc = d / "decision_config.json"
+    if dc.exists() and "readout.weight" in tensors:
+        # 0.291 pplx-decider: decision head rows / attention mode / pooling (decision_config.json) and the request
+        # protocol (joint_config.json: one readout per question marker) drive the readout model (core/model.py)
+        dj = json.loads(dc.read_text())
+        jc = d / "joint_config.json"
+        extra["decision"] = {"readout": list(tensors["readout.weight"][1]),
+                             "attention_mode": dj.get("attention_mode") or "causal",
+                             "pooling": dj.get("pooling"), "temperature": dj.get("temperature"),
+                             "codes": len(dj.get("codes") or ()), "max_pixels": dj.get("max_pixels"),
+                             "joint": json.loads(jc.read_text()) if jc.exists() else None}
     fc = d / "fish_codec.json"
     if fc.exists():
         # 0.277 Fish Audio Drama 3: DAC codec.pth shapes (scripts/fetch_fish_codec.py) drive drama3.dac_ops

@@ -7790,3 +7790,27 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §235.4 Default behaviour, old → new
 - All 604 default points identical (Bolt TPOT included). Bolt-24GB vector / dequant ms up 1.83× on the IQ2_XXS share; the warning text and coverage note change.
+
+## §236 Decision readout checkpoints (pplx-decider); Jais 3 / Mellum2.1; per-run test report cache (0.291)
+
+### §236.1 Readout head instead of an lm_head
+- `readout.safetensors` 「来源」 (perplexity-ai/pplx-decider-*): one bf16 tensor `weight` [255, hidden]; `fetch_hf_release` stores its header as `readout.weight`, `summarize_release` counts it in the lm_head role and records `extra.decision` = {readout, attention_mode, pooling, temperature, codes, max_pixels, joint} from `decision_config.json` / `joint_config.json`.
+- `ModelSpec.readout_rows` (0 = none): `head_params` = readout_rows · hidden; the tied-embedding dedup is skipped for decision releases (the readout is not the embedding).
+- `ir._head_ops`: in a decision readout the head GEMM is m = batch · questions, n = labels; outside it (decode / plain prefill) the full readout n = readout_rows is projected (no vocab head exists). `labels > readout_rows` → ValueError.
+- `attention_mode: noncausal_full_attention` 「来源」 → full-attention (gqa / mla) cores `causal=False` (the same rule as StartLux v1.1 Instant); linear-attention (Gated-DeltaNet) layers stay causal. Missing attention_mode (v1) = causal.
+
+### §236.2 Joint questions
+- `joint_config.json` template `joint-question-inline-readout-v1` 「来源」: several questions inline in one sequence, one readout per question marker. `Serving.questions` (1 … 4096, needs labels): one prefill of the whole prompt, readout m = batch · questions. `decision()`: latency = the prefill + readout; `decisions_per_s` = batch · questions / latency 「推导」. The prompt length is the user's (the questions are part of it).
+- v1.2, b1, prompt 1050, 4 labels on 100T: 548.15 ms either way; 1.824 → 14.594 decisions/s at 8 questions.
+
+### §236.3 Jais 3 (k2_horizon) and Mellum2.1
+- `k2_horizon` 「来源」 modeling_k2_horizon.py: sigmoid router + per-expert bias (`moe_gate_bias`, E params per MoE layer) × `router_scaling_factor`; `num_shared_experts` × `moe_intermediate_size` shared experts; dense layers = `mlp_only_layers`; q/k norm when `query_key_norm` (2 · head_dim misc params); partial RoPE and group RMSNorm change no params. MoVA (routed V projections + V router + softplus gate) is not modelled → not listed.
+- IFM FP8: compressed-tensors float W8A8, 128 × 128 block weights, dynamic per-group-128 activations → act fp8; 375B keeps attention / shared / router / dense bf16.
+- `mellum` 「来源」 modular_mellum.py: Qwen3-MoE attention with q_norm / k_norm [head_dim] (misc 2 · hd), `layer_types` 3 sliding (window 1024) : 1 full, 64 experts top-8.
+
+### §236.4 Per-run test report cache
+- `tests/runcache.py` `cached(fn)`: key = SHA-256(code version = all bytes under accel_dse/; model state = upper-case data globals of every accel_dse module (exact perf memos excluded), code locations of module functions and class methods, effective ContextVar values; function; canonical argument text). Hits return unpickled copies; storage in-process + a per-run directory set by the runners (removed after the run).
+- Measured 0.291: 58 reports computed, 0 hits. The apparent cross-file duplicates of the 0.290 profile were differently pinned (model_flags) or internal `capture_ctx` contexts that cannot cross processes. Overhead ≈ 10 ms per call.
+
+### §236.5 Default behaviour, old → new
+- 756 / 756 points identical (126 LLMs × 3 chips × decode / prefill). `decision()` adds `questions`. New: 14 listed entries.

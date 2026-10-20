@@ -115,6 +115,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                    help="prefill: prompt tokens already in the KV cache (prefix-cache hit, 0.52)")
     p.add_argument("--think", nargs="?", type=int, const=596, default=None, metavar="TOKENS",
                    help="decision: AutoThink thought decoded before the readout (default 596 = card mean 「二手」)")
+    p.add_argument("--questions", type=int, default=None,
+                   help="0.291 joint decision request: question readouts per sequence (pplx-decider v1.2; needs --labels)")
     p.add_argument("--labels", type=int, default=None,
                    help="0.191 decision readout: logits over N option tokens, one forward (needs --phase prefill)")
     for k, hlp in (("frames", "video frames"), ("height", "video height px"), ("width", "video width px"),
@@ -403,7 +405,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     sv = {"phase": a.phase, "batch": a.batch, "spec_k": a.spec_k}
     for k, attr in (("ctx", "ctx"), ("prompt", "prompt"), ("spec_accept", "spec_accept"), ("tpot_slo_ms", "tpot_slo"),
                     ("ttft_slo_ms", "ttft_slo"), ("out_len", "out_len"), ("prefix_cached", "prefix_cached"),
-                    ("labels", "labels"), ("draft_model", "draft_model"), ("spec_rollback", "spec_rollback"),
+                    ("labels", "labels"), ("questions", "questions"), ("draft_model", "draft_model"), ("spec_rollback", "spec_rollback"),
                     ("mamba_track_interval", "mamba_track_interval"), ("spec_topk", "spec_topk"),
                     ("spec_draft_tokens", "spec_draft_tokens"),
                     ("spec_tree_accept_model", "spec_tree_accept_model"), ("spec_sampling", "spec_sampling"),
@@ -750,7 +752,8 @@ def cmd_eval(a) -> dict:
                     print(f"    {d['curve']} ({d['tag']}): f {d['f_ghz']:.3g} GHz (x{d['s']:.3f}), V x{d['v']:.3f}"
                           f" -> throughput x{d['throughput_factor']:.3g}, {d['bound']}-bound")
     if d := out.get("summary", {}).get("decision"):
-        print(f"decision: {d['labels']} labels, {d['latency_ms']:.2f} ms / decision, {d['decisions_per_s']:.4g} decisions/s "
+        print(f"decision: {d['labels']} labels" + (f" x {d['questions']} questions / sequence" if d.get("questions", 1) > 1 else "")
+              + f", {d['latency_ms']:.2f} ms / {'request' if d.get('questions', 1) > 1 else 'decision'}, {d['decisions_per_s']:.4g} decisions/s "
               f"({d['decisions_per_s_card']:.4g} / card)"
               + (f"; = readout {d['readout_ms']:.2f} + think {d['think_ms']:.2f} ms ({d['think_tokens']} tok)" if d["think_ms"] else ""))
     if b := out.get("budget"):

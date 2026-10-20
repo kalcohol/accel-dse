@@ -27,6 +27,7 @@ SERVING_MAX = 1 << 24          # 0.61.1: upper bound of serving.batch / prompt /
 
 
 DECISION_MAX_LABELS = 1024
+DECISION_MAX_QUESTIONS = 4096   # 0.291: readouts per joint sequence (the card sets no cap; the length limit decides)
 THINK_MAX = 4096          # 0.192: StartLux-Decision v1.1 AutoThink card: thought ≤ 4096 tokens 「二手」     # 0.191: option tokens read at the last position (StartLux: ≤ 26 letters per row)
 
 
@@ -103,6 +104,10 @@ class Serving:
     # 0.192 AutoThink: a thought decoded before the readout (opt-in).  Default length = StartLux-Decision v1.1
     # AutoThink model card mean at gate 0.9 (596 tokens / question) 「二手」; card maximum 4096.  Needs labels.
     think: bool = field(default=False, metadata={"omit_default": True})
+    # 0.291 joint decision requests (pplx-decider v1.2 joint-question-inline-readout-v1, model card): one sequence holds
+    # the state and every question; each question has its own readout at a marker → questions readouts per sequence.
+    # prompt = the whole joint sequence.  1 = one question per sequence (StartLux / v1 / v1.1).  Needs labels.
+    questions: int = field(default=1, metadata={"omit_default": True})
     think_tokens: int = field(default=596, metadata={"omit_default": True})
     # internal: image (and 0.165 video) tokens already added to prompt / ctx by vision.expand_images (never serialised or accepted)
     image_tokens: int = field(default=0, metadata={"internal": True})
@@ -160,6 +165,10 @@ class Serving:
             raise ValueError(f"serving.labels must be an integer in [0, {DECISION_MAX_LABELS}]")
         if self.labels and self.phase != "prefill":
             raise ValueError("serving.labels (decision readout) needs serving.phase = prefill: one forward, no decode")
+        if isinstance(self.questions, bool) or not isinstance(self.questions, int) or not 1 <= self.questions <= DECISION_MAX_QUESTIONS:
+            raise ValueError(f"serving.questions must be an integer in [1, {DECISION_MAX_QUESTIONS}]")
+        if self.questions > 1 and not self.labels:
+            raise ValueError("serving.questions (joint decision request: readouts per sequence) needs serving.labels > 0")
         if not isinstance(self.think, bool):
             raise ValueError("serving.think must be a boolean")
         if isinstance(self.think_tokens, bool) or not isinstance(self.think_tokens, int) or not 1 <= self.think_tokens <= THINK_MAX:

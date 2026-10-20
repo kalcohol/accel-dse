@@ -400,19 +400,20 @@ class Result:
             T, n = sv.think_tokens, 4
             for i in range(n):
                 c = sv.prompt + round((i + 0.5) * T / n)
-                d = self.scenario.replace("serving.think", False).replace("serving.labels", 0) \
+                d = self.scenario.replace("serving.think", False).replace("serving.questions", 1).replace("serving.labels", 0) \
                     .replace("serving.phase", "decode").replace("serving.ctx", c)
                 think_s += evaluate(d).step * T / n
             think_note = (f"思考 {T} token 解码（{'默认 = StartLux-Decision v1.1 AutoThink 卡片均值 596，gate 0.9 「二手」' if T == 596 else '用户填写'}）"
                           "+ 读出；同批 batch 行并行")
         total = self.step + think_s
-        dps = sv.batch / total if total > 0 else 0.0
-        return {"labels": sv.labels, "latency_ms": total * 1e3, "readout_ms": self.step * 1e3,
+        dps = sv.batch * sv.questions / total if total > 0 else 0.0     # 0.291: joint requests answer `questions` each
+        return {"labels": sv.labels, "questions": sv.questions, "latency_ms": total * 1e3, "readout_ms": self.step * 1e3,
                 "think_tokens": sv.think_tokens if sv.think else 0, "think_ms": think_s * 1e3, "think_note": think_note,
                 "decisions_per_s": dps,
                 "decisions_per_s_card": dps / self.scenario.layout.cards, "prompt": sv.prompt,
                 "basis": "每个决策 = 一次前向（prompt + 选项）+ 末位置对 ≤ labels 个选项 token 的 logits（输出头按行取），"
-                         "无解码循环；批内各行即各问题（StartLux-Decision 推理包同一前向内多问题）"}
+                         "无解码循环；批内各行即各问题（StartLux-Decision 推理包同一前向内多问题）"
+                         + (f"；联合请求：每序列 {sv.questions} 题、每题一个标记位读出（pplx-decider v1.2 卡片）" if sv.questions > 1 else "")}
 
 
 @lru_cache(maxsize=64)
@@ -1627,6 +1628,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             warnings.append("Dory 参考实现（vLLM PR #60149）只支持 TP = 1、不支持流水并行；此处按所设并行方式估算")
     elif wk.loops or wk.loop_kv != "per_loop":
         warnings.append("workload.loops / loop_kv 只用于循环 LM（Dory），已忽略")
+    if m.readout_rows and scn.serving.labels > m.readout_rows:
+        # 0.291 pplx-decider: answer codes are the readout's rows (model card: 1 to 255 options per question)
+        raise ValueError(f"serving.labels = {scn.serving.labels} 超过该决策模型读出头的 {m.readout_rows} 行（每题 ≤ "
+                         f"{m.readout_rows} 个选项）")
     if scn.serving.spec_accept_src == "published":
         # 0.253: the draft's published acceptance length at the round's temperature → i.i.d. per-draft acceptance 「推导」
         from .model import spec_accept_from_tau
@@ -1834,7 +1839,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
         ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=rskew,
-                   ep_nodes=ep_nodes, labels=sv.labels)
+                   ep_nodes=ep_nodes, labels=sv.labels, questions=sv.questions)
         ctx_cap = sv.prompt
     cp_ring = None
     if lay.cp > 1:
@@ -1852,7 +1857,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             # CP silently removed up to half of the bidirectional attention work)
             c_eq = S - q_loc
         ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=rskew, cp=cp, cp_len=S, ep_nodes=ep_nodes,
-                   labels=sv.labels)
+                   labels=sv.labels, questions=sv.questions)
         ctx_cap = q_loc
         cp_ring = (cp, lay.tp, _cdiv(sv.batch, mb) * q_loc / lay.dp)   # tokens of this rank's block per step
         lay = Layout(lay.pp, lay.tp, lay.dp * cp, lay.ep, lay.etp, 1)   # internal: CP ranks as attention replicas

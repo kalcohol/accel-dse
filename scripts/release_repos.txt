@@ -151,3 +151,17 @@ nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16
 nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
 nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
 nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+perplexity-ai/pplx-decider-v1.2
+perplexity-ai/pplx-decider-flash-v1.2
+perplexity-ai/pplx-decider-v1.1-27b
+perplexity-ai/pplx-decider-v1-27b
+inception42/Jais-3-375B-A23B
+inception42/Jais-3-32B
+inception42/Jais-3-7B
+inception42/Jais-3-3.7B
+inception42/Jais-3-0.9B
+IFM/Jais-3-375B-A23B-FP8
+IFM/Jais-3-32B-FP8
+IFM/Jais-3-7B-FP8
+IFM/Jais-3-3.7B-FP8
+JetBrains/Mellum2.1-12B-A2.5B-Thinking

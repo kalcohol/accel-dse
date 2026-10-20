@@ -472,6 +472,9 @@ class ModelSpec:
     workload: NativeWorkload | None = None
     vocab_head: bool = True                  # encoders: MLM decoder over the vocab on every token (0.106: False =
                                              # token-classification heads only, in io_post — Carbon-A)
+    # 0.291 decision checkpoint (pplx-decider readout.safetensors [rows, hidden]): the head is this readout, not a vocab
+    # lm_head — logits of ≤ rows answer codes at each question marker; 0 = an ordinary LM head
+    readout_rows: int = 0
     standby_params: int = 0                  # stored but idle per forward (Wan2.2 A14B: the other noise-level expert)
     cached_params: int = 0                   # in the release but not loaded for inference (MiniMax-H3 AdaLN branches:
                                              # modulation outputs precomputed per timestep, README)
@@ -515,6 +518,8 @@ class ModelSpec:
 
     @property
     def head_params(self) -> int:
+        if self.readout_rows:
+            return self.readout_rows * self.hidden     # 0.291: the decision readout replaces the lm_head
         return 0 if self.tie_embeddings else self.vocab * self.hidden
 
     @property
@@ -742,6 +747,14 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         de = c.get("expert_hidden_dim") or de
         n_sh = c.get("num_shared_experts") or 0
         d_sh = de if n_sh else 0
+    k2h = mt == "k2_horizon"
+    if k2h:
+        # 0.291 IFM Jais 3 (modeling_k2_horizon.py 「来源」): K2HorizonSparseMoeBlock = sigmoid router (+ bias when
+        # moe_gate_bias) over num_experts, top-k renormalised × router_scaling_factor, plus num_shared_experts
+        # shared experts of moe_intermediate_size (safetensors mlp.shared_experts.* [1792, 6144]); dense layers =
+        # mlp_only_layers; GQA with partial RoPE (rope_head_dim) and group RMSNorm (layernorm_num_groups: same params)
+        n_sh = c.get("num_shared_experts") or 0
+        d_sh = de if n_sh else 0
     first_dense = c.get("first_k_dense_replace") or 0
     mlp_only = set(c.get("mlp_only_layers") or [])
     types = _list(c.get("layer_types")) or []
@@ -761,7 +774,11 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             ffn, flin = _ffn_moe(h, E, k, de, n_sh, d_sh, shared_gate=bool(c.get("shared_expert_intermediate_size")))
         else:
             ffn, flin = _ffn_dense(h, c["intermediate_size"])
-        misc = 2 * h + (2 * hd if mt.startswith("qwen3") or (hy3 and c.get("qk_norm")) else 0)
+        # 0.291 Mellum (transformers MellumAttention = Qwen3MoeAttention: q_norm / k_norm RMSNorm over head_dim 「来源」)
+        misc = 2 * h + (2 * hd if mt.startswith("qwen3") or mt == "mellum" or (hy3 and c.get("qk_norm"))
+                        or (k2h and c.get("query_key_norm")) else 0)
+        if k2h and ffn.kind == "moe" and c.get("moe_gate_bias"):
+            misc += E                                      # router bias (mlp.gate.bias [E])
         if hy3 and ffn.kind == "moe" and c.get("moe_router_enable_expert_bias"):
             misc += E                                      # fp32 expert_bias (sigmoid router selection bias)
         if c.get("attention_bias") or mt == "qwen2" or mt == "gpt_oss":
@@ -2115,7 +2132,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             spec = replace(spec, mtp_layers=(), mtp_extra_params=0,
                            notes=spec.notes + ("config 声明 MTP，但发布权重中没有 MTP 模块 → 不建模 MTP",))
         head_copy = 0
-        if tie and "lm_head" in rel.get("roles", {}):
+        if tie and "lm_head" in rel.get("roles", {}) and not rel.get("decision"):   # 0.291: a readout is no tied copy
             head_copy = sum(v["params"] for v in rel["roles"]["lm_head"].values())
         if spec.mtp_layers and rmtp:
             per = spec.mtp_layers[0].params(h)
@@ -2149,6 +2166,24 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                               for L in spec.layers),
                            notes=spec.notes + ("jev_prompt_attention = bidirectional：全注意力层（1/4）prompt 内双向"
                                                "（发布 config / 模型卡），线性注意力层保持因果",))    # the final hyper_connection_mixer replaces the last norm
+        dec = (rel or {}).get("decision")
+        if dec:
+            # 0.291 pplx-decider (model card + decision_config.json / joint_config.json 「来源」): Qwen3_5Model backbone, no
+            # lm_head; readout.safetensors BF16 [255, hidden] applied at each question's <|fim_suffix|> marker (v1.2
+            # joint-question-inline-readout-v1) or at the last token (v1 / v1.1, one question per sequence).
+            # attention_mode noncausal_full_attention (v1.1, v1.2): the full-attention layers see the whole request,
+            # the linear-attention layers stay causal; v1 has no attention_mode → causal
+            nc = dec.get("attention_mode") == "noncausal_full_attention"
+            if nc:
+                spec = replace(spec, layers=tuple(replace(L, core=replace(L.core, causal=False))
+                                                  if L.core is not None and L.core.kind in ("gqa", "mla") else L
+                                                  for L in spec.layers))
+            j = dec.get("joint") or {}
+            spec = replace(spec, readout_rows=int(dec["readout"][0]), notes=spec.notes + (
+                f"决策读出头 readout [{dec['readout'][0]}, {dec['readout'][1]}]（bf16，替代 lm_head；每题按答案代码行取 logits）"
+                + ("；全注意力层非因果（attention_mode = noncausal_full_attention），线性注意力层保持因果" if nc else "；因果注意力")
+                + ("；联合请求格式：一个序列含全部问题，每题一个 <|fim_suffix|> 读出位置（serving.questions）"
+                   if j.get("template") == "joint-question-inline-readout-v1" else "；每序列一题，读末位置"),))
         if (c.get("model_type") or "").startswith("deepseek_v41"):
             # Engram tables stay fp8 with an e8m0 scale per 32 (ParallelEngramEmbedding) → 8.25 bits / param stored
             spec = replace(spec, lookup_bits=8 + 8 / 32, engram_ngram=c.get("engram_max_ngram_size") or 0,

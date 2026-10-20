@@ -110,6 +110,7 @@ class Phase:
     acc: float = 0.0     # 0.223 per-draft acceptance (replay / track: the ring advances by the expected accepted tokens)
     topk: int = 0        # 0.224 tree drafting: branches per draft step (0 / 1 = chain); q = verified tree tokens
     track: int = 0       # 0.224 radix-track interval (tokens) of hybrid-layer states; 0 = off
+    questions: int = 1   # 0.291 joint decision request: readouts (question markers) per sequence
     labels: int = 0      # 0.191 decision readout (prefill only): logits of ≤ labels option tokens at the last
     samp: bool = False   # 0.253 decode verify: sampled draft rounds (DSpine eager serial_rs_table; serving.spec_sampling)
     txt: int = 0         # 0.258 full: joint text rows of this forward (0 = the model's prefix_tokens) — CFG negative branch
@@ -1400,7 +1401,20 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
         return [Op("final_norm", "vector", model.n_layers,
                    vec=0 if model.final_norm_params == 0 else b_loc * model.hidden * 4)] + \
             tts_head_ops(ts, b_loc, model.n_layers, replicated=sh.tp, af=model.act_fmt)
+    if model.readout_rows and not (ph.labels and ph.kind == "prefill"):
+        # 0.291 a decision checkpoint (pplx-decider) has no vocab head: outside a decision readout every row it
+        # projects reads the whole readout (all answer-code rows)
+        L = model.readout_rows
+        return [Op("final_norm", "vector", model.n_layers,
+                   vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
+                gemm(model, "label_head", model.n_layers, m, model.hidden, L, "lm_head", stream=True),
+                Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
     if ph.labels and ph.kind == "prefill":
+        # 0.291: joint requests read out at every question marker (m = sequences × questions); a readout checkpoint
+        # reads its readout rows (role lm_head), not the vocab head
+        m = m * ph.questions
+        if model.readout_rows:
+            role = "lm_head"
         # 0.191 decision readout (StartLux-Decision inference model.py): hidden at the last prompt position @ the
         # option-letter rows of the output head (index_select, replicated) → softmax over ≤ labels; nothing sampled,
         # no vocab-wide logits, no logits gather

@@ -59,6 +59,10 @@ _PREPROC = {
     "ornith-ai/Ornith-1.5-122B": {"min_px": 65536, "max_px": 16777216},   # 0.287: preprocessor_config.json (Qwen2VLImageProcessorFast)
     # 0.288: the other Ornith repos — each preprocessor_config.json checked (same size / patch 16 / merge 2)
     **{f"ornith-ai/Ornith-{v}": {"min_px": 65536, "max_px": 16777216} for v in ORNITH_REPOS},
+    # 0.291 pplx-decider: processor_config.json image_processor size (Qwen2VLImageProcessor, patch 16, merge 2), each
+    # checked; v1.2 / Flash = decision_config max_pixels 1638400 (card: 1.6 MP); v1.1 4194304; v1 262144 (512 × 512)
+    **{f"perplexity-ai/pplx-decider-{v}": {"min_px": 65536, "max_px": x} for v, x in (
+        ("v1.2", 1638400), ("flash-v1.2", 1638400), ("v1.1-27b", 4194304), ("v1-27b", 262144))},
     "zai-org/GLM-5.3-Flash": {"min_tok": 16, "max_tok": 8000},
     "moonshotai/Kimi-K2.5": {"in_patch_limit": 16384, "side": 512},
     "moonshotai/Kimi-K2.7-Code": {"in_patch_limit": 16384, "side": 512},   # same vision_config / image processor as K2.5

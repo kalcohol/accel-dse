@@ -6,6 +6,41 @@
 
 
 
+## [0.291.0]
+
+### Added: pplx-decider decision models (perplexity-ai, Apache-2.0)
+- Four checkpoints, listed in the decision grouping (`DECISION_IDS`): `pplx-decider-v1.2` (2026-10-15 JST), `pplx-decider-flash-v1.2` (10-16), `pplx-decider-v1.1-27b` (10-05), `pplx-decider-v1-27b` (10-02). Families: 「pplx-decider v1.2」 (v1.2 + Flash) and 「pplx-decider v1 / v1.1」. Provider: Perplexity（决策模型）.
+- Backbone `Qwen3_5Model` as released (bf16). There is no lm_head: `readout.safetensors` is a bf16 [255, hidden] decision head 「来源」 (header fetched by `fetch_hf_release`). `ModelSpec.readout_rows` = 255; `head_params` = 255 · hidden, so the param check is exact (LLM 25.6259 B for the 27B checkpoints, 4.2064 B for Flash; rel_err 0). The tied-head dedup is skipped for decision releases.
+- `decision_config.json` 「来源」: v1.1 / v1.2 / Flash `attention_mode: noncausal_full_attention` → the full-attention layers run non-causal (`causal=False`); the Gated-DeltaNet layers stay causal. v1 has no attention_mode → causal.
+- v1.2 / Flash v1.2 `joint_config.json` (template `joint-question-inline-readout-v1`): one readout per question marker. New `Serving.questions` (1–4096, needs `labels`; CLI `--questions`): the readout GEMM has m = batch · questions; `decision()` reports `decisions_per_s` = batch · questions / latency and a 「联合请求」 note. `labels` above `readout_rows` (255, card: ≤ 255 options) is rejected.
+- Image budget from the processor configs 「来源」: max pixels 1 638 400 (v1.2, Flash), 4 194 304 (v1.1), 262 144 (v1); a 2048² image is 1 600 tokens on v1.2 (card: "a 1.6 MP image uses about 1,600 sequence positions").
+- Decision defaults (100T, b1, prompt 1050, 4 labels) 「推导」: v1.2 and v1.1 548.15 ms (1.824 decisions/s; v1.2 with 8 joint questions: 14.594/s at the same 548.15 ms), Flash v1.2 85.30 ms (11.723/s; ×8: 93.788/s), v1 545.81 ms (1.832/s). microsoft-decision-1 unchanged: 160.61 ms, 6.226/s. Non-causal vs causal at 16 384 tokens: v1.1 TTFT above v1 (full-attention cores lose the causal half). The card's GB200 fast-path median (96 ms) is a different chip and is not a calibration target 「假设」.
+
+### Added: Jais 3 (inception42 BF16, IFM FP8; Apache-2.0) and Mellum2.1 (JetBrains, Apache-2.0)
+- Jais 3 (`k2_horizon`, custom modeling_k2_horizon.py 「来源」): 375B-A23B, 32B, 7B, 3.7B, 0.9B bf16 (inception42, 2026-09-29 JST) and IFM FP8 for 375B-A23B / 32B / 7B / 3.7B (09-29 / 09-30). Sigmoid router + `moe_gate_bias` × `router_scaling_factor`, `num_shared_experts` shared experts of width `moe_intermediate_size`, dense `mlp_only_layers`, partial RoPE, group RMSNorm. `_build_std` adds the shared experts, the router bias and q/k norm when `query_key_norm`. Param checks exact (375B: 379.1672 B total, 26.669 B active).
+- IFM FP8 as released: compressed-tensors W8A8 float, 128 × 128 block weights, dynamic per-group-128 activations → act fp8. The 375B-FP8 keeps attention, shared experts, routers and dense layers bf16 (W bf16/专家 fp8).
+- Mellum2.1-12B-A2.5B-Thinking (2026-09-20 JST): transformers `mellum` = Qwen3-MoE attention (q_norm / k_norm) + Laguna-style layers, 3 : 1 sliding (1024) / full attention (21 / 7 of 28), 64 experts top-8, bf16. Param check exact (12.1499 B, 2.439 B active). The MTP head is not released.
+- Defaults (100T, lpddr5x_4x64_8533_16g, b1, 4096; TPOT / TTFT) 「推导」: jais-3-375b-a23b 267.96 ms / 4.710 s (does not fit); -fp8 187.78 / 2.786 (does not fit); 32b 355.76 / 2.925 (does not fit); 32b-fp8 187.26 / 1.578; 7b 86.24 / 0.662; 7b-fp8 49.91 / 0.367; 3.7b 49.03 / 0.386; 3.7b-fp8 29.29 / 0.227; 0.9b 11.14 / 0.103; mellum2.1 23.35 / 0.208. pplx-decider-v1.2 / v1.1 257.17 ms / 2.165 s, v1 TTFT 2.131 s, Flash 38.00 ms / 0.347 s.
+- Not added: Jais-3-MoVA (BF16 and FP8; routed V projections with a V-router and a softplus attention gate are not modelled, +21 % param gap), Jais 0.9B FP8 (no release), Uno adapters, GGUF / MLX, the pre-window K2-Horizon family, Mellum2 (2026-05), pplx PII-Tracer / embed / computer.
+- Providers: Perplexity（决策模型）, Inception / MBZUAI IFM（Jais）, JetBrains（Mellum）. Release files 170 → 184 (llm 144 → 158).
+
+### Test suite: per-run report cache (tests/runcache.py)
+- `cached(fn)` wraps the test-level `disagg_report` calls of the PD-heavy files (053, 058, 061_3, 061_4, 086, 088, 101, 231, 234). Key = SHA-256 of (a) the code version: every file under `accel_dse/` (sources + data); (b) the live model state: every accel_dse module's upper-case data globals (`model_flags` / pin_legacy overrides, `REF_HW`, `SPLIT_K` …), the code location of every module-level function and class method (a monkeypatch changes it), every module-level ContextVar's effective value (e.g. the `capture_ctx` sink); (c) the function and its full arguments as canonical text (all dataclass fields, sorted sets / dicts; nothing hash-seed dependent). Exact perf memo tables are excluded. Unfingerprintable arguments or unpicklable results are not cached.
+- In-process dict plus, when `tests/run_tests.py` / `scripts/run_tests.py` sets `ACCEL_DSE_TEST_RUNCACHE`, a per-run directory shared by the module processes (atomic rename, O_EXCL lock so a second process waits instead of recomputing; removed at the end of the run). A hit returns an unpickled copy. Test files only gained the 2-line wrapper; no assertion changed. test_core_291 covers copy semantics, flag / ContextVar / monkeypatch / argument / code-version keying, cross-process sharing and the unpicklable pass-through.
+- Measured: 0 hits. The full run computed 58 cached reports, 0 shared across files, 0 reused in-file, CPU saved 0 s; the overhead is about 10 ms per call. The 0.290 profile's "duplicates" were not real: the 057 ↔ 058 report (≈ 83 s) runs under different model flags (057 is pinned to ≤ 0.192 + ≤ 0.171 attention orientation), and the 231 ↔ 234 one is internal to `pdsim.compare` / `capture_ctx`, whose live queue ctx (closures, id-keyed memos) cannot be shared across processes. 053 and 049 have no repeated reports.
+- Suite wall alone (-j 8): 0.290 1468 s → 0.291 (pre-docs run, cache active) 1292 s; per-file times 053 292 → 280 s, 057 262 → 256 s, 234 212 → 200 s, 049 669 → 183 s. The difference is box noise (the 0.290 run had multi-minute stalls in 049 / 088 / 101), not the cache.
+
+### Freshness
+- HF sweep since 2026-10-19 (93 orgs): Ornith-1.5-122B MLX / GGUF / NVFP4 siblings (not added, same as the other Ornith NVFP4 / GGUF / MLX repos), unsloth re-uploads (Ornith GGUF, sam3.1), tencent Hy-Memory GGUF (Hy-Memory is listed), nvidia Cosmos3 robotics / world-model releases (outside the catalogued domains).
+- `freshness_sweep`: IFM, JetBrains, perplexity-ai and inception42 are now provider orgs.
+
+### Default behaviour, old → new
+- All 756 points identical to 0.290 (126 evaluable LLMs × 100T / 1P / H100-like × decode b8 / prefill; TPOT, TTFT, bound, per-stage times, warnings).
+- `decision()` gains a `questions` key (1 unless set); microsoft-decision-1 numbers unchanged. Scenarios serialise `serving.questions` only when it is not 1.
+- New: the 14 listed entries above.
+- ext_validate: only the version stamp changed (0.290.0 → 0.291.0).
+
+
 ## [0.290.0]
 
 ### Changed: IQ2_XXS dequant cost from the ggml reference dequant (Bolt-24GB)

@@ -1,0 +1,160 @@
+{
+ "bytes_llm": 24299846144,
+ "bytes_mtp": 0,
+ "bytes_total": 24299846144,
+ "config": {
+  "architectures": [
+   "MellumForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": 0,
+  "dtype": "bfloat16",
+  "eos_token_id": 28,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 2304,
+  "initializer_range": 0.02,
+  "intermediate_size": 7168,
+  "layer_types": [
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "full_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "full_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "full_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "full_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "full_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "full_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "sliding_attention",
+   "full_attention"
+  ],
+  "max_position_embeddings": 131072,
+  "max_window_layers": 0,
+  "mlp_layer_types": [
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse",
+   "sparse"
+  ],
+  "model_type": "mellum",
+  "moe_intermediate_size": 896,
+  "norm_topk_prob": true,
+  "num_attention_heads": 32,
+  "num_experts": 64,
+  "num_experts_per_tok": 8,
+  "num_hidden_layers": 28,
+  "num_key_value_heads": 4,
+  "output_router_logits": false,
+  "rms_norm_eps": 1e-06,
+  "rope_parameters": {
+   "full_attention": {
+    "attention_factor": 1.2772588722239782,
+    "beta_fast": 32.0,
+    "beta_slow": 1.0,
+    "factor": 16.0,
+    "original_max_position_embeddings": 8192,
+    "rope_theta": 500000.0,
+    "rope_type": "yarn"
+   },
+   "sliding_attention": {
+    "rope_theta": 500000.0,
+    "rope_type": "default"
+   }
+  },
+  "router_aux_loss_coef": 0.001,
+  "sliding_window": 1024,
+  "tie_word_embeddings": false,
+  "transformers_version": "5.8.1",
+  "use_cache": true,
+  "use_sliding_window": true,
+  "vocab_size": 98304
+ },
+ "fetched": "2026-10-21",
+ "n_tensors": 5631,
+ "params_llm": 12149923072,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "JetBrains/Mellum2.1-12B-A2.5B-Thinking",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 1189085184,
+    "params": 594542592
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 452984832,
+    "params": 226492416
+   }
+  },
+  "expert": {
+   "bf16": {
+    "bytes": 22196256768,
+    "params": 11098128384
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 452984832,
+    "params": 226492416
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 276992,
+    "params": 138496
+   }
+  },
+  "router": {
+   "bf16": {
+    "bytes": 8257536,
+    "params": 4128768
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

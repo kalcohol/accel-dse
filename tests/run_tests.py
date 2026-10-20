@@ -11,9 +11,12 @@ time changes.  Each OK line carries the test's duration.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import sys
 import time
 import traceback
@@ -84,6 +87,9 @@ def _kflags(argv: list[str]) -> list[str]:
     return out
 
 
+ENV_RUNCACHE = "ACCEL_DSE_TEST_RUNCACHE"   # = tests.runcache.ENV
+
+
 def main(argv: list[str]) -> int:
     jobs = min(8, os.cpu_count() or 1)
     if argv and argv[0] == "--one":                       # child: one module, sequential
@@ -99,6 +105,35 @@ def main(argv: list[str]) -> int:
     failed = passed = 0
     t0 = time.time()
     mods = sorted(HERE.glob("test_*.py"))
+    # 0.291: per-run directory for tests/runcache.py (heavy report calls shared across the module processes of this
+    # run only; removed below, never reused by a later run)
+    own_cache = ENV_RUNCACHE not in os.environ
+    if own_cache:
+        os.environ[ENV_RUNCACHE] = tempfile.mkdtemp(prefix="accel-dse-runcache-")
+    try:
+        return _main_run(mods, argv, jobs, t0)
+    finally:
+        if own_cache:
+            d = Path(os.environ.pop(ENV_RUNCACHE))
+            _runcache_summary(d)
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def _runcache_summary(d: Path) -> None:
+    tot: dict = {}
+    for f in d.glob("stats.*.json"):
+        try:
+            for k, v in json.loads(f.read_text()).items():
+                tot[k] = tot.get(k, 0) + v
+        except (OSError, ValueError):
+            pass
+    if tot:
+        print(f"[runcache] {tot.get('miss', 0)} computed, {tot.get('hit_disk', 0)} shared across files, "
+              f"{tot.get('hit_mem', 0)} reused in-file, CPU saved {tot.get('saved_s', 0):.1f}s")
+
+
+def _main_run(mods, argv, jobs, t0) -> int:
+    failed = passed = 0
     if argv and not any(_selected(m, argv) for m in mods):
         print(f"no test module / test matches {argv} (exact names; use -k WORD for substring)")
         return 2

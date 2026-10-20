@@ -17,6 +17,8 @@ from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.parallel import Layout
 from accel_dse.core.scenario import PDConfig, Scenario, Serving
+from tests.runcache import cached  # noqa: E402  0.291: per-run report cache (tests/runcache.py)
+disagg_report = cached(disagg_report)
 
 T = EnergyTable(pJ_mac=0.5, pJ_vec=1.0, pJ_bit_sram=0.1, pJ_bit_dram=5.0, pJ_bit_link=10.0, idle_W=100.0,
                 pJ_bit_slc=1.0, pJ_bit_d2d=2.0, pJ_bit_net=20.0)
