@@ -71,6 +71,10 @@ class GemmCost:
     # 0.303: cycles the NoC payload needs across the bisection (Chip.noc_bw_cycles; 0 when noc_link_Bpc is unset) —
     # already folded into ``cycles`` (max with the array); kept for reporting
     noc_cycles: float = 0.0
+    # 0.307 (Chip.noc_eject "link" only, else 0): op-total cycles of the busiest network link and of one engine's
+    # local port — the stage adds the DRAM stream's share of those resources (Chip.noc_share_seconds)
+    noc_link: float = 0.0
+    noc_eject: float = 0.0
 
     @property
     def bound(self) -> str:
@@ -121,6 +125,14 @@ def _wide_noc_cycles(ch: Chip, df: str, m, k, n, ab) -> float:
         return 0.0
     d = min(ch.engines, _cd(n, ch.cols))
     return ch.noc_traffic_cycles(_a_bytes(ch, df, m, k, n, ab), d) if d > 1 else 0.0
+
+
+def _wide_port_cycles(ch: Chip, df: str, m, k, n, ab) -> tuple[float, float]:
+    """0.307: per-instance (busiest link, local port) cycles of the ganged multicast (local-port model on)."""
+    if not ch.noc_eject_on() or ch.engines <= 1:
+        return 0.0, 0.0
+    d = min(ch.engines, _cd(n, ch.cols))
+    return ch.noc_port_cycles(_a_bytes(ch, df, m, k, n, ab), d) if d > 1 else (0.0, 0.0)
 
 
 def _wide_noc(ch: Chip, df: str, m, k, n, ab, count) -> tuple[float, float]:
@@ -270,8 +282,10 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
                     xb_ = count * k * n * wb if (sp > 1 and mm != m) else count * m * k * ab if sp > 1 else 0.0
                     if ch.noc_link_Bpc and ch.noc_routing == "xy":
                         xn = ch.noc_traffic_cycles(xb_, sp, g) + (one.noc_cycles if xb_ else 0.0)
+                        xl, xe = ch.noc_port_cycles(xb_, sp, g)      # 0.307 (0, 0) unless noc_eject "link"
                     else:
                         xn = ch.noc_bw_cycles(xb_) if ch.noc_link_Bpc else 0.0
+                        xl = xe = 0.0
                     c1 = max(c1, xn)
                     sc = max(c1, (one.convert_elems * count * sp / waves * 2.0
                                   + one.convert_x * count * sp / waves) / conv_rate) if flag else c1
@@ -282,18 +296,18 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
                         xb = (count * k * n * wb if (sp > 1 and mm != m) else count * m * k * ab if sp > 1 else 0.0)
                         xh, xp = noc_multicast(ch, sp, g) if xb else (0.0, 0.0)
                         best_s, best_c, alt = sc, c1, (one, count * sp / waves, c1 - one.cycles, xb * xh, xb * xp,
-                                                       max(one.noc_cycles, xn))
+                                                       max(one.noc_cycles, xn), one.noc_link + xl, one.noc_eject + xe)
         if alt is not None:
             # conversions: every (row-split) instance piece converts its own operands (row splits replicate K×N)
-            one, per, extra, xh, xp, xn = alt
+            one, per, extra, xh, xp, xn, xl, xe = alt
             nh, npi = one.noc_hops * per + xh, one.noc_pitch * per + xp
             if not extra:
                 return GemmCost(one.cycles, one.mac_cycles, one.feed_cycles, one.dataflow, one.exec_fmt, one.conversion,
                                 one.convert_elems * per, one.convert_w * per, one.convert_x * per, one.convert_wx * per,
-                                nh, npi, xn)
+                                nh, npi, xn, xl, xe)
             return GemmCost(one.cycles + extra, one.mac_cycles + extra, one.feed_cycles, one.dataflow, one.exec_fmt,
                             one.conversion, one.convert_elems * per, one.convert_w * per, one.convert_x * per,
-                            one.convert_wx * per, nh, npi, xn)
+                            one.convert_wx * per, nh, npi, xn, xl, xe)
     conv_elems = 0.0
     if flag & 1:
         conv_elems += k * n
@@ -301,13 +315,14 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
         conv_elems += m * k
     xw, xa = _conv_extra(m, k, n, w_fmt, a_fmt, flag)
     nh, npi = _wide_noc(ch, df, m, k, n, ab, count)
+    pl, pe = _wide_port_cycles(ch, df, m, k, n, ab)      # 0.307 (0, 0) unless noc_eject "link"
     if lat:
         return GemmCost(max(mac * count + fill, feed * count, nc * count) + lat, mac * count + fill + lat, feed * count,
                         df, ex, conv, conv_elems * count, (k * n * count) if flag & 1 else 0.0, (xw + xa) * count,
-                        xw * count, nh, npi, nc * count)
+                        xw * count, nh, npi, nc * count, pl * count, pe * count)
     return GemmCost(max(mac * count + fill, feed * count, nc * count), mac * count + fill, feed * count, df, ex, conv,
                     conv_elems * count, (k * n * count) if flag & 1 else 0.0, (xw + xa) * count, xw * count, nh, npi,
-                    nc * count)
+                    nc * count, pl * count, pe * count)
 
 
 def _conv_extra(m, k, n, w_fmt, a_fmt, flag) -> tuple[float, float]:

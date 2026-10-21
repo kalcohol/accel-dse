@@ -680,10 +680,12 @@ def _splitk_alt(ch, org, m, k, n, count, w_fmt, a_fmt, w_bits, c):
             if one.cycles + red >= best.cycles:
                 s *= 2
                 continue
+            rl, re_ = ch.noc_port_cycles(pb, s, ch.engines // s, "reduce")     # 0.307 (0, 0) unless noc_eject
             best = replace(one, cycles=one.cycles + red, mac_cycles=one.mac_cycles + red,
                            convert_elems=c.convert_elems, convert_w=c.convert_w, convert_x=c.convert_x,
                            convert_wx=c.convert_wx, noc_hops=s * one.noc_hops + pb * rh,
-                           noc_pitch=s * one.noc_pitch + pb * rp)
+                           noc_pitch=s * one.noc_pitch + pb * rp, noc_link=one.noc_link + rl,
+                           noc_eject=one.noc_eject + re_)
         s *= 2
     return best
 
@@ -727,7 +729,7 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
                 if t.cycles < c.cycles:
                     c = t
     else:
-        return 0.0, 0.0, 0.0, _vec_seconds(ch, op), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, _vec_seconds(ch, op), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     if (op.kind == "attn" and WIDE_GEMM_SPLIT and op.count > 1 and ch.instance_sched == "wide"
             and not ch.split_instances):
         # 0.173: (batch × head × chunk) attention instances spread over SMs (see _wide_alt) — same formats as costed
@@ -766,7 +768,8 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
             mac_share += d
     vw = _convert_seconds(ch, c.convert_w * 2.0 + c.convert_wx) if op.kind == "gemm" else 0.0   # weight dequant: per pass, not per token
     return (t, mac_share, t - mac_share, vec, c.convert_elems, ideal, c.feed_cycles * op.causal * ch.port_Bpc, vw,
-            c.noc_hops * op.causal, c.noc_pitch * op.causal)     # 0.299: NoC byte·hops / byte·pitches (energy)
+            c.noc_hops * op.causal, c.noc_pitch * op.causal,     # 0.299: NoC byte·hops / byte·pitches (energy)
+            c.noc_link * op.causal / (ch.freq_ghz * 1e9), c.noc_eject * op.causal / (ch.freq_ghz * 1e9))   # 0.307
 
 
 def stage_ops(model: ModelSpec, first: int, last: int, has_embed: bool, has_head: bool, ph: Phase, sh: Shard,
@@ -806,7 +809,8 @@ _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "l
              "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
              "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e", "t_arr_attn", "t_vec_attn",
              "wire_d2d", "wire_link", "wire_net", "kern", "disp", "hot_rr", "hot_rt",
-             "noc_h", "noc_p", "noc_h_e", "noc_p_e")     # 0.299: NoC byte·hops / byte·pitches (all / routed experts)
+             "noc_h", "noc_p", "noc_h_e", "noc_p_e",     # 0.299: NoC byte·hops / byte·pitches (all / routed experts)
+             "noc_lk_s", "noc_ej_s")                     # 0.307: busiest-link / local-port seconds (noc_eject)
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _EP_COMM = ("moe_dispatch", "moe_combine", "expert_allreduce")
 _TIERS = ("d2d", "link", "net")
@@ -892,7 +896,7 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         r_ = om.get(o)
         if r_ is None:
             r_ = om[o] = _op_seconds(o, sys, org, model)
-        a_, ma, fe, v, ce, idl, sb, vw, nh_, np_ = r_
+        a_, ma, fe, v, ce, idl, sb, vw, nh_, np_, nl_, ne_ = r_
         if o.kind == "attn":
             d["t_arr_attn"] += a_
         if o.kind == "attn" or o.name.endswith("softmax"):
@@ -909,6 +913,7 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
         d["noc_h"] += nh_; d["noc_p"] += np_      # 0.299
+        d["noc_lk_s"] += nl_; d["noc_ej_s"] += ne_      # 0.307: local-port model (0 unless Chip.noc_eject "link")
         # 0.110 (audit): the SFU pipe (Chip.sfu_per_cycle) only changes the op's *time* (max of lanes and SFU); the
         # vector work counted for energy / KPIs stays the lane work (SFU-bound ops inflated the vec count)
         sfu_x = _vec_seconds(sys.chip, o) - vector_seconds(sys.chip, o.vec) if (sys.chip.sfu_per_cycle and o.sfu) else 0.0
@@ -1191,11 +1196,16 @@ def _links(scn: Scenario) -> tuple:
             scn.net if scn.node_cards > 0 else None, scn.node_cards)
 
 
-def _dram_t(sys: System, dram: dict) -> float:
-    """DRAM seconds of a stage's traffic; 0.108: KV-cache bytes at System.kv_eff when set (else = total / BW)."""
+def _dram_t(sys: System, dram: dict, agg: dict | None = None) -> float:
+    """DRAM seconds of a stage's traffic; 0.108: KV-cache bytes at System.kv_eff when set (else = total / BW).
+    0.307: ≥ the seconds the DRAM stream and the dataflow need on the NoC resources they share (Chip.noc_eject
+    "link": every engine's local port, a ring's memory-stop links) — 0 unless that model is on."""
     s = sys.kv_time_scale
     b = dram["total"] if s == 1.0 else dram["total"] + (dram["kv_read"] + dram["kv_write"]) * (s - 1.0)
-    return b / (sys.dram_GBps * 1e9)
+    t = b / (sys.dram_GBps * 1e9)
+    if agg is not None and sys.chip.noc_eject != "off":
+        t = max(t, sys.chip.noc_share_seconds(agg.get("noc_ej_s", 0.0), agg.get("noc_lk_s", 0.0), dram["total"]))
+    return t
 
 
 def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, store, dram: dict,
@@ -2081,7 +2091,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                 link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
                 _add_wire(wire, {"d2d": act * fd, "net": act * fn, "link": act * (1 - fd - fn)})
                 extra.append((bw, tier))
-            t_dram = _dram_t(sys, dram)
+            t_dram = _dram_t(sys, dram, agg)
             so, pre = {}, (link_bw, sync, d2d_b, net_b, dict(wire))
             win = max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram))
             if sys.fabric.enabled:
@@ -2536,7 +2546,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
                 link_bw += bw; sync += a; link_bytes += act; d2d_b += act * fd; net_b += act * fn
                 _add_wire(wire, {"d2d": act * fd, "net": act * fn, "link": act * (1 - fd - fn)})
                 extra.append((bw, tier))
-            t_dram = _dram_t(sys, dram)
+            t_dram = _dram_t(sys, dram, agg)
             so, pre = {}, (link_bw, sync, d2d_b, net_b, dict(wire))
             win = max(agg["t_arr"], agg["t_vec"], t_dram, _slc_time(sys, dram))
             if sys.fabric.enabled:
@@ -2881,7 +2891,10 @@ def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, a
     # dispatch-free even with the knobs set.  Both knobs default to off → bit-identical by default.
     disp = d["disp"] + sys.chip.dispatch_s()[0] * sum(n for _, n in groups)
     sync = d["sync"] + disp - d["disp"]
-    stt = StageTime(d["t_arr"], d["t_mac"], d["t_feed"], d["t_vec"], dram / (sys.dram_GBps * 1e9), 0.0, sync, dram,
+    t_d = dram / (sys.dram_GBps * 1e9)
+    if sys.chip.noc_eject != "off":      # 0.307: shared local ports / ring stop links (Chip.noc_share_seconds)
+        t_d = max(t_d, sys.chip.noc_share_seconds(d["noc_ej_s"], d["noc_lk_s"], dram))
+    stt = StageTime(d["t_arr"], d["t_mac"], d["t_feed"], d["t_vec"], t_d, 0.0, sync, dram,
                     0.0, d["flops"], d["t_ideal"], t_dram_kv=kv_b / (sys.dram_GBps * 1e9), t_kern=d["kern"], t_disp=disp)
     ch = sys.chip
     extra = {"sync_s": sync, "dispatch_s": disp} if sync else {}     # only when a knob is set (summaries unchanged)

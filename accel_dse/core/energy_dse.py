@@ -45,39 +45,24 @@ from .noc_insight import _fill
 
 MAX_POINTS = 240                       # 0.301: 96 → 240 (memory / SLC axes)
 
-# 0.306: NoC router cost per link width, for the `noc_links` axis.  Park et al., DAC 2012 (MIT 16-node 4×4 mesh, 45 nm
-# SOI, 1.1 V, 1 GHz, 5-port routers, 64-bit flits), Table 4: router with a full-swing 5×5 crossbar 227,230 µm², the
-# synthesized full-swing crossbar alone 26,840 µm² 「来源」; §4.1: clocking + full-swing datapath at near-zero load
-# 5.6 mW / router (the non-data-dependent floor) and 76.7 mW measured leakage for the 16-node chip 「来源」.
-NOC_ROUTER_REF_BITS = 64
-NOC_ROUTER_UM2_45 = 227_230.0
-NOC_XBAR_UM2_45 = 26_840.0
-NOC_ROUTER_CLK_PJ_45 = 5.6                      # pJ / cycle / router (5.6 mW at 1 GHz)
-NOC_ROUTER_LEAK_MW_45 = 76.7 / 16               # mW / router (chip leakage incl. NICs ÷ 16 → upper bound) 「推导」
-NOC_MAC_UM2_45 = 1640 + 4184                    # Horowitz 45 nm bf16 MAC (16b FP mult + 32b FP add) µm² 「二手」
-NOC_PORTS = {"mesh": 5, "ring": 3}
-NOC_COST_SRC = ("Park et al., DAC 2012 (45 nm, 64-bit, 5-port): router 227,230 µm² of which crossbar 26,840 µm² (Table 4); "
-                "clock + datapath floor 5.6 mW/router @1 GHz, leakage 76.7 mW / 16 routers (§4.1) 「来源」")
+# 0.306: NoC router cost per link width, for the `noc_links` axis (constants and scaling live in energy.py since 0.307).
+from .energy import (NOC_COST_SRC, NOC_MAC_UM2_45, NOC_PORTS, NOC_ROUTER_CLK_PJ_45,  # noqa: E402,F401
+                     NOC_ROUTER_LEAK_MW_45, NOC_ROUTER_REF_BITS, NOC_ROUTER_UM2_45, NOC_XBAR_UM2_45, noc_router_scale)
+NOC_NODE_E = 2.6        # 45 → 7 nm energy factor of the tpuv4i_7nm preset 「推导」
 
 
 def noc_router_cost(link_Bpc: float, topology: str, f_ghz: float, mm2_per_kmac: float | None) -> dict | None:
-    """0.306: one router's area (mm²) and width-dependent static power (W) for a link of ``link_Bpc`` bytes / cycle.
-    Width scaling 「推导」: crossbar ∝ (ports · width)² (wire-limited P×P switch of width-w buses, Dally & Towles ch. 17),
-    the rest (input buffers, pipeline registers, datapath) ∝ ports · width; allocators / route logic, which do not scale
-    with width, are lumped into the linear part (overstates them at wide links, understates at narrow) 「假设」.
-    Clock floor ∝ width (clocked flops), leakage ∝ area 「假设」.  Node: area × (the user's MAC density ÷ Horowitz's 45 nm
-    bf16 MAC area) — logic scales like the MAC datapath 「推导/假设」; energy / leakage ÷ 2.6 (the preset's 45 → 7 nm
-    factor, tpuv4i_7nm) 「推导」.  Ring routers have 3 ports.  Crossbar topology (one switch for all engines): None."""
-    P = NOC_PORTS.get(topology)
-    if P is None or not link_Bpc or link_Bpc <= 0:
+    """0.306: one router's area (mm²) and width-dependent static power (W) for a link of ``link_Bpc`` bytes / cycle
+    (energy.noc_router_scale; clock floor ∝ ports·width, leakage ∝ area 「假设」).  Node: area × (the user's MAC density
+    ÷ Horowitz's 45 nm bf16 MAC area) — logic scales like the MAC datapath 「推导/假设」; energy / leakage ÷ 2.6 (the
+    preset's 45 → 7 nm factor) 「推导」.  Crossbar topology (one switch for all engines): None."""
+    sc = noc_router_scale(link_Bpc, topology)
+    if sc is None:
         return None
-    w = 8.0 * link_Bpc / NOC_ROUTER_REF_BITS
-    p5 = P / 5.0
-    um2 = NOC_XBAR_UM2_45 * (p5 * w) ** 2 + (NOC_ROUTER_UM2_45 - NOC_XBAR_UM2_45) * p5 * w
-    a45 = um2 / NOC_ROUTER_UM2_45
     node = (mm2_per_kmac / 1024 * 1e6 / NOC_MAC_UM2_45) if mm2_per_kmac else None
-    W = (NOC_ROUTER_CLK_PJ_45 * p5 * w * f_ghz * 1e-3 + NOC_ROUTER_LEAK_MW_45 * a45 * 1e-3) / 2.6
-    return {"mm2": um2 * 1e-6 * node if node else None, "W": W, "area_x": a45}
+    W = (NOC_ROUTER_CLK_PJ_45 * sc["lin"] * f_ghz * 1e-3 + NOC_ROUTER_LEAK_MW_45 * sc["area_x"] * 1e-3) / NOC_NODE_E
+    return {"mm2": sc["um2_45"] * 1e-6 * node if node else None, "W": W, "area_x": sc["area_x"]}
+
 
 MAC_SCALES = (0.5, 1.0, 2.0)
 SRAM_SCALES = (0.5, 1.0, 2.0)
@@ -222,7 +207,8 @@ def _run(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
     o = {"unit": er["unit"], "fits": bool(r.fits), "bound": r.bound, "thr_nominal": r.per_card,
          "J_nominal": er["J_per_unit"], "W_nominal": er["avg_W_per_card"], "share": er["breakdown"]["share"],
          "thr": r.per_card, "J_per_unit": er["J_per_unit"], "W_card": er["avg_W_per_card"], "f_scale": f_op,
-         "capped": False, "lat_ms": lat * 1e3, "hbm_static_W": er.get("hbm_static_W_card"), "why": []}
+         "capped": False, "lat_ms": lat * 1e3, "hbm_static_W": er.get("hbm_static_W_card"), "why": [],
+         "noc_W": (er.get("noc_router") or {}).get("W")}      # 0.307: router static W at the operating point
     r = r0
     if cap is not None and o["W_card"] > cap * (1 + 1e-9) and r.fits:
         if power_mode == "reject":
@@ -358,8 +344,14 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                      "交叉开关 ∝ (端口·位宽)²、缓冲 / 数据通路 ∝ 端口·位宽「推导/假设」，时钟底功耗 ∝ 位宽、泄漏 ∝ 面积「假设」；"
                      + NOC_COST_SRC + "；工艺：面积 × (用户 MAC 密度 ÷ Horowitz 45 nm bf16 MAC 5824 µm²)「推导/二手」，功耗 ÷ 2.6「推导」"
                      + ("" if kd else "；未填 mm2_per_kmac：NoC 面积未计（只计功耗）")
-                     + "。NoC 静态功耗在功耗封顶之后加到卡功耗（封顶时钟不再下调，超预算即剔除）「近似」；"
-                     "uncore_frac（含布线 / 空白）可能已部分包含 NoC 面积，可能重复计「假设」；crossbar 拓扑不计（单个大开关，无此模型）")
+                     + "。NoC 路由器时钟底功耗（核心轨 V²、× f）与泄漏（∝ V）进入能耗表（pJ_noc_router_cycle / mW_noc_router_leak），"
+                     "在功耗封顶 / DVFS 之前计入（0.307）；面积：路由器单独计一次，不乘 uncore_frac，链路导线已在 uncore 的布线份额内，"
+                     "mm2_fixed 已含 NoC 时不再加（MODEL §252.1）；crossbar 拓扑不计（单个大开关，无此模型）")
+        # 0.307: router static power enters the energy table → priced before the power cap / DVFS (user values win)
+        t = replace(t, pJ_noc_router_cycle=(t.pJ_noc_router_cycle if t.pJ_noc_router_cycle is not None
+                                            else NOC_ROUTER_CLK_PJ_45 / NOC_NODE_E),
+                    mW_noc_router_leak=(t.mW_noc_router_leak if t.mW_noc_router_leak is not None
+                                        else NOC_ROUTER_LEAK_MW_45 / NOC_NODE_E))
     if L:
         notes.append(f"NoC 拥塞：链路 {L:g} B/周期/方向，数据流 NoC 载荷超出拓扑二分带宽时计时（MODEL §248）" if RT == "bisection"
                      else f"NoC 拥塞（逐链路 XY）：链路 {L:g} B/周期/方向，按维序路由最忙链路负载计时（MODEL §249.2）")
@@ -408,31 +400,16 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     row["thr_nominal"] = 1.0 / (P / pf["thr_nominal"] + mix_out_tokens / dc["thr_nominal"])
                 else:
                     o = res[phases[0]]
-                    row.update({k: v for k, v in o.items() if k not in ("why", "lat_ms")})
+                    row.update({k: v for k, v in o.items() if k not in ("why", "lat_ms", "noc_W")})
                     row["tpot_ms" if phases[0] == "decode" else "ttft_ms"] = o["lat_ms"]
+                if res[phases[-1]].get("noc_W") is not None:
+                    row["noc_W"] = res[phases[-1]]["noc_W"]
                 s_full = s0.replace("chip", c).replace("mem_id", mid)
                 if dens_ok:
-                    row["mm2"] = full_area(s_full, b)["mm2"]
-                if lw is not None:                   # 0.306: router area + width-dependent static power
-                    rc = noc_router_cost(lw, p["topology"], ch.freq_ghz * row.get("f_scale", fo),   # the running clock
-                                         b.mm2_per_kmac if b is not None else None)
-                    if rc is not None and p["engines"] > 1:
-                        nW = rc["W"] * p["engines"]
-                        row["noc_W"] = nW
-                        if row["thr"] > 0:
-                            row["J_per_unit"] += nW / row["thr"]
-                            row["W_card"] += nW
-                            if mix:
-                                for ph in phases:
-                                    if row["phases"][ph]["thr"] > 0:
-                                        row["phases"][ph]["J_per_unit"] += nW / row["phases"][ph]["thr"]
-                                        row["phases"][ph]["W_card"] += nW
-                        if rc["mm2"] is not None:
-                            row["noc_mm2"] = rc["mm2"] * p["engines"]
-                            if row.get("mm2") is not None:
-                                row["mm2"] += row["noc_mm2"]
-                        if cap is not None and row["W_card"] > cap * (1 + 1e-9):
-                            why.append(f"功耗 {row['W_card']:.0f} > {cap:g} W（含 NoC 静态 {nW:.1f} W）")
+                    fa = full_area(s_full, b, noc_routers=Ls is not None)    # 0.307: routers counted once (budget.py)
+                    row["mm2"] = fa["mm2"]
+                    if "noc_routers" in fa["terms"]:
+                        row["noc_mm2"] = fa["terms"]["noc_routers"]
                 if prices:
                     pr = prices.get(row["mem_type"])
                     row["mem_usd"] = row["mem_GB"] * pr if pr is not None else None

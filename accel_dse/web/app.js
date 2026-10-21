@@ -354,7 +354,7 @@ function syncInputs() {
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
   if ($('c-attn_fmt') && S.cat) $('c-attn_fmt').value = chipVal('attn_fmt') || '';
   if ($('c-dispatch') && S.cat) $('c-dispatch').value = chipVal('dispatch') || '';
-  for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach']) {   // 0.306: NoC selects ('' = preset / default)
+  for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach', 'noc_eject']) {   // 0.306: NoC selects ('' = preset / default)
     if ($('c-' + k) && S.cat) $('c-' + k).value = k in S.chipOver ? S.chipOver[k] : '';
   }
   if ($('c-clk_datapath_gate')) $('c-clk_datapath_gate').checked = !!chipVal('clk_datapath_gate');
@@ -1118,6 +1118,8 @@ function renderEnergy(r) {
     ...(c.net ? [['跨节点网络发送', c.net, ' B', 'net', 'pJ_bit_net']] : []),
     ...(c.host ? [['主机链路重载（卸载放置）', c.host, ' B', 'host', 'pJ_bit_host']] : []),
     ...(c.clock != null ? [['时钟（MAC 槽·周期，忙或停顿）' + (e.clock_W_card != null ? `（${num(e.clock_W_card)} W/卡` + (e.clock_gating && e.clock_gating.ungated_share < 1 ? `，门控：未门控 ${num(e.clock_gating.ungated_share)} · 利用率 ${num(e.clock_gating.util != null ? e.clock_gating.util : e.clock_gating.mac_util)}` + (e.clock_gating.datapath_gate ? `（数据通路 mean MAC/向量/SRAM口）` : '') : '') + '）' : ''), c.clock, '', 'clock', 'pJ_clk_mac_cycle']] : []),   // 0.228/0.265
+    ...(e.noc_router ? [[`NoC 路由器时钟底（卡·秒；${num(e.noc_router.routers)} 个 · ${num(e.noc_router.link_Bpc)} B/周期 · ${num(e.noc_router.clk_W)} W/卡）`, c.idle_card_s, ' 卡·s', 'noc_clk', 'pJ_noc_router_cycle'],
+      [`NoC 路由器泄漏（卡·秒；${num(e.noc_router.leak_W)} W/卡，静态）`, c.idle_card_s, ' 卡·s', 'noc_leak', 'mW_noc_router_leak']] : []),   // 0.307
     ['卡·秒（静态）' + (e.idle_source && e.idle_source !== 'idle_W' ? `（${num(e.idle_W_used)} W = idle/TDP × TDP）` : ''), c.idle_card_s, ' 卡·s', 'idle', 'idle_W']];
   const head = h('tr', {}, h('th', {}, '动作'), h('th', {}, `次数 / ${u}`), h('th', {}, `能耗 J / ${u}`));
   const body = rows.map(([lab, n, sfx, k, key]) => h('tr', {}, h('td', {}, lab), h('td', { class: 'num' }, sci(n) + sfx),
@@ -2781,7 +2783,7 @@ async function init() {
     'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2', 'mm2_per_dq_hbm', 'mm2_per_dq_lpddr', 'mm2_per_d2d_unit', 'mm2_per_GBps_c2c', 'uncore_frac', 'mm2_host_io', 'mm2_per_unit_mc'])
     bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
       { nullable: true, int: k === 'cards' });
-  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_dram_hbm4', 'pJ_bit_dram_lpddr6', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W', 'pJ_clk_mac_cycle', 'sram_temp_C', 'dram_temp_C', 'slc_access_ref_mib', 'pJ_bit_mm_onchip', 'slc_mm2_per_mib', 'pJ_bit_hop_noc', 'noc_mm2_per_kmac'])
+  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_dram_hbm4', 'pJ_bit_dram_lpddr6', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W', 'pJ_clk_mac_cycle', 'sram_temp_C', 'dram_temp_C', 'slc_access_ref_mib', 'pJ_bit_mm_onchip', 'slc_mm2_per_mib', 'pJ_bit_hop_noc', 'noc_mm2_per_kmac', 'pJ_noc_router_cycle', 'mW_noc_router_leak'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   $('e-power_cap').addEventListener('change', (e) => { S.powerCap = e.target.checked; schedule(); });   // 0.189
   initDensityPresets();
@@ -2843,7 +2845,7 @@ async function init() {
   $('c-slc_policy').addEventListener('change', (e) => { S.chipOver.slc_policy = e.target.value; schedule(); });
   $('c-attn_fmt').addEventListener('change', (e) => { if (e.target.value) S.chipOver.attn_fmt = e.target.value; else delete S.chipOver.attn_fmt; schedule(); });
   $('c-dispatch').addEventListener('change', (e) => { if (e.target.value) S.chipOver.dispatch = e.target.value; else delete S.chipOver.dispatch; schedule(); });
-  for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach']) {   // 0.306: chip-panel NoC selects
+  for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach', 'noc_eject']) {   // 0.306: chip-panel NoC selects
     $('c-' + k).addEventListener('change', (e) => { if (e.target.value) S.chipOver[k] = e.target.value; else delete S.chipOver[k]; schedule(); });
   }
   $('c-clk_datapath_gate').addEventListener('change', (e) => { if (e.target.checked) S.chipOver.clk_datapath_gate = true; else delete S.chipOver.clk_datapath_gate; schedule(); });

@@ -150,6 +150,13 @@ class EnergyTable:
     pJ_bit_hop_noc: float | None = None
     # 0.299: MAC-array area density for the engine pitch (mm² per 1024 MACs).  None = NOC_MM2_PER_KMAC_DEFAULT.
     noc_mm2_per_kmac: float | None = None
+    # 0.307: NoC router static power, per *reference* router (64-bit flits, 5 ports) at this table's node; scaled per
+    # chip by link width / ports (noc_router_scale) and × engines.  Only while the chip has noc_link_Bpc > 0 and a
+    # mesh / ring NoC.  pJ_noc_router_cycle: clock + always-clocked datapath floor per cycle (core rail: V², × f);
+    # mW_noc_router_leak: leakage (∝ V under DVFS, static under the power cap).  Not filled by any preset; the
+    # energy DSE's NoC-width axis sets NOC_ROUTER_CLK_PJ_45 / 2.6 and NOC_ROUTER_LEAK_MW_45 / 2.6 (Park DAC 2012).
+    pJ_noc_router_cycle: float | None = None
+    mW_noc_router_leak: float | None = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -648,6 +655,49 @@ ENERGY_PRESETS["tpuv4i_7nm"]["fields"].update({
                             "：(IDD5 − IDD3N) 功耗 113.8 mW × tRFCab 210 ns / tREFI 3.9 µs（JEDEC ≤ 85 °C）÷ 8 Gb = 0.765 mW/Gb"),
 })
 
+# 0.306/0.307: NoC router cost per link width.  Park et al., DAC 2012 (MIT 16-node 4×4 mesh, 45 nm SOI, 1.1 V, 1 GHz,
+# 5-port routers, 64-bit flits), Table 4: router with a full-swing 5×5 crossbar 227,230 µm², the synthesized
+# full-swing crossbar alone 26,840 µm² 「来源」; §4.1: clocking + full-swing datapath at near-zero load 5.6 mW / router
+# (the non-data-dependent floor) and 76.7 mW measured leakage for the 16-node chip 「来源」.
+NOC_ROUTER_REF_BITS = 64
+NOC_ROUTER_UM2_45 = 227_230.0
+NOC_XBAR_UM2_45 = 26_840.0
+NOC_ROUTER_CLK_PJ_45 = 5.6                      # pJ / cycle / router (5.6 mW at 1 GHz)
+NOC_ROUTER_LEAK_MW_45 = 76.7 / 16               # mW / router (chip leakage incl. NICs ÷ 16 → upper bound) 「推导」
+NOC_MAC_UM2_45 = 1640 + 4184                    # Horowitz 45 nm bf16 MAC (16b FP mult + 32b FP add) µm² 「二手」
+NOC_PORTS = {"mesh": 5, "ring": 3}
+NOC_COST_SRC = ("Park et al., DAC 2012 (45 nm, 64-bit, 5-port): router 227,230 µm² of which crossbar 26,840 µm² (Table 4); "
+                "clock + datapath floor 5.6 mW/router @1 GHz, leakage 76.7 mW / 16 routers (§4.1) 「来源」")
+
+
+def noc_router_scale(link_Bpc: float, topology: str) -> dict | None:
+    """0.307: one router relative to the 64-bit 5-port reference: {"lin": ports·width factor (buffers / datapath /
+    clocked flops), "area_x": area ÷ reference area (crossbar ∝ (ports·width)² + rest ∝ ports·width), "um2_45": area
+    at 45 nm}.  None for a crossbar topology (one switch for all engines — no per-engine router) or no link width.
+    Width scaling 「推导」 (wire-limited P×P switch of w-bit buses, Dally & Towles ch. 17); allocators / route logic,
+    which do not scale with width, are lumped into the linear part 「假设」."""
+    P = NOC_PORTS.get(topology)
+    if P is None or not link_Bpc or link_Bpc <= 0:
+        return None
+    lin = P / 5.0 * 8.0 * link_Bpc / NOC_ROUTER_REF_BITS
+    um2 = NOC_XBAR_UM2_45 * lin ** 2 + (NOC_ROUTER_UM2_45 - NOC_XBAR_UM2_45) * lin
+    return {"lin": lin, "area_x": um2 / NOC_ROUTER_UM2_45, "um2_45": um2}
+
+
+def noc_router_W(table, chip) -> dict | None:
+    """0.307: the chip's NoC router static power from the table's reference-router fields (W per card): clock floor
+    E · lin · pJ · f and leakage E · area_x · mW.  None when the fields are unset or the chip has no routers to price."""
+    if table.pJ_noc_router_cycle is None and table.mW_noc_router_leak is None:
+        return None
+    sc = noc_router_scale(chip.noc_link_Bpc, chip.noc_topology)
+    if sc is None or chip.engines <= 1:
+        return None
+    clk = chip.engines * sc["lin"] * (table.pJ_noc_router_cycle or 0.0) * chip.freq_ghz * 1e9 * 1e-12
+    leak = chip.engines * sc["area_x"] * (table.mW_noc_router_leak or 0.0) * 1e-3
+    return {"clk_W": clk, "leak_W": leak, "W": clk + leak, "routers": chip.engines, "lin": sc["lin"],
+            "area_x": sc["area_x"], "link_Bpc": chip.noc_link_Bpc, "topology": chip.noc_topology}
+
+
 NOC_BASIS = ("NoC：每字节 × 路由跳数 × pJ_bit_hop_noc + 每字节 × 链路长度（引擎间距）× pJ_bit_mm_onchip；流量来自数据流"
              "（A 操作数多播到持有输出列的引擎、跨组拷贝、split-K 部分和归约树），拓扑 mesh / ring / crossbar（Park DAC 2012；Keckler 2011）")
 
@@ -704,7 +754,8 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                           "pJ_bit_dram_hbm4", "pJ_bit_dram_lpddr6", "mW_lpddr_ch_standby", "mW_lpddr_Gb_refresh",
                                           "mW_lpddr_ch_pd", "mW_lpddr_ch_sr", "ns_lpddr_pd_gap", "ns_lpddr_sr_gap",
                                           "pJ_clk_mac_cycle", "sram_temp_C", "dram_temp_C", "slc_access_ref_mib", "pJ_bit_mm_onchip", "slc_mm2_per_mib",
-                                          "pJ_bit_hop_noc", "noc_mm2_per_kmac")
+                                          "pJ_bit_hop_noc", "noc_mm2_per_kmac", "pJ_noc_router_cycle",
+                                          "mW_noc_router_leak")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
                        and not (f.name == "idle_W" and (idle_W_of(table) is not None or table.idle_frac_tdp is not None))]
                       + (["tdp_W"] if table.idle_W is None and table.idle_frac_tdp is not None and table.tdp_W is None
@@ -781,6 +832,14 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
         out["clock_gating"] = {"ungated_share": g, "mac_util": cu["mac_util"], "vec_util": cu["vec_util"],
                                "sram_port_util": cu["sram_port_util"], "util": util, "factor": k,
                                "datapath_gate": cu["datapath_gate"], "basis": cu["basis"]}
+    nr = noc_router_W(table, r.scenario.chip)      # 0.307: NoC router clock floor (dynamic) + leakage (static)
+    if nr is not None:
+        if nr["clk_W"]:
+            j["noc_clk"] = nr["clk_W"] * per["idle_card_s"]
+        if nr["leak_W"]:
+            j["noc_leak"] = nr["leak_W"] * per["idle_card_s"]
+        out["noc_router"] = {**nr, "basis": NOC_COST_SRC}
+        out["noc_leak_W_card"] = nr["leak_W"]
     iw = idle_W_of(table)
     if iw is not None:
         j["idle"] = iw * per["idle_card_s"]
@@ -831,8 +890,8 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
     out.update(J_per_unit=tot, J_by_action=j,
                avg_W_per_card=tot * u / a["window_s"] / r.scenario.layout.cards if a["window_s"] > 0 else 0.0)
     out["breakdown"] = energy_breakdown(out)      # 0.299: component groups (UI / insight)
-    stat = j.get("idle", 0.0) + j.get("sram_leak", 0.0) + j.get("hbm_static", 0.0)    # 0.212/0.216: static too
-    if ("idle" in j or "sram_leak" in j or "hbm_static" in j) and tot > 0:       # 0.189: static share + dominant-term warning
+    stat = j.get("idle", 0.0) + j.get("sram_leak", 0.0) + j.get("hbm_static", 0.0) + j.get("noc_leak", 0.0)
+    if ("idle" in j or "sram_leak" in j or "hbm_static" in j or "noc_leak" in j) and tot > 0:       # 0.189: static share + dominant-term warning
         out["static_share"] = stat / tot
         out["J_dynamic_per_unit"] = tot - stat
         if out["static_share"] > STATIC_WARN:
@@ -875,11 +934,11 @@ def energy_breakdown(rep: dict) -> dict:
     g["mac"] += j.get("mac", 0.0)
     g["vec"] += j.get("vec", 0.0)
     g["wire"] += j.get("noc_wire", 0.0)
-    g["noc"] += j.get("noc", 0.0)
+    g["noc"] += j.get("noc", 0.0) + j.get("noc_clk", 0.0)          # 0.307: router clock floor
     g["dram"] += j.get("dram", 0.0) + j.get("dram_phy", 0.0)
     g["io"] += j.get("d2d", 0.0) + j.get("link", 0.0) + j.get("net", 0.0) + j.get("host", 0.0)
     g["clock"] += j.get("clock", 0.0)
-    g["static"] += j.get("idle", 0.0) + j.get("sram_leak", 0.0) + j.get("hbm_static", 0.0)
+    g["static"] += j.get("idle", 0.0) + j.get("sram_leak", 0.0) + j.get("hbm_static", 0.0) + j.get("noc_leak", 0.0)
     tot = sum(g.values())
     return {"J": g, "share": {k: (v / tot if tot > 0 else 0.0) for k, v in g.items()}, "total": tot,
             "labels": BREAKDOWN_LABEL}
@@ -891,8 +950,9 @@ def _power_cap(out, j, iw, table, cards, u, win) -> dict:
         return {"error": "power_cap 需要 tdp_W（每卡 TDP，产品决策，无默认值）"}
     # 0.227 fix: SRAM leakage (0.212) and HBM standby / refresh (0.216) are static too — they were counted as
     # dynamic energy that shrinks with the slowdown (under-slowed the capped point)
-    st_keys = ("idle", "sram_leak", "hbm_static")
-    p_stat = (iw or 0.0) + (out.get("sram_leak_W_card") or 0.0) + (out.get("hbm_static_W_card") or 0.0)
+    st_keys = ("idle", "sram_leak", "hbm_static", "noc_leak")       # 0.307: + NoC router leakage
+    p_stat = (iw or 0.0) + (out.get("sram_leak_W_card") or 0.0) + (out.get("hbm_static_W_card") or 0.0) \
+        + (out.get("noc_leak_W_card") or 0.0)
     e_dyn_card = sum(v for k, v in j.items() if k not in st_keys) * u / cards        # J per card per window
     p_dyn = e_dyn_card / win
     need = p_dyn + p_stat

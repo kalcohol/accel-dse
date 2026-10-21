@@ -8536,3 +8536,60 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §251.4 Chip panel
 - 高级芯片参数 gains NoC 拓扑 (mesh / ring / crossbar), NoC 链路 B/周期 (empty = unlimited), NoC 拥塞模型 (XY default / 二分) and DRAM 接入 (edge default / none). They are bound through `S.chipOver`; empty means the preset or default. The fold summary shows the link width.
+
+## §252 NoC: router power before the power cap, router area counted once, local ports shared with the DRAM stream (0.307)
+
+### §252.1 The two 0.306 approximations, removed 「来源/推导」 (`core/energy.py`, `core/powercap.py`, `core/budget.py`, `core/energy_dse.py`)
+- **Router static power before the cap.**
+  - 0.306 added the NoC routers' W to a point after `_run` had capped it, and dropped the point if that exceeded the budget 「近似」.
+  - The routers are now part of the energy table, so the power cap and DVFS see them:
+    - `pJ_noc_router_cycle`: clock and always-clocked datapath floor per cycle of a reference router (64-bit flits, 5 ports). Core rail, so DVFS scales it × V² (powercap `CORE_ACTIONS["noc_clk"]`) and × f through the re-evaluation.
+    - `mW_noc_router_leak`: leakage of the reference router. Under DVFS it scales ∝ V, the same rule as SRAM leakage (AccelWattch eq. 2, §221). Under the duty-cycle cap it is static (`static_W`, `_power_cap` static keys).
+  - `noc_router_W(table, chip)`: E × lin × pJ × f + E × area_x × mW, with `noc_router_scale` (§251.2: lin = ports/5 · width/64 bit; area_x = crossbar ∝ lin² plus the rest ∝ lin, over the reference area).
+    - Applies only with `noc_link_Bpc` > 0 on a mesh / ring with E > 1. The report gains `noc_router` and `noc_leak_W_card`; J rows `noc_clk` (breakdown "noc") and `noc_leak` (breakdown "static").
+    - No preset fills the fields, so default results are unchanged. The DSE `noc_links` axis fills them with NOC_ROUTER_CLK_PJ_45 / 2.6 = 2.15 pJ and NOC_ROUTER_LEAK_MW_45 / 2.6 = 1.84 mW (Park DAC 2012 「来源」, 45 → 7 nm 「推导」). User values win.
+  - Old → new (1P, qwen3-8b decode b64, HBM3E, n7_tpuv4i, die ≤ 1300 mm², sides 16–256, links 8 / 32 / 128):
+
+| point | 0.306 | 0.307 |
+|---|---|---|
+| 250 W: 2048 × 16² @ 32 B | dropped: 268 W incl. 38.1 W NoC | capped f × 0.93: 3.19 k tok/s, 78.4 mJ, 250 W |
+| 250 W: 512 × 32² @ 128 B | dropped (power and area) | capped f × 0.56, 3.77 k, 66.3 mJ (area ✗) |
+| 300 W: 2048 × 16² @ 128 B | 495 W (power and area ✗) | capped f × 0.16, 2.15 k, 300 W (area ✗) |
+| uncapped points | — | identical (the router W was already in W/J) |
+| front | {128 × 64² @ 128 B} at 250 W | unchanged |
+
+- **Router area counted once.** What `uncore_frac` covers:
+  - The 0.23 preset is TPUv1's control 2 % plus the unlabelled 21 % of the floor plan (Jouppi ISCA 2017 Fig. 2: buffers 37 %, compute 30 %, I/O 10 %, control 2 % 「来源」).
+  - TPUv1 has one 256 × 256 MXU and no on-chip network. "The internal blocks are typically connected together by 256-byte-wide paths" (§2 「来源」). So the unlabelled share is global wiring (those dedicated paths) and white space, not packet routers 「推导」.
+  - Split 「推导/假设」:
+    - The NoC's **link wires** play the role of TPUv1's block-to-block paths and stay inside the uncore share (not added).
+    - The **routers** are logic that TPUv1 does not have. They are added once as `terms["noc_routers"]`, after the uncore share, not scaled by it: Park's router area is a post-layout figure that already includes its own placement.
+    - `mm2_fixed` means "everything else, including the NoC" (Budget field note), so routers are not added when it is given (a note says so).
+  - Code: `budget.noc_router_mm2(chip, b)` and `full_area(scn, b, noc_routers=True)`; the DSE takes the term from there (`row["noc_mm2"]`).
+  - Old → new: with the preset densities (uncore_frac, no mm2_fixed) the area is unchanged. With mm2_fixed set, a point's mm² drops by its router area (0.306 counted it twice).
+
+### §252.2 Local (eject) ports and the DRAM stream sharing them 「推导/假设」 (`core/hardware.py`, `core/mapping.py`, `core/evaluate.py`)
+- §251.3 left three bounded excesses unmodelled: ring stop links, crossbar ports and mesh local ports. They are now modelled under the opt-in `chip.noc_eject` = "link" (needs `noc_link_Bpc` > 0 and XY): every engine's local (eject) port is one link wide 「假设」 (Blackhole NIU ↔ router: one 512-bit flit per cycle, the same as a link 「来源」).
+  - `noc_eject_load`: all-gather (s − 1)/s · P / g per port; reduce P / g (a lower bound: XY tree nodes with 2–3 children ingest more). `noc_traffic_cycles` takes max(busiest link, local port), so the port can bind an op by itself. Mesh 4 × 4: port 15/16 P vs column 3/4 P. Ring: port (s − 1)/s P vs link ½ P, about 2×. Crossbar: the port is already its figure, so the multicast bound does not change. Only the DRAM share below applies (the E ≤ 32 rows).
+  - The mapping carries op-total `noc_link` / `noc_eject` cycles (GemmCost; wide, split and split-K paths). `_op_seconds` returns them as seconds; the stage sums `noc_lk_s` / `noc_ej_s`.
+  - **DRAM sharing.** `Chip.noc_share_seconds`: every engine's port carries Σ op port load + D / E. On a ring, the link next to a memory stop (stops are ring nodes, so the all-gather passes them) carries Σ op link load + D / 4. The stage DRAM time `_dram_t(sys, dram, agg)` (and the component path) is ≥ that. Mesh row links need no term (§251.3 proof).
+- **Why stage-level, not per-op.** The cost model has no per-op DRAM timing. DRAM is a stage roofline term, max(Σ op time, D / BW), which assumes the stream overlaps the whole stage, and memplan decides residency per stage. Attributing D to ops would invent a schedule the rest of the model does not have. The shared-resource bound is therefore taken at the same level and under the same overlap assumption: per-op multicast loads summed from the mapping, plus the stage's DRAM bytes.
+- Effect (1P, qwen3-8b, HBM3E 3.30 TB/s; throughput eject "link" vs "off"; decode b64 / prefill b1 p2048):
+
+| L | E | crossbar | ring | mesh |
+|---|---|---|---|---|
+| 64 | 2 | −1.7 / −7.3 % | −50.9 / −53.7 % | −1.7 / −7.3 % |
+| 64 | 32 | 0 / −0.5 % | −0.4 / −33.0 % | 0 / −15.5 % |
+| 64 | 128 | 0 / 0 | −0.4 / −33.0 % | 0 / −8.7 % |
+| 64 | 512 | 0 / 0 | −0.6 / −23.2 % | 0 / −5.4 % |
+| 64 | 2048 | 0 / 0 | −0.6 / −33.7 % | 0 / −0.5 % |
+| 256 | 2 | −1.7 / −40.4 % | −42.1 / −42.3 % | −1.7 / −40.4 % |
+| 256 | 32 | 0 / 0 | −0.9 / 0 | 0 / −2.2 % |
+| 256 | 128–2048 | 0 / 0 | −0.8…−1.2 / −4…−29 % | 0 / 0 |
+
+  - Decode stays ingress-bound (§250.1), so sharing matters little there. E = 2 is the exception: each port carries half the DRAM stream plus the whole all-gather.
+  - Prefill on a mesh loses up to 15 % (E = 32, L = 64): the local port, not the column link, is the busiest resource of an all-gather.
+  - Rings lose ~⅓ of prefill: one local port ingests twice what a ring link carries.
+  - The §250.2 design rule is unchanged for decode. For prefill with a 1-link local port, the mesh optimum moves toward larger E (fewer bytes per port).
+- Why opt-in: the port width is a design choice (wider NIU ports remove the port term) 「假设」, and the ≤ 0.306 figures stay reproducible. Default "off" is bit-identical.
+- Not modelled: per-op DRAM attribution (see above); reduce-tree nodes with more than one child; the pipe-overlap path (`_pipe_time`).

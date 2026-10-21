@@ -47,6 +47,7 @@ NOC_TOPOLOGIES = ("crossbar", "ring", "mesh")
 # (per-link load of dimension-ordered multicast trees / reduction trees, MODEL §249.2)
 NOC_ROUTINGS = ("bisection", "xy")
 NOC_MEM_ATTACH = ("edge", "none")      # 0.305: DRAM ingress into the NoC (Chip.noc_mem_attach)
+NOC_EJECT = ("off", "link")            # 0.307: engine local (eject) port model (Chip.noc_eject)
 # 0.303: reference NoC link bandwidth — Tenstorrent Blackhole: one 512-bit flit per cycle per link per NoC (64 B /
 # cycle; Wormhole 256 bit = 32 B), tt-isa-documentation BlackholeA0/NoC/README.md 「来源」.  Measured multicast
 # throughput on Blackhole is 24 B / cycle (tt-low-level-documentation, data-movement report) — not used, cross-check.
@@ -116,6 +117,12 @@ class Chip:
     # NIU → router one flit per cycle → DRAM ingress ≤ 2·⌊√E⌋ links × noc_link_Bpc (mesh / crossbar ports alike), ring:
     # two memory stops injecting both ways (4 links).  "none": DRAM ingress not limited by the NoC (≤ 0.304).
     noc_mem_attach: str = field(default="edge", metadata={"omit_default": True})
+    # 0.307 (opt-in; only with noc_link_Bpc > 0, noc_routing "xy"): "link" = each engine's local (eject) port is one
+    # link wide, so (a) a multicast's per-engine ingest (s − 1)/s · payload / g bounds the op like any link, and
+    # (b) the DRAM stream shares that port (D / E per engine) and, on a ring, the links next to the two memory stops
+    # (D / 4 each) with the dataflow — the stage needs ≥ (Σ op load on the shared port + DRAM share) / (L · f).
+    # "off" = ≤ 0.306 (only network links; DRAM ingress bound separately).  MODEL §252.2
+    noc_eject: str = field(default="off", metadata={"omit_default": True})
     # 0.72 (optional, default 0): sequencer launch / barrier overhead (cycles).  Every op pays one launch; when ≥ 2
     # core groups run instances in lock-step waves, each further wave adds one barrier (a single sequencer — wide,
     # or one active group — streams its instances back to back) 「假设」
@@ -203,6 +210,8 @@ class Chip:
             raise ValueError(f"chip.dispatch must be one of {DISPATCH_MODES}")
         if self.dispatch_us is not None and (isinstance(self.dispatch_us, bool) or not 0.0 <= self.dispatch_us < 1e9):
             raise ValueError("chip.dispatch_us must be finite and >= 0")
+        if self.noc_eject not in NOC_EJECT:
+            raise ValueError(f"chip.noc_eject must be one of {NOC_EJECT} (got {self.noc_eject!r})")
         if self.noc_mem_attach not in NOC_MEM_ATTACH:
             raise ValueError(f"chip.noc_mem_attach must be one of {NOC_MEM_ATTACH} (got {self.noc_mem_attach!r})")
         if self.noc_routing not in NOC_ROUTINGS:
@@ -353,6 +362,42 @@ class Chip:
         n = self.noc_mem_links()
         return math.inf if math.isinf(n) else n * self.noc_link_Bpc * self.freq_ghz
 
+    def noc_eject_on(self) -> bool:
+        """0.307: the local-port model applies (noc_eject "link", a link width set, XY routing)."""
+        return bool(self.noc_link_Bpc) and self.noc_eject == "link" and self.noc_routing == "xy"
+
+    def noc_eject_load(self, payload: float, s: int, g: int = 1, pattern: str = "allgather") -> float:
+        """0.307: bytes through one engine's local (eject) port when ``payload`` moves among ``s`` blocks of ``g``
+        engines 「推导」: all-gather — a block ingests the other blocks' shards, (s − 1)/s · payload, through its g
+        engines' ports (the in-block multicast is the sub-op's own traffic); reduce — a tree node ingests at least one
+        partial tile, payload / g (lower bound: XY tree nodes with 2–3 children ingest more).  The crossbar's output
+        port is the same port (equal to its noc_xy_load)."""
+        if s <= 1 or payload <= 0:
+            return 0.0
+        f = 1.0 if pattern == "reduce" else (s - 1) / s
+        return payload * f / max(1, g)
+
+    def noc_port_cycles(self, payload: float, s: int, g: int = 1, pattern: str = "allgather") -> tuple[float, float]:
+        """0.307: (busiest network-link cycles, local-port cycles) of one dataflow payload under XY with the local-port
+        model on; (0, 0) otherwise.  The first is noc_xy_load / L (≤ 0.306's figure)."""
+        if not self.noc_eject_on() or payload <= 0 or s * g <= 1:
+            return 0.0, 0.0
+        L = self.noc_link_Bpc
+        return self.noc_xy_load(payload, s, g, pattern) / L, self.noc_eject_load(payload, s, g, pattern) / L
+
+    def noc_share_seconds(self, eject_s: float, link_s: float, dram_bytes: float) -> float:
+        """0.307: stage seconds the DRAM stream and the dataflow need on the resources they share (local-port model
+        on, noc_mem_attach "edge"): every engine's port carries Σ op port load + D / E; on a ring the link next to a
+        memory stop carries Σ op link load + D / 4 (two stops, both directions).  Mesh row links never exceed
+        max(ingress, busiest link) (MODEL §251.3) — no term.  0 when off."""
+        if not self.noc_eject_on() or self.noc_mem_attach == "none" or self.engines <= 1:
+            return 0.0
+        bw = self.noc_link_Bpc * self.freq_ghz * 1e9
+        t = eject_s + dram_bytes / self.engines / bw
+        if self.noc_topology == "ring":
+            t = max(t, link_s + dram_bytes / 4.0 / bw)
+        return t
+
     def noc_traffic_cycles(self, payload: float, s: int, g: int = 1, pattern: str = "allgather") -> float:
         """0.304: NoC cycles of one dataflow payload among ``s`` blocks of ``g`` engines: noc_routing "bisection"
         → payload ÷ (bisection links of s·g engines × noc_link_Bpc) (0.303); "xy" → busiest-link load ÷ noc_link_Bpc.
@@ -360,7 +405,10 @@ class Chip:
         if not self.noc_link_Bpc or payload <= 0 or s * g <= 1:
             return 0.0
         if self.noc_routing == "xy":
-            return self.noc_xy_load(payload, s, g, pattern) / self.noc_link_Bpc
+            ld = self.noc_xy_load(payload, s, g, pattern)
+            if self.noc_eject == "link":          # 0.307: the local port is a link too
+                ld = max(ld, self.noc_eject_load(payload, s, g, pattern))
+            return ld / self.noc_link_Bpc
         return payload / (self.noc_bisection_links(s * g) * self.noc_link_Bpc)
 
     @property

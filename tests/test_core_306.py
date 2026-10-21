@@ -104,7 +104,9 @@ def test_link_width_axis_front():
         assert [x["noc_link_Bpc"] for x in g] == [8.0, 32.0, 128.0]
         assert g[0]["noc_W"] < g[1]["noc_W"] < g[2]["noc_W"] and g[0]["noc_mm2"] < g[2]["noc_mm2"]
     big = max(rows, key=lambda x: x["noc_W"])
-    assert big["engines"] == 2048 and not big["feasible"] and "NoC 静态" in big["why"]
+    # 0.307: router static power is priced before the cap → the point runs DVFS-capped (was: dropped over budget)
+    assert big["engines"] == 2048 and not big["feasible"] and big["capped"] and big["W_card"] <= 300 * (1 + 1e-9)
+    assert "面积" in big["why"] and "NoC 静态" not in big["why"]
     fr = [rows[i] for i in r["front"]]
     # the trade-off: the narrowest link on the front sits on more (smaller) engines than the widest one
     lo, hi = min(fr, key=lambda x: x["noc_link_Bpc"]), max(fr, key=lambda x: x["noc_link_Bpc"])
@@ -145,7 +147,8 @@ def test_api_and_ui_wiring():
     assert W.select_options(html, "c-noc_topology") == ["", "mesh", "ring", "crossbar"]
     assert "Blackhole" in W.label_text(html, "c-noc_mem_attach")
     assert W.has(js, "'clk_ungated_share', 'noc_link_Bpc']") and W.has(js, "k === 'noc_link_Bpc'")
-    assert W.count(js, "for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach'])") == 2   # init + change
+    # init + change (0.307: + noc_eject)
+    assert W.count(js, "for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach', 'noc_eject'])") == 2
     src = W.function_source(js, "runInsightDse")
     for k in ("noc_links", "ins-dse-links", "noc_W", "noc_mm2"):
         assert k in src, k

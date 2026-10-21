@@ -34,7 +34,8 @@ CORE_ACTIONS = {"mac": "pJ_mac", "vec": "pJ_vec", "sram": "pJ_bit_sram", "slc": 
                 # 0.298: on-chip wire (SLC / SRAM distance term) is CV² switching on the core rail too; ≤ 0.297 it
                 # stayed at nominal V under DVFS
                 "wire": "pJ_bit_mm_onchip",
-                "noc": "pJ_bit_hop_noc"}     # 0.299: NoC routers switch on the core rail too
+                "noc": "pJ_bit_hop_noc",     # 0.299: NoC routers switch on the core rail too
+                "noc_clk": "pJ_noc_router_cycle"}   # 0.307: router clock floor (V², × f via the re-evaluation)
 
 
 def volt(curve: str, s: float) -> float:
@@ -50,7 +51,8 @@ def volt(curve: str, s: float) -> float:
 
 def static_W(e: dict) -> float:
     """Static W per card of an energy report: idle + SRAM leakage + HBM standby / refresh."""
-    return (e.get("idle_W_used") or 0.0) + (e.get("sram_leak_W_card") or 0.0) + (e.get("hbm_static_W_card") or 0.0)
+    return ((e.get("idle_W_used") or 0.0) + (e.get("sram_leak_W_card") or 0.0) + (e.get("hbm_static_W_card") or 0.0)
+            + (e.get("noc_leak_W_card") or 0.0))       # 0.307: NoC router leakage
 
 
 def _units_s_card(e: dict, cards: int) -> float:
@@ -66,6 +68,8 @@ def _point(r, table, curve: str, s: float):
     t = replace(table, **{f: getattr(table, f) * v * v for f in CORE_ACTIONS.values() if getattr(table, f) is not None})
     if t.uW_per_mib_sram_leak is not None and v != 1.0:     # 0.260: core-rail leakage ∝ V (AccelWattch eq. 2)
         t = replace(t, uW_per_mib_sram_leak=t.uW_per_mib_sram_leak * v)
+    if t.mW_noc_router_leak is not None and v != 1.0:      # 0.307: router leakage on the core rail, ∝ V likewise
+        t = replace(t, mW_noc_router_leak=t.mW_noc_router_leak * v)
     return q, energy_report(q, t)
 
 

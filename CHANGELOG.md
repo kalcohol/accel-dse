@@ -6,6 +6,29 @@
 
 
 
+## [0.307.0]
+
+### NoC: router power before the power cap, router area counted once, local ports shared with the DRAM stream
+- **Router static power is now priced before the power cap / DVFS** (fixes the 0.306 「近似」 of adding it after the cap). New energy fields `pJ_noc_router_cycle` and `mW_noc_router_leak` describe a reference router (64-bit, 5-port).
+  - Each chip's routers scale from that reference by link width and port count. Charged only on mesh / ring with a link width set. No preset fills them; the DSE NoC-width axis fills them with Park/2.6 values, and user values win.
+  - Clock floor: core rail, × V² · f under DVFS. Leakage: ∝ V, static under the cap. The energy table shows both rows.
+  - Old → new, 1P decode DSE at 250 W: 2048 × 16² @ 32 B/cycle needs 268 W incl. 38 W of routers. 0.306 dropped it; 0.307 runs it DVFS-capped (f × 0.93, 3.19 k tok/s, 78.4 mJ). Uncapped points are unchanged and the front is unchanged.
+- **Router area counted once** (fixes the 0.306 「假设」 of possible double counting with `uncore_frac`):
+  - `uncore_frac` is TPUv1's control + unlabelled share. TPUv1 has no NoC: its blocks are joined by dedicated 256-byte paths (Jouppi ISCA 2017 「来源」).
+  - So the share holds wiring and white space, not routers. NoC link wires stay inside it; routers are added once, after the share (`budget.full_area(noc_routers=True)`, `noc_router_mm2`).
+  - Routers are not added when `mm2_fixed` is given, since that already covers the NoC.
+  - Preset densities: no change. With `mm2_fixed`: −router mm² (old double count). MODEL §252.1.
+- **Local (eject) port model** (`chip.noc_eject` "link", opt-in; needs a link width and XY routing). Each engine's local port is one link wide:
+  - A multicast's per-engine ingest (s − 1)/s · payload / g bounds the op.
+  - The DRAM stream shares those ports (D / E per engine) and, on a ring, the memory-stop links (D / 4). The mapping carries op-total busiest-link and local-port cycles; the stage DRAM time is ≥ (Σ op port load + DRAM share) / (L · f).
+  - Default "off" is bit-identical to 0.306.
+  - Effect (1P HBM3E, L = 64): mesh prefill −7 % / −15 % / −9 % / −5 % at E = 2 / 32 / 128 / 512; ring prefill −23 … −54 %; crossbar only at E ≤ 32 (DRAM share); decode within −2 % except rings at E = 2. MODEL §252.2.
+- UI:
+  - Chip panel: 本地端口 (off / link).
+  - Energy inputs: NoC 路由器 pJ/周期 and NoC 路由器泄漏 mW, with router rows in the energy table.
+- Tests: tests/test_core_307.py (8). test_core_306 now records the capped (no longer dropped) over-budget point.
+- Freshness sweep (107 orgs, since 2026-10-21): no new releases.
+
 ## [0.306.0]
 
 ### NoC: DRAM-hop energy, chip-panel NoC controls, NoC link width as an energy-DSE axis

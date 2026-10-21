@@ -264,8 +264,23 @@ def shoreline_check(scn, die_mm2: float | None) -> dict | None:
     return out
 
 
-def full_area(scn, b: Budget) -> dict:
-    """Die area proxy incl. interface PHYs (0.149): area_estimate(chip) + phy_area(scenario)."""
+def noc_router_mm2(chip, b) -> float | None:
+    """0.307: area of the chip's NoC routers (one per engine, mesh / ring, link width set): E × the Park DAC 2012
+    reference router scaled to the link width (energy.noc_router_scale) × the node factor (the user's MAC density ÷
+    Horowitz's 45 nm bf16 MAC, 「推导/二手」).  None without mm2_per_kmac or without routers to price."""
+    from .energy import NOC_MAC_UM2_45, noc_router_scale
+    sc = noc_router_scale(chip.noc_link_Bpc, chip.noc_topology)
+    if sc is None or chip.engines <= 1 or b.mm2_per_kmac is None:
+        return None
+    return chip.engines * sc["um2_45"] * 1e-6 * (b.mm2_per_kmac / 1024 * 1e6 / NOC_MAC_UM2_45)
+
+
+def full_area(scn, b: Budget, noc_routers: bool = False) -> dict:
+    """Die area proxy incl. interface PHYs (0.149): area_estimate(chip) + phy_area(scenario).
+    0.307 ``noc_routers`` (the energy DSE's NoC-width axis): + the NoC routers, counted once — after the uncore share
+    (uncore_frac is TPUv1's control + unlabelled share; TPUv1 has no NoC: its blocks are joined by dedicated 256-byte
+    paths, so the share holds wiring / white space, not routers; the NoC's link wires play the role of those paths
+    and stay inside the share), and not at all when mm2_fixed is given (it already means "everything else, incl. NoC")."""
     a = area_estimate(scn.chip, b)
     p = phy_area(scn, b)
     terms = {**a["terms"], **p["terms"]}
@@ -287,6 +302,14 @@ def full_area(scn, b: Budget) -> dict:
             mm2 += u
     elif b.mm2_fixed is not None and (b.uncore_frac or b.mm2_host_io or b.mm2_per_unit_mc):
         notes.append("已填固定面积 mm2_fixed：uncore 项不再另计（避免重复）")
+    if noc_routers and mm2 is not None:
+        nr = noc_router_mm2(scn.chip, b)
+        if nr is not None:
+            if b.mm2_fixed is None:
+                terms["noc_routers"] = nr
+                mm2 += nr
+            else:
+                notes.append("已填固定面积 mm2_fixed（含 NoC）：路由器面积不再另计（0.307，避免重复）")
     return {**a, "mm2": mm2, "terms": terms, "phy_notes": notes}
 
 
