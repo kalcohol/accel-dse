@@ -75,7 +75,10 @@ def test_report_single_chunk_cases_unchanged_and_multi_chunk_costlier():
     # 0.236: the head's work moves into the head batch and the next batch shrinks (D_b two-point) → 42.4807
     # 0.242: TTFT bins follow the queue-weighted batch law (the fused share grows with k even with one chunk per
     # prompt — the decodes ride in the iteration) → 42.5230; energy unchanged
-    assert abs(c["ttft_ms"]["mean"] - 42.5230) < 1e-3 and abs(q["energy"]["coloc_chunked"]["J_per_token"] - 0.20190) < 2e-5
+    # 0.298: preset pJ_mac += 32b FP accumulate 0.9 / 2.6 pJ → J/token 0.20190 → 0.22584 (= old + MAC count × 0.9/2.6 pJ)
+    eq = q["energy"]["coloc_chunked"]
+    assert abs(c["ttft_ms"]["mean"] - 42.5230) < 1e-3 and abs(eq["J_per_token"] - 0.22584) < 2e-5
+    assert abs(eq["J_per_token"] - eq["counts_per_token"]["mac"] * 0.9 / 2.6 * 1e-12 - 0.20190) < 2e-5
     # D (48 GB → budget 2048): 2–3 chunks; a chunk with its prefix costs more than its token share of the prompt
     d = disagg_report(_pd(cap=48.0))["queue"]["modes"]["coloc_chunked"]
     assert d["stable"] and d["ttft_ms"]["mean"] > c["ttft_ms"]["mean"]

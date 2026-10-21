@@ -1097,7 +1097,7 @@ function renderEnergy(r) {
   const u = e.unit === 'frame' && model() && model().workload && model().workload.image ? '张' : (E_UNIT[e.unit] || e.unit);   // 0.130
   const sci = (x) => (x === 0 ? '0' : x.toExponential(3));
   const rows = [['MAC（bf16 等效）', c.mac, '', 'mac', 'pJ_mac'], ['向量操作', c.vec, '', 'vec', 'pJ_vec'],
-    ['SRAM 端口', c.sram, ' B', 'sram', 'pJ_bit_sram'],
+    ['SRAM 端口' + (e.sram_access && e.sram_access.scale > 1 ? `（本地分片 ${num(e.sram_access.slice_mib)} MiB · 线缆 ${num(e.sram_access.wire_mm)} mm · ×${num(e.sram_access.scale)}）` : ''), c.sram, ' B', 'sram', 'pJ_bit_sram'],   // 0.298
     ...(c.slc ? [['SLC 命中' + (e.slc_access && e.slc_access.scale > 1 ? `（${e.slc_access.deprecated ? '√C 已弃用 · ' : ''}线缆 ×${num(e.slc_access.scale)} @ ${num(e.slc_access.slc_mib)} MiB` + (e.slc_access.wire_mm != null ? ` · ${num(e.slc_access.wire_mm)} mm` + (e.slc_access.over_reticle ? ' · 超光罩' : '') : '') + '）' : ''), c.slc, ' B', 'slc', 'pJ_bit_slc']] : []),
     [c.slc ? 'DRAM 读写（SLC 未命中）' : 'DRAM 读写', c.dram, ' B', 'dram', e.dram_pJ_field || 'pJ_bit_dram'],
     ...(e.phy_pJ_field ? [['DRAM PHY（芯片侧）', c.dram, ' B', 'dram_phy', e.phy_pJ_field]] : []),   // 0.188

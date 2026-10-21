@@ -7967,3 +7967,27 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §242.5 Default behaviour, old → new
 - The cost model is unchanged. See CHANGELOG 0.297.0.
+
+## §243 Energy: MAC = multiply + FP32 accumulate; local SRAM access energy vs slice size (0.298)
+
+### §243.1 MAC 「来源/推导」
+- Matrix MACs take bf16 inputs and accumulate in FP32 (Google Cloud TPU docs "TPU architecture"; Cloud blog "BFloat16: the secret to high performance on Cloud TPUs").
+- E_MAC = E(16b FP mult) + E(32b FP add) = 1.1 + 0.9 = 2.0 pJ at 45 nm (Horowitz ISSCC 2014). 7 nm: / 2.6 (TPUv4i logic scaling) = 0.769 pJ.
+- ≤ 0.297: multiply only (1.1, 0.423); kept in `energy.PJ_MAC_MULT_ONLY`.
+- Low-precision MACs still count as bf16-equivalent slots (fp8 at 2× rate = ½), so the accumulate share scales the same way 「近似」.
+
+### §243.2 Local SRAM wire 「推导/假设」
+- e_SRAM = pJ_bit_sram + w · ½√(A_slice), A_slice = (sram_mib / engines) · ρ, w = pJ_bit_mm_onchip (Keckler 2011), ρ = 3 nm HD macro density (Aoyagi 2025; array only → lower-bound distance).
+- Assumption: every engine streams its operand partition from its own slice; cross-engine (NoC) traffic is not in this term.
+- Opt-in through w (no preset sets it), as for the SLC (§212).
+
+### §243.3 Result (tpuv4i_7nm, qwen3-8b, prompt 4096)
+- MAC: prefill J/prompt-token +56–61 % (1P / 100T / H100-like); decode b8 +2–3 %, b128 +6–8 %. Prefill MAC share 68–74 % → 80–84 %.
+- Under a power cap at the old prefill power: 0.85× clock / throughput (rx5700xt_n7 V–f).
+- SRAM wire at w = 0.078: slice 8 / 4 / 3.1 MiB → 0.69 / 0.49 / 0.43 mm. On 1P, decode b8 J/token gain from 64 → 512 MiB SRAM shrinks from 0.00267 to 0.00168 J.
+
+### §243.4 Not modelled
+- NoC / inter-PE operand movement (Eyeriss normalized: NoC 2× an ALU op, global buffer 6×). On a systolic array this is ≈ a constant per-MAC factor, so it does not separate designs; not added.
+
+### §243.5 Default behaviour, old → new
+- See CHANGELOG 0.298.0.

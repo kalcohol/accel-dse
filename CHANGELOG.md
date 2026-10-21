@@ -6,6 +6,36 @@
 
 
 
+## [0.298.0]
+
+### Energy: MAC = multiply + FP32 accumulate (presets); local SRAM access energy vs slice size
+- Why these two (NOTES_0298): they are the energy terms that move NPU design conclusions. GPU-reference gap work is parked (needs a trace; AGENTS §248).
+  - The tpuv4i_7nm split of the main design questions (qwen3-8b, prompt 4096): prefill is 68–74 % MAC; decode is DRAM + clock, MAC 2–10 %.
+  - A NoC / inter-PE term (Eyeriss ratios) is ≈ a constant per-MAC factor on a systolic array, so it would not separate designs. Not added.
+- **MAC energy** 「推导」: the presets priced a bf16 MAC as the 16-bit FP multiply alone (Horowitz ISSCC 2014: 1.1 pJ at 45 nm).
+  - Matrix MACs accumulate in FP32 「来源」: Google Cloud TPU docs, "All multiplies take bfloat16 inputs, but all accumulations are performed in FP32 number format"; Cloud blog "BFloat16: the secret to high performance on Cloud TPUs".
+  - So pJ_mac = 16b FP mult 1.1 + 32b FP add 0.9 = 2.0 pJ (45 nm, Horowitz). tpuv4i_7nm: 2.0 / 2.6 = 0.769 (TPUv4i logic scaling, as before).
+  - `energy.PJ_MAC_MULT_ONLY` keeps the ≤ 0.297 values.
+  - Effect (tpuv4i_7nm, qwen3-8b): prefill J/prompt-token +56–61 % (1P 0.00430 → 0.00691; 100T 0.00468 → 0.00730; H100-like 0.00451 → 0.00713); decode b8 +2–3 %, b128 +6–8 %.
+  - Prefill card power rises by the same factor. Under a cap at the old prefill power, DVFS (rx5700xt_n7) runs at 0.85× clock → 0.85× prefill throughput on all three.
+- **Local SRAM distance energy** 「推导/假设」: `sram_pJ_bit` = pJ_bit_sram + pJ_bit_mm_onchip × ½√((sram_mib / engines) · mm²/MiB).
+  - Each engine streams its operands from its local slice; same ½√area mean distance as the 0.267 SLC model.
+  - Wire coefficient: Keckler 2011 (same field). Density: Aoyagi 2025 3 nm HD macro (`slc_mm2_per_mib` / default), array-only → lower bound.
+  - Only when `pJ_bit_mm_onchip` is set (no preset sets it). Report field `sram_access` (slice_mib, engines, wire_mm, scale, basis). PD-queue ledger uses the same pJ/bit.
+  - Effect at 0.078 pJ/bit/mm: 1P (8 MiB slice) 0.687 mm, SRAM pJ/bit ×1.61; 100T (4 MiB) 0.486 mm; H100-like (3.1 MiB) 0.430 mm.
+  - Design reading: on 1P, decode b8 J/token falls 64 → 512 MiB SRAM by 0.00267 J flat but only 0.00168 J with wire. Bigger SRAM is not free per access.
+- **DVFS**: `powercap.CORE_ACTIONS` += `wire: pJ_bit_mm_onchip` (on-chip wires switch on the core rail, CV²).
+- UI: pJ / MAC tooltip (FP32 accumulate); wire tooltip covers SRAM; energy table SRAM row shows slice / wire / scale.
+
+### Freshness
+- HF sweep since 2026-10-21 (107 orgs): empty. Nothing new.
+
+### Default behaviour, old → new
+- Preset `pJ_mac`: horowitz_45nm 1.1 → 2.0 (tag 来源 → 推导); tpuv4i_7nm 0.4231 → 0.7692. Every preset-based energy number moves by MAC count × Δ.
+- With `pJ_bit_mm_onchip` set, SRAM traffic now pays the wire term (was flat pJ_bit_sram), and DVFS scales the wire coefficient by V² (was nominal).
+- Cost model (time) unchanged: all 858 scan points identical to 0.297. ext_validate: only the version stamp (0.297.0 → 0.298.0).
+- Tests re-stated by mechanism: test_core_152 (preset value / tag), test_core_233 (J/token 0.20190 → 0.22584 = old + MAC count × 0.9 / 2.6 pJ).
+
 ## [0.297.0]
 
 ### Grouped-GEMM efficiency at small per-expert row counts: checked against public kernel timings (`core/extkern.py`)

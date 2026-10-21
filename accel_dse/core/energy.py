@@ -187,12 +187,21 @@ _GRACE = ("NVIDIA Grace CPU Superchip product page / Grace Performance Tuning Gu
           "up to 500 GB/s of bandwidth in only about 16W'")
 _PIMAI = "Ortega et al., 'PIM-AI: A Novel Architecture for High-Efficiency LLM Inference', arXiv 2411.17309 (2024), Table 1"
 
+# 0.298: accumulation precision of bf16 matrix MACs (why pJ_mac = 16b mult + 32b add)
+_FP32_ACC = ("Google Cloud TPU docs 'TPU architecture': 'All multiplies take bfloat16 inputs, but all accumulations are "
+             "performed in FP32 number format'; Google Cloud blog 'BFloat16: the secret to high performance on Cloud TPUs' "
+             "(2019): 'bfloat16 for the multiplication and 32-bit IEEE floating point for accumulation'")
+# 0.298: ≤ 0.297 preset pJ_mac (multiply only) — kept for reproducibility / tests
+PJ_MAC_MULT_ONLY = {"horowitz_45nm": 1.1, "tpuv4i_7nm": 1.1 / 2.6}
+
 ENERGY_PRESETS: dict[str, dict] = {
     "horowitz_45nm": {
         "label": "45 nm（Horowitz ISSCC 2014）",
         "fields": {
-            # 16b FP multiply ≈ bf16 MAC; 16b FP add as a stand-in for mixed vector ops
-            "pJ_mac": (1.1, "来源", _HOROWITZ + ": 16-bit FP multiply 1.1 pJ"),
+            # 0.298: a bf16 MAC = 16b FP multiply + 32b FP accumulate (MXU / tensor-core MACs accumulate in FP32,
+            # _FP32_ACC); ≤ 0.297 priced the multiply only (1.1).  16b FP add as a stand-in for mixed vector ops
+            "pJ_mac": (1.1 + 0.9, "推导", _HOROWITZ + ": 16-bit FP multiply 1.1 + 32-bit FP add 0.9 pJ（FP32 累加，"
+                       + _FP32_ACC + "）"),
             "pJ_vec": (0.4, "来源", _HOROWITZ + ": 16-bit FP add 0.4 pJ（向量操作代理）"),
             "pJ_bit_sram": (5.0 / 32, "来源", _HOROWITZ + ": 32-bit SRAM cache read 5 pJ → 5/32 pJ/bit"),
             "pJ_bit_slc": (5.0 / 32, "假设", "= SRAM array（同宏类）on " + _HOROWITZ + "; wire vs capacity: set slc_access_ref_mib"),
@@ -217,7 +226,8 @@ ENERGY_PRESETS: dict[str, dict] = {
             # 195 mA·1.2 V·260/3900 = 15.6 mW per 8 Gb → 1.95 mW/Gb.  HBM2-era, 1.2 V (HBM3 core 1.1 V): an upper-side proxy
             "mW_hbm_die_standby": (40 * 1.2, "二手", _DRAMSIM3_HBM2 + ": IDD2N 40 mA × VDD 1.2 V per die（HBM2 代理，非 HBM3E 数据手册）"),
             "mW_hbm_Gb_refresh": (195 * 1.2 * 260 / 3900 / 8, "推导", _DRAMSIM3_HBM2 + ": (IDD5AB 250 − IDD3N 55) mA × 1.2 V × tRFC 260 / tREFI 3900 ÷ 8 Gb；按容量线性外推到 24/32 Gb 晶粒「假设」"),
-            "pJ_mac": (1.1 / 2.6, "推导", _TPUV4I + "; base 16b FP mult 1.1 pJ / 2.6"),
+            "pJ_mac": ((1.1 + 0.9) / 2.6, "推导", _TPUV4I + "; base 16b FP mult 1.1 + 32b FP add 0.9 pJ（FP32 累加，"
+                       + _FP32_ACC + "）/ 2.6"),
             "pJ_vec": (0.4 / 2.6, "推导", _TPUV4I + "; base 16b FP add 0.4 pJ / 2.6"),
             "pJ_bit_sram": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "推导", _TPUV4I + "; SRAM 1.3–2.4× (geom. mean)"),
             "pJ_bit_slc": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "假设", "= SRAM array after 7 nm scale; wire vs capacity: set slc_access_ref_mib"),
@@ -466,6 +476,34 @@ def slc_pJ_bit(table: EnergyTable, slc_mib: float) -> float | None:
     return e * max(1.0, math.sqrt(float(slc_mib) / float(ref)))
 
 
+# 0.298: the on-chip SRAM is banked per engine (each engine streams its own operand partition from its local slice);
+# the wire from a uniform point of that slice to the engine's array edge is the same ½·√(area) mean Manhattan distance
+# as the 0.267 SLC model, area = (sram_mib / engines) × the same 3 nm HD macro density 「推导/假设」.  Cross-engine
+# (NoC) traffic is not in this term.  ≤ 0.297 the SRAM pJ/bit was flat, so SRAM capacity carried no access-energy cost.
+SRAM_WIRE_BASIS = ("pJ_bit_sram + pJ_bit_mm_onchip × ½√((sram_mib/engines)·mm²/MiB)（每引擎本地分片，Keckler 2011 线能耗；"
+                   "Aoyagi 2025 3 nm 宏密度，阵列面积下限 → 距离下限）")
+
+
+def sram_slice_mib(chip) -> float:
+    """0.298: MiB of the engine-local SRAM slice (chip.sram_mib split evenly over the engines)."""
+    mib = float(getattr(chip, "sram_mib", 0.0) or 0.0)
+    return mib / max(1, int(getattr(chip, "engines", 1) or 1))
+
+
+def sram_wire_mm(table: EnergyTable, chip) -> float:
+    """0.298: mean distance (mm) from a uniform point of the engine-local SRAM slice to its port (same model as SLC)."""
+    return slc_wire_mm(table, sram_slice_mib(chip))
+
+
+def sram_pJ_bit(table: EnergyTable, chip) -> float | None:
+    """0.298: effective pJ/bit of local SRAM port traffic.  Flat ``pJ_bit_sram`` unless ``pJ_bit_mm_onchip`` is set,
+    then + pJ_bit_mm_onchip · sram_wire_mm (distance model shared with the SLC)."""
+    e = table.pJ_bit_sram
+    if e is None or table.pJ_bit_mm_onchip is None or chip is None:
+        return e
+    return e + table.pJ_bit_mm_onchip * sram_wire_mm(table, chip)
+
+
 def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) -> dict:
     """0.189 power_cap (opt-in): when average card power (dynamic + static) exceeds table.tdp_W, sustained throughput
     is cut to fit.  Energy per action held constant (no DVFS V² saving, 「假设」, conservative), so the window stretches
@@ -518,6 +556,16 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                      "array_mm2": slc_mib * dens, "over_reticle": slc_mib * dens > RETICLE_MM2,
                                      "scale": e / table.pJ_bit_slc if table.pJ_bit_slc else None,
                                      "basis": "pJ_bit_slc + pJ_bit_mm_onchip × ½√(slc_mib·mm²/MiB) (Keckler 2011, 0.267)"}
+        elif k == "sram":
+            ch = r.scenario.chip
+            e = sram_pJ_bit(table, ch)
+            if e is not None and table.pJ_bit_mm_onchip is not None:
+                dens = table.slc_mm2_per_mib if table.slc_mm2_per_mib is not None else SLC_MM2_PER_MIB_DEFAULT
+                out["sram_access"] = {"pJ_bit": e, "pJ_bit_base": table.pJ_bit_sram, "slice_mib": sram_slice_mib(ch),
+                                      "engines": ch.engines, "wire_mm": sram_wire_mm(table, ch),
+                                      "pJ_bit_mm": table.pJ_bit_mm_onchip, "mm2_per_mib": dens,
+                                      "scale": e / table.pJ_bit_sram if table.pJ_bit_sram else None,
+                                      "basis": SRAM_WIRE_BASIS}
         else:
             e = getattr(table, dfield if k == "dram" else attr)
         if e is not None:

@@ -30,7 +30,10 @@ VF_CURVES = {
 CAP_CURVES = ("dfs", "rx5700xt_n7")
 F_MIN = 0.15
 CORE_ACTIONS = {"mac": "pJ_mac", "vec": "pJ_vec", "sram": "pJ_bit_sram", "slc": "pJ_bit_slc",
-                "clock": "pJ_clk_mac_cycle"}      # 0.228: per-cycle term on the core rail (V²; f via the re-evaluation)
+                "clock": "pJ_clk_mac_cycle",      # 0.228: per-cycle term on the core rail (V²; f via the re-evaluation)
+                # 0.298: on-chip wire (SLC / SRAM distance term) is CV² switching on the core rail too; ≤ 0.297 it
+                # stayed at nominal V under DVFS
+                "wire": "pJ_bit_mm_onchip"}
 
 
 def volt(curve: str, s: float) -> float:

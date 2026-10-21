@@ -26,8 +26,9 @@ def test_energy_presets_labelled():
         for f, (v, st, src) in p["fields"].items():
             assert v > 0 and st in _STATUS and len(src) > 20, (pid, f, st)
     h = ENERGY_PRESETS["horowitz_45nm"]["fields"]
-    assert h["pJ_mac"][0] == 1.1 and abs(h["pJ_bit_sram"][0] - 5 / 32) < 1e-12 and h["pJ_bit_dram"][0] == 20.0
-    assert h["pJ_mac"][1] == "来源" and ENERGY_PRESETS["tpuv4i_7nm"]["fields"]["pJ_mac"][1] == "推导"
+    # 0.298: pJ_mac = 16b FP mult 1.1 + 32b FP accumulate 0.9 (was multiply only, 1.1 「来源」)
+    assert h["pJ_mac"][0] == 1.1 + 0.9 and abs(h["pJ_bit_sram"][0] - 5 / 32) < 1e-12 and h["pJ_bit_dram"][0] == 20.0
+    assert h["pJ_mac"][1] == "推导" and ENERGY_PRESETS["tpuv4i_7nm"]["fields"]["pJ_mac"][1] == "推导"
 
 
 def test_energy_preset_precedence_and_api():
