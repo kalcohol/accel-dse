@@ -221,6 +221,11 @@ EXTRA_TAIL = [
     # 0.291 JetBrains Mellum2.1 Thinking (Apache-2.0, 2026-09-20 JST): transformers mellum (Qwen3-MoE attention with
     # q / k norm, 3:1 sliding 1024 / full, 64 experts top-8), bf16; the card's MTP head is not released yet
     ("mellum2.1-12b-a2.5b-thinking", "JetBrains/Mellum2.1-12B-A2.5B-Thinking"),
+    # 0.311 inclusionAI Ling-3.0 text releases (2026-08-10 / 08-03 JST; bailing_hybrid KDA + MLA, the Ling-3.1-flash
+    # builder) + Ling-3.0-tiny-UBTree (2026-10-21 22:49 JST: DFlash block backbone + bigram selector, tree verify)
+    ("ling-3.0-tiny", "inclusionAI/Ling-3.0-tiny"),
+    ("ling-3.0-flash", "inclusionAI/Ling-3.0-flash"),
+    ("ling-3.0-tiny-ubtree", "inclusionAI/Ling-3.0-tiny+inclusionAI/Ling-3.0-tiny-UBTree"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -415,7 +420,8 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
     ("arc", "Evo 2（StripedHyena 2 DNA 语言模型）", ("evo2-",)),
     ("meta", "Muse Spark Open", ("muse-spark",)),
-    ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)), ("ant", "Ling-3.0-VL", ("ling-3.0",)),
+    ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)), ("ant", "Ling-3.0-VL", ("ling-3.0-flash-vl",)),
+    ("ant", "Ling-3.0", ("ling-3.0",)),   # 0.311: Ling-3.0-tiny / -flash text + the tiny UBTree pair
     ("ant", "Ming-3.0-ASR", ("ming-3.0-asr",)), ("ant", "Ming-3.0-TTS", ("ming-3.0-tts",)),
     ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),
     ("stepfun", "Step-Audio-2", ("step-audio-2",)), ("stepfun", "Step-5", ("step-5",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),

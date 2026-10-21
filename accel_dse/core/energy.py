@@ -832,6 +832,9 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                           "hops_per_byte": nd["hops_per_byte"],
                                           "pitches_per_byte": nd["pitches_per_byte"],
                                           "mem_edges": ch.mem_edges, "mem_edges_auto": ch.noc_mem_edges == 0,   # 0.310
+                                          # 0.311: units per memory edge, interleave rule, host-I/O edges kept
+                                          "mem_load": list(ch.noc_mem_load), "mem_balance": ch.noc_mem_balance,
+                                          "mem_links": ch.noc_mem_links(), "io_edges": ch.noc_mem_io_edges,
                                           "J": (nd["byte_hops"] * e + nd["byte_pitches"] * (unit_pJ(table, "noc_wire", ch) or 0.0))
                                           * 8e-12 / u}
                 if a.get("noc_d2d"):         # 0.308: the D2D bytes' share (engine ↔ D2D edge, both ends)

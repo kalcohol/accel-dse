@@ -2,13 +2,22 @@
 Starts `accel-dse serve` on a free port, loads the page, drives key controls (model, phase, chip preset, memory
 count/type, cards/TP, mapping, density preset, D2D), runs design-insight sizing / joint / upgrade path, and asserts:
 no page errors / console errors / failed API calls, KPI cards populate after each change, sizing tables fill.
-Usage: python3 scripts/ui_headless_smoke.py [--chrome /usr/bin/google-chrome]   exit 0 = clean."""
+Usage: python3 scripts/ui_headless_smoke.py [--chrome /usr/bin/google-chrome] [--budget 1800]   exit 0 = clean.
+0.311 robustness (checks unchanged): server stderr goes to a log file (an undrained pipe blocks the server's request
+threads once ~64 KB of access log accumulate); every STEP prints as it completes, with elapsed seconds; every wait is
+bounded and a timeout names the step, the waited-for panel status text, the server's liveness and its log tail; any
+exception aborts the browser part with that context instead of a bare traceback; a global watchdog (--budget seconds)
+ends a stuck run with exit 3 and the last step."""
 from __future__ import annotations
 
 import json
+import os
+import re
 import socket
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -21,12 +30,70 @@ def _port():
         return s.getsockname()[1]
 
 
-def main(chrome="/usr/bin/google-chrome") -> int:
+class StepTimeout(Exception):
+    """0.311: a bounded wait ran out — carries the step context."""
+
+
+class _Steps(list):
+    """0.311: steps print as they complete (a hang shows where it stopped)."""
+
+    def __init__(self, t0: float):
+        super().__init__()
+        self.t0, self.last = t0, "start"
+
+    def append(self, s) -> None:
+        super().append(s)
+        self.last = str(s[0])
+        print(f"STEP [{time.time() - self.t0:6.1f}s]", *s, flush=True)
+
+
+def _tail(path: str, n: int = 6) -> str:
+    try:
+        with open(path, errors="replace") as f:
+            return " | ".join(x.strip() for x in f.readlines()[-n:])
+    except OSError:
+        return ""
+
+
+class _Guard:
+    """0.311: any exception in the browser part → one clear error (step, type, message, server state); not re-raised."""
+
+    def __init__(self, errs, steps, srv, log):
+        self.errs, self.steps, self.srv, self.log = errs, steps, srv, log
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, et, ev, tb):
+        if et is None:
+            return False
+        msg = str(ev).strip().splitlines()[0][:300] if str(ev).strip() else ""
+        self.errs.append(f"ABORT after step '{self.steps.last}': {et.__name__}: {msg} · server "
+                         f"{'alive' if self.srv.poll() is None else f'exited {self.srv.returncode}'}"
+                         f" · server log: {_tail(self.log)[:400]}")
+        return True
+
+
+def main(chrome="/usr/bin/google-chrome", budget=1800.0) -> int:
+    from playwright.sync_api import TimeoutError as PWTimeout
     from playwright.sync_api import sync_playwright
     port = _port()
+    fd, log = tempfile.mkstemp(prefix="ui_headless_srv_", suffix=".log")
+    os.close(fd)
+    logf = open(log, "w")                                # 0.311: never an undrained pipe
     srv = subprocess.Popen([sys.executable, "-m", "accel_dse", "serve", "--host", "127.0.0.1", "--port", str(port)],
-                           cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    errs, steps = [], []
+                           cwd=ROOT, stdout=subprocess.DEVNULL, stderr=logf)
+    errs, steps = [], _Steps(time.time())
+    done = threading.Event()
+
+    def watchdog():                                      # 0.311: global budget — a stuck run ends with its context
+        if not done.wait(budget):
+            print(f"ABORT: global budget {budget:.0f}s exceeded after step '{steps.last}' · server "
+                  f"{'alive' if srv.poll() is None else 'exited'} · server log: {_tail(log)[:400]}", flush=True)
+            print(f"{len(errs) + 1} error(s)", flush=True)
+            srv.kill()
+            os._exit(3)
+    threading.Thread(target=watchdog, daemon=True).start()
     try:
         for _ in range(100):
             try:
@@ -34,14 +101,42 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 break
             except OSError:
                 time.sleep(0.2)
-        with sync_playwright() as pw:
+        with _Guard(errs, steps, srv, log), sync_playwright() as pw:
             b = pw.chromium.launch(executable_path=chrome, args=["--headless=new", "--no-sandbox"])
             p = b.new_page()
+
+            def _ctx(expr):
+                """The panel status text a wait expression watches (getElementById('…')), for the timeout message."""
+                m = re.search(r"getElementById\('([^']+)'\)", expr)
+                if not m:
+                    return ""
+                try:
+                    return f" · #{m.group(1)} = {p.inner_text('#' + m.group(1))[:160]!r}"
+                except Exception:                    # noqa: BLE001
+                    return ""
+
+            def wait_js(expr, timeout=600000):
+                """0.311: p.wait_for_function with a clear timeout (step, waited-for status, server state)."""
+                t0 = time.time()
+                try:
+                    return p.wait_for_function(expr, timeout=timeout)
+                except PWTimeout:
+                    raise StepTimeout(f"no completion {time.time() - t0:.0f}s after step '{steps.last}' "
+                                      f"(limit {timeout / 1000:.0f}s){_ctx(expr)}") from None
+
+            def wait_sel(sel, timeout=60000):
+                """0.311: p.wait_for_selector with a clear timeout."""
+                t0 = time.time()
+                try:
+                    return p.wait_for_selector(sel, timeout=timeout)
+                except PWTimeout:
+                    raise StepTimeout(f"{sel} absent {time.time() - t0:.0f}s after step '{steps.last}' "
+                                      f"(limit {timeout / 1000:.0f}s)") from None
             p.on("pageerror", lambda e: errs.append(f"pageerror: {e}"))
             p.on("console", lambda m: m.type == "error" and errs.append(f"console: {m.text}"))
             p.on("response", lambda r: "/api/" in r.url and r.status >= 500 and errs.append(f"HTTP {r.status} {r.url}"))
             p.goto(f"http://127.0.0.1:{port}/")
-            p.wait_for_selector("#kpis .kpi", timeout=60000)
+            wait_sel("#kpis .kpi", timeout=60000)
             p.click("#sec-open-all")      # 0.256: budget / energy knob groups start collapsed
 
             def settle(label, timeout=60.0):
@@ -147,7 +242,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 bcheck("no balance warning on 1P", p.query_selector("#warns .balance-warn") is None, p.inner_text("#warns")[:300])
                 # 0.208: balance what-if table from the sensitivity response (one lever each)
                 try:
-                    p.wait_for_selector("#bal-whatif-tbl tbody tr", timeout=60000)
+                    wait_sel("#bal-whatif-tbl tbody tr", timeout=60000)
                     wt = p.inner_text("#bal-whatif-tbl")
                 except Exception as e_:   # noqa: BLE001
                     wt = f"missing: {e_}"
@@ -225,7 +320,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             for joint in (False, True):
                 p.set_checked("#ins-size-joint", joint)
                 p.click("#ins-size-run")
-                p.wait_for_function("(() => { const t = document.getElementById('ins-size-status').textContent;"
+                wait_js("(() => { const t = document.getElementById('ins-size-status').textContent;"
                                     " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
                 st = p.inner_text("#ins-size-status")
                 rows = len(p.query_selector_all("#ins-size-tbl tbody tr"))
@@ -244,7 +339,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 p.click("button[data-tab=insight]")
                 p.set_checked("#ins-size-energy", True)
                 p.click("#ins-size-run")
-                p.wait_for_function("(() => { const t = document.getElementById('ins-size-status').textContent;"
+                wait_js("(() => { const t = document.getElementById('ins-size-status').textContent;"
                                     " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
                 st = p.inner_text("#ins-size-status")
                 cells = p.inner_text("#ins-size-tbl")
@@ -296,7 +391,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 p.click("button[data-tab=insight]")
             p.fill("#ins-steps", "1")
             p.click("#ins-path-run")
-            p.wait_for_function("(() => { const t = document.getElementById('ins-path-status').textContent;"
+            wait_js("(() => { const t = document.getElementById('ins-path-status').textContent;"
                                 " return t.startsWith('完成') || t.startsWith('错误') || t.includes('无'); })()",
                                 timeout=600000)
             steps.append(("path", p.inner_text("#ins-path-status")[:60]))
@@ -307,7 +402,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 p.fill("#ins-dse-macs", "0.5,1")
                 p.fill("#ins-dse-sram", "1")
                 p.click("#ins-dse-run")
-                p.wait_for_function("(() => { const t = document.getElementById('ins-dse-status').textContent;"
+                wait_js("(() => { const t = document.getElementById('ins-dse-status').textContent;"
                                     " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
                 st = p.inner_text("#ins-dse-status")
                 rows = len(p.query_selector_all("#ins-dse-tbl tbody tr"))
@@ -320,7 +415,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                     p.fill("#ins-dse-freq", "1,0.7")
                     p.select_option("#ins-dse-curve", "rx5700xt_n7")
                     p.click("#ins-dse-run")
-                    p.wait_for_function("(() => { const t = document.getElementById('ins-dse-status').textContent;"
+                    wait_js("(() => { const t = document.getElementById('ins-dse-status').textContent;"
                                         " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
                     st = p.inner_text("#ins-dse-status")
                     rows2 = len(p.query_selector_all("#ins-dse-tbl tbody tr"))
@@ -334,7 +429,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 p.fill("#ins-dse-slc", "0,64")
                 p.fill("#ins-dse-out", "256")
                 p.click("#ins-dse-run")
-                p.wait_for_function("(() => { const t = document.getElementById('ins-dse-status').textContent;"
+                wait_js("(() => { const t = document.getElementById('ins-dse-status').textContent;"
                                     " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
                 st = p.inner_text("#ins-dse-status")
                 tbl = p.inner_text("#ins-dse-tbl")
@@ -345,7 +440,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 p.fill("#ins-dse-memn", "0.5,1,2")
                 m0 = p.eval_on_selector("#model", "e => e.value")
                 p.click("#ins-dse-run")
-                p.wait_for_function("document.getElementById('ins-dse-status').textContent.startsWith('计算中')", timeout=60000)
+                wait_js("document.getElementById('ins-dse-status').textContent.startsWith('计算中')", timeout=60000)
                 p.select_option("#model", "qwen3-1.7b" if m0 != "qwen3-1.7b" else "qwen3-0.6b")
                 time.sleep(1.0)
                 p.select_option("#model", m0)
@@ -358,7 +453,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                     p.fill(sel, v)
             # 0.275: speech bottleneck panel (/api/insight_speech)
             p.click("#ins-sp-run")
-            p.wait_for_function("(() => { const t = document.getElementById('ins-sp-status').textContent;"
+            wait_js("(() => { const t = document.getElementById('ins-sp-status').textContent;"
                                 " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
             st = p.inner_text("#ins-sp-status")
             rows = len(p.query_selector_all("#ins-sp-tbl tbody tr"))
@@ -379,9 +474,9 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             p.fill("#ins-sps-gib", "0, 4")
             m_before = p.eval_on_selector("#model", "e => e.value")
             p.click("#ins-sps-run")
-            p.wait_for_function("document.querySelectorAll('#ins-sps-tbl tbody tr').length >= 1", timeout=600000)
+            wait_js("document.querySelectorAll('#ins-sps-tbl tbody tr').length >= 1", timeout=600000)
             p.select_option("#model", "qwen3-1.7b" if m_before != "qwen3-1.7b" else "qwen3-0.6b")
-            p.wait_for_function("(() => { const t = document.getElementById('ins-sps-status').textContent;"
+            wait_js("(() => { const t = document.getElementById('ins-sps-status').textContent;"
                                 " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=900000)
             p.remove_listener("request", _sps_req)
             st = p.inner_text("#ins-sps-status")
@@ -402,7 +497,7 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             # 0.284: LLM decode dispatch sensitivity (two models keep the smoke short)
             p.fill("#ins-dp-models", "qwen3-0.6b, qwen3-30b-a3b")
             p.click("#ins-dp-run")
-            p.wait_for_function("(() => { const t = document.getElementById('ins-dp-status').textContent;"
+            wait_js("(() => { const t = document.getElementById('ins-dp-status').textContent;"
                                 " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
             st = p.inner_text("#ins-dp-status")
             rows = len(p.query_selector_all("#ins-dp-tbl tbody tr"))
@@ -421,13 +516,17 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             errs.append("static build: " + " | ".join(l for l in r.stdout.splitlines() if l.startswith("ERR"))[:600]
                         + (r.stderr[-300:] if not r.stdout else ""))
     finally:
+        done.set()
         srv.terminate()
         try:
             srv.wait(10)
         except subprocess.TimeoutExpired:
             srv.kill()
-    for s in steps:
-        print("STEP", *s)
+        logf.close()
+        if not errs:
+            os.unlink(log)
+        else:
+            print(f"server log kept: {log}", flush=True)
     for e in errs:
         print("ERROR", e)
     print(f"{len(errs)} error(s)")
@@ -436,4 +535,5 @@ def main(chrome="/usr/bin/google-chrome") -> int:
 
 if __name__ == "__main__":
     a = sys.argv[1:]
-    sys.exit(main(a[a.index("--chrome") + 1] if "--chrome" in a else "/usr/bin/google-chrome"))
+    sys.exit(main(a[a.index("--chrome") + 1] if "--chrome" in a else "/usr/bin/google-chrome",
+                  float(a[a.index("--budget") + 1]) if "--budget" in a else 1800.0))

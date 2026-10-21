@@ -1339,7 +1339,7 @@ function renderBalanceWhatif(w) {
         + (x.d2d_J_per_tok != null ? ` · D2D ${num(x.d2d_J_per_tok * 1e3)} mJ/tok` : '') + (x.coll_lat_ms ? ` · 集合延迟 ${num(x.coll_lat_ms)} ms/步` : '')) : '',   // 0.214
       x.shoreline ? h('div', { class: 'small' + (x.shoreline.status !== 'ok' ? ' warn' : ''), title: x.shoreline.warning || '' },
         `岸线 ${x.shoreline.stacks} 堆栈 ${num(x.shoreline.need_mm)} / ${num(x.shoreline.edge_typical_mm)} mm（两边）`
-        + (x.shoreline.status === 'tight' ? ' ⚠ 需三、四边' : x.shoreline.status === 'over' ? ' ⚠ 超出四边 · 需多晶粒' : '')) : ''),
+        + (x.shoreline.status === 'tight' ? ' ⚠ 需第三边起' : x.shoreline.status === 'over' ? ` ⚠ 超出可用 ${x.shoreline.sides_max} 边 · 需多晶粒` : '')) : ''),
     h('td', {}, x.J_per_tok == null ? '—' : `${num(x.J_per_tok * 1e3)} mJ @B${x.cost_batch}${x.cost_basis ? '（' + ({critical_batch: '临界', batch_limit: '上限', configured: '配置'}[x.cost_basis] || x.cost_basis) + '）' : ''}`
       + (x.base_J_per_tok_at_cost_batch != null ? `（基线 ${num(x.base_J_per_tok_at_cost_batch * 1e3)}${x.base_cost_batch != null && x.base_cost_batch !== x.cost_batch ? ' @B' + x.base_cost_batch : ''}）` : '')),
     h('td', {}, (x.W_card != null ? num(x.W_card) + ' W' + (x.cost_batch != null ? ` @B${x.cost_batch}` : '') : '—')
@@ -2488,7 +2488,7 @@ async function runInsightDse() {
         h('td', {}, x.tpot_ms != null ? num(x.tpot_ms) : '—'), h('td', {}, x.ttft_ms != null ? num(x.ttft_ms) : '—'),
         h('td', {}, x.mem_usd != null ? num(x.mem_usd) : '—'),
         ...['mac', 'sram', 'wire', 'noc', 'dram', 'static'].map((k) => h('td', {}, x.share ? pct(x.share[k] || 0) : '—')),
-        h('td', { class: 'l' }, x.why || [x.capped ? 'DVFS 封顶' : '', x.shoreline === 'tight' ? 'HBM 岸线紧（占第三 / 四边）' : '', x.front_kgd ? '良率前沿' : ''].filter(Boolean).join('；'))))));
+        h('td', { class: 'l' }, x.why || [x.capped ? 'DVFS 封顶' : '', x.shoreline === 'tight' ? 'HBM 岸线紧（占第三边起）' : '', x.front_kgd ? '良率前沿' : ''].filter(Boolean).join('；'))))));
     $('ins-dse-status').textContent = `完成 · ${rows.length} 点${staleTag(v0)}`;
     $('ins-dse-status').dataset.done = '1';
   } catch (e) {

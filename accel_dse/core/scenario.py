@@ -681,6 +681,13 @@ class Scenario:
             m = mem_edges_auto(self)
             if m != ch.noc_mem_edges_auto:
                 object.__setattr__(self, "chip", dataclasses.replace(ch, noc_mem_edges_auto=m))
+        # 0.311: memory units per memory edge (uniform interleave → the most loaded edge binds the NoC ingress)
+        ch = self.chip
+        if ch.noc_mem_attach != "none" and ch.noc_link_Bpc and ch.noc_mem_balance == "interleave":
+            from .budget import mem_load_auto
+            ld = mem_load_auto(self)
+            if ld != ch.noc_mem_load:
+                object.__setattr__(self, "chip", dataclasses.replace(ch, noc_mem_load=ld))
 
     @property
     def d2d_link(self) -> Link:

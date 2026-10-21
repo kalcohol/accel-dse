@@ -443,6 +443,11 @@ class ModelSpec:
     # two grouped dynamic convolutions per draft layer + candidate selector; (taps, conv group, selector rank,
     # selector top-k, trained block); the served block is 1 + spec_k (draft_block = the card's serving default)
     draft_dflash2: tuple[int, ...] = ()
+    # 0.311 UBTree (inclusionAI Ling-3.0-tiny-UBTree; config ubtree_config + safetensors header 「来源」, serving code
+    # unreleased): DFlash anchor-row block backbone + unigram top-K / bigram selector → a pruned verification tree;
+    # (candidate K, selector rank, factorizer width, depths, tree budget, published-tree nodes); the target verifies
+    # 1 + nodes tree tokens per step
+    draft_ubtree: tuple[int, ...] = ()
     # 0.253 looped LM (Dory): (input layers, recurrent layers, loops, kv mode) and the physical layer list the loops
     # expand (``with_loops``); layers = input + recurrent × loops + output
     loop_spec: tuple = ()
@@ -1530,6 +1535,53 @@ def _attach_ready_dspark(spec: ModelSpec, d: dict) -> ModelSpec:
                                           if acc else ""),))
 
 
+def _attach_ubtree(spec: ModelSpec, d: dict) -> ModelSpec:
+    """0.311 UBTree draft (inclusionAI/Ling-3.0-tiny-UBTree: config.json ubtree_config / dflash_config + the safetensors
+    header 「来源」; model card + arXiv 2609.39972 for the method; the SGLang serving code is not released → the selector
+    and tree-build kernels are 「假设」 from the config).  Backbone = a DFlash anchor-row block draft: fc over the
+    concatenated hidden states of the 5 target_layer_ids → hidden_norm, num_hidden_layers Qwen3 layers (GQA + q / k
+    norm, SwiGLU, full attention) over the block (anchor + block − 1 mask rows; DFlash block attention non-causal
+    「假设」), norm; no embedding / lm_head (the target's).  Tail: target lm_head on the draft rows → top-K candidates
+    (candidate_k) per row; selector: hidden_projection h → rank per row (per-depth affine scales); tied token
+    factorizer = predecessor / successor MLPs (h → width → rank) on the target-embedding rows of the K candidates
+    (computed on the gathered rows 「假设」, no load-time table); bigram edges K × K × rank between adjacent rows +
+    unary logits; pruned tree of ``tree_budget`` nodes (default; the card's benchmark used 49) → the target verifies
+    1 + nodes tokens."""
+    c = d["config"]
+    dc = c.get("dflash_config") or {}
+    ub = c["ubtree_config"]
+    h, H, KV, hd = c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"], c["head_dim"]
+    nl = c["num_hidden_layers"]
+    K, R, F = int(ub["candidate_k"]), int(ub["rank"]), int(ub["factorizer_hidden_width"])
+    D, budget = int(ub["depth_condition_count"]), int(ub["tree_budget"])
+    mtp = []
+    for _ in range(nl):
+        alin, core = _gqa(h, H, KV, hd)
+        ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        mtp.append(Layer(alin, core, ffn, flin, 2 * h + 2 * hd))     # input / post-attention norms + q / k norms
+    nt = len(dc.get("target_layer_ids") or c["target_layer_ids"])
+    te = int(ub.get("target_embedding_dim") or h)
+    # fc, hidden_norm + norm, hidden_projection, predecessor + successor MLPs, unary / correction depth scales
+    extra = nt * h * h + 2 * h + R * h + 2 * (F * te + R * F) + 2 * D
+    acc = d.get("acceptance") or {}
+    left = extra - (extra // nl) * nl
+    B = int(dc.get("block_size") or c.get("block_size") or 16)
+    nodes = int(acc.get("tree_nodes") or budget)
+    return replace(spec, mtp_layers=tuple(mtp), mtp_extra_params=extra // nl, draft="dspark", draft_anchor=True,
+                   draft_block=B, draft_targets=nt, draft_markov=0, draft_kv=2 * KV * hd,
+                   draft_ubtree=(K, R, F, D, budget, nodes), draft_cold_params=left,
+                   spec_published=(float(acc["tau"]), int(acc["block"])) if acc else (),
+                   notes=spec.notes + (f"UBTree 草稿模型（{d['repo']}，bf16 {d['params'] / 1e6:.0f}M，独立仓库，共享目标 "
+                                       f"embedding / lm_head）：DFlash 块草稿 {nl} 层（锚行 + {B - 1} 个草稿，块内非因果「假设」），"
+                                       f"目标层 {dc.get('target_layer_ids')} hidden 拼接 + fc；尾部每行 top-{K} 候选 + 二元选择器"
+                                       f"（秩 {R}，目标 embedding 上的 {F} 宽 MLP 因子化，相邻行 {K}×{K} 边分）→ 剪枝树"
+                                       f"（预算 {budget} 节点；公开基准用 {nodes} 节点）→ 目标验证 1 + 节点数个 token；"
+                                       "SGLang 实现未发布，选择器 / 建树算子按 config「假设」"
+                                       + (f"；公开接受长度 τ {acc['tau']}（{acc['block']} 个草稿深度、{nodes} 节点树，温度 0）"
+                                          "→ 等效链接受率「推导」；serving.spec_accept_src = published 按发布 τ 取接受率，"
+                                          "默认仍为「假设」杠杆" if acc else ""),))
+
+
 def _build_beam(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """0.254 Reflection Beam-1.0 (BeamForCausalLM; transformers main models/beam/modular_beam.py + vLLM main
     vllm/models/beam/nvidia/model.py, 「来源」).  Every layer: GQA (num_attention_heads / num_key_value_heads × head_dim)
@@ -2215,7 +2267,9 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                            draft_block=c.get("dspark_block_size") or 0,
                            draft_targets=len(_list(c.get("dspark_target_layer_ids")) or []),
                            draft_markov=c.get("dspark_markov_rank") or 0)
-        if rel.get("dspark") and rel["dspark"].get("kind") == "dflash2":
+        if rel.get("dspark") and rel["dspark"].get("kind") == "ubtree":
+            spec = _attach_ubtree(spec, rel["dspark"])            # 0.311: DFlash block + bigram tree selector
+        elif rel.get("dspark") and rel["dspark"].get("kind") == "dflash2":
             spec = _attach_dflash2(spec, rel["dspark"])           # 0.254: DFlash2 block draft (conv + selector)
         elif rel.get("dspark") and (c.get("model_type") or "").startswith("muse_spark"):
             spec = _attach_muse_dspark(spec, rel["dspark"])

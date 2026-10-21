@@ -9,10 +9,13 @@ CoWoS-L 4719 mm², D0 0.1 /cm²) over MAC ×{1, 2}, 1 / 2 / 4 dies × {UCIe-A 48
     python3 scripts/chiplet_example.py --flat     # 0.308 view (flat monolithic die, two memory columns)
     python3 scripts/chiplet_example.py --case 0   # one case (index into CASES)
     python3 scripts/chiplet_example.py --cost n5_cowos_l --d0 0.2   # 0.310: cost per good package (+ D0)
+    python3 scripts/chiplet_example.py --io-edges 0   # 0.310 rule: no die edge kept for host I/O (0.311 default keeps
+                                                      # one, so 8 stacks no longer fit a 654 mm² monolith or 2 dies)
 """
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import os
 import sys
 
@@ -48,13 +51,14 @@ def budget() -> Budget:
     return Budget(**{k: v for k, (v, _, _) in f.items() if k in Budget.__dataclass_fields__}, power_W_card=700)
 
 
-def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d0=0.1) -> dict:
+def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d0=0.1, io_edges=1) -> dict:
     std = d2d_catalog.D2D_STANDARDS["ucie-a-48"]
     old = std["pJ_bit"]
     if pj:
         std["pJ_bit"] = pj
     try:
-        s = Scenario(model=model, chip=CHIPS["1P"], mem_id="hbm3e_8s_8h24g_9200",
+        chip = CHIPS["1P"] if io_edges == 1 else replace(CHIPS["1P"], noc_mem_io_edges=io_edges)
+        s = Scenario(model=model, chip=chip, mem_id="hbm3e_8s_8h24g_9200",
                      serving=Serving(phase=ph, batch=64 if ph == "decode" else 1, prompt=2048, ctx=4096))
         kw = dict(noc_link_Bpc=L, noc_routing="xy") if L else {}
         o = energy_design_search(s, table(), budget(), mac_scales=(1.0, 2.0), sram_scales=(1.0,), sides=(128,),
@@ -63,7 +67,7 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d
                                  mem_edges_shoreline=not flat, **({"cost": cost} if cost else {}), **kw)
     finally:
         std["pJ_bit"] = old
-    out(f"== {model} {ph} {split} L={L} pj={pj} {'(0.308 flat)' if flat else '(0.309)'}")
+    out(f"== {model} {ph} {split} L={L} pj={pj} {'(0.308 flat)' if flat else '(0.309)'} io_edges={io_edges}")
     for x in o["rows"]:
         kind = x.get("d2d_std") or ("mono" if x.get("clusters", 1) == 1 else f"mono×{x['clusters']}簇")
         out(f'  MAC×{x["mac_x"]:g} N={x["dies"]} {kind:10s} thr={x.get("thr", 0):8.0f} '
@@ -87,9 +91,11 @@ def main(argv=None) -> int:
     ap.add_argument("--case", type=int, action="append", help="case index (repeatable); default all")
     ap.add_argument("--cost", choices=("n5_cowos_s", "n5_cowos_l"), help="0.310: cost per good package")
     ap.add_argument("--d0", type=float, default=0.1, help="defect density /cm² (default 0.1)")
+    ap.add_argument("--io-edges", type=int, choices=(0, 1), default=1,
+                    help="0.311: die edges kept for host I/O (default 1; 0 = the 0.310 rule, memory may use every edge)")
     a = ap.parse_args(argv)
     for i in (a.case or range(len(CASES))):
-        run(*CASES[i], flat=a.flat, cost=a.cost, d0=a.d0)
+        run(*CASES[i], flat=a.flat, cost=a.cost, d0=a.d0, io_edges=a.io_edges)
     return 0
 
 

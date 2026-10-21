@@ -1905,8 +1905,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         elif sv.phase == "decode" and m.draft_anchor and spec_k != m.draft_block - 1:
             # 0.252 DSpine: block = anchor + B − 1 drafts, and the reference serves only the checkpoint's block size
             # (DSpineDraftModel.set_block_size raises; worker needs --speculative-num-draft-tokens == block)
-            warnings.append(f"spec_k {spec_k}：DSpine 块大小固定为 {m.draft_block}（锚行 + {m.draft_block - 1} 个草稿，"
-                            f"参考实现拒绝其他块大小）→ 按 k = {m.draft_block - 1} 计")
+            warnings.append(f"spec_k {spec_k}：{'UBTree' if m.draft_ubtree else 'DSpine'} 块大小固定为 {m.draft_block}"
+                            f"（锚行 + {m.draft_block - 1} 个草稿，"
+                            + ("按训练块计「假设」）" if m.draft_ubtree else "参考实现拒绝其他块大小）")
+                            + f"→ 按 k = {m.draft_block - 1} 计")
             spec_k = m.draft_block - 1
         elif sv.phase == "decode" and spec_k > m.draft_block:
             warnings.append(f"spec_k {spec_k} 超过 DSpark 草稿块 {m.draft_block}：按 {m.draft_block} 计")
@@ -1925,7 +1927,18 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if topk_ > 1 and m.draft == "dspark" and dm is None:
         warnings.append("spec_topk 已忽略：DSpark 草稿是块草稿，不是树")
         topk_ = 1
-    if sv.spec_draft_tokens and topk_ <= 1 and spec_k:
+    # 0.311 UBTree: a block draft whose selector builds a pruned tree → the target verifies 1 + nodes tree tokens
+    # (serving.spec_draft_tokens incl. the root; default 1 + the card's benchmark tree of 49 nodes)
+    ub_q = 0
+    if m.draft_ubtree and dm is None and spec_k and sv.phase == "decode":
+        bud, nodes = m.draft_ubtree[4], m.draft_ubtree[5]
+        ub_q = sv.spec_draft_tokens or 1 + nodes
+        if not 1 + spec_k <= ub_q <= 1 + bud:
+            raise ValueError(f"serving.spec_draft_tokens {ub_q}：UBTree 树 token 数须在 [1 + k, 1 + 预算] = "
+                             f"[{1 + spec_k}, {1 + bud}]")
+        warnings.append(f"UBTree：目标每步验证 {ub_q} 个树 token（1 + {ub_q - 1} 节点；公开基准 {nodes} 节点，config 预算 "
+                        f"{bud}）；选择器 / 建树算子按 config「假设」（SGLang 实现未发布）")
+    if sv.spec_draft_tokens and topk_ <= 1 and spec_k and not ub_q:
         warnings.append(f"spec_draft_tokens 已忽略：线性链（spec_topk = 1）验证 1 + k = {1 + spec_k} 个 token")
     if sv.spec_tree_accept_model != "chain" and topk_ <= 1 and spec_k:
         warnings.append("spec_tree_accept_model 已忽略：线性链（spec_topk = 1）没有树")
@@ -1978,6 +1991,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         q = 1 + spec_k
         if topk_ > 1:
             q = tree_tokens(spec_k, topk_, sv.spec_draft_tokens)
+        if ub_q:
+            q = ub_q                                   # 0.311 UBTree tree verify
         rr = sv.spec_rollback == "replay" and q > 1      # 0.223 ReplaySSM verify (ir.REPLAY_RING_DEFAULT)
         if rr and topk_ > 1:
             # SGLang: ReplaySSM is linear-chain only ("Tree verify (topk > 1) … fall back to the recurrent verify
@@ -2226,7 +2241,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                  if spec_k else 1.0)
         if spec_k:
             spec_info = {"k": spec_k, "topk": topk_, "accept": sv.spec_accept, "accept_model": sv.spec_tree_accept_model,
-                         "n": tree_tokens(spec_k, topk_, sv.spec_draft_tokens) if topk_ > 1 else 1 + spec_k, "tau": e_tok}
+                         "n": tree_tokens(spec_k, topk_, sv.spec_draft_tokens) if topk_ > 1 else (ub_q or 1 + spec_k),
+                         "tau": e_tok}
             if topk_ > 1:
                 # 0.226: the band [chain, indep] (+ rank) is always reported; TPOT at each τ (same step)
                 for mm in ("chain", "rank", "indep"):

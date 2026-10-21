@@ -1564,7 +1564,8 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
         lops = [replace(o, kv_write=0.0) if o.name == "softmax" else o for o in lops]
         hq = _cdiv(L.core.n_q, tp)
         # 0.252 DSpine / DFlash draft_block_causal: row i attends block rows ≤ i → (B + 1) / 2B of the B × B scores
-        cz = (B + 1) / (2 * B) if model.draft_anchor and not model.draft_dflash2 else 1.0   # 0.254 DFlash2: non-causal
+        # 0.254 DFlash2 non-causal; 0.311 UBTree's DFlash backbone non-causal 「假设」 (serving code unreleased)
+        cz = (B + 1) / (2 * B) if model.draft_anchor and not (model.draft_dflash2 or model.draft_ubtree) else 1.0
         for nm in ("dspark_block_qk", "dspark_block_pv"):
             lops.append(Op(nm, "attn", lj, m=B * hq, k=hd, n=B, count=b_loc, causal=cz, w_fmt="bf16", a_fmt="bf16"))
         lops.append(Op("dspark_block_softmax", "vector", lj, vec=b_loc * B * hq * B * 5 * cz, sfu=b_loc * B * hq * B * cz))
@@ -1603,6 +1604,27 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
                         Op("dspine_rs_write", "gemm", li, m=n * K_, k=R_, n=h, w_params=h * R_, w_bits=32, **f32),
                         Op("dspine_rs_logits", "attn", li, m=K_, k=h, n=K_, count=n, **f32),
                         Op("dspine_rs_sample", "vector", li, vec=n * K_ * K_ * 8, sfu=n * K_ * K_, replicated=tp)]
+        if model.draft_ubtree:
+            # 0.311 UBTree selector + tree build (config ubtree_config; SGLang code unreleased → 「假设」): hidden_projection
+            # h → R per draft row (per-depth affine scales: vector); the K candidates' target-embedding rows gathered and
+            # run through the predecessor and successor MLPs (h → F, SiLU, F → R); bigram edges per row = K × K × R
+            # (predecessor[q] ⊙ h_p · successor[c]) + unary logits; pruned tree build over the rows' K × K scores
+            # (best-first, budget nodes) — per row K² score reads + per node a K-wide pick
+            K3, R3, F3, _, _, nodes = model.draft_ubtree
+            nk = n * K3
+            ops += [gemm(model, "ubtree.hidden_proj", li, n, h, R3, "mtp", replicated=tp),
+                    Op("ubtree_depth_affine", "vector", li, vec=n * R3 * 2, replicated=tp),
+                    Op("ubtree_cand_embed", "lookup", li, kv_read=nk * h * model.fmt("embed").bits / 8, vec=nk * h,
+                       replicated=tp),
+                    gemm(model, "ubtree.pred_in", li, nk, h, F3, "mtp", replicated=tp),
+                    gemm(model, "ubtree.succ_in", li, nk, h, F3, "mtp", replicated=tp),
+                    Op("ubtree_mlp_act", "vector", li, vec=2 * nk * F3 * 4, sfu=2 * nk * F3, replicated=tp),
+                    gemm(model, "ubtree.pred_out", li, nk, F3, R3, "mtp", replicated=tp),
+                    gemm(model, "ubtree.succ_out", li, nk, F3, R3, "mtp", replicated=tp),
+                    Op("ubtree_edges", "attn", li, m=K3, k=R3, n=K3, count=n, w_fmt="bf16", a_fmt="bf16",
+                       replicated=tp),
+                    Op("ubtree_tree_build", "vector", li, vec=n * K3 * K3 * 2 + b_loc * nodes * K3 * 4,
+                       replicated=tp)]
         if model.draft_dflash2:
             # 0.254 DFlash2 candidate selector (models/beam/nvidia/dflash2_ops.candidate_edges + speculator.py
             # _selector_walk_kernel 「来源」): hidden_projection h → R on the draft rows; per row and each of the K

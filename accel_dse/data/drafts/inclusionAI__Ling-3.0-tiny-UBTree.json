@@ -1,0 +1,350 @@
+{
+ "acceptance": {
+  "block": 15,
+  "source": "\u6765\u6e90: model card Benchmark results \u2014 acceptance length with block size 16 (anchor-inclusive \u2192 15 drafts), a 49-node verification tree, TP1, concurrency 1, BF16, greedy no-thinking decoding (three-round medians): GSM8K 9.53, MATH-500 9.86, AIME 2025 8.44, HumanEval 10.04, MBPP 9.35, LiveCodeBench 7.46 \u2192 mean 9.113",
+  "tau": 9.113,
+  "tree_nodes": 49
+ },
+ "bytes": 366254652,
+ "config": {
+  "architectures": [
+   "Ling3UBTreeModel"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "block_size": 16,
+  "bos_token_id": null,
+  "dflash_config": {
+   "block_size": 16,
+   "contract": "flashflow_anchor_inclusive_v1",
+   "mask_token_id": 156892,
+   "num_target_layers": 24,
+   "target_layer_ids": [
+    4,
+    8,
+    12,
+    16,
+    22
+   ]
+  },
+  "dflash_contract": "flashflow_anchor_inclusive_v1",
+  "dtype": "bfloat16",
+  "eos_token_id": 156895,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "hidden_size": 1536,
+  "initializer_range": 0.02,
+  "intermediate_size": 4608,
+  "layer_types": [
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention"
+  ],
+  "mask_token_id": 156892,
+  "max_position_embeddings": 131072,
+  "max_window_layers": 20,
+  "model_type": "qwen3",
+  "num_attention_heads": 16,
+  "num_hidden_layers": 5,
+  "num_key_value_heads": 16,
+  "num_target_layers": 24,
+  "pad_token_id": 156892,
+  "partial_rotary_factor": 1.0,
+  "rms_norm_eps": 1e-06,
+  "rope_parameters": {
+   "partial_rotary_factor": 1.0,
+   "rope_theta": 6000000,
+   "rope_type": "default"
+  },
+  "rope_theta": 6000000.0,
+  "sliding_window": null,
+  "target_layer_ids": [
+   4,
+   8,
+   12,
+   16,
+   22
+  ],
+  "tie_word_embeddings": false,
+  "transformers_version": "5.12.1",
+  "ubtree_config": {
+   "adds_unary_logits": true,
+   "architecture": "cp",
+   "candidate_k": 64,
+   "candidate_source": "frozen_dflash_unary_topk_ids_only",
+   "depth_condition_count": 15,
+   "depth_conditioning": "unary_correction_two_scale",
+   "depth_scale_parameterization": "exp_log_scale",
+   "factorizer_hidden_width": 512,
+   "hidden_projection_depth_count": 15,
+   "hidden_projection_type": "shared",
+   "inference_hidden_projection": "materialized_per_depth_affine",
+   "kl_temperature": 1.0,
+   "objective": "kl",
+   "rank": 256,
+   "target_embedding_dim": 1536,
+   "token_factorizer": "target_embedding_mlp",
+   "train_backbone": true,
+   "trained": true,
+   "training_mode": "joint_backbone_selector",
+   "tree_budget": 64,
+   "tree_builder": "pruned",
+   "tree_depth_bonus": 0.0,
+   "tree_supertree_width": 12,
+   "type": "residual_bigram",
+   "version": 1
+  },
+  "use_cache": true,
+  "use_qk_norm": true,
+  "use_sliding_window": false,
+  "vocab_size": 157184
+ },
+ "fetched": "2026-10-22",
+ "kind": "ubtree",
+ "n_tensors": 65,
+ "own_lm_head": false,
+ "params": 183127326,
+ "repo": "inclusionAI/Ling-3.0-tiny-UBTree",
+ "revision": "05abc072b6547f49dc6920cbdf7b6f4402950e54",
+ "serving_note": "model card: SGLang UBTree support for Ling3 not yet released (2026-10-22); safetensors metadata serving_algorithm UBTREE, source_architecture Qwen3UBTreeModel",
+ "shapes": {
+  "fc.weight": [
+   1536,
+   7680
+  ],
+  "hidden_norm.weight": [
+   1536
+  ],
+  "layers.0.input_layernorm.weight": [
+   1536
+  ],
+  "layers.0.mlp.down_proj.weight": [
+   1536,
+   4608
+  ],
+  "layers.0.mlp.gate_proj.weight": [
+   4608,
+   1536
+  ],
+  "layers.0.mlp.up_proj.weight": [
+   4608,
+   1536
+  ],
+  "layers.0.post_attention_layernorm.weight": [
+   1536
+  ],
+  "layers.0.self_attn.k_norm.weight": [
+   128
+  ],
+  "layers.0.self_attn.k_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.0.self_attn.o_proj.weight": [
+   1536,
+   2048
+  ],
+  "layers.0.self_attn.q_norm.weight": [
+   128
+  ],
+  "layers.0.self_attn.q_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.0.self_attn.v_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.1.input_layernorm.weight": [
+   1536
+  ],
+  "layers.1.mlp.down_proj.weight": [
+   1536,
+   4608
+  ],
+  "layers.1.mlp.gate_proj.weight": [
+   4608,
+   1536
+  ],
+  "layers.1.mlp.up_proj.weight": [
+   4608,
+   1536
+  ],
+  "layers.1.post_attention_layernorm.weight": [
+   1536
+  ],
+  "layers.1.self_attn.k_norm.weight": [
+   128
+  ],
+  "layers.1.self_attn.k_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.1.self_attn.o_proj.weight": [
+   1536,
+   2048
+  ],
+  "layers.1.self_attn.q_norm.weight": [
+   128
+  ],
+  "layers.1.self_attn.q_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.1.self_attn.v_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.2.input_layernorm.weight": [
+   1536
+  ],
+  "layers.2.mlp.down_proj.weight": [
+   1536,
+   4608
+  ],
+  "layers.2.mlp.gate_proj.weight": [
+   4608,
+   1536
+  ],
+  "layers.2.mlp.up_proj.weight": [
+   4608,
+   1536
+  ],
+  "layers.2.post_attention_layernorm.weight": [
+   1536
+  ],
+  "layers.2.self_attn.k_norm.weight": [
+   128
+  ],
+  "layers.2.self_attn.k_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.2.self_attn.o_proj.weight": [
+   1536,
+   2048
+  ],
+  "layers.2.self_attn.q_norm.weight": [
+   128
+  ],
+  "layers.2.self_attn.q_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.2.self_attn.v_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.3.input_layernorm.weight": [
+   1536
+  ],
+  "layers.3.mlp.down_proj.weight": [
+   1536,
+   4608
+  ],
+  "layers.3.mlp.gate_proj.weight": [
+   4608,
+   1536
+  ],
+  "layers.3.mlp.up_proj.weight": [
+   4608,
+   1536
+  ],
+  "layers.3.post_attention_layernorm.weight": [
+   1536
+  ],
+  "layers.3.self_attn.k_norm.weight": [
+   128
+  ],
+  "layers.3.self_attn.k_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.3.self_attn.o_proj.weight": [
+   1536,
+   2048
+  ],
+  "layers.3.self_attn.q_norm.weight": [
+   128
+  ],
+  "layers.3.self_attn.q_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.3.self_attn.v_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.4.input_layernorm.weight": [
+   1536
+  ],
+  "layers.4.mlp.down_proj.weight": [
+   1536,
+   4608
+  ],
+  "layers.4.mlp.gate_proj.weight": [
+   4608,
+   1536
+  ],
+  "layers.4.mlp.up_proj.weight": [
+   4608,
+   1536
+  ],
+  "layers.4.post_attention_layernorm.weight": [
+   1536
+  ],
+  "layers.4.self_attn.k_norm.weight": [
+   128
+  ],
+  "layers.4.self_attn.k_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.4.self_attn.o_proj.weight": [
+   1536,
+   2048
+  ],
+  "layers.4.self_attn.q_norm.weight": [
+   128
+  ],
+  "layers.4.self_attn.q_proj.weight": [
+   2048,
+   1536
+  ],
+  "layers.4.self_attn.v_proj.weight": [
+   2048,
+   1536
+  ],
+  "norm.weight": [
+   1536
+  ],
+  "ubtree_selector.depth_conditioner.correction_log_scale": [
+   15
+  ],
+  "ubtree_selector.depth_conditioner.unary_log_scale": [
+   15
+  ],
+  "ubtree_selector.hidden_projection.weight": [
+   256,
+   1536
+  ],
+  "ubtree_selector.tied_token_factorizer.predecessor_mlp.input_projection.weight": [
+   512,
+   1536
+  ],
+  "ubtree_selector.tied_token_factorizer.predecessor_mlp.output_projection.weight": [
+   256,
+   512
+  ],
+  "ubtree_selector.tied_token_factorizer.successor_mlp.input_projection.weight": [
+   512,
+   1536
+  ],
+  "ubtree_selector.tied_token_factorizer.successor_mlp.output_projection.weight": [
+   256,
+   512
+  ]
+ }
+}

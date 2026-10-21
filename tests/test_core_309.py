@@ -19,6 +19,8 @@ from accel_dse.core.scenario import CLUSTER_UNLIMITED_GBps, Scenario, Serving
 from tests import webstruct as W  # noqa: E402
 
 M = "qwen3-8b"
+# 0.311: pinned to the 0.310 memory-edge rule (no host-I/O edge kept, pooled attach links)
+_P1 = replace(CHIPS["1P"], noc_mem_io_edges=0, noc_mem_balance="pooled")
 H8 = "hbm3e_8s_8h24g_9200"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,19 +34,19 @@ def _b(**kw):
 
 
 def _scn(c=None, mem=H8, phase="decode", batch=64, **kw):
-    return Scenario(model=M, chip=c or CHIPS["1P"], mem_id=mem,
+    return Scenario(model=M, chip=c or _P1, mem_id=mem,
                     serving=Serving(phase=phase, batch=batch, prompt=2048, ctx=4096), **kw)
 
 
 def _clu(k=2, link=0.0, clusters=True):
-    c = replace(CHIPS["1P"], engines=32 // k, sram_mib=256.0 / k, noc_link_Bpc=link,
+    c = replace(_P1, engines=32 // k, sram_mib=256.0 / k, noc_link_Bpc=link,
                 noc_clusters=k if clusters else 1)
     return _scn(c, mem=f"hbm3e_{8 // k}s_8h24g_9200", layout=Layout(tp=k), package_cards=k, d2d_enabled=True)
 
 
 # ---------------------------------------------------------------- hardware: clusters and memory edges
 def test_chip_fields_validate():
-    c = CHIPS["1P"]
+    c = _P1
     assert c.noc_clusters == 1 and c.mem_edges == 2          # 0.310: noc_mem_edges 0 = auto (bare chip → 2)
     for kw in ({"noc_clusters": 0}, {"noc_clusters": 65}, {"noc_clusters": True}, {"noc_mem_edges": 1},
                {"noc_mem_edges": 5}):
@@ -61,7 +63,7 @@ def test_chip_fields_validate():
 
 
 def test_cluster_memory_geometry_is_the_whole_die():
-    flat = replace(CHIPS["1P"], noc_link_Bpc=32.0)
+    flat = replace(_P1, noc_link_Bpc=32.0)
     for k in (2, 4):
         ck = replace(flat, engines=32 // k, noc_clusters=k)
         assert ck.noc_mem_hops() == flat.noc_mem_hops()
@@ -70,7 +72,7 @@ def test_cluster_memory_geometry_is_the_whole_die():
 
 
 def test_mem_edges_geometry():
-    c = replace(CHIPS["1P"], noc_link_Bpc=32.0)                       # 32 engines: R 5, C 7
+    c = replace(_P1, noc_link_Bpc=32.0)                       # 32 engines: R 5, C 7
     assert c.noc_mem_links() == 10
     assert replace(c, noc_mem_edges=3).noc_mem_links() == 10 + 7
     assert replace(c, noc_mem_edges=4).noc_mem_links() == 10 + 14
@@ -161,7 +163,7 @@ def test_dse_verdicts_old_to_new():
 
 # ---------------------------------------------------------------- API / UI / script
 def test_api_and_ui():
-    body = {"chip_preset": "1P", "scenario": {"model": M, "mem_id": H8}, "energy": {"energy_preset": "tpuv4i_7nm"},
+    body = {"chip_preset": "1P", "scenario": {"model": M, "mem_id": H8, "chip": {"noc_mem_io_edges": 0, "noc_mem_balance": "pooled"}}, "energy": {"energy_preset": "tpuv4i_7nm"},
             "budget": {"density_preset": "n5_derived"}, "mac_scales": [1], "sram_scales": [1], "sides": [128],
             "dies": [1, 2], "d2d_stds": ["ucie-a-48"]}
     o = api.api_insight_dse(body)
@@ -182,10 +184,10 @@ def test_api_and_ui():
 
 
 def test_example_script_runs():
-    r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "chiplet_example.py"), "--case", "0"],
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "chiplet_example.py"), "--case", "0", "--io-edges", "0"],
                        capture_output=True, text=True, timeout=120, cwd=ROOT)
     assert r.returncode == 0, r.stderr
     assert "verdict=mono" in r.stdout and "mono×2簇" in r.stdout
-    r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "chiplet_example.py"), "--flat", "--case", "0"],
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "chiplet_example.py"), "--flat", "--case", "0", "--io-edges", "0"],
                        capture_output=True, text=True, timeout=120, cwd=ROOT)
     assert r.returncode == 0 and "verdict=split_J" in r.stdout and "簇" not in r.stdout

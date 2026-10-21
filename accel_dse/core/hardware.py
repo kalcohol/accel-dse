@@ -47,6 +47,7 @@ NOC_TOPOLOGIES = ("crossbar", "ring", "mesh")
 # (per-link load of dimension-ordered multicast trees / reduction trees, MODEL §249.2)
 NOC_ROUTINGS = ("bisection", "xy")
 NOC_MEM_ATTACH = ("edge", "none")      # 0.305: DRAM ingress into the NoC (Chip.noc_mem_attach)
+NOC_MEM_BALANCE = ("interleave", "pooled")   # 0.311: Chip.noc_mem_balance
 NOC_EJECT = ("off", "link")            # 0.307: engine local (eject) port model (Chip.noc_eject)
 # 0.303: reference NoC link bandwidth — Tenstorrent Blackhole: one 512-bit flit per cycle per link per NoC (64 B /
 # cycle; Wormhole 256 bit = 32 B), tt-isa-documentation BlackholeA0/NoC/README.md 「来源」.  Measured multicast
@@ -139,6 +140,19 @@ class Chip:
     # 2 / 3 / 4 = fixed (2 reproduces ≤ 0.309 outside the chiplet DSE).  A bare Chip (no Scenario) uses 2.
     noc_mem_edges: int = field(default=0, metadata={"omit_default": True})
     noc_mem_edges_auto: int = field(default=2, metadata={"internal": True})
+    # 0.311: die edges kept for the host interface (PCIe / card link): memory may take at most 4 − D2D edges − this
+    # (floor 2) — budget.mem_sides_max.  1 (default) = one edge always left for I/O 「假设」 (shipping packages keep
+    # two: GH100 NVLink + PCIe, B200 NV-HBI + I/O 「二手」); 0 = the 0.310 rule (memory may take every non-D2D edge).
+    noc_mem_io_edges: int = field(default=1, metadata={"omit_default": True})
+    # 0.311: how the memory-attach links share the DRAM traffic.  "interleave" (default): addresses are interleaved
+    # uniformly over the memory units (HBM stacks / LPDDR channels), so edge e carries the share u_e / N of the bytes
+    # its units serve and the NoC delivers at most min_e links_e · N / u_e link-widths (the most loaded edge binds);
+    # units are placed on the edges by water-filling against each edge's links and length (budget.mem_edge_load).
+    # "pooled" = ≤ 0.310 (every attach link carries an equal share, whatever memory sits behind it).
+    noc_mem_balance: str = field(default="interleave", metadata={"omit_default": True})
+    # 0.311: memory units per memory edge (west, east, north, south)[: mem_edges] — set by the Scenario
+    # (budget.mem_load_auto) for HBM / LPDDR; () = unknown → pooled
+    noc_mem_load: tuple = field(default=(), metadata={"internal": True})
     # 0.72 (optional, default 0): sequencer launch / barrier overhead (cycles).  Every op pays one launch; when ≥ 2
     # core groups run instances in lock-step waves, each further wave adds one barrier (a single sequencer — wide,
     # or one active group — streams its instances back to back) 「假设」
@@ -230,6 +244,13 @@ class Chip:
             raise ValueError("chip.noc_mem_edges must be 0 (auto), 2, 3 or 4")
         if self.noc_mem_edges_auto not in (2, 3, 4):
             raise ValueError("chip.noc_mem_edges_auto must be 2, 3 or 4")
+        if isinstance(self.noc_mem_io_edges, bool) or self.noc_mem_io_edges not in (0, 1):
+            raise ValueError("chip.noc_mem_io_edges must be 0 or 1")
+        if self.noc_mem_balance not in NOC_MEM_BALANCE:
+            raise ValueError(f"chip.noc_mem_balance must be one of {NOC_MEM_BALANCE}")
+        if not isinstance(self.noc_mem_load, tuple) or any(isinstance(u, bool) or not isinstance(u, int) or u < 0
+                                                           for u in self.noc_mem_load):
+            raise ValueError("chip.noc_mem_load must be a tuple of unit counts >= 0")
         if isinstance(self.noc_clusters, bool) or not isinstance(self.noc_clusters, int) or not 1 <= self.noc_clusters <= 64:
             raise ValueError("chip.noc_clusters must be an integer in [1, 64]")
         if self.noc_eject not in NOC_EJECT:
@@ -362,11 +383,24 @@ class Chip:
             return math.inf
         k = self.noc_clusters        # 0.309: a cluster gets its share of the whole die's memory-column attach points
         m = self.mem_edges           # 0.309: 3 / 4 edges add a memory row on the north / south side (C attach each)
+        per = self.noc_mem_edge_links()
+        ld = self.noc_mem_load
+        if self.noc_mem_balance == "interleave" and len(ld) == m and sum(ld) > 0:
+            # 0.311: uniform interleave over the units → edge e carries u_e / N of the bytes on links_e links
+            n = sum(ld)
+            return min(per[i] * n / u for i, u in enumerate(ld) if u > 0) / k
+        return sum(per) / k
+
+    def noc_mem_edge_links(self) -> list[float]:
+        """0.311: attach links per memory edge (west, east, north, south)[: mem_edges] of the whole die: mesh /
+        crossbar R = ⌊√E⌋ on the west / east columns, C = ⌈E/R⌉ on the north / south rows; ring 2 per memory stop."""
+        m = self.mem_edges
         if self.noc_topology == "ring":
-            return 2.0 * m / k
-        E = self.engines * k
+            return [2.0] * m
+        E = self.engines * self.noc_clusters
         r_ = max(1, math.isqrt(E))
-        return (2.0 * r_ + (m - 2) * -(-E // r_)) / k
+        c_ = -(-E // r_)
+        return [float(r_), float(r_), float(c_), float(c_)][:m]
 
     def noc_mem_hops(self) -> tuple[float, float]:
         """0.306: (router traversals, link pitches) per DRAM byte from the memory columns to the engines (noc_mem_attach
@@ -758,6 +792,23 @@ PRESET_MEM = {"1P": "hbm3e_4s_8h24g_9200", "H100-like": "hbm3_5s_8h16g_5234"}
 # (NVIDIA H100 whitepaper 「来源」).
 PRESET_DIE_MM2 = {"H100-like": 814.0, "H100-like-lp4x64": 814.0}
 _AREA_KEYS = ("engines", "rows", "cols", "sram_mib", "slc_mib", "state_sram_mib", "vector_lanes", "noc_clusters")
+
+
+# 0.311: published long-edge length of a preset's namesake die.  GH100 carries its 6 HBM sites 3 per long side
+# (NVIDIA Hopper whitepaper "6 HBM3 or HBM2e stacks"; die shots 「二手」) → ≥ 3 × 11 mm = 33 mm of usable long edge
+# (stack pitch budget.HBM_STACK_EDGE_MM, stacks overhanging the die corners on the interposer) 「推导」; the short edge
+# is 814 / 33 = 24.7 mm.  Every other die is square (0.212).
+PRESET_DIE_EDGE_MM = {"H100-like": 33.0, "H100-like-lp4x64": 33.0}
+
+
+def die_edges(chip, die_mm2: float) -> list[float]:
+    """0.311: the four edge lengths of the die, long edges first: the preset's published long edge when the die is the
+    preset's published area (preset_die_mm2), else a square of ``die_mm2``."""
+    lg = PRESET_DIE_EDGE_MM.get(getattr(chip, "name", ""))
+    if lg and preset_die_mm2(chip) == die_mm2 and lg * lg >= die_mm2:
+        return [lg, lg, die_mm2 / lg, die_mm2 / lg]
+    s = die_mm2 ** 0.5
+    return [s, s, s, s]
 
 
 def preset_die_mm2(chip) -> float | None:

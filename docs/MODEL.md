@@ -8791,5 +8791,51 @@ Reading:
 - Not modelled: NRE / mask sets (amortisation dominates at low volume and favours reusing one small die), interposer cost as a function of the die count (bridges per die edge), wafer-edge exclusion, the cost of D2D PHY yield.
 
 ### §255.4 Freshness
-- Model-release sweep 2026-10-21, new since 0.309: inclusionAI/Ling-3.0-tiny-UBTree (created 2026-10-21 13:49 UTC = 22:49 JST). It is a 183 M-parameter tree-speculation draft head (DFlash anchor + UBTree factorizer, 5 layers) for Ling-3.0-tiny. The target's `bailing_hybrid` architecture is not in the catalog, so it was not added (deferred with the target).
+- Model-release sweep 2026-10-21, new since 0.309: inclusionAI/Ling-3.0-tiny-UBTree (created 2026-10-21 13:49 UTC = 22:49 JST). It is a 183 M-parameter tree-speculation draft head (DFlash anchor + UBTree factorizer, 5 layers) for Ling-3.0-tiny. (Corrected in §256.6: the targets build with the existing bailing_hybrid builder.) The target's `bailing_hybrid` architecture is not in the catalog, so it was not added (deferred with the target).
 - UCIe: 4.0 still unreleased (§254.4). CoWoS / wafer cost sources are 2020–2026 estimates, labelled 「二手」.
+
+## §256 Audit of the 0.310 memory-edge default: host-I/O edge, per-edge interleave; robust headless smoke; Ling-3.0 + UBTree (0.311)
+
+### §256.1 Which metric was +49 %, and why
+- Case: 100T + LPDDR5X 8 × 64 (8533 MT/s), qwen3-8b decode batch 64, prompt 2048 / ctx 4096, `noc_link_Bpc = 32`, energy table tpuv4i_7nm.
+- **The +49 % is decode throughput per card**: 304.65 → 454.92 tok/s (+49.3 %). J/token went the other way, 70.052 → 62.913 mJ (−10.2 %).
+- Mechanism: 100T has 16 engines on a 4 × 4 mesh (R = C = 4) with 1 GHz × 32 B links. Memory attached on the W / E columns enters through 2R = 8 links (256 GB/s). A third (N) edge adds C = 4 → 12 links (384 GB/s). LPDDR5X 8 × 64 delivers ≈ 546 GB/s peak, so with 8 links decode is NoC-ingress-bound. With 12 links it reaches the DRAM roofline, and 454.92 equals the L = 0 value (no NoC limit). Of the J gain only −0.4 % comes from the edge count itself (the L = 0 J moves 64.20 → 63.95 mJ, shorter attach paths); the rest is static / idle energy spread over 49 % more tokens per second 「推导」.
+
+### §256.2 Is a third LPDDR edge physical?
+- Die: 100T keeps no published area, so the side comes from the n5_derived proxy, 107.9 mm² → 10.39 mm 「近似」.
+- Need: 512 bus bits ÷ 18.75 pins / mm (§255.1 「二手/推导」) = 27.3 mm = 2.63 edges. **Two edges (0.309) cannot hold this bus, so the third edge is real.** Balanced across 3 edges it is 9.1 mm per edge (< 10.39).
+- What was wrong in 0.310: (a) the clamp was 4 − D2D edges, so a single die could give all four edges to memory and keep none for host I/O (PCIe / NVLink-class SerDes). Shipping parts keep at least one: GH100, B200 and MI300X put HBM on two (or the long) edges and D2D / PCIe / NVLink on the rest (0.212 note 「二手」). (b) The attach links of all memory edges were pooled, as if every unit could feed every edge's routers. With address interleave over all units, each edge carries traffic in proportion to the units it holds, so the most-loaded edge per link sets the rate.
+- Fix A1, host-I/O edge: `Chip.noc_mem_io_edges` (default 1 「假设」, 0 allowed). `budget.mem_sides_max(scn) = max(2, 4 − D2D edges − io edges)`. Shoreline checks and warnings use it ("> 可用 N 边 X mm").
+- Fix A2, published geometry: `hardware.PRESET_DIE_EDGE_MM` (H100-like 33 mm long edge: 6 HBM sites, 3 per long side × 11 mm 「推导」; short edge 814 / 33 = 24.7 mm). `die_edges(chip, mm2)` returns the long edges first, as a rectangle only while the chip keeps the preset area. Every other die is square.
+- Fix A3, interleave: `budget.mem_edge_units(spec)` = HBM stacks × 11 mm, or LPDDR channels (x16; LPDDR6 x24) × bits / 18.75 mm. `mem_edge_load` water-fills the units onto the memory edges in proportion to each edge's links (W, E = R; N, S = C; ring 2 per stop), capped by each edge's length. Then `Chip.noc_mem_links() = min_e links_e · N / u_e / k` for `noc_mem_balance = "interleave"` (default); "pooled" = Σ links_e / k (0.310). Interleave ≤ pooled, and they are equal when the load is proportional.
+- Result for the audit case: edges 3, load (11, 11, 10) channels, links 12 → 11.636. Throughput 443.12 tok/s, J 63.285 mJ. **vs 0.309: throughput +45.4 %, J −9.7 %.** The I/O edge does not bind here (3 ≤ 4 − 1).
+
+### §256.3 Broad old → new (840 cases, /tmp/a311/broad3.py on the box)
+- Grid: 7 presets × 14 memories (HBM3E 1 / 2 / 4 / 5 / 6 / 8 / 12 stacks, HBM3 5, HBM4 8, LPDDR5X 2 / 4 / 6 / 8 / 9 × 64) × L ∈ {0, 16, 32, 64} × {qwen3-8b decode b64, qwen3-8b prefill b1, gpt-oss-120b decode b16}.
+- 0.310 → 0.311: 240 cases lower throughput, 0 higher. 0.309 → 0.311: 99 lower, 108 higher. Default presets with default memory at L = 0: unchanged.
+- Outliers, each checked against the mechanism:
+  - 1P / 1P-lp4x64 + 8 × HBM3E and 100T + 4 / 5 × HBM3E: 0.310 gave 4 edges; now 2 (3 edges cannot hold the stacks either, so this is shoreline "over" and kept at 2, the 0.309 value). L16 / L32 throughput −58 % vs 0.310. **The 0.310 +140 % for 1P + 8 × HBM3E was a die with no host I/O.**
+  - One HBM stack: the stack sits on one edge, so links = R instead of 2R. −50 % at L32 vs pooled (1P: 382 → 191 tok/s). This is physical: one stack's PHY is on one edge.
+  - H100-like + 8 × HBM3E: 3 edges, load (3, 3, 2), L32 836.2 → 743.3 tok/s (−11 % vs 0.310, +33 % vs 0.309). H100-like + 6 stacks: 2 edges, as on GH100.
+- Switches: `noc_mem_io_edges = 0` + `noc_mem_balance = "pooled"` reproduces 0.310, except H100-like with ≥ 6 stacks (now the 33 mm edge). Adding `noc_mem_edges = 2` reproduces 0.309.
+
+### §256.4 Chiplet consequence (§255.3 revisited)
+- `scripts/chiplet_example.py --cost n5_cowos_l --d0 0.1` (new `--io-edges`, default 1): 1P + 8 × HBM3E monolithic 654 mm² needs 88 mm of HBM edge but has 3 usable edges = 77 mm ("over"). 2 × 333 mm² (1 D2D + 1 I/O edge kept) have 37 mm for 44 mm ("over"). Only the 4 × 171 mm² split is buildable (memE 2, $2059).
+- So the 0.310 comparison of monolithic $2013 vs 4-die $2059 at D0 0.1 priced a die that cannot carry 8 stacks plus host I/O. With 8 stacks, splitting is required by shoreline, not chosen on cost; the cost comparison stands only while the stacks fit the usable edges (1P monolithic: 3 edges = 77 mm, ≤ 7 stacks). `--io-edges 0` gives the 0.310 view.
+
+### §256.5 ui_headless_smoke robustness
+- Hang cause (most likely): the server ran with `stderr=PIPE` that nobody read. Under concurrent load a chatty server fills the pipe and blocks, and the page waits then never resolve. Now stderr goes to a temp log, kept on failure.
+- Every page wait goes through `wait_js(expr, step, timeout)` / `wait_sel` (11 + 2 sites). A timeout raises `StepTimeout` naming the step, the expression and the panel status text it watched. `_Guard` turns any browser-part exception into one "ABORT after step '…'" error with the server state and the log tail. `_Steps` prints `STEP [elapsed]` as each step completes, so a hang shows where it stopped. A global watchdog (`--budget`, 1800 s) kills a stuck run with the same context (exit 3).
+- Every assertion is unchanged: same steps and same checked strings and values.
+
+### §256.6 Freshness: Ling-3.0 targets + UBTree
+- inclusionAI/Ling-3.0-tiny and Ling-3.0-flash have public configs (fetched 2026-10-22). Both are `bailing_hybrid` (KDA linear attention + MLA full attention, MoE), the builder already used for Ling-3.1-flash. **The §255.4 note that the architecture was not in the catalog was wrong.** Built at full coverage, param_err 0: tiny 7.89 B total / 1.38 B active (24 layers, h 1536), flash 124.4 B / 5.51 B (42 layers, h 2560).
+- inclusionAI/Ling-3.0-tiny-UBTree (rev 05abc072…), `ling-3.0-tiny-ubtree` (target + draft):
+  - Backbone (DFlash, config + safetensors header 「来源」): fc [1536, 7680] over the hidden states of target layers [4, 8, 12, 16, 22] → hidden_norm → 5 Qwen3 layers (16 / 16 heads × 128, SwiGLU 4608) → norm. Block 16 including the anchor row. It uses the target's embedding and lm_head.
+  - Selector: target lm_head on the draft rows → top-K = 64 candidates per row; hidden_projection 256 × 1536 with per-depth affine scales (2 × 15); predecessor / successor MLPs 1536 → 512 → 256 on the candidates' target-embedding rows; bigram edges K × K × 256 between adjacent rows; pruned tree, budget 64 non-root nodes (the card's benchmarks use 49).
+  - Params 183,127,326 exactly (layers 169,099,520 + fc / norms / selector 14,027,806).
+  - Model: `ModelSpec.draft_ubtree = (K, rank, width, depths, budget, nodes)`. IR ops: hidden_proj GEMM, candidate embed gather, 4 factorizer GEMMs over n · K rows + SiLU, K × K × R edge scores per row, tree-build vector pass. The target verifies q = 1 + nodes (default 50; `serving.spec_draft_tokens` in [1 + k, 64]). The block is fixed at 16 「假设」; another spec_k is warned and set to 15.
+  - Acceptance: card AL with the 49-node tree, greedy — GSM8K 9.53, MATH-500 9.86, AIME 2025 8.44, HumanEval 10.04, MBPP 9.35, LiveCodeBench 7.46; mean τ = 9.113 「来源/推导」 over 15 draft depths → `spec_published`.
+  - The SGLang serving code is not released, so the selector / tree kernels and the non-causal block attention are 「假设」 (warned).
+  - Example: 1P + 4 × HBM3E, batch 1, ctx 4096: TPOT 0.626 → 0.556 ms with the published τ (default `spec_accept` 0.7 → 1.53 ms: the 50-token tree verify only pays off at the card's acceptance).
+

@@ -6,6 +6,29 @@
 
 
 
+## [0.311.0]
+
+### Audit of the 0.310 memory-edge default; host-I/O edge; per-edge interleave; robust headless smoke; Ling-3.0 + UBTree
+- **Audit: the 0.310 "+49 %" at 100T + LPDDR5X 8 × 64, links 32 B/cycle is decode throughput per card**, 304.7 → 454.9 tok/s (qwen3-8b, batch 64). J/token went 70.05 → 62.91 mJ (−10.2 %), not +49 %.
+  - Mechanism: 16 engines (R = C = 4), 1 GHz × 32 B links. Memory ingress links 2R = 8 → 2R + C = 12, so 256 → 384 GB/s. Decode moves from NoC-ingress-bound to DRAM-bound; 454.9 equals the L = 0 roofline.
+  - Physical check: LPDDR 512 bits ÷ 18.75 pins/mm = 27.3 mm on a 10.39 mm proxy edge (107.9 mm², n5_derived 「近似」) needs 2.63 edges. So the 0.309 two-edge attach was not buildable, and a third edge is real (9.1 mm per edge balanced). What 0.310 got wrong was the other edges: it let memory take every edge not used by D2D, so nothing was left for host I/O (PCIe / NVLink-class). It also pooled all links of all memory edges as if every unit were spread evenly.
+- **Host-I/O edge** (`Chip.noc_mem_io_edges`, default 1; 0 / 1): memory edges ≤ max(2, 4 − D2D edges − I/O edges). GH100 / B200 / MI300X keep non-HBM edges for D2D / PCIe / NVLink (0.212 note 「二手」); 1 edge 「假设」.
+- **Published rectangle for H100-like**: long edge 33 mm (6 HBM sites = 3 per long side × 11 mm 「推导」), short edge 814 / 33 mm. Memory takes long edges first. Other dies stay square 「近似」.
+- **Per-edge interleave** (`Chip.noc_mem_balance`, default "interleave"; "pooled" = 0.310): memory units (HBM stacks 11 mm; LPDDR x16 / LPDDR6 x24 channels at bits / 18.75 mm) are water-filled onto the memory edges, capped by edge length. Address interleave across all units makes the busiest edge the limit: links = min_e links_e · N / u_e (≤ pooled). `energy.noc.dram` reports `mem_load`, `mem_balance`, `mem_links`, `io_edges`.
+- **Old → new** (840 cases: 7 chips × 14 memories × L ∈ {0, 16, 32, 64} × {qwen3-8b decode b64, qwen3-8b prefill, gpt-oss-120b decode b16}):
+  - 0.310 → 0.311: 240 cases lower throughput, 0 higher. Default presets with default memory at L = 0: unchanged.
+  - 100T + LPDDR5X 8 × 64, L32: 454.9 → 443.1 tok/s (load 11 / 11 / 10 channels, links 12 → 11.64), J 62.91 → 63.29 mJ. Net vs 0.309: throughput +45.4 %, J −9.7 %.
+  - 1P / 1P-lp4x64 + 8 × HBM3E and 100T + 4 / 5 × HBM3E: 4 → 2 edges (the 4th edge is the I/O edge, 3 edges cannot hold the stacks either, so it is shoreline "over"); L16 / L32 throughput −58 %, back to 0.309.
+  - One HBM stack (any chip): it sits on one edge, so attach links halve vs pooled (−50 % at L32).
+  - H100-like + 8 × HBM3E: 3 edges (load 3 / 3 / 2), L32 836 → 743 tok/s. H100-like + 6 stacks stays at 2 edges (33 mm long edges).
+  - 0.309 → 0.311: 99 lower, 108 higher.
+- **Chiplet consequence** (`scripts/chiplet_example.py`, new `--io-edges {0,1}`): 1P + 8 × HBM3E monolithic (654 mm²) needs 88 mm of HBM edge but has 3 usable edges = 77 mm; 2 × 333 mm² dies (1 D2D + 1 I/O edge) have 37 mm for 44 mm. Only the 4-die split is buildable (memE 2, $2059 at D0 0.1). The 0.310 monolithic $2013 vs 4-die $2059 comparison assumed an unbuildable die.
+- **Switches:** `noc_mem_io_edges = 0` + `noc_mem_balance = "pooled"` reproduces 0.310, except H100-like with ≥ 6 HBM stacks (published long edge). Adding `noc_mem_edges = 2` reproduces 0.309. Older tests that pin 0.308 / 0.309 / 0.310 numbers use these switches.
+- **ui_headless_smoke robust**: every page wait goes through `wait_js` / `wait_sel` with a per-step timeout. A timeout names the step, the waited expression and the panel status text. The server's stderr goes to a temp log instead of an undrained PIPE (the likely hang under concurrent load). `STEP [elapsed]` prints live. A global watchdog (`--budget`, default 1800 s) ends a stuck run with the last step and the server state. Any browser-part exception becomes one ABORT error line. Every check is unchanged.
+- **Ling-3.0 releases** (inclusionAI, public configs, fetched 2026-10-22): `ling-3.0-tiny` (7.89 B total / 1.38 B active) and `ling-3.0-flash` (124.4 B / 5.51 B), `bailing_hybrid` (KDA + MLA, the Ling-3.1-flash builder), full coverage, param_err 0. The 0.310 note "architecture not in catalog" was wrong.
+- **UBTree draft** (`ling-3.0-tiny-ubtree` = Ling-3.0-tiny + inclusionAI/Ling-3.0-tiny-UBTree, 183,127,326 bf16 params exactly from the safetensors header): DFlash anchor block (16, 5 Qwen3 layers over target layers [4, 8, 12, 16, 22]) + top-64 candidates per row + bigram selector (rank 256, target-embedding MLP factorizer 1536 → 512 → 256) → pruned tree. `ModelSpec.draft_ubtree`. The target verifies 1 + nodes tokens (default 49 nodes as on the card; `serving.spec_draft_tokens` within [1 + k, 64]). Published τ 9.113 (mean of 6 card benchmarks, greedy). The SGLang code is unreleased, so the selector / tree ops and the non-causal block are 「假设」.
+- Tests: test_core_311.py (6). test_core_308 / 309 / 310 pin their switches; test_core_213 / 214 / 062_1 expectations updated with 0.311 comments.
+
 ## [0.310.0]
 
 ### Memory-attach edges as the mechanism default; NoC-cluster axis; chiplet economics

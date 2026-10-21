@@ -16,7 +16,9 @@ def test_d2d_edge_reduces_shoreline_sides():
     s = Scenario(chip=CHIPS["1P"])
     one = shoreline_check(s, 400.0)
     two = shoreline_check(s.replace("package_cards", 2).replace("d2d_enabled", True).replace("layout.tp", 2), 400.0)
-    assert one["sides_max"] == 4 and two["sides_max"] == 3 and two["d2d_edges"] == 1
+    assert one["sides_max"] == 3 and two["sides_max"] == 2 and two["d2d_edges"] == 1    # 0.311: − 1 host-I/O edge
+    s0 = s.replace("chip.noc_mem_io_edges", 0)
+    assert shoreline_check(s0, 400.0)["sides_max"] == 4                                   # 0.310 rule
     assert two["edge_typical_mm"] == one["edge_typical_mm"] and two["edge_max_mm"] < one["edge_max_mm"]
 
 
@@ -25,7 +27,7 @@ def test_two_die_rwkv_1p():
     t, x2 = rows["two_die"], rows["dram_bw_x2"]
     assert t["dies"] == 2 and t["d2d_phy_mm2"] > 0 and t["d2d_J_per_tok"] is not None
     assert t["area_mm2"] < 0.65 * x2["area_mm2"]                 # per die ≈ half the 8-stack die (+ D2D PHY)
-    assert t["shoreline"]["stacks"] == 4 and t["shoreline"]["sides_max"] == 3
+    assert t["shoreline"]["stacks"] == 4 and t["shoreline"]["sides_max"] == 2          # 0.311: D2D 1 + host I/O 1
     assert t["reachable"] and abs(t["critical_batch"] - x2["critical_batch"]) / x2["critical_batch"] < 0.1
     assert abs(t["tpot_ms"] / x2["tpot_ms"] - 1) < 0.05            # same totals: TPOT within 5 % (D2D latency)
     assert t["d2d_J_per_tok"] < 0.01 * t["J_per_tok"]              # D2D energy is a small share

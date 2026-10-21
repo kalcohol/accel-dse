@@ -32,14 +32,18 @@ def _b(**kw):
     return Budget(**apply_preset({"density_preset": "n5_derived", **kw}))
 
 
+# 0.311: these tests pin the 0.310 rule (no host-I/O edge kept, pooled attach links) — the 0.311 switch values
+V310 = {"noc_mem_io_edges": 0, "noc_mem_balance": "pooled"}
+
+
 def _scn(chip="1P", mem=H8, phase="decode", batch=64, **ck):
-    c = replace(CHIPS[chip], **ck) if ck else CHIPS[chip]
+    c = replace(CHIPS[chip], **{**V310, **ck})
     return Scenario(model=M, chip=c, mem_id=mem, serving=Serving(phase=phase, batch=batch, prompt=2048, ctx=4096))
 
 
 # ---------------------------------------------------------------- (1) auto memory edges everywhere
 def test_chip_field_auto_default_and_serialisation():
-    c = CHIPS["1P"]
+    c = replace(CHIPS["1P"], **V310)
     assert c.noc_mem_edges == 0 and c.mem_edges == 2              # a bare chip: two columns
     for v in (1, 5, True):
         try:
@@ -50,7 +54,7 @@ def test_chip_field_auto_default_and_serialisation():
     s = _scn()
     assert s.chip.noc_mem_edges_auto == 4 and s.chip.mem_edges == 4
     d = s.to_dict()
-    assert "noc_mem_edges" not in d["chip"] and "noc_mem_edges_auto" not in d["chip"]
+    assert "noc_mem_edges" not in d["chip"] and "noc_mem_edges_auto" not in d["chip"] and "noc_mem_load" not in d["chip"]
     assert Scenario.from_dict(d).chip.mem_edges == 4
     try:                                                          # internal: never accepted
         Scenario.from_dict({**d, "chip": {**d["chip"], "noc_mem_edges_auto": 3}})
@@ -102,10 +106,11 @@ def test_pd_pool_and_api_paths_resolve():
     s = _scn(mem="hbm3e_4s_8h24g_9200")
     ps = s.colocated().replace("mem_id", H8)                       # the PD prefill pool's own memory
     assert ps.chip.mem_edges == 4
-    body = {"chip_preset": "1P", "scenario": {"model": M, "mem_id": H8}, "energy": {"energy_preset": "tpuv4i_7nm"}}
+    body = {"chip_preset": "1P", "scenario": {"model": M, "mem_id": H8, "chip": dict(V310)},
+            "energy": {"energy_preset": "tpuv4i_7nm"}}
     o = api.api_eval(body)
     assert o["energy"]["noc"]["dram"]["mem_edges"] == 4
-    o2 = api.api_eval({**body, "scenario": {"model": M, "mem_id": H8, "chip": {"noc_mem_edges": 2}}})
+    o2 = api.api_eval({**body, "scenario": {"model": M, "mem_id": H8, "chip": {**V310, "noc_mem_edges": 2}}})
     assert o2["energy"]["noc"]["dram"]["mem_edges"] == 2
     assert o2["energy"]["J_per_unit"] > o["energy"]["J_per_unit"]
 
@@ -204,8 +209,8 @@ def test_cost_crossover_d0():
 
 # ---------------------------------------------------------------- API / UI / script
 def test_api_and_ui():
-    body = {"chip_preset": "1P", "scenario": {"model": M, "mem_id": H8}, "energy": {"energy_preset": "tpuv4i_7nm"},
-            "budget": {"density_preset": "n5_derived"}, "mac_scales": [1], "sram_scales": [1], "sides": [128],
+    body = {"chip_preset": "1P", "scenario": {"model": M, "mem_id": H8, "chip": dict(V310)},
+            "energy": {"energy_preset": "tpuv4i_7nm"}, "budget": {"density_preset": "n5_derived"}, "mac_scales": [1], "sram_scales": [1], "sides": [128],
             "clusters": [1, 2], "cost": "n5_cowos_s", "d0_per_cm2": 0.1}
     o = api.api_insight_dse(body)
     assert o["costed"] and [x["clusters"] for x in o["rows"]] == [1, 2]
@@ -228,7 +233,7 @@ def test_api_and_ui():
 
 def test_example_script_cost():
     r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "chiplet_example.py"), "--case", "0",
-                        "--cost", "n5_cowos_l", "--d0", "0.2"], capture_output=True, text=True, timeout=120, cwd=ROOT)
+                        "--cost", "n5_cowos_l", "--d0", "0.2", "--io-edges", "0"], capture_output=True, text=True, timeout=120, cwd=ROOT)
     assert r.returncode == 0, r.stderr
     import re
     assert re.search(r"\$\s*\d+C", r.stdout)                         # a cost-front row

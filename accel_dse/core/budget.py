@@ -248,6 +248,18 @@ HBM_SIDES_TYPICAL, HBM_SIDES_MAX = 2, 4
 KNOWN_MAX_STACKS = {"B200 (CoWoS-L, 2 dies)": 8, "MI300X (CoWoS-S, 4 IODs)": 8}    # vendor specs 「来源」
 
 
+def _d2d_edges_of(scn) -> int:
+    from .d2d_catalog import d2d_edges as _d2d_edges
+    return _d2d_edges(getattr(scn, "package_cards", 1)) if getattr(scn, "d2d_enabled", False) else 0
+
+
+def mem_sides_max(scn) -> int:
+    """0.311: die edges the memory interface may occupy = 4 − D2D edges − host-I/O edges (Chip.noc_mem_io_edges),
+    floor 2 (a middle die of a ≥ 3-die package reaches the host through its neighbours 「假设」).  0.310: 4 − D2D."""
+    io = getattr(scn.chip, "noc_mem_io_edges", 0)
+    return max(2, HBM_SIDES_MAX - _d2d_edges_of(scn) - io) if io else HBM_SIDES_MAX - _d2d_edges_of(scn)
+
+
 def shoreline_check(scn, die_mm2: float | None) -> dict | None:
     """HBM stacks vs the die edge: None for non-HBM memory or an unknown die area.  0.309: a NoC-clustered scenario is
     checked as its whole die (all stacks on its edges, no D2D edge)."""
@@ -256,23 +268,31 @@ def shoreline_check(scn, die_mm2: float | None) -> dict | None:
     spec = mem_catalog.parse_mem_id(scn.mem_id)
     if "HBM" not in spec.mem_type.upper() or not die_mm2:
         return None
+    from .hardware import die_edges
+    ed = die_edges(scn.chip, die_mm2)            # 0.311: long edges first (GH100 published long edge), else square
     side = die_mm2 ** 0.5
     need = spec.n_units * HBM_STACK_EDGE_MM
     # 0.214: a die in a multi-die package gives one edge to the D2D link (B200: the inner edge to NV-HBI)
     # 0.308: two inner edges for packages of ≥ 3 dies (d2d_catalog.d2d_edges)
-    from .d2d_catalog import d2d_edges as _d2d_edges
-    d2d_edges = _d2d_edges(getattr(scn, "package_cards", 1)) if getattr(scn, "d2d_enabled", False) else 0
-    sides_max = HBM_SIDES_MAX - d2d_edges
-    typ, mx = min(HBM_SIDES_TYPICAL, sides_max) * side, sides_max * side
+    # 0.311: and one edge stays for the host I/O (Chip.noc_mem_io_edges, mem_sides_max)
+    d2d_edges = _d2d_edges_of(scn)
+    sides_max = mem_sides_max(scn)
+    typ, mx = sum(ed[:min(HBM_SIDES_TYPICAL, sides_max)]), sum(ed[:sides_max])
     status = "ok" if need <= typ else ("tight" if need <= mx else "over")
     out = {"stacks": spec.n_units, "need_mm": need, "edge_typical_mm": typ, "edge_max_mm": mx, "die_mm2": die_mm2,
            "status": status, "fit_typical": int(typ // HBM_STACK_EDGE_MM), "fit_max": int(mx // HBM_STACK_EDGE_MM),
            "known_max_stacks": KNOWN_MAX_STACKS, "d2d_edges": d2d_edges, "sides_max": sides_max}
     if status != "ok":
-        out["warning"] = (f"HBM 岸线：{spec.n_units} 堆栈需 {need:.0f} mm 晶粒边缘，方形晶粒 {die_mm2:.0f} mm² 两长边仅 "
-                          f"{typ:.0f} mm（{'四' if sides_max == 4 else '三'}边 {mx:.0f} mm）" + ("；四边也放不下 — 需多晶粒封装（如 B200 2 晶粒 8 堆栈）"
-                                                              if status == "over" else "；需占用第三、四边")
-                          + f" · HBM shoreline: {spec.n_units} stacks need {need:.0f} mm of die edge")
+        io = getattr(scn.chip, "noc_mem_io_edges", 0)
+        keep = "、".join(x for x in (f"D2D {d2d_edges} 边" if d2d_edges else "", "主机 I/O 1 边" if io else "") if x)
+        nz = "二三四"[sides_max - 2] if 2 <= sides_max <= 4 else str(sides_max)
+        out["warning"] = (f"HBM 岸线：{spec.n_units} 堆栈需 {need:.0f} mm 晶粒边缘，{'方形' if ed[0] == ed[2] else ''}晶粒 "
+                          f"{die_mm2:.0f} mm² 两长边仅 {typ:.0f} mm（可用 {nz}边 {mx:.0f} mm"
+                          + (f"，另留 {keep}" if keep else "") + "）"
+                          + (f"；可用 {nz}边也放不下 — 需多晶粒封装（如 B200 2 晶粒 8 堆栈）" if status == "over"
+                             else "；需占用第三" + ("、四边" if sides_max >= 4 else "边"))
+                          + f" · HBM shoreline: {spec.n_units} stacks need {need:.0f} mm of die edge"
+                          + f" ({sides_max} usable edges, {mx:.0f} mm)")
     return out
 
 
@@ -294,30 +314,72 @@ def mem_edge_need_mm(spec) -> float | None:
 
 
 def hbm_mem_edges(scn, die_mm2: float | None, lpddr: bool = True) -> int:
-    """0.309: die edges the HBM stacks occupy = ⌈stacks × 11 mm / side⌉ clamped to [2, sides_max] (shoreline_check);
-    2 for an unknown area or a stack count beyond the four sides.  0.310 (``lpddr``): LPDDR interfaces too
-    (mem_edge_need_mm), same clamp; ``lpddr=False`` = the 0.309 HBM-only rule.  Feeds Chip.noc_mem_edges: the memory
-    attach points sit where the interface PHYs are 「推导」."""
-    import math
+    """0.309: die edges the HBM stacks occupy = the fewest edges (long first) whose length covers stacks × 11 mm,
+    in [2, sides_max]; 2 for an unknown area or a stack count beyond sides_max (shoreline_check "over").  0.310
+    (``lpddr``): LPDDR interfaces too (mem_edge_need_mm), same clamp; ``lpddr=False`` = the 0.309 HBM-only rule.
+    0.311: sides_max keeps the host-I/O edge (mem_sides_max) and the edges are the die's (hardware.die_edges: the
+    GH100 long edge, else square — = ⌈need / side⌉ as before).  Feeds Chip.noc_mem_edges: the memory attach points
+    sit where the interface PHYs are 「推导」."""
     from .. import mem_catalog
+    from .hardware import die_edges
     if not die_mm2:
         return 2
     sh = shoreline_check(scn, die_mm2)
+    w = whole_die(scn)
     if sh:
         if sh["status"] == "over":
             return 2
-        m = math.ceil(sh["need_mm"] / die_mm2 ** 0.5 - 1e-9)
-        return max(2, min(int(sh["sides_max"]), m))
-    if not lpddr:
-        return 2
+        need, smax = sh["need_mm"], int(sh["sides_max"])
+    else:
+        if not lpddr:
+            return 2
+        spec = mem_catalog.parse_mem_id(w.mem_id)
+        if "LPDDR" not in spec.mem_type.upper():
+            return 2
+        need, smax = mem_edge_need_mm(spec), mem_sides_max(w)
+    ed = die_edges(w.chip, die_mm2)
+    for m in range(2, smax + 1):
+        if sum(ed[:m]) >= need - 1e-9:
+            return m
+    return 2
+
+
+def mem_edge_units(spec) -> tuple[int, float] | None:
+    """0.311: the interleave units of a memory and the die edge each takes: HBM stacks × 11 mm; LPDDR channels (x16
+    LPDDR4X / 5 / 5X, x24 LPDDR6 — mem_catalog, JEDEC 「来源」) × channel bits ÷ 18.75 pins / mm 「推导」; None else."""
+    t = spec.mem_type.upper()
+    if "HBM" in t:
+        return int(spec.n_units), HBM_STACK_EDGE_MM
+    if "LPDDR" in t:
+        cb = 24 if "LPDDR6" in t else 16
+        return max(1, spec.bus_bits // cb), cb / LPDDR_PINS_PER_MM
+    return None
+
+
+def mem_edge_load(scn, die_mm2: float | None, m: int) -> tuple:
+    """0.311: memory units per memory edge (west, east, north, south)[:m] — water-filled one unit at a time onto the
+    edge with the lowest load per attach link after the add, within each edge's length (⌊edge / unit edge⌋, the die's
+    west / east = its long edges); length ignored when the units cannot fit (an over-full shoreline is
+    shoreline_check's warning) or the die is unknown.  () for memory without units (DDR / GDDR)."""
+    import math
+    from .. import mem_catalog
+    from .hardware import die_edges
     w = whole_die(scn)
-    spec = mem_catalog.parse_mem_id(w.mem_id)
-    if "LPDDR" not in spec.mem_type.upper():
-        return 2
-    from .d2d_catalog import d2d_edges as _d2d_edges
-    sides_max = HBM_SIDES_MAX - (_d2d_edges(w.package_cards) if w.d2d_enabled else 0)
-    m = math.ceil(mem_edge_need_mm(spec) / die_mm2 ** 0.5 - 1e-9)
-    return 2 if m > sides_max else max(2, min(sides_max, m))
+    u = mem_edge_units(mem_catalog.parse_mem_id(w.mem_id))
+    if u is None or m < 2:
+        return ()
+    n, umm = u
+    from dataclasses import replace as _rp
+    per = (w.chip if w.chip.mem_edges == m else _rp(w.chip, noc_mem_edges=m)).noc_mem_edge_links()
+    caps = [math.floor(x / umm + 1e-9) for x in die_edges(w.chip, die_mm2)][:m] if die_mm2 else None
+    if caps is not None and sum(caps) < n:
+        caps = None
+    load = [0] * m
+    for _ in range(n):
+        best = min((e for e in range(m) if caps is None or load[e] < caps[e]),
+                   key=lambda e: ((load[e] + 1) / per[e], e))
+        load[best] += 1
+    return tuple(load)
 
 
 AUTO_EDGE_DENSITY = "n5_derived"     # 0.310: die-area proxy for the auto memory edges when no densities are given
@@ -360,6 +422,40 @@ def mem_edges_auto(scn, b: "Budget | None" = None) -> int:
             _AUTO_CACHE.clear()
         _AUTO_CACHE[key] = m
     return m
+
+
+def auto_die_mm2(scn, b: "Budget | None" = None) -> float | None:
+    """0.311: the die area the memory-edge rules use — the preset's published area (hardware.preset_die_mm2) when
+    ``b`` is None, else the area proxy (full_area) from ``b`` or the n5_derived preset."""
+    from .hardware import preset_die_mm2
+    die = preset_die_mm2(scn.chip) if b is None else None
+    if die is None:
+        die = full_area(scn, b if b is not None else auto_area_budget()).get("mm2")
+    return die
+
+
+_LOAD_CACHE: dict = {}
+
+
+def mem_load_auto(scn) -> tuple:
+    """0.311: Chip.noc_mem_load of a scenario — mem_edge_load over auto_die_mm2 for the chip's memory edges.
+    Cached per (chip, memory, package, layout)."""
+    try:
+        key = (scn.chip, scn.mem_id, scn.d2d_enabled, scn.package_cards, scn.layout, scn.mem_cap_GB)
+        hit = _LOAD_CACHE.get(key)
+    except TypeError:
+        key, hit = None, None
+    if hit is not None:
+        return hit
+    try:
+        ld = mem_edge_load(scn, auto_die_mm2(scn), scn.chip.mem_edges)
+    except (ValueError, KeyError, TypeError):
+        ld = ()
+    if key is not None:
+        if len(_LOAD_CACHE) > 20000:
+            _LOAD_CACHE.clear()
+        _LOAD_CACHE[key] = ld
+    return ld
 
 
 def d2d_shoreline(scn, die_mm2: float | None) -> dict | None:

@@ -650,7 +650,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                      f"簇间按 {die_split.upper()} 切分；面积 / 良率按整片")
     if auto_edges and not (chip_mode and not mem_edges_shoreline):
         notes.append("外存接入边（0.310 机理默认）：每个设计点按其晶粒的外存岸线占用（HBM 堆栈 × 11 mm；LPDDR 位宽 ÷ 18.75 引脚 / mm，"
-                     "Credo 0.18 Tb/s/mm @ 9.6 GT/s「二手/推导」）决定几条边接入 NoC；芯片 noc_mem_edges = 2 复现 0.309")
+                     "Credo 0.18 Tb/s/mm @ 9.6 GT/s「二手/推导」）决定几条边接入 NoC；芯片 noc_mem_edges = 2 复现 0.309。"
+                     "0.311：外存至多占 4 − D2D 边 − 1 条主机 I/O 边（noc_mem_io_edges = 0 复现 0.310），"
+                     "地址均匀交织 → 各边按其上外存单元份额承载流量，最重的边限制 NoC 接入（noc_mem_balance = pooled 复现 0.310）")
     if cost_p is not None:
         notes.append("成本 / 好封装（0.310）：Σ 晶粒 × 晶圆价 / DPW / Y + 封装 $/mm² × (Σ 晶粒 + HBM 占地) + 测试 / 组装（多晶粒 + KGD）"
                      "，HBM 不计（同一外存档相同）；DPW = πR²/A − π·2R/√(2A)（R = 150 mm「来源」，无划片 / 边缘排除「近似」）；"
@@ -780,7 +782,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     if sh:
                         row["shoreline"] = sh["status"]      # "tight" = needs the 3rd / 4th die edge (kept, flagged)
                     if sh and sh["status"] == "over":
-                        why.append(f"HBM 岸线：{sh['stacks']} 堆栈需 {sh['need_mm']:.0f} mm > 四边 {sh['edge_max_mm']:.0f} mm")
+                        why.append(f"HBM 岸线：{sh['stacks']} 堆栈需 {sh['need_mm']:.0f} mm > 可用 {sh['sides_max']} 边 "
+                                   f"{sh['edge_max_mm']:.0f} mm")   # 0.311: D2D + host-I/O edges excluded
                 if slo_tpot_ms is not None and row.get("tpot_ms") is not None and row["tpot_ms"] > slo_tpot_ms * (1 + 1e-9):
                     why.append(f"TPOT {row['tpot_ms']:.1f} > {slo_tpot_ms:g} ms")
                 if slo_ttft_ms is not None and row.get("ttft_ms") is not None and row["ttft_ms"] > slo_ttft_ms * (1 + 1e-9):

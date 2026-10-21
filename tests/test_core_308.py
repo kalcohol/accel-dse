@@ -16,6 +16,8 @@ from accel_dse.core.scenario import Scenario, Serving
 from tests import webstruct as W  # noqa: E402
 
 M = "qwen3-8b"
+# 0.311: pinned to the 0.310 memory-edge rule (no host-I/O edge kept, pooled attach links)
+_P1 = replace(CHIPS["1P"], noc_mem_io_edges=0, noc_mem_balance="pooled")
 H8 = "hbm3e_8s_8h24g_9200"
 
 
@@ -28,12 +30,12 @@ def _b(**kw):
 
 
 def _scn(c=None, mem=H8, phase="decode", batch=64, **kw):
-    return Scenario(model=M, chip=c or CHIPS["1P"], mem_id=mem,
+    return Scenario(model=M, chip=c or _P1, mem_id=mem,
                     serving=Serving(phase=phase, batch=batch, prompt=2048, ctx=4096), **kw)
 
 
 def _two(std="ucie-a-48", n=2, link=0.0):
-    c = replace(CHIPS["1P"], engines=32 // n, sram_mib=256.0 / n, noc_link_Bpc=link)
+    c = replace(_P1, engines=32 // n, sram_mib=256.0 / n, noc_link_Bpc=link)
     return _scn(c, mem=f"hbm3e_{8 // n}s_8h24g_9200", layout=Layout(tp=n), package_cards=n, d2d_enabled=True, d2d_std=std)
 
 
@@ -159,7 +161,7 @@ def test_split_layouts_and_memory():
     o = energy_design_search(_scn(mem="hbm3e_6s_8h24g_9200"), _t(), _b(), mac_scales=(1.0,), sram_scales=(1.0,),
                              sides=(128,), dies=(1, 4))
     assert "不能平分" in next(x for x in o["rows"] if x["dies"] == 4)["why"]
-    m = energy_design_search(Scenario(model="qwen3-30b-a3b", chip=CHIPS["1P"], mem_id=H8,
+    m = energy_design_search(Scenario(model="qwen3-30b-a3b", chip=_P1, mem_id=H8,
                                       serving=Serving(phase="decode", batch=64, ctx=4096)), _t(), _b(),
                              mac_scales=(1.0,), sram_scales=(1.0,), sides=(128,), dies=(1, 2), die_split="ep")
     assert all(x["feasible"] for x in m["rows"]) and m["rows"][1]["die_split"] == "ep"
@@ -184,7 +186,7 @@ def test_dse_validation_and_default_unchanged():
 
 # ---------------------------------------------------------------- API / UI
 def test_api_and_ui():
-    body = {"chip_preset": "1P", "scenario": {"model": M, "mem_id": H8}, "energy": {"energy_preset": "tpuv4i_7nm"},
+    body = {"chip_preset": "1P", "scenario": {"model": M, "mem_id": H8, "chip": {"noc_mem_io_edges": 0, "noc_mem_balance": "pooled"}}, "energy": {"energy_preset": "tpuv4i_7nm"},
             "budget": {"density_preset": "n5_derived"}, "mac_scales": [2], "sram_scales": [1], "sides": [128],
             "dies": [1, 2], "d2d_stds": ["bow-256"], "d2d_units": 8, "die_split": "tp", "pkg_mm2": "cowos-l",
             "d0_per_cm2": 0.1}
