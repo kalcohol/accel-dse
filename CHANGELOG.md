@@ -6,6 +6,28 @@
 
 
 
+## [0.305.0]
+
+### NoC model consolidation (XY default, DRAM ingress through the NoC); LPDDR self-refresh / refresh vs temperature
+- **Default change (only when `noc_link_Bpc` > 0): NoC routing bisection → xy.**
+  - XY is the physical routing of a mesh (Tenstorrent X-then-Y).
+  - Ring XY equals the bisection figure.
+  - Crossbar XY is the port-ingress limit.
+  - "bisection" stays selectable as the optimistic bound.
+- **New: DRAM ingress through the NoC.** Chip `noc_mem_attach` ("edge" default, "none" = ≤ 0.304).
+  - Memory tiles in two columns, one attach per engine row (Blackhole NoC 0 「来源」), cap delivered DRAM at 2·⌊√E⌋·L·f (ring 4·L·f).
+  - Under XY, weight streaming (row links) and activation all-gathers (column links) use different bottleneck links; within-op sharing still adds.
+- **Many-small-cores conclusion re-derived** (1P, HBM 3.3 TB/s):
+  - At 64 B/cycle, decode is NoC-ingress bound below E ≈ 2048. Mesh E2048 is needed for full bandwidth; E512 gets 85 %; few big engines lose 81–91 %; rings are unusable. Best J: decode 2048 × 16² mesh, prefill 32 × 128² mesh.
+  - At 256 B/cycle, E ≥ 128 is fully fed, and the few-big-engines prefill optimum returns (2 × 512²).
+  - Design rule: L ≥ BW ÷ (2·⌊√E⌋·f). 100T / LPDDR is unaffected. MODEL §250.1–250.2.
+- **LPDDR temperature**: energy `dram_temp_C` (0–95 °C; unset → `sram_temp_C` → 85 °C max as before).
+  - Self-refresh is log-linear over the Micron Y52Q points (25/45/65 °C typical 0.77/1.23/2.84 mW, 85 °C max 9.99 mW per channel).
+  - Refresh is 2× above 85 °C (JEDEC MR4).
+  - 100T prefill background 0.85 → 0.50 W at 25 °C (J −0.7 %); 95 °C decode +2.6 %. UI: DRAM 温度 input. MODEL §250.3.
+- Tests: tests/test_core_305.py (7); test_core_303 / 304 pin the models they describe (bisection, DRAM ingress off).
+- Freshness sweep (107 orgs, since 2026-10-21): no new releases.
+
 ## [0.304.0]
 
 ### PD-queue LPDDR window; per-link (XY) NoC contention (opt-in); suite-time check; robust 210 guard

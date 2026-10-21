@@ -73,12 +73,13 @@ def test_pd_report_credits_selfrefresh():
 
 # ---------------------------------------------------------------- per-link XY NoC contention
 def _chip(e, side, topo, routing="xy", link=64.0):
+    # 0.305: DRAM ingress pinned off — these tests isolate the 0.304 tree loads
     return replace(CHIPS["1P"], engines=e, rows=side, cols=side, noc_topology=topo, noc_link_Bpc=link,
-                   noc_routing=routing)
+                   noc_routing=routing, noc_mem_attach="none")
 
 
 def test_xy_link_load_formulas():
-    assert NOC_ROUTINGS == ("bisection", "xy") and CHIPS["1P"].noc_routing == "bisection"
+    assert NOC_ROUTINGS == ("bisection", "xy") and CHIPS["1P"].noc_routing == "xy"      # 0.305 default (was bisection)
     P = 1024.0
     m = _chip(16, 64, "mesh")
     assert abs(m.noc_xy_load(P, 16) - P * 3 / 4) < 1e-9          # 4 × 4: column links carry 3 of 4 rows' shards
@@ -110,9 +111,9 @@ def test_xy_vs_bisection_effect():
     xy = thr(_chip(32, 128, "mesh"))
     # every engine ingests the whole A through its column link: busier than the bisection average
     assert xy < bis * 0.8 and bis <= free
-    # routing has no effect while the link is unlimited; default routing = 0.303
+    # routing has no effect while the link is unlimited; 0.305: the default routing is XY
     assert thr(_chip(32, 128, "mesh", "xy", 0.0)) == free
-    assert bis == thr(replace(CHIPS["1P"], engines=32, rows=128, cols=128, noc_link_Bpc=64.0))
+    assert xy == thr(replace(CHIPS["1P"], engines=32, rows=128, cols=128, noc_link_Bpc=64.0, noc_mem_attach="none"))
     # ring: XY ≈ bisection (both: half the payload per link)
     rb, rx = thr(_chip(8, 256, "ring", "bisection")), thr(_chip(8, 256, "ring"))
     assert abs(rx / rb - 1) < 0.02

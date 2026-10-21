@@ -21,7 +21,9 @@ def _t(**kw):
 
 
 def _chip(e, side, topo, link=0.0, base="1P"):
-    return replace(CHIPS[base], engines=e, rows=side, cols=side, noc_topology=topo, noc_link_Bpc=link)
+    # 0.305: the default became XY + DRAM ingress; these tests pin the 0.303 bisection model they describe
+    return replace(CHIPS[base], engines=e, rows=side, cols=side, noc_topology=topo, noc_link_Bpc=link,
+                   noc_routing="bisection", noc_mem_attach="none")
 
 
 def _ev(ch, phase="prefill", mem=None, batch=1):
@@ -50,7 +52,7 @@ def test_default_unchanged_and_penalty_only_when_exceeded():
     ch = CHIPS["1P"]
     assert ch.noc_link_Bpc == 0.0
     # unset link: identical to an explicit 0
-    a, b = _ev(ch), _ev(replace(ch, noc_link_Bpc=0.0))
+    a, b = _ev(ch), _ev(replace(ch, noc_link_Bpc=0.0, noc_routing="bisection", noc_mem_attach="none"))
     assert a.throughput == b.throughput
     # few big engines on a ring at the reference link: slower; a huge link: identical to unlimited
     free = _ev(_chip(8, 256, "ring"))

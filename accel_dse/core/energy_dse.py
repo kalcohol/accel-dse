@@ -312,6 +312,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     if L:
         notes.append(f"NoC 拥塞：链路 {L:g} B/周期/方向，数据流 NoC 载荷超出拓扑二分带宽时计时（MODEL §248）" if RT == "bisection"
                      else f"NoC 拥塞（逐链路 XY）：链路 {L:g} B/周期/方向，按维序路由最忙链路负载计时（MODEL §249.2）")
+    if L and ch.noc_mem_attach == "edge":
+        notes.append(f"DRAM 经 NoC 进入阵列（0.305，noc_mem_attach=edge：两列存储 tile，每行引擎各一个接入点，Tenstorrent Blackhole「来源」）："
+                     f"可送达 DRAM 带宽 ≤ 2·⌊√E⌋ × {L:g} B/周期 × 频率（ring 4 条），低于存储带宽时 decode 受 NoC 限制（MODEL §250.1）")
     if fs != [1.0]:
         notes.append(f"频率轴（DVFS 工作点）：f/f_max ∈ {{{', '.join(f'{x:g}' for x in fs)}}}，按 {curve} 曲线取 V(f)，核心轨动作能耗 × V²、"
                      f"SRAM 泄漏 × V（与功耗封顶同一机制，MODEL §221/§247）；{VF_CURVES[curve]['label']}「{VF_CURVES[curve]['tag']}」")

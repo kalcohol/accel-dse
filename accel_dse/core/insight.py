@@ -643,8 +643,8 @@ def _dram_delivered(s) -> float:
     m = float(_memspec(s).effective_GBps)
     c = s.chip
     if c.dma_engines:
-        return min(m, c.dma_engines * c.dma_outstanding_KiB * 1024 / (c.dram_latency_ns * 1e-9) / 1e9)
-    return m
+        return min(m, c.dma_engines * c.dma_outstanding_KiB * 1024 / (c.dram_latency_ns * 1e-9) / 1e9, c.noc_mem_GBps())
+    return min(m, c.noc_mem_GBps())          # 0.305: NoC DRAM ingress
 
 
 def _chip_set(f):

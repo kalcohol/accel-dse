@@ -46,6 +46,7 @@ NOC_TOPOLOGIES = ("crossbar", "ring", "mesh")
 # 0.304: NoC contention model when noc_link_Bpc is set: "bisection" (0.303: payload ÷ bisection links) or "xy"
 # (per-link load of dimension-ordered multicast trees / reduction trees, MODEL §249.2)
 NOC_ROUTINGS = ("bisection", "xy")
+NOC_MEM_ATTACH = ("edge", "none")      # 0.305: DRAM ingress into the NoC (Chip.noc_mem_attach)
 # 0.303: reference NoC link bandwidth — Tenstorrent Blackhole: one 512-bit flit per cycle per link per NoC (64 B /
 # cycle; Wormhole 256 bit = 32 B), tt-isa-documentation BlackholeA0/NoC/README.md 「来源」.  Measured multicast
 # throughput on Blackhole is 24 B / cycle (tt-low-level-documentation, data-movement report) — not used, cross-check.
@@ -105,10 +106,16 @@ class Chip:
     # cross the topology's bisection: an op takes ≥ payload / (bisection links × noc_link_Bpc) cycles, overlapped with
     # the array (max), so a time penalty appears only when the bisection is exceeded.  Reference NOC_LINK_BPC_REF.
     noc_link_Bpc: float = field(default=0.0, metadata={"omit_default": True})
-    # 0.304 (optional, default "bisection" = 0.303): "xy" prices the busiest link of the dataflow's multicast /
-    # reduction trees under dimension-ordered (X then Y) routing instead of the bisection average, and adds the
-    # cross-group copies to the in-group traffic they share links with (no effect while noc_link_Bpc = 0)
-    noc_routing: str = field(default="bisection", metadata={"omit_default": True})
+    # 0.304: "xy" prices the busiest link of the dataflow's multicast / reduction trees under dimension-ordered
+    # (X then Y) routing instead of the bisection average, and adds the cross-group copies to the in-group traffic
+    # they share links with (no effect while noc_link_Bpc = 0).  0.305: default "xy" (was "bisection") — XY is the
+    # physical routing of a mesh, and the ring / crossbar formulas are their per-link physical limits (MODEL §250.1)
+    noc_routing: str = field(default="xy", metadata={"omit_default": True})
+    # 0.305: where DRAM enters the NoC (only while noc_link_Bpc > 0).  "edge" (default): memory tiles in two columns,
+    # one attach point per engine row in each (Tenstorrent Blackhole NoC 0: GDDR tiles at x = 0 and x = 9 「来源」), each
+    # NIU → router one flit per cycle → DRAM ingress ≤ 2·⌊√E⌋ links × noc_link_Bpc (mesh / crossbar ports alike), ring:
+    # two memory stops injecting both ways (4 links).  "none": DRAM ingress not limited by the NoC (≤ 0.304).
+    noc_mem_attach: str = field(default="edge", metadata={"omit_default": True})
     # 0.72 (optional, default 0): sequencer launch / barrier overhead (cycles).  Every op pays one launch; when ≥ 2
     # core groups run instances in lock-step waves, each further wave adds one barrier (a single sequencer — wide,
     # or one active group — streams its instances back to back) 「假设」
@@ -196,6 +203,8 @@ class Chip:
             raise ValueError(f"chip.dispatch must be one of {DISPATCH_MODES}")
         if self.dispatch_us is not None and (isinstance(self.dispatch_us, bool) or not 0.0 <= self.dispatch_us < 1e9):
             raise ValueError("chip.dispatch_us must be finite and >= 0")
+        if self.noc_mem_attach not in NOC_MEM_ATTACH:
+            raise ValueError(f"chip.noc_mem_attach must be one of {NOC_MEM_ATTACH} (got {self.noc_mem_attach!r})")
         if self.noc_routing not in NOC_ROUTINGS:
             raise ValueError(f"chip.noc_routing must be one of {NOC_ROUTINGS} (got {self.noc_routing!r})")
         if self.noc_topology not in NOC_TOPOLOGIES:
@@ -308,6 +317,21 @@ class Chip:
         else:
             f = (s - 1) / s
         return payload * f / self.noc_block_links(g)
+
+    def noc_mem_links(self) -> float:
+        """0.305: NoC links DRAM traffic can enter through (noc_mem_attach "edge"): mesh / crossbar 2·⌊√E⌋ (a memory
+        column on each side, one attach per engine row), ring 4 (two memory stops, both directions); inf when the
+        link width is unset or attach is "none"."""
+        if not self.noc_link_Bpc or self.noc_mem_attach == "none":
+            return math.inf
+        if self.noc_topology == "ring":
+            return 4.0
+        return 2.0 * max(1, math.isqrt(self.engines))
+
+    def noc_mem_GBps(self) -> float:
+        """0.305: DRAM bandwidth the NoC can deliver into the array: memory-attach links × noc_link_Bpc × clock."""
+        n = self.noc_mem_links()
+        return math.inf if math.isinf(n) else n * self.noc_link_Bpc * self.freq_ghz
 
     def noc_traffic_cycles(self, payload: float, s: int, g: int = 1, pattern: str = "allgather") -> float:
         """0.304: NoC cycles of one dataflow payload among ``s`` blocks of ``g`` engines: noc_routing "bisection"
@@ -553,8 +577,9 @@ class System:
     def dram_GBps(self) -> float:
         c = self.chip
         if c.dma_engines:     # 0.98 (opt-in): DMA issue limit, Little's law — engines × outstanding bytes / latency
-            return min(self.mem.effective_GBps, c.dma_engines * c.dma_outstanding_KiB * 1024 / (c.dram_latency_ns * 1e-9) / 1e9)
-        return self.mem.effective_GBps
+            return min(self.mem.effective_GBps, c.dma_engines * c.dma_outstanding_KiB * 1024 / (c.dram_latency_ns * 1e-9) / 1e9,
+                       c.noc_mem_GBps())
+        return min(self.mem.effective_GBps, c.noc_mem_GBps())      # 0.305: NoC DRAM ingress (inf unless link set)
 
     @property
     def dram_bytes(self) -> float:

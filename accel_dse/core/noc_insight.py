@@ -77,6 +77,9 @@ def noc_design_report(scn, table: EnergyTable, topologies: tuple = NOC_TOPOLOGIE
                      if RT == "bisection" else
                      f"NoC 拥塞（逐链路 XY）：链路 {L:g} B/周期/方向，按维序路由多播 / 归约树最忙链路的负载计时，"
                      "跨组拷贝与组内多播共用链路时相加（MODEL §249.2）；tok_s_free = 不限带宽时的吞吐")
+    if L and ch.noc_mem_attach == "edge":
+        notes.append(f"DRAM 经 NoC 进入阵列（0.305，noc_mem_attach=edge：两列存储 tile，每行引擎各一个接入点，Tenstorrent Blackhole「来源」）："
+                     f"可送达 DRAM 带宽 ≤ 2·⌊√E⌋ × {L:g} B/周期 × 频率（ring 4 条），低于存储带宽时 decode 受 NoC 限制（MODEL §250.1）")
     cuts = engine_cuts(ch.macs)
     if (ch.engines, ch.rows) not in cuts and ch.rows == ch.cols:
         cuts = sorted(set(cuts) | {(ch.engines, ch.rows)})

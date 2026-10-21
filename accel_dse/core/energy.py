@@ -128,6 +128,9 @@ class EnergyTable:
     # 0.261: die (junction) temperature for SRAM / SLC leakage, °C.  uW_per_mib_sram_leak is a 25 °C figure; the charged
     # value is × leak_temp_factor(T) (same macro measured at 25 and 85 °C, see SRAM_LEAK_T).  None = 25 °C (lower bound).
     sram_temp_C: float | None = None
+    # 0.305: LPDDR case temperature for self-refresh / refresh power (°C, 0–95); None → sram_temp_C (DRAM case ≈ die
+    # junction 「假设」, conservative for a discrete package) → None (≤ 0.304: the 85 °C maximum, 1× refresh)
+    dram_temp_C: float | None = None
     # 0.266 (DEPRECATED 0.268 — use pJ_bit_mm_onchip): capacity-dependent SLC access energy.  None = flat pJ_bit_slc.  When set to a
     # reference capacity C_ref (MiB), effective pJ/bit = pJ_bit_slc · max(1, √(slc_mib / C_ref)).  Horowitz ISSCC 2014
     # Fig. 1.1.9: 8 KB / 32 KB / 1 MB SRAM accesses 10 / 20 / 100 pJ (64-bit) ⇒ E ∝ √C 「推导」; H-tree dominates
@@ -157,6 +160,8 @@ class EnergyTable:
                 raise ValueError(f"energy.{f.name} must be a finite number in [0, 1e6) or null")
         if self.sram_temp_C is not None and not 0 <= self.sram_temp_C <= SRAM_LEAK_T["t_max_C"]:
             raise ValueError(f"energy.sram_temp_C must be in [0, {SRAM_LEAK_T['t_max_C']:g}] °C or null")
+        if self.dram_temp_C is not None and not 0 <= self.dram_temp_C <= LPDDR_T_MAX_C:
+            raise ValueError(f"energy.dram_temp_C must be in [0, {LPDDR_T_MAX_C:g}] °C or null")
         if self.slc_access_ref_mib is not None and not (0 < self.slc_access_ref_mib < 1e6):
             raise ValueError("energy.slc_access_ref_mib must be in (0, 1e6) MiB or null")
         if self.noc_mm2_per_kmac is not None and not self.noc_mm2_per_kmac > 0:
@@ -686,7 +691,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                           "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh",
                                           "pJ_bit_dram_hbm4", "pJ_bit_dram_lpddr6", "mW_lpddr_ch_standby", "mW_lpddr_Gb_refresh",
                                           "mW_lpddr_ch_pd", "mW_lpddr_ch_sr", "ns_lpddr_pd_gap", "ns_lpddr_sr_gap",
-                                          "pJ_clk_mac_cycle", "sram_temp_C", "slc_access_ref_mib", "pJ_bit_mm_onchip", "slc_mm2_per_mib",
+                                          "pJ_clk_mac_cycle", "sram_temp_C", "dram_temp_C", "slc_access_ref_mib", "pJ_bit_mm_onchip", "slc_mm2_per_mib",
                                           "pJ_bit_hop_noc", "noc_mm2_per_kmac")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
                        and not (f.name == "idle_W" and (idle_W_of(table) is not None or table.idle_frac_tdp is not None))]
@@ -883,6 +888,45 @@ def _power_cap(out, j, iw, table, cards, u, win) -> dict:
                      "E_dyn / (TDP − P_static)"}
 
 
+# 0.305: Micron Y52Q Table 18 / Table 21 (full-array power-down self refresh, one x16 channel of 8 Gb, all rails at
+# nominal 1.8 / 1.05 / 0.9 / 0.5 V): 25 / 45 / 65 °C typical (reference-only), 85 °C maximum 「来源」 — mW
+LPDDR_SR_MW_T = ((25.0, 0.17 * 1.8 + 0.42 * 1.05 + 0.01 * 0.9 + 0.03 * 0.5),
+                 (45.0, 0.23 * 1.8 + 0.75 * 1.05 + 0.01 * 0.9 + 0.03 * 0.5),
+                 (65.0, 0.40 * 1.8 + 2.00 * 1.05 + 0.01 * 0.9 + 0.03 * 0.5),
+                 (85.0, 1.20 * 1.8 + 7.00 * 1.05 + 0.20 * 0.9 + 0.60 * 0.5))
+LPDDR_T_MAX_C = 95.0        # Y52Q IT grade TC ≤ 95 °C 「来源」
+
+
+def dram_temp_of(table) -> float | None:
+    """0.305: the LPDDR temperature in effect: dram_temp_C, else sram_temp_C, else None (85 °C maximum)."""
+    t = getattr(table, "dram_temp_C", None)
+    return t if t is not None else getattr(table, "sram_temp_C", None)
+
+
+def lpddr_sr_temp_factor(t_C: float | None) -> float:
+    """0.305: self-refresh power at t_C relative to the 85 °C maximum the preset's mW_lpddr_ch_sr holds: log-linear
+    between the Y52Q points (self-refresh current is dominated by the temperature-compensated internal refresh rate and
+    leakage, both ~exponential in T 「推导」); clamped to the 25 °C value below 25 °C; 1 at ≥ 85 °C (the extra refresh
+    above 85 °C is lpddr_refresh_factor's).  The 25–65 °C points are typical, 85 °C a guaranteed maximum, so the curve
+    steps from typical to worst-case toward 85 °C (labelled)."""
+    if t_C is None or t_C >= 85.0:
+        return 1.0
+    pts = LPDDR_SR_MW_T
+    if t_C <= pts[0][0]:
+        return pts[0][1] / pts[-1][1]
+    for (t0, p0), (t1, p1) in zip(pts, pts[1:]):
+        if t0 <= t_C <= t1:
+            return math.exp(math.log(p0) + (math.log(p1) - math.log(p0)) * (t_C - t0) / (t1 - t0)) / pts[-1][1]
+    return 1.0
+
+
+def lpddr_refresh_factor(t_C: float | None) -> float:
+    """0.305: controller-issued refresh rate relative to tREFI = 3.9 µs: 2× above 85 °C (MR4 refresh multiplier 0.5 ×
+    tREFI, JEDEC LPDDR5 「二手」), 1× at ≤ 85 °C (the slower low-temperature MR4 rates are vendor thresholds not in the
+    data sheet: not credited, the high side)."""
+    return 2.0 if t_C is not None and t_C > 85.0 else 1.0
+
+
 def lpddr_residency(sp, table: "EnergyTable", util: float, gap_s: float | None) -> dict:
     """0.303: per-slice time fractions of an LPDDR card's 8 Gb channel slices in standby / power-down / self-refresh.
 
@@ -1000,11 +1044,17 @@ def hbm_static_W(mem_id: str | None, table: "EnergyTable", util: float | None = 
         gb = sp.nominal_capacity_GB * 8.0
         sl = gb / LPDDR_CH_GB
         stb = sl * (table.mW_lpddr_ch_standby or 0.0) * 1e-3
-        ref = gb * (table.mW_lpddr_Gb_refresh or 0.0) * 1e-3
+        tC = dram_temp_of(table)                                       # 0.305: temperature
+        rf = lpddr_refresh_factor(tC)
+        ref = gb * (table.mW_lpddr_Gb_refresh or 0.0) * 1e-3 * rf
         if util is not None and table.mW_lpddr_ch_pd is not None:      # 0.303: low-power residency
             res = lpddr_residency(sp, table, util, gap_s)
             pd = sl * res["f_powerdown"] * table.mW_lpddr_ch_pd * 1e-3
-            sr = sl * res["f_selfrefresh"] * (table.mW_lpddr_ch_sr or 0.0) * 1e-3
+            # 0.305: self-refresh at temperature (+ the doubled refresh above 85 °C, a slice's refresh share)
+            sr_mW = (table.mW_lpddr_ch_sr or 0.0) * lpddr_sr_temp_factor(tC) \
+                + (rf - 1.0) * LPDDR_CH_GB * (table.mW_lpddr_Gb_refresh or 0.0)
+            sr = sl * res["f_selfrefresh"] * sr_mW * 1e-3
+            res = {**res, "temp_C": tC, "sr_mW_per_slice": sr_mW, "refresh_factor": rf}
             stb_r = stb * res["f_standby"]
             ref_r = ref * (1.0 - res["f_selfrefresh"])
             return {"W": stb_r + pd + sr + ref_r, "standby_W": stb_r, "powerdown_W": pd, "selfrefresh_W": sr,
@@ -1013,6 +1063,7 @@ def hbm_static_W(mem_id: str | None, table: "EnergyTable", util: float | None = 
                     "basis": "LPDDR：每 8 Gb x16 通道片按驻留加权 待机 IDD2N / 掉电 IDD2P / 自刷新（Micron Y52Q）+ 非自刷新时段的刷新；"
                              "驻留来自建模的 DRAM 利用率、每通道 rank 数与层间空闲间隙（MODEL §248）"}
         return {"W": stb + ref, "standby_W": stb, "refresh_W": ref, "kind": "LPDDR", "channel_slices": sl,
+                "temp_C": tC, "refresh_factor": rf,
                 "basis": "LPDDR：每 8 Gb x16 通道片 IDD2N 待机（全部电源轨）+ 每 Gb 刷新（Micron Y52Q）"}
     if not getattr(sp, "hbm_height", None):
         return None

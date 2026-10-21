@@ -8373,3 +8373,92 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 - The code costs the same. The 0.303 run met external load on the shared box (other agents' work), so there is nothing to cut.
 - test_core_210 guard: the request's own CPU time (`time.process_time`; the API's process pool is server-only, so library calls are in-process) must stay under the same thresholds (20 s; 80 s for sensitivity / fit / sweep). Wall time is checked against the threshold × the contention factor of a calibration loop measured before and after the request, with 2× slack. A compute regression (the 0.209 127 s replay) moves CPU time and is caught as before. Suite contention no longer trips it.
 - Wall-clock steps: the first 0.304 full suite failed test_core_238's 60 s runtime guard at a measured 318.9 s, while the runner's monotonic clock timed the whole file at 78.5 s. Rerun alone, it passed in 44 s. The box's wall clock (time.time) had stepped mid-run. The runtime guards in test_core_209 / 210 / 238 and the harness's per-test times now use time.perf_counter (monotonic). Same thresholds, so this is not a weakening.
+
+## §250 NoC model consolidation (XY default, DRAM ingress through the NoC); LPDDR self-refresh / refresh vs temperature (0.305)
+
+### §250.1 Default NoC contention model and DRAM ingress 「来源/推导」 (`core/hardware.py`)
+- **Routing default.** `noc_routing` default "bisection" → "xy". This only matters when `noc_link_Bpc` > 0; the preset chips leave it at 0, so their results are unchanged.
+- **Why XY is the default (mechanism).**
+  - The bisection model (§248) assumes the payload spreads perfectly over every cut link. For a multicast that is not physically achievable: every destination engine must ingest the whole operand through its own input links.
+  - A mesh routes dimension-ordered. Tenstorrent Wormhole / Blackhole route X then Y on each NoC (tt-isa-documentation 「来源」), and the busiest-link load of XY trees is what the hardware sees.
+  - Ring: XY equals the bisection figure (½ the payload per link), so nothing changes there.
+  - Crossbar: the output port's ingress (s − 1)/s is the physical limit. The bisection's s/2 links overstated it by up to s/2.
+  - "bisection" stays selectable as the optimistic lower bound.
+- **DRAM ingress, new mechanism.** DRAM bytes reach the engines through the same NoC.
+  - Blackhole NoC 0 places its GDDR tiles in two columns (x = 0 and x = 9), one tile per Tensix row in each; each NIU → router is one 512-bit flit per cycle (tt-isa-documentation BlackholeA0/NoC 「来源」).
+  - New chip field `noc_mem_attach`:
+    - "edge" (default): two memory columns, one attach link per engine row in each. Mesh and crossbar ports: 2·⌊√E⌋ links. Ring: two memory stops injecting both ways, 4 links 「假设」.
+    - "none": ≤ 0.304, DRAM not limited by the NoC.
+  - `System.dram_GBps` = min(memory effective, DMA issue limit, links × noc_link_Bpc × clock). The insight's `_dram_delivered` mirrors it.
+  - Cross-check: Blackhole's 10 rows × 2 × 64 B × 1.35 GHz = 1.7 TB/s per NoC, against 512 GB/s of GDDR6. A balanced design is not NoC-limited, as expected.
+- **Inter-op contention.**
+  - Under XY, the DRAM stream rides the row (X) links out of the memory columns. An activation all-gather's busiest links are column (Y) links, so weight streaming and activation multicast mostly use different links and do not add at the bottleneck.
+  - The residual is the all-gather row phase: (C − 1)/(R·C) of the payload per row link. It is not added 「近似」, and it is small next to the column load.
+  - Consecutive ops are serialised in the cost model, so they do not overlap on links.
+  - Concurrent sharing within an op (cross-group copy + in-group multicast) adds, as in 0.304.
+- **Old → new** (only when `noc_link_Bpc` > 0 and the fields are not given):
+  - routing bisection → xy (§249.2 tables);
+  - DRAM ingress unlimited → 2·⌊√E⌋·L·f.
+  - 1P (HBM3E 4 stacks, 3.30 TB/s effective, 1 GHz) at L = 64: decode b64 at E = 32 drops 3.94 → 0.76 k tok/s.
+
+### §250.2 The many-small-cores conclusion, re-derived
+- Setup: 1P, qwen3-8b, tpuv4i_7nm preset; decode b64 ctx 4096; prefill b1 prompt 2048. Throughput in k tok/s, energy in mJ/token. Each cell: crossbar | ring | mesh.
+
+| L (B/cycle) | E × array | decode k tok/s | decode mJ/token | prefill k tok/s | prefill mJ/token |
+|---|---|---|---|---|---|
+| 0 (unlimited) | 2 … 2048 | 1.15 / 3.45 / 3.94 (E ≥ 32) | 82.8 → 47.2 (min E32) | 63.1 → 71.3 | 6.86 (E2) → 14.0 |
+| 64 | 2 × 512² | 0.15 / 0.31 / 0.15 | 400 / 217 / 400 | 17.1 / 34.2 / 17.1 | 9.28 / 7.65 / 9.28 |
+| 64 | 32 × 128² | 0.76 / 0.31 / 0.76 | 106 / 216 / 106 | 32.9 / 34.2 / 38.7 | 7.98 / 7.86 / 7.62 |
+| 64 | 128 × 64² | 1.68 / 0.31 / 1.68 | 66.6 / 216 / 66.4 | 46.8 / 34.2 / 44.9 | 8.41 / 8.18 / 7.78 |
+| 64 | 512 × 32² | 3.36 / 0.31 / 3.36 | 52.9 / 217 / 50.5 | 69.0 / 28.5 / 57.9 | 9.39 / 9.10 / 8.32 |
+| 64 | 2048 × 16² | 3.94 / 0.31 / 3.94 | 57.1 / 219 / 49.1 | 71.3 / 25.7 / 71.3 | 15.5 / 21.3 / 10.5 |
+| 256 | 2 × 512² | 0.61 / 1.04 / 0.61 | 126 / 88 / 126 | 60.2 / 62.2 / 60.2 | 6.98 / 6.93 / 6.96 |
+| 256 | 32 × 128² | 3.06 / 1.22 / 3.06 | 51.9 / 78.9 / 51.5 | 70.2 / 66.0 / 70.2 | 7.55 / 7.18 / 7.15 |
+| 256 | 128 × 64² | 3.94 / 1.22 / 3.94 | 48.4 / 79.0 / 47.4 | 70.9 / 62.3 / 70.9 | 8.71 / 8.37 / 7.65 |
+
+- Design rule 「推导」: the NoC delivers the memory's bandwidth only if L ≥ BW_eff ÷ (2·⌊√E⌋·f). For 1P / 3.30 TB/s that is 1649 / 824 / 330 / 150 / 75 / 37 B/cycle at E = 2 / 8 / 32 / 128 / 512 / 2048.
+- 100T (LPDDR5X, 191 GB/s) needs ≤ 48 B/cycle from E = 8. Its results at L = 64 are unchanged, and the fewest engines (E16) stay best.
+- Conclusion:
+  1. With HBM-class memory and a Blackhole-class link (64 B/cycle), many small cores on a mesh are required. Ingress grows with √E, so decode reaches full memory bandwidth only at E ≥ 2048, and E ≥ 512 gets 85 %. Few big engines lose 81–91 % of decode.
+     - Lowest decode J: 2048 × 16² mesh (49.1 mJ).
+     - Lowest prefill J: 32 × 128² mesh (7.62 mJ).
+     - Highest prefill throughput: E = 2048 mesh / crossbar (71.3 k).
+     - Rings are unusable: 4 ingress links.
+  2. With 4× wider links (256 B/cycle), E ≥ 128 mesh / crossbar is fully fed for decode. Prefill is within 5 % of unlimited from E = 8. The best J is E = 32–128 mesh for decode (47.4 mJ) and 2 × 512² ring / mesh for prefill (6.93 mJ), close to the unlimited-NoC result.
+  3. So the real choice is between link width and core count. The 0.303 bisection-model claim, that mid-size meshes are free and few big engines are only mildly penalised, does not survive. Under XY + DRAM ingress, a narrow NoC forces many small cores, and a wide NoC restores the few-big-engines energy optimum.
+- Not modelled:
+  - NoC energy of the DRAM bytes' hops;
+  - the second NoC (Blackhole has two, which would double every capacity: read L as the total per direction);
+  - adaptive routing.
+
+### §250.3 LPDDR self-refresh / refresh power vs temperature 「来源/推导/二手」 (`core/energy.py`)
+- New field `dram_temp_C` (0–95 °C). Unset → `sram_temp_C` (DRAM case ≈ die junction 「假设」; conservative for discrete packages) → unset → the 85 °C maximum (≤ 0.304).
+- Self-refresh source: Micron Y52Q Tables 18 / 21, full-array power-down self refresh per x16 channel of 8 Gb, all rails:
+
+| Temperature | Value type | mW per channel |
+|---|---|---|
+| 25 °C | typical | 0.771 |
+| 45 °C | typical | 1.23 |
+| 65 °C | typical | 2.84 |
+| 85 °C | maximum (guaranteed) | 9.99 |
+
+  - `lpddr_sr_temp_factor` interpolates log-linearly between the points (self-refresh current is dominated by the temperature-compensated refresh rate and leakage, both ≈ exponential 「推导」), clamps below 25 °C, and scales the preset's `mW_lpddr_ch_sr` (the 85 °C value). A user value is read as the 85 °C value.
+  - Below 85 °C the curve mixes typical and maximum points (labelled).
+- Refresh issued by the controller (standby / power-down time):
+  - 1× tREFI = 3.9 µs at ≤ 85 °C;
+  - 2× above 85 °C (MR4 refresh multiplier, JEDEC LPDDR5 「二手」), also added to the self-refresh figure as one more slice refresh share.
+  - The slower low-temperature MR4 rates are vendor thresholds, not in the data sheet, and are not credited.
+- Not temperature-scaled: IDD2N / IDD2P (the data sheet gives maxima only) and HBM.
+- Effect, 100T LPDDR5X 16 GB, qwen3-8b. DRAM background W/card, prefill / decode b8:
+
+| Temperature | prefill W | decode b8 W |
+|---|---|---|
+| 25 °C | 0.504 | 1.167 |
+| 45 °C | 0.521 | 1.167 |
+| 65 °C | 0.582 | 1.167 |
+| 85 °C / unset | 0.854 | 1.167 |
+| 95 °C | 1.246 | 1.559 |
+
+  - Prefill J/token at 25 °C: 0.0079085 → 0.0078532 (−0.7 %).
+  - Memory-bound decode has no self-refresh, so it is unchanged at ≤ 85 °C. At 95 °C it is +2.6 %.
+- Old → new: none unless `dram_temp_C` or `sram_temp_C` is set. With `sram_temp_C` set, LPDDR background now follows it (default change for those inputs).
