@@ -100,6 +100,7 @@ def test_dse_split_package_figures():
     assert len(rows) == 2 * (1 + 2 * 2) and o["chiplet"]["reticle_mm2"] == RETICLE_MM2
     x = next(r for r in rows if r["mac_x"] == 1.0 and r["dies"] == 2 and r["d2d_std"] == "ucie-a-48")
     s = _two()
+    s = replace(s, chip=replace(s.chip, noc_mem_edges=2))       # the 0.308 view: two memory columns (0.310 auto)
     r = evaluate(s)
     assert abs(x["thr"] - 2 * r.per_card) < 1e-6 * x["thr"]                   # package = per die × dies
     assert abs(x["J_per_unit"] - energy_report(r, _t())["J_per_unit"]) < 1e-9 * x["J_per_unit"]

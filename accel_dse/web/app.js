@@ -357,6 +357,7 @@ function syncInputs() {
   for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach', 'noc_eject']) {   // 0.306: NoC selects ('' = preset / default)
     if ($('c-' + k) && S.cat) $('c-' + k).value = k in S.chipOver ? S.chipOver[k] : '';
   }
+  if ($('c-noc_mem_edges') && S.cat) $('c-noc_mem_edges').value = 'noc_mem_edges' in S.chipOver ? String(S.chipOver.noc_mem_edges) : '';   // 0.310
   if ($('c-clk_datapath_gate')) $('c-clk_datapath_gate').checked = !!chipVal('clk_datapath_gate');
   if ($('fab-enabled') && S.sc && S.cat) fabPaint();
   if ($('d2d-enabled') && S.sc) { $('d2d-enabled').checked = !!S.sc.d2d_enabled; if (S.cat) $('d2d-std').value = S.sc.d2d_std; d2dPaint(); }
@@ -2431,6 +2432,12 @@ async function runInsightDse() {
         if (+$('ins-dse-d0').value > 0) ex.d0_per_cm2 = +$('ins-dse-d0').value;
         if (!$('ins-dse-clusters').checked) { ex.mono_clusters = false; ex.mem_edges_shoreline = false; }   // 0.309
       }
+      const kclu = list('ins-dse-kclu');                 // 0.310: NoC-cluster axis, cost per good package
+      const badk = kclu.length > 5 || kclu.some((x) => !Number.isInteger(x) || x < 1 || x > 64);
+      $('ins-dse-kclu').classList.toggle('bad', badk);
+      if (badk) { $('ins-dse-status').textContent = ''; return; }
+      if (kclu.length) ex.clusters = kclu;
+      if ($('ins-dse-cost').value) ex.cost = $('ins-dse-cost').value;
     }
     if ($('ins-dse-topo').checked) ex.topologies = ['mesh', 'ring', 'crossbar'];
     if (memT.length) { ex.mem_types = memT; ex.mem_count_scales = memn; }
@@ -2458,19 +2465,21 @@ async function runInsightDse() {
         const vf = e.verdict_flat && e.verdict_flat !== e.verdict ? `（对平面单片：${e.verdict_flat}）` : '';   // 0.309
         return `MAC×${e.mac_x} SRAM×${e.sram_x} ${e.mem_id} → ${v}${d}${vf}`;
       }).join('；') : '')
+      + (r.costed ? ` · 成本前沿（吞吐↑ J↓ $/好封装↓）${rows.filter((x) => x.front_cost).length} 点` : '')
       + ((r.notes || []).length ? ' · ' + r.notes.join('；') : '');
     put($('ins-dse-chart'), paretoChart(rows));
     const pct = (x) => (x * 100).toFixed(1) + '%';
     put($('ins-dse-tbl'), h('thead', {}, h('tr', {},
-      ['前沿', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', 'NoC B/周期', 'NoC mm² / W', '晶粒 × D2D', 'D2D GB/s', 'Σ mm² / 良率', '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '工作点 f ×', '运行 f ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
+      ['前沿', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', 'NoC B/周期', 'NoC mm² / W', '晶粒 × D2D', 'D2D GB/s', 'Σ mm² / 良率', '$/好封装', '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '工作点 f ×', '运行 f ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
       h('tbody', {}, rows.map((x) => h('tr', { class: x.front ? 'best' : '' },
         h('td', {}, x.front ? '★' : x.front3 ? '☆' : x.front_usd ? '$' : ''), h('td', {}, String(x.mac_x)),
         h('td', {}, `${x.engines}×${x.array}` + (x.base ? ' ←当前' : '')), h('td', {}, num(x.sram_mib)), h('td', {}, x.topology),
         h('td', {}, x.noc_link_Bpc ? num(x.noc_link_Bpc) : '不限'),
         h('td', {}, x.noc_W != null ? `${x.noc_mm2 != null ? num(x.noc_mm2) : '—'} / ${num(x.noc_W)}` : '—'),
-        h('td', {}, x.dies > 1 ? `${x.dies} × ${x.d2d_std}×${x.d2d_units}（${(x.die_split || '').toUpperCase()}）` : x.dies === 1 ? (x.clusters > 1 ? `单片×${x.clusters}簇` : '单片') : '—'),
+        h('td', {}, x.dies > 1 ? `${x.dies} × ${x.d2d_std}×${x.d2d_units}（${(x.die_split || '').toUpperCase()}）` : x.dies === 1 || x.clusters ? (x.clusters > 1 ? `单片×${x.clusters}簇` : '单片') : '—'),
         h('td', {}, x.d2d_GBps != null ? num(x.d2d_GBps) + (x.d2d_noc_capped ? '（NoC 限）' : '') : '—'),
         h('td', {}, x.si_mm2 != null ? num(x.si_mm2) + (x.die_yield != null ? ` / ${(x.die_yield * 100).toFixed(0)}%` : '') : '—'),
+        h('td', { title: x.usd_good_pkg != null ? `硅 $${num(x.si_usd)} + 封装 $${num(x.pkg_usd)} + 测试 $${num(x.test_usd)}` : '' }, x.usd_good_pkg != null ? '$' + num(x.usd_good_pkg) + (x.front_cost ? ' ★' : '') : '—'),   // 0.310
         h('td', {}, x.mem_id || '—'), h('td', {}, x.mem_GBps != null ? num(x.mem_GBps) : '—'), h('td', {}, x.mem_GB != null ? num(x.mem_GB) : '—'),
         h('td', {}, x.slc_mib != null ? num(x.slc_mib) : '—'),
         h('td', {}, x.thr != null ? num(x.thr) : '—'), h('td', {}, sci(x.J_per_unit)), h('td', {}, x.perf_W != null ? num(x.perf_W) : '—'),
@@ -2873,6 +2882,7 @@ async function init() {
   for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach', 'noc_eject']) {   // 0.306: chip-panel NoC selects
     $('c-' + k).addEventListener('change', (e) => { if (e.target.value) S.chipOver[k] = e.target.value; else delete S.chipOver[k]; schedule(); });
   }
+  $('c-noc_mem_edges').addEventListener('change', (e) => { if (e.target.value) S.chipOver.noc_mem_edges = parseInt(e.target.value, 10); else delete S.chipOver.noc_mem_edges; schedule(); });   // 0.310
   $('c-clk_datapath_gate').addEventListener('change', (e) => { if (e.target.checked) S.chipOver.clk_datapath_gate = true; else delete S.chipOver.clk_datapath_gate; schedule(); });
   $('l-pp_split').addEventListener('change', (e) => { S.sc.pp_split = e.target.value; schedule(); });
   $('l-indexer').addEventListener('change', (e) => { S.sc.indexer = e.target.value; schedule(); });

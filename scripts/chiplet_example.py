@@ -8,6 +8,7 @@ CoWoS-L 4719 mm², D0 0.1 /cm²) over MAC ×{1, 2}, 1 / 2 / 4 dies × {UCIe-A 48
                                                   # on every edge its stacks occupy; prints verdict and the 0.308 one
     python3 scripts/chiplet_example.py --flat     # 0.308 view (flat monolithic die, two memory columns)
     python3 scripts/chiplet_example.py --case 0   # one case (index into CASES)
+    python3 scripts/chiplet_example.py --cost n5_cowos_l --d0 0.2   # 0.310: cost per good package (+ D0)
 """
 from __future__ import annotations
 
@@ -47,7 +48,7 @@ def budget() -> Budget:
     return Budget(**{k: v for k, (v, _, _) in f.items() if k in Budget.__dataclass_fields__}, power_W_card=700)
 
 
-def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print) -> dict:
+def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d0=0.1) -> dict:
     std = d2d_catalog.D2D_STANDARDS["ucie-a-48"]
     old = std["pJ_bit"]
     if pj:
@@ -58,8 +59,8 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print) -> dict:
         kw = dict(noc_link_Bpc=L, noc_routing="xy") if L else {}
         o = energy_design_search(s, table(), budget(), mac_scales=(1.0, 2.0), sram_scales=(1.0,), sides=(128,),
                                  dies=(1, 2, 4), d2d_stds=("ucie-a-48", "ucie-s-32", "bow-256"), die_split=split,
-                                 d0_per_cm2=0.1, pkg_mm2="cowos-l", mono_clusters=not flat,
-                                 mem_edges_shoreline=not flat, **kw)
+                                 d0_per_cm2=d0, pkg_mm2="cowos-l", mono_clusters=not flat,
+                                 mem_edges_shoreline=not flat, **({"cost": cost} if cost else {}), **kw)
     finally:
         std["pJ_bit"] = old
     out(f"== {model} {ph} {split} L={L} pj={pj} {'(0.308 flat)' if flat else '(0.309)'}")
@@ -69,7 +70,9 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print) -> dict:
             f'J={x.get("J_per_unit", 0) * 1e3:7.2f}mJ W={x.get("W_card", 0):5.0f} die={x.get("mm2", 0):5.0f} '
             f'Σ={x.get("si_mm2", 0):5.0f} kgd={x.get("kgd_mm2", 0):5.0f} memE={x.get("mem_edges", 2)} '
             f'd2d={x.get("d2d_GBps") or 0:6.0f}{"*" if x.get("d2d_noc_capped") else " "} '
-            f'{"F" if x.get("front") else " "}{"K" if x.get("front_kgd") else " "} {x.get("why", "")}')
+            f'{"F" if x.get("front") else " "}{"K" if x.get("front_kgd") else " "}'
+            + (f' ${x["usd_good_pkg"]:6.0f}{"C" if x.get("front_cost") else " "}' if x.get("usd_good_pkg") is not None else '')
+            + f' {x.get("why", "")}')
     for e in o["chiplet"]["compare"]:
         pc = lambda v: None if v is None else round(v * 100, 1)  # noqa: E731
         out(f'  -> MAC×{e["mac_x"]:g} verdict={e["verdict"]} d_thr={pc(e.get("d_thr"))}% d_J={pc(e.get("d_J"))}% '
@@ -82,9 +85,11 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--flat", action="store_true", help="0.308 view: no NoC-cluster rows, two memory columns")
     ap.add_argument("--case", type=int, action="append", help="case index (repeatable); default all")
+    ap.add_argument("--cost", choices=("n5_cowos_s", "n5_cowos_l"), help="0.310: cost per good package")
+    ap.add_argument("--d0", type=float, default=0.1, help="defect density /cm² (default 0.1)")
     a = ap.parse_args(argv)
     for i in (a.case or range(len(CASES))):
-        run(*CASES[i], flat=a.flat)
+        run(*CASES[i], flat=a.flat, cost=a.cost, d0=a.d0)
     return 0
 
 

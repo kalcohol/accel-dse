@@ -134,7 +134,11 @@ class Chip:
     # 0.309: die edges with memory attach (noc_mem_attach "edge"): 2 = the west / east memory columns (0.305,
     # Blackhole); 3 / 4 add a memory row on the north / south edge — HBM stacks that need the 3rd / 4th die edge
     # (budget.shoreline_check "tight") attach there too, C routers per row.  Memory links and DRAM hops follow.
-    noc_mem_edges: int = field(default=2, metadata={"omit_default": True})
+    # 0.310: 0 (default) = auto — the Scenario sets noc_mem_edges_auto from the memory's shoreline occupancy
+    # (budget.mem_edges_auto: HBM stacks × 11 mm, LPDDR GB/s ÷ beachfront density, over the die proxy's side);
+    # 2 / 3 / 4 = fixed (2 reproduces ≤ 0.309 outside the chiplet DSE).  A bare Chip (no Scenario) uses 2.
+    noc_mem_edges: int = field(default=0, metadata={"omit_default": True})
+    noc_mem_edges_auto: int = field(default=2, metadata={"internal": True})
     # 0.72 (optional, default 0): sequencer launch / barrier overhead (cycles).  Every op pays one launch; when ≥ 2
     # core groups run instances in lock-step waves, each further wave adds one barrier (a single sequencer — wide,
     # or one active group — streams its instances back to back) 「假设」
@@ -222,8 +226,10 @@ class Chip:
             raise ValueError(f"chip.dispatch must be one of {DISPATCH_MODES}")
         if self.dispatch_us is not None and (isinstance(self.dispatch_us, bool) or not 0.0 <= self.dispatch_us < 1e9):
             raise ValueError("chip.dispatch_us must be finite and >= 0")
-        if self.noc_mem_edges not in (2, 3, 4):
-            raise ValueError("chip.noc_mem_edges must be 2, 3 or 4")
+        if isinstance(self.noc_mem_edges, bool) or self.noc_mem_edges not in (0, 2, 3, 4):
+            raise ValueError("chip.noc_mem_edges must be 0 (auto), 2, 3 or 4")
+        if self.noc_mem_edges_auto not in (2, 3, 4):
+            raise ValueError("chip.noc_mem_edges_auto must be 2, 3 or 4")
         if isinstance(self.noc_clusters, bool) or not isinstance(self.noc_clusters, int) or not 1 <= self.noc_clusters <= 64:
             raise ValueError("chip.noc_clusters must be an integer in [1, 64]")
         if self.noc_eject not in NOC_EJECT:
@@ -343,6 +349,11 @@ class Chip:
             f = (s - 1) / s
         return payload * f / self.noc_block_links(g)
 
+    @property
+    def mem_edges(self) -> int:
+        """0.310: memory-attach edges in effect — the fixed noc_mem_edges, else the Scenario-resolved auto value."""
+        return self.noc_mem_edges or self.noc_mem_edges_auto
+
     def noc_mem_links(self) -> float:
         """0.305: NoC links DRAM traffic can enter through (noc_mem_attach "edge"): mesh / crossbar 2·⌊√E⌋ (a memory
         column on each side, one attach per engine row), ring 4 (two memory stops, both directions); inf when the
@@ -350,7 +361,7 @@ class Chip:
         if not self.noc_link_Bpc or self.noc_mem_attach == "none":
             return math.inf
         k = self.noc_clusters        # 0.309: a cluster gets its share of the whole die's memory-column attach points
-        m = self.noc_mem_edges       # 0.309: 3 / 4 edges add a memory row on the north / south side (C attach each)
+        m = self.mem_edges           # 0.309: 3 / 4 edges add a memory row on the north / south side (C attach each)
         if self.noc_topology == "ring":
             return 2.0 * m / k
         E = self.engines * k
@@ -372,7 +383,7 @@ class Chip:
         def mean_d(n: int) -> float:
             n = max(1, n)
             return sum(min(i, n + 1 - i) for i in range(1, n + 1)) / n
-        m = self.noc_mem_edges
+        m = self.mem_edges
         if self.noc_topology == "ring":
             d = mean_d(-(-self.engines // m))     # m memory stops (0.309; 2 = ≤ 0.308)
             return d, d
@@ -740,6 +751,22 @@ CHIP_H100_LIKE_L = replace(CHIP_H100_LIKE, name="H100-like-lp4x64")
 CHIPS = {c.name: c for c in (CHIP_100T, CHIP_1P, CHIP_H100_LIKE, CHIP_1P_L, CHIP_H100_LIKE_L)}
 # default memory per chip name (not a Chip field: the chip object and its hash stay what they were)
 PRESET_MEM = {"1P": "hbm3e_4s_8h24g_9200", "H100-like": "hbm3_5s_8h16g_5234"}
+
+
+# 0.310: published die area of a preset's namesake (not a Chip field: hashes unchanged) — used by the auto memory edges
+# instead of the density proxy while the chip keeps the preset's area-relevant geometry.  H100 SXM: 814 mm²
+# (NVIDIA H100 whitepaper 「来源」).
+PRESET_DIE_MM2 = {"H100-like": 814.0, "H100-like-lp4x64": 814.0}
+_AREA_KEYS = ("engines", "rows", "cols", "sram_mib", "slc_mib", "state_sram_mib", "vector_lanes", "noc_clusters")
+
+
+def preset_die_mm2(chip) -> float | None:
+    """0.310: PRESET_DIE_MM2 for a chip that still has its preset's area-relevant geometry, else None."""
+    a = PRESET_DIE_MM2.get(chip.name)
+    p = CHIPS.get(chip.name)
+    if a is None or p is None or any(getattr(chip, k) != getattr(p, k) for k in _AREA_KEYS):
+        return None
+    return a
 
 
 # 0.218: provenance of every preset number (catalog audit).  Chip geometries are design points, not products.

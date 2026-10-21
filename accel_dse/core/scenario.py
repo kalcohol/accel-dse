@@ -673,6 +673,14 @@ class Scenario:
             raise ValueError("mem_cap_GB must be 0 (stack capacity) or finite > 0")
         if not (0 < self.kv_mem_frac <= 1):
             raise ValueError("kv_mem_frac must be in (0,1]")
+        # 0.310: auto memory-attach edges (Chip.noc_mem_edges = 0) — resolved here so every path (single eval,
+        # energy DSE, insight panels, PD pools) uses the shoreline occupancy of this chip + memory
+        ch = self.chip
+        if ch.noc_mem_edges == 0 and ch.noc_mem_attach != "none":
+            from .budget import mem_edges_auto
+            m = mem_edges_auto(self)
+            if m != ch.noc_mem_edges_auto:
+                object.__setattr__(self, "chip", dataclasses.replace(ch, noc_mem_edges_auto=m))
 
     @property
     def d2d_link(self) -> Link:

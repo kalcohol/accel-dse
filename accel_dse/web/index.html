@@ -333,6 +333,7 @@
         <label title="0.303：NoC 链路带宽，字节 / 周期 / 链路 / 方向；空 = 不限（≤ 0.302）。参考 Tenstorrent Blackhole 64 B/周期「来源」。设定后：数据流多播 / 归约按最忙链路计时，DRAM 经 NoC 接入受 2·⌊√E⌋ 条链路限制">NoC 链路 B/周期<input type="number" id="c-noc_link_Bpc" min="0" step="16" placeholder="不限"></label>
         <label title="0.304/0.305：拥塞模型（仅在设链路带宽时生效）。XY（默认）= 维序路由下多播 / 归约树最忙链路；二分 = 载荷 ÷ 拓扑二分链路（乐观下界）">NoC 拥塞模型<select id="c-noc_routing"><option value="">XY（默认）</option><option value="bisection">二分</option></select></label>
         <label title="0.305/0.306：DRAM 是否经 NoC 进入阵列。edge（默认）= 两列存储 tile、每行引擎各一个接入点（Blackhole NoC0「来源」）：设链路带宽时限制可送达 DRAM 带宽，并计 DRAM 字节的 NoC 跳数能耗；none = 专用通路（≤ 0.304，不计 NoC）">DRAM 接入<select id="c-noc_mem_attach"><option value="">edge（默认）</option><option value="none">none（专用通路）</option></select></label>
+        <label title="0.310：外存接入边数。自动（默认）= 外存接口实际占用的晶粒边：HBM 堆栈 × 11 mm、LPDDR 位宽 ÷ 18.75 引脚 / mm（Credo 0.18 Tb/s/mm @ 9.6 GT/s「二手/推导」），除以晶粒边长（预设公开面积，否则 n5_derived 面积代理「近似」）；2 = 两列存储（≤ 0.309 行为）；3 / 4 = 固定">外存接入边<select id="c-noc_mem_edges"><option value="">自动（岸线）</option><option value="2">2（0.309）</option><option value="3">3</option><option value="4">4</option></select></label>
         <label title="0.307：引擎本地（弹出）端口模型（只在设链路带宽且 XY 时生效）。link = 本地端口与链路同宽：多播的每引擎接收 (s − 1)/s · 载荷按端口计时，且 DRAM 流（每引擎 D / E；ring 存储站相邻链路 D / 4）与数据流共享这些端口 / 链路；off（默认）= ≤ 0.306">本地端口<select id="c-noc_eject"><option value="">off（默认）</option><option value="link">link（与链路同宽）</option></select></label>
       </div>
       <div class="row3" id="slc-row">
@@ -633,6 +634,10 @@
       <label title="封装（中介层）面积上限：Σ 晶粒 + HBM 占地。CoWoS-S 3.3× 光罩 ≈ 2700 mm²、CoWoS-L 5.5× ≈ 4719 mm²（TSMC「来源」）">封装<select id="ins-dse-pkg"><option value="">不限</option><option value="cowos-s">CoWoS-S 2700</option><option value="cowos-l">CoWoS-L 4719</option></select></label>
       <label title="缺陷密度 D0 /cm²（空 = 不算良率）。参考 TSMC N5 ≈ 0.10、N7 ≈ 0.09（AnandTech 转述「二手」）；Y = exp(−A·D0)「假设」，KGD 测试后封装">D0<input type="number" id="ins-dse-d0" min="0" step="0.01" placeholder="0.10" style="width:5em"></label>
       <label title="0.309：单片也按同一切分数 K 划成片上 NoC 簇（层次化 NoC：簇内 mesh/ring + 簇间片上全局链路，按导线 / 路由能耗计、无 D2D PHY；A100/H100 L2 分区「来源」），并把外存接入点放到 HBM 堆栈实际占用的每条晶粒边；取消 = 0.308 平面单片对照"><input type="checkbox" id="ins-dse-clusters" checked>单片分簇</label>
+    </div>
+    <div class="row" title="0.310：单片 NoC 簇轴与芯粒经济性">
+      <label title="单片划成 K 个片上 NoC 簇（逗号分隔，1–64，最多 5 档；空 = 不作为轴；有晶粒数轴时替代其 K 集合）。层次化 NoC：簇间片上全局链路，按 NoC 跳 / 导线计能耗、无 D2D PHY（0.309 机理）">NoC 簇<input type="text" id="ins-dse-kclu" placeholder="如 1,2,4" style="width:6em"></label>
+      <label title="成本 / 好封装：Σ 晶粒 × 晶圆价 / DPW / 良率 + 封装 $/mm² × 封装面积 + 测试 / 组装（多晶粒 KGD +22.5 %）。N5 晶圆 $16,988（CSET「二手」）；CoWoS-S $750 / H100、CoWoS-L $1,100 / B200（Silicon Analysts「二手」）折算每 mm²「推导」；HBM 不计。需面积密度；良率需 D0">成本<select id="ins-dse-cost"><option value="">不算</option><option value="n5_cowos_s">N5 + CoWoS-S</option><option value="n5_cowos_l">N5 + CoWoS-L</option></select></label>
     </div>
     <div class="note small" id="ins-dse-summary"></div>
     <div class="chart" id="ins-dse-chart"></div>

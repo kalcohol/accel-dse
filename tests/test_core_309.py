@@ -45,7 +45,7 @@ def _clu(k=2, link=0.0, clusters=True):
 # ---------------------------------------------------------------- hardware: clusters and memory edges
 def test_chip_fields_validate():
     c = CHIPS["1P"]
-    assert c.noc_clusters == 1 and c.noc_mem_edges == 2
+    assert c.noc_clusters == 1 and c.mem_edges == 2          # 0.310: noc_mem_edges 0 = auto (bare chip → 2)
     for kw in ({"noc_clusters": 0}, {"noc_clusters": 65}, {"noc_clusters": True}, {"noc_mem_edges": 1},
                {"noc_mem_edges": 5}):
         try:
@@ -138,7 +138,7 @@ def test_dse_cluster_rows():
         assert x.get("d2d_std") is None and not x["base"] and x["W_card"] <= 700 * (1 + 1e-6)
     assert any("0.309" in n for n in o["notes"])
     o0 = _dse(mono_clusters=False, mem_edges_shoreline=False)
-    assert len(o0["rows"]) == 3 and all("mem_edges" not in x for x in o0["rows"])
+    assert len(o0["rows"]) == 3 and all(x["mem_edges"] == 2 for x in o0["rows"])
 
 
 def test_dse_verdicts_old_to_new():

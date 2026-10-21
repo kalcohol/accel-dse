@@ -156,7 +156,7 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                                "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd", "f_scales",
                                "noc_link_Bpc", "noc_routing", "noc_links", "dies", "d2d_stds", "d2d_units",
                                "die_split", "reticle_mm2", "pkg_mm2", "d0_per_cm2", "mono_clusters",
-                               "mem_edges_shoreline"}}
+                               "mem_edges_shoreline", "clusters", "cost"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1494,6 +1494,15 @@ def api_insight_dse(body: dict) -> dict:
         if v not in ("tp", "pp", "ep"):
             raise ApiError("die_split must be 'tp', 'pp' or 'ep'")
         kw["die_split"] = v
+    if (v := nums("clusters", 1, 64, n=5, integer=True)) is not None:      # 0.310: NoC-cluster axis
+        kw["clusters"] = v
+    if (v := body.get("cost")) is not None:                                # 0.310: cost per good package
+        from .core.energy_dse import _cost_params
+        try:
+            _cost_params(v)
+        except ValueError as e:
+            raise ApiError(str(e)) from None
+        kw["cost"] = v
     for k in ("mono_clusters", "mem_edges_shoreline"):     # 0.309: fair monolithic comparison (default on)
         if (v := body.get(k)) is not None:
             if not isinstance(v, bool):

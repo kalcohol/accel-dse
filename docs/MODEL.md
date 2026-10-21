@@ -8728,3 +8728,68 @@ Reading:
 - Model-release sweep (`scripts/freshness_sweep.py 2026-10-21`): identical to the 0.308 sweep.
 - UCIe: 3.0 (2025-08-05) is still the latest released specification. 4.0 is targeted for end-2026 (power reduction / AVS, GUC CTO post 2026-05 「二手」), not released. The catalog is unchanged.
 - Not modelled: a clustered die's global tier as a separate topology (it is the K-card collective over the boundary links); memory-attach on non-square dies; interior links shared between DRAM and cluster / D2D traffic.
+
+## §255 Memory-attach edges as the mechanism default; NoC-cluster axis; chiplet economics (0.310)
+
+### §255.1 Memory edges everywhere 「推导」 (`core/hardware.py`, `core/scenario.py`, `core/budget.py`, `core/energy_dse.py`)
+- **The inconsistency.** In 0.309 the shoreline rule (§254.1) ran only inside the chiplet DSE. Single eval, the plain energy DSE, the insight panels and the PD pools kept two memory columns. The same chip + memory therefore had different DRAM hops and ingress depending on the panel.
+- **Mechanism.** `Chip.noc_mem_edges` gains 0 = auto as the default (2 / 3 / 4 stay fixed). `Scenario.__post_init__` resolves auto into the internal `noc_mem_edges_auto` (never serialised or accepted) with `budget.mem_edges_auto`. `Chip.mem_edges` is the value in effect.
+  - Every Scenario construction or replace re-resolves the value, so every path that builds a scenario sees it. This covers PD prefill pools with their own memory or chip, insight what-ifs, the DSE and single eval.
+  - A bare Chip outside a Scenario uses 2.
+- **Rule.** m = ⌈edge needed / die side⌉, clamped to [2, 4 − D2D edges]. When the interface does not fit on all four sides ("over") the result is 2, because that point is flagged infeasible elsewhere.
+  - HBM: stacks × 11 mm (`shoreline_check`, 「近似」).
+  - LPDDR (new): bus bits ÷ 18.75 pins / mm. Credo's Weaver brief gives 0.18 Tb/s per mm for conventional LPDDR5X 「二手」; at the brief's 9.6 GT/s PHY that is 18.75 data pins / mm 「推导」. Pins rather than rate set the edge, so the figure is used for all LPDDR generations 「近似」. Cross-check: Grace's ≈ 480-bit LPDDR5X needs 25.6 mm, about one edge of a large die.
+  - DDR / GDDR: no figure, so 2 edges.
+- **Die side** (`mem_edges_auto`):
+  - A preset's published die area is used while the chip keeps the preset's area-relevant geometry (`hardware.PRESET_DIE_MM2`, `preset_die_mm2`): H100-like 814 mm² (NVIDIA H100 whitepaper 「来源」). The density proxy says 283 mm² there, which would wrongly give 4 edges; with 814 the rule gives the real H100's 2 HBM edges.
+  - Otherwise: the die-area proxy `full_area` with the n5_derived densities (`AUTO_EDGE_DENSITY`; 5 nm-class 「近似」 for other nodes). Cached per (chip, memory, package, layout).
+  - Energy-DSE rows: the search's own densities, so the edges match the reported `mm2`.
+- **Energy DSE.**
+  - Auto chip: every row resolves from its own die. HBM + LPDDR rule.
+  - Fixed chip: the value is kept, except that the chiplet comparison applies its 0.309 HBM-only rule (`mem_edges_shoreline=True`). `False` forces 2 (the 0.308 view).
+  - Every row reports `mem_edges`.
+- **Switch.** `chip.noc_mem_edges = 2` (chip panel 外存接入边 = 2) reproduces 0.309 on every path, including the chiplet DSE. The 0.309 example output is identical in both views.
+- **Old → new (auto vs fixed 2; tpuv4i_7nm energy; qwen3-8b, decode b64 / prefill p2048):**
+
+| chip + memory | edges | decode L = 0 | decode, L = 32 B/cycle | prefill |
+|---|---|---|---|---|
+| 1P + 4 × HBM3E (default), H100-like + 5 × HBM3 (default), 100T + LPDDR5X 4 × 64 (default) | 2 → 2 | unchanged | unchanged | unchanged |
+| 1P + 8 × HBM3E | 2 → 4 | J 47.39 → 45.11 mJ (−4.8 %) | 382 → 917 tok/s (+140 %), J −47.6 % | J −0.3 % (L = 32: thr +2.9 %) |
+| 100T + LPDDR5X 8 × 64 | 2 → 3 | J −0.4 % | 305 → 455 (+49 %), J −10.2 % | ≤ 0.5 % |
+| 100T + 4 × HBM3E | 2 → 4 | J −1.2 % | 305 → 609 (+100 %), J −21.9 % | ≤ 0.8 % |
+
+  Script: /tmp/a310/oldnew.py (box), table in NOTES_0310.
+
+### §255.2 NoC clusters in the energy DSE; chip panel
+- `energy_design_search(clusters=[K…])` (1–5 values, 1–64; API `clusters`; UI NoC 簇): a monolithic die searched as K on-die NoC clusters (the 0.309 mechanism, split along `die_split`), with or without the dies axis. With the dies axis it replaces the K set taken from it. Rows carry `clusters`; area / yield / cost are the whole die.
+- Example: 1P, 8 × HBM3E, prefill, links 64 B/cycle: K = 1 / 2 / 4 → 39.5 k / 48.0 k / 60.9 k tok/s, 7.71 / 7.49 / 7.40 mJ. With unlimited links clustering costs −0.8 % / −2 % (§254.2), so it is an axis, not a default.
+- **Chip panel: not offered.** A clustered chip only exists as K cards of one package (`package_cards = K`, d2d tier = cluster tier, layout × K along the split axis, memory / K). The chip panel's chip is the whole die, so offering clusters there would mean rewriting layout / memory / package behind the user's entries. The DSE does exactly that transform and reports the whole-die figures. The scenario API keeps it reachable for experts (`chip.noc_clusters` with the matching package).
+
+### §255.3 Chiplet economics (`energy_dse.COST_PRESETS`, `package_cost`, `cost=`)
+- Cost per good package = (N · good-die cost + packaging + test / assembly) / assembly yield. HBM is excluded because it is the same in every point of one memory axis value; with `mem_usd_per_GB` the memory $ is already a separate column. Terms:
+  - Die: wafer $ / DPW, with DPW = π R²/A − π · 2R / √(2A), R = 150 mm (standard gross-die approximation 「来源」; scribe lanes / edge exclusion not modelled 「近似」). Wafer: TSMC N5 $16,988 (CSET 2020 "AI Chips" foundry sale-price model 「二手」). A 2025 N4/N5 price of ≈ $18–20 k (Morgan Stanley via heise 「二手」) is a user override (`cost.wafer_usd`).
+  - Good die = die / Y. The Poisson yield is the 0.308 term (D0; Y = 1 without D0). Dies are known-good-tested, so bad dies are not packaged.
+  - Packaging per mm² of the package area (Σ dies + HBM footprints, the 0.308 `pkg_mm2`) 「推导」:
+    - CoWoS-S: $750 per H100 (Silicon Analysts 2026 「二手」) ÷ (814 + 6 × 121) mm² → $0.49 / mm².
+    - CoWoS-L: $1,100 per B200 ÷ (2 × 800 + 8 × 121) mm² → $0.43 / mm².
+    - The interposer yield is inside these figures.
+  - Test / assembly: $920 per package (H100, same source 「二手」). Multi-die packages pay +22.5 %: KGD testing adds 15–30 % to test cost (same source; midpoint 「二手」). Clusters are one die, so they pay no extra.
+  - Assembly yield 1.0: bonding loss of good dies is not modelled 「假设」 (`cost.asm_yield` override).
+- Rows: `dpw`, `good_die_usd`, `si_usd`, `pkg_usd`, `test_usd`, `usd_good_pkg`. `front_cost` = non-dominated on (throughput ↑, J ↓, cost ↓). The UI shows a $/好封装 column (★ on the cost front).
+- **Result** (1P, qwen3-8b decode b64, 8 × HBM3E, CoWoS-L, MAC × 1; `scripts/chiplet_example.py --cost n5_cowos_l --d0 …`):
+
+| D0 /cm² | monolithic 654 mm² (flat = clustered) | 2 × 333 | 4 × 171 |
+|---|---|---|---|
+| 0.05 | $1902 | $2055 | $2040 |
+| 0.10 | $2013 (si 399 + pkg 695 + test 920) | $2097 (+4.2 %) | $2059 (+2.3 %; si 223 + pkg 708 + test 1127) |
+| 0.20 | $2382 | $2203 | $2100 (−11.8 %) |
+| 0.30 | $3090 | $2352 | $2150 |
+
+  - Break-even D0 vs the monolithic die: ≈ 0.12 /cm² for 4 dies and 0.14 for 2 dies. Over the KGD +15–30 % range it is 0.09–0.14 (4 dies) and 0.11–0.17 (2 dies); CoWoS-S gives the same within 0.001.
+  - At the N5 HVM reference D0 ≈ 0.10 (§253.1) the yield saving of splitting ($176) is smaller than the extra KGD test ($207) and package area. Splitting pays only on an immature process (D0 ≳ 0.12) or beyond the reticle: MAC × 2 is split-only, 4 dies $2278 vs 2 dies $2375.
+  - With §254 (no J / throughput advantage once the comparison is fair), cost and reticle are the remaining split criteria, and cost only above that D0.
+- Not modelled: NRE / mask sets (amortisation dominates at low volume and favours reusing one small die), interposer cost as a function of the die count (bridges per die edge), wafer-edge exclusion, the cost of D2D PHY yield.
+
+### §255.4 Freshness
+- Model-release sweep 2026-10-21, new since 0.309: inclusionAI/Ling-3.0-tiny-UBTree (created 2026-10-21 13:49 UTC = 22:49 JST). It is a 183 M-parameter tree-speculation draft head (DFlash anchor + UBTree factorizer, 5 layers) for Ling-3.0-tiny. The target's `bailing_hybrid` architecture is not in the catalog, so it was not added (deferred with the target).
+- UCIe: 4.0 still unreleased (§254.4). CoWoS / wafer cost sources are 2020–2026 estimates, labelled 「二手」.

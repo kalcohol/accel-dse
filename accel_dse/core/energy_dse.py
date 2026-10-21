@@ -112,6 +112,78 @@ def _split_layout(lay, n: int, split: str, moe: bool):
     return Layout(lay.pp, lay.tp, lay.dp * n, lay.ep * n, lay.etp, lay.sp, lay.cp)
 
 
+# 0.310: chiplet economics — cost per good package = Σ good-die cost + packaging + test / assembly (HBM excluded:
+# the same stacks in every point of one memory; added as mem_usd when priced).  Every figure is an estimate:
+#   wafer: TSMC N5 300 mm foundry sale price $16,988 (CSET 2020 "AI Chips" model 「二手」);
+#   dies per wafer: π R² / A − π · 2R / √(2A), R = 150 mm (standard gross-die approximation 「来源」; no scribe /
+#     edge exclusion 「近似」); good die = die / Y (Poisson Y, d0_per_cm2; KGD-tested dies, so bad dies are not packaged);
+#   packaging per mm² of the package area (Σ dies + HBM footprints): CoWoS-S $750 per H100 (Silicon Analysts 2026
+#     「二手」) over 814 + 6 × 121 mm² → $0.49 / mm²; CoWoS-L $1,100 per B200 over 2 × 800 + 8 × 121 mm² → $0.43 / mm²
+#     「推导」 (interposer yield is inside these figures);
+#   test / assembly $920 per package (H100, Silicon Analysts 「二手」); multi-die packages +22.5 % (KGD testing adds
+#     15–30 % to test cost, same source, midpoint 「二手」);
+#   assembly yield 1.0 (bonding loss of good dies not modelled 「假设」).
+COST_PRESETS = {
+    "n5_cowos_s": {"wafer_usd": 16988.0, "pkg_usd_per_mm2": 750.0 / (814 + 6 * 121), "test_usd": 920.0,
+                   "kgd_test_extra": 0.225, "asm_yield": 1.0,
+                   "src": "N5 晶圆 $16,988（CSET 2020「二手」）；CoWoS-S $750 / H100（Silicon Analysts「二手」）÷ (814 + 6×121) mm²「推导」；"
+                          "测试 / 组装 $920 / 封装、多晶粒 KGD +22.5 %（同源 15–30 % 中值「二手」）"},
+    "n5_cowos_l": {"wafer_usd": 16988.0, "pkg_usd_per_mm2": 1100.0 / (2 * 800 + 8 * 121), "test_usd": 920.0,
+                   "kgd_test_extra": 0.225, "asm_yield": 1.0,
+                   "src": "N5 晶圆 $16,988（CSET 2020「二手」）；CoWoS-L $1,100 / B200（Silicon Analysts「二手」）÷ (2×800 + 8×121) mm²「推导」；"
+                          "测试 / 组装 $920 / 封装、多晶粒 KGD +22.5 %「二手」"},
+}
+COST_KEYS = ("wafer_usd", "pkg_usd_per_mm2", "test_usd", "kgd_test_extra", "asm_yield")
+WAFER_R_MM = 150.0
+
+
+def _cost_params(cost):
+    """None | preset name | dict (a ``preset`` key plus any COST_KEYS overrides) → the cost terms."""
+    if cost is None:
+        return None
+    if isinstance(cost, str):
+        cost = {"preset": cost}
+    if not isinstance(cost, dict):
+        raise ValueError(f"cost must be a preset name ({sorted(COST_PRESETS)}) or an object")
+    pr = cost.get("preset", "n5_cowos_s")
+    if pr not in COST_PRESETS:
+        raise ValueError(f"cost preset must be one of {sorted(COST_PRESETS)}")
+    out = dict(COST_PRESETS[pr], preset=pr)
+    for k, v in cost.items():
+        if k == "preset":
+            continue
+        if k not in COST_KEYS:
+            raise ValueError(f"unknown cost key {k!r} (one of {COST_KEYS})")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v < 1e7:
+            raise ValueError(f"cost.{k} must be a number in [0, 1e7)")
+        out[k] = float(v)
+    if not 0 < out["asm_yield"] <= 1:
+        raise ValueError("cost.asm_yield must be in (0, 1]")
+    if not out["wafer_usd"] > 0:
+        raise ValueError("cost.wafer_usd must be > 0")
+    if k_ := [k for k in cost if k != "preset"]:
+        out["src"] = out["src"] + "；用户覆盖：" + "、".join(k_)
+    return out
+
+
+def dies_per_wafer(mm2: float) -> float:
+    """Gross dies per 300 mm wafer: π R² / A − π · 2R / √(2A) (≥ 0)."""
+    import math
+    return max(0.0, math.pi * WAFER_R_MM ** 2 / mm2 - math.pi * 2 * WAFER_R_MM / math.sqrt(2 * mm2))
+
+
+def package_cost(cp: dict, die_mm2: float, n_dies: int, die_yield: float, pkg_area_mm2: float) -> dict:
+    """0.310: cost per good package (USD) from the cost terms ``cp`` (see COST_PRESETS)."""
+    dpw = dies_per_wafer(die_mm2)
+    die = cp["wafer_usd"] / dpw if dpw > 0 else float("inf")
+    good = die / die_yield if die_yield > 0 else float("inf")
+    pkg = cp["pkg_usd_per_mm2"] * pkg_area_mm2
+    test = cp["test_usd"] * (1 + (cp["kgd_test_extra"] if n_dies > 1 else 0.0))
+    tot = (n_dies * good + pkg + test) / cp["asm_yield"]
+    return {"dpw": dpw, "die_usd": die, "good_die_usd": good, "si_usd": n_dies * good, "pkg_usd": pkg,
+            "test_usd": test, "usd_good_pkg": tot}
+
+
 def _hbm_footprint(mem_id: str) -> float:
     from .. import mem_catalog as mc
     sp = mc.parse_mem_id(mem_id)
@@ -356,7 +428,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          noc_routing: str | None = None, noc_links=None, dies=None, d2d_stds=None,
                          d2d_units: int | None = None, die_split: str = "tp", reticle_mm2: float | None = None,
                          pkg_mm2=None, d0_per_cm2: float | None = None, mono_clusters: bool = True,
-                         mem_edges_shoreline: bool = True) -> dict:
+                         mem_edges_shoreline: bool = True, clusters=None, cost=None) -> dict:
     from .. import mem_catalog as mc
     from .budget import full_area, shoreline_check
     from .hardware import default_mem
@@ -435,15 +507,30 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         raise ValueError("pkg_mm2 must be > 0")
     if d0_per_cm2 is not None and not 0 < d0_per_cm2 < 10:
         raise ValueError("d0_per_cm2 must be in (0, 10) defects / cm²")
+    # 0.310: NoC clusters of the monolithic die as an axis of its own (also without the dies axis)
+    if clusters is not None:
+        if not clusters or len(clusters) > 5 or not all(not isinstance(x, bool) and float(x).is_integer()
+                                                        and 1 <= int(x) <= 64 for x in clusters):
+            raise ValueError("clusters must be a list of 1–5 integers in [1, 64]")
+        if scn.d2d_enabled and scn.package_cards > 1:
+            raise ValueError("clusters 轴从单片设计出发：场景已是多晶粒封装（d2d_enabled / package_cards > 1）")
+    Ks = sorted({int(x) for x in clusters if int(x) > 1}) if clusters is not None else \
+        ([nn for nn in Ns if nn > 1] if (chip_mode and mono_clusters) else [])
+    clu_mode = chip_mode or clusters is not None
     from .catalog import get_model
-    moe = bool(get_model(scn.model).is_moe) if chip_mode else False
+    moe = bool(get_model(scn.model).is_moe) if clu_mode else False
     # (dies, D2D standard, NoC clusters per die).  0.309: with the die axis on, a monolithic die is also searched
     # split into K NoC clusters for every K > 1 in the die axis (same partition the K-die package gets; mono_clusters)
-    pk_axis = ([(1, None, 1)] + [(1, None, nn) for nn in Ns if nn > 1 and mono_clusters]
-               + [(nn, sd, 1) for nn in Ns if nn > 1 for sd in stds]) if chip_mode else [(1, None, 1)]
+    pk_axis = ([(1, None, 1)] + [(1, None, k) for k in Ks]
+               + ([(nn, sd, 1) for nn in Ns if nn > 1 for sd in stds] if chip_mode else []))
     if chip_mode and 1 not in Ns:
         pk_axis = [x for x in pk_axis if x[0] > 1]
     mem_edges_on = bool(chip_mode and mem_edges_shoreline)
+    # 0.310: memory edges are a mechanism default (Chip.noc_mem_edges = 0 = auto): every row resolves them from its
+    # own die (the search's densities when complete, else the Scenario's proxy); a fixed chip value is kept, except
+    # that the chiplet comparison applies its 0.309 HBM rule (mem_edges_shoreline) and False forces 2 (0.308)
+    auto_edges = scn.chip.noc_mem_edges == 0
+    cost_p = _cost_params(cost)
     mix = mix_out_tokens is not None
     phases = ("prefill", "decode") if mix else (phase or scn.serving.phase,)
     scn_ph = {ph: _phase_scn(scn, ph, prompt) for ph in phases}
@@ -558,6 +645,16 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         if L and ch.noc_mem_attach != "none":
             notes.append("D2D 经晶粒边缘接入 NoC（0.308）：D2D 边每列引擎一个接入路由器（mesh ⌈E/R⌉ 条链路 / 边，ring 每边 2），"
                          "可承载 D2D 带宽 ≤ 接入链路 × 链路宽度 × 频率；D2D 字节两端各穿过半个晶粒的 NoC（能耗计入 NoC）")
+    if clusters is not None and Ks:
+        notes.append(f"NoC 簇轴（0.310）：单片按 K = {{{', '.join(map(str, Ks))}}} 划成片上 NoC 簇（层次化 NoC，0.309 机理），"
+                     f"簇间按 {die_split.upper()} 切分；面积 / 良率按整片")
+    if auto_edges and not (chip_mode and not mem_edges_shoreline):
+        notes.append("外存接入边（0.310 机理默认）：每个设计点按其晶粒的外存岸线占用（HBM 堆栈 × 11 mm；LPDDR 位宽 ÷ 18.75 引脚 / mm，"
+                     "Credo 0.18 Tb/s/mm @ 9.6 GT/s「二手/推导」）决定几条边接入 NoC；芯片 noc_mem_edges = 2 复现 0.309")
+    if cost_p is not None:
+        notes.append("成本 / 好封装（0.310）：Σ 晶粒 × 晶圆价 / DPW / Y + 封装 $/mm² × (Σ 晶粒 + HBM 占地) + 测试 / 组装（多晶粒 + KGD）"
+                     "，HBM 不计（同一外存档相同）；DPW = πR²/A − π·2R/√(2A)（R = 150 mm「来源」，无划片 / 边缘排除「近似」）；"
+                     + cost_p["src"] + ("" if d0_per_cm2 else "；未设 D0：良率按 1 计"))
     rows = []
     for p in grid:
         for mid in mem_ids:
@@ -571,6 +668,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                 if chip_mode:
                     row.update(dies=nd, d2d_std=sd, d2d_units=units if nd > 1 else None,
                                die_split=die_split if npart > 1 else None, clusters=kc)
+                elif clu_mode:
+                    row.update(clusters=kc, die_split=die_split if kc > 1 else None)
                 mid_d = _mem_split(mid, npart)
                 if p["engines"] % npart or mid_d is None:
                     rows.append({**row, "feasible": False,
@@ -580,6 +679,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                 c = replace(ch, engines=p["engines"] // npart, rows=p["side"], cols=p["side"],
                             sram_mib=p["sram_mib"] / npart, noc_topology=p["topology"], slc_mib=slc / npart,
                             noc_link_Bpc=lk, noc_routing=RT, state_sram_mib=ch.state_sram_mib / npart, noc_clusters=kc)
+                if chip_mode and not mem_edges_shoreline:
+                    c = replace(c, noc_mem_edges=2)                  # the 0.308 view
 
                 def die_scn(sx, c, mid_d=mid_d, npart=npart, nd=nd, sd=sd):
                     if npart == 1:
@@ -597,13 +698,14 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     continue
                 if dens_ok:
                     fa = full_area(s_full, b, noc_routers=Ls is not None)    # 0.307: routers counted once (budget.py)
-                    if mem_edges_on:        # 0.309: memory attach on every die edge the HBM stacks occupy
+                    if mem_edges_on or (auto_edges and not chip_mode):
+                        # 0.309: memory attach on every die edge the HBM stacks occupy (0.310: + LPDDR when auto)
                         from .budget import hbm_mem_edges
-                        me = hbm_mem_edges(s_full, fa["mm2"])
-                        row["mem_edges"] = me
+                        me = hbm_mem_edges(s_full, fa["mm2"], lpddr=auto_edges)
                         if me != c.noc_mem_edges:
                             c = replace(c, noc_mem_edges=me)
                             s_full = die_scn(s0, c)
+                row["mem_edges"] = s_full.chip.mem_edges
                 td = replace(t, pJ_bit_d2d=D2D_STANDARDS[sd]["pJ_bit"]) if (sd and d2d_stds) else t
                 try:
                     res = {ph: _run(die_scn(scn_ph[ph], c), td, cap, power_mode, curve, fo, npart) for ph in phases}
@@ -650,6 +752,11 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     row["d2d_noc_capped"] = lk_d.GBps < _dg(sd, units) * (1 - 1e-12)
                     ph_ = res[phases[-1]]
                     row["io_share"] = (ph_.get("share") or {}).get("io")     # D2D (+ link / net when the replica spans packages)
+                if cost_p is not None and dens_ok and row.get("mm2"):
+                    cc = package_cost(cost_p, row["mm2"], nd, row.get("die_yield", 1.0),
+                                      row["si_mm2"] + _hbm_footprint(mid))
+                    row.update({k: cc[k] for k in ("dpw", "good_die_usd", "si_usd", "pkg_usd", "test_usd",
+                                                   "usd_good_pkg")})
                 if prices:
                     pr = prices.get(row["mem_type"])
                     row["mem_usd"] = row["mem_GB"] * pr if pr is not None else None
@@ -699,6 +806,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         if d0_per_cm2:
             for i in [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1), ("kgd_mm2", -1)), tie)]:
                 rows[i]["front_kgd"] = True
+    costed = cost_p is not None and bool(sub) and all(x.get("usd_good_pkg") is not None for x in sub)
+    if costed:      # 0.310: cost axis — throughput ↑, J ↓, cost per good package ↓
+        for i in [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1), ("usd_good_pkg", -1)), tie)]:
+            rows[i]["front_cost"] = True
     priced = bool(prices) and sub and all(x.get("mem_usd") is not None for x in sub)
     if priced:
         for i in [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1), ("mem_usd", -1)), tie)]:
@@ -726,6 +837,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
             "noc_links": Ls,
             "mix": {"prompt": P, "out_tokens": mix_out_tokens} if mix else None,
             "slo": {"tpot_ms": slo_tpot_ms, "ttft_ms": slo_ttft_ms}, "priced": bool(priced),
+            "cost": ({k: cost_p[k] for k in (*COST_KEYS, "preset", "src")} if cost_p else None), "costed": costed,
+            "clusters": Ks if clusters is not None else None,
             "basis": "设计网格（MAC 总数 × 引擎边长 × SRAM × NoC 拓扑 × 外存 × SLC × 频率工作点）逐点评估：时间 / 放得下来自代价模型，"
                      "J/单位 来自能耗表（MAC / SRAM / 导线 / NoC / DRAM+PHY / 静态）；perf/W = 1 / (J/单位)；超功耗点按 DVFS "
                      "封顶运行（或剔除），超面积 / HBM 岸线 / SLO / 内存 $ 的点剔除；前沿 = 吞吐↑ 与 J/单位↓ 的非支配集，"

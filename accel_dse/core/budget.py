@@ -276,16 +276,90 @@ def shoreline_check(scn, die_mm2: float | None) -> dict | None:
     return out
 
 
-def hbm_mem_edges(scn, die_mm2: float | None) -> int:
+# 0.310: conventional LPDDR5X beachfront 0.18 Tb/s per mm of die edge (Credo Weaver brief, vs its 2 Tb/s/mm
+# SerDes fan-out 「二手」) at the brief's 9.6 GT/s LPDDR5X PHY → 18.75 data pins / mm 「推导」; used for every LPDDR
+# generation (pins, not rate, set the edge) 「近似」.  DDR / GDDR: no figure (2 edges kept).
+LPDDR_TBps_PER_MM, LPDDR_REF_GTps = 0.18, 9.6
+LPDDR_PINS_PER_MM = LPDDR_TBps_PER_MM * 1000 / LPDDR_REF_GTps
+
+
+def mem_edge_need_mm(spec) -> float | None:
+    """0.310: die edge the DRAM interface needs: HBM stacks × 11 mm; LPDDR bus bits ÷ 18.75 pins / mm; else None."""
+    t = spec.mem_type.upper()
+    if "HBM" in t:
+        return spec.n_units * HBM_STACK_EDGE_MM
+    if "LPDDR" in t:
+        return spec.bus_bits / LPDDR_PINS_PER_MM
+    return None
+
+
+def hbm_mem_edges(scn, die_mm2: float | None, lpddr: bool = True) -> int:
     """0.309: die edges the HBM stacks occupy = ⌈stacks × 11 mm / side⌉ clamped to [2, sides_max] (shoreline_check);
-    2 for non-HBM memory, an unknown area or a stack count beyond the four sides.  Feeds Chip.noc_mem_edges: the
-    memory attach points sit where the stacks' PHYs are 「推导」."""
+    2 for an unknown area or a stack count beyond the four sides.  0.310 (``lpddr``): LPDDR interfaces too
+    (mem_edge_need_mm), same clamp; ``lpddr=False`` = the 0.309 HBM-only rule.  Feeds Chip.noc_mem_edges: the memory
+    attach points sit where the interface PHYs are 「推导」."""
     import math
-    sh = shoreline_check(scn, die_mm2)
-    if not sh or sh["status"] == "over":
+    from .. import mem_catalog
+    if not die_mm2:
         return 2
-    m = math.ceil(sh["need_mm"] / die_mm2 ** 0.5 - 1e-9)
-    return max(2, min(int(sh["sides_max"]), m))
+    sh = shoreline_check(scn, die_mm2)
+    if sh:
+        if sh["status"] == "over":
+            return 2
+        m = math.ceil(sh["need_mm"] / die_mm2 ** 0.5 - 1e-9)
+        return max(2, min(int(sh["sides_max"]), m))
+    if not lpddr:
+        return 2
+    w = whole_die(scn)
+    spec = mem_catalog.parse_mem_id(w.mem_id)
+    if "LPDDR" not in spec.mem_type.upper():
+        return 2
+    from .d2d_catalog import d2d_edges as _d2d_edges
+    sides_max = HBM_SIDES_MAX - (_d2d_edges(w.package_cards) if w.d2d_enabled else 0)
+    m = math.ceil(mem_edge_need_mm(spec) / die_mm2 ** 0.5 - 1e-9)
+    return 2 if m > sides_max else max(2, min(sides_max, m))
+
+
+AUTO_EDGE_DENSITY = "n5_derived"     # 0.310: die-area proxy for the auto memory edges when no densities are given
+_AUTO_B: list = []
+_AUTO_CACHE: dict = {}
+
+
+def auto_area_budget() -> "Budget":
+    if not _AUTO_B:
+        _AUTO_B.append(Budget(**{k: v for k, (v, _, _) in DENSITY_PRESETS[AUTO_EDGE_DENSITY]["fields"].items()
+                                 if k in Budget.__dataclass_fields__}))
+    return _AUTO_B[0]
+
+
+def mem_edges_auto(scn, b: "Budget | None" = None) -> int:
+    """0.310: the auto memory-attach edges of a scenario — hbm_mem_edges over the die area: a preset's published
+    area (hardware.preset_die_mm2, H100-like 814 mm²), else the die-area proxy (full_area) from ``b``'s densities,
+    else the n5_derived preset (5 nm-class 「近似」 for other nodes).  2 when the proxy is
+    incomplete.  Cached per (chip, memory, package, layout) when ``b`` is None."""
+    key = None
+    if b is None:
+        try:
+            key = (scn.chip, scn.mem_id, scn.d2d_enabled, scn.package_cards, scn.d2d_std, scn.d2d_units,
+                   scn.layout, scn.node_cards, scn.link, scn.mem_cap_GB)
+            hit = _AUTO_CACHE.get(key)
+        except TypeError:
+            key, hit = None, None
+        if hit is not None:
+            return hit
+    try:
+        from .hardware import preset_die_mm2
+        die = preset_die_mm2(scn.chip) if b is None else None
+        if die is None:
+            die = full_area(scn, b if b is not None else auto_area_budget()).get("mm2")
+        m = hbm_mem_edges(scn, die) if die else 2
+    except (ValueError, KeyError, TypeError):
+        m = 2
+    if key is not None:
+        if len(_AUTO_CACHE) > 20000:
+            _AUTO_CACHE.clear()
+        _AUTO_CACHE[key] = m
+    return m
 
 
 def d2d_shoreline(scn, die_mm2: float | None) -> dict | None:

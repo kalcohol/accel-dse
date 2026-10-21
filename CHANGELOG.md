@@ -6,6 +6,39 @@
 
 
 
+## [0.310.0]
+
+### Memory-attach edges as the mechanism default; NoC-cluster axis; chiplet economics
+- **Memory edges by shoreline occupancy everywhere** (`Chip.noc_mem_edges`: 0 = auto, the new default; 2 / 3 / 4 = fixed).
+  - The Scenario resolves auto (`budget.mem_edges_auto`). So single eval, the energy DSE, the insight panels and the PD pools all use the same rule.
+  - Rule: edges = ⌈interface edge / die side⌉, clamped to [2, 4 − D2D edges]. HBM needs stacks × 11 mm (0.309). New for LPDDR: bus bits ÷ 18.75 pins / mm (Credo Weaver brief, conventional LPDDR5X 0.18 Tb/s/mm at 9.6 GT/s 「二手/推导」). DDR / GDDR keep 2.
+  - Die side comes from a preset's published area when the chip keeps its geometry (`PRESET_DIE_MM2`: H100-like 814 mm², NVIDIA 「来源」). Otherwise it comes from the n5_derived density proxy 「近似」. Energy-DSE rows use the search's own densities.
+  - `energy.noc.dram` reports `mem_edges` / `mem_edges_auto`. Chip panel: 外存接入边 (自动 / 2 / 3 / 4).
+  - Switch: `chip.noc_mem_edges = 2` reproduces 0.309 everywhere, including the chiplet DSE.
+- **Old → new (auto vs 2):**
+  - Default presets with their default memory are unchanged: 1P with 4 × HBM3E, H100-like (5 × HBM3 on 814 mm²), 100T with LPDDR5X 4 × 64.
+  - 1P + 8 × HBM3E (4 edges): decode J −4.8 %; with 32 B/cycle links decode throughput +140 % (DRAM ingress 10 → 24 links) and J −48 %.
+  - 100T + LPDDR5X 8 × 64 (3 edges): decode L32 throughput +49 %, J −10 %.
+  - 100T + 4 × HBM3E (4 edges): decode L32 throughput +100 %.
+  - The 0.309 chiplet example is unchanged in both views.
+- **NoC clusters as an energy-DSE axis** (`clusters=[K…]`, API `clusters`, UI NoC 簇). Works with or without the dies axis. Example: prefill with 64 B/cycle links, 4 clusters give +54 % throughput on the same die.
+  - Not offered in the chip panel: a cluster chip is K cards of one package (layout, memory and package are rewritten), which is the DSE's transform.
+- **Chiplet economics** (`cost=` preset `n5_cowos_s` / `n5_cowos_l`, or a dict of overrides; API `cost`; UI 成本). Each row gets `usd_good_pkg` (with `si_usd`, `pkg_usd`, `test_usd`, `dpw`), and a `front_cost` Pareto front ranks throughput ↑, J ↓, cost ↓.
+  - Formula: Σ good-die cost + packaging + test / assembly; HBM excluded. Each term is labelled:
+    - Good die: N5 wafer $16,988 (CSET 「二手」) / DPW (π R²/A − π·2R/√(2A) 「来源」) / Y.
+    - Packaging: CoWoS-S $750 per H100 and CoWoS-L $1,100 per B200 (Silicon Analysts 「二手」), per mm² of Σ dies + HBM 「推导」.
+    - Test / assembly: $920, +22.5 % KGD for multi-die packages 「二手」.
+  - 1P example (8 × HBM3E, CoWoS-L):
+
+    | D0 | Monolithic | 2 dies | 4 dies |
+    |---|---|---|---|
+    | 0.1 | $2013 | $2097 (+4 %) | $2059 (+2 %) |
+    | 0.2 | $2382 | — | $2100 (−12 %) |
+
+    The break-even D0 is ≈ 0.12 /cm² (4 dies; 0.09–0.14 over KGD +15–30 %). MAC × 2 remains split-only (reticle).
+- `scripts/chiplet_example.py --cost … --d0 …`.
+- Freshness: new since 0.309 is inclusionAI/Ling-3.0-tiny-UBTree (2026-10-21, a 183 M tree-speculation draft head for Ling-3.0-tiny, whose bailing_hybrid target is not in the catalog). It was not added. UCIe 4.0 is still unreleased.
+
 ## [0.309.0]
 
 ### Fair monolithic-vs-split comparison in the chiplet DSE; self-contained chiplet example
