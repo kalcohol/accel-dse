@@ -6,6 +6,49 @@
 
 
 
+## [0.295.0]
+
+### Speculative decoding on a small-active MoE: what explains batch-1 DSpark 1.1× (model) vs 2.38× (B300)?
+- New diagnostic `core/extspec.py` + `data/ext_measurements_spec.json`. It takes all 72 rows (8 datasets × concurrency 1 … 256) of the LFM2.5-24B-A2B-DSpark repo's `benchmarks/b300-fp8.csv` + `protocol.json` 「来源」. The setup there is FP8 target, SGLang 488869c + patch, block 9 / 10 draft tokens, temperature 0 and bf16 KV.
+- Diagnostic only; nothing is fitted. The measured τ of each row is an input (`spec_accept_from_tau`), like the speech diagnostic's measured window schedule.
+- Closed loop at concurrency c (mean field, as for speech) 「推导」: tok/s = c·OUT / (c·ttft₁ + OUT/τ·step(c)).
+  - Hardware: the extval B200 reference chip stands in for the B300 「近似」. HGX B300 and B200 list the same dense FP8 rate and NVLink 5, and both have 8 TB/s HBM3e.
+  - Prompt length: 256 tokens 「假设」 (not published).
+- Mechanisms checked; mean speed-up over the 8 datasets, model vs measured:
+
+  | c | Measured | Roofline (`catalog`) | Per-kernel floor (`default`) | Perfect locality (bound) | Expert union | Kernel share of target step |
+  |---|---|---|---|---|---|---|
+  | 1 | 2.38× | 1.13× | 2.59× | 4.15× | 7.75× | 0.74 |
+  | 8 | 2.23× | 2.11× | 2.74× | 4.16× | 2.46× | 0.45 |
+  | 32 | 2.69× | 3.67× | 3.52× | 3.74× | 1.14× | 0.30 |
+  | 256 | 1.71× | 1.89× | 1.99× | 1.99× | 1.00× | 0.24 |
+
+  - **(c) Hardware baseline: explains the gap.** The B300 baseline (314 tok/s at c = 1) is far from bandwidth-bound. With extval's trace-sourced per-kernel floor (MODEL §39 / §119; not fitted), 74 % of the modelled target step at c = 1 is per-kernel cost. Kernel cost does not grow with the 10 verified tokens, so the verify step costs 1.98× a plain step, not the 4.6× of the roofline. Speed-up 2.59× vs 2.38× measured (gmean over all 72 rows: 1.18× high).
+  - **(a) Expert union: present, and consistent with the data.** 10 tokens touch ⌈64(1 − (60/64)^10)⌉ = 31 experts instead of 4 (7.75× the expert bytes at c = 1). The ratio falls to 1 by c = 128, where every expert is already read.
+  - **(b) Expert locality: not supported.** No public LFM2 routing statistic exists, so only the upper bound is computed: the block routes like one token per sequence, and the union's expert bytes are removed at the step's achieved bandwidth 「近似」. It would give 4.15× at c = 1, far above 2.38×. Any strong locality would widen the gap, not close it.
+- Chip-design reading: on a bandwidth-roofline accelerator with no per-kernel overhead (the catalog chips), block-verify speculation on a 64-expert top-4 MoE really is worth only ~1.1× at batch 1, because the verify reads 4.6× the bytes. Most of the GPU's 2.4× comes from amortising per-kernel cost. No cost-model change: the catalog chips keep ideal dispatch (0.284 decision).
+- Residuals, not fitted: mid concurrency (c = 8 … 64) is predicted 23–31 % high, and the target-alone tok/s 1.38–1.88× high (as for Drama 3).
+- `ext_validation.json` gains `spec[default|catalog]` = {summary, by_concurrency, rows}.
+
+### Drama 3: synchronized start burst (TTFA at c = 256)
+- `extspeech.burst(variant, c, vocoder)`, a closed-form schedule of c arrivals at t = 0 「推导」:
+  - SGLang prefills every waiting request in one forward up to `max_prefill_tokens` 16384 (sglang server_args default 「来源」; Drama 3 context 16384, no chunked prefill), so batches hold ⌊16384 / 148 rows⌋ = 110 requests.
+  - The 4-round prefill gate runs between batches. Each batch is prefilled together (P(n) at batch n, not n × batch-1).
+  - First audio comes after 10 more decode rounds plus the first window. The batch's first windows reach the vocoder together and decode one at a time.
+- Result:
+  - c = 256 wave-1 mean TTFA is 777 ms (same GPU) / 727 ms (second GPU), below even the steady state (1,078 / 883 ms). Wave 1 is 256 of the 1,088 requests (23.5 %), so it cannot set the p50.
+  - From the measurements alone: at c = 256 the p50 exceeds the time for 10 frames at the measured per-stream rate (c / frames/s) by 2.35 s (same GPU) and 1.53 s (second GPU). At c = 128 the excess is 97 / 54 ms.
+  - So a wait of 1.5–2.3 s happens before a stream runs at the shared rate. The synchronized start rules itself out. The cookbook attributes the same-GPU case to a fully loaded vocoder queue, which would mean ≈ 3× the modelled per-window vocoder time (cf. the open colocated-throughput residual). The second-GPU case stays unexplained (an admission limit is suspected, not sourced). Steady-state TTFA is unchanged.
+- Rows carry `ttfa_rate_ms` (measured-only) and `ttfa_burst_wave1_ms`.
+- Found on the way, deferred: the steady-state TTFA / throughput cycle still costs co-batched prefills serially (k·ttft₁). At c = 256 that is 153 ms for k = 11.6, against a batched P(k) of a few tens of ms.
+
+### Freshness
+- HF sweep since 2026-10-20 (107 orgs): only entries already seen (Ornith-1.5-122B siblings, unsloth re-uploads, LFM2.5 DSpark GGUF). Nothing new.
+
+### Default behaviour, old → new
+- The cost model is unchanged: all 858 points (143 LLMs × 100T / 1P / H100-like × decode b8 / prefill) are identical to 0.294.
+- ext_validate: the LLM metrics and the speech predictions are unchanged, and the version stamp moved (0.294.0 → 0.295.0). New: the `spec` section, plus the speech row fields `ttfa_rate_ms` / `ttfa_burst_wave1_ms`.
+
 ## [0.294.0]
 
 ### Drama 3 closed-loop TTFA (ext speech diagnostic, `core/extspeech.py`)

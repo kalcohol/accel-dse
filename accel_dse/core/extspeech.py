@@ -24,8 +24,15 @@ Closed loop at concurrency c (every stream restarts as soon as it ends, steady s
                    server, windows decode one at a time; M/G/1 Pollaczek–Khinchine 「近似」, s = DAC window GPU seconds)
         TTFA     = W_gate + k·ttft₁ + stream_stride · T_round + W_voc + vocoder(first window)
     The vocoder on a second GPU still decodes the first window there (0.282 dropped it from TTFA).
-    Not modelled: the benchmark's start burst (all c requests at t = 0; 1,088 requests = 4.25 per slot at c = 256) and
-    host / IPC hops (the c = 1 residual).
+    Not modelled in TTFA: host / IPC hops (the c = 1 residual).
+0.295 start burst (``burst``, synchronized arrivals — the benchmark starts all c streams at t = 0) 「推导」:
+    SGLang prefills every waiting request in one forward up to max_prefill_tokens (default 16384 「来源」 sglang
+    server_args; real bound max(16384, context_length 16384); Drama 3 disables chunked prefill) → batches of
+    B = ⌊16384 / prompt rows⌋ requests; between batches the gate runs 4 decode rounds at the running batch R.  Batch j
+    gets its first frame at the end of its (batched) prefill P(n_j) and its first audio after `stride` more decode
+    rounds (later batches' prefills interleave) plus its first window: the n_j first windows reach the vocoder
+    together and decode one at a time (same GPU: on the shared timeline; second GPU: on its own).  Deterministic
+    schedule → wave-1 mean / max TTFA.  Only the first wave (c of the run's 1,088 requests) starts synchronized.
 Vocoder modes:
     "sglang"  — SGLang-Omni (the measured stack) 「来源」 sglang_omni/models/fishaudio_drama3 config.py + vocoder.py @
                 0029194: strides 10, 10, 12, 32, then 64; every window re-decodes min(32, emitted) earlier frames
@@ -41,6 +48,8 @@ import json
 import math
 from pathlib import Path
 
+MAX_PREFILL_TOKENS = 16384     # sglang server_args max_prefill_tokens default (Drama 3 context_length 16384)
+RUN_REQUESTS = 1088            # cookbook Tables 1–2: 1,088 requests per concurrency level
 PREFILL_INTERVAL = 4          # sglang_omni fishaudio_drama3/engine_builder.py DECODE_STEPS_BETWEEN_PREFILLS @ 0029194
 DATA = Path(__file__).resolve().parents[1] / "data" / "ext_measurements_speech.json"
 STRIDE, RAMP, FOLLOW, OVERLAP = 10, (10, 12, 32), 64, 32      # sglang config.py DEFAULT_STREAM_* / stream_overlap_tokens
@@ -139,6 +148,9 @@ def table(variant: str, vocoder: str = "sglang", t2: bool = False) -> list[dict]
                     "ratio": round(p["frames_per_s"] / r["value"], 3),
                     "ttfa_meas_ms": r.get("ttfa_p50_ms"), "ttfa_pred_ms": round(p["ttfa_s"] * 1e3, 1),
                     "ttfa_noq_ms": round(p["ttfa_noq_s"] * 1e3, 1),
+                    # measured-only: the first `stride` frames at the measured per-stream frame rate (c / frames/s) 「推导」
+                    "ttfa_rate_ms": round(STRIDE * r["concurrency"] / r["value"] * 1e3, 1),
+                    "ttfa_burst_wave1_ms": round(burst(variant, r["concurrency"], voc if voc != "vllm" else "sglang")["wave1_mean_s"] * 1e3, 1),
                     "ttfa_ratio": round(p["ttfa_s"] * 1e3 / r["ttfa_p50_ms"], 3) if r.get("ttfa_p50_ms") else None,
                     "shares": {k: round(v, 3) for k, v in p["shares"].items()}})
     return out
@@ -149,3 +161,55 @@ def summary(t: list[dict]) -> dict:
     return {"n": len(t), "gmean_ratio": round(math.exp(sum(lr) / len(lr)), 3),
             "ratio_c1": t[0]["ratio"], "ratio_cmax": t[-1]["ratio"],
             "ttfa_gmean_ratio": round(math.exp(sum(math.log(x["ttfa_ratio"]) for x in t) / len(t)), 3)}
+
+
+def burst(variant: str, c: int, vocoder: str = "sglang") -> dict:
+    """0.295 wave-1 TTFA of c synchronized arrivals (module docstring), seconds; ``vocoder`` "sglang" (same GPU) or
+    "none" (second GPU).  Uses the batched prefill P(n) = speech_kpis(batch n).ttft_s, decode rounds tpot(R)."""
+    from .catalog import get_model
+    from .hardware import System
+    from .speech import _dac_window, speech_kpis
+    scn = _scenario(variant, 1)
+    kp = {}
+
+    def k(b):
+        if b not in kp:
+            kp[b] = speech_kpis(scn.replace("serving.batch", b), OUT_S)
+        return kp[b]
+    rows_p = k(1)["prompt_rows"]
+    B = max(1, MAX_PREFILL_TOKENS // rows_p)
+    sizes = [min(B, c - j * B) for j in range(-(-c // B))]
+    fs = get_model("drama-3").fish
+    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
+                 scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
+    s0 = _dac_window(fs, STRIDE, 0, 0, 1, sys, scn.mapping)
+    same = vocoder == "sglang"
+    st = {"t": 0.0, "R": 0, "voc_free": 0.0}
+    pending, first = [], []
+
+    def rounds(m):
+        for _ in range(m):
+            if st["R"] == 0:
+                return
+            st["t"] += k(st["R"])["tpot_s"]
+            for p in pending:
+                p[1] -= 1
+            for p in [p for p in pending if p[1] <= 0]:
+                pending.remove(p)
+                if same:                                   # windows on the shared timeline, one at a time
+                    first.extend(st["t"] + (i + 1) * s0 for i in range(p[0]))
+                    st["t"] += p[0] * s0
+                else:                                      # second GPU: its own queue
+                    t0 = max(st["t"], st["voc_free"])
+                    first.extend(t0 + (i + 1) * s0 for i in range(p[0]))
+                    st["voc_free"] = t0 + p[0] * s0
+    for j, n in enumerate(sizes):
+        if j:
+            rounds(PREFILL_INTERVAL)
+        st["t"] += k(n)["ttft_s"]
+        st["R"] += n
+        pending.append([n, STRIDE])
+    while pending:
+        rounds(1)
+    return {"c": c, "batch_cap": B, "batches": sizes, "wave1_mean_s": sum(first) / len(first), "wave1_max_s": max(first),
+            "wave1_share": min(1.0, c / RUN_REQUESTS)}

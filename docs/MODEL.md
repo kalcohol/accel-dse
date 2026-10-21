@@ -7894,3 +7894,28 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §239.6 Default behaviour, old → new
 - See CHANGELOG 0.294.0.
+
+## §240 Speculative decoding on a small-active MoE (LFM2.5 DSpark, B300); Drama 3 start burst (0.295)
+
+### §240.1 Data 「来源」
+- LiquidAI/LFM2.5-24B-A2B-DSpark `benchmarks/b300-fp8.csv` (72 rows: 8 datasets × c ∈ {1, 2, …, 256}) and `protocol.json`.
+  - Each row gives target-only and DSpark output tok/s and the acceptance length τ (output tokens per verification, including the bonus token).
+  - Setup: FP8 target, bf16 KV, temperature 0, no radix cache, no torch.compile; complete dataset passes with ≥ 3.5 request waves.
+
+### §240.2 Prediction 「推导」
+- Closed loop: tok/s = c·OUT / (c·ttft₁(256) + OUT/τ·step(c)). step = evaluate(decode, batch c, ctx = 256 + OUT/2), with spec_k 9 and spec_accept = spec_accept_from_tau(τ_row, 9) for DSpark.
+- Chip: the extval B200 reference stands in for the B300 「近似」 (same dense FP8, NVLink 5 and 8 TB/s HBM3e per the HGX table; B300 has 160 vs 148 SMs and more memory, neither binding here).
+- Variants: `catalog` = bandwidth roofline; `default` = per-SM GPU path with the trace-sourced per-kernel floor.
+
+### §240.3 Mechanisms
+- (a) Expert union: uniform routing gives E·(1 − (1 − k/E)^(c·n)) touched experts (ir.moe_routing). At c = 1, n = 10: 31 vs 4.
+- (b) Locality bound: the block routes like one token per sequence. Step − (union expert bytes − target-alone expert bytes) / achieved bandwidth 「近似」.
+- (c) Per-kernel floor: a fixed cost per kernel, independent of the verified tokens. It is 74 % of the target step at c = 1 and 24 % at c = 256.
+- Reading: the roofline reproduces the catalog-chip 1.1× at c = 1, and the per-kernel floor gives 2.59× (measured 2.38×). The locality bound gives 4.15×, so strong locality is inconsistent with the measurement. The gap is the hardware baseline; the union is real.
+
+### §240.4 Drama 3 synchronized start
+- Batches of ⌊max_prefill_tokens / prompt rows⌋ = 110 requests (SGLang max_prefill_tokens 16384, chunked prefill off), with 4 gate rounds between batches. Batched prefill P(n); first audio after `stride` rounds plus the first window, and the batch's first windows queue one at a time (same GPU: shared timeline; second GPU: its own).
+- c = 256 wave-1 mean 777 / 727 ms is below the steady state. Measured p50 − 10·c / (measured frames/s) = 2.35 s / 1.53 s, a pre-run wait that the burst cannot produce. Deferred: its source (vocoder load per the cookbook, for the same GPU; an admission limit is suspected for the second GPU) and batched prefill in the steady-state cycle.
+
+### §240.5 Default behaviour, old → new
+- Cost model unchanged. See CHANGELOG 0.295.0.
