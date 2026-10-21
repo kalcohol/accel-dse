@@ -1,5 +1,5 @@
 {
- "generated": "0.293.0",
+ "generated": "0.294.0",
  "variants": {
   "default": {
    "eff": "catalog",
@@ -6120,7 +6120,8 @@
     "n": 7,
     "gmean_ratio": 1.323,
     "ratio_c1": 1.234,
-    "ratio_cmax": 1.29
+    "ratio_cmax": 1.29,
+    "ttfa_gmean_ratio": 0.718
    },
    "rows": [
     {
@@ -6131,7 +6132,9 @@
      "pred": 205.6,
      "ratio": 1.234,
      "ttfa_meas_ms": 88.9,
-     "ttfa_pred_ms": 61.2,
+     "ttfa_pred_ms": 61.3,
+     "ttfa_noq_ms": 61.2,
+     "ttfa_ratio": 0.689,
      "shares": {
       "prefill": 0.031,
       "decode": 0.956,
@@ -6146,7 +6149,9 @@
      "pred": 368.7,
      "ratio": 1.285,
      "ttfa_meas_ms": 96.2,
-     "ttfa_pred_ms": 64.7,
+     "ttfa_pred_ms": 67.2,
+     "ttfa_noq_ms": 64.7,
+     "ttfa_ratio": 0.699,
      "shares": {
       "prefill": 0.055,
       "decode": 0.92,
@@ -6161,7 +6166,9 @@
      "pred": 614.5,
      "ratio": 1.314,
      "ttfa_meas_ms": 108.2,
-     "ttfa_pred_ms": 71.2,
+     "ttfa_pred_ms": 79.0,
+     "ttfa_noq_ms": 71.2,
+     "ttfa_ratio": 0.73,
      "shares": {
       "prefill": 0.091,
       "decode": 0.867,
@@ -6176,7 +6183,9 @@
      "pred": 933.9,
      "ratio": 1.377,
      "ttfa_meas_ms": 153.2,
-     "ttfa_pred_ms": 83.2,
+     "ttfa_pred_ms": 102.1,
+     "ttfa_noq_ms": 83.2,
+     "ttfa_ratio": 0.667,
      "shares": {
       "prefill": 0.139,
       "decode": 0.799,
@@ -6191,7 +6200,9 @@
      "pred": 1300.0,
      "ratio": 1.401,
      "ttfa_meas_ms": 210.1,
-     "ttfa_pred_ms": 103.3,
+     "ttfa_pred_ms": 146.2,
+     "ttfa_noq_ms": 103.3,
+     "ttfa_ratio": 0.696,
      "shares": {
       "prefill": 0.193,
       "decode": 0.719,
@@ -6206,7 +6217,9 @@
      "pred": 1700.7,
      "ratio": 1.366,
      "ttfa_meas_ms": 304.6,
-     "ttfa_pred_ms": 133.9,
+     "ttfa_pred_ms": 227.1,
+     "ttfa_noq_ms": 133.9,
+     "ttfa_ratio": 0.746,
      "shares": {
       "prefill": 0.253,
       "decode": 0.633,
@@ -6221,7 +6234,9 @@
      "pred": 2177.0,
      "ratio": 1.29,
      "ttfa_meas_ms": 450.9,
-     "ttfa_pred_ms": 170.7,
+     "ttfa_pred_ms": 365.7,
+     "ttfa_noq_ms": 170.7,
+     "ttfa_ratio": 0.811,
      "shares": {
       "prefill": 0.324,
       "decode": 0.53,
@@ -6238,7 +6253,9 @@
      "pred": 2737.3,
      "ratio": 1.257,
      "ttfa_meas_ms": 685,
-     "ttfa_pred_ms": 211.1,
+     "ttfa_pred_ms": 608.4,
+     "ttfa_noq_ms": 211.1,
+     "ttfa_ratio": 0.888,
      "shares": {
       "prefill": 0.403,
       "decode": 0.416,
@@ -6253,7 +6270,9 @@
      "pred": 3175.4,
      "ratio": 1.311,
      "ttfa_meas_ms": 3403,
-     "ttfa_pred_ms": 277.1,
+     "ttfa_pred_ms": 1077.7,
+     "ttfa_noq_ms": 277.1,
+     "ttfa_ratio": 0.317,
      "shares": {
       "prefill": 0.467,
       "decode": 0.322,
@@ -6268,7 +6287,9 @@
      "pred": 3345.8,
      "ratio": 0.906,
      "ttfa_meas_ms": 401,
-     "ttfa_pred_ms": 210.5,
+     "ttfa_pred_ms": 512.4,
+     "ttfa_noq_ms": 211.1,
+     "ttfa_ratio": 1.278,
      "shares": {
       "prefill": 0.492,
       "decode": 0.508,
@@ -6283,7 +6304,9 @@
      "pred": 4024.5,
      "ratio": 0.967,
      "ttfa_meas_ms": 2146,
-     "ttfa_pred_ms": 276.4,
+     "ttfa_pred_ms": 883.0,
+     "ttfa_noq_ms": 277.1,
+     "ttfa_ratio": 0.411,
      "shares": {
       "prefill": 0.592,
       "decode": 0.408,
@@ -6297,7 +6320,8 @@
     "n": 7,
     "gmean_ratio": 2.256,
     "ratio_c1": 3.126,
-    "ratio_cmax": 1.633
+    "ratio_cmax": 1.633,
+    "ttfa_gmean_ratio": 0.447
    },
    "rows": [
     {
@@ -6309,6 +6333,8 @@
      "ratio": 3.126,
      "ttfa_meas_ms": 88.9,
      "ttfa_pred_ms": 28.9,
+     "ttfa_noq_ms": 28.9,
+     "ttfa_ratio": 0.325,
      "shares": {
       "prefill": 0.06,
       "decode": 0.912,
@@ -6323,7 +6349,9 @@
      "pred": 823.4,
      "ratio": 2.869,
      "ttfa_meas_ms": 96.2,
-     "ttfa_pred_ms": 32.3,
+     "ttfa_pred_ms": 34.1,
+     "ttfa_noq_ms": 32.3,
+     "ttfa_ratio": 0.355,
      "shares": {
       "prefill": 0.095,
       "decode": 0.861,
@@ -6338,7 +6366,9 @@
      "pred": 1172.5,
      "ratio": 2.508,
      "ttfa_meas_ms": 108.2,
-     "ttfa_pred_ms": 38.7,
+     "ttfa_pred_ms": 44.5,
+     "ttfa_noq_ms": 38.7,
+     "ttfa_ratio": 0.411,
      "shares": {
       "prefill": 0.135,
       "decode": 0.803,
@@ -6353,7 +6383,9 @@
      "pred": 1519.8,
      "ratio": 2.241,
      "ttfa_meas_ms": 153.2,
-     "ttfa_pred_ms": 50.5,
+     "ttfa_pred_ms": 64.8,
+     "ttfa_noq_ms": 50.5,
+     "ttfa_ratio": 0.423,
      "shares": {
       "prefill": 0.175,
       "decode": 0.744,
@@ -6368,7 +6400,9 @@
      "pred": 1861.7,
      "ratio": 2.007,
      "ttfa_meas_ms": 210.1,
-     "ttfa_pred_ms": 70.4,
+     "ttfa_pred_ms": 103.2,
+     "ttfa_noq_ms": 70.4,
+     "ttfa_ratio": 0.491,
      "shares": {
       "prefill": 0.215,
       "decode": 0.687,
@@ -6383,7 +6417,9 @@
      "pred": 2240.6,
      "ratio": 1.8,
      "ttfa_meas_ms": 304.6,
-     "ttfa_pred_ms": 100.3,
+     "ttfa_pred_ms": 172.7,
+     "ttfa_noq_ms": 100.3,
+     "ttfa_ratio": 0.567,
      "shares": {
       "prefill": 0.259,
       "decode": 0.623,
@@ -6398,7 +6434,9 @@
      "pred": 2755.9,
      "ratio": 1.633,
      "ttfa_meas_ms": 450.9,
-     "ttfa_pred_ms": 135.9,
+     "ttfa_pred_ms": 288.2,
+     "ttfa_noq_ms": 135.9,
+     "ttfa_ratio": 0.639,
      "shares": {
       "prefill": 0.318,
       "decode": 0.536,
@@ -6415,7 +6453,9 @@
      "pred": 3424.6,
      "ratio": 1.573,
      "ttfa_meas_ms": 685,
-     "ttfa_pred_ms": 173.7,
+     "ttfa_pred_ms": 484.4,
+     "ttfa_noq_ms": 173.7,
+     "ttfa_ratio": 0.707,
      "shares": {
       "prefill": 0.391,
       "decode": 0.43,
@@ -6430,7 +6470,9 @@
      "pred": 3990.0,
      "ratio": 1.647,
      "ttfa_meas_ms": 3403,
-     "ttfa_pred_ms": 228.9,
+     "ttfa_pred_ms": 854.6,
+     "ttfa_noq_ms": 228.9,
+     "ttfa_ratio": 0.251,
      "shares": {
       "prefill": 0.456,
       "decode": 0.336,
@@ -6445,7 +6487,9 @@
      "pred": 4171.1,
      "ratio": 1.13,
      "ttfa_meas_ms": 401,
-     "ttfa_pred_ms": 173.3,
+     "ttfa_pred_ms": 408.9,
+     "ttfa_noq_ms": 173.7,
+     "ttfa_ratio": 1.02,
      "shares": {
       "prefill": 0.477,
       "decode": 0.523,
@@ -6460,7 +6504,9 @@
      "pred": 5041.3,
      "ratio": 1.212,
      "ttfa_meas_ms": 2146,
-     "ttfa_pred_ms": 228.5,
+     "ttfa_pred_ms": 701.6,
+     "ttfa_noq_ms": 228.9,
+     "ttfa_ratio": 0.327,
      "shares": {
       "prefill": 0.576,
       "decode": 0.424,

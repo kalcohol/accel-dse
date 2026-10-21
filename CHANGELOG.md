@@ -6,6 +6,38 @@
 
 
 
+## [0.294.0]
+
+### Drama 3 closed-loop TTFA (ext speech diagnostic, `core/extspeech.py`)
+- Why this item: of the open AGENTS items it says the most about chip-design conclusions. Time to first audio under load is the speech SLO metric, and the 0.282 diagnostic predicted it 1.5–2.6× low with a gap that grew with concurrency (c = 1 … 64). That points to a missing serving mechanism, not a per-op cost error. The other candidates are blocked or small: the colocated-vocoder residual (measured 1.70× vs modelled 1.22×) needs a kernel trace that is not public (the vocoder decodes windows one at a time at batch 1, already modelled). Dory `logit_scale` is negligible. Suite-wall reduction does not change any modelled number.
+- Mechanism 「来源」: SGLang `prefill_decode_interval` (Drama 3 engine_builder.py `DECODE_STEPS_BETWEEN_PREFILLS = 4` @ 0029194; sglang scheduler `_arm_prefill_decode_interval` / `_should_defer_prefill`). After a prefill batch the next 4 rounds defer prefill. After that, prefill runs first whenever a request waits.
+- Model 「推导」 (closed loop at concurrency c, N frames per request, mean field):
+  - a = (c − 1)/N: the other streams' arrivals per decode round.
+  - T_round = tpot(c) + a·(ttft₁ + vocoder per request): each decode round stretched by the others' prefills and (same GPU, time-shared) their vocoder windows.
+  - p_win = 4a/(4a + 1): the chance the prefill gate is shut. W_gate = p_win·1.5·T_round.
+  - k = 1 + p_win·4a: requests in the same prefill batch, at serial cost k·ttft₁ 「近似」.
+  - W_voc: Pollaczek–Khinchine wait of the first window behind the others' windows (one server) 「近似」.
+  - TTFA = W_gate + k·ttft₁ + 10·T_round + W_voc + DAC(first window). At c = 1 it reduces to the 0.282 form, which is kept as `ttfa_noq_s` / `ttfa_noq_ms`.
+  - With the vocoder on a second GPU, TTFA now keeps that GPU's first-window decode (0.282 dropped it).
+- Result (ext default variant, Table 1 p50; never fitted). Predicted / measured TTFA: c1 0.69, c2 0.70, c4 0.73, c8 0.67, c16 0.70, c32 0.75, c64 0.81. Before (no queueing): 0.69 → 0.38. gmean 0.718.
+  - The ratio is now flat. The remaining ≈ 0.7 matches the decode being ≈ 1.2–1.4× slower than modelled (frames/s ratio 1.23–1.40) plus a c = 1 fixed ≈ 28 ms (host / IPC hops, not modelled).
+  - Table 2: c128 same GPU 608 vs 685 ms (0.89); second GPU 512 vs 401 (1.28). c256: 1078 vs 3403 and 883 vs 2146. The c = 256 rows are dominated by what is not modelled: the start burst (all c requests at t = 0; 1,088 requests = 4.25 per slot).
+- `ext_validation.json` speech rows carry `ttfa_noq_ms` / `ttfa_ratio`; the summary carries `ttfa_gmean_ratio`. Throughput (frames/s) is unchanged.
+
+### Freshness
+- HF sweep since 2026-10-19 (107 orgs): the Ornith-1.5-122B siblings and unsloth re-uploads (as in 0.293), tencent Hy-Memory GGUF, nvidia Cosmos3 robotics, LiquidAI LFM2.5-24B-A2B-DSpark (+ GGUF).
+- `freshness_sweep.EXTRA_ORGS` += 14 orgs. Speech: Zyphra, neuphonic, Marvis-AI, myshell-ai, parler-tts, hume-ai, KittenML. RWKV: fla-hub, recursal. Other: Tencent-Hunyuan, amazon, apple, ServiceNow-AI, RekaAI. None had a release in the window. No new decision-model release (perplexity-ai, startlux-models).
+- **Added `lfm2.5-24b-a2b-fp8-dspark`**: the LFM2.5-24B-A2B FP8 target with the LiquidAI DSpark draft (repo created 2026-10-20 JST, lfm1.0), as in the README SGLang command (DSPARK, block 9, 10 draft tokens).
+  - The draft (config.json + safetensors header 「来源」) has the SGLang native DSpark layout: 5 dense GQA layers (2048, 32/8 × 64, q/k norm, full attention), SwiGLU 6144, fc over 5 target layers, Markov head rank 256, confidence head, no own lm_head / embedding. bf16, 327 707 521 params (ours 327 707 520: the existing floor of extra / layers).
+  - Published τ 5.16 (mean tokens / step over 8 datasets, c = 1, temperature 0, 1 × B300, FP8 target) → `spec_published` (i.i.d. acceptance 0.840 「推导」). `spec_accept` stays a lever.
+  - Modelled b1 speed-up with k = 9 at that acceptance: 1.11× (1P), 1.17× (H100-like), 1.16× (100T). The README reports 2.38× (B300). On a bandwidth-bound roofline, the 10 verified tokens touch ≈ 7× the experts of one token (64 experts, top-4). The published baseline (324 tok/s at c = 1) is far from bandwidth-bound on a B300. Diagnostic only, not fitted.
+  - `_attach_ready_dspark` reads `target_layer_ids` from `dflash_config` when the top-level key is absent (the LFM config has only the nested key).
+  - Not added: the earlier LFM2.5 DSpark drafts (1.2B / 2.6B / VL-3B / 8B-A1B, 2026-08/09); their targets are not catalogued. Also not added: the DSpark GGUF.
+
+### Default behaviour, old → new
+- All 852 points of the 142 LLMs evaluated in 0.293 are identical: 100T / 1P / H100-like × decode b8 / prefill; TPOT, TTFT, bound, per-stage times and warnings. New: the 6 `lfm2.5-24b-a2b-fp8-dspark` points. With speculation off (the default) they equal `lfm2.5-24b-a2b-fp8`.
+- ext_validate: LLM metrics unchanged and the version stamp moved (0.293.0 → 0.294.0). Speech: TTFA predictions as above; frames/s unchanged.
+
 ## [0.293.0]
 
 ### MoVA value-expert routing: release statistics, measured loads, residency class

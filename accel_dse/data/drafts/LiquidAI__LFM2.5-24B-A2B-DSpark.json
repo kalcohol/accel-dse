@@ -1,0 +1,64 @@
+{
+ "repo": "LiquidAI/LFM2.5-24B-A2B-DSpark",
+ "fetched": "2026-10-21",
+ "source": "来源: public config.json + model.safetensors header (HTTP range read); README.md (serve command, Performance table); benchmarks/protocol.json + b300-fp8.csv (repo created 2026-10-20 JST)",
+ "params": 327707521,
+ "bytes": 655415042,
+ "n_tensors": 62,
+ "params_draft": 327707521,
+ "own_lm_head": false,
+ "config": {
+  "architectures": [
+   "Lfm2DSparkDraftModel"
+  ],
+  "model_type": "qwen3",
+  "dtype": "bfloat16",
+  "hidden_size": 2048,
+  "num_hidden_layers": 5,
+  "num_attention_heads": 32,
+  "num_key_value_heads": 8,
+  "head_dim": 64,
+  "intermediate_size": 6144,
+  "hidden_act": "silu",
+  "rms_norm_eps": 1e-05,
+  "vocab_size": 128000,
+  "rope_theta": 10000000.0,
+  "max_position_embeddings": 131072,
+  "layer_types": [
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention"
+  ],
+  "block_size": 9,
+  "dflash_config": {
+   "mask_token_id": 125017,
+   "target_layer_ids": [
+    2,
+    10,
+    18,
+    26,
+    34
+   ],
+   "num_target_layers": 40
+  },
+  "markov_rank": 256,
+  "rope_is_neox_style": false,
+  "enable_confidence_head": true,
+  "markov_head_type": "vanilla"
+ },
+ "serve": {
+  "target": "LiquidAI/LFM2.5-24B-A2B-FP8",
+  "speculative_algorithm": "DSPARK",
+  "block_size": 9,
+  "num_draft_tokens": 10,
+  "kv": "bf16",
+  "source": "来源: README 'How to run (SGLang)' + benchmarks/protocol.json"
+ },
+ "acceptance": {
+  "tau": 5.16,
+  "block": 9,
+  "source": "来源: README Performance table — arithmetic mean tokens / step 5.16 over 8 datasets (MATH-500 5.61 … LiveCodeBench 4.02), incl. the target's bonus token (ceiling 10), concurrency 1, temperature 0, FP8 target, 1 × B300, SGLang 488869c + runtime.patch"
+ }
+}

@@ -24,6 +24,10 @@ EXTRA_ORGS = (
     # 0.290: orgs with official releases no sweep saw (NOTES_0290): IFM (Jais 3, 2026-10), JetBrains (Mellum2.1,
     # 2026-09-20), perplexity-ai (pplx-decider, 2026-10)
     "IFM", "JetBrains", "perplexity-ai",    # 0.291: catalog providers now (+ inception42, the Jais 3 BF16 org)
+    # 0.294: speech / RWKV / other official orgs no sweep watched (TTS: Zyphra Zonos, Neuphonic, Marvis, MyShell,
+    # Parler-TTS, Hume, KittenML; RWKV: fla-hub, recursal; general: Tencent-Hunyuan, amazon, apple, ServiceNow-AI, RekaAI)
+    "Zyphra", "neuphonic", "Marvis-AI", "myshell-ai", "parler-tts", "hume-ai", "KittenML", "fla-hub", "recursal",
+    "Tencent-Hunyuan", "amazon", "apple", "ServiceNow-AI", "RekaAI",
 )
 # 0.287: ornith-ai is now a catalog provider (PROVIDERS) — it was untracked, so Ornith-1.0 / 1.5 (2026-06 / 08) were
 # never swept; found via the unsloth/Ornith-1.5-122B-GGUF re-upload.

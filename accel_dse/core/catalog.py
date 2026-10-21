@@ -71,6 +71,8 @@ EXTRA_TAIL = [
     ("muse-spark-open-nvfp4-dspark", "meta-models/Muse-Spark-Open-816B-A42B-NVFP4+Inferact/Muse-Spark-Open-DSpark"),
     # 0.221: Qwen3.8-27B target + StartLux ReaDy DSpark draft with the recurrent-state reader (both public, 2026-10-17)
     ("qwen3.8-27b-ready", "Qwen/Qwen3.8-27B+startlux-models/ReaDy-Qwen3.8-27B"),
+    # 0.294: LFM2.5-24B-A2B FP8 target + LiquidAI DSpark draft (the README's SGLang serve command; repo 2026-10-20 JST)
+    ("lfm2.5-24b-a2b-fp8-dspark", "LiquidAI/LFM2.5-24B-A2B-FP8+LiquidAI/LFM2.5-24B-A2B-DSpark"),
     # 0.252: Qwen3-8B target + tencent DSpine (DFlash anchor-row block draft + selected-prefix code bridge, 2026-10-16)
     ("qwen3-8b-dspine", "Qwen/Qwen3-8B+tencent/Qwen3-8B-DSpine-b16"),
     # 0.191 decision models ("System One": one forward, letter logits over the listed options; serving.labels).

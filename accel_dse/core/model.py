@@ -1512,7 +1512,7 @@ def _attach_ready_dspark(spec: ModelSpec, d: dict) -> ModelSpec:
         alin, core = _gqa(h, H, KV, hd, out_gate=bool(c.get("use_attn_o_gate")), window=win)
         ffn, flin = _ffn_dense(h, c["intermediate_size"])
         mtp.append(Layer(alin, core, ffn, flin, 2 * h + 2 * hd))     # input / post-attention norms + q / k norms
-    nt = len(c["target_layer_ids"])
+    nt = len(c.get("target_layer_ids") or c["dflash_config"]["target_layer_ids"])   # 0.294 LFM2.5 DSpark: dflash_config only
     extra = (nt * h * h + 2 * h + (V * h if d.get("own_lm_head") else 0) + 2 * V * r + (h + r + 1)
              + int(d.get("params_reader") or 0))                    # fc, hidden_norm + norm, markov w1/w2, confidence, reader
     rd = ((rc["rank"], len(rc["state_layers"]), rc["heads"], rc["key_dim"], rc["value_dim"], rc["bottleneck"],

@@ -7863,3 +7863,34 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §238.5 Default behaviour, old → new
 - The 840 non-MoVA points are identical. MoVA decode TPOT changes by −0.03 to −0.5 % at the default SRAM sizes (fewer misses on the every-step bytes), and prefill TTFT moves by ≤ 0.04 % (pipe replay). With large SRAM / SLC the effect is much larger (CHANGELOG 0.293 table: 4 GiB SRAM b1 −37 %). ext_validate unchanged.
+
+## §239 Drama 3 closed-loop TTFA; LFM2.5-24B-A2B DSpark draft (0.294)
+
+### §239.1 Why TTFA
+- 0.282 TTFA = ttft₁ + stride·tpot(c) + DAC(window 0), with no queueing. Predicted / measured (Table 1 p50) fell from 0.69 at c = 1 to 0.38 at c = 64, a load-dependent gap. A per-op cost error would give a roughly constant ratio, so the growing gap pointed at the serving loop. Time to first audio at concurrency is the speech SLO metric, so leaving the gap would misstate SLO-bound capacity.
+
+### §239.2 Serving loop 「来源」
+- SGLang-Omni Drama 3 @ 0029194: `prefill_decode_interval` = DECODE_STEPS_BETWEEN_PREFILLS = 4, no chunked or mixed prefill, overlap schedule off.
+- sglang scheduler: a prefill batch arms a 4-round counter; while it is armed, `get_next_batch_to_run` skips prefill and decodes. Once it expires, waiting requests are prefilled first, all in one batch (first-frame graphs up to 16 requests).
+- The vocoder stage decodes stream windows one at a time (WindowGraphDecoder captured at batch 1; `max_batch_size` 8 applies to non-streaming payloads only).
+
+### §239.3 Model 「推导」
+- Closed loop: every stream restarts when it ends, so other streams arrive at a = (c − 1)/N per decode round.
+- Mean field: a decode round lasts T_round = tpot(c) + a·(ttft₁ + v), where v is the vocoder GPU seconds per request when it shares the GPU (time-sliced, loads add 「假设」) and 0 on a second GPU. The `frames/s` cycle uses the same shares.
+- Prefill gate: arrivals come at round boundaries. A gate-open period ends with exactly one arrival, which is prefilled at once. So a fraction p_win = 4a/(4a + 1) of arrivals land in a deferred window, uniformly over its 4 rounds, and wait (4 − 1)/2 = 1.5 rounds on average: W_gate = p_win·1.5·T_round.
+- Co-batching: the batch holds k = 1 + p_win·4a requests (≤ 16 for c ≤ 256: 4a ≤ 10.6). Its cost is k·ttft₁ (serial, as in the cycle 「近似」), and the first frames come at the end of the batch.
+- Vocoder queue: windows reach the vocoder at λ = c·n_windows / cycle; s are the DAC window seconds (batch 1). M/G/1: W_voc = λE[s²]/(2(1 − ρ)). This is < 1 ms here, because a window is ≈ 0.65 ms.
+- TTFA = W_gate + k·ttft₁ + stride·T_round + W_voc + DAC(window 0). At c = 1 it is the 0.282 form. With the vocoder on a second GPU, the window still decodes there and stays in TTFA.
+
+### §239.4 Diagnostic (ext default variant, never fitted)
+- Predicted / measured TTFA, c1 … c64: 0.69 0.70 0.73 0.67 0.70 0.75 0.81 (before: 0.69 → 0.38). The level is consistent with decode being slower than modelled (frames/s 1.23–1.40× high) and a c = 1 fixed ≈ 28 ms (host / IPC hops).
+- Table 2: c128 same GPU 0.89, second GPU 1.28. c256 0.32 / 0.41: the benchmark's start burst dominates there (all c requests at t = 0; 4.25 requests per slot over the 1,088), and it is not modelled.
+
+### §239.5 LFM2.5-24B-A2B-DSpark
+- `lfm2.5-24b-a2b-fp8-dspark` = LiquidAI/LFM2.5-24B-A2B-FP8 + LiquidAI/LFM2.5-24B-A2B-DSpark, from the README serve command (block 9, 10 draft tokens).
+- The draft is the SGLang native DSpark layout (`_attach_ready_dspark`, no reader, no own lm_head): 5 GQA layers, fc over target layers 2 / 10 / 18 / 26 / 34, Markov rank 256, confidence head. 327 707 521 bf16 params.
+- Published τ 5.16 (k = 9, c = 1, temperature 0, B300) → i.i.d. acceptance 0.840.
+- Modelled b1 speed-up at that acceptance: 1.11–1.17× (1P / H100-like / 100T), against 2.38× published. On a bandwidth roofline the 10 verified tokens touch ≈ 7× the experts of one token. The measured baseline is far from bandwidth-bound.
+
+### §239.6 Default behaviour, old → new
+- See CHANGELOG 0.294.0.
