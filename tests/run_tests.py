@@ -63,11 +63,11 @@ def _run_module(mod_path: Path, argv: list[str]) -> tuple[int, int]:
     for name in sorted(n for n in dir(m) if n.startswith("test_")):
         if argv and not _wants(mod_path.stem, name, argv):
             continue
-        t1 = time.time()
+        t1 = time.perf_counter()
         try:
             getattr(m, name)()
             passed += 1
-            print(f"OK   {mod_path.stem}::{name}  ({time.time() - t1:.1f}s)", flush=True)
+            print(f"OK   {mod_path.stem}::{name}  ({time.perf_counter() - t1:.1f}s)", flush=True)
         except Exception as exc:  # noqa: BLE001
             failed += 1
             print(f"FAIL {mod_path.stem}::{name}: {exc}")
@@ -122,7 +122,7 @@ def main(argv: list[str]) -> int:
             jobs, argv = int(argv[0][2:]), argv[1:]
     argv = _kflags(argv)
     failed = passed = 0
-    t0 = time.time()
+    t0 = time.perf_counter()
     mods = sorted(HERE.glob("test_*.py"))
     if argv and not any(_selected(m, argv) for m in mods):
         print(f"no test module / test matches {argv} (exact names; use -k WORD for substring)")
@@ -156,7 +156,7 @@ def main(argv: list[str]) -> int:
                     failed += 1
                     print(f"FAIL {m.stem}: module crashed (exit {r.returncode})")
                 sys.stdout.flush()
-    print(f"{'PASSED' if failed == 0 else 'FAILED'}: {passed} passed, {failed} failed in {time.time() - t0:.1f}s")
+    print(f"{'PASSED' if failed == 0 else 'FAILED'}: {passed} passed, {failed} failed in {time.perf_counter() - t0:.1f}s")
     return 1 if failed else 0
 
 

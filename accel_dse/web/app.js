@@ -2317,7 +2317,7 @@ async function runInsightNoc() {
   try {
     const pr = parseInt($('ins-noc-prompt').value, 10);
     const lk = $('ins-noc-link').value === '' ? null : +$('ins-noc-link').value;   // 0.303: NoC link B/cycle
-    const r = await track(req('insight_noc', '/api/insight_noc', body({ ...(pr > 0 ? { prompt: pr } : {}), ...(lk != null && lk >= 0 ? { noc_link_Bpc: lk } : {}) })));
+    const r = await track(req('insight_noc', '/api/insight_noc', body({ ...(pr > 0 ? { prompt: pr } : {}), ...(lk != null && lk >= 0 ? { noc_link_Bpc: lk } : {}), ...($('ins-noc-routing').value ? { noc_routing: $('ins-noc-routing').value } : {}) })));
     if (!r) return;
     const best = Object.entries(r.best || {}).map(([ph, b]) => `${ph} J 最优 ${b.engines}×${b.array} ${b.topology}（${sci(b.J_per_unit)} J）`).join(' · ');
     $('ins-noc-summary').textContent = `${r.chip} · ${r.model} · ${num(r.macs)} MAC · SRAM ${num(r.sram_mib)} MiB · 路由 ${num(r.pJ_bit_hop_noc)} pJ/bit/跳 · 导线 ${num(r.pJ_bit_mm_onchip)} pJ/bit/mm`
@@ -2402,6 +2402,7 @@ async function runInsightDse() {
     const ex = { mac_scales: macs, sram_scales: sram, power_mode: $('ins-dse-power').value, curve: $('ins-dse-curve').value };
     if (freq.length > 1 || freq[0] !== 1) ex.f_scales = freq;     // 0.302: DVFS operating point axis
     if ($('ins-dse-link').value !== '' && +$('ins-dse-link').value >= 0) ex.noc_link_Bpc = +$('ins-dse-link').value;   // 0.303
+    if ($('ins-dse-routing').value) ex.noc_routing = $('ins-dse-routing').value;   // 0.304
     if ($('ins-dse-phase').value) ex.phase = $('ins-dse-phase').value;
     if ($('ins-dse-topo').checked) ex.topologies = ['mesh', 'ring', 'crossbar'];
     if (memT.length) { ex.mem_types = memT; ex.mem_count_scales = memn; }
@@ -2421,7 +2422,7 @@ async function runInsightDse() {
     const desc = (b) => `${b.engines}×${b.array} · SRAM ${num(b.sram_mib)} MiB · ${b.topology} · ${b.mem_id} · SLC ${num(b.slc_mib)} MiB${b.f_op != null && b.f_op !== 1 ? ` · f×${b.f_op}` : ''}（${num(b.thr)} /s · ${sci(b.J_per_unit)} J）`;
     $('ins-dse-summary').textContent = `${r.chip} · ${r.model} · ${r.phase === 'mix' ? `混合（prompt ${r.mix.prompt} + 输出 ${r.mix.out_tokens}）` : r.phase} · 外存 ${(r.mems || []).length} 档 · SLC ${(r.slc_mibs || []).length} 档 · 频率 ${(r.f_scales || [1]).length} 档 · 可行 ${r.n_feasible}/${rows.length} 点 · 前沿 ${(r.front || []).length} 点`
       + (r.power_cap_W ? ` · 功耗预算 ${num(r.power_cap_W)} W（${r.power_mode === 'dvfs' ? 'DVFS 封顶' : '剔除'}）` : '')
-      + (r.die_mm2 ? ` · 面积预算 ${num(r.die_mm2)} mm²` : '') + (r.noc_link_Bpc ? ` · NoC 链路 ${num(r.noc_link_Bpc)} B/周期` : '')
+      + (r.die_mm2 ? ` · 面积预算 ${num(r.die_mm2)} mm²` : '') + (r.noc_link_Bpc ? ` · NoC 链路 ${num(r.noc_link_Bpc)} B/周期${r.noc_routing === 'xy' ? '（逐链路 XY）' : ''}` : '')
       + (bp ? ` · perf/W 最优 ${desc(bp)}` : '') + (bt ? ` · 吞吐最优 ${desc(bt)}` : '')
       + ((r.notes || []).length ? ' · ' + r.notes.join('；') : '');
     put($('ins-dse-chart'), paretoChart(rows));

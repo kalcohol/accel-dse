@@ -120,7 +120,7 @@ def _wide_noc_cycles(ch: Chip, df: str, m, k, n, ab) -> float:
     if not ch.noc_link_Bpc or ch.engines <= 1:
         return 0.0
     d = min(ch.engines, _cd(n, ch.cols))
-    return ch.noc_bw_cycles(_a_bytes(ch, df, m, k, n, ab), d) if d > 1 else 0.0
+    return ch.noc_traffic_cycles(_a_bytes(ch, df, m, k, n, ab), d) if d > 1 else 0.0
 
 
 def _wide_noc(ch: Chip, df: str, m, k, n, ab, count) -> tuple[float, float]:
@@ -264,8 +264,14 @@ def _gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, count: int, w_fmt: st
                     c1 = one.cycles + ((waves - 1) * ch.wave_overhead_cycles if act > 1 else 0.0)
                     # 0.303: a split's cross-group operand copies (row split: K×N, column split: M×K to sp groups)
                     # cross the chip bisection, overlapped with the groups' own work
-                    xn = ch.noc_bw_cycles(count * k * n * wb if (sp > 1 and mm != m) else count * m * k * ab
-                                          if sp > 1 else 0.0) if ch.noc_link_Bpc else 0.0
+                    # 0.304: noc_routing "xy" — the copy is an all-gather over the sp groups' trees (busiest link,
+                    # spread over a group's boundary links) and shares links with the groups' own multicasts, so the
+                    # two NoC loads add (concurrent traffic on one link) instead of overlapping
+                    xb_ = count * k * n * wb if (sp > 1 and mm != m) else count * m * k * ab if sp > 1 else 0.0
+                    if ch.noc_link_Bpc and ch.noc_routing == "xy":
+                        xn = ch.noc_traffic_cycles(xb_, sp, g) + (one.noc_cycles if xb_ else 0.0)
+                    else:
+                        xn = ch.noc_bw_cycles(xb_) if ch.noc_link_Bpc else 0.0
                     c1 = max(c1, xn)
                     sc = max(c1, (one.convert_elems * count * sp / waves * 2.0
                                   + one.convert_x * count * sp / waves) / conv_rate) if flag else c1

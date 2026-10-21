@@ -8302,3 +8302,74 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 - Temperature dependence of self-refresh (85 °C max used).
 - LPDDR6 channel geometry; HBM power-down / self-refresh.
 - Exit latency on the access path: the scheduler is assumed to wake the rank ahead of time.
+
+## §249 PD-queue LPDDR window; per-link (XY) NoC contention; suite-time check (0.304)
+
+### §249.1 PD-queue LPDDR residency with an evaluation window 「推导/假设」 (`core/pdqueue.py`, `core/energy.py`)
+- 0.303 gave the queue ledger (`pdqueue._energy`) a pool's average DRAM busy fraction but no window. So it credited power-down for every idle moment (any gap ≥ tXP assumed) and never credited self-refresh. The single-evaluation path (`energy_report`) did credit self-refresh.
+- 0.304 gives every pool a representative iteration (`_pool_window`): its memoised evaluation of the pool's phase at the largest batch it ran (decode pool: decode; prefill pool: prefill; colocated: decode 「近似」). `lpddr_window(r)` returns three values:
+  - the iteration's DRAM busy fraction u_iter = DRAM bytes ÷ (cards × window) ÷ effective bandwidth;
+  - the window;
+  - the card's layers.
+- `hbm_static_W_window(mem, table, u, win)`:
+  - The cards iterate a fraction ρ = u ÷ u_iter (≤ 1) of the time. While iterating, the residency is the single-evaluation one: `lpddr_residency` at u_iter, with gaps (1 − u_iter)·window ÷ layers (§248.3).
+  - An empty-queue period lasts at least one iteration window, because the next request starts an iteration 「假设」. It is spent at u = 0 with that gap, so in self-refresh.
+  - W = ρ·W_iter + (1 − ρ)·W_idle. Residency fractions are linear in time 「推导」.
+- Consistency: a single-phase operating point priced through `_energy` with its own window equals `energy_report` exactly (test_core_304).
+- Without a window, the 0.303 figure is returned. It is not strictly an upper bound: it ignored the tXP exit window. On decode b8 it is 1e-5 below the windowed figure.
+- Example: 100T LPDDR5X 16 GB, qwen3-8b, PD 2 prefill + 6 decode cards, prompt 2048, out 512.
+
+| Load | Mode | J/token 0.303 → 0.304 | DRAM background J/token | Prefill pool ρ / self-refresh | Decode pool ρ / self-refresh |
+|---|---|---|---|---|---|
+| 0.3 | PD | 0.42891 → 0.42747 (−0.34 %) | 0.03572 → 0.03428 | 0.088 / 0.97 | 0.78 / 0.22 |
+| 0.3 | colocated prefill-first | 0.46777 → 0.46677 | 0.03763 → 0.03663 | — | ρ 0.72 / 0.28 |
+| 0.7 | PD | 0.21739 → 0.21694 | 0.01603 → 0.01557 | 0.21 / 0.93 | 0.92 / 0.085 |
+
+- The change is small: at the 85 °C maximum, self-refresh (9.99 mW per slice) is only 13 % below power-down + refresh (11.5 mW). At typical temperatures, self-refresh is about 10× lower (0.77 mW at 25 °C), and the window would matter more. The temperature dependence is still not modelled.
+- Old → new: J/token of PD-queue reports on LPDDR memories with the tpuv4i_7nm preset drops by ≤ 0.4 % in the cases above. HBM and single-evaluation reports are unchanged.
+
+### §249.2 Per-link NoC contention, dimension-ordered routing 「推导」 (opt-in)
+- New chip field `noc_routing`:
+  - "bisection" is the default and the 0.303 model: payload ÷ (bisection links × L).
+  - "xy" prices the busiest link of the dataflow's trees.
+  - It has no effect while `noc_link_Bpc` = 0. There is no default change.
+- Parameters: `/api/insight_noc` and `/api/insight_dse` take `noc_routing`. UI: 拥塞模型 select on both panels.
+- Busiest-link load for a payload among s blocks of g engines (`Chip.noc_xy_load`):
+  - **all-gather.** The A operand is sharded over the engines, because outputs stay local and become the next op's A (§244.1), and every engine needs all of it.
+    - Mesh R × C (R = ⌊√s⌋), X then Y routing: after the row phase every node forwards down its column. So the column link below row r carries every shard of rows ≤ r, and the busiest carries (R − 1)/R of the payload. A 1 × C row: (C − 1)/C.
+    - Ring (shortest way round): ⌊s/2⌋/s, which equals the 0.303 bisection figure.
+    - Crossbar: an output port ingests (s − 1)/s.
+  - **reduce.** Split-K partial tiles go over a tree that mirrors the multicast; every tree edge carries one tile.
+  - Load is divided by the block-boundary links a tree edge spreads over: mesh ⌊√g⌋, ring 1, crossbar g.
+- **Concurrent traffic.**
+  - A core-group split's cross-group copy (all-gather over the sp groups) uses the same links as the groups' own in-group multicasts, so the two loads add. Under "bisection" they overlap (max).
+  - Instances spread over groups stay inside their own rectangle / arc 「假设」, so groups do not contend with each other.
+- Why it matters: the bisection average assumes perfectly spread traffic. Under XY multicast, each engine ingests the whole A through one column link, so mesh time ≈ (1 − 1/R)·A / L whatever the mesh size. The bisection model gave A / (⌊√s⌋·L), optimistic by ≈ √s / 2.
+- Effect on the many-small-cores conclusion: 1P qwen3-8b prefill b1, prompt 2048, tpuv4i_7nm preset, 64 B/cycle. Cells are k tok/s / mJ/token.
+
+| E × array | crossbar bisection | crossbar XY | ring (both) | mesh bisection | mesh XY |
+|---|---|---|---|---|---|
+| 2 × 512² | 45.1 / 7.27 | 47.6 / 7.19 | 47.6 / 7.19 | 45.1 / 7.27 | 47.6 / 7.19 |
+| 8 × 256² | 68.0 / 6.92 | 39.0 / 7.47 | 50.3 / 7.17 | 50.3 / 7.17 | 50.3 / 7.17 |
+| 32 × 128² | 70.4 / 7.55 | 33.6 / 7.94 | 51.6 / 7.31 | 67.7 / 7.16 | 39.8 / 7.58 |
+| 128 × 64² | 70.9 / 8.71 | 47.3 / 8.40 | 51.9 / 7.62 | 70.9 / 7.78 | 45.3 / 7.77 |
+| 512 × 32² | 71.2 / 11.17 | 69.1 / 9.39 | 30.3 / 8.98 | 71.2 / 9.95 | 58.0 / 8.31 |
+| 2048 × 16² | 71.3 / 15.56 | 71.3 / 15.53 | 27–28 / 21.1 | 71.3 / 14.03 | 71.3 / 10.49 |
+
+  - Unlimited NoC: 63.1 / 68.0 / 70.4 / 70.9 / 71.2 / 71.3 k tok/s for E = 2 … 2048.
+  - Under XY, the mid-size meshes and crossbars (E = 8–128) lose 30–52 % of prefill throughput. Their ganged plans all-gather A through single column links / ports.
+  - At E = 2048 the planner spreads instances (heads / rows) over small groups that keep their operands local. That avoids the all-gather: full throughput, and on mesh 25 % less J than under the bisection model (less NoC traffic chosen).
+  - Lowest prefill J moves from 8 × 256² crossbar (6.92 mJ, bisection) to 8 × 256² ring / mesh (7.17 mJ). The 0.303 "mesh E ≈ 32–128" sweet spot disappears under XY. The fastest designs are either the fewest engines with the narrowest tree (E ≤ 8, ring / mesh) or the most engines with local plans (E ≥ 512 mesh).
+  - Decode is memory-bound and unchanged.
+- Not modelled: adaptive / YX-alternating routing (which would halve the column load), virtual-channel or head-of-line effects, contention between consecutive ops (they are serialised).
+
+### §249.3 Suite wall 471 s (0.302) → 648 s (0.303): not a test-cost regression
+- Per-file walls: the +1407 s summed difference sits in the 8 longest files, which run concurrently at the start of the longest-first schedule. Each was ≈ 1.8× slower: 051 / 052 / 061 / domain / scenario_search / topk2 rose by 150–170 s each, 210 by 225 s, 086 by 218 s (10 → 228 s). All other files changed by ≤ 17 s.
+- Re-run of those 8 files with -j 8, back to back on the 0.302 and 0.303(+0.304 WIP) trees:
+  - wall 197 s vs 190 s;
+  - machine CPU 925 vs 872 CPU-s;
+  - per file within ±15 s;
+  - 086 at 9.7 vs 9.1 s, and 9 s alone.
+- The code costs the same. The 0.303 run met external load on the shared box (other agents' work), so there is nothing to cut.
+- test_core_210 guard: the request's own CPU time (`time.process_time`; the API's process pool is server-only, so library calls are in-process) must stay under the same thresholds (20 s; 80 s for sensitivity / fit / sweep). Wall time is checked against the threshold × the contention factor of a calibration loop measured before and after the request, with 2× slack. A compute regression (the 0.209 127 s replay) moves CPU time and is caught as before. Suite contention no longer trips it.
+- Wall-clock steps: the first 0.304 full suite failed test_core_238's 60 s runtime guard at a measured 318.9 s, while the runner's monotonic clock timed the whole file at 78.5 s. Rerun alone, it passed in 44 s. The box's wall clock (time.time) had stepped mid-run. The runtime guards in test_core_209 / 210 / 238 and the harness's per-test times now use time.perf_counter (monotonic). Same thresholds, so this is not a weakening.

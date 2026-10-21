@@ -931,6 +931,58 @@ def lpddr_gap_s(r, util: float) -> float | None:
     return max(0.0, 1.0 - util) * a["window_s"] / nl
 
 
+def lpddr_window(r) -> dict | None:
+    """0.304: one evaluated iteration's DRAM window for the queue ledger: busy fraction during the iteration
+    (DRAM bytes ÷ (cards × window) ÷ effective bandwidth), the window and the card's layers (gap = (1 − u)·window ÷
+    layers, as lpddr_gap_s).  None without a memory spec / layer structure."""
+    from .. import mem_catalog
+    try:
+        a = action_counts(r)
+        sp = mem_catalog.parse_mem_id(r.scenario.mem_id)
+        nl = len(r.model.layers) / max(1, r.scenario.layout.pp)
+    except Exception:                       # noqa: BLE001
+        return None
+    w, bw = a.get("window_s") or 0.0, getattr(sp, "effective_GBps", 0.0) * 1e9
+    cs = r.scenario.layout.cards * w
+    if w <= 0 or bw <= 0 or nl <= 0 or cs <= 0:
+        return None
+    return {"util": min(1.0, a["counts"].get("dram", 0.0) / cs / bw), "window_s": w, "layers": nl}
+
+
+def hbm_static_W_window(mem_id: str | None, table: "EnergyTable", util: float | None, win: dict | None) -> dict | None:
+    """0.304: DRAM background of a queue pool whose cards alternate between iterations and empty-queue idle.
+
+    The pool's average DRAM busy fraction ``util`` (its bytes per card-second ÷ effective bandwidth) and one
+    representative iteration ``win`` (lpddr_window) give the fraction of time the cards are iterating,
+    ρ = util ÷ u_iter (≤ 1).  While iterating the residency is the single-evaluation one (lpddr_residency at u_iter,
+    gaps (1 − u_iter)·window ÷ layers — the same mechanism as energy_report); an empty-queue period lasts at least
+    one iteration window (the next request starts an iteration 「假设」) and is spent at u = 0 with that gap.
+    W = ρ·W_iter + (1 − ρ)·W_idle (residency fractions are linear in time 「推导」).  ``win`` None → the 0.303
+    power-down-only bound; HBM → hbm_static_W unchanged."""
+    if util is None or win is None:
+        return hbm_static_W(mem_id, table, util, None)
+    ui = win["util"]
+    if util >= ui or ui <= 0:
+        rho, ub = 1.0, max(util, ui)
+    else:
+        rho, ub = util / ui, ui
+    b = hbm_static_W(mem_id, table, ub, max(0.0, 1.0 - ub) * win["window_s"] / win["layers"])
+    if not b or "residency" not in b:
+        return b
+    i = hbm_static_W(mem_id, table, 0.0, win["window_s"])
+    mix = lambda x, y: rho * x + (1.0 - rho) * y      # noqa: E731
+    out = dict(b)
+    for k in ("W", "standby_W", "powerdown_W", "selfrefresh_W", "refresh_W"):
+        out[k] = mix(b[k], i[k])
+    out["residency"] = {**{k: mix(b["residency"][k], i["residency"][k])
+                           for k in ("f_standby", "f_powerdown", "f_selfrefresh")},
+                        "util": util, "util_iter": ui, "busy_frac": rho, "window_s": win["window_s"],
+                        "gap_s": b["residency"]["gap_s"], "ranks_per_channel": b["residency"]["ranks_per_channel"],
+                        "channels": b["residency"]["channels"]}
+    out["basis"] = b["basis"] + "；排队：迭代时段按单次评估驻留，空队时段（≥ 一个迭代窗口）自刷新（MODEL §249）"
+    return out
+
+
 def hbm_static_W(mem_id: str | None, table: "EnergyTable", util: float | None = None,
                  gap_s: float | None = None) -> dict | None:
     """0.216: HBM background + refresh power of the card's stacks: stacks × height × standby/die + total Gb × refresh/Gb."""

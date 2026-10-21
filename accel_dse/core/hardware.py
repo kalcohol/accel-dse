@@ -43,6 +43,9 @@ SLC_POLICIES = ("pin", "lru", "pin_bw", "dip")   # 0.91 pin_bw: pin + bandwidth-
 ACC_KIB_PER_ENGINE = 64.0     # 0.141: = the ≤ 0.140 1024 KiB chip default / 16 engines 「假设」
 INSTANCE_SCHEDS = ("wide", "split", "auto", "cta")   # 0.92 cta: GPU thread-block tiling (reference hardware)
 NOC_TOPOLOGIES = ("crossbar", "ring", "mesh")
+# 0.304: NoC contention model when noc_link_Bpc is set: "bisection" (0.303: payload ÷ bisection links) or "xy"
+# (per-link load of dimension-ordered multicast trees / reduction trees, MODEL §249.2)
+NOC_ROUTINGS = ("bisection", "xy")
 # 0.303: reference NoC link bandwidth — Tenstorrent Blackhole: one 512-bit flit per cycle per link per NoC (64 B /
 # cycle; Wormhole 256 bit = 32 B), tt-isa-documentation BlackholeA0/NoC/README.md 「来源」.  Measured multicast
 # throughput on Blackhole is 24 B / cycle (tt-low-level-documentation, data-movement report) — not used, cross-check.
@@ -102,6 +105,10 @@ class Chip:
     # cross the topology's bisection: an op takes ≥ payload / (bisection links × noc_link_Bpc) cycles, overlapped with
     # the array (max), so a time penalty appears only when the bisection is exceeded.  Reference NOC_LINK_BPC_REF.
     noc_link_Bpc: float = field(default=0.0, metadata={"omit_default": True})
+    # 0.304 (optional, default "bisection" = 0.303): "xy" prices the busiest link of the dataflow's multicast /
+    # reduction trees under dimension-ordered (X then Y) routing instead of the bisection average, and adds the
+    # cross-group copies to the in-group traffic they share links with (no effect while noc_link_Bpc = 0)
+    noc_routing: str = field(default="bisection", metadata={"omit_default": True})
     # 0.72 (optional, default 0): sequencer launch / barrier overhead (cycles).  Every op pays one launch; when ≥ 2
     # core groups run instances in lock-step waves, each further wave adds one barrier (a single sequencer — wide,
     # or one active group — streams its instances back to back) 「假设」
@@ -189,6 +196,8 @@ class Chip:
             raise ValueError(f"chip.dispatch must be one of {DISPATCH_MODES}")
         if self.dispatch_us is not None and (isinstance(self.dispatch_us, bool) or not 0.0 <= self.dispatch_us < 1e9):
             raise ValueError("chip.dispatch_us must be finite and >= 0")
+        if self.noc_routing not in NOC_ROUTINGS:
+            raise ValueError(f"chip.noc_routing must be one of {NOC_ROUTINGS} (got {self.noc_routing!r})")
         if self.noc_topology not in NOC_TOPOLOGIES:
             raise ValueError(f"chip.noc_topology must be one of {NOC_TOPOLOGIES} (got {self.noc_topology!r})")
         for k in ("noc_hop_cycles", "wave_overhead_cycles", "kernel_us", "noc_link_Bpc"):
@@ -268,6 +277,47 @@ class Chip:
         if not self.noc_link_Bpc or payload <= 0:
             return 0.0
         return payload / (self.noc_bisection_links(cores) * self.noc_link_Bpc)
+
+    def noc_block_links(self, g: int) -> float:
+        """0.304: links on the boundary of a block of ``g`` engines that a tree edge between blocks can spread over:
+        mesh ⌊√g⌋ (one per row of the block's side), ring 1 (a contiguous arc), crossbar g (a port per engine)."""
+        if g <= 1:
+            return 1.0
+        return {"crossbar": float(g), "ring": 1.0, "mesh": float(math.isqrt(g))}[self.noc_topology]
+
+    def noc_xy_load(self, payload: float, s: int, g: int = 1, pattern: str = "allgather") -> float:
+        """0.304: bytes on the busiest link (one direction) when ``payload`` moves among ``s`` blocks of ``g`` engines
+        under dimension-ordered routing 「推导」:
+          allgather  every block needs the whole payload, sharded over the blocks (0.299: outputs stay local and
+                     become the next op's A).  Mesh R × C blocks (R = ⌊√s⌋, X then Y): a column link below row r
+                     carries every shard of rows ≤ r → (R − 1)/R · payload (a 1 × C row: (C − 1)/C); ring
+                     (shortest way round): ⌊s/2⌋/s · payload; crossbar: an output port ingests (s − 1)/s · payload.
+          reduce     s partial tiles of ``payload`` summed over a tree mirroring the multicast: every tree edge
+                     carries one tile → payload.
+        divided by the block-boundary links a tree edge spreads over (noc_block_links(g))."""
+        if s <= 1 or payload <= 0:
+            return 0.0
+        if pattern == "reduce":
+            f = 1.0
+        elif self.noc_topology == "mesh":
+            r = math.isqrt(s)
+            c = -(-s // r)
+            f = (r - 1) / r if r >= 2 else (c - 1) / c
+        elif self.noc_topology == "ring":
+            f = (s // 2) / s
+        else:
+            f = (s - 1) / s
+        return payload * f / self.noc_block_links(g)
+
+    def noc_traffic_cycles(self, payload: float, s: int, g: int = 1, pattern: str = "allgather") -> float:
+        """0.304: NoC cycles of one dataflow payload among ``s`` blocks of ``g`` engines: noc_routing "bisection"
+        → payload ÷ (bisection links of s·g engines × noc_link_Bpc) (0.303); "xy" → busiest-link load ÷ noc_link_Bpc.
+        0 when noc_link_Bpc is unset."""
+        if not self.noc_link_Bpc or payload <= 0 or s * g <= 1:
+            return 0.0
+        if self.noc_routing == "xy":
+            return self.noc_xy_load(payload, s, g, pattern) / self.noc_link_Bpc
+        return payload / (self.noc_bisection_links(s * g) * self.noc_link_Bpc)
 
     @property
     def c_eff(self) -> int:

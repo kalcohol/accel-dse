@@ -59,9 +59,9 @@ DES = {"vl4096": (dict(prompt=4096, cap=48.0, load=0.85, chunk_profile="vllm"), 
 
 def test_fused_off_multiple_p99_parity_and_runtime():
     for name, (kw, p90, p99) in DES.items():
-        t0 = time.time()
+        t0 = time.perf_counter()
         c = disagg_report(_pd(**kw))["queue"]["modes"]["coloc_chunked"]["ttft_ms"]
-        assert time.time() - t0 < 60, (name, time.time() - t0)
+        assert time.perf_counter() - t0 < 60, (name, time.perf_counter() - t0)
         assert abs(c["p90"] - p90) / p90 < 0.03, (name, c["p90"], p90)
         assert abs(c["p99"] - p99) / p99 < 0.03, (name, c["p99"], p99)
 

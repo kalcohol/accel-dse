@@ -3406,7 +3406,7 @@ def _per_unit(r: Result) -> dict:
 
 
 def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, prefill_card_s_tok: float = 0.0,
-            pools: tuple = (), pool_counts: tuple = (), pool_names: tuple = ()) -> dict:
+            pools: tuple = (), pool_counts: tuple = (), pool_names: tuple = (), pool_windows: tuple = ()) -> dict:
     """Dynamic energy = action counts × the table; static energy = W × card-seconds per output token at this load
     (wall-clock, busy or idle — the cards are provisioned either way).  ``prefill_card_s_tok``: the PD prefill pool's
     share of ``card_s_tok``, charged at ``idle_W_prefill`` when given (its chip may differ, 0.56); nothing defaulted.
@@ -3424,7 +3424,7 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
     are priced with that pool's memory kind (pJ/bit + chip-side PHY), and each pool's clock gating uses its own MAC
     utilisation u_p = its MAC count / its slot-cycles.  Every term is booked to the pool that spends it
     (``J_by_pool``; Σ pools = J_per_token).  Without it (colocated modes: one pool) nothing changes."""
-    from .energy import dram_static_set, hbm_static_W, idle_W_of, slc_pJ_bit, sram_leak_uW_per_mib, sram_pJ_bit, unit_pJ
+    from .energy import dram_static_set, hbm_static_W, hbm_static_W_window, idle_W_of, slc_pJ_bit, sram_leak_uW_per_mib, sram_pJ_bit, unit_pJ
     out = {"counts_per_token": counts_tok, "card_s_per_token": card_s_tok}
     if table is None or not table.provided:
         return out
@@ -3517,12 +3517,16 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
                 if mib > 0:
                     add("sram_leak", mib * sram_leak_uW_per_mib(table) * 1e-6 * cs, i)     # 0.261: × T factor
             if not has_idle and dram_static_set(table):
-                # 0.303: LPDDR residency at the pool's DRAM busy fraction; idle-gap length unknown here → power-down
-                # only (no self-refresh credit, the high side of energy_report's residency)
+                # 0.303: LPDDR residency at the pool's DRAM busy fraction; 0.304: with the pool's representative
+                # iteration as the evaluation window (iterating vs empty-queue time, self-refresh credited like
+                # energy_report); no window → power-down only (the 0.303 bound)
                 pc_ = pool_counts[i] if psplit else counts_tok
                 cs_ = cs if psplit else sum(c_ for _, c_ in pools)
                 ut_ = _pool_dram_util(sc.mem_id, pc_.get("dram", 0.0), cs_)
-                hs = hbm_static_W(sc.mem_id, table, ut_, None)
+                win = pool_windows[i] if i < len(pool_windows) else None
+                hs = hbm_static_W_window(sc.mem_id, table, ut_, win)
+                if hs and "residency" in hs:
+                    out.setdefault("dram_residency", {})[pool_names[i] if i < len(pool_names) else str(i)] = hs["residency"]
                 if hs and hs["W"] > 0:
                     add("hbm_static", hs["W"] * cs, i)
             if psplit and cyc[i] > 0:
@@ -3634,6 +3638,16 @@ def _restore_extra(x: dict, extra: dict) -> dict:
     return extra
 
 
+def _pool_window(pool, phase: str) -> dict | None:
+    """0.304: the pool's representative iteration for the LPDDR queue ledger — its memoised evaluation of ``phase``
+    at the largest batch it ran (the loaded operating point 「近似」); None if it never ran that phase."""
+    from .energy import lpddr_window
+    ks = [k for k in getattr(pool, "memo", {}) if k[0] == phase]
+    if not ks:
+        return None
+    return lpddr_window(pool.memo[max(ks, key=lambda k: (k[1], k[2] or 0, -(k[3] or 0)))])
+
+
 def _pool_dram_util(mem_id, dram_B: float, card_s: float) -> float | None:
     """0.303: a pool's DRAM busy fraction (bytes per card-second ÷ effective bandwidth), for the LPDDR residency."""
     from .. import mem_catalog
@@ -3725,24 +3739,28 @@ def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None 
         c_pre = {k: c_all[k] - c_dec.get(k, 0.0) for k in c_all}
         en["pd"] = _energy(c_all, cards / lam / o, table, ctx["n_p"] / lam / o,
                            pools=((ctx["dpool"].scn, ctx["n_d"] / lam / o), (ctx["ppool"].scn, ctx["n_p"] / lam / o)),
-                           pool_counts=(c_dec, c_pre), pool_names=("decode", "prefill"))
+                           pool_counts=(c_dec, c_pre), pool_names=("decode", "prefill"),
+                           pool_windows=(_pool_window(ctx["dpool"], "decode"), _pool_window(ctx["ppool"], "prefill")))
     pts = ctx.get("pts_c", pts)                 # colocated replicas: their own prefix-cache hit mix (0.53)
     ws = [w for w, _, _ in pts]
     y = modes.get("coloc_prefill_first")
     if y and y["stable"]:
         en["coloc_prefill_first"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["mix"], o, _restore_extra(y, {})),
-                                            cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),))
+                                            cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),),
+                                            pool_windows=(_pool_window(ctx["cpool"], "decode"),))
     y = modes.get("coloc_chunked")
     if y and y["stable"] and (y.get("chunk_profile") or {}).get("nonfused"):
         # 0.232 SGLang non-fused: prefill-first accounting with the chunk iterations' own counts (_per_unit)
         en["coloc_chunked"] = _energy(_mix(y["_pre"]["rs"], pts, y["_dec"]["mix"], o, _restore_extra(y, {})),
-                                      cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),))
+                                      cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),),
+                                            pool_windows=(_pool_window(ctx["cpool"], "decode"),))
     elif y and y["stable"]:
         # 0.233: Σ the chunk evaluations' counts (each with its own activations and prefix-KV re-read); a chunk's
         # weight read is shared with the decode iteration it rides on
         pres = [_chunk_counts(ch, S) for ch, (_, S, _) in zip(y["_chunks"], pts)]
         en["coloc_chunked"] = _energy(_mix(pres, pts, y["_dec_r"], o, _restore_extra(y, {})),
-                                      cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),))
+                                      cards / lam / o, table, pools=((ctx["cpool"].scn, cards / lam / o),),
+                                            pool_windows=(_pool_window(ctx["cpool"], "decode"),))
     out["modes"] = {k: _public(v) for k, v in modes.items()}
     out["energy"] = en
     return out

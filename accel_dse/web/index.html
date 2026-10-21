@@ -582,6 +582,7 @@
     <div class="row">
       <label title="prefill 的 prompt 长度（空 = 场景的 prompt）">prefill prompt<input type="number" id="ins-noc-prompt" min="1" step="256" style="width:6em"></label>
       <label title="0.303：NoC 链路带宽（字节 / 周期 / 链路 / 方向；空 = 芯片设定，0 = 不限）。数据流的 NoC 载荷须穿过拓扑二分（mesh ⌊√E⌋ / ring 2 / crossbar E/2 条链路），超出时计时；参考 Tenstorrent Blackhole 64 B/周期「来源」">NoC 链路 B/周期<input type="number" id="ins-noc-link" min="0" step="16" placeholder="芯片" style="width:5em"></label>
+      <label title="0.304：拥塞模型。二分 = 0.303 载荷 ÷ 二分链路；XY = 维序路由下多播 / 归约树最忙链路的负载（跨组拷贝与组内多播同链路相加）">拥塞模型<select id="ins-noc-routing"><option value="">芯片</option><option value="bisection">二分</option><option value="xy">逐链路 XY</option></select></label>
       <button class="btn" id="ins-noc-run">计算引擎数 × 拓扑</button>
       <span class="small muted" id="ins-noc-status"></span>
     </div>
@@ -605,6 +606,7 @@
       <label title="每颗粒 / 堆栈容量 GB（空 = 默认；目录中不存在的组合跳过）">容量 GB<input type="text" id="ins-dse-memcap" placeholder="默认" style="width:5em"></label>
       <label title="SLC 容量 MiB（逗号分隔，0 = 无 SLC；空 = 当前）">SLC MiB<input type="text" id="ins-dse-slc" placeholder="当前" style="width:7em"></label>
       <label title="0.303：NoC 链路带宽（字节 / 周期 / 链路 / 方向；空 = 芯片设定，0 = 不限），对每个设计点计入 NoC 二分拥塞">NoC 链路 B/周期<input type="number" id="ins-dse-link" min="0" step="16" placeholder="芯片" style="width:5em"></label>
+      <label title="0.304：NoC 拥塞模型（二分 / 逐链路 XY）">拥塞模型<select id="ins-dse-routing"><option value="">芯片</option><option value="bisection">二分</option><option value="xy">逐链路 XY</option></select></label>
     </div>
     <div class="row" title="0.301：负载混合与 SLO">
       <label title="负载混合：每请求输出 token 数 D（prefill = 场景 prompt）。设置后阶段 = 混合：J/请求 = P·J_prefill + D·J_decode，卡秒/请求 = P/吞吐_prefill + D/吞吐_decode">混合输出 token<input type="number" id="ins-dse-out" min="1" step="64" placeholder="不混合" style="width:6em"></label>

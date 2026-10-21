@@ -150,11 +150,11 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight_speech": {"models", "audio_s", "verify", "dispatch"},
                "insight_speech_streams": {"models", "audio_s", "slc_gib"},
                "insight_dispatch": {"models", "batches", "ctx"},
-               "insight_noc": {"topologies", "phases", "prompt", "noc_link_Bpc"},
+               "insight_noc": {"topologies", "phases", "prompt", "noc_link_Bpc", "noc_routing"},
                "insight_dse": {"mac_scales", "sram_scales", "sides", "topologies", "power_mode", "curve", "phase",
                                "prompt", "tie", "mems", "mem_types", "mem_count_scales", "mem_caps", "slc_mibs",
                                "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd", "f_scales",
-                               "noc_link_Bpc"}}
+                               "noc_link_Bpc", "noc_routing"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1390,6 +1390,15 @@ def _noc_link(body: dict):
     return None if v is None else float(v)
 
 
+def _noc_routing(body: dict):
+    """0.304: optional NoC contention model ("bisection" = 0.303, "xy" = busiest link under XY routing)."""
+    from .core.hardware import NOC_ROUTINGS
+    v = body.get("noc_routing")
+    if v is not None and v not in NOC_ROUTINGS:
+        raise ApiError(f"noc_routing must be one of {NOC_ROUTINGS}")
+    return v
+
+
 def api_insight_noc(body: dict) -> dict:
     """0.299: NoC / on-chip data-movement energy vs engine count × topology (core/noc_insight.py)."""
     from .core.hardware import NOC_TOPOLOGIES
@@ -1405,9 +1414,9 @@ def api_insight_noc(body: dict) -> dict:
     pr = body.get("prompt")
     if pr is not None and (isinstance(pr, bool) or not isinstance(pr, int) or not 1 <= pr <= 1 << 20):
         raise ApiError("prompt must be an integer in [1, 1048576]")
-    nl = _noc_link(body)
+    nl, rt = _noc_link(body), _noc_routing(body)
     try:
-        return {**noc_design_report(scn, _energy_table(body), tuple(topo), tuple(ph), pr, nl), "hash": scn.hash()}
+        return {**noc_design_report(scn, _energy_table(body), tuple(topo), tuple(ph), pr, nl, rt), "hash": scn.hash()}
     except ValueError as e:
         raise ApiError(str(e)) from None
 
@@ -1454,6 +1463,8 @@ def api_insight_dse(body: dict) -> dict:
             kw[k] = float(v)
     if (nl := _noc_link(body)) is not None:      # 0.303: NoC congestion on every grid point
         kw["noc_link_Bpc"] = nl
+    if (rt := _noc_routing(body)) is not None:   # 0.304: per-link XY contention
+        kw["noc_routing"] = rt
     mo = body.get("mix_out_tokens")
     if mo is not None:
         if isinstance(mo, bool) or not isinstance(mo, int) or not 1 <= mo <= 1 << 20:

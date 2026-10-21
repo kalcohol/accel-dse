@@ -6,6 +6,25 @@
 
 
 
+## [0.304.0]
+
+### PD-queue LPDDR window; per-link (XY) NoC contention (opt-in); suite-time check; robust 210 guard
+- **PD-queue LPDDR residency with an evaluation window (small default change).**
+  - Each pool's representative iteration (largest-batch memoised evaluation of its phase) gives its DRAM busy fraction and gaps. The cards iterate ρ = u ÷ u_iter of the time, with the single-evaluation residency, and spend the rest in empty-queue self-refresh.
+  - A single-phase point priced by the queue ledger now equals `energy_report` exactly.
+  - Old → new: 100T LPDDR5X PD load 0.3: 0.42891 → 0.42747 J/token (−0.34 %); prefill pool 97 % self-refresh. HBM unchanged.
+  - New `dram_residency` per pool in the queue energy. MODEL §249.1.
+- **Per-link NoC contention, opt-in**: chip `noc_routing` ("bisection" default = 0.303, "xy").
+  - XY prices the busiest link of the dataflow's dimension-ordered multicast / reduction trees. For an all-gather, mesh (R−1)/R of the payload on a column link, ring ½, crossbar port (s−1)/s, divided over the block's boundary links.
+  - Cross-group copies add to the in-group multicasts on shared links.
+  - API `noc_routing` on insight_noc / insight_dse. UI 拥塞模型 selects.
+  - Effect (1P qwen3-8b prefill, 64 B/cycle): mid-size meshes / crossbars (E 8–128) lose 30–52 %; E 2048 mesh keeps full throughput with local plans; the 0.303 "mesh E 32–128" sweet spot disappears. MODEL §249.2.
+- **Suite wall 0.303**: not a test-cost regression. The 8 longest concurrent files re-ran in 190 s vs 197 s on the 0.302 tree, at equal CPU-seconds; the 0.303 run met external load. MODEL §249.3.
+- **test_core_210 guard**: request CPU time under the same thresholds, plus a wall check scaled by a measured contention factor. A compute regression is still caught; suite load no longer trips it.
+- Runtime guards in test_core_209 / 210 / 238 and the harness's per-test times use time.perf_counter instead of time.time. The wall clock stepped by minutes mid-suite: 238 measured 318.9 s inside a file the runner timed at 78.5 s.
+- Tests: tests/test_core_304.py (8).
+- Freshness sweep (107 orgs, since 2026-10-21): no new releases.
+
 ## [0.303.0]
 
 ### NoC congestion (bisection bandwidth, opt-in); LPDDR power-down / self-refresh residency

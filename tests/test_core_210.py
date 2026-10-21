@@ -16,6 +16,35 @@ WALL_KEYS = {"compute", "dram", "collective_bw", "collective_lat", "dispatch", "
 GUARD_S = 20.0          # per request; 0.209 found a 127 s prefill (overlap open-window replay)
 
 
+def _contention() -> float:
+    """0.304: wall ÷ CPU of a fixed pure-Python calibration loop (≈ 1 on an idle box, > 1 when the full suite's other
+    workers share the CPUs)."""
+    w, c = time.perf_counter(), time.process_time()
+    x = 0
+    for i in range(300_000):
+        x += i * i % 7
+    dc = max(time.process_time() - c, 1e-3)
+    return max(1.0, (time.perf_counter() - w) / dc)
+
+
+def _timed(fn, body, bound: float):
+    """0.304: run one in-process request (the API's process pool is only enabled by the HTTP server) under a guard
+    that full-suite load contention cannot trip.  The request's own CPU time (time.process_time, every thread of this
+    process) must stay under ``bound`` — the same threshold as before, on the measure a compute regression moves;
+    its wall time (time.perf_counter: monotonic — 0.304 saw the wall clock step by minutes mid-suite) must stay under ``bound`` × the box's contention factor measured around it (calibration loop before
+    and after; 2× slack for contention varying during the request), which still catches a blocking / sleeping hang."""
+    k0 = _contention()
+    w, c = time.perf_counter(), time.process_time()
+    try:
+        r = fn(body)
+    finally:
+        dw, dc = time.perf_counter() - w, time.process_time() - c
+    k = max(k0, _contention())
+    assert dc < bound, ("cpu", body, dc)
+    assert dw < bound or dw < bound * 2.0 * k, ("wall", body, dw, k)
+    return r
+
+
 def _nan(x):
     if isinstance(x, float):
         return math.isnan(x)
@@ -84,13 +113,10 @@ def test_cross_route_fuzz_with_timing_guard():
     for i in range(16):
         body = _body(rnd)
         name, fn = routes[i % len(routes)]
-        t = time.time()
         try:
-            r = fn(body)
+            r = _timed(fn, body, GUARD_S * (4 if name in ("sensitivity", "fit", "sweep") else 1))
         except api.ApiError:
             continue
-        dt = time.time() - t
-        assert dt < GUARD_S * (4 if name in ("sensitivity", "fit", "sweep") else 1), (name, body, dt)
         assert not _nan(r), (name, body)
         if name == "eval":
             _walls_ok(r, body)
@@ -100,12 +126,10 @@ def test_huge_batch_timing_guard():
     for model, phase in ((LUX, "prefill"), (NEXT, "prefill"), (RWKV, "decode"), ("qwen3-8b", "prefill")):
         body = {"chip_preset": "1P-lp4x64", "scenario": {"model": model, "layout": {"pp": 2},
                 "serving": {"phase": phase, "batch": 100000, "prompt": 8192}}, "sensitivity": False}
-        t = time.time()
         try:
-            api.api_eval(body)
+            _timed(api.api_eval, body, GUARD_S)
         except api.ApiError:
             pass
-        assert time.time() - t < GUARD_S, body
 
 
 def test_pipe_split_matches_step_dram():

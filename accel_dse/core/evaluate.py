@@ -673,7 +673,10 @@ def _splitk_alt(ch, org, m, k, n, count, w_fmt, a_fmt, w_bits, c):
             rh, rp = noc_multicast(ch, s, ch.engines // s)
             pb = m * n * count * 4.0
             # 0.303: the partial tiles cross the chip bisection; the reduction is pipelined with the vector sums (max)
-            red = max(red, ch.noc_bw_cycles(pb)) if ch.noc_link_Bpc else red
+            # 0.304: noc_routing "xy" — one tile per reduction-tree edge, spread over a group's boundary links
+            if ch.noc_link_Bpc:
+                red = max(red, ch.noc_traffic_cycles(pb, s, ch.engines // s, "reduce") if ch.noc_routing == "xy"
+                          else ch.noc_bw_cycles(pb))
             if one.cycles + red >= best.cycles:
                 s *= 2
                 continue

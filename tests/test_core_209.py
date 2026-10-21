@@ -214,9 +214,9 @@ def test_open_window_long_run_fast_and_exact():
     tile = (1048576.0, 5.5e-06, 6.8e-07)
     for s in (s1, s2):
         s.feed([("open", 0, 0.0)])
-    t = time.time()
+    t = time.perf_counter()
     s1.feed_runs([(tile, 200000)], True)
-    assert time.time() - t < 2
+    assert time.perf_counter() - t < 2
     s2.feed([tile]); s2.feed([tile] * 199999)
     for s in (s1, s2):
         s.feed([("close", 0, 0.0)])
