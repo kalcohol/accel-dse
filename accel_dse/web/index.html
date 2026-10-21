@@ -418,6 +418,8 @@
       <label title="已弃用（0.268）：请改用下方「片上导线 pJ/bit/mm」距离模型。0.266：SLC 访存能耗随容量按 √(C/C_ref) 放大（Horowitz ISSCC 2014 8KB/32KB/1MB ⇒ E∝√C「推导」；大缓存 H-tree 主导，CACTI/ISQED 2023）。空 = 不放大（平坦 = SRAM）。填 1 = 以 1 MiB 为锚（Horowitz 1 MB 点）">SLC 线缆锚点 MiB <span class="tag assume">已弃用</span><input type="number" id="e-slc_access_ref_mib" min="0" step="1" placeholder="空=平坦"></label>
       <label title="0.267：片上导线能耗 pJ/bit/mm（距离模型，与 √C 锚点二选一）：SLC 每 bit = pJ/bit SLC + 本值 × ½√(SLC MiB × mm²/MiB)；0.298 起本地 SRAM 同样计入：pJ/bit SRAM + 本值 × ½√(SRAM MiB/引擎数 × mm²/MiB)。Keckler 等 IEEE Micro 2011：40 nm 256 bit × 10 mm = 310 pJ（0.121），10 nm 投影 200 pJ（0.078）「来源/推导」">片上导线 pJ/bit/mm<input type="number" id="e-pJ_bit_mm_onchip" min="0" step="0.01" placeholder="0.078"></label>
       <label title="0.267：SLC 阵列密度 mm²/MiB（只用于导线距离）；空 = 3 nm HD 宏 35.5 Mbit/mm²（Aoyagi VLSI 2025，仅阵列，距离偏下限）">SLC mm²/MiB（导线）<input type="number" id="e-slc_mm2_per_mib" min="0" step="0.01" placeholder="0.236"></label>
+      <label title="0.299：NoC 路由每 bit 每跳能耗 pJ（空 = 不计 NoC）。流量由数据流推导：A 操作数多播到持有输出列的引擎、跨组拷贝、split-K 部分和归约；每跳另计链路 = 片上导线 × 引擎间距。Park 等 DAC 2012（45 nm 4×4 mesh，1 mm 链路）：(427.3 − 76.7 mW) / 653 Gb/s = 0.537 pJ/bit/跳，减 Keckler 1 mm 导线 0.121 → 路由 0.416（下限）；7 nm ÷ 2.6 → 0.160「推导」">NoC pJ/bit/跳 <span class="tag assume">推导</span><input type="number" id="e-pJ_bit_hop_noc" min="0" step="0.01" placeholder="0.160"></label>
+      <label title="0.299：MAC 阵列面积密度 mm²/1024 MAC（只用于引擎间距 = √(SRAM 分片 + 阵列面积)）；空 = TPUv4i 4×128² MXU = 11 % × 400 mm²（Jouppi ISCA 2021，上限）0.6875">MAC mm²/kMAC（间距）<input type="number" id="e-noc_mm2_per_kmac" min="0" step="0.01" placeholder="0.6875"></label>
       <label title="每卡静态 / 空闲功耗，W（× 卡数 × 时间窗）">静态 W / 卡<input type="number" id="e-idle_W" min="0" step="5"></label>
       <label title="PD 报告：prefill 池芯片每卡静态功耗，W（prefill 芯片与 decode 不同时填；空 = 同上）">静态 W / 卡 · PD prefill<input type="number" id="e-idle_W_prefill" min="0" step="5"></label>
       <label title="0.152：按文献填入有出处的动作能耗（来源见悬停；idle_W 不进预设；仍可逐项改写）">能耗预设<select id="e-preset"><option value="">（不用预设）</option></select></label>
@@ -451,6 +453,7 @@
     <h4>存储规划</h4>
     <div class="scroll"><table class="tbl" id="mem-tbl"></table></div>
     <h4>动作计数与能耗 <span class="small muted">每输出单位；能耗只按左侧「能耗」里填写的项计算</span></h4>
+    <div id="energy-breakdown" title="0.299：能耗构成（MAC / SRAM 阵列 / 片上导线 / NoC / DRAM / 静态 …），Σ = J/单位"></div>
     <div class="scroll"><table class="tbl" id="energy-tbl"></table></div>
     <div id="fab-box" hidden>
       <h4>集合通信（拓扑感知，0.59） <span class="small muted">每种集合通信所选算法与 α-β 时间；「假设」</span></h4>
@@ -573,6 +576,14 @@
     </div>
     <div class="note small" id="ins-slc-summary"></div>
     <div class="scroll"><table class="tbl tight" id="ins-slc-tbl"></table></div>
+    <h4 title="0.299：同 MAC 总数与 SRAM 切成不同引擎数（多小核 vs 少大核）× NoC 拓扑，逐点评估时间与能耗构成；并对比中心 SRAM 摆放（解析）。能耗表未填 NoC 项时用参考值并注明">NoC 与片上搬运能耗</h4>
+    <div class="row">
+      <label title="prefill 的 prompt 长度（空 = 场景的 prompt）">prefill prompt<input type="number" id="ins-noc-prompt" min="1" step="256" style="width:6em"></label>
+      <button class="btn" id="ins-noc-run">计算引擎数 × 拓扑</button>
+      <span class="small muted" id="ins-noc-status"></span>
+    </div>
+    <div class="note small" id="ins-noc-summary"></div>
+    <div class="scroll"><table class="tbl tight" id="ins-noc-tbl"></table></div>
     <h4 title="0.274/0.275：对左侧芯片 + 外存，目录中每个语音模型（batch 1）哪个阶段限制实时 / 首音频，以及解锁实时所需的有效 DRAM 带宽或 SLC 钉住容量（机理推导，并用引擎自身 SLC 路径复算）">语音瓶颈</h4>
     <div class="row">
       <label title="ASR 为输入音频秒，TTS / 语音输出为输出音频秒">音频秒<input type="number" id="ins-sp-audio" min="1" max="600" value="10" style="width:4em"></label>

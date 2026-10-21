@@ -39,10 +39,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, fields
 
-ACTIONS = ("mac", "vec", "sram", "slc", "dram", "d2d", "link", "net", "idle")
+# 0.299: + noc (NoC bytes × router traversals), noc_wire (NoC bytes × link length in engine pitches)
+ACTIONS = ("mac", "vec", "sram", "slc", "dram", "d2d", "link", "net", "idle", "noc", "noc_wire")
 _UNIT_PJ = {"mac": "pJ_mac", "vec": "pJ_vec", "sram": "pJ_bit_sram", "slc": "pJ_bit_slc", "dram": "pJ_bit_dram",
-            "d2d": "pJ_bit_d2d", "link": "pJ_bit_link", "net": "pJ_bit_net"}
-_BITS = ("sram", "slc", "dram", "d2d", "link", "net")
+            "d2d": "pJ_bit_d2d", "link": "pJ_bit_link", "net": "pJ_bit_net",
+            "noc": "pJ_bit_hop_noc", "noc_wire": "pJ_bit_mm_onchip"}     # 0.299 (noc_wire: × engine pitch, see unit_pJ)
+_BITS = ("sram", "slc", "dram", "d2d", "link", "net", "noc", "noc_wire")
 
 
 # 0.261: SRAM leakage vs die temperature.  Aoyagi et al. (TSMC), 'A 3-nm FinFET 563-kbit 35.5-Mbit/mm² Dual-Rail
@@ -123,6 +125,13 @@ class EnergyTable:
     pJ_bit_mm_onchip: float | None = None
     # SLC array density for the distance (mm² / MiB).  None = SLC_MM2_PER_MIB_DEFAULT (Aoyagi 3 nm macro, array only).
     slc_mm2_per_mib: float | None = None
+    # 0.299: NoC router traversal energy per bit per hop (opt-in: None = no NoC term, ≤ 0.298).  Charged on the
+    # dataflow's NoC traffic (mapping.noc_multicast: operand multicast across engines, cross-group operand copies,
+    # split-K partial-sum reduction), plus the link wire pJ_bit_mm_onchip × engine pitch per traversal.
+    # Reference: NOC_HOP_PJ_BIT_45NM (Park et al. DAC 2012, 45 nm) / 2.6 at 7 nm (NOC_HOP_PJ_BIT_7NM) 「推导」.
+    pJ_bit_hop_noc: float | None = None
+    # 0.299: MAC-array area density for the engine pitch (mm² per 1024 MACs).  None = NOC_MM2_PER_KMAC_DEFAULT.
+    noc_mm2_per_kmac: float | None = None
 
     def __post_init__(self):
         for f in fields(self):
@@ -135,6 +144,8 @@ class EnergyTable:
             raise ValueError(f"energy.sram_temp_C must be in [0, {SRAM_LEAK_T['t_max_C']:g}] °C or null")
         if self.slc_access_ref_mib is not None and not (0 < self.slc_access_ref_mib < 1e6):
             raise ValueError("energy.slc_access_ref_mib must be in (0, 1e6) MiB or null")
+        if self.noc_mm2_per_kmac is not None and not self.noc_mm2_per_kmac > 0:
+            raise ValueError("energy.noc_mm2_per_kmac must be > 0 or null")
         if self.slc_mm2_per_mib is not None and not self.slc_mm2_per_mib > 0:
             raise ValueError("energy.slc_mm2_per_mib must be > 0 or null")
         if self.pJ_bit_mm_onchip is not None and self.slc_access_ref_mib is not None:
@@ -345,6 +356,8 @@ def _counts(r) -> dict:
             fl = ea.get("link_frac", 1.0)
             c["vec"] += st.conv_w * ch.lanes * f * nb + ea.get("conv_w", st.conv_w) * ch.lanes * f * ni
             c["sram"] += st.sram_bytes * nb + ea.get("sram", st.sram_bytes) * ni
+            c["noc"] += st.noc_hops * nb + ea.get("noc", st.noc_hops) * ni          # 0.299
+            c["noc_wire"] += st.noc_pitch * nb + ea.get("noc_wire", st.noc_pitch) * ni
             c["dram"] += t.dram_bytes * nb + st.dram.get("exp_dram", t.dram_bytes) * ni
             c["slc"] += t.slc_bytes * nb + st.dram.get("exp_slc", t.slc_bytes) * ni
             c["d2d"] += t.wire_d2d * (nb + fl * ni)       # 0.78: bytes on each tier's wire (per algorithm)
@@ -353,6 +366,8 @@ def _counts(r) -> dict:
         else:
             c["vec"] += st.conv_w * ch.lanes * f * n   # weight dequant: per pass
             c["sram"] += st.sram_bytes * n
+            c["noc"] += st.noc_hops * n            # 0.299: NoC byte·hops / byte·pitches (energy only)
+            c["noc_wire"] += st.noc_pitch * n
             c["dram"] += t.dram_bytes * n
             c["slc"] += t.slc_bytes * n
             c["d2d"] += t.wire_d2d * n
@@ -504,6 +519,52 @@ def sram_pJ_bit(table: EnergyTable, chip) -> float | None:
     return e + table.pJ_bit_mm_onchip * sram_wire_mm(table, chip)
 
 
+# 0.299: NoC hop energy.  Park et al. (MIT), "Approaching the theoretical limits of a mesh NoC with a 16-node chip
+# prototype in 45nm SOI", DAC 2012: 4×4 mesh, 1 mm links, 1.1 V / 1 GHz, 427.3 mW (Table 2) delivering 653 Gb/s of
+# broadcast traffic, of which 76.7 mW leakage 「来源」.  A broadcast flit costs k² crossbar + (k² − 1) link traversals
+# for k² − 1 deliveries (their Table 1), so a delivered bit ≈ one router + one 1 mm link: (427.3 − 76.7) / 653 =
+# 0.537 pJ/bit/hop 「推导」.  Router only = − Keckler 2011 40 nm full-swing wire 0.121 pJ/bit/mm × 1 mm = 0.416 (their
+# link is low-swing, cheaper than full swing, so this is a lower bound on the router) 「推导/近似」; 7 nm: / 2.6
+# (TPUv4i logic scaling, as pJ_mac) 「推导」.
+NOC_HOP_PJ_BIT_45NM = (427.3 - 76.7) / 653.0 - 0.121
+NOC_HOP_PJ_BIT_7NM = NOC_HOP_PJ_BIT_45NM / 2.6
+NOC_SRC = ("Park et al., 'Approaching the theoretical limits of a mesh NoC with a 16-node chip prototype in 45nm SOI', "
+           "DAC 2012: (427.3 mW − 76.7 mW leakage) / 653 Gb/s broadcast = 0.537 pJ/bit per router + 1 mm link; − Keckler "
+           "2011 wire 0.121 pJ/bit/mm → router 0.416 pJ/bit (45 nm, lower bound); / 2.6 at 7 nm (TPUv4i) → 0.160")
+# MAC-array density for the engine pitch: TPUv4i (Jouppi et al., ISCA 2021): 4 × 128×128 bf16 MXUs = 11 % of a
+# < 400 mm² die → 0.6875 mm² per 1024 MACs (upper bound; same value as budget DENSITY_PRESETS n7_tpuv4i) 「来源」
+NOC_MM2_PER_KMAC_DEFAULT = 400 * 0.11 / 64
+NOC_BASIS = ("NoC：每字节 × 路由跳数 × pJ_bit_hop_noc + 每字节 × 链路长度（引擎间距）× pJ_bit_mm_onchip；流量来自数据流"
+             "（A 操作数多播到持有输出列的引擎、跨组拷贝、split-K 部分和归约树），拓扑 mesh / ring / crossbar（Park DAC 2012；Keckler 2011）")
+
+
+def noc_pitch_mm(table: EnergyTable, chip) -> float:
+    """0.299: engine pitch (mm) = √(engine tile area): its SRAM slice (the 0.298 density) + its MAC array
+    (noc_mm2_per_kmac).  Uncore / vector units are left out, so the pitch is a lower bound 「推导/假设」."""
+    dens = table.slc_mm2_per_mib if table.slc_mm2_per_mib is not None else SLC_MM2_PER_MIB_DEFAULT
+    km = table.noc_mm2_per_kmac if table.noc_mm2_per_kmac is not None else NOC_MM2_PER_KMAC_DEFAULT
+    e = max(1, int(getattr(chip, "engines", 1) or 1))
+    return math.sqrt(sram_slice_mib(chip) * dens + float(chip.macs) / e / 1024.0 * km)
+
+
+def unit_pJ(table: EnergyTable, k: str, chip=None, dram_field: str | None = None) -> float | None:
+    """0.299: pJ per count of action ``k`` (per bit for _BITS) on ``chip`` — the one place for the per-chip terms
+    (SLC / SRAM distance, NoC wire per pitch); the NoC terms only when pJ_bit_hop_noc is set (opt-in)."""
+    if k == "slc":
+        return slc_pJ_bit(table, float(getattr(chip, "slc_mib", 0.0) or 0.0)) if chip is not None else table.pJ_bit_slc
+    if k == "sram":
+        return sram_pJ_bit(table, chip) if chip is not None else table.pJ_bit_sram
+    if k == "noc":
+        return table.pJ_bit_hop_noc
+    if k == "noc_wire":
+        if table.pJ_bit_hop_noc is None or table.pJ_bit_mm_onchip is None or chip is None:
+            return None
+        return table.pJ_bit_mm_onchip * noc_pitch_mm(table, chip)
+    if k == "dram" and dram_field:
+        return getattr(table, dram_field)
+    return getattr(table, _UNIT_PJ[k])
+
+
 def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) -> dict:
     """0.189 power_cap (opt-in): when average card power (dynamic + static) exceeds table.tdp_W, sustained throughput
     is cut to fit.  Energy per action held constant (no DVFS V² saving, 「假设」, conservative), so the window stretches
@@ -526,7 +587,8 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                        and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
                                           "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W",
                                           "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh",
-                                          "pJ_clk_mac_cycle", "sram_temp_C", "slc_access_ref_mib", "pJ_bit_mm_onchip", "slc_mm2_per_mib")
+                                          "pJ_clk_mac_cycle", "sram_temp_C", "slc_access_ref_mib", "pJ_bit_mm_onchip", "slc_mm2_per_mib",
+                                          "pJ_bit_hop_noc", "noc_mm2_per_kmac")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
                        and not (f.name == "idle_W" and (idle_W_of(table) is not None or table.idle_frac_tdp is not None))]
                       + (["tdp_W"] if table.idle_W is None and table.idle_frac_tdp is not None and table.tdp_W is None
@@ -566,6 +628,15 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                       "pJ_bit_mm": table.pJ_bit_mm_onchip, "mm2_per_mib": dens,
                                       "scale": e / table.pJ_bit_sram if table.pJ_bit_sram else None,
                                       "basis": SRAM_WIRE_BASIS}
+        elif k in ("noc", "noc_wire"):
+            e = unit_pJ(table, k, r.scenario.chip)
+            if k == "noc" and e is not None:
+                ch = r.scenario.chip
+                out["noc"] = {"pJ_bit_hop": e, "pitch_mm": noc_pitch_mm(table, ch),
+                              "pJ_bit_pitch": unit_pJ(table, "noc_wire", ch), "topology": ch.noc_topology,
+                              "engines": ch.engines,
+                              "byte_hops": per.get("noc", 0.0), "byte_pitches": per.get("noc_wire", 0.0),
+                              "basis": NOC_BASIS}
         else:
             e = getattr(table, dfield if k == "dram" else attr)
         if e is not None:
@@ -634,6 +705,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
     tot = sum(j.values())
     out.update(J_per_unit=tot, J_by_action=j,
                avg_W_per_card=tot * u / a["window_s"] / r.scenario.layout.cards if a["window_s"] > 0 else 0.0)
+    out["breakdown"] = energy_breakdown(out)      # 0.299: component groups (UI / insight)
     stat = j.get("idle", 0.0) + j.get("sram_leak", 0.0) + j.get("hbm_static", 0.0)    # 0.212/0.216: static too
     if ("idle" in j or "sram_leak" in j or "hbm_static" in j) and tot > 0:       # 0.189: static share + dominant-term warning
         out["static_share"] = stat / tot
@@ -652,6 +724,40 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
 
 
 STATIC_WARN = 0.5
+
+# 0.299: component groups of J_by_action — the on-chip wire (SRAM / SLC distance terms and NoC links) is split out of
+# its action so the design trade-offs (SRAM size, engine count, topology) read directly
+BREAKDOWN_GROUPS = ("mac", "vec", "sram", "slc", "wire", "noc", "dram", "io", "clock", "static")
+BREAKDOWN_LABEL = {"mac": "MAC", "vec": "向量", "sram": "SRAM 阵列", "slc": "SLC 阵列", "wire": "片上导线",
+                   "noc": "NoC 路由", "dram": "DRAM（含 PHY）", "io": "片间 / 主机链路", "clock": "时钟",
+                   "static": "静态（空闲 / 漏电 / HBM 后台）"}
+
+
+def energy_breakdown(rep: dict) -> dict:
+    """0.299: {"J": {group: J/unit}, "share": {group: fraction}} from an energy report.  Σ groups = J_per_unit.
+    SRAM / SLC J are split into array (pJ_bit_*) and wire (distance term) parts by their access scale."""
+    j = rep.get("J_by_action") or {}
+    g = dict.fromkeys(BREAKDOWN_GROUPS, 0.0)
+
+    def split(key: str, acc: dict | None) -> None:
+        v = j.get(key, 0.0)
+        sc = (acc or {}).get("scale") or 1.0
+        wire = v * (1.0 - 1.0 / sc) if sc > 1.0 else 0.0
+        g[key] += v - wire
+        g["wire"] += wire
+    split("sram", rep.get("sram_access"))
+    split("slc", rep.get("slc_access"))
+    g["mac"] += j.get("mac", 0.0)
+    g["vec"] += j.get("vec", 0.0)
+    g["wire"] += j.get("noc_wire", 0.0)
+    g["noc"] += j.get("noc", 0.0)
+    g["dram"] += j.get("dram", 0.0) + j.get("dram_phy", 0.0)
+    g["io"] += j.get("d2d", 0.0) + j.get("link", 0.0) + j.get("net", 0.0) + j.get("host", 0.0)
+    g["clock"] += j.get("clock", 0.0)
+    g["static"] += j.get("idle", 0.0) + j.get("sram_leak", 0.0) + j.get("hbm_static", 0.0)
+    tot = sum(g.values())
+    return {"J": g, "share": {k: (v / tot if tot > 0 else 0.0) for k, v in g.items()}, "total": tot,
+            "labels": BREAKDOWN_LABEL}
 
 
 def _power_cap(out, j, iw, table, cards, u, win) -> dict:

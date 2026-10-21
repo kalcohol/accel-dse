@@ -7991,3 +7991,58 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §243.5 Default behaviour, old → new
 - See CHANGELOG 0.298.0.
+
+## §244 NoC / on-chip data-movement energy from the dataflow (0.299)
+
+### §244.1 Traffic 「推导」
+- Ganged GEMM over E engines:
+  - Weight columns stay in each engine's slice (0.298 local wire).
+  - The streamed A operand (the feed term's A bytes: ⌈N/(E·cols)⌉·M·K·ab, or M·K·ab for GEMV) is multicast to the a = min(E, ⌈N/cols⌉) engines holding output columns.
+  - Outputs stay local and become the next op's A.
+- Core-group plans (auto / split):
+  - The in-group multicast comes from the sub-chip cost.
+  - A row split adds count·K·N·wb delivered to s groups; a column split adds count·M·K·ab.
+  - Spread instances keep their operands local 「假设」.
+- Split-K over s groups: s × the group's traffic + the m·n·count·4 B partial tiles reduced over a tree of s blocks of E/s engines.
+- Delivery of 1 byte to d blocks of u engines:
+
+  | Topology | Router traversals | Link (pitches) |
+  |---|---|---|
+  | mesh | (d−1)·√u | = traversals |
+  | ring | (d−1)·u | = traversals |
+  | crossbar | d−1 | d·½√(d·u) |
+
+  Mesh tree: Park et al. DAC 2012 Table 1 (broadcast = k² crossbar + (k²−1) link traversals).
+
+### §244.2 Energy 「来源/推导」
+- E = 8·B_hop·pJ_bit_hop_noc + 8·B_pitch·pJ_bit_mm_onchip·pitch_mm.
+- pJ_bit_hop_noc reference:
+  - (427.3 − 76.7) mW / 653 Gb/s = 0.537 pJ/bit per router + 1 mm link (Park DAC 2012, 45 nm).
+  - Router = 0.537 − 0.121 (Keckler 1 mm full-swing wire) = 0.416, a lower bound since Park's link is low-swing.
+  - 7 nm: ÷ 2.6 = 0.160.
+- pitch = √(sram_mib/E · ρ_SRAM + MACs/E/1024 · ρ_MAC):
+  - ρ_SRAM = 3 nm HD macro (array only).
+  - ρ_MAC = TPUv4i MXU 0.6875 mm²/kMAC (upper bound).
+  - Uncore is omitted, so the pitch is a lower bound.
+- Opt-in; the link term needs the wire coefficient too.
+
+### §244.3 Result (insight, tpuv4i_7nm + reference NoC, qwen3-8b)
+- 1P prefill NoC + link share by engine count (mesh), with J/token:
+
+  | E | 2 | 8 | 32 | 128 | 512 | 2048 |
+  |---|---|---|---|---|---|---|
+  | NoC + link share | 2.0 % | 3.9 % | 5.3 % | 9.5 % | 23 % | 40 % |
+  | J/token | 0.00723 | 0.00726 | 0.00736 | 0.00784 | 0.00950 | 0.01269 |
+
+  - Throughput plateaus from E = 32.
+- Decode NoC ≤ 2 %.
+- Crossbar costs +6 % prefill J at E32 (long wires). Ring router energy is 1.7–7× mesh at E ≥ 512.
+- Central SRAM: +24 % decode / prefill J on 1P E32, growing with E.
+
+### §244.4 Not modelled
+- DRAM → slice placement traffic (DMA lands in the owning slice 「假设」).
+- GPU (cta) references: SM ↔ L2 crossbar traffic. The insight warns on them.
+- NoC contention / latency: the time model is unchanged.
+
+### §244.5 Default behaviour, old → new
+- See CHANGELOG 0.299.0 (no default change; opt-in).

@@ -141,7 +141,7 @@ function cancel(chan) {
    (Pyodide) build also reports its first-load phases here (download / init / package). */
 const STAGE = { eval: 'eval 评估', sensitivity: 'sensitivity 敏感度', fit: 'fit 容量修正搜索', memory: 'memory 内存',
   compare: 'compare 映射对比', layouts: 'layouts 布局搜索', stability: 'stability 排名稳定性', sweep: 'sweep 扫描',
-  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC', insight_dispatch: 'LLM 派发敏感度',
+  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC', insight_dispatch: 'LLM 派发敏感度', insight_noc: 'NoC 能耗',
   health: 'catalog 载入目录', catalog: 'catalog 载入目录', models: 'catalog 载入目录' };
 const LOAD_ZH = { download: '下载 Python 运行时', init: '初始化 Pyodide', package: '载入 accel_dse 包', ready: '就绪', error: '静态版加载失败' };
 const PROG = {
@@ -713,7 +713,7 @@ function invalidate() {
   // 0.285: speech / streams / dispatch insight panels keep their text and gain the stale tag once
   // 0.288: + the design-insight panels (insight / SLC size / sizing / upgrade path) — they kept old results untagged
   for (const id of ['ins-sp-status', 'ins-sps-status', 'ins-dp-status', 'ins-status', 'ins-slc-status', 'ins-size-status',
-    'ins-path-status']) {
+    'ins-path-status', 'ins-noc-status']) {
     const el = $(id);
     if (el && el.dataset.done && !el.textContent.includes(STALE)) el.textContent += ` · ${STALE}`;
   }
@@ -1101,6 +1101,8 @@ function renderEnergy(r) {
     ...(c.slc ? [['SLC 命中' + (e.slc_access && e.slc_access.scale > 1 ? `（${e.slc_access.deprecated ? '√C 已弃用 · ' : ''}线缆 ×${num(e.slc_access.scale)} @ ${num(e.slc_access.slc_mib)} MiB` + (e.slc_access.wire_mm != null ? ` · ${num(e.slc_access.wire_mm)} mm` + (e.slc_access.over_reticle ? ' · 超光罩' : '') : '') + '）' : ''), c.slc, ' B', 'slc', 'pJ_bit_slc']] : []),
     [c.slc ? 'DRAM 读写（SLC 未命中）' : 'DRAM 读写', c.dram, ' B', 'dram', e.dram_pJ_field || 'pJ_bit_dram'],
     ...(e.phy_pJ_field ? [['DRAM PHY（芯片侧）', c.dram, ' B', 'dram_phy', e.phy_pJ_field]] : []),   // 0.188
+    ...(c.noc ? [['NoC 路由（字节·跳）' + (e.noc ? `（${e.noc.topology} · ${num(e.noc.engines)} 引擎 · 间距 ${num(e.noc.pitch_mm)} mm）` : ''), c.noc, ' B·跳', 'noc', 'pJ_bit_hop_noc'],
+      ['NoC 链路导线（字节·间距；需同时填 NoC 与导线）', c.noc_wire, ' B·间距', 'noc_wire', 'pJ_bit_hop_noc']] : []),   // 0.299
     ...(c.d2d ? [['D2D 发送（封装内）', c.d2d, ' B', 'd2d', 'pJ_bit_d2d']] : []),
     [c.d2d || c.net ? '节点内 scale-up 发送' : '链路发送', c.link, ' B', 'link', 'pJ_bit_link'],
     ...(c.net ? [['跨节点网络发送', c.net, ' B', 'net', 'pJ_bit_net']] : []),
@@ -1124,6 +1126,21 @@ function renderEnergy(r) {
   if (e.host_note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, e.host_note)));
   if (e.note) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small muted' }, e.note)));   // 0.131
   put($('energy-tbl'), h('thead', {}, head), h('tbody', {}, ...body));
+  renderEnergyBreakdown(e);
+}
+/* 0.299: component breakdown (energy.energy_breakdown): MAC / SRAM / wire / NoC / DRAM / static …, Σ = J per unit */
+const EB_COLOR = { mac: '#4e79a7', vec: '#76b7b2', sram: '#59a14f', slc: '#8cd17d', wire: '#edc948', noc: '#f28e2b',
+  dram: '#e15759', io: '#b07aa1', clock: '#9c755f', static: '#bab0ac' };
+function renderEnergyBreakdown(e) {
+  const box = $('energy-breakdown');
+  const sci = (x) => (x === 0 ? '0' : x.toExponential(3));
+  const b = e && e.breakdown;
+  if (!b || !(b.total > 0)) { put(box); return; }
+  const keys = Object.keys(b.J).filter((k) => b.J[k] > 0);
+  put(box, h('div', { class: 'wbar' }, ...keys.map((k) => h('i', { style: `width:${(b.share[k] * 100).toFixed(2)}%;background:${EB_COLOR[k] || '#999'}`,
+    title: `${b.labels[k] || k}：${sci(b.J[k])} J（${(b.share[k] * 100).toFixed(1)}%）` }))),
+    h('div', { class: 'legend' }, ...keys.map((k) => h('span', { style: `--c:${EB_COLOR[k] || '#999'}` },
+      `${b.labels[k] || k} ${(b.share[k] * 100).toFixed(1)}%`))));
 }
 function renderPD(r) {
   const pd = r.pd;
@@ -2283,6 +2300,36 @@ async function runInsightSlc(cmp) {
   }
 }
 
+/* 0.299: NoC / on-chip movement energy vs engine count × topology (/api/insight_noc, core/noc_insight.py) */
+async function runInsightNoc() {
+  const v0 = S.ver;
+  const sci = (x) => (x == null ? '—' : x === 0 ? '0' : x.toExponential(3));
+  $('ins-noc-status').textContent = '计算中（引擎切分 × 拓扑 × decode/prefill）…';
+  delete $('ins-noc-status').dataset.done;
+  try {
+    const pr = parseInt($('ins-noc-prompt').value, 10);
+    const r = await track(req('insight_noc', '/api/insight_noc', body(pr > 0 ? { prompt: pr } : {})));
+    if (!r) return;
+    const best = Object.entries(r.best || {}).map(([ph, b]) => `${ph} J 最优 ${b.engines}×${b.array} ${b.topology}（${sci(b.J_per_unit)} J）`).join(' · ');
+    $('ins-noc-summary').textContent = `${r.chip} · ${r.model} · ${num(r.macs)} MAC · SRAM ${num(r.sram_mib)} MiB · 路由 ${num(r.pJ_bit_hop_noc)} pJ/bit/跳 · 导线 ${num(r.pJ_bit_mm_onchip)} pJ/bit/mm`
+      + (best ? ' · ' + best : '') + ((r.notes || []).length ? ' · ' + r.notes.join('；') : '');
+    const pct = (x) => (x * 100).toFixed(1) + '%';
+    put($('ins-noc-tbl'), h('thead', {}, h('tr', {},
+      ['阶段', '引擎 × 阵列', '拓扑', 'J/单位', 'tok/s', 'MAC', 'SRAM', '导线', 'NoC 路由', 'DRAM', '静态', 'NoC+链路占比', '中心 SRAM J'].map((x) => h('th', {}, x)))),
+      h('tbody', {}, (r.rows || []).map((x) => x.error
+        ? h('tr', {}, h('td', {}, x.phase), h('td', {}, `${x.engines}×${x.array}`), h('td', {}, x.topology), h('td', { colspan: 10 }, x.error))
+        : h('tr', {}, h('td', {}, x.phase), h('td', {}, `${x.engines}×${x.array}` + (x.base ? ' ←当前' : '')), h('td', {}, x.topology),
+            h('td', {}, sci(x.J_per_unit)), h('td', {}, num(x.tok_s)),
+            ...['mac', 'sram', 'wire', 'noc', 'dram', 'static'].map((k) => h('td', {}, pct(x.share[k] || 0))),
+            h('td', {}, pct(x.noc_share)), h('td', {}, x.central ? sci(x.central.J_per_unit) : '—')))));
+    $('ins-noc-status').textContent = `完成 · ${(r.rows || []).length} 点${staleTag(v0)}`;
+    $('ins-noc-status').dataset.done = '1';
+  } catch (e) {
+    $('ins-noc-status').textContent = '错误：' + e.message;
+    $('ins-noc-status').dataset.done = '1';
+  }
+}
+
 /* 0.157: datapath sizing headroom */
 async function runInsightSizing() {
   const btn = $('ins-size-run');
@@ -2602,7 +2649,7 @@ async function init() {
     'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2', 'mm2_per_dq_hbm', 'mm2_per_dq_lpddr', 'mm2_per_d2d_unit', 'mm2_per_GBps_c2c', 'uncore_frac', 'mm2_host_io', 'mm2_per_unit_mc'])
     bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
       { nullable: true, int: k === 'cards' });
-  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W', 'pJ_clk_mac_cycle', 'sram_temp_C', 'slc_access_ref_mib', 'pJ_bit_mm_onchip', 'slc_mm2_per_mib'])
+  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W', 'pJ_clk_mac_cycle', 'sram_temp_C', 'slc_access_ref_mib', 'pJ_bit_mm_onchip', 'slc_mm2_per_mib', 'pJ_bit_hop_noc', 'noc_mm2_per_kmac'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   $('e-power_cap').addEventListener('change', (e) => { S.powerCap = e.target.checked; schedule(); });   // 0.189
   initDensityPresets();
@@ -2810,6 +2857,7 @@ async function init() {
   $('ins-path-run').addEventListener('click', runInsightPath);
   $('ins-size-run').addEventListener('click', runInsightSizing);
   $('ins-slc-run').addEventListener('click', () => runInsightSlc(false));
+  $('ins-noc-run').addEventListener('click', runInsightNoc);   // 0.299
   $('ins-sp-run').addEventListener('click', runInsightSpeech);
   $('ins-sps-run').addEventListener('click', runInsightSpeechStreams);
   $('ins-dp-run').addEventListener('click', runInsightDispatch);

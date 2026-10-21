@@ -19,7 +19,7 @@ from .hardware import System
 from .domain import ResolvedWorkload, resolve_workload
 from .ir import (Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, full_io_ops, head_ops, layer_repeat,
                  mtp_ops)
-from .mapping import gemm_cost, vector_seconds
+from .mapping import gemm_cost, noc_multicast, vector_seconds
 from .memo import layer_groups, model_cache
 from .memplan import (RUNTIME_RESERVE, MemPlan, act_stream, exp_miss, held, hot_miss, rt_miss, plan, stage_storage, step_dram_bytes,
                       touched)
@@ -37,6 +37,18 @@ from .schedule import (StageTime, collective_seconds, collective_wire, fabric_co
                        spec_tree_tau, tree_tokens, wire_single)
 
 
+_NOC_ACTS = ("noc", "noc_wire")
+
+
+def _pl_view(pl):
+    """0.299: the pipeline as summarised — the components' NoC action counts are energy-internal (energy.action_counts
+    reads Result.pipeline directly), so the summary JSON / fingerprints stay as ≤ 0.298."""
+    if not pl or not any(k in (p.get("acts") or {}) for p in pl.get("parts", []) for k in _NOC_ACTS):
+        return pl
+    return {**pl, "parts": [{**p, "acts": {k: v for k, v in p["acts"].items() if k not in _NOC_ACTS}}
+                            if "acts" in p else p for p in pl["parts"]]}
+
+
 @dataclass
 class StageResult:
     index: int
@@ -52,6 +64,8 @@ class StageResult:
     vec_w: float = 0.0       # 0.63: vector s of the mean rank's token work (excl. weight conversion)
     conv_w: float = 0.0      # 0.63: vector s of weight conversion (once per pass on every busy rank)
     exp_acts: dict = field(default_factory=dict)  # 0.65: routed-expert part {sram, conv_w, link_frac} (idle EP ranks)
+    noc_hops: float = 0.0    # 0.299: on-chip NoC bytes × router traversals of one rank per tick (energy action count)
+    noc_pitch: float = 0.0   # 0.299: on-chip NoC bytes × link length in engine pitches of one rank per tick
     pipe_ctx: tuple | None = field(default=None, repr=False, compare=False)   # 0.102: inputs of the pipe replay
     exp_route: tuple = field(default=(), repr=False, compare=False)  # 0.103: (E, top-k, tokens, EP, skew) of MoE layers
     # 0.287: (StageStorage, touched-byte sums before the memory plan, SLC/DRAM bandwidth ratio, SLC B/s) — lets a fused
@@ -150,7 +164,7 @@ class Result:
             if pl:
                 d["tflop_per_request"] += pl["tflop"] / b
                 d["dit_tflop_per_request"] = d["tflop_per_request"] - pl["tflop"] / b
-            d.update(pipeline=pl, denoise_s=denoise)
+            d.update(pipeline=_pl_view(pl), denoise_s=denoise)
             if self.prefix_kv:          # 0.116 (key only present when the reuse is active)
                 d["prefix_kv"] = self.prefix_kv
             if self.mode_cache:         # 0.255 (key only present when the reuse is active)
@@ -654,9 +668,14 @@ def _splitk_alt(ch, org, m, k, n, count, w_fmt, a_fmt, w_bits, c):
         red = m * n * count * (s - 1) / ch.lanes
         if one.cycles + red < best.cycles:
             # conversion work is the operands' (every K slice converted once, by its own group): unchanged
+            # 0.299: NoC — the s groups each move their own slice's traffic (s × one), and the s fp32 partial m × n
+            # tiles are reduced over a tree of the s groups (E / s engines each; mirror of a multicast)
+            rh, rp = noc_multicast(ch, s, ch.engines // s)
+            pb = m * n * count * 4.0
             best = replace(one, cycles=one.cycles + red, mac_cycles=one.mac_cycles + red,
                            convert_elems=c.convert_elems, convert_w=c.convert_w, convert_x=c.convert_x,
-                           convert_wx=c.convert_wx)
+                           convert_wx=c.convert_wx, noc_hops=s * one.noc_hops + pb * rh,
+                           noc_pitch=s * one.noc_pitch + pb * rp)
         s *= 2
     return best
 
@@ -700,7 +719,7 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
                 if t.cycles < c.cycles:
                     c = t
     else:
-        return 0.0, 0.0, 0.0, _vec_seconds(ch, op), 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, _vec_seconds(ch, op), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     if (op.kind == "attn" and WIDE_GEMM_SPLIT and op.count > 1 and ch.instance_sched == "wide"
             and not ch.split_instances):
         # 0.173: (batch × head × chunk) attention instances spread over SMs (see _wide_alt) — same formats as costed
@@ -738,7 +757,8 @@ def _op_seconds(op: Op, sys: System, org: str, model: ModelSpec) -> tuple:
             t += d
             mac_share += d
     vw = _convert_seconds(ch, c.convert_w * 2.0 + c.convert_wx) if op.kind == "gemm" else 0.0   # weight dequant: per pass, not per token
-    return t, mac_share, t - mac_share, vec, c.convert_elems, ideal, c.feed_cycles * op.causal * ch.port_Bpc, vw
+    return (t, mac_share, t - mac_share, vec, c.convert_elems, ideal, c.feed_cycles * op.causal * ch.port_Bpc, vw,
+            c.noc_hops * op.causal, c.noc_pitch * op.causal)     # 0.299: NoC byte·hops / byte·pitches (energy)
 
 
 def stage_ops(model: ModelSpec, first: int, last: int, has_embed: bool, has_head: bool, ph: Phase, sh: Shard,
@@ -777,7 +797,8 @@ _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "l
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
              "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
              "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e", "t_arr_attn", "t_vec_attn",
-             "wire_d2d", "wire_link", "wire_net", "kern", "disp", "hot_rr", "hot_rt")
+             "wire_d2d", "wire_link", "wire_net", "kern", "disp", "hot_rr", "hot_rt",
+             "noc_h", "noc_p", "noc_h_e", "noc_p_e")     # 0.299: NoC byte·hops / byte·pitches (all / routed experts)
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _EP_COMM = ("moe_dispatch", "moe_combine", "expert_allreduce")
 _TIERS = ("d2d", "link", "net")
@@ -815,7 +836,8 @@ def _exp_acts(agg: dict) -> dict:
     """0.65: the routed-expert part of a stage step — SRAM-port bytes and weight-dequant vector seconds of the
     expert GEMMs, and the EP dispatch / combine / expert all-reduce share of the stage's collective bytes."""
     lb = agg["link_bytes"]
-    return {"sram": agg["sram_e"], "conv_w": agg["conv_w_e"], "link_frac": agg["link_bytes_e"] / lb if lb > 0 else 0.0}
+    return {"sram": agg["sram_e"], "conv_w": agg["conv_w_e"], "link_frac": agg["link_bytes_e"] / lb if lb > 0 else 0.0,
+            "noc": agg["noc_h_e"], "noc_wire": agg["noc_p_e"]}
 
 
 def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tuple | None = None) -> dict:
@@ -862,7 +884,7 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         r_ = om.get(o)
         if r_ is None:
             r_ = om[o] = _op_seconds(o, sys, org, model)
-        a_, ma, fe, v, ce, idl, sb, vw = r_
+        a_, ma, fe, v, ce, idl, sb, vw, nh_, np_ = r_
         if o.kind == "attn":
             d["t_arr_attn"] += a_
         if o.kind == "attn" or o.name.endswith("softmax"):
@@ -878,6 +900,7 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
             d["kern"] += sys.chip.kernel_us * 1e-6
         d["t_arr"] += a_; d["t_mac"] += ma; d["t_feed"] += fe; d["t_vec"] += v; d["conv"] += ce
         d["t_ideal"] += idl; d["sram"] += sb
+        d["noc_h"] += nh_; d["noc_p"] += np_      # 0.299
         # 0.110 (audit): the SFU pipe (Chip.sfu_per_cycle) only changes the op's *time* (max of lanes and SFU); the
         # vector work counted for energy / KPIs stays the lane work (SFU-bound ops inflated the vec count)
         sfu_x = _vec_seconds(sys.chip, o) - vector_seconds(sys.chip, o.vec) if (sys.chip.sfu_per_cycle and o.sfu) else 0.0
@@ -885,6 +908,7 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
         d["t_conv_w"] += vw * o.wshare        # 0.64: mean-rank weight elements (uneven TP / EP splits)
         if o.role == "expert":                # 0.65: routed-expert share (idle EP ranks, energy action counts)
             d["sram_e"] += sb
+            d["noc_h_e"] += nh_; d["noc_p_e"] += np_
             d["conv_w_e"] += vw * o.wshare
         d["flops"] += o.flops
         d["flops_u"] += o.flops * o.share / max(1, o.replicated)
@@ -2110,7 +2134,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             if tpipe is not None:
                 pctx = (sys, scn.mapping, m, mm, segs, mp, store, sum(b for b, _ in extra), picks, {})
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
-                                      sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
+                                      sram_bytes=agg["sram"], noc_hops=agg["noc_h"], noc_pitch=agg["noc_p"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg), pipe_ctx=pctx,
                                       exp_route=_exp_route(m, ph, sh, st.first, st.last),
                                       ledger=(store, {k: agg[k] for k in _DRAM_KEYS + ("hot_rr", "hot_rt") if k in agg},
@@ -2558,7 +2582,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             # 0.288: the same ledger as the LLM stages (DiT / protein / genomics trunks); an FSDP gather write is
             # demand of its own (dram["fsdp_gather"], charged to DRAM)
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
-                                      sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
+                                      sram_bytes=agg["sram"], noc_hops=agg["noc_h"], noc_pitch=agg["noc_p"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg),
                                       ledger=(store, {k: agg[k] for k in _DRAM_KEYS + ("hot_rr", "hot_rt") if k in agg},
                                               sys.chip.slc_GBps / sys.dram_GBps, sys.chip.slc_GBps * 1e9)))
@@ -2856,7 +2880,8 @@ def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, a
     return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound, **extra,
             # action counts (0.47.1, core/energy.py): bf16-equivalent MAC slots, vector element-ops, SRAM-port bytes
             "acts": {"mac": d["t_ideal"] * ch.macs * ch.freq_ghz * 1e9, "vec": d["t_vec"] * ch.lanes * ch.freq_ghz * 1e9,
-                     "sram": d["sram"], "dram": dram, "link": 0.0, "d2d": 0.0, "net": 0.0}}
+                     "sram": d["sram"], "dram": dram, "link": 0.0, "d2d": 0.0, "net": 0.0,
+                     "noc": d["noc_h"], "noc_wire": d["noc_p"]}}
 
 
 def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: System, warnings: list[str],

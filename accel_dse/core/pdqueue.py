@@ -3424,7 +3424,7 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
     are priced with that pool's memory kind (pJ/bit + chip-side PHY), and each pool's clock gating uses its own MAC
     utilisation u_p = its MAC count / its slot-cycles.  Every term is booked to the pool that spends it
     (``J_by_pool``; Σ pools = J_per_token).  Without it (colocated modes: one pool) nothing changes."""
-    from .energy import hbm_static_W, idle_W_of, slc_pJ_bit, sram_leak_uW_per_mib, sram_pJ_bit
+    from .energy import hbm_static_W, idle_W_of, slc_pJ_bit, sram_leak_uW_per_mib, sram_pJ_bit, unit_pJ
     out = {"counts_per_token": counts_tok, "card_s_per_token": card_s_tok}
     if table is None or not table.provided:
         return out
@@ -3445,6 +3445,7 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
         if psplit:
             for i, ((sc, _), pc) in enumerate(zip(pools, pool_counts)):
                 e = (_slc_e(sc) if k == "slc" else sram_pJ_bit(table, sc.chip) if k == "sram" else
+                     unit_pJ(table, k, sc.chip) if k in ("noc", "noc_wire") else
                      getattr(table, _dram_field(sc, table) if k == "dram" else attr))
                 if e is not None:
                     add(k, pc.get(k, 0.0) * e * 1e-12 * (8 if k in _BITS else 1), i)
@@ -3456,6 +3457,8 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
             e = getattr(table, attr)
         elif k == "sram" and mem_scn is not None:     # 0.298: distance model, as energy_report
             e = sram_pJ_bit(table, mem_scn.chip)
+        elif k in ("noc", "noc_wire"):                # 0.299: opt-in NoC terms (per-chip pitch)
+            e = unit_pJ(table, k, mem_scn.chip if mem_scn is not None else None)
         else:
             e = getattr(table, attr)
         if e is not None:

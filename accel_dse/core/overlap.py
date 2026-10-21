@@ -67,7 +67,7 @@ def items_of(ops, op_secs, comm_secs, act_bytes) -> list[tuple]:
             else:
                 out.append((0.0, {}, bw))
             continue
-        a, _, _, v, _, _, _, _ = op_secs(o)
+        a, _, _, v = op_secs(o)[:4]
         a, v = a * sc, v * sc
         b = {}
         if o.kind == "gemm":

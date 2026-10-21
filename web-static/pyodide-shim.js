@@ -14,7 +14,7 @@
   const CFG = window.ACCEL_STATIC || {};
   const SLOW = new Set(CFG.slowRoutes || ['/api/fit', '/api/compare', '/api/layouts', '/api/stability',
     '/api/insight', '/api/insight_path', '/api/insight_sizing', '/api/insight_slc', '/api/insight_speech',
-    '/api/insight_speech_streams', '/api/insight_dispatch']);
+    '/api/insight_speech_streams', '/api/insight_dispatch', '/api/insight_noc']);
   // 0.285: every route the UI calls is classified explicitly (tests/test_static_routes.py: UI calls ⊆ FAST ∪ SLOW);
   // an unclassified /api route still works — it goes to the slow (abortable) lane with a console warning
   const FAST = new Set(CFG.fastRoutes || ['/api/health', '/api/catalog', '/api/models', '/api/memory', '/api/eval',

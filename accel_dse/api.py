@@ -149,7 +149,8 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight_slc": {"models", "policy", "gibs", "temps"},
                "insight_speech": {"models", "audio_s", "verify", "dispatch"},
                "insight_speech_streams": {"models", "audio_s", "slc_gib"},
-               "insight_dispatch": {"models", "batches", "ctx"}}
+               "insight_dispatch": {"models", "batches", "ctx"},
+               "insight_noc": {"topologies", "phases", "prompt"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1373,6 +1374,27 @@ def api_insight_slc(body: dict) -> dict:
         return {**slc_energy_report(scn, _energy_table(body), models, policy=pol,
                                     gibs=tuple(gibs) if gibs is not None else None,
                                     temps=tuple(temps) if temps is not None else None), "hash": scn.hash()}
+    except ValueError as e:
+        raise ApiError(str(e)) from None
+
+
+def api_insight_noc(body: dict) -> dict:
+    """0.299: NoC / on-chip data-movement energy vs engine count × topology (core/noc_insight.py)."""
+    from .core.hardware import NOC_TOPOLOGIES
+    from .core.noc_insight import noc_design_report
+    _check_keys(body, "insight_noc")
+    scn = scenario_from_body(body)
+    topo = body.get("topologies", list(NOC_TOPOLOGIES))
+    if not isinstance(topo, list) or not topo or not all(isinstance(x, str) and x in NOC_TOPOLOGIES for x in topo):
+        raise ApiError(f"topologies must be a non-empty list of {NOC_TOPOLOGIES}")
+    ph = body.get("phases", ["decode", "prefill"])
+    if not isinstance(ph, list) or not ph or not all(x in ("decode", "prefill") for x in ph):
+        raise ApiError("phases must be a non-empty list of 'decode' / 'prefill'")
+    pr = body.get("prompt")
+    if pr is not None and (isinstance(pr, bool) or not isinstance(pr, int) or not 1 <= pr <= 1 << 20):
+        raise ApiError("prompt must be an integer in [1, 1048576]")
+    try:
+        return {**noc_design_report(scn, _energy_table(body), tuple(topo), tuple(ph), pr), "hash": scn.hash()}
     except ValueError as e:
         raise ApiError(str(e)) from None
 

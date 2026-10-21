@@ -6,6 +6,72 @@
 
 
 
+## [0.299.0]
+
+### NoC / on-chip data-movement energy from the dataflow (opt-in); energy breakdown; NoC design insight
+- Why: 0.298 left NoC energy as a per-MAC constant, so it could not separate designs. It is now derived from what each GEMM schedule actually moves between engines.
+- **Traffic** (`mapping.GemmCost.noc_hops` / `noc_pitch`, per op → `StageResult.noc_hops` / `noc_pitch` → energy actions `noc` / `noc_wire`):
+  - Ganged ("wide") GEMM: the weight columns sit in each engine's local slice; the A row tile is multicast to the engines that hold output columns, min(E, ⌈N / cols⌉).
+  - Core-group plans: a row split copies the K×N operand to its groups; a column split copies the M×K operand. Instances spread over groups keep their operands local 「假设」.
+  - Split-K: the s fp32 partial m × n tiles are reduced over a tree of the s groups.
+  - Topology (`chip.noc_topology`, existing design variable) per byte delivered to d blocks of u engines 「推导」:
+
+    | Topology | Router traversals | Link length (pitches) |
+    |---|---|---|
+    | mesh (XY tree) | (d − 1)·√u | same as traversals |
+    | ring | (d − 1)·u | same as traversals |
+    | crossbar | d − 1 | d · ½√(d·u) |
+
+  - The mesh tree follows Park et al. DAC 2012 (broadcast = k² crossbar + (k² − 1) link traversals).
+  - Time is unchanged (NoC latency stays `noc_hop_cycles`).
+- **Energy** (opt-in: `energy.pJ_bit_hop_noc`; None = no NoC term):
+  - E = bits × hops × pJ_bit_hop_noc + bits × pitches × pJ_bit_mm_onchip × pitch_mm.
+  - Router energy 「推导」, Park et al. DAC 2012 (45 nm 4×4 mesh, 1 mm links):
+    - (427.3 mW − 76.7 mW leakage) / 653 Gb/s broadcast = 0.537 pJ/bit per router + link.
+    - Minus Keckler 2011 wire 0.121 pJ/bit/mm → router 0.416 pJ/bit (lower bound).
+    - ÷ 2.6 at 7 nm → `NOC_HOP_PJ_BIT_7NM` = 0.160.
+  - Engine pitch = √(SRAM slice × 3 nm macro density + MACs / engine × `noc_mm2_per_kmac`).
+    - Default MAC density 0.6875 mm² / 1024 MAC 「来源」: TPUv4i, 4 × 128² MXUs = 11 % of < 400 mm² (upper bound).
+    - Uncore is left out, so the pitch is a lower bound.
+  - The link wire is charged only with both `pJ_bit_hop_noc` and `pJ_bit_mm_onchip` set.
+  - PD ledger uses the same terms (`energy.unit_pJ`). DVFS scales `pJ_bit_hop_noc` by V² (`CORE_ACTIONS["noc"]`).
+- **Breakdown**: `energy_report` → `breakdown` {J, share, total, labels}.
+  - Groups: MAC / 向量 / SRAM 阵列 / SLC 阵列 / 片上导线 / NoC 路由 / DRAM（含 PHY）/ 链路 / 时钟 / 静态; Σ = J_per_unit.
+  - SRAM / SLC J is split into array and wire parts by their access scale.
+  - UI: stacked bar + legend above the energy table (`energy-breakdown`), and NoC rows in the table.
+- **Insight** `/api/insight_noc` (`core/noc_insight.py`; UI panel "NoC 与片上搬运能耗", slow lane in the static build):
+  - The chip's MACs and SRAM are re-cut into E engines of r × r arrays and run on each topology, for decode and prefill. Each point gets time, J and the breakdown.
+  - Also a central-SRAM placement priced analytically: every SRAM-port byte travels ½√E mesh hops, plus the whole-array wire.
+  - Without NoC numbers in the table it fills the reference values (0.160 / 0.078) and says so.
+- Design reading (tpuv4i_7nm + reference NoC, qwen3-8b, prompt 4096):
+  - 1P prefill (mesh), NoC + link share and J / prompt token:
+
+    | Engines | NoC + link share | J / prompt token |
+    |---|---|---|
+    | 2 | 2.0 % | — |
+    | 8 | 3.9 % | 0.00726 |
+    | 32 | 5.3 % | 0.00736 |
+    | 128 | 9.5 % | 0.00784 |
+    | 512 | 23 % | 0.00950 |
+    | 2048 | 40 % | 0.01269 |
+
+    Throughput gains only +1.3 % beyond E = 32. **Many small cores past ≈ 32–128 engines cost prefill energy for no speed.**
+  - Decode NoC stays ≤ 2 % for every cut: decode engine count is decided by time, not NoC.
+  - Crossbar (1P E32): +6 % prefill J vs mesh. Ring ≈ mesh at small E; its router energy is 1.7–7× mesh at E ≥ 512.
+  - Central SRAM (1P E32): decode +24 % (0.125 → 0.156 J/token), prefill +24 %. Grows with E. **Keep SRAM sliced per engine.**
+  - 100T and H100-like follow the same pattern.
+
+### Freshness
+- HF sweep since 2026-10-21 (107 orgs): empty. Nothing new.
+
+### Default behaviour, old → new
+- No default changes. The NoC term is opt-in (`pJ_bit_hop_noc`; no preset sets it). The cost model (time) is unchanged: 858 scan points identical. ext_validate: only the version stamp (0.298.0 → 0.299.0).
+- Additive outputs:
+  - `counts_per_unit.noc` / `noc_wire`; `energy_report.breakdown`; `noc` report block when set.
+  - Energy table rows for NoC counts (energy "未提供" until set).
+  - `_op_seconds` returns 10 values (+ NoC byte·hops / byte·pitches).
+- `Result.summary()` is unchanged: components' NoC counts are energy-internal (`_pl_view`), and all fingerprints hold.
+
 ## [0.298.0]
 
 ### Energy: MAC = multiply + FP32 accumulate (presets); local SRAM access energy vs slice size
