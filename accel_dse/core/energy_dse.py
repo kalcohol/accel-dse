@@ -328,7 +328,8 @@ def _run(s, t, cap, power_mode, curve, f_op: float = 1.0, n_dies: int = 1) -> di
     per-card figures are scaled to the package (throughput, W, static W × n; J/unit and latency unchanged)."""
     o = _run1(s, t, None if cap is None else cap / n_dies, power_mode, curve, f_op)
     if n_dies > 1:
-        for k in ("thr", "thr_nominal", "W_card", "W_nominal", "hbm_static_W", "noc_W", "dram_dev_W"):
+        for k in ("thr", "thr_nominal", "W_card", "W_nominal", "hbm_static_W", "noc_W", "dram_dev_W", "static_W",
+                  "idle_W"):
             if o.get(k) is not None:
                 o[k] *= n_dies
         o["why"] = [f"每晶粒（预算 ÷ {n_dies}）{w}" for w in o["why"]]
@@ -340,7 +341,7 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
     curve, core-rail energies × V², leakage × V — powercap._point), then capped / rejected by power.  A point over the
     cap is capped from f_max like any other: power rises with f, so the cap clock is below f_op and equals the f_op = 1
     point's capped result."""
-    from .powercap import _point, dvfs_cap
+    from .powercap import _point, dvfs_cap, static_W
     from .thermal import dram_dev_W
     r0 = evaluate(s)
     r, er = (r0, energy_report(r0, t)) if f_op == 1.0 else _point(r0, t, curve, f_op)
@@ -353,7 +354,8 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
          "thr": r.per_card, "J_per_unit": er["J_per_unit"], "W_card": er["avg_W_per_card"], "f_scale": f_op,
          "capped": False, "lat_ms": lat * 1e3, "hbm_static_W": er.get("hbm_static_W_card"), "why": [],
          "noc_W": (er.get("noc_router") or {}).get("W"),      # 0.307: router static W at the operating point
-         "dram_dev_W": dram_dev_W(er)}                         # 0.313: DRAM-device W (heat in the stacks, thermal)
+         "dram_dev_W": dram_dev_W(er),                         # 0.313: DRAM-device W (heat in the stacks, thermal)
+         "static_W": static_W(er), "idle_W": er.get("idle_W_used")}   # 0.315: static in W_card (thermal.package_power)
     r = r0
     if cap is not None and o["W_card"] > cap * (1 + 1e-9) and r.fits:
         if power_mode == "reject":
@@ -442,9 +444,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     from .budget import full_area, shoreline_report
     from .thermal import COOLING, thermal_report
     from .energy import idle_W_of
+    from .thermal import STATIC_FLOOR_W_MM2, VR_EFF
     if cooling is not None and cooling not in COOLING:
         raise ValueError(f"cooling must be one of {sorted(COOLING)}")
-    static_in = idle_W_of(table) is not None      # 0.314: does the card power hold the whole-card static floor?
+    static_in = idle_W_of(table) is not None      # 0.314: the table's idle figure (0.315: else the thermal static floor)
     from .hardware import default_mem
     from .insight import TIE
     from .powercap import CAP_CURVES, F_MIN, VF_CURVES
@@ -672,10 +675,14 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         notes.append("岸线严格（0.313，shore_strict）：外存占第 3 / 4 边（tight）视为不可建——出货晶粒（GH100、B200、MI300X IOD、"
                      "TPU v5p、Trainium2、MI250X GCD）外存不超过两条边「二手」；第三边仅见于专利（Google US 12,315,860 B2 "
                      "权利要求 14）「来源」，无出货先例；默认（关）沿用 0.310 起的四边几何上限「假设」")
-    notes.append("热 / 功耗（0.313；0.314 口径统一）：每点报告封装功耗、热流密度（判定用：封装功耗 ÷ 逻辑晶粒总面积，与出货件 "
-                 "TDP ÷ 晶粒面积同口径；另报每晶粒（扣 DRAM 器件）热流）与 0.75 V「假设」下的电流密度"
-                 + ("" if static_in else "；能耗表无整卡静态（idle_W / idle_frac_tdp），功耗偏低「近似」") + "；"
-                 + (f"按 {cooling} 判定（{COOLING[cooling]['pkg_W']:g} W / {COOLING[cooling]['flux_W_mm2']:g} W/mm²；"
+    notes.append("热 / 功耗（0.313；0.314 口径统一；0.315 封装功耗完整）：每点报告封装功耗（模块输入侧，与出货件 TDP 同口径："
+                 "能耗表功耗" + ("（含能耗表 idle 整卡静态）" if static_in else
+                              f" + 整卡静态底功耗 {STATIC_FLOOR_W_MM2:g} W/mm² × 晶粒面积（扣已计泄漏 / HBM 待机）")
+                 + f" + 稳压器 / PDN 损耗（效率 {VR_EFF:g}「近似」））、热流密度（判定用：封装功耗 ÷ 逻辑晶粒总面积，与出货件 "
+                 "TDP ÷ 晶粒面积同口径；晶粒发热（扣 DRAM 器件与稳压器损耗）对 HIR 晶粒热流上限）与 0.75 V「假设」下的电流密度；"
+                 "静态按空闲温度实测，85 °C 泄漏上界下超限的「可建」点标记余量不足（hot_ok）；"
+                 + (f"按 {cooling} 判定（{COOLING[cooling]['pkg_W']:g} W / {COOLING[cooling]['flux_W_mm2']:g} W/mm²"
+                    f"（晶粒 {COOLING[cooling]['die_flux_W_mm2']:g}）；"
                     + COOLING[cooling]["src"] + "）" if cooling else "未选冷却方案（cooling）：只报告不判定")
                  + "；供电（凸点电流）无公开上限，只报告")
     if cost_p is not None:
@@ -755,7 +762,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                                capped=pf["capped"] or dc["capped"], ttft_ms=pf["lat_ms"], tpot_ms=dc["lat_ms"],
                                phases={ph: {k: res[ph][k] for k in ("thr", "J_per_unit", "W_card", "f_scale", "capped",
                                                                     "lat_ms", "bound")} for ph in phases},
-                               hbm_static_W=dc["hbm_static_W"])
+                               hbm_static_W=dc["hbm_static_W"], static_W=dc["static_W"], idle_W=dc["idle_W"])
                     fr = {ph: (res[ph]["dram_dev_W"] / res[ph]["W_card"] if res[ph]["W_card"] > 0 else 0.0) for ph in phases}
                     row["dram_dev_W"] = row["W_card"] * ((P * pf["J_per_unit"] * fr["prefill"] + mix_out_tokens
                                                           * dc["J_per_unit"] * fr["decode"]) / J if J > 0 else 0.0)
@@ -832,10 +839,13 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                         why.append(sw)
                 # 0.313: thermal / power buildability (always reported; judged only with a cooling preset)
                 th = thermal_report(row.get("W_card"), row.get("mm2") if dens_ok else sr.get("die_mm2"), nd,
-                                    row.get("dram_dev_W") or 0.0, cooling, static_in)
+                                    row.get("dram_dev_W") or 0.0, cooling, row.get("static_W") or 0.0, row.get("idle_W"))
                 # 0.314: flux_W_mm2 = card-level (judged, shipped-part definition); die_flux_W_mm2 = DRAM devices out
-                row["thermal"] = {k: th.get(k) for k in ("status", "feasible", "pkg_W", "die_W", "flux_W_mm2",
-                                                         "die_flux_W_mm2", "flux_ratio", "static_included")}
+                # 0.315: pkg_W = complete package power (static floor + VR loss, thermal.package_power)
+                row["thermal"] = {k: th.get(k) for k in ("status", "feasible", "pkg_W", "card_W", "die_W", "flux_W_mm2",
+                                                         "die_flux_W_mm2", "flux_ratio", "static_included",
+                                                         "static_basis", "static_add_W", "vr_loss_W", "pkg_W_hot",
+                                                         "hot_ok")}
                 row["thermal"]["A_per_mm2"] = (th.get("pd") or {}).get("A_per_mm2")
                 if th.get("feasible") is False:
                     row["buildable"] = False

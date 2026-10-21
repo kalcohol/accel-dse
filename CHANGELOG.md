@@ -6,6 +6,49 @@
 
 
 
+## [0.315.0]
+
+### Complete package power for thermal / power buildability; suite-time check; Flint
+- **Package power is now complete and in the shipped-TDP scope** (`thermal.package_power`). Judged package W =
+  - modelled card W (energy_report, unchanged)
+  - + **whole-card static floor, always on.** The floor is `STATIC_FLOOR_W_MM2` 0.088 W/mm² × logic-die area × VR_EFF (the delivered side), less the static already charged (SRAM / NoC-router leakage, HBM standby; same no-double-count rule as energy.py).
+    - 0.088 is cross-checked by two vendors: H100 SXM idle 71.8 W 「二手」 ÷ 814 mm² = 0.088, and MI300X idle 131–133 W socket (AMD article, rocm-smi) 「来源」 ÷ 4 × 370 mm² IOD 「二手」 = 0.089 「推导」.
+    - A table with `idle_W` / `idle_frac_tdp` uses that figure instead (board-level).
+    - 0.314: static was included only with an idle figure.
+  - + **VR / PDN loss**: delivered W × (1 / VR_EFF − 1), with **VR_EFF 0.85** 「近似」 (range 0.77–0.90).
+    - Sources: ECCE 2024 48 V → 1 V single-stage VPD, 84.4 % full-load system efficiency (77.2 % at 0.65 V / 600 A) 「来源」; APEC 2024 48 → 1.8 V bus stage ≤ 95 % 「来源」 × a second stage.
+    - Scope: OCP OAM r2.0 §8.4 defines TDP at the 44–59.5 V module input 「来源」, so a shipped TDP includes this loss.
+    - A board-level idle figure carries no second loss.
+- **Where each part sits:** HBM / DRAM devices are in the package but off the die (out of die heat); the host DRAM PHY is on the die (in die heat); VR loss is on the module (in package power, out of die heat). `die_W` = (delivered W − DRAM devices) ÷ dies.
+- **Each flux precedent is judged in its own definition.** Old → new:
+  - liquid card-level limit 1.70 → **0.96 W/mm²** (MI355X 1400 W ÷ 1464 mm² 「推导」).
+  - HIR 2021 Table 1 thermal-budget rows become die-heat limits, `die_flux_W_mm2`: air 0.55, liquid 1.70 「来源」.
+  - A point is buildable on flux when either precedent holds; `flux_ratio` = min of the two ratios.
+  - Reason: 0.314 judged HIR's chip heat flux 1.70 against card-level power (VR and HBM included). Air is unchanged: 0.86 card-level decides.
+- **Caveat narrowed.** 0.314's blanket "over is trustworthy, a marginal ok is not" is removed: the two omissions it covered (static, VR) are now in the power.
+  - What remains is that the floor is measured at idle temperature (≈ 40 °C 「近似」).
+  - `pkg_W_hot` applies the TSMC 3 nm leakage ratio 40 → 85 °C (× 3.21) to all static, an upper bound 「假设」. An "ok" row that is over under that bound gets `hot_ok` False and a note.
+  - That bound is loose: it flags H100-like prefill at 627 W, while H100 ships at 700 W on air. So it is a flag and is not judged.
+- **New report fields:** `card_W`, `power` (breakdown), `static_basis` (floor / idle / none / package), `static_add_W`, `vr_loss_W`, `pkg_W_hot`, `hot_ok`. `thermal_report(..., static_W, idle_W, basis="model" | "package")`: "package" judges a module-input power as given (shipped parts; every KNOWN_PART passes its preset).
+- **Verdict effect (old → new)**, 80 chip × memory × phase cases (qwen3-8b, tpuv4i_7nm table without idle, 3 presets):
+  - **air_oam / air_hgx: 8 → 12 over (4 flips ok → over each)**: 1P and 1P-lp4x64 prefill with 8 × HBM3E (card-level 0.78 → 0.99 W/mm²) and with HBM3 5-stack (0.85 → 1.08).
+  - The 8 already over stay over (0.88–0.97 → 1.12–1.23).
+  - liquid: 0 → 0 (highest die-heat ratio 0.72).
+  - Package / card ratio: 1.26–2.35, median 1.38. The floor dominates on the ~100 W 100T chip.
+  - With the H100 idle fraction in the table: 20 → 20 over, 0 flips.
+  - H100-like: complete package power is 627 W prefill and 243 W decode, under its 700 W TDP. The floor path and the measured-idle path agree to < 1 %.
+- **Suite wall time (0.314: 452 → 553 s) was load noise.** The unchanged 0.314 code re-run gives **446 s**, 1670 passed.
+  - The 0.314 excess sat in 8 small files (test_core_059 / 087 / 144 / 269 / 273 / 276 / 295 / 296), each ~4.5 s → ~113 s in one concurrent window. In the rerun they take 3.9–4.9 s each.
+  - The median per-file ratio against 0.313 is 1.00. Steal was 0.01 % over the rerun (/proc/stat, 5 s samples).
+  - Cause: host-level VM freezes. A 2 s sampler stopped for 123 s and 47 s while /proc/stat advanced ≈ 3.6 CPU-s, and the virtio balloon moved ≈ 2 M pages each way. Steal and cgroup throttling were 0. Every concurrently running file gains the freeze length.
+  - Fix for the real part: `scripts/test_durations.json` (stale since 0.238) is refreshed, so test_core_237 (≈ 120 s, ranked at 28 s) no longer starts last and sets the tail. This is a deliberate exception to the reset-durations step.
+- **Freshness** (2026-10-22 JST):
+  - + **Flint** (RecursiveSI, Apache-2.0, 2026-10-21 23:20 JST; coding-agent MoE) as model_type `flint`: 49 layers (2 dense + 47 MoE, 256 experts top-6 sigmoid + 1 ungated shared expert), 35 sliding-513 + 14 full NoPE layers, learned per-head sinks (`softmax_offset`), q / k norm, bf16.
+    - 39.785 B, param_err 0. Active 2.82 B = the card's 2.5 B plus the input embedding.
+    - New provider `recursive`.
+  - Raon-1-mini-preview: still gated (HTTP 401).
+- Tests: test_core_315.py (8). test_core_313 / 314 thermal asserts moved to 0.315 semantics (old values above). Releases 189 → 190 (llm 163 → 164); catalog total 197 → 198.
+
 ## [0.314.0]
 
 ### Thermal model audited against shipped parts; shore_strict evidence; OvisOCR3

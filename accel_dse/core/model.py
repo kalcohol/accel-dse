@@ -794,15 +794,17 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             alin = alin[:2] + (Linear("v_router", h, Ev, "rep"), Linear("v_experts", h, Ev * KV * hd, "head", unit=hd)) \
                 + alin[2:]
             core = replace(core, v_experts=Ev, v_topk=kv_k)
-        if mt == "gpt_oss":
-            core = replace(core, sink=True)
+        if mt == "gpt_oss" or (mt == "flint" and c.get("softmax_type") == "learnable"):
+            core = replace(core, sink=True)        # 0.315 Flint: self_attn.softmax_offset [H] = learned sink logits
         hy_dense = hy3 and i < len(c.get("mlp_layer_types") or ()) and c["mlp_layer_types"][i] == "dense"
         if E and i >= first_dense and i not in mlp_only and not hy_dense:
-            ffn, flin = _ffn_moe(h, E, k, de, n_sh, d_sh, shared_gate=bool(c.get("shared_expert_intermediate_size")))
+            # 0.315 Flint: the shared expert has no shared_expert_gate tensor (safetensors header)
+            ffn, flin = _ffn_moe(h, E, k, de, n_sh, d_sh,
+                                 shared_gate=bool(c.get("shared_expert_intermediate_size")) and mt != "flint")
         else:
             ffn, flin = _ffn_dense(h, c["intermediate_size"])
         # 0.291 Mellum (transformers MellumAttention = Qwen3MoeAttention: q_norm / k_norm RMSNorm over head_dim 「来源」)
-        misc = 2 * h + (2 * hd if mt.startswith("qwen3") or mt == "mellum" or (hy3 and c.get("qk_norm"))
+        misc = 2 * h + (2 * hd if mt.startswith("qwen3") or mt in ("mellum", "flint") or (hy3 and c.get("qk_norm"))
                         or (k2h and c.get("query_key_norm")) else 0)
         if k2h and ffn.kind == "moe" and c.get("moe_gate_bias"):
             misc += E                                      # router bias (mlp.gate.bias [E])
@@ -812,6 +814,8 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             misc += E                                      # fp32 expert_bias (sigmoid router selection bias)
         if c.get("attention_bias") or mt == "qwen2" or mt == "gpt_oss":
             misc += H * hd + 2 * KV * hd + (h if mt == "gpt_oss" else 0)
+        if mt == "flint" and core.sink:
+            misc += H  # 0.315 softmax_offset [H]
         if mt == "gpt_oss":
             misc += H  # attention sinks
             misc += E * (2 * de + h)  # expert biases
@@ -819,7 +823,10 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     if mt == "gpt_oss":
         notes.append("attention sink 按参考实现建模（每个 query 行的 softmax 多一个可学习 logit，随后丢弃）；"
                      "128-token 交替滑窗已建模")
-    if any(l.core.window for l in layers) and mt != "gpt_oss":
+    if mt == "flint":
+        notes.append(f"Flint（RecursiveSI）：35 层滑窗 {window}（含当前 token）+ 14 层全注意力（全注意力层无 RoPE，不影响参数与计算量）；"
+                     "每头可学习 attention sink（softmax_offset）与 q / k RMSNorm 已建模；sigmoid 路由 top-k 归一化（无路由偏置）")
+    if any(l.core.window for l in layers) and mt not in ("gpt_oss", "flint"):
         notes.append(f"滑窗 {window} 已建模")
     mtp = []
     n_mtp = c.get("num_nextn_predict_layers") or 0

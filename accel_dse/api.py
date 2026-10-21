@@ -1021,6 +1021,7 @@ def api_eval(body: dict) -> dict:
     out["energy"] = energy_report(r, table, power_cap=pc)      # 0.47.1: action counts always; J only for user-supplied entries
     # 0.313: thermal / power buildability beside the shoreline — reported whenever the energy table gives a power;
     # judged only with body.cooling (a thermal.COOLING preset)
+    from .core.powercap import static_W as _static_W
     from .core.thermal import COOLING, dram_dev_W, thermal_report
     cool = body.get("cooling")
     if cool is not None and cool not in COOLING:
@@ -1028,8 +1029,8 @@ def api_eval(body: dict) -> dict:
     ew = out["energy"].get("avg_W_per_card")
     pk = scn.package_cards if scn.d2d_enabled else 1
     th = thermal_report(ew * pk if ew is not None else None, sh.get("die_mm2"), pk,
-                        dram_dev_W(out["energy"]) * pk, cool,
-                        out["energy"].get("idle_W_used") is not None)     # 0.314: static floor in the card power?
+                        dram_dev_W(out["energy"]) * pk, cool, _static_W(out["energy"]) * pk,     # 0.315: complete power
+                        out["energy"]["idle_W_used"] * pk if out["energy"].get("idle_W_used") is not None else None)
     out["thermal"] = th
     if th.get("feasible") is False:
         out["summary"]["warnings"].append("不可建（热 / 功耗）：" + "；".join(th["reasons"]))

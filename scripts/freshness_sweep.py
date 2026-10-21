@@ -30,6 +30,7 @@ EXTRA_ORGS = (
     "Tencent-Hunyuan", "amazon", "apple", "ServiceNow-AI", "RekaAI",
     # 0.313: KRAFTON (Raon-1-mini-preview 30B-A4B, 2026-10-21 — gated config, custom raon1_mini code; not added)
     # 0.314: still gated (HTTP 401 on config.json, checked 2026-10-22 JST)
+    # 0.315: still gated (HTTP 401 on config.json; API gated "auto", custom raon1_mini code, checked 2026-10-22 JST)
     "KRAFTON",
     # 0.314: ATH-MaaS (Ovis series; OvisOCR3 merged into StartLux-Decision-v1-0.8B, no listed family)
     "ATH-MaaS",

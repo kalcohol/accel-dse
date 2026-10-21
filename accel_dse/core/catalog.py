@@ -230,6 +230,10 @@ EXTRA_TAIL = [
     # transformers qwen3_5 VLM as released bf16 — same config / header shapes as StartLux-Decision-v1-0.8B except the
     # MTP head it does not ship → MERGED (resolvable + validated, not listed)
     ("ovisocr3", "ATH-MaaS/OvisOCR3"),
+    # 0.315 RecursiveSI Flint (Apache-2.0, 2026-10-21 23:20 JST; coding-agent MoE 39.8B-A2.5B): transformers flint
+    # (no modeling code released; SGLang kit), 49 layers = 2 dense + 47 MoE (256 experts top-6 sigmoid + 1 ungated
+    # shared expert), 35 sliding-513 / 14 full NoPE layers, learned per-head sinks, q / k norm; bf16
+    ("flint", "RecursiveSI/flint"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -402,6 +406,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("perplexity", "Perplexity（决策模型）", ("perplexity-ai/",)),     # 0.291
     ("inception", "Inception / MBZUAI IFM（Jais）", ("inception42/", "IFM/")),     # 0.291
     ("jetbrains", "JetBrains（Mellum）", ("JetBrains/",)),     # 0.291
+    ("recursive", "Recursive（Flint）", ("RecursiveSI/",)),     # 0.315
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Fun-ASR-Nano", ("fun-asr-nano",)), ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2.5-Omni", ("qwen2.5-omni",)),
@@ -445,6 +450,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("perplexity", "pplx-decider v1.2", ("pplx-decider-v1.2", "pplx-decider-flash-v1.2")),     # 0.291
     ("perplexity", "pplx-decider v1 / v1.1", ("pplx-decider-v1",)),
     ("inception", "Jais 3", ("jais-3-",)), ("jetbrains", "Mellum2.1", ("mellum2.1",)),
+    ("recursive", "Flint", ("flint",)),     # 0.315
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.

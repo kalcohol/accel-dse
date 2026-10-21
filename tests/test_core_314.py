@@ -38,8 +38,9 @@ def test_limits_follow_the_shipped_envelope_rule():
     # air flux = the highest shipped air part (H100 / H200 SXM), above HIR's 0.55 thermal-budget figure
     assert abs(max(air) - 700 / 814) < 1e-12 and COOLING["air_hgx"]["flux_W_mm2"] == COOLING["air_oam"]["flux_W_mm2"] == 0.86
     assert max(air) <= 0.86 + 1e-9 and 0.86 > 0.55
-    # liquid flux = HIR 1.70 (thermal budget), above every shipped liquid part (MI355X 0.96)
-    assert abs(max(liq) - 1400 / (2 * 732.2)) < 1e-12 and COOLING["liquid"]["flux_W_mm2"] == 1.70 > max(liq)
+    # liquid: card-level = the highest shipped liquid part (MI355X 0.96, 0.315); HIR 1.70 is the die-heat limit
+    assert abs(max(liq) - 1400 / (2 * 732.2)) < 1e-12 and COOLING["liquid"]["flux_W_mm2"] == round(max(liq), 2)
+    assert COOLING["liquid"]["die_flux_W_mm2"] == 1.70
     # package power: the largest shipped part per cooling class
     assert COOLING["air_oam"]["pkg_W"] == parts["MI350X"]["W"] == 1000.0 > parts["Gaudi 3 HL-325L"]["W"]
     assert COOLING["liquid"]["pkg_W"] == parts["MI355X"]["W"] == 1400.0
@@ -47,16 +48,17 @@ def test_limits_follow_the_shipped_envelope_rule():
     # every shipped air part passes its own preset (the limits are not below any shipped part)
     for p in KNOWN_PARTS:
         if p["cooling"] == "air" and p["W"] and p["die_mm2"]:
-            assert thermal_report(p["W"], p["die_mm2"], p["dies"], 0.0, "air_oam")["feasible"] is True, p["part"]
+            assert thermal_report(p["W"], p["die_mm2"], p["dies"], 0.0, "air_oam", basis="package")["feasible"] is True, p["part"]
 
 
 def test_card_level_flux_and_static_flag():
-    t = thermal_report(504.25, 571.4, 1, 14.0, "air_hgx", False)
+    # 0.315: as-is module power (basis "package") keeps the 0.314 card-level arithmetic
+    t = thermal_report(504.25, 571.4, 1, 14.0, "air_hgx", basis="package")
     assert t["feasible"] is False and abs(t["flux_W_mm2"] - 504.25 / 571.4) < 1e-12
-    assert abs(t["die_flux_W_mm2"] - 490.25 / 571.4) < 1e-12 and abs(t["flux_ratio"] - 504.25 / 571.4 / 0.86) < 1e-12
-    assert t["notes"] and "静态" in t["notes"][0] and t["flux_basis"].startswith("封装功耗 ÷ 逻辑晶粒总面积")
-    assert thermal_report(504.25, 571.4, 1, 14.0, "liquid", True)["notes"] == []
-    two = thermal_report(1200.0, 858.0, 2, 0.0, "liquid")
+    assert abs(t["die_flux_W_mm2"] - 490.25 / 571.4) < 1e-12
+    assert abs(t["flux_ratio"] - min(504.25 / 571.4 / 0.86, 490.25 / 571.4 / 0.55)) < 1e-12
+    assert t["flux_basis"].startswith("封装功耗（含整卡静态与稳压器损耗")
+    two = thermal_report(1200.0, 858.0, 2, 0.0, "liquid", basis="package")
     assert abs(two["flux_W_mm2"] - 1200 / 1716) < 1e-12 and two["feasible"] is True
 
 
@@ -67,16 +69,16 @@ def test_static_floor_reaches_the_report():
                                                                                          "prompt": 4096, "ctx": 8192}},
          "energy": {"energy_preset": "tpuv4i_7nm"}, "sensitivity": False}
     o = api.api_eval(b)["thermal"]
-    assert o["static_included"] is False and o["notes"]
+    assert o["static_included"] is True and o["static_basis"] == "floor" and o["notes"] == []     # 0.315: always on
     s = Scenario(model="qwen3-8b", chip=CHIPS["1P"], mem_id=H4, serving=PF)
     kw = dict(mac_scales=(1.0,), sram_scales=(1.0,), sides=(128,))
     d = energy_design_search(s, t, ex.budget(), **kw)
-    assert d["rows"][0]["thermal"]["static_included"] is False
-    assert any("能耗表无整卡静态" in n for n in d["notes"])
+    assert d["rows"][0]["thermal"]["static_basis"] == "floor" and d["rows"][0]["thermal"]["static_add_W"] > 0
+    assert any("整卡静态底功耗" in n for n in d["notes"])
     ds = energy_design_search(s, replace(t, idle_frac_tdp=71.8 / 700, tdp_W=700.0), ex.budget(), **kw)
     th = ds["rows"][0]["thermal"]
-    assert th["static_included"] is True and th["flux_W_mm2"] > d["rows"][0]["thermal"]["flux_W_mm2"]
-    assert not any("能耗表无整卡静态" in n for n in ds["notes"])
+    assert th["static_basis"] == "idle" and th["static_add_W"] == 0.0
+    assert not any("整卡静态底功耗" in n for n in ds["notes"])
 
 
 # ---------------------------------------------------------------- (2) shore_strict evidence

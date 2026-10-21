@@ -9034,3 +9034,87 @@ Scan over 80 chip × memory × phase cases (qwen3-8b, tpuv4i_7nm dynamic table, 
   - Same config and header shapes as StartLux-Decision-v1-0.8B, minus the MTP head → merged (0.251 / 0.288 rule). Resolvable and validated; the ViT is built (identical preprocessor_config).
   - ATH-MaaS added to the sweep's EXTRA_ORGS.
 - Raon-1-mini-preview: config still gated (HTTP 401).
+
+## §260 Complete package power for thermal / power buildability (0.315)
+
+### §260.1 Problem
+In 0.314 the judged package power was the modelled card W. It held the whole-card static only when the energy table had an idle figure, and it held no voltage-regulator loss. A shipped TDP / TBP holds both: OCP OAM r2.0 §8.4 defines TDP at the 44–59.5 V module input 「来源」. So the two sides of the comparison had different scopes, and the report needed the caveat "over is trustworthy, a marginal ok is not".
+
+### §260.2 Mechanism (`thermal.package_power`)
+pkg_W = (card_W + S_add) / η − idle_board × (1/η − 1), where:
+- **Static floor.** S_add = max(0, ρ_s · A_logic · η − S_charged).
+  - ρ_s = **0.088 W/mm²** of logic-die footprint: the idle (no workload, idle clocks) card power per mm².
+    - H100 SXM: 71.8 W (lo0 tech blog 「二手」) ÷ GH100 814 mm² 「二手」 = 0.0882.
+    - MI300X: 131–133 W socket at SCLK 132 MHz and 0 % utilisation (AMD technical article, rocm-smi output 「来源」) ÷ 4 × 370 mm² IOD 「二手」 = 0.089.
+    - Two vendors agree within 1 % 「推导」.
+  - The measured idle contains logic leakage, uncore, PLLs and HBM self-refresh. So the static the model already charges (S_charged = SRAM leakage + NoC-router leakage + HBM standby, `powercap.static_W`) is subtracted. This is the same no-double-count rule energy.py applies to a measured idle.
+  - The figure is board-level, so it enters on the delivered side as ρ_s · A · η.
+- **VR / PDN loss.** η = **0.85** 「近似」, range 0.77–0.90.
+  - ECCE 2024 single-stage 48 V → 1 V VPD: 84.4 % system efficiency at full load (1.0 V / 400 A), 77.2 % at 0.65 V / 600 A 「来源」.
+  - APEC 2024 two-stage, first stage 48 → 1.8 V: ≤ 95 % 「来源」, times a second-stage VR.
+  - Conventional lateral delivery from the platform input is estimated below 70 % (arXiv 2606.28837), but that is rack scope and not used.
+- **Table with an idle figure** (idle_W, or idle_frac_tdp × tdp_W): S_add = 0, and the loss applies only to card_W − idle (the idle figure is board-level).
+- **Placement.**
+  - HBM / DRAM devices (dram + hbm_static): in the package, off the die.
+  - Host DRAM PHY: on the die.
+  - VR: on the module.
+  - die_W = (card_W + S_add − DRAM devices) ÷ dies.
+  - The judged card-level flux = pkg_W ÷ (dies × die mm²), the shipped definition (TDP ÷ die area).
+
+### §260.3 Limits per definition
+The rule "the larger of the shipped part and HIR" compared HIR's chip-level heat flux against card-level power. Each precedent is now judged in its own definition, and a point passes on flux when either holds:
+- Card-level `flux_W_mm2` against the highest shipped part: air 0.86 (H100 / H200 SXM 700 W ÷ 814 mm²), liquid **1.70 → 0.96** (MI355X 1400 W ÷ 1464 mm²) 「推导」.
+- Die heat `die_flux_W_mm2` against the HIR 2021 Table 1 thermal-budget row (50 °C, 4 cm²): air 0.55, liquid 1.70 「来源」.
+- Package power is unchanged: air 1000 W, liquid 1400 W, now against a module-input pkg_W.
+
+### §260.4 What remains of the caveat
+- The floor is measured at idle temperature: MI300X idle junctions read 34–47 °C 「二手」, taken as 40 °C 「近似」.
+- `pkg_W_hot` = pkg_W + S_total · (k − 1) / η, with k = leak_temp_factor(85) / leak_temp_factor(40) = 3.21. This is the TSMC 3 nm SRAM ratio applied to all static, an upper bound 「假设」.
+- An "ok" point that is over under this bound carries `hot_ok` False and a note. Only those points are marginal.
+- The bound is loose. It flags H100-like prefill (627 W package; the real H100 ships at 700 W on air), so it is reported, not judged.
+- Hot spots are still not modelled (the same caveat as §259).
+
+### §260.5 Effect (old → new)
+80 chip × memory × phase cases × 3 presets (qwen3-8b; tpuv4i_7nm table without idle; /tmp/a315/scan.py run against 959ec95 and 0.315):
+- **Air (both presets): 8 → 12 over.** Flips ok → over: 1P and 1P-lp4x64 prefill with 8 × HBM3E (card-level 0.776 → 0.990 W/mm²; package 507 → 647 W = + 43 static + 97 VR) and with HBM3 5-stack (0.849 → 1.081).
+  - The 8 already over stay over: 0.88–0.97 → 1.12–1.23 card-level; die heat 0.93–1.02 > 0.55.
+- **Liquid: 0 → 0.** Card-level is up to 1.33 > 0.96, but die heat ≤ 0.72 × 1.70.
+- **Package / card ratio** 1.26–2.35 (median 1.38). The high end is the 100T chip, whose ~100 W dynamic power is small next to the area floor.
+- **Table with the H100 idle fraction:** 20 → 20 over, 0 flips.
+- **Calibration check (not tuned):** H100-like on HBM3 5-stack gives a complete package power of 627 W prefill and 243 W decode, under the 700 W TDP (a rated maximum). The floor path and the measured-idle path agree to < 1 %. That agreement is the consistency test, and it holds by construction of ρ_s from the same measurement, independent of chip.
+- **Hot-margin flags:** 17 of the 68 air "ok" cases are prefill points. They are informational, not judged.
+
+### §260.6 Not changed
+- The DVFS power cap (`power_W_card` / `tdp_W`) still compares the energy-table card power. Making the cap module-input scope would change every capped DSE throughput and needs its own audit; it is deferred.
+- Power delivery stays reported, not judged.
+
+### §260.7 Suite wall time
+0.314's 553 s (from 452 s in 0.313) was not reproducible:
+- The unchanged 0.314 code gives 446 s, 1670 passed.
+- The excess sat in 8 small files, each ~4.5 → ~113 s in one concurrent window. In the rerun they take 3.9–4.9 s.
+- The median per-file ratio against 0.313 is 1.00, and steal was 0.01 %.
+- Cause found (0.315 runs): **host-level VM freezes**, not code and not a co-tenant.
+  - A 2 s `date` / `sleep` sampler stopped for 123 s (05:20:20 → 05:22:23 JST) and 47 s (05:22:46 → 05:23:33). Across the first gap /proc/stat advanced only 289 ticks (≈ 3.6 s of CPU on 8 CPUs).
+  - virtio_balloon moved ≈ 2.0 M pages each way (≈ 7.6 GB inflated / 8 GB deflated) in the same window. steal does not count a paused VM, and cgroup throttling was 0.
+  - Every file running during a freeze gains its length: 8 files × ~100 s in 0.314; test_core_184's fuzz guard read a 122.4 s "hang" (passes alone in 12.7 s).
+- Real, separate fix: the committed `scripts/test_durations.json` was last refreshed in 0.238. test_core_237 (113–193 s actual) was ranked at 28 s, so longest-first started it near the end and it set every run's tail.
+  - Refreshed from the quiet base rerun; 237 now ranks 6th. The 0.315 commit carries this file instead of the base's copy, a deliberate exception to the reset step.
+- 0.315 runs:
+
+  | Run | Result | Wall |
+  |---|---|---|
+  | Base rerun | 1670 passed | 446 s |
+  | 0.315 code, stale durations | 1678 passed | 538 s (237 tail 193 s) |
+  | Refreshed durations | 1678 passed | 551 s (one freeze) |
+  | Third run | 1677 passed + 184 freeze-flake | 583 s (two freezes) |
+
+  Wall time on this box is bounded by freezes, not by code.
+
+### §260.8 Freshness (2026-10-22 JST)
+- + Flint (RecursiveSI/flint, Apache-2.0, 2026-10-21 23:20 JST), model_type `flint` on the generic GQA-MoE path.
+  - 49 layers: 2 dense (`mlp_only_layers`) + 47 MoE (256 experts top-6, sigmoid router without bias, 1 shared expert of 1024 with no `shared_expert_gate` tensor).
+  - 35 sliding-window (513, including the current token) + 14 full-attention NoPE layers.
+  - q / k RMSNorm [128], learned per-head sinks (`self_attn.softmax_offset` [32]). bf16.
+  - Header total 39.785 B = config build (param_err 0). Active 2.82 B; the card's ≈ 2.5 B excludes the input embedding (0.31 B).
+  - Quantised siblings (int4, nvfp4-gguf) are not added.
+- Raon-1-mini-preview: config.json HTTP 401 (gated "auto").
