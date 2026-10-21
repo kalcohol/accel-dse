@@ -9191,3 +9191,52 @@ Per package at its operating point:
 
 ### §262.6 Freshness (2026-10-22 JST)
 - No new tracked-org release. Raon still 401.
+
+## §263 TCO sensitivity (0.318)
+
+### §263.1 Mechanism
+For one design, throughput, package power and the idle floor are outputs of the cost / energy model at the operating point. None of the TCO inputs changes them, so only these terms move:
+
+    package $ = package_cost(wafer $, Y = exp(−A·D0/100), CoWoS $/mm² × s, test)      (§255, same function)
+    memory $  = GB × $/GB                                                            (§262.2)
+    $/M       = tco_point(life, PUE, $/kWh, r, host $ / W)                           (§262.1)
+
+- `row_usd` recomputes these from the row (mm², dies, Σ die mm² + HBM footprint, GB, thr, P_pkg, P_pkg,idle). It equals the row's $/M at the base.
+- **Tornado:** one input at a time to each end of its range; bars are Δ$/M ÷ base, sorted by the larger magnitude.
+- **Flip:** `verdict(overrides)` on a 33-point grid over the range, then each label change is bisected (40 steps).
+  - Mono / split uses the 0.317 rule: split if its best $/M is more than tie (1 %) below the mono best, over buildable, priced rows.
+  - The sweep "cheaper" rule and the memory choice (argmin of the best $/M per memory option) are as in the 0.317 study.
+
+### §263.2 Ranges
+Each end carries its own tag; the table is in CHANGELOG [0.318.0].
+- Every priced default lies inside its range (tested).
+- The D0 low end (0.05) is 「假设」, because no public mature-N5 D0 exists. The high end, 0.2, is TSMC's pre-volume N5 figure 「二手」.
+- The CoWoS-S relative band is borrowed from CoWoS-L 「假设」.
+
+### §263.3 Results (chiplet example, n5_cowos_l, accel_2026)
+- **Size of the effects:**
+  - Host share, capital rate, $/kWh, memory $/GB, life and PUE each move $/Mtok by 10–130 %.
+  - Wafer $, D0 and CoWoS move it by ≤ 5 %, because good-die + packaging $ is a minority of a 5-year TCO.
+- **Mono / split:**
+  - 3 of 7 priced mono verdicts flip to split at D0 ≈ 0.16–0.17 /cm². Above that, the yield loss of the large mono die outweighs the throughput gain.
+  - No other input flips them.
+  - With a server_2026 base, none flip.
+- **Sweep:** 1 / 44 cells flips: 4 × HBM3E, tp 1, D0 0.05, MAC × 2, mono → split at wafer ≥ $19.8k or $/kWh ≥ 0.1245.
+- **4- vs 8-stack:**
+  - The tp 8 MAC × 2 D0 ≤ 0.2 choice of 4 stacks holds over every range.
+  - Flips appear only in D0 0.3 cells, which lie outside the sourced D0 range and are near ties.
+
+### §263.4 Memory prices (default change)
+- HBM3: none → $13.0 「二手」.
+- HBM4E: none → $28 「二手」 (a 2027 forecast).
+- LPDDR5: none → $10 「二手」.
+- LPDDR6: unpriced.
+- Sources and dates are in CHANGELOG [0.318.0] and `tco.MEM_USD_PER_GB`.
+
+### §263.5 Limits
+- One input at a time; joint corners are not searched.
+- Bonding / assembly yield loss is not modelled (asm_yield 1).
+- The memory range is the row's type range even when the user set a price.
+
+### §263.6 Freshness (2026-10-22 JST)
+- No new tracked-org release. Raon still 401.

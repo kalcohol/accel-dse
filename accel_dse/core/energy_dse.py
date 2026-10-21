@@ -496,7 +496,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          pkg_mm2=None, d0_per_cm2: float | None = None, mono_clusters: bool = True,
                          mem_edges_shoreline: bool = True, clusters=None, cost=None,
                          include_unbuildable: bool = False, shore_strict: bool = False,
-                         cooling: str | None = None, power_scope: str = "package", tco=None) -> dict:
+                         cooling: str | None = None, power_scope: str = "package", tco=None,
+                         tco_sens_row: int | None = None) -> dict:
     from .. import mem_catalog as mc
     from .budget import full_area, shoreline_report
     from .thermal import COOLING, thermal_report
@@ -1012,6 +1013,24 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         if miss:
             notes.append("TCO 缺项（该点不进 $/M 前沿）：" + "；".join(miss))
     split = _split_compare(rows, tco=tco_p is not None) if chip_mode else None
+    sens = None
+    if tco_sens_row is not None:
+        if tco_p is None:
+            raise ValueError("tco_sens_row needs tco")
+        if not 0 <= tco_sens_row < len(rows) or not _tco_ok(rows[tco_sens_row]):
+            raise ValueError("tco_sens_row must index a feasible, buildable, priced row")
+    sr_ = best_tco if tco_sens_row is None else tco_sens_row
+    if tco_p is not None and sr_ is not None:          # 0.318: one-at-a-time sensitivity over the sourced ranges
+        from .tco_sens import compare_flips, compare_key, tornado
+        sb = {"tco": tco_p, "cost": cost_p, "d0": d0_per_cm2 or 0.0, "prices": prices}   # no D0 = yield 1
+        sens = tornado(rows[sr_], sb)
+        sens["row"] = sr_
+        if split:
+            fl = {f["key"]: f for f in compare_flips(rows, split, sb, tie)}
+            for e in split:
+                if (f := fl.get(compare_key(e))) is not None:
+                    e["tco_flips"] = [{"input": x["input"], "label": x["label"], "thresholds": x["thresholds"]}
+                                      for x in f["flips"]]
     return {"chiplet": {"dies": Ns, "d2d_stds": stds, "d2d_units": units, "die_split": die_split,
                         "reticle_mm2": reticle_mm2, "pkg_mm2": pkg_mm2, "d0_per_cm2": d0_per_cm2,
                         "compare": split} if chip_mode else None,
@@ -1032,7 +1051,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
             "tco": None if tco_p is None else {**{k: tco_p[k] for k in ("preset", "life_years", "pue", "usd_per_kWh", "util",
                                                                        "capital_rate", "system_usd_per_card",
                                                                        "system_W_per_card")},
-                                               "src": tco_p["src"], "best": best_tco, "n_ranked": n_tco},
+                                               "src": tco_p["src"], "best": best_tco, "n_ranked": n_tco, "sens": sens},
             "basis": "设计网格（MAC 总数 × 引擎边长 × SRAM × NoC 拓扑 × 外存 × SLC × 频率工作点）逐点评估：时间 / 放得下来自代价模型，"
                      "J/单位 来自能耗表（MAC / SRAM / 导线 / NoC / DRAM+PHY / 静态）；perf/W = 1 / (J/单位)；超功耗点按 DVFS "
                      "封顶运行（或剔除），超面积 / 岸线不可建（外存 / D2D / I/O，0.312；include_unbuildable 可纳入）/ SLO / 内存 $ 的点剔除；前沿 = 吞吐↑ 与 J/单位↓ 的非支配集，"

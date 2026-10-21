@@ -27,8 +27,30 @@ MEM_USD_PER_GB = {
     "LPDDR5X": (19.5, "推导", "LPDDR5X 2Q26 合约约 $19.3–19.8/GB（SemiAnalysis 约 $10/GB 基数 × TrendForce 2Q26 +93–98 %，经 Wccftech "
                              "转述「二手」）「推导」，取中值"),
 }
-# LPDDR5 / LPDDR6 / HBM3 / HBM4E: no recent public price → unpriced unless the user gives one (never silently 0)
-
+# 0.318 additions — public, dated, labelled; LPDDR6 still unpriced (only a rumoured +20 % premium over LPDDR5X, no $/GB)
+MEM_USD_PER_GB.update({
+    "HBM3": (13.0, "二手", "HBM3 2025 合约 $13.00/GB（区间 12.0–13.6；Silicon Analysts 模型估计，基于 TrendForce 2024-05 所述 "
+                         "2025 涨幅，低置信度「二手」；页面 2026-10 查）"),
+    "HBM4E": (28.0, "二手", "HBM4E 2027 预测 $3.5/Gb = $28/GB（UBS，2026-06-22，经新浪财经转述「二手」）——是预测，不是成交价"),
+    "LPDDR5": (10.0, "二手", "LPDDR5 合约约 $10/GB（SemiAnalysis，2026-05，经 Wccftech 转述「二手」；2Q26 涨价前水平，"
+                           "原文 LPDDR5 / 5X 口径不严）"),
+})
+# 0.318: sourced $/GB range per type for the sensitivity view: (lo, hi, tag_lo, tag_hi, source)
+MEM_RANGES = {
+    "HBM3E": (10.28, 18.0, "二手", "二手",
+              "HBM3E $10.28–18.0/GB：下端 2026-08-31 合约低值（GPUQuant「二手」）；上端 Fubon $17–18（TrendForce 2026-08-13「二手」）；"
+              "Silicon Analysts 每栈成交 $12.5–13.9（首尔经济 2025-12-26「二手」）在区间内"),
+    "HBM4": (15.56, 32.0, "二手", "二手",
+             "HBM4 $15.56–32/GB：下端 SK hynix 对 NVIDIA 约 $560 / 36 GB 栈（首尔经济 2025-11-05，经 Silicon Analysts「二手」）；"
+             "上端 Fubon $31–32（TrendForce 2026-08-13「二手」）；2027 供货预期约 $36（首尔经济 2026-10-01）不计入 2026 区间"),
+    "LPDDR5X": (7.8, 21.0, "二手", "二手", "LPDDR5X $7.8–21/GB：长约下限 / 上限（Wccftech 2026-05「二手」）"),
+    "HBM3": (12.0, 13.6, "二手", "二手", "HBM3 $12.0–13.6/GB（Silicon Analysts 2025 合约模型区间「二手」）"),
+    "HBM4E": (28.0, 40.0, "二手", "推导",
+              "HBM4E 2027 预测：下端 UBS $3.5/Gb = $28/GB「二手」；上端 台湾分析师 2027 HBM4 $4.16/Gb × HBM4E +20 %（三立新闻「二手」）"
+              "≈ $5/Gb = $40/GB「推导」"),
+    "LPDDR5": (10.0, 19.8, "二手", "推导", "LPDDR5 $10–19.8/GB：SemiAnalysis 约 $10「二手」→ × TrendForce 2Q26 +93–98 %「推导」上端"),
+}
+# LPDDR6: unpriced unless the user gives one (never silently 0); no sourced range
 _BASE = {
     "life_years": 5.0, "pue": 1.54, "usd_per_kWh": 0.0891, "util": 1.0, "capital_rate": 0.0,
     "system_usd_per_card": 0.0, "system_W_per_card": 0.0,
@@ -177,6 +199,7 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str) -> dict:
     mid = scn.mem_id or default_mem(scn.chip)
     sp = mc.parse_mem_id(mid)
     notes, miss = [], []
+    cp, d0 = None, None
     if spec.get("pkg_usd") is not None:
         v = spec["pkg_usd"]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v < 1e8:
@@ -220,4 +243,9 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str) -> dict:
     t.update(preset=p["preset"], pkg_usd=pkg_usd, pkg_src=pkg_src, mem_usd=mem_usd, mem_GB=sp.capacity_GB * pk,
              mem_usd_per_GB=pr, mem_price_src=ptag, pkg_W=pw, pkg_W_idle=idle, thr=thr, src=p["src"],
              notes=notes + [basis_note(p)])
+    # 0.318: one-at-a-time sensitivity over the sourced ranges (cost inputs only when priced from a cost preset)
+    from .tco_sens import tornado
+    rw = {"mm2": die_mm2, "dies": pk, "si_mm2": (die_mm2 or 0.0) * pk, "mem_id": mid, "mem_type": sp.mem_type,
+          "mem_GB": sp.capacity_GB * pk, "thr": thr, "unit": unit, "tco": t}
+    t["sens"] = tornado(rw, {"tco": p, "cost": cp, "d0": d0, "prices": None})
     return t

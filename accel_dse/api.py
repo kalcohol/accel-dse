@@ -157,7 +157,7 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                                "noc_link_Bpc", "noc_routing", "noc_links", "dies", "d2d_stds", "d2d_units",
                                "die_split", "reticle_mm2", "pkg_mm2", "d0_per_cm2", "mono_clusters",
                                "mem_edges_shoreline", "clusters", "cost", "include_unbuildable", "shore_strict",
-                               "cooling", "power_scope", "tco"}}
+                               "cooling", "power_scope", "tco", "tco_sens_row"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1564,6 +1564,12 @@ def api_insight_dse(body: dict) -> dict:
         if kw.get("cost") is None:
             raise ApiError("tco needs cost (package cost per good unit, n5_cowos_s / n5_cowos_l)")
         kw["tco"] = v
+    if (v := body.get("tco_sens_row")) is not None:                        # 0.318: sensitivity of a chosen row
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ApiError("tco_sens_row must be a row index ≥ 0")
+        if kw.get("tco") is None:
+            raise ApiError("tco_sens_row needs tco")
+        kw["tco_sens_row"] = v
     for k in ("mono_clusters", "mem_edges_shoreline", "include_unbuildable", "shore_strict"):   # 0.309 / 0.312 / 0.313
         if (v := body.get(k)) is not None:
             if not isinstance(v, bool):
@@ -1605,6 +1611,30 @@ def api_insight_dse(body: dict) -> dict:
                 "hash": scn.hash()}
     except ValueError as e:
         raise ApiError(str(e)) from None
+
+
+def api_tco_sens(body: dict) -> dict:
+    """0.318: TCO sensitivity of one design of an energy DSE (body = insight_dse body with tco + cost; optional
+    tco_sens_row, default the cheapest $/M row): the tornado over the sourced ranges, the mono / split $/M verdicts
+    with the inputs that flip them (and where), and the ranges with their sources."""
+    from .core.tco import MEM_RANGES
+    from .core.tco_sens import LABELS, RANGES
+    if not isinstance(body, dict) or body.get("tco") is None:
+        raise ApiError("tco_sens needs an insight_dse body with tco (and cost)")
+    r = api_insight_dse(body)
+    t = r["tco"] or {}
+    cmp_ = [{k: e.get(k) for k in ("mac_x", "sram_x", "side", "topology", "mem_id", "slc_mib", "f_op", "verdict_tco",
+                                   "d_tco", "best_tco_mono", "best_tco_split", "tco_flips")}
+            for e in ((r.get("chiplet") or {}).get("compare") or []) if e.get("verdict_tco")]
+    return {"sens": t.get("sens"), "row": (t.get("sens") or {}).get("row"),
+            "design": None if t.get("sens") is None else
+            {k: r["rows"][t["sens"]["row"]].get(k) for k in ("dies", "mac_x", "sram_x", "mem_id", "topology", "thr", "unit")},
+            "compare": cmp_, "preset": t.get("preset"), "n_ranked": t.get("n_ranked"),
+            "ranges": {"inputs": {k: {"label": LABELS[k], "lo": v[0], "hi": v[1], "tag_lo": v[2], "tag_hi": v[3], "src": v[4]}
+                                  for k, v in RANGES.items()},
+                       "mem_usd_per_GB": {k: {"lo": v[0], "hi": v[1], "tag_lo": v[2], "tag_hi": v[3], "src": v[4]}
+                                          for k, v in MEM_RANGES.items()}},
+            "hash": r.get("hash")}
 
 
 def api_insight_speech(body: dict) -> dict:

@@ -6,6 +6,73 @@
 
 
 
+## [0.318.0]
+
+### TCO sensitivity: which sourced input moves $/M most, and do the 0.317 verdicts flip
+- **New `accel_dse/core/tco_sens.py`.** Each input is varied one at a time across its sourced range, with the others at the design's base values.
+  - **Mechanism:** throughput, package power and the idle floor are fixed (none of these inputs changes them). Only cost terms move, through the same functions as before: `package_cost` (wafer $, D0 → Poisson yield, CoWoS $/mm²) and `tco_point`.
+  - `row_usd(row, base, overrides)` reproduces the row's $/M exactly at the base (checked; a mismatch raises).
+  - `tornado(row, base)` returns bars sorted by the larger |Δ $/M|.
+  - `scan_flip(verdict, input, range)` grid-scans the range (33 points) and bisects every verdict change.
+  - `compare_flips` does this for each mono / split $/M verdict of a DSE.
+- **Ranges (`RANGES`, `tco.MEM_RANGES`), each end tagged:**
+
+  | Input | Low | High | Basis |
+  |---|---|---|---|
+  | Wafer N5/N4 | $16,000 | $21,300 | Silicon Analysts band citing CSET / Morgan Stanley 「二手」 |
+  | D0 | 0.05 /cm² | 0.20 /cm² | High: TSMC 2020 N5 pre-volume ≈ 0.2 「二手」; low: mature 「假设」 (no public mature N5 value) |
+  | CoWoS $/mm² | × 0.909 | × 1.091 | B200 CoWoS-L $1,000–1,200 (Epoch AI 「二手」) ÷ $1,100; CoWoS-S borrows the relative band 「假设」 |
+  | $/kWh | 0.0546 | 0.1385 | EIA state industrial minimum (NM, via DC Hub 「二手」) / EIA national commercial 「来源」 |
+  | PUE | 1.09 | 1.58 | Google 2025 fleet TTM 「来源」 / Uptime 2021–2025 maximum (2023) 「来源」 |
+  | Life | 4 years | 6 years | SemiAnalysis / Meta analysis 「二手」 / Alphabet 10-K 「来源」 |
+  | Host share | 0 | $7,500 + 575 W | accel → server_2026 「推导」 |
+  | Capital rate | 0 | 9.33 % | Meta analysis WACC 「二手」 |
+  | HBM3E $/GB | 10.28 | 18.0 | GPUQuant contract low 2026-08-31 / Fubon via TrendForce 2026-08-13 「二手」 |
+  | HBM4 $/GB | 15.56 | 32.0 | SK hynix mid-$500s per 36 GB stack (Seoul Economic Daily 2025-11-05 via Silicon Analysts) / Fubon 「二手」 |
+  | LPDDR5X $/GB | 7.8 | 21 | LTA floor / ceiling (Wccftech 2026-05 「二手」) |
+
+- **Where it appears:**
+  - DSE with `tco`: `tco.sens` (tornado of the cheapest $/M row, or `tco_sens_row`) and per mono / split compare entry `tco_flips` (input, thresholds from → to).
+  - eval `tco.sens`. Cost inputs are skipped when the user gives `pkg_usd`.
+  - New route `POST /api/tco_sens` (insight_dse body plus optional `tco_sens_row`): the tornado, the design, the compare verdicts with their flips, and all ranges with sources.
+  - CLI: `scripts/tco_sens.py` (`--case i` tornado, `--study` flip analysis).
+  - UI: a bar chart under the DSE summary (with the flipping inputs and thresholds) and under the chip-panel TCO line.
+- **Results (chiplet example, n5_cowos_l, accel_2026):**
+  - **Biggest movers** (case 0 cheapest design, mono 8 × HBM3E):
+    - Host share 0 → server: +134 %.
+    - Capital rate 0 → 9.33 %: +20 %.
+    - $/kWh: −13 / +19 %.
+    - Memory $/GB: −17 / +1 %.
+    - Life: +16 / −11 %.
+    - PUE: −10 / +1 %.
+    - D0: −1.4 / +4.5 %.
+    - Wafer $: −0.3 / +1.2 %.
+    - CoWoS: ±0.8 %.
+  - Chip economics (wafer, D0, CoWoS) move $/Mtok by a few percent; facility, finance and host terms by 10–130 %.
+  - **Mono / split verdicts (7 priced cases, all mono under $/M):**
+    - **3 flip to split inside the D0 range**: case 0 at D0 ≈ 0.162, case 3 at ≈ 0.167, case 5 at ≈ 0.163 /cm², i.e. at pre-mature defect density.
+    - No other input flips any case.
+    - With server_2026 as the base, no case flips (the host share dilutes the package term).
+    - The MAC × 2 entries are only_split (the mono die is unbuildable), which no cost input can change.
+  - **Sweep cheaper option (44 cells with both sides buildable; D0 is the grid axis there, not scanned):** 1 flips. 4 × HBM3E, tp 1, D0 0.05, MAC × 2 goes mono → split at wafer ≥ $19,800 or $/kWh ≥ 0.1245.
+  - **4- vs 8-stack choice:** the 0.317 result (tp 8, MAC × 2, D0 ≤ 0.2: $/M picks 4 stacks) **does not flip for any input in its range**. tp 1 always picks 8 stacks; tp 8 / 900 MAC × 1 always 6.
+    - Flips occur only in the D0 0.3 cells, which lie outside the sourced D0 range. At tp 8 / 400 MAC × 2, 4s → 8s at wafer ≥ $18,390, memory ≤ $15.33/GB, $/kWh ≤ 0.060 or host ≥ 0.46.
+- Limits: one input at a time (joint corners are not searched); package / bonding yield loss is still not modelled (asm_yield 1).
+
+### Memory $/GB: three types newly priced (default change, old → new)
+- **HBM3: none → $13.0/GB 「二手」**: Silicon Analysts 2025 contract, a model estimate on TrendForce's stated 2025 hike, low confidence; range 12.0–13.6.
+- **HBM4E: none → $28/GB 「二手」**: UBS 2027 forecast $3.5/Gb (2026-06-22, via Sina). It is a forecast, not a transaction price. Range up to $40 「推导」 from Taiwanese analysts' 2027 HBM4 $4.16/Gb × the +20 % HBM4E premium.
+- **LPDDR5: none → $10/GB 「二手」**: SemiAnalysis, 2026-05, via Wccftech. This is the pre-2Q26-increase level, and the source is loose about LPDDR5 vs 5X; range up to $19.8 「推导」 (× TrendForce 2Q26 +93–98 %).
+- **LPDDR6 stays unpriced**: only a rumoured +20 % premium over LPDDR5X (Weibo tipster via Wccftech / eTeknix), no $/GB, so nothing is derived from it.
+- Mechanism for the change: public, dated $/GB now exist for these types. Rows of these types now get a $/M instead of 「缺」. Rows of other types are unchanged.
+
+### Freshness (2026-10-22 07:40 JST)
+- No new release from the 110 tracked orgs.
+- HF newest: derivatives only (Ornith-1.5-122B MLX / GGUF / NVFP4 quantisations of a catalogued model; Qwen3.8-27B SLQ quantisations; a MiniCPM-V-4.7 MNN conversion; third-party fine-tunes).
+- Raon-1-mini-preview: still 401.
+- Tests: new test_core_318 (9); test_core_317 now asserts only LPDDR6 unpriced.
+
+
 ## [0.317.0]
 
 ### Cost per unit of work (TCO, opt-in): $/M unit and unit/s/W per design

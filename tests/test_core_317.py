@@ -52,8 +52,7 @@ def test_sources_and_defaults():
     s = TCO_PRESETS["server_2026"]
     assert s["system_usd_per_card"] == (250e3 - 190e3) / 8 and s["system_W_per_card"] == (10.2e3 - 8 * 700) / 8
     assert MEM_USD_PER_GB["HBM3E"][0] == 17.5 and MEM_USD_PER_GB["HBM3E"][1] == "二手"
-    for t in ("HBM3", "LPDDR5", "LPDDR6", "HBM4E"):          # no recent public price → never a silent default
-        assert t not in MEM_USD_PER_GB
+    assert "LPDDR6" not in MEM_USD_PER_GB                    # 0.318: still no public $/GB → never a silent default
 
 
 def test_formula_exact():

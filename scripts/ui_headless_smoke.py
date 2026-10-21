@@ -465,6 +465,10 @@ def main(chrome="/usr/bin/google-chrome", budget=1800.0) -> int:
                     tbl = p.inner_text("#ins-dse-tbl")
                     ok = st.startswith("完成") and "TCO（accel_2026）" in sm and "$/M" in tbl and "◆" in tbl
                     steps.append(("dse tco", st[:40], ok))
+                    nb = p.evaluate("document.querySelectorAll('#ins-dse-sens-bars .sens-row').length")   # 0.318
+                    steps.append(("dse tco sens bars", nb))
+                    if not nb:
+                        errs.append("dse tco sens: no bars: " + p.inner_text("#ins-dse-sens")[:200])
                     if not ok:
                         errs.append(f"dse tco: {st[:120]} | {sm[-200:]}")
                     p.select_option("#ins-dse-tco", "")
@@ -476,6 +480,10 @@ def main(chrome="/usr/bin/google-chrome", budget=1800.0) -> int:
                     try:
                         wait_js("document.getElementById('chip-tco').textContent.includes('TCO：$')", timeout=120000)
                         steps.append(("chip tco", p.inner_text("#chip-tco")[:60]))
+                        nb = p.evaluate("document.querySelectorAll('#chip-tco-sens .sens-row').length")   # 0.318
+                        steps.append(("chip tco sens bars", nb))
+                        if not nb:
+                            errs.append("chip tco sens: no bars")
                     except PWTimeout:
                         errs.append("chip tco: no $/M line: " + p.inner_text("#chip-tco")[:200])
                     p.select_option("#c-tco", "")

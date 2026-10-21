@@ -1455,6 +1455,30 @@ function renderShore(x) {
 // 0.313: thermal / power buildability in the chip panel (package W, per-die heat flux vs the cooling preset)
 const COOL_ZH = { air_oam: '风冷 OAM', air_hgx: '风冷 HGX', liquid: '液冷' };   // 0.316
 
+// 0.318: TCO sensitivity bars — each input at the two ends of its sourced range (one at a time); left = cheaper,
+// right = dearer, scaled to the largest |Δ|; the tag of each end is shown on hover
+const SENS_FMT = { capital_rate: (v) => (v * 100).toFixed(2) + '%', host: (v) => (v === 0 ? '0' : v === 1 ? '服务器' : v.toFixed(2)),
+  pkg_scale: (v) => '×' + v.toFixed(3) };
+function sensBars(s, id) {
+  if (!s || !(s.bars || []).length) return null;
+  const m = Math.max(...s.bars.map((b) => Math.max(Math.abs(b.d_lo), Math.abs(b.d_hi))), 1e-9);
+  const pc = (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+  const fv = (k, v) => (SENS_FMT[k] ? SENS_FMT[k](v) : num(v));
+  const seg = (d, col) => {
+    const w = (Math.abs(d) / m) * 50;
+    return h('div', { style: `position:absolute;top:2px;height:10px;background:${col};${d < 0 ? `right:50%;width:${w}%` : `left:50%;width:${w}%`}` });
+  };
+  return h('div', { id, class: 'sens-bars' },
+    h('div', { class: 'small muted' }, `TCO 敏感性（$/M ${s.unit} 基值 $${num(s.usd_per_Munit)}；一次只动一个输入，区间两端「标签」见悬停；按影响排序）`),
+    s.bars.map((b) => h('div', { class: 'sens-row', style: 'display:flex;align-items:center;gap:6px', title: `${b.src}` },
+      h('span', { style: 'width:7em;text-align:right' }, b.label),
+      h('div', { style: 'position:relative;width:240px;height:14px;background:#f2f2f2' },
+        h('div', { style: 'position:absolute;left:50%;top:0;bottom:0;border-left:1px solid #888' }),
+        seg(b.d_lo, '#4a90d9'), seg(b.d_hi, '#d9734a')),
+      h('span', { class: 'small' }, `${fv(b.input, b.lo)}「${b.tag_lo}」${pc(b.d_lo)} · ${fv(b.input, b.hi)}「${b.tag_hi}」${pc(b.d_hi)}`))),
+    (s.skipped || []).length ? h('div', { class: 'small muted' }, '未变动：' + s.skipped.join('；')) : null);
+}
+
 function renderTco(t) {          // 0.317
   const el = $('chip-tco');
   if (!el) return;
@@ -1467,6 +1491,8 @@ function renderTco(t) {          // 0.317
     + ` · 资本 $${num(t.capex_usd)}（封装 $${num(t.pkg_usd)} + 内存 $${num(t.mem_usd)}，${num(t.mem_GB)} GB × $${num(t.mem_usd_per_GB)}「${t.mem_price_src}」）`
     + ` · 封装功耗 ${num(t.pkg_W)} W × PUE → ${num(t.kWh_per_yr)} kWh/年 · 占比 封装 ${pc(sh.package)} / 内存 ${pc(sh.memory)} / 系统 ${pc(sh.system)} / 电 ${pc(sh.energy)}`),
     h('div', { class: 'small muted' }, (t.notes || []).join('；')));
+  const sb = sensBars(t.sens, 'chip-tco-sens');   // 0.318
+  if (sb) el.append(sb);
 }
 
 function renderThermal(x) {
@@ -2540,6 +2566,19 @@ async function runInsightDse() {
       + (r.costed ? ` · 成本前沿（吞吐↑ J↓ $/好封装↓）${rows.filter((x) => x.front_cost).length} 点` : '')
       + (r.tco ? ` · TCO（${r.tco.preset}）：$/M${(rows.find((x) => x.unit) || {}).unit || '单位'} 前沿（吞吐↑ $/M↓，只含可建点）${rows.filter((x) => x.front_tco).length} 点` + (r.tco.best != null ? `，最低 $${rows[r.tco.best].tco.usd_per_Munit.toPrecision(3)}（第 ${r.tco.best} 行，表中 ◆）` : '，无可建且已定价的点') : '')   // 0.317
       + ((r.notes || []).length ? ' · ' + r.notes.join('；') : '');
+    if ($('ins-dse-sens')) {            // 0.318: sensitivity of the cheapest $/M row + verdict flips
+      const el = $('ins-dse-sens');
+      el.textContent = '';
+      const sn = r.tco && r.tco.sens;
+      if (sn) {
+        el.append(h('div', {}, `第 ${sn.row} 行（${sn.row === r.tco.best ? '$/M 最低' : '所选'}）`));
+        el.append(sensBars(sn, 'ins-dse-sens-bars'));
+        const fl = ((r.chiplet && r.chiplet.compare) || []).filter((e) => (e.tco_flips || []).length);
+        el.append(h('div', { class: 'small', id: 'ins-dse-sens-flips' }, fl.length
+          ? '有出处区间内会翻转的单片 / 拆分 $/M 结论：' + fl.map((e) => `MAC×${e.mac_x} 边长 ${e.side} ${e.topology}（${e.verdict_tco}）：` + e.tco_flips.map((f) => f.thresholds.map((t) => `${f.label} ${num(t.at)} 处 ${t.from}→${t.to}`).join('，')).join('；')).join(' | ')
+          : ((r.chiplet && r.chiplet.compare) || []).some((e) => e.verdict_tco === 'split' || e.verdict_tco === 'mono') ? '单片 / 拆分 $/M 结论在各输入的有出处区间内均不翻转（一次只动一个）' : ''));
+      }
+    }
     put($('ins-dse-chart'), paretoChart(rows));
     const pct = (x) => (x * 100).toFixed(1) + '%';
     put($('ins-dse-tbl'), h('thead', {}, h('tr', {},
