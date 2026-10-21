@@ -180,3 +180,8 @@ def test_pd_handoff_bytes_per_layer_kind():
     full, half = kv_bytes_per_request(m, 8192), cache_new_bytes(m, 8192, 4096)
     st = kv_bytes_per_request(m, 2) - 2 * (kv_bytes_per_request(m, 4) - kv_bytes_per_request(m, 2)) / 2
     assert half > full / 2 and half >= st
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

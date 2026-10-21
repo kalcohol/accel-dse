@@ -403,6 +403,8 @@
       <label title="外部存储读写每 bit 的能耗（含接口），pJ">pJ / bit DRAM<input type="number" id="e-pJ_bit_dram" min="0" step="0.5"></label>
       <label title="0.186：HBM 时用此值（不填 = 上面的通用 DRAM 值）">pJ / bit DRAM·HBM<input type="number" id="e-pJ_bit_dram_hbm" min="0" step="0.1"></label>
       <label title="0.186：非 HBM（LPDDR 等）时用此值（不填 = 上面的通用 DRAM 值）">pJ / bit DRAM·LPDDR<input type="number" id="e-pJ_bit_dram_lpddr" min="0" step="0.5"></label>
+      <label title="0.302：HBM4 / HBM4E 时用此值（不填 = DRAM·HBM）。预设 2.46 = HBM3E 3.44 ÷ 1.4（Samsung / SK hynix：能效比 HBM3E 高约 40 %，厂商口径）「推导」">pJ / bit DRAM·HBM4<input type="number" id="e-pJ_bit_dram_hbm4" min="0" step="0.1"></label>
+      <label title="0.302：LPDDR6 时用此值（不填 = DRAM·LPDDR）。预设 3.31 = LPDDR5X 4.0 ÷ 1.21（Samsung ISSCC 2026 LPDDR6：能效比 LPDDR5X 高 21.0 %）「推导」">pJ / bit DRAM·LPDDR6<input type="number" id="e-pJ_bit_dram_lpddr6" min="0" step="0.1"></label>
       <label title="0.188：芯片侧 DRAM PHY（HBM）每 bit，单列 dram_phy">pJ / bit PHY·HBM<input type="number" id="e-pJ_bit_phy_hbm" min="0" step="0.05"></label>
       <label title="0.188：芯片侧 DRAM PHY（LPDDR）每 bit，单列 dram_phy">pJ / bit PHY·LPDDR<input type="number" id="e-pJ_bit_phy_lpddr" min="0" step="0.05"></label>
       <label title="0.228：每 MAC 槽每个核心时钟周期的能耗（时钟树 / 常开流水寄存器），忙或停顿都付：P = MAC 槽 × f × 此值；降频时随 f 下降">pJ / MAC槽·周期<input type="number" id="e-pJ_clk_mac_cycle" min="0" step="0.01"></label>
@@ -588,13 +590,15 @@
     <div class="row">
       <label title="decode = 场景当前设置；prefill = batch 1 + prompt">阶段<select id="ins-dse-phase"><option value="">场景</option><option value="decode">decode</option><option value="prefill">prefill</option></select></label>
       <label title="超功耗预算的点：dvfs = 降频运行到预算内（0.227 模型）；reject = 剔除">超功耗<select id="ins-dse-power"><option value="dvfs">DVFS 封顶</option><option value="reject">剔除</option></select></label>
+      <label title="0.302：频率轴（DVFS 工作点 f/f_max，逗号分隔，0.15–1）：每点按所选 V–f 曲线降压，核心轨动作能耗 × V²、SRAM 泄漏 × V（与功耗封顶同一机制）；更多 MAC × 更低频率 vs 更少 MAC × 满频在前沿上直接比较">频率 ×<input type="text" id="ins-dse-freq" value="1" style="width:6em"></label>
+      <label title="V–f 曲线（频率轴与 DVFS 封顶共用）：dfs = 仅降频、电压不变（每动作能耗不变，偏保守）；rx5700xt_n7 = AMD RX 5700 XT（N7）默认 V–f 曲线「二手」">V–f<select id="ins-dse-curve"><option value="dfs">dfs（电压不变）</option><option value="rx5700xt_n7">rx5700xt_n7</option></select></label>
       <label title="MAC 总数倍数（逗号分隔）">MAC ×<input type="text" id="ins-dse-macs" value="0.5,1,2" style="width:6em"></label>
       <label title="SRAM 容量倍数（逗号分隔）">SRAM ×<input type="text" id="ins-dse-sram" value="0.5,1,2" style="width:6em"></label>
       <label class="small" title="也扫 NoC 拓扑 mesh / ring / crossbar（点数 ×3）"><input type="checkbox" id="ins-dse-topo"> 拓扑</label>
       <button class="btn" id="ins-dse-run">搜索设计点</button>
       <span class="small muted" id="ins-dse-status"></span>
     </div>
-    <div class="row" title="0.301：外存与 SLC 作为联合搜索轴（空 = 场景当前值）。DRAM 能耗按类别 pJ/bit + PHY（HBM4 / LPDDR6 用 HBM3E / LPDDR5X 数值「近似」，结果注明）；面积加 DRAM PHY（总线位宽 × 每 bit 面积）与 SLC 面积；HBM 堆栈数受晶粒岸线限制">
+    <div class="row" title="0.301：外存与 SLC 作为联合搜索轴（空 = 场景当前值）。DRAM 能耗按类别 pJ/bit + PHY（0.302：HBM4 / LPDDR6 用厂商 / ISSCC 能效比推导的 pJ/bit，PHY 仍借 HBM3 / LPDDR5X「近似」，结果注明）＋ DRAM 后台 / 刷新（HBM；0.302 起 LPDDR）；面积加 DRAM PHY（总线位宽 × 每 bit 面积）与 SLC 面积；HBM 堆栈数受晶粒岸线限制">
       <label title="外存类型（逗号分隔，如 HBM3E,HBM4,LPDDR5X,LPDDR6；空 = 当前外存）">外存<input type="text" id="ins-dse-mem" placeholder="当前" style="width:12em"></label>
       <label title="颗粒 / 堆栈数倍数（同类型相对当前，其他类型相对目录默认；吸附到目录允许的数量）">数量 ×<input type="text" id="ins-dse-memn" value="1" style="width:5em"></label>
       <label title="每颗粒 / 堆栈容量 GB（空 = 默认；目录中不存在的组合跳过）">容量 GB<input type="text" id="ins-dse-memcap" placeholder="默认" style="width:5em"></label>

@@ -93,3 +93,8 @@ def test_fuzz_phase_law_invariants():
         assert abs(sum(m for m, *_ in L["atoms"]) - tot) < 1e-6 * tot
         assert all(s > 0 and l_ >= s * 0.999 for _, s, l_, _ in L["atoms"])        # own latency ≥ its share
         assert 0 <= L["follower"] <= L["pi"] + 1e-4      # = π unless a mixture phase rounds to 0
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

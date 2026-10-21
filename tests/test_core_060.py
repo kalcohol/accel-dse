@@ -244,3 +244,8 @@ def test_decode_chain_interpolation_large_batch():
         PQ.INTERP_B = old
     assert a is not None and b is not None
     assert abs(a["tpot"] / b["tpot"] - 1) < 5e-3
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped except in the test that reads them (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals(), skip=("test_pd_split_sampling_matches_exact",))

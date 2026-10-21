@@ -1,5 +1,6 @@
 """0.300: energy-aware design search — Pareto front of throughput vs J/token (≡ perf/W) under area / power budgets.
 0.301: memory side (DRAM type / unit count / per-unit capacity, SLC size) as joint axes; workload mix; SLO limits.
+0.302: DVFS operating point (clock / voltage) as an axis; LPDDR background power and HBM4 / LPDDR6 pJ/bit in the table.
 
 The scenario's chip is varied on a small grid of design variables, every point is evaluated by the cost model (time,
 fit) and priced by the energy table (MAC / SRAM / wire / NoC / DRAM / static, incl. the 0.299 dataflow NoC):
@@ -8,9 +9,13 @@ fit) and priced by the energy table (MAC / SRAM / wire / NoC / DRAM / static, in
   NoC         topologies    (default: the chip's)
   DRAM        `mems` (explicit catalog ids) or `mem_types` × `mem_count_scales` × `mem_caps` (0.301; default: the
               scenario's memory).  Bandwidth / capacity / fit from the cost model; energy from the per-kind pJ/bit
-              (pJ_bit_dram_hbm / _lpddr + PHY) and HBM standby / refresh; die area adds the DRAM PHY (bus bits ×
+              (pJ_bit_dram_hbm / _lpddr, 0.302 _hbm4 / _lpddr6, + PHY) and DRAM standby / refresh; die area adds the DRAM PHY (bus bits ×
               mm2_per_dq_*); HBM stacks are checked against the die shoreline (budget.shoreline_check, "over" = drop)
   SLC         `slc_mibs` (0.301; absolute MiB, default the chip's): area mm2_per_mib_slc, SLC access + wire energy
+  clock       `f_scales` (0.302; f/f_max of the chip's nominal clock, default 1): the DVFS operating point — the
+              chip is re-evaluated at freq_ghz·f, core-rail action energies × V(f)², SRAM leakage × V(f), V(f) from the
+              `curve` (powercap._point, the same mechanism as the power cap).  More MACs at a lower clock vs fewer at
+              f_max is then a front trade under the power budget.  Under "dfs" (V flat) a lower clock never lowers J/unit.
 Constraints (budget, all optional; nothing is defaulted silently):
   area   die area proxy (budget.full_area with the user's densities) ≤ die_mm2 — a hard limit (area cannot be throttled)
   power  avg card power ≤ power_W_card (or energy.tdp_W): over-budget points either run clock-capped (power_mode
@@ -142,12 +147,13 @@ def _mem_info(mem_id: str) -> dict:
 
 
 # 0.301: which preset pJ/bit / PHY figures stand in for a memory type they were not measured on (labelled in notes)
-MEM_PROXY = {
-    "HBM4": "HBM4 / HBM4E 用 HBM3E 的 pJ/bit（SK hynix IEDM 2023：HBM2E 4.3 × 0.8）与 HBM3 PHY 0.29 pJ/bit「近似（假设）」",
-    "HBM4E": "HBM4 / HBM4E 用 HBM3E 的 pJ/bit（SK hynix IEDM 2023：HBM2E 4.3 × 0.8）与 HBM3 PHY 0.29 pJ/bit「近似（假设）」",
+MEM_PROXY = {      # 0.302: HBM4 / LPDDR6 pJ/bit sourced (pJ_bit_dram_hbm4 / _lpddr6); PHY energy still borrowed
+    "HBM4": "HBM4 pJ/bit = pJ_bit_dram_hbm4（预设 2.46：HBM3E ÷ 1.4，Samsung / SK hynix 厂商口径「推导」）；PHY 仍用 HBM3 0.29 pJ/bit「近似（假设）」",
+    "HBM4E": "HBM4E 沿用 HBM4 的 pJ/bit（pJ_bit_dram_hbm4）与 HBM3 PHY 0.29 pJ/bit「近似（假设）」",
     "HBM3": "HBM3 用 HBM3E 的 pJ/bit（HBM3E = HBM2E −20 %，HBM3 介于两者）「近似（假设）」",
-    "LPDDR6": "LPDDR6 用 LPDDR5X 的 pJ/bit（Grace 500 GB/s ≈ 16 W → 4.0）与 LPDDR5X PHY 1.3 pJ/bit「近似（假设）」",
-    "LPDDR5": "LPDDR5 用 LPDDR5X 的 pJ/bit「近似（假设）」",
+    "LPDDR6": "LPDDR6 pJ/bit = pJ_bit_dram_lpddr6（预设 3.31：LPDDR5X ÷ 1.21，Samsung ISSCC 2026「推导」）；PHY 仍用 LPDDR5X 1.3 pJ/bit、"
+              "后台功耗沿用 LPDDR5X（Micron Y52Q）「近似（假设）」",
+    "LPDDR5": "LPDDR5 用 LPDDR5X 的 pJ/bit 与后台功耗「近似（假设）」",
 }
 PHY_AREA_PROXY = {"HBM": "HBM PHY 面积按 HBM4 base die 的常规 PHY（> 8 × 4 mm / 2048 bit）每 bit 计，HBM3E 窄总线同密度「近似」",
                   "LPDDR": "LPDDR PHY 面积按 SF2 LPDDR6 x24 通道 0.695 mm² 每 bit 计，LPDDR5X 同密度「近似」"}
@@ -162,19 +168,23 @@ def _phase_scn(scn, phase, prompt):
     return scn.replace("serving", sv)
 
 
-def _run(s, t, cap, power_mode, curve) -> dict:
-    """One phase of one design point: nominal, then capped / rejected by power."""
-    from .powercap import dvfs_cap
-    r = evaluate(s)
-    er = energy_report(r, t)
+def _run(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
+    """One phase of one design point: at the operating point f_op (0.302; clock f_op·f_max, voltage V(f_op) on the
+    curve, core-rail energies × V², leakage × V — powercap._point), then capped / rejected by power.  A point over the
+    cap is capped from f_max like any other: power rises with f, so the cap clock is below f_op and equals the f_op = 1
+    point's capped result."""
+    from .powercap import _point, dvfs_cap
+    r0 = evaluate(s)
+    r, er = (r0, energy_report(r0, t)) if f_op == 1.0 else _point(r0, t, curve, f_op)
     if er.get("J_per_unit") is None:
         raise ValueError(er.get("note") or "能耗表为空")
     dec = s.serving.phase == "decode"
     lat = (r.tpot if dec else r.ttft) or 0.0
     o = {"unit": er["unit"], "fits": bool(r.fits), "bound": r.bound, "thr_nominal": r.per_card,
          "J_nominal": er["J_per_unit"], "W_nominal": er["avg_W_per_card"], "share": er["breakdown"]["share"],
-         "thr": r.per_card, "J_per_unit": er["J_per_unit"], "W_card": er["avg_W_per_card"], "f_scale": 1.0,
+         "thr": r.per_card, "J_per_unit": er["J_per_unit"], "W_card": er["avg_W_per_card"], "f_scale": f_op,
          "capped": False, "lat_ms": lat * 1e3, "hbm_static_W": er.get("hbm_static_W_card"), "why": []}
+    r = r0
     if cap is not None and o["W_card"] > cap * (1 + 1e-9) and r.fits:
         if power_mode == "reject":
             o["why"].append(f"功耗 {o['W_card']:.0f} > {cap:g} W")
@@ -195,12 +205,12 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          mems=None, mem_types=None, mem_count_scales=None, mem_caps=None, slc_mibs=None,
                          mix_out_tokens: int | None = None, slo_tpot_ms: float | None = None,
                          slo_ttft_ms: float | None = None, mem_usd_per_GB: dict | None = None,
-                         max_mem_usd: float | None = None) -> dict:
+                         max_mem_usd: float | None = None, f_scales=None) -> dict:
     from .. import mem_catalog as mc
     from .budget import full_area, shoreline_check
     from .hardware import default_mem
     from .insight import TIE
-    from .powercap import CAP_CURVES
+    from .powercap import CAP_CURVES, F_MIN, VF_CURVES
     tie = TIE if tie is None else float(tie)
     if not 0 <= tie < 0.5:
         raise ValueError("tie must be in [0, 0.5)")
@@ -230,6 +240,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         prices[tt] = float(v)
     if max_mem_usd is not None and not prices:
         raise ValueError("max_mem_usd needs mem_usd_per_GB (no memory price is built in)")
+    fs = sorted({float(x) for x in f_scales}, reverse=True) if f_scales else [1.0]
+    if not all(F_MIN <= x <= 1.0 for x in fs):
+        raise ValueError(f"f_scales must be in [{F_MIN:g}, 1] (fraction of the chip's nominal clock)")
     mix = mix_out_tokens is not None
     phases = ("prefill", "decode") if mix else (phase or scn.serving.phase,)
     scn_ph = {ph: _phase_scn(scn, ph, prompt) for ph in phases}
@@ -252,9 +265,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     slcs = sorted({float(x) for x in slc_mibs}) if slc_mibs else [float(ch.slc_mib)]
     if any(x < 0 for x in slcs):
         raise ValueError("slc_mibs must be ≥ 0")
-    n_pts = len(grid) * len(mem_ids) * len(slcs)
+    n_pts = len(grid) * len(mem_ids) * len(slcs) * len(fs)
     if n_pts > MAX_POINTS:
-        raise ValueError(f"设计网格 {n_pts} 点 > 上限 {MAX_POINTS}：减少 mac_scales / sram_scales / sides / topologies / 内存 / SLC 档")
+        raise ValueError(f"设计网格 {n_pts} 点 > 上限 {MAX_POINTS}：减少 mac_scales / sram_scales / sides / topologies / 内存 / SLC / 频率档")
     b = budget
     area_lim = getattr(b, "die_mm2", None) if b is not None else None
     cap = (getattr(b, "power_W_card", None) if b is not None else None) or t.tdp_W
@@ -283,21 +296,28 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     notes.append(PHY_AREA_PROXY[kk])
             if any(x > 0 for x in slcs) and b.mm2_per_mib_slc is None:
                 notes.append("预算未填 mm2_per_mib_slc：SLC 面积未计")
-        if any(i["mem_kind"] != "HBM" for i in infos.values()):
-            notes.append("LPDDR 后台 / 刷新功耗未建模（只有 HBM 有待机 + 刷新项）：LPDDR 点的静态功耗偏低")
+        if any(i["mem_kind"] != "HBM" for i in infos.values()) and t.mW_lpddr_ch_standby is None \
+                and t.mW_lpddr_Gb_refresh is None:
+            notes.append("能耗表未填 LPDDR 后台 / 刷新（mW_lpddr_ch_standby / mW_lpddr_Gb_refresh）：LPDDR 点的静态功耗偏低")
+    if fs != [1.0]:
+        notes.append(f"频率轴（DVFS 工作点）：f/f_max ∈ {{{', '.join(f'{x:g}' for x in fs)}}}，按 {curve} 曲线取 V(f)，核心轨动作能耗 × V²、"
+                     f"SRAM 泄漏 × V（与功耗封顶同一机制，MODEL §221/§247）；{VF_CURVES[curve]['label']}「{VF_CURVES[curve]['tag']}」")
+        if curve == "dfs":
+            notes.append("曲线 dfs 电压不变：降频不降每动作能耗，只有在功耗预算下才可能有收益（选 rx5700xt_n7 看电压收益）")
     if mix:
         notes.append(f"负载混合：每请求 prefill {P} token + decode {mix_out_tokens} token，同卡分时；"
                      "J/请求 = P·J_prefill + D·J_decode，卡秒/请求 = P/吞吐_prefill + D/吞吐_decode「推导」")
     rows = []
     for p in grid:
         for mid in mem_ids:
-            for slc in slcs:
+            for slc, fo in ((x, y) for x in slcs for y in fs):
                 c = replace(ch, engines=p["engines"], rows=p["side"], cols=p["side"], sram_mib=p["sram_mib"],
                             noc_topology=p["topology"], slc_mib=slc)
-                row = {**p, "array": f'{p["side"]}×{p["side"]}', **infos[mid], "slc_mib": slc,
-                       "base": p["base"] and mid == base_mem and slc == float(ch.slc_mib)}
+                row = {**p, "array": f'{p["side"]}×{p["side"]}', **infos[mid], "slc_mib": slc, "f_op": fo,
+                       "f_ghz": ch.freq_ghz * fo,
+                       "base": p["base"] and mid == base_mem and slc == float(ch.slc_mib) and fo == 1.0}
                 try:
-                    res = {ph: _run(scn_ph[ph].replace("chip", c).replace("mem_id", mid), t, cap, power_mode, curve)
+                    res = {ph: _run(scn_ph[ph].replace("chip", c).replace("mem_id", mid), t, cap, power_mode, curve, fo)
                            for ph in phases}
                 except ValueError as ex:
                     rows.append({**row, "feasible": False, "why": str(ex)})
@@ -368,7 +388,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         def pick(i):
             x = rows[i]
             return {"index": i, "engines": x["engines"], "array": x["array"], "macs": x["macs"], "sram_mib": x["sram_mib"],
-                    "topology": x["topology"], "mem_id": x["mem_id"], "slc_mib": x["slc_mib"], "thr": x["thr"],
+                    "topology": x["topology"], "mem_id": x["mem_id"], "slc_mib": x["slc_mib"], "f_op": x["f_op"],
+                    "thr": x["thr"],
                     "J_per_unit": x["J_per_unit"], "mm2": x.get("mm2")}
         best["perf_W"] = pick(min(ok, key=lambda i: (rows[i]["J_per_unit"], -rows[i]["thr"])))
         best["thr"] = pick(max(ok, key=lambda i: (rows[i]["thr"], -rows[i]["J_per_unit"])))
@@ -376,10 +397,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     return {"chip": ch.name, "model": scn.model, "phase": "mix" if mix else phases[0], "rows": rows,
             "front": sorted(f2, key=lambda i: rows[i]["thr"]), "best": best, "base": base, "notes": notes,
             "power_cap_W": cap, "power_cap_src": cap_src, "power_mode": power_mode, "curve": curve,
-            "die_mm2": area_lim, "tie": tie, "area": dens_ok, "n_feasible": len(ok), "mems": mem_ids, "slc_mibs": slcs,
+            "die_mm2": area_lim, "tie": tie, "area": dens_ok, "n_feasible": len(ok), "mems": mem_ids, "slc_mibs": slcs, "f_scales": fs,
             "mix": {"prompt": P, "out_tokens": mix_out_tokens} if mix else None,
             "slo": {"tpot_ms": slo_tpot_ms, "ttft_ms": slo_ttft_ms}, "priced": bool(priced),
-            "basis": "设计网格（MAC 总数 × 引擎边长 × SRAM × NoC 拓扑 × 外存 × SLC）逐点评估：时间 / 放得下来自代价模型，"
+            "basis": "设计网格（MAC 总数 × 引擎边长 × SRAM × NoC 拓扑 × 外存 × SLC × 频率工作点）逐点评估：时间 / 放得下来自代价模型，"
                      "J/单位 来自能耗表（MAC / SRAM / 导线 / NoC / DRAM+PHY / 静态）；perf/W = 1 / (J/单位)；超功耗点按 DVFS "
                      "封顶运行（或剔除），超面积 / HBM 岸线 / SLO / 内存 $ 的点剔除；前沿 = 吞吐↑ 与 J/单位↓ 的非支配集，"
-                     "差 ≤ tie（默认 1 %）视为持平（MODEL §245–246）"}
+                     "差 ≤ tie（默认 1 %）视为持平（MODEL §245–247）"}

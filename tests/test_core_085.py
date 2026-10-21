@@ -59,3 +59,8 @@ def test_ui_verdict_and_error_branches_are_stale_flagged():
 from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
 from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 pin_module(globals())
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

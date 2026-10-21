@@ -105,6 +105,13 @@ class EnergyTable:
     # only when no idle figure is set (a measured card idle already contains its DRAM background) — like SRAM leakage.
     mW_hbm_die_standby: float | None = None
     mW_hbm_Gb_refresh: float | None = None
+    # 0.302: per-generation DRAM pJ/bit (unset → the per-kind field above): HBM4 / HBM4E stacks, LPDDR6 packages.
+    pJ_bit_dram_hbm4: float | None = None
+    pJ_bit_dram_lpddr6: float | None = None
+    # 0.302: LPDDR background (precharge standby IDD2N, all rails) per x16 channel of 8 Gb, and refresh per Gb.  Charged
+    # like the HBM terms (only when no idle figure is set); counted on every 8 Gb channel slice of the card's capacity.
+    mW_lpddr_ch_standby: float | None = None
+    mW_lpddr_Gb_refresh: float | None = None
     # 0.228: per-cycle dynamic energy per MAC slot (pJ per MAC-slot per core cycle) — clock tree / distribution,
     # always-clocked pipeline registers and control: paid every core cycle the card is clocked, busy or stalled, so
     # P_clk = macs × f × pJ (scales with f and, under DVFS, with V²).  The only dynamic power that falls with the clock
@@ -433,11 +440,21 @@ def dram_pJ_field(r, table: EnergyTable) -> str:
     """0.186: which field prices this result's DRAM bits: the per-kind field when set, else pJ_bit_dram."""
     from .. import mem_catalog
     try:
-        hbm = "HBM" in mem_catalog.parse_mem_id(r.scenario.mem_id).mem_type.upper()
+        t = mem_catalog.parse_mem_id(r.scenario.mem_id).mem_type.upper()
     except Exception:                       # noqa: BLE001 — unknown id: generic field
         return "pJ_bit_dram"
+    hbm = "HBM" in t
+    gen = "pJ_bit_dram_hbm4" if t in ("HBM4", "HBM4E") else ("pJ_bit_dram_lpddr6" if t == "LPDDR6" else None)
+    if gen is not None and getattr(table, gen) is not None:      # 0.302: per-generation figure
+        return gen
     f = "pJ_bit_dram_hbm" if hbm else "pJ_bit_dram_lpddr"
     return f if getattr(table, f) is not None else "pJ_bit_dram"
+
+
+def dram_static_set(table) -> bool:
+    """0.302: any DRAM background / refresh field set (HBM 0.216, LPDDR 0.302)."""
+    return any(getattr(table, f) is not None for f in ("mW_hbm_die_standby", "mW_hbm_Gb_refresh",
+                                                      "mW_lpddr_ch_standby", "mW_lpddr_Gb_refresh"))
 
 
 
@@ -556,6 +573,30 @@ PRESET_ONCHIP = {
 for _pid, _f in PRESET_ONCHIP.items():
     ENERGY_PRESETS[_pid]["fields"].update(_f)
 
+# 0.302: per-generation DRAM energy and LPDDR background power (tpuv4i_7nm, the preset that carries per-kind DRAM).
+# HBM4: Samsung (HBM4 product page / newsroom 2026-02, 1c DRAM + 4 nm base die) and SK hynix (newsroom 2025-09) both
+#   state ≈ 40 % better power efficiency than HBM3E → 3.44 / 1.4 = 2.46 pJ/bit 「推导」 (vendor claim; HBM4E uses it).
+# LPDDR6: Kim et al. (Samsung), 'A 16Gb 12.8Gb/s LPDDR6 SDRAM …', ISSCC 2026 pp. 268–270 (doi 10.1109/ISSCC49663.
+#   2026.11409018): '21.0 % better energy efficiency than LPDDR5x' → 4.0 / 1.21 = 3.31 pJ/bit 「推导」.
+# LPDDR background: Micron Y52Q LPDDR5X data sheet (315b/441b/561b, Rev. G 05/2025), Table 16 per x16 channel of a
+#   2-channel 16 Gb die (8 Gb / channel), max values: IDD2N 1.3 mA VDD1 + 28 mA VDD2H + 0.2 mA VDD2L + 0.6 mA VDDQ at
+#   1.8 / 1.05 / 0.9 / 0.5 V typ = 32.2 mW 「来源」; refresh (IDD5 − IDD3N) = (14 − 2.7) mA × 1.8 V + (124 − 35) mA ×
+#   1.05 V = 113.8 mW for tRFCab 210 ns (Table 5) every tREFI 3.9 µs (JEDEC LPDDR5 at ≤ 85 °C 「二手」) → 6.12 mW
+#   per 8 Gb = 0.765 mW/Gb 「推导」.  IDD2N on every slice is the non-power-down upper side (idle ranks in power-down
+#   draw IDD2P 2.3 mA VDD2H) 「假设」; LPDDR6 uses the LPDDR5X figure 「假设」.
+LPDDR_CH_GB = 8.0
+_MICRON_Y52Q = "Micron Y52Q LPDDR5X data sheet (Rev. G 05/2025) Table 16 / Table 5"
+ENERGY_PRESETS["tpuv4i_7nm"]["fields"].update({
+    "pJ_bit_dram_hbm4": (4.3 * 0.8 / 1.4, "推导", "HBM3E 3.44 pJ/bit ÷ 1.4 — Samsung HBM4（官网 / 2026-02 新闻稿）与 SK hynix"
+                         "（2025-09 新闻稿）均称能效比 HBM3E 高约 40 %（厂商口径）；HBM4E 沿用"),
+    "pJ_bit_dram_lpddr6": (4.0 / 1.21, "推导", "LPDDR5X 4.0 pJ/bit ÷ 1.21 — Kim et al.（Samsung）ISSCC 2026 LPDDR6 12.8 Gb/s："
+                           "'21.0 % better energy efficiency than LPDDR5x'（doi 10.1109/ISSCC49663.2026.11409018）"),
+    "mW_lpddr_ch_standby": (1.3 * 1.8 + 28 * 1.05 + 0.2 * 0.9 + 0.6 * 0.5, "来源", _MICRON_Y52Q + "：IDD2N 每 x16 通道"
+                            "（8 Gb）1.3 mA·1.8 V + 28 mA·1.05 V + 0.2 mA·0.9 V + 0.6 mA·0.5 V = 32.2 mW（最大值；非掉电待机，偏高侧）"),
+    "mW_lpddr_Gb_refresh": (((14 - 2.7) * 1.8 + (124 - 35) * 1.05) * 210 / 3904 / 8, "推导/二手", _MICRON_Y52Q +
+                            "：(IDD5 − IDD3N) 功耗 113.8 mW × tRFCab 210 ns / tREFI 3.9 µs（JEDEC ≤ 85 °C）÷ 8 Gb = 0.765 mW/Gb"),
+})
+
 NOC_BASIS = ("NoC：每字节 × 路由跳数 × pJ_bit_hop_noc + 每字节 × 链路长度（引擎间距）× pJ_bit_mm_onchip；流量来自数据流"
              "（A 操作数多播到持有输出列的引擎、跨组拷贝、split-K 部分和归约树），拓扑 mesh / ring / crossbar（Park DAC 2012；Keckler 2011）")
 
@@ -609,6 +650,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                        and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
                                           "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W",
                                           "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh",
+                                          "pJ_bit_dram_hbm4", "pJ_bit_dram_lpddr6", "mW_lpddr_ch_standby", "mW_lpddr_Gb_refresh",
                                           "pJ_clk_mac_cycle", "sram_temp_C", "slc_access_ref_mib", "pJ_bit_mm_onchip", "slc_mm2_per_mib",
                                           "pJ_bit_hop_noc", "noc_mm2_per_kmac")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
@@ -710,8 +752,8 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
             else:
                 out["sram_leak_scope"] = ("state_sram + slc（共享 SRAM 泄漏已含于 idle；SLC 按增量计「假设」)"
                                           if slc > 0 else "state_sram（共享 SRAM 泄漏已含于 idle 数值）")
-    if iw is None and (table.mW_hbm_die_standby is not None or table.mW_hbm_Gb_refresh is not None):
-        hs = hbm_static_W(r.scenario.mem_id, table)      # 0.216: HBM standby + refresh (static)
+    if iw is None and dram_static_set(table):
+        hs = hbm_static_W(r.scenario.mem_id, table)      # 0.216: HBM standby + refresh (static); 0.302: + LPDDR
         if hs:
             j["hbm_static"] = hs["W"] * per["idle_card_s"]
             out["hbm_static_W_card"] = hs["W"]
@@ -752,7 +794,7 @@ STATIC_WARN = 0.5
 BREAKDOWN_GROUPS = ("mac", "vec", "sram", "slc", "wire", "noc", "dram", "io", "clock", "static")
 BREAKDOWN_LABEL = {"mac": "MAC", "vec": "向量", "sram": "SRAM 阵列", "slc": "SLC 阵列", "wire": "片上导线",
                    "noc": "NoC 路由", "dram": "DRAM（含 PHY）", "io": "片间 / 主机链路", "clock": "时钟",
-                   "static": "静态（空闲 / 漏电 / HBM 后台）"}
+                   "static": "静态（空闲 / 漏电 / DRAM 后台）"}
 
 
 def energy_breakdown(rep: dict) -> dict:
@@ -813,9 +855,19 @@ def hbm_static_W(mem_id: str | None, table: "EnergyTable") -> dict | None:
         sp = mem_catalog.parse_mem_id(mem_id)
     except Exception:
         return None
-    if getattr(sp, "kind", None) != "HBM" or not getattr(sp, "hbm_height", None):
+    if getattr(sp, "kind", None) != "HBM":
+        # 0.302: LPDDR — IDD2N standby on every x16 channel slice of 8 Gb (Micron die organisation) + refresh per Gb
+        if table.mW_lpddr_ch_standby is None and table.mW_lpddr_Gb_refresh is None:
+            return None
+        gb = sp.nominal_capacity_GB * 8.0
+        sl = gb / LPDDR_CH_GB
+        stb = sl * (table.mW_lpddr_ch_standby or 0.0) * 1e-3
+        ref = gb * (table.mW_lpddr_Gb_refresh or 0.0) * 1e-3
+        return {"W": stb + ref, "standby_W": stb, "refresh_W": ref, "kind": "LPDDR", "channel_slices": sl,
+                "basis": "LPDDR：每 8 Gb x16 通道片 IDD2N 待机（全部电源轨）+ 每 Gb 刷新（Micron Y52Q）"}
+    if not getattr(sp, "hbm_height", None):
         return None
     dies = sp.n_units * sp.hbm_height
     stb = dies * (table.mW_hbm_die_standby or 0.0) * 1e-3
     ref = dies * sp.hbm_die_Gb * (table.mW_hbm_Gb_refresh or 0.0) * 1e-3
-    return {"W": stb + ref, "standby_W": stb, "refresh_W": ref, "stacks": sp.n_units, "dies": dies}
+    return {"W": stb + ref, "standby_W": stb, "refresh_W": ref, "stacks": sp.n_units, "dies": dies, "kind": "HBM"}

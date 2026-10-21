@@ -6,6 +6,36 @@
 
 
 
+## [0.302.0]
+
+### Sourced HBM4 / LPDDR6 DRAM energy, LPDDR background power, DVFS operating point as a design-search axis; faster suite
+- **Default change (tpuv4i_7nm energy preset)**: four new fields, all filled by the preset. User values still win, including 0.
+  - `pJ_bit_dram_hbm4` unset → 2.46 pJ/bit (HBM4 / HBM4E; was the HBM3E 3.44). This is HBM3E ÷ 1.4: Samsung (HBM4 page / 2026-02 newsroom) and SK hynix (2025-09 newsroom) both claim ≈ 40 % better power efficiency than HBM3E (vendor claim 「推导」). HBM4E reuses it 「假设」.
+  - `pJ_bit_dram_lpddr6` unset → 3.31 pJ/bit (LPDDR6; was the LPDDR5X 4.0). This is LPDDR5X ÷ 1.21: Kim et al. (Samsung), ISSCC 2026, 16 Gb 12.8 Gb/s LPDDR6, "21.0 % better energy efficiency than LPDDR5x" 「推导」.
+  - `mW_lpddr_ch_standby` unset → 32.2 mW per x16 channel of 8 Gb: Micron Y52Q LPDDR5X data sheet, Table 16, IDD2N on all four rails 「来源」. Max values in non-power-down standby, so an upper side.
+  - `mW_lpddr_Gb_refresh` unset → 0.765 mW/Gb: (IDD5 − IDD3N) × tRFCab 210 ns / tREFI 3.9 µs 「推导/二手」.
+  - LPDDR background power is static, like HBM standby / refresh (§216). It is charged only when no idle figure is set, and its report key stays `hbm_static` (it now means DRAM background). LPDDR6 / LPDDR5 reuse the LPDDR5X figures 「假设」.
+  - Effect, preset J/token, qwen3-8b:
+    - 100T + LPDDR5X 4×16 GB: decode b8 0.182 → 0.214 (+17.6 %; +2.45 W/card); prefill +5.0 %.
+    - 4×32 GB: decode +35 % (+4.9 W).
+    - 1P + HBM4 4×12-high: decode b8 0.108 → 0.089 (−17.9 %).
+    - 100T + LPDDR6: decode +3.4 % (cheaper bits, plus background).
+    - HBM3E: unchanged.
+  - CLI: `--pJ-bit-dram-hbm4` / `--pJ-bit-dram-lpddr6`. UI: two new energy inputs. The static label now reads "DRAM 后台".
+  - The design-search notes no longer call HBM4 / LPDDR6 energy "borrowed". PHY energy and area are still the HBM3 / LPDDR5X proxies, labelled. MODEL §247.1–247.2.
+- **DVFS operating point as a design-search axis**: `/api/insight_dse` `f_scales` (f / f_max, 0.15–1; default [1], so the 0.301 output is unchanged).
+  - Each point is re-evaluated at freq_ghz·f. Core-rail energies are scaled × V(f)² and SRAM leakage × V(f), with V(f) from the chosen `curve`. This is the same mechanism as the 0.227 power cap (`powercap._point`).
+  - A point still over the budget is capped from f_max, as before.
+  - Rows gain `f_op` and `f_ghz`. UI: 频率 × input and a V–f curve select.
+  - Example (1P qwen3-8b prefill, 300 W, RX 5700 XT V–f curve): 2× MACs at 0.6 f_max give 84.3 k tok/s at 3.36 mJ/token, vs 1× MACs at f_max throttled to 0.84 f, which give 59.1 k tok/s at 5.07 mJ/token. Under "dfs" (V flat) a lower clock never lowers J/token. MODEL §247.3.
+- **Suite time (test-only)**: many PD-queue / DES tests read only operating-point outputs. For those, `tests/fast_queue.py` replaces the SLO-goodput rate bisection of `pdqueue.queue_report` with a −1 sentinel. That search took ≥ 90 % of these reports' time.
+  - Applied to 43 test modules. Tests that read SLO outputs and the runtime-guard tests are excluded.
+  - Equivalence was checked once for every wrapped module (`ACCEL_FASTQ_VERIFY=1`): each queue_report was run both ways and every non-SLO field compared; there were no differences.
+  - test_core_049's compare-view budget check runs on qwen3-8b × 4 cards (same code path).
+  - Production code is unchanged.
+- Tests: tests/test_core_302.py (6); test_core_301 restated (LPDDR points now carry background power).
+- Freshness sweep (107 orgs, since 2026-10-21): no new releases.
+
 ## [0.301.0]
 
 ### Energy-aware design search over compute + memory jointly; workload mix; SLO; memory $ (user input)

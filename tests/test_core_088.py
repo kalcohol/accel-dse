@@ -222,3 +222,8 @@ def test_burst_client_still_fails_on_a_hung_server():
         raise AssertionError("closed port accepted")
     except OSError as e:
         assert not isinstance(e, TimeoutError) or "progress" not in str(e)
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

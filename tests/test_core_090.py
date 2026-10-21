@@ -96,3 +96,8 @@ def test_sweep_hint_wiring():
     assert "sw-hint" in W.html_ids(html) and W.has(fn["swHint"], "f.algo !== 'auto_overlap'")
     assert W.has(fn["swHint"], "S.sc.d2d_enabled") and W.has(fn["swHint"], "id: 'sw-hint-fix'")
     assert W.has(fn["schedule"], "swHint();")       # every input change re-evaluates the hint
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

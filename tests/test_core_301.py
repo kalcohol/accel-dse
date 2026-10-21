@@ -58,8 +58,9 @@ def test_memory_axis_area_energy_bandwidth():
     assert abs((h8["mm2"] - h4["mm2"]) - (phy(h8) - phy(h4)) / (1 - b.uncore_frac)) < 1e-6
     # decode b64 is DRAM-bound: 2× HBM stacks → more tok/s; LPDDR5X 8×x64 → far less (bandwidth), TPOT up
     assert h8["thr"] > 1.1 * h4["thr"] and l8["thr"] < 0.3 * h4["thr"] and l8["tpot_ms"] > 3 * h4["tpot_ms"]
-    assert h8["hbm_static_W"] > h4["hbm_static_W"] > 0 and l8["hbm_static_W"] is None
-    assert any("LPDDR 后台" in n for n in o["notes"]) and any("PHY 面积" in n for n in o["notes"])
+    # 0.302: the preset now carries LPDDR background (Micron IDD2N + refresh) — charged, the "not modelled" note gone
+    assert h8["hbm_static_W"] > h4["hbm_static_W"] > 0 and l8["hbm_static_W"] > 0
+    assert not any("LPDDR 后台" in n for n in o["notes"]) and any("PHY 面积" in n for n in o["notes"])
     assert o["rows"][o["base"]]["mem_id"] == BASE and len(o["mems"]) == 4
 
 

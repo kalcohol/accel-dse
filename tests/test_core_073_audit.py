@@ -198,3 +198,8 @@ def test_pd_fluid_and_energy_identities():
     assert q["modes"]["pd"]["slo_rate_rps"] <= r["req_s"] * (1 + 1e-6)
     for e in q["energy"].values():
         assert abs(sum(e["J_by_action"].values()) - e["J_per_token"]) <= 1e-9 * e["J_per_token"]
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped except in the test that reads them (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals(), skip=("test_pd_fluid_and_energy_identities",))

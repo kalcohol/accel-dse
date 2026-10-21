@@ -83,3 +83,8 @@ def test_fuzz_pd_energy():
             assert 0 < W < 2000 and abs(e["J_per_token"] * lam * o / 8 / W - 1) < 1e-9, m
             assert 0 <= e["clock_gating"]["mac_util"] <= 1
             assert 0 <= e["static_share"] < 1
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

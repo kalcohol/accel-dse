@@ -48,3 +48,8 @@ def test_field_default_and_cli():
     body = _body(p.parse_args(["--model", "deepseek-v3", "--fabric", "--kv-feedback", "--kv-feedback-prefill"]))
     fab = body["scenario"]["fabric"] if "scenario" in body else body["fabric"]
     assert fab["kv_feedback_prefill"] is True and Fabric(**fab).kv_feedback_prefill
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

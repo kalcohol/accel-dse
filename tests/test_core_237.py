@@ -165,3 +165,9 @@ def _guard_cases(spent, work=None):
             assert work["calls"][0] > 0 and work["calls"][4] > 0, (kw, work["calls"])
         assert spent[0] < 45 * lim, (kw, spent[0])
         assert total < 90 * lim, (kw, total)
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py);
+# not in the runtime guard, which times the full report
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals(), skip=("test_runtime_guard_phase_law_paths",))

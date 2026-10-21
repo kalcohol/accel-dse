@@ -119,3 +119,8 @@ def test_des_seed_validation_and_determinism():
         raise AssertionError("duplicate seeds accepted")
     except ValueError:
         pass
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

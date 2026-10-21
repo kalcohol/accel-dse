@@ -63,3 +63,8 @@ def test_pd_prefill_batch_smallest_sufficient():
     pb = r["prefill"]["batch"]
     assert r["ttft_ok"] and r["ttft_ms"] < 1000         # ≤ 0.140: 1298 ms at the same goodput
     assert pb == 1                                       # λ is decode-bound: batch 1 carries it
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

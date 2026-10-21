@@ -1349,7 +1349,7 @@ function renderBalanceWhatif(w) {
       x.spec_tree_compare ? treeCmp(x.spec_tree_compare) : ''));
   put(box, h('h4', {}, '机器平衡 what-if · balance levers（每次只改一个变量 · one variable each）'),
     h('table', { class: 'tbl', id: 'bal-whatif-tbl' },
-      h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', 'Δ面积 area', 'J/token @计价 batch（临界 / 上限 / 配置）', '功耗 W/卡（含 SRAM 泄漏 + HBM 待机/刷新）', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
+      h('thead', {}, h('tr', {}, ...['杠杆 lever', '芯片 FLOP/B', '临界 batch critical batch', '上限 batch limit', '饱和强度 asymptote', 'TPOT', 'Δ面积 area', 'J/token @计价 batch（临界 / 上限 / 配置）', '功耗 W/卡（含 SRAM 泄漏 + DRAM 后台/刷新）', '判定'].map((t, i) => h('th', i ? {} : { class: 'l' }, t)))),
       h('tbody', {}, tr('当前 base', w.base, true), ...w.rows.map((x) => x.error ? h('tr', {}, h('td', { class: 'l' }, x.label), h('td', { colspan: 9, class: 'l small' }, x.error)) : tr(x.label, x, false)))),
     w.cost_basis ? h('div', { class: 'small' }, w.cost_basis.note) : '',
     h('div', { class: 'small' }, w.works.length ? `有效杠杆 · levers that work：${w.works.join('、')}（阈值 ${pct(w.gain)}）` : '没有单一杠杆有效 · no single lever works'),
@@ -2373,9 +2373,9 @@ async function runInsightDse() {
   const v0 = S.ver;
   const sci = (x) => (x == null ? '—' : x === 0 ? '0' : x.toExponential(3));
   const list = (id) => $(id).value.split(/[,\s]+/).filter(Boolean).map(Number);
-  const macs = list('ins-dse-macs'), sram = list('ins-dse-sram'), memn = list('ins-dse-memn');
-  for (const [id, v] of [['ins-dse-macs', macs], ['ins-dse-sram', sram], ['ins-dse-memn', memn]]) {
-    const bad = !v.length || v.length > 6 || v.some((x) => !isFinite(x) || x <= 0);
+  const macs = list('ins-dse-macs'), sram = list('ins-dse-sram'), memn = list('ins-dse-memn'), freq = list('ins-dse-freq');
+  for (const [id, v] of [['ins-dse-macs', macs], ['ins-dse-sram', sram], ['ins-dse-memn', memn], ['ins-dse-freq', freq]]) {
+    const bad = !v.length || v.length > 6 || v.some((x) => !isFinite(x) || x <= 0) || (id === 'ins-dse-freq' && v.some((x) => x < 0.15 || x > 1));
     $(id).classList.toggle('bad', bad);
     if (bad) return;
   }
@@ -2398,7 +2398,8 @@ async function runInsightDse() {
   $('ins-dse-status').textContent = '计算中（MAC × 引擎边长 × SRAM 网格）…';
   delete $('ins-dse-status').dataset.done;
   try {
-    const ex = { mac_scales: macs, sram_scales: sram, power_mode: $('ins-dse-power').value };
+    const ex = { mac_scales: macs, sram_scales: sram, power_mode: $('ins-dse-power').value, curve: $('ins-dse-curve').value };
+    if (freq.length > 1 || freq[0] !== 1) ex.f_scales = freq;     // 0.302: DVFS operating point axis
     if ($('ins-dse-phase').value) ex.phase = $('ins-dse-phase').value;
     if ($('ins-dse-topo').checked) ex.topologies = ['mesh', 'ring', 'crossbar'];
     if (memT.length) { ex.mem_types = memT; ex.mem_count_scales = memn; }
@@ -2415,8 +2416,8 @@ async function runInsightDse() {
     const rows = r.rows || [];
     const u = rows.find((x) => x.unit)?.unit || '单位';
     const bp = r.best && r.best.perf_W, bt = r.best && r.best.thr;
-    const desc = (b) => `${b.engines}×${b.array} · SRAM ${num(b.sram_mib)} MiB · ${b.topology} · ${b.mem_id} · SLC ${num(b.slc_mib)} MiB（${num(b.thr)} /s · ${sci(b.J_per_unit)} J）`;
-    $('ins-dse-summary').textContent = `${r.chip} · ${r.model} · ${r.phase === 'mix' ? `混合（prompt ${r.mix.prompt} + 输出 ${r.mix.out_tokens}）` : r.phase} · 外存 ${(r.mems || []).length} 档 · SLC ${(r.slc_mibs || []).length} 档 · 可行 ${r.n_feasible}/${rows.length} 点 · 前沿 ${(r.front || []).length} 点`
+    const desc = (b) => `${b.engines}×${b.array} · SRAM ${num(b.sram_mib)} MiB · ${b.topology} · ${b.mem_id} · SLC ${num(b.slc_mib)} MiB${b.f_op != null && b.f_op !== 1 ? ` · f×${b.f_op}` : ''}（${num(b.thr)} /s · ${sci(b.J_per_unit)} J）`;
+    $('ins-dse-summary').textContent = `${r.chip} · ${r.model} · ${r.phase === 'mix' ? `混合（prompt ${r.mix.prompt} + 输出 ${r.mix.out_tokens}）` : r.phase} · 外存 ${(r.mems || []).length} 档 · SLC ${(r.slc_mibs || []).length} 档 · 频率 ${(r.f_scales || [1]).length} 档 · 可行 ${r.n_feasible}/${rows.length} 点 · 前沿 ${(r.front || []).length} 点`
       + (r.power_cap_W ? ` · 功耗预算 ${num(r.power_cap_W)} W（${r.power_mode === 'dvfs' ? 'DVFS 封顶' : '剔除'}）` : '')
       + (r.die_mm2 ? ` · 面积预算 ${num(r.die_mm2)} mm²` : '')
       + (bp ? ` · perf/W 最优 ${desc(bp)}` : '') + (bt ? ` · 吞吐最优 ${desc(bt)}` : '')
@@ -2424,14 +2425,14 @@ async function runInsightDse() {
     put($('ins-dse-chart'), paretoChart(rows));
     const pct = (x) => (x * 100).toFixed(1) + '%';
     put($('ins-dse-tbl'), h('thead', {}, h('tr', {},
-      ['前沿', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '频率 ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
+      ['前沿', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '工作点 f ×', '运行 f ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
       h('tbody', {}, rows.map((x) => h('tr', { class: x.front ? 'best' : '' },
         h('td', {}, x.front ? '★' : x.front3 ? '☆' : x.front_usd ? '$' : ''), h('td', {}, String(x.mac_x)),
         h('td', {}, `${x.engines}×${x.array}` + (x.base ? ' ←当前' : '')), h('td', {}, num(x.sram_mib)), h('td', {}, x.topology),
         h('td', {}, x.mem_id || '—'), h('td', {}, x.mem_GBps != null ? num(x.mem_GBps) : '—'), h('td', {}, x.mem_GB != null ? num(x.mem_GB) : '—'),
         h('td', {}, x.slc_mib != null ? num(x.slc_mib) : '—'),
         h('td', {}, x.thr != null ? num(x.thr) : '—'), h('td', {}, sci(x.J_per_unit)), h('td', {}, x.perf_W != null ? num(x.perf_W) : '—'),
-        h('td', {}, x.W_card != null ? num(x.W_card) : '—'), h('td', {}, x.f_scale != null ? x.f_scale.toFixed(2) : '—'),
+        h('td', {}, x.W_card != null ? num(x.W_card) : '—'), h('td', {}, x.f_op != null ? x.f_op.toFixed(2) : '—'), h('td', {}, x.f_scale != null ? x.f_scale.toFixed(2) : '—'),
         h('td', {}, x.mm2 != null ? num(x.mm2) : '—'),
         h('td', {}, x.tpot_ms != null ? num(x.tpot_ms) : '—'), h('td', {}, x.ttft_ms != null ? num(x.ttft_ms) : '—'),
         h('td', {}, x.mem_usd != null ? num(x.mem_usd) : '—'),
@@ -2764,7 +2765,7 @@ async function init() {
     'mm2_per_mib_slc', 'mm2_fixed', 'system_mm2', 'mm2_per_dq_hbm', 'mm2_per_dq_lpddr', 'mm2_per_d2d_unit', 'mm2_per_GBps_c2c', 'uncore_frac', 'mm2_host_io', 'mm2_per_unit_mc'])
     bindNumber('b-' + k, () => (S.budget || {})[k] ?? null, (x) => { S.budget = { ...(S.budget || {}), [k]: x }; },
       { nullable: true, int: k === 'cards' });
-  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W', 'pJ_clk_mac_cycle', 'sram_temp_C', 'slc_access_ref_mib', 'pJ_bit_mm_onchip', 'slc_mm2_per_mib', 'pJ_bit_hop_noc', 'noc_mm2_per_kmac'])
+  for (const k of ['pJ_mac', 'pJ_vec', 'pJ_bit_sram', 'pJ_bit_dram', 'pJ_bit_link', 'idle_W', 'pJ_bit_slc', 'pJ_bit_d2d', 'pJ_bit_net', 'idle_W_prefill', 'pJ_bit_host', 'pJ_bit_dram_hbm', 'pJ_bit_dram_lpddr', 'pJ_bit_dram_hbm4', 'pJ_bit_dram_lpddr6', 'pJ_bit_phy_hbm', 'pJ_bit_phy_lpddr', 'idle_frac_tdp', 'tdp_W', 'pJ_clk_mac_cycle', 'sram_temp_C', 'slc_access_ref_mib', 'pJ_bit_mm_onchip', 'slc_mm2_per_mib', 'pJ_bit_hop_noc', 'noc_mm2_per_kmac'])
     bindNumber('e-' + k, () => (S.energy || {})[k] ?? null, (x) => { S.energy = { ...(S.energy || {}), [k]: x }; }, { nullable: true });
   $('e-power_cap').addEventListener('change', (e) => { S.powerCap = e.target.checked; schedule(); });   // 0.189
   initDensityPresets();

@@ -130,3 +130,8 @@ def test_pd_budget_scope_note():
                                    "pd": {"enabled": True, "prefill_cards": 2, "decode_cards": 2}},
                       "budget": {"cards": 4}})
     assert "PD prefill 池" in r["budget"]["scope_note"]
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

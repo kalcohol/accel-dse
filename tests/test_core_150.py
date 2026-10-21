@@ -69,3 +69,8 @@ def test_every_domain_area_and_budget():
 def test_ui_preset_keeps_user_values():
     js = W.read()                                      # 0.286: parsed
     assert W.has(js, "S.presetFilled[f] !== cur") and W.any_string_contains(js, "保留你的输入")
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

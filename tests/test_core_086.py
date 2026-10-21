@@ -154,3 +154,8 @@ def test_numerical_extremes():
             for ph in ("decode", "prefill"):
                 r = evaluate(Scenario(model="qwen3-8b", chip=chip, serving=Serving(phase=ph, batch=8, prompt=2048, ctx=2048)))
                 assert math.isfinite(r.step) and r.step > 0, (fq, sram, ph)
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

@@ -315,6 +315,20 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 steps.append(("dse", st[:40], rows, dots))
                 if not st.startswith("完成") or rows == 0 or dots == 0 or "★" not in p.inner_text("#ins-dse-tbl"):
                     errs.append(f"dse: {st[:200]} rows={rows} dots={dots}")
+                # 0.302: DVFS operating point axis (f/f_max) on the RX 5700 XT V–f curve
+                if p.query_selector("#ins-dse-freq"):
+                    p.fill("#ins-dse-freq", "1,0.7")
+                    p.select_option("#ins-dse-curve", "rx5700xt_n7")
+                    p.click("#ins-dse-run")
+                    p.wait_for_function("(() => { const t = document.getElementById('ins-dse-status').textContent;"
+                                        " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
+                    st = p.inner_text("#ins-dse-status")
+                    rows2 = len(p.query_selector_all("#ins-dse-tbl tbody tr"))
+                    steps.append(("dse freq axis", st[:40], rows2))
+                    if not st.startswith("完成") or rows2 != 2 * rows or "0.70" not in p.inner_text("#ins-dse-tbl"):
+                        errs.append(f"dse freq axis: {st[:200]} rows={rows2} (expected {2 * rows})")
+                    p.fill("#ins-dse-freq", "1")
+                    p.select_option("#ins-dse-curve", "dfs")
                 # 0.301: memory-side axes + mix, then a mid-run scenario edit must drop the in-flight search
                 p.fill("#ins-dse-mem", "HBM3E,LPDDR5X")
                 p.fill("#ins-dse-slc", "0,64")

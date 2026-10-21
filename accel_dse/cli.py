@@ -186,6 +186,8 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                             ("--pJ-bit-dram", "pJ_bit_dram", "per DRAM bit"),
                             ("--pJ-bit-dram-hbm", "pJ_bit_dram_hbm", "per DRAM bit when the memory is HBM (else --pJ-bit-dram)"),
                             ("--pJ-bit-dram-lpddr", "pJ_bit_dram_lpddr", "per DRAM bit for non-HBM memory (else --pJ-bit-dram)"),
+                            ("--pJ-bit-dram-hbm4", "pJ_bit_dram_hbm4", "per DRAM bit for HBM4 / HBM4E (else --pJ-bit-dram-hbm)"),
+                            ("--pJ-bit-dram-lpddr6", "pJ_bit_dram_lpddr6", "per DRAM bit for LPDDR6 (else --pJ-bit-dram-lpddr)"),
                            ("--pJ-bit-phy-hbm", "pJ_bit_phy_hbm", "chip-side HBM PHY per DRAM bit (separate dram_phy line)"),
                            ("--pJ-bit-phy-lpddr", "pJ_bit_phy_lpddr", "chip-side LPDDR PHY per DRAM bit"),
                            ("--idle-frac-tdp", "idle_frac_tdp", "idle power as a fraction of card TDP (needs --tdp-W)"),
@@ -614,7 +616,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
     en = {k: getattr(a, k) for k in ("pJ_mac", "pJ_vec", "pJ_bit_sram", "pJ_bit_dram", "pJ_bit_link", "idle_W",
                                      "pJ_bit_slc", "pJ_bit_d2d", "pJ_bit_net", "idle_W_prefill",
                                      "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
-                                     "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W")
+                                     "pJ_bit_dram_hbm4", "pJ_bit_dram_lpddr6", "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W")
           if getattr(a, k, None) is not None}
     if en:
         body["energy"] = en

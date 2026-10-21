@@ -124,3 +124,8 @@ def test_fuzz_profiles():
             for m, e in q["energy"].items():
                 W = e["J_per_token"] / e["card_s_per_token"]
                 assert 0 < W < 2000 and abs(e["J_per_token"] * lam * o / 8 / W - 1) < 1e-9, m
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

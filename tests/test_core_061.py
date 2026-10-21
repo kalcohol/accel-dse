@@ -273,3 +273,8 @@ def test_op_memo_pure():
     model_cache(get_model("deepseek-v3")).clear()
     b2, b1 = evaluate(s2).step, evaluate(s1).step
     assert (a1, a2) == (b1, b2)
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped except in the test that reads them (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals(), skip=("test_pd_queue_truncation_bounded",))

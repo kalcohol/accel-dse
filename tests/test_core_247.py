@@ -38,3 +38,8 @@ def test_floor_diagnostics_and_replay_hook():
     # a weaker floor drift → more mass near U = 0 → more backlog; above 0 unchanged
     assert y["p_sat"] > x["p_sat"] and math.isclose(y["theta"], x["theta"])
     assert all(math.isclose(a * 0.65, b, rel_tol=1e-12) for (_, a), (_, b) in zip(x["mu_f"], y["mu_f"]))
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

@@ -115,3 +115,8 @@ def test_pp_imbalance_warning_only_for_heterogeneous_stacks():
     w = lambda mid: [x for x in _eval({"model": mid, "layout": {"pp": 2}, "pp_split": "layers"})["summary"]["warnings"]
                      if "流水级按层数" in x]
     assert w("esmfold") and not w("qwen3-8b")
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

@@ -69,3 +69,8 @@ def test_exposed_rule_and_ignore_warning():
     assert abs(ld["req_s_replica"] - 10e9 / (0.5 * 1e9)) < 1e-9
     w = disagg_report(sc(prefix_hit=0.3, prefix_host_GB=100.0))
     assert any("prefix_host_GB 已忽略" in x for x in w["warnings"])
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

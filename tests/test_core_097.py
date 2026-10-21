@@ -108,3 +108,8 @@ def test_ui_wiring():
     assert "/api/sensitivity" in {c["path"] for c in W.req_calls(js)} and W.has(js, "sensitivity: false")
     assert {"renderSweepSens", "renderParetoSens"} <= set(W.functions(js))
     assert '"/api/sensitivity"' in (root / "serve.py").read_text()
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

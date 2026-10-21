@@ -104,3 +104,8 @@ def test_v4_grid_n_high_option():
 # 0.193: these check the ≤ 0.192 wide-schedule / reference-GPU mechanism at fixed inputs (pin_legacy)
 from tests.pin_legacy import pin_module_0192  # noqa: E402
 pin_module_0192(globals())
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

@@ -45,3 +45,8 @@ def test_multi_turn_host_tier():
     r = _run(prefix_host_GB=100.0, prefix_turns=3, prefix_turn_user=200)
     h = r["prefix_cache"]["host"]
     assert "turns" in r["prefix_cache"] and h["hit_host"] > 0 and 0 < h["write_frac"] < 1
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

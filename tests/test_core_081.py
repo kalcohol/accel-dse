@@ -145,3 +145,8 @@ def test_des_nonbinding_kv_cap_equals_cap_off():
         if not binding:
             assert d0["itl_max"] == d1["itl_max"] and d0["tpot"] == d1["tpot"], (d0["itl_max"], d1["itl_max"])
 
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

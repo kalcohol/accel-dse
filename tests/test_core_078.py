@@ -75,3 +75,8 @@ def test_des_overload_detected_when_run_shorter_than_request_lifetime():
 
 from tests.pin_legacy import pin_module  # noqa: E402  (0.173)
 pin_module(globals())
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

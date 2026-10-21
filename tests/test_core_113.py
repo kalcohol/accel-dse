@@ -76,3 +76,8 @@ def test_hw_catalog_consistency():
     for s, (l, r) in {"ucie-a-48": (64, 48), "ucie-a-64": (64, 64), "ucie-s-32": (16, 32), "bow-256": (16, 16),
                       "bow-512": (16, 32)}.items():
         assert D2D_STANDARDS[s]["per_unit_GBps"] == l * r / 8
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

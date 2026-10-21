@@ -146,3 +146,8 @@ def test_from_dict_roundtrip():
     s2 = Scenario.from_dict(d)
     assert s2.pd.prefix_affinity and s2.pd.prefill_chip.name == "100T"
     assert s2.pd.prefix_cache_GB == 12.5 and s2.pd.search_decode_batch
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

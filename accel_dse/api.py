@@ -153,7 +153,7 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight_noc": {"topologies", "phases", "prompt"},
                "insight_dse": {"mac_scales", "sram_scales", "sides", "topologies", "power_mode", "curve", "phase",
                                "prompt", "tie", "mems", "mem_types", "mem_count_scales", "mem_caps", "slc_mibs",
-                               "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd"}}
+                               "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd", "f_scales"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -875,10 +875,10 @@ def balance_whatif(scn: Scenario, r: Result, power_cap_W: float | None = None) -
     return {"base": base, "rows": rows, "gain": WHATIF_GAIN, "works": [x["key"] for x in rows if x.get("works")], **capd,
             "cost_basis": {"density_preset": WHATIF_DENSITY, "energy_preset": WHATIF_ENERGY, "reticle_mm2": RETICLE_MM2,
                            "note": ("面积 = SRAM（含专用状态 SRAM，同宏密度）+ DRAM PHY 引脚（budget.full_area，n5_derived 密度 「推导」）；"
-                                    "能耗 = 动态 J/token + SRAM 泄漏 + HBM 待机/刷新（tpuv4i_7nm 预设，不含 idle_W），在各杠杆自己的临界 batch 与基线同 batch 比较；"
+                                    "能耗 = 动态 J/token + SRAM 泄漏 + DRAM 待机/刷新（tpuv4i_7nm 预设，不含 idle_W），在各杠杆自己的临界 batch 与基线同 batch 比较；"
                                     "HBM 岸线按面积代理的方形晶粒 · area = SRAM incl. the state buffer + DRAM PHY pins; dynamic J/token at the "
                                     "lever's critical batch vs the base at the same batch; SRAM leakage 230.7 µW/MiB (3 nm, 25 °C, lower bound) "
-                                    "in W/卡 and Δ泄漏; HBM standby 48 mW/die + refresh 1.95 mW/Gb (DRAMsim3 HBM2 IDD proxy, 二手/推导) in Δ HBM; HBM shoreline 11 mm/stack on a square die of the area proxy, 2 sides typical")}}
+                                    "in W/卡 and Δ泄漏; HBM standby 48 mW/die + refresh 1.95 mW/Gb (DRAMsim3 HBM2 IDD proxy, 二手/推导), LPDDR IDD2N 32.2 mW per 8 Gb channel + refresh 0.765 mW/Gb (Micron Y52Q, 来源/推导) in Δ DRAM; HBM shoreline 11 mm/stack on a square die of the area proxy, 2 sides typical")}}
 
 
 SENS_BASE_LABEL = {"stage": "stage 全重叠（吞吐上界）", "pipe": "pipe 硬件推导（现实估计）", "serial": "serial 无重叠（吞吐下界）"}
@@ -1425,7 +1425,8 @@ def api_insight_dse(body: dict) -> dict:
         if v is not None:
             kw[k] = v
     for k, lo, hi, it in (("mem_count_scales", 0.0625, 16, False), ("mem_caps", 1, 1024, False),
-                          ("slc_mibs", 0, 1 << 20, False)):          # 0.301: memory-side axes
+                          ("slc_mibs", 0, 1 << 20, False),          # 0.301: memory-side axes
+                          ("f_scales", 0.15, 1, False)):            # 0.302: DVFS operating point (f / f_max)
         v = nums(k, lo, hi, n=8, integer=it)
         if v is not None:
             kw[k] = v

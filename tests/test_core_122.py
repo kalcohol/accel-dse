@@ -127,3 +127,8 @@ def test_changelog_has_every_release_header():
     heads = set(re.findall(r"^## \[0\.(\d+)\.0\]", s, flags=re.M))
     cur = int(__version__.split(".")[1])
     assert all(str(v) in heads for v in range(100, cur + 1)), sorted(set(map(str, range(100, cur + 1))) - heads)
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

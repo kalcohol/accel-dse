@@ -149,3 +149,8 @@ def test_api_validation_and_pd_kv():
 
 from tests.pin_legacy import pin_module_flat_alpha  # noqa: E402  (0.199: α-β / bit-for-bit checks on the flat α)
 pin_module_flat_alpha(globals(), only={'test_off_is_058_bit_for_bit'})
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

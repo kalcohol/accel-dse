@@ -61,3 +61,8 @@ def test_turn_prompt_and_validation():
     b = _body(p.parse_args(["--model", "qwen3-8b", "--pd", "--pd-prefix-tree", "512:1:0", "--pd-turns", "3",
                             "--pd-turn-prompt"]))
     assert (b.get("scenario") or b)["pd"]["prefix_turn_prompt"] is True
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

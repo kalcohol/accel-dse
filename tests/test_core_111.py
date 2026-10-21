@@ -42,3 +42,8 @@ def test_fingerprints_unchanged():
 # 0.193: the busy-vs-DES operating point is pinned to the ≤ 0.192 reference GPUs (pin_legacy)
 from tests.pin_legacy import pin_module_0192  # noqa: E402
 pin_module_0192(globals(), only={"test_busy_lowers_small_model_prefill_first_ttft_toward_des"})
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

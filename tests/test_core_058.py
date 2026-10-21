@@ -107,3 +107,8 @@ def test_coloc_slot_hold_wait_shape_chunked_refill():
     ch = m["coloc_chunked"]
     assert abs(ch["kv_cap"]["refill_tight_share"] - (1 - ch["prefill"]["rho"])) < 1e-9
     assert "refill_tight_share" not in m["coloc_prefill_first"]["kv_cap"]
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

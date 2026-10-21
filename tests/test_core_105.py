@@ -52,3 +52,8 @@ def test_pd_ttft_never_rises_with_prefix_or_link_at_fixed_rate():
             assert q1[k] <= q0[k] * (1 + 1e-6), (k, q0[k], q1[k])
         if r1["prefill"]["batch"] <= r0["prefill"]["batch"]:
             assert r1["ttft_ms"] <= r0["ttft_ms"] * (1 + 1e-6)
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals())

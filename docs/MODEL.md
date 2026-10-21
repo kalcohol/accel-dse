@@ -8164,3 +8164,68 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §246.6 Default behaviour, old → new
 - None. The new axes default to the scenario's memory and SLC, and the 0.300 search output is unchanged apart from added row fields: mem_*, slc_mib, tpot_ms / ttft_ms, shoreline.
+
+## §247 Sourced HBM4 / LPDDR6 energy, LPDDR background power, DVFS operating point as a design axis (0.302)
+
+### §247.1 Per-generation DRAM pJ/bit 「推导」 (`core/energy.py`)
+- New fields `pJ_bit_dram_hbm4` (HBM4 / HBM4E) and `pJ_bit_dram_lpddr6` (LPDDR6). `dram_pJ_field` picks them when the scenario's memory type matches; unset → the per-kind field (`pJ_bit_dram_hbm` / `_lpddr`) → `pJ_bit_dram` (≤ 0.301 order).
+- tpuv4i_7nm preset:
+  - HBM4 2.46 pJ/bit = HBM3E 3.44 ÷ 1.4. Samsung (HBM4 product page; newsroom 2026-02, 1c DRAM + 4 nm logic base die) and SK hynix (newsroom 2025-09) both state ≈ 40 % better power efficiency than HBM3E. Vendor claims, not a measured pJ/bit; the efficiency ratio is applied to the preset's HBM3E figure. HBM4E reuses it 「假设」. Context only, not used: Samsung ISSCC 2026 HBM4 lowers VDDQ (1.1 → 0.75 V class) and doubles the interface to 2048 bit.
+  - LPDDR6 3.31 pJ/bit = LPDDR5X 4.0 ÷ 1.21. Kim et al. (Samsung), "A 16Gb 12.8Gb/s LPDDR6 SDRAM …", ISSCC 2026 pp. 268–270 (doi 10.1109/ISSCC49663.2026.11409018): "21.0 % better energy efficiency than LPDDR5x". Samsung's LPDDR6 page states "up to 21 %".
+- The chip-side PHY pJ/bit and PHY area stay the HBM3 / LPDDR5X figures for the new generations 「近似（假设）」, as labelled in the design-search notes.
+
+### §247.2 LPDDR background (standby + refresh) power 「来源/推导」
+- New fields `mW_lpddr_ch_standby` (per x16 channel of 8 Gb) and `mW_lpddr_Gb_refresh` (per Gb). `hbm_static_W` covers LPDDR when either is set: slices = capacity_Gb / 8, W = slices · standby + capacity_Gb · refresh. Same gating as HBM (§216): charged only when no idle figure is set; the report key stays `hbm_static` / `hbm_static_W_card` (= DRAM background).
+- Source: Micron Y52Q LPDDR5X data sheet (MT62F512M32D1 / MT62F512M64D2, Rev. G 05/2025), Table 16, per x16 channel of a 2-channel 16 Gb die (8 Gb per channel), maximum values:
+  - IDD2N (precharge standby): VDD1 1.3 mA · 1.8 V + VDD2H 28 mA · 1.05 V + VDD2L 0.2 mA · 0.9 V + VDDQ 0.6 mA · 0.5 V = 32.2 mW 「来源」.
+  - Refresh: (IDD5 − IDD3N) = (14 − 2.7) mA · 1.8 V + (124 − 35) mA · 1.05 V = 113.8 mW during tRFCab = 210 ns (Table 5), once per tREFI = 3.9 µs (JEDEC LPDDR5 at ≤ 85 °C 「二手」) → 6.12 mW per 8 Gb = 0.765 mW/Gb 「推导」.
+- Upper side 「假设」: every slice is charged IDD2N. Idle ranks in power-down draw IDD2P (2.3 mA VDD2H, ≈ 12× lower on that rail), and self-refresh is lower still (Y52Q IDD61 / IDD62H 0.17 / 0.42 mA per channel at 25 °C). The tool does not model power-down residency. LPDDR6 / LPDDR5 reuse these figures 「假设」.
+- Scale: 64 GB LPDDR5X = 64 slices → 2.06 W standby + 0.39 W refresh = 2.45 W; 128 GB → 4.9 W.
+
+### §247.3 DVFS operating point as a design-search axis 「推导」 (`core/energy_dse.py`)
+- `f_scales` (f / f_max in [0.15, 1], default [1]). For each grid point and each f, the chip is evaluated at freq_ghz·f. Core-rail action energies (mac, vec, sram, slc, clock, wire, noc) are scaled × V(f)², and SRAM leakage × V(f), with V from the `curve` (powercap._point, the same code path as the 0.227 cap). DRAM, links and static terms are held.
+- Power budget: a point over the cap is capped from f_max with the cap search. Power rises with f, so the capped clock is below f_op and the row equals the f_op = 1 twin's capped result. `f_scale` = running clock and `f_op` = design point.
+- Under "dfs" (V flat) a lower f_op never lowers J/unit: the per-action energies are unchanged and static power is amortised over fewer units. The voltage benefit needs a V–f curve (rx5700xt_n7 「二手」).
+- Example (tpuv4i_7nm, n7_tpuv4i densities, die ≤ 3000 mm², 300 W, 1P qwen3-8b prefill b1 prompt 2048, rx5700xt_n7):
+
+| MAC × | f_op | running f | k tok/s | mJ/token | W nominal at f_op |
+|---|---|---|---|---|---|
+| 1 | 1.0 | 0.838 (capped) | 59.1 | 5.07 | 504 |
+| 1 | 0.6 | 0.6 | 42.4 | 3.29 | 140 |
+| 2 | 1.0 | 0.623 (capped) | 87.4 | 3.43 | 1028 |
+| 2 | 0.6 | 0.6 | 84.3 | 3.36 | 283 |
+| 0.5 | 0.6 | 0.6 | 21.3 | 3.36 | 71 |
+
+  - Under the cap, more MACs at a lower V–f point beats fewer MACs at f_max, both in throughput (+43 %) and in J/token (−34 %).
+  - The front holds 1× @ 0.6 (lowest J), 2× @ 0.6 and 2× capped (highest throughput).
+- Decode at small batch is memory-bound. The axis then changes only J (clock-tree term × f·V², SRAM leakage × V); throughput is flat.
+
+### §247.4 Suite time (test-only)
+- PD-queue reports spend ≥ 90 % of their time in the SLO-goodput / stability rate bisection (`_slo_rate`; cProfile, test_core_057 `_rep`: 190 of 199 s). Tests that read only operating-point outputs now replace it with a −1 sentinel (`tests/fast_queue.py`). Its outputs are exactly the keys in `SLO_KEYS`.
+- Equivalence: `ACCEL_FASTQ_VERIFY=1` runs each queue_report both ways and compares every other field. All 43 wrapped modules showed no difference. The two runtime-guard tests (test_core_237 / 238) are not wrapped, since they time the full report.
+- The SLO search stays covered by the unwrapped tests that read it (test_core_051 / 052 / 063 / 064 / 065 / 080 and the per-test exclusions in 054 / 056 / 060 / 061 / 073_audit / 101).
+
+### §247.5 Not modelled
+- LPDDR power-down / self-refresh residency (idle ranks). The background figure is the non-power-down upper side.
+- Per-generation PHY energy and area.
+- Overclocking (f > f_max).
+- Per-rail voltage of the memory (memory energy is held under DVFS).
+
+### §247.6 Default behaviour, old → new
+- tpuv4i_7nm preset (no idle figure):
+  - `pJ_bit_dram_hbm4` unset → 2.457.
+  - `pJ_bit_dram_lpddr6` unset → 3.306.
+  - `mW_lpddr_ch_standby` unset → 32.22.
+  - `mW_lpddr_Gb_refresh` unset → 0.765.
+- Preset J/token, qwen3-8b, ctx 4096, prompt 2048 (old → new):
+
+| Chip / memory | decode b8 | prefill b1 |
+|---|---|---|
+| 100T / LPDDR5X 4×16 GB (default) | 0.1816 → 0.2135 (+17.6 %) | 0.00777 → 0.00816 (+5.0 %) |
+| 100T / LPDDR5X 4×32 GB | 0.1816 → 0.2455 (+35.2 %) | +10.0 % |
+| 100T / LPDDR6 4×x96 16 GB | 0.1551 → 0.1605 (+3.4 %) | +4.1 % |
+| 1P / HBM3E (default) | unchanged | unchanged |
+| 1P / HBM4 4×12-high | 0.1083 → 0.0889 (−17.9 %) | −0.8 % |
+
+- §246.4, 100T decode b8: LPDDR5X J/token 0.18 → 0.21, which widens the HBM advantage. The design-search note "LPDDR background not modelled" now appears only when the energy table lacks the LPDDR fields.
+- §246.4 (1P decode b64, ≤ 800 mm² / 250 W): the tie between HBM4 4 stacks and HBM3E 8 stacks (≈ 4.81 k tok/s, 0.040 J/token) is broken. HBM4 4 stacks is now the sole front point, at 6.85 k tok/s and 0.031 J/token (693 mm²). The cheaper DRAM bits take it off the power cap, so it also runs faster.

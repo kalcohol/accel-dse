@@ -33,3 +33,8 @@ def test_energy_counts_overlap_independent():
                 assert math.isclose(a[k], b[k], rel_tol=1e-9, abs_tol=1e-12), (kw["model"], k)
         assert b["idle_card_s"] >= a["idle_card_s"] * (1 - 1e-12)   # static energy: the slower step idles longer
         assert b["clock"] >= a["clock"] * (1 - 1e-12)               # 0.228: … and stays clocked longer
+
+
+# 0.302 suite time: the SLO-goodput rate searches are skipped except in the test that reads them (tests/fast_queue.py)
+from tests.fast_queue import fast_module  # noqa: E402
+fast_module(globals(), skip=("test_chunked_fused_step_follows_overlap",))

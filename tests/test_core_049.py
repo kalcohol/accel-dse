@@ -159,7 +159,10 @@ def test_budget_api_cli_search_flags():
     oks = [r["budget_ok"] for r in flagged["rows"]]
     assert True in oks and False in oks
     assert all(o is False for o in oks[oks.index(False):])          # breaking rows ranked after the rest
-    cmp = api.api_compare({**body, "budget": {"power_W_card": lim}})
+    # 0.302 suite time: the per-mapping compare view on qwen3-8b × 4 cards (was qwen3-30b-a3b × 8: 168 s of this test);
+    # the check — every compare row carries the budget verdict — is the same code path
+    cmp = api.api_compare({**body, "scenario": {"model": "qwen3-8b", "mem_id": HBM}, "cards": 4,
+                           "budget": {"power_W_card": lim}})
     assert all("budget_ok" in r for r in cmp["rows"])
     sw = api.api_sweep({"scenario": {"model": "qwen3-8b", "serving": {"batch": 8}}, "path": "chip.sram_mib",
                         "values": [32, 64, 128], "budget": {"die_mm2": 60, "mm2_per_mib_sram": 0.5,
