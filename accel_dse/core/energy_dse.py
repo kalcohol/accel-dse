@@ -64,6 +64,62 @@ def noc_router_cost(link_Bpc: float, topology: str, f_ghz: float, mm2_per_kmac: 
     return {"mm2": sc["um2_45"] * 1e-6 * node if node else None, "W": W, "area_x": sc["area_x"]}
 
 
+# 0.308: chiplet partitioning — package / yield limits (each with its status; every one overridable by argument)
+RETICLE_MM2 = 26 * 33                  # 858 mm² single-exposure field (26 × 33 mm, ASML / industry standard) 「来源」
+PKG_LIMITS = {    # interposer area (dies + HBM stacks must fit) — package technology presets
+    "cowos-s": (2700.0, "来源", "TSMC 3DFabric CoWoS page: CoWoS-S interposer up to 3.3× reticle (~2700 mm²)"),
+    "cowos-l": (5.5 * RETICLE_MM2, "来源/推导", "TSMC 2026 North America Technology Symposium press release: "
+                "'now producing 5.5-reticle size CoWoS' → 5.5 × 858 = 4719 mm²"),
+}
+HBM_FOOTPRINT_MM2 = {"HBM4": 11.0 * 12.8, "HBM4E": 11.0 * 12.8}   # HBM4 base die 11 × 12.8 mm (Samsung HC 2026) 「二手」
+HBM_FOOTPRINT_DEFAULT = 11.0 * 11.0     # HBM3 / 3E: 11 mm edge (budget.HBM_STACK_EDGE_MM) squared 「近似」
+D0_NOTE = ("缺陷密度参考：TSMC N5 量产爬坡时约 0.10 /cm²、N7 约 0.09 /cm²（TSMC 技术论坛 / VLSI 2019，经 AnandTech 转述「二手」）；"
+           "良率模型 Y = exp(−A·D0)（Poisson「假设」；Murphy / 负二项更乐观）；晶粒在封装前测试（KGD）「假设」，封装 / 键合良率未计")
+DIE_SPLITS = ("tp", "pp", "ep")
+
+
+def _mem_split(mem_id: str, n: int) -> str | None:
+    """0.308: the per-die memory of a package memory split over n dies (unit count ÷ n, same unit), or None when the
+    count does not divide or the catalog has no such count."""
+    from .. import mem_catalog as mc
+    if n == 1:
+        return mem_id
+    sp = mc.parse_mem_id(mem_id)
+    if sp.n_units % n:
+        return None
+    hbm = sp.kind == "HBM"
+    kw = {"height": sp.hbm_height, "die_Gb": sp.hbm_die_Gb} if hbm else {"cap_GB": sp.cap_per_unit_GB}
+    try:
+        return mc.make_spec(sp.mem_type, form=None if hbm else sp.form, width_bits=sp.unit_width_bits,
+                            rate=sp.rate_MTps, count=sp.n_units // n, **kw).id
+    except (KeyError, ValueError):
+        return None
+
+
+def _split_layout(lay, n: int, split: str, moe: bool):
+    """0.308: the replica's layout with its package split over n dies — the cross-die traffic is the existing
+    collective model of that axis on the D2D tier (schedule: a package's consecutive cards talk over D2D):
+      tp  TP × n (MoE: expert TP × n too, ep·etp = tp·dp) — per-layer all-reduce / all-gather over D2D
+      pp  PP × n — stage-boundary activations over D2D (and the pipeline bubble of the micro-batches)
+      ep  MoE only: attention DP × n, experts EP × n — dispatch / combine all-to-all over D2D."""
+    from .parallel import Layout
+    if split == "tp":
+        return Layout(lay.pp, lay.tp * n, lay.dp, lay.ep, lay.etp * n if moe else lay.etp, lay.sp, lay.cp)
+    if split == "pp":
+        return Layout(lay.pp * n, lay.tp, lay.dp, lay.ep, lay.etp, lay.sp, lay.cp)
+    if not moe:
+        raise ValueError("die_split ep 只用于 MoE 模型")
+    return Layout(lay.pp, lay.tp, lay.dp * n, lay.ep * n, lay.etp, lay.sp, lay.cp)
+
+
+def _hbm_footprint(mem_id: str) -> float:
+    from .. import mem_catalog as mc
+    sp = mc.parse_mem_id(mem_id)
+    if sp.kind != "HBM":
+        return 0.0
+    return sp.n_units * HBM_FOOTPRINT_MM2.get(sp.mem_type, HBM_FOOTPRINT_DEFAULT)
+
+
 MAC_SCALES = (0.5, 1.0, 2.0)
 SRAM_SCALES = (0.5, 1.0, 2.0)
 POWER_MODES = ("dvfs", "reject")
@@ -192,7 +248,19 @@ def _phase_scn(scn, phase, prompt):
     return scn.replace("serving", sv)
 
 
-def _run(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
+def _run(s, t, cap, power_mode, curve, f_op: float = 1.0, n_dies: int = 1) -> dict:
+    """0.308: a package of ``n_dies`` dies (one card each in the cost model): every die runs under cap / n and the
+    per-card figures are scaled to the package (throughput, W, static W × n; J/unit and latency unchanged)."""
+    o = _run1(s, t, None if cap is None else cap / n_dies, power_mode, curve, f_op)
+    if n_dies > 1:
+        for k in ("thr", "thr_nominal", "W_card", "W_nominal", "hbm_static_W", "noc_W"):
+            if o.get(k) is not None:
+                o[k] *= n_dies
+        o["why"] = [f"每晶粒（预算 ÷ {n_dies}）{w}" for w in o["why"]]
+    return o
+
+
+def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
     """One phase of one design point: at the operating point f_op (0.302; clock f_op·f_max, voltage V(f_op) on the
     curve, core-rail energies × V², leakage × V — powercap._point), then capped / rejected by power.  A point over the
     cap is capped from f_max like any other: power rises with f, so the cap clock is below f_op and equals the f_op = 1
@@ -224,6 +292,45 @@ def _run(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
     return o
 
 
+def _split_compare(rows: list[dict], tie: float = 0.01) -> list[dict]:
+    """0.308: per design (same package totals: MACs, SRAM, engine side, topology, memory, SLC, clock, NoC link), the
+    monolithic die (dies = 1) against its best feasible split (by throughput and by J/unit).  Verdicts: only_split
+    (the monolithic die is infeasible — reticle / area / power / shoreline — and a split is feasible), split_thr /
+    split_J / split_both (better by more than ``tie``), mono (no split beats it), none (nothing feasible)."""
+    groups: dict = {}
+    for i, x in enumerate(rows):
+        k = (x["mac_x"], x["sram_x"], x["side"], x["topology"], x["mem_id"], x["slc_mib"], x["f_op"], x["noc_link_Bpc"])
+        groups.setdefault(k, []).append(i)
+    out = []
+    for k, ix in groups.items():
+        mono = next((i for i in ix if rows[i].get("dies", 1) == 1), None)
+        sp = [i for i in ix if rows[i].get("dies", 1) > 1 and rows[i].get("feasible")]
+        if not any(rows[i].get("dies", 1) > 1 for i in ix):
+            continue
+        e = {"mac_x": k[0], "sram_x": k[1], "side": k[2], "topology": k[3], "mem_id": k[4], "slc_mib": k[5],
+             "f_op": k[6], "noc_link_Bpc": k[7], "mono": mono,
+             "mono_feasible": bool(mono is not None and rows[mono].get("feasible")),
+             "mono_why": rows[mono].get("why") if mono is not None else None}
+        if not sp:
+            e["verdict"] = "mono" if e["mono_feasible"] else "none"
+            out.append(e)
+            continue
+        bt = max(sp, key=lambda i: (rows[i]["thr"], -rows[i]["J_per_unit"]))
+        bj = min(sp, key=lambda i: (rows[i]["J_per_unit"], -rows[i]["thr"]))
+        e.update(best_thr=bt, best_J=bj)
+        if not e["mono_feasible"]:
+            e["verdict"] = "only_split"
+        else:
+            m = rows[mono]
+            e["d_thr"] = rows[bt]["thr"] / m["thr"] - 1 if m["thr"] > 0 else None
+            e["d_J"] = rows[bj]["J_per_unit"] / m["J_per_unit"] - 1 if m["J_per_unit"] > 0 else None
+            bthr = e["d_thr"] is not None and e["d_thr"] > tie
+            bJ = e["d_J"] is not None and e["d_J"] < -tie
+            e["verdict"] = "split_both" if bthr and bJ else "split_thr" if bthr else "split_J" if bJ else "mono"
+        out.append(e)
+    return out
+
+
 def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SCALES, sram_scales=SRAM_SCALES,
                          sides=None, topologies=None, power_mode: str = "dvfs", curve: str = "dfs",
                          phase: str | None = None, prompt: int | None = None, tie: float | None = None,
@@ -231,7 +338,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          mix_out_tokens: int | None = None, slo_tpot_ms: float | None = None,
                          slo_ttft_ms: float | None = None, mem_usd_per_GB: dict | None = None,
                          max_mem_usd: float | None = None, f_scales=None, noc_link_Bpc: float | None = None,
-                         noc_routing: str | None = None, noc_links=None) -> dict:
+                         noc_routing: str | None = None, noc_links=None, dies=None, d2d_stds=None,
+                         d2d_units: int | None = None, die_split: str = "tp", reticle_mm2: float | None = None,
+                         pkg_mm2=None, d0_per_cm2: float | None = None) -> dict:
     from .. import mem_catalog as mc
     from .budget import full_area, shoreline_check
     from .hardware import default_mem
@@ -278,6 +387,43 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     fs = sorted({float(x) for x in f_scales}, reverse=True) if f_scales else [1.0]
     if not all(F_MIN <= x <= 1.0 for x in fs):
         raise ValueError(f"f_scales must be in [{F_MIN:g}, 1] (fraction of the chip's nominal clock)")
+    # 0.308: chiplet partitioning axes
+    from .d2d_catalog import D2D_STANDARDS, d2d_edges
+    chip_mode = dies is not None
+    Ns = sorted({int(x) for x in dies}) if chip_mode else [1]
+    if chip_mode and (not dies or not all(float(x).is_integer() and 1 <= int(x) <= 16 for x in dies)):
+        raise ValueError("dies must be a non-empty list of integers in [1, 16]")
+    if chip_mode and scn.d2d_enabled and scn.package_cards > 1:
+        raise ValueError("dies 轴从单片设计出发：场景已是多晶粒封装（d2d_enabled / package_cards > 1）")
+    if d2d_stds is not None and (not d2d_stds or not all(x in D2D_STANDARDS for x in d2d_stds)):
+        raise ValueError(f"d2d_stds must be a non-empty list of {sorted(D2D_STANDARDS)}")
+    if (d2d_stds is not None or d2d_units is not None) and not chip_mode:
+        raise ValueError("d2d_stds / d2d_units need the dies axis")
+    if d2d_units is not None and not (isinstance(d2d_units, int) and 1 <= d2d_units <= 64):
+        raise ValueError("d2d_units must be an integer in [1, 64]")
+    if die_split not in DIE_SPLITS:
+        raise ValueError(f"die_split must be one of {DIE_SPLITS}")
+    stds = list(dict.fromkeys(d2d_stds)) if d2d_stds else [scn.d2d_std if scn.d2d_std != "custom" else "ucie-a-48"]
+    units = d2d_units if d2d_units is not None else scn.d2d_units
+    if reticle_mm2 is None and chip_mode:
+        reticle_mm2 = float(RETICLE_MM2)
+    if reticle_mm2 is not None and not reticle_mm2 >= 0:
+        raise ValueError("reticle_mm2 must be ≥ 0 (0 = off)")
+    pkg_src = None
+    if isinstance(pkg_mm2, str):
+        if pkg_mm2 not in PKG_LIMITS:
+            raise ValueError(f"pkg_mm2 must be a number or one of {sorted(PKG_LIMITS)}")
+        pkg_src = PKG_LIMITS[pkg_mm2][2]
+        pkg_mm2 = PKG_LIMITS[pkg_mm2][0]
+    if pkg_mm2 is not None and not pkg_mm2 > 0:
+        raise ValueError("pkg_mm2 must be > 0")
+    if d0_per_cm2 is not None and not 0 < d0_per_cm2 < 10:
+        raise ValueError("d0_per_cm2 must be in (0, 10) defects / cm²")
+    from .catalog import get_model
+    moe = bool(get_model(scn.model).is_moe) if chip_mode else False
+    pk_axis = [(1, None)] + [(nn, sd) for nn in Ns if nn > 1 for sd in stds] if chip_mode else [(1, None)]
+    if chip_mode and 1 not in Ns:
+        pk_axis = pk_axis[1:]
     mix = mix_out_tokens is not None
     phases = ("prefill", "decode") if mix else (phase or scn.serving.phase,)
     scn_ph = {ph: _phase_scn(scn, ph, prompt) for ph in phases}
@@ -301,9 +447,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     if any(x < 0 for x in slcs):
         raise ValueError("slc_mibs must be ≥ 0")
     Ls = sorted({float(x) for x in noc_links}) if noc_links is not None else None
-    n_pts = len(grid) * len(mem_ids) * len(slcs) * len(fs) * (len(Ls) if Ls else 1)
+    n_pts = len(grid) * len(mem_ids) * len(slcs) * len(fs) * (len(Ls) if Ls else 1) * len(pk_axis)
     if n_pts > MAX_POINTS:
-        raise ValueError(f"设计网格 {n_pts} 点 > 上限 {MAX_POINTS}：减少 mac_scales / sram_scales / sides / topologies / 内存 / SLC / 频率档 / NoC 链路")
+        raise ValueError(f"设计网格 {n_pts} 点 > 上限 {MAX_POINTS}：减少 mac_scales / sram_scales / sides / topologies / 内存 / SLC / 频率档 / NoC 链路 / 晶粒数 / D2D 接口")
     b = budget
     area_lim = getattr(b, "die_mm2", None) if b is not None else None
     cap = (getattr(b, "power_W_card", None) if b is not None else None) or t.tdp_W
@@ -366,20 +512,55 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     if mix:
         notes.append(f"负载混合：每请求 prefill {P} token + decode {mix_out_tokens} token，同卡分时；"
                      "J/请求 = P·J_prefill + D·J_decode，卡秒/请求 = P/吞吐_prefill + D/吞吐_decode「推导」")
+    if chip_mode:
+        notes.append(f"晶粒切分轴（0.308）：每封装 {{{', '.join(map(str, Ns))}}} 个晶粒 × D2D 接口 {{{', '.join(stds)}}}，每晶粒 {units} 个单元；"
+                     f"同一封装总量（MAC / SRAM / SLC / 外存堆栈）平分到各晶粒，按 {die_split.upper()} 切到晶粒上——跨晶粒流量即该并行轴的"
+                     "既有集合通信（封装内卡间字节走 D2D 层，schedule），D2D 带宽 = 单元数 × 目录带宽「来源/假设」并受晶粒 NoC 边缘接入限制（0.308）；"
+                     "吞吐 / 功耗按封装计（每晶粒 × 晶粒数），功耗预算按封装、每晶粒 ÷ 晶粒数；面积预算 die_mm2 限制封装逻辑硅总面积（Σ 晶粒）")
+        if d2d_stds:
+            notes.append("D2D pJ/bit 取所选接口目录值（UCIe-A 0.25 / UCIe-S 0.5 / BoW 0.5「来源」；48 / 64 GT/s 沿用 UCIe 2.0 目标「假设」），"
+                         "覆盖能耗表 pJ_bit_d2d")
+        if reticle_mm2:
+            notes.append(f"单晶粒面积 ≤ 光罩 {reticle_mm2:g} mm²（26 × 33 mm「来源」；拼接 / 多次曝光未建模「近似」）")
+        if pkg_mm2:
+            notes.append(f"封装（中介层）面积 ≤ {pkg_mm2:g} mm²：Σ 晶粒 + HBM 堆栈占地（HBM3/3E 11 × 11 mm「近似」，HBM4 11 × 12.8 mm「二手」），"
+                         "间距 / 无源器件未计「近似」" + (f"；{pkg_src}" if pkg_src else ""))
+        if d0_per_cm2:
+            notes.append(f"良率：D0 = {d0_per_cm2:g} /cm²；" + D0_NOTE + "；kgd_mm2 = 每好封装消耗的晶圆面积 Σ A / Y(A)")
+        if L and ch.noc_mem_attach != "none":
+            notes.append("D2D 经晶粒边缘接入 NoC（0.308）：D2D 边每列引擎一个接入路由器（mesh ⌈E/R⌉ 条链路 / 边，ring 每边 2），"
+                         "可承载 D2D 带宽 ≤ 接入链路 × 链路宽度 × 频率；D2D 字节两端各穿过半个晶粒的 NoC（能耗计入 NoC）")
     rows = []
     for p in grid:
         for mid in mem_ids:
-            for slc, fo, lw in ((x, y, z) for x in slcs for y in fs for z in (Ls or [None])):
+            for slc, fo, lw, (nd, sd) in ((x, y, z, w) for x in slcs for y in fs for z in (Ls or [None]) for w in pk_axis):
                 lk = lw if lw is not None else (ch.noc_link_Bpc if noc_link_Bpc is None else float(noc_link_Bpc))
-                c = replace(ch, engines=p["engines"], rows=p["side"], cols=p["side"], sram_mib=p["sram_mib"],
-                            noc_topology=p["topology"], slc_mib=slc, noc_link_Bpc=lk, noc_routing=RT)
                 row = {**p, "array": f'{p["side"]}×{p["side"]}', **infos[mid], "slc_mib": slc, "f_op": fo,
                        "f_ghz": ch.freq_ghz * fo, "noc_link_Bpc": lk,
                        "base": p["base"] and mid == base_mem and slc == float(ch.slc_mib) and fo == 1.0
-                       and (lw is None or lw == ch.noc_link_Bpc)}
+                       and (lw is None or lw == ch.noc_link_Bpc) and nd == 1}
+                if chip_mode:
+                    row.update(dies=nd, d2d_std=sd, d2d_units=units if nd > 1 else None, die_split=die_split if nd > 1 else None)
+                mid_d = _mem_split(mid, nd)
+                if p["engines"] % nd or mid_d is None:
+                    rows.append({**row, "feasible": False,
+                                 "why": f"{p['engines']} 引擎 / {infos[mid]['mem_units']} 个外存单元不能平分到 {nd} 个晶粒"})
+                    continue
+                c = replace(ch, engines=p["engines"] // nd, rows=p["side"], cols=p["side"], sram_mib=p["sram_mib"] / nd,
+                            noc_topology=p["topology"], slc_mib=slc / nd, noc_link_Bpc=lk, noc_routing=RT,
+                            state_sram_mib=ch.state_sram_mib / nd)
+
+                def die_scn(sx, c=c, mid_d=mid_d, nd=nd, sd=sd):
+                    sx = sx.replace("chip", c).replace("mem_id", mid_d)
+                    if nd == 1:
+                        return sx
+                    sx = sx.replace("layout", _split_layout(sx.layout, nd, die_split, moe))
+                    sx = replace(sx, package_cards=nd, d2d_enabled=True, d2d_std=sd, d2d_units=units,
+                                 mem_cap_GB=sx.mem_cap_GB / nd)
+                    return sx
+                td = replace(t, pJ_bit_d2d=D2D_STANDARDS[sd]["pJ_bit"]) if (sd and d2d_stds) else t
                 try:
-                    res = {ph: _run(scn_ph[ph].replace("chip", c).replace("mem_id", mid), t, cap, power_mode, curve, fo)
-                           for ph in phases}
+                    res = {ph: _run(die_scn(scn_ph[ph]), td, cap, power_mode, curve, fo, nd) for ph in phases}
                 except ValueError as ex:
                     rows.append({**row, "feasible": False, "why": str(ex)})
                     continue
@@ -404,19 +585,45 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     row["tpot_ms" if phases[0] == "decode" else "ttft_ms"] = o["lat_ms"]
                 if res[phases[-1]].get("noc_W") is not None:
                     row["noc_W"] = res[phases[-1]]["noc_W"]
-                s_full = s0.replace("chip", c).replace("mem_id", mid)
+                s_full = die_scn(s0)
                 if dens_ok:
                     fa = full_area(s_full, b, noc_routers=Ls is not None)    # 0.307: routers counted once (budget.py)
                     row["mm2"] = fa["mm2"]
                     if "noc_routers" in fa["terms"]:
-                        row["noc_mm2"] = fa["terms"]["noc_routers"]
+                        row["noc_mm2"] = fa["terms"]["noc_routers"] * nd
+                    row["si_mm2"] = fa["mm2"] * nd            # 0.308: logic silicon per package (Σ dies)
+                    if "d2d_phy" in fa["terms"]:
+                        row["d2d_phy_mm2"] = fa["terms"]["d2d_phy"] * nd
+                    if d0_per_cm2:
+                        import math as _m
+                        y = _m.exp(-fa["mm2"] * d0_per_cm2 / 100.0)
+                        row["die_yield"] = y
+                        row["kgd_mm2"] = nd * fa["mm2"] / y
+                if chip_mode and nd > 1:
+                    lk_d = s_full.d2d_link
+                    row["d2d_GBps"] = lk_d.GBps
+                    from .d2d_catalog import d2d_GBps as _dg
+                    row["d2d_noc_capped"] = lk_d.GBps < _dg(sd, units) * (1 - 1e-12)
+                    ph_ = res[phases[-1]]
+                    row["io_share"] = (ph_.get("share") or {}).get("io")     # D2D (+ link / net when the replica spans packages)
                 if prices:
                     pr = prices.get(row["mem_type"])
                     row["mem_usd"] = row["mem_GB"] * pr if pr is not None else None
                 if not row["fits"]:
                     why.insert(0, "放不下（内存）")
-                if area_lim is not None and dens_ok and row.get("mm2") is not None and row["mm2"] > area_lim * (1 + 1e-9):
-                    why.append(f"面积 {row['mm2']:.0f} > {area_lim:g} mm²")
+                if area_lim is not None and dens_ok and row.get("si_mm2") is not None and row["si_mm2"] > area_lim * (1 + 1e-9):
+                    why.append(f"面积 {row['si_mm2']:.0f} > {area_lim:g} mm²" + (f"（{nd} 晶粒合计）" if nd > 1 else ""))
+                if reticle_mm2 and dens_ok and row.get("mm2") is not None and row["mm2"] > reticle_mm2 * (1 + 1e-9):
+                    why.append(f"单晶粒 {row['mm2']:.0f} > 光罩 {reticle_mm2:g} mm²")
+                if pkg_mm2 and dens_ok and row.get("si_mm2") is not None:
+                    row["pkg_mm2"] = row["si_mm2"] + _hbm_footprint(mid)
+                    if row["pkg_mm2"] > pkg_mm2 * (1 + 1e-9):
+                        why.append(f"封装 {row['pkg_mm2']:.0f} > 中介层 {pkg_mm2:g} mm²")
+                if chip_mode and nd > 1 and dens_ok and row.get("mm2"):
+                    from .budget import d2d_shoreline
+                    ds = d2d_shoreline(s_full, row["mm2"])
+                    if ds and ds["status"] == "over":
+                        why.append(f"D2D 岸线：{ds['units']} 单元需 {ds['need_mm']:.1f} mm > {ds['edges']} 边 {ds['edge_mm']:.1f} mm")
                 if dens_ok and row["mem_kind"] == "HBM" and row.get("mm2"):
                     sh = shoreline_check(s_full, row["mm2"])
                     if sh:
@@ -443,8 +650,11 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     for i in f2:
         rows[i]["front"] = True
     if dens_ok:
-        for i in [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1), ("mm2", -1)), tie)]:
-            rows[i]["front3"] = True
+        for i in [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1), ("si_mm2", -1)), tie)]:
+            rows[i]["front3"] = True        # 0.308: Σ die area per package (= mm2 for a monolithic die)
+        if d0_per_cm2:
+            for i in [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1), ("kgd_mm2", -1)), tie)]:
+                rows[i]["front_kgd"] = True
     priced = bool(prices) and sub and all(x.get("mem_usd") is not None for x in sub)
     if priced:
         for i in [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1), ("mem_usd", -1)), tie)]:
@@ -455,13 +665,17 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
             x = rows[i]
             return {"index": i, "engines": x["engines"], "array": x["array"], "macs": x["macs"], "sram_mib": x["sram_mib"],
                     "topology": x["topology"], "mem_id": x["mem_id"], "slc_mib": x["slc_mib"], "f_op": x["f_op"],
-                    "noc_link_Bpc": x["noc_link_Bpc"],
+                    "noc_link_Bpc": x["noc_link_Bpc"], "dies": x.get("dies", 1), "d2d_std": x.get("d2d_std"),
                     "thr": x["thr"],
                     "J_per_unit": x["J_per_unit"], "mm2": x.get("mm2")}
         best["perf_W"] = pick(min(ok, key=lambda i: (rows[i]["J_per_unit"], -rows[i]["thr"])))
         best["thr"] = pick(max(ok, key=lambda i: (rows[i]["thr"], -rows[i]["J_per_unit"])))
     base = next((i for i, x in enumerate(rows) if x["base"]), None)
-    return {"chip": ch.name, "model": scn.model, "phase": "mix" if mix else phases[0], "rows": rows,
+    split = _split_compare(rows) if chip_mode else None
+    return {"chiplet": {"dies": Ns, "d2d_stds": stds, "d2d_units": units, "die_split": die_split,
+                        "reticle_mm2": reticle_mm2, "pkg_mm2": pkg_mm2, "d0_per_cm2": d0_per_cm2,
+                        "compare": split} if chip_mode else None,
+            "chip": ch.name, "model": scn.model, "phase": "mix" if mix else phases[0], "rows": rows,
             "front": sorted(f2, key=lambda i: rows[i]["thr"]), "best": best, "base": base, "notes": notes,
             "power_cap_W": cap, "power_cap_src": cap_src, "power_mode": power_mode, "curve": curve,
             "die_mm2": area_lim, "tie": tie, "area": dens_ok, "n_feasible": len(ok), "mems": mem_ids, "slc_mibs": slcs, "f_scales": fs, "noc_link_Bpc": None if Ls else L, "noc_routing": RT,

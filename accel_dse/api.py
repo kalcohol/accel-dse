@@ -154,7 +154,8 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight_dse": {"mac_scales", "sram_scales", "sides", "topologies", "power_mode", "curve", "phase",
                                "prompt", "tie", "mems", "mem_types", "mem_count_scales", "mem_caps", "slc_mibs",
                                "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd", "f_scales",
-                               "noc_link_Bpc", "noc_routing", "noc_links"}}
+                               "noc_link_Bpc", "noc_routing", "noc_links", "dies", "d2d_stds", "d2d_units",
+                               "die_split", "reticle_mm2", "pkg_mm2", "d0_per_cm2"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1477,6 +1478,35 @@ def api_insight_dse(body: dict) -> dict:
         if isinstance(mo, bool) or not isinstance(mo, int) or not 1 <= mo <= 1 << 20:
             raise ApiError("mix_out_tokens must be an integer in [1, 1048576]")
         kw["mix_out_tokens"] = mo
+    # 0.308: chiplet partitioning — dies per package × D2D grade, split axis, reticle / interposer / yield
+    if (v := nums("dies", 1, 16, n=5, integer=True)) is not None:
+        kw["dies"] = v
+    if (v := body.get("d2d_stds")) is not None:
+        if not isinstance(v, list) or not 1 <= len(v) <= 6 or not all(isinstance(x, str) and x in D2D_STANDARDS for x in v):
+            raise ApiError(f"d2d_stds must be a list of 1–6 of {sorted(D2D_STANDARDS)}")
+        kw["d2d_stds"] = tuple(v)
+    if (v := body.get("d2d_units")) is not None:
+        if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 64:
+            raise ApiError("d2d_units must be an integer in [1, 64]")
+        kw["d2d_units"] = v
+    if (v := body.get("die_split")) is not None:
+        if v not in ("tp", "pp", "ep"):
+            raise ApiError("die_split must be 'tp', 'pp' or 'ep'")
+        kw["die_split"] = v
+    for k, lo, hi in (("reticle_mm2", 0, 1e5), ("d0_per_cm2", 1e-6, 10)):
+        v = body.get(k)
+        if v is not None:
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v < hi:
+                raise ApiError(f"{k} must be a number in [{lo:g}, {hi:g})")
+            kw[k] = float(v)
+    if (v := body.get("pkg_mm2")) is not None:
+        from .core.energy_dse import PKG_LIMITS
+        if isinstance(v, str):
+            if v not in PKG_LIMITS:
+                raise ApiError(f"pkg_mm2 must be a number or one of {sorted(PKG_LIMITS)}")
+        elif isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < 1e6:
+            raise ApiError("pkg_mm2 must be a number in (0, 1e6) mm² or a package preset")
+        kw["pkg_mm2"] = v if isinstance(v, str) else float(v)
     up = body.get("mem_usd_per_GB")
     if up is not None:
         if (not isinstance(up, dict) or len(up) > 8 or

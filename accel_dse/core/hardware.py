@@ -362,6 +362,39 @@ class Chip:
         n = self.noc_mem_links()
         return math.inf if math.isinf(n) else n * self.noc_link_Bpc * self.freq_ghz
 
+    def noc_d2d_links(self, edges: int) -> float:
+        """0.308: NoC links D2D traffic can enter through on ``edges`` die edges given to D2D PHYs (d2d_catalog.d2d_edges)
+        「推导」: the PHY sits on the north / south edge, one attach router per engine column (the memory columns are
+        the west / east edges, 0.305) → C = ⌈E/R⌉ per edge (mesh; crossbar as the mesh, like noc_mem_links); ring: one
+        stop per edge, both directions → 2.  inf when the link width is unset, attach is "none", or no edge."""
+        if not self.noc_link_Bpc or self.noc_mem_attach == "none" or edges <= 0:
+            return math.inf
+        if self.noc_topology == "ring":
+            return 2.0 * edges
+        r_ = max(1, math.isqrt(self.engines))
+        return float(edges * -(-self.engines // r_))
+
+    def noc_d2d_GBps(self, edges: int) -> float:
+        """0.308: D2D bandwidth (per direction) the NoC can carry to / from the die edge: attach links × width × clock."""
+        n = self.noc_d2d_links(edges)
+        return math.inf if math.isinf(n) else n * self.noc_link_Bpc * self.freq_ghz
+
+    def noc_d2d_hops(self) -> tuple[float, float]:
+        """0.308: (router traversals, link pitches) per D2D byte between the die edge and an engine (one end) 「推导」:
+        mesh R rows below the D2D edge, an engine in row i is i hops from its column's attach router → (R + 1)/2;
+        ring: a stop on the ring, nearest way round → mean over E engines of min(i, E − i), ≈ E/4; crossbar: one
+        switch traversal, the mesh's wire distance 「假设」.  With two D2D edges each edge's traffic travels
+        perpendicular to its own edge (the same mean).  (0, 0) when attach is "none" or a single engine."""
+        if self.noc_mem_attach == "none" or self.engines <= 1:
+            return 0.0, 0.0
+        E = self.engines
+        if self.noc_topology == "ring":
+            d = sum(min(i, E - i) for i in range(E)) / E
+            return d, d
+        r_ = max(1, math.isqrt(E))
+        d = (r_ + 1) / 2.0
+        return (1.0, d) if self.noc_topology == "crossbar" else (d, d)
+
     def noc_eject_on(self) -> bool:
         """0.307: the local-port model applies (noc_eject "link", a link width set, XY routing)."""
         return bool(self.noc_link_Bpc) and self.noc_eject == "link" and self.noc_routing == "xy"

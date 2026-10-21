@@ -670,9 +670,16 @@ class Scenario:
     @property
     def d2d_link(self) -> Link:
         """Effective D2D link: the catalog grade × units (raw, per direction), or ``d2d`` when ``d2d_std`` = custom."""
-        if self.d2d_std == "custom":
-            return self.d2d
-        return Link(d2d_GBps(self.d2d_std, self.d2d_units), self.d2d.alpha_us, self.d2d.topology)
+        lk = self.d2d if self.d2d_std == "custom" else Link(d2d_GBps(self.d2d_std, self.d2d_units), self.d2d.alpha_us,
+                                                             self.d2d.topology)
+        # 0.308: D2D bytes enter / leave the die's NoC at the D2D edge(s): ≤ attach links × link width × clock
+        # (Chip.noc_d2d_GBps; inf unless a NoC link width is set with edge attach) — the 0.305 DRAM-ingress rule
+        if self.d2d_enabled and self.package_cards > 1:
+            from .d2d_catalog import d2d_edges
+            cap = self.chip.noc_d2d_GBps(d2d_edges(self.package_cards))
+            if cap < lk.GBps:
+                lk = dataclasses.replace(lk, GBps=cap)
+        return lk
 
     @property
     def package_eff(self) -> int:

@@ -6,6 +6,35 @@
 
 
 
+## [0.308.0]
+
+### Chiplet partitioning in the energy-aware DSE; D2D consistent with the NoC
+- **Dies per package × D2D grade as search axes** (`energy_design_search(dies=, d2d_stds=, d2d_units=, die_split=, reticle_mm2=, pkg_mm2=, d0_per_cm2=)`; API `insight_dse`; UI 晶粒数 / D2D 接口 / 单元 / 切分 / 光罩 / 封装 / D0).
+  - The package totals are split evenly over N dies: MACs, SRAM, SLC and memory stacks. Points whose engine or memory-unit counts do not divide by N are marked infeasible.
+  - The split runs along TP, PP or EP (EP for MoE only). Cross-die traffic is that axis's existing collective on the D2D tier, so no new traffic model is added.
+  - Package figures are per die × N (throughput, W); J/unit is unchanged. The power budget applies per package (cap ÷ N per die). `die_mm2` limits Σ die area.
+  - Limits: each die ≤ reticle 858 mm² (26 × 33 「来源」; stitching not modelled 「近似」, default when the axis is on). Optional interposer limit: Σ dies + HBM footprints ≤ CoWoS-S 2700 / CoWoS-L 4719 mm² (TSMC 「来源」). Optional Poisson yield exp(−A·D0) with KGD (`kgd_mm2`, `front_kgd`; D0 reference N5 ≈ 0.10 /cm² 「二手」).
+  - Per-design verdicts in `chiplet.compare`: only_split / split_thr / split_J / split_both / mono.
+  - Example (1P, 8 × HBM3E, 700 W):
+    - 2 × MAC (908 mm²) exceeds the reticle as one die; 2 or 4 dies make it feasible.
+    - Decode b64 at 1 × MAC, 2 dies over UCIe-A: J/token −4.8 % (shorter NoC distances per die), throughput −0.5 %.
+    - Prefill over BoW / UCIe-S: throughput −25 % / −15 % (D2D bandwidth); UCIe-A −3.4 %.
+    - With NoC links of 32 B/cycle, DRAM ingress scales with die edge: 2 dies decode +60 % throughput, −31 % J.
+    - Yield (D0 0.1): wafer area per good package 1258 → 814 mm² with 4 dies.
+- **Per-grade D2D PHY footprint** (`d2d_catalog.D2D_PHY_GEOM`):
+  - UCIe-A x64: 388.8 × 1043 µm; UCIe-S x16: 571.5 × 1540 µm (UCIe tutorial 「来源」).
+  - BoW: one TX + one RX slice, 0.65 × 1.35 mm (BoW 2.0 §8.11 「推导」).
+  - UCIe-S and BoW now use their own area. Old → new, 4 units: 1.62 → 3.52 / 3.51 mm². UCIe-A still uses `mm2_per_d2d_unit`; NVLink-C2C has none.
+  - D2D shoreline check: units × edge ≤ D2D edges × side.
+- **D2D edges:** a package of ≥ 3 dies now gives each die 2 inner D2D edges (was 1). The HBM shoreline loses an edge. Old → new: 4 dies × 4 stacks on a 300 mm² die goes from tight to over.
+- **D2D through the die's NoC** (edge attach, the 0.305 rule):
+  - Bandwidth: D2D ≤ attach links × link width × clock, with attach links = ⌈E/R⌉ per D2D edge (mesh) or 2 (ring). Applies only with a NoC link width set. Old → new, 2 × 16 engines, TP prefill: L = 32: −15.5 %; L = 128: −4.8 %.
+  - Energy: D2D bytes pay NoC hops at both ends, (R + 1)/2 per end. Default on with edge attach. Old → new J/token, TP prefill: +0.29 % (2 dies), +0.85 % (4 dies).
+- Freshness: UCIe 3.0 high-rate energy target 0.75 pJ/bit and "no change in bump locations" (SemiEngineering 2026-02-12 「二手」).
+  - The footprint label moves from 「假设」 to 「二手」. The pJ/bit default is kept and 0.75 is noted as the upper reference; with 0.75, prefill J changes by ≤ 0.3 %.
+  - UCIe 4.0 is not released. 107 orgs since 2026-10-21: none.
+- Tests: tests/test_core_308.py (10).
+
 ## [0.307.0]
 
 ### NoC: router power before the power cap, router area counted once, local ports shared with the DRAM stream

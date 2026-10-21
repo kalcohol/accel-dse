@@ -643,7 +643,10 @@ def _d2d_GBps(sc: dict) -> float:
 
 
 def cmd_d2d(a) -> dict:
-    out = {"standards": [{"id": k, **v} for k, v in D2D_STANDARDS.items()], "default_std": D2D_DEFAULT_STD,
+    from .core.d2d_catalog import D2D_PHY_GEOM
+    geo = lambda k: ({"phy_edge_mm": D2D_PHY_GEOM[k][0], "phy_depth_mm": D2D_PHY_GEOM[k][1], "phy_src": D2D_PHY_GEOM[k][2]}
+                     if k in D2D_PHY_GEOM else {})       # 0.308: PHY footprint per unit
+    out = {"standards": [{"id": k, **v, **geo(k)} for k, v in D2D_STANDARDS.items()], "default_std": D2D_DEFAULT_STD,
            "default_units": D2D_DEFAULT_UNITS, "default_enabled": False}
     if a.json:
         return out
@@ -651,7 +654,9 @@ def cmd_d2d(a) -> dict:
           f"{D2D_DEFAULT_STD} x{D2D_DEFAULT_UNITS} units/die 「假设」")
     for k, v in D2D_STANDARDS.items():
         print(f"  {k:<11} {v['per_unit_GBps']:>6.0f} GB/s per {v['unit']:<14} {v['pJ_bit']:.2g} pJ/bit  "
-              f"{'open' if v['open'] else 'vendor'}  {v['label']}")
+              f"{'open' if v['open'] else 'vendor'}  {v['label']}"
+              + (f"  PHY {D2D_PHY_GEOM[k][0]:.3g} × {D2D_PHY_GEOM[k][1]:.3g} mm ({v['per_unit_GBps'] / D2D_PHY_GEOM[k][0]:.0f} GB/s/mm)"
+                 if k in D2D_PHY_GEOM else ""))
     return {}
 
 

@@ -434,10 +434,23 @@ def _counts(r) -> dict:
             nd = {"byte_hops": c["dram"] * h, "byte_pitches": c["dram"] * p, "hops_per_byte": h, "pitches_per_byte": p}
             c["noc"] += nd["byte_hops"]
             c["noc_wire"] += nd["byte_pitches"]
+    # 0.308: D2D bytes cross the NoC too — from the sending engine to the D2D edge and from the edge to the receiving
+    # engine (two ends per wire byte), Chip.noc_d2d_hops per end; the same edge-attach switch as DRAM (energy only)
+    n2 = None
+    scn_ = r.scenario
+    if c["d2d"] > 0 and scn_.d2d_enabled and scn_.package_cards > 1:
+        h, p = ch.noc_d2d_hops()
+        if h or p:
+            n2 = {"byte_hops": 2 * c["d2d"] * h, "byte_pitches": 2 * c["d2d"] * p, "hops_per_byte": 2 * h,
+                  "pitches_per_byte": 2 * p}
+            c["noc"] += n2["byte_hops"]
+            c["noc_wire"] += n2["byte_pitches"]
     units = r.throughput * window
     out = {"counts": c, "window_s": window, "units": units, "unit": unit}
     if nd:
         out["noc_dram"] = nd
+    if n2:
+        out["noc_d2d"] = n2
     return out
 
 
@@ -811,6 +824,13 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                           "pitches_per_byte": nd["pitches_per_byte"],
                                           "J": (nd["byte_hops"] * e + nd["byte_pitches"] * (unit_pJ(table, "noc_wire", ch) or 0.0))
                                           * 8e-12 / u}
+                if a.get("noc_d2d"):         # 0.308: the D2D bytes' share (engine ↔ D2D edge, both ends)
+                    n2 = a["noc_d2d"]
+                    out["noc"]["d2d"] = {"byte_hops": n2["byte_hops"] / u, "byte_pitches": n2["byte_pitches"] / u,
+                                         "hops_per_byte": n2["hops_per_byte"],
+                                         "pitches_per_byte": n2["pitches_per_byte"],
+                                         "J": (n2["byte_hops"] * e + n2["byte_pitches"] * (unit_pJ(table, "noc_wire", ch) or 0.0))
+                                         * 8e-12 / u}
         else:
             e = getattr(table, dfield if k == "dram" else attr)
         if e is not None:

@@ -213,10 +213,16 @@ def phy_area(scn, b: Budget) -> dict:
     if dq is not None:
         terms["dram_phy"] = spec.bus_bits * dq
     if scn.d2d_enabled and scn.package_cards > 1 and b.mm2_per_d2d_unit is not None:
+        from .d2d_catalog import d2d_phy_mm2
         if scn.d2d_std == "custom":
             notes.append("d2d_std = custom：单元数未知，D2D PHY 未计")
-        else:
+        elif scn.d2d_std.startswith("ucie-a"):      # the density field is the UCIe-A module (preset 「来源」)
             terms["d2d_phy"] = scn.d2d_units * b.mm2_per_d2d_unit
+        elif d2d_phy_mm2(scn.d2d_std) is not None:   # 0.308: UCIe-S / BoW — their own published footprint
+            terms["d2d_phy"] = scn.d2d_units * d2d_phy_mm2(scn.d2d_std)
+            notes.append(f"D2D PHY 按 {scn.d2d_std} 自身单元尺寸计（d2d_catalog.D2D_PHY_GEOM，0.308）")
+        else:
+            notes.append(f"{scn.d2d_std}：无公开 PHY 尺寸，D2D PHY 未计")
     pk = scn.package_cards if scn.d2d_enabled else 1
     if b.mm2_per_GBps_c2c is not None:
         if scn.layout.cards > pk:          # 0.150: the scale-up link only leaves the package when cards > dies/package
@@ -249,7 +255,9 @@ def shoreline_check(scn, die_mm2: float | None) -> dict | None:
     side = die_mm2 ** 0.5
     need = spec.n_units * HBM_STACK_EDGE_MM
     # 0.214: a die in a multi-die package gives one edge to the D2D link (B200: the inner edge to NV-HBI)
-    d2d_edges = 1 if (getattr(scn, "d2d_enabled", False) and getattr(scn, "package_cards", 1) > 1) else 0
+    # 0.308: two inner edges for packages of ≥ 3 dies (d2d_catalog.d2d_edges)
+    from .d2d_catalog import d2d_edges as _d2d_edges
+    d2d_edges = _d2d_edges(getattr(scn, "package_cards", 1)) if getattr(scn, "d2d_enabled", False) else 0
     sides_max = HBM_SIDES_MAX - d2d_edges
     typ, mx = min(HBM_SIDES_TYPICAL, sides_max) * side, sides_max * side
     status = "ok" if need <= typ else ("tight" if need <= mx else "over")
@@ -262,6 +270,21 @@ def shoreline_check(scn, die_mm2: float | None) -> dict | None:
                                                               if status == "over" else "；需占用第三、四边")
                           + f" · HBM shoreline: {spec.n_units} stacks need {need:.0f} mm of die edge")
     return out
+
+
+def d2d_shoreline(scn, die_mm2: float | None) -> dict | None:
+    """0.308: D2D PHY units vs the die edges they get (d2d_catalog.d2d_edges of a square die): units × the unit's edge
+    length ≤ edges × side.  None when D2D is off, the grade has no published footprint, or the die area is unknown."""
+    from .d2d_catalog import d2d_edge_mm, d2d_edges
+    if not (getattr(scn, "d2d_enabled", False) and scn.package_cards > 1) or not die_mm2:
+        return None
+    w = d2d_edge_mm(scn.d2d_std)
+    if w is None:
+        return None
+    ed = d2d_edges(scn.package_cards)
+    need, have = scn.d2d_units * w, ed * die_mm2 ** 0.5
+    return {"units": scn.d2d_units, "unit_edge_mm": w, "need_mm": need, "edges": ed, "edge_mm": have,
+            "status": "ok" if need <= have else "over"}
 
 
 def noc_router_mm2(chip, b) -> float | None:

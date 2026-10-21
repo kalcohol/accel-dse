@@ -624,6 +624,15 @@
       <label title="内存单价 $/GB（用户输入，工具不内置价格），如 HBM3E:15,LPDDR5X:4；填了才算内存 $ 与 $ 前沿">$/GB<input type="text" id="ins-dse-usd" placeholder="不计价" style="width:10em"></label>
       <label title="每卡内存 $ 上限（需 $/GB）">内存 $ ≤<input type="number" id="ins-dse-maxusd" min="0" step="10" style="width:6em"></label>
     </div>
+    <div class="row" title="0.308：芯粒切分——同一封装总量（MAC / SRAM / SLC / 外存堆栈）平分到 N 个晶粒，经 D2D 接口按并行轴切分；对比单片与拆分">
+      <label title="每封装晶粒数（逗号分隔，1–16，最多 5 档；空 = 不作为轴）。含 1 = 单片对照">晶粒数<input type="text" id="ins-dse-dies" placeholder="如 1,2,4" style="width:6em"></label>
+      <label title="D2D 接口（逗号分隔：ucie-a-48, ucie-a-64, ucie-s-32, bow-256, bow-512, nvlink-c2c；空 = 场景的）。带宽 = 单元数 × 目录带宽，pJ/bit 取目录值，PHY 面积按各自模块尺寸（UCIe 模块表 / BoW 2.0 §8.11「来源/推导」）">D2D 接口<input type="text" id="ins-dse-d2d" placeholder="如 ucie-a-48,ucie-s-32,bow-256" style="width:14em"></label>
+      <label title="每晶粒 D2D 单元数（UCIe 模块 / BoW 收发片对；空 = 场景的，默认 4「假设」）">单元<input type="number" id="ins-dse-d2dunits" min="1" max="64" step="1" style="width:4em"></label>
+      <label title="跨晶粒切分轴：tp = 每层 all-reduce 经 D2D；pp = 流水级边界激活经 D2D；ep = MoE 专家并行（all-to-all）">切分<select id="ins-dse-split"><option value="tp">TP</option><option value="pp">PP</option><option value="ep">EP（MoE）</option></select></label>
+      <label title="单晶粒面积上限 mm²（空 = 光罩 858 = 26 × 33 mm「来源」；0 = 不限；拼接未建模）">光罩<input type="number" id="ins-dse-reticle" min="0" step="1" placeholder="858" style="width:5em"></label>
+      <label title="封装（中介层）面积上限：Σ 晶粒 + HBM 占地。CoWoS-S 3.3× 光罩 ≈ 2700 mm²、CoWoS-L 5.5× ≈ 4719 mm²（TSMC「来源」）">封装<select id="ins-dse-pkg"><option value="">不限</option><option value="cowos-s">CoWoS-S 2700</option><option value="cowos-l">CoWoS-L 4719</option></select></label>
+      <label title="缺陷密度 D0 /cm²（空 = 不算良率）。参考 TSMC N5 ≈ 0.10、N7 ≈ 0.09（AnandTech 转述「二手」）；Y = exp(−A·D0)「假设」，KGD 测试后封装">D0<input type="number" id="ins-dse-d0" min="0" step="0.01" placeholder="0.10" style="width:5em"></label>
+    </div>
     <div class="note small" id="ins-dse-summary"></div>
     <div class="chart" id="ins-dse-chart"></div>
     <div class="scroll"><table class="tbl tight" id="ins-dse-tbl"></table></div>

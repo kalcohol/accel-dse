@@ -8593,3 +8593,84 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
   - The §250.2 design rule is unchanged for decode. For prefill with a 1-link local port, the mesh optimum moves toward larger E (fewer bytes per port).
 - Why opt-in: the port width is a design choice (wider NIU ports remove the port term) 「假设」, and the ≤ 0.306 figures stay reproducible. Default "off" is bit-identical.
 - Not modelled: per-op DRAM attribution (see above); reduce-tree nodes with more than one child; the pipe-overlap path (`_pipe_time`).
+
+## §253 Chiplet partitioning in the energy-aware DSE; D2D consistent with the NoC (0.308)
+
+### §253.1 Axes and mechanism 「推导」 (`core/energy_dse.py`)
+- `dies` (N per package, 1–16) × `d2d_stds` (catalog grades) × `d2d_units` (per die) × `die_split` ("tp" / "pp" / "ep"). Each design point of the existing grid is a **package**: its MACs, SRAM, SLC and memory stacks (the mem axis id) are split evenly over the N dies.
+  - Each die has engines/N (same r × r array), SRAM/N, SLC/N, state SRAM/N and stacks/N (`_mem_split`; mem_cap_GB/N).
+  - A point whose engine count or stack count does not divide by N is marked infeasible, not dropped.
+- **Cross-die traffic is not a new model.** The replica layout is multiplied along one axis (`_split_layout`), and the existing collective model routes a package's inter-card bytes over the D2D tier (schedule: TP-fastest numbering; `package_cards = N`, `d2d_enabled`):
+  - tp: TP × N (MoE: expert TP × N, keeping ep·etp = tp·dp). Per-layer all-reduce / all-gather over D2D.
+  - pp: PP × N. Stage-boundary activations over D2D, plus the micro-batch bubble.
+  - ep (MoE only): attention DP × N, experts EP × N. Dispatch / combine all-to-all over D2D.
+  - D2D time uses the grade's bandwidth (units × catalog figure) and α (`d2d.alpha_us`, 「假设」).
+  - D2D energy: with the `d2d_stds` axis, each grade's catalog pJ/bit (UCIe-A 0.25, UCIe-S 0.5, BoW 0.5 「来源」; 48 / 64 GT/s keep the 2.0 target 「假设」, see §253.4) replaces the table's `pJ_bit_d2d`. Without the axis, the table value is used.
+- **Package figures.** Throughput and W are per die × N; J/unit and latency are unchanged.
+  - The power budget is per package: each die runs under cap / N, so DVFS caps per die.
+  - The area budget `die_mm2` limits Σ die area (`si_mm2`, which equals `mm2` for one die). `front3` ranks on Σ die area.
+- **Limits** (each labelled; all overridable):
+  - Reticle: each die ≤ `reticle_mm2`, default 858 = 26 × 33 mm when the axis is on 「来源」 (0 = off). Stitched dies are not modelled 「近似」.
+  - Interposer `pkg_mm2` (number, "cowos-s" 2700 = 3.3× reticle, or "cowos-l" 4719 = 5.5×, TSMC 「来源/推导」): Σ dies + HBM footprints ≤ limit. Footprints: HBM3 / 3E 11 × 11 mm 「近似」, HBM4 11 × 12.8 mm 「二手」. Spacing and passives are not counted 「近似」.
+  - Yield `d0_per_cm2`: die yield Y = exp(−A·D0) (Poisson 「假设」; Murphy / negative binomial give higher yield for large dies). Dies are known-good-tested before assembly 「假设」; assembly / bonding yield is not modelled.
+    - `kgd_mm2` = N · A / Y(A) is the wafer area per good package; `front_kgd` ranks on it.
+    - D0 reference: TSMC N5 ≈ 0.10 /cm² at HVM ramp, N7 0.09 (TSMC symposium / VLSI 2019 via AnandTech 「二手」).
+  - D2D shoreline: units × the unit's edge length ≤ D2D edges × die side (`budget.d2d_shoreline`).
+- **Verdict** (`chiplet.compare`, `_split_compare`): per design (same package totals), the monolithic row against the best feasible split by throughput and by J/unit. The 1 % tie of `insight.TIE` applies.
+  - only_split: the monolithic die is infeasible (reticle / area / power / shoreline) and a split is feasible.
+  - split_thr / split_J / split_both: the split is better on that metric.
+  - mono: no split beats the monolithic die.
+
+### §253.2 Worked example (1P, qwen3-8b, 8 × HBM3E 8H @ 9.2, n5_derived densities, tpuv4i_7nm energy, 700 W per package, D0 0.1, CoWoS-L; MAC ×1 / ×2 at 128², SRAM ×1; dies 1 / 2 / 4 × UCIe-A 48 / UCIe-S 32 / BoW-256, 4 units)
+
+| case | mono | best split | verdict |
+|---|---|---|---|
+| decode b64, MAC ×1 | 7875 tok/s, 47.4 mJ, 654 mm² | 2 × UCIe-A: 7839, 45.1 mJ, 2 × 333 | split_J (−4.8 % J, −0.5 % thr) |
+| decode b64, MAC ×2 | 908 mm² > reticle | 2 × UCIe-A 7840, 53.9 mJ; 4 dies 51.7 mJ | only_split |
+| prefill p2048, MAC ×1 | 70.8 k tok/s, 7.26 mJ | UCIe-A 68.4 k (−3.4 %); UCIe-S 60.5 k (−15 %); BoW 53.1 k (−25 %) | mono |
+| prefill, MAC ×2 | > reticle | 2 × UCIe-A 96.2 k, 7.27 mJ | only_split |
+| decode, NoC links 32 B/cycle | 382 tok/s, 194 mJ | 2 dies 611 (+60 %), 4 dies 134 mJ (−31 %) | split_both |
+| prefill, NoC links 64 B/cycle | 38.7 k, 7.76 mJ | 4 × UCIe-A 60.2 k (+55 %), 7.40 mJ (−4.6 %) | split_both |
+| MoE qwen3-30b-a3b decode, ep | 4959, 67.6 mJ | 2 dies 4754 (−4.1 %), 66.3 mJ (−1.9 %) | split_J |
+| MoE, tp | 4959, 67.6 mJ | 2 dies 4939 (−0.4 %), 64.1 mJ (−5.3 %) | split_J |
+| yield (all cases) | 1258 mm² wafer / good package | 2 dies 929; 4 dies 814 | (front_kgd) |
+
+Reading the example:
+- **J/token.** Splitting lowers decode J (−5 %) because each die's NoC is smaller: DRAM and multicast bytes travel fewer hops. This is the existing §249 / §250 NoC energy model, not a D2D effect; D2D energy is ≤ 0.2 % of J at 0.25–0.5 pJ/bit.
+  - Caveat 「近似」: the monolithic die is mapped as one NoC domain. A monolithic die with an internal TP-like partition would recover part of this saving.
+- **Throughput.** Throughput costs come from D2D bandwidth on the TP collectives, which matter in prefill. A grade with 128–256 GB/s per die (BoW-256 / UCIe-S × 4) loses 15–25 %; UCIe-A × 4 (1.5 TB/s) loses 3 %.
+  - PP is the wrong split for b1 prefill (the bubble halves throughput). EP vs TP for the MoE: TP keeps throughput, EP loses 4 %.
+- **Edge-limited NoC.** When the NoC limits DRAM ingress (§250.1, L = 32–64), splitting adds die edge (2⌊√E⌋ memory-attach links per die). Throughput rises by up to 60 %; this is the 0.305 "narrow links force many small cores" rule applied across dies.
+- **Area.** Split dies cost +1–6 % Σ silicon (D2D PHY and the uncore share). Yield more than repays it at D0 0.1 (−26 % to −47 % wafer area per good package).
+- Script: /workspace/ex_0308.py (box), output /workspace/ex_0308.txt.
+
+### §253.3 D2D with the 0.305–0.307 NoC (die-edge attach) 「推导」 (`core/hardware.py`, `core/scenario.py`, `core/energy.py`, `core/budget.py`, `core/d2d_catalog.py`)
+- **Edges** (`d2d_edges`): a die in a two-die package gives one inner edge to D2D (B200 「二手」). With ≥ 3 dies it gives two (a 2 × 2 like MI300X's IODs, or the inner dies of a chain 「二手/假设」).
+  - The HBM shoreline check now uses 4 − edges sides; it was always 4 − 1.
+  - The NoC's memory columns are the west / east edges (0.305), so the D2D PHYs sit on north / south. That matches 2 HBM sides + up to 2 D2D sides.
+  - Not modelled 「近似」: a "tight" HBM case that needs a third edge would conflict with a 2-edge D2D layout and would attach outside the two memory columns.
+- **Bandwidth** (`Chip.noc_d2d_links` / `noc_d2d_GBps`; `Scenario.d2d_link`):
+  - The D2D PHY attaches to the routers along its edge, one per engine column → ⌈E/R⌉ links per edge (mesh; crossbar like the mesh, as `noc_mem_links`). Ring: one stop per edge, both directions → 2.
+  - The usable D2D bandwidth per direction is min(PHY, links × L × f). This is the same rule as DRAM ingress, under the same switch (`noc_mem_attach` "edge"), and only with a link width set.
+  - Example: 16 engines / die, L = 32 → 4 × 32 B × 1 GHz = 128 GB/s, so UCIe-A × 4 (1536) is throttled to BoW-256 × 4 (128). The DSE row flags this (`d2d_noc_capped`).
+  - DRAM and D2D share interior links; that is not modelled (each is bounded at its own edge) 「近似」.
+- **Energy** (`action_counts` "noc_d2d"): every D2D wire byte crosses the sender's NoC from its engine to the edge and the receiver's NoC from the edge to its engine. Each end costs (R + 1)/2 hops and pitches (mesh: the engine row below the D2D edge), ring mean min(i, E − i), crossbar one traversal plus the mesh distance.
+  - It is booked on noc / noc_wire like the 0.306 DRAM hops and reported under `energy.noc.d2d`.
+- **PHY footprint per grade** (`D2D_PHY_GEOM`; `budget.phy_area`):
+  - UCIe-A x64 0.3888 × 1.043 mm, UCIe-S x16 0.5715 × 1.540 mm (UCIe tutorial module table 「来源」).
+  - BoW: one TX + one RX slice = 5.2 mm / 8 × 1.35 mm, from the BoW 2.0 §8.11 example link of 8 + 8 slices on organic laminate at 130 µm pitch 「推导」.
+  - Shoreline density: UCIe-A 988 GB/s/mm at 48 GT/s (658 at 32 GT/s, the consortium's figure), UCIe-S 112, BoW-256 49.
+  - UCIe-A keeps `mm2_per_d2d_unit` (the preset is the same module); UCIe-S and BoW use their own footprint (0.88 / 0.88 mm² per unit, was the UCIe-A 0.41). NVLink-C2C has no published footprint, so none is counted.
+- Old → new (1P halves, TP over 2 / 4 dies, HBM3E):
+  - D2D PHY area, 4 units, UCIe-S / BoW: 1.62 → 3.52 / 3.51 mm².
+  - Shoreline, 4 dies × 4 stacks on a 300 mm² die: tight → over.
+  - J/token (prefill, edge attach default): +0.29 % / +0.85 %.
+  - D2D bandwidth with L = 32: TP prefill throughput −15.5 % / −14.8 %; L = 128: −4.8 % / −3.4 %.
+  - No link width, monolithic, or D2D off: identical.
+
+### §253.4 Freshness and labels
+- UCIe 3.0 (Aug 2025) is the latest release; 4.0 is targeted for the end of 2026 and not released.
+- SemiEngineering (2026-02-12, citing the consortium): 48 / 64 GT/s keep the bump locations, so the footprint label moves from 「假设」 to 「二手」. Energy target: below 0.5 pJ/bit at the lower rates, 0.75 pJ/bit with the enhanced equalization of the higher rates (package type not stated in the text).
+  - The catalog keeps 0.25 for UCIe-A 48 / 64 and notes 0.75 as the upper reference 「二手」.
+  - Sensitivity: with 0.75 for UCIe-A 48, prefill J changes by ≤ 0.3 % and no verdict changes.
+- Not modelled: stitched / multi-exposure dies; assembly yield; interposer cost; D2D link power states; heterogeneous dies (I/O die + compute dies); 3D stacking (UCIe-3D).
