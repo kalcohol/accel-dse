@@ -69,6 +69,15 @@ class Serving:
     ttft_slo_ms: float = 2000.0
     moe_skew: float = 1.0          # MoE: busiest EP rank's token-expert pairs / mean (0.49; 1 = uniform) 「假设」
     moe_expert_load: tuple[float, ...] = ()   # MoE: relative tokens per expert (measured) → skew per EP layout
+    # 0.293 MoVA (k2_horizon routed value projections): measured relative tokens per *value* expert (the v_router,
+    # mova_num_experts entries) → touched value experts per step and their SRAM / SLC read share.  A separate router
+    # from the FFN one, so moe_expert_load never applies to it.  () = uniform routing 「假设」
+    mova_expert_load: tuple[float, ...] = field(default=(), metadata={"omit_default": True})
+    # 0.293: per-layer measured loads — one vector per MoE layer (moe_*, in layer order, each of that layer's expert
+    # count: heterogeneous MoE such as Nemotron-H Puzzle) / per MoVA layer (mova_*).  Alternatives to the one-vector
+    # forms above; each layer routes, skews and ranks its experts for residency by its own load
+    moe_expert_load_layers: tuple[tuple[float, ...], ...] = field(default=(), metadata={"omit_default": True})
+    mova_expert_load_layers: tuple[tuple[float, ...], ...] = field(default=(), metadata={"omit_default": True})
     # 0.132: where a scalar moe_skew's extra pairs land on the busiest rank — "popular" (already-read experts, the
     # 0.49 assumption: distinct experts = the uniform expectation) | "uniform" (spread over all the rank's experts:
     # P(token → local expert) = k·skew/E).  Opt-in; ignored with moe_expert_load (exact occupancy from the load).
@@ -195,6 +204,19 @@ class Serving:
                 raise ValueError("serving.moe_expert_load: ≤ 4096 finite numbers ≥ 0 with a positive sum")
             if self.moe_skew != 1.0:
                 raise ValueError("serving.moe_skew and serving.moe_expert_load are alternatives — set one")
+        ld = self.mova_expert_load
+        if ld and not _load_ok(ld):
+            raise ValueError("serving.mova_expert_load: ≤ 4096 finite numbers ≥ 0 with a positive sum")
+        for name, flat in (("moe_expert_load_layers", "moe_expert_load"), ("mova_expert_load_layers", "mova_expert_load")):
+            lls = getattr(self, name)
+            if not lls:
+                continue
+            if len(lls) > 1024 or not all(_load_ok(x) for x in lls):
+                raise ValueError(f"serving.{name}: ≤ 1024 layers, each ≤ 4096 finite numbers ≥ 0 with a positive sum")
+            if getattr(self, flat):
+                raise ValueError(f"serving.{flat} and serving.{name} are alternatives — set one")
+        if self.moe_expert_load_layers and self.moe_skew != 1.0:
+            raise ValueError("serving.moe_skew and serving.moe_expert_load_layers are alternatives — set one")
         if self.moe_skew_spread not in ("popular", "uniform"):
             raise ValueError("serving.moe_skew_spread must be popular|uniform")
         if self.moe_rank_max not in ("off", "expected"):
@@ -812,6 +834,12 @@ def _tname(t) -> str:
 def _jtype(v) -> str:
     return {bool: "boolean", int: "integer", float: "number", str: "string", list: "list", dict: "object",
             type(None): "null"}.get(type(v), type(v).__name__)
+
+
+def _load_ok(ld) -> bool:
+    """0.293: a measured expert-load vector: ≤ 4096 finite numbers ≥ 0 with a positive sum."""
+    return (0 < len(ld) <= 4096 and all(not isinstance(x, bool) and isinstance(x, (int, float)) and math.isfinite(x)
+                                        and x >= 0 for x in ld) and sum(ld) > 0)
 
 
 def _coerce(v, t, where):

@@ -276,10 +276,12 @@ def apply_energy_preset(d: dict) -> dict:
 def action_counts(r) -> dict:
     """(counts per window, window s, output units per window, unit label) for one evaluated result."""
     sv = r.scenario.serving
-    if sv.moe_skew != 1.0 or sv.moe_expert_load:
+    if sv.moe_skew != 1.0 or sv.moe_expert_load or getattr(sv, "moe_expert_load_layers", ()):
         from dataclasses import replace
         from .evaluate import evaluate
-        bal = action_counts(evaluate(replace(r.scenario, serving=replace(sv, moe_skew=1.0, moe_expert_load=()))))
+        # 0.293: per-layer FFN loads are the same EP skew input (value-expert loads are not: no EP, kept)
+        bal = action_counts(evaluate(replace(r.scenario, serving=replace(sv, moe_skew=1.0, moe_expert_load=(),
+                                                                          moe_expert_load_layers=()))))
         out = _counts(r)
         k = out["units"] / bal["units"] if bal["units"] else 0.0
         out["counts"] = {a: bal["counts"][a] * k for a in ACTIONS}

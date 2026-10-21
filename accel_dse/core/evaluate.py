@@ -21,7 +21,7 @@ from .ir import (Op, Phase, Shard, _cdiv, build_rank_ops, embed_ops, full_io_ops
                  mtp_ops)
 from .mapping import gemm_cost, vector_seconds
 from .memo import layer_groups, model_cache
-from .memplan import (RUNTIME_RESERVE, MemPlan, act_stream, exp_miss, held, hot_miss, plan, stage_storage, step_dram_bytes,
+from .memplan import (RUNTIME_RESERVE, MemPlan, act_stream, exp_miss, held, hot_miss, rt_miss, plan, stage_storage, step_dram_bytes,
                       touched)
 from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages, plan_stages_balanced
@@ -463,7 +463,7 @@ def chunk_mem_bytes(sd, sp, f: float, reread_frac: float = 0.0) -> tuple[float, 
     tp = sp.ledger[1]
     t = {k: f * tp.get(k, 0.0) for k in _CHUNK_KEYS}
     t["kv_read"] += reread_frac * tp.get("kv_write", 0.0)
-    t.update(hot=0.0, exp=0.0, hot_rr=0.0, w_extra=0.0)
+    t.update(hot=0.0, exp=0.0, hot_rr=0.0, hot_rt=0.0, w_extra=0.0)
     d = step_dram_bytes(sd.mem, store, t, ratio)
     dram = sum(d[k] for k in _CHUNK_KEYS)
     return dram, d.get("slc", 0.0), d["kv_read"] + d["kv_write"] + d["state"], old_kv
@@ -760,7 +760,7 @@ def _tail_ops(model, has_head, ph, sh, spec_k, glue: bool = False):
         if spec_k and model.draft == "dspark":
             ops += dspark_ops(model, ph, sh)       # one block pass per step (prefill: seed the draft windows)
         elif spec_k and model.mtp_layers and ph.kind == "decode":
-            dph = Phase("decode", ph.batch, 1, ph.ctx, skew=ph.skew)
+            dph = Phase("decode", ph.batch, 1, ph.ctx, skew=ph.skew, v_p=ph.v_p, skew_l=ph.skew_l, v_pl=ph.v_pl)
             for d in range(spec_k):
                 # 0.224 tree drafting: after the first step each draft step extends topk branches per sequence
                 # (SGLang EAGLE draft_forward: topk tokens per request per step) 「来源」
@@ -777,7 +777,7 @@ _SUM_KEYS = ("t_arr", "t_mac", "t_feed", "t_vec", "conv", "t_ideal", "flops", "l
              "hot", "exp", "kv_read", "kv_write", "state", "lookup", "max_act", "act", "w_extra", "max_act_tot",
              "flops_u", "sram", "d2d_bytes", "net_bytes", "busy_d2d", "busy_link", "busy_net", "bw_max",
              "t_ideal_w", "t_vec_w", "t_conv_w", "sram_e", "conv_w_e", "link_bytes_e", "t_arr_attn", "t_vec_attn",
-             "wire_d2d", "wire_link", "wire_net", "kern", "disp", "hot_rr")
+             "wire_d2d", "wire_link", "wire_net", "kern", "disp", "hot_rr", "hot_rt")
 _MAX_KEYS = ("max_act", "max_act_tot", "bw_max")
 _EP_COMM = ("moe_dispatch", "moe_combine", "expert_allreduce")
 _TIERS = ("d2d", "link", "net")
@@ -902,18 +902,133 @@ def _sum_ops(ops: list[Op], sys: System, org: str, model: ModelSpec, memos: tupl
     return d
 
 
+def _ffn_layer_loads(m: ModelSpec, sv) -> list:
+    """0.293: [(layer index, load)] of ``serving.moe_expert_load_layers`` — one vector per main-stack MoE layer, in
+    layer order, each with that layer's expert count."""
+    idx = [i for i, L in enumerate(m.layers) if L.ffn.kind == "moe"]
+    lls = sv.moe_expert_load_layers
+    if len(lls) != len(idx):
+        raise ValueError(f"serving.moe_expert_load_layers needs {len(idx)} vectors (one per MoE layer), got {len(lls)}")
+    for n, (i, ld) in enumerate(zip(idx, lls)):
+        E = m.layers[i].ffn.n_experts
+        if len(ld) != E:
+            raise ValueError(f"serving.moe_expert_load_layers[{n}] (layer {i}) needs {E} entries, got {len(ld)}")
+    return list(zip(idx, (tuple(x) for x in lls)))
+
+
+def _layer_routes(m: ModelSpec, sv, lay: Layout, skew_g: float, warnings: list[str]) -> tuple:
+    """0.293: per-layer routing from measured per-layer loads.  Returns (skew_l, exp_pl, v_pl): per main-stack layer
+    the MoE routing skew (float | SkewSpec, the one-vector rule of evaluate applied to the layer's own load), the
+    busiest-load rank's inclusion probabilities with the layer's per-expert weight bytes (residency, memplan A0), the
+    value-expert probabilities — None where the layer has none; () when no per-layer load is given."""
+    from .ir import SkewSpec, hot_rank_probs, mova_probs
+    n = len(m.layers)
+    skew_l = exp_pl = v_pl = ()
+    if getattr(sv, "moe_expert_load_layers", ()) and m.is_moe:
+        sl, el = [None] * n, [None] * n
+        eb = m.fmt("expert").bits / 8
+        for i, ld in _ffn_layer_loads(m, sv):
+            f = m.layers[i].ffn
+            s = skew_from_load(ld, lay.ep) if lay.ep > 1 else 1.0     # EP 1: no cross-rank skew (as _moe_skew)
+            hp = hot_rank_probs(ld, lay.ep, f.top_k)
+            r = SkewSpec(s, hp) if s != 1.0 else 1.0
+            if sv.moe_rank_max != "off" and lay.ep > 1:
+                r = SkewSpec(s, hp, "popular", sv.moe_rank_max)
+            sl[i] = r
+            el[i] = (max(hp, key=sum), f.mats * f.expert_in(m.hidden) * _cdiv(f.d_expert, lay.etp) * eb)
+        skew_l, exp_pl = tuple(sl), tuple(el)
+    lls = getattr(sv, "mova_expert_load_layers", ())
+    if lls:
+        idx = [i for i, L in enumerate(m.layers) if L.core is not None and getattr(L.core, "v_experts", 0)]
+        if not idx:
+            warnings.append("serving.mova_expert_load_layers 已忽略：该模型没有 MoVA 路由值投影（value experts）")
+        else:
+            if len(lls) != len(idx):
+                raise ValueError(f"serving.mova_expert_load_layers needs {len(idx)} vectors (one per MoVA layer), "
+                                 f"got {len(lls)}")
+            vl = [None] * n
+            for j, (i, ld) in enumerate(zip(idx, lls)):
+                c = m.layers[i].core
+                if len(ld) != c.v_experts:
+                    raise ValueError(f"serving.mova_expert_load_layers[{j}] (layer {i}) needs {c.v_experts} entries, "
+                                     f"got {len(ld)}")
+                vl[i] = mova_probs(tuple(ld), c.v_topk)
+            v_pl = tuple(vl)
+    return skew_l, exp_pl, v_pl
+
+
+def _stage_resid(exp_p, v_p, exp_pl, v_pl, first: int, last: int) -> dict:
+    """0.293: memplan residency inputs of a stage — one-vector loads as given, per-layer loads as the stage's items."""
+    out = {"exp_p": exp_p, "rt_p": v_p or None}
+    if exp_pl:
+        out["exp_p"], out["exp_w"] = _stage_probs(exp_pl, first, last)
+    if v_pl:
+        out["rt_p"] = _stage_probs(v_pl, first, last)[0]
+    return out
+
+
+def _route_groups(m: ModelSpec, ph) -> list:
+    """0.293: layer groups for the op sums — identical layer specs that also route alike (per-layer loads split them)."""
+    g = layer_groups(m)
+    if not ph.skew_l and not ph.v_pl:
+        return g
+    ids: dict = {}
+    pick = lambda t, i: t[i] if i < len(t) else None
+    return [ids.setdefault((g[i], pick(ph.skew_l, i), pick(ph.v_pl, i)), len(ids)) for i in range(len(m.layers))]
+
+
+def _stage_probs(pl: tuple, first: int, last: int) -> tuple:
+    """0.293: the stage's per-layer residency items: (probabilities, per-item weights) concatenated over its layers;
+    weights None when every item has the same size (the unweighted A0 curve)."""
+    ps, ws = [], []
+    for i in range(first, min(last, len(pl))):
+        e = pl[i]
+        if e is None:
+            continue
+        p, w = e if isinstance(e[0], tuple) else (e, 1.0)
+        ps.extend(p)
+        ws.extend([w] * len(p))
+    if not ps:
+        return None, None
+    return tuple(ps), (None if len(set(ws)) <= 1 else tuple(ws))
+
+
+def _mova_p(m: ModelSpec, sv, warnings: list[str]) -> tuple:
+    """0.293: per-value-expert inclusion probabilities from ``serving.mova_expert_load`` (() = uniform routing).  One
+    vector for every MoVA layer (as moe_expert_load for the FFN experts); ignored with a warning on a model without
+    routed value projections."""
+    ld = getattr(sv, "mova_expert_load", ())
+    if not ld:
+        return ()
+    cores = [L.core for L in m.layers if L.core is not None and getattr(L.core, "v_experts", 0)]
+    if not cores:
+        warnings.append("serving.mova_expert_load 已忽略：该模型没有 MoVA 路由值投影（value experts）")
+        return ()
+    E, k = cores[0].v_experts, cores[0].v_topk
+    if len(ld) != E:
+        raise ValueError(f"serving.mova_expert_load needs {E} entries (one per value expert), got {len(ld)}")
+    from .ir import mova_probs
+    return mova_probs(tuple(ld), k)
+
+
 def _moe_skew(m: ModelSpec, sv, lay: Layout, warnings: list[str]) -> float:
     """Effective EP load skew of the scenario (0.49): ``serving.moe_skew`` or derived from ``moe_expert_load``."""
-    if sv.moe_skew == 1.0 and not sv.moe_expert_load:
+    if sv.moe_skew == 1.0 and not sv.moe_expert_load and not getattr(sv, "moe_expert_load_layers", ()):
         return 1.0
     if not m.is_moe or lay.ep <= 1:
         warnings.append("MoE 负载倾斜已忽略：" + ("非 MoE 模型" if not m.is_moe else "EP = 1（专家全在每个 rank 上，无跨 rank 不均衡）"))
         return 1.0
     ns = sorted({L.ffn.n_experts for L in m.layers if L.ffn.kind == "moe"})
+    if getattr(sv, "moe_expert_load_layers", ()):
+        # 0.293: per-layer loads — each layer routes with its own skew (Phase.skew_l); this phase-wide value (the
+        # layer mean) is what the MTP layers and the co-located chunk's union routing use 「近似」
+        lds = _ffn_layer_loads(m, sv)
+        return sum(skew_from_load(ld, lay.ep) for _, ld in lds) / len(lds)
     if sv.moe_expert_load:
         if len(ns) > 1:       # 0.289 Nemotron-H Puzzle: one load vector cannot describe layers of different E
             raise ValueError(f"serving.moe_expert_load: the MoE layers have different expert counts ({ns[0]}–{ns[-1]}); "
-                             "a per-expert load needs one expert count — use serving.moe_skew")
+                             "a per-expert load needs one expert count — use serving.moe_expert_load_layers (one "
+                             "vector per MoE layer) or serving.moe_skew")
         n = ns[0]
         if len(sv.moe_expert_load) != n:
             raise ValueError(f"serving.moe_expert_load needs {n} entries (one per routed expert), got "
@@ -1075,7 +1190,7 @@ def _pipe_time(sys: System, org: str, m: ModelSpec, mm, segments, mp: MemPlan, s
     segs = [(_ovl.items_of(ops, op_secs, comm_secs, act_b), n) for ops, n in segments]
     kvst = mp.kv_total + mp.state_total
     _mh, _mr = hot_miss(mp, store)
-    f = {"hot": _mh, "hot_rr": _mr,
+    f = {"hot": _mh, "hot_rr": _mr, "hot_rt": rt_miss(mp, store),
          "exp": exp_miss(mp, store),       # 0.286: read share (load-aware pin)
          **_kv_state_miss(mp), "lookup": 1.0, "act": 1.0}
     nb = sum(n * sum(x * f.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
@@ -1160,7 +1275,7 @@ def _pipe_fused_(sd, sp, f, rr, t_mem):
                 t_arr += n * sc * r_[0]; t_vec += n * sc * r_[3]
     kvst = mp.kv_total + mp.state_total
     _mh, _mr = hot_miss(mp, store)
-    fr = {"hot": _mh, "hot_rr": _mr,
+    fr = {"hot": _mh, "hot_rr": _mr, "hot_rt": rt_miss(mp, store),
           "exp": exp_miss(mp, store),       # 0.286: read share (load-aware pin)
           **_kv_state_miss(mp), "lookup": 1.0, "act": 1.0}
     nb = sum(n * sum(x * fr.get(k, 1.0) for _, b, _ in its for k, x in b.items()) for its, n in segs)
@@ -1805,6 +1920,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         from .ir import hot_rank_probs
         f_ = next(L.ffn for L in m.layers if L.ffn.kind == "moe")
         exp_p = max(hot_rank_probs(tuple(sv.moe_expert_load), lay.ep, f_.top_k), key=sum)
+    v_p = _mova_p(m, sv, warnings)       # 0.293: measured value-expert load (serving.mova_expert_load)
+    skew_l, exp_pl, v_pl = _layer_routes(m, sv, lay, skew, warnings)    # 0.293: per-layer measured loads
     # 0.134: node-deduplicating EP all-to-all (DeepEP normal kernels) — serving.moe_a2a; "auto" = prefill only (decode
     # runs the low-latency kernels, which send every token-expert pair over RDMA)
     ep_nodes = 1
@@ -1831,7 +1948,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         if rr and not lins:
             warnings.append("spec_rollback = replay：模型没有线性注意力 / 循环层，回滚方式不影响结果")
         trk = sv.mamba_track_interval if lins else 0     # 0.224 radix-track state copies (ir TRACK note)
-        ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=rskew, ep_nodes=ep_nodes,
+        ph = Phase("decode", _cdiv(sv.batch, mb), q, sv.ctx, skew=rskew, ep_nodes=ep_nodes, v_p=v_p, skew_l=skew_l, v_pl=v_pl,
                    roll="replay" if rr else "", acc=sv.spec_accept if (rr or (trk and q > 1)) else 0.0, track=trk,
                    topk=topk_ if topk_ > 1 else 0, samp=bool(spec_k) and sv.spec_sampling == "sampled")
         ctx_cap = sv.ctx + q
@@ -1839,7 +1956,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
         ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=rskew,
-                   ep_nodes=ep_nodes, labels=sv.labels, questions=sv.questions)
+                   ep_nodes=ep_nodes, v_p=v_p, skew_l=skew_l, v_pl=v_pl, labels=sv.labels, questions=sv.questions)
         ctx_cap = sv.prompt
     cp_ring = None
     if lay.cp > 1:
@@ -1856,7 +1973,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             # 0.107: attn_mode = bidir — no mask, every rank's q queries see all S keys (was the causal S²/(2cp):
             # CP silently removed up to half of the bidirectional attention work)
             c_eq = S - q_loc
-        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=rskew, cp=cp, cp_len=S, ep_nodes=ep_nodes,
+        ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=rskew, cp=cp, cp_len=S, ep_nodes=ep_nodes, v_p=v_p, skew_l=skew_l, v_pl=v_pl,
                    labels=sv.labels, questions=sv.questions)
         ctx_cap = q_loc
         cp_ring = (cp, lay.tp, _cdiv(sv.batch, mb) * q_loc / lay.dp)   # tokens of this rank's block per step
@@ -1870,7 +1987,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     tail_k = 0 if dm is not None else spec_k     # the target's own draft modules stay idle under an independent draft
     b_rank = _cdiv(sv.batch, scn.layout.dp)   # sequences whose KV lives on one rank (all micro-batches; CP: a shard each)
     cache: dict = {}
-    groups = layer_groups(m)
+    groups = _route_groups(m, ph)           # 0.293: per-layer loads split identical layers that route differently
     store_memo = model_cache(m).setdefault("stage_storage", {})
     ops_memo = model_cache(m).setdefault("layer_sums", {})
     if len(ops_memo) > 200_000:
@@ -1918,7 +2035,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             mp = plan(store, b_rank, sys.chip.sram_bytes, sys.dram_bytes, agg["max_act"],
                       act_need=max(0.0, agg["max_act_tot"] - RUNTIME_RESERVE), stream=True,
                       slc_bytes=sys.chip.slc_bytes, slc_policy=sys.chip.slc_policy, kv_frac=sys.kv_frac,
-                      state_buf=sys.chip.state_sram_mib * 2**20, exp_read=agg["exp"], exp_p=exp_p,
+                      state_buf=sys.chip.state_sram_mib * 2**20, exp_read=agg["exp"],
+                      rt_read=agg["hot_rt"], **_stage_resid(exp_p, v_p, exp_pl, v_pl, st.first, st.last),
                       **(d_resv if st.has_head else {}))
             dram = step_dram_bytes(mp, store, agg, sys.chip.slc_GBps / sys.dram_GBps)
             link_bw, sync, link_bytes, d2d_b = agg["link_bw"], agg["sync"], agg["link_bytes"], agg["d2d_bytes"]
@@ -1995,7 +2113,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg), pipe_ctx=pctx,
                                       exp_route=_exp_route(m, ph, sh, st.first, st.last),
-                                      ledger=(store, {k: agg[k] for k in _DRAM_KEYS + ("hot_rr",) if k in agg},
+                                      ledger=(store, {k: agg[k] for k in _DRAM_KEYS + ("hot_rr", "hot_rt") if k in agg},
                                               sys.chip.slc_GBps / sys.dram_GBps, sys.chip.slc_GBps * 1e9)))
         return stages
 
@@ -2442,7 +2560,7 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
             stages.append(StageResult(st.index, (st.first, st.last), stt, mp, dram, agg["conv"], flops_u=agg["flops_u"],
                                       sram_bytes=agg["sram"], ideal_w=agg["t_ideal_w"], vec_w=agg["t_vec_w"],
                                       conv_w=agg["t_conv_w"], exp_acts=_exp_acts(agg),
-                                      ledger=(store, {k: agg[k] for k in _DRAM_KEYS + ("hot_rr",) if k in agg},
+                                      ledger=(store, {k: agg[k] for k in _DRAM_KEYS + ("hot_rr", "hot_rt") if k in agg},
                                               sys.chip.slc_GBps / sys.dram_GBps, sys.chip.slc_GBps * 1e9)))
         return stages
 

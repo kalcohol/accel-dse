@@ -7838,3 +7838,28 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §237.5 Default behaviour, old → new
 - 840 / 840 points identical (140 LLMs × 3 chips × decode / prefill). New: the two Jais-3-MoVA entries.
+
+## §238 Value-expert routing and residency; per-layer expert loads (0.293)
+
+### §238.1 What the release says about value routing 「来源」
+- config.json: `mova_num_experts` 64, `mova_num_experts_per_tok` 4, `moe_gate_bias` true, `router_scaling_factor` 2.5, `router_aux_loss_coef` 0.001, `output_router_logits` false. modeling_k2_horizon.py: the aux loss (`load_balancing_loss_func`) takes `outputs.router_logits`, recorded from `K2HorizonSparseMoeBlock` only (the FFN router). The `v_router` bias is added to the selection scores only (aux-loss-free balancing); no loss term reaches it.
+- Model card and blog: benchmarks, training stages, serving recipes; no expert-load figure. The W&B training-log page is a JavaScript application with no readable data.
+- So uniform value routing stays the default 「假设」. The selection bias is a mechanism that pushes loads toward balance, which is consistent with that default but is not a measurement.
+
+### §238.2 Measured value-expert load
+- `serving.mova_expert_load` (E_v values) → p_e = min(1, k_v·load_e/Σload). Touched experts per step = ⌈Σ_e 1 − (1 − p_e)^t⌉, clipped to [k_v, E_v] (`ir.mova_hits`); m_e = ⌈t·k_v/hit⌉; uniform load = `moe_routing` exactly. Attention TP: t = every token of the rank (no EP for the value experts).
+
+### §238.3 Routed hot class (memplan)
+- The 0.192 pin rule ranks a byte by the DRAM bytes it saves per step per byte of SRAM, which is its read share per step. Value-expert bytes are read when their expert is routed: per step ρ_rt = touched / stored value-expert bytes (b1: 4/64, b8: 26/64, prefill: 1). ≤ 0.292 they were in `hot` (ρ = 1), so on a large SRAM they took the place of every-step bytes, and the uniform hot miss share spread the saving over them.
+- 0.293 order 「推导」: re-read hot (0.269, if > 2 reads), state, the rest of hot (every step), then {value experts, routed FFN experts} by ρ (equal ρ: value experts first), then KV. Value-expert read share served by the SRAM: H_rt(p_rt / rt_w), with H_rt = `dip_exp_hit(v_p, ρ_rt, f)` for a measured load and f for a uniform one. Miss shares: `hot_miss` (the rest of hot, excluding rr and rt) and `rt_miss`.
+- SLC `pin`: the same order over the off-SRAM bytes; read share served H_rt((p + s)/rt_w) − H_rt(p/rt_w). `dip`: the value experts join the expert pool of `dip_split` (bytes r_rt, read e_rt per step); the retained share fe applies to both populations alike 「近似」, and within each population the A0 curve applies. `lru`: unchanged.
+- Ledger property (random plans, every policy, measured loads): SRAM + SLC + DRAM = demand per class, no negative tier (test_core_293). A routed class that is stored but untouched in a step still splits the SLC shares.
+
+### §238.4 Per-layer expert loads
+- `serving.moe_expert_load_layers` / `mova_expert_load_layers`: one vector per MoE / MoVA layer (layer order; each with its layer's E).
+- Per layer: the one-vector rule (busiest-rank skew `skew_from_load`, `SkewSpec(skew, hot_rank_probs)`, rank_max) → `Phase.skew_l[li]`; value experts → `Phase.v_pl[li]`. `_route_groups` splits identical layers that route differently.
+- Residency (memplan A0): the items are every expert of the stage's layers with the busiest-load rank's probabilities. Byte-weighted when sizes differ (het MoE, `_dip_exp_hit_w`: the means and the resident fraction are over bytes; most-read bytes first).
+- Phase-wide skew (MTP layers, chunk union routing, summary) = the layer mean 「近似」.
+
+### §238.5 Default behaviour, old → new
+- The 840 non-MoVA points are identical. MoVA decode TPOT changes by −0.03 to −0.5 % at the default SRAM sizes (fewer misses on the every-step bytes), and prefill TTFT moves by ≤ 0.04 % (pipe replay). With large SRAM / SLC the effect is much larger (CHANGELOG 0.293 table: 4 GiB SRAM b1 −37 %). ext_validate unchanged.

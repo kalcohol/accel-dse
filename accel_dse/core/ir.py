@@ -100,6 +100,11 @@ class Phase:
     ref: int = 0         # 0.252 full: reference-image rows in the sequence (FLUX 3 image_cond tokens, own weights)
     pair: PairDims | None = None   # full: structure-model grids (AlphaFold-family / ESMFold trunks)
     skew: float = 1.0    # MoE: token-expert pairs on the busiest EP rank / the mean (0.49; 1 = uniform routing)
+    v_p: tuple = ()      # 0.293 MoVA: per-value-expert inclusion probability k_v·load_e/Σload (measured; () = uniform)
+    # 0.293 per-layer measured loads (serving.*_expert_load_layers): per main-stack layer index the MoE routing skew
+    # (float | SkewSpec) / the value-expert probabilities, None where the layer has none; () = the phase-wide skew / v_p
+    skew_l: tuple = ()
+    v_pl: tuple = ()
     cp: int = 1          # 0.89: context-parallel chunk phase (evaluate) — cp ranks, true prompt length cp_len
     cp_len: int = 0
     ep_nodes: int = 1    # 0.134: nodes the EP group spans when the all-to-all sends a token once per node (else 1)
@@ -1208,7 +1213,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(gemm(model, "attn.qkv", li, t, k_, sum(ns), "attn", params=k_ * sum(ns), replicated=rp))
             continue
         if l.name == "v_experts":
-            ops += _mova_v_ops(model, li, L.core, l, t, tp)
+            ops += _mova_v_ops(model, li, L.core, l, t, tp, layer_vp(ph, li))
             continue
         k, n = _lin_local(l, tp, L.core)
         m = t
@@ -1290,7 +1295,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             role = "router" if l.name.startswith(("router", "shared_expert_gate")) else (
                 "shared_expert" if l.name.startswith("shared") else "mlp")
             ops.append(gemm(model, f"moe.{l.name}", li, t, k, n, role, replicated=_repl(l, tp)))
-        r = moe_routing(f.n_experts, f.top_k, T, sh.ep, ph.skew, f.groups)
+        r = moe_routing(f.n_experts, f.top_k, T, sh.ep, layer_skew(ph, li), f.groups)
         d_loc = _cdiv(f.d_expert, sh.etp)
         ein = f.expert_in(h)
         if r.hit:
@@ -1317,7 +1322,38 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     return _llm_stream(ops, ph)
 
 
-def _mova_v_ops(model: ModelSpec, li: int, c: AttnCore, l: Linear, t: int, tp: int) -> list[Op]:
+def layer_skew(ph: "Phase", li: int):
+    """0.293: the routing skew of layer li — its own (per-layer measured load) or the phase-wide one (MTP layers, li
+    beyond the main stack, use the phase-wide skew)."""
+    s = ph.skew_l[li] if 0 <= li < len(ph.skew_l) else None
+    return ph.skew if s is None else s
+
+
+def layer_vp(ph: "Phase", li: int) -> tuple:
+    """0.293: value-expert probabilities of layer li (per-layer measured load) or the phase-wide ones."""
+    v = ph.v_pl[li] if 0 <= li < len(ph.v_pl) else None
+    return ph.v_p if v is None else v
+
+
+def mova_hits(E: int, k: int, t: int, v_p: tuple = ()) -> Routing:
+    """0.293: value-expert routing of t tokens (attention TP: every rank routes all its tokens, ep = 1).  Uniform
+    (``v_p`` empty): ``moe_routing`` (「假设」).  Measured load: distinct experts = the occupancy Σ_e 1 − (1 − p_e)^t
+    (p_e = k·load_e/Σload, the 0.132 rule of ``moe_routing``'s SkewSpec path), at least k (a token picks k distinct
+    experts) and at most E; pairs stay t·k."""
+    r = moe_routing(E, k, t, 1)
+    if not v_p or t <= 0:
+        return r
+    occ = sum(1.0 - (1.0 - min(1.0, p)) ** t for p in v_p)
+    hit = min(E, max(min(E, k), math.ceil(occ - 1e-9)))
+    return Routing(t, r.pairs_local, hit, max(1, math.ceil(r.pairs_local / hit)), E, r.pairs_mean)
+
+
+def mova_probs(load: tuple, k: int) -> tuple:
+    """0.293: inclusion probabilities k·load_e/Σload of a measured value-expert load (hot_rank_probs at ep = 1)."""
+    return hot_rank_probs(tuple(load), 1, k)[0]
+
+
+def _mova_v_ops(model: ModelSpec, li: int, c: AttnCore, l: Linear, t: int, tp: int, v_p: tuple = ()) -> list[Op]:
     """0.292 MoVA routed value projection (modeling_k2_horizon combine_routed_experts 「来源」): the v_router GEMM is
     an ordinary Linear; here each touched value expert is one GEMM over its routed rows (uniform-routing expectation,
     ``moe_routing`` over this rank's t tokens — attention TP keeps every token on every rank, each rank holds every
@@ -1325,7 +1361,7 @@ def _mova_v_ops(model: ModelSpec, li: int, c: AttnCore, l: Linear, t: int, tp: i
     and the sigmoid + top-k selection (6 ops / expert, as the DiT MoE router).  Only touched experts' weights stream."""
     E, k = c.v_experts, c.v_topk
     n_loc = gqa_local(c.n_q, c.n_kv, tp)[0] * c.v_dim if tp > 1 else c.n_kv * c.v_dim
-    r = moe_routing(E, k, t, 1)
+    r = mova_hits(E, k, t, v_p)       # 0.293: measured load → occupancy (serving.mova_expert_load)
     ops = []
     if r.hit:
         u = min(1.0, r.pairs_local / (r.hit * r.m_e))
@@ -1519,7 +1555,7 @@ def _dspark_ops(model: ModelSpec, ph: Phase, sh: Shard) -> list[Op]:
     if ph.kind == "prefill":
         return ops
     B = model.draft_block
-    dph = Phase("decode", ph.batch, B, ph.ctx, skew=ph.skew)
+    dph = Phase("decode", ph.batch, B, ph.ctx, skew=ph.skew, v_p=ph.v_p, skew_l=ph.skew_l, v_pl=ph.v_pl)
     ops.append(Op("dspark_embed", "lookup", li, kv_read=b_loc * B * h * model.fmt("embed").bits / 8, vec=b_loc * B * h))
     for j, L in enumerate(model.mtp_layers):
         lj = li + j

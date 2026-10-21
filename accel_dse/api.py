@@ -232,7 +232,11 @@ def _stage_dict(s) -> dict:
                     "slc_frac": s.mem.slc_frac, "slc_frac_exp": s.mem.slc_frac_exp, "slc_frac_exp_bytes": s.mem.slc_frac_exp_bytes,
                     "slc_w_MiB": (s.mem.slc_hot + s.mem.slc_expert) / 2**20, "slc_kv_MiB": s.mem.slc_kv / 2**20,
                     # 0.286: with a measured expert load, the share of expert reads the SRAM-pinned experts serve
-                    **({"sram_exp_hit": s.mem.sram_exp_hit} if s.mem.sram_exp_hit >= 0 else {})},
+                    **({"sram_exp_hit": s.mem.sram_exp_hit} if s.mem.sram_exp_hit >= 0 else {}),
+                    # 0.293 MoVA value experts (routed hot class): pinned bytes and the read shares SRAM / SLC serve
+                    **({"vexp_sram_MiB": s.mem.pinned_rt / 2**20, "sram_vexp_hit": s.mem.sram_rt_hit,
+                        "slc_vexp_MiB": s.mem.slc_rt / 2**20, "slc_frac_vexp": s.mem.slc_frac_rt}
+                       if s.mem.sram_rt_hit >= 0 else {})},
             "convert_Melems": s.convert_elems / 1e6, "tflops": t.flops / 1e12,
             # 0.290: weight-dequant vector ms and whether it decides a VECTOR-bound stage (≥ half its vector time)
             "dequant_ms": s.conv_w * 1e3, "dequant_bound": dequant_bound(s)}

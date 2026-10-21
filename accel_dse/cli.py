@@ -28,9 +28,18 @@ def _load_list(v: str) -> list[float]:
         with open(v) as f:
             x = json.load(f)
         if not isinstance(x, list):
-            raise SystemExit("--moe-expert-load file must hold a JSON list")
+            raise SystemExit("--moe-expert-load / --mova-expert-load file must hold a JSON list")
         return x
     return [float(t) for t in v.split(",") if t.strip()]
+
+
+def _load_lists(v: str) -> list:
+    """0.293: a JSON file holding a list of lists (one load vector per layer)."""
+    with open(v) as f:
+        x = json.load(f)
+    if not (isinstance(x, list) and all(isinstance(r, list) for r in x)):
+        raise SystemExit("--*-expert-load-layers file must hold a JSON list of lists")
+    return x
 
 
 def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
@@ -288,6 +297,14 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--moe-expert-load", dest="moe_expert_load", default=None,
                    help="MoE: measured tokens per routed expert — JSON file with a list, or comma-separated numbers "
                         "(skew derived per EP layout, contiguous expert placement)")
+    p.add_argument("--mova-expert-load", dest="mova_expert_load", default=None,
+                   help="MoVA: measured tokens per value expert (v_router) — JSON file with a list, or comma-separated "
+                        "numbers (touched value experts and their SRAM / SLC read share; 0.293)")
+    p.add_argument("--moe-expert-load-layers", dest="moe_expert_load_layers", default=None,
+                   help="MoE: measured tokens per routed expert per MoE layer — JSON file with a list of lists, one "
+                        "per MoE layer in layer order (heterogeneous MoE: each with its layer's expert count; 0.293)")
+    p.add_argument("--mova-expert-load-layers", dest="mova_expert_load_layers", default=None,
+                   help="MoVA: measured tokens per value expert per MoVA layer — JSON file with a list of lists (0.293)")
     p.add_argument("--pd", action="store_true", help="LLM: prefill / decode disaggregation report (0.50; decode pool = "
                    "the layout flags, prefill pool = --pd-prefill-*)")
     for k in ("pp", "tp", "dp", "ep", "etp"):
@@ -443,6 +460,11 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sv["moe_skew_spread"] = a.moe_skew_spread
     if getattr(a, "moe_expert_load", None):
         sv["moe_expert_load"] = _load_list(a.moe_expert_load)
+    if getattr(a, "mova_expert_load", None):
+        sv["mova_expert_load"] = _load_list(a.mova_expert_load)
+    for k in ("moe_expert_load_layers", "mova_expert_load_layers"):
+        if getattr(a, k, None):
+            sv[k] = _load_lists(getattr(a, k))
     if getattr(a, "microbatches", None) is not None:
         sv["microbatches"] = a.microbatches
     sc = {"model": a.model, "mapping": a.mapping, "serving": sv}

@@ -6,6 +6,44 @@
 
 
 
+## [0.293.0]
+
+### MoVA value-expert routing: release statistics, measured loads, residency class
+- Release check 「来源」 (config.json, modeling_k2_horizon.py, model card, Jais 3 blog): no value-routing statistic or load figure is published. `router_aux_loss_coef` 0.001 is applied only to the FFN router logits (`output_router_logits` records `K2HorizonSparseMoeBlock`; default false). The `v_router` has a selection-only bias (aux-loss-free balancing) and no loss term. The W&B training-log link is a JavaScript app with no readable data. Uniform routing stays the default 「假设」.
+- `serving.mova_expert_load` (64 values, measured tokens per value expert; API / CLI `--mova-expert-load`): touched value experts = the occupancy Σ_e 1 − (1 − p_e)^t, p_e = k·load_e/Σload (`ir.mova_hits`, the 0.132 rule; at least k, at most E). Pairs stay t·k. This is a separate router from the FFN one: `moe_expert_load` never reaches the value experts. On a model without MoVA the field is ignored with a warning. A uniform load gives the uniform hits exactly.
+- Residency: does the 0.286 machinery apply? Not as a merged class: the routed-FFN class (`exp`) carries EP semantics (the idle-DP-rank expert reads in energy, the chunk union scaling, skew). Its principle does apply, so the value experts get their own class: `StageStorage.rt_w`, touched key `hot_rt`, `MemPlan.pinned_rt / slc_rt / sram_rt_hit / slc_frac_rt`, `memplan.rt_miss`.
+  - Before (≤ 0.292), the value experts were ordinary hot bytes. The 0.192 pin rule ranked them as read every step, and every hot byte missed at one byte share, so on a big SRAM the 30 GB (fp32) / 15 GB (bf16) of value experts diluted the q / k / o / gate / shared-expert reads.
+  - Now (0.192 rule, read share per byte) 「推导」: the every-step hot bytes go first, then the value experts and the routed FFN experts in order of read share (touched / stored bytes of the step; equal shares: value experts first). Each class misses at its own share. A measured value load uses the 0.286 A0 read-share curve (`dip_exp_hit`).
+  - SLC: `pin` uses the same order. `dip` puts the off-SRAM value experts in the probabilistically read pool with the FFN experts, and the retained share applies to both 「近似」. `lru` is unchanged. The pipe replay (`overlap`) charges `attn.v_experts` at its own miss share.
+- Design effect (jais-3-mova-36b-a4b-fp8, 100T + SRAM / SLC overrides, decode TPOT, 0.292 → 0.293) 「推导」:
+
+  | Config | b1 | b8 |
+  |---|---|---|
+  | SRAM 4 GiB | 41.67 → 26.18 ms | 149.60 → 139.80 ms |
+  | SRAM 8 GiB | 34.70 → 20.89 ms | 136.95 → 127.35 ms |
+  | SLC 16 GiB pin | 20.65 → 15.32 ms | 111.45 → 103.57 ms |
+  | SLC 16 GiB dip | 18.64 → 11.81 ms | 104.52 → 88.27 ms |
+
+### Per-layer measured expert loads (AGENTS: carried since §236)
+- Why this item: it has the most impact on chip-design conclusions of the open AGENTS items. Measured expert popularity is the input of the SRAM / SLC expert-residency study (0.261 / 0.263 / 0.286), the main on-chip memory sizing knob for MoE. With one vector, every layer had the same hot experts and the same skew. A heterogeneous MoE (Nemotron 3.5 Bolt, 0.289) could not take a measured load at all. The other open items are small (sigmoid out-gate, measured 0.2–0.65 % of TTFT on the MoVA model's softplus gate), cover one release (served ggml kernels: one catalogued GGUF model), or need data that is not public (host CPU, vocoder trace).
+- `serving.moe_expert_load_layers` (one vector per MoE layer, in layer order, each with its layer's expert count; CLI `--moe-expert-load-layers FILE`) and `serving.mova_expert_load_layers` (one per MoVA layer). These are alternatives to the one-vector forms (and to `moe_skew`).
+  - Each layer routes with its own skew and busiest-rank shape (`Phase.skew_l` / `v_pl`, `ir.layer_skew` / `layer_vp`; the one-vector rule applied per layer). Layers that are identical but load differently are no longer summed as one group (`evaluate._route_groups`).
+  - Residency ranks every expert of the stage's layers by read probability (A0 across layers). Experts of different sizes (het MoE) are weighted by bytes (`dip_exp_hit(..., w)`).
+  - The MTP layers and the co-located chunk's union routing use the layer-mean skew 「近似」. Energy action counts treat the per-layer FFN loads as the same EP-skew input as the one-vector form (counted at balance).
+- One vector repeated per layer gives the one-vector result to 1e-12 (TPOT, energy counts). On Bolt, a one-vector load is still rejected; the error now names the per-layer field.
+
+### Freshness
+- HF sweep since 2026-10-20 (93 orgs): same 8 entries as the 0.292 sweep (Ornith-1.5-122B siblings, unsloth re-uploads); nothing new. Not added (as for Ornith): the Jais-3-MoVA GGUF / MLX siblings named on the model card.
+
+### Default behaviour, old → new
+- The 840 points of the other 140 evaluable LLMs are identical to 0.292 (100T / 1P / H100-like × decode b8 / prefill; TPOT, TTFT, bound, per-stage times, warnings). No default sets a measured load.
+- Jais-3-MoVA only (residency class; DRAM bytes of prefill unchanged, its pipe replay now charges the value-expert GEMMs their own miss share). Times in ms.
+  - Default (100T, b1, 4096): TPOT 115.16 → 114.92 (fp32), 48.53 → 48.29 (fp8); TTFT 973.34 → 973.47, 471.07 → 471.26.
+  - Decode b8 TPOT, -fp8: 100T 162.06 → 161.91, 1P 9.360 → 9.325, H100-like 13.214 → 13.205.
+  - Decode b8 TPOT, fp32: 426.64 → 426.51, 24.70 → 24.66, 34.78 → 34.77.
+  - Prefill TTFT moves by ≤ 0.04 %.
+- ext_validate: all metrics unchanged; only the version stamp moved (0.292.0 → 0.293.0).
+
 ## [0.292.0]
 
 ### Added: Jais-3-MoVA-36B-A4B (inception42 BF16 release, IFM FP8; Apache-2.0) — mixture-of-value-experts attention
