@@ -392,7 +392,54 @@ def _verdict(rows, sp_thr, sp_J, monos, tie):
     return ("split_both" if bthr and bJ else "split_thr" if bthr else "split_J" if bJ else "mono"), d_thr, d_J, mt, mj
 
 
-def _split_compare(rows: list[dict], tie: float = 0.01) -> list[dict]:
+def _tco_ok(x: dict) -> bool:
+    """0.317: a row may rank on $/M only when feasible, buildable (not merely kept by include_unbuildable) and priced."""
+    return bool(x.get("feasible")) and x.get("buildable") is not False and \
+        (x.get("tco") or {}).get("usd_per_Munit") is not None
+
+
+def _tco_row(p, row, user_prices, die_mm2, nd, mem_price, tco_point) -> dict:
+    """0.317: one row's TCO.  Package $ = usd_good_pkg (HBM devices excluded there, 0.310), memory $ = GB × $/GB (the
+    only memory term), power = row thermal pkg_W (the complete package power the thermal / cap checks use)."""
+    from .thermal import package_power
+    miss = []
+    if row.get("usd_good_pkg") is None:
+        miss.append("每好封装成本（需面积密度 + cost）")
+    pr, ptag = mem_price(p, row["mem_type"], user_prices)
+    if pr is None:
+        miss.append(f"{row['mem_type']} $/GB（无公开价，请填 tco.mem_usd_per_GB）")
+    pw = (row.get("thermal") or {}).get("pkg_W")
+    if pw is None:
+        miss.append("封装功耗")
+    if miss or not row.get("thr"):
+        return {"usd_per_Munit": None, "missing": miss or ["吞吐为 0"]}
+    st = row.get("static_W") or 0.0
+    idle = package_power(st, die_mm2, nd, st, row.get("idle_W"))["pkg_W"]
+    t = tco_point(p, pkg_usd=row["usd_good_pkg"], mem_usd=row["mem_GB"] * pr, thr=row["thr"], pkg_W=pw,
+                  pkg_W_idle=idle, unit=row.get("unit") or "token")
+    t.update(mem_usd_per_GB=pr, mem_price_src=ptag, pkg_W=pw, pkg_W_idle=idle, pkg_usd=row["usd_good_pkg"],
+             mem_usd=row["mem_GB"] * pr)
+    return t
+
+
+def _tco_verdict(rows, e, monos, sp, tie) -> None:
+    """0.317: mono vs split on $/M unit (buildable, priced rows only): split / mono / only_split / only_mono / none."""
+    mt = [i for i in monos if _tco_ok(rows[i])]
+    st = [i for i in sp if _tco_ok(rows[i])]
+    u = lambda i: rows[i]["tco"]["usd_per_Munit"]     # noqa: E731
+    bm = min(mt, key=u) if mt else None
+    bs = min(st, key=u) if st else None
+    e.update(best_tco_mono=bm, best_tco_split=bs)
+    if bm is None:
+        e["verdict_tco"] = "only_split" if bs is not None else "none"
+    elif bs is None:
+        e["verdict_tco"] = "only_mono"
+    else:
+        d = u(bs) / u(bm) - 1
+        e.update(verdict_tco="split" if d < -tie else "mono", d_tco=d)
+
+
+def _split_compare(rows: list[dict], tie: float = 0.01, tco: bool = False) -> list[dict]:
     """0.308: per design (same package totals: MACs, SRAM, engine side, topology, memory, SLC, clock, NoC link), the
     monolithic die (dies = 1) against its best feasible split (by throughput and by J/unit).  Verdicts: only_split
     (the monolithic die is infeasible — reticle / area / power / shoreline — and a split is feasible), split_thr /
@@ -418,6 +465,8 @@ def _split_compare(rows: list[dict], tie: float = 0.01) -> list[dict]:
             e["verdict"] = e["verdict_flat"] = "mono" if monos else "none"
             if not flat_ok:
                 e["verdict_flat"] = "none"
+            if tco:
+                _tco_verdict(rows, e, monos, sp, tie)
             out.append(e)
             continue
         bt = max(sp, key=lambda i: (rows[i]["thr"], -rows[i]["J_per_unit"]))
@@ -429,6 +478,8 @@ def _split_compare(rows: list[dict], tie: float = 0.01) -> list[dict]:
             e.update(d_thr=dt, d_J=dj)
         vf, dtf, djf, _, _ = _verdict(rows, bt, bj, [mono] if flat_ok else [], tie)
         e.update(verdict_flat=vf, d_thr_flat=dtf, d_J_flat=djf)
+        if tco:
+            _tco_verdict(rows, e, monos, sp, tie)
         out.append(e)
     return out
 
@@ -445,7 +496,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          pkg_mm2=None, d0_per_cm2: float | None = None, mono_clusters: bool = True,
                          mem_edges_shoreline: bool = True, clusters=None, cost=None,
                          include_unbuildable: bool = False, shore_strict: bool = False,
-                         cooling: str | None = None, power_scope: str = "package") -> dict:
+                         cooling: str | None = None, power_scope: str = "package", tco=None) -> dict:
     from .. import mem_catalog as mc
     from .budget import full_area, shoreline_report
     from .thermal import COOLING, thermal_report
@@ -456,6 +507,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     from .thermal import POWER_SCOPES, cap_power_fn
     if power_scope not in POWER_SCOPES:
         raise ValueError(f"power_scope must be one of {POWER_SCOPES}")
+    if tco is not None and cost is None:        # 0.317: validated before any work
+        raise ValueError("tco needs cost (package cost per good unit, a COST_PRESETS name) — the TCO capex term")
     static_in = idle_W_of(table) is not None      # 0.314: the table's idle figure (0.315: else the thermal static floor)
     from .hardware import default_mem
     from .insight import TIE
@@ -557,6 +610,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     # that the chiplet comparison applies its 0.309 HBM rule (mem_edges_shoreline) and False forces 2 (0.308)
     auto_edges = scn.chip.noc_mem_edges == 0
     cost_p = _cost_params(cost)
+    from .tco import basis_note as _tco_note, mem_price as _tco_mem, tco_params, tco_point
+    tco_p = tco_params(tco)           # 0.317: opt-in $/M unit (TCO); None = unchanged
+    if tco_p is not None and cost_p is None:
+        raise ValueError("tco needs cost (package cost per good unit, a COST_PRESETS name) — the TCO capex term")
     mix = mix_out_tokens is not None
     phases = ("prefill", "decode") if mix else (phase or scn.serving.phase,)
     scn_ph = {ph: _phase_scn(scn, ph, prompt) for ph in phases}
@@ -892,6 +949,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                 if why:
                     row["why"] = "；".join(dict.fromkeys(why))
                 row["perf_W"] = 1.0 / row["J_per_unit"] if row["J_per_unit"] > 0 else None
+                if tco_p is not None:           # 0.317: TCO from the same package cost / package power as the row
+                    row["tco"] = _tco_row(tco_p, row, prices, row.get("mm2") if dens_ok else sr.get("die_mm2"), nd,
+                                          _tco_mem, tco_point)
                 rows.append(row)
     ok = [i for i, x in enumerate(rows) if x.get("feasible")]
     sub = [rows[i] for i in ok]
@@ -935,7 +995,23 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         best["perf_W"] = pick(min(ok, key=lambda i: (rows[i]["J_per_unit"], -rows[i]["thr"])))
         best["thr"] = pick(max(ok, key=lambda i: (rows[i]["thr"], -rows[i]["J_per_unit"])))
     base = next((i for i, x in enumerate(rows) if x["base"]), None)
-    split = _split_compare(rows) if chip_mode else None
+    # 0.317: $/M-unit front (thr ↑, $/M ↓) and the cheapest point — feasible AND buildable rows only (an unbuildable
+    # design has no cost meaning, so include_unbuildable does not widen this front); thermal-out rows are infeasible
+    best_tco, n_tco = None, 0
+    if tco_p is not None:
+        tk = [i for i in ok if _tco_ok(rows[i])]
+        n_tco = len(tk)
+        sub_t = [{"thr": rows[i]["thr"], "usd": rows[i]["tco"]["usd_per_Munit"]} for i in tk]
+        for j in pareto(sub_t, (("thr", 1), ("usd", -1)), tie):
+            rows[tk[j]]["front_tco"] = True
+        if tk:
+            best_tco = min(tk, key=lambda i: (rows[i]["tco"]["usd_per_Munit"], -rows[i]["thr"]))
+            rows[best_tco]["best_tco"] = True
+        notes.append(_tco_note(tco_p))
+        miss = sorted({m for x in rows for m in (x.get("tco") or {}).get("missing", [])})
+        if miss:
+            notes.append("TCO 缺项（该点不进 $/M 前沿）：" + "；".join(miss))
+    split = _split_compare(rows, tco=tco_p is not None) if chip_mode else None
     return {"chiplet": {"dies": Ns, "d2d_stds": stds, "d2d_units": units, "die_split": die_split,
                         "reticle_mm2": reticle_mm2, "pkg_mm2": pkg_mm2, "d0_per_cm2": d0_per_cm2,
                         "compare": split} if chip_mode else None,
@@ -953,6 +1029,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
             "shore_strict": bool(shore_strict), "cooling": cooling,
             "n_thermal_over": sum(1 for x in rows if (x.get("thermal") or {}).get("feasible") is False),
             "n_front_thermal_out": n_th_out, "power_scope": power_scope,
+            "tco": None if tco_p is None else {**{k: tco_p[k] for k in ("preset", "life_years", "pue", "usd_per_kWh", "util",
+                                                                       "capital_rate", "system_usd_per_card",
+                                                                       "system_W_per_card")},
+                                               "src": tco_p["src"], "best": best_tco, "n_ranked": n_tco},
             "basis": "设计网格（MAC 总数 × 引擎边长 × SRAM × NoC 拓扑 × 外存 × SLC × 频率工作点）逐点评估：时间 / 放得下来自代价模型，"
                      "J/单位 来自能耗表（MAC / SRAM / 导线 / NoC / DRAM+PHY / 静态）；perf/W = 1 / (J/单位)；超功耗点按 DVFS "
                      "封顶运行（或剔除），超面积 / 岸线不可建（外存 / D2D / I/O，0.312；include_unbuildable 可纳入）/ SLO / 内存 $ 的点剔除；前沿 = 吞吐↑ 与 J/单位↓ 的非支配集，"

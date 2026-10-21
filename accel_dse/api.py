@@ -141,7 +141,7 @@ def _finite(x: Any, where: str = "body") -> None:
 
 
 _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
-_ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "audio_out_s", "cooling", "power_scope"}, "fit": set(), "layouts": {"cards", "objective"},
+_ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "audio_out_s", "cooling", "power_scope", "tco"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
                "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": {"power_cap_W"},
                "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
@@ -157,7 +157,7 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                                "noc_link_Bpc", "noc_routing", "noc_links", "dies", "d2d_stds", "d2d_units",
                                "die_split", "reticle_mm2", "pkg_mm2", "d0_per_cm2", "mono_clusters",
                                "mem_edges_shoreline", "clusters", "cost", "include_unbuildable", "shore_strict",
-                               "cooling", "power_scope"}}
+                               "cooling", "power_scope", "tco"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1041,6 +1041,16 @@ def api_eval(body: dict) -> dict:
     out["thermal"] = th
     if th.get("feasible") is False:
         out["summary"]["warnings"].append("不可建（热 / 功耗）：" + "；".join(th["reasons"]))
+    if body.get("tco") is not None:          # 0.317: opt-in $/M unit (core/tco.py)
+        from .core.tco import eval_tco
+        try:
+            out["tco"] = eval_tco(body["tco"], scn=scn, r=r, energy=out["energy"], die_mm2=sh.get("die_mm2"),
+                                  unit=out["energy"].get("unit") or "token")
+        except ValueError as e:
+            raise ApiError(str(e)) from None
+        if out["tco"].get("usd_per_Munit") is not None and (th.get("feasible") is False or sh.get("feasible") is False):
+            out["tco"]["buildable"] = False
+            out["tco"]["notes"].append("该设计不可建（岸线 / 热）：$/M 仅供参考，不能作为成本结论")
     if body.get("sensitivity", True):
         out["sensitivity"] = sensitivity_report(scn, r, table.tdp_W if pc and table.tdp_W else None)   # 0.227
     if bud is not None:
@@ -1545,6 +1555,15 @@ def api_insight_dse(body: dict) -> dict:
         if v not in POWER_SCOPES:
             raise ApiError(f"power_scope must be one of {list(POWER_SCOPES)}")
         kw["power_scope"] = v
+    if (v := body.get("tco")) is not None:                                 # 0.317: $/M unit axis (needs cost)
+        from .core.tco import tco_params
+        try:
+            tco_params(v)
+        except ValueError as e:
+            raise ApiError(str(e)) from None
+        if kw.get("cost") is None:
+            raise ApiError("tco needs cost (package cost per good unit, n5_cowos_s / n5_cowos_l)")
+        kw["tco"] = v
     for k in ("mono_clusters", "mem_edges_shoreline", "include_unbuildable", "shore_strict"):   # 0.309 / 0.312 / 0.313
         if (v := body.get(k)) is not None:
             if not isinstance(v, bool):

@@ -19,6 +19,7 @@ CoWoS-L 4719 mm², D0 0.1 /cm²) over MAC ×{1, 2}, 1 / 2 / 4 dies × {UCIe-A 48
     python3 scripts/chiplet_example.py --sweep --strict     # 0.313: memory on > 2 edges counts as unbuildable
     python3 scripts/chiplet_example.py --case 0 --cost n5_cowos_l --cooling air_oam   # 0.313: thermal judged
     python3 scripts/chiplet_example.py --case 1 --power-scope card   # 0.316: 0.315 card-W power cap
+    python3 scripts/chiplet_example.py --tco accel_2026               # 0.317: verdicts under $/Mtok
 """
 from __future__ import annotations
 
@@ -62,7 +63,7 @@ def budget() -> Budget:
 
 def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d0=0.1, io_edges=-1,
         mem="hbm3e_8s_8h24g_9200", tp=1, link=400.0, macs=(1.0, 2.0), include_unbuildable=False, lane=None,
-        shore_strict=False, cooling=None, power_scope="package") -> dict:
+        shore_strict=False, cooling=None, power_scope="package", tco=None) -> dict:
     std = d2d_catalog.D2D_STANDARDS["ucie-a-48"]
     old = std["pJ_bit"]
     if pj:
@@ -78,7 +79,7 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d
                                  dies=(1, 2, 4), d2d_stds=("ucie-a-48", "ucie-s-32", "bow-256"), die_split=split,
                                  d0_per_cm2=d0, pkg_mm2="cowos-l", mono_clusters=not flat,
                                  mem_edges_shoreline=not flat, include_unbuildable=include_unbuildable,
-                                 shore_strict=shore_strict, cooling=cooling, power_scope=power_scope,
+                                 shore_strict=shore_strict, cooling=cooling, power_scope=power_scope, tco=tco,
                                  **({"cost": cost} if cost else {}), **kw)
     finally:
         std["pJ_bit"] = old
@@ -142,6 +143,60 @@ def sweep(out=print, io_edges=-1, cost="n5_cowos_l", lane=None, shore_strict=Fal
     return res
 
 
+def tco_study(out=print, tco="accel_2026", cost="n5_cowos_l", cooling=None) -> dict:
+    """0.317: do the verdicts change under $/Mtok?  (a) CASES: mono / split by thr & J (0.308) vs by $/M (verdict_tco);
+    (b) SWEEP grid (memory × deployment × D0, decode): cheaper by $/good package (0.312) vs by $/Mtok, and the memory
+    choice (4 / 6 / 8 × HBM3E) per (deployment, D0, MAC×) by throughput, by package $ + memory $, and by $/Mtok.
+    Buildable rows only (feasible, not include_unbuildable)."""
+    res = {"cases": [], "sweep": [], "mem": []}
+    out(f"== tco_study tco={tco} cost={cost} cooling={cooling}")
+    for ci, c in enumerate(CASES):
+        o = run(*c, out=lambda *_: None, cost=cost, tco=tco, cooling=cooling)
+        for e in o["chiplet"]["compare"]:
+            r = {"case": ci, "mac_x": e["mac_x"], "verdict": e["verdict"], "verdict_tco": e.get("verdict_tco"),
+                 "d_tco": e.get("d_tco"), "best_tco": o["tco"]["best"]}
+            res["cases"].append(r)
+            out(f"  case {ci} {c[0]} {c[1]} {c[2]} L{c[3]} MAC×{e['mac_x']:g}: thr/J {e['verdict']:11s} | $/M "
+                f"{e.get('verdict_tco')} {'' if e.get('d_tco') is None else '%+.1f%%' % (100 * e['d_tco'])}")
+    tk = lambda x: x.get("feasible") and x.get("buildable") is not False and (x.get("tco") or {}).get("usd_per_Munit") is not None   # noqa: E731
+    best = {}
+    for mem in SWEEP_MEMS:
+        for tp, lk in SWEEP_DEPLOY:
+            for d0 in SWEEP_D0:
+                o = run("qwen3-8b", "decode", "tp", 0, None, out=lambda *_: None, cost=cost, d0=d0, mem=mem, tp=tp,
+                        link=lk, tco=tco, cooling=cooling)
+                for mx in (1.0, 2.0):
+                    rs = [x for x in o["rows"] if x["mac_x"] == mx and tk(x)]
+                    mono = [x for x in rs if x.get("dies", 1) == 1]
+                    sp = [x for x in rs if x.get("dies", 1) > 1]
+                    pick = lambda L, f: min(L, key=f) if L else None   # noqa: E731
+                    usd = lambda x: x["usd_good_pkg"]                  # noqa: E731
+                    tm = lambda x: x["tco"]["usd_per_Munit"]           # noqa: E731
+                    def who(f):
+                        m_, s_ = pick(mono, f), pick(sp, f)
+                        return "mono" if m_ and (not s_ or f(m_) <= f(s_)) else ("split" if s_ else "none")
+                    r = {"mem": mem, "tp": tp, "link": lk, "d0": d0, "mac_x": mx, "cheaper_pkg": who(usd),
+                         "cheaper_tco": who(tm)}
+                    res["sweep"].append(r)
+                    if rs:
+                        bt = max(rs, key=lambda x: x["thr"])
+                        bc = min(rs, key=lambda x: x["usd_good_pkg"] + x["tco"]["mem_usd"])
+                        bm = min(rs, key=tm)
+                        best.setdefault((tp, lk, d0, mx), {})[mem] = (bt["thr"], bc["usd_good_pkg"] + bc["tco"]["mem_usd"], tm(bm),
+                                                                      bm["tco"]["share"])
+    for k, d in sorted(best.items()):
+        by_thr = max(d, key=lambda m: d[m][0])
+        by_cap = min(d, key=lambda m: d[m][1])
+        by_tco = min(d, key=lambda m: d[m][2])
+        res["mem"].append({"tp": k[0], "link": k[1], "d0": k[2], "mac_x": k[3], "by_thr": by_thr, "by_capex": by_cap,
+                           "by_tco": by_tco, "usd_per_Mtok": {m: d[m][2] for m in d}})
+        out(f"  mem choice tp{k[0]}/{k[1]:.0f} D0 {k[2]:.2f} ×{k[3]:g}: thr→{by_thr.split('_')[1]} capex→{by_cap.split('_')[1]} "
+            f"$/M→{by_tco.split('_')[1]}  " + " ".join(f"{m.split('_')[1]}:{d[m][2]:.5f}" for m in d))
+    n = sum(1 for r in res["sweep"] if r["cheaper_pkg"] != r["cheaper_tco"])
+    out(f"  sweep: cheaper by $/pkg vs $/Mtok differ in {n}/{len(res['sweep'])} cells")
+    return res
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--flat", action="store_true", help="0.308 view: no NoC-cluster rows, two memory columns")
@@ -161,8 +216,13 @@ def main(argv=None) -> int:
     ap.add_argument("--cooling", choices=("air_oam", "air_hgx", "liquid"), help="0.313: judge thermal buildability")
     ap.add_argument("--power-scope", choices=("package", "card"), default="package",
                     help="0.316: power cap compared to package W (default, same as thermal) or card W (0.315)")
+    ap.add_argument("--tco", choices=("accel_2026", "server_2026"),
+                    help="0.317: $/Mtok study (mono/split and memory-choice verdicts under TCO; needs --cost, default n5_cowos_l)")
     ap.add_argument("--sweep", action="store_true", help="0.312: buildable-only verdict table (memory × D0 × deployment)")
     a = ap.parse_args(argv)
+    if a.tco:
+        tco_study(tco=a.tco, cost=a.cost or "n5_cowos_l", cooling=a.cooling)
+        return 0
     if a.sweep:
         sweep(io_edges=a.io_edges, cost=a.cost or "n5_cowos_l", lane=a.lane, shore_strict=a.strict)
         return 0

@@ -9152,3 +9152,42 @@ See CHANGELOG 0.316.0.
 
 ### §261.5 Freshness (2026-10-22 JST)
 - No new tracked-org release since 0.315. Raon-1-mini-preview is still gated (401).
+
+## §262 Cost per unit of work — TCO (0.317, opt-in)
+
+### §262.1 Definition
+Per package at its operating point:
+
+    $/M unit = [C_yr + E_yr] ÷ [thr · util · 3600 · 8760] × 1e6
+    C   = usd_good_pkg + mem_GB · $/GB + system_usd_per_card
+    C_yr = C / L                      (straight line)  or  C · r / (1 − (1 + r)^−L)
+    E_yr = [util · (P_pkg + P_sys) + (1 − util) · (P_pkg,idle + P_sys)] · PUE · 8760 / 1000 · $/kWh
+
+- `P_pkg` = `thermal.package_power` at the row's operating point: card W including DRAM devices + static floor + VR / PDN loss (§260). On capped rows it is the capped point (= `cap_pkg_W`, §261). `P_pkg,idle` = the same function with only the static.
+- `thr` is at the scenario's batch. SLO-violating points are already infeasible, so a ranked point meets its SLO.
+- `unit/s/W` = thr ÷ P_pkg (module input; facility W = (P_pkg + P_sys) · PUE).
+
+### §262.2 What each term contains (no double count)
+- `usd_good_pkg` (0.310) = Σ good dies + packaging $/mm² × (Σ dies + HBM footprints) + test / assembly. The HBM footprint is interposer area (packaging), **not** HBM devices; memory devices are priced only as `mem_GB × $/GB`.
+- `P_pkg` contains the DRAM device power (energy table) once, and the static once: the floor is net of SRAM / NoC / HBM-standby leakage already in card W (§260.1).
+- PUE carries all facility overhead (cooling, distribution) once. The thermal cooling preset is a buildability limit, not an energy term.
+- System terms (host / network) are zero in `accel_2026`. In `server_2026` they are a lower-bound capex share and an upper-bound power share, both 「推导」.
+
+### §262.3 Buildability
+- The $/M front and the cheapest point use rows that are feasible **and** buildable. `include_unbuildable` keeps unbuildable rows on the throughput / J fronts as before, but never on the $/M front: an unbuildable design has no cost.
+- Thermal-out rows (cooling preset, §261.3) are infeasible and are excluded.
+
+### §262.4 Sources
+- PUE 1.54 (Uptime 2025 「来源」).
+- $0.0891 / kWh (EIA Table 5.3, industrial, rolling 12 months to Jul 2026 「来源」).
+- Life 5 years (10-K disclosures, 5–6 years 「来源」; low end 「假设」).
+- HBM3E $17.5 / GB and HBM4 $31.5 / GB (TrendForce citing Fubon 「二手」); LPDDR5X $19.5 / GB 「推导」.
+- Types without a recent public price are unpriced.
+
+### §262.5 Verdicts under $/Mtok
+- Mono vs split: unchanged on all 7 cases × 2 MAC scales.
+- Per-package cheaper option: 16 / 72 sweep cells flip split → mono, all at tp 8. Split saves yield $ but loses 40 % throughput; package $ is ~40 % of TCO.
+- Memory choice: $/Mtok differs from the throughput choice at tp 8 MAC × 2, D0 ≤ 0.2 (4 vs 8 stacks): 8 stacks force a split and double memory $.
+
+### §262.6 Freshness (2026-10-22 JST)
+- No new tracked-org release. Raon still 401.

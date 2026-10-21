@@ -6,6 +6,57 @@
 
 
 
+## [0.317.0]
+
+### Cost per unit of work (TCO, opt-in): $/M unit and unit/s/W per design
+- **New `accel_dse/core/tco.py`.** `$/M unit = (annual capex charge + annual energy cost) ÷ units per year × 1e6`, per package at its operating point.
+  - **Capex** = `usd_good_pkg` (0.310 chiplet economics: Σ good dies + packaging incl. HBM interposer footprint + test; **no memory devices**) + **memory GB × $/GB** (the only memory term) + `system_usd_per_card`.
+  - Straight-line over `life_years`, or an annuity with `capital_rate`.
+  - **Energy** = IT power × PUE × 8760 h × $/kWh.
+    - IT power = util · (P_pkg + P_sys) + (1 − util) · (P_pkg,idle + P_sys).
+    - P_pkg is the **complete package power** (`thermal.package_power`, the function the thermal check and the 0.316 power cap use) at the **capped** operating point. P_pkg,idle is the same function on the static alone.
+  - **Units/year** = throughput at the scenario's batch × util × 3600 × 8760. SLO-violating points are already infeasible.
+  - Also reports `units_per_s_per_W` (thr ÷ P_pkg, module input) and `units_per_s_per_facility_W`.
+  - Cost basis is manufacturing cost (no vendor margin) 「假设」: the designer's view.
+- **Defaults, every one labelled:**
+
+  | Term | Value | Basis |
+  |---|---|---|
+  | PUE | 1.54 | Uptime Institute Global Data Center Survey 2025 weighted average, n = 681 「来源」 |
+  | $/kWh | 0.0891 | EIA Electric Power Monthly Table 5.3, industrial, rolling 12 months to Jul 2026 「来源」 |
+  | Life | 5 years | Amazon moved a server subset 6 → 5 years in 2025; Meta 5.5, Alphabet 6 (10-K 「来源」); range low end 「假设」 |
+  | util / capital_rate | 1.0 / 0 | 「假设」 (Meta 24k-H100 analysis: 90 %, WACC 9.33 % 「二手」) |
+  | HBM3E / HBM4 | $17.5 / $31.5 per GB | TrendForce citing Fubon, 2026-08-13 「二手」 |
+  | LPDDR5X | $19.5 per GB | SemiAnalysis ~$10 base × TrendForce 2Q26 +93–98 % 「推导」 |
+  | LPDDR5 / LPDDR6 / HBM3 / HBM4E | none | No recent public price: the row is unpriced and needs the user's figure, never 0 |
+  | `server_2026` system | $7,500 and 575 W per card | SemiAnalysis H100 ($250k all-in − $190k server) ÷ 8 「推导」 (lower bound); DGX H100 10.2 kW max − 8 × 700 W, ÷ 8 「推导」 (nameplate upper bound) |
+
+  - `accel_2026` (default) has no system terms. The user's values win: `mem_usd_per_GB` from the DSE first, then `tco.mem_usd_per_GB`.
+- **Where it appears (opt-in; defaults unchanged, no `tco` key appears without it):**
+  - `energy_design_search(..., tco=)` (needs `cost`): row `tco` (breakdown and shares), `front_tco` (thr ↑, $/M ↓), `best_tco` / `tco.best`, chiplet `verdict_tco` / `d_tco`, notes.
+  - `api_eval` body `tco` (`pkg_usd`, or `cost` priced on the shoreline die with Poisson yield at `d0_per_cm2`, default 0.10).
+  - `insight_dse` `tco`.
+  - UI: chip panel 「TCO」 select plus a $/M line; DSE 「TCO 轴」 select, `$/M` and `/s/W` columns (◆ cheapest, ★ front), summary and verdicts.
+  - `chiplet_example.py --tco accel_2026|server_2026`.
+- **Adversarial checks** (test_core_317):
+  - Memory is priced once: package $ is independent of the memory price; capex = package $ + GB × $/GB exactly; no memory key exists in COST_PRESETS; a DSE memory price is reused, not added.
+  - Power is the complete package power once: = thermal pkg_W, = cap_pkg_W on capped rows, > card W. Energy is exactly IT W × PUE × h × $/kWh, with no separate DRAM, static or cooling term (PUE covers cooling).
+  - The $/M front and best point contain only feasible and buildable rows. They exclude rows kept by `include_unbuildable` (decode, 8 × HBM3E, `shore_strict`: rows 0–2 stay on the main front, off the $/M front) and thermal-out rows (cooling preset).
+  - Eval uses the capped operating point (package W = TDP 150 W, throughput × factor). `tco` without `cost` / `pkg_usd` is rejected.
+- **Verdicts under $/Mtok** (`chiplet_example.py --tco`, n5_cowos_l, buildable only; same under `server_2026`):
+  - **Mono / split: unchanged** in all 14 case × MAC combinations. Mono stays cheaper per token by +0.7 – +25.5 % (case 2, L32: D2D-bound split); `only_split` stays where the mono die is over the reticle.
+  - **Cheaper option (0.312 sweep, 72 cells): 16 flip split → mono**, all at tp = 8.
+    - At D0 0.2–0.3 the split package is cheaper to make (4 × HBM3E, D0 0.3: $1,865 vs $2,373), but its best split serves 2,100 vs 3,572 tok/s (−41 %), so $/Mtok is +55 %.
+    - Package $ is only ~40 % of TCO, so the yield saving cannot pay for lost throughput.
+  - **Memory choice (4 / 6 / 8 × HBM3E):**
+    - By $/good package + memory, always 4 stacks.
+    - By throughput vs by $/Mtok: they agree at tp 1 (8 stacks). They differ at tp 8 MAC × 2 for D0 ≤ 0.2 (6 of 8 cells): throughput picks 8 stacks, $/Mtok picks 4.
+    - Mechanism: 8 stacks give +4 % throughput (3,728 vs 3,586) but force a split (the mono die with 8 PHYs is over the reticle) and double memory $ ($3,360 vs $1,680) → $/Mtok +39 %.
+    - At tp 8 / 900 GB/s MAC × 1, 6 stacks win both.
+- **Freshness (2026-10-22 JST):** no new release from tracked orgs. DeepSeek-V4.1-Flash-1017 (2026-10-17) is already catalogued; the new HF uploads are re-uploads, quantisations or fine-tunes. Raon-1-mini-preview: still 401.
+- Tests: new test_core_317 (9).
+
+
 ## [0.316.0]
 
 ### Power cap in the same package scope as the thermal check; thermal front exclusion made visible; freeze-aware timing guards

@@ -100,6 +100,7 @@ const MAP_DESC = {
 /* ------------------------------------------------------------------ state */
 const S = {
   cooling: null,          // 0.313: chip-panel cooling preset (eval body.cooling)
+  tco: null,              // 0.317: chip-panel TCO preset (eval body.tco, priced with N5 + CoWoS-S on the shoreline die)
   cat: null, models: [], byId: {}, preset: '100T', chipOver: {}, mixed: [], sc: null,
   mem: {}, memInfo: null, wiW: '', wiKV: '', wiAct: '', best: false, last: null,
   cmpObj: 'decode', layObj: 'decode', tab: 'eval',
@@ -746,7 +747,7 @@ function showErr(msg) {
 async function runEval() {
   const t0 = performance.now();
   try {
-    const r = await track(req('eval', '/api/eval', body({ best_batch: S.best, sensitivity: false, ...(S.powerCap ? { power_cap: true } : {}), ...(S.cooling ? { cooling: S.cooling } : {}) })));
+    const r = await track(req('eval', '/api/eval', body({ best_batch: S.best, sensitivity: false, ...(S.powerCap ? { power_cap: true } : {}), ...(S.cooling ? { cooling: S.cooling } : {}), ...(S.tco ? { tco: { preset: S.tco, cost: 'n5_cowos_s' } } : {}) })));
     if (!r) return;
     S.last = r;
     markEvalStale(false);
@@ -804,6 +805,7 @@ function renderEval(r) {
   renderFabric(r);
   renderShore(r.shoreline);       // 0.312: chip-panel shoreline buildability
   renderThermal(r.thermal);       // 0.313: thermal / power buildability
+  renderTco(r.tco);               // 0.317: $/M unit (opt-in)
   renderBudget(r);
   renderSensitivity(r);
   renderPD(r);
@@ -1452,6 +1454,20 @@ function renderShore(x) {
 
 // 0.313: thermal / power buildability in the chip panel (package W, per-die heat flux vs the cooling preset)
 const COOL_ZH = { air_oam: '风冷 OAM', air_hgx: '风冷 HGX', liquid: '液冷' };   // 0.316
+
+function renderTco(t) {          // 0.317
+  const el = $('chip-tco');
+  if (!el) return;
+  el.textContent = '';
+  if (!t) return;
+  if (t.usd_per_Munit == null) { el.append(h('div', { class: 'small muted' }, 'TCO：缺 ' + (t.missing || []).join('；'))); return; }
+  const sh = t.share || {};
+  const pc = (v) => `${((v || 0) * 100).toFixed(0)}%`;
+  el.append(h('div', {}, `TCO：$${t.usd_per_Munit.toPrecision(3)} / M ${t.unit}${t.buildable === false ? '（不可建，仅供参考）' : ''} · ${num(t.units_per_s_per_W)} ${t.unit}/s/W（封装）`
+    + ` · 资本 $${num(t.capex_usd)}（封装 $${num(t.pkg_usd)} + 内存 $${num(t.mem_usd)}，${num(t.mem_GB)} GB × $${num(t.mem_usd_per_GB)}「${t.mem_price_src}」）`
+    + ` · 封装功耗 ${num(t.pkg_W)} W × PUE → ${num(t.kWh_per_yr)} kWh/年 · 占比 封装 ${pc(sh.package)} / 内存 ${pc(sh.memory)} / 系统 ${pc(sh.system)} / 电 ${pc(sh.energy)}`),
+    h('div', { class: 'small muted' }, (t.notes || []).join('；')));
+}
 
 function renderThermal(x) {
   const el = $('chip-thermal');
@@ -2491,6 +2507,7 @@ async function runInsightDse() {
       if (badk) { $('ins-dse-status').textContent = ''; return; }
       if (kclu.length) ex.clusters = kclu;
       if ($('ins-dse-cost').value) ex.cost = $('ins-dse-cost').value;
+      if ($('ins-dse-tco') && $('ins-dse-tco').value) ex.tco = $('ins-dse-tco').value;            // 0.317 (needs cost)
     }
     if ($('ins-dse-topo').checked) ex.topologies = ['mesh', 'ring', 'crossbar'];
     if (memT.length) { ex.mem_types = memT; ex.mem_count_scales = memn; }
@@ -2517,14 +2534,16 @@ async function runInsightDse() {
         const v = { only_split: '仅拆分可行', split_both: '拆分吞吐与 J 均更优', split_thr: '拆分吞吐更高', split_J: '拆分 J 更低', mono: '单片更优', none: '均不可行' }[e.verdict] || e.verdict;
         const d = e.d_thr != null ? `（吞吐 ${(e.d_thr * 100).toFixed(1)}%，J ${(e.d_J * 100).toFixed(1)}%）` : e.mono_why ? `（单片：${e.mono_why}）` : '';
         const vf = e.verdict_flat && e.verdict_flat !== e.verdict ? `（对平面单片：${e.verdict_flat}）` : '';   // 0.309
-        return `MAC×${e.mac_x} SRAM×${e.sram_x} ${e.mem_id} → ${v}${d}${vf}`;
+        const vt = e.verdict_tco ? `；按 $/M：${{ split: '拆分更便宜', mono: '单片更便宜', only_split: '仅拆分可建', only_mono: '仅单片可建', none: '均不可建' }[e.verdict_tco] || e.verdict_tco}${e.d_tco != null ? `（${(e.d_tco * 100).toFixed(1)}%）` : ''}` : '';   // 0.317
+        return `MAC×${e.mac_x} SRAM×${e.sram_x} ${e.mem_id} → ${v}${d}${vf}${vt}`;
       }).join('；') : '')
       + (r.costed ? ` · 成本前沿（吞吐↑ J↓ $/好封装↓）${rows.filter((x) => x.front_cost).length} 点` : '')
+      + (r.tco ? ` · TCO（${r.tco.preset}）：$/M${(rows.find((x) => x.unit) || {}).unit || '单位'} 前沿（吞吐↑ $/M↓，只含可建点）${rows.filter((x) => x.front_tco).length} 点` + (r.tco.best != null ? `，最低 $${rows[r.tco.best].tco.usd_per_Munit.toPrecision(3)}（第 ${r.tco.best} 行，表中 ◆）` : '，无可建且已定价的点') : '')   // 0.317
       + ((r.notes || []).length ? ' · ' + r.notes.join('；') : '');
     put($('ins-dse-chart'), paretoChart(rows));
     const pct = (x) => (x * 100).toFixed(1) + '%';
     put($('ins-dse-tbl'), h('thead', {}, h('tr', {},
-      ['前沿', '热 / 封装 W', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', 'NoC B/周期', 'NoC mm² / W', '晶粒 × D2D', 'D2D GB/s', 'Σ mm² / 良率', '$/好封装', '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '工作点 f ×', '运行 f ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
+      ['前沿', '热 / 封装 W', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', 'NoC B/周期', 'NoC mm² / W', '晶粒 × D2D', 'D2D GB/s', 'Σ mm² / 良率', '$/好封装', `$/M${u}`, `${u}/s/W`, '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '工作点 f ×', '运行 f ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
       h('tbody', {}, rows.map((x) => h('tr', { class: x.front ? 'best' : '' },
         h('td', {}, x.front ? '★' : x.front_thermal_out ? '✗热' : x.front3 ? '☆' : x.front_usd ? '$' : ''),
         h('td', { title: x.thermal && x.thermal.flux_ratio != null ? `热流 ${x.thermal.flux_W_mm2.toFixed(2)} W/mm²（${x.thermal.flux_ratio.toFixed(2)}× 上限）` : '' },   // 0.316
@@ -2537,6 +2556,9 @@ async function runInsightDse() {
         h('td', {}, x.d2d_GBps != null ? num(x.d2d_GBps) + (x.d2d_noc_capped ? '（NoC 限）' : '') : '—'),
         h('td', {}, x.si_mm2 != null ? num(x.si_mm2) + (x.die_yield != null ? ` / ${(x.die_yield * 100).toFixed(0)}%` : '') : '—'),
         h('td', { title: x.usd_good_pkg != null ? `硅 $${num(x.si_usd)} + 封装 $${num(x.pkg_usd)} + 测试 $${num(x.test_usd)}` : '' }, x.usd_good_pkg != null ? '$' + num(x.usd_good_pkg) + (x.front_cost ? ' ★' : '') : '—'),   // 0.310
+        h('td', { title: x.tco ? (x.tco.usd_per_Munit != null ? `资本 $${num(x.tco.capex_usd)}（封装 $${num(x.tco.pkg_usd)} + 内存 $${num(x.tco.mem_usd)}）· 电 $${num(x.tco.energy_usd_per_yr)}/年 · 电占 ${((x.tco.share.energy || 0) * 100).toFixed(0)}%` : '缺 ' + (x.tco.missing || []).join('；')) : '' },   // 0.317
+          x.tco && x.tco.usd_per_Munit != null ? '$' + x.tco.usd_per_Munit.toPrecision(3) + (x.best_tco ? ' ◆' : x.front_tco ? ' ★' : '') : '—'),
+        h('td', {}, x.tco && x.tco.units_per_s_per_W != null ? num(x.tco.units_per_s_per_W) : '—'),
         h('td', {}, x.mem_id || '—'), h('td', {}, x.mem_GBps != null ? num(x.mem_GBps) : '—'), h('td', {}, x.mem_GB != null ? num(x.mem_GB) : '—'),
         h('td', {}, x.slc_mib != null ? num(x.slc_mib) : '—'),
         h('td', {}, x.thr != null ? num(x.thr) : '—'), h('td', {}, sci(x.J_per_unit)), h('td', {}, x.perf_W != null ? num(x.perf_W) : '—'),
@@ -2942,6 +2964,7 @@ async function init() {
   $('c-noc_mem_edges').addEventListener('change', (e) => { if (e.target.value) S.chipOver.noc_mem_edges = parseInt(e.target.value, 10); else delete S.chipOver.noc_mem_edges; schedule(); });   // 0.310
   $('c-io_su_lane_Gbps').addEventListener('change', (e) => { if (e.target.value) S.chipOver.io_su_lane_Gbps = parseFloat(e.target.value); else delete S.chipOver.io_su_lane_Gbps; schedule(); });   // 0.313
   $('c-cooling').addEventListener('change', (e) => { S.cooling = e.target.value || null; schedule(); });   // 0.313
+  $('c-tco').addEventListener('change', (e) => { S.tco = e.target.value || null; schedule(); });           // 0.317
   $('c-noc_mem_io_edges').addEventListener('change', (e) => { if (e.target.value) S.chipOver.noc_mem_io_edges = parseInt(e.target.value, 10); else delete S.chipOver.noc_mem_io_edges; schedule(); });   // 0.312
   $('c-io_host_lanes').addEventListener('change', (e) => { const v = parseInt(e.target.value, 10); if (Number.isFinite(v) && v >= 0) S.chipOver.io_host_lanes = v; else delete S.chipOver.io_host_lanes; schedule(); });   // 0.312
   $('c-clk_datapath_gate').addEventListener('change', (e) => { if (e.target.checked) S.chipOver.clk_datapath_gate = true; else delete S.chipOver.clk_datapath_gate; schedule(); });

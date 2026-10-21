@@ -451,6 +451,34 @@ def main(chrome="/usr/bin/google-chrome", budget=1800.0) -> int:
                     errs.append(f"dse mid-run edit: not dropped / tagged: {st[:200]}")
                 for sel, v in (("#ins-dse-mem", ""), ("#ins-dse-memn", "1"), ("#ins-dse-slc", ""), ("#ins-dse-out", "")):
                     p.fill(sel, v)
+                # 0.317: TCO axis (needs cost) → summary + $/M column; then the chip-panel TCO line
+                if p.query_selector("#ins-dse-tco"):
+                    p.select_option("#b-preset", "n5_derived")      # package $ needs area densities
+                    time.sleep(1.0)
+                    p.select_option("#ins-dse-cost", "n5_cowos_s")
+                    p.select_option("#ins-dse-tco", "accel_2026")
+                    p.click("#ins-dse-run")
+                    wait_js("(() => { const t = document.getElementById('ins-dse-status').textContent;"
+                                        " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
+                    st = p.inner_text("#ins-dse-status")
+                    sm = p.inner_text("#ins-dse-summary")
+                    tbl = p.inner_text("#ins-dse-tbl")
+                    ok = st.startswith("完成") and "TCO（accel_2026）" in sm and "$/M" in tbl and "◆" in tbl
+                    steps.append(("dse tco", st[:40], ok))
+                    if not ok:
+                        errs.append(f"dse tco: {st[:120]} | {sm[-200:]}")
+                    p.select_option("#ins-dse-tco", "")
+                    p.select_option("#ins-dse-cost", "")
+                    p.select_option("#b-preset", "")
+                    time.sleep(1.0)
+                if p.query_selector("#c-tco"):
+                    p.select_option("#c-tco", "accel_2026")
+                    try:
+                        wait_js("document.getElementById('chip-tco').textContent.includes('TCO：$')", timeout=120000)
+                        steps.append(("chip tco", p.inner_text("#chip-tco")[:60]))
+                    except PWTimeout:
+                        errs.append("chip tco: no $/M line: " + p.inner_text("#chip-tco")[:200])
+                    p.select_option("#c-tco", "")
             # 0.275: speech bottleneck panel (/api/insight_speech)
             p.click("#ins-sp-run")
             wait_js("(() => { const t = document.getElementById('ins-sp-status').textContent;"
