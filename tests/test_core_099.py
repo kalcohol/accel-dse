@@ -1,4 +1,7 @@
 """0.99: exact pipe replay (no extrapolation), tile ≤ buffer/2, bracketed sensitivity labels."""
+import sys
+from pathlib import Path
+
 from accel_dse import api
 from accel_dse.core import overlap as O
 from accel_dse.core.evaluate import evaluate
@@ -27,10 +30,12 @@ def test_periodic_jump_is_exact():
 
 
 def test_dit_exact_and_fast():
-    import time
-    t = time.perf_counter()
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from freeze_clock import clock                       # 0.316: freeze-aware (host/VM freeze time not charged)
+    fc = clock()
+    t = fc.now()
     r = evaluate(Scenario(model="wan2.1-14b", chip=C, exec_overlap="pipe"))
-    assert time.perf_counter() - t < 20 and r.throughput > 0
+    assert fc.now() - t < 20 and r.throughput > 0, (fc.now() - t, fc.stalls())
 
 
 def test_tile_capped_by_buffer():

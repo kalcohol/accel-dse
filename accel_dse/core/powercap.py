@@ -73,39 +73,50 @@ def _point(r, table, curve: str, s: float):
     return q, energy_report(q, t)
 
 
-def dvfs_cap(r, table, cap_W: float, curve: str = "dfs", iters: int = 22) -> dict:
-    """Highest clock (fraction s of the nominal) whose card power fits cap_W; then the throughput / energy there."""
+def dvfs_cap(r, table, cap_W: float, curve: str = "dfs", iters: int = 22, pk=None) -> dict:
+    """Highest clock (fraction s of the nominal) whose power fits cap_W; then the throughput / energy there.
+    0.316 ``pk``: the compared power as a function of (card W, static W, idle W) — thermal.cap_power_fn (package
+    scope: the thermal check's package_power, evaluated at every clock); None = the card W itself (0.315)."""
     from .energy import energy_report
     cards = r.scenario.layout.cards
     e1 = energy_report(r, table)
     if e1.get("avg_W_per_card") is None:
         return {"error": "功耗封顶需要能耗表（J/单位）"}
+
+    def W(e):
+        return e["avg_W_per_card"] if pk is None else pk(e["avg_W_per_card"], static_W(e), e.get("idle_W_used"))
     u1 = _units_s_card(e1, cards)
     P1 = e1["avg_W_per_card"]
-    base = {"curve": curve, "tag": VF_CURVES[curve]["tag"], "cap_W": cap_W, "P_nominal_W": P1, "f_nominal_ghz": r.scenario.chip.freq_ghz}
-    if P1 <= cap_W * (1 + 1e-12):
+    base = {"curve": curve, "tag": VF_CURVES[curve]["tag"], "cap_W": cap_W, "P_nominal_W": P1,
+            "f_nominal_ghz": r.scenario.chip.freq_ghz, "scope": "card" if pk is None else pk.scope,
+            "pkg_nominal_W": W(e1)}
+    if W(e1) <= cap_W * (1 + 1e-12):
         return {**base, "binds": False, "s": 1.0, "f_ghz": r.scenario.chip.freq_ghz, "v": 1.0, "throughput_factor": 1.0,
-                "W_card": P1, "J_per_unit": e1["J_per_unit"], "bound": r.bound, "duty": 1.0}
+                "W_card": P1, "pkg_W": W(e1), "J_per_unit": e1["J_per_unit"], "bound": r.bound, "duty": 1.0}
     lo_q, lo_e = _point(r, table, curve, F_MIN)
-    if lo_e["avg_W_per_card"] > cap_W:
+    if W(lo_e) > cap_W:
         ps = static_W(lo_e)
-        if ps >= cap_W:
-            return {**base, "binds": True, "feasible": False, "error": "静态功耗 ≥ 封顶：任何吞吐都超功耗"}
-        slow = (lo_e["avg_W_per_card"] - ps) / (cap_W - ps)
+        from .thermal import card_W_for_cap
+        cap_c = card_W_for_cap(pk, cap_W, ps, lo_e.get("idle_W_used"))     # the card W at which the cap holds
+        if cap_c is None or ps >= cap_c:
+            return {**base, "binds": True, "feasible": False, "error": "静态功耗 ≥ 封顶：任何吞吐都超功耗"
+                    + ("（封装口径：含静态底功耗与稳压器损耗）" if pk is not None else "")}
+        slow = (lo_e["avg_W_per_card"] - ps) / (cap_c - ps)
         J = lo_e["J_per_unit"] + ps * cards / _units_s_card(lo_e, cards) / cards * (slow - 1.0)
         return {**base, "binds": True, "feasible": True, "s": F_MIN, "f_ghz": lo_q.scenario.chip.freq_ghz,
                 "v": volt(curve, F_MIN), "duty": 1.0 / slow, "throughput_factor": _units_s_card(lo_e, cards) / slow / u1,
-                "W_card": cap_W, "J_per_unit": J, "bound": lo_q.bound}
+                "W_card": cap_c, "pkg_W": cap_W, "static_W": ps, "J_per_unit": J, "bound": lo_q.bound}
     lo, hi = F_MIN, 1.0
     best = (lo_q, lo_e, lo)
     for _ in range(iters):
         mid = (lo + hi) / 2
         q, e = _point(r, table, curve, mid)
-        if e["avg_W_per_card"] <= cap_W:
+        if W(e) <= cap_W:
             lo, best = mid, (q, e, mid)
         else:
             hi = mid
     q, e, s = best
     return {**base, "binds": True, "feasible": True, "s": s, "f_ghz": q.scenario.chip.freq_ghz, "v": volt(curve, s),
-            "duty": 1.0, "throughput_factor": _units_s_card(e, cards) / u1, "W_card": e["avg_W_per_card"],
+            "duty": 1.0, "throughput_factor": _units_s_card(e, cards) / u1, "W_card": e["avg_W_per_card"], "pkg_W": W(e),
+            "static_W": static_W(e),
             "J_per_unit": e["J_per_unit"], "bound": q.bound, "tpot_ms": q.tpot * 1e3 if q.tpot else None}

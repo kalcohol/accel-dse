@@ -96,7 +96,7 @@ def _dse(**kw):
 
 
 def test_link_width_axis_front():
-    r = _dse(noc_links=(32, 8, 128))
+    r = _dse(noc_links=(32, 8, 128), power_scope="card")     # 0.316: card-W cap (package scope: front = 128 × 128 B only)
     rows = r["rows"]
     assert r["noc_links"] == [8.0, 32.0, 128.0] and r["noc_link_Bpc"] is None and len(rows) == 15
     for e in {x["engines"] for x in rows}:

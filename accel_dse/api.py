@@ -141,7 +141,7 @@ def _finite(x: Any, where: str = "body") -> None:
 
 
 _COMMON_KEYS = {"chip_preset", "scenario", "energy", "budget"}
-_ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "audio_out_s", "cooling"}, "fit": set(), "layouts": {"cards", "objective"},
+_ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "audio_out_s", "cooling", "power_scope"}, "fit": set(), "layouts": {"cards", "objective"},
                "compare": {"cards", "objective"}, "stability": {"cards", "objective", "include_mapping"},
                "pareto": {"sensitivity"}, "sweep": {"path", "values", "sensitivity"}, "sensitivity": {"power_cap_W"},
                "insight": {"models"}, "insight_path": {"models", "metric", "steps", "max_cost", "beam"},
@@ -157,7 +157,7 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                                "noc_link_Bpc", "noc_routing", "noc_links", "dies", "d2d_stds", "d2d_units",
                                "die_split", "reticle_mm2", "pkg_mm2", "d0_per_cm2", "mono_clusters",
                                "mem_edges_shoreline", "clusters", "cost", "include_unbuildable", "shore_strict",
-                               "cooling"}}
+                               "cooling", "power_scope"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1018,7 +1018,14 @@ def api_eval(body: dict) -> dict:
             sh = out["shoreline"] = {**su, "die_src": "budget"}
     if sh.get("feasible") is False:
         out["summary"]["warnings"].append("不可建（岸线）：" + "；".join(sh["reasons"]))
-    out["energy"] = energy_report(r, table, power_cap=pc)      # 0.47.1: action counts always; J only for user-supplied entries
+    # 0.316: the TDP cap compares the package power (thermal.cap_power_fn → package_power, the function the thermal
+    # check below uses) per card over the shoreline die; power_scope "card" = 0.315
+    from .core.thermal import POWER_SCOPES, cap_power_fn
+    psc = body.get("power_scope", "package")
+    if psc not in POWER_SCOPES:
+        raise ApiError(f"power_scope must be one of {list(POWER_SCOPES)}")
+    pkf = cap_power_fn(sh.get("die_mm2"), 1, psc) if pc else None
+    out["energy"] = energy_report(r, table, power_cap=pc, pk=pkf)      # 0.47.1: action counts always; J only for user-supplied entries
     # 0.313: thermal / power buildability beside the shoreline — reported whenever the energy table gives a power;
     # judged only with body.cooling (a thermal.COOLING preset)
     from .core.powercap import static_W as _static_W
@@ -1533,6 +1540,11 @@ def api_insight_dse(body: dict) -> dict:
         if v not in COOLING:
             raise ApiError(f"cooling must be one of {sorted(COOLING)}")
         kw["cooling"] = v
+    if (v := body.get("power_scope")) is not None:                         # 0.316: cap scope (card = 0.315)
+        from .core.thermal import POWER_SCOPES
+        if v not in POWER_SCOPES:
+            raise ApiError(f"power_scope must be one of {list(POWER_SCOPES)}")
+        kw["power_scope"] = v
     for k in ("mono_clusters", "mem_edges_shoreline", "include_unbuildable", "shore_strict"):   # 0.309 / 0.312 / 0.313
         if (v := body.get(k)) is not None:
             if not isinstance(v, bool):

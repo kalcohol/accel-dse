@@ -6,6 +6,41 @@
 
 
 
+## [0.316.0]
+
+### Power cap in the same package scope as the thermal check; thermal front exclusion made visible; freeze-aware timing guards
+- **The DVFS power cap now compares the complete package power**, the same number the thermal check judges. Both sides call one function, `thermal.cap_power_fn(die_mm2, dies, scope)` → `thermal.package_power`: card W + whole-card static floor (0.088 W/mm², less already-charged leakage) + VR / PDN loss (η 0.85), as defined in 0.315. So the two cannot diverge.
+  - `powercap.dvfs_cap(..., pk)`: every comparison against the cap uses `pk(card W, static W(f), idle W)`. The duty-cycle branch inverts the same function with `thermal.card_W_for_cap` (bisection; `pk(c) ≥ c`, so the root lies in [0, cap]). It is infeasible when floor + loss alone exceed the cap.
+  - `energy_report(..., pk)` / `_power_cap`: `scope`, `cap_card_W`, `pkg_needed_W`. DSE rows: `cap_pkg_W`; the reject reason reads 「封装口径」.
+  - On a capped DSE row, `thermal.pkg_W` now equals `cap_pkg_W` (checked on all 42 capped example rows, max relative difference 0) and stays ≤ the budget. 0.315 capped the card W, so its capped "700 W" example rows sat at 896–900 W of package power.
+  - **Switch:** `power_scope` ∈ {`package` (default), `card`}, on `energy_design_search`, the `eval` / `insight_dse` API and `chiplet_example.py --power-scope`. `card` reproduces 0.315 exactly: 0 differences on 14 case × cooling combinations. The UI checkbox is 「功耗预算按卡（0.315 口径）」.
+  - Default changed for a mechanism reason: a shipped TDP is defined at the module input (OCP OAM r2.0 §8.4 「来源」, 0.315), so a budget compared to card W silently allowed static + VR on top. The what-if lever `lever_power_cap` stays card-level by design (a relative ±8 W probe).
+- **Capped DSE examples, old (card) → new (package)**, `chiplet_example.py` cases 0–6 (126 rows, 700 W budget):
+
+  | Cooling | Capped rows | Feasible | Front points | mono / split verdicts |
+  |---|---|---|---|---|
+  | none | 14 → 21 | 105 → 105 | 25 → 25 | unchanged |
+  | air_oam | 14 → 21 | 83 → 94 | 26 → 24 | unchanged |
+
+  - Cases 1 / 6 (qwen3-8b prefill tp, L0): 9 rows change, throughput × 0.758–0.936. bow-256 2- and 4-die are newly capped. With no cooling the front stays [12].
+    - air_oam front [4, 17] → [12]: the MAC×2 2- / 4-die UCIe rows 12, 13, 15 and 16, thermally over at their 0.315 card-capped point (≈ 900 W package), become thermally feasible once the cap holds package W ≤ 700 W.
+  - Case 3 (prefill L64): rows 11, 15 and 16 are newly capped (× 0.777 / 0.775 / 0.878). air_oam front [6, 16] → [6, 15].
+  - Decode cases 0 / 2 / 4 / 5: unchanged (no row near the cap).
+  - Unit tests pinned to the card scope, because they test other mechanisms at card-W budgets on 1200–3000 mm² dies:
+    - test_core_302: under package scope 2× MAC @ 0.6 f (286 W card) is capped too and still beats 1× (56.8 k vs 50.9 k).
+    - test_core_306: the package-scope front is 128 × 128 B only.
+    - test_core_307: the package scope runs 2048 × 32 B at f × 0.52, 1.80 k tok/s (card 0.93, 3.19 k).
+- **Thermal result in the DSE front, made explicit.** Since 0.313 a row over the selected cooling preset is unbuildable and leaves every front (like a shoreline-unbuildable row; `include_unbuildable` keeps it). With no cooling preset, thermal is reported only.
+  - New: `front_thermal_out` marks rows that would be on the front without the cooling filter. The result adds `n_front_thermal_out` and `power_scope`, plus notes stating the rule and the cap scope.
+  - Example: qwen3-8b prefill, card scope, air_oam → 1 point (row 12, flux 0.98 > 0.86 W/mm²); package scope → 0 (the cap already keeps it in).
+  - UI: the DSE summary shows the cooling preset, 热超限 N 点 and how many were on the front, plus the cap scope. The table gains a 「热 / 封装 W」 column (✓ / ✗ + package W, flux in the tooltip) and the ✗热 front marker. The eval power-cap line shows the package W.
+- **Freeze-aware timing guards** (`scripts/freeze_clock.py`). A sampler thread (50 ms) counts a wake-up gap ≥ 0.5 s as frozen only when the process burned < 20 % CPU over it 「假设」 (it did not execute at all: a host / VM freeze, SIGSTOP). Frozen time is subtracted; everything else counts 1:1.
+  - A sleeping / blocking hang and a CPU-bound hang (including one C call holding the GIL) are still charged in full. Tested by SIGSTOP, sleep and GIL-holding child processes.
+  - Used by the test_core_184 fuzz watchdog (SIGALRM re-arms for the remainder when frozen time ate the budget), test_core_099 (< 20 s), test_core_209 (< 2 s) and test_core_210 (`_timed` wall bound). The CPU bound in 210 is unchanged.
+- **Freshness (2026-10-22 JST):** no new release from tracked orgs since 0.315. The sweep window (since 2026-10-21) lists only items already handled. Raon-1-mini-preview config.json still HTTP 401.
+- Tests: new test_core_316 (7).
+
+
 ## [0.315.0]
 
 ### Complete package power for thermal / power buildability; suite-time check; Flint

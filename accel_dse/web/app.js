@@ -1138,7 +1138,7 @@ function renderEnergy(r) {
     e.static_warning || `静态能耗占 ${(e.static_share * 100).toFixed(1)}%`)));
   const pc = e.power_cap;
   if (pc) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small' }, pc.error ? '功耗封顶：' + pc.error
-    : `功耗封顶：需 ${num(pc.P_needed_W)} W / TDP ${num(pc.tdp_W)} W → ` + (pc.capped ? `吞吐 ×${num(pc.throughput_factor)}，J/单位 ${sci(pc.J_per_unit_capped)}` : '未超 TDP')
+    : `功耗封顶：需 ${num(pc.P_needed_W)} W${pc.scope === 'package' ? `（封装 ${num(pc.pkg_needed_W)} W，含静态底功耗与稳压器损耗）` : ''} / TDP ${num(pc.tdp_W)} W → ` + (pc.capped ? `吞吐 ×${num(pc.throughput_factor)}，J/单位 ${sci(pc.J_per_unit_capped)}` : '未超 TDP')
       // 0.227: the clock / voltage the cap implies
       + (pc.dvfs ? '；' + Object.values(pc.dvfs).map((d) => d.error ? d.error
         : `${d.curve === 'dfs' ? '仅降频' : 'V–f（' + d.tag + '）'} f ${num(d.f_ghz)} GHz（×${num(d.s)}）V ×${num(d.v)} → 吞吐 ×${num(d.throughput_factor)}，${d.bound}`).join('；') : ''))));
@@ -1451,6 +1451,8 @@ function renderShore(x) {
 }
 
 // 0.313: thermal / power buildability in the chip panel (package W, per-die heat flux vs the cooling preset)
+const COOL_ZH = { air_oam: '风冷 OAM', air_hgx: '风冷 HGX', liquid: '液冷' };   // 0.316
+
 function renderThermal(x) {
   const el = $('chip-thermal');
   if (!el) return;
@@ -2482,6 +2484,7 @@ async function runInsightDse() {
       if ($('ins-dse-unbuild') && $('ins-dse-unbuild').checked) ex.include_unbuildable = true;   // 0.312
       if ($('ins-dse-strict') && $('ins-dse-strict').checked) ex.shore_strict = true;            // 0.313
       if ($('ins-dse-cooling') && $('ins-dse-cooling').value) ex.cooling = $('ins-dse-cooling').value;   // 0.313
+      if ($('ins-dse-cardscope') && $('ins-dse-cardscope').checked) ex.power_scope = 'card';            // 0.316
       const kclu = list('ins-dse-kclu');                 // 0.310: NoC-cluster axis, cost per good package
       const badk = kclu.length > 5 || kclu.some((x) => !Number.isInteger(x) || x < 1 || x > 64);
       $('ins-dse-kclu').classList.toggle('bad', badk);
@@ -2506,7 +2509,8 @@ async function runInsightDse() {
     const bp = r.best && r.best.perf_W, bt = r.best && r.best.thr;
     const desc = (b) => `${b.engines}×${b.array} · SRAM ${num(b.sram_mib)} MiB · ${b.topology} · ${b.mem_id} · SLC ${num(b.slc_mib)} MiB${b.f_op != null && b.f_op !== 1 ? ` · f×${b.f_op}` : ''}${(r.noc_links || []).length ? ` · NoC ${num(b.noc_link_Bpc)} B/周期` : ''}${b.dies > 1 ? ` · ${b.dies} 晶粒 ${b.d2d_std}` : ''}（${num(b.thr)} /s · ${sci(b.J_per_unit)} J）`;
     $('ins-dse-summary').textContent = `${r.chip} · ${r.model} · ${r.phase === 'mix' ? `混合（prompt ${r.mix.prompt} + 输出 ${r.mix.out_tokens}）` : r.phase} · 外存 ${(r.mems || []).length} 档 · SLC ${(r.slc_mibs || []).length} 档 · 频率 ${(r.f_scales || [1]).length} 档 · 可行 ${r.n_feasible}/${rows.length} 点 · 前沿 ${(r.front || []).length} 点`
-      + (r.power_cap_W ? ` · 功耗预算 ${num(r.power_cap_W)} W（${r.power_mode === 'dvfs' ? 'DVFS 封顶' : '剔除'}）` : '')
+      + (r.power_cap_W ? ` · 功耗预算 ${num(r.power_cap_W)} W（${r.power_mode === 'dvfs' ? 'DVFS 封顶' : '剔除'}；${r.power_scope === 'card' ? '按卡功耗，0.315 口径' : '按封装功耗：能耗 + 静态底功耗 + 稳压器损耗，与热判定同口径'}）` : '')
+      + (r.cooling ? ` · 冷却 ${COOL_ZH[r.cooling] || r.cooling}：热超限 ${r.n_thermal_over} 点${r.include_unbuildable ? '（已纳入前沿）' : `，已移出前沿（其中 ${r.n_front_thermal_out || 0} 点本在前沿，表中标 ✗热）`}` : ' · 未选冷却方案：热 / 功耗只报告，不影响前沿')   // 0.316
       + (r.die_mm2 ? ` · 面积预算 ${num(r.die_mm2)} mm²` : '') + ((r.noc_links || []).length ? ` · NoC 链路轴 ${r.noc_links.map(num).join(' / ')} B/周期` : r.noc_link_Bpc ? ` · NoC 链路 ${num(r.noc_link_Bpc)} B/周期${r.noc_routing === 'xy' ? '（逐链路 XY）' : ''}` : '')
       + (bp ? ` · perf/W 最优 ${desc(bp)}` : '') + (bt ? ` · 吞吐最优 ${desc(bt)}` : '')
       + (r.chiplet ? ' · 单片 vs 拆分：' + (r.chiplet.compare || []).map((e) => {
@@ -2520,9 +2524,12 @@ async function runInsightDse() {
     put($('ins-dse-chart'), paretoChart(rows));
     const pct = (x) => (x * 100).toFixed(1) + '%';
     put($('ins-dse-tbl'), h('thead', {}, h('tr', {},
-      ['前沿', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', 'NoC B/周期', 'NoC mm² / W', '晶粒 × D2D', 'D2D GB/s', 'Σ mm² / 良率', '$/好封装', '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '工作点 f ×', '运行 f ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
+      ['前沿', '热 / 封装 W', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', 'NoC B/周期', 'NoC mm² / W', '晶粒 × D2D', 'D2D GB/s', 'Σ mm² / 良率', '$/好封装', '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '工作点 f ×', '运行 f ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
       h('tbody', {}, rows.map((x) => h('tr', { class: x.front ? 'best' : '' },
-        h('td', {}, x.front ? '★' : x.front3 ? '☆' : x.front_usd ? '$' : ''), h('td', {}, String(x.mac_x)),
+        h('td', {}, x.front ? '★' : x.front_thermal_out ? '✗热' : x.front3 ? '☆' : x.front_usd ? '$' : ''),
+        h('td', { title: x.thermal && x.thermal.flux_ratio != null ? `热流 ${x.thermal.flux_W_mm2.toFixed(2)} W/mm²（${x.thermal.flux_ratio.toFixed(2)}× 上限）` : '' },   // 0.316
+          x.thermal && x.thermal.pkg_W != null ? `${x.thermal.feasible === false ? '✗ ' : x.thermal.feasible ? '✓ ' : ''}${num(x.thermal.pkg_W)}` : '—'),
+        h('td', {}, String(x.mac_x)),
         h('td', {}, `${x.engines}×${x.array}` + (x.base ? ' ←当前' : '')), h('td', {}, num(x.sram_mib)), h('td', {}, x.topology),
         h('td', {}, x.noc_link_Bpc ? num(x.noc_link_Bpc) : '不限'),
         h('td', {}, x.noc_W != null ? `${x.noc_mm2 != null ? num(x.noc_mm2) : '—'} / ${num(x.noc_W)}` : '—'),

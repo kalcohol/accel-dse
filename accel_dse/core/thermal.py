@@ -130,6 +130,41 @@ def package_power(card_W: float | None, die_mm2: float | None, dies: int = 1, st
     return out
 
 
+POWER_SCOPES = ("package", "card")     # 0.316: what a power cap compares ("card" = 0.315 and earlier)
+
+
+def cap_power_fn(die_mm2: float | None, dies: int = 1, scope: str = "package"):
+    """0.316: the power a cap is compared against, as a function of the modelled card W (+ its static and idle).
+    "package" = ``package_power`` — the same function the thermal check judges (static floor + VR / PDN loss), so the
+    two cannot diverge; "card" = the energy-table card W as is (0.315 and earlier)."""
+    if scope not in POWER_SCOPES:
+        raise ValueError(f"power_scope must be one of {POWER_SCOPES}")
+    if scope == "card":
+        return None
+
+    def f(card_W: float, static_W: float = 0.0, idle_W: float | None = None) -> float:
+        return package_power(card_W, die_mm2, dies, static_W, idle_W)["pkg_W"]
+    f.scope, f.die_mm2, f.dies = scope, die_mm2, dies
+    return f
+
+
+def card_W_for_cap(pk, cap_W: float, static_W: float = 0.0, idle_W: float | None = None) -> float | None:
+    """0.316: the card W whose package power (``pk``) equals cap_W — bisection on the shared function (monotone in
+    card W; pk(c) ≥ c, so the root is in [0, cap_W]).  None when even 0 W of card power is over (floor + loss > cap)."""
+    if pk is None:
+        return cap_W
+    if pk(0.0, static_W, idle_W) > cap_W:
+        return None
+    lo, hi = 0.0, cap_W
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if pk(mid, static_W, idle_W) <= cap_W:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def thermal_report(pkg_W: float | None, die_mm2: float | None, dies: int = 1, dram_dev_W: float = 0.0,
                    cooling: str | None = None, static_W: float = 0.0, idle_W: float | None = None,
                    basis: str = "model") -> dict:

@@ -9118,3 +9118,37 @@ The rule "the larger of the shipped part and HIR" compared HIR's chip-level heat
   - Header total 39.785 B = config build (param_err 0). Active 2.82 B; the card's ≈ 2.5 B excludes the input embedding (0.31 B).
   - Quantised siblings (int4, nvfp4-gguf) are not added.
 - Raon-1-mini-preview: config.json HTTP 401 (gated "auto").
+
+## §261 Power cap in package scope; thermal front exclusion; freeze-aware guards (0.316)
+
+### §261.1 One function for both checks
+- Thermal (0.315, §260) judges the module-input package power `P_pkg = package_power(P_card, A_die, n, P_static, P_idle)`: card W + whole-card static floor + VR / PDN loss.
+- 0.315's DVFS power cap still compared `P_card` with the budget. A capped point therefore sat at `P_pkg ≈ 1.28 × budget` (896–900 W on the 700 W chiplet examples), and the same point could pass the power budget while failing thermal at the same watts. That is a scope mismatch, not a model error in either part.
+- 0.316: `thermal.cap_power_fn(A_die, n, scope)` returns `pk(P_card, P_static, P_idle) = package_power(...)["pkg_W"]`. It is passed into `powercap.dvfs_cap`, `energy._power_cap` and the DSE row.
+  - Every cap comparison is `pk(·) ≤ cap`.
+  - The thermal check calls the same `package_power`, so on a capped row `thermal.pkg_W == cap_pkg_W` (verified, max relative difference 0 over 42 rows).
+- Static at the capped point: DVFS changes V, so the static W passed to both checks is the capped point's `static_W(f)` (package scope only; card scope keeps 0.315's row static, so it is reproduced bit-for-bit).
+- The duty-cycle branch (below f_min) needs the card W whose package power equals the cap: `card_W_for_cap` bisects `pk` on [0, cap] (60 steps). `pk` is monotone and `pk(c) ≥ c` 「推导」. It returns None, so the point is infeasible, when `pk(0) > cap` (the floor + loss alone exceed the budget).
+- Scope is 「来源」 OCP OAM r2.0 §8.4: TDP is defined at the module input (§260.1). `power_scope="card"` keeps 0.315.
+- The eval API uses the shoreline die area. The what-if lever stays a card-W probe by design.
+
+### §261.2 Effect (old → new)
+See CHANGELOG 0.316.0.
+- 126 example rows: capped 14 → 21; air_oam feasible 83 → 94, because capping now also brings package W under the air limit; front points 26 → 24. No mono / split verdict changes.
+- Capped throughput factor × 0.758–0.936 on the prefill cases. Decode cases are unchanged.
+
+### §261.3 Thermal in the DSE front
+- The rule is unchanged since 0.313: with a cooling preset, a row over its limit is unbuildable and leaves every front, as shoreline-unbuildable rows do (`include_unbuildable` keeps both). Without a preset, thermal is reported only.
+- 0.316 records the effect. Front without the cooling filter (rows feasible except for the thermal reason) minus the buildable front → `front_thermal_out` rows, `n_front_thermal_out`. These are shown in the UI summary and table.
+
+### §261.4 Freeze-aware timing guards
+- A host / VM freeze (§260.7) stops the process while wall time runs, so wall guards (fuzz 120 s watchdog, 20 s / 2 s bounds) report hangs that are not hangs.
+- `scripts/freeze_clock.py`: a 50 ms sampler. A gap ≥ 0.5 s with process CPU < 20 % of the gap 「假设」 counts as frozen; `now()` = monotonic − frozen.
+- Detection is not weakened:
+  - a blocking hang has no gaps (the sampler keeps waking);
+  - a CPU-bound hang, including a GIL-holding C call, shows CPU ≈ gap;
+  - only non-execution is excused.
+- The test_core_210 CPU bound is unchanged.
+
+### §261.5 Freshness (2026-10-22 JST)
+- No new tracked-org release since 0.315. Raon-1-mini-preview is still gated (401).

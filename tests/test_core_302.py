@@ -112,7 +112,10 @@ def test_dvfs_axis_v2_mechanism():
 
 def test_dvfs_axis_trades_macs_vs_clock_under_cap():
     # compute-bound prefill under a 300 W cap: 2× MACs at 0.6 f_max (lower V) beats 1× MACs at f_max (cap-throttled)
-    o = _dse(mac_scales=(1.0, 2.0), f_scales=(1.0, 0.6), curve="rx5700xt_n7", bud={"power_W_card": 300, "die_mm2": 3000})
+    # 0.316: card-W cap (power_scope="card", the 0.315 mechanism this test pins).  Package scope (default): 2× @ 0.6
+    # (286 W card → > 300 W package) is capped too and 2× still beats 1× (56.8 k vs 50.9 k) — CHANGELOG 0.316.0
+    o = _dse(mac_scales=(1.0, 2.0), f_scales=(1.0, 0.6), curve="rx5700xt_n7", bud={"power_W_card": 300, "die_mm2": 3000},
+             power_scope="card")
     rows = {(x["mac_x"], x["f_op"]): x for x in o["rows"]}
     for k, x in rows.items():
         assert x["feasible"] and x["W_card"] <= 300 * (1 + 1e-6), k

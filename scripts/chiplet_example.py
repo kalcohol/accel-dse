@@ -18,6 +18,7 @@ CoWoS-L 4719 mm², D0 0.1 /cm²) over MAC ×{1, 2}, 1 / 2 / 4 dies × {UCIe-A 48
     python3 scripts/chiplet_example.py --sweep --lane 100   # 0.313: the 0.312 scale-up lane rate (default 200G)
     python3 scripts/chiplet_example.py --sweep --strict     # 0.313: memory on > 2 edges counts as unbuildable
     python3 scripts/chiplet_example.py --case 0 --cost n5_cowos_l --cooling air_oam   # 0.313: thermal judged
+    python3 scripts/chiplet_example.py --case 1 --power-scope card   # 0.316: 0.315 card-W power cap
 """
 from __future__ import annotations
 
@@ -61,7 +62,7 @@ def budget() -> Budget:
 
 def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d0=0.1, io_edges=-1,
         mem="hbm3e_8s_8h24g_9200", tp=1, link=400.0, macs=(1.0, 2.0), include_unbuildable=False, lane=None,
-        shore_strict=False, cooling=None) -> dict:
+        shore_strict=False, cooling=None, power_scope="package") -> dict:
     std = d2d_catalog.D2D_STANDARDS["ucie-a-48"]
     old = std["pJ_bit"]
     if pj:
@@ -77,7 +78,7 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d
                                  dies=(1, 2, 4), d2d_stds=("ucie-a-48", "ucie-s-32", "bow-256"), die_split=split,
                                  d0_per_cm2=d0, pkg_mm2="cowos-l", mono_clusters=not flat,
                                  mem_edges_shoreline=not flat, include_unbuildable=include_unbuildable,
-                                 shore_strict=shore_strict, cooling=cooling,
+                                 shore_strict=shore_strict, cooling=cooling, power_scope=power_scope,
                                  **({"cost": cost} if cost else {}), **kw)
     finally:
         std["pJ_bit"] = old
@@ -158,6 +159,8 @@ def main(argv=None) -> int:
                     help="0.313: scale-up lane Gb/s (default the chip's: 200; 100 = the 0.312 rule)")
     ap.add_argument("--strict", action="store_true", help="0.313: memory on > 2 edges counts as unbuildable")
     ap.add_argument("--cooling", choices=("air_oam", "air_hgx", "liquid"), help="0.313: judge thermal buildability")
+    ap.add_argument("--power-scope", choices=("package", "card"), default="package",
+                    help="0.316: power cap compared to package W (default, same as thermal) or card W (0.315)")
     ap.add_argument("--sweep", action="store_true", help="0.312: buildable-only verdict table (memory × D0 × deployment)")
     a = ap.parse_args(argv)
     if a.sweep:
@@ -165,7 +168,7 @@ def main(argv=None) -> int:
         return 0
     for i in (a.case or range(len(CASES))):
         run(*CASES[i], flat=a.flat, cost=a.cost, d0=a.d0, io_edges=a.io_edges, mem=a.mem, tp=a.tp, link=a.link,
-            include_unbuildable=a.include_unbuildable, lane=a.lane, shore_strict=a.strict, cooling=a.cooling)
+            include_unbuildable=a.include_unbuildable, lane=a.lane, shore_strict=a.strict, cooling=a.cooling, power_scope=a.power_scope)
     return 0
 
 

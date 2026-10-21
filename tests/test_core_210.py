@@ -2,14 +2,19 @@
 pipe-mode per-op KV / state miss split."""
 import math
 import random
+import sys
 import time
 from dataclasses import replace
+from pathlib import Path
 
 from accel_dse import api
 from accel_dse.core import memplan
 from accel_dse.core.evaluate import _kv_state_miss, evaluate
 from accel_dse.core.hardware import CHIPS, DISPATCH_MODES, default_mem
 from accel_dse.core.scenario import Scenario
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from freeze_clock import clock  # noqa: E402  (0.316 freeze-aware wall guard)
 
 RWKV, LUX, NEXT = "rwkv7-g1k-7.2b", "startlux-decision-v1-35b-a3b", "qwen3-next-80b-a3b"
 WALL_KEYS = {"compute", "dram", "collective_bw", "collective_lat", "dispatch", "fixed_overhead"}
@@ -31,17 +36,18 @@ def _timed(fn, body, bound: float):
     """0.304: run one in-process request (the API's process pool is only enabled by the HTTP server) under a guard
     that full-suite load contention cannot trip.  The request's own CPU time (time.process_time, every thread of this
     process) must stay under ``bound`` — the same threshold as before, on the measure a compute regression moves;
-    its wall time (time.perf_counter: monotonic — 0.304 saw the wall clock step by minutes mid-suite) must stay under ``bound`` × the box's contention factor measured around it (calibration loop before
+    its wall time (monotonic — 0.304 saw the wall clock step by minutes mid-suite; 0.316 freeze-aware, scripts/freeze_clock.py) must stay under ``bound`` × the box's contention factor measured around it (calibration loop before
     and after; 2× slack for contention varying during the request), which still catches a blocking / sleeping hang."""
     k0 = _contention()
-    w, c = time.perf_counter(), time.process_time()
+    fc = clock()                                  # 0.316: wall minus time the process did not execute (host freeze)
+    w, c = fc.now(), time.process_time()
     try:
         r = fn(body)
     finally:
-        dw, dc = time.perf_counter() - w, time.process_time() - c
+        dw, dc = fc.now() - w, time.process_time() - c
     k = max(k0, _contention())
     assert dc < bound, ("cpu", body, dc)
-    assert dw < bound or dw < bound * 2.0 * k, ("wall", body, dw, k)
+    assert dw < bound or dw < bound * 2.0 * k, ("wall", body, dw, k, fc.stalls())
     return r
 
 

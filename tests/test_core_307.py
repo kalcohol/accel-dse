@@ -81,7 +81,7 @@ def _dse(cap, **kw):
 def test_dse_recaps_with_router_power():
     """old → new: at 250 W, 2048 × 16² @ 32 B/cycle needs 268 W incl. 38 W of routers — 0.306 dropped it
     ('功耗 268 > 250 W（含 NoC 静态）'); 0.307 runs it DVFS-capped (f × 0.93, 3.19 k tok/s, 78.4 mJ)."""
-    r = _dse(250)
+    r = _dse(250, power_scope="card")       # 0.316: card-W cap; package scope runs it at f × 0.52, 1.80 k tok/s
     x = next(x for x in r["rows"] if x["engines"] == 2048 and x["noc_link_Bpc"] == 32.0)
     assert x["feasible"] and x["capped"] and x["W_card"] <= 250 * (1 + 1e-9) and 0.9 < x["f_scale"] < 0.96
     assert 3.1e3 < x["thr"] < 3.3e3 and abs(x["noc_W"] - 38.1) < 0.2

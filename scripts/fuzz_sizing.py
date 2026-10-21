@@ -1,5 +1,7 @@
 """0.184: fuzz every sizing / headroom entry point (sizing_report per-resource + joint, upgrade_path, insight_report)
-over random small chips (1 core, 1 package, tiny SRAM / lanes / arrays) with a per-call wall-clock timeout.
+over random small chips (1 core, 1 package, tiny SRAM / lanes / arrays) with a per-call wall-clock timeout
+(0.316: freeze-aware — time in which this process did not execute at all, e.g. a host/VM freeze, is not charged;
+scripts/freeze_clock.py).
 A hang, an exception other than a clean ValueError, or a broken report invariant is a finding.
 Usage: python3 scripts/fuzz_sizing.py [n_cases] [seed] [timeout_s]"""
 from __future__ import annotations
@@ -17,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from accel_dse.core.budget import Budget, apply_preset          # noqa: E402
 from accel_dse.core.insight import SIZING, insight_report, sizing_report, upgrade_path   # noqa: E402
 from accel_dse.core.scenario import Scenario                    # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from freeze_clock import clock                                  # noqa: E402
 
 MODEL_SETS = [["qwen3-8b"], ["gpt-oss-120b"], ["qwen3-8b", "gpt-oss-120b"], ["esm2-650m"], ["wan2.1-1.3b"]]
 MEMS = ["lpddr5x_1x64_8533_16g", "lpddr5x_2x64_8533_16g", "lpddr5x_4x64_8533_16g", "hbm3e_1s_8h24g_9600",
@@ -27,7 +31,16 @@ class Hang(Exception):
     pass
 
 
+_WATCH = {"t0": 0.0, "timeout": 0}
+
+
 def _alarm(sig, frm):
+    """0.316: on SIGALRM, charge only active (non-frozen) time; if a host freeze ate part of the budget, re-arm for the
+    remainder instead of reporting a HANG.  A blocking or CPU-bound hang still accrues active time 1:1 and trips."""
+    left = _WATCH["timeout"] - (clock().now() - _WATCH["t0"])
+    if left > 0.5:
+        signal.alarm(max(1, int(left + 0.999)))
+        return
     raise Hang()
 
 
@@ -64,6 +77,7 @@ def check_sizing(rep):
 
 def run(n=30, seed=184, timeout=120):
     rng = random.Random(seed)
+    clock()
     signal.signal(signal.SIGALRM, _alarm)
     findings, rejected = [], []
     for i in range(n):
@@ -75,6 +89,7 @@ def run(n=30, seed=184, timeout=120):
                  ("insight", lambda: insight_report(s, models, b))]
         for name, fn in calls:
             t0 = time.time()
+            _WATCH["t0"], _WATCH["timeout"] = clock().now(), timeout
             signal.alarm(timeout)
             try:
                 fn()
@@ -87,6 +102,9 @@ def run(n=30, seed=184, timeout=120):
             finally:
                 signal.alarm(0)
             print(f"case {i} {name} {time.time() - t0:.1f}s", flush=True)
+    fz = clock().frozen()
+    if fz:
+        print(f"freeze-aware watchdog: {fz:.1f} s frozen (not charged), stalls {clock().stalls()}", flush=True)
     print(f"{len(rejected)} clean rejection(s):", *sorted({r[2] for r in rejected}), sep="\n  ")
     return findings
 

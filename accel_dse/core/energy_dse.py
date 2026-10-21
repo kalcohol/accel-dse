@@ -323,20 +323,20 @@ def _phase_scn(scn, phase, prompt):
     return scn.replace("serving", sv)
 
 
-def _run(s, t, cap, power_mode, curve, f_op: float = 1.0, n_dies: int = 1) -> dict:
+def _run(s, t, cap, power_mode, curve, f_op: float = 1.0, n_dies: int = 1, pk=None) -> dict:
     """0.308: a package of ``n_dies`` dies (one card each in the cost model): every die runs under cap / n and the
     per-card figures are scaled to the package (throughput, W, static W × n; J/unit and latency unchanged)."""
-    o = _run1(s, t, None if cap is None else cap / n_dies, power_mode, curve, f_op)
+    o = _run1(s, t, None if cap is None else cap / n_dies, power_mode, curve, f_op, pk)
     if n_dies > 1:
         for k in ("thr", "thr_nominal", "W_card", "W_nominal", "hbm_static_W", "noc_W", "dram_dev_W", "static_W",
-                  "idle_W"):
+                  "idle_W", "cap_pkg_W"):
             if o.get(k) is not None:
                 o[k] *= n_dies
         o["why"] = [f"每晶粒（预算 ÷ {n_dies}）{w}" for w in o["why"]]
     return o
 
 
-def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
+def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0, pk=None) -> dict:
     """One phase of one design point: at the operating point f_op (0.302; clock f_op·f_max, voltage V(f_op) on the
     curve, core-rail energies × V², leakage × V — powercap._point), then capped / rejected by power.  A point over the
     cap is capped from f_max like any other: power rises with f, so the cap clock is below f_op and equals the f_op = 1
@@ -357,11 +357,14 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
          "dram_dev_W": dram_dev_W(er),                         # 0.313: DRAM-device W (heat in the stacks, thermal)
          "static_W": static_W(er), "idle_W": er.get("idle_W_used")}   # 0.315: static in W_card (thermal.package_power)
     r = r0
-    if cap is not None and o["W_card"] > cap * (1 + 1e-9) and r.fits:
+    # 0.316: the cap compares the package power (thermal.cap_power_fn → package_power, the thermal check's function)
+    # unless power_scope "card" (pk None, 0.315)
+    o["cap_pkg_W"] = o["W_card"] if pk is None else pk(o["W_card"], o["static_W"], o["idle_W"])
+    if cap is not None and o["cap_pkg_W"] > cap * (1 + 1e-9) and r.fits:
         if power_mode == "reject":
-            o["why"].append(f"功耗 {o['W_card']:.0f} > {cap:g} W")
+            o["why"].append(f"功耗 {o['cap_pkg_W']:.0f} > {cap:g} W" + ("（封装口径）" if pk is not None else ""))
         else:
-            d = dvfs_cap(r, t, cap, curve, iters=12)
+            d = dvfs_cap(r, t, cap, curve, iters=12, pk=pk)
             if d.get("error") or not d.get("feasible", True):
                 o["why"].append(d.get("error") or "功耗封顶不可行")
             else:
@@ -369,7 +372,10 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
                 if o["W_card"] > 0:     # 0.313: the DRAM-device share of the capped power (same traffic per unit)
                     o["dram_dev_W"] = o["dram_dev_W"] * d["W_card"] / o["W_card"]
                 o.update(thr=r.per_card * k, J_per_unit=d["J_per_unit"], W_card=d["W_card"], f_scale=d["s"],
-                         capped=True, lat_ms=o["lat_ms"] / k if k > 0 else o["lat_ms"])
+                         capped=True, lat_ms=o["lat_ms"] / k if k > 0 else o["lat_ms"], cap_pkg_W=d.get("pkg_W", d["W_card"]),
+                         static_W=d.get("static_W", o["static_W"]) if pk is not None else o["static_W"])
+                # 0.316: package scope carries the static at the capped clock (the cap and the thermal check then see
+                # the same package power); card scope keeps the nominal static (0.315)
     return o
 
 
@@ -439,7 +445,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          pkg_mm2=None, d0_per_cm2: float | None = None, mono_clusters: bool = True,
                          mem_edges_shoreline: bool = True, clusters=None, cost=None,
                          include_unbuildable: bool = False, shore_strict: bool = False,
-                         cooling: str | None = None) -> dict:
+                         cooling: str | None = None, power_scope: str = "package") -> dict:
     from .. import mem_catalog as mc
     from .budget import full_area, shoreline_report
     from .thermal import COOLING, thermal_report
@@ -447,6 +453,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     from .thermal import STATIC_FLOOR_W_MM2, VR_EFF
     if cooling is not None and cooling not in COOLING:
         raise ValueError(f"cooling must be one of {sorted(COOLING)}")
+    from .thermal import POWER_SCOPES, cap_power_fn
+    if power_scope not in POWER_SCOPES:
+        raise ValueError(f"power_scope must be one of {POWER_SCOPES}")
     static_in = idle_W_of(table) is not None      # 0.314: the table's idle figure (0.315: else the thermal static floor)
     from .hardware import default_mem
     from .insight import TIE
@@ -585,6 +594,12 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         notes.append("die_mm2 已填但缺面积密度：面积约束未生效")
     if cap is None:
         notes.append("未填功耗预算（budget.power_W_card 或 energy.tdp_W）：不做功耗约束")
+    elif power_scope == "package":
+        notes.append(f"功耗预算 {cap:g} W 按封装功耗比较（0.316）：与热判定同一函数 thermal.package_power（能耗表功耗 + "
+                     + ("能耗表 idle 静态（板级，不再计稳压器损耗）" if static_in else "整卡静态底功耗 + 稳压器 / PDN 损耗")
+                     + "），DVFS 封顶点的封装功耗 ≤ 预算；power_scope=card 复现 0.315（只比能耗表卡功耗）")
+    else:
+        notes.append(f"功耗预算 {cap:g} W 按能耗表卡功耗比较（power_scope=card，0.315 口径；不含静态底功耗与稳压器损耗）")
     if ch.instance_sched == "cta" or getattr(ch, "gpu", False):
         notes.append("GPU 参考芯片（cta 调度）：NoC 流量未建模，重切引擎的结论只对 NPU 有意义")
     infos = {m: _mem_info(m) for m in mem_ids}
@@ -683,7 +698,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                  "静态按空闲温度实测，85 °C 泄漏上界下超限的「可建」点标记余量不足（hot_ok）；"
                  + (f"按 {cooling} 判定（{COOLING[cooling]['pkg_W']:g} W / {COOLING[cooling]['flux_W_mm2']:g} W/mm²"
                     f"（晶粒 {COOLING[cooling]['die_flux_W_mm2']:g}）；"
-                    + COOLING[cooling]["src"] + "）" if cooling else "未选冷却方案（cooling）：只报告不判定")
+                    + COOLING[cooling]["src"] + "）；热超限点与岸线不可建点同样移出 Pareto 前沿（0.316，"
+                    "front_thermal_out 标出本在前沿的点；include_unbuildable 保留）"
+                    if cooling else "未选冷却方案（cooling）：只报告不判定，不影响前沿")
                  + "；供电（凸点电流）无公开上限，只报告")
     if cost_p is not None:
         notes.append("成本 / 好封装（0.310）：Σ 晶粒 × 晶圆价 / DPW / Y + 封装 $/mm² × (Σ 晶粒 + HBM 占地) + 测试 / 组装（多晶粒 + KGD）"
@@ -744,8 +761,13 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                             s_full = die_scn(s0, c)
                 row["mem_edges"] = s_full.chip.mem_edges
                 td = replace(t, pJ_bit_d2d=D2D_STANDARDS[sd]["pJ_bit"]) if (sd and d2d_stds) else t
+                # 0.316: the cap's package power per die / cluster card over the die the thermal check uses (the
+                # search densities, else the shoreline proxy) — one area for both
+                sr0 = None if dens_ok else shoreline_report(s_full, None)
+                die_a = fa["mm2"] if dens_ok else (sr0 or {}).get("die_mm2")
+                pk = cap_power_fn(die_a * nd / npart if die_a else None, 1, power_scope) if cap is not None else None
                 try:
-                    res = {ph: _run(die_scn(scn_ph[ph], c), td, cap, power_mode, curve, fo, npart) for ph in phases}
+                    res = {ph: _run(die_scn(scn_ph[ph], c), td, cap, power_mode, curve, fo, npart, pk) for ph in phases}
                 except ValueError as ex:
                     rows.append({**row, "feasible": False, "why": str(ex)})
                     continue
@@ -806,7 +828,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     why.append(f"面积 {row['si_mm2']:.0f} > {area_lim:g} mm²" + (f"（{nd} 晶粒合计）" if nd > 1 else ""))
                 if reticle_mm2 and dens_ok and row.get("mm2") is not None and row["mm2"] > reticle_mm2 * (1 + 1e-9):
                     why.append(f"单晶粒 {row['mm2']:.0f} > 光罩 {reticle_mm2:g} mm²")
-                sr = shoreline_report(s_full, row.get("mm2") if dens_ok else None)
+                sr = sr0 if sr0 is not None else shoreline_report(s_full, row.get("mm2") if dens_ok else None)
                 if pkg_mm2 and dens_ok and row.get("si_mm2") is not None:
                     row["pkg_mm2"] = row["si_mm2"] + _hbm_footprint(mid)
                     if nd == 1 and (sr.get("footprint") or {}).get("bbox_mm2"):
@@ -847,6 +869,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                                                          "static_basis", "static_add_W", "vr_loss_W", "pkg_W_hot",
                                                          "hot_ok")}
                 row["thermal"]["A_per_mm2"] = (th.get("pd") or {}).get("A_per_mm2")
+                tw_added = None
                 if th.get("feasible") is False:
                     row["buildable"] = False
                     tw = "；".join(th["reasons"])
@@ -854,6 +877,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                         row["why_thermal"] = tw
                     else:
                         why.append(tw)
+                        tw_added = tw       # 0.316: off the front only because of the cooling limit?
                 if slo_tpot_ms is not None and row.get("tpot_ms") is not None and row["tpot_ms"] > slo_tpot_ms * (1 + 1e-9):
                     why.append(f"TPOT {row['tpot_ms']:.1f} > {slo_tpot_ms:g} ms")
                 if slo_ttft_ms is not None and row.get("ttft_ms") is not None and row["ttft_ms"] > slo_ttft_ms * (1 + 1e-9):
@@ -864,6 +888,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     elif row["mem_usd"] > max_mem_usd * (1 + 1e-9):
                         why.append(f"内存 ${row['mem_usd']:.0f} > ${max_mem_usd:g}")
                 row["feasible"] = not why
+                row["_ok_wo_thermal"] = (not why) or (tw_added is not None and all(w == tw_added for w in why))
                 if why:
                     row["why"] = "；".join(dict.fromkeys(why))
                 row["perf_W"] = 1.0 / row["J_per_unit"] if row["J_per_unit"] > 0 else None
@@ -873,6 +898,17 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     f2 = [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1)), tie)]
     for i in f2:
         rows[i]["front"] = True
+    # 0.316: points the thermal check took off the front — the front without the cooling filter, less the buildable
+    # front (only with a cooling preset; include_unbuildable keeps them on the front anyway)
+    n_th_out = 0
+    if cooling is not None and not include_unbuildable:
+        okw = [i for i, x in enumerate(rows) if x.pop("_ok_wo_thermal", False)]
+        for i in [okw[j] for j in pareto([rows[i] for i in okw], (("thr", 1), ("J_per_unit", -1)), tie)]:
+            if not rows[i].get("feasible"):
+                rows[i]["front_thermal_out"] = True
+                n_th_out += 1
+    for x in rows:
+        x.pop("_ok_wo_thermal", None)
     if dens_ok:
         for i in [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1), ("si_mm2", -1)), tie)]:
             rows[i]["front3"] = True        # 0.308: Σ die area per package (= mm2 for a monolithic die)
@@ -916,6 +952,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
             "n_unbuildable": sum(1 for x in rows if x.get("buildable") is False),
             "shore_strict": bool(shore_strict), "cooling": cooling,
             "n_thermal_over": sum(1 for x in rows if (x.get("thermal") or {}).get("feasible") is False),
+            "n_front_thermal_out": n_th_out, "power_scope": power_scope,
             "basis": "设计网格（MAC 总数 × 引擎边长 × SRAM × NoC 拓扑 × 外存 × SLC × 频率工作点）逐点评估：时间 / 放得下来自代价模型，"
                      "J/单位 来自能耗表（MAC / SRAM / 导线 / NoC / DRAM+PHY / 静态）；perf/W = 1 / (J/单位)；超功耗点按 DVFS "
                      "封顶运行（或剔除），超面积 / 岸线不可建（外存 / D2D / I/O，0.312；include_unbuildable 可纳入）/ SLO / 内存 $ 的点剔除；前沿 = 吞吐↑ 与 J/单位↓ 的非支配集，"

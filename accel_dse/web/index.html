@@ -643,6 +643,7 @@
       <label title="0.312：岸线不可建的设计点（外存 / D2D / 主机 + scale-up I/O 放不下晶粒边，budget.shoreline_report）默认标记并剔除出前沿；勾选 = 仍纳入前沿（只标记）"><input type="checkbox" id="ins-dse-unbuild">含不可建点</label>
       <label title="0.313：岸线严格 = 外存占第 3 / 4 边（tight）也算不可建——出货晶粒（GH100、B200、MI300X IOD）外存只在两条长边「二手」；默认关（四边几何上限「假设」）"><input type="checkbox" id="ins-dse-strict">岸线严格</label>
       <label title="0.313：按冷却方案判定热 / 功耗可建性（封装功耗、热流密度 = 封装功耗 ÷ 晶粒总面积，0.314 与出货件同口径；thermal.COOLING）；空 = 只报告">冷却<select id="ins-dse-cooling"><option value="">不判定</option><option value="air_oam">风冷 OAM</option><option value="air_hgx">风冷 HGX</option><option value="liquid">液冷</option></select></label>
+      <label title="0.316：功耗预算（budget.power_W_card / tdp_W）默认与热判定用同一封装功耗比较（能耗 + 整卡静态底功耗 + 稳压器损耗，thermal.package_power）；勾选 = 0.315 口径（只比能耗表卡功耗）"><input type="checkbox" id="ins-dse-cardscope"> 功耗预算按卡（0.315 口径）</label>
     </div>
     <div class="row" title="0.310：单片 NoC 簇轴与芯粒经济性">
       <label title="单片划成 K 个片上 NoC 簇（逗号分隔，1–64，最多 5 档；空 = 不作为轴；有晶粒数轴时替代其 K 集合）。层次化 NoC：簇间片上全局链路，按 NoC 跳 / 导线计能耗、无 D2D PHY（0.309 机理）">NoC 簇<input type="text" id="ins-dse-kclu" placeholder="如 1,2,4" style="width:6em"></label>
