@@ -14,8 +14,6 @@ from accel_dse.core.disagg import disagg_report
 from accel_dse.core.prefixcache import (tree_cum_tokens, tree_depth_law, tree_depth_tail, tree_groups,
                                         tree_resident)
 from accel_dse.core.validation import v4_scenario
-from tests.runcache import cached  # noqa: E402  0.291: per-run report cache (tests/runcache.py)
-disagg_report = cached(disagg_report)
 
 TREE = ((512, 4, 1.0), (1536, 200, 1.0), (1024, 100, 0.0))
 

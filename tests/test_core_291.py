@@ -34,7 +34,7 @@ def test_entries_exact_listed_and_grouped():
     assert {idx[m]["family"] for m in DECIDERS} == {"pplx-decider v1.2", "pplx-decider v1 / v1.1"}
     assert all(idx[m]["provider"] == "inception" and idx[m]["family"] == "Jais 3" for m in JAIS)
     assert idx[MELLUM]["provider"] == "jetbrains" and not idx[MELLUM]["decision"]
-    assert "jais-3-mova-36b-a4b-fp8" not in idx and "jais-3-mova-36b-a4b" not in idx      # MoVA not modelled
+    # 0.292: Jais-3-MoVA is now modelled and listed (routed value experts) — checked in test_core_292
 
 
 def test_decider_readout_replaces_lm_head():
@@ -130,102 +130,3 @@ def test_mellum_qk_norm_window_and_moe():
     assert win.count(1024) == 21 and win.count(None) == 7 and win[3] is None
     f = m.layers[0].ffn
     assert (f.n_experts, f.top_k, f.d_expert) == (64, 8, 896) and m.kv_fmt == "bf16" and m.act_fmt == "bf16"
-
-
-# ---- 0.291 scope 2: tests/runcache.py (per-run report cache shared across test processes) ----
-
-def _rc_toy(x, scale=1.0):
-    return {"v": [x * scale, x], "n": _RC_CALLS.append(1) or len(_RC_CALLS)}
-
-
-_RC_CALLS: list = []
-
-
-def test_runcache_hit_is_an_equal_independent_copy():
-    import tests.runcache as rc
-    f = rc.cached(_rc_toy)
-    a = f(3.5, scale=2.0)
-    b = f(3.5, scale=2.0)
-    assert a == b and a is not b and len(_RC_CALLS) == 1          # second call served from the cache
-    b["v"].append(9)
-    assert f(3.5, scale=2.0) == a                                 # mutating a hit does not leak into the cache
-    assert f(3.5, scale=3.0) != a and len(_RC_CALLS) == 2         # any argument change is a new key
-    assert f.uncached is _rc_toy
-
-
-def test_runcache_key_tracks_model_state():
-    import contextvars
-    import tests.runcache as rc
-    from accel_dse.core import disagg as dg, evaluate as E, mapping as mp
-    with E.model_flags():                                         # loads the modules model_flags touches
-        pass
-    s0 = rc.state()
-    with E.model_flags(**E.LEGACY_0192, FUSE_QKV=False):         # pin_legacy flags
-        assert rc.state() != s0
-    assert rc.state() == s0
-    tok = dg.CTX_SINK.set({})                                     # pdsim.capture_ctx sink
-    try:
-        assert rc.state() != s0
-    finally:
-        dg.CTX_SINK.reset(tok)
-    old = mp._gemm_cost if hasattr(mp, "_gemm_cost") else None
-    orig = E.evaluate
-    E.evaluate = lambda *a, **k: orig(*a, **k)                    # a monkeypatched module function
-    try:
-        assert rc.state() != s0
-    finally:
-        E.evaluate = orig
-    assert rc.state() == s0 and old is getattr(mp, "_gemm_cost", None)
-    assert isinstance(dg.CTX_SINK, contextvars.ContextVar)
-    assert len(rc.code_version()) == 64
-
-
-def test_runcache_code_version_covers_sources_and_data():
-    import pathlib
-    import tempfile
-    import tests.runcache as rc
-    with tempfile.TemporaryDirectory() as d:
-        r = pathlib.Path(d)
-        (r / "core").mkdir(); (r / "data").mkdir()
-        (r / "core" / "m.py").write_text("X = 1\n"); (r / "data" / "c.json").write_text("{}")
-        h0 = rc._tree_hash(r)
-        (r / "data" / "c.json").write_text("{ }")                   # a data byte changes the version
-        h1 = rc._tree_hash(r)
-        (r / "core" / "m.py").write_text("X = 2\n")                # so does a source byte
-        h2 = rc._tree_hash(r)
-        assert len({h0, h1, h2}) == 3
-    assert rc.code_version() == rc._tree_hash(rc._ROOT)
-
-
-def test_runcache_disk_shared_across_processes_and_unpicklable_passthrough():
-    import os
-    import subprocess
-    import sys
-    import tempfile
-    import tests.runcache as rc
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with tempfile.TemporaryDirectory() as d:
-        env = {**os.environ, rc.ENV: d}
-        code = ("import statistics, tests.runcache as rc; print(rc.cached(statistics.fmean)([1.0, 2.0, 4.5]));"
-                "print(rc.STATS['miss'])")
-        out = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True,
-                             check=True).stdout.split()
-        assert out == [repr(7.5 / 3), "1"]
-        ls = os.listdir(d)
-        entries = [f for f in ls if "." not in f]
-        assert len(entries) == 1 and f"{entries[0]}.s" in ls                # result + its compute seconds
-        assert not [f for f in ls if f.endswith((".lock", ".tmp"))]       # lock released, write was atomic
-        assert [f for f in ls if f.startswith("stats.")]                 # the child left its counters
-        import statistics
-        was, os.environ[rc.ENV] = os.environ.get(rc.ENV), d
-        try:
-            h = rc.STATS["hit_disk"]
-            assert rc.cached(statistics.fmean)([1.0, 2.0, 4.5]) == 7.5 / 3 and rc.STATS["hit_disk"] == h + 1
-        finally:
-            if was is None:
-                os.environ.pop(rc.ENV)
-            else:
-                os.environ[rc.ENV] = was
-    u = rc.STATS["uncached"]
-    g = rc.cached(lambda x: (lambda: x))                          # unpicklable result: returned, not cached
-    assert g(1)() == 1 and rc.STATS["uncached"] == u + 1

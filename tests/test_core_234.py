@@ -14,8 +14,6 @@ from accel_dse.core.pdqueue import (_chunk_fused, _fused_multi, _fused_step, _pa
 from accel_dse.core.pdsim import compare, simulate
 from accel_dse.core.scenario import PDConfig, Scenario, Serving
 from accel_dse.core.validation import V4_BANDS
-from tests.runcache import cached  # noqa: E402  0.291: per-run report cache (tests/runcache.py)
-disagg_report = cached(disagg_report)
 
 HB = "hbm3e_8s_12h24g_9200"
 

@@ -6,6 +6,39 @@
 
 
 
+## [0.292.0]
+
+### Added: Jais-3-MoVA-36B-A4B (inception42 BF16 release, IFM FP8; Apache-2.0) — mixture-of-value-experts attention
+- Mechanism 「来源」 modeling_k2_horizon.py (K2HorizonDecoderLayer / K2HorizonMoVAAttention, calc_router_weights, combine_routed_experts) and config.json:
+  - Every sparse layer (not in `mlp_only_layers` 0–2; 45 of 48) replaces v_proj with `mova_num_experts` = 64 value experts, linear h → n_kv·hd = 2560 → 1024, no bias. Each token gets v = Σ over its top `mova_num_experts_per_tok` = 4 experts of w_e · silu(W_e x).
+  - The `v_router` (h → 64, sigmoid) adds its bias only to the selection scores; the selected weights are renormalised and × `router_scaling_factor` 2.5.
+  - `attention_gate_func: softplus`: every layer (also the dense ones) has `gate_proj` [32·128, h], and the attention output is multiplied by softplus(gate_proj x, β = ln 2) before o_proj.
+- Model: `AttnCore.v_experts` / `v_topk` / `out_gate_fn`. The `attn_linears` of a MoVA layer are q (+ gate, 2 × width), k, v_router [h, 64], v_experts [h, 64·1024], o. `misc_params` adds the v_router bias. `active_params` counts 4 of the 64 value experts.
+- IR (`ir._mova_v_ops`) 「推导」: the value experts use the MoE uniform-routing expectation over this rank's tokens. The rank runs one GEMM per touched expert (m_e rows), and only the touched experts' weights stream. With attention TP, every rank holds every expert's slice of its KV heads. Vector work: silu, routing weight and scatter-add (6 ops / element), plus the sigmoid + top-k selection (6 ops / expert). `attn_out_gate`: 5 ops + 2 SFU (exp, log) per element 「假设」. Decode b1 touches 4 experts, b8 touches 26, prefill touches all 64.
+- Param check exact: 37 444 792 020 = release, for both repos. Active 5.95 B, embeddings and head included (4.67 B without).
+- As released: the inception42 safetensors are fp32 (config `torch_dtype` bf16), so the weights are fp32. The IFM FP8 (`quant_method: fp8`, 128 × 128 blocks, dynamic activations) quantises only the routed FFN experts. Value experts, v_router, q/k/o/gate, shared expert, dense layers, embeddings and head stay bf16 (`ignored_layers`, 3 408 entries).
+- Defaults (100T, lpddr5x_4x64_8533_16g, b1, 4096; TPOT / TTFT) 「推导」: jais-3-mova-36b-a4b 115.16 ms / 0.973 s (does not fit: 141.2 GiB per card); -fp8 48.53 ms / 0.471 s (fits).
+- Release files 184 → 186 (llm 158 → 160). Family 「Jais 3」, provider Inception / MBZUAI IFM. The 0.291 test that MoVA was absent now points to test_core_292.
+
+### Removed: the 0.291 per-run test report cache
+- `tests/runcache.py`, its 4 tests in test_core_291, the per-run directory in `tests/run_tests.py` / `scripts/run_tests.py` and the 2-line `cached(disagg_report)` wrappers in test_core_053 / 058 / 061_3 / 061_4 / 086 / 088 / 101 / 231 / 234 are gone. The 9 test files are byte-identical to 0.290 (327b584), except 088 (below). Reason: 0 hits in two full runs (58 reports, no shared keys), so it was dead code to maintain. test_core_292 checks that nothing references it.
+
+### Fixed: flaky test_core_088::test_server_burst_and_stalled_client
+- Failure seen in the 0.291 suite: {200: 69, TimeoutError: 27}. The 96 burst clients had a fixed 120 s urlopen deadline. The test server evaluates in its handler threads (serialised on the GIL), so on a loaded box the last responses arrive later than 120 s while the server is healthy.
+- New client `_post_progress` (raw socket, whole response read): it waits as long as the server keeps answering someone, and fails only after 60 s with no response anywhere (a hung server), or on any reset or refusal. The assertion is unchanged: all 96 must return 200. The 2 s read timeout is now set after the burst, only for the stalled-client check (set before it, a handler starved for more than 2 s could return 408 to a healthy request).
+- Reproduction with a server slowed to 1.4 s per eval: old test FAIL {200: 78, TimeoutError: 18}, new test PASS (173 s). New `test_burst_client_still_fails_on_a_hung_server`: a listener that accepts and never answers raises TimeoutError, and a closed port raises a connection error.
+
+### Test runner: longest-first start order
+- `tests/run_tests.py` `order_longest_first`: modules start by recorded per-file time (`scripts/test_durations.json`; local updates stay out of commits). The fallback is the old SLOW_FIRST, then name order. Previously only the static SLOW_FIRST list was used, which lacked 049 / 222 / 231 / 234 / 235 / domain (the 0.291 run ended on test_core_domain). Every module still runs once, in its own process.
+
+### Freshness
+- HF sweep since 2026-10-20 (93 orgs): only the Ornith-1.5-122B siblings (FP8 listed; MLX / GGUF / NVFP4 not added) and unsloth re-uploads.
+
+### Default behaviour, old → new
+- All 840 points identical to 0.291 (140 evaluable LLMs × 100T / 1P / H100-like × decode b8 / prefill; TPOT, TTFT, bound, per-stage times, warnings).
+- New entries: jais-3-mova-36b-a4b (fp32 as released; 100T b1 TPOT 115.16 ms, TTFT 0.973 s, no fit), jais-3-mova-36b-a4b-fp8 (48.53 ms, 0.471 s).
+- ext_validate: all metrics unchanged; only the version stamp moved (0.291.0 → 0.292.0).
+
 ## [0.291.0]
 
 ### Added: pplx-decider decision models (perplexity-ai, Apache-2.0)

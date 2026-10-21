@@ -13,8 +13,6 @@ from accel_dse.core.prefixcache import capacity, lru_hit, zipf_groups, che_T, re
 from accel_dse.core.queueing import mdc_wait
 from accel_dse.core.scenario import PDConfig, Scenario, Serving
 from accel_dse.api import scenario_from_body
-from tests.runcache import cached  # noqa: E402  0.291: per-run report cache (tests/runcache.py)
-disagg_report = cached(disagg_report)
 
 SV = Serving(batch=64, prompt=4096, out_len=512, ttft_slo_ms=400, tpot_slo_ms=10)
 BASE = dict(model="qwen3-8b", chip=CHIPS["1P"], mem_id="hbm3e_8s_12h24g_9200", layout=Layout(tp=2), serving=SV)

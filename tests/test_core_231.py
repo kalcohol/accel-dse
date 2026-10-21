@@ -11,8 +11,6 @@ from accel_dse.core.parallel import Layout
 from accel_dse.core.pdqueue import CHUNK_PROFILES, _chunk_plan, chunk_at, chunk_spec, vllm_budget
 from accel_dse.core.pdsim import compare
 from accel_dse.core.scenario import CHUNK_PROFILE_IDS, PDConfig, Scenario, Serving
-from tests.runcache import cached  # noqa: E402  0.291: per-run report cache (tests/runcache.py)
-disagg_report = cached(disagg_report)
 
 HB = "hbm3e_8s_12h24g_9200"
 

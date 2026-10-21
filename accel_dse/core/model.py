@@ -127,6 +127,12 @@ class AttnCore:
     conv_channels: int = 0
     conv_kernel: int = 0
     causal: bool = True        # False: bidirectional (DiT / protein encoders)
+    # 0.292 MoVA (Jais-3-MoVA, modeling_k2_horizon K2HorizonMoVAAttention 「来源」): the value projection is v_experts
+    # routed linears h → n_kv·v_dim (no bias), each token's v = Σ_top-v_topk w_e · silu(W_e x) from a sigmoid v_router
+    # (+ selection bias); attn_linears carry v_router [h, E] and v_experts [h, E·n_kv·v_dim] (params = all experts)
+    v_experts: int = 0
+    v_topk: int = 0
+    out_gate_fn: str = ""      # 0.292 attention output gate o · f(gate_proj x) applied per element: softplus (k2_horizon)
     cross: bool = False        # cross-attention: keys are the conditioning tokens (``full`` phase ``ctx``)
     # 0.170 StripedHyena 2 (Evo 2, vortex engine.py): lin = "hyena"; conv_channels / conv_kernel = the featurizer short
     # FIR over the 3h projections; the inner filter of the h-wide operator is
@@ -547,6 +553,8 @@ class ModelSpec:
             if l.ffn.kind == "moe":
                 f = l.ffn
                 p -= (f.n_experts - f.top_k) * f.mats * f.expert_in(self.hidden) * f.d_expert
+            if l.core.v_experts:          # 0.292 MoVA: top v_topk of the routed value experts per token
+                p -= (l.core.v_experts - l.core.v_topk) * self.hidden * l.core.n_kv * l.core.v_dim
         return p
 
     @property
@@ -766,7 +774,21 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             w = window
         elif mt in ("mistral", "mixtral") and window and window < (c.get("max_position_embeddings") or 0):
             w = window
-        alin, core = _gqa(h, H, KV, hd, window=w)
+        sparse = bool(E and i >= first_dense and i not in mlp_only)
+        gate_fn = (c.get("attention_gate_func") or "") if k2h else ""
+        alin, core = _gqa(h, H, KV, hd, window=w, out_gate=bool(gate_fn))      # gate_proj [H·hd, h] = q width × 2
+        if gate_fn:
+            core = replace(core, out_gate_fn=gate_fn)
+        mova = k2h and sparse and (c.get("mova_num_experts") or 0) > 0
+        if mova:
+            # 0.292 K2HorizonDecoderLayer: sparse layers (MoE FFN) use K2HorizonMoVAAttention — v_proj replaced by
+            # mova_num_experts routed value experts (top mova_num_experts_per_tok, silu, router weights renormalised ×
+            # router_scaling_factor); safetensors self_attn.v_router [E, h] (+ bias [E]), self_attn.v_experts.N [KV·hd, h]
+            Ev, kv_k = c["mova_num_experts"], c["mova_num_experts_per_tok"]
+            alin = tuple(l for l in alin if l.name != "v")
+            alin = alin[:2] + (Linear("v_router", h, Ev, "rep"), Linear("v_experts", h, Ev * KV * hd, "head", unit=hd)) \
+                + alin[2:]
+            core = replace(core, v_experts=Ev, v_topk=kv_k)
         if mt == "gpt_oss":
             core = replace(core, sink=True)
         hy_dense = hy3 and i < len(c.get("mlp_layer_types") or ()) and c["mlp_layer_types"][i] == "dense"
@@ -779,6 +801,8 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
                         or (k2h and c.get("query_key_norm")) else 0)
         if k2h and ffn.kind == "moe" and c.get("moe_gate_bias"):
             misc += E                                      # router bias (mlp.gate.bias [E])
+        if mova and c.get("moe_gate_bias"):
+            misc += core.v_experts                         # 0.292 v_router.bias [E_v] (selection only)
         if hy3 and ffn.kind == "moe" and c.get("moe_router_enable_expert_bias"):
             misc += E                                      # fp32 expert_bias (sigmoid router selection bias)
         if c.get("attention_bias") or mt == "qwen2" or mt == "gpt_oss":

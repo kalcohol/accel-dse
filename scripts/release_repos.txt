@@ -164,4 +164,6 @@ IFM/Jais-3-375B-A23B-FP8
 IFM/Jais-3-32B-FP8
 IFM/Jais-3-7B-FP8
 IFM/Jais-3-3.7B-FP8
+inception42/Jais-3-MoVA-36B-A4B
+IFM/Jais-3-MoVA-36B-A4B-FP8
 JetBrains/Mellum2.1-12B-A2.5B-Thinking

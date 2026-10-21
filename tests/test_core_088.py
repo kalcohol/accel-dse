@@ -90,8 +90,6 @@ def test_cp_energy_and_pd_prefill_layout():
     assert abs(e8["counts_per_unit"]["mac"] / e1["counts_per_unit"]["mac"] - 1) < 1e-5
     assert abs(sum(e8["J_by_action"].values()) - e8["J_per_unit"]) <= 1e-9 * e8["J_per_unit"]
     from accel_dse.core.disagg import disagg_report
-    from tests.runcache import cached   # 0.291: per-run report cache
-    disagg_report = cached(disagg_report)
     s = Scenario(model="qwen3-8b", mem_id=H, node_cards=8, serving=Serving(batch=16, prompt=32768, out_len=256),
                  pd=PDConfig(enabled=True, prefill_layout=Layout(cp=4), prefill_cards=4, decode_cards=4))
     r = disagg_report(s)
@@ -113,29 +111,63 @@ def test_scenario_hash_back_compat():
         assert Scenario.from_dict(s.to_dict(full=True)).hash() == h        # full dicts (UI) reload to the same hash
 
 
+def _post_progress(port: int, body: bytes, done: list, quiet_s: float = 60.0, poll_s: float = 5.0):
+    """0.292: POST /api/eval on a raw socket and read the whole response, waiting as long as the server keeps
+    completing requests (``done`` grows).  Fails (TimeoutError) only after ``quiet_s`` with no response anywhere — a
+    hung server — instead of a fixed per-request deadline that a loaded box (suite -j 8, evals serialised on the GIL)
+    could exceed while the server is healthy.  Any reset / refusal still raises."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=quiet_s)
+    try:
+        s.sendall(b"POST /api/eval HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                  b"Connection: close\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+        s.settimeout(poll_s)
+        got, seen, quiet = b"", len(done), 0.0
+        while True:
+            try:
+                chunk = s.recv(65536)
+            except socket.timeout:
+                if len(done) > seen:                # the server answered someone meanwhile: still serving the queue
+                    seen, quiet = len(done), 0.0
+                    continue
+                quiet += poll_s
+                if quiet >= quiet_s:
+                    raise TimeoutError(f"no server progress for {quiet_s:.0f} s") from None
+                continue
+            if not chunk:
+                break
+            got += chunk
+        line = got.split(b"\r\n", 1)[0].split()
+        return int(line[1]) if len(line) >= 2 and line[1].isdigit() else got[:40]
+    finally:
+        s.close()
+
+
 def test_server_burst_and_stalled_client():
     from accel_dse import serve
     assert serve.Server.request_queue_size >= 128 and serve.Server.daemon_threads and serve.Handler.timeout > 0
     srv = serve.Server(("127.0.0.1", 0), serve.Handler)
     old_t = serve.Handler.timeout
-    serve.Handler.timeout = 2
     th = threading.Thread(target=srv.serve_forever, daemon=True)
     th.start()
     try:
         port = srv.server_address[1]
-        res = []
+        res, done = [], []
+        body = json.dumps({"scenario": {"model": "qwen3-8b"}}).encode()
 
         def go():
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/eval", data=json.dumps({"scenario": {"model": "qwen3-8b"}}).encode())
             try:
-                with urllib.request.urlopen(req, timeout=120) as r:
-                    res.append(r.status)
-            except Exception as e:      # noqa: BLE001 — any reset is the failure under test
-                res.append(type(e).__name__)
+                st = _post_progress(port, body, done)
+            except Exception as e:      # noqa: BLE001 — any reset / refusal / hang is the failure under test
+                st = type(e).__name__
+            res.append(st)
+            done.append(1)
+        # 0.292: the burst runs with the production read timeout; the 2 s timeout is only for the stalled client below
+        # (set before the burst, a handler starved > 2 s on a loaded box could 408 a healthy request)
         ts = [threading.Thread(target=go) for _ in range(96)]
         [t.start() for t in ts]
         [t.join() for t in ts]
         assert res.count(200) == 96, {x: res.count(x) for x in set(res)}
+        serve.Handler.timeout = 2
         s = socket.create_connection(("127.0.0.1", port))
         s.sendall(b"POST /api/eval HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n{")
         # 0.173: read until the status line is complete (a single recv may return a partial segment under load) and
@@ -163,3 +195,30 @@ def test_server_burst_and_stalled_client():
         serve.Handler.timeout = old_t
         srv.shutdown()
         srv.server_close()
+
+
+def test_burst_client_still_fails_on_a_hung_server():
+    """0.292: the progress-based client is not a weaker check — a server that accepts and never answers (and makes no
+    progress for anyone) still fails it, and so does a reset."""
+    lst = socket.socket()
+    lst.bind(("127.0.0.1", 0))
+    lst.listen(4)
+    port = lst.getsockname()[1]
+    held = []
+    th = threading.Thread(target=lambda: held.append(lst.accept()), daemon=True)
+    th.start()
+    t0 = time.monotonic()
+    try:
+        _post_progress(port, b"{}", [], quiet_s=1.0, poll_s=0.25)
+        raise AssertionError("hung server accepted")
+    except TimeoutError:
+        assert time.monotonic() - t0 < 30
+    th.join(5)
+    for c, _ in held:
+        c.close()
+    lst.close()
+    try:                                              # nothing listening: refused, not a silent pass
+        _post_progress(port, b"{}", [], quiet_s=1.0, poll_s=0.25)
+        raise AssertionError("closed port accepted")
+    except OSError as e:
+        assert not isinstance(e, TimeoutError) or "progress" not in str(e)

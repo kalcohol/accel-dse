@@ -7,8 +7,6 @@ from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
 from accel_dse.core.parallel import Layout
 from accel_dse.core.scenario import PDConfig, Scenario, Serving
-from tests.runcache import cached  # noqa: E402  0.291: per-run report cache (tests/runcache.py)
-disagg_report = cached(disagg_report)
 
 HB = "hbm3e_8s_12h24g_9200"
 

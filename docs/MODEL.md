@@ -7814,3 +7814,27 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §236.5 Default behaviour, old → new
 - 756 / 756 points identical (126 LLMs × 3 chips × decode / prefill). `decision()` adds `questions`. New: 14 listed entries.
+
+## §237 Mixture-of-value-experts attention (Jais-3-MoVA); runner start order; burst-test client (0.292)
+
+### §237.1 MoVA mechanism 「来源」
+- modeling_k2_horizon.py: `K2HorizonDecoderLayer` uses `K2HorizonMoVAAttention` when the layer is sparse (not in `mlp_only_layers`, `num_experts` > 0, (i+1) % `decoder_sparse_step` = 0) and `mova_num_experts` > 0. q / k / o and the optional `gate_proj` are the same as `K2HorizonAttention`. v_proj is replaced by `v_router` (Linear h → E_v, bias = `moe_gate_bias`) and `v_experts` (E_v × Linear h → n_kv·hd, no bias).
+- Routing (`calc_router_weights`): sigmoid scores; bias added to the selection scores only; top-k; the selected unbiased scores are renormalised (k > 1) and × `router_scaling_factor`. Combine (`combine_routed_experts`): Σ_e w_e · silu(W_e x), so the value is no longer linear in x.
+- Output gate (`attention_gate_func`): attn_out · softplus(gate_proj x, β = ln 2) (or silu), per element before o_proj. Jais-3-MoVA-36B-A4B: E_v = 64, k_v = 4, softplus, 45 MoVA layers of 48; MoE FFN 100 experts top-8 + 1 shared.
+
+### §237.2 Model / IR
+- `AttnCore.v_experts`, `v_topk`, `out_gate_fn`. The q Linear carries the gate width (`_gqa(out_gate=True)`), as for Qwen3-Next. `active_params` subtracts (E_v − k_v) · h · n_kv · hd per MoVA layer.
+- `_mova_v_ops` 「推导」: r = `moe_routing(E_v, k_v, t, ep=1)` over the rank's t tokens (attention TP: all tokens on every rank; each rank holds every expert's slice of its gqa_local KV heads). One GEMM per touched expert: m_e × h × (kv_loc·hd), count = hit, share = pairs / (hit · m_e). Only the touched experts' weights stream. Vector: pairs · n · 6 + t · E_v · 6, SFU pairs · n · 2 + t · E_v.
+- `attn_out_gate` (softplus): t · n_q,loc · v_dim · (5 vector + 2 SFU) 「假设」. Not charged for the Qwen3-Next sigmoid gate (unchanged convention).
+- Hit counts (uniform 「假设」): b1 4, b8 26, b64 64 of 64; prefill 4096 tokens: all 64, 256 rows each.
+
+### §237.3 Dtypes and defaults
+- inception42 safetensors fp32 (as released; config says bf16). IFM FP8: block-128 fp8 on routed FFN experts only.
+- 100T default b1, 4096: fp32 TPOT 115.16 ms / TTFT 0.973 s (no fit); FP8 48.53 ms / 0.471 s.
+
+### §237.4 Test infrastructure
+- `tests/run_tests.py order_longest_first`: LPT start order from scripts/test_durations.json; SLOW_FIRST is the fallback.
+- test_core_088 burst client: progress-based wait (fails after 60 s with no server progress, or on a reset). The 0.291 runcache was removed (0 hits).
+
+### §237.5 Default behaviour, old → new
+- 840 / 840 points identical (140 LLMs × 3 chips × decode / prefill). New: the two Jais-3-MoVA entries.

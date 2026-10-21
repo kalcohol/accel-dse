@@ -1207,6 +1207,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             k_, ns, rp = fq
             ops.append(gemm(model, "attn.qkv", li, t, k_, sum(ns), "attn", params=k_ * sum(ns), replicated=rp))
             continue
+        if l.name == "v_experts":
+            ops += _mova_v_ops(model, li, L.core, l, t, tp)
+            continue
         k, n = _lin_local(l, tp, L.core)
         m = t
         if l.name == "kv_b" and ph.kind == "prefill":
@@ -1227,6 +1230,12 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         ops.append(gemm(model, f"attn.{l.name}", li, m, k, n, l.role or "attn", count=gc, params=k * n * gc,
                         replicated=_repl(l, tp)))
     ops.extend(_attn_core_ops(model, li, L.core, ph, sh, b_loc))
+    if L.core.out_gate_fn == "softplus":
+        # 0.292 k2_horizon: attn_output · softplus(gate_proj x, β = ln 2) per element before o_proj 「来源」
+        # (K2HorizonAttention / K2HorizonMoVAAttention): softplus = log1p(exp(βx))/β — exp + log on the SFU, 4 ops
+        # around them + the multiply
+        nq = gqa_local(L.core.n_q, L.core.n_kv, tp)[1] * L.core.v_dim
+        ops.append(Op("attn_out_gate", "vector", li, vec=t * nq * 5, sfu=t * nq * 2))
     if L.core.kind in ("gqa", "mla"):
         hq = gqa_local(L.core.n_q, L.core.n_kv, tp)[1] if L.core.kind == "gqa" else _cdiv(L.core.n_q, tp)
         if L.core.rope_n and L.core.kind == "gqa":
@@ -1306,6 +1315,25 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(Op("shared_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     ops.append(Op("residual", "vector", li, vec=t * h * 2))
     return _llm_stream(ops, ph)
+
+
+def _mova_v_ops(model: ModelSpec, li: int, c: AttnCore, l: Linear, t: int, tp: int) -> list[Op]:
+    """0.292 MoVA routed value projection (modeling_k2_horizon combine_routed_experts 「来源」): the v_router GEMM is
+    an ordinary Linear; here each touched value expert is one GEMM over its routed rows (uniform-routing expectation,
+    ``moe_routing`` over this rank's t tokens — attention TP keeps every token on every rank, each rank holds every
+    expert's slice of its KV heads), then silu, × routing weight, scatter-add (6 ops / element, exp + rcp on the SFU),
+    and the sigmoid + top-k selection (6 ops / expert, as the DiT MoE router).  Only touched experts' weights stream."""
+    E, k = c.v_experts, c.v_topk
+    n_loc = gqa_local(c.n_q, c.n_kv, tp)[0] * c.v_dim if tp > 1 else c.n_kv * c.v_dim
+    r = moe_routing(E, k, t, 1)
+    ops = []
+    if r.hit:
+        u = min(1.0, r.pairs_local / (r.hit * r.m_e))
+        ops.append(replace(gemm(model, "attn.v_experts", li, r.m_e, l.k, n_loc, l.role or "attn", count=r.hit,
+                                replicated=_repl(l, tp)), share=u))
+    ops.append(Op("v_expert_combine", "vector", li, vec=r.pairs_local * n_loc * 6 + t * E * 6,
+                  sfu=r.pairs_local * n_loc * 2 + t * E))
+    return ops
 
 
 def _cross_decode_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard, b_loc: int) -> list[Op]:

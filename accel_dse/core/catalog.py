@@ -198,8 +198,8 @@ EXTRA_TAIL = [
     ("pplx-decider-v1-27b", "perplexity-ai/pplx-decider-v1-27b"),
     # 0.291 Jais 3 (Inception / MBZUAI IFM, Apache-2.0; k2_horizon, 2026-09-29 JST): BF16 originals (inception42/*) and
     # IFM's FP8 releases (compressed-tensors W8A8 float, 128×128 block weights + dynamic per-group-128 activations; the
-    # 375B-A23B keeps attention, shared experts, routers and the first 3 dense layers bf16).  Not added: MoVA-36B-A4B
-    # (mixture-of-values attention: routed V projections, not modelled), the 0.9B FP8 (no such release), Uno adapters
+    # 375B-A23B keeps attention, shared experts, routers and the first 3 dense layers bf16).  MoVA-36B-A4B: added in 0.292
+    # (routed value experts modelled, below); not added: the 0.9B FP8 (no such release), Uno adapters
     ("jais-3-375b-a23b", "inception42/Jais-3-375B-A23B"),
     ("jais-3-32b", "inception42/Jais-3-32B"),
     ("jais-3-7b", "inception42/Jais-3-7B"),
@@ -209,6 +209,13 @@ EXTRA_TAIL = [
     ("jais-3-32b-fp8", "IFM/Jais-3-32B-FP8"),
     ("jais-3-7b-fp8", "IFM/Jais-3-7B-FP8"),
     ("jais-3-3.7b-fp8", "IFM/Jais-3-3.7B-FP8"),
+    # 0.292 Jais-3-MoVA-36B-A4B (inception42, 2026-09-29 JST; IFM FP8 sibling): k2_horizon with MoVA attention in the
+    # 45 sparse layers (64 routed value experts top-4 replace v_proj) and a softplus attention output gate in every
+    # layer; 100 experts top-8 + 1 shared.  As released: the inception42 safetensors are fp32 (config dtype bf16);
+    # the IFM FP8 (quant_method fp8, 128 × 128 blocks, dynamic activations) quantises only the routed FFN experts —
+    # value experts, v_router, attention, shared expert, dense layers, embeddings and head stay bf16
+    ("jais-3-mova-36b-a4b", "inception42/Jais-3-MoVA-36B-A4B"),
+    ("jais-3-mova-36b-a4b-fp8", "IFM/Jais-3-MoVA-36B-A4B-FP8"),
     # 0.291 JetBrains Mellum2.1 Thinking (Apache-2.0, 2026-09-20 JST): transformers mellum (Qwen3-MoE attention with
     # q / k norm, 3:1 sliding 1024 / full, 64 experts top-8), bf16; the card's MTP head is not released yet
     ("mellum2.1-12b-a2.5b-thinking", "JetBrains/Mellum2.1-12B-A2.5B-Thinking"),

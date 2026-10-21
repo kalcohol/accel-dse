@@ -14,9 +14,7 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
-import tempfile
 import sys
 import time
 import traceback
@@ -30,6 +28,30 @@ HERE = Path(__file__).parent
 SLOW_FIRST = ("test_core_scenario_search_topk1", "test_core_scenario_search_topk2", "test_core_057", "test_core_057b",
               "test_core_scenario_search", "test_core_053", "test_core_061_3", "test_core_052", "test_core_061_4",
               "test_core_060", "test_core_058", "test_core_062", "test_core_054", "test_core_055", "test_core_056")
+
+
+DURATIONS = HERE.parent / "scripts" / "test_durations.json"
+
+
+def _durations() -> dict:
+    """Per-file wall seconds recorded by scripts/run_tests.py (tracked; local updates stay out of commits)."""
+    try:
+        return json.loads(DURATIONS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def order_longest_first(mods: list[Path], dur: dict) -> list[Path]:
+    """0.292: longest-first (LPT) by the recorded per-file times, so a long module never starts last and becomes the
+    tail of a parallel run (the 0.291 suite ended on test_core_domain, 125 s, which SLOW_FIRST did not list).  Files
+    without a record: SLOW_FIRST ones first, the rest after the known ones, in name order.  Only the start order
+    changes — every module still runs once, in its own process."""
+    def key(m: Path):
+        d = dur.get(m.name)
+        if not isinstance(d, (int, float)):
+            d = 1e9 if m.stem in SLOW_FIRST else -1.0
+        return (-d, SLOW_FIRST.index(m.stem) if m.stem in SLOW_FIRST else len(SLOW_FIRST), m.name)
+    return sorted(mods, key=key)
 
 
 def _run_module(mod_path: Path, argv: list[str]) -> tuple[int, int]:
@@ -87,9 +109,6 @@ def _kflags(argv: list[str]) -> list[str]:
     return out
 
 
-ENV_RUNCACHE = "ACCEL_DSE_TEST_RUNCACHE"   # = tests.runcache.ENV
-
-
 def main(argv: list[str]) -> int:
     jobs = min(8, os.cpu_count() or 1)
     if argv and argv[0] == "--one":                       # child: one module, sequential
@@ -105,35 +124,6 @@ def main(argv: list[str]) -> int:
     failed = passed = 0
     t0 = time.time()
     mods = sorted(HERE.glob("test_*.py"))
-    # 0.291: per-run directory for tests/runcache.py (heavy report calls shared across the module processes of this
-    # run only; removed below, never reused by a later run)
-    own_cache = ENV_RUNCACHE not in os.environ
-    if own_cache:
-        os.environ[ENV_RUNCACHE] = tempfile.mkdtemp(prefix="accel-dse-runcache-")
-    try:
-        return _main_run(mods, argv, jobs, t0)
-    finally:
-        if own_cache:
-            d = Path(os.environ.pop(ENV_RUNCACHE))
-            _runcache_summary(d)
-            shutil.rmtree(d, ignore_errors=True)
-
-
-def _runcache_summary(d: Path) -> None:
-    tot: dict = {}
-    for f in d.glob("stats.*.json"):
-        try:
-            for k, v in json.loads(f.read_text()).items():
-                tot[k] = tot.get(k, 0) + v
-        except (OSError, ValueError):
-            pass
-    if tot:
-        print(f"[runcache] {tot.get('miss', 0)} computed, {tot.get('hit_disk', 0)} shared across files, "
-              f"{tot.get('hit_mem', 0)} reused in-file, CPU saved {tot.get('saved_s', 0):.1f}s")
-
-
-def _main_run(mods, argv, jobs, t0) -> int:
-    failed = passed = 0
     if argv and not any(_selected(m, argv) for m in mods):
         print(f"no test module / test matches {argv} (exact names; use -k WORD for substring)")
         return 2
@@ -144,7 +134,7 @@ def _main_run(mods, argv, jobs, t0) -> int:
             failed += f
     else:
         mods = [m for m in mods if _selected(m, argv)]
-        mods.sort(key=lambda m: (SLOW_FIRST.index(m.stem) if m.stem in SLOW_FIRST else len(SLOW_FIRST)))
+        mods = order_longest_first(mods, _durations())
 
         def child(m: Path):
             r = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--one", str(m), *argv],
