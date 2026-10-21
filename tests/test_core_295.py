@@ -63,6 +63,8 @@ def test_burst_does_not_explain_c256():
     t2 = {(x["c"], x["vocoder_gpu"]): x for x in XS.table("default", t2=True)}
     for g in ("same", "second"):
         x = t2[(256, g)]
-        # wave 1 (23.5 % of the run) is below even the steady state; the measured p50 exceeds the stride frames at the
-        # measured per-stream rate by > 1.4 s — a wait the synchronized start cannot produce
-        assert x["ttfa_burst_wave1_ms"] < x["ttfa_pred_ms"] and x["ttfa_meas_ms"] - x["ttfa_rate_ms"] > 1400
+        # wave 1 (23.5 % of the run) stays under half the measured p50 (0.296: above the batched steady state, below
+        # the ≤ 0.295 serial one); the measured p50 exceeds the stride frames at the measured per-stream rate by > 1.4 s
+        # — a wait the synchronized start cannot produce
+        assert x["ttfa_burst_wave1_ms"] < 0.5 * x["ttfa_meas_ms"] and x["ttfa_meas_ms"] - x["ttfa_rate_ms"] > 1400
+        assert x["ttfa_burst_wave1_ms"] < x["ttfa_serial_ms"]

@@ -7919,3 +7919,28 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §240.5 Default behaviour, old → new
 - Cost model unchanged. See CHANGELOG 0.295.0.
+
+## §241 Drama 3 batched prefill in the steady state; the LFM2.5 DSpark mid-c gap by token count (0.296)
+
+### §241.1 Batched prefill 「来源」/「推导」
+- SGLang prefills all waiting requests in one forward (PrefillAdder). No request cap by default (`--prefill-max-requests` unset); `max_prefill_tokens` 16384 → B = ⌊16384 / 148⌋ = 110. The 16-request first-frame CUDA-graph cap picks graph vs eager launch only.
+- The batch a request is in: n = 1 + Poisson(k − 1) 「近似」, clipped at B. Here k = 1 + p_win·I·a (§239), I = 4, a = (c − 1)/N.
+- p̄ = E[P(n)/n] is the GPU prefill seconds per request; P̂ = E[P(n)] is what a request waits for. P(n) = evaluate(prefill, batch n).
+- Cycle = c·p̄ + N·tpot(c) + c·vocoder. T_round = tpot + a·(p̄ + vocoder). TTFA = W_gate + P̂ + stride·T_round + W_voc + DAC(first window). With n ≡ 1 (c = 1) or `prefill="serial"` (P̂ = k·ttft₁, p̄ = ttft₁) this is §239.
+
+### §241.2 Result and reading
+- Default variant, predicted / measured, serial → batched: frames/s c64 1.29 → 1.55, c128 1.26 → 1.77 (second GPU 0.91 → 1.40), c256 1.31 → 2.13 (second GPU 0.97 → 1.88). TTFA c8 … c64 0.67 – 0.81 → 0.64 – 0.67.
+- The serial pricing hid an engine step that, at high batch, is slower than modelled. With the prefill priced as run, the TTFA ratio is flat over c = 1 … 64 (0.64 – 0.73).
+
+### §241.3 LFM2.5 DSpark: steps as a function of tokens 「推导」
+- Measured-implied step = (c·OUT / tok_s − c·ttft₁) / OUT · τ (τ = 1 for the target alone).
+- At equal token count (c·10 for a verify, c for the target alone), the DSpark step costs 0.91 – 1.15× the target-alone step, measured, and 1.01 – 1.13× in the model. So the speculative structure is priced right.
+- The model's target-alone marginal cost falls to 4.7 µs/token once the expert union saturates. The measured cost stays at 78 → 40 → 24 µs/token over 32 → 256 sequences. The c = 8 … 64 speed-up over-prediction follows from this flatter curve between c and 10c tokens. It is the same signature as §241.2.
+- Ruled out, with sources:
+  - The overlap scheduler is on for DSPARK on CUDA.
+  - The radix cache is off, so the mamba `no_buffer` branch that disables overlap is not taken.
+  - The README launch command sets no graph or chunk flags.
+- Open: the per-token kernel cost at 64 – 2560 tokens. The candidate is FP8 fused-MoE efficiency at small per-expert row counts. It needs a trace and is not fitted.
+
+### §241.4 Default behaviour, old → new
+- The cost model is unchanged; only the diagnostics changed. See CHANGELOG 0.296.0.

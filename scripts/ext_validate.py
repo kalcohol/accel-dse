@@ -31,7 +31,8 @@ from accel_dse.core import extspec as XP
 res["spec"] = {}
 for v in ("default", "catalog"):
     t = XP.table(v)
-    res["spec"][v] = {"summary": XP.summary(t), "by_concurrency": XP.by_concurrency(t), "rows": t}
+    res["spec"][v] = {"summary": XP.summary(t), "by_concurrency": XP.by_concurrency(t), "token_curve": XP.token_curve(t),
+                      "rows": t}
 if a.calib:
     res["calibration"] = json.load(open(a.calib))
 json.dump(res, open(a.out, "w"), indent=1)

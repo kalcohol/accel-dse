@@ -56,7 +56,7 @@ def _step(variant: str, c: int, ctx: int, accept: float) -> dict:
     d = st.dram if isinstance(st.dram, dict) else vars(st.dram)
     bw = d["total"] / st.time.t_dram if st.time.t_dram > 0 else math.inf     # bytes / s actually achieved in the step
     return {"step": res.step, "tps": res.tokens_per_step, "exp_bytes": d.get("exp_dram", 0.0), "bytes": d["total"],
-            "bw": bw, "t_kern": st.time.t_kern, "t_dram": st.time.t_dram, "fits": res.fits}
+            "w_bytes": d.get("weights", 0.0), "bw": bw, "t_kern": st.time.t_kern, "t_dram": st.time.t_dram, "fits": res.fits}
 
 
 @lru_cache(maxsize=64)
@@ -83,7 +83,12 @@ def predict(r: dict, variant: str = "default") -> dict:
     # (b) bound: the verified block's union expert bytes → the target-alone step's expert bytes (same c sequences)
     saved = max(0.0, s["exp_bytes"] - b["exp_bytes"]) / s["bw"] if s["bw"] < math.inf else 0.0
     loc = tok_s(max(s["step"] - saved, 1e-12), s["tps"], r["out_dspark"])
-    return {"c": c, "accept": a, "tau_model": s["tps"], "base_tok_s": base, "spec_tok_s": spec, "ratio": spec / base,
+    # 0.296 measured-implied steps 「推导」: invert the same closed loop on the measured tok/s (model ttft₁)
+    sb_meas = (c * r["out_baseline"] / r["baseline_tok_s"] - c * t1) / r["out_baseline"]
+    ss_meas = (c * r["out_dspark"] / r["dspark_tok_s"] - c * t1) / r["out_dspark"] * tau
+    return {"c": c, "accept": a, "tau_model": s["tps"],
+            "step_base_meas_ms": sb_meas * 1e3, "step_spec_meas_ms": ss_meas * 1e3,
+            "w_bw_meas_tbps": b["w_bytes"] / sb_meas / 1e12 if sb_meas > 0 else math.inf, "base_tok_s": base, "spec_tok_s": spec, "ratio": spec / base,
             "ratio_locality_bound": loc / base, "step_base_ms": b["step"] * 1e3, "step_spec_ms": s["step"] * 1e3,
             "exp_union": s["exp_bytes"] / b["exp_bytes"] if b["exp_bytes"] else 1.0,
             "kern_share_base": b["t_kern"] / b["step"] if b["step"] else 0.0}
@@ -98,7 +103,10 @@ def table(variant: str = "default") -> list[dict]:
                     "base_ratio": round(p["base_tok_s"] / r["baseline_tok_s"], 3),
                     "speedup_meas": r["ratio"], "speedup_pred": round(p["ratio"], 3),
                     "speedup_locality_bound": round(p["ratio_locality_bound"], 3),
-                    "exp_union": round(p["exp_union"], 2), "kern_share_base": round(p["kern_share_base"], 3)})
+                    "exp_union": round(p["exp_union"], 2), "kern_share_base": round(p["kern_share_base"], 3),
+                    "step_base_pred_ms": round(p["step_base_ms"], 3), "step_base_meas_ms": round(p["step_base_meas_ms"], 3),
+                    "step_spec_pred_ms": round(p["step_spec_ms"], 3), "step_spec_meas_ms": round(p["step_spec_meas_ms"], 3),
+                    "w_bw_meas_tbps": round(p["w_bw_meas_tbps"], 2)})
     return out
 
 
@@ -110,7 +118,10 @@ def by_concurrency(t: list[dict]) -> list[dict]:
         m = lambda k: round(sum(x[k] for x in g) / len(g), 3)
         out.append({"c": c, "n": len(g), "speedup_meas": m("speedup_meas"), "speedup_pred": m("speedup_pred"),
                     "speedup_locality_bound": m("speedup_locality_bound"), "base_ratio": m("base_ratio"),
-                    "exp_union": m("exp_union"), "kern_share_base": m("kern_share_base")})
+                    "exp_union": m("exp_union"), "kern_share_base": m("kern_share_base"),
+                    "step_base_pred_ms": m("step_base_pred_ms"), "step_base_meas_ms": m("step_base_meas_ms"),
+                    "step_spec_pred_ms": m("step_spec_pred_ms"), "step_spec_meas_ms": m("step_spec_meas_ms"),
+                    "w_bw_meas_tbps": m("w_bw_meas_tbps")})
     return out
 
 
@@ -119,3 +130,33 @@ def summary(t: list[dict]) -> dict:
     lb = [math.log(x["base_ratio"]) for x in t]
     return {"n": len(t), "speedup_gmean_ratio": round(math.exp(sum(lr) / len(lr)), 3),
             "base_gmean_ratio": round(math.exp(sum(lb) / len(lb)), 3)}
+
+
+def token_curve(t: list[dict]) -> dict:
+    """0.296 (AGENTS §246) the c8–64 gap by mechanism: is it speculative (verify / draft) or the target's own step?
+
+    Every step is a function of the tokens it carries — c for the target alone, c·(K + 1) for a DSpark verify.
+    ``spec_vs_base_at_tokens``: the DSpark step over the target-alone step at the SAME token count (log–log
+    interpolation of the per-concurrency means, inside the measured base range 1 … 256 tokens) — measured and
+    predicted alike 「推导」.  ``base_slope_us_per_token``: marginal target-alone step cost between consecutive
+    concurrencies 「推导」.  Nothing fitted."""
+    bc = by_concurrency(t)
+    pts = sorted((x["c"], x["step_base_meas_ms"], x["step_base_pred_ms"]) for x in bc)
+
+    def at(tok, i):
+        for a, b in zip(pts, pts[1:]):
+            if a[0] <= tok <= b[0]:
+                f = math.log(tok / a[0]) / math.log(b[0] / a[0])
+                return math.exp(math.log(a[i]) * (1 - f) + math.log(b[i]) * f)
+        return None
+    same = []
+    for x in bc:
+        tok = x["c"] * (K + 1)
+        m, p = at(tok, 1), at(tok, 2)
+        if m is None:
+            continue
+        same.append({"c": x["c"], "tokens": tok, "meas": round(x["step_spec_meas_ms"] / m, 3),
+                     "pred": round(x["step_spec_pred_ms"] / p, 3)})
+    slope = [{"c": f"{a[0]}-{b[0]}", "meas": round((b[1] - a[1]) / (b[0] - a[0]) * 1e3, 1),
+              "pred": round((b[2] - a[2]) / (b[0] - a[0]) * 1e3, 1)} for a, b in zip(pts, pts[1:])]
+    return {"spec_vs_base_at_tokens": same, "base_slope_us_per_token": slope}

@@ -38,11 +38,16 @@ def test_gap_decomposition():
     # roofline without GPU per-kernel costs: ≥ 3× optimistic at c = 1 (the 0.276 "≈ 2.2×" gap was at b = 1 frame steps)
     assert cat[0]["ratio"] > 3.0
     # trace-sourced per-kernel floor (ext default variant) + closed-loop prefill + SGLang vocoder windows
-    assert 1.0 < dflt[0]["ratio"] < 1.35 and all(x["ratio"] < 1.5 for x in dflt)
-    assert dflt[-1]["shares"]["prefill"] > 0.25                     # 4.4 s utterances: prefill is a third at c = 64
+    assert 1.0 < dflt[0]["ratio"] < 1.35
+    # ≤ 0.295 serial prefill pricing (kept per row as pred_serial): within 1.5× everywhere, second GPU within 10 %
+    assert all(x["pred_serial"] / x["meas"] < 1.5 for x in dflt)
     t2 = {(x["c"], x["vocoder_gpu"]): x for x in XS.table("default", t2=True)}
-    # vocoder on a second GPU: within 10 % — the residual same-GPU gap is the vocoder (measured 1.70× vs modelled)
-    assert all(0.9 <= t2[(c, "second")]["ratio"] <= 1.05 for c in (128, 256))
+    assert all(0.9 <= t2[(c, "second")]["pred_serial"] / t2[(c, "second")]["meas"] <= 1.05 for c in (128, 256))
+    # 0.296 batched prefill (SGLang's one-forward prefill batch): c = 1 unchanged, never slower, and it removes the
+    # serial pricing's compensation — the second-GPU rows (no vocoder) now over-predict by > 1.3× (diagnostic, open)
+    assert dflt[0]["pred"] == dflt[0]["pred_serial"] and all(x["pred"] >= x["pred_serial"] for x in dflt)
+    assert all(t2[(c, "second")]["ratio"] > 1.3 for c in (128, 256))
+    assert 0.1 < dflt[-1]["shares"]["prefill"] < 0.25              # batched: prefill ≈ a sixth of the cycle at c = 64
     assert t2[(128, "same")]["ratio"] > t2[(128, "second")]["ratio"] + 0.3
 
 

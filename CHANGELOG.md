@@ -6,6 +6,69 @@
 
 
 
+## [0.296.0]
+
+### Drama 3: batched prefill in the steady state (`core/extspeech.py`)
+- The issue (deferred in 0.295): the closed-loop cycle and TTFA priced the co-batched prefills serially, k·ttft₁ per batch and ttft₁ per request.
+- Mechanism 「来源」: SGLang prefills every waiting request in one forward (PrefillAdder). `--prefill-max-requests` is unset, which means no request cap (sglang server_args docs); only `max_prefill_tokens` 16384 bounds the batch (⌊16384 / 148 rows⌋ = 110 requests). The 16-request first-frame CUDA-graph cap (`first_frame_cuda_graph_max_requests`, engine_builder.py / first_frame_graphs.py @ 0029194) only chooses graph or eager launch; it does not cap the batch.
+- Model 「推导」/「近似」:
+  - The 0.294 gate (p_win) and mean batch k = 1 + p_win·4a are kept (`_gate`).
+  - The batch a request is in: n = 1 + Poisson(k − 1) 「近似」 (the others arrive independently), clipped at 110 (`_batch_dist`).
+  - P(n) = the engine's batch-n prefill. Per request the GPU pays p̄ = E[P(n)/n]: it goes into the cycle (c·p̄) and the round stretch (T_round = tpot + a·(p̄ + vocoder)). A request waits for P̂ = E[P(n)].
+  - TTFA = W_gate + P̂ + 10·T_round + W_voc + DAC(first window). At c = 1 it is identical to 0.295.
+  - `predict(..., prefill="serial")` keeps the ≤ 0.295 pricing. Rows carry `pred_serial` / `ttfa_serial_ms`; `predict` returns `prefill_s_per_request` / `prefill_batch_mean`.
+- Result (ext default variant, never fitted). Each cell is the predicted / measured ratio, serial → batched:
+
+  | c | frames/s | TTFA p50 |
+  |---|---|---|
+  | 1 | 1.23 → 1.23 | 0.69 → 0.69 |
+  | 8 | 1.38 → 1.38 | 0.67 → 0.66 |
+  | 16 | 1.40 → 1.43 | 0.70 → 0.67 |
+  | 32 | 1.37 → 1.47 | 0.75 → 0.67 |
+  | 64 | 1.29 → 1.55 | 0.81 → 0.64 |
+  | 128, same GPU | 1.26 → 1.77 | 0.89 → 0.58 |
+  | 256, same GPU | 1.31 → 2.13 | 0.32 → 0.18 |
+  | 128, second GPU | 0.91 → 1.40 | 1.28 → 0.75 |
+  | 256, second GPU | 0.97 → 1.88 | 0.41 → 0.19 |
+
+  - gmean frames/s ratio 1.323 → 1.376; TTFA 0.718 → 0.679. Catalog variant: 2.256 → 2.355, TTFA 0.447 → 0.420.
+- Reading:
+  - The serial pricing was compensating something missing. Once the prefill is priced as SGLang runs it, the engine alone (vocoder on a second GPU, so no vocoder in the cycle) runs 1.40× / 1.88× too fast at c = 128 / 256.
+  - The TTFA ratio over c = 1 … 64 is now flat at 0.64–0.73. That is consistent with a uniform ≈ 1.4× slower decode round plus the c = 1 fixed ≈ 28 ms (host / IPC).
+  - It is the same signature as the LFM2.5 target alone below: the real GPU step grows with the tokens in the step faster than the per-SM + per-kernel-floor path. It is not a TTS-specific mechanism.
+  - c = 256 is still dominated by the unexplained pre-run wait (0.295).
+- `burst` is unchanged: c = 256 wave 1 (777 / 727 ms) is now above the batched steady state (597 / 403 ms) and below the serial one. Tests re-stated by mechanism: wave 1 < ½ of the measured p50 and < the serial steady state.
+
+### LFM2.5 DSpark c = 8 … 64 gap, located by mechanism (`extspec.token_curve`)
+- Measured-implied steps 「推导」: invert the same closed loop on the measured tok/s (model ttft₁). Rows and `by_concurrency` carry `step_{base,spec}_{meas,pred}_ms` and `w_bw_meas_tbps` (modelled weight bytes / measured step).
+- (i) A DSpark step costs what a target-alone step with the same token count (c·10 vs c) costs. Measured / interpolated base step at c = 1 … 16 (10 … 160 tokens): 1.15, 1.08, 1.03, 1.02, 0.91. Model: 1.13, 1.10, 1.09, 1.05, 1.01. So the verify / draft structure is right: draft cost, the Markov chain and per-step DSpark overhead do not explain the gap.
+- (ii) The gap is the target's own token slope. Marginal target-alone cost in µs/token, measured vs model:
+
+  | c range | Measured | Model |
+  |---|---|---|
+  | 8–16 | 227 | 132 |
+  | 16–32 | 124 | 60 |
+  | 32–64 | 78 | 18 |
+  | 64–128 | 40 | 4.7 |
+  | 128–256 | 24 | 4.7 |
+
+  - The model flattens once the expert union saturates (every expert read from c ≈ 64): the step becomes weight-bound. The measured step keeps growing, and the implied weight bandwidth peaks at 2.6 TB/s (c = 32) and falls to 1.6 TB/s at c = 256.
+  - Since speed-up ≈ τ · base_step(c) / spec_step(c·10 tokens), the model's flatter curve between 64 and 640 tokens gives the over-prediction: measured 20.9 / 11.8 = 1.77 vs model 8.23 / 6.32 = 1.30, i.e. ≈ 1.36× (the observed 23–31 % after prefill and draft).
+- Checked and ruled out, with sources:
+  - The overlap scheduler stays on for DSPARK on CUDA (sglang 488869c `speculative_hook._handle_dspark`: no overlap override).
+  - The radix cache is off (protocol), so the hybrid-mamba `no_buffer` branch that disables overlap is not taken (`overrides._mamba_radix_cache_resolution`).
+  - The README launch command sets no CUDA-graph or chunk flags.
+- Not identified: the per-token cost at 64–2560 tokens. Candidate: FP8 fused-MoE kernel efficiency at small per-expert row counts (no B300-tuned config is sourced). No public trace exists, so it is not modelled.
+
+### Freshness
+- HF sweep since 2026-10-20 (107 orgs): only entries already seen (Ornith-1.5-122B siblings, unsloth re-uploads, LFM2.5-24B-A2B-DSpark-GGUF, a llama.cpp repack of a listed entry). The 2026-10-21 window is empty. Nothing new.
+
+### Default behaviour, old → new
+- The cost model is unchanged: all 858 points are identical to 0.295.
+- ext_validate: the LLM metrics are unchanged and the version stamp moved (0.295.0 → 0.296.0). Intended diagnostic changes:
+  - The speech `pred` / `ratio` / `shares` / `ttfa_pred_ms` / `ttfa_ratio` and summaries now use batched prefill (c ≥ 4 change; c = 1, 2 identical), plus the new `pred_serial` / `ttfa_serial_ms`.
+  - spec rows gain the step fields, and the spec section gains `token_curve`. The spec predictions are unchanged.
+
 ## [0.295.0]
 
 ### Speculative decoding on a small-active MoE: what explains batch-1 DSpark 1.1× (model) vs 2.38× (B300)?

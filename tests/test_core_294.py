@@ -15,9 +15,11 @@ def test_interval_sourced():
 
 def test_queue_terms_closed_form():
     # hand-derived: c = 9, N = 100 → a = 0.08, I·a = 0.32, p_win = 0.32 / 1.32
-    q = XS._ttfa_queue(9, 100, 0.010, 0.005, 0.002, [0.001, 0.003], 1.0, 10)
+    # 0.296 signature: per-request prefill cost 0.010, the prefill batch waited for 0.015, p_win
     a, p = 0.08, 0.32 / 1.32
+    q = XS._ttfa_queue(9, 100, 0.010, 0.015, p, 0.005, 0.002, [0.001, 0.003], 1.0, 10)
     tr = 0.005 + a * 0.012
+    assert q["prefill"] == 0.015
     assert math.isclose(q["t_round"], tr)
     assert math.isclose(q["gate"], p * 1.5 * tr)
     assert math.isclose(q["prefill_batch"], 1 + p * 0.32)
@@ -41,8 +43,9 @@ def test_ttfa_grows_with_load_and_flattens_ratio():
     noq = [x["ttfa_noq_ms"] / x["ttfa_meas_ms"] for x in t]
     # diagnostic shape (never fitted): the no-queue form drifts 0.69 → 0.38 over c = 1 … 64; queueing keeps it flat
     assert max(noq) / min(noq) > 1.7 and max(r) / min(r) < 1.3
-    p = XS.predict("default", 64)
-    assert p["ttfa_parts"]["decode"] > 1.8 * 10 * p["tpot_s"]  # the others' prefills / windows nearly double a round
+    p, ps = XS.predict("default", 64), XS.predict("default", 64, prefill="serial")
+    # the others' prefills / windows stretch a round: ×1.87 priced serially, ×1.57 batched (0.296)
+    assert ps["ttfa_parts"]["decode"] > 1.8 * 10 * ps["tpot_s"] and 1.4 < p["ttfa_parts"]["t_round"] / p["tpot_s"] < 1.8
 
 
 def test_second_gpu_keeps_first_window():
