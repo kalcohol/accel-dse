@@ -1028,7 +1028,8 @@ def api_eval(body: dict) -> dict:
     ew = out["energy"].get("avg_W_per_card")
     pk = scn.package_cards if scn.d2d_enabled else 1
     th = thermal_report(ew * pk if ew is not None else None, sh.get("die_mm2"), pk,
-                        dram_dev_W(out["energy"]) * pk, cool)
+                        dram_dev_W(out["energy"]) * pk, cool,
+                        out["energy"].get("idle_W_used") is not None)     # 0.314: static floor in the card power?
     out["thermal"] = th
     if th.get("feasible") is False:
         out["summary"]["warnings"].append("不可建（热 / 功耗）：" + "；".join(th["reasons"]))

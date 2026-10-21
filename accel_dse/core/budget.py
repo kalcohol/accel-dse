@@ -757,8 +757,18 @@ def _sized_report(scn, die: float, out: dict) -> dict:
                 "shape": {"long_mm": ed[0], "short_mm": ed[2], "aspect": ed[0] / ed[2],
                           "reshaped": L["shape_index"] > 0, "aspect_max": DIE_ASPECT_MAX,
                           "field_mm": list(RETICLE_FIELD_MM)}})
+    if out.get("status") == "tight":       # 0.314: evidence for memory beyond two edges
+        out["precedent"] = TIGHT_PRECEDENT
     return out
 
+
+# 0.314 (MODEL §259.3): memory on a 3rd / 4th die edge ("tight") — evidence.  Shipped HBM parts carry stacks on at most
+# two edges of a logic die: GV100 / GA100 / GH100 / B200 (long edges), MI250X GCD, MI300X / MI350X IODs (package
+# photos), TPU v5p (3 + 3 on two sides), Trainium2 (both sides) 「二手」.  The only third-edge layout found is a patent
+# claim: Google US 12,315,860 B2 claim 14 (12 stacks "along a third side of the second logic die") 「来源」 — claimed,
+# not shipped.  So shore_strict stays opt-in: no shipped precedent, but not excluded by any source either.
+TIGHT_PRECEDENT = ("外存占第 3 / 4 边：无出货先例（出货 HBM 件每个逻辑晶粒至多两边「二手」）；仅见专利 Google US 12,315,860 B2 "
+                   "权利要求 14（12 堆中有堆栈沿第二晶粒第三边）「来源」——shore_strict 可将其判为不可建")
 
 _SHORE_CACHE: dict = {}
 
@@ -888,6 +898,8 @@ def shoreline_report_uncached(scn, die_mm2: float | None = None, b: "Budget | No
     out.update({"edges": rows, "mem": mem, "d2d": d2d, "io": io, "feasible": not over,
                 "status": "over" if over else ("tight" if mem["status"] == "tight" else "ok"),
                 "used_mm": sum(r["used_mm"] for r in rows), "perimeter_mm": sum(ed)})
+    if out.get("status") == "tight":       # 0.314: evidence for memory beyond two edges
+        out["precedent"] = TIGHT_PRECEDENT
     return out
 
 

@@ -89,18 +89,22 @@ def test_shore_strict_flips_the_8_stack_verdict():
 # ---------------------------------------------------------------- (2) thermal / power
 def test_thermal_report_presets_and_known_parts():
     assert set(COOLING) == {"air_oam", "air_hgx", "liquid"}
-    assert (COOLING["air_oam"]["pkg_W"], COOLING["air_hgx"]["pkg_W"], COOLING["liquid"]["pkg_W"]) == (600.0, 1000.0, 1400.0)
-    assert (COOLING["air_oam"]["flux_W_mm2"], COOLING["liquid"]["flux_W_mm2"]) == (0.85, 2.5)
+    # 0.314 (MODEL §259): air_oam 600 → 1000 W (MI350X OAM air), flux air 0.85 → 0.86 (H100 SXM), liquid 2.5 → 1.70 (HIR)
+    assert (COOLING["air_oam"]["pkg_W"], COOLING["air_hgx"]["pkg_W"], COOLING["liquid"]["pkg_W"]) == (1000.0, 1000.0, 1400.0)
+    assert (COOLING["air_oam"]["flux_W_mm2"], COOLING["liquid"]["flux_W_mm2"]) == (0.86, 1.70)
     h = [p for p in KNOWN_PARTS if p["part"] == "H100 SXM"][0]
     assert abs(h["W"] / h["die_mm2"] - 0.86) < 0.01                # H100 sits at the air flux limit
     t = thermal_report(700.0, 814.0, 1, 60.0, None)
-    assert t["status"] == "unchecked" and t["feasible"] is None and abs(t["flux_W_mm2"] - 640 / 814) < 1e-12
-    assert t["limits"]["air_oam"]["pkg_ok"] is False and t["limits"]["air_hgx"]["pkg_ok"] is True
+    # 0.314: judged flux = card-level (700 / 814); the die-level figure (DRAM devices out) is reported beside it
+    assert t["status"] == "unchecked" and t["feasible"] is None and abs(t["flux_W_mm2"] - 700 / 814) < 1e-12
+    assert abs(t["die_flux_W_mm2"] - 640 / 814) < 1e-12
+    assert t["limits"]["air_oam"]["pkg_ok"] is True and t["limits"]["air_hgx"]["pkg_ok"] is True
     assert thermal_report(700.0, 814.0, 1, 60.0, "air_hgx")["feasible"] is True
-    o = thermal_report(700.0, 814.0, 1, 60.0, "air_oam")
-    assert o["feasible"] is False and o["reasons"][0].startswith("封装功耗 700 W > air_oam")
+    o = thermal_report(1100.0, 1600.0, 1, 60.0, "air_oam")
+    assert o["feasible"] is False and o["reasons"][0].startswith("封装功耗 1100 W > air_oam")
     two = thermal_report(1000.0, 800.0, 2, 200.0, None)            # equal split over the package's dies
-    assert two["die_W"] == 400.0 and two["flux_W_mm2"] == 0.5 and two["pd"]["judged"] is False
+    assert two["die_W"] == 400.0 and two["flux_W_mm2"] == 1000.0 / 1600.0 and two["die_flux_W_mm2"] == 0.5
+    assert two["pd"]["judged"] is False
     assert thermal_report(None, 800.0)["status"] == "unknown"
     assert dram_dev_W({"J_by_action": {"dram": 1.0, "hbm_static": 1.0, "mac": 2.0}, "avg_W_per_card": 100.0}) == 50.0
     try:
@@ -115,10 +119,11 @@ def test_thermal_in_eval_and_dse():
                                                                                          "prompt": 4096, "ctx": 8192}},
          "energy": {"energy_preset": "tpuv4i_7nm"}, "sensitivity": False}
     o = api.api_eval(b)
-    t = o["thermal"]                                  # 1P prefill: 504 W on 571 mm² → 0.86 W/mm² (above air 0.85)
-    assert t["status"] == "unchecked" and abs(t["pkg_W"] - 504.25) < 0.1 and abs(t["flux_W_mm2"] - 0.8584) < 1e-3
+    t = o["thermal"]                  # 1P prefill: 504 W on 571 mm² → 0.88 W/mm² card-level (0.314; air 0.86)
+    assert t["status"] == "unchecked" and abs(t["pkg_W"] - 504.25) < 0.1 and abs(t["die_flux_W_mm2"] - 0.8584) < 1e-3
+    assert abs(t["flux_W_mm2"] - 0.8825) < 1e-3 and t["static_included"] is False and t["notes"]
     oa = api.api_eval({**b, "cooling": "air_oam"})
-    assert oa["thermal"]["feasible"] is False and any(w.startswith("不可建（热 / 功耗）：热流密度 0.86") for w in oa["summary"]["warnings"])
+    assert oa["thermal"]["feasible"] is False and any(w.startswith("不可建（热 / 功耗）：热流密度 0.88") for w in oa["summary"]["warnings"])
     assert api.api_eval({**b, "cooling": "liquid"})["thermal"]["feasible"] is True
     try:
         api.api_eval({**b, "cooling": "x"})

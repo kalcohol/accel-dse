@@ -441,8 +441,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     from .. import mem_catalog as mc
     from .budget import full_area, shoreline_report
     from .thermal import COOLING, thermal_report
+    from .energy import idle_W_of
     if cooling is not None and cooling not in COOLING:
         raise ValueError(f"cooling must be one of {sorted(COOLING)}")
+    static_in = idle_W_of(table) is not None      # 0.314: does the card power hold the whole-card static floor?
     from .hardware import default_mem
     from .insight import TIE
     from .powercap import CAP_CURVES, F_MIN, VF_CURVES
@@ -667,9 +669,12 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                      "晶粒在 26 × 33 曝光场内可取长宽比 ≤ 2 的矩形（noc_mem_io_edges = 1 复现 0.311 整边保留，0 复现 0.310），"
                      "地址均匀交织 → 各边按其上外存单元份额承载流量，最重的边限制 NoC 接入（noc_mem_balance = pooled 复现 0.310）")
     if shore_strict:
-        notes.append("岸线严格（0.313，shore_strict）：外存占第 3 / 4 边（tight）视为不可建——出货晶粒（GH100、B200、MI300X IOD）"
-                     "外存只在两条长边「二手」；默认（关）沿用 0.310 起的四边几何上限「假设」")
-    notes.append("热 / 功耗（0.313）：每点报告封装功耗、每晶粒热流密度（卡功耗 − DRAM 器件功耗）÷ 晶粒数 ÷ 面积与 0.75 V「假设」下的电流密度；"
+        notes.append("岸线严格（0.313，shore_strict）：外存占第 3 / 4 边（tight）视为不可建——出货晶粒（GH100、B200、MI300X IOD、"
+                     "TPU v5p、Trainium2、MI250X GCD）外存不超过两条边「二手」；第三边仅见于专利（Google US 12,315,860 B2 "
+                     "权利要求 14）「来源」，无出货先例；默认（关）沿用 0.310 起的四边几何上限「假设」")
+    notes.append("热 / 功耗（0.313；0.314 口径统一）：每点报告封装功耗、热流密度（判定用：封装功耗 ÷ 逻辑晶粒总面积，与出货件 "
+                 "TDP ÷ 晶粒面积同口径；另报每晶粒（扣 DRAM 器件）热流）与 0.75 V「假设」下的电流密度"
+                 + ("" if static_in else "；能耗表无整卡静态（idle_W / idle_frac_tdp），功耗偏低「近似」") + "；"
                  + (f"按 {cooling} 判定（{COOLING[cooling]['pkg_W']:g} W / {COOLING[cooling]['flux_W_mm2']:g} W/mm²；"
                     + COOLING[cooling]["src"] + "）" if cooling else "未选冷却方案（cooling）：只报告不判定")
                  + "；供电（凸点电流）无公开上限，只报告")
@@ -827,8 +832,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                         why.append(sw)
                 # 0.313: thermal / power buildability (always reported; judged only with a cooling preset)
                 th = thermal_report(row.get("W_card"), row.get("mm2") if dens_ok else sr.get("die_mm2"), nd,
-                                    row.get("dram_dev_W") or 0.0, cooling)
-                row["thermal"] = {k: th.get(k) for k in ("status", "feasible", "pkg_W", "die_W", "flux_W_mm2")}
+                                    row.get("dram_dev_W") or 0.0, cooling, static_in)
+                # 0.314: flux_W_mm2 = card-level (judged, shipped-part definition); die_flux_W_mm2 = DRAM devices out
+                row["thermal"] = {k: th.get(k) for k in ("status", "feasible", "pkg_W", "die_W", "flux_W_mm2",
+                                                         "die_flux_W_mm2", "flux_ratio", "static_included")}
                 row["thermal"]["A_per_mm2"] = (th.get("pd") or {}).get("A_per_mm2")
                 if th.get("feasible") is False:
                     row["buildable"] = False

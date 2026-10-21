@@ -1460,9 +1460,11 @@ function renderThermal(x) {
   const st = { ok: '✓ 可建', over: '✗ 不可建', unchecked: '（未选冷却，只报告）', unknown: '?' }[x.status] || x.status;
   const lim = x.limits ? Object.entries(x.limits).map(([k, v]) => `${{ air_oam: '风冷OAM', air_hgx: '风冷HGX', liquid: '液冷' }[k] || k} ${v.pkg_ok && v.flux_ok !== false ? '✓' : '✗'}`).join(' · ') : '';
   el.append(h('div', { class: x.feasible === false ? 'warn' : '', id: 'chip-thermal-head' },
-    `热 / 功耗 ${st} · 封装 ${num(x.pkg_W)} W（DRAM 器件 ${num(x.dram_dev_W)} W）· 每晶粒 ${num(x.die_W)} W · 热流 ${x.flux_W_mm2 != null ? x.flux_W_mm2.toFixed(2) : '—'} W/mm²`
+    `热 / 功耗 ${st} · 封装 ${num(x.pkg_W)} W（DRAM 器件 ${num(x.dram_dev_W)} W）· 每晶粒 ${num(x.die_W)} W · 热流 ${x.flux_W_mm2 != null ? x.flux_W_mm2.toFixed(2) : '—'} W/mm²（封装功耗 ÷ 晶粒面积，出货件同口径）`
+    + (x.die_flux_W_mm2 != null ? ` · 晶粒热流 ${x.die_flux_W_mm2.toFixed(2)}（扣 DRAM 器件）` : '') + (x.flux_ratio != null ? ` · ${x.flux_ratio.toFixed(2)}× 上限` : '')
     + (x.pd && x.pd.A_per_mm2 != null ? ` · 电流 ${x.pd.A_per_mm2.toFixed(2)} A/mm² @ ${x.pd.vdd_V} V「假设」（供电只报告）` : '') + (lim ? ` · ${lim}` : '')));
   if (x.reasons && x.reasons.length) el.append(h('div', { class: 'warn' }, x.reasons.join('；')));
+  if (x.notes && x.notes.length) el.append(h('div', { class: 'small muted' }, x.notes.join('；')));   // 0.314
 }
 
 function renderBudget(r) {

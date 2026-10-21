@@ -6,6 +6,41 @@
 
 
 
+## [0.314.0]
+
+### Thermal model audited against shipped parts; shore_strict evidence; OvisOCR3
+- **Thermal: one flux definition on both sides.**
+  - 0.313 judged the die-level flux ((card W − DRAM-device W) ÷ area) against 0.85 W/mm². That limit equals H100's *card-level* figure (700 W ÷ 814 mm² = 0.86), so the two sides used different definitions.
+  - `flux_W_mm2` (the judged value) is now card-level: package W ÷ logic-die area, the only definition in which a shipped part's figure can be formed, since neither its HBM power nor its VR loss is published.
+  - The die-level figure stays reported as `die_flux_W_mm2`. New fields: `flux_ratio`, `static_included`, `notes`, `flux_basis`.
+  - Both figures are averages; hot spots are not modelled. A shipped part's average already carries its own hot-spot ratio 「近似」.
+- **Thermal: what the modelled power contains.**
+  - Dynamic MAC / vector / SRAM / SLC / NoC + wire / clock / DRAM device / DRAM PHY / D2D / link energy, SRAM and NoC-router leakage, and HBM standby.
+  - Whole-card static (logic leakage, uncore) only when the energy table has `idle_W` or `idle_frac_tdp` × `tdp_W`. The chiplet example and its scans drop it. No VR loss is modelled.
+  - Both omissions make the modelled power low against a shipped TDP, so "over" is robust and a marginal "ok" is not. The report now says so in `notes` when static is missing.
+- **Thermal: limits re-sourced.** Rule: the larger of the highest shipped average and the HIR 2021 Table 1 thermal-budget figure. The HIR uniform-flux idealisations are no longer used. Old → new:
+  - Air flux 0.85 → **0.86 W/mm²**. Basis: H100 / H200 SXM 700 W air (Dell XE9680: 8 × H200 700 W, air, 35 °C inlet 「来源」) ÷ 814 mm² 「推导」. HIR's 0.55 W/mm² thermal-budget figure is exceeded by shipped parts. 0.313's "0.55–0.85 at a 50 °C budget" misquoted HIR: 0.85 is its uniform-flux idealisation.
+  - `air_oam` package 600 → **1000 W**: MI350X OAM air 1000 W TBP (AMD 「来源」); Gaudi 3 HL-325L OAM air 900 W (Hot Chips 2024 「来源」). The OCP OAM r2.0 600 W recommendation is exceeded by both.
+  - `air_hgx` 1000 W: source upgraded to the NVIDIA Blackwell datasheet 「来源」.
+  - `liquid` 1400 W: MI355X direct liquid 1400 W TBP (AMD 「来源」).
+  - Liquid flux 2.5 → **1.70 W/mm²** (HIR Table 1 water cold plate, 50 °C budget, 4 cm² chip 「来源」). Shipped liquid parts reach ≤ 0.96 (MI355X on ≈ 1464 mm² IOD 「二手」).
+- **Thermal: known parts.** KNOWN_PARTS now covers H100, H200, B200 air / liquid, MI300X, MI350X, MI355X, Gaudi 3 (area unpublished) and TPU v5p / v6e (no official TDP or area; third-party estimates not used). Card-level average flux, air: H100 / H200 0.86 > MI350X 0.68 > B200 ≥ 0.58 > MI300X 0.51; liquid: MI355X 0.96 > B200 ≥ 0.70.
+- **Thermal: verdict effect (old → new)** over 80 chip × memory × phase cases (qwen3-8b, tpuv4i_7nm dynamic table, 3 presets each): **0 changes**.
+  - Over air: the same 8 cases in both versions (1P and 1P-lp4x64 prefill with 1 / 2 / 4 × HBM3E and LPDDR5X 8 × 64; card-level 0.88–0.97 W/mm², 1.03–1.13× the H100 envelope). Over liquid: none.
+  - With the H100-measured static floor charged (71.8 / 700 × 700 W 「二手」), the 1P prefill configurations over air go from 4 to 6 per chip (+ 8 × HBM3E 0.88, HBM3 5-stack 0.97).
+- **shore_strict stays opt-in, now with evidence** (`budget.TIGHT_PRECEDENT`, shown as `precedent` on every "tight" shoreline report).
+  - Every shipped HBM part found carries memory on at most two edges of a logic die: GV100 / GA100 / GH100 / B200, MI250X GCD, MI300X / MI350X IODs, TPU v5p (3 + 3), Trainium2 「二手」.
+  - The only third-edge layout found is a patent claim: Google US 12,315,860 B2, claim 14 (12 stacks, some "along a third side of the second logic die") 「来源」.
+  - Rubin Ultra's announced 4-die / 16-stack package places stacks on outer edges and was reportedly dropped 「二手」. No source excludes a third edge, so the default is unchanged.
+  - The same patent cross-checks the 0.313 interposer bbox: a 650 mm² 5 nm die → about 2250 mm² interposer with surrounding HBM, against the model's 1P + 8 × HBM3E 654 → 2264 mm² (not fitted).
+- **Freshness** (2026-10-22 JST):
+  - + **OvisOCR3** (ATH-MaaS, Apache-2.0, 2026-10-21 11:36 JST): Qwen3.5-0.8B post-train, qwen3_5 VLM as released bf16, 0.752 B params.
+    - It has the same config and header shapes as StartLux-Decision-v1-0.8B, except that it ships no MTP head and is all-bf16 where the Qwen base keeps a few fp32 norms. So it is **merged** (`MERGED["ovisocr3"] = "startlux-decision-v1-0.8b"`, the 0.251 / 0.288 precedent): resolvable by id and validated, but not listed.
+    - Its preprocessor_config is identical to Qwen3.5's, so the 12-block ViT is built.
+    - ATH-MaaS is added to the sweep's watched orgs.
+  - KRAFTON Raon-1-mini-preview: config still gated (HTTP 401), so not added.
+- Tests: test_core_314.py. test_core_313's thermal asserts moved to the 0.314 values (old values above). Release count 188 → 189 (llm 162 → 163); catalog total 196 → 197 (listed unchanged; + 1 merged).
+
 ## [0.313.0]
 
 ### Adversarial review of 0.310–0.312 (lane rate and lane edge, 4-sided memory, interposer box); thermal / power buildability

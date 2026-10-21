@@ -8962,3 +8962,75 @@ These versions flipped the monolithic-vs-split verdict twice: 0.310 mono, 0.311 
 - HF sweep since 2026-10-21: only Ling-3.0-tiny-UBTree (in).
 - KRAFTON Raon-1-mini-preview (30B-A4B): config gated and custom code, so not added. KRAFTON added to the watched orgs.
 - UCIe 4.0 unpublished. JEDEC has no HBM4E. 448G is in OIF definition.
+
+## §259 Thermal model audited against shipped parts; shore_strict evidence (0.314)
+
+### §259.1 Flux definition
+- A shipped part's figure can only be formed as TDP / TBP ÷ logic-die area, because its HBM power and VR loss are not published. Since 0.314 the model judges the same quantity: `flux_W_mm2` = package W ÷ (dies × die mm²).
+- 0.313 judged (card W − DRAM-device W) ÷ area against 0.85 W/mm², which equals H100's card-level figure. That mixed two definitions.
+- The die-level figure stays reported as `die_flux_W_mm2`. Both are averages.
+- Hot spots are not modelled. A shipped part's average already carries its own hot-spot ratio, so the comparison holds for a design of similar uniformity 「近似」.
+- For 3D stacks (MI300X / MI350X) the area is the heat-exiting footprint (the IODs).
+
+### §259.2 What the modelled power contains
+- **Included:**
+  - Dynamic MAC, vector, SRAM, SLC, NoC + wire, clock, DRAM device, DRAM PHY (host side, on die), D2D and link energy.
+  - SRAM and NoC-router leakage, and HBM standby.
+  - Whole-card static (logic leakage, uncore) only when the energy table has `idle_W` or `idle_frac_tdp` × `tdp_W`. `chiplet_example.table()` drops these; the eval API includes them when the user sets TDP.
+- **HBM:** device power is in the package figure, like a TBP, and out of the die figure. The host PHY is on the die in both.
+- **Not modelled:** VR loss on the module.
+- Both omissions bias the modelled power low against a shipped TDP. An "over" verdict is therefore robust; an "ok" within that margin is not. `static_included` and `notes` say so per report.
+
+### §259.3 Limits
+Rule: the larger of (a) the highest average flux or package power of a shipped part with that cooling and (b) the HIR 2021 Table 1 thermal-budget figure (50 °C junction-to-inlet, 4 cm² chip, demonstrated hardware). The HIR uniform-heat-flux idealisations (air 0.85, water 2.50 W/mm²) are not used.
+
+| preset | package W | flux W/mm² | basis |
+|---|---|---|---|
+| air_oam | 600 → 1000 | 0.85 → 0.86 | MI350X OAM air 1000 W TBP (AMD 「来源」); Gaudi 3 HL-325L OAM air 900 W (Hot Chips 2024 「来源」); flux: H100 / H200 SXM 700 W ÷ 814 mm² 「推导」 |
+| air_hgx | 1000 | 0.85 → 0.86 | HGX B200 configurable to 1000 W, air (NVIDIA Blackwell datasheet 「来源」) |
+| liquid | 1400 | 2.5 → 1.70 | MI355X DLC 1400 W TBP (AMD 「来源」); HIR water cold plate at a 50 °C budget 「来源」 |
+
+Shipped parts, as TDP ÷ logic-die area. Air:
+
+| part | W/mm² | inputs |
+|---|---|---|
+| H100 / H200 SXM | 0.86 | 700 W ÷ 814 mm²; Dell XE9680 air, 35 °C inlet 「来源」 |
+| MI350X | 0.68 | 1000 W ÷ 2 × 732 mm² (IOD 「二手」, ASCII.jp) |
+| B200 | ≥ 0.58 | 1000 W ÷ 2 × ≤ 858 mm² 「二手」 |
+| MI300X | 0.51 | 750 W ÷ 4 × 370 mm² (IOD 「二手」) |
+
+Liquid:
+
+| part | W/mm² | inputs |
+|---|---|---|
+| MI355X | 0.96 | 1400 W ÷ 2 × 732 mm² 「二手」 |
+| B200 | ≥ 0.70 | 1200 W 「二手」 |
+
+Gaudi 3 publishes package power only (air 900 W / liquid 1200 W). TPU v5p / v6e have no official TDP or area, and third-party estimates are not used.
+
+HIR's air figure at a 50 °C budget (0.55; text: 40–53 W/cm² for a 45–50 °C budget) is exceeded by every high-end shipped air part, which use larger heat sinks, a 35 °C inlet and vapour chambers. Shipped parts are the better buildability evidence.
+
+### §259.4 Effect
+Scan over 80 chip × memory × phase cases (qwen3-8b, tpuv4i_7nm dynamic table, 3 presets each; /tmp/a314/therm2.py): **0 verdict changes** from 0.313.
+- Over air: 1P and 1P-lp4x64 prefill with 1 / 2 / 4 × HBM3E and LPDDR5X 8 × 64. Card-level 0.88–0.97 W/mm², 1.03–1.13× the H100 envelope.
+- Over liquid: none.
+- With the H100 static floor charged (idle_frac_tdp 0.103 × 700 W 「二手」, meaningful only for 700 W-class chips), 1P prefill over air goes from 4 to 6 memory configurations per chip: + 8 × HBM3E 0.88, HBM3 5-stack 0.97.
+- The 1P + 4 × HBM3E prefill flag that prompted the audit holds under the consistent definition. It is marginal (1.03×) without static and clear (1.17×) with it.
+
+### §259.5 Memory on more than two edges (shore_strict)
+- **Shipped HBM parts, ≤ 2 edges per logic die** 「二手」:
+  - GV100 / GA100 / GH100 / B200 (long edges).
+  - MI250X GCDs.
+  - MI300X / MI350X IODs.
+  - TPU v5p (3 + 3 stacks on two sides, I/O die at the front).
+  - Trainium2 (stacks on both sides).
+- **Announced:** Rubin Ultra 4-die / 16-stack (stacks on outer edges; reportedly dropped for a 2-die package 「二手」).
+- **Patent:** Google US 12,315,860 B2 claim 14 claims 12 stacks with some "along a third side of the second logic die" 「来源」. This is the only third-edge layout found. Claims 15–18 also place stacks two deep (2 × 2 arrays fed through organic substrate traces), a mechanism not modelled here.
+- No source excludes a third edge and none ships one, so `shore_strict` stays opt-in. Every "tight" shoreline report now carries `precedent` (`budget.TIGHT_PRECEDENT`).
+- The same patent gives a 650 mm² 5 nm die → about 2250 mm² interposer with surrounding HBM, against the 0.313 bbox for 1P + 8 × HBM3E: 654 → 2264 mm² (independent, not fitted).
+
+### §259.6 Freshness (2026-10-22 JST)
+- + OvisOCR3 (ATH-MaaS, Apache-2.0, 2026-10-21 11:36 JST). Qwen3.5-0.8B post-train, qwen3_5 VLM, bf16, 0.752 B.
+  - Same config and header shapes as StartLux-Decision-v1-0.8B, minus the MTP head → merged (0.251 / 0.288 rule). Resolvable and validated; the ViT is built (identical preprocessor_config).
+  - ATH-MaaS added to the sweep's EXTRA_ORGS.
+- Raon-1-mini-preview: config still gated (HTTP 401).

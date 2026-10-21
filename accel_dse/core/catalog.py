@@ -226,6 +226,10 @@ EXTRA_TAIL = [
     ("ling-3.0-tiny", "inclusionAI/Ling-3.0-tiny"),
     ("ling-3.0-flash", "inclusionAI/Ling-3.0-flash"),
     ("ling-3.0-tiny-ubtree", "inclusionAI/Ling-3.0-tiny+inclusionAI/Ling-3.0-tiny-UBTree"),
+    # 0.314 ATH-MaaS OvisOCR3 (Apache-2.0, 2026-10-21 11:36 JST; document OCR / parsing): Qwen3.5-0.8B post-train,
+    # transformers qwen3_5 VLM as released bf16 — same config / header shapes as StartLux-Decision-v1-0.8B except the
+    # MTP head it does not ship → MERGED (resolvable + validated, not listed)
+    ("ovisocr3", "ATH-MaaS/OvisOCR3"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -457,7 +461,9 @@ MERGED = {"deepseek-v3.1": "deepseek-v3", "deepseek-r1": "deepseek-v3", "kimi-k2
           "ornith-1.5-397b": "qwen3.5-397b-a17b", "ornith-1.5-35b-a3b": "startlux-decision-v1-35b-a3b",
           "ornith-1.5-9b": "qwen3.5-9b", "ornith-1.0-397b": "qwen3.5-397b-a17b",
           "ornith-1.0-35b": "startlux-decision-v1-35b-a3b", "ornith-1.0-9b": "qwen3.5-9b",
-          "ornith-1.0-397b-fp8": "ornith-1.5-397b-fp8", "ornith-1.0-35b-fp8": "ornith-1.5-35b-a3b-fp8"}
+          "ornith-1.0-397b-fp8": "ornith-1.5-397b-fp8", "ornith-1.0-35b-fp8": "ornith-1.5-35b-a3b-fp8",
+          # 0.314: OvisOCR3 (ATH-MaaS Qwen3.5-0.8B post-train; no MTP head; all-bf16 where StartLux keeps fp32 norms)
+          "ovisocr3": "startlux-decision-v1-0.8b"}
 # 0.289: the Nemotron 3.5 bf16 releases (Bolt, Lightning, Super-VL) are listed, not merged — MERGED needs identical
 # params and dtypes, and they differ in dtype from the as-served 24GB / NVFP4 releases
 # Generic dense GQA models whose sizes are already covered by Qwen3 / Llama 3: no extra design insight.
