@@ -215,7 +215,7 @@ ENERGY_PRESETS: dict[str, dict] = {
                        + _FP32_ACC + "）"),
             "pJ_vec": (0.4, "来源", _HOROWITZ + ": 16-bit FP add 0.4 pJ（向量操作代理）"),
             "pJ_bit_sram": (5.0 / 32, "来源", _HOROWITZ + ": 32-bit SRAM cache read 5 pJ → 5/32 pJ/bit"),
-            "pJ_bit_slc": (5.0 / 32, "假设", "= SRAM array（同宏类）on " + _HOROWITZ + "; wire vs capacity: set slc_access_ref_mib"),
+            "pJ_bit_slc": (5.0 / 32, "假设", "= SRAM array（同宏类）on " + _HOROWITZ + "；容量相关的导线项由 pJ_bit_mm_onchip（预设已填，0.300）加上"),
             "pJ_bit_dram": (640.0 / 32, "来源", _HOROWITZ + ": 32-bit DRAM read 640 pJ → 20 pJ/bit（DDR 类接口时代；含 I/O）"),
             "pJ_bit_d2d": (0.25, "来源", _UCIE + "（Advanced）"),
             "pJ_bit_link": (1.3, "来源", _NVL + "（节点内 scale-up 代理）"),
@@ -241,7 +241,7 @@ ENERGY_PRESETS: dict[str, dict] = {
                        + _FP32_ACC + "）/ 2.6"),
             "pJ_vec": (0.4 / 2.6, "推导", _TPUV4I + "; base 16b FP add 0.4 pJ / 2.6"),
             "pJ_bit_sram": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "推导", _TPUV4I + "; SRAM 1.3–2.4× (geom. mean)"),
-            "pJ_bit_slc": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "假设", "= SRAM array after 7 nm scale; wire vs capacity: set slc_access_ref_mib"),
+            "pJ_bit_slc": ((5.0 / 32) / (1.3 * 2.4) ** 0.5, "假设", "= SRAM array after 7 nm scale；容量相关的导线项由 pJ_bit_mm_onchip（预设已填，0.300）加上"),
             "pJ_bit_dram": ((640.0 / 32) / 6.3, "推导", _TPUV4I + "; DRAM 6.3× via HBM packaging "
                             "→ ≈ 3.2 pJ/bit（I/O+阵列量级；HBM3 接口 alone 0.29 pJ/bit, Chae et al. JSSC 2023, 仅 PHY）"),
             # 0.187: per-kind DRAM from primary vendor figures (0.186 used PIM-AI's derived profile, HBM 7 / LPDDR 10,
@@ -290,6 +290,8 @@ def apply_energy_preset(d: dict) -> dict:
     if pid not in ENERGY_PRESETS:
         raise ValueError(f"energy.energy_preset must be one of {sorted(ENERGY_PRESETS)}")
     for k, (v, _, _) in ENERGY_PRESETS[pid]["fields"].items():
+        if k == "pJ_bit_mm_onchip" and d.get("slc_access_ref_mib") is not None:
+            continue                  # 0.300: the user's √C SLC model excludes the distance model (EnergyTable check)
         if d.get(k) is None:
             d[k] = v
     return d
@@ -534,6 +536,26 @@ NOC_SRC = ("Park et al., 'Approaching the theoretical limits of a mesh NoC with 
 # MAC-array density for the engine pitch: TPUv4i (Jouppi et al., ISCA 2021): 4 × 128×128 bf16 MXUs = 11 % of a
 # < 400 mm² die → 0.6875 mm² per 1024 MACs (upper bound; same value as budget DENSITY_PRESETS n7_tpuv4i) 「来源」
 NOC_MM2_PER_KMAC_DEFAULT = 400 * 0.11 / 64
+# 0.300: the presets carry the on-chip wire (Keckler 2011) and the NoC router (Park 2012), so a preset's J/token
+# includes the SRAM / SLC distance term (0.298), the NoC traffic and its wires (0.299) by default.  ≤ 0.299 both were
+# unset in every preset (opt-in): the preset J/token omitted every on-chip-movement cost, which biases design
+# comparisons toward many small engines and a big flat SRAM (the cost the design change adds is the one left out).
+# A user value (incl. 0) still wins; a user √C (slc_access_ref_mib) keeps the preset from filling the distance model.
+_KECKLER = ("Keckler et al., 'GPUs and the Future of Parallel Computing', IEEE Micro 2011, Fig. 3: moving 256 bits "
+            "10 mm costs 310 pJ at 40 nm, 200 pJ projected at 10 nm / 0.75 V")
+PRESET_ONCHIP = {
+    "horowitz_45nm": {
+        "pJ_bit_mm_onchip": (310.0 / 256 / 10, "来源", _KECKLER + " → 0.121 pJ/bit/mm（40 nm，作 45 nm 代理）"),
+        "pJ_bit_hop_noc": (NOC_HOP_PJ_BIT_45NM, "推导", NOC_SRC + "（45 nm 值 0.416）"),
+    },
+    "tpuv4i_7nm": {
+        "pJ_bit_mm_onchip": (200.0 / 256 / 10, "来源/假设", _KECKLER + " → 0.078 pJ/bit/mm（10 nm 投影作 7 nm 代理，偏低侧）"),
+        "pJ_bit_hop_noc": (NOC_HOP_PJ_BIT_7NM, "推导", NOC_SRC),
+    },
+}
+for _pid, _f in PRESET_ONCHIP.items():
+    ENERGY_PRESETS[_pid]["fields"].update(_f)
+
 NOC_BASIS = ("NoC：每字节 × 路由跳数 × pJ_bit_hop_noc + 每字节 × 链路长度（引擎间距）× pJ_bit_mm_onchip；流量来自数据流"
              "（A 操作数多播到持有输出列的引擎、跨组拷贝、split-K 部分和归约树），拓扑 mesh / ring / crossbar（Park DAC 2012；Keckler 2011）")
 

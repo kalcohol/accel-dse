@@ -1,4 +1,5 @@
 """0.264: 25/85 °C SLC energy packaged into default insight_report; UI apply hooks."""
+from dataclasses import replace
 from pathlib import Path
 
 from accel_dse import api
@@ -14,7 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _t(**kw):
-    return EnergyTable(**apply_energy_preset({"energy_preset": "tpuv4i_7nm", **kw}))
+    t = EnergyTable(**apply_energy_preset({"energy_preset": "tpuv4i_7nm", **kw}))
+    # 0.300: the presets now fill the on-chip wire + NoC router; this file pins the ≤ 0.299 preset (no on-chip
+    # movement terms) unless a test passes them
+    return replace(t, **{k: None for k in ("pJ_bit_mm_onchip", "pJ_bit_hop_noc") if k not in kw})
 
 
 def _base():
@@ -41,7 +45,7 @@ def test_insight_skips_slc_temp_without_leak():
 def test_api_insight_slc_temp_and_ui():
     out = api.api_insight({"scenario": {"model": M, "mem_id": LP, "chip": {"name": "100T"},
                                         "serving": {"batch": 8}},
-                           "energy": {"energy_preset": "tpuv4i_7nm"},
+                           "energy": {"energy_preset": "tpuv4i_7nm", "pJ_bit_mm_onchip": 0, "pJ_bit_hop_noc": 0},
                            "models": [M]})
     assert out["slc_temp"] and out["slc_temp"]["recommend"][0]["hot_cuts_J_opt"]
     html, js = W.read(W.INDEX_HTML), W.read()          # 0.286: parsed

@@ -5,7 +5,7 @@ from accel_dse.core.insight import sizing_report
 from accel_dse.core.scenario import Scenario
 from tests import webstruct as W  # noqa: E402  (0.286 structural UI checks)
 
-E = {"energy_preset": "tpuv4i_7nm"}
+E = {"energy_preset": "tpuv4i_7nm", "pJ_bit_mm_onchip": 0, "pJ_bit_hop_noc": 0}   # 0.300: ≤ 0.299 preset (no on-chip movement)
 
 
 def test_dram_presets_primary():

@@ -16,7 +16,10 @@ M = "qwen3-8b"
 
 
 def _t(**kw):
-    return EnergyTable(**apply_energy_preset({"energy_preset": "tpuv4i_7nm", **kw}))
+    t = EnergyTable(**apply_energy_preset({"energy_preset": "tpuv4i_7nm", **kw}))
+    # 0.300: the presets now fill the on-chip wire + NoC router; this file pins the ≤ 0.299 preset (no on-chip
+    # movement terms) unless a test passes them
+    return replace(t, **{k: None for k in ("pJ_bit_mm_onchip", "pJ_bit_hop_noc") if k not in kw})
 
 
 def test_presets_mult_plus_fp32_accumulate():

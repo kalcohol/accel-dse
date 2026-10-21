@@ -141,7 +141,7 @@ function cancel(chan) {
    (Pyodide) build also reports its first-load phases here (download / init / package). */
 const STAGE = { eval: 'eval 评估', sensitivity: 'sensitivity 敏感度', fit: 'fit 容量修正搜索', memory: 'memory 内存',
   compare: 'compare 映射对比', layouts: 'layouts 布局搜索', stability: 'stability 排名稳定性', sweep: 'sweep 扫描',
-  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC', insight_dispatch: 'LLM 派发敏感度', insight_noc: 'NoC 能耗',
+  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC', insight_dispatch: 'LLM 派发敏感度', insight_noc: 'NoC 能耗', insight_dse: '能耗设计搜索',
   health: 'catalog 载入目录', catalog: 'catalog 载入目录', models: 'catalog 载入目录' };
 const LOAD_ZH = { download: '下载 Python 运行时', init: '初始化 Pyodide', package: '载入 accel_dse 包', ready: '就绪', error: '静态版加载失败' };
 const PROG = {
@@ -713,7 +713,7 @@ function invalidate() {
   // 0.285: speech / streams / dispatch insight panels keep their text and gain the stale tag once
   // 0.288: + the design-insight panels (insight / SLC size / sizing / upgrade path) — they kept old results untagged
   for (const id of ['ins-sp-status', 'ins-sps-status', 'ins-dp-status', 'ins-status', 'ins-slc-status', 'ins-size-status',
-    'ins-path-status', 'ins-noc-status']) {
+    'ins-path-status', 'ins-noc-status', 'ins-dse-status']) {
     const el = $(id);
     if (el && el.dataset.done && !el.textContent.includes(STALE)) el.textContent += ` · ${STALE}`;
   }
@@ -2075,6 +2075,7 @@ function initEnergyPresets() {
     for (const [f, x] of Object.entries(p.fields)) {
       const cur = e[f], mine = cur !== null && cur !== undefined && S.energyPresetFilled[f] !== cur;
       const inp = $('e-' + f);
+      if (f === 'pJ_bit_mm_onchip' && e.slc_access_ref_mib != null) { kept.push(f + '（已用 √C 模型）'); continue; }
       if (mine) { kept.push(f); if (inp) inp.title = '你的输入（预设未覆盖）'; continue; }
       e[f] = +x.value.toPrecision(4); S.energyPresetFilled[f] = e[f];
       st[x.status] = (st[x.status] || 0) + 1;
@@ -2327,6 +2328,84 @@ async function runInsightNoc() {
   } catch (e) {
     $('ins-noc-status').textContent = '错误：' + e.message;
     $('ins-noc-status').dataset.done = '1';
+  }
+}
+
+/* 0.300: energy-aware design search — throughput vs J/unit Pareto front (/api/insight_dse, core/energy_dse.py) */
+function paretoChart(rows) {
+  const pts = rows.filter((x) => x.thr != null && x.J_per_unit != null);
+  if (!pts.length) return h('div', { class: 'empty' }, '无数据');
+  const W = 760, H = 300, P = { l: 70, r: 20, t: 24, b: 40 };
+  const xs = pts.map((p) => p.J_per_unit), ys = pts.map((p) => p.thr);
+  const x0 = Math.min(...xs) * 0.97, x1 = Math.max(...xs) * 1.03, y1 = Math.max(...ys) * 1.08 || 1;
+  const X = (v) => P.l + (x1 === x0 ? 0.5 : (v - x0) / (x1 - x0)) * (W - P.l - P.r);
+  const Y = (v) => H - P.b - (v / y1) * (H - P.t - P.b);
+  const ns = 'http://www.w3.org/2000/svg';
+  const s = (tag, a, txt) => { const e = document.createElementNS(ns, tag); for (const k in a) e.setAttribute(k, a[k]); if (txt !== undefined) e.textContent = txt; return e; };
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', id: 'ins-dse-svg' });
+  svg.append(s('line', { x1: P.l, y1: H - P.b, x2: W - P.r, y2: H - P.b, stroke: '#2e3f55' }));
+  for (let i = 0; i <= 4; i++) {
+    const yv = (y1 * i) / 4, xv = x0 + ((x1 - x0) * i) / 4;
+    svg.append(s('line', { x1: P.l, x2: W - P.r, y1: Y(yv), y2: Y(yv), stroke: '#1f2b3b' }));
+    svg.append(s('text', { x: P.l - 6, y: Y(yv) + 4, 'text-anchor': 'end', fill: '#8fa3b8', 'font-size': 11 }, num(yv)));
+    svg.append(s('text', { x: X(xv), y: H - P.b + 16, 'text-anchor': 'middle', fill: '#8fa3b8', 'font-size': 11 }, xv.toExponential(2)));
+  }
+  svg.append(s('text', { x: W / 2, y: H - 4, 'text-anchor': 'middle', fill: '#8fa3b8', 'font-size': 11 }, 'J/单位（越左越省电 = perf/W 越高）'));
+  svg.append(s('text', { x: 4, y: 12, fill: '#8fa3b8', 'font-size': 11 }, '吞吐 /s/卡'));
+  const front = pts.filter((p) => p.front).sort((a, b) => a.J_per_unit - b.J_per_unit);
+  if (front.length > 1) svg.append(s('polyline', { points: front.map((p) => `${X(p.J_per_unit)},${Y(p.thr)}`).join(' '), fill: 'none', stroke: '#34d399', 'stroke-width': 2 }));
+  for (const p of pts) {
+    const c = s('circle', { cx: X(p.J_per_unit), cy: Y(p.thr), r: p.base ? 6 : 4,
+      fill: !p.feasible ? 'none' : p.front ? '#34d399' : '#5b6b80', stroke: p.base ? '#f59e0b' : !p.feasible ? '#ef4444' : 'none', 'stroke-width': 2 });
+    c.append(s('title', {}, `${p.engines}×${p.array} · MAC×${p.mac_x} · SRAM ${num(p.sram_mib)} MiB · ${p.topology}` + (p.why ? ` · ${p.why}` : '')));
+    svg.append(c);
+  }
+  return svg;
+}
+async function runInsightDse() {
+  const v0 = S.ver;
+  const sci = (x) => (x == null ? '—' : x === 0 ? '0' : x.toExponential(3));
+  const list = (id) => $(id).value.split(/[,\s]+/).filter(Boolean).map(Number);
+  const macs = list('ins-dse-macs'), sram = list('ins-dse-sram');
+  for (const [id, v] of [['ins-dse-macs', macs], ['ins-dse-sram', sram]]) {
+    const bad = !v.length || v.length > 6 || v.some((x) => !isFinite(x) || x <= 0);
+    $(id).classList.toggle('bad', bad);
+    if (bad) return;
+  }
+  $('ins-dse-status').textContent = '计算中（MAC × 引擎边长 × SRAM 网格）…';
+  delete $('ins-dse-status').dataset.done;
+  try {
+    const ex = { mac_scales: macs, sram_scales: sram, power_mode: $('ins-dse-power').value };
+    if ($('ins-dse-phase').value) ex.phase = $('ins-dse-phase').value;
+    if ($('ins-dse-topo').checked) ex.topologies = ['mesh', 'ring', 'crossbar'];
+    const r = await track(req('insight_dse', '/api/insight_dse', body(ex)));
+    if (!r) return;
+    const rows = r.rows || [];
+    const u = rows.find((x) => x.unit)?.unit || '单位';
+    const bp = r.best && r.best.perf_W, bt = r.best && r.best.thr;
+    const desc = (b) => `${b.engines}×${b.array} · SRAM ${num(b.sram_mib)} MiB · ${b.topology}（${num(b.thr)} /s · ${sci(b.J_per_unit)} J）`;
+    $('ins-dse-summary').textContent = `${r.chip} · ${r.model} · ${r.phase} · 可行 ${r.n_feasible}/${rows.length} 点 · 前沿 ${(r.front || []).length} 点`
+      + (r.power_cap_W ? ` · 功耗预算 ${num(r.power_cap_W)} W（${r.power_mode === 'dvfs' ? 'DVFS 封顶' : '剔除'}）` : '')
+      + (r.die_mm2 ? ` · 面积预算 ${num(r.die_mm2)} mm²` : '')
+      + (bp ? ` · perf/W 最优 ${desc(bp)}` : '') + (bt ? ` · 吞吐最优 ${desc(bt)}` : '')
+      + ((r.notes || []).length ? ' · ' + r.notes.join('；') : '');
+    put($('ins-dse-chart'), paretoChart(rows));
+    const pct = (x) => (x * 100).toFixed(1) + '%';
+    put($('ins-dse-tbl'), h('thead', {}, h('tr', {},
+      ['前沿', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '频率 ×', 'mm²', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
+      h('tbody', {}, rows.map((x) => h('tr', { class: x.front ? 'best' : '' },
+        h('td', {}, x.front ? '★' : x.front3 ? '☆' : ''), h('td', {}, String(x.mac_x)),
+        h('td', {}, `${x.engines}×${x.array}` + (x.base ? ' ←当前' : '')), h('td', {}, num(x.sram_mib)), h('td', {}, x.topology),
+        h('td', {}, x.thr != null ? num(x.thr) : '—'), h('td', {}, sci(x.J_per_unit)), h('td', {}, x.perf_W != null ? num(x.perf_W) : '—'),
+        h('td', {}, x.W_card != null ? num(x.W_card) : '—'), h('td', {}, x.f_scale != null ? x.f_scale.toFixed(2) : '—'),
+        h('td', {}, x.mm2 != null ? num(x.mm2) : '—'),
+        ...['mac', 'sram', 'wire', 'noc', 'dram', 'static'].map((k) => h('td', {}, x.share ? pct(x.share[k] || 0) : '—')),
+        h('td', { class: 'l' }, x.why || (x.capped ? 'DVFS 封顶' : ''))))));
+    $('ins-dse-status').textContent = `完成 · ${rows.length} 点${staleTag(v0)}`;
+    $('ins-dse-status').dataset.done = '1';
+  } catch (e) {
+    $('ins-dse-status').textContent = '错误：' + e.message;
+    $('ins-dse-status').dataset.done = '1';
   }
 }
 
@@ -2858,6 +2937,7 @@ async function init() {
   $('ins-size-run').addEventListener('click', runInsightSizing);
   $('ins-slc-run').addEventListener('click', () => runInsightSlc(false));
   $('ins-noc-run').addEventListener('click', runInsightNoc);   // 0.299
+  $('ins-dse-run').addEventListener('click', runInsightDse);   // 0.300
   $('ins-sp-run').addEventListener('click', runInsightSpeech);
   $('ins-sps-run').addEventListener('click', runInsightSpeechStreams);
   $('ins-dp-run').addEventListener('click', runInsightDispatch);

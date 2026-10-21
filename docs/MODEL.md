@@ -8046,3 +8046,67 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §244.5 Default behaviour, old → new
 - See CHANGELOG 0.299.0 (no default change; opt-in).
+
+## §245 Energy presets include on-chip movement; energy-aware design search (0.300)
+
+### §245.1 Preset default 「来源/推导」
+- Both energy presets now fill the on-chip wire and the NoC router:
+
+  | Preset | pJ_bit_mm_onchip | pJ_bit_hop_noc |
+  |---|---|---|
+  | horowitz_45nm | 0.121 (Keckler 2011, 40 nm: 310 pJ / 256 bit / 10 mm) 「来源」 | 0.416 (§244.2, 45 nm) 「推导」 |
+  | tpuv4i_7nm | 0.078 (Keckler 2011, 10 nm projection as a 7 nm proxy, low side) 「来源/假设」 | 0.160 (0.416 ÷ 2.6) 「推导」 |
+
+- Why (mechanism): ≤ 0.299 a preset J/token left out every on-chip-movement cost (SRAM / SLC distance §243, NoC traffic and its links §244). Those are exactly the costs that change with the design variables in question (engine count, SRAM size, topology), so omitting them biased comparisons toward many small engines and a big flat SRAM.
+- Precedence is unchanged: a user value (including 0) wins. A user √C SLC model (`slc_access_ref_mib`) stops the preset from filling `pJ_bit_mm_onchip` (the two are exclusive), in the API and in the UI preset fill.
+- Old → new J/token (qwen3-8b, batch 8, ctx 4096, prompt 2048):
+
+  | Chip / phase | tpuv4i_7nm | horowitz_45nm |
+  |---|---|---|
+  | 1P decode | 0.1239 → 0.1254 (+1.2 %) | 0.4149 → 0.4174 (+0.6 %) |
+  | 1P prefill | 0.006654 → 0.007048 (+5.9 %) | 0.0157 → 0.01644 (+4.7 %) |
+  | 100T decode | 0.1802 → 0.1816 (+0.7 %) | 0.419 → 0.4214 (+0.6 %) |
+  | 100T prefill | 0.006988 → 0.00752 (+7.6 %) | 0.01647 → 0.01754 (+6.5 %) |
+
+- Conclusions that moved:
+  - qwen3-8b on 100T + LPDDR5X (b8): the 25 °C J-optimal SLC drops 32 → 16 GiB (per-access wire grows with √C), equal to the 85 °C optimum, so "hot die cuts the J-optimal SLC" no longer holds there.
+  - wan2.1-1.3b SRAM sizing with `energy_tie`: J/token no longer limits the shrink (smaller SRAM is also shorter wire); latency does.
+- Time and the summary fingerprints are unchanged (energy only).
+
+### §245.2 Energy-aware design search 「推导」 (`core/energy_dse.py`, `/api/insight_dse`)
+- Grid on the scenario's chip:
+  - MAC count × `mac_scales` (default 0.5, 1, 2).
+  - Engine side r ∈ {r/2, r, 2r}, kept when MACs / r² is a whole engine count.
+  - SRAM × `sram_scales` (0.5, 1, 2).
+  - NoC `topologies` (default: the chip's).
+  - At most 96 points.
+- Each point is evaluated by the cost model (time, fit) and priced with the energy table, so every term is in: MAC, SRAM, wire, NoC, DRAM and static. If the table has no NoC or wire numbers, the §244 reference values are filled and the report says so.
+- Constraints. All come from the budget and none is defaulted silently:
+  - Area: `full_area` (user densities) ≤ `die_mm2`. Over-area points are dropped, since area cannot be throttled.
+  - Power: average card W ≤ `power_W_card` (else `energy.tdp_W`).
+    - `power_mode = dvfs` (default): the point runs at the highest clock that fits, using the 0.227 DVFS model on `curve` (default dfs). Its throughput and J are taken at that clock.
+    - `power_mode = reject`: the point is dropped.
+  - Fit: the model must fit in memory.
+- Objectives:
+  - Throughput per card ↑ and J/unit ↓. For one workload, perf/W = units/s ÷ W = 1 / (J/unit), so this front is also the throughput–perf/W front.
+  - `front3` adds die area ↓.
+  - Dominance treats relative differences ≤ `tie` (default 1 %, as insight.TIE) as equal. The relation is then not transitive; an empty result falls back to exact dominance.
+
+### §245.3 Result (tpuv4i_7nm, n7_tpuv4i densities, die ≤ 800 mm², ≤ 250 W/card, qwen3-8b)
+- 1P decode, b64 (DRAM-bound):
+  - The front is only MAC × 0.5 designs (64×64 or 128×128 engines, SRAM × 0.5–1): ≈ 3.93 k tok/s, 0.0407 J/token.
+  - The 1P base (839 mm²) is over the area budget. At full MACs it would cost 0.0474 J/token (+16 %) for the same throughput. The extra J is the clocked MAC array and its static power.
+- 1P prefill:
+  - At 250 W the full-MAC chips run clock-capped (f × 0.46–0.53) to ≈ 33–34 k tok/s, the same as the uncapped half-MAC chips.
+  - The front: 16 × 128² with 256 MiB (33.7 k tok/s, 7.42 mJ/token) and 8 × 256² capped with 128 MiB (34.0 k, 7.35 mJ).
+  - Under a power budget, extra MACs buy area, not throughput.
+- 100T decode, b1: J/token falls with MACs (0.90 at × 0.5 vs 1.10 at × 1) at equal throughput (DRAM-bound).
+
+### §245.4 Not modelled
+- Vector lanes / uncore area per engine (the area proxy is SRAM + MAC + PHY + uncore share).
+- Frequency as a free grid variable: the clock only moves under the power cap.
+- Other memory kinds or cards as design variables.
+
+### §245.5 Default behaviour, old → new
+- Energy presets: `pJ_bit_mm_onchip` unset → 0.121 (45 nm) / 0.078 (7 nm); `pJ_bit_hop_noc` unset → 0.416 / 0.160.
+- See §245.1 for the numbers.

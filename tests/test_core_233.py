@@ -4,6 +4,7 @@ f-share of the whole prompt (which carried the whole prompt's activation spill).
 fuzz."""
 import random
 
+from dataclasses import replace
 from accel_dse.core.disagg import disagg_report
 from accel_dse.core.energy import EnergyTable, apply_energy_preset
 from accel_dse.core.hardware import CHIPS
@@ -24,7 +25,10 @@ def _pd(prompt=4096, out=512, batch=64, cap=0.0, **pd):
 
 
 def _t(**kw):
-    return EnergyTable(**apply_energy_preset({"energy_preset": "tpuv4i_7nm", **kw}))
+    t = EnergyTable(**apply_energy_preset({"energy_preset": "tpuv4i_7nm", **kw}))
+    # 0.300: the presets now fill the on-chip wire + NoC router; this file pins the ≤ 0.299 preset (no on-chip
+    # movement terms) unless a test passes them
+    return replace(t, **{k: None for k in ("pJ_bit_mm_onchip", "pJ_bit_hop_noc") if k not in kw})
 
 
 def _act(r):

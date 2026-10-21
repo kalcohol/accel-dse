@@ -150,7 +150,9 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight_speech": {"models", "audio_s", "verify", "dispatch"},
                "insight_speech_streams": {"models", "audio_s", "slc_gib"},
                "insight_dispatch": {"models", "batches", "ctx"},
-               "insight_noc": {"topologies", "phases", "prompt"}}
+               "insight_noc": {"topologies", "phases", "prompt"},
+               "insight_dse": {"mac_scales", "sram_scales", "sides", "topologies", "power_mode", "curve", "phase",
+                               "prompt", "tie"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1395,6 +1397,46 @@ def api_insight_noc(body: dict) -> dict:
         raise ApiError("prompt must be an integer in [1, 1048576]")
     try:
         return {**noc_design_report(scn, _energy_table(body), tuple(topo), tuple(ph), pr), "hash": scn.hash()}
+    except ValueError as e:
+        raise ApiError(str(e)) from None
+
+
+def api_insight_dse(body: dict) -> dict:
+    """0.300: energy-aware design search — throughput vs J/token (perf/W) Pareto front under the budget's die area /
+    card power (core/energy_dse.py)."""
+    from .core.energy_dse import energy_design_search
+
+    _check_keys(body, "insight_dse")
+    scn = scenario_from_body(body)
+
+    def nums(k, lo, hi, n=6, integer=False):
+        v = body.get(k)
+        if v is None:
+            return None
+        if (not isinstance(v, list) or not 1 <= len(v) <= n or
+                not all(isinstance(x, (int, float)) and not isinstance(x, bool) and lo <= x <= hi for x in v) or
+                (integer and not all(float(x).is_integer() for x in v))):
+            raise ApiError(f"{k} must be a list of 1–{n} {'integers' if integer else 'numbers'} in [{lo}, {hi}]")
+        return tuple(int(x) if integer else float(x) for x in v)
+    kw = {}
+    for k, lo, hi, it in (("mac_scales", 0.0625, 16, False), ("sram_scales", 0.0625, 16, False), ("sides", 4, 1024, True)):
+        v = nums(k, lo, hi, integer=it)
+        if v is not None:
+            kw[k] = v
+    for k, typ in (("topologies", list), ("power_mode", str), ("curve", str), ("phase", str)):
+        if body.get(k) is not None:
+            if not isinstance(body[k], typ):
+                raise ApiError(f"{k} must be a {'list' if typ is list else 'string'}")
+            kw[k] = tuple(body[k]) if typ is list else body[k]
+    pr = body.get("prompt")
+    if pr is not None and (isinstance(pr, bool) or not isinstance(pr, int) or not 1 <= pr <= 1 << 20):
+        raise ApiError("prompt must be an integer in [1, 1048576]")
+    tie = body.get("tie")
+    if tie is not None and (isinstance(tie, bool) or not isinstance(tie, (int, float))):
+        raise ApiError("tie must be a number in [0, 0.5)")
+    try:
+        return {**energy_design_search(scn, _energy_table(body), _budget(body), prompt=pr, tie=tie, **kw),
+                "hash": scn.hash()}
     except ValueError as e:
         raise ApiError(str(e)) from None
 

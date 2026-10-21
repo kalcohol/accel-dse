@@ -6,6 +6,33 @@
 
 
 
+## [0.300.0]
+
+### Energy presets include on-chip movement by default; energy-aware design search (Pareto)
+- **Default change (energy presets)**: `horowitz_45nm` and `tpuv4i_7nm` now fill `pJ_bit_mm_onchip` and `pJ_bit_hop_noc`. Both were unset before.
+  - horowitz_45nm: wire unset → 0.121 pJ/bit/mm (Keckler 2011, 40 nm 「来源」); NoC router unset → 0.416 pJ/bit/hop (Park DAC 2012 「推导」).
+  - tpuv4i_7nm: wire unset → 0.078 pJ/bit/mm (Keckler 10 nm projection 「来源/假设」); NoC router unset → 0.160 pJ/bit/hop (÷ 2.6 「推导」).
+  - Why: a preset J/token omitted every on-chip-movement cost (the SRAM / SLC distance term of 0.298, and the NoC traffic and its links of 0.299). Those are the costs that change with engine count, SRAM size and topology.
+  - Effect on preset J/token: decode +0.6–1.2 %, prefill +4.7–7.6 % (1P / 100T, qwen3-8b; table in MODEL §245.1).
+  - Conclusions that moved:
+    - qwen3-8b 100T + LPDDR5X b8: 25 °C J-optimal SLC 32 → 16 GiB.
+    - wan2.1-1.3b energy-tied SRAM sizing: no longer limited by J/token.
+  - User values (incl. 0) still win. A user `slc_access_ref_mib` (√C) keeps the preset from filling the distance model, in the API and in the UI preset fill.
+- **Energy-aware design search** (`core/energy_dse.py`, `/api/insight_dse`, slow lane):
+  - Grid: MAC count × engine side × SRAM (× NoC topology).
+  - Per point: throughput and fit from the cost model; J/unit from the energy table (MAC / SRAM / wire / NoC / DRAM / static); perf/W = 1 / J.
+  - Budget: over-area points (budget `die_mm2` with densities) are dropped. Over-power points (`power_W_card` or `tdp_W`) run DVFS-capped (0.227 model, default) or are dropped (`power_mode: reject`).
+  - Output: the Pareto front of throughput ↑ vs J/unit ↓, with differences ≤ 1 % counted as ties (`tie`); plus `front3` with area, and the best perf/W and best throughput points.
+  - Example, 1P qwen3-8b under 800 mm² / 250 W:
+    - Decode: the front is all half-MAC designs (−14 % J/token at equal throughput).
+    - Prefill: power-capped full-MAC chips only match the half-MAC throughput.
+- UI: an 「能耗感知设计搜索（Pareto）」 panel (`ins-dse-*`).
+  - Controls: phase, over-power handling, MAC / SRAM multipliers, topology toggle.
+  - Output: a scatter of J/unit vs throughput with the front polyline, and a table with the energy-breakdown shares.
+- Tests: tests/test_core_300.py (10).
+  - Files that pin the ≤ 0.299 preset (no on-chip movement) now say so explicitly: test_core_187 / 233 / 264 / 266 / 267 / 298 / 299.
+- Freshness sweep (107 orgs, since 2026-10-21): no new releases.
+
 ## [0.299.0]
 
 ### NoC / on-chip data-movement energy from the dataflow (opt-in); energy breakdown; NoC design insight

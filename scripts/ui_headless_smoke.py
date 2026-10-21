@@ -302,6 +302,19 @@ def main(chrome="/usr/bin/google-chrome") -> int:
             steps.append(("path", p.inner_text("#ins-path-status")[:60]))
             if "错误" in p.inner_text("#ins-path-status"):
                 errs.append("path: " + p.inner_text("#ins-path-status")[:200])
+            # 0.300: energy-aware design search (Pareto front) — needs the energy preset set above
+            if p.query_selector("#ins-dse-run"):
+                p.fill("#ins-dse-macs", "0.5,1")
+                p.fill("#ins-dse-sram", "1")
+                p.click("#ins-dse-run")
+                p.wait_for_function("(() => { const t = document.getElementById('ins-dse-status').textContent;"
+                                    " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
+                st = p.inner_text("#ins-dse-status")
+                rows = len(p.query_selector_all("#ins-dse-tbl tbody tr"))
+                dots = len(p.query_selector_all("#ins-dse-chart circle"))
+                steps.append(("dse", st[:40], rows, dots))
+                if not st.startswith("完成") or rows == 0 or dots == 0 or "★" not in p.inner_text("#ins-dse-tbl"):
+                    errs.append(f"dse: {st[:200]} rows={rows} dots={dots}")
             # 0.275: speech bottleneck panel (/api/insight_speech)
             p.click("#ins-sp-run")
             p.wait_for_function("(() => { const t = document.getElementById('ins-sp-status').textContent;"
