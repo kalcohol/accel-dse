@@ -95,7 +95,7 @@ def _dse(**kw):
 
 
 def test_dse_split_package_figures():
-    o = _dse()
+    o = _dse(mono_clusters=False, mem_edges_shoreline=False)      # the 0.308 view (0.309 rows: test_core_309)
     rows = o["rows"]
     assert len(rows) == 2 * (1 + 2 * 2) and o["chiplet"]["reticle_mm2"] == RETICLE_MM2
     x = next(r for r in rows if r["mac_x"] == 1.0 and r["dies"] == 2 and r["d2d_std"] == "ucie-a-48")
@@ -116,7 +116,9 @@ def test_dse_split_package_figures():
 
 def test_dse_noc_edge_split_beats_monolithic():
     # narrow NoC links: DRAM ingress per die ∝ its edge (2·⌊√E⌋ links) — two half dies have more edge than one
-    o = _dse(mac_scales=(1.0,), d2d_stds=("ucie-a-48",), noc_link_Bpc=32.0, noc_routing="xy")
+    # 0.308 view: two memory columns on the monolithic die (0.309: HBM attach on every occupied edge → mono)
+    o = _dse(mac_scales=(1.0,), d2d_stds=("ucie-a-48",), noc_link_Bpc=32.0, noc_routing="xy",
+             mono_clusters=False, mem_edges_shoreline=False)
     e = o["chiplet"]["compare"][0]
     assert e["verdict"] in ("split_thr", "split_both") and e["d_thr"] > 0.3
     sp = o["rows"][e["best_thr"]]

@@ -558,6 +558,9 @@ class PDConfig:
             raise ValueError("pd.kv_capacity_GB must be > 0 or null")
 
 
+CLUSTER_UNLIMITED_GBps = 1e9      # 0.309: on-die cluster tier with an unlimited NoC (no link width) — not a bound
+
+
 @dataclass(frozen=True)
 class Scenario:
     model: str = "qwen3-8b"
@@ -654,6 +657,10 @@ class Scenario:
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                 raise ValueError(f"{k} must be an integer in [{lo}, {hi}]")
+        kc = self.chip.noc_clusters
+        if kc > 1 and not (self.d2d_enabled and self.package_cards == kc):
+            raise ValueError(f"chip.noc_clusters = {kc}（片上 NoC 簇）需要 d2d_enabled 且 package_cards = {kc}："
+                             "簇以封装内的卡建模，簇间层即 D2D 层的片上版本（0.309）")
         if self.node_cards and self.d2d_enabled and self.node_cards % self.package_cards:
             raise ValueError("node_cards must be a multiple of package_cards")
         if self.pd.decode_cards and self.pd.decode_cards % self.layout.cards:
@@ -670,6 +677,13 @@ class Scenario:
     @property
     def d2d_link(self) -> Link:
         """Effective D2D link: the catalog grade × units (raw, per direction), or ``d2d`` when ``d2d_std`` = custom."""
+        if self.chip.noc_clusters > 1:
+            # 0.309: on-die cluster tier — the NoC's own boundary links (no PHY): attach links × width × clock on the
+            # cluster's shared edge(s), unbounded while the NoC is (no link width); α = the D2D tier's (collective
+            # sync dominates; PHY latency < 2 ns either way) 「假设」
+            from .d2d_catalog import d2d_edges
+            bw = self.chip.noc_d2d_GBps(d2d_edges(self.package_cards))
+            return Link(CLUSTER_UNLIMITED_GBps if math.isinf(bw) else bw, self.d2d.alpha_us, self.d2d.topology)
         lk = self.d2d if self.d2d_std == "custom" else Link(d2d_GBps(self.d2d_std, self.d2d_units), self.d2d.alpha_us,
                                                              self.d2d.topology)
         # 0.308: D2D bytes enter / leave the die's NoC at the D2D edge(s): ≤ attach links × link width × clock

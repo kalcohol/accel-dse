@@ -8637,12 +8637,12 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 Reading the example:
 - **J/token.** Splitting lowers decode J (−5 %) because each die's NoC is smaller: DRAM and multicast bytes travel fewer hops. This is the existing §249 / §250 NoC energy model, not a D2D effect; D2D energy is ≤ 0.2 % of J at 0.25–0.5 pJ/bit.
-  - Caveat 「近似」: the monolithic die is mapped as one NoC domain. A monolithic die with an internal TP-like partition would recover part of this saving.
+  - Caveat 「近似」: the monolithic die is mapped as one NoC domain. A monolithic die with an internal TP-like partition would recover part of this saving. 0.309 (§254): most of the saving was the memory-attach geometry, not the NoC domain; with the shoreline edge rule the verdict becomes mono.
 - **Throughput.** Throughput costs come from D2D bandwidth on the TP collectives, which matter in prefill. A grade with 128–256 GB/s per die (BoW-256 / UCIe-S × 4) loses 15–25 %; UCIe-A × 4 (1.5 TB/s) loses 3 %.
   - PP is the wrong split for b1 prefill (the bubble halves throughput). EP vs TP for the MoE: TP keeps throughput, EP loses 4 %.
 - **Edge-limited NoC.** When the NoC limits DRAM ingress (§250.1, L = 32–64), splitting adds die edge (2⌊√E⌋ memory-attach links per die). Throughput rises by up to 60 %; this is the 0.305 "narrow links force many small cores" rule applied across dies.
 - **Area.** Split dies cost +1–6 % Σ silicon (D2D PHY and the uncore share). Yield more than repays it at D0 0.1 (−26 % to −47 % wafer area per good package).
-- Script: /workspace/ex_0308.py (box), output /workspace/ex_0308.txt.
+- Script: `python3 scripts/chiplet_example.py --flat` (0.309; self-contained) reproduces this table; without `--flat` it gives the 0.309 view (§254.2).
 
 ### §253.3 D2D with the 0.305–0.307 NoC (die-edge attach) 「推导」 (`core/hardware.py`, `core/scenario.py`, `core/energy.py`, `core/budget.py`, `core/d2d_catalog.py`)
 - **Edges** (`d2d_edges`): a die in a two-die package gives one inner edge to D2D (B200 「二手」). With ≥ 3 dies it gives two (a 2 × 2 like MI300X's IODs, or the inner dies of a chain 「二手/假设」).
@@ -8674,3 +8674,57 @@ Reading the example:
   - The catalog keeps 0.25 for UCIe-A 48 / 64 and notes 0.75 as the upper reference 「二手」.
   - Sensitivity: with 0.75 for UCIe-A 48, prefill J changes by ≤ 0.3 % and no verdict changes.
 - Not modelled: stitched / multi-exposure dies; assembly yield; interposer cost; D2D link power states; heterogeneous dies (I/O die + compute dies); 3D stacking (UCIe-3D).
+
+## §254 Fair monolithic-vs-split comparison: on-die NoC clusters, memory attach on the HBM edges (0.309)
+
+### §254.1 Mechanism 「推导」 (`core/hardware.py`, `core/scenario.py`, `core/energy.py`, `core/budget.py`, `core/energy_dse.py`)
+- **The 0.308 bias.** In the chiplet DSE, the monolithic die was one flat NoC domain with two memory columns. Each split die got its own smaller NoC and its own memory edges. Two things were confounded: the NoC partition (which clustering can give a monolithic die too) and the memory-attach geometry.
+- **On-die NoC clusters** (`Chip.noc_clusters = K`, 1–64; hierarchical NoC). A monolithic die is K clusters of engines/K, each with its own mesh / ring, joined by an on-die global tier.
+  - Precedent: A100 / H100, "The L2 cache is divided into two partitions … Each L2 partition localizes and caches data for memory accesses from SMs in the GPCs directly connected to the partition" (NVIDIA A100 / H100 whitepapers 「来源」).
+  - Representation: the chip object is one cluster, and the scenario is K cards in one package (`package_cards = K`, `d2d_enabled`; validated). The cluster tier replaces the D2D tier, so cross-cluster TP / PP / EP bytes use the existing collective model. No new traffic model.
+  - Bandwidth (`Scenario.d2d_link`): the cluster's boundary attach links × `noc_link_Bpc` × clock (`noc_d2d_GBps(d2d_edges(K))`, the 0.308 edge rule). Without a link width it is unlimited (`CLUSTER_UNLIMITED_GBps` = 1e9). α is the D2D α 「假设」: synchronisation-dominated, not PHY-dominated.
+  - Energy (`action_counts` "noc_d2d", `on_die`): each byte crosses half of each cluster's NoC, as 0.308 D2D bytes do. It also pays +½ hop and +½ pitch per end, so the boundary crossing costs 1 router + 1 link pitch (`pJ_bit_hop_noc`, `pJ_bit_mm_onchip`, Keckler 2011 「来源」). No D2D PHY energy.
+  - Area (`budget.whole_die`, `full_area`, `phy_area`, `shoreline_check`): the whole die (K × the cluster's engines / SRAM / SLC / stacks, one card), so area equals the flat die (654 mm² for 1P). No D2D PHY area. `d2d_shoreline` is None. Yield and reticle come from the whole die.
+  - DRAM: `noc_mem_hops` and `noc_mem_links` are the whole die's (the memory columns are the die's edges); a cluster gets links / K.
+- **Memory attach on the HBM edges** (`Chip.noc_mem_edges` 2 / 3 / 4; `budget.hbm_mem_edges`).
+  - The 0.305 model attaches memory on the west / east columns (2·⌊√E⌋ links). A die whose stacks need a 3rd / 4th edge (shoreline "tight") has its HBM PHYs on those edges too, so the NoC attaches there as well.
+  - Each extra edge adds one memory row (north, then south) with C = ⌈E/R⌉ attach routers. Links = 2R + (m − 2)·C (ring: 2m stops).
+  - DRAM hops: mean over the R × C grid of the distance to the nearest attached edge. For m = 2 the formula is unchanged. Ring: m stops; crossbar: one traversal + the same wire.
+  - In the chiplet DSE (`mem_edges_shoreline=True`), m = ⌈stacks × 11 mm / side⌉ clamped to [2, 4 − D2D edges]. Monolithic and split dies use the same rule. Example: 1P mono, 8 stacks on 654 mm² (side 25.6, need 88 mm) → 4; 2-die halves, 4 stacks on 333 mm² (one D2D edge) → 3; 4-die quarters → 2.
+  - Elsewhere the default is 2, so every non-chiplet path is bit-identical. This closes the §253.3 "not modelled" note (a tight die used only two memory columns).
+- **Verdicts** (`_split_compare`): the best split by throughput / J is compared with the best monolithic row (flat or clustered) by the same metric (`mono_thr`, `mono_J`). `verdict_flat`, `d_thr_flat` and `d_J_flat` compare against the flat monolithic row only (the 0.308 semantics, under the same memory-edge rule). `mono_clusters=False, mem_edges_shoreline=False` reproduces 0.308 row for row.
+- **DSE rows**: with the dies axis on, each K > 1 in the axis adds a monolithic row with K clusters (`clusters`; no `d2d_std`; split axis = `die_split`; no catalog pJ override). Every chiplet row carries `mem_edges`.
+
+### §254.2 Re-derived verdicts, old → new (the §253.2 set; MAC ×1; `scripts/chiplet_example.py` vs `--flat`)
+
+| case | 0.308 (flat mono, 2 memory columns) | edge rule only (`verdict_flat`) | 0.309 (best of flat / clustered) |
+|---|---|---|---|
+| decode b64 | split_J: mono 7875 / 47.39 mJ; 2 × UCIe-A −0.5 % thr, −4.8 % J | mono: mono 45.11 mJ, best split 44.75 (−0.8 %) | mono |
+| prefill p2048 | mono (−3.4 % thr) | mono | mono (2 clusters 70.3 k, −0.8 %; 4 clusters −2.0 %) |
+| decode, L = 32 | split_both: mono 382 tok/s / 194 mJ; split +60 %, −31 % | mono: mono 917 / 101.8 mJ; 2 dies 917 / 101.4 (−0.3 %) | mono |
+| prefill, L = 64 | split_both: mono 38.7 k; 4 × UCIe-A 60.2 k (+55 %), −4.6 % J | split_both: mono 39.5 k; split +52.5 %, −4.0 % J | mono: 4 clusters 60.9 k / 7.40 mJ; split −1.1 % thr, +0.1 % J |
+| MoE ep | split_J (−4.1 % / −1.9 %) | mono (−4.1 % / +2.7 %) | mono |
+| MoE tp | split_J (−0.4 % / −5.3 %) | mono (−0.4 % / −0.8 %) | mono |
+| prefill, UCIe-A 0.75 pJ/bit | mono | mono | mono |
+| MAC ×2 (908 mm²) | only_split | only_split | only_split (clustered mono is also > reticle) |
+
+Reading:
+- **Where the 0.308 split advantage came from.** Decomposition, decode L = 0 (0.308 geometry): flat mono, mono with 2 clusters and 2 split dies have noc + wire 7.16 / 7.17 / 4.84 mJ. The DRAM-hop part is 6.74 / 6.74 / 4.43 mJ (hops / B 2.29 / 2.29 / 1.50).
+  - So clustering alone recovers nothing. The saving was the memory-attach distance: two dies had 2.8 S of memory edge, the flat die only 2 S, while its 8 stacks actually occupy all four edges.
+  - The L = 32 throughput gap (+60 %) has the same cause: DRAM ingress links 10 vs 2 × 8. With the stacks' edges attached (24 links), the mono die reaches 917 tok/s.
+- **What clustering does recover.** The NoC-domain effect, which shows when a narrow link width makes the single-domain on-die traffic congest (prefill L = 64). Clusters give the mono die the same partitioned dataflow without a D2D bandwidth cap. The best clustered mono (K = 4) is 1.1 % faster than the best split.
+  - At L = 0 clustering only adds cluster-tier syncs (−0.8 % / −2 % thr), so the flat die stays best. This is why the verdict takes the best of both.
+- **What splitting still buys** (unchanged by 0.309): yield (wafer area per good package 1258 → 929 / 814 mm² at D0 0.1) and the reticle (MAC ×2 only as 2 or 4 dies). Splitting costs +1–6 % Σ silicon and the D2D bandwidth in prefill (BoW / UCIe-S −15 to −25 %).
+- **Labels.** The memory-edge rule is 「推导」 from the shoreline check (itself 「近似」: square die, 11 mm per stack). The cluster tier's α 「假设」. Cluster boundary cost 1 hop + 1 pitch 「推导」 from the existing per-hop / per-mm energies 「来源」.
+
+### §254.3 Example script
+- `scripts/chiplet_example.py` is self-contained: inline energy table (`tpuv4i_7nm` preset fields without idle / TDP), `n5_derived` densities, 700 W, and the 7 cases of §253.2.
+  - `--flat` gives the 0.308 view; it reproduces the 0.308 example output row for row.
+  - The default is the 0.309 view, which prints `verdict` and `verdict_flat`. `--case N` runs one case.
+  - The UCIe-A 0.75 pJ/bit sensitivity case restores the catalog afterwards.
+- Runtime ≈ 1.3 s. It replaces the box-only /workspace/ex_0308.py + /tmp/a308/t1.py.
+
+### §254.4 Freshness
+- Model-release sweep (`scripts/freshness_sweep.py 2026-10-21`): identical to the 0.308 sweep.
+- UCIe: 3.0 (2025-08-05) is still the latest released specification. 4.0 is targeted for end-2026 (power reduction / AVS, GUC CTO post 2026-05 「二手」), not released. The catalog is unchanged.
+- Not modelled: a clustered die's global tier as a separate topology (it is the K-card collective over the boundary links); memory-attach on non-square dies; interior links shared between DRAM and cluster / D2D traffic.

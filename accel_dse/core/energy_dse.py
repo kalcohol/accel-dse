@@ -292,41 +292,56 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
     return o
 
 
+def _verdict(rows, sp_thr, sp_J, monos, tie):
+    """Best split (by thr, by J) against the best of ``monos`` (each by its own metric)."""
+    if not monos:
+        return "only_split", None, None, None, None
+    mt = max(monos, key=lambda i: (rows[i]["thr"], -rows[i]["J_per_unit"]))
+    mj = min(monos, key=lambda i: (rows[i]["J_per_unit"], -rows[i]["thr"]))
+    d_thr = rows[sp_thr]["thr"] / rows[mt]["thr"] - 1 if rows[mt]["thr"] > 0 else None
+    d_J = rows[sp_J]["J_per_unit"] / rows[mj]["J_per_unit"] - 1 if rows[mj]["J_per_unit"] > 0 else None
+    bthr = d_thr is not None and d_thr > tie
+    bJ = d_J is not None and d_J < -tie
+    return ("split_both" if bthr and bJ else "split_thr" if bthr else "split_J" if bJ else "mono"), d_thr, d_J, mt, mj
+
+
 def _split_compare(rows: list[dict], tie: float = 0.01) -> list[dict]:
     """0.308: per design (same package totals: MACs, SRAM, engine side, topology, memory, SLC, clock, NoC link), the
     monolithic die (dies = 1) against its best feasible split (by throughput and by J/unit).  Verdicts: only_split
     (the monolithic die is infeasible — reticle / area / power / shoreline — and a split is feasible), split_thr /
-    split_J / split_both (better by more than ``tie``), mono (no split beats it), none (nothing feasible)."""
+    split_J / split_both (better by more than ``tie``), mono (no split beats it), none (nothing feasible).
+    0.309: the monolithic side is the best feasible dies = 1 row — flat or split into K NoC clusters (mono_clusters) —
+    by each metric; ``verdict_flat`` / ``d_thr_flat`` / ``d_J_flat`` keep the 0.308 flat-die-only comparison."""
     groups: dict = {}
     for i, x in enumerate(rows):
         k = (x["mac_x"], x["sram_x"], x["side"], x["topology"], x["mem_id"], x["slc_mib"], x["f_op"], x["noc_link_Bpc"])
         groups.setdefault(k, []).append(i)
     out = []
     for k, ix in groups.items():
-        mono = next((i for i in ix if rows[i].get("dies", 1) == 1), None)
+        mono = next((i for i in ix if rows[i].get("dies", 1) == 1 and rows[i].get("clusters", 1) == 1), None)
+        monos = [i for i in ix if rows[i].get("dies", 1) == 1 and rows[i].get("feasible")]
         sp = [i for i in ix if rows[i].get("dies", 1) > 1 and rows[i].get("feasible")]
         if not any(rows[i].get("dies", 1) > 1 for i in ix):
             continue
+        flat_ok = bool(mono is not None and rows[mono].get("feasible"))
         e = {"mac_x": k[0], "sram_x": k[1], "side": k[2], "topology": k[3], "mem_id": k[4], "slc_mib": k[5],
-             "f_op": k[6], "noc_link_Bpc": k[7], "mono": mono,
-             "mono_feasible": bool(mono is not None and rows[mono].get("feasible")),
-             "mono_why": rows[mono].get("why") if mono is not None else None}
+             "f_op": k[6], "noc_link_Bpc": k[7], "mono": mono, "mono_feasible": bool(monos),
+             "mono_flat_feasible": flat_ok, "mono_why": rows[mono].get("why") if mono is not None else None}
         if not sp:
-            e["verdict"] = "mono" if e["mono_feasible"] else "none"
+            e["verdict"] = e["verdict_flat"] = "mono" if monos else "none"
+            if not flat_ok:
+                e["verdict_flat"] = "none"
             out.append(e)
             continue
         bt = max(sp, key=lambda i: (rows[i]["thr"], -rows[i]["J_per_unit"]))
         bj = min(sp, key=lambda i: (rows[i]["J_per_unit"], -rows[i]["thr"]))
         e.update(best_thr=bt, best_J=bj)
-        if not e["mono_feasible"]:
-            e["verdict"] = "only_split"
-        else:
-            m = rows[mono]
-            e["d_thr"] = rows[bt]["thr"] / m["thr"] - 1 if m["thr"] > 0 else None
-            e["d_J"] = rows[bj]["J_per_unit"] / m["J_per_unit"] - 1 if m["J_per_unit"] > 0 else None
-            bthr = e["d_thr"] is not None and e["d_thr"] > tie
-            bJ = e["d_J"] is not None and e["d_J"] < -tie
-            e["verdict"] = "split_both" if bthr and bJ else "split_thr" if bthr else "split_J" if bJ else "mono"
+        v, dt, dj, mt, mj = _verdict(rows, bt, bj, monos, tie)
+        e.update(verdict=v, mono_thr=mt, mono_J=mj)
+        if dt is not None or dj is not None:
+            e.update(d_thr=dt, d_J=dj)
+        vf, dtf, djf, _, _ = _verdict(rows, bt, bj, [mono] if flat_ok else [], tie)
+        e.update(verdict_flat=vf, d_thr_flat=dtf, d_J_flat=djf)
         out.append(e)
     return out
 
@@ -340,7 +355,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          max_mem_usd: float | None = None, f_scales=None, noc_link_Bpc: float | None = None,
                          noc_routing: str | None = None, noc_links=None, dies=None, d2d_stds=None,
                          d2d_units: int | None = None, die_split: str = "tp", reticle_mm2: float | None = None,
-                         pkg_mm2=None, d0_per_cm2: float | None = None) -> dict:
+                         pkg_mm2=None, d0_per_cm2: float | None = None, mono_clusters: bool = True,
+                         mem_edges_shoreline: bool = True) -> dict:
     from .. import mem_catalog as mc
     from .budget import full_area, shoreline_check
     from .hardware import default_mem
@@ -421,9 +437,13 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         raise ValueError("d0_per_cm2 must be in (0, 10) defects / cm²")
     from .catalog import get_model
     moe = bool(get_model(scn.model).is_moe) if chip_mode else False
-    pk_axis = [(1, None)] + [(nn, sd) for nn in Ns if nn > 1 for sd in stds] if chip_mode else [(1, None)]
+    # (dies, D2D standard, NoC clusters per die).  0.309: with the die axis on, a monolithic die is also searched
+    # split into K NoC clusters for every K > 1 in the die axis (same partition the K-die package gets; mono_clusters)
+    pk_axis = ([(1, None, 1)] + [(1, None, nn) for nn in Ns if nn > 1 and mono_clusters]
+               + [(nn, sd, 1) for nn in Ns if nn > 1 for sd in stds]) if chip_mode else [(1, None, 1)]
     if chip_mode and 1 not in Ns:
-        pk_axis = pk_axis[1:]
+        pk_axis = [x for x in pk_axis if x[0] > 1]
+    mem_edges_on = bool(chip_mode and mem_edges_shoreline)
     mix = mix_out_tokens is not None
     phases = ("prefill", "decode") if mix else (phase or scn.serving.phase,)
     scn_ph = {ph: _phase_scn(scn, ph, prompt) for ph in phases}
@@ -527,40 +547,66 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          "间距 / 无源器件未计「近似」" + (f"；{pkg_src}" if pkg_src else ""))
         if d0_per_cm2:
             notes.append(f"良率：D0 = {d0_per_cm2:g} /cm²；" + D0_NOTE + "；kgd_mm2 = 每好封装消耗的晶圆面积 Σ A / Y(A)")
+        if 1 in Ns and mono_clusters and any(nn > 1 for nn in Ns):
+            notes.append("单片对照（0.309）：单片也按同一 K 划成片上 NoC 簇（层次化 NoC；A100/H100 L2 两分区、GPC 直连本分区「来源」）——"
+                         "簇间层 = 片上全局链路：带宽 = 簇边界接入链路 × 链路宽度 × 频率（链路宽度未设 = 不限），能耗按每端半跨 NoC "
+                         "+ 一跳一节距（pJ_bit_hop_noc / pJ_bit_mm_onchip，Keckler 2011「来源」），无 D2D PHY 能耗与面积；"
+                         "面积 / 良率 / 光罩 / 岸线按整片计；单片判定取平面与分簇中各指标最优者，verdict_flat = 0.308 仅平面对照")
+        if mem_edges_on:
+            notes.append("外存接入边（0.309）：HBM 堆栈占用几条晶粒边（⌈堆栈 × 11 mm / 边长⌉，≤ 4 − D2D 边），NoC 就在几条边接入外存"
+                         "（第 3 / 4 边各加一行接入路由器）——单片与拆分按同一岸线规则，DRAM 跳数 / 接入链路随之「推导」")
         if L and ch.noc_mem_attach != "none":
             notes.append("D2D 经晶粒边缘接入 NoC（0.308）：D2D 边每列引擎一个接入路由器（mesh ⌈E/R⌉ 条链路 / 边，ring 每边 2），"
                          "可承载 D2D 带宽 ≤ 接入链路 × 链路宽度 × 频率；D2D 字节两端各穿过半个晶粒的 NoC（能耗计入 NoC）")
     rows = []
     for p in grid:
         for mid in mem_ids:
-            for slc, fo, lw, (nd, sd) in ((x, y, z, w) for x in slcs for y in fs for z in (Ls or [None]) for w in pk_axis):
+            for slc, fo, lw, (nd, sd, kc) in ((x, y, z, w) for x in slcs for y in fs for z in (Ls or [None]) for w in pk_axis):
+                npart = nd if nd > 1 else kc        # cards the evaluator sees: dies, or the clusters of one die
                 lk = lw if lw is not None else (ch.noc_link_Bpc if noc_link_Bpc is None else float(noc_link_Bpc))
                 row = {**p, "array": f'{p["side"]}×{p["side"]}', **infos[mid], "slc_mib": slc, "f_op": fo,
                        "f_ghz": ch.freq_ghz * fo, "noc_link_Bpc": lk,
                        "base": p["base"] and mid == base_mem and slc == float(ch.slc_mib) and fo == 1.0
-                       and (lw is None or lw == ch.noc_link_Bpc) and nd == 1}
+                       and (lw is None or lw == ch.noc_link_Bpc) and nd == 1 and kc == 1}
                 if chip_mode:
-                    row.update(dies=nd, d2d_std=sd, d2d_units=units if nd > 1 else None, die_split=die_split if nd > 1 else None)
-                mid_d = _mem_split(mid, nd)
-                if p["engines"] % nd or mid_d is None:
+                    row.update(dies=nd, d2d_std=sd, d2d_units=units if nd > 1 else None,
+                               die_split=die_split if npart > 1 else None, clusters=kc)
+                mid_d = _mem_split(mid, npart)
+                if p["engines"] % npart or mid_d is None:
                     rows.append({**row, "feasible": False,
-                                 "why": f"{p['engines']} 引擎 / {infos[mid]['mem_units']} 个外存单元不能平分到 {nd} 个晶粒"})
+                                 "why": f"{p['engines']} 引擎 / {infos[mid]['mem_units']} 个外存单元不能平分到 {npart} 个"
+                                        + ("晶粒" if nd > 1 else " NoC 簇")})
                     continue
-                c = replace(ch, engines=p["engines"] // nd, rows=p["side"], cols=p["side"], sram_mib=p["sram_mib"] / nd,
-                            noc_topology=p["topology"], slc_mib=slc / nd, noc_link_Bpc=lk, noc_routing=RT,
-                            state_sram_mib=ch.state_sram_mib / nd)
+                c = replace(ch, engines=p["engines"] // npart, rows=p["side"], cols=p["side"],
+                            sram_mib=p["sram_mib"] / npart, noc_topology=p["topology"], slc_mib=slc / npart,
+                            noc_link_Bpc=lk, noc_routing=RT, state_sram_mib=ch.state_sram_mib / npart, noc_clusters=kc)
 
-                def die_scn(sx, c=c, mid_d=mid_d, nd=nd, sd=sd):
-                    sx = sx.replace("chip", c).replace("mem_id", mid_d)
-                    if nd == 1:
-                        return sx
-                    sx = sx.replace("layout", _split_layout(sx.layout, nd, die_split, moe))
-                    sx = replace(sx, package_cards=nd, d2d_enabled=True, d2d_std=sd, d2d_units=units,
-                                 mem_cap_GB=sx.mem_cap_GB / nd)
-                    return sx
+                def die_scn(sx, c, mid_d=mid_d, npart=npart, nd=nd, sd=sd):
+                    if npart == 1:
+                        return sx.replace("chip", c).replace("mem_id", mid_d)
+                    # clusters: the chip goes in last — noc_clusters > 1 needs d2d_enabled / package_cards = K first
+                    sx = sx.replace("chip", replace(c, noc_clusters=1)).replace("mem_id", mid_d)
+                    sx = sx.replace("layout", _split_layout(sx.layout, npart, die_split, moe))
+                    sx = replace(sx, package_cards=npart, d2d_enabled=True, mem_cap_GB=sx.mem_cap_GB / npart,
+                                 **({"d2d_std": sd, "d2d_units": units} if nd > 1 else {}))
+                    return replace(sx, chip=c) if c.noc_clusters > 1 else sx
+                try:
+                    s_full = die_scn(s0, c)
+                except ValueError as ex:
+                    rows.append({**row, "feasible": False, "why": str(ex)})
+                    continue
+                if dens_ok:
+                    fa = full_area(s_full, b, noc_routers=Ls is not None)    # 0.307: routers counted once (budget.py)
+                    if mem_edges_on:        # 0.309: memory attach on every die edge the HBM stacks occupy
+                        from .budget import hbm_mem_edges
+                        me = hbm_mem_edges(s_full, fa["mm2"])
+                        row["mem_edges"] = me
+                        if me != c.noc_mem_edges:
+                            c = replace(c, noc_mem_edges=me)
+                            s_full = die_scn(s0, c)
                 td = replace(t, pJ_bit_d2d=D2D_STANDARDS[sd]["pJ_bit"]) if (sd and d2d_stds) else t
                 try:
-                    res = {ph: _run(die_scn(scn_ph[ph]), td, cap, power_mode, curve, fo, nd) for ph in phases}
+                    res = {ph: _run(die_scn(scn_ph[ph], c), td, cap, power_mode, curve, fo, npart) for ph in phases}
                 except ValueError as ex:
                     rows.append({**row, "feasible": False, "why": str(ex)})
                     continue
@@ -585,9 +631,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     row["tpot_ms" if phases[0] == "decode" else "ttft_ms"] = o["lat_ms"]
                 if res[phases[-1]].get("noc_W") is not None:
                     row["noc_W"] = res[phases[-1]]["noc_W"]
-                s_full = die_scn(s0)
                 if dens_ok:
-                    fa = full_area(s_full, b, noc_routers=Ls is not None)    # 0.307: routers counted once (budget.py)
                     row["mm2"] = fa["mm2"]
                     if "noc_routers" in fa["terms"]:
                         row["noc_mm2"] = fa["terms"]["noc_routers"] * nd

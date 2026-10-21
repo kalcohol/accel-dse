@@ -440,11 +440,20 @@ def _counts(r) -> dict:
     scn_ = r.scenario
     if c["d2d"] > 0 and scn_.d2d_enabled and scn_.package_cards > 1:
         h, p = ch.noc_d2d_hops()
+        on_die = ch.noc_clusters > 1
+        if on_die:
+            # 0.309: on-die cluster tier — no PHY: the crossing is one more router hop + one link pitch (the boundary
+            # link between the two clusters' edge routers), priced as NoC (pJ_bit_hop_noc / pJ_bit_mm_onchip) 「推导」
+            h, p = h + 0.5, p + 0.5       # per end: half the crossing (2 ends below → + 1 hop, + 1 pitch)
         if h or p:
             n2 = {"byte_hops": 2 * c["d2d"] * h, "byte_pitches": 2 * c["d2d"] * p, "hops_per_byte": 2 * h,
-                  "pitches_per_byte": 2 * p}
+                  "pitches_per_byte": 2 * p, "on_die": on_die}
             c["noc"] += n2["byte_hops"]
             c["noc_wire"] += n2["byte_pitches"]
+        if on_die:
+            n2 = n2 or {"on_die": True}
+            n2["cluster_bytes"] = c["d2d"]
+            c["d2d"] = 0.0                      # no D2D PHY energy on a monolithic die
     units = r.throughput * window
     out = {"counts": c, "window_s": window, "units": units, "unit": unit}
     if nd:
@@ -826,7 +835,8 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                           * 8e-12 / u}
                 if a.get("noc_d2d"):         # 0.308: the D2D bytes' share (engine ↔ D2D edge, both ends)
                     n2 = a["noc_d2d"]
-                    out["noc"]["d2d"] = {"byte_hops": n2["byte_hops"] / u, "byte_pitches": n2["byte_pitches"] / u,
+                    out["noc"]["d2d"] = {"on_die": bool(n2.get("on_die")),       # 0.309: cluster tier of one die
+                                         "byte_hops": n2["byte_hops"] / u, "byte_pitches": n2["byte_pitches"] / u,
                                          "hops_per_byte": n2["hops_per_byte"],
                                          "pitches_per_byte": n2["pitches_per_byte"],
                                          "J": (n2["byte_hops"] * e + n2["byte_pitches"] * (unit_pJ(table, "noc_wire", ch) or 0.0))

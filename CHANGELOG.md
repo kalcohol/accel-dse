@@ -6,6 +6,38 @@
 
 
 
+## [0.309.0]
+
+### Fair monolithic-vs-split comparison in the chiplet DSE; self-contained chiplet example
+- **On-die NoC clusters** (`Chip.noc_clusters = K`; hierarchical NoC). A monolithic die can now be partitioned like a K-die package: K clusters, each with its own mesh / ring over engines/K, joined by an on-die global tier.
+  - Mechanism: the chip object is one cluster; the scenario has `package_cards = K` with `d2d_enabled`, and the cluster tier takes the place of the D2D tier. So TP / PP / EP traffic between clusters uses the existing collective model.
+  - Cluster-tier bandwidth = the cluster's boundary attach links × link width × clock (the 0.308 edge rule; unlimited without a link width). α is the D2D α 「假设」.
+  - Energy: each cluster-tier byte pays half a cluster NoC per end + 1 hop + 1 pitch for the boundary crossing (`pJ_bit_hop_noc` / `pJ_bit_mm_onchip`, Keckler 2011 「来源」); no D2D PHY energy (`energy.noc.d2d.on_die`).
+  - Area, yield, reticle and shoreline use the whole die (`budget.whole_die`); no D2D PHY area. DRAM attach and hops are those of the whole die.
+  - Precedent: A100 / H100 split L2 into two partitions, each serving the SMs of its directly connected GPCs (NVIDIA whitepapers 「来源」).
+- **Memory attach on the HBM edges** (`Chip.noc_mem_edges` 2 / 3 / 4; `budget.hbm_mem_edges`). With 3 or 4 edges the NoC also attaches memory along the north / south rows, one router per column; memory links and DRAM hops follow 「推导」.
+  - In the chiplet DSE the value is the number of die edges the HBM stacks occupy, ⌈stacks × 11 mm / side⌉, capped at 4 − D2D edges. Monolithic dies and split dies get the same rule.
+  - This fixes the §253.3 gap: a "tight" HBM die used only two memory columns.
+  - Default chip (2) and every non-chiplet path are unchanged.
+- **DSE** (`energy_design_search(mono_clusters=True, mem_edges_shoreline=True)`; API `insight_dse`; UI 单片分簇):
+  - With the dies axis on, each K > 1 in the axis adds a monolithic row with K clusters. New row fields: `clusters`, `mem_edges`.
+  - `chiplet.compare` now compares the best split against the best monolithic row (flat or clustered), metric by metric (`mono_thr` / `mono_J`).
+  - `verdict_flat` / `d_thr_flat` / `d_J_flat` keep the flat-only comparison. Setting both options to False reproduces 0.308 exactly.
+- **Verdicts old → new** (1P, qwen3-8b / qwen3-30b-a3b, 8 × HBM3E, 700 W, MAC ×1; MODEL §254.2):
+
+  | Case | 0.308 | 0.309 |
+  |---|---|---|
+  | Decode b64 | split_J −4.8 % J | mono (split −0.5 % thr, −0.8 % J) |
+  | Decode, L = 32 | split_both +60 % / −31 % | mono |
+  | Prefill, L = 64 | split_both +55 % / −4.6 % | mono (4-cluster mono within 1.1 %) |
+  | MoE ep | split_J | mono |
+  | MoE tp | split_J | mono |
+
+  - Prefill at L = 0 stays mono. MAC ×2 stays only_split (reticle).
+  - Splitting still wins on yield (KGD wafer area 1258 → 929 / 814 mm²) and on the reticle.
+- **Script** `scripts/chiplet_example.py` (`--flat` for the 0.308 view, `--case N`). It reproduces MODEL §253.2 / §254.2 without box files.
+- Freshness: model-release sweep unchanged vs 0.308. UCIe 3.0 is still the latest spec; 4.0 is targeted for end-2026 (not released).
+
 ## [0.308.0]
 
 ### Chiplet partitioning in the energy-aware DSE; D2D consistent with the NoC

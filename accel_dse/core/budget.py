@@ -212,7 +212,9 @@ def phy_area(scn, b: Budget) -> dict:
     dq = b.mm2_per_dq_hbm if hbm else b.mm2_per_dq_lpddr
     if dq is not None:
         terms["dram_phy"] = spec.bus_bits * dq
-    if scn.d2d_enabled and scn.package_cards > 1 and b.mm2_per_d2d_unit is not None:
+    if getattr(scn.chip, "noc_clusters", 1) > 1:
+        notes.append("片上 NoC 簇：簇间链路无 D2D PHY（0.309）")
+    elif scn.d2d_enabled and scn.package_cards > 1 and b.mm2_per_d2d_unit is not None:
         from .d2d_catalog import d2d_phy_mm2
         if scn.d2d_std == "custom":
             notes.append("d2d_std = custom：单元数未知，D2D PHY 未计")
@@ -247,8 +249,10 @@ KNOWN_MAX_STACKS = {"B200 (CoWoS-L, 2 dies)": 8, "MI300X (CoWoS-S, 4 IODs)": 8} 
 
 
 def shoreline_check(scn, die_mm2: float | None) -> dict | None:
-    """HBM stacks vs the die edge: None for non-HBM memory or an unknown die area."""
+    """HBM stacks vs the die edge: None for non-HBM memory or an unknown die area.  0.309: a NoC-clustered scenario is
+    checked as its whole die (all stacks on its edges, no D2D edge)."""
     from .. import mem_catalog
+    scn = whole_die(scn)
     spec = mem_catalog.parse_mem_id(scn.mem_id)
     if "HBM" not in spec.mem_type.upper() or not die_mm2:
         return None
@@ -272,11 +276,24 @@ def shoreline_check(scn, die_mm2: float | None) -> dict | None:
     return out
 
 
+def hbm_mem_edges(scn, die_mm2: float | None) -> int:
+    """0.309: die edges the HBM stacks occupy = ⌈stacks × 11 mm / side⌉ clamped to [2, sides_max] (shoreline_check);
+    2 for non-HBM memory, an unknown area or a stack count beyond the four sides.  Feeds Chip.noc_mem_edges: the
+    memory attach points sit where the stacks' PHYs are 「推导」."""
+    import math
+    sh = shoreline_check(scn, die_mm2)
+    if not sh or sh["status"] == "over":
+        return 2
+    m = math.ceil(sh["need_mm"] / die_mm2 ** 0.5 - 1e-9)
+    return max(2, min(int(sh["sides_max"]), m))
+
+
 def d2d_shoreline(scn, die_mm2: float | None) -> dict | None:
     """0.308: D2D PHY units vs the die edges they get (d2d_catalog.d2d_edges of a square die): units × the unit's edge
     length ≤ edges × side.  None when D2D is off, the grade has no published footprint, or the die area is unknown."""
     from .d2d_catalog import d2d_edge_mm, d2d_edges
-    if not (getattr(scn, "d2d_enabled", False) and scn.package_cards > 1) or not die_mm2:
+    if not (getattr(scn, "d2d_enabled", False) and scn.package_cards > 1) or not die_mm2 \
+            or getattr(scn.chip, "noc_clusters", 1) > 1:
         return None
     w = d2d_edge_mm(scn.d2d_std)
     if w is None:
@@ -298,12 +315,44 @@ def noc_router_mm2(chip, b) -> float | None:
     return chip.engines * sc["um2_45"] * 1e-6 * (b.mm2_per_kmac / 1024 * 1e6 / NOC_MAC_UM2_45)
 
 
+def whole_die(scn):
+    """0.309: the monolithic die a NoC-clustered scenario (chip.noc_clusters = K > 1, K cluster cards on the on-die
+    tier) stands for: engines / SRAM / SLC / state SRAM × K, memory units × K, one flat NoC domain, D2D off, layout
+    unchanged (area / shoreline only).  Any other scenario is returned unchanged."""
+    k = getattr(scn.chip, "noc_clusters", 1)
+    if k <= 1:
+        return scn
+    from dataclasses import replace as _rp
+    from .. import mem_catalog as mc
+    ch = scn.chip
+    c = _rp(ch, engines=ch.engines * k, sram_mib=ch.sram_mib * k, slc_mib=ch.slc_mib * k,
+            state_sram_mib=ch.state_sram_mib * k, noc_clusters=1)
+    sp = mc.parse_mem_id(scn.mem_id)
+    hbm = sp.kind == "HBM"
+    kw = {"height": sp.hbm_height, "die_Gb": sp.hbm_die_Gb} if hbm else {"cap_GB": sp.cap_per_unit_GB}
+    mid = mc.make_spec(sp.mem_type, form=None if hbm else sp.form, width_bits=sp.unit_width_bits, rate=sp.rate_MTps,
+                       count=sp.n_units * k, **kw).id
+    lay = scn.layout                  # the clusters were cards along one axis: the die is 1/K of the replica's cards
+    for ax in ("tp", "pp", "dp", "cp", "sp"):
+        if getattr(lay, ax) % k == 0:
+            lay = _rp(lay, **{ax: getattr(lay, ax) // k})
+            break
+    return _rp(scn, chip=c, mem_id=mid, d2d_enabled=False, package_cards=1, mem_cap_GB=scn.mem_cap_GB * k, layout=lay)
+
+
 def full_area(scn, b: Budget, noc_routers: bool = False) -> dict:
     """Die area proxy incl. interface PHYs (0.149): area_estimate(chip) + phy_area(scenario).
     0.307 ``noc_routers`` (the energy DSE's NoC-width axis): + the NoC routers, counted once — after the uncore share
     (uncore_frac is TPUv1's control + unlabelled share; TPUv1 has no NoC: its blocks are joined by dedicated 256-byte
     paths, so the share holds wiring / white space, not routers; the NoC's link wires play the role of those paths
-    and stay inside the share), and not at all when mm2_fixed is given (it already means "everything else, incl. NoC")."""
+    and stay inside the share), and not at all when mm2_fixed is given (it already means "everything else, incl. NoC").
+    0.309: a NoC-clustered scenario (chip.noc_clusters > 1) is priced as its whole monolithic die (whole_die: no D2D
+    PHY — the cluster tier is the NoC's own links); "mm2" is the die, "clusters" says so."""
+    k = getattr(scn.chip, "noc_clusters", 1)
+    if k > 1:
+        out = full_area(whole_die(scn), b, noc_routers)
+        out["phy_notes"] = out["phy_notes"] + [f"片上 {k} 个 NoC 簇：按整片单晶粒计面积（簇间链路即 NoC 链路，无 D2D PHY，0.309）"]
+        return {**out, "clusters": k}
     a = area_estimate(scn.chip, b)
     p = phy_area(scn, b)
     terms = {**a["terms"], **p["terms"]}
@@ -469,9 +518,10 @@ def budget_report(r, b: Budget, energy: dict | None = None) -> dict:
             else:
                 items.append(_item("power_W_card", w, b.power_W_card))
     area = area_estimate(ch, b) if any(getattr(b, k) is not None for k in _DENS + _PHY_DENS + ("die_mm2", "system_mm2")) else None
-    if area is not None and any(getattr(b, k) is not None for k in _PHY_DENS):      # 0.149: interface PHYs
-        area = full_area(r.scenario, b)
-    for k, mult in (("die_mm2", 1), ("system_mm2", lay.cards)):
+    kc = getattr(ch, "noc_clusters", 1)
+    if area is not None and (kc > 1 or any(getattr(b, k) is not None for k in _PHY_DENS)):      # 0.149: interface PHYs
+        area = full_area(r.scenario, b)        # 0.309: clustered → the whole die
+    for k, mult in (("die_mm2", 1), ("system_mm2", lay.cards / kc)):
         lim = getattr(b, k)
         if lim is None:
             continue

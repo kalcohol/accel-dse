@@ -632,6 +632,7 @@
       <label title="单晶粒面积上限 mm²（空 = 光罩 858 = 26 × 33 mm「来源」；0 = 不限；拼接未建模）">光罩<input type="number" id="ins-dse-reticle" min="0" step="1" placeholder="858" style="width:5em"></label>
       <label title="封装（中介层）面积上限：Σ 晶粒 + HBM 占地。CoWoS-S 3.3× 光罩 ≈ 2700 mm²、CoWoS-L 5.5× ≈ 4719 mm²（TSMC「来源」）">封装<select id="ins-dse-pkg"><option value="">不限</option><option value="cowos-s">CoWoS-S 2700</option><option value="cowos-l">CoWoS-L 4719</option></select></label>
       <label title="缺陷密度 D0 /cm²（空 = 不算良率）。参考 TSMC N5 ≈ 0.10、N7 ≈ 0.09（AnandTech 转述「二手」）；Y = exp(−A·D0)「假设」，KGD 测试后封装">D0<input type="number" id="ins-dse-d0" min="0" step="0.01" placeholder="0.10" style="width:5em"></label>
+      <label title="0.309：单片也按同一切分数 K 划成片上 NoC 簇（层次化 NoC：簇内 mesh/ring + 簇间片上全局链路，按导线 / 路由能耗计、无 D2D PHY；A100/H100 L2 分区「来源」），并把外存接入点放到 HBM 堆栈实际占用的每条晶粒边；取消 = 0.308 平面单片对照"><input type="checkbox" id="ins-dse-clusters" checked>单片分簇</label>
     </div>
     <div class="note small" id="ins-dse-summary"></div>
     <div class="chart" id="ins-dse-chart"></div>

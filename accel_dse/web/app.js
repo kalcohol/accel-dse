@@ -2429,6 +2429,7 @@ async function runInsightDse() {
         if ($('ins-dse-reticle').value !== '' && +$('ins-dse-reticle').value >= 0) ex.reticle_mm2 = +$('ins-dse-reticle').value;
         if ($('ins-dse-pkg').value) ex.pkg_mm2 = $('ins-dse-pkg').value;
         if (+$('ins-dse-d0').value > 0) ex.d0_per_cm2 = +$('ins-dse-d0').value;
+        if (!$('ins-dse-clusters').checked) { ex.mono_clusters = false; ex.mem_edges_shoreline = false; }   // 0.309
       }
     }
     if ($('ins-dse-topo').checked) ex.topologies = ['mesh', 'ring', 'crossbar'];
@@ -2454,7 +2455,8 @@ async function runInsightDse() {
       + (r.chiplet ? ' · 单片 vs 拆分：' + (r.chiplet.compare || []).map((e) => {
         const v = { only_split: '仅拆分可行', split_both: '拆分吞吐与 J 均更优', split_thr: '拆分吞吐更高', split_J: '拆分 J 更低', mono: '单片更优', none: '均不可行' }[e.verdict] || e.verdict;
         const d = e.d_thr != null ? `（吞吐 ${(e.d_thr * 100).toFixed(1)}%，J ${(e.d_J * 100).toFixed(1)}%）` : e.mono_why ? `（单片：${e.mono_why}）` : '';
-        return `MAC×${e.mac_x} SRAM×${e.sram_x} ${e.mem_id} → ${v}${d}`;
+        const vf = e.verdict_flat && e.verdict_flat !== e.verdict ? `（对平面单片：${e.verdict_flat}）` : '';   // 0.309
+        return `MAC×${e.mac_x} SRAM×${e.sram_x} ${e.mem_id} → ${v}${d}${vf}`;
       }).join('；') : '')
       + ((r.notes || []).length ? ' · ' + r.notes.join('；') : '');
     put($('ins-dse-chart'), paretoChart(rows));
@@ -2466,7 +2468,7 @@ async function runInsightDse() {
         h('td', {}, `${x.engines}×${x.array}` + (x.base ? ' ←当前' : '')), h('td', {}, num(x.sram_mib)), h('td', {}, x.topology),
         h('td', {}, x.noc_link_Bpc ? num(x.noc_link_Bpc) : '不限'),
         h('td', {}, x.noc_W != null ? `${x.noc_mm2 != null ? num(x.noc_mm2) : '—'} / ${num(x.noc_W)}` : '—'),
-        h('td', {}, x.dies > 1 ? `${x.dies} × ${x.d2d_std}×${x.d2d_units}（${(x.die_split || '').toUpperCase()}）` : x.dies === 1 ? '单片' : '—'),
+        h('td', {}, x.dies > 1 ? `${x.dies} × ${x.d2d_std}×${x.d2d_units}（${(x.die_split || '').toUpperCase()}）` : x.dies === 1 ? (x.clusters > 1 ? `单片×${x.clusters}簇` : '单片') : '—'),
         h('td', {}, x.d2d_GBps != null ? num(x.d2d_GBps) + (x.d2d_noc_capped ? '（NoC 限）' : '') : '—'),
         h('td', {}, x.si_mm2 != null ? num(x.si_mm2) + (x.die_yield != null ? ` / ${(x.die_yield * 100).toFixed(0)}%` : '') : '—'),
         h('td', {}, x.mem_id || '—'), h('td', {}, x.mem_GBps != null ? num(x.mem_GBps) : '—'), h('td', {}, x.mem_GB != null ? num(x.mem_GB) : '—'),

@@ -155,7 +155,8 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                                "prompt", "tie", "mems", "mem_types", "mem_count_scales", "mem_caps", "slc_mibs",
                                "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd", "f_scales",
                                "noc_link_Bpc", "noc_routing", "noc_links", "dies", "d2d_stds", "d2d_units",
-                               "die_split", "reticle_mm2", "pkg_mm2", "d0_per_cm2"}}
+                               "die_split", "reticle_mm2", "pkg_mm2", "d0_per_cm2", "mono_clusters",
+                               "mem_edges_shoreline"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1493,6 +1494,11 @@ def api_insight_dse(body: dict) -> dict:
         if v not in ("tp", "pp", "ep"):
             raise ApiError("die_split must be 'tp', 'pp' or 'ep'")
         kw["die_split"] = v
+    for k in ("mono_clusters", "mem_edges_shoreline"):     # 0.309: fair monolithic comparison (default on)
+        if (v := body.get(k)) is not None:
+            if not isinstance(v, bool):
+                raise ApiError(f"{k} must be a boolean")
+            kw[k] = v
     for k, lo, hi in (("reticle_mm2", 0, 1e5), ("d0_per_cm2", 1e-6, 10)):
         v = body.get(k)
         if v is not None:

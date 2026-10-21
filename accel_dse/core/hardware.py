@@ -123,6 +123,18 @@ class Chip:
     # (D / 4 each) with the dataflow — the stage needs ≥ (Σ op load on the shared port + DRAM share) / (L · f).
     # "off" = ≤ 0.306 (only network links; DRAM ingress bound separately).  MODEL §252.2
     noc_eject: str = field(default="off", metadata={"omit_default": True})
+    # 0.309: this chip object is one of ``noc_clusters`` NoC clusters (domains) of ONE monolithic die — a hierarchical
+    # NoC (A100 / H100: "the L2 cache is divided into two partitions … each partition caches data for memory accesses
+    # from SMs in the GPCs directly connected to the partition" 「来源」).  The scenario then models the die as
+    # noc_clusters cards on an on-die cluster tier (package_cards = noc_clusters, d2d_enabled): the tier is the NoC's
+    # own boundary links (no PHY, no reticle relief), its bytes are NoC hops + one link pitch; DRAM attach and DRAM
+    # hops keep the whole die's geometry (memory columns on the die's west / east edges, shared by the clusters).
+    # 1 = a flat (single-domain) die (≤ 0.308).  MODEL §254
+    noc_clusters: int = field(default=1, metadata={"omit_default": True})
+    # 0.309: die edges with memory attach (noc_mem_attach "edge"): 2 = the west / east memory columns (0.305,
+    # Blackhole); 3 / 4 add a memory row on the north / south edge — HBM stacks that need the 3rd / 4th die edge
+    # (budget.shoreline_check "tight") attach there too, C routers per row.  Memory links and DRAM hops follow.
+    noc_mem_edges: int = field(default=2, metadata={"omit_default": True})
     # 0.72 (optional, default 0): sequencer launch / barrier overhead (cycles).  Every op pays one launch; when ≥ 2
     # core groups run instances in lock-step waves, each further wave adds one barrier (a single sequencer — wide,
     # or one active group — streams its instances back to back) 「假设」
@@ -210,6 +222,10 @@ class Chip:
             raise ValueError(f"chip.dispatch must be one of {DISPATCH_MODES}")
         if self.dispatch_us is not None and (isinstance(self.dispatch_us, bool) or not 0.0 <= self.dispatch_us < 1e9):
             raise ValueError("chip.dispatch_us must be finite and >= 0")
+        if self.noc_mem_edges not in (2, 3, 4):
+            raise ValueError("chip.noc_mem_edges must be 2, 3 or 4")
+        if isinstance(self.noc_clusters, bool) or not isinstance(self.noc_clusters, int) or not 1 <= self.noc_clusters <= 64:
+            raise ValueError("chip.noc_clusters must be an integer in [1, 64]")
         if self.noc_eject not in NOC_EJECT:
             raise ValueError(f"chip.noc_eject must be one of {NOC_EJECT} (got {self.noc_eject!r})")
         if self.noc_mem_attach not in NOC_MEM_ATTACH:
@@ -333,9 +349,13 @@ class Chip:
         link width is unset or attach is "none"."""
         if not self.noc_link_Bpc or self.noc_mem_attach == "none":
             return math.inf
+        k = self.noc_clusters        # 0.309: a cluster gets its share of the whole die's memory-column attach points
+        m = self.noc_mem_edges       # 0.309: 3 / 4 edges add a memory row on the north / south side (C attach each)
         if self.noc_topology == "ring":
-            return 4.0
-        return 2.0 * max(1, math.isqrt(self.engines))
+            return 2.0 * m / k
+        E = self.engines * k
+        r_ = max(1, math.isqrt(E))
+        return (2.0 * r_ + (m - 2) * -(-E // r_)) / k
 
     def noc_mem_hops(self) -> tuple[float, float]:
         """0.306: (router traversals, link pitches) per DRAM byte from the memory columns to the engines (noc_mem_attach
@@ -344,17 +364,25 @@ class Chip:
         averaged over the columns 「推导」.  Ring: two memory stops splitting the ring into arcs of E/2 engines, the
         same nearest-stop distance along an arc.  Crossbar: one switch traversal; the wire runs the same floor-plan
         distance as the mesh 「假设」.  (0, 0) for "none" or a single engine."""
-        if self.noc_mem_attach == "none" or self.engines <= 1:
+        if self.noc_mem_attach == "none" or self.engines * self.noc_clusters <= 1:
             return 0.0, 0.0
+        if self.noc_clusters > 1:    # 0.309: memory columns are the die's edges — the whole die's distances 「推导」
+            return replace(self, engines=self.engines * self.noc_clusters, noc_clusters=1).noc_mem_hops()
 
         def mean_d(n: int) -> float:
             n = max(1, n)
             return sum(min(i, n + 1 - i) for i in range(1, n + 1)) / n
+        m = self.noc_mem_edges
         if self.noc_topology == "ring":
-            d = mean_d(-(-self.engines // 2))
+            d = mean_d(-(-self.engines // m))     # m memory stops (0.309; 2 = ≤ 0.308)
             return d, d
         r_ = max(1, math.isqrt(self.engines))
-        d = mean_d(-(-self.engines // r_))
+        c_ = -(-self.engines // r_)
+        if m == 2:
+            d = mean_d(c_)
+        else:   # 0.309: nearest of the west / east columns and the north (m ≥ 3) / south (m = 4) memory rows 「推导」
+            d = sum(min(c, c_ + 1 - c, r, *((r_ + 1 - r,) if m == 4 else ()))
+                    for r in range(1, r_ + 1) for c in range(1, c_ + 1)) / (r_ * c_)
         return (1.0, d) if self.noc_topology == "crossbar" else (d, d)
 
     def noc_mem_GBps(self) -> float:
