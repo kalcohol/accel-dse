@@ -154,7 +154,7 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight_dse": {"mac_scales", "sram_scales", "sides", "topologies", "power_mode", "curve", "phase",
                                "prompt", "tie", "mems", "mem_types", "mem_count_scales", "mem_caps", "slc_mibs",
                                "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd", "f_scales",
-                               "noc_link_Bpc", "noc_routing"}}
+                               "noc_link_Bpc", "noc_routing", "noc_links"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1465,6 +1465,13 @@ def api_insight_dse(body: dict) -> dict:
         kw["noc_link_Bpc"] = nl
     if (rt := _noc_routing(body)) is not None:   # 0.304: per-link XY contention
         kw["noc_routing"] = rt
+    if (v := body.get("noc_links")) is not None:  # 0.306: NoC link width as a search axis
+        if (not isinstance(v, list) or not 1 <= len(v) <= 6 or
+                not all(isinstance(x, (int, float)) and not isinstance(x, bool) and 0 < x < 1e6 for x in v)):
+            raise ApiError("noc_links must be a list of 1–6 link widths in (0, 1e6) bytes / cycle")
+        if "noc_link_Bpc" in kw:
+            raise ApiError("noc_links (axis) and noc_link_Bpc (single value) are exclusive")
+        kw["noc_links"] = tuple(float(x) for x in v)
     mo = body.get("mix_out_tokens")
     if mo is not None:
         if isinstance(mo, bool) or not isinstance(mo, int) or not 1 <= mo <= 1 << 20:

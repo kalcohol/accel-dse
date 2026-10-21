@@ -328,6 +328,26 @@ class Chip:
             return 4.0
         return 2.0 * max(1, math.isqrt(self.engines))
 
+    def noc_mem_hops(self) -> tuple[float, float]:
+        """0.306: (router traversals, link pitches) per DRAM byte from the memory columns to the engines (noc_mem_attach
+        "edge"; independent of the link width).  Mesh R × C (R = ⌊√E⌋, C = ⌈E/R⌉) with a memory column beside
+        column 1 and column C: an engine in column c is min(c, C + 1 − c) hops (and pitches) from the nearer one;
+        averaged over the columns 「推导」.  Ring: two memory stops splitting the ring into arcs of E/2 engines, the
+        same nearest-stop distance along an arc.  Crossbar: one switch traversal; the wire runs the same floor-plan
+        distance as the mesh 「假设」.  (0, 0) for "none" or a single engine."""
+        if self.noc_mem_attach == "none" or self.engines <= 1:
+            return 0.0, 0.0
+
+        def mean_d(n: int) -> float:
+            n = max(1, n)
+            return sum(min(i, n + 1 - i) for i in range(1, n + 1)) / n
+        if self.noc_topology == "ring":
+            d = mean_d(-(-self.engines // 2))
+            return d, d
+        r_ = max(1, math.isqrt(self.engines))
+        d = mean_d(-(-self.engines // r_))
+        return (1.0, d) if self.noc_topology == "crossbar" else (d, d)
+
     def noc_mem_GBps(self) -> float:
         """0.305: DRAM bandwidth the NoC can deliver into the array: memory-attach links × noc_link_Bpc × clock."""
         n = self.noc_mem_links()

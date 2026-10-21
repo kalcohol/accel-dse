@@ -6,6 +6,28 @@
 
 
 
+## [0.306.0]
+
+### NoC: DRAM-hop energy, chip-panel NoC controls, NoC link width as an energy-DSE axis
+- **Default change (energy only): DRAM bytes now pay NoC hop energy** under `noc_mem_attach` "edge" (the 0.305 default).
+  - Bytes travel from the two memory columns to the engines. The mean distance to the nearer column is booked on the `noc` (router) and `noc_wire` (pitch) actions.
+  - Per byte: mesh = mean of min(c, C + 1 − c); ring = two stops; crossbar = 1 switch plus the same floor-plan wire. `Chip.noc_mem_hops()`. The report adds `noc.dram`.
+  - Timing is unchanged. "none" restores ≤ 0.305.
+  - Old → new J/token, tpuv4i_7nm preset, qwen3-8b:
+    - 1P: decode b8 +15.8 %, decode b64 +14.2 %, prefill +0.8 %.
+    - 100T: decode b64 +4.1 %.
+  - Design conclusion: wan2.1-1.3b energy-tied SRAM sizing is now J/token-limited (min 16 → 19.0 MiB). MODEL §251.1.
+- **UI (chip panel, 高级芯片参数):** NoC 拓扑, NoC 链路 B/周期, NoC 拥塞模型 (XY / 二分), DRAM 接入 (edge / none).
+- **Energy DSE `noc_links` axis** (API `noc_links`, UI 「NoC 链路轴」). Each point is charged router area and width-dependent static power.
+  - Source: Park et al. DAC 2012 router 227,230 µm², crossbar 26,840 µm², 5.6 mW clock floor, 76.7 mW / 16 leakage 「来源」.
+  - Scaling 「推导/假设」: crossbar ∝ (ports·width)², rest ∝ ports·width. Node: user MAC density ÷ Horowitz MAC 「二手」; power ÷ 2.6.
+  - The front now shows the trade-off. 1P decode, die 1300 mm², 300 W: 2048 × 16² @ 32 B/cycle (3.44 k tok/s, 77.9 mJ, NoC 291 mm² / 38 W) vs 128 × 64² @ 128 B/cycle (3.36 k, 61.3 mJ, NoC 149 mm² / 15 W). MODEL §251.2.
+- **Row-link sharing (weight streaming vs activation all-gather) under XY:**
+  - Mesh: proven never to exceed the modelled max(ingress link, busiest all-gather link), so it is exact. This corrects the 0.305 「近似」 wording.
+  - Ring / crossbar port / mesh ejection port: bounded and documented, not modelled. MODEL §251.3.
+- Tests: tests/test_core_306.py (6). test_core_300 pins `noc_mem_attach="none"` for its 0.300 records. test_core_223 adds the draft's DRAM-NoC hops.
+- Freshness sweep (107 orgs, since 2026-10-21): no new releases.
+
 ## [0.305.0]
 
 ### NoC model consolidation (XY default, DRAM ingress through the NoC); LPDDR self-refresh / refresh vs temperature

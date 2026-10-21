@@ -8462,3 +8462,77 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
   - Prefill J/token at 25 °C: 0.0079085 → 0.0078532 (−0.7 %).
   - Memory-bound decode has no self-refresh, so it is unchanged at ≤ 85 °C. At 95 °C it is +2.6 %.
 - Old → new: none unless `dram_temp_C` or `sram_temp_C` is set. With `sram_temp_C` set, LPDDR background now follows it (default change for those inputs).
+
+## §251 NoC: DRAM-hop energy, chip-panel NoC controls, NoC link width as an energy-DSE axis (0.306)
+
+### §251.1 NoC hop energy of DRAM traffic 「推导/假设」 (`core/hardware.py`, `core/energy.py`)
+- Since 0.305, DRAM bytes enter the array through the NoC (`noc_mem_attach` "edge": a memory column on each side of the engine array, one attach per engine row, Blackhole NoC 0 「来源」). Their router traversals and link pitches were not yet priced. They are now.
+- `Chip.noc_mem_hops()` gives (router traversals, link pitches) per DRAM byte:
+  - **Mesh** R × C (R = ⌊√E⌋, C = ⌈E/R⌉): an engine in column c is d(c) = min(c, C + 1 − c) hops from the nearer memory column (the first hop is the attach → router link). Traversals = pitches = the mean of d over the columns 「推导」. Values: E2 1.0, E16 1.5, E32 2.29, E512 6.5, E2048 12.0.
+  - **Ring**: two memory stops split the ring into two arcs of E/2. Same nearest-stop mean, ≈ E/8 (E2048: 256.5).
+  - **Crossbar**: 1 switch traversal; the wire runs the same floor-plan distance as the mesh 「假设」.
+  - "none" or E = 1 → 0 (≤ 0.305).
+- `action_counts`: `noc` += DRAM bytes × traversals and `noc_wire` += DRAM bytes × pitches. This covers every DRAM byte booked (stages, draft passes, VLM encoder, gen parts), priced by the existing `pJ_bit_hop_noc` / `pJ_bit_mm_onchip × pitch`. The report adds `noc.dram` {byte_hops, byte_pitches, hops_per_byte, pitches_per_byte, J}.
+- Timing is untouched. DRAM delivery is already capped by the ingress links (§250.1).
+- SLC hits are not routed: the SLC access already carries its own distance term (§246).
+- **Old → new** (tpuv4i_7nm preset, qwen3-8b, default chips — the preset sets `pJ_bit_hop_noc`, so this is a default change):
+
+| chip / phase | old J/token | new J/token | Δ |
+|---|---|---|---|
+| 1P decode b8 | 0.12538 | 0.14522 | +15.8 % |
+| 1P decode b64 | 0.047366 | 0.054109 | +14.2 % |
+| 1P prefill b1 p2048 | 0.0071614 | 0.0072217 | +0.8 % |
+| 100T decode b64 | 0.072369 | 0.075358 | +4.1 % |
+| 100T decode b8 | 0.19675 | 0.20561 | +4.5 % |
+
+  - On 1P (32 engines) one pitch is 3.6 mm. A DRAM byte crosses 2.29 hops × (0.16 router + 0.078 × 3.6 wire) ≈ 1.0 pJ/bit, against 3.44 + 0.29 pJ/bit for HBM + PHY. The wire is ⅔ of it.
+  - Sweep (1P, decode b64): mesh E2 / 32 / 512 / 2048 +10 / +14 / +19 / +22 %; crossbar +10 / +11 / +8 / +7 %; ring at E512 / 2048 +75 / +70 % (rings are already unusable, §250.2). Prefill +0.2–10 %.
+  - Design conclusion moved: the wan2.1-1.3b energy-tied SRAM sizing (insight_sizing, energy_tie) is now limited by J/token. Minimum SRAM 16 → 19.0 MiB of 64, because a smaller SRAM's extra DRAM bytes now also pay NoC hops. test_core_300 pins "none" for its 0.300 record.
+
+### §251.2 NoC link width as an energy-DSE axis 「来源/推导/假设」 (`core/energy_dse.py`)
+- `energy_design_search(noc_links=[…])` (API `noc_links`, 1–6 widths in B/cycle; UI 「NoC 链路轴」). Every grid point is evaluated at each width. It is exclusive with the single-value `noc_link_Bpc`; without the axis nothing changes.
+- Each point is charged the routers' area and width-dependent static power (`noc_router_cost`). Reference: Park et al., DAC 2012, the MIT 16-node 4 × 4 mesh, 45 nm SOI, 1.1 V, 1 GHz, 5-port, 64-bit flits 「来源」:
+  - Table 4: router with a full-swing 5 × 5 crossbar 227,230 µm²; the crossbar alone 26,840 µm².
+  - §4.1: clocking plus full-swing datapath at near-zero load 5.6 mW/router (the non-data floor); measured leakage 76.7 mW for the chip → 4.8 mW/router (includes NICs, so an upper bound 「推导」).
+- Width scaling 「推导/假设」:
+  - Crossbar ∝ (ports · width)²: a wire-limited P × P switch of w-bit buses (Dally & Towles ch. 17).
+  - Buffers, pipeline registers and datapath ∝ ports · width. Allocators and route logic do not scale with width; they are lumped into the linear part, which overstates wide links and understates narrow ones 「假设」.
+  - Clock floor ∝ width (clocked flops); leakage ∝ area 「假设」. Ring routers have 3 ports. The crossbar topology (one switch for all engines) is not costed.
+- Node scaling: area × (the user's `mm2_per_kmac` / 1024 ÷ Horowitz's 45 nm bf16 MAC 5824 µm² 「二手」), i.e. logic scales like the MAC datapath 「推导/假设」. Power ÷ 2.6, the preset's 45 → 7 nm factor 「推导」, at the running clock. No area density → power only.
+- Resulting 7 nm router (n7_tpuv4i density, 1 GHz, mesh):
+
+| link B/cycle | 8 | 16 | 32 | 64 | 128 | 256 |
+|---|---|---|---|---|---|---|
+| mm² / router | 0.026 | 0.059 | 0.142 | 0.383 | 1.16 | 3.91 |
+| mW / router | 4.0 | 8.4 | 18.6 | 44.2 | 116 | 344 |
+
+  - Cross-check: a Blackhole-class 64 B NoC at ~140 tiles would be ≈ 54 mm² per NoC — plausible for a 600+ mm² die, probably high (no public router area) 「近似」.
+- Accounting: NoC area is added to the point's die-area proxy. NoC static W is added to W/card and J/unit after the power cap; a point then over budget is dropped, not re-capped 「近似」. `uncore_frac` (routing / white space) may already contain part of it, so it may be counted twice 「假设」.
+- **The trade-off on the front.** 1P, qwen3-8b decode b64, HBM3E, n7_tpuv4i densities, die ≤ 1300 mm², ≤ 300 W; sides 16–256 at a fixed MAC count; links 8 / 32 / 128 B/cycle (each cell: k tok/s · mJ/token · NoC mm² / W):
+
+| E × array | 8 B | 32 B | 128 B |
+|---|---|---|---|
+| 8 × 256² | 0.04 · 1506 · 0.2 / 0.0 | 0.15 · 408 · 1.1 / 0.1 | 0.61 · 134 · 9 / 0.9 |
+| 32 × 128² | 0.10 · 627 · 0.8 / 0.1 | 0.38 · 188 · 4.5 / 0.6 | 1.53 · 78.9 · 37 / 3.7 |
+| 128 × 64² | 0.21 · 309 · 3.4 / 0.5 | 0.84 · 110 · 18 / 2.4 | **3.36 · 61.3 · 149 / 15** ★ |
+| 512 × 32² | 0.42 · 181 · 13 / 2.0 | 1.68 · 82.8 · 73 / 9.5 | 3.94 · 73.2 · 595 / 60 (area ✗) |
+| 2048 × 16² | 0.86 · 126 · 54 / 8.2 | **3.44 · 77.9 · 291 / 38** ★ | 3.94 · 126 · 2379 / 238 (✗) |
+
+  - Front (★): narrow NoC × many small cores (2048 @ 32 B) reaches the throughput, but pays 2.6× the NoC power and 2× the NoC area. Wide NoC × fewer bigger cores (128 @ 128 B) is 21 % lower J at −2 % throughput.
+  - Wide NoC × many cores is unaffordable: router area grows as width², times E.
+  - So with a priced NoC, the 0.305 "many small cores are required" conclusion becomes a choice: buy ingress with routers (E) or with link width (L). The energy optimum sits at the smallest E that L can still feed (L ≥ BW ÷ (2·⌊√E⌋·f), §250.2).
+
+### §251.3 Row-link sharing between weight streaming and activation all-gather 「推导」 (documented; mesh exact)
+- 0.305 (§250.1) left the all-gather's row-phase load beside the DRAM stream unadded 「近似」. Derivation for one row link, direction away from the left memory column, mesh R × C, g = 1, h = ⌈C/2⌉ columns fed from each side, op DRAM bytes D and all-gather payload P over s = E engines:
+  - DRAM on link j (between columns j and j + 1, j < h): (h − j)·D/E. The attach link carries h·D/E = D/(2R), the modelled ingress per link.
+  - All-gather X phase on link j: j shards = j·P/s. The modelled busiest link is the column link, (R − 1)/R·P ≥ (C − 1)·P/s for R ≥ 2. For R = 1, the X maximum (C − 1)/C·P is itself the modelled figure.
+  - Sum (h − j)·D/E + j·P/s is linear in j, so its maximum is at j = 1 or at the far end. At j = 1: if P/s ≤ D/E it is ≤ h·D/E (the ingress); else it is < h·P/s ≤ (C − 1)·P/s (the X maximum).
+  - **So on a mesh, the shared row links never exceed max(ingress link, busiest all-gather link), which is what the model takes. The 0.305 approximation is exact; nothing to add.**
+- Not exact (documented, not modelled, needs per-op DRAM bytes in the mapping):
+  - **Ring**: the all-gather loads every link uniformly, ⌊s/2⌋/s·P. The link next to a stop carries (q − 1)·D/E + ½P (q = E/4). The excess over the modelled max is ≤ min(½P − D/E, (q − 1)·D/E), up to ~2× when the two are equal. Rings are already NoC-bound.
+  - **Crossbar output port**: an engine ingests D/E + (s − 1)/s·P through one port. The excess over the model is ≤ D/E, relative ≤ 1/h (up to 2× at E = 2).
+  - **Mesh ejection port** (a separate gap found here): each engine ingests (s − 1)/s·P + D/E through its local port. The model bounds only network links, (R − 1)/R·P. At equal width the ejection port is busier, by (1 − 1/s)/(1 − 1/R): +9 % at E = 128, 1.5× at E = 4, plus D/E. Wider NIU ports avoid it in real designs.
+  - Split-K reduce trees run after the K-sliced GEMM (sequential in the model), so they do not share with that op's stream.
+
+### §251.4 Chip panel
+- 高级芯片参数 gains NoC 拓扑 (mesh / ring / crossbar), NoC 链路 B/周期 (empty = unlimited), NoC 拥塞模型 (XY default / 二分) and DRAM 接入 (edge default / none). They are bound through `S.chipOver`; empty means the preset or default. The fold summary shows the link width.

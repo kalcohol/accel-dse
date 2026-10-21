@@ -29,7 +29,9 @@ def test_draft_acts_counted_once_per_pass():
     r = evaluate(_sc("qwen3-32b", 8, 4, dm="qwen3-0.6b"))
     assert r.draft and set(r.draft["acts"]) >= {"mac", "dram"}
     with_d, without = _counts(r)["counts"], _counts(rp(r, draft=None))["counts"]
+    hp = dict(zip(("noc", "noc_wire"), r.scenario.chip.noc_mem_hops()))   # 0.306: the draft's DRAM bytes cross the NoC
     for a, v in r.draft["acts"].items():
+        v += r.draft["acts"]["dram"] * hp.get(a, 0.0)
         assert abs(with_d.get(a, 0.0) - without.get(a, 0.0) - v) <= 1e-6 * max(1.0, v)
     # 0.287: the draft pins beside the target's staging, which grows with the 1 + k verify tokens → on 1P (256 MiB
     # SRAM) a k = 4 draft pass reads more from DRAM than a k = 1 pass; exactly k passes when the SRAM is not contended

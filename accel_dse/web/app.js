@@ -354,6 +354,9 @@ function syncInputs() {
   if ($('c-slc_policy') && S.cat) $('c-slc_policy').value = chipVal('slc_policy') || 'pin';
   if ($('c-attn_fmt') && S.cat) $('c-attn_fmt').value = chipVal('attn_fmt') || '';
   if ($('c-dispatch') && S.cat) $('c-dispatch').value = chipVal('dispatch') || '';
+  for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach']) {   // 0.306: NoC selects ('' = preset / default)
+    if ($('c-' + k) && S.cat) $('c-' + k).value = k in S.chipOver ? S.chipOver[k] : '';
+  }
   if ($('c-clk_datapath_gate')) $('c-clk_datapath_gate').checked = !!chipVal('clk_datapath_gate');
   if ($('fab-enabled') && S.sc && S.cat) fabPaint();
   if ($('d2d-enabled') && S.sc) { $('d2d-enabled').checked = !!S.sc.d2d_enabled; if (S.cat) $('d2d-std').value = S.sc.d2d_std; d2dPaint(); }
@@ -2375,6 +2378,12 @@ async function runInsightDse() {
   const sci = (x) => (x == null ? '—' : x === 0 ? '0' : x.toExponential(3));
   const list = (id) => $(id).value.split(/[,\s]+/).filter(Boolean).map(Number);
   const macs = list('ins-dse-macs'), sram = list('ins-dse-sram'), memn = list('ins-dse-memn'), freq = list('ins-dse-freq');
+  const links = $('ins-dse-links') ? list('ins-dse-links') : [];      // 0.306: NoC link-width axis (optional)
+  {
+    const bad = links.length > 6 || links.some((x) => !isFinite(x) || x <= 0);
+    $('ins-dse-links').classList.toggle('bad', bad);
+    if (bad) return;
+  }
   for (const [id, v] of [['ins-dse-macs', macs], ['ins-dse-sram', sram], ['ins-dse-memn', memn], ['ins-dse-freq', freq]]) {
     const bad = !v.length || v.length > 6 || v.some((x) => !isFinite(x) || x <= 0) || (id === 'ins-dse-freq' && v.some((x) => x < 0.15 || x > 1));
     $(id).classList.toggle('bad', bad);
@@ -2401,7 +2410,8 @@ async function runInsightDse() {
   try {
     const ex = { mac_scales: macs, sram_scales: sram, power_mode: $('ins-dse-power').value, curve: $('ins-dse-curve').value };
     if (freq.length > 1 || freq[0] !== 1) ex.f_scales = freq;     // 0.302: DVFS operating point axis
-    if ($('ins-dse-link').value !== '' && +$('ins-dse-link').value >= 0) ex.noc_link_Bpc = +$('ins-dse-link').value;   // 0.303
+    if (links.length) ex.noc_links = links;                        // 0.306: link width as an axis (wins over the single value)
+    else if ($('ins-dse-link').value !== '' && +$('ins-dse-link').value >= 0) ex.noc_link_Bpc = +$('ins-dse-link').value;   // 0.303
     if ($('ins-dse-routing').value) ex.noc_routing = $('ins-dse-routing').value;   // 0.304
     if ($('ins-dse-phase').value) ex.phase = $('ins-dse-phase').value;
     if ($('ins-dse-topo').checked) ex.topologies = ['mesh', 'ring', 'crossbar'];
@@ -2419,19 +2429,21 @@ async function runInsightDse() {
     const rows = r.rows || [];
     const u = rows.find((x) => x.unit)?.unit || '单位';
     const bp = r.best && r.best.perf_W, bt = r.best && r.best.thr;
-    const desc = (b) => `${b.engines}×${b.array} · SRAM ${num(b.sram_mib)} MiB · ${b.topology} · ${b.mem_id} · SLC ${num(b.slc_mib)} MiB${b.f_op != null && b.f_op !== 1 ? ` · f×${b.f_op}` : ''}（${num(b.thr)} /s · ${sci(b.J_per_unit)} J）`;
+    const desc = (b) => `${b.engines}×${b.array} · SRAM ${num(b.sram_mib)} MiB · ${b.topology} · ${b.mem_id} · SLC ${num(b.slc_mib)} MiB${b.f_op != null && b.f_op !== 1 ? ` · f×${b.f_op}` : ''}${(r.noc_links || []).length ? ` · NoC ${num(b.noc_link_Bpc)} B/周期` : ''}（${num(b.thr)} /s · ${sci(b.J_per_unit)} J）`;
     $('ins-dse-summary').textContent = `${r.chip} · ${r.model} · ${r.phase === 'mix' ? `混合（prompt ${r.mix.prompt} + 输出 ${r.mix.out_tokens}）` : r.phase} · 外存 ${(r.mems || []).length} 档 · SLC ${(r.slc_mibs || []).length} 档 · 频率 ${(r.f_scales || [1]).length} 档 · 可行 ${r.n_feasible}/${rows.length} 点 · 前沿 ${(r.front || []).length} 点`
       + (r.power_cap_W ? ` · 功耗预算 ${num(r.power_cap_W)} W（${r.power_mode === 'dvfs' ? 'DVFS 封顶' : '剔除'}）` : '')
-      + (r.die_mm2 ? ` · 面积预算 ${num(r.die_mm2)} mm²` : '') + (r.noc_link_Bpc ? ` · NoC 链路 ${num(r.noc_link_Bpc)} B/周期${r.noc_routing === 'xy' ? '（逐链路 XY）' : ''}` : '')
+      + (r.die_mm2 ? ` · 面积预算 ${num(r.die_mm2)} mm²` : '') + ((r.noc_links || []).length ? ` · NoC 链路轴 ${r.noc_links.map(num).join(' / ')} B/周期` : r.noc_link_Bpc ? ` · NoC 链路 ${num(r.noc_link_Bpc)} B/周期${r.noc_routing === 'xy' ? '（逐链路 XY）' : ''}` : '')
       + (bp ? ` · perf/W 最优 ${desc(bp)}` : '') + (bt ? ` · 吞吐最优 ${desc(bt)}` : '')
       + ((r.notes || []).length ? ' · ' + r.notes.join('；') : '');
     put($('ins-dse-chart'), paretoChart(rows));
     const pct = (x) => (x * 100).toFixed(1) + '%';
     put($('ins-dse-tbl'), h('thead', {}, h('tr', {},
-      ['前沿', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '工作点 f ×', '运行 f ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
+      ['前沿', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', 'NoC B/周期', 'NoC mm² / W', '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '工作点 f ×', '运行 f ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
       h('tbody', {}, rows.map((x) => h('tr', { class: x.front ? 'best' : '' },
         h('td', {}, x.front ? '★' : x.front3 ? '☆' : x.front_usd ? '$' : ''), h('td', {}, String(x.mac_x)),
         h('td', {}, `${x.engines}×${x.array}` + (x.base ? ' ←当前' : '')), h('td', {}, num(x.sram_mib)), h('td', {}, x.topology),
+        h('td', {}, x.noc_link_Bpc ? num(x.noc_link_Bpc) : '不限'),
+        h('td', {}, x.noc_W != null ? `${x.noc_mm2 != null ? num(x.noc_mm2) : '—'} / ${num(x.noc_W)}` : '—'),
         h('td', {}, x.mem_id || '—'), h('td', {}, x.mem_GBps != null ? num(x.mem_GBps) : '—'), h('td', {}, x.mem_GB != null ? num(x.mem_GB) : '—'),
         h('td', {}, x.slc_mib != null ? num(x.slc_mib) : '—'),
         h('td', {}, x.thr != null ? num(x.thr) : '—'), h('td', {}, sci(x.J_per_unit)), h('td', {}, x.perf_W != null ? num(x.perf_W) : '—'),
@@ -2672,7 +2684,8 @@ function paintPanel() {
     const v = (id) => ($(id) ? $(id).value : ''), opt = (id) => { const e = $(id); return e && e.selectedIndex >= 0 ? e.options[e.selectedIndex].text : ''; };
     const kus = +v('c-kernel_us') || 0, slc = +v('c-slc_mib') || 0;
     set('sec-chip-adv-sum', [`派发 ${v('c-dispatch') ? opt('c-dispatch').split(' ')[0] : '理想'}`, kus ? `kernel ${kus} µs` : '',
-      slc ? `SLC ${slc} MiB` : 'SLC 无', v('c-attn_fmt') ? '原生 KV 注意力' : ''].filter(Boolean).join(' · '));
+      slc ? `SLC ${slc} MiB` : 'SLC 无', v('c-attn_fmt') ? '原生 KV 注意力' : '',
+      +v('c-noc_link_Bpc') ? `NoC ${v('c-noc_link_Bpc')} B/周期` : ''].filter(Boolean).join(' · '));   // 0.306
   }
   for (const id of ['sec-budget', 'sec-energy']) { const n = filledIn(id); set(id + '-sum', n ? `已填 ${n} 项` : '未填（不计）'); }
 }
@@ -2731,8 +2744,8 @@ async function init() {
     const dm = S.cat.chips[v].default_mem || S.cat.mem_legacy_default || 'lpddr5x_4x64_8533_16g';
     if (!S.memInfo || S.memInfo.id !== dm) applyMem(dm); else schedule();
   });
-  for (const k of ['freq_ghz', 'sram_mib', 'state_sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us', 'dispatch_us', 'clk_ungated_share']) {
-    const nullable = k === 'sram_port_Bpc' || k === 'acc_kib' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine' || k === 'kernel_us' || k === 'dispatch_us' || k === 'clk_ungated_share';
+  for (const k of ['freq_ghz', 'sram_mib', 'state_sram_mib', 'sram_port_Bpc', 'sram_port_Bpc_per_engine', 'gemv_macs', 'mac_eff', 'acc_kib', 'slc_mib', 'slc_GBps', 'kernel_us', 'dispatch_us', 'clk_ungated_share', 'noc_link_Bpc']) {
+    const nullable = k === 'sram_port_Bpc' || k === 'acc_kib' || k === 'gemv_macs' || k === 'sram_port_Bpc_per_engine' || k === 'kernel_us' || k === 'dispatch_us' || k === 'clk_ungated_share' || k === 'noc_link_Bpc';
     bindNumber('c-' + k, () => chipVal(k), (x) => { if (x === null) delete S.chipOver[k]; else S.chipOver[k] = x; if (k === 'freq_ghz') onPreset(); },
       { int: k === 'gemv_macs', nullable });
   }
@@ -2830,6 +2843,9 @@ async function init() {
   $('c-slc_policy').addEventListener('change', (e) => { S.chipOver.slc_policy = e.target.value; schedule(); });
   $('c-attn_fmt').addEventListener('change', (e) => { if (e.target.value) S.chipOver.attn_fmt = e.target.value; else delete S.chipOver.attn_fmt; schedule(); });
   $('c-dispatch').addEventListener('change', (e) => { if (e.target.value) S.chipOver.dispatch = e.target.value; else delete S.chipOver.dispatch; schedule(); });
+  for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach']) {   // 0.306: chip-panel NoC selects
+    $('c-' + k).addEventListener('change', (e) => { if (e.target.value) S.chipOver[k] = e.target.value; else delete S.chipOver[k]; schedule(); });
+  }
   $('c-clk_datapath_gate').addEventListener('change', (e) => { if (e.target.checked) S.chipOver.clk_datapath_gate = true; else delete S.chipOver.clk_datapath_gate; schedule(); });
   $('l-pp_split').addEventListener('change', (e) => { S.sc.pp_split = e.target.value; schedule(); });
   $('l-indexer').addEventListener('change', (e) => { S.sc.indexer = e.target.value; schedule(); });

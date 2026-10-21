@@ -418,8 +418,20 @@ def _counts(r) -> dict:
     else:
         window = r.latency
         unit = w.unit
+    # 0.306: DRAM bytes cross the NoC from the memory columns to the engines (noc_mem_attach "edge"): router
+    # traversals / link pitches per byte from Chip.noc_mem_hops, booked on the NoC actions (energy only)
+    nd = None
+    if c["dram"] > 0:
+        h, p = ch.noc_mem_hops()
+        if h or p:
+            nd = {"byte_hops": c["dram"] * h, "byte_pitches": c["dram"] * p, "hops_per_byte": h, "pitches_per_byte": p}
+            c["noc"] += nd["byte_hops"]
+            c["noc_wire"] += nd["byte_pitches"]
     units = r.throughput * window
-    return {"counts": c, "window_s": window, "units": units, "unit": unit}
+    out = {"counts": c, "window_s": window, "units": units, "unit": unit}
+    if nd:
+        out["noc_dram"] = nd
+    return out
 
 
 def _is_hbm(r) -> bool | None:
@@ -741,6 +753,13 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                               "engines": ch.engines,
                               "byte_hops": per.get("noc", 0.0), "byte_pitches": per.get("noc_wire", 0.0),
                               "basis": NOC_BASIS}
+                if a.get("noc_dram"):        # 0.306: the DRAM bytes' share (memory columns → engines)
+                    nd = a["noc_dram"]
+                    out["noc"]["dram"] = {"byte_hops": nd["byte_hops"] / u, "byte_pitches": nd["byte_pitches"] / u,
+                                          "hops_per_byte": nd["hops_per_byte"],
+                                          "pitches_per_byte": nd["pitches_per_byte"],
+                                          "J": (nd["byte_hops"] * e + nd["byte_pitches"] * (unit_pJ(table, "noc_wire", ch) or 0.0))
+                                          * 8e-12 / u}
         else:
             e = getattr(table, dfield if k == "dram" else attr)
         if e is not None:

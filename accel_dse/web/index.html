@@ -329,6 +329,10 @@
         <label title="0.120：每个 kernel 的启动 / 调度固定开销（µs，默认 0 = 不计）。每个 GEMM、融合注意力、结构模型算子各一次；分块三角注意力每块 3 次（QKᵀ、softmax、·V）">kernel 启动 µs <span class="tag assume">假设</span><input type="number" id="c-kernel_us" step="0.5" min="0" placeholder="0"></label>
         <label title="0.203 NPU 派发模型 · NPU dispatch model。空 = 理想（0 开销，「假设」）；static-graph = 每步一次静态图启动 + token 同步（10 µs，JAX jit 派发，仅主机路径 「二手」）；trace = 设备回放命令流，每算子 1.5 µs（tt-metal #20681 「二手」）；host = 主机逐算子派发，每算子 20 µs（vllm-ascend #13021，910B 实测 「二手」）">派发 dispatch <span class="tag assume">二手</span><select id="c-dispatch"><option value="">理想 ideal</option><option value="static">静态图 static-graph</option><option value="trace">设备回放 trace</option><option value="host">主机逐算子 host</option></select></label>
         <label title="0.203：覆盖所选派发模式的 µs（static-graph = 每步，trace / host = 每算子）· override the mode's µs (per step / per op)">派发 µs dispatch_us<input type="number" id="c-dispatch_us" step="0.5" min="0" placeholder="默认 default"></label>
+        <label title="0.299：片上网络拓扑（引擎间数据流 / DRAM 接入的路由与能耗）">NoC 拓扑<select id="c-noc_topology"><option value="">预设（mesh）</option><option value="mesh">mesh</option><option value="ring">ring</option><option value="crossbar">crossbar</option></select></label>
+        <label title="0.303：NoC 链路带宽，字节 / 周期 / 链路 / 方向；空 = 不限（≤ 0.302）。参考 Tenstorrent Blackhole 64 B/周期「来源」。设定后：数据流多播 / 归约按最忙链路计时，DRAM 经 NoC 接入受 2·⌊√E⌋ 条链路限制">NoC 链路 B/周期<input type="number" id="c-noc_link_Bpc" min="0" step="16" placeholder="不限"></label>
+        <label title="0.304/0.305：拥塞模型（仅在设链路带宽时生效）。XY（默认）= 维序路由下多播 / 归约树最忙链路；二分 = 载荷 ÷ 拓扑二分链路（乐观下界）">NoC 拥塞模型<select id="c-noc_routing"><option value="">XY（默认）</option><option value="bisection">二分</option></select></label>
+        <label title="0.305/0.306：DRAM 是否经 NoC 进入阵列。edge（默认）= 两列存储 tile、每行引擎各一个接入点（Blackhole NoC0「来源」）：设链路带宽时限制可送达 DRAM 带宽，并计 DRAM 字节的 NoC 跳数能耗；none = 专用通路（≤ 0.304，不计 NoC）">DRAM 接入<select id="c-noc_mem_attach"><option value="">edge（默认）</option><option value="none">none（专用通路）</option></select></label>
       </div>
       <div class="row3" id="slc-row">
         <label title="系统级缓存（SLC, system-level cache）：位于 SRAM 与 DRAM 之间，每卡容量；0 = 无（默认）。不增加容量（包含式）">SLC MiB <span class="tag assume">假设</span><input type="number" id="c-slc_mib" step="64" min="0"></label>
@@ -583,6 +587,7 @@
     <div class="row">
       <label title="prefill 的 prompt 长度（空 = 场景的 prompt）">prefill prompt<input type="number" id="ins-noc-prompt" min="1" step="256" style="width:6em"></label>
       <label title="0.303：NoC 链路带宽（字节 / 周期 / 链路 / 方向；空 = 芯片设定，0 = 不限）。数据流的 NoC 载荷须穿过拓扑二分（mesh ⌊√E⌋ / ring 2 / crossbar E/2 条链路），超出时计时；参考 Tenstorrent Blackhole 64 B/周期「来源」">NoC 链路 B/周期<input type="number" id="ins-noc-link" min="0" step="16" placeholder="芯片" style="width:5em"></label>
+      <label title="0.306：NoC 链路宽度轴（B/周期/方向，逗号分隔，最多 6 档；空 = 不作为轴）。每点计路由器面积（交叉开关 ∝ 位宽²、缓冲 ∝ 位宽，Park DAC 2012「来源」+ 缩放「推导/假设」）与静态功耗；窄 NoC × 多小核 vs 宽 NoC × 少大核在前沿上直接比较。与上面的单值互斥">NoC 链路轴<input type="text" id="ins-dse-links" placeholder="如 16,64,256" style="width:7em"></label>
       <label title="0.304：拥塞模型。二分 = 0.303 载荷 ÷ 二分链路；XY = 维序路由下多播 / 归约树最忙链路的负载（跨组拷贝与组内多播同链路相加）">拥塞模型<select id="ins-noc-routing"><option value="">芯片</option><option value="bisection">二分</option><option value="xy">逐链路 XY</option></select></label>
       <button class="btn" id="ins-noc-run">计算引擎数 × 拓扑</button>
       <span class="small muted" id="ins-noc-status"></span>

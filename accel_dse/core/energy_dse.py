@@ -14,6 +14,8 @@ fit) and priced by the energy table (MAC / SRAM / wire / NoC / DRAM / static, in
   SLC         `slc_mibs` (0.301; absolute MiB, default the chip's): area mm2_per_mib_slc, SLC access + wire energy
   NoC link    `noc_link_Bpc` (0.303; default the chip's, 0 = unlimited): bisection congestion on every point;
               `noc_routing` (0.304; "bisection" / "xy"): busiest-link load under dimension-ordered routing
+              `noc_links` (0.306): link width as an axis — every point also pays router area + width-dependent
+              static power (noc_router_cost, Park DAC 2012 「来源」 scaled 「推导/假设」), MODEL §251.2
   clock       `f_scales` (0.302; f/f_max of the chip's nominal clock, default 1): the DVFS operating point — the
               chip is re-evaluated at freq_ghz·f, core-rail action energies × V(f)², SRAM leakage × V(f), V(f) from the
               `curve` (powercap._point, the same mechanism as the power cap).  More MACs at a lower clock vs fewer at
@@ -42,6 +44,41 @@ from .hardware import NOC_TOPOLOGIES
 from .noc_insight import _fill
 
 MAX_POINTS = 240                       # 0.301: 96 → 240 (memory / SLC axes)
+
+# 0.306: NoC router cost per link width, for the `noc_links` axis.  Park et al., DAC 2012 (MIT 16-node 4×4 mesh, 45 nm
+# SOI, 1.1 V, 1 GHz, 5-port routers, 64-bit flits), Table 4: router with a full-swing 5×5 crossbar 227,230 µm², the
+# synthesized full-swing crossbar alone 26,840 µm² 「来源」; §4.1: clocking + full-swing datapath at near-zero load
+# 5.6 mW / router (the non-data-dependent floor) and 76.7 mW measured leakage for the 16-node chip 「来源」.
+NOC_ROUTER_REF_BITS = 64
+NOC_ROUTER_UM2_45 = 227_230.0
+NOC_XBAR_UM2_45 = 26_840.0
+NOC_ROUTER_CLK_PJ_45 = 5.6                      # pJ / cycle / router (5.6 mW at 1 GHz)
+NOC_ROUTER_LEAK_MW_45 = 76.7 / 16               # mW / router (chip leakage incl. NICs ÷ 16 → upper bound) 「推导」
+NOC_MAC_UM2_45 = 1640 + 4184                    # Horowitz 45 nm bf16 MAC (16b FP mult + 32b FP add) µm² 「二手」
+NOC_PORTS = {"mesh": 5, "ring": 3}
+NOC_COST_SRC = ("Park et al., DAC 2012 (45 nm, 64-bit, 5-port): router 227,230 µm² of which crossbar 26,840 µm² (Table 4); "
+                "clock + datapath floor 5.6 mW/router @1 GHz, leakage 76.7 mW / 16 routers (§4.1) 「来源」")
+
+
+def noc_router_cost(link_Bpc: float, topology: str, f_ghz: float, mm2_per_kmac: float | None) -> dict | None:
+    """0.306: one router's area (mm²) and width-dependent static power (W) for a link of ``link_Bpc`` bytes / cycle.
+    Width scaling 「推导」: crossbar ∝ (ports · width)² (wire-limited P×P switch of width-w buses, Dally & Towles ch. 17),
+    the rest (input buffers, pipeline registers, datapath) ∝ ports · width; allocators / route logic, which do not scale
+    with width, are lumped into the linear part (overstates them at wide links, understates at narrow) 「假设」.
+    Clock floor ∝ width (clocked flops), leakage ∝ area 「假设」.  Node: area × (the user's MAC density ÷ Horowitz's 45 nm
+    bf16 MAC area) — logic scales like the MAC datapath 「推导/假设」; energy / leakage ÷ 2.6 (the preset's 45 → 7 nm
+    factor, tpuv4i_7nm) 「推导」.  Ring routers have 3 ports.  Crossbar topology (one switch for all engines): None."""
+    P = NOC_PORTS.get(topology)
+    if P is None or not link_Bpc or link_Bpc <= 0:
+        return None
+    w = 8.0 * link_Bpc / NOC_ROUTER_REF_BITS
+    p5 = P / 5.0
+    um2 = NOC_XBAR_UM2_45 * (p5 * w) ** 2 + (NOC_ROUTER_UM2_45 - NOC_XBAR_UM2_45) * p5 * w
+    a45 = um2 / NOC_ROUTER_UM2_45
+    node = (mm2_per_kmac / 1024 * 1e6 / NOC_MAC_UM2_45) if mm2_per_kmac else None
+    W = (NOC_ROUTER_CLK_PJ_45 * p5 * w * f_ghz * 1e-3 + NOC_ROUTER_LEAK_MW_45 * a45 * 1e-3) / 2.6
+    return {"mm2": um2 * 1e-6 * node if node else None, "W": W, "area_x": a45}
+
 MAC_SCALES = (0.5, 1.0, 2.0)
 SRAM_SCALES = (0.5, 1.0, 2.0)
 POWER_MODES = ("dvfs", "reject")
@@ -208,7 +245,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          mix_out_tokens: int | None = None, slo_tpot_ms: float | None = None,
                          slo_ttft_ms: float | None = None, mem_usd_per_GB: dict | None = None,
                          max_mem_usd: float | None = None, f_scales=None, noc_link_Bpc: float | None = None,
-                         noc_routing: str | None = None) -> dict:
+                         noc_routing: str | None = None, noc_links=None) -> dict:
     from .. import mem_catalog as mc
     from .budget import full_area, shoreline_check
     from .hardware import default_mem
@@ -248,6 +285,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     from .hardware import NOC_ROUTINGS
     if noc_routing is not None and noc_routing not in NOC_ROUTINGS:
         raise ValueError(f"noc_routing must be one of {NOC_ROUTINGS}")
+    if noc_links is not None and (not noc_links or not all(0 < float(x) < 1e6 for x in noc_links)):
+        raise ValueError("noc_links must be a non-empty list of link widths in (0, 1e6) bytes / cycle")
+    if noc_links is not None and noc_link_Bpc is not None:
+        raise ValueError("noc_links (axis) and noc_link_Bpc (single value) are exclusive")
     fs = sorted({float(x) for x in f_scales}, reverse=True) if f_scales else [1.0]
     if not all(F_MIN <= x <= 1.0 for x in fs):
         raise ValueError(f"f_scales must be in [{F_MIN:g}, 1] (fraction of the chip's nominal clock)")
@@ -273,9 +314,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     slcs = sorted({float(x) for x in slc_mibs}) if slc_mibs else [float(ch.slc_mib)]
     if any(x < 0 for x in slcs):
         raise ValueError("slc_mibs must be ≥ 0")
-    n_pts = len(grid) * len(mem_ids) * len(slcs) * len(fs)
+    Ls = sorted({float(x) for x in noc_links}) if noc_links is not None else None
+    n_pts = len(grid) * len(mem_ids) * len(slcs) * len(fs) * (len(Ls) if Ls else 1)
     if n_pts > MAX_POINTS:
-        raise ValueError(f"设计网格 {n_pts} 点 > 上限 {MAX_POINTS}：减少 mac_scales / sram_scales / sides / topologies / 内存 / SLC / 频率档")
+        raise ValueError(f"设计网格 {n_pts} 点 > 上限 {MAX_POINTS}：减少 mac_scales / sram_scales / sides / topologies / 内存 / SLC / 频率档 / NoC 链路")
     b = budget
     area_lim = getattr(b, "die_mm2", None) if b is not None else None
     cap = (getattr(b, "power_W_card", None) if b is not None else None) or t.tdp_W
@@ -309,6 +351,15 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
             notes.append("能耗表未填 LPDDR 后台 / 刷新（mW_lpddr_ch_standby / mW_lpddr_Gb_refresh）：LPDDR 点的静态功耗偏低")
     L = ch.noc_link_Bpc if noc_link_Bpc is None else float(noc_link_Bpc)
     RT = ch.noc_routing if noc_routing is None else noc_routing
+    if Ls:
+        L = Ls[-1]                                   # notes below quote the widest link of the axis
+        kd = b.mm2_per_kmac if b is not None else None
+        notes.append(f"NoC 链路宽度轴（0.306）：{{{', '.join(f'{x:g}' for x in Ls)}}} B/周期/方向；每点计路由器面积与静态功耗——"
+                     "交叉开关 ∝ (端口·位宽)²、缓冲 / 数据通路 ∝ 端口·位宽「推导/假设」，时钟底功耗 ∝ 位宽、泄漏 ∝ 面积「假设」；"
+                     + NOC_COST_SRC + "；工艺：面积 × (用户 MAC 密度 ÷ Horowitz 45 nm bf16 MAC 5824 µm²)「推导/二手」，功耗 ÷ 2.6「推导」"
+                     + ("" if kd else "；未填 mm2_per_kmac：NoC 面积未计（只计功耗）")
+                     + "。NoC 静态功耗在功耗封顶之后加到卡功耗（封顶时钟不再下调，超预算即剔除）「近似」；"
+                     "uncore_frac（含布线 / 空白）可能已部分包含 NoC 面积，可能重复计「假设」；crossbar 拓扑不计（单个大开关，无此模型）")
     if L:
         notes.append(f"NoC 拥塞：链路 {L:g} B/周期/方向，数据流 NoC 载荷超出拓扑二分带宽时计时（MODEL §248）" if RT == "bisection"
                      else f"NoC 拥塞（逐链路 XY）：链路 {L:g} B/周期/方向，按维序路由最忙链路负载计时（MODEL §249.2）")
@@ -326,14 +377,14 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     rows = []
     for p in grid:
         for mid in mem_ids:
-            for slc, fo in ((x, y) for x in slcs for y in fs):
+            for slc, fo, lw in ((x, y, z) for x in slcs for y in fs for z in (Ls or [None])):
+                lk = lw if lw is not None else (ch.noc_link_Bpc if noc_link_Bpc is None else float(noc_link_Bpc))
                 c = replace(ch, engines=p["engines"], rows=p["side"], cols=p["side"], sram_mib=p["sram_mib"],
-                            noc_topology=p["topology"], slc_mib=slc,
-                            noc_link_Bpc=ch.noc_link_Bpc if noc_link_Bpc is None else float(noc_link_Bpc),
-                            noc_routing=RT)
+                            noc_topology=p["topology"], slc_mib=slc, noc_link_Bpc=lk, noc_routing=RT)
                 row = {**p, "array": f'{p["side"]}×{p["side"]}', **infos[mid], "slc_mib": slc, "f_op": fo,
-                       "f_ghz": ch.freq_ghz * fo,
-                       "base": p["base"] and mid == base_mem and slc == float(ch.slc_mib) and fo == 1.0}
+                       "f_ghz": ch.freq_ghz * fo, "noc_link_Bpc": lk,
+                       "base": p["base"] and mid == base_mem and slc == float(ch.slc_mib) and fo == 1.0
+                       and (lw is None or lw == ch.noc_link_Bpc)}
                 try:
                     res = {ph: _run(scn_ph[ph].replace("chip", c).replace("mem_id", mid), t, cap, power_mode, curve, fo)
                            for ph in phases}
@@ -362,6 +413,26 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                 s_full = s0.replace("chip", c).replace("mem_id", mid)
                 if dens_ok:
                     row["mm2"] = full_area(s_full, b)["mm2"]
+                if lw is not None:                   # 0.306: router area + width-dependent static power
+                    rc = noc_router_cost(lw, p["topology"], ch.freq_ghz * row.get("f_scale", fo),   # the running clock
+                                         b.mm2_per_kmac if b is not None else None)
+                    if rc is not None and p["engines"] > 1:
+                        nW = rc["W"] * p["engines"]
+                        row["noc_W"] = nW
+                        if row["thr"] > 0:
+                            row["J_per_unit"] += nW / row["thr"]
+                            row["W_card"] += nW
+                            if mix:
+                                for ph in phases:
+                                    if row["phases"][ph]["thr"] > 0:
+                                        row["phases"][ph]["J_per_unit"] += nW / row["phases"][ph]["thr"]
+                                        row["phases"][ph]["W_card"] += nW
+                        if rc["mm2"] is not None:
+                            row["noc_mm2"] = rc["mm2"] * p["engines"]
+                            if row.get("mm2") is not None:
+                                row["mm2"] += row["noc_mm2"]
+                        if cap is not None and row["W_card"] > cap * (1 + 1e-9):
+                            why.append(f"功耗 {row['W_card']:.0f} > {cap:g} W（含 NoC 静态 {nW:.1f} W）")
                 if prices:
                     pr = prices.get(row["mem_type"])
                     row["mem_usd"] = row["mem_GB"] * pr if pr is not None else None
@@ -407,6 +478,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
             x = rows[i]
             return {"index": i, "engines": x["engines"], "array": x["array"], "macs": x["macs"], "sram_mib": x["sram_mib"],
                     "topology": x["topology"], "mem_id": x["mem_id"], "slc_mib": x["slc_mib"], "f_op": x["f_op"],
+                    "noc_link_Bpc": x["noc_link_Bpc"],
                     "thr": x["thr"],
                     "J_per_unit": x["J_per_unit"], "mm2": x.get("mm2")}
         best["perf_W"] = pick(min(ok, key=lambda i: (rows[i]["J_per_unit"], -rows[i]["thr"])))
@@ -415,7 +487,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     return {"chip": ch.name, "model": scn.model, "phase": "mix" if mix else phases[0], "rows": rows,
             "front": sorted(f2, key=lambda i: rows[i]["thr"]), "best": best, "base": base, "notes": notes,
             "power_cap_W": cap, "power_cap_src": cap_src, "power_mode": power_mode, "curve": curve,
-            "die_mm2": area_lim, "tie": tie, "area": dens_ok, "n_feasible": len(ok), "mems": mem_ids, "slc_mibs": slcs, "f_scales": fs, "noc_link_Bpc": L, "noc_routing": RT,
+            "die_mm2": area_lim, "tie": tie, "area": dens_ok, "n_feasible": len(ok), "mems": mem_ids, "slc_mibs": slcs, "f_scales": fs, "noc_link_Bpc": None if Ls else L, "noc_routing": RT,
+            "noc_links": Ls,
             "mix": {"prompt": P, "out_tokens": mix_out_tokens} if mix else None,
             "slo": {"tpot_ms": slo_tpot_ms, "ttft_ms": slo_ttft_ms}, "priced": bool(priced),
             "basis": "设计网格（MAC 总数 × 引擎边长 × SRAM × NoC 拓扑 × 外存 × SLC × 频率工作点）逐点评估：时间 / 放得下来自代价模型，"

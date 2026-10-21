@@ -48,7 +48,10 @@ def test_preset_user_values_win_and_sqrtc_kept():
 def test_preset_energy_now_includes_noc_and_wire():
     """old → new on 1P qwen3-8b (tpuv4i_7nm): the preset J/token grows by the on-chip movement terms only."""
     for ph, lo, hi in (("decode", 0.003, 0.04), ("prefill", 0.03, 0.12)):
-        s = Scenario(model=M, chip=CHIPS["1P"], serving=Serving(phase=ph, batch=8, prompt=2048, ctx=4096))
+        # 0.306: DRAM bytes now also cross the NoC (noc_mem_attach "edge"); this 0.300 record is for the dataflow
+        # terms only → pinned to "none" (the 0.306 delta is recorded in test_core_306)
+        s = Scenario(model=M, chip=replace(CHIPS["1P"], noc_mem_attach="none"),
+                     serving=Serving(phase=ph, batch=8, prompt=2048, ctx=4096))
         r = evaluate(s)
         new = energy_report(r, _t())
         old = energy_report(r, replace(_t(), pJ_bit_mm_onchip=None, pJ_bit_hop_noc=None))
@@ -172,5 +175,6 @@ def test_default_shifts_design_conclusions():
         rec = insight_report(s, [M], table=t)["slc_temp"]["recommend"][0]
         assert rec["opt_J_gib_25C"] == j25 and rec["opt_J_gib_85C"] == 16.0 and rec["hot_cuts_J_opt"] is cuts
     w = api.api_insight_sizing({"models": ["wan2.1-1.3b"], "energy": {"energy_preset": "tpuv4i_7nm"},
-                                "resources": ["sram"], "energy_tie": True})["resources"][0]
+                                "resources": ["sram"], "energy_tie": True,
+                                "scenario": {"chip": {"noc_mem_attach": "none"}}})["resources"][0]   # 0.306: pinned
     assert w["limited_by"]["metric"] != "J_tok"
