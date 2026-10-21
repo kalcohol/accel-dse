@@ -6,6 +6,28 @@
 
 
 
+## [0.301.0]
+
+### Energy-aware design search over compute + memory jointly; workload mix; SLO; memory $ (user input)
+- `/api/insight_dse` gains memory-side axes:
+  - DRAM: `mems` (catalog ids), or `mem_types` × `mem_count_scales` × `mem_caps`, snapped to catalog counts and capacities.
+  - SLC: `slc_mibs`.
+  - Defaults are the scenario's own memory and SLC, so 0.300 output is unchanged. The grid cap goes from 96 to 240 points.
+- Per point:
+  - Bandwidth, time and fit come from the cost model.
+  - DRAM energy: per-kind pJ/bit + PHY + HBM standby / refresh. Sourced figures; HBM4 / HBM3 and LPDDR6 / LPDDR5 use the HBM3E and LPDDR5X figures as labelled approximations.
+  - Die area adds the DRAM PHY (bus bits × mm2_per_dq_*) and the SLC.
+  - HBM shoreline: "over" drops the point; "tight" is flagged.
+- Optional user $/GB per memory type (`mem_usd_per_GB`, no built-in price) → memory $ per card, a `max_mem_usd` limit and a `front_usd` objective.
+- Workload mix (`mix_out_tokens`): J/request = P·J_prefill + D·J_decode; card-s per request = P / thr_prefill + D / thr_decode (time-shared, each phase capped on its own).
+- SLO limits: `slo_tpot_ms` / `slo_ttft_ms`, applied at the capped clock.
+- Example (1P qwen3-8b decode b64, 800 mm² / 250 W): the front is half-MAC + HBM4 4 stacks or HBM3E 8 stacks, ≈ 4.8 k tok/s at 0.040 J/token. Under a 50 ms TPOT, LPDDR never makes the front. On 100T b8, HBM halves J/token vs LPDDR5X but needs the 3rd / 4th die edge. MODEL §246.
+- UI: the DSE panel adds memory types / count / capacity, SLC, mix output tokens, TPOT / TTFT limits, $/GB and a memory $ limit. The table adds memory, GB/s, GB, SLC, TPOT, TTFT and $ columns.
+  - Non-blocking: a scenario edit during a search cancels it (the static build terminates the slow-lane worker) and tags the panel. The progress pill is shown as before.
+- ui_headless_smoke drives the memory + mix search and a mid-run edit.
+- Tests: tests/test_core_301.py (7).
+- Freshness sweep (107 orgs, since 2026-10-21): no new releases.
+
 ## [0.300.0]
 
 ### Energy presets include on-chip movement by default; energy-aware design search (Pareto)

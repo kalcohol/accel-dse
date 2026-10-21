@@ -594,6 +594,19 @@
       <button class="btn" id="ins-dse-run">搜索设计点</button>
       <span class="small muted" id="ins-dse-status"></span>
     </div>
+    <div class="row" title="0.301：外存与 SLC 作为联合搜索轴（空 = 场景当前值）。DRAM 能耗按类别 pJ/bit + PHY（HBM4 / LPDDR6 用 HBM3E / LPDDR5X 数值「近似」，结果注明）；面积加 DRAM PHY（总线位宽 × 每 bit 面积）与 SLC 面积；HBM 堆栈数受晶粒岸线限制">
+      <label title="外存类型（逗号分隔，如 HBM3E,HBM4,LPDDR5X,LPDDR6；空 = 当前外存）">外存<input type="text" id="ins-dse-mem" placeholder="当前" style="width:12em"></label>
+      <label title="颗粒 / 堆栈数倍数（同类型相对当前，其他类型相对目录默认；吸附到目录允许的数量）">数量 ×<input type="text" id="ins-dse-memn" value="1" style="width:5em"></label>
+      <label title="每颗粒 / 堆栈容量 GB（空 = 默认；目录中不存在的组合跳过）">容量 GB<input type="text" id="ins-dse-memcap" placeholder="默认" style="width:5em"></label>
+      <label title="SLC 容量 MiB（逗号分隔，0 = 无 SLC；空 = 当前）">SLC MiB<input type="text" id="ins-dse-slc" placeholder="当前" style="width:7em"></label>
+    </div>
+    <div class="row" title="0.301：负载混合与 SLO">
+      <label title="负载混合：每请求输出 token 数 D（prefill = 场景 prompt）。设置后阶段 = 混合：J/请求 = P·J_prefill + D·J_decode，卡秒/请求 = P/吞吐_prefill + D/吞吐_decode">混合输出 token<input type="number" id="ins-dse-out" min="1" step="64" placeholder="不混合" style="width:6em"></label>
+      <label title="TPOT 上限 ms（decode / 混合；超出的点剔除）">TPOT ≤<input type="number" id="ins-dse-tpot" min="0" step="1" style="width:5em"></label>
+      <label title="TTFT 上限 ms（prefill / 混合）">TTFT ≤<input type="number" id="ins-dse-ttft" min="0" step="10" style="width:5em"></label>
+      <label title="内存单价 $/GB（用户输入，工具不内置价格），如 HBM3E:15,LPDDR5X:4；填了才算内存 $ 与 $ 前沿">$/GB<input type="text" id="ins-dse-usd" placeholder="不计价" style="width:10em"></label>
+      <label title="每卡内存 $ 上限（需 $/GB）">内存 $ ≤<input type="number" id="ins-dse-maxusd" min="0" step="10" style="width:6em"></label>
+    </div>
     <div class="note small" id="ins-dse-summary"></div>
     <div class="chart" id="ins-dse-chart"></div>
     <div class="scroll"><table class="tbl tight" id="ins-dse-tbl"></table></div>

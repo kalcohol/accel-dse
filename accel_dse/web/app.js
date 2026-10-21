@@ -717,6 +717,13 @@ function invalidate() {
     const el = $(id);
     if (el && el.dataset.done && !el.textContent.includes(STALE)) el.textContent += ` · ${STALE}`;
   }
+  // 0.301: a scenario edit drops an in-flight design search (the long slow-lane job; static build frees its worker)
+  const ds = $('ins-dse-status');
+  if (ds && !ds.dataset.done && ds.textContent.startsWith('计算中')) {
+    cancel('insight_dse');
+    ds.textContent = `已丢弃进行中的搜索 · ${STALE}`;
+    ds.dataset.done = '1';
+  }
   // 0.78: the stability verdict was only tagged at render time — later edits left it looking current
   const sb = $('stab-box');
   if (sb && sb.dataset.done && !sb.querySelector('.stale')) {
@@ -2357,7 +2364,7 @@ function paretoChart(rows) {
   for (const p of pts) {
     const c = s('circle', { cx: X(p.J_per_unit), cy: Y(p.thr), r: p.base ? 6 : 4,
       fill: !p.feasible ? 'none' : p.front ? '#34d399' : '#5b6b80', stroke: p.base ? '#f59e0b' : !p.feasible ? '#ef4444' : 'none', 'stroke-width': 2 });
-    c.append(s('title', {}, `${p.engines}×${p.array} · MAC×${p.mac_x} · SRAM ${num(p.sram_mib)} MiB · ${p.topology}` + (p.why ? ` · ${p.why}` : '')));
+    c.append(s('title', {}, `${p.engines}×${p.array} · MAC×${p.mac_x} · SRAM ${num(p.sram_mib)} MiB · ${p.topology} · ${p.mem_id || ''} · SLC ${num(p.slc_mib || 0)} MiB` + (p.why ? ` · ${p.why}` : '')));
     svg.append(c);
   }
   return svg;
@@ -2366,25 +2373,50 @@ async function runInsightDse() {
   const v0 = S.ver;
   const sci = (x) => (x == null ? '—' : x === 0 ? '0' : x.toExponential(3));
   const list = (id) => $(id).value.split(/[,\s]+/).filter(Boolean).map(Number);
-  const macs = list('ins-dse-macs'), sram = list('ins-dse-sram');
-  for (const [id, v] of [['ins-dse-macs', macs], ['ins-dse-sram', sram]]) {
+  const macs = list('ins-dse-macs'), sram = list('ins-dse-sram'), memn = list('ins-dse-memn');
+  for (const [id, v] of [['ins-dse-macs', macs], ['ins-dse-sram', sram], ['ins-dse-memn', memn]]) {
     const bad = !v.length || v.length > 6 || v.some((x) => !isFinite(x) || x <= 0);
     $(id).classList.toggle('bad', bad);
     if (bad) return;
   }
+  // 0.301: memory-side axes, workload mix, SLO, memory $/GB (all optional; empty = the scenario's own)
+  const memT = $('ins-dse-mem').value.split(/[,\s]+/).filter(Boolean);
+  const memcap = list('ins-dse-memcap'), slc = list('ins-dse-slc');
+  const usd = {};
+  let badUsd = false;
+  for (const kv of $('ins-dse-usd').value.split(/[,\s]+/).filter(Boolean)) {
+    const [k, v] = kv.split(':');
+    if (!k || !isFinite(+v) || +v < 0) badUsd = true; else usd[k] = +v;
+  }
+  $('ins-dse-usd').classList.toggle('bad', badUsd);
+  for (const [id, v] of [['ins-dse-memcap', memcap], ['ins-dse-slc', slc]]) {
+    const bad = v.length > 8 || v.some((x) => !isFinite(x) || x < 0);
+    $(id).classList.toggle('bad', bad);
+    if (bad) return;
+  }
+  if (badUsd || memT.length > 12) return;
   $('ins-dse-status').textContent = '计算中（MAC × 引擎边长 × SRAM 网格）…';
   delete $('ins-dse-status').dataset.done;
   try {
     const ex = { mac_scales: macs, sram_scales: sram, power_mode: $('ins-dse-power').value };
     if ($('ins-dse-phase').value) ex.phase = $('ins-dse-phase').value;
     if ($('ins-dse-topo').checked) ex.topologies = ['mesh', 'ring', 'crossbar'];
+    if (memT.length) { ex.mem_types = memT; ex.mem_count_scales = memn; }
+    if (memT.length && memcap.length) ex.mem_caps = memcap;
+    if (slc.length) ex.slc_mibs = slc;
+    const out = parseInt($('ins-dse-out').value, 10), tp = +$('ins-dse-tpot').value, tt = +$('ins-dse-ttft').value;
+    if (out > 0) ex.mix_out_tokens = out;
+    if (tp > 0) ex.slo_tpot_ms = tp;
+    if (tt > 0) ex.slo_ttft_ms = tt;
+    if (Object.keys(usd).length) ex.mem_usd_per_GB = usd;
+    if (+$('ins-dse-maxusd').value > 0) ex.max_mem_usd = +$('ins-dse-maxusd').value;
     const r = await track(req('insight_dse', '/api/insight_dse', body(ex)));
     if (!r) return;
     const rows = r.rows || [];
     const u = rows.find((x) => x.unit)?.unit || '单位';
     const bp = r.best && r.best.perf_W, bt = r.best && r.best.thr;
-    const desc = (b) => `${b.engines}×${b.array} · SRAM ${num(b.sram_mib)} MiB · ${b.topology}（${num(b.thr)} /s · ${sci(b.J_per_unit)} J）`;
-    $('ins-dse-summary').textContent = `${r.chip} · ${r.model} · ${r.phase} · 可行 ${r.n_feasible}/${rows.length} 点 · 前沿 ${(r.front || []).length} 点`
+    const desc = (b) => `${b.engines}×${b.array} · SRAM ${num(b.sram_mib)} MiB · ${b.topology} · ${b.mem_id} · SLC ${num(b.slc_mib)} MiB（${num(b.thr)} /s · ${sci(b.J_per_unit)} J）`;
+    $('ins-dse-summary').textContent = `${r.chip} · ${r.model} · ${r.phase === 'mix' ? `混合（prompt ${r.mix.prompt} + 输出 ${r.mix.out_tokens}）` : r.phase} · 外存 ${(r.mems || []).length} 档 · SLC ${(r.slc_mibs || []).length} 档 · 可行 ${r.n_feasible}/${rows.length} 点 · 前沿 ${(r.front || []).length} 点`
       + (r.power_cap_W ? ` · 功耗预算 ${num(r.power_cap_W)} W（${r.power_mode === 'dvfs' ? 'DVFS 封顶' : '剔除'}）` : '')
       + (r.die_mm2 ? ` · 面积预算 ${num(r.die_mm2)} mm²` : '')
       + (bp ? ` · perf/W 最优 ${desc(bp)}` : '') + (bt ? ` · 吞吐最优 ${desc(bt)}` : '')
@@ -2392,15 +2424,19 @@ async function runInsightDse() {
     put($('ins-dse-chart'), paretoChart(rows));
     const pct = (x) => (x * 100).toFixed(1) + '%';
     put($('ins-dse-tbl'), h('thead', {}, h('tr', {},
-      ['前沿', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '频率 ×', 'mm²', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
+      ['前沿', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '频率 ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
       h('tbody', {}, rows.map((x) => h('tr', { class: x.front ? 'best' : '' },
-        h('td', {}, x.front ? '★' : x.front3 ? '☆' : ''), h('td', {}, String(x.mac_x)),
+        h('td', {}, x.front ? '★' : x.front3 ? '☆' : x.front_usd ? '$' : ''), h('td', {}, String(x.mac_x)),
         h('td', {}, `${x.engines}×${x.array}` + (x.base ? ' ←当前' : '')), h('td', {}, num(x.sram_mib)), h('td', {}, x.topology),
+        h('td', {}, x.mem_id || '—'), h('td', {}, x.mem_GBps != null ? num(x.mem_GBps) : '—'), h('td', {}, x.mem_GB != null ? num(x.mem_GB) : '—'),
+        h('td', {}, x.slc_mib != null ? num(x.slc_mib) : '—'),
         h('td', {}, x.thr != null ? num(x.thr) : '—'), h('td', {}, sci(x.J_per_unit)), h('td', {}, x.perf_W != null ? num(x.perf_W) : '—'),
         h('td', {}, x.W_card != null ? num(x.W_card) : '—'), h('td', {}, x.f_scale != null ? x.f_scale.toFixed(2) : '—'),
         h('td', {}, x.mm2 != null ? num(x.mm2) : '—'),
+        h('td', {}, x.tpot_ms != null ? num(x.tpot_ms) : '—'), h('td', {}, x.ttft_ms != null ? num(x.ttft_ms) : '—'),
+        h('td', {}, x.mem_usd != null ? num(x.mem_usd) : '—'),
         ...['mac', 'sram', 'wire', 'noc', 'dram', 'static'].map((k) => h('td', {}, x.share ? pct(x.share[k] || 0) : '—')),
-        h('td', { class: 'l' }, x.why || (x.capped ? 'DVFS 封顶' : ''))))));
+        h('td', { class: 'l' }, x.why || [x.capped ? 'DVFS 封顶' : '', x.shoreline === 'tight' ? 'HBM 岸线紧（占第三 / 四边）' : ''].filter(Boolean).join('；'))))));
     $('ins-dse-status').textContent = `完成 · ${rows.length} 点${staleTag(v0)}`;
     $('ins-dse-status').dataset.done = '1';
   } catch (e) {

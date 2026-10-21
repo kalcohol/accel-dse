@@ -315,6 +315,33 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 steps.append(("dse", st[:40], rows, dots))
                 if not st.startswith("完成") or rows == 0 or dots == 0 or "★" not in p.inner_text("#ins-dse-tbl"):
                     errs.append(f"dse: {st[:200]} rows={rows} dots={dots}")
+                # 0.301: memory-side axes + mix, then a mid-run scenario edit must drop the in-flight search
+                p.fill("#ins-dse-mem", "HBM3E,LPDDR5X")
+                p.fill("#ins-dse-slc", "0,64")
+                p.fill("#ins-dse-out", "256")
+                p.click("#ins-dse-run")
+                p.wait_for_function("(() => { const t = document.getElementById('ins-dse-status').textContent;"
+                                    " return t.startsWith('完成') || t.startsWith('错误'); })()", timeout=600000)
+                st = p.inner_text("#ins-dse-status")
+                tbl = p.inner_text("#ins-dse-tbl")
+                steps.append(("dse memory+mix", st[:40], "lpddr5x" in tbl and "hbm3e" in tbl))
+                if not st.startswith("完成") or "lpddr5x" not in tbl or "hbm3e" not in tbl:
+                    errs.append(f"dse memory+mix: {st[:200]}")
+                p.fill("#ins-dse-mem", "HBM3E,HBM4,LPDDR5X,LPDDR6")
+                p.fill("#ins-dse-memn", "0.5,1,2")
+                m0 = p.eval_on_selector("#model", "e => e.value")
+                p.click("#ins-dse-run")
+                p.wait_for_function("document.getElementById('ins-dse-status').textContent.startsWith('计算中')", timeout=60000)
+                p.select_option("#model", "qwen3-1.7b" if m0 != "qwen3-1.7b" else "qwen3-0.6b")
+                time.sleep(1.0)
+                p.select_option("#model", m0)
+                time.sleep(4.0)
+                st = p.inner_text("#ins-dse-status")
+                steps.append(("dse mid-run edit", st[:40]))
+                if "丢弃" not in st and "场景已改变" not in st:
+                    errs.append(f"dse mid-run edit: not dropped / tagged: {st[:200]}")
+                for sel, v in (("#ins-dse-mem", ""), ("#ins-dse-memn", "1"), ("#ins-dse-slc", ""), ("#ins-dse-out", "")):
+                    p.fill(sel, v)
             # 0.275: speech bottleneck panel (/api/insight_speech)
             p.click("#ins-sp-run")
             p.wait_for_function("(() => { const t = document.getElementById('ins-sp-status').textContent;"

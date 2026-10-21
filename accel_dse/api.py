@@ -152,7 +152,8 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight_dispatch": {"models", "batches", "ctx"},
                "insight_noc": {"topologies", "phases", "prompt"},
                "insight_dse": {"mac_scales", "sram_scales", "sides", "topologies", "power_mode", "curve", "phase",
-                               "prompt", "tie"}}
+                               "prompt", "tie", "mems", "mem_types", "mem_count_scales", "mem_caps", "slc_mibs",
+                               "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1423,6 +1424,34 @@ def api_insight_dse(body: dict) -> dict:
         v = nums(k, lo, hi, integer=it)
         if v is not None:
             kw[k] = v
+    for k, lo, hi, it in (("mem_count_scales", 0.0625, 16, False), ("mem_caps", 1, 1024, False),
+                          ("slc_mibs", 0, 1 << 20, False)):          # 0.301: memory-side axes
+        v = nums(k, lo, hi, n=8, integer=it)
+        if v is not None:
+            kw[k] = v
+    for k in ("mems", "mem_types"):
+        v = body.get(k)
+        if v is not None:
+            if not isinstance(v, list) or not 1 <= len(v) <= 12 or not all(isinstance(x, str) and 0 < len(x) <= 64 for x in v):
+                raise ApiError(f"{k} must be a list of 1–12 strings")
+            kw[k] = tuple(v)
+    for k in ("slo_tpot_ms", "slo_ttft_ms", "max_mem_usd"):
+        v = body.get(k)
+        if v is not None:
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < 1e12:
+                raise ApiError(f"{k} must be a positive number")
+            kw[k] = float(v)
+    mo = body.get("mix_out_tokens")
+    if mo is not None:
+        if isinstance(mo, bool) or not isinstance(mo, int) or not 1 <= mo <= 1 << 20:
+            raise ApiError("mix_out_tokens must be an integer in [1, 1048576]")
+        kw["mix_out_tokens"] = mo
+    up = body.get("mem_usd_per_GB")
+    if up is not None:
+        if (not isinstance(up, dict) or len(up) > 8 or
+                not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v < 1e6 for v in up.values())):
+            raise ApiError("mem_usd_per_GB must be an object {memory type: $/GB ≥ 0}")
+        kw["mem_usd_per_GB"] = dict(up)
     for k, typ in (("topologies", list), ("power_mode", str), ("curve", str), ("phase", str)):
         if body.get(k) is not None:
             if not isinstance(body[k], typ):

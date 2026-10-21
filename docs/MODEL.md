@@ -8110,3 +8110,57 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 ### §245.5 Default behaviour, old → new
 - Energy presets: `pJ_bit_mm_onchip` unset → 0.121 (45 nm) / 0.078 (7 nm); `pJ_bit_hop_noc` unset → 0.416 / 0.160.
 - See §245.1 for the numbers.
+
+## §246 Energy-aware design search over compute + memory (0.301)
+
+### §246.1 Memory-side axes 「推导」 (`core/energy_dse.py`)
+- DRAM:
+  - Either explicit catalog ids (`mems`), or `mem_types` × `mem_count_scales` × `mem_caps`.
+  - Count scales apply to the scenario's own unit count when the type matches, else to the catalog default. The result snaps to the catalog's allowed counts (HBM 1–12 stacks).
+  - Per-unit capacities: LPDDR uses the catalog package capacities; HBM uses height × die density / 8. Combinations the catalog does not list are skipped.
+  - Rate, width and form are taken from the scenario's memory, or else from the type default.
+- SLC: `slc_mibs`, absolute MiB, where 0 = no SLC.
+- Default for both axes: the scenario's own memory and SLC, so 0.300 results are unchanged.
+- Grid cap 96 → 240 points (compute × memory × SLC).
+
+### §246.2 Terms per point
+- Time, bandwidth and fit: the cost model at that memory, i.e. the same path as a normal eval with `mem_id`.
+- Energy, from the preset's per-kind fields:
+  - pJ_bit_dram_hbm 3.44 (SK hynix IEDM 2023, HBM3E) or pJ_bit_dram_lpddr 4.0 (Grace LPDDR5X).
+  - Plus the chip-side PHY: 0.29 (HBM3, Chae ISSCC 2023) or 1.3 (LPDDR5X).
+  - Plus HBM standby / refresh (§216).
+  - Approximations, labelled in the notes 「近似（假设）」: HBM4 / HBM4E and HBM3 use the HBM3E figure; LPDDR6 / LPDDR5 use the LPDDR5X figure.
+  - LPDDR background / refresh power is not modelled, so LPDDR static power is low. This is stated in the notes.
+- Area: the die proxy adds the DRAM PHY = bus bits × mm2_per_dq_* (density preset). HBM is per bit from the HBM4 base-die PHY; LPDDR is per bit from the SF2 LPDDR6 x24 PHY. Both are applied across generations 「近似」.
+  - The SLC adds mm2_per_mib_slc.
+  - The uncore share scales with both.
+- HBM shoreline (budget.shoreline_check, 11 mm per stack): "over" (more than 4 die edges) drops the point; "tight" is kept and flagged.
+- Memory $ per card: capacity × the user's `mem_usd_per_GB[type]`. No price is built in. `max_mem_usd` is a limit, and `front_usd` adds $ ↓ as an objective.
+
+### §246.3 Workload mix and SLO 「推导」
+- `mix_out_tokens` = D: a request is prompt P (serving.prompt) prefill + D decode on one card, time-shared.
+  - Card-s per request = P / thr_prefill + D / thr_decode.
+  - J per request = P·J_prefill + D·J_decode. Shares are energy-weighted.
+  - Each phase runs at its own batch and at its own capped clock under the power budget.
+  - Queueing and prefill/decode interference are not modelled. Use pdqueue / pdsim for those.
+- `slo_tpot_ms` / `slo_ttft_ms` limit the point. Latency is taken at the capped clock (nominal ÷ throughput factor; exact at a fixed batch).
+
+### §246.4 Result (tpuv4i_7nm, n7_tpuv4i densities, qwen3-8b, ctx = prompt = 4096)
+- 1P decode b64, ≤ 800 mm² / 250 W, MAC × {0.5, 1}, DRAM {HBM3E, HBM4, LPDDR5X, LPDDR6} × {½, 1, 2}:
+  - The front is half-MAC with 2048-bit-per-stack-equivalent bandwidth: HBM4 4 stacks or HBM3E 8 stacks. Both give ≈ 4.81 k tok/s at 0.040 J/token (693 mm²).
+  - The 1P base (HBM3E 4 stacks, full MACs) is over the area budget, at 3.94 k tok/s and 0.047 J/token.
+- Mix (D = 512, TPOT ≤ 50 ms): the same two designs win (≈ 4.36 req/s, ≈ 51 J/request).
+  - Every LPDDR point fails TPOT (70–340 ms at b64).
+  - A 256 MiB SLC never makes the front: it adds 291 mm² for < 0.3 % J.
+- 100T decode b8, ≤ 300 mm² / 60 W:
+  - 4 HBM3E stacks (12-high) instead of LPDDR5X 4×x64 give 630 vs 77 tok/s and 0.095 vs 0.18 J/token, because static, clock and idle power are amortised over 8× the tokens.
+  - It needs the 3rd / 4th die edge (shoreline tight), and its cost is only comparable once $/GB is given.
+
+### §246.5 Not modelled
+- LPDDR background power.
+- Memory controller area (no public figure; `mm2_per_unit_mc` stays a user input).
+- Per-generation PHY area and pJ/bit beyond the labelled proxies.
+- Package / interposer cost.
+
+### §246.6 Default behaviour, old → new
+- None. The new axes default to the scenario's memory and SLC, and the 0.300 search output is unchanged apart from added row fields: mem_*, slc_mib, tpot_ms / ttft_ms, shoreline.
