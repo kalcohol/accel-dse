@@ -1,0 +1,1054 @@
+{
+ "about": "0.297 public MoE kernel timings (diagnostic only, never fitted): grouped-GEMM cost vs rows per expert on GPU reference chips.",
+ "grouped_h800": {
+  "source": "github.com/shenh10/DeepSeek_Simulator @ 7c6910172fd8b87405f2f8f089f97982bd5107c9 (2025-04-02) results/H800_group_gemm.csv; python/test_decode_gemms.py test_m_grouped_gemm_masked",
+  "kernel": "DeepGEMM m_grouped_gemm_fp8_fp8_bf16_nt_masked (FP8 block-scaled, bf16 out), every group masked_m = m_per_group, kineto kernel time (bench_kineto)",
+  "hw": "H800-SXM",
+  "bytes": "groups·(m·k + k·n + 2·m·n) (the script's bandwidth column)",
+  "note": "duplicate (groups, m, n, k) rows across the script's (d, b_mla) sweep are averaged",
+  "rows": [
+   {
+    "groups": 1,
+    "m": 8,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 20.0,
+    "repeats": 1
+   },
+   {
+    "groups": 1,
+    "m": 8,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 9.0,
+    "repeats": 1
+   },
+   {
+    "groups": 1,
+    "m": 16,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 20.0,
+    "repeats": 2
+   },
+   {
+    "groups": 1,
+    "m": 16,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 8.5,
+    "repeats": 2
+   },
+   {
+    "groups": 1,
+    "m": 32,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 18.0,
+    "repeats": 3
+   },
+   {
+    "groups": 1,
+    "m": 32,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 8.0,
+    "repeats": 3
+   },
+   {
+    "groups": 1,
+    "m": 64,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 14.0,
+    "repeats": 4
+   },
+   {
+    "groups": 1,
+    "m": 64,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 6.0,
+    "repeats": 4
+   },
+   {
+    "groups": 1,
+    "m": 128,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 15.0,
+    "repeats": 4
+   },
+   {
+    "groups": 1,
+    "m": 128,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 8.0,
+    "repeats": 4
+   },
+   {
+    "groups": 1,
+    "m": 256,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 18.25,
+    "repeats": 4
+   },
+   {
+    "groups": 1,
+    "m": 256,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 10.0,
+    "repeats": 4
+   },
+   {
+    "groups": 1,
+    "m": 512,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 27.0,
+    "repeats": 3
+   },
+   {
+    "groups": 1,
+    "m": 512,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 18.0,
+    "repeats": 3
+   },
+   {
+    "groups": 1,
+    "m": 1024,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 49.0,
+    "repeats": 2
+   },
+   {
+    "groups": 1,
+    "m": 1024,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 33.0,
+    "repeats": 2
+   },
+   {
+    "groups": 1,
+    "m": 2048,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 97.0,
+    "repeats": 1
+   },
+   {
+    "groups": 1,
+    "m": 2048,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 63.0,
+    "repeats": 1
+   },
+   {
+    "groups": 2,
+    "m": 4,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 28.0,
+    "repeats": 1
+   },
+   {
+    "groups": 2,
+    "m": 4,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 12.0,
+    "repeats": 1
+   },
+   {
+    "groups": 2,
+    "m": 8,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 27.0,
+    "repeats": 2
+   },
+   {
+    "groups": 2,
+    "m": 8,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 12.5,
+    "repeats": 2
+   },
+   {
+    "groups": 2,
+    "m": 16,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 27.0,
+    "repeats": 3
+   },
+   {
+    "groups": 2,
+    "m": 16,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 12.0,
+    "repeats": 3
+   },
+   {
+    "groups": 2,
+    "m": 32,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 26.0,
+    "repeats": 4
+   },
+   {
+    "groups": 2,
+    "m": 32,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 12.0,
+    "repeats": 4
+   },
+   {
+    "groups": 2,
+    "m": 64,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 26.0,
+    "repeats": 4
+   },
+   {
+    "groups": 2,
+    "m": 64,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 12.0,
+    "repeats": 4
+   },
+   {
+    "groups": 2,
+    "m": 128,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 28.0,
+    "repeats": 4
+   },
+   {
+    "groups": 2,
+    "m": 128,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 13.0,
+    "repeats": 4
+   },
+   {
+    "groups": 2,
+    "m": 256,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 33.0,
+    "repeats": 3
+   },
+   {
+    "groups": 2,
+    "m": 256,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 20.0,
+    "repeats": 3
+   },
+   {
+    "groups": 2,
+    "m": 512,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 58.5,
+    "repeats": 2
+   },
+   {
+    "groups": 2,
+    "m": 512,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 33.0,
+    "repeats": 2
+   },
+   {
+    "groups": 2,
+    "m": 1024,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 113.0,
+    "repeats": 1
+   },
+   {
+    "groups": 2,
+    "m": 1024,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 64.0,
+    "repeats": 1
+   },
+   {
+    "groups": 3,
+    "m": 4,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 38.0,
+    "repeats": 1
+   },
+   {
+    "groups": 3,
+    "m": 4,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 22.0,
+    "repeats": 1
+   },
+   {
+    "groups": 3,
+    "m": 8,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 37.0,
+    "repeats": 2
+   },
+   {
+    "groups": 3,
+    "m": 8,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 21.5,
+    "repeats": 2
+   },
+   {
+    "groups": 3,
+    "m": 16,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 37.0,
+    "repeats": 3
+   },
+   {
+    "groups": 3,
+    "m": 16,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 21.33,
+    "repeats": 3
+   },
+   {
+    "groups": 3,
+    "m": 32,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 37.75,
+    "repeats": 4
+   },
+   {
+    "groups": 3,
+    "m": 32,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 21.0,
+    "repeats": 4
+   },
+   {
+    "groups": 3,
+    "m": 64,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 38.0,
+    "repeats": 4
+   },
+   {
+    "groups": 3,
+    "m": 64,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 21.0,
+    "repeats": 4
+   },
+   {
+    "groups": 3,
+    "m": 128,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 40.0,
+    "repeats": 4
+   },
+   {
+    "groups": 3,
+    "m": 128,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 23.0,
+    "repeats": 4
+   },
+   {
+    "groups": 3,
+    "m": 256,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 54.0,
+    "repeats": 3
+   },
+   {
+    "groups": 3,
+    "m": 256,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 29.67,
+    "repeats": 3
+   },
+   {
+    "groups": 3,
+    "m": 512,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 87.5,
+    "repeats": 2
+   },
+   {
+    "groups": 3,
+    "m": 512,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 48.0,
+    "repeats": 2
+   },
+   {
+    "groups": 3,
+    "m": 1024,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 169.0,
+    "repeats": 1
+   },
+   {
+    "groups": 3,
+    "m": 1024,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 101.0,
+    "repeats": 1
+   },
+   {
+    "groups": 4,
+    "m": 4,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 48.0,
+    "repeats": 2
+   },
+   {
+    "groups": 4,
+    "m": 4,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 27.0,
+    "repeats": 2
+   },
+   {
+    "groups": 4,
+    "m": 8,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 48.0,
+    "repeats": 3
+   },
+   {
+    "groups": 4,
+    "m": 8,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 27.0,
+    "repeats": 3
+   },
+   {
+    "groups": 4,
+    "m": 16,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 48.25,
+    "repeats": 4
+   },
+   {
+    "groups": 4,
+    "m": 16,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 27.0,
+    "repeats": 4
+   },
+   {
+    "groups": 4,
+    "m": 32,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 48.0,
+    "repeats": 4
+   },
+   {
+    "groups": 4,
+    "m": 32,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 27.0,
+    "repeats": 4
+   },
+   {
+    "groups": 4,
+    "m": 64,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 48.0,
+    "repeats": 4
+   },
+   {
+    "groups": 4,
+    "m": 64,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 27.0,
+    "repeats": 4
+   },
+   {
+    "groups": 4,
+    "m": 128,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 51.0,
+    "repeats": 3
+   },
+   {
+    "groups": 4,
+    "m": 128,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 29.0,
+    "repeats": 3
+   },
+   {
+    "groups": 4,
+    "m": 256,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 65.0,
+    "repeats": 2
+   },
+   {
+    "groups": 4,
+    "m": 256,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 37.0,
+    "repeats": 2
+   },
+   {
+    "groups": 4,
+    "m": 512,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 117.0,
+    "repeats": 1
+   },
+   {
+    "groups": 4,
+    "m": 512,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 67.0,
+    "repeats": 1
+   },
+   {
+    "groups": 6,
+    "m": 4,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 70.5,
+    "repeats": 2
+   },
+   {
+    "groups": 6,
+    "m": 4,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 39.0,
+    "repeats": 2
+   },
+   {
+    "groups": 6,
+    "m": 8,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 69.0,
+    "repeats": 3
+   },
+   {
+    "groups": 6,
+    "m": 8,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 38.33,
+    "repeats": 3
+   },
+   {
+    "groups": 6,
+    "m": 16,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 68.75,
+    "repeats": 4
+   },
+   {
+    "groups": 6,
+    "m": 16,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 38.25,
+    "repeats": 4
+   },
+   {
+    "groups": 6,
+    "m": 32,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 69.5,
+    "repeats": 4
+   },
+   {
+    "groups": 6,
+    "m": 32,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 39.0,
+    "repeats": 4
+   },
+   {
+    "groups": 6,
+    "m": 64,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 70.0,
+    "repeats": 4
+   },
+   {
+    "groups": 6,
+    "m": 64,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 39.0,
+    "repeats": 4
+   },
+   {
+    "groups": 6,
+    "m": 128,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 73.67,
+    "repeats": 3
+   },
+   {
+    "groups": 6,
+    "m": 128,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 41.0,
+    "repeats": 3
+   },
+   {
+    "groups": 6,
+    "m": 256,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 95.0,
+    "repeats": 2
+   },
+   {
+    "groups": 6,
+    "m": 256,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 53.0,
+    "repeats": 2
+   },
+   {
+    "groups": 6,
+    "m": 512,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 176.0,
+    "repeats": 1
+   },
+   {
+    "groups": 6,
+    "m": 512,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 103.0,
+    "repeats": 1
+   },
+   {
+    "groups": 9,
+    "m": 4,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 101.33,
+    "repeats": 3
+   },
+   {
+    "groups": 9,
+    "m": 4,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 54.0,
+    "repeats": 3
+   },
+   {
+    "groups": 9,
+    "m": 8,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 98.0,
+    "repeats": 4
+   },
+   {
+    "groups": 9,
+    "m": 8,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 54.0,
+    "repeats": 4
+   },
+   {
+    "groups": 9,
+    "m": 16,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 97.0,
+    "repeats": 4
+   },
+   {
+    "groups": 9,
+    "m": 16,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 54.25,
+    "repeats": 4
+   },
+   {
+    "groups": 9,
+    "m": 32,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 98.0,
+    "repeats": 4
+   },
+   {
+    "groups": 9,
+    "m": 32,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 55.0,
+    "repeats": 4
+   },
+   {
+    "groups": 9,
+    "m": 64,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 99.0,
+    "repeats": 3
+   },
+   {
+    "groups": 9,
+    "m": 64,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 56.0,
+    "repeats": 3
+   },
+   {
+    "groups": 9,
+    "m": 128,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 105.0,
+    "repeats": 2
+   },
+   {
+    "groups": 9,
+    "m": 128,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 60.0,
+    "repeats": 2
+   },
+   {
+    "groups": 9,
+    "m": 256,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 147.0,
+    "repeats": 1
+   },
+   {
+    "groups": 9,
+    "m": 256,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 83.0,
+    "repeats": 1
+   },
+   {
+    "groups": 12,
+    "m": 4,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 124.0,
+    "repeats": 3
+   },
+   {
+    "groups": 12,
+    "m": 4,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 68.33,
+    "repeats": 3
+   },
+   {
+    "groups": 12,
+    "m": 8,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 124.75,
+    "repeats": 4
+   },
+   {
+    "groups": 12,
+    "m": 8,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 68.0,
+    "repeats": 4
+   },
+   {
+    "groups": 12,
+    "m": 16,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 125.0,
+    "repeats": 4
+   },
+   {
+    "groups": 12,
+    "m": 16,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 68.0,
+    "repeats": 4
+   },
+   {
+    "groups": 12,
+    "m": 32,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 127.0,
+    "repeats": 3
+   },
+   {
+    "groups": 12,
+    "m": 32,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 69.0,
+    "repeats": 3
+   },
+   {
+    "groups": 12,
+    "m": 64,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 129.0,
+    "repeats": 2
+   },
+   {
+    "groups": 12,
+    "m": 64,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 70.0,
+    "repeats": 2
+   },
+   {
+    "groups": 12,
+    "m": 128,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 135.0,
+    "repeats": 1
+   },
+   {
+    "groups": 12,
+    "m": 128,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 75.0,
+    "repeats": 1
+   },
+   {
+    "groups": 18,
+    "m": 4,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 184.0,
+    "repeats": 4
+   },
+   {
+    "groups": 18,
+    "m": 4,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 97.75,
+    "repeats": 4
+   },
+   {
+    "groups": 18,
+    "m": 8,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 182.25,
+    "repeats": 4
+   },
+   {
+    "groups": 18,
+    "m": 8,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 98.0,
+    "repeats": 4
+   },
+   {
+    "groups": 18,
+    "m": 16,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 182.67,
+    "repeats": 3
+   },
+   {
+    "groups": 18,
+    "m": 16,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 99.67,
+    "repeats": 3
+   },
+   {
+    "groups": 18,
+    "m": 32,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 185.0,
+    "repeats": 2
+   },
+   {
+    "groups": 18,
+    "m": 32,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 101.0,
+    "repeats": 2
+   },
+   {
+    "groups": 18,
+    "m": 64,
+    "n": 4096,
+    "k": 7168,
+    "time_us": 189.0,
+    "repeats": 1
+   },
+   {
+    "groups": 18,
+    "m": 64,
+    "n": 7168,
+    "k": 2048,
+    "time_us": 103.0,
+    "repeats": 1
+   }
+  ]
+ },
+ "module_b200": {
+  "source": "TensorRT-LLM tech blog 24 'MoE as Dense GEMM' (nvidia.github.io/TensorRT-LLM, page built from commit 0372799, 2026-10-19), table 'Per-Rank MoE Module Latency', column TRTLLM-Gen (per-expert grouped GEMM)",
+  "setup": "single B200, DeepSeek-V3-style routed MoE hidden 7168, 256 experts, top-8, SwiGLU, NVFP4, TP8 (intermediate 2048 / 8 = 256 per rank); module = router GEMM, TopK, alpha generation, FC1, FC2, quantization; AllReduces excluded",
+  "hidden": 7168,
+  "intermediate": 256,
+  "experts": 256,
+  "top_k": 8,
+  "rows": [
+   {
+    "tokens": 1,
+    "time_us": 26.78
+   },
+   {
+    "tokens": 8,
+    "time_us": 57.68
+   },
+   {
+    "tokens": 16,
+    "time_us": 86.55
+   },
+   {
+    "tokens": 32,
+    "time_us": 117.2
+   },
+   {
+    "tokens": 48,
+    "time_us": 133.54
+   },
+   {
+    "tokens": 64,
+    "time_us": 141.68
+   },
+   {
+    "tokens": 128,
+    "time_us": 161.87
+   },
+   {
+    "tokens": 192,
+    "time_us": 168.23
+   },
+   {
+    "tokens": 208,
+    "time_us": 169.34
+   },
+   {
+    "tokens": 224,
+    "time_us": 169.24
+   },
+   {
+    "tokens": 256,
+    "time_us": 172.17
+   },
+   {
+    "tokens": 272,
+    "time_us": 176.1
+   },
+   {
+    "tokens": 336,
+    "time_us": 184.32
+   },
+   {
+    "tokens": 384,
+    "time_us": 186.92
+   }
+  ]
+ }
+}

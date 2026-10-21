@@ -33,6 +33,11 @@ for v in ("default", "catalog"):
     t = XP.table(v)
     res["spec"][v] = {"summary": XP.summary(t), "by_concurrency": XP.by_concurrency(t), "token_curve": XP.token_curve(t),
                       "rows": t}
+# 0.297: public MoE kernel timings vs the GPU reference path (core/extkern.py); not in the LLM summary
+from accel_dse.core import extkern as XK
+res["kernels"] = {"default": {"summary": XK.summary("default"), "grouped_h800": XK.grouped_table("default"),
+                              "module_b200": XK.module_table("default")},
+                  "npu_rows": {c: XK.npu_rows_curve(c) for c in ("1P", "100T", "H100-like")}}
 if a.calib:
     res["calibration"] = json.load(open(a.calib))
 json.dump(res, open(a.out, "w"), indent=1)

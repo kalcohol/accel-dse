@@ -7944,3 +7944,26 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §241.4 Default behaviour, old → new
 - The cost model is unchanged; only the diagnostics changed. See CHANGELOG 0.296.0.
+
+## §242 Grouped-GEMM efficiency at small rows per expert vs public kernel timings; NPU M granularity (0.297)
+
+### §242.1 Data 「来源」
+- DeepGEMM masked grouped FP8 GEMM on H800 (DeepSeek_Simulator @ 7c69101, `results/H800_group_gemm.csv`). Kineto kernel time; 122 distinct (groups, m, N, K) for m = 4 … 2048 and the DeepSeek-V3 expert shapes.
+- TensorRT-LLM tech blog 24: B200 NVFP4 DeepSeek-V3-style MoE module at TP8, TRTLLM-Gen grouped GEMM, 1 … 384 tokens.
+
+### §242.2 Model 「推导」
+- Grouped time = max(array time of the `groups` GEMMs (gemm_cost on the extval default chip), operand bytes / achieved DRAM bandwidth), optionally + kernel_us per kernel.
+- Module: moe_routing (uniform) → hit × m_e; FC1 + FC2 in NVFP4 (4.5 bits); + bf16 hidden in / out; 6 kernels 「假设」.
+
+### §242.3 Result
+- H800, 4 – 128 rows: model / measured 1.03 (1.13 with the floor). 256 – 2048 rows: 0.73 (the masked kernel runs below the FP8 ceiling).
+- B200 module: 0.84 – 1.00 with the floor. The post-saturation slope is 0.115 µs/token measured vs 0.005 modelled. As an LFM2.5 upper bound 「近似」 that is ≤ 3.95 µs/token per step of the ≈ 19 missing; for Drama 3 it is 2.6.
+- Conclusion: grouped-GEMM small-M efficiency is priced. The shared signature (§241) lies mostly elsewhere: per-token non-GEMM kernels or host work, with no public data.
+
+### §242.4 NPU designs
+- Small-M inefficiency on an NPU is the array's M granularity: rows padded to the array dimension (gemm_cost). On 1P / 100T / H100-like that gives 6 – 14 % utilisation at 1 row and > 95 % from 16 – 32 rows.
+- It binds only when array time exceeds DRAM time. MoE decode is weight-streaming and stays DRAM-bound to ≥ 128 rows per expert.
+- The design variable already exists (array rows × cols); no new parameter.
+
+### §242.5 Default behaviour, old → new
+- The cost model is unchanged. See CHANGELOG 0.297.0.

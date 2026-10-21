@@ -6,6 +6,49 @@
 
 
 
+## [0.297.0]
+
+### Grouped-GEMM efficiency at small per-expert row counts: checked against public kernel timings (`core/extkern.py`)
+- The question (0.296 shared signature): on the GPU references the step grows with the tokens in the step faster than modelled.
+  - Drama 3, batched prefill: throughput over-predicted at c64–256.
+  - LFM2.5 target: marginal cost 24–78 µs/token measured vs 4.7–18 modelled.
+- Is the cause grouped-GEMM (MoE) efficiency at small rows per expert? Both models are fine-grained MoEs: LFM2.5 has 64 experts top-4 (d 1536); Drama 3 has 256 experts top-8 (d 512) in 40 of its 53 layers.
+- New diagnostic `core/extkern.py` + `data/ext_kernels_moe.json`, built only from public kernel timings 「来源」:
+  - **`grouped_h800`**: DeepGEMM `m_grouped_gemm_fp8_fp8_bf16_nt_masked` on H800, kineto kernel time.
+    - Source: DeepSeek_Simulator @ 7c69101, `results/H800_group_gemm.csv`; `python/test_decode_gemms.py` shows every group masked at m_per_group.
+    - Coverage: 340 rows → 122 distinct (groups 1–18 × m 4–2048 × the two DeepSeek-V3 expert shapes, N × K = 4096 × 7168 and 7168 × 2048).
+  - **`module_b200`**: TensorRT-LLM tech blog 24, "Per-Rank MoE Module Latency", TRTLLM-Gen column.
+    - Setup: B200; DeepSeek-V3-style NVFP4 routed MoE at TP8 (hidden 7168, 256 experts, top-8; intermediate 2048 / 8 = 256 per rank 「推导」); 1–384 tokens.
+    - The module covers router GEMM, TopK, alpha, FC1, FC2 and quantization.
+- Model 「推导」: the extval default variant's chip with the same op pricing as `evaluate`. Grouped GEMM time = max(array time, operand bytes / achieved DRAM bandwidth).
+  - Optionally plus the trace-sourced per-kernel floor: 1 kernel per grouped GEMM, 6 per module 「假设」 (one per listed stage).
+  - The module uses uniform routing (`ir.moe_routing`) and NVFP4 at 4.5 bits (4 bits + one e4m3 scale per 16 「来源」).
+- Results (never fitted), model / measured:
+
+  | Case | Without floor | With floor | Note |
+  |---|---|---|---|
+  | H800 grouped, 4–128 rows per group | 1.03 (0.996–1.08 per bin) | 1.13 | measured 1.5–2.9 TB/s; bandwidth-bound |
+  | H800 grouped, 256–2048 rows | 0.73 | — | the masked kernel runs below the model's FP8 ceiling; prefill regime, open |
+  | B200 module, 1–384 tokens | — | 0.84–1.00 | — |
+
+  - B200 module after every expert is hit (256 → 384 tokens): measured slope 0.115 µs/token vs model 0.005.
+- Reading:
+  - Small per-expert rows are already priced. On H800 the grouped GEMM stays bandwidth-bound and at measured bandwidth from 4 to 128 rows per expert, as the model has it.
+  - The only missing piece is the B200 module's post-saturation slope (which also covers its token-proportional router / TopK / quantization kernels). Transferred to LFM2.5 as an upper bound 「近似」 (per token-expert pair, scaled by expert MACs, × top-4 × 40 layers), it is ≤ 3.95 µs/token per step. That is ≈ 20 % of the ≈ 19 µs/token missing at c128–256. For Drama 3 (top-8, d 512, 40 MoE layers) the same bound is 2.6 µs/token.
+  - So the shared signature is mostly not grouped-GEMM efficiency. **No mechanism added; the cost model is unchanged.**
+  - Remaining candidates (no public data): per-token non-GEMM kernels (activation quantization, routing / sort, finalize) and per-token host / scheduler work in SGLang.
+- NPU designs (`npu_rows_curve`, catalog 1P / 100T / H100-like, LFM2.5 gate_up shape, 64 experts, FP8):
+  - The array pads each expert's rows to its M granularity (16 rows for 1P / H100-like, 8 for 100T): array utilisation is 6–14 % at 1 row and > 95 % from 16–32 rows. This is the existing design variable (array rows × cols, via `gemm_cost`).
+  - It costs time only when array time exceeds DRAM time. For weight-streaming MoE decode every design stays DRAM-bound up to 128 rows per expert (1P up to 512).
+  - So no separate "MoE tile efficiency at small M" variable is needed for NPUs. It would matter for designs with a much higher FLOP : byte ratio or a coarser M tile; that is visible today by changing the array shape.
+
+### Freshness
+- HF sweep since 2026-10-21 (107 orgs): empty. Nothing new.
+
+### Default behaviour, old → new
+- The cost model is unchanged: all 858 points are identical to 0.296.
+- ext_validate: every existing section is unchanged and the version stamp moved (0.296.0 → 0.297.0). New: the `kernels` section (summary, grouped_h800, module_b200 tables, npu_rows curves).
+
 ## [0.296.0]
 
 ### Drama 3: batched prefill in the steady state (`core/extspeech.py`)
