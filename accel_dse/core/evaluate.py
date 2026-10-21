@@ -111,6 +111,13 @@ class Result:
         return self.model.domain
 
     @property
+    def shoreline(self) -> dict:
+        """0.312: buildability of the die's shoreline (budget.shoreline_report over the auto die area: the preset's
+        published area, else the n5_derived proxy) — memory / D2D / I/O per edge, feasible."""
+        from .budget import shoreline_report
+        return shoreline_report(self.scenario)
+
+    @property
     def slo_ok(self) -> bool:
         """Latency SLO of the scenario: LLM decode TPOT (prefill: none), video clip latency, protein batch latency."""
         sv, w = self.scenario.serving, self.scenario.workload

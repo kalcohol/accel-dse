@@ -143,7 +143,20 @@ class Chip:
     # 0.311: die edges kept for the host interface (PCIe / card link): memory may take at most 4 − D2D edges − this
     # (floor 2) — budget.mem_sides_max.  1 (default) = one edge always left for I/O 「假设」 (shipping packages keep
     # two: GH100 NVLink + PCIe, B200 NV-HBI + I/O 「二手」); 0 = the 0.310 rule (memory may take every non-D2D edge).
-    noc_mem_io_edges: int = field(default=1, metadata={"omit_default": True})
+    # 0.312: -1 (default) = sized from the mechanism — the host (PCIe) and scale-up SerDes lanes × a PHY edge per
+    # lane (io_* below) take shoreline wherever memory leaves room on the non-D2D edges (budget.io_need /
+    # shoreline_report); memory may then take every non-D2D edge.  1 = the 0.311 whole reserved edge, 0 = 0.310.
+    noc_mem_io_edges: int = field(default=-1, metadata={"omit_default": True})
+    # 0.312: host / scale-up I/O lanes and their PHY edge (budget.io_need).  Host: PCIe x16 per package (H100 SXM /
+    # PCIe: PCIe Gen5 x16, NVIDIA datasheet 「来源」); per duplex lane 0.285 mm of die edge (Intel 32 Gb/s PCIe Gen5
+    # SerDes, 10 nm, CICC 2020: "die edge usage per lane of 285 µm" 「来源」).  Scale-up: the card's Link.GBps per
+    # direction ÷ the lane rate (100 Gb/s PAM4: NVLink4 18 links × 2 lanes × 100 G = 450 GB/s per direction 「二手」)
+    # duplex lanes, each at the PCIe lane's edge (no public long-reach 112G die-edge figure; 112G XSR 0.8–2 Tb/s/mm =
+    # 0.05–0.14 mm/lane is the short-reach floor 「二手」) 「假设」
+    io_host_lanes: int = field(default=16, metadata={"omit_default": True})
+    io_lane_mm: float = field(default=0.285, metadata={"omit_default": True})
+    io_su_lane_Gbps: float = field(default=100.0, metadata={"omit_default": True})
+    io_su_lane_mm: float = field(default=0.285, metadata={"omit_default": True})
     # 0.311: how the memory-attach links share the DRAM traffic.  "interleave" (default): addresses are interleaved
     # uniformly over the memory units (HBM stacks / LPDDR channels), so edge e carries the share u_e / N of the bytes
     # its units serve and the NoC delivers at most min_e links_e · N / u_e link-widths (the most loaded edge binds);
@@ -244,8 +257,15 @@ class Chip:
             raise ValueError("chip.noc_mem_edges must be 0 (auto), 2, 3 or 4")
         if self.noc_mem_edges_auto not in (2, 3, 4):
             raise ValueError("chip.noc_mem_edges_auto must be 2, 3 or 4")
-        if isinstance(self.noc_mem_io_edges, bool) or self.noc_mem_io_edges not in (0, 1):
-            raise ValueError("chip.noc_mem_io_edges must be 0 or 1")
+        if isinstance(self.noc_mem_io_edges, bool) or self.noc_mem_io_edges not in (-1, 0, 1):
+            raise ValueError("chip.noc_mem_io_edges must be -1 (sized), 0 or 1")
+        if isinstance(self.io_host_lanes, bool) or not isinstance(self.io_host_lanes, int) \
+                or not 0 <= self.io_host_lanes <= 256:
+            raise ValueError("chip.io_host_lanes must be an integer in [0, 256]")
+        for nm, hi in (("io_lane_mm", 10.0), ("io_su_lane_mm", 10.0), ("io_su_lane_Gbps", 10000.0)):
+            v = getattr(self, nm)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= hi:
+                raise ValueError(f"chip.{nm} must be in (0, {hi:g}]")
         if self.noc_mem_balance not in NOC_MEM_BALANCE:
             raise ValueError(f"chip.noc_mem_balance must be one of {NOC_MEM_BALANCE}")
         if not isinstance(self.noc_mem_load, tuple) or any(isinstance(u, bool) or not isinstance(u, int) or u < 0

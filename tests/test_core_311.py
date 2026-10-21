@@ -26,6 +26,7 @@ def _t():
 
 
 def _run(chip="100T", mem=LP8, L=32, model="qwen3-8b", batch=64, **ck):
+    ck.setdefault("noc_mem_io_edges", 1)          # 0.312: these tests pin the 0.311 rule (whole host-I/O edge)
     s = Scenario(model=model, chip=replace(CHIPS[chip], noc_link_Bpc=L, **ck), mem_id=mem,
                  serving=Serving(phase="decode", batch=batch, prompt=2048, ctx=4096))
     ev = evaluate(s)
@@ -79,8 +80,10 @@ def test_single_stack_interleave_and_pooled_switch():
     assert s.chip.noc_mem_load == (1, 0) and s.chip.noc_mem_links() * 2 == p.chip.noc_mem_links()
     assert abs(e.per_card / ep.per_card - 0.5) < 1e-3              # one stack sits on one edge
     d = s.to_dict()["chip"]
-    assert "noc_mem_load" not in d and "noc_mem_io_edges" not in d and "noc_mem_balance" not in d
-    for bad in ({"noc_mem_balance": "x"}, {"noc_mem_io_edges": 3}):
+    assert "noc_mem_load" not in d and "noc_mem_balance" not in d
+    assert d["noc_mem_io_edges"] == 1             # 0.312: the 0.311 rule is now an explicit (serialised) choice
+    assert "noc_mem_io_edges" not in replace(s, chip=replace(s.chip, noc_mem_io_edges=-1)).to_dict()["chip"]
+    for bad in ({"noc_mem_balance": "x"}, {"noc_mem_io_edges": 3}, {"noc_mem_io_edges": -2}):
         try:
             replace(CHIPS["1P"], **bad)
             raise AssertionError(bad)

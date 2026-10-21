@@ -6,6 +6,33 @@
 
 
 
+## [0.312.0]
+
+### Shoreline feasibility as a first-class result; sized host + scale-up I/O edge; per-part scale-up link; 238 on CPU time
+- **Buildability on every result**: `budget.shoreline_report(scn)` returns, per edge (W / E / N / S), length, memory units (whole HBM stacks / LPDDR channels), memory / D2D / I/O mm, used / free, role, plus overall `feasible` and `status` (ok / tight = memory beyond 2 edges / over / unknown) and the reasons. It is exposed as `Result.shoreline`, `/api/eval` `shoreline` (with the budget's die area when given; an infeasible eval adds the warning "不可建（岸线）：…"), and per energy-DSE row (`buildable`, `shoreline`, `shore`).
+- **Fronts are buildable-only by default**: an infeasible row gets `why` and stays off every front / verdict. `include_unbuildable=True` (API key, UI checkbox "含不可建点", `chiplet_example.py --include-unbuildable`) keeps it (`why_shore`). Output has `n_unbuildable`.
+- **Sized I/O edge** (`Chip.noc_mem_io_edges` default 1 → **-1 = sized**; 1 reproduces 0.311's whole reserved edge, 0 reproduces 0.310):
+  - Host lanes: `io_host_lanes` = 16 (PCIe x16 per package, H100 datasheet 「来源」), split over the package's dies.
+  - Scale-up lanes: Link.GBps × 8 ÷ `io_su_lane_Gbps` 100 「假设」. These apply only when the replica leaves the package. Lanes are counted in x4 macros, and a macro is never split across edges 「假设」.
+  - Lane edge: 0.285 mm per duplex lane (`io_lane_mm` / `io_su_lane_mm`; Intel 32 Gb/s PCIe5 SerDes, CICC 2020, 285 µm/lane 「来源」). For 112G long-reach no public die-edge figure exists, so the same pitch is used 「假设」; XSR 0.05–0.14 mm/lane is the floor 「二手」.
+  - Check: H100-like at tp8 with 450 GB/s needs 16 + 36 lanes (NVLink4 18 × 2 「二手」) = 14.8 mm.
+- **Discrete fit and die shape (sized mode only)**: each edge holds whole units (HBM stack 11 mm; LPDDR channel 16 / 18.75 mm). A die without published geometry may be any rectangle of its area in the 26 × 33 mm exposure field with aspect ≤ 2 (`DIE_ASPECT_MAX` 「假设」; GH100 1.34, B200-class 1.2–1.4 「二手」), in 0.25 mm steps, squarest feasible first. D2D goes on the short or the long edges. Memory goes on the fewest non-D2D edges. I/O is placed first-fit into what is left.
+- **Per-part scale-up link** (energy-DSE splits / NoC clusters): each die or cluster card gets Link.GBps / parts. ≤ 0.311 gave every part the whole link, i.e. K × the package's off-package bandwidth (and, now visible, K × the SerDes). Example: 1P + 8 × HBM3E prefill L64 at tp8 / 900, K = 4: 27.7k → 23.3k tok/s. At tp1 nothing changes.
+- **Old → new** (840 cases as in 0.311; default 0.312 vs the 0.311 switch): 45 cases change, all up, 0 down.
+  - 1P / 1P-lp4x64 + 8 × HBM3E / 8 × HBM4: memory edges 2 → 4. L16 / L32 throughput +100 % (attach links 10 → 20), J −42…−47 %.
+  - 100T + 4 × HBM3E: 2 → 4 edges.
+  - Buildability (70 chip × memory at tp1 / 400): 0.311 ok 42 / tight 13 / over 15; 0.312 ok 41 / tight 18 / over 11.
+- **Chiplet verdicts, buildable only** (qwen3-8b decode, n5_cowos_l; `chiplet_example.py --sweep`). The split is cheaper from D0 (per cm²):
+  - 4 × HBM3E: MAC×1 0.16, MAC×2 0.08 (tp1 / 400, tp8 / 400, tp8 / 900).
+  - 6 ×: MAC×1 0.16; MAC×2 monolithic over the reticle (867–898 mm²), split only.
+  - 8 ×: MAC×1 0.12 (tp1 / 400) or 0.13 (tp8 / 400). At tp8 / 900 monolithic is unbuildable (I/O 16 + 72 lanes = 25.1 mm > 16.7 mm left), split only. MAC×2 is over the reticle.
+  - Example: 8 × tp1 at D0 0.1: monolithic $2013 (4 edges, buildable) < 4-die $2059.
+  - 0.311 called 8-stack monolithic unbuildable (whole I/O edge). 0.312 restores "mono" for all 7 example cases at MAC×1 (as 0.310 had, now with the I/O checked).
+- **UI**: chip panel has "I/O 岸线" (按通道 / 整边（0.311） / 不计（0.310）) and "主机 PCIe 通道", plus a per-edge shoreline table (`#chip-shore`). The DSE panel has the "含不可建点" switch, and its why column shows the shoreline reason.
+- **test_core_238**: runtime bound measured in CPU time (`time.process_time`, as test_core_210), same 60 s limit, same checks.
+- Freshness (2026-10-22): HF sweep since 2026-10-21 (107 orgs) found only Ling-3.0-tiny-UBTree (added in 0.311). UCIe 4.0 is not published (3.0 latest). JEDEC has no HBM4E standard (HBM4 JESD270-4A, SPHBM4 JESD330-4). Nothing new.
+- Tests: test_core_312.py (7). test_core_311 pins `noc_mem_io_edges = 1`; test_core_213 / 214 expectations updated with 0.312 comments.
+
 ## [0.311.0]
 
 ### Audit of the 0.310 memory-edge default; host-I/O edge; per-edge interleave; robust headless smoke; Ling-3.0 + UBTree

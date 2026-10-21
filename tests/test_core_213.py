@@ -48,7 +48,8 @@ def test_rwkv_1p_die_and_shoreline_with_uncore():
     assert 560 < b["area_mm2"] < 580 and b["shoreline"]["status"] == "ok"          # 434 → 571 mm²: 4 stacks fit 2 sides
     bw = rows["dram_bw_x2"]
     # 0.311: one die edge kept for host I/O → 8 × 11 mm > 3 × 25.6 mm = "over" (was "tight" on four edges)
-    assert 640 < bw["area_mm2"] < 670 and bw["shoreline"]["status"] == "over" and not bw["over_reticle"]
+    # 0.312: the I/O is sized (PCIe x16 = 4.6 mm fits beside 2 stacks on each 25.6 mm edge) → "tight" on four edges
+    assert 640 < bw["area_mm2"] < 670 and bw["shoreline"]["status"] == "tight" and not bw["over_reticle"]
     st = rows["state_sram"]
     assert st["over_reticle"] and st["area_mm2"] > 9000
     # consistency: one die area drives both the reticle flag and the shoreline

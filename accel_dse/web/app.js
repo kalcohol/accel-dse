@@ -358,6 +358,8 @@ function syncInputs() {
     if ($('c-' + k) && S.cat) $('c-' + k).value = k in S.chipOver ? S.chipOver[k] : '';
   }
   if ($('c-noc_mem_edges') && S.cat) $('c-noc_mem_edges').value = 'noc_mem_edges' in S.chipOver ? String(S.chipOver.noc_mem_edges) : '';   // 0.310
+  if ($('c-noc_mem_io_edges') && S.cat) $('c-noc_mem_io_edges').value = 'noc_mem_io_edges' in S.chipOver && S.chipOver.noc_mem_io_edges !== -1 ? String(S.chipOver.noc_mem_io_edges) : '';   // 0.312
+  if ($('c-io_host_lanes') && S.cat) $('c-io_host_lanes').value = 'io_host_lanes' in S.chipOver ? String(S.chipOver.io_host_lanes) : '';   // 0.312
   if ($('c-clk_datapath_gate')) $('c-clk_datapath_gate').checked = !!chipVal('clk_datapath_gate');
   if ($('fab-enabled') && S.sc && S.cat) fabPaint();
   if ($('d2d-enabled') && S.sc) { $('d2d-enabled').checked = !!S.sc.d2d_enabled; if (S.cat) $('d2d-std').value = S.sc.d2d_std; d2dPaint(); }
@@ -798,6 +800,7 @@ function renderEval(r) {
   renderWalls(r);
   renderEnergy(r);
   renderFabric(r);
+  renderShore(r.shoreline);       // 0.312: chip-panel shoreline buildability
   renderBudget(r);
   renderSensitivity(r);
   renderPD(r);
@@ -1425,6 +1428,25 @@ function renderParetoSens(s) {
     ? `⚠ Pareto 前沿取决于：${s.hinges.map((k) => SENS_ZH[k] || k).join('、')}`
     : 'Pareto 前沿上的点在各假设下不变';
 }
+// 0.312: shoreline buildability in the chip panel — per die edge: memory units / D2D / host + scale-up I/O vs length
+function renderShore(x) {
+  const el = $('chip-shore');
+  if (!el) return;
+  el.textContent = '';
+  if (!x || !x.edges) { if (x && x.reasons && x.reasons.length) el.append(h('div', { class: 'small' }, '岸线：' + x.reasons.join('；'))); return; }
+  const st = { ok: '✓ 可建', tight: '✓ 可建（外存占第三边起）', over: '✗ 不可建' }[x.status] || x.status;
+  const io = x.io || {}, m = x.mem || {}, d = x.d2d;
+  const head = `岸线 ${st} · 晶粒 ${num(x.die_mm2)} mm²${x.die_src === 'budget' ? '（预算面积）' : ''} · 外存 ${m.units != null ? m.units + ' 单元 ' + num(m.need_mm) + ' mm / 可用 ' + m.sides_max + ' 边' : '未判定'}`
+    + (d ? ` · D2D ${d.edges} 边${d.need_mm != null ? ' ' + num(d.need_mm) + ' mm' : ''}` : '')
+    + (io.mode === 'none' ? ' · I/O 不计（0.310）' : ` · I/O ${io.mode === 'edge' ? '整边（0.311）' : '按通道'} 主机 ${io.host_lanes} + scale-up ${io.scaleup_lanes} 通道 ${num(io.need_mm)} mm`);
+  el.append(h('div', { class: x.feasible === false ? 'warn' : '', id: 'chip-shore-head' }, head));
+  const rows = x.edges.map((e) => h('tr', { class: e.free_mm < -1e-6 ? 'warn' : '' },
+    h('td', { class: 'l' }, e.edge), h('td', {}, num(e.len_mm)), h('td', {}, e.mem_units ? `${e.mem_units} · ${num(e.mem_mm)}` : '—'),
+    h('td', {}, e.d2d_mm ? num(e.d2d_mm) : '—'), h('td', {}, e.io_mm ? num(e.io_mm) : '—'), h('td', {}, num(e.free_mm)), h('td', { class: 'l' }, e.role)));
+  el.append(h('table', { class: 'small', id: 'chip-shore-table' }, h('tr', {}, ...['边', '长 mm', '外存 单元·mm', 'D2D mm', 'I/O mm', '余 mm', '用途'].map((t) => h('th', {}, t))), ...rows));
+  if (x.reasons && x.reasons.length) el.append(h('div', { class: 'warn' }, x.reasons.join('；')));
+}
+
 function renderBudget(r) {
   const b = r.budget;
   $('budget-box').hidden = !b;
@@ -2431,6 +2453,7 @@ async function runInsightDse() {
         if ($('ins-dse-pkg').value) ex.pkg_mm2 = $('ins-dse-pkg').value;
         if (+$('ins-dse-d0').value > 0) ex.d0_per_cm2 = +$('ins-dse-d0').value;
         if (!$('ins-dse-clusters').checked) { ex.mono_clusters = false; ex.mem_edges_shoreline = false; }   // 0.309
+        if ($('ins-dse-unbuild') && $('ins-dse-unbuild').checked) ex.include_unbuildable = true;   // 0.312
       }
       const kclu = list('ins-dse-kclu');                 // 0.310: NoC-cluster axis, cost per good package
       const badk = kclu.length > 5 || kclu.some((x) => !Number.isInteger(x) || x < 1 || x > 64);
@@ -2488,7 +2511,7 @@ async function runInsightDse() {
         h('td', {}, x.tpot_ms != null ? num(x.tpot_ms) : '—'), h('td', {}, x.ttft_ms != null ? num(x.ttft_ms) : '—'),
         h('td', {}, x.mem_usd != null ? num(x.mem_usd) : '—'),
         ...['mac', 'sram', 'wire', 'noc', 'dram', 'static'].map((k) => h('td', {}, x.share ? pct(x.share[k] || 0) : '—')),
-        h('td', { class: 'l' }, x.why || [x.capped ? 'DVFS 封顶' : '', x.shoreline === 'tight' ? 'HBM 岸线紧（占第三边起）' : '', x.front_kgd ? '良率前沿' : ''].filter(Boolean).join('；'))))));
+        h('td', { class: 'l' }, x.why || [x.capped ? 'DVFS 封顶' : '', x.shoreline === 'tight' ? '外存岸线紧（占第三边起）' : '', x.why_shore ? '不可建（已纳入前沿）：' + x.why_shore : '', x.front_kgd ? '良率前沿' : ''].filter(Boolean).join('；'))))));
     $('ins-dse-status').textContent = `完成 · ${rows.length} 点${staleTag(v0)}`;
     $('ins-dse-status').dataset.done = '1';
   } catch (e) {
@@ -2883,6 +2906,8 @@ async function init() {
     $('c-' + k).addEventListener('change', (e) => { if (e.target.value) S.chipOver[k] = e.target.value; else delete S.chipOver[k]; schedule(); });
   }
   $('c-noc_mem_edges').addEventListener('change', (e) => { if (e.target.value) S.chipOver.noc_mem_edges = parseInt(e.target.value, 10); else delete S.chipOver.noc_mem_edges; schedule(); });   // 0.310
+  $('c-noc_mem_io_edges').addEventListener('change', (e) => { if (e.target.value) S.chipOver.noc_mem_io_edges = parseInt(e.target.value, 10); else delete S.chipOver.noc_mem_io_edges; schedule(); });   // 0.312
+  $('c-io_host_lanes').addEventListener('change', (e) => { const v = parseInt(e.target.value, 10); if (Number.isFinite(v) && v >= 0) S.chipOver.io_host_lanes = v; else delete S.chipOver.io_host_lanes; schedule(); });   // 0.312
   $('c-clk_datapath_gate').addEventListener('change', (e) => { if (e.target.checked) S.chipOver.clk_datapath_gate = true; else delete S.chipOver.clk_datapath_gate; schedule(); });
   $('l-pp_split').addEventListener('change', (e) => { S.sc.pp_split = e.target.value; schedule(); });
   $('l-indexer').addEventListener('change', (e) => { S.sc.indexer = e.target.value; schedule(); });

@@ -8839,3 +8839,53 @@ Reading:
   - The SGLang serving code is not released, so the selector / tree kernels and the non-causal block attention are 「假设」 (warned).
   - Example: 1P + 4 × HBM3E, batch 1, ctx 4096: TPOT 0.626 → 0.556 ms with the published τ (default `spec_accept` 0.7 → 1.53 ms: the 50-token tree verify only pays off at the card's acceptance).
 
+
+## §257 Shoreline feasibility as a first-class result; sized I/O edge; per-part scale-up link (0.312)
+
+### §257.1 The report
+`budget.shoreline_report(scn, die_mm2=None)` places memory, D2D and I/O on the four edges of one die and returns the per-edge ledger (length, whole memory units, mem / d2d / io mm, used / free, role), `feasible`, `status` (ok; tight = memory beyond two edges; over; unknown when the die area is unknown) and readable reasons.
+- Every evaluation carries it (`Result.shoreline`, `/api/eval`). Every energy-DSE row carries it (`buildable`, `shoreline`, `shore`).
+- An infeasible row is excluded from all fronts and verdicts unless `include_unbuildable=True`.
+- The legacy modes keep their own rules: `noc_mem_io_edges = 1` (0.311, whole I/O edge, I/O "reserved" and not checked) and `0` (0.310, no I/O).
+
+### §257.2 Sizing the I/O edge from lanes
+need = (host + scale-up lanes) × lane edge, counted in x4 macros that are never split across edges 「假设」.
+- Host: PCIe x16 per package 「来源」 (H100 datasheet), split over the dies.
+- Scale-up: GB/s per direction × 8 ÷ 100 Gb/s per lane 「假设」, only when the replica leaves the package (the c2c-PHY rule).
+- Lane edge 0.285 mm 「来源」 (Intel 32 Gb/s PCIe5 transceiver, 10 nm, CICC 2020: "die edge usage per lane of 285 µm"). The same pitch is used for 112G long reach 「假设」 because no public figure exists; 112G XSR 0.8–2 Tb/s/mm is the floor 「二手」.
+- Check: H100-like at tp8 with 450 GB/s gives 16 + 36 lanes (NVLink4 18 links × 2 lanes 「二手」) = 14.82 mm. That fits beside 5–6 HBM sites on 2 × 33 + 2 × 24.7 mm.
+
+### §257.3 Discrete fit and die shape (sized mode)
+- Each edge holds ⌊len / unit⌋ whole stacks (11 mm) or channels (16 / 18.75 mm).
+- A die without published geometry may be any rectangle of its area in the 26 × 33 mm field with aspect ≤ 2 (`DIE_ASPECT_MAX` 「假设」; GH100 1.34 and B200-class dies 1.2–1.4 「二手」), in 0.25 mm steps. The squarest shape that fits is chosen.
+- D2D goes on the short or the long edges. Memory goes on the fewest non-D2D edges (water-filled by attach links). I/O is placed first-fit in what is left.
+- Examples:
+  - 1P + 8 × HBM3E (654 mm², 25.6 mm square) holds 2 stacks per edge on all 4 edges, with 14.3 mm left for I/O (4.56 mm needed at tp1).
+  - At tp8 / 400 GB/s the I/O needs 13.7 mm: buildable.
+  - At tp8 / 900 GB/s the I/O needs 25.1 mm against 16.7 mm left: over.
+  - 2 × 333 mm² dies reshape to 22.2 × 15.0 mm and hold 4 stacks each.
+  - 100T cannot hold 8 stacks.
+
+### §257.4 Per-part scale-up link
+A split or clustered package keeps its scale-up bandwidth: each part gets Link.GBps / parts. Through 0.311 every part had the whole link, i.e. K × the package's off-package bandwidth. The sized I/O check exposed this: K = 4 would have needed 288 lanes. 1P + 8 × HBM3E prefill L64 at tp8 / 900: K = 1 / 2 / 4 = 16.5k / 17.6k / 23.3k tok/s (was 16.5k / 19.2k / 27.7k). tp1 is unchanged (39.4k / 47.8k / 60.6k).
+
+### §257.5 Old → new and buildable-only verdicts
+- 840 cases, 0.311 switch → 0.312 default: 45 change, all up.
+  - 1P / 1P-lp4x64 + 8 × HBM3E / HBM4: memory edges 2 → 4, L16 / L32 throughput +100 %, J −42…−47 %.
+  - 100T + 4 × HBM3E: 2 → 4 edges.
+  - Buildable at tp1 / 400 (70 chip × memory): ok / tight / over = 42 / 13 / 15 → 41 / 18 / 11.
+- Chiplet economics (qwen3-8b decode, n5_cowos_l, buildable designs only). D0 from which the split is cheaper:
+
+| memory | tp1/400 MAC×1 / ×2 | tp8/400 | tp8/900 |
+|---|---|---|---|
+| 4 × HBM3E | 0.16 / 0.08 | 0.16 / 0.08 | 0.16 / 0.08 |
+| 6 × HBM3E | 0.16 / mono > reticle | 0.16 / mono > reticle | 0.16 / mono > reticle |
+| 8 × HBM3E | 0.12 / mono > reticle | 0.13 / mono > reticle | mono unbuildable (I/O) / mono > reticle |
+
+- Below the break-even D0, the monolithic die is buildable and cheaper (e.g. 8 × tp1 at D0 0.1: $2013 vs 4-die $2059).
+- 0.311's "only_split" for the 8-stack example was an artefact of the whole reserved I/O edge. All 7 example cases are "mono" at MAC×1 again; the I/O is now checked.
+- The one physically unbuildable monolithic case is a fast scale-up domain (900 GB/s at tp8) on an 8-stack die. There the split is forced by I/O shoreline, not by yield.
+
+### §257.6 test_core_238 and freshness
+- test_core_238 measures its bound in CPU time (`time.process_time`) with the same 60 s limit. Alone it takes 17.5 / 10.9 / 17.0 s per case, and box load no longer counts.
+- Freshness, 2026-10-22: HF since 2026-10-21 has nothing new (only Ling-3.0-tiny-UBTree, already in). UCIe 4.0 is unpublished. JEDEC has no HBM4E.

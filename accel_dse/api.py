@@ -156,7 +156,7 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                                "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd", "f_scales",
                                "noc_link_Bpc", "noc_routing", "noc_links", "dies", "d2d_stds", "d2d_units",
                                "die_split", "reticle_mm2", "pkg_mm2", "d0_per_cm2", "mono_clusters",
-                               "mem_edges_shoreline", "clusters", "cost"}}
+                               "mem_edges_shoreline", "clusters", "cost", "include_unbuildable"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -278,6 +278,7 @@ def result_dict(r: Result, *, with_goodput: bool = False) -> dict:
            "dispatch_sens": r.dispatch_sens(),     # 0.284 per-op dispatch sensitivity of the step
            "model": {"id": r.model.id, "hf_id": r.model.hf_id, **labels(r.model)},
            "hash": text_view(s).hash(), "scenario": text_view(s).to_dict()}   # 0.62: as entered (image tokens not folded in)
+    out["shoreline"] = r.shoreline     # 0.312: buildability (per-edge memory / D2D / I/O shoreline)
     if r.spec:
         out["spec"] = r.spec        # 0.225: τ of the spec step (+ tree band and published-reference check)
     if with_goodput and s.serving.phase == "decode" and r.workload is None:
@@ -1008,6 +1009,14 @@ def api_eval(body: dict) -> dict:
     pc = body.get("power_cap", False)
     if not isinstance(pc, bool):
         raise ApiError("power_cap must be true or false")
+    sh = out["shoreline"]
+    if bud is not None and (bud.die_mm2 or bud.mm2_per_kmac is not None):     # 0.312: the user's die area / densities
+        from .core.budget import shoreline_report
+        su = shoreline_report(scn, die_mm2=bud.die_mm2, b=None if bud.die_mm2 else bud)
+        if su.get("die_mm2"):
+            sh = out["shoreline"] = {**su, "die_src": "budget"}
+    if sh.get("feasible") is False:
+        out["summary"]["warnings"].append("不可建（岸线）：" + "；".join(sh["reasons"]))
     out["energy"] = energy_report(r, table, power_cap=pc)      # 0.47.1: action counts always; J only for user-supplied entries
     if body.get("sensitivity", True):
         out["sensitivity"] = sensitivity_report(scn, r, table.tdp_W if pc and table.tdp_W else None)   # 0.227
@@ -1503,7 +1512,7 @@ def api_insight_dse(body: dict) -> dict:
         except ValueError as e:
             raise ApiError(str(e)) from None
         kw["cost"] = v
-    for k in ("mono_clusters", "mem_edges_shoreline"):     # 0.309: fair monolithic comparison (default on)
+    for k in ("mono_clusters", "mem_edges_shoreline", "include_unbuildable"):   # 0.309 / 0.312 (buildability switch)
         if (v := body.get(k)) is not None:
             if not isinstance(v, bool):
                 raise ApiError(f"{k} must be a boolean")

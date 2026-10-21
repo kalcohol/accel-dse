@@ -10,7 +10,9 @@ fit) and priced by the energy table (MAC / SRAM / wire / NoC / DRAM / static, in
   DRAM        `mems` (explicit catalog ids) or `mem_types` × `mem_count_scales` × `mem_caps` (0.301; default: the
               scenario's memory).  Bandwidth / capacity / fit from the cost model; energy from the per-kind pJ/bit
               (pJ_bit_dram_hbm / _lpddr, 0.302 _hbm4 / _lpddr6, + PHY) and DRAM standby / refresh; die area adds the DRAM PHY (bus bits ×
-              mm2_per_dq_*); HBM stacks are checked against the die shoreline (budget.shoreline_check, "over" = drop)
+              mm2_per_dq_*); buildability (0.312) = budget.shoreline_report per die: memory units, D2D PHY and host +
+              scale-up I/O lanes per edge; an infeasible die is flagged (row.buildable / why) and kept off the fronts
+              unless include_unbuildable=True
   SLC         `slc_mibs` (0.301; absolute MiB, default the chip's): area mm2_per_mib_slc, SLC access + wire energy
   NoC link    `noc_link_Bpc` (0.303; default the chip's, 0 = unlimited): bisection congestion on every point;
               `noc_routing` (0.304; "bisection" / "xy"): busiest-link load under dimension-ordered routing
@@ -428,9 +430,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          noc_routing: str | None = None, noc_links=None, dies=None, d2d_stds=None,
                          d2d_units: int | None = None, die_split: str = "tp", reticle_mm2: float | None = None,
                          pkg_mm2=None, d0_per_cm2: float | None = None, mono_clusters: bool = True,
-                         mem_edges_shoreline: bool = True, clusters=None, cost=None) -> dict:
+                         mem_edges_shoreline: bool = True, clusters=None, cost=None,
+                         include_unbuildable: bool = False) -> dict:
     from .. import mem_catalog as mc
-    from .budget import full_area, shoreline_check
+    from .budget import full_area, shoreline_report
     from .hardware import default_mem
     from .insight import TIE
     from .powercap import CAP_CURVES, F_MIN, VF_CURVES
@@ -651,7 +654,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     if auto_edges and not (chip_mode and not mem_edges_shoreline):
         notes.append("外存接入边（0.310 机理默认）：每个设计点按其晶粒的外存岸线占用（HBM 堆栈 × 11 mm；LPDDR 位宽 ÷ 18.75 引脚 / mm，"
                      "Credo 0.18 Tb/s/mm @ 9.6 GT/s「二手/推导」）决定几条边接入 NoC；芯片 noc_mem_edges = 2 复现 0.309。"
-                     "0.311：外存至多占 4 − D2D 边 − 1 条主机 I/O 边（noc_mem_io_edges = 0 复现 0.310），"
+                     "0.312：主机 I/O 按通道定长（PCIe x16 + scale-up 链路 ÷ 100 Gb/s，× 0.285 mm/通道），外存按整堆栈 / 整通道放边，"
+                     "晶粒在 26 × 33 曝光场内可取长宽比 ≤ 2 的矩形（noc_mem_io_edges = 1 复现 0.311 整边保留，0 复现 0.310），"
                      "地址均匀交织 → 各边按其上外存单元份额承载流量，最重的边限制 NoC 接入（noc_mem_balance = pooled 复现 0.310）")
     if cost_p is not None:
         notes.append("成本 / 好封装（0.310）：Σ 晶粒 × 晶圆价 / DPW / Y + 封装 $/mm² × (Σ 晶粒 + HBM 占地) + 测试 / 组装（多晶粒 + KGD）"
@@ -690,7 +694,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     # clusters: the chip goes in last — noc_clusters > 1 needs d2d_enabled / package_cards = K first
                     sx = sx.replace("chip", replace(c, noc_clusters=1)).replace("mem_id", mid_d)
                     sx = sx.replace("layout", _split_layout(sx.layout, npart, die_split, moe))
+                    # 0.312: the package keeps its scale-up bandwidth — each die / cluster card gets Link.GBps / npart
+                    # (≤ 0.311 gave every part the whole link: K× the package's off-package bandwidth and SerDes)
                     sx = replace(sx, package_cards=npart, d2d_enabled=True, mem_cap_GB=sx.mem_cap_GB / npart,
+                                 link=replace(sx.link, GBps=sx.link.GBps / npart),
                                  **({"d2d_std": sd, "d2d_units": units} if nd > 1 else {}))
                     return replace(sx, chip=c) if c.noc_clusters > 1 else sx
                 try:
@@ -772,18 +779,23 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     row["pkg_mm2"] = row["si_mm2"] + _hbm_footprint(mid)
                     if row["pkg_mm2"] > pkg_mm2 * (1 + 1e-9):
                         why.append(f"封装 {row['pkg_mm2']:.0f} > 中介层 {pkg_mm2:g} mm²")
-                if chip_mode and nd > 1 and dens_ok and row.get("mm2"):
-                    from .budget import d2d_shoreline
-                    ds = d2d_shoreline(s_full, row["mm2"])
-                    if ds and ds["status"] == "over":
-                        why.append(f"D2D 岸线：{ds['units']} 单元需 {ds['need_mm']:.1f} mm > {ds['edges']} 边 {ds['edge_mm']:.1f} mm")
-                if dens_ok and row["mem_kind"] == "HBM" and row.get("mm2"):
-                    sh = shoreline_check(s_full, row["mm2"])
-                    if sh:
-                        row["shoreline"] = sh["status"]      # "tight" = needs the 3rd / 4th die edge (kept, flagged)
-                    if sh and sh["status"] == "over":
-                        why.append(f"HBM 岸线：{sh['stacks']} 堆栈需 {sh['need_mm']:.0f} mm > 可用 {sh['sides_max']} 边 "
-                                   f"{sh['edge_max_mm']:.0f} mm")   # 0.311: D2D + host-I/O edges excluded
+                # 0.312: buildability is a first-class result — one shoreline report per die (memory units, D2D PHY,
+                # host + scale-up I/O per edge; budget.shoreline_report) over the row's die (the search densities, else
+                # the n5_derived proxy 「近似」).  Unbuildable rows leave every front unless include_unbuildable.
+                sr = shoreline_report(s_full, row.get("mm2") if dens_ok else None)
+                row["buildable"] = sr.get("feasible")
+                row["shoreline"] = sr.get("status")       # ok / tight (memory beyond 2 edges) / over / unknown
+                if sr.get("edges"):
+                    row["shore"] = {"mem": sr["mem"]["status"], "io": sr["io"]["status"],
+                                    "d2d": (sr.get("d2d") or {}).get("status"), "io_mm": sr["io"].get("need_mm"),
+                                    "used_mm": sr["used_mm"], "perimeter_mm": sr["perimeter_mm"],
+                                    "die_src": "dse" if dens_ok else "proxy"}
+                if sr.get("feasible") is False:
+                    sw = "；".join(sr["reasons"])
+                    if include_unbuildable:
+                        row["why_shore"] = sw
+                    else:
+                        why.append(sw)
                 if slo_tpot_ms is not None and row.get("tpot_ms") is not None and row["tpot_ms"] > slo_tpot_ms * (1 + 1e-9):
                     why.append(f"TPOT {row['tpot_ms']:.1f} > {slo_tpot_ms:g} ms")
                 if slo_ttft_ms is not None and row.get("ttft_ms") is not None and row["ttft_ms"] > slo_ttft_ms * (1 + 1e-9):
@@ -842,7 +854,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
             "slo": {"tpot_ms": slo_tpot_ms, "ttft_ms": slo_ttft_ms}, "priced": bool(priced),
             "cost": ({k: cost_p[k] for k in (*COST_KEYS, "preset", "src")} if cost_p else None), "costed": costed,
             "clusters": Ks if clusters is not None else None,
+            "include_unbuildable": bool(include_unbuildable),
+            "n_unbuildable": sum(1 for x in rows if x.get("buildable") is False),
             "basis": "设计网格（MAC 总数 × 引擎边长 × SRAM × NoC 拓扑 × 外存 × SLC × 频率工作点）逐点评估：时间 / 放得下来自代价模型，"
                      "J/单位 来自能耗表（MAC / SRAM / 导线 / NoC / DRAM+PHY / 静态）；perf/W = 1 / (J/单位)；超功耗点按 DVFS "
-                     "封顶运行（或剔除），超面积 / HBM 岸线 / SLO / 内存 $ 的点剔除；前沿 = 吞吐↑ 与 J/单位↓ 的非支配集，"
+                     "封顶运行（或剔除），超面积 / 岸线不可建（外存 / D2D / I/O，0.312；include_unbuildable 可纳入）/ SLO / 内存 $ 的点剔除；前沿 = 吞吐↑ 与 J/单位↓ 的非支配集，"
                      "差 ≤ tie（默认 1 %）视为持平（MODEL §245–247）"}

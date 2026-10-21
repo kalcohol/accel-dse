@@ -24,6 +24,7 @@ the rows that fit (see api.py).
 from __future__ import annotations
 
 import math
+import copy
 from dataclasses import dataclass, fields
 
 _LIMITS = {   # key → (label, unit)
@@ -256,8 +257,23 @@ def _d2d_edges_of(scn) -> int:
 def mem_sides_max(scn) -> int:
     """0.311: die edges the memory interface may occupy = 4 − D2D edges − host-I/O edges (Chip.noc_mem_io_edges),
     floor 2 (a middle die of a ≥ 3-die package reaches the host through its neighbours 「假设」).  0.310: 4 − D2D."""
-    io = getattr(scn.chip, "noc_mem_io_edges", 0)
-    return max(2, HBM_SIDES_MAX - _d2d_edges_of(scn) - io) if io else HBM_SIDES_MAX - _d2d_edges_of(scn)
+    if getattr(scn.chip, "noc_mem_io_edges", 0) == 1:
+        return max(2, HBM_SIDES_MAX - _d2d_edges_of(scn) - 1)
+    # 0.312 sized I/O (-1): memory may take every non-D2D edge; the I/O lanes must fit in what it leaves
+    # (shoreline_report) — the same edge budget as 0.310 (0), plus that check
+    return HBM_SIDES_MAX - _d2d_edges_of(scn)
+
+
+def discrete_fit(scn) -> bool:
+    """0.312: memory units fit edge by edge (⌊edge / unit edge⌋ whole HBM stacks / LPDDR channels per edge) — the
+    sized-I/O mechanism (noc_mem_io_edges = -1).  The 0.310 / 0.311 switches (0 / 1) keep their summed-edge-length
+    test, so they reproduce those versions."""
+    return getattr(scn.chip, "noc_mem_io_edges", -1) == -1
+
+
+def _fit_units(lengths, umm) -> int:
+    import math
+    return sum(math.floor(x / umm + 1e-9) for x in lengths)
 
 
 def shoreline_check(scn, die_mm2: float | None) -> dict | None:
@@ -278,16 +294,24 @@ def shoreline_check(scn, die_mm2: float | None) -> dict | None:
     d2d_edges = _d2d_edges_of(scn)
     sides_max = mem_sides_max(scn)
     typ, mx = sum(ed[:min(HBM_SIDES_TYPICAL, sides_max)]), sum(ed[:sides_max])
-    status = "ok" if need <= typ else ("tight" if need <= mx else "over")
+    if discrete_fit(scn):           # 0.312: whole stacks per edge (⌊edge / 11 mm⌋ each), not summed edge length
+        ft, fm = _fit_units(ed[:min(HBM_SIDES_TYPICAL, sides_max)], HBM_STACK_EDGE_MM), \
+            _fit_units(ed[:sides_max], HBM_STACK_EDGE_MM)
+        status = "ok" if spec.n_units <= ft else ("tight" if spec.n_units <= fm else "over")
+    else:
+        ft, fm = int(typ // HBM_STACK_EDGE_MM), int(mx // HBM_STACK_EDGE_MM)
+        status = "ok" if need <= typ else ("tight" if need <= mx else "over")
     out = {"stacks": spec.n_units, "need_mm": need, "edge_typical_mm": typ, "edge_max_mm": mx, "die_mm2": die_mm2,
-           "status": status, "fit_typical": int(typ // HBM_STACK_EDGE_MM), "fit_max": int(mx // HBM_STACK_EDGE_MM),
+           "status": status, "fit_typical": ft, "fit_max": fm, "discrete": discrete_fit(scn),
            "known_max_stacks": KNOWN_MAX_STACKS, "d2d_edges": d2d_edges, "sides_max": sides_max}
     if status != "ok":
         io = getattr(scn.chip, "noc_mem_io_edges", 0)
-        keep = "、".join(x for x in (f"D2D {d2d_edges} 边" if d2d_edges else "", "主机 I/O 1 边" if io else "") if x)
+        keep = "、".join(x for x in (f"D2D {d2d_edges} 边" if d2d_edges else "", "主机 I/O 1 边" if io == 1 else "")
+                         if x)
         nz = "二三四"[sides_max - 2] if 2 <= sides_max <= 4 else str(sides_max)
         out["warning"] = (f"HBM 岸线：{spec.n_units} 堆栈需 {need:.0f} mm 晶粒边缘，{'方形' if ed[0] == ed[2] else ''}晶粒 "
                           f"{die_mm2:.0f} mm² 两长边仅 {typ:.0f} mm（可用 {nz}边 {mx:.0f} mm"
+                          + (f"，每边整堆栈只放得下 {fm} 个" if discrete_fit(scn) else "")
                           + (f"，另留 {keep}" if keep else "") + "）"
                           + (f"；可用 {nz}边也放不下 — 需多晶粒封装（如 B200 2 晶粒 8 堆栈）" if status == "over"
                              else "；需占用第三" + ("、四边" if sides_max >= 4 else "边"))
@@ -324,8 +348,16 @@ def hbm_mem_edges(scn, die_mm2: float | None, lpddr: bool = True) -> int:
     from .hardware import die_edges
     if not die_mm2:
         return 2
-    sh = shoreline_check(scn, die_mm2)
     w = whole_die(scn)
+    if discrete_fit(w) and lpddr:   # 0.312: the sized layout's memory edges (2 when it cannot hold the memory)
+        try:
+            L = sized_layout(scn, die_mm2)
+        except (ValueError, KeyError, TypeError):
+            return 2
+        if not L["units"] or L["mem_status"] == "over":
+            return 2
+        return max(2, min(4, L["mem_edges"]))
+    sh = shoreline_check(scn, die_mm2)
     if sh:
         if sh["status"] == "over":
             return 2
@@ -338,8 +370,9 @@ def hbm_mem_edges(scn, die_mm2: float | None, lpddr: bool = True) -> int:
             return 2
         need, smax = mem_edge_need_mm(spec), mem_sides_max(w)
     ed = die_edges(w.chip, die_mm2)
+    u = mem_edge_units(mem_catalog.parse_mem_id(w.mem_id)) if discrete_fit(w) else None
     for m in range(2, smax + 1):
-        if sum(ed[:m]) >= need - 1e-9:
+        if (_fit_units(ed[:m], u[1]) >= u[0]) if u else (sum(ed[:m]) >= need - 1e-9):
             return m
     return 2
 
@@ -448,7 +481,14 @@ def mem_load_auto(scn) -> tuple:
     if hit is not None:
         return hit
     try:
-        ld = mem_edge_load(scn, auto_die_mm2(scn), scn.chip.mem_edges)
+        die = auto_die_mm2(scn)
+        ld = ()
+        if die and discrete_fit(whole_die(scn)):      # 0.312: the sized layout's load when its edge count is the chip's
+            L = sized_layout(scn, die)
+            if len(L["load"]) == scn.chip.mem_edges and L["mem_status"] != "over":
+                ld = tuple(L["load"])
+        if not ld:
+            ld = mem_edge_load(scn, die, scn.chip.mem_edges)
     except (ValueError, KeyError, TypeError):
         ld = ()
     if key is not None:
@@ -472,6 +512,346 @@ def d2d_shoreline(scn, die_mm2: float | None) -> dict | None:
     need, have = scn.d2d_units * w, ed * die_mm2 ** 0.5
     return {"units": scn.d2d_units, "unit_edge_mm": w, "need_mm": need, "edges": ed, "edge_mm": have,
             "status": "ok" if need <= have else "over"}
+
+
+EDGE_NAMES = ("W", "E", "N", "S")      # 0.312: die edges in hardware.die_edges order (long first = W / E)
+IO_MACRO_LANES = 4                     # 0.312: SerDes macros of 4 duplex lanes (Synopsys PCIe5 PHY x4, Cadence 112G
+                                       # quad macro 「来源」); a macro is never split across two edges 「假设」
+
+
+def io_need(scn) -> dict:
+    """0.312: host + scale-up I/O lanes of one die and the die edge they need (Chip.io_*; mechanism and sources at
+    the fields).  Host: io_host_lanes per package, split over its dies (⌈lanes / dies⌉ to x4 macros 「假设」).
+    Scale-up: only when the replica's cards leave the package (layout.cards > dies per package — the c2c PHY rule of
+    phy_area), Link.GBps per direction × 8 ÷ io_su_lane_Gbps duplex lanes per card (× the clusters of a NoC-clustered
+    die), to x4 macros.  The network NIC hangs off PCIe (not on the die)."""
+    import math
+    ch = scn.chip
+    k = getattr(ch, "noc_clusters", 1)
+    pk = scn.package_cards if scn.d2d_enabled else 1
+    dies = 1 if k > 1 else pk
+    q = IO_MACRO_LANES
+    host = math.ceil(ch.io_host_lanes / dies / q) * q if ch.io_host_lanes else 0
+    su_cards = k if k > 1 else 1
+    su = 0
+    if scn.layout.cards > pk:
+        su = math.ceil(scn.link.GBps * 8 * su_cards / ch.io_su_lane_Gbps / q) * q
+    macros = [q * ch.io_lane_mm] * (host // q) + [q * ch.io_su_lane_mm] * (su // q)
+    return {"host_lanes": host, "scaleup_lanes": su, "lane_mm": ch.io_lane_mm, "su_lane_mm": ch.io_su_lane_mm,
+            "su_lane_Gbps": ch.io_su_lane_Gbps, "need_mm": host * ch.io_lane_mm + su * ch.io_su_lane_mm,
+            "macros_mm": macros, "dies": dies}
+
+
+# 0.312: die shape under the sized-I/O mechanism.  A die with no published geometry may be drawn as any rectangle of
+# its area inside the scanner exposure field 26 × 33 mm (the 858 mm² reticle limit already used, 「来源」) up to an
+# aspect of 2 : 1 「假设」 (shipping ASICs: GH100 33 × 24.7 = 1.34, B200-class dies ≈ 1.2–1.4 「二手」); the squarest
+# shape whose shoreline holds memory + D2D + I/O is taken (0.25 mm steps).  D2D sits on the short or the long
+# edge(s) — whichever lets the rest fit (a row of strips joins on its long edges, B200 NV-HBI 「二手」).
+RETICLE_FIELD_MM = (26.0, 33.0)
+DIE_ASPECT_MAX = 2.0
+SHAPE_STEP_MM = 0.25
+_SIZED_CACHE: dict = {}
+
+
+def die_shapes(chip, die_mm2: float) -> list:
+    """0.312: candidate edge lengths [long, long, short, short], squarest first (a published rectangle: only it)."""
+    from .hardware import die_edges
+    ed = die_edges(chip, die_mm2)
+    if abs(ed[0] - ed[2]) > 1e-9:
+        return [list(ed)]
+    out, L = [list(ed)], ed[0]
+    if die_mm2 > RETICLE_FIELD_MM[0] * RETICLE_FIELD_MM[1] * (1 + 1e-9):
+        return out
+    while True:
+        L += SHAPE_STEP_MM
+        S = die_mm2 / L
+        if L > RETICLE_FIELD_MM[1] + 1e-9 or L / S > DIE_ASPECT_MAX + 1e-9:
+            return out
+        if S <= RETICLE_FIELD_MM[0] + 1e-9:
+            out.append([L, L, S, S])
+
+
+_D2D_POS = {0: [()], 1: [(3,), (1,)], 2: [(2, 3), (0, 1)]}
+
+
+def _place(ed, dpos, units, links4, macros, d2d_need) -> dict:
+    """0.312: one shape × D2D position: memory units on the fewest non-D2D edges (long first) that hold them whole,
+    water-filled against each edge's attach links within ⌊edge / unit⌋; D2D PHY on dpos; I/O x4 macros first-fit
+    into what memory leaves on the non-D2D edges."""
+    import math
+    non = [i for i in range(4) if i not in dpos]
+    mem_mm, mem_u, io_mm = [0.0] * 4, [0] * 4, [0.0] * 4
+    d2d_mm = [0.0] * 4
+    d2d_st = None
+    if dpos:
+        d2d_st = "unknown"
+        if d2d_need is not None:
+            for i in dpos:
+                d2d_mm[i] = d2d_need / len(dpos)
+            d2d_st = "ok" if d2d_need <= sum(ed[i] for i in dpos) + 1e-9 else "over"
+    mst, k, fitk, load = "unknown", min(2, len(non)), None, ()
+    if units:
+        n, umm = units
+        cap = {i: math.floor(ed[i] / umm + 1e-9) for i in non}
+        lo = min(2, len(non))
+        k = next((j for j in range(lo, len(non) + 1) if sum(cap[i] for i in non[:j]) >= n), len(non))
+        fitk = sum(cap[i] for i in non[:k])
+        mst = "ok" if n <= sum(cap[i] for i in non[:lo]) else ("tight" if n <= fitk else "over")
+        med = non[:k]
+        ld = [0] * k
+        for _ in range(n):
+            ok = [j for j in range(k) if mst == "over" or ld[j] < cap[med[j]]]
+            j = min(ok, key=lambda j: ((ld[j] + 1) / links4[j], j))
+            ld[j] += 1
+        load = tuple(ld)
+        for j, i in enumerate(med):
+            mem_u[i], mem_mm[i] = ld[j], ld[j] * umm
+    free = [max(0.0, ed[i] - mem_mm[i]) if i in non else 0.0 for i in range(4)]
+    left = 0
+    order = sorted(non, key=lambda j: (-free[j], j))
+    for mac in sorted(macros, reverse=True):
+        i = next((j for j in order if free[j] - io_mm[j] >= mac - 1e-9), None)
+        if i is None:
+            left += 1
+        else:
+            io_mm[i] += mac
+    io_st = "ok" if not left else "over"
+    bad = sum(st == "over" for st in (mst, d2d_st, io_st))
+    return {"ed": list(ed), "dpos": list(dpos), "non": non, "mem_edges": k, "mem_status": mst, "fit_units": fitk,
+            "load": load, "mem_u": mem_u, "mem_mm": mem_mm, "d2d_mm": d2d_mm, "d2d_status": d2d_st, "io_mm": io_mm,
+            "io_status": io_st, "io_free_mm": sum(free), "unplaced_macros": left, "bad": bad,
+            "free_total": sum(ed) - sum(mem_mm) - sum(d2d_mm) - sum(io_mm)}
+
+
+def sized_layout(scn, die_mm2: float) -> dict:
+    """0.312: the buildable layout of one die under the sized-I/O mechanism — the squarest die shape (die_shapes)
+    × D2D position (short / long edges) whose memory, D2D and I/O all fit (fewer memory edges, then more free edge,
+    on ties); else the square die's least-violating placement.  Cached."""
+    from .. import mem_catalog
+    w = whole_die(scn)
+    try:
+        key = (w.chip, w.mem_id, scn.d2d_enabled, scn.package_cards, scn.d2d_std, scn.d2d_units, scn.layout,
+               scn.link, scn.mem_cap_GB, round(die_mm2, 6))
+        hit = _SIZED_CACHE.get(key)
+    except TypeError:
+        key, hit = None, None
+    if hit is not None:
+        return hit
+    units = mem_edge_units(mem_catalog.parse_mem_id(w.mem_id))
+    from dataclasses import replace as _rp
+    links4 = (_rp(w.chip, noc_mem_edges=4)).noc_mem_edge_links()
+    nz = io_need(scn)
+    ds = d2d_shoreline(scn, die_mm2)
+    nd = _d2d_edges_of(w)
+    best = None
+    for si, ed in enumerate(die_shapes(w.chip, die_mm2)):
+        cands = [_place(ed, dp, units, links4, nz["macros_mm"], ds["need_mm"] if ds else None)
+                 for dp in _D2D_POS.get(nd, [tuple(range(4 - nd, 4))])]
+        ok = [c for c in cands if not c["bad"]]
+        if ok:
+            best = min(ok, key=lambda c: (c["mem_edges"], -c["free_total"]))
+            best["shape_index"] = si
+            break
+        if si == 0:
+            best = min(cands, key=lambda c: (c["bad"], c["mem_edges"], -c["free_total"]))
+            best["shape_index"] = 0
+    best["io_need"] = nz
+    best["d2d"] = ds
+    best["units"] = units
+    if key is not None:
+        if len(_SIZED_CACHE) > 20000:
+            _SIZED_CACHE.clear()
+        _SIZED_CACHE[key] = best
+    return best
+
+
+def _sized_report(scn, die: float, out: dict) -> dict:
+    from .. import mem_catalog
+    w = whole_die(scn)
+    L = sized_layout(scn, die)
+    ed, nd = L["ed"], _d2d_edges_of(w)
+    spec = mem_catalog.parse_mem_id(w.mem_id)
+    need = mem_edge_need_mm(spec)
+    if L["units"]:
+        n, umm = L["units"]
+        mem = {"kind": spec.kind, "units": n, "unit_mm": umm, "need_mm": need, "edges": L["mem_edges"],
+               "sides_max": len(L["non"]), "avail_mm": sum(ed[i] for i in L["non"]), "fit_units": L["fit_units"],
+               "load": list(L["load"]), "status": L["mem_status"]}
+    else:
+        mem = {"kind": spec.kind, "units": None, "need_mm": None, "edges": w.chip.mem_edges, "sides_max": len(L["non"]),
+               "status": "unknown"}
+        out["reasons"].append(f"{spec.mem_type} 无公开岸线密度：外存岸线未判定")
+    ds = L["d2d"]
+    d2d = None
+    if nd:
+        d2d = {"edges": nd, "status": L["d2d_status"], "at": [EDGE_NAMES[i] for i in L["dpos"]]}
+        if ds:
+            d2d.update(units=ds["units"], unit_edge_mm=ds["unit_edge_mm"], need_mm=ds["need_mm"],
+                       avail_mm=sum(ed[i] for i in L["dpos"]))
+    nz = L["io_need"]
+    io = {"mode": "sized", "status": L["io_status"], "avail_mm": L["io_free_mm"], "unplaced_macros": L["unplaced_macros"],
+          **{k: nz[k] for k in ("host_lanes", "scaleup_lanes", "lane_mm", "su_lane_mm", "need_mm")}}
+    rows = []
+    for i in range(4):
+        used = L["mem_mm"][i] + L["d2d_mm"][i] + L["io_mm"][i]
+        role = "+".join(r for r, v in (("mem", L["mem_mm"][i]), ("d2d", L["d2d_mm"][i]), ("io", L["io_mm"][i]))
+                        if v > 0) or "free"
+        rows.append({"edge": EDGE_NAMES[i], "len_mm": ed[i], "mem_units": L["mem_u"][i], "mem_mm": L["mem_mm"][i],
+                     "d2d_mm": L["d2d_mm"][i], "io_mm": L["io_mm"][i], "used_mm": used, "free_mm": ed[i] - used,
+                     "role": role})
+    if mem["status"] == "over":
+        if spec.kind == "HBM":
+            out["reasons"].append(f"HBM 岸线：{mem['units']} 堆栈需 {need:.0f} mm，非 D2D 的 {mem['sides_max']} 边"
+                                  f"（{'/'.join(f'{ed[i]:.1f}' for i in L['non'])} mm，任意 ≤ 2:1 长宽比）每边整堆栈只放得下 "
+                                  f"{mem['fit_units']} 个")
+        else:
+            out["reasons"].append(f"{spec.mem_type} 岸线：{mem['units']} 通道需 {need:.1f} mm > 可用 {mem['sides_max']} 边 "
+                                  f"{mem['avail_mm']:.1f} mm（可放 {mem['fit_units']}）")
+    if d2d and d2d["status"] == "over":
+        out["reasons"].append(f"D2D 岸线：{d2d['units']} 单元需 {d2d['need_mm']:.1f} mm > {nd} 边 {d2d['avail_mm']:.1f} mm")
+    if io["status"] == "over":
+        out["reasons"].append(f"I/O 岸线：主机 {io['host_lanes']} + scale-up {io['scaleup_lanes']} 通道需 "
+                              f"{io['need_mm']:.1f} mm，外存 / D2D 之外剩余 {io['avail_mm']:.1f} mm 放不下 "
+                              f"{io['unplaced_macros']} 个 x4 宏")
+    over = [st for st in (mem["status"], (d2d or {}).get("status"), io["status"]) if st == "over"]
+    out.update({"edges": rows, "mem": mem, "d2d": d2d, "io": io, "feasible": not over,
+                "status": "over" if over else ("tight" if mem["status"] == "tight" else "ok"),
+                "used_mm": sum(r["used_mm"] for r in rows), "perimeter_mm": sum(ed),
+                "shape": {"long_mm": ed[0], "short_mm": ed[2], "aspect": ed[0] / ed[2],
+                          "reshaped": L["shape_index"] > 0, "aspect_max": DIE_ASPECT_MAX,
+                          "field_mm": list(RETICLE_FIELD_MM)}})
+    return out
+
+
+_SHORE_CACHE: dict = {}
+
+
+def shoreline_report(scn, die_mm2: float | None = None, b: "Budget | None" = None) -> dict:
+    """0.312: shoreline_report_uncached, cached per (chip, memory, package, layout, link) for the auto die area."""
+    key = None
+    if die_mm2 is None and b is None:
+        try:
+            key = (scn.chip, scn.mem_id, scn.d2d_enabled, scn.package_cards, scn.d2d_std, scn.d2d_units,
+                   scn.layout, scn.link, scn.mem_cap_GB)
+            hit = _SHORE_CACHE.get(key)
+        except TypeError:
+            key, hit = None, None
+        if hit is not None:
+            return copy.deepcopy(hit)
+    try:
+        out = shoreline_report_uncached(scn, die_mm2, b)
+    except (ValueError, KeyError, TypeError) as e:
+        out = {"die_mm2": die_mm2, "feasible": None, "status": "unknown", "reasons": [f"岸线不可判定：{e}"]}
+    if key is not None:
+        if len(_SHORE_CACHE) > 20000:
+            _SHORE_CACHE.clear()
+        _SHORE_CACHE[key] = copy.deepcopy(out)
+    return out
+
+
+def shoreline_report_uncached(scn, die_mm2: float | None = None, b: "Budget | None" = None) -> dict:
+    """0.312: buildability of one die's shoreline — per edge (W, E, N, S = hardware.die_edges, long first) the memory
+    units placed (mem_edge_load), the D2D PHY (d2d_shoreline, on the last D2D edges), and the host / scale-up I/O
+    (io_need: x4 macros placed greedily on the non-D2D edges' free length in sized mode; the whole last non-D2D edge
+    with noc_mem_io_edges = 1; not checked with 0).  Status per part ok / tight (memory beyond the 2 long edges) /
+    over; ``feasible`` = no part over (None when the die area is unknown).  ``die_mm2`` None = auto_die_mm2."""
+    from .. import mem_catalog
+    from .hardware import die_edges
+    w = whole_die(scn)
+    die = die_mm2 or auto_die_mm2(scn, b)
+    mode = {-1: "sized", 0: "none", 1: "edge"}[getattr(scn.chip, "noc_mem_io_edges", -1)]
+    out = {"die_mm2": die, "io_mode": mode, "feasible": None, "status": "unknown", "reasons": []}
+    if not die:
+        out["reasons"].append("晶粒面积未知：岸线不可判定")
+        return out
+    if discrete_fit(w):             # 0.312: the sized mechanism (shape × D2D position search)
+        return _sized_report(scn, die, out)
+    ed = list(die_edges(w.chip, die))
+    nd = _d2d_edges_of(w)
+    smax = mem_sides_max(w)
+    m = min(w.chip.mem_edges, smax) if w.chip.mem_edges else 2
+    spec = mem_catalog.parse_mem_id(w.mem_id)
+    u = mem_edge_units(spec)
+    need = mem_edge_need_mm(spec)
+    mem_mm = [0.0] * 4
+    mem_u = [0] * 4
+    if u:
+        n, umm = u
+        load = mem_edge_load(w, die, m)
+        for i, x in enumerate(load):
+            mem_u[i], mem_mm[i] = x, x * umm
+        fit2, fitm = _fit_units(ed[:min(2, smax)], umm), _fit_units(ed[:smax], umm)
+        if discrete_fit(w):
+            mst = "ok" if n <= fit2 else ("tight" if n <= fitm else "over")
+        else:                       # 0.310 / 0.311 switches: summed edge length (their rule)
+            t2, tm = sum(ed[:min(2, smax)]), sum(ed[:smax])
+            mst = "ok" if need <= t2 + 1e-9 else ("tight" if need <= tm + 1e-9 else "over")
+        mem = {"kind": spec.kind, "units": n, "unit_mm": umm, "need_mm": need, "edges": m, "sides_max": smax,
+               "avail_mm": sum(ed[:smax]), "fit_units": fitm, "load": list(load), "status": mst}
+    else:
+        mem = {"kind": spec.kind, "units": None, "need_mm": None, "edges": m, "sides_max": smax, "status": "unknown"}
+        out["reasons"].append(f"{spec.mem_type} 无公开岸线密度：外存岸线未判定")
+    d2d_mm = [0.0] * 4
+    ds = d2d_shoreline(scn, die)
+    d2d = None
+    if nd:
+        d2d = {"edges": nd, "status": "unknown"}
+        if ds:
+            for i in range(4 - nd, 4):
+                d2d_mm[i] = ds["need_mm"] / nd
+            d2d = {"edges": nd, "units": ds["units"], "unit_edge_mm": ds["unit_edge_mm"], "need_mm": ds["need_mm"],
+                   "avail_mm": sum(ed[4 - nd:]), "status": ds["status"]}
+    io_mm = [0.0] * 4
+    io = {"mode": mode, "status": "off"}
+    if mode != "none":
+        nz = io_need(scn)
+        io.update({k: nz[k] for k in ("host_lanes", "scaleup_lanes", "lane_mm", "su_lane_mm", "need_mm")})
+        if mode == "edge":
+            e = 4 - nd - 1
+            if e < m:               # floor 2: a middle die reaches the host through its neighbours (0.311)
+                io.update(status="via_neighbour", avail_mm=0.0)
+            else:                   # 0.311 rule: the reserved edge is assumed to suffice (reported, not checked)
+                io_mm[e] = min(nz["need_mm"], ed[e])
+                io.update(status="reserved", avail_mm=ed[e], edge=EDGE_NAMES[e],
+                          fits_edge=nz["need_mm"] <= ed[e] + 1e-9)
+        else:
+            free = [max(0.0, ed[i] - mem_mm[i]) if i < 4 - nd else 0.0 for i in range(4)]
+            placed, left = [0.0] * 4, 0
+            order = sorted(range(4), key=lambda j: (-free[j], j))      # first fit, the freest edge first
+            for mac in sorted(nz["macros_mm"], reverse=True):
+                i = next((j for j in order if free[j] - placed[j] >= mac - 1e-9), None)
+                if i is None:
+                    left += 1
+                else:
+                    placed[i] += mac
+            io_mm = placed
+            io.update(status="ok" if not left else "over", avail_mm=sum(free), unplaced_macros=left)
+    rows = []
+    for i in range(4):
+        used = mem_mm[i] + d2d_mm[i] + io_mm[i]
+        if mode == "edge" and io.get("edge") == EDGE_NAMES[i]:
+            used = max(used, ed[i])
+        role = "+".join(r for r, v in (("mem", mem_mm[i]), ("d2d", d2d_mm[i]), ("io", io_mm[i])) if v > 0) or "free"
+        rows.append({"edge": EDGE_NAMES[i], "len_mm": ed[i], "mem_units": mem_u[i], "mem_mm": mem_mm[i],
+                     "d2d_mm": d2d_mm[i], "io_mm": io_mm[i], "used_mm": used, "free_mm": ed[i] - used, "role": role})
+    parts = [("外存", mem["status"]), ("D2D", (d2d or {}).get("status")), ("I/O", io["status"])]
+    over = [p for p, st in parts if st == "over"]
+    if mem["status"] == "over":
+        if spec.kind == "HBM":
+            out["reasons"].append(f"HBM 岸线：{mem['units']} 堆栈需 {need:.0f} mm > 可用 {smax} 边 {mem['avail_mm']:.0f} mm"
+                                  + (f"（每边整堆栈，只放得下 {mem['fit_units']} 个）" if discrete_fit(w) else ""))
+        else:
+            out["reasons"].append(f"{spec.mem_type} 岸线：{mem['units']} 通道需 {need:.1f} mm > 可用 {smax} 边 "
+                                  f"{mem['avail_mm']:.1f} mm（可放 {mem['fit_units']}）")
+    if d2d and d2d["status"] == "over":
+        out["reasons"].append(f"D2D 岸线：{d2d['units']} 单元需 {d2d['need_mm']:.1f} mm > {nd} 边 {d2d['avail_mm']:.1f} mm")
+    if io["status"] == "over":
+        out["reasons"].append(f"I/O 岸线：主机 {io['host_lanes']} + scale-up {io['scaleup_lanes']} 通道需 "
+                              f"{io['need_mm']:.1f} mm > 外存 / D2D 之外剩余 {io['avail_mm']:.1f} mm")
+    out.update({"edges": rows, "mem": mem, "d2d": d2d, "io": io, "feasible": not over,
+                "status": "over" if over else ("tight" if mem["status"] == "tight" else "ok"),
+                "used_mm": sum(r["used_mm"] for r in rows), "perimeter_mm": sum(ed)})
+    return out
 
 
 def noc_router_mm2(chip, b) -> float | None:
