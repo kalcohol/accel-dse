@@ -10,7 +10,8 @@ fit) and priced by the energy table (MAC / SRAM / wire / NoC / DRAM / static, in
   DRAM        `mems` (explicit catalog ids) or `mem_types` × `mem_count_scales` × `mem_caps` (0.301; default: the
               scenario's memory).  Bandwidth / capacity / fit from the cost model; energy from the per-kind pJ/bit
               (pJ_bit_dram_hbm / _lpddr, 0.302 _hbm4 / _lpddr6, + PHY) and DRAM standby / refresh; die area adds the DRAM PHY (bus bits ×
-              mm2_per_dq_*); buildability (0.312) = budget.shoreline_report per die: memory units, D2D PHY and host +
+              mm2_per_dq_*); buildability (0.312) = budget.shoreline_report per die (0.313: + thermal.thermal_report with a cooling
+              preset; shore_strict = memory on ≤ 2 edges): memory units, D2D PHY and host +
               scale-up I/O lanes per edge; an infeasible die is flagged (row.buildable / why) and kept off the fronts
               unless include_unbuildable=True
   SLC         `slc_mibs` (0.301; absolute MiB, default the chip's): area mm2_per_mib_slc, SLC access + wire energy
@@ -74,7 +75,7 @@ PKG_LIMITS = {    # interposer area (dies + HBM stacks must fit) — package tec
                 "'now producing 5.5-reticle size CoWoS' → 5.5 × 858 = 4719 mm²"),
 }
 HBM_FOOTPRINT_MM2 = {"HBM4": 11.0 * 12.8, "HBM4E": 11.0 * 12.8}   # HBM4 base die 11 × 12.8 mm (Samsung HC 2026) 「二手」
-HBM_FOOTPRINT_DEFAULT = 11.0 * 11.0     # HBM3 / 3E: 11 mm edge (budget.HBM_STACK_EDGE_MM) squared 「近似」
+HBM_FOOTPRINT_DEFAULT = 11.0 * 11.0     # HBM3 / 3E: 11 × 11 mm (Micron HBM3E product brief 「来源」, 0.313; was 「近似」)
 D0_NOTE = ("缺陷密度参考：TSMC N5 量产爬坡时约 0.10 /cm²、N7 约 0.09 /cm²（TSMC 技术论坛 / VLSI 2019，经 AnandTech 转述「二手」）；"
            "良率模型 Y = exp(−A·D0)（Poisson「假设」；Murphy / 负二项更乐观）；晶粒在封装前测试（KGD）「假设」，封装 / 键合良率未计")
 DIE_SPLITS = ("tp", "pp", "ep")
@@ -327,7 +328,7 @@ def _run(s, t, cap, power_mode, curve, f_op: float = 1.0, n_dies: int = 1) -> di
     per-card figures are scaled to the package (throughput, W, static W × n; J/unit and latency unchanged)."""
     o = _run1(s, t, None if cap is None else cap / n_dies, power_mode, curve, f_op)
     if n_dies > 1:
-        for k in ("thr", "thr_nominal", "W_card", "W_nominal", "hbm_static_W", "noc_W"):
+        for k in ("thr", "thr_nominal", "W_card", "W_nominal", "hbm_static_W", "noc_W", "dram_dev_W"):
             if o.get(k) is not None:
                 o[k] *= n_dies
         o["why"] = [f"每晶粒（预算 ÷ {n_dies}）{w}" for w in o["why"]]
@@ -340,6 +341,7 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
     cap is capped from f_max like any other: power rises with f, so the cap clock is below f_op and equals the f_op = 1
     point's capped result."""
     from .powercap import _point, dvfs_cap
+    from .thermal import dram_dev_W
     r0 = evaluate(s)
     r, er = (r0, energy_report(r0, t)) if f_op == 1.0 else _point(r0, t, curve, f_op)
     if er.get("J_per_unit") is None:
@@ -350,7 +352,8 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
          "J_nominal": er["J_per_unit"], "W_nominal": er["avg_W_per_card"], "share": er["breakdown"]["share"],
          "thr": r.per_card, "J_per_unit": er["J_per_unit"], "W_card": er["avg_W_per_card"], "f_scale": f_op,
          "capped": False, "lat_ms": lat * 1e3, "hbm_static_W": er.get("hbm_static_W_card"), "why": [],
-         "noc_W": (er.get("noc_router") or {}).get("W")}      # 0.307: router static W at the operating point
+         "noc_W": (er.get("noc_router") or {}).get("W"),      # 0.307: router static W at the operating point
+         "dram_dev_W": dram_dev_W(er)}                         # 0.313: DRAM-device W (heat in the stacks, thermal)
     r = r0
     if cap is not None and o["W_card"] > cap * (1 + 1e-9) and r.fits:
         if power_mode == "reject":
@@ -361,6 +364,8 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0) -> dict:
                 o["why"].append(d.get("error") or "功耗封顶不可行")
             else:
                 k = d["throughput_factor"]
+                if o["W_card"] > 0:     # 0.313: the DRAM-device share of the capped power (same traffic per unit)
+                    o["dram_dev_W"] = o["dram_dev_W"] * d["W_card"] / o["W_card"]
                 o.update(thr=r.per_card * k, J_per_unit=d["J_per_unit"], W_card=d["W_card"], f_scale=d["s"],
                          capped=True, lat_ms=o["lat_ms"] / k if k > 0 else o["lat_ms"])
     return o
@@ -431,9 +436,13 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                          d2d_units: int | None = None, die_split: str = "tp", reticle_mm2: float | None = None,
                          pkg_mm2=None, d0_per_cm2: float | None = None, mono_clusters: bool = True,
                          mem_edges_shoreline: bool = True, clusters=None, cost=None,
-                         include_unbuildable: bool = False) -> dict:
+                         include_unbuildable: bool = False, shore_strict: bool = False,
+                         cooling: str | None = None) -> dict:
     from .. import mem_catalog as mc
     from .budget import full_area, shoreline_report
+    from .thermal import COOLING, thermal_report
+    if cooling is not None and cooling not in COOLING:
+        raise ValueError(f"cooling must be one of {sorted(COOLING)}")
     from .hardware import default_mem
     from .insight import TIE
     from .powercap import CAP_CURVES, F_MIN, VF_CURVES
@@ -654,9 +663,16 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     if auto_edges and not (chip_mode and not mem_edges_shoreline):
         notes.append("外存接入边（0.310 机理默认）：每个设计点按其晶粒的外存岸线占用（HBM 堆栈 × 11 mm；LPDDR 位宽 ÷ 18.75 引脚 / mm，"
                      "Credo 0.18 Tb/s/mm @ 9.6 GT/s「二手/推导」）决定几条边接入 NoC；芯片 noc_mem_edges = 2 复现 0.309。"
-                     "0.312：主机 I/O 按通道定长（PCIe x16 + scale-up 链路 ÷ 100 Gb/s，× 0.285 mm/通道），外存按整堆栈 / 整通道放边，"
+                     "0.312：主机 I/O 按通道定长（PCIe x16 × 0.285 mm + scale-up 链路 ÷ 通道速率 × 每通道边长；0.313 默认 200G × 0.5 mm「来源」，100G × 0.285 mm = 0.312），外存按整堆栈 / 整通道放边，"
                      "晶粒在 26 × 33 曝光场内可取长宽比 ≤ 2 的矩形（noc_mem_io_edges = 1 复现 0.311 整边保留，0 复现 0.310），"
                      "地址均匀交织 → 各边按其上外存单元份额承载流量，最重的边限制 NoC 接入（noc_mem_balance = pooled 复现 0.310）")
+    if shore_strict:
+        notes.append("岸线严格（0.313，shore_strict）：外存占第 3 / 4 边（tight）视为不可建——出货晶粒（GH100、B200、MI300X IOD）"
+                     "外存只在两条长边「二手」；默认（关）沿用 0.310 起的四边几何上限「假设」")
+    notes.append("热 / 功耗（0.313）：每点报告封装功耗、每晶粒热流密度（卡功耗 − DRAM 器件功耗）÷ 晶粒数 ÷ 面积与 0.75 V「假设」下的电流密度；"
+                 + (f"按 {cooling} 判定（{COOLING[cooling]['pkg_W']:g} W / {COOLING[cooling]['flux_W_mm2']:g} W/mm²；"
+                    + COOLING[cooling]["src"] + "）" if cooling else "未选冷却方案（cooling）：只报告不判定")
+                 + "；供电（凸点电流）无公开上限，只报告")
     if cost_p is not None:
         notes.append("成本 / 好封装（0.310）：Σ 晶粒 × 晶圆价 / DPW / Y + 封装 $/mm² × (Σ 晶粒 + HBM 占地) + 测试 / 组装（多晶粒 + KGD）"
                      "，HBM 不计（同一外存档相同）；DPW = πR²/A − π·2R/√(2A)（R = 150 mm「来源」，无划片 / 边缘排除「近似」）；"
@@ -735,6 +751,9 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                                phases={ph: {k: res[ph][k] for k in ("thr", "J_per_unit", "W_card", "f_scale", "capped",
                                                                     "lat_ms", "bound")} for ph in phases},
                                hbm_static_W=dc["hbm_static_W"])
+                    fr = {ph: (res[ph]["dram_dev_W"] / res[ph]["W_card"] if res[ph]["W_card"] > 0 else 0.0) for ph in phases}
+                    row["dram_dev_W"] = row["W_card"] * ((P * pf["J_per_unit"] * fr["prefill"] + mix_out_tokens
+                                                          * dc["J_per_unit"] * fr["decode"]) / J if J > 0 else 0.0)
                     row["thr_nominal"] = 1.0 / (P / pf["thr_nominal"] + mix_out_tokens / dc["thr_nominal"])
                 else:
                     o = res[phases[0]]
@@ -775,27 +794,49 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     why.append(f"面积 {row['si_mm2']:.0f} > {area_lim:g} mm²" + (f"（{nd} 晶粒合计）" if nd > 1 else ""))
                 if reticle_mm2 and dens_ok and row.get("mm2") is not None and row["mm2"] > reticle_mm2 * (1 + 1e-9):
                     why.append(f"单晶粒 {row['mm2']:.0f} > 光罩 {reticle_mm2:g} mm²")
+                sr = shoreline_report(s_full, row.get("mm2") if dens_ok else None)
                 if pkg_mm2 and dens_ok and row.get("si_mm2") is not None:
                     row["pkg_mm2"] = row["si_mm2"] + _hbm_footprint(mid)
+                    if nd == 1 and (sr.get("footprint") or {}).get("bbox_mm2"):
+                        # 0.313: one die — its placed stacks' bounding box (corner squares of a 3–4-sided stack row)
+                        row["pkg_mm2"] = max(row["pkg_mm2"], sr["footprint"]["bbox_mm2"])
                     if row["pkg_mm2"] > pkg_mm2 * (1 + 1e-9):
                         why.append(f"封装 {row['pkg_mm2']:.0f} > 中介层 {pkg_mm2:g} mm²")
                 # 0.312: buildability is a first-class result — one shoreline report per die (memory units, D2D PHY,
                 # host + scale-up I/O per edge; budget.shoreline_report) over the row's die (the search densities, else
                 # the n5_derived proxy 「近似」).  Unbuildable rows leave every front unless include_unbuildable.
-                sr = shoreline_report(s_full, row.get("mm2") if dens_ok else None)
-                row["buildable"] = sr.get("feasible")
+                feas = sr.get("feasible")
+                if shore_strict and feas and sr.get("status") == "tight":
+                    # 0.313: no shipping die carries HBM / memory on more than its two long edges (GH100, B200,
+                    # MI300X IODs 「二手」) — strict counts a 3–4-sided memory row as unbuildable
+                    feas = False
+                    sr["reasons"] = sr.get("reasons", []) + [
+                        f"外存占 {sr['mem'].get('edges')} 边（> 2 边无出货先例，shore_strict）"]
+                row["buildable"] = feas
                 row["shoreline"] = sr.get("status")       # ok / tight (memory beyond 2 edges) / over / unknown
                 if sr.get("edges"):
                     row["shore"] = {"mem": sr["mem"]["status"], "io": sr["io"]["status"],
                                     "d2d": (sr.get("d2d") or {}).get("status"), "io_mm": sr["io"].get("need_mm"),
                                     "used_mm": sr["used_mm"], "perimeter_mm": sr["perimeter_mm"],
                                     "die_src": "dse" if dens_ok else "proxy"}
-                if sr.get("feasible") is False:
+                if feas is False:
                     sw = "；".join(sr["reasons"])
                     if include_unbuildable:
                         row["why_shore"] = sw
                     else:
                         why.append(sw)
+                # 0.313: thermal / power buildability (always reported; judged only with a cooling preset)
+                th = thermal_report(row.get("W_card"), row.get("mm2") if dens_ok else sr.get("die_mm2"), nd,
+                                    row.get("dram_dev_W") or 0.0, cooling)
+                row["thermal"] = {k: th.get(k) for k in ("status", "feasible", "pkg_W", "die_W", "flux_W_mm2")}
+                row["thermal"]["A_per_mm2"] = (th.get("pd") or {}).get("A_per_mm2")
+                if th.get("feasible") is False:
+                    row["buildable"] = False
+                    tw = "；".join(th["reasons"])
+                    if include_unbuildable:
+                        row["why_thermal"] = tw
+                    else:
+                        why.append(tw)
                 if slo_tpot_ms is not None and row.get("tpot_ms") is not None and row["tpot_ms"] > slo_tpot_ms * (1 + 1e-9):
                     why.append(f"TPOT {row['tpot_ms']:.1f} > {slo_tpot_ms:g} ms")
                 if slo_ttft_ms is not None and row.get("ttft_ms") is not None and row["ttft_ms"] > slo_ttft_ms * (1 + 1e-9):
@@ -856,6 +897,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
             "clusters": Ks if clusters is not None else None,
             "include_unbuildable": bool(include_unbuildable),
             "n_unbuildable": sum(1 for x in rows if x.get("buildable") is False),
+            "shore_strict": bool(shore_strict), "cooling": cooling,
+            "n_thermal_over": sum(1 for x in rows if (x.get("thermal") or {}).get("feasible") is False),
             "basis": "设计网格（MAC 总数 × 引擎边长 × SRAM × NoC 拓扑 × 外存 × SLC × 频率工作点）逐点评估：时间 / 放得下来自代价模型，"
                      "J/单位 来自能耗表（MAC / SRAM / 导线 / NoC / DRAM+PHY / 静态）；perf/W = 1 / (J/单位)；超功耗点按 DVFS "
                      "封顶运行（或剔除），超面积 / 岸线不可建（外存 / D2D / I/O，0.312；include_unbuildable 可纳入）/ SLO / 内存 $ 的点剔除；前沿 = 吞吐↑ 与 J/单位↓ 的非支配集，"

@@ -147,6 +147,13 @@ class Chip:
     # lane (io_* below) take shoreline wherever memory leaves room on the non-D2D edges (budget.io_need /
     # shoreline_report); memory may then take every non-D2D edge.  1 = the 0.311 whole reserved edge, 0 = 0.310.
     noc_mem_io_edges: int = field(default=-1, metadata={"omit_default": True})
+    # 0.313: io_su_lane_Gbps default 200 = the shipping scale-up lane of the HBM3E era (NVLink5 / B200: 18 links × 2
+    # pairs per direction × 200 Gb/s, 224G PAM4 = 900 GB/s per direction, NVIDIA Blackwell whitepaper 「来源」);
+    # 100 = NVLink4 (H100, the H100-like preset) = the 0.312 rule; 50 = NVLink3 (A100) — budget.SU_LANE_GENERATIONS.
+    # 0.313: io_su_lane_mm 0 (default) = by lane rate (budget.SU_LANE_MM): 224G ≈ 0.5 mm per duplex lane ("DSP/SERDES
+    # beachfront costs ~4 mm per Rx/Tx 8-lane port", OIF 448G Signaling for AI workshop, MaxLinear, Apr 2025, slide 14;
+    # slide 15: 32 ports × 8 lanes in 128 mm 「来源」, approximate); ≤ 112G keeps the PCIe5 0.285 mm 「假设」.  A
+    # positive value pins it.
     # 0.312: host / scale-up I/O lanes and their PHY edge (budget.io_need).  Host: PCIe x16 per package (H100 SXM /
     # PCIe: PCIe Gen5 x16, NVIDIA datasheet 「来源」); per duplex lane 0.285 mm of die edge (Intel 32 Gb/s PCIe Gen5
     # SerDes, 10 nm, CICC 2020: "die edge usage per lane of 285 µm" 「来源」).  Scale-up: the card's Link.GBps per
@@ -155,8 +162,8 @@ class Chip:
     # 0.05–0.14 mm/lane is the short-reach floor 「二手」) 「假设」
     io_host_lanes: int = field(default=16, metadata={"omit_default": True})
     io_lane_mm: float = field(default=0.285, metadata={"omit_default": True})
-    io_su_lane_Gbps: float = field(default=100.0, metadata={"omit_default": True})
-    io_su_lane_mm: float = field(default=0.285, metadata={"omit_default": True})
+    io_su_lane_Gbps: float = field(default=200.0, metadata={"omit_default": True})
+    io_su_lane_mm: float = field(default=0.0, metadata={"omit_default": True})
     # 0.311: how the memory-attach links share the DRAM traffic.  "interleave" (default): addresses are interleaved
     # uniformly over the memory units (HBM stacks / LPDDR channels), so edge e carries the share u_e / N of the bytes
     # its units serve and the NoC delivers at most min_e links_e · N / u_e link-widths (the most loaded edge binds);
@@ -264,6 +271,8 @@ class Chip:
             raise ValueError("chip.io_host_lanes must be an integer in [0, 256]")
         for nm, hi in (("io_lane_mm", 10.0), ("io_su_lane_mm", 10.0), ("io_su_lane_Gbps", 10000.0)):
             v = getattr(self, nm)
+            if nm == "io_su_lane_mm" and not isinstance(v, bool) and v == 0:
+                continue                    # 0.313: 0 = by lane rate (budget.SU_LANE_MM)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= hi:
                 raise ValueError(f"chip.{nm} must be in (0, {hi:g}]")
         if self.noc_mem_balance not in NOC_MEM_BALANCE:
@@ -799,7 +808,8 @@ CHIP_100T = Chip("100T", 1.0, 56, 56, 16)            # 100.35 TFLOPS bf16
 CHIP_1P = Chip("1P", 1.0, 128, 128, 32, sram_mib=256.0)   # 1048.6 TFLOPS bf16
 CHIP_H100_LIKE = Chip("H100-like", 1.83, 128, 128, 16,      # ≈ 959 TFLOPS dense bf16
                       formats=FormatSupport(rates=(("bf16", 1.0), ("fp16", 1.0), ("fp8", 2.0), ("int8", 2.0))),
-                      sram_mib=50.0, vector_lanes=16384, sram_port_Bpc=None)
+                      sram_mib=50.0, vector_lanes=16384, sram_port_Bpc=None,
+                      io_su_lane_Gbps=100.0)   # 0.313: NVLink4 lanes (H100: 18 × 2 pairs × 100 Gb/s/dir 「来源」)
 CHIP_1P_L = replace(CHIP_1P, name="1P-lp4x64")
 CHIP_H100_LIKE_L = replace(CHIP_H100_LIKE, name="H100-like-lp4x64")
 CHIPS = {c.name: c for c in (CHIP_100T, CHIP_1P, CHIP_H100_LIKE, CHIP_1P_L, CHIP_H100_LIKE_L)}
@@ -817,7 +827,10 @@ _AREA_KEYS = ("engines", "rows", "cols", "sram_mib", "slc_mib", "state_sram_mib"
 # 0.311: published long-edge length of a preset's namesake die.  GH100 carries its 6 HBM sites 3 per long side
 # (NVIDIA Hopper whitepaper "6 HBM3 or HBM2e stacks"; die shots 「二手」) → ≥ 3 × 11 mm = 33 mm of usable long edge
 # (stack pitch budget.HBM_STACK_EDGE_MM, stacks overhanging the die corners on the interposer) 「推导」; the short edge
-# is 814 / 33 = 24.7 mm.  Every other die is square (0.212).
+# is 814 / 33 = 24.7 mm.  Every other die is square (0.212).  0.313 audit: GH100's outline is not published (only
+# 814 mm²); the 33 mm follows from the 11 mm stack rule itself (Micron HBM3E 11 × 11 mm 「来源」), so it cannot
+# independently confirm that rule — the host-side HBM3 PHY is narrower (8 × 3 mm, HBM4 8 × 4 mm, Samsung via
+# inlevel9 「二手」): the stack, not the PHY, sets the edge a stack occupies (I/O cannot face a stack).
 PRESET_DIE_EDGE_MM = {"H100-like": 33.0, "H100-like-lp4x64": 33.0}
 
 

@@ -240,11 +240,13 @@ def phy_area(scn, b: Budget) -> dict:
 
 
 # 0.212: die shoreline for HBM PHYs.  Each stack faces the host die with its 11 mm side (HBM4 base die 11 × 12.8 mm,
-# Samsung Hot Chips 2026 via Tom's Hardware 「二手」; HBM3E stack ≈ 11 mm wide 「二手」), so one stack takes ≥ 11 mm of
+# Samsung Hot Chips 2026 via Tom's Hardware 「二手」; HBM3E stack 11 × 11 × 0.72 mm, Micron HBM3E product brief
+# 「来源」 — 0.313), so one stack takes ≥ 11 mm of
 # die edge.  Shipping packages put HBM on the two long sides and keep the other two for D2D / PCIe / NVLink: GH100
 # (6 sites, 3 per long side, 814 mm²), B200 (4 per die on 2 dies, 8 per package), MI300X (8 stacks on the long sides of
 # 4 IODs) 「二手」 — so 2 sides is the typical budget, 4 sides the geometric limit 「假设」.  The die is taken as square.
 HBM_STACK_EDGE_MM = 11.0
+HBM_STACK_DEPTH_MM = {"HBM4": 12.8, "HBM4E": 12.8}     # 0.313: depth away from the die edge (HBM4 11 × 12.8 「二手」)
 HBM_SIDES_TYPICAL, HBM_SIDES_MAX = 2, 4
 KNOWN_MAX_STACKS = {"B200 (CoWoS-L, 2 dies)": 8, "MI300X (CoWoS-S, 4 IODs)": 8}    # vendor specs 「来源」
 
@@ -519,6 +521,29 @@ IO_MACRO_LANES = 4                     # 0.312: SerDes macros of 4 duplex lanes 
                                        # quad macro 「来源」); a macro is never split across two edges 「假设」
 
 
+# 0.313: scale-up SerDes lane generations (per-direction pair rate of the shipping scale-up links, NVIDIA A100 / H100 /
+# Blackwell whitepapers 「来源」).  The lane rate is an era choice (a design uses the fastest lane of its generation,
+# not the slowest that reaches its bandwidth): Chip.io_su_lane_Gbps, default 200 (HBM3E era), H100-like 100.
+# Sensitivity of the verdicts: MODEL §258.2.
+SU_LANE_GENERATIONS = {50.0: "NVLink3 (A100, HBM2E): 12 links × 4 pairs × 50 Gb/s = 300 GB/s/dir 「来源」",
+                       100.0: "NVLink4 (H100, HBM3): 18 links × 2 pairs × 100 Gb/s = 450 GB/s/dir 「来源」",
+                       200.0: "NVLink5 (B200, HBM3E): 18 links × 2 pairs × 200 Gb/s (224G PAM4) = 900 GB/s/dir 「来源」"}
+
+# 0.313: die edge per duplex scale-up lane by rate (Chip.io_su_lane_mm = 0): 224G ≈ 0.5 mm (OIF 448G workshop,
+# MaxLinear Apr 2025: ~4 mm per Rx/Tx 8-lane port 「来源」, "~"); 50 / 112G: no public figure → the PCIe5 lane's
+# 0.285 mm (Intel CICC 2020) 「假设」 (the 0.312 value).  Per Tb/s: 224G 2.5 mm, 100G 2.85 mm — similar, so the lane
+# rate alone does not rescue a tight I/O edge.
+SU_LANE_MM = {50.0: 0.285, 100.0: 0.285, 200.0: 0.5}
+
+
+def su_lane_mm(chip) -> float:
+    v = getattr(chip, "io_su_lane_mm", 0.0) or 0.0
+    if v > 0:
+        return float(v)
+    r = float(chip.io_su_lane_Gbps)
+    return SU_LANE_MM.get(r, 0.5 if r > 112.0 else 0.285)
+
+
 def io_need(scn) -> dict:
     """0.312: host + scale-up I/O lanes of one die and the die edge they need (Chip.io_*; mechanism and sources at
     the fields).  Host: io_host_lanes per package, split over its dies (⌈lanes / dies⌉ to x4 macros 「假设」).
@@ -534,11 +559,14 @@ def io_need(scn) -> dict:
     host = math.ceil(ch.io_host_lanes / dies / q) * q if ch.io_host_lanes else 0
     su_cards = k if k > 1 else 1
     su = 0
+    rate = float(ch.io_su_lane_Gbps)
+    basis = SU_LANE_GENERATIONS.get(rate, "pinned 「假设」")
     if scn.layout.cards > pk:
-        su = math.ceil(scn.link.GBps * 8 * su_cards / ch.io_su_lane_Gbps / q) * q
-    macros = [q * ch.io_lane_mm] * (host // q) + [q * ch.io_su_lane_mm] * (su // q)
-    return {"host_lanes": host, "scaleup_lanes": su, "lane_mm": ch.io_lane_mm, "su_lane_mm": ch.io_su_lane_mm,
-            "su_lane_Gbps": ch.io_su_lane_Gbps, "need_mm": host * ch.io_lane_mm + su * ch.io_su_lane_mm,
+        su = math.ceil(scn.link.GBps * 8 * su_cards / rate / q) * q
+    smm = su_lane_mm(ch)
+    macros = [q * ch.io_lane_mm] * (host // q) + [q * smm] * (su // q)
+    return {"host_lanes": host, "scaleup_lanes": su, "lane_mm": ch.io_lane_mm, "su_lane_mm": smm,
+            "su_lane_Gbps": rate, "su_lane_basis": basis, "need_mm": host * ch.io_lane_mm + su * smm,
             "macros_mm": macros, "dies": dies}
 
 
@@ -714,6 +742,15 @@ def _sized_report(scn, die: float, out: dict) -> dict:
                               f"{io['need_mm']:.1f} mm，外存 / D2D 之外剩余 {io['avail_mm']:.1f} mm 放不下 "
                               f"{io['unplaced_macros']} 个 x4 宏")
     over = [st for st in (mem["status"], (d2d or {}).get("status"), io["status"]) if st == "over"]
+    # 0.313: interposer footprint of this die + its stacks as placed — the bounding box (stacks stand out from their
+    # edge by their depth: HBM3/3E 11 mm, Micron 「来源」; HBM4 12.8 mm 「二手」) vs the plain area sum; a stack row on
+    # 3–4 sides leaves the corner squares empty, so Σ areas understates the interposer (0.308 – 0.312 used Σ)
+    if spec.kind == "HBM" and L["units"]:
+        dep = HBM_STACK_DEPTH_MM.get(spec.mem_type, HBM_STACK_EDGE_MM)
+        dz = [dep if L["mem_u"][i] else 0.0 for i in range(4)]
+        bbox = (ed[2] + dz[0] + dz[1]) * (ed[0] + dz[2] + dz[3])
+        ssum = die + L["units"][0] * HBM_STACK_EDGE_MM * dep
+        out["footprint"] = {"bbox_mm2": max(bbox, ssum), "sum_mm2": ssum, "stack_depth_mm": dep}
     out.update({"edges": rows, "mem": mem, "d2d": d2d, "io": io, "feasible": not over,
                 "status": "over" if over else ("tight" if mem["status"] == "tight" else "ok"),
                 "used_mm": sum(r["used_mm"] for r in rows), "perimeter_mm": sum(ed),

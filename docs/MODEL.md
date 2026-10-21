@@ -8873,7 +8873,7 @@ A split or clustered package keeps its scale-up bandwidth: each part gets Link.G
 - 840 cases, 0.311 switch → 0.312 default: 45 change, all up.
   - 1P / 1P-lp4x64 + 8 × HBM3E / HBM4: memory edges 2 → 4, L16 / L32 throughput +100 %, J −42…−47 %.
   - 100T + 4 × HBM3E: 2 → 4 edges.
-  - Buildable at tp1 / 400 (70 chip × memory): ok / tight / over = 42 / 13 / 15 → 41 / 18 / 11.
+  - Buildable at tp1 / 400 (70 chip × memory): ok / tight / over = 42 / 13 / 15 → 41 / 18 / 11. (Corrected in §258.5: the shipped 0.312 code gives 42 / 18 / 10.)
 - Chiplet economics (qwen3-8b decode, n5_cowos_l, buildable designs only). D0 from which the split is cheaper:
 
 | memory | tp1/400 MAC×1 / ×2 | tp8/400 | tp8/900 |
@@ -8889,3 +8889,76 @@ A split or clustered package keeps its scale-up bandwidth: each part gets Link.G
 ### §257.6 test_core_238 and freshness
 - test_core_238 measures its bound in CPU time (`time.process_time`) with the same 60 s limit. Alone it takes 17.5 / 10.9 / 17.0 s per case, and box load no longer counts.
 - Freshness, 2026-10-22: HF since 2026-10-21 has nothing new (only Ling-3.0-tiny-UBTree, already in). UCIe 4.0 is unpublished. JEDEC has no HBM4E.
+
+## §258 Adversarial review of 0.310–0.312; thermal / power buildability (0.313)
+
+### §258.1 Review method
+These versions flipped the monolithic-vs-split verdict twice: 0.310 mono, 0.311 only_split, 0.312 mono. The review asked, for each shoreline input, whether it is sourced and which way an error would move the verdict:
+1. Scale-up lane rate.
+2. Die edge per lane.
+3. Memory on more than two edges.
+4. Interposer area.
+5. HBM stack and PHY widths.
+6. The H100-like rectangle.
+7. The memory-edge and scale-up split accounting (Link / parts, cap ÷ dies: both checked consistent).
+
+### §258.2 Scale-up lanes: rate and edge per lane
+- **Lane rate.** The shipping per-direction pair rates are NVLink3 50 G (A100: 12 links × 4 pairs = 300 GB/s), NVLink4 100 G (H100: 18 × 2 = 450 GB/s) and NVLink5 200 G (B200: 18 × 2 × 224G PAM4 = 900 GB/s), all 「来源」 (NVIDIA whitepapers). 0.312 used 100 G for every link, which doubles the lane count of a 900 GB/s link against its only shipping precedent.
+- **Edge per lane.** The edge grows with rate. PCIe5 32 G is 0.285 mm (Intel CICC 2020 「来源」). 224G is about 0.5 mm per duplex lane: "~4 mm per Rx/Tx 8-lane port" and 128 mm for 32 ports × 8 lanes (OIF 448G Signaling for AI workshop, MaxLinear, April 2025, slides 14–15 「来源」, approximate). 50 / 112 G: no public figure, so 0.285 「假设」.
+- **New defaults.** `io_su_lane_Gbps` = 200 and `io_su_lane_mm` = 0, meaning by rate (`SU_LANE_MM`). The H100-like presets are pinned to 100.
+- **Sensitivity** (1P + 8 × HBM3E, tp8, plain monolithic die, from chiplet_example.py --lane). I/O need in mm, against the free edge (ok / over):
+
+| link GB/s/dir | 50 G (0.285) | 100 G (0.285) | 200 G (0.5) | free edge |
+|---|---|---|---|---|
+| 400 | 22.8 over | 13.7 ok | 12.6 ok | 15.4 |
+| 450 | 25.1 over | 14.8 ok | 14.6 ok | 15.5 |
+| 900 | 45.6 over | 25.1 over | 22.6 over | 16.7 |
+
+- Per Tb/s, 200 G at 0.5 mm (2.5 mm) and 100 G at 0.285 mm (2.85 mm) are close, so the 0.312 verdicts hold, with the 900 GB/s case now on sourced numbers.
+
+### §258.3 Memory on more than two edges
+- Since 0.310 a die may carry memory on all non-D2D edges (status tight, 「假设」 geometric limit). No shipping die does: GH100, B200 and MI300X IODs use the long edges only 「二手」.
+- The 6- and 8-stack monolithic verdicts depend on this. With `shore_strict`:
+  - 6- and 8-stack monolithic dies are unbuildable in every deployment (split only).
+  - The 7 example cases at MAC×1 are only_split.
+  - The 4-stack break-evens are unchanged: 0.16 (MAC×1) and 0.08 (MAC×2).
+- Default off; the verdict tables state both readings.
+
+### §258.4 Interposer box; stack and PHY widths
+- **Bounding box.** The interposer must hold the bounding box of the die and its placed stacks: (short + depths W/E) × (long + depths N/S), with depth 11 mm for HBM3/3E (Micron 11 × 11 mm 「来源」) and 12.8 mm for HBM4 「二手」. Σ areas understates this for a 3–4-sided row: 1P + 8 × HBM3E is 2264 vs 1622 mm², H100-like + 8 is 2053 vs 1782. Used for single-die packages in the energy DSE (max with Σ). No verdict changes (all < CoWoS-S 2700 mm²). Multi-die packages keep Σ 「近似」.
+- **PHY width.** The host-side HBM PHY is about 8 mm wide (HBM3 8 × 3, HBM4 8 × 4 mm; Samsung via inlevel9 「二手」), narrower than the 11 mm stack. The stack sets the occupied edge, because I/O cannot face a stack.
+- **H100-like rectangle.** GH100's outline is not published, so its 33 mm long edge (3 × 11) is derived from that same rule and is not independent evidence.
+
+### §258.5 Corrections to 0.312 documentation
+- §257.5's tp1 count "41 / 18 / 11" was taken before the die-shape freedom landed. The shipped code gives 42 / 18 / 10: 100T + 1 × HBM3E reshapes to 11.2 × 9.8 mm and holds its stack.
+- The 0.312 DSE switch "含不可建点" was sent only with dies set. The 0.313 switches are sent with every DSE.
+
+### §258.6 Thermal / power buildability (opt-in judgement)
+`thermal.thermal_report(pkg_W, die_mm2, dies, dram_dev_W, cooling)`:
+- Die heat = (package W − DRAM-device W, i.e. dram + hbm_static J share) ÷ dies. The card idle / static figure is counted on the die 「近似」.
+- Flux = die heat ÷ area. Current density = die heat ÷ 0.75 V 「假设」 ÷ area (reported only).
+
+| preset | package W | flux W/mm² | sources |
+|---|---|---|---|
+| air_oam | 600 | 0.85 | OCP OAM r2.0 「来源」; HIR 2021 ch. 20 air 0.55–0.85 「来源」 |
+| air_hgx | 1000 | 0.85 | HGX B200 air 「二手」 |
+| liquid | 1400 | 2.5 | HGX B300 「二手」; single-phase cold plate 1.7–2.5 「来源」 |
+
+- **Known part:** H100 SXM 700 W / 814 mm² = 0.86 W/mm² card-level, at the air limit 「二手」.
+- **Where it binds** (tpuv4i_7nm energy, qwen3-8b prefill 4k, b1):
+
+| configuration | power and flux | air | liquid |
+|---|---|---|---|
+| 1P + 4 × HBM3E | 504 W, 0.86 W/mm² | over | ok |
+| 1P + LPDDR5X 8 × 64 | 0.93 W/mm² | over | ok |
+| 1P + 8 × HBM3E | 0.75 W/mm² (the PHY area spreads the heat) | ok | ok |
+| H100-like | 0.55 W/mm² | ok | ok |
+
+  Decode stays at 0.1–0.25 W/mm².
+- **Default:** report only (`cooling` None). The package limits are 二手 product configurations, so making them default constraints would change verdicts on weaker sources than the shoreline ones.
+- **Power delivery** is not judged. The only per-bump figure found is the legacy ≈ 0.2 A per 50–100 µm C4 bump 「二手」, which does not apply to current micro-bump pitches.
+
+### §258.7 Freshness (2026-10-22)
+- HF sweep since 2026-10-21: only Ling-3.0-tiny-UBTree (in).
+- KRAFTON Raon-1-mini-preview (30B-A4B): config gated and custom code, so not added. KRAFTON added to the watched orgs.
+- UCIe 4.0 unpublished. JEDEC has no HBM4E. 448G is in OIF definition.

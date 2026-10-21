@@ -15,6 +15,9 @@ CoWoS-L 4719 mm², D0 0.1 /cm²) over MAC ×{1, 2}, 1 / 2 / 4 dies × {UCIe-A 48
     python3 scripts/chiplet_example.py --mem hbm3e_6s_8h24g_9200 --tp 8 --link 900   # 0.312: other memory; a
                                                       # replica over 8 packages (scale-up SerDes on every die)
     python3 scripts/chiplet_example.py --sweep        # 0.312: buildable-only verdicts over memory × D0 × deployment
+    python3 scripts/chiplet_example.py --sweep --lane 100   # 0.313: the 0.312 scale-up lane rate (default 200G)
+    python3 scripts/chiplet_example.py --sweep --strict     # 0.313: memory on > 2 edges counts as unbuildable
+    python3 scripts/chiplet_example.py --case 0 --cost n5_cowos_l --cooling air_oam   # 0.313: thermal judged
 """
 from __future__ import annotations
 
@@ -57,13 +60,16 @@ def budget() -> Budget:
 
 
 def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d0=0.1, io_edges=-1,
-        mem="hbm3e_8s_8h24g_9200", tp=1, link=400.0, macs=(1.0, 2.0), include_unbuildable=False) -> dict:
+        mem="hbm3e_8s_8h24g_9200", tp=1, link=400.0, macs=(1.0, 2.0), include_unbuildable=False, lane=None,
+        shore_strict=False, cooling=None) -> dict:
     std = d2d_catalog.D2D_STANDARDS["ucie-a-48"]
     old = std["pJ_bit"]
     if pj:
         std["pJ_bit"] = pj
     try:
         chip = CHIPS["1P"] if io_edges == -1 else replace(CHIPS["1P"], noc_mem_io_edges=io_edges)
+        if lane:                    # 0.313: scale-up lane rate (Gb/s per pair; default the chip's 200)
+            chip = replace(chip, io_su_lane_Gbps=float(lane))
         s = Scenario(model=model, chip=chip, mem_id=mem, layout=Layout(tp=tp), link=Link(GBps=link),
                      serving=Serving(phase=ph, batch=64 if ph == "decode" else 1, prompt=2048, ctx=4096))
         kw = dict(noc_link_Bpc=L, noc_routing="xy") if L else {}
@@ -71,6 +77,7 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d
                                  dies=(1, 2, 4), d2d_stds=("ucie-a-48", "ucie-s-32", "bow-256"), die_split=split,
                                  d0_per_cm2=d0, pkg_mm2="cowos-l", mono_clusters=not flat,
                                  mem_edges_shoreline=not flat, include_unbuildable=include_unbuildable,
+                                 shore_strict=shore_strict, cooling=cooling,
                                  **({"cost": cost} if cost else {}), **kw)
     finally:
         std["pJ_bit"] = old
@@ -99,18 +106,18 @@ SWEEP_D0 = (0.05, 0.1, 0.2, 0.3)
 SWEEP_DEPLOY = ((1, 400.0), (8, 400.0), (8, 900.0))     # (packages per replica, scale-up GB/s per direction)
 
 
-def sweep(out=print, io_edges=-1, cost="n5_cowos_l") -> list:
+def sweep(out=print, io_edges=-1, cost="n5_cowos_l", lane=None, shore_strict=False) -> list:
     """0.312: buildable-only economics — qwen3-8b decode, MAC ×1 / ×2: for each memory × deployment × D0 the cheapest
     feasible (buildable) monolithic die (flat or NoC-clustered) against the cheapest feasible split, $ per good
     package (n5_cowos_l).  "mono buildable" = some dies = 1 row passes the shoreline report."""
     res = []
-    out(f"== sweep io_edges={io_edges} cost={cost}: mem tp/link D0 MAC× | mono buildable · mono $ | best split $ (N std) "
+    out(f"== sweep io_edges={io_edges} cost={cost} lane={lane or 'chip'} strict={shore_strict}: mem tp/link D0 MAC× | mono buildable · mono $ | best split $ (N std) "
         "| cheaper")
     for mem in SWEEP_MEMS:
         for tp, lk in SWEEP_DEPLOY:
             for d0 in SWEEP_D0:
                 o = run("qwen3-8b", "decode", "tp", 0, None, out=lambda *_: None, cost=cost, d0=d0, io_edges=io_edges,
-                        mem=mem, tp=tp, link=lk)
+                        mem=mem, tp=tp, link=lk, lane=lane, shore_strict=shore_strict)
                 for mx in (1.0, 2.0):
                     rs = [x for x in o["rows"] if x["mac_x"] == mx]
                     mono = [x for x in rs if x.get("dies", 1) == 1]
@@ -147,14 +154,18 @@ def main(argv=None) -> int:
     ap.add_argument("--tp", type=int, default=1, help="packages per replica (TP); > 1 puts scale-up SerDes on each die")
     ap.add_argument("--link", type=float, default=400.0, help="scale-up GB/s per direction per card (default 400)")
     ap.add_argument("--include-unbuildable", action="store_true", help="0.312: keep unbuildable rows on the fronts")
+    ap.add_argument("--lane", type=float, choices=(50.0, 100.0, 200.0),
+                    help="0.313: scale-up lane Gb/s (default the chip's: 200; 100 = the 0.312 rule)")
+    ap.add_argument("--strict", action="store_true", help="0.313: memory on > 2 edges counts as unbuildable")
+    ap.add_argument("--cooling", choices=("air_oam", "air_hgx", "liquid"), help="0.313: judge thermal buildability")
     ap.add_argument("--sweep", action="store_true", help="0.312: buildable-only verdict table (memory × D0 × deployment)")
     a = ap.parse_args(argv)
     if a.sweep:
-        sweep(io_edges=a.io_edges, cost=a.cost or "n5_cowos_l")
+        sweep(io_edges=a.io_edges, cost=a.cost or "n5_cowos_l", lane=a.lane, shore_strict=a.strict)
         return 0
     for i in (a.case or range(len(CASES))):
         run(*CASES[i], flat=a.flat, cost=a.cost, d0=a.d0, io_edges=a.io_edges, mem=a.mem, tp=a.tp, link=a.link,
-            include_unbuildable=a.include_unbuildable)
+            include_unbuildable=a.include_unbuildable, lane=a.lane, shore_strict=a.strict, cooling=a.cooling)
     return 0
 
 

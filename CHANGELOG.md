@@ -6,6 +6,55 @@
 
 
 
+## [0.313.0]
+
+### Adversarial review of 0.310–0.312 (lane rate and lane edge, 4-sided memory, interposer box); thermal / power buildability
+- **Review: how the scale-up lanes are counted.**
+  - 0.312 counted every scale-up link in 100 Gb/s lanes at 0.285 mm (the PCIe5 lane edge). The only shipping 900 GB/s-per-direction link (NVLink5, B200) uses 18 links × 2 pairs × 200 Gb/s (224G PAM4; NVIDIA Blackwell whitepaper 「来源」). NVLink4 uses 100 G and NVLink3 uses 50 G (A100 / H100 whitepapers 「来源」).
+  - A 224G lane is also wider: about 0.5 mm of die edge per duplex lane ("DSP/SERDES beachfront costs ~4 mm per Rx/Tx 8-lane port", OIF 448G Signaling for AI workshop, MaxLinear, April 2025 「来源」).
+  - New defaults:
+    - `Chip.io_su_lane_Gbps` 100 → 200 (the HBM3E-era lane). The H100-like presets are pinned to 100 (NVLink4).
+    - `Chip.io_su_lane_mm` 0.285 → 0, meaning "by rate" (`budget.SU_LANE_MM`): 200 G → 0.5 mm 「来源」, ≤ 100 G → 0.285 mm 「假设」.
+    - `io_su_lane_Gbps = 100` reproduces 0.312.
+  - Per Tb/s the edge is similar (2.5 vs 2.85 mm), so the 0.312 verdicts hold. 1P + 8 × HBM3E at tp8 / 900 needs 16 + 36 lanes = 22.6 mm against 16.7 mm free (0.312: 16 + 72 lanes = 25.1 mm), so the monolithic die is still unbuildable, now on sourced numbers.
+  - Lane-rate sensitivity (`chiplet_example.py --lane`): 100 G gives the same verdicts. 50 G also makes 8 × HBM3E tp8 / 400 monolithic unbuildable (64 lanes = 22.8 mm > 15.4 mm).
+- **Review: 4-sided memory** (status "tight" counted as buildable since 0.310 「假设」). No shipping die carries memory on more than its two long edges (GH100, B200, MI300X IODs 「二手」).
+  - The 6- and 8-stack monolithic verdicts rest on this assumption.
+  - The new opt-in `shore_strict` (API, UI "岸线严格", `--strict`) counts tight as unbuildable. With it, 6- and 8-stack monolithic dies are unbuildable in every deployment (split only), the 7 example cases at MAC×1 become only_split, and the 4-stack verdicts are unchanged.
+  - The default stays off: there is no source either way.
+- **Review: interposer area.** 0.308–0.312 compared the sum of die and stack areas with the interposer limit. A stack row on 3–4 sides leaves the corner squares empty. The shoreline report now gives `footprint.bbox_mm2` (stack depth: HBM3/3E 11 mm, Micron 「来源」; HBM4 12.8 mm 「二手」), and the energy DSE checks single-die packages against max(sum, box).
+  - Example: 1P + 8 × HBM3E is 2264 mm² against a sum of 1622. It is still under CoWoS-S 2700 mm², so no verdict changes.
+- **Review: sources and labels.**
+  - HBM3E stack 11 × 11 mm is now 「来源」 (Micron HBM3E product brief).
+  - The host-side HBM PHY is narrower (HBM3 8 × 3 mm, HBM4 8 × 4 mm; Samsung via inlevel9 「二手」). The stack, not the PHY, sets the edge a stack occupies, because I/O cannot face a stack.
+  - GH100's outline is not published. The H100-like 33 mm long edge follows from the 11 mm stack rule itself (noted as circular).
+  - The 0.312 buildability count for tp1 was stale (see the 0.312 entry).
+- **Review: UI.** The DSE "含不可建点" switch was sent only when dies were set. All buildability switches now go with every DSE.
+- **Thermal / power buildability** (new `core/thermal.py`; reported always, judged only with `cooling`, so opt-in):
+  - Package power = card power. Die heat = (card W − DRAM-device W) ÷ dies. Flux = die heat ÷ area.
+  - Presets:
+    - `air_oam`: 600 W (OCP OAM r2.0 「来源」), 0.85 W/mm² (air 0.55–0.85, IEEE HIR 2021 ch. 20 「来源」).
+    - `air_hgx`: 1000 W (HGX B200 air 「二手」), 0.85 W/mm².
+    - `liquid`: 1400 W (HGX B300 「二手」), 2.5 W/mm² (single-phase cold plate 1.7–2.5 「来源」).
+  - Known part: H100 SXM 700 W on 814 mm² = 0.86 W/mm², at the air flux limit 「二手」.
+  - Power delivery: the die current at 0.75 V 「假设」 is reported. It is not judged, because no public per-bump limit exists at current pitches.
+  - Exposed in `/api/eval` `thermal` (+ the warning "不可建（热 / 功耗）"), each DSE row (`thermal`, `why_thermal`, `n_thermal_over`), the UI (chip panel "冷却" and `#chip-thermal`, DSE "冷却"), and `chiplet_example.py --cooling`.
+  - Where it binds (tpuv4i_7nm energy, qwen3-8b prefill 4k):
+    - 1P + 4 × HBM3E: 504 W on 571 mm² = 0.86 W/mm², over air and OK on liquid.
+    - 1P + LPDDR5X 8 × 64: 0.93 W/mm², over air.
+    - 1P + 8 × HBM3E: 0.75 W/mm², OK; the PHY area spreads the heat.
+    - H100-like: 0.55 W/mm².
+    - Decode stays at 0.1–0.25 W/mm².
+- **Old → new** (0.312 → 0.313 defaults):
+  - Shoreline status over 280 chip × memory × deployment cases (tp1 / 400, tp8 / 400, 450, 900): 0 changes.
+  - Throughput (evaluate): 0 changes.
+  - Chiplet break-even D0: identical to 0.312 (4 stacks 0.16 / 0.08; 6 stacks 0.16 / reticle; 8 stacks 0.12 at tp1 / 400, 0.13 at tp8 / 400, I/O-unbuildable at tp8 / 900).
+- **Freshness** (2026-10-22):
+  - HF sweep since 2026-10-21 (107 orgs): only Ling-3.0-tiny-UBTree (already in).
+  - KRAFTON Raon-1-mini-preview (30B-A4B, Apache-2.0, 2026-10-21) has a gated config and custom `raon1_mini` code, so it is not added. KRAFTON is now watched by the sweep.
+  - No public 224G die-edge figure beyond the OIF slide. 448G is still in OIF definition.
+- Tests: test_core_313.py (6). test_core_312 pins `io_su_lane_Gbps = 100` (0.312 rule).
+
 ## [0.312.0]
 
 ### Shoreline feasibility as a first-class result; sized host + scale-up I/O edge; per-part scale-up link; 238 on CPU time
@@ -21,7 +70,7 @@
 - **Old → new** (840 cases as in 0.311; default 0.312 vs the 0.311 switch): 45 cases change, all up, 0 down.
   - 1P / 1P-lp4x64 + 8 × HBM3E / 8 × HBM4: memory edges 2 → 4. L16 / L32 throughput +100 % (attach links 10 → 20), J −42…−47 %.
   - 100T + 4 × HBM3E: 2 → 4 edges.
-  - Buildability (70 chip × memory at tp1 / 400): 0.311 ok 42 / tight 13 / over 15; 0.312 ok 41 / tight 18 / over 11.
+  - Buildability (70 chip × memory at tp1 / 400): 0.311 ok 42 / tight 13 / over 15; 0.312 ok 41 / tight 18 / over 11. *(Corrected in 0.313: shipped 0.312 gives ok 42 / tight 18 / over 10. 100T + 1 × HBM3E reshapes to 11.2 × 9.8 mm and holds its stack; the scan predates the shape freedom.)*
 - **Chiplet verdicts, buildable only** (qwen3-8b decode, n5_cowos_l; `chiplet_example.py --sweep`). The split is cheaper from D0 (per cm²):
   - 4 × HBM3E: MAC×1 0.16, MAC×2 0.08 (tp1 / 400, tp8 / 400, tp8 / 900).
   - 6 ×: MAC×1 0.16; MAC×2 monolithic over the reticle (867–898 mm²), split only.

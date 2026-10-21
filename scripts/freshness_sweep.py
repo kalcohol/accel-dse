@@ -28,6 +28,8 @@ EXTRA_ORGS = (
     # Parler-TTS, Hume, KittenML; RWKV: fla-hub, recursal; general: Tencent-Hunyuan, amazon, apple, ServiceNow-AI, RekaAI)
     "Zyphra", "neuphonic", "Marvis-AI", "myshell-ai", "parler-tts", "hume-ai", "KittenML", "fla-hub", "recursal",
     "Tencent-Hunyuan", "amazon", "apple", "ServiceNow-AI", "RekaAI",
+    # 0.313: KRAFTON (Raon-1-mini-preview 30B-A4B, 2026-10-21 — gated config, custom raon1_mini code; not added)
+    "KRAFTON",
 )
 # 0.287: ornith-ai is now a catalog provider (PROVIDERS) — it was untracked, so Ornith-1.0 / 1.5 (2026-06 / 08) were
 # never swept; found via the unsloth/Ornith-1.5-122B-GGUF re-upload.

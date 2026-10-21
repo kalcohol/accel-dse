@@ -99,6 +99,7 @@ const MAP_DESC = {
 
 /* ------------------------------------------------------------------ state */
 const S = {
+  cooling: null,          // 0.313: chip-panel cooling preset (eval body.cooling)
   cat: null, models: [], byId: {}, preset: '100T', chipOver: {}, mixed: [], sc: null,
   mem: {}, memInfo: null, wiW: '', wiKV: '', wiAct: '', best: false, last: null,
   cmpObj: 'decode', layObj: 'decode', tab: 'eval',
@@ -359,6 +360,7 @@ function syncInputs() {
   }
   if ($('c-noc_mem_edges') && S.cat) $('c-noc_mem_edges').value = 'noc_mem_edges' in S.chipOver ? String(S.chipOver.noc_mem_edges) : '';   // 0.310
   if ($('c-noc_mem_io_edges') && S.cat) $('c-noc_mem_io_edges').value = 'noc_mem_io_edges' in S.chipOver && S.chipOver.noc_mem_io_edges !== -1 ? String(S.chipOver.noc_mem_io_edges) : '';   // 0.312
+  if ($('c-io_su_lane_Gbps') && S.cat) $('c-io_su_lane_Gbps').value = 'io_su_lane_Gbps' in S.chipOver ? String(S.chipOver.io_su_lane_Gbps) : '';   // 0.313
   if ($('c-io_host_lanes') && S.cat) $('c-io_host_lanes').value = 'io_host_lanes' in S.chipOver ? String(S.chipOver.io_host_lanes) : '';   // 0.312
   if ($('c-clk_datapath_gate')) $('c-clk_datapath_gate').checked = !!chipVal('clk_datapath_gate');
   if ($('fab-enabled') && S.sc && S.cat) fabPaint();
@@ -744,7 +746,7 @@ function showErr(msg) {
 async function runEval() {
   const t0 = performance.now();
   try {
-    const r = await track(req('eval', '/api/eval', body({ best_batch: S.best, sensitivity: false, ...(S.powerCap ? { power_cap: true } : {}) })));
+    const r = await track(req('eval', '/api/eval', body({ best_batch: S.best, sensitivity: false, ...(S.powerCap ? { power_cap: true } : {}), ...(S.cooling ? { cooling: S.cooling } : {}) })));
     if (!r) return;
     S.last = r;
     markEvalStale(false);
@@ -801,6 +803,7 @@ function renderEval(r) {
   renderEnergy(r);
   renderFabric(r);
   renderShore(r.shoreline);       // 0.312: chip-panel shoreline buildability
+  renderThermal(r.thermal);       // 0.313: thermal / power buildability
   renderBudget(r);
   renderSensitivity(r);
   renderPD(r);
@@ -1444,6 +1447,21 @@ function renderShore(x) {
     h('td', { class: 'l' }, e.edge), h('td', {}, num(e.len_mm)), h('td', {}, e.mem_units ? `${e.mem_units} · ${num(e.mem_mm)}` : '—'),
     h('td', {}, e.d2d_mm ? num(e.d2d_mm) : '—'), h('td', {}, e.io_mm ? num(e.io_mm) : '—'), h('td', {}, num(e.free_mm)), h('td', { class: 'l' }, e.role)));
   el.append(h('table', { class: 'small', id: 'chip-shore-table' }, h('tr', {}, ...['边', '长 mm', '外存 单元·mm', 'D2D mm', 'I/O mm', '余 mm', '用途'].map((t) => h('th', {}, t))), ...rows));
+  if (x.reasons && x.reasons.length) el.append(h('div', { class: 'warn' }, x.reasons.join('；')));
+}
+
+// 0.313: thermal / power buildability in the chip panel (package W, per-die heat flux vs the cooling preset)
+function renderThermal(x) {
+  const el = $('chip-thermal');
+  if (!el) return;
+  el.textContent = '';
+  if (!x) return;
+  if (x.pkg_W == null) { el.append(h('div', { class: 'small muted' }, '热 / 功耗：' + (x.reasons || []).join('；'))); return; }
+  const st = { ok: '✓ 可建', over: '✗ 不可建', unchecked: '（未选冷却，只报告）', unknown: '?' }[x.status] || x.status;
+  const lim = x.limits ? Object.entries(x.limits).map(([k, v]) => `${{ air_oam: '风冷OAM', air_hgx: '风冷HGX', liquid: '液冷' }[k] || k} ${v.pkg_ok && v.flux_ok !== false ? '✓' : '✗'}`).join(' · ') : '';
+  el.append(h('div', { class: x.feasible === false ? 'warn' : '', id: 'chip-thermal-head' },
+    `热 / 功耗 ${st} · 封装 ${num(x.pkg_W)} W（DRAM 器件 ${num(x.dram_dev_W)} W）· 每晶粒 ${num(x.die_W)} W · 热流 ${x.flux_W_mm2 != null ? x.flux_W_mm2.toFixed(2) : '—'} W/mm²`
+    + (x.pd && x.pd.A_per_mm2 != null ? ` · 电流 ${x.pd.A_per_mm2.toFixed(2)} A/mm² @ ${x.pd.vdd_V} V「假设」（供电只报告）` : '') + (lim ? ` · ${lim}` : '')));
   if (x.reasons && x.reasons.length) el.append(h('div', { class: 'warn' }, x.reasons.join('；')));
 }
 
@@ -2453,8 +2471,12 @@ async function runInsightDse() {
         if ($('ins-dse-pkg').value) ex.pkg_mm2 = $('ins-dse-pkg').value;
         if (+$('ins-dse-d0').value > 0) ex.d0_per_cm2 = +$('ins-dse-d0').value;
         if (!$('ins-dse-clusters').checked) { ex.mono_clusters = false; ex.mem_edges_shoreline = false; }   // 0.309
-        if ($('ins-dse-unbuild') && $('ins-dse-unbuild').checked) ex.include_unbuildable = true;   // 0.312
       }
+      // 0.313: buildability switches apply to every DSE (not only the chiplet branch; 0.312 sent include_unbuildable
+      // only with dies set)
+      if ($('ins-dse-unbuild') && $('ins-dse-unbuild').checked) ex.include_unbuildable = true;   // 0.312
+      if ($('ins-dse-strict') && $('ins-dse-strict').checked) ex.shore_strict = true;            // 0.313
+      if ($('ins-dse-cooling') && $('ins-dse-cooling').value) ex.cooling = $('ins-dse-cooling').value;   // 0.313
       const kclu = list('ins-dse-kclu');                 // 0.310: NoC-cluster axis, cost per good package
       const badk = kclu.length > 5 || kclu.some((x) => !Number.isInteger(x) || x < 1 || x > 64);
       $('ins-dse-kclu').classList.toggle('bad', badk);
@@ -2511,7 +2533,7 @@ async function runInsightDse() {
         h('td', {}, x.tpot_ms != null ? num(x.tpot_ms) : '—'), h('td', {}, x.ttft_ms != null ? num(x.ttft_ms) : '—'),
         h('td', {}, x.mem_usd != null ? num(x.mem_usd) : '—'),
         ...['mac', 'sram', 'wire', 'noc', 'dram', 'static'].map((k) => h('td', {}, x.share ? pct(x.share[k] || 0) : '—')),
-        h('td', { class: 'l' }, x.why || [x.capped ? 'DVFS 封顶' : '', x.shoreline === 'tight' ? '外存岸线紧（占第三边起）' : '', x.why_shore ? '不可建（已纳入前沿）：' + x.why_shore : '', x.front_kgd ? '良率前沿' : ''].filter(Boolean).join('；'))))));
+        h('td', { class: 'l' }, x.why || [x.capped ? 'DVFS 封顶' : '', x.shoreline === 'tight' ? '外存岸线紧（占第三边起）' : '', x.why_shore ? '不可建（已纳入前沿）：' + x.why_shore : '', x.why_thermal ? '热不可建（已纳入前沿）：' + x.why_thermal : '', x.front_kgd ? '良率前沿' : ''].filter(Boolean).join('；'))))));
     $('ins-dse-status').textContent = `完成 · ${rows.length} 点${staleTag(v0)}`;
     $('ins-dse-status').dataset.done = '1';
   } catch (e) {
@@ -2906,6 +2928,8 @@ async function init() {
     $('c-' + k).addEventListener('change', (e) => { if (e.target.value) S.chipOver[k] = e.target.value; else delete S.chipOver[k]; schedule(); });
   }
   $('c-noc_mem_edges').addEventListener('change', (e) => { if (e.target.value) S.chipOver.noc_mem_edges = parseInt(e.target.value, 10); else delete S.chipOver.noc_mem_edges; schedule(); });   // 0.310
+  $('c-io_su_lane_Gbps').addEventListener('change', (e) => { if (e.target.value) S.chipOver.io_su_lane_Gbps = parseFloat(e.target.value); else delete S.chipOver.io_su_lane_Gbps; schedule(); });   // 0.313
+  $('c-cooling').addEventListener('change', (e) => { S.cooling = e.target.value || null; schedule(); });   // 0.313
   $('c-noc_mem_io_edges').addEventListener('change', (e) => { if (e.target.value) S.chipOver.noc_mem_io_edges = parseInt(e.target.value, 10); else delete S.chipOver.noc_mem_io_edges; schedule(); });   // 0.312
   $('c-io_host_lanes').addEventListener('change', (e) => { const v = parseInt(e.target.value, 10); if (Number.isFinite(v) && v >= 0) S.chipOver.io_host_lanes = v; else delete S.chipOver.io_host_lanes; schedule(); });   // 0.312
   $('c-clk_datapath_gate').addEventListener('change', (e) => { if (e.target.checked) S.chipOver.clk_datapath_gate = true; else delete S.chipOver.clk_datapath_gate; schedule(); });
