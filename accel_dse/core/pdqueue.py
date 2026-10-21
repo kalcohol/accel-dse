@@ -3517,7 +3517,12 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
                 if mib > 0:
                     add("sram_leak", mib * sram_leak_uW_per_mib(table) * 1e-6 * cs, i)     # 0.261: × T factor
             if not has_idle and dram_static_set(table):
-                hs = hbm_static_W(sc.mem_id, table)
+                # 0.303: LPDDR residency at the pool's DRAM busy fraction; idle-gap length unknown here → power-down
+                # only (no self-refresh credit, the high side of energy_report's residency)
+                pc_ = pool_counts[i] if psplit else counts_tok
+                cs_ = cs if psplit else sum(c_ for _, c_ in pools)
+                ut_ = _pool_dram_util(sc.mem_id, pc_.get("dram", 0.0), cs_)
+                hs = hbm_static_W(sc.mem_id, table, ut_, None)
                 if hs and hs["W"] > 0:
                     add("hbm_static", hs["W"] * cs, i)
             if psplit and cyc[i] > 0:
@@ -3627,6 +3632,16 @@ def _restore_extra(x: dict, extra: dict) -> dict:
         extra["dram"] = extra.get("dram", 0.0) + p_v * 2 * rs[2]
         extra["host"] = extra.get("host", 0.0) + p_v * 2 * rs[2]      # 0.61.4: out + in over the host link
     return extra
+
+
+def _pool_dram_util(mem_id, dram_B: float, card_s: float) -> float | None:
+    """0.303: a pool's DRAM busy fraction (bytes per card-second ÷ effective bandwidth), for the LPDDR residency."""
+    from .. import mem_catalog
+    try:
+        bw = mem_catalog.parse_mem_id(mem_id).effective_GBps * 1e9
+    except Exception:                       # noqa: BLE001
+        return None
+    return min(1.0, dram_B / card_s / bw) if bw > 0 and card_s > 0 else None
 
 
 def queue_report(ctx: dict, lam_fluid: float, pd, sv, table: EnergyTable | None = None) -> dict:

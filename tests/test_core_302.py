@@ -73,7 +73,9 @@ def test_lpddr_background_power():
     # charged in the report as static (no idle figure); a measured idle already contains it
     r = _r(sp.id, "100T")
     e = energy_report(r, t)
-    assert abs(e["hbm_static_W_card"] - hs["W"]) < 1e-12 and e["J_by_action"]["hbm_static"] > 0
+    # 0.303: the report applies the low-power residency; its no-low-power bound is the 0.302 figure
+    assert abs(e["hbm_static"]["W_no_lowpower"] - hs["W"]) < 1e-12 and e["J_by_action"]["hbm_static"] > 0
+    assert e["hbm_static_W_card"] < hs["W"]
     e2 = energy_report(r, replace(t, idle_W=5.0))
     assert "hbm_static" not in e2["J_by_action"]
     assert not {"mW_lpddr_ch_standby", "pJ_bit_dram_lpddr6"} & set(energy_report(r, EnergyTable(pJ_mac=1))["missing"])

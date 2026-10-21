@@ -672,6 +672,11 @@ def _splitk_alt(ch, org, m, k, n, count, w_fmt, a_fmt, w_bits, c):
             # tiles are reduced over a tree of the s groups (E / s engines each; mirror of a multicast)
             rh, rp = noc_multicast(ch, s, ch.engines // s)
             pb = m * n * count * 4.0
+            # 0.303: the partial tiles cross the chip bisection; the reduction is pipelined with the vector sums (max)
+            red = max(red, ch.noc_bw_cycles(pb)) if ch.noc_link_Bpc else red
+            if one.cycles + red >= best.cycles:
+                s *= 2
+                continue
             best = replace(one, cycles=one.cycles + red, mac_cycles=one.mac_cycles + red,
                            convert_elems=c.convert_elems, convert_w=c.convert_w, convert_x=c.convert_x,
                            convert_wx=c.convert_wx, noc_hops=s * one.noc_hops + pb * rh,

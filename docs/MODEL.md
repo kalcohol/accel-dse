@@ -8206,7 +8206,7 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 - The SLO search stays covered by the unwrapped tests that read it (test_core_051 / 052 / 063 / 064 / 065 / 080 and the per-test exclusions in 054 / 056 / 060 / 061 / 073_audit / 101).
 
 ### §247.5 Not modelled
-- LPDDR power-down / self-refresh residency (idle ranks). The background figure is the non-power-down upper side.
+- LPDDR power-down / self-refresh residency (idle ranks). The background figure is the non-power-down upper side (0.303: modelled, §248.3).
 - Per-generation PHY energy and area.
 - Overclocking (f > f_max).
 - Per-rail voltage of the memory (memory energy is held under DVFS).
@@ -8229,3 +8229,76 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 - §246.4, 100T decode b8: LPDDR5X J/token 0.18 → 0.21, which widens the HBM advantage. The design-search note "LPDDR background not modelled" now appears only when the energy table lacks the LPDDR fields.
 - §246.4 (1P decode b64, ≤ 800 mm² / 250 W): the tie between HBM4 4 stacks and HBM3E 8 stacks (≈ 4.81 k tok/s, 0.040 J/token) is broken. HBM4 4 stacks is now the sole front point, at 6.85 k tok/s and 0.031 J/token (693 mm²). The cheaper DRAM bits take it off the power cap, so it also runs faster.
+
+## §248 NoC congestion (bisection bandwidth) and LPDDR power-down / self-refresh residency (0.303)
+
+### §248.1 NoC congestion 「推导」 (`core/hardware.py`, `core/mapping.py`, `core/evaluate.py`)
+- New chip field `noc_link_Bpc` (bytes / cycle / link / direction). Default 0 = unlimited, which is the ≤ 0.302 model, so there is no default change (old → new: none). It is opt-in on the chip, in `/api/insight_noc` and `/api/insight_dse` (`noc_link_Bpc`), and in the UI (NoC 链路 B/周期 on both insight panels).
+- Reference value `NOC_LINK_BPC_REF` = 64 B/cycle. Source: Tenstorrent Blackhole, one 512-bit flit per cycle per link per NoC (tt-isa-documentation, BlackholeA0/NoC/README.md 「来源」). Wormhole is 32 B/cycle. Measured multicast throughput is ≈ 24 B/cycle (cross-check only, not used).
+- Bisection links of the s engines an op spans (`Chip.noc_bisection_links`): mesh ⌊√s⌋, ring 2, crossbar s/2. s ≤ 1 → no NoC.
+- Traffic is the 0.299 dataflow payload (§244):
+  - the wide-op A-operand multicast to min(E, ⌈N/cols⌉) engines;
+  - cross-group copies of core-group split plans;
+  - the split-K partial-sum reduction.
+- Each payload is assumed to cross the bisection once (tree multicast / reduction across the two halves 「假设」). The op then takes ≥ payload / (links × noc_link_Bpc) cycles. This is overlapped with the array and the feed (max), so a time penalty appears only when the bisection is exceeded. GemmCost gains `noc_cycles`, and `bound` = "noc" when it dominates.
+- Plan choice sees the NoC time, so a congested topology can switch to a sub-group or split-K plan with less traffic. Split-K is kept only if it still wins after its reduction time.
+- `noc_design_report` rows gain `tok_s_free` (the same point with an unlimited NoC) and `noc_penalty` = 1 − tok_s / tok_s_free.
+
+### §248.2 Effect on the many-small-cores conclusion (§244)
+- Setup: 1P qwen3-8b, tpuv4i_7nm preset, prefill b1 prompt 2048. Throughput penalty at 64 B/cycle:
+
+| Prefill E × array | crossbar | ring | mesh |
+|---|---|---|---|
+| 2 × 512² | −28.6 % | −24.7 % | −28.6 % |
+| 8 × 256² | 0 | −26.1 % | −26.1 % |
+| 32 × 128² | 0 | −26.7 % | −3.9 % |
+| 128 × 64² | 0 | −26.9 % | 0 |
+| 512 × 32² | 0 | −57.5 % | 0 |
+| 2048 × 16² | 0 | −60.3 % | 0 |
+
+- At 32 B/cycle (Wormhole class), mesh: E2 −35 %, E8 −53 %, E32 −19 %, E128 −16 %, E ≥ 512 0. Ring: −29 to −75 %.
+- Decode throughput is memory-bound and unchanged. J/token still moves, because plan choice now avoids congested plans: ring E512 0.1326 → 0.0483, ring E2048 0.478 → 0.0547, mesh E2048 0.0701 → 0.0492.
+- Conclusion:
+  - Without a link limit (≤ 0.302), few big engines (2 × 512²) were the lowest-J prefill design, and throughput plateaued from E = 32.
+  - With a realistic link, the A-operand multicast of a few big engines saturates the narrow bisection (one or two links), and they lose about 25–30 % of prefill throughput.
+  - Mesh designs with E ≥ 128 and crossbars with E ≥ 8 have enough bisection and lose no time. They still pay NoC energy (§244).
+  - Rings get worse with E, because the bisection stays at 2 links.
+  - Best by J: decode 128 × 64² ring (0.0473 J/token); prefill 8 × 256² crossbar (6.92 mJ/token).
+  - The efficient region moves to many-small-cores on mesh (E ≈ 32–128) or a modest crossbar (E = 8), not to the fewest engines.
+
+### §248.3 LPDDR power-down / self-refresh residency 「来源/推导/假设」 (`core/energy.py`)
+- New fields, each per x16 channel slice of 8 Gb:
+  - `mW_lpddr_ch_pd` (power-down);
+  - `mW_lpddr_ch_sr` (self-refresh; includes refresh);
+  - `ns_lpddr_pd_gap` / `ns_lpddr_sr_gap` (the shortest idle gap that pays for each state: exit latency + minimum residency).
+- tpuv4i_7nm preset values:
+  - Power-down: Micron Y52Q LPDDR5X (Rev. G 05/2025) Table 16, IDD2P on all rails, max: 1.4 mA·1.8 V + 2.3·1.05 + 0.2·0.9 + 0.6·0.5 = 5.42 mW 「来源」.
+  - Self-refresh: Y52Q Table 18, power-down self refresh at 85 °C max: 1.2·1.8 + 7.0·1.05 + 0.2·0.9 + 0.6·0.5 = 9.99 mW 「来源」. Typical values: 0.77 mW at 25 °C, 1.03 mW at 45 °C. The max is the conservative side, matching IDD2N in §247.2.
+  - Gaps (JEDEC LPDDR5 general spec, which the data sheet references 「二手」): power-down tXP 7.5 ns + entry ≈ 7.5 ns = 15 ns. Self-refresh tXSR = tRFCab 210 + 7.5 ns, plus minimum residency tSR 15 ns = 232.5 ns.
+- Mechanism (`lpddr_residency`), assuming a statically scheduled accelerator knows its gaps and enters the deepest state that fits 「假设」:
+  - u = DRAM busy fraction = modelled DRAM bytes per card-second ÷ effective bandwidth (≤ 1).
+  - Ranks per channel n_r = slices ÷ (bus bits / 16). While a channel streams, one rank is accessed: that slice is in standby u / n_r of the time, and the others are in power-down (n_r − 1)·u / n_r (rank bursts ≫ tXP).
+  - The channel-idle fraction 1 − u arrives in gaps of g = (1 − u)·window ÷ layers on the card (one weight / KV stream per layer 「假设」). If g ≥ the SR gap, the slice is in self-refresh for g − gap and in standby for the rest. Otherwise, if g ≥ the PD gap, it is in power-down likewise. Otherwise it stays in standby.
+  - Refresh is charged on the non-self-refresh fraction only.
+  - The PD queue's pool ledger has no window, so it credits power-down only and no self-refresh (the high side).
+- Result keys: `hbm_static` gains `powerdown_W`, `selfrefresh_W`, `residency` and `W_no_lowpower` (the 0.302 bound). `hbm_static_W(mem_id, table)` without a utilisation still returns the 0.302 bound. Unset fields → the 0.302 behaviour. HBM is unchanged.
+- LPDDR6 uses the LPDDR5X figures and 16-bit channel slices 「假设」.
+
+### §248.4 Default behaviour, old → new
+- tpuv4i_7nm preset (no idle figure): `mW_lpddr_ch_pd` unset → 5.415, `mW_lpddr_ch_sr` unset → 9.99, `ns_lpddr_pd_gap` unset → 15, `ns_lpddr_sr_gap` unset → 232.5.
+- 100T, qwen3-8b, ctx 4096, prompt 2048. J/token (background W/card), old → new:
+
+| Memory | decode b8 | decode b64 | prefill b1 |
+|---|---|---|---|
+| LPDDR5X 4×16 GB (default) | 0.2135 → 0.1968 (−7.8 %; 2.45 → 1.17 W) | 0.0780 → 0.0724 (−7.2 %) | 0.00816 → 0.00791 (−3.1 %; u 0.41, 59 % self-refresh, 0.85 W) |
+| LPDDR5X 4×32 GB | 0.2455 → 0.2064 (−15.9 %; 4.91 → 1.91 W) | −14.9 % | −6.2 % |
+| LPDDR6 4×x96 16 GB | 0.1605 → 0.1521 (−5.2 %) | −4.7 % | −3.2 % |
+| HBM3E (1P default) | unchanged | unchanged | unchanged |
+
+- Memory-bound decode keeps u = 1, so the saving comes from rank-level power-down. Capacity added to a channel as ranks now costs mostly power-down power. Of the +2.45 W LPDDR background in 0.302, about half remains.
+
+### §248.5 Not modelled
+- Per-link NoC routing and hot spots: one bisection cut only, no adaptive routing, no contention between concurrent ops.
+- Temperature dependence of self-refresh (85 °C max used).
+- LPDDR6 channel geometry; HBM power-down / self-refresh.
+- Exit latency on the access path: the scheduler is assumed to wake the rank ahead of time.

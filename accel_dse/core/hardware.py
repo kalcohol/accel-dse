@@ -43,6 +43,10 @@ SLC_POLICIES = ("pin", "lru", "pin_bw", "dip")   # 0.91 pin_bw: pin + bandwidth-
 ACC_KIB_PER_ENGINE = 64.0     # 0.141: = the ≤ 0.140 1024 KiB chip default / 16 engines 「假设」
 INSTANCE_SCHEDS = ("wide", "split", "auto", "cta")   # 0.92 cta: GPU thread-block tiling (reference hardware)
 NOC_TOPOLOGIES = ("crossbar", "ring", "mesh")
+# 0.303: reference NoC link bandwidth — Tenstorrent Blackhole: one 512-bit flit per cycle per link per NoC (64 B /
+# cycle; Wormhole 256 bit = 32 B), tt-isa-documentation BlackholeA0/NoC/README.md 「来源」.  Measured multicast
+# throughput on Blackhole is 24 B / cycle (tt-low-level-documentation, data-movement report) — not used, cross-check.
+NOC_LINK_BPC_REF = 64.0
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,11 @@ class Chip:
     # topology "crossbar" (1 hop), "ring" (⌊s/2⌋), "mesh" (2·(⌈√s⌉−1)).  0 = ideal NoC (≤ 0.71) 「假设」
     noc_topology: str = field(default="mesh", metadata={"omit_default": True})
     noc_hop_cycles: float = field(default=0.0, metadata={"omit_default": True})
+    # 0.303 (optional, default 0 = unlimited, ≤ 0.302): NoC link bandwidth, bytes per core cycle per link per
+    # direction.  The dataflow's NoC payload (0.299: operand multicast, cross-group copies, split-K partial sums) must
+    # cross the topology's bisection: an op takes ≥ payload / (bisection links × noc_link_Bpc) cycles, overlapped with
+    # the array (max), so a time penalty appears only when the bisection is exceeded.  Reference NOC_LINK_BPC_REF.
+    noc_link_Bpc: float = field(default=0.0, metadata={"omit_default": True})
     # 0.72 (optional, default 0): sequencer launch / barrier overhead (cycles).  Every op pays one launch; when ≥ 2
     # core groups run instances in lock-step waves, each further wave adds one barrier (a single sequencer — wide,
     # or one active group — streams its instances back to back) 「假设」
@@ -182,7 +191,7 @@ class Chip:
             raise ValueError("chip.dispatch_us must be finite and >= 0")
         if self.noc_topology not in NOC_TOPOLOGIES:
             raise ValueError(f"chip.noc_topology must be one of {NOC_TOPOLOGIES} (got {self.noc_topology!r})")
-        for k in ("noc_hop_cycles", "wave_overhead_cycles", "kernel_us"):
+        for k in ("noc_hop_cycles", "wave_overhead_cycles", "kernel_us", "noc_link_Bpc"):
             v = getattr(self, k)
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0.0 <= v < 1e9):
                 raise ValueError(f"chip.{k} must be finite and >= 0 (got {v})")
@@ -244,6 +253,21 @@ class Chip:
             return 0.0
         d = {"crossbar": 1, "ring": s_ // 2, "mesh": 2 * math.isqrt(s_ - 1)}[self.noc_topology]
         return self.noc_hop_cycles * d
+
+    def noc_bisection_links(self, cores: int | None = None) -> float:
+        """0.303: links per direction across the minimum bisection of ``cores`` engines (default all): mesh ⌊√s⌋ (a
+        k × k grid cut in half crosses k links), ring 2 (a cut severs two links; traffic may go either way round),
+        crossbar s / 2 (a non-blocking switch: half the ports on each side) 「推导」."""
+        s_ = cores or self.engines
+        if s_ <= 1:
+            return math.inf
+        return {"crossbar": s_ / 2, "ring": 2.0, "mesh": float(math.isqrt(s_))}[self.noc_topology]
+
+    def noc_bw_cycles(self, payload: float, cores: int | None = None) -> float:
+        """0.303: cycles to carry ``payload`` bytes across the bisection of ``cores`` engines (0 when unlimited)."""
+        if not self.noc_link_Bpc or payload <= 0:
+            return 0.0
+        return payload / (self.noc_bisection_links(cores) * self.noc_link_Bpc)
 
     @property
     def c_eff(self) -> int:

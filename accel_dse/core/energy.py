@@ -112,6 +112,14 @@ class EnergyTable:
     # like the HBM terms (only when no idle figure is set); counted on every 8 Gb channel slice of the card's capacity.
     mW_lpddr_ch_standby: float | None = None
     mW_lpddr_Gb_refresh: float | None = None
+    # 0.303: LPDDR low-power residency (opt-in; preset-filled).  Per 8 Gb channel slice: power-down (IDD2P, all rails)
+    # and self-refresh (power-down self refresh, all rails, refresh included); the minimum idle gap that pays for each
+    # state (exit latency + minimum residency, ns).  With them the background is the residency-weighted mix of
+    # standby / power-down / self-refresh at the modelled DRAM utilisation instead of standby everywhere (§248).
+    mW_lpddr_ch_pd: float | None = None
+    mW_lpddr_ch_sr: float | None = None
+    ns_lpddr_pd_gap: float | None = None
+    ns_lpddr_sr_gap: float | None = None
     # 0.228: per-cycle dynamic energy per MAC slot (pJ per MAC-slot per core cycle) — clock tree / distribution,
     # always-clocked pipeline registers and control: paid every core cycle the card is clocked, busy or stalled, so
     # P_clk = macs × f × pJ (scales with f and, under DVFS, with V²).  The only dynamic power that falls with the clock
@@ -451,6 +459,20 @@ def dram_pJ_field(r, table: EnergyTable) -> str:
     return f if getattr(table, f) is not None else "pJ_bit_dram"
 
 
+def dram_util(r, per: dict) -> float | None:
+    """0.303: DRAM busy fraction of a card = modelled DRAM bytes per card-second ÷ the memory's effective bandwidth."""
+    from .. import mem_catalog
+    try:
+        sp = mem_catalog.parse_mem_id(r.scenario.mem_id)
+    except Exception:                       # noqa: BLE001
+        return None
+    bw = getattr(sp, "effective_GBps", 0.0) * 1e9
+    cs = per.get("idle_card_s") or 0.0
+    if bw <= 0 or cs <= 0:
+        return None
+    return min(1.0, per.get("dram", 0.0) / cs / bw)
+
+
 def dram_static_set(table) -> bool:
     """0.302: any DRAM background / refresh field set (HBM 0.216, LPDDR 0.302)."""
     return any(getattr(table, f) is not None for f in ("mW_hbm_die_standby", "mW_hbm_Gb_refresh",
@@ -586,7 +608,19 @@ for _pid, _f in PRESET_ONCHIP.items():
 #   draw IDD2P 2.3 mA VDD2H) 「假设」; LPDDR6 uses the LPDDR5X figure 「假设」.
 LPDDR_CH_GB = 8.0
 _MICRON_Y52Q = "Micron Y52Q LPDDR5X data sheet (Rev. G 05/2025) Table 16 / Table 5"
+# 0.303: LPDDR low-power states, same data sheet (max values, per x16 channel of 8 Gb):
+#   power-down IDD2P (Table 16): 1.4 mA·1.8 V + 2.3 mA·1.05 V + 0.2 mA·0.9 V + 0.6 mA·0.5 V = 5.42 mW 「来源」;
+#   power-down self refresh (Table 18, 85 °C maximum; refresh internal): 1.2·1.8 + 7.0·1.05 + 0.2·0.9 + 0.6·0.5 = 9.99 mW
+#   「来源」 (typical 25 °C 0.77 mW — the max at 85 °C is the conservative side, like IDD2N).
+#   Minimum gaps (JEDEC LPDDR5 general spec, referenced by the data sheet 「二手」): power-down exit tXP = 7.5 ns (+ entry
+#   ≈ tCSPD) → 15 ns; self-refresh exit tXSR = tRFCab + 7.5 ns = 217.5 ns + minimum residency tSR 15 ns → 232.5 ns.
 ENERGY_PRESETS["tpuv4i_7nm"]["fields"].update({
+    "mW_lpddr_ch_pd": (1.4 * 1.8 + 2.3 * 1.05 + 0.2 * 0.9 + 0.6 * 0.5, "来源", _MICRON_Y52Q.replace("Table 16 / Table 5", "Table 16")
+                       + "：IDD2P 每 x16 通道（8 Gb）1.4 mA·1.8 V + 2.3 mA·1.05 V + 0.2 mA·0.9 V + 0.6 mA·0.5 V = 5.42 mW（最大值）"),
+    "mW_lpddr_ch_sr": (1.2 * 1.8 + 7.0 * 1.05 + 0.2 * 0.9 + 0.6 * 0.5, "来源", "Micron Y52Q LPDDR5X data sheet（Rev. G 05/2025）"
+                       "Table 18 掉电自刷新 85 °C 最大值：1.2 mA·1.8 V + 7.0 mA·1.05 V + 0.2 mA·0.9 V + 0.6 mA·0.5 V = 9.99 mW（含内部刷新）"),
+    "ns_lpddr_pd_gap": (15.0, "二手/假设", "JEDEC LPDDR5 tXP 7.5 ns + 进入 ≈ 7.5 ns（数据手册引用 JEDEC 通用规范）"),
+    "ns_lpddr_sr_gap": (232.5, "二手", "JEDEC LPDDR5 tXSR = tRFCab 210 ns + 7.5 ns，加最短自刷新驻留 tSR 15 ns"),
     "pJ_bit_dram_hbm4": (4.3 * 0.8 / 1.4, "推导", "HBM3E 3.44 pJ/bit ÷ 1.4 — Samsung HBM4（官网 / 2026-02 新闻稿）与 SK hynix"
                          "（2025-09 新闻稿）均称能效比 HBM3E 高约 40 %（厂商口径）；HBM4E 沿用"),
     "pJ_bit_dram_lpddr6": (4.0 / 1.21, "推导", "LPDDR5X 4.0 pJ/bit ÷ 1.21 — Kim et al.（Samsung）ISSCC 2026 LPDDR6 12.8 Gb/s："
@@ -651,6 +685,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                                           "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W",
                                           "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh",
                                           "pJ_bit_dram_hbm4", "pJ_bit_dram_lpddr6", "mW_lpddr_ch_standby", "mW_lpddr_Gb_refresh",
+                                          "mW_lpddr_ch_pd", "mW_lpddr_ch_sr", "ns_lpddr_pd_gap", "ns_lpddr_sr_gap",
                                           "pJ_clk_mac_cycle", "sram_temp_C", "slc_access_ref_mib", "pJ_bit_mm_onchip", "slc_mm2_per_mib",
                                           "pJ_bit_hop_noc", "noc_mm2_per_kmac")
                        and not (f.name == "pJ_bit_dram" and dfield != "pJ_bit_dram")
@@ -753,7 +788,9 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False) 
                 out["sram_leak_scope"] = ("state_sram + slc（共享 SRAM 泄漏已含于 idle；SLC 按增量计「假设」)"
                                           if slc > 0 else "state_sram（共享 SRAM 泄漏已含于 idle 数值）")
     if iw is None and dram_static_set(table):
-        hs = hbm_static_W(r.scenario.mem_id, table)      # 0.216: HBM standby + refresh (static); 0.302: + LPDDR
+        ut = dram_util(r, per)                            # 0.303: LPDDR residency at the modelled utilisation
+        hs = hbm_static_W(r.scenario.mem_id, table, ut, lpddr_gap_s(r, ut) if ut is not None else None)
+        # 0.216: HBM standby + refresh (static); 0.302: + LPDDR
         if hs:
             j["hbm_static"] = hs["W"] * per["idle_card_s"]
             out["hbm_static_W_card"] = hs["W"]
@@ -846,7 +883,56 @@ def _power_cap(out, j, iw, table, cards, u, win) -> dict:
                      "E_dyn / (TDP − P_static)"}
 
 
-def hbm_static_W(mem_id: str | None, table: "EnergyTable") -> dict | None:
+def lpddr_residency(sp, table: "EnergyTable", util: float, gap_s: float | None) -> dict:
+    """0.303: per-slice time fractions of an LPDDR card's 8 Gb channel slices in standby / power-down / self-refresh.
+
+    Mechanism 「推导」 (controller policy 「假设」: a statically scheduled accelerator knows its idle gaps, so it enters the
+    deepest state whose exit latency + minimum residency fits the gap and exits ahead of the next access):
+      u      DRAM busy fraction = modelled bytes/s ÷ the memory's effective bandwidth (capped at 1);
+      ranks  slices per x16 channel (n_r = slices / channels): while a channel is busy only one rank is accessed, so a
+             slice is in standby u / n_r of the time and in power-down for the other (n_r − 1)·u / n_r (rank bursts ≫ tXP);
+      gaps   the channel-idle fraction 1 − u arrives as gaps of gap_s (caller: (1 − u)·window / layers — one weight /
+             KV stream per layer); a gap ≥ ns_lpddr_sr_gap is self-refresh for gap − that (the rest standby), a gap ≥
+             ns_lpddr_pd_gap power-down likewise, else standby.  gap_s None (unknown) → power-down only.
+    Refresh is charged on every non-self-refresh fraction (self-refresh current already contains it)."""
+    ch = max(1.0, sp.bus_bits / 16.0)
+    sl = sp.nominal_capacity_GB * 8.0 / LPDDR_CH_GB
+    nr = max(1.0, sl / ch)
+    u = min(1.0, max(0.0, util))
+    f_sb, f_pd, f_sr = u / nr, u * (1.0 - 1.0 / nr), 0.0
+    idle = 1.0 - u
+    pd_g = (table.ns_lpddr_pd_gap or 0.0) * 1e-9
+    sr_g = (table.ns_lpddr_sr_gap or 0.0) * 1e-9
+    if idle > 0:
+        if gap_s is not None and table.mW_lpddr_ch_sr is not None and table.ns_lpddr_sr_gap is not None and gap_s >= sr_g:
+            k = 1.0 - sr_g / gap_s
+            f_sr += idle * k
+            f_sb += idle * (1.0 - k)
+        elif gap_s is None or gap_s >= pd_g:
+            k = 1.0 if gap_s is None or gap_s <= 0 else 1.0 - pd_g / gap_s
+            f_pd += idle * k
+            f_sb += idle * (1.0 - k)
+        else:
+            f_sb += idle
+    return {"util": u, "ranks_per_channel": nr, "channels": ch, "gap_s": gap_s,
+            "f_standby": f_sb, "f_powerdown": f_pd, "f_selfrefresh": f_sr}
+
+
+def lpddr_gap_s(r, util: float) -> float | None:
+    """0.303: idle-gap length for lpddr_residency: (1 − u) × the evaluation window ÷ the card's layers (one DRAM stream
+    per layer per window 「假设」)."""
+    try:
+        a = action_counts(r)
+        nl = len(r.model.layers) / max(1, r.scenario.layout.pp)
+    except Exception:                       # noqa: BLE001 — no layer structure (non-LLM pipelines): unknown gap
+        return None
+    if not a.get("window_s") or nl <= 0:
+        return None
+    return max(0.0, 1.0 - util) * a["window_s"] / nl
+
+
+def hbm_static_W(mem_id: str | None, table: "EnergyTable", util: float | None = None,
+                 gap_s: float | None = None) -> dict | None:
     """0.216: HBM background + refresh power of the card's stacks: stacks × height × standby/die + total Gb × refresh/Gb."""
     if not mem_id:
         return None
@@ -863,6 +949,17 @@ def hbm_static_W(mem_id: str | None, table: "EnergyTable") -> dict | None:
         sl = gb / LPDDR_CH_GB
         stb = sl * (table.mW_lpddr_ch_standby or 0.0) * 1e-3
         ref = gb * (table.mW_lpddr_Gb_refresh or 0.0) * 1e-3
+        if util is not None and table.mW_lpddr_ch_pd is not None:      # 0.303: low-power residency
+            res = lpddr_residency(sp, table, util, gap_s)
+            pd = sl * res["f_powerdown"] * table.mW_lpddr_ch_pd * 1e-3
+            sr = sl * res["f_selfrefresh"] * (table.mW_lpddr_ch_sr or 0.0) * 1e-3
+            stb_r = stb * res["f_standby"]
+            ref_r = ref * (1.0 - res["f_selfrefresh"])
+            return {"W": stb_r + pd + sr + ref_r, "standby_W": stb_r, "powerdown_W": pd, "selfrefresh_W": sr,
+                    "refresh_W": ref_r, "W_no_lowpower": stb + ref, "kind": "LPDDR", "channel_slices": sl,
+                    "residency": res,
+                    "basis": "LPDDR：每 8 Gb x16 通道片按驻留加权 待机 IDD2N / 掉电 IDD2P / 自刷新（Micron Y52Q）+ 非自刷新时段的刷新；"
+                             "驻留来自建模的 DRAM 利用率、每通道 rank 数与层间空闲间隙（MODEL §248）"}
         return {"W": stb + ref, "standby_W": stb, "refresh_W": ref, "kind": "LPDDR", "channel_slices": sl,
                 "basis": "LPDDR：每 8 Gb x16 通道片 IDD2N 待机（全部电源轨）+ 每 Gb 刷新（Micron Y52Q）"}
     if not getattr(sp, "hbm_height", None):

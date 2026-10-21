@@ -150,10 +150,11 @@ _ROUTE_KEYS = {"eval": {"best_batch", "goodput", "sensitivity", "power_cap", "au
                "insight_speech": {"models", "audio_s", "verify", "dispatch"},
                "insight_speech_streams": {"models", "audio_s", "slc_gib"},
                "insight_dispatch": {"models", "batches", "ctx"},
-               "insight_noc": {"topologies", "phases", "prompt"},
+               "insight_noc": {"topologies", "phases", "prompt", "noc_link_Bpc"},
                "insight_dse": {"mac_scales", "sram_scales", "sides", "topologies", "power_mode", "curve", "phase",
                                "prompt", "tie", "mems", "mem_types", "mem_count_scales", "mem_caps", "slc_mibs",
-                               "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd", "f_scales"}}
+                               "mix_out_tokens", "slo_tpot_ms", "slo_ttft_ms", "mem_usd_per_GB", "max_mem_usd", "f_scales",
+                               "noc_link_Bpc"}}
 
 
 def _check_keys(body, route: str) -> None:
@@ -1381,6 +1382,14 @@ def api_insight_slc(body: dict) -> dict:
         raise ApiError(str(e)) from None
 
 
+def _noc_link(body: dict):
+    """0.303: optional NoC link bandwidth (B / cycle / link / direction) applied to every insight / DSE point."""
+    v = body.get("noc_link_Bpc")
+    if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v < 1e6):
+        raise ApiError("noc_link_Bpc must be a number in [0, 1e6) bytes / cycle / link")
+    return None if v is None else float(v)
+
+
 def api_insight_noc(body: dict) -> dict:
     """0.299: NoC / on-chip data-movement energy vs engine count × topology (core/noc_insight.py)."""
     from .core.hardware import NOC_TOPOLOGIES
@@ -1396,8 +1405,9 @@ def api_insight_noc(body: dict) -> dict:
     pr = body.get("prompt")
     if pr is not None and (isinstance(pr, bool) or not isinstance(pr, int) or not 1 <= pr <= 1 << 20):
         raise ApiError("prompt must be an integer in [1, 1048576]")
+    nl = _noc_link(body)
     try:
-        return {**noc_design_report(scn, _energy_table(body), tuple(topo), tuple(ph), pr), "hash": scn.hash()}
+        return {**noc_design_report(scn, _energy_table(body), tuple(topo), tuple(ph), pr, nl), "hash": scn.hash()}
     except ValueError as e:
         raise ApiError(str(e)) from None
 
@@ -1442,6 +1452,8 @@ def api_insight_dse(body: dict) -> dict:
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < 1e12:
                 raise ApiError(f"{k} must be a positive number")
             kw[k] = float(v)
+    if (nl := _noc_link(body)) is not None:      # 0.303: NoC congestion on every grid point
+        kw["noc_link_Bpc"] = nl
     mo = body.get("mix_out_tokens")
     if mo is not None:
         if isinstance(mo, bool) or not isinstance(mo, int) or not 1 <= mo <= 1 << 20:

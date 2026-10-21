@@ -6,6 +6,21 @@
 
 
 
+## [0.303.0]
+
+### NoC congestion (bisection bandwidth, opt-in); LPDDR power-down / self-refresh residency
+- **NoC congestion (opt-in, no default change)**: new chip field `noc_link_Bpc` (B / cycle / link / direction; 0 = unlimited = ≤ 0.302).
+  - The 0.299 dataflow NoC payloads (A-operand multicast, cross-group copies, split-K reduction) must cross the topology bisection: mesh ⌊√E⌋, ring 2, crossbar E/2 links. Each op takes ≥ payload / (links × L), overlapped with the array (max). Plan choice sees the NoC time; GemmCost gains `noc_cycles`, bound "noc".
+  - Reference 64 B/cycle (Tenstorrent Blackhole, 512-bit flit per cycle per link 「来源」).
+  - `/api/insight_noc` and `/api/insight_dse` take `noc_link_Bpc`; NoC insight rows gain `tok_s_free` / `noc_penalty`. UI: NoC 链路 B/周期 inputs and a NoC 拥塞损失 column.
+  - Effect on the many-small-cores conclusion (1P qwen3-8b prefill, 64 B/cycle): few big engines lose 25–29 % (2 × 512² on any topology, 8 × 256² on ring / mesh); mesh E ≥ 128 and crossbar E ≥ 8 lose nothing; rings lose 25–60 %, worse with E. Best prefill by J becomes 8 × 256² crossbar; decode 128 × 64² ring. MODEL §248.1–248.2.
+- **Default change (tpuv4i_7nm energy preset): LPDDR low-power residency**. New fields `mW_lpddr_ch_pd` 5.42 mW (Y52Q IDD2P 「来源」), `mW_lpddr_ch_sr` 9.99 mW (Y52Q power-down self refresh, 85 °C max 「来源」), `ns_lpddr_pd_gap` 15 ns and `ns_lpddr_sr_gap` 232.5 ns (JEDEC LPDDR5 tXP / tXSR + tSR 「二手」); all were unset before.
+  - The LPDDR background is now the residency mix at the modelled DRAM utilisation: the active rank in standby, other ranks of a busy channel in power-down, channel-idle gaps ((1 − u)·window / layers) in self-refresh or power-down when they exceed the exit + minimum time. Refresh only outside self-refresh.
+  - Old → new, 100T qwen3-8b J/token: LPDDR5X 4×16 GB decode b8 0.2135 → 0.1968 (−7.8 %; background 2.45 → 1.17 W/card), prefill −3.1 %; 4×32 GB decode −15.9 %; LPDDR6 decode −5.2 %. HBM unchanged. The PD queue ledger credits power-down only. MODEL §248.3–248.4.
+  - `hbm_static` gains `powerdown_W`, `selfrefresh_W`, `residency`, `W_no_lowpower` (the 0.302 bound).
+- Tests: tests/test_core_303.py (6); test_core_302 restated (the report's LPDDR background is now below the 0.302 bound).
+- Freshness sweep (107 orgs, since 2026-10-21): no new releases.
+
 ## [0.302.0]
 
 ### Sourced HBM4 / LPDDR6 DRAM energy, LPDDR background power, DVFS operating point as a design-search axis; faster suite

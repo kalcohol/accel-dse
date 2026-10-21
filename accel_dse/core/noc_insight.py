@@ -56,13 +56,19 @@ def _central(e: dict, chip, table: EnergyTable) -> dict:
 
 
 def noc_design_report(scn, table: EnergyTable, topologies: tuple = NOC_TOPOLOGIES, phases: tuple = ("decode", "prefill"),
-                      prompt: int | None = None) -> dict:
+                      prompt: int | None = None, noc_link_Bpc: float | None = None) -> dict:
     if table is None or table.pJ_mac is None:
         raise ValueError("NoC 洞察需要能耗表（左侧「能耗」组或预设，至少 pJ_mac）")
     t, notes = _fill(table)
     ch = scn.chip
     if ch.instance_sched == "cta" or getattr(ch, "gpu", False):
         notes.append("GPU 参考芯片（cta 调度）：NoC 流量未建模（SM 经 L2 交叉开关），本洞察只对 NPU 有意义")
+    if noc_link_Bpc is not None and not 0 <= noc_link_Bpc < 1e6:
+        raise ValueError("noc_link_Bpc must be in [0, 1e6) bytes / cycle / link")
+    L = ch.noc_link_Bpc if noc_link_Bpc is None else float(noc_link_Bpc)
+    if L:
+        notes.append(f"NoC 拥塞：链路 {L:g} B/周期/方向，数据流 NoC 载荷须穿过拓扑二分（mesh ⌊√E⌋ / ring 2 / crossbar E/2 条），"
+                     "超出时按二分带宽计时（与阵列重叠取 max，MODEL §248）；tok_s_free = 不限带宽时的吞吐")
     cuts = engine_cuts(ch.macs)
     if (ch.engines, ch.rows) not in cuts and ch.rows == ch.cols:
         cuts = sorted(set(cuts) | {(ch.engines, ch.rows)})
@@ -73,7 +79,7 @@ def noc_design_report(scn, table: EnergyTable, topologies: tuple = NOC_TOPOLOGIE
             sv = replace(sv, batch=1, prompt=prompt or sv.prompt)
         for e_, side in cuts:
             for topo in topologies:
-                c = replace(ch, engines=e_, rows=side, cols=side, noc_topology=topo)
+                c = replace(ch, engines=e_, rows=side, cols=side, noc_topology=topo, noc_link_Bpc=L)
                 row = {"phase": ph, "engines": e_, "array": f"{side}×{side}", "topology": topo,
                        "base": e_ == ch.engines and side == ch.rows and topo == ch.noc_topology}
                 try:
@@ -90,6 +96,10 @@ def noc_design_report(scn, table: EnergyTable, topologies: tuple = NOC_TOPOLOGIE
                            breakdown=b["J"], share=b["share"], pitch_mm=er["noc"]["pitch_mm"] if "noc" in er else None,
                            byte_hops=er["counts_per_unit"].get("noc", 0.0), sram_B=er["counts_per_unit"].get("sram", 0.0),
                            noc_share=(b["J"]["noc"] + er["J_by_action"].get("noc_wire", 0.0)) / er["J_per_unit"])
+                if L:            # 0.303: the same point with an unlimited NoC → the congestion penalty
+                    rf = evaluate(scn.replace("chip", replace(c, noc_link_Bpc=0.0)).replace("serving", sv))
+                    row["tok_s_free"] = rf.throughput
+                    row["noc_penalty"] = 1.0 - r.throughput / rf.throughput if rf.throughput > 0 else 0.0
                 if topo == "mesh":
                     row["central"] = _central(er, c, t)
                 rows.append(row)
@@ -100,6 +110,6 @@ def noc_design_report(scn, table: EnergyTable, topologies: tuple = NOC_TOPOLOGIE
             m = min(ok, key=lambda x: x["J_per_unit"])
             best[ph] = {"engines": m["engines"], "array": m["array"], "topology": m["topology"], "J_per_unit": m["J_per_unit"]}
     return {"chip": ch.name, "model": scn.model, "macs": ch.macs, "sram_mib": ch.sram_mib, "rows": rows, "best": best,
-            "notes": notes, "pJ_bit_hop_noc": t.pJ_bit_hop_noc, "pJ_bit_mm_onchip": t.pJ_bit_mm_onchip,
+            "notes": notes, "noc_link_Bpc": L, "pJ_bit_hop_noc": t.pJ_bit_hop_noc, "pJ_bit_mm_onchip": t.pJ_bit_mm_onchip,
             "basis": "同 MAC 总数 / SRAM 切成 E 个 r×r 引擎 × 拓扑；时间来自代价模型（端口 / 累加器 / 向量随引擎形状推导），"
                      "能耗 = 能耗表（NoC 由数据流推导，见 MODEL §244）"}
