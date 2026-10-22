@@ -6,6 +6,24 @@
 
 
 
+## [0.348.0] — 2026-10-23
+
+### Adversarial sidecar_params (MODEL §293)
+
+- No double-count with `params()` / param_err (sidecar still storage-only).
+- PP: sidecar on head stage only; TP: full sidecar per rank (same pattern as `tts.stored_params`).
+- MOSS audio heads: bf16 bytes correct. Moshi depth: bf16 correct; Mimi fp32 was missing from fits.
+
+### `sidecar_bytes` — mixed-dtype same-card extras (mechanism)
+
+- New `ModelSpec.sidecar_bytes`: exact resident bytes preferred by memplan over `sidecar_params * bits`.
+- Moshi: `sidecar_bytes = MoshiSpec.stored_bytes` (depth bf16 + Mimi fp32). MOSS: heads × 2.
+- `sidecar_params` / `sidecar_bits` kept for single-dtype introspection and backward path.
+
+### Path choice / deferred
+
+- **MOSS-Nano / Local:** still not clean (new arch / gated). **Thinker∥Talker overlap:** no sourced schedule. **NPU:** no new absolute. **No visual UI restyle.**
+
 ## [0.347.0] — 2026-10-23
 
 ### Adversarial MOSS-TTS Delay + Qwen3-Omni 0.346 fixes (MODEL §292)

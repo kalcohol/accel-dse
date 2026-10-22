@@ -248,9 +248,11 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             store_extra += table
         store_extra += model.lookup_params * ((model.lookup_bits / 8) if model.lookup_bits else emb_b) / sh.tp
     if has_head:
-        # 0.347 same-card speech extras outside params_llm (MOSS audio lm_heads / Moshi depth) 「来源」:
-        # resident on the head stage like tts.stored_params (not TP-split; not in Model.params()).
-        if model.sidecar_params:
+        # 0.347/0.348 same-card speech extras outside params_llm 「来源」: head stage like tts.stored_params
+        # (not TP-split; not in Model.params()). Prefer sidecar_bytes (mixed dtypes); else params*bits.
+        if model.sidecar_bytes:
+            store_extra += model.sidecar_bytes
+        elif model.sidecar_params:
             sb = (model.sidecar_bits / 8) if model.sidecar_bits else model.fmt("attn").bits / 8
             store_extra += model.sidecar_params * sb
         ts = getattr(model, "tts", None)

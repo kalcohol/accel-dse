@@ -10168,3 +10168,18 @@ Image/video ViT forward (storage only); Thinker→Talker projection traffic deta
 ### §292.3 Deferred
 - MOSS-TTS-Nano (GPT2+local, fp32, pickle bin); MOSS-Local (gated); Mimi fp32 into sidecar; NPU absolute; visual UI restyle.
 
+## §293 Adversarial sidecar; `sidecar_bytes` folds Mimi (0.348)
+
+### §293.1 Adversarial 「来源」/「推导」
+- `params()` / param_err exclude sidecar — no double-count with memplan `store_extra`.
+- PP: sidecar only on `has_head` stage (same as `tts.stored_params`). TP: full sidecar per rank (speech TP usually 1).
+- MOSS: `sidecar_bytes = audio_head_params × 2` (bf16) 「来源」 release headers.
+- Moshi depth: bf16 via tensors.json; single `sidecar_params*bits` could not mix Mimi fp32.
+
+### §293.2 `sidecar_bytes` 「推导」
+- Prefer exact resident bytes when dtypes mix. Moshi: `sidecar_bytes = MoshiSpec.stored_bytes` = depth×2 + mimi×4 「来源」 `speech_tensors` roles.
+- memplan: if `sidecar_bytes` set, use it; else fall back to `sidecar_params * (sidecar_bits/8)`.
+- Speech-card stacks (Qwen3-Omni Talker/code2wav) stay off sidecar.
+
+### §293.3 Deferred
+- MOSS-TTS-Nano / Local; Thinker∥Talker sourced pipeline overlap; NPU absolute; visual UI restyle (§293 AGENTS wait).
