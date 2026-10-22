@@ -516,7 +516,7 @@ function paintDomain(m) {
         + (w.atoms_per_res ? `；原子 ≈ ${w.atoms_per_res} / 残基「假设」，局部窗口注意力` : '')
         + '。只评估网络推理（MSA / 模板检索与特征化不在范围内）；布局取 PP × DP × DAP（DAP = pair / MSA 网格按残基轴切分，FastFold 动态轴并行；pair 的 TP 未建模）。'
       : 'token 数 = 残基 + <cls>/<eos>。');
-  }
+  } else $('wl-kind').textContent = '';    // 0.343: LLM / speech models have no workload preset — do not keep the last gen / protein line
 }
 function onModel() {
   const m = model();

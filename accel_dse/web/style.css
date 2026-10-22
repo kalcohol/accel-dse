@@ -300,3 +300,17 @@ details.sec.sub > summary:hover h4 { color: var(--accent); }
 .scroll, .panel { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .scroll { padding-bottom: var(--sb-gap); }
 .panel { scrollbar-gutter: stable; padding-right: var(--sb-gap); }
+
+/* 0.343 functional UI (from ui-audit, NOT the visual restyle): .row had no rule so 设计洞察
+   captions / inputs / checkboxes stacked one per line; share .toolbar's bottom-aligned flex. */
+.toolbar, .row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; margin: 6px 0; }
+.row > label { width: auto; flex: 0 0 auto; }
+.row > label > input:not([type=checkbox]), .row > label > select { width: auto; min-width: 5em; }
+.row > label > select { max-width: 22em; }
+.row > .small, .toolbar > .small, .row > span, .toolbar > span { align-self: center; }
+.row > input, .toolbar > input { width: auto; }
+.row > label:has(> input[type=checkbox]), .toolbar > label:has(> input[type=checkbox]), label.inline, label.chk {
+  flex-direction: row; align-items: center; gap: 6px; height: 26px; width: auto; color: var(--text); }
+.toolbar > label:has(> input[type=checkbox]) { width: auto; }
+/* empty result tables: do not reserve scrollbar padding height between unrun sections */
+.scroll:has(> table:empty) { padding-bottom: 0; }

@@ -10088,3 +10088,17 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 
 ### §287.4 Freshness
 - OrcaCyber Nano sha `1af1635`, gated auto, config 401. pocket-tts sha `db04f0e`, gated auto, config 401.
+
+## §288 Functional UI bugfixes from ui-audit; visual restyle still pending (0.343)
+
+### §288.1 Ported (functional only) 「来源」 ui-audit/ui.patch on f53ac7a
+- **`.row` flex:** `.row` had no rule; 设计洞察 labels/inputs/checkboxes stacked. Share `.toolbar` bottom-aligned flex wrap (concrete px, no new type/color tokens).
+- **`#wl-kind` clear:** `paintDomain` else-branch clears the caption when `m.workload` is absent (LLM / speech).
+- **Empty `.scroll` tables:** `:has(> table:empty)` drops `padding-bottom` so unrun sections do not stack scrollbar gutters.
+
+### §288.2 Not applied — waiting on user
+- The rest of ui-audit visual harmony (type scale `--fs-*`, control height, segment restyle, KPI fonts, tag tones, chart max-width, etc.). AGENTS §293: do not apply until the user asks.
+
+### §288.3 Freshness / NPU
+- OrcaCyber Nano sha `1af1635` / pocket-tts sha `db04f0e`: still gated (config 401).
+- NPU: no new public numbers; skipped.

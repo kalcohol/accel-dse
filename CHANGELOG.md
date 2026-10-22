@@ -6,6 +6,21 @@
 
 
 
+## [0.343.0] — 2026-10-23
+
+### Fixed
+- **Functional UI only** (ported from `/workspace/ui-audit/ui.patch`, rebased onto f53ac7a; **not** the visual restyle):
+  - `.row` / `.toolbar` flex layout so 设计洞察 controls sit in a wrapping row instead of one-per-line.
+  - `paintDomain`: clear `#wl-kind` when the model has no workload presets (LLM / speech) so a prior gen/protein line does not linger.
+  - `.scroll:has(> table:empty) { padding-bottom: 0 }` — empty result tables do not reserve scrollbar padding height.
+
+### Pending / not applied
+- **ui-audit visual harmony** (type scale, colors, segment buttons, KPI fonts, radii, chart sizing, etc.) — still waiting on the user; do not apply the rest of `ui.patch`.
+- OrcaCyber Nano: sha `1af1635`, gated auto, config 401.
+- pocket-tts: sha `db04f0e`, gated auto, config 401.
+- NPU: no new public numbers this pass (skipped).
+- Qwen3-Omni / MOSS-TTS / Ming-3.0-audio-*.
+
 ## [0.342.0] — 2026-10-23
 
 ### Changed

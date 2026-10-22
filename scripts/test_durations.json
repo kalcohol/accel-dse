@@ -315,5 +315,6 @@
   "test_static_build.py": 0.53,
   "test_static_routes.py": 7.67,
   "test_core_341.py": 1.0,
-  "test_core_342.py": 0.3
+  "test_core_342.py": 0.3,
+  "test_core_343.py": 0.2
 }
