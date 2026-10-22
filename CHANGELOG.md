@@ -6,6 +6,22 @@
 
 
 
+## [0.340.0] — 2026-10-22
+
+### Added
+- `ming-3.0-tts-0.5b` (inclusionAI/Ming-3.0-tts-0.5B): dense Qwen2.5-0.5B + DiTAR (`ditar_config`) via existing `tts_spec` / TTS loop (FlowLoss Euler 10 × CFG 2 + Aggregator + AudioVAE) 「来源」 github inclusionAI/Ming-3.0-tts; SPEECH 30 → 31.
+- summarize role map for dense+DiTAR: `flowloss` / `stop_head` / `spk_head` → `tts`.
+
+### Changed
+- Adversarial: 0.339 Omni-3B / Step-Base/Think / moshika + Qwen3-TTS prefill(2)+15 decode held across eval / speech / SPS.
+
+### Pending / not applied
+- pocket-tts: gated (config 401).
+- OrcaCyber Nano 1.0: sha `1af1635` unchanged, gated auto, config 401.
+- MOSS-TTS / Qwen3-Omni: new architectures — keep pending.
+- NPU: no new public numbers.
+- **UI patch not applied** (user still deciding).
+
 ## [0.339.0] — 2026-10-22
 
 ### Added

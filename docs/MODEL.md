@@ -10042,3 +10042,19 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 - New-arch speech: Qwen3-Omni, MOSS-TTS, Ming-3.0-tts-0.5B, pocket-tts.
 - NPU: no public numbers this pass (PCIe/CXL controller area; HBM controller N7/N28; controller power; SPHBM4 PHY; NMC).
 - UI patch not applied.
+
+## §285 Adversarial 0.339 speech; Ming-3.0-tts-0.5B DiTAR (0.340)
+
+### §285.1 Adversarial (Omni-3B / Step Base·Think / moshika / Qwen3-TTS prefill)
+- param_err 0, domain omni/tts, speech KPIs, eval fits, SPS↔SPEECH parity held.
+- Qwen3-TTS `cp.prefill.0.q` M=2; 15 codebook heads (prefill + 14 decode) 「来源」 HF generate.
+
+### §285.2 Ming-3.0-tts-0.5B 「来源」
+- HF `inclusionAI/Ming-3.0-tts-0.5B` + github `inclusionAI/Ming-3.0-tts` `modeling_bailingmm.py` / `fm/{flowloss,CFM,dit}.py`.
+- Same TTS step as tiny: LLM token → FlowLoss (DiT depth 8, Euler 10, CFG 2) → Aggregator → streaming AudioVAE (44.1 kHz, 80 ms/step).
+- Backbone: Qwen2.5-0.5B (`llm_config`); `ditar_config` maps to flow fields; `audio_tokenizer_config` = AudioVAE.
+- Release roles: `flowloss`/`stop_head`/`spk_head` → `tts` (outside `params_llm`); audio + `linear_proj_audio` → vision.
+- pocket-tts gated — not added.
+
+### §285.3 Pending
+- OrcaCyber Nano (sha 1af1635, gated). MOSS-TTS / Qwen3-Omni (new arch). NPU (no public numbers). UI patch not applied.

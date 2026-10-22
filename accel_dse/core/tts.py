@@ -1,4 +1,4 @@
-"""0.269 speech synthesis (TTS) decode head: Ming-3.0-tts-tiny (inclusionAI, ``lingv3_tts``).
+"""0.269 speech synthesis (TTS) decode head: Ming-3.0-tts-tiny (``lingv3_tts``); 0.340 + Ming-3.0-tts-0.5B (``dense`` + DiTAR).
 
 Reference code 「来源」 (HF repo inclusionAI/Ming-3.0-tts-tiny): modeling_lingv3_tts.py ``generate_speech``, CFM.py,
 dit.py, aggregator.py, modules.py (DiTBlock), vae_modules.py (Decoder.low_level_reconstruct), istft.py.
@@ -126,30 +126,49 @@ class TtsSpec:
         return self.dec_layers * self.dec_window * 2 * self.dec_kv * (self.dec_h // self.dec_heads) * 2.0
 
 
-def tts_spec(cfg: dict, headers: dict | None = None) -> TtsSpec | None:
-    if cfg.get("model_type") != "lingv3_tts":
-        return None
-    lc, ac, tc = cfg["llm_config"], cfg["audio_config"], cfg["tts_config"]
-    fc, gc = cfg["flow_config"], cfg["aggregator_config"]
-    db = ac["dec_kwargs"]["backbone"]
+def _audio_vae_enc_params(ac: dict) -> int:
+    """AudioVAE encoder params (stored only) from ``audio_config`` / ``audio_tokenizer_config`` 「来源」 header."""
     eb = ac["enc_kwargs"]["backbone"]
-    # AudioVAE encoder (Qwen2 backbone + 1-layer-type aggregator + fc1/fc2/fc3 + norm + cls), stored only
     eh, ehd = eb["hidden_size"], eb["hidden_size"] // eb["num_attention_heads"]
     ekv = eb["num_key_value_heads"] * ehd
     el = (eh * eh + eh) + 2 * (eh * ekv + ekv) + eh * eh + 3 * eh * eb["intermediate_size"] + 2 * eh
     lat = ac["enc_kwargs"]["latent_dim"]
-    enc = (eb["num_hidden_layers"] * el + 2 * eh                      # encoder backbone (+ embed_tokens row, norm)
-           + 4 * el + 2 * eh                                           # aggregator backbone: 4 layers (header)
-           + eh + ac["enc_kwargs"]["input_dim"] * eh + (eh * eh + eh) + (eh * 2 * lat + 2 * lat) + 2 * eh)
-    sd = tc.get("speaker_embedding_dim", 192)
+    return (eb["num_hidden_layers"] * el + 2 * eh
+            + 4 * el + 2 * eh
+            + eh + ac["enc_kwargs"]["input_dim"] * eh + (eh * eh + eh) + (eh * 2 * lat + 2 * lat) + 2 * eh)
+
+
+def tts_spec(cfg: dict, headers: dict | None = None) -> TtsSpec | None:
+    """Ming-3.0-tts-tiny (``lingv3_tts``) or Ming-3.0-tts-0.5B (``dense`` + ``ditar_config``, github inclusionAI/Ming-3.0-tts)."""
+    mt = cfg.get("model_type")
+    # 0.340: dense BailingMMNative + DiTAR shares the tiny TTS loop (FlowLoss/CFM Euler + Aggregator + AudioVAE)
+    if mt == "lingv3_tts":
+        lc, ac, tc = cfg["llm_config"], cfg["audio_config"], cfg["tts_config"]
+        fc, gc = cfg["flow_config"], cfg["aggregator_config"]
+        db = ac["dec_kwargs"]["backbone"]
+        z, patch, history = tc["latent_dim"], tc["patch_size"], tc["history_size"]
+        rate = tc.get("sample_rate", ac["sample_rate"])
+        sd = tc.get("speaker_embedding_dim", 192)
+    elif mt == "dense" and isinstance(cfg.get("ditar_config"), dict) and isinstance(cfg.get("audio_tokenizer_config"), dict):
+        # 「来源」 modeling_bailingmm.py + fm/{flowloss,CFM,dit}.py: generate(cfg=2.0), FlowLoss.sample(steps=10)
+        lc, ac = cfg["llm_config"], cfg["audio_tokenizer_config"]
+        fc, gc = cfg["ditar_config"], cfg["aggregator_config"]
+        db = ac["dec_kwargs"]["backbone"]
+        z = ac["enc_kwargs"]["latent_dim"]
+        patch = fc["patch_size"]
+        history = fc.get("history_patch_size", patch)
+        rate = ac["sample_rate"]
+        sd = 192  # spk_head Linear(192 → llm_h) 「来源」 modeling_bailingmm.__init__
+    else:
+        return None
     return TtsSpec(
-        llm_h=lc["hidden_size"], z=tc["latent_dim"], patch=tc["patch_size"], history=tc["history_size"],
+        llm_h=lc["hidden_size"], z=z, patch=patch, history=history,
         flow_d=fc["hidden_size"], flow_depth=fc["depth"], flow_heads=fc["num_heads"], flow_mlp=float(fc["mlp_ratio"]),
         agg_d=gc["hidden_size"], agg_depth=gc["depth"], agg_heads=gc["num_heads"], agg_mlp=float(gc["mlp_ratio"]),
         dec_h=db["hidden_size"], dec_layers=db["num_hidden_layers"], dec_heads=db["num_attention_heads"],
         dec_kv=db["num_key_value_heads"], dec_inter=db["intermediate_size"], dec_window=db.get("sliding_window") or 0,
-        up=ac["patch_size"], hop=ac["dec_kwargs"]["output_dim"], rate=tc.get("sample_rate", ac["sample_rate"]),
-        enc_params=enc, spk_params=sd * lc["hidden_size"] + lc["hidden_size"])
+        up=ac["patch_size"], hop=ac["dec_kwargs"]["output_dim"], rate=rate,
+        enc_params=_audio_vae_enc_params(ac), spk_params=sd * lc["hidden_size"] + lc["hidden_size"])
 
 
 def tts_head_ops(t: TtsSpec, b: int, layer: int, replicated: int = 1, af: str = "bf16") -> list[Op]:

@@ -68,7 +68,7 @@ class TestSpeechFreshness339(unittest.TestCase):
         self.assertIsNotNone(ka.moshi)
 
     def test_speech_count(self):
-        self.assertEqual(len(SPEECH_MODELS), 30)
+        self.assertEqual(len(SPEECH_MODELS), 31)  # 0.340 +ming-0.5b
 
 
 class TestDocs339(unittest.TestCase):

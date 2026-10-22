@@ -603,6 +603,9 @@ def _tc(cfg: dict) -> dict:
               "tie_word_embeddings": False, "torch_dtype": cfg.get("torch_dtype") or "bfloat16"}
     if mt == "lingv3_tts" and isinstance(cfg.get("llm_config"), dict):
         tc = cfg["llm_config"]      # 0.269 Ming-3.0-tts-tiny: the BailingMoeV3 decoder config sits in llm_config
+    if mt == "dense" and isinstance(cfg.get("ditar_config"), dict) and isinstance(cfg.get("llm_config"), dict):
+        # 0.340 Ming-3.0-tts-0.5B: Qwen2.5-0.5B backbone in llm_config; DiTAR + AudioVAE → core/tts.py
+        tc = cfg["llm_config"]
     if mt == "qwen3_asr" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
         tc = cfg["thinker_config"]["text_config"]      # 0.270 Qwen3-ASR: thinker_config.text_config (Qwen3)
     if mt == "qwen2_5_omni" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
@@ -2367,8 +2370,10 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         if ts is not None:
             # 0.269: the release summary files flow DiT / stop / spk heads under params_llm (no "audio" in the name)
             # and the AudioVAE + aggregator under params_vision; the TTS spec carries all of them (exact, header)
-            spec = replace(spec, tts=ts, release_params=spec.release_params - ts.llm_side_params,
-                           release_bytes=(spec.release_bytes or 0) - 2 * ts.llm_side_params or None,
+            # 0.340 Ming-0.5B: summarize puts flowloss/stop/spk in role ``tts`` (outside params_llm) — do not subtract again
+            side = 0 if (rel.get("roles") or {}).get("tts") else ts.llm_side_params
+            spec = replace(spec, tts=ts, release_params=spec.release_params - side,
+                           release_bytes=((spec.release_bytes or 0) - 2 * side) or None,
                            notes=spec.notes + (
                                f"语音合成（TTS）：每步 = LLM 1 token + 流匹配 DiT 头 {ts.flow_steps} 步 Euler × CFG {ts.cfg_mult} "
                                f"+ 聚合器 + 流式 AudioVAE 解码；每步 {ts.s_per_step * 1e3:.0f} ms 音频（44.1 kHz）；"

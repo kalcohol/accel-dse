@@ -295,6 +295,18 @@ def _qwen3_tts_role(name: str, n_layers: int | None) -> str:
     return classify(name, n_layers)
 
 
+
+def _ming_dense_tts_role(name: str, n_layers: int | None) -> str:
+    """0.340 Ming-3.0-tts-0.5B (model_type dense + ditar): flowloss DiT → tts; stop/spk heads → tts;
+    audio.* / linear_proj_audio → vision (AudioVAE + aggregator, same as lingv3_tts); LLM under model.*."""
+    if name.startswith(("flowloss.", "stop_head.", "spk_head.")):
+        return "tts"
+    if name.startswith(("audio.", "linear_proj_audio.")):
+        return "vision"
+    return classify(name, n_layers)
+
+
+
 def _compact_qc(qc):
     """0.278 ModelOpt MIXED_PRECISION configs list every quantized module (the Nemotron-3.5-Super-VL config.json is
     8.7 MB): keep the scheme keys, replace the per-module lists by counts per algorithm."""
@@ -448,6 +460,7 @@ def summarize(repo: str, key: str | None = None) -> dict:
                 _moshi_role(name, nl) if cfg.get("model_type") == "moshi" else
                 _firered_role(name, nl) if cfg.get("model_type") == "fireredtts3" else
                 _qwen3_tts_role(name, nl) if cfg.get("model_type") == "qwen3_tts" else
+                _ming_dense_tts_role(name, nl) if cfg.get("model_type") == "dense" and cfg.get("ditar_config") else
                 _fish_role(name, nl) if cfg.get("model_type") == "fish_omni" else
                 _nemotron_h_omni_role(name, nl) if cfg.get("model_type") == "nemotron_h_omni" else
                 _echo_role(name, nl) if cfg.get("model_type") == "index_echo_s2st" else

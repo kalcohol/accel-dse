@@ -122,6 +122,8 @@ EXTRA_TAIL = [
     ("ming-3.0-asr-tiny", "inclusionAI/Ming-3.0-asr-tiny"),
     # 0.269: inclusionAI Ming-3.0-tts-tiny (2026-09-22; same decoder + flow-matching DiT head + streaming AudioVAE)
     ("ming-3.0-tts-tiny", "inclusionAI/Ming-3.0-tts-tiny"),
+    # 0.340: Ming-3.0-tts-0.5B (dense Qwen2.5-0.5B + DiTAR flow; same TTS loop as tiny)
+    ("ming-3.0-tts-0.5b", "inclusionAI/Ming-3.0-tts-0.5B"),
     # 0.270 speech round: Whisper-large-v3 / -turbo (encoder-decoder, cross-attention decode, 30 s padded windows),
     # Qwen2-Audio-7B-Instruct (Whisper-v3 encoder + pool + Qwen-7B), Qwen3-ASR-1.7B (AuT encoder + Qwen3-1.7B)
     ("whisper-large-v3", "openai/whisper-large-v3"),
@@ -608,7 +610,7 @@ def entries() -> list[dict]:
             # 0.270: any release with a modelled audio encoder and no vision tower (Whisper keeps it outside audio_config)
             from .vision import audio_spec
             # 0.271: Qwen2.5-Omni (speech in + speech out) → omni; 0.273: Step-Audio-2-mini with its token2wav too
-            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3", "fish_omni", "qwen3_tts") else "omni" if cf.get("model_type") == "qwen2_5_omni" or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") in ("moshi", "index_echo_s2st") else \
+            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3", "fish_omni", "qwen3_tts") or (cf.get("model_type") == "dense" and cf.get("ditar_config")) else "omni" if cf.get("model_type") == "qwen2_5_omni" or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") in ("moshi", "index_echo_s2st") else \
                 ("asr" if (cf.get("audio_config") or audio_spec(cf) is not None) and not cf.get("vision_config")
                  else "vlm") if (rel.get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])

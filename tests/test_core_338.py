@@ -51,7 +51,7 @@ class TestQwen3Tts338(unittest.TestCase):
     def test_speech_models_include_qwen3_tts(self):
         for mid in IDS:
             self.assertIn(mid, SPEECH_MODELS)
-        self.assertEqual(len(SPEECH_MODELS), 30)  # 0.339: +moshika +step-base/think +omni-3b
+        self.assertEqual(len(SPEECH_MODELS), 31)  # 0.340 +ming-0.5b  # 0.339: +moshika +step-base/think +omni-3b
 
 
 class TestAdversarial338(unittest.TestCase):
