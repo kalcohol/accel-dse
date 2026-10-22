@@ -6,6 +6,36 @@
 
 
 
+## [0.322.0]
+
+### Parked items re-examined: Drama 3 c256 second-GPU wait, colocated vocoder c128 residual
+- **Admission / capture mechanisms checked against sources and excluded** (sglang-omni @ 0029194, pinned sglang 0.5.21):
+  - Decode CUDA graphs: sglang `arg_groups/memory_hook.py` sets the decode-graph `max_bs` to 256 on H20 / H200 (tp < 4), so c256 decode replays a graph. A capture limit is excluded 「来源」.
+  - State pool: Drama 3 sets `disable_radix_cache` True and passes `max_running_requests` (`engine_builder.generation_defaults`). sglang then sizes the mamba / GDN state pool to exactly `max_running_requests` (`mem_cache/kv_cache_configurator.py`, branch "mamba_pool.from_max_running_requests"). The cookbook sets 256, so the state pool cannot cap admission below 256 「来源」.
+  - Prefill graphs: a prefill above 16 requests (`first_frame_cuda_graph_max_requests`) or above 2048 tokens (`PREFILL_CUDA_GRAPH_MAX_TOKENS`) runs the first-frame step / prefill eagerly (`sglang_model.py`); it is not capped. The steady-state prefill batch at c256 is 10.8 requests × 148 rows ≈ 1,600 rows, inside both limits. Only the start burst is affected 「推导」.
+  - Preprocessing: the cookbook requests carry pre-encoded `vq_codes`, so the GPU reference encode in `create_preprocessing_executor` does not run 「来源」.
+  - Table 2 TTFA p95 / p50 at second GPU c256 is 2469 / 2146 = 1.15: a steady-state wait, not the start burst 「推导」.
+- **Remaining sourced mechanism, not modelled:** Drama 3 runs `disable_overlap_schedule` True, so the scheduler's per-request CPU work (output processing, `Drama3FrameStreamer`, a tensor message per frame for the first `stride` frames) is serial with the GPU round. Its cost is not published.
+  - New measured-only diagnostic `host_implied_us` in `extspeech.table` rows (1/meas − 1/pred per frame, µs) 「推导」.
+  - Table 1 falls 393 → 194 µs (c8 → c64); Table 2 second GPU rises 77 → 113 µs (c128 → c256). No constant per-request host term fits both, so nothing is fitted. Predictions are unchanged.
+- **Colocated vocoder c128 residual:** sourced candidate, documented, not adopted.
+  - Drama 3's vocoder does not coalesce stream chunks (`can_batch_stream_chunks` False). Every incoming item is copied to the GPU (`build_stream_vocoder_chunk`: `codes.to(device, non_blocking=True)`).
+  - The engine sends the first `stride` = 10 frames one item at a time, so each request makes 9 copy-only GPU submissions on the vocoder context on top of its 5 windows.
+  - If each cost a switch pair like a window, the vocoder-side loss would grow by about +2.6 ms per request (≈ +33 %). Whether a small DMA copy from another context forces a compute time-slice switch is undocumented (Gilman & Walls 2021 O4 names transfer interference without a per-copy cost), so it is not a reading or a default.
+
+### Static Pages (Pyodide) build: design report / compare
+- Report and compare now use their own channels (`report`, `report_cmp`). Since both hit `/api/report`, the progress pill used to name both "report 设计结论报告"; it now keys `report_cmp` by channel (`CHAN_STAGE`, opt-in) and shows "compare 设计对比". Both stay on the slow lane (`/api/report`) and are non-blocking.
+- A superseded reply no longer clears the newer request's status line (`if (!rr) return`).
+- A reply that lands after its design search was replaced is discarded, not downloaded (`reportStale`, by `S.dseRes` identity).
+- A scenario edit or a new design search drops in-flight report / compare requests (`dropReports` → `cancel`; the static build terminates the slow-lane worker). Finished report / compare statuses are stale-tagged (`invalidate` list; `staleTag(S.dseVer)`).
+- `scripts/ui_static_smoke.py` step 2e: DSE search → report (progress pill, inputs enabled, downloaded) → compare double-click (superseded request killed or dropped, slow lane only) → mid-run scenario edit (dropped or stale-tagged; report stale-tagged).
+
+### Freshness
+- 110 orgs since 2026-10-21: Ling-3.0-tiny-UBTree, OvisOCR3, Flint and Raon are already in the data, fetched 2026-10-22 after their last change (10-21). Nothing new on 2026-10-22.
+
+### Tests
+- tests/test_core_322.py (4).
+
 ## [0.321.0]
 
 ### Parked item re-examined: colocated vocoder (Drama 3, vocoder on the engine's GPU)

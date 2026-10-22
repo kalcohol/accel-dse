@@ -153,6 +153,71 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 steps.append(("speech streams", rows, st[:40]))
                 if not st.startswith("完成") or rows < 8:
                     errs.append(f"speech streams: {st[:200]} rows={rows}")
+
+                # 2e. 0.322: design report / compare (0.320 / 0.321) on the Pages build — slow lane, progress pill,
+                # non-blocking, superseded and stale replies discarded
+                if p.query_selector("#e-preset") and "tpuv4i_7nm" in p.eval_on_selector_all("#e-preset option", "os => os.map(o => o.value)"):
+                    # the energy knob group starts collapsed (0.256): set it as the select's change handler sees it
+                    p.evaluate("(() => { const e = document.getElementById('e-preset'); e.value = 'tpuv4i_7nm';"
+                               " e.dispatchEvent(new Event('change', {bubbles: true})); })()")
+                    time.sleep(1.0)
+                p.fill("#ins-dse-macs", "0.5,1")
+                p.fill("#ins-dse-sram", "1")
+                p.click("#ins-dse-run")
+                st = wait_text("#ins-dse-status", "t.startsWith('完成') || t.startsWith('错误')")
+                steps.append(("dse (for report)", st[:30]))
+                if not st.startswith("完成"):
+                    errs.append(f"dse for report: {st[:200]}")
+                else:
+                    n0 = p.evaluate("__accelStatic.log.length")
+                    # every pill text seen while it runs (a fast reply may finish inside the 150 ms show delay)
+                    p.evaluate("(() => { window.__pill = []; new MutationObserver(() => window.__pill.push("
+                               "document.getElementById('busy-pill').textContent)).observe(document.getElementById('busy-pill'),"
+                               " {childList: true, characterData: true, subtree: true}); })()")
+                    p.click("#ins-dse-report")
+                    if p.is_disabled("#ins-dse-compare") or p.is_disabled("#model"):
+                        errs.append("inputs disabled while the report runs (progress must be non-blocking)")
+                    st = wait_text("#ins-dse-report-status", "t.startsWith('第') || t.startsWith('报告失败')")
+                    wall = p.evaluate(f"Math.max(0, ...__accelStatic.log.slice({n0}).filter(e => e.path === '/api/report').map(e => e.wallMs || 0))")
+                    pill = p.evaluate("window.__pill.some(t => t.includes('设计结论报告'))")
+                    steps.append(("design report", st[:40], "wall ms", round(wall), "pill", pill))
+                    if not st.startswith("第") or "已下载" not in st:
+                        errs.append(f"design report: {st[:200]}")
+                    if wall >= 400 and not pill:
+                        errs.append(f"progress pill did not show for the design report ({wall:.0f} ms)")
+                    # compare: two clicks in one task — the first request is superseded (dropped while queued or its
+                    # worker killed), the second renders; the pill names the compare stage
+                    p.fill("#ins-dse-cmp-rows", "")
+                    n1 = p.evaluate("__accelStatic.log.length")
+                    p.evaluate("window.__pill = []; const b = document.getElementById('ins-dse-compare'); b.click(); b.click();")
+                    st = wait_text("#ins-dse-compare-status", "t.startsWith('行') || t.startsWith('对比失败')")
+                    lanes = p.evaluate(f"[...new Set(__accelStatic.log.slice({n0}).filter(e => e.path === '/api/report').map(e => e.lane))]")
+                    sup = p.evaluate(f"__accelStatic.log.slice({n1}).filter(e => e.path === '/api/report' && (e.killed || e.dropped || e.aborted)).length")
+                    wall = p.evaluate(f"Math.max(0, ...__accelStatic.log.slice({n1}).filter(e => e.path === '/api/report').map(e => e.wallMs || 0))")
+                    pill = p.evaluate("window.__pill.some(t => t.includes('设计对比'))")
+                    steps.append(("design compare", st[:40], "lanes", lanes, "superseded", sup, "wall ms", round(wall), "pill", pill))
+                    if not st.startswith("行") or "已下载" not in st:
+                        errs.append(f"design compare: {st[:200]}")
+                    if lanes != ["slow"]:
+                        errs.append(f"/api/report lanes {lanes} (want slow only)")
+                    if sup < 1:
+                        errs.append("design compare: the superseded request was neither killed nor dropped")
+                    if wall >= 400 and not pill:
+                        errs.append(f"progress pill did not name the compare stage ({wall:.0f} ms)")
+                    # a scenario edit mid-run drops the in-flight compare; nothing lands afterwards
+                    m0 = p.eval_on_selector("#model", "e => e.value")
+                    p.click("#ins-dse-compare")
+                    wait_text("#ins-dse-compare-status", "t.startsWith('生成中')", 30000)
+                    p.select_option("#model", "qwen3-0.6b" if m0 != "qwen3-0.6b" else "qwen3-1.7b")
+                    # dropped while running, or (if it finished first) tagged stale — never shown as current
+                    st = wait_text("#ins-dse-compare-status", "t.includes('已丢弃') || t.includes('场景已改变')", 60000)
+                    time.sleep(3.0)
+                    st2 = p.text_content("#ins-dse-compare-status") or ""
+                    st3 = p.text_content("#ins-dse-report-status") or ""
+                    steps.append(("compare mid-run edit", "dropped" if "已丢弃" in st2 else "tagged", "report tagged", "场景已改变" in st3))
+                    if "场景已改变" not in st2 or "场景已改变" not in st3:
+                        errs.append(f"report stale handling: compare={st2[:120]} report={st3[:120]}")
+                    p.select_option("#model", m0)
                 b.close()
         finally:
             srv.shutdown()

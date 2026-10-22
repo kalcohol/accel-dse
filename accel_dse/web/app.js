@@ -143,14 +143,17 @@ function cancel(chan) {
    (Pyodide) build also reports its first-load phases here (download / init / package). */
 const STAGE = { eval: 'eval 评估', sensitivity: 'sensitivity 敏感度', fit: 'fit 容量修正搜索', memory: 'memory 内存',
   compare: 'compare 映射对比', layouts: 'layouts 布局搜索', stability: 'stability 排名稳定性', sweep: 'sweep 扫描',
-  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC', insight_dispatch: 'LLM 派发敏感度', insight_noc: 'NoC 能耗', insight_dse: '能耗设计搜索', report: 'report 设计结论报告',
+  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC', insight_dispatch: 'LLM 派发敏感度', insight_noc: 'NoC 能耗', insight_dse: '能耗设计搜索', report: 'report 设计结论报告', report_cmp: 'compare 设计对比',
   health: 'catalog 载入目录', catalog: 'catalog 载入目录', models: 'catalog 载入目录' };
+const CHAN_STAGE = new Set(['report_cmp']);     // 0.322: stage keyed by channel, not endpoint
 const LOAD_ZH = { download: '下载 Python 运行时', init: '初始化 Pyodide', package: '载入 accel_dse 包', ready: '就绪', error: '静态版加载失败' };
 const PROG = {
   act: new Map(), n: 0, timer: null, load: null, DELAY: 150,
   start(chan, path) {
     const id = ++this.n;
-    this.act.set(id, { chan, stage: path.replace(/^\/api\//, '').split('?')[0], t0: performance.now() });
+    // 0.322: channels that share an endpoint name their own stage (compare vs report on /api/report)
+    const ep = path.replace(/^\/api\//, '').split('?')[0];
+    this.act.set(id, { chan, stage: CHAN_STAGE.has(chan) ? chan : ep, t0: performance.now() });
     this.tick();
     return id;
   },
@@ -722,7 +725,7 @@ function invalidate() {
   // 0.285: speech / streams / dispatch insight panels keep their text and gain the stale tag once
   // 0.288: + the design-insight panels (insight / SLC size / sizing / upgrade path) — they kept old results untagged
   for (const id of ['ins-sp-status', 'ins-sps-status', 'ins-dp-status', 'ins-status', 'ins-slc-status', 'ins-size-status',
-    'ins-path-status', 'ins-noc-status', 'ins-dse-status']) {
+    'ins-path-status', 'ins-noc-status', 'ins-dse-status', 'ins-dse-report-status', 'ins-dse-compare-status']) {
     const el = $(id);
     if (el && el.dataset.done && !el.textContent.includes(STALE)) el.textContent += ` · ${STALE}`;
   }
@@ -733,6 +736,7 @@ function invalidate() {
     ds.textContent = `已丢弃进行中的搜索 · ${STALE}`;
     ds.dataset.done = '1';
   }
+  dropReports();                         // 0.322: report / compare of the old search
   // 0.78: the stability verdict was only tagged at render time — later edits left it looking current
   const sb = $('stab-box');
   if (sb && sb.dataset.done && !sb.querySelector('.stale')) {
@@ -1681,16 +1685,20 @@ async function runDesignReport() {     // 0.320: design verdict report of the se
   const st = $('ins-dse-report-status');
   if (!S.dseBody || !S.dseRes) { st.textContent = '先运行「搜索设计点」'; return; }
   const sn = S.dseRes.tco && S.dseRes.tco.sens;
+  const res0 = S.dseRes;
   st.textContent = '生成中…';
+  delete st.dataset.done;
   let rr;
   try {
     rr = await track(req('report', '/api/report', { ...S.dseBody, ...(sn && sn.row != null ? { report_row: sn.row } : {}) }));
-  } catch (e) { st.textContent = '报告失败：' + e.message; return; }
-  if (!rr) { st.textContent = ''; return; }
+  } catch (e) { st.textContent = '报告失败：' + e.message; st.dataset.done = '1'; return; }
+  if (!rr) return;                       // 0.322: superseded — the newer request owns the status line
+  if (reportStale(st, res0)) return;
   const base = `accel-dse_design-report_${String(S.dseRes.model || 'model').replace(/[^\w.\-]+/g, '_')}_row${rr.row}`;
   download(base + '.md', rr.markdown, 'text/markdown;charset=utf-8');
   download(base + '.json', JSON.stringify(rr.report, null, 1), 'application/json');
-  st.textContent = `第 ${rr.row} 行：${rr.report.design} · 警告 ${rr.report.verdict.n_near_ties} 条 · 缺项 ${rr.report.missing.length} 项（已下载 .md / .json）`;
+  st.textContent = `第 ${rr.row} 行：${rr.report.design} · 警告 ${rr.report.verdict.n_near_ties} 条 · 缺项 ${rr.report.missing.length} 项（已下载 .md / .json）${staleTag(S.dseVer)}`;
+  st.dataset.done = '1';
 }
 async function runDesignCompare() {    // 0.321: side-by-side design comparison (Markdown + JSON)
   const st = $('ins-dse-compare-status');
@@ -1700,16 +1708,39 @@ async function runDesignCompare() {    // 0.321: side-by-side design comparison 
   if (rows && (rows.length < 2 || rows.length > 3 || rows.some((x) => !Number.isInteger(x) || x < 0))) {
     st.textContent = '行号：2 – 3 个非负整数，逗号分隔'; return;
   }
+  const res0 = S.dseRes;
   st.textContent = '生成中…';
+  delete st.dataset.done;
   let rr;
   try {
-    rr = await track(req('report', '/api/report', { ...S.dseBody, ...(rows ? { report_rows: rows } : { report_compare: true }) }));
-  } catch (e) { st.textContent = '对比失败：' + e.message; return; }
-  if (!rr) { st.textContent = ''; return; }
+    rr = await track(req('report_cmp', '/api/report', { ...S.dseBody, ...(rows ? { report_rows: rows } : { report_compare: true }) }));
+  } catch (e) { st.textContent = '对比失败：' + e.message; st.dataset.done = '1'; return; }
+  if (!rr) return;                       // 0.322: superseded — the newer request owns the status line
+  if (reportStale(st, res0)) return;
   const base = `accel-dse_design-compare_${String(S.dseRes.model || 'model').replace(/[^\w.\-]+/g, '_')}_rows${rr.rows.join('-')}`;
   download(base + '.md', rr.markdown, 'text/markdown;charset=utf-8');
   download(base + '.json', JSON.stringify(rr.compare, null, 1), 'application/json');
-  st.textContent = `行 ${rr.rows.join(' / ')}：不同 ${rr.compare.n_differ} 项 · 警告 ${rr.compare.near_ties.length} 条（已下载 .md / .json）`;
+  st.textContent = `行 ${rr.rows.join(' / ')}：不同 ${rr.compare.n_differ} 项 · 警告 ${rr.compare.near_ties.length} 条（已下载 .md / .json）${staleTag(S.dseVer)}`;
+  st.dataset.done = '1';
+}
+// 0.322: a report / compare reply that lands after the design search it was asked for was replaced (new search, or
+// the search was dropped) is discarded, not downloaded
+function reportStale(st, res0) {
+  if (S.dseRes === res0) return false;
+  st.textContent = `已丢弃过期的报告结果 · ${STALE}`;
+  st.dataset.done = '1';
+  return true;
+}
+// 0.322: drop in-flight report / compare requests (static build: frees the slow-lane worker) and say so
+function dropReports() {
+  for (const [chan, id] of [['report', 'ins-dse-report-status'], ['report_cmp', 'ins-dse-compare-status']]) {
+    const el = $(id);
+    if (el && !el.dataset.done && el.textContent.startsWith('生成中')) {
+      cancel(chan);
+      el.textContent = `已丢弃进行中的报告 · ${STALE}`;
+      el.dataset.done = '1';
+    }
+  }
 }
 function download(name, text, type) {
   const a = document.createElement('a');
@@ -2582,6 +2613,8 @@ async function runInsightDse() {
     if (+$('ins-dse-maxusd').value > 0) ex.max_mem_usd = +$('ins-dse-maxusd').value;
     const dseBody = body(ex);
     S.dseBody = dseBody; S.dseRes = null;     // 0.320: the design verdict report re-runs this body
+    S.dseVer = v0;                            // 0.322: report / compare statuses are stale against this
+    dropReports();                            // 0.322: a new search drops reports of the previous one
     const r = await track(req('insight_dse', '/api/insight_dse', dseBody));
     if (!r) return;
     S.dseRes = r;

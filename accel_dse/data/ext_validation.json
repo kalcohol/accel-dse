@@ -6137,6 +6137,7 @@
      "pred_serial": 205.0,
      "ttfa_serial_ms": 61.5,
      "ttfa_rate_ms": 60.0,
+     "host_implied_us": 1120.6,
      "ttfa_burst_wave1_ms": 61.5,
      "ttfa_ratio": 0.692,
      "shares": {
@@ -6158,6 +6159,7 @@
      "pred_serial": 366.7,
      "ttfa_serial_ms": 67.7,
      "ttfa_rate_ms": 69.7,
+     "host_implied_us": 757.1,
      "ttfa_burst_wave1_ms": 66.8,
      "ttfa_ratio": 0.703,
      "shares": {
@@ -6179,6 +6181,7 @@
      "pred_serial": 608.8,
      "ttfa_serial_ms": 79.8,
      "ttfa_rate_ms": 85.5,
+     "host_implied_us": 497.0,
      "ttfa_burst_wave1_ms": 76.8,
      "ttfa_ratio": 0.735,
      "shares": {
@@ -6200,6 +6203,7 @@
      "pred_serial": 920.7,
      "ttfa_serial_ms": 103.5,
      "ttfa_rate_ms": 118.0,
+     "host_implied_us": 393.0,
      "ttfa_burst_wave1_ms": 95.2,
      "ttfa_ratio": 0.668,
      "shares": {
@@ -6221,6 +6225,7 @@
      "pred_serial": 1274.7,
      "ttfa_serial_ms": 149.0,
      "ttfa_rate_ms": 172.5,
+     "host_implied_us": 308.8,
      "ttfa_burst_wave1_ms": 129.7,
      "ttfa_ratio": 0.683,
      "shares": {
@@ -6242,6 +6247,7 @@
      "pred_serial": 1657.7,
      "ttfa_serial_ms": 232.6,
      "ttfa_rate_ms": 257.1,
+     "host_implied_us": 239.8,
      "ttfa_burst_wave1_ms": 190.4,
      "ttfa_ratio": 0.689,
      "shares": {
@@ -6263,6 +6269,7 @@
      "pred_serial": 2107.0,
      "ttfa_serial_ms": 376.7,
      "ttfa_rate_ms": 379.3,
+     "host_implied_us": 193.7,
      "ttfa_burst_wave1_ms": 287.9,
      "ttfa_ratio": 0.663,
      "shares": {
@@ -6286,6 +6293,7 @@
      "pred_serial": 2628.6,
      "ttfa_serial_ms": 630.6,
      "ttfa_rate_ms": 588.0,
+     "host_implied_us": 184.0,
      "ttfa_burst_wave1_ms": 466.5,
      "ttfa_ratio": 0.614,
      "shares": {
@@ -6307,6 +6315,7 @@
      "pred_serial": 3030.1,
      "ttfa_serial_ms": 1122.3,
      "ttfa_rate_ms": 1057.0,
+     "host_implied_us": 203.6,
      "ttfa_burst_wave1_ms": 814.5,
      "ttfa_ratio": 0.189,
      "shares": {
@@ -6328,6 +6337,7 @@
      "pred_serial": 3345.8,
      "ttfa_serial_ms": 512.4,
      "ttfa_rate_ms": 346.7,
+     "host_implied_us": 77.0,
      "ttfa_burst_wave1_ms": 437.8,
      "ttfa_ratio": 0.754,
      "shares": {
@@ -6349,6 +6359,7 @@
      "pred_serial": 4024.5,
      "ttfa_serial_ms": 883.0,
      "ttfa_rate_ms": 615.4,
+     "host_implied_us": 112.7,
      "ttfa_burst_wave1_ms": 726.5,
      "ttfa_ratio": 0.188,
      "shares": {
@@ -6397,6 +6408,7 @@
      "pred_serial": 517.0,
      "ttfa_serial_ms": 29.2,
      "ttfa_rate_ms": 60.0,
+     "host_implied_us": 4064.4,
      "ttfa_burst_wave1_ms": 29.1,
      "ttfa_ratio": 0.328,
      "shares": {
@@ -6418,6 +6430,7 @@
      "pred_serial": 813.1,
      "ttfa_serial_ms": 34.6,
      "ttfa_rate_ms": 69.7,
+     "host_implied_us": 2254.6,
      "ttfa_burst_wave1_ms": 33.0,
      "ttfa_ratio": 0.359,
      "shares": {
@@ -6439,6 +6452,7 @@
      "pred_serial": 1151.9,
      "ttfa_serial_ms": 45.3,
      "ttfa_rate_ms": 85.5,
+     "host_implied_us": 1271.3,
      "ttfa_burst_wave1_ms": 40.2,
      "ttfa_ratio": 0.417,
      "shares": {
@@ -6460,6 +6474,7 @@
      "pred_serial": 1485.4,
      "ttfa_serial_ms": 66.3,
      "ttfa_rate_ms": 118.0,
+     "host_implied_us": 805.2,
      "ttfa_burst_wave1_ms": 58.0,
      "ttfa_ratio": 0.426,
      "shares": {
@@ -6481,6 +6496,7 @@
      "pred_serial": 1810.3,
      "ttfa_serial_ms": 106.0,
      "ttfa_rate_ms": 172.5,
+     "host_implied_us": 538.6,
      "ttfa_burst_wave1_ms": 92.6,
      "ttfa_ratio": 0.482,
      "shares": {
@@ -6502,6 +6518,7 @@
      "pred_serial": 2166.5,
      "ttfa_serial_ms": 178.1,
      "ttfa_rate_ms": 257.1,
+     "host_implied_us": 375.4,
      "ttfa_burst_wave1_ms": 141.2,
      "ttfa_ratio": 0.521,
      "shares": {
@@ -6523,6 +6540,7 @@
      "pred_serial": 2644.7,
      "ttfa_serial_ms": 299.2,
      "ttfa_rate_ms": 379.3,
+     "host_implied_us": 278.2,
      "ttfa_burst_wave1_ms": 228.3,
      "ttfa_ratio": 0.519,
      "shares": {
@@ -6546,6 +6564,7 @@
      "pred_serial": 3256.1,
      "ttfa_serial_ms": 506.6,
      "ttfa_rate_ms": 588.0,
+     "host_implied_us": 239.0,
      "ttfa_burst_wave1_ms": 341.4,
      "ttfa_ratio": 0.487,
      "shares": {
@@ -6567,6 +6586,7 @@
      "pred_serial": 3763.3,
      "ttfa_serial_ms": 899.3,
      "ttfa_rate_ms": 1057.0,
+     "host_implied_us": 241.2,
      "ttfa_burst_wave1_ms": 579.0,
      "ttfa_ratio": 0.155,
      "shares": {
@@ -6588,6 +6608,7 @@
      "pred_serial": 4171.1,
      "ttfa_serial_ms": 408.9,
      "ttfa_rate_ms": 346.7,
+     "host_implied_us": 117.9,
      "ttfa_burst_wave1_ms": 316.9,
      "ttfa_ratio": 0.589,
      "shares": {
@@ -6609,6 +6630,7 @@
      "pred_serial": 5041.3,
      "ttfa_serial_ms": 701.6,
      "ttfa_rate_ms": 615.4,
+     "host_implied_us": 136.0,
      "ttfa_burst_wave1_ms": 512.3,
      "ttfa_ratio": 0.153,
      "shares": {

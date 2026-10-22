@@ -7577,6 +7577,7 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
   - Neither padding nor fp16 (cheaper than our fp32) closes the gap.
 - The measured split implies vocoder ≈ 0.70 × (prefill + decode) ≈ 20 ms per request against the modelled 6.4 ms. The remaining candidate is two-process time-slicing on one GPU without MPS, which needs a kernel trace. Not fitted; documented.
 - 0.321 (§266.1): the two-process / MPS-off layout is sourced. The switch cost (145 µs × 2 per window) is now in the default; c = 256 lies inside the published band, while c = 128 stays above the full-slice upper bound.
+- 0.322 (§267.2): a sourced candidate for the c = 128 residual is 9 copy-only GPU submissions per request (single-frame stream items). Whether such copies cost a compute time-slice switch is undocumented, so it is documented, not adopted.
 
 ## §229 Dispatch default decision; per-op dispatch sensitivity beyond speech (0.284)
 
@@ -7918,6 +7919,7 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 ### §240.4 Drama 3 synchronized start
 - Batches of ⌊max_prefill_tokens / prompt rows⌋ = 110 requests (SGLang max_prefill_tokens 16384, chunked prefill off), with 4 gate rounds between batches. Batched prefill P(n); first audio after `stride` rounds plus the first window, and the batch's first windows queue one at a time (same GPU: shared timeline; second GPU: its own).
 - c = 256 wave-1 mean 777 / 727 ms is below the steady state. Measured p50 − 10·c / (measured frames/s) = 2.35 s / 1.53 s, a pre-run wait that the burst cannot produce. Deferred: its source (vocoder load per the cookbook, for the same GPU; an admission limit is suspected for the second GPU) and batched prefill in the steady-state cycle.
+  - 0.322 (§267.1): the admission-limit suspicion is excluded from sources: decode-graph max_bs 256, a state pool equal to max_running_requests, and prefill graphs that fall back eagerly rather than capping. The remaining sourced mechanism is serial host work (overlap disabled); its cost is unpublished.
 
 ### §240.5 Default behaviour, old → new
 - Cost model unchanged. See CHANGELOG 0.295.0.
@@ -9359,4 +9361,41 @@ Each end carries its own tag; the table is in CHANGELOG [0.318.0].
 - Winner only for directed metrics (`DIRECTION`). Near tie: |best − runner-up| / max ≤ tie (the DSE tie).
 - $/M: `_pair_check(A, X)` for each X (one-at-a-time scans over the sourced ranges plus both joint corners, §263 / §264). No pair check when any design is unpriced (reported as such).
 - Flags: `differs`, `missing_in`, `tag_differs` (same quantity, different evidence label).
+
+## §267 Drama 3 c256 wait and vocoder c128 residual re-examined; report / compare on the static build (0.322)
+
+### §267.1 Second-GPU c = 256 wait: admission limits excluded
+- Measured (cookbook Table 2, second GPU, c = 256): frames/s 4,160 (predicted 1.88×), TTFA p50 / p95 2,146 / 2,469 ms (predicted 403 ms).
+  - p95 / p50 = 1.15, so this is a steady-state wait, not the t = 0 burst 「推导」.
+- Checked against sglang-omni @ 0029194 and its pinned sglang 0.5.21 「来源」:
+
+  | candidate | source | verdict |
+  |---|---|---|
+  | decode CUDA-graph capture size | `sglang/srt/arg_groups/memory_hook.py`: H20 / H200, tp < 4 → `max_bs` 256 | c256 replays a graph; excluded |
+  | GDN / mamba state pool | Drama 3 `disable_radix_cache` True + `max_running_requests` → `kv_cache_configurator` sizes the pool to `max_running_requests` (256 in the cookbook) | cannot cap below 256; excluded |
+  | first-frame graphs (16 requests), prefill graph (2048 tokens) | `sglang_model.py` falls back to an eager step above the limit (no cap) | steady prefill batch 10.8 × 148 ≈ 1,600 rows is inside both; burst only |
+  | reference encode in preprocessing | cookbook: pre-encoded `vq_codes` | does not run; excluded |
+
+- What remains is a sourced mechanism whose cost is unpublished. `disable_overlap_schedule` is True for Drama 3, so per-request scheduler and streamer CPU work is serial with each GPU round. This includes `Drama3FrameStreamer` building and sending one tensor message per frame for the first `stride` frames.
+  - Diagnostic `host_implied_us` = (1/meas − 1/pred) × 10⁶ µs per frame 「推导」, measured-only, written by ext_validate:
+    - Table 1: 393 (c8) → 194 µs (c64);
+    - Table 2 second GPU: 77 (c128) → 113 µs (c256);
+    - Table 2 same GPU: 184 → 204 µs.
+  - A constant per-request host cost would make these equal across c. They fall in Table 1 and rise in Table 2, so no single host term explains the gap. Nothing is fitted, and predictions are unchanged.
+
+### §267.2 Colocated vocoder c = 128 residual
+- 「来源」 Drama 3's vocoder scheduler does not set `can_batch_stream_chunks` (each chunk is handled alone).
+  - `build_stream_vocoder_chunk` copies every incoming item to the GPU (`codes.to(device, non_blocking=True)`).
+  - The engine's `Drama3FrameStreamer` sends frames 1 … `stride` (10) as single-frame items, then complete windows.
+- Per request that is 14 GPU submissions on the vocoder context: 9 copy-only plus 5 windows, against the 5 the switch term counts.
+- If a copy cost a switch pair like a window, the vocoder-side loss would grow by 9 × 2 × 145 µs ≈ 2.6 ms per request (≈ +33 % over the ≈ 7.8 ms of the windows) 「推导」.
+- Whether a small host-to-device DMA from another process's context forces a compute time-slice switch is not documented. Gilman & Walls 2021 (O4) report transfer interference but no per-copy cost. The candidate is documented, not added as a reading or a default (§271 gotcha: do not pick the reading that matches the measurement).
+
+### §267.3 Report / compare on the static (Pyodide) build
+- `/api/report` was already on the slow lane (0.320). Gaps found and fixed (app.js):
+  1. Report and compare shared one channel, so starting one cancelled the other. Now `report` / `report_cmp`. The pill was keyed by endpoint, so compare showed as the report; `CHAN_STAGE` (opt-in) keys `report_cmp` by channel.
+  2. A superseded request cleared the newer request's status line. Now it returns silently.
+  3. A reply for a replaced design search would still download. Now `reportStale` (by `S.dseRes` identity) discards it.
+  4. Scenario edits and new searches left in-flight reports running, and finished ones untagged. Now `dropReports` cancels them (the static worker is terminated), and both statuses are in `invalidate`'s stale list.
+- Static smoke step 2e (`scripts/ui_static_smoke.py`) checks this live; tests/test_core_322.py pins it structurally.
 

@@ -223,6 +223,10 @@ def table(variant: str, vocoder: str = "sglang", t2: bool = False) -> list[dict]
                     "pred_serial": round(ps["frames_per_s"], 1), "ttfa_serial_ms": round(ps["ttfa_s"] * 1e3, 1),
                     # measured-only: the first `stride` frames at the measured per-stream frame rate (c / frames/s) 「推导」
                     "ttfa_rate_ms": round(STRIDE * r["concurrency"] / r["value"] * 1e3, 1),
+                    # 0.322 measured-only: per-request, per-round serial time the frames/s gap implies (1/meas − 1/pred,
+                    # µs per frame) if it were all host work — sglang-omni 0029194 Drama 3 runs disable_overlap_schedule
+                    # True, so per-request scheduler/streamer CPU adds to the round 「推导」 (diagnostic, not a model term)
+                    "host_implied_us": round((1 / r["value"] - 1 / p["frames_per_s"]) * 1e6, 1),
                     "ttfa_burst_wave1_ms": round(burst(variant, r["concurrency"], voc if voc != "vllm" else "sglang")["wave1_mean_s"] * 1e3, 1),
                     "ttfa_ratio": round(p["ttfa_s"] * 1e3 / r["ttfa_p50_ms"], 3) if r.get("ttfa_p50_ms") else None,
                     "shares": {k: round(v, 3) for k, v in p["shares"].items()}})
