@@ -232,6 +232,9 @@ class AudioSpec:
     # 0.336 OmniASR (kind "w2v"): Wav2Vec2-style tower — ``ds`` = ((kernel, stride, 0), …) of the feature-extractor
     # Conv1d stack (config conv_kernel / conv_stride); ``n_mels`` reused as the last conv channel (projection in);
     # ``ch`` = num_conv_pos_embedding_groups; positional conv kernel = ``kernel`` when kind is w2v
+    # 0.337: as-released weight format for the audio tower (OmniASR headers are fp32; other kinds keep bf16 default)
+    w_bits: float = 16.0
+    w_fmt: str = "bf16"
 
     @property
     def samples_per_token(self) -> int:
@@ -541,8 +544,11 @@ def _omniasr_audio_spec(cfg: dict, ac: dict) -> AudioSpec:
         lin = ((d, out),)
         params += _lin(d, out)
     ds = tuple((ck[i], cs[i], 0) for i in range(len(ck)))
+    # as-released: bezzam OmniASR safetensors are float32 (release roles.vision fp32) 「来源」
+    dt = (cfg.get("dtype") or cfg.get("torch_dtype") or "").lower()
+    wb, wf = (32.0, "fp32") if dt in ("float32", "fp32") else (16.0, "bf16")
     return AudioSpec(16000, (math.prod(cs),), (d,), (L,), pk, ff / d, out, params, kind="w2v", heads=nh,
-                     n_mels=cd[-1], ds=ds, lin=lin, ch=g)
+                     n_mels=cd[-1], ds=ds, lin=lin, ch=g, w_bits=wb, w_fmt=wf)
 
 
 def _w2v_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
@@ -555,7 +561,7 @@ def _w2v_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> li
 
     def gemm(name: str, m: int, k: int, n: int, li: int = 0, wp: int | None = None) -> Op:
         return Op(name, "gemm", li, m=m, k=k, n=n, role="vision", w_params=(wp if wp is not None else k * n + n),
-                  w_bits=16.0, w_fmt="bf16", a_fmt=af, act_bytes=m * (k + n) * ab, stream=True,
+                  w_bits=a.w_bits, w_fmt=a.w_fmt, a_fmt=af, act_bytes=m * (k + n) * ab, stream=True,
                   vec=m * n * VEC_PER_OUT)
 
     # feature-extractor lengths per layer (same recurrence as tokens())

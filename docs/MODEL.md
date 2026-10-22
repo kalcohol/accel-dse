@@ -9979,3 +9979,28 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 - **Param check:** builder `params` = `params_vision` (incl. projector) for every released size; `params_llm` matches the Llama trunk.
 - **CTC (`omniasr_ctc`):** same audio tower; no AR LM — pending (not in catalog).
 - **0.335 LPDDR:** no change; adversarial pass reconfirmed device 3.23 + PHY 1.3, HBM untouched.
+
+## §282 OmniASR w2v as-released dtype; Carbon-X; speech pending (0.337)
+
+### §282.1 OmniASR adversarial (shapes / dtype / workloads)
+- Shapes, catalog dims, eval speech, DSE, and static paths for the four bezzam OmniASR LLM v2 ports check out (same builder as 0.336).
+- **As-released weight dtype gap (fixed):** bezzam OmniASR safetensors / release `roles.vision` are **fp32**; `_w2v_ops` had hard-coded `w_bits=16` / `w_fmt="bf16"` (same default as Whisper / AuT / SAN-M audio paths) → understated encoder weight traffic by 2×.
+  - `AudioSpec.w_bits` / `w_fmt` (default 16 / bf16) 「来源」 for as-released accounting.
+  - `_omniasr_audio_spec` sets 32 / fp32 when `dtype` or `torch_dtype` is float32 「来源」.
+  - `_w2v_ops` reads `a.w_bits` / `a.w_fmt`. Other audio kinds unchanged.
+- Activation format still follows the scenario / eval path (not forced to fp32).
+
+### §282.2 Carbon-X
+- `HuggingFaceBio/Carbon-X` — public `Qwen3ForCausalLM` + `dna_config` 6-mer tags, bf16 as released, 14.822B params, param_err 0 「来源」.
+- Catalog id `carbon-x` (same SERIES prefix `carbon-` as carbon-8b / 3b / 500m). DNA tagging is metadata only; workload is stock Qwen3 causal LM.
+
+### §282.3 Speech pick not added
+- **Qwen3-TTS** (`qwen3_tts`: talker + codebooks + tokenizer-12Hz) has newly public usable config but needs a new TTS builder — pending (same posture as OmniASR CTC).
+- No other TTS / omni with newly public usable dims this pass.
+
+### §282.4 Hotfix: portable UI-patch assert (0.336 suite)
+- `test_core_336::test_docs_and_no_ui_patch` no longer requires `/workspace/ui-audit/ui.patch` (authoring-box only). It asserts the 0.336 CHANGELOG section contains **UI patch not applied**.
+
+### §282.5 Freshness / pending
+- OrcaCyber Nano: sha `1af1635` unchanged, gated auto, config 401 → still pending.
+- Carried: OmniASR CTC; Qwen3-TTS builder; PixText routing mask; PCIe / CXL area; N7 / N28 controller; controller power; SPHBM4 PHY; NMC; HBM4 absolute pJ; LPDDR system idle/active.

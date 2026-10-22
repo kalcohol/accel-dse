@@ -6,6 +6,14 @@
 
 
 
+## [0.337.0] — 2026-10-22
+
+- **Hotfix (0.336 suite on non-box hosts):** `test_core_336::test_docs_and_no_ui_patch` no longer requires `/workspace/ui-audit/ui.patch` (authoring-box only). It asserts the 0.336 CHANGELOG section documents that the UI patch was not applied.
+- **OmniASR / w2v adversarial (0.336 follow-up).** Shapes, catalog dims, eval speech, DSE, and static paths check out for the four bezzam OmniASR LLM v2 ports. **As-released dtype:** audio-tower safetensors are fp32; `_w2v_ops` previously hard-coded bf16 weight bits (same as other ASR audio paths) and understated weight traffic. `AudioSpec` now carries `w_bits`/`w_fmt` (default bf16); `_omniasr_audio_spec` sets fp32 when `dtype`/`torch_dtype` is float32; `_w2v_ops` uses those fields. Other audio kinds unchanged.
+- **Carbon-X.** `HuggingFaceBio/Carbon-X` — public `Qwen3ForCausalLM` + `dna_config` 6-mer tags, bf16 as released, 14.822B params (param_err 0). Added as `carbon-x` (same family as carbon-8b/3b/500m). Releases 197→198, listed+unlisted 205→206.
+- **Speech pick (not added).** Qwen3-TTS (`qwen3_tts`: talker + codebooks + tokenizer-12Hz) has newly public usable config but needs a new TTS builder — documented pending (same posture as OmniASR CTC). No other TTS/omni with newly public usable dims this pass.
+- **Freshness.** OrcaCyber Nano still gated (sha `1af1635`, config 401) — pending. Carbon-X added above.
+
 ## [0.336.0]
 
 ### OmniASR LLM v2 — Wav2Vec2-style audio builder in the asr domain (MODEL §281)

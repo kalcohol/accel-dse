@@ -179,3 +179,5 @@ bezzam/omniasr-llm-300m-v2
 bezzam/omniasr-llm-1b-v2
 bezzam/omniasr-llm-3b-v2
 bezzam/omniasr-llm-7b-v2
+# 0.337 Carbon-X (Qwen3 DNA LM)
+HuggingFaceBio/Carbon-X

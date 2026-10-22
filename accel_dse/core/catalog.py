@@ -44,6 +44,8 @@ EXTRA_TAIL = [
     ("carbon-8b", "HuggingFaceBio/Carbon-8B"),
     ("carbon-3b", "HuggingFaceBio/Carbon-3B"),
     ("carbon-500m", "HuggingFaceBio/Carbon-500M"),
+    # 0.337: Carbon-X (2026-10-22; stock Qwen3ForCausalLM + dna_config 6-mer tags, bf16 as released)
+    ("carbon-x", "HuggingFaceBio/Carbon-X"),
     # 0.114 coverage refresh (official releases 2026-10-12 / 13; public config.json + safetensors headers)
     ("lfm2.5-24b-a2b", "LiquidAI/LFM2.5-24B-A2B"),
     ("lfm2.5-24b-a2b-fp8", "LiquidAI/LFM2.5-24B-A2B-FP8"),
