@@ -324,5 +324,6 @@
   "test_mem_catalog.py": 0.04,
   "test_static_build.py": 0.53,
   "test_static_routes.py": 7.67,
-  "test_core_351.py": 0.6
+  "test_core_351.py": 0.6,
+  "test_core_352.py": 1.5
 }

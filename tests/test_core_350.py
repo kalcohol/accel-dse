@@ -59,7 +59,8 @@ def test_no_cooling_omits_limit_margins():
     rep = design_report(o, {}, 0)
     th = next(s for s in rep["sections"] if s["id"] == "thermal")
     keys = {i["key"] for i in th["items"] if i["value"] is not None}
-    assert "pkg_margin_W" not in keys and "thermal_binding" not in keys
+    # cooling-limit margins/front omitted; 0.352: power_cap alone may still set thermal_binding=功耗预算
+    assert "pkg_margin_W" not in keys and "flux_margin_W_mm2" not in keys
     assert th.get("front_thermal") is None
 
 

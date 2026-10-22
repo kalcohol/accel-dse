@@ -316,17 +316,43 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
             it.append(item("die_flux_ratio", "晶粒热流 / 上限", die_r, tag="推导",
                            src="die_flux_W_mm2 ÷ COOLING.die_flux_W_mm2（可行性用 min(卡, 晶)）"))
         # 0.351: flux_ratio item above is the feasibility min; no separate feas_flux_ratio
-    if plim and th.get("pkg_W"):
+    pr = (th["pkg_W"] / plim) if (plim and th.get("pkg_W")) else None
+    if pr is not None:
         # 0.349 / 0.350: package-power margin; binding vs card flux (not feas min) 「推导」
-        pr = th["pkg_W"] / plim
         it += [item("pkg_margin_W", "封装功耗余量（上限 − 封装功耗）", plim - th["pkg_W"], "W", tag="推导",
                     src="冷却上限 − package_power"),
                item("pkg_headroom", "功耗可增幅（封装达上限）", 1 / pr - 1 if pr else None, tag="推导",
                     src="1 / (封装功耗 / 上限) − 1")]
-        if card_r is not None:
-            bind = "热流" if card_r >= pr else "封装功耗"
-            it.append(item("thermal_binding", "热约束紧侧", bind, tag="推导",
-                           src="max(卡级热流/上限, 封装功耗/上限)；面积↔功耗取舍"))
+    # 0.352: power-budget margin on the same axis DVFS uses (power_scope); three-way binding
+    # with card flux + cool pkg — liquid+package flips 热流 → 功耗预算 「推导」
+    cap = r.get("power_cap_W")
+    scope = r.get("power_scope") or "package"
+    if cap and scope == "card":
+        cw, cap_axis = th.get("card_W"), "能耗表卡功耗（power_scope=card）"
+    elif cap:
+        cw, cap_axis = th.get("pkg_W"), "封装功耗（power_scope=package）"
+    else:
+        cw, cap_axis = None, None
+    cap_r = (cw / cap) if (cap and cw) else None
+    if cap_r is not None:
+        margins.append(("功耗预算", 1 - cap_r))
+        it += [item("cap_margin_W", f"功耗预算余量（上限 − {('卡' if scope == 'card' else '封装')}功耗）",
+                    cap - cw, "W", tag="推导", src=f"power_cap_W − {cap_axis}"),
+               item("cap_headroom", "功耗可增幅（达功耗预算）", 1 / cap_r - 1 if cap_r else None, tag="推导",
+                    src=f"1 / ({cap_axis} / power_cap_W) − 1"),
+               item("cap_ratio", "功耗预算占用比", cap_r, tag="推导",
+                    src=f"{cap_axis} ÷ power_cap_W")]
+    cands = []
+    if card_r is not None:
+        cands.append((card_r, "热流"))
+    if pr is not None:
+        cands.append((pr, "封装功耗"))
+    if cap_r is not None:
+        cands.append((cap_r, "功耗预算"))
+    if cands:
+        bind = max(cands, key=lambda z: z[0])[1]
+        it.append(item("thermal_binding", "热/功耗约束紧侧", bind, tag="推导",
+                       src="max(卡级热流/上限, 封装功耗/冷却上限, 功耗预算占用)；冷却↔面积↔预算取舍"))
     sec_th = _sec("thermal", "热 / 功耗", it, th.get("status"))
     ft = _front_thermal(r, rows, cool, flim, plim, cs, tie) if (flim or plim) else None
     if ft:
@@ -590,7 +616,8 @@ DIRECTION = {"thr": 1, "perf_W": 1, "slo_margin": 1, "shore_margin": 1, "die_yie
              "flux_W_mm2": -1, "flux_ratio": -1, "card_flux_ratio": -1, "mm2": -1, "good_die_usd": -1, "si_usd": -1, "pkg_usd": -1,
              "kgd_scrap_usd": -1, "usd_good_pkg": -1, "usd_per_Munit": -1, "capex_usd": -1, "mem_usd": -1,
              "energy_usd_per_yr": -1, "kWh_per_yr": -1, "flux_margin_W_mm2": 1, "flux_headroom": 1,
-             "pkg_margin_W": 1, "pkg_headroom": 1}   # 0.331 / 0.351
+             "pkg_margin_W": 1, "pkg_headroom": 1, "cap_margin_W": 1, "cap_headroom": 1,
+             "cap_ratio": -1}   # 0.331 / 0.351 / 0.352
 HEADLINE = ("usd_per_Munit", "perf_W", "thr", "tpot_ms", "J_per_unit", "pkg_W", "usd_good_pkg")
 _LETTERS = "ABC"
 

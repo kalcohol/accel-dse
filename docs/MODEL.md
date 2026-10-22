@@ -10226,3 +10226,16 @@ Image/video ViT forward (storage only); Thinker→Talker projection traffic deta
 
 ### §296.3 Deferred
 - NPU: no new absolute public mm² / pJ → skip. No speech catalog churn. Visual UI restyle: still no written user yes.
+
+## §297 Adversarial ratio persist; power-cap three-way binding (0.352)
+
+### §297.1 Adversarial 「推导」
+- Card/die ratios persist on thermal_report and DSE rows; report/UI show 卡级 vs 可行性 min. Liquid design headroom ≈1.5%.
+- Static: `build_static` copies `accel_dse/web/app.js` verbatim. Pages (0.259) lags until rebuilt from main.
+
+### §297.2 Power-budget binding 「推导」
+- DVFS compares `power_cap_W` to card W (`power_scope=card`) or package W (`package`). Report now exposes that axis as margin/headroom/ratio.
+- `thermal_binding` = argmax of card flux/limit, cool pkg/limit, cap occupancy. liquid+package → 功耗预算 (was 热流).
+
+### §297.3 Deferred
+- NPU absolutes still absent. Visual UI restyle: no written user yes. Pages rebuild: separate track.

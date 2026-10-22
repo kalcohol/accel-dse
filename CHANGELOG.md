@@ -6,6 +6,24 @@
 
 
 
+## [0.352.0] — 2026-10-23
+
+### Adversarial card/die ratio persistence + UI (MODEL §297)
+
+- thermal_report / DSE rows / report / chip+DSE UI still on card axis; liquid headroom ≈1.5% not feas ~140%.
+- COOLING pins unchanged. `build_static` still copies live `app.js` (card-axis strings present).
+- Pages branch (wt-pages @ 0.259) still pre-0.351 — rebuild from main is a separate track; not invented here.
+
+### Power-budget three-way binding (mechanism)
+
+- Design report adds `cap_margin_W` / `cap_headroom` / `cap_ratio` on the same axis DVFS uses (`power_scope`: card W vs package W).
+- `thermal_binding` = max(卡级热流, 冷却封装功耗, 功耗预算). **liquid + package flips 热流 → 功耗预算** — changes which knob to turn.
+- Limits / COOLING never retuned. No NPU absolute invent; no speech catalog churn.
+
+### Path / deferred
+
+- NPU: HBM4 still vendor ≈40% only — no absolute pJ. **No visual UI restyle** (no written user yes).
+
 ## [0.351.0] — 2026-10-23
 
 ### Adversarial card-axis margins across report / eval / DSE / static (MODEL §296)
