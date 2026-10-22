@@ -146,10 +146,66 @@ def _fc(mode, s, stop):
     return {k: float(v) for k, v in d.items()}
 
 
+def _fake(script):
+    """0.331: drive FreezeClock.observe with a scripted (wall, cpu) sequence — no threads, no real time.
+    ``script`` = list of (wall gap, cpu gained) per sampler wake-up; returns (clock, wall, excused list)."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    from freeze_clock import FreezeClock
+    t = {"w": 100.0, "c": 7.0}
+    fc = FreezeClock(wall=lambda: t["w"], cpu=lambda: t["c"], start=False)
+    a0, ex = fc.now(), []
+    for dw, dc in script:
+        t["w"] += dw
+        t["c"] += dc
+        ex.append(fc.observe(t["w"], t["c"]))
+    return fc, t["w"] - 100.0, fc.now() - a0, ex
+
+
+P = 0.05
+
+
 def test_freeze_clock_excuses_only_non_execution():
-    f = _fc("spin", 3, True)            # CPU-bound run, process stopped 2 s (a stand-in for a host/VM freeze)
-    assert 1.5 < f["frozen"] < 2.6 and f["active"] > 2.9
-    s = _fc("sleep", 2, False)          # a sleeping / blocking "hang" is charged in full
-    assert s["frozen"] == 0 and s["active"] > 2.0
-    g = _fc("gil", 2, False)            # one C call holding the GIL: CPU advances, not a freeze
-    assert g["frozen"] == 0 and abs(g["active"] - g["wall"]) < 1e-6
+    # 0.331: deterministic (fake clock).  ≤ 0.330 ran three real subprocesses and asserted on wall time; under -j 8 on
+    # msa1 the GIL case failed once (frozen > 0): a starved process (or a host freeze) is a legitimate stall for the
+    # sampler, so wall-time equalities cannot be asserted on a loaded host.  Same three cases, now exact:
+    # (a) CPU-bound run stopped 2 s (SIGSTOP / host freeze stand-in): the 2 s gap is excused minus one period
+    fc, wall, act, ex = _fake([(P, P)] * 20 + [(2.0, 0.0)] + [(P, P)] * 20)
+    assert abs(fc.frozen() - (2.0 - P)) < 1e-9 and abs(act - (wall - (2.0 - P))) < 1e-9 and act > 2.0
+    assert len(fc.stalls()) == 1 and fc.stalls()[0][1:] == (2.0, 0.0)
+    # (b) sleeping / blocking hang: sampler wakes every period, nothing excused, charged in full
+    fc, wall, act, ex = _fake([(P, 0.0)] * 40)
+    assert fc.frozen() == 0 and abs(act - wall) < 1e-9 and abs(wall - 2.0) < 1e-9
+    # (c) one C call holding the GIL for 2 s: one 2 s gap with CPU ≈ gap — not a stall, charged in full
+    fc, wall, act, ex = _fake([(P, P)] * 4 + [(2.0, 2.0)] + [(P, P)] * 4)
+    assert fc.frozen() == 0 and abs(act - wall) < 1e-9
+
+
+def test_freeze_clock_thresholds_and_cpu_never_excused():
+    # thresholds 「假设」: gap ≥ 0.5 s and CPU < 20 % of the gap (both strict as coded)
+    assert _fake([(0.49, 0.0)])[3] == [0.0]
+    assert abs(_fake([(0.5, 0.0)])[3][0] - (0.5 - P)) < 1e-12
+    assert _fake([(1.0, 0.2)])[3] == [0.0]                       # exactly 20 % CPU → running, not frozen
+    # 0.331 fix: a starved-but-running process (CPU 15 % of a 2 s gap — e.g. a GIL call under heavy -j load) is a
+    # stall, but its executed CPU stays charged: excused 2.0 − 0.3 = 1.7 (≤ 0.330: 2.0 − 0.05 = 1.95, active 0.05 s
+    # < the 0.3 s it executed)
+    fc, wall, act, ex = _fake([(2.0, 0.3)])
+    assert abs(ex[0] - 1.7) < 1e-12 and abs(act - 0.3) < 1e-12
+    # invariant: active ≥ CPU executed, for any mix of gaps
+    import random
+    rnd = random.Random(316)
+    for _ in range(200):
+        sc = [(g, g * rnd.choice((0.0, 0.05, 0.19, 0.2, 0.5, 1.0))) for g in
+              (rnd.choice((P, 0.3, 0.5, 0.8, 2.0, 7.5)) for _ in range(30))]
+        fc, wall, act, ex = _fake(sc)
+        assert act >= sum(c for _, c in sc) - 1e-9 and act >= len(sc) * P - 1e-9 and act <= wall + 1e-9
+
+
+def test_freeze_clock_real_process_invariants():
+    # real sampler thread + real SIGSTOP / GIL call; only load-independent assertions (a busy host can add stalls
+    # but can never make a stopped process run or un-charge executed CPU)
+    # (active vs CPU over the clock's whole life: excused ≤ gap − CPU-in-gap for every stall ⇒ act_all ≥ cpu_all)
+    f = _fc("spin", 3, True)            # CPU-bound 3 s, stopped ≥ 2 s
+    assert f["frozen"] >= 1.5 and f["cpu"] >= 2.9 and f["active"] <= f["wall"]
+    assert f["act_all"] >= f["cpu_all"] - 0.02
+    g = _fc("gil", 2, False)            # one C call holding the GIL: its CPU is always charged
+    assert g["act_all"] >= g["cpu_all"] - 0.02 and g["active"] <= g["wall"] + 1e-3 and g["cpu"] > 0.5

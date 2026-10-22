@@ -305,6 +305,9 @@ _PIXTEXT_SRC = ("ATH-MaaS/PixText（Apache-2.0，2026-10-22 15:41 JST）models/P
                 "main_target_area 1048576（1024×1024）、steps 4（meanflow_interval_euler）、guidance_scale 3.3、"
                 "guidance_interval [0.1, 1.0] → 7 次前向（README）、max_items_per_pass 12；编辑项 + 字形 token = 发布参考用例 "
                 "examples/pipeline_case 第 1 pass（12 项裁块 196 token ×2 = 392）「来源」")
+_PIXTEXT_TEACHER_SRC = ("ATH-MaaS/PixText models/PixText-Teacher/config.json + inference_config：同 MeanFlow 的几何（1024×1024）、"
+                        "steps 25（euler）、guidance_scale 3.3、guidance_interval [0.1, 1.0] → 25 + 22 = 47 次前向「推导」"
+                        "（sampling/flow.py：low < k/25 < high）、max_items_per_pass 12；编辑项 + 字形 token 同 MeanFlow 参考用例「来源」")
 DOMAIN_RELEASES = [
     ("wan2.1-14b", "Wan-AI/Wan2.1-T2V-14B", "wan",
      NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, vae_frames="wan", source=_WAN_SRC.format(res="720P（1280×720）"))),
@@ -368,16 +371,29 @@ DOMAIN_RELEASES = [
     ("moss-image-sft", "OpenMOSS-Team/MOSS-Image-SFT", "moss",
      NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=50, cfg=2, text_tokens=256, source=_MOSS_SRC)),
     # 0.330 PixText-MeanFlow (ATH-MaaS, 2026-10-22; pixel-space text-editing GroupJiT, the README's default quick-start
-    # checkpoint); the 25-step Teacher (models/PixText-Teacher, no interval embedder) stays pending: one release file
-    # per repo (release_path) — see AGENTS §280
+    # checkpoint); 0.331: guidance interval (3 of 4 steps guided) + no-glyph negative branch at its own shape
     ("pixtext-meanflow", "ATH-MaaS/PixText", "pixtext",
-     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=1, steps=7, cfg=1, text_tokens=392,
-                    source=_PIXTEXT_SRC)),
+     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=1, steps=4, cfg=2, cfg_interval=(0.1, 1.0),
+                    text_tokens=392, source=_PIXTEXT_SRC)),
+    # 0.331 PixText-Teacher (same repo, models/PixText-Teacher: no interval embedder, 25 Euler steps) — its own release
+    # file through RELEASE_KEYS; hf_id stays the public repo (links, provider, freshness)
+    ("pixtext-teacher", "ATH-MaaS/PixText", "pixtext",
+     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=1, steps=25, cfg=2, cfg_interval=(0.1, 1.0),
+                    text_tokens=392, source=_PIXTEXT_TEACHER_SRC)),
 ]
+# 0.331: release file of a model when one public repo holds several checkpoints.  Key = "<repo>:<subfolder>" → file
+# releases/<repo with / → __>_<subfolder with / → __>.json (model.release_path); every model not listed here reads
+# its hf_id's file, as before.  hf_id stays the public repo id (UI text, provider_of, freshness sweep, aliases).
+RELEASE_KEYS = {"pixtext-teacher": "ATH-MaaS/PixText:models/PixText-Teacher"}
+
+
+def release_key(model_id: str, hf_id: str) -> str:
+    """0.331: the release-file key of a catalogued model (RELEASE_KEYS, else its hf_id)."""
+    return RELEASE_KEYS.get(model_id, hf_id)
 _DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
 # GitHub-only releases: the repo name alone does not say which checkpoint is evaluated
 DOMAIN_LABELS = {"alphafold2": "AlphaFold 2 · model_1_ptm", "openfold": "OpenFold · finetuning_ptm_2",
-                 "protenix": "Protenix v0.5.0"}
+                 "protenix": "Protenix v0.5.0", "pixtext-teacher": "PixText · Teacher"}   # 0.331: 2nd checkpoint of a repo
 # catalog-only rows that stay off core v2, with the reason shown in the listing
 OFFLINE_REASONS = {
     "alphafold3": "权重需向 Google DeepMind 申请（表单审批、条款禁止再分发），没有可公开读取的发布文件来核对张量形状 → "
@@ -543,12 +559,16 @@ def entries() -> list[dict]:
     old = {e["id"]: e for e in raw["entries"]}
     for i, h, b, wl in DOMAIN_RELEASES:
         al = tuple(old.get(i, {}).get("aliases") or ()) + (h,)
-        out.append({"id": i, "hf_id": h, "aliases": al, "builder": b, "workload": wl})
+        rk = release_key(i, h)      # 0.331: a second checkpoint of a repo resolves by its release key, not the repo id
+        al = al if rk == h else tuple(x for x in al if x != h) + (rk,)
+        out.append({"id": i, "hf_id": h, "aliases": al, "builder": b, "workload": wl, "release": rk})
     for i, h in EXTRA_TAIL:
         out.append({"id": i, "hf_id": h, "aliases": (h,)})
     for i, h, prov, lab, note in PROXIES:
         out.append({"id": i, "hf_id": h, "aliases": (), "proxy_note": note, "proxy_label": lab, "proxy_provider": prov})
-    out = [e for e in out if load_release(e["hf_id"]) is not None]
+    for e in out:
+        e.setdefault("release", e["hf_id"])
+    out = [e for e in out if load_release(e["release"]) is not None]
     for e in out:
         e["label"] = e.get("proxy_label") or DOMAIN_LABELS.get(e["id"]) or _repo_name(e["hf_id"])
         e["provider"], e["provider_label"] = provider_of(e["hf_id"])
@@ -560,7 +580,7 @@ def entries() -> list[dict]:
         if e.get("builder"):
             e["domain"] = e["workload"].kind
         else:
-            rel = load_release(e["hf_id"])
+            rel = load_release(e["release"])
             cf = rel.get("config") or {}
             # 0.268: an audio-only release (audio_config, no vision_config) is speech recognition, not a VLM
             # 0.270: any release with a modelled audio encoder and no vision tower (Whisper keeps it outside audio_config)
@@ -640,7 +660,7 @@ def get_model(model_id: str) -> ModelSpec:
     if e is None:
         raise KeyError(f"unknown model {model_id!r}")
     if e.get("builder"):
-        return from_domain_release(e["id"], e["hf_id"], e["builder"], e["workload"])
+        return from_domain_release(e["id"], e["hf_id"], e["builder"], e["workload"], release=e["release"])
     spec = from_release(e["id"], e["hf_id"])
     if e.get("proxy_note"):
         from dataclasses import replace as _rp

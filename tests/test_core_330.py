@@ -136,19 +136,25 @@ def test_pixtext_release_and_exact_params():
     assert any("no additional text encoder" in n for n in m.notes)
     assert any("seven model forwards" in n for n in m.notes)
     ids = [i for i, *_ in C.DOMAIN_RELEASES]
-    assert "pixtext-meanflow" in ids and not any("teacher" in i for i in ids if "pixtext" in i)
+    # 0.331: the Teacher is now added from the same repo (release key "ATH-MaaS/PixText:models/PixText-Teacher");
+    # was `not any("teacher" in i ...)`
+    assert "pixtext-meanflow" in ids and "pixtext-teacher" in ids
 
 
 def test_pixtext_workload_and_flops():
     w = next(w for i, _, _, w in C.DOMAIN_RELEASES if i == "pixtext-meanflow")
-    assert (w.height, w.width, w.vae_s, w.steps, w.cfg, w.text_tokens) == (1024, 1024, 1, 7, 1, 392)
+    # 0.331: 4 steps, cfg 2 guided on 3 of them (cfg_interval) — was 7 forwards folded as steps=7, cfg=1
+    assert (w.height, w.width, w.vae_s, w.steps, w.cfg, w.text_tokens) == (1024, 1024, 1, 4, 2, 392)
+    assert w.cfg_interval == (0.1, 1.0)
     r = evaluate(Scenario().replace("model", "pixtext-meanflow").replace("serving.batch", 1))
-    assert (r.workload.tokens, r.workload.ctx, r.workload.steps, r.workload.seqs_per_request) == (4488, 392, 7, 1)
-    # per forward: GEMMs 2 · 4488 · 32 · (3840 + 1280 + 7680 + 6826 + 3413)·1280 + dense attention 4 · 4488² · 1280 · 32
-    gemm = 2 * 4488 * 32 * (3840 + 1280 + 7680 + 6826 + 3413) * 1280
-    attn = 4 * 4488 ** 2 * 1280 * 32
-    per = r._tflop_per_request() / 7 * 1e12
-    assert abs(per / (gemm + attn) - 1) < 0.01, per / (gemm + attn)
+    # 0.331: steps 7 → 4, seqs 1 → 2 (cond + no-glyph branch, serial)
+    assert (r.workload.tokens, r.workload.ctx, r.workload.steps, r.workload.seqs_per_request) == (4488, 392, 4, 2)
+    assert r.workload.guided == 3
+    # per forward: GEMMs 2 · T · 32 · (3840 + 1280 + 7680 + 6826 + 3413)·1280 + dense attention 4 · T² · 1280 · 32;
+    # 0.331: 4 cond forwards at T = 4488 + 3 no-glyph forwards at T = 4292 (was 7 × 4488)
+    f = lambda t: 2 * t * 32 * (3840 + 1280 + 7680 + 6826 + 3413) * 1280 + 4 * t * t * 1280 * 32
+    tot = r._tflop_per_request() * 1e12
+    assert abs(tot / (4 * f(4488) + 3 * f(4292)) - 1) < 0.01, tot / (4 * f(4488) + 3 * f(4292))
     # the allowed-mask pair count of the release case (pass 1): main → main + items, items → main + items + own
     # glyph, glyph → own glyph + own item; dense overcounts it by 9.29 %
     n = [20] + [16] * 11

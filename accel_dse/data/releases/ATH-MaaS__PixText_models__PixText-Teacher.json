@@ -1,0 +1,219 @@
+{
+ "bytes_llm": 1903959680,
+ "bytes_mtp": 0,
+ "bytes_total": 1903959680,
+ "config": {
+  "format_version": 1,
+  "model": {
+   "axes_dims": [
+    12,
+    34,
+    34
+   ],
+   "depth": 32,
+   "hidden_size": 1280,
+   "image_attention_routing": "items_interread_glyph_reads_own_item_bidirectional_main",
+   "in_channels": 3,
+   "interval_conditioning": false,
+   "mlp_ratio": 4.0,
+   "num_heads": 16,
+   "patch_size": 16,
+   "theta": 10000.0
+  },
+  "variant": "teacher"
+ },
+ "domain": "video",
+ "fetched": "2026-10-22",
+ "n_tensors": 461,
+ "params_llm": 951979840,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "ATH-MaaS/PixText",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 419758080,
+    "params": 209879040
+   }
+  },
+  "cond": {
+   "bf16": {
+    "bytes": 640133120,
+    "params": 320066560
+   }
+  },
+  "io": {
+   "bf16": {
+    "bytes": 4594176,
+    "params": 2297088
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 839297664,
+    "params": 419648832
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 176640,
+    "params": 88320
+   }
+  }
+ },
+ "shapes": {
+  "blocks.0.adaLN_modulation.1.bias": [
+   7680
+  ],
+  "blocks.0.adaLN_modulation.1.weight": [
+   7680,
+   1280
+  ],
+  "blocks.0.attn.k_norm.weight": [
+   80
+  ],
+  "blocks.0.attn.proj.bias": [
+   1280
+  ],
+  "blocks.0.attn.proj.weight": [
+   1280,
+   1280
+  ],
+  "blocks.0.attn.q_norm.weight": [
+   80
+  ],
+  "blocks.0.attn.qkv.bias": [
+   3840
+  ],
+  "blocks.0.attn.qkv.weight": [
+   3840,
+   1280
+  ],
+  "blocks.0.mlp.w12.bias": [
+   6826
+  ],
+  "blocks.0.mlp.w12.weight": [
+   6826,
+   1280
+  ],
+  "blocks.0.mlp.w3.bias": [
+   1280
+  ],
+  "blocks.0.mlp.w3.weight": [
+   1280,
+   3413
+  ],
+  "blocks.0.norm1.weight": [
+   1280
+  ],
+  "blocks.0.norm2.weight": [
+   1280
+  ],
+  "blocks.31.adaLN_modulation.1.bias": [
+   7680
+  ],
+  "blocks.31.adaLN_modulation.1.weight": [
+   7680,
+   1280
+  ],
+  "blocks.31.attn.k_norm.weight": [
+   80
+  ],
+  "blocks.31.attn.proj.bias": [
+   1280
+  ],
+  "blocks.31.attn.proj.weight": [
+   1280,
+   1280
+  ],
+  "blocks.31.attn.q_norm.weight": [
+   80
+  ],
+  "blocks.31.attn.qkv.bias": [
+   3840
+  ],
+  "blocks.31.attn.qkv.weight": [
+   3840,
+   1280
+  ],
+  "blocks.31.mlp.w12.bias": [
+   6826
+  ],
+  "blocks.31.mlp.w12.weight": [
+   6826,
+   1280
+  ],
+  "blocks.31.mlp.w3.bias": [
+   1280
+  ],
+  "blocks.31.mlp.w3.weight": [
+   1280,
+   3413
+  ],
+  "blocks.31.norm1.weight": [
+   1280
+  ],
+  "blocks.31.norm2.weight": [
+   1280
+  ],
+  "final_layer.adaLN_modulation.1.bias": [
+   2560
+  ],
+  "final_layer.adaLN_modulation.1.weight": [
+   2560,
+   1280
+  ],
+  "final_layer.linear.bias": [
+   768
+  ],
+  "final_layer.linear.weight": [
+   768,
+   1280
+  ],
+  "final_layer.norm_final.weight": [
+   1280
+  ],
+  "glyph_projection.proj.bias": [
+   1280
+  ],
+  "glyph_projection.proj.weight": [
+   1280,
+   256
+  ],
+  "patch_projection.proj.bias": [
+   1280
+  ],
+  "patch_projection.proj.weight": [
+   1280,
+   768
+  ],
+  "timestep_embedder.mlp.0.bias": [
+   1280
+  ],
+  "timestep_embedder.mlp.0.weight": [
+   1280,
+   256
+  ],
+  "timestep_embedder.mlp.2.bias": [
+   1280
+  ],
+  "timestep_embedder.mlp.2.weight": [
+   1280,
+   1280
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "release_key": "ATH-MaaS/PixText:models/PixText-Teacher",
+  "repo_files": {
+   "models/PixText-MeanFlow/model.safetensors": 1907943360,
+   "models/PixText-Teacher/model.safetensors": 1904005664
+  },
+  "revision": "main",
+  "spec": "ATH-MaaS/PixText:models/PixText-Teacher",
+  "subfolder": "models/PixText-Teacher",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}

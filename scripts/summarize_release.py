@@ -328,8 +328,9 @@ def _base(name: str) -> str:
 _GGML_BLOCK = {66: ("iq2_xxs", 256), 34: ("q8_0", 32)}
 
 
-def summarize(repo: str) -> dict:
-    d = CACHE / repo.replace("/", "__")
+def summarize(repo: str, key: str | None = None) -> dict:
+    """``key`` (0.331): "repo:subfolder" of a checkpoint with its own release file (cache dir / output keyed by it)."""
+    d = CACHE / (key or repo).replace(":", "_").replace("/", "__")
     cfg = json.loads((d / "config.json").read_text())
     headers = json.loads((d / "headers.json").read_text())
     tc = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else {}
@@ -544,12 +545,24 @@ def summarize(repo: str) -> dict:
     }
 
 
+def _cache_key(p: Path) -> str:
+    """0.331: the release key of a cache dir — source.json's release_key (own-file checkpoints), else the repo."""
+    src = p / "source.json"
+    if src.exists():
+        k = json.loads(src.read_text()).get("release_key")
+        if k:
+            return k
+    return p.name.replace("__", "/", 1)
+
+
 def main(argv):
-    repos = argv or sorted(p.name.replace("__", "/", 1) for p in CACHE.iterdir() if (p / "headers.json").exists())
+    repos = argv or sorted(_cache_key(p) for p in CACHE.iterdir() if (p / "headers.json").exists())
     OUT.mkdir(parents=True, exist_ok=True)
-    for repo in repos:
-        s = summarize(repo)
-        (OUT / (repo.replace("/", "__") + ".json")).write_text(json.dumps(s, indent=1, sort_keys=True))
+    for item in repos:
+        repo, _, sub = item.partition(":")          # 0.331: "repo:subfolder" = a checkpoint with its own release file
+        key = item if sub else None
+        s = summarize(repo, key)
+        (OUT / (item.replace(":", "_").replace("/", "__") + ".json")).write_text(json.dumps(s, indent=1, sort_keys=True))
         fm = {f for r, v in s["roles"].items() if r in ("expert", "attn", "mlp", "shared_expert") for f in v}
         print(f"{repo:48s} llm={s['params_llm']/1e9:9.3f}B mtp={s['params_mtp']/1e9:6.2f}B vis={s['params_vision']/1e9:5.2f}B "
               f"bytes={s['bytes_llm']/2**30:8.1f}GiB fmts={sorted(fm)}")

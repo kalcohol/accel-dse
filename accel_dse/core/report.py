@@ -297,7 +297,24 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
         lim = (COOLING.get(cool) or {}).get("pkg_W")
         if lim and th.get("pkg_W"):
             margins.append(("封装功耗", 1 - th["pkg_W"] / lim))
-    secs.append(_sec("thermal", "热 / 功耗", it, th.get("status")))
+    flim = (COOLING.get(cool) or {}).get("flux_W_mm2") if cool else None
+    if flim and th.get("flux_W_mm2") and th.get("flux_ratio"):
+        # 0.331: the margin in the limit's own unit and as power headroom (limit / flux − 1 at fixed area) 「推导」
+        it += [item("flux_margin_W_mm2", "热流余量（上限 − 热流）", flim - th["flux_W_mm2"], "W/mm²", tag="推导",
+                    src="冷却上限 − 封装热流"),
+               item("flux_headroom", "功耗可增幅（热流达上限，面积不变）", 1 / th["flux_ratio"] - 1, tag="推导",
+                    src="1 / (热流 / 上限) − 1")]
+    sec_th = _sec("thermal", "热 / 功耗", it, th.get("status"))
+    ft = _front_thermal(r, rows, cool, flim, cs, tie) if flim else None
+    if ft:
+        sec_th["front_thermal"] = ft
+        for p_ in ft["points"]:
+            if p_["within_tie"]:
+                warn.append({"kind": "front_thermal", "text": f"前沿点第 {p_['row']} 行（{p_['design']}）热流 "
+                             f"{p_['flux_W_mm2']:.4f} vs {cool} 上限 {flim:g} W/mm²：余量 {p_['margin_W_mm2']:.4f} W/mm²"
+                             f"（{p_['margin']:.2%}）≤ 持平阈 {tie:.0%}——功耗 +{p_['headroom']:.2%} 即不可行、离开前沿"
+                             "（上限不调，只报告）"})
+    secs.append(sec_th)
 
     # 6 yield and cost per good package -----------------------------------------------------------------------------
     cp = r.get("cost")
@@ -422,6 +439,28 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
             "rules": "每个数带标签（来源 / 二手 / 推导 / 假设 / 近似 / 用户输入）与出处；缺的输入列为缺项，不补 0、不借用默认"}
 
 
+def _front_thermal(r: dict, rows: list, cool: str, flim: float, src: str | None, tie: float) -> dict | None:
+    """0.331: thermal sensitivity of the perf/W front (insight_dse ``front``): per front point its package flux, the
+    cooling limit, the margin (W/mm² and 1 − flux / limit) and the power headroom to the limit at fixed area; points
+    within the DSE tie are the fragile ones (a small power / area change moves them off the front).  The limit is
+    reported, never retuned."""
+    pts = []
+    for j in r.get("front") or []:
+        y = rows[j]
+        t = y.get("thermal") or {}
+        f, q = t.get("flux_W_mm2"), t.get("flux_ratio")
+        if not f or not q:
+            continue
+        m = 1 - q
+        pts.append({"row": j, "design": _desc(y), "flux_W_mm2": f, "limit_W_mm2": flim, "margin_W_mm2": flim - f,
+                    "margin": m, "headroom": 1 / q - 1, "within_tie": m <= tie, "feasible": bool(y.get("feasible"))})
+    if not pts:
+        return None
+    return {"cooling": cool, "limit_W_mm2": flim, "src": src or "", "tie": tie, "points": pts,
+            "n_within_tie": sum(1 for p in pts if p["within_tie"]),
+            "label": "前沿热敏感性：余量 = 1 − 热流 / 上限「推导」；上限按冷却预设出处，不调"}
+
+
 def _fmt(v) -> str:
     if v is None:
         return "—"
@@ -465,6 +504,13 @@ def to_markdown(rep: dict) -> str:
             L += ["", f"联合角点（所有适用输入同时取不利 / 有利端）：不利 {c['adverse']['d']:+.1%}，有利 {c['favourable']['d']:+.1%}"]
             if sn["skipped"]:
                 L.append("未变动：" + "；".join(sn["skipped"]))
+        if s.get("front_thermal"):          # 0.331
+            ft = s["front_thermal"]
+            L += ["", f"前沿热敏感性（{ft['cooling']} 上限 {ft['limit_W_mm2']:g} W/mm²，不调；余量 ≤ 持平阈 {ft['tie']:.0%} 的点标 ⚠）：", "",
+                  "| 前沿点 | 设计 | 热流 W/mm² | 余量 W/mm² | 余量 | 功耗可增 | |", "|---|---|---|---|---|---|---|"]
+            for p_ in ft["points"]:
+                L.append(f"| 第 {p_['row']} 行 | {_md_cell(p_['design'])} | {p_['flux_W_mm2']:.4f} | {p_['margin_W_mm2']:.4f} | "
+                         f"{p_['margin']:.2%} | {p_['headroom']:+.2%} | {'⚠' if p_['within_tie'] else ''} |")
         for n in s.get("notes") or []:
             L += ["", f"> {n}"]
         L.append("")
@@ -490,7 +536,7 @@ DIRECTION = {"thr": 1, "perf_W": 1, "slo_margin": 1, "shore_margin": 1, "die_yie
              "tpot_ms": -1, "ttft_ms": -1, "J_per_unit": -1, "W_card": -1, "static_W": -1, "pkg_W": -1, "die_W": -1,
              "flux_W_mm2": -1, "flux_ratio": -1, "mm2": -1, "good_die_usd": -1, "si_usd": -1, "pkg_usd": -1,
              "kgd_scrap_usd": -1, "usd_good_pkg": -1, "usd_per_Munit": -1, "capex_usd": -1, "mem_usd": -1,
-             "energy_usd_per_yr": -1, "kWh_per_yr": -1}
+             "energy_usd_per_yr": -1, "kWh_per_yr": -1, "flux_margin_W_mm2": 1, "flux_headroom": 1}   # 0.331
 HEADLINE = ("usd_per_Munit", "perf_W", "thr", "tpot_ms", "J_per_unit", "pkg_W", "usd_good_pkg")
 _LETTERS = "ABC"
 

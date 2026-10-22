@@ -410,6 +410,10 @@ class NativeWorkload:
     uncond: tuple = ()             # 0.258: the CFG negative branch's own shape when the reference runs it differently:
                                    # (text tokens, skipped block indices) — e.g. MOSS-Image: empty negative prompt, block 22
                                    # skipped (uncond_skip_layers default); () = same shape as the conditional branch
+    cfg_interval: tuple = ()       # 0.331: guidance interval (lo, hi) on the progress grid k / steps — the negative branch
+                                   # runs only on steps with lo < k / steps < hi (PixText samplers: flow.py / meanflow.py
+                                   # ``low < time_value < high``; Kynkäänniemi et al. 2024 limited-interval guidance);
+                                   # () = every step.  Needs ``uncond`` (two serial forwards); see domain.guided_steps
     source: str = ""
 
 

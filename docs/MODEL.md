@@ -9741,3 +9741,64 @@ Samsung Hot Chips 2026 (S. Han) slide 11 「来源」 (ServeTheHome slide image)
 - Partial guidance as a workload field: PixText counts forwards as steps.
 - PixText-Teacher.
 - OrcaCyber Nano 1.0 (drafter-only GGUF metadata, config 401).
+
+## §276 Release keys; partial guidance; PixText-Teacher; front thermal sensitivity (0.331)
+
+### §276.1 One repo, several release files
+- A catalogued model reads `releases/<key>.json` with key = `catalog.RELEASE_KEYS.get(id, hf_id)`.
+  - Key form `"<repo>:<subfolder>"` → `<repo /→__>_<subfolder /→__>.json` (`model.release_path`, unchanged).
+  - hf_id stays the public repo, used for links, `provider_of` and the freshness org list. The keyed model's alias is its key, so the bare repo id still resolves to the first (default) checkpoint.
+- Fetch spec `repo:sub!` → own file (`scripts/fetch_hf_release.py`). The cache dir and `source.json` carry `release_key`; summarize reads it back.
+
+### §276.2 Partial guidance (`NativeWorkload.cfg_interval`) 「来源」 mechanism
+- With guidance scale > 1 on an interval (lo, hi), the negative branch runs only on steps k with lo < k/steps < hi.
+  - Strict inequalities: PixText `sampling/flow.py` `_guided_prediction` and `sampling/meanflow.py` `_guided_interval_prediction`. The pipeline passes `guidance_interval` with no progress grid, so progress = k/steps.
+  - The limited-interval method is Kynkäänniemi et al., NeurIPS 2024.
+- `guided_steps(steps, (lo, hi))`; an empty interval means every step, the old behaviour for every other model.
+- Two-forward CFG (§ 0.258):
+  - TFLOP per request = cond × steps + uncond × guided;
+  - denoise time = steps × t_cond + guided × t_uncond;
+  - energy counts the uncond stages guided times.
+- The packed symmetric path (`cfg_branches = same`, or the PP > 1 / micro-batch / step-skip fallback) counts every step, with a warning.
+
+### §276.3 PixText fidelity, old → new
+| | ≤ 0.330 | 0.331 |
+|---|---|---|
+| MeanFlow workload | steps 7, cfg 1 | steps 4, cfg 2, interval (0.1, 1.0) → 4 + 3 = 7 forwards |
+| negative branch shape | 4488 tokens (cond) 「近似」 | 4292 tokens (main 4096 + items 196, no glyphs) 「来源」 |
+| per forward | 11.84 TF | cond 11.84 / uncond 11.19 TF |
+| TFLOP / request | 82.879 | 80.916 (−2.37%) |
+| default-chip latency | 0.935 s | 0.907 s |
+- **Routing mask: still dense 「近似」 on the conditional branch** (18,430,912 allowed vs 20,142,144 pairs, +9.3%).
+  - Rule: main → main + items; items → main + items + own glyph; glyph → own glyph + own item.
+  - The glyph-row and own-glyph terms scale with Σ nᵢ² over items. The workload has no per-item sizes, so modelling it needs a PixText-only rule, which is out of scope.
+  - The no-glyph branch has no glyph rows: main + items are mutually dense, so it is exact.
+
+### §276.4 PixText-Teacher
+- `ATH-MaaS/PixText:models/PixText-Teacher`: 461 BF16 tensors, 951,979,840 params = builder, exactly.
+  - Same GroupJiT as MeanFlow without the interval embedder (−1,968,640 params).
+- 25 Euler steps; guidance 3.3 on (0.1, 1.0) → k = 3…24 guided = 22 → 47 forwards 「推导」.
+- Result: 540.45 TFLOP per request; 6.056 s on the default chip.
+
+### §276.5 Design report: front thermal sensitivity
+- Thermal items (「推导」):
+  - flux margin = limit − flux (W/mm²);
+  - headroom = limit / flux − 1 (power increase at fixed area that reaches the limit).
+- `front_thermal` lists each perf/W front point; points with margin ≤ the DSE tie (1%) are flagged and warned. The limit is not retuned.
+- air_oam (0.86 W/mm², 700 W / 814 mm² GH100 「推导」 0.315), qwen3-8b prefill tp, card scope:
+  - row 0: 0.8576 (margin 0.0024 W/mm², 0.28%);
+  - row 15: 0.8581 (0.0019, 0.23%);
+  - row 1: 0.8509 (1.06%).
+  - A +0.3% power or −0.3% area change removes rows 0 / 15 from the front.
+
+### §276.7 Suite freeze clock (test infrastructure)
+- `scripts/freeze_clock.py`: excused per stall gap = gap − max(period, CPU in the gap). It was gap − period.
+  - So active ≥ CPU executed. A starved-but-running process no longer has its executed CPU excused (8× oversubscription: GIL call active 0.24 → 1.61 s for 1.41 s CPU).
+  - Thresholds unchanged 「假设」.
+- The logic is a pure `observe(w, c)` on injectable clocks; test_core_316 checks it on a fake clock.
+
+### §276.6 Not modelled / pending
+- PixText routing mask (above); glyph rasterisation time.
+- Guidance interval on the packed / PP > 1 fallback path.
+- PCIe / CXL controller area; HBM controller at N7 / N28; controller power.
+- OrcaCyber Nano 1.0 (0.331 retry: sha 1af1635, drafter-only GGUF metadata, config 401).

@@ -143,7 +143,7 @@ class Result:
             return (pk["extract_tflop_seq"] + (w.steps - 1) * pk["cached_tflop_seq"]) * w.seqs_per_request
         if self.cfg_asym:       # 0.258: one conditional + one negative-branch forward per step, each its own shape
             ca = self.cfg_asym
-            return (ca["cond_tflop_seq"] + ca["uncond_tflop_seq"]) * w.steps
+            return ca["cond_tflop_seq"] * w.steps + ca["uncond_tflop_seq"] * ca["guided_steps"]   # 0.331 interval
         per_seq = sum(st.flops_u for st in self.stages) * lay.tp * lay.sp * lay.dp * lay.cp / b_mb
         if self.step_cache:     # 0.167: skipped steps run embed + head + residual add only
             sc = self.step_cache
@@ -2709,10 +2709,14 @@ def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]
         if asym:
             tick_u = max(st.time.total for st in stages_u)
             n_r = lay.tp * lay.sp * lay.dp * lay.cp
-            asym.update(cond_ms=tick * 1e3, uncond_ms=tick_u * 1e3, step_ms=(tick + tick_u) * 1e3,
+            # 0.331: guidance interval — the negative branch runs on ``guided`` of the steps (every step when −1);
+            # step_ms = the mean step (= cond + uncond when every step is guided, as before)
+            g = wl.steps if wl.guided < 0 else wl.guided
+            denoise = wl.steps * tick + g * tick_u
+            asym.update(cond_ms=tick * 1e3, uncond_ms=tick_u * 1e3, step_ms=denoise / wl.steps * 1e3,
+                        guided_step_ms=(tick + tick_u) * 1e3, guided_steps=g,
                         cond_tflop_seq=sum(st.flops_u for st in stages) * n_r / sv.batch / 1e12,
                         uncond_tflop_seq=sum(st.flops_u for st in stages_u) * n_r / sv.batch / 1e12)
-            denoise = wl.steps * (tick + tick_u)
         elif pkv or mcache:
             tick_x = max(st.time.total for st in stages_x)
             denoise = per_step * (tick_x + (wl.steps - 1) * tick)
@@ -2820,6 +2824,8 @@ def _cfg_asym(scn: Scenario, m: ModelSpec, wl, pp: int, warnings: list[str]) -> 
     if wl.kind != "gen" or nw is None or not nw.uncond or wl.seqs_per_request != 2:
         return None
     if scn.workload.cfg_branches == "same":
+        if 0 <= wl.guided < wl.steps:       # 0.331: the packed symmetric forward has no per-step guidance switch
+            warnings.append("cfg_branches = same：cond / uncond 打包为一次前向，guidance 区间未建模（按每步都有负分支计）")
         return None
     why = []
     if pp > 1:
@@ -2829,7 +2835,8 @@ def _cfg_asym(scn: Scenario, m: ModelSpec, wl, pp: int, warnings: list[str]) -> 
     if scn.workload.step_skip:
         why.append("workload.step_skip")
     if why:
-        warnings.append("CFG 负分支按与正分支同形状计（未建模：" + "、".join(why) + "）")
+        warnings.append("CFG 负分支按与正分支同形状计（未建模：" + "、".join(why) + "）"
+                        + ("；guidance 区间未建模，按每步都有负分支计" if wl.guided >= 0 and wl.guided < wl.steps else ""))
         return None
     return nw.uncond
 

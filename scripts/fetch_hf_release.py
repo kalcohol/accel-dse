@@ -7,7 +7,10 @@ model.safetensors.index.json, and every safetensors **header** via HTTP Range
 accel_dse.core (dtype per tensor role) and by the V1 validation (param counts).
 
 Raw files are cached under local/hf_cache/ (gitignored).
-Usage: python3 scripts/fetch_hf_release.py [repo[:subfolder][@revision] ...]   (default: scripts/release_repos.txt)
+Usage: python3 scripts/fetch_hf_release.py [repo[:subfolder][@revision][!] ...]   (default: scripts/release_repos.txt)
+A trailing ``!`` (0.331) keys the cache and the release file by ``repo:subfolder`` (one repo holding several
+checkpoints, e.g. ``ATH-MaaS/PixText:models/PixText-Teacher!`` → releases/ATH-MaaS__PixText_models__PixText-Teacher.json,
+catalog.RELEASE_KEYS); without it the file is keyed by the repo, as before.
 """
 from __future__ import annotations
 
@@ -100,12 +103,27 @@ def _files_of(base: str) -> tuple[dict | None, list[str] | None]:
     return idx, files
 
 
-def fetch(spec: str) -> dict:
+def release_stem(key: str) -> str:
+    """0.331: file stem of a release key — identical to accel_dse.core.model.release_path ("repo" or "repo:subfolder")."""
+    return key.replace(":", "_").replace("/", "__")
+
+
+def own_key(spec: str) -> str | None:
+    """0.331: ``repo:sub!`` → "repo:sub" (own release file); None for an ordinary spec."""
+    if not spec.endswith("!"):
+        return None
+    repo, sub, _ = parse_spec(spec[:-1])
+    if not sub:
+        raise ValueError("'!' needs a subfolder: " + spec)
+    return f"{repo}:{sub}"
+
+
+def fetch(spec: str, rkey: str | None = None) -> dict:
     """``repo:sub1+sub2`` fetches several denoisers of one release (Wan2.2 A14B: high- and low-noise experts);
     their headers are keyed ``sub/file`` and the first subfolder's config is the release config."""
     repo, sub, rev = parse_spec(spec)
     subs = sub.split("+") if sub else [""]
-    d = CACHE / repo.replace("/", "__")
+    d = CACHE / release_stem(rkey or repo)
     d.mkdir(parents=True, exist_ok=True)
     root = f"{HF}/{repo}/resolve/{rev.replace('/', '%2F')}/"
     cfg = _json(root + (subs[0] + "/" if subs[0] else "") + "config.json")
@@ -148,6 +166,7 @@ def fetch(spec: str) -> dict:
             pass
     hdr_path.write_text(json.dumps(headers))
     meta = {"spec": spec, "subfolder": sub, "subfolders": subs if len(subs) > 1 else None, "revision": rev,
+            **({"release_key": rkey} if rkey else {}),
             "main_bin_total_size": bin_total,
             "repo_files": _tree_sizes(repo) if (sub or rev != "main" or "diffusion" in first_files[0]) else {}}
     (d / "source.json").write_text(json.dumps(meta, indent=1))
@@ -217,11 +236,13 @@ def main(argv: list[str]) -> int:
     for repo in repos:
         try:
             t0 = time.time()
-            fetch(repo)
+            key = own_key(repo)
+            spec = repo[:-1] if key else repo
+            fetch(spec, key)
             # the release summary proper (logical params, packed formats, domain roles) is summarize_release.py's
             import summarize_release
-            s = summarize_release.summarize(parse_spec(repo)[0])
-            (OUT / (parse_spec(repo)[0].replace("/", "__") + ".json")).write_text(json.dumps(s, indent=1, sort_keys=True))
+            s = summarize_release.summarize(parse_spec(spec)[0], key)
+            (OUT / (release_stem(key or parse_spec(spec)[0]) + ".json")).write_text(json.dumps(s, indent=1, sort_keys=True))
             print(f"OK   {repo:55s} tensors={s['n_tensors']:6d} params={s['params_llm']/1e9:9.3f}B "
                   f"q={bool(s['quantization_config'])} {time.time()-t0:.1f}s", flush=True)
             ok += 1

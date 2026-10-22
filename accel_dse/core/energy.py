@@ -368,7 +368,8 @@ def _counts(r) -> dict:
     c = dict.fromkeys(ACTIONS, 0.0)
     # 0.258: CFG negative branch at its own shape — the conditional and the negative-branch forwards each run once
     # per step (micro-batches = the 2 serial calls, B sequences each)
-    sets = ([(st, w.steps) for st in r.stages] + [(st, w.steps) for st in r.stages_u]
+    # 0.331: with a guidance interval the negative branch runs on cfg_asym["guided_steps"] of the steps
+    sets = ([(st, w.steps) for st in r.stages] + [(st, r.cfg_asym.get("guided_steps", w.steps)) for st in r.stages_u]
             if getattr(r, "cfg_asym", None) else [(st, passes) for st in r.stages])
     for st, passes in sets:
         t = st.time

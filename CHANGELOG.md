@@ -6,6 +6,80 @@
 
 
 
+## [0.331.0]
+
+### One repo, several release files; PixText-Teacher
+- **Release key separate from hf_id.** New `catalog.RELEASE_KEYS` (model id → `"<repo>:<subfolder>"`) and `release_key()`.
+  - The file is `releases/<repo /→__>_<subfolder /→__>.json`, using the existing `model.release_path`, which already mapped ":" → "_".
+  - Every entry now carries `release`. Only the listed models differ from their hf_id, so all existing ids, files, aliases, labels, links, providers and the freshness org list are unchanged (regression test).
+  - The hf_id of a keyed model stays the public repo (links, `provider_of`, freshness). Its alias is the release key, not the repo, so `ATH-MaaS/PixText` still resolves to MeanFlow.
+  - `get_model` → `from_domain_release(..., release=)`.
+- **Fetch / summarize.**
+  - `scripts/fetch_hf_release.py` spec `repo:sub!` gives the subfolder its own file (`own_key`, `release_stem` = `release_path` stem); the cache dir and `source.json` carry `release_key`.
+  - `summarize_release.py` reads it back (`_cache_key`) and accepts `repo:sub` items.
+  - `release_repos.txt`: `ATH-MaaS/PixText:models/PixText-Teacher!`.
+- **PixText-Teacher added** (`pixtext-teacher`, label "PixText · Teacher", release `ATH-MaaS__PixText_models__PixText-Teacher.json`).
+  - Public config + safetensors header: 461 BF16 tensors, 951,979,840 params, 1,903,959,680 B. Matches the builder exactly, coverage full (no interval embedder).
+  - Workload: the same reference case as MeanFlow (4096 + 392 tokens), 25 Euler steps, guidance 3.3 on (0.1, 1.0) → 25 + 22 = 47 forwards 「推导」 (sampling/flow.py `low < k/25 < high`).
+  - Result: 540.45 TFLOP per request; default chip 6.056 s per request.
+
+### Partial guidance (general workload field, not PixText-specific)
+- **`NativeWorkload.cfg_interval = (lo, hi)`**, default `()` = every step guided, the old behaviour.
+  - `domain.guided_steps(steps, interval)` counts steps k with lo < k/steps < hi (strict, as the PixText samplers do 「来源」; the guidance-interval idea is Kynkäänniemi et al. 2024).
+  - `ResolvedWorkload.guided` (−1 = all).
+  - The two-forward CFG path (`_cfg_asym`, 0.258) runs the negative branch on `guided` steps only: TFLOP = cond × steps + uncond × guided, and denoise = steps × tick + guided × tick_u. The asym dict gains `guided_steps` / `step_ms` / `guided_step_ms`.
+  - Energy counts the negative-branch stages `guided_steps` times.
+  - `workload.cfg_branches = same` (packed) and the PP > 1 fallback do not model the interval: they warn and count every step.
+- **PixText no-glyph negative branch at its own shape.** `build_pixtext` sets `uncond = (prefix − crop tokens, ())`: 4292 tokens (main + items, no glyphs) vs 4488, through the existing asym path.
+- **Defaults old → new (mechanism: release sampler code + README):**
+  - pixtext-meanflow workload steps 7, cfg 1 → steps 4, cfg 2, cfg_interval (0.1, 1.0) (still 7 forwards).
+  - Per forward: cond 11.84 TFLOP; uncond 11.84 → 11.19 TFLOP.
+  - Per request: TFLOP 82.879 → 80.916 (−2.37%); default-chip latency 0.935 → 0.907 s.
+  - MOSS-Image unchanged (4953.804 TFLOP per request, checked against 0.330 main).
+- **Routing attention mask: not modelled (still dense 「近似」, +9.3% pairs on the conditional branch).**
+  - Glyph rows attend only to their own item's slot, so cost depends on Σ nᵢ² over items. No workload field carries the per-item sizes, so modelling it would need a PixText-specific rule.
+  - The no-glyph branch is fully dense under the mask, so it is exact now.
+
+### Design report: front thermal sensitivity (no limit change)
+- **Thermal section:**
+  - new items `flux_margin_W_mm2` (limit − flux, 「推导」) and `flux_headroom` (limit / flux − 1 = the power increase at fixed area that reaches the limit);
+  - new `front_thermal` block: every perf/W front point with flux, limit, margin in W/mm² and %, headroom and a within-tie flag;
+  - near-tie warnings of kind `front_thermal`;
+  - a Markdown table.
+  - `compare_report` treats both new items as higher-is-better.
+- **air_oam card front (qwen3-8b prefill tp):**
+  - row 0: 0.8576 W/mm², margin 0.0024 W/mm² (0.28%);
+  - row 15: 0.8581 W/mm², margin 0.0019 W/mm² (0.23%);
+  - both are within the 1% tie and flagged. Row 1: 0.8509, 1.06%, not flagged.
+- `COOLING["air_oam"]` stays 0.86 W/mm².
+
+### Suite timing: freeze_clock never excuses executed CPU; test_core_316 deterministic
+- **Symptom.** On msa1's 0.330 full suite (-j 8), `test_core_316::test_freeze_clock_excuses_only_non_execution` failed once (line 155, GIL case: `frozen == 0 and active == wall`); it passed on the box.
+- **Mechanism (reproduced).** Under 8× CPU oversubscription (64 busy-loops on 8 cores) the 2 s GIL call stretches to ≈ 10 s of wall at ≈ 14% CPU, below the 20% stall threshold, so the sampler correctly sees a stall: the process could not run.
+  - The real flaw: ≤ 0.330 excused the whole `gap − period`, including the CPU the process *did* execute inside the gap.
+  - Result: active 0.24 s for 1.4 s of executed CPU (old) → active 1.61 s ≥ 1.41 s CPU (new).
+  - A gap above the threshold during which the process ran ≥ 20% is not counted (unchanged, checked).
+- **Fix, `scripts/freeze_clock.py` (old → new).** Excused per stall: `gap − period` → `gap − max(period, CPU in the gap)`, so active time ≥ process CPU time under any load. This matches the module's stated rule ("only time in which the process did not execute at all is excused").
+  - Thresholds unchanged (0.05 s / 0.5 s / 20%, 「假设」).
+  - Wall / CPU clocks are injectable; the decision moved to a pure `observe(w, c)`; `start=False` runs no thread; `t0` / `c0` baseline.
+  - The self-check prints `cpu`, `act_all`, `cpu_all`.
+- **test_core_316 (no check weakened).**
+  - The three cases (SIGSTOP 2 s excused minus one period; sleeping hang charged in full; 2 s GIL call charged in full) now run on a fake clock with exact equalities.
+  - New threshold / fix test: 0.49 s not a stall; 0.5 s is; exactly 20% CPU is running; 2 s at 15% CPU excuses 1.7 not 1.95; plus a 200-script random invariant active ≥ CPU and ≤ wall.
+  - The real-subprocess check keeps the SIGSTOP and GIL runs with load-independent assertions: frozen ≥ 1.5 s for the stop, lifetime active ≥ lifetime CPU, active ≤ wall.
+  - Wall-time equalities are no longer asserted on a real host. Starvation is a legitimate stall, so they cannot hold on a loaded host.
+
+### Tests
+- New `tests/test_core_331.py` (9).
+- test_core_316: freeze-clock test split into 3 (deterministic cases, thresholds / fix, real-process invariants): 7 → 9 tests.
+- test_core_330: MeanFlow workload steps 7, cfg 1 → 4, cfg 2 (+ cfg_interval); seqs 1 → 2; FLOP check now 4 × f(4488) + 3 × f(4292); the "no teacher" assertion → teacher present.
+- test_core_062_1: release files 192 → 193; listed + unlisted 200 → 201 (+ pixtext-teacher).
+
+### Freshness (since 2026-10-22, 110 orgs)
+- Same list as 0.330: PixText (both checkpoints now catalogued), unsloth MOSS-Image GGUF / FP8 (third-party quants), TextVerifier-CJK-CLIP (classifier).
+- **OrcaCyber Nano 1.0 still pending.** Same sha 1af1635 (lastModified 12:16 JST); public GGUF metadata is the dflash drafter's; config 401; no new orcarouter repos.
+
+
 ## [0.330.0]
 
 ### Adversarial review of the 0.329 verdict flips (no default value changes)

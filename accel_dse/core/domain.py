@@ -842,30 +842,38 @@ def build_pixtext(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> M
     io_misc = _io_misc(sh, io_pre + io_post, used + used2) - sum(x.params for x in dup)
     wl = _image_wl(wl, P, wl.text_tokens)
     n_crop = wl.text_tokens // 2
+    # 0.331: the guidance branch is a second, serial model call without glyphs (sampling/flow.py _guided_prediction,
+    # meanflow.py _guided_interval_prediction: glyph_conditions → None) → its sequence = main + item crops: the joint
+    # prefix minus the glyph tokens (one glyph token per item crop token, 「来源」 branch tokenizer); no skipped blocks
+    if wl.cfg == 2 and not wl.uncond:
+        wl = replace(wl, uncond=(wl.text_tokens - n_crop, ()))
+    g = guided_steps(wl.steps, wl.cfg_interval) if wl.cfg == 2 else 0
+    solver = "meanflow_interval_euler，c = k/{0}".format(wl.steps) if iv else "Euler，t = k/{0}".format(wl.steps)
+    fwd = (f"每请求 {wl.steps} 步（{solver}）+ guidance_scale 3.3 只在 guidance_interval "
+           f"({wl.cfg_interval[0]}, {wl.cfg_interval[1]}) 内（严格不等，k/步数）的 {g} 步各多一次无字形分支前向 = "
+           f"{wl.steps + g} 次 DiT 前向（参考实现两次串行调用「来源」"
+           + ("；README：four MeanFlow updates use seven model forwards" if iv else "") + "）；无字形分支按自身形状"
+           f"（{(wl.height // P) * (wl.width // P) + wl.text_tokens - n_crop} token：主图 + 编辑项，无字形）计（0.331，"
+           "原按条件分支形状）") if wl.cfg_interval else ""
     return _finish(model_id, hf_id, rel, f"PixText GroupJiT 像素空间 DiT（{L} 层单流，[主图 ‖ 编辑项裁块 ‖ 字形] 联合注意力；"
                    f"16×16 像素 patch，无 VAE）", d, 0, [layer] * L, io_pre + dup, io_post, io_misc, 0, wl, "",
                    skip=("models",), standalone=(
                        "发布即完整推理：无文本编码器、无 OCR、无 VAE（README：MeanFlow needs no additional text encoder, OCR "
-                       "model, VAE）——字形由字体光栅化（CPU，未计时）、输出直接是像素 patch"),
-                   fwd_note=_PIXTEXT_FWD.get(model_id, ""), extra_notes=(
+                       "model, VAE；Teacher 同一 GroupJiT 结构）——字形由字体光栅化（CPU，未计时）、输出直接是像素 patch"),
+                   fwd_note=fwd, extra_notes=(
                        f"每次 pass = 主图（main_target_area 1048576 → 1024×1024 = {(wl.height // P) * (wl.width // P)} token）"
                        f" + 编辑项 RGB 裁块 {n_crop} token + 等量字形 token {n_crop}（发布参考用例 examples/pipeline_case 第 1 pass："
                        f"12 项，11 个 64×64 + 1 个 64×80 裁块 → Σ{n_crop}「来源」）；max_items_per_pass 12，"
                        f"更多项分多次 pass 串行（参考用例 13 项 = 2 pass，第 2 pass 仅 1 项 12 token）",
                        "注意力掩码（items_interread_glyph_reads_own_item_bidirectional_main）：主图看主图 + 全部编辑项、编辑项看主图 / 全部编辑项 / "
-                       "自己的字形、字形只看自己的字形与所属编辑项（attention.py _allowed_routing_pair「来源」）——按稠密联合注意力计「近似」（参考用例第 1 pass 允许 18,430,912 对 vs 稠密 4488² = 20,142,144，多算 ≈ 9.3%，"
-                       "≈ 2.6% 总 FLOP「推导」）",
+                       "自己的字形、字形只看自己的字形与所属编辑项（attention.py _allowed_routing_pair「来源」）——条件分支按稠密联合注意力计「近似」"
+                       "（参考用例第 1 pass 允许 18,430,912 对 vs 稠密 4488² = 20,142,144，多算 ≈ 9.3%「推导」；未建模原因：字形只看"
+                       "所属编辑项，代价取决于各项尺寸 Σnᵢ²，工作负载只有总 token 数）；无字形分支（主图 + 编辑项）在该掩码下本就稠密，按实计",
                        "AdaLN（d → 6d）、timestep / interval embedder 按参考实现逐 token 计算（conditioning_ids = arange(tokens)）；"
                        "patch_projection 按主图行、glyph_projection 按前缀行计（编辑项 RGB 行实为 patch_projection，"
                        "≈ 0.005% FLOP「近似」）"))
 
 
-_PIXTEXT_FWD = {
-    "pixtext-meanflow": ("每请求 7 次 DiT 前向，按 7「步」计、cfg 1：4 步 MeanFlow（meanflow_interval_euler，c = k/4）+ "
-                         "guidance_scale 3.3 只在 guidance_interval (0.1, 1.0) 内的 3 步各多一次无字形分支前向（参考实现串行"
-                         "两次调用；README：four MeanFlow updates use seven model forwards「来源」）；无字形分支按条件分支形状计"
-                         "（参考用例少 196 字形 token：4292 vs 4488，≈ +1.9% FLOP「近似」）"),
-}
 
 
 # ---------------------------------------------------------------- common tail
@@ -987,10 +995,11 @@ from .structure import BUILDERS as _STRUCTURE_BUILDERS  # noqa: E402  (0.43 prot
 BUILDERS.update(_STRUCTURE_BUILDERS)
 
 
-def from_domain_release(model_id: str, hf_id: str, builder: str, wl: NativeWorkload) -> ModelSpec:
-    rel = load_release(hf_id)
+def from_domain_release(model_id: str, hf_id: str, builder: str, wl: NativeWorkload, release: str | None = None) -> ModelSpec:
+    """``release`` (0.331): the release-file key when it differs from the public repo id (catalog.RELEASE_KEYS)."""
+    rel = load_release(release or hf_id)
     if rel is None:
-        raise ValueError(f"no release metadata for {hf_id}; run scripts/fetch_hf_release.py")
+        raise ValueError(f"no release metadata for {release or hf_id}; run scripts/fetch_hf_release.py")
     return BUILDERS[builder](model_id, hf_id, rel, wl)
 
 
@@ -1010,6 +1019,17 @@ class ResolvedWorkload:
     aux: int = 0             # joint audio rows in the sequence
     pair: object = None      # structure models: ir.PairDims (grids, recycles, diffusion steps, samples)
     ref: int = 0             # 0.252 reference-image rows in the sequence (FLUX 3 image_cond tokens)
+    guided: int = -1         # 0.331 steps that run the CFG negative branch (cfg_interval); −1 = every step
+
+
+def guided_steps(steps: int, interval: tuple) -> int:
+    """0.331: steps k = 0 … steps − 1 whose progress k / steps lies strictly inside the guidance interval (lo, hi)
+    (PixText GroupFlowSampler / GroupMeanFlowSampler: ``low < time_value < high`` with time_value = k / steps, 「来源」);
+    an empty interval guides every step."""
+    if not interval:
+        return steps
+    lo, hi = interval
+    return sum(1 for k in range(steps) if lo < k / steps < hi)
 
 
 def _latent_frames(d: NativeWorkload, F: int, warns: list[str]) -> int:
@@ -1145,6 +1165,10 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
                 "seq_tokens": vid + d.prefix_tokens + aud + ref_rows, "steps": steps, "cfg": cfg,
                 "default": {"frames": d.frames, "height": d.height, "width": d.width, "steps": d.steps, "cfg": d.cfg},
                 "source": d.source}
+        g = -1
+        if d.cfg_interval and cfg > 1:              # 0.331 only interval-guided models carry the keys
+            g = guided_steps(steps, d.cfg_interval)
+            info.update(cfg_interval=list(d.cfg_interval), guided_steps=g, forwards=steps + g)
         if image:                                   # only image models carry the key (video summaries unchanged)
             info["image"] = True
         if d.max_refs:                              # 0.252 only models with a reference stream carry the keys
@@ -1152,7 +1176,7 @@ def resolve_workload(spec: ModelSpec, w) -> ResolvedWorkload:
         if attn == "factorized":
             info["attn_groups"] = {"spatial": [gt, gh * gw], "temporal": [gh * gw, gt]}
         return ResolvedWorkload("gen", vid + d.prefix_tokens + aud + ref_rows, d.text_tokens, cfg,
-                                steps, float(F), "frame", info, tuple(warns), frames=gt, aux=aud, ref=ref_rows)
+                                steps, float(F), "frame", info, tuple(warns), frames=gt, aux=aud, ref=ref_rows, guided=g)
     if spec.domain == "genomics":                       # 0.106: one window of k-mer tokens per sequence
         L = w.seq_len or d.seq_len
         if d.max_seq and L > d.max_seq:
