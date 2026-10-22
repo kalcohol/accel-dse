@@ -90,7 +90,9 @@ def test_mac2_4stack_crosses_reticle():
     # 4-stack mono was 838.9 mm² (< 858, $/M 0.01164 — the 0.329 winner); now 899.0 → best 4-stack row is a split
     ret = bm.RETICLE_FIELD_MM[0] * bm.RETICLE_FIELD_MM[1]
     assert 898.99 - 4 * STACK < ret == 858.0 < 898.99
-    assert abs(tco[H4S] - 0.01966) < 5e-5 and abs(tco[H8] - 0.01681) < 5e-5 and tco[H8] < tco[H4S]
+    # 0.333 re-pin (HBM 5.80 pJ/bit + per-channel standby, MODEL §278): 4-stack 0.01966 → 0.02138, 8-stack 0.01681 →
+    # 0.01860; the 8-stack row still wins
+    assert abs(tco[H4S] - 0.02138) < 5e-5 and abs(tco[H8] - 0.01860) < 5e-5 and tco[H8] < tco[H4S]
 
 
 # ---------------------------------------------------------------- (1) I/O: tp8 / 900 GB/s buildable by area alone
@@ -108,12 +110,15 @@ def test_air_flux_whole_die_definition_and_thin_margin():
     c = COOLING["air_oam"]
     assert c["flux_W_mm2"] == 0.86 and "814" in c["src"]       # 700 W ÷ 814 mm² of the whole GH100 die (PHYs incl.)
     o = _ex().run("qwen3-8b", "prefill", "tp", 0, None, out=lambda *_: None, cooling="air_oam", power_scope="card")
-    assert o["front"] == [1, 0, 15]
+    # 0.333 re-pin: front [1, 0, 15] → [4, 16].  Rows 0 / 15 sat at 0.858 W/mm² vs 0.86 (0.2 % margin, fragile in
+    # MODEL §275); with the H200-measured HBM energy (MODEL §278) they go over: 0.8576 → 0.9461, 0.8581 → 0.8615
+    assert o["front"] == [4, 16]
     rows = o["rows"]
-    # rows 0 / 15 sit at 0.858 W/mm² vs 0.86 (0.2 % margin) — recorded as fragile in MODEL §275
     for i in (0, 15):
         f = rows[i]["thermal"]["flux_W_mm2"]
-        assert rows[i]["feasible"] and 0.855 < f < 0.86, (i, f)
+        assert not rows[i]["feasible"] and f > 0.86, (i, f)
+    f = rows[16]["thermal"]["flux_W_mm2"]                     # the new thin margin: 0.8543 vs 0.86 (0.7 %)
+    assert rows[16]["feasible"] and 0.85 < f < 0.86, f
 
 
 # ---------------------------------------------------------------- (2) PixText-MeanFlow

@@ -88,8 +88,8 @@ def test_router_cost_scaling():
     assert noc_router_cost(8, "mesh", 2.0, kd)["W"] > r["W"]
 
 
-def _dse(**kw):
-    b = Budget.from_dict(apply_preset({"density_preset": "n7_tpuv4i", "die_mm2": 1300, "power_W_card": 300}))
+def _dse(power_W=300, **kw):
+    b = Budget.from_dict(apply_preset({"density_preset": "n7_tpuv4i", "die_mm2": 1300, "power_W_card": power_W}))
     s = Scenario(model=M, chip=CHIPS["1P"], serving=Serving(phase="decode", batch=64, prompt=2048, ctx=4096))
     return energy_design_search(s, _t(), b, mac_scales=(1.0,), sram_scales=(1.0,), sides=(16, 32, 64, 128, 256),
                                 phase="decode", **kw)
@@ -108,7 +108,15 @@ def test_link_width_axis_front():
     assert big["engines"] == 2048 and not big["feasible"] and big["capped"] and big["W_card"] <= 300 * (1 + 1e-9)
     assert "面积" in big["why"] and "NoC 静态" not in big["why"]
     fr = [rows[i] for i in r["front"]]
-    # the trade-off: the narrowest link on the front sits on more (smaller) engines than the widest one
+    # 0.333: HBM 5.80 pJ/bit + per-channel standby add ≈ 77 W to every point: at 300 W the 2048-engine × 32 B point
+    # (268 → 345 W nominal) is capped and dominated, so the card-scope front is 128 × 128 B only (as package scope)
+    assert [(x["engines"], x["noc_link_Bpc"]) for x in fr] == [(128, 128.0)]
+    m = next(x for x in rows if (x["engines"], x["noc_link_Bpc"]) == (2048, 32.0))
+    assert m["capped"] and m["thr"] < fr[0]["thr"]
+    # the trade-off with the same headroom as ≤ 0.332's 300 W (380 W): the narrowest link on the front sits on more
+    # (smaller) engines than the widest one
+    r3 = _dse(noc_links=(32, 8, 128), power_scope="card", power_W=380)
+    fr = [r3["rows"][i] for i in r3["front"]]
     lo, hi = min(fr, key=lambda x: x["noc_link_Bpc"]), max(fr, key=lambda x: x["noc_link_Bpc"])
     assert lo["noc_link_Bpc"] < hi["noc_link_Bpc"] and lo["engines"] > hi["engines"]
     assert any("NoC 链路宽度轴" in n and "Park" in n for n in r["notes"])

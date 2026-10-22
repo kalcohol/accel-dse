@@ -440,7 +440,7 @@ def _run(s, t, cap, power_mode, curve, f_op: float = 1.0, n_dies: int = 1, pk=No
     o = _run1(s, t, None if cap is None else cap / n_dies, power_mode, curve, f_op, pk)
     if n_dies > 1:
         for k in ("thr", "thr_nominal", "W_card", "W_nominal", "hbm_static_W", "noc_W", "dram_dev_W", "static_W",
-                  "idle_W", "cap_pkg_W"):
+                  "idle_W", "cap_pkg_W", "standby_W"):
             if o.get(k) is not None:
                 o[k] *= n_dies
         o["why"] = [f"每晶粒（预算 ÷ {n_dies}）{w}" for w in o["why"]]
@@ -452,7 +452,7 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0, pk=None) -> dict:
     curve, core-rail energies × V², leakage × V — powercap._point), then capped / rejected by power.  A point over the
     cap is capped from f_max like any other: power rises with f, so the cap clock is below f_op and equals the f_op = 1
     point's capped result."""
-    from .powercap import _point, dvfs_cap, static_W
+    from .powercap import _point, dvfs_cap, hbm_standby_W, static_W
     from .thermal import dram_dev_W
     r0 = _memo(("eval", s), lambda: evaluate(s))
     r, er = (r0, energy_report(r0, t)) if f_op == 1.0 else _point(r0, t, curve, f_op)
@@ -466,11 +466,12 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0, pk=None) -> dict:
          "capped": False, "lat_ms": lat * 1e3, "hbm_static_W": er.get("hbm_static_W_card"), "why": [],
          "noc_W": (er.get("noc_router") or {}).get("W"),      # 0.307: router static W at the operating point
          "dram_dev_W": dram_dev_W(er),                         # 0.313: DRAM-device W (heat in the stacks, thermal)
-         "static_W": static_W(er), "idle_W": er.get("idle_W_used")}   # 0.315: static in W_card (thermal.package_power)
+         "static_W": static_W(er), "idle_W": er.get("idle_W_used"),   # 0.315: static in W_card (thermal.package_power)
+         "standby_W": hbm_standby_W(er)}                              # 0.333: its clocked-HBM-standby part
     r = r0
     # 0.316: the cap compares the package power (thermal.cap_power_fn → package_power, the thermal check's function)
     # unless power_scope "card" (pk None, 0.315)
-    o["cap_pkg_W"] = o["W_card"] if pk is None else pk(o["W_card"], o["static_W"], o["idle_W"])
+    o["cap_pkg_W"] = o["W_card"] if pk is None else pk(o["W_card"], o["static_W"], o["idle_W"], o["standby_W"])
     if cap is not None and o["cap_pkg_W"] > cap * (1 + 1e-9) and r.fits:
         if power_mode == "reject":
             o["why"].append(f"功耗 {o['cap_pkg_W']:.0f} > {cap:g} W" + ("（封装口径）" if pk is not None else ""))
@@ -529,7 +530,7 @@ def _tco_row(p, row, user_prices, die_mm2, nd, mem_price, tco_point, hbm_base: s
     if miss or not row.get("thr"):
         return {"usd_per_Munit": None, "missing": miss or ["吞吐为 0"]}
     st = row.get("static_W") or 0.0
-    idle = package_power(st, die_mm2, nd, st, row.get("idle_W"))["pkg_W"]
+    idle = package_power(st, die_mm2, nd, st, row.get("idle_W"), row.get("standby_W") or 0.0)["pkg_W"]
     km = row.get("mem_scrap_k", 1.0)             # 0.319: HBM stacks scrapped with failed assemblies (× k_mem)
     t = tco_point(p, pkg_usd=row["usd_good_pkg"], mem_usd=row["mem_GB"] * pr * km, thr=row["thr"], pkg_W=pw,
                   pkg_W_idle=idle, unit=row.get("unit") or "token")
@@ -1005,7 +1006,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                                capped=pf["capped"] or dc["capped"], ttft_ms=pf["lat_ms"], tpot_ms=dc["lat_ms"],
                                phases={ph: {k: res[ph][k] for k in ("thr", "J_per_unit", "W_card", "f_scale", "capped",
                                                                     "lat_ms", "bound")} for ph in phases},
-                               hbm_static_W=dc["hbm_static_W"], static_W=dc["static_W"], idle_W=dc["idle_W"])
+                               hbm_static_W=dc["hbm_static_W"], static_W=dc["static_W"], idle_W=dc["idle_W"],
+                               standby_W=dc["standby_W"])
                     fr = {ph: (res[ph]["dram_dev_W"] / res[ph]["W_card"] if res[ph]["W_card"] > 0 else 0.0) for ph in phases}
                     row["dram_dev_W"] = row["W_card"] * ((P * pf["J_per_unit"] * fr["prefill"] + mix_out_tokens
                                                           * dc["J_per_unit"] * fr["decode"]) / J if J > 0 else 0.0)
@@ -1091,7 +1093,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     th_c = th_a + dlt if dlt else None
                 th = thermal_report(row.get("W_card"), th_a, nd,
                                     row.get("dram_dev_W") or 0.0, cooling, row.get("static_W") or 0.0, row.get("idle_W"),
-                                    card_area_mm2=th_c)
+                                    card_area_mm2=th_c, standby_W=row.get("standby_W") or 0.0)
                 # 0.314: flux_W_mm2 = card-level (judged, shipped-part definition); die_flux_W_mm2 = DRAM devices out
                 # 0.315: pkg_W = complete package power (static floor + VR loss, thermal.package_power)
                 row["thermal"] = {k: th.get(k) for k in ("status", "feasible", "pkg_W", "card_W", "die_W", "flux_W_mm2",

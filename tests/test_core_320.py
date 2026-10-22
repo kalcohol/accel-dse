@@ -75,7 +75,8 @@ def test_memory_alternative_pair_check():
     rep = _rep(b)["report"]
     assert "hbm3e_8s" in rep["design"]
     c = next(c for c in rep["pair_checks"] if c["kind"] == "other_memory")
-    assert "hbm3e_4s" in c["rival"] and 0.2 < c["d"] < 0.26 and set(c["corners"].values()) == {"this"}
+    # 0.333: d 0.20–0.26 → 0.196 (HBM energy raises both rows' $/M; 8-stack still wins at every corner)
+    assert "hbm3e_4s" in c["rival"] and 0.19 < c["d"] < 0.22 and set(c["corners"].values()) == {"this"}
     v = {it["key"]: it for it in _items(rep)}
     assert v["slo_tpot_ms"]["value"] is None and "未设 SLO" in v["slo_tpot_ms"]["missing"]
     assert v["cooling"]["value"] is None and v["flux_ratio"]["value"] is None

@@ -36,7 +36,8 @@ def test_whatif_cost_columns_rwkv_1p():
     # 0.216: + HBM standby/refresh of the 4 extra stacks (+3.03 W static) → +0.7 % J/token, < 1 %
     # 0.228: + per-cycle clock power (tpuv4i_7nm pJ_clk_mac_cycle): 2× bandwidth shortens the step at the same batch,
     # so clock energy per token falls — d_J was +0.7 %, now ≈ −6 % (negative, under 10 %)
-    assert st["d_J_per_tok"] < 0 and -0.1 * bw["J_per_tok"] < bw["d_J_per_tok"] < 0 and abs(bw["d_hbm_W"] - 3.0336) < 1e-6
+    # 0.333: 4 extra stacks = 64 channels × 376.8 mW + refresh → +25.61 W static (was 3.03 W at 48 mW/die); d_J now ≈ −3.0 %
+    assert st["d_J_per_tok"] < 0 and -0.1 * bw["J_per_tok"] < bw["d_J_per_tok"] < 0 and abs(bw["d_hbm_W"] - 25.611111111111107) < 1e-6
     assert st["cost_batch"] == st["critical_batch"] and bw["cost_batch"] == bw["critical_batch"]
     assert w["base"]["area_mm2"] > 0 and all(x.get("W_card", 1) > 0 for x in w["rows"])
 

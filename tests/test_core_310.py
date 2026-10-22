@@ -97,7 +97,10 @@ def test_old_to_new_single_eval():
             r = evaluate(_scn(noc_mem_edges=me, noc_link_Bpc=L))
             e = energy_report(r, t)
             out[me, L] = (r.per_card, e["J_per_unit"], e["noc"]["dram"])
-    assert abs(out[0, 0.0][1] / out[2, 0.0][1] - 1 + 0.048) < 0.002            # decode J −4.8 %
+    # decode J: the wire saving is the same 2.2758 mJ/token; 0.333 HBM (5.80 pJ/bit + standby) enlarges the total, so
+    # −4.8 % → −3.3 %
+    assert abs(out[2, 0.0][1] - out[0, 0.0][1] - 2.2758e-3) < 1e-6
+    assert abs(out[0, 0.0][1] / out[2, 0.0][1] - 1 + 0.033) < 0.002
     assert out[0, 0.0][0] == out[2, 0.0][0]
     assert out[0, 32.0][0] / out[2, 32.0][0] > 2.3                           # DRAM ingress 10 → 24 links
     assert out[0, 0.0][2]["mem_edges"] == 4 and out[0, 0.0][2]["mem_edges_auto"]

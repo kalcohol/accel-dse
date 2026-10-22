@@ -129,11 +129,14 @@ def test_thermal_in_eval_and_dse():
     t = o["thermal"]      # 1P prefill: 504 W modelled → 645 W package (0.315: + static floor + VR) on 631 mm²
     # 0.329 re-pin (4 × HBM3E die 571 → 631 mm²): package 639.86 → 645.15 W (area-scaled static floor), die flux
     # 0.9278 → 0.8465, card-level flux 1.1204 → 1.0221 W/mm² (still over air_oam 0.86)
-    assert t["status"] == "unchecked" and abs(t["card_W"] - 504.25) < 0.1 and abs(t["pkg_W"] - 645.15) < 0.1
-    assert abs(t["die_flux_W_mm2"] - 0.8465) < 1e-3
-    assert abs(t["flux_W_mm2"] - 1.0221) < 1e-3 and t["static_included"] is True and t["notes"] == []
+    # 0.333 re-pin (HBM 5.80 pJ/bit + per-channel standby, MODEL §278): card 504.25 → 534.39 W, package 645.15 →
+    # 682.41 W (HBM device power 14.0 → 44.2 W; clocked HBM standby does not offset the area floor, 0.333); the memory
+    # power sits beside the die, so die flux only 0.8465 → 0.8489 while card-level flux 1.0221 → 1.0811
+    assert t["status"] == "unchecked" and abs(t["card_W"] - 534.39) < 0.1 and abs(t["pkg_W"] - 682.41) < 0.1
+    assert abs(t["die_flux_W_mm2"] - 0.8489) < 1e-3
+    assert abs(t["flux_W_mm2"] - 1.0811) < 1e-3 and t["static_included"] is True and t["notes"] == []
     oa = api.api_eval({**b, "cooling": "air_oam"})
-    assert oa["thermal"]["feasible"] is False and any(w.startswith("不可建（热 / 功耗）：热流密度 1.02") for w in oa["summary"]["warnings"])
+    assert oa["thermal"]["feasible"] is False and any(w.startswith("不可建（热 / 功耗）：热流密度 1.08") for w in oa["summary"]["warnings"])
     assert api.api_eval({**b, "cooling": "liquid"})["thermal"]["feasible"] is True
     try:
         api.api_eval({**b, "cooling": "x"})

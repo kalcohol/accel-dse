@@ -1091,7 +1091,7 @@ def api_eval(body: dict) -> dict:
     opc = _capped_point(out["energy"], pkf is not None)
     # 0.313: thermal / power buildability beside the shoreline — reported whenever the energy table gives a power;
     # judged only with body.cooling (a thermal.COOLING preset)
-    from .core.powercap import static_W as _static_W
+    from .core.powercap import hbm_standby_W as _stb_W, static_W as _static_W
     from .core.thermal import COOLING, dram_dev_W, thermal_report
     cool = body.get("cooling")
     if cool is not None and cool not in COOLING:
@@ -1110,7 +1110,7 @@ def api_eval(body: dict) -> dict:
     th = thermal_report(ew * pk if ew is not None else None, sh.get("die_mm2"), pk,
                         ddw * pk, cool, stw * pk,     # 0.315: complete power
                         out["energy"]["idle_W_used"] * pk if out["energy"].get("idle_W_used") is not None else None,
-                        card_area_mm2=th_c)
+                        card_area_mm2=th_c, standby_W=_stb_W(out["energy"]) * pk)
     if opc is not None:
         th["operating_point"] = "capped"
     out["thermal"] = th

@@ -105,6 +105,10 @@ class EnergyTable:
     # only when no idle figure is set (a measured card idle already contains its DRAM background) — like SRAM leakage.
     mW_hbm_die_standby: float | None = None
     mW_hbm_Gb_refresh: float | None = None
+    # 0.333: HBM background per 64-bit channel (mW), height-independent: standby current is set by the clocked channel
+    # interface / peripheral (it scales with data rate, Olgun et al. 2026 Finding 6), not by die count.  Summed with
+    # mW_hbm_die_standby when both are set; the tpuv4i_7nm preset now fills only this one (MODEL §278).
+    mW_hbm_ch_standby: float | None = None
     # 0.302: per-generation DRAM pJ/bit (unset → the per-kind field above): HBM4 / HBM4E stacks, LPDDR6 packages.
     pJ_bit_dram_hbm4: float | None = None
     pJ_bit_dram_lpddr6: float | None = None
@@ -232,6 +236,21 @@ _FP32_ACC = ("Google Cloud TPU docs 'TPU architecture': 'All multiplies take bfl
 # 0.298: ≤ 0.297 preset pJ_mac (multiply only) — kept for reproducibility / tests
 PJ_MAC_MULT_ONLY = {"horowitz_45nm": 1.1, "tpuv4i_7nm": 1.1 / 2.6}
 
+# 0.333: HBM energy reconciliation (MODEL §278).  Olgun et al., 'Understanding the Power Consumption of Modern High
+# Bandwidth Memory…', arXiv 2610.14244 (MICRO 2026), §6.2 + released data (github.com/CMU-SAFARI/HBM-Power,
+# case_studies/hbm3e_validation/data, nvidia-smi GPU memory power of three H200, 6 × HBM3E 8-high 24 Gb stacks = 96
+# 64-bit channels, read microbenchmark, uniform-random data): idle (NOP + refresh) / total under read / read GB/s.
+HBM_CH_BITS = 64
+_OLGUN = ("Olgun et al. (ETH), arXiv 2610.14244 (MICRO 2026) §6.2 + released H200 data "
+          "(github.com/CMU-SAFARI/HBM-Power, case_studies/hbm3e_validation/data)")
+H200_HBM_MEAS = {   # 「来源」 per unit: (idle W, read total W, read GB/s)
+    "units": ((35.55, 247.75, 4520.6), (34.75, 241.71, 4517.3), (44.95, 255.22, 4523.3)),
+    "stacks": 6, "height": 8, "die_Gb": 24, "channels": 6 * 1024 // HBM_CH_BITS, "src": _OLGUN}
+_H200_IDLE_W = sum(u[0] for u in H200_HBM_MEAS["units"]) / 3                                   # 38.42 W
+_H200_ACTIVE_PJ = sum((u[1] - u[0]) / (u[2] * 1e9 * 8) * 1e12 for u in H200_HBM_MEAS["units"]) / 3   # 5.80 pJ/bit
+_HBM_REF_MW_GB = 195 * 1.2 * 260 / 3900 / 8                                                     # 1.95 mW/Gb (0.216)
+
+
 ENERGY_PRESETS: dict[str, dict] = {
     "horowitz_45nm": {
         "label": "45 nm（Horowitz ISSCC 2014）",
@@ -262,8 +281,17 @@ ENERGY_PRESETS: dict[str, dict] = {
             # 0.216: HBM2 8Gb per-channel IDD values (DRAMsim3 configs/HBM2_8Gb_x128.ini, VDD 1.2 V, 8 ch × 1 GiB stack):
             # standby IDD2N 40 mA × 1.2 V = 48 mW per channel-die; refresh (IDD5AB − IDD3N)·VDD·tRFC/tREFI =
             # 195 mA·1.2 V·260/3900 = 15.6 mW per 8 Gb → 1.95 mW/Gb.  HBM2-era, 1.2 V (HBM3 core 1.1 V): an upper-side proxy
-            "mW_hbm_die_standby": (40 * 1.2, "二手", _DRAMSIM3_HBM2 + ": IDD2N 40 mA × VDD 1.2 V per die（HBM2 代理，非 HBM3E 数据手册）"),
-            "mW_hbm_Gb_refresh": (195 * 1.2 * 260 / 3900 / 8, "推导", _DRAMSIM3_HBM2 + ": (IDD5AB 250 − IDD3N 55) mA × 1.2 V × tRFC 260 / tREFI 3900 ÷ 8 Gb；按容量线性外推到 24/32 Gb 晶粒「假设」"),
+            # 0.333: background per 64-bit channel from the measured H200 idle (≤ 0.332: 48 mW per die, DRAMsim3 HBM2
+            # IDD2N 40 mA × 1.2 V at 2 Gb/s — 2.3 W for H200's 48 dies vs 38.4 W measured idle).  Idle − refresh (this
+            # preset's 1.95 mW/Gb × 1152 Gb = 2.25 W) over 96 channels = 376.8 mW/ch; HBM4 32 ch/stack → 12.1 W/stack
+            # (cross-check, not fitted: Ayna's HBM4 extrapolation IDD2N 176.2 mA/PC × 1.05 V × 64 PC = 11.8 W)
+            "mW_hbm_ch_standby": ((_H200_IDLE_W - H200_HBM_MEAS["stacks"] * H200_HBM_MEAS["height"] * H200_HBM_MEAS["die_Gb"]
+                                   * _HBM_REF_MW_GB * 1e-3) / H200_HBM_MEAS["channels"] * 1e3, "推导",
+                                  _OLGUN + "：H200 HBM3E 空闲（NOP + 刷新）实测 35.55 / 34.75 / 44.95 W，均值 38.42 W − 刷新 2.25 W"
+                                  "（本预设 1.95 mW/Gb × 1152 Gb）÷ 96 个 64 位通道 = 376.8 mW/通道；按通道而非晶粒计（待机随数据率"
+                                  "线性上升 = 时钟化接口 / 外围电路，Finding 6）；不随速率外推「假设」；nvidia-smi 内存功耗视为器件侧"
+                                  "（Ayna 仅建模器件、在读负载下误差 2.4 %）「假设」"),
+            "mW_hbm_Gb_refresh": (_HBM_REF_MW_GB, "推导", _DRAMSIM3_HBM2 + ": (IDD5AB 250 − IDD3N 55) mA × 1.2 V × tRFC 260 / tREFI 3900 ÷ 8 Gb；按容量线性外推到 24/32 Gb 晶粒「假设」"),
             "pJ_mac": ((1.1 + 0.9) / 2.6, "推导", _TPUV4I + "; base 16b FP mult 1.1 + 32b FP add 0.9 pJ（FP32 累加，"
                        + _FP32_ACC + "）/ 2.6"),
             "pJ_vec": (0.4 / 2.6, "推导", _TPUV4I + "; base 16b FP add 0.4 pJ / 2.6"),
@@ -274,8 +302,15 @@ ENERGY_PRESETS: dict[str, dict] = {
             # 0.187: per-kind DRAM from primary vendor figures (0.186 used PIM-AI's derived profile, HBM 7 / LPDDR 10,
             # which counts both interfaces ×2 and is ≈ 2× these primary numbers; ratio 1.43 vs 1.16 here).  Both are
             # memory-side at peak bandwidth; the SoC-side PHY is not included (HBM3 host PHY ≈ 0.29 pJ/bit, Chae JSSC 2023).
-            "pJ_bit_dram_hbm": (4.3 * 0.8, "推导", _SKH_IEDM + ": HBM2E ≈ 4.3 pJ/bit, HBM3E 20 % lower → 3.44 pJ/bit "
-                                "(memory side); cross-check " + _FGDRAM + " HBM2 ≈ 3.97"),
+            # 0.333: measured H200 HBM3E active energy (≤ 0.332: 3.44 = SK hynix HBM2E 4.3 × 0.8, vendor figure at
+            # standard-loop data, no activation at a real access stream).  Mechanism of the gap: random data +14 % on the
+            # same H200 (const-0 read 5.09 pJ/bit), activations at the streaming locality (Ayna split at 4 reads / ACT:
+            # 1.73 pJ/bit ACT + 4.17 read movement), and measured HBM2 read current 1.78× FGDRAM's (paper §6).
+            "pJ_bit_dram_hbm": (_H200_ACTIVE_PJ, "推导", _OLGUN + "：H200 HBM3E 读带宽 4.52 TB/s 时 (总 − 空闲) 功耗 212.20 / 206.96 / "
+                                "210.27 W ÷ 读带宽 = 5.87 / 5.73 / 5.81 → 均值 5.80 pJ/bit（器件侧动态：激活 + 读数据搬运 + I/O，"
+                                "均匀随机数据，GPU 流式读的行局部性；常数 0 数据 5.09）；静态另计（mW_hbm_ch_standby + 刷新）。"
+                                "写 ≈ 4.2 pJ/bit（常数 0，同来源）未单列「近似」；交叉核对 " + _FGDRAM + " HBM2 ≈ 3.97（论文 §6：实测 "
+                                "HBM2 读电流为 FGDRAM 隐含值 1.78×）"),
             "pJ_bit_dram_lpddr": (16.0 / (500e9 * 8) * 1e12, "推导", _GRACE + ": LPDDR5X subsystem up to 500 GB/s in "
                                   "about 16 W → 4.0 pJ/bit at peak (memory side); 0.186 value 10 (PIM-AI, 二手) dropped"),
             # 0.188: chip-side PHY and static power
@@ -544,7 +579,7 @@ def dram_util(r, per: dict) -> float | None:
 
 def dram_static_set(table) -> bool:
     """0.302: any DRAM background / refresh field set (HBM 0.216, LPDDR 0.302)."""
-    return any(getattr(table, f) is not None for f in ("mW_hbm_die_standby", "mW_hbm_Gb_refresh",
+    return any(getattr(table, f) is not None for f in ("mW_hbm_die_standby", "mW_hbm_ch_standby", "mW_hbm_Gb_refresh",
                                                       "mW_lpddr_ch_standby", "mW_lpddr_Gb_refresh"))
 
 
@@ -690,8 +725,9 @@ ENERGY_PRESETS["tpuv4i_7nm"]["fields"].update({
                        "Table 18 掉电自刷新 85 °C 最大值：1.2 mA·1.8 V + 7.0 mA·1.05 V + 0.2 mA·0.9 V + 0.6 mA·0.5 V = 9.99 mW（含内部刷新）"),
     "ns_lpddr_pd_gap": (15.0, "二手/假设", "JEDEC LPDDR5 tXP 7.5 ns + 进入 ≈ 7.5 ns（数据手册引用 JEDEC 通用规范）"),
     "ns_lpddr_sr_gap": (232.5, "二手", "JEDEC LPDDR5 tXSR = tRFCab 210 ns + 7.5 ns，加最短自刷新驻留 tSR 15 ns"),
-    "pJ_bit_dram_hbm4": (4.3 * 0.8 / 1.4, "推导", "HBM3E 3.44 pJ/bit ÷ 1.4 — Samsung HBM4（官网 / 2026-02 新闻稿）与 SK hynix"
-                         "（2025-09 新闻稿）均称能效比 HBM3E 高约 40 %（厂商口径）；HBM4E 沿用"),
+    "pJ_bit_dram_hbm4": (_H200_ACTIVE_PJ / 1.4, "推导", "HBM3E 5.80 pJ/bit（0.333，H200 实测，≤ 0.332 为 3.44）÷ 1.4 — Samsung HBM4（官网 / 2026-02 新闻稿）与 SK hynix"
+                         "（2025-09 新闻稿）均称能效比 HBM3E 高约 40 %（厂商口径）；HBM4E 沿用。敏感性：Olgun et al. 2026 的 HBM4 投影（仅电压，无工艺改进）"
+                         "8 Gb/s 时为 HBM3E 6.4 Gb/s 的 0.94–1.00×"),
     "pJ_bit_dram_lpddr6": (4.0 / 1.21, "推导", "LPDDR5X 4.0 pJ/bit ÷ 1.21 — Kim et al.（Samsung）ISSCC 2026 LPDDR6 12.8 Gb/s："
                            "'21.0 % better energy efficiency than LPDDR5x'（doi 10.1109/ISSCC49663.2026.11409018）"),
     "mW_lpddr_ch_standby": (1.3 * 1.8 + 28 * 1.05 + 0.2 * 0.9 + 0.6 * 0.5, "来源", _MICRON_Y52Q + "：IDD2N 每 x16 通道"
@@ -796,7 +832,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False, 
                        and f.name not in ("idle_W_prefill", "pJ_bit_host", "pJ_bit_dram_hbm", "pJ_bit_dram_lpddr",
                                           "pJ_bit_phy_hbm", "pJ_bit_phy_lpddr", "idle_frac_tdp", "tdp_W",
                                           "uW_per_mib_sram_leak", "mW_hbm_die_standby", "mW_hbm_Gb_refresh",
-                                          "pJ_bit_dram_hbm4", "pJ_bit_dram_lpddr6", "mW_lpddr_ch_standby", "mW_lpddr_Gb_refresh",
+                                          "mW_hbm_ch_standby", "pJ_bit_dram_hbm4", "pJ_bit_dram_lpddr6", "mW_lpddr_ch_standby", "mW_lpddr_Gb_refresh",
                                           "mW_lpddr_ch_pd", "mW_lpddr_ch_sr", "ns_lpddr_pd_gap", "ns_lpddr_sr_gap",
                                           "pJ_clk_mac_cycle", "sram_temp_C", "dram_temp_C", "slc_access_ref_mib", "pJ_bit_mm_onchip", "slc_mm2_per_mib",
                                           "pJ_bit_hop_noc", "noc_mm2_per_kmac", "pJ_noc_router_cycle",
@@ -1025,10 +1061,12 @@ def _power_cap(out, j, iw, table, cards, u, win, pk=None, cap=None) -> dict:
     e_dyn_card = sum(v for k, v in j.items() if k not in st_keys) * u / cards        # J per card per window
     p_dyn = e_dyn_card / win
     need = p_dyn + p_stat
+    from .powercap import hbm_standby_W
     from .thermal import card_W_for_cap
-    cap_c = card_W_for_cap(pk, cap, p_stat, iw)
+    stb = hbm_standby_W(out)                                        # 0.333: clocked HBM standby (no floor offset)
+    cap_c = card_W_for_cap(pk, cap, p_stat, iw, stb)
     scope = {"scope": "card" if pk is None else pk.scope, "cap_card_W": cap_c,
-             "pkg_needed_W": need if pk is None else pk(need, p_stat, iw)}
+             "pkg_needed_W": need if pk is None else pk(need, p_stat, iw, stb)}
     if cap_c is None or p_stat >= cap_c:
         return {"P_needed_W": need, "tdp_W": cap, "feasible": False, **scope,
                 "error": "静态功耗 ≥ TDP：任何吞吐都超功耗" + ("（封装口径：含静态底功耗与稳压器损耗）" if pk is not None else "")}
@@ -1221,6 +1259,8 @@ def hbm_static_W(mem_id: str | None, table: "EnergyTable", util: float | None = 
     if not getattr(sp, "hbm_height", None):
         return None
     dies = sp.n_units * sp.hbm_height
-    stb = dies * (table.mW_hbm_die_standby or 0.0) * 1e-3
+    chs = sp.n_units * sp.unit_width_bits / HBM_CH_BITS        # 0.333: 64-bit channels (HBM3/3E 16, HBM4 32 per stack)
+    stb = dies * (table.mW_hbm_die_standby or 0.0) * 1e-3 + chs * (table.mW_hbm_ch_standby or 0.0) * 1e-3
     ref = dies * sp.hbm_die_Gb * (table.mW_hbm_Gb_refresh or 0.0) * 1e-3
-    return {"W": stb + ref, "standby_W": stb, "refresh_W": ref, "stacks": sp.n_units, "dies": dies, "kind": "HBM"}
+    return {"W": stb + ref, "standby_W": stb, "refresh_W": ref, "stacks": sp.n_units, "dies": dies, "channels": chs,
+            "kind": "HBM"}

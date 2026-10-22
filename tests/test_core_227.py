@@ -84,7 +84,9 @@ def test_memory_bound_keeps_throughput_with_voltage():
     v = dvfs_cap(r, _t(), 0.9 * P, "rx5700xt_n7")
     d = dvfs_cap(r, _t(), 0.9 * P, "dfs")
     # 0.228: with the per-cycle term, clock-only DFS sheds 10 % too (was tf < 0.9 without it — see test_core_228)
-    assert v["throughput_factor"] > 0.99 and v["bound"] == "DRAM" and d["throughput_factor"] > 0.99
+    # 0.333: HBM 5.80 pJ/bit raises the unsheddable DRAM share of card energy 34 → 47 %, so clock-only DFS needs s 0.513 →
+    # 0.471 for the same 10 % cut and starts to leave the DRAM-bound regime: tf 0.9961 → 0.9813 (V–f still 1.0)
+    assert v["throughput_factor"] > 0.99 and v["bound"] == "DRAM" and d["throughput_factor"] > 0.98
 
 
 def test_invariant_at_capped_point():

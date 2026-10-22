@@ -267,8 +267,10 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str, op: dict | None 
         thr *= pc["throughput_factor"]
         card_W = pc["cap_card_W"] * pk
         notes.append("按功耗封顶后的工作点计（占空比：吞吐 × 封顶系数，封装功耗 = 封顶点）")
-    pw = package_power(card_W, die_mm2, pk, st, iw)["pkg_W"]
-    idle = package_power(st, die_mm2, pk, st, iw)["pkg_W"]
+    from .powercap import hbm_standby_W
+    stb = hbm_standby_W(energy) * pk        # 0.333: memory-side, clock-independent (same at the capped point)
+    pw = package_power(card_W, die_mm2, pk, st, iw, stb)["pkg_W"]
+    idle = package_power(st, die_mm2, pk, st, iw, stb)["pkg_W"]
     mem_dev = sp.capacity_GB * pk * pr
     mem_usd = mem_dev * km                  # 0.319: HBM scrapped with failed assemblies (cost model only)
     t = tco_point(p, pkg_usd=pkg_usd, mem_usd=mem_usd, thr=thr, pkg_W=pw, pkg_W_idle=idle, unit=unit)

@@ -81,8 +81,14 @@ def test_report_single_chunk_cases_unchanged_and_multi_chunk_costlier():
     # prompt — the decodes ride in the iteration) → 42.5230; energy unchanged
     # 0.298: preset pJ_mac += 32b FP accumulate 0.9 / 2.6 pJ → J/token 0.20190 → 0.22584 (= old + MAC count × 0.9/2.6 pJ)
     eq = q["energy"]["coloc_chunked"]
-    assert abs(c["ttft_ms"]["mean"] - 42.5230) < 1e-3 and abs(eq["J_per_token"] - 0.22584) < 2e-5
-    assert abs(eq["J_per_token"] - eq["counts_per_token"]["mac"] * 0.9 / 2.6 * 1e-12 - 0.20190) < 2e-5
+    # 0.333: preset HBM 3.44 → 5.80 pJ/bit (idle_W set here, so no HBM standby) → 0.22584 → 0.28948 = old + DRAM bytes ×
+    # 8 × (5.80173 − 3.44) pJ
+    from accel_dse.core.energy import ENERGY_PRESETS
+    dpj = ENERGY_PRESETS["tpuv4i_7nm"]["fields"]["pJ_bit_dram_hbm"][0] - 3.44
+    assert abs(c["ttft_ms"]["mean"] - 42.5230) < 1e-3 and abs(eq["J_per_token"] - 0.28948) < 2e-5
+    assert abs(eq["J_per_token"] - eq["counts_per_token"]["dram"] * 8 * dpj * 1e-12 - 0.22584) < 2e-5
+    assert abs(eq["J_per_token"] - eq["counts_per_token"]["dram"] * 8 * dpj * 1e-12
+               - eq["counts_per_token"]["mac"] * 0.9 / 2.6 * 1e-12 - 0.20190) < 2e-5
     # D (48 GB → budget 2048): 2–3 chunks; a chunk with its prefix costs more than its token share of the prompt
     d = disagg_report(_pd(cap=48.0))["queue"]["modes"]["coloc_chunked"]
     assert d["stable"] and d["ttft_ms"]["mean"] > c["ttft_ms"]["mean"]

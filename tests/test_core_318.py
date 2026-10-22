@@ -109,7 +109,9 @@ def test_d0_flip_threshold_case0():
     fl = {f["input"]: f for f in e["tco_flips"]}
     # 0.329 re-pin: the larger 8 × HBM3E mono die (654 → 774 mm²) brings the split closer, so besides D0 the wafer
     # price ($19,395) and carrier yield (0.680, split → mono) now also flip inside their sourced ranges (was D0 only)
-    assert set(fl) == {"d0", "wafer_usd", "carrier_yield"}
+    # 0.333: HBM energy (5.80 pJ/bit + per-channel standby) raises the energy share of $/M, so the carrier yield no
+    # longer flips inside its range (was 0.680, split → mono); D0 0.110 → 0.113, wafer $19,395 → $20,101
+    assert set(fl) == {"d0", "wafer_usd"}
     th = fl["d0"]["thresholds"][0]
     assert 0.10 < th["at"] < 0.12 and (th["from"], th["to"]) == ("mono", "split")   # 0.319–0.328 ≈ 0.150 → 0.329 ≈ 0.110
     # bisection is exact: the verdict on either side of the threshold

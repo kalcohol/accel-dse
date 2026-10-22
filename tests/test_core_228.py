@@ -69,10 +69,12 @@ def test_memory_bound_dfs_now_sheds_power():
     t, t0 = _t(), replace(_t(), pJ_clk_mac_cycle=None)
     P, P0 = energy_report(r, t)["avg_W_per_card"], energy_report(r, t0)["avg_W_per_card"]
     d, d0 = dvfs_cap(r, t, 0.9 * P, "dfs"), dvfs_cap(r, t0, 0.9 * P0, "dfs")
-    assert d["throughput_factor"] > 0.99 and d["s"] > 0.5
+    # 0.333: larger unsheddable HBM share (5.80 pJ/bit) → the clock must fall further for the same 10 %: s 0.565 → 0.448,
+    # throughput still 0.9999; at 0.7 × P dfs's lead over duty cycling narrows 0.117 → 0.088
+    assert d["throughput_factor"] > 0.99 and d["s"] > 0.4
     assert d0["throughput_factor"] < 0.9 and d0["s"] < 0.4
     pc = energy_report(r, replace(t, tdp_W=0.7 * P), power_cap=True)["power_cap"]
-    assert pc["dvfs"]["dfs"]["throughput_factor"] > pc["throughput_factor"] + 0.1     # dfs beats duty cycling
+    assert pc["dvfs"]["dfs"]["throughput_factor"] > pc["throughput_factor"] + 0.05    # dfs beats duty cycling
 
 
 def test_compute_bound_dfs_close_to_duty():

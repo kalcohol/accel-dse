@@ -16,7 +16,11 @@ from tests import webstruct as W  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 0.315 (commit 517b865, power cap on card W) — chiplet_example case 1 (qwen3-8b prefill tp, L0), 700 W budget:
 OLD_CAPPED_THR = {9: 93791.672, 10: 96713.337, 11: 95072.811, 12: 96217.883, 13: 93824.535, 15: 94746.84,
-                  16: 90821.435}
+                  16: 90821.435}            # ≤ 0.332 (0.315 values)
+# 0.333 (HBM 5.80 pJ/bit + per-channel standby, MODEL §278): more card W in memory → every card-scope capped row runs
+# slower and row 14 (f 0.966) is capped too
+CAPPED_THR = {9: 86048.461, 10: 88698.021, 11: 86562.533, 12: 88268.986, 13: 86334.213, 14: 83175.511, 15: 86312.029,
+              16: 83227.728}
 _C = {}
 
 
@@ -59,7 +63,7 @@ def test_dse_cap_equals_thermal_package_power():
     cap = o["power_cap_W"]
     assert o["power_scope"] == "package"
     capped = [x for x in o["rows"] if x.get("capped")]
-    assert len(capped) == 9
+    assert len(capped) == 14            # 0.333: 9 → 14 (≈ 31 W more HBM device power per card counts against 700 W)
     for x in capped:                                            # the very same number on both checks
         assert abs(x["thermal"]["pkg_W"] - x["cap_pkg_W"]) <= 1e-9 * x["cap_pkg_W"]
         assert x["cap_pkg_W"] <= cap * (1 + 1e-9)
@@ -68,19 +72,22 @@ def test_dse_cap_equals_thermal_package_power():
 def test_card_scope_reproduces_0315():
     # 0.329 re-pin: the air_oam front [4, 17] → [1, 0, 15] (HBM3E PHY 16 → 24 mm² + 3.575 mm² controller per stack
     # change the die areas / flux of every row); the capped set and capped clocks are unchanged
-    for cool, front in ((None, [12]), ("air_oam", [1, 0, 15])):
+    # 0.333: air_oam front [1, 0, 15] → [4, 16]: the HBM energy reconciliation adds card W to every row, rows 0 / 1 /
+    # 15 go over air (0.946 / 0.939 / 0.8615 > 0.86); row 12 stays over (0.876, thermal-out, next test)
+    for cool, front in ((None, [12]), ("air_oam", [4, 16])):
         o = _case1(cool, "card")
         assert o["power_scope"] == "card" and o["front"] == front
         got = {i: x["thr"] for i, x in enumerate(o["rows"]) if x.get("capped")}
-        assert set(got) == set(OLD_CAPPED_THR)
-        # 0.323: CAP_ITERS 12 → 16 continues the same bisection (the 12-step clock is a prefix), so the capped clock
-        # only rises, by ≤ (1 − F_MIN)/2^12 — the 0.315 values (12 steps) are lower bounds within 3e-4
-        for i, t in OLD_CAPPED_THR.items():
-            assert t - 1e-3 <= got[i] <= t * (1 + 3e-4), (i, got[i], t)
+        assert set(got) == set(CAPPED_THR) == set(OLD_CAPPED_THR) | {14}
+        for i, t in CAPPED_THR.items():                # 0.333 values (16-step bisection); all below 0.315's
+            assert abs(got[i] - t) <= 1e-3, (i, got[i], t)
+            assert i not in OLD_CAPPED_THR or got[i] < OLD_CAPPED_THR[i]
     # package scope caps more (static floor + VR loss count against the budget) and never runs faster
     new = _case1(None, "package")
     old = _case1(None, "card")
-    assert new["front"] == [12]
+    # 0.333: [12] → [3, 0, 1]: at package scope all 14 rows (HBM standby + data energy in the 700 W) are capped; the
+    # narrow-mesh rows 0 / 1 / 3 then keep the most clock (67.0–67.1 k vs row 12 63.9 k tok/s)
+    assert new["front"] == [3, 0, 1]
     for a, b in zip(new["rows"], old["rows"]):
         if b.get("capped"):
             assert a.get("capped")

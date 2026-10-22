@@ -9842,3 +9842,72 @@ Samsung Hot Chips 2026 (S. Han) slide 11 「来源」 (ServeTheHome slide image)
 - Near-memory compute.
 - HBM all-in energy (§277.3).
 - OrcaCyber Nano 1.0 (0.332 retry: sha 1af1635 unchanged, drafter GGUF only, config 401).
+
+## §278 HBM energy reconciliation against measured H200 HBM3E (0.333)
+
+Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High Bandwidth Memory", arXiv 2610.14244 (MICRO 2026), §6.2, plus its released data (github.com/CMU-SAFARI/HBM-Power, `case_studies/hbm3e_validation/data`). Every number below is read from the released data tables 「来源」 or derived from them 「推导」. No plot was digitized.
+
+### §278.1 What each side covers
+- **Model ≤ 0.332, per bit** (`pJ_bit_dram_hbm` 3.44): the memory device (array, TSV, base-die I/O, memory-side PHY) at a vendor-quoted operating point. Host PHY is a separate term (`pJ_bit_phy_hbm` 0.29, Chae ISSCC 2023). The controller is area only (§273). There is no activation / row-locality term.
+- **Model ≤ 0.332, static** (charged only when the table has no idle figure; the tpuv4i_7nm preset charges it): 48 mW per die standby (DRAMsim3 HBM2 IDD2N × 1.2 V) + 1.95 mW/Gb refresh.
+- **Paper**: nvidia-smi GPU memory power (treated as device-side 「假设」; supported by its device-only model Ayna matching the read workload within 2.4 %). It reports:
+  - idle = NOP + refresh with clocks running;
+  - a streaming read microbenchmark, total = idle + activation + read data movement + I/O.
+  - The quoted ≈ 6.86 pJ/bit is total ÷ bandwidth, i.e. it includes idle.
+  - Power delivery and the host PHY are outside nvidia-smi's memory rail 「假设」.
+
+### §278.2 Measured numbers (H200, 6 × HBM3E 8-high 24 Gb, 96 64-bit channels; uniform-random data) 「来源」
+
+| unit | idle W | read total W | read GB/s | (total − idle) / BW pJ/bit 「推导」 |
+|---|---|---|---|---|
+| 1 | 35.55 | 247.75 | 4520.6 | 5.87 |
+| 2 | 34.75 | 241.71 | 4517.3 | 5.73 |
+| 3 | 44.95 | 255.22 | 4523.3 | 5.81 |
+| mean | 38.42 | | | 5.80 |
+
+- Const-0 data read on the same H200: 226.70 W total, 42.24 W idle → 5.09 pJ/bit. Random data adds +14 %.
+- Write, const-0: 189.30 W total, 44.86 W idle, 4327.5 GB/s → ≈ 4.17 pJ/bit.
+
+### §278.3 Internal composition (Ayna HBM3E config, 192 pseudo-channels, VDD 1.1 V, trace = 4 reads per ACT + REFab every tREFI) 「推导」
+
+| component | per-PC / per-bit | H200 total |
+|---|---|---|
+| background (IDD2N/3N) | ≈ 156 mW per PC | ≈ 30.1 W |
+| refresh (IDD5B, tRFC 350 / tREFI 3900 ns) | 9.02 mW per PC | 1.73 W |
+| activation (1772 pJ per ACT ÷ 1024 bits) | 1.73 pJ/bit | ≈ 62 W |
+| read data movement (IDD4R, data-pattern scale 1.588) | 4.17 pJ/bit | ≈ 150 W |
+| sum | | ≈ 244 W (measured 248) |
+
+- Ayna's idle prediction is 12–20 % below the measured idle. The model takes the measured idle, not Ayna's.
+- The activation share is set by the benchmark's locality (4 reads per ACT). A gather-heavy access stream would pay more per bit; this is not modelled (§278.6).
+
+### §278.4 Adopted (mechanism → term)
+- **Dynamic**: `pJ_bit_dram_hbm` 3.44 → 5.8017 「推导」 = measured (total − idle) ÷ BW.
+  - Why 3.44 was low: vendor figure at standard-loop data, no real access-stream activations, and the paper's measured HBM2 read current is 1.78× FGDRAM's implied value.
+  - FGDRAM (O'Connor MICRO 2017) cross-check: HBM2 ≈ 3.97 pJ/bit, 909 pJ per activation.
+- **HBM4**: `pJ_bit_dram_hbm4` = HBM3E ÷ 1.4, 2.457 → 4.144 (vendor "≈ 40 % better" ratio kept).
+  - Sensitivity: the paper's voltage-only projection is 0.94–1.00× HBM3E per bit, i.e. 5.45–5.80 pJ/bit. It assumes no process gain, so it is an upper bound, not adopted.
+- **Static**: new `mW_hbm_ch_standby` 376.8 mW per 64-bit channel 「推导」 = (38.42 − 2.2464 refresh) ÷ 96.
+  - Per channel, not per die: standby scales with data rate (Finding 6), i.e. it is set by the clocked interface and peripherals, not by the number of core dies. Per-die × height would give 77 W for HBM4 8 × 12-high.
+  - HBM4 cross-check: 32 channels per stack → 12.06 W per stack vs the paper's extrapolation IDD2N 176.2 mA/PC × 1.05 V × 64 PC = 11.84 W (not fitted).
+  - No data-rate scaling is applied to other parts 「假设」.
+  - The preset drops `mW_hbm_die_standby`; the field stays as a user input and sums with the channel form.
+- **Refresh**: unchanged at 1.95 mW/Gb (Ayna's config gives 2.26).
+- **By construction**: the H200-like hbm3e_6s card's HBM static equals the measured idle mean (38.417 W), and its per-bit term equals the measured active energy. test_core_333 asserts this reproduction, not a validation.
+
+### §278.5 Package floor (mechanism fix)
+- `thermal.package_power` adds `max(0, STATIC_FLOOR_W_MM2 × area × VR_EFF − static already charged)`.
+- The floor comes from H100 / MI300X idle with no workload at idle clocks, which contains HBM self-refresh. Refresh and SRAM / NoC leakage overlap it; **clocked HBM standby does not**. Clocked standby is also not die leakage, so it does not scale with die temperature (`pkg_W_hot`).
+- The new `standby_W` argument (from `powercap.hbm_standby_W`) is excluded from both. All callers pass it: cap function, cap inverse, thermal report, energy power cap, TCO, energy DSE rows, api.
+- Without this, 8 × HBM3E standby (48 W) filled most of the floor and die area stopped affecting package power. test_core_327's custom-base-die decision flipped for that reason only; with the fix it holds as in 0.332.
+
+### §278.6 Not modelled / pending
+- Activation / row-locality term: the per-bit value is at a streaming read's locality, so gathers would pay more.
+- Standby data-rate scaling across HBM speed grades.
+- Write energy (≈ 4.2 vs read 5.8 pJ/bit) is not split out.
+- LPDDR `pJ_bit_dram_lpddr` 4.0 is a Grace all-in subsystem figure (16 W at 500 GB/s), a different scope from the HBM device-dynamic 5.80. An LPDDR measured split is pending; test_core_186 now pins the per-bit ratio and the total-J ordering.
+- nvidia-smi memory-rail scope (device only vs including PHY / VR) 「假设」.
+- HBM4 measured data.
+- Temperature dependence (paper: +6.7 mA/°C).
+- SC25 NERSC GH200 "HBM datapath 2.99 + control 8.69 pJ/bit" is GPU-level and not decomposable into this model's scope; it is a cross-check only.
+- Carried: PixText routing mask; PCIe / CXL controller area; HBM controller at N7 / N28 and controller power; SPHBM4 PHY area; near-memory compute; OrcaCyber Nano 1.0 (0.333 retry: sha 1af1635 unchanged, config 401).

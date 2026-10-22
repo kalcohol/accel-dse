@@ -42,12 +42,18 @@ def test_only_kind_field_is_not_missing_generic():
 
 def test_preset_values_and_labels():
     f = ENERGY_PRESETS["tpuv4i_7nm"]["fields"]
-    assert abs(f["pJ_bit_dram_hbm"][0] - 3.44) < 1e-9 and f["pJ_bit_dram_hbm"][1] == "推导"
+    # 0.333: HBM 3.44 → 5.80 pJ/bit (H200 measured active, Olgun et al. 2026; MODEL §278)
+    assert abs(f["pJ_bit_dram_hbm"][0] - 5.8017342581848474) < 1e-9 and f["pJ_bit_dram_hbm"][1] == "推导"
     assert abs(f["pJ_bit_dram_lpddr"][0] - 4.0) < 1e-9 and f["pJ_bit_dram_lpddr"][1] == "推导"
     assert "pJ_bit_dram_hbm" not in ENERGY_PRESETS["horowitz_45nm"]["fields"]
     t = EnergyTable(**apply_energy_preset({"energy_preset": "tpuv4i_7nm"}))
     jl, jh = energy_report(_r(LP), t)["J_by_action"]["dram"], energy_report(_r(HBM), t)["J_by_action"]["dram"]
-    assert jl > jh                         # same model, same DRAM bytes per token class: LPDDR costs more per bit
+    # same model, same DRAM bytes: the DRAM line is bytes × the kind's pJ/bit.  ≤ 0.332 LPDDR cost more per bit (4.0 vs
+    # 3.44); 0.333 HBM is the measured device-side active 5.80 → HBM's line is 5.80 / 4.0 × LPDDR's.  Caveat (MODEL §278,
+    # pending): LPDDR 4.0 is an all-in subsystem figure (Grace), not a device-side dynamic one
+    assert abs(jh / jl - f["pJ_bit_dram_hbm"][0] / f["pJ_bit_dram_lpddr"][0]) < 1e-9
+    # whole J/token still favours HBM here (shorter step → less static / clock energy per token)
+    assert energy_report(_r(HBM), t)["J_per_unit"] < energy_report(_r(LP), t)["J_per_unit"]
 
 
 def test_validation():

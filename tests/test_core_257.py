@@ -116,7 +116,10 @@ def test_hetero_memory_and_gating_priced_per_pool():
     assert abs(e["J_by_action"]["clock"] - clk) <= 1e-12 * clk
     # the 0.230 pooled form priced all DRAM as HBM and gated with one utilisation
     old = _energy(tot, sum(cs), t, cs[1], pools=pools)
-    assert old["J_by_action"]["dram"] < e["J_by_action"]["dram"]
+    # 0.333: was `old < e` while HBM was the cheaper kind per bit (3.44 vs LPDDR 4.0); with HBM 5.80 the pooled form
+    # now over-prices — check the mechanism itself: pooled = all bytes at the HBM rate, ≠ the per-pool sum
+    assert abs(old["J_by_action"]["dram"] - tot["dram"] * t.pJ_bit_dram_hbm * 8e-12) <= 1e-12 * old["J_by_action"]["dram"]
+    assert abs(old["J_by_action"]["dram"] - e["J_by_action"]["dram"]) > 1e-6 * e["J_by_action"]["dram"]
     assert old["J_by_action"]["clock"] != e["J_by_action"]["clock"]
 
 

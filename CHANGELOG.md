@@ -6,6 +6,44 @@
 
 
 
+## [0.333.0]
+
+### HBM energy reconciliation against Olgun et al., arXiv 2610.14244 (MICRO 2026) — MODEL §278
+- **Split, not fitted.** The paper's released H200 data (github.com/CMU-SAFARI/HBM-Power, `case_studies/hbm3e_validation/data`; nvidia-smi GPU memory power of three H200s, 6 × HBM3E 8-high 24 Gb = 96 64-bit channels) gives idle (NOP + refresh) and total power under a streaming random-data read separately. They map one-to-one onto the model's static term and per-bit term. The ≈ 6.86 pJ/bit "all-in" figure (total ÷ bandwidth) is not used as a per-bit value.
+- **`pJ_bit_dram_hbm` 3.44 → 5.80** 「推导」 = mean (total − idle) ÷ read bandwidth = 5.87 / 5.73 / 5.81 pJ/bit. It is device-side dynamic energy: activation at the streaming row locality, read data movement and I/O, with random data (const-0 data 5.09 on the same H200).
+  - The old value was SK hynix's HBM2E 4.3 × 0.8 vendor figure.
+  - Write ≈ 4.2 pJ/bit (const-0) is not split out 「近似」.
+- **`pJ_bit_dram_hbm4` 2.457 → 4.144** (HBM3E ÷ 1.4, the vendor ratio is kept). The paper's own voltage-only projection (0.94–1.00× HBM3E per bit) is recorded as a sensitivity in the source text.
+- **HBM standby: per 64-bit channel instead of per die.** The preset changes from `mW_hbm_die_standby` 48 mW/die (DRAMsim3 HBM2 IDD2N × 1.2 V) to the new field **`mW_hbm_ch_standby` = 376.8 mW/channel** 「推导」 = (38.42 W measured idle − 2.25 W refresh from this preset's 1.95 mW/Gb) ÷ 96.
+  - Standby is set by the clocked channel interface, not by die count (the paper's Finding 6: it scales with data rate). So it is height-independent; HBM4 has 32 channels per stack, which gives 12.06 W per stack. This is within 2 % of the paper's own HBM4 idle extrapolation of 11.84 W (cross-check, not fitted).
+  - `mW_hbm_die_standby` stays as a user input; the two fields sum when both are set.
+  - Refresh is unchanged at 1.95 mW/Gb.
+  - HBM static per card: hbm3e_4s 3.03 → 25.6 W; hbm3e_6s 4.55 → 38.4 W; hbm3e_8s_12h 9.10 → 52.7 W; hbm4_8s_12h 9.10 → 100.9 W.
+- **Mechanism fix: clocked HBM standby no longer offsets the area-scaled idle floor.** `thermal.package_power(..., standby_W)`; new `powercap.hbm_standby_W(e)`, plumbed through `cap_power_fn` / `card_W_for_cap` / `thermal_report` / energy power-cap / TCO / energy DSE rows / api.
+  - The floor (H100 71.8 W ÷ 814 mm², no CUDA context) is measured at idle clocks with the HBM in self-refresh. Refresh and SRAM / NoC leakage overlap it; clocked standby does not, and it is not die leakage either, so it is also excluded from the hot-leakage term.
+  - ≤ 0.332 the standby was 48 mW/die, so the overlap was small. At 377 mW/channel the stacks filled the floor, and die area stopped affecting package power: test_core_327's custom-base-die decision flipped. With the fix it holds as in 0.332.
+- **Impact** (qwen3-8b, 1P, tpuv4i_7nm, n5_cowos_s, no cap; old → new):
+
+  | case | J/token | $/M | package W |
+  |---|---|---|---|
+  | decode b64 hbm3e_4s | 0.05411 → 0.07566 (×1.398) | 0.008388 → 0.009372 (×1.117) | 302.6 → 404.2 |
+  | decode b1 hbm3e_4s | ×1.456 | 0.14938 → 0.16756 (×1.122) | |
+  | prefill b8 hbm3e_4s | ×1.062 | ×1.032 | |
+  | decode b64 hbm4_8s_12h | ×1.556 | ×1.100 | |
+  | decode b64 hbm3e_6s (H200-like) | ×1.456 | ×1.113 | |
+
+  - Energy share of $/M for decode b64 hbm3e_4s goes from 0.349 to 0.417.
+  - Under a 400 W card cap with 8 × HBM4 12-high (test_core_324), the DVFS point drops from s 0.778 to 0.384 and $/M doubles (0.012257 → 0.024810).
+- **Test re-pins (old → new in each file):**
+  - 186: HBM per-bit pin; the HBM / LPDDR per-bit ratio replaces `jl > jh` (LPDDR 4.0 is an all-in subsystem figure, see §278.6).
+  - 187, 211, 216 (`_t` keeps the per-die field at 48 mW), 217, 227, 228, 229, 233, 257, 302, 306, 307, 310, 313, 315 (now passes `standby_W`), 316 (card-scope capped clocks; air_oam front [1, 0, 15] → [4, 16]; package front [12] → [3, 0, 1]; 9 → 14 capped), 318 (carrier-yield flip leaves its range), 319, 324, 328, 330 (thin-margin rows 0 / 15 go over air, front [4, 16]), 331 (near-tie {0, 15} → {16}).
+  - 317 and 327 are unchanged.
+- **New `tests/test_core_333.py`** (7 tests).
+
+### Freshness
+- Same 6 rows as 0.332. OrcaCyber Nano retry: sha 1af1635 unchanged, config still 401 (gated; public metadata only).
+
+
 ## [0.332.0]
 
 ### Load-robust runtime guards (test infrastructure; no model default changed)

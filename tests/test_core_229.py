@@ -58,7 +58,9 @@ def test_gating_formula_and_util():
 
 def test_gating_saves_in_decode_not_prefill():
     d1, d0 = (energy_report(evaluate(_sc(g)), _t()) for g in (1.0, 0.25))
-    assert d0["avg_W_per_card"] < 0.85 * d1["avg_W_per_card"]          # memory-bound: arrays mostly stalled
+    # memory-bound: arrays mostly stalled.  0.333: the saving is the same 37.1 W, but HBM (5.80 pJ/bit + per-channel
+    # standby) enlarges the card (230 → 292 W), so it is 12.7 % of it (was 16.1 %)
+    assert d0["avg_W_per_card"] < 0.9 * d1["avg_W_per_card"] and d1["avg_W_per_card"] - d0["avg_W_per_card"] > 35
     p1, p0 = (energy_report(evaluate(_sc(g, phase="prefill", b=8)), _t()) for g in (1.0, 0.25))
     assert p0["clock_gating"]["mac_util"] > 0.9 and p0["avg_W_per_card"] > 0.99 * p1["avg_W_per_card"]
 

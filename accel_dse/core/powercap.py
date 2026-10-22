@@ -55,6 +55,12 @@ def static_W(e: dict) -> float:
             + (e.get("noc_leak_W_card") or 0.0))       # 0.307: NoC router leakage
 
 
+def hbm_standby_W(e: dict) -> float:
+    """0.333: clocked HBM standby W per card inside static_W (thermal.package_power standby_W); 0 for LPDDR / unset."""
+    h = e.get("hbm_static") or {}
+    return (h.get("standby_W") or 0.0) if h.get("kind") == "HBM" else 0.0
+
+
 def _units_s_card(e: dict, cards: int) -> float:
     return e["units_per_window"] / e["window_s"] / cards if e.get("window_s") else 0.0
 
@@ -91,7 +97,8 @@ def dvfs_cap(r, table, cap_W: float, curve: str = "dfs", iters: int = CAP_ITERS,
         return {"error": "功耗封顶需要能耗表（J/单位）"}
 
     def W(e):
-        return e["avg_W_per_card"] if pk is None else pk(e["avg_W_per_card"], static_W(e), e.get("idle_W_used"))
+        return e["avg_W_per_card"] if pk is None else pk(e["avg_W_per_card"], static_W(e), e.get("idle_W_used"),
+                                                          hbm_standby_W(e))
     u1 = _units_s_card(e1, cards)
     P1 = e1["avg_W_per_card"]
     base = {"curve": curve, "tag": VF_CURVES[curve]["tag"], "cap_W": cap_W, "P_nominal_W": P1,
@@ -104,7 +111,7 @@ def dvfs_cap(r, table, cap_W: float, curve: str = "dfs", iters: int = CAP_ITERS,
     if W(lo_e) > cap_W:
         ps = static_W(lo_e)
         from .thermal import card_W_for_cap
-        cap_c = card_W_for_cap(pk, cap_W, ps, lo_e.get("idle_W_used"))     # the card W at which the cap holds
+        cap_c = card_W_for_cap(pk, cap_W, ps, lo_e.get("idle_W_used"), hbm_standby_W(lo_e))   # card W at the cap
         if cap_c is None or ps >= cap_c:
             return {**base, "binds": True, "feasible": False, "error": "静态功耗 ≥ 封顶：任何吞吐都超功耗"
                     + ("（封装口径：含静态底功耗与稳压器损耗）" if pk is not None else "")}

@@ -84,7 +84,10 @@ def test_thermal_card_area_is_precedent_definition():
     assert _close(tc["card_area_mm2"], s["shoreline"]["die_mm2"])          # = the std-interface die
     assert _close(tc["flux_W_mm2"], tc["pkg_W"] / tc["card_area_mm2"])
     assert _close(tc["die_flux_W_mm2"], tc["die_W"] / c["shoreline"]["die_mm2"])   # physical, real area
-    assert tc["status"] == ts["status"] == "ok"                             # 0.324: custom was "over"
+    # 0.324: custom was "over" on its shrunk die; with the precedent area both were "ok".  0.333: HBM energy
+    # (5.80 pJ/bit + per-channel standby) pushes the std package to 784.7 W / 0.877 W/mm² → over air_oam; custom
+    # stays ok (751.7 W / 0.840 on the same card area) — the precedent definition still keeps the custom row buildable
+    assert ts["status"] == "over" and tc["status"] == "ok"
     r = thermal.thermal_report(600.0, 500.0, 1, 50.0, "air_oam", 0.0, None, card_area_mm2=700.0)
     assert _close(r["flux_W_mm2"], r["pkg_W"] / 700.0) and _close(r["die_flux_W_mm2"], r["die_W"] / 500.0)
     assert thermal.thermal_report(600.0, 500.0, 1, 50.0, "air_oam")["flux_W_mm2"] > r["flux_W_mm2"]

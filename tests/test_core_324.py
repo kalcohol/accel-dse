@@ -52,13 +52,18 @@ def test_std_unchanged_from_0323():
     """Pinned on the 0.323 tree (626fdb3) with no hbm_base key: every number identical; std adds no DSE key."""
     for hb in (None, "std"):
         e = api.api_eval(_body(hb))
-        assert e["energy"]["J_per_unit"] == 0.037492266659349203
+        # 0.333 re-pin (HBM 5.80 pJ/bit + per-channel standby, MODEL §278): 8 × HBM4 12-high = 256 channels → HBM static
+        # 9.10 → 100.9 W of the 400 W cap (paper's own HBM4 idle extrapolation ≈ 11.8 W/stack 「推导」), so the dfs
+        # point s 0.778 → 0.384: J 0.037492266659349203 → 0.05834957496937111, $/M 0.012256563438298044 →
+        # 0.024809665451833468 (×2.02)
+        assert e["energy"]["J_per_unit"] == 0.05834957496937111
         # 0.328 re-pin: n5_derived carries the HBM4 controller area 8 × 7.15 mm² (MODEL §273): die 820.4 → 894.7 mm²,
         # $/M 0.011879644207241864 → 0.012256563438298044; J unchanged (eval energy has no area term on this path)
-        assert e["tco"]["usd_per_Munit"] == 0.012256563438298044
+        assert e["tco"]["usd_per_Munit"] == 0.024809665451833468
         assert "hbm_base" not in e
         r = _dse(_body(hb))
-        assert r["rows"][r["base"]]["J_per_unit"] == 0.037764624854310015   # 0.328: was 0.03774018739951754 (larger die)
+        # 0.328: was 0.03774018739951754 (larger die); 0.333: 0.037764624854310015 → 0.07519524238934748 (as above)
+        assert r["rows"][r["base"]]["J_per_unit"] == 0.07519524238934748
         assert "hbm_base" not in r and not any("hbm_custom" in x for x in r["rows"])
     assert api.api_eval(_body(None))["energy"]["phy_pJ_per_bit"] == _approx(0.29)   # new output (0.324)
 
@@ -177,9 +182,13 @@ def test_hbm_base_study_no_thermal_artifact():
                    tco="accel_2026", include_unbuildable=True, hbm_base=hb, macs=(1.0,)) for hb in ("std", "custom")}
     a, b = o["std"]["rows"][0], o["custom"]["rows"][0]
     assert a["dies"] == 1 and a["buildable"] is True and b["buildable"] is True
-    assert a["shoreline"] == b["shoreline"] == "tight" and a["thr"] == b["thr"] and b["mm2"] < a["mm2"]
+    # 0.333: both rows are now capped at 700 W package (8 × HBM4 standby ≈ 97 W per card); the custom die's smaller
+    # area-scaled static floor leaves more clock (thr 59990 → 63901, f 0.847 vs 0.902) — was equal thr, uncapped; at
+    # the cap both have the same package power on the same precedent area, so the card-level flux is equal (was lower)
+    assert a["shoreline"] == b["shoreline"] == "tight" and b["thr"] > a["thr"] * 1.05 and b["mm2"] < a["mm2"]
+    assert a["capped"] and b["capped"]
     assert b["thermal"]["die_flux_W_mm2"] > a["thermal"]["die_flux_W_mm2"]
-    assert b["thermal"]["flux_W_mm2"] < a["thermal"]["flux_W_mm2"]       # same area definition, lower power
+    assert abs(b["thermal"]["flux_W_mm2"] - a["thermal"]["flux_W_mm2"]) < 1e-4       # same area definition, both at cap
 
 
 def _bodies():

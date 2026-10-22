@@ -154,16 +154,17 @@ def test_report_front_thermal_margin_air_oam():
     rep = design_report(o, {}, 0)
     th = next(s for s in rep["sections"] if s["id"] == "thermal")
     it = {i["key"]: i["value"] for i in th["items"]}
-    assert abs(it["flux_margin_W_mm2"] - (lim - it["flux_W_mm2"])) < 1e-12 and 0 < it["flux_margin_W_mm2"] < 0.0086
+    # 0.333 re-pin (HBM 5.80 pJ/bit + per-channel standby, MODEL §278; front [1, 0, 15] → [4, 16], test_core_330): the
+    # headline row is now over air (flux 0.9461, margin 0.0024 → −0.0861); front near-ties {0, 15} (0.858) → {16}
+    assert abs(it["flux_margin_W_mm2"] - (lim - it["flux_W_mm2"])) < 1e-12 and -0.087 < it["flux_margin_W_mm2"] < -0.085
     ft = th["front_thermal"]
     pts = {p["row"]: p for p in ft["points"]}
-    assert set(pts) == set(o["front"])
-    for j in (0, 15):
-        p = pts[j]
-        assert round(p["flux_W_mm2"], 3) == 0.858 and p["within_tie"] and p["margin"] < 0.01
-        assert abs(p["margin_W_mm2"] - (0.86 - p["flux_W_mm2"])) < 1e-12
-    assert not pts[1]["within_tie"] and pts[1]["margin"] > 0.01
+    assert set(pts) == set(o["front"]) == {4, 16}
+    p = pts[16]
+    assert round(p["flux_W_mm2"], 4) == 0.8543 and p["within_tie"] and p["margin"] < 0.01
+    assert abs(p["margin_W_mm2"] - (0.86 - p["flux_W_mm2"])) < 1e-12
+    assert not pts[4]["within_tie"] and pts[4]["margin"] > 0.01
     w = [x for x in rep["near_ties"] if x["kind"] == "front_thermal"]
-    assert {x["text"].split("前沿点第 ")[1].split(" 行")[0] for x in w} == {"0", "15"}
+    assert {x["text"].split("前沿点第 ")[1].split(" 行")[0] for x in w} == {"16"}
     md = to_markdown(rep)
-    assert "前沿热敏感性" in md and "| 第 15 行 |" in md and "⚠" in md
+    assert "前沿热敏感性" in md and "| 第 16 行 |" in md and "⚠" in md

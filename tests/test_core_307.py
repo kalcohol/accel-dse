@@ -83,12 +83,15 @@ def test_dse_recaps_with_router_power():
     ('功耗 268 > 250 W（含 NoC 静态）'); 0.307 runs it DVFS-capped (f × 0.93, 3.19 k tok/s, 78.4 mJ)."""
     r = _dse(250, power_scope="card")       # 0.316: card-W cap; package scope runs it at f × 0.52, 1.80 k tok/s
     x = next(x for x in r["rows"] if x["engines"] == 2048 and x["noc_link_Bpc"] == 32.0)
-    assert x["feasible"] and x["capped"] and x["W_card"] <= 250 * (1 + 1e-9) and 0.9 < x["f_scale"] < 0.96
-    assert 3.1e3 < x["thr"] < 3.3e3 and abs(x["noc_W"] - 38.1) < 0.2
+    # 0.333: HBM 5.80 pJ/bit + per-channel standby → 268 → 345 W nominal: capped deeper, f × 0.926 → 0.682, 3.19 k →
+    # 2.35 k tok/s; router W unchanged
+    assert x["feasible"] and x["capped"] and x["W_card"] <= 250 * (1 + 1e-9) and 0.65 < x["f_scale"] < 0.72
+    assert 2.2e3 < x["thr"] < 2.5e3 and abs(x["noc_W"] - 38.1) < 0.2
     assert all("NoC 静态" not in x.get("why", "") for x in r["rows"])
     # uncapped points are unchanged from 0.306 (the router W was already in W / J there)
     y = next(x for x in r["rows"] if x["engines"] == 128 and x["noc_link_Bpc"] == 128.0)
-    assert not y["capped"] and abs(y["J_per_unit"] - 0.0613) < 2e-4 and abs(y["noc_W"] - 14.9) < 0.1
+    # 0.333: 128 × 128 B now 282 W nominal > 250 → capped too (J/token 0.0613 → 0.0854; ≤ 0.332 uncapped at 206 W)
+    assert y["capped"] and y["W_card"] <= 250 * (1 + 1e-9) and abs(y["J_per_unit"] - 0.0854) < 2e-4 and abs(y["noc_W"] - 14.9) < 0.1
     assert [r["rows"][i]["engines"] for i in r["front"]] == [128]
     assert any("功耗封顶 / DVFS 之前" in n for n in r["notes"])
     # user values win over the axis defaults

@@ -63,7 +63,8 @@ def test_qwen_jtok_order_of_magnitude():
     w = api.api_sensitivity({"chip_preset": "1P", "scenario": {"model": "qwen3-8b", "formats_override": [["kv", "fp8"]]}})
     rows = {x["key"]: x for x in w["sensitivity"]["balance_whatif"]["rows"]}
     x = rows["hbm_12h24g"]
-    assert x["cost_batch"] == 453 and 5e-3 < x["J_per_tok"] < 3e-2     # ~14.7 mJ, not 0.48 J (batch 1)
+    # 0.333: 26.7 → 35.4 mJ (HBM 5.80 pJ/bit + per-channel standby); the check is the order of magnitude, not 0.48 J
+    assert x["cost_batch"] == 453 and 5e-3 < x["J_per_tok"] < 5e-2
 
 
 def test_main_eval_invariant_with_draft():

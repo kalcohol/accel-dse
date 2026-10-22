@@ -124,7 +124,9 @@ def test_dvfs_axis_trades_macs_vs_clock_under_cap():
             tw = rows[(x["mac_x"], 1.0)]
             assert abs(x["J_per_unit"] - tw["J_per_unit"]) < 1e-9 * tw["J_per_unit"]
     a, w = rows[(1.0, 1.0)], rows[(2.0, 0.6)]
-    assert a["capped"] and not w["capped"] and a["W_nominal"] > 300 > w["W_nominal"]
+    # 0.333: HBM 5.80 pJ/bit + per-channel standby: 2× @ 0.6 now needs 320.3 W nominal (was 285.8) → capped at f 0.572,
+    # i.e. its f_op = 1 twin; the mechanism (wide + slow beats narrow + fast under the cap) holds below
+    assert a["capped"] and w["capped"] and a["W_nominal"] > w["W_nominal"] > 300 and abs(w["f_scale"] - 0.572) < 0.01
     assert w["thr"] > 1.3 * a["thr"] and w["J_per_unit"] < a["J_per_unit"]
     assert w.get("front") and not a.get("front")
 

@@ -4,8 +4,10 @@ from accel_dse.core.energy import ENERGY_PRESETS, EnergyTable, hbm_static_W
 
 
 def _t(**kw):
+    # 0.333: the preset fills per-channel standby (mW_hbm_ch_standby) instead; the per-die field stays a user input —
+    # these tests keep exercising it at its ≤ 0.332 preset value 48 mW (DRAMsim3 HBM2 IDD2N × 1.2 V)
     f = ENERGY_PRESETS["tpuv4i_7nm"]["fields"]
-    return EnergyTable(mW_hbm_die_standby=f["mW_hbm_die_standby"][0], mW_hbm_Gb_refresh=f["mW_hbm_Gb_refresh"][0], **kw)
+    return EnergyTable(mW_hbm_die_standby=48.0, mW_hbm_Gb_refresh=f["mW_hbm_Gb_refresh"][0], **kw)
 
 
 def test_static_scales_with_stacks_and_dies():
@@ -30,9 +32,12 @@ def test_no_double_count_with_idle():
 def test_whatif_power_column():
     w = api.api_sensitivity({"chip_preset": "1P", "scenario": {"model": "qwen3-8b", "formats_override": [["kv", "fp8"]]}})
     rows = {x["key"]: x for x in w["sensitivity"]["balance_whatif"]["rows"]}
-    assert abs(rows["hbm_12h24g"]["d_hbm_W"] - 1.5168) < 1e-6
-    assert abs(rows["hbm_16h24g"]["d_hbm_W"] - 3.0336) < 1e-6
-    assert abs(rows["dram_bw_x2"]["d_hbm_W"] - 3.0336) < 1e-6
+    # 0.333: standby is per 64-bit channel (376.8 mW), so a taller stack adds refresh only (4 stacks × 4 dies × 24 Gb ×
+    # 1.95 mW/Gb = 0.7488 W; was 1.5168 with 48 mW per die) and doubling the stacks adds 64 channels + their refresh
+    # (25.611 W; was 3.0336)
+    assert abs(rows["hbm_12h24g"]["d_hbm_W"] - 0.7488) < 1e-6
+    assert abs(rows["hbm_16h24g"]["d_hbm_W"] - 1.4976) < 1e-6
+    assert abs(rows["dram_bw_x2"]["d_hbm_W"] - 25.611111111111107) < 1e-6
     assert rows["ctx_half"]["d_hbm_W"] == 0.0
 
 

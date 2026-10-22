@@ -9,7 +9,7 @@ from accel_dse.core.energy import energy_report
 from accel_dse.core.energy_dse import energy_design_search
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS
-from accel_dse.core.powercap import static_W
+from accel_dse.core.powercap import hbm_standby_W, static_W
 from accel_dse.core.scenario import Scenario, Serving
 from accel_dse.core.thermal import (COOLING, STATIC_FLOOR_W_MM2, VR_EFF, _hot_k, dram_dev_W, package_power,
                                     thermal_report)
@@ -92,10 +92,15 @@ def test_verdict_change_and_hot_margin():
     r = evaluate(s)
     er = energy_report(r, ex.table())
     a = shoreline_report(s)["die_mm2"]
-    th = thermal_report(er["avg_W_per_card"], a, 1, dram_dev_W(er), "air_oam", static_W(er), None)
+    th = thermal_report(er["avg_W_per_card"], a, 1, dram_dev_W(er), "air_oam", static_W(er), None,
+                        standby_W=hbm_standby_W(er))                 # 0.333: as api / DSE pass it
     # 0.329 re-pin (MODEL §274): the per-generation HBM3E PHY + controller grows the die 654 → 774 mm², so the same
     # power spreads over more area: flux ≈ 0.99 (over air) → 0.850 W/mm², now feasible on air_oam (thin margin)
-    assert er["avg_W_per_card"] / a < 0.70 and th["feasible"] is True and 0.83 < th["flux_W_mm2"] < 0.86
+    # 0.333 (HBM 5.80 pJ/bit + per-channel standby 48.2 W, MODEL §278; standby no longer offsets the area floor):
+    # package 723.6 W, card-level flux 0.850 → 0.934 W/mm², over air_oam 0.86 again; the HBM device power sits beside
+    # the die, so die flux only 0.700 → 0.704
+    assert er["avg_W_per_card"] / a < 0.75 and th["feasible"] is False and 0.92 < th["flux_W_mm2"] < 0.95
+    assert 0.70 < th["die_flux_W_mm2"] < 0.71
     d = energy_design_search(s, ex.table(), ex.budget(), cooling="liquid", **kw)
     row = d["rows"][0]["thermal"]
     for k in ("card_W", "pkg_W", "static_add_W", "vr_loss_W", "pkg_W_hot", "hot_ok", "static_basis"):
