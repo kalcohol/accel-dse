@@ -702,10 +702,11 @@ def _qwen3_omni_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = Fal
 
 
 def _moss_tts_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) -> dict:
-    """0.346 MOSS-TTS Delay (core/moss_tts.py): per 80 ms frame on the replica card 「假设」 (same device as
+    """0.346/0.347 MOSS-TTS Delay (core/moss_tts.py): per 80 ms frame on the replica card 「假设」 (same device as
     language_model): backbone decode (evaluate TPOT) + emb_ext lookups + n_vq audio lm_heads.
         frame = TPOT + t_audio_heads ; real-time ⇔ frame ≤ 80 ms ; RTF = frame / 80 ms
-        first audio ≈ prefill + delay_frames · TPOT + one frame 「来源」 delay pattern fills n_vq before audio eos
+        first audio ≈ prefill + delay_frames · frame + one frame 「来源」 delay steps still run all lm_heads
+        (0.347: was delay·TPOT only — understated). Sidecar folds audio heads into evaluate.fits.
     External audio tokenizer / vocoder not in checkpoint — waveform decode unmodeled."""
     from .evaluate import _component_time
     from .hardware import System
@@ -738,7 +739,8 @@ def _moss_tts_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False
     while lo + 1 < hi:
         mid = (lo + hi) // 2
         lo, hi = (mid, hi) if frame(mid)["frame_s"] <= FRAME_S else (lo, mid)
-    first = pre.ttft + o.delay_frames * f["backbone_s"] + f["frame_s"]
+    # 0.347: delay steps run backbone + audio heads (all lm_heads every step) 「来源」 MossTTSDelayModel.generate
+    first = pre.ttft + o.delay_frames * f["frame_s"] + f["frame_s"]
     tot = first + max(0, n_frames - 1) * f["frame_s"]
     return {"kind": "moss_tts", "label": "MOSS-TTS Delay 12.5Hz", "frame_ms": FRAME_S * 1e3,
             "out_len": sv.out_len, "streams_per_card": b, "delay_frames": o.delay_frames,
@@ -752,7 +754,7 @@ def _moss_tts_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False
             "total_s": tot,
             "audio_out_s_per_s_card": (b if f["frame_s"] <= FRAME_S else b * FRAME_S / f["frame_s"]) /
                                      pre.scenario.layout.cards,
-            "split_first": {"prefill_s": pre.ttft, "delay_s": o.delay_frames * f["backbone_s"],
+            "split_first": {"prefill_s": pre.ttft, "delay_s": o.delay_frames * f["frame_s"],
                             "frame_s": f["frame_s"]},
             "tokenizer_note": "external audio tokenizer / vocoder not in checkpoint"}
 

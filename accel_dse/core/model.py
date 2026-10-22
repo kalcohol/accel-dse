@@ -430,6 +430,8 @@ class ModelSpec:
     mtp_extra_params: int = 0                # eh_proj etc. per MTP module
     lookup_params: int = 0                   # n-gram / engram tables (lookup only)
     lookup_bits: float = 0.0                 # stored bits per lookup param incl. scales (0 = embed format)
+    sidecar_params: int = 0                  # 0.347 same-card extras outside params_llm (MOSS audio heads, Moshi depth); storage only, not in params()
+    sidecar_bits: float = 0.0                # 0 = attn format bits
     engram_ngram: int = 0                    # V4.1 engram_max_ngram_size (hash multiplies per token)
     draft: str = ""                          # dspark: V4.1 block draft head (one pass of draft_block positions)
     draft_block: int = 0
@@ -2465,14 +2467,20 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         if ms is not None:
             # 0.346 MOSS-TTS Delay: Qwen3 backbone (catalog) + n_vq audio emb/heads on the same card 「来源」;
             # external audio tokenizer / vocoder not in checkpoint — waveform decode unmodeled.
-            spec = replace(spec, moss_tts=ms, notes=spec.notes + (
+            # 0.347: audio lm_heads (params_depth) live on the replica card — fold into evaluate.fits via sidecar
+            spec = replace(spec, moss_tts=ms,
+                           sidecar_params=ms.audio_head_params, sidecar_bits=16.0,
+                           notes=spec.notes + (
                 f"语音输出（MOSS-TTS Delay，{ms.frame_hz} Hz）：Qwen3 主干 + {ms.n_vq} 路码本 delay"
                 f"（emb_ext + audio lm_heads {ms.audio_head_params / 1e6:.0f}M，bf16）；"
                 f"首音频约 {ms.delay_frames} 帧 delay；外置 audio tokenizer 未计",))
         from .moshi import moshi_spec
         ms = moshi_spec(cfg, rel)
         if ms is not None:
-            spec = replace(spec, moshi=ms, notes=spec.notes + (
+            # 0.347: depth (params_depth) on the replica card → sidecar for evaluate.fits; Mimi stays speech-KPI only (fp32)
+            spec = replace(spec, moshi=ms,
+                           sidecar_params=ms.depth_params, sidecar_bits=16.0,
+                           notes=spec.notes + (
                 f"全双工语音：每 80 ms 帧 = Mimi 编码（用户音频，fp32）+ 时间 Transformer 1 步（本模型，KV 环形缓存 {ms.context} 帧）"
                 f"+ 深度 Transformer {ms.dep_q} 步 × {ms.dep_layers} 层（{ms.depth_params / 1e6:.0f}M，bf16，每步独立权重切片）"
                 f"+ Mimi 解码（{ms.mimi_params / 1e6:.0f}M，fp32）；全部串行在同一张卡上「假设」",))

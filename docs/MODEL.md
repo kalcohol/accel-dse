@@ -10154,3 +10154,17 @@ Image/video ViT forward (storage only); Thinker→Talker projection traffic deta
 - MOSS-TTS-Nano / Local; MOSS waveform tokenizer if released into same repo.
 - Qwen3-Omni Thinker/Talker true pipelined overlap (needs a sourced schedule).
 
+## §292 Adversarial MOSS-TTS; sidecar_params for same-card speech fits (0.347)
+
+### §292.1 Adversarial 「来源」
+- MOSS Delay: every generate step runs text + n_vq audio lm_heads; delay fill still pays full frame. first_audio = ttft + delay_frames·frame + frame.
+- Qwen3-Omni 0.346 fixes held: code2wav keys=`sliding_window` when frames=1; Talker `text_projection` once at setup.
+
+### §292.2 `sidecar_params` 「推导」
+- Problem: params_depth (MOSS audio heads / Moshi depformer) lived on the replica card but outside `params_llm`, so `evaluate.fits` ignored them (speech KPI only reported GB).
+- Mechanism: `sidecar_params` storage-only (not in `Model.params()`); memplan head-stage `store_extra` like `tts.stored_params`. bf16 via `sidecar_bits=16`.
+- Not used for speech-card stacks (Qwen3-Omni Talker/code2wav) — those keep `stored_bytes ≤ dram` on the extra card.
+
+### §292.3 Deferred
+- MOSS-TTS-Nano (GPT2+local, fp32, pickle bin); MOSS-Local (gated); Mimi fp32 into sidecar; NPU absolute; visual UI restyle.
+

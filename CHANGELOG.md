@@ -6,6 +6,24 @@
 
 
 
+## [0.347.0] — 2026-10-23
+
+### Adversarial MOSS-TTS Delay + Qwen3-Omni 0.346 fixes (MODEL §292)
+
+- **MOSS first-audio (fixed).** Delay steps still run all `lm_heads` 「来源」; `first_audio` used `delay · TPOT` and understated. Now `delay · frame` (backbone + audio heads).
+- **Qwen3-Omni sliding_window / text_projection:** rechecked across eval/speech — keys=72 for frames=1; projection 2048→2048→1024 once in prefill; dual-MoE/bf16/other omni·tts unchanged. No further code change.
+
+### Same-card speech extras → `evaluate.fits` (mechanism)
+
+- New `ModelSpec.sidecar_params` (+ `sidecar_bits`): resident weights outside `params_llm`, **not** in `params()` / param_err.
+- `memplan` folds sidecar into head-stage `store_extra` (like `tts.stored_params`).
+- Wired: MOSS-TTS audio lm_heads; Moshi depth (bf16). Mimi stays speech-KPI-only (fp32). Qwen3-Omni Talker stays speech-card (not sidecar).
+
+### Path choice / deferred
+
+- **MOSS-Nano:** public but new arch (GPT2 + local transformer, float32, `pytorch_model.bin`, separate tokenizer) — not cleanly additive; deferred.
+- **MOSS-Local:** gated 401. **NPU:** no new public absolute. **No visual UI restyle.**
+
 ## [0.346.0] — 2026-10-23
 
 ### Adversarial Qwen3-Omni dual-MoE + code2wav (MODEL §291)
