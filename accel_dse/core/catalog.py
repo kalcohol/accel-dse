@@ -138,6 +138,7 @@ EXTRA_TAIL = [
     ("qwen2.5-omni-3b", "Qwen/Qwen2.5-Omni-3B"),
     # 0.345: Qwen3-Omni-30B-A3B (Thinker MoE + Talker MoE + code2wav; core/qwen3_omni.py)
     ("qwen3-omni-30b-a3b", "Qwen/Qwen3-Omni-30B-A3B-Instruct"),
+    ("moss-tts", "OpenMOSS-Team/MOSS-TTS"),  # 0.346 Delay-8B
     # 0.271: CosyVoice2-0.5B / Fun-CosyVoice3-0.5B-2512 (Qwen2.5-0.5B LM → 25 Hz tokens → chunked flow matching → HiFT;
     # torch .pt checkpoints read by scripts/fetch_pt_release.py)
     ("cosyvoice2-0.5b", "FunAudioLLM/CosyVoice2-0.5B"),
@@ -614,7 +615,7 @@ def entries() -> list[dict]:
             # 0.270: any release with a modelled audio encoder and no vision tower (Whisper keeps it outside audio_config)
             from .vision import audio_spec
             # 0.271: Qwen2.5-Omni (speech in + speech out) → omni; 0.273: Step-Audio-2-mini with its token2wav too
-            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3", "fish_omni", "qwen3_tts") or (cf.get("model_type") == "dense" and cf.get("ditar_config")) else "omni" if cf.get("model_type") in ("qwen2_5_omni", "qwen3_omni_moe") or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") in ("moshi", "index_echo_s2st") else \
+            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3", "fish_omni", "qwen3_tts", "moss_tts_delay") or (cf.get("model_type") == "dense" and cf.get("ditar_config")) else "omni" if cf.get("model_type") in ("qwen2_5_omni", "qwen3_omni_moe") or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") in ("moshi", "index_echo_s2st") else \
                 ("asr" if (cf.get("audio_config") or audio_spec(cf) is not None) and not cf.get("vision_config")
                  else "vlm") if (rel.get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])

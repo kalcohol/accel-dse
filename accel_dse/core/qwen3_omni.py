@@ -1,4 +1,4 @@
-"""0.345 Qwen3-Omni (dual MoE + code2wav; docs/MODEL.md §290).
+"""0.345/0.346 Qwen3-Omni (dual MoE + code2wav; docs/MODEL.md §290 / §291).
 
 Reference 「来源」: HF Qwen/Qwen3-Omni-30B-A3B-Instruct config.json + safetensors headers;
 transformers modeling_qwen3_omni_moe.py / configuration_qwen3_omni_moe.py;
@@ -71,6 +71,9 @@ class Qwen3OmniSpec:
     talker_params: int = 0       # talker.* excl. code_predictor
     cp_params: int = 0
     code2wav_params: int = 0
+    # 0.346 Talker ResizeMLP (text_projection / hidden_projection) 「来源」 modeling TalkerResizeMLP
+    thinker_hidden: int = 2048
+    proj_inter: int = 2048       # talker text_config.intermediate_size (not moe_inter)
     kind: str = "qwen3_omni"
 
     @property
@@ -193,6 +196,8 @@ def qwen3_omni_spec(cfg: dict, rel: dict | None = None) -> Qwen3OmniSpec | None:
         c2_quantizers=c2["num_quantizers"],
         upsample_rates=rates, upsampling_ratios=ratios,
         talker_params=tp, cp_params=cpp, code2wav_params=c2p,
+        thinker_hidden=int(talk.get("thinker_hidden_size") or 2048),
+        proj_inter=int(tc.get("intermediate_size") or 2048),
     )
 
 
@@ -237,6 +242,16 @@ def _talker_model(s: Qwen3OmniSpec):
                  ("mlp", bf), ("embed", bf)),
         act_fmt="bf16", kv_fmt="bf16",
     )
+
+
+def talker_projection_ops(s: Qwen3OmniSpec, b: int, n_tok: int) -> list[Op]:
+    """0.346 Thinker→Talker ResizeMLP once per setup (text_projection) 「来源」 Qwen3OmniMoeTalkerResizeMLP:
+    Linear(thinker_h → proj_inter) + act + Linear(proj_inter → talker_h); bf16.  Called on user/assistant
+    thinker embeds before Talker generate — not per codec frame."""
+    n = max(1, n_tok)
+    return [_g("talker.proj.fc1", b * n, s.thinker_hidden, s.proj_inter, 16),
+            Op("talker.proj.act", "vector", 0, vec=b * n * s.proj_inter * VEC_PER_OUT),
+            _g("talker.proj.fc2", b * n, s.proj_inter, s.t_h, 16)]
 
 
 def talker_ops(s: Qwen3OmniSpec, b: int, q: int, ctx: int) -> list[Op]:
@@ -300,7 +315,9 @@ def code2wav_ops(s: Qwen3OmniSpec, b: int, frames: int = 1) -> list[Op]:
     ops.append(Op("c2w.embed", "lookup", 0,
                   kv_read=b * frames * s.c2_quantizers * h * 2.0,
                   vec=b * frames * s.c2_quantizers * h))
-    keys = min(frames, s.c2_window)
+    # 0.346: streaming one new frame with past_key_values attends up to sliding_window 「来源」
+    # Code2WavAttention.sliding_window + chunked_decode left_context; was min(frames, window)=1 → understated.
+    keys = s.c2_window if frames == 1 else min(frames, s.c2_window)
     for li in range(s.c2_layers):
         p = f"c2w.pre.{li}"
         ops += [_g(f"{p}.qkv", b * frames, h, h + 2 * h, 16),  # MHA kv=heads

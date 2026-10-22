@@ -200,3 +200,6 @@ Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
 Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 # 0.339 moshika (fetch_pt_release --moshi; no HF config.json)
 kyutai/moshika-pytorch-bf16
+
+# 0.346: MOSS-TTS Delay-8B (Qwen3 + 32-VQ delay; external tokenizer)
+OpenMOSS-Team/MOSS-TTS

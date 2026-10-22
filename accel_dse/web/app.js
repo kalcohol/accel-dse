@@ -978,6 +978,16 @@ function renderEval(r) {
         + ` · 实时路数 ${p.streams_realtime} · Talker ${num(p.talker_GB)} + predictor ${num(p.code_predictor_GB)} + code2wav ${num(p.code2wav_GB)} GB`,
         p.rtf > 1 || !p.fits ? 'warn' : ''));
     }
+    if (p.kind === 'moss_tts') {     // 0.346 MOSS-TTS Delay: backbone + n_vq audio heads per 80 ms
+      const f = p.split_frame || {}, sf = p.split_first || {};
+      k.push(kpi(`语音端到端 · ${p.label}`, `帧 ${num(p.frame_s * 1e3)} ms / ${num(p.frame_ms)} ms`,
+        `RTF ${num(p.rtf)}（${p.streams_per_card} 路）· 主干 ${num(f.backbone_s * 1e3)} + ${p.n_vq} 路音频头 ${num(f.audio_heads_s * 1e3)} ms`
+        + ` · 首音频 ${num(p.first_audio_s * 1e3)} ms（delay ${p.delay_frames} 帧）· 实时路数 ${p.streams_realtime}`
+        + ` · 音频头/码本 ${num(p.audio_heads_GB)} GB`
+        + (p.tokenizer_note ? ` · ${p.tokenizer_note}` : ''),
+        p.rtf > 1 || !p.fits ? 'warn' : ''));
+    }
+
 if (p.kind === 'tts') k.push(kpi(`语音端到端 · ${p.label || 'TTS'}`, `RTF ${num(p.rtf)}`,
       `${num(p.audio_out_s)} s 音频输出 = ${p.steps} 步 · 首音频 ${num(p.first_audio_s * 1e3)} ms · 共 ${num(p.total_s)} s · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`
       + (p.split_first && p.split_first.prompt_s != null ? ` · 非流式：提示音频 ${num(p.prompt_audio_s)} s 编码 ${num(p.split_first.prompt_s * 1e3)} + 预填充 ${num(p.split_first.prefill_s * 1e3)}`   // 0.275 FireRedTTS3
@@ -2394,7 +2404,7 @@ async function runInsightDispatch() {
 }
 
 /* 0.276: real-time streams per card vs SLC size (/api/insight_speech_streams) */
-const SPS_OUT = ['moshiko-7b', 'moshika-7b', 'kimi-audio-7b-instruct', 'step-audio-2-mini', 'step-audio-2-mini-base', 'step-audio-2-mini-think', 'qwen2.5-omni-7b', 'qwen2.5-omni-3b', 'qwen3-omni-30b-a3b', 'cosyvoice2-0.5b',
+const SPS_OUT = ['moshiko-7b', 'moshika-7b', 'kimi-audio-7b-instruct', 'step-audio-2-mini', 'step-audio-2-mini-base', 'step-audio-2-mini-think', 'qwen2.5-omni-7b', 'qwen2.5-omni-3b', 'qwen3-omni-30b-a3b', 'moss-tts', 'cosyvoice2-0.5b',
   'fun-cosyvoice3-0.5b-2512', 'fireredtts3-base', 'drama-3', 'ming-3.0-tts-tiny', 'ming-3.0-tts-0.5b', 'ming-omni-tts-0.5b',
   'qwen3-tts-0.6b-base', 'qwen3-tts-1.7b-base', 'qwen3-tts-0.6b-custom-voice', 'qwen3-tts-1.7b-custom-voice', 'qwen3-tts-1.7b-voice-design',  // 0.338
   'index-echo-s2st-2b', 'index-echo-s2st-9b'];  // 0.339 +moshika +step-base/think +omni-3b

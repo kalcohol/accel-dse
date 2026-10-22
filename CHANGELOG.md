@@ -6,6 +6,24 @@
 
 
 
+## [0.346.0] — 2026-10-23
+
+### Adversarial Qwen3-Omni dual-MoE + code2wav (MODEL §291)
+
+- **code2wav streaming KV (fixed).** `code2wav_ops(..., frames=1)` used `keys = min(frames, sliding_window) = 1`, understating Code2WavAttention's sliding window (config `sliding_window=72` / chunked_decode left_context). Now `keys = c2_window` when `frames==1`, else `min(frames, window)`. Shape / MoE routing / bf16 as released unchanged; other omni/tts builders untouched.
+- **Talker setup projection (fixed).** Thinker→Talker `text_projection` ResizeMLP (2048→2048→1024) was missing from Talker prefill; added `talker_projection_ops` once per utterance into `_qwen3_omni_kpis` prefill. Not per-frame.
+- **Joint Thinker/Talker scheduling:** existing `tot = first + max(audio*rtf, out_len*tpot)` kept — no new invent. NPU absolute not found this pass.
+
+### MOSS-TTS Delay-8B (highest-value next)
+
+- New builder `core/moss_tts.py` (kind `moss_tts`, domain tts). Gated on `model_type == moss_tts_delay` only (Nano/Local deferred). Qwen3 language_config backbone + `emb_ext[32]` + `lm_heads[1..32]` on the same card; 12.5 Hz; bf16 as released. External audio tokenizer/vocoder not in checkpoint → coverage partial.
+- Catalog: `moss-tts` → OpenMOSS-Team/MOSS-TTS; SPEECH_MODELS / SPS_OUT 33→34. param_err 0.
+- Speech KPI: frame = TPOT + audio heads; first ≈ ttft + 32·TPOT + frame. Waveform decode unmodeled.
+
+### Freshness / UI
+
+- Light freshness sweep (see NOTES). **No visual UI restyle.**
+
 ## [0.345.0] — 2026-10-23
 
 ### Added

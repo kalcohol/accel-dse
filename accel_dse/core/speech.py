@@ -638,8 +638,9 @@ def _qwen3_tts_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = Fals
 
 
 def _qwen3_omni_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) -> dict:
-    """0.345 Qwen3-Omni (core/qwen3_omni.py): Thinker (catalog) + Talker MoE + code predictor + code2wav
-    on a speech card 「假设」. Per 80 ms frame; real-time ⇔ frame ≤ 80 ms."""
+    """0.345/0.346 Qwen3-Omni (core/qwen3_omni.py): Thinker (catalog) + Talker MoE + code predictor + code2wav
+    on a speech card 「假设」. Per 80 ms frame; real-time ⇔ frame ≤ 80 ms.
+    0.346: code2wav streaming attn uses sliding_window KV; Talker prefill includes Thinker→Talker projection."""
     from .evaluate import _component_time
     from .hardware import System
     from .ir import _cdiv
@@ -668,7 +669,10 @@ def _qwen3_omni_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = Fal
     if lm_only:              # 0.277: thinker load + fit (speech-card DRAM) — frame is speech_card
         return {"kind": "qwen3_omni", "lm_stages": {"thinker": sv.out_len * dec.tpot / audio_out_s},
                 "fits": pre.fits and dec.fits and need <= sys.dram_bytes}
-    t_pre = _component_time([(talker_ops(o, b, max(1, P), 0), 1)], sys, org, "bf16")["s"]
+    from .qwen3_omni import talker_projection_ops
+    # 0.346: Thinker→Talker projection over prompt embeds once, then Talker prefill 「来源」 _get_talker_*_parts
+    t_pre = (_component_time([(talker_projection_ops(o, b, max(1, P)), 1)], sys, org, "bf16")["s"]
+             + _component_time([(talker_ops(o, b, max(1, P), 0), 1)], sys, org, "bf16")["s"])
     lo, hi = 1, 1
     while hi <= 1024 and frame(hi, ctx_mid)["frame_s"] <= FRAME_S:
         lo, hi = hi, hi * 2
@@ -696,6 +700,63 @@ def _qwen3_omni_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = Fal
                             "talker_prefill_s": t_pre, "frame_s": f["frame_s"]}}
 
 
+
+def _moss_tts_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) -> dict:
+    """0.346 MOSS-TTS Delay (core/moss_tts.py): per 80 ms frame on the replica card 「假设」 (same device as
+    language_model): backbone decode (evaluate TPOT) + emb_ext lookups + n_vq audio lm_heads.
+        frame = TPOT + t_audio_heads ; real-time ⇔ frame ≤ 80 ms ; RTF = frame / 80 ms
+        first audio ≈ prefill + delay_frames · TPOT + one frame 「来源」 delay pattern fills n_vq before audio eos
+    External audio tokenizer / vocoder not in checkpoint — waveform decode unmodeled."""
+    from .evaluate import _component_time
+    from .hardware import System
+    from .ir import _cdiv
+    from .moss_tts import FRAME_S, moss_audio_head_ops, moss_audio_weight_bytes
+    sv, lay, m = scn.serving, scn.layout, pre.model
+    o = m.moss_tts
+    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
+                 scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
+    org = scn.mapping
+    n_frames = max(1, math.ceil(audio_out_s / FRAME_S - 1e-9))
+    ctx_mid = sv.prompt + o.delay_frames + n_frames // 2
+
+    def frame(bb: int) -> dict:
+        dec = evaluate(scn.replace("serving.phase", "decode")
+                         .replace("serving.ctx", ctx_mid)
+                         .replace("serving.batch", bb * lay.dp))
+        t_h = _component_time([(moss_audio_head_ops(o, bb), 1)], sys, org, "bf16")["s"]
+        return {"backbone_s": dec.tpot, "audio_heads_s": t_h,
+                "frame_s": dec.tpot + t_h, "fits": dec.fits}
+
+    b = _cdiv(sv.batch, lay.dp)
+    f = frame(b)
+    if lm_only:
+        return {"kind": "moss_tts", "lm_stages": {"frame": f["frame_s"] / FRAME_S},
+                "fits": f["fits"] and pre.fits}
+    lo, hi = 1, 1
+    while hi <= 1024 and frame(hi)["frame_s"] <= FRAME_S:
+        lo, hi = hi, hi * 2
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if frame(mid)["frame_s"] <= FRAME_S else (lo, mid)
+    first = pre.ttft + o.delay_frames * f["backbone_s"] + f["frame_s"]
+    tot = first + max(0, n_frames - 1) * f["frame_s"]
+    return {"kind": "moss_tts", "label": "MOSS-TTS Delay 12.5Hz", "frame_ms": FRAME_S * 1e3,
+            "out_len": sv.out_len, "streams_per_card": b, "delay_frames": o.delay_frames,
+            "n_vq": o.n_vq,
+            "split_frame": {k: f[k] for k in ("backbone_s", "audio_heads_s")},
+            "frame_s": f["frame_s"], "rtf": f["frame_s"] / FRAME_S, "realtime": f["frame_s"] <= FRAME_S,
+            "fits": f["fits"] and pre.fits,
+            "first_audio_s": first, "streams_realtime": lo,
+            "audio_heads_GB": moss_audio_weight_bytes(o) / 1e9,
+            "audio_out_s": audio_out_s, "ttft_s": pre.ttft, "tpot_s": f["backbone_s"],
+            "total_s": tot,
+            "audio_out_s_per_s_card": (b if f["frame_s"] <= FRAME_S else b * FRAME_S / f["frame_s"]) /
+                                     pre.scenario.layout.cards,
+            "split_first": {"prefill_s": pre.ttft, "delay_s": o.delay_frames * f["backbone_s"],
+                            "frame_s": f["frame_s"]},
+            "tokenizer_note": "external audio tokenizer / vocoder not in checkpoint"}
+
+
 def speech_kpis(scn: Scenario, audio_out_s: float = 10.0, lm_only: bool = False) -> dict:
     """``lm_only`` (0.277, speech_insight.speech_streams): omni / cosyvoice / kimi / moshi return only
     {kind, lm_stages, fits} — the LM-card stage loads and the fit verdict by the same expressions as the full KPIs, without
@@ -715,6 +776,8 @@ def speech_kpis(scn: Scenario, audio_out_s: float = 10.0, lm_only: bool = False)
         return _moshi_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "qwen3_tts", None) is not None:
         return _qwen3_tts_kpis(scn, pre, audio_out_s, lm_only)
+    if getattr(m, "moss_tts", None) is not None:
+        return _moss_tts_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "qwen3_omni", None) is not None:
         return _qwen3_omni_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "fish", None) is not None:

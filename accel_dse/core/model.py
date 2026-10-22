@@ -504,6 +504,7 @@ class ModelSpec:
     tts: object = None                       # 0.269 core.tts.TtsSpec: speech-synthesis decode head (replaces the LM head)
     qwen3_tts: object = None                 # 0.338 core.qwen3_tts.Qwen3TtsSpec: code predictor + tokenizer decode
     qwen3_omni: object = None                # 0.345 core.qwen3_omni.Qwen3OmniSpec: Talker MoE + code predictor + code2wav
+    moss_tts: object = None                   # 0.346 core.moss_tts.MossTtsSpec: Delay-pattern Qwen3 + n_vq audio heads
     # 0.270 encoder-decoder (Whisper): encoder positions each decoder sequence cross-attends to (1500 per 30 s window);
     # the cross K/V of every layer is computed at prefill and kept per sequence (fixed size, like recurrent state)
     enc_ctx: int = 0
@@ -609,6 +610,11 @@ def _tc(cfg: dict) -> dict:
         tc = cfg["llm_config"]
     if mt == "qwen3_asr" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
         tc = cfg["thinker_config"]["text_config"]      # 0.270 Qwen3-ASR: thinker_config.text_config (Qwen3)
+    if mt == "moss_tts_delay" and isinstance(cfg.get("language_config"), dict):
+        # 0.346 MOSS-TTS Delay: Qwen3 language_config is the catalog LLM; emb_ext + audio lm_heads → core/moss_tts.py
+        tc = dict(cfg["language_config"])
+        tc.setdefault("model_type", tc.get("model_type") or "qwen3")
+        return tc
     if mt == "qwen3_omni_moe" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
         # 0.345 Qwen3-Omni: Thinker text_config (qwen3_omni_moe_text MoE); Talker MoE + code2wav → core/qwen3_omni.py
         tc = {**cfg["thinker_config"]["text_config"]}
@@ -2155,9 +2161,12 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     if hc and not any(l.hc or l.gres_n for l in spec.layers):
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
     if (spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers)
-            and mt not in ("whisper", "moshi") and not c.get("cosyvoice") and spec.fish is None
-            and getattr(spec, "qwen3_tts", None) is None):  # 0.274 Moshi / 0.338 Qwen3-TTS embed tables (exact)
+            and mt not in ("whisper", "moshi", "moss_tts_delay") and not c.get("cosyvoice") and spec.fish is None
+            and getattr(spec, "qwen3_tts", None) is None
+            and getattr(spec, "moss_tts", None) is None):  # 0.274 Moshi / 0.338 Qwen3-TTS / 0.346 MOSS emb_ext (exact)
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
+    if getattr(spec, "moss_tts", None) is not None:
+        r.append("外置 audio tokenizer / vocoder 不在本权重：波形解码未计「来源」")
     if spec.fish is not None:
         if not spec.fish.codec:
             r.append("Drama 3：Stage 1 的 Fish DAC 解码器（codec.pth，torch pickle）未读、未计时")     # 0.276
@@ -2243,6 +2252,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=16.0,
                            notes=spec.notes + (f"文本 embedding（{(emb_rel - spec.embed_params) / 1e9:.2f}B，bf16）："
                                                "提示查表；每帧用 codec_embedding",))
+        elif emb_rel > 1.05 * spec.embed_params and (cfg.get("model_type") or "") == "moss_tts_delay":
+            # 0.346: language_model.embed_tokens + emb_ext[n_vq] audio codebooks 「来源」; surplus = emb_ext
+            spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=16.0,
+                           notes=spec.notes + (f"音频码本 embedding emb_ext（{(emb_rel - spec.embed_params) / 1e9:.2f}B，bf16）："
+                                               "每帧按行查表并加到文本嵌入",))
         elif emb_rel > 1.05 * spec.embed_params:
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params,
                            notes=spec.notes + (f"查表 {(emb_rel - spec.embed_params) / 1e9:.1f}B 参数（n-gram / engram），"
@@ -2446,6 +2460,15 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 f"{qo.cp_layers} 层 d{qo.cp_h}（{qo.code_predictor_params / 1e6:.0f}M，bf16）+ code2wav "
                 f"（{qo.code2wav_params / 1e6:.0f}M，bf16，upsample {qo.total_upsample} → {qo.sample_rate // 1000} kHz）；"
                 f"每帧 {qo.frame_s * 1e3:.0f} ms；放在每个副本一张额外卡上「假设」",))
+        from .moss_tts import moss_tts_spec
+        ms = moss_tts_spec(cfg, rel)
+        if ms is not None:
+            # 0.346 MOSS-TTS Delay: Qwen3 backbone (catalog) + n_vq audio emb/heads on the same card 「来源」;
+            # external audio tokenizer / vocoder not in checkpoint — waveform decode unmodeled.
+            spec = replace(spec, moss_tts=ms, notes=spec.notes + (
+                f"语音输出（MOSS-TTS Delay，{ms.frame_hz} Hz）：Qwen3 主干 + {ms.n_vq} 路码本 delay"
+                f"（emb_ext + audio lm_heads {ms.audio_head_params / 1e6:.0f}M，bf16）；"
+                f"首音频约 {ms.delay_frames} 帧 delay；外置 audio tokenizer 未计",))
         from .moshi import moshi_spec
         ms = moshi_spec(cfg, rel)
         if ms is not None:

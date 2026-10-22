@@ -10135,3 +10135,22 @@ NPU dig: no new absolute adopted. No visual UI restyle. Freshness light.
 ### §290.4 Unmodeled
 Image/video ViT forward (storage only); Thinker→Talker projection traffic detail; code2wav streaming window schedule (costed per-frame); SPHBM4 / PCIe5/6×16+CXL N5 area / HBM4 all-in pJ still pending public numbers.
 
+## §291 Adversarial Qwen3-Omni; MOSS-TTS Delay (0.346)
+
+### §291.1 Qwen3-Omni adversarial 「来源」 HF modeling + config 2026-10-23
+- code2wav: streaming one new frame with `past_key_values` attends up to `sliding_window` (72), not `min(1, window)`.
+- Talker: `text_projection` ResizeMLP once at setup (thinker_hidden → intermediate → talker_hidden); counted in Talker prefill, not per frame.
+- Talker MoE top-6 + shared 768 via `build_rank_ops` — unchanged. As-released bf16.
+- Joint Thinker∥Talker: no new mechanism beyond existing first+max(audio·rtf, text·tpot).
+
+### §291.2 MOSS-TTS Delay 「来源」 OpenMOSS-Team/MOSS-TTS
+- `moss_tts_delay`: Qwen3 dense (h=4096, L=36) + n_vq=32 delay channels; audio_vocab=1024; 1s≈12.5 tokens; sampling_rate 24000; bf16.
+- Roles: `language_model.*` → catalog; `emb_ext` → lookup; `lm_heads.0` text; `lm_heads.1..32` → params_depth / audio heads on same card.
+- External tokenizer/vocoder absent from checkpoint — waveform unmodeled (coverage partial).
+- Nano (GPT2+local float32) / Local (gated) deferred.
+
+### §291.3 Pending
+- NPU absolute still none public this pass.
+- MOSS-TTS-Nano / Local; MOSS waveform tokenizer if released into same repo.
+- Qwen3-Omni Thinker/Talker true pipelined overlap (needs a sourced schedule).
+

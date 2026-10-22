@@ -189,6 +189,24 @@ def _qwen3_omni_role(name: str, n_layers: int | None) -> str:
     return classify(name, n_layers)
 
 
+def _moss_tts_role(name: str, n_layers: int | None) -> str:
+    """0.346 MOSS-TTS Delay (modeling_moss_tts.py): language_model.* → LLM (strip prefix);
+    emb_ext.* → embed (audio codebooks); lm_heads.0 → lm_head (text); lm_heads.1.. → depth (audio)."""
+    if name.startswith("language_model."):
+        name = name[len("language_model."):]
+        return classify(name, n_layers)
+    if name.startswith("emb_ext."):
+        return "embed"
+    if name.startswith("lm_heads."):
+        # lm_heads.0 = text; lm_heads.N = audio channel N
+        try:
+            idx = int(name.split(".")[1])
+        except (IndexError, ValueError):
+            idx = -1
+        return "lm_head" if idx == 0 else "depth"
+    return classify(name, n_layers)
+
+
 def _kimi_role(name: str, n_layers: int | None) -> str:
     """0.273 Kimi-Audio-7B-Instruct (modeling_moonshot_kimia.py MoonshotKimiaForCausalLM): Whisper-large-v3 encoder
     (whisper.*, from the repo's whisper-large-v3/ — scripts/fetch_pt_release.py --kimi) + vq_adaptor → vision; the
@@ -468,6 +486,7 @@ def summarize(repo: str, key: str | None = None) -> dict:
         b = _base(name) if is_blocks else re.sub(r"\.(weight_packed|qweight)$", ".weight", name)
         role = (_whisper_role(name) if cfg.get("model_type") == "whisper" else
                 _omni_role(name, nl) if cfg.get("model_type") == "qwen2_5_omni" else
+                _moss_tts_role(name, nl) if cfg.get("model_type") == "moss_tts_delay" else
                 _qwen3_omni_role(name, nl) if cfg.get("model_type") == "qwen3_omni_moe" else
                 _step_audio_role(name, nl) if cfg.get("model_type") == "step_audio_2" else
                 _moshi_role(name, nl) if cfg.get("model_type") == "moshi" else
