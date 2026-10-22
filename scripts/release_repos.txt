@@ -174,3 +174,8 @@ KRAFTON/Raon-1-mini-preview
 ATH-MaaS/PixText:models/PixText-MeanFlow
 # 0.331: PixText-Teacher — own release file (trailing '!': keyed by repo:subfolder, catalog.RELEASE_KEYS)
 ATH-MaaS/PixText:models/PixText-Teacher!
+# 0.336 OmniASR LLM v2 (bezzam HF ports; facebook/omniASR ships .pt only — no config.json)
+bezzam/omniasr-llm-300m-v2
+bezzam/omniasr-llm-1b-v2
+bezzam/omniasr-llm-3b-v2
+bezzam/omniasr-llm-7b-v2

@@ -229,6 +229,9 @@ class AudioSpec:
     # 0.273 Kimi-Audio: ``stack`` consecutive encoder positions concatenated (1280 × 4 = 5120) into one LLM position
     # (12.5 Hz) before the adaptor Linears; sequential 30 s windows (pad, no truncation)
     stack: int = 0
+    # 0.336 OmniASR (kind "w2v"): Wav2Vec2-style tower — ``ds`` = ((kernel, stride, 0), …) of the feature-extractor
+    # Conv1d stack (config conv_kernel / conv_stride); ``n_mels`` reused as the last conv channel (projection in);
+    # ``ch`` = num_conv_pos_embedding_groups; positional conv kernel = ``kernel`` when kind is w2v
 
     @property
     def samples_per_token(self) -> int:
@@ -281,6 +284,8 @@ class AudioSpec:
             return sum(self.aut_len(n) for n in self.chunks(seconds))
         if self.kind == "sanm":
             return self.lfr_frames(seconds)
+        if self.kind == "w2v":
+            return self.tokens(seconds)        # 0.336: one encoder / LLM position per post-conv frame (50 Hz)
         if self.kind != "whisper":
             return self.tokens(seconds)        # Muse Spark: one output position per token (no chunking)
         return sum(self.chunk_len(n)[0] for n in self.chunks(seconds))
@@ -328,6 +333,12 @@ class AudioSpec:
             return (t - 2) // self.pool + 1
         if self.kind == "whisper":
             return sum(self.chunk_len(n)[1] for n in self.chunks(seconds))
+        if self.kind == "w2v":
+            # 0.336 OmniASR / Wav2Vec2 _get_feat_extract_output_lengths 「来源」: (L − k) // s + 1 per Conv1d
+            n = round(seconds * self.rate)
+            for k, st, _ in self.ds:
+                n = (n - k) // st + 1 if n >= k else 0
+            return max(0, n)
         return math.ceil(round(seconds * self.rate) / self.samples_per_token)
 
 
@@ -367,6 +378,10 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
         mats = tuple((sh[1], sh[0]) for n_, sh in sorted(ct.items()) if len(sh) == 2)
         return replace(a, lin=a.lin + mats, out=mats[-1][1] if mats else a.out,
                        params=a.params + sum(math.prod(sh) for sh in ct.values()))
+    if mt in ("omniasr", "omniasr_ctc") and ac.get("model_type") == "omniasr_audio":
+        # 0.336 OmniASR LLM / CTC (bezzam/*-v2 HF ports of facebook/omniASR): Wav2Vec2-style audio_tower +
+        # multi_modal_projector (LLM) or CTC lm_head (CTC — encoder only; language decode not modelled as asr)
+        return _omniasr_audio_spec(cfg, ac)
     if ac.get("model_type") != "muse_spark_audio":
         return None
     pt, dm, dp, k, r = tuple(ac["patch_sizes"]), tuple(ac["hidden_sizes"]), tuple(ac["depths"]), ac["conv_kernel_size"], ac["mlp_ratio"]
@@ -498,6 +513,81 @@ def _sanm_spec(ac: dict, ad: dict) -> AudioSpec:
               + _lin(d, P) + _lin(P, D) + nl * blk(D, D, adf, False))
     return AudioSpec(16000, (160,), (d,), (L,), k, ffn / d, D, params, kind="sanm", heads=nh, n_mels=din,
                      lin=((d, P), (P, D)), maxf=ac["max_position_embeddings"] - 1, lfr=(m, 6), ad=(nl, D, adh, adf))
+
+
+def _omniasr_audio_spec(cfg: dict, ac: dict) -> AudioSpec:
+    """0.336 OmniASR audio tower (bezzam/omniasr-*-v2 config + safetensors headers 「来源」; Wav2Vec2-shaped
+    transformers OmniASR audio): raw 16 kHz waveform → 7 Conv1d (bias) + LayerNorm per layer (config conv_dim /
+    conv_kernel / conv_stride) → LayerNorm → Linear last_conv → hidden → grouped positional Conv1d
+    (num_conv_pos_embeddings × groups) → L pre-LN blocks (q / k / v / o with bias, GELU intermediate / output with
+    bias, 2 × LayerNorm) → final LayerNorm; LLM releases add multi_modal_projector Linear hidden → text_hidden
+    (bias).  Frame rate = 16 kHz / Π stride = 50 Hz.  Param count matches params_vision (incl. projector)."""
+    d, L, nh, ff = ac["hidden_size"], ac["num_hidden_layers"], ac["num_attention_heads"], ac["intermediate_size"]
+    cd, ck, cs = list(ac["conv_dim"]), list(ac["conv_kernel"]), list(ac["conv_stride"])
+    g = ac.get("num_conv_pos_embedding_groups", 16)
+    pk = ac.get("num_conv_pos_embeddings", 128)
+    params = cd[0] * 1 * ck[0] + cd[0] + 2 * cd[0]
+    for i in range(1, len(cd)):
+        params += cd[i] * cd[i - 1] * ck[i] + cd[i] + 2 * cd[i]
+    params += 2 * cd[-1] + _lin(cd[-1], d)                                  # post-conv LN + projection
+    params += d * (d // g) * pk + d                                         # grouped positional conv + bias
+    blk = 4 * _lin(d, d) + _lin(d, ff) + _lin(ff, d) + 4 * d
+    params += L * blk + 2 * d
+    out = d
+    lin: tuple[tuple[int, int], ...] = ()
+    tc = cfg.get("text_config") or {}
+    if cfg.get("model_type") == "omniasr" and tc.get("hidden_size"):
+        out = tc["hidden_size"]
+        lin = ((d, out),)
+        params += _lin(d, out)
+    ds = tuple((ck[i], cs[i], 0) for i in range(len(ck)))
+    return AudioSpec(16000, (math.prod(cs),), (d,), (L,), pk, ff / d, out, params, kind="w2v", heads=nh,
+                     n_mels=cd[-1], ds=ds, lin=lin, ch=g)
+
+
+def _w2v_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
+    """0.336 OmniASR / Wav2Vec2 encoder ops: each Conv1d as an implicit GEMM over every output frame; positional
+    conv as depthwise-ish GEMM; L bidirectional full-attention blocks; optional projector Linear."""
+    d, dh = a.dims[0], a.dims[0] // a.heads
+    T = a.tokens(seconds)
+    R = T * clips
+    ops: list[Op] = []
+
+    def gemm(name: str, m: int, k: int, n: int, li: int = 0, wp: int | None = None) -> Op:
+        return Op(name, "gemm", li, m=m, k=k, n=n, role="vision", w_params=(wp if wp is not None else k * n + n),
+                  w_bits=16.0, w_fmt="bf16", a_fmt=af, act_bytes=m * (k + n) * ab, stream=True,
+                  vec=m * n * VEC_PER_OUT)
+
+    # feature-extractor lengths per layer (same recurrence as tokens())
+    n = round(seconds * a.rate)
+    lens = []
+    for k, st, _ in a.ds:
+        n = (n - k) // st + 1 if n >= k else 0
+        lens.append(max(0, n))
+    din = 1
+    for i, ((k, st, _), cd, Lout) in enumerate(zip(a.ds, [a.n_mels] * len(a.ds), lens)):
+        # first layer in_ch=1, later in_ch=out_ch=n_mels (all OmniASR conv_dim equal)
+        cin = 1 if i == 0 else a.n_mels
+        cout = a.n_mels
+        rows = Lout * clips
+        ops.append(gemm(f"aud.fe.{i}", rows, k * cin, cout, 0, wp=cout * cin * k + cout))
+        din = cout
+    if T:
+        ops.append(gemm("aud.fe.proj", R, a.n_mels, d, 0))
+        # grouped positional conv: weight [d, d/g, pk] → treat as GEMM R × (pk·d/g) → d
+        ops.append(gemm("aud.pos", R, a.kernel * (d // a.ch), d, 0, wp=d * (d // a.ch) * a.kernel + d))
+        ff = int(a.mlp * d)
+        for li in range(a.depths[0]):
+            ops += [gemm(f"aud.{li}.qkv", R, d, 3 * d, li), gemm(f"aud.{li}.o", R, d, d, li),
+                    gemm(f"aud.{li}.fc1", R, d, ff, li), gemm(f"aud.{li}.fc2", R, ff, d, li),
+                    Op(f"aud.{li}.qk", "attn", li, m=T, k=dh, n=T, count=clips * a.heads, causal=1.0,
+                       act_bytes=clips * a.heads * T * dh * ab, stream=True, orient=True),
+                    Op(f"aud.{li}.pv", "attn", li, m=T, k=T, n=dh, count=clips * a.heads, causal=1.0,
+                       act_bytes=clips * a.heads * T * dh * ab, orient=True),
+                    Op(f"aud.{li}.softmax", "vector", li, vec=clips * a.heads * T * T * 5.0)]
+        for j, (k, n) in enumerate(a.lin or ()):
+            ops.append(gemm(f"aud.proj.linear{j}", R, k, n, a.depths[0]))
+    return ops
 
 
 def _sanm_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
@@ -637,6 +727,8 @@ def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> lis
         return _aut_ops(a, seconds, clips, ab, af)
     if a.kind == "sanm":
         return _sanm_ops(a, seconds, clips, ab, af)
+    if a.kind == "w2v":
+        return _w2v_ops(a, seconds, clips, ab, af)
     t = a.tokens(seconds) * a.samples_per_token * clips       # padded samples (all clips)
     ops: list[Op] = []
     din = 1
@@ -677,7 +769,7 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return None
     if not vc:
         au = audio_spec(cfg)
-        if au is not None and au.kind in ("whisper", "aut", "sanm"):
+        if au is not None and au.kind in ("whisper", "aut", "sanm", "w2v"):
             # 0.268 audio-only release (Ming-3.0-asr-tiny): an encoder container with no image path (family "audio":
             # image_grid_of → None, serving.images ignored with a warning); costed when serving.audio_s > 0
             # 0.270: Whisper-large-v3 (encoder-decoder), Qwen2-Audio (Whisper-v3 encoder + pool + projector), Qwen3-ASR (AuT)
@@ -688,6 +780,7 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                    "AuT 音频编码器（Qwen3-Omni，Conv2d ×3 下采样 8×，窗口注意力）+ MLP 投影 + ST 连接器" if au.kind == "aut" and cfg.get("model_type") == "index_echo_s2st" else
                    "AuT 音频编码器（Conv2d ×3 下采样 8×，窗口注意力）+ MLP 投影" if au.kind == "aut" else
                    "SAN-M 音频编码器（LFR 7/6 帧堆叠，70 层 FSMN 自注意力，整段双向）+ 投影 + 2 层适配器" if au.kind == "sanm" else
+                   "OmniASR / Wav2Vec2 音频编码器（7 层 Conv1d 下采样 320× → 50 Hz，双向 Transformer）+ 线性投影" if au.kind == "w2v" else
                    "Whisper 音频编码器 + 卷积下采样投影")
             return VisionSpec("audio", lab, 0, 1, au.dims[0], int(au.mlp * au.dims[0]),
                               au.depths[0], au.heads, au.dims[0], False, 1, (), au.params, (), audio=au,

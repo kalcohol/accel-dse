@@ -1,0 +1,135 @@
+{
+ "bytes_llm": 5275271168,
+ "bytes_mtp": 0,
+ "bytes_total": 6553815040,
+ "config": {
+  "architectures": [
+   "OmniASRForConditionalGeneration"
+  ],
+  "audio_config": {
+   "activation_dropout": 0.1,
+   "attention_dropout": 0.0,
+   "conv_bias": true,
+   "conv_dim": [
+    512,
+    512,
+    512,
+    512,
+    512,
+    512,
+    512
+   ],
+   "conv_kernel": [
+    10,
+    3,
+    3,
+    3,
+    3,
+    2,
+    2
+   ],
+   "conv_stride": [
+    5,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+   ],
+   "hidden_act": "gelu",
+   "hidden_dropout": 0.1,
+   "hidden_size": 1024,
+   "initializer_range": 0.02,
+   "intermediate_size": 4096,
+   "layer_norm_eps": 1e-05,
+   "layerdrop": 0.1,
+   "model_type": "omniasr_audio",
+   "num_attention_heads": 16,
+   "num_conv_pos_embedding_groups": 16,
+   "num_conv_pos_embeddings": 128,
+   "num_hidden_layers": 24
+  },
+  "audio_token_id": 10289,
+  "bos_token_id": 0,
+  "dtype": "float32",
+  "eos_token_id": 2,
+  "initializer_range": 0.02,
+  "model_type": "omniasr",
+  "pad_token_id": 1,
+  "text_config": {
+   "attention_bias": false,
+   "attention_dropout": 0.0,
+   "bos_token_id": 1,
+   "eos_token_id": 2,
+   "head_dim": 512,
+   "hidden_act": "silu",
+   "hidden_size": 4096,
+   "initializer_range": 0.02,
+   "intermediate_size": 2816,
+   "max_position_embeddings": 8192,
+   "mlp_bias": false,
+   "model_type": "llama",
+   "num_attention_heads": 8,
+   "num_hidden_layers": 12,
+   "num_key_value_heads": 8,
+   "pad_token_id": null,
+   "pretraining_tp": 1,
+   "rms_norm_eps": 1e-05,
+   "rope_parameters": {
+    "rope_theta": 10000.0,
+    "rope_type": "default"
+   },
+   "tie_word_embeddings": false,
+   "use_cache": true,
+   "vocab_size": 11984
+  },
+  "transformers_version": "5.21.0.dev0"
+ },
+ "fetched": "2026-10-22",
+ "n_tensors": 533,
+ "params_llm": 1318817792,
+ "params_mtp": 0,
+ "params_vision": 319635968,
+ "quantization_config": null,
+ "repo": "bezzam/omniasr-llm-300m-v2",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 3221225472,
+    "params": 805306368
+   }
+  },
+  "embed": {
+   "fp32": {
+    "bytes": 196345856,
+    "params": 49086464
+   }
+  },
+  "lm_head": {
+   "fp32": {
+    "bytes": 196345856,
+    "params": 49086464
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 1660944384,
+    "params": 415236096
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 409600,
+    "params": 102400
+   }
+  },
+  "vision": {
+   "fp32": {
+    "bytes": 1278543872,
+    "params": 319635968
+   }
+  }
+ },
+ "torch_dtype": "float32"
+}

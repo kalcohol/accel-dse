@@ -2389,7 +2389,8 @@ function speechStreamsCell(c) {
 // 0.277: one request per model (rows render as they land; the slow lane stays interleavable between models); a new
 // click supersedes the run (req drops the old reply, the static build frees its worker); a scenario edit marks it stale
 const SPS_ASR = ['qwen2-audio-7b-instruct', 'qwen3-asr-1.7b', 'fun-asr-nano-2512', 'whisper-large-v3',
-  'whisper-large-v3-turbo', 'ming-3.0-asr-tiny'];
+  'whisper-large-v3-turbo', 'ming-3.0-asr-tiny',
+  'omniasr-llm-300m-v2', 'omniasr-llm-1b-v2', 'omniasr-llm-3b-v2', 'omniasr-llm-7b-v2'];  // 0.336 OmniASR
 let spsRun = 0;
 async function runInsightSpeechStreams() {
   const run = ++spsRun, v0 = S.ver, t0 = performance.now();

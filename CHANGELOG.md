@@ -6,6 +6,21 @@
 
 
 
+## [0.336.0]
+
+### OmniASR LLM v2 — Wav2Vec2-style audio builder in the asr domain (MODEL §281)
+- **`omniasr_audio` builder** (kind `w2v`): 7× Conv1d feature extractor + grouped positional conv + bidirectional Transformer + `multi_modal_projector`, dims from public config / safetensors (bezzam/omniasr-llm-*-v2 HF ports of facebook/omniASR; official facebook repos ship `.pt` only).
+- **Released:** `omniasr-llm-300m-v2` / `1b` / `3b` / `7b` (shared Llama text trunk 1.319 B fp32; audio tower 0.32 / 0.97 / 3.07 / 6.49 B). Frame rate 50 Hz; 10 s → 499 prompt audio tokens.
+- **Speech insight / UI:** added to `SPEECH_MODELS` and `SPS_ASR` (17 → 21 models).
+- **CTC siblings pending:** `omniasr_ctc` encoder builds, but no AR language backbone for the asr domain decode path — not catalogued.
+- **Freshness:** OrcaCyber Nano sha `1af1635` unchanged, config 401 → still pending. Carbon-X (Qwen3 stock) noted, not added this pass.
+
+### 0.335 LPDDR adversarial (light)
+- Device-side 3.23 / PHY 1.3 / HBM 5.80 unchanged; `hbm_standby_W` / `hbm_device_static_W` still feed LPDDR through eval. Decode J ×0.970 vs Grace-4.0 default reconfirmed. No default change.
+
+### Other
+- **UI patch not applied** (`/workspace/ui-audit/ui.patch` present; user still deciding).
+
 ## [0.335.0]
 
 ### LPDDR device energy aligned with HBM 0.333 idle/active split (MODEL §280)

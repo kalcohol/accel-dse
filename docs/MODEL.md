@@ -9966,3 +9966,16 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 - System-level LPDDR idle/active measurement (Grace / GH200).
 - OmniASR (bezzam/omniasr-*-v2): public config, needs a new `omniasr_audio` builder.
 - Carried: activation locality; HBM4 absolute; PixText mask; PCIe/CXL; controllers; NMC; OrcaCyber Nano.
+
+## §281 OmniASR LLM v2 Wav2Vec2-style audio encoder (0.336)
+- **Source:** bezzam/omniasr-llm-{300m,1b,3b,7b}-v2 `config.json` + safetensors headers 「来源」(2026-10-22); facebook/omniASR-* official checkpoints are `.pt` without HF config — not used.
+- **Audio tower** (`audio_config.model_type = omniasr_audio`, kind `w2v`):
+  - Feature extractor: 7 Conv1d + LayerNorm (conv_dim / conv_kernel / conv_stride) → LN → Linear → `hidden_size`.
+  - Grouped positional Conv1d (`num_conv_pos_embeddings` × `num_conv_pos_embedding_groups`).
+  - `num_hidden_layers` pre-LN blocks (q/k/v/o + GELU FF, all with bias) + final LN.
+  - LLM: `multi_modal_projector` Linear `hidden_size` → `text_config.hidden_size` (bias).
+  - Output length: Wav2Vec2 `(L − k) // s + 1` per layer; Π stride = 320 → 50 Hz at 16 kHz.
+- **Text:** `text_config` Llama (shared across sizes: h=4096, L=12, nh=8, head_dim=512, ff=2816, vocab=11984) 「来源」.
+- **Param check:** builder `params` = `params_vision` (incl. projector) for every released size; `params_llm` matches the Llama trunk.
+- **CTC (`omniasr_ctc`):** same audio tower; no AR LM — pending (not in catalog).
+- **0.335 LPDDR:** no change; adversarial pass reconfirmed device 3.23 + PHY 1.3, HBM untouched.

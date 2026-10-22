@@ -134,6 +134,12 @@ EXTRA_TAIL = [
     ("fun-cosyvoice3-0.5b-2512", "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"),
     # 0.272 speech round 3: Fun-ASR-Nano-2512 (transformers fun_asr_nano: SAN-M 70-layer encoder + adaptor + Qwen3-0.6B)
     ("fun-asr-nano-2512", "FunAudioLLM/Fun-ASR-Nano-2512-hf"),
+    # 0.336 OmniASR LLM v2 (bezzam HF ports of facebook/omniASR; Wav2Vec2 audio_tower + Llama text; fp32 as released).
+    # CTC siblings (omniasr_ctc) kept pending: encoder dims readable, but no AR language backbone for the asr domain.
+    ("omniasr-llm-300m-v2", "bezzam/omniasr-llm-300m-v2"),
+    ("omniasr-llm-1b-v2", "bezzam/omniasr-llm-1b-v2"),
+    ("omniasr-llm-3b-v2", "bezzam/omniasr-llm-3b-v2"),
+    ("omniasr-llm-7b-v2", "bezzam/omniasr-llm-7b-v2"),
     # 0.272: Step-Audio-2-mini (Whisper-style encoder + AvgPool + conv Adaptor → Qwen2.5-7B-shaped LLM; audio in)
     ("step-audio-2-mini", "stepfun-ai/Step-Audio-2-mini"),
     # 0.273 speech round 4: Kimi-Audio-7B-Instruct (Whisper-large-v3 encoder + adaptor → Qwen2-7B trunk with a 6-layer
@@ -410,7 +416,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("alibaba", "阿里（Qwen · Wan · 通义）", ("Qwen/", "Wan-AI/", "Tongyi-MAI/", "FunAudioLLM/")), ("deepseek", "DeepSeek（深度求索）", ("deepseek-ai/",)),
     ("kimi", "Kimi（月之暗面）", ("moonshotai/",)), ("zhipu", "智谱（GLM · CogVideoX）", ("zai-org/", "THUDM/")),
     ("minimax", "MiniMax（稀宇）", ("MiniMaxAI/",)),
-    ("meta", "Meta（Llama · ESM · Muse）", ("unsloth/", "meta-llama/", "facebook/", "meta-models/", "amd/Muse-Spark")),
+    ("meta", "Meta（Llama · ESM · Muse · OmniASR）", ("unsloth/", "meta-llama/", "facebook/", "meta-models/", "amd/Muse-Spark", "bezzam/")),
     ("openai", "OpenAI（gpt-oss · Whisper）", ("openai/",)), ("mistral", "Mistral AI", ("mistralai/",)),
     ("microsoft", "微软（Phi）", ("microsoft/",)),
     ("bytedance", "字节跳动（Seed · Protenix）", ("ByteDance-Seed/", "gh:bytedance/")),
@@ -455,6 +461,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("minimax", "MiniMax-M1 / Text-01", ("minimax-m1", "minimax-text")), ("minimax", "MiniMax-H", ("minimax-h",)),
     ("meta", "Llama 3", ("llama-3",)), ("meta", "ESM-2", ("esm2",)), ("meta", "ESMFold", ("esmfold",)),
     ("openai", "gpt-oss", ("gpt-oss",)), ("openai", "Whisper", ("whisper",)),
+    ("meta", "OmniASR", ("omniasr",)),
     ("mistral", "Mistral Large", ("mistral-large",)), ("mistral", "Mixtral", ("mixtral",)), ("mistral", "Magistral", ("magistral",)),
     ("microsoft", "Phi-4", ("phi-4",)), ("bytedance", "Seed-OSS", ("seed-oss",)), ("bytedance", "Protenix", ("protenix",)),
     ("tencent", "HunyuanVideo", ("hunyuanvideo",)), ("lightricks", "LTX-Video", ("ltx-video",)),

@@ -54,6 +54,7 @@ from .scenario import Scenario
 SPEECH_MODELS = ("moshiko-7b", "kimi-audio-7b-instruct", "step-audio-2-mini", "qwen2.5-omni-7b", "cosyvoice2-0.5b",
                  "fun-cosyvoice3-0.5b-2512", "fireredtts3-base", "drama-3", "ming-3.0-tts-tiny", "qwen2-audio-7b-instruct", "qwen3-asr-1.7b",
                  "fun-asr-nano-2512", "whisper-large-v3", "whisper-large-v3-turbo", "ming-3.0-asr-tiny",
+                 "omniasr-llm-300m-v2", "omniasr-llm-1b-v2", "omniasr-llm-3b-v2", "omniasr-llm-7b-v2",  # 0.336 OmniASR
                  "index-echo-s2st-2b", "index-echo-s2st-9b")   # 0.280 S2ST
 OUT_LEN = 64            # reply / transcript tokens 「假设」 (same default as the UI speech panel)
 PROMPT = 64             # text prompt tokens 「假设」
