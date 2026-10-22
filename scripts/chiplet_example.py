@@ -64,7 +64,8 @@ def budget(mc=None) -> Budget:
     extra = {}
     if mc:                          # 0.327: HBM controller area preset (budget.MC_PRESETS)
         extra = {k: v for k, (v, _, _) in MC_PRESETS[mc]["fields"].items()}
-    return Budget(**{k: v for k, (v, _, _) in f.items() if k in Budget.__dataclass_fields__}, power_W_card=700, **extra)
+    # 0.328: n5_derived carries mm2_per_hbm_mc 7.15 (HBM4 / 4E); an mc preset overrides it
+    return Budget(**{**{k: v for k, (v, _, _) in f.items() if k in Budget.__dataclass_fields__}, **extra}, power_W_card=700)
 
 
 def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d0=0.1, io_edges=-1,

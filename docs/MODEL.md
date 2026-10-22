@@ -9575,3 +9575,50 @@ The bottom-up area is SRAM + MAC + PHY + host IO + 23% uncore. The uncore share 
 
 ### §272.5 Consistency fix
 `hbm_base.NOT_MODELLED` no longer lists organic SPHBM4 (modelled in §271), and the custom shoreline note points to `hbm_pkg=sphbm4`.
+
+## §273 HBM4 / HBM4E memory-controller area on by default (0.328)
+
+### §273.1 The double-count question (§272.3), answered from floor plans
+The uncore share (§160) copies TPUv1's control 2% + unlabelled 21%. The question was whether that 21% already holds memory-controller logic. Public, annotated Google floor plans and the NeuroMeter validation paper say it does not:
+
+| Design | What the floor plan labels | Memory port / controller | Unknown / wiring |
+|---|---|---|---|
+| TPUv1, 28 nm, < 331 mm² (Jouppi ISCA 2017 Fig. 2) 「来源」 | DRAM port 3% × 2, PCIe 3%, Host Interf. 2%, Misc I/O 1%, Control 2%, UB 29%, MMU 24%, Acc 6%, Act 6% | DRAM port 6% (own block) | 21% unlabelled |
+| TPUv1 per NeuroMeter (Tang et al. HPCA 2021 §IV) 「来源」 | "DRAM port (6.0% v.s. 2.8%)", "do not model host interface, controller, and misc I/O, with 5% in total" | 6.0% | "unknown components … ∼21%" |
+| TPUv2, 16 nm, < 611 mm² (NeuroMeter §IV; Norrie et al. IEEE Micro 2021 Fig. 4) 「来源」 | 4 × "HBM port"; PCIe drawn as "PCIe Link" + "PCIe ctrl"; no HBM controller block | "HBM ports (9% v.s 5%)" | "unknown components (which probably includes the inter-component interconnection) … ∼21%"; white areas "filled with wiring" |
+| TPUv4i, 7 nm, < 400 mm² (Jouppi et al. ISCA 2021 Fig. 6, Fig. 5 lists "HBM Controller (HBMC)") | 2 × "HBMC & SerDes", OCI, CMEM 28%, ICR, LST, PCIe, UHI, MGR | 6.6% by pixel count 「推导」 (CMEM measures 27.4% vs caption 28%) | OCI 20.5% (pixels; the caption says it is stretched to fill) |
+
+- TPUv2 draws its PCIe controller as a separate block but no HBM controller block, so the HBM controller is inside the "HBM port" 「推导」. TPUv4i names it explicitly ("HBMC & SerDes").
+- In every case the memory port, with its controller, is a labelled block **outside** the ~21% unknown / interconnect share. The model's 21% is that share, so a controller term is not a double count 「推导」.
+- The model's PHY term is the memory-side PHY: Samsung HC 2026 slides 10 / 13 draw "HBM Ctrl" and "HBM PHY" as separate xPU blocks for standard HBM, and slide 11 gives the PHY alone 「二手」.
+
+### §273.2 Value
+- 7.15 mm² per stack = 0.05 × 858 ÷ 6 (Samsung HC 2026 "about 5-10% of the SoC area" × its reference xPU, §272.1) 「二手/推导」, the low end.
+- Cross-check from Google's numbers 「推导/假设」:
+  - TPUv2: 9% × < 611 mm² ÷ 4 ≈ ≤ 13.7 mm² per HBM2 port (PHY + controller). Samsung's HBM2 memory-side PHY 6 × 1.2 = 7.2 mm² (slide 11, 「二手」), taking host PHY ≈ memory-side PHY 「假设」, leaves ≤ 6.5 mm² of controller per HBM2 stack at 16 nm.
+  - TPUv4i: 6.6% × < 400 mm² ÷ 2 stacks (614 GB/s 「推导」) ≈ ≤ 13.3 mm² per HBM2(E) stack, PHY + controller, at 7 nm.
+  - Scaling to HBM4: the controller grows with channels, 8 per HBM2 / 2E stack → 32 per HBM4 stack (4×, JEDEC 「来源」), and shrinks N7 → N5 by the n5_derived ÷ 1.8 rule 「假设」. From TPUv4i: controller ≤ 13.3 − ~7.2 (PHY, as above) ≈ 6.1 mm² → × 4 ÷ 1.8 ≈ ≤ 13.6 mm² per HBM4 stack 「推导」. That bound sits inside Samsung's 7.15–14.3 and does not single out a point, so the low end is used as the default and 14.3 stays a credible ceiling (`mc_preset=samsung_hc2026_hi`). (No 16 nm → 5 nm factor is sourced in the model, so TPUv2's ≤ 6.5 mm² is not scaled.)
+- Not tuned: no validation row or DES result was consulted; the value is Samsung's low end unchanged.
+
+### §273.3 Scope: HBM4 / HBM4E only (old → new: any HBM)
+- For HBM4 / 4E the PHY term `mm2_per_dq_hbm` × 2048 = 32 mm² is Samsung's own HBM4 PHY (8 × 4 mm), so PHY + controller is the complete host interface.
+- For HBM3 / 3E the same per-DQ value gives 16 mm² per 1024-DQ stack, while Samsung's HBM3 PHY is 8 × 3 = 24 mm². The PHY error (−8 mm²) exceeds the controller (7.15). Adding the controller alone would correct the smaller half of the error with a value sourced for HBM4-era xPUs. Deferred: per-generation PHY + controller together (pending). HBM3 / 3E carry the note "只用于 HBM4 / HBM4E 堆栈（0.328）…PHY 项按代修正前暂缓".
+- HBM2 / 2E are not in the memory catalog. For them the PHY term (16 mm²) already exceeds Google's measured PHY + controller (≤ 13.3–13.7 mm²): another reason not to stack a controller on that term.
+- Only `n5_derived` carries the default (Samsung's xPU is a 4–5 nm reticle-class die). `n7_tpuv4i` / `n28_tpuv1` stay without it: no node scaling invented. The auto memory-edge proxy (`auto_area_budget`, n5_derived) follows.
+
+### §273.4 Precedence
+`mm2_per_unit_mc` (generic) > explicit `mm2_per_hbm_mc` > `mc_preset` > density preset default. `_budget` now applies `mc_preset` before `density_preset` (both fill unset fields only). `mm2_per_hbm_mc: 0` reproduces 0.327.
+
+### §273.5 Effect (defaults, old → new)
+- **Eval** 1P qwen3-8b decode b64, 8 × HBM4 10 Gb/s, n5_derived, n5_cowos_s: std die 820.4 → 894.7 mm²; $/Mtok 9.7658 → 9.8969 m$; custom 535.5 mm², 9.8678 m$. The cheaper option flips std → custom by default.
+- **DSE / hbm_base study** (n5_cowos_l, air_oam): std MAC×1 mono 820 → 895 mm², over the 858 mm² reticle → verdict mono → only_split for qwen3-8b decode / prefill and qwen3-30b-a3b decode. Custom stays mono. Std MAC×2 dies (1074 → 1149 mm²) get 3 instead of 4 auto memory edges (the fewest-edges rule on a longer perimeter), so their throughput / J move (qwen3-8b decode 13758 → 13290).
+- **Unchanged:** HBM3 / 3E / LPDDR / DDR numbers; n7 / n28 presets.
+
+### §273.6 Citation fix
+`_UNCORE.mm2_host_io` cited "NeuroMeter (Shao et al., MICRO 2021)". The paper is Tang, Li, Nai, Jouppi, Xie, HPCA 2021 (industry track). Its 1.8% PCIe is NeuroMeter's modelled value; the published TPUv1 share is 3.0% (Fig. 2). The value (6.0 mm²) is unchanged; a modern PCIe 5/6 × 16 PHY + controller source is pending.
+
+### §273.7 Not modelled / pending
+- Per-generation HBM PHY area (HBM3 24 mm², HBM3E, HBM4 32 mm² per Samsung slide 11) with a matching per-generation controller.
+- Controller area at N7 / N28 (no node scaling invented).
+- Host-IO (PCIe) area from a modern source.
+- Controller power (the controller's pJ/bit is inside the device / PHY energy terms, not split).

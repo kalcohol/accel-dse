@@ -430,6 +430,9 @@ def _budget(body: dict) -> Budget | None:
         d = body["budget"]
         if isinstance(d, dict):
             from .core.budget import apply_preset, apply_electricity_preset
+            if "mc_preset" in d:                # 0.327: HBM controller area (Samsung HC 2026); 0.328: before the
+                from .core.budget import apply_mc_preset    # density preset, whose n5_derived default it overrides
+                d = apply_mc_preset(d)
             if "density_preset" in d:
                 d = apply_preset(d)
             if "electricity_preset" in d:
@@ -437,9 +440,6 @@ def _budget(body: dict) -> Budget | None:
             if "tco_preset" in d:
                 from .core.budget import apply_tco_preset
                 d = apply_tco_preset(d)
-            if "mc_preset" in d:                # 0.327: HBM controller area (Samsung HC 2026)
-                from .core.budget import apply_mc_preset
-                d = apply_mc_preset(d)
         return Budget.from_dict(d)
     except (ValueError, TypeError) as e:
         raise ApiError(str(e)) from None

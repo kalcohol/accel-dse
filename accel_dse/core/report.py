@@ -132,7 +132,7 @@ def _desc(x: dict) -> str:
 def design_report(r: dict, body: dict, row: int | None = None) -> dict:
     """The report of row ``row`` (default: cheapest $/M, else best perf/W) of insight_dse result ``r``."""
     from .. import __version__
-    from .budget import DENSITY_PRESETS, MC_PRESETS
+    from .budget import DENSITY_PRESETS, MC_PRESETS, MC_TYPES
     from .energy import ENERGY_PRESETS
     from .energy_dse import ASM_SRC, _tco_ok, asm_note
     from .thermal import COOLING
@@ -146,13 +146,26 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
 
     # 1 design ------------------------------------------------------------------------------------------------
     dens = (body.get("budget") or {}).get("density_preset")
-    _bd = body.get("budget") or {}                       # 0.327: HBM controller area (user value, else mc_preset)
+    _bd = body.get("budget") or {}                       # 0.327 / 0.328: HBM controller area and where it came from
     _mcp = _bd.get("mc_preset")
-    _mc = _bd.get("mm2_per_unit_mc") if _bd.get("mm2_per_unit_mc") is not None else (
-        _bd.get("mm2_per_hbm_mc") if _bd.get("mm2_per_hbm_mc") is not None else
-        (MC_PRESETS[_mcp]["fields"]["mm2_per_hbm_mc"][0] if _mcp in MC_PRESETS else None))
-    if _mc is not None and _bd.get("mm2_per_unit_mc") is None and "HBM" not in str(x.get("mem_type") or x.get("mem_id") or "").upper():
-        _mc = None                                       # HBM-only field on non-HBM memory: not counted (budget.full_area)
+    _dfl = (DENSITY_PRESETS.get(dens) or {}).get("fields", {}).get("mm2_per_hbm_mc")
+    if _bd.get("mm2_per_unit_mc") is not None:
+        _mc, _mct, _mcs = _bd["mm2_per_unit_mc"], "用户输入", "budget.mm2_per_unit_mc"
+    elif _bd.get("mm2_per_hbm_mc") is not None:
+        _mc, _mct, _mcs = _bd["mm2_per_hbm_mc"], "用户输入", "budget.mm2_per_hbm_mc"
+    elif _mcp in MC_PRESETS:
+        _mc, _mct, _mcs = MC_PRESETS[_mcp]["fields"]["mm2_per_hbm_mc"]
+    elif _dfl is not None:
+        _mc, _mct, _mcs = _dfl[0], _dfl[1], f"面积密度预设 {dens}：" + _dfl[2]
+    else:
+        _mc = _mct = _mcs = None
+    try:
+        from .. import mem_catalog as _mcat
+        _mtype = _mcat.parse_mem_id(x.get("mem_id")).mem_type.upper() if x.get("mem_id") else str(x.get("mem_type") or "").upper()
+    except Exception:       # noqa: BLE001 — unknown id: no HBM controller item
+        _mtype = str(x.get("mem_type") or "").upper()
+    if _mc is not None and _bd.get("mm2_per_unit_mc") is None and _mtype not in MC_TYPES:
+        _mc = None                                       # HBM4 / HBM4E-only field (budget.full_area)
     it = [item("chip", "芯片基线", r["chip"], tag="用户输入", src="chip_preset"),
           item("model", "模型", r["model"], tag="用户输入", src="scenario.model"),
           item("phase", "阶段", r["phase"], tag="用户输入", src="serving.phase"),
@@ -171,8 +184,7 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
                   tag="用户输入", src="chip.hbm_base = custom（hbm_base：每栈 D2D = UCIe-A 模块数 × 模块面积「推导」、接口 = 链路 pJ/bit 代替两端 PHY「推导」、"
                   "$/GB × 1.10「二手/假设」）" + ("" if _mc else "；内存控制器面积未计（Samsung HC 2026 每栈 7.15–14.3 mm²「二手/推导」，"
                                                  "budget.mc_preset 打开）"))] if r.get("hbm_base") == "custom" else []),
-          *([item("hbm_mc", "HBM 内存控制器面积", _mc, "mm² / 栈", tag=(MC_PRESETS[_mcp]["fields"]["mm2_per_hbm_mc"][1] if _mcp in MC_PRESETS else "用户输入"),
-                  src=(MC_PRESETS[_mcp]["fields"]["mm2_per_hbm_mc"][2] if _mcp in MC_PRESETS else "budget.mm2_per_unit_mc / mm2_per_hbm_mc")
+          *([item("hbm_mc", "HBM 内存控制器面积", _mc, "mm² / 栈", tag=_mct, src=_mcs
                   + ("（定制基础晶粒：移出主晶粒）" if x.get("hbm_custom") else ""))] if _mc is not None else []),
           *([item("hbm_pkg", "HBM 封装",                     # 0.326: only with the option on (si reports unchanged)
                   "SPHBM4 有机基板（每栈岸线 8.33 mm，堆栈不在中介层上）" if x.get("hbm_sphbm4") else "硅中介层（该外存不适用 SPHBM4）",

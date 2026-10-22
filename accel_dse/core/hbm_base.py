@@ -9,7 +9,8 @@ the model changes, each number labelled:
                           custom (0.325) ceil(stack GB/s ÷ 384) UCIe-A x64 modules × 0.3888 × 1.043 mm (d2d_catalog,
                           UCIe geometry 「来源」) 「推导」 — HBM4 10 Gb/s: 7 modules ≈ 2.84 mm² (0.324: 12.75, Samsung's
                           base-die block taken for the host side; that is the memory side)
-  memory controller       moved to the base die: the host term mm2_per_unit_mc / mm2_per_hbm_mc drops out (0.327:
+  memory controller       moved to the base die: the host term mm2_per_unit_mc / mm2_per_hbm_mc drops out (0.328: on
+                          by default in n5_derived for HBM4 / 4E at 7.15 mm²; 0.327:
                           opt-in mc_preset 7.15 / 14.3 mm² per stack = Samsung HC 2026 "about 5-10% of the SoC
                           area" 「二手」 × its 26 × 33 mm, 6-stack reference xPU 「推导」; budget.MC_PRESETS)
   interface energy / bit  (0.325) both ends: std host PHY 0.29 「来源」 + memory-side PHY in the device pJ/bit (taken

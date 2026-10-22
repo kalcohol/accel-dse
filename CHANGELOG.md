@@ -6,6 +6,35 @@
 
 
 
+## [0.328.0]
+
+### HBM4 / HBM4E memory-controller area now on by default (n5_derived, 7.15 mm² per stack)
+- **The 0.327 blocker, resolved from public floor plans.** 0.327 kept the controller preset off because the 23% uncore share (TPUv1 control 2% + 21% unlabelled) might already hold controller logic. Three Google floor plans and one paper answer that 「来源」:
+  - TPUv1 (Jouppi et al., ISCA 2017 Fig. 2): "DRAM port" 3% × 2 is drawn as its own block, inside the 10% I/O and outside the 21% unlabelled.
+  - NeuroMeter (Tang, Li, Nai, Jouppi, Xie, HPCA 2021 industry track) §IV: TPUv1 "DRAM port 6.0%" and the "unknown components ~21%" are separate; TPUv2 (< 611 mm²): "HBM ports 9%" separate from "unknown components (which probably includes the inter-component interconnection) ~21%".
+  - TPUv2 floor plan (Norrie et al., IEEE Micro 2021 Fig. 4): four "HBM port" blocks and no separate HBM controller block, while PCIe is split into "PCIe Link" and "PCIe ctrl" — so the HBM controller sits inside the port 「推导」; white areas "are filled with wiring".
+  - TPUv4i floor plan (Jouppi et al., ISCA 2021 Fig. 6; Fig. 5 lists "HBM Controller (HBMC)"): two "HBMC & SerDes" blocks measure 6.6% of the die by pixels 「推导」 (scale check: CMEM measures 27.4% vs the caption's 28%) ≈ ≤ 13.3 mm² per stack of a < 400 mm² die; the on-chip interconnect is its own 20.5% block.
+  - So in every Google design the memory port **with its controller** is outside the ~21% the model's uncore share copies; adding a controller term does not double count.
+- **Value: 7.15 mm² per stack (low end of Samsung HC 2026's 5–10% × 858 mm² ÷ 6, 「二手/推导」).** Cross-check 「推导/假设」: TPUv2 9% × 611 ÷ 4 ≈ 13.7 mm² per HBM2 port, minus Samsung's HBM2 memory-side PHY 6 × 1.2 = 7.2 mm² (HC 2026 slide 11, 「二手」, host PHY ≈ memory-side PHY 「假设」) leaves ≤ 6.5 mm² of controller per HBM2 stack at 16 nm. TPUv4i (≤ 13.3 mm² per stack incl. PHY, 7 nm) leaves ≈ ≤ 6.1 mm²; × 4 channels (8 → 32 per stack) ÷ 1.8 (N7 → N5, n5_derived rule 「假设」) ≈ ≤ 13.6 mm² per HBM4 stack — inside Samsung's 7.15–14.3, not singling out a point. The low end is used; the high end stays as `mc_preset=samsung_hc2026_hi`.
+- **Scope (old → new): `mm2_per_hbm_mc` applied to any HBM (0.327) → HBM4 / HBM4E only.** For HBM4 / 4E the PHY term (2048 DQ × 0.015625 = 32 mm²) is the generation's own Samsung figure (8 × 4 mm), so PHY + controller is the complete host interface. For HBM3 / 3E the PHY term is the same HBM4-derived per-DQ value (16 mm² per 1024-DQ stack) while Samsung's own HBM3 PHY is 8 × 3 = 24 mm²: the controller alone would be the smaller half of a correction. HBM3 / 3E stay without a controller until the PHY is made per-generation (pending), and carry a note saying so. LPDDR / DDR no longer get a note (the default fills the field).
+- **Presets:** only `n5_derived` carries the default (the source's node class); `n7_tpuv4i` / `n28_tpuv1` do not (no node scaling invented). `budget.mc_preset` is now applied **before** `density_preset` so `samsung_hc2026_hi` overrides the n5_derived default (an explicit `mm2_per_hbm_mc` still wins). `mm2_per_hbm_mc: 0` reproduces 0.327.
+- **UI:** the controller preset may replace a value the density preset filled; "不用预设" on it restores the density fill. Labels say HBM4 / HBM4E.
+- **Report:** the `hbm_mc` item now also shows the density-preset default (source "面积密度预设 n5_derived：…"), HBM4 / HBM4E only.
+- **Fixes:** `chiplet_example.budget(mc)` passed `mm2_per_hbm_mc` twice once the density preset carries it (TypeError) — merged. NeuroMeter citation in `_UNCORE` corrected: Tang et al., HPCA 2021 (was "Shao et al., MICRO 2021"); its 1.8% PCIe is NeuroMeter's **modelled** share, the published floor plan says 3.0% — value unchanged, recorded as pending.
+
+### Effect (old → new, defaults; 1P qwen3-8b decode b64, 8 × HBM4 10 Gb/s, n5_derived, n5_cowos_s, accel_2026, D0 0.1)
+- Std die 820.4 → 894.7 mm² (+ 8 × 7.15 ÷ 0.77); J/token unchanged; $/Mtok 9.7658 → 9.8969 m$. Custom base die 535.5 mm², 9.8678 m$ (unchanged) — **custom is now the cheaper option by default** (was std).
+- Card-level thermal precedent area of a custom host 820 → 895 mm² (std-equivalent includes the controller ring, §270).
+- DSE / hbm_base study (n5_cowos_l, air_oam): std MAC×1 mono 895 mm² > 858 reticle → verdict mono → only_split for qwen3-8b decode / prefill and qwen3-30b-a3b decode; custom stays mono. Std MAC×2 dies 1074 → 1149 mm² get one fewer auto memory edge (4 → 3, the existing fewest-edges rule on a longer perimeter), so their throughput moves (e.g. qwen3-8b decode 13758 → 13290 tok/s).
+- Unchanged: HBM3 / HBM3E / LPDDR / DDR results (only `budget.provided` lists the new field, plus the HBM3E note); n7 / n28 presets; no-budget paths except the auto memory-edge proxy for HBM4 / 4E (which uses n5_derived).
+
+### Tests
+- New `tests/test_core_328.py` (8). Re-pinned with old → new values: `test_core_324` (std $/M 0.011879644 → 0.012256563, DSE base J 0.0377402 → 0.0377646, custom logic-die formula adds the controller) and `test_core_327` (off = `mm2_per_hbm_mc: 0`; n5_derived carries the field; no LPDDR note; std report shows the item).
+
+### Freshness
+- Sweep since 2026-10-21 (110 orgs): Ling-3.0-tiny-UBTree, Flint, Raon-1-mini, OvisOCR3, MOSS-Image are already catalogued / merged; TextVerifier-CJK-CLIP is a classifier (out of scope). Nothing new to add.
+- OrcaCyber Nano 1.0: repo updated 2026-10-22 12:16 JST but the public GGUF metadata is still the drafter's (`dflash`), the main files are mixed quants without public metadata, config 401 — still pending.
+
 ## [0.327.0]
 
 ### HBM memory-controller area: a sourced preset (opt-in)

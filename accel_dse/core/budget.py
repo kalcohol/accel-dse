@@ -45,6 +45,10 @@ _TPUV1 = "Jouppi et al., ISCA 2017 (arXiv 1704.04760) §2 / Fig. 2; die < 330 mm
 _TPUV4I = "Jouppi et al., 'Ten Lessons From Three Generations Shaped Google's TPUv4i', ISCA 2021, Fig. 6 / §7.A / Table 1"
 _BITCELL = ("TSMC N7 HD 6T bitcell 0.027 µm² (Wu et al., IEDM 2016); N5 0.021 µm² (Yeap et al., IEDM 2019; "
             "WikiChip / SemiAnalysis); N5 logic density 1.8× N7 (TSMC, WikiChip 'TSMC Details 5 nm')")
+_MC_SRC = ("S. Han (Samsung), Hot Chips 2026 tutorial 'HBM Base Die: How HBM Will Evolve Using Advanced Logic "
+           "Processes': memory controllers 'about 5-10% of the SoC area' (MK 2026-08-24 quote; TMTBreakout; Wccftech "
+           "via cnyes) 「二手」; slide 9 reference xPU 26 × 33 mm, 6 HBM stacks per xPU (ServeTheHome) 「二手」")
+MC_XPU_MM2, MC_XPU_STACKS, MC_SOC_FRAC = 26 * 33, 6, (0.05, 0.10)
 _PHY = {
     # 0.185: was 14/1024 「二手/假设」 (H100 die-shot estimates, unverified).  Now Samsung Hot Chips 2026 (S. Han, via
     # Tom's Hardware 2026-08 report): on the 11 × 12.8 mm HBM4 base die the conventional PHY occupies "more than 8 × 4 mm"
@@ -90,12 +94,15 @@ def _vec(kmac: float, node_src: str) -> dict:
 
 _UNCORE = {
     # 0.213: TPUv1 floor plan (Jouppi et al., ISCA 2017, Fig. 2 caption): data buffers 37 %, compute 30 %, I/O 10 %,
-    # control 2 % — the remaining 21 % is unlabelled (routing / white space; NeuroMeter, MICRO 2021, also leaves ≈ 21 %
-    # of TPUv1 "unknown").  I/O is modelled separately (DRAM PHY pins + host IO), so uncore = control 2 % + 21 %.
+    # control 2 % — the remaining 21 % is unlabelled (routing / white space; NeuroMeter, Tang et al., HPCA 2021 — 0.328
+    # citation fix, was "MICRO 2021" — also leaves ≈ 21 % of TPUv1 "unknown").  I/O is modelled separately (DRAM PHY pins + host IO), so uncore = control 2 % + 21 %.
     "uncore_frac": (0.23, "来源/推导", "TPUv1 floor plan (Jouppi et al., ISCA 2017 Fig. 2): control 2 % + unlabelled "
                     "21 % (100 − 37 buffers − 30 compute − 10 I/O − 2 control); one design's share used for all 「假设」"),
-    "mm2_host_io": (0.018 * 331, "二手", "NeuroMeter (Shao et al., MICRO 2021) TPUv1 die-shot breakdown: PCIe interface "
-                    "1.8 % of a < 331 mm² 28 nm die ≈ 6.0 mm²; not scaled by node (analog PHY shrinks little) 「假设」"),
+    "mm2_host_io": (0.018 * 331, "二手", "NeuroMeter (Tang, Li, Nai, Jouppi, Xie, HPCA 2021 industry track; 0.328 "
+                    "citation fix, was 'Shao et al., MICRO 2021') TPUv1 validation: PCIe interface 1.8 % is NeuroMeter's "
+                    "MODELLED share (published floor plan 3.0 %, Jouppi ISCA 2017 Fig. 2 「来源」) of a < 331 mm² 28 nm "
+                    "die ≈ 6.0 mm²; not scaled by node (analog PHY shrinks little) 「假设」; value unchanged in 0.328 "
+                    "(pending: a modern PCIe 5/6 ×16 PHY + controller source)"),
 }
 
 
@@ -119,7 +126,15 @@ DENSITY_PRESETS: dict[str, dict] = {
         "mm2_per_mib_slc": (400 * 0.28 / 128 * 0.021 / 0.027, "推导", "= SRAM density (TPUv4i CMEM × bitcell ratio)"),
         "mm2_per_kmac": (400 * 0.11 / 64 / 1.8, "推导", "TPUv4i MXU ÷ 1.8 logic density; " + _BITCELL),
         **_vec(400 * 0.11 / 64 / 1.8, "N5 (TPUv4i ÷ 1.8)"),
-        **_PHY, **_UNCORE}},
+        **_PHY, **_UNCORE,
+        # 0.328: HBM4 / HBM4E controller on by default (was opt-in, 0.327) — the TPU floor plans place the DRAM / HBM
+        # port outside the unlabelled ~21 % (MODEL §273), so it is not in uncore_frac; low end of Samsung's range
+        "mm2_per_hbm_mc": (MC_SOC_FRAC[0] * MC_XPU_MM2 / MC_XPU_STACKS, "二手/推导",
+                           _MC_SRC + " → 0.05 × 858 ÷ 6 = 7.15 mm² per HBM4 / HBM4E stack 「推导」 (low end; quote taken "
+                           "for that xPU 「假设」). Not in uncore: TPUv1 / TPUv2 / TPUv4i floor plans draw the DRAM / HBM "
+                           "port (+ controller) outside the ~21 % unknown / interconnect share (Jouppi ISCA 2017 Fig. 2; "
+                           "Tang et al. HPCA 2021 NeuroMeter §IV; Norrie et al. IEEE Micro 2021 Fig. 4; Jouppi et al. ISCA "
+                           "2021 Fig. 6) 「来源」")}},
 }
 
 
@@ -166,13 +181,10 @@ TCO_PRESETS: dict[str, dict] = {
 # "Memory controllers account for about 5-10% of the SoC area" (quoted by Maeil Business / MK 2026-08-24; also
 # TMTBreakout, Wccftech via cnyes) 「二手」; the talk's own reference xPU (slide 9 "xPU Area Reclamation", via
 # ServeTheHome) is 26 × 33 mm with 6 HBM stacks per xPU (12 around 2 xPUs) 「二手」.  Per stack = share × 858 mm² ÷ 6
-# 「推导」, taking the quote to refer to that xPU 「假设」.  Opt-in only: the bottom-up area (TPUv1-derived uncore 23 %
-# whose unlabelled 21 % may already hold controller logic) cannot be shown free of double counting, so no density
-# preset carries it (MODEL §272).
-_MC_SRC = ("S. Han (Samsung), Hot Chips 2026 tutorial 'HBM Base Die: How HBM Will Evolve Using Advanced Logic "
-           "Processes': memory controllers 'about 5-10% of the SoC area' (MK 2026-08-24 quote; TMTBreakout; Wccftech "
-           "via cnyes) 「二手」; slide 9 reference xPU 26 × 33 mm, 6 HBM stacks per xPU (ServeTheHome) 「二手」")
-MC_XPU_MM2, MC_XPU_STACKS, MC_SOC_FRAC = 26 * 33, 6, (0.05, 0.10)
+# 「推导」, taking the quote to refer to that xPU 「假设」.  0.327 kept it opt-in (the TPUv1-derived uncore's unlabelled
+# 21 % might hold controller logic); 0.328 resolved that from three TPU floor plans (the DRAM / HBM port is drawn
+# outside the ~21 %), so n5_derived carries the low end for HBM4 / HBM4E (MODEL §273).  The presets stay for the high
+# end and for the other density presets.
 MC_PRESETS: dict[str, dict] = {
     "samsung_hc2026_lo": {"label": "HBM 控制器 5 % SoC（Samsung HC 2026）", "fields": {
         "mm2_per_hbm_mc": (MC_SOC_FRAC[0] * MC_XPU_MM2 / MC_XPU_STACKS, "二手/推导",
@@ -197,13 +209,21 @@ def apply_mc_preset(d: dict) -> dict:
     return d
 
 
+# 0.328: mm2_per_hbm_mc applies to HBM4 / HBM4E only (0.327: any HBM).  For these the PHY term (mm2_per_dq_hbm) is
+# the generation's own figure (Samsung HC 2026 HBM4 PHY > 8 × 4 mm), so PHY + controller is the complete host
+# interface.  For HBM3 / HBM3E the PHY term is the HBM4-derived per-DQ value, 8 mm² per stack below Samsung's own
+# HBM3 PHY (8 × 3 mm, slide 11): the controller alone would be half of a correction whose larger half is the PHY —
+# deferred to a joint per-generation PHY + controller change (MODEL §273).  Generic mm2_per_unit_mc still applies.
+MC_TYPES = ("HBM4", "HBM4E")
+
+
 def mc_mm2_per_unit(b, mem_type: str | None) -> float | None:
-    """0.327: controller mm² per DRAM unit — the generic mm2_per_unit_mc, else mm2_per_hbm_mc on HBM memory."""
+    """0.327: controller mm² per DRAM unit — the generic mm2_per_unit_mc, else mm2_per_hbm_mc (0.328: HBM4 / HBM4E)."""
     if b is None:
         return None
     if b.mm2_per_unit_mc is not None:
         return b.mm2_per_unit_mc
-    if getattr(b, "mm2_per_hbm_mc", None) is not None and mem_type and "HBM" in mem_type.upper():
+    if getattr(b, "mm2_per_hbm_mc", None) is not None and mem_type and mem_type.upper() in MC_TYPES:
         return b.mm2_per_hbm_mc
     return None
 
@@ -1073,8 +1093,9 @@ def full_area(scn, b: Budget, noc_routers: bool = False) -> dict:
             from .hbm_base import custom_applies
             spec = mem_catalog.parse_mem_id(scn.mem_id)
             mc = mc_mm2_per_unit(b, spec.mem_type)
-            if mc is None:                                  # 0.327: HBM-only controller area on non-HBM memory
-                notes.append(f"mm2_per_hbm_mc 只用于 HBM 堆栈：{spec.mem_type} 不计控制器面积（可填 mm2_per_unit_mc）")
+            if mc is None:          # 0.328: note only on HBM3 / 3E (0.327: on non-HBM memory too — now silent there,
+                if "HBM" in spec.mem_type.upper():             # since n5_derived fills mm2_per_hbm_mc by default)
+                    notes.append(f"mm2_per_hbm_mc 只用于 HBM4 / HBM4E 堆栈（0.328）：{spec.mem_type} 不计控制器面积（PHY 项按代修正前暂缓；可填 mm2_per_unit_mc）")
             elif custom_applies(scn.chip, spec.mem_type):   # 0.324: the controller sits on the custom base die
                 notes.append("定制 HBM 基础晶粒：内存控制器在基础晶粒上，主晶粒不计 mm2_per_unit_mc")
             else:

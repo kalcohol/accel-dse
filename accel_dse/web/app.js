@@ -2267,13 +2267,19 @@ function initElectricityPresets(selId = 'b-elec-preset', catKey = 'electricity_p
     const b = { ...(S.budget || {}) };
     S[fillKey] = S[fillKey] || {};
     if (!p) {
-      for (const [f, v] of Object.entries(S[fillKey])) if (b[f] === v) { delete b[f]; const inp = $('b-' + f); if (inp) inp.title = ''; }
+      for (const [f, v] of Object.entries(S[fillKey])) if (b[f] === v) {
+        const dv = catKey === 'mc_presets' ? (S.presetFilled || {})[f] : undefined;   // 0.328: back to the density fill
+        if (dv !== undefined) b[f] = dv; else delete b[f];
+        const inp = $('b-' + f); if (inp) inp.title = '';
+      }
       S[fillKey] = {};
       S.budget = b; syncInputs(); $(noteId).textContent = ''; schedule(); return;
     }
     const kept = [], st = {};
     for (const [f, x] of Object.entries(p.fields)) {
-      const cur = b[f], mine = cur !== null && cur !== undefined && S[fillKey][f] !== cur;
+      // 0.328: the n5_derived density preset fills mm2_per_hbm_mc — a controller preset may replace that fill
+      const byDens = catKey === 'mc_presets' && (S.presetFilled || {})[f] === cur;
+      const mine = cur !== null && cur !== undefined && S[fillKey][f] !== cur && !byDens;
       const inp = $('b-' + f);
       if (mine) { kept.push(f); if (inp) inp.title = '你的输入（预设未覆盖）'; continue; }
       b[f] = +x.value.toPrecision(4); S[fillKey][f] = b[f];
@@ -2282,7 +2288,7 @@ function initElectricityPresets(selId = 'b-elec-preset', catKey = 'electricity_p
     }
     S.budget = b; syncInputs();
     $(noteId).textContent = '已填入：' + Object.entries(st).map(([k, n]) => `${n} 项「${k}」`).join('，') +
-      (kept.length ? `；保留你的输入：${kept.join('、')}` : '') + (catKey === 'tco_presets' ? '（卡价 / 摊销需自填；悬停看出处）' : catKey === 'mc_presets' ? '（只用于 HBM；悬停看出处）' : '（不静默填电价；悬停看出处）');
+      (kept.length ? `；保留你的输入：${kept.join('、')}` : '') + (catKey === 'tco_presets' ? '（卡价 / 摊销需自填；悬停看出处）' : catKey === 'mc_presets' ? '（只用于 HBM4 / HBM4E；悬停看出处）' : '（不静默填电价；悬停看出处）');
     schedule();
   });
 }

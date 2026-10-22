@@ -53,10 +53,12 @@ def test_std_unchanged_from_0323():
     for hb in (None, "std"):
         e = api.api_eval(_body(hb))
         assert e["energy"]["J_per_unit"] == 0.037492266659349203
-        assert e["tco"]["usd_per_Munit"] == 0.011879644207241864
+        # 0.328 re-pin: n5_derived carries the HBM4 controller area 8 × 7.15 mm² (MODEL §273): die 820.4 → 894.7 mm²,
+        # $/M 0.011879644207241864 → 0.012256563438298044; J unchanged (eval energy has no area term on this path)
+        assert e["tco"]["usd_per_Munit"] == 0.012256563438298044
         assert "hbm_base" not in e
         r = _dse(_body(hb))
-        assert r["rows"][r["base"]]["J_per_unit"] == 0.03774018739951754
+        assert r["rows"][r["base"]]["J_per_unit"] == 0.037764624854310015   # 0.328: was 0.03774018739951754 (larger die)
         assert "hbm_base" not in r and not any("hbm_custom" in x for x in r["rows"])
     assert api.api_eval(_body(None))["energy"]["phy_pJ_per_bit"] == _approx(0.29)   # new output (0.324)
 
@@ -72,7 +74,8 @@ def test_custom_mechanisms():
     from accel_dse.api import _budget
     u = _budget({"budget": {"density_preset": "n5_derived"}}).uncore_frac
     assert hb["std_phy_mm2_per_stack"] == _approx(32.0)        # 2048 × 0.015625 — Samsung HC 2026 "> 8 × 4 mm"
-    logic = s["shoreline"]["die_mm2"] - 8 * (32.0 - 7 * 0.3888 * 1.043) / (1 - u)
+    # 0.328: the std die also carries the n5_derived HBM4 controller 7.15 mm² / stack, which the custom die drops
+    logic = s["shoreline"]["die_mm2"] - 8 * (32.0 - 7 * 0.3888 * 1.043 + 7.15) / (1 - u)
     assert hb["shore_pad_mm2"] and c["shoreline"]["die_mm2"] == _approx(logic + hb["shore_pad_mm2"], rel=1e-9)
     assert c["shoreline"]["status"] == "tight" and s["shoreline"]["mem"]["edges"] == c["shoreline"]["mem"]["edges"]
     # 0.325 re-pin: host PHY line = half the UCIe-A link (0.25 / 2; was 0.55 × 0.29); throughput unchanged uncapped
