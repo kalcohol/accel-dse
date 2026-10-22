@@ -316,6 +316,7 @@ class Layer:
     misc_params: int = 0                     # norms, gates, conv, hc — not GEMMs
     hc: int = 0                              # mHC streams (GLM-5.3-Flash): attn + ffn hyper-connection compute per layer
     hc_iters: int = 0                        # Sinkhorn-Knopp iterations of the comb weight
+    hc_rows: int = 0                         # 0.320: selector GEMM rows when not (2+N)·N (Raon_mHC: 2N + (N−1)²)
     gres_n: int = 0                          # Qwen4Exp gated residual: streams (attn + mlp GatedResidual per layer)
     gres_head: bool = False                  # last layer: final hyper_connection_mixer (no combine)
     ple_rows: int = 0                        # Qwen4Exp PLE layer: n-gram rows per token (heads × (ngram − 1))
@@ -892,10 +893,11 @@ def _gdn(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
 
 def _kda(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
     """Kimi Delta Attention (Kimi-Linear / Kimi-K3 / GLM-5.x-Next)."""
-    lc = _list(c.get("linear_attn_config")) or {}
+    raon = c.get("model_type") == "raon1_mini"
+    lc = _list(c.get("linear_attn_config")) or (_list(c.get("rda_config")) if raon else None) or {}
     ling = c.get("model_type") in _LING       # 0.114: Ling-3.x keeps these at the top level
     H, hd = lc.get("num_heads", c["num_attention_heads"]), lc.get("head_dim", (c.get("head_dim") if ling else None) or 128)
-    kern = lc.get("short_conv_kernel_size", (c.get("short_conv_kernel_size") if ling else None) or 4)
+    kern = lc.get("short_conv_kernel_size", lc.get("conv_kernel_size", (c.get("short_conv_kernel_size") if ling else None) or 4))
     d = H * hd
     # output gate: full g_proj (Kimi-K3 release) or low-rank g_a / g_b (transformers Glm5NextTextLinearAttention)
     gate = ((Linear("kda_g_a", h, hd, "rep"), Linear("kda_g_b", hd, d, "col")) if c.get("model_type", "").startswith("glm5_next")
@@ -903,8 +905,12 @@ def _kda(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
     # 0.114: Ling-3.x (bailing_hybrid, no_kda_lora): full-rank f_proj h → d instead of the low-rank f_a / f_b
     fgate = ((Linear("kda_f", h, d, "col"),) if c.get("no_kda_lora") else
              (Linear("kda_f_a", h, hd, "rep"), Linear("kda_f_b", hd, d, "col")))
+    # 0.320 Raon Delta Attention (raon1_mini, modeling_raon1_mini.Raon1MiniRDA): the KDA layout (per-channel low-rank
+    # decay f_a / f_b of rank head_dim, full-rank g_proj, b_proj, A_log, dt_bias, per-head o_norm, q / k / v short convs)
+    # plus rda_w_proj h → heads (write gate sigmoid(β + δ) over erase gate sigmoid(β), a per-head value scale)
+    wgate = (Linear("rda_w", h, H, "col"),) if raon else ()
     lin = (Linear("kda_q", h, d, "col"), Linear("kda_k", h, d, "col"), Linear("kda_v", h, d, "col")) + gate + (
-        Linear("kda_b", h, H, "col"),) + fgate + (Linear("kda_o", d, h, "row"),)
+        Linear("kda_b", h, H, "col"),) + wgate + fgate + (Linear("kda_o", d, h, "row"),)
     core = AttnCore("linear", n_state_heads=H, state_dk=hd, state_dv=hd, conv_channels=3 * d, conv_kernel=kern,
                     lin="kda", lin_chunk=64)   # transformers chunk_kimi_delta_attention(chunk_size=64) / FLA chunk_kda
     misc = 3 * d * kern + d + H + hd
@@ -928,6 +934,10 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             types = ["full_attention" if (i + 1) % n == 0 else "linear_attention" for i in range(L)]
         elif c.get("attn_type_list"):
             types = ["full_attention" if t == 1 else "linear_attention" for t in c["attn_type_list"]]
+        elif mt == "raon1_mini" and (c.get("rda_config") or {}).get("mla_layers"):
+            # 0.320: rda_config.mla_layers is 1-based (release header: model.layers.3 / .24 carry the MLA tensors)
+            full = {x - 1 for x in c["rda_config"]["mla_layers"]}
+            types = ["full_attention" if i in full else "linear_attention" for i in range(L)]
         elif mt in _LING and c.get("layer_group_size"):
             # 0.114 Ling-3.x: groups of layer_group_size, the last of each group MLA, the rest KDA
             n = c["layer_group_size"]
@@ -937,7 +947,7 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     de = _g(c, "moe_intermediate_size", "intermediate_size")
     mlp_types = _list(c.get("mlp_layer_types"))
     first_dense = c.get("first_k_dense_replace") or 0
-    kda = mt in ("kimi_linear",) + _LING or mt.startswith("glm5_next")
+    kda = mt in ("kimi_linear", "raon1_mini") + _LING or mt.startswith("glm5_next")
     is_minimax = mt.startswith("minimax")
 
     def ffn_for(i: int):
@@ -1001,10 +1011,18 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         t = types[i] if types and i < len(types) else "full_attention"
         alin, core, misc = full_attn(i) if t != "linear_attention" else lin_attn(i)
         ffn, flin = ffn_for(i)
-        if ffn.kind == "moe" and mt in ("kimi_linear",) + _LING or (ffn.kind == "moe" and c.get("n_routed_experts")):
+        if ffn.kind == "moe" and mt in ("kimi_linear", "raon1_mini") + _LING or (ffn.kind == "moe" and c.get("n_routed_experts")):
             misc += E
         hc = c.get("hc_mult") or 0
-        if hc and mt.startswith("glm5_next"):
+        if mt == "raon1_mini" and c.get("raon_mhc_streams"):
+            # 0.320 Raon_mHC ×2 per layer (attention + MLP site): selector [2N + (N−1)², N·h] (phi_pre / phi_post / phi_z),
+            # b_pre / b_post (N), b_z ((N−1)²), alpha_pre / alpha_post / alpha_z, eta; closed-form residual chart
+            # (Helmert transform of an (N−1)² matrix, no Sinkhorn) costed as one normalisation pass 「近似」
+            n = c["raon_mhc_streams"]
+            rows = 2 * n + (n - 1) ** 2
+            misc += 2 * (rows * n * h + rows + 4)
+            layers.append(Layer(alin, core, ffn, flin, misc + 2 * h, hc=n, hc_iters=1, hc_rows=rows))
+        elif hc and mt.startswith("glm5_next"):
             # transformers Glm5NextTextHyperConnection ×2 per layer (attn_hc, ffn_hc): fn [(2+N)·N, N·h], base, scale
             misc += 2 * ((2 + hc) * hc * (hc * h + 1) + 3)
             layers.append(Layer(alin, core, ffn, flin, misc + 2 * h, hc=hc, hc_iters=c.get("hc_sinkhorn_iters") or 1))
@@ -1932,6 +1950,8 @@ def _builder(c: dict):
         return _build_dsv4_ref, "DeepSeek-V4 (CSA/MQA-512)"
     if mt.startswith("deepseek_v4"):
         return _build_dsv4, "DeepSeek-V4 (CSA/MQA-512)"
+    if mt == "raon1_mini":     # 0.320 KRAFTON Raon-1-mini: RDA (gated delta) + NoPE gated MLA, Raon_mHC, MoE
+        return _build_hybrid, "混合注意力（RDA delta 规则 + NoPE 门控 MLA）mHC MoE"
     if mt in ("kimi_linear", "bailing_hybrid", "bailing_moe_v3_vl", "ming_v3_asr", "bailing_moe_v3", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
               "qwen4_exp", "qwen4_exp_text", "minimax_text_01", "minimax_m1", "minimax") or mt.startswith("glm5_next"):
         return _build_hybrid, "混合注意力（linear + full）"

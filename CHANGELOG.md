@@ -6,6 +6,60 @@
 
 
 
+## [0.320.0]
+
+### Design verdict report (new): one design, everything the tool knows, labels attached
+- `core/report.py` `design_report(r, body, row=None)` builds the report from one `insight_dse` row (default: the cheapest $/M row, else the best perf/W, else the front head; `report_row` picks another).
+- Sections: design, performance at SLO, energy, shoreline buildability, thermal / power, yield and cost per good package, TCO with tornado bars, joint adverse / favourable corners and skipped inputs.
+- Every number is an item `{key, label, value, unit, tag, src}`. Tags are 来源 / 二手 / 推导 / 假设 / 近似 / 用户输入.
+- **Never invented:** a value the run does not have is `None` with a `missing` reason. Examples: no TCO preset, an unpriced memory type (LPDDR6), no D0. TCO secondary items inherit the TCO-missing reason. The `missing` list collects them all.
+- **Near-tie warnings** are mechanism checks, not heuristics:
+  - the DSE compare `tco_flips` / `tco_corners` for this row's comparison;
+  - `_pair_check` against the cheapest other priced design and against the best alternative memory of the same design (`scan_flip` over the TCO inputs plus both joint corners);
+  - SLO, shoreline, flux and package-W margins within the DSE tie (1 %).
+- Exports:
+  - API: `POST /api/report` (`report_format` json | markdown | both, default both).
+  - CLI: `scripts/design_report.py --body f.json | --example [--row i] [--md out.md] [--json out.json]`.
+  - UI: a 设计结论报告 button next to the DSE run button downloads .md + .json.
+- Example (`--example`: 1P qwen3-8b decode b64, dies 1 / 2, CoWoS-S, accel_2026, D0 0.1):
+  - Row 3 (32×128×128, 4 × HBM3E) at $/M 0.008479.
+  - Two warnings: mono → split at D0 0.182, and row 0 (128×64×64) is +0.17 % (within the tie, no flips).
+  - Corners: adverse +400 %, favourable −44 %.
+
+### Parked item re-examined: DeepGEMM masked grouped FP8 at 256+ rows (0.73)
+- **Mechanism:** `extkern` priced `grouped_h800` (a DeepGEMM kernel) at the generic Hopper FP8 cap (1550 / 1979). Its scenario carried no `src`, so the DeepGEMM per-shape ceilings (`extval.DEEPGEMM_0325`, DeepGEMM README, H800, same (N, K) 4096×7168 / 7168×2048 and the g-variants) were never applied. Those ceilings have applied to every DeepGEMM validation row since 0.2xx.
+- **Fix:** the grouped rows run under `deepgemm_variant` with a DeepGEMM stack src, the same `DEEPGEMM_SRC` scoping rule. Nothing is fitted.
+- **Cross-check 「来源」:** DeepGEMM README @ 55ab91f (2025-03-25) masked-layout table (`ext_kernels_moe.json` `readme_masked_h800`, 6 rows). It matches the DeepSeek_Simulator CSV within 1.5 % (ratio 0.985–0.997), so the measured data are right.
+- **Old → new** (model / measured, geometric mean):
+
+  | rows / group | 0.319 | 0.320 |
+  |---|---|---|
+  | 256+ (all) | 0.729 | 0.86 (0.93 with the per-kernel floor) |
+  | 256 | 0.844 | 0.85 |
+  | 512 | 0.643 | 0.839 |
+  | 1024 | 0.672 | 0.882 |
+  | 2048 | 0.726 | 0.973 |
+  | 4 – 128 | 1.03 | 1.03 (unchanged) |
+
+- The remaining 0.84–0.88 at 256–1024 rows is masked-layout specific: the per-shape ceilings are dense / contiguous figures. It stays unfitted (AGENTS §247). The m = 2048 rows reach the ceiling (0.97).
+- **Scope:** diagnostic only. `extkern` does not feed the cost model, and no evaluation, DSE or TCO number changes. `extkern.summary(deepgemm=False)` reproduces 0.319 (0.729). `ext_validation.json`: only `kernels.default` and the version stamp change.
+
+### Fixed
+- `energy_dse.D0_NOTE` still said package / bonding yield was not counted ("封装 / 键合良率未计"), which has been stale since 0.319. It now points to the cost item (carrier × attach × bond; not counted when no cost preset is selected).
+
+### Freshness (2026-10-22 JST)
+- **KRAFTON Raon-1-mini-preview** is now public (config.json 200, API gated false; it was HTTP 401 through 0.319). Added as `raon-1-mini-preview` (provider `krafton`, Apache-2.0):
+  - **Model type** `raon1_mini`:
+    - Layers: 25 = 18 RDA + 7 NoPE gated MLA. `rda_config.mla_layers` is 1-based; the release header puts the MLA tensors at layers 3 / 7 / … / 23 / 24.
+    - RDA is the KDA layout: per-channel low-rank decay of rank head_dim 128, full-rank g_proj, short convs of kernel 4, plus `rda_w_proj` h → heads.
+    - MLA: q_lora 576, kv_lora 512 + rope 64, 40 heads, output gate.
+    - FFN: 1 dense layer (12032) + 24 MoE (128 experts top-6, sigmoid router with bias, 1 shared expert 1088).
+  - **Raon_mHC:** 4 streams, two sites per layer, selector [2N + (N−1)² = 17, N·h] plus 21 scalars per site. The chart is closed-form (no Sinkhorn) and costed as one normalisation pass 「近似」. New `Layer.hc_rows`, used by `ir._hc_ops`. The final collapse is the stream mean.
+  - SiTU-GLU is costed as SwiGLU 「近似」.
+  - Routed experts are MXFP8 (E4M3, e8m0 per 32 → 8.25 bits); the rest is bf16. Default inputs are bf16 (W8A16; W8A8 on sm_100 per the modeling docstring is a what-if).
+  - Params 28,783,218,602 = the release header exactly; active 4.317 B (vendor: 4.3 B).
+- Other tracked orgs (110): nothing new. Newest HF uploads are derivatives only.
+
 ## [0.319.0]
 
 ### Package / bonding yield: a sourced per-component model replaces assembly yield 1.0 (default change)

@@ -1,5 +1,5 @@
 {
- "generated": "0.319.0",
+ "generated": "0.320.0",
  "variants": {
   "default": {
    "eff": "catalog",
@@ -9647,7 +9647,8 @@
    "summary": {
     "grouped_small_m_ratio": 1.03,
     "grouped_small_m_ratio_floor": 1.134,
-    "grouped_large_m_ratio": 0.729,
+    "grouped_large_m_ratio": 0.86,
+    "grouped_large_m_ratio_floor": 0.93,
     "grouped_small_m_GBps": [
      1474,
      2917
@@ -9698,29 +9699,29 @@
      {
       "m": 256,
       "n": 12,
-      "ratio": 0.844,
-      "ratio_floor": 0.939,
+      "ratio": 0.85,
+      "ratio_floor": 0.943,
       "meas_GBps": 1982
      },
      {
       "m": 512,
       "n": 10,
-      "ratio": 0.643,
-      "ratio_floor": 0.706,
+      "ratio": 0.839,
+      "ratio_floor": 0.901,
       "meas_GBps": 1331
      },
      {
       "m": 1024,
       "n": 6,
-      "ratio": 0.672,
-      "ratio_floor": 0.718,
+      "ratio": 0.882,
+      "ratio_floor": 0.926,
       "meas_GBps": 898
      },
      {
       "m": 2048,
       "n": 2,
-      "ratio": 0.726,
-      "ratio_floor": 0.767,
+      "ratio": 0.973,
+      "ratio_floor": 1.013,
       "meas_GBps": 696
      }
     ],
@@ -9745,7 +9746,64 @@
      "meas_us_per_token": 0.1152,
      "pred_us_per_token": 0.0051
     },
-    "lfm_slope_bound_us_per_token": 3.95
+    "lfm_slope_bound_us_per_token": 3.95,
+    "grouped_ceiling": "DeepGEMM per-shape (DEEPGEMM_0325)",
+    "readme_masked_check": [
+     {
+      "groups": 1,
+      "m": 1024,
+      "n": 4096,
+      "k": 7168,
+      "readme_tflops": 1233,
+      "csv_tflops": 1227,
+      "ratio": 0.995
+     },
+     {
+      "groups": 1,
+      "m": 1024,
+      "n": 7168,
+      "k": 2048,
+      "readme_tflops": 925,
+      "csv_tflops": 911,
+      "ratio": 0.985
+     },
+     {
+      "groups": 2,
+      "m": 512,
+      "n": 4096,
+      "k": 7168,
+      "readme_tflops": 1040,
+      "csv_tflops": 1028,
+      "ratio": 0.988
+     },
+     {
+      "groups": 2,
+      "m": 512,
+      "n": 7168,
+      "k": 2048,
+      "readme_tflops": 916,
+      "csv_tflops": 911,
+      "ratio": 0.995
+     },
+     {
+      "groups": 4,
+      "m": 256,
+      "n": 4096,
+      "k": 7168,
+      "readme_tflops": 932,
+      "csv_tflops": 925,
+      "ratio": 0.993
+     },
+     {
+      "groups": 4,
+      "m": 256,
+      "n": 7168,
+      "k": 2048,
+      "readme_tflops": 815,
+      "csv_tflops": 813,
+      "ratio": 0.997
+     }
+    ]
    },
    "grouped_h800": [
     {
@@ -9886,11 +9944,11 @@
      "n": 7168,
      "k": 2048,
      "meas_us": 10.0,
-     "pred_us": 8.05,
-     "ratio": 0.805,
-     "ratio_floor": 1.107,
+     "pred_us": 8.69,
+     "ratio": 0.869,
+     "ratio_floor": 1.171,
      "meas_GBps": 1887,
-     "bound": "dram"
+     "bound": "array"
     },
     {
      "groups": 1,
@@ -9898,9 +9956,9 @@
      "n": 4096,
      "k": 7168,
      "meas_us": 27.0,
-     "pred_us": 20.03,
-     "ratio": 0.742,
-     "ratio_floor": 0.854,
+     "pred_us": 23.81,
+     "ratio": 0.882,
+     "ratio_floor": 0.994,
      "meas_GBps": 1379,
      "bound": "array"
     },
@@ -9910,9 +9968,9 @@
      "n": 7168,
      "k": 2048,
      "meas_us": 18.0,
-     "pred_us": 10.05,
-     "ratio": 0.559,
-     "ratio_floor": 0.727,
+     "pred_us": 15.2,
+     "ratio": 0.845,
+     "ratio_floor": 1.013,
      "meas_GBps": 1282,
      "bound": "array"
     },
@@ -9922,9 +9980,9 @@
      "n": 4096,
      "k": 7168,
      "meas_us": 49.0,
-     "pred_us": 40.07,
-     "ratio": 0.818,
-     "ratio_floor": 0.879,
+     "pred_us": 47.62,
+     "ratio": 0.972,
+     "ratio_floor": 1.034,
      "meas_GBps": 920,
      "bound": "array"
     },
@@ -9934,9 +9992,9 @@
      "n": 7168,
      "k": 2048,
      "meas_us": 33.0,
-     "pred_us": 20.11,
-     "ratio": 0.609,
-     "ratio_floor": 0.701,
+     "pred_us": 30.41,
+     "ratio": 0.921,
+     "ratio_floor": 1.013,
      "meas_GBps": 953,
      "bound": "array"
     },
@@ -9946,9 +10004,9 @@
      "n": 4096,
      "k": 7168,
      "meas_us": 97.0,
-     "pred_us": 80.13,
-     "ratio": 0.826,
-     "ratio_floor": 0.857,
+     "pred_us": 95.25,
+     "ratio": 0.982,
+     "ratio_floor": 1.013,
      "meas_GBps": 627,
      "bound": "array"
     },
@@ -9958,9 +10016,9 @@
      "n": 7168,
      "k": 2048,
      "meas_us": 63.0,
-     "pred_us": 40.21,
-     "ratio": 0.638,
-     "ratio_floor": 0.686,
+     "pred_us": 60.81,
+     "ratio": 0.965,
+     "ratio_floor": 1.013,
      "meas_GBps": 766,
      "bound": "array"
     },
@@ -10138,9 +10196,9 @@
      "n": 4096,
      "k": 7168,
      "meas_us": 58.5,
-     "pred_us": 40.07,
-     "ratio": 0.685,
-     "ratio_floor": 0.737,
+     "pred_us": 47.88,
+     "ratio": 0.818,
+     "ratio_floor": 0.87,
      "meas_GBps": 1273,
      "bound": "array"
     },
@@ -10150,9 +10208,9 @@
      "n": 7168,
      "k": 2048,
      "meas_us": 33.0,
-     "pred_us": 20.11,
-     "ratio": 0.609,
-     "ratio_floor": 0.701,
+     "pred_us": 28.36,
+     "ratio": 0.859,
+     "ratio_floor": 0.951,
      "meas_GBps": 1398,
      "bound": "array"
     },
@@ -10162,9 +10220,9 @@
      "n": 4096,
      "k": 7168,
      "meas_us": 113.0,
-     "pred_us": 80.13,
-     "ratio": 0.709,
-     "ratio_floor": 0.736,
+     "pred_us": 95.76,
+     "ratio": 0.847,
+     "ratio_floor": 0.874,
      "meas_GBps": 798,
      "bound": "array"
     },
@@ -10174,9 +10232,9 @@
      "n": 7168,
      "k": 2048,
      "meas_us": 64.0,
-     "pred_us": 40.21,
-     "ratio": 0.628,
-     "ratio_floor": 0.676,
+     "pred_us": 56.72,
+     "ratio": 0.886,
+     "ratio_floor": 0.933,
      "meas_GBps": 983,
      "bound": "array"
     },
@@ -10354,9 +10412,9 @@
      "n": 4096,
      "k": 7168,
      "meas_us": 87.5,
-     "pred_us": 60.1,
-     "ratio": 0.687,
-     "ratio_floor": 0.721,
+     "pred_us": 71.82,
+     "ratio": 0.821,
+     "ratio_floor": 0.855,
      "meas_GBps": 1276,
      "bound": "array"
     },
@@ -10366,9 +10424,9 @@
      "n": 7168,
      "k": 2048,
      "meas_us": 48.0,
-     "pred_us": 30.16,
-     "ratio": 0.628,
-     "ratio_floor": 0.691,
+     "pred_us": 42.54,
+     "ratio": 0.886,
+     "ratio_floor": 0.949,
      "meas_GBps": 1442,
      "bound": "array"
     },
@@ -10378,9 +10436,9 @@
      "n": 4096,
      "k": 7168,
      "meas_us": 169.0,
-     "pred_us": 120.2,
-     "ratio": 0.711,
-     "ratio_floor": 0.729,
+     "pred_us": 143.64,
+     "ratio": 0.85,
+     "ratio_floor": 0.868,
      "meas_GBps": 800,
      "bound": "array"
     },
@@ -10390,9 +10448,9 @@
      "n": 7168,
      "k": 2048,
      "meas_us": 101.0,
-     "pred_us": 58.89,
-     "ratio": 0.583,
-     "ratio_floor": 0.613,
+     "pred_us": 83.06,
+     "ratio": 0.822,
+     "ratio_floor": 0.852,
      "meas_GBps": 934,
      "bound": "array"
     },
@@ -10570,9 +10628,9 @@
      "n": 4096,
      "k": 7168,
      "meas_us": 117.0,
-     "pred_us": 80.13,
-     "ratio": 0.685,
-     "ratio_floor": 0.711,
+     "pred_us": 95.76,
+     "ratio": 0.818,
+     "ratio_floor": 0.844,
      "meas_GBps": 1273,
      "bound": "array"
     },
@@ -10582,9 +10640,9 @@
      "n": 7168,
      "k": 2048,
      "meas_us": 67.0,
-     "pred_us": 40.21,
-     "ratio": 0.6,
-     "ratio_floor": 0.645,
+     "pred_us": 56.72,
+     "ratio": 0.847,
+     "ratio_floor": 0.892,
      "meas_GBps": 1377,
      "bound": "array"
     },
@@ -10762,9 +10820,9 @@
      "n": 4096,
      "k": 7168,
      "meas_us": 176.0,
-     "pred_us": 120.2,
-     "ratio": 0.683,
-     "ratio_floor": 0.7,
+     "pred_us": 143.64,
+     "ratio": 0.816,
+     "ratio_floor": 0.833,
      "meas_GBps": 1269,
      "bound": "array"
     },
@@ -10774,11 +10832,11 @@
      "n": 7168,
      "k": 2048,
      "meas_us": 103.0,
-     "pred_us": 59.03,
-     "ratio": 0.573,
-     "ratio_floor": 0.602,
+     "pred_us": 83.06,
+     "ratio": 0.806,
+     "ratio_floor": 0.836,
      "meas_GBps": 1344,
-     "bound": "dram"
+     "bound": "array"
     },
     {
      "groups": 9,

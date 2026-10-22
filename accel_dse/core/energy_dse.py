@@ -77,7 +77,7 @@ PKG_LIMITS = {    # interposer area (dies + HBM stacks must fit) — package tec
 HBM_FOOTPRINT_MM2 = {"HBM4": 11.0 * 12.8, "HBM4E": 11.0 * 12.8}   # HBM4 base die 11 × 12.8 mm (Samsung HC 2026) 「二手」
 HBM_FOOTPRINT_DEFAULT = 11.0 * 11.0     # HBM3 / 3E: 11 × 11 mm (Micron HBM3E product brief 「来源」, 0.313; was 「近似」)
 D0_NOTE = ("缺陷密度参考：TSMC N5 量产爬坡时约 0.10 /cm²、N7 约 0.09 /cm²（TSMC 技术论坛 / VLSI 2019，经 AnandTech 转述「二手」）；"
-           "良率模型 Y = exp(−A·D0)（Poisson「假设」；Murphy / 负二项更乐观）；晶粒在封装前测试（KGD）「假设」，封装 / 键合良率未计")
+           "良率模型 Y = exp(−A·D0)（Poisson「假设」；Murphy / 负二项更乐观）；晶粒在封装前测试（KGD）「假设」；封装 / 键合良率见成本项（0.319 按部件：载板 × 贴装 × 键合；未选成本时不计）")
 DIE_SPLITS = ("tp", "pp", "ep")
 
 

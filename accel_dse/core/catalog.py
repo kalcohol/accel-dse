@@ -234,6 +234,12 @@ EXTRA_TAIL = [
     # (no modeling code released; SGLang kit), 49 layers = 2 dense + 47 MoE (256 experts top-6 sigmoid + 1 ungated
     # shared expert), 35 sliding-513 / 14 full NoPE layers, learned per-head sinks, q / k norm; bf16
     ("flint", "RecursiveSI/flint"),
+    # 0.320 KRAFTON Raon-1-mini-preview (Apache-2.0; public 2026-10-22 JST, gated ≤ 0.319): custom raon1_mini code
+    # (modeling_raon1_mini.py), 25 layers = 18 RDA (KDA-layout gated delta rule + rda_w_proj write gate) + 7 NoPE
+    # gated MLA (rda_config.mla_layers, 1-based), Raon_mHC 4 streams (closed-form chart, no Sinkhorn), 1 dense + 24 MoE
+    # (128 experts top-6 sigmoid + 1 shared, SiTU-GLU costed as SwiGLU 「近似」); routed experts MXFP8 (E4M3, e8m0 / 32),
+    # rest bf16; params 28,783,218,602 = release header exactly
+    ("raon-1-mini-preview", "KRAFTON/Raon-1-mini-preview"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -407,6 +413,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("inception", "Inception / MBZUAI IFM（Jais）", ("inception42/", "IFM/")),     # 0.291
     ("jetbrains", "JetBrains（Mellum）", ("JetBrains/",)),     # 0.291
     ("recursive", "Recursive（Flint）", ("RecursiveSI/",)),     # 0.315
+    ("krafton", "KRAFTON（Raon）", ("KRAFTON/",)),     # 0.320
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Fun-ASR-Nano", ("fun-asr-nano",)), ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2.5-Omni", ("qwen2.5-omni",)),
@@ -451,6 +458,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("perplexity", "pplx-decider v1 / v1.1", ("pplx-decider-v1",)),
     ("inception", "Jais 3", ("jais-3-",)), ("jetbrains", "Mellum2.1", ("mellum2.1",)),
     ("recursive", "Flint", ("flint",)),     # 0.315
+    ("krafton", "Raon-1-mini", ("raon-1-mini",)),     # 0.320
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.

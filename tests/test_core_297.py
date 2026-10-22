@@ -29,8 +29,10 @@ def test_small_rows_per_expert_already_priced():
     # 4 … 128 rows per group: model within a few % (bandwidth-bound; measured 1.5 – 2.9 TB/s on H800)
     assert 0.95 < s["grouped_small_m_ratio"] < 1.1
     assert all(0.95 < x["ratio"] < 1.15 for x in s["grouped_by_m"] if x["m"] <= 128)
-    # 256+ rows: the masked grouped kernel runs below the model's FP8 ceiling (open, not the decode regime)
-    assert s["grouped_large_m_ratio"] < 0.8
+    # 256+ rows: 0.320 prices the DeepGEMM kernel at DeepGEMM's own per-shape ceilings (0.729 → 0.86); the generic
+    # Hopper FP8 cap (0.319, deepgemm=False) leaves the masked kernel's compute regime at 0.73
+    assert 0.83 < s["grouped_large_m_ratio"] < 0.9 and s["grouped_ceiling"].startswith("DeepGEMM")
+    assert XK.summary(deepgemm=False)["grouped_large_m_ratio"] < 0.8
 
 
 def test_module_b200_and_slope_bound():

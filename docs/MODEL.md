@@ -7957,6 +7957,7 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 
 ### §242.3 Result
 - H800, 4 – 128 rows: model / measured 1.03 (1.13 with the floor). 256 – 2048 rows: 0.73 (the masked kernel runs below the FP8 ceiling).
+  - 0.320 (§265.2): the 256 – 2048-row gap was mostly a pricing scope error: the rows ran at the generic Hopper FP8 cap, not DeepGEMM's per-shape ceilings. 0.73 → 0.86.
 - B200 module: 0.84 – 1.00 with the floor. The post-saturation slope is 0.115 µs/token measured vs 0.005 modelled. As an LFM2.5 upper bound 「近似」 that is ≤ 3.95 µs/token per step of the ≈ 19 missing; for Drama 3 it is 2.6.
 - Conclusion: grouped-GEMM small-M efficiency is priced. The shared signature (§241) lies mostly elsewhere: per-token non-GEMM kernels or host work, with no public data.
 
@@ -9295,3 +9296,40 @@ Each end carries its own tag; the table is in CHANGELOG [0.318.0].
 
 ### §264.5 Freshness (2026-10-22 08:29 JST)
 - No new tracked-org release; HF newest are derivatives. Raon-1-mini still 401.
+
+## §265 Design verdict report; DeepGEMM masked-kernel ceiling scope; Raon-1-mini (0.320)
+
+### §265.1 Design verdict report (`core/report.py`)
+- The report is a view, not a model: every value is read from one `insight_dse` row and its result (perf, energy, shoreline, thermal, cost, tco, tco.sens). It recomputes nothing except the near-tie checks below, which reuse `tco_sens`.
+- Item = `{key, label, value, unit, tag, src}`.
+  - The tag is the source tag of the underlying quantity: preset numbers keep their preset tag, model outputs are 推导, and inputs the user set are 用户输入.
+  - A value the run lacks is `None` with a `missing` reason. There is no zero default (§267 rule).
+- Near-tie warnings:
+  1. The DSE compare `tco_flips` / `tco_corners` entries for this row's `compare_key`.
+  2. `_pair_check(base, this, other)`: `scan_flip` over every TCO input range (§263), plus `corner` adverse / favourable (§264). `other` is (a) the cheapest other priced design and (b) the best alternative memory of the same design.
+  3. Margins (SLO, shoreline edge, flux, package W) ≤ tie (1 %).
+- `_base` rebuilds the tornado base from the request body, and `tornado` raises if `row_usd` does not reproduce the row's $/M (§268 invariant). The report therefore cannot silently price a different design.
+- Markdown is rendered from the JSON (`to_markdown`), with every item's tag and source in the table.
+
+### §265.2 DeepGEMM masked grouped FP8 (extkern), 256+ rows
+- §242.3 left 0.73 at 256 – 2048 rows. Re-examined, it turned out to be a scope error, not a missing mechanism. `grouped_h800` is DeepGEMM, and `DEEPGEMM_0325` per-shape ceilings 「来源」 exist for exactly these (N, K). The extkern scenario had no `src`, so the generic cap applied.
+- 0.320 applies the DeepGEMM stack scope (`deepgemm_variant` + `DEEPGEMM_SRC`), as for the DeepGEMM validation rows. By m:
+
+  | m | 256 | 512 | 1024 | 2048 |
+  |---|---|---|---|---|
+  | 0.319 | 0.844 | 0.643 | 0.672 | 0.726 |
+  | 0.320 | 0.85 | 0.839 | 0.882 | 0.973 |
+
+  - All 256+ rows: 0.729 → 0.86 (0.93 with the floor). Rows of ≤ 128 are unchanged (1.03).
+- README cross-check 「来源」: the DeepGEMM README @ 55ab91f masked table matches the CSV (0.985–0.997).
+- What remains (0.84 – 0.88 at m 256 – 1024) is the masked layout running below the dense / contiguous per-shape ceiling. No public masked per-shape ceiling exists, so it is documented, not fitted.
+- Diagnostic only: no evaluation / DSE / TCO number moves. `summary(deepgemm=False)` = 0.319.
+
+### §265.3 Raon-1-mini (`raon1_mini` in `_build_hybrid`)
+- RDA → `_kda` (`rda_config`), + `rda_w` Linear h → H.
+- MLA (NoPE: rope dims still in q / k, no rotation) with an output gate.
+- Raon_mHC:
+  - misc per layer 2 · (17 · N·h + 21); `Layer(hc=4, hc_iters=1, hc_rows=17)`.
+  - IR selector GEMM [N·h → 17] instead of (2+N)·N. The vector term uses one normalisation pass for the closed-form chart 「近似」.
+- Param check: 28,783,218,602 = release header (rel_err 0).
+

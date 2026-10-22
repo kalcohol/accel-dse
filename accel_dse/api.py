@@ -1637,6 +1637,31 @@ def api_tco_sens(body: dict) -> dict:
             "hash": r.get("hash")}
 
 
+def api_report(body: dict) -> dict:
+    """0.320: design verdict report of one design of an energy DSE (body = insight_dse body; optional report_row,
+    default the cheapest $/M row, else the best perf/W row; report_format json | markdown | both): performance at SLO,
+    energy, shoreline, thermal / power, yield and cost per good package, TCO with sensitivity and joint corners, and
+    near-tie warnings — every number with its label and source, missing inputs listed as missing (core/report.py)."""
+    from .core.report import design_report, to_markdown
+    if not isinstance(body, dict):
+        raise ApiError("body must be a JSON object")
+    fmt = body.get("report_format", "both")
+    if fmt not in ("json", "markdown", "both"):
+        raise ApiError("report_format must be json, markdown or both")
+    b = {k: v for k, v in body.items() if k not in ("report_row", "report_format")}
+    r = api_insight_dse(b)
+    try:
+        rep = design_report(r, b, body.get("report_row"))
+    except ValueError as e:
+        raise ApiError(str(e)) from None
+    out = {"row": rep["row"], "hash": rep["hash"]}
+    if fmt in ("json", "both"):
+        out["report"] = rep
+    if fmt in ("markdown", "both"):
+        out["markdown"] = to_markdown(rep)
+    return out
+
+
 def api_insight_speech(body: dict) -> dict:
     """0.274: which stage bounds real time / first audio for each catalog speech model on the scenario's chip + memory,
     and the DRAM bandwidth or pinned SLC that would unlock real time (core/speech_insight.py)."""

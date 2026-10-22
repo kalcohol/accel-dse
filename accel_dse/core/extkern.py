@@ -30,12 +30,20 @@ def data() -> dict:
     return json.loads(DATA.read_text())
 
 
+# 0.320: grouped_h800 IS a DeepGEMM kernel, so its stack's per-shape FP8 ceilings (extval.DEEPGEMM_0325, DeepGEMM
+# README, H800, largest published M — the same (N, K) as these rows) apply, through the same scoping rule as the
+# DeepGEMM validation rows (deepgemm variant + a DEEPGEMM_SRC stack).  ≤ 0.319 priced the rows at the generic
+# 1550 / 1979 Hopper FP8 cap → 256+ rows 0.729.  ``deepgemm=False`` reproduces 0.319.
+DEEPGEMM_STACK = "deepseek-profile"
+
+
 @lru_cache(maxsize=8)
-def _sys(hw: str, variant: str = "default"):
+def _sys(hw: str, variant: str = "default", src: str | None = None):
     from . import extval as X
     from .catalog import get_model
     from .hardware import System
-    sc = X.scenario(dict(hw=hw, model="qwen3-8b", tp=1, dtype="release"), variant, phase="decode", batch=1, ctx=1024)
+    sc = X.scenario(dict(hw=hw, model="qwen3-8b", tp=1, dtype="release", **({"src": src} if src else {})), variant,
+                    phase="decode", batch=1, ctx=1024)
     return System(sc.chip, sc.mem_id), get_model("qwen3-8b")
 
 
@@ -50,9 +58,10 @@ def grouped_time(sysm, model, groups: int, m: int, k: int, n: int, fmt: str = "f
     return {"array": ta, "dram": by / (sysm.dram_GBps * 1e9), "bytes": by}
 
 
-def grouped_table(variant: str = "default") -> list[dict]:
+def grouped_table(variant: str = "default", deepgemm: bool = True) -> list[dict]:
+    from . import extval as X
     d = data()["grouped_h800"]
-    sysm, model = _sys(d["hw"], variant)
+    sysm, model = (_sys(d["hw"], X.deepgemm_variant(variant), DEEPGEMM_STACK) if deepgemm else _sys(d["hw"], variant))
     ku = (sysm.chip.kernel_us or 0.0) * 1e-6
     out = []
     for r in d["rows"]:
@@ -63,6 +72,20 @@ def grouped_table(variant: str = "default") -> list[dict]:
                     "pred_us": round(pred * 1e6, 2), "ratio": round(pred / meas, 3),
                     "ratio_floor": round((pred + ku) / meas, 3),
                     "meas_GBps": round(t["bytes"] / meas / 1e9), "bound": "array" if t["array"] > t["dram"] else "dram"})
+    return out
+
+
+def readme_check() -> list[dict]:
+    """0.320: the grouped_h800 rows against DeepGEMM's own README masked-layout table (same kernel, H800): measured
+    TFLOPS of the CSV row with the same (groups, m, n, k) over the README figure."""
+    d = data()
+    rows = {(r["groups"], r["m"], r["n"], r["k"]): r["time_us"] for r in d["grouped_h800"]["rows"]}
+    out = []
+    for r in d["readme_masked_h800"]["rows"]:
+        t = rows.get((r["groups"], r["m"], r["n"], r["k"]))
+        tf = 2 * r["groups"] * r["m"] * r["n"] * r["k"] / (t * 1e-6) / 1e12 if t else None
+        out.append({**{k: r[k] for k in ("groups", "m", "n", "k")}, "readme_tflops": r["tflops"],
+                    "csv_tflops": None if tf is None else round(tf), "ratio": None if tf is None else round(tf / r["tflops"], 3)})
     return out
 
 
@@ -115,18 +138,21 @@ def lfm_share(slope_us_per_token: float, top_k_ref: int = 8, top_k: int = 4, moe
     return per_pair * top_k * moe_layers
 
 
-def summary(variant: str = "default") -> dict:
-    gt, mt = grouped_table(variant), module_table(variant)
+def summary(variant: str = "default", deepgemm: bool = True) -> dict:
+    gt, mt = grouped_table(variant, deepgemm), module_table(variant)
     bm = grouped_by_m(gt)
     small = [x for x in gt if x["m"] <= 128]
     big = [x for x in gt if x["m"] >= 256]
     gm = lambda g, k: round(math.exp(sum(math.log(x[k]) for x in g) / len(g)), 3)
     sl = slopes(mt)
     return {"grouped_small_m_ratio": gm(small, "ratio"), "grouped_small_m_ratio_floor": gm(small, "ratio_floor"),
-            "grouped_large_m_ratio": gm(big, "ratio"), "grouped_small_m_GBps": [min(x["meas_GBps"] for x in small),
+            "grouped_large_m_ratio": gm(big, "ratio"), "grouped_large_m_ratio_floor": gm(big, "ratio_floor"),
+            "grouped_small_m_GBps": [min(x["meas_GBps"] for x in small),
                                                                                max(x["meas_GBps"] for x in small)],
             "grouped_by_m": bm, "module_ratio_floor": [x["ratio_floor"] for x in mt], "module_slope": sl,
-            "lfm_slope_bound_us_per_token": round(lfm_share(sl["meas_us_per_token"]), 2)}
+            "lfm_slope_bound_us_per_token": round(lfm_share(sl["meas_us_per_token"]), 2),
+            "grouped_ceiling": "DeepGEMM per-shape (DEEPGEMM_0325)" if deepgemm else "generic Hopper FP8 (0.319)",
+            "readme_masked_check": readme_check()}
 
 
 @lru_cache(maxsize=8)

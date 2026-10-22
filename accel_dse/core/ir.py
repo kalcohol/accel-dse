@@ -1136,7 +1136,7 @@ def _hc_ops(model: ModelSpec, li: int, L: Layer, t: int, tp: int, which: str) ->
     (1 + 2·(iters − 1) normalisations of N×N); collapse Σ pre·streams; after the block post ⊗ out + combᵀ·residual.
     The residual streams are replicated on every TP rank.  fn weights are in misc_params (read with the hot set)."""
     N, h = L.hc, model.hidden
-    nh, nw = N * h, (2 + N) * N
+    nh, nw = N * h, L.hc_rows or (2 + N) * N          # 0.320: Raon_mHC selector rows 2N + (N−1)²
     vec = t * (4 * nh                                   # unweighted RMSNorm over N·h
                + 2 * N * 4 + N * N * 5                  # sigmoid pre / post, softmax comb
                + (2 * L.hc_iters - 1) * 2 * N * N       # Sinkhorn row / column normalisations (sum + divide)

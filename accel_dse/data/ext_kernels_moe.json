@@ -1050,5 +1050,54 @@
     "time_us": 186.92
    }
   ]
+ },
+ "readme_masked_h800": {
+  "source": "github.com/deepseek-ai/DeepGEMM README @ 55ab91f (2025-03-25, 'Update performance'), table 'Grouped GEMMs for MoE models (masked layout)', H800 SXM5, NVCC 12.8",
+  "kernel": "DeepGEMM m_grouped_gemm_fp8_fp8_bf16_nt_masked (same kernel as grouped_h800)",
+  "note": "0.320: independent cross-check of the grouped_h800 large-m rows (kernel author's own timing); not used for pricing",
+  "rows": [
+   {
+    "groups": 1,
+    "m": 1024,
+    "n": 4096,
+    "k": 7168,
+    "tflops": 1233
+   },
+   {
+    "groups": 1,
+    "m": 1024,
+    "n": 7168,
+    "k": 2048,
+    "tflops": 925
+   },
+   {
+    "groups": 2,
+    "m": 512,
+    "n": 4096,
+    "k": 7168,
+    "tflops": 1040
+   },
+   {
+    "groups": 2,
+    "m": 512,
+    "n": 7168,
+    "k": 2048,
+    "tflops": 916
+   },
+   {
+    "groups": 4,
+    "m": 256,
+    "n": 4096,
+    "k": 7168,
+    "tflops": 932
+   },
+   {
+    "groups": 4,
+    "m": 256,
+    "n": 7168,
+    "k": 2048,
+    "tflops": 815
+   }
+  ]
  }
 }

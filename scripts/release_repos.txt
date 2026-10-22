@@ -169,3 +169,4 @@ IFM/Jais-3-MoVA-36B-A4B-FP8
 JetBrains/Mellum2.1-12B-A2.5B-Thinking
 ATH-MaaS/OvisOCR3
 RecursiveSI/flint
+KRAFTON/Raon-1-mini-preview

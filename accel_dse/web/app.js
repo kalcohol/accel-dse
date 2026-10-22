@@ -143,7 +143,7 @@ function cancel(chan) {
    (Pyodide) build also reports its first-load phases here (download / init / package). */
 const STAGE = { eval: 'eval 评估', sensitivity: 'sensitivity 敏感度', fit: 'fit 容量修正搜索', memory: 'memory 内存',
   compare: 'compare 映射对比', layouts: 'layouts 布局搜索', stability: 'stability 排名稳定性', sweep: 'sweep 扫描',
-  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC', insight_dispatch: 'LLM 派发敏感度', insight_noc: 'NoC 能耗', insight_dse: '能耗设计搜索',
+  pareto: 'pareto', insight: 'insight 设计洞察', insight_path: 'path 升级路径', insight_sizing: 'sizing 缩减余量', insight_slc: 'SLC 能耗最优', insight_speech: '语音瓶颈', insight_speech_streams: '语音实时路数 vs SLC', insight_dispatch: 'LLM 派发敏感度', insight_noc: 'NoC 能耗', insight_dse: '能耗设计搜索', report: 'report 设计结论报告',
   health: 'catalog 载入目录', catalog: 'catalog 载入目录', models: 'catalog 载入目录' };
 const LOAD_ZH = { download: '下载 Python 运行时', init: '初始化 Pyodide', package: '载入 accel_dse 包', ready: '就绪', error: '静态版加载失败' };
 const PROG = {
@@ -1677,6 +1677,21 @@ function expName(e, ext) {
   const stamp = `${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`;
   return `accel-dse_${e.kind}_${String(e.scenario.model || 'model').replace(/[^\w.\-]+/g, '_')}_${stamp}.${ext}`;
 }
+async function runDesignReport() {     // 0.320: design verdict report of the selected DSE row (Markdown + JSON)
+  const st = $('ins-dse-report-status');
+  if (!S.dseBody || !S.dseRes) { st.textContent = '先运行「搜索设计点」'; return; }
+  const sn = S.dseRes.tco && S.dseRes.tco.sens;
+  st.textContent = '生成中…';
+  let rr;
+  try {
+    rr = await track(req('report', '/api/report', { ...S.dseBody, ...(sn && sn.row != null ? { report_row: sn.row } : {}) }));
+  } catch (e) { st.textContent = '报告失败：' + e.message; return; }
+  if (!rr) { st.textContent = ''; return; }
+  const base = `accel-dse_design-report_${String(S.dseRes.model || 'model').replace(/[^\w.\-]+/g, '_')}_row${rr.row}`;
+  download(base + '.md', rr.markdown, 'text/markdown;charset=utf-8');
+  download(base + '.json', JSON.stringify(rr.report, null, 1), 'application/json');
+  st.textContent = `第 ${rr.row} 行：${rr.report.design} · 警告 ${rr.report.verdict.n_near_ties} 条 · 缺项 ${rr.report.missing.length} 项（已下载 .md / .json）`;
+}
 function download(name, text, type) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([text], { type }));
@@ -2546,8 +2561,11 @@ async function runInsightDse() {
     if (tt > 0) ex.slo_ttft_ms = tt;
     if (Object.keys(usd).length) ex.mem_usd_per_GB = usd;
     if (+$('ins-dse-maxusd').value > 0) ex.max_mem_usd = +$('ins-dse-maxusd').value;
-    const r = await track(req('insight_dse', '/api/insight_dse', body(ex)));
+    const dseBody = body(ex);
+    S.dseBody = dseBody; S.dseRes = null;     // 0.320: the design verdict report re-runs this body
+    const r = await track(req('insight_dse', '/api/insight_dse', dseBody));
     if (!r) return;
+    S.dseRes = r;
     const rows = r.rows || [];
     const u = rows.find((x) => x.unit)?.unit || '单位';
     const bp = r.best && r.best.perf_W, bt = r.best && r.best.thr;
@@ -3158,6 +3176,7 @@ async function init() {
   $('ins-slc-run').addEventListener('click', () => runInsightSlc(false));
   $('ins-noc-run').addEventListener('click', runInsightNoc);   // 0.299
   $('ins-dse-run').addEventListener('click', runInsightDse);   // 0.300
+  $('ins-dse-report').addEventListener('click', runDesignReport);   // 0.320
   $('ins-sp-run').addEventListener('click', runInsightSpeech);
   $('ins-sps-run').addEventListener('click', runInsightSpeechStreams);
   $('ins-dp-run').addEventListener('click', runInsightDispatch);

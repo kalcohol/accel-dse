@@ -1,0 +1,193 @@
+{
+ "bytes_llm": 32699649368,
+ "bytes_mtp": 0,
+ "bytes_total": 32699649368,
+ "config": {
+  "activation_situ_beta": 4.0,
+  "activation_situ_linear_beta": 25.0,
+  "architectures": [
+   "Raon1MiniForCausalLM"
+  ],
+  "auto_map": {
+   "AutoConfig": "configuration_raon1_mini.Raon1MiniConfig",
+   "AutoModel": "modeling_raon1_mini.Raon1MiniModel",
+   "AutoModelForCausalLM": "modeling_raon1_mini.Raon1MiniForCausalLM"
+  },
+  "dtype": "bfloat16",
+  "first_k_dense_replace": 1,
+  "head_dim": 128,
+  "hidden_act": "situ",
+  "hidden_size": 2560,
+  "intermediate_size": 12032,
+  "kv_lora_rank": 512,
+  "max_position_embeddings": 262144,
+  "mla_use_nope": true,
+  "mla_use_output_gate": true,
+  "model_type": "raon1_mini",
+  "moe_intermediate_size": 1088,
+  "moe_layer_freq": 1,
+  "moe_renormalize": true,
+  "moe_router_activation_func": "sigmoid",
+  "num_attention_heads": 40,
+  "num_experts": 128,
+  "num_experts_per_token": 6,
+  "num_hidden_layers": 25,
+  "num_shared_experts": 1,
+  "q_lora_rank": 576,
+  "qk_nope_head_dim": 128,
+  "qk_rope_head_dim": 64,
+  "quantization_config": {
+   "activation_scheme": "dynamic",
+   "dequantize": false,
+   "ignored_layers": [
+    "lm_head",
+    "model.layers.*.self_attn*",
+    "model.layers.*.mlp*",
+    "model.layers.*.moe.gate*",
+    "model.layers.*.moe.shared_experts*",
+    "model.layers.*.moe.experts$"
+   ],
+   "quant_method": "mxfp8",
+   "weight_block_size": [
+    1,
+    32
+   ]
+  },
+  "raon_mhc_streams": 4,
+  "rda_config": {
+   "conv_kernel_size": 4,
+   "full_rank_gate": true,
+   "gate_lower_bound": -5.0,
+   "head_dim": 128,
+   "mla_layers": [
+    4,
+    8,
+    12,
+    16,
+    20,
+    24,
+    25
+   ],
+   "num_heads": 40,
+   "rda_layers": [
+    1,
+    2,
+    3,
+    5,
+    6,
+    7,
+    9,
+    10,
+    11,
+    13,
+    14,
+    15,
+    17,
+    18,
+    19,
+    21,
+    22,
+    23
+   ]
+  },
+  "rms_norm_eps": 1e-05,
+  "rope_parameters": null,
+  "routed_scaling_factor": 1.0,
+  "tie_word_embeddings": false,
+  "transformers_version": "5.16.1",
+  "v_head_dim": 128,
+  "vocab_size": 259840
+ },
+ "fetched": "2026-10-22",
+ "n_tensors": 19434,
+ "params_llm": 28783218602,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": {
+  "activation_scheme": "dynamic",
+  "dequantize": false,
+  "ignored_layers": [
+   "lm_head",
+   "model.layers.*.self_attn*",
+   "model.layers.*.mlp*",
+   "model.layers.*.moe.gate*",
+   "model.layers.*.moe.shared_experts*",
+   "model.layers.*.moe.experts$"
+  ],
+  "quant_method": "mxfp8",
+  "weight_block_size": [
+   1,
+   32
+  ]
+ },
+ "repo": "KRAFTON/Raon-1-mini-preview",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 2956596200,
+    "params": 1478298100
+   },
+   "fp32": {
+    "bytes": 371620,
+    "params": 92905
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1330380800,
+    "params": 665190400
+   }
+  },
+  "expert": {
+   "fp8": {
+    "bytes": 26471301120,
+    "params": 25669140480
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 1330380800,
+    "params": 665190400
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 184811520,
+    "params": 92405760
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 280960,
+    "params": 140480
+   }
+  },
+  "other": {
+   "bf16": {
+    "bytes": 8705000,
+    "params": 4352500
+   },
+   "fp32": {
+    "bytes": 100,
+    "params": 25
+   }
+  },
+  "router": {
+   "bf16": {
+    "bytes": 15728640,
+    "params": 7864320
+   },
+   "fp32": {
+    "bytes": 12288,
+    "params": 3072
+   }
+  },
+  "shared_expert": {
+   "bf16": {
+    "bytes": 401080320,
+    "params": 200540160
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}
