@@ -381,7 +381,7 @@ def main(chrome="/usr/bin/google-chrome", budget=1800.0) -> int:
                 check("J falls with idle_frac", j0 is not None and j1 is not None and j1 < j0, f"{j0} -> {j1}")
                 act("power_cap on", lambda: p.set_checked("#e-power_cap", True))
                 t = etbl()
-                check("cap not binding @175W", "未超 TDP" in t, t)
+                check("cap not binding @175W", "未超上限" in t, t)
                 act("tdp_W 2", lambda: p.fill("#e-tdp_W", "2") or p.press("#e-tdp_W", "Tab"))
                 t = etbl()
                 f = num(t, r"吞吐 ×([0-9.]+)")

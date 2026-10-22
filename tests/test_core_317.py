@@ -154,7 +154,9 @@ def test_eval_and_api():
     assert abs(t["mem_usd"] - 96 * 17.5 * t["mem_scrap_k"]) < 1e-9 and t["mem_scrap_k"] > 1      # 0.319 scrap
     c = api.api_eval({**b, "energy": {"energy_preset": "tpuv4i_7nm", "tdp_W": 150}, "power_cap": True,
                       "tco": {"pkg_usd": 3000}})["tco"]
-    assert abs(c["pkg_W"] - 150.0) < 1e-3 and c["pkg_usd"] == 3000 and c["thr"] < t["thr"]     # capped point
+    # capped point — 0.323: the dfs clock the DSE uses (bisection lands just under the cap); ≤ 0.322 the duty-cycle
+    # throttle at exactly 150 W (thr 2520.32 now)
+    assert 150.0 * 0.995 < c["pkg_W"] <= 150.0 * (1 + 1e-9) and c["pkg_usd"] == 3000 and c["thr"] < t["thr"]
     assert "tco" not in api.api_eval(b)
     for bad in ({}, {"cost": "x"}, {"pkg_usd": -1}, {"pkg_usd": 1, "pue": 0.5}):
         try:

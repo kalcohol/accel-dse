@@ -1144,7 +1144,7 @@ function renderEnergy(r) {
     e.static_warning || `静态能耗占 ${(e.static_share * 100).toFixed(1)}%`)));
   const pc = e.power_cap;
   if (pc) body.push(h('tr', {}, h('td', { colspan: 3, class: 'small' }, pc.error ? '功耗封顶：' + pc.error
-    : `功耗封顶：需 ${num(pc.P_needed_W)} W${pc.scope === 'package' ? `（封装 ${num(pc.pkg_needed_W)} W，含静态底功耗与稳压器损耗）` : ''} / TDP ${num(pc.tdp_W)} W → ` + (pc.capped ? `吞吐 ×${num(pc.throughput_factor)}，J/单位 ${sci(pc.J_per_unit_capped)}` : '未超 TDP')
+    : `功耗封顶：需 ${num(pc.P_needed_W)} W${pc.scope === 'package' ? `（封装 ${num(pc.pkg_needed_W)} W，含静态底功耗与稳压器损耗）` : ''} / ${pc.cap_src === 'budget.power_W_card' ? '功耗预算' : 'TDP'} ${num(pc.tdp_W)} W → ` + (pc.capped ? `吞吐 ×${num(pc.throughput_factor)}（占空比口径，保守）· J/单位 ${sci(pc.J_per_unit_capped)}；热 / TCO 按下列 dfs 降频工作点（同能耗 DSE）` : '未超上限')
       // 0.227: the clock / voltage the cap implies
       + (pc.dvfs ? '；' + Object.values(pc.dvfs).map((d) => d.error ? d.error
         : `${d.curve === 'dfs' ? '仅降频' : 'V–f（' + d.tag + '）'} f ${num(d.f_ghz)} GHz（×${num(d.s)}）V ×${num(d.v)} → 吞吐 ×${num(d.throughput_factor)}，${d.bound}`).join('；') : ''))));

@@ -751,7 +751,7 @@ def unit_pJ(table: EnergyTable, k: str, chip=None, dram_field: str | None = None
     return getattr(table, _UNIT_PJ[k])
 
 
-def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False, pk=None) -> dict:
+def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False, pk=None, cap_W: float | None = None) -> dict:
     """0.189 power_cap (opt-in): when average card power (dynamic + static) exceeds table.tdp_W, sustained throughput
     is cut to fit.  Energy per action held constant (no DVFS V² saving, 「假设」, conservative), so the window stretches
     to t' = E_dyn / (TDP − P_static), i.e. ×(P_dyn / (TDP − P_static)); static J grows by the same factor."""
@@ -932,12 +932,15 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False, 
             out["static_warning"] = (f"静态能耗占 J/{a['unit']} 的 {out['static_share']:.1%}（> {STATIC_WARN:.0%}）："
                                      "结论主要由空闲功耗假设决定，而非动态动作")
     if power_cap:
-        out["power_cap"] = _power_cap(out, j, iw, table, r.scenario.layout.cards, u, a["window_s"], pk)
+        # 0.323: ``cap_W`` = the cap the caller resolved (budget.power_W_card, else energy.tdp_W — the DSE's rule);
+        # the "tdp_W" field of power_cap then holds that cap (cap_src names it)
+        cap = cap_W if cap_W is not None else table.tdp_W
+        out["power_cap"] = _power_cap(out, j, iw, table, r.scenario.layout.cards, u, a["window_s"], pk, cap)
         if not out["power_cap"].get("error") and out["power_cap"].get("capped"):
             # 0.227: the clock / voltage the cap implies (core/powercap.py) — dfs (headline, ≡ the duty-cycle throughput)
             # and a measured V–f curve (voltage benefit, 「二手」)
             from .powercap import CAP_CURVES, dvfs_cap
-            out["power_cap"]["dvfs"] = {c: dvfs_cap(r, table, table.tdp_W, c, pk=pk) for c in CAP_CURVES}
+            out["power_cap"]["dvfs"] = {c: dvfs_cap(r, table, cap, c, pk=pk) for c in CAP_CURVES}
     return out
 
 
@@ -978,12 +981,14 @@ def energy_breakdown(rep: dict) -> dict:
             "labels": BREAKDOWN_LABEL}
 
 
-def _power_cap(out, j, iw, table, cards, u, win, pk=None) -> dict:
+def _power_cap(out, j, iw, table, cards, u, win, pk=None, cap=None) -> dict:
     """0.189: TDP-capped sustained throughput (opt-in).  Needs tdp_W.  See EnergyTable.power_cap.
     0.316 ``pk`` (thermal.cap_power_fn): TDP is compared against the package power (the thermal check's
     package_power) — the card-level cap is the card W at which package_power reaches TDP; None = card W (0.315)."""
-    if table.tdp_W is None or win <= 0:
-        return {"error": "power_cap 需要 tdp_W（每卡 TDP，产品决策，无默认值）"}
+    if cap is None:
+        cap = table.tdp_W
+    if cap is None or win <= 0:
+        return {"error": "power_cap 需要功耗上限：budget.power_W_card 或 energy.tdp_W（每卡 TDP，产品决策，无默认值）"}
     # 0.227 fix: SRAM leakage (0.212) and HBM standby / refresh (0.216) are static too — they were counted as
     # dynamic energy that shrinks with the slowdown (under-slowed the capped point)
     st_keys = ("idle", "sram_leak", "hbm_static", "noc_leak")       # 0.307: + NoC router leakage
@@ -993,15 +998,15 @@ def _power_cap(out, j, iw, table, cards, u, win, pk=None) -> dict:
     p_dyn = e_dyn_card / win
     need = p_dyn + p_stat
     from .thermal import card_W_for_cap
-    cap_c = card_W_for_cap(pk, table.tdp_W, p_stat, iw)
+    cap_c = card_W_for_cap(pk, cap, p_stat, iw)
     scope = {"scope": "card" if pk is None else pk.scope, "cap_card_W": cap_c,
              "pkg_needed_W": need if pk is None else pk(need, p_stat, iw)}
     if cap_c is None or p_stat >= cap_c:
-        return {"P_needed_W": need, "tdp_W": table.tdp_W, "feasible": False, **scope,
+        return {"P_needed_W": need, "tdp_W": cap, "feasible": False, **scope,
                 "error": "静态功耗 ≥ TDP：任何吞吐都超功耗" + ("（封装口径：含静态底功耗与稳压器损耗）" if pk is not None else "")}
     slow = max(1.0, p_dyn / (cap_c - p_stat))
     J = out["J_per_unit"] + (sum(j.get(k, 0.0) for k in st_keys) * (slow - 1.0))
-    return {"P_needed_W": need, "P_dyn_W": p_dyn, "P_static_W": p_stat, "tdp_W": table.tdp_W, "feasible": True, **scope,
+    return {"P_needed_W": need, "P_dyn_W": p_dyn, "P_static_W": p_stat, "tdp_W": cap, "feasible": True, **scope,
             "capped": slow > 1.0, "slowdown": slow, "throughput_factor": 1.0 / slow, "J_per_unit_capped": J,
             "basis": "每动作能耗不随频率变（不计 DVFS 的 V² 收益，「假设」，偏保守）；超 TDP 时窗口拉长到 "
                      "E_dyn / (TDP′ − P_static)；TDP′ = 封装功耗（能耗 + 整卡静态底功耗 + 稳压器损耗，thermal.package_power，"

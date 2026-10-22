@@ -82,4 +82,4 @@ def test_190_cli_power_cap():
     assert o.returncode == 0 and "power cap:" in o.stdout and "throughput ×0." in o.stdout
     o = subprocess.run([sys.executable, "-m", "accel_dse.cli", "eval", "--pJ-mac", "0.5", "--power-cap"],
                        capture_output=True, text=True)
-    assert o.returncode == 0 and "power_cap 需要 tdp_W" in o.stdout
+    assert o.returncode == 0 and "power_cap 需要功耗上限" in o.stdout

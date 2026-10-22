@@ -6,6 +6,30 @@
 
 
 
+## [0.323.0]
+
+### Cross-module consistency audit (eval ↔ energy DSE ↔ report ↔ compare ↔ static build ↔ CLI)
+- **Audit:** for seeded random designs (5 chips × 4 models × phase / batch / cooling / cap / cost / TCO preset / D0), compared eval vs the energy-DSE base row on J/unit, card W, package W, thermal status, buildable, shoreline status, memory edges, good-package $, $/M unit and the capped flag (tolerance 1e-9), and report items vs row fields, compare cells vs report items (value / tag / unit). Server and static Pages build answer through the same `serve.respond` (no worker pool on eval / DSE / report), so their bytes are equal by construction; the CLI prints `api.clean` of the same call. Four divergences found and fixed (eval aligned to the DSE / report convention, the more mechanistic path):
+  1. **D0 unset:** eval TCO defaulted D0 to 0.1 /cm² while the DSE and report treat it as missing (die yield 1, flagged). Eval now does the same, with the note "未设 D0（tco.d0_per_cm2）：晶粒良率按 1 计…" and `pkg_src` "未设 D0：良率按 1 计（缺项）". 1P qwen3-8b decode b64, n5_cowos_s: `tco.pkg_usd` 1755.44 → 1615.51 (= DSE row).
+  2. **Memory edges:** with auto edges eval resolved them on the preset's published die (H100-like 814 mm²) while the DSE sizes them on the budget-density die it reports. Eval now resolves them on the budget die whenever a budget is given (`hbm_mem_edges(scn, die_mm2)`). H100-like qwen3-8b decode b64, n5_derived: 2 → 3 edges; J/token 0.05587 → 0.05551, card W 155.87 → 154.87 (= DSE row).
+  3. **Power cap source and operating point:** eval capped only at `energy.tdp_W` and ran thermal / TCO at the duty-cycle throttle; the DSE caps at `budget.power_W_card` (else `energy.tdp_W`) at the dfs clock. Eval now takes the same cap (`power_cap.cap_src` = "budget.power_W_card" / "energy.tdp_W"), keeps the duty-cycle headline (labelled conservative), and runs thermal (`operating_point` "capped") and TCO at the dfs point (`_capped_point`). H100-like qwen3-30b-a3b decode b1, tdp 150 W, liquid: TCO throughput 310.9 → 364.30 tok/s (duty ×0.853 → dfs ×0.99996, memory bound); thermal package W 173.1 → 150.0. The error without a cap now names both inputs: "power_cap 需要功耗上限：budget.power_W_card 或 energy.tdp_W…" (was "power_cap 需要 tdp_W…").
+  4. **Bisection depth:** `dvfs_cap` ran 22 steps in eval / sensitivity and 12 in the DSE, so one capped design differed by up to 2⁻¹² of the clock range. One shared `powercap.CAP_ITERS` = 16 「推导」: (1 − F_MIN)/2¹⁶ ≈ 1.3e-5 of the clock, an order below the 2e-4 dfs ≡ duty tolerance (12 steps broke it). DSE capped clocks rise by ≤ 2.1e-4 (the 12-step clock is a prefix of the 16-step bisection); eval ones move by ≤ 1.3e-5.
+- UI: the power-cap line names its source (功耗预算 / TDP), states that thermal / TCO use the dfs point, "未超 TDP" → "未超上限". CLI: `eval --body FILE` takes an /api/eval body as-is.
+
+### Energy DSE speed (Pyodide)
+- Measured on the static build (headless Chrome, worker `ms`): a 216-point DSE with every new axis took 3.6 – 6.6 s, but 15.3 s (cold) / 13.2 s (warm) once the power budget binds (150 W: 138 capped rows × 12 bisection evaluates).
+- **Mapping memo keyed without the clock** (`mapping.FREQ_FREE_KEY`, default True): the GEMM mapping search counts cycles and no path in it reads `chip.freq_ghz` (only `gemm_seconds` / `vector_seconds` convert, with the caller's chip), so `gemm_cost` keys `_gemm_cost` on the chip at 1 GHz (`_cycle_chip`). Bit-identical results; the bisection and the f_scales axis reuse the nominal-clock search.
+- **Layer IR memoised for one search** (`ir.rank_memo()`, entered by `energy_design_search`; `energy_dse.RANK_MEMO`): `build_rank_ops` is a pure function of (model, layer, phase, shard, glue), all frozen, and no chip field enters it, yet every bisection clock rebuilt it. Scoped to the call, so module flags toggled between runs are never served stale; callers get a fresh list.
+- `energy_dse.hbm_stacks` / `_hbm_footprint` memoised (pure in the id string; the TCO flip scan re-parsed ids ~10⁵ times).
+- Results bit-identical (the whole DSE JSON, both switches off vs on). CPython, 216 points: cap 150 W 10.19 → 3.32 s, cap 300 W 6.31 → 2.13 s, prefill cap 150 W 10.30 → 3.41 s, MoE cap 150 W 12.03 → 3.88 s. Pyodide (cold / warm): cap 150 W 15.3 / 13.2 → 6.9 / 5.0 s, prefill cap 150 W 15.4 / 11.4 → 9.9 / 5.2 s; unbinding 216-point DSEs 1.4 – 3.5 s. The remaining time is the overlap feed simulation (clock-dependent op times, already exact run-skipping). No pruning of dominated or unbuildable points: they are rows the UI shows (`include_unbuildable`), and the target was met without it.
+
+### Freshness
+- 110 orgs, 2026-10-21 / 22: Ling-3.0-tiny-UBTree, OvisOCR3, Flint, Raon already in data; 2026-10-22 only unsloth MOSS-Image GGUF / FP8 derivatives (MOSS-Image in the catalog since 0.257) and an image-classification CLIP. Nothing to add.
+
+### Tests
+- tests/test_core_323.py (7): eval ≡ DSE base row over 10 seeded designs; report / compare ≡ row over 3 seeded DSEs; wire / static ≡ API and CLI `--body --json` ≡ wire; cap source / iterations / budget-die edges; speedups bit-identical on a capped DSE; GEMM cycles independent of the clock over 40 seeded shapes; IR memo run-scoped.
+- Re-pinned: test_core_189 (cap error text), test_core_316 (thermal at the capped point; 0.315 capped throughput now a lower bound within 3e-4), test_core_317 (TCO capped package W within the bisection band).
+
 ## [0.322.0]
 
 ### Parked items re-examined: Drama 3 c256 second-GPU wait, colocated vocoder c128 residual

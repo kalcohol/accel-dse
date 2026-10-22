@@ -661,12 +661,18 @@ def cmd_d2d(a) -> dict:
 
 
 def cmd_eval(a) -> dict:
-    body = _body(a)
-    body["best_batch"] = a.best_batch
-    if getattr(a, "power_cap", False):
-        body["power_cap"] = True
-    if getattr(a, "no_sensitivity", False):
-        body["sensitivity"] = False
+    if getattr(a, "body_file", None):      # 0.323: the API body as-is (energy / budget / cooling / TCO included)
+        with open(a.body_file, encoding="utf-8") as f:
+            body = json.load(f)
+        if not isinstance(body, dict):
+            raise SystemExit("--body: expected a JSON object (an /api/eval body)")
+    else:
+        body = _body(a)
+        body["best_batch"] = a.best_batch
+        if getattr(a, "power_cap", False):
+            body["power_cap"] = True
+        if getattr(a, "no_sensitivity", False):
+            body["sensitivity"] = False
     out = api.api_eval(body)
     if a.json:
         return out
@@ -1013,7 +1019,12 @@ def main(argv: list[str] | None = None) -> int:
     _scenario_args(e)
     e.add_argument("--best-batch", action="store_true", help="largest batch meeting the TPOT SLO")
     e.add_argument("--power-cap", action="store_true",
-                   help="0.190: cap sustained throughput at --tdp-W (dynamic + static power), opt-in; needs --tdp-W")
+                   help="0.190: cap sustained throughput at --budget-power-W, else --tdp-W (0.323: the energy DSE's "
+                        "rule), opt-in")
+    e.add_argument("--body", dest="body_file", default=None, metavar="FILE",
+                   help="0.323: a whole /api/eval body (chip_preset, scenario, energy, budget, cooling, power_scope, tco, "
+                        "power_cap ...) evaluated as-is — the same numbers as the API / UI / static build; other flags "
+                        "are then ignored except --json")
     for name, helptext in (("search", "rank layouts for N cards"), ("compare", "best layout per mapping"),
                            ("stability", "ranking stability under assumption perturbations")):
         x = sub.add_parser(name, help=helptext)

@@ -71,8 +71,10 @@ def test_card_scope_reproduces_0315():
         assert o["power_scope"] == "card" and o["front"] == front
         got = {i: x["thr"] for i, x in enumerate(o["rows"]) if x.get("capped")}
         assert set(got) == set(OLD_CAPPED_THR)
+        # 0.323: CAP_ITERS 12 → 16 continues the same bisection (the 12-step clock is a prefix), so the capped clock
+        # only rises, by ≤ (1 − F_MIN)/2^12 — the 0.315 values (12 steps) are lower bounds within 3e-4
         for i, t in OLD_CAPPED_THR.items():
-            assert abs(got[i] - t) < 1e-3, (i, got[i], t)
+            assert t - 1e-3 <= got[i] <= t * (1 + 3e-4), (i, got[i], t)
     # package scope caps more (static floor + VR loss count against the budget) and never runs faster
     new = _case1(None, "package")
     old = _case1(None, "card")
@@ -109,7 +111,11 @@ def test_api_scope():
     c = api.api_eval({**b, "power_scope": "card"})
     pp, pc = p["energy"]["power_cap"], c["energy"]["power_cap"]
     assert pp["scope"] == "package" and pc["scope"] == "card"
-    assert abs(pp["pkg_needed_W"] - p["thermal"]["pkg_W"]) < 1e-6          # same package power as the thermal check
+    # 0.323: the thermal check runs at the capped dfs point (as the energy DSE) — ≤ 0.322 at the uncapped package
+    # power pkg_needed_W (630.63 → 399.99 W here); pkg_needed_W stays the nominal requirement the cap is set against
+    th = p["thermal"]
+    assert th["operating_point"] == "capped" and abs(th["pkg_W"] - pp["dvfs"]["dfs"]["pkg_W"]) < 1e-9
+    assert th["pkg_W"] <= 400 * (1 + 1e-9) < pp["pkg_needed_W"]
     assert pc["cap_card_W"] == 400 and pp["cap_card_W"] < 400
     assert pp["throughput_factor"] < pc["throughput_factor"]
     try:

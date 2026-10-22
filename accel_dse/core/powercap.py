@@ -73,7 +73,14 @@ def _point(r, table, curve: str, s: float):
     return q, energy_report(q, t)
 
 
-def dvfs_cap(r, table, cap_W: float, curve: str = "dfs", iters: int = 22, pk=None) -> dict:
+# 0.323: one bisection depth for every caller — the DSE ran 12, eval / sensitivity 22, so the same capped design
+# differed by up to 2^-12 of the clock range between paths.  16 「推导」: (1 − F_MIN) / 2^16 ≈ 1.3e-5 of the clock,
+# an order below the 2e-4 dfs ≡ duty-cycle tolerance (test_core_227; 12 gave ≈ 2.1e-4 and broke it); the mapping memo
+# drops the clock (mapping.FREQ_FREE_KEY), so the extra depth costs little.  Old: DSE 12, eval / sensitivity 22.
+CAP_ITERS = 16
+
+
+def dvfs_cap(r, table, cap_W: float, curve: str = "dfs", iters: int = CAP_ITERS, pk=None) -> dict:
     """Highest clock (fraction s of the nominal) whose power fits cap_W; then the throughput / energy there.
     0.316 ``pk``: the compared power as a function of (card W, static W, idle W) — thermal.cap_power_fn (package
     scope: the thermal check's package_power, evaluated at every clock); None = the card W itself (0.315)."""

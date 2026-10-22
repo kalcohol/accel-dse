@@ -9399,3 +9399,29 @@ Each end carries its own tag; the table is in CHANGELOG [0.318.0].
   4. Scenario edits and new searches left in-flight reports running, and finished ones untagged. Now `dropReports` cancels them (the static worker is terminated), and both statuses are in `invalidate`'s stale list.
 - Static smoke step 2e (`scripts/ui_static_smoke.py`) checks this live; tests/test_core_322.py pins it structurally.
 
+
+## §268 Cross-module consistency; clock-free mapping memo (0.323)
+
+### §268.1 One design, one set of numbers
+The same design reaches the user through six paths: `/api/eval`, an energy-DSE row (`/api/insight_dse`), the design report and the comparison (`/api/report`, which read the row), the static Pages build (Pyodide) and the CLI. Server and static build both answer through `serve.respond`, which calls `api.clean` on the same `api_*` function; the CLI prints `api.clean` of that call too. So the transport adds nothing. The comparison has to be between eval and the DSE row, which compute separately.
+
+Conventions, now shared (the DSE / report convention is kept; it is the more mechanistic one):
+
+| quantity | convention | eval ≤ 0.322 |
+|---|---|---|
+| die yield without D0 | missing input: yield 1, flagged 「缺项」 | D0 0.1 /cm² default |
+| auto memory edges | `hbm_mem_edges` on the budget-density die the row reports | on the preset's published area (H100-like 814 mm²) |
+| power cap | `budget.power_W_card`, else `energy.tdp_W` (`cap_src`) | `energy.tdp_W` only |
+| capped operating point for thermal / TCO | dfs clock (§222 bisection) | duty-cycle throttle |
+| bisection depth | `CAP_ITERS` = 16 for every caller | eval 22, DSE 12 |
+
+- The duty-cycle throttle stays as eval's headline throughput factor, labelled conservative (it can never beat the dfs clock without the per-cycle term, §223). Thermal and TCO need one operating point, and the DSE's is the dfs clock.
+- Depth 16 「推导」: bisection on [F_MIN, 1] = [0.15, 1] leaves (1 − F_MIN)/2¹⁶ ≈ 1.3e-5 of the clock. The dfs ≡ duty identity (no per-cycle term) is checked to 2e-4, which 12 steps (2.1e-4) cannot meet. A deeper bisection only continues the shallower one, so DSE capped clocks rise by ≤ 2.1e-4.
+
+Property tests (tests/test_core_323.py) draw seeded random designs and check eval ≡ row (J/unit, card / package W, thermal status, buildable, shoreline status, memory edges, good-package $, $/M, capped), report ≡ row, compare ≡ report (value, tag, unit), wire ≡ API and CLI ≡ wire.
+
+### §268.2 Clock-free mapping memo
+`_gemm_cost` returns cycles. It reads the chip's array, port, NoC and occupancy fields but never `freq_ghz`; seconds are formed by `gemm_seconds` / `vector_seconds` with the caller's own chip. The memo used the whole chip as its key, so each of the 16 bisection clocks of a capped design, and each `f_scales` value, re-ran the same search. `gemm_cost` now keys it on the chip at 1 GHz (`_cycle_chip`, memoised; `mapping.FREQ_FREE_KEY` False restores the old key).
+- The result is bit-identical by construction. Tests check this two ways: the whole DSE JSON with the flag on and off, and `_gemm_cost` unmemoised at three clocks for 40 seeded shapes.
+- The layer IR (`build_rank_ops`) is likewise free of chip fields and was rebuilt at every clock. It is memoised for the duration of one `energy_design_search` (`ir.rank_memo()`), not globally, so a module flag toggled between runs is never served stale.
+- Measured, static build: a 216-point DSE with a binding 150 W budget went from 15.3 s cold / 13.2 s warm to 6.9 / 5.0 s (prefill: 15.4 / 11.4 → 9.9 / 5.2 s). What remains is the overlap feed simulation, whose op times depend on the clock. The 0.323 target was about 10 s, so no pruning of dominated or unbuildable points was added. Such pruning would also drop rows the UI can show (`include_unbuildable`).

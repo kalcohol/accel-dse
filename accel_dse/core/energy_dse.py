@@ -40,6 +40,7 @@ perf/W = units/s ÷ W = 1 / (J/unit) for a given workload, so the 2-D front (thr
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import lru_cache
 
 from .energy import EnergyTable, energy_report
 from .evaluate import evaluate
@@ -276,6 +277,9 @@ def asm_note(cp: dict) -> str:
             + "；".join(ASM_SRC[k] for k in (cp["carrier"], "attach", "hybrid", "scrap")))
 
 
+# 0.323: pure functions of the id string (numbers out) — memoised; the TCO flip scan (tco_sens.row_usd) re-parsed the
+# same few ids ~10⁵ times per capped DSE
+@lru_cache(maxsize=1 << 10)
 def hbm_stacks(mem_id: str) -> int:
     """0.319: HBM stacks attached to the carrier (0 for off-carrier memory)."""
     from .. import mem_catalog as mc
@@ -283,6 +287,7 @@ def hbm_stacks(mem_id: str) -> int:
     return sp.n_units if sp.kind == "HBM" else 0
 
 
+@lru_cache(maxsize=1 << 10)
 def _hbm_footprint(mem_id: str) -> float:
     from .. import mem_catalog as mc
     sp = mc.parse_mem_id(mem_id)
@@ -460,7 +465,7 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0, pk=None) -> dict:
         if power_mode == "reject":
             o["why"].append(f"功耗 {o['cap_pkg_W']:.0f} > {cap:g} W" + ("（封装口径）" if pk is not None else ""))
         else:
-            d = dvfs_cap(r, t, cap, curve, iters=12, pk=pk)
+            d = dvfs_cap(r, t, cap, curve, pk=pk)     # 0.323: CAP_ITERS (shared)
             if d.get("error") or not d.get("feasible", True):
                 o["why"].append(d.get("error") or "功耗封顶不可行")
             else:
@@ -581,6 +586,24 @@ def _split_compare(rows: list[dict], tie: float = 0.01, tco: bool = False) -> li
     return out
 
 
+def _scoped_rank_memo(fn):
+    """0.323: run the whole search under ir.rank_memo() (the layer IR is clock- and chip-free; MODEL §268.2)."""
+    import functools
+
+    @functools.wraps(fn)
+    def run(*a, **kw):
+        from .ir import rank_memo
+        if not RANK_MEMO:
+            return fn(*a, **kw)
+        with rank_memo():
+            return fn(*a, **kw)
+    return run
+
+
+RANK_MEMO = True       # 0.323: False = ≤ 0.322 (rebuild the layer IR at every evaluate)
+
+
+@_scoped_rank_memo
 def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SCALES, sram_scales=SRAM_SCALES,
                          sides=None, topologies=None, power_mode: str = "dvfs", curve: str = "dfs",
                          phase: str | None = None, prompt: int | None = None, tie: float | None = None,

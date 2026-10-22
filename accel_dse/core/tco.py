@@ -179,7 +179,7 @@ def basis_note(p: dict) -> str:
 EVAL_KEYS = ("cost", "pkg_usd", "d0_per_cm2")
 
 
-def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str) -> dict:
+def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str, op: dict | None = None) -> dict:
     """0.317: TCO of one evaluated package.  ``spec`` = tco_params input plus eval-only keys: ``pkg_usd`` (package $
     without memory devices, e.g. a known part) or ``cost`` (COST_PRESETS name / object, priced on the shoreline die with
     Poisson yield at ``d0_per_cm2``, default 0.10 /cm² 「二手」 N5).  Power = the complete package power at the
@@ -207,17 +207,23 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str) -> dict:
         pkg_usd, pkg_src = float(v), "用户输入（不含内存器件）"
     elif spec.get("cost") is not None:
         cp = _cost_params(spec["cost"])
-        d0 = spec.get("d0_per_cm2", 0.1)
-        if isinstance(d0, bool) or not isinstance(d0, (int, float)) or not 0 <= d0 < 10:
+        # 0.323: no D0 = yield 1, said so — the energy DSE / report convention (eval silently used 0.10, so the same
+        # design's $/good package differed between eval and the DSE row / report)
+        d0 = spec.get("d0_per_cm2")
+        if d0 is not None and (isinstance(d0, bool) or not isinstance(d0, (int, float)) or not 0 <= d0 < 10):
             raise ValueError("tco.d0_per_cm2 must be a number in [0, 10)")
         if not die_mm2:
             miss.append("晶粒面积（岸线报告无面积）")
             pkg_usd, pkg_src = None, None
         else:
-            y = math.exp(-die_mm2 * d0 / 100.0)
+            y = math.exp(-die_mm2 * d0 / 100.0) if d0 else 1.0
             cc = package_cost(cp, die_mm2, pk, y, pk * die_mm2 + _hbm_footprint(mid), hbm_stacks(mid))
-            pkg_usd, pkg_src = cc["usd_good_pkg"], (f"{cp['preset']} × 岸线晶粒 {die_mm2:.0f} mm²，D0 {d0:g}，良率 {y:.3f}，"
-                                                    f"封装良率 {cc['asm']['Y']:.3f}")
+            pkg_usd, pkg_src = cc["usd_good_pkg"], (f"{cp['preset']} × 岸线晶粒 {die_mm2:.0f} mm²，"
+                                                    + (f"D0 {d0:g}，良率 {y:.3f}，" if d0 else "未设 D0：良率按 1 计（缺项），")
+                                                    + f"封装良率 {cc['asm']['Y']:.3f}")
+            if not d0:
+                notes.append("未设 D0（tco.d0_per_cm2）：晶粒良率按 1 计，每好封装成本偏低——与能耗 DSE / 设计报告同口径；"
+                             "参考 N5 量产约 0.10 /cm²「二手」")
             km = cc["asm"]["k_mem"]
             notes.append(asm_note(cp))
     else:
@@ -234,11 +240,16 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str) -> dict:
     iw = energy["idle_W_used"] * pk if energy.get("idle_W_used") is not None else None
     thr = r.per_card * pk
     card_W = ew * pk
-    pc = energy.get("power_cap") or {}
-    if pc.get("capped"):                    # the sustained, capped point: throughput × factor at the capped card W
+    if op is not None:                      # 0.323: the clock-capped point (DVFS dfs) — the energy DSE row's point
+        thr *= op["throughput_factor"]
+        card_W = op["W_card"] * pk
+        st = op["static_W"] * pk
+        notes.append("按功耗封顶后的工作点计（降频 dfs 工作点：吞吐 × 封顶系数，封装功耗 = 封顶点，与能耗 DSE 同口径）")
+    elif (energy.get("power_cap") or {}).get("capped"):     # no feasible clock-capped point: the duty-cycle view
+        pc = energy["power_cap"]
         thr *= pc["throughput_factor"]
         card_W = pc["cap_card_W"] * pk
-        notes.append("按功耗封顶后的工作点计（吞吐 × 封顶系数，封装功耗 = 封顶点）")
+        notes.append("按功耗封顶后的工作点计（占空比：吞吐 × 封顶系数，封装功耗 = 封顶点）")
     pw = package_power(card_W, die_mm2, pk, st, iw)["pkg_W"]
     idle = package_power(st, die_mm2, pk, st, iw)["pkg_W"]
     mem_dev = sp.capacity_GB * pk * pr
@@ -252,5 +263,5 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str) -> dict:
     from .tco_sens import tornado
     rw = {"mm2": die_mm2, "dies": pk, "si_mm2": (die_mm2 or 0.0) * pk, "mem_id": mid, "mem_type": sp.mem_type,
           "mem_GB": sp.capacity_GB * pk, "thr": thr, "unit": unit, "tco": t}
-    t["sens"] = tornado(rw, {"tco": p, "cost": cp, "d0": d0, "prices": None})
+    t["sens"] = tornado(rw, {"tco": p, "cost": cp, "d0": d0 or 0.0, "prices": None})   # 0.323: no D0 = yield 1 (as the DSE)
     return t

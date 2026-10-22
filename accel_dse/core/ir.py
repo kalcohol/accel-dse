@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import functools
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 
 from .dtypes import fmt as _fmt
@@ -1056,10 +1057,42 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
 
 
 # ------------------------------------------------------------------ layer ops
+# 0.323: a run-scoped memo of build_rank_ops (None = off).  The layer IR is a pure function of (model, layer, phase,
+# shard, glue) — no chip field enters it — and every argument and Op is a frozen dataclass, yet a capped energy DSE
+# rebuilt it for each of the 16 bisection clocks of every design.  Scoped (rank_memo()) rather than global so module
+# flags that tests toggle (e.g. SPEC_STATE_SNAPSHOT) are never served stale; callers get a fresh list.
+_RANK_MEMO: dict | None = None
+
+
+@contextmanager
+def rank_memo():
+    """Memoise build_rank_ops for the duration of the block (nests: an outer memo is kept)."""
+    global _RANK_MEMO
+    if _RANK_MEMO is not None:
+        yield
+        return
+    _RANK_MEMO = {}
+    try:
+        yield
+    finally:
+        _RANK_MEMO = None
+
+
 def build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None,
                    glue: bool = False) -> list[Op]:
     """Ops of one rank for transformer layer ``li`` (or an explicit MTP ``layer``), with work shares (rank_shares).
     0.177: ``glue`` adds the GPU-runtime kernels of glue_ops."""
+    memo = _RANK_MEMO
+    if memo is None:
+        return _build_rank_ops(model, li, ph, sh, layer, glue)
+    key = (model, li, ph, sh, layer, glue)
+    hit = memo.get(key)
+    if hit is None:
+        hit = memo[key] = tuple(_build_rank_ops(model, li, ph, sh, layer, glue))
+    return list(hit)
+
+
+def _build_rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard, layer: Layer | None, glue: bool) -> list[Op]:
     ops = rank_shares(_rank_ops(model, li, ph, sh, layer), sh,
                       lambda: _rank_ops(model, li, ph, Shard(), layer))
     if ph.labels and ph.kind == "prefill" and ph.ctx == 0:

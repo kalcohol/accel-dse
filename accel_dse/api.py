@@ -989,6 +989,20 @@ def evaluate_mem_eff(scn: Scenario) -> float:
     return System(scn.chip, scn.mem_id, None).mem.efficiency
 
 
+def _capped_point(e: dict, pkg_scope: bool) -> dict | None:
+    """0.323: the clock-capped operating point of an eval under a binding cap — energy.power_cap.dvfs.dfs, the same
+    dvfs_cap call (curve dfs, CAP_ITERS) the energy DSE makes for a row; static at the capped clock in package scope,
+    the nominal static in card scope (energy_dse._run).  None when no cap binds."""
+    from .core.powercap import static_W
+    pc = e.get("power_cap") or {}
+    d = (pc.get("dvfs") or {}).get("dfs") or {}
+    if pc.get("error") or not pc.get("capped") or d.get("error") or not d.get("feasible", True) or "W_card" not in d:
+        return None
+    return {"throughput_factor": d["throughput_factor"], "W_card": d["W_card"], "pkg_W": d.get("pkg_W", d["W_card"]),
+            "static_W": d.get("static_W", static_W(e)) if pkg_scope else static_W(e), "J_per_unit": d["J_per_unit"],
+            "s": d.get("s"), "curve": "dfs"}
+
+
 def api_eval(body: dict) -> dict:
     from .core.speech import speech_kpis
     _check_keys(body, "eval")
@@ -1000,6 +1014,21 @@ def api_eval(body: dict) -> dict:
         if bb.batch:
             scn = scn.replace("serving.batch", bb.batch)
     table = _energy_table(body)
+    # 0.323: the user's die (budget die_mm2 / densities) decides the auto memory-attach edges, as in the energy DSE
+    # (hbm_mem_edges on the row's die) — the Scenario resolves them on the preset's published area (H100-like 814 mm²)
+    # while the shoreline / thermal / cost checks below use the budget die, so one eval priced NoC energy on one die
+    # and judged buildability on another
+    su = None
+    if bud is not None and (bud.die_mm2 or bud.mm2_per_kmac is not None):     # 0.312: the user's die area / densities
+        from .core.budget import hbm_mem_edges, shoreline_report
+        su = shoreline_report(scn, die_mm2=bud.die_mm2, b=None if bud.die_mm2 else bud)
+        ch = scn.chip
+        if su.get("die_mm2") and ch.noc_mem_edges == 0 and ch.noc_mem_attach != "none":
+            me = hbm_mem_edges(scn, su["die_mm2"])
+            if me != ch.mem_edges:
+                import dataclasses as _dc
+                scn = scn.replace("chip", _dc.replace(ch, noc_mem_edges=me))
+                su = shoreline_report(scn, die_mm2=bud.die_mm2, b=None if bud.die_mm2 else bud)
     try:
         r = evaluate(scn)
     except ValueError as e:
@@ -1011,11 +1040,8 @@ def api_eval(body: dict) -> dict:
     if not isinstance(pc, bool):
         raise ApiError("power_cap must be true or false")
     sh = out["shoreline"]
-    if bud is not None and (bud.die_mm2 or bud.mm2_per_kmac is not None):     # 0.312: the user's die area / densities
-        from .core.budget import shoreline_report
-        su = shoreline_report(scn, die_mm2=bud.die_mm2, b=None if bud.die_mm2 else bud)
-        if su.get("die_mm2"):
-            sh = out["shoreline"] = {**su, "die_src": "budget"}
+    if su is not None and su.get("die_mm2"):
+        sh = out["shoreline"] = {**su, "die_src": "budget"}
     if sh.get("feasible") is False:
         out["summary"]["warnings"].append("不可建（岸线）：" + "；".join(sh["reasons"]))
     # 0.316: the TDP cap compares the package power (thermal.cap_power_fn → package_power, the function the thermal
@@ -1025,7 +1051,16 @@ def api_eval(body: dict) -> dict:
     if psc not in POWER_SCOPES:
         raise ApiError(f"power_scope must be one of {list(POWER_SCOPES)}")
     pkf = cap_power_fn(sh.get("die_mm2"), 1, psc) if pc else None
-    out["energy"] = energy_report(r, table, power_cap=pc, pk=pkf)      # 0.47.1: action counts always; J only for user-supplied entries
+    # 0.323: the cap is budget.power_W_card, else energy.tdp_W — the energy DSE's rule (eval read tdp_W only)
+    cap_W = (bud.power_W_card if bud is not None and bud.power_W_card else None) or table.tdp_W
+    out["energy"] = energy_report(r, table, power_cap=pc, pk=pkf, cap_W=cap_W)      # 0.47.1: action counts always; J only for user-supplied entries
+    # 0.323: the operating point under a binding cap = the DVFS clock-capped point (curve dfs), the energy DSE's
+    # default (power_mode dvfs, curve dfs); thermal and TCO are judged / priced there.  The duty-cycle headline
+    # (energy.power_cap.throughput_factor, 0.189) stays as the labelled conservative view.
+    if isinstance(out["energy"].get("power_cap"), dict):     # 0.323: where the cap came from (the DSE's power_cap_src)
+        out["energy"]["power_cap"]["cap_src"] = ("budget.power_W_card" if bud is not None and bud.power_W_card
+                                                 else "energy.tdp_W" if table.tdp_W else None)
+    opc = _capped_point(out["energy"], pkf is not None)
     # 0.313: thermal / power buildability beside the shoreline — reported whenever the energy table gives a power;
     # judged only with body.cooling (a thermal.COOLING preset)
     from .core.powercap import static_W as _static_W
@@ -1035,9 +1070,15 @@ def api_eval(body: dict) -> dict:
         raise ApiError(f"cooling must be one of {sorted(COOLING)}")
     ew = out["energy"].get("avg_W_per_card")
     pk = scn.package_cards if scn.d2d_enabled else 1
+    ddw, stw = dram_dev_W(out["energy"]), _static_W(out["energy"])
+    if opc is not None:                     # 0.323: at the capped operating point (as the DSE row)
+        ddw = ddw * opc["W_card"] / ew if ew else ddw
+        ew, stw = opc["W_card"], opc["static_W"]
     th = thermal_report(ew * pk if ew is not None else None, sh.get("die_mm2"), pk,
-                        dram_dev_W(out["energy"]) * pk, cool, _static_W(out["energy"]) * pk,     # 0.315: complete power
+                        ddw * pk, cool, stw * pk,     # 0.315: complete power
                         out["energy"]["idle_W_used"] * pk if out["energy"].get("idle_W_used") is not None else None)
+    if opc is not None:
+        th["operating_point"] = "capped"
     out["thermal"] = th
     if th.get("feasible") is False:
         out["summary"]["warnings"].append("不可建（热 / 功耗）：" + "；".join(th["reasons"]))
@@ -1045,14 +1086,14 @@ def api_eval(body: dict) -> dict:
         from .core.tco import eval_tco
         try:
             out["tco"] = eval_tco(body["tco"], scn=scn, r=r, energy=out["energy"], die_mm2=sh.get("die_mm2"),
-                                  unit=out["energy"].get("unit") or "token")
+                                  unit=out["energy"].get("unit") or "token", op=opc)
         except ValueError as e:
             raise ApiError(str(e)) from None
         if out["tco"].get("usd_per_Munit") is not None and (th.get("feasible") is False or sh.get("feasible") is False):
             out["tco"]["buildable"] = False
             out["tco"]["notes"].append("该设计不可建（岸线 / 热）：$/M 仅供参考，不能作为成本结论")
     if body.get("sensitivity", True):
-        out["sensitivity"] = sensitivity_report(scn, r, table.tdp_W if pc and table.tdp_W else None)   # 0.227
+        out["sensitivity"] = sensitivity_report(scn, r, cap_W if pc and cap_W else None)   # 0.227 (0.323: same cap)
     if bud is not None:
         out["budget"] = budget_report(r, bud, out["energy"])
     if scn.fabric.enabled:  # 0.59: per-collective algorithm / topology breakdown

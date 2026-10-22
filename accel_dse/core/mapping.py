@@ -196,7 +196,19 @@ def _candidates(org: str) -> tuple[str, ...]:
 def gemm_cost(ch: Chip, org: str, m: int, k: int, n: int, *, count: int = 1, w_fmt: str = "bf16",
               a_fmt: str = "bf16", w_bits: float | None = None) -> GemmCost:
     """Cycles for ``count`` identical GEMMs [m,k]×[k,n] under organisation ``org`` (memoised: pure function)."""
-    return _gemm_cost(ch, org, m, k, n, count, w_fmt, a_fmt, w_bits)
+    return _gemm_cost(_cycle_chip(ch) if FREQ_FREE_KEY else ch, org, m, k, n, count, w_fmt, a_fmt, w_bits)
+
+
+# 0.323: the mapping search counts cycles — no path below reads chip.freq_ghz (only the seconds converters
+# gemm_seconds / vector_seconds do, with the caller's own chip) — so the memo key drops the clock: the power-cap
+# bisection (12 clocks per capped design) and the f_scales axis re-ran the identical search at every clock (≈ 75 % of
+# a capped energy DSE).  Results are bit-identical (test_core_323 pins it); False = ≤ 0.322 keying.
+FREQ_FREE_KEY = True
+
+
+@lru_cache(maxsize=1 << 12)
+def _cycle_chip(ch: Chip) -> Chip:
+    return ch if ch.freq_ghz == 1.0 else replace(ch, freq_ghz=1.0)
 
 
 @lru_cache(maxsize=1 << 12)
