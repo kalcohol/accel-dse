@@ -61,6 +61,13 @@ def hbm_standby_W(e: dict) -> float:
     return (h.get("standby_W") or 0.0) if h.get("kind") == "HBM" else 0.0
 
 
+def hbm_device_static_W(e: dict) -> float:
+    """0.334: full HBM device static (standby + refresh) per card — off-die, so it does not scale with die
+    temperature in package_power's hot bound; 0 for LPDDR / unset.  Clocked standby alone is hbm_standby_W."""
+    h = e.get("hbm_static") or {}
+    return (h.get("W") or 0.0) if h.get("kind") == "HBM" else 0.0
+
+
 def _units_s_card(e: dict, cards: int) -> float:
     return e["units_per_window"] / e["window_s"] / cards if e.get("window_s") else 0.0
 

@@ -1,10 +1,12 @@
 """0.333: HBM energy reconciliation against Olgun et al. arXiv 2610.14244 (MODEL §278) — measured H200 HBM3E split
 into a static term (per-64-bit-channel standby + refresh, ∝ channels / capacity × time) and a per-bit dynamic term;
-clocked HBM standby no longer offsets the area-scaled idle floor (thermal.package_power standby_W)."""
+clocked HBM standby no longer offsets the area-scaled idle floor (thermal.package_power standby_W).
+0.334: adversarial review — hot bound excludes full HBM device static (standby+refresh); stale HBM4 2.46 labels → 4.14."""
 import os
 
 from accel_dse.core.energy import (ENERGY_PRESETS, H200_HBM_MEAS, HBM_CH_BITS, EnergyTable, hbm_static_W)
-from accel_dse.core.powercap import hbm_standby_W
+from accel_dse.core.powercap import hbm_device_static_W, hbm_standby_W
+from accel_dse.core.energy_dse import MEM_PROXY
 from accel_dse.core.thermal import STATIC_FLOOR_W_MM2, VR_EFF, _hot_k, cap_power_fn, card_W_for_cap, package_power
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,6 +76,12 @@ def test_standby_does_not_offset_the_area_floor():
     assert new["pkg_W"] > old["pkg_W"] and _close(new["static_W"], st + new["static_add_W"])
     hot = (st - stb + new["static_add_W"]) * (_hot_k() - 1.0) / VR_EFF            # standby is not die leakage
     assert _close(new["pkg_W_hot"] - new["pkg_W"], hot)
+    # 0.334: refresh is also off-die — pass device_static_W = standby+refresh; floor still uses standby only
+    ref = 5.0
+    both = package_power(300.0, die, 1, st, None, stb, device_static_W=stb + ref)
+    assert _close(both["static_add_W"], new["static_add_W"])                      # floor unchanged
+    hot2 = (st - (stb + ref) + both["static_add_W"]) * (_hot_k() - 1.0) / VR_EFF
+    assert _close(both["pkg_W_hot"] - both["pkg_W"], hot2) and both["pkg_W_hot"] < new["pkg_W_hot"]
     # die area matters again when the stacks out-idle the die (the 0.333 test_core_327 decision)
     small, big = (package_power(st, a, 1, st, None, stb)["pkg_W"] for a in (500.0, 900.0))
     assert big > small
@@ -87,6 +95,9 @@ def test_hbm_standby_W_reads_only_hbm():
     assert hbm_standby_W({"hbm_static": {"kind": "HBM", "standby_W": 25.0}}) == 25.0
     assert hbm_standby_W({"hbm_static": {"kind": "LPDDR", "standby_W": 3.0}}) == 0.0
     assert hbm_standby_W({}) == 0.0
+    e = {"hbm_static": {"kind": "HBM", "standby_W": 25.0, "refresh_W": 3.0, "W": 28.0}}
+    assert hbm_device_static_W(e) == 28.0 and hbm_standby_W(e) == 25.0
+    assert hbm_device_static_W({"hbm_static": {"kind": "LPDDR", "W": 3.0}}) == 0.0
 
 
 def test_docs_record_the_change():
@@ -95,3 +106,5 @@ def test_docs_record_the_change():
     assert "§278" in md and "2610.14244" in md
     sec = cl.split("## [0.333.0]")[1].split("## [")[0]
     assert "3.44" in sec and "5.80" in sec and "376.8" in sec and "standby_W" in sec
+    assert "§279" in md and "## [0.334.0]" in cl
+    assert "4.14" in MEM_PROXY["HBM4"] and "2.46" not in MEM_PROXY["HBM4"]

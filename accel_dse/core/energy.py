@@ -701,7 +701,7 @@ for _pid, _f in PRESET_ONCHIP.items():
 
 # 0.302: per-generation DRAM energy and LPDDR background power (tpuv4i_7nm, the preset that carries per-kind DRAM).
 # HBM4: Samsung (HBM4 product page / newsroom 2026-02, 1c DRAM + 4 nm base die) and SK hynix (newsroom 2025-09) both
-#   state ≈ 40 % better power efficiency than HBM3E → 3.44 / 1.4 = 2.46 pJ/bit 「推导」 (vendor claim; HBM4E uses it).
+#   state ≈ 40 % better power efficiency than HBM3E → 5.80 / 1.4 = 4.14 pJ/bit 「推导」 (vendor claim; HBM4E uses it; 0.333).
 # LPDDR6: Kim et al. (Samsung), 'A 16Gb 12.8Gb/s LPDDR6 SDRAM …', ISSCC 2026 pp. 268–270 (doi 10.1109/ISSCC49663.
 #   2026.11409018): '21.0 % better energy efficiency than LPDDR5x' → 4.0 / 1.21 = 3.31 pJ/bit 「推导」.
 # LPDDR background: Micron Y52Q LPDDR5X data sheet (315b/441b/561b, Rev. G 05/2025), Table 16 per x16 channel of a

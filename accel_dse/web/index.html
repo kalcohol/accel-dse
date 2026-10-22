@@ -421,9 +421,9 @@
       <label title="每个向量元素操作（范数、softmax、激活、反量化）的能耗，pJ">pJ / 向量操作<input type="number" id="e-pJ_vec" min="0" step="0.1"></label>
       <label title="经 SRAM ↔ 数据通路端口每 bit 的能耗，pJ">pJ / bit SRAM<input type="number" id="e-pJ_bit_sram" min="0" step="0.05"></label>
       <label title="外部存储读写每 bit 的能耗（含接口），pJ">pJ / bit DRAM<input type="number" id="e-pJ_bit_dram" min="0" step="0.5"></label>
-      <label title="0.186：HBM 时用此值（不填 = 上面的通用 DRAM 值）">pJ / bit DRAM·HBM<input type="number" id="e-pJ_bit_dram_hbm" min="0" step="0.1"></label>
+      <label title="0.186 / 0.333：HBM 时用此值（不填 = 上面的通用 DRAM 值）。预设 5.80 = H200 HBM3E (总−空闲)÷读带宽（arXiv 2610.14244）「推导」">pJ / bit DRAM·HBM<input type="number" id="e-pJ_bit_dram_hbm" min="0" step="0.1"></label>
       <label title="0.186：非 HBM（LPDDR 等）时用此值（不填 = 上面的通用 DRAM 值）">pJ / bit DRAM·LPDDR<input type="number" id="e-pJ_bit_dram_lpddr" min="0" step="0.5"></label>
-      <label title="0.302：HBM4 / HBM4E 时用此值（不填 = DRAM·HBM）。预设 2.46 = HBM3E 3.44 ÷ 1.4（Samsung / SK hynix：能效比 HBM3E 高约 40 %，厂商口径）「推导」">pJ / bit DRAM·HBM4<input type="number" id="e-pJ_bit_dram_hbm4" min="0" step="0.1"></label>
+      <label title="0.302 / 0.333：HBM4 / HBM4E 时用此值（不填 = DRAM·HBM）。预设 4.14 = HBM3E 5.80（H200 实测动态）÷ 1.4（Samsung / SK hynix：能效比 HBM3E 高约 40 %，厂商口径）「推导」">pJ / bit DRAM·HBM4<input type="number" id="e-pJ_bit_dram_hbm4" min="0" step="0.1"></label>
       <label title="0.302：LPDDR6 时用此值（不填 = DRAM·LPDDR）。预设 3.31 = LPDDR5X 4.0 ÷ 1.21（Samsung ISSCC 2026 LPDDR6：能效比 LPDDR5X 高 21.0 %）「推导」">pJ / bit DRAM·LPDDR6<input type="number" id="e-pJ_bit_dram_lpddr6" min="0" step="0.1"></label>
       <label title="0.188：芯片侧 DRAM PHY（HBM）每 bit，单列 dram_phy">pJ / bit PHY·HBM<input type="number" id="e-pJ_bit_phy_hbm" min="0" step="0.05"></label>
       <label title="0.188：芯片侧 DRAM PHY（LPDDR）每 bit，单列 dram_phy">pJ / bit PHY·LPDDR<input type="number" id="e-pJ_bit_phy_lpddr" min="0" step="0.05"></label>

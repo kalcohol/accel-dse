@@ -6,6 +6,23 @@
 
 
 
+## [0.334.0]
+
+### Adversarial review of 0.333 HBM energy + package idle floor (MODEL §279)
+- **No double-count (confirmed).** At the measured H200 streaming bandwidth, `hbm_static_W` (idle) + `pJ_bit_dram_hbm` × bits ≈ measured total within ~3 % — by construction of the idle / active split. Host PHY stays a separate line. Activation is inside the 5.80 pJ/bit term; there is no second activation charge.
+- **Hot leakage used the wrong power (fixed).** 0.333 excluded only clocked `standby_W` from `pkg_W_hot`, so refresh (off-die, ~3 W on 8 × HBM3E) still rode the die-temperature factor `_hot_k()`. Floor offset correctly kept refresh (it overlaps the idle-floor measurement). One knob cannot serve both.
+  - New `powercap.hbm_device_static_W` = full HBM device static (standby + refresh).
+  - `package_power(..., device_static_W)` / `thermal_report(..., device_static_W)`: hot excludes `device_static_W`; floor still excludes only `standby_W`.
+  - Plumbed through api + energy DSE rows. Cap / TCO `pkg_W` unchanged (hot is a margin flag only).
+  - Example: 8 × HBM3E prefill, `pkg_W_hot` 874.5 → 866.7 W (−7.8 W); `pkg_W` identical.
+- **Stale HBM4 2.46 labels (fixed).** Preset value has been 4.14 since 0.333; `MEM_PROXY["HBM4"]`, the energy.py 0.302 comment, and the web HBM / HBM4 field tooltips still said 2.46 / 3.44. Updated to 5.80 / 4.14. Not a styling change.
+- **HBM4 ÷ 1.4 source reconfirmed.** Samsung HBM4 product page / 2026 shipping news and SK hynix (~40 % / 40%+a) still give only the relative claim — no public absolute pJ/bit. Keep ÷ 1.4; paper's 0.94–1.00× stays a sensitivity.
+- **TCO / J/token deltas are mechanical (confirmed).** Overriding only `pJ_bit_dram_hbm` to 3.44 moves J by the DRAM share; standby lands in `hbm_static` / package idle. No fitting.
+- **Highest-value remaining sourced item: skipped.** No new public absolute HBM4 (or other pending) number found beyond the vendor ratio already used.
+- **Freshness:** same 6 rows as 0.333. OrcaCyber Nano retry: sha `1af1635` unchanged, gated auto, config 401, public siblings = drafter/mix GGUF only → still pending.
+- **UI patch not applied.**
+
+
 ## [0.333.0]
 
 ### HBM energy reconciliation against Olgun et al., arXiv 2610.14244 (MICRO 2026) — MODEL §278

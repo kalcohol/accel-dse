@@ -105,14 +105,17 @@ def _hot_k() -> float:
 
 
 def package_power(card_W: float | None, die_mm2: float | None, dies: int = 1, static_W: float = 0.0,
-                  idle_W: float | None = None, standby_W: float = 0.0) -> dict:
+                  idle_W: float | None = None, standby_W: float = 0.0,
+                  device_static_W: float | None = None) -> dict:
     """0.315: complete package (module-input) power from the modelled card W (energy_report scope, see module doc).
     ``static_W`` = static already in card_W (powercap.static_W: idle + SRAM / NoC leakage + HBM standby);
     ``idle_W`` = the table's idle figure when one is charged (board-level: no floor, no second VR loss).
-    0.333 ``standby_W`` = the part of static_W that is clocked HBM standby (powercap.hbm_standby_W): it neither offsets
-    the idle floor (measured at idle clocks: HBM in self-refresh — refresh, SRAM / NoC leakage do overlap) nor scales
-    with die temperature.  ≤ 0.332 it did both; at 48 mW/die it was small, at the H200-measured 377 mW/channel the
-    floor (∝ die area) vanished whenever the stacks out-idled the die."""
+    0.333 ``standby_W`` = clocked HBM standby (powercap.hbm_standby_W): it does not offset the idle floor (measured at
+    idle clocks with HBM in self-refresh — refresh and SRAM / NoC leakage do overlap).  ≤ 0.332 it did; at 48 mW/die
+    the overlap was small, at the H200-measured 377 mW/channel the floor vanished whenever the stacks out-idled the die.
+    0.334 ``device_static_W`` = full off-die HBM device static (standby + refresh, powercap.hbm_device_static_W) excluded
+    from the die-temperature hot bound; default = standby_W (0.333 behaviour).  Refresh is beside the die, so it must
+    not ride the die leakage temperature factor — 0.333 left it in by using one knob for both floor and hot."""
     out = {"card_W": card_W, "vr_eff": VR_EFF, "static_floor_W_mm2": STATIC_FLOOR_W_MM2, "static_add_W": 0.0,
            "vr_loss_W": 0.0, "pkg_W": card_W, "pkg_W_hot": card_W, "static_basis": "none"}
     if card_W is None:
@@ -129,9 +132,11 @@ def package_power(card_W: float | None, die_mm2: float | None, dies: int = 1, st
     deliv = card_W + add
     vr = max(0.0, deliv - board) * (1.0 / VR_EFF - 1.0)
     stat = static_W + add                                                   # all static, delivered side
-    hot = stat - (standby_W or 0.0)                                         # 0.333: die-temperature static only
+    excl = (standby_W or 0.0) if device_static_W is None else (device_static_W or 0.0)   # 0.334: off-die out of hot
+    hot = stat - excl                                                       # die-temperature static only
     out.update(static_add_W=add, delivered_W=deliv, vr_loss_W=vr, pkg_W=deliv + vr, static_W=stat,
-               standby_W=standby_W or 0.0, pkg_W_hot=deliv + vr + hot * (_hot_k() - 1.0) / VR_EFF)
+               standby_W=standby_W or 0.0, device_static_W=excl,
+               pkg_W_hot=deliv + vr + hot * (_hot_k() - 1.0) / VR_EFF)
     return out
 
 
@@ -173,7 +178,8 @@ def card_W_for_cap(pk, cap_W: float, static_W: float = 0.0, idle_W: float | None
 
 def thermal_report(pkg_W: float | None, die_mm2: float | None, dies: int = 1, dram_dev_W: float = 0.0,
                    cooling: str | None = None, static_W: float = 0.0, idle_W: float | None = None,
-                   basis: str = "model", card_area_mm2: float | None = None, standby_W: float = 0.0) -> dict:
+                   basis: str = "model", card_area_mm2: float | None = None, standby_W: float = 0.0,
+                   device_static_W: float | None = None) -> dict:
     """Package power and heat flux vs a cooling preset.  ``cooling`` None = report only (``feasible`` None, status
     "unchecked"); a preset name = judged (``feasible`` False when the package power is over, or the flux is over both
     the shipped card-level limit and the HIR die-heat limit).
@@ -184,7 +190,7 @@ def thermal_report(pkg_W: float | None, die_mm2: float | None, dies: int = 1, dr
     if basis not in ("model", "package"):
         raise ValueError("basis must be 'model' or 'package'")
     if basis == "model":
-        pp = package_power(pkg_W, die_mm2, dies, static_W, idle_W, standby_W)
+        pp = package_power(pkg_W, die_mm2, dies, static_W, idle_W, standby_W, device_static_W)
     else:
         pp = {"card_W": None, "pkg_W": pkg_W, "pkg_W_hot": pkg_W, "vr_loss_W": None, "static_add_W": 0.0,
               "static_basis": "package", "delivered_W": None}

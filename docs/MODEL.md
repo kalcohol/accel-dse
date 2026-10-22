@@ -9911,3 +9911,30 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 - Temperature dependence (paper: +6.7 mA/°C).
 - SC25 NERSC GH200 "HBM datapath 2.99 + control 8.69 pJ/bit" is GPU-level and not decomposable into this model's scope; it is a cross-check only.
 - Carried: PixText routing mask; PCIe / CXL controller area; HBM controller at N7 / N28 and controller power; SPHBM4 PHY area; near-memory compute; OrcaCyber Nano 1.0 (0.333 retry: sha 1af1635 unchanged, config 401).
+
+## §279 Adversarial review of the 0.333 HBM energy change (0.334)
+
+### §279.1 Double-count check
+- Idle term = measured H200 idle (NOP + refresh) → `mW_hbm_ch_standby` + refresh.
+- Dynamic term = measured (total − idle) / BW → `pJ_bit_dram_hbm` 5.80.
+- At the measured streaming bandwidth, idle_W + 5.80 pJ/bit × bits ≈ measured total (within ~3 % across the three units). So standby is not inside the per-bit term, and the per-bit term is not inside standby.
+- Host PHY (`pJ_bit_phy_hbm` 0.29) stays separate; the paper's nvidia-smi rail is treated as device-side 「假设」.
+- No separate activation charge: Ayna's ACT share is already in the 5.80.
+
+### §279.2 Package floor vs hot leakage (0.333 bug → 0.334 fix)
+- Floor measurement (H100 / MI300X idle) includes HBM self-refresh. Refresh and on-die leakage overlap it; **clocked** standby does not → `standby_W` out of the floor offset (0.333, kept).
+- Hot bound scales static with die temperature (`_hot_k`). DRAM-device power sits beside the die. 0.333 removed only clocked standby from hot, leaving refresh in — wrong.
+- 0.334: `device_static_W` = standby + refresh (`hbm_device_static_W`) out of hot; floor still uses clocked `standby_W` only. Two knobs, two mechanisms.
+- `pkg_W` (cap / TCO) unchanged; only `pkg_W_hot` / `hot_ok` move (≈ −8 W on 8 × HBM3E).
+
+### §279.3 HBM4 ÷ 1.4
+- Still Samsung / SK hynix vendor "≈ 40 % better than HBM3E" only. No public absolute pJ/bit in 2026 shipping / product pages. Ratio kept; Olgun voltage-only 0.94–1.00× remains a sensitivity in the source text.
+- Stale UI / MEM_PROXY / comment strings that still said 2.46 were updated to 4.14.
+
+### §279.4 TCO / J mechanics
+- J/token moves with DRAM bytes × ΔpJ and with the static energy over the window. $/M follows package power and throughput. No coefficient was fitted to the paper's all-in 6.86.
+
+### §279.5 Not modelled / pending (carried)
+- Activation / row-locality term; standby data-rate scaling; write per-bit; LPDDR all-in vs HBM device scope; nvidia-smi rail scope; HBM4 measured absolute; temperature (+6.7 mA/°C).
+- PixText routing mask; PCIe / CXL area; N7 / N28 controller; controller power; SPHBM4 PHY; near-memory compute.
+- OrcaCyber Nano 1.0 (0.334 retry: sha 1af1635, gated auto, config 401, public GGUF = drafter/mix only).
