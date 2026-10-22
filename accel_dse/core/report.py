@@ -298,21 +298,39 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
         if lim and th.get("pkg_W"):
             margins.append(("封装功耗", 1 - th["pkg_W"] / lim))
     flim = (COOLING.get(cool) or {}).get("flux_W_mm2") if cool else None
+    plim = (COOLING.get(cool) or {}).get("pkg_W") if cool else None
     if flim and th.get("flux_W_mm2") and th.get("flux_ratio"):
         # 0.331: the margin in the limit's own unit and as power headroom (limit / flux − 1 at fixed area) 「推导」
         it += [item("flux_margin_W_mm2", "热流余量（上限 − 热流）", flim - th["flux_W_mm2"], "W/mm²", tag="推导",
                     src="冷却上限 − 封装热流"),
                item("flux_headroom", "功耗可增幅（热流达上限，面积不变）", 1 / th["flux_ratio"] - 1, tag="推导",
                     src="1 / (热流 / 上限) − 1")]
+    if plim and th.get("pkg_W"):
+        # 0.349: package-power margin / headroom parallel to flux (same COOLING.pkg_W 「来源」; never retune)
+        pr = th["pkg_W"] / plim
+        it += [item("pkg_margin_W", "封装功耗余量（上限 − 封装功耗）", plim - th["pkg_W"], "W", tag="推导",
+                    src="冷却上限 − package_power"),
+               item("pkg_headroom", "功耗可增幅（封装达上限）", 1 / pr - 1 if pr else None, tag="推导",
+                    src="1 / (封装功耗 / 上限) − 1")]
+        fr = th.get("flux_ratio")
+        if fr is not None:
+            # tighter of flux vs package (higher ratio binds) 「推导」 — guides area vs power trades
+            it.append(item("thermal_binding", "热约束紧侧", "热流" if fr >= pr else "封装功耗", tag="推导",
+                           src="max(热流/上限, 封装功耗/上限)"))
     sec_th = _sec("thermal", "热 / 功耗", it, th.get("status"))
-    ft = _front_thermal(r, rows, cool, flim, cs, tie) if flim else None
+    ft = _front_thermal(r, rows, cool, flim, plim, cs, tie) if (flim or plim) else None
     if ft:
         sec_th["front_thermal"] = ft
         for p_ in ft["points"]:
-            if p_["within_tie"]:
+            if p_["within_tie"] and p_.get("flux_W_mm2") is not None and flim:
                 warn.append({"kind": "front_thermal", "text": f"前沿点第 {p_['row']} 行（{p_['design']}）热流 "
                              f"{p_['flux_W_mm2']:.4f} vs {cool} 上限 {flim:g} W/mm²：余量 {p_['margin_W_mm2']:.4f} W/mm²"
                              f"（{p_['margin']:.2%}）≤ 持平阈 {tie:.0%}——功耗 +{p_['headroom']:.2%} 即不可行、离开前沿"
+                             "（上限不调，只报告）"})
+            if p_.get("pkg_within_tie") and p_.get("pkg_W") is not None and plim:
+                warn.append({"kind": "front_pkg", "text": f"前沿点第 {p_['row']} 行（{p_['design']}）封装功耗 "
+                             f"{p_['pkg_W']:.1f} W vs {cool} 上限 {plim:g} W：余量 {p_['pkg_margin_W']:.1f} W"
+                             f"（{p_['pkg_margin']:.2%}）≤ 持平阈 {tie:.0%}——功耗 +{p_['pkg_headroom']:.2%} 即不可行、离开前沿"
                              "（上限不调，只报告）"})
     secs.append(sec_th)
 
@@ -439,26 +457,39 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
             "rules": "每个数带标签（来源 / 二手 / 推导 / 假设 / 近似 / 用户输入）与出处；缺的输入列为缺项，不补 0、不借用默认"}
 
 
-def _front_thermal(r: dict, rows: list, cool: str, flim: float, src: str | None, tie: float) -> dict | None:
-    """0.331: thermal sensitivity of the perf/W front (insight_dse ``front``): per front point its package flux, the
-    cooling limit, the margin (W/mm² and 1 − flux / limit) and the power headroom to the limit at fixed area; points
-    within the DSE tie are the fragile ones (a small power / area change moves them off the front).  The limit is
-    reported, never retuned."""
+def _front_thermal(r: dict, rows: list, cool: str, flim: float | None, plim: float | None,
+                   src: str | None, tie: float) -> dict | None:
+    """0.331 / 0.349: thermal sensitivity of the perf/W front (insight_dse ``front``).
+    Per front point: flux margin (W/mm², 1 − flux/limit, headroom) and — when the cooling preset has pkg_W —
+    package-power margin (W, 1 − pkg/limit, headroom).  Points within the DSE tie on either axis are fragile.
+    Limits come from COOLING 「来源」 and are never retuned."""
     pts = []
     for j in r.get("front") or []:
         y = rows[j]
         t = y.get("thermal") or {}
         f, q = t.get("flux_W_mm2"), t.get("flux_ratio")
-        if not f or not q:
+        pw = t.get("pkg_W")
+        if not ((flim and f and q) or (plim and pw)):
             continue
-        m = 1 - q
-        pts.append({"row": j, "design": _desc(y), "flux_W_mm2": f, "limit_W_mm2": flim, "margin_W_mm2": flim - f,
-                    "margin": m, "headroom": 1 / q - 1, "within_tie": m <= tie, "feasible": bool(y.get("feasible"))})
+        m = (1 - q) if q else None
+        pr = (pw / plim) if (plim and pw) else None
+        pm = (1 - pr) if pr is not None else None
+        flux_tie = bool(m is not None and m <= tie)
+        pkg_tie = bool(pm is not None and pm <= tie)
+        pts.append({
+            "row": j, "design": _desc(y), "feasible": bool(y.get("feasible")),
+            "flux_W_mm2": f, "limit_W_mm2": flim, "margin_W_mm2": (flim - f) if (flim and f) else None,
+            "margin": m, "headroom": (1 / q - 1) if q else None, "within_tie": flux_tie,
+            "pkg_W": pw, "limit_pkg_W": plim, "pkg_margin_W": (plim - pw) if (plim and pw) else None,
+            "pkg_margin": pm, "pkg_headroom": (1 / pr - 1) if pr else None, "pkg_within_tie": pkg_tie,
+            "any_within_tie": flux_tie or pkg_tie,
+        })
     if not pts:
         return None
-    return {"cooling": cool, "limit_W_mm2": flim, "src": src or "", "tie": tie, "points": pts,
+    return {"cooling": cool, "limit_W_mm2": flim, "limit_pkg_W": plim, "src": src or "", "tie": tie, "points": pts,
             "n_within_tie": sum(1 for p in pts if p["within_tie"]),
-            "label": "前沿热敏感性：余量 = 1 − 热流 / 上限「推导」；上限按冷却预设出处，不调"}
+            "n_pkg_within_tie": sum(1 for p in pts if p["pkg_within_tie"]),
+            "label": "前沿热敏感性：热流余量 = 1 − 热流/上限；封装余量 = 1 − 封装功耗/上限「推导」；上限按冷却预设出处，不调"}
 
 
 def _fmt(v) -> str:
@@ -504,13 +535,22 @@ def to_markdown(rep: dict) -> str:
             L += ["", f"联合角点（所有适用输入同时取不利 / 有利端）：不利 {c['adverse']['d']:+.1%}，有利 {c['favourable']['d']:+.1%}"]
             if sn["skipped"]:
                 L.append("未变动：" + "；".join(sn["skipped"]))
-        if s.get("front_thermal"):          # 0.331
+        if s.get("front_thermal"):          # 0.331 / 0.349
             ft = s["front_thermal"]
-            L += ["", f"前沿热敏感性（{ft['cooling']} 上限 {ft['limit_W_mm2']:g} W/mm²，不调；余量 ≤ 持平阈 {ft['tie']:.0%} 的点标 ⚠）：", "",
-                  "| 前沿点 | 设计 | 热流 W/mm² | 余量 W/mm² | 余量 | 功耗可增 | |", "|---|---|---|---|---|---|---|"]
+            lim_s = (f"热流上限 {ft['limit_W_mm2']:g} W/mm²" if ft.get("limit_W_mm2") else "")
+            if ft.get("limit_pkg_W"):
+                lim_s = (lim_s + "；" if lim_s else "") + f"封装上限 {ft['limit_pkg_W']:g} W"
+            L += ["", f"前沿热敏感性（{ft['cooling']} {lim_s}，不调；余量 ≤ 持平阈 {ft['tie']:.0%} 的点标 ⚠）：", "",
+                  "| 前沿点 | 设计 | 热流 W/mm² | 热流余量 | 封装 W | 封装余量 W | 封装余量 | |",
+                  "|---|---|---|---|---|---|---|---|"]
             for p_ in ft["points"]:
-                L.append(f"| 第 {p_['row']} 行 | {_md_cell(p_['design'])} | {p_['flux_W_mm2']:.4f} | {p_['margin_W_mm2']:.4f} | "
-                         f"{p_['margin']:.2%} | {p_['headroom']:+.2%} | {'⚠' if p_['within_tie'] else ''} |")
+                fx = f"{p_['flux_W_mm2']:.4f}" if p_.get("flux_W_mm2") is not None else "—"
+                fxm = f"{p_['margin_W_mm2']:.4f}" if p_.get("margin_W_mm2") is not None else "—"
+                pw = f"{p_['pkg_W']:.1f}" if p_.get("pkg_W") is not None else "—"
+                pwm = f"{p_['pkg_margin_W']:.1f}" if p_.get("pkg_margin_W") is not None else "—"
+                pm = f"{p_['pkg_margin']:.2%}" if p_.get("pkg_margin") is not None else "—"
+                flag = "⚠" if p_.get("any_within_tie") else ""
+                L.append(f"| 第 {p_['row']} 行 | {_md_cell(p_['design'])} | {fx} | {fxm} | {pw} | {pwm} | {pm} | {flag} |")
         for n in s.get("notes") or []:
             L += ["", f"> {n}"]
         L.append("")

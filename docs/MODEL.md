@@ -10183,3 +10183,18 @@ Image/video ViT forward (storage only); Thinker→Talker projection traffic deta
 
 ### §293.3 Deferred
 - MOSS-TTS-Nano / Local; Thinker∥Talker sourced pipeline overlap; NPU absolute; visual UI restyle (§293 AGENTS wait).
+
+## §294 Adversarial sidecar_bytes; package-power margin in design report (0.349)
+
+### §294.1 Adversarial 「来源」/「推导」
+- Moshi `sidecar_bytes = stored_bytes` (depth bf16 + Mimi fp32); MOSS heads × 2. memplan / evaluate.fits / PP-head / TP-full per rank match; `params()` excludes sidecar.
+- Speech-card stacks (Qwen3-Omni etc.) stay off sidecar. DSE filters on `r.fits` — sidecar already in the gate.
+
+### §294.2 NPU absolute (empty this pass)
+- HBM4: Samsung / SK hynix still ≈40% vs HBM3E only; no public absolute pJ/bit. HBM4E “<1.95 pJ/bit” second-hand / other product — not adopted.
+- SPHBM4: JESD330-4 interface (512 DQ, 4:1); Eliyan UMI/NuLink marketing mm² ≠ JEDEC SPHBM4 host PHY.
+- PCIe/CXL N5 controller area; HBM controller power: vendor IP pages, no public mm² / pJ.
+
+### §294.3 Report mechanism 「推导」 from sourced COOLING
+- Parallel to flux (0.331): `pkg_margin_W`, `pkg_headroom`, `thermal_binding` (tighter of flux vs package).
+- Front points gain `pkg_*` fields; `front_pkg` near-tie when package margin ≤ DSE tie. Limits never retuned.

@@ -6,6 +6,21 @@
 
 
 
+## [0.349.0] — 2026-10-23
+
+### Adversarial sidecar_bytes (MODEL §294)
+
+- Moshi Mimi fp32 + depth bf16 and MOSS heads: `evaluate.fits` / memplan / PP-head / TP-full match `sidecar_bytes`; no `params()` double-count. Speech-card stacks stay off sidecar. DSE `fits` gate unchanged.
+
+### NPU absolute search (empty) → thermal margin clarity
+
+- Deep search again: HBM4 still vendor ≈40% only (no absolute pJ); SPHBM4 JEDEC interface only (Eliyan UMI/NuLink ≠ SPHBM4 PHY mm²); PCIe/CXL N5 controller area and HBM controller power still unpublished. **No invent.**
+- **Mechanism:** design report adds package-power margin / headroom (parallel to flux 0.331) from the same `COOLING.pkg_W` 「来源」, `thermal_binding` (tighter of flux vs package), and front-point `pkg_within_tie` warnings — limits never retuned.
+
+### Path / deferred
+
+- NPU absolutes still pending. MOSS-Nano/Local; Thinker∥Talker pipeline. **No visual UI restyle** (ui-audit: user has not approved).
+
 ## [0.348.0] — 2026-10-23
 
 ### Adversarial sidecar_params (MODEL §293)
