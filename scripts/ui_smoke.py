@@ -173,6 +173,23 @@ with sync_playwright() as pw:
     et = p.inner_text("#energy-tbl")
     assert "未门控 0.25" in et and "利用率" in et, et[-600:]
     print("CLOCK GATING ok")
+    # 0.344 adversarial of 0.343 functional UI
+    p.click("button[data-tab=insight]"); time.sleep(1)
+    row_cs = p.eval_on_selector(
+        "#tab-insight .row",
+        "e => ({d: getComputedStyle(e).display, w: getComputedStyle(e).flexWrap})")
+    assert row_cs["d"] == "flex" and row_cs["w"] == "wrap", row_cs
+    pad = p.eval_on_selector(
+        "#ins-size-tbl",
+        "e => { const s = e.closest('.scroll'); return s ? getComputedStyle(s).paddingBottom : null; }")
+    assert pad in ("0px", "0"), pad
+    p.select_option("#model", "wan2.1-1.3b"); time.sleep(3)
+    wk_gen = (p.inner_text("#wl-kind") or "").strip()
+    assert wk_gen, "wl-kind empty on gen"
+    p.select_option("#model", "qwen3-8b"); time.sleep(3)
+    wk_llm = (p.inner_text("#wl-kind") or "").strip()
+    assert not wk_llm, f"wl-kind lingered: {wk_llm[:120]}"
+    print("UI343 ok", row_cs, pad, wk_gen[:40])
     p.screenshot(path="/workspace/smoke/ui166.png", full_page=False)
     b.close()
 print("ERRORS:", errs)

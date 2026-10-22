@@ -316,6 +316,35 @@ def main(chrome="/usr/bin/google-chrome", budget=1800.0) -> int:
 
             # design insight: sizing (+ joint) and upgrade path
             p.click("button[data-tab=insight]")
+            # 0.344 adversarial of 0.343 functional UI (before sizing fills tables)
+            row_cs = p.eval_on_selector(
+                "#tab-insight .row",
+                "e => ({d: getComputedStyle(e).display, w: getComputedStyle(e).flexWrap})")
+            steps.append(("insight .row flex", row_cs.get("d"), row_cs.get("w")))
+            if row_cs.get("d") != "flex" or row_cs.get("w") != "wrap":
+                errs.append(f"insight .row: {row_cs}")
+            pad = p.eval_on_selector(
+                "#ins-size-tbl",
+                "e => { const s = e.closest('.scroll'); return s ? getComputedStyle(s).paddingBottom : null; }")
+            steps.append(("empty scroll pad", pad))
+            if pad not in ("0px", "0"):
+                errs.append(f"empty .scroll pad-bottom: {pad}")
+            m_wl = p.eval_on_selector("#model", "e => e.value")
+            if "wan2.1-1.3b" in opts("#model"):
+                act("wl-kind gen", lambda: p.select_option("#model", "wan2.1-1.3b"))
+                settle("wan2.1-1.3b")
+                wk_gen = (p.inner_text("#wl-kind") or "").strip()
+                act("wl-kind llm", lambda: p.select_option("#model", "qwen3-8b"))
+                settle("qwen3-8b after gen")
+                wk_llm = (p.inner_text("#wl-kind") or "").strip()
+                steps.append(("wl-kind clear", wk_gen[:40], repr(wk_llm)))
+                if not wk_gen:
+                    errs.append("wl-kind empty on gen (expected caption)")
+                if wk_llm:
+                    errs.append(f"wl-kind lingered on LLM: {wk_llm[:120]}")
+                if m_wl and m_wl in opts("#model"):
+                    p.select_option("#model", m_wl)
+                    settle("model restored pre-sizing")
             p.fill("#ins-models", "qwen3-8b")
             for joint in (False, True):
                 p.set_checked("#ins-size-joint", joint)

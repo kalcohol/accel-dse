@@ -10102,3 +10102,16 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 ### §288.3 Freshness / NPU
 - OrcaCyber Nano sha `1af1635` / pocket-tts sha `db04f0e`: still gated (config 401).
 - NPU: no new public numbers; skipped.
+
+## §289 Adversarial 0.343 UI; Qwen3-Omni gate; NPU skip (0.344)
+
+### §289.1 Adversarial 0.343 functional UI 「推导」
+- Headless + Playwright smoke: insight `.row` → `display:flex` / `flex-wrap:wrap`; empty `#ins-size-tbl` scroll `padding-bottom: 0`; gen (`wan2.1-1.3b`) fills `#wl-kind`, LLM (`qwen3-8b`) clears it. Unit: CSS / `paintDomain` else still present; no visual tokens (`--fs-kpi`, `--ctl-h`).
+
+### §289.2 Qwen3-Omni — still new arch 「来源」 HF config 2026-10-23
+- `Qwen/Qwen3-Omni-30B-A3B-Instruct` `model_type=qwen3_omni_moe`: thinker MoE (128 exp, top-8, h=2048, L48); talker MoE (128 exp, top-6, h=1024, L20, vocab 3072); nested `code_predictor` (5L, 16 code groups); **code2wav** ConvNet (8L, h=1024, upsample [8,5,4,3], sliding_window 72) ≠ Qwen2.5-Omni `token2wav` DiT+BigVGAN.
+- Gate: `omni_spec` / `qwen3_tts_spec` return None on a minimal public-dim stub; no catalog id. AGENTS §291 / §294: do not thin-wrap.
+
+### §289.3 NPU / freshness
+- NPU: no new absolute public numbers this pass (SPHBM4 JEDEC interface only; SemiAnalysis ~16% Rubin estimate and HBM-side Samsung PHY maps already covered by existing HBM4 `mm2_per_dq_hbm`).
+- OrcaCyber Nano sha `1af1635` / pocket-tts sha `db04f0e`: gated auto, config 401.

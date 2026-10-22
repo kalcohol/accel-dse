@@ -6,6 +6,19 @@
 
 
 
+## [0.344.0] — 2026-10-23
+
+### Changed
+- **Adversarial of 0.343 functional UI** in `ui_smoke` / `ui_headless_smoke` + `test_core_344`: insight `.row` computed `display:flex` / `flex-wrap:wrap`; empty `.scroll > table` `padding-bottom: 0`; `#wl-kind` caption present on gen, cleared on LLM. Visual restyle still **not** applied.
+
+### Pending / not applied
+- **Qwen3-Omni-30B-A3B** (`qwen3_omni_moe`): public config dims confirmed (thinker MoE 128-exp top-8 h=2048 L48; talker MoE 128-exp top-6 h=1024 L20; code_predictor 5L/16 groups; **code2wav** 8L/1024/upsample 8·5·4·3 — not token2wav DiT/BigVGAN). `omni_spec` / `qwen3_tts_spec` correctly return None; no catalog entry. Needs a new omni mode — do not thin-wrap.
+- **NPU:** still no shippable public absolute for PCIe/CXL controller mm², HBM controller at N7/N28, controller power, SPHBM4 host PHY (Samsung HC 2026 >8×4 mm already modelled for HBM4; blog %/HBM-side maps not used).
+- OrcaCyber Nano: sha `1af1635`, gated auto, config 401.
+- pocket-tts: sha `db04f0e`, gated auto, config 401.
+- ui-audit visual harmony — waiting on the user (AGENTS §293).
+- MOSS-TTS / Ming-3.0-audio-*.
+
 ## [0.343.0] — 2026-10-23
 
 ### Fixed
