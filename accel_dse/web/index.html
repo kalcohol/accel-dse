@@ -619,6 +619,9 @@
       <span class="small muted" id="ins-dse-status"></span>
       <button class="btn" id="ins-dse-report" type="button" title="0.320：设计结论报告——对所选设计（TCO 敏感性所选行，默认 $/M 最低行；未算 TCO 时 perf/W 最优行）汇总 SLO 下性能、能耗、岸线可建性、热 / 功耗、良率与每好封装成本、TCO 敏感性与联合角点、近似持平警告；每个数带标签与出处，缺的输入列为缺项。下载 Markdown + JSON">设计结论报告</button>
       <span class="small muted" id="ins-dse-report-status"></span>
+      <input id="ins-dse-cmp-rows" type="text" size="10" placeholder="如 3,0 或 3,0,1" title="0.321：对比的 DSE 行号（2 – 3 个，逗号分隔，第一个为基准 A）；留空 = 报告行 vs $/M 最便宜的其他设计">
+      <button class="btn" id="ins-dse-compare" type="button" title="0.321：设计对比报告——2 – 3 个设计并排：每项带标签与出处，相对 A 的差值，有方向指标标出更优者与近似持平（≤ 持平阈），$/M 结论在有出处区间与联合角点下是否翻转；缺项照列。下载 Markdown + JSON">设计对比报告</button>
+      <span class="small muted" id="ins-dse-compare-status"></span>
     </div>
     <div class="row" title="0.301：外存与 SLC 作为联合搜索轴（空 = 场景当前值）。DRAM 能耗按类别 pJ/bit + PHY（0.302：HBM4 / LPDDR6 用厂商 / ISSCC 能效比推导的 pJ/bit，PHY 仍借 HBM3 / LPDDR5X「近似」，结果注明）＋ DRAM 后台 / 刷新（HBM；0.302 起 LPDDR）；面积加 DRAM PHY（总线位宽 × 每 bit 面积）与 SLC 面积；HBM 堆栈数受晶粒岸线限制">
       <label title="外存类型（逗号分隔，如 HBM3E,HBM4,LPDDR5X,LPDDR6；空 = 当前外存）">外存<input type="text" id="ins-dse-mem" placeholder="当前" style="width:12em"></label>

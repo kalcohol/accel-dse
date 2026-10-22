@@ -25,7 +25,8 @@ from accel_dse.core import extspeech as XS
 res["speech"] = {}
 for v in ("default", "catalog"):
     t1, t2 = XS.table(v), XS.table(v, t2=True)
-    res["speech"][v] = {"summary": XS.summary(t1), "rows": t1, "rows_t2": t2}
+    res["speech"][v] = {"summary": XS.summary(t1), "rows": t1, "rows_t2": t2,
+                        "colocated": XS.colocated(v)}      # 0.321 same → second GPU speed-up by time-slice reading
 # 0.295: speculative-decoding diagnostic (core/extspec.py) — LFM2.5-24B-A2B FP8 + DSpark on one B300; not in the LLM summary
 from accel_dse.core import extspec as XP
 res["spec"] = {}

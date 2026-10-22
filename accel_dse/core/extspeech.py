@@ -5,7 +5,7 @@ published serving loop is reproduced from its sourced settings; nothing here is 
 
 Closed loop at concurrency c (every stream restarts as soon as it ends, steady state) 「推导」:
     one cycle of c requests = c prefills (prefill_decode_interval 4 keeps them out of decode rounds) + N decode steps
-    at batch c + the vocoder's work (same GPU, own process → time-shared, loads add 「假设」)
+    at batch c + the vocoder's work (same GPU, own process → time-sliced, loads add + 2 context switches per window 「来源」 0.321)
     frames/s = c·N / (c·p̄ + N·tpot(c) + c·vocoder_per_request)
     0.296 batched prefill: SGLang prefills every waiting request in ONE forward (PrefillAdder; --prefill-max-requests
     unset = no request cap 「来源」 sglang server_args docs; only max_prefill_tokens 16384 bounds it), so a request
@@ -87,7 +87,30 @@ def _scenario(variant: str, c: int):
     return X.scenario(r, variant, phase="decode", batch=c, ctx=512, prompt=TEXT_ROWS, audio_s=REF_S)
 
 
-def predict(variant: str, c: int, vocoder: str = "sglang", out_s: float = OUT_S, prefill: str = "batched") -> dict:
+# 0.321 colocated vocoder: two CUDA contexts time-sliced on one GPU 「来源」 sglang-omni @ 0029194
+# models/fishaudio_drama3/config.py (tts_engine in process "pipeline", vocoder in process "vocoder", both gpu=0) and
+# config/schema.py (mps default "off") — without MPS kernels of separate processes never run concurrently (NVIDIA
+# "Improving GPU Utilization in Kubernetes"; Gilman & Walls, Performance 2021, arXiv 2110.00459 §4.2).  Every vocoder
+# window while the engine is busy costs a switch in and a switch out: 145 µs between the last thread of slice n and
+# the first of slice n + 1 (Gilman & Walls §6, RTX 3090 / Ampere 「二手」; applied to H200 「近似」).  Slices are
+# fixed ≈ 2 ms and round-robin (same paper §4.2); whether a context that runs out of work keeps the rest of its slice
+# is not documented, so ``timeslice="slice"`` (each window held for a whole slice) is an UPPER BOUND, not a default.
+SWITCH_S = 145e-6
+SLICE_S = 2e-3
+TIMESLICE = ("switch", "slice", "none")
+
+
+def _window_s(s: float, timeslice: str) -> float:
+    """GPU seconds the shared GPU loses to one vocoder window of ``s`` seconds (vocoder on the engine's GPU)."""
+    if timeslice == "none":            # ≤ 0.320: loads add, no switch cost
+        return s
+    if timeslice == "slice":           # upper bound: the window holds a full slice
+        return max(s, SLICE_S) + 2 * SWITCH_S
+    return s + 2 * SWITCH_S
+
+
+def predict(variant: str, c: int, vocoder: str = "sglang", out_s: float = OUT_S, prefill: str = "batched",
+            timeslice: str = "switch") -> dict:
     from .catalog import get_model
     from .drama3 import CHUNK_RAMP
     from .hardware import System
@@ -104,6 +127,8 @@ def predict(variant: str, c: int, vocoder: str = "sglang", out_s: float = OUT_S,
         # still decode there (one at a time), so the first window and its queue stay in TTFA
         win = sglang_windows(N)
         ws = [_dac_window(fs, n, ctx, done, 1, sys, scn.mapping) for n, ctx, done in win]
+        if vocoder == "sglang":            # 0.321: same GPU → time-sliced contexts (module constants above)
+            ws = [_window_s(w, timeslice) for w in ws]
         voc_req = 0.0 if vocoder == "none" else sum(ws)
         voc_first, first_frames = ws[0], STRIDE
     else:
@@ -211,6 +236,18 @@ def summary(t: list[dict]) -> dict:
             "ttfa_gmean_ratio": round(math.exp(sum(math.log(x["ttfa_ratio"]) for x in t) / len(t)), 3)}
 
 
+def colocated(variant: str = "default") -> list[dict]:
+    """0.321: same → second GPU frames/s speed-up (Table 2, c 128 / 256), measured vs modelled under each time-slice
+    reading (``none`` = ≤ 0.320 loads add; ``switch`` = default, + 2 × 145 µs per window; ``slice`` = upper bound)."""
+    meas = {(r["concurrency"], r.get("vocoder_gpu")): r["value"] for r in rows() if r["metric"] == "frames_per_s_t2"}
+    out = []
+    for c in sorted({k[0] for k in meas}):
+        b = predict(variant, c, "none")["frames_per_s"]
+        out.append({"c": c, "meas": round(meas[(c, "second")] / meas[(c, "same")], 3),
+                    **{t: round(b / predict(variant, c, "sglang", timeslice=t)["frames_per_s"], 3) for t in TIMESLICE}})
+    return out
+
+
 def burst(variant: str, c: int, vocoder: str = "sglang") -> dict:
     """0.295 wave-1 TTFA of c synchronized arrivals (module docstring), seconds; ``vocoder`` "sglang" (same GPU) or
     "none" (second GPU).  Uses the batched prefill P(n) = speech_kpis(batch n).ttft_s, decode rounds tpot(R)."""
@@ -232,6 +269,8 @@ def burst(variant: str, c: int, vocoder: str = "sglang") -> dict:
                  scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
     s0 = _dac_window(fs, STRIDE, 0, 0, 1, sys, scn.mapping)
     same = vocoder == "sglang"
+    if same:                               # 0.321: time-sliced contexts (switch in / out per window)
+        s0 = _window_s(s0, "switch")
     st = {"t": 0.0, "R": 0, "voc_free": 0.0}
     pending, first = [], []
 

@@ -43,7 +43,9 @@ SCALE_RE = re.compile(r"(_(weight|input)_scale(_2)?$|\.weight_scale_inv$|\.scale
 # 0.282: learned parameters whose names end in "scale" but are not quantization scales — the manifold hyper-connection
 # mixing scales (DeepSeek-V4 / GLM-5.3 hc_attn_scale / hc_ffn_scale [3] per layer, hc_head_scale [1]; modeling code
 # nn.Parameter, counted by the templates) 「来源」.  ≤ 0.281 they were dropped as scales (V4-Flash −259 params etc.).
-NOT_SCALE_RE = re.compile(r"(^|\.)hc_(attn|ffn|head)_scale$")
+# 0.321: Dory lm_head.logit_scale [vocab] — nn.Parameter, logits × logit_scale / initializer_range (vLLM PR #60149
+# DoryForCausalLM.compute_logits) 「来源」; ≤ 0.320 dropped as a scale (−131,072 params)
+NOT_SCALE_RE = re.compile(r"((^|\.)hc_(attn|ffn|head)_scale|^lm_head\.logit_scale)$")
 ROLE = [
     ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.|^linear_proj\.)"),
     ("mtp", r"(^mtp\.|\.mtp\.|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),

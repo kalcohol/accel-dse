@@ -1,5 +1,5 @@
 {
- "bytes_llm": 7950196736,
+ "bytes_llm": 7950458880,
  "bytes_mtp": 0,
  "bytes_total": 7950458880,
  "config": {
@@ -117,7 +117,7 @@
  },
  "fetched": "2026-10-19",
  "n_tensors": 507,
- "params_llm": 3975098368,
+ "params_llm": 3975229440,
  "params_mtp": 0,
  "params_vision": 0,
  "quantization_config": null,
@@ -137,20 +137,14 @@
   },
   "lm_head": {
    "bf16": {
-    "bytes": 671088640,
-    "params": 335544320
+    "bytes": 671350784,
+    "params": 335675392
    }
   },
   "mlp": {
    "bf16": {
     "bytes": 3964833792,
     "params": 1982416896
-   }
-  },
-  "scale": {
-   "scale": {
-    "bytes": 262144,
-    "params": 0
    }
   }
  },

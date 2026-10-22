@@ -1692,6 +1692,25 @@ async function runDesignReport() {     // 0.320: design verdict report of the se
   download(base + '.json', JSON.stringify(rr.report, null, 1), 'application/json');
   st.textContent = `第 ${rr.row} 行：${rr.report.design} · 警告 ${rr.report.verdict.n_near_ties} 条 · 缺项 ${rr.report.missing.length} 项（已下载 .md / .json）`;
 }
+async function runDesignCompare() {    // 0.321: side-by-side design comparison (Markdown + JSON)
+  const st = $('ins-dse-compare-status');
+  if (!S.dseBody || !S.dseRes) { st.textContent = '先运行「搜索设计点」'; return; }
+  const raw = $('ins-dse-cmp-rows').value.trim();
+  const rows = raw ? raw.split(',').map((x) => x.trim()).filter((x) => x !== '').map(Number) : null;
+  if (rows && (rows.length < 2 || rows.length > 3 || rows.some((x) => !Number.isInteger(x) || x < 0))) {
+    st.textContent = '行号：2 – 3 个非负整数，逗号分隔'; return;
+  }
+  st.textContent = '生成中…';
+  let rr;
+  try {
+    rr = await track(req('report', '/api/report', { ...S.dseBody, ...(rows ? { report_rows: rows } : { report_compare: true }) }));
+  } catch (e) { st.textContent = '对比失败：' + e.message; return; }
+  if (!rr) { st.textContent = ''; return; }
+  const base = `accel-dse_design-compare_${String(S.dseRes.model || 'model').replace(/[^\w.\-]+/g, '_')}_rows${rr.rows.join('-')}`;
+  download(base + '.md', rr.markdown, 'text/markdown;charset=utf-8');
+  download(base + '.json', JSON.stringify(rr.compare, null, 1), 'application/json');
+  st.textContent = `行 ${rr.rows.join(' / ')}：不同 ${rr.compare.n_differ} 项 · 警告 ${rr.compare.near_ties.length} 条（已下载 .md / .json）`;
+}
 function download(name, text, type) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([text], { type }));
@@ -3177,6 +3196,7 @@ async function init() {
   $('ins-noc-run').addEventListener('click', runInsightNoc);   // 0.299
   $('ins-dse-run').addEventListener('click', runInsightDse);   // 0.300
   $('ins-dse-report').addEventListener('click', runDesignReport);   // 0.320
+  $('ins-dse-compare').addEventListener('click', runDesignCompare);   // 0.321
   $('ins-sp-run').addEventListener('click', runInsightSpeech);
   $('ins-sps-run').addEventListener('click', runInsightSpeechStreams);
   $('ins-dp-run').addEventListener('click', runInsightDispatch);

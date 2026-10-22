@@ -6,6 +6,56 @@
 
 
 
+## [0.321.0]
+
+### Parked item re-examined: colocated vocoder (Drama 3, vocoder on the engine's GPU)
+- **Mechanism, now sourced:** sglang-omni @ 0029194 runs the TTS engine (process "pipeline") and the vocoder (process "vocoder") as two OS processes on GPU 0 (`models/fishaudio_drama3/config.py`), with CUDA MPS off by default (`config/schema.py` `mps: "off"`).
+  - Without MPS, kernels of separate processes never run concurrently. The GPU time-slices between the contexts: NVIDIA "Improving GPU Utilization in Kubernetes"; Gilman & Walls, Performance 2021 (arXiv 2110.00459, §4.2).
+  - "Loads add" was 「假设」 up to 0.320; it is now 「来源」.
+- **New term:** each vocoder window, while the engine is busy, costs a context switch in and a switch out. The published gap between consecutive time slices is 145 µs (Gilman & Walls, measured on an RTX 3090, Ampere) 「二手」; it is applied to H200 as 「近似」.
+  - `extspeech.SWITCH_S`; `predict(timeslice="switch")` is the default.
+  - `timeslice="slice"` is an **upper bound**: each window holds a full ≈ 2 ms slice (same paper). Whether a context that runs out of work keeps the rest of its slice is not documented, so the bound is not a default.
+  - `timeslice="none"` reproduces 0.320.
+- **Same → second-GPU frames/s speed-up** (Table 2, ext default variant; `extspeech.colocated`, written by ext_validate):
+
+  | c | measured | 0.320 (loads add) | 0.321 switch | slice upper bound |
+  |---|---|---|---|---|
+  | 128 | 1.696 | 1.343 | 1.421 | 1.615 |
+  | 256 | 1.718 | 1.520 | 1.639 | 1.934 |
+
+  - At c = 256 the measurement lies inside the published band. At c = 128 it lies above even the upper bound (1.62 vs 1.70), so a residual beyond time-slicing remains. Candidates are DAC kernel efficiency on GPU and memory-transfer interference (Gilman & Walls O4); there is no public trace. Documented, not fitted.
+- **Rows old → new** (predicted / measured, default):
+  - Table 2 same-GPU: c128 1.765 → 1.668, c256 2.127 → 1.973; second-GPU rows unchanged.
+  - Table 1 gmean 1.376 → 1.352, c64 1.545 → 1.485, TTFA gmean 0.679 → 0.690.
+  - Catalog variant: gmean 2.355 → 2.297.
+- **Scope:** diagnostic only (`extspeech`). On an NPU the vocoder and the engine share one runtime and one context, so no time-slice term applies; the main speech model is unchanged.
+
+### Parked item re-examined: Dory `lm_head.logit_scale` (fixed)
+- 「来源」 vLLM PR #60149 `DoryForCausalLM`: `self.lm_head.logit_scale = nn.Parameter(torch.empty(vocab_size))`, and `compute_logits` returns `logits.float() * (logit_scale.float() / initializer_range)`. It is a learned per-vocab parameter plus one multiply per logit, not a quantisation scale.
+- `summarize_release.NOT_SCALE_RE` keeps `lm_head.logit_scale`. The three Dory releases were re-summarised from their headers (`fetched` kept): params_llm 3,975,098,368 → 3,975,229,440 (+131,072), and bytes_llm +262,144 (the old "scale" role moves into lm_head).
+- Template: `ModelSpec.logit_scale`. Dory: `io_misc_params` += vocab, and the sample vector op gets 4 instead of 3 ops per logit. Param checks stay exact (rel_err 0) for all three releases.
+- Effect: dory1.0-4b on H100-like decode tok/s −0.0001 % at b1, −0.002 % at b64.
+
+### Design comparison report (new)
+- `report.compare_report(r, body, rows)` puts 2 – 3 DSE rows side by side; the first is the baseline A.
+  - Each column is that design's own `design_report` item (value, tag, source, missing reason); nothing is recomputed.
+  - Items are aligned by key, with Δ vs A for numbers and equality for everything else (◆ marks a difference).
+  - Directed metrics (`DIRECTION`: $/M, perf/W, throughput, TPOT, J/unit, package W, flux, $/good package, …) get a winner, and a near tie when the gap to the runner-up is ≤ the DSE tie (1 %).
+  - An item missing in only some designs is flagged (`missing_in`); its cell carries the reason and is never 0.
+  - The same quantity with different evidence labels across designs (e.g. 推导 vs 假设) is flagged (`tag_differs`).
+  - Energy shares show the union of each design's top shares (the row's own computed share).
+- **$/M near ties** are mechanism checks: for each design vs A, the 0.320 pair check (one-at-a-time scans over the sourced ranges plus both joint corners). If a design is unpriced, the report says so instead of comparing.
+- **Headline:** $/M, perf/W, throughput, TPOT, J/unit, package W and $/good package. Warnings cover the headline metrics plus the pair checks; each design's own warnings and missing items are listed too.
+- **Exports:**
+  - API: `POST /api/report` with `report_rows: [i, j(, k)]`, or `report_compare: true` (the report row vs its cheapest rival). Returns `{rows, hash, compare, markdown}`.
+  - CLI: `scripts/design_report.py --compare 3,0[,1] | auto`.
+  - UI: row input + 设计对比报告 button (downloads .md + .json).
+- Example (`--example --compare 3,0,1`): A 32×128×128 $/M 0.008479; B +0.17 % and C +0.35 % (within the tie, A holds at both corners, no flips). Throughput and TPOT A ≈ B (0.01 %). The NoC / wire energy split differs most: wire share 0.091 vs 0.069, noc 0.048 vs 0.075.
+
+### Freshness (2026-10-22 JST)
+- 110 tracked orgs since 2026-10-21: nothing new. Raon-1-mini-preview-mlx and the Flint int4 / GGUF uploads are derivatives.
+- Newest HF uploads overall (text generation, VLM, TTS since 2026-10-22 00:00 JST) are community fine-tunes, quantisations and conversions.
+
 ## [0.320.0]
 
 ### Design verdict report (new): one design, everything the tool knows, labels attached

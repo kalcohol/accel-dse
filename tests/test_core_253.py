@@ -25,7 +25,7 @@ def _ev(mid, phase="decode", sv=None, **wl):
 def test_dory_structure_exact():
     for mid, fm in ((D, "bf16"), (D + "-mxfp8", "fp8"), (D + "-nvfp4", "nvfp4")):
         m = C.get_model(mid)
-        assert m.param_check()["rel_err"] == 0.0 and m.release_params == 3975098368
+        assert m.param_check()["rel_err"] == 0.0 and m.release_params == 3975229440   # 0.321: + lm_head.logit_scale (131,072); was 3975098368
         assert m.coverage == "full" and not m.coverage_reasons and m.act_fmt == "bf16"     # W8A16 / W4A16 weight-only
         assert dict(m.formats)["mlp"].fmt == fm and dict(m.formats)["attn"].fmt == fm
         assert m.loop_spec == (16, 40, 2, "per_loop") and len(m.loop_phys) == 72

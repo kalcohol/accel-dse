@@ -476,6 +476,7 @@ class ModelSpec:
     io_pre: tuple[Linear, ...] = ()          # input-side GEMMs on the first stage (patch / text / timestep embedders)
     io_post: tuple[Linear, ...] = ()         # output-side GEMMs on the last stage (un-patchify head, LM-head dense)
     io_misc_params: int = 0                  # io biases / unused stored tables (counted in storage, no GEMM)
+    logit_scale: bool = False                # 0.321 Dory: learned per-vocab logit scale (+vocab params, 1 multiply / logit)
     # 0.258: self-attention cores of io blocks (text refiners): ((name, rows, heads, head_dim, blocks), ...); rows "txt"
     # = the joint text rows of the forward — the refiner GEMMs are io_pre Linears, this adds their attention core
     io_attn: tuple = ()
@@ -2244,6 +2245,10 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             spec = replace(spec, mtp_layers=spec.mtp_layers[:n_eff], mtp_extra_params=extra)
         if (c.get("model_type") or "").startswith("qwen4_exp") or (c.get("model_type") or "") == "dory":
             spec = replace(spec, final_norm_params=0)       # 0.253 Dory: nGPT, final state justnorm (no weight)
+        if (c.get("model_type") or "") == "dory":
+            # 0.321: lm_head.logit_scale [vocab] is an nn.Parameter; logits.float() × (logit_scale / initializer_range)
+            # (vLLM PR #60149 DoryForCausalLM.compute_logits 「来源」) — ≤ 0.320 dropped as a quantisation scale
+            spec = replace(spec, io_misc_params=spec.io_misc_params + c["vocab_size"], logit_scale=True)
         if (c.get("model_type") or "") == "rwkv7":
             spec = replace(spec, final_norm_params=2 * h)      # ln_out LayerNorm (weight + bias)
         if (c.get("model_type") or "") == "whisper":

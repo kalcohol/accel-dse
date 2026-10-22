@@ -48,7 +48,9 @@ def test_gap_decomposition():
     assert dflt[0]["pred"] == dflt[0]["pred_serial"] and all(x["pred"] >= x["pred_serial"] for x in dflt)
     assert all(t2[(c, "second")]["ratio"] > 1.3 for c in (128, 256))
     assert 0.1 < dflt[-1]["shares"]["prefill"] < 0.25              # batched: prefill ≈ a sixth of the cycle at c = 64
-    assert t2[(128, "same")]["ratio"] > t2[(128, "second")]["ratio"] + 0.3
+    # 0.321: the time-sliced context-switch term (extspeech SWITCH_S) narrows the colocated residual 1.765 − 1.397 =
+    # 0.37 → 1.668 − 1.397 = 0.27; it stays open (the full-slice upper bound does not close c = 128, test_core_321)
+    assert t2[(128, "same")]["ratio"] > t2[(128, "second")]["ratio"] + 0.2
 
 
 def test_ext_validation_speech_fresh():

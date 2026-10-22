@@ -1490,7 +1490,8 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
     ops = [Op("final_norm", "vector", model.n_layers,
               vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
            gemm(model, "lm_head", model.n_layers, m, model.hidden, n, role, stream=True),
-           Op("sample", "vector", model.n_layers, vec=m * n * 3, sfu=m * n)]
+           # 0.321: + 1 multiply per logit for a learned logit scale (Dory)
+           Op("sample", "vector", model.n_layers, vec=m * n * (4 if model.logit_scale else 3), sfu=m * n)]
     if model.kv_cache:
         # 0.273 extra output heads of an autoregressive model (Kimi-Audio mimo_output: the audio-token head, sampled
         # every step next to the text head), vocab-parallel like the lm_head

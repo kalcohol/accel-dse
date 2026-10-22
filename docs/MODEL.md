@@ -7531,6 +7531,7 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
 ### §227.2 Hyper-connection scales
 - 「来源」 DeepSeek-V4 inference `model.py` / GLM-5.3 modeling: `hc_attn_scale`, `hc_ffn_scale` (shape [3]) and `hc_head_scale` ([1]) are `nn.Parameter`s of the mHC mixing (the templates' `hc_p` / `head_p` already include them). `summarize_release` dropped them as scales through `_scale$`; `NOT_SCALE_RE` keeps them. Release LLM params now equal the templates for V4-Flash (+259), V4-Pro (+367), V4.1-Flash (+240) and GLM-5.3-Flash (+270); MTP +7 / +7 / +18 / 0, still exact.
 - Dory `lm_head.logit_scale` [131,072] stays excluded: the template has no logit-scale term, so counting it would open a 3e-5 gap.
+  - 0.321 (§266.2): counted. It is an nn.Parameter applied to every logit (vLLM PR #60149), and the template now has the term (`ModelSpec.logit_scale`).
 
 ## §228 Per-op dispatch on components; speech op-dispatch sensitivity; colocated vocoder (0.283)
 
@@ -7575,6 +7576,7 @@ The b streams' windows are decoded in one forward (`per_step_batch` 「来源」
   - `stages.py` decodes `ChannelsLastDecoder(codec, dtype=float16)`.
   - Neither padding nor fp16 (cheaper than our fp32) closes the gap.
 - The measured split implies vocoder ≈ 0.70 × (prefill + decode) ≈ 20 ms per request against the modelled 6.4 ms. The remaining candidate is two-process time-slicing on one GPU without MPS, which needs a kernel trace. Not fitted; documented.
+- 0.321 (§266.1): the two-process / MPS-off layout is sourced. The switch cost (145 µs × 2 per window) is now in the default; c = 256 lies inside the published band, while c = 128 stays above the full-slice upper bound.
 
 ## §229 Dispatch default decision; per-op dispatch sensitivity beyond speech (0.284)
 
@@ -9332,4 +9334,29 @@ Each end carries its own tag; the table is in CHANGELOG [0.318.0].
   - misc per layer 2 · (17 · N·h + 21); `Layer(hc=4, hc_iters=1, hc_rows=17)`.
   - IR selector GEMM [N·h → 17] instead of (2+N)·N. The vector term uses one normalisation pass for the closed-form chart 「近似」.
 - Param check: 28,783,218,602 = release header (rel_err 0).
+
+## §266 Colocated vocoder time-slicing; Dory logit scale; design comparison (0.321)
+
+### §266.1 Colocated vocoder (extspeech, diagnostic)
+- 「来源」 sglang-omni @ 0029194: engine and vocoder are separate processes on gpu 0, and `mps` defaults to "off". Without MPS the contexts time-slice and never overlap (NVIDIA; Gilman & Walls 2021 §4.2).
+- Per vocoder window, while the engine is busy:
+
+      lost GPU time = s + 2·t_sw            (switch in + out; t_sw = 145 µs, Gilman & Walls §6, RTX 3090 「二手」 → H200 「近似」)
+      upper bound   = max(s, T_slice) + 2·t_sw   (T_slice ≈ 2 ms fixed, round-robin; holding a whole slice is not documented)
+
+  - s is the DAC window time at batch 1 (`speech._dac_window`), ≈ 0.65 – 1.9 ms; 5 windows per request.
+- Same → second-GPU speed-up, measured vs model:
+  - c128: 1.696 vs 1.343 → 1.421 (bound 1.615).
+  - c256: 1.718 vs 1.520 → 1.639 (bound 1.934).
+- Reading: time-slicing explains c = 256 within published numbers. at c = 128 the measured speed-up is 5 % above even the full-slice bound (1.696 vs 1.615), so another per-window cost exists (DAC kernel efficiency, transfer interference). It is not fitted.
+- For an accelerator: if the runtime cannot co-schedule two streams (one context, priority queues), each vocoder window costs at least a switch (≈ 0.3 ms per window here), and up to a whole slice. Streaming TTS with ≥ 5 windows per request should keep vocoder and engine in one context or give the vocoder its own engine.
+
+### §266.2 Dory logit scale
+- `logits.float() × (logit_scale / initializer_range)`: +vocab params (bf16, in lm_head bytes) and +1 op per logit in the sample vector op. Params exact for BF16 / MXFP8 / NVFP4 (3,975,229,440).
+
+### §266.3 Design comparison (`report.compare_report`)
+- Columns are `design_report` items, unmodified. Alignment is by item key. Δ = v / v_A − 1 (None if v_A is 0 or missing).
+- Winner only for directed metrics (`DIRECTION`). Near tie: |best − runner-up| / max ≤ tie (the DSE tie).
+- $/M: `_pair_check(A, X)` for each X (one-at-a-time scans over the sourced ranges plus both joint corners, §263 / §264). No pair check when any design is unpriced (reported as such).
+- Flags: `differs`, `missing_in`, `tag_differs` (same quantity, different evidence label).
 

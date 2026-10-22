@@ -426,3 +426,236 @@ def to_markdown(rep: dict) -> str:
     L += ["", "## 缺项", ""] + ([f"- {m['label']}：{m['reason']}" for m in rep["missing"]] or ["- 无"])
     L += ["", "## 口径", "", rep["rules"], "", rep.get("basis") or ""] + [f"- {n}" for n in rep["notes"]]
     return "\n".join(L) + "\n"
+
+
+# ---------------------------------------------------------------- 0.321 side-by-side comparison
+# Direction of a metric (key → +1 higher is better, −1 lower is better).  Only these get a winner / near-tie flag; every
+# other item is compared for equality only (a design input, a status, a preset value).
+DIRECTION = {"thr": 1, "perf_W": 1, "slo_margin": 1, "shore_margin": 1, "die_yield": 1, "asm_Y": 1, "dpw": 1,
+             "tpot_ms": -1, "ttft_ms": -1, "J_per_unit": -1, "W_card": -1, "static_W": -1, "pkg_W": -1, "die_W": -1,
+             "flux_W_mm2": -1, "flux_ratio": -1, "mm2": -1, "good_die_usd": -1, "si_usd": -1, "pkg_usd": -1,
+             "kgd_scrap_usd": -1, "usd_good_pkg": -1, "usd_per_Munit": -1, "capex_usd": -1, "mem_usd": -1,
+             "energy_usd_per_yr": -1, "kWh_per_yr": -1}
+HEADLINE = ("usd_per_Munit", "perf_W", "thr", "tpot_ms", "J_per_unit", "pkg_W", "usd_good_pkg")
+_LETTERS = "ABC"
+
+
+def _num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def compare_rows(r: dict, rows) -> list[int]:
+    """Validate 2 – 3 distinct row indices; ``None`` → the default report row and its cheapest other priced row (else
+    the next row on the perf/W front)."""
+    from .energy_dse import _tco_ok
+    n = len(r["rows"])
+    if rows is None:
+        i = _row_index(r, None)
+        pr = [j for j, y in enumerate(r["rows"]) if j != i and _tco_ok(y)] if r.get("tco") else []
+        if pr:
+            return [i, min(pr, key=lambda j: r["rows"][j]["tco"]["usd_per_Munit"])]
+        fr = [j for j in (r.get("front") or []) if j != i]
+        if not fr:
+            raise ValueError("no second design to compare (report_rows needed)")
+        return [i, fr[0]]
+    if not isinstance(rows, list) or not 2 <= len(rows) <= 3 or len(set(map(repr, rows))) != len(rows):
+        raise ValueError("report_rows must be a list of 2 or 3 distinct row indices")
+    for j in rows:
+        if isinstance(j, bool) or not isinstance(j, int) or not 0 <= j < n:
+            raise ValueError(f"report_rows entries must be integers in [0, {n})")
+    return list(rows)
+
+
+def _align(reps: list[dict], tie: float) -> list[dict]:
+    """Sections × items of every report, aligned by key (order of the first report, then any extra keys)."""
+    out = []
+    sids = []
+    for rp in reps:
+        for s in rp["sections"]:
+            if s["id"] not in sids:
+                sids.append(s["id"])
+    for sid in sids:
+        secs = [next((s for s in rp["sections"] if s["id"] == sid), None) for rp in reps]
+        keys, title = [], next(s["title"] for s in secs if s)
+        for s in secs:
+            for it in (s["items"] if s else []):
+                if it["key"] not in keys:
+                    keys.append(it["key"])
+        items = []
+        for k in keys:
+            cells = []
+            for s in secs:
+                it = next((x for x in (s["items"] if s else []) if x["key"] == k), None)
+                cells.append(it or {"key": k, "label": None, "value": None, "unit": "", "tag": None, "src": "",
+                                    "missing": "该设计的报告无此项"})
+            items.append(_diff(k, cells, tie))
+        out.append({"id": sid, "title": title, "status": [s.get("status") if s else None for s in secs], "items": items})
+    return out
+
+
+def _diff(k: str, cells: list[dict], tie: float) -> dict:
+    vals = [c["value"] for c in cells]
+    lab = next((c["label"] for c in cells if c["label"]), k)
+    unit = next((c["unit"] for c in cells if c["unit"]), "")
+    e = {"key": k, "label": lab, "unit": unit,
+         "cells": [{x: c.get(x) for x in ("value", "tag", "src", "missing")} for c in cells]}
+    miss = [i for i, v in enumerate(vals) if v is None]
+    if miss and len(miss) < len(vals):
+        e["missing_in"] = miss
+    tags = {c["tag"] for c in cells if c["value"] is not None}
+    if len(tags) > 1:
+        e["tag_differs"] = True          # same quantity, different evidence (e.g. 推导 vs 假设)
+    present = [(i, v) for i, v in enumerate(vals) if v is not None]
+    if all(_num(v) for _, v in present) and present:
+        v0 = vals[0]
+        e["delta"] = [None if (v is None or not _num(v0) or v0 == 0) else v / v0 - 1 for v in vals]
+        e["differs"] = len({round(float(v), 12) for _, v in present}) > 1 or bool(e.get("missing_in"))
+        d = DIRECTION.get(k)
+        if d and len(present) >= 2 and e["differs"]:
+            srt = sorted(present, key=lambda iv: -d * iv[1])
+            (bi, bv), (si, sv) = srt[0], srt[1]
+            gap = abs(bv - sv) / max(abs(bv), abs(sv)) if max(abs(bv), abs(sv)) else 0.0
+            e["best"] = bi
+            e["direction"] = "higher" if d > 0 else "lower"
+            if gap <= tie:
+                e["near_tie"] = {"between": sorted([bi, si]), "gap": gap}
+    else:
+        e["differs"] = len({repr(v) for v in vals}) > 1
+    return e
+
+
+def compare_report(r: dict, body: dict, rows=None) -> dict:
+    """Side-by-side report of 2 – 3 rows of insight_dse result ``r`` (first = baseline A): each design's full report
+    (labels and sources kept per cell), aligned items with Δ vs A, the winner of every directed metric, near ties
+    (directed metrics within the DSE tie; $/M pair checks over the sourced ranges + joint corners), missing items and
+    items whose evidence label differs between designs."""
+    from .. import __version__
+    from .energy_dse import _tco_ok
+    idx = compare_rows(r, rows)
+    reps = [design_report(r, body, i) for i in idx]
+    # each report lists its own top-4 energy shares; side by side every design shows the union (the row's own
+    # computed share — a share outside one design's top 4 is a value, not missing)
+    sk = []
+    for rp in reps:
+        for it in next(s for s in rp["sections"] if s["id"] == "energy")["items"]:
+            if it["key"].startswith("share_") and it["key"] not in sk:
+                sk.append(it["key"])
+    for rp, i in zip(reps, idx):
+        en = next(s for s in rp["sections"] if s["id"] == "energy")
+        have = {it["key"] for it in en["items"]}
+        sh = r["rows"][i].get("share") or {}
+        pos = max([n for n, it in enumerate(en["items"]) if it["key"].startswith("share_")], default=3) + 1
+        for k in sk:
+            if k not in have:
+                en["items"].insert(pos, item(k, f"能耗占比：{k[6:]}", sh.get(k[6:]), "", src="能耗分解",
+                                             missing="该设计的能耗分解无此项"))
+                pos += 1
+    tie = reps[0]["tie"]
+    secs = _align(reps, tie)
+    rows_ = r["rows"]
+    warn, checks = [], []
+    for s in secs:
+        for e in s["items"]:
+            # warnings for the headline metrics only (derived items — yearly kWh, die W — repeat them); $/M is the pair
+            # check's (it also tests robustness over the sourced ranges)
+            if e.get("near_tie") and e["key"] in HEADLINE and not (e["key"] == "usd_per_Munit" and r.get("tco")):
+                a, b = e["near_tie"]["between"]
+                warn.append({"kind": "metric", "key": e["key"],
+                             "text": f"{e['label']}：{_LETTERS[a]} 与 {_LETTERS[b]} 相差 {e['near_tie']['gap']:.2%}，在持平阈 {tie:.0%} 内"})
+            if e.get("tag_differs"):
+                warn.append({"kind": "evidence", "key": e["key"],
+                             "text": f"{e['label']}：各设计的证据标签不同（" + "，".join(
+                                 f"{_LETTERS[i]} {c['tag']}" for i, c in enumerate(e["cells"]) if c["value"] is not None) + "），比较时注意口径"})
+    base = None
+    if r.get("tco") and all(_tco_ok(rows_[i]) for i in idx):
+        try:
+            base = _base(r, body)
+        except (ValueError, KeyError):
+            base = None
+    if base is not None:
+        x0 = rows_[idx[0]]
+        for n, j in enumerate(idx[1:], 1):
+            c = _pair_check(x0, rows_[j], base, tie)
+            c.update({"a": 0, "b": n, "a_row": idx[0], "b_row": j})
+            checks.append(c)
+            who = {"this": "A", "rival": _LETTERS[n]}
+            if c["within_tie"]:
+                warn.append({"kind": "tco_pair", "text": f"$/M：{_LETTERS[n]} 比 A {c['d']:+.2%}，在持平阈 {tie:.0%} 内"})
+            for f in c["flips"]:
+                for th_ in f["thresholds"]:
+                    warn.append({"kind": "tco_pair", "text": f"$/M A vs {_LETTERS[n]}：基值下 {who[c['base']]} 更便宜；"
+                                 f"{f['label']} = {th_['at']:.4g} 时翻转（有出处区间内，一次只动一个）"})
+            for sd, v in c["corners"].items():
+                if v != c["base"]:
+                    warn.append({"kind": "tco_pair", "text": f"$/M A vs {_LETTERS[n]}：联合{'不利' if sd == 'adverse' else '有利'}"
+                                 f"角点下 {who[v]} 更便宜（基值 {who[c['base']]}）"})
+    elif r.get("tco"):
+        warn.append({"kind": "tco_pair", "text": "部分设计未定价（不可行 / 不可建 / 内存无价），$/M 稳健性未比"})
+    head = []
+    for k in HEADLINE:
+        e = next((x for s in secs for x in s["items"] if x["key"] == k), None)
+        if e is not None:
+            head.append({"key": k, "label": e["label"], "unit": e["unit"], "values": [c["value"] for c in e["cells"]],
+                         "best": e.get("best"), "near_tie": e.get("near_tie"), "delta": e.get("delta")})
+    n_diff = sum(1 for s in secs for e in s["items"] if e.get("differs"))
+    return {"report": "design_compare", "version": __version__, "hash": r.get("hash"), "rows": idx, "tie": tie,
+            "designs": [{"letter": _LETTERS[n], "row": rp["row"], "design": rp["design"], "verdict": rp["verdict"],
+                         "near_ties": rp["near_ties"], "missing": rp["missing"]} for n, rp in enumerate(reps)],
+            "headline": head, "sections": secs, "near_ties": warn, "pair_checks": checks, "n_differ": n_diff,
+            "unit": reps[0]["unit"], "basis": r.get("basis"),
+            "rules": reps[0]["rules"] + "；Δ 相对设计 A；有方向的指标标出更优者，差距 ≤ 持平阈记为近似持平"}
+
+
+def _cell_md(c: dict, delta, best: bool, tie: bool) -> str:
+    if c["value"] is None:
+        return _md_cell(f"缺：{c.get('missing') or '—'}")
+    s = _fmt(c["value"])
+    if delta is not None and abs(delta) > 1e-12:
+        s += f"（{delta:+.2%}）" if abs(delta) < 0.01 else f"（{delta:+.1%}）"
+    if best:
+        s = f"**{s}**" + (" ≈" if tie else " ✓")
+    return _md_cell(s)
+
+
+def compare_markdown(rep: dict) -> str:
+    D = rep["designs"]
+    L = ["# 设计对比报告 — " + " / ".join(f"{d['letter']} 第 {d['row']} 行" for d in D), "",
+         f"accel_dse {rep['version']} · hash {rep['hash']} · 持平阈 {rep['tie']:.0%} · Δ 相对 A · **粗体** = 该指标更优"
+         "（✓ 明确更优，≈ 与次优在持平阈内）· 不同的行标 ◆", ""]
+    L += ["## 设计", ""] + [f"- **{d['letter']}**（第 {d['row']} 行）：{_md_cell(d['design'])}；可建 {_fmt(d['verdict']['buildable'])}，"
+                            f"SLO { {'ok': '达标', 'fail': '不达标', None: '未设'}[d['verdict']['slo']] }，"
+                            f"$/M {_fmt(d['verdict']['usd_per_Munit'])}" for d in D]
+    L += ["", "## 关键指标", "", "| 指标 | 单位 | " + " | ".join(d["letter"] for d in D) + " |",
+          "|---|---|" + "---|" * len(D)]
+    for h in rep["headline"]:
+        L.append(f"| {h['label']} | {h['unit']} | " + " | ".join(
+            _cell_md({"value": v, "missing": "—"}, (h["delta"] or [None] * len(D))[i], h["best"] == i, bool(h["near_tie"]))
+            for i, v in enumerate(h["values"])) + " |")
+    L += ["", "## 近似持平 / 翻转警告", ""] + ([f"- {w['text']}" for w in rep["near_ties"]] or
+                                         ["- 无（有方向指标的差距均大于持平阈；$/M 结论在有出处区间与联合角点下不翻转）"])
+    if rep["pair_checks"]:
+        L += ["", "| 对比 | Δ$/M（对方 / A − 1） | 基值更便宜 | 翻转输入 | 不利角点 | 有利角点 |", "|---|---|---|---|---|---|"]
+        for c in rep["pair_checks"]:
+            b = _LETTERS[c["b"]]
+            w = {"this": "A", "rival": b}
+            L.append(f"| A vs {b} | {c['d']:+.2%} | {w[c['base']]} | {', '.join(f['label'] for f in c['flips']) or '无'} | "
+                     f"{w[c['corners']['adverse']]} | {w[c['corners']['favourable']]} |")
+    for s in rep["sections"]:
+        L += ["", f"## {s['title']}", "", "| | 项 | 单位 | " + " | ".join(d["letter"] for d in D) + " | 标签 | 出处 |",
+              "|---|---|---|" + "---|" * len(D) + "---|---|"]
+        for e in s["items"]:
+            dl = e.get("delta") or [None] * len(D)
+            cells = " | ".join(_cell_md(c, dl[i], e.get("best") == i, bool(e.get("near_tie"))) for i, c in enumerate(e["cells"]))
+            tg = {c["tag"] for c in e["cells"] if c["value"] is not None}
+            tag = (next(iter(tg)) if len(tg) == 1 else " / ".join(f"{D[i]['letter']}:{c['tag']}" for i, c in enumerate(e["cells"])
+                                                                if c["value"] is not None)) if tg else "—"
+            ss = [c["src"] for c in e["cells"] if c["src"]]
+            src = ss[0] if len(set(ss)) == 1 else " / ".join(f"{D[i]['letter']}:{c['src']}" for i, c in enumerate(e["cells"]) if c["src"])
+            L.append(f"| {'◆' if e.get('differs') else ''} | {_md_cell(e['label'])} | {_md_cell(e['unit'])} | {cells} | "
+                     f"{_md_cell(tag)} | {_md_cell(src)} |")
+    L += ["", "## 各设计自身的警告与缺项", ""]
+    for d in D:
+        L += [f"### {d['letter']}（第 {d['row']} 行）", ""] + ([f"- 警告：{w['text']}" for w in d["near_ties"]] or ["- 警告：无"]) \
+            + ([f"- 缺：{m['label']}：{m['reason']}" for m in d["missing"]] or ["- 缺项：无"]) + [""]
+    L += ["## 口径", "", rep["rules"], "", rep.get("basis") or ""]
+    return "\n".join(L) + "\n"

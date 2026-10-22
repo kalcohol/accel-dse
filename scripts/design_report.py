@@ -3,6 +3,8 @@
 
     python3 scripts/design_report.py --example                      # 1P qwen3-8b decode, mono vs 2 dies, CoWoS-S, accel TCO
     python3 scripts/design_report.py --body dse.json --row 3 --md r.md --json r.json
+    python3 scripts/design_report.py --example --compare 3,0          # 0.321: side by side (2 – 3 rows; A = first)
+    python3 scripts/design_report.py --example --compare auto         # the report row vs its cheapest rival
 
 The body is an insight_dse body (the UI's DSE request).  Without --row: the cheapest $/M row (TCO set), else the best
 perf/W row.  Markdown goes to stdout unless --md is given.  Every number carries its label and source; inputs the
@@ -29,18 +31,30 @@ def main(argv=None) -> int:
     g.add_argument("--body", help="insight_dse body (JSON file)")
     g.add_argument("--example", action="store_true", help="built-in example body")
     ap.add_argument("--row", type=int, default=None)
+    ap.add_argument("--compare", help="comparison: 2 – 3 comma-separated rows (first = baseline A) or 'auto'")
     ap.add_argument("--md", help="write Markdown here (default: stdout)")
     ap.add_argument("--json", help="write the JSON report here")
     a = ap.parse_args(argv)
     body = EXAMPLE if a.example else json.load(open(a.body, encoding="utf-8"))
+    if a.compare is not None and a.row is not None:
+        print("error: --row and --compare are exclusive", file=sys.stderr)
+        return 2
+    extra = {"report_row": a.row} if a.row is not None else {}
+    if a.compare is not None:
+        try:
+            extra = {"report_compare": True} if a.compare == "auto" else \
+                {"report_rows": [int(x) for x in a.compare.split(",") if x.strip()]}
+        except ValueError:
+            print("error: --compare takes comma-separated row indices or 'auto'", file=sys.stderr)
+            return 2
     try:
-        out = api.api_report({**body, **({"report_row": a.row} if a.row is not None else {})})
+        out = api.api_report({**body, **extra})
     except api.ApiError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
-            json.dump(out["report"], f, ensure_ascii=False, indent=1)
+            json.dump(out["compare"] if a.compare is not None else out["report"], f, ensure_ascii=False, indent=1)
     if a.md:
         with open(a.md, "w", encoding="utf-8") as f:
             f.write(out["markdown"])
