@@ -1044,6 +1044,11 @@ def api_eval(body: dict) -> dict:
         sh = out["shoreline"] = {**su, "die_src": "budget"}
     if sh.get("feasible") is False:
         out["summary"]["warnings"].append("不可建（岸线）：" + "；".join(sh["reasons"]))
+    if getattr(scn.chip, "hbm_base", "std") == "custom":       # 0.324: custom HBM base die — what it changed
+        from .core import hbm_base as _hb
+        from .core.budget import auto_area_budget as _aab
+        out["hbm_base"] = _hb.report(scn, bud if bud is not None else _aab())
+        out["summary"]["warnings"] += [n for n in out["hbm_base"]["notes"] if n.startswith("hbm_base=custom")]
     # 0.316: the TDP cap compares the package power (thermal.cap_power_fn → package_power, the function the thermal
     # check below uses) per card over the shoreline die; power_scope "card" = 0.315
     from .core.thermal import POWER_SCOPES, cap_power_fn

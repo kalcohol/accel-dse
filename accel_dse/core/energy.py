@@ -478,6 +478,11 @@ def phy_pJ(r, table: EnergyTable):
         return None, None
     f = "pJ_bit_phy_hbm" if h else "pJ_bit_phy_lpddr"
     v = getattr(table, f)
+    if v is not None and h:
+        from .. import mem_catalog
+        from .hbm_base import CUSTOM, custom_applies
+        if custom_applies(r.scenario.chip, mem_catalog.parse_mem_id(r.scenario.mem_id).mem_type):
+            v = v * CUSTOM["phy_pJ_factor"][0]        # 0.324: custom base die — narrow D2D instead of the HBM PHY
     return (f, v) if v is not None else (None, None)
 
 
@@ -853,6 +858,7 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False, 
     if pv is not None:
         j["dram_phy"] = per["dram"] * pv * 1e-12 * 8
         out["phy_pJ_field"] = pf
+        out["phy_pJ_per_bit"] = pv          # 0.324: the value used (× 0.55 with a custom HBM base die)
     if table.pJ_clk_mac_cycle is not None:      # 0.228: per-cycle dynamic (clock tree / always-clocked registers)
         # 0.229/0.265: ungated share g always; gated share tracks MAC util, or mean(mac,vec,sram_port) when
         # chip.clk_datapath_gate (closes §176 "vector/SRAM ports not gated separately")

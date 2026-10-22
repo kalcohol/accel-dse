@@ -53,6 +53,9 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
                         "[+ 'chip_preset']) — scenario flags are then ignored; energy / budget flags still apply")
     p.add_argument("--mem", default=None, help="memory id, e.g. lpddr5x_4x64_8533_16g / hbm3e_8s_12h24g_9200")
     p.add_argument("--mem-eff", type=float, default=None, help="DRAM efficiency 「假设」 (default 0.7)")
+    p.add_argument("--hbm-base", dest="hbm_base", choices=["std", "custom"], default=None,
+                   help="0.324: HBM4 / 4E base die — custom = controller on a logic base die + narrow D2D (host PHY area, "
+                        "PHY pJ/bit, memory $/GB change; MODEL §269)")
     p.add_argument("--mem-cap-gb", type=float, default=None, help="usable DRAM per card, GB (default: stack capacity)")
     p.add_argument("--kv-mem-frac", type=float, default=None, help="KV / state share of post-weight free memory (default 1)")
     p.add_argument("--kv-mem-eff", type=float, default=None, help="DRAM efficiency of KV-cache streams (opt-in; default = mem_eff)")
@@ -541,7 +544,8 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         sc["layout"] = {k: getattr(a, k) for k in ("pp", "tp", "dp", "ep", "etp", "sp")}
         if getattr(a, "cp", 1) > 1:     # 0.88 context parallel (omitted at 1: hash unchanged)
             sc["layout"]["cp"] = a.cp
-    chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy", "attn_fmt", "sram_port_Bpc_per_engine", "kernel_us", "dispatch", "dispatch_us")
+    chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy", "attn_fmt", "sram_port_Bpc_per_engine", "kernel_us", "dispatch", "dispatch_us",
+                                       "hbm_base")
             if getattr(a, k, None) is not None}
     if chip:
         sc["chip"] = chip

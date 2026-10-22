@@ -118,6 +118,10 @@ class Chip:
     # NIU → router one flit per cycle → DRAM ingress ≤ 2·⌊√E⌋ links × noc_link_Bpc (mesh / crossbar ports alike), ring:
     # two memory stops injecting both ways (4 links).  "none": DRAM ingress not limited by the NoC (≤ 0.304).
     noc_mem_attach: str = field(default="edge", metadata={"omit_default": True})
+    # 0.324: HBM base die (core/hbm_base.py): "std" = JEDEC HBM4 interface (2048-DQ PHY + controller on this die,
+    # ≤ 0.323); "custom" = a custom logic base die (controller on the base die, narrow D2D link): host PHY area,
+    # PHY pJ/bit and memory $/GB change — HBM4 / HBM4E only (MODEL §269)
+    hbm_base: str = field(default="std", metadata={"omit_default": True})
     # 0.307 (opt-in; only with noc_link_Bpc > 0, noc_routing "xy"): "link" = each engine's local (eject) port is one
     # link wide, so (a) a multicast's per-engine ingest (s − 1)/s · payload / g bounds the op like any link, and
     # (b) the DRAM stream shares that port (D / E per engine) and, on a ring, the links next to the two memory stops
@@ -284,6 +288,8 @@ class Chip:
             raise ValueError("chip.noc_clusters must be an integer in [1, 64]")
         if self.noc_eject not in NOC_EJECT:
             raise ValueError(f"chip.noc_eject must be one of {NOC_EJECT} (got {self.noc_eject!r})")
+        if self.hbm_base not in ("std", "custom"):
+            raise ValueError(f"chip.hbm_base must be 'std' or 'custom' (got {self.hbm_base!r})")
         if self.noc_mem_attach not in NOC_MEM_ATTACH:
             raise ValueError(f"chip.noc_mem_attach must be one of {NOC_MEM_ATTACH} (got {self.noc_mem_attach!r})")
         if self.noc_routing not in NOC_ROUTINGS:

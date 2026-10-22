@@ -9425,3 +9425,50 @@ Property tests (tests/test_core_323.py) draw seeded random designs and check eva
 - The result is bit-identical by construction. Tests check this two ways: the whole DSE JSON with the flag on and off, and `_gemm_cost` unmemoised at three clocks for 40 seeded shapes.
 - The layer IR (`build_rank_ops`) is likewise free of chip fields and was rebuilt at every clock. It is memoised for the duration of one `energy_design_search` (`ir.rank_memo()`), not globally, so a module flag toggled between runs is never served stale.
 - Measured, static build: a 216-point DSE with a binding 150 W budget went from 15.3 s cold / 13.2 s warm to 6.9 / 5.0 s (prefill: 15.4 / 11.4 → 9.9 / 5.2 s). What remains is the overlap feed simulation, whose op times depend on the clock. The 0.323 target was about 10 s, so no pruning of dominated or unbuildable points was added. Such pruning would also drop rows the UI can show (`include_unbuildable`).
+
+## §269 Custom HBM4 / HBM4E base die; exact reuse in the energy DSE (0.324)
+
+### §269.1 What a custom base die is
+From HBM4 on, the stack's base die is made on a logic process. SK hynix uses TSMC N12, Samsung SF4, Micron its own CMOS 「二手」. TSMC quotes N12 at 0.8 V against 1.1 V for the HBM3E base die. Custom HBM4E (C-HBM4E) and NVIDIA's NVHBM go to N3P / N3 at 0.75 V 「二手」.
+
+A *standard* base die still speaks the JEDEC interface: 2048 DQ to a PHY and a memory controller on the host. A *custom* base die takes the controller onto the memory and talks to the host over a narrow die-to-die link:
+- Samsung (Hot Chips 2026): an 8.5 × 1.5 mm block against > 8 × 4 mm; channel depth 5.5 → 2 mm.
+- Marvell: 512-bit D2D at 32 GT/s, interface power −45 … −70%.
+- JEDEC SPHBM4 (JESD330-4, 2026-06) is the standard cousin: 512 DQ, 4:1 serialization.
+
+`Chip.hbm_base` = "custom" selects it; "std" (default) is the ≤ 0.323 model. It applies only to HBM4 / HBM4E. On other memory it is ignored, with a warning in eval, a note in the area report and the row flag `hbm_custom` False.
+
+### §269.2 What changes, and what does not
+
+| quantity | std | custom | tag / source |
+|---|---|---|---|
+| host PHY area / stack | 2048 DQ × `mm2_per_dq_hbm` (n5_derived: 32 mm²) | 12.75 mm² | Samsung HC 2026 「二手」; host side = memory side 「推导」 |
+| memory controller | `mm2_per_unit_mc` × units (user field) | on the base die (term dropped) | Samsung HC 2026: controller 5–10% of XPU area 「二手」 |
+| host PHY pJ/bit | `pJ_bit_dram_phy` | × 0.55 (range 0.30 … 0.55) | Marvell / EE Times 「二手」, low end |
+| memory $/GB | sourced preset price | × 1.10 (range 1.05 … 1.10) | EE Times part 1 (speculation) 「二手/假设」, high end; base die 3–4× a core die (TrendForce) as context |
+| shoreline / stack | 11 mm | 11 mm | 「推导」: the stack footprint, ≥ the D2D width |
+| stack bandwidth | unchanged | unchanged | not a base-die property (NVHBM's +30% = faster spec) |
+
+The die-area change carries the existing uncore share of the final die (`budget.full_area`: uncore = u / (1 − u) of the rest). So 8 stacks remove 8 × 19.25 / (1 − 0.23) = 200 mm² on n5_derived.
+
+The shoreline consequence is indirect. The per-stack need is the same, but the host die is smaller, so its perimeter is shorter. On the 1P example (820 → 620 mm²) the status stays "tight". On the H100-like example (428 → 278 mm²) six stacks no longer fit: "tight" → "over". The custom die's area saving is bounded below by the shoreline the stacks need, and a real design would keep the edge and spend the area on compute.
+
+The thermal consequence is direct. The same die power on less area raises W/mm²: qwen3-8b prefill MAC×1 mono on air goes 0.81 → 1.04 W/mm², which is unbuildable. The DSE's TCO verdict then becomes only_split.
+
+Listed, not modelled: near-memory compute / offload (no published throughput or energy); base-die process energy (its share of the device pJ/bit is unpublished); Marvell's "+33% stacks" (no mechanism, the footprint is unchanged); the D2D hotspot (Samsung's Heat Path Block, −35% peak temperature).
+
+A user-entered memory price is taken as given: the premium applies only to the sourced default.
+
+### §269.3 The examples (std → custom)
+The eval figures and the energy-DSE study (`scripts/chiplet_example.py --hbm-base-study`) are tabulated in CHANGELOG [0.324.0]. The pattern:
+- Uncapped: throughput is unchanged, J/unit falls by the PHY share (−2.3% decode, −0.1% prefill), the package $ falls by 14%, the memory $ rises by 10%, and $/Mtok rises by about 3%. HBM dominates the bill of materials.
+- Under a binding power cap the PHY saving buys clock: HBM4E at 300 W gives +10.4% throughput and −6.0% $/Mtok. This is where a custom base die pays in this model.
+
+### §269.4 Exact reuse in the energy DSE
+A point at f_op < 1 whose power is over the cap is capped from f_max (the 0.302 operating-point rule). Its bisection is then exactly the bisection its f_op = 1 twin already ran: `dvfs_cap(evaluate(s), table, cap, curve, pk)` with every argument equal.
+- `energy_dse._memo` keys that call, and `evaluate(s)`, on (the frozen Scenario, the frozen EnergyTable, cap, curve, (pk.scope, pk.die_mm2, pk.dies)). `pk` is rebuilt per row but is a pure function of those three.
+- The store lives for one `energy_design_search` call (`_scoped_rank_memo`). A hit returns a deep copy of the cap dict; evaluate results are only read.
+- Results are byte-identical (whole DSE JSON, `CAP_MEMO` on vs off; test_core_324).
+- The prefill body at 150 W made 2844 evaluate calls, 1368 of them repeats. Pyodide prefill cap 150 W: 9.9 → 8.2 s cold, 5.2 → 4.0 s warm.
+
+Unbuildable points are not skipped. Every row is kept with its metrics, and `include_unbuildable` only decides front membership, so skipping them would change the output. The pruning is restricted to work whose result is already known exactly.

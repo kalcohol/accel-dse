@@ -211,8 +211,17 @@ def phy_area(scn, b: Budget) -> dict:
     spec = mem_catalog.parse_mem_id(scn.mem_id)
     hbm = "HBM" in spec.mem_type.upper()
     dq = b.mm2_per_dq_hbm if hbm else b.mm2_per_dq_lpddr
+    from .hbm_base import CUSTOM, custom_applies, ignored_note
     if dq is not None:
-        terms["dram_phy"] = spec.bus_bits * dq
+        if custom_applies(scn.chip, spec.mem_type):     # 0.324: D2D block per stack instead of the 2048-DQ PHY
+            terms["dram_phy"] = spec.n_units * CUSTOM["d2d_mm2_per_stack"][0]
+            notes.append(f"定制 HBM 基础晶粒：主晶粒侧每栈 D2D {CUSTOM['d2d_mm2_per_stack'][0]:g} mm²（Samsung HC 2026"
+                         "「二手」，主机侧取同值「推导」），代替 2048 DQ × mm2_per_dq_hbm")
+        else:
+            terms["dram_phy"] = spec.bus_bits * dq
+    n = ignored_note(scn.chip, spec.mem_type)
+    if n:
+        notes.append(n)
     if getattr(scn.chip, "noc_clusters", 1) > 1:
         notes.append("片上 NoC 簇：簇间链路无 D2D PHY（0.309）")
     elif scn.d2d_enabled and scn.package_cards > 1 and b.mm2_per_d2d_unit is not None:
@@ -964,9 +973,13 @@ def full_area(scn, b: Budget, noc_routers: bool = False) -> dict:
             mm2 += b.mm2_host_io
         if b.mm2_per_unit_mc is not None:
             from .. import mem_catalog
+            from .hbm_base import custom_applies
             spec = mem_catalog.parse_mem_id(scn.mem_id)
-            terms["mem_ctrl"] = spec.n_units * b.mm2_per_unit_mc
-            mm2 += terms["mem_ctrl"]
+            if custom_applies(scn.chip, spec.mem_type):     # 0.324: the controller sits on the custom base die
+                notes.append("定制 HBM 基础晶粒：内存控制器在基础晶粒上，主晶粒不计 mm2_per_unit_mc")
+            else:
+                terms["mem_ctrl"] = spec.n_units * b.mm2_per_unit_mc
+                mm2 += terms["mem_ctrl"]
         if b.uncore_frac:
             u = mm2 * b.uncore_frac / (1 - b.uncore_frac)      # share of the final die
             terms["uncore"] = u

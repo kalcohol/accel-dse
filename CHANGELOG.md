@@ -6,6 +6,66 @@
 
 
 
+## [0.324.0]
+
+### Custom HBM4 / HBM4E base die (design option, opt-in)
+- **What it models:** from HBM4 on, the base die is made on a logic process: SK hynix on TSMC N12, Samsung on SF4, Micron on in-house CMOS. Custom HBM4E and NVIDIA NVHBM base dies are on TSMC N3-class 「二手」. A *custom* base die moves the memory controller onto the memory and replaces the 2048-DQ host PHY with a narrow die-to-die link (Samsung Hot Chips 2026; Marvell custom HBM; NVHBM). New `Chip.hbm_base` = "std" (default, the JEDEC interface, ≤ 0.323) | "custom". Module `core/hbm_base.py` carries every number with its tag and source.
+- **Numbers and labels:**
+  - Host PHY per stack: 2048 DQ × 0.015625 = 32 mm² (std; Samsung HC 2026 "conventional PHY > 8 × 4 mm") → 8.5 × 1.5 = 12.75 mm² D2D (Samsung HC 2026 「二手」; host side taken equal to the memory side 「推导」).
+  - Memory controller: off the host (the `mem_ctrl` term drops out when a density is set).
+  - Host PHY pJ/bit: × 0.55. Marvell: interface power −45 … −70% "depending on scenarios" (EE Times part 2; Marvell PR "up to 70%") 「二手」. The low end is the default; the range (0.30, 0.55) is recorded.
+  - Memory $/GB: × 1.10 on the sourced price. Custom premium "5% to 10% overhead tops" (EE Times part 1, analyst speculation) 「二手/假设」; range (1.05, 1.10). A user-entered price is taken as given.
+  - Process: N12 / SF4 → N3P / N3 (reported, not used in a formula).
+- **What it does not change (mechanism):**
+  - The shoreline a stack needs stays 11 mm. The stack's footprint sets the edge, and the D2D block (8.5 mm) is no narrower than the PHY (8 mm) 「推导」: a custom die shrinks PHY *depth* and area. Shoreline therefore moves only through the smaller host die's shorter perimeter.
+  - Stack bandwidth is unchanged. NVHBM's +30% comes with a faster interface spec, and Marvell's custom stack (2.048 TB/s) is slower; neither is a base-die property.
+- **Listed, not modelled (no public figures):** near-memory compute / offload (Samsung phase 2); base-die process energy (N12 0.8 V → N3P 0.75 V); Marvell's "+33% stacks"; D2D hotspot (Samsung Heat Path Block, −35% peak temperature).
+- **Scope:** HBM4 / HBM4E only. On HBM3E / LPDDR / GDDR the switch is ignored, with a warning. The std outputs are byte-identical to 0.323 (DSE JSON; eval adds the new `energy.phy_pJ_per_bit`). The eval block `hbm_base`, the DSE key `hbm_base`, the row flag `hbm_custom`, the DSE note and the design-report item appear only when custom.
+- **Wiring:** the area path (`budget.phy_area` / `full_area`), energy (`energy.phy_pJ`, also used by pdqueue), price (`tco.mem_price` in eval TCO, the DSE `_tco_row` and the tornado `base_values` / `row_usd` / `input_range`) and `report._base`. Eval ≡ DSE row under custom. UI: chip panel select "HBM 基础晶粒". CLI: `--hbm-base {std,custom}`. Script: `scripts/chiplet_example.py --hbm-base custom` and `--hbm-base-study`.
+- **Old → new on the examples** (eval, n5_derived, tpuv4i_7nm, accel_2026, n5_cowos_s, D0 0.1; std → custom):
+
+  | Example | die mm² | shoreline | thr | J/unit | pkg $ | mem $ | $/Mtok | Note |
+  |---|---|---|---|---|---|---|---|---|
+  | 1P 8×HBM4 qwen3-8b decode b64, air_oam | 820.4 → 620.4 | tight → tight | 9609 → 9609 | 0.037492 → 0.036618 | 2502 → 2145 | 9378 → 10315 | 0.0097658 → 0.0100401 (+2.8%) | |
+  | 1P 8×HBM4 qwen3-8b prefill b8 | (as above) | | 71192 → 71192 | 0.0071166 → 0.0071100 | | | 0.0014103 → 0.0014523 (+3.0%) | |
+  | 1P 8×HBM4 qwen3-30b-a3b decode b64 | | | | 0.051874 → 0.050486 | | | 0.015136 → 0.015571 (+2.9%) | |
+  | H100-like 6×HBM4 decode b64, cap 400 W, liquid | 428.3 → 278.3 | **tight → over** | 8662 → 8806 | | 1742 → 1575 | | 0.008164 → 0.008377 | The smaller host die no longer has the perimeter for 6 stacks: the area saving is bounded by the shoreline floor on a small host |
+  | 1P 8×HBM4E decode b64, cap 300 W | | | 5299 → 5849 (+10.4%) | | | | 0.015128 → 0.014224 (−6.0%) | Under a binding cap the PHY energy saving buys clock |
+  | 1P 8×HBM3E | | | | | | | unchanged | Switch ignored, warning |
+
+- **Energy DSE example** (`chiplet_example.py --hbm-base-study`: cases 0 / 1 / 4 on 8 × HBM4, n5_cowos_l, accel_2026, air_oam, 700 W):
+  - Every host die is 200 mm² (mono) / 100 (N=2) / 50 (N=4) smaller. That is 8 × 19.25 mm² PHY ÷ (1 − uncore 0.23), the existing area rule.
+  - No shoreline status changes.
+  - **Buildability flips on thermal:** qwen3-8b prefill MAC×1 mono / ×2簇 / ×4簇 and UCIe-A/S N=2, UCIe-A N=4 turn unbuildable on air. The same ~530 W die power on 620 instead of 820 mm²: flux 0.81 → 1.04 W/mm². The MAC×1 TCO verdict goes mono → only_split.
+  - At MAC×2 (cap-bound) throughput rises 1.4 – 5.7%. $/Mtok goes up 3.5 – 4.8% at MAC×1 (the memory premium exceeds the die saving) and down 0.1 – 2.6% for MAC×2 mono.
+
+### Energy DSE: exact reuse inside a search (CAP_MEMO)
+- In a power-capped DSE every f_op < 1 point over the cap is capped from f_max (0.302 rule, `_run1`). Its DVFS bisection is therefore exactly the one its f_op = 1 twin already ran: same evaluate(s), table, cap, curve and package-power function. Prefill at 150 W, 216 points: 2844 evaluate calls, 1368 of them repeats.
+- `energy_dse._memo` stores `evaluate(s)` and `dvfs_cap(...)` keyed on the frozen Scenario / EnergyTable, the cap, the curve and the package-power function's arguments. The store is scoped to one `energy_design_search` call and returns a deep copy of a cap dict. `energy_dse.CAP_MEMO` = False restores the ≤ 0.323 path.
+- Results byte-identical (whole DSE JSON, on vs off) on 7 bodies: cap 150 / 300, prefill, MoE, mix phase, custom HBM4, include_unbuildable + card scope.
+- CPython, 216 points: prefill cap 150 W 5.53 → 2.42 s, cap 150 W 3.88 → 2.58 s, MoE 4.85 → 2.94 s, mix 7.51 → 4.96 s. Pyodide (cold / warm): prefill cap 150 W 9.9 / 5.2 → 8.2 / 4.0 s; cap 150 W 6.9 / 5.0 → 5.8 / 4.1 s.
+- **Not done:** skipping unbuildable points before evaluation. The DSE keeps every unbuildable row with its full metrics (thr, J, W, $, the why), whether or not `include_unbuildable` is set; the UI shows them, and the fronts and verdicts read the flags. Skipping them would change the result, so it is not "provably identical". Only exactly-known work is pruned.
+
+### Freshness
+- 110 orgs, 2026-10-22: the same set as 0.323's sweep (unsloth MOSS-Image GGUF / FP8 derivatives, an image-classification CLIP). Nothing to add.
+- HBM sources dated up to 2026-10-19 (TrendForce: NVHBM on TSMC 3 nm) were used for the base-die numbers.
+
+### Process
+- 0.323's ext_validation.json stamp had been hand-edited (0.322.0 → 0.323.0). From 0.324 on, ext_validate is rerun after the version bump. This release's run changed only the stamp (0.323.0 → 0.324.0, script-generated); every validation number is unchanged.
+
+### Tests
+- tests/test_core_324.py (10):
+  - std pinned to the 0.323 tree;
+  - custom mechanisms (PHY 32 → 12.75 mm² per stack, die −200 mm², edges unchanged, pJ × 0.55, mem $ × 1.10, throughput unchanged);
+  - area terms and controller removal;
+  - price rules (user price as given);
+  - HBM3E ignored with a warning;
+  - eval ≡ DSE row under custom;
+  - report item only when custom;
+  - Chip validation, UI select and CLI flag;
+  - the prefill thermal flip;
+  - CAP_MEMO byte-identical with fewer evaluate calls, run-scoped.
+
 ## [0.323.0]
 
 ### Cross-module consistency audit (eval ↔ energy DSE ↔ report ↔ compare ↔ static build ↔ CLI)

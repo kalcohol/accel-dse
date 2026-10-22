@@ -89,7 +89,7 @@ def _base(r: dict, body: dict):
     from .energy_dse import _cost_params
     cost = body.get("cost")
     return {"tco": tco_params(body.get("tco")), "cost": _cost_params(cost), "d0": body.get("d0_per_cm2") or 0.0,
-            "prices": body.get("mem_usd_per_GB")}
+            "prices": body.get("mem_usd_per_GB"), "hbm_base": r.get("hbm_base", "std")}     # 0.324
 
 
 def _pair_check(a: dict, b: dict, base: dict, tie: float) -> dict:
@@ -159,6 +159,10 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
           item("mem_id", "外存", x.get("mem_id"), tag="用户输入", src="DSE 网格点"),
           item("mem_GB", "外存容量", x.get("mem_GB"), "GB", tag="来源", src="内存目录（器件规格）"),
           item("mem_GBps", "外存带宽（峰值）", x.get("mem_GBps"), "GB/s", tag="来源", src="内存目录（器件规格）"),
+          *([item("hbm_base", "HBM 基础晶粒",                # 0.324: only with the switch on (std reports unchanged)
+                  "定制（逻辑工艺基础晶粒 + D2D，控制器在基础晶粒）" if x.get("hbm_custom") else "标准（该外存不适用定制）",
+                  tag="用户输入", src="chip.hbm_base = custom（hbm_base.CUSTOM：每栈 D2D 12.75 mm²、PHY pJ/bit × 0.55、"
+                  "$/GB × 1.10，均「二手」）")] if r.get("hbm_base") == "custom" else []),
           item("dies", "晶粒数", x.get("dies") or 1, tag="用户输入", src="DSE 晶粒轴"),
           item("d2d_std", "D2D 接口", x.get("d2d_std") if (x.get("dies") or 1) > 1 else "—", tag="用户输入", src="DSE D2D 轴"),
           item("f_ghz", "运行频率", x.get("f_ghz"), "GHz", src="工作点 × DVFS 封顶（若封顶）"),

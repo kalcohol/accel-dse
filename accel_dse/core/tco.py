@@ -127,15 +127,30 @@ def _mem_prices(d) -> dict:
     return out
 
 
-def mem_price(p: dict, mem_type: str, user: dict | None = None):
-    """$/GB and its provenance: user (DSE mem_usd_per_GB, then tco.mem_usd_per_GB) → sourced default → None."""
+def mem_price(p: dict, mem_type: str, user: dict | None = None, custom: bool = False):
+    """$/GB and its provenance: user (DSE mem_usd_per_GB, then tco.mem_usd_per_GB) → sourced default → None.
+    0.324 ``custom``: a custom HBM base die (hbm_base.CUSTOM usd_per_GB_factor) on the sourced standard price; a
+    user-entered price is taken as given (it may already include the premium)."""
     for d, tag in ((user or {}, "用户输入"), (p.get("mem_prices") or {}, "用户输入")):
         if mem_type in d:
             return d[mem_type], tag
     if mem_type in MEM_USD_PER_GB:
         v, tag, _ = MEM_USD_PER_GB[mem_type]
+        if custom:
+            from .hbm_base import CUSTOM
+            f, ft, _ = CUSTOM["usd_per_GB_factor"]
+            return v * f, f"{tag} × 定制基础晶粒 {f:g}「{ft}」"
         return v, tag
     return None, None
+
+
+def mem_range_for(mem_type: str, custom: bool = False):
+    """0.324: the sourced $/GB range; with a custom base die × the premium range (hbm_base.USD_FACTOR_RANGE)."""
+    r = MEM_RANGES.get(mem_type)
+    if r is None or not custom:
+        return r
+    from .hbm_base import USD_FACTOR_RANGE
+    return (r[0] * USD_FACTOR_RANGE[0], r[1] * USD_FACTOR_RANGE[1]) + tuple(r[2:])
 
 
 def capex_per_year(p: dict, capex_usd: float) -> float:
@@ -228,7 +243,9 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str, op: dict | None 
             notes.append(asm_note(cp))
     else:
         raise ValueError("tco in eval needs pkg_usd (package $ without memory) or cost (a COST_PRESETS name)")
-    pr, ptag = mem_price(p, sp.mem_type)
+    from .hbm_base import custom_applies
+    hb_custom = custom_applies(scn.chip, sp.mem_type)
+    pr, ptag = mem_price(p, sp.mem_type, custom=hb_custom)
     if pr is None:
         miss.append(f"{sp.mem_type} $/GB（无公开价，请填 tco.mem_usd_per_GB）")
     ew = energy.get("avg_W_per_card")
@@ -263,5 +280,6 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str, op: dict | None 
     from .tco_sens import tornado
     rw = {"mm2": die_mm2, "dies": pk, "si_mm2": (die_mm2 or 0.0) * pk, "mem_id": mid, "mem_type": sp.mem_type,
           "mem_GB": sp.capacity_GB * pk, "thr": thr, "unit": unit, "tco": t}
-    t["sens"] = tornado(rw, {"tco": p, "cost": cp, "d0": d0 or 0.0, "prices": None})   # 0.323: no D0 = yield 1 (as the DSE)
+    t["sens"] = tornado(rw, {"tco": p, "cost": cp, "d0": d0 or 0.0, "prices": None,
+                             "hbm_base": getattr(scn.chip, "hbm_base", "std")})   # 0.323: no D0 = yield 1 (as the DSE)
     return t

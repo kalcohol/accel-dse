@@ -21,6 +21,8 @@ CoWoS-L 4719 mm², D0 0.1 /cm²) over MAC ×{1, 2}, 1 / 2 / 4 dies × {UCIe-A 48
     python3 scripts/chiplet_example.py --case 1 --power-scope card   # 0.316: 0.315 card-W power cap
     python3 scripts/chiplet_example.py --tco accel_2026               # 0.317: verdicts under $/Mtok
     python3 scripts/chiplet_example.py --tco accel_2026 --asm flat    # 0.319: the 0.318 assembly yield (1.0)
+    python3 scripts/chiplet_example.py --hbm-base-study               # 0.324: 8 × HBM4, standard vs custom base die
+    python3 scripts/chiplet_example.py --mem hbm4_8s_12h24g_10000 --hbm-base custom   # 0.324: one view, custom die
 """
 from __future__ import annotations
 
@@ -64,7 +66,7 @@ def budget() -> Budget:
 
 def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d0=0.1, io_edges=-1,
         mem="hbm3e_8s_8h24g_9200", tp=1, link=400.0, macs=(1.0, 2.0), include_unbuildable=False, lane=None,
-        shore_strict=False, cooling=None, power_scope="package", tco=None) -> dict:
+        shore_strict=False, cooling=None, power_scope="package", tco=None, hbm_base="std") -> dict:
     std = d2d_catalog.D2D_STANDARDS["ucie-a-48"]
     old = std["pJ_bit"]
     if pj:
@@ -73,6 +75,8 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d
         chip = CHIPS["1P"] if io_edges == -1 else replace(CHIPS["1P"], noc_mem_io_edges=io_edges)
         if lane:                    # 0.313: scale-up lane rate (Gb/s per pair; default the chip's 200)
             chip = replace(chip, io_su_lane_Gbps=float(lane))
+        if hbm_base != "std":       # 0.324: custom HBM4 / 4E base die (core/hbm_base.py)
+            chip = replace(chip, hbm_base=hbm_base)
         s = Scenario(model=model, chip=chip, mem_id=mem, layout=Layout(tp=tp), link=Link(GBps=link),
                      serving=Serving(phase=ph, batch=64 if ph == "decode" else 1, prompt=2048, ctx=4096))
         kw = dict(noc_link_Bpc=L, noc_routing="xy") if L else {}
@@ -85,7 +89,7 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d
     finally:
         std["pJ_bit"] = old
     out(f"== {model} {ph} {split} L={L} pj={pj} {'(0.308 flat)' if flat else '(0.309)'} io_edges={io_edges} "
-        f"mem={mem} tp={tp} link={link:g}")
+        f"mem={mem} tp={tp} link={link:g}" + (f" hbm_base={hbm_base}" if hbm_base != "std" else ""))
     for x in o["rows"]:
         kind = x.get("d2d_std") or ("mono" if x.get("clusters", 1) == 1 else f"mono×{x['clusters']}簇")
         out(f'  MAC×{x["mac_x"]:g} N={x["dies"]} {kind:10s} thr={x.get("thr", 0):8.0f} '
@@ -198,6 +202,39 @@ def tco_study(out=print, tco="accel_2026", cost="n5_cowos_l", cooling=None) -> d
     return res
 
 
+HBM4_MEM = "hbm4_8s_12h24g_10000"       # 0.324: 8 × HBM4 12-high 24 Gb at 10 Gb/s (SK hynix rate 「来源」)
+HBM_BASE_CASES = (0, 1, 4)              # qwen3-8b decode / prefill (tp), qwen3-30b-a3b decode (ep)
+
+
+def hbm_base_study(out=print, cost="n5_cowos_l", tco="accel_2026", cooling="air_oam", mem=HBM4_MEM) -> list:
+    """0.324: the examples with HBM4 memory, standard vs custom base die — per design point the die area, shoreline /
+    thermal buildability, throughput, J/unit, $/good package and $/Mtok (MODEL §269.3)."""
+    res = []
+    for ci in HBM_BASE_CASES:
+        model, ph, split, L, pj = CASES[ci]
+        o = {hb: run(model, ph, split, L, pj, out=lambda *_: None, cost=cost, mem=mem, cooling=cooling, tco=tco,
+                     include_unbuildable=True, hbm_base=hb) for hb in ("std", "custom")}
+        out(f"== {model} {ph} {split} mem={mem} cooling={cooling} tco={tco}: std → custom")
+        for a, b in zip(o["std"]["rows"], o["custom"]["rows"]):
+            kind = a.get("d2d_std") or ("mono" if a.get("clusters", 1) == 1 else f"mono×{a['clusters']}簇")
+            ta, tb = (a.get("tco") or {}).get("usd_per_Munit"), (b.get("tco") or {}).get("usd_per_Munit")
+            rec = {"case": ci, "mac_x": a["mac_x"], "dies": a["dies"], "kind": kind,
+                   "die": (a.get("mm2"), b.get("mm2")), "build": (a.get("buildable"), b.get("buildable")),
+                   "shore": (a.get("shoreline"), b.get("shoreline")), "thr": (a.get("thr"), b.get("thr")),
+                   "J": (a.get("J_per_unit"), b.get("J_per_unit")), "pkg": (a.get("usd_good_pkg"), b.get("usd_good_pkg")),
+                   "usdM": (ta, tb)}
+            res.append(rec)
+            f = lambda v, k=1.0, d=0: "—" if v is None else f"{v * k:.{d}f}"  # noqa: E731
+            out(f'  MAC×{a["mac_x"]:g} N={a["dies"]} {kind:10s} die {f(a.get("mm2"))}→{f(b.get("mm2"))} mm² '
+                f'shore {a.get("shoreline")}→{b.get("shoreline")} build {a.get("buildable")}→{b.get("buildable")} '
+                f'thr {f(a.get("thr"))}→{f(b.get("thr"))} J {f(a.get("J_per_unit"), 1e3, 3)}→{f(b.get("J_per_unit"), 1e3, 3)} mJ '
+                f'pkg ${f(a.get("usd_good_pkg"))}→${f(b.get("usd_good_pkg"))} $/M {f(ta, 1e3, 4)}→{f(tb, 1e3, 4)} m$')
+        for x in ("std", "custom"):
+            for e in o[x]["chiplet"]["compare"]:
+                out(f'  [{x}] MAC×{e["mac_x"]:g} verdict={e["verdict"]} verdict_tco={e.get("verdict_tco")}')
+    return res
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--flat", action="store_true", help="0.308 view: no NoC-cluster rows, two memory columns")
@@ -220,11 +257,18 @@ def main(argv=None) -> int:
     ap.add_argument("--tco", choices=("accel_2026", "server_2026"),
                     help="0.317: $/Mtok study (mono/split and memory-choice verdicts under TCO; needs --cost, default n5_cowos_l)")
     ap.add_argument("--sweep", action="store_true", help="0.312: buildable-only verdict table (memory × D0 × deployment)")
+    ap.add_argument("--hbm-base", choices=("std", "custom"), default="std",
+                    help="0.324: HBM4 / 4E base die (custom = controller on a logic base die + narrow D2D)")
+    ap.add_argument("--hbm-base-study", action="store_true",
+                    help="0.324: cases 0 / 1 / 4 on 8 × HBM4, standard vs custom base die (cost, TCO, air_oam)")
     ap.add_argument("--asm", choices=("component", "flat"), default="component",
                     help="0.319: package / bonding yield per component (default) or flat = the 0.318 rule (asm_yield 1)")
     a = ap.parse_args(argv)
     if a.cost:
         a.cost = {"preset": a.cost, "asm_model": a.asm}
+    if a.hbm_base_study:
+        hbm_base_study(cost=a.cost or {"preset": "n5_cowos_l", "asm_model": a.asm}, cooling=a.cooling or "air_oam")
+        return 0
     if a.tco:
         tco_study(tco=a.tco, cost=a.cost or {"preset": "n5_cowos_l", "asm_model": a.asm}, cooling=a.cooling)
         return 0
@@ -234,7 +278,8 @@ def main(argv=None) -> int:
         return 0
     for i in (a.case or range(len(CASES))):
         run(*CASES[i], flat=a.flat, cost=a.cost, d0=a.d0, io_edges=a.io_edges, mem=a.mem, tp=a.tp, link=a.link,
-            include_unbuildable=a.include_unbuildable, lane=a.lane, shore_strict=a.strict, cooling=a.cooling, power_scope=a.power_scope)
+            include_unbuildable=a.include_unbuildable, lane=a.lane, shore_strict=a.strict, cooling=a.cooling, power_scope=a.power_scope,
+            hbm_base=a.hbm_base)
     return 0
 
 

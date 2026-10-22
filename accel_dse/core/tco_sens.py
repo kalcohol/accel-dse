@@ -60,9 +60,15 @@ LOW_IS_ADVERSE = ("life_years", "carrier_yield", "attach_yield")   # all other i
 HOST_USD, HOST_W = 7500.0, 575.0
 
 
-def mem_range(mem_type: str):
-    from .tco import MEM_RANGES
-    return MEM_RANGES.get(mem_type)
+def mem_range(mem_type: str, custom: bool = False):
+    from .tco import mem_range_for
+    return mem_range_for(mem_type, custom)
+
+
+def custom_mem(base: dict | None, mem_type: str | None) -> bool:
+    """0.324: does this row's memory carry the custom HBM base die premium (base["hbm_base"] = the DSE chip's)?"""
+    from .hbm_base import CUSTOM_TYPES
+    return bool(base) and base.get("hbm_base") == "custom" and bool(mem_type) and mem_type.upper() in CUSTOM_TYPES
 
 
 def base_values(base: dict, mem_type: str) -> dict:
@@ -78,7 +84,7 @@ def base_values(base: dict, mem_type: str) -> dict:
         v.update(wafer_usd=cp["wafer_usd"], d0=base["d0"], pkg_scale=1.0)
         if cp.get("asm_model") == "component":
             v.update(carrier_yield=cp["carrier_yield"], attach_yield=cp["attach_yield"])
-    v["mem_usd_per_GB"] = mem_price(p, mem_type, base.get("prices"))[0]
+    v["mem_usd_per_GB"] = mem_price(p, mem_type, base.get("prices"), custom=custom_mem(base, mem_type))[0]
     return v
 
 
@@ -114,7 +120,7 @@ def row_usd(row: dict, base: dict, ov: dict | None = None) -> float:
     if "host" in ov:
         p["system_usd_per_card"], p["system_W_per_card"] = HOST_USD * ov["host"], HOST_W * ov["host"]
     pr = ov.get("mem_usd_per_GB", t["mem_usd_per_GB"])
-    if "mem_end" in ov and (mr := mem_range(row["mem_type"])) is not None:
+    if "mem_end" in ov and (mr := mem_range(row["mem_type"], custom_mem(base, row["mem_type"]))) is not None:
         pr = mr[0] if ov["mem_end"] == "lo" else mr[1]
     return tco_point(p, pkg_usd=pkg, mem_usd=row["mem_GB"] * pr * km, thr=row["thr"], pkg_W=t["pkg_W"],
                      pkg_W_idle=t["pkg_W_idle"], unit=row.get("unit") or "token")["usd_per_Munit"]
@@ -132,7 +138,7 @@ def applicable(k: str, base: dict) -> bool:
 def input_range(k: str, mem_type: str | None = None, base: dict | None = None):
     """(lo, hi, tag_lo, tag_hi, src) of one input, or None (no sourced range for this memory type / carrier)."""
     if k == "mem_usd_per_GB":
-        return mem_range(mem_type) if mem_type else None
+        return mem_range(mem_type, custom_mem(base, mem_type)) if mem_type else None
     if k == "carrier_yield":
         cp = (base or {}).get("cost") or {}
         return CARRIER_RANGES.get(cp.get("carrier"))

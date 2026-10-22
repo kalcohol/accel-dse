@@ -362,6 +362,7 @@ function syncInputs() {
   for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach', 'noc_eject']) {   // 0.306: NoC selects ('' = preset / default)
     if ($('c-' + k) && S.cat) $('c-' + k).value = k in S.chipOver ? S.chipOver[k] : '';
   }
+  if ($('c-hbm_base') && S.cat) $('c-hbm_base').value = S.chipOver.hbm_base || '';   // 0.324: custom HBM base die ('' = std)
   if ($('c-noc_mem_edges') && S.cat) $('c-noc_mem_edges').value = 'noc_mem_edges' in S.chipOver ? String(S.chipOver.noc_mem_edges) : '';   // 0.310
   if ($('c-noc_mem_io_edges') && S.cat) $('c-noc_mem_io_edges').value = 'noc_mem_io_edges' in S.chipOver && S.chipOver.noc_mem_io_edges !== -1 ? String(S.chipOver.noc_mem_io_edges) : '';   // 0.312
   if ($('c-io_su_lane_Gbps') && S.cat) $('c-io_su_lane_Gbps').value = 'io_su_lane_Gbps' in S.chipOver ? String(S.chipOver.io_su_lane_Gbps) : '';   // 0.313
@@ -3074,6 +3075,7 @@ async function init() {
   for (const k of ['noc_topology', 'noc_routing', 'noc_mem_attach', 'noc_eject']) {   // 0.306: chip-panel NoC selects
     $('c-' + k).addEventListener('change', (e) => { if (e.target.value) S.chipOver[k] = e.target.value; else delete S.chipOver[k]; schedule(); });
   }
+  $('c-hbm_base').addEventListener('change', (e) => { if (e.target.value) S.chipOver.hbm_base = e.target.value; else delete S.chipOver.hbm_base; schedule(); });   // 0.324
   $('c-noc_mem_edges').addEventListener('change', (e) => { if (e.target.value) S.chipOver.noc_mem_edges = parseInt(e.target.value, 10); else delete S.chipOver.noc_mem_edges; schedule(); });   // 0.310
   $('c-io_su_lane_Gbps').addEventListener('change', (e) => { if (e.target.value) S.chipOver.io_su_lane_Gbps = parseFloat(e.target.value); else delete S.chipOver.io_su_lane_Gbps; schedule(); });   // 0.313
   $('c-cooling').addEventListener('change', (e) => { S.cooling = e.target.value || null; schedule(); });   // 0.313

@@ -444,7 +444,7 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0, pk=None) -> dict:
     point's capped result."""
     from .powercap import _point, dvfs_cap, static_W
     from .thermal import dram_dev_W
-    r0 = evaluate(s)
+    r0 = _memo(("eval", s), lambda: evaluate(s))
     r, er = (r0, energy_report(r0, t)) if f_op == 1.0 else _point(r0, t, curve, f_op)
     if er.get("J_per_unit") is None:
         raise ValueError(er.get("note") or "能耗表为空")
@@ -465,7 +465,10 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0, pk=None) -> dict:
         if power_mode == "reject":
             o["why"].append(f"功耗 {o['cap_pkg_W']:.0f} > {cap:g} W" + ("（封装口径）" if pk is not None else ""))
         else:
-            d = dvfs_cap(r, t, cap, curve, pk=pk)     # 0.323: CAP_ITERS (shared)
+            # 0.324: an f_op < 1 point over the cap is capped from f_max — the same bisection as its f_op = 1 twin
+            # (same r0, table, cap, curve, package-power function), reused exactly within the search (CAP_MEMO)
+            pkk = None if pk is None else (pk.scope, pk.die_mm2, pk.dies)
+            d = _memo(("cap", s, t, cap, curve, pkk), lambda: dvfs_cap(r, t, cap, curve, pk=pk))   # 0.323: CAP_ITERS
             if d.get("error") or not d.get("feasible", True):
                 o["why"].append(d.get("error") or "功耗封顶不可行")
             else:
@@ -499,14 +502,15 @@ def _tco_ok(x: dict) -> bool:
         (x.get("tco") or {}).get("usd_per_Munit") is not None
 
 
-def _tco_row(p, row, user_prices, die_mm2, nd, mem_price, tco_point) -> dict:
+def _tco_row(p, row, user_prices, die_mm2, nd, mem_price, tco_point, hbm_base: str = "std") -> dict:
     """0.317: one row's TCO.  Package $ = usd_good_pkg (HBM devices excluded there, 0.310), memory $ = GB × $/GB (the
     only memory term), power = row thermal pkg_W (the complete package power the thermal / cap checks use)."""
     from .thermal import package_power
     miss = []
     if row.get("usd_good_pkg") is None:
         miss.append("每好封装成本（需面积密度 + cost）")
-    pr, ptag = mem_price(p, row["mem_type"], user_prices)
+    from .tco_sens import custom_mem
+    pr, ptag = mem_price(p, row["mem_type"], user_prices, custom=custom_mem({"hbm_base": hbm_base}, row["mem_type"]))
     if pr is None:
         miss.append(f"{row['mem_type']} $/GB（无公开价，请填 tco.mem_usd_per_GB）")
     pw = (row.get("thermal") or {}).get("pkg_W")
@@ -586,21 +590,48 @@ def _split_compare(rows: list[dict], tie: float = 0.01, tco: bool = False) -> li
     return out
 
 
+_CAP_MEMO_D: dict | None = None
+
+
+def _memo(key, fn):
+    """0.324: exact reuse inside one search (CAP_MEMO, MODEL §269.4) — ``fn`` is a pure function of ``key`` (a frozen
+    Scenario / EnergyTable, the cap, curve and the package-power function's arguments); a hit returns the stored result
+    (a deep copy of a dvfs_cap dict, so rows stay independent; evaluate Results are only read)."""
+    import copy
+    if _CAP_MEMO_D is None:
+        return fn()
+    try:
+        hit = _CAP_MEMO_D.get(key)
+    except TypeError:               # an unhashable part: no reuse
+        return fn()
+    if hit is None:
+        hit = _CAP_MEMO_D[key] = fn()
+    return copy.deepcopy(hit) if isinstance(hit, dict) else hit
+
+
 def _scoped_rank_memo(fn):
-    """0.323: run the whole search under ir.rank_memo() (the layer IR is clock- and chip-free; MODEL §268.2)."""
+    """0.323: run the whole search under ir.rank_memo() (the layer IR is clock- and chip-free; MODEL §268.2).
+    0.324: and under the exact cap / evaluate reuse (CAP_MEMO; the store lives only for this call)."""
     import functools
 
     @functools.wraps(fn)
     def run(*a, **kw):
+        global _CAP_MEMO_D
         from .ir import rank_memo
-        if not RANK_MEMO:
-            return fn(*a, **kw)
-        with rank_memo():
-            return fn(*a, **kw)
+        prev = _CAP_MEMO_D
+        _CAP_MEMO_D = {} if CAP_MEMO else None
+        try:
+            if not RANK_MEMO:
+                return fn(*a, **kw)
+            with rank_memo():
+                return fn(*a, **kw)
+        finally:
+            _CAP_MEMO_D = prev
     return run
 
 
 RANK_MEMO = True       # 0.323: False = ≤ 0.322 (rebuild the layer IR at every evaluate)
+CAP_MEMO = True        # 0.324: False = ≤ 0.323 (re-run evaluate / the cap bisection for every row)
 
 
 @_scoped_rank_memo
@@ -1074,8 +1105,17 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                 row["perf_W"] = 1.0 / row["J_per_unit"] if row["J_per_unit"] > 0 else None
                 if tco_p is not None:           # 0.317: TCO from the same package cost / package power as the row
                     row["tco"] = _tco_row(tco_p, row, prices, row.get("mm2") if dens_ok else sr.get("die_mm2"), nd,
-                                          _tco_mem, tco_point)
+                                          _tco_mem, tco_point, getattr(ch, "hbm_base", "std"))
+                if getattr(ch, "hbm_base", "std") == "custom":      # 0.324: does the custom base die apply here
+                    from .hbm_base import custom_applies
+                    row["hbm_custom"] = custom_applies(ch, row["mem_type"])
                 rows.append(row)
+    if getattr(ch, "hbm_base", "std") == "custom":         # 0.324
+        from .hbm_base import CUSTOM
+        notes.append(f"定制 HBM 基础晶粒（hbm_base=custom，仅 HBM4 / HBM4E 行）：主晶粒每栈 D2D {CUSTOM['d2d_mm2_per_stack'][0]:g} mm²"
+                     f"「{CUSTOM['d2d_mm2_per_stack'][1]}」代替 2048-DQ PHY，内存控制器移至基础晶粒；PHY pJ/bit × "
+                     f"{CUSTOM['phy_pJ_factor'][0]:g}「{CUSTOM['phy_pJ_factor'][1]}」；内存 $/GB × {CUSTOM['usd_per_GB_factor'][0]:g}"
+                     f"「{CUSTOM['usd_per_GB_factor'][1]}」；每栈岸线 11 mm 不变「推导」；带宽、近存计算未改（无公开机理）")
     ok = [i for i, x in enumerate(rows) if x.get("feasible")]
     sub = [rows[i] for i in ok]
     f2 = [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1)), tie)]
@@ -1144,7 +1184,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     sr_ = best_tco if tco_sens_row is None else tco_sens_row
     if tco_p is not None and sr_ is not None:          # 0.318: one-at-a-time sensitivity over the sourced ranges
         from .tco_sens import compare_flips, compare_key, tornado
-        sb = {"tco": tco_p, "cost": cost_p, "d0": d0_per_cm2 or 0.0, "prices": prices}   # no D0 = yield 1
+        sb = {"tco": tco_p, "cost": cost_p, "d0": d0_per_cm2 or 0.0, "prices": prices,   # no D0 = yield 1
+              "hbm_base": getattr(ch, "hbm_base", "std")}                                 # 0.324
         sens = tornado(rows[sr_], sb)
         sens["row"] = sr_
         if split:
@@ -1157,6 +1198,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
     return {"chiplet": {"dies": Ns, "d2d_stds": stds, "d2d_units": units, "die_split": die_split,
                         "reticle_mm2": reticle_mm2, "pkg_mm2": pkg_mm2, "d0_per_cm2": d0_per_cm2,
                         "compare": split} if chip_mode else None,
+            **({"hbm_base": "custom"} if getattr(ch, "hbm_base", "std") == "custom" else {}),   # 0.324 (std: absent)
             "chip": ch.name, "model": scn.model, "phase": "mix" if mix else phases[0], "rows": rows,
             "front": sorted(f2, key=lambda i: rows[i]["thr"]), "best": best, "base": base, "notes": notes,
             "power_cap_W": cap, "power_cap_src": cap_src, "power_mode": power_mode, "curve": curve,
