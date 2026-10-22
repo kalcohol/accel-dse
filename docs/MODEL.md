@@ -10071,3 +10071,20 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 - **Qwen3-Omni-30B-A3B** (`qwen3_omni_moe`): thinker MoE 128-exp + talker MoE + 16-codebook predictor + **code2wav** (not Qwen2.5-Omni token2wav DiT/BigVGAN). Needs a new omni mode, not a thin `omni_spec` fork.
 - **MOSS-TTS-Nano / v1.5 / Local**: `moss_tts_nano` / `_delay` / `_local` — GPT2 global±local over N VQ + external audio tokenizer. New family vs Moshi/Qwen3-TTS.
 - OrcaCyber / pocket-tts: still gated (config 401). UI patch not applied.
+
+## §287 Adversarial ming-omni; energy/thermal/TCO consistency; NPU still pending (0.342)
+
+### §287.1 Adversarial ming-omni-tts-0.5b
+- Same DiTAR as §286.1 / §285.2: flow_depth 8, Euler 10, CFG 2, AudioVAE 44.1 kHz; `patch=4` / `history=32` → `s_per_step` 320 ms (4× Ming-3.0-tts-0.5B's 80 ms); ops `flow0`…`flow9`; param_err 0; eval/speech/SPS OK.
+
+### §287.2 NPU design — no public numbers this pass
+- Searched again: PCIe/CXL controller area (vendor IP pages, no mm²); HBM4 absolute pJ (Samsung shipping note has BW only; blog ranges not used); JEDEC SPHBM4 PHY (JESD330-4 interface only; Eliyan NuLink/UMI marketing ≠ SPHBM4); HBM NMC TOPS/W (LPDDR5X-PIM / CXL MX1 are other products). Carried pending unchanged.
+
+### §287.3 Consistency audit (energy / thermal / TCO, 0.333–0.341) 「推导」
+- Presets: HBM3E 5.80 / HBM4 4.14 (=÷1.4) / LPDDR 3.23; `EnergyTable` ↔ `ENERGY_PRESETS`; `MEM_PROXY` DSE labels track 4.14 / 5.80 / 2.67.
+- `dram_pJ_field`: HBM3E→`pJ_bit_dram_hbm`, HBM4→`pJ_bit_dram_hbm4`, LPDDR→`pJ_bit_dram_lpddr`; `energy_report` J_dram ∝ pJ (synthetic ratio 1.400).
+- `package_power`: standby adds to `static_W` / `pkg_W`; `static_floor_W` unchanged (0.333 invariant).
+- LPDDR accepted by `hbm_standby_W` (0.335). No stale 3.44 / 2.46 live assignments in code. No fix required.
+
+### §287.4 Freshness
+- OrcaCyber Nano sha `1af1635`, gated auto, config 401. pocket-tts sha `db04f0e`, gated auto, config 401.

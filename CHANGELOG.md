@@ -6,6 +6,19 @@
 
 
 
+## [0.342.0] — 2026-10-23
+
+### Changed
+- Adversarial: `ming-omni-tts-0.5b` DiTAR (patch=4 / history=32 → 320 ms/step, Euler 10 × CFG 2, AudioVAE 44.1 kHz, flow0..flow9) held across eval / speech / SPS; 4× `s_per_step` vs Ming-3.0-tts-0.5B.
+- Consistency audit (energy / thermal / TCO, 0.333–0.341): HBM3E 5.80 / HBM4 4.14 (=÷1.4) / LPDDR 3.23 presets, `MEM_PROXY` labels, `dram_pJ_field` selection, `energy_report` J∝pJ, `package_power` standby-vs-floor, LPDDR thermal knobs — all green; no code change.
+
+### Pending / not applied
+- **NPU design:** still no public numbers for PCIe/CXL controller area, HBM controller at N7/N28, controller power split, JEDEC SPHBM4 PHY mm², HBM4 absolute measured pJ/bit, or HBM NMC TOPS/W (Eliyan UMI / LPDDR5X-PIM / CXL MX1 marketing not used).
+- OrcaCyber Nano: sha `1af1635` unchanged, gated auto, config 401.
+- pocket-tts: sha `db04f0e` unchanged, gated auto, config 401.
+- Qwen3-Omni / MOSS-TTS / Ming-3.0-audio-* (new arch).
+- **UI patch not applied**.
+
 ## [0.341.0] — 2026-10-22
 
 ### Added
