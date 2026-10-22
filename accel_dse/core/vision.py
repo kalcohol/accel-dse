@@ -371,6 +371,9 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
         return _sanm_spec(ac, cfg.get("adaptor_config") or {})
     if mt == "qwen3_asr" and (tk.get("audio_config") or {}).get("model_type") == "qwen3_asr_audio_encoder":
         return _aut_spec(tk["audio_config"])
+    if mt == "qwen3_omni_moe" and (tk.get("audio_config") or {}).get("model_type") == "qwen3_omni_moe_audio_encoder":
+        # 0.345 Qwen3-Omni Thinker AuT (same encoder type as Index-Echo) 「来源」 configuration_qwen3_omni_moe.py
+        return _aut_spec(tk["audio_config"])
     if mt == "index_echo_s2st" and ac.get("model_type") == "qwen3_omni_moe_audio_encoder":
         # 0.279 Index-Echo ST LM (code/stlm/audio_model.py 「来源」): the Qwen3-Omni AuT (same encoder as Qwen3-ASR:
         # WhisperFeatureExtractor 128 mel with n_samples raised to 300 s, only the valid frames encoded) → connector:
@@ -772,6 +775,15 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                               0, 1, au.dims[0], int(au.mlp * au.dims[0]), au.depths[0], au.heads, au.dims[0], False, 1,
                               (), au.params, (), audio=au,
                               approx="视觉塔（Qwen2.5-VL ViT，thinker.visual）只计存储：图像 / 视频输入未建模")
+        return None
+    if cfg.get("model_type") == "qwen3_omni_moe":
+        # 0.345 Qwen3-Omni: AuT audio modelled; ViT (thinker.visual) storage only — image/video prompts not costed
+        au = audio_spec(cfg)
+        if au is not None:
+            return VisionSpec("audio", "Qwen3-Omni AuT 音频编码器（Conv2d ×3 下采样 8×，窗口注意力）+ MLP 投影",
+                              0, 1, au.dims[0], int(au.mlp * au.dims[0]), au.depths[0], au.heads, au.dims[0], False, 1,
+                              (), au.params, (), audio=au,
+                              approx="视觉塔（thinker.visual）只计存储：图像 / 视频输入未建模")
         return None
     if not vc:
         au = audio_spec(cfg)

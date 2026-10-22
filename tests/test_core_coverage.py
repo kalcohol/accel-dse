@@ -80,7 +80,7 @@ IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b",
 # 0.144 VLMs whose vision side is approximated (LLM side exact): Step-5 overview only, MiniCPM one 448² view, MiMo window
 # attention as full + audio encoder storage-only
 GGML_PARTIAL = ("nemotron-3.5-bolt-74b-a9b-24gb",)   # 0.289
-VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4", "qwen2.5-omni-7b", "qwen2.5-omni-3b",  # 0.339 Omni-3B ViT stored only
+VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4", "qwen2.5-omni-7b", "qwen2.5-omni-3b", "qwen3-omni-30b-a3b",  # 0.345 Omni ViT stored only; 0.339 Omni-3B
                   "kimi-audio-7b-instruct",
                   "nemotron-3.5-super-vl-120b-a12b-nvfp4",
                   "nemotron-3.5-super-vl-120b-a12b-bf16", "nemotron-3.5-bolt-74b-a9b-bf16",   # 0.289 RADIO ≈ only

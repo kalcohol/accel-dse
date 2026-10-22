@@ -130,6 +130,8 @@ Qwen/Qwen3-ASR-1.7B
 Qwen/Qwen2.5-Omni-7B
 # 0.339
 Qwen/Qwen2.5-Omni-3B
+# 0.345: Qwen3-Omni-30B-A3B Instruct (dual MoE + code2wav)
+Qwen/Qwen3-Omni-30B-A3B-Instruct
 # 0.271 CosyVoice2-0.5B / Fun-CosyVoice3-0.5B-2512 ship torch .pt only → scripts/fetch_pt_release.py (not listed here)
 # 0.272 speech round 3: Fun-ASR-Nano-2512-hf (SAN-M encoder + adaptor + Qwen3-0.6B)
 FunAudioLLM/Fun-ASR-Nano-2512-hf

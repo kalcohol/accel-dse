@@ -51,7 +51,7 @@ from .evaluate import evaluate
 from .hardware import System
 from .scenario import Scenario
 
-SPEECH_MODELS = ("moshiko-7b", "moshika-7b", "kimi-audio-7b-instruct", "step-audio-2-mini", "step-audio-2-mini-base", "step-audio-2-mini-think", "qwen2.5-omni-7b", "qwen2.5-omni-3b", "cosyvoice2-0.5b",
+SPEECH_MODELS = ("moshiko-7b", "moshika-7b", "kimi-audio-7b-instruct", "step-audio-2-mini", "step-audio-2-mini-base", "step-audio-2-mini-think", "qwen2.5-omni-7b", "qwen2.5-omni-3b", "qwen3-omni-30b-a3b", "cosyvoice2-0.5b",
                  "fun-cosyvoice3-0.5b-2512", "fireredtts3-base", "drama-3", "ming-3.0-tts-tiny", "ming-3.0-tts-0.5b", "ming-omni-tts-0.5b", "qwen2-audio-7b-instruct", "qwen3-asr-1.7b",
                  "fun-asr-nano-2512", "whisper-large-v3", "whisper-large-v3-turbo", "ming-3.0-asr-tiny",
                  "omniasr-llm-300m-v2", "omniasr-llm-1b-v2", "omniasr-llm-3b-v2", "omniasr-llm-7b-v2",  # 0.336 OmniASR
@@ -84,6 +84,9 @@ def _stages(k: dict, audio_s: float) -> tuple[dict, float, str, float]:
         return ({"frame": k["rtf"]}, 1.0 / (k["frame_ms"] / 1e3), dom, k["first_audio_s"])
     if kind == "qwen3_tts":
         return ({"frame": k["rtf"]}, 1.0 / (k["frame_ms"] / 1e3), dom, k["first_audio_s"])
+    if kind == "qwen3_omni":
+        return ({"thinker": k["out_len"] * k["tpot_s"] / k["audio_out_s"], "speech_card": k["rtf"]},
+                1.0 / (k["frame_ms"] / 1e3), dom, k["first_audio_s"])
     if kind == "s2st":
         sp = k["split"]
         # re-reads / output audio s of the dominant decode stage (ST: text tokens, CV3: speech tokens) 「近似」

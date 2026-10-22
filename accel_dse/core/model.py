@@ -503,6 +503,7 @@ class ModelSpec:
     fish: object = None                      # 0.276 core.drama3.FishSpec: Drama 3 codebook-MTP tower (in layers) + frame timing
     tts: object = None                       # 0.269 core.tts.TtsSpec: speech-synthesis decode head (replaces the LM head)
     qwen3_tts: object = None                 # 0.338 core.qwen3_tts.Qwen3TtsSpec: code predictor + tokenizer decode
+    qwen3_omni: object = None                # 0.345 core.qwen3_omni.Qwen3OmniSpec: Talker MoE + code predictor + code2wav
     # 0.270 encoder-decoder (Whisper): encoder positions each decoder sequence cross-attends to (1500 per 30 s window);
     # the cross K/V of every layer is computed at prefill and kept per sequence (fixed size, like recurrent state)
     enc_ctx: int = 0
@@ -608,6 +609,10 @@ def _tc(cfg: dict) -> dict:
         tc = cfg["llm_config"]
     if mt == "qwen3_asr" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
         tc = cfg["thinker_config"]["text_config"]      # 0.270 Qwen3-ASR: thinker_config.text_config (Qwen3)
+    if mt == "qwen3_omni_moe" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
+        # 0.345 Qwen3-Omni: Thinker text_config (qwen3_omni_moe_text MoE); Talker MoE + code2wav → core/qwen3_omni.py
+        tc = {**cfg["thinker_config"]["text_config"]}
+        tc.setdefault("model_type", "qwen3_omni_moe_text")
     if mt == "qwen2_5_omni" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
         # 0.271 Qwen2.5-Omni: the Thinker's text_config (Qwen2.5-7B shape; Qwen2 attention: q / k / v with bias —
         # transformers Qwen2_5OmniAttention 「来源」); talker / token2wav → core/omni.py
@@ -2430,6 +2435,17 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 f"{qs.cp_steps} 步 × {qs.cp_layers} 层 d{qs.cp_h}（{qs.code_predictor_params / 1e6:.0f}M，bf16）"
                 f"+ speech tokenizer 解码（{qs.tokenizer_dec_params / 1e6:.0f}M，fp32，{qs.sample_rate // 1000} kHz）；"
                 f"每帧 {qs.frame_s * 1e3:.0f} ms 音频；放在每个副本一张额外卡上「假设」",))
+        from .qwen3_omni import qwen3_omni_spec
+        qo = qwen3_omni_spec(cfg, rel)
+        if qo is not None:
+            # 0.345 Qwen3-Omni: Talker MoE + code predictor + code2wav (bf16 as released) — roles talker / depth /
+            # code2wav outside params_llm; costed per output-audio second by core/speech.py on a speech card 「假设」
+            spec = replace(spec, qwen3_omni=qo, notes=spec.notes + (
+                f"语音输出（Qwen3-Omni，12.5 Hz）：Talker MoE（{qo.talker_params / 1e9:.3f}B，bf16，"
+                f"{qo.t_experts} 专家 top-{qo.t_topk}，每帧 1 步）+ code predictor {qo.cp_steps} 步 × "
+                f"{qo.cp_layers} 层 d{qo.cp_h}（{qo.code_predictor_params / 1e6:.0f}M，bf16）+ code2wav "
+                f"（{qo.code2wav_params / 1e6:.0f}M，bf16，upsample {qo.total_upsample} → {qo.sample_rate // 1000} kHz）；"
+                f"每帧 {qo.frame_s * 1e3:.0f} ms；放在每个副本一张额外卡上「假设」",))
         from .moshi import moshi_spec
         ms = moshi_spec(cfg, rel)
         if ms is not None:

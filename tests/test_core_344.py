@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from accel_dse.core.catalog import list_models
 from accel_dse.core.omni import omni_spec
 from accel_dse.core.qwen3_tts import qwen3_tts_spec
 from tests import webstruct as W  # noqa: E402
@@ -65,11 +64,9 @@ def test_wl_kind_clear_else_branch():
 
 
 def test_qwen3_omni_not_thin_wrapped():
+    # 0.344 gate: must not force-fit omni_spec / qwen3_tts.  0.345 ships clean qwen3_omni_spec + catalog.
     assert omni_spec(_QWEN3_OMNI_MIN) is None
     assert qwen3_tts_spec(_QWEN3_OMNI_MIN) is None
-    ids = {e["id"] for e in list_models()}
-    assert "qwen3-omni-30b-a3b" not in ids
-    assert not any("qwen3-omni" in i for i in ids)
     assert "code2wav_config" in _QWEN3_OMNI_MIN and "token2wav_config" not in _QWEN3_OMNI_MIN
     c2 = _QWEN3_OMNI_MIN["code2wav_config"]
     assert c2["num_quantizers"] == 16 and c2["upsample_rates"] == [8, 5, 4, 3]

@@ -177,6 +177,18 @@ def _omni_role(name: str, n_layers: int | None) -> str:
     return classify(name, n_layers)
 
 
+def _qwen3_omni_role(name: str, n_layers: int | None) -> str:
+    """0.345 Qwen3-Omni (modeling_qwen3_omni_moe.py): Thinker (thinker.*) is the LLM + its AuT/ViT → vision;
+    Talker MoE (talker.*) excl. code_predictor → talker; talker.code_predictor → depth; code2wav.* → code2wav."""
+    if name.startswith("talker.code_predictor"):
+        return "depth"
+    if name.startswith("talker."):
+        return "talker"
+    if name.startswith("code2wav."):
+        return "code2wav"
+    return classify(name, n_layers)
+
+
 def _kimi_role(name: str, n_layers: int | None) -> str:
     """0.273 Kimi-Audio-7B-Instruct (modeling_moonshot_kimia.py MoonshotKimiaForCausalLM): Whisper-large-v3 encoder
     (whisper.*, from the repo's whisper-large-v3/ — scripts/fetch_pt_release.py --kimi) + vq_adaptor → vision; the
@@ -456,6 +468,7 @@ def summarize(repo: str, key: str | None = None) -> dict:
         b = _base(name) if is_blocks else re.sub(r"\.(weight_packed|qweight)$", ".weight", name)
         role = (_whisper_role(name) if cfg.get("model_type") == "whisper" else
                 _omni_role(name, nl) if cfg.get("model_type") == "qwen2_5_omni" else
+                _qwen3_omni_role(name, nl) if cfg.get("model_type") == "qwen3_omni_moe" else
                 _step_audio_role(name, nl) if cfg.get("model_type") == "step_audio_2" else
                 _moshi_role(name, nl) if cfg.get("model_type") == "moshi" else
                 _firered_role(name, nl) if cfg.get("model_type") == "fireredtts3" else
@@ -506,10 +519,10 @@ def summarize(repo: str, key: str | None = None) -> dict:
         e["bytes"] += w["bytes"]
     if buffers:
         roles["buffer"] = {"int64": {"params": 0, "bytes": buffers}}
-    llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge", "spk")]
+    llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "code2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge", "spk")]
     tot = lambda rs, k: sum(v[k] for r in rs for v in roles.get(r, {}).values())
     extra = {"vision_fmt": vfmt} if vfmt else {}
-    for r in ("talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge", "spk"):   # 0.271 speech; 0.338 +spk
+    for r in ("talker", "token2wav", "code2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge", "spk"):   # 0.271 speech; 0.338 +spk; 0.345 +code2wav
         if r in roles:
             extra[f"params_{r}"] = tot([r], "params")
             extra[f"bytes_{r}"] = tot([r], "bytes")

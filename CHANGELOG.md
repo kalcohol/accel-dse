@@ -6,6 +6,16 @@
 
 
 
+## [0.345.0] — 2026-10-23
+
+### Added
+- **Qwen3-Omni-30B-A3B** (`qwen3_omni_moe`): clean builder `core/qwen3_omni.py` — Thinker MoE (catalog) + Talker MoE + code predictor + code2wav from public HF config / safetensors headers (as-released bf16, sourced dims). AuT audio costed; ViT storage-only. Does not touch `omni_spec` / `qwen3_tts_spec`.
+
+### Notes
+- **NPU:** deep dig found no new shippable absolute (HBM4 all-in pJ/bit, SPHBM4 host PHY mm²/pJ, PCIe5/6×16+CXL N5 area, HBM controller power) — skip; keep prior Samsung HBM4 PHY.
+- **UI:** no visual restyle (still waiting on user).
+- Freshness light (A path only).
+
 ## [0.344.0] — 2026-10-23
 
 ### Changed

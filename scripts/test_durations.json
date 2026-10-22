@@ -292,6 +292,11 @@
   "test_core_336.py": 0.58,
   "test_core_337.py": 0.07,
   "test_core_338.py": 0.1,
+  "test_core_341.py": 1.0,
+  "test_core_342.py": 0.3,
+  "test_core_343.py": 0.2,
+  "test_core_344.py": 0.8,
+  "test_core_345.py": 3.4,
   "test_core_coverage.py": 2.46,
   "test_core_dap_place.py": 1.68,
   "test_core_domain.py": 120.61,
@@ -313,9 +318,5 @@
   "test_core_validation.py": 0.26,
   "test_mem_catalog.py": 0.04,
   "test_static_build.py": 0.53,
-  "test_static_routes.py": 7.67,
-  "test_core_341.py": 1.0,
-  "test_core_342.py": 0.3,
-  "test_core_343.py": 0.2,
-  "test_core_344.py": 0.8
+  "test_static_routes.py": 7.67
 }

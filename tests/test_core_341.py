@@ -45,7 +45,7 @@ def test_ming_omni_tts_05b():
 
 
 def test_speech_count_341():
-    assert len(SPEECH_MODELS) == 32
+    assert len(SPEECH_MODELS) == 33
 
 
 def test_changelog_no_ui_patch_341():

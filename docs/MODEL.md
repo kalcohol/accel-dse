@@ -10115,3 +10115,23 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 ### §289.3 NPU / freshness
 - NPU: no new absolute public numbers this pass (SPHBM4 JEDEC interface only; SemiAnalysis ~16% Rubin estimate and HBM-side Samsung PHY maps already covered by existing HBM4 `mm2_per_dq_hbm`).
 - OrcaCyber Nano sha `1af1635` / pocket-tts sha `db04f0e`: gated auto, config 401.
+
+## §290 Qwen3-Omni dual-MoE + code2wav (0.345)
+
+### §290.1 Architecture 「来源」
+HF `Qwen/Qwen3-Omni-30B-A3B-Instruct` config + safetensors headers; transformers `modeling_qwen3_omni_moe.py` / `configuration_qwen3_omni_moe.py`; vllm-omni code2wav.
+
+- **Thinker** (`qwen3_omni_moe_text`): MoE h=2048, L=48, 128 experts top-8, moe_inter 768, shared 0; AuT audio + ViT (storage only).
+- **Talker** MoE: h=1024, L=20, 128 experts top-6, moe_inter 384, shared 768; codec vocab 3072; bf16.
+- **Code predictor**: 5L h=1024, 15 AR steps (16 groups − 1); bf16 — same shape as Qwen3-TTS.
+- **Code2wav** (not token2wav DiT): embed+mean RVQ → 8L sliding-window pre_transformer (window 72) → upsampling_ratios [2,2] → decoder upsample_rates [8,5,4,3] + SnakeBeta → 24 kHz. `total_upsample = 1920` → 12.5 Hz. **bf16 as released** (headers; not fp32).
+
+### §290.2 Catalog / roles
+`qwen3-omni-30b-a3b` → `core/qwen3_omni.py`. Release roles: thinker → params_llm; `talker.*` → params_talker; `talker.code_predictor` → params_depth; `code2wav.*` → params_code2wav. Gated on `model_type == qwen3_omni_moe` only — `omni_spec` / `qwen3_tts_spec` stay None.
+
+### §290.3 NPU / UI / freshness
+NPU dig: no new absolute adopted. No visual UI restyle. Freshness light.
+
+### §290.4 Unmodeled
+Image/video ViT forward (storage only); Thinker→Talker projection traffic detail; code2wav streaming window schedule (costed per-frame); SPHBM4 / PCIe5/6×16+CXL N5 area / HBM4 all-in pJ still pending public numbers.
+

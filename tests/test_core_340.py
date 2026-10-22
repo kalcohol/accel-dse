@@ -58,7 +58,7 @@ def test_ming_tiny_still_ok():
 
 
 def test_speech_count_340():
-    assert len(SPEECH_MODELS) == 32
+    assert len(SPEECH_MODELS) == 33
 
 
 def test_changelog_no_ui_patch_340():

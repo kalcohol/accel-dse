@@ -636,6 +636,66 @@ def _qwen3_tts_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = Fals
             "audio_out_s_per_s_card": (b if f["frame_s"] <= FRAME_S else b * FRAME_S / f["frame_s"]) / lay.cards,
             "speaker_encode_s": spk_s}
 
+
+def _qwen3_omni_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) -> dict:
+    """0.345 Qwen3-Omni (core/qwen3_omni.py): Thinker (catalog) + Talker MoE + code predictor + code2wav
+    on a speech card 「假设」. Per 80 ms frame; real-time ⇔ frame ≤ 80 ms."""
+    from .evaluate import _component_time
+    from .hardware import System
+    from .ir import _cdiv
+    from .qwen3_omni import (FRAME_S, code2wav_ops, code2wav_weight_bytes, code_predictor_ops,
+                             code_predictor_weight_bytes, talker_ops, talker_weight_bytes)
+    sv, lay, m = scn.serving, scn.layout, pre.model
+    o = m.qwen3_omni
+    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
+                 scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
+    org = scn.mapping
+    dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.ctx", sv.prompt + sv.out_len // 2))
+    b = _cdiv(sv.batch, lay.dp)
+    P = pre.scenario.serving.prompt
+    n_frames = max(1, math.ceil(audio_out_s / FRAME_S - 1e-9))
+
+    def frame(bb: int, ctx: int) -> dict:
+        t = {"talker_s": _component_time([(talker_ops(o, bb, 1, ctx), 1)], sys, org, "bf16")["s"],
+             "code_predictor_s": _component_time([(code_predictor_ops(o, bb), 1)], sys, org, "bf16")["s"],
+             "code2wav_s": _component_time([(code2wav_ops(o, bb, frames=1), 1)], sys, org, "bf16")["s"]}
+        t["frame_s"] = sum(t.values())
+        return t
+
+    ctx_mid = P + n_frames // 2
+    f = frame(b, ctx_mid)
+    need = o.stored_bytes + b * o.talker_kv_bytes(P + n_frames)
+    if lm_only:              # 0.277: thinker load + fit (speech-card DRAM) — frame is speech_card
+        return {"kind": "qwen3_omni", "lm_stages": {"thinker": sv.out_len * dec.tpot / audio_out_s},
+                "fits": pre.fits and dec.fits and need <= sys.dram_bytes}
+    t_pre = _component_time([(talker_ops(o, b, max(1, P), 0), 1)], sys, org, "bf16")["s"]
+    lo, hi = 1, 1
+    while hi <= 1024 and frame(hi, ctx_mid)["frame_s"] <= FRAME_S:
+        lo, hi = hi, hi * 2
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if frame(mid, ctx_mid)["frame_s"] <= FRAME_S else (lo, mid)
+    first = pre.ttft + dec.tpot + t_pre + 2 * f["frame_s"]
+    tot = first + max(audio_out_s * (f["frame_s"] / FRAME_S), sv.out_len * dec.tpot)
+    return {"kind": "qwen3_omni", "label": "Qwen3-Omni 12.5Hz", "frame_ms": FRAME_S * 1e3,
+            "out_len": sv.out_len,
+            "streams_per_card": b,
+            "split_frame": {k: f[k] for k in ("talker_s", "code_predictor_s", "code2wav_s")},
+            "frame_s": f["frame_s"], "rtf": f["frame_s"] / FRAME_S, "realtime": f["frame_s"] <= FRAME_S,
+            "fits": pre.fits and dec.fits and need <= sys.dram_bytes,
+            "first_audio_s": first, "streams_realtime": lo,
+            "talker_GB": talker_weight_bytes(o) / 1e9,
+            "code_predictor_GB": code_predictor_weight_bytes(o) / 1e9,
+            "code2wav_GB": code2wav_weight_bytes(o) / 1e9, "cp_steps": o.cp_steps,
+            "audio_out_s": audio_out_s, "ttft_s": pre.ttft, "tpot_s": dec.tpot,
+            "talker_prefill_s": t_pre, "total_s": tot,
+            "speech_card_GB": need / 1e9, "speech_card_fits": need <= sys.dram_bytes,
+            "audio_out_s_per_s_card": (b if f["frame_s"] <= FRAME_S else b * FRAME_S / f["frame_s"]) /
+                                     (pre.scenario.layout.cards + lay.dp),
+            "split_first": {"thinker_ttft_s": pre.ttft, "thinker_tpot_s": dec.tpot,
+                            "talker_prefill_s": t_pre, "frame_s": f["frame_s"]}}
+
+
 def speech_kpis(scn: Scenario, audio_out_s: float = 10.0, lm_only: bool = False) -> dict:
     """``lm_only`` (0.277, speech_insight.speech_streams): omni / cosyvoice / kimi / moshi return only
     {kind, lm_stages, fits} — the LM-card stage loads and the fit verdict by the same expressions as the full KPIs, without
@@ -655,6 +715,8 @@ def speech_kpis(scn: Scenario, audio_out_s: float = 10.0, lm_only: bool = False)
         return _moshi_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "qwen3_tts", None) is not None:
         return _qwen3_tts_kpis(scn, pre, audio_out_s, lm_only)
+    if getattr(m, "qwen3_omni", None) is not None:
+        return _qwen3_omni_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "fish", None) is not None:
         return _fish_kpis(scn, m.fish, audio_out_s, lm_only)
     ts = getattr(m, "tts", None)
