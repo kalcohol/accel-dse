@@ -12,7 +12,9 @@ def test_dram_presets_primary():
     f = ENERGY_PRESETS["tpuv4i_7nm"]["fields"]
     # 0.333: 3.44 (SK hynix IEDM 2023 HBM2E × 0.8) → 5.80 (H200 measured active; FGDRAM kept as cross-check)
     assert abs(f["pJ_bit_dram_hbm"][0] - 5.8017342581848474) < 1e-9 and "2610.14244" in f["pJ_bit_dram_hbm"][2]
-    assert abs(f["pJ_bit_dram_lpddr"][0] - 4.0) < 1e-9 and "Grace" in f["pJ_bit_dram_lpddr"][2]
+    # 0.335: 4.0 (Grace all-in) → 3.23 (Micron Y52Q IDD4R−IDD2N); Grace kept as cross-check in the source text
+    assert abs(f["pJ_bit_dram_lpddr"][0] - 3.2298828125000005) < 1e-9 and "IDD4R" in f["pJ_bit_dram_lpddr"][2]
+    assert "Grace" in f["pJ_bit_dram_lpddr"][2] and "4.0" in f["pJ_bit_dram_lpddr"][2]
     h = ENERGY_PRESETS["horowitz_45nm"]["fields"]
     assert "pJ_bit_dram_hbm" not in h and "pJ_bit_dram_lpddr" not in h      # no 45 nm-era per-kind source
 

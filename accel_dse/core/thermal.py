@@ -113,7 +113,7 @@ def package_power(card_W: float | None, die_mm2: float | None, dies: int = 1, st
     0.333 ``standby_W`` = clocked HBM standby (powercap.hbm_standby_W): it does not offset the idle floor (measured at
     idle clocks with HBM in self-refresh — refresh and SRAM / NoC leakage do overlap).  ≤ 0.332 it did; at 48 mW/die
     the overlap was small, at the H200-measured 377 mW/channel the floor vanished whenever the stacks out-idled the die.
-    0.334 ``device_static_W`` = full off-die HBM device static (standby + refresh, powercap.hbm_device_static_W) excluded
+    0.334 / 0.335 ``device_static_W`` = full off-die DRAM device static (HBM standby+refresh; LPDDR too from 0.335) excluded
     from the die-temperature hot bound; default = standby_W (0.333 behaviour).  Refresh is beside the die, so it must
     not ride the die leakage temperature factor — 0.333 left it in by using one knob for both floor and hot."""
     out = {"card_W": card_W, "vr_eff": VR_EFF, "static_floor_W_mm2": STATIC_FLOOR_W_MM2, "static_add_W": 0.0,

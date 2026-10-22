@@ -66,10 +66,11 @@ def test_recorded_old_new():
         c = CHIPS[chip]
         new, old = (energy_report(_res(x, ph, b), t)["J_per_unit"] for x in (c, replace(c, noc_mem_attach="none")))
         assert lo < new / old - 1 < hi, (chip, ph, new / old)
-    # design conclusion: wan2.1-1.3b energy-tied SRAM sizing is J/token-limited again (16 → ≈ 19 MiB)
+    # design conclusion (0.335): LPDDR device pJ 4.0→3.23 drops DRAM share enough that energy-tie no longer
+    # lifts SRAM past the latency knee — wan2.1-1.3b stays lat-limited at 16 MiB (was J_tok ≈ 19 under 4.0)
     w = api.api_insight_sizing({"models": ["wan2.1-1.3b"], "energy": {"energy_preset": "tpuv4i_7nm"},
                                 "resources": ["sram"], "energy_tie": True})["resources"][0]
-    assert w["limited_by"]["metric"] == "J_tok" and 18 < w["min_ok"] < 20
+    assert w["limited_by"]["metric"] == "lat" and w["min_ok"] == 16.0
 
 
 # ---------------------------------------------------------------- router cost per link width

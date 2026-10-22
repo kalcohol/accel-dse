@@ -1,5 +1,5 @@
 """0.311: audit of the 0.310 memory-edge default (the +49 % at 100T + LPDDR5X 8×64, L32 is decode THROUGHPUT per card;
-J/token −10 %), the host-I/O edge kept off the memory shoreline, the published H100-like rectangle, per-edge interleave of
+J/token −11 % after 0.335 LPDDR pJ; was −10 %), the host-I/O edge kept off the memory shoreline, the published H100-like rectangle, per-edge interleave of
 the attach links, the ui_headless_smoke robustness, and the Ling-3.0 releases + the UBTree draft."""
 import contextlib
 import importlib.util
@@ -44,8 +44,8 @@ def test_the_plus49_is_throughput_and_its_mechanism():
     assert s1.chip.noc_mem_load == (11, 11, 10) and abs(s1.chip.noc_mem_links() - 11.636) < 1e-3
     assert abs(e9.per_card - 304.65) < 0.1 and abs(e0.per_card - 454.92) < 0.1 and abs(e1.per_card - 443.12) < 0.1
     assert abs(e0.per_card / e9.per_card - 1.4932) < 1e-3          # the 0.310 "+49 %" = tok/s per card
-    assert abs(j0 / j9 - 1 + 0.1019) < 1e-3                        # J/token −10.2 %, not +49 %
-    assert abs(e1.per_card / e9.per_card - 1.4545) < 1e-3 and abs(j1 * 1e3 - 63.285) < 1e-2
+    assert abs(j0 / j9 - 1 + 0.11004) < 1e-3                       # J/token −11.0 % (0.335 LPDDR pJ 4.0→3.23; was −10.2)
+    assert abs(e1.per_card / e9.per_card - 1.4545) < 1e-3 and abs(j1 * 1e3 - 58.108) < 1e-2
     # at L = 0 (no NoC limit) the value is the DRAM roofline: 3 edges lifted decode off the NoC-ingress bound
     assert abs(_run(L=0)[1].per_card - 454.92) < 0.1
 

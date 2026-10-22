@@ -250,6 +250,14 @@ _H200_IDLE_W = sum(u[0] for u in H200_HBM_MEAS["units"]) / 3                    
 _H200_ACTIVE_PJ = sum((u[1] - u[0]) / (u[2] * 1e9 * 8) * 1e12 for u in H200_HBM_MEAS["units"]) / 3   # 5.80 pJ/bit
 _HBM_REF_MW_GB = 195 * 1.2 * 260 / 3900 / 8                                                     # 1.95 mW/Gb (0.216)
 
+# 0.335: LPDDR5X device-side active pJ/bit (same sheet as mW_lpddr_ch_standby).  Table 16 WT, x16, 9600 Mb/s:
+# IDD4R − IDD2N on typ rails; IDD4RQ is datasheet "reference only / typical" 「近似」.
+_LPDDR_V = (1.8, 1.05, 0.9, 0.5)          # VDD1 / VDD2H / VDD2L / VDDQ typ
+_LPDDR_IDD2N = (1.3, 28.0, 0.2, 0.6)      # mA, Table 16 WT (matches mW_lpddr_ch_standby)
+_LPDDR_IDD4R = (17.0, 416.0, 0.2, 121.5)  # mA, Table 16 WT @ 9600 Mb/s
+_LPDDR_ACTIVE_PJ = (sum(i * v for i, v in zip(_LPDDR_IDD4R, _LPDDR_V))
+                    - sum(i * v for i, v in zip(_LPDDR_IDD2N, _LPDDR_V))) * 1e-3 / (9600e6 * 16) * 1e12
+
 
 ENERGY_PRESETS: dict[str, dict] = {
     "horowitz_45nm": {
@@ -311,8 +319,13 @@ ENERGY_PRESETS: dict[str, dict] = {
                                 "均匀随机数据，GPU 流式读的行局部性；常数 0 数据 5.09）；静态另计（mW_hbm_ch_standby + 刷新）。"
                                 "写 ≈ 4.2 pJ/bit（常数 0，同来源）未单列「近似」；交叉核对 " + _FGDRAM + " HBM2 ≈ 3.97（论文 §6：实测 "
                                 "HBM2 读电流为 FGDRAM 隐含值 1.78×）"),
-            "pJ_bit_dram_lpddr": (16.0 / (500e9 * 8) * 1e12, "推导", _GRACE + ": LPDDR5X subsystem up to 500 GB/s in "
-                                  "about 16 W → 4.0 pJ/bit at peak (memory side); 0.186 value 10 (PIM-AI, 二手) dropped"),
+            # 0.335: device-side active (IDD4R − IDD2N)/BW, same Micron Y52Q sheet as LPDDR standby (MODEL §280).
+            # ≤ 0.334: Grace subsystem 16 W / 500 GB/s = 4.0 all-in at peak (no idle/active split) — cross-check only.
+            "pJ_bit_dram_lpddr": (_LPDDR_ACTIVE_PJ, "推导",
+                                  "Micron Y52Q LPDDR5X (Rev. G 05/2025) Table 16 WT @ 9600 Mb/s x16：(IDD4R − IDD2N) × "
+                                  "(1.8/1.05/0.9/0.5 V) ÷ (9600 Mb/s × 16) = 3.23 pJ/bit「推导」（器件侧动态；IDD4RQ 为手册 typical"
+                                  "「近似」）。与 HBM 0.333 (总−空闲)/带宽同构。交叉核对 " + _GRACE + "：子系统满带宽 ≈ 4.0 pJ/bit"
+                                  " all-in（无空闲拆分；≈ 3.23 + PHY 1.3）；NVIDIA 幻灯 5 pJ/bit「二手」。0.186 的 10 已弃"),
             # 0.188: chip-side PHY and static power
             "pJ_bit_phy_hbm": (0.29, "来源", "Chae et al. (Samsung), 'A 4-nm 1.15 TB/s HBM3 Interface…', ISSCC 2023 28.4 / "
                                "JSSC 2023: 0.29 pJ/bit (controller-side interface); cross-check Mehta et al. VLSID 2025 "
@@ -703,7 +716,7 @@ for _pid, _f in PRESET_ONCHIP.items():
 # HBM4: Samsung (HBM4 product page / newsroom 2026-02, 1c DRAM + 4 nm base die) and SK hynix (newsroom 2025-09) both
 #   state ≈ 40 % better power efficiency than HBM3E → 5.80 / 1.4 = 4.14 pJ/bit 「推导」 (vendor claim; HBM4E uses it; 0.333).
 # LPDDR6: Kim et al. (Samsung), 'A 16Gb 12.8Gb/s LPDDR6 SDRAM …', ISSCC 2026 pp. 268–270 (doi 10.1109/ISSCC49663.
-#   2026.11409018): '21.0 % better energy efficiency than LPDDR5x' → 4.0 / 1.21 = 3.31 pJ/bit 「推导」.
+#   2026.11409018): '21.0 % better energy efficiency than LPDDR5x' → 3.23 / 1.21 = 2.67 pJ/bit 「推导」 (0.335).
 # LPDDR background: Micron Y52Q LPDDR5X data sheet (315b/441b/561b, Rev. G 05/2025), Table 16 per x16 channel of a
 #   2-channel 16 Gb die (8 Gb / channel), max values: IDD2N 1.3 mA VDD1 + 28 mA VDD2H + 0.2 mA VDD2L + 0.6 mA VDDQ at
 #   1.8 / 1.05 / 0.9 / 0.5 V typ = 32.2 mW 「来源」; refresh (IDD5 − IDD3N) = (14 − 2.7) mA × 1.8 V + (124 − 35) mA ×
@@ -728,8 +741,9 @@ ENERGY_PRESETS["tpuv4i_7nm"]["fields"].update({
     "pJ_bit_dram_hbm4": (_H200_ACTIVE_PJ / 1.4, "推导", "HBM3E 5.80 pJ/bit（0.333，H200 实测，≤ 0.332 为 3.44）÷ 1.4 — Samsung HBM4（官网 / 2026-02 新闻稿）与 SK hynix"
                          "（2025-09 新闻稿）均称能效比 HBM3E 高约 40 %（厂商口径）；HBM4E 沿用。敏感性：Olgun et al. 2026 的 HBM4 投影（仅电压，无工艺改进）"
                          "8 Gb/s 时为 HBM3E 6.4 Gb/s 的 0.94–1.00×"),
-    "pJ_bit_dram_lpddr6": (4.0 / 1.21, "推导", "LPDDR5X 4.0 pJ/bit ÷ 1.21 — Kim et al.（Samsung）ISSCC 2026 LPDDR6 12.8 Gb/s："
-                           "'21.0 % better energy efficiency than LPDDR5x'（doi 10.1109/ISSCC49663.2026.11409018）"),
+    "pJ_bit_dram_lpddr6": (_LPDDR_ACTIVE_PJ / 1.21, "推导", "LPDDR5X 3.23 pJ/bit（0.335，Micron IDD4R−IDD2N；≤ 0.334 为 Grace 4.0）÷ 1.21 — "
+                           "Kim et al.（Samsung）ISSCC 2026 LPDDR6 12.8 Gb/s：'21.0 % better energy efficiency than LPDDR5x'"
+                           "（doi 10.1109/ISSCC49663.2026.11409018）"),
     "mW_lpddr_ch_standby": (1.3 * 1.8 + 28 * 1.05 + 0.2 * 0.9 + 0.6 * 0.5, "来源", _MICRON_Y52Q + "：IDD2N 每 x16 通道"
                             "（8 Gb）1.3 mA·1.8 V + 28 mA·1.05 V + 0.2 mA·0.9 V + 0.6 mA·0.5 V = 32.2 mW（最大值；非掉电待机，偏高侧）"),
     "mW_lpddr_Gb_refresh": (((14 - 2.7) * 1.8 + (124 - 35) * 1.05) * 210 / 3904 / 8, "推导/二手", _MICRON_Y52Q +

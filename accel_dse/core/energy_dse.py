@@ -416,7 +416,7 @@ MEM_PROXY = {      # 0.302: HBM4 / LPDDR6 pJ/bit sourced (pJ_bit_dram_hbm4 / _lp
     "HBM4": "HBM4 pJ/bit = pJ_bit_dram_hbm4（预设 4.14：HBM3E 5.80 ÷ 1.4，Samsung / SK hynix 厂商口径「推导」；0.333）；PHY 仍用 HBM3 0.29 pJ/bit「近似（假设）」",
     "HBM4E": "HBM4E 沿用 HBM4 的 pJ/bit（pJ_bit_dram_hbm4）与 HBM3 PHY 0.29 pJ/bit「近似（假设）」",
     "HBM3": "HBM3 用 HBM3E 的 pJ/bit（HBM3E = HBM2E −20 %，HBM3 介于两者）「近似（假设）」",
-    "LPDDR6": "LPDDR6 pJ/bit = pJ_bit_dram_lpddr6（预设 3.31：LPDDR5X ÷ 1.21，Samsung ISSCC 2026「推导」）；PHY 仍用 LPDDR5X 1.3 pJ/bit、"
+    "LPDDR6": "LPDDR6 pJ/bit = pJ_bit_dram_lpddr6（预设 2.67：LPDDR5X 3.23 ÷ 1.21，Samsung ISSCC 2026「推导」；0.335）；PHY 仍用 LPDDR5X 1.3 pJ/bit、"
               "后台功耗沿用 LPDDR5X（Micron Y52Q）「近似（假设）」",
     "LPDDR5": "LPDDR5 用 LPDDR5X 的 pJ/bit 与后台功耗「近似（假设）」",
 }

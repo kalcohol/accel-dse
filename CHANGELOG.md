@@ -6,6 +6,25 @@
 
 
 
+## [0.335.0]
+
+### LPDDR device energy aligned with HBM 0.333 idle/active split (MODEL §280)
+- **No Grace-style measured idle/active split exists** (subsystem peak 16 W / 500 GB/s only). Device-side active is taken from the same Micron Y52Q sheet already used for LPDDR standby.
+- **`pJ_bit_dram_lpddr` 4.0 → 3.23** 「推导」 = Table 16 WT @ 9600 Mb/s x16: (IDD4R − IDD2N) × typ rails ÷ (9600 Mb/s × 16). IDD4RQ is datasheet typical 「近似」. Same structure as HBM `(total − idle) / BW`.
+- **`pJ_bit_dram_lpddr6` 3.31 → 2.67** (÷ 1.21, Samsung ISSCC 2026 21 % claim kept).
+- **Grace 4.0** kept as an all-in-at-peak cross-check in the source text (≈ 3.23 + PHY 1.3); not used as the per-bit default.
+- **Impact** (qwen3-8b 1P tpuv4i_7nm): decode b64 LPDDR5X J/token ×0.970, $/M ×0.996; HBM path unchanged.
+- **Test re-pins** (mechanical): test_core_311 J/token edge delta −10.2 % → −11.0 % / 63.3 → 58.1 mJ; test_core_306 wan2.1-1.3b energy-tie SRAM back to lat@16 (was J_tok≈19 under 4.0).
+
+### 0.334 thermal knobs apply to LPDDR (consistency)
+- `hbm_standby_W` / `hbm_device_static_W` now return LPDDR standby / full device static (were 0). Clocked IDD2N does not offset the area floor; full device static is out of `pkg_W_hot`. Cap / TCO `pkg_W` path unchanged in structure.
+
+### Freshness
+- Same HF new-row set as 0.333/0.334. OrcaCyber Nano: sha `1af1635` unchanged, gated auto, config 401 → pending.
+- **OmniASR** (bezzam/omniasr-*-v2, 2026-10-22): public `config.json` + weights, but `model_type: omniasr` needs a new audio-encoder builder (not Whisper/AuT/SAN-M) → pending, not added.
+- **UI patch not applied.**
+
+
 ## [0.334.0]
 
 ### Adversarial review of 0.333 HBM energy + package idle floor (MODEL §279)

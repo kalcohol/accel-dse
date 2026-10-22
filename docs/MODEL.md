@@ -9938,3 +9938,31 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 - Activation / row-locality term; standby data-rate scaling; write per-bit; LPDDR all-in vs HBM device scope; nvidia-smi rail scope; HBM4 measured absolute; temperature (+6.7 mA/°C).
 - PixText routing mask; PCIe / CXL area; N7 / N28 controller; controller power; SPHBM4 PHY; near-memory compute.
 - OrcaCyber Nano 1.0 (0.334 retry: sha 1af1635, gated auto, config 401, public GGUF = drafter/mix only).
+
+## §280 LPDDR device energy aligned with the HBM 0.333 split (0.335)
+
+### §280.1 Gap vs HBM
+- HBM 0.333 used a measured H200 idle / active split (nvidia-smi memory rail).
+- LPDDR has no public counterpart: NVIDIA Grace publishes only the subsystem peak ≈ 16 W at 500 GB/s → 4.0 pJ/bit all-in (no idle figure). Micron’s GH200 brief gives multichase DRAM watts, still not an idle/active pair.
+
+### §280.2 Adopted (datasheet mechanism, same source as standby)
+- Device-side active: Micron Y52Q LPDDR5X Rev. G Table 16 WT, x16 @ 9600 Mb/s 「来源」:
+  - IDD2N = (1.3, 28, 0.2, 0.6) mA on (1.8, 1.05, 0.9, 0.5) V = 32.22 mW (already `mW_lpddr_ch_standby`).
+  - IDD4R = (17, 416, 0.2, 121.5) mA → 528.33 mW (IDD4RQ typical 「近似」).
+  - Active = (528.33 − 32.22) mW ÷ (9600 Mb/s × 16) = **3.23 pJ/bit** 「推导」.
+- LPDDR6: 3.23 ÷ 1.21 = **2.67** (Samsung ISSCC 2026 “21.0 % better than LPDDR5x”).
+- Host PHY (`pJ_bit_phy_lpddr` 1.3) stays separate — Micron IDD is device-side.
+- Standby / refresh / PD / SR unchanged (Micron Y52Q).
+
+### §280.3 Cross-checks (not fitted)
+- Grace all-in 4.0 ≈ 3.23 + 1.3 PHY.
+- NVIDIA slide “5 pJ/bit vs DDR 36” 「二手」 — same order.
+- Old default 4.0 remains in the source text as the all-in sensitivity.
+
+### §280.4 Thermal consistency with 0.334
+- LPDDR device power is off-die. `hbm_standby_W` / `hbm_device_static_W` now cover `kind == "LPDDR"` (clocked IDD2N out of the floor offset; full W out of hot). Eval / DSE / api already pass both knobs.
+
+### §280.5 Not modelled / pending
+- System-level LPDDR idle/active measurement (Grace / GH200).
+- OmniASR (bezzam/omniasr-*-v2): public config, needs a new `omniasr_audio` builder.
+- Carried: activation locality; HBM4 absolute; PixText mask; PCIe/CXL; controllers; NMC; OrcaCyber Nano.

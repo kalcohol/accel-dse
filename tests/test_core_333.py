@@ -93,11 +93,12 @@ def test_standby_does_not_offset_the_area_floor():
 
 def test_hbm_standby_W_reads_only_hbm():
     assert hbm_standby_W({"hbm_static": {"kind": "HBM", "standby_W": 25.0}}) == 25.0
-    assert hbm_standby_W({"hbm_static": {"kind": "LPDDR", "standby_W": 3.0}}) == 0.0
+    assert hbm_standby_W({"hbm_static": {"kind": "LPDDR", "standby_W": 3.0}}) == 3.0  # 0.335
     assert hbm_standby_W({}) == 0.0
     e = {"hbm_static": {"kind": "HBM", "standby_W": 25.0, "refresh_W": 3.0, "W": 28.0}}
     assert hbm_device_static_W(e) == 28.0 and hbm_standby_W(e) == 25.0
-    assert hbm_device_static_W({"hbm_static": {"kind": "LPDDR", "W": 3.0}}) == 0.0
+    assert hbm_device_static_W({"hbm_static": {"kind": "LPDDR", "W": 3.0}}) == 3.0   # 0.335: LPDDR too
+    assert hbm_standby_W({"hbm_static": {"kind": "LPDDR", "standby_W": 1.5}}) == 1.5
 
 
 def test_docs_record_the_change():
@@ -108,3 +109,5 @@ def test_docs_record_the_change():
     assert "3.44" in sec and "5.80" in sec and "376.8" in sec and "standby_W" in sec
     assert "§279" in md and "## [0.334.0]" in cl
     assert "4.14" in MEM_PROXY["HBM4"] and "2.46" not in MEM_PROXY["HBM4"]
+    assert "§280" in md and "## [0.335.0]" in cl
+    assert "2.67" in MEM_PROXY["LPDDR6"] or "3.23" in MEM_PROXY["LPDDR6"]
