@@ -6,6 +6,63 @@
 
 
 
+## [0.326.0]
+
+### SPHBM4 on an organic substrate (HBM package option, opt-in)
+- **Switch:** `Chip.hbm_pkg` = `si` (default: HBM on a silicon interposer, unchanged) | `sphbm4`. New module `core/hbm_pkg.py`. Also on the CLI (`--hbm-pkg`), in the UI (HBM 封装 select), in the design report (`hbm_pkg` item) and in `chiplet_example.py --hbm-pkg / --hbm-pkg-study`.
+- **Sources:**
+  - JEDEC JESD330-4 (v1.0 Jun 2026; PR 2026-07-13) 「来源」: same DRAM core dies as HBM4; 512 DQ (32 × 16-bit channels, 8 Quad Channels) with 4:1 serialisation, each channel "four times faster than the corresponding HBM4 channel"; bump pitch > 90 µm; channels ≤ 20 mm.
+  - Rates 22.4 – 46.0 GT/s and 2.944 TB/s per stack at 46 GT/s (Tom's Hardware, Igor's Lab) 「二手」.
+  - Eliyan (Electronic Design 2026-02-18) 「二手」: silicon "two per 25-mm die edge"; organic "three memory devices … along the same edge".
+- **What changes when it applies:**
+  - Shoreline per stack: 11 → **25 / 3 = 8.33 mm** (Eliyan's organic figure, used as published). Eliyan's own silicon figure is 12.5 mm against the model's 11 mm (Micron footprint), so the gain is 1.32×, not Eliyan's 1.5×.
+  - The stacks leave the interposer: the DSE package-area limit (CoWoS-S / -L) and the 0.313 bounding box count only the logic dies (JEDEC: organic "rather than silicon substrates").
+  - Stack bandwidth and capacity are unchanged: 512 DQ × 4× rate = the HBM4 stack at the same equivalent rate 「推导」.
+- **Scope:** HBM4 only, at HBM4-equivalent rates of 5600 – 11500 MT/s (22.4 – 46.0 GT/s ÷ 4) 「推导」. HBM4 11700 / 13000 MT/s, HBM4E and HBM3E are ignored with a warning. Mutually exclusive with `hbm_base=custom` (SPHBM4 defines its own base die): validation error.
+- **Not modelled: no public number, so HBM4 values are kept (`hbm_pkg.NOT_MODELLED`):**
+  - SPHBM4 host-PHY area (Eliyan says only "often not more") and interface pJ/bit (Igor's Lab: "no reliable product measurements").
+  - Organic-substrate $/mm² and flip-chip attach yield. Package $ keeps the stack footprint at the CoWoS rate, an upper bound; eval reports the most that dropping it could save (`pkg_usd_bound`, 8 × HBM4 on n5_cowos_s ≈ $549).
+  - SPHBM4 $/GB (Tom's: the base die is "likely costlier").
+  - Substrate size / layer limits, 20 mm routing feasibility, and SerDes latency.
+- **Examples (eval: n5_derived, tpuv4i_7nm, accel_2026, n5_cowos_s, D0 0.1; si → sphbm4):**
+
+  | Example | shoreline | memory edges | J/unit | $/Mtok (m$) |
+  |---|---|---|---|---|
+  | 1P 8×HBM4 qwen3-8b decode b64 | tight → tight | 4 → 3 | 0.037492 → 0.038588 | 9.7658 → 9.8150 |
+  | 1P 12×HBM4 | **over → tight** | 4 → 4 | 0.040242 → 0.037966 | 13.5325 → 13.4305 |
+  | H100-like 6×HBM4 | tight → tight | 4 → 3 | 0.036328 → 0.036688 | 8.0569 → 8.0730 |
+  | H100-like 8×HBM4 | **over → tight** | 4 → 4 | 0.036587 → 0.036587 | 9.9735 → 9.9735 |
+
+  - Throughput, die area and package $ are unchanged in every row.
+  - The +2.9% / +1.0% J on the first and third rows is the 0.309 / 0.312 fewest-edges placement rule: narrower stacks fit on fewer edges, so DRAM gets fewer NoC attach edges. It is not the package. With `noc_mem_edges` pinned, J is byte-identical si vs sphbm4 (tested). eval reports this in `hbm_pkg.notes`.
+- **Energy DSE (`--hbm-pkg-study`, cases 0 / 1 / 4, n5_cowos_l, air_oam, accel_2026):**
+  - Interposer area per point drops by the stack footprints (8 × HBM4: e.g. 2942 → 820 mm² mono).
+  - 12 × HBM4: mono and N = 2 rows go shoreline over → tight (buildable). Mono stays infeasible on the reticle (987 > 858 mm²), so the verdicts stay only_split.
+  - 8 × HBM4 qwen3-8b decode MAC×1: verdict mono → split_J (J rule above), TCO verdict mono unchanged.
+
+### Custom-HBM DSE speed (results byte-identical)
+- 0.325 made the custom base-die DSE slower: 216 points 4.64 s cold / 2.49 s warm (std 3.4 / 2.1).
+- Fixes, all exact:
+  - `hbm_base.shore_floor_mm2` is memoised on (scenario, die): `full_area` and `std_equiv_delta` asked for the same floor, 180 bisections of which 66 were distinct.
+  - `sized_layout` caches its die-independent inputs (memory units, the attach links of a 4-edge chip, I/O macros, D2D edges) per key-without-die.
+  - After the first die shape, candidates whose memory or D2D is over by `_place`'s own test are skipped. Only a candidate with nothing over can be chosen there.
+  - The water-fill in `_place` is an explicit scan with the same arithmetic and tie order.
+- Now 3.5 – 3.8 s cold / 2.1 – 2.5 s warm (back to 0.324's 3.55 / 2.10 within run-to-run noise).
+- Proof:
+  - The full JSON of 4 DSEs (custom / std × 216-point and 126-point chiplet grids), 14 evals and both `chiplet_example` outputs is byte-identical to 0.325 (3,049,832 bytes each).
+  - test_core_326 checks the scan and the pruning against the 0.325 form on 3000 random placements.
+
+### Freshness
+- The HF sweep on 2026-10-22 (110 orgs) matches 0.325: nothing addable.
+- **OrcaCyber Nano 1.0 is still pending.** Retried the HF API (`expand` gguf / config / safetensors, tree, base repo, search) and third-party sources:
+  - The public GGUF metadata is the DFlash2 drafter's (`architecture: dflash`, 1.92 B).
+  - The base repo and config.json return 401.
+  - localLLMrig states its KV heads / head_dim are *assumed* from Qwen3.5-27B because the config is gated.
+  - The V100-LLM catalogue calls it "a Qwen3.8-27B type model" but gives only file sizes / sha256.
+  - Heads, KV heads, head_dim, FFN, linear-attention dims and vocab remain unconfirmed.
+
+### Tests
+- New: `test_core_326` (10).
 ## [0.325.0]
 
 ### Custom HBM base die: adversarial review of 0.324 (fixes, sourced)

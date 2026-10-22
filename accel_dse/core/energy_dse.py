@@ -287,6 +287,15 @@ def hbm_stacks(mem_id: str) -> int:
     return sp.n_units if sp.kind == "HBM" else 0
 
 
+def _sphbm4(chip, mem_id: str) -> bool:
+    """0.326: SPHBM4 on organic applies to this row's memory (hbm_pkg.sphbm4_applies)."""
+    if getattr(chip, "hbm_pkg", "si") != "sphbm4":
+        return False
+    from .. import mem_catalog as mc
+    from .hbm_pkg import sphbm4_applies
+    return sphbm4_applies(chip, mc.parse_mem_id(mem_id))
+
+
 @lru_cache(maxsize=1 << 10)
 def _hbm_footprint(mem_id: str) -> float:
     from .. import mem_catalog as mc
@@ -1041,7 +1050,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     why.append(f"单晶粒 {row['mm2']:.0f} > 光罩 {reticle_mm2:g} mm²")
                 sr = sr0 if sr0 is not None else shoreline_report(s_full, row.get("mm2") if dens_ok else None)
                 if pkg_mm2 and dens_ok and row.get("si_mm2") is not None:
-                    row["pkg_mm2"] = row["si_mm2"] + _hbm_footprint(mid)
+                    row["pkg_mm2"] = row["si_mm2"] + (0.0 if _sphbm4(ch, mid) else _hbm_footprint(mid))   # 0.326
                     if nd == 1 and (sr.get("footprint") or {}).get("bbox_mm2"):
                         # 0.313: one die — its placed stacks' bounding box (corner squares of a 3–4-sided stack row)
                         row["pkg_mm2"] = max(row["pkg_mm2"], sr["footprint"]["bbox_mm2"])
@@ -1114,6 +1123,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                 if tco_p is not None:           # 0.317: TCO from the same package cost / package power as the row
                     row["tco"] = _tco_row(tco_p, row, prices, row.get("mm2") if dens_ok else sr.get("die_mm2"), nd,
                                           _tco_mem, tco_point, getattr(ch, "hbm_base", "std"))
+                if getattr(ch, "hbm_pkg", "si") == "sphbm4":        # 0.326: does SPHBM4 on organic apply here
+                    row["hbm_sphbm4"] = _sphbm4(ch, mid)
                 if getattr(ch, "hbm_base", "std") == "custom":      # 0.324: does the custom base die apply here
                     from .hbm_base import custom_applies
                     row["hbm_custom"] = custom_applies(ch, row["mem_type"])
@@ -1125,6 +1136,13 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                      "代替两端 HBM PHY「推导」；内存 $/GB × "
                      f"{CUSTOM['usd_per_GB_factor'][0]:g}「{CUSTOM['usd_per_GB_factor'][1]}」；每栈岸线 11 mm 不变（硅中介层短距须紧贴）"
                      "「推导」；卡级热流按标准接口等效面积判定（晶粒热流按实际面积）；带宽、近存计算、控制器功耗未改（无公开数字）")
+    if getattr(ch, "hbm_pkg", "si") == "sphbm4":           # 0.326
+        from .hbm_pkg import NOT_MODELLED as _NMP, SPHBM4_EDGE_MM, rate_range_MTps
+        lo_, hi_ = rate_range_MTps()
+        notes.append(f"SPHBM4 有机基板（hbm_pkg=sphbm4，仅 HBM4 @ {lo_:g} – {hi_:g} MT/s 等效的行）：每栈岸线 11 → "
+                     f"{SPHBM4_EDGE_MM:.2f} mm（Eliyan 每 25 mm 3 堆「二手」）；堆栈不在中介层上——中介层面积上限只计逻辑晶粒"
+                     "（JESD330-4「来源」）；带宽 / 容量同 HBM4（同 DRAM 芯、512 DQ × 4 倍速率「来源」）；未建模（无公开数字，沿用 HBM4）："
+                     + "；".join(x.split("：")[0] for x in _NMP))
     ok = [i for i, x in enumerate(rows) if x.get("feasible")]
     sub = [rows[i] for i in ok]
     f2 = [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1)), tie)]
@@ -1208,6 +1226,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                         "reticle_mm2": reticle_mm2, "pkg_mm2": pkg_mm2, "d0_per_cm2": d0_per_cm2,
                         "compare": split} if chip_mode else None,
             **({"hbm_base": "custom"} if getattr(ch, "hbm_base", "std") == "custom" else {}),   # 0.324 (std: absent)
+            **({"hbm_pkg": "sphbm4"} if getattr(ch, "hbm_pkg", "si") == "sphbm4" else {}),     # 0.326 (si: absent)
             "chip": ch.name, "model": scn.model, "phase": "mix" if mix else phases[0], "rows": rows,
             "front": sorted(f2, key=lambda i: rows[i]["thr"]), "best": best, "base": base, "notes": notes,
             "power_cap_W": cap, "power_cap_src": cap_src, "power_mode": power_mode, "curve": curve,

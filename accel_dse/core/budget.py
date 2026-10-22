@@ -299,7 +299,8 @@ def shoreline_check(scn, die_mm2: float | None) -> dict | None:
     from .hardware import die_edges
     ed = die_edges(scn.chip, die_mm2)            # 0.311: long edges first (GH100 published long edge), else square
     side = die_mm2 ** 0.5
-    need = spec.n_units * HBM_STACK_EDGE_MM
+    em = _stack_edge(scn.chip, spec)        # 0.326: 8.33 mm with SPHBM4 on organic (hbm_pkg), else 11
+    need = spec.n_units * em
     # 0.214: a die in a multi-die package gives one edge to the D2D link (B200: the inner edge to NV-HBI)
     # 0.308: two inner edges for packages of ≥ 3 dies (d2d_catalog.d2d_edges)
     # 0.311: and one edge stays for the host I/O (Chip.noc_mem_io_edges, mem_sides_max)
@@ -307,15 +308,16 @@ def shoreline_check(scn, die_mm2: float | None) -> dict | None:
     sides_max = mem_sides_max(scn)
     typ, mx = sum(ed[:min(HBM_SIDES_TYPICAL, sides_max)]), sum(ed[:sides_max])
     if discrete_fit(scn):           # 0.312: whole stacks per edge (⌊edge / 11 mm⌋ each), not summed edge length
-        ft, fm = _fit_units(ed[:min(HBM_SIDES_TYPICAL, sides_max)], HBM_STACK_EDGE_MM), \
-            _fit_units(ed[:sides_max], HBM_STACK_EDGE_MM)
+        ft, fm = _fit_units(ed[:min(HBM_SIDES_TYPICAL, sides_max)], em), _fit_units(ed[:sides_max], em)
         status = "ok" if spec.n_units <= ft else ("tight" if spec.n_units <= fm else "over")
     else:
-        ft, fm = int(typ // HBM_STACK_EDGE_MM), int(mx // HBM_STACK_EDGE_MM)
+        ft, fm = int(typ // em), int(mx // em)
         status = "ok" if need <= typ else ("tight" if need <= mx else "over")
     out = {"stacks": spec.n_units, "need_mm": need, "edge_typical_mm": typ, "edge_max_mm": mx, "die_mm2": die_mm2,
            "status": status, "fit_typical": ft, "fit_max": fm, "discrete": discrete_fit(scn),
            "known_max_stacks": KNOWN_MAX_STACKS, "d2d_edges": d2d_edges, "sides_max": sides_max}
+    if em != HBM_STACK_EDGE_MM:             # 0.326: SPHBM4 on organic (std output unchanged)
+        out["stack_edge_mm"] = em
     if status != "ok":
         io = getattr(scn.chip, "noc_mem_io_edges", 0)
         keep = "、".join(x for x in (f"D2D {d2d_edges} 边" if d2d_edges else "", "主机 I/O 1 边" if io == 1 else "")
@@ -339,11 +341,20 @@ LPDDR_TBps_PER_MM, LPDDR_REF_GTps = 0.18, 9.6
 LPDDR_PINS_PER_MM = LPDDR_TBps_PER_MM * 1000 / LPDDR_REF_GTps
 
 
-def mem_edge_need_mm(spec) -> float | None:
-    """0.310: die edge the DRAM interface needs: HBM stacks × 11 mm; LPDDR bus bits ÷ 18.75 pins / mm; else None."""
+def _stack_edge(chip, spec) -> float:
+    """0.326: die edge per HBM stack — hbm_pkg.stack_edge_mm (SPHBM4 on organic 8.33 mm) with a chip, else 11 mm."""
+    if chip is None or getattr(chip, "hbm_pkg", "si") == "si":
+        return HBM_STACK_EDGE_MM
+    from .hbm_pkg import stack_edge_mm
+    return stack_edge_mm(chip, spec)
+
+
+def mem_edge_need_mm(spec, chip=None) -> float | None:
+    """0.310: die edge the DRAM interface needs: HBM stacks × 11 mm (0.326: × hbm_pkg edge with ``chip``); LPDDR bus
+    bits ÷ 18.75 pins / mm; else None."""
     t = spec.mem_type.upper()
     if "HBM" in t:
-        return spec.n_units * HBM_STACK_EDGE_MM
+        return spec.n_units * _stack_edge(chip, spec)
     if "LPDDR" in t:
         return spec.bus_bits / LPDDR_PINS_PER_MM
     return None
@@ -380,21 +391,21 @@ def hbm_mem_edges(scn, die_mm2: float | None, lpddr: bool = True) -> int:
         spec = mem_catalog.parse_mem_id(w.mem_id)
         if "LPDDR" not in spec.mem_type.upper():
             return 2
-        need, smax = mem_edge_need_mm(spec), mem_sides_max(w)
+        need, smax = mem_edge_need_mm(spec, w.chip), mem_sides_max(w)
     ed = die_edges(w.chip, die_mm2)
-    u = mem_edge_units(mem_catalog.parse_mem_id(w.mem_id)) if discrete_fit(w) else None
+    u = mem_edge_units(mem_catalog.parse_mem_id(w.mem_id), w.chip) if discrete_fit(w) else None
     for m in range(2, smax + 1):
         if (_fit_units(ed[:m], u[1]) >= u[0]) if u else (sum(ed[:m]) >= need - 1e-9):
             return m
     return 2
 
 
-def mem_edge_units(spec) -> tuple[int, float] | None:
+def mem_edge_units(spec, chip=None) -> tuple[int, float] | None:
     """0.311: the interleave units of a memory and the die edge each takes: HBM stacks × 11 mm; LPDDR channels (x16
     LPDDR4X / 5 / 5X, x24 LPDDR6 — mem_catalog, JEDEC 「来源」) × channel bits ÷ 18.75 pins / mm 「推导」; None else."""
     t = spec.mem_type.upper()
     if "HBM" in t:
-        return int(spec.n_units), HBM_STACK_EDGE_MM
+        return int(spec.n_units), _stack_edge(chip, spec)
     if "LPDDR" in t:
         cb = 24 if "LPDDR6" in t else 16
         return max(1, spec.bus_bits // cb), cb / LPDDR_PINS_PER_MM
@@ -410,7 +421,7 @@ def mem_edge_load(scn, die_mm2: float | None, m: int) -> tuple:
     from .. import mem_catalog
     from .hardware import die_edges
     w = whole_die(scn)
-    u = mem_edge_units(mem_catalog.parse_mem_id(w.mem_id))
+    u = mem_edge_units(mem_catalog.parse_mem_id(w.mem_id), w.chip)
     if u is None or m < 2:
         return ()
     n, umm = u
@@ -589,6 +600,7 @@ RETICLE_FIELD_MM = (26.0, 33.0)
 DIE_ASPECT_MAX = 2.0
 SHAPE_STEP_MM = 0.25
 _SIZED_CACHE: dict = {}
+_SIZED_PRE: dict = {}          # 0.326: sized_layout's die-independent inputs (see there)
 
 
 def die_shapes(chip, die_mm2: float) -> list:
@@ -637,10 +649,20 @@ def _place(ed, dpos, units, links4, macros, d2d_need) -> dict:
         mst = "ok" if n <= sum(cap[i] for i in non[:lo]) else ("tight" if n <= fitk else "over")
         med = non[:k]
         ld = [0] * k
+        # water-fill: each unit to the edge with the lowest (load + 1) / links, lowest index on ties — 0.326: an
+        # explicit scan (the 0.312 min(..., key=lambda) form, same arithmetic and tie order, ~3× faster)
+        over_ = mst == "over"
+        capm = [cap[i] for i in med]
         for _ in range(n):
-            ok = [j for j in range(k) if mst == "over" or ld[j] < cap[med[j]]]
-            j = min(ok, key=lambda j: ((ld[j] + 1) / links4[j], j))
-            ld[j] += 1
+            bj, bv = -1, 0.0
+            for j in range(k):
+                if over_ or ld[j] < capm[j]:
+                    v = (ld[j] + 1) / links4[j]
+                    if bj < 0 or v < bv:
+                        bj, bv = j, v
+            if bj < 0:
+                raise ValueError("min() arg is an empty sequence")
+            ld[bj] += 1
         load = tuple(ld)
         for j, i in enumerate(med):
             mem_u[i], mem_mm[i] = ld[j], ld[j] * umm
@@ -661,6 +683,18 @@ def _place(ed, dpos, units, links4, macros, d2d_need) -> dict:
             "free_total": sum(ed) - sum(mem_mm) - sum(d2d_mm) - sum(io_mm)}
 
 
+def _surely_bad(ed, dpos, units, d2d_need) -> bool:
+    """0.326: True when _place(ed, dpos, …) would report memory or D2D "over" (its exact expressions)."""
+    import math
+    if dpos and d2d_need is not None and not d2d_need <= sum(ed[i] for i in dpos) + 1e-9:
+        return True
+    if units:
+        n, umm = units
+        if n > sum(math.floor(ed[i] / umm + 1e-9) for i in range(4) if i not in dpos):
+            return True
+    return False
+
+
 def sized_layout(scn, die_mm2: float) -> dict:
     """0.312: the buildable layout of one die under the sized-I/O mechanism — the squarest die shape (die_shapes)
     × D2D position (short / long edges) whose memory, D2D and I/O all fit (fewer memory edges, then more free edge,
@@ -675,16 +709,31 @@ def sized_layout(scn, die_mm2: float) -> dict:
         key, hit = None, None
     if hit is not None:
         return hit
-    units = mem_edge_units(mem_catalog.parse_mem_id(w.mem_id))
-    from dataclasses import replace as _rp
-    links4 = (_rp(w.chip, noc_mem_edges=4)).noc_mem_edge_links()
-    nz = io_need(scn)
+    # 0.326: the die-independent inputs (memory units, attach links of a 4-edge chip, I/O macros, D2D edges) are
+    # cached per key-without-die — the shoreline-floor bisection (hbm_base.shore_floor_mm2) calls this ~30 times per
+    # row at varying dies; values are the same objects' copies, so every layout is unchanged
+    pk = key[:-1] if key is not None else None
+    pre = _SIZED_PRE.get(pk) if pk is not None else None
+    if pre is None:
+        from dataclasses import replace as _rp
+        pre = (mem_edge_units(mem_catalog.parse_mem_id(w.mem_id), w.chip),
+               (_rp(w.chip, noc_mem_edges=4)).noc_mem_edge_links(), io_need(scn), _d2d_edges_of(w))
+        if pk is not None:
+            if len(_SIZED_PRE) > 20000:
+                _SIZED_PRE.clear()
+            _SIZED_PRE[pk] = pre
+    units, links4, nz0, nd = pre
+    nz = {**nz0, "macros_mm": list(nz0["macros_mm"])}
     ds = d2d_shoreline(scn, die_mm2)
-    nd = _d2d_edges_of(w)
     best = None
+    dneed = ds["need_mm"] if ds else None
     for si, ed in enumerate(die_shapes(w.chip, die_mm2)):
-        cands = [_place(ed, dp, units, links4, nz["macros_mm"], ds["need_mm"] if ds else None)
-                 for dp in _D2D_POS.get(nd, [tuple(range(4 - nd, 4))])]
+        # 0.326: after the first shape only a candidate with nothing over can be chosen; one whose memory or D2D is
+        # over by _place's own test (memory: units > Σ ⌊edge / unit + 1e-9⌋ over the non-D2D edges; D2D: need >
+        # Σ its edges + 1e-9) is skipped unbuilt — the chosen layout is unchanged
+        cands = [_place(ed, dp, units, links4, nz["macros_mm"], dneed)
+                 for dp in _D2D_POS.get(nd, [tuple(range(4 - nd, 4))])
+                 if si == 0 or not _surely_bad(ed, dp, units, dneed)]
         ok = [c for c in cands if not c["bad"]]
         if ok:
             best = min(ok, key=lambda c: (c["mem_edges"], -c["free_total"]))
@@ -709,7 +758,7 @@ def _sized_report(scn, die: float, out: dict) -> dict:
     L = sized_layout(scn, die)
     ed, nd = L["ed"], _d2d_edges_of(w)
     spec = mem_catalog.parse_mem_id(w.mem_id)
-    need = mem_edge_need_mm(spec)
+    need = mem_edge_need_mm(spec, w.chip)
     if L["units"]:
         n, umm = L["units"]
         mem = {"kind": spec.kind, "units": n, "unit_mm": umm, "need_mm": need, "edges": L["mem_edges"],
@@ -755,7 +804,8 @@ def _sized_report(scn, die: float, out: dict) -> dict:
     # 0.313: interposer footprint of this die + its stacks as placed — the bounding box (stacks stand out from their
     # edge by their depth: HBM3/3E 11 mm, Micron 「来源」; HBM4 12.8 mm 「二手」) vs the plain area sum; a stack row on
     # 3–4 sides leaves the corner squares empty, so Σ areas understates the interposer (0.308 – 0.312 used Σ)
-    if spec.kind == "HBM" and L["units"]:
+    from .hbm_pkg import sphbm4_applies
+    if spec.kind == "HBM" and L["units"] and not sphbm4_applies(w.chip, spec):   # 0.326: SPHBM4 stacks are off it
         dep = HBM_STACK_DEPTH_MM.get(spec.mem_type, HBM_STACK_EDGE_MM)
         dz = [dep if L["mem_u"][i] else 0.0 for i in range(4)]
         bbox = (ed[2] + dz[0] + dz[1]) * (ed[0] + dz[2] + dz[3])
@@ -828,8 +878,8 @@ def shoreline_report_uncached(scn, die_mm2: float | None = None, b: "Budget | No
     smax = mem_sides_max(w)
     m = min(w.chip.mem_edges, smax) if w.chip.mem_edges else 2
     spec = mem_catalog.parse_mem_id(w.mem_id)
-    u = mem_edge_units(spec)
-    need = mem_edge_need_mm(spec)
+    u = mem_edge_units(spec, w.chip)
+    need = mem_edge_need_mm(spec, w.chip)
     mem_mm = [0.0] * 4
     mem_u = [0] * 4
     if u:

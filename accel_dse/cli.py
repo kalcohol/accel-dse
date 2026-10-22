@@ -56,6 +56,9 @@ def _scenario_args(p: argparse.ArgumentParser, layout: bool = True) -> None:
     p.add_argument("--hbm-base", dest="hbm_base", choices=["std", "custom"], default=None,
                    help="0.324: HBM4 / 4E base die — custom = controller on a logic base die + narrow D2D (host PHY area, "
                         "PHY pJ/bit, memory $/GB change; MODEL §269)")
+    p.add_argument("--hbm-pkg", dest="hbm_pkg", choices=["si", "sphbm4"], default=None,
+                   help="0.326: HBM package — sphbm4 = JEDEC SPHBM4 (JESD330-4) stacks on the organic substrate: 8.33 mm "
+                        "of die edge per stack (Eliyan 3 per 25 mm), stacks off the interposer; HBM4 only (MODEL §271)")
     p.add_argument("--mem-cap-gb", type=float, default=None, help="usable DRAM per card, GB (default: stack capacity)")
     p.add_argument("--kv-mem-frac", type=float, default=None, help="KV / state share of post-weight free memory (default 1)")
     p.add_argument("--kv-mem-eff", type=float, default=None, help="DRAM efficiency of KV-cache streams (opt-in; default = mem_eff)")
@@ -545,7 +548,7 @@ def _body(a: argparse.Namespace, layout: bool = True) -> dict:
         if getattr(a, "cp", 1) > 1:     # 0.88 context parallel (omitted at 1: hash unchanged)
             sc["layout"]["cp"] = a.cp
     chip = {k: getattr(a, k) for k in ("slc_mib", "slc_GBps", "slc_policy", "attn_fmt", "sram_port_Bpc_per_engine", "kernel_us", "dispatch", "dispatch_us",
-                                       "hbm_base")
+                                       "hbm_base", "hbm_pkg")
             if getattr(a, k, None) is not None}
     if chip:
         sc["chip"] = chip

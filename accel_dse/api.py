@@ -1049,6 +1049,18 @@ def api_eval(body: dict) -> dict:
         from .core.budget import auto_area_budget as _aab
         out["hbm_base"] = _hb.report(scn, bud if bud is not None else _aab(), table, sh.get("die_mm2"))
         out["summary"]["warnings"] += [n for n in out["hbm_base"]["notes"] if n.startswith("hbm_base=custom")]
+    if getattr(scn.chip, "hbm_pkg", "si") == "sphbm4":        # 0.326: SPHBM4 on organic — what it changed
+        from .core import hbm_pkg as _hp
+        _tc = body.get("tco")
+        _cp = None
+        if isinstance(_tc, dict) and _tc.get("cost") is not None:
+            from .core.energy_dse import _cost_params
+            try:
+                _cp = _cost_params(_tc["cost"])
+            except (ValueError, KeyError, TypeError):
+                _cp = None
+        out["hbm_pkg"] = _hp.report(scn, sh, _cp)
+        out["summary"]["warnings"] += [n for n in out["hbm_pkg"]["notes"] if n.startswith("hbm_pkg=sphbm4 ")]
     # 0.316: the TDP cap compares the package power (thermal.cap_power_fn → package_power, the function the thermal
     # check below uses) per card over the shoreline die; power_scope "card" = 0.315
     from .core.thermal import POWER_SCOPES, cap_power_fn

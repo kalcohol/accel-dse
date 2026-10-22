@@ -363,6 +363,7 @@ function syncInputs() {
     if ($('c-' + k) && S.cat) $('c-' + k).value = k in S.chipOver ? S.chipOver[k] : '';
   }
   if ($('c-hbm_base') && S.cat) $('c-hbm_base').value = S.chipOver.hbm_base || '';   // 0.324: custom HBM base die ('' = std)
+  if ($('c-hbm_pkg') && S.cat) $('c-hbm_pkg').value = S.chipOver.hbm_pkg || '';   // 0.326: SPHBM4 on organic ('' = si)
   if ($('c-noc_mem_edges') && S.cat) $('c-noc_mem_edges').value = 'noc_mem_edges' in S.chipOver ? String(S.chipOver.noc_mem_edges) : '';   // 0.310
   if ($('c-noc_mem_io_edges') && S.cat) $('c-noc_mem_io_edges').value = 'noc_mem_io_edges' in S.chipOver && S.chipOver.noc_mem_io_edges !== -1 ? String(S.chipOver.noc_mem_io_edges) : '';   // 0.312
   if ($('c-io_su_lane_Gbps') && S.cat) $('c-io_su_lane_Gbps').value = 'io_su_lane_Gbps' in S.chipOver ? String(S.chipOver.io_su_lane_Gbps) : '';   // 0.313
@@ -1531,7 +1532,7 @@ function renderBudget(r) {
     h('td', { class: 'l small' }, i.note || '')));
   if (b.shoreline) rows.push(h('tr', { class: b.shoreline.status !== 'ok' ? 'warn' : '' }, h('td', { class: 'l' }, 'HBM 岸线 shoreline'),
     h('td', {}, num(b.shoreline.need_mm) + ' mm'), h('td', {}, num(b.shoreline.edge_typical_mm) + ' mm'), h('td', {}, '—'),
-    h('td', { class: 'l' }, b.shoreline.status === 'ok' ? '✓' : '⚠'), h('td', { class: 'l small' }, b.shoreline.warning || `${b.shoreline.stacks} 堆栈 × 11 mm；两长边可放 ${b.shoreline.fit_typical}`)));   // 0.212
+    h('td', { class: 'l' }, b.shoreline.status === 'ok' ? '✓' : '⚠'), h('td', { class: 'l small' }, b.shoreline.warning || `${b.shoreline.stacks} 堆栈 × ${num(b.shoreline.stack_edge_mm || 11)} mm${b.shoreline.stack_edge_mm ? '（SPHBM4 有机基板）' : ''}；两长边可放 ${b.shoreline.fit_typical}`)));   // 0.212
   if (b.area && b.area.mm2 !== null) rows.push(h('tr', {}, h('td', { class: 'l' }, '面积代理分项'), h('td', { colspan: 5, class: 'l small' },
     Object.entries(b.area.terms).map(([k, v]) => `${{ sram: 'SRAM', slc: 'SLC', mac: 'MAC 阵列', fixed: '固定' }[k] || k} ${num(v)} mm²`).join(' + ') + ` = ${num(b.area.mm2)} mm² / 卡「假设」`)));
   if (b.scope_note) rows.push(h('tr', {}, h('td', { class: 'l' }, '范围'), h('td', { colspan: 5, class: 'l small' }, b.scope_note)));
@@ -3076,6 +3077,7 @@ async function init() {
     $('c-' + k).addEventListener('change', (e) => { if (e.target.value) S.chipOver[k] = e.target.value; else delete S.chipOver[k]; schedule(); });
   }
   $('c-hbm_base').addEventListener('change', (e) => { if (e.target.value) S.chipOver.hbm_base = e.target.value; else delete S.chipOver.hbm_base; schedule(); });   // 0.324
+  $('c-hbm_pkg').addEventListener('change', (e) => { if (e.target.value) S.chipOver.hbm_pkg = e.target.value; else delete S.chipOver.hbm_pkg; schedule(); });   // 0.326
   $('c-noc_mem_edges').addEventListener('change', (e) => { if (e.target.value) S.chipOver.noc_mem_edges = parseInt(e.target.value, 10); else delete S.chipOver.noc_mem_edges; schedule(); });   // 0.310
   $('c-io_su_lane_Gbps').addEventListener('change', (e) => { if (e.target.value) S.chipOver.io_su_lane_Gbps = parseFloat(e.target.value); else delete S.chipOver.io_su_lane_Gbps; schedule(); });   // 0.313
   $('c-cooling').addEventListener('change', (e) => { S.cooling = e.target.value || null; schedule(); });   // 0.313

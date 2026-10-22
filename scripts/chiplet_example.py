@@ -66,7 +66,7 @@ def budget() -> Budget:
 
 def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d0=0.1, io_edges=-1,
         mem="hbm3e_8s_8h24g_9200", tp=1, link=400.0, macs=(1.0, 2.0), include_unbuildable=False, lane=None,
-        shore_strict=False, cooling=None, power_scope="package", tco=None, hbm_base="std") -> dict:
+        shore_strict=False, cooling=None, power_scope="package", tco=None, hbm_base="std", hbm_pkg="si") -> dict:
     std = d2d_catalog.D2D_STANDARDS["ucie-a-48"]
     old = std["pJ_bit"]
     if pj:
@@ -77,6 +77,8 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d
             chip = replace(chip, io_su_lane_Gbps=float(lane))
         if hbm_base != "std":       # 0.324: custom HBM4 / 4E base die (core/hbm_base.py)
             chip = replace(chip, hbm_base=hbm_base)
+        if hbm_pkg != "si":         # 0.326: SPHBM4 stacks on the organic substrate (core/hbm_pkg.py)
+            chip = replace(chip, hbm_pkg=hbm_pkg)
         s = Scenario(model=model, chip=chip, mem_id=mem, layout=Layout(tp=tp), link=Link(GBps=link),
                      serving=Serving(phase=ph, batch=64 if ph == "decode" else 1, prompt=2048, ctx=4096))
         kw = dict(noc_link_Bpc=L, noc_routing="xy") if L else {}
@@ -89,7 +91,8 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d
     finally:
         std["pJ_bit"] = old
     out(f"== {model} {ph} {split} L={L} pj={pj} {'(0.308 flat)' if flat else '(0.309)'} io_edges={io_edges} "
-        f"mem={mem} tp={tp} link={link:g}" + (f" hbm_base={hbm_base}" if hbm_base != "std" else ""))
+        f"mem={mem} tp={tp} link={link:g}" + (f" hbm_base={hbm_base}" if hbm_base != "std" else "")
+        + (f" hbm_pkg={hbm_pkg}" if hbm_pkg != "si" else ""))
     for x in o["rows"]:
         kind = x.get("d2d_std") or ("mono" if x.get("clusters", 1) == 1 else f"mono×{x['clusters']}簇")
         out(f'  MAC×{x["mac_x"]:g} N={x["dies"]} {kind:10s} thr={x.get("thr", 0):8.0f} '
@@ -235,6 +238,39 @@ def hbm_base_study(out=print, cost="n5_cowos_l", tco="accel_2026", cooling="air_
     return res
 
 
+HBM_PKG_MEMS = ("hbm4_8s_12h24g_10000", "hbm4_12s_12h24g_10000")   # 0.326: 8 and 12 × HBM4 at 10 Gb/s
+
+
+def hbm_pkg_study(out=print, cost="n5_cowos_l", tco="accel_2026", cooling="air_oam", mems=HBM_PKG_MEMS) -> list:
+    """0.326: cases 0 / 1 / 4 on 8 and 12 × HBM4, silicon interposer vs SPHBM4 on organic — per design point the
+    shoreline status, memory edges, buildability, throughput, J/unit, interposer area and $/Mtok (MODEL §271)."""
+    res = []
+    for mem in mems:
+        for ci in HBM_BASE_CASES:
+            model, ph, split, L, pj = CASES[ci]
+            o = {hp: run(model, ph, split, L, pj, out=lambda *_: None, cost=cost, mem=mem, cooling=cooling, tco=tco,
+                         include_unbuildable=True, hbm_pkg=hp) for hp in ("si", "sphbm4")}
+            out(f"== {model} {ph} {split} mem={mem} cooling={cooling} tco={tco}: si → sphbm4")
+            for a, b in zip(o["si"]["rows"], o["sphbm4"]["rows"]):
+                kind = a.get("d2d_std") or ("mono" if a.get("clusters", 1) == 1 else f"mono×{a['clusters']}簇")
+                ta, tb = (a.get("tco") or {}).get("usd_per_Munit"), (b.get("tco") or {}).get("usd_per_Munit")
+                rec = {"mem": mem, "case": ci, "mac_x": a["mac_x"], "dies": a["dies"], "kind": kind,
+                       "shore": (a.get("shoreline"), b.get("shoreline")), "mem_edges": (a.get("mem_edges"), b.get("mem_edges")),
+                       "build": (a.get("buildable"), b.get("buildable")), "thr": (a.get("thr"), b.get("thr")),
+                       "J": (a.get("J_per_unit"), b.get("J_per_unit")), "pkg_mm2": (a.get("pkg_mm2"), b.get("pkg_mm2")),
+                       "usdM": (ta, tb)}
+                res.append(rec)
+                f = lambda v, k=1.0, d=0: "—" if v is None else f"{v * k:.{d}f}"  # noqa: E731
+                out(f'  MAC×{a["mac_x"]:g} N={a["dies"]} {kind:10s} shore {a.get("shoreline")}→{b.get("shoreline")} '
+                    f'memE {a.get("mem_edges")}→{b.get("mem_edges")} build {a.get("buildable")}→{b.get("buildable")} '
+                    f'thr {f(a.get("thr"))}→{f(b.get("thr"))} J {f(a.get("J_per_unit"), 1e3, 3)}→{f(b.get("J_per_unit"), 1e3, 3)} mJ '
+                    f'interposer {f(a.get("pkg_mm2"))}→{f(b.get("pkg_mm2"))} mm² $/M {f(ta, 1e3, 4)}→{f(tb, 1e3, 4)} m$')
+            for x in ("si", "sphbm4"):
+                for e in o[x]["chiplet"]["compare"]:
+                    out(f'  [{x}] MAC×{e["mac_x"]:g} verdict={e["verdict"]} verdict_tco={e.get("verdict_tco")}')
+    return res
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--flat", action="store_true", help="0.308 view: no NoC-cluster rows, two memory columns")
@@ -261,6 +297,10 @@ def main(argv=None) -> int:
                     help="0.324: HBM4 / 4E base die (custom = controller on a logic base die + narrow D2D)")
     ap.add_argument("--hbm-base-study", action="store_true",
                     help="0.324: cases 0 / 1 / 4 on 8 × HBM4, standard vs custom base die (cost, TCO, air_oam)")
+    ap.add_argument("--hbm-pkg", choices=("si", "sphbm4"), default="si",
+                    help="0.326: HBM package (sphbm4 = JEDEC SPHBM4 stacks on the organic substrate; HBM4 only)")
+    ap.add_argument("--hbm-pkg-study", action="store_true",
+                    help="0.326: cases 0 / 1 / 4 on 8 and 12 × HBM4, silicon interposer vs SPHBM4 on organic")
     ap.add_argument("--asm", choices=("component", "flat"), default="component",
                     help="0.319: package / bonding yield per component (default) or flat = the 0.318 rule (asm_yield 1)")
     a = ap.parse_args(argv)
@@ -268,6 +308,9 @@ def main(argv=None) -> int:
         a.cost = {"preset": a.cost, "asm_model": a.asm}
     if a.hbm_base_study:
         hbm_base_study(cost=a.cost or {"preset": "n5_cowos_l", "asm_model": a.asm}, cooling=a.cooling or "air_oam")
+        return 0
+    if a.hbm_pkg_study:
+        hbm_pkg_study(cost=a.cost or {"preset": "n5_cowos_l", "asm_model": a.asm}, cooling=a.cooling or "air_oam")
         return 0
     if a.tco:
         tco_study(tco=a.tco, cost=a.cost or {"preset": "n5_cowos_l", "asm_model": a.asm}, cooling=a.cooling)
@@ -279,7 +322,7 @@ def main(argv=None) -> int:
     for i in (a.case or range(len(CASES))):
         run(*CASES[i], flat=a.flat, cost=a.cost, d0=a.d0, io_edges=a.io_edges, mem=a.mem, tp=a.tp, link=a.link,
             include_unbuildable=a.include_unbuildable, lane=a.lane, shore_strict=a.strict, cooling=a.cooling, power_scope=a.power_scope,
-            hbm_base=a.hbm_base)
+            hbm_base=a.hbm_base, hbm_pkg=a.hbm_pkg)
     return 0
 
 

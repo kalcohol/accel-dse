@@ -163,6 +163,11 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
                   "定制（逻辑工艺基础晶粒 + D2D，控制器在基础晶粒）" if x.get("hbm_custom") else "标准（该外存不适用定制）",
                   tag="用户输入", src="chip.hbm_base = custom（hbm_base：每栈 D2D = UCIe-A 模块数 × 模块面积「推导」、接口 = 链路 pJ/bit 代替两端 PHY「推导」、"
                   "$/GB × 1.10「二手/假设」）")] if r.get("hbm_base") == "custom" else []),
+          *([item("hbm_pkg", "HBM 封装",                     # 0.326: only with the option on (si reports unchanged)
+                  "SPHBM4 有机基板（每栈岸线 8.33 mm，堆栈不在中介层上）" if x.get("hbm_sphbm4") else "硅中介层（该外存不适用 SPHBM4）",
+                  tag="用户输入", src="chip.hbm_pkg = sphbm4（hbm_pkg：JESD330-4 512 DQ × 4 倍速率、凸点 > 90 µm、≤ 20 mm「来源」；"
+                  "每 25 mm 3 堆「二手」Eliyan；PHY 面积 / 能耗、有机基板 $、$/GB 无公开数字——沿用 HBM4）")]
+            if r.get("hbm_pkg") == "sphbm4" else []),
           item("dies", "晶粒数", x.get("dies") or 1, tag="用户输入", src="DSE 晶粒轴"),
           item("d2d_std", "D2D 接口", x.get("d2d_std") if (x.get("dies") or 1) > 1 else "—", tag="用户输入", src="DSE D2D 轴"),
           item("f_ghz", "运行频率", x.get("f_ghz"), "GHz", src="工作点 × DVFS 封顶（若封顶）"),

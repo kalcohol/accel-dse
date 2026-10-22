@@ -122,6 +122,10 @@ class Chip:
     # ≤ 0.323); "custom" = a custom logic base die (controller on the base die, narrow D2D link): host PHY area,
     # PHY pJ/bit and memory $/GB change — HBM4 / HBM4E only (MODEL §269)
     hbm_base: str = field(default="std", metadata={"omit_default": True})
+    # 0.326: HBM package (core/hbm_pkg.py): "si" = stacks on a silicon interposer abutting this die (≤ 0.325);
+    # "sphbm4" = JEDEC SPHBM4 (JESD330-4) stacks on the organic substrate: 8.33 mm of die edge per stack (Eliyan
+    # 3 per 25 mm 「二手」) and no interposer area for the stacks — HBM4 at ≤ 11500 MT/s equivalent only (MODEL §271)
+    hbm_pkg: str = field(default="si", metadata={"omit_default": True})
     # 0.307 (opt-in; only with noc_link_Bpc > 0, noc_routing "xy"): "link" = each engine's local (eject) port is one
     # link wide, so (a) a multicast's per-engine ingest (s − 1)/s · payload / g bounds the op like any link, and
     # (b) the DRAM stream shares that port (D / E per engine) and, on a ring, the links next to the two memory stops
@@ -290,6 +294,11 @@ class Chip:
             raise ValueError(f"chip.noc_eject must be one of {NOC_EJECT} (got {self.noc_eject!r})")
         if self.hbm_base not in ("std", "custom"):
             raise ValueError(f"chip.hbm_base must be 'std' or 'custom' (got {self.hbm_base!r})")
+        if self.hbm_pkg not in ("si", "sphbm4"):
+            raise ValueError(f"chip.hbm_pkg must be 'si' or 'sphbm4' (got {self.hbm_pkg!r})")
+        if self.hbm_pkg == "sphbm4" and self.hbm_base == "custom":
+            raise ValueError("chip.hbm_pkg 'sphbm4' and chip.hbm_base 'custom' are exclusive: SPHBM4 defines its own "
+                             "standard base die (JESD330-4)")
         if self.noc_mem_attach not in NOC_MEM_ATTACH:
             raise ValueError(f"chip.noc_mem_attach must be one of {NOC_MEM_ATTACH} (got {self.noc_mem_attach!r})")
         if self.noc_routing not in NOC_ROUTINGS:

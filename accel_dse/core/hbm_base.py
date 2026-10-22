@@ -138,7 +138,27 @@ def ignored_note(chip, mem_type: str | None) -> str | None:
     return None
 
 
+_FLOOR_MEMO: dict = {}
+
+
 def shore_floor_mm2(scn, die_mm2: float | None) -> float | None:
+    """0.326: memoised on (scenario, die) — the energy DSE asks for the same floor from full_area and again from
+    std_equiv_delta (180 bisections, 66 distinct, on a 216-point custom DSE); the bisection itself is unchanged."""
+    try:
+        key = (scn, die_mm2)
+        hit = _FLOOR_MEMO.get(key, _FLOOR_MEMO)
+    except TypeError:
+        return _shore_floor_mm2(scn, die_mm2)
+    if hit is not _FLOOR_MEMO:
+        return hit
+    r = _shore_floor_mm2(scn, die_mm2)
+    if len(_FLOOR_MEMO) > 20000:
+        _FLOOR_MEMO.clear()
+    _FLOOR_MEMO[key] = r
+    return r
+
+
+def _shore_floor_mm2(scn, die_mm2: float | None) -> float | None:
     """0.325: the smallest die (mm², budget.shoreline_report geometry) whose shoreline is not "over" — the floor a
     custom-base-die host cannot shrink below while its stacks abut it (silicon interposer).  None when ``die_mm2`` is
     already not over, or the geometry is unknown."""

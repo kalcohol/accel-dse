@@ -9511,3 +9511,41 @@ This removes 0.324's "smaller die → split" flips, which were an artifact of th
 Not modelled: no vendor base-die compute or energy figures exist, and per-cube bandwidth does not rise (AMMA).
 
 Upper bound 「推导」: attention / KV offload saves at most KV-byte share × whole-link energy. For 1P qwen3-8b decode b64 custom that is ≈ 3.4% J at 4K ctx and ≈ 5.3% at 32K, gross of base-die compute.
+
+## §271 SPHBM4 on an organic substrate; exact speed-ups of the custom-HBM DSE (0.326)
+
+### §271.1 What SPHBM4 is
+JEDEC JESD330-4 「来源」 keeps the HBM4 DRAM core dies and swaps in a buffer die whose external interface is 512 DQ, as 32 × 16-bit channels in 8 Quad Channels. Each channel is "four times faster than the corresponding HBM4 channel". Bumps are > 90 µm and channels up to 20 mm, which allows routing on a standard organic substrate instead of a silicon interposer.
+
+Consequences:
+- Stack bandwidth = 512 × pin rate ÷ 8 = the HBM4 stack at pin rate ÷ 4 「推导」, and capacity per stack is unchanged.
+- The standard's 22.4 – 46.0 GT/s (2.944 TB/s at 46 「二手」) bounds the HBM4-equivalent rate to 5600 – 11500 MT/s. The option applies only to HBM4 in that range (`hbm_pkg.sphbm4_applies`); otherwise it is ignored with a warning.
+
+### §271.2 Shoreline per stack
+- On silicon a stack abuts the host: 11 mm per stack (the stack footprint, §259).
+- On organic, longer reach and angled routing let stacks fan out. Eliyan's published layout is "three memory devices … along the same edge" of 25 mm, versus two on silicon 「二手」. The model takes 25 / 3 = 8.33 mm per stack as published (`SPHBM4_EDGE_MM`), not Eliyan's silicon-to-organic ratio applied to 11 mm.
+- Every shoreline consumer reads `budget._stack_edge(chip, spec)`: `shoreline_check`, `mem_edge_need_mm`, `mem_edge_units`, `sized_layout`, `_sized_report`, `hbm_mem_edges` and `mem_edge_load`. With the discrete fit, a 25 mm edge holds exactly 3.
+- The memory-edge count then follows the existing fewest-edges rule (0.309 / 0.312). Narrower stacks can need fewer edges, hence fewer NoC attach edges and more DRAM hop energy. That is the placement rule's effect, not the package's: pinning `noc_mem_edges` makes energy byte-identical. eval's `hbm_pkg.notes` says so when the count drops.
+- 3rd / 4th-edge memory is still "tight" (no shipped precedent; Eliyan's 12-device package is a concept figure).
+
+### §271.3 Interposer
+The stacks are off the interposer, so the DSE package-area limit and the 0.313 bounding box count the logic dies only.
+
+The package $ (`pkg_usd_per_mm2` × area) is NOT reduced. The organic-substrate $/mm² and the flip-chip attach yield have no public figure (SemiAnalysis says only "20 – 28+ layer" ABF). The CoWoS-rate stack footprint is kept as an upper bound, and eval reports the most it could be (`pkg_usd_bound`).
+
+### §271.4 Not modelled (no public number; HBM4 values kept)
+- host-PHY area and interface pJ/bit;
+- SPHBM4 $/GB;
+- substrate size / layer limits and 20 mm routing feasibility;
+- SerDes latency.
+
+All are listed in `hbm_pkg.NOT_MODELLED`.
+
+### §271.5 Exact speed-ups (custom-HBM DSE)
+The shoreline-floor bisection (§270.3) made custom DSEs about 1 s slower cold. Four exact changes:
+1. `shore_floor_mm2` is memoised on (scenario, die).
+2. `sized_layout` caches its die-independent inputs per key-without-die.
+3. After the first die shape, a candidate whose memory or D2D is over by `_place`'s own expressions is skipped (`_surely_bad`). For shapes after the first, only nothing-over candidates are eligible, and shape 0 still supplies the fallback.
+4. The water-fill is an explicit scan with identical arithmetic and tie order.
+
+`_SIZED_CACHE` (keyed on `round(die, 6)`) is untouched, so the bisection sees the same layouts. Whole-output JSON is byte-identical to 0.325 on custom / std DSEs, chiplet grids, evals and the example script outputs.
