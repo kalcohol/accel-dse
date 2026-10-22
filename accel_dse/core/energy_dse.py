@@ -420,7 +420,8 @@ MEM_PROXY = {      # 0.302: HBM4 / LPDDR6 pJ/bit sourced (pJ_bit_dram_hbm4 / _lp
               "后台功耗沿用 LPDDR5X（Micron Y52Q）「近似（假设）」",
     "LPDDR5": "LPDDR5 用 LPDDR5X 的 pJ/bit 与后台功耗「近似（假设）」",
 }
-PHY_AREA_PROXY = {"HBM": "HBM PHY 面积按 HBM4 base die 的常规 PHY（> 8 × 4 mm / 2048 bit）每 bit 计，HBM3E 窄总线同密度「近似」",
+PHY_AREA_PROXY = {"HBM": "HBM4 / 4E PHY 面积按 HBM4 base die 的常规 PHY（> 8 × 4 mm / 2048 bit）每 bit 计；HBM3 / 3E 按 Samsung "
+                         "Hot Chips 2026 第 11 页 HBM3 PHY 8 × 3 mm / 1024 bit（mm2_per_dq_hbm3，0.329；按凸点图，HBM3E 沿用「假设」）",
                   "LPDDR": "LPDDR PHY 面积按 SF2 LPDDR6 x24 通道 0.695 mm² 每 bit 计，LPDDR5X 同密度「近似」"}
 
 
@@ -828,6 +829,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                 notes.append(MEM_PROXY[k])
         if dens_ok:
             for kk in sorted({i["mem_kind"] for i in infos.values()}):
+                # the HBM4 field gates the note; HBM3 / 3E use mm2_per_dq_hbm3 when set, else fall back to it (0.329)
                 fld = "mm2_per_dq_hbm" if kk == "HBM" else "mm2_per_dq_lpddr"
                 if getattr(b, fld, None) is None:
                     notes.append(f"预算未填 {fld}：{kk} PHY 面积未计（密度预设含该项）")

@@ -857,7 +857,12 @@ def _density(budget, dens, base):
     if budget is None or not dens:
         return None
     if dens == "mm2_per_dq":
-        dens = "mm2_per_dq_hbm" if "HBM" in _memspec(base).mem_type.upper() else "mm2_per_dq_lpddr"
+        mt = _memspec(base).mem_type
+        if "HBM" in mt.upper():                          # 0.329: HBM3 / 3E have their own PHY density
+            from .budget import hbm_dq_field
+            dens = hbm_dq_field(budget, mt)
+        else:
+            dens = "mm2_per_dq_lpddr"
     return getattr(budget, dens, None)
 
 

@@ -95,9 +95,12 @@ def test_cost_validation():
 def test_flat_reproduces_0318_and_component_case0():
     f, c = _run("flat"), _run("component")
     bf, bc = f["rows"][f["tco"]["best"]], c["rows"][c["tco"]["best"]]
-    assert round(bf["usd_good_pkg"]) == 2013 and math.isclose(bf["tco"]["usd_per_Munit"], 0.006594, rel_tol=1e-3)
+    # 0.329 re-pin (HBM3E PHY 16 → 24 mm² + controller 3.575 mm² per stack): the best row is now the 4-die split;
+    # flat $2013 / 0.006594 → $2161 / 0.006799, component $2116 / 0.007372 → $2233 / 0.007577
+    assert bf["dies"] == 4 and bc["dies"] == 4
+    assert round(bf["usd_good_pkg"]) == 2161 and math.isclose(bf["tco"]["usd_per_Munit"], 0.006799, rel_tol=1e-3)
     assert bf["mem_scrap_k"] == 1.0 and bf["kgd_scrap_usd"] == 0
-    assert round(bc["usd_good_pkg"]) == 2116 and math.isclose(bc["tco"]["usd_per_Munit"], 0.007372, rel_tol=1e-3)
+    assert round(bc["usd_good_pkg"]) == 2233 and math.isclose(bc["tco"]["usd_per_Munit"], 0.007577, rel_tol=1e-3)
     assert 1.2 < bc["mem_scrap_k"] < 1.3 and bc["asm_Y"] < 0.8
     assert math.isclose(bc["tco"]["mem_usd"], bc["tco"]["mem_dev_usd"] * bc["mem_scrap_k"])
     assert c["cost"]["asm_model"] == "component" and c["cost"]["carrier"] == "cowos_l"
@@ -145,12 +148,13 @@ def test_server_d0_03_runs():
 def test_study_subset_corners():
     T = _mod("tco_sens")
     res = T.study(out=lambda *_: None, cases=[0], sweep_cells=[(8, 0.2)])
-    th = res["cases"][0]["flips"][0]["thresholds"][0]
-    assert res["cases"][0]["flips"][0]["input"] == "d0" and 0.14 < th["at"] < 0.16
+    fd = next(f for f in res["cases"][0]["flips"] if f["input"] == "d0")
+    th = fd["thresholds"][0]
+    assert 0.10 < th["at"] < 0.12                                           # 0.329: ≈ 0.150 → ≈ 0.110
     assert set(res["corner_flips"]) == {"adverse", "favourable"}
     m = [x for x in res["mem"] if x["tp"] == 8 and x["link"] == 400 and x["mac_x"] == 2.0]
-    assert m and m[0]["by_tco"] == "hbm3e_4s_8h24g_9200" and not m[0]["flips"]
-    assert set(m[0]["corners"].values()) == {"hbm3e_4s_8h24g_9200"}        # 4-stack choice holds at both corners
+    assert m and m[0]["by_tco"] == "hbm3e_8s_8h24g_9200" and not m[0]["flips"]
+    assert set(m[0]["corners"].values()) == {"hbm3e_8s_8h24g_9200"}        # 0.329: 4-stack → 8-stack at both corners
 
 
 def test_api_carries_corners_and_flat_switch():

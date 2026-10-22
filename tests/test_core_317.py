@@ -137,9 +137,14 @@ def test_verdicts_under_tco():
     assert all(c["verdict"] == c["verdict_tco"] for c in r["cases"])          # mono / only_split unchanged
     assert sum(1 for c in r["cases"] if c["verdict_tco"] == "mono") == 7
     diff = [x for x in r["sweep"] if x["cheaper_pkg"] != x["cheaper_tco"]]
-    assert len(diff) == 16 and all(x["tp"] == 8 and (x["cheaper_pkg"], x["cheaper_tco"]) == ("split", "mono") for x in diff)
+    # 0.329 re-pin (HBM3E PHY 16 → 24 mm² + controller 3.575 mm² per stack): still 16 disagreements, now 14 at tp8
+    # (split by package $, mono by TCO; was 16) plus 2 at tp1 the other way (mono by package $, split by TCO; was 0)
+    assert len(diff) == 16
+    assert sum(1 for x in diff if x["tp"] == 8 and (x["cheaper_pkg"], x["cheaper_tco"]) == ("split", "mono")) == 14
+    assert sum(1 for x in diff if x["tp"] == 1 and (x["cheaper_pkg"], x["cheaper_tco"]) == ("mono", "split")) == 2
     m = {(x["tp"], x["link"], x["d0"], x["mac_x"]): x for x in r["mem"]}
-    assert m[(8, 400.0, 0.1, 2.0)]["by_thr"].startswith("hbm3e_8s") and m[(8, 400.0, 0.1, 2.0)]["by_tco"].startswith("hbm3e_4s")
+    # 0.329: the TCO-best memory here moves 4-stack → 8-stack (the 4-stack's thr edge over cost no longer wins)
+    assert m[(8, 400.0, 0.1, 2.0)]["by_thr"].startswith("hbm3e_8s") and m[(8, 400.0, 0.1, 2.0)]["by_tco"].startswith("hbm3e_8s")
     assert all(x["by_capex"].startswith("hbm3e_4s") for x in r["mem"])
     assert all(x["by_tco"] == x["by_thr"] for x in r["mem"] if x["tp"] == 1)
 

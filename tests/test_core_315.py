@@ -93,7 +93,9 @@ def test_verdict_change_and_hot_margin():
     er = energy_report(r, ex.table())
     a = shoreline_report(s)["die_mm2"]
     th = thermal_report(er["avg_W_per_card"], a, 1, dram_dev_W(er), "air_oam", static_W(er), None)
-    assert er["avg_W_per_card"] / a < 0.86 and th["feasible"] is False and 0.95 < th["flux_W_mm2"] < 1.05
+    # 0.329 re-pin (MODEL §274): the per-generation HBM3E PHY + controller grows the die 654 → 774 mm², so the same
+    # power spreads over more area: flux ≈ 0.99 (over air) → 0.850 W/mm², now feasible on air_oam (thin margin)
+    assert er["avg_W_per_card"] / a < 0.70 and th["feasible"] is True and 0.83 < th["flux_W_mm2"] < 0.86
     d = energy_design_search(s, ex.table(), ex.budget(), cooling="liquid", **kw)
     row = d["rows"][0]["thermal"]
     for k in ("card_W", "pkg_W", "static_add_W", "vr_loss_W", "pkg_W_hot", "hot_ok", "static_basis"):

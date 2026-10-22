@@ -66,7 +66,9 @@ def test_dse_cap_equals_thermal_package_power():
 
 
 def test_card_scope_reproduces_0315():
-    for cool, front in ((None, [12]), ("air_oam", [4, 17])):
+    # 0.329 re-pin: the air_oam front [4, 17] → [1, 0, 15] (HBM3E PHY 16 → 24 mm² + 3.575 mm² controller per stack
+    # change the die areas / flux of every row); the capped set and capped clocks are unchanged
+    for cool, front in ((None, [12]), ("air_oam", [1, 0, 15])):
         o = _case1(cool, "card")
         assert o["power_scope"] == "card" and o["front"] == front
         got = {i: x["thr"] for i, x in enumerate(o["rows"]) if x.get("capped")}

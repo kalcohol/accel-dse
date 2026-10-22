@@ -196,7 +196,8 @@ def report(scn, b=None, table=None, die_mm2=None) -> dict:
     if "HBM" in sp.mem_type.upper():
         from .budget import HBM_STACK_EDGE_MM
         out["edge_per_stack_mm"] = HBM_STACK_EDGE_MM
-        dq = getattr(b, "mm2_per_dq_hbm", None) if b is not None else None
+        from .budget import hbm_dq_field                # 0.329: per-generation PHY density (HBM3 / 3E own field)
+        dq = getattr(b, hbm_dq_field(b, sp.mem_type), None) if b is not None else None
         std = sp.bus_bits / sp.n_units * dq if dq is not None else None
         out.update(std_phy_mm2_per_stack=std, custom_phy_mm2_per_stack=host_d2d_mm2(sp),
                    d2d_std=D2D_STD, d2d_units_per_stack=host_d2d_units(sp), d2d_edge_mm_per_stack=host_d2d_edge_mm(sp),

@@ -54,7 +54,8 @@ def test_memory_axis_area_energy_bandwidth():
     # die area moves by exactly the DRAM PHY (bus bits × mm2_per_dq_*, sourced densities) — uncore share scales with it
     assert h8["mm2"] > h4["mm2"] and l8["mm2"] < h4["mm2"]
     assert h8["mem_bus_bits"] == 2 * h4["mem_bus_bits"] and abs(h8["mem_GBps"] / h4["mem_GBps"] - 2) < 1e-12
-    phy = lambda x: x["mem_bus_bits"] * (b.mm2_per_dq_hbm if x["mem_kind"] == "HBM" else b.mm2_per_dq_lpddr)
+    # 0.329: HBM3E uses its own per-generation density (mm2_per_dq_hbm3); n7_tpuv4i carries no controller default
+    phy = lambda x: x["mem_bus_bits"] * (b.mm2_per_dq_hbm3 if x["mem_kind"] == "HBM" else b.mm2_per_dq_lpddr)
     assert abs((h8["mm2"] - h4["mm2"]) - (phy(h8) - phy(h4)) / (1 - b.uncore_frac)) < 1e-6
     # decode b64 is DRAM-bound: 2× HBM stacks → more tok/s; LPDDR5X 8×x64 → far less (bandwidth), TPOT up
     assert h8["thr"] > 1.1 * h4["thr"] and l8["thr"] < 0.3 * h4["thr"] and l8["tpot_ms"] > 3 * h4["tpot_ms"]

@@ -107,9 +107,11 @@ def test_d0_flip_threshold_case0():
     o = _case0()
     e = next(x for x in o["chiplet"]["compare"] if x.get("verdict_tco") == "mono")
     fl = {f["input"]: f for f in e["tco_flips"]}
-    assert set(fl) == {"d0"}                                   # only D0 flips mono → split inside the sourced ranges
+    # 0.329 re-pin: the larger 8 × HBM3E mono die (654 → 774 mm²) brings the split closer, so besides D0 the wafer
+    # price ($19,395) and carrier yield (0.680, split → mono) now also flip inside their sourced ranges (was D0 only)
+    assert set(fl) == {"d0", "wafer_usd", "carrier_yield"}
     th = fl["d0"]["thresholds"][0]
-    assert 0.14 < th["at"] < 0.17 and (th["from"], th["to"]) == ("mono", "split")   # 0.319 component: ≈ 0.150
+    assert 0.10 < th["at"] < 0.12 and (th["from"], th["to"]) == ("mono", "split")   # 0.319–0.328 ≈ 0.150 → 0.329 ≈ 0.110
     # bisection is exact: the verdict on either side of the threshold
     from accel_dse.core.tco_sens import compare_key, mono_split_verdict
     rows = o["rows"]
@@ -123,9 +125,9 @@ def test_d0_flip_threshold_case0():
 def test_study_subset():
     T = _mod("tco_sens")
     res = T.study(out=lambda *_: None, cases=[0], sweep_cells=[(8, 0.2)])
-    assert res["cases"][0]["flips"][0]["input"] == "d0"
+    assert "d0" in [f["input"] for f in res["cases"][0]["flips"]]
     m = [x for x in res["mem"] if x["tp"] == 8 and x["link"] == 400 and x["mac_x"] == 2.0]
-    assert m and m[0]["by_tco"] == "hbm3e_4s_8h24g_9200" and not m[0]["flips"]   # 0.317 4-stack choice holds
+    assert m and m[0]["by_tco"] == "hbm3e_8s_8h24g_9200" and not m[0]["flips"]   # 0.317–0.328 4-stack → 0.329 8-stack
     assert all(s["input"] != "d0" for x in res["sweep"] + res["mem"] for s in x["flips"])   # D0 is a grid axis there
 
 

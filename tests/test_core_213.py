@@ -45,11 +45,12 @@ def test_uncore_frac_range():
 def test_rwkv_1p_die_and_shoreline_with_uncore():
     w = api.api_sensitivity({"chip_preset": "1P", "scenario": {"model": RWKV}})["sensitivity"]["balance_whatif"]
     b, rows = w["base"], {x["key"]: x for x in w["rows"]}
-    assert 560 < b["area_mm2"] < 580 and b["shoreline"]["status"] == "ok"          # 434 → 571 mm²: 4 stacks fit 2 sides
+    # 0.329 re-pin: 571 → 631 mm² (HBM3E PHY 16 → 24 mm² + controller 3.575 per stack, ÷ 0.77); 4 stacks fit 2 sides
+    assert 625 < b["area_mm2"] < 640 and b["shoreline"]["status"] == "ok"          # 434 → 571 (0.213) → 631 mm²
     bw = rows["dram_bw_x2"]
     # 0.311: one die edge kept for host I/O → 8 × 11 mm > 3 × 25.6 mm = "over" (was "tight" on four edges)
     # 0.312: the I/O is sized (PCIe x16 = 4.6 mm fits beside 2 stacks on each 25.6 mm edge) → "tight" on four edges
-    assert 640 < bw["area_mm2"] < 670 and bw["shoreline"]["status"] == "tight" and not bw["over_reticle"]
+    assert 765 < bw["area_mm2"] < 785 and bw["shoreline"]["status"] == "tight" and not bw["over_reticle"]   # 0.329: 654 → 774
     st = rows["state_sram"]
     assert st["over_reticle"] and st["area_mm2"] > 9000
     # consistency: one die area drives both the reticle flag and the shoreline

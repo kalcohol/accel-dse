@@ -34,7 +34,7 @@ _LIMITS = {   # key → (label, unit)
     "system_mm2": ("硅面积代理 / 副本", "mm²"),
 }
 _DENS = ("mm2_per_mib_sram", "mm2_per_mib_slc", "mm2_per_kmac", "mm2_fixed")
-_PHY_DENS = ("mm2_per_dq_hbm", "mm2_per_dq_lpddr", "mm2_per_d2d_unit", "mm2_per_GBps_c2c",
+_PHY_DENS = ("mm2_per_dq_hbm", "mm2_per_dq_hbm3", "mm2_per_dq_lpddr", "mm2_per_d2d_unit", "mm2_per_GBps_c2c",
              "uncore_frac", "mm2_host_io", "mm2_per_unit_mc", "mm2_per_hbm_mc")   # 0.213 uncore; 0.327 HBM MC
 
 # 0.149: cited density presets per process node.  Each value: (number, status, source).  status 「来源」 = read from
@@ -58,6 +58,16 @@ _PHY = {
                        "for 2048 DQ (SF4), reported by Tom's Hardware / ServeTheHome → ≥ 0.0156 mm²/DQ; host-side PHY taken "
                        "equal to the memory-side one (推导, lower bound). Old: ≈14 mm²/1024-bit HBM3 from H100 die-shot "
                        "estimates (0.0137)"),
+    # 0.329: per-generation HBM PHY.  Samsung HC 2026 slide 11 "Generational Area Reduction" (slide image via
+    # ServeTheHome, read directly): HBM2 PHY 6 × 1.2 mm, HBM3 8 × 3 mm (die photo cited "VLSI2022"), sHBM4 8 × 4 mm,
+    # footnote "PHY area is based on the bump map".  The footprint is set by the JEDEC microbump map, not by the
+    # transistor process, and the xPU-side PHY lands the same bump map (slide 10 draws the xPU HBM PHY mirroring the
+    # base-die one) → host-side = memory-side also for HBM3 (whose base die is 1x-nm DRAM process) 「推导」.
+    "mm2_per_dq_hbm3": (8 * 3 / 1024, "来源/推导", "Samsung Hot Chips 2026 slide 11: HBM3 PHY 8 × 3 mm for 1024 DQ, "
+                        "'PHY area is based on the bump map' (slide image via ServeTheHome; also Hardwareluxx, "
+                        "inlevel9) 「来源」 → 0.0234 mm²/DQ; host side = the same bump map 「推导」; HBM3E taken as "
+                        "the HBM3 bump map (same 1024-DQ JESD238 interface) 「假设」. Old (≤ 0.328): HBM3 / 3E used "
+                        "mm2_per_dq_hbm (HBM4 value, 16 mm² per stack)"),
     # 0.184: was 0.03 「假设」 (no public LPDDR5X PHY area).  Now the Samsung SF2 LPDDR6 PHY (ISSCC 2026 paper 37.3, as
     # reported by SemiAnalysis 2026-04-15: 0.695 mm², 2.32 mm shoreline, 55.3 GB/s/mm² ⇒ 38.4 GB/s = one x24 channel
     # at 14.4 Gb/s incl. the 32/36 BL24 payload) → 0.695 / 24 DQ.  Includes the channel's CA / clock overhead.
@@ -101,8 +111,14 @@ _UNCORE = {
     "mm2_host_io": (0.018 * 331, "二手", "NeuroMeter (Tang, Li, Nai, Jouppi, Xie, HPCA 2021 industry track; 0.328 "
                     "citation fix, was 'Shao et al., MICRO 2021') TPUv1 validation: PCIe interface 1.8 % is NeuroMeter's "
                     "MODELLED share (published floor plan 3.0 %, Jouppi ISCA 2017 Fig. 2 「来源」) of a < 331 mm² 28 nm "
-                    "die ≈ 6.0 mm²; not scaled by node (analog PHY shrinks little) 「假设」; value unchanged in 0.328 "
-                    "(pending: a modern PCIe 5/6 ×16 PHY + controller source)"),
+                    "die ≈ 6.0 mm²; not scaled by node (analog PHY shrinks little) 「假设」; value unchanged in 0.328. "
+                    "0.329 reconciliation, value kept: a modern ×16 PHY is 16 × 0.3725 = 5.96 mm² — 5 nm DSP SerDes "
+                    "for 'Ethernet and PCIe applications', quad 1806 × 825 µm (VLSI 2022, doi 10.1109/"
+                    "VLSITechnologyandCir46769.2022.9830304, abstract 「来源」; a 112 Gb/s lane, so an upper bound "
+                    "for a 64 GT/s PCIe 6 / CXL 3 lane 「推导」). PCIe / CXL controller logic is not counted (no "
+                    "public split; TPUv2 floor plan draws 'PCIe ctrl' as its own block, and NeuroMeter gives "
+                    "'PCIe Link + PCIe Ctrl' 2 % of < 611 mm² (16 nm, Gen3 ×16) ≈ ≤ 12.2 mm² for both 「来源/推导」, "
+                    "not node-scaled)"),
 }
 
 
@@ -128,9 +144,11 @@ DENSITY_PRESETS: dict[str, dict] = {
         **_vec(400 * 0.11 / 64 / 1.8, "N5 (TPUv4i ÷ 1.8)"),
         **_PHY, **_UNCORE,
         # 0.328: HBM4 / HBM4E controller on by default (was opt-in, 0.327) — the TPU floor plans place the DRAM / HBM
-        # port outside the unlabelled ~21 % (MODEL §273), so it is not in uncore_frac; low end of Samsung's range
+        # port outside the unlabelled ~21 % (MODEL §273), so it is not in uncore_frac; low end of Samsung's range.
+        # 0.329: the value is per HBM4 stack (32 channels); HBM3 / 3E stacks carry × 16 / 32 (MC_CHANNELS, §274)
         "mm2_per_hbm_mc": (MC_SOC_FRAC[0] * MC_XPU_MM2 / MC_XPU_STACKS, "二手/推导",
-                           _MC_SRC + " → 0.05 × 858 ÷ 6 = 7.15 mm² per HBM4 / HBM4E stack 「推导」 (low end; quote taken "
+                           _MC_SRC + " → 0.05 × 858 ÷ 6 = 7.15 mm² per HBM4 / HBM4E stack (32 channels; 0.329: HBM3 / 3E × 16 / 32 "
+                           "= 3.575 by JEDEC channel count 「推导」) 「推导」 (low end; quote taken "
                            "for that xPU 「假设」). Not in uncore: TPUv1 / TPUv2 / TPUv4i floor plans draw the DRAM / HBM "
                            "port (+ controller) outside the ~21 % unknown / interconnect share (Jouppi ISCA 2017 Fig. 2; "
                            "Tang et al. HPCA 2021 NeuroMeter §IV; Norrie et al. IEEE Micro 2021 Fig. 4; Jouppi et al. ISCA "
@@ -209,22 +227,41 @@ def apply_mc_preset(d: dict) -> dict:
     return d
 
 
-# 0.328: mm2_per_hbm_mc applies to HBM4 / HBM4E only (0.327: any HBM).  For these the PHY term (mm2_per_dq_hbm) is
-# the generation's own figure (Samsung HC 2026 HBM4 PHY > 8 × 4 mm), so PHY + controller is the complete host
-# interface.  For HBM3 / HBM3E the PHY term is the HBM4-derived per-DQ value, 8 mm² per stack below Samsung's own
-# HBM3 PHY (8 × 3 mm, slide 11): the controller alone would be half of a correction whose larger half is the PHY —
-# deferred to a joint per-generation PHY + controller change (MODEL §273).  Generic mm2_per_unit_mc still applies.
-MC_TYPES = ("HBM4", "HBM4E")
+# 0.329: per-generation HBM host interface.  PHY: mm2_per_dq_hbm3 for HBM3 / HBM3E (Samsung slide 11, bump map),
+# mm2_per_dq_hbm for HBM4 / HBM4E.  Controller: mm2_per_hbm_mc is per HBM4 stack (32 channels); a stack of another
+# generation carries it × its JEDEC channel count ÷ 32 — one controller / scheduler per independent channel (NVIDIA
+# GH100: "12 512-bit memory controllers" for 6 HBM3 stacks, i.e. controllers per channel group 「来源」).  Channels:
+# HBM3 16 (JESD238), HBM3E 16 (HBM3 interface), HBM4 32 (JESD270-4) 「来源」, HBM4E 32 「假设」.  0.328 applied the
+# controller to HBM4 / 4E only and deferred HBM3 / 3E until their PHY was per-generation (MODEL §273 / §274).
+HBM3_TYPES = ("HBM3", "HBM3E")
+MC_CHANNELS = {"HBM3": 16, "HBM3E": 16, "HBM4": 32, "HBM4E": 32}
+MC_REF_CHANNELS = 32
+MC_TYPES = tuple(MC_CHANNELS)
+
+
+def hbm_dq_field(b, mem_type: str | None) -> str:
+    """0.329: the PHY density field for an HBM type — mm2_per_dq_hbm3 for HBM3 / 3E when set, else mm2_per_dq_hbm."""
+    if mem_type and mem_type.upper() in HBM3_TYPES and getattr(b, "mm2_per_dq_hbm3", None) is not None:
+        return "mm2_per_dq_hbm3"
+    return "mm2_per_dq_hbm"
+
+
+def mc_scale(mem_type: str | None) -> float | None:
+    """0.329: controller area of one stack of ``mem_type`` relative to an HBM4 stack (channel ratio), None if n/a."""
+    ch = MC_CHANNELS.get((mem_type or "").upper())
+    return None if ch is None else ch / MC_REF_CHANNELS
 
 
 def mc_mm2_per_unit(b, mem_type: str | None) -> float | None:
-    """0.327: controller mm² per DRAM unit — the generic mm2_per_unit_mc, else mm2_per_hbm_mc (0.328: HBM4 / HBM4E)."""
+    """0.327: controller mm² per DRAM unit — the generic mm2_per_unit_mc, else mm2_per_hbm_mc × the channel ratio
+    (0.329: HBM3 / 3E / 4 / 4E; 0.328: HBM4 / 4E only)."""
     if b is None:
         return None
     if b.mm2_per_unit_mc is not None:
         return b.mm2_per_unit_mc
-    if getattr(b, "mm2_per_hbm_mc", None) is not None and mem_type and mem_type.upper() in MC_TYPES:
-        return b.mm2_per_hbm_mc
+    k = mc_scale(mem_type)
+    if getattr(b, "mm2_per_hbm_mc", None) is not None and k is not None:
+        return b.mm2_per_hbm_mc * k
     return None
 
 
@@ -276,7 +313,7 @@ def phy_area(scn, b: Budget) -> dict:
     terms, notes = {}, []
     spec = mem_catalog.parse_mem_id(scn.mem_id)
     hbm = "HBM" in spec.mem_type.upper()
-    dq = b.mm2_per_dq_hbm if hbm else b.mm2_per_dq_lpddr
+    dq = getattr(b, hbm_dq_field(b, spec.mem_type)) if hbm else b.mm2_per_dq_lpddr     # 0.329: per generation
     from .hbm_base import D2D_STD, custom_applies, host_d2d_mm2, host_d2d_units, ignored_note
     if dq is not None:
         if custom_applies(scn.chip, spec.mem_type):     # 0.324: D2D per stack instead of the 2048-DQ PHY
@@ -1093,9 +1130,9 @@ def full_area(scn, b: Budget, noc_routers: bool = False) -> dict:
             from .hbm_base import custom_applies
             spec = mem_catalog.parse_mem_id(scn.mem_id)
             mc = mc_mm2_per_unit(b, spec.mem_type)
-            if mc is None:          # 0.328: note only on HBM3 / 3E (0.327: on non-HBM memory too — now silent there,
-                if "HBM" in spec.mem_type.upper():             # since n5_derived fills mm2_per_hbm_mc by default)
-                    notes.append(f"mm2_per_hbm_mc 只用于 HBM4 / HBM4E 堆栈（0.328）：{spec.mem_type} 不计控制器面积（PHY 项按代修正前暂缓；可填 mm2_per_unit_mc）")
+            if mc is None:          # 0.329: only an HBM type outside MC_CHANNELS (none catalogued); 0.328: HBM3 / 3E
+                if "HBM" in spec.mem_type.upper():             # (0.327: non-HBM memory too — silent since 0.328)
+                    notes.append(f"mm2_per_hbm_mc 只用于 HBM3 / 3E / 4 / 4E 堆栈（0.329）：{spec.mem_type} 不计控制器面积（可填 mm2_per_unit_mc）")
             elif custom_applies(scn.chip, spec.mem_type):   # 0.324: the controller sits on the custom base die
                 notes.append("定制 HBM 基础晶粒：内存控制器在基础晶粒上，主晶粒不计 mm2_per_unit_mc")
             else:
@@ -1151,6 +1188,7 @@ class Budget:
     mm2_per_kdq: float | None = None
     # 0.149: interface PHY area (optional; None = not counted).  Presets in DENSITY_PRESETS carry the sources.
     mm2_per_dq_hbm: float | None = None       # per HBM data pin (bus bit) of the DRAM interface
+    mm2_per_dq_hbm3: float | None = None      # 0.329: per HBM3 / HBM3E data pin (unset → mm2_per_dq_hbm)
     mm2_per_dq_lpddr: float | None = None     # per data pin of any non-HBM DRAM interface (LPDDR / DDR / GDDR)
     mm2_per_d2d_unit: float | None = None     # per D2D unit (UCIe module / BoW slice) on the die
     mm2_per_GBps_c2c: float | None = None     # per GB/s (per direction) of card-to-card SerDes link

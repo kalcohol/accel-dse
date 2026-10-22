@@ -184,7 +184,14 @@ def test_dse_cost_rows_and_front():
     clu = next(x for x in rows if x["mac_x"] == 1 and x["dies"] == 1 and x["clusters"] == 2)
     four = next(x for x in rows if x["mac_x"] == 1 and x["dies"] == 4)
     assert clu["usd_good_pkg"] == mono["usd_good_pkg"]                # clusters: same die, same cost
-    assert mono["usd_good_pkg"] < four["usd_good_pkg"] and mono.get("front_cost")   # D0 0.1: mono cheaper
+    # 0.329 (MODEL §274): the per-generation HBM3E PHY + controller grows the mono die 654 → 774 mm², moving the
+    # mono / 4-die cost crossover from D0 ∈ (0.1, 0.2) to ≈ 0.07 /cm²: at 0.1 the 4-die package is now cheaper
+    # ($2232.9 vs $2354.5); the "mono cheaper" leg moves to D0 0.05 ($2133.6 vs $2199.8)
+    assert four["usd_good_pkg"] < mono["usd_good_pkg"]
+    lo = _cdse(0.05)["rows"]
+    m05 = next(x for x in lo if x["mac_x"] == 1 and x["dies"] == 1 and x["clusters"] == 1)
+    f05 = next(x for x in lo if x["mac_x"] == 1 and x["dies"] == 4)
+    assert m05["usd_good_pkg"] < f05["usd_good_pkg"] and m05.get("front_cost")       # D0 0.05: mono cheaper
     hi = _cdse(0.2)["rows"]
     m2 = next(x for x in hi if x["mac_x"] == 1 and x["dies"] == 1 and x["clusters"] == 1)
     f2 = next(x for x in hi if x["mac_x"] == 1 and x["dies"] == 4)

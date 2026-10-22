@@ -44,12 +44,14 @@ def test_scale_up_lane_rate_by_generation():
     assert io_need(_s(tp=8, link=900.0, io_su_lane_Gbps=100.0))["su_lane_mm"] == 0.285
     assert io_need(_s(tp=8, link=900.0, io_su_lane_mm=0.3))["su_lane_mm"] == 0.3                 # pinned
     assert io_need(_s("H100-like", tp=8, link=450.0))["scaleup_lanes"] == 36      # NVLink4 18 × 2 (unchanged)
-    # the 0.312 verdict "8 × HBM3E monolithic unbuildable at tp8 / 900" holds at 200 G too (22.6 > 16.7 mm free);
-    # 400 GB/s fits at 100 G and 200 G, not at 50 G
+    # 0.329 (MODEL §274): the per-generation HBM3E PHY + controller grows the 8-stack die 654 → 774 mm², so tp8 / 900
+    # is now buildable at 100 G and 200 G (was not) and 400 GB/s fits at 50 G too (was not); 1200 GB/s is unbuildable
+    # at both lane rates.  400 GB/s fits at 100 G and 200 G (unchanged)
     for g in (100.0, 200.0):
-        assert not shoreline_report(_s(tp=8, link=900.0, io_su_lane_Gbps=g))["feasible"]
+        assert shoreline_report(_s(tp=8, link=900.0, io_su_lane_Gbps=g))["feasible"]
+        assert not shoreline_report(_s(tp=8, link=1200.0, io_su_lane_Gbps=g))["feasible"]
         assert shoreline_report(_s(tp=8, link=400.0, io_su_lane_Gbps=g))["feasible"]
-    assert not shoreline_report(_s(tp=8, link=400.0, io_su_lane_Gbps=50.0))["feasible"]
+    assert shoreline_report(_s(tp=8, link=400.0, io_su_lane_Gbps=50.0))["feasible"]
     for bad in (0, -1, True):
         try:
             replace(CHIPS["1P"], io_su_lane_Gbps=bad)
@@ -61,7 +63,8 @@ def test_scale_up_lane_rate_by_generation():
 def test_interposer_bbox_and_sourced_stack():
     r = shoreline_report(_s())                       # 1P + 8 stacks on 4 edges: the corner squares stay empty
     fp = r["footprint"]
-    assert abs(fp["sum_mm2"] - 1622.2) < 0.1 and abs(fp["bbox_mm2"] - 2263.6) < 0.1 and fp["stack_depth_mm"] == 11.0
+    # 0.329 re-pin (die 654 → 774 mm²): Σ 1622.2 → 1742.5 mm², bounding box 2263.6 → 2482.9 mm²
+    assert abs(fp["sum_mm2"] - 1742.5) < 0.1 and abs(fp["bbox_mm2"] - 2482.9) < 0.1 and fp["stack_depth_mm"] == 11.0
     assert abs(shoreline_report(_s("H100-like"))["footprint"]["bbox_mm2"] - 2053.3) < 0.1
     src = open(os.path.join(ROOT, "accel_dse", "core", "budget.py"), encoding="utf-8").read()
     assert "Micron HBM3E product brief" in src
@@ -78,9 +81,11 @@ def test_shore_strict_flips_the_8_stack_verdict():
     mono = [x for x in st["rows"] if x["dies"] == 1]
     assert mono and all(x["buildable"] is False and x["shoreline"] == "tight" and "shore_strict" in x["why"] for x in mono)
     assert all(x["buildable"] for x in st["rows"] if x["dies"] > 1)
-    t9 = ex.run("qwen3-8b", "decode", tp=8, link=900.0, **q)       # 200 G lanes at 0.5 mm: mono still I/O-limited
+    # 0.329: tp8 / 900 now fits the 774 mm² mono die; 1200 GB/s (48 lanes at 200 G, 28.6 mm) keeps it I/O-limited
+    assert ex.run("qwen3-8b", "decode", tp=8, link=900.0, **q)["chiplet"]["compare"][0]["verdict"] == "mono"
+    t9 = ex.run("qwen3-8b", "decode", tp=8, link=1200.0, **q)      # 200 G lanes at 0.5 mm: mono I/O-limited
     m9 = [x for x in t9["rows"] if x["dies"] == 1 and x.get("clusters", 1) == 1][0]
-    assert m9["buildable"] is False and "scale-up 36 通道需 22.6 mm" in m9["why"]
+    assert m9["buildable"] is False and "scale-up 48 通道需 28.6 mm" in m9["why"]
     assert t9["chiplet"]["compare"][0]["verdict"] == "only_split"
     t4 = ex.run("qwen3-8b", "decode", tp=8, link=400.0, **q)
     assert t4["chiplet"]["compare"][0]["verdict"] == "mono"
@@ -121,12 +126,14 @@ def test_thermal_in_eval_and_dse():
                                                                                          "prompt": 4096, "ctx": 8192}},
          "energy": {"energy_preset": "tpuv4i_7nm"}, "sensitivity": False}
     o = api.api_eval(b)
-    t = o["thermal"]      # 1P prefill: 504 W modelled → 640 W package (0.315: + static floor 40 + VR 96) on 571 mm²
-    assert t["status"] == "unchecked" and abs(t["card_W"] - 504.25) < 0.1 and abs(t["pkg_W"] - 639.86) < 0.1
-    assert abs(t["die_flux_W_mm2"] - 0.9278) < 1e-3
-    assert abs(t["flux_W_mm2"] - 1.1204) < 1e-3 and t["static_included"] is True and t["notes"] == []
+    t = o["thermal"]      # 1P prefill: 504 W modelled → 645 W package (0.315: + static floor + VR) on 631 mm²
+    # 0.329 re-pin (4 × HBM3E die 571 → 631 mm²): package 639.86 → 645.15 W (area-scaled static floor), die flux
+    # 0.9278 → 0.8465, card-level flux 1.1204 → 1.0221 W/mm² (still over air_oam 0.86)
+    assert t["status"] == "unchecked" and abs(t["card_W"] - 504.25) < 0.1 and abs(t["pkg_W"] - 645.15) < 0.1
+    assert abs(t["die_flux_W_mm2"] - 0.8465) < 1e-3
+    assert abs(t["flux_W_mm2"] - 1.0221) < 1e-3 and t["static_included"] is True and t["notes"] == []
     oa = api.api_eval({**b, "cooling": "air_oam"})
-    assert oa["thermal"]["feasible"] is False and any(w.startswith("不可建（热 / 功耗）：热流密度 1.12") for w in oa["summary"]["warnings"])
+    assert oa["thermal"]["feasible"] is False and any(w.startswith("不可建（热 / 功耗）：热流密度 1.02") for w in oa["summary"]["warnings"])
     assert api.api_eval({**b, "cooling": "liquid"})["thermal"]["feasible"] is True
     try:
         api.api_eval({**b, "cooling": "x"})

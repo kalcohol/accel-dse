@@ -6,6 +6,38 @@
 
 
 
+## [0.329.0]
+
+### Per-generation HBM host interface: HBM3 / HBM3E get their own PHY area and a channel-scaled controller
+- **Mechanism.** Samsung's Hot Chips 2026 tutorial (S. Han, slide 11, read from the ServeTheHome slide image 「来源」) gives the HBM PHY footprint by generation: HBM2 6 × 1.2 mm, **HBM3 8 × 3 mm** (die photo cited "VLSI2022"), sHBM4 8 × 4 mm, cHBM4 D2D 8.5 × 1.5 mm, sHBM5 9.5 × 1.7 mm, with the footnote "PHY area is based on the bump map". Slide 10 draws the xPU-side HBM PHY mirroring the base-die one. A bump-map-limited footprint is set by the microbump pitch and the DQ / CA count, not by the logic node, so the host-side PHY equals the memory-side one, also for HBM3 (1x-nm DRAM base die) 「推导」. HBM3E keeps the HBM3 interface (1024 DQ, 16 channels) and is taken as the HBM3 bump map 「假设」.
+- **PHY (old → new): HBM3 / HBM3E 1024 DQ × 0.015625 (the HBM4 per-DQ value) = 16 mm² → new field `mm2_per_dq_hbm3` = 8 × 3 / 1024 = 0.0234375 mm²/DQ = 24 mm² per stack** 「来源/推导」, in all three density presets (the PHY is bump-map-limited, so node-independent, like `mm2_per_dq_hbm`). HBM4 / 4E stay at 2048 DQ × 0.015625 = 32 mm² (8 × 4 mm). A budget without `mm2_per_dq_hbm3` falls back to `mm2_per_dq_hbm` (the ≤ 0.328 behaviour).
+- **Controller (old → new): HBM3 / HBM3E none → 3.575 mm² per stack (n5_derived).** `mm2_per_hbm_mc` (7.15) is per HBM4 stack (32 channels, JESD270-4). A stack is scaled by its JEDEC channel count, 16 / 32 for HBM3 (JESD238) and HBM3E 「来源」 → 3.575 「推导」. NVIDIA GH100 has "12 512-bit memory controllers" for 6 HBM3 stacks 「来源」, i.e. controllers sized per channel group. HBM4E is taken at 32 channels 「假设」. Scope `MC_TYPES`: HBM4 / 4E → HBM3 / 3E / 4 / 4E. The generic `mm2_per_unit_mc` still wins unscaled; n7 / n28 still carry no controller.
+- **Cross-check against the TPU floor plans used in 0.328 「推导」.** TPUv4i "HBMC & SerDes" ≤ 13.3 mm² per HBM2 port at N7 ≥ Samsung HBM2 PHY 7.2 + controller 8 ch × 7.15 / 32 = 1.79 at N5 (× 1.8 to N7 「假设」 = 3.2) = 10.4: consistent. Channel scaling fits Google's floor plans better than bus-width scaling. No public HBM3 TPU floor plan exists, so HBM3 itself is not checked. The secondary H100 die-shot estimates (≈ 24 vs ≈ 14 mm² per stack) conflict and are unsourced, so they are not used.
+- **Report:** new `hbm_phy` item (mm² per stack, field and source, HBM std base only). `hbm_mc` now appears for HBM3E with "（HBM3E：× 16 / 32 通道，JEDEC 通道数「推导」）". **Notes:** the 0.328 HBM3 / 3E note "只用于 HBM4 / HBM4E" is retired. The energy-DSE PHY note no longer says "HBM3E 窄总线同密度". **UI:** new input "mm² / HBM3 DQ" (filled by every density preset); controller titles and preset note say HBM3 / 3E are scaled by 16 / 32 channels.
+
+### Host IO: `mm2_host_io` (1.8% × 331 = 5.958 mm²) kept and reconciled with a modern PHY source
+- VLSI 2022 5 nm DSP SerDes "for Ethernet and PCIe applications" (doi 10.1109/VLSITechnologyandCir46769.2022.9830304): quad 1806 × 825 µm = 0.3725 mm² per lane (abstract 「来源」) → x16 PHY 5.96 mm² 「推导」, equal to the current value within 0.04%. It is an upper bound for a 64 GT/s PCIe 6 / CXL 3 lane, since the source lane is 112 Gb/s. CXL uses the PCIe 6 PHY (Intel 3 VLSI 2024 transceiver, no area published).
+- The PCIe / CXL controller is **not** counted: there is no public N5 figure. TPUv2 (NeuroMeter): "PCIe Link + PCIe Ctrl" 2% of < 611 mm² ≈ ≤ 12.2 mm² for both at 16 nm, Gen3 x16 「来源/推导」. Value and tag (二手) unchanged; source text extended.
+
+### Effect (old → new, defaults)
+- 1P qwen3-8b, 8 × HBM3E 9.2 Gb/s, n5_derived: std die 654.2 → 774.5 mm² (dram_phy 128 → 192, mem_ctrl 0 → 28.6, ÷ 0.77). J/token unchanged; $/M up. 1P RWKV prefill (4 × HBM3E) 571 → 631 mm²; its dram_bw × 2 what-if +83.1 → +143.2 mm² (still tight, not over reticle).
+- **Decisions that change:**
+  - 1P + 8 × HBM3E with tp8 / 900 GB/s scale-up at 100 G or 200 G lanes was unbuildable (I/O over the shoreline) and is now buildable; the I/O-over regime starts at 1200 GB/s. 400 GB/s at 50 G lanes is now feasible.
+  - 8 × HBM3E prefill on air_oam: flux ≈ 0.99 W/mm² (over) → 0.850 (feasible, thin margin, limit 0.86).
+  - Chiplet cost (n5_cowos_s, MAC×1): the mono / 4-die crossover moves from D0 ∈ (0.1, 0.2) to ≈ 0.07 /cm². At D0 0.1 the 4-die UCIe-A package ($2232.9) is now cheaper than mono ($2354.5).
+  - tco_sens case 0: the D0 mono → split threshold moves 0.150 → 0.110 /cm². Wafer $ (19,395) and carrier yield (0.680) now also flip inside their sourced ranges. Best package flat $2013 → $2161, component $2116 → $2233 (both now 4-die).
+  - The TCO-best memory at tp8 / 400 / D0 0.1 / MAC×2 moves 4-stack → 8-stack (both corners). The 16 pkg-vs-TCO disagreements are now 14 at tp8 + 2 at tp1 (was 16 at tp8).
+  - energy_dse power-scope study, air_oam card front [4, 17] → [1, 0, 15].
+- **Unchanged:** HBM4 / HBM4E (all paths; only `budget.provided` lists the new field), LPDDR / DDR, host IO.
+
+### Tests
+- New `tests/test_core_329.py` (9).
+- Re-pinned with old → new comments: test_core_211, 213, 301, 310, 312, 313, 315, 316, 317, 318, 319, 328.
+
+### Freshness
+- Since 2026-10-22, new: ATH-MaaS/PixText (pixel-space text-editing image DiT, Apache-2.0, arXiv 2610.18284; hidden 1280, depth 32, 16 heads, patch 16; ≈ 0.95 B if bf16 「推导」). Pending: it needs a new domain builder.
+- OrcaCyber Nano 1.0: still pending (GGUF metadata is still the dflash drafter's, config 401).
+
 ## [0.328.0]
 
 ### HBM4 / HBM4E memory-controller area now on by default (n5_derived, 7.15 mm² per stack)

@@ -132,7 +132,7 @@ def _desc(x: dict) -> str:
 def design_report(r: dict, body: dict, row: int | None = None) -> dict:
     """The report of row ``row`` (default: cheapest $/M, else best perf/W) of insight_dse result ``r``."""
     from .. import __version__
-    from .budget import DENSITY_PRESETS, MC_PRESETS, MC_TYPES
+    from .budget import DENSITY_PRESETS, HBM3_TYPES, MC_CHANNELS, MC_PRESETS, MC_REF_CHANNELS, MC_TYPES, mc_scale
     from .energy import ENERGY_PRESETS
     from .energy_dse import ASM_SRC, _tco_ok, asm_note
     from .thermal import COOLING
@@ -164,8 +164,30 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
         _mtype = _mcat.parse_mem_id(x.get("mem_id")).mem_type.upper() if x.get("mem_id") else str(x.get("mem_type") or "").upper()
     except Exception:       # noqa: BLE001 — unknown id: no HBM controller item
         _mtype = str(x.get("mem_type") or "").upper()
-    if _mc is not None and _bd.get("mm2_per_unit_mc") is None and _mtype not in MC_TYPES:
-        _mc = None                                       # HBM4 / HBM4E-only field (budget.full_area)
+    if _mc is not None and _bd.get("mm2_per_unit_mc") is None:
+        if _mtype not in MC_TYPES:
+            _mc = None                                   # HBM-only field (budget.full_area)
+        elif mc_scale(_mtype) != 1:                      # 0.329: per HBM4 stack × channel ratio (HBM3 / 3E: 16 / 32)
+            _mc *= mc_scale(_mtype)
+            _mcs = f"{_mcs}（{_mtype}：× {MC_CHANNELS[_mtype]} / {MC_REF_CHANNELS} 通道，JEDEC 通道数「推导」）"
+    # 0.329: the per-generation HBM host PHY area behind dram_phy (HBM3 / 3E: mm2_per_dq_hbm3, HBM4 / 4E: mm2_per_dq_hbm)
+    _phy = None
+    try:
+        _sp = _mcat.parse_mem_id(x["mem_id"]) if x.get("mem_id") else None
+    except Exception:       # noqa: BLE001
+        _sp = None
+    if _sp is not None and _sp.kind == "HBM" and not x.get("hbm_custom"):
+        _pf = DENSITY_PRESETS.get(dens, {}).get("fields", {})
+        _fld = "mm2_per_dq_hbm"
+        if _mtype in HBM3_TYPES and (_bd.get("mm2_per_dq_hbm3") is not None or "mm2_per_dq_hbm3" in _pf):
+            _fld = "mm2_per_dq_hbm3"
+        if _bd.get(_fld) is not None:
+            _phy = (_bd[_fld], "用户输入", f"budget.{_fld}")
+        elif _fld in _pf:
+            _phy = (_pf[_fld][0], _pf[_fld][1], f"面积密度预设 {dens}：" + _pf[_fld][2])
+        if _phy is not None:
+            _dq = _sp.bus_bits / max(1, _sp.n_units)
+            _phy = (_phy[0] * _dq, _phy[1], f"{_phy[2]}（{_mtype}：每栈 {_dq:g} DQ × {_fld}）")
     it = [item("chip", "芯片基线", r["chip"], tag="用户输入", src="chip_preset"),
           item("model", "模型", r["model"], tag="用户输入", src="scenario.model"),
           item("phase", "阶段", r["phase"], tag="用户输入", src="serving.phase"),
@@ -184,6 +206,7 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
                   tag="用户输入", src="chip.hbm_base = custom（hbm_base：每栈 D2D = UCIe-A 模块数 × 模块面积「推导」、接口 = 链路 pJ/bit 代替两端 PHY「推导」、"
                   "$/GB × 1.10「二手/假设」）" + ("" if _mc else "；内存控制器面积未计（Samsung HC 2026 每栈 7.15–14.3 mm²「二手/推导」，"
                                                  "budget.mc_preset 打开）"))] if r.get("hbm_base") == "custom" else []),
+          *([item("hbm_phy", "HBM 主机侧 PHY 面积", _phy[0], "mm² / 栈", tag=_phy[1], src=_phy[2])] if _phy else []),
           *([item("hbm_mc", "HBM 内存控制器面积", _mc, "mm² / 栈", tag=_mct, src=_mcs
                   + ("（定制基础晶粒：移出主晶粒）" if x.get("hbm_custom") else ""))] if _mc is not None else []),
           *([item("hbm_pkg", "HBM 封装",                     # 0.326: only with the option on (si reports unchanged)

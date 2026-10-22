@@ -60,9 +60,12 @@ def test_sized_default_vs_reproduce_switches():
     assert r1["reasons"][0].startswith("HBM 岸线：8 堆栈需 88 mm")
     r0 = shoreline_report(_s(noc_mem_io_edges=0))
     assert r0["io_mode"] == "none" and r0["feasible"] and r0["io"]["status"] == "off"
-    hot = shoreline_report(_s(tp=8, link=900.0))                   # 16 + 72 lanes = 25.1 mm > 16.7 mm left
-    assert not hot["feasible"] and hot["io"]["status"] == "over" and hot["io"]["unplaced_macros"] == 10
-    assert hot["reasons"][0].startswith("I/O 岸线：主机 16 + scale-up 72 通道需 25.1 mm")
+    # 0.329: the per-generation HBM3E PHY + controller (MODEL §274) grows the die 654 → 774 mm², so 900 GB/s (16 + 72
+    # lanes) now fits; 1200 GB/s (16 + 96 lanes = 31.9 mm > 26.3 mm left) keeps the I/O-over regime (was 900 / 10 macros)
+    hot = shoreline_report(_s(tp=8, link=1200.0))
+    assert not hot["feasible"] and hot["io"]["status"] == "over" and hot["io"]["unplaced_macros"] == 8
+    assert hot["reasons"][0].startswith("I/O 岸线：主机 16 + scale-up 96 通道需 31.9 mm")
+    assert shoreline_report(_s(tp=8, link=900.0))["feasible"]              # 0.329: buildable (was over)
     assert shoreline_report(_s(tp=8, link=400.0))["feasible"]
     assert shoreline_report(_s("100T"))["status"] == "over"        # 100T die cannot hold 8 stacks
     assert RETICLE_FIELD_MM == (26.0, 33.0) and DIE_ASPECT_MAX == 2.0
@@ -84,10 +87,10 @@ def test_chip_fields_serialise_and_validate():
 
 # ---------------------------------------------------------------- (1) first-class result: eval / API / DSE
 def test_result_and_api_carry_shoreline():
-    ev = evaluate(_s(tp=8, link=900.0))
+    ev = evaluate(_s(tp=8, link=1200.0))                            # 0.329: 1200 GB/s (900 now fits, see above)
     assert ev.shoreline["status"] == "over"
     o = api.api_eval({"chip_preset": "1P", "scenario": {"model": "qwen3-8b", "mem_id": H8, "layout": {"tp": 8},
-                                                         "link": {"GBps": 900}, "chip": {"io_su_lane_Gbps": 100}},
+                                                         "link": {"GBps": 1200}, "chip": {"io_su_lane_Gbps": 100}},
                       "sensitivity": False})
     sh = o["shoreline"]
     assert sh["feasible"] is False and len(sh["edges"]) == 4
@@ -96,22 +99,22 @@ def test_result_and_api_carry_shoreline():
 
 def test_dse_rows_buildable_and_front_switch():
     ex = _ex()
-    s = _s(tp=8, link=900.0)
+    s = _s(tp=8, link=1200.0)                                       # 0.329: was 900 GB/s (now buildable on 774 mm²)
     s = s.replace("serving", Serving(phase="prefill", batch=1, prompt=2048, ctx=4096))   # 100 G lanes (0.312)
     from accel_dse.core.energy_dse import energy_design_search
     kw = dict(mac_scales=(1.0,), sram_scales=(1.0,), sides=(128,), clusters=[1, 2, 4], noc_link_Bpc=64, noc_routing="xy")
     o = energy_design_search(s, ex.table(), ex.budget(), **kw)
     assert o["n_unbuildable"] == 3 and o["front"] == [] and not o["include_unbuildable"]
     assert all(x["buildable"] is False and x["why"].startswith("I/O 岸线") for x in o["rows"])
-    # the package keeps its scale-up bandwidth: K clusters share 900 GB/s → 72 lanes for every K (≤ 0.311: K × 72)
-    assert all("scale-up 72 通道" in x["why"] for x in o["rows"])
+    # the package keeps its scale-up bandwidth: K clusters share 1200 GB/s → 96 lanes for every K (≤ 0.311: K × lanes)
+    assert all("scale-up 96 通道" in x["why"] for x in o["rows"])
     oi = energy_design_search(s, ex.table(), ex.budget(), include_unbuildable=True, **kw)
     assert oi["include_unbuildable"] and oi["front"] and all("why_shore" in x for x in oi["rows"])
     ok = energy_design_search(s.replace("link", Link(GBps=400.0)), ex.table(), ex.budget(), **kw)
     assert ok["n_unbuildable"] == 0 and ok["front"] and all(x["buildable"] for x in ok["rows"])
     assert all(x["shore"]["io_mm"] > 0 and x["shoreline"] in ("ok", "tight") for x in ok["rows"])
     o2 = api.api_insight_dse({"chip_preset": "1P", "scenario": {"model": "qwen3-8b", "mem_id": H8, "layout": {"tp": 8},
-                                                                "link": {"GBps": 900}, "chip": {"io_su_lane_Gbps": 100}},
+                                                                "link": {"GBps": 1200}, "chip": {"io_su_lane_Gbps": 100}},
                               "energy": {"energy_preset": "tpuv4i_7nm"}, "budget": {"density_preset": "n5_derived"},
                               "mac_scales": [1], "sram_scales": [1], "sides": [128], "include_unbuildable": True})
     assert o2["include_unbuildable"] and o2["n_unbuildable"] >= 1
@@ -123,13 +126,15 @@ def test_chiplet_verdicts_buildable_only():
     if True:
         fl = {"preset": "n5_cowos_l", "asm_model": "flat"}    # 0.319: pinned $ are the 0.312 (flat) rule
         o = ex.run("qwen3-8b", "decode", out=lambda *a: None, cost=fl, d0=0.1, macs=(1.0,))
-        o9 = ex.run("qwen3-8b", "decode", out=lambda *a: None, cost="n5_cowos_l", d0=0.1, macs=(1.0,), tp=8, link=900.0,
+        o9 = ex.run("qwen3-8b", "decode", out=lambda *a: None, cost="n5_cowos_l", d0=0.1, macs=(1.0,), tp=8, link=1200.0,
                     lane=100)
         o1 = ex.run("qwen3-8b", "decode", out=lambda *a: None, cost="n5_cowos_l", d0=0.1, macs=(1.0,), io_edges=1)
     mono = [x for x in o["rows"] if x["dies"] == 1 and x.get("clusters", 1) == 1][0]
-    assert mono["buildable"] and mono["mem_edges"] == 4 and round(mono["usd_good_pkg"]) == 2013
+    # 0.329 re-pin (HBM3E PHY 16 → 24 mm² + controller 3.575 mm² per stack, die 654 → 774 mm²): $2013 → $2214, 4-die
+    # $2059 → $2161 (now the cheaper package; the verdict is throughput / energy-based and stays mono)
+    assert mono["buildable"] and mono["mem_edges"] == 4 and round(mono["usd_good_pkg"]) == 2214
     best4 = min(x["usd_good_pkg"] for x in o["rows"] if x["dies"] == 4 and x["buildable"])
-    assert round(best4) == 2059 and o["chiplet"]["compare"][0]["verdict"] == "mono"
+    assert round(best4) == 2161 and o["chiplet"]["compare"][0]["verdict"] == "mono"
     assert o1["chiplet"]["compare"][0]["verdict"] == "only_split"           # 0.311 whole I/O edge
     m9 = [x for x in o9["rows"] if x["dies"] == 1 and x.get("clusters", 1) == 1][0]
     assert m9["buildable"] is False and "I/O 岸线" in m9["why"]
