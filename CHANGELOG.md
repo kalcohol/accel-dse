@@ -6,6 +6,24 @@
 
 
 
+## [0.351.0] — 2026-10-23
+
+### Adversarial card-axis margins across report / eval / DSE / static (MODEL §296)
+
+- Re-verified liquid: design `flux_headroom` ≈1.5% (card), not ~+140% (feas min). COOLING pins unchanged.
+- Gap: `/api/eval` already returned full `thermal_report`, but DSE rows dropped `card_flux_ratio` / `die_flux_ratio`, and the chip panel + DSE table showed feas `flux_ratio` as 「× 上限」— same class of bug as 0.350 for UI/static.
+
+### Mechanism: persist + display card-axis ratios
+
+- `thermal_report` exposes top-level `card_flux_ratio` / `die_flux_ratio` (limits[*] keep `card_ratio`/`die_ratio`).
+- DSE `row.thermal` persists both; report relabels `flux_ratio` → 「可行性热流比 min(卡,晶)」; DIRECTION adds `pkg_margin_W` / `pkg_headroom` / `card_flux_ratio`.
+- Web: chip thermal + DSE tooltip use **卡级** × 上限 (die note when skewed).
+
+### Path / deferred
+
+- NPU absolute search empty again (HBM4 ≈40% only; SPHBM4 interface; no public PCIe/CXL N5 mm²) → **no invent**.
+- No speech catalog churn. **No visual UI restyle** (still no written user yes, §293).
+
 ## [0.350.0] — 2026-10-23
 
 ### Adversarial package-power / flux margins (MODEL §295)

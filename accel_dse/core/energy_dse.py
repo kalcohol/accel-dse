@@ -1098,8 +1098,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                                     device_static_W=row.get("device_static_W"))
                 # 0.314: flux_W_mm2 = card-level (judged, shipped-part definition); die_flux_W_mm2 = DRAM devices out
                 # 0.315: pkg_W = complete package power (static floor + VR loss, thermal.package_power)
+                # 0.351: persist card/die flux ratios (design axis); flux_ratio stays feas min(card,die)
                 row["thermal"] = {k: th.get(k) for k in ("status", "feasible", "pkg_W", "card_W", "die_W", "flux_W_mm2",
-                                                         "die_flux_W_mm2", "flux_ratio", "static_included",
+                                                         "die_flux_W_mm2", "flux_ratio", "card_flux_ratio",
+                                                         "die_flux_ratio", "static_included",
                                                          "static_basis", "static_add_W", "vr_loss_W", "pkg_W_hot",
                                                          "hot_ok")}
                 row["thermal"]["A_per_mm2"] = (th.get("pd") or {}).get("A_per_mm2")

@@ -288,7 +288,7 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
                tag=tags_in(cs), src=cs or "", missing="未选冷却方案"),
           item("cool_flux", "冷却上限：热流", (COOLING.get(cool) or {}).get("flux_W_mm2") if cool else None, "W/mm²",
                tag=tags_in(cs), src=cs or "", missing="未选冷却方案"),
-          item("flux_ratio", "热流 / 上限", th.get("flux_ratio") if cool else None, src="thermal", missing="未选冷却方案"),
+          item("flux_ratio", "可行性热流比 min(卡,晶)", th.get("flux_ratio") if cool else None, src="thermal（两侧都超才判热流超限）", missing="未选冷却方案"),
           item("power_cap_W", "功耗预算", r.get("power_cap_W"), "W", tag="用户输入", src=r.get("power_cap_src") or "",
                missing="未填功耗预算（budget.power_W_card / energy.tdp_W）：不做功耗约束"),
           item("capped", "DVFS 封顶", x.get("capped"), src="powercap（0.302 / 0.316，封装口径）")]
@@ -315,9 +315,7 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
         if die_r is not None:
             it.append(item("die_flux_ratio", "晶粒热流 / 上限", die_r, tag="推导",
                            src="die_flux_W_mm2 ÷ COOLING.die_flux_W_mm2（可行性用 min(卡, 晶)）"))
-        if th.get("flux_ratio") is not None and abs(th["flux_ratio"] - card_r) > 1e-9:
-            it.append(item("feas_flux_ratio", "可行性热流比 min(卡, 晶)", th["flux_ratio"], tag="推导",
-                           src="thermal.flux_ratio（两侧都超才判热流超限）"))
+        # 0.351: flux_ratio item above is the feasibility min; no separate feas_flux_ratio
     if plim and th.get("pkg_W"):
         # 0.349 / 0.350: package-power margin; binding vs card flux (not feas min) 「推导」
         pr = th["pkg_W"] / plim
@@ -589,9 +587,10 @@ def to_markdown(rep: dict) -> str:
 # other item is compared for equality only (a design input, a status, a preset value).
 DIRECTION = {"thr": 1, "perf_W": 1, "slo_margin": 1, "shore_margin": 1, "die_yield": 1, "asm_Y": 1, "dpw": 1,
              "tpot_ms": -1, "ttft_ms": -1, "J_per_unit": -1, "W_card": -1, "static_W": -1, "pkg_W": -1, "die_W": -1,
-             "flux_W_mm2": -1, "flux_ratio": -1, "mm2": -1, "good_die_usd": -1, "si_usd": -1, "pkg_usd": -1,
+             "flux_W_mm2": -1, "flux_ratio": -1, "card_flux_ratio": -1, "mm2": -1, "good_die_usd": -1, "si_usd": -1, "pkg_usd": -1,
              "kgd_scrap_usd": -1, "usd_good_pkg": -1, "usd_per_Munit": -1, "capex_usd": -1, "mem_usd": -1,
-             "energy_usd_per_yr": -1, "kWh_per_yr": -1, "flux_margin_W_mm2": 1, "flux_headroom": 1}   # 0.331
+             "energy_usd_per_yr": -1, "kWh_per_yr": -1, "flux_margin_W_mm2": 1, "flux_headroom": 1,
+             "pkg_margin_W": 1, "pkg_headroom": 1}   # 0.331 / 0.351
 HEADLINE = ("usd_per_Munit", "perf_W", "thr", "tpot_ms", "J_per_unit", "pkg_W", "usd_good_pkg")
 _LETTERS = "ABC"
 

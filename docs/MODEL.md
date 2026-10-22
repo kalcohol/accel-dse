@@ -10213,3 +10213,16 @@ Image/video ViT forward (storage only); Thinker→Talker projection traffic deta
 - Design margins / headroom / binding / front flux ties use **card** `flux_W_mm2 ÷ COOLING.flux_W_mm2`.
 - Report exposes `card_flux_ratio`; when different, `die_flux_ratio` and `feas_flux_ratio`. Binding = max(card, package).
 - Visual UI restyle: no written user approval → not applied. Thinker∥Talker: no sourced schedule → not invented.
+
+## §296 Adversarial card-axis across DSE/UI; persist ratios (0.351)
+
+### §296.1 Adversarial 「推导」
+- Liquid card headroom ≈1.5%; feas-min headroom would be ~140%. COOLING air 1000/0.86/0.55, liquid 1400/0.96/1.70 unchanged.
+- Report/design path fixed in 0.350; eval/DSE/static still surfaced feas `flux_ratio` as the only 「× 上限」.
+
+### §296.2 Mechanism
+- `thermal_report` top-level `card_flux_ratio` / `die_flux_ratio`; DSE rows persist them; report `flux_ratio` label = feasibility min; UI chip + DSE tooltip show 卡级.
+- DIRECTION: `pkg_margin_W`/`pkg_headroom` (+1), `card_flux_ratio` (−1).
+
+### §296.3 Deferred
+- NPU: no new absolute public mm² / pJ → skip. No speech catalog churn. Visual UI restyle: still no written user yes.

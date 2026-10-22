@@ -1542,7 +1542,13 @@ function renderThermal(x) {
     + (x.static_add_W ? ` + 静态底功耗 ${num(x.static_add_W)} W` : '') + (x.vr_loss_W ? ` + 稳压器损耗 ${num(x.vr_loss_W)} W` : '')   // 0.315
     + `；DRAM 器件 ${num(x.dram_dev_W)} W）· 每晶粒 ${num(x.die_W)} W · 热流 ${x.flux_W_mm2 != null ? x.flux_W_mm2.toFixed(2) : '—'} W/mm²（封装功耗 ÷ 晶粒面积，出货件同口径）`
     + (x.die_flux_W_mm2 != null ? ` · 晶粒热流 ${x.die_flux_W_mm2.toFixed(2)}（扣 DRAM 器件与稳压器损耗）` : '')
-    + (x.hot_ok === false ? ` · 余量不足（85 °C 泄漏上界 ${num(x.pkg_W_hot)} W）` : '') + (x.flux_ratio != null ? ` · ${x.flux_ratio.toFixed(2)}× 上限` : '')
+    + (x.hot_ok === false ? ` · 余量不足（85 °C 泄漏上界 ${num(x.pkg_W_hot)} W）` : '')
+    + ((() => { const cr = x.card_flux_ratio != null ? x.card_flux_ratio : x.flux_ratio;  // 0.351: card axis for design ×上限
+               if (cr == null) return '';
+               let s = ` · 卡级 ${cr.toFixed(2)}× 上限`;
+               if (x.die_flux_ratio != null && x.card_flux_ratio != null && Math.abs(x.die_flux_ratio - x.card_flux_ratio) > 1e-6)
+                 s += `（晶粒 ${x.die_flux_ratio.toFixed(2)}×；可行性取 min）`;
+               return s; })())
     + (x.pd && x.pd.A_per_mm2 != null ? ` · 电流 ${x.pd.A_per_mm2.toFixed(2)} A/mm² @ ${x.pd.vdd_V} V「假设」（供电只报告）` : '') + (lim ? ` · ${lim}` : '')));
   if (x.reasons && x.reasons.length) el.append(h('div', { class: 'warn' }, x.reasons.join('；')));
   if (x.notes && x.notes.length) el.append(h('div', { class: 'small muted' }, x.notes.join('；')));   // 0.314
@@ -2697,7 +2703,7 @@ async function runInsightDse() {
       ['前沿', '热 / 封装 W', 'MAC ×', '引擎 × 阵列', 'SRAM MiB', '拓扑', 'NoC B/周期', 'NoC mm² / W', '晶粒 × D2D', 'D2D GB/s', 'Σ mm² / 良率', '$/好封装', `$/M${u}`, `${u}/s/W`, '外存', 'GB/s', 'GB', 'SLC MiB', `${u}/s/卡`, `J/${u}`, `perf/W（${u}/J）`, 'W/卡', '工作点 f ×', '运行 f ×', 'mm²', 'TPOT ms', 'TTFT ms', '内存 $', 'MAC', 'SRAM', '导线', 'NoC', 'DRAM', '静态', '说明'].map((x) => h('th', {}, x)))),
       h('tbody', {}, rows.map((x) => h('tr', { class: x.front ? 'best' : '' },
         h('td', {}, x.front ? '★' : x.front_thermal_out ? '✗热' : x.front3 ? '☆' : x.front_usd ? '$' : ''),
-        h('td', { title: x.thermal && x.thermal.flux_ratio != null ? `热流 ${x.thermal.flux_W_mm2.toFixed(2)} W/mm²（${x.thermal.flux_ratio.toFixed(2)}× 上限）` : '' },   // 0.316
+        h('td', { title: x.thermal && (x.thermal.card_flux_ratio != null || x.thermal.flux_ratio != null) ? `热流 ${x.thermal.flux_W_mm2.toFixed(2)} W/mm²（卡级 ${(x.thermal.card_flux_ratio != null ? x.thermal.card_flux_ratio : x.thermal.flux_ratio).toFixed(2)}× 上限）` : '' },   // 0.316 / 0.351 card axis
           x.thermal && x.thermal.pkg_W != null ? `${x.thermal.feasible === false ? '✗ ' : x.thermal.feasible ? '✓ ' : ''}${num(x.thermal.pkg_W)}` : '—'),
         h('td', {}, String(x.mac_x)),
         h('td', {}, `${x.engines}×${x.array}` + (x.base ? ' ←当前' : '')), h('td', {}, num(x.sram_mib)), h('td', {}, x.topology),

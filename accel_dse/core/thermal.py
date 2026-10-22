@@ -243,6 +243,9 @@ def thermal_report(pkg_W: float | None, die_mm2: float | None, dies: int = 1, dr
         return out
     c, l = COOLING[cooling], lim[cooling]
     out["flux_ratio"] = l["flux_ratio"]
+    # 0.351: design-facing ratios on the report object (limits[*] keep card_ratio/die_ratio)
+    out["card_flux_ratio"] = l["card_ratio"]
+    out["die_flux_ratio"] = l["die_ratio"]
     if not l["pkg_ok"]:
         out["reasons"].append(f"封装功耗 {P:.0f} W > {cooling} 上限 {c['pkg_W']:g} W")
     if l["flux_ok"] is False:

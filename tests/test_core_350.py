@@ -38,8 +38,9 @@ def test_card_axis_headroom_and_binding():
         assert it["thermal_binding"] == ("热流" if card_r >= pr else "封装功耗")
         # liquid: feas min(card,die) << card → must not drive headroom/binding
         if cool == "liquid":
-            assert it.get("feas_flux_ratio") is not None
-            assert it["feas_flux_ratio"] < card_r - 0.2
+            assert it["flux_ratio"] is not None  # feasibility min(card,die)
+            assert it["flux_ratio"] < card_r - 0.2
+            assert abs(it["card_flux_ratio"] - card_r) < 1e-12
             assert it["flux_headroom"] < 0.05  # ~1.5%, not ~140%
             assert it["thermal_binding"] == "热流"
         ft = th["front_thermal"]
