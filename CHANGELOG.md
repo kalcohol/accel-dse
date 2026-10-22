@@ -6,6 +6,21 @@
 
 
 
+## [0.341.0] — 2026-10-22
+
+### Added
+- `ming-omni-tts-0.5b` (inclusionAI/Ming-omni-tts-0.5B): same dense+DiTAR `tts_spec` as Ming-3.0-tts-0.5B; patch=4 / history=32 → 320 ms audio/step 「来源」; SPEECH 31 → 32.
+
+### Changed
+- Adversarial: Ming-3.0-tts-0.5B DiTAR (Euler 10 × CFG 2, AudioVAE 44.1 kHz, flow0..flow9) held across eval / speech / SPS.
+
+### Pending / not applied
+- **Qwen3-Omni** (`qwen3_omni_moe`): MoE thinker (128 experts) + MoE talker + `code_predictor` + `code2wav` (not token2wav) — new architecture, not a minimal omni/tts extension.
+- **MOSS-TTS** (Nano / v1.5 / Local): `moss_tts_*` global+local GPT2 / delay patterns + separate audio tokenizer — new builder family.
+- OrcaCyber Nano / pocket-tts: sha unchanged, gated auto, config 401.
+- Ming-3.0-audio-{tiny,flash}: `bailing_moe_v3_audio` — new ASR arch.
+- **UI patch not applied**.
+
 ## [0.340.0] — 2026-10-22
 
 ### Added

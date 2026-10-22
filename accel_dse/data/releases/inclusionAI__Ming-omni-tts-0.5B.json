@@ -1,0 +1,213 @@
+{
+ "bytes_llm": 1260334848,
+ "bytes_mtp": 0,
+ "bytes_total": 3231179176,
+ "bytes_tts": 206585348,
+ "config": {
+  "aggregator_config": {
+   "attn_mask_enabled": false,
+   "depth": 8,
+   "dropout": 0.0,
+   "hidden_size": 1024,
+   "mlp_ratio": 4,
+   "num_heads": 16
+  },
+  "architectures": [
+   "BailingMMNativeForConditionalGeneration"
+  ],
+  "audio_tokenizer_config": {
+   "_name_or_path": "",
+   "add_cross_attention": false,
+   "architectures": [
+    "AudioVAE"
+   ],
+   "bad_words_ids": null,
+   "begin_suppress_tokens": null,
+   "bos_token_id": null,
+   "chunk_size_feed_forward": 0,
+   "cross_attention_hidden_size": null,
+   "dec_kwargs": {
+    "backbone": {
+     "_attn_implementation": "flash_attention_2",
+     "attention_dropout": 0.0,
+     "attn_implementation": null,
+     "bos_token_id": 151643,
+     "eos_token_id": 151645,
+     "hidden_act": "silu",
+     "hidden_size": 896,
+     "initializer_range": 0.02,
+     "intermediate_size": 4864,
+     "is_causal": true,
+     "max_position_embeddings": 32768,
+     "max_window_layers": 0,
+     "model_type": "qwen2",
+     "num_attention_heads": 14,
+     "num_hidden_layers": 24,
+     "num_key_value_heads": 2,
+     "rms_norm_eps": 1e-06,
+     "rope_theta": 1000000.0,
+     "sliding_window": 64,
+     "tie_word_embeddings": true,
+     "torch_dtype": "bfloat16",
+     "transformers_version": "4.43.1",
+     "use_cache": false,
+     "use_sliding_window": true,
+     "vocab_size": 1
+    },
+    "latent_dim": 64,
+    "output_dim": 882
+   },
+   "decoder_start_token_id": null,
+   "diversity_penalty": 0.0,
+   "do_sample": false,
+   "early_stopping": false,
+   "enc_kwargs": {
+    "backbone": {
+     "_attn_implementation": "flash_attention_2",
+     "attention_dropout": 0.0,
+     "attn_implementation": null,
+     "bos_token_id": 151643,
+     "eos_token_id": 151645,
+     "hidden_act": "silu",
+     "hidden_size": 896,
+     "initializer_range": 0.02,
+     "intermediate_size": 4864,
+     "is_causal": true,
+     "max_position_embeddings": 32768,
+     "max_window_layers": 0,
+     "model_type": "qwen2",
+     "num_attention_heads": 14,
+     "num_hidden_layers": 24,
+     "num_key_value_heads": 2,
+     "rms_norm_eps": 1e-06,
+     "rope_theta": 1000000.0,
+     "sliding_window": 64,
+     "tie_word_embeddings": true,
+     "torch_dtype": "bfloat16",
+     "transformers_version": "4.43.1",
+     "use_cache": false,
+     "use_sliding_window": true,
+     "vocab_size": 1
+    },
+    "hop_size": 882,
+    "input_dim": 882,
+    "latent_dim": 64
+   },
+   "init_method": "kaiming",
+   "patch_size": 4,
+   "sample_rate": 44100,
+   "semantic_module_kwargs": null,
+   "tie_word_embeddings": true,
+   "torch_dtype": "bfloat16",
+   "use_bfloat16": false
+  },
+  "auto_map": {
+   "AutoConfig": "configuration_bailingmm.BailingMMConfig"
+  },
+  "ditar_config": {
+   "attn_backend": "torch",
+   "attn_mask_enabled": false,
+   "depth": 8,
+   "dropout": 0.0,
+   "hidden_size": 1024,
+   "history_patch_size": 32,
+   "mlp_ratio": 4,
+   "num_heads": 16,
+   "patch_size": 4
+  },
+  "llm_config": {
+   "_name_or_path": "",
+   "architectures": [
+    "Qwen2ForCausalLM"
+   ],
+   "attention_dropout": 0.0,
+   "attn_implementation": null,
+   "bos_token_id": 151643,
+   "eos_token_id": 151645,
+   "hidden_act": "silu",
+   "hidden_size": 896,
+   "initializer_range": 0.02,
+   "intermediate_size": 4864,
+   "max_position_embeddings": 32768,
+   "max_window_layers": 21,
+   "model_type": "qwen2",
+   "num_attention_heads": 14,
+   "num_hidden_layers": 24,
+   "num_key_value_heads": 2,
+   "rms_norm_eps": 1e-06,
+   "rope_theta": 1000000.0,
+   "sliding_window": 32768,
+   "tie_word_embeddings": true,
+   "torch_dtype": "bfloat16",
+   "transformers_version": "4.43.1",
+   "use_cache": true,
+   "use_sliding_window": false,
+   "vocab_size": 151936
+  },
+  "mlp_depth": 2,
+  "model_type": "dense",
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.52.4"
+ },
+ "fetched": "2026-10-23",
+ "n_tensors": 1181,
+ "params_llm": 630167424,
+ "params_mtp": 0,
+ "params_tts": 103292642,
+ "params_vision": 882129458,
+ "quantization_config": null,
+ "repo": "inclusionAI/Ming-omni-tts-0.5B",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 88135680,
+    "params": 44067840
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 272269312,
+    "params": 136134656
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 272269312,
+    "params": 136134656
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 627572736,
+    "params": 313786368
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 87808,
+    "params": 43904
+   }
+  },
+  "tts": {
+   "bf16": {
+    "bytes": 206585220,
+    "params": 103292610
+   },
+   "fp32": {
+    "bytes": 128,
+    "params": 32
+   }
+  },
+  "vision": {
+   "bf16": {
+    "bytes": 1764258852,
+    "params": 882129426
+   },
+   "fp32": {
+    "bytes": 128,
+    "params": 32
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

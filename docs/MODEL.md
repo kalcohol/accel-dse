@@ -10058,3 +10058,16 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 
 ### §285.3 Pending
 - OrcaCyber Nano (sha 1af1635, gated). MOSS-TTS / Qwen3-Omni (new arch). NPU (no public numbers). UI patch not applied.
+
+## §286 Adversarial Ming-0.5B DiTAR; Ming-omni-tts; Qwen3-Omni/MOSS pending (0.341)
+
+### §286.1 Adversarial Ming-3.0-tts-0.5B
+- `tts_spec` dense+DiTAR: flow_depth 8, Euler 10, CFG 2, rate 44100, s_per_step 80 ms; ops `flow0`…`flow9`; param_err 0; eval/speech/SPS OK.
+
+### §286.2 Ming-omni-tts-0.5B 「来源」
+- Same builder as §285.2; `ditar_config.patch_size=4`, `history_patch_size=32` → 320 ms audio/step. Release role `tts` for flowloss/stop/spk.
+
+### §286.3 Why Qwen3-Omni / MOSS stay pending
+- **Qwen3-Omni-30B-A3B** (`qwen3_omni_moe`): thinker MoE 128-exp + talker MoE + 16-codebook predictor + **code2wav** (not Qwen2.5-Omni token2wav DiT/BigVGAN). Needs a new omni mode, not a thin `omni_spec` fork.
+- **MOSS-TTS-Nano / v1.5 / Local**: `moss_tts_nano` / `_delay` / `_local` — GPT2 global±local over N VQ + external audio tokenizer. New family vs Moshi/Qwen3-TTS.
+- OrcaCyber / pocket-tts: still gated (config 401). UI patch not applied.

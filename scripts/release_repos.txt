@@ -119,6 +119,8 @@ inclusionAI/Ming-3.0-asr-tiny
 inclusionAI/Ming-3.0-tts-tiny
 # 0.340
 inclusionAI/Ming-3.0-tts-0.5B
+# 0.341
+inclusionAI/Ming-omni-tts-0.5B
 # 0.270 speech round: Whisper-large-v3 / turbo, Qwen2-Audio-7B-Instruct, Qwen3-ASR-1.7B
 openai/whisper-large-v3
 openai/whisper-large-v3-turbo

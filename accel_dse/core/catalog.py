@@ -124,6 +124,8 @@ EXTRA_TAIL = [
     ("ming-3.0-tts-tiny", "inclusionAI/Ming-3.0-tts-tiny"),
     # 0.340: Ming-3.0-tts-0.5B (dense Qwen2.5-0.5B + DiTAR flow; same TTS loop as tiny)
     ("ming-3.0-tts-0.5b", "inclusionAI/Ming-3.0-tts-0.5B"),
+    # 0.341: Ming-omni-tts-0.5B (same dense+DiTAR tts_spec; patch=4 history=32)
+    ("ming-omni-tts-0.5b", "inclusionAI/Ming-omni-tts-0.5B"),
     # 0.270 speech round: Whisper-large-v3 / -turbo (encoder-decoder, cross-attention decode, 30 s padded windows),
     # Qwen2-Audio-7B-Instruct (Whisper-v3 encoder + pool + Qwen-7B), Qwen3-ASR-1.7B (AuT encoder + Qwen3-1.7B)
     ("whisper-large-v3", "openai/whisper-large-v3"),
