@@ -166,38 +166,49 @@ def _attn(name: str, q: int, keys: int, hd: int, heads: int, bits: float, b: int
 
 
 def code_predictor_ops(s: Qwen3TtsSpec, b: int) -> list[Op]:
-    """One frame: talker already produced group-0; predictor AR-generates groups 1..n_groups-1.
-    Step k attends over (k + 1) in-frame positions (seed talker_hidden + codes so far) 「来源」."""
+    """One frame after talker drew group-0.
+
+    HF ``code_predictor.generate(inputs_embeds=cat(past_hidden, last_id_hidden),
+    max_new_tokens=num_code_groups-1)`` 「来源」: one **prefill** over the 2-row seed, then
+    ``cp_steps`` **decode** steps (KV cache), each emitting one residual codebook id.
+    Embeddings are talker_h wide; layers are cp_h — Identity or Linear(talker_h → cp_h).
+    """
     h, hd, inter = s.cp_h, s.cp_hd, s.cp_inter
     kv_d = s.cp_kv * hd
     ops: list[Op] = []
-    # seed: project talker hidden into predictor width when dims differ (usually equal on 0.6B; 1.7B talker 2048 / cp 1024 — uses talker past_hidden which is talker_h; modeling cats past_hidden with last_id_hidden both at talker_h then predictor embeds at cp_h)
-    # modeling: inputs_embeds = cat(past_hidden, last_id_hidden) both talker_h; code_predictor.model expects embedding_dim = talker hidden (see __init__ embedding_dim). Check:
-    # CodePredictorModel.__init__(config, embedding_dim) — embeddings are vocab × embedding_dim. From headers: codec_embedding [2048, 1024] = [vocab, cp_h]. past_hidden is talker_h.
-    # generate inputs_embeds cat((past_hidden, last_id_hidden)) — both talker_h. So predictor hidden == talker_h for the seed, but layers are cp_h!
-    # Looking at headers again: 0.6B talker_h=1024, cp_h=1024. 1.7B talker_h=2048, cp_h=1024 — need check 1.7B headers.
-    # embeddings are talker_h wide; layers are cp_h — Identity or Linear(talker_h → cp_h) 「来源」
     if s.talker_h != h:
-        ops.append(_g("cp.small_to_mtp", b, s.talker_h, h, 16, w=s.talker_h * h + h))
-    for k in range(s.cp_steps):
-        # embed of previous code (width talker_h; projected once into the residual stream)
-        ops.append(Op(f"cp.{k}.emb", "lookup", 0, kv_read=b * s.talker_h * 2.0, vec=b * s.talker_h))
-        seq = k + 2          # past_hidden + first_code + k more
+        ops.append(_g("cp.small_to_mtp", b * 2, s.talker_h, h, 16, w=s.talker_h * h + h))
+
+    def layer_block(tag: str, rows: int, keys: int) -> list[Op]:
+        out: list[Op] = []
         for li in range(s.cp_layers):
-            p = f"cp.{k}.{li}"
-            # decode step: 1 new row (streaming); attn over seq keys
-            ops += [_g(f"{p}.q", b, h, s.cp_heads * hd, 16),
-                    _g(f"{p}.k", b, h, kv_d, 16),
-                    _g(f"{p}.v", b, h, kv_d, 16),
-                    _g(f"{p}.o", b, s.cp_heads * hd, h, 16),
-                    _g(f"{p}.gate", b, h, inter, 16),
-                    _g(f"{p}.up", b, h, inter, 16),
-                    _g(f"{p}.down", b, inter, h, 16),
-                    Op(f"{p}.norm", "vector", li, vec=b * h * 10)]
-            ops += _attn(f"{p}.attn", 1, seq, hd, s.cp_heads, 16, b)
+            p = f"{tag}.{li}"
+            out += [_g(f"{p}.q", b * rows, h, s.cp_heads * hd, 16),
+                    _g(f"{p}.k", b * rows, h, kv_d, 16),
+                    _g(f"{p}.v", b * rows, h, kv_d, 16),
+                    _g(f"{p}.o", b * rows, s.cp_heads * hd, h, 16),
+                    _g(f"{p}.gate", b * rows, h, inter, 16),
+                    _g(f"{p}.up", b * rows, h, inter, 16),
+                    _g(f"{p}.down", b * rows, inter, h, 16),
+                    Op(f"{p}.norm", "vector", li, vec=b * rows * h * 10)]
+            out += _attn(f"{p}.attn", rows, keys, hd, s.cp_heads, 16, b)
+        return out
+
+    # seed embeds: talker past_hidden + group-0 codec embed (2 rows) — looked up / carried in
+    ops.append(Op("cp.seed_emb", "lookup", 0, kv_read=b * 2 * s.talker_h * 2.0, vec=b * 2 * s.talker_h))
+    # prefill over 2 seed positions
+    ops += layer_block("cp.prefill", 2, 2)
+    ops.append(_g("cp.prefill.head", b, h, s.cp_vocab, 16))  # first of the cp_steps logits from prefill last row
+    ops.append(Op("cp.prefill.sample", "vector", 0, vec=b * s.cp_vocab * 3, sfu=b * s.cp_vocab))
+    # remaining cp_steps-1 decode steps (KV grows: after prefill cache=2, then 3..cp_steps+1)
+    for k in range(1, s.cp_steps):
+        ops.append(Op(f"cp.{k}.emb", "lookup", 0, kv_read=b * s.talker_h * 2.0, vec=b * s.talker_h))
+        keys = 2 + k  # seed 2 + k prior generated codes
+        ops += layer_block(f"cp.{k}", 1, keys)
         ops.append(_g(f"cp.{k}.head", b, h, s.cp_vocab, 16))
         ops.append(Op(f"cp.{k}.sample", "vector", 0, vec=b * s.cp_vocab * 3, sfu=b * s.cp_vocab))
     return ops
+
 
 
 def tokenizer_decode_ops(s: Qwen3TtsSpec, b: int, frames: int = 1) -> list[Op]:

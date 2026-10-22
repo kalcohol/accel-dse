@@ -2386,10 +2386,10 @@ async function runInsightDispatch() {
 }
 
 /* 0.276: real-time streams per card vs SLC size (/api/insight_speech_streams) */
-const SPS_OUT = ['moshiko-7b', 'kimi-audio-7b-instruct', 'step-audio-2-mini', 'qwen2.5-omni-7b', 'cosyvoice2-0.5b',
+const SPS_OUT = ['moshiko-7b', 'moshika-7b', 'kimi-audio-7b-instruct', 'step-audio-2-mini', 'step-audio-2-mini-base', 'step-audio-2-mini-think', 'qwen2.5-omni-7b', 'qwen2.5-omni-3b', 'cosyvoice2-0.5b',
   'fun-cosyvoice3-0.5b-2512', 'fireredtts3-base', 'drama-3', 'ming-3.0-tts-tiny',
   'qwen3-tts-0.6b-base', 'qwen3-tts-1.7b-base', 'qwen3-tts-0.6b-custom-voice', 'qwen3-tts-1.7b-custom-voice', 'qwen3-tts-1.7b-voice-design',  // 0.338
-  'index-echo-s2st-2b', 'index-echo-s2st-9b'];
+  'index-echo-s2st-2b', 'index-echo-s2st-9b'];  // 0.339 +moshika +step-base/think +omni-3b
 function speechStreamsCell(c) {
   const lim = { realtime: '实时', memory: '容量', cap: '上限' }[c.lm_limit] || c.lm_limit;
   const tip = `LM 卡 ${c.streams_lm} 路（线性预测 ${c.streams_lm_pred}，止于${lim}）`

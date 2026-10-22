@@ -40,7 +40,7 @@ class TestQwen3Tts338(unittest.TestCase):
     def test_code_predictor_ops_and_speech_kpis(self):
         m = get_model("qwen3-tts-0.6b-base")
         ops = code_predictor_ops(m.qwen3_tts, 1)
-        self.assertTrue(any(o.name.startswith("cp.0.") for o in ops))
+        self.assertTrue(any(o.name.startswith("cp.prefill.") for o in ops))  # 0.339: HF prefill(2)+15 decode
         s = Scenario(model="qwen3-tts-0.6b-base", chip=CHIPS["100T"], mem_id="lpddr5x_4x64_8533_16g",
                      serving=Serving(batch=1, prompt=64, out_len=64))
         k = speech_kpis(s)
@@ -51,7 +51,7 @@ class TestQwen3Tts338(unittest.TestCase):
     def test_speech_models_include_qwen3_tts(self):
         for mid in IDS:
             self.assertIn(mid, SPEECH_MODELS)
-        self.assertEqual(len(SPEECH_MODELS), 26)
+        self.assertEqual(len(SPEECH_MODELS), 30)  # 0.339: +moshika +step-base/think +omni-3b
 
 
 class TestAdversarial338(unittest.TestCase):

@@ -6,6 +6,21 @@
 
 
 
+## [0.339.0] — 2026-10-22
+
+### Added
+- Speech freshness (existing builders): `qwen2.5-omni-3b`, `step-audio-2-mini-base`, `step-audio-2-mini-think`, `moshika-7b` (SPEECH 26 → 30).
+- Releases: Qwen2.5-Omni-3B, Step-Audio-2-mini-Base/Think (+ token2wav sidecars), moshika-pytorch-bf16 (`fetch_pt_release.py --moshi`).
+
+### Changed
+- Qwen3-TTS code predictor: HF `generate` = **prefill over 2 seed embeds** then `cp_steps` decode steps (was 15× decode(1) with growing KV — undercounted first step) 「来源」 modeling_qwen3_tts.
+
+### Pending / not applied
+- OrcaCyber Nano 1.0: sha `1af1635` unchanged, gated auto, config 401 (drafter GGUF only).
+- NPU: no new public numbers (PCIe/CXL controller area, N7/N28 controller, controller power, SPHBM4 PHY, NMC) — skipped.
+- Qwen3-Omni / MOSS-TTS / Ming-3.0-tts-0.5B / pocket-tts: need new architecture modes — keep pending.
+- **UI patch not applied** (user still deciding).
+
 ## [0.338.0] — 2026-10-22
 
 - **Qwen3-TTS builder** (kind `qwen3_tts`, domain tts). Discrete multi-codebook LM at 12.5 Hz: Talker (catalog Qwen3) draws the first codebook; code predictor AR-generates the remaining 15; speech_tokenizer decode (fp32) → 24 kHz. Reuses Moshi-style frame KPIs. **Released:** `qwen3-tts-{0.6b,1.7b}-{base,custom-voice}` + `qwen3-tts-1.7b-voice-design` (param_err 0). SPEECH_MODELS / SPS_OUT 21→26.

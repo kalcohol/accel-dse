@@ -10024,3 +10024,21 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 
 ### §283.4 Pending
 - OrcaCyber Nano (sha 1af1635, gated). Tokenizer encode path detail beyond header GEMMs 「近似」. Carried: OmniASR CTC; PixText mask; PCIe/CXL; controllers; NMC; HBM4 absolute; LPDDR system idle/active.
+
+## §284 Qwen3-TTS predictor prefill; speech freshness (0.339)
+
+### §284.1 Qwen3-TTS adversarial fix 「来源」
+- HF `code_predictor.generate(inputs_embeds=cat(past_hidden, last_id_hidden), max_new_tokens=num_code_groups−1)`: **one prefill** over the 2-row seed, then `cp_steps` decode steps with KV cache.
+- 0.338 approximated 15× decode(1) with growing KV → undercounted the first step (2-row attention / MLP vs 1). Fixed in `code_predictor_ops` (seed emb + `cp.prefill.*` + `cp.1..cp_steps-1`).
+- Talker / speech_tokenizer / as-released dtypes / eval / DSE / report / static paths otherwise held.
+
+### §284.2 Freshness adds (existing builders)
+- `qwen2.5-omni-3b` — same `qwen2_5_omni` Thinker+Talker+token2wav as 7B; Thinker text h=2048 L=36; Talker h=896 L=24; token2wav fp32 「来源」.
+- `step-audio-2-mini-base` / `step-audio-2-mini-think` — same `step_audio_2` dims + token2wav sidecar as mini (`fetch_pt_release.py --token2wav`).
+- `moshika-7b` — female-voice twin of moshiko; identical LM/depformer/Mimi dims (`fetch_pt_release.py --moshi`); SPEECH 26 → 30.
+
+### §284.3 Kept pending
+- OrcaCyber Nano 1.0: sha `1af1635`, gated auto, config 401 (drafter/mix GGUF only).
+- New-arch speech: Qwen3-Omni, MOSS-TTS, Ming-3.0-tts-0.5B, pocket-tts.
+- NPU: no public numbers this pass (PCIe/CXL controller area; HBM controller N7/N28; controller power; SPHBM4 PHY; NMC).
+- UI patch not applied.

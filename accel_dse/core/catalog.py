@@ -130,6 +130,8 @@ EXTRA_TAIL = [
     ("qwen3-asr-1.7b", "Qwen/Qwen3-ASR-1.7B"),
     # 0.271 speech round 2: Qwen2.5-Omni-7B (Thinker Qwen2.5-7B + Whisper-v3 audio tower; Talker + token2wav speech out)
     ("qwen2.5-omni-7b", "Qwen/Qwen2.5-Omni-7B"),
+    # 0.339: Qwen2.5-Omni-3B (same qwen2_5_omni builder; Thinker Qwen2.5-3B-shaped + Talker + token2wav)
+    ("qwen2.5-omni-3b", "Qwen/Qwen2.5-Omni-3B"),
     # 0.271: CosyVoice2-0.5B / Fun-CosyVoice3-0.5B-2512 (Qwen2.5-0.5B LM → 25 Hz tokens → chunked flow matching → HiFT;
     # torch .pt checkpoints read by scripts/fetch_pt_release.py)
     ("cosyvoice2-0.5b", "FunAudioLLM/CosyVoice2-0.5B"),
@@ -144,12 +146,17 @@ EXTRA_TAIL = [
     ("omniasr-llm-7b-v2", "bezzam/omniasr-llm-7b-v2"),
     # 0.272: Step-Audio-2-mini (Whisper-style encoder + AvgPool + conv Adaptor → Qwen2.5-7B-shaped LLM; audio in)
     ("step-audio-2-mini", "stepfun-ai/Step-Audio-2-mini"),
+    # 0.339: Step-Audio-2-mini-Base / Think (same step_audio_2 + token2wav sidecar as mini)
+    ("step-audio-2-mini-base", "stepfun-ai/Step-Audio-2-mini-Base"),
+    ("step-audio-2-mini-think", "stepfun-ai/Step-Audio-2-mini-Think"),
     # 0.273 speech round 4: Kimi-Audio-7B-Instruct (Whisper-large-v3 encoder + adaptor → Qwen2-7B trunk with a 6-layer
     # audio branch; text + 12.5 Hz audio tokens per step → chunked flow-matching DiT detokenizer → BigVGAN)
     ("kimi-audio-7b-instruct", "moonshotai/Kimi-Audio-7B-Instruct"),
     # 0.274 speech round 5: Kyutai Moshi (moshiko, bf16) — full-duplex: temporal 7B + depth transformer (8 codebooks
     # per 12.5 Hz frame) + Mimi codec; architecture from the moshi package loaders.py (no HF config)
     ("moshiko-7b", "kyutai/moshiko-pytorch-bf16"),
+    # 0.339: moshika (female voice; identical dims to moshiko, fetch_pt_release --moshi)
+    ("moshika-7b", "kyutai/moshika-pytorch-bf16"),
     # 0.275: FireRedTTS3-Base (fp32) — Qwen3-1.7B backbone → per-step DiT flow head (10 steps × CFG 2) + patch encoder,
     # RedAE decode after generation; backbone config from the code (fireredtts3_base.py), see core/fireredtts3.py
     ("fireredtts3-base", "FireRedTeam/FireRedTTS3"),
