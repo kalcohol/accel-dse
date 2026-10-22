@@ -37,7 +37,7 @@ def _base(tco="accel_2026", d0=0.1):
 
 def test_ranges_sourced_and_contain_defaults():
     for k, (lo, hi, tl, th, src) in RANGES.items():
-        if k == "mem_usd_per_GB":
+        if k in ("mem_usd_per_GB", "carrier_yield"):                 # per memory type / per carrier (0.319)
             continue
         assert lo < hi and tl in TAGS and th in TAGS and len(src) > 20, k
     for t, (lo, hi, tl, th, src) in MEM_RANGES.items():
@@ -76,9 +76,9 @@ def test_row_usd_exact_and_directions():
     en = 1 - cap
     assert math.isclose(row_usd(r, b, {"usd_per_kWh": 0.0891 * 2}) / t["usd_per_Munit"], 1 + en, rel_tol=1e-9)
     assert math.isclose(row_usd(r, b, {"pue": 1.54 * 1.5}) / t["usd_per_Munit"], 1 + 0.5 * en, rel_tol=1e-9)
-    # memory $ only through GB × $/GB
+    # memory $ only through GB × $/GB (× the 0.319 HBM scrap factor)
     d = row_usd(r, b, {"mem_usd_per_GB": 18.0}) - row_usd(r, b, {"mem_usd_per_GB": 17.0})
-    assert math.isclose(d, r["mem_GB"] * 1.0 / 5 / (r["thr"] * 3600 * 8760) * 1e6, rel_tol=1e-9)
+    assert math.isclose(d, r["mem_GB"] * r["mem_scrap_k"] / 5 / (r["thr"] * 3600 * 8760) * 1e6, rel_tol=1e-9)
     for k, up in (("wafer_usd", True), ("d0", True), ("pkg_scale", True), ("usd_per_kWh", True), ("pue", True),
                   ("life_years", False), ("host", True), ("capital_rate", True)):
         lo, hi = RANGES[k][:2]
@@ -109,7 +109,7 @@ def test_d0_flip_threshold_case0():
     fl = {f["input"]: f for f in e["tco_flips"]}
     assert set(fl) == {"d0"}                                   # only D0 flips mono → split inside the sourced ranges
     th = fl["d0"]["thresholds"][0]
-    assert 0.15 < th["at"] < 0.17 and (th["from"], th["to"]) == ("mono", "split")
+    assert 0.14 < th["at"] < 0.17 and (th["from"], th["to"]) == ("mono", "split")   # 0.319 component: ≈ 0.150
     # bisection is exact: the verdict on either side of the threshold
     from accel_dse.core.tco_sens import compare_key, mono_split_verdict
     rows = o["rows"]
@@ -136,7 +136,7 @@ def test_eval_sens_and_cost_inputs_skipped_for_given_pkg_usd():
     t = api.api_eval({**b, "tco": {"cost": "n5_cowos_s"}})["tco"]
     assert {x["input"] for x in t["sens"]["bars"]} == set(INPUTS)
     u = api.api_eval({**b, "tco": {"pkg_usd": 3000, "preset": "server_2026"}})["tco"]
-    assert not {x["input"] for x in u["sens"]["bars"]} & set(COST_INPUTS) and len(u["sens"]["skipped"]) == 3
+    assert not {x["input"] for x in u["sens"]["bars"]} & set(COST_INPUTS) and len(u["sens"]["skipped"]) == len(COST_INPUTS)
     h = next(x for x in u["sens"]["bars"] if x["input"] == "host")
     assert h["base"] == 1.0 and h["d_hi"] == 0 and h["d_lo"] < 0
 

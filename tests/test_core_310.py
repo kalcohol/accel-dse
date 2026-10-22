@@ -12,7 +12,9 @@ from accel_dse.core.budget import (LPDDR_PINS_PER_MM, Budget, apply_preset, full
                                    mem_edges_auto)
 from accel_dse.core.energy import EnergyTable, apply_energy_preset, energy_report
 from accel_dse.core.energy_dse import (COST_PRESETS, _cost_params, _hbm_footprint, dies_per_wafer, energy_design_search,
-                                       package_cost)
+                                       hbm_stacks, package_cost)
+
+FLAT_L = {"preset": "n5_cowos_l", "asm_model": "flat"}       # 0.319: the 0.310–0.318 cost rule (asm_yield 1)
 from accel_dse.core.evaluate import evaluate
 from accel_dse.core.hardware import CHIPS, preset_die_mm2
 from accel_dse.core.scenario import Scenario, Serving
@@ -147,7 +149,7 @@ def test_dse_clusters_axis():
 # ---------------------------------------------------------------- (2) chiplet economics
 def test_cost_terms():
     assert abs(dies_per_wafer(654.0) - (math.pi * 22500 / 654 - math.pi * 300 / math.sqrt(1308))) < 1e-9
-    cp = _cost_params("n5_cowos_l")
+    cp = _cost_params(FLAT_L)
     assert cp["wafer_usd"] == 16988.0 and abs(cp["pkg_usd_per_mm2"] - 1100 / 2568) < 1e-12
     assert abs(COST_PRESETS["n5_cowos_s"]["pkg_usd_per_mm2"] - 750 / 1540) < 1e-12
     m = package_cost(cp, 654.0, 1, 0.52, 654 + 968)
@@ -176,7 +178,7 @@ def test_dse_cost_rows_and_front():
     assert o["costed"] and o["cost"]["preset"] == "n5_cowos_l" and any("成本" in n for n in o["notes"])
     for x in rows:
         cc = package_cost(_cost_params("n5_cowos_l"), x["mm2"], x["dies"], x["die_yield"],
-                          x["si_mm2"] + _hbm_footprint(H8))
+                          x["si_mm2"] + _hbm_footprint(H8), hbm_stacks(H8))
         assert abs(x["usd_good_pkg"] - cc["usd_good_pkg"]) < 1e-9
     mono = next(x for x in rows if x["mac_x"] == 1 and x["dies"] == 1 and x["clusters"] == 1)
     clu = next(x for x in rows if x["mac_x"] == 1 and x["dies"] == 1 and x["clusters"] == 2)
@@ -195,7 +197,7 @@ def test_dse_cost_rows_and_front():
 
 
 def test_cost_crossover_d0():
-    cp = _cost_params("n5_cowos_l")
+    cp = _cost_params(FLAT_L)                                       # the 0.310 crossover (0.319: component ~0.10)
     H = _hbm_footprint(H8)
 
     def c(n, a, d0):
@@ -204,7 +206,7 @@ def test_cost_crossover_d0():
     for _ in range(50):
         m = (lo + hi) / 2
         lo, hi = (lo, m) if c(4, 171, m) < c(1, 654, m) else (m, hi)
-    assert 0.11 < hi < 0.13                                         # MODEL §255.2
+    assert 0.11 < hi < 0.13                                         # MODEL §255.3
 
 
 # ---------------------------------------------------------------- API / UI / script

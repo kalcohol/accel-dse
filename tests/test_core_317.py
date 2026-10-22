@@ -78,10 +78,11 @@ def test_memory_counted_once_and_not_in_package():
     b = _run(mem_usd_per_GB={"HBM3E": 30.0})                   # DSE memory price → used by TCO too, not added twice
     for x, y in zip(a["rows"], b["rows"]):
         assert x["usd_good_pkg"] == y["usd_good_pkg"]           # package $ never sees the memory price
-        assert abs(y["tco"]["mem_usd"] - y["mem_usd"]) < 1e-9
+        k = x["mem_scrap_k"]                                    # 0.319: HBM scrapped with failed assemblies
+        assert abs(y["tco"]["mem_dev_usd"] - y["mem_usd"]) < 1e-9 and abs(y["tco"]["mem_usd"] - y["mem_usd"] * k) < 1e-9
         assert y["tco"]["mem_price_src"] == "用户输入" and x["tco"]["mem_price_src"] == "二手"
-        assert abs(x["tco"]["capex_usd"] - (x["usd_good_pkg"] + x["mem_GB"] * 17.5)) < 1e-6
-        assert abs(y["tco"]["capex_usd"] - x["tco"]["capex_usd"] - x["mem_GB"] * (30.0 - 17.5)) < 1e-6
+        assert abs(x["tco"]["capex_usd"] - (x["usd_good_pkg"] + x["mem_GB"] * 17.5 * k)) < 1e-6
+        assert abs(y["tco"]["capex_usd"] - x["tco"]["capex_usd"] - x["mem_GB"] * (30.0 - 17.5) * k) < 1e-6
         assert x["tco"]["pkg_usd"] == x["usd_good_pkg"]
     from accel_dse.core.energy_dse import COST_PRESETS
     for cp in COST_PRESETS.values():                            # no memory-device term exists in package cost
@@ -149,7 +150,8 @@ def test_eval_and_api():
          "energy": {"energy_preset": "tpuv4i_7nm"}, "sensitivity": False}
     o = api.api_eval({**b, "tco": {"cost": "n5_cowos_s"}})
     t = o["tco"]
-    assert abs(t["pkg_W"] - o["thermal"]["pkg_W"]) < 1e-9 and t["mem_usd"] == 96 * 17.5 and t["unit"] == "token"
+    assert abs(t["pkg_W"] - o["thermal"]["pkg_W"]) < 1e-9 and t["mem_dev_usd"] == 96 * 17.5 and t["unit"] == "token"
+    assert abs(t["mem_usd"] - 96 * 17.5 * t["mem_scrap_k"]) < 1e-9 and t["mem_scrap_k"] > 1      # 0.319 scrap
     c = api.api_eval({**b, "energy": {"energy_preset": "tpuv4i_7nm", "tdp_W": 150}, "power_cap": True,
                       "tco": {"pkg_usd": 3000}})["tco"]
     assert abs(c["pkg_W"] - 150.0) < 1e-3 and c["pkg_usd"] == 3000 and c["thr"] < t["thr"]     # capped point

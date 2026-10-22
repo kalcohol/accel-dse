@@ -186,7 +186,7 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str) -> dict:
     operating point (capped when the TDP cap binds), throughput likewise."""
     import math
     from .. import mem_catalog as mc
-    from .energy_dse import _cost_params, _hbm_footprint, package_cost
+    from .energy_dse import _cost_params, _hbm_footprint, asm_note, hbm_stacks, package_cost
     from .hardware import default_mem
     from .powercap import static_W
     from .thermal import package_power
@@ -199,7 +199,7 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str) -> dict:
     mid = scn.mem_id or default_mem(scn.chip)
     sp = mc.parse_mem_id(mid)
     notes, miss = [], []
-    cp, d0 = None, None
+    cp, d0, km = None, None, 1.0
     if spec.get("pkg_usd") is not None:
         v = spec["pkg_usd"]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v < 1e8:
@@ -215,8 +215,11 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str) -> dict:
             pkg_usd, pkg_src = None, None
         else:
             y = math.exp(-die_mm2 * d0 / 100.0)
-            cc = package_cost(cp, die_mm2, pk, y, pk * die_mm2 + _hbm_footprint(mid))
-            pkg_usd, pkg_src = cc["usd_good_pkg"], f"{cp['preset']} × 岸线晶粒 {die_mm2:.0f} mm²，D0 {d0:g}，良率 {y:.3f}"
+            cc = package_cost(cp, die_mm2, pk, y, pk * die_mm2 + _hbm_footprint(mid), hbm_stacks(mid))
+            pkg_usd, pkg_src = cc["usd_good_pkg"], (f"{cp['preset']} × 岸线晶粒 {die_mm2:.0f} mm²，D0 {d0:g}，良率 {y:.3f}，"
+                                                    f"封装良率 {cc['asm']['Y']:.3f}")
+            km = cc["asm"]["k_mem"]
+            notes.append(asm_note(cp))
     else:
         raise ValueError("tco in eval needs pkg_usd (package $ without memory) or cost (a COST_PRESETS name)")
     pr, ptag = mem_price(p, sp.mem_type)
@@ -238,9 +241,11 @@ def eval_tco(spec, *, scn, r, energy: dict, die_mm2, unit: str) -> dict:
         notes.append("按功耗封顶后的工作点计（吞吐 × 封顶系数，封装功耗 = 封顶点）")
     pw = package_power(card_W, die_mm2, pk, st, iw)["pkg_W"]
     idle = package_power(st, die_mm2, pk, st, iw)["pkg_W"]
-    mem_usd = sp.capacity_GB * pk * pr
+    mem_dev = sp.capacity_GB * pk * pr
+    mem_usd = mem_dev * km                  # 0.319: HBM scrapped with failed assemblies (cost model only)
     t = tco_point(p, pkg_usd=pkg_usd, mem_usd=mem_usd, thr=thr, pkg_W=pw, pkg_W_idle=idle, unit=unit)
-    t.update(preset=p["preset"], pkg_usd=pkg_usd, pkg_src=pkg_src, mem_usd=mem_usd, mem_GB=sp.capacity_GB * pk,
+    t.update(preset=p["preset"], pkg_usd=pkg_usd, pkg_src=pkg_src, mem_usd=mem_usd, mem_dev_usd=mem_dev, mem_scrap_k=km,
+             mem_GB=sp.capacity_GB * pk,
              mem_usd_per_GB=pr, mem_price_src=ptag, pkg_W=pw, pkg_W_idle=idle, thr=thr, src=p["src"],
              notes=notes + [basis_note(p)])
     # 0.318: one-at-a-time sensitivity over the sourced ranges (cost inputs only when priced from a cost preset)

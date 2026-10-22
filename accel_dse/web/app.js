@@ -1476,6 +1476,7 @@ function sensBars(s, id) {
         h('div', { style: 'position:absolute;left:50%;top:0;bottom:0;border-left:1px solid #888' }),
         seg(b.d_lo, '#4a90d9'), seg(b.d_hi, '#d9734a')),
       h('span', { class: 'small' }, `${fv(b.input, b.lo)}「${b.tag_lo}」${pc(b.d_lo)} · ${fv(b.input, b.hi)}「${b.tag_hi}」${pc(b.d_hi)}`))),
+    s.corners ? h('div', { class: 'small', id: `${id}-corners` }, `联合角点（0.319，所有适用输入同时取不利 / 有利端）：不利 $${num(s.corners.adverse.usd)}（${pc(s.corners.adverse.d)}）· 有利 $${num(s.corners.favourable.usd)}（${pc(s.corners.favourable.d)}）`) : null,
     (s.skipped || []).length ? h('div', { class: 'small muted' }, '未变动：' + s.skipped.join('；')) : null);
 }
 
@@ -2532,7 +2533,7 @@ async function runInsightDse() {
       $('ins-dse-kclu').classList.toggle('bad', badk);
       if (badk) { $('ins-dse-status').textContent = ''; return; }
       if (kclu.length) ex.clusters = kclu;
-      if ($('ins-dse-cost').value) ex.cost = $('ins-dse-cost').value;
+      if ($('ins-dse-cost').value) ex.cost = ($('ins-dse-asm') && $('ins-dse-asm').value === 'flat') ? { preset: $('ins-dse-cost').value, asm_model: 'flat' } : $('ins-dse-cost').value;   // 0.319: assembly-yield switch
       if ($('ins-dse-tco') && $('ins-dse-tco').value) ex.tco = $('ins-dse-tco').value;            // 0.317 (needs cost)
     }
     if ($('ins-dse-topo').checked) ex.topologies = ['mesh', 'ring', 'crossbar'];
@@ -2577,6 +2578,9 @@ async function runInsightDse() {
         el.append(h('div', { class: 'small', id: 'ins-dse-sens-flips' }, fl.length
           ? '有出处区间内会翻转的单片 / 拆分 $/M 结论：' + fl.map((e) => `MAC×${e.mac_x} 边长 ${e.side} ${e.topology}（${e.verdict_tco}）：` + e.tco_flips.map((f) => f.thresholds.map((t) => `${f.label} ${num(t.at)} 处 ${t.from}→${t.to}`).join('，')).join('；')).join(' | ')
           : ((r.chiplet && r.chiplet.compare) || []).some((e) => e.verdict_tco === 'split' || e.verdict_tco === 'mono') ? '单片 / 拆分 $/M 结论在各输入的有出处区间内均不翻转（一次只动一个）' : ''));
+        const jc = ((r.chiplet && r.chiplet.compare) || []).filter((e) => e.tco_corners && ['adverse', 'favourable'].some((sd) => e.tco_corners[sd] !== e.verdict_tco));   // 0.319
+        el.append(h('div', { class: 'small', id: 'ins-dse-sens-corners' }, ((r.chiplet && r.chiplet.compare) || []).some((e) => e.tco_corners)
+          ? (jc.length ? '联合角点翻转：' + jc.map((e) => `MAC×${e.mac_x} 边长 ${e.side} ${e.topology}：${e.verdict_tco} → 不利 ${e.tco_corners.adverse} / 有利 ${e.tco_corners.favourable}`).join(' | ') : '单片 / 拆分 $/M 结论在联合不利 / 有利角点均不翻转') : ''));
       }
     }
     put($('ins-dse-chart'), paretoChart(rows));

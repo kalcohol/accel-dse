@@ -1624,7 +1624,7 @@ def api_tco_sens(body: dict) -> dict:
     r = api_insight_dse(body)
     t = r["tco"] or {}
     cmp_ = [{k: e.get(k) for k in ("mac_x", "sram_x", "side", "topology", "mem_id", "slc_mib", "f_op", "verdict_tco",
-                                   "d_tco", "best_tco_mono", "best_tco_split", "tco_flips")}
+                                   "d_tco", "best_tco_mono", "best_tco_split", "tco_flips", "tco_corners")}
             for e in ((r.get("chiplet") or {}).get("compare") or []) if e.get("verdict_tco")]
     return {"sens": t.get("sens"), "row": (t.get("sens") or {}).get("row"),
             "design": None if t.get("sens") is None else

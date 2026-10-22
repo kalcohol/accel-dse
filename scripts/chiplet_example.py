@@ -20,6 +20,7 @@ CoWoS-L 4719 mm², D0 0.1 /cm²) over MAC ×{1, 2}, 1 / 2 / 4 dies × {UCIe-A 48
     python3 scripts/chiplet_example.py --case 0 --cost n5_cowos_l --cooling air_oam   # 0.313: thermal judged
     python3 scripts/chiplet_example.py --case 1 --power-scope card   # 0.316: 0.315 card-W power cap
     python3 scripts/chiplet_example.py --tco accel_2026               # 0.317: verdicts under $/Mtok
+    python3 scripts/chiplet_example.py --tco accel_2026 --asm flat    # 0.319: the 0.318 assembly yield (1.0)
 """
 from __future__ import annotations
 
@@ -219,12 +220,17 @@ def main(argv=None) -> int:
     ap.add_argument("--tco", choices=("accel_2026", "server_2026"),
                     help="0.317: $/Mtok study (mono/split and memory-choice verdicts under TCO; needs --cost, default n5_cowos_l)")
     ap.add_argument("--sweep", action="store_true", help="0.312: buildable-only verdict table (memory × D0 × deployment)")
+    ap.add_argument("--asm", choices=("component", "flat"), default="component",
+                    help="0.319: package / bonding yield per component (default) or flat = the 0.318 rule (asm_yield 1)")
     a = ap.parse_args(argv)
+    if a.cost:
+        a.cost = {"preset": a.cost, "asm_model": a.asm}
     if a.tco:
-        tco_study(tco=a.tco, cost=a.cost or "n5_cowos_l", cooling=a.cooling)
+        tco_study(tco=a.tco, cost=a.cost or {"preset": "n5_cowos_l", "asm_model": a.asm}, cooling=a.cooling)
         return 0
     if a.sweep:
-        sweep(io_edges=a.io_edges, cost=a.cost or "n5_cowos_l", lane=a.lane, shore_strict=a.strict)
+        sweep(io_edges=a.io_edges, cost=a.cost or {"preset": "n5_cowos_l", "asm_model": a.asm}, lane=a.lane,
+              shore_strict=a.strict)
         return 0
     for i in (a.case or range(len(CASES))):
         run(*CASES[i], flat=a.flat, cost=a.cost, d0=a.d0, io_edges=a.io_edges, mem=a.mem, tp=a.tp, link=a.link,

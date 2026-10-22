@@ -32,6 +32,7 @@ EXTRA_ORGS = (
     # 0.314: still gated (HTTP 401 on config.json, checked 2026-10-22 JST)
     # 0.315: still gated (HTTP 401 on config.json; API gated "auto", custom raon1_mini code, checked 2026-10-22 JST)
     # 0.318: still gated (HTTP 401 on config.json, checked 2026-10-22 07:40 JST)
+    # 0.319: still gated (HTTP 401 on config.json, checked 2026-10-22 08:29 JST)
     "KRAFTON",
     # 0.314: ATH-MaaS (Ovis series; OvisOCR3 merged into StartLux-Decision-v1-0.8B, no listed family)
     "ATH-MaaS",

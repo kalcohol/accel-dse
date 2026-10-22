@@ -6,6 +6,73 @@
 
 
 
+## [0.319.0]
+
+### Package / bonding yield: a sourced per-component model replaces assembly yield 1.0 (default change)
+- **Mechanism** (`energy_dse.asm_yield`, `package_cost`; `cost.asm_model`):
+  - Y_asm = Y_carrier × y_attach^HBM stacks × y_bond^dies, with y_bond = microbump attach or hybrid bond (`cost.bond`).
+  - **chip_first** (default, CoWoS): a failed carrier or attach scraps the known-good dies and the HBM stacks already on it. **chip_last** (`cost.flow`): the carrier is tested first, so only attach failures scrap them.
+  - Rework fraction ρ (`cost.rework`, default 0). Scrap factor k = (1 − ρ(1 − Y_exposed)) / Y_exposed.
+  - Per good package: good-die $ × k_kgd (`kgd_scrap_usd` column). HBM device $ × k_mem is applied in the TCO memory term (rows `mem_scrap_k`, `tco.mem_dev_usd`). LPDDR is off the carrier, so k_mem = 1.
+  - Packaging $/mm² and test stay per shipped package: the Epoch / Silicon Analysts figures are top-down per package (interposer yield is inside them), so they are not divided by Y.
+- **Calibration:**
+
+  | Term | Value | Basis |
+  |---|---|---|
+  | CoWoS-S carrier | 0.985 | TSMC 98–99 % (OCP APAC 2026, via Silicon Analysts 2026-08-11) 「二手」 |
+  | Microbump attach (per HBM stack and per die) | 0.998 | Epoch AI CoWoS-S packaging yield 95–99 % (mid 0.97); H100 = 1 die + 6 HBM sites → (0.97 / 0.985)^(1/7) 「推导」 |
+  | CoWoS-L carrier | 0.81 | Epoch AI B200: packaging yield loss ≈ $1,000 on ≈ $3,800 of dies + HBM → Y ≈ 0.79 「推导」; ÷ 0.998^10 「推导」 |
+  | Hybrid bond (per die) | 0.97 | ECTC D2W > 95 % (Gao et al. / Theil et al. 2020) and 96–99 % void-free (ECTC 2023) 「二手」 |
+  | Scrap on failure | ρ = 0 | Epoch (KGD + HBM lost) 「二手」; rework 0 「假设」 |
+
+  - Check: B200 (2 dies + 8 stacks, CoWoS-L) Y = 0.794; H100 (CoWoS-S) Y = 0.971.
+  - Not used: the Chiplet Actuary defaults (SI bonding 0.95 per chip), because 0.95⁷ = 0.70 is inconsistent with Epoch's 95–99 % per CoWoS-S package.
+- **Default change (old → new):** assembly yield 1.0 「假设」, nothing scrapped → component (CoWoS-S 0.985 / CoWoS-L 0.81 carrier, 0.998 attach, microbump, chip_first, ρ 0).
+  - **Switch:** `cost: {"preset": …, "asm_model": "flat"}` reproduces 0.318 exactly. It was checked on all 7 chiplet cases plus 36 sweep runs × 2 TCO presets: 1,494 rows, usd_good_pkg / $/M / fronts identical.
+  - CLI: `--asm flat` in `chiplet_example.py` and `tco_sens.py`. UI: the 封装良率 select.
+- **Effect** (chiplet case 0, 1P qwen3-8b decode, 8 × HBM3E, CoWoS-L, D0 0.1):
+  - Cheapest design usd_good_pkg $2,013 → $2,116.
+  - $/Mtok 0.006594 → 0.007372 (+11.8 %), mostly HBM scrap (k_mem 1.257 × $3,360 of HBM).
+  - Package-only break-even D0 vs the 654 mm² mono die: 4 dies 0.12 → 0.100, 2 dies 0.14 → 0.122. Chip-first scrap is proportional to the silicon $ at risk, which is largest for the big mono die.
+- **Verdict changes old → new** (`scripts/tco_sens.py --asm-compare`):
+  - n5_cowos_l, accel_2026:
+    - CASES $/M mono/split: 0 / 14 changed.
+    - SWEEP cheaper-by-$/package and by-$/M: 0 / 144.
+    - Memory choice by thr / capex / $/M: 1 / 72, which is tp8/400 D0 0.30 MAC × 1, by $/M 8 stacks → 6 stacks. D0 0.3 lies outside the sourced D0 range.
+  - n5_cowos_l server_2026, and n5_cowos_s with either preset: 0 changes.
+
+### TCO sensitivity: joint corners
+- `tco_sens.corner(base, side)`: every applicable input goes to its adverse ($/M-raising) or favourable end together. Low is adverse for life, carrier yield and attach yield. Memory goes to the end of each row's own type range.
+- Two new inputs:
+  - Carrier yield, per carrier (`CARRIER_RANGES`):
+    - CoWoS-S 0.963 (Epoch low 0.95 ÷ 0.998^7 「推导」) – 0.99 (TSMC 98–99 % 「二手」).
+    - CoWoS-L 0.663 (Epoch low 0.65 ÷ 0.998^10 「推导」) – 0.985 (the TSMC 2026 claim, which may cover the interposer only 「二手」).
+  - Attach yield 0.995 (Epoch CoWoS-S low ÷ 0.985, 7th root 「推导」) – 1.0 (no attach loss 「假设」).
+- Where it appears: `tco.sens.corners` (adverse / favourable $/M and Δ), compare entries `tco_corners` (verdict at each corner, DSE and `/api/tco_sens`), the corner line under the UI bar charts, and `scripts/tco_sens.py --study` (`corner_flips`).
+- **Results** (component default), as flipped / total:
+
+  | Study | Single input | Joint adverse | Joint favourable |
+  |---|---|---|---|
+  | accel_2026, cases | 3/7 (D0 0.150–0.155; 0.318: 0.162–0.167) | 3/7 → split | 0/7 |
+  | accel_2026, sweep | 1/44 | 1/44 | 0/44 |
+  | accel_2026, memory choice | 5/24 | 2/24 | 2/24 |
+  | server_2026, cases | 3/7 (D0 0.186–0.194) | 3/7 | 0/7 |
+  | server_2026, sweep | 1/44 | 1/44 | 0/44 |
+  | server_2026, memory choice | 2/24 | 0/24 | 0/24 |
+
+  - At accel_2026 both memory-choice corner flips are the D0 0.3 cells, which go to 8 stacks.
+  - The tp8 MAC × 2 4-stack choice at D0 ≤ 0.2 holds at single inputs and at both corners.
+  - New near tie: tp8/400 MAC × 1 at D0 0.05–0.2 is 8 stacks vs 6 stacks within single-input ranges (it was not under flat). It stays 8 stacks at both corners.
+  - Case 0 cheapest design: adverse corner +283 %, favourable −52 %.
+
+### Fixed
+- `scan_flip` raised `ValueError` (min of an empty list) when the base value lay outside the scanned range and the label changed between the range end and the base. This crashed 0.318 DSE runs with `tco="server_2026"`, D0 0.3, tp 1 (all three HBM3E stack counts). The scan now bisects between the nearer end and the base, and marks the threshold `outside`.
+
+### Freshness (2026-10-22 08:29 JST)
+- `freshness_sweep.py`: 110 orgs, nothing new.
+- HF newest: derivatives only.
+- KRAFTON Raon-1-mini config.json still 401.
+
 ## [0.318.0]
 
 ### TCO sensitivity: which sourced input moves $/M most, and do the 0.317 verdicts flip

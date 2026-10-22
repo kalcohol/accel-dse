@@ -8774,7 +8774,7 @@ Reading:
     - CoWoS-L: $1,100 per B200 ÷ (2 × 800 + 8 × 121) mm² → $0.43 / mm².
     - The interposer yield is inside these figures.
   - Test / assembly: $920 per package (H100, same source 「二手」). Multi-die packages pay +22.5 %: KGD testing adds 15–30 % to test cost (same source; midpoint 「二手」). Clusters are one die, so they pay no extra.
-  - Assembly yield 1.0: bonding loss of good dies is not modelled 「假设」 (`cost.asm_yield` override).
+  - Assembly yield 1.0: bonding loss of good dies is not modelled 「假设」 (`cost.asm_yield` override). 0.319: replaced by the per-component model (§264); `asm_model: "flat"` keeps this rule.
 - Rows: `dpw`, `good_die_usd`, `si_usd`, `pkg_usd`, `test_usd`, `usd_good_pkg`. `front_cost` = non-dominated on (throughput ↑, J ↓, cost ↓). The UI shows a $/好封装 column (★ on the cost front).
 - **Result** (1P, qwen3-8b decode b64, 8 × HBM3E, CoWoS-L, MAC × 1; `scripts/chiplet_example.py --cost n5_cowos_l --d0 …`):
 
@@ -9234,9 +9234,64 @@ Each end carries its own tag; the table is in CHANGELOG [0.318.0].
 - Sources and dates are in CHANGELOG [0.318.0] and `tco.MEM_USD_PER_GB`.
 
 ### §263.5 Limits
-- One input at a time; joint corners are not searched.
-- Bonding / assembly yield loss is not modelled (asm_yield 1).
+- One input at a time; joint corners are not searched (0.319: both joint corners, §264.3).
+- Bonding / assembly yield loss is not modelled (asm_yield 1) (0.319: §264.1).
 - The memory range is the row's type range even when the user set a price.
 
 ### §263.6 Freshness (2026-10-22 JST)
 - No new tracked-org release. Raon still 401.
+
+## §264 Package / bonding yield by component; joint TCO corners (0.319)
+
+### §264.1 Mechanism (`energy_dse.asm_yield`, `package_cost`)
+§255.3 divided the whole package by an assembly yield of 1.0 「假设」. Assembly is a sequence of placements on a carrier. Each placement can fail, and with chip-first CoWoS a failure scraps what is already on the carrier:
+
+    Y_asm   = Y_carrier × y_attach^S × y_bond^N          (S HBM stacks, N logic dies; y_bond = microbump attach or hybrid bond)
+    Y_exp   = Y_asm (chip_first) | y_attach^S · y_bond^N (chip_last: carrier tested before the KGDs go on)
+    k       = (1 − ρ (1 − Y_exp)) / Y_exp                (ρ = reworked fraction of failures)
+    $/good package = N · good die · k + packaging $/mm² · area + test
+    TCO memory $   = GB · $/GB · k   (HBM on the carrier; LPDDR is off it, so ×1)
+
+- Packaging and test are not divided by Y. The CoWoS $ per package (Silicon Analysts, Epoch) is a top-down price per shipped package with the interposer yield inside it, so dividing would count it twice 「推导」.
+- The HBM factor lives in the TCO memory term, never in `usd_good_pkg` (§267 rule: memory counted once).
+- Calibration and sources are in CHANGELOG [0.319.0]:
+  - CoWoS-S carrier 0.985 「二手」; attach 0.998 「推导」 from Epoch 95–99 % per CoWoS-S package (H100 1 + 6 sites).
+  - CoWoS-L carrier 0.81 「推导」 from Epoch's B200 yield-loss $ (Y ≈ 0.79).
+  - Hybrid bond 0.97 「二手」 (ECTC D2W).
+  - Scrap of KGD + HBM on failure 「二手」, ρ = 0 「假设」.
+  - Check: B200 0.794, H100 0.971.
+- `asm_model: "flat"` is the §255.3 / 0.318 rule (÷ asm_yield, memory unscaled), reproduced bit-for-bit.
+
+### §264.2 Effects
+- **Case 0 (CoWoS-L, 8 × HBM3E, D0 0.1):**
+  - Cheapest design $2,013 → $2,116 per good package.
+  - $/Mtok +11.8 %. Most of it is HBM scrap: 1.257 × $3,360 of HBM, against $103 of KGD scrap.
+- **Break-even D0 (§255.3 table, package only):**
+  - 4 dies vs mono: 0.12 → 0.100. 2 dies: 0.14 → 0.122.
+  - Including the HBM scrap: 0.109 and 0.125.
+  - Why it moves: scrap ∝ the silicon $ at risk, which is largest for the 654 mm² mono die (k 1.257 vs 1.265 for 4 dies, but $399 vs $223 of good silicon).
+  - The 4- / 8-stack trade gains a term: each extra stack lowers Y by 0.2 % and is itself scrapped with a failed package. The verdict change is limited to the D0 0.3 cell below.
+- **Verdict changes, flat → component** (`tco_sens.py --asm-compare`):
+  - n5_cowos_l / accel_2026: 1 of 230 verdicts — memory choice tp8/400 D0 0.30 MAC × 1, by $/M 8 → 6 stacks, outside the sourced D0 range.
+  - Everything else is unchanged, including n5_cowos_s and server_2026.
+
+### §264.3 Joint corners (`tco_sens.corner`)
+- All applicable inputs go to their adverse ends together (low is adverse for life and the yields; memory goes to the high end of the row's type range), and likewise to their favourable ends.
+- D0 is skipped where it is a grid axis.
+- The joint corner bounds every single-input end (tested).
+- **Results (accel_2026):**
+  - Mono → split at the adverse corner in the same 3/7 cases that flip on D0 alone (now at D0 0.150–0.155), and none at the favourable corner.
+  - Sweep: 1/44 at adverse.
+  - Memory choice: 2/24 at both corners, the D0 0.3 cells going to 8 stacks.
+  - The tp8 MAC × 2 4-stack choice and the tp8/400 MAC × 1 8-stack choice hold at both corners. The latter is now a near tie with 6 stacks under single inputs (5/24 vs 3/24 single-input memory flips under flat).
+- **server_2026:** cases 3/7 (D0 0.186–0.194), sweep 1/44 at adverse; memory 0/24.
+- **Case 0 band:** −52 % … +283 % $/M.
+
+### §264.4 Limits
+- One carrier yield per technology; no learning curve over time and no per-interposer-size dependence beyond the per-carrier calibration.
+- The hybrid-bond option uses an ECTC D2W yield, not a production SoIC yield.
+- Rework is a user input (default 0).
+- Corners are the two ends only; there is no search over mixed corners.
+
+### §264.5 Freshness (2026-10-22 08:29 JST)
+- No new tracked-org release; HF newest are derivatives. Raon-1-mini still 401.

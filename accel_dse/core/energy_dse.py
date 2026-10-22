@@ -125,18 +125,55 @@ def _split_layout(lay, n: int, split: str, moe: bool):
 #     「推导」 (interposer yield is inside these figures);
 #   test / assembly $920 per package (H100, Silicon Analysts 「二手」); multi-die packages +22.5 % (KGD testing adds
 #     15–30 % to test cost, same source, midpoint 「二手」);
-#   assembly yield 1.0 (bonding loss of good dies not modelled 「假设」).
+#   assembly yield 1.0 (bonding loss of good dies not modelled 「假设」) — 0.310–0.318; 0.319: ASM_* below
+#   (asm_model "flat" keeps the 0.318 rule exactly).
+#
+# 0.319: package / bonding yield per component (asm_model "component", default):
+#   Y_asm = Y_carrier(CoWoS-S / -L) × y_attach^(HBM stacks) × y_die^(logic dies)   (Chiplet Actuary eq. 4 form,
+#   Feng & Ma DAC 2022 「二手」: carrier yield × per-chiplet bonding yield^n)
+#   y_die = y_attach for microbump (TCB) attach, y_hybrid for hybrid-bonded dies.
+#   A failed assembly scraps its known-good dies and HBM stacks (Epoch AI B200 model 「二手」: "when a package fails
+#   testing, the logic die and HBM stacks cannot be recovered"); flow chip_first (default) exposes them to the whole
+#   Y_asm, chip_last (carrier tested before attach, Chiplet Actuary) only to the attach terms; rework ρ recovers that
+#   fraction of a failed assembly's dies / stacks (default 0 = scrap).  KGD $ per good package = Σ good-die $ ×
+#   (1 − ρ(1 − Y_f)) / Y_f, and the same factor scales the HBM devices (memory $ in TCO; LPDDR is off the carrier).
+#   Packaging $ / mm² and test $ are per shipped package already (Silicon Analysts / Epoch top-down) → not divided.
+#   Values (calibrated so that two public anchors are reproduced, every step labelled):
+#     carrier CoWoS-S 0.985: TSMC 98–99 % for CoWoS in HVM (OCP APAC 2026, via Silicon Analysts 2026-08-11「二手」)
+#     attach 0.998 per stack / die: Epoch CoWoS-S package yield 95–99 % (mid 0.97「二手」) for H100 (1 die + 6 HBM
+#       sites) → (0.97 / 0.985)^(1/7)「推导」
+#     carrier CoWoS-L 0.81: Epoch B200 yield-loss $1,000 on $3,800 dies + HBM → Y = 0.79「推导」→ ÷ 0.998^10「推导」
+#     hybrid bond 0.97 per die: ECTC D2W test vehicles > 95 % (Gao / Theil 2020) and 96–99 % void-free (2023)「二手」
+ASM_CARRIER = {"cowos_s": 0.985, "cowos_l": 0.81}
+ASM_ATTACH = 0.998
+ASM_HYBRID = 0.97
+ASM_MODELS = ("component", "flat")
+ASM_FLOWS = ("chip_first", "chip_last")
+ASM_BONDS = ("microbump", "hybrid")
+ASM_SRC = {
+    "cowos_s": "CoWoS-S 载板 / 中介层组装良率 0.985：TSMC 称 CoWoS 量产良率 98–99 %（OCP APAC 2026，经 Silicon Analysts "
+               "2026-08-11「二手」；可能只指中介层）",
+    "cowos_l": "CoWoS-L 载板良率 0.81：Epoch AI B200 封装良率损失 $1,000 / 晶粒 + HBM $3,800 → 封装良率 0.79「推导」÷ 0.998^10"
+               "「推导」（Epoch CoWoS-L 区间 65–95 %「二手」；TSMC 2026 称 98–99 % 为高端）",
+    "attach": "每 HBM 堆栈 / 每晶粒微凸点贴装良率 0.998：Epoch CoWoS-S 封装良率 95–99 %（中值 0.97「二手」）、H100 1 晶粒 + 6 HBM 位 "
+              "→ (0.97 / 0.985)^(1/7)「推导」；Chiplet Actuary 硅中介层取 0.95 / 芯粒「二手」（更悲观）",
+    "hybrid": "混合键合每晶粒 0.97：ECTC D2W 测试载体 > 95 %（Gao / Theil 2020）、无空洞 96–99 %（ECTC 2023）「二手」",
+    "scrap": "失败封装报废其 KGD 与 HBM（Epoch AI「二手」）；chip_last = 载板先测（Chiplet Actuary）；返修比例默认 0「假设」",
+}
+
 COST_PRESETS = {
     "n5_cowos_s": {"wafer_usd": 16988.0, "pkg_usd_per_mm2": 750.0 / (814 + 6 * 121), "test_usd": 920.0,
-                   "kgd_test_extra": 0.225, "asm_yield": 1.0,
+                   "kgd_test_extra": 0.225, "asm_yield": 1.0, "carrier": "cowos_s",
                    "src": "N5 晶圆 $16,988（CSET 2020「二手」）；CoWoS-S $750 / H100（Silicon Analysts「二手」）÷ (814 + 6×121) mm²「推导」；"
                           "测试 / 组装 $920 / 封装、多晶粒 KGD +22.5 %（同源 15–30 % 中值「二手」）"},
     "n5_cowos_l": {"wafer_usd": 16988.0, "pkg_usd_per_mm2": 1100.0 / (2 * 800 + 8 * 121), "test_usd": 920.0,
-                   "kgd_test_extra": 0.225, "asm_yield": 1.0,
+                   "kgd_test_extra": 0.225, "asm_yield": 1.0, "carrier": "cowos_l",
                    "src": "N5 晶圆 $16,988（CSET 2020「二手」）；CoWoS-L $1,100 / B200（Silicon Analysts「二手」）÷ (2×800 + 8×121) mm²「推导」；"
                           "测试 / 组装 $920 / 封装、多晶粒 KGD +22.5 %「二手」"},
 }
 COST_KEYS = ("wafer_usd", "pkg_usd_per_mm2", "test_usd", "kgd_test_extra", "asm_yield")
+ASM_KEYS = ("carrier_yield", "attach_yield", "hybrid_yield", "rework")          # 0.319, fractions in (0, 1] / [0, 1)
+ASM_STR_KEYS = {"asm_model": ASM_MODELS, "flow": ASM_FLOWS, "bond": ASM_BONDS}
 WAFER_R_MM = 150.0
 
 
@@ -151,12 +188,24 @@ def _cost_params(cost):
     pr = cost.get("preset", "n5_cowos_s")
     if pr not in COST_PRESETS:
         raise ValueError(f"cost preset must be one of {sorted(COST_PRESETS)}")
-    out = dict(COST_PRESETS[pr], preset=pr)
+    out = dict(COST_PRESETS[pr], preset=pr, asm_model="component", flow="chip_first", bond="microbump",
+               carrier_yield=ASM_CARRIER[COST_PRESETS[pr]["carrier"]], attach_yield=ASM_ATTACH, hybrid_yield=ASM_HYBRID,
+               rework=0.0)
     for k, v in cost.items():
         if k == "preset":
             continue
+        if k in ASM_STR_KEYS:
+            if v not in ASM_STR_KEYS[k]:
+                raise ValueError(f"cost.{k} must be one of {ASM_STR_KEYS[k]}")
+            out[k] = v
+            continue
+        if k in ASM_KEYS:
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0 <= v < 1 if k == "rework" else 0 < v <= 1):
+                raise ValueError(f"cost.{k} must be a fraction in {'[0, 1)' if k == 'rework' else '(0, 1]'}")
+            out[k] = float(v)
+            continue
         if k not in COST_KEYS:
-            raise ValueError(f"unknown cost key {k!r} (one of {COST_KEYS})")
+            raise ValueError(f"unknown cost key {k!r} (one of {COST_KEYS + ASM_KEYS + tuple(ASM_STR_KEYS)})")
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v < 1e7:
             raise ValueError(f"cost.{k} must be a number in [0, 1e7)")
         out[k] = float(v)
@@ -175,16 +224,63 @@ def dies_per_wafer(mm2: float) -> float:
     return max(0.0, math.pi * WAFER_R_MM ** 2 / mm2 - math.pi * 2 * WAFER_R_MM / math.sqrt(2 * mm2))
 
 
-def package_cost(cp: dict, die_mm2: float, n_dies: int, die_yield: float, pkg_area_mm2: float) -> dict:
-    """0.310: cost per good package (USD) from the cost terms ``cp`` (see COST_PRESETS)."""
+def asm_yield(cp: dict, n_dies: int, n_stacks: int = 0) -> dict:
+    """0.319: assembly yield and the scrap factors per good package (see ASM_* above).
+    ``k_kgd`` multiplies the good-die $, ``k_mem`` the HBM device $; flat (0.318) divides everything by asm_yield and
+    leaves memory alone."""
+    if cp.get("asm_model", "flat") == "flat":
+        y = cp["asm_yield"]
+        return {"model": "flat", "Y": y, "k_kgd": 1 / y, "k_all": 1 / y, "k_mem": 1.0}
+    yc, ya = cp["carrier_yield"], cp["attach_yield"]
+    yd = ya if cp.get("bond", "microbump") == "microbump" else cp["hybrid_yield"]
+    y_att = ya ** n_stacks * yd ** n_dies
+    y = yc * y_att
+    yf = y if cp.get("flow", "chip_first") == "chip_first" else y_att       # what the KGD / stacks are exposed to
+    rho = cp.get("rework", 0.0)
+    k = (1 - rho * (1 - yf)) / yf
+    return {"model": "component", "Y": y, "Y_carrier": yc, "Y_attach": y_att, "Y_exposed": yf, "k_kgd": k,
+            "k_all": 1.0, "k_mem": k if n_stacks else 1.0, "n_stacks": n_stacks}
+
+
+def package_cost(cp: dict, die_mm2: float, n_dies: int, die_yield: float, pkg_area_mm2: float,
+                 n_stacks: int = 0) -> dict:
+    """0.310: cost per good package (USD) from the cost terms ``cp`` (see COST_PRESETS).  0.319: with the component
+    assembly model the good dies are scrapped with failed assemblies (× k_kgd); ``asm`` carries k_mem for the HBM
+    devices (priced in TCO).  asm_model "flat" = the 0.318 formula."""
     dpw = dies_per_wafer(die_mm2)
     die = cp["wafer_usd"] / dpw if dpw > 0 else float("inf")
     good = die / die_yield if die_yield > 0 else float("inf")
     pkg = cp["pkg_usd_per_mm2"] * pkg_area_mm2
     test = cp["test_usd"] * (1 + (cp["kgd_test_extra"] if n_dies > 1 else 0.0))
-    tot = (n_dies * good + pkg + test) / cp["asm_yield"]
+    a = asm_yield(cp, n_dies, n_stacks)
+    if a["model"] == "flat":
+        tot = (n_dies * good + pkg + test) / cp["asm_yield"]
+        scrap = tot - (n_dies * good + pkg + test)
+    else:
+        scrap = n_dies * good * (a["k_kgd"] - 1)
+        tot = n_dies * good + scrap + pkg + test
     return {"dpw": dpw, "die_usd": die, "good_die_usd": good, "si_usd": n_dies * good, "pkg_usd": pkg,
-            "test_usd": test, "usd_good_pkg": tot}
+            "test_usd": test, "usd_good_pkg": tot, "kgd_scrap_usd": scrap, "asm": a}
+
+
+def asm_note(cp: dict) -> str:
+    """0.319: the assembly-yield basis line."""
+    if cp.get("asm_model", "flat") == "flat":
+        return f"封装 / 键合良率：0.318 口径（asm_model flat）——全部 ÷ asm_yield {cp['asm_yield']:g}，内存不计报废"
+    return ("封装 / 键合良率（0.319，按部件）：Y = 载板 {:.3f} × 贴装 {:.3f}^HBM 堆栈数 × {}^晶粒数；失败封装报废 KGD 与 HBM"
+            "（{}，返修 {:.0%}），每好封装晶粒 $ × k、HBM 器件 $ × k（TCO 内存项）；封装 $/mm² 与测试已按出货件计，不除良率；"
+            .format(cp["carrier_yield"], cp["attach_yield"],
+                    f"微凸点 {cp['attach_yield']:.3f}" if cp.get("bond") == "microbump" else f"混合键合 {cp['hybrid_yield']:.3f}",
+                    "chip-first：载板失败也报废" if cp.get("flow") == "chip_first" else "chip-last：载板先测，只有贴装失败报废",
+                    cp.get("rework", 0.0))
+            + "；".join(ASM_SRC[k] for k in (cp["carrier"], "attach", "hybrid", "scrap")))
+
+
+def hbm_stacks(mem_id: str) -> int:
+    """0.319: HBM stacks attached to the carrier (0 for off-carrier memory)."""
+    from .. import mem_catalog as mc
+    sp = mc.parse_mem_id(mem_id)
+    return sp.n_units if sp.kind == "HBM" else 0
 
 
 def _hbm_footprint(mem_id: str) -> float:
@@ -415,10 +511,11 @@ def _tco_row(p, row, user_prices, die_mm2, nd, mem_price, tco_point) -> dict:
         return {"usd_per_Munit": None, "missing": miss or ["吞吐为 0"]}
     st = row.get("static_W") or 0.0
     idle = package_power(st, die_mm2, nd, st, row.get("idle_W"))["pkg_W"]
-    t = tco_point(p, pkg_usd=row["usd_good_pkg"], mem_usd=row["mem_GB"] * pr, thr=row["thr"], pkg_W=pw,
+    km = row.get("mem_scrap_k", 1.0)             # 0.319: HBM stacks scrapped with failed assemblies (× k_mem)
+    t = tco_point(p, pkg_usd=row["usd_good_pkg"], mem_usd=row["mem_GB"] * pr * km, thr=row["thr"], pkg_W=pw,
                   pkg_W_idle=idle, unit=row.get("unit") or "token")
     t.update(mem_usd_per_GB=pr, mem_price_src=ptag, pkg_W=pw, pkg_W_idle=idle, pkg_usd=row["usd_good_pkg"],
-             mem_usd=row["mem_GB"] * pr)
+             mem_usd=row["mem_GB"] * pr * km, mem_dev_usd=row["mem_GB"] * pr, mem_scrap_k=km)
     return t
 
 
@@ -764,6 +861,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
         notes.append("成本 / 好封装（0.310）：Σ 晶粒 × 晶圆价 / DPW / Y + 封装 $/mm² × (Σ 晶粒 + HBM 占地) + 测试 / 组装（多晶粒 + KGD）"
                      "，HBM 不计（同一外存档相同）；DPW = πR²/A − π·2R/√(2A)（R = 150 mm「来源」，无划片 / 边缘排除「近似」）；"
                      + cost_p["src"] + ("" if d0_per_cm2 else "；未设 D0：良率按 1 计"))
+        notes.append(asm_note(cost_p))
     rows = []
     for p in grid:
         for mid in mem_ids:
@@ -874,9 +972,10 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     row["io_share"] = (ph_.get("share") or {}).get("io")     # D2D (+ link / net when the replica spans packages)
                 if cost_p is not None and dens_ok and row.get("mm2"):
                     cc = package_cost(cost_p, row["mm2"], nd, row.get("die_yield", 1.0),
-                                      row["si_mm2"] + _hbm_footprint(mid))
+                                      row["si_mm2"] + _hbm_footprint(mid), hbm_stacks(mid))
                     row.update({k: cc[k] for k in ("dpw", "good_die_usd", "si_usd", "pkg_usd", "test_usd",
-                                                   "usd_good_pkg")})
+                                                   "usd_good_pkg", "kgd_scrap_usd")})
+                    row.update(asm_Y=cc["asm"]["Y"], mem_scrap_k=cc["asm"]["k_mem"])      # 0.319
                 if prices:
                     pr = prices.get(row["mem_type"])
                     row["mem_usd"] = row["mem_GB"] * pr if pr is not None else None
@@ -1031,6 +1130,7 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                 if (f := fl.get(compare_key(e))) is not None:
                     e["tco_flips"] = [{"input": x["input"], "label": x["label"], "thresholds": x["thresholds"]}
                                       for x in f["flips"]]
+                    e["tco_corners"] = f["corners"]          # 0.319: verdict with all inputs adverse / favourable
     return {"chiplet": {"dies": Ns, "d2d_stds": stds, "d2d_units": units, "die_split": die_split,
                         "reticle_mm2": reticle_mm2, "pkg_mm2": pkg_mm2, "d0_per_cm2": d0_per_cm2,
                         "compare": split} if chip_mode else None,
@@ -1041,7 +1141,8 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
             "noc_links": Ls,
             "mix": {"prompt": P, "out_tokens": mix_out_tokens} if mix else None,
             "slo": {"tpot_ms": slo_tpot_ms, "ttft_ms": slo_ttft_ms}, "priced": bool(priced),
-            "cost": ({k: cost_p[k] for k in (*COST_KEYS, "preset", "src")} if cost_p else None), "costed": costed,
+            "cost": ({k: cost_p[k] for k in (*COST_KEYS, *ASM_KEYS, *ASM_STR_KEYS, "carrier", "preset", "src")}
+                     if cost_p else None), "costed": costed,
             "clusters": Ks if clusters is not None else None,
             "include_unbuildable": bool(include_unbuildable),
             "n_unbuildable": sum(1 for x in rows if x.get("buildable") is False),

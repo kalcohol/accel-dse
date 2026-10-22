@@ -9,7 +9,7 @@ the operating point; none of the inputs below changes them).  Only cost terms mo
     $/M unit  = tco_point(life, PUE, $/kWh, capital rate, host $ / W)                   (0.317, same function)
 
 ``tornado`` varies one input at a time across its sourced range (all others at the design's base values) and sorts by
-the larger |Δ $/M|.  ``scan_flip`` scans one input across its range for any verdict function and bisects the value
+the larger |Δ $/M|; 0.319: ``corner`` puts every input at its adverse (or favourable) end together.  ``scan_flip`` scans one input across its range for any verdict function and bisects the value
 where the verdict first changes (one-at-a-time; joint corners are not searched).  Every range end carries its tag."""
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ RANGES = {
            "（AnandTech）；下端 0.05 为成熟工艺「假设」（无公开 N5 成熟值）"),
     "pkg_scale": (1000.0 / 1100.0, 1200.0 / 1100.0, "二手", "二手",
                   "CoWoS 每 mm² 价 × 0.909–1.091：B200 CoWoS-L $1,000–1,200（Epoch AI 2025-12「二手」）÷ 默认 $1,100"
-                  "「推导」；CoWoS-S 无公开区间，借同一相对区间「假设」；封装 / 键合良率损失仍不计（asm_yield = 1）"),
+                  "「推导」；CoWoS-S 无公开区间，借同一相对区间「假设」；封装 / 键合良率另见载板 / 贴装良率（0.319）"),
     "mem_usd_per_GB": (None, None, None, None, "按该行内存类型取 MEM_RANGES（见 tco.MEM_USD_PER_GB 来源）"),
     "usd_per_kWh": (0.0546, 0.1385, "二手", "来源",
                     "$/kWh：下端 5.46 ¢ = EIA 州级工业电价 12 个月最低（新墨西哥，经 DC Hub 汇总「二手」）；"
@@ -39,11 +39,24 @@ RANGES = {
              "主机 / 网络分摊：0（只算加速器）→ $7,500 + 575 W / 卡（server_2026，SemiAnalysis H100 系统价与 DGX H100 "
              "铭牌功耗「推导」）"),
     "capital_rate": (0.0, 0.0933, "假设", "二手", "资金成本：0（直线摊销）→ 9.33 %（Meta 集群分析 WACC「二手」）"),
+    "carrier_yield": (None, None, None, None, "按成本预设的载板取 CARRIER_RANGES"),
+    "attach_yield": (0.995, 1.0, "推导", "假设",
+                     "每堆栈 / 晶粒贴装良率：下端 0.995 = Epoch CoWoS-S 下端 0.95 ÷ 0.985 开 7 次方「推导」；上端 1.0（无贴装损失）"
+                     "「假设」；Chiplet Actuary 硅中介层 0.95 / 芯粒「二手」与 Epoch CoWoS-S 95–99 % 不相容（0.95^7 = 0.70），不取"),
+}
+# 0.319: carrier (CoWoS) assembly yield range per carrier
+CARRIER_RANGES = {
+    "cowos_s": (0.963, 0.99, "推导", "二手", "CoWoS-S 载板良率：Epoch 封装良率下端 0.95 ÷ 0.998^7「推导」→ TSMC 98–99 % 上端「二手」"),
+    "cowos_l": (0.663, 0.985, "推导", "二手", "CoWoS-L 载板良率：Epoch 下端 0.65 ÷ 0.998^10「推导」→ TSMC 2026 称 98–99 %（5.5× 光罩 CoWoS，"
+                "可能只指中介层）取 0.985「二手」"),
 }
 LABELS = {"wafer_usd": "晶圆 $", "d0": "D0", "pkg_scale": "CoWoS $/mm²", "mem_usd_per_GB": "内存 $/GB",
-          "usd_per_kWh": "$/kWh", "pue": "PUE", "life_years": "寿命", "host": "主机分摊", "capital_rate": "资金成本"}
+          "usd_per_kWh": "$/kWh", "pue": "PUE", "life_years": "寿命", "host": "主机分摊", "capital_rate": "资金成本",
+          "carrier_yield": "载板良率", "attach_yield": "贴装良率"}
 INPUTS = tuple(RANGES)
-COST_INPUTS = ("wafer_usd", "d0", "pkg_scale")   # need a cost model (not a user-given package $)
+COST_INPUTS = ("wafer_usd", "d0", "pkg_scale", "carrier_yield", "attach_yield")   # need a cost model (not a user $)
+ASM_INPUTS = ("carrier_yield", "attach_yield")                 # 0.319: only with asm_model "component"
+LOW_IS_ADVERSE = ("life_years", "carrier_yield", "attach_yield")   # all other inputs raise $/M at their high end
 HOST_USD, HOST_W = 7500.0, 575.0
 
 
@@ -63,26 +76,35 @@ def base_values(base: dict, mem_type: str) -> dict:
          "host": h if math.isclose(p["system_W_per_card"], HOST_W * h, abs_tol=1e-9) else None}
     if cp is not None:
         v.update(wafer_usd=cp["wafer_usd"], d0=base["d0"], pkg_scale=1.0)
+        if cp.get("asm_model") == "component":
+            v.update(carrier_yield=cp["carrier_yield"], attach_yield=cp["attach_yield"])
     v["mem_usd_per_GB"] = mem_price(p, mem_type, base.get("prices"))[0]
     return v
 
 
 def row_usd(row: dict, base: dict, ov: dict | None = None) -> float:
     """$/M unit of ``row`` with inputs ``ov`` overriding the base.  ``row`` needs mm2, dies, si_mm2, mem_id, mem_type,
-    mem_GB, thr and tco (pkg_W, pkg_W_idle, pkg_usd, mem_usd_per_GB); ``base`` = {tco: tco_params, cost: cost params or
-    None (package $ fixed at row tco.pkg_usd), d0, prices}."""
-    from .energy_dse import _hbm_footprint, package_cost
+    mem_GB, thr and tco (pkg_W, pkg_W_idle, pkg_usd, mem_usd_per_GB, mem_scrap_k); ``base`` = {tco: tco_params, cost:
+    cost params or None (package $ fixed at row tco.pkg_usd), d0, prices}.  ``ov["mem_end"]`` = "lo" / "hi" puts the
+    memory price at that end of the row's own type range (joint corners over mixed memory types)."""
+    from .energy_dse import _hbm_footprint, hbm_stacks, package_cost
     from .tco import tco_point
     ov = ov or {}
     t = row["tco"]
     cp = base.get("cost")
+    km = t.get("mem_scrap_k", 1.0)
     if cp is not None and any(k in ov for k in COST_INPUTS):
         c = dict(cp)
         c["wafer_usd"] = ov.get("wafer_usd", cp["wafer_usd"])
         c["pkg_usd_per_mm2"] = cp["pkg_usd_per_mm2"] * ov.get("pkg_scale", 1.0)
+        for k in ASM_INPUTS:
+            if k in ov:
+                c[k] = ov[k]
         d0 = ov.get("d0", base["d0"])
         y = math.exp(-row["mm2"] * d0 / 100.0)
-        pkg = package_cost(c, row["mm2"], row.get("dies", 1), y, row["si_mm2"] + _hbm_footprint(row["mem_id"]))["usd_good_pkg"]
+        cc = package_cost(c, row["mm2"], row.get("dies", 1), y, row["si_mm2"] + _hbm_footprint(row["mem_id"]),
+                          hbm_stacks(row["mem_id"]))
+        pkg, km = cc["usd_good_pkg"], cc["asm"]["k_mem"]
     else:
         pkg = t["pkg_usd"]
     p = dict(base["tco"])
@@ -92,15 +114,47 @@ def row_usd(row: dict, base: dict, ov: dict | None = None) -> float:
     if "host" in ov:
         p["system_usd_per_card"], p["system_W_per_card"] = HOST_USD * ov["host"], HOST_W * ov["host"]
     pr = ov.get("mem_usd_per_GB", t["mem_usd_per_GB"])
-    return tco_point(p, pkg_usd=pkg, mem_usd=row["mem_GB"] * pr, thr=row["thr"], pkg_W=t["pkg_W"],
+    if "mem_end" in ov and (mr := mem_range(row["mem_type"])) is not None:
+        pr = mr[0] if ov["mem_end"] == "lo" else mr[1]
+    return tco_point(p, pkg_usd=pkg, mem_usd=row["mem_GB"] * pr * km, thr=row["thr"], pkg_W=t["pkg_W"],
                      pkg_W_idle=t["pkg_W_idle"], unit=row.get("unit") or "token")["usd_per_Munit"]
 
 
-def input_range(k: str, mem_type: str | None = None):
-    """(lo, hi, tag_lo, tag_hi, src) of one input, or None (no sourced range for this memory type)."""
+def applicable(k: str, base: dict) -> bool:
+    cp = base.get("cost")
+    if k in COST_INPUTS and cp is None:
+        return False
+    if k in ASM_INPUTS and cp.get("asm_model") != "component":
+        return False
+    return True
+
+
+def input_range(k: str, mem_type: str | None = None, base: dict | None = None):
+    """(lo, hi, tag_lo, tag_hi, src) of one input, or None (no sourced range for this memory type / carrier)."""
     if k == "mem_usd_per_GB":
         return mem_range(mem_type) if mem_type else None
+    if k == "carrier_yield":
+        cp = (base or {}).get("cost") or {}
+        return CARRIER_RANGES.get(cp.get("carrier"))
     return RANGES[k]
+
+
+def corner(base: dict, side: str, skip=()) -> dict:
+    """0.319: every applicable input at its adverse ($/M-raising) or favourable end together.  Memory goes to the end
+    of each row's own type range (``mem_end``)."""
+    ov = {}
+    for k in INPUTS:
+        if k in skip or not applicable(k, base):
+            continue
+        if k == "mem_usd_per_GB":
+            ov["mem_end"] = "hi" if side == "adverse" else "lo"
+            continue
+        rg = input_range(k, None, base)
+        if rg is None:
+            continue
+        lo_end = (k in LOW_IS_ADVERSE) == (side == "adverse")
+        ov[k] = rg[0] if lo_end else rg[1]
+    return ov
 
 
 def tornado(row: dict, base: dict) -> dict:
@@ -112,10 +166,10 @@ def tornado(row: dict, base: dict) -> dict:
     bv = base_values(base, row["mem_type"])
     bars, skipped = [], []
     for k in INPUTS:
-        if k in COST_INPUTS and base.get("cost") is None:
-            skipped.append(f"{LABELS[k]}（封装价为用户输入）")
+        if not applicable(k, base):
+            skipped.append(f"{LABELS[k]}（{'封装价为用户输入' if base.get('cost') is None else '封装良率按 0.318 口径'}）")
             continue
-        rg = input_range(k, row["mem_type"])
+        rg = input_range(k, row["mem_type"], base)
         if rg is None:
             skipped.append(f"{LABELS[k]}（{row['mem_type']} 无公开价区间）")
             continue
@@ -125,7 +179,9 @@ def tornado(row: dict, base: dict) -> dict:
                      "usd_lo": ul, "usd_hi": uh, "d_lo": ul / t0 - 1, "d_hi": uh / t0 - 1,
                      "span": abs(uh - ul) / t0, "src": src})
     bars.sort(key=lambda b: -max(abs(b["d_lo"]), abs(b["d_hi"])))
+    cor = {sd: row_usd(row, base, corner(base, sd)) for sd in ("adverse", "favourable")}
     return {"usd_per_Munit": t0, "unit": row.get("unit") or "token", "bars": bars, "skipped": skipped,
+            "corners": {sd: {"usd": u, "d": u / t0 - 1} for sd, u in cor.items()},
             "note": "一次只动一个输入（其余取该设计的基值）；吞吐 / 封装功耗不随这些输入变化；条 = 区间两端的 $/M 相对基值变化"}
 
 
@@ -151,7 +207,21 @@ def scan_flip(verdict, k: str, rg, base_val, n: int = 64, iters: int = 48) -> di
                 else:
                     b = m
             out["thresholds"].append({"at": (a + b) / 2, "from": labs[i], "to": labs[i + 1]})
-    if base_val is not None:
+    # 0.319: a base value outside [lo, hi] (e.g. a DSE run at D0 0.3) whose label differs from the whole nearer end —
+    # the change lies between that end and the base; bisect there and mark it as outside the sourced range
+    if base_val is not None and not lo <= base_val <= hi:
+        e = hi if base_val > hi else lo
+        le = labs[-1] if e == hi else labs[0]
+        if le != v0:
+            a, b = e, base_val
+            for _ in range(iters):
+                m = (a + b) / 2
+                if verdict({k: m}) == le:
+                    a = m
+                else:
+                    b = m
+            out["thresholds"].append({"at": (a + b) / 2, "from": le, "to": v0, "outside": True})
+    if base_val is not None and out["thresholds"]:
         out["nearest"] = min(out["thresholds"], key=lambda t: abs(t["at"] - base_val))
     return out
 
@@ -188,12 +258,13 @@ def compare_flips(rows, compare, base, tie=0.01) -> list[dict]:
         bv = base_values(base, mt)
         scans = []
         for k in INPUTS:
-            if k in COST_INPUTS and base.get("cost") is None:
+            if not applicable(k, base):
                 continue
-            rg = input_range(k, mt)
+            rg = input_range(k, mt, base)
             if rg is None:
                 continue
             scans.append(scan_flip(f, k, rg, bv.get(k), n=32, iters=40))
         out.append({"key": key, "mac_x": e["mac_x"], "sram_x": e["sram_x"], "mem_id": e["mem_id"], "verdict_tco": e["verdict_tco"],
-                    "flips": [s for s in scans if s["flips"]], "n_inputs": len(scans)})
+                    "flips": [s for s in scans if s["flips"]], "n_inputs": len(scans),
+                    "corners": {sd: f(corner(base, sd)) for sd in ("adverse", "favourable")}})
     return out

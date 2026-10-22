@@ -121,7 +121,8 @@ def test_chiplet_verdicts_buildable_only():
     ex = _ex()
     lines = []
     if True:
-        o = ex.run("qwen3-8b", "decode", out=lambda *a: None, cost="n5_cowos_l", d0=0.1, macs=(1.0,))
+        fl = {"preset": "n5_cowos_l", "asm_model": "flat"}    # 0.319: pinned $ are the 0.312 (flat) rule
+        o = ex.run("qwen3-8b", "decode", out=lambda *a: None, cost=fl, d0=0.1, macs=(1.0,))
         o9 = ex.run("qwen3-8b", "decode", out=lambda *a: None, cost="n5_cowos_l", d0=0.1, macs=(1.0,), tp=8, link=900.0,
                     lane=100)
         o1 = ex.run("qwen3-8b", "decode", out=lambda *a: None, cost="n5_cowos_l", d0=0.1, macs=(1.0,), io_edges=1)
