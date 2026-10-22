@@ -6,6 +6,24 @@
 
 
 
+## [0.350.0] — 2026-10-23
+
+### Adversarial package-power / flux margins (MODEL §295)
+
+- COOLING limits unchanged. Package margin / front_pkg arithmetic OK; no-cooling omits limits.
+- **Bug:** `flux_headroom`, `thermal_binding`, front flux near-ties, and margins「热流」used `thermal.flux_ratio` = min(card, die) (feasibility: over only if both). Card-level `flux_margin_W_mm2` disagreed — e.g. liquid looked +140% expandable while card flux had ~1.5% left.
+
+### Card-axis thermal margin consistency (mechanism)
+
+- Margins / headroom / binding / front flux ties use **card** flux ÷ `COOLING.flux_W_mm2` (same axis as `flux_margin_W_mm2`).
+- Report also shows `card_flux_ratio`, and when it differs, `die_flux_ratio` + `feas_flux_ratio` (feasibility min).
+- Binding = tighter of card flux vs package power. Limits never retuned.
+
+### Milestone path
+
+- **Visual UI restyle:** no written user yes in NOTES/AGENTS/ui-audit → skipped (§293).
+- Thinker∥Talker overlap: no sourced schedule → not invented. Prefer chip/report fix above.
+
 ## [0.349.0] — 2026-10-23
 
 ### Adversarial sidecar_bytes (MODEL §294)

@@ -10198,3 +10198,18 @@ Image/video ViT forward (storage only); Thinker→Talker projection traffic deta
 ### §294.3 Report mechanism 「推导」 from sourced COOLING
 - Parallel to flux (0.331): `pkg_margin_W`, `pkg_headroom`, `thermal_binding` (tighter of flux vs package).
 - Front points gain `pkg_*` fields; `front_pkg` near-tie when package margin ≤ DSE tie. Limits never retuned.
+
+## §295 Adversarial thermal margins; card-axis consistency (0.350)
+
+### §295.1 Adversarial 「推导」
+- `COOLING` pkg_W / flux_W_mm2 / die_flux_W_mm2 unchanged (air 1000 W / 0.86; liquid 1400 / 0.96).
+- Package margin / front_pkg warn sets match row `thermal.pkg_W`. No-cooling → no limit items / no front_thermal.
+
+### §295.2 Feasibility vs design margin axes
+- `thermal.flux_ratio` = min(card_ratio, die_ratio): flux fails only if **both** exceed (MODEL §259 / thermal docstring).
+- 0.349 used that min for `flux_headroom`, `thermal_binding`, front flux ties, and margins「热流」, while `flux_margin_W_mm2` stayed card-level → liquid headroom +140% vs ~1.5% card left.
+
+### §295.3 Fix 「推导」
+- Design margins / headroom / binding / front flux ties use **card** `flux_W_mm2 ÷ COOLING.flux_W_mm2`.
+- Report exposes `card_flux_ratio`; when different, `die_flux_ratio` and `feas_flux_ratio`. Binding = max(card, package).
+- Visual UI restyle: no written user approval → not applied. Thinker∥Talker: no sourced schedule → not invented.

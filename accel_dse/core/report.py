@@ -292,31 +292,43 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
           item("power_cap_W", "功耗预算", r.get("power_cap_W"), "W", tag="用户输入", src=r.get("power_cap_src") or "",
                missing="未填功耗预算（budget.power_W_card / energy.tdp_W）：不做功耗约束"),
           item("capped", "DVFS 封顶", x.get("capped"), src="powercap（0.302 / 0.316，封装口径）")]
-    if cool and th.get("flux_ratio") is not None:
-        margins.append(("热流", 1 - th["flux_ratio"]))
-        lim = (COOLING.get(cool) or {}).get("pkg_W")
-        if lim and th.get("pkg_W"):
-            margins.append(("封装功耗", 1 - th["pkg_W"] / lim))
     flim = (COOLING.get(cool) or {}).get("flux_W_mm2") if cool else None
+    dlim = (COOLING.get(cool) or {}).get("die_flux_W_mm2") if cool else None
     plim = (COOLING.get(cool) or {}).get("pkg_W") if cool else None
-    if flim and th.get("flux_W_mm2") and th.get("flux_ratio"):
-        # 0.331: the margin in the limit's own unit and as power headroom (limit / flux − 1 at fixed area) 「推导」
+    # 0.350: card-level flux ratio (= flux_W_mm2 / COOLING.flux) for margins / headroom / binding / front ties.
+    # thermal.flux_ratio is min(card, die) for feasibility ("over only if both"); using it for headroom made
+    # liquid look 140% expandable while card flux had ~1.5% left 「推导」 inconsistency with flux_margin_W_mm2.
+    card_r = (th["flux_W_mm2"] / flim) if (flim and th.get("flux_W_mm2")) else None
+    die_r = (th["die_flux_W_mm2"] / dlim) if (dlim and th.get("die_flux_W_mm2")) else None
+    if cool and card_r is not None:
+        margins.append(("热流", 1 - card_r))
+    if cool and plim and th.get("pkg_W"):
+        margins.append(("封装功耗", 1 - th["pkg_W"] / plim))
+    if flim and th.get("flux_W_mm2") and card_r:
+        # 0.331 / 0.350: margin and headroom on the same card-flux axis as flux_margin_W_mm2 「推导」
         it += [item("flux_margin_W_mm2", "热流余量（上限 − 热流）", flim - th["flux_W_mm2"], "W/mm²", tag="推导",
                     src="冷却上限 − 封装热流"),
-               item("flux_headroom", "功耗可增幅（热流达上限，面积不变）", 1 / th["flux_ratio"] - 1, tag="推导",
-                    src="1 / (热流 / 上限) − 1")]
+               item("flux_headroom", "功耗可增幅（卡级热流达上限，面积不变）", 1 / card_r - 1, tag="推导",
+                    src="1 / (封装热流 / 卡级上限) − 1"),
+               item("card_flux_ratio", "卡级热流 / 上限", card_r, tag="推导",
+                    src="flux_W_mm2 ÷ COOLING.flux_W_mm2")]
+        if die_r is not None:
+            it.append(item("die_flux_ratio", "晶粒热流 / 上限", die_r, tag="推导",
+                           src="die_flux_W_mm2 ÷ COOLING.die_flux_W_mm2（可行性用 min(卡, 晶)）"))
+        if th.get("flux_ratio") is not None and abs(th["flux_ratio"] - card_r) > 1e-9:
+            it.append(item("feas_flux_ratio", "可行性热流比 min(卡, 晶)", th["flux_ratio"], tag="推导",
+                           src="thermal.flux_ratio（两侧都超才判热流超限）"))
     if plim and th.get("pkg_W"):
-        # 0.349: package-power margin / headroom parallel to flux (same COOLING.pkg_W 「来源」; never retune)
+        # 0.349 / 0.350: package-power margin; binding vs card flux (not feas min) 「推导」
         pr = th["pkg_W"] / plim
         it += [item("pkg_margin_W", "封装功耗余量（上限 − 封装功耗）", plim - th["pkg_W"], "W", tag="推导",
                     src="冷却上限 − package_power"),
                item("pkg_headroom", "功耗可增幅（封装达上限）", 1 / pr - 1 if pr else None, tag="推导",
                     src="1 / (封装功耗 / 上限) − 1")]
-        fr = th.get("flux_ratio")
-        if fr is not None:
-            # tighter of flux vs package (higher ratio binds) 「推导」 — guides area vs power trades
-            it.append(item("thermal_binding", "热约束紧侧", "热流" if fr >= pr else "封装功耗", tag="推导",
-                           src="max(热流/上限, 封装功耗/上限)"))
+        if card_r is not None:
+            bind = "热流" if card_r >= pr else "封装功耗"
+            it.append(item("thermal_binding", "热约束紧侧", bind, tag="推导",
+                           src="max(卡级热流/上限, 封装功耗/上限)；面积↔功耗取舍"))
     sec_th = _sec("thermal", "热 / 功耗", it, th.get("status"))
     ft = _front_thermal(r, rows, cool, flim, plim, cs, tie) if (flim or plim) else None
     if ft:
@@ -459,19 +471,21 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
 
 def _front_thermal(r: dict, rows: list, cool: str, flim: float | None, plim: float | None,
                    src: str | None, tie: float) -> dict | None:
-    """0.331 / 0.349: thermal sensitivity of the perf/W front (insight_dse ``front``).
-    Per front point: flux margin (W/mm², 1 − flux/limit, headroom) and — when the cooling preset has pkg_W —
-    package-power margin (W, 1 − pkg/limit, headroom).  Points within the DSE tie on either axis are fragile.
-    Limits come from COOLING 「来源」 and are never retuned."""
+    """0.331 / 0.349 / 0.350: thermal sensitivity of the perf/W front (insight_dse ``front``).
+    Per front point: card-level flux margin (W/mm², 1 − card_flux/limit, headroom) and — when COOLING has pkg_W —
+    package-power margin (W, 1 − pkg/limit, headroom).  Card axis matches flux_margin_W_mm2 (not feas min(card,die)).
+    Points within the DSE tie on either axis are fragile.  Limits from COOLING 「来源」, never retuned."""
     pts = []
     for j in r.get("front") or []:
         y = rows[j]
         t = y.get("thermal") or {}
-        f, q = t.get("flux_W_mm2"), t.get("flux_ratio")
+        f = t.get("flux_W_mm2")
         pw = t.get("pkg_W")
-        if not ((flim and f and q) or (plim and pw)):
+        # 0.350: card-level ratio for flux margin/tie (matches flux_margin_W_mm2); feas flux_ratio kept aside
+        card_q = (f / flim) if (flim and f) else None
+        if not ((flim and f and card_q) or (plim and pw)):
             continue
-        m = (1 - q) if q else None
+        m = (1 - card_q) if card_q is not None else None
         pr = (pw / plim) if (plim and pw) else None
         pm = (1 - pr) if pr is not None else None
         flux_tie = bool(m is not None and m <= tie)
@@ -479,7 +493,8 @@ def _front_thermal(r: dict, rows: list, cool: str, flim: float | None, plim: flo
         pts.append({
             "row": j, "design": _desc(y), "feasible": bool(y.get("feasible")),
             "flux_W_mm2": f, "limit_W_mm2": flim, "margin_W_mm2": (flim - f) if (flim and f) else None,
-            "margin": m, "headroom": (1 / q - 1) if q else None, "within_tie": flux_tie,
+            "margin": m, "headroom": (1 / card_q - 1) if card_q else None, "within_tie": flux_tie,
+            "card_flux_ratio": card_q, "feas_flux_ratio": t.get("flux_ratio"),
             "pkg_W": pw, "limit_pkg_W": plim, "pkg_margin_W": (plim - pw) if (plim and pw) else None,
             "pkg_margin": pm, "pkg_headroom": (1 / pr - 1) if pr else None, "pkg_within_tie": pkg_tie,
             "any_within_tie": flux_tie or pkg_tie,

@@ -301,6 +301,7 @@
   "test_core_347.py": 0.3,
   "test_core_348.py": 0.3,
   "test_core_349.py": 0.5,
+  "test_core_350.py": 0.8,
   "test_core_coverage.py": 2.46,
   "test_core_dap_place.py": 1.68,
   "test_core_domain.py": 120.61,
