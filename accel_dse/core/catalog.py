@@ -301,6 +301,10 @@ _FLUX3_SRC = ("black-forest-labs/flux-3-image-klein README / config.json：sampl
 _MOSS_SRC = ("OpenMOSS-Team/MOSS-Image-Base README / pipeline_moss_image.py：1024×1024、num_inference_steps 50、guidance_scale 3"
              "（CFG，两次前向；uncond 跳过第 22 块）、shift 5；Qwen3.5-9B 文本（末层隐状态，逐样本真实长度，≈ 256 token「假设」）；"
              "AutoencoderKLFlux2 ×8（FLUX.2 small decoder，fp32）+ 2×2 打包")
+_PIXTEXT_SRC = ("ATH-MaaS/PixText（Apache-2.0，2026-10-22 15:41 JST）models/PixText-MeanFlow/config.json + inference_config："
+                "main_target_area 1048576（1024×1024）、steps 4（meanflow_interval_euler）、guidance_scale 3.3、"
+                "guidance_interval [0.1, 1.0] → 7 次前向（README）、max_items_per_pass 12；编辑项 + 字形 token = 发布参考用例 "
+                "examples/pipeline_case 第 1 pass（12 项裁块 196 token ×2 = 392）「来源」")
 DOMAIN_RELEASES = [
     ("wan2.1-14b", "Wan-AI/Wan2.1-T2V-14B", "wan",
      NativeWorkload("gen", frames=81, height=720, width=1280, fps=16, vae_frames="wan", source=_WAN_SRC.format(res="720P（1280×720）"))),
@@ -363,6 +367,12 @@ DOMAIN_RELEASES = [
      NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=50, cfg=2, text_tokens=256, source=_MOSS_SRC)),
     ("moss-image-sft", "OpenMOSS-Team/MOSS-Image-SFT", "moss",
      NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=8, steps=50, cfg=2, text_tokens=256, source=_MOSS_SRC)),
+    # 0.330 PixText-MeanFlow (ATH-MaaS, 2026-10-22; pixel-space text-editing GroupJiT, the README's default quick-start
+    # checkpoint); the 25-step Teacher (models/PixText-Teacher, no interval embedder) stays pending: one release file
+    # per repo (release_path) — see AGENTS §280
+    ("pixtext-meanflow", "ATH-MaaS/PixText", "pixtext",
+     NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=1, steps=7, cfg=1, text_tokens=392,
+                    source=_PIXTEXT_SRC)),
 ]
 _DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
 # GitHub-only releases: the repo name alone does not say which checkpoint is evaluated
@@ -414,6 +424,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("jetbrains", "JetBrains（Mellum）", ("JetBrains/",)),     # 0.291
     ("recursive", "Recursive（Flint）", ("RecursiveSI/",)),     # 0.315
     ("krafton", "KRAFTON（Raon）", ("KRAFTON/",)),     # 0.320
+    ("athmaas", "ATH-MaaS（PixText）", ("ATH-MaaS/",)),     # 0.330
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Fun-ASR-Nano", ("fun-asr-nano",)), ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2.5-Omni", ("qwen2.5-omni",)),
@@ -459,6 +470,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("inception", "Jais 3", ("jais-3-",)), ("jetbrains", "Mellum2.1", ("mellum2.1",)),
     ("recursive", "Flint", ("flint",)),     # 0.315
     ("krafton", "Raon-1-mini", ("raon-1-mini",)),     # 0.320
+    ("athmaas", "PixText", ("pixtext",)),     # 0.330
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.

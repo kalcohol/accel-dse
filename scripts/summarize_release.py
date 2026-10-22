@@ -68,7 +68,7 @@ ROLE_DOMAIN = {
         ("cond", r"(modulation|time_embedding|time_projection|norm\d\.linear|norm_out\.linear|text_embedding|text_proj|"
                  r"time_text_embed|time_embed|context_embedder|caption_proj|t_block|t_embedder|fps_embedder|y_embedder|"
                  r"adaln_proj|norm1_context\.linear|\.norm\.linear|scale_shift_table|token_refiner|_mod\.\d|stream_modulation|"
-                 r"time_guidance_embed|text_embedder)"),  # 0.115 image DiT: Qwen-Image img_/txt_mod, FLUX.2 shared modulation
+                 r"time_guidance_embed|text_embedder|^timestep_embedder\.|^interval_embedder\.)"),  # 0.330 PixText per-token embedders  # 0.115 image DiT: Qwen-Image img_/txt_mod, FLUX.2 shared modulation
         ("norm", r"(norm_post_|norm_[qk]\.|norm_added_[qk]|[qk]_norm\.|norm\d?\.(weight|bias)$|norm_final|norm_out\.norm|"
                  r"\.norm\.(weight|bias)$|^final_norm_video\.)"),   # 0.257 MOSS-Image final norm
         ("attn", r"(self_attn|cross_attn|attn1|attn2|\.attn\.|\.proj\.[qkvo]\.)"),   # 0.257 MOSS-Image layers.N.proj.{q,k,v,o}
@@ -77,7 +77,7 @@ ROLE_DOMAIN = {
         ("shared_expert", r"\.ffn\.shared_experts\."),
         ("expert", r"\.ffn\.experts\."),
         ("mlp", r"(\.ffn\.|\.ff\.|ff_context|\.mlp\.|proj_mlp|single_transformer_blocks\.\d+\.proj_out|_mlp\.|\.proj\.ffn_)"),
-        ("io", r"(^video_embedder|^final_linear_video|patch_embed|^proj_out|^head\.|x_embedder|^proj_in|audio_proj|final_layer\.linear|^img_in|^txt_in|^txt_norm)"),
+        ("io", r"(^video_embedder|^final_linear_video|patch_embed|^proj_out|^head\.|x_embedder|^proj_in|audio_proj|final_layer\.linear|^img_in|^txt_in|^txt_norm|^patch_projection\.|^glyph_projection\.)"),
     ],
     "protein": [
         ("buffer", r"(inv_freq$|position_ids$)"),
@@ -110,6 +110,9 @@ def domain_of(cfg: dict) -> str:
                "QwenImageTransformer2DModel", "QwenImage21Transformer2DModel", "Flux2Transformer2DModel", "Flux3Transformer2DModel",
                "LingBotVideoTransformer3DModel", "MOSSImageTransformer") \
             or cfg.get("model_type") == "STDiT3":
+        return "video"
+    # 0.330 PixText (ATH-MaaS): pixel-space text-editing DiT, own config format {"format_version", "model": {...}}
+    if isinstance(cfg.get("model"), dict) and "image_attention_routing" in cfg["model"]:
         return "video"
     if cfg.get("model_type") == "esm":
         return "protein"

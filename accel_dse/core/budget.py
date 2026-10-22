@@ -65,9 +65,14 @@ _PHY = {
     # base-die one) → host-side = memory-side also for HBM3 (whose base die is 1x-nm DRAM process) 「推导」.
     "mm2_per_dq_hbm3": (8 * 3 / 1024, "来源/推导", "Samsung Hot Chips 2026 slide 11: HBM3 PHY 8 × 3 mm for 1024 DQ, "
                         "'PHY area is based on the bump map' (slide image via ServeTheHome; also Hardwareluxx, "
-                        "inlevel9) 「来源」 → 0.0234 mm²/DQ; host side = the same bump map 「推导」; HBM3E taken as "
-                        "the HBM3 bump map (same 1024-DQ JESD238 interface) 「假设」. Old (≤ 0.328): HBM3 / 3E used "
-                        "mm2_per_dq_hbm (HBM4 value, 16 mm² per stack)"),
+                        "inlevel9) 「来源」 → 0.0234 mm²/DQ; host side = the same bump map 「推导」; HBM3E = the HBM3 "
+                        "bump map 「推导」 (0.330, was 「假设」 in 0.329): JEDEC publishes no separate HBM3E standard "
+                        "(HBM3 = JESD238); Synopsys' HBM3 PHY IP supports 'JEDEC standard HBM3 DRAMs with data rates "
+                        "up to 9600 Mbps' on one 1024-bit, 16-channel micro-bump interface (HBM3E speeds); H200 "
+                        "(HBM3e) is Hopper / the GH100 die whose whitepaper lists HBM3 controllers; AMD CDNA 3: 16 "
+                        "channels per stack, MI300X HBM3 → MI325X HBM3E on the same IOD 「来源」. No public measured "
+                        "HBM3E PHY area (B200 / MI325X die shots unannotated; Gaudi 3 is HBM2e). Old (≤ 0.328): "
+                        "HBM3 / 3E used mm2_per_dq_hbm (HBM4 value, 16 mm² per stack)"),
     # 0.184: was 0.03 「假设」 (no public LPDDR5X PHY area).  Now the Samsung SF2 LPDDR6 PHY (ISSCC 2026 paper 37.3, as
     # reported by SemiAnalysis 2026-04-15: 0.695 mm², 2.32 mm shoreline, 55.3 GB/s/mm² ⇒ 38.4 GB/s = one x24 channel
     # at 14.4 Gb/s incl. the 32/36 BL24 payload) → 0.695 / 24 DQ.  Includes the channel's CA / clock overhead.
@@ -148,8 +153,10 @@ DENSITY_PRESETS: dict[str, dict] = {
         # 0.329: the value is per HBM4 stack (32 channels); HBM3 / 3E stacks carry × 16 / 32 (MC_CHANNELS, §274)
         "mm2_per_hbm_mc": (MC_SOC_FRAC[0] * MC_XPU_MM2 / MC_XPU_STACKS, "二手/推导",
                            _MC_SRC + " → 0.05 × 858 ÷ 6 = 7.15 mm² per HBM4 / HBM4E stack (32 channels; 0.329: HBM3 / 3E × 16 / 32 "
-                           "= 3.575 by JEDEC channel count 「推导」) 「推导」 (low end; quote taken "
-                           "for that xPU 「假设」). Not in uncore: TPUv1 / TPUv2 / TPUv4i floor plans draw the DRAM / HBM "
+                           "= 3.575 by JEDEC channel count 「推导」; JESD270-4 release: 16 → 32 channels 「来源」) 「推导」 (low end; quote "
+                           "taken for that xPU 「假设」 — slide 9's xPU carries no generation, its context is the HBM4 "
+                           "custom base die 「推导」; were it an HBM3E xPU the HBM3E value would be 7.15: range "
+                           "3.575–7.15 per HBM3E stack, 0.330). Not in uncore: TPUv1 / TPUv2 / TPUv4i floor plans draw the DRAM / HBM "
                            "port (+ controller) outside the ~21 % unknown / interconnect share (Jouppi ISCA 2017 Fig. 2; "
                            "Tang et al. HPCA 2021 NeuroMeter §IV; Norrie et al. IEEE Micro 2021 Fig. 4; Jouppi et al. ISCA "
                            "2021 Fig. 6) 「来源」")}},
@@ -233,6 +240,11 @@ def apply_mc_preset(d: dict) -> dict:
 # GH100: "12 512-bit memory controllers" for 6 HBM3 stacks, i.e. controllers per channel group 「来源」).  Channels:
 # HBM3 16 (JESD238), HBM3E 16 (HBM3 interface), HBM4 32 (JESD270-4) 「来源」, HBM4E 32 「假设」.  0.328 applied the
 # controller to HBM4 / 4E only and deferred HBM3 / 3E until their PHY was per-generation (MODEL §273 / §274).
+# 0.330 adversarial check (MODEL §275): JEDEC JESD270-4 release (2025-04-16) "doubles the number of independent
+# channels per stack, from 16 channels (HBM3) to 32" 「来源」; AMD CDNA 3 whitepaper "each stack of HBM memory is
+# associated with 16 parallel channels" for MI300X / MI325X (HBM3 / HBM3E) 「来源」.  Residual: Samsung's 5–10 % SoC
+# quote (slide 9, generic 6-stack xPU, no generation printed; context = HBM4 custom base die 「推导」) — if it meant an
+# HBM3E xPU the HBM3E controller would be 7.15, not 3.575 mm² per stack; range 3.575–7.15 recorded, value unchanged.
 HBM3_TYPES = ("HBM3", "HBM3E")
 MC_CHANNELS = {"HBM3": 16, "HBM3E": 16, "HBM4": 32, "HBM4E": 32}
 MC_REF_CHANNELS = 32

@@ -170,3 +170,5 @@ JetBrains/Mellum2.1-12B-A2.5B-Thinking
 ATH-MaaS/OvisOCR3
 RecursiveSI/flint
 KRAFTON/Raon-1-mini-preview
+# 0.330: PixText-MeanFlow (pixel-space text-editing GroupJiT; release config format {format_version, model} → summarize_release.domain_of)
+ATH-MaaS/PixText:models/PixText-MeanFlow

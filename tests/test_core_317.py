@@ -143,7 +143,10 @@ def test_verdicts_under_tco():
     assert sum(1 for x in diff if x["tp"] == 8 and (x["cheaper_pkg"], x["cheaper_tco"]) == ("split", "mono")) == 14
     assert sum(1 for x in diff if x["tp"] == 1 and (x["cheaper_pkg"], x["cheaper_tco"]) == ("mono", "split")) == 2
     m = {(x["tp"], x["link"], x["d0"], x["mac_x"]): x for x in r["mem"]}
-    # 0.329: the TCO-best memory here moves 4-stack → 8-stack (the 4-stack's thr edge over cost no longer wins)
+    # 0.329: the TCO-best memory here moves 4-stack → 8-stack.  0.330 corrected mechanism (the 0.329 comment said
+    # "the 4-stack's thr edge over cost no longer wins"): the MAC×2 4-stack mono die grows 838.9 → 899.0 mm² and
+    # crosses the 858 mm² reticle, so only its split rows remain — 4s $/M 0.01164 → 0.01966 vs 8s 0.01641 → 0.01681
+    # (test_core_330.test_mac2_4stack_crosses_reticle)
     assert m[(8, 400.0, 0.1, 2.0)]["by_thr"].startswith("hbm3e_8s") and m[(8, 400.0, 0.1, 2.0)]["by_tco"].startswith("hbm3e_8s")
     assert all(x["by_capex"].startswith("hbm3e_4s") for x in r["mem"])
     assert all(x["by_tco"] == x["by_thr"] for x in r["mem"] if x["tp"] == 1)

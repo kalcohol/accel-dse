@@ -6,6 +6,68 @@
 
 
 
+## [0.330.0]
+
+### Adversarial review of the 0.329 verdict flips (no default value changes)
+- **HBM3E = HBM3 bump map: 「假设」 → 「推导」 (value unchanged, 24 mm² per stack).**
+  - JEDEC publishes no separate HBM3E standard (HBM3 = JESD238).
+  - Synopsys' HBM3 PHY IP supports "JEDEC standard HBM3 DRAMs with data rates up to 9600 Mbps" on one 1024-bit, 16-channel micro-bump interface, i.e. HBM3E speeds on the HBM3 bump map 「来源」.
+  - H200 (HBM3e) is Hopper; the GH100 whitepaper lists "6 HBM3 or HBM2e stacks, 12 512-bit Memory Controllers" 「来源」, and H200 uses the same die 「二手」.
+  - AMD CDNA 3: "each stack of HBM memory is associated with 16 parallel channels", and MI300X HBM3 → MI325X HBM3E 「来源」.
+  - No public measured HBM3E PHY area exists: B200 / MI325X die shots are unannotated, and Gaudi 3 is HBM2e.
+  - Source text of `mm2_per_dq_hbm3` updated in all three presets.
+- **Channels 16 / 32 「来源」.** The JEDEC JESD270-4 release (2025-04-16) "doubles the number of independent channels per stack, from 16 channels (HBM3) to 32"; AMD CDNA 3 confirms 16 per HBM3 / 3E stack.
+- **Controller residual recorded (value unchanged).** Samsung's 5–10% quote (slide 9) uses a generic 6-stack xPU with no generation printed, in an HBM4 custom-base-die context 「推导」. If it meant an HBM3E xPU, HBM3E would be 7.15 mm² per stack instead of 3.575: range 3.575–7.15.
+- **No double count 「推导」.**
+  - Every die grows by exactly stacks/die × (8 + 3.575) / 0.77: +120.26 / +60.13 / +30.07 / +15.03 mm² for 8 / 4 / 2 / 1 stacks per die (checked mono, 2-die and 4-die at MAC×1 / ×2).
+  - The shoreline uses stack edge lengths only (no PHY area).
+  - D2D is only on multi-die and custom HBM4.
+  - The DRAM port sits outside the 21% unknown (0.328). The ÷ 0.77 markup on the PHY is the proportional uncore convention, not a second PHY 「假设」.
+- **Each 0.329 flip re-derived from the area increment alone:**
+  - **Cost:** at D0 0.1, mono +$238.7 vs 4-die +$115.2. Yield is super-linear in area, so the crossover moves to ≈ 0.07.
+  - **I/O:** tp8 / 900 GB/s needs the same lanes; only the edge grew. The new test compares an old-semantics budget with the new one on the same scenario.
+  - **Air thermal:** 0.86 W/mm² is 700 W ÷ 814 mm² of the *whole* GH100 die (PHYs included), the same definition as `full_area`. Rows 0 / 15 of the air_oam card front sit at 0.858 vs 0.86 (0.2% margin): fragile, recorded.
+  - **tco_sens:** thresholds follow the narrower mono / split margin.
+  - **eval = DSE = report = static:** verified for 8 × HBM3E 774.462, 4 × HBM3E 631.215 and 8 × HBM4 894.722 mm² (static runs the same Python via pyodide).
+- **Corrections to the 0.329 record (old → new):**
+  - **MAC×2 TCO memory 4s → 8s mechanism.** The 0.329 test comment said "the 4-stack's thr edge over cost no longer wins". In fact the MAC×2 4-stack mono die grows 838.9 → 899.0 mm² and crosses the 858 mm² reticle, so only its split rows remain: 4s $/M 0.01164 → 0.01966 vs 8s 0.01641 → 0.01681. test_core_317 comment fixed.
+  - **Unreported MAC×1 change.** The tp8 / 400 / D0 0.1 MAC×1 TCO memory moved 8s → 6s (0.00949 vs 0.00952, inside the 1% tie). The 0.329 CHANGELOG did not list it.
+  - **PixText file sizes.** The 0.329 freshness note gave one size for both files. Actual: MeanFlow 1,907,943,360 B, Teacher 1,904,005,664 B.
+
+### PixText-MeanFlow (ATH-MaaS/PixText, Apache-2.0, 2026-10-22 15:41 JST) in the gen domain
+- **Release data.** The release has its own config format (`{"format_version", "model": {...}, "variant"}`, read via `summarize_release.domain_of`), plus the public safetensors header (HTTP Range).
+  - 465 tensors, all BF16, 953,948,480 params, 1,907,896,960 B = the header, exactly.
+  - Fetched as `ATH-MaaS/PixText:models/PixText-MeanFlow`. New role patterns: `^timestep_embedder.` / `^interval_embedder.` → cond; `^patch_projection.` / `^glyph_projection.` → io.
+- **New builder `build_pixtext` (GroupJiT, from github.com/ATH-MaaS/PixText transformer.py 「来源」):**
+  - Pixel space: 16×16×3 patches, `patch_projection` 768 → 1280; `glyph_projection` 256 → 1280. No VAE, no text encoder (README).
+  - 32 blocks, each with: RMSNorm; fused qkv (+bias); RMS QK-norm; 3-axis RoPE 12 + 34 + 34 = head dim 80; proj; SwiGLU w12 1280 → 6826 and w3 3413 → 1280.
+  - Block AdaLN (d → 6d), the timestep embedder and the interval embedder run **per token** (`conditioning_ids = arange(tokens)`). The interval embedder is called twice per token (f(r) − f(0)): the second call is compute, not storage.
+  - Final layer: AdaLN per image + linear on the RGB rows.
+- **Parameter check:** 953,948,480 = the header, coverage full.
+- **Default workload = the release's own reference case 「来源」:**
+  - main image 1024² (`main_target_area` 1048576), patch 16 → 4096 tokens;
+  - edit items + glyphs = pass 1 of examples/pipeline_case: 12 crops, 196 tokens × 2 = 392 prefix tokens;
+  - 7 forwards per request ("four MeanFlow updates use seven model forwards": 4 steps + 3 guidance-branch forwards inside guidance_interval (0.1, 1.0)), counted as steps 7, cfg 1.
+- **Approximations 「近似」, sized on the reference case:**
+  - Dense joint attention instead of the routing mask: 18,430,912 allowed pairs vs 4488² = 20,142,144, +9.3% pairs ≈ +2.6% FLOP.
+  - Guidance forwards are counted at the conditional shape (4488 vs 4292 tokens) ≈ +1.9% FLOP.
+  - Item RGB rows are counted with glyph_projection rows ≈ 0.005%.
+- **Check:** 11.84 TFLOP per forward = the hand count; 82.9 TFLOP per request.
+- **Catalog:** new provider ATH-MaaS（PixText） and family PixText. `_finish` gains `standalone=` / `fwd_note=` (opt-in; no other model affected).
+- **Teacher pending.** PixText-Teacher (25 steps → 47 forwards 「推导」, no interval embedder, 951,979,840 params) has a fully read header, but one release file per repo (`release_path`) keeps it out this round.
+
+### Tests
+- New `tests/test_core_330.py` (9).
+- test_core_317: comment corrected (mechanism above); assertions unchanged.
+- test_core_062_1: release-file count 191 → 192 (llm 165 unchanged) and listed + unlisted 199 → 200 (+ pixtext-meanflow).
+
+### Freshness (since 2026-10-22, 110 orgs)
+- PixText added (above).
+- unsloth MOSS-Image GGUF / FP8: third-party quants, not added.
+- ATH-MaaS/TextVerifier-CJK-CLIP: classifier, out of scope.
+- **OrcaCyber Nano 1.0 still pending.** lastModified 2026-10-22 12:16 JST (sha 1af1635); the public GGUF metadata is still the dflash drafter's (1.92 B); the main files are mixed quants; config.json 401.
+
+
 ## [0.329.0]
 
 ### Per-generation HBM host interface: HBM3 / HBM3E get their own PHY area and a channel-scaled controller

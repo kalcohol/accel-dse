@@ -795,9 +795,85 @@ def build_generanno(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) ->
                    notes=tuple(notes), coverage_reasons=tuple(reasons), coverage="partial" if reasons else "full")
 
 
+# ---------------------------------------------------------------- 0.330 PixText (pixel-space text-editing DiT)
+def build_pixtext(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
+    """PixText (ATH-MaaS, GroupJiT, github.com/ATH-MaaS/PixText src/pixtext/modeling/transformer.py, 「来源」):
+    pixel space — no VAE, no text encoder.  One packed sequence per pass = the main RGB image (16×16×3 pixel patches,
+    patch_projection 768 → d) ‖ for each edit item its RGB crop tokens ‖ the same number of glyph tokens (rendered
+    16×16 glyph patches, glyph_projection 256 → d).  ``depth`` PackedJiT blocks: RMSNorm, fused qkv (+bias), RMS
+    QK-norm, 3-axis RoPE over the whole head (axes_dims sum = head dim), proj; SwiGLU w12 (d → 2·⌊4d·2/3⌋) / w3;
+    AdaLN ``adaLN_modulation`` (d → 6d) evaluated **per token** (conditioning_ids = arange(tokens): every token
+    carries its own timestep embedding), as are timestep_embedder and — MeanFlow — interval_embedder, which the
+    reference calls twice per token (f(r) − f(0)).  Final layer on the RGB tokens (per-image AdaLN d → 2d, linear d → 768).
+    Workload mapping: main tokens = the image rows (frames 1, ``vae_s`` 1, patch 16); items + glyphs = the joint
+    prefix rows (``text_tokens``)."""
+    c, sh = rel["config"]["model"], rel["shapes"]
+    d, H, L, P = c["hidden_size"], c["num_heads"], c["depth"], c["patch_size"]
+    hd = d // H
+    if sum(c["axes_dims"]) != hd:
+        raise ValueError(f"PixText: RoPE axes {c['axes_dims']} do not cover head dim {hd}")
+    f = int(int(d * c["mlp_ratio"]) * 2 / 3)          # SwiGLUFFN: hidden = int(mlp_hidden · 2 / 3)
+    p = "blocks.0."
+    if sh[p + "mlp.w12.weight"][0] != 2 * f or sh[p + "mlp.w3.weight"][1] != f:
+        raise ValueError("PixText: w12 / w3 do not match int(4d·2/3)")
+    if sh[p + "attn.qkv.weight"][0] != 3 * d or sh[p + "adaLN_modulation.1.weight"][0] != 6 * d:
+        raise ValueError("PixText: qkv / adaLN shapes")
+    blocks = sorted({int(t.split(".")[1]) for t in sh if t.startswith("blocks.")})
+    if blocks[-1] != L - 1:
+        raise ValueError(f"blocks: last block {blocks[-1]} ≠ depth {L} − 1")
+    core = AttnCore("gqa", n_q=H, n_kv=H, qk_dim=hd, v_dim=hd, rope_dim=hd, causal=False)
+    a = [("attn.qkv", "qkv", "col"), ("attn.proj", "o", "row"), ("adaLN_modulation.1", "ada_mod", "col")]
+    fl = [("mlp.w12", "gate_up", "col"), ("mlp.w3", "down", "row")]
+    misc, _ = _misc(sh, p, [n for n, *_ in a + fl])
+    layer = Layer(tuple(_lin(sh, p + n, s_, sp, role=("cond" if s_ == "ada_mod" else "")) for n, s_, sp in a), core,
+                  Ffn("dense", d_ff=f, gated=True), tuple(_lin(sh, p + n, s_, sp) for n, s_, sp in fl), misc)
+    specs = [("patch_projection.proj", "patch_embed", "img"), ("glyph_projection.proj", "glyph_embed", "txt"),
+             ("timestep_embedder.mlp.0", "time_1", "tok", "cond"), ("timestep_embedder.mlp.2", "time_2", "tok", "cond")]
+    iv = "interval_embedder.mlp.0.weight" in sh
+    if iv:
+        specs += [("interval_embedder.mlp.0", "interval_1", "tok", "cond"), ("interval_embedder.mlp.2", "interval_2", "tok", "cond")]
+    io_pre, used = _io(sh, specs)
+    dup = ()
+    if iv:   # IntervalEmbedder.forward = f(r) − f(0): the second call reuses the same weights (compute, no storage)
+        dup = (_lin(sh, "interval_embedder.mlp.0", "interval_1_zero", rows="tok", role="cond"),
+               _lin(sh, "interval_embedder.mlp.2", "interval_2_zero", rows="tok", role="cond"))
+    io_post, used2 = _io(sh, [("final_layer.adaLN_modulation.1", "norm_out_mod", "seq", "cond"),
+                              ("final_layer.linear", "head", "img")])
+    io_misc = _io_misc(sh, io_pre + io_post, used + used2) - sum(x.params for x in dup)
+    wl = _image_wl(wl, P, wl.text_tokens)
+    n_crop = wl.text_tokens // 2
+    return _finish(model_id, hf_id, rel, f"PixText GroupJiT 像素空间 DiT（{L} 层单流，[主图 ‖ 编辑项裁块 ‖ 字形] 联合注意力；"
+                   f"16×16 像素 patch，无 VAE）", d, 0, [layer] * L, io_pre + dup, io_post, io_misc, 0, wl, "",
+                   skip=("models",), standalone=(
+                       "发布即完整推理：无文本编码器、无 OCR、无 VAE（README：MeanFlow needs no additional text encoder, OCR "
+                       "model, VAE）——字形由字体光栅化（CPU，未计时）、输出直接是像素 patch"),
+                   fwd_note=_PIXTEXT_FWD.get(model_id, ""), extra_notes=(
+                       f"每次 pass = 主图（main_target_area 1048576 → 1024×1024 = {(wl.height // P) * (wl.width // P)} token）"
+                       f" + 编辑项 RGB 裁块 {n_crop} token + 等量字形 token {n_crop}（发布参考用例 examples/pipeline_case 第 1 pass："
+                       f"12 项，11 个 64×64 + 1 个 64×80 裁块 → Σ{n_crop}「来源」）；max_items_per_pass 12，"
+                       f"更多项分多次 pass 串行（参考用例 13 项 = 2 pass，第 2 pass 仅 1 项 12 token）",
+                       "注意力掩码（items_interread_glyph_reads_own_item_bidirectional_main）：主图看主图 + 全部编辑项、编辑项看主图 / 全部编辑项 / "
+                       "自己的字形、字形只看自己的字形与所属编辑项（attention.py _allowed_routing_pair「来源」）——按稠密联合注意力计「近似」（参考用例第 1 pass 允许 18,430,912 对 vs 稠密 4488² = 20,142,144，多算 ≈ 9.3%，"
+                       "≈ 2.6% 总 FLOP「推导」）",
+                       "AdaLN（d → 6d）、timestep / interval embedder 按参考实现逐 token 计算（conditioning_ids = arange(tokens)）；"
+                       "patch_projection 按主图行、glyph_projection 按前缀行计（编辑项 RGB 行实为 patch_projection，"
+                       "≈ 0.005% FLOP「近似」）"))
+
+
+_PIXTEXT_FWD = {
+    "pixtext-meanflow": ("每请求 7 次 DiT 前向，按 7「步」计、cfg 1：4 步 MeanFlow（meanflow_interval_euler，c = k/4）+ "
+                         "guidance_scale 3.3 只在 guidance_interval (0.1, 1.0) 内的 3 步各多一次无字形分支前向（参考实现串行"
+                         "两次调用；README：four MeanFlow updates use seven model forwards「来源」）；无字形分支按条件分支形状计"
+                         "（参考用例少 196 字形 token：4292 vs 4488，≈ +1.9% FLOP「近似」）"),
+}
+
+
 # ---------------------------------------------------------------- common tail
 def _finish(model_id, hf_id, rel, arch, d, L, layer, io_pre, io_post, io_misc, vocab, wl, _, skip=(), extra_notes=(),
-            ext_parts=()):
+            ext_parts=(), standalone="", fwd_note=""):
+    """``standalone`` (0.330): the release has no text encoder / VAE at all (PixText) — that sentence replaces the
+    "DiT trunk only" coverage reason when no unmodelled component is found; ``fwd_note`` replaces the generic
+    forwards-per-step note (PixText: guidance on a sub-interval of the steps, counted as forwards)."""
     fm = _formats(rel)
     fmd = dict(fm)
     dom = wl.kind if wl.kind in ("gen", "genomics") else "protein"
@@ -826,7 +902,9 @@ def _finish(model_id, hf_id, rel, arch, d, L, layer, io_pre, io_post, io_misc, v
             parts.append(f"音频 VAE（{_gb(um['audio_vae'])}）")
         from .pipeline import pipeline_for, stored_bytes
         pl = pipeline_for(model_id)
-        if pl is None:
+        if pl is None and standalone and not parts:
+            notes.append(standalone)
+        elif pl is None:
             reasons.append("只评估 DiT 去噪主干：" + "、".join(parts or list(ext_parts) or ["文本编码器与 VAE"]) +
                            "未建模——不计其权重存储与时间（文本编码每请求一次、VAE 解码每段一次）")
         else:
@@ -837,7 +915,9 @@ def _finish(model_id, hf_id, rel, arch, d, L, layer, io_pre, io_post, io_misc, v
                          "权重按加载的整个检查点计入首 / 末流水级卡的存储；见 docs/MODEL.md §11.4")
             notes.extend(n for n in [t.note for t in pl.text] + [v.note for v in (pl.vae, pl.audio) if v] + [pl.note]
                          if n)
-        if wl.cfg > 1:
+        if fwd_note:
+            notes.append(fwd_note)
+        elif wl.cfg > 1:
             notes.append(f"每个去噪步 {wl.cfg} 次前向（classifier-free guidance：cond + uncond，batch ×{wl.cfg}）；"
                          f"默认 {wl.steps} 步")
         else:
@@ -901,7 +981,8 @@ def build_lingbot(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> M
 BUILDERS = {"wan": build_wan, "wan22": build_wan22, "cogvideox": build_cogvideox, "hunyuan": build_hunyuan,
             "ltx": build_ltx, "mochi": build_mochi, "stdit": build_stdit, "h3": build_h3, "esm": build_esm,
             "generanno": build_generanno, "qwenimage": build_qwenimage, "qwenimage21": build_qwenimage21,
-            "flux2": build_flux2, "lingbot": build_lingbot, "flux3": build_flux3, "moss": build_moss}
+            "flux2": build_flux2, "lingbot": build_lingbot, "flux3": build_flux3, "moss": build_moss,
+            "pixtext": build_pixtext}
 from .structure import BUILDERS as _STRUCTURE_BUILDERS  # noqa: E402  (0.43 protein structure models)
 BUILDERS.update(_STRUCTURE_BUILDERS)
 

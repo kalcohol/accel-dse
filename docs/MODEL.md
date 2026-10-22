@@ -9658,3 +9658,86 @@ Samsung Hot Chips 2026 (S. Han) slide 11 「来源」 (ServeTheHome slide image)
 - HBM2 / 2E (not in the catalog; Samsung 7.2 mm² PHY would apply).
 - PixText (new image DiT, needs a domain builder).
 - OrcaCyber Nano 1.0.
+
+## §275 Adversarial review of the 0.329 flips; PixText-MeanFlow (0.330)
+
+### §275.1 HBM3E PHY = HBM3 bump map 「推导」 (was 「假设」; value unchanged)
+- JEDEC publishes no separate HBM3E standard: HBM3 = JESD238.
+- Synopsys HBM3 PHY IP: "JEDEC standard HBM3 DRAMs with data rates up to 9600 Mbps", "16 independent 64-bit memory channels", micro-bump array 「来源」. So HBM3E speeds run on the HBM3 interface and bump map.
+- NVIDIA: H200 = Hopper with HBM3e; the GH100 whitepaper lists HBM3 controllers 「来源」; H200 uses the same die 「二手」.
+- AMD CDNA 3: 16 channels per stack; MI300X HBM3 → MI325X HBM3E 「来源」.
+- No public measured HBM3E PHY area (B200 / MI325X die shots unannotated; Gaudi 3 = HBM2e). An unsourced "GH100 ≈ 120 mm² for 5 PHYs" blog figure is not used.
+
+### §275.2 Channels and controller
+- JEDEC JESD270-4 release (2025-04-16): "doubles the number of independent channels per stack, from 16 channels (HBM3) to 32" 「来源」. The HBM3 / 3E scale is therefore 16 / 32.
+- The SK hynix IEDM 2023 "16 Ch × 128 I/O" HBM4 figure was pre-standard.
+- Residual: Samsung slide 9's 5–10% SoC quote uses a generic 6-stack xPU (26 × 33 mm, no generation printed) in an HBM4 custom-base-die context 「推导」. Were it an HBM3E xPU, HBM3E would carry 7.15 mm² per stack. Range 3.575–7.15; value kept at 3.575.
+
+### §275.3 No double count 「推导」
+- `full_area` grows by exactly stacks/die × (8 + 3.575) / 0.77 per die: 15.03 mm² per stack. Verified for mono, 2-die and 4-die at MAC×1 and ×2 (test_core_330).
+- The shoreline uses `HBM_STACK_EDGE_MM` only, not PHY area. D2D is multi-die and custom HBM4 only.
+- The DRAM port is outside the 21% unknown (§273). The ÷ (1 − 0.23) markup applies the uncore share proportionally to the whole die, ports included, as in the TPUv1 fraction 「假设」. This is a convention, not a second PHY.
+
+### §275.4 Each flip from the increment alone
+- **Cost (D0 0.1, MAC×1):** mono +$238.7 ($2115.8 → $2354.5), 4-die +$115.2 ($2117.7 → $2232.9). Yield is super-linear in die area, so the mono / 4-die crossover moves to D0 ≈ 0.07.
+- **I/O (tp8):** lane needs are unchanged. 900 GB/s fits once the die grows (paired old / new budget test); 1200 GB/s needs 31.9 mm vs 26.3 mm left and stays over. Square-die perimeter gain ≈ the deeper-PHY geometry 「推导」.
+- **Air thermal:** limit 0.86 W/mm² = H100 / H200 700 W ÷ 814 mm² of the *whole* die (PHYs included), the same definition as `full_area`.
+  - 8 × HBM3E prefill flux 0.99 → 0.85.
+  - air_oam card front [4, 17] → [1, 0, 15] with thr and J unchanged: only feasibility changed.
+  - Rows 0 / 15 sit at 0.858 vs 0.86 (0.2% margin): fragile.
+- **TCO memory (tp8 / 400 / D0 0.1, MAC×2): 4s → 8s is a reticle crossing.** The 4-stack mono die goes 838.9 → 899.0 mm² > 858, so only split rows remain: 4s $/M 0.01164 → 0.01966; 8s 0.01641 → 0.01681. The 0.329 test comment ("thr edge over cost") was wrong and is corrected.
+  - MAC×1 also moved 8s → 6s, within the 1% tie (0.00949 vs 0.00952). Not reported in 0.329; recorded now.
+- **tco_sens:** D0 threshold 0.150 → 0.110, and the wafer / carrier-yield flips follow from the narrower mono / split margin.
+- **eval = DSE = report = static:** same die mm² and $/M; report hbm_phy × stacks = dram_phy and hbm_mc × stacks = mem_ctrl. Static is the same Python under pyodide.
+
+### §275.5 PixText-MeanFlow (ATH-MaaS/PixText, Apache-2.0) 「来源」 unless tagged
+**Release data**
+- Config `models/PixText-MeanFlow/config.json`: hidden 1280, depth 32, 16 heads, mlp_ratio 4, patch 16, in_channels 3, axes_dims [12, 34, 34], interval_conditioning true.
+- Header: 465 BF16 tensors, 953,948,480 params (EMA). `summarize_release.domain_of` recognises the format by `model.image_attention_routing`.
+
+**Per block** (`build_pixtext`)
+
+| Tensor | Shape | Rows |
+|---|---|---|
+| qkv | 1280 → 3840 (+bias) | tok |
+| proj | 1280 → 1280 | tok |
+| adaLN_modulation | 1280 → 7680 | tok (conditioning_ids = arange(tokens); role cond) |
+| SwiGLU w12 | 1280 → 6826 | tok (hidden int(5120 · 2/3) = 3413) |
+| w3 | 3413 → 1280 | tok |
+
+- RMS QK-norm(80); RoPE over the whole head (12 + 34 + 34 = 80); bidirectional.
+
+**io**
+
+| Tensor | Shape | Rows |
+|---|---|---|
+| patch_projection | 768 → 1280 | img |
+| glyph_projection | 256 → 1280 | txt |
+| timestep_embedder | 256 → 1280 → 1280 | tok |
+| interval_embedder | 256 → 1280 → 1280 | tok, twice: f(r) − f(0); the second pair is compute only, subtracted from io_misc |
+| final adaLN | 1280 → 2560 | seq |
+| final linear | 1280 → 768 | img |
+
+**Workload** (release reference case examples/pipeline_case, pass 1)
+- main 1024² → 4096 tokens (vae_s 1, patch 16);
+- 12 items: crops 11 × 64² + 64 × 80 → 196 RGB + 196 glyph = 392 prefix tokens;
+- sequence 4488;
+- 7 forwards (4 MeanFlow steps + guidance-branch forwards at c = 0.25 / 0.5 / 0.75 inside (0.1, 1.0)) = steps 7, cfg 1.
+- More than 12 items run as further sequential passes (13 items = 2 passes).
+
+**Approximations 「近似」**
+- Dense attention vs the routing mask (main → main + items; items → main + items + own glyph; glyph → own glyph + own item): 18,430,912 vs 20,142,144 pairs, +9.3% ≈ +2.6% FLOP.
+- Guidance branch counted at the conditional shape (4292 → 4488) ≈ +1.9%.
+- Item RGB rows counted on the glyph projection ≈ 0.005%.
+- Glyph rasterisation (CPU) not timed.
+
+**Checks:** 11.84 TFLOP per forward; 82.9 TFLOP per request; parameters exact.
+
+**Pending:** PixText-Teacher (25 Euler steps → 47 forwards 「推导」, 951,979,840 params, no interval embedder) needs a per-subfolder release id.
+
+### §275.6 Not modelled / pending
+- PCIe / CXL controller area; HBM controller at N7 / N28; controller power split.
+- HBM3E-specific PHY measurement (none public).
+- Partial guidance as a workload field: PixText counts forwards as steps.
+- PixText-Teacher.
+- OrcaCyber Nano 1.0 (drafter-only GGUF metadata, config 401).
