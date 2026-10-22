@@ -35,7 +35,7 @@ _LIMITS = {   # key → (label, unit)
 }
 _DENS = ("mm2_per_mib_sram", "mm2_per_mib_slc", "mm2_per_kmac", "mm2_fixed")
 _PHY_DENS = ("mm2_per_dq_hbm", "mm2_per_dq_lpddr", "mm2_per_d2d_unit", "mm2_per_GBps_c2c",
-             "uncore_frac", "mm2_host_io", "mm2_per_unit_mc")      # 0.213: uncore goes through full_area too
+             "uncore_frac", "mm2_host_io", "mm2_per_unit_mc", "mm2_per_hbm_mc")   # 0.213 uncore; 0.327 HBM MC
 
 # 0.149: cited density presets per process node.  Each value: (number, status, source).  status 「来源」 = read from
 # the cited text; 「推导」 = arithmetic on cited figures (the scaling step itself is an assumption); 「二手」 = number
@@ -160,6 +160,52 @@ TCO_PRESETS: dict[str, dict] = {
         "pue": (1.47, "来源", "Uptime Institute Journal, 'Large data centers are mostly more efficient, analysis "
                 "confirms': 2023 capacity-weighted PUE 1.47 (per-site 1.58)")}},
 }
+
+
+# 0.327: HBM memory-controller area per stack.  S. Han (Samsung), Hot Chips 2026 tutorial "HBM Base Die", 2026-08-23:
+# "Memory controllers account for about 5-10% of the SoC area" (quoted by Maeil Business / MK 2026-08-24; also
+# TMTBreakout, Wccftech via cnyes) 「二手」; the talk's own reference xPU (slide 9 "xPU Area Reclamation", via
+# ServeTheHome) is 26 × 33 mm with 6 HBM stacks per xPU (12 around 2 xPUs) 「二手」.  Per stack = share × 858 mm² ÷ 6
+# 「推导」, taking the quote to refer to that xPU 「假设」.  Opt-in only: the bottom-up area (TPUv1-derived uncore 23 %
+# whose unlabelled 21 % may already hold controller logic) cannot be shown free of double counting, so no density
+# preset carries it (MODEL §272).
+_MC_SRC = ("S. Han (Samsung), Hot Chips 2026 tutorial 'HBM Base Die: How HBM Will Evolve Using Advanced Logic "
+           "Processes': memory controllers 'about 5-10% of the SoC area' (MK 2026-08-24 quote; TMTBreakout; Wccftech "
+           "via cnyes) 「二手」; slide 9 reference xPU 26 × 33 mm, 6 HBM stacks per xPU (ServeTheHome) 「二手」")
+MC_XPU_MM2, MC_XPU_STACKS, MC_SOC_FRAC = 26 * 33, 6, (0.05, 0.10)
+MC_PRESETS: dict[str, dict] = {
+    "samsung_hc2026_lo": {"label": "HBM 控制器 5 % SoC（Samsung HC 2026）", "fields": {
+        "mm2_per_hbm_mc": (MC_SOC_FRAC[0] * MC_XPU_MM2 / MC_XPU_STACKS, "二手/推导",
+                           _MC_SRC + " → 0.05 × 858 ÷ 6 = 7.15 mm² per stack 「推导」 (quote taken for that xPU 「假设」)")}},
+    "samsung_hc2026_hi": {"label": "HBM 控制器 10 % SoC（Samsung HC 2026）", "fields": {
+        "mm2_per_hbm_mc": (MC_SOC_FRAC[1] * MC_XPU_MM2 / MC_XPU_STACKS, "二手/推导",
+                           _MC_SRC + " → 0.10 × 858 ÷ 6 = 14.3 mm² per stack 「推导」 (quote taken for that xPU 「假设」)")}},
+}
+
+
+def apply_mc_preset(d: dict) -> dict:
+    """0.327: body ``budget`` with ``mc_preset``: fill mm2_per_hbm_mc only if the user left it unset."""
+    d = dict(d)
+    pid = d.pop("mc_preset", None)
+    if pid is None:
+        return d
+    if pid not in MC_PRESETS:
+        raise ValueError(f"budget.mc_preset must be one of {sorted(MC_PRESETS)}")
+    for k, (v, _, _) in MC_PRESETS[pid]["fields"].items():
+        if d.get(k) is None:
+            d[k] = v
+    return d
+
+
+def mc_mm2_per_unit(b, mem_type: str | None) -> float | None:
+    """0.327: controller mm² per DRAM unit — the generic mm2_per_unit_mc, else mm2_per_hbm_mc on HBM memory."""
+    if b is None:
+        return None
+    if b.mm2_per_unit_mc is not None:
+        return b.mm2_per_unit_mc
+    if getattr(b, "mm2_per_hbm_mc", None) is not None and mem_type and "HBM" in mem_type.upper():
+        return b.mm2_per_hbm_mc
+    return None
 
 
 def apply_tco_preset(d: dict) -> dict:
@@ -1022,20 +1068,23 @@ def full_area(scn, b: Budget, noc_routers: bool = False) -> dict:
         if b.mm2_host_io is not None:
             terms["host_io"] = b.mm2_host_io
             mm2 += b.mm2_host_io
-        if b.mm2_per_unit_mc is not None:
+        if b.mm2_per_unit_mc is not None or b.mm2_per_hbm_mc is not None:
             from .. import mem_catalog
             from .hbm_base import custom_applies
             spec = mem_catalog.parse_mem_id(scn.mem_id)
-            if custom_applies(scn.chip, spec.mem_type):     # 0.324: the controller sits on the custom base die
+            mc = mc_mm2_per_unit(b, spec.mem_type)
+            if mc is None:                                  # 0.327: HBM-only controller area on non-HBM memory
+                notes.append(f"mm2_per_hbm_mc 只用于 HBM 堆栈：{spec.mem_type} 不计控制器面积（可填 mm2_per_unit_mc）")
+            elif custom_applies(scn.chip, spec.mem_type):   # 0.324: the controller sits on the custom base die
                 notes.append("定制 HBM 基础晶粒：内存控制器在基础晶粒上，主晶粒不计 mm2_per_unit_mc")
             else:
-                terms["mem_ctrl"] = spec.n_units * b.mm2_per_unit_mc
+                terms["mem_ctrl"] = spec.n_units * mc
                 mm2 += terms["mem_ctrl"]
         if b.uncore_frac:
             u = mm2 * b.uncore_frac / (1 - b.uncore_frac)      # share of the final die
             terms["uncore"] = u
             mm2 += u
-    elif b.mm2_fixed is not None and (b.uncore_frac or b.mm2_host_io or b.mm2_per_unit_mc):
+    elif b.mm2_fixed is not None and (b.uncore_frac or b.mm2_host_io or b.mm2_per_unit_mc or b.mm2_per_hbm_mc):
         notes.append("已填固定面积 mm2_fixed：uncore 项不再另计（避免重复）")
     if noc_routers and mm2 is not None:
         nr = noc_router_mm2(scn.chip, b)
@@ -1090,6 +1139,9 @@ class Budget:
     uncore_frac: float | None = None          # share of the final die, 0 ≤ f < 1
     mm2_host_io: float | None = None          # host interface (PCIe x16 class) incl. its PHY
     mm2_per_unit_mc: float | None = None   # memory controller per DRAM unit (HBM stack / DRAM package; no public figure: no preset)
+    # 0.327: HBM-stack controller only (HBM memory; ignored on LPDDR / DDR / GDDR).  mm2_per_unit_mc wins when both are
+    # set.  Sourced presets: MC_PRESETS (mc_preset) — Samsung Hot Chips 2026 「二手」 × its reference xPU 「推导」.
+    mm2_per_hbm_mc: float | None = None
     # 0.153: absolute operating cost (optional; None = insight does not rank by $).
     usd_per_kWh: float | None = None           # electricity rate; presets in ELECTRICITY_PRESETS
     tdp_W_card: float | None = None            # nameplate / design TDP for J≈W·t when energy table has no J

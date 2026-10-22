@@ -6,6 +6,51 @@
 
 
 
+## [0.327.0]
+
+### HBM memory-controller area: a sourced preset (opt-in)
+- **Why this item:** the AGENTS pending / unmodelled lists were checked against public numbers available now.
+  - Organic-substrate SPHBM4 PHY pJ/bit and area: still no number. JEDEC and the trade press give none; Eliyan only claims "~2× better power efficiency" against an unnamed baseline.
+  - The fewest-edges placement rule: no source with numbers (SoftHier / FlatAttention only parameterises 4-edge placement).
+  - Base-die process energy: Samsung ISSCC 2026 15.6 gives SF4 and VDDQ 0.75 V, no pJ/bit split.
+  - Near-memory compute: Hot Chips 2026 gave no TOPS or W.
+  - The memory-controller area **has** a public figure. It also changes a design decision: whether a custom HBM base die beats the standard interface, and whether the std host still fits the reticle. Until now `mm2_per_unit_mc` had no preset, so std hosts carried no controller area and a custom base die took nothing off the host.
+- **Source:**
+  - S. Han (Samsung), Hot Chips 2026 tutorial "HBM Base Die: How HBM Will Evolve Using Advanced Logic Processes", 2026-08-23: "Memory controllers account for about 5-10% of the SoC area". Quoted by Maeil Business (MK) 2026-08-24; also TMTBreakout and Wccftech via cnyes 「二手」.
+  - The talk's slide 9 reference xPU is 26 × 33 mm with 6 HBM stacks per xPU (ServeTheHome slide images) 「二手」.
+  - Per stack = share × 858 mm² ÷ 6 = **7.15 / 14.3 mm²** 「推导」, taking the quote to refer to that xPU 「假设」.
+- **What changed:**
+  - New `Budget.mm2_per_hbm_mc`, the controller area per HBM stack. It applies to HBM memory only; on LPDDR / DDR / GDDR it is ignored with a note. The generic `mm2_per_unit_mc` wins when both are set.
+  - `budget.mc_preset` = `samsung_hc2026_lo` | `samsung_hc2026_hi` (`budget.MC_PRESETS`), fills unset fields only. Wired into the API, the catalog (`mc_presets`), the UI ("HBM 控制器 mm² / 栈" input and "HBM 控制器预设" select), the design report (`hbm_mc` item) and `chiplet_example.py --mc-preset`.
+  - Std hosts add stacks × the value (before the 23% uncore share); a custom base die drops it (0.324 rule).
+  - The custom eval block reports `mc_mm2_per_stack` and `mc_reclaim_mm2`. When unset, it reports `mc_reclaim_range_mm2` and the note "内存控制器面积未计…". The design report flags the same.
+- **Default unchanged** (no density preset carries it). The bottom-up area's 23% uncore is TPUv1 control 2% plus 21% unlabelled, and that unlabelled share may already hold controller logic. Adding the controller to every std die could therefore double count, and the source is a 2× range. Without the preset, all non-custom output is byte-identical to 0.326 (DSE std / custom / chiplet, evals, both studies).
+- **Decision changes with the preset:**
+  - **Eval**, 1P qwen3-8b decode b64, 8 × HBM4 10 Gb/s, n5_derived, n5_cowos_s, accel_2026, D0 0.1:
+
+    | | std die / $/Mtok | custom die / $/Mtok |
+    |---|---|---|
+    | none | 820.4 mm² / 9.7658 m$ | 535.5 / 9.8678 |
+    | lo | 894.7 / **9.8969** | 535.5 / 9.8678 |
+    | hi | 969.0 / 10.0395 | 535.5 / 9.8678 |
+
+    The cheaper option flips from std to custom at the 5% end.
+  - **Energy DSE** (`--hbm-base-study`, n5_cowos_l, air_oam, cases 0 / 1 / 4):
+    - The std MAC×1 verdict goes **mono → only_split** in all three cases under either preset: the std monolithic die is 895 / 969 mm², over the 858 mm² reticle.
+    - Custom verdicts are unchanged.
+    - Case 0 mono $/Mtok, std vs custom: 11.1181 vs 11.3158 (none), 11.2639 vs 11.3158 (lo), 11.4236 vs 11.3158 (hi).
+    - Every split adds the controller once in total: Σ +74–75 mm² (lo) at N = 1 / 2 / 4.
+
+### Consistency fixes (0.326 follow-up)
+`hbm_base.NOT_MODELLED` and the custom shoreline note still said the organic SPHBM4 package was "未建模". It is modelled since 0.326 (`hbm_pkg=sphbm4`, exclusive with custom). The entry is removed and the note points to it. Only the custom HBM4 / HBM4E eval notes change.
+
+### Freshness
+- The HF sweep (2026-10-21 onwards, 110 orgs) found nothing new: OvisOCR3 (merged, 0.314), Flint (0.315), Raon-1-mini (0.320) and Ling-3.0-tiny-UBTree (0.311) are all handled.
+- **OrcaCyber Nano 1.0 is still pending.** The public GGUF metadata is the DFlash drafter's (`architecture: dflash`, 1.92 B), config.json returns 401, and orcarouter has no newer repos.
+
+### Tests
+- New: `test_core_327` (8).
+
 ## [0.326.0]
 
 ### SPHBM4 on an organic substrate (HBM package option, opt-in)

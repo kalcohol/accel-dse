@@ -9,7 +9,9 @@ the model changes, each number labelled:
                           custom (0.325) ceil(stack GB/s ÷ 384) UCIe-A x64 modules × 0.3888 × 1.043 mm (d2d_catalog,
                           UCIe geometry 「来源」) 「推导」 — HBM4 10 Gb/s: 7 modules ≈ 2.84 mm² (0.324: 12.75, Samsung's
                           base-die block taken for the host side; that is the memory side)
-  memory controller       moved to the base die: the host term mm2_per_unit_mc (user field, no preset) drops out
+  memory controller       moved to the base die: the host term mm2_per_unit_mc / mm2_per_hbm_mc drops out (0.327:
+                          opt-in mc_preset 7.15 / 14.3 mm² per stack = Samsung HC 2026 "about 5-10% of the SoC
+                          area" 「二手」 × its 26 × 33 mm, 6-stack reference xPU 「推导」; budget.MC_PRESETS)
   interface energy / bit  (0.325) both ends: std host PHY 0.29 「来源」 + memory-side PHY in the device pJ/bit (taken
                           = host PHY, 「推导」) → custom UCIe-A link 0.25 pJ/bit split half host / half base die 「推导」;
                           ratio 0.43, inside Marvell's −45 … −75 % 「二手」 (0.324: host PHY × 0.55, memory side unchanged)
@@ -60,8 +62,8 @@ USD_FACTOR_RANGE = (1.05, 1.10)     # +5 % … +10 % 「二手（推测）」
 # (≈ 2.7 mm for 7 UCIe-A modules).  Eliyan (Electronic Design 2026): "on silicon substrates [stacks] must be placed
 # immediately adjacent to the XPU, limiting the number of stacks to two per 25-mm die edge"; on organic substrate with
 # a long-reach narrow interface (SPHBM4: 512 DQ, ≥ 90 µm bumps, 20 mm reach, JESD330-4) "three memory devices can be
-# connected along the same edge" (≈ 8.3 mm per stack) 「二手」 — a different package (organic, no interposer), not
-# modelled here (it needs the organic package cost and reach geometry).
+# connected along the same edge" (≈ 8.3 mm per stack) 「二手」 — a different package (organic, no interposer): 0.326
+# models it as Chip.hbm_pkg = "sphbm4" (core/hbm_pkg.py), mutually exclusive with a custom base die.
 ORGANIC_STACKS_PER_25MM = (3, 2)
 NOT_MODELLED = ("近存计算 / 卸载（Samsung 第 2 阶段、SK hynix StreamDQ 基础晶粒反量化）：无厂商公布的基础晶粒算力 / 能耗 / 功耗预算；"
                 "且基础晶粒算力不提高每栈带宽（TSV 带宽 = 接口带宽，AMMA arXiv 2026「PNM alone does not increase per-cube "
@@ -70,7 +72,6 @@ NOT_MODELLED = ("近存计算 / 卸载（Samsung 第 2 阶段、SK hynix StreamD
                 "内存控制器功耗：标准设计中主晶粒也未单列控制器功耗（无可分离的公开数字；SC'25 GPU 实测把控制 + 接口 + 片上互连合计 "
                 "8.5–13.5 pJ/bit），故定制时无项可移；方向：若计入，定制主晶粒发热更低",
                 "基础晶粒工艺能耗（N12 0.8 V → N3P 0.75 V）：基础晶粒在器件 pJ/bit 中的份额未公开，未建模",
-                "有机基板长距窄接口（SPHBM4 类）每 25 mm 边 3 栈（硅中介层 2 栈，Eliyan「二手」）：另一种封装，未建模",
                 "D2D 接口功率密度更高（Samsung 以 Heat Path Block 降峰温 > 35 %）：热点仅报告（hotspot_W_mm2），不判定")
 
 
@@ -208,6 +209,18 @@ def report(scn, b=None, table=None, die_mm2=None) -> dict:
                    std_equiv_delta_mm2=std_equiv_delta(scn, b),
                    src={k: CUSTOM[k][2] for k in ("base_die_d2d_mm2", "link_std", "usd_per_GB_factor", "process")},
                    tags={k: CUSTOM[k][1] for k in ("base_die_d2d_mm2", "link_std", "usd_per_GB_factor", "process")})
+        # 0.327: the controller area that leaves the host (budget.mc_mm2_per_unit), or the sourced range when unset
+        from .budget import MC_PRESETS, mc_mm2_per_unit
+        mc = mc_mm2_per_unit(b, sp.mem_type)
+        fixed = b is not None and getattr(b, "mm2_fixed", None) is not None
+        out["mc_mm2_per_stack"] = mc
+        out["mc_reclaim_mm2"] = out["stacks"] * mc if mc is not None and not fixed else None
+        if mc is None and not fixed:
+            lo, hi = (MC_PRESETS[k]["fields"]["mm2_per_hbm_mc"][0] for k in ("samsung_hc2026_lo", "samsung_hc2026_hi"))
+            out["mc_reclaim_range_mm2"] = (out["stacks"] * lo, out["stacks"] * hi)
+            out["notes"].append(f"内存控制器面积未计：Samsung HC 2026「约占 SoC 面积 5–10 %」「二手」→ 每栈 {lo:.2f}–{hi:.1f} mm²"
+                                f"（其参考 xPU 26 × 33 mm、6 栈「推导」）；定制基础晶粒从主晶粒移走的 {out['stacks'] * lo:.0f}–"
+                                f"{out['stacks'] * hi:.0f} mm² 未计入定制 / 标准比较（budget.mc_preset 打开）")
         fl = shore_floor_mm2(scn, die_mm2)
         out["shore_floor_mm2"] = fl
         pad = None
@@ -231,7 +244,8 @@ def report(scn, b=None, table=None, die_mm2=None) -> dict:
                                 "（Marvell HC 2025「主晶粒与 HBM I/O 功耗低 75 %」、EE Times −45…−70 %「二手」）内，作交叉检验")
         out["notes"] += ["岸线：每栈仍占 11 mm——硅中介层上短距 D2D（UCIe-A ≤ 2 mm）要求堆栈紧贴主晶粒边，边长由堆栈占地决定，"
                          f"不由链路宽度决定（{host_d2d_units(sp)} 个 UCIe-A 模块 ≈ {host_d2d_edge_mm(sp):.1f} mm）"
-                         "「推导」；Eliyan：硅基板每 25 mm 边 2 栈、有机基板长距窄接口 3 栈「二手」（另一种封装，未建模）",
+                         "「推导」；Eliyan：硅基板每 25 mm 边 2 栈、有机基板长距窄接口 3 栈「二手」（另一种封装：hbm_pkg=sphbm4，"
+                         "0.326，与定制基础晶粒互斥）",
                          "热：卡级热流先例（出货件 TDP ÷ 逻辑晶粒面积）的面积含 HBM PHY / 控制器环，定制晶粒按同口径"
                          "（加回标准接口面积）判卡级热流；晶粒热流按实际面积（物理口径）"] + list(NOT_MODELLED)
     return out

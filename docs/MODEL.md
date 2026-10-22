@@ -9549,3 +9549,29 @@ The shoreline-floor bisection (§270.3) made custom DSEs about 1 s slower cold. 
 4. The water-fill is an explicit scan with identical arithmetic and tie order.
 
 `_SIZED_CACHE` (keyed on `round(die, 6)`) is untouched, so the bisection sees the same layouts. Whole-output JSON is byte-identical to 0.325 on custom / std DSEs, chiplet grids, evals and the example script outputs.
+
+## §272 HBM memory-controller area: sourced opt-in preset (0.327)
+
+### §272.1 Source and number
+- S. Han (Samsung), Hot Chips 2026 tutorial (2026-08-23), as quoted by MK (2026-08-24) 「二手」: "Memory controllers account for about 5-10% of the SoC area". Moving them to a custom base die "can be filled with operation cores".
+- The same talk's slide 9 draws the reference xPU: 26 × 33 mm (858 mm², reticle class) with 6 HBM stacks per xPU 「二手」 (ServeTheHome slide images).
+- Per stack: 0.05 × 858 ÷ 6 = **7.15 mm²** and 0.10 × 858 ÷ 6 = **14.3 mm²** 「推导」. This reads the quote as referring to the slide's xPU 「假设」. The quote names no product, so the range is kept rather than a point.
+- Mechanism: a controller per HBM channel set, so the area scales with stacks, which is what `mm2_per_unit_mc` already does. The new field is HBM-only because the source concerns HBM controllers; an LPDDR package controller is not 7–14 mm².
+
+### §272.2 Model
+- `Budget.mm2_per_hbm_mc` (HBM memory only); `mm2_per_unit_mc` (generic) wins when both are set.
+- `mc_preset` fills `mm2_per_hbm_mc` from `MC_PRESETS`.
+- `full_area`: std host + stacks × value, before the uncore share (so the final die grows by value ÷ 0.77). A custom base die drops the term (§269), so a custom host reclaims it.
+- Consequences inside the 0.325 rules:
+  - `std_equiv_delta` (card-level thermal precedent) now adds the controller back, consistent with "the precedent area counts the PHY / controller ring".
+  - The DSE interposer limit and the reticle check see the larger std die.
+
+### §272.3 Why the default stays off
+The bottom-up area is SRAM + MAC + PHY + host IO + 23% uncore. The uncore share is TPUv1's control 2% plus an unlabelled 21%. TPUv1's DDR3 controllers are not broken out in its floor plan, so part of a controller may already sit inside that 21%. Adding the controller to every std die could double count, and the source is a 2× range. The preset is therefore opt-in (precedent: §269 custom $/GB, upper end inside the option only). The eval's custom block and the design report flag the omission: "控制器面积未计", with the stacks × 7.15–14.3 mm² range.
+
+### §272.4 Effect (8 × HBM4 10 Gb/s, 1P qwen3-8b decode b64)
+- **Eval** (n5_cowos_s): std die 820 → 895 / 969 mm²; $/Mtok std 9.7658 → 9.8969 / 10.0395 m$ against custom 9.8678 (unchanged). The cheaper option flips std → custom already at 5%.
+- **DSE** (n5_cowos_l, air_oam): the std monolithic MAC×1 die passes the 858 mm² reticle without the preset and fails with it. The verdict goes mono → only_split for qwen3-8b decode / prefill and qwen3-30b-a3b decode, while custom stays mono.
+
+### §272.5 Consistency fix
+`hbm_base.NOT_MODELLED` no longer lists organic SPHBM4 (modelled in §271), and the custom shoreline note points to `hbm_pkg=sphbm4`.

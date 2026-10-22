@@ -339,6 +339,13 @@ def _tco_presets() -> dict:
             for k, v in TCO_PRESETS.items()}
 
 
+def _mc_presets() -> dict:
+    from .core.budget import MC_PRESETS
+    return {k: {"label": v["label"], "fields": {f: {"value": x, "status": st, "source": src}
+                                                for f, (x, st, src) in v["fields"].items()}}
+            for k, v in MC_PRESETS.items()}
+
+
 def _electricity_presets() -> dict:
     from .core.budget import ELECTRICITY_PRESETS
     return {k: {"label": v["label"], "fields": {f: {"value": x, "status": st, "source": src}
@@ -363,6 +370,7 @@ def api_catalog() -> dict:
             "energy_presets": _energy_presets(),
             "electricity_presets": _electricity_presets(),
             "tco_presets": _tco_presets(),
+            "mc_presets": _mc_presets(),
             "mixed_presets": {k: {"pairs": [list(p) for p in v[0]], "source": v[1]} for k, v in MIXED_PRESETS.items()},
             "dequant_ops": dict(DEQUANT_OPS)}
 
@@ -429,6 +437,9 @@ def _budget(body: dict) -> Budget | None:
             if "tco_preset" in d:
                 from .core.budget import apply_tco_preset
                 d = apply_tco_preset(d)
+            if "mc_preset" in d:                # 0.327: HBM controller area (Samsung HC 2026)
+                from .core.budget import apply_mc_preset
+                d = apply_mc_preset(d)
         return Budget.from_dict(d)
     except (ValueError, TypeError) as e:
         raise ApiError(str(e)) from None

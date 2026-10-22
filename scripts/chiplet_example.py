@@ -34,7 +34,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from accel_dse.core import d2d_catalog  # noqa: E402
-from accel_dse.core.budget import DENSITY_PRESETS, Budget  # noqa: E402
+from accel_dse.core.budget import DENSITY_PRESETS, MC_PRESETS, Budget  # noqa: E402
 from accel_dse.core.energy import ENERGY_PRESETS, EnergyTable  # noqa: E402
 from accel_dse.core.energy_dse import energy_design_search  # noqa: E402
 from accel_dse.core.hardware import CHIPS, Link  # noqa: E402
@@ -59,14 +59,17 @@ def table() -> EnergyTable:
                                   and k not in ("idle_W", "idle_frac_tdp", "tdp_W")})
 
 
-def budget() -> Budget:
+def budget(mc=None) -> Budget:
     f = DENSITY_PRESETS["n5_derived"]["fields"]
-    return Budget(**{k: v for k, (v, _, _) in f.items() if k in Budget.__dataclass_fields__}, power_W_card=700)
+    extra = {}
+    if mc:                          # 0.327: HBM controller area preset (budget.MC_PRESETS)
+        extra = {k: v for k, (v, _, _) in MC_PRESETS[mc]["fields"].items()}
+    return Budget(**{k: v for k, (v, _, _) in f.items() if k in Budget.__dataclass_fields__}, power_W_card=700, **extra)
 
 
 def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d0=0.1, io_edges=-1,
         mem="hbm3e_8s_8h24g_9200", tp=1, link=400.0, macs=(1.0, 2.0), include_unbuildable=False, lane=None,
-        shore_strict=False, cooling=None, power_scope="package", tco=None, hbm_base="std", hbm_pkg="si") -> dict:
+        shore_strict=False, cooling=None, power_scope="package", tco=None, hbm_base="std", hbm_pkg="si", mc=None) -> dict:
     std = d2d_catalog.D2D_STANDARDS["ucie-a-48"]
     old = std["pJ_bit"]
     if pj:
@@ -82,7 +85,7 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d
         s = Scenario(model=model, chip=chip, mem_id=mem, layout=Layout(tp=tp), link=Link(GBps=link),
                      serving=Serving(phase=ph, batch=64 if ph == "decode" else 1, prompt=2048, ctx=4096))
         kw = dict(noc_link_Bpc=L, noc_routing="xy") if L else {}
-        o = energy_design_search(s, table(), budget(), mac_scales=macs, sram_scales=(1.0,), sides=(128,),
+        o = energy_design_search(s, table(), budget(mc), mac_scales=macs, sram_scales=(1.0,), sides=(128,),
                                  dies=(1, 2, 4), d2d_stds=("ucie-a-48", "ucie-s-32", "bow-256"), die_split=split,
                                  d0_per_cm2=d0, pkg_mm2="cowos-l", mono_clusters=not flat,
                                  mem_edges_shoreline=not flat, include_unbuildable=include_unbuildable,
@@ -92,7 +95,7 @@ def run(model, ph, split="tp", L=0, pj=None, flat=False, out=print, cost=None, d
         std["pJ_bit"] = old
     out(f"== {model} {ph} {split} L={L} pj={pj} {'(0.308 flat)' if flat else '(0.309)'} io_edges={io_edges} "
         f"mem={mem} tp={tp} link={link:g}" + (f" hbm_base={hbm_base}" if hbm_base != "std" else "")
-        + (f" hbm_pkg={hbm_pkg}" if hbm_pkg != "si" else ""))
+        + (f" hbm_pkg={hbm_pkg}" if hbm_pkg != "si" else "") + (f" mc={mc}" if mc else ""))
     for x in o["rows"]:
         kind = x.get("d2d_std") or ("mono" if x.get("clusters", 1) == 1 else f"mono×{x['clusters']}簇")
         out(f'  MAC×{x["mac_x"]:g} N={x["dies"]} {kind:10s} thr={x.get("thr", 0):8.0f} '
@@ -209,15 +212,16 @@ HBM4_MEM = "hbm4_8s_12h24g_10000"       # 0.324: 8 × HBM4 12-high 24 Gb at 10 G
 HBM_BASE_CASES = (0, 1, 4)              # qwen3-8b decode / prefill (tp), qwen3-30b-a3b decode (ep)
 
 
-def hbm_base_study(out=print, cost="n5_cowos_l", tco="accel_2026", cooling="air_oam", mem=HBM4_MEM) -> list:
+def hbm_base_study(out=print, cost="n5_cowos_l", tco="accel_2026", cooling="air_oam", mem=HBM4_MEM, mc=None) -> list:
     """0.324: the examples with HBM4 memory, standard vs custom base die — per design point the die area, shoreline /
-    thermal buildability, throughput, J/unit, $/good package and $/Mtok (MODEL §269.3)."""
+    thermal buildability, throughput, J/unit, $/good package and $/Mtok (MODEL §269.3).  0.327 ``mc``: an HBM
+    controller-area preset (budget.MC_PRESETS) — std hosts carry it, custom hosts move it to the base die."""
     res = []
     for ci in HBM_BASE_CASES:
         model, ph, split, L, pj = CASES[ci]
         o = {hb: run(model, ph, split, L, pj, out=lambda *_: None, cost=cost, mem=mem, cooling=cooling, tco=tco,
-                     include_unbuildable=True, hbm_base=hb) for hb in ("std", "custom")}
-        out(f"== {model} {ph} {split} mem={mem} cooling={cooling} tco={tco}: std → custom")
+                     include_unbuildable=True, hbm_base=hb, mc=mc) for hb in ("std", "custom")}
+        out(f"== {model} {ph} {split} mem={mem} cooling={cooling} tco={tco}" + (f" mc={mc}" if mc else "") + ": std → custom")
         for a, b in zip(o["std"]["rows"], o["custom"]["rows"]):
             kind = a.get("d2d_std") or ("mono" if a.get("clusters", 1) == 1 else f"mono×{a['clusters']}簇")
             ta, tb = (a.get("tco") or {}).get("usd_per_Munit"), (b.get("tco") or {}).get("usd_per_Munit")
@@ -297,6 +301,8 @@ def main(argv=None) -> int:
                     help="0.324: HBM4 / 4E base die (custom = controller on a logic base die + narrow D2D)")
     ap.add_argument("--hbm-base-study", action="store_true",
                     help="0.324: cases 0 / 1 / 4 on 8 × HBM4, standard vs custom base die (cost, TCO, air_oam)")
+    ap.add_argument("--mc-preset", choices=tuple(MC_PRESETS), default=None,
+                    help="0.327: HBM memory-controller area per stack (Samsung HC 2026, budget.MC_PRESETS)")
     ap.add_argument("--hbm-pkg", choices=("si", "sphbm4"), default="si",
                     help="0.326: HBM package (sphbm4 = JEDEC SPHBM4 stacks on the organic substrate; HBM4 only)")
     ap.add_argument("--hbm-pkg-study", action="store_true",
@@ -307,7 +313,8 @@ def main(argv=None) -> int:
     if a.cost:
         a.cost = {"preset": a.cost, "asm_model": a.asm}
     if a.hbm_base_study:
-        hbm_base_study(cost=a.cost or {"preset": "n5_cowos_l", "asm_model": a.asm}, cooling=a.cooling or "air_oam")
+        hbm_base_study(cost=a.cost or {"preset": "n5_cowos_l", "asm_model": a.asm}, cooling=a.cooling or "air_oam",
+                       mc=a.mc_preset)
         return 0
     if a.hbm_pkg_study:
         hbm_pkg_study(cost=a.cost or {"preset": "n5_cowos_l", "asm_model": a.asm}, cooling=a.cooling or "air_oam")
@@ -322,7 +329,7 @@ def main(argv=None) -> int:
     for i in (a.case or range(len(CASES))):
         run(*CASES[i], flat=a.flat, cost=a.cost, d0=a.d0, io_edges=a.io_edges, mem=a.mem, tp=a.tp, link=a.link,
             include_unbuildable=a.include_unbuildable, lane=a.lane, shore_strict=a.strict, cooling=a.cooling, power_scope=a.power_scope,
-            hbm_base=a.hbm_base, hbm_pkg=a.hbm_pkg)
+            hbm_base=a.hbm_base, hbm_pkg=a.hbm_pkg, mc=a.mc_preset)
     return 0
 
 

@@ -399,7 +399,8 @@
       <label title="卡间 SerDes 每 GB/s（单向）的 PHY 面积，mm²（0.149）">mm² / C2C GB/s<input type="number" id="b-mm2_per_GBps_c2c" min="0" step="0.001"></label>
       <label title="0.213: uncore（控制 / NoC / 布线 / 空白）占最终晶粒的比例；填了固定面积 mm2_fixed 时不另计">uncore 占比<input type="number" id="b-uncore_frac" min="0" max="0.95" step="0.01"></label>
       <label title="0.213: 主机接口（PCIe x16 类，含 PHY）面积，mm²">主机 IO mm²<input type="number" id="b-mm2_host_io" min="0" step="0.1"></label>
-      <label title="0.213: 每个 DRAM 单元（HBM 堆栈 / 封装）的内存控制器面积，mm²；无公开数据，无预设">内存控制器 mm² / 单元<input type="number" id="b-mm2_per_unit_mc" min="0" step="0.1"></label>
+      <label title="0.213: 每个 DRAM 单元（HBM 堆栈 / 封装）的内存控制器面积，mm²；通用项，无预设；填了则优先于 HBM 项">内存控制器 mm² / 单元<input type="number" id="b-mm2_per_unit_mc" min="0" step="0.1"></label>
+      <label title="0.327: 每个 HBM 堆栈的内存控制器面积，mm²（只用于 HBM；定制基础晶粒时移出主晶粒）；预设见下">HBM 控制器 mm² / 栈<input type="number" id="b-mm2_per_hbm_mc" min="0" step="0.1"></label>
     </div>
     <div class="row"><label title="0.149：按工艺节点填入有出处的密度（来源见悬停；仍可逐项改写）">密度预设<select id="b-preset"><option value="">（不用预设）</option></select></label>
       <span class="small muted" id="b-preset-note"></span></div>
@@ -407,6 +408,8 @@
       <span class="small muted" id="b-elec-preset-note"></span></div>
     <div class="row"><label title="0.154：有出处的 PUE（来源见悬停；卡价 / 摊销无公开口径，需自填）">PUE 预设<select id="b-tco-preset"><option value="">（不用预设）</option></select></label>
       <span class="small muted" id="b-tco-preset-note"></span></div>
+    <div class="row"><label title="0.327：Samsung Hot Chips 2026「内存控制器约占 SoC 面积 5–10 %」「二手」× 其参考 xPU（26 × 33 mm、6 栈）「推导」；只填 HBM 控制器面积，不静默打开">HBM 控制器预设<select id="b-mc-preset"><option value="">（不用预设）</option></select></label>
+      <span class="small muted" id="b-mc-preset-note"></span></div>
   </details>
 
   <details class="grp sec" id="sec-energy">
