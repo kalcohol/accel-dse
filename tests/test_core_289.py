@@ -2,9 +2,7 @@
 BF16), routing of heterogeneous MoE layers, and the pipe flow-shop state as a lazy view (protenix on a 4 GiB SRAM +
 4 GiB SLC pin chip: > 700 s → seconds, bit-identical)."""
 import math
-import os
 import random
-import time
 
 from accel_dse import api
 from accel_dse.core import overlap as OV
@@ -298,20 +296,20 @@ def test_pin_chip_structure_runtime_guard():
             work["cmp"] += a[2][2] - a[2][1]
         return s0(a, b, scale)
 
-    par = int(os.environ.get("ACCEL_TEST_JOBS", "1") or 1) > 1
+    from tests.workmeter import guard
     OV._Sim.feed, OV._same = feed, same
     OV._PIPE_MEMO.clear()
     try:
         for mid, (nf, nc, ns) in _PIN_WORK.items():
             for k in work:
                 work[k] = 0
-            c0 = time.process_time()
-            r = evaluate(api.scenario_from_body({"scenario": {"model": mid, "chip": PIN,
-                                                              "serving": {"phase": "decode", "batch": 1}}}))
-            cpu = time.process_time() - c0
+            # 0.332: the 20 s CPU bound (60 s under -j) is now deterministic work at the 20 s quiet-box equivalent
+            # (tests/workmeter.py); 2.4 s alone (protenix); > 700 s at 0.288
+            with guard(20, f"289 {mid}"):
+                r = evaluate(api.scenario_from_body({"scenario": {"model": mid, "chip": PIN,
+                                                                  "serving": {"phase": "decode", "batch": 1}}}))
             assert r.step > 0
             assert work["feed"] <= 1.5 * nf and work["cmp"] <= 1.5 * nc + 1000 and work["same"] <= 1.5 * ns, (mid, work)
-            assert cpu <= (60.0 if par else 20.0), (mid, cpu)      # 2.4 s alone (protenix); > 700 s at 0.288
     finally:
         OV._Sim.feed, OV._same = f0, s0
     st = OV._Sim(1 << 30).state()

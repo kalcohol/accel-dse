@@ -15,22 +15,22 @@ net = {}
 
 
 def idle(p, quiet=2.0, timeout=600):
-    t0 = time.time(); last = None; since = time.time()
-    while time.time() - t0 < timeout:
+    t0 = time.monotonic(); last = None; since = time.monotonic()
+    while time.monotonic() - t0 < timeout:
         st = p.evaluate("[__accelStatic.busy(), __accelStatic.log.length, (document.getElementById('status')||{}).textContent]")
         if st[0] == 0 and st[2] != '计算中…':
             if last != st[1]:
-                last, since = st[1], time.time()
-            elif time.time() - since >= quiet:
-                return time.time() - t0 - quiet
+                last, since = st[1], time.monotonic()
+            elif time.monotonic() - since >= quiet:
+                return time.monotonic() - t0 - quiet
         else:
-            last, since = None, time.time()
+            last, since = None, time.monotonic()
         time.sleep(0.2)
     raise TimeoutError("not idle")
 
 
 def phase(p, name, action, shot=None, timeout=600):
-    n0 = p.evaluate("__accelStatic.log.length"); t0 = time.time()
+    n0 = p.evaluate("__accelStatic.log.length"); t0 = time.monotonic()
     action()
     wall = idle(p, timeout=timeout)
     log = p.evaluate(f"__accelStatic.log.slice({n0}).map(e => ({{path: e.path, ms: e.ms, status: e.status, dropped: e.dropped, aborted: e.aborted}}))")
@@ -77,12 +77,12 @@ with sync_playwright() as pw:
             pass
     p.on("requestfinished", lambda rq: on_resp(rq.response()) if rq.response() else None)
 
-    t0 = time.time()
+    t0 = time.monotonic()
     p.goto(STATIC)
     p.wait_for_function("window.__accelStatic && __accelStatic.loadMs !== null", timeout=180000)
-    t_ready = time.time() - t0
+    t_ready = time.monotonic() - t0
     p.wait_for_selector("#kpis .kpi", timeout=180000)
-    t_kpi = time.time() - t0
+    t_kpi = time.monotonic() - t0
     idle(p)
     res["cold"] = {"ready_s": round(t_ready, 2), "first_kpi_s": round(t_kpi, 2),
                    "detail": p.evaluate("__accelStatic.detail"), "shim_loadMs": p.evaluate("__accelStatic.loadMs")}
@@ -137,13 +137,13 @@ for e in log:
         continue
     req = urllib.request.Request(SERVER + e["path"], data=e["body"].encode() if e["method"] == "POST" else None,
                                  method=e["method"], headers={"Content-Type": "application/json"})
-    t = time.time()
+    t = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=900) as r:
             st, txt = r.status, r.read().decode()
     except urllib.error.HTTPError as he:
         st, txt = he.code, he.read().decode()
-    srv_times.append((e["path"], round((time.time() - t) * 1e3), round(e["ms"])))
+    srv_times.append((e["path"], round((time.monotonic() - t) * 1e3), round(e["ms"])))
     tot["calls"] += 1
     tot["byte_identical"] += (txt == e["text"] and st == e["status"])
     a, bb = json.loads(e["text"]), json.loads(txt)

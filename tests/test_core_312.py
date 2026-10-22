@@ -152,4 +152,5 @@ def test_ui_and_238_cpu_time():
         assert k in html, k
     assert "renderShore" in js and "include_unbuildable" in js
     t = open(os.path.join(ROOT, "tests", "test_core_238.py"), encoding="utf-8").read()
-    assert "process_time" in t and "60" in t
+    # 0.332: the 60 s bound is now deterministic work (tests/workmeter.py), was process_time (0.312)
+    assert 'guard(60, f"238 {name}")' in t and "process_time" not in t

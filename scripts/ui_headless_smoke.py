@@ -44,7 +44,7 @@ class _Steps(list):
     def append(self, s) -> None:
         super().append(s)
         self.last = str(s[0])
-        print(f"STEP [{time.time() - self.t0:6.1f}s]", *s, flush=True)
+        print(f"STEP [{time.monotonic() - self.t0:6.1f}s]", *s, flush=True)
 
 
 def _tail(path: str, n: int = 6) -> str:
@@ -83,7 +83,7 @@ def main(chrome="/usr/bin/google-chrome", budget=1800.0) -> int:
     logf = open(log, "w")                                # 0.311: never an undrained pipe
     srv = subprocess.Popen([sys.executable, "-m", "accel_dse", "serve", "--host", "127.0.0.1", "--port", str(port)],
                            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=logf)
-    errs, steps = [], _Steps(time.time())
+    errs, steps = [], _Steps(time.monotonic())
     done = threading.Event()
 
     def watchdog():                                      # 0.311: global budget — a stuck run ends with its context
@@ -117,20 +117,20 @@ def main(chrome="/usr/bin/google-chrome", budget=1800.0) -> int:
 
             def wait_js(expr, timeout=600000):
                 """0.311: p.wait_for_function with a clear timeout (step, waited-for status, server state)."""
-                t0 = time.time()
+                t0 = time.monotonic()
                 try:
                     return p.wait_for_function(expr, timeout=timeout)
                 except PWTimeout:
-                    raise StepTimeout(f"no completion {time.time() - t0:.0f}s after step '{steps.last}' "
+                    raise StepTimeout(f"no completion {time.monotonic() - t0:.0f}s after step '{steps.last}' "
                                       f"(limit {timeout / 1000:.0f}s){_ctx(expr)}") from None
 
             def wait_sel(sel, timeout=60000):
                 """0.311: p.wait_for_selector with a clear timeout."""
-                t0 = time.time()
+                t0 = time.monotonic()
                 try:
                     return p.wait_for_selector(sel, timeout=timeout)
                 except PWTimeout:
-                    raise StepTimeout(f"{sel} absent {time.time() - t0:.0f}s after step '{steps.last}' "
+                    raise StepTimeout(f"{sel} absent {time.monotonic() - t0:.0f}s after step '{steps.last}' "
                                       f"(limit {timeout / 1000:.0f}s)") from None
             p.on("pageerror", lambda e: errs.append(f"pageerror: {e}"))
             p.on("console", lambda m: m.type == "error" and errs.append(f"console: {m.text}"))
@@ -141,12 +141,12 @@ def main(chrome="/usr/bin/google-chrome", budget=1800.0) -> int:
 
             def settle(label, timeout=60.0):
                 """KPI cards present, nothing pending, status not an error."""
-                t0 = time.time()
-                while time.time() - t0 < timeout:
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < timeout:
                     st = p.inner_text("#status") if p.is_visible("#status") else ""
                     n = len(p.query_selector_all("#kpis .kpi"))
                     if n and "计算中" not in st:
-                        steps.append((label, n, round(time.time() - t0, 1)))
+                        steps.append((label, n, round(time.monotonic() - t0, 1)))
                         if "错误" in st:
                             errs.append(f"{label}: status {st[:200]}")
                         return

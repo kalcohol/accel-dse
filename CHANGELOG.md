@@ -6,6 +6,40 @@
 
 
 
+## [0.332.0]
+
+### Load-robust runtime guards (test infrastructure; no model default changed)
+- **New `tests/workmeter.py`**: a deterministic work meter (stdlib `sys.monitoring`). Work = Python function starts in `accel_dse` code + calls issued from `accel_dse` code. Code outside the package is switched off per location (`DISABLE`).
+  - The same request gives the same count whatever the load. Checks: disagg vllm_v0 148,629,143 calls in two runs; 210 under 8 busy-loop hogs on 8 cores gave 15/15 labels identical to the quiet run.
+  - Overhead ≈ 1.6–1.8× CPU inside guarded blocks (start+call; start-only 1.2×, start+jump 2.3×).
+- **`guard(bound_s, label)`** asserts calls ≤ `budget(bound_s, label)` = bound × the label's own quiet-box rate (calls / CPU s), i.e. quiet CPU ≤ bound: the old threshold.
+  - Rates were measured 2026-10-22 by the new `scripts/workmeter_calibrate.py` and rounded down to 2 significant figures, so budgets are never looser.
+  - `RATE_FLOOR` = 2.3 M/s (the lowest) applies to blocks under 0.05 s CPU or unlisted labels.
+  - One global rate does not work: rates span 2.3–18.8 M/s.
+- **Converted guards** (old → new):
+  - 099: freeze-aware wall < 20 s → work ≤ 20 s-equivalent.
+  - 209: freeze-aware wall < 2 s → work ≤ 2 s-equivalent.
+  - 210: CPU < 20 / 80 s plus contention-scaled freeze-aware wall (0.304 / 0.316) → work ≤ 20 / 80 s-equivalent.
+  - 237: CPU < 45 / 90 s, ×6 under -j → work ≤ 45 / 90 s-equivalent at any -j. This is stricter in parallel runs. The kernel work counts (1.5×) are kept.
+  - 238: CPU < 60 s → work ≤ 60 s-equivalent.
+  - 289: CPU < 20 s (60 s under -j) → work ≤ 20 s-equivalent at any -j. Kernel counts are kept.
+  - A sleeping or blocking hang is caught by the runner's per-file timeout (1800 s).
+- **088**: the burst / stalled-client checks are now server-side and deterministic. A `Handler` subclass records every 408 with its socket timeout; the burst fires none, and the stalled client gets exactly `[(408, 2)]`. The wall inference `dt < 20 + stall` was removed (a gross `dt < old_t + stall` bound stays), and the hung-server bound uses the freeze clock.
+- **304**: the 210 guard check now uses deterministic work (the same burn counts equal after warm-up; an overrun trips; a cheap call passes).
+- **311**: `_Steps(time.monotonic())`.
+- **312** meta check: 238 must use `guard(60, …)` and no `process_time` (was: `process_time` present).
+- New `tests/test_core_332.py` (8 tests).
+
+### Decision timers monotonic
+- `scripts/static_parity_check.py`, `ui_headless_smoke.py` and `ui_static_smoke.py` use `time.monotonic()` instead of `time.time()` for their timeout decisions; a wall-clock step was seen in 0.304.
+- `core/validation.py` elapsed_s uses `time.monotonic()`.
+- Print-only durations (fetch_hf_release, fuzz_sizing, ui_smoke, v4_serving) are left as they are.
+
+### Audit (no change needed)
+- No other wall/CPU mixing in the package: freeze_clock was fixed in 0.331. The Pyodide worker `ms` and shim `wallMs` are both `performance.now()` and labelled separately; the app.js progress tracker is `performance.now()`; the api pool has no timing.
+- Gross subprocess / socket timeouts (087, 090, 129, 130, 184, 309, 310) have ≥ 10× slack and stay.
+
+
 ## [0.331.0]
 
 ### One repo, several release files; PixText-Teacher

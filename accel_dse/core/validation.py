@@ -196,10 +196,10 @@ def _grid_point(args):
     slo_n = args[7] if len(args) > 7 else max(600, n_req // 2)
     import time
     from .pdsim import compare
-    t0 = time.time()
+    t0 = time.monotonic()                   # 0.332: monotonic (a wall-clock step no longer shows in elapsed_s)
     r = compare(v4_scenario(load, cv, prefix, family), n_req=n_req, warmup=n_req // 4, seeds=seeds, slo=slo,
                 slo_n=slo_n, slo_tol=0.01)
-    r.update(load=load, cv=cv, prefix=prefix, family=family, n_req=n_req, elapsed_s=round(time.time() - t0, 1))
+    r.update(load=load, cv=cv, prefix=prefix, family=family, n_req=n_req, elapsed_s=round(time.monotonic() - t0, 1))
     return r
 
 

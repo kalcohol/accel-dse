@@ -76,11 +76,11 @@ def main(chrome="/usr/bin/google-chrome") -> int:
                 p = b.new_page(viewport={"width": 1600, "height": 1000})
                 p.on("pageerror", lambda e: errs.append(f"pageerror: {e}"))
                 p.on("console", lambda m: m.type == "error" and errs.append(f"console: {m.text}"))
-                t0 = time.time()
+                t0 = time.monotonic()
                 p.goto(url)
                 p.wait_for_function("window.__accelStatic && __accelStatic.loadMs !== null", timeout=300000)
                 p.wait_for_selector("#kpis .kpi", timeout=300000)
-                steps.append(("cold load", round(time.time() - t0, 1)))
+                steps.append(("cold load", round(time.monotonic() - t0, 1)))
 
                 def wait_text(sel, pred, timeout=900000):
                     p.wait_for_function(f"(() => {{ const t = (document.querySelector({sel!r}) || {{}}).textContent || '';"

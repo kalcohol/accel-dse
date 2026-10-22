@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import socket
+import sys
 import threading
 import time
 import urllib.request
@@ -145,7 +147,14 @@ def _post_progress(port: int, body: bytes, done: list, quiet_s: float = 60.0, po
 def test_server_burst_and_stalled_client():
     from accel_dse import serve
     assert serve.Server.request_queue_size >= 128 and serve.Server.daemon_threads and serve.Handler.timeout > 0
-    srv = serve.Server(("127.0.0.1", 0), serve.Handler)
+    fired = []                          # 0.332: (status, socket timeout in effect) for every 408 the server sends
+
+    class H(serve.Handler):
+        def _send(self, status, payload, ctype):
+            if status == 408:
+                fired.append((status, self.connection.gettimeout()))
+            return super()._send(status, payload, ctype)
+    srv = serve.Server(("127.0.0.1", 0), H)
     old_t = serve.Handler.timeout
     th = threading.Thread(target=srv.serve_forever, daemon=True)
     th.start()
@@ -167,6 +176,7 @@ def test_server_burst_and_stalled_client():
         [t.start() for t in ts]
         [t.join() for t in ts]
         assert res.count(200) == 96, {x: res.count(x) for x in set(res)}
+        assert not fired                # no healthy burst request was 408'd
         serve.Handler.timeout = 2
         s = socket.create_connection(("127.0.0.1", port))
         s.sendall(b"POST /api/eval HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n{")
@@ -187,10 +197,13 @@ def test_server_burst_and_stalled_client():
         s.close()
         assert got.startswith(b"HTTP/1.0 408"), (got[:80], dt)
         ct.join()
-        # unloaded: ctl ≈ 2 s → bound 20 s as before (proves the 2 s timeout fired, not the 30 s default); under a
-        # whole-machine stall (suite -j 8) the bound moves by the stall the control timer saw, not by a fixed slack
+        # 0.332: deterministic proof that the 2 s read timeout fired (not the 30 s default / a held thread): the server
+        # recorded the socket timeout in effect when it sent the 408.  ≤ 0.331 inferred it from wall time
+        # (dt < 20 + stall, stall from a control timer), which a starved handler thread under -j 8 could still exceed;
+        # the wall bound stays only as the gross "not the 30 s default" check, stall-adjusted as before
+        assert fired == [(408, 2)], fired
         stall = max(0.0, ctl[0] - serve.Handler.timeout)
-        assert dt < 20 + stall and dt < old_t + stall, (got[:40], dt, ctl[0])
+        assert dt < old_t + stall, (got[:40], dt, ctl[0])
     finally:
         serve.Handler.timeout = old_t
         srv.shutdown()
@@ -207,12 +220,17 @@ def test_burst_client_still_fails_on_a_hung_server():
     held = []
     th = threading.Thread(target=lambda: held.append(lst.accept()), daemon=True)
     th.start()
-    t0 = time.monotonic()
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+    from freeze_clock import clock      # 0.332: freeze-aware (a host freeze is not the client waiting)
+    fc = clock()
+    t0 = fc.now()
     try:
         _post_progress(port, b"{}", [], quiet_s=1.0, poll_s=0.25)
         raise AssertionError("hung server accepted")
     except TimeoutError:
-        assert time.monotonic() - t0 < 30
+        # the client gives up after quiet_s / poll_s = 4 empty polls (counted, not timed); the bound is a gross
+        # "did not wait for the 60 s default" check
+        assert fc.now() - t0 < 30
     th.join(5)
     for c, _ in held:
         c.close()

@@ -1,9 +1,7 @@
 """0.209: recurrent-state on-chip residency (dedicated state buffer Chip.state_sram_mib, per-stream miss split,
 partial residency knee probe) and the 'state SRAM' what-if lever; adversarial edge inputs for 0.203–0.208."""
 import math
-import sys
 from dataclasses import replace
-from pathlib import Path
 
 from accel_dse import api
 
@@ -210,17 +208,14 @@ def _inv(model, ssram):
 
 def test_open_window_long_run_fast_and_exact():
     """0.209 overlap fix: a long run inside an open shared-expert window is skipped, not replayed (was minutes)."""
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    from freeze_clock import clock                       # 0.316: freeze-aware (host/VM freeze time not charged)
+    from tests.workmeter import guard                    # 0.332: deterministic work (was freeze-aware wall, 0.316)
     from accel_dse.core import overlap as o
     s1, s2 = o._Sim(1e8, True), o._Sim(1e8, True)
     tile = (1048576.0, 5.5e-06, 6.8e-07)
     for s in (s1, s2):
         s.feed([("open", 0, 0.0)])
-    fc = clock()
-    t = fc.now()
-    s1.feed_runs([(tile, 200000)], True)
-    assert fc.now() - t < 2, (fc.now() - t, fc.stalls())
+    with guard(2, "209 feed_runs 200000 in an open window"):
+        s1.feed_runs([(tile, 200000)], True)
     s2.feed([tile]); s2.feed([tile] * 199999)
     for s in (s1, s2):
         s.feed([("close", 0, 0.0)])

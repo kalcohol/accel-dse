@@ -9802,3 +9802,43 @@ Samsung Hot Chips 2026 (S. Han) slide 11 「来源」 (ServeTheHome slide image)
 - Guidance interval on the packed / PP > 1 fallback path.
 - PCIe / CXL controller area; HBM controller at N7 / N28; controller power.
 - OrcaCyber Nano 1.0 (0.331 retry: sha 1af1635, drafter-only GGUF metadata, config 401).
+
+
+## §277 Load-robust runtime guards; decision timers; NPU pending audit (0.332)
+
+### §277.1 Work meter (test infrastructure)
+- The quantity a runtime guard bounds is work per request: exploding loops, the 22-min regressions. Wall and CPU seconds are proxies that inflate under load. rt278b measured 9.5× the CPU seconds for identical work at -j 8 「来源」 (AGENTS §229).
+- `tests/workmeter.py` counts PY_START + CALL events in `accel_dse` code (sys.monitoring, Python 3.13.5). The count is exactly deterministic for a code path from a given cache state 「来源」 (measured: repeat runs equal; 8 hogs on 8 cores, 15/15 labels equal).
+- Budget per guard = bound_s × r_label, where r_label = calls / unmetered CPU s on the quiet box (2026-10-22, single process), rounded down to 2 significant figures 「近似」. So calls ≤ budget ⇔ quiet CPU ≤ bound: the pre-0.332 threshold, never looser.
+
+| guard | quiet CPU s / bound | rate M/s |
+|---|---|---|
+| 237 report vllm | 57.70 / 90 | 7.9 |
+| 237 phase-law vllm | 29.39 / 45 | 8.9 |
+| 238 vl6000 / vl4096 / mx4096 | 16.15 / 16.06 / 10.61 of 60 | 8.5 / 10 / 8.7 |
+| 210 fuzz 13 sensitivity / 6 fit | 7.13 / 5.86 of 80 | 4.8 / 6.8 |
+| 289 protenix / boltz-1 | 2.25 / 0.91 of 20 | 2.3 / 3.6 |
+| 099 wan2.1-14b | 0.094 / 20 | 11 |
+
+- Rates span 2.3–18.8 M/s (call-heavy vs NumPy-free arithmetic paths), so no single rate is equivalent. Blocks under 0.05 s CPU use the floor of 2.3 M/s 「假设」: their rate is timer noise, and the floor is the strict side.
+- Meter overhead is 1.6–1.8× CPU inside guarded blocks. Budgets are in calls, so the overhead does not consume headroom.
+
+### §277.2 Timers
+- Decision timeouts in scripts and `validation.elapsed_s` use `time.monotonic()`; `time.time()` can step.
+- Audit: no other wall/CPU mixing in the package (freeze_clock fixed in §276.7). Pyodide worker `ms` and shim `wallMs` are both `performance.now()` and labelled separately.
+
+### §277.3 NPU item (2): skipped — no public numbers
+- PCIe / CXL controller area: vendor IP pages give no mm².
+- HBM controller at N7 / N28 and controller power: nothing public found in 2026.
+- SPHBM4 PHY: JESD330-4 describes the interface only; already a package option (0.326).
+- Near-memory compute: HC 2026 talks give no TOPS/W.
+- Candidate for decision, not applied: arXiv 2610.14244 (Olgun et al., MICRO 2026) measures H200 HBM3E memory power at 248 W for 4.52 TB/s → ≈ 6.86 pJ/bit all-in 「推导」, vs `pJ_bit_dram_hbm` 3.44.
+  - Its HBM4 projection is 6.24–6.73 pJ/bit vs the model's 2.46.
+  - The paper's all-in figure includes idle / refresh (Fig. 22 split is figure-only). Adopting it changes a core energy default ~2×, so it needs the user's decision and a data-vs-I/O split.
+
+### §277.4 Not modelled / pending (carried)
+- PixText routing mask.
+- PCIe / CXL controller area; HBM controller at N7 / N28; controller power; SPHBM4 PHY area.
+- Near-memory compute.
+- HBM all-in energy (§277.3).
+- OrcaCyber Nano 1.0 (0.332 retry: sha 1af1635 unchanged, drafter GGUF only, config 401).

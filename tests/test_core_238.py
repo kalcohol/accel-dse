@@ -4,11 +4,11 @@ sglang_mixed) where the running decodes leave C(k) = budget − k — per batch 
 n4000×10; runtime guard."""
 import math
 import random
-import time
 
 from accel_dse.core.disagg import disagg_report
 from accel_dse.core.queueing import mg1_corr_mix_sum_quantile, mg1_corr_sum_quantile, mg1_mix_sum_quantile
 from test_core_234 import _pd
+from tests.workmeter import guard
 
 
 def test_mix_reduces_to_single_and_to_independent():
@@ -59,13 +59,10 @@ DES = {"vl4096": (dict(prompt=4096, cap=48.0, load=0.85, chunk_profile="vllm"), 
 
 def test_fused_off_multiple_p99_parity_and_runtime():
     for name, (kw, p90, p99) in DES.items():
-        # 0.312: the runtime guard is the report's own CPU time (time.process_time, every thread of this process, as
-        # test_core_210) — same 60 s bound, which full-suite load contention cannot trip (0.311: 96 s wall under load,
-        # 57 s for the whole module alone)
-        t0 = time.process_time()
-        c = disagg_report(_pd(**kw))["queue"]["modes"]["coloc_chunked"]["ttft_ms"]
-        dc = time.process_time() - t0
-        assert dc < 60, ("cpu", name, dc)
+        # 0.312: the runtime guard was the report's own CPU time (same 60 s bound); 0.332: deterministic work (calls in
+        # accel_dse code, tests/workmeter.py) at the work 60 quiet-box CPU seconds buy — CPU seconds inflate under -j 8
+        with guard(60, f"238 {name}"):
+            c = disagg_report(_pd(**kw))["queue"]["modes"]["coloc_chunked"]["ttft_ms"]
         assert abs(c["p90"] - p90) / p90 < 0.03, (name, c["p90"], p90)
         assert abs(c["p99"] - p99) / p99 < 0.03, (name, c["p99"], p99)
 

@@ -140,19 +140,26 @@ def test_api_and_ui_routing():
 
 
 # ---------------------------------------------------------------- 210 guard
-def test_210_guard_uses_cpu_time():
-    import time
-
-    from tests.test_core_210 import _contention, _timed
-    assert _contention() >= 1.0
+def test_210_guard_uses_deterministic_work():
+    # 0.332: the 210 guard counts work (calls in accel_dse code, tests/workmeter.py) instead of CPU / wall time
+    # (≤ 0.331: CPU-time bound + contention-scaled wall, 0.304); an overrun still trips it, a cheap call passes, and the
+    # count is identical on a rerun (load-independent)
+    from accel_dse.core.scenario import Scenario
+    from tests.test_core_210 import _timed
+    from tests.workmeter import budget, meter
 
     def burn(_):
-        t = time.process_time()
-        while time.process_time() - t < 0.3:
-            pass
+        for _ in range(50):
+            Scenario().hash()
+    burn(None)  # warm caches: the count is deterministic for the same code path from the same state
+    with meter() as m1:
+        burn(None)
+    with meter() as m2:
+        burn(None)
+    assert m1.calls == m2.calls > budget(1e-5)
     try:
-        _timed(burn, {}, 0.2)
-        raise AssertionError("cpu over the bound passed")
+        _timed(burn, {}, 1e-5)
+        raise AssertionError("work over the bound passed")
     except AssertionError as e:
-        assert "cpu" in str(e)
+        assert "work" in str(e)
     assert _timed(lambda b: 7, {}, 5.0) == 7

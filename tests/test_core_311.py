@@ -101,7 +101,7 @@ def _smoke():
 
 def test_smoke_steps_and_guard():
     m = _smoke()
-    st = m._Steps(time.time())
+    st = m._Steps(time.monotonic())      # 0.332: the smoke's step clock is monotonic
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         st.append(("panel", "ok"))

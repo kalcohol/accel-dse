@@ -2,10 +2,7 @@
 pipe-mode per-op KV / state miss split."""
 import math
 import random
-import sys
-import time
 from dataclasses import replace
-from pathlib import Path
 
 from accel_dse import api
 from accel_dse.core import memplan
@@ -13,42 +10,21 @@ from accel_dse.core.evaluate import _kv_state_miss, evaluate
 from accel_dse.core.hardware import CHIPS, DISPATCH_MODES, default_mem
 from accel_dse.core.scenario import Scenario
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from freeze_clock import clock  # noqa: E402  (0.316 freeze-aware wall guard)
+from tests.workmeter import guard  # 0.332 deterministic work guard
 
 RWKV, LUX, NEXT = "rwkv7-g1k-7.2b", "startlux-decision-v1-35b-a3b", "qwen3-next-80b-a3b"
 WALL_KEYS = {"compute", "dram", "collective_bw", "collective_lat", "dispatch", "fixed_overhead"}
 GUARD_S = 20.0          # per request; 0.209 found a 127 s prefill (overlap open-window replay)
 
 
-def _contention() -> float:
-    """0.304: wall ÷ CPU of a fixed pure-Python calibration loop (≈ 1 on an idle box, > 1 when the full suite's other
-    workers share the CPUs)."""
-    w, c = time.perf_counter(), time.process_time()
-    x = 0
-    for i in range(300_000):
-        x += i * i % 7
-    dc = max(time.process_time() - c, 1e-3)
-    return max(1.0, (time.perf_counter() - w) / dc)
-
-
-def _timed(fn, body, bound: float):
-    """0.304: run one in-process request (the API's process pool is only enabled by the HTTP server) under a guard
-    that full-suite load contention cannot trip.  The request's own CPU time (time.process_time, every thread of this
-    process) must stay under ``bound`` — the same threshold as before, on the measure a compute regression moves;
-    its wall time (monotonic — 0.304 saw the wall clock step by minutes mid-suite; 0.316 freeze-aware, scripts/freeze_clock.py) must stay under ``bound`` × the box's contention factor measured around it (calibration loop before
-    and after; 2× slack for contention varying during the request), which still catches a blocking / sleeping hang."""
-    k0 = _contention()
-    fc = clock()                                  # 0.316: wall minus time the process did not execute (host freeze)
-    w, c = fc.now(), time.process_time()
-    try:
-        r = fn(body)
-    finally:
-        dw, dc = fc.now() - w, time.process_time() - c
-    k = max(k0, _contention())
-    assert dc < bound, ("cpu", body, dc)
-    assert dw < bound or dw < bound * 2.0 * k, ("wall", body, dw, k, fc.stalls())
-    return r
+def _timed(fn, body, bound: float, label: str = "210"):
+    """Run one in-process request under a runtime guard that load cannot trip (0.332, tests/workmeter.py): the
+    request's deterministic work (calls in accel_dse code) must stay within what ``bound`` quiet-box CPU seconds buy —
+    the same threshold as 0.304's CPU-time bound, on a measure that does not inflate under -j 8 (CPU seconds did, 9.5×
+    at rt278b).  ≤ 0.331 also bounded freeze-aware wall × a contention factor (0.304 / 0.316); a sleeping / blocking
+    hang never returns, which the runner's per-file timeout reports (no in-process I/O on this path)."""
+    with guard(bound, label):
+        return fn(body)
 
 
 def _nan(x):
@@ -120,7 +96,7 @@ def test_cross_route_fuzz_with_timing_guard():
         body = _body(rnd)
         name, fn = routes[i % len(routes)]
         try:
-            r = _timed(fn, body, GUARD_S * (4 if name in ("sensitivity", "fit", "sweep") else 1))
+            r = _timed(fn, body, GUARD_S * (4 if name in ("sensitivity", "fit", "sweep") else 1), f"210 fuzz {i} {name}")
         except api.ApiError:
             continue
         assert not _nan(r), (name, body)
@@ -133,7 +109,7 @@ def test_huge_batch_timing_guard():
         body = {"chip_preset": "1P-lp4x64", "scenario": {"model": model, "layout": {"pp": 2},
                 "serving": {"phase": phase, "batch": 100000, "prompt": 8192}}, "sensitivity": False}
         try:
-            _timed(api.api_eval, body, GUARD_S)
+            _timed(api.api_eval, body, GUARD_S, f"210 huge {model} {phase}")
         except api.ApiError:
             pass
 

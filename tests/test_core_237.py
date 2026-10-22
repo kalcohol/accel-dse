@@ -3,7 +3,6 @@ prompt's own wait (wait-correlated W ⊕ latency, queueing.mg1_corr_sum_quantile
 runtime guard for the phase-law paths (test_core_052 CLI / KPI-type cases)."""
 import math
 import random
-import time
 
 from accel_dse.core import pdsim
 from accel_dse.core.disagg import disagg_report
@@ -81,17 +80,19 @@ def test_runtime_guard_phase_law_paths():
     # work (rt278b: vllm_v0 phase law 136 s CPU, 14.3 s alone, identical work counts), so under the parallel runner the
     # CPU-time bounds are gross catastrophe bounds (× 6: 270 s / 540 s, still ≥ 4 × below the 22 min / 30 min
     # regressions); run alone they stay 45 s / 90 s.
+    # 0.332: the two time bounds are deterministic work too (tests/workmeter.py: calls in accel_dse code), at the work
+    # 45 s / 90 s of quiet-box CPU buy — the alone thresholds, now also under -j 8 (was × 6 there), load-independent.
     from accel_dse.core import pdqueue
     spent = [0.0]
-    work = {"run": 0, "chunk": 0}
+    work = {"run": 0, "chunk": 0, "meter": None}
 
     def timed(fn):
         def run(*a, **k):
-            c0 = time.process_time()
+            c0 = work["meter"].now()
             try:
                 return fn(*a, **k)
             finally:
-                spent[0] += time.process_time() - c0
+                spent[0] += work["meter"].now() - c0
         return run
 
     def counted(key, fn):
@@ -142,29 +143,25 @@ _PHASE_WORK = {
 }
 
 
-def _guard_cases(spent, work=None):
-    import os
-    par = int(os.environ.get("ACCEL_TEST_JOBS", "1") or 1) > 1
-    lim = 6.0 if par else 1.0
+def _guard_cases(spent, work):
+    from tests.workmeter import guard, within
     for kw in (dict(prompt=4096, cap=48.0, chunk_profile="sglang_mixed"), dict(prompt=6000, cap=48.0, chunk_profile="sglang"),
                dict(prompt=6000, cap=48.0, chunk_profile="vllm_v0"), dict(prompt=4096, chunk_profile="vllm", prompt_cv=0.5)):
         spent[0] = 0.0
-        if work is not None:
-            work.update(run=0, chunk=0, calls=[0] * len(_PHASE_FNS), size=[0] * len(_PHASE_FNS))
-        c0 = time.process_time()
-        q = disagg_report(_pd(**kw))["queue"]
-        total = time.process_time() - c0
+        work.update(run=0, chunk=0, calls=[0] * len(_PHASE_FNS), size=[0] * len(_PHASE_FNS))
+        prof = kw["chunk_profile"]
+        with guard(90, f"237 report {prof}") as m:              # whole report: ≤ 90 s-equivalent work
+            work["meter"] = m
+            q = disagg_report(_pd(**kw))["queue"]
+        within(m, spent[0], 45, f"237 phase-law {prof}")        # colocated phase-law paths: ≤ 45 s-equivalent
         assert q["modes"]["coloc_chunked"].get("stable") is not None
         assert spent[0] > 0, kw
-        if work is not None:
-            r0, c0_ = _WORK[kw["chunk_profile"]]
-            assert 0 < work["run"] <= 1.5 * r0 and work["chunk"] <= 1.5 * c0_ + 10, (kw, work["run"], work["chunk"])
-            pc, ps = _PHASE_WORK[kw["chunk_profile"]]
-            for n, c, c_ref, z, z_ref in zip(_PHASE_FNS, work["calls"], pc, work["size"], ps):
-                assert c <= 1.5 * c_ref + 10 and z <= 1.5 * z_ref + 10, (kw, n, c, c_ref, z, z_ref)
-            assert work["calls"][0] > 0 and work["calls"][4] > 0, (kw, work["calls"])
-        assert spent[0] < 45 * lim, (kw, spent[0])
-        assert total < 90 * lim, (kw, total)
+        r0, c0_ = _WORK[kw["chunk_profile"]]
+        assert 0 < work["run"] <= 1.5 * r0 and work["chunk"] <= 1.5 * c0_ + 10, (kw, work["run"], work["chunk"])
+        pc, ps = _PHASE_WORK[kw["chunk_profile"]]
+        for n, c, c_ref, z, z_ref in zip(_PHASE_FNS, work["calls"], pc, work["size"], ps):
+            assert c <= 1.5 * c_ref + 10 and z <= 1.5 * z_ref + 10, (kw, n, c, c_ref, z, z_ref)
+        assert work["calls"][0] > 0 and work["calls"][4] > 0, (kw, work["calls"])
 
 
 # 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py);
