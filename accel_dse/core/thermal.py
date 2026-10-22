@@ -167,7 +167,7 @@ def card_W_for_cap(pk, cap_W: float, static_W: float = 0.0, idle_W: float | None
 
 def thermal_report(pkg_W: float | None, die_mm2: float | None, dies: int = 1, dram_dev_W: float = 0.0,
                    cooling: str | None = None, static_W: float = 0.0, idle_W: float | None = None,
-                   basis: str = "model") -> dict:
+                   basis: str = "model", card_area_mm2: float | None = None) -> dict:
     """Package power and heat flux vs a cooling preset.  ``cooling`` None = report only (``feasible`` None, status
     "unchecked"); a preset name = judged (``feasible`` False when the package power is over, or the flux is over both
     the shipped card-level limit and the HIR die-heat limit).
@@ -200,6 +200,14 @@ def thermal_report(pkg_W: float | None, die_mm2: float | None, dies: int = 1, dr
     die_W = max(0.0, deliv - (dram_dev_W or 0.0)) / dies
     out["die_W"] = die_W
     area = die_mm2 * dies if die_mm2 else None
+    if card_area_mm2 and area:
+        # 0.325: the card-level precedent's area definition (shipped parts' logic die incl. the HBM PHY / controller
+        # ring); a custom-HBM-base-die die passes its standard-interface equivalent (hbm_base.std_equiv_delta).  The
+        # die-heat flux stays on the real area (physical).
+        area = card_area_mm2 * dies
+        out["card_area_mm2"] = card_area_mm2
+        out["notes"].append(f"卡级热流按标准接口等效面积 {card_area_mm2:.0f} mm²（先例口径含 HBM PHY / 控制器环；定制 HBM "
+                            f"基础晶粒）判定；晶粒热流按实际 {die_mm2:.0f} mm²")
 
     def _lim(Pp, dW):
         fl = Pp / area if area else None

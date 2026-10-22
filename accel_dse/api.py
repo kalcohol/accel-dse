@@ -1047,7 +1047,7 @@ def api_eval(body: dict) -> dict:
     if getattr(scn.chip, "hbm_base", "std") == "custom":       # 0.324: custom HBM base die — what it changed
         from .core import hbm_base as _hb
         from .core.budget import auto_area_budget as _aab
-        out["hbm_base"] = _hb.report(scn, bud if bud is not None else _aab())
+        out["hbm_base"] = _hb.report(scn, bud if bud is not None else _aab(), table, sh.get("die_mm2"))
         out["summary"]["warnings"] += [n for n in out["hbm_base"]["notes"] if n.startswith("hbm_base=custom")]
     # 0.316: the TDP cap compares the package power (thermal.cap_power_fn → package_power, the function the thermal
     # check below uses) per card over the shoreline die; power_scope "card" = 0.315
@@ -1079,9 +1079,15 @@ def api_eval(body: dict) -> dict:
     if opc is not None:                     # 0.323: at the capped operating point (as the DSE row)
         ddw = ddw * opc["W_card"] / ew if ew else ddw
         ew, stw = opc["W_card"], opc["static_W"]
+    th_c = None
+    if sh.get("die_mm2") and getattr(scn.chip, "hbm_base", "std") == "custom":     # 0.325: card-level precedent area
+        from .core.hbm_base import std_equiv_delta
+        dlt = std_equiv_delta(scn, bud if bud is not None else _aab())
+        th_c = sh["die_mm2"] + dlt if dlt else None
     th = thermal_report(ew * pk if ew is not None else None, sh.get("die_mm2"), pk,
                         ddw * pk, cool, stw * pk,     # 0.315: complete power
-                        out["energy"]["idle_W_used"] * pk if out["energy"].get("idle_W_used") is not None else None)
+                        out["energy"]["idle_W_used"] * pk if out["energy"].get("idle_W_used") is not None else None,
+                        card_area_mm2=th_c)
     if opc is not None:
         th["operating_point"] = "capped"
     out["thermal"] = th

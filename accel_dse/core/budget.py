@@ -211,12 +211,13 @@ def phy_area(scn, b: Budget) -> dict:
     spec = mem_catalog.parse_mem_id(scn.mem_id)
     hbm = "HBM" in spec.mem_type.upper()
     dq = b.mm2_per_dq_hbm if hbm else b.mm2_per_dq_lpddr
-    from .hbm_base import CUSTOM, custom_applies, ignored_note
+    from .hbm_base import D2D_STD, custom_applies, host_d2d_mm2, host_d2d_units, ignored_note
     if dq is not None:
-        if custom_applies(scn.chip, spec.mem_type):     # 0.324: D2D block per stack instead of the 2048-DQ PHY
-            terms["dram_phy"] = spec.n_units * CUSTOM["d2d_mm2_per_stack"][0]
-            notes.append(f"定制 HBM 基础晶粒：主晶粒侧每栈 D2D {CUSTOM['d2d_mm2_per_stack'][0]:g} mm²（Samsung HC 2026"
-                         "「二手」，主机侧取同值「推导」），代替 2048 DQ × mm2_per_dq_hbm")
+        if custom_applies(scn.chip, spec.mem_type):     # 0.324: D2D per stack instead of the 2048-DQ PHY
+            terms["dram_phy"] = spec.n_units * host_d2d_mm2(spec)       # 0.325: UCIe-A geometry 「推导」
+            notes.append(f"定制 HBM 基础晶粒：主晶粒侧每栈 {host_d2d_units(spec)} 个 {D2D_STD} 模块 = "
+                         f"{host_d2d_mm2(spec):.2f} mm²（栈峰值带宽 ÷ 模块带宽，UCIe 几何「来源」→「推导」），"
+                         "代替 2048 DQ × mm2_per_dq_hbm")
         else:
             terms["dram_phy"] = spec.bus_bits * dq
     n = ignored_note(scn.chip, spec.mem_type)
@@ -994,6 +995,18 @@ def full_area(scn, b: Budget, noc_routers: bool = False) -> dict:
                 mm2 += nr
             else:
                 notes.append("已填固定面积 mm2_fixed（含 NoC）：路由器面积不再另计（0.307，避免重复）")
+    if mm2 is not None and getattr(scn.chip, "hbm_base", "std") == "custom":
+        # 0.325: a custom base die shrinks the host below the edge its abutting stacks need (silicon interposer):
+        # the die is held at the shoreline floor (hbm_base.shore_floor_mm2) — padding silicon, costed, no compute 「推导」
+        from .. import mem_catalog
+        from .hbm_base import custom_applies, shore_floor_mm2
+        if custom_applies(scn.chip, mem_catalog.parse_mem_id(scn.mem_id).mem_type):
+            fl = shore_floor_mm2(scn, mm2)
+            if fl and fl > mm2:
+                terms["shore_pad"] = fl - mm2
+                notes.append(f"定制 HBM 基础晶粒：逻辑面积 {mm2:.0f} mm² 低于紧贴堆栈所需岸线下限，晶粒保持在 {fl:.0f} mm²"
+                             f"（+{fl - mm2:.0f} mm² 填充硅，计成本 / 良率 / 热，不计算力）")
+                mm2 = fl
     return {**a, "mm2": mm2, "terms": terms, "phy_notes": notes}
 
 

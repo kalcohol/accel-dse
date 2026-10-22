@@ -161,8 +161,8 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
           item("mem_GBps", "外存带宽（峰值）", x.get("mem_GBps"), "GB/s", tag="来源", src="内存目录（器件规格）"),
           *([item("hbm_base", "HBM 基础晶粒",                # 0.324: only with the switch on (std reports unchanged)
                   "定制（逻辑工艺基础晶粒 + D2D，控制器在基础晶粒）" if x.get("hbm_custom") else "标准（该外存不适用定制）",
-                  tag="用户输入", src="chip.hbm_base = custom（hbm_base.CUSTOM：每栈 D2D 12.75 mm²、PHY pJ/bit × 0.55、"
-                  "$/GB × 1.10，均「二手」）")] if r.get("hbm_base") == "custom" else []),
+                  tag="用户输入", src="chip.hbm_base = custom（hbm_base：每栈 D2D = UCIe-A 模块数 × 模块面积「推导」、接口 = 链路 pJ/bit 代替两端 PHY「推导」、"
+                  "$/GB × 1.10「二手/假设」）")] if r.get("hbm_base") == "custom" else []),
           item("dies", "晶粒数", x.get("dies") or 1, tag="用户输入", src="DSE 晶粒轴"),
           item("d2d_std", "D2D 接口", x.get("d2d_std") if (x.get("dies") or 1) > 1 else "—", tag="用户输入", src="DSE D2D 轴"),
           item("f_ghz", "运行频率", x.get("f_ghz"), "GHz", src="工作点 × DVFS 封顶（若封顶）"),

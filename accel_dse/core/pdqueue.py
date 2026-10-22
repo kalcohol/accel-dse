@@ -3468,10 +3468,16 @@ def _energy(counts_tok: dict, card_s_tok: float, table: EnergyTable | None, pref
             pv = _phy_pJ(sc, table)
             if pv is not None:
                 add("dram_phy", pc.get("dram", 0.0) * pv * 1e-12 * 8, i)
+                dd = _dev_delta(sc, table)          # 0.325: custom HBM base die, device side
+                if dd:
+                    add("dram", pc.get("dram", 0.0) * dd * 1e-12 * 8, i)
     elif mem_scn is not None:
         pv = _phy_pJ(mem_scn, table)
         if pv is not None:
             add("dram_phy", counts_tok.get("dram", 0.0) * pv * 1e-12 * 8)
+            dd = _dev_delta(mem_scn, table)
+            if dd:
+                add("dram", counts_tok.get("dram", 0.0) * dd * 1e-12 * 8)
     if counts_tok.get("host", 0.0) > 0:
         if table.pJ_bit_host is not None:
             if psplit:
@@ -3575,6 +3581,15 @@ def _phy_pJ(scn, table: EnergyTable):
     class _R:
         scenario = scn
     return phy_pJ(_R, table)[1]
+
+
+def _dev_delta(scn, table: EnergyTable) -> float:
+    """0.325: energy.dev_pJ_delta for a scenario (custom HBM base die: device-side interface change per bit)."""
+    from .energy import dev_pJ_delta
+
+    class _R:
+        scenario = scn
+    return dev_pJ_delta(_R, table)
 
 
 def _mix(pres, pts, dec: Result, out: float, extra: dict, shared_weights: bool = False) -> dict:

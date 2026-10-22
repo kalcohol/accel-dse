@@ -6,6 +6,60 @@
 
 
 
+## [0.325.0]
+
+### Custom HBM base die: adversarial review of 0.324 (fixes, sourced)
+- **(a) Shoreline per stack: unchanged, but for the right reason.**
+  - On a silicon interposer a short-reach D2D link needs the stack adjacent to the host, so the stack footprint (11 mm) sets the edge 「推导」. Eliyan: 2 stacks per 25 mm edge on silicon 「二手」.
+  - The 0.324 reason ("D2D 8.5 mm ≥ PHY 8 mm") was wrong. The host-side UCIe link is only ≈ 2.7 mm of edge.
+  - A closer pitch needs a longer-reach interface on an organic package (JEDEC SPHBM4 JESD330-4: 512 DQ, 4:1 serialisation, ≥ 90 µm bumps, 20 mm reach, "potentially increasing the total number of SPHBM stacks"; Eliyan 3 per 25 mm). That is a different package, so it is listed as not modelled (`ORGANIC_STACKS_PER_25MM` = (3, 2), reference only).
+- **(b) Interface energy: no double count in 0.324, but the memory side was missing.**
+  - Device `pJ_bit_dram_hbm4` 2.46 includes the base-die PHY. 0.324 scaled only the host PHY (0.29 × 0.55 = 0.1595).
+  - Now one D2D link (`ucie-a-48`, 0.25 pJ/bit 「来源」 catalogue) replaces both PHY ends (host 0.29 Chae ISSCC 2023 「来源」; memory end taken symmetric 「推导」). It is split half host / half base die:
+    - host `phy_pJ_per_bit` 0.1595 → **0.125**;
+    - device delta (new `dram_dev_pJ_delta`) 0 → **−0.165**.
+  - Interface ratio 0.25 / 0.58 = 0.43, inside Marvell's −45 … −70% (`VENDOR_IFACE_RATIO` (0.25, 0.55), cross-check only, 「二手」; Hot Chips 2025 "75% lower HBM & main die I/O power" is the upper bound).
+  - The × 0.55 factor is gone. The same delta enters `pdqueue` (both branches).
+- **(c) Area.**
+  - The host D2D area was the 12.75 mm² base-die block (Samsung HC 2026). It is now derived from UCIe geometry: units = ⌈stack GB/s ÷ 384⌉ (HBM4 10 Gb/s → 7) × 0.3888 × 1.043 mm = **2.84 mm²/stack** 「推导」 (12.75 is kept as `base_die_d2d_mm2`, memory side, reference only).
+  - Audit: shoreline, thermal, eval TCO, DSE cost / yield and package all read the custom die. NoC pitch (engine tile) and hops (engine grid) are correctly independent of the PHY.
+  - New **shoreline floor**: a custom host die smaller than the edge the stacks need is held at that floor (`terms.shore_pad`, filler silicon) instead of being reported "over". This is the switch's own side effect; std is unaffected.
+- **(d) Thermal: the 0.324 "smaller die flips to split" was an artifact.**
+  - The card-level precedent (H100 700 W / 814 mm² = 0.86 W/mm² on air) is defined on a die that *includes* the HBM PHY / controller ring. Custom card flux is now judged on the std-equivalent area (`card_area_mm2` = die + `std_equiv_delta`). Die-heat flux stays on the real area.
+  - Controller power: the std model has no separate controller energy term (none public; SC'25 lumps control + interface 8.5–13.5 pJ/bit), so there is nothing to move. Samsung HC 2026: controller moves to the base die, "thermal impact manageable". Direction: custom would run cooler. Listed, not modelled.
+- **Old → new (custom; std byte-identical):**
+
+  | Example | die mm² | shoreline | J/unit | $/Mtok | Note |
+  |---|---|---|---|---|---|
+  | 1P 8×HBM4 qwen3-8b decode b64, air | 620.4 → 535.5 (logic 517.5 + pad 18.0) | tight → tight | 0.036618 → 0.035282 | 0.010040 → 0.00987 | pkg $ 2145 → 2020 |
+  | 1P prefill b8 | | | | 0.001452 → 0.00144 | thermal over → ok |
+  | 1P qwen3-30b-a3b decode b64 | | | 0.050486 → 0.04836 | 0.015571 → 0.0153 | |
+  | H100-like 6×HBM4, cap 400 W, liquid | 278.3 → 283.2 (logic 201 + pad) | **over → tight** | 0.03617 → 0.03411 | 0.008377 → 0.00829 | |
+  | 1P 8×HBM4E, cap 300 W | 620 → 535 | | | 0.014224 → 0.01316 | thr 5849 → 6261 |
+  | HBM3E | | | | unchanged | switch ignored |
+
+- **Energy DSE (`--hbm-base-study`):** no thermal buildability flips any more. MAC×1 verdicts are mono, as std; 0.324 had the prefill thermal flip and a mono → only_split TCO verdict. At MAC×2 the custom mono die is 1074 → 771 mm², under the 858 mm² reticle, so mono becomes feasible (8b decode: thr 13758 → 15266, $/Mtok 8.69 → 7.96 m$).
+
+### Near-memory compute / offload in the base die: not modelled (documented)
+- Sources:
+  - SK hynix StreamDQ (base-die dequantisation, "up to 5.15×"): no compute or energy figures.
+  - Samsung phase 2: no figures.
+  - AMMA arXiv 2604.26103 (academic, 96 TFLOPS per cube) states "PNM alone does not increase per-cube bandwidth".
+- No vendor publishes base-die compute or energy, so nothing was added.
+- Upper bound 「推导」: attention offload saves at most the interface energy of the KV bytes, i.e. KV-byte share × whole-link energy. On 1P qwen3-8b decode b64 custom that is ≈ 3.4% J at ctx 4K and ≈ 5.3% at 32K, before any base-die compute energy. This is recorded in `hbm_base.NOT_MODELLED`.
+
+### Freshness
+- The HF sweep on 2026-10-22 (110 orgs) matches 0.324: only text-to-image and classifier repos, none addable.
+- **OrcaCyber Nano 1.0** (orcarouter, gated, licence qwen): pending, not added.
+  - Public: `Qwen3_5ForConditionalGeneration`, 64 layers, hidden 5120, 48 linear + 16 full attention, ctx 262144, MTP. These match Qwen3.8-27B.
+  - Not public: heads, KV heads, head_dim, FFN, linear-attention dims, vocab. config.json and the GGUF headers return 401 (gated); the base repo is not public; Thaki Cloud reports the base "officially unconfirmed".
+  - If the base is confirmed, effective bits per (LLM + MTP) param, from file size 「推导」: Mix-13G 3.81, Mix-15.7G 4.60.
+  - OrcaCyber Zero 1.0 / 1.5 and Ultra 1.0 are API-only with no config, so they cannot be added.
+
+### Tests
+- New: `test_core_325` (7).
+- Re-pinned in `test_core_324`: custom PHY area 7 × 0.4055; die = logic + `shore_pad`; `phy_pJ_per_bit` 0.125; `dram_dev_pJ_delta` −0.165; CLI die 535.460; `test_hbm_base_study_no_thermal_artifact` (was the thermal flip).
+
 ## [0.324.0]
 
 ### Custom HBM4 / HBM4E base die (design option, opt-in)

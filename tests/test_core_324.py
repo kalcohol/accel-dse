@@ -65,17 +65,19 @@ def test_custom_mechanisms():
     s, c = api.api_eval(_body("std", cap=None)), api.api_eval(_body("custom", cap=None))
     hb = c["hbm_base"]
     assert hb["applies"] and hb["mode"] == "custom" and hb["stacks"] == 8 and hb["edge_per_stack_mm"] == 11
-    assert hb["custom_phy_mm2_per_stack"] == _approx(8.5 * 1.5)
-    # host die: 8 × (2048 DQ PHY 32 mm² − 12.75 mm² D2D) smaller, grossed up by the uncore share of the final die
-    # (budget.full_area, the existing rule for every term); shoreline need per stack unchanged
+    # 0.325 re-pin: host D2D = 7 UCIe-A x64 modules (2560 GB/s ÷ 384) × 0.3888 × 1.043 mm (was 12.75, base-die block)
+    assert hb["custom_phy_mm2_per_stack"] == _approx(7 * 0.3888 * 1.043)
+    # host logic die: 8 × (32 − 2.84) mm² smaller, grossed up by the uncore share (budget.full_area), then held at the
+    # shoreline floor of 8 abutting stacks (0.325 shore_pad); shoreline need per stack unchanged
     from accel_dse.api import _budget
     u = _budget({"budget": {"density_preset": "n5_derived"}}).uncore_frac
     assert hb["std_phy_mm2_per_stack"] == _approx(32.0)        # 2048 × 0.015625 — Samsung HC 2026 "> 8 × 4 mm"
-    d_die = s["shoreline"]["die_mm2"] - c["shoreline"]["die_mm2"]
-    assert d_die == _approx(8 * (32.0 - 12.75) / (1 - u), rel=1e-9)
-    assert s["shoreline"]["mem"]["edges"] == c["shoreline"]["mem"]["edges"]
-    # PHY energy × 0.55; throughput unchanged without a cap (stack bandwidth unchanged)
-    assert c["energy"]["phy_pJ_per_bit"] == _approx(0.55 * s["energy"]["phy_pJ_per_bit"])
+    logic = s["shoreline"]["die_mm2"] - 8 * (32.0 - 7 * 0.3888 * 1.043) / (1 - u)
+    assert hb["shore_pad_mm2"] and c["shoreline"]["die_mm2"] == _approx(logic + hb["shore_pad_mm2"], rel=1e-9)
+    assert c["shoreline"]["status"] == "tight" and s["shoreline"]["mem"]["edges"] == c["shoreline"]["mem"]["edges"]
+    # 0.325 re-pin: host PHY line = half the UCIe-A link (0.25 / 2; was 0.55 × 0.29); throughput unchanged uncapped
+    assert c["energy"]["phy_pJ_per_bit"] == _approx(0.125)
+    assert c["energy"]["dram_dev_pJ_delta"] == _approx(0.125 - 0.29)
     assert c["energy"]["J_per_unit"] < s["energy"]["J_per_unit"]
     assert c["tco"]["thr"] == s["tco"]["thr"]
     # memory $ × 1.10 on the sourced price; package $ down (smaller die)
@@ -93,7 +95,7 @@ def test_area_terms_and_controller():
     b = replace(b, mm2_per_unit_mc=5.0)
     st = Scenario(model="qwen3-8b", chip=CHIPS["1P"], mem_id=HBM4)
     cu = Scenario(model="qwen3-8b", chip=replace(CHIPS["1P"], hbm_base="custom"), mem_id=HBM4)
-    assert bmod.phy_area(cu, b)["terms"]["dram_phy"] == _approx(8 * 12.75)
+    assert bmod.phy_area(cu, b)["terms"]["dram_phy"] == _approx(8 * 7 * 0.3888 * 1.043)      # 0.325 re-pin
     assert bmod.phy_area(st, b)["terms"]["dram_phy"] == _approx(2048 * 8 * b.mm2_per_dq_hbm)
     ts, tc = bmod.full_area(st, b)["terms"], bmod.full_area(cu, b)["terms"]
     assert ts.get("mem_ctrl") and not tc.get("mem_ctrl")              # the controller moves to the base die
@@ -105,7 +107,7 @@ def test_price_rules():
     v1, tag = mem_price(p, "HBM4", custom=True)
     assert v1 == _approx(1.10 * v0) and "1.1" in tag
     assert mem_price(p, "HBM4", {"HBM4": 12.0}, custom=True)[0] == 12.0      # a user price is taken as given
-    assert hbm_base.USD_FACTOR_RANGE == (1.05, 1.10) and hbm_base.PJ_FACTOR_RANGE == (0.30, 0.55)
+    assert hbm_base.USD_FACTOR_RANGE == (1.05, 1.10) and hbm_base.VENDOR_IFACE_RATIO == (0.25, 0.55)   # 0.325
 
 
 def test_hbm3e_ignored_with_note():
@@ -156,11 +158,13 @@ def test_chip_validation_ui_cli():
     out = subprocess.run([sys.executable, "-m", "accel_dse.cli", "eval", "--chip", "1P", "--mem", HBM4,
                           "--hbm-base", "custom", "--json"], capture_output=True, text=True, cwd=ROOT, check=True)
     d = json.loads(out.stdout)
-    assert d["hbm_base"]["applies"] and d["shoreline"]["die_mm2"] == _approx(620.436, abs=1e-2)
+    assert d["hbm_base"]["applies"] and d["shoreline"]["die_mm2"] == _approx(535.460, abs=1e-2)     # 0.325 re-pin
 
 
-def test_hbm_base_study_thermal_flip():
-    """The smaller custom host die raises W/mm²: prefill MAC×1 mono turns thermally unbuildable on air (MODEL §269.3)."""
+def test_hbm_base_study_no_thermal_artifact():
+    """0.325 re-pin (MODEL §270): 0.324's prefill MAC×1 mono thermal flip came from judging the card-level precedent
+    (TDP ÷ a die area that includes the HBM PHY ring) on the shrunk die; on the precedent's own area definition the
+    custom row is buildable.  The die-heat flux (real area) still rises."""
     sys.path.insert(0, os.path.join(ROOT, "scripts"))
     try:
         import chiplet_example as X
@@ -169,9 +173,10 @@ def test_hbm_base_study_thermal_flip():
     o = {hb: X.run("qwen3-8b", "prefill", out=lambda *_: None, cost="n5_cowos_l", mem=X.HBM4_MEM, cooling="air_oam",
                    tco="accel_2026", include_unbuildable=True, hbm_base=hb, macs=(1.0,)) for hb in ("std", "custom")}
     a, b = o["std"]["rows"][0], o["custom"]["rows"][0]
-    assert a["dies"] == 1 and a["buildable"] is True and b["buildable"] is False
-    assert a["shoreline"] == b["shoreline"] == "tight" and a["thr"] == b["thr"]
-    assert b["thermal"]["flux_W_mm2"] > a["thermal"]["flux_W_mm2"] and b["mm2"] < a["mm2"]
+    assert a["dies"] == 1 and a["buildable"] is True and b["buildable"] is True
+    assert a["shoreline"] == b["shoreline"] == "tight" and a["thr"] == b["thr"] and b["mm2"] < a["mm2"]
+    assert b["thermal"]["die_flux_W_mm2"] > a["thermal"]["die_flux_W_mm2"]
+    assert b["thermal"]["flux_W_mm2"] < a["thermal"]["flux_W_mm2"]       # same area definition, lower power
 
 
 def _bodies():

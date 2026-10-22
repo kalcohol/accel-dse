@@ -479,11 +479,28 @@ def phy_pJ(r, table: EnergyTable):
     f = "pJ_bit_phy_hbm" if h else "pJ_bit_phy_lpddr"
     v = getattr(table, f)
     if v is not None and h:
-        from .. import mem_catalog
-        from .hbm_base import CUSTOM, custom_applies
-        if custom_applies(r.scenario.chip, mem_catalog.parse_mem_id(r.scenario.mem_id).mem_type):
-            v = v * CUSTOM["phy_pJ_factor"][0]        # 0.324: custom base die — narrow D2D instead of the HBM PHY
+        ip = _custom_iface(r, table)
+        if ip is not None:
+            v = ip["host"]          # 0.325: custom base die — the host half of the D2D link (hbm_base.iface_pJ)
     return (f, v) if v is not None else (None, None)
+
+
+def _custom_iface(r, table: EnergyTable):
+    """0.325: hbm_base.iface_pJ when a custom HBM base die applies to this result's memory, else None."""
+    from .. import mem_catalog
+    from .hbm_base import custom_applies, iface_pJ
+    try:
+        mt = mem_catalog.parse_mem_id(r.scenario.mem_id).mem_type
+    except Exception:                       # noqa: BLE001
+        return None
+    return iface_pJ(table) if custom_applies(r.scenario.chip, mt) else None
+
+
+def dev_pJ_delta(r, table: EnergyTable) -> float:
+    """0.325: per-bit change of the DRAM-device energy with a custom base die: the memory-side HBM PHY (taken equal to
+    the host PHY, 「推导」) leaves, the base-die half of the D2D link comes in (heat in the stack)."""
+    ip = _custom_iface(r, table)
+    return ip["dev_delta"] if ip is not None else 0.0
 
 
 def idle_W_of(table: EnergyTable):
@@ -858,7 +875,11 @@ def energy_report(r, table: EnergyTable | None = None, power_cap: bool = False, 
     if pv is not None:
         j["dram_phy"] = per["dram"] * pv * 1e-12 * 8
         out["phy_pJ_field"] = pf
-        out["phy_pJ_per_bit"] = pv          # 0.324: the value used (× 0.55 with a custom HBM base die)
+        out["phy_pJ_per_bit"] = pv          # 0.324: the value used (0.325: custom = host half of the D2D link)
+        dd = dev_pJ_delta(r, table)
+        if dd and j.get("dram") is not None:    # 0.325: device side of a custom base die (memory-side PHY → link half)
+            j["dram"] += per["dram"] * dd * 1e-12 * 8
+            out["dram_dev_pJ_delta"] = dd
     if table.pJ_clk_mac_cycle is not None:      # 0.228: per-cycle dynamic (clock tree / always-clocked registers)
         # 0.229/0.265: ungated share g always; gated share tracks MAC util, or mean(mac,vec,sram_port) when
         # chip.clk_datapath_gate (closes §176 "vector/SRAM ports not gated separately")

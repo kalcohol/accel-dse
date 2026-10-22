@@ -9472,3 +9472,42 @@ A point at f_op < 1 whose power is over the cap is capped from f_max (the 0.302 
 - The prefill body at 150 W made 2844 evaluate calls, 1368 of them repeats. Pyodide prefill cap 150 W: 9.9 → 8.2 s cold, 5.2 → 4.0 s warm.
 
 Unbuildable points are not skipped. Every row is kept with its metrics, and `include_unbuildable` only decides front membership, so skipping them would change the output. The pruning is restricted to work whose result is already known exactly.
+
+## §270 Custom HBM base die: adversarial review (0.325)
+
+### §270.1 Shoreline
+On a silicon interposer a short-reach D2D link only works with the stack adjacent to the host, so the stack footprint (11 mm) still sets the edge per stack 「推导」. Eliyan reports 2 stacks per 25 mm on silicon 「二手」. The UCIe link itself needs only ≈ 2.72 mm of edge (7 × `ucie-a-48` modules).
+
+A closer stack pitch needs a longer-reach interface on organic substrate:
+- JEDEC SPHBM4 (JESD330-4): 512 DQ at 4:1, ≥ 90 µm bumps, 20 mm reach 「二手」, PR 2026-07-13;
+- Eliyan: 3 stacks per 25 mm.
+
+That is a different package and is not modelled (`ORGANIC_STACKS_PER_25MM`, reference only).
+
+### §270.2 Interface energy
+DRAM energy is device `pJ_bit_dram_hbm4` (memory side, which includes the base-die PHY) plus host `pJ_bit_phy_hbm` 0.29 (Chae ISSCC 2023).
+
+A custom base die replaces both PHY ends with one D2D link. The link energy is that of `D2D_STD = ucie-a-48`, 0.25 pJ/bit; the memory end is taken symmetric to the host at 0.29 「推导」. It is split half and half:
+- host: `phy_pJ_per_bit` = 0.125;
+- memory: `dram_dev_pJ_delta` = 0.125 − 0.29 = −0.165, added to the DRAM term in `energy_report` and in `pdqueue`.
+
+The ratio link ÷ pair = 0.43 lies inside Marvell's −45 … −70% (`VENDOR_IFACE_RATIO`, check only). With no `pJ_bit_phy_hbm` in the table, `iface_pJ` is None and nothing changes.
+
+### §270.3 Area, and the shoreline floor
+Host D2D per stack = ⌈`stack_GBps` ÷ 384⌉ × 0.3888 × 1.043 mm (HBM4 10 Gb/s: 7 × 0.4055 = 2.84 mm²). The Samsung 12.75 mm² is the base-die block (`base_die_d2d_mm2`, reference).
+
+A custom die smaller than the shoreline the stacks need is padded to the floor:
+- `shore_floor_mm2` bisects on `shoreline_report`;
+- `full_area` adds `terms.shore_pad`.
+
+All consumers (shoreline, thermal, eval TCO, DSE cost / yield, package) read the same die. NoC pitch and hops come from the engine tile and grid and do not depend on the PHY.
+
+### §270.4 Thermal
+The card-level precedent (H100 700 W / 814 mm²) is a die that includes the memory-interface ring. For custom, the card flux is computed on die + `std_equiv_delta` (`thermal_report(card_area_mm2=…)`), and the die-heat flux on the real die.
+
+This removes 0.324's "smaller die → split" flips, which were an artifact of the definition. Controller power has no separate std term, so it is not moved (Samsung: controller on the base die, "thermal impact manageable"); this is listed in `NOT_MODELLED`.
+
+### §270.5 Near-memory compute
+Not modelled: no vendor base-die compute or energy figures exist, and per-cube bandwidth does not rise (AMMA).
+
+Upper bound 「推导」: attention / KV offload saves at most KV-byte share × whole-link energy. For 1P qwen3-8b decode b64 custom that is ≈ 3.4% J at 4K ctx and ≈ 5.3% at 32K, gross of base-die compute.

@@ -1071,8 +1071,16 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     else:
                         why.append(sw)
                 # 0.313: thermal / power buildability (always reported; judged only with a cooling preset)
-                th = thermal_report(row.get("W_card"), row.get("mm2") if dens_ok else sr.get("die_mm2"), nd,
-                                    row.get("dram_dev_W") or 0.0, cooling, row.get("static_W") or 0.0, row.get("idle_W"))
+                th_a = row.get("mm2") if dens_ok else sr.get("die_mm2")
+                th_c = None
+                if th_a and getattr(s_full.chip, "hbm_base", "std") == "custom":     # 0.325: card-level precedent area
+                    from .budget import auto_area_budget
+                    from .hbm_base import std_equiv_delta
+                    dlt = std_equiv_delta(s_full, b if dens_ok else auto_area_budget())
+                    th_c = th_a + dlt if dlt else None
+                th = thermal_report(row.get("W_card"), th_a, nd,
+                                    row.get("dram_dev_W") or 0.0, cooling, row.get("static_W") or 0.0, row.get("idle_W"),
+                                    card_area_mm2=th_c)
                 # 0.314: flux_W_mm2 = card-level (judged, shipped-part definition); die_flux_W_mm2 = DRAM devices out
                 # 0.315: pkg_W = complete package power (static floor + VR loss, thermal.package_power)
                 row["thermal"] = {k: th.get(k) for k in ("status", "feasible", "pkg_W", "card_W", "die_W", "flux_W_mm2",
@@ -1111,11 +1119,12 @@ def energy_design_search(scn, table: EnergyTable, budget=None, mac_scales=MAC_SC
                     row["hbm_custom"] = custom_applies(ch, row["mem_type"])
                 rows.append(row)
     if getattr(ch, "hbm_base", "std") == "custom":         # 0.324
-        from .hbm_base import CUSTOM
-        notes.append(f"定制 HBM 基础晶粒（hbm_base=custom，仅 HBM4 / HBM4E 行）：主晶粒每栈 D2D {CUSTOM['d2d_mm2_per_stack'][0]:g} mm²"
-                     f"「{CUSTOM['d2d_mm2_per_stack'][1]}」代替 2048-DQ PHY，内存控制器移至基础晶粒；PHY pJ/bit × "
-                     f"{CUSTOM['phy_pJ_factor'][0]:g}「{CUSTOM['phy_pJ_factor'][1]}」；内存 $/GB × {CUSTOM['usd_per_GB_factor'][0]:g}"
-                     f"「{CUSTOM['usd_per_GB_factor'][1]}」；每栈岸线 11 mm 不变「推导」；带宽、近存计算未改（无公开机理）")
+        from .hbm_base import CUSTOM, D2D_STD
+        notes.append(f"定制 HBM 基础晶粒（hbm_base=custom，仅 HBM4 / HBM4E 行）：主晶粒每栈 D2D = ⌈栈带宽 ÷ {D2D_STD} 模块带宽⌉"
+                     "个 UCIe-A 模块「推导」代替 2048-DQ PHY，内存控制器移至基础晶粒；接口能耗 = 链路 pJ/bit（主机 / 基础晶粒各半）"
+                     "代替两端 HBM PHY「推导」；内存 $/GB × "
+                     f"{CUSTOM['usd_per_GB_factor'][0]:g}「{CUSTOM['usd_per_GB_factor'][1]}」；每栈岸线 11 mm 不变（硅中介层短距须紧贴）"
+                     "「推导」；卡级热流按标准接口等效面积判定（晶粒热流按实际面积）；带宽、近存计算、控制器功耗未改（无公开数字）")
     ok = [i for i, x in enumerate(rows) if x.get("feasible")]
     sub = [rows[i] for i in ok]
     f2 = [ok[i] for i in pareto(sub, (("thr", 1), ("J_per_unit", -1)), tie)]
