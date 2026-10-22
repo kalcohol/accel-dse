@@ -271,6 +271,30 @@ def _echo_role(name: str, n_layers: int | None) -> str:
     return classify(name, n_layers)
 
 
+
+def _qwen3_tts_role(name: str, n_layers: int | None) -> str:
+    """0.338 Qwen3-TTS (modeling_qwen3_tts.py): talker.model / talker.codec_head / talker.text_* → LLM;
+    talker.code_predictor → depth; speaker_encoder → spk; speech_tokenizer (speech_tensors) → codec."""
+    if name.startswith("talker.code_predictor"):
+        return "depth"
+    if name.startswith("speaker_encoder"):
+        return "spk"
+    if name.startswith(("decoder.", "encoder.")):
+        return "codec"
+    if name.startswith("talker."):
+        name = name[len("talker."):]
+        if name.startswith("codec_head"):
+            return "lm_head"
+        if name.startswith("text_projection"):
+            return "other"
+        if name.startswith("model."):
+            name = name[len("model."):]
+        if name.startswith("codec_embedding") or name.startswith("text_embedding"):
+            return "embed"
+        return classify(name, n_layers)
+    return classify(name, n_layers)
+
+
 def _compact_qc(qc):
     """0.278 ModelOpt MIXED_PRECISION configs list every quantized module (the Nemotron-3.5-Super-VL config.json is
     8.7 MB): keep the scheme keys, replace the per-module lists by counts per algorithm."""
@@ -377,6 +401,13 @@ def summarize(repo: str, key: str | None = None) -> dict:
         for name, (dt, shape) in json.loads(fr.read_text())["tensors"].items():
             n = math.prod(shape)
             tensors[name] = (dt, shape, n, n * {"F32": 4, "F16": 2, "BF16": 2}[dt])
+    qt = d / "qwen3_tts_tokenizer.json"
+    qj: dict = {}
+    if qt.exists():       # 0.338 Qwen3-TTS: speech_tokenizer/* safetensors (fp32), outside model.safetensors
+        qj = json.loads(qt.read_text())
+        for name, (dt, shape) in qj["tensors"].items():
+            n = math.prod(shape)
+            tensors[name] = (dt, shape, n, n * {"F32": 4, "F16": 2, "BF16": 2, "F64": 8}.get(dt, 2))
     if cfg.get("model_type") == "fireredtts3":
         tc = cfg.get("backbone") or tc
     nl = tc.get("num_hidden_layers") or cfg.get("num_hidden_layers") or cfg.get("num_layers")
@@ -416,6 +447,7 @@ def summarize(repo: str, key: str | None = None) -> dict:
                 _step_audio_role(name, nl) if cfg.get("model_type") == "step_audio_2" else
                 _moshi_role(name, nl) if cfg.get("model_type") == "moshi" else
                 _firered_role(name, nl) if cfg.get("model_type") == "fireredtts3" else
+                _qwen3_tts_role(name, nl) if cfg.get("model_type") == "qwen3_tts" else
                 _fish_role(name, nl) if cfg.get("model_type") == "fish_omni" else
                 _nemotron_h_omni_role(name, nl) if cfg.get("model_type") == "nemotron_h_omni" else
                 _echo_role(name, nl) if cfg.get("model_type") == "index_echo_s2st" else
@@ -461,10 +493,10 @@ def summarize(repo: str, key: str | None = None) -> dict:
         e["bytes"] += w["bytes"]
     if buffers:
         roles["buffer"] = {"int64": {"params": 0, "bytes": buffers}}
-    llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge")]
+    llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge", "spk")]
     tot = lambda rs, k: sum(v[k] for r in rs for v in roles.get(r, {}).values())
     extra = {"vision_fmt": vfmt} if vfmt else {}
-    for r in ("talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge"):   # 0.271 speech output (Omni / CosyVoice; absent → no key)
+    for r in ("talker", "token2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge", "spk"):   # 0.271 speech; 0.338 +spk
         if r in roles:
             extra[f"params_{r}"] = tot([r], "params")
             extra[f"bytes_{r}"] = tot([r], "bytes")
@@ -476,6 +508,12 @@ def summarize(repo: str, key: str | None = None) -> dict:
     if fr.exists():
         # 0.275 FireRedTTS3: speech head + RedAE tensor shapes drive core/fireredtts3.py
         extra["speech_tensors"] = {n: list(t[1]) for n, t in tensors.items() if not n.startswith("backbone_llm.")}
+    if qt.exists() or cfg.get("model_type") == "qwen3_tts":
+        # 0.338: code predictor lives in the main file (depth); tokenizer decoder shapes → speech_tensors
+        extra["speech_tensors"] = {n: list(t[1]) for n, t in tensors.items()
+                                   if n.startswith(("decoder.", "encoder."))}
+        if qt.exists():
+            extra["tokenizer_config"] = qj.get("config") or {}
     if ka.exists():
         extra["speech_tensors"] = {n: list(t[1]) for n, t in tensors.items() if n.startswith(("detok.", "voc."))}
         extra["kimi_audio"] = kj["config"]

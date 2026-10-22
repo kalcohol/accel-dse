@@ -961,7 +961,16 @@ function renderEval(r) {
         `时间 Transformer ${num(b.temporal_GB)} + KV ${num(b.kv_GB)} + 深度 Transformer ${num(b.depformer_GB)} + Mimi ${num(b.mimi_GB)} GB`
         + ` · 实时需有效 DRAM ${num(p.dram_GBps_for_realtime)} GB/s（当前 ${num(p.dram_GBps)}）· 每帧全部权重读一遍 → SLC 每钉住 1 GB 省 12.5 GB/s`));
     }
-    if (p.kind === 'tts') k.push(kpi(`语音端到端 · ${p.label || 'TTS'}`, `RTF ${num(p.rtf)}`,
+        if (p.kind === 'qwen3_tts') {     // 0.338 Qwen3-TTS: per 80 ms frame — Talker + code predictor + tokenizer
+      const f = p.split_frame || {};
+      k.push(kpi(`语音端到端 · ${p.label}`, `帧 ${num(p.frame_s * 1e3)} ms / ${num(p.frame_ms)} ms`,
+        `RTF ${num(p.rtf)}（${p.streams_per_card} 路）· Talker ${num(f.talker_s * 1e3)} + code predictor ${p.cp_steps} 步 ${num(f.code_predictor_s * 1e3)}`
+        + ` + tokenizer 解码 ${num(f.tokenizer_s * 1e3)} ms · 首音频 ${num(p.first_audio_s * 1e3)} ms · 实时路数 ${p.streams_realtime}`
+        + ` · predictor ${num(p.code_predictor_GB)} GB + tokenizer ${num(p.tokenizer_GB)} GB`
+        + (p.speaker_encode_s ? ` · 说话人编码 ${num(p.speaker_encode_s * 1e3)} ms` : ''),
+        p.rtf > 1 || !p.fits ? 'warn' : ''));
+    }
+if (p.kind === 'tts') k.push(kpi(`语音端到端 · ${p.label || 'TTS'}`, `RTF ${num(p.rtf)}`,
       `${num(p.audio_out_s)} s 音频输出 = ${p.steps} 步 · 首音频 ${num(p.first_audio_s * 1e3)} ms · 共 ${num(p.total_s)} s · ${num(p.audio_out_s_per_s_card)} 输出音频秒/秒/卡`
       + (p.split_first && p.split_first.prompt_s != null ? ` · 非流式：提示音频 ${num(p.prompt_audio_s)} s 编码 ${num(p.split_first.prompt_s * 1e3)} + 预填充 ${num(p.split_first.prefill_s * 1e3)}`   // 0.275 FireRedTTS3
         + ` + ${p.steps} 步 ${num(p.split_first.steps_s * 1e3)}（每步 ${num(p.tpot_s * 1e3)} ms：主干 + DiT ${p.flow_steps} 步 × CFG ${p.cfg} + patch 编码器）+ RedAE 解码 ${num(p.split_first.redae_decode_s * 1e3)} ms` : '')
@@ -2378,7 +2387,9 @@ async function runInsightDispatch() {
 
 /* 0.276: real-time streams per card vs SLC size (/api/insight_speech_streams) */
 const SPS_OUT = ['moshiko-7b', 'kimi-audio-7b-instruct', 'step-audio-2-mini', 'qwen2.5-omni-7b', 'cosyvoice2-0.5b',
-  'fun-cosyvoice3-0.5b-2512', 'fireredtts3-base', 'drama-3', 'ming-3.0-tts-tiny', 'index-echo-s2st-2b', 'index-echo-s2st-9b'];
+  'fun-cosyvoice3-0.5b-2512', 'fireredtts3-base', 'drama-3', 'ming-3.0-tts-tiny',
+  'qwen3-tts-0.6b-base', 'qwen3-tts-1.7b-base', 'qwen3-tts-0.6b-custom-voice', 'qwen3-tts-1.7b-custom-voice', 'qwen3-tts-1.7b-voice-design',  // 0.338
+  'index-echo-s2st-2b', 'index-echo-s2st-9b'];
 function speechStreamsCell(c) {
   const lim = { realtime: '实时', memory: '容量', cap: '上限' }[c.lm_limit] || c.lm_limit;
   const tip = `LM 卡 ${c.streams_lm} 路（线性预测 ${c.streams_lm_pred}，止于${lim}）`

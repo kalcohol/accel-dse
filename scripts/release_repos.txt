@@ -181,3 +181,9 @@ bezzam/omniasr-llm-3b-v2
 bezzam/omniasr-llm-7b-v2
 # 0.337 Carbon-X (Qwen3 DNA LM)
 HuggingFaceBio/Carbon-X
+# 0.338 Qwen3-TTS 12 Hz
+Qwen/Qwen3-TTS-12Hz-0.6B-Base
+Qwen/Qwen3-TTS-12Hz-1.7B-Base
+Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign

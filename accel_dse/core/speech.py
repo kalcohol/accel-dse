@@ -588,6 +588,54 @@ def _echo_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) ->
             "card_GB": (mem.dram_need + extra_B) / 1e9, "fits": fits}
 
 
+
+def _qwen3_tts_kpis(scn: Scenario, pre, audio_out_s: float, lm_only: bool = False) -> dict:
+    """0.338 Qwen3-TTS (core/qwen3_tts.py): per 80 ms frame on a speech card 「假设」 —
+    Talker decode (catalog LM) + code predictor (n_groups−1 AR steps) + speech-tokenizer decode.
+    Real-time ⇔ frame ≤ 80 ms; first audio ≈ 2 frames + one frame compute (+ speaker encode on Base)."""
+    from .evaluate import _component_time
+    from .hardware import System
+    from .ir import _cdiv
+    from .qwen3_tts import (FRAME_S, code_predictor_ops, code_predictor_weight_bytes, speaker_encoder_ops,
+                            tokenizer_decode_ops, tokenizer_weight_bytes)
+    sv, lay, m = scn.serving, scn.layout, pre.model
+    q = m.qwen3_tts
+    sys = System(scn.chip, scn.mem_id, scn.mem_eff, scn.link, scn.d2d_link, scn.package_eff, scn.net, scn.node_cards,
+                 scn.fabric, 1, scn.mem_cap_GB, scn.kv_mem_frac, scn.kv_mem_eff)
+    org = scn.mapping
+
+    def frame(bb: int) -> dict:
+        dec = evaluate(scn.replace("serving.phase", "decode").replace("serving.batch", bb * lay.dp))
+        t = {"talker_s": dec.tpot,
+             "code_predictor_s": _component_time([(code_predictor_ops(q, bb), 1)], sys, org, "bf16")["s"],
+             "tokenizer_s": _component_time([(tokenizer_decode_ops(q, bb, frames=1), 1)], sys, org, "fp32")["s"]}
+        t["frame_s"] = sum(t.values())
+        t["fits"] = dec.fits
+        return t
+
+    b = _cdiv(sv.batch, lay.dp)
+    f = frame(b)
+    if lm_only:
+        return {"kind": "qwen3_tts", "lm_stages": {"frame": f["frame_s"] / FRAME_S},
+                "fits": f["fits"] and pre.fits}
+    lo, hi = 1, 1
+    while hi <= 1024 and frame(hi)["frame_s"] <= FRAME_S:
+        lo, hi = hi, hi * 2
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if frame(mid)["frame_s"] <= FRAME_S else (lo, mid)
+    spk_s = (_component_time([(speaker_encoder_ops(q, 1), 1)], sys, org, "bf16")["s"] if q.spk_params else 0.0)
+    return {"kind": "qwen3_tts", "label": "Qwen3-TTS 12Hz", "frame_ms": FRAME_S * 1e3,
+            "streams_per_card": b, "split_frame": {k: f[k] for k in ("talker_s", "code_predictor_s", "tokenizer_s")},
+            "frame_s": f["frame_s"], "rtf": f["frame_s"] / FRAME_S, "realtime": f["frame_s"] <= FRAME_S,
+            "fits": f["fits"] and pre.fits,
+            "first_audio_s": 2 * FRAME_S + f["frame_s"] + spk_s, "streams_realtime": lo,
+            "code_predictor_GB": code_predictor_weight_bytes(q) / 1e9,
+            "tokenizer_GB": tokenizer_weight_bytes(q) / 1e9, "cp_steps": q.cp_steps,
+            "audio_out_s": audio_out_s,
+            "audio_out_s_per_s_card": (b if f["frame_s"] <= FRAME_S else b * FRAME_S / f["frame_s"]) / lay.cards,
+            "speaker_encode_s": spk_s}
+
 def speech_kpis(scn: Scenario, audio_out_s: float = 10.0, lm_only: bool = False) -> dict:
     """``lm_only`` (0.277, speech_insight.speech_streams): omni / cosyvoice / kimi / moshi return only
     {kind, lm_stages, fits} — the LM-card stage loads and the fit verdict by the same expressions as the full KPIs, without
@@ -605,6 +653,8 @@ def speech_kpis(scn: Scenario, audio_out_s: float = 10.0, lm_only: bool = False)
         return _kimi_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "moshi", None) is not None:
         return _moshi_kpis(scn, pre, audio_out_s, lm_only)
+    if getattr(m, "qwen3_tts", None) is not None:
+        return _qwen3_tts_kpis(scn, pre, audio_out_s, lm_only)
     if getattr(m, "fish", None) is not None:
         return _fish_kpis(scn, m.fish, audio_out_s, lm_only)
     ts = getattr(m, "tts", None)

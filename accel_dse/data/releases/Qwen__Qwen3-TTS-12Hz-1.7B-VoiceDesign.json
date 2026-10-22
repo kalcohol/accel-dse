@@ -1,0 +1,2092 @@
+{
+ "bytes_codec": 682164228,
+ "bytes_depth": 350251520,
+ "bytes_llm": 3483101184,
+ "bytes_mtp": 0,
+ "bytes_total": 4515582468,
+ "config": {
+  "architectures": [
+   "Qwen3TTSForConditionalGeneration"
+  ],
+  "assistant_token_id": 77091,
+  "im_end_token_id": 151645,
+  "im_start_token_id": 151644,
+  "model_type": "qwen3_tts",
+  "talker_config": {
+   "attention_bias": false,
+   "attention_dropout": 0,
+   "code_predictor_config": {
+    "_name_or_path": "",
+    "add_cross_attention": false,
+    "architectures": null,
+    "attention_bias": false,
+    "attention_dropout": 0,
+    "bad_words_ids": null,
+    "begin_suppress_tokens": null,
+    "bos_token_id": null,
+    "chunk_size_feed_forward": 0,
+    "cross_attention_hidden_size": null,
+    "decoder_start_token_id": null,
+    "diversity_penalty": 0.0,
+    "do_sample": false,
+    "dtype": null,
+    "early_stopping": false,
+    "encoder_no_repeat_ngram_size": 0,
+    "eos_token_id": null,
+    "exponential_decay_length_penalty": null,
+    "finetuning_task": null,
+    "forced_bos_token_id": null,
+    "forced_eos_token_id": null,
+    "head_dim": 128,
+    "hidden_act": "silu",
+    "hidden_size": 1024,
+    "id2label": {
+     "0": "LABEL_0",
+     "1": "LABEL_1"
+    },
+    "initializer_range": 0.02,
+    "intermediate_size": 3072,
+    "is_decoder": false,
+    "is_encoder_decoder": false,
+    "label2id": {
+     "LABEL_0": 0,
+     "LABEL_1": 1
+    },
+    "layer_types": [
+     "full_attention",
+     "full_attention",
+     "full_attention",
+     "full_attention",
+     "full_attention"
+    ],
+    "length_penalty": 1.0,
+    "max_length": 20,
+    "max_position_embeddings": 65536,
+    "max_window_layers": 28,
+    "min_length": 0,
+    "model_type": "qwen3_tts_talker_code_predictor",
+    "no_repeat_ngram_size": 0,
+    "num_attention_heads": 16,
+    "num_beam_groups": 1,
+    "num_beams": 1,
+    "num_code_groups": 16,
+    "num_hidden_layers": 5,
+    "num_key_value_heads": 8,
+    "num_return_sequences": 1,
+    "output_attentions": false,
+    "output_hidden_states": false,
+    "output_scores": false,
+    "pad_token_id": null,
+    "prefix": null,
+    "problem_type": null,
+    "pruned_heads": {},
+    "remove_invalid_values": false,
+    "repetition_penalty": 1.0,
+    "return_dict": true,
+    "return_dict_in_generate": false,
+    "rms_norm_eps": 1e-06,
+    "rope_scaling": null,
+    "rope_theta": 1000000,
+    "sep_token_id": null,
+    "sliding_window": null,
+    "suppress_tokens": null,
+    "task_specific_params": null,
+    "temperature": 1.0,
+    "tf_legacy_loss": false,
+    "tie_encoder_decoder": false,
+    "tie_word_embeddings": false,
+    "tokenizer_class": null,
+    "top_k": 50,
+    "top_p": 1.0,
+    "torchscript": false,
+    "typical_p": 1.0,
+    "use_bfloat16": false,
+    "use_cache": true,
+    "use_sliding_window": false,
+    "vocab_size": 2048
+   },
+   "codec_bos_id": 2149,
+   "codec_eos_token_id": 2150,
+   "codec_language_id": {
+    "chinese": 2055,
+    "english": 2050,
+    "french": 2061,
+    "german": 2053,
+    "italian": 2070,
+    "japanese": 2058,
+    "korean": 2064,
+    "portuguese": 2071,
+    "russian": 2069,
+    "spanish": 2054
+   },
+   "codec_nothink_id": 2155,
+   "codec_pad_id": 2148,
+   "codec_think_bos_id": 2156,
+   "codec_think_eos_id": 2157,
+   "codec_think_id": 2154,
+   "head_dim": 128,
+   "hidden_act": "silu",
+   "hidden_size": 2048,
+   "initializer_range": 0.02,
+   "intermediate_size": 6144,
+   "max_position_embeddings": 32768,
+   "model_type": "qwen3_tts_talker",
+   "num_attention_heads": 16,
+   "num_code_groups": 16,
+   "num_hidden_layers": 28,
+   "num_key_value_heads": 8,
+   "position_id_per_seconds": 13,
+   "rms_norm_eps": 1e-06,
+   "rope_scaling": {
+    "interleaved": true,
+    "mrope_section": [
+     24,
+     20,
+     20
+    ],
+    "rope_type": "default",
+    "type": "default"
+   },
+   "rope_theta": 1000000,
+   "sliding_window": null,
+   "spk_id": {},
+   "spk_is_dialect": {},
+   "text_hidden_size": 2048,
+   "text_vocab_size": 151936,
+   "use_cache": true,
+   "use_sliding_window": false,
+   "vocab_size": 3072
+  },
+  "tokenizer_type": "qwen3_tts_tokenizer_12hz",
+  "transformers_version": "4.57.3",
+  "tts_bos_token_id": 151672,
+  "tts_eos_token_id": 151673,
+  "tts_model_size": "1b7",
+  "tts_model_type": "voice_design",
+  "tts_pad_token_id": 151671
+ },
+ "fetched": "2026-10-22",
+ "n_tensors": 900,
+ "params_codec": 170541057,
+ "params_depth": 175125760,
+ "params_llm": 1741550592,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 704643072,
+    "params": 352321536
+   }
+  },
+  "codec": {
+   "fp32": {
+    "bytes": 682164228,
+    "params": 170541057
+   }
+  },
+  "depth": {
+   "bf16": {
+    "bytes": 350251520,
+    "params": 175125760
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 634912768,
+    "params": 317456384
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 12582912,
+    "params": 6291456
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 2113929216,
+    "params": 1056964608
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 247808,
+    "params": 123904
+   }
+  },
+  "other": {
+   "bf16": {
+    "bytes": 16785408,
+    "params": 8392704
+   }
+  },
+  "scale": {
+   "scale": {
+    "bytes": 65536,
+    "params": 0
+   }
+  }
+ },
+ "speech_tensors": {
+  "decoder.decoder.0.conv.bias": [
+   1536
+  ],
+  "decoder.decoder.0.conv.weight": [
+   1536,
+   1024,
+   7
+  ],
+  "decoder.decoder.1.block.0.alpha": [
+   1536
+  ],
+  "decoder.decoder.1.block.0.beta": [
+   1536
+  ],
+  "decoder.decoder.1.block.1.conv.bias": [
+   768
+  ],
+  "decoder.decoder.1.block.1.conv.weight": [
+   1536,
+   768,
+   16
+  ],
+  "decoder.decoder.1.block.2.act1.alpha": [
+   768
+  ],
+  "decoder.decoder.1.block.2.act1.beta": [
+   768
+  ],
+  "decoder.decoder.1.block.2.act2.alpha": [
+   768
+  ],
+  "decoder.decoder.1.block.2.act2.beta": [
+   768
+  ],
+  "decoder.decoder.1.block.2.conv1.conv.bias": [
+   768
+  ],
+  "decoder.decoder.1.block.2.conv1.conv.weight": [
+   768,
+   768,
+   7
+  ],
+  "decoder.decoder.1.block.2.conv2.conv.bias": [
+   768
+  ],
+  "decoder.decoder.1.block.2.conv2.conv.weight": [
+   768,
+   768,
+   1
+  ],
+  "decoder.decoder.1.block.3.act1.alpha": [
+   768
+  ],
+  "decoder.decoder.1.block.3.act1.beta": [
+   768
+  ],
+  "decoder.decoder.1.block.3.act2.alpha": [
+   768
+  ],
+  "decoder.decoder.1.block.3.act2.beta": [
+   768
+  ],
+  "decoder.decoder.1.block.3.conv1.conv.bias": [
+   768
+  ],
+  "decoder.decoder.1.block.3.conv1.conv.weight": [
+   768,
+   768,
+   7
+  ],
+  "decoder.decoder.1.block.3.conv2.conv.bias": [
+   768
+  ],
+  "decoder.decoder.1.block.3.conv2.conv.weight": [
+   768,
+   768,
+   1
+  ],
+  "decoder.decoder.1.block.4.act1.alpha": [
+   768
+  ],
+  "decoder.decoder.1.block.4.act1.beta": [
+   768
+  ],
+  "decoder.decoder.1.block.4.act2.alpha": [
+   768
+  ],
+  "decoder.decoder.1.block.4.act2.beta": [
+   768
+  ],
+  "decoder.decoder.1.block.4.conv1.conv.bias": [
+   768
+  ],
+  "decoder.decoder.1.block.4.conv1.conv.weight": [
+   768,
+   768,
+   7
+  ],
+  "decoder.decoder.1.block.4.conv2.conv.bias": [
+   768
+  ],
+  "decoder.decoder.1.block.4.conv2.conv.weight": [
+   768,
+   768,
+   1
+  ],
+  "decoder.decoder.2.block.0.alpha": [
+   768
+  ],
+  "decoder.decoder.2.block.0.beta": [
+   768
+  ],
+  "decoder.decoder.2.block.1.conv.bias": [
+   384
+  ],
+  "decoder.decoder.2.block.1.conv.weight": [
+   768,
+   384,
+   10
+  ],
+  "decoder.decoder.2.block.2.act1.alpha": [
+   384
+  ],
+  "decoder.decoder.2.block.2.act1.beta": [
+   384
+  ],
+  "decoder.decoder.2.block.2.act2.alpha": [
+   384
+  ],
+  "decoder.decoder.2.block.2.act2.beta": [
+   384
+  ],
+  "decoder.decoder.2.block.2.conv1.conv.bias": [
+   384
+  ],
+  "decoder.decoder.2.block.2.conv1.conv.weight": [
+   384,
+   384,
+   7
+  ],
+  "decoder.decoder.2.block.2.conv2.conv.bias": [
+   384
+  ],
+  "decoder.decoder.2.block.2.conv2.conv.weight": [
+   384,
+   384,
+   1
+  ],
+  "decoder.decoder.2.block.3.act1.alpha": [
+   384
+  ],
+  "decoder.decoder.2.block.3.act1.beta": [
+   384
+  ],
+  "decoder.decoder.2.block.3.act2.alpha": [
+   384
+  ],
+  "decoder.decoder.2.block.3.act2.beta": [
+   384
+  ],
+  "decoder.decoder.2.block.3.conv1.conv.bias": [
+   384
+  ],
+  "decoder.decoder.2.block.3.conv1.conv.weight": [
+   384,
+   384,
+   7
+  ],
+  "decoder.decoder.2.block.3.conv2.conv.bias": [
+   384
+  ],
+  "decoder.decoder.2.block.3.conv2.conv.weight": [
+   384,
+   384,
+   1
+  ],
+  "decoder.decoder.2.block.4.act1.alpha": [
+   384
+  ],
+  "decoder.decoder.2.block.4.act1.beta": [
+   384
+  ],
+  "decoder.decoder.2.block.4.act2.alpha": [
+   384
+  ],
+  "decoder.decoder.2.block.4.act2.beta": [
+   384
+  ],
+  "decoder.decoder.2.block.4.conv1.conv.bias": [
+   384
+  ],
+  "decoder.decoder.2.block.4.conv1.conv.weight": [
+   384,
+   384,
+   7
+  ],
+  "decoder.decoder.2.block.4.conv2.conv.bias": [
+   384
+  ],
+  "decoder.decoder.2.block.4.conv2.conv.weight": [
+   384,
+   384,
+   1
+  ],
+  "decoder.decoder.3.block.0.alpha": [
+   384
+  ],
+  "decoder.decoder.3.block.0.beta": [
+   384
+  ],
+  "decoder.decoder.3.block.1.conv.bias": [
+   192
+  ],
+  "decoder.decoder.3.block.1.conv.weight": [
+   384,
+   192,
+   8
+  ],
+  "decoder.decoder.3.block.2.act1.alpha": [
+   192
+  ],
+  "decoder.decoder.3.block.2.act1.beta": [
+   192
+  ],
+  "decoder.decoder.3.block.2.act2.alpha": [
+   192
+  ],
+  "decoder.decoder.3.block.2.act2.beta": [
+   192
+  ],
+  "decoder.decoder.3.block.2.conv1.conv.bias": [
+   192
+  ],
+  "decoder.decoder.3.block.2.conv1.conv.weight": [
+   192,
+   192,
+   7
+  ],
+  "decoder.decoder.3.block.2.conv2.conv.bias": [
+   192
+  ],
+  "decoder.decoder.3.block.2.conv2.conv.weight": [
+   192,
+   192,
+   1
+  ],
+  "decoder.decoder.3.block.3.act1.alpha": [
+   192
+  ],
+  "decoder.decoder.3.block.3.act1.beta": [
+   192
+  ],
+  "decoder.decoder.3.block.3.act2.alpha": [
+   192
+  ],
+  "decoder.decoder.3.block.3.act2.beta": [
+   192
+  ],
+  "decoder.decoder.3.block.3.conv1.conv.bias": [
+   192
+  ],
+  "decoder.decoder.3.block.3.conv1.conv.weight": [
+   192,
+   192,
+   7
+  ],
+  "decoder.decoder.3.block.3.conv2.conv.bias": [
+   192
+  ],
+  "decoder.decoder.3.block.3.conv2.conv.weight": [
+   192,
+   192,
+   1
+  ],
+  "decoder.decoder.3.block.4.act1.alpha": [
+   192
+  ],
+  "decoder.decoder.3.block.4.act1.beta": [
+   192
+  ],
+  "decoder.decoder.3.block.4.act2.alpha": [
+   192
+  ],
+  "decoder.decoder.3.block.4.act2.beta": [
+   192
+  ],
+  "decoder.decoder.3.block.4.conv1.conv.bias": [
+   192
+  ],
+  "decoder.decoder.3.block.4.conv1.conv.weight": [
+   192,
+   192,
+   7
+  ],
+  "decoder.decoder.3.block.4.conv2.conv.bias": [
+   192
+  ],
+  "decoder.decoder.3.block.4.conv2.conv.weight": [
+   192,
+   192,
+   1
+  ],
+  "decoder.decoder.4.block.0.alpha": [
+   192
+  ],
+  "decoder.decoder.4.block.0.beta": [
+   192
+  ],
+  "decoder.decoder.4.block.1.conv.bias": [
+   96
+  ],
+  "decoder.decoder.4.block.1.conv.weight": [
+   192,
+   96,
+   6
+  ],
+  "decoder.decoder.4.block.2.act1.alpha": [
+   96
+  ],
+  "decoder.decoder.4.block.2.act1.beta": [
+   96
+  ],
+  "decoder.decoder.4.block.2.act2.alpha": [
+   96
+  ],
+  "decoder.decoder.4.block.2.act2.beta": [
+   96
+  ],
+  "decoder.decoder.4.block.2.conv1.conv.bias": [
+   96
+  ],
+  "decoder.decoder.4.block.2.conv1.conv.weight": [
+   96,
+   96,
+   7
+  ],
+  "decoder.decoder.4.block.2.conv2.conv.bias": [
+   96
+  ],
+  "decoder.decoder.4.block.2.conv2.conv.weight": [
+   96,
+   96,
+   1
+  ],
+  "decoder.decoder.4.block.3.act1.alpha": [
+   96
+  ],
+  "decoder.decoder.4.block.3.act1.beta": [
+   96
+  ],
+  "decoder.decoder.4.block.3.act2.alpha": [
+   96
+  ],
+  "decoder.decoder.4.block.3.act2.beta": [
+   96
+  ],
+  "decoder.decoder.4.block.3.conv1.conv.bias": [
+   96
+  ],
+  "decoder.decoder.4.block.3.conv1.conv.weight": [
+   96,
+   96,
+   7
+  ],
+  "decoder.decoder.4.block.3.conv2.conv.bias": [
+   96
+  ],
+  "decoder.decoder.4.block.3.conv2.conv.weight": [
+   96,
+   96,
+   1
+  ],
+  "decoder.decoder.4.block.4.act1.alpha": [
+   96
+  ],
+  "decoder.decoder.4.block.4.act1.beta": [
+   96
+  ],
+  "decoder.decoder.4.block.4.act2.alpha": [
+   96
+  ],
+  "decoder.decoder.4.block.4.act2.beta": [
+   96
+  ],
+  "decoder.decoder.4.block.4.conv1.conv.bias": [
+   96
+  ],
+  "decoder.decoder.4.block.4.conv1.conv.weight": [
+   96,
+   96,
+   7
+  ],
+  "decoder.decoder.4.block.4.conv2.conv.bias": [
+   96
+  ],
+  "decoder.decoder.4.block.4.conv2.conv.weight": [
+   96,
+   96,
+   1
+  ],
+  "decoder.decoder.5.alpha": [
+   96
+  ],
+  "decoder.decoder.5.beta": [
+   96
+  ],
+  "decoder.decoder.6.conv.bias": [
+   1
+  ],
+  "decoder.decoder.6.conv.weight": [
+   1,
+   96,
+   7
+  ],
+  "decoder.pre_conv.conv.bias": [
+   1024
+  ],
+  "decoder.pre_conv.conv.weight": [
+   1024,
+   512,
+   3
+  ],
+  "decoder.pre_transformer.input_proj.bias": [
+   512
+  ],
+  "decoder.pre_transformer.input_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.0.input_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.0.mlp.down_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.0.mlp.gate_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.0.mlp.up_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.0.mlp_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.0.post_attention_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.0.self_attn.k_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.0.self_attn.o_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.0.self_attn.q_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.0.self_attn.v_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.0.self_attn_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.1.input_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.1.mlp.down_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.1.mlp.gate_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.1.mlp.up_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.1.mlp_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.1.post_attention_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.1.self_attn.k_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.1.self_attn.o_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.1.self_attn.q_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.1.self_attn.v_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.1.self_attn_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.2.input_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.2.mlp.down_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.2.mlp.gate_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.2.mlp.up_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.2.mlp_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.2.post_attention_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.2.self_attn.k_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.2.self_attn.o_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.2.self_attn.q_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.2.self_attn.v_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.2.self_attn_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.3.input_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.3.mlp.down_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.3.mlp.gate_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.3.mlp.up_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.3.mlp_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.3.post_attention_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.3.self_attn.k_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.3.self_attn.o_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.3.self_attn.q_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.3.self_attn.v_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.3.self_attn_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.4.input_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.4.mlp.down_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.4.mlp.gate_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.4.mlp.up_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.4.mlp_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.4.post_attention_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.4.self_attn.k_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.4.self_attn.o_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.4.self_attn.q_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.4.self_attn.v_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.4.self_attn_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.5.input_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.5.mlp.down_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.5.mlp.gate_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.5.mlp.up_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.5.mlp_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.5.post_attention_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.5.self_attn.k_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.5.self_attn.o_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.5.self_attn.q_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.5.self_attn.v_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.5.self_attn_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.6.input_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.6.mlp.down_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.6.mlp.gate_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.6.mlp.up_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.6.mlp_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.6.post_attention_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.6.self_attn.k_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.6.self_attn.o_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.6.self_attn.q_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.6.self_attn.v_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.6.self_attn_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.7.input_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.7.mlp.down_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.7.mlp.gate_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.7.mlp.up_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.7.mlp_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.layers.7.post_attention_layernorm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.layers.7.self_attn.k_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.7.self_attn.o_proj.weight": [
+   512,
+   1024
+  ],
+  "decoder.pre_transformer.layers.7.self_attn.q_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.7.self_attn.v_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.pre_transformer.layers.7.self_attn_layer_scale.scale": [
+   512
+  ],
+  "decoder.pre_transformer.norm.weight": [
+   512
+  ],
+  "decoder.pre_transformer.output_proj.bias": [
+   1024
+  ],
+  "decoder.pre_transformer.output_proj.weight": [
+   1024,
+   512
+  ],
+  "decoder.quantizer.rvq_first.input_proj.weight": [
+   256,
+   512,
+   1
+  ],
+  "decoder.quantizer.rvq_first.output_proj.weight": [
+   512,
+   256,
+   1
+  ],
+  "decoder.quantizer.rvq_first.vq.layers.0._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_first.vq.layers.0._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.input_proj.weight": [
+   256,
+   512,
+   1
+  ],
+  "decoder.quantizer.rvq_rest.output_proj.weight": [
+   512,
+   256,
+   1
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.0._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.0._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.1._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.1._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.10._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.10._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.11._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.11._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.12._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.12._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.13._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.13._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.14._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.14._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.2._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.2._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.3._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.3._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.4._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.4._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.5._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.5._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.6._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.6._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.7._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.7._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.8._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.8._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.9._codebook.cluster_usage": [
+   2048
+  ],
+  "decoder.quantizer.rvq_rest.vq.layers.9._codebook.embedding_sum": [
+   2048,
+   256
+  ],
+  "decoder.upsample.0.0.conv.bias": [
+   1024
+  ],
+  "decoder.upsample.0.0.conv.weight": [
+   1024,
+   1024,
+   2
+  ],
+  "decoder.upsample.0.1.dwconv.conv.bias": [
+   1024
+  ],
+  "decoder.upsample.0.1.dwconv.conv.weight": [
+   1024,
+   1,
+   7
+  ],
+  "decoder.upsample.0.1.gamma": [
+   1024
+  ],
+  "decoder.upsample.0.1.norm.bias": [
+   1024
+  ],
+  "decoder.upsample.0.1.norm.weight": [
+   1024
+  ],
+  "decoder.upsample.0.1.pwconv1.bias": [
+   4096
+  ],
+  "decoder.upsample.0.1.pwconv1.weight": [
+   4096,
+   1024
+  ],
+  "decoder.upsample.0.1.pwconv2.bias": [
+   1024
+  ],
+  "decoder.upsample.0.1.pwconv2.weight": [
+   1024,
+   4096
+  ],
+  "decoder.upsample.1.0.conv.bias": [
+   1024
+  ],
+  "decoder.upsample.1.0.conv.weight": [
+   1024,
+   1024,
+   2
+  ],
+  "decoder.upsample.1.1.dwconv.conv.bias": [
+   1024
+  ],
+  "decoder.upsample.1.1.dwconv.conv.weight": [
+   1024,
+   1,
+   7
+  ],
+  "decoder.upsample.1.1.gamma": [
+   1024
+  ],
+  "decoder.upsample.1.1.norm.bias": [
+   1024
+  ],
+  "decoder.upsample.1.1.norm.weight": [
+   1024
+  ],
+  "decoder.upsample.1.1.pwconv1.bias": [
+   4096
+  ],
+  "decoder.upsample.1.1.pwconv1.weight": [
+   4096,
+   1024
+  ],
+  "decoder.upsample.1.1.pwconv2.bias": [
+   1024
+  ],
+  "decoder.upsample.1.1.pwconv2.weight": [
+   1024,
+   4096
+  ],
+  "encoder.downsample.conv.weight": [
+   512,
+   512,
+   4
+  ],
+  "encoder.encoder.layers.0.conv.bias": [
+   64
+  ],
+  "encoder.encoder.layers.0.conv.weight": [
+   64,
+   1,
+   7
+  ],
+  "encoder.encoder.layers.1.block.1.conv.bias": [
+   32
+  ],
+  "encoder.encoder.layers.1.block.1.conv.weight": [
+   32,
+   64,
+   3
+  ],
+  "encoder.encoder.layers.1.block.3.conv.bias": [
+   64
+  ],
+  "encoder.encoder.layers.1.block.3.conv.weight": [
+   64,
+   32,
+   1
+  ],
+  "encoder.encoder.layers.10.block.1.conv.bias": [
+   256
+  ],
+  "encoder.encoder.layers.10.block.1.conv.weight": [
+   256,
+   512,
+   3
+  ],
+  "encoder.encoder.layers.10.block.3.conv.bias": [
+   512
+  ],
+  "encoder.encoder.layers.10.block.3.conv.weight": [
+   512,
+   256,
+   1
+  ],
+  "encoder.encoder.layers.12.conv.bias": [
+   1024
+  ],
+  "encoder.encoder.layers.12.conv.weight": [
+   1024,
+   512,
+   16
+  ],
+  "encoder.encoder.layers.14.conv.bias": [
+   512
+  ],
+  "encoder.encoder.layers.14.conv.weight": [
+   512,
+   1024,
+   3
+  ],
+  "encoder.encoder.layers.3.conv.bias": [
+   128
+  ],
+  "encoder.encoder.layers.3.conv.weight": [
+   128,
+   64,
+   8
+  ],
+  "encoder.encoder.layers.4.block.1.conv.bias": [
+   64
+  ],
+  "encoder.encoder.layers.4.block.1.conv.weight": [
+   64,
+   128,
+   3
+  ],
+  "encoder.encoder.layers.4.block.3.conv.bias": [
+   128
+  ],
+  "encoder.encoder.layers.4.block.3.conv.weight": [
+   128,
+   64,
+   1
+  ],
+  "encoder.encoder.layers.6.conv.bias": [
+   256
+  ],
+  "encoder.encoder.layers.6.conv.weight": [
+   256,
+   128,
+   10
+  ],
+  "encoder.encoder.layers.7.block.1.conv.bias": [
+   128
+  ],
+  "encoder.encoder.layers.7.block.1.conv.weight": [
+   128,
+   256,
+   3
+  ],
+  "encoder.encoder.layers.7.block.3.conv.bias": [
+   256
+  ],
+  "encoder.encoder.layers.7.block.3.conv.weight": [
+   256,
+   128,
+   1
+  ],
+  "encoder.encoder.layers.9.conv.bias": [
+   512
+  ],
+  "encoder.encoder.layers.9.conv.weight": [
+   512,
+   256,
+   12
+  ],
+  "encoder.encoder_transformer.layers.0.input_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.0.input_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.0.mlp.fc1.weight": [
+   2048,
+   512
+  ],
+  "encoder.encoder_transformer.layers.0.mlp.fc2.weight": [
+   512,
+   2048
+  ],
+  "encoder.encoder_transformer.layers.0.mlp_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.0.post_attention_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.0.post_attention_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.0.self_attn.k_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.0.self_attn.o_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.0.self_attn.q_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.0.self_attn.v_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.0.self_attn_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.input_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.input_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.mlp.fc1.weight": [
+   2048,
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.mlp.fc2.weight": [
+   512,
+   2048
+  ],
+  "encoder.encoder_transformer.layers.1.mlp_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.post_attention_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.post_attention_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.self_attn.k_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.self_attn.o_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.self_attn.q_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.self_attn.v_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.1.self_attn_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.input_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.input_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.mlp.fc1.weight": [
+   2048,
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.mlp.fc2.weight": [
+   512,
+   2048
+  ],
+  "encoder.encoder_transformer.layers.2.mlp_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.post_attention_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.post_attention_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.self_attn.k_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.self_attn.o_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.self_attn.q_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.self_attn.v_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.2.self_attn_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.input_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.input_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.mlp.fc1.weight": [
+   2048,
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.mlp.fc2.weight": [
+   512,
+   2048
+  ],
+  "encoder.encoder_transformer.layers.3.mlp_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.post_attention_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.post_attention_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.self_attn.k_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.self_attn.o_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.self_attn.q_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.self_attn.v_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.3.self_attn_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.input_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.input_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.mlp.fc1.weight": [
+   2048,
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.mlp.fc2.weight": [
+   512,
+   2048
+  ],
+  "encoder.encoder_transformer.layers.4.mlp_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.post_attention_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.post_attention_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.self_attn.k_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.self_attn.o_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.self_attn.q_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.self_attn.v_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.4.self_attn_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.input_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.input_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.mlp.fc1.weight": [
+   2048,
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.mlp.fc2.weight": [
+   512,
+   2048
+  ],
+  "encoder.encoder_transformer.layers.5.mlp_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.post_attention_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.post_attention_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.self_attn.k_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.self_attn.o_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.self_attn.q_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.self_attn.v_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.5.self_attn_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.input_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.input_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.mlp.fc1.weight": [
+   2048,
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.mlp.fc2.weight": [
+   512,
+   2048
+  ],
+  "encoder.encoder_transformer.layers.6.mlp_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.post_attention_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.post_attention_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.self_attn.k_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.self_attn.o_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.self_attn.q_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.self_attn.v_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.6.self_attn_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.input_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.input_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.mlp.fc1.weight": [
+   2048,
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.mlp.fc2.weight": [
+   512,
+   2048
+  ],
+  "encoder.encoder_transformer.layers.7.mlp_layer_scale.scale": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.post_attention_layernorm.bias": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.post_attention_layernorm.weight": [
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.self_attn.k_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.self_attn.o_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.self_attn.q_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.self_attn.v_proj.weight": [
+   512,
+   512
+  ],
+  "encoder.encoder_transformer.layers.7.self_attn_layer_scale.scale": [
+   512
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.input_proj.weight": [
+   256,
+   512,
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.0.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.0.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.0.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.1.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.1.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.1.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.10.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.10.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.10.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.11.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.11.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.11.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.12.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.12.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.12.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.13.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.13.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.13.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.14.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.14.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.14.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.15.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.15.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.15.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.16.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.16.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.16.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.17.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.17.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.17.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.18.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.18.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.18.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.19.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.19.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.19.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.2.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.2.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.2.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.20.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.20.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.20.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.21.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.21.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.21.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.22.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.22.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.22.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.23.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.23.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.23.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.24.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.24.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.24.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.25.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.25.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.25.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.26.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.26.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.26.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.27.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.27.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.27.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.28.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.28.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.28.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.29.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.29.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.29.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.3.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.3.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.3.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.30.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.30.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.30.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.4.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.4.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.4.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.5.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.5.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.5.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.6.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.6.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.6.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.7.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.7.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.7.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.8.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.8.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.8.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.9.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.9.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.layers.9.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.acoustic_residual_vector_quantizer.output_proj.weight": [
+   512,
+   256,
+   1
+  ],
+  "encoder.quantizer.semantic_residual_vector_quantizer.input_proj.weight": [
+   256,
+   512,
+   1
+  ],
+  "encoder.quantizer.semantic_residual_vector_quantizer.layers.0.codebook.cluster_usage": [
+   2048
+  ],
+  "encoder.quantizer.semantic_residual_vector_quantizer.layers.0.codebook.embed_sum": [
+   2048,
+   256
+  ],
+  "encoder.quantizer.semantic_residual_vector_quantizer.layers.0.codebook.initialized": [
+   1
+  ],
+  "encoder.quantizer.semantic_residual_vector_quantizer.output_proj.weight": [
+   512,
+   256,
+   1
+  ]
+ },
+ "tokenizer_config": {
+  "architectures": [
+   "Qwen3TTSTokenizerV2Model"
+  ],
+  "decode_upsample_rate": 1920,
+  "decoder_config": {
+   "attention_bias": false,
+   "attention_dropout": 0.0,
+   "codebook_dim": 512,
+   "codebook_size": 2048,
+   "decoder_dim": 1536,
+   "head_dim": 64,
+   "hidden_act": "silu",
+   "hidden_size": 512,
+   "intermediate_size": 1024,
+   "latent_dim": 1024,
+   "layer_scale_initial_scale": 0.01,
+   "max_position_embeddings": 8000,
+   "num_attention_heads": 16,
+   "num_hidden_layers": 8,
+   "num_key_value_heads": 16,
+   "num_quantizers": 16,
+   "num_semantic_quantizers": 1,
+   "rms_norm_eps": 1e-05,
+   "rope_theta": 10000,
+   "semantic_codebook_size": 4096,
+   "sliding_window": 72,
+   "upsample_rates": [
+    8,
+    5,
+    4,
+    3
+   ],
+   "upsampling_ratios": [
+    2,
+    2
+   ],
+   "vector_quantization_hidden_dimension": 512
+  },
+  "encode_downsample_rate": 1920,
+  "encoder_config": {
+   "_frame_rate": 12.5,
+   "attention_bias": false,
+   "attention_dropout": 0.0,
+   "audio_channels": 1,
+   "codebook_dim": 256,
+   "codebook_size": 2048,
+   "compress": 2,
+   "dilation_growth_rate": 2,
+   "dtype": "float32",
+   "head_dim": 64,
+   "hidden_act": "gelu",
+   "hidden_size": 512,
+   "initializer_range": 0.02,
+   "intermediate_size": 2048,
+   "kernel_size": 7,
+   "last_kernel_size": 3,
+   "layer_scale_initial_scale": 0.01,
+   "max_position_embeddings": 8000,
+   "norm_eps": 1e-05,
+   "normalize": false,
+   "num_attention_heads": 8,
+   "num_filters": 64,
+   "num_hidden_layers": 8,
+   "num_key_value_heads": 8,
+   "num_quantizers": 32,
+   "num_residual_layers": 1,
+   "num_semantic_quantizers": 1,
+   "pad_mode": "constant",
+   "residual_kernel_size": 3,
+   "rope_theta": 10000.0,
+   "sampling_rate": 24000,
+   "sliding_window": 250,
+   "transformers_version": "4.57.0.dev0",
+   "trim_right_ratio": 1.0,
+   "upsample_groups": 512,
+   "upsampling_ratios": [
+    8,
+    6,
+    5,
+    4
+   ],
+   "use_cache": false,
+   "use_causal_conv": true,
+   "use_conv_shortcut": false,
+   "use_streaming": false,
+   "vector_quantization_hidden_dimension": 256
+  },
+  "encoder_valid_num_quantizers": 16,
+  "input_sample_rate": 24000,
+  "model_type": "qwen3_tts_tokenizer_12hz",
+  "output_sample_rate": 24000,
+  "transformers_version": "4.57.3"
+ },
+ "torch_dtype": null
+}

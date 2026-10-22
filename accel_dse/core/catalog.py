@@ -153,6 +153,12 @@ EXTRA_TAIL = [
     # 0.275: FireRedTTS3-Base (fp32) — Qwen3-1.7B backbone → per-step DiT flow head (10 steps × CFG 2) + patch encoder,
     # RedAE decode after generation; backbone config from the code (fireredtts3_base.py), see core/fireredtts3.py
     ("fireredtts3-base", "FireRedTeam/FireRedTTS3"),
+    # 0.338 Qwen3-TTS 12 Hz multi-codebook LM (talker + code predictor + speech_tokenizer)
+    ("qwen3-tts-0.6b-base", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"),
+    ("qwen3-tts-1.7b-base", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
+    ("qwen3-tts-0.6b-custom-voice", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"),
+    ("qwen3-tts-1.7b-custom-voice", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"),
+    ("qwen3-tts-1.7b-voice-design", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"),
     # 0.276: Fish Audio Drama 3 — Qwen3.5-35B-A3B-shaped MoE backbone (FP8 experts) + 13-layer codebook-MTP tower (one
     # row per backbone position, own KV) → 10-codebook frame per step @ 44.1 kHz / 2048; DAC codec not costed
     ("drama-3", "fishaudio/drama-3"),
@@ -595,7 +601,7 @@ def entries() -> list[dict]:
             # 0.270: any release with a modelled audio encoder and no vision tower (Whisper keeps it outside audio_config)
             from .vision import audio_spec
             # 0.271: Qwen2.5-Omni (speech in + speech out) → omni; 0.273: Step-Audio-2-mini with its token2wav too
-            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3", "fish_omni") else "omni" if cf.get("model_type") == "qwen2_5_omni" or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") in ("moshi", "index_echo_s2st") else \
+            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3", "fish_omni", "qwen3_tts") else "omni" if cf.get("model_type") == "qwen2_5_omni" or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") in ("moshi", "index_echo_s2st") else \
                 ("asr" if (cf.get("audio_config") or audio_spec(cf) is not None) and not cf.get("vision_config")
                  else "vlm") if (rel.get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])

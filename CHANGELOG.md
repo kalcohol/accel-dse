@@ -6,6 +6,12 @@
 
 
 
+## [0.338.0] — 2026-10-22
+
+- **Qwen3-TTS builder** (kind `qwen3_tts`, domain tts). Discrete multi-codebook LM at 12.5 Hz: Talker (catalog Qwen3) draws the first codebook; code predictor AR-generates the remaining 15; speech_tokenizer decode (fp32) → 24 kHz. Reuses Moshi-style frame KPIs. **Released:** `qwen3-tts-{0.6b,1.7b}-{base,custom-voice}` + `qwen3-tts-1.7b-voice-design` (param_err 0). SPEECH_MODELS / SPS_OUT 21→26.
+- **Freshness:** OrcaCyber Nano still gated (sha `1af1635`, config 401) — pending.
+- **Adversarial:** Carbon-X eval/shapes/dtype OK (stock Qwen3, dna_config metadata only). OmniASR w2v as-released fp32 weight bits held across eval/speech; other ASR audio still bf16.
+
 ## [0.337.0] — 2026-10-22
 
 - **Hotfix (0.336 suite on non-box hosts):** `test_core_336::test_docs_and_no_ui_patch` no longer requires `/workspace/ui-audit/ui.patch` (authoring-box only). It asserts the 0.336 CHANGELOG section documents that the UI patch was not applied.

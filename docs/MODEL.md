@@ -10004,3 +10004,23 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 ### §282.5 Freshness / pending
 - OrcaCyber Nano: sha `1af1635` unchanged, gated auto, config 401 → still pending.
 - Carried: OmniASR CTC; Qwen3-TTS builder; PixText routing mask; PCIe / CXL area; N7 / N28 controller; controller power; SPHBM4 PHY; NMC; HBM4 absolute pJ; LPDDR system idle/active.
+
+
+## §283 Qwen3-TTS 12 Hz multi-codebook LM (0.338)
+
+### §283.1 Architecture 「来源」
+- HF `Qwen/Qwen3-TTS-12Hz-*` + github QwenLM/Qwen3-TTS `modeling_qwen3_tts.py`.
+- **Talker** (`talker_config`, bf16): Qwen3 decoder (0.6B: h=1024 L=28; 1.7B: h=2048 L=28), `codec_head` vocab 3072. Text via `text_embedding` (text_h) → `text_projection` into talker h (prompt / trailing); per-frame input = sum of 16 codebook embeds.
+- **Code predictor** (`code_predictor_config`, bf16): 5-layer Qwen3 (h=1024), AR `num_code_groups−1` steps per frame; embeds width = talker_h; optional `small_to_mtp_projection` when talker_h ≠ cp_h (1.7B).
+- **Speech tokenizer** (`speech_tokenizer/*`, fp32): encode_downsample / decode_upsample 1920 @ 24 kHz → **12.5 Hz**. Decoder path costed; encoder used for Base voice-clone prompt only.
+- **Speaker encoder** (Base only): CampPlus/Res2Net, once per clone request.
+
+### §283.2 Catalog / roles
+- Talker → LLM (`params_llm`); code_predictor → `depth`; tokenizer → `codec`; speaker_encoder → `spk`; text_projection → prompt-only (subtracted from `release_params`).
+
+### §283.3 Adversarial (Carbon-X / OmniASR fp32)
+- Carbon-X: public Qwen3ForCausalLM, param_err 0, eval prefill/decode OK; dna_config does not change GEMMs.
+- OmniASR: `AudioSpec.w_bits`/`w_fmt` fp32 on bezzam ports held; whisper etc. still bf16 default.
+
+### §283.4 Pending
+- OrcaCyber Nano (sha 1af1635, gated). Tokenizer encode path detail beyond header GEMMs 「近似」. Carried: OmniASR CTC; PixText mask; PCIe/CXL; controllers; NMC; HBM4 absolute; LPDDR system idle/active.

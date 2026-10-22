@@ -55,6 +55,8 @@ SPEECH_MODELS = ("moshiko-7b", "kimi-audio-7b-instruct", "step-audio-2-mini", "q
                  "fun-cosyvoice3-0.5b-2512", "fireredtts3-base", "drama-3", "ming-3.0-tts-tiny", "qwen2-audio-7b-instruct", "qwen3-asr-1.7b",
                  "fun-asr-nano-2512", "whisper-large-v3", "whisper-large-v3-turbo", "ming-3.0-asr-tiny",
                  "omniasr-llm-300m-v2", "omniasr-llm-1b-v2", "omniasr-llm-3b-v2", "omniasr-llm-7b-v2",  # 0.336 OmniASR
+                 "qwen3-tts-0.6b-base", "qwen3-tts-1.7b-base", "qwen3-tts-0.6b-custom-voice",
+                 "qwen3-tts-1.7b-custom-voice", "qwen3-tts-1.7b-voice-design",  # 0.338 Qwen3-TTS
                  "index-echo-s2st-2b", "index-echo-s2st-9b")   # 0.280 S2ST
 OUT_LEN = 64            # reply / transcript tokens 「假设」 (same default as the UI speech panel)
 PROMPT = 64             # text prompt tokens 「假设」
@@ -79,6 +81,8 @@ def _stages(k: dict, audio_s: float) -> tuple[dict, float, str, float]:
         return ({"thinker": k["out_len"] * k["tpot_s"] / k["audio_out_s"], "speech_card": k["rtf"]}, k["codec_per_s"],
                 dom, k["first_audio_s"])
     if kind == "moshi":
+        return ({"frame": k["rtf"]}, 1.0 / (k["frame_ms"] / 1e3), dom, k["first_audio_s"])
+    if kind == "qwen3_tts":
         return ({"frame": k["rtf"]}, 1.0 / (k["frame_ms"] / 1e3), dom, k["first_audio_s"])
     if kind == "s2st":
         sp = k["split"]

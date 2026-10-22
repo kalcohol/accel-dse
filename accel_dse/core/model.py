@@ -502,6 +502,7 @@ class ModelSpec:
     omni: object = None                      # 0.271 core.omni.OmniSpec: Qwen2.5-Omni Talker + token2wav (speech output)
     fish: object = None                      # 0.276 core.drama3.FishSpec: Drama 3 codebook-MTP tower (in layers) + frame timing
     tts: object = None                       # 0.269 core.tts.TtsSpec: speech-synthesis decode head (replaces the LM head)
+    qwen3_tts: object = None                 # 0.338 core.qwen3_tts.Qwen3TtsSpec: code predictor + tokenizer decode
     # 0.270 encoder-decoder (Whisper): encoder positions each decoder sequence cross-attends to (1500 per 30 s window);
     # the cross K/V of every layer is computed at prefill and kept per sequence (fixed size, like recurrent state)
     enc_ctx: int = 0
@@ -595,6 +596,11 @@ def _is_kimi(cfg: dict) -> bool:
 def _tc(cfg: dict) -> dict:
     tc = cfg.get("text_config")
     mt = cfg.get("model_type")
+    if mt == "qwen3_tts" and isinstance(cfg.get("talker_config"), dict):
+        # 0.338 Qwen3-TTS: talker is the AR codec LM (Qwen3 + codec_head); text_embedding is looked up /
+        # projected (from_release lookup); code_predictor + speech_tokenizer → core/qwen3_tts.py
+        tc = {**cfg["talker_config"], "model_type": "qwen3",
+              "tie_word_embeddings": False, "torch_dtype": cfg.get("torch_dtype") or "bfloat16"}
     if mt == "lingv3_tts" and isinstance(cfg.get("llm_config"), dict):
         tc = cfg["llm_config"]      # 0.269 Ming-3.0-tts-tiny: the BailingMoeV3 decoder config sits in llm_config
     if mt == "qwen3_asr" and isinstance((cfg.get("thinker_config") or {}).get("text_config"), dict):
@@ -2140,8 +2146,9 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
     if hc and not any(l.hc or l.gres_n for l in spec.layers):
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
-    if spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers) and mt not in ("whisper", "moshi") \
-            and not c.get("cosyvoice") and spec.fish is None:     # 0.274 Moshi: per-frame input tables, a few rows each (exact)
+    if (spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers)
+            and mt not in ("whisper", "moshi") and not c.get("cosyvoice") and spec.fish is None
+            and getattr(spec, "qwen3_tts", None) is None):  # 0.274 Moshi / 0.338 Qwen3-TTS embed tables (exact)
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
     if spec.fish is not None:
         if not spec.fish.codec:
@@ -2223,6 +2230,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=spec.fmt("embed").bits,
                            notes=spec.notes + (f"查表 {(emb_rel - spec.embed_params) / 1e9:.2f}B：文本 embedding（252 288 行）"
                                                "+ 帧输入码本 embedding（10 × 4096）+ 塔层码表；每帧只读少量行",))
+        elif emb_rel > 1.05 * spec.embed_params and (cfg.get("model_type") or "") == "qwen3_tts":
+            # 0.338: text_embedding (prompt rows) + codec_embedding (per-frame); surplus = text table
+            spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=16.0,
+                           notes=spec.notes + (f"文本 embedding（{(emb_rel - spec.embed_params) / 1e9:.2f}B，bf16）："
+                                               "提示查表；每帧用 codec_embedding",))
         elif emb_rel > 1.05 * spec.embed_params:
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params,
                            notes=spec.notes + (f"查表 {(emb_rel - spec.embed_params) / 1e9:.1f}B 参数（n-gram / engram），"
@@ -2399,6 +2411,20 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 f"token2wav DiT（{om.dit_params / 1e6:.1f}M，fp32，RK4 {om.evals} 次 × CFG {om.cfg_mult}，"
                 f"{om.chunk} 帧分块流式）+ BigVGAN（{om.bigvgan_params / 1e6:.1f}M，fp32，24 kHz）；"
                 "按每输出音频秒计（core/speech.py），放在每个副本一张额外卡上「假设」",))
+        from .qwen3_tts import qwen3_tts_spec
+        qs = qwen3_tts_spec(cfg, rel)
+        if qs is not None:
+            # 0.338 Qwen3-TTS: talker = catalog LLM; code predictor (depth) + speech tokenizer decode (codec)
+            # + speaker encoder (spk, Base) costed per output-audio second by core/speech.py.
+            # text_projection (release role other) is prompt-only — drop from params_llm like Ming llm_side.
+            spec = replace(spec, qwen3_tts=qs,
+                           release_params=(spec.release_params or 0) - qs.text_proj_params,
+                           release_bytes=((spec.release_bytes or 0) - 2 * qs.text_proj_params) or None,
+                           notes=spec.notes + (
+                f"语音合成（TTS，12.5 Hz 多码本 LM）：Talker 每帧 1 步（bf16，首码本）+ code predictor "
+                f"{qs.cp_steps} 步 × {qs.cp_layers} 层 d{qs.cp_h}（{qs.code_predictor_params / 1e6:.0f}M，bf16）"
+                f"+ speech tokenizer 解码（{qs.tokenizer_dec_params / 1e6:.0f}M，fp32，{qs.sample_rate // 1000} kHz）；"
+                f"每帧 {qs.frame_s * 1e3:.0f} ms 音频；放在每个副本一张额外卡上「假设」",))
         from .moshi import moshi_spec
         ms = moshi_spec(cfg, rel)
         if ms is not None:
