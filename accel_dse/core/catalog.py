@@ -46,6 +46,8 @@ EXTRA_TAIL = [
     ("carbon-500m", "HuggingFaceBio/Carbon-500M"),
     # 0.337: Carbon-X (2026-10-22; stock Qwen3ForCausalLM + dna_config 6-mer tags, bf16 as released)
     ("carbon-x", "HuggingFaceBio/Carbon-X"),
+    # 0.355: MiniMax M3.1-Flash (2026-10-23; native multimodal MoE ~428B / 23B, block-level max-scored sparse attention)
+    ("minimax-m3.1-flash", "MiniMaxAI/MiniMax-M3.1-Flash"),
     # 0.114 coverage refresh (official releases 2026-10-12 / 13; public config.json + safetensors headers)
     ("lfm2.5-24b-a2b", "LiquidAI/LFM2.5-24B-A2B"),
     ("lfm2.5-24b-a2b-fp8", "LiquidAI/LFM2.5-24B-A2B-FP8"),
