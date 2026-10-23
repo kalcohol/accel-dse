@@ -6,6 +6,22 @@
 
 
 
+## [0.357.0] — 2026-10-23
+
+### 语音模型覆盖补充 (MODEL §357)
+
+- **Whisper 系列补全**：OpenAI Whisper 全系列 ASR 模型（公开架构配置 + safetensors headers）
+  - whisper-tiny（39M encoder + 38M decoder；4 层 encoder/decoder，384 维）
+  - whisper-base（74M；6 层，512 维）
+  - whisper-small（244M；12 层，768 维）
+  - whisper-medium（769M；24 层，1024 维）
+  - whisper-large（1.5B；32 层，1280 维，v1 原始版）
+  - whisper-large-v2（1.5B；32 层，1280 维，v2 改进版）
+  - 已有 whisper-large-v3 / -turbo 保持（0.270 已覆盖）
+- **机制**：标准 Whisper encoder-decoder，cross-attention decode，30 秒固定窗口，FP32 as-released dtype
+- **覆盖**：完整（all 6 size variants，encoder + decoder GEMMs + cross-attention + positional embeddings；参数总数对齐 HF headers）
+- **调研**：Qwen-Omni / Qwen-Audio 系列（Qwen2-Audio, Qwen2.5-Omni, Qwen3-Omni, Qwen3-ASR, Qwen3-TTS）已在 0.270-0.346 完整覆盖；Kimi-Audio-7B（0.273）、CosyVoice2/3（0.271）、Step-Audio-2（0.272, 0.339）、Moshi（0.274, 0.339）均已存在；本轮专注 Whisper 官方全系列补齐
+
 ## [0.356.0] — 2026-10-23
 
 ### MiniMax M3 和 M2.7 (MODEL §356)

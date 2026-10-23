@@ -137,6 +137,13 @@ EXTRA_TAIL = [
     ("whisper-large-v3-turbo", "openai/whisper-large-v3-turbo"),
     ("qwen2-audio-7b-instruct", "Qwen/Qwen2-Audio-7B-Instruct"),
     ("qwen3-asr-1.7b", "Qwen/Qwen3-ASR-1.7B"),
+    # 0.357 speech models round: Whisper family (tiny/base/small/medium/large/large-v2) — official OpenAI ASR releases
+    ("whisper-tiny", "openai/whisper-tiny"),
+    ("whisper-base", "openai/whisper-base"),
+    ("whisper-small", "openai/whisper-small"),
+    ("whisper-medium", "openai/whisper-medium"),
+    ("whisper-large", "openai/whisper-large"),
+    ("whisper-large-v2", "openai/whisper-large-v2"),
     # 0.271 speech round 2: Qwen2.5-Omni-7B (Thinker Qwen2.5-7B + Whisper-v3 audio tower; Talker + token2wav speech out)
     ("qwen2.5-omni-7b", "Qwen/Qwen2.5-Omni-7B"),
     # 0.339: Qwen2.5-Omni-3B (same qwen2_5_omni builder; Thinker Qwen2.5-3B-shaped + Talker + token2wav)
