@@ -48,6 +48,9 @@ EXTRA_TAIL = [
     ("carbon-x", "HuggingFaceBio/Carbon-X"),
     # 0.355: MiniMax M3.1-Flash (2026-10-23; native multimodal MoE ~428B / 23B, block-level max-scored sparse attention)
     ("minimax-m3.1-flash", "MiniMaxAI/MiniMax-M3.1-Flash"),
+    # 0.356: MiniMax M3 (non-Flash) + M2.7 (2026-10-23; M3 ~426B / 23B same block-level MSA, M2.7 ~229B / 29B fp8)
+    ("minimax-m3", "MiniMaxAI/MiniMax-M3"),
+    ("minimax-m2.7", "MiniMaxAI/MiniMax-M2.7"),
     # 0.114 coverage refresh (official releases 2026-10-12 / 13; public config.json + safetensors headers)
     ("lfm2.5-24b-a2b", "LiquidAI/LFM2.5-24B-A2B"),
     ("lfm2.5-24b-a2b-fp8", "LiquidAI/LFM2.5-24B-A2B-FP8"),

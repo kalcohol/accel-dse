@@ -65,6 +65,8 @@ _PREPROC = {
         ("v1.2", 1638400), ("flash-v1.2", 1638400), ("v1.1-27b", 4194304), ("v1-27b", 262144))},
     # 0.355 MiniMax M3.1-Flash: patch_merge spatial 2 / temporal 2, image 672, patch 14 → 1296 base patches (48×27), merged to 576
     "MiniMaxAI/MiniMax-M3.1-Flash": {"min_px": 65536, "max_px": 16777216},
+    # 0.356 MiniMax M3 (non-Flash): same vision config as M3.1-Flash (image 2016, patch 14, merged to 576)
+    "MiniMaxAI/MiniMax-M3": {"min_px": 65536, "max_px": 16777216},
     "zai-org/GLM-5.3-Flash": {"min_tok": 16, "max_tok": 8000},
     "moonshotai/Kimi-K2.5": {"in_patch_limit": 16384, "side": 512},
     "moonshotai/Kimi-K2.7-Code": {"in_patch_limit": 16384, "side": 512},   # same vision_config / image processor as K2.5

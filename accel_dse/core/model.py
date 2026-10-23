@@ -2032,7 +2032,7 @@ def _builder(c: dict):
     if mt == "minimax_m3_vl":
         return _build_minimax_m3, "MiniMax M3.1-Flash（GQA + 块级 MSA）MoE"
     if mt in ("kimi_linear", "bailing_hybrid", "bailing_moe_v3_vl", "ming_v3_asr", "bailing_moe_v3", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
-              "qwen4_exp", "qwen4_exp_text", "minimax_text_01", "minimax_m1", "minimax") or mt.startswith("glm5_next"):
+              "qwen4_exp", "qwen4_exp_text", "minimax_text_01", "minimax_m1", "minimax_m2", "minimax") or mt.startswith("glm5_next"):
         return _build_hybrid, "混合注意力（linear + full）"
     if c.get("kv_lora_rank"):
         return _build_mla, "MLA" + (" + DSA" if c.get("index_n_heads") else "") + (" MoE" if c.get("n_routed_experts") else "")

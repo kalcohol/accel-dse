@@ -6,6 +6,20 @@
 
 
 
+## [0.356.0] — 2026-10-23
+
+### MiniMax M3 和 M2.7 (MODEL §356)
+
+- **MiniMaxAI/MiniMax-M3**（non-Flash，native multimodal MoE ~426B / 23B active）：复用 M3.1-Flash block-level MSA 机制
+  - 架构与 M3.1-Flash 一致：60 层，128 local experts / 4 per tok / 1 shared，block-level max-scored sparse attention（块大小 128，top-16 块，索引器 4 头 × 128 维）
+  - 主要区别：无量化（BF16 存储），vision tower image_size 2016（vs M3.1-Flash 672）
+  - 覆盖：**完整**（all GEMMs + block-level MSA + MoE + vision；params 426.4B 对齐 header）
+- **MiniMaxAI/MiniMax-M2.7**（MoE ~229B / 29B active，fp8 量化）：纯 MoE 架构（无 sparse attention）
+  - 62 层，256 local experts / 8 per tok / 0 shared，intermediate 1536，hidden 3072，GQA 48 heads / 8 KV（head_dim 128）
+  - 量化：fp8（float8_e4m3fn，weight_block_size 128×128）主干，gate/lm_head 未量化（as-released）
+  - MTP 模块：use_mtp=true，num_mtp_modules=3，mtp_transformer_layers=1（hybrid builder 路径，attn_type_list 全 1 = 全 full attention）
+  - 覆盖：**完整**（all GEMMs + MoE + MTP；params 228.7B 对齐 header）
+
 ## [0.355.0] — 2026-10-23
 
 ### MiniMax M3.1-Flash 块级稀疏注意力 (MODEL §355)
