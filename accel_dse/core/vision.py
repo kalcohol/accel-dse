@@ -63,6 +63,8 @@ _PREPROC = {
     # checked; v1.2 / Flash = decision_config max_pixels 1638400 (card: 1.6 MP); v1.1 4194304; v1 262144 (512 × 512)
     **{f"perplexity-ai/pplx-decider-{v}": {"min_px": 65536, "max_px": x} for v, x in (
         ("v1.2", 1638400), ("flash-v1.2", 1638400), ("v1.1-27b", 4194304), ("v1-27b", 262144))},
+    # 0.355 MiniMax M3.1-Flash: patch_merge spatial 2 / temporal 2, image 672, patch 14 → 1296 base patches (48×27), merged to 576
+    "MiniMaxAI/MiniMax-M3.1-Flash": {"min_px": 65536, "max_px": 16777216},
     "zai-org/GLM-5.3-Flash": {"min_tok": 16, "max_tok": 8000},
     "moonshotai/Kimi-K2.5": {"in_patch_limit": 16384, "side": 512},
     "moonshotai/Kimi-K2.7-Code": {"in_patch_limit": 16384, "side": 512},   # same vision_config / image processor as K2.5
@@ -887,6 +889,20 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                           ((hm, hm), (hm, out)), params, tuple(sorted(pre.items())), kv_heads=kv,
                           win=vc.get("visual_token_window_size") or 0, full_idx=tuple(vc["fullatt_block_indexes"]),
                           sink=bool(vc.get("use_sink")), perm=perm)
+    if mt == "clip_vision_model" and cfg.get("model_type") == "minimax_m3_vl":    # 0.355 MiniMax M3.1-Flash
+        h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"]
+        p, img_size = vc["patch_size"], vc["image_size"]
+        mk_s = cfg.get("img_token_compression_config", {}).get("spatial_merge_size", 2)
+        mk_t = cfg.get("img_token_compression_config", {}).get("temporal_patch_size", 2)
+        mk = mk_s  # spatial merge
+        proj_h = cfg.get("projector_hidden_size", text_h)
+        # Conv2d patch embed + 3D RoPE + LN blocks (qkv / proj, GELU MLP) + LN + projector (h → proj_h, bias) + patch_merge MLP
+        hm = h * mk * mk
+        params = (3 * p * p * h + L * (2 * h + _lin(h, 3 * h) + _lin(h, h) + _lin(h, inter) + _lin(inter, h))
+                  + h + _lin(h, proj_h) + _lin(hm, hm) + _lin(hm, hm))
+        pre["factor"] = p * mk
+        return VisionSpec("minimax", "MiniMax ViT (3D RoPE) + patch merger", p, mk_t, h, inter, L, nh, h, False, mk,
+                          ((h, proj_h), (hm, hm), (hm, hm)), params, tuple(sorted(pre.items())))
     if mt == "muse_spark_vision":                         # 0.174 vLLM PR #61879 vision.py NaViT
         h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"]
         p, t, mk = vc["patch_size"], vc["patch_temporal"], vc["merge_size"]

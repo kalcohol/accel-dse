@@ -116,6 +116,7 @@ class AttnCore:
                                # once into a cached fp32 + fp8 summary (kernel.py csa_compress_regions); the
                                # indexer reads the fp8 summaries, no per-forward re-pooling
     idx_kpool: int = 0         # GLM-5.3-Flash: indexer scores gated k-pools of this many keys (top-k/kpool pools)
+    idx_score_type: str = ""   # 0.355 MiniMax M3.1-Flash block-level MSA: max (max-scored blocks) | mean (mean pooling); "" = token-level
     lin: str = ""              # linear-attention recurrence: gdn | kda (delta rule, scalar / per-channel gate) | lightning
     lin_chunk: int = 0         # prefill chunk (block) length of the reference chunked kernel
     sink: bool = False         # learned attention sink per head (gpt-oss): one extra softmax logit per query row
@@ -1068,6 +1069,54 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, mtp, notes, cov
 
 
+def _build_minimax_m3(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.355 MiniMax M3.1-Flash (minimax_m3_vl): native multimodal MoE with block-level max-scored sparse attention (MSA).
+    text_config: 60 layers, hidden 6144, 64 heads (128 dim) / 4 KV, MoE 128 local experts / 4 per tok / 1 shared (first 3
+    layers dense), intermediate 3072 (routed) / 12288 (dense) / 3072 (shared), swigluoai (alpha 1.702 / limit 7.0), partial
+    RoPE (64/128), max_pos 1048576.  sparse_attention_config: block_size 128, topk_blocks 16, index_heads 4, index_dim 128,
+    score_type max (per-block max of indexer scores over block keys).  quantization_config: mxfp8 / NVFP4 MoE."""
+    h = c["hidden_size"]
+    L = c["num_hidden_layers"]
+    H = c["num_attention_heads"]
+    KV = c.get("num_key_value_heads") or H
+    hd = c.get("head_dim") or h // H
+    rope = c.get("rotary_dim") or 0
+    E = c.get("num_local_experts") or 0
+    k = c.get("num_experts_per_tok") or 0
+    de = c.get("intermediate_size") or 0
+    d_dense = c.get("dense_intermediate_size") or 0
+    d_sh = c.get("shared_intermediate_size") or 0
+    n_sh = c.get("n_shared_experts") or 0
+    moe_freq = _list(c.get("moe_layer_freq")) or [0] * L
+    sp_cfg = c.get("sparse_attention_config") or {}
+    sp_freq = _list(sp_cfg.get("sparse_attention_freq")) or [0] * L
+    sp_block = sp_cfg.get("sparse_block_size") or 0
+    sp_topk_blocks = sp_cfg.get("sparse_topk_blocks") or 0
+    ih = sp_cfg.get("sparse_num_index_heads") or 0
+    idim = sp_cfg.get("sparse_index_dim") or 0
+    score_type = sp_cfg.get("sparse_score_type") or ""
+    notes = [f"MiniMax M3.1-Flash：MoE {E}×{de}（4 选 1 shared）+ 块稀疏注意力（块大小 {sp_block}，top-{sp_topk_blocks} 块，"
+             f"{score_type} 打分，{ih} 索引头）"]
+
+    def layer(i: int) -> Layer:
+        alin, core = _gqa(h, H, KV, hd, out_gate=False)
+        if sp_freq[i] if i < len(sp_freq) else 0:
+            alin = alin + (Linear("idx_q", h, ih * idim, "rep"), Linear("idx_k", h, idim, "rep"))
+            core = replace(core, qsa=sp_block, topk=sp_topk_blocks * sp_block, idx_heads=ih, idx_dim=idim,
+                           idx_score_type=score_type, rope_n=rope)
+        is_moe = moe_freq[i] if i < len(moe_freq) else 0
+        if is_moe:
+            ffn, flin = _ffn_moe(h, E, k, de, n_sh, d_sh)
+            misc = 2 * hd + E
+        else:
+            ffn, flin = _ffn_dense(h, d_dense)
+            misc = 2 * hd
+        return Layer(alin, core, ffn, flin, misc + 2 * h)
+
+    layers = [layer(i) for i in range(L)]
+    return layers, [], notes, "full"
+
+
 def _build_dsv4_ref(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """DeepSeek-V4-Flash / -Pro per the official inference/model.py (identical in both repos): MQA head_dim 512 (one
     shared K = V entry, attention sink, per-head q RMSNorm, inverse RoPE on o), grouped low-rank output, sliding
@@ -1980,6 +2029,8 @@ def _builder(c: dict):
         return _build_dsv4, "DeepSeek-V4 (CSA/MQA-512)"
     if mt == "raon1_mini":     # 0.320 KRAFTON Raon-1-mini: RDA (gated delta) + NoPE gated MLA, Raon_mHC, MoE
         return _build_hybrid, "混合注意力（RDA delta 规则 + NoPE 门控 MLA）mHC MoE"
+    if mt == "minimax_m3_vl":
+        return _build_minimax_m3, "MiniMax M3.1-Flash（GQA + 块级 MSA）MoE"
     if mt in ("kimi_linear", "bailing_hybrid", "bailing_moe_v3_vl", "ming_v3_asr", "bailing_moe_v3", "qwen3_next", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text",
               "qwen4_exp", "qwen4_exp_text", "minimax_text_01", "minimax_m1", "minimax") or mt.startswith("glm5_next"):
         return _build_hybrid, "混合注意力（linear + full）"

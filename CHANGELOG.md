@@ -6,6 +6,18 @@
 
 
 
+## [0.355.0] — 2026-10-23
+
+### MiniMax M3.1-Flash 块级稀疏注意力 (MODEL §355)
+
+- MiniMaxAI/MiniMax-M3.1-Flash（native multimodal MoE ~428B / 23B active）：block-level max-scored sparse attention（MSA）
+- **机制新增**：`AttnCore.idx_score_type`（max | mean）区分块稀疏选择策略；max = 每块取索引器分数最大值，mean = 块级 mean pooling
+- **block-level MSA**：sparse_block_size 128，sparse_topk_blocks 16（选 top-k 块），sparse_score_type max；索引器 4 头 × 128 维；ir.py 按块最大值计分 + 块级 top-k（≠ 现有 token-level 或 mean-pooled QSA）
+- **MoE**：128 local experts / 4 per tok / 1 shared（前 3 层 dense），intermediate 3072 / dense_intermediate 12288 / shared_intermediate 3072
+- **量化**：mxfp8 主干 + NVFP4 MoE experts（as-released dtype，硬件原生支持矩阵 + 反量化开销）
+- Vision tower（ViT-like 1280/16 heads/32 layers, patch 14, image 672）+ multimodal projector 已建模（vision.py 路径存在）；DSpark draft head 存在但未建模（代码库无 clean hook）
+- 覆盖：**完整**（all GEMMs + block-level MSA mechanism + MoE + vision；params 426.4B 对齐 header）
+
 ## [0.354.0] — 2026-10-23
 
 ### Validation and catalog review

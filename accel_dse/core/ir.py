@@ -919,14 +919,21 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         ib = core.idx_bytes_per_token(kvb) * core.compress          # bytes per cached indexer key
         pool_vec = 0.0
         if core.qsa:
-            # Qwen4Exp QSA: score ⌊p/b⌋ mean-pooled key blocks (every forward pools the cached raw keys once: mean
-            # 1/elem, k LayerNorm 4/elem, RoPE on the block start; the reference loop recomputes this per query —
-            # identical values, counted once), q LayerNorm + RoPE, ReLU + head sum, top-(budget/b) blocks
             b_ = core.qsa
             n_keys = max(ctx_tot // b_, 1)
-            fs = lambda m_: (lambda a_, c_: b_ * a_ * (a_ - 1) // 2 + a_ * (c_ + 1))(*divmod(m_, b_))
-            icaus = 1.0 if ph.kind == "decode" else min(1.0, (fs(ctx_tot) - fs(ph.ctx)) / q / n_keys)
-            pool_vec = b_loc * (ctx_tot // b_) * (b_ * core.idx_dim + 4 * core.idx_dim + 3 * core.idx_rope)
+            if core.idx_score_type == "max":
+                # 0.355 MiniMax M3.1-Flash block-level MSA: per-block max of indexer scores (no pooling / k norm per
+                # forward; indexer q LayerNorm + RoPE, score all cached keys, max over each block, top-(topk/b) blocks)
+                fs = lambda m_: (lambda a_, c_: b_ * a_ * (a_ - 1) // 2 + a_ * (c_ + 1))(*divmod(m_, b_))
+                icaus = 1.0 if ph.kind == "decode" else min(1.0, (fs(ctx_tot) - fs(ph.ctx)) / q / n_keys)
+                pool_vec = b_loc * (ctx_tot // b_) * core.idx_dim    # per-block max reduction (1/elem)
+            else:
+                # Qwen4Exp QSA: score ⌊p/b⌋ mean-pooled key blocks (every forward pools the cached raw keys once: mean
+                # 1/elem, k LayerNorm 4/elem, RoPE on the block start; the reference loop recomputes this per query —
+                # identical values, counted once), q LayerNorm + RoPE, ReLU + head sum, top-(budget/b) blocks
+                fs = lambda m_: (lambda a_, c_: b_ * a_ * (a_ - 1) // 2 + a_ * (c_ + 1))(*divmod(m_, b_))
+                icaus = 1.0 if ph.kind == "decode" else min(1.0, (fs(ctx_tot) - fs(ph.ctx)) / q / n_keys)
+                pool_vec = b_loc * (ctx_tot // b_) * (b_ * core.idx_dim + 4 * core.idx_dim + 3 * core.idx_rope)
             if core.idx_sum:
                 # 0.144 Step-5 (inference/kernel.py update_summaries_*): only regions completed in this pass are
                 # compressed (z-gated weighted sum 3/elem, k LayerNorm 4/elem, RoPE, fp8 round 2/elem) and cached;
@@ -978,9 +985,15 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
         per_tok = 4 * core.idx_dim + 3 * rows * core.idx_rope
         if core.idx_fp8:
             per_tok += rows * core.idx_dim * (math.log2(core.idx_dim) + 2)
-        if core.qsa:       # q LayerNorm (4/elem) + RoPE on the index q heads; per pair ReLU + head sum, top-k
-            per_tok = core.idx_heads * (4 * core.idx_dim + 3 * core.idx_rope)
-            per_pair = 2 * core.idx_heads + 1
+        if core.qsa:
+            if core.idx_score_type == "max":
+                # 0.355 MiniMax M3.1-Flash: q LayerNorm + RoPE, top-k over block-wise max
+                per_tok = core.idx_heads * (4 * core.idx_dim + 3 * core.idx_rope)
+                per_pair = 1    # max reduction per block, then top-k
+            else:
+                # Qwen4Exp QSA: q LayerNorm + RoPE; per pair ReLU + head sum, top-k
+                per_tok = core.idx_heads * (4 * core.idx_dim + 3 * core.idx_rope)
+                per_pair = 2 * core.idx_heads + 1
         if core.dual:      # V4.1: RoPE + fp4-simulated quant on the local q heads; weights GEMM is a Linear
             per_tok = ih_loc * (3 * core.idx_rope + 2 * core.idx_dim)
         if core.idx_cmp:
