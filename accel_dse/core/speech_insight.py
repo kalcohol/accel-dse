@@ -57,7 +57,8 @@ SPEECH_MODELS = ("moshiko-7b", "moshika-7b", "kimi-audio-7b-instruct", "step-aud
                  "omniasr-llm-300m-v2", "omniasr-llm-1b-v2", "omniasr-llm-3b-v2", "omniasr-llm-7b-v2",  # 0.336 OmniASR
                  "qwen3-tts-0.6b-base", "qwen3-tts-1.7b-base", "qwen3-tts-0.6b-custom-voice",
                  "qwen3-tts-1.7b-custom-voice", "qwen3-tts-1.7b-voice-design",  # 0.338 Qwen3-TTS
-                 "index-echo-s2st-2b", "index-echo-s2st-9b")   # 0.280 S2ST
+                 "index-echo-s2st-2b", "index-echo-s2st-9b",  # 0.280 S2ST
+                 "whisper-tiny", "whisper-base", "whisper-small", "whisper-medium", "whisper-large", "whisper-large-v2")   # 0.357 Whisper family
 OUT_LEN = 64            # reply / transcript tokens 「假设」 (same default as the UI speech panel)
 PROMPT = 64             # text prompt tokens 「假设」
 
