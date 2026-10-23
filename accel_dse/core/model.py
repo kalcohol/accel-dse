@@ -558,6 +558,9 @@ class ModelSpec:
         p += self.standby_params + self.cached_params
         if include_mtp:
             p += self.mtp_params()
+        # 0.358: encoder-decoder (Whisper) includes the encoder — vision_params is part of the model, not an optional tower
+        if self.enc_ctx and self.vision_params:
+            p += self.vision_params
         return p
 
     def mtp_params(self) -> int:
@@ -2283,8 +2286,13 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         if not any(l.role == "other" for L in spec.layers + spec.mtp_layers for l in L.attn_linears):
             fm.pop("other", None)             # 0.280: only models with role-"other" Linears (Qwen4Exp) carry it
         fm.update(_w4a4_roles(rel, fm))
+        # 0.358: encoder-decoder (Whisper) release_params includes encoder + decoder
+        whisper_enc_dec = (c.get("model_type") or "") == "whisper"
+        rp = rel.get("params_llm") or 0
+        if whisper_enc_dec:
+            rp += rel.get("params_vision") or 0
         spec = replace(spec, formats=tuple(sorted(fm.items())), kv_fmt=_kv_fmt(rel), act_fmt=_act_fmt(rel),
-                       release_params=rel.get("params_llm"), release_mtp_params=rel.get("params_mtp"),
+                       release_params=rp, release_mtp_params=rel.get("params_mtp"),
                        release_bytes=rel.get("bytes_llm"), quantized_release=_quant_release(rel))
         # lookup-only tables (n-gram / engram embeddings): stored, read a few rows per token
         emb_rel = sum(v["params"] for v in rel.get("roles", {}).get("embed", {}).values())
