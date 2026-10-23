@@ -146,6 +146,7 @@
   "use_cache": true,
   "vocab_size": 51865
  },
+ "domain": "asr",
  "fetched": "2026-10-23",
  "n_tensors": 245,
  "params_llm": 52003328,

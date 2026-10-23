@@ -2425,7 +2425,8 @@ function speechStreamsCell(c) {
 // click supersedes the run (req drops the old reply, the static build frees its worker); a scenario edit marks it stale
 const SPS_ASR = ['qwen2-audio-7b-instruct', 'qwen3-asr-1.7b', 'fun-asr-nano-2512', 'whisper-large-v3',
   'whisper-large-v3-turbo', 'ming-3.0-asr-tiny',
-  'omniasr-llm-300m-v2', 'omniasr-llm-1b-v2', 'omniasr-llm-3b-v2', 'omniasr-llm-7b-v2'];  // 0.336 OmniASR
+  'omniasr-llm-300m-v2', 'omniasr-llm-1b-v2', 'omniasr-llm-3b-v2', 'omniasr-llm-7b-v2',
+  'whisper-tiny', 'whisper-base', 'whisper-small', 'whisper-medium', 'whisper-large', 'whisper-large-v2'];  // 0.336 OmniASR; 0.357 Whisper family
 let spsRun = 0;
 async function runInsightSpeechStreams() {
   const run = ++spsRun, v0 = S.ver, t0 = performance.now();
