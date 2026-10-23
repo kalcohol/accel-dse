@@ -20,17 +20,27 @@ W3, WT, Q2, Q3 = "whisper-large-v3", "whisper-large-v3-turbo", "qwen2-audio-7b-i
 
 
 def test_exact_params_vs_header():
-    """Released safetensors headers (HF): decoder / LLM = params_llm, audio encoder (+ projector) = params_vision."""
+    """Released safetensors headers (HF): decoder / LLM = params_llm, audio encoder (+ projector) = params_vision.
+    0.358: Whisper encoder-decoder params() includes encoder + decoder; others params() = LLM only."""
     want = {W3: (906_521_600, 636_968_960), WT: (171_909_120, 636_968_960),
             Q2: (7_754_878_976, 642_215_936), Q3: (1_720_574_976, 317_477_504)}
     fams = {W3: "Whisper", WT: "Whisper", Q2: "Qwen2-Audio", Q3: "Qwen3-ASR"}
     ents = {e["id"]: e for e in list_models()}
     for mid, (llm, enc) in want.items():
         m = get_model(mid)
-        assert m.params() == llm and m.param_check()["rel_err"] == 0.0, mid
+        # 0.358: Whisper encoder-decoder params() = encoder + decoder; others = LLM only
+        if m.enc_ctx > 0:  # Whisper encoder-decoder
+            assert m.params() == llm + enc and m.param_check()["rel_err"] == 0.0, mid
+        else:  # Qwen2-Audio / Qwen3-ASR: LLM + separate audio tower
+            assert m.params() == llm and m.param_check()["rel_err"] == 0.0, mid
         assert m.vision.audio.params == enc == m.vision_params, mid
-        assert ents[mid]["domain"] == "asr" and ents[mid]["family"] == fams[mid] and ents[mid]["coverage"] == "full", mid
-    assert get_model(W3).params() + get_model(W3).vision_params == 1_543_490_560     # "1.54B"
+        # 0.358: Whisper is full coverage after params fix
+        assert ents[mid]["domain"] == "asr" and ents[mid]["family"] == fams[mid], mid
+        if m.enc_ctx > 0:  # Whisper
+            assert ents[mid]["coverage"] == "full", mid
+        else:
+            assert ents[mid]["coverage"] == "full", mid
+    assert get_model(W3).params() == 1_543_490_560     # 0.358: params() includes encoder
     w = get_model(W3)
     assert w.enc_ctx == 1500 and w.max_ctx == 448 and w.tie_embeddings and sum(L.cross is not None for L in w.layers) == 32
     assert sum(L.cross is not None for L in get_model(WT).layers) == 4

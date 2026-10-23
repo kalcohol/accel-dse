@@ -6,6 +6,23 @@
 
 
 
+## [0.358.0] — 2026-10-23
+
+### Whisper encoder-decoder 参数计数修复 (MODEL §358)
+
+- **Bug 修复**: Whisper 编码器-解码器模型的 `params()` 之前只返回解码器参数（whisper-large-v3 报告 906M，实际应为 1.54B）
+- **根本原因**: 编码器参数存储在 `vision_params` 中，但 `params()` 方法未包含编码器部分
+- **修复内容**:
+  - `Model.params()` 现在对编码器-解码器模型（`enc_ctx > 0` 且 `vision_params > 0`）包含编码器参数
+  - `release_params` 对 Whisper 模型设置为 `params_llm + params_vision` 总和
+  - 添加 test_core_358.py 验证修复并防止回归
+- **影响模型**:
+  - whisper-large-v3: `params()` 从 906M → 1.54B（+637M 编码器）✓
+  - whisper-large-v3-turbo: `params()` 从 172M → 809M（+637M 编码器）✓
+  - 其他 ASR 模型（Qwen2-Audio / Qwen3-ASR / Fun-ASR）不受影响（编码器已包含在 params_llm 中）
+- **机制正确性**: 编码器是 Whisper 模型的核心组件（非可选视觉塔），应计入总参数
+- **参数对齐**: `param_check()` 显示 `rel_err = 0.0`，与发布 safetensors header 完全对齐
+
 ## [0.357.0] — 2026-10-23
 
 ### 语音模型覆盖补充 (MODEL §357)

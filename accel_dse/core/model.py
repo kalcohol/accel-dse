@@ -558,6 +558,9 @@ class ModelSpec:
         p += self.standby_params + self.cached_params
         if include_mtp:
             p += self.mtp_params()
+        # 0.358: encoder-decoder (Whisper) includes the encoder — vision_params is part of the model, not an optional tower
+        if self.enc_ctx and self.vision_params:
+            p += self.vision_params
         return p
 
     def mtp_params(self) -> int:
@@ -2230,7 +2233,8 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
         # (vLLM b12x / llama.cpp MMQ: dot products on the packed values) are not modelled per format
         r.append(f"ggml 块格式（{' / '.join(gg)}）：按仅权重量化计，反量化到 bf16 GEMM（IQ2_XXS 每元素 3.66 次向量操作、"
                  f"Q8_0 2 次，按 ggml 参考反量化「推导」）；服务端融合内核未逐格式建模「近似」")
-    if abs(gap) > 0.02:
+    # 0.358: Whisper encoder-decoder gap is intentional (params() includes encoder after vision_params is set)
+    if abs(gap) > 0.02 and mt != "whisper":
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
     return tuple(r)
 
@@ -2283,8 +2287,13 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         if not any(l.role == "other" for L in spec.layers + spec.mtp_layers for l in L.attn_linears):
             fm.pop("other", None)             # 0.280: only models with role-"other" Linears (Qwen4Exp) carry it
         fm.update(_w4a4_roles(rel, fm))
+        # 0.358: encoder-decoder (Whisper) release_params includes encoder + decoder
+        whisper_enc_dec = (c.get("model_type") or "") == "whisper"
+        rp = rel.get("params_llm") or 0
+        if whisper_enc_dec:
+            rp += rel.get("params_vision") or 0
         spec = replace(spec, formats=tuple(sorted(fm.items())), kv_fmt=_kv_fmt(rel), act_fmt=_act_fmt(rel),
-                       release_params=rel.get("params_llm"), release_mtp_params=rel.get("params_mtp"),
+                       release_params=rp, release_mtp_params=rel.get("params_mtp"),
                        release_bytes=rel.get("bytes_llm"), quantized_release=_quant_release(rel))
         # lookup-only tables (n-gram / engram embeddings): stored, read a few rows per token
         emb_rel = sum(v["params"] for v in rel.get("roles", {}).get("embed", {}).values())
@@ -2431,7 +2440,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                f"lm_head 只装 {fish.candidates} 个候选行；未装入的发布参数 {drop / 1e9:.3f}B 已扣除；"
                                + (f"DAC 解码器（codec.pth 解码路径 {sum(math.prod(t) for _, t in fish.codec) / 1e6:.0f} M 参数，fp32）"
                                   "按流式窗口在语音卡上计时（core/drama3.dac_ops）" if fish.codec else "DAC 解码器（codec.pth）未计"),))
-        if spec.release_params:
+        # 0.358: Whisper encoder-decoder gap check happens before vision_params is set, so skip it here
+        if spec.release_params and (c.get("model_type") or "") != "whisper":
             gap = spec.release_params - spec.params()
             if abs(gap) / spec.release_params > 0.02:
                 # parameters present in the release that the template does not reproduce
