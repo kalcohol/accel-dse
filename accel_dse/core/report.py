@@ -354,7 +354,7 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
         it.append(item("thermal_binding", "热/功耗约束紧侧", bind, tag="推导",
                        src="max(卡级热流/上限, 封装功耗/冷却上限, 功耗预算占用)；冷却↔面积↔预算取舍"))
     sec_th = _sec("thermal", "热 / 功耗", it, th.get("status"))
-    ft = _front_thermal(r, rows, cool, flim, plim, cs, tie) if (flim or plim) else None
+    ft = _front_thermal(r, rows, cool, flim, plim, cs, tie, cap=cap, scope=scope) if (flim or plim) else None
     if ft:
         sec_th["front_thermal"] = ft
         for p_ in ft["points"]:
@@ -368,6 +368,13 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
                              f"{p_['pkg_W']:.1f} W vs {cool} 上限 {plim:g} W：余量 {p_['pkg_margin_W']:.1f} W"
                              f"（{p_['pkg_margin']:.2%}）≤ 持平阈 {tie:.0%}——功耗 +{p_['pkg_headroom']:.2%} 即不可行、离开前沿"
                              "（上限不调，只报告）"})
+            # 0.353: power-budget front ties (same axis as thermal_binding / DVFS power_scope)
+            if p_.get("cap_within_tie") and p_.get("cap_W") is not None and p_.get("limit_cap_W"):
+                axis = "卡功耗" if (p_.get("cap_scope") == "card") else "封装功耗"
+                warn.append({"kind": "front_cap", "text": f"前沿点第 {p_['row']} 行（{p_['design']}）{axis} "
+                             f"{p_['cap_W']:.1f} W vs 功耗预算 {p_['limit_cap_W']:g} W：余量 {p_['cap_margin_W']:.1f} W"
+                             f"（{p_['cap_margin']:.2%}）≤ 持平阈 {tie:.0%}——功耗 +{p_['cap_headroom']:.2%} 即触顶、离开前沿"
+                             "（预算不调，只报告）"})
     secs.append(sec_th)
 
     # 6 yield and cost per good package -----------------------------------------------------------------------------
@@ -494,11 +501,13 @@ def design_report(r: dict, body: dict, row: int | None = None) -> dict:
 
 
 def _front_thermal(r: dict, rows: list, cool: str, flim: float | None, plim: float | None,
-                   src: str | None, tie: float) -> dict | None:
-    """0.331 / 0.349 / 0.350: thermal sensitivity of the perf/W front (insight_dse ``front``).
-    Per front point: card-level flux margin (W/mm², 1 − card_flux/limit, headroom) and — when COOLING has pkg_W —
-    package-power margin (W, 1 − pkg/limit, headroom).  Card axis matches flux_margin_W_mm2 (not feas min(card,die)).
-    Points within the DSE tie on either axis are fragile.  Limits from COOLING 「来源」, never retuned."""
+                   src: str | None, tie: float, *, cap: float | None = None,
+                   scope: str = "package") -> dict | None:
+    """0.331 / 0.349 / 0.350 / 0.353: thermal + power-budget sensitivity of the perf/W front.
+    Per front point: card-level flux margin, package-power margin (COOLING), and — when ``power_cap_W`` is set —
+    power-budget margin on the same axis DVFS uses (``power_scope``: card W vs package W).
+    Card axis matches flux_margin_W_mm2 (not feas min(card,die)). Points within the DSE tie on any axis are fragile.
+    Cooling limits from COOLING 「来源」, never retuned; budget is the user input, never retuned."""
     pts = []
     for j in r.get("front") or []:
         y = rows[j]
@@ -507,13 +516,23 @@ def _front_thermal(r: dict, rows: list, cool: str, flim: float | None, plim: flo
         pw = t.get("pkg_W")
         # 0.350: card-level ratio for flux margin/tie (matches flux_margin_W_mm2); feas flux_ratio kept aside
         card_q = (f / flim) if (flim and f) else None
-        if not ((flim and f and card_q) or (plim and pw)):
+        # 0.353: power-budget axis (same as design-report thermal_binding / cap_ratio)
+        if cap and scope == "card":
+            cw = t.get("card_W")
+        elif cap:
+            cw = pw
+        else:
+            cw = None
+        cr = (cw / cap) if (cap and cw) else None
+        if not ((flim and f and card_q) or (plim and pw) or (cr is not None)):
             continue
         m = (1 - card_q) if card_q is not None else None
         pr = (pw / plim) if (plim and pw) else None
         pm = (1 - pr) if pr is not None else None
+        cm = (1 - cr) if cr is not None else None
         flux_tie = bool(m is not None and m <= tie)
         pkg_tie = bool(pm is not None and pm <= tie)
+        cap_tie = bool(cm is not None and cm <= tie)
         pts.append({
             "row": j, "design": _desc(y), "feasible": bool(y.get("feasible")),
             "flux_W_mm2": f, "limit_W_mm2": flim, "margin_W_mm2": (flim - f) if (flim and f) else None,
@@ -521,14 +540,21 @@ def _front_thermal(r: dict, rows: list, cool: str, flim: float | None, plim: flo
             "card_flux_ratio": card_q, "feas_flux_ratio": t.get("flux_ratio"),
             "pkg_W": pw, "limit_pkg_W": plim, "pkg_margin_W": (plim - pw) if (plim and pw) else None,
             "pkg_margin": pm, "pkg_headroom": (1 / pr - 1) if pr else None, "pkg_within_tie": pkg_tie,
-            "any_within_tie": flux_tie or pkg_tie,
+            "cap_W": cw, "limit_cap_W": cap, "cap_scope": scope if cap else None,
+            "cap_margin_W": (cap - cw) if (cap and cw) else None,
+            "cap_margin": cm, "cap_headroom": (1 / cr - 1) if cr else None, "cap_ratio": cr,
+            "cap_within_tie": cap_tie,
+            "any_within_tie": flux_tie or pkg_tie or cap_tie,
         })
     if not pts:
         return None
-    return {"cooling": cool, "limit_W_mm2": flim, "limit_pkg_W": plim, "src": src or "", "tie": tie, "points": pts,
+    return {"cooling": cool, "limit_W_mm2": flim, "limit_pkg_W": plim, "limit_cap_W": cap,
+            "cap_scope": scope if cap else None, "src": src or "", "tie": tie, "points": pts,
             "n_within_tie": sum(1 for p in pts if p["within_tie"]),
             "n_pkg_within_tie": sum(1 for p in pts if p["pkg_within_tie"]),
-            "label": "前沿热敏感性：热流余量 = 1 − 热流/上限；封装余量 = 1 − 封装功耗/上限「推导」；上限按冷却预设出处，不调"}
+            "n_cap_within_tie": sum(1 for p in pts if p["cap_within_tie"]),
+            "label": ("前沿热/功耗敏感性：热流余量 = 1 − 热流/上限；封装余量 = 1 − 封装功耗/上限；"
+                      "功耗预算余量 = 1 − (卡|封装)功耗/预算「推导」；上限与预算按出处，不调")}
 
 
 def _fmt(v) -> str:
@@ -579,17 +605,20 @@ def to_markdown(rep: dict) -> str:
             lim_s = (f"热流上限 {ft['limit_W_mm2']:g} W/mm²" if ft.get("limit_W_mm2") else "")
             if ft.get("limit_pkg_W"):
                 lim_s = (lim_s + "；" if lim_s else "") + f"封装上限 {ft['limit_pkg_W']:g} W"
+            if ft.get("limit_cap_W"):
+                ax = "卡" if ft.get("cap_scope") == "card" else "封装"
+                lim_s = (lim_s + "；" if lim_s else "") + f"功耗预算 {ft['limit_cap_W']:g} W（{ax}）"
             L += ["", f"前沿热敏感性（{ft['cooling']} {lim_s}，不调；余量 ≤ 持平阈 {ft['tie']:.0%} 的点标 ⚠）：", "",
-                  "| 前沿点 | 设计 | 热流 W/mm² | 热流余量 | 封装 W | 封装余量 W | 封装余量 | |",
+                  "| 前沿点 | 设计 | 热流 W/mm² | 热流余量 | 封装 W | 封装余量 | 预算占用 | |",
                   "|---|---|---|---|---|---|---|---|"]
             for p_ in ft["points"]:
                 fx = f"{p_['flux_W_mm2']:.4f}" if p_.get("flux_W_mm2") is not None else "—"
                 fxm = f"{p_['margin_W_mm2']:.4f}" if p_.get("margin_W_mm2") is not None else "—"
                 pw = f"{p_['pkg_W']:.1f}" if p_.get("pkg_W") is not None else "—"
-                pwm = f"{p_['pkg_margin_W']:.1f}" if p_.get("pkg_margin_W") is not None else "—"
                 pm = f"{p_['pkg_margin']:.2%}" if p_.get("pkg_margin") is not None else "—"
+                cm = f"{p_['cap_ratio']:.2%}" if p_.get("cap_ratio") is not None else "—"
                 flag = "⚠" if p_.get("any_within_tie") else ""
-                L.append(f"| 第 {p_['row']} 行 | {_md_cell(p_['design'])} | {fx} | {fxm} | {pw} | {pwm} | {pm} | {flag} |")
+                L.append(f"| 第 {p_['row']} 行 | {_md_cell(p_['design'])} | {fx} | {fxm} | {pw} | {pm} | {cm} | {flag} |")
         for n in s.get("notes") or []:
             L += ["", f"> {n}"]
         L.append("")

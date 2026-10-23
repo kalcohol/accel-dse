@@ -6,6 +6,13 @@
 
 
 
+## [0.353.0] — 2026-10-23
+
+### Adversarial front_cap near-ties (MODEL §298)
+
+- 0.352 three-way `thermal_binding` / design-level 功耗预算 margin warn were correct, but `_front_thermal` only flagged flux / pkg ties — liquid+package front points sitting on the DVFS power_cap (~100% 占用) produced no `front_cap` warning.
+- Front points now carry `cap_ratio` / `cap_margin*` on the same `power_scope` axis as DVFS; `near_ties` add `front_cap`; markdown table shows 预算占用. COOLING pins unchanged. No visual UI restyle (§293).
+
 ## [0.352.0] — 2026-10-23
 
 ### Adversarial card/die ratio persistence + UI (MODEL §297)

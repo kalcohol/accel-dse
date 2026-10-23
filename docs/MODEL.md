@@ -10239,3 +10239,10 @@ Image/video ViT forward (storage only); Thinker→Talker projection traffic deta
 
 ### §297.3 Deferred
 - NPU absolutes still absent. Visual UI restyle: no written user yes. Pages rebuild: separate track.
+
+## §298 Front power-budget near-ties (0.353)
+
+设计结论报告的前沿热敏感性（`front_thermal`）在 0.349/0.350 已覆盖卡级热流与冷却封装功耗持平点。0.352 把设计点的 `thermal_binding` 扩成三方（含功耗预算），但前沿点仍不报告预算持平——液冷 + `power_scope=package` 时前沿可坐在 DVFS 预算刀口上却只有设计级 `margin` 警告。
+
+0.353：前沿点按与 DVFS 相同的 `power_scope` 轴计算 `cap_ratio` / 余量；余量 ≤ 持平阈时发 `front_cap` 警告；markdown 表增加「预算占用」。冷却上限与用户预算均不调，只报告。
+
