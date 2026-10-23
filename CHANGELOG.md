@@ -6,6 +6,23 @@
 
 
 
+## [0.354.0] — 2026-10-23
+
+### Validation and catalog review
+
+- Full test suite green (1906 tests, 0 failures). Flaky list remains empty.
+- 0.353 front_cap adversarial checks verified complete: power-budget near-ties correctly flagged across all cooling modes and power scopes.
+
+### Catalog review: MiniMax M3.1 Flash
+
+- Investigated MiniMax-M3.1-Flash (HF: MiniMaxAI/MiniMax-M3.1-Flash, 2026-10-19): 428B total / 23B active MoE, 1M context, mxfp8 quantization-aware training.
+- Architecture requirements for clean integration: block-level sparse attention (MSA: `sparse_topk_blocks=16, sparse_block_size=128` — different from existing token-level `topk`), sparse indexer modeling (`sparse_num_index_heads=4, sparse_index_dim=128`), mxfp8 format verification from safetensors headers, Vision tower + multimodal handling.
+- **Decision: deferred to 0.355.** M3.1 Flash requires significant new sparse-attention mechanisms (block-level selection, indexer cost) that do not fit a focused 0.354 release. Mechanism-first principle: verify block-sparse FLOPs and memory from first principles before catalog entry.
+
+### Path
+
+- 0.355: MiniMax M3.1 Flash clean builder (block-sparse MSA, mxfp8 verification, sparse indexer).
+
 ## [0.353.0] — 2026-10-23
 
 ### Adversarial front_cap near-ties (MODEL §298)
