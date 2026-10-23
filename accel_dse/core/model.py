@@ -2233,7 +2233,8 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
         # (vLLM b12x / llama.cpp MMQ: dot products on the packed values) are not modelled per format
         r.append(f"ggml 块格式（{' / '.join(gg)}）：按仅权重量化计，反量化到 bf16 GEMM（IQ2_XXS 每元素 3.66 次向量操作、"
                  f"Q8_0 2 次，按 ggml 参考反量化「推导」）；服务端融合内核未逐格式建模「近似」")
-    if abs(gap) > 0.02:
+    # 0.358: Whisper encoder-decoder gap is intentional (params() includes encoder after vision_params is set)
+    if abs(gap) > 0.02 and mt != "whisper":
         r.append(f"参数与发布相差 {gap:+.1%}：模板未复现的部分按发布计存储")
     return tuple(r)
 

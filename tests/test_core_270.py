@@ -34,7 +34,12 @@ def test_exact_params_vs_header():
         else:  # Qwen2-Audio / Qwen3-ASR: LLM + separate audio tower
             assert m.params() == llm and m.param_check()["rel_err"] == 0.0, mid
         assert m.vision.audio.params == enc == m.vision_params, mid
-        assert ents[mid]["domain"] == "asr" and ents[mid]["family"] == fams[mid] and ents[mid]["coverage"] == "full", mid
+        # 0.358: Whisper is full coverage after params fix
+        assert ents[mid]["domain"] == "asr" and ents[mid]["family"] == fams[mid], mid
+        if m.enc_ctx > 0:  # Whisper
+            assert ents[mid]["coverage"] == "full", mid
+        else:
+            assert ents[mid]["coverage"] == "full", mid
     assert get_model(W3).params() == 1_543_490_560     # 0.358: params() includes encoder
     w = get_model(W3)
     assert w.enc_ctx == 1500 and w.max_ctx == 448 and w.tie_embeddings and sum(L.cross is not None for L in w.layers) == 32
