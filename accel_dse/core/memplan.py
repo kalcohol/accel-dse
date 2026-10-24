@@ -670,9 +670,15 @@ def act_stream(op: Op, ab: float, sram_bytes: float, engines: int = 1) -> tuple[
         return (io, 0.0) if tot > budget else (0.0, 0.0)
     if op.kind == "state" and op.act_x:     # 0.170 hyena FFT kernels: each torch.fft / elementwise call round-trips
         return op.act_x, 0.0                # its fp32 / complex64 operands through DRAM (ir._hyena_ops)
-    if op.kind == "attn":       # qk op of a flash-style attention (v_dim == qk_dim for these models)
-        qo = 2.0 * op.count * op.m * op.k * ab
-        kv = 2.0 * op.count * op.n * op.k * ab
+    if op.kind == "attn":       # qk op of a flash-style attention. Equal width (v_dim == 0 or v_dim == k):
+        # Q/O and K/V are both k wide, so each pair is 2·k. 0.362 DeepEmbedAttention sets v_dim: K is k wide
+        # and V is v_dim wide, and the output row is v_dim, not k.
+        if op.v_dim and op.v_dim != op.k:
+            qo = op.count * op.m * (op.k + op.v_dim) * ab
+            kv = op.count * op.n * (op.k + op.v_dim) * ab
+        else:
+            qo = 2.0 * op.count * op.m * op.k * ab
+            kv = 2.0 * op.count * op.n * op.k * ab
         if qo + kv <= budget:
             return 0.0, 0.0
         br = max(1, int(budget // (op.k * (ab + 4))))

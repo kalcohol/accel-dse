@@ -10252,5 +10252,9 @@ Image/video ViT forward (storage only); Thinker→Talker projection traffic deta
 
 时间混合就是 RWKV-7（`lin=rwkv7`，fp32 状态 H×64×64，prefill 用已有的 chunk 64）。通道混合在 FFN 之后按当前 token 乘 `ffn.enn` 的一行（DeepEmbed，查表，不是 KV）。hybrid 在时间混合旁边加 DeepEmbedAttention：每层缓存 fp16 的 32 维 kk 和 32 维 vv，整栈另存一份 int32 token id 并每步读一次，再用 `kkup` / `vvup` 重建整段 K/V，乘 `ennk` / `emm`，soft-cap 后做单头因果注意力。纯模型没有这条缓存，解码代价不随上下文变。参考代码是单卡，DEA 投影按复制计。
 
+## §362 DEA 重建 K/V 的重读（0.362）
+
+0.361 把低秩缓存记在 `kv_read`，重建出的 K（256）和 V（768）是激活。放得进 SRAM 激活半区时不出 DRAM。放不下时 GEMM 写出，`dea_qk` 按真实宽度读回（解码 q=1 读一遍；prefill 按 flash 的 Q 分块重读）。等宽公式会把 V 当成另一个 K，长上下文解码因此少算约一半激活流量。`dea_qk` / `dea_pv` 与投影一样按 TP 复制，请求 FLOPs 只计一次。
+
 ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有公开权重；StartLux 的 bf16 家族已经在目录中。
 
