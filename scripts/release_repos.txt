@@ -221,3 +221,5 @@ Qwen/Qwen3-Omni-30B-A3B-Captioner
 # 0.360 Kimi-Audio-7B: python3 scripts/fetch_pt_release.py --kimi moonshotai/Kimi-Audio-7B
 #        then python3 scripts/fetch_hf_release.py moonshotai/Kimi-Audio-7B
 moonshotai/Kimi-Audio-7B
+# 0.372 MiMo-V2-Flash (text). Flash-Base is the same tensors with a different shard count.
+XiaomiMiMo/MiMo-V2-Flash

@@ -6,6 +6,34 @@
 
 
 
+## [0.372.0] — 2026-10-24
+
+### 复核 0.371 的 q/k norm；目录补上 MiMo-V2-Flash
+
+- **0.371 复核过、账目未改。** 对照 `Olmo3Attention` / `Exaone4Attention` 与已入库 header：
+  - **Olmo-3。** `q_norm` 在拆头之前，宽 `H·head_dim`；`k_norm` 宽 `KV·head_dim`。7B 是 MHA，两份都是 hidden（`2·L·hidden`）。32B 是 GQA（40/8，head 128），k_norm 宽 1024。滑窗层和全注意力层都做 RoPE。post-attention / post-feedforward 仍是现有的 `2·hidden`。YaRN 不改变 GEMM 形状，也不改变 KV 宽度。
+  - **EXAONE-4。** `q_norm` / `k_norm` 是共享的 RMSNorm(head_dim)。`sliding_window` 非空时，滑窗层做 RoPE，全注意力层是全局 NoPE（`no_rope`）；KV 宽度不变。1.2B 的 `sliding_window` 为空，30 层都做 RoPE，tied。
+  - q/k norm 的逐元素运算仍只进参数，与 Qwen3 相同。GQA 的 RoPE 向量仍是查询头 × `head_dim // 2` × 3，不为 Olmo / EXAONE 单独改公式。
+- **新增 1 个发布**（2026-10-24 读取 header）。`model_type=mimo_v2_flash` 接到现有 MiMo-V2 混合 builder。`param_check().rel_err == 0`。覆盖 full。无视觉塔。
+  - **MiMo-V2-Flash**（`XiaomiMiMo/MiMo-V2-Flash`）：48 层、hidden 4096、头 64、head 192、v 128、词表 152576、untied。`hybrid_layer_pattern` 为 9 层全注意力（KV 4）+ 39 层滑窗 128（KV 8，每头一个 attention sink）。第 0 层稠密 SwiGLU（intermediate 16384），其余 47 层 sigmoid noaux_tc MoE（256 专家、top-8、专家宽 2048、无共享专家、`n_group` 1 不分组）。语言参数 308,778,780,864。
+  - **MTP ×3** 在权重里（`model.mtp.layers.{0,1,2}`），config 没有 `num_nextn_predict_layers`。每层是滑窗注意力 + 稠密 FFN + 五个 hidden RMSNorm（input / pre_mlp / enorm / hnorm / final）+ sink，再加 `eh_proj` `[4096, 8192]`（`2·hidden·hidden`）。MTP 参数 987,820,224。
+  - **发布 dtype。** `quant_method=fp8`、`fmt=e4m3`、`weight_block_size` 128、激活 dynamic。q/k/v、稠密 MLP、专家是 block-fp8。`ignored_layers` 把每一层 `o_proj` 留在 bf16（另有一条不存在的 `model.decoder.self_attn.o_proj`）。attn 角色的 bf16 桶等于全部 `o_proj` 加上 39×64 个 sink；fp8 桶等于 q/k/v。角色仍按既有规则取主导格式 fp8 和平均位宽，与已入库的 MiMo-V2.6 同一对桶，不另开 role。路由 `gate.weight` 与 `e_score_correction_bias` 都是 fp32，路由 GEMM 按 32 bit 计；bias 落在层 misc 里，记忆体计划对 LLM misc 仍按每参数 2 字节。embed / `lm_head` / norm 是 bf16。KV 无 `kv_cache_scheme`，仍是 bf16。激活 fp8。
+  - **partial_rotary_factor 0.334** 旋转 q/k 的前 `int(192·0.334)=64` 维，缓存的 K 仍是整段 head。周期沿用 GQA 的查询头半 head 向量（96），与已入库、同样带 0.334 的 MiMo-V2.6 相同。`attention_value_scale` 0.707 是 V 上的标量乘。`attention_chunk_size` 128 在 `MiMoV2Attention` 里没有被读取，注意力按滑窗或全上下文计。
+  - **MiMo-V2-Flash-Base** 的 index `total_size` 与张量数相同（313,051,659,008 字节、72,826 张量，192 个分片）。同一套权重，不单列。
+- **未纳入：**
+  - **Ling-flash-2.0**（`bailing_moe`）。融合 QKV、逐头 q/k norm、共享专家宽 `moe_intermediate_size·num_shared_experts`、分组 sigmoid top-k、`expert_bias` buffer，并带 MTP 类。`partial_rotary_factor` 0.5 与现有半 head RoPE 账单重合。本轮没有把它的 header 收到 `rel_err == 0`，不新开 builder。
+  - **Step-3.5-Flash**（`step3p5`）。滑窗层用 `attention_other_setting` 改头数，另有逐头门、按层 partial RoPE、共享专家和 MTP。不是 Step-5 的 DSA。未对上现有 builder。
+  - **LongCat-Flash。** 每个 block 两套子层（MLA + 稠密 MLP），第 0 子层的 MoE 以 shortcut 加到第 1 子层之后；256 个恒等 zero-expert 没有权重；MLA 在进 cache 之前展开成多头 K/V，不是已入库的 latent MLA。config 没有 `model_type`。不套进现有 MLA。
+  - **ERNIE-4.5-21B-A3B。** 仓库里没有 modeling 文件。transformers 主线是 GQA + 共享专家 + fp32 router bias + MTP。本轮未收到 `rel_err == 0`。
+  - **Hunyuan-A13B。** `use_mixed_mlp_moe` 使 MoE 层同时有共享 MLP 和专家，`use_qk_norm` 打开，`use_cla` 关闭。config 里的 ViT 字段为空，不编造视觉塔。未对上。
+  - **Mistral-Small-3.2 / Magistral-Small-2509。** 文本加 Pixtral 视觉塔。视觉塔仍未建模，不把文本单独当成这个架构入库。Magistral-2507 是普通 `mistral` 文本，不单列填充目录。
+  - **视频。** `Gemma4VideoProcessor` 仍没有接到现有 video grid 的公开打包配方。不编造。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **LTX-2.3。** 根上和 `transformer/` 都没有 `config.json`。不编造层宽。
+  - **gated：** OrcaCyber、pocket-tts。不入库。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.371.0] — 2026-10-24
 
 ### 复核 0.370 的音频相对 key 与 Granite-4.1；目录补上 Olmo-3 与 EXAONE-4

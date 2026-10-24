@@ -1499,6 +1499,31 @@ def _build_mimo_v2(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, mtp, notes, "full"
 
 
+def _build_mimo_v2_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.372 Xiaomi MiMo-V2-Flash (modeling_mimo_v2_flash.py).
+
+    The layer math is the MiMo-V2 hybrid stack: ``hybrid_layer_pattern`` 0 = full / 1 = SWA,
+    separate q/k/v (same parameter count as a fused qkv), SWA attention sinks, sigmoid
+    noaux_tc MoE with no shared expert. ``partial_rotary_factor`` rotates a prefix of q/k and
+    the cache still stores the full head, so the GQA rope vector stays the historical
+    query-head half-head bill (MiMo-V2.6 ships the same factor). ``attention_value_scale`` is a
+    scalar on V. ``attention_chunk_size`` is not read by ``MiMoV2Attention``.
+    """
+    layers, mtp, notes, cov = _build_mimo_v2(c)
+    hd = int(c["head_dim"])
+    factor = float(c.get("partial_rotary_factor") or 1.0)
+    rot = int(hd * factor)
+    notes = list(notes) + [
+        f"MiMo-V2-Flash：RoPE 作用在 q/k 的前 {rot}/{hd} 维（partial_rotary_factor {factor:g}），"
+        "缓存的 K 仍是整段 head；周期沿用 GQA 的查询头半 head 向量。"
+        "V 乘 attention_value_scale。"
+        "注意力按滑窗或全上下文计算（MiMoV2Attention 不读取 attention_chunk_size）。"
+        "o_proj 与 attention sink 落在 attn 角色的 bf16 桶，q/k/v 与专家是 block-fp8（128）；"
+        "该角色按发布字节的平均位宽计。路由权重与 e_score_correction_bias 都是 fp32。",
+    ]
+    return layers, mtp, notes, cov
+
+
 def _build_step5(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """0.144 StepFun Step-5 (official inference/model.py + kernel.py).  ``layer_types`` sliding_attention (window
     sliding_window) | full_attention; every layer GQA (num_attention_groups KV heads, head_dim) with q / k RMSNorm and
@@ -2268,6 +2293,8 @@ def _builder(c: dict):
         return _build_whisper, "编码器-解码器（MHA 自注意力 + 交叉注意力）稠密"
     if mt == "stripedhyena2":
         return _build_hyena, "StripedHyena 2（Hyena SE / MR / LR + MHA）"
+    if mt == "mimo_v2_flash":
+        return _build_mimo_v2_flash, "混合注意力（SWA + full）MoE"
     if mt == "mimo_v2":
         return _build_mimo_v2, "混合注意力（SWA + full）MoE"
     if mt == "step5":
