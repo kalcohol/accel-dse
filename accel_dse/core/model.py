@@ -2549,6 +2549,35 @@ def _build_hunyuan_v1_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str],
     return layers, [], notes, "full"
 
 
+def _build_ernie4_5(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """Dense ERNIE-4.5 (ernie4_5).
+
+    The 0.3B repos ship no modeling file. Geometry is the public transformers class
+    ``Ernie4_5ForCausalLM`` (modeling_ernie4_5.py): GQA and SwiGLU linears take
+    ``use_bias`` (false on the shipped checkpoints), two RMSNorms per block, a final
+    RMSNorm, and a tied ``lm_head`` (no second tensor in the checkpoint). ``head_dim``
+    is the config field. On 0.3B it is 128 while ``hidden_size // num_attention_heads``
+    is 64, so ``q_proj`` is ``[2048, 1024]`` and ``k_proj`` / ``v_proj`` are
+    ``[256, 1024]``. The class has no MTP module. Interleaved RoPE does not change
+    GEMM shapes or the KV width.
+    """
+    if c.get("use_bias"):
+        raise ValueError("ernie4_5 use_bias is not modeled")
+    if c.get("num_nextn_predict_layers"):
+        raise ValueError("ernie4_5 has no MTP module")
+    layers, mtp, notes, cov = _build_std(c)
+    h = int(c["hidden_size"])
+    heads = int(c["num_attention_heads"])
+    hd = int(c.get("head_dim") or (h // heads))
+    width = f"（hidden/heads = {h // heads}）" if heads and hd != h // heads else ""
+    notes = list(notes) + [
+        f"ERNIE-4.5 稠密：GQA 投影宽度按 head_dim {hd}{width}。"
+        "use_bias 为 false，没有投影 bias。公开类没有 MTP。没有视觉塔。"
+        "交错 RoPE 不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。",
+    ]
+    return layers, mtp, notes, cov
+
+
 def _build_ernie4_5_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """ERNIE-4.5 MoE (ernie4_5_moe).
 
@@ -2645,6 +2674,8 @@ def _builder(c: dict):
         return _build_longcat_flash, "LongCat-Flash（展开 KV 的 MLA + 零专家 MoE）"
     if mt == "hunyuan_v1_moe":
         return _build_hunyuan_v1_moe, "GQA（q/k RMSNorm）+ 共享 MLP 的 MoE"
+    if mt == "ernie4_5":
+        return _build_ernie4_5, "GQA 稠密"
     if mt == "ernie4_5_moe":
         # Shared MLP exists only when moe_num_shared_experts > 0 (21B). 300B ships 0.
         if int(c.get("moe_num_shared_experts") or 0) > 0:

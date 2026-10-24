@@ -6,6 +6,34 @@
 
 
 
+## [0.381.0] — 2026-10-24
+
+### 复核 Mistral-Small-3.2；目录补上 ERNIE-4.5-0.3B
+
+- **0.380 的账目复核过，参数路径不改。** 2026-10-24 重新读取 `mistralai/Mistral-Small-3.2-24B-Instruct-2506` 全部 10 个 safetensors 分片 header（585 张量，全部 bf16），并对照当前公开 transformers `Mistral3ForConditionalGeneration` 与 `PixtralVisionModel`：
+  - **语言几何。** 40 层 GQA（32/8，head 128）。`q_proj` 是 `[4096, 5120]`，`k_proj` / `v_proj` 是 `[1024, 5120]`，`o_proj` 是 `[5120, 4096]`。SwiGLU intermediate 32768。两个 RMSNorm 各 `[5120]`。最终 RMSNorm `[5120]`。`sliding_window` 为 null。没有投影 bias。去重后的语言参数 22,901,314,560。
+  - **tied lm_head。** 发布 JSON 仍没有 `tie_word_embeddings`。当前公开 `Mistral3Config` 的缺省仍是 true。类把 `lm_head.weight` 绑到 `model.language_model.embed_tokens.weight`。checkpoint 仍另存 bf16 `language_model.lm_head.weight` `[131072, 5120]`。去重后 `param_check().rel_err == 0`。`params_llm` 23,572,403,200 含这份副本。
+  - **视觉塔。** `vision_tower.patch_conv.weight` `[1024, 3, 14, 14]`，无 bias。`ln_pre` `[1024]`。24 层：q/k/v/o 各 `[1024, 1024]`，gate/up `[4096, 1024]`，down `[1024, 4096]`，两个 RMSNorm `[1024]`。`hidden_act=silu`，类的 MLP 仍是 gate×up。Projector：norm `[1024]`，`merging_layer` `[1024, 4096]`，`linear_1` `[5120, 1024]`，`linear_2` `[5120, 5120]`，没有 bias。视觉参数 438,958,080。`vision_feature_layer=-1` 只选最后一层隐藏状态，塔仍跑完全部 24 层。注意力按每张图一块双向 N×N 计。
+  - **图像位置。** `PixtralProcessor` 仍把图像处理器的 patch 设成 28，最长边 1540。1024×1024 落到 1036×1036：74×74 patch，合并 1369，LLM 位置 1406。`rel_err == 0`。
+- **新增 2 个发布**（2026-10-24 读取 `model.safetensors` header）。仓库没有 modeling 文件。几何来自公开 `Ernie4_5ForCausalLM`。`model_type=ernie4_5` 走稠密 GQA，并拒绝 `use_bias=true` 与 `num_nextn_predict_layers`。`param_check().rel_err == 0`。覆盖 full。无视觉塔。权重 bf16，`quantization_config` 为空。激活 bf16。
+  - **ERNIE-4.5-0.3B-PT**（`baidu/ERNIE-4.5-0.3B-PT`，164 张量）：18 层 GQA（16/2）。`head_dim` 是 128，`hidden_size // num_attention_heads` 是 64。`q_proj` 是 bf16 `[2048, 1024]`，`k_proj` / `v_proj` 是 `[256, 1024]`，`o_proj` 是 `[1024, 2048]`。SwiGLU intermediate 3072。`use_bias` 为 false，header 没有 bias。词表 103424，`tie_word_embeddings` 为 true，checkpoint 没有另存 `lm_head`。最终 RMSNorm `[1024]`。语言参数 360,748,032。`bytes_total` 721,496,064。config 没有 `num_nextn_predict_layers`，header 没有 `mtp_*`，`params_mtp == 0`。`n_mtp=0` 时 stage 权重比 `bytes_llm` 少 `1024×2` = 2048 字节。
+  - **ERNIE-4.5-0.3B-Base-PT**（`baidu/ERNIE-4.5-0.3B-Base-PT`，164 张量）：config 与 PT 相同。header 的名字、dtype、形状与 PT 相同。语言参数、字节、`params_mtp` 与 PT 相同。两份是不同仓库，这里只按 header 闭合，不声称权重数值相同。
+  - **交错 RoPE。** 公开类按偶奇维配对旋转整个 head。不改变 GEMM 形状，也不改变 KV 宽度。不计额外周期。
+- **未纳入：**
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不跑这份权重。不另写递推。
+  - **Gemma-4 视频。** `Gemma4VideoProcessor` 已公开：逐帧按与图像相同的宽高比缩放，再 pad 到 `max_soft_tokens × pooling²` 个 patch。现有 video grid 只收 qwen / kimi / muse / radio。没有接到这条网格上。不编造。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 0.380 已核对全部分片 header 与 3.2 相同。不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **Magistral-Small-2507。** 公开类是纯文本 `MistralForCausalLM`。不单列。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。没有读 config 或 header。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。本轮 0.3B 已经按 header 闭合，没有再扫 `scripts/release_repos.txt` 以外的全量仓库。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.380.0] — 2026-10-24
 
 ### 复核 ERNIE-4.5-300B-A47B；目录补上 Mistral-Small-3.2

@@ -240,3 +240,6 @@ baidu/ERNIE-4.5-300B-A47B-PT
 baidu/ERNIE-4.5-300B-A47B-Base-PT
 # 0.380 Mistral-Small-3.2 (mistral3 text + Pixtral vision). Magistral-Small-2509 and 3.1 match these headers.
 mistralai/Mistral-Small-3.2-24B-Instruct-2506
+# 0.381 ERNIE-4.5-0.3B-PT / Base-PT. Dense ernie4_5. Same header shapes. No MTP tensors.
+baidu/ERNIE-4.5-0.3B-PT
+baidu/ERNIE-4.5-0.3B-Base-PT

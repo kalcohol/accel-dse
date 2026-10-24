@@ -87,6 +87,10 @@ EXTRA_TAIL = [
     # 0.380: Mistral-Small-3.2. Text is Mistral GQA (head_dim 128). Vision is the public Pixtral
     # tower plus the Mistral3 projector. Magistral-Small-2509 and Mistral-Small-3.1 match these headers.
     ("mistral-small-3.2-24b-instruct-2506", "mistralai/Mistral-Small-3.2-24B-Instruct-2506"),
+    # 0.381: ERNIE-4.5-0.3B-PT / Base-PT. Dense ernie4_5. head_dim 128 is not hidden/heads.
+    # Both checkpoints share tensor names, dtypes, and shapes. No MTP field and no lm_head copy.
+    ("ernie-4.5-0.3b-pt", "baidu/ERNIE-4.5-0.3B-PT"),
+    ("ernie-4.5-0.3b-base-pt", "baidu/ERNIE-4.5-0.3B-Base-PT"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
