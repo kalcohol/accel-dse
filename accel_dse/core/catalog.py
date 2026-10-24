@@ -361,6 +361,7 @@ EXTRA_TAIL = [
     ("qwen3-vl-2b-fp8", "Qwen/Qwen3-VL-2B-Instruct-FP8"),
     # 0.368 Gemma-4 (gemma4 / gemma4_unified). Hybrid sliding/full attention, not a Gemma-3 wrap.
     # 0.369 adds E2B / E4B (KV alias, PLE, gemma4_audio). Assistant drafts and DiffusionGemma stay out.
+    # 0.382 wires the published video processor (max_soft_tokens 70, num_frames 32). No new checkpoint.
     ("gemma-4-31b-it", "google/gemma-4-31B-it"),
     ("gemma-4-31b", "google/gemma-4-31B"),
     ("gemma-4-26b-a4b-it", "google/gemma-4-26B-A4B-it"),
