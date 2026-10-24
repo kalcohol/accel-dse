@@ -1543,6 +1543,98 @@ def _build_mimo_v2_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], 
     return layers, mtp, notes, cov
 
 
+def _step3p5_moe_ids(raw) -> set[int]:
+    """``moe_layers_enum`` is a comma-separated string. ``_list`` JSON-parses strings and would drop every MoE layer."""
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        return {int(x) for x in raw.split(",") if x.strip()}
+    return {int(x) for x in raw}
+
+
+def _build_step3p5(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.374 StepFun Step-3.5-Flash (modeling_step3p5.py Step3p5DecoderLayer + safetensors headers).
+
+    Not Step-5 DSA. Sliding layers take Q heads / KV groups / head_dim from ``attention_other_setting``;
+    full layers use the top-level counts. ``num_attention_groups`` is the KV head count. Each layer has a
+    bias-free head-wise gate ``g_proj`` (h → n_heads) and q/k RMSNorm(head_dim) — the class always builds
+    those norms. ``partial_rotary_factors[i]`` sets ``rope_dim = int(head_dim * factor)`` (full 0.5, sliding
+    1.0). Do not set ``rope_n``: that is the Qwen4Exp path (extra q/k norm FLOPs and a rope on both q and k).
+    The KV cache still stores the full head. ``use_rope_layers`` empty leaves RoPE on.
+
+    MoE layers are the comma list ``moe_layers_enum``: sigmoid router, fp32 ``router_bias`` (a Parameter, not
+    ``.router.`` so the header role is ``other``), no group limit, one ungated shared MLP of ``share_expert_dim``.
+    ``gate.weight`` is bf16 as released; ``need_fp32_gate`` only casts the matmul. Other layers are dense SwiGLU
+    of ``intermediate_size``. ``zero_centered`` adds 1 to the RMSNorm weight in the forward (same parameter).
+    ``swiglu_limits`` / yarn / ``moe_router_scaling_factor`` do not change GEMM or KV shapes.
+
+    MTP (``num_nextn_predict_layers``) continues ``layer_types``: sliding attention, dense FFN, enorm / hnorm /
+    eh_proj, and a private ``shared_head`` (norm + vocab projection). The published class does not construct
+    those modules; the checkpoint stores them and the length-48 schedules cover indices L .. L+n_mtp-1.
+    """
+    h = c["hidden_size"]
+    L = c["num_hidden_layers"]
+    H0 = c["num_attention_heads"]
+    KV0 = c["num_attention_groups"]
+    hd0 = c["head_dim"]
+    types = _list(c.get("layer_types")) or []
+    rope_f = _list(c.get("partial_rotary_factors")) or []
+    other = c.get("attention_other_setting") or {}
+    win = c.get("sliding_window")
+    moe_ids = _step3p5_moe_ids(c.get("moe_layers_enum"))
+    E = c["moe_num_experts"]
+    k = c["moe_top_k"]
+    de = c["moe_intermediate_size"]
+    d_sh = c.get("share_expert_dim") or 0
+    n_mtp = c.get("num_nextn_predict_layers") or 0
+    gate = bool(c.get("use_head_wise_attn_gate"))
+    bias = bool(c.get("use_moe_router_bias"))
+
+    def one(i: int, mtp: bool) -> Layer:
+        swa = i < len(types) and types[i] == "sliding_attention"
+        if swa:
+            H = int(other.get("num_attention_heads") or H0)
+            KV = int(other.get("num_attention_groups") or KV0)
+            hd = int(other.get("head_dim") or hd0)
+        else:
+            H, KV, hd = H0, KV0, hd0
+        alin, core = _gqa(h, H, KV, hd, window=win if swa else None)
+        if gate:
+            alin = alin + (Linear("g_head", h, H, "col"),)
+        factor = float(rope_f[i]) if i < len(rope_f) else 1.0
+        core = replace(core, rope_dim=int(hd * factor))
+        misc = 2 * hd + 2 * h                      # q_norm, k_norm, input + post RMSNorm
+        if (not mtp) and i in moe_ids:
+            ffn, flin = _ffn_moe(h, E, k, de, 1 if d_sh else 0, d_sh, shared_gate=False)
+            if bias:
+                misc += E                          # fp32 router_bias, stored in layer misc
+        else:
+            ffn, flin = _ffn_dense(h, c["intermediate_size"])
+        if mtp:
+            misc += 3 * h                          # enorm, hnorm, shared_head.norm
+        return Layer(alin, core, ffn, flin, misc)
+
+    layers = [one(i, False) for i in range(L)]
+    mtp = [one(L + j, True) for j in range(n_mtp)]
+    n_sw = sum(1 for ly in layers if ly.core.window is not None)
+    n_moe = sum(1 for ly in layers if ly.ffn.kind == "moe")
+    notes = [
+        f"Step-3.5-Flash 按 modeling_step3p5.py 建模：{L - n_sw} 层全注意力（{H0}/{KV0}，head {hd0}，"
+        f"partial RoPE {int(hd0 * (rope_f[0] if rope_f else 0.5))}）与 {n_sw} 层滑窗 {win}"
+        f"（{int(other.get('num_attention_heads') or H0)}/"
+        f"{int(other.get('num_attention_groups') or KV0)}，旋转整段 head）。"
+        "逐头 sigmoid 门 g_proj。q/k RMSNorm(head_dim)。",
+        f"MoE {n_moe} 层：sigmoid 路由 {E} 专家 top-{k}，专家宽 {de}，无分组；"
+        f"1 个不带门的共享专家（宽 {d_sh}）。"
+        "router_bias 是 fp32，落在层 misc，记忆体计划仍按每参数 2 字节。"
+        "gate.weight 按发布是 bf16；need_fp32_gate 只把那一次 matmul 转成 fp32，不另开计算格式。",
+        "zero_centered 的 weight+1、swiglu clamp、YaRN 与 routed_scaling_factor 不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。",
+        f"MTP ×{n_mtp}：发布类不实例化这些层，权重里有。每层是滑窗注意力 + 稠密 FFN + eh_proj，"
+        "另有私有 shared_head（norm + 词表投影）。",
+    ]
+    return layers, mtp, notes, "full"
+
+
 def _build_step5(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """0.144 StepFun Step-5 (official inference/model.py + kernel.py).  ``layer_types`` sliding_attention (window
     sliding_window) | full_attention; every layer GQA (num_attention_groups KV heads, head_dim) with q / k RMSNorm and
@@ -2316,6 +2408,8 @@ def _builder(c: dict):
         return _build_mimo_v2_flash, "混合注意力（SWA + full）MoE"
     if mt == "mimo_v2":
         return _build_mimo_v2, "混合注意力（SWA + full）MoE"
+    if mt == "step3p5":
+        return _build_step3p5, "混合注意力（滑窗头数不同 + 逐头门）MoE"
     if mt == "step5":
         return _build_step5, "混合注意力（SWA + DSA 区域稀疏）MoE"
     if mt in ("lfm2", "lfm2_moe"):
@@ -2684,7 +2778,8 @@ def _mtp_oproj_bf16_format(rel: dict, spec: "ModelSpec") -> RoleFormat | None:
     0.364 replaces the mtp role only when the low-precision params equal every MTP GEMM. MiMo also leaves MTP
     ``o_proj`` in bf16, so that matcher does not fire and the role average (~9.6 bit, named fp8) was applied to
     eh_proj. Decoder GEMMs other than ``o`` stay on the main stack's attn / mlp formats. This function does not
-    retag ``o``; the caller does that only together with ``_o_proj_bf16_attn_split``.
+    retag ``o``. The caller retags MTP ``o`` whenever this identity holds, and retags the main stack only
+    together with ``_o_proj_bf16_attn_split``.
     """
     role = (rel.get("roles") or {}).get("mtp") or {}
     if not spec.mtp_layers or "bf16" not in role or len(role) != 2:
@@ -2881,11 +2976,16 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             spec = replace(spec, formats=tuple(sorted(fm.items())), layers=_retag_o_proj(spec.layers),
                            mtp_layers=mtp_layers, notes=notes)
         elif mtp_o is not None:
+            # The bf16 bucket contains MTP o, but the main-stack attn split did not match, so those o
+            # projections stay on the attn role. Retag only the MTP copies.
             fm = dict(spec.formats)
             fm["mtp"] = mtp_o
+            fm["o_proj"] = RoleFormat("bf16", 16.0)
             spec = replace(spec, formats=tuple(sorted(fm.items())),
+                           mtp_layers=_retag_o_proj(spec.mtp_layers),
                            notes=spec.notes + (
-                               "MTP 的 bf16 桶恰好是 o_proj + eh_proj + 层内 misc，eh_proj 按 bf16 计。",))
+                               "MTP 的 bf16 桶恰好是 o_proj + eh_proj + 层内 misc，"
+                               "eh_proj 与 MTP 的 o_proj 按 bf16 计。",))
         if (c.get("model_type") or "").startswith("qwen4_exp") or (c.get("model_type") or "") == "dory":
             spec = replace(spec, final_norm_params=0)       # 0.253 Dory: nGPT, final state justnorm (no weight)
         if (c.get("model_type") or "") == "dory":

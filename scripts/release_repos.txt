@@ -225,3 +225,5 @@ moonshotai/Kimi-Audio-7B
 XiaomiMiMo/MiMo-V2-Flash
 # 0.373 Ling-flash-2.0 (bailing_moe). Ling-flash-base-2.0 is a different checkpoint.
 inclusionAI/Ling-flash-2.0
+# 0.374 Step-3.5-Flash (step3p5). Sliding and full layers use different head counts.
+stepfun-ai/Step-3.5-Flash
