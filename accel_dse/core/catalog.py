@@ -73,6 +73,8 @@ EXTRA_TAIL = [
     ("step-3.5-flash", "stepfun-ai/Step-3.5-Flash"),
     # 0.375: LongCat-Flash-Chat. Dual attention sublayers, MoE shortcut, expanded KV, identity zero-experts.
     ("longcat-flash-chat", "meituan-longcat/LongCat-Flash-Chat"),
+    # 0.376: Hunyuan-A13B-Instruct. Text MoE only (vit fields are null). Mixed shared MLP + q/k RMSNorm.
+    ("hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
@@ -659,6 +661,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("athmaas", "PixText", ("pixtext",)),     # 0.330
     ("distil", "Distil-Whisper", ("distil-whisper",)),   # 0.360
     ("meituan", "LongCat-Flash", ("longcat-flash",)),   # 0.375
+    ("tencent", "Hunyuan-A13B", ("hunyuan-a13b",)),   # 0.376
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.

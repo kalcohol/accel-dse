@@ -64,7 +64,10 @@ ROLE = [
     ("lm_head", r"(lm_head|^output\.weight$|embed_out|^head\.weight$|^readout\.weight$)"),   # 0.291 decision readout
     ("norm", r"(norm\.|norm$|_norm|ln_|layernorm|\.ln\d)"),
     ("other", r"_hyper_connection\."),   # 0.280 Qwen4Exp gated-residual mixers (attn_ / mlp_; bf16, outside quantization)
-    ("router", r"(\.gate\.weight$|\.router\.|gate\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid)"),
+    # 0.376: HunYuanTopKGate.wg is nn.Linear(hidden, num_experts, dtype=float32). The name is
+    # mlp.gate.wg.weight, which is not ".gate.weight". Leaving it in mlp mixes those fp32 params into the
+    # shared-MLP average and bills the router GEMM at the attn fallback.
+    ("router", r"(\.gate\.weight$|\.router\.|gate\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid|\.mlp\.gate\.wg\.)"),
     ("shared_expert", r"(shared_expert|\.share_expert\.)"),
     ("expert", r"(\.experts\.|block_sparse_moe\.experts|routed_expert|\.moe\.(gate|up|down)_proj\.)"),
     ("mlp", r"(\.mixer\.(gate_proj|up_proj|down_proj|suv_gate|suv_up)|\.mlp_alpha$)"),   # 0.253 Dory / Nemotron-H MLP mixers
