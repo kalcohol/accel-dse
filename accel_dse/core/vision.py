@@ -111,6 +111,14 @@ QWEN3_VL_REPOS = (
     "Qwen/Qwen3-VL-2B-Instruct-FP8", "Qwen/Qwen3-VL-4B-Instruct-FP8", "Qwen/Qwen3-VL-8B-Instruct-FP8",
     "Qwen/Qwen3-VL-32B-Instruct-FP8", "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8", "Qwen/Qwen3-VL-235B-A22B-Instruct-FP8",
 )
+# 0.388 WeVisOne-VL (tencent, 2026-10-22). processor_config.json on both repos: image processor is
+# Qwen2VLImageProcessor (shortest 65536 / longest 16777216), video processor is Qwen3VLVideoProcessor
+# (shortest 4096 / longest 25165824, fps 2, min_frames 4, max_frames 768). 2B sets max_video_tokens 768;
+# 4B omits it and Qwen3VLVideoProcessor.max_video_tokens defaults to 768. Patch 16, merge 2, temporal 2.
+WEVIS_REPOS = (
+    "tencent/WeVisOne-VL-2B",
+    "tencent/WeVisOne-VL-4B",
+)
 
 # released image-processor settings (preprocessor_config.json / processor_config.json / inference/config.json)
 _PREPROC = {
@@ -169,6 +177,8 @@ _PREPROC = {
             "v1.1-0.8B-Instant"))},
     # 0.366 Qwen3-VL: same image processor bounds as Qwen3.5 (checked per repo, see QWEN3_VL_REPOS)
     **{k: {"min_px": 65536, "max_px": 16777216} for k in QWEN3_VL_REPOS},
+    # 0.388 WeVisOne: same pixel bounds (processor_config.json, both sizes)
+    **{k: {"min_px": 65536, "max_px": 16777216} for k in WEVIS_REPOS},
 }
 
 # 0.165 — video input.  「来源」 each repo's video_preprocessor_config.json (Qwen3VLVideoProcessor): size shortest_edge
@@ -177,7 +187,8 @@ _VIDEO = {k: {"min_px": 4096, "max_px": 25165824} for k in (
     "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-27B-FP8", "Qwen/Qwen3.8-Flash-Next", "internlm/Intern-S2-397B",
     "nvidia/Qwen3.8-Flash-Next-FP4-Local",
     "ornith-ai/Ornith-1.5-122B") + tuple(f"ornith-ai/Ornith-{v}" for v in ORNITH_REPOS)
-    + QWEN3_VL_REPOS}   # 0.287 Ornith; 0.366 Qwen3-VL: video_preprocessor_config.json (Qwen3VLVideoProcessor, same size / patch / merge)
+    + QWEN3_VL_REPOS   # 0.287 Ornith; 0.366 Qwen3-VL: video_preprocessor_config.json (Qwen3VLVideoProcessor, same size / patch / merge)
+    + WEVIS_REPOS}     # 0.388 WeVisOne: processor_config.json video_processor (same size / patch / merge)
 # 0.166 — Kimi K2.5 / K2.7-Code video chunks.  「来源」 preprocessor_config.json media_proc_cfg: temporal_merge_kernel_size 4,
 # in_patch_limit_each_frame 4096, in_patch_limit_video null (K2.5) / 655360 (K2.7-Code), patch_limit_on_one_side 512;
 # config.json vision_config video_attn_type spatial_temporal, merge_type sd2_tpool (modeling_kimi_k25 identical vision code).
@@ -1343,13 +1354,16 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return VisionSpec("kimi", "MoonViT" + (" v2" if v2 else ""), p, 1, h, inter, L, nh, q, False, mk,
                           ((hm, hm), (hm, text_h)), params, tuple(sorted(pre.items())), abias)
     if mt in ("qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen3_5_vision", "qwen3_5_moe_vision",
-              "qwen3_vl", "qwen3_vl_moe"):   # 0.191: transformers 5 names it *_vision (0.287: MoE too; 0.366: Qwen3-VL)
+              "qwen3_vl", "qwen3_vl_moe", "qwen3_vl_vision"):
+        # 0.191: transformers 5 names Qwen3.5 vision *_vision. 0.366: Qwen3-VL deepstack.
+        # 0.388: transformers 5.12 Qwen3VLVisionConfig.model_type is qwen3_vl_vision. Older checkpoints
+        # still say qwen3_vl; Qwen3VLConfig rewrites that name to qwen3_vl_vision. Same module.
         h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["depth"], vc["num_heads"]
         p, t, mk, out = vc["patch_size"], vc["temporal_patch_size"], vc["spatial_merge_size"], vc["out_hidden_size"]
         # 0.366: deepstack mergers exist only on Qwen3VLVisionModel (one ModuleList entry per index,
         # use_postshuffle_norm=True).  A non-empty list on Qwen3.5 / Qwen3.8 is still not that module.
         ds = vc.get("deepstack_visual_indexes") or ()
-        if ds and mt not in ("qwen3_vl", "qwen3_vl_moe"):
+        if ds and mt not in ("qwen3_vl", "qwen3_vl_moe", "qwen3_vl_vision"):
             return None
         if any(type(i) is not int or i < 0 or i >= L for i in ds):
             return None

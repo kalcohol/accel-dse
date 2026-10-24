@@ -40,11 +40,19 @@ def test_tower_formats_and_bytes():
     assert (ops["vis.0.qkv"].w_fmt, ops["vis.0.qkv"].a_fmt) == ("fp8", "fp8")
     assert (ops["vis.0.mlp_out"].w_fmt, ops["vis.0.mlp_out"].a_fmt) == ("nvfp4", "bf16")
     assert ops["vis.merger.0"].w_fmt == "nvfp4" and ops["vis.patch_embed"].w_fmt == "bf16"
-    # every other vision tower keeps bf16 (defaults)
+    # every other vision tower keeps bf16, except a Qwen3-VL tower whose safetensors are fp32
+    fp32_qwen = set()
     for e in entries():
         m = get_model(e["id"])
-        if getattr(m, "vision", None) is not None and e["id"] != M:
-            assert m.vision.wfmt == () and m.vision.w_Bpp == 2.0, e["id"]
+        if getattr(m, "vision", None) is None or e["id"] == M:
+            continue
+        if m.vision.family == "qwen" and m.vision.w_Bpp == 4.0:
+            fm = {k: (f, b, a) for k, f, b, a in m.vision.wfmt}
+            assert fm == {k: ("fp32", 32.0, "bf16") for k in ("attn", "merger", "mlp", "patch")}, e["id"]
+            fp32_qwen.add(e["id"])
+            continue
+        assert m.vision.wfmt == () and m.vision.w_Bpp == 2.0, e["id"]
+    assert fp32_qwen == {"wevisone-vl-2b", "wevisone-vl-4b"}
 
 
 def test_encoder_faster_and_smaller_than_bf16_tower():

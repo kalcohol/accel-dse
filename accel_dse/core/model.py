@@ -3646,6 +3646,21 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             vs = replace(vs, extra=rv - vs.params, params=rv)
         if vs is not None and rel.get("vision_fmt"):
             vs = replace(vs, **_vision_formats(rel, vs))
+        # 0.388: a Qwen3-VL tower stored entirely as fp32 (config dtype may still say bfloat16).
+        # Language roles already take the safetensors dtype. The tower GEMMs follow the same file dtype;
+        # activations stay the model's act format (no activation quantizer in Qwen3VLVisionModel).
+        if vs is not None and vs.family == "qwen" and not vs.wfmt:
+            vr = (rel.get("roles") or {}).get("vision") or {}
+            block = vr.get("fp32") or {}
+            if set(vr) == {"fp32"} and block.get("params") == vs.params and block.get("params"):
+                bits = 8.0 * block["bytes"] / block["params"]
+                if abs(bits - 32.0) > 1e-6:
+                    raise ValueError(f"qwen vision fp32 role is {bits} bits, not 32")
+                act = spec.act_fmt
+                vs = replace(vs, w_Bpp=bits / 8.0, wfmt=tuple(
+                    (k, "fp32", bits, act) for k in ("patch", "attn", "mlp", "merger")))
+                spec = replace(spec, notes=spec.notes + (
+                    "safetensors 是 fp32（config dtype 为 bfloat16）。语言 GEMM 与视觉塔权重按 fp32 计，激活仍是 bf16。",))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),

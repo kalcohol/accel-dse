@@ -254,3 +254,6 @@ baidu/ERNIE-4.5-VL-424B-A47B-PT
 ibm-granite/granite-4.2-30b
 # 0.387 LFM2.5-2.6B-Base. Same safetensors shapes as LFM2.5-2.6B. max_position_embeddings 128000.
 LiquidAI/LFM2.5-2.6B-Base
+# 0.388 WeVisOne-VL-4B / 2B. Qwen3-VL class. Safetensors are fp32. Untied lm_head, vocab 152680.
+tencent/WeVisOne-VL-4B
+tencent/WeVisOne-VL-2B
