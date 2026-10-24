@@ -93,10 +93,12 @@ EXTRA_TAIL = [
     ("ernie-4.5-0.3b-base-pt", "baidu/ERNIE-4.5-0.3B-Base-PT"),
     # 0.383: LFM2.5-2.6B. Dense lfm2 hybrid (22 conv + 8 GQA), not the 24B-A2B MoE.
     ("lfm2.5-2.6b", "LiquidAI/LFM2.5-2.6B"),
-    # 0.383: Granite-4.2 dense GQA. Same GEMM shapes as 4.1-8b / 4.1-3b, untied lm_head.
-    # embedding / residual / logits scalars do not change shapes. 30B and compressed twins stay out.
+    # 0.383: Granite-4.2-8b / 3b. Same GEMM shapes as 4.1, untied lm_head.
+    # 0.386: granite-4.2-30b. Same GEMM shapes as 4.1-30b, untied lm_head.
+    # embedding / residual / logits scalars do not change shapes. Compressed twins stay out.
     ("granite-4.2-8b", "ibm-granite/granite-4.2-8b"),
     ("granite-4.2-3b", "ibm-granite/granite-4.2-3b"),
+    ("granite-4.2-30b", "ibm-granite/granite-4.2-30b"),
     # 0.384: ERNIE-4.5-VL dual-pool MoE. Text experts and vision experts have different widths.
     # Image tokens (merged patches plus start / end) use the vision pool.
     # 0.385: video frames are paired on a separate grid; temporal GEMMs see half the rows.
