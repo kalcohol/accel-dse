@@ -6,6 +6,39 @@
 
 
 
+## [0.385.0] — 2026-10-24
+
+### 复核 ERNIE-4.5-VL 双池；视频按公开 processor 做帧配对
+
+- **0.384 的参数路径复核过，不改。** 2026-10-24 重新读取 `baidu/ERNIE-4.5-VL-28B-A3B-PT` 与 `baidu/ERNIE-4.5-VL-424B-A47B-PT` 的 safetensors header，与已入库的发布 JSON 没有差异。两份 `param_check().rel_err == 0`。没有新的目录条目。
+  - **文本步。** 只计第一池和 `gate.weight`。不计 `gate.weight_1`，也不计视觉专家 GEMM。
+  - **混合步。** 这一步里只要有非文本 token，两个 fp32 router 都对每个 token 计。文本 token 留在第一池，其余走视觉池。28B 有共享 SwiGLU（宽 3072 = 文本专家宽 1536 × 2），对这一步的每个 token 计。424B 的 config 没有 `moe_num_shared_experts`，header 没有 `shared_experts`。
+  - **dtype。** 视觉塔是 fp16（`patch_embed.proj` `[1280, 588]`）。resampler 是 bf16。两种都是每参数 2 字节，GEMM 标签仍是 bf16。`attn_sep` 仍不另计一段注意力。
+  - **图像。** 1024×1024 仍是 1036×1036：74×74 patch，合并 1369，加上 IMAGE_START / IMAGE_END 共 1371。静止图像把单帧复制后拼接，行数不变，不走视频配对。
+  - **没有 MTP。** config 没有 `num_nextn_predict_layers`，header 没有 `mtp_*`，`params_mtp == 0`。不把缺省填成 1。
+- **视频时间合并。** 接到已有的 ERNIE-4.5-VL 网格上，没有新权重，`rel_err` 仍是 0。公开类是 `Ernie4_5_VLProcessor`（仓库没有 `processor_config.json`，也没有 `video_preprocessor_config.json`）。每一帧用 `video_min_pixels = 299×28²`、`video_max_pixels = 1196×28²` 做 `smart_resize`。`preprocessor_config` 的 `max_pixels` 不是这条路径。奇数帧复制最后一帧，使 `temporal_conv_size` 2 的两行相等。`fps` / `min_frames` / `max_frames` 只决定从文件里抽多少帧。`serving.video_frames` 就是这个帧数，不夹到 16–180。时间戳画进像素，不另占 token。
+  - **塔。** `vision_forward` 把 `grid_thw` 展开成每帧一行 `(1, h, w)`。注意力在帧内，空间线性看每一帧的合并行。时间线性把一对帧在特征维拼起来（K = 10240），之后的 GEMM 行数减半。拼行用的 `index_select` 不计。`VIDEO_START` / `VIDEO_END` 是 LLM token。类里视频 patch 的 token 类型先是 video，进 MoE 前改写成 image，和首尾标记一样走视觉专家池，不进 merger 的 M。整段视频一次编码器，配对跨帧。
+  - **1280×720、32 帧。** 落到 1288×728，52×92 patch，每帧合并 1196。LLM 位置 `16×1196+2 = 19138`。
+  - **17 帧。** 补成 18。LLM 位置 `9×1196+2 = 10766`。
+  - **1024×1024 视频。** 落到 952×952，每帧合并 1156。同一分辨率的静止图像仍是 1369 + 2。两帧时空间 merger 的 M 是 `2×1156`，时间 merger 与投影的 M 是 1156。
+  - **8×8。** 落到 504×504，36×36，每帧合并 324。**48×4000。** 落到 56×4424，每帧合并 316。
+  - 视频 token 放在提示前面。`prefix_cached` 盖住这段之后，这一步不再计视觉池。decode 仍是文本 token，不计第二池。权重仍在。
+- **未纳入：**
+  - **granite-4.2-30b 与 4.2 的 fp8 / mxfp4 / nvfp4。** 本轮没有读这些仓库的 config 或 header。
+  - **LFM2.5-2.6B-Base。** 没有和 2.6B 对过 header。GGUF / MLX / ONNX 分支不单列。
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不跑这份权重。不另写递推。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。没有读 config 或 header。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 与已入库的 3.2 同 header。不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **Gemma-4 assistant / QAT。** 与已入库的十个发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.384.0] — 2026-10-24
 
 ### 复核 LFM2.5-2.6B 与 Granite-4.2；ERNIE-4.5-VL 按双池 MoE 入库

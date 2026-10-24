@@ -151,12 +151,13 @@ def test_ernie45_vl_dual_pool_matches_headers():
         assert m.fmt("router").fmt == "fp32" and m.fmt("expert").fmt == "bf16"
         assert m.vision.family == "ernievl" and m.vision.wfmt == () and m.vision.w_Bpp == 2.0
         assert m.vision.gated is False and m.vision.depth == 32 and m.vision.hidden == 1280
-        assert video_pre(m) is None
+        # 0.385 wires Ernie4_5_VLProcessor. The still-image grid stays one frame.
+        assert video_pre(m) == {"ernie_temporal": 2, "min_px": 299 * 28 * 28, "max_px": 1196 * 28 * 28}
         assert ids[mid]["family"] == "ERNIE-4.5-VL" and ids[mid]["domain"] == "vlm"
         assert ids[mid]["provider"] == "baidu"
 
         g = image_grid(m.vision, 1024, 1024)
-        assert (g.ph, g.pw, g.merged, g.llm_tokens, g.px) == (74, 74, 1369, 1371, (1036, 1036))
+        assert (g.ph, g.pw, g.merged, g.llm_tokens, g.px, g.tframes) == (74, 74, 1369, 1371, (1036, 1036), 1)
         tiny = image_grid(m.vision, 8, 8)
         assert (tiny.ph, tiny.pw, tiny.merged, tiny.llm_tokens, tiny.px) == (4, 4, 4, 6, (56, 56))
         ops = vision_ops(m.vision, g, 1)

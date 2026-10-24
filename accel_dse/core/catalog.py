@@ -98,7 +98,8 @@ EXTRA_TAIL = [
     ("granite-4.2-8b", "ibm-granite/granite-4.2-8b"),
     ("granite-4.2-3b", "ibm-granite/granite-4.2-3b"),
     # 0.384: ERNIE-4.5-VL dual-pool MoE. Text experts and vision experts have different widths.
-    # Image tokens (merged patches plus start / end) use the vision pool. Video temporal merge is not this grid.
+    # Image tokens (merged patches plus start / end) use the vision pool.
+    # 0.385: video frames are paired on a separate grid; temporal GEMMs see half the rows.
     ("ernie-4.5-vl-28b-a3b-pt", "baidu/ERNIE-4.5-VL-28B-A3B-PT"),
     ("ernie-4.5-vl-424b-a47b-pt", "baidu/ERNIE-4.5-VL-424B-A47B-PT"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
