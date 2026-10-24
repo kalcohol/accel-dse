@@ -80,6 +80,10 @@ EXTRA_TAIL = [
     # 0.378: ERNIE-4.5-21B-A3B-Base-PT. Same language stack. Config omits num_nextn_predict_layers and the
     # headers have no mtp tensors, so this row does not invent an MTP module.
     ("ernie-4.5-21b-a3b-base-pt", "baidu/ERNIE-4.5-21B-A3B-Base-PT"),
+    # 0.379: ERNIE-4.5-300B-A47B-PT / Base-PT. Same public class. 54-layer GQA, no shared experts,
+    # MoE from layer 3, untied lm_head. Full shard headers close rel_err. Base has no MTP tensors.
+    ("ernie-4.5-300b-a47b-pt", "baidu/ERNIE-4.5-300B-A47B-PT"),
+    ("ernie-4.5-300b-a47b-base-pt", "baidu/ERNIE-4.5-300B-A47B-Base-PT"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
