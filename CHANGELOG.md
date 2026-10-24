@@ -6,6 +6,32 @@
 
 
 
+## [0.374.0] — 2026-10-24
+
+### 复核 0.373 的 o_proj 拆分；目录补上 Step-3.5-Flash
+
+- **0.373 的结构复核过、主栈账目不改。** 对照 `modeling_mimo_v2_flash.py`、`modeling_bailing_moe_v2.py` 与已入库 header：
+  - **MiMo-V2-Flash / V2.6。** attn 的 bf16 桶仍是全部 `o_proj` 加 SWA sink，恰好 2 字节/参数；fp8 桶是 q/k/v（含 block scale）。两边身份都成立时，主栈和 MTP 的 `o` 记 role `o_proj`（bf16），`eh_proj` 按 bf16。q/k/v 仍走主栈 attn 的低精度位宽，稠密 MLP 走 mlp。Flash 与 V2.6-Flash 的 MTP 存储仍多出约 146 字节；V2.6-Pro 两边对齐。`partial_rotary_factor` 0.334 的周期仍是查询头半 head（`rope_dim` 为 0 时的历史公式）。`attention_chunk_size` 仍不读取。目录里命中 `o_proj` 的仍是这三个模型。LLM misc 仍按每参数 2 字节（fp32 `e_score_correction_bias` 少计 2 字节/参数），最终 RMSNorm 仍不进 stage storage。
+  - **Ling-flash-2.0。** 第 0 层稠密、31 层分组 sigmoid MoE（256/top-8，`n_group` 8、`topk_group` 4）、共享专家宽 `moe_intermediate_size·num_shared_experts`（1024）、无 `shared_expert_gate`、q/k RMSNorm(head_dim)、fp32 `expert_bias` 在 mlp 角色里。`gate.weight` 按发布是 bf16。没有 MTP 张量。语言参数 102,889,705,216。`rel_err == 0`。`expert_bias` 的 fp32 抹进 mlp 平均位宽，与 misc 的 2 字节少计几乎抵消。不改几何。
+  - **Bug。** 只命中 MTP 身份、主栈 `_o_proj_bf16_attn_split` 对不上时，`mtp` 角色被改成 bf16，但 MTP 的 `o` 仍留在 attn 角色上，按那一档低精度平均位宽计。bf16 桶里明明包含这份 `o`。修复：这种情况下只把 MTP 的 `o` 改记 role `o_proj`（bf16，16 bit），主栈 `o` 不动。已入库的三个 MiMo 两边都命中，走原来的分支，笔记和拆分不变。没有第四个目录模型因此获得 `o_proj`。
+- **新增 1 个发布**（2026-10-24 读取 header）。`model_type=step3p5` 单独 builder，不走 Step-5 的 DSA。`param_check().rel_err == 0`。覆盖 full。无视觉塔。权重 bf16，`quantization_config` 为空。
+  - **Step-3.5-Flash**（`stepfun-ai/Step-3.5-Flash`，`Step3p5ForCausalLM`）：45 层、hidden 4096、词表 128896、untied。全注意力 12 层（64/8，head 128，`partial_rotary_factors` 0.5，旋转 64 维）。滑窗 33 层（窗口 512；头数来自 `attention_other_setting`：96/8，head 128，因子 1.0，旋转整段 head）。KV 两组都是 8×(128+128)，bf16。每层有 bias-free `g_proj`（h → 头数）和 q/k RMSNorm(head_dim)。`rope_dim` 只改 RoPE 向量宽度，不走 `rope_n`。`use_rope_layers` 为空，每一层仍做 RoPE。
+  - **MoE** 在 `moe_layers_enum`（逗号字符串，层 3–44，共 42 层）：sigmoid、288 专家、top-8、专家宽 1280、无 `n_group`。共享专家一个 MLP，宽 `share_expert_dim` 1280，没有 `shared_expert_gate`。`router_bias` 是 fp32 Parameter `[288]`，名字对不上 `\.router\.`，header 角色是 `other`（42×288 = 12096）。放进层 misc，不抹进 router GEMM。`gate.weight` 按发布是 bf16；`need_fp32_gate` 只把那一次 matmul 转成 fp32。第 0–2 层稠密 SwiGLU（intermediate 11264）。语言参数 196,956,130,368。
+  - **zero_centered** 的 weight+1、`swiglu_limits`（只有层 43/44 非零）、YaRN（只在全注意力）和 `moe_router_scaling_factor` 不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。
+  - **MTP ×3。** config 有 `num_nextn_predict_layers=3`。发布的 modeling 类不实例化 MTP；`_keys_to_ignore_on_load_unexpected` 跳过 `model.layers.45/46/47`，但权重里有。`layer_types` / `partial_rotary_factors` 长 48，这三层是滑窗、因子 1.0、稠密 FFN 11264。每层另有 `eh_proj` `[4096, 8192]`、`enorm` / `hnorm` / `shared_head.norm`，以及私有 `shared_head.output` `[128896, 4096]`（不与 `lm_head` 绑定）。MTP 参数 2,428,171,008。全部 bf16。
+  - **存储残差。** LLM misc 仍按每参数 2 字节，fp32 `router_bias` 少计 24192 字节，最终 RMSNorm 不进 stage storage（再少 8192）。`n_mtp=0` 时 stage 权重比 `bytes_llm` 少 32384 字节。MTP 三层全是 bf16，`n_mtp=3` 时与 `bytes_mtp` 对齐。
+- **未纳入：**
+  - **LongCat-Flash**（`meituan-longcat/LongCat-Flash-Chat`，config 没有 `model_type`，`LongcatFlashForCausalLM`）。每个 decoder block 有两套注意力子层；第 0 层 MoE 输出以 shortcut 加到第 1 子层之后。512 个有权重的专家加 256 个恒等 zero-expert，恒等专家没有权重。`kv_b_proj` 在写入 cache 之前展开成多头 K/V，不是已入库的 latent cache。现有 MLA 会把 KV 记成 `kv_lora+rope`。不半套。
+  - **Mistral-Small-3.2-24B-Instruct-2506**（`mistral3`：文本 `mistral` + Pixtral 视觉塔）。仓库里没有 modeling 文件。视觉塔仍未建模，不把文本单独入库。Magistral-Small-2509 同一情况，不单列。
+  - **ERNIE-4.5-21B-A3B-PT**（`baidu/ERNIE-4.5-21B-A3B-PT`，`ernie4_5_moe`）。仓库里没有 modeling 文件。不新增。
+  - **Hunyuan-A13B-Instruct**（`tencent/Hunyuan-A13B-Instruct`，`hunyuan_v1_moe`）。`vit_type`、`vit_path`、`anyres_vit_max_image_size` 都是 null。不是真实的 ViT 尺寸。不编造视觉塔。
+  - **视频。** `Gemma4VideoProcessor` 仍没有接到现有 video grid 的公开打包配方。不编造。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **LTX-2.3。** 仓库根上是 safetensors，没有 `config.json`。
+  - **OrcaCyber-Nano-1.0。** 只有 GGUF，没有 `config.json`。**pocket-tts** 没有架构 config。按没有公开 modeling config 拒绝。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.373.0] — 2026-10-24
 
 ### 复核 MiMo-V2-Flash 的发布 dtype；目录补上 Ling-flash-2.0
