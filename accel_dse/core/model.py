@@ -356,7 +356,11 @@ class Layer:
     # caching: each loop overwrites the step's rows) → no own KV storage, same KV reads / writes
     loop: int = 0
     kv_shared: bool = False
+    # 0.369 Gemma-4: this layer reads the donor layer's KV tensors (no own cache, kv_write = 0).
+    # Distinct from kv_shared, which still writes (Dory last-loop overwrites the donor slot).
+    kv_alias: bool = False
     deepemb: int = 0                         # 0.361 RWKV-8 DeepEmbed width (ffn.enn row); 0 = none.  Current-token lookup.
+    ple_in: int = 0                          # 0.369 Gemma-4 per-layer input width (gate h→ple, proj ple→h). 0 = none.
 
     def expert_params(self, hidden: int) -> int:
         f = self.ffn
@@ -442,6 +446,7 @@ class ModelSpec:
     mtp_extra_params: int = 0                # eh_proj etc. per MTP module
     lookup_params: int = 0                   # n-gram / engram tables (lookup only)
     lookup_bits: float = 0.0                 # stored bits per lookup param incl. scales (0 = embed format)
+    ple_packed: int = 0                      # 0.369 Gemma-4 PLE row width (layers * ple). 0 = none. One row per token.
     sidecar_params: int = 0                  # 0.347 same-card extras outside params_llm (MOSS audio heads, Moshi depth); storage only, not in params()
     sidecar_bits: float = 0.0                # 0 = attn format bits (used only when sidecar_bytes == 0)
     sidecar_bytes: float = 0.0               # 0.348 exact resident bytes (mixed dtypes: bf16 depth + fp32 Mimi); preferred over params*bits
@@ -2082,28 +2087,62 @@ def with_loops(spec: ModelSpec, loops: int, mode: str) -> ModelSpec:
     return replace(spec, layers=tuple(ls), loop_spec=(n_in, n_rec, loops, mode))
 
 
-def _build_gemma4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
-    """Gemma 4 text (gemma4_text / gemma4_unified_text).
+def _gemma4_unloaded_kv(c: dict) -> int:
+    """k_proj, v_proj and k_norm that the checkpoint stores on KV-shared layers.
 
-    Sliding layers use head_dim and num_key_value_heads, with a real v_proj and
-    window = sliding_window. Full layers use global_head_dim; when
-    attention_k_eq_v is set they also use num_global_key_value_heads and omit
-    v_proj. V is then RMSNorm(K) with with_scale=False (no parameter) and is
-    still written to the KV cache, so the cache stores both K and V.
-    KV-shared layers, per-layer input embeddings and the double-wide MLP are
-    refused: the existing kv_shared flag does not store the extra full-length
-    shared_kv_states copy.
+    Gemma4TextAttention does not construct those modules past the sharing cut
+    (_keys_to_ignore_on_load_unexpected). v_norm has with_scale=False (0 params).
+    The tensors stay in the safetensors header. They are not loaded and not executed.
     """
-    if (c.get("num_kv_shared_layers") or 0) or (c.get("hidden_size_per_layer_input") or 0) \
-            or c.get("use_double_wide_mlp"):
-        raise ValueError("gemma4 KV-shared layers, per-layer embeddings and double-wide MLP are not modelled")
+    n_share = int(c.get("num_kv_shared_layers") or 0)
+    L = int(c.get("num_hidden_layers") or 0)
+    types = _list(c.get("layer_types"))
+    if n_share <= 0 or L <= 0 or n_share >= L or len(types) != L:
+        return 0
     h = c["hidden_size"]
     H = c["num_attention_heads"]
     kv_s = c.get("num_key_value_heads") or H
     hd_s = c.get("head_dim") or h // H
     hd_f = c.get("global_head_dim") or hd_s
-    kv_f = c.get("num_global_key_value_heads") or kv_s
     k_eq = bool(c.get("attention_k_eq_v"))
+    kv_f = (c.get("num_global_key_value_heads") or kv_s) if k_eq else kv_s
+    total = 0
+    for i in range(L - n_share, L):
+        full = types[i] == "full_attention"
+        hd = hd_f if full else hd_s
+        kv = kv_f if full else kv_s
+        total += h * kv * hd
+        if not (full and k_eq):
+            total += h * kv * hd
+        total += hd
+    return total
+
+
+def _build_gemma4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """Gemma 4 text (gemma4_text / gemma4_unified_text).
+
+    Sliding layers use head_dim and num_key_value_heads, with a real v_proj and
+    window = sliding_window. Full layers use global_head_dim. num_global_key_value_heads
+    and the omitted v_proj apply only when attention_k_eq_v is set. V is then
+    RMSNorm(K) with with_scale=False (no parameter) and is still written to the
+    KV cache, so the cache stores both K and V.
+
+    The last num_kv_shared_layers read the donor layer's cache tensors
+    (shared_kv_states holds the Cache.update result; sliding attention is still
+    masked to sliding_window). kv_alias: no own cache and kv_write = 0. There is
+    no second full-length buffer. Checkpoint k/v on those layers is cached_params.
+
+    Per-layer embeddings: one packed row (layers * ple) per token, one projection
+    GEMM on layer 0, then a gate and a projection on every layer.
+    use_double_wide_mlp widens only the shared layers' MLP.
+    """
+    h = c["hidden_size"]
+    H = c["num_attention_heads"]
+    kv_s = c.get("num_key_value_heads") or H
+    hd_s = c.get("head_dim") or h // H
+    hd_f = c.get("global_head_dim") or hd_s
+    k_eq = bool(c.get("attention_k_eq_v"))
+    kv_f = (c.get("num_global_key_value_heads") or kv_s) if k_eq else kv_s
     L = c["num_hidden_layers"]
     types = _list(c.get("layer_types"))
     if not types or len(types) != L or any(t not in ("sliding_attention", "full_attention") for t in types):
@@ -2111,6 +2150,16 @@ def _build_gemma4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     window = c.get("sliding_window")
     if any(t == "sliding_attention" for t in types) and not window:
         raise ValueError("gemma4 sliding_attention requires sliding_window")
+    n_share = int(c.get("num_kv_shared_layers") or 0)
+    if n_share < 0 or n_share >= L:
+        raise ValueError("gemma4 num_kv_shared_layers must leave at least one donor layer")
+    first_share = L - n_share
+    if n_share and not set(types[first_share:]) <= set(types[:first_share]):
+        raise ValueError("gemma4 KV-shared layers need a non-shared donor of the same layer_type")
+    ple = int(c.get("hidden_size_per_layer_input") or 0)
+    if ple < 0:
+        raise ValueError("gemma4 hidden_size_per_layer_input must be >= 0")
+    wide = bool(c.get("use_double_wide_mlp"))
     inter = c["intermediate_size"]
     moe = bool(c.get("enable_moe_block"))
     E = k = de = 0
@@ -2119,33 +2168,50 @@ def _build_gemma4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     layers = []
     for i in range(L):
         full = types[i] == "full_attention"
+        shared = n_share > 0 and i >= first_share
         hd = hd_f if full else hd_s
         kv = kv_f if full else kv_s
-        # Full + attention_k_eq_v: no v_proj. KV still stores the post-norm V.
-        if full and k_eq:
+        # Shared layers have q / o only. Full + attention_k_eq_v: no v_proj.
+        if shared:
+            lin = (Linear("q", h, H * hd, "col"),
+                   Linear("o", H * hd, h, "row"))
+        elif full and k_eq:
             lin = (Linear("q", h, H * hd, "col"),
                    Linear("k", h, kv * hd, "head", unit=hd),
                    Linear("o", H * hd, h, "row"))
         else:
             lin, _core = _gqa(h, H, kv, hd, window=None if full else window)
+        if ple and i == 0:
+            lin = lin + (Linear("ple_proj", h, L * ple, "col", role="other"),)
         core = AttnCore("gqa", n_q=H, n_kv=kv, qk_dim=hd, v_dim=hd, window=None if full else window)
-        # Four decoder RMSNorms + persistent layer_scalar [1] + q_norm + k_norm.
-        # v_norm is with_scale=False (0 params). Final RMSNorm is ModelSpec's, not per layer.
-        misc = 4 * h + 1 + 2 * hd
+        # Four decoder RMSNorms + layer_scalar [1] + q_norm. k_norm only when this
+        # layer projects K. v_norm is with_scale=False. Final RMSNorm is ModelSpec's.
+        misc = 4 * h + 1 + (hd if shared else 2 * hd)
+        if ple:
+            misc += h
+        d_ff = inter * (2 if wide and shared else 1)
         if moe:
-            # Dense MLP on every token (intermediate_size) plus routed experts (moe_intermediate_size).
-            # Router RMSNorm has no scale. router.scale [h] and per_expert_scale [E] are parameters.
-            # Three extra norms wrap the MoE branch (post_ffn_1, pre_ffn_2, post_ffn_2).
-            ffn, flin = _ffn_moe(h, E, k, de, 1, inter)
+            # Dense MLP on every token plus routed experts. Router RMSNorm has no
+            # scale. router.scale [h] and per_expert_scale [E] are parameters.
+            ffn, flin = _ffn_moe(h, E, k, de, 1, d_ff)
             misc += 3 * h + h + E
         else:
-            ffn, flin = _ffn_dense(h, inter)
-        layers.append(Layer(lin, core, ffn, flin, misc))
+            ffn, flin = _ffn_dense(h, d_ff)
+        if ple:
+            flin = flin + (Linear("ple_gate", h, ple, "col", role="other"),
+                           Linear("ple_up", ple, h, "row", role="other"))
+        layers.append(Layer(lin, core, ffn, flin, misc, kv_alias=shared, ple_in=ple))
     n_s = types.count("sliding_attention")
     n_f = types.count("full_attention")
     notes = [f"滑窗 {window}（{n_s} 层，head {hd_s}，KV {kv_s}）与全注意力（{n_f} 层，head {hd_f}，KV {kv_f}）分开记账"]
     if k_eq and n_f:
         notes.append("全注意力 attention_k_eq_v：无 v_proj；V 为无 scale 的 RMSNorm(K)，KV 仍存储 K 与 V")
+    if n_share:
+        notes.append(f"后 {n_share} 层读捐赠层 KV（滑窗仍按 window，不另存全长副本），本层不写 KV")
+    if ple:
+        notes.append(f"逐层嵌入：每 token 查一行（{L}×{ple}），第 0 层投影；每层 gate / proj")
+    if wide and n_share:
+        notes.append(f"共享层 MLP 双倍宽（intermediate {inter}×2）")
     if moe:
         notes.append(f"每层稠密 MLP（intermediate {inter}）与 {E} 专家 top-{k}（moe intermediate {de}）同时计算")
     notes.append("final_logit_softcapping 与 partial RoPE 不改变 GEMM / KV 宽度，不计额外周期")
@@ -2379,7 +2445,8 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     if (spec.lookup_params and not any(l.engram_cols or l.ple_rows or l.deepemb for l in spec.layers)
             and mt not in ("whisper", "moshi", "moss_tts_delay", "rwkv8") and not c.get("cosyvoice") and spec.fish is None
             and getattr(spec, "qwen3_tts", None) is None
-            and getattr(spec, "moss_tts", None) is None):  # 0.274 Moshi / 0.338 Qwen3-TTS / 0.346 MOSS emb_ext / 0.361 RWKV-8 DeepEmbed (exact)
+            and getattr(spec, "moss_tts", None) is None
+            and not spec.ple_packed):  # 0.274 Moshi / 0.338 Qwen3-TTS / 0.346 MOSS / 0.361 RWKV-8 / 0.369 Gemma-4 PLE
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
     if getattr(spec, "moss_tts", None) is not None:
         r.append("外置 audio tokenizer / vocoder 不在本权重：波形解码未计「来源」")
@@ -2543,6 +2610,10 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         # release default: config n_recurrent_loops, per-loop KV (vLLM DoryConfig default / README serve command)
         spec = with_loops(replace(spec, loop_spec=(c["n_input_layers"], c["n_recurrent_layers"]), loop_phys=spec.layers),
                           c.get("n_recurrent_loops") or 1, "per_loop")
+    if (c.get("model_type") or "") in ("gemma4_text", "gemma4_unified_text"):
+        ple_w = int(c.get("hidden_size_per_layer_input") or 0)
+        spec = replace(spec, cached_params=_gemma4_unloaded_kv(c),
+                       **({"final_norm_params": h + ple_w} if ple_w else {}))
     if rel is not None:
         fm = _release_formats(rel)
         if not any(l.role == "other" for L in spec.layers + spec.mtp_layers for l in L.attn_linears):
@@ -2581,6 +2652,20 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=16.0,
                            notes=spec.notes + (f"音频码本 embedding emb_ext（{(emb_rel - spec.embed_params) / 1e9:.2f}B，bf16）："
                                                "每帧按行查表并加到文本嵌入",))
+        elif emb_rel > 1.05 * spec.embed_params and (c.get("model_type") or "") in (
+                "gemma4_text", "gemma4_unified_text") and (c.get("hidden_size_per_layer_input") or 0):
+            # 0.369: embed_tokens_per_layer is Embedding(vocab_ple, layers * ple), one row per token.
+            # The projection GEMM and the per-layer gate / proj are real Linears (not this table).
+            ple = int(c["hidden_size_per_layer_input"])
+            packed = c["num_hidden_layers"] * ple
+            vocab_ple = c.get("vocab_size_per_layer_input") or c["vocab_size"]
+            expect = int(vocab_ple) * packed
+            surplus = emb_rel - spec.embed_params
+            if surplus != expect:
+                raise ValueError(f"gemma4 PLE table {surplus} != vocab_ple * layers * ple ({expect})")
+            spec = replace(spec, lookup_params=surplus, lookup_bits=spec.fmt("embed").bits, ple_packed=packed,
+                           notes=spec.notes + (
+                               f"逐层嵌入表（{surplus / 1e9:.3f}B，{spec.fmt('embed').fmt}）：每 token 读一行，宽 {packed}",))
         elif emb_rel > 1.05 * spec.embed_params and (cfg.get("model_type") or "") == "rwkv8":
             # 0.361: ffn.enn (+ hybrid qkv.ennk / qkv.emm) live in the embed role.  Bits are that role's
             # stored width (bf16 pile, fp16 hybrid).  Rows are read, not a hash table.

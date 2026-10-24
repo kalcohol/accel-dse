@@ -35,11 +35,15 @@ docs/MODEL.md §20):
          gated MLP). The processor pads to max_soft_tokens · pooling² patches; those rows are what the
          tower GEMMs and the bidirectional attention see. Average-pool (no parameters) then strips the
          pad; the projector Linear(h → text, no bias) runs on the remaining soft tokens. std_bias and
-         std_scale are stored buffers when standardize is set. use_clipped_linears is refused.
+         std_scale are stored buffers when standardize is set. use_clipped_linears adds four bf16
+         scalar buffers on each of q, k, v, o, gate, up and down; the clamp does not change the GEMM.
   gemma4u Gemma-4 12B encoder-free embedder (gemma4_unified_vision): LN → Linear(48²·3 → mm) → LN →
          factorised position table → LN → RMSNorm (no scale) → Linear(mm → text). Both GEMMs see the
          padded max_soft_tokens rows; the LLM prompt keeps only the real soft tokens. The unified audio
          path is one Linear(audio_embed_dim → text) when audio_config.model_type is gemma4_unified_audio.
+         gemma4_audio (E2B / E4B) is a conformer: two stride-2 Conv2d, 12 local-attention blocks,
+         then Linear into the text embedder. Prompt tokens follow the processor formula; the tower
+         GEMMs see the waveform padded to a multiple of 128.
 
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
@@ -57,6 +61,17 @@ from .ir import Op
 
 VEC_PER_OUT = 3.0
 DEFAULT_PX = (1024, 1024)          # 「假设」 typical image when serving.images > 0 and no resolution is given
+
+# 0.369 Gemma-4 E2B / E4B. processor_config.json is identical on the four repos (2026-10-24):
+# sampling_rate 16000, hop_length 160, frame_length 320, feature_size 128, audio_seq_length 750.
+# Gemma4AudioFeatureExtractor.__call__ pads to a multiple of 128 and truncates at 480000 samples.
+_G4_AUDIO_RATE = 16000
+_G4_AUDIO_HOP = 160
+_G4_AUDIO_FRAME = 320
+_G4_AUDIO_MELS = 128
+_G4_AUDIO_CAP = 750
+_G4_AUDIO_MAX_SAMPLES = 480_000
+_G4_AUDIO_PAD = 128
 
 # 0.288: Ornith repos besides 1.5-122B (image + video preprocessor configs identical to Qwen3.5's, each checked)
 ORNITH_REPOS = ("1.5-122B-FP8", "1.5-397B-FP8", "1.5-35B-A3B-FP8", "1.5-397B", "1.5-35B-A3B", "1.5-9B", "1.0-397B",
@@ -273,6 +288,11 @@ class AudioSpec:
     # 0.337: as-released weight format for the audio tower (OmniASR headers are fp32; other kinds keep bf16 default)
     w_bits: float = 16.0
     w_fmt: str = "bf16"
+    # 0.369 Gemma-4 conformer (kind "g4conf"): STFT frame length in samples, and the chunked-attention
+    # context_left / context_right from Gemma4AudioConfig. 0 leaves every other kind unchanged.
+    frame: int = 0
+    ctx_l: int = 0
+    ctx_r: int = 0
 
     @property
     def samples_per_token(self) -> int:
@@ -327,6 +347,8 @@ class AudioSpec:
             return self.lfr_frames(seconds)
         if self.kind == "w2v":
             return self.tokens(seconds)        # 0.336: one encoder / LLM position per post-conv frame (50 Hz)
+        if self.kind == "g4conf":
+            return self._g4_audio_lens(seconds)[0]
         if self.kind != "whisper":
             return self.tokens(seconds)        # Muse Spark: one output position per token (no chunking)
         return sum(self.chunk_len(n)[0] for n in self.chunks(seconds))
@@ -343,7 +365,36 @@ class AudioSpec:
             o = (o + 2 * pd - k) // st + 1
         return t, o
 
+    def _g4_mel(self, samples: int) -> int:
+        """Gemma4AudioFeatureExtractor semicausal unfold (frame + 1, hop)."""
+        if samples <= 0 or self.frame <= 0:
+            return 0
+        pad_left = self.frame // 2
+        unfold = self.frame + 1
+        return (samples + pad_left - unfold) // self.patches[0] + 1
+
+    def _g4_conv_len(self, samples: int) -> int:
+        """Two stride-2 Conv2d (kernel 3, pad 1) after the mel frames. Gemma4Processor._compute_audio_num_tokens."""
+        mel = self._g4_mel(samples)
+        if mel <= 0:
+            return 0
+        t = mel
+        for _ in range(2):
+            t = (t + 2 - 3) // 2 + 1
+        return t
+
+    def _g4_audio_lens(self, seconds: float) -> tuple[int, int]:
+        """(tower time steps, prompt tokens). The tower sees the 128-sample pad; the prompt uses the mask."""
+        n = min(_G4_AUDIO_MAX_SAMPLES, max(0, round(seconds * self.rate)))
+        prompt = self._g4_conv_len(n)
+        if self.maxf:
+            prompt = min(prompt, self.maxf)
+        padded = ((n + _G4_AUDIO_PAD - 1) // _G4_AUDIO_PAD) * _G4_AUDIO_PAD if n else 0
+        return self._g4_conv_len(padded), prompt
+
     def tokens(self, seconds: float) -> int:
+        if self.kind == "g4conf":
+            return self._g4_audio_lens(seconds)[1]
         if self.kind == "sanm":
             return self.lfr_frames(seconds)     # processor: num_audio_tokens = input_features_mask.sum (one per LFR frame)
         if self.kind == "aut":
@@ -381,6 +432,48 @@ class AudioSpec:
                 n = (n - k) // st + 1 if n >= k else 0
             return max(0, n)
         return math.ceil(round(seconds * self.rate) / self.samples_per_token)
+
+
+def _gemma4_audio_spec(cfg: dict, ac: dict) -> AudioSpec | None:
+    """gemma4_audio conformer plus embed_audio. None when a width has no header path."""
+    text_h = (cfg.get("text_config") or {}).get("hidden_size")
+    h = ac.get("hidden_size") or 0
+    layers = ac.get("num_hidden_layers") or 0
+    heads = ac.get("num_attention_heads") or 0
+    chans = list(ac.get("subsampling_conv_channels") or [])
+    out_d = ac.get("output_proj_dims") or 0
+    kernel = ac.get("conv_kernel_size") or 0
+    chunk = ac.get("attention_chunk_size") or 0
+    ctx_l = int(ac.get("attention_context_left") or 0)
+    ctx_r = int(ac.get("attention_context_right") or 0)
+    if not (text_h and h and layers and heads and out_d and kernel and chunk and ctx_l >= 1):
+        return None
+    if h % heads or not ac.get("use_clipped_linears"):
+        return None
+    if len(chans) != 2 or int(chans[0]) != _G4_AUDIO_MELS:
+        return None
+    c0, c1 = int(chans[0]), int(chans[1])
+    # Gemma4AudioSubSampleConvProjection: proj_in = (c0 // 4) * c1. That is two stride-2
+    # reductions of a mel axis whose width equals the first conv's channel count.
+    proj_in = (c0 // 4) * c1
+    if proj_in != h:
+        return None
+    hd = h // heads
+    # Conv2d k3 s2 p1, no bias, plus LayerNorm weight. Linear(proj_in, h), no bias.
+    sub = c0 * 9 + c0 + c1 * c0 * 9 + c1 + proj_in * h
+    # Two FFNs. Each has two clipped linears (four bf16 scalars) and two RMSNorms. Width is 4h.
+    one_ff = 2 * (h * 4 * h) + 2 * h + 8
+    # GLU linear_start h to 2h, causal depthwise conv, linear_end h to h, two RMSNorms. Both linears are clipped.
+    lconv = h * (2 * h) + 4 + h * h + 4 + h * kernel + 2 * h
+    # q, k, v, post are clipped. relative_k_proj is a plain Linear. per_dim_scale is [head_dim]. Three RMSNorms.
+    attn = 4 * (h * h + 4) + h * h + hd + 3 * h
+    tower = sub + layers * (2 * one_ff + lconv + attn) + h * out_d + out_d
+    # embed_audio: Linear(out_d, text), no bias. The pre-norm has with_scale=False.
+    params = tower + out_d * text_h
+    return AudioSpec(
+        _G4_AUDIO_RATE, (_G4_AUDIO_HOP,), (h, c0, c1), (layers,), kernel, 4.0, text_h, params,
+        kind="g4conf", heads=heads, n_mels=_G4_AUDIO_MELS, chunk=chunk, lin=((h, out_d),),
+        maxf=_G4_AUDIO_CAP, frame=_G4_AUDIO_FRAME, ctx_l=ctx_l, ctx_r=ctx_r)
 
 
 def audio_spec(cfg: dict) -> AudioSpec | None:
@@ -427,7 +520,7 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
         # multi_modal_projector (LLM) or CTC lm_head (CTC — encoder only; language decode not modelled as asr)
         return _omniasr_audio_spec(cfg, ac)
     if ac.get("model_type") == "gemma4_unified_audio":
-        # One projection. A conformer (gemma4_audio on E2B / E4B) is not this module.
+        # 12B: one projection. The E2B / E4B conformer is gemma4_audio, below.
         d_in = ac.get("output_proj_dims")
         if not d_in or d_in != ac.get("audio_embed_dim"):
             return None
@@ -436,6 +529,8 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
         if spt <= 0 or not text_h:
             return None
         return AudioSpec(16000, (spt,), (d_in,), (0,), 1, 1.0, text_h, d_in * text_h, kind="g4lin")
+    if ac.get("model_type") == "gemma4_audio":
+        return _gemma4_audio_spec(cfg, ac)
     if ac.get("model_type") != "muse_spark_audio":
         return None
     pt, dm, dp, k, r = tuple(ac["patch_sizes"]), tuple(ac["hidden_sizes"]), tuple(ac["depths"]), ac["conv_kernel_size"], ac["mlp_ratio"]
@@ -775,9 +870,67 @@ def _whisper_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -
     return ops
 
 
+def _g4conf_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
+    """Conformer GEMMs at the padded tower length. Attention is on chunk-padded blocks."""
+    from .dtypes import fmt as _fmt
+    ab = _fmt(af).bytes
+    tower, _prompt = a._g4_audio_lens(seconds)
+    if tower <= 0 or clips <= 0:
+        return []
+    h, c0, c1 = a.dims
+    hd = h // a.heads
+    context = a.chunk + (a.ctx_l - 1) + a.ctx_r
+    rel = context // 2 + 1
+    q_pad = -(-tower // a.chunk) * a.chunk
+    wf, wb = a.w_fmt, a.w_bits
+    n = min(_G4_AUDIO_MAX_SAMPLES, max(0, round(seconds * a.rate)))
+    padded = ((n + _G4_AUDIO_PAD - 1) // _G4_AUDIO_PAD) * _G4_AUDIO_PAD
+    mel = a._g4_mel(padded)
+
+    def conv_out(length: int) -> int:
+        return (length + 2 - 3) // 2 + 1
+
+    t0, f0 = conv_out(mel), conv_out(a.n_mels)
+    f1 = conv_out(f0)
+    out_d = a.lin[0][1]
+
+    def gemm(name: str, m: int, k: int, n: int, layer: int = 0, count: int = 1) -> Op:
+        return Op(name, "gemm", layer, m=m, k=k, n=n, count=count, role="vision", w_params=k * n * count,
+                  w_bits=wb, w_fmt=wf, a_fmt=af, act_bytes=m * (k + n) * count * ab, stream=True,
+                  vec=m * n * count * VEC_PER_OUT)
+
+    t = tower * clips
+    ops = [
+        gemm("aud.conv0", t0 * f0 * clips, 9, c0),
+        gemm("aud.conv1", tower * f1 * clips, 9 * c0, c1),
+        gemm("aud.sub_proj", t, f1 * c1, h),
+    ]
+    for li in range(a.depths[0]):
+        ops += [gemm(f"aud.{li}.ff1_up", t, h, 4 * h, li), gemm(f"aud.{li}.ff1_down", t, 4 * h, h, li),
+                gemm(f"aud.{li}.ff2_up", t, h, 4 * h, li), gemm(f"aud.{li}.ff2_down", t, 4 * h, h, li)]
+        ops += [gemm(f"aud.{li}.q", t, h, h, li), gemm(f"aud.{li}.k", t, h, h, li),
+                gemm(f"aud.{li}.v", t, h, h, li), gemm(f"aud.{li}.post", t, h, h, li)]
+        # relative_k_proj runs once per clip on context//2+1 positions. The weight is one h by h matrix.
+        ops.append(gemm(f"aud.{li}.rel", rel * clips, h, h, li))
+        ops += [Op(f"aud.{li}.qk", "attn", li, m=q_pad, k=hd, n=context, count=a.heads * clips, causal=1.0,
+                   act_bytes=a.heads * clips * q_pad * hd * ab, stream=True, orient=True),
+                Op(f"aud.{li}.pv", "attn", li, m=q_pad, k=context, n=hd, count=a.heads * clips, causal=1.0,
+                   act_bytes=a.heads * clips * q_pad * hd * ab, orient=True),
+                Op(f"aud.{li}.softmax", "vector", li, vec=a.heads * clips * q_pad * context * 5.0)]
+        ops.append(Op(f"aud.{li}.lconv", "vector", li, vec=t * h * a.kernel, act_bytes=2 * t * h * ab))
+        ops.append(gemm(f"aud.{li}.lconv_start", t, h, 2 * h, li))
+        ops.append(gemm(f"aud.{li}.lconv_end", t, h, h, li))
+    ops.append(gemm("aud.out", t, h, out_d, a.depths[0]))
+    # embed_audio sees the tower rows. The prompt mask is applied after this Linear.
+    ops.append(gemm("aud.embed", t, out_d, a.out, a.depths[0]))
+    return ops
+
+
 def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> list[Op]:
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
+    if a.kind == "g4conf":
+        return _g4conf_ops(a, seconds, clips, af)
     if a.kind == "g4lin":
         # Gemma4UnifiedMultimodalEmbedder: one Linear(audio_embed_dim → text), no bias. RMSNorm has no scale.
         t = a.tokens(seconds) * clips
@@ -862,8 +1015,6 @@ def _gemma4_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
                           False, pool, ((mm, text_h),), params, tuple(sorted(pre.items())), audio=au)
     if mt != "gemma4_vision":
         return None
-    if vc.get("use_clipped_linears"):
-        return None
     hv = vc.get("hidden_size") or 0
     inter = vc.get("intermediate_size") or 0
     depth = vc.get("num_hidden_layers") or 0
@@ -884,12 +1035,21 @@ def _gemma4_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
               + depth * (hv * qd + 2 * hv * kvd + qd * hv + 2 * hd + 4 * hv + 3 * hv * inter))
     if vc.get("standardize", False):
         params += 2 * hv
+    if vc.get("use_clipped_linears"):
+        # Seven Gemma4ClippableLinear modules per block. Each stores four bf16 scalar buffers.
+        # The clamp does not change the GEMM.
+        params += depth * 7 * 4
     mm = vc.get("output_proj_dims") or hv
     params += mm * text_h
+    au = audio_spec(cfg)
+    if au is not None and au.kind != "g4conf":
+        return None
+    if au is not None:
+        params += au.params
     pre = {"patch": patch, "pool": pool, "max_soft": soft, "qd": qd, "kvd": kvd, "text_h": text_h,
            "std": 1 if vc.get("standardize", False) else 0}
     return VisionSpec("gemma4", "Gemma-4 ViT + pool + projector", patch, 1, hv, inter, depth, nh, qd, True, pool,
-                      ((mm, text_h),), params, tuple(sorted(pre.items())))
+                      ((mm, text_h),), params, tuple(sorted(pre.items())), audio=au)
 
 
 def _gemma4_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> list[Op]:

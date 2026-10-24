@@ -331,13 +331,17 @@ EXTRA_TAIL = [
     ("qwen3-vl-2b", "Qwen/Qwen3-VL-2B-Instruct"),
     ("qwen3-vl-2b-fp8", "Qwen/Qwen3-VL-2B-Instruct-FP8"),
     # 0.368 Gemma-4 (gemma4 / gemma4_unified). Hybrid sliding/full attention, not a Gemma-3 wrap.
-    # E2B / E4B, assistant drafts and DiffusionGemma are not listed (see CHANGELOG).
+    # 0.369 adds E2B / E4B (KV alias, PLE, gemma4_audio). Assistant drafts and DiffusionGemma stay out.
     ("gemma-4-31b-it", "google/gemma-4-31B-it"),
     ("gemma-4-31b", "google/gemma-4-31B"),
     ("gemma-4-26b-a4b-it", "google/gemma-4-26B-A4B-it"),
     ("gemma-4-26b-a4b", "google/gemma-4-26B-A4B"),
     ("gemma-4-12b-it", "google/gemma-4-12B-it"),
     ("gemma-4-12b", "google/gemma-4-12B"),
+    ("gemma-4-e4b-it", "google/gemma-4-E4B-it"),
+    ("gemma-4-e4b", "google/gemma-4-E4B"),
+    ("gemma-4-e2b-it", "google/gemma-4-E2B-it"),
+    ("gemma-4-e2b", "google/gemma-4-E2B"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)

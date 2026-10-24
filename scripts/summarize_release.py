@@ -51,9 +51,12 @@ SCALE_RE = re.compile(r"(_(weight|input)_scale(_2)?$|\.weight_scale_inv$|\.scale
 # 0.368: Gemma-4 router.scale [hidden] and router.per_expert_scale [E] are nn.Parameter (Gemma4TextRouter);
 # vision_tower.std_scale [hidden] is the standardize buffer next to std_bias (Gemma4VisionModel). None of
 # these are quantization scales. Anchored so expert *_scale_inv names still strip.
+# 0.369: Gemma-4 audio attention per_dim_scale [head_dim] is an nn.Parameter
+# (softplus, multiplies queries). Not a quantization scale.
 NOT_SCALE_RE = re.compile(
     r"((^|\.)hc_(attn|ffn|head)_scale|^lm_head\.logit_scale|"
-    r"(^|\.)router\.(per_expert_scale|scale)$|(^|\.)vision_tower\.std_scale$)")
+    r"(^|\.)router\.(per_expert_scale|scale)$|(^|\.)vision_tower\.std_scale$|"
+    r"(^|\.)self_attn\.per_dim_scale$)")
 ROLE = [
     ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.|^linear_proj\.)"),
     ("mtp", r"(^mtp\.|\.mtp\.|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),

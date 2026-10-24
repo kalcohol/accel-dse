@@ -775,7 +775,8 @@ def _rwkv7_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
 
 
 # ------------------------------------------------------------------ attention core
-def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, b_loc: int) -> list[Op]:
+def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, b_loc: int,
+                   alias: bool = False) -> list[Op]:
     ops: list[Op] = []
     ab = _fmt(model.act_fmt).bytes
     kvb = _fmt(model.kv_fmt).bytes
@@ -1060,6 +1061,9 @@ def _attn_core_ops(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Sha
                                + ((ph.ctx // r_) * core.cmp_bytes if core.dual else 0.0))
         kv_write = b_loc * q * core.win_bytes + (b_loc * (ctx_tot // r_ - ph.ctx // r_) * core.cmp_bytes
                                                  if core.kv_owner else 0.0)
+    if alias:
+        # 0.369 Gemma-4: this layer reads the donor layer's KV tensors and does not write its own cache.
+        kv_write = 0.0
     ops.append(Op("softmax", "vector", li, vec=sm_elems * 5, sfu=sm_elems, kv_read=kv_read, kv_write=kv_write,
                   replicated=(tp if core.kind == "mla" else 1)))
     if ph.cp > 1 and ph.kind == "prefill" and core.topk is not None:
@@ -1351,7 +1355,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         gc = groups_local(l, tp)[0] if l.groups > 1 else 1
         ops.append(gemm(model, f"attn.{l.name}", li, m, k, n, l.role or "attn", count=gc, params=k * n * gc,
                         replicated=_repl(l, tp)))
-    ops.extend(_attn_core_ops(model, li, L.core, ph, sh, b_loc))
+    ops.extend(_attn_core_ops(model, li, L.core, ph, sh, b_loc, L.kv_alias))
     if L.core.out_gate_fn == "softplus":
         # 0.292 k2_horizon: attn_output · softplus(gate_proj x, β = ln 2) per element before o_proj 「来源」
         # (K2HorizonAttention / K2HorizonMoVAAttention): softplus = log1p(exp(βx))/β — exp + log on the SFU, 4 ops
@@ -1400,7 +1404,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     if f.kind == "dense":
         for l in L.ffn_linears:
             k, n = _lin_local(l, tp)
-            ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, "mlp"))
+            ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
         ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4, sfu=t * _cdiv(f.d_ff, tp) * 2))   # silu: exp + rcp
         if tp > 1:
             ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
@@ -1409,8 +1413,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         T = ph.tokens                       # global tokens in the stage step
         for l in L.ffn_linears:
             k, n = _lin_local(l, tp)
-            role = "router" if l.name.startswith(("router", "shared_expert_gate")) else (
-                "shared_expert" if l.name.startswith("shared") else "mlp")
+            role = l.role or ("router" if l.name.startswith(("router", "shared_expert_gate")) else (
+                "shared_expert" if l.name.startswith("shared") else "mlp"))
             ops.append(gemm(model, f"moe.{l.name}", li, t, k, n, role, replicated=_repl(l, tp)))
         r = moe_routing(f.n_experts, f.top_k, T, sh.ep, layer_skew(ph, li), f.groups)
         d_loc = _cdiv(f.d_expert, sh.etp)
@@ -1435,6 +1439,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                           comm_bytes=r.pairs_local * ein * rb))
         if tp > 1 and f.n_shared:
             ops.append(Op("shared_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
+    if L.ple_in:
+        # 0.369 Gemma-4: GELU(gate) * this layer's PLE slice, then RMSNorm(h). The GEMMs are ple_gate / ple_up.
+        ops.append(Op("ple_mix", "vector", li, vec=t * (L.ple_in * 4 + h * 4), sfu=t * L.ple_in))
     if L.deepemb:
         # 0.361 RWKV-8 channel mix: value(relu(key)^2) * enn[idx] for the new tokens only (demo CMix_*).
         bits = model.lookup_bits or model.fmt("embed").bits or 16.0
@@ -1561,7 +1568,14 @@ def _embed_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
     b_loc = _cdiv(ph.batch, sh.dp)
     t = b_loc * ph.q
     rf = model.fmt("embed")
-    return [Op("embed_lookup", "lookup", -1, kv_read=t * model.hidden * rf.bits / 8, vec=t * model.hidden)]
+    ops = [Op("embed_lookup", "lookup", -1, kv_read=t * model.hidden * rf.bits / 8, vec=t * model.hidden)]
+    if model.ple_packed:
+        # 0.369 Gemma-4: one packed PLE row per token, then RMSNorm on each layer slice (width ple).
+        bits = model.lookup_bits or rf.bits
+        w = model.ple_packed
+        ops.append(Op("ple_lookup", "lookup", -1, kv_read=t * w * bits / 8, vec=t * w))
+        ops.append(Op("ple_norm", "vector", -1, vec=t * w * 4, sfu=t * model.n_layers))
+    return ops
 
 
 def head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = False) -> list[Op]:
