@@ -233,3 +233,5 @@ meituan-longcat/LongCat-Flash-Chat
 tencent/Hunyuan-A13B-Instruct
 # 0.377 ERNIE-4.5-21B-A3B-PT (ernie4_5_moe). Repo has no modeling file; headers + transformers class.
 baidu/ERNIE-4.5-21B-A3B-PT
+# 0.378 ERNIE-4.5-21B-A3B-Base-PT. Same language geometry; no num_nextn_predict_layers and no MTP tensors.
+baidu/ERNIE-4.5-21B-A3B-Base-PT

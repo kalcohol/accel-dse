@@ -2550,22 +2550,25 @@ def _build_hunyuan_v1_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str],
 
 
 def _build_ernie4_5_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
-    """ERNIE-4.5 MoE (baidu/ERNIE-4.5-21B-A3B-PT).
+    """ERNIE-4.5 MoE (ernie4_5_moe).
 
-    The checkpoint repo has no modeling file. The geometry is the public transformers class
-    ``Ernie4_5_MoeForCausalLM`` (modeling_ernie4_5_moe.py) checked against the safetensors headers.
+    The checkpoint repos have no modeling file. The geometry is the public transformers class
+    ``Ernie4_5_MoeForCausalLM`` (modeling_ernie4_5_moe.py, transformers v5.12.0) checked against
+    the safetensors headers.
 
     Decoder layers whose index satisfies the published interval test are ``Ernie4_5_MoeSparseMoeBlock``:
     fp32 ``gate.weight`` [E, hidden], fp32 ``moe_statics.e_score_correction_bias`` [1, E] added after softmax
-    (selection only), routed SwiGLU experts of width ``moe_intermediate_size``, and one shared SwiGLU of width
+    (selection only; gathered expert weights are the pre-bias softmax scores), routed SwiGLU experts of width
+    ``moe_intermediate_size``, and one shared SwiGLU of width
     ``moe_intermediate_size * moe_num_shared_experts``. There is no ``shared_expert_gate``. Other layers are a
-    dense SwiGLU of ``intermediate_size``. Attention is bias-free GQA. ``use_bias`` is false on this release;
-    a true flag is refused rather than guessed.
+    dense SwiGLU of ``intermediate_size``. Attention is bias-free GQA. ``use_bias`` is false on the shipped
+    releases; a true flag is refused rather than guessed.
 
-    ``_keys_to_ignore_on_load_unexpected = ["mtp"]`` and the class does not build an MTP module. The checkpoint
-    still stores one dense block (same GEMMs as a dense decoder layer), ``mtp_linear_proj`` [hidden, 2·hidden],
-    ``mtp_emb_norm`` and ``mtp_hidden_norm``. Those tensors are the existing MTP parameter path (eh_proj is
-    2h→h). This is not a clone of the last MoE layer and not a new recurrence.
+    ``_keys_to_ignore_on_load_unexpected = ["mtp"]`` and the class does not build an MTP module. When
+    ``num_nextn_predict_layers`` is set, each stored block is a dense decoder layer (not a clone of the last
+    MoE layer) plus ``mtp_linear_proj`` [hidden, 2·hidden], ``mtp_emb_norm`` and ``mtp_hidden_norm``. Those
+    tensors use the existing MTP parameter path (eh_proj is 2h→h). A config that omits the field does not
+    invent MTP layers.
     """
     if c.get("use_bias"):
         raise ValueError("ernie4_5_moe use_bias is not modeled")
@@ -2623,10 +2626,14 @@ def _build_ernie4_5_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str], s
         "gate.weight 与 moe_statics.e_score_correction_bias 按发布是 fp32。"
         "bias 加在 softmax 之后，只参与选专家。",
         "选中专家的归一化、moe_norm_min 和 router 的 fp32 matmul 不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。",
-        "发布类把 mtp 列在 _keys_to_ignore_on_load_unexpected，forward 不跑这份权重。"
-        "header 里是一层与稠密层相同的 GQA + SwiGLU、eh_proj [hidden, 2·hidden]、mtp_emb_norm 与 mtp_hidden_norm。"
-        "参数按这条形状记，不克隆最后一层 MoE，也不另写递推。没有视觉塔。",
     ]
+    if n_mtp:
+        notes.append(
+            "发布类把 mtp 列在 _keys_to_ignore_on_load_unexpected，forward 不跑这份权重。"
+            "header 里是一层与稠密层相同的 GQA + SwiGLU、eh_proj [hidden, 2·hidden]、mtp_emb_norm 与 mtp_hidden_norm。"
+            "参数按这条形状记，不克隆最后一层 MoE，也不另写递推。没有视觉塔。")
+    else:
+        notes.append("num_nextn_predict_layers 未给出或为 0，不建模 MTP。没有视觉塔。")
     return layers, mtp, notes, "full"
 
 
