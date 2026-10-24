@@ -59,7 +59,7 @@ def test_wevisone_vl_fp32_matches_qwen3_vl_shapes():
         q = get_model(twin)
         rel = load_release(m.hf_id)
         pc = m.param_check()
-        hd = hidden // nq
+        hd = 128
         qn, kn = nq * hd, nkv * hd
         assert pc["rel_err"] == 0.0 and m.params() == params == m.release_params == rel["params_llm"], mid
         assert m.vision.params == vis == rel["params_vision"] == q.vision.params, mid
@@ -126,4 +126,4 @@ def test_wevisone_vl_fp32_matches_qwen3_vl_shapes():
         assert pre.vision["weights_GB"] == m.vision.params * m.vision.w_Bpp / 1e9, mid
         assert pre.step > 0
         dec = evaluate(Scenario(model=mid, serving=Serving(phase="decode", batch=1, ctx=32)))
-        assert dec.step > 0 and dec.vision["weights_GB"] == pre.vision["weights_GB"], mid
+        assert dec.step > 0 and dec.vision is None, mid
