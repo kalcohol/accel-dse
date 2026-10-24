@@ -485,8 +485,10 @@ def _run1(s, t, cap, power_mode, curve, f_op: float = 1.0, pk=None) -> dict:
                 o["why"].append(d.get("error") or "功耗封顶不可行")
             else:
                 k = d["throughput_factor"]
-                if o["W_card"] > 0:     # 0.313: the DRAM-device share of the capped power (same traffic per unit)
-                    o["dram_dev_W"] = o["dram_dev_W"] * d["W_card"] / o["W_card"]
+                # 0.359: device watts at the capped clock. Scaling the pre-cap dram_dev_W by W_card ratio
+                # pulled HBM/LPDDR static down with core power and charged that heat to the die.
+                if d.get("dram_dev_W") is not None:
+                    o["dram_dev_W"] = d["dram_dev_W"]
                 o.update(thr=r.per_card * k, J_per_unit=d["J_per_unit"], W_card=d["W_card"], f_scale=d["s"],
                          capped=True, lat_ms=o["lat_ms"] / k if k > 0 else o["lat_ms"], cap_pkg_W=d.get("pkg_W", d["W_card"]),
                          static_W=d.get("static_W", o["static_W"]) if pk is not None else o["static_W"])
