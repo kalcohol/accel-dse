@@ -1991,17 +1991,37 @@ def _mamba2(c: dict, h: int) -> tuple[tuple[Linear, ...], AttnCore, int]:
     return lin, core, misc
 
 
+# 0.363: Nemotron-H releases that predate layers_block_type publish the same schedule as
+# hybrid_override_pattern. The alphabet is the one Nemotron-3.5 expands into layers_block_type
+# (Nano-30B-A3B pattern == Lightning's list): M mamba, E moe, * attention, - mlp.
+# Unknown characters are rejected.
+_NEMOTRON_PAT = {"M": "mamba", "E": "moe", "*": "attention", "-": "mlp"}
+
+
+def _nemotron_block_types(c: dict) -> tuple[list, list[str]]:
+    bcs = list(c.get("block_configs") or ())
+    if bcs:
+        return bcs, [b["block_type"] for b in bcs]
+    if c.get("layers_block_type"):
+        return [], list(c["layers_block_type"])
+    pat = c.get("hybrid_override_pattern") or ""
+    bad = sorted({ch for ch in pat if ch not in _NEMOTRON_PAT})
+    if not pat or bad:
+        raise ValueError(f"nemotron_h: no layers_block_type; hybrid_override_pattern {pat!r} has unknown chars {bad}")
+    return [], [_NEMOTRON_PAT[ch] for ch in pat]
+
+
 def _build_nemotron_h(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """0.278 Nemotron-H (transformers NemotronHForCausalLM 「来源」): ``layers_block_type`` gives one mixer per layer —
     mamba (Mamba-2, _mamba2) | attention (GQA, no RoPE in the reference attention path's cost) | moe (NemotronHMoE: sigmoid
     top-k router with correction bias, relu² non-gated routed experts in the moe_latent_size space between
     fc1_latent_proj / fc2_latent_proj, one relu² shared expert at full width) | mlp (relu² up / down); one pre-norm
-    each.  MTP (num_nextn_predict_layers, mtp_layers_block_type): eh_proj 2h → h + enorm / hnorm + one block per type."""
+    each.  MTP (num_nextn_predict_layers, mtp_layers_block_type): eh_proj 2h → h + enorm / hnorm + one block per type.
+    0.363: a release that only ships hybrid_override_pattern uses that string (see _NEMOTRON_PAT)."""
     h = c["hidden_size"]
     # 0.289 Nemotron-H Puzzle (Nemotron-3.5-Bolt, configuration_nemotron_h_puzzle.py 「来源」): ``block_configs[i]`` updates
     # the global config for layer i (get_nemotron_h_config_for_layer) — per-layer routed experts, MoE width and top-k
-    bcs = list(c.get("block_configs") or ())
-    types = [b["block_type"] for b in bcs] if bcs else list(c["layers_block_type"])
+    bcs, types = _nemotron_block_types(c)
     lat = c.get("moe_latent_size") or 0
 
     def block(t: str, i: int = -1, mtp_cfg: dict | None = None):
@@ -2039,10 +2059,11 @@ def _build_nemotron_h(c: dict) -> tuple[list[Layer], list[Layer], list[str], str
     rng = lambda xs: f"{min(xs)}" if min(xs) == max(xs) else f"{min(xs)}–{max(xs)}"
     es = (f"{rng([f.n_experts for f in mf])} 专家 top-{rng([f.top_k for f in mf])}"
           + (f"，宽 {rng([f.d_expert for f in mf])}（逐层异构，Puzzle block_configs）" if bcs else "")) if mf else "无"
+    mlp_n = f" + {n['mlp']} 层 relu² MLP" if n.get("mlp") else ""
     notes = [f"Nemotron-H 混合：{n.get('mamba', 0)} 层 Mamba-2（SSD，{c['mamba_num_heads']} 头 × {c['mamba_head_dim']}，"
              f"状态 {c['ssm_state_size']}，B/C 按 {c['n_groups']} 组共享，chunk {c.get('chunk_size') or 128}，状态 fp32）+ "
              f"{n.get('attention', 0)} 层 GQA + {n.get('moe', 0)} 层 latent MoE（{es}，relu² 非门控，"
-             f"latent {lat}，共享专家 {c.get('moe_shared_expert_intermediate_size')}）；每层只有一个 mixer"]
+             f"latent {lat}，共享专家 {c.get('moe_shared_expert_intermediate_size')}）{mlp_n}；每层只有一个 mixer"]
     return layers, mtp, notes, "full"
 
 

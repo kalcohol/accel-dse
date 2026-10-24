@@ -1,0 +1,107 @@
+{
+ "bytes_llm": 17776454656,
+ "bytes_mtp": 0,
+ "bytes_total": 17776454656,
+ "config": {
+  "architectures": [
+   "NemotronHForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "auto_map": {
+   "AutoConfig": "configuration_nemotron_h.NemotronHConfig",
+   "AutoModelForCausalLM": "modeling_nemotron_h.NemotronHForCausalLM"
+  },
+  "bos_token_id": 1,
+  "chunk_size": 128,
+  "conv_kernel": 4,
+  "eos_token_id": 12,
+  "head_dim": 128,
+  "hidden_dropout": 0.0,
+  "hidden_size": 4480,
+  "hybrid_override_pattern": "M-M-M-MM-M-M-M*-M-M-M*-M-M-M-M*-M-M-M-M*-M-MM-M-M-M-M-M-",
+  "initializer_range": 0.02,
+  "intermediate_size": 15680,
+  "layer_norm_epsilon": 1e-05,
+  "mamba_head_dim": 80,
+  "mamba_hidden_act": "silu",
+  "mamba_num_groups": 8,
+  "mamba_num_heads": 128,
+  "mamba_proj_bias": false,
+  "mamba_state_dim": 128,
+  "max_position_embeddings": 131072,
+  "mlp_bias": false,
+  "mlp_hidden_act": "relu2",
+  "model_type": "nemotron_h",
+  "n_groups": 8,
+  "num_attention_heads": 40,
+  "num_hidden_layers": 56,
+  "num_key_value_heads": 8,
+  "num_logits_to_keep": 1,
+  "num_query_groups": 8,
+  "pad_token_id": 0,
+  "rescale_prenorm_residual": true,
+  "residual_in_fp32": false,
+  "rms_norm_eps": 1e-05,
+  "sliding_window": null,
+  "ssm_state_size": 128,
+  "tie_word_embeddings": false,
+  "time_step_floor": 0.0001,
+  "time_step_max": 0.1,
+  "time_step_min": 0.001,
+  "time_step_rank": 256,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.51.3",
+  "use_bias": false,
+  "use_cache": true,
+  "use_conv_bias": true,
+  "use_mamba_kernels": true,
+  "vocab_size": 131072
+ },
+ "fetched": "2026-10-24",
+ "n_tensors": 341,
+ "params_llm": 8888227328,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 8401940736,
+    "params": 4200970368
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1174405120,
+    "params": 587202560
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 1174405120,
+    "params": 587202560
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 7024640000,
+    "params": 3512320000
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 1054720,
+    "params": 527360
+   }
+  },
+  "other": {
+   "bf16": {
+    "bytes": 8960,
+    "params": 4480
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}
