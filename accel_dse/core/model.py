@@ -302,7 +302,7 @@ class PairCore:
 @dataclass(frozen=True)
 class Ffn:
     kind: str                    # dense | moe | none
-    d_ff: int = 0                # dense intermediate
+    d_ff: int = 0                # dense intermediate; on a moe block, a parallel dense SwiGLU of this width (0 = none)
     gated: bool = True           # SwiGLU (3 mats) vs 2 mats
     n_experts: int = 0
     top_k: int = 0
@@ -313,6 +313,8 @@ class Ffn:
     # 0.255 group-limited routing (DeepSeek-V3 MoEGate / vLLM grouped_topk / Beam / Bailing): (n_group, topk_group) —
     # a token's top-k experts come from topk_group of n_group contiguous expert groups; () = unrestricted
     groups: tuple[int, ...] = ()
+    # Identity experts scored by the router and applied as a copy of the token. They have no parameters.
+    zero_experts: int = 0
 
     @property
     def mats(self) -> int:
@@ -593,7 +595,12 @@ class ModelSpec:
         for l in self.layers:
             if l.ffn.kind == "moe":
                 f = l.ffn
-                p -= (f.n_experts - f.top_k) * f.mats * f.expert_in(self.hidden) * f.d_expert
+                pool = f.n_experts + f.zero_experts
+                if f.zero_experts and pool and (f.top_k * f.n_experts) % pool == 0:
+                    k_hit = (f.top_k * f.n_experts) // pool
+                else:
+                    k_hit = f.top_k
+                p -= (f.n_experts - k_hit) * f.mats * f.expert_in(self.hidden) * f.d_expert
             if l.core.v_experts:          # 0.292 MoVA: top v_topk of the routed value experts per token
                 p -= (l.core.v_experts - l.core.v_topk) * self.hidden * l.core.n_kv * l.core.v_dim
         return p
@@ -2381,8 +2388,88 @@ def _build_gemma4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, [], notes, "full"
 
 
+def _longcat_attn(h: int, nh: int, q_lora: int, kv_lora: int, nope: int, rope: int, vdim: int) -> tuple:
+    """LongCat-Flash MLA projections. kv_b expands to per-head K/V before the cache, so the core is GQA."""
+    qk = nope + rope
+    lin = (
+        Linear("q_a", h, q_lora, "rep"),
+        Linear("q", q_lora, nh * qk, "col"),
+        Linear("kv_a", h, kv_lora + rope, "rep"),
+        Linear("kv_up", kv_lora, nh * (nope + vdim), "col"),
+        Linear("o", nh * vdim, h, "row"),
+    )
+    core = AttnCore("gqa", n_q=nh, n_kv=nh, qk_dim=qk, v_dim=vdim, rope_dim=rope)
+    return lin, core
+
+
+def _build_longcat_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """LongCat-Flash (meituan-longcat/LongCat-Flash-Chat, modeling_longcat_flash.py).
+
+    Each of ``num_layers`` blocks runs two sub-layers. Both have MLA attention and a dense SwiGLU
+    (``ffn_hidden_size``). Sublayer 0 also runs a routed MoE on the same post-attention stream; that
+    MoE output is added after sublayer 1 (``LongcatFlashDecoderLayer.forward``), not inside sublayer 0's
+    residual. The GEMMs are the same as attention, dense MLP, and MoE on those widths.
+
+    Attention is not latent-cache MLA. ``kv_b_proj`` expands the compressed KV to per-head K (nope) and V,
+    RoPE is applied to the key, and ``past_key_values.update`` stores
+    ``[batch, num_heads, seq, qk_nope + qk_rope]`` and ``[batch, num_heads, seq, v_head_dim]``.
+    The single key RoPE vector is expanded across heads before that write.
+
+    The router scores ``n_routed_experts + zero_expert_num`` classes (``LongcatFlashTopkRouter``).
+    Identity zero-experts have no parameters; a hit copies the token. ``e_score_correction_bias`` is an
+    fp32 buffer of that width, stored in the MoE sublayer's misc. ``classifier.weight`` is fp32 as released.
+    ``mla_scale_*`` and ``routed_scaling_factor`` are Python floats. They do not change GEMM or KV shape,
+    so they add no cycles. The published class lists ``model.mtp.*`` in ``_keys_to_ignore_on_load_unexpected``
+    and does not construct an MTP module. Those tensors are not modeled.
+    """
+    h = int(c["hidden_size"])
+    n_blocks = int(c.get("num_layers") or c["num_hidden_layers"])
+    nh = int(c["num_attention_heads"])
+    nope = int(c["qk_nope_head_dim"])
+    rope = int(c["qk_rope_head_dim"])
+    vdim = int(c["v_head_dim"])
+    q_lora = int(c["q_lora_rank"])
+    kv_lora = int(c["kv_lora_rank"])
+    routed = int(c["n_routed_experts"])
+    zero = int(c.get("zero_expert_num") or 0)
+    if c.get("zero_expert_type") not in (None, "identity"):
+        raise ValueError("longcat_flash zero_expert_type must be identity")
+    topk = int(c["moe_topk"])
+    d_exp = int(c["expert_ffn_hidden_size"])
+    d_ff = int(c["ffn_hidden_size"])
+    pool = routed + zero
+    attn_misc = 2 * h + q_lora + kv_lora
+    layers: list[Layer] = []
+    for _ in range(n_blocks):
+        lin, core = _longcat_attn(h, nh, q_lora, kv_lora, nope, rope, vdim)
+        dense_lin = (Linear("gate_up", h, 2 * d_ff, "col"), Linear("down", d_ff, h, "row"))
+        moe_lin = dense_lin + (Linear("router", h, pool, "rep"),)
+        layers.append(Layer(
+            lin, core,
+            Ffn("moe", d_ff=d_ff, gated=True, n_experts=routed, top_k=topk, d_expert=d_exp, zero_experts=zero),
+            moe_lin, attn_misc + pool))
+        lin1, core1 = _longcat_attn(h, nh, q_lora, kv_lora, nope, rope, vdim)
+        ffn1, flin1 = _ffn_dense(h, d_ff)
+        layers.append(Layer(lin1, core1, ffn1, flin1, attn_misc))
+    notes = [
+        f"LongCat-Flash：{n_blocks} 个 block，每个 block 两套注意力 + 两套稠密 SwiGLU（intermediate {d_ff}）。"
+        f"第 0 子层的 MoE 与该子层稠密 MLP 读同一条 post-attention 流，MoE 输出加在第 1 子层残差之后。",
+        f"注意力在写入 cache 之前用 kv_b 展开成多头 K/V（{nh} 头，K {nope + rope}，V {vdim}），"
+        f"不是 latent cache（kv_lora {kv_lora} + RoPE {rope}）。q/k 的低秩 RMSNorm 在 q_lora / kv_lora 上。",
+        f"MoE：{routed} 个有权重的专家（intermediate {d_exp}）top-{topk}，另有 {zero} 个恒等 zero-expert（无参数）。"
+        f"router 对 {pool} 类打分，classifier.weight 与 e_score_correction_bias 按发布是 fp32。",
+        "mla_scale_q_lora / mla_scale_kv_lora 与 routed_scaling_factor 是 Python 标量，不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。",
+        "checkpoint 另有 model.mtp.*：一层与子层相同的展开 KV 注意力、一份稠密 MLP、eh_proj [hidden, 2·hidden]、"
+        "enorm / hnorm、mtp.norm 和私有 embedding。发布的类把这些 key 列在 _keys_to_ignore_on_load_unexpected，没有 MTP forward。"
+        "参数按未声明 MTP 的既有路径记在最后一层子层上（GEMM 形状与这份权重相同），不另写递推。",
+    ]
+    return layers, [], notes, "full"
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if "LongcatFlashForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash":
+        return _build_longcat_flash, "LongCat-Flash（展开 KV 的 MLA + 零专家 MoE）"
     if mt in ("gemma4_text", "gemma4_unified_text"):
         moe = " MoE" if c.get("enable_moe_block") else ""
         return _build_gemma4, "Gemma-4 混合注意力（滑窗 + 全注意力）" + moe

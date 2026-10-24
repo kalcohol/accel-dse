@@ -69,7 +69,7 @@ ROLE = [
     ("expert", r"(\.experts\.|block_sparse_moe\.experts|routed_expert|\.moe\.(gate|up|down)_proj\.)"),
     ("mlp", r"(\.mixer\.(gate_proj|up_proj|down_proj|suv_gate|suv_up)|\.mlp_alpha$)"),   # 0.253 Dory / Nemotron-H MLP mixers
     ("attn", r"(self_attn|attention|\.attn\.|linear_attn|\.mixer\.|\.attn_|\.conv\.(in_proj|out_proj|conv)\.|^rwkv7\.blocks\.\d+\.att\.)"),  # 0.114 LFM2 short conv; 0.191 RWKV-7
-    ("mlp", r"(\.mlp\.|feed_forward|\.ffn\.)"),
+    ("mlp", r"(\.mlp\.|\.mlps\.|feed_forward|\.ffn\.)"),
 ]
 
 
