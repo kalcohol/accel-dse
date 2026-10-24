@@ -6,6 +6,29 @@
 
 
 
+## [0.370.0] — 2026-10-24
+
+### Gemma-4 音频相对位置分数；目录补上 Granite-4.1
+
+- **Bug：** `gemma4_audio` 的 `Gemma4AudioAttention` 除了内容 QK（每个查询看 24 个 key）之外，还会把补齐后的每个查询与 `context // 2 + 1`（13）个相对位置 key 做一次 matmul（`queries_flat @ relative_key_states`，`matrix_bd`）。`relative_k_proj` 只作用在 batch 为 1 的正弦位置上，不随 clip 数变长。0.369 把这次投影按 `rel * clips` 计，并且没有计 Q·相对 key。1 秒、8 头、head 128、查询补到 36 时，漏掉的 matmul 约为内容 QK 的一半。softmax 仍是加完分数之后的一次，`rel_shift` 只重排下标。
+- **修复：** `aud.{li}.rel` 的 M 固定为 13；新增 `aud.{li}.relqk`（`m = q_pad`，`n = 13`，`count = heads * clips`）。eager 路径先算完整 matmul 再做 mask，按 `causal = 1` 计，不假设融合 kernel 会跳过被 mask 的位置。
+- **0.369 复核过、未改：**
+  - **KV 别名。** 共享层读捐赠层 `Cache.update` 返回的同一张量。`kv_write = 0`，解码 `kv_read` 仍按该层窗口（全注意力为 `ctx + q`，捐赠层已经写入当前 token；滑窗仍是 `sliding_window`）。存储一份。`cached_params` 仍是未加载的 `k_proj` / `v_proj` / `k_norm`（E2B 18,880,512，E4B 55,055,616）。
+  - **PLE、E2B 双倍宽 MLP、视觉 clip 标量、`per_dim_scale`。** 与 `modeling_gemma4.py` 和 header 一致。`param_check().rel_err == 0`。`attention_multiplier` 一类标量、softcap、partial RoPE、GELU 都不另计周期。
+- **新增 6 个发布**（2026-10-24 读取 header）。现有稠密 GQA builder，`param_check().rel_err == 0`，覆盖 full。没有滑窗，没有 MoE。
+  - **Granite-4.1-3B**（`ibm-granite/granite-4.1-3b`）：40 层、hidden 2560、40/8 头、head 64、intermediate 8192、词表 100352、tied。参数 3,402,836,480。bf16。
+  - **Granite-4.1-8B**（`ibm-granite/granite-4.1-8b`）：40 层、hidden 4096、32/8 头、head 128、intermediate 12800、同一词表、tied。参数 8,380,551,168。checkpoint 另存一份 tied `lm_head`，按既有规则去重。
+  - **Granite-4.1-30B**（`ibm-granite/granite-4.1-30b`）：64 层、hidden 4096、32/8 头、intermediate 32768。参数 28,865,728,512。bf16，没有另存 `lm_head`。
+  - 三个 **FP8**（`quant_method=compressed-tensors`、float-quantized、权重量化到 per-channel fp8、激活 dynamic per-token fp8）。语言 GEMM 为 fp8（含 channel scale 后约 8.00x bit），embed / norm / `lm_head` 为 bf16，激活 fp8，KV 仍是 bf16（`kv_cache_scheme` 为空）。`ignore` 只有 `lm_head`。三份都另存了 tied `lm_head`。
+  - `embedding_multiplier`、`residual_multiplier`、`attention_multiplier`、`logits_scaling` 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+  - 3B / 30B 的 `-base` 与对应 instruct 的 index 字节和张量数相同，不单列。8B-base 没有那份多余的 `lm_head`，逻辑参数与 8B instruct 相同，不单列。
+- **未纳入：**
+  - **视频。** `Gemma4VideoProcessor` 仍是每帧 `max_soft_tokens` 70（允许 70/140/280/560/1120）、最多 32 帧，塔按帧跑图像路径，并在 token 序列里插入 `mm:ss` 文本。时间戳的 token 数依赖分词器，没有接到现有 video grid。不编造打包。
+  - **Assistant draft / DiffusionGemma。** `google/gemma-4-assistant` 为 401。没有核对到与已入库 text + vision builder 相同且 `rel_err == 0` 的公开 header，不单列。
+  - **MiniMax-M2 / M2.1 / M2.5。** 张量名与已入库的 M2.7 相同（96103）。M2 / M2.1 的文件字节与 M2.7 一致（M2 多五个 40 字节空分片）。M2.5 只差 safetensors JSON 头的几十个字节。`max_position_embeddings` 不同，不改变参数。同形，不单列。
+  - **LTX-2.3**（`Lightricks/LTX-2.3`）。仓库在，根上和 `transformer/` 都没有 `config.json`。权重是单文件 `ltx-2.3-22b-dev.safetensors`，张量在 `model.diffusion_model.transformer_blocks.*`，并带 audio / a2v 交叉注意力的 scale-shift 表。不是 `build_ltx` 所读的 LTX-Video 2B diffusers 配置。不编造层宽。
+  - **同形或差一口气对不上现有 builder：** Qwen3-4B-Instruct-2507 的 builder 计数等于已入库的 Qwen3-4B，index 多 655,360 字节，未拉 header，不单列。Qwen3-30B-A3B-Instruct-2507、Qwen3-235B-A22B-Instruct-2507、Qwen3-Next-80B-A3B-Thinking、Qwen3-Coder-Next、Qwen3.5-4B、Qwen3.5-122B-A10B、GLM-4.7、GLM-5.1、DeepSeek-V3-0324、DeepSeek-V3.2-Exp、Kimi-K2-Thinking、Kimi-K2-Instruct-0905 的公开 config 仍落在已有行上。Qwen3-Coder-30B-A3B 为 401。Olmo-3-7B-Think 的 index 比稠密 GQA 计数多 `2 · L · hidden`（262,144），EXAONE-4.0-32B 多 `2 · L · head_dim`（16,384）；现有 builder 不给 `olmo3` / `exaone4` 加 q/k norm，不改 builder 去凑。Ling-flash-2.0（`bailing_moe`，`use_qk_norm`，`num_shared_experts`）、Step-3.5-Flash（`step3p5`，不是 `step5`）、MiMo-V2-Flash（`mimo_v2_flash`，不是 `mimo_v2`）、ERNIE-4.5-21B-A3B、Hunyuan-A13B、LongCat-Flash-Chat、Mistral-Small-3.2（Pixtral 视觉塔未建模）仍对不上。Granite 的 switch / vision / speech / guardian 不是这条稠密 GQA。
+
 ## [0.369.0] — 2026-10-24
 
 ### Gemma-4 E2B / E4B：KV 别名、逐层嵌入、conformer 音频
