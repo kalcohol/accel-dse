@@ -215,6 +215,9 @@ for _g4 in (
     "google/gemma-4-12B-it", "google/gemma-4-12B",
     "google/gemma-4-E4B-it", "google/gemma-4-E4B",
     "google/gemma-4-E2B-it", "google/gemma-4-E2B",
+    # 0.389 Nemotron-3.5-Bolt-E4B-BF16: processor_config.json matches google/gemma-4-E4B
+    # (Gemma4VideoProcessor, max_soft_tokens 70, num_frames 32, patch 16, pool 3).
+    "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16",
 ):
     _VIDEO[_g4] = dict(_GEMMA4_VIDEO)
 # 0.385 ERNIE-4.5-VL video. processing_ernie4_5_vl.py Ernie4_5_VLProcessor (no processor_config.json):

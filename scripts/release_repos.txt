@@ -257,3 +257,17 @@ LiquidAI/LFM2.5-2.6B-Base
 # 0.388 WeVisOne-VL-4B / 2B. Qwen3-VL class. Safetensors are fp32. Untied lm_head, vocab 152680.
 tencent/WeVisOne-VL-4B
 tencent/WeVisOne-VL-2B
+# 0.389 Nemotron-3.5-Bolt-E4B-BF16 (gemma4, same tensors as gemma-4-E4B). LFM2.5-8B-A1B / 1.2B / 350M / 230M.
+# granite-4.2 fp8 (compressed-tensors W8A8). Atria-Dawn / FP8 (same tensors as GLM-5.2 / GLM-5.3).
+nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16
+LiquidAI/LFM2.5-8B-A1B
+LiquidAI/LFM2.5-1.2B-Instruct
+LiquidAI/LFM2.5-1.2B-Base
+LiquidAI/LFM2.5-350M
+LiquidAI/LFM2.5-350M-Base
+LiquidAI/LFM2.5-230M
+ibm-granite/granite-4.2-8b-fp8
+ibm-granite/granite-4.2-3b-fp8
+ibm-granite/granite-4.2-30b-fp8
+internlm/Atria-Dawn
+internlm/Atria-Dawn-FP8

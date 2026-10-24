@@ -1,0 +1,116 @@
+{
+ "bytes_llm": 16935715072,
+ "bytes_mtp": 0,
+ "bytes_total": 16935715072,
+ "config": {
+  "architectures": [
+   "Lfm2MoeForCausalLM"
+  ],
+  "bos_token_id": 124894,
+  "conv_L_cache": 3,
+  "conv_bias": false,
+  "dtype": "bfloat16",
+  "eos_token_id": 124900,
+  "hidden_size": 2048,
+  "initializer_range": 0.02,
+  "intermediate_size": 7168,
+  "layer_types": [
+   "conv",
+   "conv",
+   "full_attention",
+   "conv",
+   "conv",
+   "conv",
+   "full_attention",
+   "conv",
+   "conv",
+   "conv",
+   "full_attention",
+   "conv",
+   "conv",
+   "conv",
+   "full_attention",
+   "conv",
+   "conv",
+   "conv",
+   "full_attention",
+   "conv",
+   "conv",
+   "full_attention",
+   "conv",
+   "conv"
+  ],
+  "max_position_embeddings": 128000,
+  "model_type": "lfm2_moe",
+  "moe_intermediate_size": 1792,
+  "norm_eps": 1e-05,
+  "norm_topk_prob": true,
+  "num_attention_heads": 32,
+  "num_dense_layers": 2,
+  "num_experts": 32,
+  "num_experts_per_tok": 4,
+  "num_hidden_layers": 24,
+  "num_key_value_heads": 8,
+  "pad_token_id": 124893,
+  "rope_parameters": {
+   "rope_theta": 5000000,
+   "rope_type": "default"
+  },
+  "routed_scaling_factor": 1.0,
+  "tie_word_embeddings": true,
+  "transformers_version": "5.9.0",
+  "use_cache": true,
+  "use_expert_bias": true,
+  "vocab_size": 128000
+ },
+ "fetched": "2026-10-24",
+ "n_tensors": 2302,
+ "params_llm": 8467856832,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "LiquidAI/LFM2.5-8B-A1B",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 730030080,
+    "params": 365015040
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 524288000,
+    "params": 262144000
+   }
+  },
+  "expert": {
+   "bf16": {
+    "bytes": 15502147584,
+    "params": 7751073792
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 176160768,
+    "params": 88080384
+   },
+   "fp32": {
+    "bytes": 2816,
+    "params": 704
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 202240,
+    "params": 101120
+   }
+  },
+  "router": {
+   "bf16": {
+    "bytes": 2883584,
+    "params": 1441792
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

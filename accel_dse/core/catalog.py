@@ -96,12 +96,28 @@ EXTRA_TAIL = [
     # 0.387: LFM2.5-2.6B-Base. Same tensor names, dtypes, and shapes as 2.6B.
     # max_position_embeddings is 128000 (the instruct row is 131072). No extra GEMM.
     ("lfm2.5-2.6b-base", "LiquidAI/LFM2.5-2.6B-Base"),
+    # 0.389: LFM2.5-8B-A1B reuses the 24B-A2B hybrid (conv + GQA, dense then MoE).
+    # LFM2.5-1.2B Instruct and Base share shapes. Dense width follows Lfm2MLP auto-adjust.
+    ("lfm2.5-8b-a1b", "LiquidAI/LFM2.5-8B-A1B"),
+    ("lfm2.5-1.2b", "LiquidAI/LFM2.5-1.2B-Instruct"),
+    ("lfm2.5-1.2b-base", "LiquidAI/LFM2.5-1.2B-Base"),
+    # 0.389: 350M Instruct / Base share shapes. Width is the Lfm2MLP auto-adjust (4608, not 6656).
+    # 230M keeps intermediate_size (block_auto_adjust_ff_dim is false). Both tie the embedding.
+    ("lfm2.5-350m", "LiquidAI/LFM2.5-350M"),
+    ("lfm2.5-350m-base", "LiquidAI/LFM2.5-350M-Base"),
+    ("lfm2.5-230m", "LiquidAI/LFM2.5-230M"),
     # 0.383: Granite-4.2-8b / 3b. Same GEMM shapes as 4.1, untied lm_head.
     # 0.386: granite-4.2-30b. Same GEMM shapes as 4.1-30b, untied lm_head.
-    # embedding / residual / logits scalars do not change shapes. Compressed twins stay out.
+    # embedding / residual / logits scalars do not change shapes.
+    # 0.389: fp8 twins are compressed-tensors W8A8 (per-channel fp8 weights, dynamic
+    # per-token fp8 activations). mxfp4 / nvfp4 groups are 4-bit dynamic inputs; that
+    # activation path is not the existing compressed-tensors W8A8 bill, so they stay out.
     ("granite-4.2-8b", "ibm-granite/granite-4.2-8b"),
     ("granite-4.2-3b", "ibm-granite/granite-4.2-3b"),
     ("granite-4.2-30b", "ibm-granite/granite-4.2-30b"),
+    ("granite-4.2-8b-fp8", "ibm-granite/granite-4.2-8b-fp8"),
+    ("granite-4.2-3b-fp8", "ibm-granite/granite-4.2-3b-fp8"),
+    ("granite-4.2-30b-fp8", "ibm-granite/granite-4.2-30b-fp8"),
     # 0.384: ERNIE-4.5-VL dual-pool MoE. Text experts and vision experts have different widths.
     # Image tokens (merged patches plus start / end) use the vision pool.
     # 0.385: video frames are paired on a separate grid; temporal GEMMs see half the rows.
@@ -111,6 +127,12 @@ EXTRA_TAIL = [
     # (config dtype bfloat16). Untied lm_head, vocab 152680. Vision is the Qwen3-VL tower.
     ("wevisone-vl-4b", "tencent/WeVisOne-VL-4B"),
     ("wevisone-vl-2b", "tencent/WeVisOne-VL-2B"),
+    # 0.389: Atria-Dawn / FP8. Tensor names, dtypes, and shapes match GLM-5.2 / GLM-5.3.
+    # Config head_dim is 64; MLA uses qk_nope 192 + rope 64 and v_head_dim 256.
+    # indexer_types is 21 full / 57 shared. FP8 config adds scale_fmt ue8m0; stored
+    # dtypes still match GLM-5.3, so the existing fp8 bill is unchanged.
+    ("atria-dawn", "internlm/Atria-Dawn"),
+    ("atria-dawn-fp8", "internlm/Atria-Dawn-FP8"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
@@ -297,6 +319,9 @@ EXTRA_TAIL = [
     # Q8_0 attention q/k/v/o, latent projections and lm_head, bf16 embeddings / router / norms / ViT.
     ("nemotron-3.5-bolt-74b-a9b-24gb", "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB"),
     ("nemotron-3.5-bolt-74b-a9b-bf16", "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16"),
+    # 0.389: Bolt-E4B-BF16 is Gemma4ForConditionalGeneration (same tensor names, dtypes, and
+    # shapes as gemma-4-E4B). max_position_embeddings is 65536. The 4GB repo is GGUF only.
+    ("nemotron-3.5-bolt-e4b-bf16", "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16"),
     # Lightning 30B-A3B (2026-08-01 / 04): nemotron_h text-only, 52 layers, 128 experts top-6 (no latent), 1 MTP layer;
     # NVFP4 = ModelOpt MIXED_PRECISION (W4A16 NVFP4 experts / shared / lm_head, FP8 attention, fp8 KV)
     ("nemotron-3.5-lightning-30b-a3b-nvfp4", "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"),
@@ -676,7 +701,9 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),
     ("stepfun", "Step-Audio-2", ("step-audio-2",)), ("stepfun", "Step-3.5", ("step-3.5",)),
     ("stepfun", "Step-5", ("step-5",)),
-    ("xiaomi", "MiMo-V2-Flash", ("mimo-v2-flash",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),
+    ("xiaomi", "MiMo-V2-Flash", ("mimo-v2-flash",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)),
+    ("internlm", "Atria", ("atria-",)),   # 0.389: before Intern-S2
+    ("internlm", "Intern-S2", ("intern-s2",)),
     ("openbmb", "MiniCPM-V 4.7", ("minicpm-v-4.7",)), ("robbyant", "LingBot-Video", ("lingbot-video",)),
     ("startlux", "StartLux-Decision v1.1", ("startlux-decision-v1.1",)), ("startlux", "StartLux-Decision v1", ("startlux-decision-v1-",)),
     ("microsoft", "Microsoft-Decision", ("microsoft-decision",)),
