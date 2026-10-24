@@ -351,6 +351,21 @@ EXTRA_TAIL = [
     ("granite-4.1-8b", "ibm-granite/granite-4.1-8b"),
     ("granite-4.1-3b-fp8", "ibm-granite/granite-4.1-3b-fp8"),
     ("granite-4.1-3b", "ibm-granite/granite-4.1-3b"),
+    # 0.371 Olmo-3 (Apache-2.0). Post-norm dense attention + full-projection q/k RMSNorm.
+    # 7B is MHA (both norms are hidden). 32B and 3.1 are GQA (k norm is KV * head_dim).
+    # 3:1 sliding / full, RoPE on both. YaRN does not change GEMM shapes or KV width.
+    ("olmo-3-32b-think", "allenai/Olmo-3-32B-Think"),
+    ("olmo-3.1-32b-instruct", "allenai/Olmo-3.1-32B-Instruct"),
+    ("olmo-3-1125-32b", "allenai/Olmo-3-1125-32B"),
+    ("olmo-3-7b-think", "allenai/Olmo-3-7B-Think"),
+    ("olmo-3-7b-instruct", "allenai/Olmo-3-7B-Instruct"),
+    ("olmo-3-1025-7b", "allenai/Olmo-3-1025-7B"),
+    # 0.371 EXAONE-4. q/k RMSNorm(head_dim), same weight count as Qwen3. 32B / 4.0.1 are
+    # LLLG hybrid: sliding layers use RoPE, full layers are NoPE. 1.2B has sliding_window
+    # null, so every full layer still uses RoPE. Tied on 1.2B only.
+    ("exaone-4.0.1-32b", "LGAI-EXAONE/EXAONE-4.0.1-32B"),
+    ("exaone-4.0-32b", "LGAI-EXAONE/EXAONE-4.0-32B"),
+    ("exaone-4.0-1.2b", "LGAI-EXAONE/EXAONE-4.0-1.2B"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -537,6 +552,8 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("distil", "Hugging Face（Distil-Whisper）", ("distil-whisper/",)),   # 0.360
     ("microsoft", "微软（Phi）", ("microsoft/",)),
     ("ibm", "IBM（Granite）", ("ibm-granite/",)),   # 0.370
+    ("allenai", "Allen Institute（Olmo）", ("allenai/",)),   # 0.371
+    ("lg", "LG AI Research（EXAONE）", ("LGAI-EXAONE/",)),   # 0.371
     ("bytedance", "字节跳动（Seed · Protenix）", ("ByteDance-Seed/", "gh:bytedance/")),
     ("yi", "零一万物（Yi）", ("01-ai/",)), ("internlm", "上海 AI 实验室（InternLM）", ("internlm/",)),
     # vendors with catalog-only (not yet on core v2) releases
@@ -588,6 +605,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("meta", "OmniASR", ("omniasr",)),
     ("mistral", "Mistral Large", ("mistral-large",)), ("mistral", "Mixtral", ("mixtral",)), ("mistral", "Magistral", ("magistral",)),
     ("microsoft", "Phi-4", ("phi-4",)), ("ibm", "Granite-4.1", ("granite-4.1-",)),
+    ("allenai", "Olmo-3", ("olmo-3",)), ("lg", "EXAONE-4", ("exaone-4",)),   # 0.371
     ("bytedance", "Seed-OSS", ("seed-oss",)), ("bytedance", "Protenix", ("protenix",)),
     ("tencent", "HunyuanVideo", ("hunyuanvideo",)), ("lightricks", "LTX-Video", ("ltx-video",)),
     ("genmo", "Mochi 1", ("mochi",)), ("hpcai", "Open-Sora", ("opensora",)),

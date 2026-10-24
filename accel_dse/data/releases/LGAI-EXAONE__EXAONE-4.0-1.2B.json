@@ -1,0 +1,106 @@
+{
+ "bytes_llm": 2558782976,
+ "bytes_mtp": 0,
+ "bytes_total": 2558782976,
+ "config": {
+  "architectures": [
+   "Exaone4ForCausalLM"
+  ],
+  "attention_dropout": 0.0,
+  "bos_token_id": 1,
+  "eos_token_id": 361,
+  "head_dim": 64,
+  "hidden_act": "silu",
+  "hidden_size": 2048,
+  "initializer_range": 0.02,
+  "intermediate_size": 4096,
+  "layer_types": [
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention",
+   "full_attention"
+  ],
+  "max_position_embeddings": 65536,
+  "model_type": "exaone4",
+  "num_attention_heads": 32,
+  "num_hidden_layers": 30,
+  "num_key_value_heads": 8,
+  "pad_token_id": 0,
+  "rms_norm_eps": 1e-05,
+  "rope_scaling": {
+   "factor": 16.0,
+   "high_freq_factor": 4.0,
+   "low_freq_factor": 1.0,
+   "original_max_position_embeddings": 8192,
+   "rope_type": "llama3"
+  },
+  "rope_theta": 1000000.0,
+  "sliding_window": null,
+  "sliding_window_pattern": null,
+  "tie_word_embeddings": true,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.54.0",
+  "use_cache": true,
+  "vocab_size": 102400
+ },
+ "fetched": "2026-10-24",
+ "n_tensors": 332,
+ "params_llm": 1279391488,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "LGAI-EXAONE/EXAONE-4.0-1.2B",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 629145600,
+    "params": 314572800
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 419430400,
+    "params": 209715200
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 1509949440,
+    "params": 754974720
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 257536,
+    "params": 128768
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

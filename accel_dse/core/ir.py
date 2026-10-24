@@ -1374,7 +1374,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             # DeepSeek-V4: RoPE on q heads + kv, inverse RoPE on o heads; per-head q RMSNorm and kv RMSNorm (4/elem)
             c_ = L.core
             ops.append(Op("rope", "vector", li, vec=t * (2 * hq + 1) * c_.rope_n * 3 + t * (hq + 1) * c_.qk_dim * 4))
-        else:
+        elif not L.core.no_rope:
+            # 0.371: EXAONE-4 hybrid full layers are global NoPE (Exaone4Attention). rope_dim 0
+            # would still bill half a head, so no_rope drops the vector. KV width is unchanged.
             ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
     if tp > 1:
         ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
