@@ -6,6 +6,36 @@
 
 
 
+## [0.382.0] — 2026-10-24
+
+### 复核 ERNIE-4.5-0.3B；Gemma-4 视频网格接到公开 processor
+
+- **0.381 的账目复核过，参数路径不改。** 2026-10-24 重新读取 `baidu/ERNIE-4.5-0.3B-PT` 与 `baidu/ERNIE-4.5-0.3B-Base-PT` 的 `model.safetensors` header（各 164 张量，全部 bf16），并对照当前公开 transformers `Ernie4_5ForCausalLM`：
+  - **语言几何。** 18 层 GQA（16/2）。`head_dim` 是 128，`hidden_size // num_attention_heads` 是 64。`q_proj` 是 `[2048, 1024]`，`k_proj` / `v_proj` 是 `[256, 1024]`，`o_proj` 是 `[1024, 2048]`。SwiGLU intermediate 3072。两个 RMSNorm 各 `[1024]`，最终 RMSNorm `[1024]`。`use_bias` 为 false，header 没有 bias。词表 103424。语言参数 360,748,032。`bytes_total` 721,496,064。
+  - **tied lm_head。** `tie_word_embeddings` 为 true。类把 `lm_head.weight` 绑到 `model.embed_tokens.weight`。两份 checkpoint 都没有另存 `lm_head`。`param_check().rel_err == 0`。
+  - **没有 MTP。** config 没有 `num_nextn_predict_layers`，header 没有 `mtp_*`，`params_mtp == 0`。不把缺省填成 1。公开类没有 MTP 模块。
+  - **PT 与 Base-PT。** config 相同。张量名字、dtype、形状相同。两份都保留。不声称权重数值相同。
+  - **交错 RoPE。** 公开类按偶奇维旋转整个 head。不改变 GEMM 形状，也不改变 KV 宽度。不计额外周期。没有发现需要改的机制错误。
+- **Gemma-4 视频网格**（不新增 checkpoint）。十个已入库的 `google/gemma-4-*` 都带公开 `processor_config.json`：`Gemma4VideoProcessor`（ViT）或 `Gemma4UnifiedVideoProcessor`（12B）。数字相同：`do_sample_frames` 为 true，`num_frames` 32，`max_soft_tokens` 70，`patch_size` 16，`pooling_kernel_size` 3。图像侧的 `max_soft_tokens` 仍是 280，这条不改。
+  - **逐帧缩放。** 与图像同一套 `get_aspect_ratio_preserving_size`，预算是 `70 × 3² = 630` 个 patch。1280×720 落到 528×288：33×18 patch，66 个 soft token。1024×1024 落到 384×384：24×24 patch，64 个 soft token。
+  - **pad。** ViT 把每一帧 pad 到 630 个 patch，塔的 GEMM 和双向注意力按这个长度计（与图像按 2520 计是同一条规则，只是预算不同）。投影跑在去掉 pad 之后的 soft token 上。12B 先做 3×3 合并，再把每一帧 pad 到 70 行；两条 GEMM 都看这 70 行，LLM 只留真实 soft token。
+  - **帧数。** 公开采样函数固定取 `num_frames` 32，短于 32 帧会拒绝。`serving.video_frames` ≥ 32 时塔只跑 32 帧；更长的源视频不再多跑。没有 qwen 那种逐帧像素 cap。
+  - **token。** LLM 位置是 `32 ×` 每帧 soft token（`_get_num_multimodal_tokens`）。`mm:ss` 时间戳和 boi / eoi 不计入，与图像路径不把 boi / eoi 算进 soft token 相同。`param_check().rel_err == 0`。没有新的权重。
+- **未纳入：**
+  - **ERNIE-4.5-VL。** 公开 config 仍是 `ernie4_5_moe_vl`（28B-A3B-PT、424B-A47B-PT）。带视觉塔，文本 / 视觉专家宽度不同。本轮视频网格已经按 processor 闭合，没有读 VL 的分片 header，也不把文本单独入库。
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不跑这份权重。不另写递推。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。没有读 config 或 header。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 与已入库的 3.2 同 header。不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **Gemma-4 assistant / QAT。** 与已入库的十个发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.381.0] — 2026-10-24
 
 ### 复核 Mistral-Small-3.2；目录补上 ERNIE-4.5-0.3B

@@ -37,9 +37,13 @@ docs/MODEL.md §20):
          pad; the projector Linear(h → text, no bias) runs on the remaining soft tokens. std_bias and
          std_scale are stored buffers when standardize is set. use_clipped_linears adds four bf16
          scalar buffers on each of q, k, v, o, gate, up and down; the clamp does not change the GEMM.
+         Video uses the same tower with the video processor's max_soft_tokens (70 on the shipped
+         configs, not the image 280): one batch row per frame, padded to 70·pooling² patches.
   gemma4u Gemma-4 12B encoder-free embedder (gemma4_unified_vision): LN → Linear(48²·3 → mm) → LN →
          factorised position table → LN → RMSNorm (no scale) → Linear(mm → text). Both GEMMs see the
-         padded max_soft_tokens rows; the LLM prompt keeps only the real soft tokens. The unified audio
+         padded max_soft_tokens rows; the LLM prompt keeps only the real soft tokens. Video merges
+         patches first, then pads each frame to the video max_soft_tokens (70) before those GEMMs.
+         The unified audio
          path is one Linear(audio_embed_dim → text) when audio_config.model_type is gemma4_unified_audio.
          gemma4_audio (E2B / E4B) is a conformer: two stride-2 Conv2d, 12 local-attention blocks,
          then Linear into the text embedder. Each block's content scores use the chunk context;
@@ -177,6 +181,19 @@ _VIDEO.update({k: {"muse_frame_tok": 256, "num_frames": 600} for k in (
 _VIDEO["nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"] = {"radio_frame": 1024, "tp": 2, "evs": 0.7}
 for _r in ("Bolt-74B-A9B-24GB", "Bolt-74B-A9B-BF16", "Super-VL-120B-A12B-BF16"):    # 0.289 same video fields
     _VIDEO[f"nvidia/NVIDIA-Nemotron-3.5-{_r}"] = {"radio_frame": 1024, "tp": 2, "evs": 0.7}
+# 0.382 Gemma-4 video. processor_config.json video_processor on each google/gemma-4-* repo (2026-10-24):
+# Gemma4VideoProcessor (ViT) or Gemma4UnifiedVideoProcessor (12B). Same numbers: do_sample_frames, num_frames 32,
+# max_soft_tokens 70, patch 16, pooling 3. Image max_soft_tokens stays 280. The sampler emits exactly num_frames
+# and rejects a shorter clip (video_utils.default_sample_indices_fn).
+_GEMMA4_VIDEO = {"gemma4_soft": 70, "num_frames": 32, "patch": 16, "pool": 3}
+for _g4 in (
+    "google/gemma-4-31B-it", "google/gemma-4-31B",
+    "google/gemma-4-26B-A4B-it", "google/gemma-4-26B-A4B",
+    "google/gemma-4-12B-it", "google/gemma-4-12B",
+    "google/gemma-4-E4B-it", "google/gemma-4-E4B",
+    "google/gemma-4-E2B-it", "google/gemma-4-E2B",
+):
+    _VIDEO[_g4] = dict(_GEMMA4_VIDEO)
 # 「来源」 transformers qwen3_vl/video_processing_qwen3_vl.py: fps 2, min_frames 4, max_frames 768, max_video_tokens 768
 VIDEO_FPS, VIDEO_MIN_FRAMES, VIDEO_MAX_FRAMES, VIDEO_MAX_TOK = 2, 4, 768, 768
 
@@ -1120,7 +1137,9 @@ def _gemma4_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> lis
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
     pr = v.rz
-    pool, soft = pr["pool"], pr["max_soft"]
+    # Image grids leave pad_soft at 0 and use the image max_soft_tokens. A video frame sets pad_soft to the
+    # video processor's max_soft_tokens (70), which is not the image pad (280).
+    pool, soft = pr["pool"], (g.pad_soft or pr["max_soft"])
     wf, wb = "bf16", 16.0
 
     def gemm(name: str, m: int, k: int, n: int, layer: int = 0) -> Op:
@@ -1542,6 +1561,7 @@ class ImageGrid:
     views: tuple = ()           # 0.145: ((ph, pw, count), …) when one image runs as several tower passes (MiniCPM)
     tframes: int = 1            # 0.166: frames attended jointly in one pass (Kimi video chunk: spatial-temporal
                                 # attention over tframes·ph·pw, temporal mean before the merger)
+    pad_soft: int = 0           # 0.382: video max_soft_tokens when it differs from the image pad (0 = image pad)
 
 
 def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
@@ -1791,10 +1811,16 @@ def expand_images(scn, m):
 
 def video_pre(m) -> dict | None:
     """Video processor settings of a model with a modelled video path (Qwen3VLVideoProcessor; 0.166 Kimi chunks;
-    0.255 MuseGlimmerVideoProcessor)."""
+    0.255 MuseGlimmerVideoProcessor; 0.382 Gemma4VideoProcessor / Gemma4UnifiedVideoProcessor)."""
     v = getattr(m, "vision", None)
     pre = _VIDEO.get(getattr(m, "hf_id", "")) if v is not None else None
-    if pre is None or v.family != ("kimi" if "chunk" in pre else "radio" if "radio_frame" in pre else "qwen"):
+    if pre is None:
+        return None
+    if "gemma4_soft" in pre:
+        if v.family not in ("gemma4", "gemma4u"):
+            return None
+        return pre
+    if v.family != ("kimi" if "chunk" in pre else "radio" if "radio_frame" in pre else "qwen"):
         return None
     return pre
 
@@ -1818,6 +1844,8 @@ def video_grid(v: VisionSpec, pre: dict, frames: int, width: int, height: int, c
         return _muse_video(v, pre, frames, width, height)
     if "radio_frame" in pre:
         return _radio_video(v, pre, frames, width, height)
+    if "gemma4_soft" in pre:
+        return _gemma4_video(v, pre, frames, width, height)
     tp, f = max(1, v.tpatch), v.patch * v.merge
     lo, hi = pre["min_px"], pre["max_px"]
     if frames < tp:
@@ -1914,13 +1942,42 @@ def _kimi_video(v: VisionSpec, pre: dict, frames: int, width: int, height: int) 
     return VideoGrid(frames, n, first, n * first.merged if tail is None else (n - 1) * first.merged + tail.merged, tail)
 
 
+def _gemma4_video(v: VisionSpec, pre: dict, frames: int, width: int, height: int) -> VideoGrid:
+    """Gemma4VideoProcessor / Gemma4UnifiedVideoProcessor, per frame.
+
+    ``get_aspect_ratio_preserving_size`` is the image resize with ``max_patches = max_soft_tokens · pooling²``.
+    The published sampler (``do_sample_frames``, ``num_frames``) returns exactly ``num_frames`` indices and
+    raises when the clip is shorter, so a longer ``serving.video_frames`` still feeds ``num_frames`` rows.
+    ViT pads each frame to ``max_soft_tokens · pooling²`` patches before the tower. Unified merges first and
+    pads to ``max_soft_tokens`` rows; ``pad_soft`` selects that pad inside ``_gemma4_vision_ops``. LLM tokens
+    are the unpadded soft tokens (``_get_num_multimodal_tokens``). ``mm:ss`` text and the boi / eoi wrappers
+    are not counted, the same way the image path omits boi / eoi. There is no per-frame pixel cap.
+    """
+    if v.patch != pre["patch"] or v.merge != pre["pool"]:
+        raise ValueError("gemma4 video processor patch/pool does not match the vision tower")
+    n = int(pre["num_frames"])
+    if frames < n:
+        raise ValueError(
+            f"serving.video_frames must be ≥ num_frames {n}: Gemma4VideoProcessor samples exactly {n} frames "
+            "and rejects a shorter clip")
+    soft_cap = int(pre["gemma4_soft"])
+    pool = int(pre["pool"])
+    max_patches = soft_cap * pool * pool
+    th, tw = _gemma4_resize(height, width, int(pre["patch"]), max_patches, pool)
+    ph, pw = th // int(pre["patch"]), tw // int(pre["patch"])
+    real = ph * pw // (pool * pool)
+    one = ImageGrid(ph, pw, real, real, (tw, th), pad_soft=soft_cap)
+    return VideoGrid(n, n, one, n * real)
+
+
 def video_grid_of(m, sv) -> VideoGrid | None:
     if not getattr(sv, "videos", 0):
         return None
     pre = video_pre(m)
     if pre is None:
         raise ValueError("serving.videos：该模型没有已建模的视频处理器（Qwen3VLVideoProcessor 系：Qwen3.5-397B / "
-                         "Qwen3.8 / Intern-S2；0.166 Kimi K2.5 / K2.7-Code 4 帧块；0.255 Muse Spark Open；0.279 Nemotron-3.5-Super-VL RADIO tubelet）")
+                         "Qwen3.8 / Intern-S2；0.166 Kimi K2.5 / K2.7-Code 4 帧块；0.255 Muse Spark Open；"
+                         "0.279 Nemotron-3.5-Super-VL RADIO tubelet；0.382 Gemma-4 逐帧 pad）")
     return video_grid(m.vision, pre, sv.video_frames, sv.video_w, sv.video_h, sv.video_cap)
 
 
