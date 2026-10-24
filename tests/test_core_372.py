@@ -98,9 +98,10 @@ def test_mimo_v2_flash_matches_headers():
     assert attn["bf16"]["bytes"] == 2 * attn["bf16"]["params"]
     qkv = sum(lin.params for L in m.layers for lin in L.attn_linears if lin.name in ("q", "k", "v"))
     assert attn["fp8"]["params"] == qkv
-    p = sum(v["params"] for v in attn.values())
-    b = sum(v["bytes"] for v in attn.values())
-    assert m.fmt("attn").fmt == "fp8" and m.fmt("attn").bits == 8.0 * b / p
+    # 0.373: the attn role is the fp8 bucket (q/k/v + block scales). o_proj is its own bf16 role.
+    fp8 = attn["fp8"]
+    assert m.fmt("attn").fmt == "fp8" and m.fmt("attn").bits == 8.0 * fp8["bytes"] / fp8["params"]
+    assert m.fmt("o_proj").fmt == "bf16" and m.fmt("o_proj").bits == 16.0
     assert set(rel["roles"]["router"]) == {"fp32"}
     assert rel["roles"]["router"]["fp32"]["bytes"] == 4 * rel["roles"]["router"]["fp32"]["params"]
     assert m.fmt("router").fmt == "fp32" and m.fmt("router").bits == 32.0

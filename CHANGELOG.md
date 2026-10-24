@@ -6,6 +6,32 @@
 
 
 
+## [0.373.0] — 2026-10-24
+
+### 复核 MiMo-V2-Flash 的发布 dtype；目录补上 Ling-flash-2.0
+
+- **0.372 的结构复核过、账目有两处 dtype 错误。** 对照 `modeling_mimo_v2_flash.py` 与已入库 header：
+  - 混合模式 0 = 全注意力、1 = 滑窗。9 层全注意力（KV 4）+ 39 层滑窗 128（KV 8，每头一个 attention sink）。第 0 层稠密 SwiGLU（intermediate 16384），其余 47 层 sigmoid MoE（256 专家、top-8、无共享专家、`n_group` 1 不分组）。语言参数 308,778,780,864。MTP ×3 在权重里，config 没有 `num_nextn_predict_layers`。每层是滑窗注意力 + 稠密 FFN + 五个 hidden RMSNorm + sink，再加 `eh_proj` `[4096, 8192]`。MTP 参数 987,820,224。这些与 0.372 一致，参数量不改。
+  - **`partial_rotary_factor` 0.334** 旋转 q/k 的前 `int(192·0.334)=64` 维，缓存的 K 仍是整段 head（192+128）。周期仍是 GQA 的查询头半 head 向量（96）。MiMo-V2.6 用同一个因子，不改这条公式。
+  - **`attention_chunk_size` 128** 在 `MiMoV2Attention` 里没有被读取。全注意力按上下文计，不按 128 截断。`attention_value_scale` 是 V 上的标量乘，不另计周期。
+  - **Bug。** `ignored_layers` 把每一层 `o_proj` 留在 bf16，SWA 的 sink 也是 bf16。attn 角色的 bf16 桶恰好等于全部 `o_proj` 加上 39×64 个 sink，而且恰好 2 字节/参数；fp8 桶恰好等于 q/k/v（含 block-128 scale）。0.372 把整个 attn 角色收成一个 fp8 名字和平均位宽，于是 bf16 的 `o_proj` 被当成原生 fp8 GEMM。MTP 同样：bf16 桶是 `o_proj` + `eh_proj` + 五个 norm + sink，0.364 的匹配要求低精度参数等于全部 MTP GEMM，对不上，`eh_proj` 落在大约 9.6 bit 的平均位宽上。
+  - **修复。** 桶与 builder 逐参数对齐时，主栈 `o` 改记 role `o_proj`（bf16，16 bit），attn 角色改为那一档低精度桶（含 scale）。同一身份也成立时，MTP 的 `o` 同样改记，`mtp` 角色改为 bf16，`eh_proj` 与 `mtp_extra` 按 16 bit 计。激活仍是发布的 fp8。记忆体计划对 role `o_proj` 单独取位宽，与 0.365 的 `lin_ba` 相同。LLM 的 misc 仍按每参数 2 字节，不改：fp32 的 `e_score_correction_bias`（47×256）因此少计 2 字节/参数，最终 RMSNorm 仍不进 stage storage。MTP 的 q/k/v 仍走主栈 attn 的低精度位宽，稠密 MLP 走 mlp 角色。Flash 与 V2.6-Flash 的主栈 scale 比 MTP fp8 桶略高，MTP 存储多出约 146 字节；V2.6-Pro 两边对齐。同一身份也覆盖已入库的 MiMo-V2.6-Flash 与 MiMo-V2.6-Pro（专家仍是 mxfp4）。目录扫描里没有第四个模型命中。
+- **新增 1 个发布**（2026-10-24 读取 header）。`model_type=bailing_moe` 接到现有 GQA + MoE builder。`param_check().rel_err == 0`。覆盖 full。无视觉塔。
+  - **Ling-flash-2.0**（`inclusionAI/Ling-flash-2.0`，`BailingMoeV2ForCausalLM`）：32 层、hidden 4096、32/4、head 128、词表 157184、untied。第 0 层稠密 SwiGLU（intermediate 9216），其余 31 层 sigmoid MoE（256 专家、top-8、专家宽 1024、`n_group` 8、`topk_group` 4）。共享专家是一个 MLP，宽 `moe_intermediate_size·num_shared_experts`（1024）；config 里的 `moe_shared_expert_intermediate_size` 数值相同，但 modeling 不用它，也没有 `shared_expert_gate`。`use_qk_norm` 是 q/k 上共享的 RMSNorm(head_dim)。`expert_bias` 是每层 MoE 一个 fp32 buffer `[256]`。`gate.weight` 按发布是 bf16。`partial_rotary_factor` 0.5 旋转半个 head，与现有半 head RoPE 账单重合，缓存仍是整段 head。融合 QKV 与分开的 q/k/v 参数量相同。语言参数 102,889,705,216。权重 bf16。config 没有 `num_nextn_predict_layers`（类默认 0），header 里没有 MTP 张量，不建模那份未发布的 MTP 类。
+  - **Ling-flash-base-2.0** 的张量数与 `total_size` 不同（24944 张量、212,391,789,056 字节）。不是同一套权重，不单列。
+- **未纳入：**
+  - **LongCat-Flash**（`meituan-longcat/LongCat-Flash-Chat`，config 没有 `model_type`）。每个 decoder block 有两套注意力子层和两套稠密 MLP，第 0 层的 MoE 输出以 shortcut 加到第 1 子层之后。路由在 512 个有权重的专家加 256 个恒等 zero-expert 上，恒等专家没有权重。MLA 在写入 cache 之前把 `kv_b_proj` 展开成多头 K/V，不是已入库的 latent cache。现有 MLA 会记错 KV 宽度。不半套。
+  - **Step-3.5-Flash**（`stepfun-ai/Step-3.5-Flash`，`step3p5`）。滑窗层与全注意力层的头数不同，另有逐头门、按层 partial RoPE、共享专家和 MTP ×3。不是 Step-5 的 DSA。未对上现有 builder。
+  - **ERNIE-4.5-21B-A3B-PT**（`baidu/ERNIE-4.5-21B-A3B-PT`，`ernie4_5_moe`）。仓库里没有 modeling 文件。28×2560、20/4、MoE 宽 1536、tied、`num_nextn_predict_layers` 1。本轮未收到 `rel_err == 0`。
+  - **Hunyuan-A13B-Instruct**（`tencent/Hunyuan-A13B-Instruct`，`hunyuan_v1_moe`）。`use_mixed_mlp_moe`、`use_qk_norm` 打开，`use_cla` 与 `use_mla` 关闭。config 里的 ViT 字段为空，不编造视觉塔。
+  - **Mistral-Small-3.2-24B-Instruct-2506**（`mistral3`：文本 `mistral` + 视觉 Pixtral）。视觉塔仍未建模，不把文本单独入库。Magistral-Small-2509 不单列填充。
+  - **LTX-2.3。** 仓库根上是 safetensors，没有 `config.json`。
+  - **OrcaCyber-Nano-1.0。** 只有 GGUF，没有 `config.json`。**pocket-tts** 有 safetensors 和 tokenizer，没有架构 config。按没有公开 modeling config 拒绝，与先前的 gated 记录一致。
+  - **视频。** `Gemma4VideoProcessor` 仍没有接到现有 video grid 的公开打包配方。不编造。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.372.0] — 2026-10-24
 
 ### 复核 0.371 的 q/k norm；目录补上 MiMo-V2-Flash

@@ -65,6 +65,9 @@ EXTRA_TAIL = [
     # 0.372: MiMo-V2-Flash (public config + safetensors headers, 2026-10-24). Text-only
     # mimo_v2_flash; Flash-Base has the same index total_size and tensor count.
     ("mimo-v2-flash", "XiaomiMiMo/MiMo-V2-Flash"),
+    # 0.373: Ling-flash-2.0 (public config + safetensors headers, 2026-10-24). bailing_moe GQA + grouped
+    # sigmoid MoE. Ling-flash-base-2.0 is a different checkpoint and is not listed.
+    ("ling-flash-2.0", "inclusionAI/Ling-flash-2.0"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
@@ -617,7 +620,8 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
     ("arc", "Evo 2（StripedHyena 2 DNA 语言模型）", ("evo2-",)),
     ("meta", "Muse Spark Open", ("muse-spark",)),
-    ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-3.1", ("ling-3.1",)), ("ant", "Ling-3.0-VL", ("ling-3.0-flash-vl",)),
+    ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-flash-2.0", ("ling-flash-2.0",)),
+    ("ant", "Ling-3.1", ("ling-3.1",)), ("ant", "Ling-3.0-VL", ("ling-3.0-flash-vl",)),
     ("ant", "Ling-3.0", ("ling-3.0",)),   # 0.311: Ling-3.0-tiny / -flash text + the tiny UBTree pair
     ("ant", "Ming-3.0-ASR", ("ming-3.0-asr",)), ("ant", "Ming-3.0-TTS", ("ming-3.0-tts",)),
     ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),

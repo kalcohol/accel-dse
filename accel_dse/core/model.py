@@ -821,6 +821,13 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         # mlp_only_layers; GQA with partial RoPE (rope_head_dim) and group RMSNorm (layernorm_num_groups: same params)
         n_sh = c.get("num_shared_experts") or 0
         d_sh = de if n_sh else 0
+    if mt == "bailing_moe":
+        # 0.373 inclusionAI Ling-flash-2.0 (modeling_bailing_moe_v2.py BailingMoeV2SparseMoeBlock): one shared MLP
+        # whose intermediate size is moe_intermediate_size * num_shared_experts. The config also stores
+        # moe_shared_expert_intermediate_size, and the module does not read it or add a shared_expert_gate.
+        n_cfg = int(c.get("num_shared_experts") or 0)
+        n_sh = 1 if n_cfg else 0
+        d_sh = int(de) * n_cfg if n_cfg else 0
     first_dense = c.get("first_k_dense_replace") or 0
     mlp_only = set(c.get("mlp_only_layers") or [])
     types = _list(c.get("layer_types")) or []
@@ -866,7 +873,7 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         if mt == "olmo3":
             qk = H * hd + KV * hd
         elif (mt.startswith("qwen3") or mt in ("mellum", "flint", "exaone4") or (hy3 and c.get("qk_norm"))
-              or (k2h and c.get("query_key_norm"))):
+              or (k2h and c.get("query_key_norm")) or (mt == "bailing_moe" and c.get("use_qk_norm"))):
             qk = 2 * hd
         else:
             qk = 0
@@ -877,6 +884,8 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             misc += core.v_experts                         # 0.292 v_router.bias [E_v] (selection only)
         if hy3 and ffn.kind == "moe" and c.get("moe_router_enable_expert_bias"):
             misc += E                                      # fp32 expert_bias (sigmoid router selection bias)
+        if mt == "bailing_moe" and ffn.kind == "moe" and c.get("moe_router_enable_expert_bias"):
+            misc += E                                      # fp32 expert_bias buffer (selection only)
         if c.get("attention_bias") or mt == "qwen2" or mt == "gpt_oss":
             misc += H * hd + 2 * KV * hd + (h if mt == "gpt_oss" else 0)
         if mt == "flint" and core.sink:
@@ -904,6 +913,17 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
                          "（sliding_window 非空且该层不是 sliding），滑窗层仍做 RoPE")
         else:
             notes.append("EXAONE-4：q / k RMSNorm(head_dim)；sliding_window 为空，每一层都做 RoPE")
+    if mt == "bailing_moe":
+        # partial_rotary_factor 0.5 rotates half the head. rope_dim 0 already bills that width, and the cache
+        # stores the full head (apply_rotary concatenates the pass-through half). Fused QKV has the same params.
+        notes.append("bailing_moe：融合 QKV 与分开的 q/k/v 参数量相同；q / k 为 RMSNorm(head_dim)。"
+                     "partial_rotary_factor 0.5 旋转半个 head，缓存的 K 仍是整段 head，"
+                     "周期沿用 GQA 的查询头半 head 向量。"
+                     f"前 {first_dense} 层稠密 SwiGLU，其余为 sigmoid MoE；"
+                     "共享专家是一个 MLP，宽 moe_intermediate_size·num_shared_experts，没有 shared_expert_gate。"
+                     "expert_bias 是 fp32 buffer，只参与选专家。"
+                     + ("" if (c.get("num_nextn_predict_layers") or 0)
+                        else "config 没有 num_nextn_predict_layers，本发布也没有 MTP 权重。"))
     mtp = []
     n_mtp = c.get("num_nextn_predict_layers") or 0
     for _ in range(n_mtp):
@@ -1518,8 +1538,7 @@ def _build_mimo_v2_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], 
         "缓存的 K 仍是整段 head；周期沿用 GQA 的查询头半 head 向量。"
         "V 乘 attention_value_scale。"
         "注意力按滑窗或全上下文计算（MiMoV2Attention 不读取 attention_chunk_size）。"
-        "o_proj 与 attention sink 落在 attn 角色的 bf16 桶，q/k/v 与专家是 block-fp8（128）；"
-        "该角色按发布字节的平均位宽计。路由权重与 e_score_correction_bias 都是 fp32。",
+        "路由权重与 e_score_correction_bias 都是 fp32。",
     ]
     return layers, mtp, notes, cov
 
@@ -2621,6 +2640,82 @@ def _gdn_bf16_attn_split(rel: dict, spec: "ModelSpec") -> tuple[RoleFormat, Role
     return RoleFormat(name, 8.0 * lo_b / lo_p), RoleFormat("bf16", 16.0)
 
 
+def _o_proj_bf16_attn_split(rel: dict, spec: "ModelSpec") -> tuple[RoleFormat, RoleFormat] | None:
+    """0.373: bill attention ``o`` at bf16 when that GEMM plus the learned sinks are the attn role's bf16 bucket.
+
+    ``_release_formats`` stores one dominant format and one average bit-width for the whole attn role. On
+    MiMo-V2-Flash and MiMo-V2.6 the block-fp8 stack leaves every ``o_proj`` in bf16 (``ignored_layers``) and the
+    SWA sinks are bf16 vectors of width ``num_attention_heads``. The average (still named fp8) was applied to
+    ``o``, so that GEMM ran native fp8×fp8. q/k/v stay on the low-precision bucket, block scales included.
+    The bf16 bucket must be exactly 2 bytes per param. One ``o`` per main-stack layer, one low format, and bf16.
+    MTP ``o`` lives in the mtp role and is not part of this identity.
+    """
+    role = (rel.get("roles") or {}).get("attn") or {}
+    if "bf16" not in role or len(role) != 2 or not spec.layers:
+        return None
+    lo_fmt = next(k for k in role if k != "bf16")
+    if lo_fmt not in _MTP_LO:
+        return None
+    o_p = sinks = gemm_lo = 0
+    for L in spec.layers:
+        named = [l for l in L.attn_linears if l.name == "o"]
+        if len(named) != 1:
+            return None
+        o_p += named[0].params
+        if L.core.sink:
+            sinks += L.core.n_q
+        gemm_lo += sum(l.params for l in L.attn_linears if l.name != "o")
+    if not o_p:
+        return None
+    lo, hi = role[lo_fmt], role["bf16"]
+    lo_p, hi_p = int(lo.get("params") or 0), int(hi.get("params") or 0)
+    lo_b, hi_b = int(lo.get("bytes") or 0), int(hi.get("bytes") or 0)
+    if lo_p != gemm_lo or hi_p != o_p + sinks or hi_b != 2 * hi_p or not lo_p:
+        return None
+    name = {"uint8": "int8", "int32": "int4"}.get(lo_fmt, lo_fmt)
+    if name not in ("fp32", "bf16", "fp16", "fp8", "mxfp4", "nvfp4", "int8", "int4", "iq2_xxs", "q8_0"):
+        return None
+    return RoleFormat(name, 8.0 * lo_b / lo_p), RoleFormat("bf16", 16.0)
+
+
+def _mtp_oproj_bf16_format(rel: dict, spec: "ModelSpec") -> RoleFormat | None:
+    """0.373: bill ``mtp.eh_proj`` at bf16 when the mtp bf16 bucket is exactly ``o`` + eh_proj + layer misc.
+
+    0.364 replaces the mtp role only when the low-precision params equal every MTP GEMM. MiMo also leaves MTP
+    ``o_proj`` in bf16, so that matcher does not fire and the role average (~9.6 bit, named fp8) was applied to
+    eh_proj. Decoder GEMMs other than ``o`` stay on the main stack's attn / mlp formats. This function does not
+    retag ``o``; the caller does that only together with ``_o_proj_bf16_attn_split``.
+    """
+    role = (rel.get("roles") or {}).get("mtp") or {}
+    if not spec.mtp_layers or "bf16" not in role or len(role) != 2:
+        return None
+    lo_fmt = next(k for k in role if k != "bf16")
+    if lo_fmt not in _MTP_LO:
+        return None
+    h = spec.hidden
+    o_p = sum(l.params for L in spec.mtp_layers for l in L.attn_linears if l.name == "o")
+    if not o_p:
+        return None
+    gemm = sum(L.params(h) - L.misc_params for L in spec.mtp_layers)
+    misc = sum(L.misc_params for L in spec.mtp_layers)
+    extra = spec.mtp_extra_params * len(spec.mtp_layers)
+    lo, hi = role[lo_fmt], role["bf16"]
+    lo_p, hi_p = int(lo.get("params") or 0), int(hi.get("params") or 0)
+    hi_b = int(hi.get("bytes") or 0)
+    if lo_p != gemm - o_p or hi_p != extra + misc + o_p or hi_b != 2 * hi_p:
+        return None
+    return RoleFormat("bf16", 16.0)
+
+
+def _retag_o_proj(layers: tuple) -> tuple:
+    """Point each attention ``o`` at the bf16 ``o_proj`` role. Other linears keep their role."""
+    return tuple(
+        replace(L, attn_linears=tuple(
+            replace(l, role="o_proj") if l.name == "o" else l for l in L.attn_linears))
+        if any(l.name == "o" for l in L.attn_linears) else L
+        for L in layers)
+
+
 def _moe_groups(c: dict) -> tuple[int, ...]:
     """0.255: (n_group, topk_group) when the router is group-limited — transformers DeepseekV3TopkRouter /
     BeamTopKRouter, vLLM grouped_topk (bailing_moe use_grouped_topk = both set) 「来源」: group scores = sum of the top-2
@@ -2768,6 +2863,29 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 if any(l.name == "lin_ba" for l in L.attn_linears) else L
                 for L in spec.layers)
             spec = replace(spec, formats=tuple(sorted(fm.items())), layers=layers)
+        o_split = _o_proj_bf16_attn_split(rel, spec)
+        mtp_o = _mtp_oproj_bf16_format(rel, spec)
+        if o_split is not None:
+            lo_o, hi_o = o_split
+            fm = dict(spec.formats)
+            fm["attn"] = lo_o
+            fm["o_proj"] = hi_o
+            mtp_layers = spec.mtp_layers
+            notes = spec.notes + (
+                "o_proj 与 attention sink 是 bf16（恰好 2 字节/参数），从 attn 角色拆出；"
+                "q/k/v 按该角色的低精度桶计（含 block scale）。",)
+            if mtp_o is not None:
+                mtp_layers = _retag_o_proj(spec.mtp_layers)
+                fm["mtp"] = mtp_o
+                notes = notes + ("MTP 的 eh_proj 与 o_proj 按 bf16 计，不再使用 mtp 角色的平均位宽。",)
+            spec = replace(spec, formats=tuple(sorted(fm.items())), layers=_retag_o_proj(spec.layers),
+                           mtp_layers=mtp_layers, notes=notes)
+        elif mtp_o is not None:
+            fm = dict(spec.formats)
+            fm["mtp"] = mtp_o
+            spec = replace(spec, formats=tuple(sorted(fm.items())),
+                           notes=spec.notes + (
+                               "MTP 的 bf16 桶恰好是 o_proj + eh_proj + 层内 misc，eh_proj 按 bf16 计。",))
         if (c.get("model_type") or "").startswith("qwen4_exp") or (c.get("model_type") or "") == "dory":
             spec = replace(spec, final_norm_params=0)       # 0.253 Dory: nGPT, final state justnorm (no weight)
         if (c.get("model_type") or "") == "dory":
