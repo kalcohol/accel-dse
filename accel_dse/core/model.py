@@ -149,6 +149,16 @@ class AttnCore:
                                 # recurrence (direct per-token recurrence)
     span: str = "full"         # full-phase self-attention extent: full (3D) | spatial (per latent frame) |
                                # temporal (per spatial position) — factorized ST-DiT (Open-Sora STDiT3)
+    # 0.361 RWKV-8 DeepEmbedAttention (BlinkDL rwkv_v8_rc00_hybrid_demo.py forward_seq).  The cache stores the
+    # low-rank kk / vv rows (dea_k, dea_v), fp16; each step rebuilds K (dea_kq) and V (dea_vd) over the whole
+    # cache, multiplies the per-token ennk / emm rows (dea_k_emb, dea_v_emb), then one causal head.  0 = none.
+    dea_q: int = 0
+    dea_k: int = 0
+    dea_kq: int = 0
+    dea_v: int = 0
+    dea_vd: int = 0
+    dea_k_emb: int = 0
+    dea_v_emb: int = 0
 
     def kv_elems_per_token(self) -> float:
         """KV-cache elements stored per token (one layer, whole model width)."""
@@ -346,6 +356,7 @@ class Layer:
     # caching: each loop overwrites the step's rows) → no own KV storage, same KV reads / writes
     loop: int = 0
     kv_shared: bool = False
+    deepemb: int = 0                         # 0.361 RWKV-8 DeepEmbed width (ffn.enn row); 0 = none.  Current-token lookup.
 
     def expert_params(self, hidden: int) -> int:
         f = self.ffn
@@ -1888,6 +1899,58 @@ def _build_rwkv7(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, [], notes, "full"
 
 
+def _build_rwkv8(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """0.361 RWKV-8 "Heron" pile rc00 (BlinkDL/rwkv-8-pile; rwkv_v8_rc00_demo.py / rwkv_v8_rc00_hybrid_demo.py).
+
+    Time-mix is the RWKV-7 generalised delta rule (same WKV-7 op, fp32 H x 64 x 64 state).  The published seq path
+    calls that op over the whole sequence; prefill keeps the RWKV-7 chunk-64 schedule (rwkv7_chunked) so the two
+    series share one recurrence.  Channel mix is squared ReLU then a per-token DeepEmbed row (ffn.enn[idx]); the
+    elementwise cost stays the shared activation op (same accounting as RWKV-7).  The hybrid checkpoint adds
+    DeepEmbedAttention beside the time-mix: fp16 kk / vv cache (32 + 32), full-cache up-projections, per-token
+    ennk / emm rows, soft-capped single-head causal attention.  No ROSA (not in these checkpoints)."""
+    h, L = c["hidden_size"], c["num_hidden_layers"]
+    N = c.get("head_dim") or 64
+    H = c.get("num_heads") or h // N
+    dw, da, dv, dg = c["decay_low_rank_dim"], c["a_low_rank_dim"], c["v_low_rank_dim"], c["gate_low_rank_dim"]
+    ln0 = bool(c.get("ln0", False))
+    de = int(c.get("deepemb") or 0)
+    dea = c.get("dea") or {}
+    layers = []
+    for i in range(L):
+        alin = (Linear("rwkv_r", h, h, "col"), Linear("rwkv_k", h, h, "col"), Linear("rwkv_v", h, h, "col"),
+                Linear("rwkv_w1", h, dw, "rep"), Linear("rwkv_w2", dw, h, "col"),
+                Linear("rwkv_a1", h, da, "rep"), Linear("rwkv_a2", da, h, "col"),
+                Linear("rwkv_g1", h, dg, "rep"), Linear("rwkv_g2", dg, h, "col")) + (
+                () if i == 0 else (Linear("rwkv_v1", h, dv, "rep"), Linear("rwkv_v2", dv, h, "col"))) + (
+                Linear("rwkv_o", h, h, "row"),)
+        core = AttnCore("linear", n_state_heads=H, state_dk=N, state_dv=N, conv_channels=2 * h, conv_kernel=2,
+                        lin="rwkv7", lin_chunk=64)
+        # Same misc as _build_rwkv7.  Layer 0 stores the unused v LoRA; ln0 only when the checkpoint has it.
+        misc = 6 * h + 3 * h + 2 * h + H * N + 2 * h + h + 4 * h + ((2 * h * dv) if i == 0 else 0)
+        if i == 0 and ln0:
+            misc += 2 * h
+        if dea:
+            q, k, kq = int(dea["q"]), int(dea["k"]), int(dea["kq"])
+            v, vd = int(dea["v"]), int(dea["vd"])
+            alin = (Linear("dea_qq", h, q, "rep"), Linear("dea_kk", h, k, "rep"), Linear("dea_vv", h, v, "rep"),
+                    Linear("dea_kkup", k, kq, "rep"), Linear("dea_vvup", v, vd, "rep")) + alin
+            misc += 2 * (q + kq + vd)       # lnq, lnk, lnv (weight + bias)
+            core = replace(core, dea_q=q, dea_k=k, dea_kq=kq, dea_v=v, dea_vd=vd,
+                           dea_k_emb=int(dea["k_emb"]), dea_v_emb=int(dea["v_emb"]))
+        ffn, flin = _ffn_dense(h, c["intermediate_size"], gated=False)
+        layers.append(Layer(alin, core, ffn, flin, misc, deepemb=de))
+    notes = ["RWKV-8 Heron：时间混合与 RWKV-7 相同（WKV-7，fp32 状态 H×64×64；prefill 按 rwkv7_chunked chunk 64 计，"
+             "与已发布的 RWKV-7 同一套递推）。通道混合是 squared ReLU，逐元素开销沿用现有激活算子（与 RWKV-7 相同）「近似」",
+             "DeepEmbed：每层 ffn.enn 只按当前 token 取一行，乘到 FFN 输出（不随上下文变长）"]
+    if dea:
+        notes.append("DeepEmbedAttention（hybrid demo forward_seq）：每层缓存 fp16 的 kk/vv（各 32 维），"
+                     "不是展开后的 K/V；每步对全部已缓存 token 做 kkup/vvup，再乘 ennk/emm 行，"
+                     "soft-cap（32·tanh(qk/512)）后单头因果注意力。参考实现是单卡：这些投影按复制计，缓存不按 TP 切分")
+    else:
+        notes.append("无 DeepEmbedAttention，无 KV 缓存；解码代价与上下文长度无关（状态大小固定）")
+    return layers, [], notes, "full"
+
+
 def _build_dory(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """0.253 NVIDIA Nemotron-Labs Dory (DoryForCausalLM; vLLM PR #60149 models/dory.py 「来源」): normalized-GPT looped
     LM.  ``num_hidden_layers`` physical layers, each ONE sublayer — attention (layer_types sliding / full) or SwiGLU
@@ -2012,6 +2075,8 @@ def _builder(c: dict):
         return _build_muse_spark, "GQA（SWA + full，输出门）latent MoE"
     if mt == "rwkv7":
         return _build_rwkv7, "RWKV-7（广义 delta 规则线性循环，无 KV）"
+    if mt == "rwkv8":
+        return _build_rwkv8, "RWKV-8 Heron（RWKV-7 时间混合 + DeepEmbed" + (" + DeepEmbedAttention" if c.get("dea") else "") + "）"
     if mt == "whisper":
         return _build_whisper, "编码器-解码器（MHA 自注意力 + 交叉注意力）稠密"
     if mt == "stripedhyena2":
@@ -2217,10 +2282,10 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     hc = next((c.get(k) for k in ("hc_mult", "hc_count", "mhc") if c.get(k)), None)
     if hc and not any(l.hc or l.gres_n for l in spec.layers):
         r.append(f"超连接（多流残差 ×{hc}）：参数计入，多流混合计算未计")
-    if (spec.lookup_params and not any(l.engram_cols or l.ple_rows for l in spec.layers)
-            and mt not in ("whisper", "moshi", "moss_tts_delay") and not c.get("cosyvoice") and spec.fish is None
+    if (spec.lookup_params and not any(l.engram_cols or l.ple_rows or l.deepemb for l in spec.layers)
+            and mt not in ("whisper", "moshi", "moss_tts_delay", "rwkv8") and not c.get("cosyvoice") and spec.fish is None
             and getattr(spec, "qwen3_tts", None) is None
-            and getattr(spec, "moss_tts", None) is None):  # 0.274 Moshi / 0.338 Qwen3-TTS / 0.346 MOSS emb_ext (exact)
+            and getattr(spec, "moss_tts", None) is None):  # 0.274 Moshi / 0.338 Qwen3-TTS / 0.346 MOSS emb_ext / 0.361 RWKV-8 DeepEmbed (exact)
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
     if getattr(spec, "moss_tts", None) is not None:
         r.append("外置 audio tokenizer / vocoder 不在本权重：波形解码未计「来源」")
@@ -2320,6 +2385,13 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=16.0,
                            notes=spec.notes + (f"音频码本 embedding emb_ext（{(emb_rel - spec.embed_params) / 1e9:.2f}B，bf16）："
                                                "每帧按行查表并加到文本嵌入",))
+        elif emb_rel > 1.05 * spec.embed_params and (cfg.get("model_type") or "") == "rwkv8":
+            # 0.361: ffn.enn (+ hybrid qkv.ennk / qkv.emm) live in the embed role.  Bits are that role's
+            # stored width (bf16 pile, fp16 hybrid).  Rows are read, not a hash table.
+            spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=spec.fmt("embed").bits,
+                           notes=spec.notes + (f"DeepEmbed 查表（{(emb_rel - spec.embed_params) / 1e9:.3f}B，"
+                                               f"{spec.fmt('embed').fmt}）：通道混合读当前 token；"
+                                               "DeepEmbedAttention 读缓存中每个 token 的 ennk / emm 行",))
         elif emb_rel > 1.05 * spec.embed_params:
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params,
                            notes=spec.notes + (f"查表 {(emb_rel - spec.embed_params) / 1e9:.1f}B 参数（n-gram / engram），"
@@ -2350,7 +2422,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             # 0.321: lm_head.logit_scale [vocab] is an nn.Parameter; logits.float() × (logit_scale / initializer_range)
             # (vLLM PR #60149 DoryForCausalLM.compute_logits 「来源」) — ≤ 0.320 dropped as a quantisation scale
             spec = replace(spec, io_misc_params=spec.io_misc_params + c["vocab_size"], logit_scale=True)
-        if (c.get("model_type") or "") == "rwkv7":
+        if (c.get("model_type") or "") in ("rwkv7", "rwkv8"):
             spec = replace(spec, final_norm_params=2 * h)      # ln_out LayerNorm (weight + bias)
         if (c.get("model_type") or "") == "whisper":
             # 0.270: decoder learned positions (looked up, one row per token) + final LayerNorm (weight + bias); the

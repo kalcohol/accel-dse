@@ -1,0 +1,68 @@
+{
+ "bytes_llm": 1262579712,
+ "bytes_mtp": 0,
+ "bytes_total": 1262579712,
+ "checkpoint": "https://huggingface.co/BlinkDL/rwkv-8-pile/resolve/main/rwkv-8-pile-rc00-20250508.pth",
+ "config": {
+  "a_low_rank_dim": 64,
+  "architectures": [
+   "RWKV_x070"
+  ],
+  "config_source": "https://github.com/BlinkDL/RWKV-LM/blob/main/RWKV-v7/rwkv_v8_rc00_demo.py",
+  "decay_low_rank_dim": 64,
+  "deepemb": 768,
+  "dtype": "bfloat16",
+  "gate_low_rank_dim": 128,
+  "head_dim": 64,
+  "hidden_size": 768,
+  "intermediate_size": 3072,
+  "ln0": true,
+  "model_type": "rwkv8",
+  "num_heads": 12,
+  "num_hidden_layers": 12,
+  "tie_word_embeddings": false,
+  "v_low_rank_dim": 32,
+  "vocab_size": 50304,
+  "wkv_state_dtype": "float32"
+ },
+ "fetched": "2026-10-24",
+ "n_tensors": 414,
+ "params_llm": 631289856,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "BlinkDL/rwkv-8-pile",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "params": 33730560,
+    "bytes": 67461120
+   }
+  },
+  "embed": {
+   "bf16": {
+    "params": 502235136,
+    "bytes": 1004470272
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "params": 38633472,
+    "bytes": 77266944
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "params": 56632320,
+    "bytes": 113264640
+   }
+  },
+  "norm": {
+   "bf16": {
+    "params": 58368,
+    "bytes": 116736
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

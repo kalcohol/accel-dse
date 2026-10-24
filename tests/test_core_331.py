@@ -39,7 +39,12 @@ def _f(t):
 
 # ---------------------------------------------------------------- (1) release keys
 def test_release_keys_regression():
-    assert C.RELEASE_KEYS == {"pixtext-teacher": TEACHER_KEY}
+    # 0.361: BlinkDL/rwkv-8-pile holds two checkpoints, same pattern as PixText.
+    assert C.RELEASE_KEYS == {
+        "pixtext-teacher": TEACHER_KEY,
+        "rwkv8-pile": "BlinkDL/rwkv-8-pile:rc00",
+        "rwkv8-pile-hybrid": "BlinkDL/rwkv-8-pile:rc00-hybrid",
+    }
     es = C.entries()
     by = {e["id"]: e for e in es}
     for e in es:
