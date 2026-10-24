@@ -1204,6 +1204,62 @@ def _gres_op(model: ModelSpec, li: int, L: Layer, t: int, tp: int, which: str) -
               vec=t * (4 * Nh + 4 * r + 4 * Nh + 2 * Nh + 4 * L.gres_n + 2 * Nh))
 
 
+def _dea_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard, b_loc: int) -> list[Op]:
+    """0.361 DeepEmbedAttention, one layer (BlinkDL rwkv_v8_rc00_hybrid_demo.py forward_seq).
+
+    New tokens only: qq / kk / vv.  The cache is the fp16 kk and vv rows (demo DTYPE = torch.half), appended
+    each step.  kkup / vvup run over every cached row (ctx + q), then the ennk / emm row of every cached token
+    id, LayerNorm, and one causal head: scores = 32 * tanh((q @ k^T) / 512), softmax, @ v.  The up-projections
+    are weight GEMMs; their left-hand side is the cache, counted as kv_read / kv_write (fp16, 2 B) rather than
+    as a second activation read.  Reference is one GPU: projections are replicated, the cache is not TP-split.
+    """
+    c = L.core
+    if not c.dea_q:
+        return []
+    tp = sh.tp
+    q = ph.q
+    t = b_loc * q
+    s = ph.ctx + q
+    rows = b_loc * s
+    by = {l.name: l for l in L.attn_linears}
+    cache_b = 2.0
+
+    def proj(name: str, m: int) -> Op:
+        lin = by[name]
+        k, n = _lin_local(lin, tp, c)
+        return gemm(model, f"attn.{name}", li, m, k, n, "attn", params=k * n, replicated=_repl(lin, tp))
+
+    if ph.kind == "decode" or s <= 0:
+        causal = 1.0
+    else:
+        # Same mean as full-softmax GQA: 0.5 * (1 + ctx / (ctx + q)).
+        causal = 0.5 * (1.0 + ph.ctx / s)
+    bits = model.lookup_bits or model.fmt("embed").bits or 16.0
+    ops = [proj("dea_qq", t), proj("dea_kk", t), proj("dea_vv", t)]
+    ops[1] = replace(ops[1], kv_write=t * c.dea_k * cache_b)
+    ops[2] = replace(ops[2], kv_write=t * c.dea_v * cache_b)
+    ops.append(Op("dea_lnq", "vector", li, vec=t * c.dea_q * 4, sfu=t, replicated=tp))
+    kk = replace(proj("dea_kkup", rows), in_elems=1, kv_read=rows * c.dea_k * cache_b)
+    vv = replace(proj("dea_vvup", rows), in_elems=1, kv_read=rows * c.dea_v * cache_b)
+    ops.append(kk)
+    ops.append(Op("dea_ennk", "lookup", li, kv_read=rows * c.dea_k_emb * bits / 8.0, vec=rows * c.dea_k_emb,
+                  replicated=tp))
+    ops.append(Op("dea_lnk", "vector", li, vec=rows * c.dea_kq * 4, sfu=rows, replicated=tp))
+    ops.append(vv)
+    ops.append(Op("dea_tanh", "vector", li, vec=rows * c.dea_vd, sfu=rows * c.dea_vd, replicated=tp))
+    ops.append(Op("dea_emm", "lookup", li, kv_read=rows * c.dea_v_emb * bits / 8.0, vec=rows * c.dea_v_emb,
+                  replicated=tp))
+    ops.append(Op("dea_lnv", "vector", li, vec=rows * c.dea_vd * 4, sfu=rows, replicated=tp))
+    sm = b_loc * q * s * causal
+    ops.append(Op("dea_qk", "attn", li, m=q, k=c.dea_kq, n=s, count=b_loc, causal=causal,
+                  act_bytes=b_loc * q * c.dea_kq * cache_b))
+    ops.append(Op("dea_softcap", "vector", li, vec=sm * 3, sfu=sm, replicated=tp))
+    ops.append(Op("dea_softmax", "vector", li, vec=sm * 5, sfu=sm, replicated=tp))
+    ops.append(Op("dea_pv", "attn", li, m=q, k=s, n=c.dea_vd, count=b_loc, causal=causal,
+                  act_bytes=b_loc * q * c.dea_vd * cache_b))
+    return ops
+
+
 def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None) -> list[Op]:
     L = layer if layer is not None else model.layers[li]
     if ph.kind == "full":
@@ -1250,8 +1306,12 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         ops.append(_gres_op(model, li, L, t, tp, "attn"))
     else:
         ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t))
+    if L.core.dea_q:
+        ops.extend(_dea_ops(model, li, L, ph, sh, b_loc))
     fq = _qkv_fusable(L, tp) if FUSE_QKV else None
     for l in L.attn_linears:
+        if l.name.startswith("dea_"):
+            continue                          # 0.361: emitted by _dea_ops (kkup / vvup run over the whole cache)
         if fq and l.name in ("k", "v"):
             continue                          # 0.198: folded into attn.qkv
         if fq and l.name == "q":
@@ -1364,6 +1424,10 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                           comm_bytes=r.pairs_local * ein * rb))
         if tp > 1 and f.n_shared:
             ops.append(Op("shared_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
+    if L.deepemb:
+        # 0.361 RWKV-8 channel mix: value(relu(key)^2) * enn[idx] for the new tokens only (demo CMix_*).
+        bits = model.lookup_bits or model.fmt("embed").bits or 16.0
+        ops.append(Op("deepemb", "lookup", li, kv_read=t * L.deepemb * bits / 8.0, vec=t * L.deepemb))
     ops.append(Op("residual", "vector", li, vec=t * h * 2))
     return _llm_stream(ops, ph)
 
@@ -1470,6 +1534,9 @@ def _llm_stream(ops: list[Op], ph: Phase) -> list[Op]:
             o = replace(o, stream=True)
         elif o.kind == "attn" and ph.kind == "prefill" and o.name in ("qk", "qk_latent") and not o.stream:
             o = replace(o, stream=True, kv_pre=pre)
+        elif o.kind == "attn" and ph.kind == "prefill" and o.name == "dea_qk" and not o.stream:
+            # Reconstructed K is rebuilt every step (not a prefix already charged to kv_read).
+            o = replace(o, stream=True, kv_pre=0.0)
         out.append(o)
     return out
 

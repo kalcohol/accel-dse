@@ -6,6 +6,20 @@
 
 
 
+## [0.361.0] — 2026-10-24
+
+### RWKV-8 Heron pile rc00（纯循环 + hybrid DeepEmbedAttention）
+
+- **新增 2 个发布**，形状和 dtype 来自 `BlinkDL/rwkv-8-pile` 的 `.pth` 头（2026-10-24 读取），不是臆造。`param_check().rel_err == 0`，覆盖完整。
+  - **rwkv8-pile**（`rwkv-8-pile-rc00-20250508.pth`，414 个张量，全部 bf16）：12 层、hidden 768、词表 50304、FFN 3072、head 64。时间混合与 RWKV-7 相同（WKV-7，fp32 状态 H×64×64）。DeepEmbed 是每层 `ffn.enn` `[50304, 768]`，只按当前 token 取一行。参数 631,289,856。
+  - **rwkv8-pile-hybrid**（`rwkv-8-pile-rc00-hybrid-20250623.pth`）：同一时间混合和 FFN，没有 ln0。`emb` / `ffn.enn` / `qkv.ennk` / `qkv.emm` 是 fp16，GEMM 权重和 `lm_head` 是 bf16。另有 DeepEmbedAttention：缓存的是每层 fp16 的 kk/vv（各 32 维），每步对全部已缓存 token 做 `kkup` / `vvup`，乘 `ennk` / `emm` 行，`32·tanh(qk/512)` 后单头因果注意力。参数 1,252,796,928。
+- **机制**（`rwkv_v8_rc00_demo.py` / `rwkv_v8_rc00_hybrid_demo.py`）：时间混合复用已有 `lin=rwkv7`。demo 的序列路径调用的是同一个 WKV-7 算子；prefill 仍按 RWKV-7 的 chunk 64 矩阵形式计，不另造一套递推。通道混合的 squared ReLU 沿用现有激活算子（与 RWKV-7 相同）。DeepEmbedAttention 是在现有 GEMM / 查表 / 因果注意力因子上补的一条 schedule：缓存字节按 demo 的 `torch.half`（2 字节），不跟 `kv_fmt` 假设走；参考实现是单卡，投影按复制计，缓存不按 TP 切分。
+- **决策模型这条没有新权重**：
+  - TypeSafe Jev 仍是托管闭源，没有公开 config / 权重。第三方蒸馏和 GGUF / MLX 不入库。
+  - Microsoft-Decision-1 仍无权重，目录里继续是 Qwen3.5-9B 代理。
+  - StartLux v1 / v1.1 和 ReaDy-Qwen3.8-27B 已在目录中。没有 v1.2 / v2。剩下的同仓库条目是 GGUF / MLX。
+- **RWKV 没纳入的**：RWKV-7 G1k（2026-09-30）已是带 `config.json` 的最新一代，已在目录。更老的 G1j / Goose 不是最新。ROSA 只在玩具实验里，这两个检查点没有对应张量。
+
 ## [0.360.0] — 2026-10-24
 
 ### 语音目录：公开配置可直接映射的 ASR / 端到端旁支 (MODEL §360)

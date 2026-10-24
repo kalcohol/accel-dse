@@ -104,6 +104,10 @@ EXTRA_TAIL = [
     ("rwkv7-g1k-7.2b", "RWKV/RWKV7-G1k-7.2B-20260930"),
     ("rwkv7-g1k-2.9b", "RWKV/RWKV7-G1k-2.9B-20260930"),
     ("rwkv7-g1k-1.5b", "RWKV/RWKV7-G1k-1.5B-20260930"),
+    # 0.361 RWKV-8 "Heron" pile rc00 (BlinkDL, Apache-2.0). Two checkpoints, one repo; shapes from the .pth
+    # headers and rwkv_v8_rc00_demo.py / rwkv_v8_rc00_hybrid_demo.py. Release files via RELEASE_KEYS.
+    ("rwkv8-pile", "BlinkDL/rwkv-8-pile"),
+    ("rwkv8-pile-hybrid", "BlinkDL/rwkv-8-pile"),
     # 0.251 catalog freshness sweep (official releases 2026-10-14 … 16; public config.json + safetensors headers, as released)
     ("hy-memory-30b-a3b", "tencent/Hy-Memory-30B-A3B"),
     ("hy-memory-30b-a3b-fp8", "tencent/Hy-Memory-30B-A3B-FP8"),
@@ -442,7 +446,9 @@ DOMAIN_RELEASES = [
 # 0.331: release file of a model when one public repo holds several checkpoints.  Key = "<repo>:<subfolder>" → file
 # releases/<repo with / → __>_<subfolder with / → __>.json (model.release_path); every model not listed here reads
 # its hf_id's file, as before.  hf_id stays the public repo id (UI text, provider_of, freshness sweep, aliases).
-RELEASE_KEYS = {"pixtext-teacher": "ATH-MaaS/PixText:models/PixText-Teacher"}
+RELEASE_KEYS = {"pixtext-teacher": "ATH-MaaS/PixText:models/PixText-Teacher",
+                "rwkv8-pile": "BlinkDL/rwkv-8-pile:rc00",
+                "rwkv8-pile-hybrid": "BlinkDL/rwkv-8-pile:rc00-hybrid"}
 
 
 def release_key(model_id: str, hf_id: str) -> str:
@@ -451,7 +457,9 @@ def release_key(model_id: str, hf_id: str) -> str:
 _DOMAIN_IDS = {i for i, *_ in DOMAIN_RELEASES}
 # GitHub-only releases: the repo name alone does not say which checkpoint is evaluated
 DOMAIN_LABELS = {"alphafold2": "AlphaFold 2 · model_1_ptm", "openfold": "OpenFold · finetuning_ptm_2",
-                 "protenix": "Protenix v0.5.0", "pixtext-teacher": "PixText · Teacher"}   # 0.331: 2nd checkpoint of a repo
+                 "protenix": "Protenix v0.5.0", "pixtext-teacher": "PixText · Teacher",
+                 "rwkv8-pile": "RWKV-8 Heron · pile rc00",
+                 "rwkv8-pile-hybrid": "RWKV-8 Heron · pile rc00 hybrid"}   # 0.331 / 0.361: 2nd checkpoint of a repo
 # catalog-only rows that stay off core v2, with the reason shown in the listing
 OFFLINE_REASONS = {
     "alphafold3": "权重需向 Google DeepMind 申请（表单审批、条款禁止再分发），没有可公开读取的发布文件来核对张量形状 → "
@@ -485,7 +493,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("bfl", "Black Forest Labs（FLUX）", ("black-forest-labs/",)),
     ("stepfun", "阶跃星辰（Step）", ("stepfun-ai/",)), ("xiaomi", "小米（MiMo）", ("XiaomiMiMo/",)),
     ("openbmb", "面壁智能 / OpenBMB（MiniCPM）", ("openbmb/",)), ("robbyant", "Robbyant（LingBot-Video）", ("robbyant/",)),
-    ("startlux", "StartLux Labs（决策模型）", ("startlux-models/",)), ("rwkv", "RWKV（BlinkDL）", ("RWKV/",)),
+    ("startlux", "StartLux Labs（决策模型）", ("startlux-models/",)), ("rwkv", "RWKV（BlinkDL）", ("RWKV/", "BlinkDL/")),
     ("nvidia", "NVIDIA（Nemotron）", ("nvidia/",)),
     ("reflection", "Reflection AI（Beam）", ("reflection/",)),
     ("openmoss", "复旦 OpenMOSS（MOSS）", ("OpenMOSS-Team/",)),
@@ -531,7 +539,8 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("stepfun", "Step-Audio-2", ("step-audio-2",)), ("stepfun", "Step-5", ("step-5",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),
     ("openbmb", "MiniCPM-V 4.7", ("minicpm-v-4.7",)), ("robbyant", "LingBot-Video", ("lingbot-video",)),
     ("startlux", "StartLux-Decision v1.1", ("startlux-decision-v1.1",)), ("startlux", "StartLux-Decision v1", ("startlux-decision-v1-",)),
-    ("microsoft", "Microsoft-Decision", ("microsoft-decision",)), ("rwkv", "RWKV-7 G1k", ("rwkv7-",)),
+    ("microsoft", "Microsoft-Decision", ("microsoft-decision",)),
+    ("rwkv", "RWKV-8 Heron", ("rwkv8-",)), ("rwkv", "RWKV-7 G1k", ("rwkv7-",)),
     ("tencent", "Hy-Memory（Hy3 MoE）", ("hy-memory",)), ("bfl", "FLUX 3", ("flux-3",)),
     ("microsoft", "UserRepGen", ("userrepgen",)),
     ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("nvidia", "Nemotron-3.5（Super VL · Bolt · Lightning）", ("nemotron-3.5",)), ("nvidia", "Qwen3.8（NVIDIA 量化）", ("qwen3.8",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
@@ -617,7 +626,11 @@ def entries() -> list[dict]:
             continue
         out.append({"id": e["id"], "hf_id": e["hf_id"], "aliases": tuple(e.get("aliases") or ())})
     for i, h in EXTRA:
-        out.append({"id": i, "hf_id": h, "aliases": (h,)})
+        rk = release_key(i, h)
+        # 0.361: a second checkpoint of one repo is addressed by its release key. The shared repo id stays an
+        # alias; _index keeps the first model (setdefault).
+        al = (h,) if rk == h else (rk, h)
+        out.append({"id": i, "hf_id": h, "aliases": al, "release": rk})
     old = {e["id"]: e for e in raw["entries"]}
     for i, h, b, wl in DOMAIN_RELEASES:
         al = tuple(old.get(i, {}).get("aliases") or ()) + (h,)
@@ -625,7 +638,9 @@ def entries() -> list[dict]:
         al = al if rk == h else tuple(x for x in al if x != h) + (rk,)
         out.append({"id": i, "hf_id": h, "aliases": al, "builder": b, "workload": wl, "release": rk})
     for i, h in EXTRA_TAIL:
-        out.append({"id": i, "hf_id": h, "aliases": (h,)})
+        rk = release_key(i, h)
+        al = (h,) if rk == h else (rk, h)
+        out.append({"id": i, "hf_id": h, "aliases": al, "release": rk})
     for i, h, prov, lab, note in PROXIES:
         out.append({"id": i, "hf_id": h, "aliases": (), "proxy_note": note, "proxy_label": lab, "proxy_provider": prov})
     for e in out:
@@ -723,7 +738,8 @@ def get_model(model_id: str) -> ModelSpec:
         raise KeyError(f"unknown model {model_id!r}")
     if e.get("builder"):
         return from_domain_release(e["id"], e["hf_id"], e["builder"], e["workload"], release=e["release"])
-    spec = from_release(e["id"], e["hf_id"])
+    rk = e.get("release") or e["hf_id"]
+    spec = from_release(e["id"], e["hf_id"], rel=None if rk == e["hf_id"] else load_release(rk))
     if e.get("proxy_note"):
         from dataclasses import replace as _rp
         spec = _rp(spec, coverage="proxy", notes=spec.notes + (e["proxy_note"],),

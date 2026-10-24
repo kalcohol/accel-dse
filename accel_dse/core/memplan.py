@@ -146,6 +146,7 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
     stb = _fmt(model.state_fmt).bytes
     kv = idx = st = 0.0
     new = S - p
+    dea_ids = False
     for L in model.layers:
         c = L.core
         if L.kv_shared:
@@ -168,12 +169,18 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
             st += model.enc_ctx * L.cross.n_kv * (L.cross.qk_dim + L.cross.v_dim) * kvb
         if c.kind == "linear":
             st += c.state_bytes(1, stb)
+        if c.dea_q:
+            # 0.361: fp16 kk + vv rows of the tokens the receiver does not hold yet (not TP-split).
+            kv += new * (c.dea_k + c.dea_v) * 2.0
+            dea_ids = True
         if c.idx_heads and c.dual:
             idx += (S // c.compress - p // c.compress) * c.idx_kbytes if c.idx_owner else 0.0
         elif c.idx_heads and c.idx_sum and c.qsa:     # 0.145: Step-5 summaries of completed regions only
             idx += (S // c.qsa - p // c.qsa) * c.idx_dim * 5.0
         elif c.idx_heads:
             idx += (math.ceil(S / c.compress) - math.ceil(p / c.compress)) * c.idx_bytes_per_token(kvb) * c.compress
+    if dea_ids:
+        kv += new * 4.0          # one int32 token-id stream (shared across DEA layers)
     return kv + idx + st
 
 
@@ -182,6 +189,7 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
     """``spec_q`` (0.222): tokens of a speculative verify pass (1 + k, decode) — hybrid / linear layers keep one
     intermediate recurrent state per draft token (ir.SPEC_STATE_SNAPSHOT; SGLang intermediate_ssm_state_cache)."""
     hot = exp = kv = idx = st = rt = 0.0
+    dea_ids = False
     kvb = _fmt(model.kv_fmt).bytes
     stb = _fmt(model.state_fmt).bytes
     layers = list(model.layers[first:last])
@@ -208,6 +216,10 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             st += model.enc_ctx * _cdiv(cc.n_kv, sh.tp) * (cc.qk_dim + cc.v_dim) * kvb
         if L.ple_rows:      # Qwen4Exp PLE dilated conv state, bf16 (kernel − 1)·dilation columns of N·h
             st += (L.ple_conv - 1) * L.ple_dil * L.gres_n * model.hidden * 2
+        if c.dea_q:
+            # 0.361 hybrid demo: fp16 kk / vv cache, one copy per sequence (the reference is a single GPU).
+            kv += ctx * (c.dea_k + c.dea_v) * 2.0
+            dea_ids = True
         if c.kind == "linear":
             st += c.state_bytes(sh.tp, stb)
             if spec_ring and c.lin in ("gdn", "kda"):
@@ -225,6 +237,8 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
             idx += _cdiv(math.ceil(ctx / c.compress), sh.tp) * c.idx_bytes_per_token(kvb) * c.compress
         elif c.idx_heads:
             idx += math.ceil(ctx / c.compress) * c.idx_bytes_per_token(kvb) * c.compress
+    if dea_ids:
+        kv += ctx * 4.0          # one int32 token-id stream for this stage (ennk / emm index)
     store_extra = 0.0
     if model.standby_params:        # idle expert of a multi-expert denoiser (Wan2.2 A14B): stored, not read this step
         store_extra += model.standby_params * (last - first) / model.n_layers / sh.tp * model.fmt("attn").bits / 8
