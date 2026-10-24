@@ -6,6 +6,14 @@
 
 
 
+## [0.359.0] — 2026-10-24
+
+### DVFS 封顶后 HBM 器件功耗不再按卡功耗比例缩小 (HBM thermal)
+
+- **Bug：** 功耗预算把工作点降频后，DSE / eval 用 `dram_dev_W × W_capped / W_nominal` 估算晶粒外 DRAM 器件功耗。HBM（及 LPDDR）静态是存储器时钟上的恒定瓦数，不随核心卡功耗下降。深封顶时该比例会把器件功耗压到静态以下，多出来的热被算进晶粒（`die_W` / `die_flux`）。卡级热流与 `pkg_W` 不变，所以 `thermal_binding` / `front_cap` 的功耗轴不受影响；变的是晶粒热流，以及「卡、晶两侧都超」才判热流超限时的可行性。
+- **修复：** `dvfs_cap` 返回封顶时钟上能耗报告的 `dram_dev_W`（低于 `F_MIN` 的占空比只缩小动态部分，器件静态保持）。能耗 DSE 与 `/api/eval` 的热报告用这个数，不再按卡功耗比例缩放。
+- **未改：** 冷却上限、功耗预算数值、`power_scope` 比较轴、三方 `thermal_binding`、前沿 `front_cap`。卡口径仍保留名义静态（0.315 复现）。
+
 ## [0.358.0] — 2026-10-23
 
 ### Whisper encoder-decoder 参数计数修复 (MODEL §358)

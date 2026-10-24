@@ -74,6 +74,18 @@ def hbm_device_static_W(e: dict) -> float:
     return 0.0
 
 
+def dram_device_W(e: dict, slow: float = 1.0) -> float:
+    """0.359: DRAM-device watts at an energy report (dynamic array + device static).
+    Duty cycling (``slow`` > 1, below F_MIN) holds device static and scales only the dynamic part by 1/slow.
+    Device static does not follow the core clock or the card-W ratio."""
+    from .thermal import dram_dev_W
+    dev = dram_dev_W(e)
+    if slow <= 1.0:
+        return dev
+    held = hbm_device_static_W(e)
+    return held + max(0.0, dev - held) / slow
+
+
 def _units_s_card(e: dict, cards: int) -> float:
     return e["units_per_window"] / e["window_s"] / cards if e.get("window_s") else 0.0
 
@@ -119,7 +131,8 @@ def dvfs_cap(r, table, cap_W: float, curve: str = "dfs", iters: int = CAP_ITERS,
             "pkg_nominal_W": W(e1)}
     if W(e1) <= cap_W * (1 + 1e-12):
         return {**base, "binds": False, "s": 1.0, "f_ghz": r.scenario.chip.freq_ghz, "v": 1.0, "throughput_factor": 1.0,
-                "W_card": P1, "pkg_W": W(e1), "J_per_unit": e1["J_per_unit"], "bound": r.bound, "duty": 1.0}
+                "W_card": P1, "pkg_W": W(e1), "J_per_unit": e1["J_per_unit"], "bound": r.bound, "duty": 1.0,
+                "dram_dev_W": dram_device_W(e1)}
     lo_q, lo_e = _point(r, table, curve, F_MIN)
     if W(lo_e) > cap_W:
         ps = static_W(lo_e)
@@ -132,7 +145,8 @@ def dvfs_cap(r, table, cap_W: float, curve: str = "dfs", iters: int = CAP_ITERS,
         J = lo_e["J_per_unit"] + ps * cards / _units_s_card(lo_e, cards) / cards * (slow - 1.0)
         return {**base, "binds": True, "feasible": True, "s": F_MIN, "f_ghz": lo_q.scenario.chip.freq_ghz,
                 "v": volt(curve, F_MIN), "duty": 1.0 / slow, "throughput_factor": _units_s_card(lo_e, cards) / slow / u1,
-                "W_card": cap_c, "pkg_W": cap_W, "static_W": ps, "J_per_unit": J, "bound": lo_q.bound}
+                "W_card": cap_c, "pkg_W": cap_W, "static_W": ps, "J_per_unit": J, "bound": lo_q.bound,
+                "dram_dev_W": dram_device_W(lo_e, slow)}
     lo, hi = F_MIN, 1.0
     best = (lo_q, lo_e, lo)
     for _ in range(iters):
@@ -145,5 +159,5 @@ def dvfs_cap(r, table, cap_W: float, curve: str = "dfs", iters: int = CAP_ITERS,
     q, e, s = best
     return {**base, "binds": True, "feasible": True, "s": s, "f_ghz": q.scenario.chip.freq_ghz, "v": volt(curve, s),
             "duty": 1.0, "throughput_factor": _units_s_card(e, cards) / u1, "W_card": e["avg_W_per_card"], "pkg_W": W(e),
-            "static_W": static_W(e),
+            "static_W": static_W(e), "dram_dev_W": dram_device_W(e),
             "J_per_unit": e["J_per_unit"], "bound": q.bound, "tpot_ms": q.tpot * 1e3 if q.tpot else None}

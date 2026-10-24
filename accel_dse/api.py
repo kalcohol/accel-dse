@@ -1009,9 +1009,12 @@ def _capped_point(e: dict, pkg_scope: bool) -> dict | None:
     d = (pc.get("dvfs") or {}).get("dfs") or {}
     if pc.get("error") or not pc.get("capped") or d.get("error") or not d.get("feasible", True) or "W_card" not in d:
         return None
-    return {"throughput_factor": d["throughput_factor"], "W_card": d["W_card"], "pkg_W": d.get("pkg_W", d["W_card"]),
-            "static_W": d.get("static_W", static_W(e)) if pkg_scope else static_W(e), "J_per_unit": d["J_per_unit"],
-            "s": d.get("s"), "curve": "dfs"}
+    out = {"throughput_factor": d["throughput_factor"], "W_card": d["W_card"], "pkg_W": d.get("pkg_W", d["W_card"]),
+           "static_W": d.get("static_W", static_W(e)) if pkg_scope else static_W(e), "J_per_unit": d["J_per_unit"],
+           "s": d.get("s"), "curve": "dfs"}
+    if d.get("dram_dev_W") is not None:          # 0.359: device watts at the capped clock (static held)
+        out["dram_dev_W"] = d["dram_dev_W"]
+    return out
 
 
 def api_eval(body: dict) -> dict:
@@ -1100,7 +1103,12 @@ def api_eval(body: dict) -> dict:
     pk = scn.package_cards if scn.d2d_enabled else 1
     ddw, stw = dram_dev_W(out["energy"]), _static_W(out["energy"])
     if opc is not None:                     # 0.323: at the capped operating point (as the DSE row)
-        ddw = ddw * opc["W_card"] / ew if ew else ddw
+        # 0.359: HBM/LPDDR static does not scale with the card-W ratio (that under-charged the stacks and
+        # over-charged the die). Use the capped point's device watts.
+        if opc.get("dram_dev_W") is not None:
+            ddw = opc["dram_dev_W"]
+        elif ew:
+            ddw = ddw * opc["W_card"] / ew
         ew, stw = opc["W_card"], opc["static_W"]
     th_c = None
     if sh.get("die_mm2") and getattr(scn.chip, "hbm_base", "std") == "custom":     # 0.325: card-level precedent area
