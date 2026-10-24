@@ -330,6 +330,14 @@ EXTRA_TAIL = [
     ("qwen3-vl-4b-fp8", "Qwen/Qwen3-VL-4B-Instruct-FP8"),
     ("qwen3-vl-2b", "Qwen/Qwen3-VL-2B-Instruct"),
     ("qwen3-vl-2b-fp8", "Qwen/Qwen3-VL-2B-Instruct-FP8"),
+    # 0.368 Gemma-4 (gemma4 / gemma4_unified). Hybrid sliding/full attention, not a Gemma-3 wrap.
+    # E2B / E4B, assistant drafts and DiffusionGemma are not listed (see CHANGELOG).
+    ("gemma-4-31b-it", "google/gemma-4-31B-it"),
+    ("gemma-4-31b", "google/gemma-4-31B"),
+    ("gemma-4-26b-a4b-it", "google/gemma-4-26B-A4B-it"),
+    ("gemma-4-26b-a4b", "google/gemma-4-26B-A4B"),
+    ("gemma-4-12b-it", "google/gemma-4-12B-it"),
+    ("gemma-4-12b", "google/gemma-4-12B"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -520,6 +528,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     # vendors with catalog-only (not yet on core v2) releases
     ("tencent", "腾讯（HunyuanVideo · Hy）", ("hunyuanvideo-community/", "tencent/")), ("lightricks", "Lightricks（LTX-Video）", ("Lightricks/",)),
     ("genmo", "Genmo（Mochi）", ("genmo/",)), ("hpcai", "HPC-AI Tech（Open-Sora）", ("hpcai-tech/",)),
+    ("google", "Google（Gemma）", ("google/",)),
     ("deepmind", "Google DeepMind（AlphaFold）", ("gh:google-deepmind/",)), ("boltz", "Boltz（MIT）", ("gh:jwohlwend/", "boltz-community/")),
     ("openfold", "OpenFold（aqlaboratory）", ("gh:aqlaboratory/",)),
     ("hfbio", "Hugging Face Bio（Carbon 基因组）", ("HuggingFaceBio/",)),
@@ -567,6 +576,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("microsoft", "Phi-4", ("phi-4",)), ("bytedance", "Seed-OSS", ("seed-oss",)), ("bytedance", "Protenix", ("protenix",)),
     ("tencent", "HunyuanVideo", ("hunyuanvideo",)), ("lightricks", "LTX-Video", ("ltx-video",)),
     ("genmo", "Mochi 1", ("mochi",)), ("hpcai", "Open-Sora", ("opensora",)),
+    ("google", "Gemma-4", ("gemma-4",)),
     ("deepmind", "AlphaFold", ("alphafold",)), ("boltz", "Boltz", ("boltz",)), ("openfold", "OpenFold", ("openfold",)),
     ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
     ("arc", "Evo 2（StripedHyena 2 DNA 语言模型）", ("evo2-",)),

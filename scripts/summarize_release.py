@@ -48,7 +48,12 @@ SCALE_RE = re.compile(r"(_(weight|input)_scale(_2)?$|\.weight_scale_inv$|\.scale
 # nn.Parameter, counted by the templates) 「来源」.  ≤ 0.281 they were dropped as scales (V4-Flash −259 params etc.).
 # 0.321: Dory lm_head.logit_scale [vocab] — nn.Parameter, logits × logit_scale / initializer_range (vLLM PR #60149
 # DoryForCausalLM.compute_logits) 「来源」; ≤ 0.320 dropped as a scale (−131,072 params)
-NOT_SCALE_RE = re.compile(r"((^|\.)hc_(attn|ffn|head)_scale|^lm_head\.logit_scale)$")
+# 0.368: Gemma-4 router.scale [hidden] and router.per_expert_scale [E] are nn.Parameter (Gemma4TextRouter);
+# vision_tower.std_scale [hidden] is the standardize buffer next to std_bias (Gemma4VisionModel). None of
+# these are quantization scales. Anchored so expert *_scale_inv names still strip.
+NOT_SCALE_RE = re.compile(
+    r"((^|\.)hc_(attn|ffn|head)_scale|^lm_head\.logit_scale|"
+    r"(^|\.)router\.(per_expert_scale|scale)$|(^|\.)vision_tower\.std_scale$)")
 ROLE = [
     ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.|^linear_proj\.)"),
     ("mtp", r"(^mtp\.|\.mtp\.|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),

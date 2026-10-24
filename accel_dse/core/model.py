@@ -2082,8 +2082,81 @@ def with_loops(spec: ModelSpec, loops: int, mode: str) -> ModelSpec:
     return replace(spec, layers=tuple(ls), loop_spec=(n_in, n_rec, loops, mode))
 
 
+def _build_gemma4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """Gemma 4 text (gemma4_text / gemma4_unified_text).
+
+    Sliding layers use head_dim and num_key_value_heads, with a real v_proj and
+    window = sliding_window. Full layers use global_head_dim; when
+    attention_k_eq_v is set they also use num_global_key_value_heads and omit
+    v_proj. V is then RMSNorm(K) with with_scale=False (no parameter) and is
+    still written to the KV cache, so the cache stores both K and V.
+    KV-shared layers, per-layer input embeddings and the double-wide MLP are
+    refused: the existing kv_shared flag does not store the extra full-length
+    shared_kv_states copy.
+    """
+    if (c.get("num_kv_shared_layers") or 0) or (c.get("hidden_size_per_layer_input") or 0) \
+            or c.get("use_double_wide_mlp"):
+        raise ValueError("gemma4 KV-shared layers, per-layer embeddings and double-wide MLP are not modelled")
+    h = c["hidden_size"]
+    H = c["num_attention_heads"]
+    kv_s = c.get("num_key_value_heads") or H
+    hd_s = c.get("head_dim") or h // H
+    hd_f = c.get("global_head_dim") or hd_s
+    kv_f = c.get("num_global_key_value_heads") or kv_s
+    k_eq = bool(c.get("attention_k_eq_v"))
+    L = c["num_hidden_layers"]
+    types = _list(c.get("layer_types"))
+    if not types or len(types) != L or any(t not in ("sliding_attention", "full_attention") for t in types):
+        raise ValueError("gemma4 requires layer_types of length num_hidden_layers (sliding_attention | full_attention)")
+    window = c.get("sliding_window")
+    if any(t == "sliding_attention" for t in types) and not window:
+        raise ValueError("gemma4 sliding_attention requires sliding_window")
+    inter = c["intermediate_size"]
+    moe = bool(c.get("enable_moe_block"))
+    E = k = de = 0
+    if moe:
+        E, k, de = c["num_experts"], c["top_k_experts"], c["moe_intermediate_size"]
+    layers = []
+    for i in range(L):
+        full = types[i] == "full_attention"
+        hd = hd_f if full else hd_s
+        kv = kv_f if full else kv_s
+        # Full + attention_k_eq_v: no v_proj. KV still stores the post-norm V.
+        if full and k_eq:
+            lin = (Linear("q", h, H * hd, "col"),
+                   Linear("k", h, kv * hd, "head", unit=hd),
+                   Linear("o", H * hd, h, "row"))
+        else:
+            lin, _core = _gqa(h, H, kv, hd, window=None if full else window)
+        core = AttnCore("gqa", n_q=H, n_kv=kv, qk_dim=hd, v_dim=hd, window=None if full else window)
+        # Four decoder RMSNorms + persistent layer_scalar [1] + q_norm + k_norm.
+        # v_norm is with_scale=False (0 params). Final RMSNorm is ModelSpec's, not per layer.
+        misc = 4 * h + 1 + 2 * hd
+        if moe:
+            # Dense MLP on every token (intermediate_size) plus routed experts (moe_intermediate_size).
+            # Router RMSNorm has no scale. router.scale [h] and per_expert_scale [E] are parameters.
+            # Three extra norms wrap the MoE branch (post_ffn_1, pre_ffn_2, post_ffn_2).
+            ffn, flin = _ffn_moe(h, E, k, de, 1, inter)
+            misc += 3 * h + h + E
+        else:
+            ffn, flin = _ffn_dense(h, inter)
+        layers.append(Layer(lin, core, ffn, flin, misc))
+    n_s = types.count("sliding_attention")
+    n_f = types.count("full_attention")
+    notes = [f"滑窗 {window}（{n_s} 层，head {hd_s}，KV {kv_s}）与全注意力（{n_f} 层，head {hd_f}，KV {kv_f}）分开记账"]
+    if k_eq and n_f:
+        notes.append("全注意力 attention_k_eq_v：无 v_proj；V 为无 scale 的 RMSNorm(K)，KV 仍存储 K 与 V")
+    if moe:
+        notes.append(f"每层稠密 MLP（intermediate {inter}）与 {E} 专家 top-{k}（moe intermediate {de}）同时计算")
+    notes.append("final_logit_softcapping 与 partial RoPE 不改变 GEMM / KV 宽度，不计额外周期")
+    return layers, [], notes, "full"
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if mt in ("gemma4_text", "gemma4_unified_text"):
+        moe = " MoE" if c.get("enable_moe_block") else ""
+        return _build_gemma4, "Gemma-4 混合注意力（滑窗 + 全注意力）" + moe
     if mt == "beam":
         return _build_beam, "GQA（SWA + full NoPE，输出门）MoE"
     if mt == "nemotron_h":
