@@ -6,6 +6,40 @@
 
 
 
+## [0.383.0] — 2026-10-24
+
+### 复核 Gemma-4 视频网格；目录补上 LFM2.5-2.6B 与 Granite-4.2
+
+- **0.382 的视频账目复核过，网格不改。** 十个已入库的 `google/gemma-4-*` 仍走公开 `Gemma4VideoProcessor`（ViT）或 `Gemma4UnifiedVideoProcessor`（12B）。数字仍是 `num_frames` 32、`max_soft_tokens` 70、`patch_size` 16、`pooling_kernel_size` 3。图像侧 `max_soft_tokens` 仍是 280，`pad_soft` 仍是 0。
+  - **ViT。** 每一帧 pad 到 630 个 patch。塔的 GEMM 和双向注意力按这个长度计。投影跑在去掉 pad 之后的 soft token 上。1280×720 仍是 528×288，每帧 66 个 soft token，LLM 位置 `32 × 66`。注意力按帧分开，`qk` 是 `(630, 630)`，条数是 `32 × heads`。
+  - **12B。** 先做 3×3 合并，再把每一帧 pad 到 70 行。`patch_dense` 与 `proj` 都看这 70 行。LLM 只留真实 soft token。
+  - **帧数与 token。** 短于 32 帧会拒绝。更长的 `serving.video_frames` 仍只跑 32 帧。`mm:ss` 与 boi / eoi 不计入。十个发布 `param_check().rel_err == 0`。没有新的权重。
+- **新增 3 个发布**（2026-10-24 读取 safetensors header）。`param_check().rel_err == 0`。覆盖 full。权重 bf16，`quantization_config` 为空。激活 bf16。无视觉塔。config 没有 `num_nextn_predict_layers`，header 没有 `mtp_*`，`params_mtp == 0`。
+  - **LFM2.5-2.6B**（`LiquidAI/LFM2.5-2.6B`，266 张量）。`model_type=lfm2`，`Lfm2ForCausalLM`。30 层：22 层门控短卷积，8 层 GQA。hidden 2048，intermediate 10752，头 32/8。config 没有 `head_dim`，`hidden // heads` 是 64。卷积：`in_proj` bf16 `[6144, 2048]`，`out_proj` `[2048, 2048]`，`conv.weight` `[2048, 1, 3]`，`conv_bias` 为 false。注意力：`q` / `o` `[2048, 2048]`，`k` / `v` `[512, 2048]`，`q_layernorm` / `k_layernorm` 各 `[64]`。SwiGLU `w1` / `w3` `[10752, 2048]`，`w2` `[2048, 10752]`。`tie_word_embeddings` 为 true，没有另存 `lm_head`。`embedding_norm` `[2048]`。没有 `num_experts`。语言参数 2,697,198,592。`bytes_total` 5,394,397,184。这是稠密混合层，不是已入库的 24B-A2B MoE。
+  - **granite-4.2-3b**（`ibm-granite/granite-4.2-3b`，363 张量）。`GraniteForCausalLM`。40 层 GQA（40/8）。config 没有 `head_dim`，head 是 64。`q` / `o` 是 bf16 `[2560, 2560]`，`k` / `v` 是 `[512, 2560]`。SwiGLU intermediate 8192。词表 100352。`tie_word_embeddings` 为 false。`embed_tokens` 与 `lm_head` 都是 bf16 `[100352, 2560]`。没有 q/k RMSNorm。最终 RMSNorm `[2560]`。语言参数 3,659,737,600。`bytes_total` 7,319,475,200。GEMM 形状与已入库的 4.1-3b 相同。4.1-3b 把 lm_head 绑在 embedding 上，参数 3,402,836,480。差额就是这一份 `100352 × 2560`。
+  - **granite-4.2-8b**（`ibm-granite/granite-4.2-8b`，363 张量）。40 层 GQA（32/8），head 128，hidden 4096，intermediate 12800。`q` / `o` `[4096, 4096]`，`k` / `v` `[1024, 4096]`。`lm_head` 与 embedding 都是 bf16 `[100352, 4096]`，untied。语言参数 8,791,592,960。`bytes_total` 17,583,185,920。GEMM 形状与已入库的 4.1-8b 相同。4.1-8b 去重后的参数 8,380,551,168。差额是 `100352 × 4096`。
+  - **标量。** 4.2-3b 的 `attention_multiplier` 是 0.015625，4.2-8b 是 0.0078125，与对应的 4.1 相同。`embedding_multiplier`、`residual_multiplier`、`logits_scaling` 在这两份 4.2 上都是 1.0（4.1-3b 是 12 / 0.22 / 10，4.1-8b 是 12 / 0.22 / 16）。这些数不改变 GEMM 形状，也不改变 KV 宽度。不计额外周期。
+- **未纳入：**
+  - **ERNIE-4.5-VL。** 2026-10-24 读了 `baidu/ERNIE-4.5-VL-28B-A3B-PT` 与 `baidu/ERNIE-4.5-VL-424B-A47B-PT` 的 config，以及分片 header。`model_type` 是 `ernie4_5_moe_vl`，类是 `Ernie4_5_VLMoeForConditionalGeneration`。文本专家和视觉专家宽度不同，现有单池 `Ffn` 不能按 forward 分开计。不把视觉专家塞进 misc，也不把两个宽度平均成一个池。
+    - **28B-A3B-PT。** 11105 张量，12 个分片，`total_size` 58,816,290,304。hidden 2560，28 层，GQA 20/4，词表 103424，`tie_word_embeddings` 为 true，没有 `lm_head`。第 0 层稠密 SwiGLU，`gate_proj` bf16 `[12288, 2560]`。第 1–27 层是双池：专家 0–63 的 `gate_proj` 是 `[1536, 2560]`，`down_proj` 是 `[2560, 1536]`；专家 64–127 是 `[512, 2560]` / `[2560, 512]`。两个 fp32 router `gate.weight` 与 `gate.weight_1` 都是 `[2560, 64]`。`e_score_correction_bias` 是 fp32 `[2, 64]`。共享专家 `gate_proj` `[3072, 2560]`、`down_proj` `[2560, 3072]`，等于文本宽 1536 乘 `moe_num_shared_experts` 2。config 的 `moe_layer_end_index` 是 `[29, 28]`；header 里专家只出现在第 1–27 层。没有 MTP。
+    - **视觉塔是 F16。** `patch_embed.proj` `[1280, 588]`（14×14×3 展平，没有时间核）。`qkv` `[3840, 1280]` 加 bias，`proj` `[1280, 1280]`，MLP `fc1` `[5120, 1280]`、`fc2` `[1280, 5120]`（4 倍，不是门控）。depth 32，hidden 1280，16 头，patch 14，`spatial_merge_size` 2，`quick_gelu`，`attn_sep` 为 true。
+    - **resampler。** `spatial_linear.0` / `.2` 都是 `[5120, 5120]`，`.3` 是 `[5120]`。`temporal_linear.0` 是 `[5120, 10240]`，`.2` 是 `[5120, 5120]`。最后 `mlp` `[2560, 5120]` 加 bias，`after_norm` `[2560]`。
+    - **424B-A47B-PT。** 20475 张量，172 个分片，`total_size` 847,161,324,032。hidden 8192，54 层，GQA 64/8，词表 103424，`tie_word_embeddings` 为 false，`lm_head` bf16 `[103424, 8192]`。第 0–2 层稠密，`gate_proj` `[28672, 8192]`。第 3–53 层（51 层）各 128 个专家：专家 0 的 `gate_proj` 是 bf16 `[3584, 8192]`，专家 64 是 `[1536, 8192]`。两个 fp32 router 都是 `[8192, 64]`，bias 是 fp32 `[2, 64]`。config 没有 `moe_num_shared_experts`，index 里没有 `shared_experts`。视觉 patch 同样是 F16 `[1280, 588]`。名字仍是 `model.layers.N.mlp.experts.*` 加 `gate.weight` / `gate.weight_1`。
+  - **granite-4.2-30b 与 4.2 的 fp8 / mxfp4 / nvfp4。** 本轮没有读这些仓库的 config 或 header。
+  - **LFM2.5-2.6B-Base。** 没有和 2.6B 对过 header。GGUF / MLX / ONNX 分支不单列。
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不跑这份权重。不另写递推。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。没有读 config 或 header。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 与已入库的 3.2 同 header。不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **Gemma-4 assistant / QAT。** 与已入库的十个发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.382.0] — 2026-10-24
 
 ### 复核 ERNIE-4.5-0.3B；Gemma-4 视频网格接到公开 processor

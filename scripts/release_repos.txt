@@ -243,3 +243,7 @@ mistralai/Mistral-Small-3.2-24B-Instruct-2506
 # 0.381 ERNIE-4.5-0.3B-PT / Base-PT. Dense ernie4_5. Same header shapes. No MTP tensors.
 baidu/ERNIE-4.5-0.3B-PT
 baidu/ERNIE-4.5-0.3B-Base-PT
+# 0.383 LFM2.5-2.6B (dense lfm2, 22 conv + 8 GQA). Granite-4.2-8b / 3b (untied dense GQA).
+LiquidAI/LFM2.5-2.6B
+ibm-granite/granite-4.2-8b
+ibm-granite/granite-4.2-3b
