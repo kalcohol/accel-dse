@@ -136,7 +136,9 @@ EXTRA_TAIL = [
     ("whisper-large-v3", "openai/whisper-large-v3"),
     ("whisper-large-v3-turbo", "openai/whisper-large-v3-turbo"),
     ("qwen2-audio-7b-instruct", "Qwen/Qwen2-Audio-7B-Instruct"),
+    ("qwen2-audio-7b", "Qwen/Qwen2-Audio-7B"),   # 0.360 base (same Qwen2-7B + Whisper-v3 encoder shape)
     ("qwen3-asr-1.7b", "Qwen/Qwen3-ASR-1.7B"),
+    ("qwen3-asr-0.6b", "Qwen/Qwen3-ASR-0.6B"),   # 0.360 AuT 18L d896 + Qwen3-0.6B thinker
     # 0.357 speech models round: Whisper family (tiny/base/small/medium/large/large-v2) — official OpenAI ASR releases
     ("whisper-tiny", "openai/whisper-tiny"),
     ("whisper-base", "openai/whisper-base"),
@@ -144,12 +146,25 @@ EXTRA_TAIL = [
     ("whisper-medium", "openai/whisper-medium"),
     ("whisper-large", "openai/whisper-large"),
     ("whisper-large-v2", "openai/whisper-large-v2"),
+    # 0.360: English-only Whisper (vocab 51864) + Distil-Whisper (fewer decoder layers; dtype as released)
+    ("whisper-tiny.en", "openai/whisper-tiny.en"),
+    ("whisper-base.en", "openai/whisper-base.en"),
+    ("whisper-small.en", "openai/whisper-small.en"),
+    ("whisper-medium.en", "openai/whisper-medium.en"),
+    ("distil-whisper-small.en", "distil-whisper/distil-small.en"),
+    ("distil-whisper-medium.en", "distil-whisper/distil-medium.en"),
+    ("distil-whisper-large-v2", "distil-whisper/distil-large-v2"),
+    ("distil-whisper-large-v3", "distil-whisper/distil-large-v3"),
+    ("distil-whisper-large-v3.5", "distil-whisper/distil-large-v3.5"),
     # 0.271 speech round 2: Qwen2.5-Omni-7B (Thinker Qwen2.5-7B + Whisper-v3 audio tower; Talker + token2wav speech out)
     ("qwen2.5-omni-7b", "Qwen/Qwen2.5-Omni-7B"),
     # 0.339: Qwen2.5-Omni-3B (same qwen2_5_omni builder; Thinker Qwen2.5-3B-shaped + Talker + token2wav)
     ("qwen2.5-omni-3b", "Qwen/Qwen2.5-Omni-3B"),
     # 0.345: Qwen3-Omni-30B-A3B (Thinker MoE + Talker MoE + code2wav; core/qwen3_omni.py)
     ("qwen3-omni-30b-a3b", "Qwen/Qwen3-Omni-30B-A3B-Instruct"),
+    # 0.360: same Thinker (AuT + MoE + ViT); enable_audio_output false — no Talker / code2wav
+    ("qwen3-omni-30b-a3b-thinking", "Qwen/Qwen3-Omni-30B-A3B-Thinking"),
+    ("qwen3-omni-30b-a3b-captioner", "Qwen/Qwen3-Omni-30B-A3B-Captioner"),
     ("moss-tts", "OpenMOSS-Team/MOSS-TTS"),  # 0.346 Delay-8B
     # 0.271: CosyVoice2-0.5B / Fun-CosyVoice3-0.5B-2512 (Qwen2.5-0.5B LM → 25 Hz tokens → chunked flow matching → HiFT;
     # torch .pt checkpoints read by scripts/fetch_pt_release.py)
@@ -168,9 +183,12 @@ EXTRA_TAIL = [
     # 0.339: Step-Audio-2-mini-Base / Think (same step_audio_2 + token2wav sidecar as mini)
     ("step-audio-2-mini-base", "stepfun-ai/Step-Audio-2-mini-Base"),
     ("step-audio-2-mini-think", "stepfun-ai/Step-Audio-2-mini-Think"),
+    # 0.360: Step-Audio-R1.1 (same step_audio_2 encoder + Qwen2-32B-shaped LLM; no token2wav in the release)
+    ("step-audio-2-r1.1", "stepfun-ai/Step-Audio-R1.1"),
     # 0.273 speech round 4: Kimi-Audio-7B-Instruct (Whisper-large-v3 encoder + adaptor → Qwen2-7B trunk with a 6-layer
     # audio branch; text + 12.5 Hz audio tokens per step → chunked flow-matching DiT detokenizer → BigVGAN)
     ("kimi-audio-7b-instruct", "moonshotai/Kimi-Audio-7B-Instruct"),
+    ("kimi-audio-7b", "moonshotai/Kimi-Audio-7B"),   # 0.360 base (same Whisper + mimo + DiT + BigVGAN)
     # 0.274 speech round 5: Kyutai Moshi (moshiko, bf16) — full-duplex: temporal 7B + depth transformer (8 codebooks
     # per 12.5 Hz frame) + Mimi codec; architecture from the moshi package loaders.py (no HF config)
     ("moshiko-7b", "kyutai/moshiko-pytorch-bf16"),
@@ -452,6 +470,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("minimax", "MiniMax（稀宇）", ("MiniMaxAI/",)),
     ("meta", "Meta（Llama · ESM · Muse · OmniASR）", ("unsloth/", "meta-llama/", "facebook/", "meta-models/", "amd/Muse-Spark", "bezzam/")),
     ("openai", "OpenAI（gpt-oss · Whisper）", ("openai/",)), ("mistral", "Mistral AI", ("mistralai/",)),
+    ("distil", "Hugging Face（Distil-Whisper）", ("distil-whisper/",)),   # 0.360
     ("microsoft", "微软（Phi）", ("microsoft/",)),
     ("bytedance", "字节跳动（Seed · Protenix）", ("ByteDance-Seed/", "gh:bytedance/")),
     ("yi", "零一万物（Yi）", ("01-ai/",)), ("internlm", "上海 AI 实验室（InternLM）", ("internlm/",)),
@@ -487,6 +506,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("alibaba", "Fun-CosyVoice3", ("fun-cosyvoice3",)), ("alibaba", "CosyVoice2", ("cosyvoice2",)),
     ("alibaba", "Qwen2-Audio", ("qwen2-audio",)),
     ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
+    ("alibaba", "Qwen3-Omni", ("qwen3-omni",)),   # 0.360: before the qwen3- dense prefix
     ("alibaba", "Qwen3 MoE", ("qwen3-235b", "qwen3-30b")), ("alibaba", "Qwen3 稠密", ("qwen3-",)),
     ("alibaba", "Qwen2.5", ("qwen2.5",)), ("alibaba", "Wan2.2", ("wan2.2",)), ("alibaba", "Wan2.1", ("wan2.1",)),
     ("deepseek", "DeepSeek-V4", ("deepseek-v4",)), ("deepseek", "DeepSeek-V3", ("deepseek-v3", "deepseek-r1")),
@@ -528,6 +548,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("recursive", "Flint", ("flint",)),     # 0.315
     ("krafton", "Raon-1-mini", ("raon-1-mini",)),     # 0.320
     ("athmaas", "PixText", ("pixtext",)),     # 0.330
+    ("distil", "Distil-Whisper", ("distil-whisper",)),   # 0.360
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.

@@ -75,7 +75,7 @@ def test_energy_thermal_tco_consistency_333_341():
 
 
 def test_speech_count_342():
-    assert len(SPEECH_MODELS) == 40
+    assert len(SPEECH_MODELS) == 55   # 0.360: +15 speech siblings
     assert "ming-omni-tts-0.5b" in SPEECH_MODELS
 
 

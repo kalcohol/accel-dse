@@ -1,0 +1,7450 @@
+{
+ "bytes_flow": 6336092480,
+ "bytes_llm": 19470249984,
+ "bytes_mtp": 0,
+ "bytes_total": 28107178788,
+ "bytes_vocoder": 964475108,
+ "config": {
+  "architectures": [
+   "MoonshotKimiaForCausalLM"
+  ],
+  "auto_map": {
+   "AutoConfig": "configuration_moonshot_kimia.KimiAudioConfig",
+   "AutoModel": "modeling_moonshot_kimia.MoonshotKimiaModel",
+   "AutoModelForCausalLM": "modeling_moonshot_kimia.MoonshotKimiaForCausalLM"
+  },
+  "bos_token_id": 151643,
+  "eos_token_ids": [
+   151644,
+   151645
+  ],
+  "hidden_act": "silu",
+  "hidden_size": 3584,
+  "initializer_range": 0.02,
+  "intermediate_size": 18944,
+  "kimia_adaptor_input_dim": 5120,
+  "kimia_audio_output_vocab": 16896,
+  "kimia_media_begin": 151661,
+  "kimia_media_end": 151663,
+  "kimia_mimo_audiodelaytokens": 6,
+  "kimia_mimo_layers": 6,
+  "kimia_mimo_transformer_from_layer_index": 21,
+  "kimia_text_output_vocab": 152064,
+  "kimia_token_offset": 152064,
+  "max_position_embeddings": 8192,
+  "num_attention_heads": 28,
+  "num_audio_special_tokens": 512,
+  "num_base_tokens": 151643,
+  "num_hidden_layers": 28,
+  "num_key_value_heads": 4,
+  "pad_token_id": 152063,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": null,
+  "rope_theta": 1000000.0,
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.44.1",
+  "use_cache": true,
+  "use_whisper_feature": true,
+  "vocab_size": 168448
+ },
+ "fetched": "2026-10-24",
+ "kimi_audio": {
+  "cfg": false,
+  "chunk": 30,
+  "dit": {
+   "depth": 16,
+   "hidden_size": 2304,
+   "hz": 50,
+   "input_size": 80,
+   "mlp_ratio": 4.0,
+   "num_heads": 18,
+   "semantic_vocab_size": 16384
+  },
+  "first_chunk": 30,
+  "look_ahead": 12,
+  "max_kv_frames": 900,
+  "ode_steps": 30,
+  "token_rate": 12.5,
+  "upsample": 4,
+  "vocoder": {
+   "hop_size": 480,
+   "num_mels": 80,
+   "resblock_dilation_sizes": [
+    [
+     1,
+     3,
+     5
+    ],
+    [
+     1,
+     3,
+     5
+    ],
+    [
+     1,
+     3,
+     5
+    ],
+    [
+     1,
+     3,
+     5
+    ]
+   ],
+   "resblock_kernel_sizes": [
+    3,
+    5,
+    7,
+    11
+   ],
+   "sampling_rate": 24000,
+   "upsample_initial_channel": 2048,
+   "upsample_rates": [
+    5,
+    2,
+    2,
+    2,
+    2,
+    3,
+    2
+   ]
+  },
+  "whisper": {
+   "d_model": 1280,
+   "encoder_attention_heads": 20,
+   "encoder_ffn_dim": 5120,
+   "encoder_layers": 32,
+   "max_source_positions": 1500,
+   "num_mel_bins": 128
+  }
+ },
+ "n_tensors": 2317,
+ "params_flow": 1584023120,
+ "params_llm": 9735124992,
+ "params_mtp": 0,
+ "params_vision": 668178432,
+ "params_vocoder": 241118777,
+ "quantization_config": null,
+ "repo": "moonshotai/Kimi-Audio-7B",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 1996802048,
+    "params": 998401024
+   }
+  },
+  "buffer": {
+   "int64": {
+    "bytes": 4352,
+    "params": 0
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1207435264,
+    "params": 603717632
+   }
+  },
+  "flow": {
+   "fp32": {
+    "bytes": 6336092480,
+    "params": 1584023120
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 2414870528,
+    "params": 1207435264
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 13850640384,
+    "params": 6925320192
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 501760,
+    "params": 250880
+   }
+  },
+  "vision": {
+   "bf16": {
+    "bytes": 1336356864,
+    "params": 668178432
+   }
+  },
+  "vocoder": {
+   "fp32": {
+    "bytes": 964475108,
+    "params": 241118777
+   }
+  }
+ },
+ "speech_tensors": {
+  "detok.blocks.0.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.0.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.0.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.0.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.0.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.0.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.0.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.0.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.0.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.0.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.1.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.1.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.1.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.1.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.1.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.1.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.1.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.1.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.1.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.1.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.10.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.10.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.10.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.10.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.10.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.10.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.10.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.10.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.10.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.10.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.11.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.11.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.11.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.11.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.11.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.11.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.11.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.11.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.11.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.11.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.12.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.12.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.12.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.12.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.12.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.12.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.12.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.12.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.12.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.12.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.13.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.13.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.13.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.13.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.13.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.13.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.13.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.13.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.13.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.13.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.14.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.14.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.14.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.14.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.14.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.14.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.14.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.14.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.14.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.14.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.15.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.15.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.15.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.15.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.15.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.15.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.15.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.15.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.15.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.15.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.2.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.2.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.2.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.2.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.2.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.2.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.2.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.2.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.2.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.2.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.3.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.3.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.3.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.3.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.3.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.3.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.3.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.3.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.3.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.3.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.4.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.4.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.4.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.4.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.4.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.4.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.4.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.4.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.4.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.4.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.5.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.5.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.5.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.5.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.5.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.5.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.5.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.5.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.5.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.5.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.6.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.6.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.6.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.6.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.6.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.6.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.6.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.6.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.6.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.6.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.7.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.7.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.7.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.7.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.7.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.7.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.7.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.7.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.7.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.7.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.8.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.8.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.8.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.8.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.8.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.8.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.8.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.8.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.8.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.8.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.blocks.9.adaLN_modulation.1.bias": [
+   13824
+  ],
+  "detok.blocks.9.adaLN_modulation.1.weight": [
+   13824,
+   2304
+  ],
+  "detok.blocks.9.attn.proj.bias": [
+   2304
+  ],
+  "detok.blocks.9.attn.proj.weight": [
+   2304,
+   2304
+  ],
+  "detok.blocks.9.attn.qkv.bias": [
+   6912
+  ],
+  "detok.blocks.9.attn.qkv.weight": [
+   6912,
+   2304
+  ],
+  "detok.blocks.9.mlp.fc1.bias": [
+   9216
+  ],
+  "detok.blocks.9.mlp.fc1.weight": [
+   9216,
+   2304
+  ],
+  "detok.blocks.9.mlp.fc2.bias": [
+   2304
+  ],
+  "detok.blocks.9.mlp.fc2.weight": [
+   2304,
+   9216
+  ],
+  "detok.final_layer.adaLN_modulation.1.bias": [
+   4608
+  ],
+  "detok.final_layer.adaLN_modulation.1.weight": [
+   4608,
+   2304
+  ],
+  "detok.final_layer.linear.bias": [
+   80
+  ],
+  "detok.final_layer.linear.weight": [
+   80,
+   2304
+  ],
+  "detok.input_linear.bias": [
+   2304
+  ],
+  "detok.input_linear.weight": [
+   2304,
+   80
+  ],
+  "detok.semantic_token_embedding.weight": [
+   16385,
+   2304
+  ],
+  "detok.t_embedder.mlp.0.bias": [
+   2304
+  ],
+  "detok.t_embedder.mlp.0.weight": [
+   2304,
+   256
+  ],
+  "detok.t_embedder.mlp.2.bias": [
+   2304
+  ],
+  "detok.t_embedder.mlp.2.weight": [
+   2304,
+   2304
+  ],
+  "voc.activation_post.act.alpha": [
+   16
+  ],
+  "voc.activation_post.act.beta": [
+   16
+  ],
+  "voc.activation_post.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.activation_post.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.conv_post.parametrizations.weight.original0": [
+   1,
+   1,
+   1
+  ],
+  "voc.conv_post.parametrizations.weight.original1": [
+   1,
+   16,
+   7
+  ],
+  "voc.conv_pre.bias": [
+   2048
+  ],
+  "voc.conv_pre.parametrizations.weight.original0": [
+   2048,
+   1,
+   1
+  ],
+  "voc.conv_pre.parametrizations.weight.original1": [
+   2048,
+   80,
+   7
+  ],
+  "voc.resblocks.0.activations.0.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.0.activations.0.act.beta": [
+   1024
+  ],
+  "voc.resblocks.0.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.1.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.0.activations.1.act.beta": [
+   1024
+  ],
+  "voc.resblocks.0.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.2.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.0.activations.2.act.beta": [
+   1024
+  ],
+  "voc.resblocks.0.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.3.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.0.activations.3.act.beta": [
+   1024
+  ],
+  "voc.resblocks.0.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.4.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.0.activations.4.act.beta": [
+   1024
+  ],
+  "voc.resblocks.0.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.5.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.0.activations.5.act.beta": [
+   1024
+  ],
+  "voc.resblocks.0.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.0.convs1.0.bias": [
+   1024
+  ],
+  "voc.resblocks.0.convs1.0.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.0.convs1.0.parametrizations.weight.original1": [
+   1024,
+   1024,
+   3
+  ],
+  "voc.resblocks.0.convs1.1.bias": [
+   1024
+  ],
+  "voc.resblocks.0.convs1.1.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.0.convs1.1.parametrizations.weight.original1": [
+   1024,
+   1024,
+   3
+  ],
+  "voc.resblocks.0.convs1.2.bias": [
+   1024
+  ],
+  "voc.resblocks.0.convs1.2.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.0.convs1.2.parametrizations.weight.original1": [
+   1024,
+   1024,
+   3
+  ],
+  "voc.resblocks.0.convs2.0.bias": [
+   1024
+  ],
+  "voc.resblocks.0.convs2.0.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.0.convs2.0.parametrizations.weight.original1": [
+   1024,
+   1024,
+   3
+  ],
+  "voc.resblocks.0.convs2.1.bias": [
+   1024
+  ],
+  "voc.resblocks.0.convs2.1.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.0.convs2.1.parametrizations.weight.original1": [
+   1024,
+   1024,
+   3
+  ],
+  "voc.resblocks.0.convs2.2.bias": [
+   1024
+  ],
+  "voc.resblocks.0.convs2.2.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.0.convs2.2.parametrizations.weight.original1": [
+   1024,
+   1024,
+   3
+  ],
+  "voc.resblocks.1.activations.0.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.1.activations.0.act.beta": [
+   1024
+  ],
+  "voc.resblocks.1.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.1.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.1.activations.1.act.beta": [
+   1024
+  ],
+  "voc.resblocks.1.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.2.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.1.activations.2.act.beta": [
+   1024
+  ],
+  "voc.resblocks.1.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.3.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.1.activations.3.act.beta": [
+   1024
+  ],
+  "voc.resblocks.1.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.4.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.1.activations.4.act.beta": [
+   1024
+  ],
+  "voc.resblocks.1.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.5.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.1.activations.5.act.beta": [
+   1024
+  ],
+  "voc.resblocks.1.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.1.convs1.0.bias": [
+   1024
+  ],
+  "voc.resblocks.1.convs1.0.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.1.convs1.0.parametrizations.weight.original1": [
+   1024,
+   1024,
+   5
+  ],
+  "voc.resblocks.1.convs1.1.bias": [
+   1024
+  ],
+  "voc.resblocks.1.convs1.1.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.1.convs1.1.parametrizations.weight.original1": [
+   1024,
+   1024,
+   5
+  ],
+  "voc.resblocks.1.convs1.2.bias": [
+   1024
+  ],
+  "voc.resblocks.1.convs1.2.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.1.convs1.2.parametrizations.weight.original1": [
+   1024,
+   1024,
+   5
+  ],
+  "voc.resblocks.1.convs2.0.bias": [
+   1024
+  ],
+  "voc.resblocks.1.convs2.0.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.1.convs2.0.parametrizations.weight.original1": [
+   1024,
+   1024,
+   5
+  ],
+  "voc.resblocks.1.convs2.1.bias": [
+   1024
+  ],
+  "voc.resblocks.1.convs2.1.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.1.convs2.1.parametrizations.weight.original1": [
+   1024,
+   1024,
+   5
+  ],
+  "voc.resblocks.1.convs2.2.bias": [
+   1024
+  ],
+  "voc.resblocks.1.convs2.2.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.1.convs2.2.parametrizations.weight.original1": [
+   1024,
+   1024,
+   5
+  ],
+  "voc.resblocks.10.activations.0.act.alpha": [
+   256
+  ],
+  "voc.resblocks.10.activations.0.act.beta": [
+   256
+  ],
+  "voc.resblocks.10.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.1.act.alpha": [
+   256
+  ],
+  "voc.resblocks.10.activations.1.act.beta": [
+   256
+  ],
+  "voc.resblocks.10.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.2.act.alpha": [
+   256
+  ],
+  "voc.resblocks.10.activations.2.act.beta": [
+   256
+  ],
+  "voc.resblocks.10.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.3.act.alpha": [
+   256
+  ],
+  "voc.resblocks.10.activations.3.act.beta": [
+   256
+  ],
+  "voc.resblocks.10.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.4.act.alpha": [
+   256
+  ],
+  "voc.resblocks.10.activations.4.act.beta": [
+   256
+  ],
+  "voc.resblocks.10.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.5.act.alpha": [
+   256
+  ],
+  "voc.resblocks.10.activations.5.act.beta": [
+   256
+  ],
+  "voc.resblocks.10.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.10.convs1.0.bias": [
+   256
+  ],
+  "voc.resblocks.10.convs1.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.10.convs1.0.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "voc.resblocks.10.convs1.1.bias": [
+   256
+  ],
+  "voc.resblocks.10.convs1.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.10.convs1.1.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "voc.resblocks.10.convs1.2.bias": [
+   256
+  ],
+  "voc.resblocks.10.convs1.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.10.convs1.2.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "voc.resblocks.10.convs2.0.bias": [
+   256
+  ],
+  "voc.resblocks.10.convs2.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.10.convs2.0.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "voc.resblocks.10.convs2.1.bias": [
+   256
+  ],
+  "voc.resblocks.10.convs2.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.10.convs2.1.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "voc.resblocks.10.convs2.2.bias": [
+   256
+  ],
+  "voc.resblocks.10.convs2.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.10.convs2.2.parametrizations.weight.original1": [
+   256,
+   256,
+   7
+  ],
+  "voc.resblocks.11.activations.0.act.alpha": [
+   256
+  ],
+  "voc.resblocks.11.activations.0.act.beta": [
+   256
+  ],
+  "voc.resblocks.11.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.1.act.alpha": [
+   256
+  ],
+  "voc.resblocks.11.activations.1.act.beta": [
+   256
+  ],
+  "voc.resblocks.11.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.2.act.alpha": [
+   256
+  ],
+  "voc.resblocks.11.activations.2.act.beta": [
+   256
+  ],
+  "voc.resblocks.11.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.3.act.alpha": [
+   256
+  ],
+  "voc.resblocks.11.activations.3.act.beta": [
+   256
+  ],
+  "voc.resblocks.11.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.4.act.alpha": [
+   256
+  ],
+  "voc.resblocks.11.activations.4.act.beta": [
+   256
+  ],
+  "voc.resblocks.11.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.5.act.alpha": [
+   256
+  ],
+  "voc.resblocks.11.activations.5.act.beta": [
+   256
+  ],
+  "voc.resblocks.11.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.11.convs1.0.bias": [
+   256
+  ],
+  "voc.resblocks.11.convs1.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.11.convs1.0.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "voc.resblocks.11.convs1.1.bias": [
+   256
+  ],
+  "voc.resblocks.11.convs1.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.11.convs1.1.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "voc.resblocks.11.convs1.2.bias": [
+   256
+  ],
+  "voc.resblocks.11.convs1.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.11.convs1.2.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "voc.resblocks.11.convs2.0.bias": [
+   256
+  ],
+  "voc.resblocks.11.convs2.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.11.convs2.0.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "voc.resblocks.11.convs2.1.bias": [
+   256
+  ],
+  "voc.resblocks.11.convs2.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.11.convs2.1.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "voc.resblocks.11.convs2.2.bias": [
+   256
+  ],
+  "voc.resblocks.11.convs2.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.11.convs2.2.parametrizations.weight.original1": [
+   256,
+   256,
+   11
+  ],
+  "voc.resblocks.12.activations.0.act.alpha": [
+   128
+  ],
+  "voc.resblocks.12.activations.0.act.beta": [
+   128
+  ],
+  "voc.resblocks.12.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.1.act.alpha": [
+   128
+  ],
+  "voc.resblocks.12.activations.1.act.beta": [
+   128
+  ],
+  "voc.resblocks.12.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.2.act.alpha": [
+   128
+  ],
+  "voc.resblocks.12.activations.2.act.beta": [
+   128
+  ],
+  "voc.resblocks.12.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.3.act.alpha": [
+   128
+  ],
+  "voc.resblocks.12.activations.3.act.beta": [
+   128
+  ],
+  "voc.resblocks.12.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.4.act.alpha": [
+   128
+  ],
+  "voc.resblocks.12.activations.4.act.beta": [
+   128
+  ],
+  "voc.resblocks.12.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.5.act.alpha": [
+   128
+  ],
+  "voc.resblocks.12.activations.5.act.beta": [
+   128
+  ],
+  "voc.resblocks.12.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.12.convs1.0.bias": [
+   128
+  ],
+  "voc.resblocks.12.convs1.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.12.convs1.0.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "voc.resblocks.12.convs1.1.bias": [
+   128
+  ],
+  "voc.resblocks.12.convs1.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.12.convs1.1.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "voc.resblocks.12.convs1.2.bias": [
+   128
+  ],
+  "voc.resblocks.12.convs1.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.12.convs1.2.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "voc.resblocks.12.convs2.0.bias": [
+   128
+  ],
+  "voc.resblocks.12.convs2.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.12.convs2.0.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "voc.resblocks.12.convs2.1.bias": [
+   128
+  ],
+  "voc.resblocks.12.convs2.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.12.convs2.1.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "voc.resblocks.12.convs2.2.bias": [
+   128
+  ],
+  "voc.resblocks.12.convs2.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.12.convs2.2.parametrizations.weight.original1": [
+   128,
+   128,
+   3
+  ],
+  "voc.resblocks.13.activations.0.act.alpha": [
+   128
+  ],
+  "voc.resblocks.13.activations.0.act.beta": [
+   128
+  ],
+  "voc.resblocks.13.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.1.act.alpha": [
+   128
+  ],
+  "voc.resblocks.13.activations.1.act.beta": [
+   128
+  ],
+  "voc.resblocks.13.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.2.act.alpha": [
+   128
+  ],
+  "voc.resblocks.13.activations.2.act.beta": [
+   128
+  ],
+  "voc.resblocks.13.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.3.act.alpha": [
+   128
+  ],
+  "voc.resblocks.13.activations.3.act.beta": [
+   128
+  ],
+  "voc.resblocks.13.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.4.act.alpha": [
+   128
+  ],
+  "voc.resblocks.13.activations.4.act.beta": [
+   128
+  ],
+  "voc.resblocks.13.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.5.act.alpha": [
+   128
+  ],
+  "voc.resblocks.13.activations.5.act.beta": [
+   128
+  ],
+  "voc.resblocks.13.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.13.convs1.0.bias": [
+   128
+  ],
+  "voc.resblocks.13.convs1.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.13.convs1.0.parametrizations.weight.original1": [
+   128,
+   128,
+   5
+  ],
+  "voc.resblocks.13.convs1.1.bias": [
+   128
+  ],
+  "voc.resblocks.13.convs1.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.13.convs1.1.parametrizations.weight.original1": [
+   128,
+   128,
+   5
+  ],
+  "voc.resblocks.13.convs1.2.bias": [
+   128
+  ],
+  "voc.resblocks.13.convs1.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.13.convs1.2.parametrizations.weight.original1": [
+   128,
+   128,
+   5
+  ],
+  "voc.resblocks.13.convs2.0.bias": [
+   128
+  ],
+  "voc.resblocks.13.convs2.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.13.convs2.0.parametrizations.weight.original1": [
+   128,
+   128,
+   5
+  ],
+  "voc.resblocks.13.convs2.1.bias": [
+   128
+  ],
+  "voc.resblocks.13.convs2.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.13.convs2.1.parametrizations.weight.original1": [
+   128,
+   128,
+   5
+  ],
+  "voc.resblocks.13.convs2.2.bias": [
+   128
+  ],
+  "voc.resblocks.13.convs2.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.13.convs2.2.parametrizations.weight.original1": [
+   128,
+   128,
+   5
+  ],
+  "voc.resblocks.14.activations.0.act.alpha": [
+   128
+  ],
+  "voc.resblocks.14.activations.0.act.beta": [
+   128
+  ],
+  "voc.resblocks.14.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.1.act.alpha": [
+   128
+  ],
+  "voc.resblocks.14.activations.1.act.beta": [
+   128
+  ],
+  "voc.resblocks.14.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.2.act.alpha": [
+   128
+  ],
+  "voc.resblocks.14.activations.2.act.beta": [
+   128
+  ],
+  "voc.resblocks.14.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.3.act.alpha": [
+   128
+  ],
+  "voc.resblocks.14.activations.3.act.beta": [
+   128
+  ],
+  "voc.resblocks.14.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.4.act.alpha": [
+   128
+  ],
+  "voc.resblocks.14.activations.4.act.beta": [
+   128
+  ],
+  "voc.resblocks.14.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.5.act.alpha": [
+   128
+  ],
+  "voc.resblocks.14.activations.5.act.beta": [
+   128
+  ],
+  "voc.resblocks.14.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.14.convs1.0.bias": [
+   128
+  ],
+  "voc.resblocks.14.convs1.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.14.convs1.0.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "voc.resblocks.14.convs1.1.bias": [
+   128
+  ],
+  "voc.resblocks.14.convs1.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.14.convs1.1.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "voc.resblocks.14.convs1.2.bias": [
+   128
+  ],
+  "voc.resblocks.14.convs1.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.14.convs1.2.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "voc.resblocks.14.convs2.0.bias": [
+   128
+  ],
+  "voc.resblocks.14.convs2.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.14.convs2.0.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "voc.resblocks.14.convs2.1.bias": [
+   128
+  ],
+  "voc.resblocks.14.convs2.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.14.convs2.1.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "voc.resblocks.14.convs2.2.bias": [
+   128
+  ],
+  "voc.resblocks.14.convs2.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.14.convs2.2.parametrizations.weight.original1": [
+   128,
+   128,
+   7
+  ],
+  "voc.resblocks.15.activations.0.act.alpha": [
+   128
+  ],
+  "voc.resblocks.15.activations.0.act.beta": [
+   128
+  ],
+  "voc.resblocks.15.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.1.act.alpha": [
+   128
+  ],
+  "voc.resblocks.15.activations.1.act.beta": [
+   128
+  ],
+  "voc.resblocks.15.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.2.act.alpha": [
+   128
+  ],
+  "voc.resblocks.15.activations.2.act.beta": [
+   128
+  ],
+  "voc.resblocks.15.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.3.act.alpha": [
+   128
+  ],
+  "voc.resblocks.15.activations.3.act.beta": [
+   128
+  ],
+  "voc.resblocks.15.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.4.act.alpha": [
+   128
+  ],
+  "voc.resblocks.15.activations.4.act.beta": [
+   128
+  ],
+  "voc.resblocks.15.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.5.act.alpha": [
+   128
+  ],
+  "voc.resblocks.15.activations.5.act.beta": [
+   128
+  ],
+  "voc.resblocks.15.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.15.convs1.0.bias": [
+   128
+  ],
+  "voc.resblocks.15.convs1.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.15.convs1.0.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "voc.resblocks.15.convs1.1.bias": [
+   128
+  ],
+  "voc.resblocks.15.convs1.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.15.convs1.1.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "voc.resblocks.15.convs1.2.bias": [
+   128
+  ],
+  "voc.resblocks.15.convs1.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.15.convs1.2.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "voc.resblocks.15.convs2.0.bias": [
+   128
+  ],
+  "voc.resblocks.15.convs2.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.15.convs2.0.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "voc.resblocks.15.convs2.1.bias": [
+   128
+  ],
+  "voc.resblocks.15.convs2.1.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.15.convs2.1.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "voc.resblocks.15.convs2.2.bias": [
+   128
+  ],
+  "voc.resblocks.15.convs2.2.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.resblocks.15.convs2.2.parametrizations.weight.original1": [
+   128,
+   128,
+   11
+  ],
+  "voc.resblocks.16.activations.0.act.alpha": [
+   64
+  ],
+  "voc.resblocks.16.activations.0.act.beta": [
+   64
+  ],
+  "voc.resblocks.16.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.1.act.alpha": [
+   64
+  ],
+  "voc.resblocks.16.activations.1.act.beta": [
+   64
+  ],
+  "voc.resblocks.16.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.2.act.alpha": [
+   64
+  ],
+  "voc.resblocks.16.activations.2.act.beta": [
+   64
+  ],
+  "voc.resblocks.16.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.3.act.alpha": [
+   64
+  ],
+  "voc.resblocks.16.activations.3.act.beta": [
+   64
+  ],
+  "voc.resblocks.16.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.4.act.alpha": [
+   64
+  ],
+  "voc.resblocks.16.activations.4.act.beta": [
+   64
+  ],
+  "voc.resblocks.16.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.5.act.alpha": [
+   64
+  ],
+  "voc.resblocks.16.activations.5.act.beta": [
+   64
+  ],
+  "voc.resblocks.16.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.16.convs1.0.bias": [
+   64
+  ],
+  "voc.resblocks.16.convs1.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.16.convs1.0.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "voc.resblocks.16.convs1.1.bias": [
+   64
+  ],
+  "voc.resblocks.16.convs1.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.16.convs1.1.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "voc.resblocks.16.convs1.2.bias": [
+   64
+  ],
+  "voc.resblocks.16.convs1.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.16.convs1.2.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "voc.resblocks.16.convs2.0.bias": [
+   64
+  ],
+  "voc.resblocks.16.convs2.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.16.convs2.0.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "voc.resblocks.16.convs2.1.bias": [
+   64
+  ],
+  "voc.resblocks.16.convs2.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.16.convs2.1.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "voc.resblocks.16.convs2.2.bias": [
+   64
+  ],
+  "voc.resblocks.16.convs2.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.16.convs2.2.parametrizations.weight.original1": [
+   64,
+   64,
+   3
+  ],
+  "voc.resblocks.17.activations.0.act.alpha": [
+   64
+  ],
+  "voc.resblocks.17.activations.0.act.beta": [
+   64
+  ],
+  "voc.resblocks.17.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.1.act.alpha": [
+   64
+  ],
+  "voc.resblocks.17.activations.1.act.beta": [
+   64
+  ],
+  "voc.resblocks.17.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.2.act.alpha": [
+   64
+  ],
+  "voc.resblocks.17.activations.2.act.beta": [
+   64
+  ],
+  "voc.resblocks.17.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.3.act.alpha": [
+   64
+  ],
+  "voc.resblocks.17.activations.3.act.beta": [
+   64
+  ],
+  "voc.resblocks.17.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.4.act.alpha": [
+   64
+  ],
+  "voc.resblocks.17.activations.4.act.beta": [
+   64
+  ],
+  "voc.resblocks.17.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.5.act.alpha": [
+   64
+  ],
+  "voc.resblocks.17.activations.5.act.beta": [
+   64
+  ],
+  "voc.resblocks.17.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.17.convs1.0.bias": [
+   64
+  ],
+  "voc.resblocks.17.convs1.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.17.convs1.0.parametrizations.weight.original1": [
+   64,
+   64,
+   5
+  ],
+  "voc.resblocks.17.convs1.1.bias": [
+   64
+  ],
+  "voc.resblocks.17.convs1.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.17.convs1.1.parametrizations.weight.original1": [
+   64,
+   64,
+   5
+  ],
+  "voc.resblocks.17.convs1.2.bias": [
+   64
+  ],
+  "voc.resblocks.17.convs1.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.17.convs1.2.parametrizations.weight.original1": [
+   64,
+   64,
+   5
+  ],
+  "voc.resblocks.17.convs2.0.bias": [
+   64
+  ],
+  "voc.resblocks.17.convs2.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.17.convs2.0.parametrizations.weight.original1": [
+   64,
+   64,
+   5
+  ],
+  "voc.resblocks.17.convs2.1.bias": [
+   64
+  ],
+  "voc.resblocks.17.convs2.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.17.convs2.1.parametrizations.weight.original1": [
+   64,
+   64,
+   5
+  ],
+  "voc.resblocks.17.convs2.2.bias": [
+   64
+  ],
+  "voc.resblocks.17.convs2.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.17.convs2.2.parametrizations.weight.original1": [
+   64,
+   64,
+   5
+  ],
+  "voc.resblocks.18.activations.0.act.alpha": [
+   64
+  ],
+  "voc.resblocks.18.activations.0.act.beta": [
+   64
+  ],
+  "voc.resblocks.18.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.1.act.alpha": [
+   64
+  ],
+  "voc.resblocks.18.activations.1.act.beta": [
+   64
+  ],
+  "voc.resblocks.18.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.2.act.alpha": [
+   64
+  ],
+  "voc.resblocks.18.activations.2.act.beta": [
+   64
+  ],
+  "voc.resblocks.18.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.3.act.alpha": [
+   64
+  ],
+  "voc.resblocks.18.activations.3.act.beta": [
+   64
+  ],
+  "voc.resblocks.18.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.4.act.alpha": [
+   64
+  ],
+  "voc.resblocks.18.activations.4.act.beta": [
+   64
+  ],
+  "voc.resblocks.18.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.5.act.alpha": [
+   64
+  ],
+  "voc.resblocks.18.activations.5.act.beta": [
+   64
+  ],
+  "voc.resblocks.18.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.18.convs1.0.bias": [
+   64
+  ],
+  "voc.resblocks.18.convs1.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.18.convs1.0.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "voc.resblocks.18.convs1.1.bias": [
+   64
+  ],
+  "voc.resblocks.18.convs1.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.18.convs1.1.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "voc.resblocks.18.convs1.2.bias": [
+   64
+  ],
+  "voc.resblocks.18.convs1.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.18.convs1.2.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "voc.resblocks.18.convs2.0.bias": [
+   64
+  ],
+  "voc.resblocks.18.convs2.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.18.convs2.0.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "voc.resblocks.18.convs2.1.bias": [
+   64
+  ],
+  "voc.resblocks.18.convs2.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.18.convs2.1.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "voc.resblocks.18.convs2.2.bias": [
+   64
+  ],
+  "voc.resblocks.18.convs2.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.18.convs2.2.parametrizations.weight.original1": [
+   64,
+   64,
+   7
+  ],
+  "voc.resblocks.19.activations.0.act.alpha": [
+   64
+  ],
+  "voc.resblocks.19.activations.0.act.beta": [
+   64
+  ],
+  "voc.resblocks.19.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.1.act.alpha": [
+   64
+  ],
+  "voc.resblocks.19.activations.1.act.beta": [
+   64
+  ],
+  "voc.resblocks.19.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.2.act.alpha": [
+   64
+  ],
+  "voc.resblocks.19.activations.2.act.beta": [
+   64
+  ],
+  "voc.resblocks.19.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.3.act.alpha": [
+   64
+  ],
+  "voc.resblocks.19.activations.3.act.beta": [
+   64
+  ],
+  "voc.resblocks.19.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.4.act.alpha": [
+   64
+  ],
+  "voc.resblocks.19.activations.4.act.beta": [
+   64
+  ],
+  "voc.resblocks.19.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.5.act.alpha": [
+   64
+  ],
+  "voc.resblocks.19.activations.5.act.beta": [
+   64
+  ],
+  "voc.resblocks.19.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.19.convs1.0.bias": [
+   64
+  ],
+  "voc.resblocks.19.convs1.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.19.convs1.0.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "voc.resblocks.19.convs1.1.bias": [
+   64
+  ],
+  "voc.resblocks.19.convs1.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.19.convs1.1.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "voc.resblocks.19.convs1.2.bias": [
+   64
+  ],
+  "voc.resblocks.19.convs1.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.19.convs1.2.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "voc.resblocks.19.convs2.0.bias": [
+   64
+  ],
+  "voc.resblocks.19.convs2.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.19.convs2.0.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "voc.resblocks.19.convs2.1.bias": [
+   64
+  ],
+  "voc.resblocks.19.convs2.1.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.19.convs2.1.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "voc.resblocks.19.convs2.2.bias": [
+   64
+  ],
+  "voc.resblocks.19.convs2.2.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.resblocks.19.convs2.2.parametrizations.weight.original1": [
+   64,
+   64,
+   11
+  ],
+  "voc.resblocks.2.activations.0.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.2.activations.0.act.beta": [
+   1024
+  ],
+  "voc.resblocks.2.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.1.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.2.activations.1.act.beta": [
+   1024
+  ],
+  "voc.resblocks.2.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.2.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.2.activations.2.act.beta": [
+   1024
+  ],
+  "voc.resblocks.2.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.3.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.2.activations.3.act.beta": [
+   1024
+  ],
+  "voc.resblocks.2.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.4.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.2.activations.4.act.beta": [
+   1024
+  ],
+  "voc.resblocks.2.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.5.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.2.activations.5.act.beta": [
+   1024
+  ],
+  "voc.resblocks.2.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.2.convs1.0.bias": [
+   1024
+  ],
+  "voc.resblocks.2.convs1.0.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.2.convs1.0.parametrizations.weight.original1": [
+   1024,
+   1024,
+   7
+  ],
+  "voc.resblocks.2.convs1.1.bias": [
+   1024
+  ],
+  "voc.resblocks.2.convs1.1.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.2.convs1.1.parametrizations.weight.original1": [
+   1024,
+   1024,
+   7
+  ],
+  "voc.resblocks.2.convs1.2.bias": [
+   1024
+  ],
+  "voc.resblocks.2.convs1.2.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.2.convs1.2.parametrizations.weight.original1": [
+   1024,
+   1024,
+   7
+  ],
+  "voc.resblocks.2.convs2.0.bias": [
+   1024
+  ],
+  "voc.resblocks.2.convs2.0.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.2.convs2.0.parametrizations.weight.original1": [
+   1024,
+   1024,
+   7
+  ],
+  "voc.resblocks.2.convs2.1.bias": [
+   1024
+  ],
+  "voc.resblocks.2.convs2.1.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.2.convs2.1.parametrizations.weight.original1": [
+   1024,
+   1024,
+   7
+  ],
+  "voc.resblocks.2.convs2.2.bias": [
+   1024
+  ],
+  "voc.resblocks.2.convs2.2.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.2.convs2.2.parametrizations.weight.original1": [
+   1024,
+   1024,
+   7
+  ],
+  "voc.resblocks.20.activations.0.act.alpha": [
+   32
+  ],
+  "voc.resblocks.20.activations.0.act.beta": [
+   32
+  ],
+  "voc.resblocks.20.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.1.act.alpha": [
+   32
+  ],
+  "voc.resblocks.20.activations.1.act.beta": [
+   32
+  ],
+  "voc.resblocks.20.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.2.act.alpha": [
+   32
+  ],
+  "voc.resblocks.20.activations.2.act.beta": [
+   32
+  ],
+  "voc.resblocks.20.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.3.act.alpha": [
+   32
+  ],
+  "voc.resblocks.20.activations.3.act.beta": [
+   32
+  ],
+  "voc.resblocks.20.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.4.act.alpha": [
+   32
+  ],
+  "voc.resblocks.20.activations.4.act.beta": [
+   32
+  ],
+  "voc.resblocks.20.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.5.act.alpha": [
+   32
+  ],
+  "voc.resblocks.20.activations.5.act.beta": [
+   32
+  ],
+  "voc.resblocks.20.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.20.convs1.0.bias": [
+   32
+  ],
+  "voc.resblocks.20.convs1.0.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.20.convs1.0.parametrizations.weight.original1": [
+   32,
+   32,
+   3
+  ],
+  "voc.resblocks.20.convs1.1.bias": [
+   32
+  ],
+  "voc.resblocks.20.convs1.1.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.20.convs1.1.parametrizations.weight.original1": [
+   32,
+   32,
+   3
+  ],
+  "voc.resblocks.20.convs1.2.bias": [
+   32
+  ],
+  "voc.resblocks.20.convs1.2.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.20.convs1.2.parametrizations.weight.original1": [
+   32,
+   32,
+   3
+  ],
+  "voc.resblocks.20.convs2.0.bias": [
+   32
+  ],
+  "voc.resblocks.20.convs2.0.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.20.convs2.0.parametrizations.weight.original1": [
+   32,
+   32,
+   3
+  ],
+  "voc.resblocks.20.convs2.1.bias": [
+   32
+  ],
+  "voc.resblocks.20.convs2.1.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.20.convs2.1.parametrizations.weight.original1": [
+   32,
+   32,
+   3
+  ],
+  "voc.resblocks.20.convs2.2.bias": [
+   32
+  ],
+  "voc.resblocks.20.convs2.2.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.20.convs2.2.parametrizations.weight.original1": [
+   32,
+   32,
+   3
+  ],
+  "voc.resblocks.21.activations.0.act.alpha": [
+   32
+  ],
+  "voc.resblocks.21.activations.0.act.beta": [
+   32
+  ],
+  "voc.resblocks.21.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.1.act.alpha": [
+   32
+  ],
+  "voc.resblocks.21.activations.1.act.beta": [
+   32
+  ],
+  "voc.resblocks.21.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.2.act.alpha": [
+   32
+  ],
+  "voc.resblocks.21.activations.2.act.beta": [
+   32
+  ],
+  "voc.resblocks.21.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.3.act.alpha": [
+   32
+  ],
+  "voc.resblocks.21.activations.3.act.beta": [
+   32
+  ],
+  "voc.resblocks.21.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.4.act.alpha": [
+   32
+  ],
+  "voc.resblocks.21.activations.4.act.beta": [
+   32
+  ],
+  "voc.resblocks.21.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.5.act.alpha": [
+   32
+  ],
+  "voc.resblocks.21.activations.5.act.beta": [
+   32
+  ],
+  "voc.resblocks.21.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.21.convs1.0.bias": [
+   32
+  ],
+  "voc.resblocks.21.convs1.0.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.21.convs1.0.parametrizations.weight.original1": [
+   32,
+   32,
+   5
+  ],
+  "voc.resblocks.21.convs1.1.bias": [
+   32
+  ],
+  "voc.resblocks.21.convs1.1.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.21.convs1.1.parametrizations.weight.original1": [
+   32,
+   32,
+   5
+  ],
+  "voc.resblocks.21.convs1.2.bias": [
+   32
+  ],
+  "voc.resblocks.21.convs1.2.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.21.convs1.2.parametrizations.weight.original1": [
+   32,
+   32,
+   5
+  ],
+  "voc.resblocks.21.convs2.0.bias": [
+   32
+  ],
+  "voc.resblocks.21.convs2.0.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.21.convs2.0.parametrizations.weight.original1": [
+   32,
+   32,
+   5
+  ],
+  "voc.resblocks.21.convs2.1.bias": [
+   32
+  ],
+  "voc.resblocks.21.convs2.1.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.21.convs2.1.parametrizations.weight.original1": [
+   32,
+   32,
+   5
+  ],
+  "voc.resblocks.21.convs2.2.bias": [
+   32
+  ],
+  "voc.resblocks.21.convs2.2.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.21.convs2.2.parametrizations.weight.original1": [
+   32,
+   32,
+   5
+  ],
+  "voc.resblocks.22.activations.0.act.alpha": [
+   32
+  ],
+  "voc.resblocks.22.activations.0.act.beta": [
+   32
+  ],
+  "voc.resblocks.22.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.1.act.alpha": [
+   32
+  ],
+  "voc.resblocks.22.activations.1.act.beta": [
+   32
+  ],
+  "voc.resblocks.22.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.2.act.alpha": [
+   32
+  ],
+  "voc.resblocks.22.activations.2.act.beta": [
+   32
+  ],
+  "voc.resblocks.22.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.3.act.alpha": [
+   32
+  ],
+  "voc.resblocks.22.activations.3.act.beta": [
+   32
+  ],
+  "voc.resblocks.22.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.4.act.alpha": [
+   32
+  ],
+  "voc.resblocks.22.activations.4.act.beta": [
+   32
+  ],
+  "voc.resblocks.22.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.5.act.alpha": [
+   32
+  ],
+  "voc.resblocks.22.activations.5.act.beta": [
+   32
+  ],
+  "voc.resblocks.22.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.22.convs1.0.bias": [
+   32
+  ],
+  "voc.resblocks.22.convs1.0.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.22.convs1.0.parametrizations.weight.original1": [
+   32,
+   32,
+   7
+  ],
+  "voc.resblocks.22.convs1.1.bias": [
+   32
+  ],
+  "voc.resblocks.22.convs1.1.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.22.convs1.1.parametrizations.weight.original1": [
+   32,
+   32,
+   7
+  ],
+  "voc.resblocks.22.convs1.2.bias": [
+   32
+  ],
+  "voc.resblocks.22.convs1.2.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.22.convs1.2.parametrizations.weight.original1": [
+   32,
+   32,
+   7
+  ],
+  "voc.resblocks.22.convs2.0.bias": [
+   32
+  ],
+  "voc.resblocks.22.convs2.0.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.22.convs2.0.parametrizations.weight.original1": [
+   32,
+   32,
+   7
+  ],
+  "voc.resblocks.22.convs2.1.bias": [
+   32
+  ],
+  "voc.resblocks.22.convs2.1.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.22.convs2.1.parametrizations.weight.original1": [
+   32,
+   32,
+   7
+  ],
+  "voc.resblocks.22.convs2.2.bias": [
+   32
+  ],
+  "voc.resblocks.22.convs2.2.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.22.convs2.2.parametrizations.weight.original1": [
+   32,
+   32,
+   7
+  ],
+  "voc.resblocks.23.activations.0.act.alpha": [
+   32
+  ],
+  "voc.resblocks.23.activations.0.act.beta": [
+   32
+  ],
+  "voc.resblocks.23.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.1.act.alpha": [
+   32
+  ],
+  "voc.resblocks.23.activations.1.act.beta": [
+   32
+  ],
+  "voc.resblocks.23.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.2.act.alpha": [
+   32
+  ],
+  "voc.resblocks.23.activations.2.act.beta": [
+   32
+  ],
+  "voc.resblocks.23.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.3.act.alpha": [
+   32
+  ],
+  "voc.resblocks.23.activations.3.act.beta": [
+   32
+  ],
+  "voc.resblocks.23.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.4.act.alpha": [
+   32
+  ],
+  "voc.resblocks.23.activations.4.act.beta": [
+   32
+  ],
+  "voc.resblocks.23.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.5.act.alpha": [
+   32
+  ],
+  "voc.resblocks.23.activations.5.act.beta": [
+   32
+  ],
+  "voc.resblocks.23.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.23.convs1.0.bias": [
+   32
+  ],
+  "voc.resblocks.23.convs1.0.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.23.convs1.0.parametrizations.weight.original1": [
+   32,
+   32,
+   11
+  ],
+  "voc.resblocks.23.convs1.1.bias": [
+   32
+  ],
+  "voc.resblocks.23.convs1.1.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.23.convs1.1.parametrizations.weight.original1": [
+   32,
+   32,
+   11
+  ],
+  "voc.resblocks.23.convs1.2.bias": [
+   32
+  ],
+  "voc.resblocks.23.convs1.2.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.23.convs1.2.parametrizations.weight.original1": [
+   32,
+   32,
+   11
+  ],
+  "voc.resblocks.23.convs2.0.bias": [
+   32
+  ],
+  "voc.resblocks.23.convs2.0.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.23.convs2.0.parametrizations.weight.original1": [
+   32,
+   32,
+   11
+  ],
+  "voc.resblocks.23.convs2.1.bias": [
+   32
+  ],
+  "voc.resblocks.23.convs2.1.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.23.convs2.1.parametrizations.weight.original1": [
+   32,
+   32,
+   11
+  ],
+  "voc.resblocks.23.convs2.2.bias": [
+   32
+  ],
+  "voc.resblocks.23.convs2.2.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.resblocks.23.convs2.2.parametrizations.weight.original1": [
+   32,
+   32,
+   11
+  ],
+  "voc.resblocks.24.activations.0.act.alpha": [
+   16
+  ],
+  "voc.resblocks.24.activations.0.act.beta": [
+   16
+  ],
+  "voc.resblocks.24.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.1.act.alpha": [
+   16
+  ],
+  "voc.resblocks.24.activations.1.act.beta": [
+   16
+  ],
+  "voc.resblocks.24.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.2.act.alpha": [
+   16
+  ],
+  "voc.resblocks.24.activations.2.act.beta": [
+   16
+  ],
+  "voc.resblocks.24.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.3.act.alpha": [
+   16
+  ],
+  "voc.resblocks.24.activations.3.act.beta": [
+   16
+  ],
+  "voc.resblocks.24.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.4.act.alpha": [
+   16
+  ],
+  "voc.resblocks.24.activations.4.act.beta": [
+   16
+  ],
+  "voc.resblocks.24.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.5.act.alpha": [
+   16
+  ],
+  "voc.resblocks.24.activations.5.act.beta": [
+   16
+  ],
+  "voc.resblocks.24.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.24.convs1.0.bias": [
+   16
+  ],
+  "voc.resblocks.24.convs1.0.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.24.convs1.0.parametrizations.weight.original1": [
+   16,
+   16,
+   3
+  ],
+  "voc.resblocks.24.convs1.1.bias": [
+   16
+  ],
+  "voc.resblocks.24.convs1.1.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.24.convs1.1.parametrizations.weight.original1": [
+   16,
+   16,
+   3
+  ],
+  "voc.resblocks.24.convs1.2.bias": [
+   16
+  ],
+  "voc.resblocks.24.convs1.2.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.24.convs1.2.parametrizations.weight.original1": [
+   16,
+   16,
+   3
+  ],
+  "voc.resblocks.24.convs2.0.bias": [
+   16
+  ],
+  "voc.resblocks.24.convs2.0.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.24.convs2.0.parametrizations.weight.original1": [
+   16,
+   16,
+   3
+  ],
+  "voc.resblocks.24.convs2.1.bias": [
+   16
+  ],
+  "voc.resblocks.24.convs2.1.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.24.convs2.1.parametrizations.weight.original1": [
+   16,
+   16,
+   3
+  ],
+  "voc.resblocks.24.convs2.2.bias": [
+   16
+  ],
+  "voc.resblocks.24.convs2.2.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.24.convs2.2.parametrizations.weight.original1": [
+   16,
+   16,
+   3
+  ],
+  "voc.resblocks.25.activations.0.act.alpha": [
+   16
+  ],
+  "voc.resblocks.25.activations.0.act.beta": [
+   16
+  ],
+  "voc.resblocks.25.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.1.act.alpha": [
+   16
+  ],
+  "voc.resblocks.25.activations.1.act.beta": [
+   16
+  ],
+  "voc.resblocks.25.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.2.act.alpha": [
+   16
+  ],
+  "voc.resblocks.25.activations.2.act.beta": [
+   16
+  ],
+  "voc.resblocks.25.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.3.act.alpha": [
+   16
+  ],
+  "voc.resblocks.25.activations.3.act.beta": [
+   16
+  ],
+  "voc.resblocks.25.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.4.act.alpha": [
+   16
+  ],
+  "voc.resblocks.25.activations.4.act.beta": [
+   16
+  ],
+  "voc.resblocks.25.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.5.act.alpha": [
+   16
+  ],
+  "voc.resblocks.25.activations.5.act.beta": [
+   16
+  ],
+  "voc.resblocks.25.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.25.convs1.0.bias": [
+   16
+  ],
+  "voc.resblocks.25.convs1.0.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.25.convs1.0.parametrizations.weight.original1": [
+   16,
+   16,
+   5
+  ],
+  "voc.resblocks.25.convs1.1.bias": [
+   16
+  ],
+  "voc.resblocks.25.convs1.1.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.25.convs1.1.parametrizations.weight.original1": [
+   16,
+   16,
+   5
+  ],
+  "voc.resblocks.25.convs1.2.bias": [
+   16
+  ],
+  "voc.resblocks.25.convs1.2.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.25.convs1.2.parametrizations.weight.original1": [
+   16,
+   16,
+   5
+  ],
+  "voc.resblocks.25.convs2.0.bias": [
+   16
+  ],
+  "voc.resblocks.25.convs2.0.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.25.convs2.0.parametrizations.weight.original1": [
+   16,
+   16,
+   5
+  ],
+  "voc.resblocks.25.convs2.1.bias": [
+   16
+  ],
+  "voc.resblocks.25.convs2.1.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.25.convs2.1.parametrizations.weight.original1": [
+   16,
+   16,
+   5
+  ],
+  "voc.resblocks.25.convs2.2.bias": [
+   16
+  ],
+  "voc.resblocks.25.convs2.2.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.25.convs2.2.parametrizations.weight.original1": [
+   16,
+   16,
+   5
+  ],
+  "voc.resblocks.26.activations.0.act.alpha": [
+   16
+  ],
+  "voc.resblocks.26.activations.0.act.beta": [
+   16
+  ],
+  "voc.resblocks.26.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.1.act.alpha": [
+   16
+  ],
+  "voc.resblocks.26.activations.1.act.beta": [
+   16
+  ],
+  "voc.resblocks.26.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.2.act.alpha": [
+   16
+  ],
+  "voc.resblocks.26.activations.2.act.beta": [
+   16
+  ],
+  "voc.resblocks.26.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.3.act.alpha": [
+   16
+  ],
+  "voc.resblocks.26.activations.3.act.beta": [
+   16
+  ],
+  "voc.resblocks.26.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.4.act.alpha": [
+   16
+  ],
+  "voc.resblocks.26.activations.4.act.beta": [
+   16
+  ],
+  "voc.resblocks.26.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.5.act.alpha": [
+   16
+  ],
+  "voc.resblocks.26.activations.5.act.beta": [
+   16
+  ],
+  "voc.resblocks.26.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.26.convs1.0.bias": [
+   16
+  ],
+  "voc.resblocks.26.convs1.0.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.26.convs1.0.parametrizations.weight.original1": [
+   16,
+   16,
+   7
+  ],
+  "voc.resblocks.26.convs1.1.bias": [
+   16
+  ],
+  "voc.resblocks.26.convs1.1.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.26.convs1.1.parametrizations.weight.original1": [
+   16,
+   16,
+   7
+  ],
+  "voc.resblocks.26.convs1.2.bias": [
+   16
+  ],
+  "voc.resblocks.26.convs1.2.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.26.convs1.2.parametrizations.weight.original1": [
+   16,
+   16,
+   7
+  ],
+  "voc.resblocks.26.convs2.0.bias": [
+   16
+  ],
+  "voc.resblocks.26.convs2.0.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.26.convs2.0.parametrizations.weight.original1": [
+   16,
+   16,
+   7
+  ],
+  "voc.resblocks.26.convs2.1.bias": [
+   16
+  ],
+  "voc.resblocks.26.convs2.1.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.26.convs2.1.parametrizations.weight.original1": [
+   16,
+   16,
+   7
+  ],
+  "voc.resblocks.26.convs2.2.bias": [
+   16
+  ],
+  "voc.resblocks.26.convs2.2.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.26.convs2.2.parametrizations.weight.original1": [
+   16,
+   16,
+   7
+  ],
+  "voc.resblocks.27.activations.0.act.alpha": [
+   16
+  ],
+  "voc.resblocks.27.activations.0.act.beta": [
+   16
+  ],
+  "voc.resblocks.27.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.1.act.alpha": [
+   16
+  ],
+  "voc.resblocks.27.activations.1.act.beta": [
+   16
+  ],
+  "voc.resblocks.27.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.2.act.alpha": [
+   16
+  ],
+  "voc.resblocks.27.activations.2.act.beta": [
+   16
+  ],
+  "voc.resblocks.27.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.3.act.alpha": [
+   16
+  ],
+  "voc.resblocks.27.activations.3.act.beta": [
+   16
+  ],
+  "voc.resblocks.27.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.4.act.alpha": [
+   16
+  ],
+  "voc.resblocks.27.activations.4.act.beta": [
+   16
+  ],
+  "voc.resblocks.27.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.5.act.alpha": [
+   16
+  ],
+  "voc.resblocks.27.activations.5.act.beta": [
+   16
+  ],
+  "voc.resblocks.27.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.27.convs1.0.bias": [
+   16
+  ],
+  "voc.resblocks.27.convs1.0.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.27.convs1.0.parametrizations.weight.original1": [
+   16,
+   16,
+   11
+  ],
+  "voc.resblocks.27.convs1.1.bias": [
+   16
+  ],
+  "voc.resblocks.27.convs1.1.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.27.convs1.1.parametrizations.weight.original1": [
+   16,
+   16,
+   11
+  ],
+  "voc.resblocks.27.convs1.2.bias": [
+   16
+  ],
+  "voc.resblocks.27.convs1.2.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.27.convs1.2.parametrizations.weight.original1": [
+   16,
+   16,
+   11
+  ],
+  "voc.resblocks.27.convs2.0.bias": [
+   16
+  ],
+  "voc.resblocks.27.convs2.0.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.27.convs2.0.parametrizations.weight.original1": [
+   16,
+   16,
+   11
+  ],
+  "voc.resblocks.27.convs2.1.bias": [
+   16
+  ],
+  "voc.resblocks.27.convs2.1.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.27.convs2.1.parametrizations.weight.original1": [
+   16,
+   16,
+   11
+  ],
+  "voc.resblocks.27.convs2.2.bias": [
+   16
+  ],
+  "voc.resblocks.27.convs2.2.parametrizations.weight.original0": [
+   16,
+   1,
+   1
+  ],
+  "voc.resblocks.27.convs2.2.parametrizations.weight.original1": [
+   16,
+   16,
+   11
+  ],
+  "voc.resblocks.3.activations.0.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.3.activations.0.act.beta": [
+   1024
+  ],
+  "voc.resblocks.3.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.1.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.3.activations.1.act.beta": [
+   1024
+  ],
+  "voc.resblocks.3.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.2.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.3.activations.2.act.beta": [
+   1024
+  ],
+  "voc.resblocks.3.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.3.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.3.activations.3.act.beta": [
+   1024
+  ],
+  "voc.resblocks.3.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.4.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.3.activations.4.act.beta": [
+   1024
+  ],
+  "voc.resblocks.3.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.5.act.alpha": [
+   1024
+  ],
+  "voc.resblocks.3.activations.5.act.beta": [
+   1024
+  ],
+  "voc.resblocks.3.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.3.convs1.0.bias": [
+   1024
+  ],
+  "voc.resblocks.3.convs1.0.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.3.convs1.0.parametrizations.weight.original1": [
+   1024,
+   1024,
+   11
+  ],
+  "voc.resblocks.3.convs1.1.bias": [
+   1024
+  ],
+  "voc.resblocks.3.convs1.1.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.3.convs1.1.parametrizations.weight.original1": [
+   1024,
+   1024,
+   11
+  ],
+  "voc.resblocks.3.convs1.2.bias": [
+   1024
+  ],
+  "voc.resblocks.3.convs1.2.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.3.convs1.2.parametrizations.weight.original1": [
+   1024,
+   1024,
+   11
+  ],
+  "voc.resblocks.3.convs2.0.bias": [
+   1024
+  ],
+  "voc.resblocks.3.convs2.0.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.3.convs2.0.parametrizations.weight.original1": [
+   1024,
+   1024,
+   11
+  ],
+  "voc.resblocks.3.convs2.1.bias": [
+   1024
+  ],
+  "voc.resblocks.3.convs2.1.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.3.convs2.1.parametrizations.weight.original1": [
+   1024,
+   1024,
+   11
+  ],
+  "voc.resblocks.3.convs2.2.bias": [
+   1024
+  ],
+  "voc.resblocks.3.convs2.2.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.resblocks.3.convs2.2.parametrizations.weight.original1": [
+   1024,
+   1024,
+   11
+  ],
+  "voc.resblocks.4.activations.0.act.alpha": [
+   512
+  ],
+  "voc.resblocks.4.activations.0.act.beta": [
+   512
+  ],
+  "voc.resblocks.4.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.1.act.alpha": [
+   512
+  ],
+  "voc.resblocks.4.activations.1.act.beta": [
+   512
+  ],
+  "voc.resblocks.4.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.2.act.alpha": [
+   512
+  ],
+  "voc.resblocks.4.activations.2.act.beta": [
+   512
+  ],
+  "voc.resblocks.4.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.3.act.alpha": [
+   512
+  ],
+  "voc.resblocks.4.activations.3.act.beta": [
+   512
+  ],
+  "voc.resblocks.4.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.4.act.alpha": [
+   512
+  ],
+  "voc.resblocks.4.activations.4.act.beta": [
+   512
+  ],
+  "voc.resblocks.4.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.5.act.alpha": [
+   512
+  ],
+  "voc.resblocks.4.activations.5.act.beta": [
+   512
+  ],
+  "voc.resblocks.4.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.4.convs1.0.bias": [
+   512
+  ],
+  "voc.resblocks.4.convs1.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.4.convs1.0.parametrizations.weight.original1": [
+   512,
+   512,
+   3
+  ],
+  "voc.resblocks.4.convs1.1.bias": [
+   512
+  ],
+  "voc.resblocks.4.convs1.1.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.4.convs1.1.parametrizations.weight.original1": [
+   512,
+   512,
+   3
+  ],
+  "voc.resblocks.4.convs1.2.bias": [
+   512
+  ],
+  "voc.resblocks.4.convs1.2.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.4.convs1.2.parametrizations.weight.original1": [
+   512,
+   512,
+   3
+  ],
+  "voc.resblocks.4.convs2.0.bias": [
+   512
+  ],
+  "voc.resblocks.4.convs2.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.4.convs2.0.parametrizations.weight.original1": [
+   512,
+   512,
+   3
+  ],
+  "voc.resblocks.4.convs2.1.bias": [
+   512
+  ],
+  "voc.resblocks.4.convs2.1.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.4.convs2.1.parametrizations.weight.original1": [
+   512,
+   512,
+   3
+  ],
+  "voc.resblocks.4.convs2.2.bias": [
+   512
+  ],
+  "voc.resblocks.4.convs2.2.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.4.convs2.2.parametrizations.weight.original1": [
+   512,
+   512,
+   3
+  ],
+  "voc.resblocks.5.activations.0.act.alpha": [
+   512
+  ],
+  "voc.resblocks.5.activations.0.act.beta": [
+   512
+  ],
+  "voc.resblocks.5.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.1.act.alpha": [
+   512
+  ],
+  "voc.resblocks.5.activations.1.act.beta": [
+   512
+  ],
+  "voc.resblocks.5.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.2.act.alpha": [
+   512
+  ],
+  "voc.resblocks.5.activations.2.act.beta": [
+   512
+  ],
+  "voc.resblocks.5.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.3.act.alpha": [
+   512
+  ],
+  "voc.resblocks.5.activations.3.act.beta": [
+   512
+  ],
+  "voc.resblocks.5.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.4.act.alpha": [
+   512
+  ],
+  "voc.resblocks.5.activations.4.act.beta": [
+   512
+  ],
+  "voc.resblocks.5.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.5.act.alpha": [
+   512
+  ],
+  "voc.resblocks.5.activations.5.act.beta": [
+   512
+  ],
+  "voc.resblocks.5.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.5.convs1.0.bias": [
+   512
+  ],
+  "voc.resblocks.5.convs1.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.5.convs1.0.parametrizations.weight.original1": [
+   512,
+   512,
+   5
+  ],
+  "voc.resblocks.5.convs1.1.bias": [
+   512
+  ],
+  "voc.resblocks.5.convs1.1.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.5.convs1.1.parametrizations.weight.original1": [
+   512,
+   512,
+   5
+  ],
+  "voc.resblocks.5.convs1.2.bias": [
+   512
+  ],
+  "voc.resblocks.5.convs1.2.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.5.convs1.2.parametrizations.weight.original1": [
+   512,
+   512,
+   5
+  ],
+  "voc.resblocks.5.convs2.0.bias": [
+   512
+  ],
+  "voc.resblocks.5.convs2.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.5.convs2.0.parametrizations.weight.original1": [
+   512,
+   512,
+   5
+  ],
+  "voc.resblocks.5.convs2.1.bias": [
+   512
+  ],
+  "voc.resblocks.5.convs2.1.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.5.convs2.1.parametrizations.weight.original1": [
+   512,
+   512,
+   5
+  ],
+  "voc.resblocks.5.convs2.2.bias": [
+   512
+  ],
+  "voc.resblocks.5.convs2.2.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.5.convs2.2.parametrizations.weight.original1": [
+   512,
+   512,
+   5
+  ],
+  "voc.resblocks.6.activations.0.act.alpha": [
+   512
+  ],
+  "voc.resblocks.6.activations.0.act.beta": [
+   512
+  ],
+  "voc.resblocks.6.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.1.act.alpha": [
+   512
+  ],
+  "voc.resblocks.6.activations.1.act.beta": [
+   512
+  ],
+  "voc.resblocks.6.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.2.act.alpha": [
+   512
+  ],
+  "voc.resblocks.6.activations.2.act.beta": [
+   512
+  ],
+  "voc.resblocks.6.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.3.act.alpha": [
+   512
+  ],
+  "voc.resblocks.6.activations.3.act.beta": [
+   512
+  ],
+  "voc.resblocks.6.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.4.act.alpha": [
+   512
+  ],
+  "voc.resblocks.6.activations.4.act.beta": [
+   512
+  ],
+  "voc.resblocks.6.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.5.act.alpha": [
+   512
+  ],
+  "voc.resblocks.6.activations.5.act.beta": [
+   512
+  ],
+  "voc.resblocks.6.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.6.convs1.0.bias": [
+   512
+  ],
+  "voc.resblocks.6.convs1.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.6.convs1.0.parametrizations.weight.original1": [
+   512,
+   512,
+   7
+  ],
+  "voc.resblocks.6.convs1.1.bias": [
+   512
+  ],
+  "voc.resblocks.6.convs1.1.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.6.convs1.1.parametrizations.weight.original1": [
+   512,
+   512,
+   7
+  ],
+  "voc.resblocks.6.convs1.2.bias": [
+   512
+  ],
+  "voc.resblocks.6.convs1.2.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.6.convs1.2.parametrizations.weight.original1": [
+   512,
+   512,
+   7
+  ],
+  "voc.resblocks.6.convs2.0.bias": [
+   512
+  ],
+  "voc.resblocks.6.convs2.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.6.convs2.0.parametrizations.weight.original1": [
+   512,
+   512,
+   7
+  ],
+  "voc.resblocks.6.convs2.1.bias": [
+   512
+  ],
+  "voc.resblocks.6.convs2.1.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.6.convs2.1.parametrizations.weight.original1": [
+   512,
+   512,
+   7
+  ],
+  "voc.resblocks.6.convs2.2.bias": [
+   512
+  ],
+  "voc.resblocks.6.convs2.2.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.6.convs2.2.parametrizations.weight.original1": [
+   512,
+   512,
+   7
+  ],
+  "voc.resblocks.7.activations.0.act.alpha": [
+   512
+  ],
+  "voc.resblocks.7.activations.0.act.beta": [
+   512
+  ],
+  "voc.resblocks.7.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.1.act.alpha": [
+   512
+  ],
+  "voc.resblocks.7.activations.1.act.beta": [
+   512
+  ],
+  "voc.resblocks.7.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.2.act.alpha": [
+   512
+  ],
+  "voc.resblocks.7.activations.2.act.beta": [
+   512
+  ],
+  "voc.resblocks.7.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.3.act.alpha": [
+   512
+  ],
+  "voc.resblocks.7.activations.3.act.beta": [
+   512
+  ],
+  "voc.resblocks.7.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.4.act.alpha": [
+   512
+  ],
+  "voc.resblocks.7.activations.4.act.beta": [
+   512
+  ],
+  "voc.resblocks.7.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.5.act.alpha": [
+   512
+  ],
+  "voc.resblocks.7.activations.5.act.beta": [
+   512
+  ],
+  "voc.resblocks.7.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.7.convs1.0.bias": [
+   512
+  ],
+  "voc.resblocks.7.convs1.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.7.convs1.0.parametrizations.weight.original1": [
+   512,
+   512,
+   11
+  ],
+  "voc.resblocks.7.convs1.1.bias": [
+   512
+  ],
+  "voc.resblocks.7.convs1.1.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.7.convs1.1.parametrizations.weight.original1": [
+   512,
+   512,
+   11
+  ],
+  "voc.resblocks.7.convs1.2.bias": [
+   512
+  ],
+  "voc.resblocks.7.convs1.2.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.7.convs1.2.parametrizations.weight.original1": [
+   512,
+   512,
+   11
+  ],
+  "voc.resblocks.7.convs2.0.bias": [
+   512
+  ],
+  "voc.resblocks.7.convs2.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.7.convs2.0.parametrizations.weight.original1": [
+   512,
+   512,
+   11
+  ],
+  "voc.resblocks.7.convs2.1.bias": [
+   512
+  ],
+  "voc.resblocks.7.convs2.1.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.7.convs2.1.parametrizations.weight.original1": [
+   512,
+   512,
+   11
+  ],
+  "voc.resblocks.7.convs2.2.bias": [
+   512
+  ],
+  "voc.resblocks.7.convs2.2.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.resblocks.7.convs2.2.parametrizations.weight.original1": [
+   512,
+   512,
+   11
+  ],
+  "voc.resblocks.8.activations.0.act.alpha": [
+   256
+  ],
+  "voc.resblocks.8.activations.0.act.beta": [
+   256
+  ],
+  "voc.resblocks.8.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.1.act.alpha": [
+   256
+  ],
+  "voc.resblocks.8.activations.1.act.beta": [
+   256
+  ],
+  "voc.resblocks.8.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.2.act.alpha": [
+   256
+  ],
+  "voc.resblocks.8.activations.2.act.beta": [
+   256
+  ],
+  "voc.resblocks.8.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.3.act.alpha": [
+   256
+  ],
+  "voc.resblocks.8.activations.3.act.beta": [
+   256
+  ],
+  "voc.resblocks.8.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.4.act.alpha": [
+   256
+  ],
+  "voc.resblocks.8.activations.4.act.beta": [
+   256
+  ],
+  "voc.resblocks.8.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.5.act.alpha": [
+   256
+  ],
+  "voc.resblocks.8.activations.5.act.beta": [
+   256
+  ],
+  "voc.resblocks.8.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.8.convs1.0.bias": [
+   256
+  ],
+  "voc.resblocks.8.convs1.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.8.convs1.0.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "voc.resblocks.8.convs1.1.bias": [
+   256
+  ],
+  "voc.resblocks.8.convs1.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.8.convs1.1.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "voc.resblocks.8.convs1.2.bias": [
+   256
+  ],
+  "voc.resblocks.8.convs1.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.8.convs1.2.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "voc.resblocks.8.convs2.0.bias": [
+   256
+  ],
+  "voc.resblocks.8.convs2.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.8.convs2.0.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "voc.resblocks.8.convs2.1.bias": [
+   256
+  ],
+  "voc.resblocks.8.convs2.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.8.convs2.1.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "voc.resblocks.8.convs2.2.bias": [
+   256
+  ],
+  "voc.resblocks.8.convs2.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.8.convs2.2.parametrizations.weight.original1": [
+   256,
+   256,
+   3
+  ],
+  "voc.resblocks.9.activations.0.act.alpha": [
+   256
+  ],
+  "voc.resblocks.9.activations.0.act.beta": [
+   256
+  ],
+  "voc.resblocks.9.activations.0.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.0.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.1.act.alpha": [
+   256
+  ],
+  "voc.resblocks.9.activations.1.act.beta": [
+   256
+  ],
+  "voc.resblocks.9.activations.1.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.1.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.2.act.alpha": [
+   256
+  ],
+  "voc.resblocks.9.activations.2.act.beta": [
+   256
+  ],
+  "voc.resblocks.9.activations.2.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.2.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.3.act.alpha": [
+   256
+  ],
+  "voc.resblocks.9.activations.3.act.beta": [
+   256
+  ],
+  "voc.resblocks.9.activations.3.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.3.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.4.act.alpha": [
+   256
+  ],
+  "voc.resblocks.9.activations.4.act.beta": [
+   256
+  ],
+  "voc.resblocks.9.activations.4.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.4.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.5.act.alpha": [
+   256
+  ],
+  "voc.resblocks.9.activations.5.act.beta": [
+   256
+  ],
+  "voc.resblocks.9.activations.5.downsample.lowpass.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.activations.5.upsample.filter": [
+   1,
+   1,
+   12
+  ],
+  "voc.resblocks.9.convs1.0.bias": [
+   256
+  ],
+  "voc.resblocks.9.convs1.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.9.convs1.0.parametrizations.weight.original1": [
+   256,
+   256,
+   5
+  ],
+  "voc.resblocks.9.convs1.1.bias": [
+   256
+  ],
+  "voc.resblocks.9.convs1.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.9.convs1.1.parametrizations.weight.original1": [
+   256,
+   256,
+   5
+  ],
+  "voc.resblocks.9.convs1.2.bias": [
+   256
+  ],
+  "voc.resblocks.9.convs1.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.9.convs1.2.parametrizations.weight.original1": [
+   256,
+   256,
+   5
+  ],
+  "voc.resblocks.9.convs2.0.bias": [
+   256
+  ],
+  "voc.resblocks.9.convs2.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.9.convs2.0.parametrizations.weight.original1": [
+   256,
+   256,
+   5
+  ],
+  "voc.resblocks.9.convs2.1.bias": [
+   256
+  ],
+  "voc.resblocks.9.convs2.1.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.9.convs2.1.parametrizations.weight.original1": [
+   256,
+   256,
+   5
+  ],
+  "voc.resblocks.9.convs2.2.bias": [
+   256
+  ],
+  "voc.resblocks.9.convs2.2.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.resblocks.9.convs2.2.parametrizations.weight.original1": [
+   256,
+   256,
+   5
+  ],
+  "voc.ups.0.0.bias": [
+   1024
+  ],
+  "voc.ups.0.0.parametrizations.weight.original0": [
+   2048,
+   1,
+   1
+  ],
+  "voc.ups.0.0.parametrizations.weight.original1": [
+   2048,
+   1024,
+   9
+  ],
+  "voc.ups.1.0.bias": [
+   512
+  ],
+  "voc.ups.1.0.parametrizations.weight.original0": [
+   1024,
+   1,
+   1
+  ],
+  "voc.ups.1.0.parametrizations.weight.original1": [
+   1024,
+   512,
+   4
+  ],
+  "voc.ups.2.0.bias": [
+   256
+  ],
+  "voc.ups.2.0.parametrizations.weight.original0": [
+   512,
+   1,
+   1
+  ],
+  "voc.ups.2.0.parametrizations.weight.original1": [
+   512,
+   256,
+   4
+  ],
+  "voc.ups.3.0.bias": [
+   128
+  ],
+  "voc.ups.3.0.parametrizations.weight.original0": [
+   256,
+   1,
+   1
+  ],
+  "voc.ups.3.0.parametrizations.weight.original1": [
+   256,
+   128,
+   4
+  ],
+  "voc.ups.4.0.bias": [
+   64
+  ],
+  "voc.ups.4.0.parametrizations.weight.original0": [
+   128,
+   1,
+   1
+  ],
+  "voc.ups.4.0.parametrizations.weight.original1": [
+   128,
+   64,
+   4
+  ],
+  "voc.ups.5.0.bias": [
+   32
+  ],
+  "voc.ups.5.0.parametrizations.weight.original0": [
+   64,
+   1,
+   1
+  ],
+  "voc.ups.5.0.parametrizations.weight.original1": [
+   64,
+   32,
+   5
+  ],
+  "voc.ups.6.0.bias": [
+   16
+  ],
+  "voc.ups.6.0.parametrizations.weight.original0": [
+   32,
+   1,
+   1
+  ],
+  "voc.ups.6.0.parametrizations.weight.original1": [
+   32,
+   16,
+   4
+  ]
+ },
+ "torch_dtype": "bfloat16",
+ "whisper_tensors": {
+  "whisper.encoder.conv1.bias": [
+   1280
+  ],
+  "whisper.encoder.conv1.weight": [
+   1280,
+   128,
+   3
+  ],
+  "whisper.encoder.conv2.bias": [
+   1280
+  ],
+  "whisper.encoder.conv2.weight": [
+   1280,
+   1280,
+   3
+  ],
+  "whisper.encoder.embed_positions.weight": [
+   1500,
+   1280
+  ],
+  "whisper.encoder.layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.0.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.0.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.0.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.0.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.0.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.0.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.0.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.0.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.0.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.0.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.0.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.0.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.0.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.0.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.0.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.1.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.1.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.1.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.1.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.1.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.1.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.1.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.1.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.1.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.1.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.1.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.1.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.1.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.1.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.1.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.10.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.10.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.10.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.10.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.10.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.10.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.10.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.10.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.10.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.10.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.10.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.10.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.10.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.10.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.10.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.11.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.11.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.11.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.11.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.11.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.11.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.11.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.11.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.11.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.11.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.11.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.11.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.11.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.11.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.11.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.12.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.12.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.12.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.12.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.12.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.12.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.12.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.12.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.12.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.12.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.12.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.12.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.12.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.12.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.12.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.13.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.13.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.13.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.13.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.13.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.13.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.13.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.13.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.13.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.13.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.13.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.13.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.13.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.13.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.13.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.14.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.14.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.14.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.14.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.14.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.14.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.14.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.14.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.14.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.14.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.14.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.14.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.14.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.14.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.14.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.15.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.15.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.15.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.15.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.15.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.15.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.15.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.15.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.15.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.15.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.15.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.15.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.15.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.15.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.15.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.16.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.16.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.16.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.16.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.16.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.16.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.16.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.16.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.16.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.16.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.16.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.16.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.16.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.16.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.16.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.17.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.17.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.17.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.17.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.17.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.17.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.17.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.17.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.17.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.17.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.17.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.17.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.17.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.17.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.17.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.18.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.18.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.18.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.18.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.18.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.18.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.18.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.18.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.18.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.18.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.18.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.18.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.18.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.18.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.18.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.19.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.19.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.19.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.19.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.19.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.19.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.19.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.19.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.19.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.19.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.19.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.19.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.19.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.19.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.19.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.2.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.2.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.2.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.2.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.2.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.2.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.2.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.2.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.2.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.2.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.2.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.2.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.2.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.2.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.2.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.20.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.20.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.20.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.20.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.20.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.20.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.20.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.20.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.20.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.20.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.20.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.20.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.20.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.20.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.20.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.21.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.21.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.21.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.21.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.21.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.21.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.21.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.21.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.21.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.21.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.21.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.21.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.21.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.21.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.21.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.22.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.22.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.22.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.22.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.22.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.22.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.22.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.22.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.22.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.22.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.22.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.22.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.22.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.22.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.22.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.23.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.23.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.23.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.23.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.23.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.23.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.23.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.23.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.23.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.23.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.23.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.23.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.23.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.23.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.23.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.24.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.24.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.24.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.24.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.24.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.24.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.24.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.24.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.24.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.24.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.24.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.24.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.24.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.24.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.24.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.25.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.25.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.25.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.25.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.25.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.25.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.25.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.25.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.25.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.25.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.25.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.25.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.25.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.25.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.25.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.26.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.26.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.26.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.26.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.26.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.26.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.26.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.26.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.26.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.26.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.26.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.26.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.26.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.26.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.26.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.27.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.27.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.27.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.27.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.27.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.27.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.27.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.27.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.27.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.27.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.27.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.27.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.27.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.27.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.27.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.28.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.28.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.28.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.28.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.28.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.28.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.28.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.28.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.28.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.28.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.28.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.28.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.28.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.28.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.28.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.29.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.29.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.29.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.29.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.29.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.29.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.29.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.29.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.29.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.29.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.29.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.29.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.29.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.29.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.29.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.3.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.3.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.3.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.3.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.3.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.3.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.3.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.3.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.3.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.3.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.3.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.3.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.3.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.3.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.3.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.30.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.30.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.30.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.30.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.30.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.30.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.30.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.30.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.30.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.30.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.30.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.30.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.30.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.30.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.30.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.31.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.31.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.31.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.31.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.31.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.31.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.31.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.31.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.31.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.31.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.31.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.31.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.31.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.31.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.31.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.4.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.4.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.4.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.4.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.4.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.4.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.4.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.4.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.4.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.4.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.4.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.4.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.4.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.4.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.4.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.5.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.5.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.5.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.5.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.5.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.5.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.5.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.5.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.5.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.5.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.5.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.5.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.5.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.5.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.5.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.6.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.6.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.6.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.6.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.6.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.6.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.6.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.6.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.6.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.6.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.6.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.6.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.6.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.6.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.6.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.7.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.7.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.7.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.7.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.7.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.7.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.7.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.7.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.7.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.7.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.7.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.7.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.7.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.7.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.7.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.8.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.8.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.8.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.8.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.8.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.8.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.8.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.8.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.8.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.8.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.8.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.8.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.8.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.8.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.8.self_attn_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.9.fc1.bias": [
+   5120
+  ],
+  "whisper.encoder.layers.9.fc1.weight": [
+   5120,
+   1280
+  ],
+  "whisper.encoder.layers.9.fc2.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.9.fc2.weight": [
+   1280,
+   5120
+  ],
+  "whisper.encoder.layers.9.final_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.9.final_layer_norm.weight": [
+   1280
+  ],
+  "whisper.encoder.layers.9.self_attn.k_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.9.self_attn.out_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.9.self_attn.out_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.9.self_attn.q_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.9.self_attn.q_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.9.self_attn.v_proj.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.9.self_attn.v_proj.weight": [
+   1280,
+   1280
+  ],
+  "whisper.encoder.layers.9.self_attn_layer_norm.bias": [
+   1280
+  ],
+  "whisper.encoder.layers.9.self_attn_layer_norm.weight": [
+   1280
+  ]
+ }
+}

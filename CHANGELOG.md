@@ -6,6 +6,29 @@
 
 
 
+## [0.360.0] — 2026-10-24
+
+### 语音目录：公开配置可直接映射的 ASR / 端到端旁支 (MODEL §360)
+
+- **新增 15 个发布**，全部复用已有 builder，`param_check().rel_err == 0`，dtype 按发布文件，不新造形状：
+  - **Whisper English**（`openai/whisper-{tiny,base,small,medium}.en`，fp32，词表 51864，比多语少一行）：encoder-decoder，`params()` 含编码器。
+  - **Distil-Whisper**（`distil-whisper/distil-{small.en,medium.en,large-v2,large-v3,large-v3.5}`）：同一 Whisper 机制，解码层更少。权重 dtype 跟 safetensors header（medium.en / large-v2 的 config.torch_dtype 写成 float32，张量是 F16）：small.en、medium.en、large-v2、large-v3 为 fp16，large-v3.5 为 fp32。large-v3 与 large-v3.5 词表 51866、mel 128；large-v2 词表 51865、mel 80；small.en / medium.en 词表 51864。
+  - **Qwen3-ASR-0.6B**（非 `-hf` 仓库，`qwen3_asr_audio_encoder`）：AuT 18 层 d896 + Qwen3-0.6B thinker，bf16，覆盖完整。
+  - **Qwen2-Audio-7B**（base，与 Instruct 同形）：Whisper-v3 编码器 + Qwen2-7B，bf16，覆盖完整。
+  - **Step-Audio-R1.1**：`step_audio_2` 编码器 + Qwen2-32B 形 LLM，bf16；发布里没有 token2wav，目录域为 ASR，覆盖完整。
+  - **Qwen3-Omni-30B-A3B-Thinking / Captioner**：与 Instruct 相同的 Thinker（AuT + MoE + ViT），`enable_audio_output=false`，没有 Talker / code2wav。目录域 omni，语音 KPI 走 ASR。覆盖 partial（ViT 只计存储，与 Instruct 同一条原因）。
+  - **Kimi-Audio-7B**（base）：与 Instruct 同形（28+6 层、Whisper 编码器、DiT、BigVGAN），bf16。目录域 omni，语音 KPI 为 kimi。覆盖 partial（GLM-4-Voice 分词器不在本仓库，与 Instruct 同一条原因）。
+- **未纳入**（配置不公开、机制对不上现有 builder，或需要臆造维度）：
+  - 已在 0.270–0.357 覆盖：Qwen2-Audio-Instruct、Qwen2.5-Omni 3B/7B、Qwen3-Omni Instruct、Qwen3-ASR-1.7B、CosyVoice2/3、Step-Audio-2-mini/Base/Think、Moshi moshiko/moshika、Kimi-Audio-7B-Instruct、Whisper tiny→large-v3/turbo。
+  - Qwen-Audio / Qwen-Audio-Chat：`audio` 只有 `output_dim`，编码器维度不在 config。
+  - Qwen3-ASR `*-hf`：`model_type` 是 `qwen3_asr_encoder`，对不上现有 AuT 门。
+  - Step-Audio-R1、kyutai/pocket-tts：HF 401。
+  - Step-Audio-EditX / TTS-3B / Chat / AQAA：主干是 step1 或 mmgpt，不是 `step_audio_2`。
+  - Fun-Audio-Chat-8B：公开 config，但是 CRQ + invert tower，没有现成 schedule。
+  - Fun-ASR-MLT-Nano-2512、SenseVoiceSmall：没有 transformers `config.json`。
+  - CosyVoice-300M（v1）：yaml 公开，但是 TransformerLM + MaskedDiff，不是 CosyVoice2/3 builder。
+  - kyutai/stt-2.6b-en、hibiki-1b / hibiki-2b：不是 Moshi 的 temporal + depth schedule。
+
 ## [0.359.0] — 2026-10-24
 
 ### DVFS 封顶后 HBM 器件功耗不再按卡功耗比例缩小 (HBM thermal)

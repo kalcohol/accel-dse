@@ -2410,7 +2410,7 @@ async function runInsightDispatch() {
 }
 
 /* 0.276: real-time streams per card vs SLC size (/api/insight_speech_streams) */
-const SPS_OUT = ['moshiko-7b', 'moshika-7b', 'kimi-audio-7b-instruct', 'step-audio-2-mini', 'step-audio-2-mini-base', 'step-audio-2-mini-think', 'qwen2.5-omni-7b', 'qwen2.5-omni-3b', 'qwen3-omni-30b-a3b', 'moss-tts', 'cosyvoice2-0.5b',
+const SPS_OUT = ['moshiko-7b', 'moshika-7b', 'kimi-audio-7b-instruct', 'kimi-audio-7b', 'step-audio-2-mini', 'step-audio-2-mini-base', 'step-audio-2-mini-think', 'qwen2.5-omni-7b', 'qwen2.5-omni-3b', 'qwen3-omni-30b-a3b', 'moss-tts', 'cosyvoice2-0.5b',
   'fun-cosyvoice3-0.5b-2512', 'fireredtts3-base', 'drama-3', 'ming-3.0-tts-tiny', 'ming-3.0-tts-0.5b', 'ming-omni-tts-0.5b',
   'qwen3-tts-0.6b-base', 'qwen3-tts-1.7b-base', 'qwen3-tts-0.6b-custom-voice', 'qwen3-tts-1.7b-custom-voice', 'qwen3-tts-1.7b-voice-design',  // 0.338
   'index-echo-s2st-2b', 'index-echo-s2st-9b'];  // 0.339 +moshika +step-base/think +omni-3b
@@ -2426,7 +2426,10 @@ function speechStreamsCell(c) {
 const SPS_ASR = ['qwen2-audio-7b-instruct', 'qwen3-asr-1.7b', 'fun-asr-nano-2512', 'whisper-large-v3',
   'whisper-large-v3-turbo', 'ming-3.0-asr-tiny',
   'omniasr-llm-300m-v2', 'omniasr-llm-1b-v2', 'omniasr-llm-3b-v2', 'omniasr-llm-7b-v2',
-  'whisper-tiny', 'whisper-base', 'whisper-small', 'whisper-medium', 'whisper-large', 'whisper-large-v2'];  // 0.336 OmniASR; 0.357 Whisper family
+  'whisper-tiny', 'whisper-base', 'whisper-small', 'whisper-medium', 'whisper-large', 'whisper-large-v2',
+  'qwen3-asr-0.6b', 'qwen2-audio-7b', 'whisper-tiny.en', 'whisper-base.en', 'whisper-small.en', 'whisper-medium.en',
+  'distil-whisper-small.en', 'distil-whisper-medium.en', 'distil-whisper-large-v2', 'distil-whisper-large-v3',
+  'distil-whisper-large-v3.5', 'step-audio-2-r1.1', 'qwen3-omni-30b-a3b-thinking', 'qwen3-omni-30b-a3b-captioner'];  // 0.336 OmniASR; 0.357 Whisper family; 0.360 speech siblings
 let spsRun = 0;
 async function runInsightSpeechStreams() {
   const run = ++spsRun, v0 = S.ver, t0 = performance.now();

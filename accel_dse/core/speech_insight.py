@@ -58,7 +58,11 @@ SPEECH_MODELS = ("moshiko-7b", "moshika-7b", "kimi-audio-7b-instruct", "step-aud
                  "qwen3-tts-0.6b-base", "qwen3-tts-1.7b-base", "qwen3-tts-0.6b-custom-voice",
                  "qwen3-tts-1.7b-custom-voice", "qwen3-tts-1.7b-voice-design",  # 0.338 Qwen3-TTS
                  "index-echo-s2st-2b", "index-echo-s2st-9b",  # 0.280 S2ST
-                 "whisper-tiny", "whisper-base", "whisper-small", "whisper-medium", "whisper-large", "whisper-large-v2")   # 0.357 Whisper family
+                 "whisper-tiny", "whisper-base", "whisper-small", "whisper-medium", "whisper-large", "whisper-large-v2",   # 0.357 Whisper family
+                 "qwen3-asr-0.6b", "qwen2-audio-7b", "whisper-tiny.en", "whisper-base.en", "whisper-small.en",
+                 "whisper-medium.en", "distil-whisper-small.en", "distil-whisper-medium.en", "distil-whisper-large-v2",
+                 "distil-whisper-large-v3", "distil-whisper-large-v3.5", "step-audio-2-r1.1",
+                 "qwen3-omni-30b-a3b-thinking", "qwen3-omni-30b-a3b-captioner", "kimi-audio-7b")   # 0.360
 OUT_LEN = 64            # reply / transcript tokens 「假设」 (same default as the UI speech panel)
 PROMPT = 64             # text prompt tokens 「假设」
 

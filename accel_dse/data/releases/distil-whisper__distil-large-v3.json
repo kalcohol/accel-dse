@@ -1,0 +1,107 @@
+{
+ "bytes_llm": 238873600,
+ "bytes_mtp": 0,
+ "bytes_total": 1512811520,
+ "config": {
+  "_name_or_path": "./distil-large-v3",
+  "activation_dropout": 0.0,
+  "activation_function": "gelu",
+  "apply_spec_augment": false,
+  "architectures": [
+   "WhisperForConditionalGeneration"
+  ],
+  "attention_dropout": 0.0,
+  "begin_suppress_tokens": [
+   220,
+   50257
+  ],
+  "bos_token_id": 50257,
+  "classifier_proj_size": 256,
+  "d_model": 1280,
+  "decoder_attention_heads": 20,
+  "decoder_ffn_dim": 5120,
+  "decoder_layerdrop": 0.0,
+  "decoder_layers": 2,
+  "decoder_start_token_id": 50258,
+  "dropout": 0.0,
+  "encoder_attention_heads": 20,
+  "encoder_ffn_dim": 5120,
+  "encoder_layerdrop": 0.0,
+  "encoder_layers": 32,
+  "eos_token_id": 50257,
+  "init_std": 0.02,
+  "is_encoder_decoder": true,
+  "mask_feature_length": 10,
+  "mask_feature_min_masks": 0,
+  "mask_feature_prob": 0.0,
+  "mask_time_length": 10,
+  "mask_time_min_masks": 2,
+  "mask_time_prob": 0.05,
+  "max_length": 448,
+  "max_source_positions": 1500,
+  "max_target_positions": 448,
+  "median_filter_width": 7,
+  "model_type": "whisper",
+  "num_hidden_layers": 32,
+  "num_mel_bins": 128,
+  "pad_token_id": 50256,
+  "scale_embedding": false,
+  "torch_dtype": "float16",
+  "transformers.js_config": {
+   "use_external_data_format": {
+    "encoder_model.onnx": true
+   }
+  },
+  "transformers_version": "4.38.0.dev0",
+  "use_cache": true,
+  "use_weighted_layer_sum": false,
+  "vocab_size": 51866
+ },
+ "domain": "asr",
+ "fetched": "2026-10-24",
+ "n_tensors": 539,
+ "params_llm": 119436800,
+ "params_mtp": 0,
+ "params_vision": 636968960,
+ "quantization_config": null,
+ "repo": "distil-whisper/distil-large-v3",
+ "roles": {
+  "attn": {
+   "fp16": {
+    "bytes": 52459520,
+    "params": 26229760
+   }
+  },
+  "embed": {
+   "fp16": {
+    "bytes": 132776960,
+    "params": 66388480
+   }
+  },
+  "mlp": {
+   "fp16": {
+    "bytes": 52454400,
+    "params": 26227200
+   }
+  },
+  "norm": {
+   "fp16": {
+    "bytes": 35840,
+    "params": 17920
+   }
+  },
+  "pos_embed": {
+   "fp16": {
+    "bytes": 1146880,
+    "params": 573440
+   }
+  },
+  "vision": {
+   "fp16": {
+    "bytes": 1273937920,
+    "params": 636968960
+   }
+  }
+ },
+ "torch_dtype": "float16"
+}

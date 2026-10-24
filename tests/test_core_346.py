@@ -73,7 +73,7 @@ def test_moss_tts_speech_kpis_and_ops():
 
 def test_moss_in_speech_models_and_no_break_others():
     assert "moss-tts" in SPEECH_MODELS
-    assert len(SPEECH_MODELS) == 40
+    assert len(SPEECH_MODELS) == 55   # 0.360: +15 speech siblings
     assert get_model("qwen3-omni-30b-a3b").moss_tts is None
     assert get_model("qwen2.5-omni-7b").omni is not None
     assert get_model("moshiko-7b").moshi is not None

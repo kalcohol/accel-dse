@@ -203,3 +203,21 @@ kyutai/moshika-pytorch-bf16
 
 # 0.346: MOSS-TTS Delay-8B (Qwen3 + 32-VQ delay; external tokenizer)
 OpenMOSS-Team/MOSS-TTS
+# 0.360 speech siblings (public config + safetensors; Distil / Whisper .en are domain asr)
+openai/whisper-tiny.en
+openai/whisper-base.en
+openai/whisper-small.en
+openai/whisper-medium.en
+distil-whisper/distil-small.en
+distil-whisper/distil-medium.en
+distil-whisper/distil-large-v2
+distil-whisper/distil-large-v3
+distil-whisper/distil-large-v3.5
+Qwen/Qwen3-ASR-0.6B
+Qwen/Qwen2-Audio-7B
+stepfun-ai/Step-Audio-R1.1
+Qwen/Qwen3-Omni-30B-A3B-Thinking
+Qwen/Qwen3-Omni-30B-A3B-Captioner
+# 0.360 Kimi-Audio-7B: python3 scripts/fetch_pt_release.py --kimi moonshotai/Kimi-Audio-7B
+#        then python3 scripts/fetch_hf_release.py moonshotai/Kimi-Audio-7B
+moonshotai/Kimi-Audio-7B
