@@ -342,6 +342,15 @@ EXTRA_TAIL = [
     ("gemma-4-e4b", "google/gemma-4-E4B"),
     ("gemma-4-e2b-it", "google/gemma-4-E2B-it"),
     ("gemma-4-e2b", "google/gemma-4-E2B"),
+    # 0.370 IBM Granite-4.1 dense GQA (Apache-2.0). bf16 as released, plus compressed-tensors W8A8
+    # (per-channel fp8 weights, dynamic per-token fp8 activations; embed / lm_head / norms stay bf16).
+    # 3B and 30B bases match the instruct checkpoints; 8B instruct stores a tied lm_head copy.
+    ("granite-4.1-30b-fp8", "ibm-granite/granite-4.1-30b-fp8"),
+    ("granite-4.1-30b", "ibm-granite/granite-4.1-30b"),
+    ("granite-4.1-8b-fp8", "ibm-granite/granite-4.1-8b-fp8"),
+    ("granite-4.1-8b", "ibm-granite/granite-4.1-8b"),
+    ("granite-4.1-3b-fp8", "ibm-granite/granite-4.1-3b-fp8"),
+    ("granite-4.1-3b", "ibm-granite/granite-4.1-3b"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -527,6 +536,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("openai", "OpenAI（gpt-oss · Whisper）", ("openai/",)), ("mistral", "Mistral AI", ("mistralai/",)),
     ("distil", "Hugging Face（Distil-Whisper）", ("distil-whisper/",)),   # 0.360
     ("microsoft", "微软（Phi）", ("microsoft/",)),
+    ("ibm", "IBM（Granite）", ("ibm-granite/",)),   # 0.370
     ("bytedance", "字节跳动（Seed · Protenix）", ("ByteDance-Seed/", "gh:bytedance/")),
     ("yi", "零一万物（Yi）", ("01-ai/",)), ("internlm", "上海 AI 实验室（InternLM）", ("internlm/",)),
     # vendors with catalog-only (not yet on core v2) releases
@@ -577,7 +587,8 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("openai", "gpt-oss", ("gpt-oss",)), ("openai", "Whisper", ("whisper",)),
     ("meta", "OmniASR", ("omniasr",)),
     ("mistral", "Mistral Large", ("mistral-large",)), ("mistral", "Mixtral", ("mixtral",)), ("mistral", "Magistral", ("magistral",)),
-    ("microsoft", "Phi-4", ("phi-4",)), ("bytedance", "Seed-OSS", ("seed-oss",)), ("bytedance", "Protenix", ("protenix",)),
+    ("microsoft", "Phi-4", ("phi-4",)), ("ibm", "Granite-4.1", ("granite-4.1-",)),
+    ("bytedance", "Seed-OSS", ("seed-oss",)), ("bytedance", "Protenix", ("protenix",)),
     ("tencent", "HunyuanVideo", ("hunyuanvideo",)), ("lightricks", "LTX-Video", ("ltx-video",)),
     ("genmo", "Mochi 1", ("mochi",)), ("hpcai", "Open-Sora", ("opensora",)),
     ("google", "Gemma-4", ("gemma-4",)),

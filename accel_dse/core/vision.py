@@ -42,8 +42,9 @@ docs/MODEL.md §20):
          padded max_soft_tokens rows; the LLM prompt keeps only the real soft tokens. The unified audio
          path is one Linear(audio_embed_dim → text) when audio_config.model_type is gemma4_unified_audio.
          gemma4_audio (E2B / E4B) is a conformer: two stride-2 Conv2d, 12 local-attention blocks,
-         then Linear into the text embedder. Prompt tokens follow the processor formula; the tower
-         GEMMs see the waveform padded to a multiple of 128.
+         then Linear into the text embedder. Each block's content scores use the chunk context;
+         every padded query also dots the context//2+1 relative keys. Prompt tokens follow the
+         processor formula; the tower GEMMs see the waveform padded to a multiple of 128.
 
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
@@ -910,9 +911,14 @@ def _g4conf_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
                 gemm(f"aud.{li}.ff2_up", t, h, 4 * h, li), gemm(f"aud.{li}.ff2_down", t, 4 * h, h, li)]
         ops += [gemm(f"aud.{li}.q", t, h, h, li), gemm(f"aud.{li}.k", t, h, h, li),
                 gemm(f"aud.{li}.v", t, h, h, li), gemm(f"aud.{li}.post", t, h, h, li)]
-        # relative_k_proj runs once per clip on context//2+1 positions. The weight is one h by h matrix.
-        ops.append(gemm(f"aud.{li}.rel", rel * clips, h, h, li))
+        # relative_k_proj is one Linear on the batch-1 sinusoid (context//2+1, h). Gemma4AudioAttention
+        # then does queries_flat @ relative_keys: every padded query dots those rel keys (matrix_bd).
+        # rel_shift reindexes that score to context and does not matmul again. The projection does not
+        # grow with the clip batch; the query-key matmul does.
+        ops.append(gemm(f"aud.{li}.rel", rel, h, h, li))
         ops += [Op(f"aud.{li}.qk", "attn", li, m=q_pad, k=hd, n=context, count=a.heads * clips, causal=1.0,
+                   act_bytes=a.heads * clips * q_pad * hd * ab, stream=True, orient=True),
+                Op(f"aud.{li}.relqk", "attn", li, m=q_pad, k=hd, n=rel, count=a.heads * clips, causal=1.0,
                    act_bytes=a.heads * clips * q_pad * hd * ab, stream=True, orient=True),
                 Op(f"aud.{li}.pv", "attn", li, m=q_pad, k=context, n=hd, count=a.heads * clips, causal=1.0,
                    act_bytes=a.heads * clips * q_pad * hd * ab, orient=True),
