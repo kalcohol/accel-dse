@@ -59,7 +59,9 @@ NOT_SCALE_RE = re.compile(
     r"(^|\.)self_attn\.per_dim_scale$)")
 ROLE = [
     ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.|^linear_proj\.)"),
-    ("mtp", r"(^mtp\.|\.mtp\.|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),
+    # 0.377: ERNIE-4.5 stores the ignored MTP block as model.mtp_block / mtp_linear_proj /
+    # mtp_emb_norm / mtp_hidden_norm (no ".mtp." dot). The published class does not run it.
+    ("mtp", r"(^mtp\.|\.mtp\.|\.mtp_|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),
     ("embed", r"(embed_tokens|\bwte\b|tok_embeddings|word_embeddings|^embed\.|\.embed\.weight|ple_embedding|^rwkv7\.emb\.weight$|^backbone\.embeddings\.)"),
     ("lm_head", r"(lm_head|^output\.weight$|embed_out|^head\.weight$|^readout\.weight$)"),   # 0.291 decision readout
     ("norm", r"(norm\.|norm$|_norm|ln_|layernorm|\.ln\d)"),
@@ -67,7 +69,9 @@ ROLE = [
     # 0.376: HunYuanTopKGate.wg is nn.Linear(hidden, num_experts, dtype=float32). The name is
     # mlp.gate.wg.weight, which is not ".gate.weight". Leaving it in mlp mixes those fp32 params into the
     # shared-MLP average and bills the router GEMM at the attn fallback.
-    ("router", r"(\.gate\.weight$|\.router\.|gate\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid|\.mlp\.gate\.wg\.)"),
+    # 0.377: Ernie4_5_MoeTopKRouter.moe_statics.e_score_correction_bias is an fp32 [1, E]
+    # parameter (selection only). It is not gate.e_score_correction_bias.
+    ("router", r"(\.gate\.weight$|\.router\.|gate\.e_score_correction|moe_statics\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid|\.mlp\.gate\.wg\.)"),
     ("shared_expert", r"(shared_expert|\.share_expert\.)"),
     ("expert", r"(\.experts\.|block_sparse_moe\.experts|routed_expert|\.moe\.(gate|up|down)_proj\.)"),
     ("mlp", r"(\.mixer\.(gate_proj|up_proj|down_proj|suv_gate|suv_up)|\.mlp_alpha$)"),   # 0.253 Dory / Nemotron-H MLP mixers

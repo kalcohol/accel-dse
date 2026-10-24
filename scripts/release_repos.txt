@@ -231,3 +231,5 @@ stepfun-ai/Step-3.5-Flash
 meituan-longcat/LongCat-Flash-Chat
 # 0.376 Hunyuan-A13B-Instruct (hunyuan_v1_moe text MoE). ViT fields are null.
 tencent/Hunyuan-A13B-Instruct
+# 0.377 ERNIE-4.5-21B-A3B-PT (ernie4_5_moe). Repo has no modeling file; headers + transformers class.
+baidu/ERNIE-4.5-21B-A3B-PT
