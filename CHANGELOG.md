@@ -6,6 +6,32 @@
 
 
 
+## [0.371.0] — 2026-10-24
+
+### 复核 0.370 的音频相对 key 与 Granite-4.1；目录补上 Olmo-3 与 EXAONE-4
+
+- **0.370 复核过、账目未改：**
+  - **Gemma-4 音频。** `Gemma4AudioRelPositionalEncoding` 的相对位置表是 `[1, context // 2 + 1, hidden]`。chunk 12、左上下文 13、右上下文 0 时 context 为 24，相对 key 为 13，与 clip 数无关。`relative_k_proj` 的 M 固定为 13。`queries_flat @ relative_keys` 的 FLOPs 随 clip 数变（`count = heads * clips`）。`rel_shift` 只重排下标。内容分与相对分相加、softcap、mask 之后只做一次 softmax，轴长是 context（24）。eager 路径按完整 matmul 计（`causal = 1`）。Q/K/V GEMM 仍在未补齐的塔长上；注意力用补齐后的查询。
+  - **Granite-4.1。** 稠密 GQA，无滑窗、无 MoE、无 q/k norm。`quant_method=compressed-tensors`、float-quantized：权重 per-channel fp8，激活 dynamic per-token fp8。语言 GEMM 为全局 fp8；`kv_cache_scheme` 为空，KV 仍是 bf16。embed / norm / `lm_head` 在 header 里是 bf16（`ignore` 只有 `lm_head`）。`Model.fmt` 没有 norm 这个 role，未知 role 会退回 attn，所以 `fmt("norm")` 不是存储格式。语言层的 misc 按既有规则固定按 2 字节计，与这份 bf16 header 一致：每层两个 RMSNorm 在 `misc_params` 里，最终 norm 仍是 `params()` 里那个 hidden。channel scale 是每个 Linear 输出通道 2 字节（bf16 scale），不是 fp32。tied `lm_head` 副本仍按既有规则去重。`embedding_multiplier`、`residual_multiplier`、`attention_multiplier`、`logits_scaling` 不改变 GEMM 形状，也不改变 KV 宽度。
+  - q/k norm 的逐元素运算不另计周期，与 Qwen3 相同，只进参数。
+- **机制：** 0.370 把 Olmo-3 与 EXAONE-4 留在外面，是因为当时的 builder 不给 `olmo3` / `exaone4` 加 q/k norm。公开 config 与 safetensors header 对得上，按同一类 RMSNorm 扩 builder。`param_check().rel_err == 0`。post-attention / post-feedforward 两个 hidden 宽的 RMSNorm 与现有 `2·hidden` 是同一笔，不另开 `post_norm`。
+  - **Olmo-3**（`Olmo3Attention`）。`q_norm` 是 RMSNorm(H·head_dim)，`k_norm` 是 RMSNorm(KV·head_dim)，在拆成多头之前做。7B 是 MHA，两份都是 hidden，多出的就是 `2·L·hidden`。32B / 3.1 是 GQA（40/8，head 128），k_norm 宽 1024，不是 hidden。滑窗层和全注意力层都做 RoPE。YaRN 是标量，不改变 GEMM 形状，也不改变 KV 宽度。3:1 的 SSSF，窗口 4096。bf16，untied。
+  - **EXAONE-4**（`Exaone4Attention`）。`q_norm` / `k_norm` 是共享的 RMSNorm(head_dim)，权重与 Qwen3 的 `2·head_dim` 相同。RoPE 只在 `sliding_window` 为空，或该层是滑窗时做。32B / 4.0.1 是 LLLG：滑窗层做 RoPE，全注意力层是全局 NoPE（`no_rope` 去掉那一笔向量；`rope_dim == 0` 仍会按半个 head 计，所以用这个标志）。KV 宽度不变。1.2B 的 `sliding_window` 为空、30 层都是 `full_attention`，每一层仍做 RoPE。只有 1.2B tied。
+- **新增 9 个发布**（2026-10-24 读取 header）。覆盖 full。权重 bf16，`quantization_config` 为空，没有额外 role。4.0.1 与 Olmo-3.1 是同形兄弟，不是新结构。
+  - **Olmo-3-7B-Think / 7B-Instruct / 1025-7B**（`allenai/Olmo-3-7B-Think`、`allenai/Olmo-3-7B-Instruct`、`allenai/Olmo-3-1025-7B`）：32 层、hidden 4096、32/32、head 128、intermediate 11008、词表 100278、untied。24 层滑窗 + 8 层全注意力。参数 7,298,011,136。
+  - **Olmo-3-32B-Think / 1125-32B / Olmo-3.1-32B-Instruct**（`allenai/Olmo-3-32B-Think`、`allenai/Olmo-3-1125-32B`、`allenai/Olmo-3.1-32B-Instruct`）：64 层、hidden 5120、40/8、head 128、intermediate 27648、同一词表、untied。48 层滑窗 + 16 层全注意力。q_norm [5120]，k_norm [1024]。参数 32,233,522,176。
+  - **EXAONE-4.0-32B / 4.0.1-32B**（`LGAI-EXAONE/EXAONE-4.0-32B`、`LGAI-EXAONE/EXAONE-4.0.1-32B`）：64 层、hidden 5120、40/8、head 128、intermediate 27392、词表 102400、untied。48 层滑窗（RoPE，窗口 4096）+ 16 层全注意力（NoPE）。q/k norm [128]。参数 32,003,216,384。模型卡上的 “30.95B without embeddings” 是总数减去 embed 与 `lm_head`（30,954,640,384）。
+  - **EXAONE-4.0-1.2B**（`LGAI-EXAONE/EXAONE-4.0-1.2B`）：30 层、hidden 2048、32/8、head 64、intermediate 4096、词表 102400、tied、无滑窗、每一层 RoPE。参数 1,279,391,488。q/k norm [64]。
+- **未纳入：**
+  - **Olmo 的 SFT / DPO 中间 checkpoint。** 没有拉 header，不单列。
+  - **视频。** `Gemma4VideoProcessor` 仍没有接到现有 video grid 的公开打包配方。不编造。
+  - **Assistant draft / DiffusionGemma。** 没有核对到与已入库 text + vision builder 相同且 `rel_err == 0` 的公开 header，不单列。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **LTX-2.3。** 根上和 `transformer/` 都没有 `config.json`。不编造层宽。
+  - **gated：** OrcaCyber、pocket-tts。不入库。
+  - **NPU。** 不编造形状、周期或面积。
+  - **仍对不上现有 builder，本轮不新开结构：** Ling-flash-2.0（`bailing_moe`）、Step-3.5-Flash（`step3p5`）、MiMo-V2-Flash（`mimo_v2_flash`）、ERNIE-4.5-21B-A3B、Hunyuan-A13B、LongCat-Flash、Mistral-Small-3.2（Pixtral 视觉塔未建模）。
+
 ## [0.370.0] — 2026-10-24
 
 ### Gemma-4 音频相对位置分数；目录补上 Granite-4.1

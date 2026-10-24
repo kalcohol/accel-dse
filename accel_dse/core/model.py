@@ -159,6 +159,10 @@ class AttnCore:
     dea_vd: int = 0
     dea_k_emb: int = 0
     dea_v_emb: int = 0
+    # 0.371 EXAONE-4 full layers: Exaone4Attention applies RoPE only when sliding_window is
+    # None or the layer is sliding. rope_dim 0 still means "half head" in the GQA rope op,
+    # so this flag is what actually drops that vector.
+    no_rope: bool = False
 
     def kv_elems_per_token(self) -> float:
         """KV-cache elements stored per token (one layer, whole model width)."""
@@ -831,6 +835,10 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         sparse = bool(E and i >= first_dense and i not in mlp_only)
         gate_fn = (c.get("attention_gate_func") or "") if k2h else ""
         alin, core = _gqa(h, H, KV, hd, window=w, out_gate=bool(gate_fn))      # gate_proj [H·hd, h] = q width × 2
+        # 0.371 Exaone4Attention: RoPE when sliding_window is None (1.2B, every layer) or this
+        # layer is sliding. A hybrid full layer (32B LLLG) is global NoPE. KV width is unchanged.
+        if mt == "exaone4" and c.get("sliding_window") is not None and w is None:
+            core = replace(core, no_rope=True)
         if gate_fn:
             core = replace(core, out_gate_fn=gate_fn)
         mova = k2h and sparse and (c.get("mova_num_experts") or 0) > 0
@@ -852,9 +860,17 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
                                  shared_gate=bool(c.get("shared_expert_intermediate_size")) and mt != "flint")
         else:
             ffn, flin = _ffn_dense(h, c["intermediate_size"])
-        # 0.291 Mellum (transformers MellumAttention = Qwen3MoeAttention: q_norm / k_norm RMSNorm over head_dim 「来源」)
-        misc = 2 * h + (2 * hd if mt.startswith("qwen3") or mt in ("mellum", "flint") or (hy3 and c.get("qk_norm"))
-                        or (k2h and c.get("query_key_norm")) else 0)
+        # 0.291 Mellum (transformers MellumAttention = Qwen3MoeAttention: q_norm / k_norm RMSNorm over head_dim).
+        # 0.371 EXAONE-4 uses the same shared head_dim weights. Olmo-3 norms the full projection
+        # before the head view: q is H*hd, k is KV*hd (7B MHA → 2*hidden; 32B GQA → hidden + KV*hd).
+        if mt == "olmo3":
+            qk = H * hd + KV * hd
+        elif (mt.startswith("qwen3") or mt in ("mellum", "flint", "exaone4") or (hy3 and c.get("qk_norm"))
+              or (k2h and c.get("query_key_norm"))):
+            qk = 2 * hd
+        else:
+            qk = 0
+        misc = 2 * h + qk
         if k2h and ffn.kind == "moe" and c.get("moe_gate_bias"):
             misc += E                                      # router bias (mlp.gate.bias [E])
         if mova and c.get("moe_gate_bias"):
@@ -877,6 +893,17 @@ def _build_std(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
                      "每头可学习 attention sink（softmax_offset）与 q / k RMSNorm 已建模；sigmoid 路由 top-k 归一化（无路由偏置）")
     if any(l.core.window for l in layers) and mt not in ("gpt_oss", "flint"):
         notes.append(f"滑窗 {window} 已建模")
+    if mt == "olmo3":
+        notes.append("Olmo-3：q_norm / k_norm 是投影后的 RMSNorm（Q 为 H·head_dim，K 为 KV·head_dim），"
+                     "在拆成多头之前做；post-attention / post-feedforward 两个 RMSNorm 与现有 2·hidden 同一笔。"
+                     "YaRN 不改变 GEMM 形状，也不改变 KV 宽度")
+    if mt == "exaone4":
+        n_nope = sum(1 for L in layers if L.core.no_rope)
+        if n_nope:
+            notes.append(f"EXAONE-4：q / k RMSNorm(head_dim)；{n_nope} 层全注意力不做 RoPE"
+                         "（sliding_window 非空且该层不是 sliding），滑窗层仍做 RoPE")
+        else:
+            notes.append("EXAONE-4：q / k RMSNorm(head_dim)；sliding_window 为空，每一层都做 RoPE")
     mtp = []
     n_mtp = c.get("num_nextn_predict_layers") or 0
     for _ in range(n_mtp):
