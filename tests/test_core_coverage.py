@@ -80,6 +80,8 @@ IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b",
 # 0.144 VLMs whose vision side is approximated (LLM side exact): Step-5 overview only, MiniCPM one 448² view, MiMo window
 # attention as full + audio encoder storage-only
 GGML_PARTIAL = ("nemotron-3.5-bolt-74b-a9b-24gb",)   # 0.289
+# 0.363 Wan2.2-TI2V-5B: DiT matches the header; umT5 and Wan2.2-VAE are outside the catalog pipeline
+DIT_PARTIAL = ("wan2.2-ti2v-5b",)
 VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4", "qwen2.5-omni-7b", "qwen2.5-omni-3b", "qwen3-omni-30b-a3b",  # 0.345 Omni ViT stored only; 0.339 Omni-3B
                   "qwen3-omni-30b-a3b-thinking", "qwen3-omni-30b-a3b-captioner",  # 0.360 Thinker-only; same ViT storage-only
                   "kimi-audio-7b-instruct", "kimi-audio-7b",  # 0.360 base: same GLM-4-Voice tokenizer gap
@@ -118,11 +120,11 @@ def test_coverage_list():
     assert all(cov[i] == "proxy" for i in PROXY)
     assert all(cov[i] == "partial" for i in PROTEIN_PARTIAL)
     assert all(cov[i] == "full" and not get_model(i).coverage_reasons for i in IMAGE_FULL)
-    assert all(cov[i] == "partial" and len(get_model(i).coverage_reasons) == 1 for i in VISION_PARTIAL)
+    assert all(cov[i] == "partial" and len(get_model(i).coverage_reasons) == 1 for i in VISION_PARTIAL + DIT_PARTIAL)
     # 0.289: Bolt-24GB = RADIO ≈ + ggml block formats ≈ (two reasons)
     assert all(cov[i] == "partial" and len(get_model(i).coverage_reasons) == 2 for i in GGML_PARTIAL)
     assert sorted(i for i, c in cov.items() if c != "full") == sorted(PROXY + PROTEIN_PARTIAL + VISION_PARTIAL
-                                                                       + GGML_PARTIAL)
+                                                                       + GGML_PARTIAL + DIT_PARTIAL)
     assert [o["id"] for o in offline_entries()] == ["alphafold3"]
 
 
