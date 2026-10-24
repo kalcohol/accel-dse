@@ -81,7 +81,8 @@ IMAGE_FULL = ("qwen-image-2.1-turbo", "qwen-image", "flux.2-klein-4b",
 # attention as full + audio encoder storage-only
 GGML_PARTIAL = ("nemotron-3.5-bolt-74b-a9b-24gb",)   # 0.289
 VISION_PARTIAL = ("step-5-preview", "step-5-preview-nvfp4", "qwen2.5-omni-7b", "qwen2.5-omni-3b", "qwen3-omni-30b-a3b",  # 0.345 Omni ViT stored only; 0.339 Omni-3B
-                  "kimi-audio-7b-instruct",
+                  "qwen3-omni-30b-a3b-thinking", "qwen3-omni-30b-a3b-captioner",  # 0.360 Thinker-only; same ViT storage-only
+                  "kimi-audio-7b-instruct", "kimi-audio-7b",  # 0.360 base: same GLM-4-Voice tokenizer gap
                   "nemotron-3.5-super-vl-120b-a12b-nvfp4",
                   "nemotron-3.5-super-vl-120b-a12b-bf16", "nemotron-3.5-bolt-74b-a9b-bf16",   # 0.289 RADIO ≈ only
                   "index-echo-s2st-2b", "index-echo-s2st-9b", "moss-tts",)   # 0.346 MOSS external tokenizer; 0.279 Index-Echo: speech_tokenizer_v3 / CampPlus ONNX not costed   # 0.279 Nemotron VL video costed (tubelet embed ≈); 0.278 RADIO cls tokens ≈   # 0.277 Drama 3 DAC costed → full (0.276: partial)   # 0.273 Kimi-Audio: GLM-4-Voice input tokenizer (other repo) not costed   # 0.271 Omni: ViT stored only   # 0.145: MiniCPM slicing + MiMo band windows modelled → full; 0.251 NVFP4 = same vision

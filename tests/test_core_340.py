@@ -58,7 +58,7 @@ def test_ming_tiny_still_ok():
 
 
 def test_speech_count_340():
-    assert len(SPEECH_MODELS) == 40
+    assert len(SPEECH_MODELS) == 55   # 0.360: +15 speech siblings
 
 
 def test_changelog_no_ui_patch_340():
