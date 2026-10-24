@@ -58,7 +58,8 @@ NOT_SCALE_RE = re.compile(
     r"(^|\.)router\.(per_expert_scale|scale)$|(^|\.)vision_tower\.std_scale$|"
     r"(^|\.)self_attn\.per_dim_scale$)")
 ROLE = [
-    ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.|^linear_proj\.)"),
+    # 0.384: ERNIE-4.5-VL resampler_model is the projector (not under vision_model).
+    ("vision", r"(vision|visual|vit\.|image_|mm_projector|audio|multi_modal_projector|patch_embed|aligner\.|(^|\.)merger\.|^vit_large_projector|^speech_embeddings\.|^linear_proj\.|resampler_model)"),
     # 0.377: ERNIE-4.5 stores the ignored MTP block as model.mtp_block / mtp_linear_proj /
     # mtp_emb_norm / mtp_hidden_norm (no ".mtp." dot). The published class does not run it.
     ("mtp", r"(^mtp\.|\.mtp\.|\.mtp_|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),
@@ -71,7 +72,8 @@ ROLE = [
     # shared-MLP average and bills the router GEMM at the attn fallback.
     # 0.377: Ernie4_5_MoeTopKRouter.moe_statics.e_score_correction_bias is an fp32 [1, E]
     # parameter (selection only). It is not gate.e_score_correction_bias.
-    ("router", r"(\.gate\.weight$|\.router\.|gate\.e_score_correction|moe_statics\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid|\.mlp\.gate\.wg\.)"),
+    # 0.384: ERNIE-4.5-VL stores the second pool router as mlp.gate.weight_1 (fp32).
+    ("router", r"(\.gate\.weight$|\.mlp\.gate\.weight_\d+$|\.router\.|gate\.e_score_correction|moe_statics\.e_score_correction|\.gate\.bias$|shared_expert_gate|\.gate\.tid2eid|\.mlp\.gate\.wg\.)"),
     ("shared_expert", r"(shared_expert|\.share_expert\.)"),
     ("expert", r"(\.experts\.|block_sparse_moe\.experts|routed_expert|\.moe\.(gate|up|down)_proj\.)"),
     ("mlp", r"(\.mixer\.(gate_proj|up_proj|down_proj|suv_gate|suv_up)|\.mlp_alpha$)"),   # 0.253 Dory / Nemotron-H MLP mixers

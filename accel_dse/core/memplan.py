@@ -123,7 +123,12 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
     exp = 0.0
     if f.kind == "moe":
         n_loc = _cdiv(f.n_experts, sh.ep)
-        exp = n_loc * f.mats * f.expert_in(model.hidden) * _cdiv(f.d_expert, sh.etp) * model.fmt("expert").bits / 8
+        bpp = model.fmt("expert").bits / 8
+        ein = f.expert_in(model.hidden)
+        exp = n_loc * f.mats * ein * _cdiv(f.d_expert, sh.etp) * bpp
+        if f.n_experts_b and f.d_expert_b:
+            n_loc_b = _cdiv(f.n_experts_b, sh.ep)
+            exp += n_loc_b * f.mats * ein * _cdiv(f.d_expert_b, sh.etp) * bpp
     return hot, exp
 
 

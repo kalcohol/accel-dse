@@ -119,6 +119,8 @@ class Phase:
     questions: int = 1   # 0.291 joint decision request: readouts (question markers) per sequence
     labels: int = 0      # 0.191 decision readout (prefill only): logits of ≤ labels option tokens at the last
     samp: bool = False   # 0.253 decode verify: sampled draft rounds (DSpine eager serial_rs_table; serving.spec_sampling)
+    # 0.384 multimodal tokens per sequence inside this step (ERNIE-4.5-VL expert pools). 0 = text only.
+    mm: int = 0
     txt: int = 0         # 0.258 full: joint text rows of this forward (0 = the model's prefix_tokens) — CFG negative branch
     skip: tuple = ()     # 0.258 full: block indices this forward skips (MOSS-Image uncond_skip_layers)
                          # position, no KV cache kept (StartLux use_cache=False path) when nothing is prefix-shared
@@ -128,6 +130,8 @@ class Phase:
             raise ValueError("phase kind must be decode|prefill|full")
         if self.batch < 1 or self.q < 1 or self.ctx < 0:
             raise ValueError("batch,q ≥ 1 and ctx ≥ 0 required")
+        if self.mm < 0 or self.mm > self.q:
+            raise ValueError("phase.mm must be an integer in [0, q]")
 
     @property
     def tokens(self) -> int:
@@ -1446,7 +1450,12 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     elif f.kind == "moe":
         sh.check_moe()
         T = ph.tokens                       # global tokens in the stage step
+        # 0.384: pool B tokens are ph.mm per sequence. Absent on every earlier MoE (n_experts_b = 0).
+        mm = min(T, ph.batch * ph.mm) if f.n_experts_b else 0
+        text_T = (T - mm) if f.n_experts_b else T
         for l in L.ffn_linears:
+            if mm == 0 and l.name.startswith("router_b"):
+                continue
             k, n = _lin_local(l, tp)
             role = l.role or ("router" if l.name.startswith(("router", "shared_expert_gate")) else (
                 "shared_expert" if l.name.startswith("shared") else "mlp"))
@@ -1457,31 +1466,41 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             if tp > 1:
                 ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp,
                               comm_bytes=t * h * rb))
-        if f.zero_experts and not f.groups:
-            r = identity_zero_routing(f.n_experts, f.zero_experts, f.top_k, T, sh.ep, layer_skew(ph, li))
-        else:
-            r = moe_routing(f.n_experts, f.top_k, T, sh.ep, layer_skew(ph, li), f.groups)
-        d_loc = _cdiv(f.d_expert, sh.etp)
-        ein = f.expert_in(h)
-        if r.hit:
-            mats_up = 2 if f.gated else 1
-            # padded rows (hit · m_e ≥ token-expert pairs) cost time but are not work: share = useful fraction (0.63)
-            u = min(1.0, r.pairs_local / (r.hit * r.m_e))
-            ops.append(replace(gemm(model, "expert.gate_up", li, r.m_e, ein, mats_up * d_loc, "expert", count=r.hit),
-                               share=u))
-            ops.append(replace(gemm(model, "expert.down", li, r.m_e, d_loc, ein, "expert", count=r.hit), share=u))
-            ops.append(Op("expert_act", "vector", li, vec=r.pairs_local * d_loc * 4, sfu=r.pairs_local * d_loc * 2))
-        if sh.ep > 1:
-            pay = r.pairs_local * ein * ab
-            fn = node_dedup_factor(f.n_experts, f.top_k, ph.ep_nodes, f.groups,
-                                   f.n_experts + f.zero_experts)
-            ops.append(Op("moe_dispatch", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay,
-                          comm_stride=sh.etp, comm_net=fn))
-            ops.append(Op("moe_combine", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay * rb / ab,
-                          comm_stride=sh.etp, comm_net=fn))
-        if sh.etp > 1:
-            ops.append(Op("expert_allreduce", "comm", li, comm_kind="allreduce", comm_group=sh.etp,
-                          comm_bytes=r.pairs_local * ein * rb))
+
+        def _pool(name: str, n_exp: int, d_exp: int, tokens: int, zero: int) -> None:
+            if tokens <= 0 or n_exp <= 0:
+                return
+            if zero and not f.groups:
+                r = identity_zero_routing(n_exp, zero, f.top_k, tokens, sh.ep, layer_skew(ph, li))
+            else:
+                r = moe_routing(n_exp, f.top_k, tokens, sh.ep, layer_skew(ph, li), f.groups)
+            d_loc = _cdiv(d_exp, sh.etp)
+            ein = f.expert_in(h)
+            if r.hit:
+                mats_up = 2 if f.gated else 1
+                # padded rows (hit · m_e ≥ token-expert pairs) cost time but are not work: share = useful fraction (0.63)
+                u = min(1.0, r.pairs_local / (r.hit * r.m_e))
+                ops.append(replace(gemm(model, f"{name}.gate_up", li, r.m_e, ein, mats_up * d_loc, "expert",
+                                        count=r.hit), share=u))
+                ops.append(replace(gemm(model, f"{name}.down", li, r.m_e, d_loc, ein, "expert", count=r.hit),
+                                   share=u))
+                ops.append(Op(f"{name}_act" if name == "expert" else f"{name}.act", "vector", li,
+                              vec=r.pairs_local * d_loc * 4, sfu=r.pairs_local * d_loc * 2))
+            if sh.ep > 1:
+                pay = r.pairs_local * ein * ab
+                fn = node_dedup_factor(n_exp, f.top_k, ph.ep_nodes, f.groups, n_exp + zero)
+                tag = "" if name == "expert" else "_b"
+                ops.append(Op(f"moe_dispatch{tag}", "comm", li, comm_kind="alltoall", comm_group=sh.ep,
+                              comm_bytes=pay, comm_stride=sh.etp, comm_net=fn))
+                ops.append(Op(f"moe_combine{tag}", "comm", li, comm_kind="alltoall", comm_group=sh.ep,
+                              comm_bytes=pay * rb / ab, comm_stride=sh.etp, comm_net=fn))
+            if sh.etp > 1:
+                ops.append(Op("expert_allreduce" if name == "expert" else "expert_b_allreduce", "comm", li,
+                              comm_kind="allreduce", comm_group=sh.etp, comm_bytes=r.pairs_local * ein * rb))
+
+        _pool("expert", f.n_experts, f.d_expert, text_T, f.zero_experts)
+        if mm and f.n_experts_b:
+            _pool("expert_b", f.n_experts_b, f.d_expert_b, mm, 0)
         if tp > 1 and f.n_shared:
             ops.append(Op("shared_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     if L.ple_in:
@@ -2223,13 +2242,18 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         # 0.144 MoE DiT (LingBot-Video LingBotVideoSparseMoeBlock): router + shared expert GEMMs on every local token;
         # routed experts as grouped GEMMs over this rank's tokens (no EP in the reference: Ulysses SP splits tokens,
         # every rank holds all experts, TP splits d_expert); uniform-routing expectation of the hit experts
+        # 0.384: pool B (ERNIE-4.5-VL) uses ph.mm of each sequence. n_experts_b = 0 keeps this block unchanged.
+        mm_tok = min(t, b * ph.mm) if f.n_experts_b else 0
+        text_tok = (t - mm_tok) if f.n_experts_b else t
         for l in L.ffn_linears:
+            if mm_tok == 0 and l.name.startswith("router_b"):
+                continue
             role = "router" if l.name.startswith("router") else ("shared_expert" if l.name.startswith("shared") else "mlp")
             ops.append(lin("moe", l, role))
         if f.zero_experts and not f.groups:
-            r = identity_zero_routing(f.n_experts, f.zero_experts, f.top_k, t, 1)
+            r = identity_zero_routing(f.n_experts, f.zero_experts, f.top_k, text_tok, 1)
         else:
-            r = moe_routing(f.n_experts, f.top_k, t, 1)
+            r = moe_routing(f.n_experts, f.top_k, text_tok, 1)
         d_loc, ein = _cdiv(f.d_expert, tp), f.expert_in(h)
         if r.hit:
             u = min(1.0, r.pairs_local / (r.hit * r.m_e))
@@ -2237,11 +2261,25 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
                                     "expert", count=r.hit, stream=True), share=u))
             ops.append(replace(gemm(model, "expert.down", li, r.m_e, d_loc, ein, "expert", count=r.hit, stream=True),
                                share=u))
+        pairs_b, d_loc_b = 0.0, 0
+        if mm_tok and f.n_experts_b:
+            rb_ = moe_routing(f.n_experts_b, f.top_k, mm_tok, 1)
+            d_loc_b = _cdiv(f.d_expert_b, tp)
+            if rb_.hit:
+                ub = min(1.0, rb_.pairs_local / (rb_.hit * rb_.m_e))
+                ops.append(replace(gemm(model, "expert_b.gate_up", li, rb_.m_e, ein,
+                                        (2 if f.gated else 1) * d_loc_b, "expert", count=rb_.hit, stream=True),
+                                   share=ub))
+                ops.append(replace(gemm(model, "expert_b.down", li, rb_.m_e, d_loc_b, ein, "expert",
+                                        count=rb_.hit, stream=True), share=ub))
+                pairs_b = rb_.pairs_local
         dense_ff = _cdiv(f.d_ff, tp) if f.d_ff else 0
-        ops.append(Op("act", "vector", li, vec=(r.pairs_local * d_loc + (t * _cdiv(f.n_shared * f.d_shared, tp)))
-                      * 4 + t * (f.n_experts + f.zero_experts) * 6 + t * dense_ff * 4,
-                      sfu=(r.pairs_local * d_loc + t * _cdiv(f.n_shared * f.d_shared, tp)) * 2
-                      + t * (f.n_experts + f.zero_experts) + t * dense_ff * 2))   # SiLU; sigmoid router + top-k (6 / class)
+        n_route = f.n_experts + f.zero_experts + (f.n_experts_b if mm_tok else 0)
+        ops.append(Op("act", "vector", li, vec=((r.pairs_local * d_loc + pairs_b * d_loc_b
+                      + (t * _cdiv(f.n_shared * f.d_shared, tp))) * 4 + t * n_route * 6 + t * dense_ff * 4),
+                      sfu=((r.pairs_local * d_loc + pairs_b * d_loc_b
+                            + t * _cdiv(f.n_shared * f.d_shared, tp)) * 2
+                           + t * n_route + t * dense_ff * 2)))   # SiLU; sigmoid router + top-k (6 / class)
     else:
         ops += [lin("mlp", l, "mlp") for l in L.ffn_linears]
         ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))     # GELU (tanh) / SwiGLU 「假设」 8 ops / element

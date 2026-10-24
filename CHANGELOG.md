@@ -6,6 +6,37 @@
 
 
 
+## [0.384.0] — 2026-10-24
+
+### 复核 LFM2.5-2.6B 与 Granite-4.2；ERNIE-4.5-VL 按双池 MoE 入库
+
+- **0.383 的账目复核过，参数路径不改。** 2026-10-24 重新读取 `LiquidAI/LFM2.5-2.6B`、`ibm-granite/granite-4.2-3b`、`ibm-granite/granite-4.2-8b` 的 safetensors header，与已入库的发布 JSON 没有差异。
+  - **LFM2.5-2.6B。** 266 张量，`model_type=lfm2`。30 层里 22 层短卷积（kernel 3）加 8 层 GQA。hidden 2048，intermediate 10752，头 32/8，head 64。`tie_word_embeddings` 为 true。语言参数 2,697,198,592。`bytes_total` 5,394,397,184。`param_check().rel_err == 0`。
+  - **granite-4.2-3b / 8b。** 各 363 张量。GEMM 形状与已入库的 4.1-3b / 4.1-8b 相同，`lm_head` 不再绑在 embedding 上。4.2-3b 语言参数 3,659,737,600，`bytes_total` 7,319,475,200，`attention_multiplier` 0.015625。4.2-8b 语言参数 8,791,592,960，`bytes_total` 17,583,185,920，`attention_multiplier` 0.0078125。两份的 `embedding_multiplier`、`residual_multiplier`、`logits_scaling` 都是 1.0。这些标量不改变 GEMM，也不改变 KV 宽度。`param_check().rel_err == 0`。
+- **新增 2 个发布**（2026-10-24 读取 safetensors header）。`model_type` 是 `ernie4_5_moe_vl`，类是仓库里的 `Ernie4_5_VLMoeForConditionalGeneration`。`param_check().rel_err == 0`。语言覆盖 full。没有 MTP：config 没有 `num_nextn_predict_layers`，header 没有 `mtp_*`，`params_mtp == 0`。不把缺省填成 1。
+  - **双池。** 一层里有两套 SwiGLU 专家和两个 router。文本 token 只走第一池和 `gate.weight`。这一步里只要有非文本 token，两个 router 都对每个 token 计，文本 token 留在第一池，其余 token 走第二池。公开 VL config 把 `moe_use_hard_gate` 默认写成 true，父类在 JSON 没有该键时又写成 false，文本路径的 `lm_gate` 因此是空的。这里按权重和多模态 forward 的分流计，不另造第三种路由。文本参考内核按 capacity 补零，多模态内核 `use_padding` 为 false。两种步都按 top-k 的期望行数计，不把补零行算进 GEMM，也不计 capacity 周期。
+  - **28B-A3B-PT**（`baidu/ERNIE-4.5-VL-28B-A3B-PT`，11105 张量）。hidden 2560，28 层，GQA 20/4，head 128。词表 103424，`tie_word_embeddings` 为 true，没有 `lm_head`。第 0 层稠密 SwiGLU，`gate_proj` bf16 `[12288, 2560]`。第 1–27 层是双池：专家 0–63 宽 1536，专家 64–127 宽 512，都是 top-6。两个 fp32 router 都是 `[2560, 64]`。`e_score_correction_bias` 是 fp32 `[2, 64]`。共享 SwiGLU 宽 3072（文本宽 1536 × `moe_num_shared_experts` 2）。语言参数 28,624,635,776。`bytes_llm` 57,266,973,184。`bytes_total` 58,816,290,304。
+  - **424B-A47B-PT**（`baidu/ERNIE-4.5-VL-424B-A47B-PT`，20475 张量）。hidden 8192，54 层，GQA 64/8，head 128。词表 103424，`tie_word_embeddings` 为 false，`lm_head` 与 embedding 都是 bf16 `[103424, 8192]`。第 0–2 层稠密，`gate_proj` `[28672, 8192]`。第 3–53 层（51 层）是双池：文本专家宽 3584，视觉专家宽 1536，各 64 个，top-8。两个 fp32 router 都是 `[8192, 64]`。config 没有 `moe_num_shared_experts`，header 没有 `shared_experts`。`freq_allocation` 是 20，不改变 GEMM 形状，也不改变 KV 宽度。语言参数 422,722,779,520。`bytes_llm` 845,552,526,848。`bytes_total` 847,159,538,176，是各张量 header 的字节合计。
+  - **fp32 校正 bias。** 落在层 misc。记忆体计划对 LLM 的 misc 仍按每参数 2 字节，发布文件按 4 字节。最终 RMSNorm 与 0.377 一样不进这一档权重合计。因此 `stage_storage` 比 `bytes_llm` 少 `n_moe × 128 × 2 + hidden × 2` 字节（28B 少 12032，424B 少 29440）。router 本身按 fp32 计。
+  - **视觉塔。** DFNRope，patch 14，depth 32，hidden 1280，16 头，`quick_gelu`，MLP 宽 5120，不是门控。`attn_sep` 为 true，`VisionAttention.forward` 不读它，不另计一段注意力。塔的权重是 fp16（`patch_embed.proj` `[1280, 588]`）。resampler 是 bf16：空间两次 `[5120, 5120]`，时间 `[5120, 10240]` 再 `[5120, 5120]`，然后投到文本 hidden。两种 dtype 都是每参数 2 字节，GEMM 标签仍是 bf16。28B 视觉参数 774,658,560。424B 视觉参数 803,505,664，差额只在最后一层线性（2560 对 8192）和 `after_norm`。
+  - **图像网格。** 用 processor 的 `smart_resize`（factor 28，最少 3136 像素，最多 `6177 × 28²`）。`preprocessor_config` 的 `max_pixels` 不是这条路径。1024×1024 落到 1036×1036：74×74 patch，合并后 1369 行，加上 IMAGE_START / IMAGE_END 共 1371 个 LLM 位置。首尾标记的 token 类型是图像，走视觉专家池。图像 token 放在提示前面。`prefix_cached` 先吃掉这段。纯文本步（含 decode）不计第二池的 GEMM，权重仍在。视频按帧配对再做时间合并，这条图像网格不含视频。
+- **未纳入：**
+  - **ERNIE-4.5-VL 视频时间合并。** 图像路径把单帧复制后拼接，行数不变。视频会先把帧配对、行数减半。不把视频网格写成图像网格。
+  - **granite-4.2-30b 与 4.2 的 fp8 / mxfp4 / nvfp4。** 本轮没有读这些仓库的 config 或 header。
+  - **LFM2.5-2.6B-Base。** 没有和 2.6B 对过 header。GGUF / MLX / ONNX 分支不单列。
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不跑这份权重。不另写递推。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。没有读 config 或 header。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 与已入库的 3.2 同 header。不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **Gemma-4 assistant / QAT。** 与已入库的十个发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.383.0] — 2026-10-24
 
 ### 复核 Gemma-4 视频网格；目录补上 LFM2.5-2.6B 与 Granite-4.2
