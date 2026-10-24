@@ -62,6 +62,9 @@ EXTRA_TAIL = [
     ("minicpm-v-4.7-35b-a3b", "openbmb/MiniCPM-V-4.7-35B-A3B"),
     # 0.145 (official releases 2026-09-04 / 2026-10; public config.json + safetensors headers, as released)
     ("mimo-v2.6-pro", "XiaomiMiMo/MiMo-V2.6-Pro-RL"),
+    # 0.372: MiMo-V2-Flash (public config + safetensors headers, 2026-10-24). Text-only
+    # mimo_v2_flash; Flash-Base has the same index total_size and tensor count.
+    ("mimo-v2-flash", "XiaomiMiMo/MiMo-V2-Flash"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
@@ -618,7 +621,8 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("ant", "Ling-3.0", ("ling-3.0",)),   # 0.311: Ling-3.0-tiny / -flash text + the tiny UBTree pair
     ("ant", "Ming-3.0-ASR", ("ming-3.0-asr",)), ("ant", "Ming-3.0-TTS", ("ming-3.0-tts",)),
     ("alibaba", "Qwen-Image", ("qwen-image",)), ("bfl", "FLUX.2", ("flux.2",)),
-    ("stepfun", "Step-Audio-2", ("step-audio-2",)), ("stepfun", "Step-5", ("step-5",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),
+    ("stepfun", "Step-Audio-2", ("step-audio-2",)), ("stepfun", "Step-5", ("step-5",)),
+    ("xiaomi", "MiMo-V2-Flash", ("mimo-v2-flash",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)), ("internlm", "Intern-S2", ("intern-s2",)),
     ("openbmb", "MiniCPM-V 4.7", ("minicpm-v-4.7",)), ("robbyant", "LingBot-Video", ("lingbot-video",)),
     ("startlux", "StartLux-Decision v1.1", ("startlux-decision-v1.1",)), ("startlux", "StartLux-Decision v1", ("startlux-decision-v1-",)),
     ("microsoft", "Microsoft-Decision", ("microsoft-decision",)),
