@@ -1354,10 +1354,13 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # merger's output onto visual-token rows.  Decode positions are not visual, so this is prefill-only.
         # The reference clones the whole hidden state; the algorithm is the indexed add (read hidden, read
         # feature, write hidden).  Billed on the encoder pass that produced the features (full width, once).
+        # 0.367: stream=True.  act_stream returns act_bytes with no SRAM absorb — later LLM layers consume the
+        # feature, so the round trip is DRAM even when the bytes fit the activation half.  vision_act_peak
+        # stays GEMM-only.
         out_h = v.post[-1][1]
         m_ = mrows if mrows is not None else images * (N0 // (v.merge * v.merge))
         ops.append(Op(pfx + "deepstack", "vector", 0, vec=v.deepstack * m_ * out_h,
-                      act_bytes=v.deepstack * 3 * m_ * out_h * ab))
+                      act_bytes=v.deepstack * 3 * m_ * out_h * ab, stream=True))
     return ops
 
 
