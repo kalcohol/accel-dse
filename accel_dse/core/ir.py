@@ -181,6 +181,8 @@ class Op:
     act_x: float = 0.0        # 0.119: extra activation DRAM bytes when the op spills (softmax read + write of logits)
     in_elems: float = 0.0     # conv as implicit GEMM: elements of the real input tensor (the M×K im2col matrix is
                               # virtual — DRAM streaming moves the input once, 0 = M·K·count)
+    v_dim: int = 0            # 0.362: attn value width when it is not k (0 = k). Flash streaming counts K and V
+                              # separately; equal-width attention leaves this 0 and stays on the 2×k path.
 
     @property
     def flops(self) -> float:
@@ -1211,7 +1213,10 @@ def _dea_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard, b_loc: i
     each step.  kkup / vvup run over every cached row (ctx + q), then the ennk / emm row of every cached token
     id, LayerNorm, and one causal head: scores = 32 * tanh((q @ k^T) / 512), softmax, @ v.  The up-projections
     are weight GEMMs; their left-hand side is the cache, counted as kv_read / kv_write (fp16, 2 B) rather than
-    as a second activation read.  Reference is one GPU: projections are replicated, the cache is not TP-split.
+    as a second activation read.  The reconstructed K (kq) and V (vd) are activations.  When they do not fit
+    the SRAM activation half, the producer writes them and dea_qk reads them back (memplan.act_stream; V is
+    not another copy of K).  Reference is one GPU: projections and the attention matmuls are replicated, the
+    cache is not TP-split.
     """
     c = L.core
     if not c.dea_q:
@@ -1255,11 +1260,13 @@ def _dea_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard, b_loc: i
                   replicated=tp))
     ops.append(Op("dea_lnv", "vector", li, vec=rows * c.dea_vd * 4, sfu=rows, replicated=tp))
     sm = b_loc * q * s * causal
-    ops.append(Op("dea_qk", "attn", li, m=q, k=c.dea_kq, n=s, count=b_loc, causal=causal,
-                  act_bytes=b_loc * q * c.dea_kq * cache_b))
+    # One head. K is [s, kq] and V is [s, vd]; they are not the same width, so flash streaming must not
+    # treat V as another K. Replicated under TP like the projections (the reference is one GPU).
+    ops.append(Op("dea_qk", "attn", li, m=q, k=c.dea_kq, n=s, count=b_loc, causal=causal, v_dim=c.dea_vd,
+                  replicated=tp, act_bytes=b_loc * q * c.dea_kq * cache_b))
     ops.append(Op("dea_softcap", "vector", li, vec=sm * 3, sfu=sm, replicated=tp))
     ops.append(Op("dea_softmax", "vector", li, vec=sm * 5, sfu=sm, replicated=tp))
-    ops.append(Op("dea_pv", "attn", li, m=q, k=s, n=c.dea_vd, count=b_loc, causal=causal,
+    ops.append(Op("dea_pv", "attn", li, m=q, k=s, n=c.dea_vd, count=b_loc, causal=causal, replicated=tp,
                   act_bytes=b_loc * q * c.dea_vd * cache_b))
     return ops
 
@@ -1538,8 +1545,9 @@ def _llm_stream(ops: list[Op], ph: Phase) -> list[Op]:
             o = replace(o, stream=True)
         elif o.kind == "attn" and ph.kind == "prefill" and o.name in ("qk", "qk_latent") and not o.stream:
             o = replace(o, stream=True, kv_pre=pre)
-        elif o.kind == "attn" and ph.kind == "prefill" and o.name == "dea_qk" and not o.stream:
-            # Reconstructed K is rebuilt every step (not a prefix already charged to kv_read).
+        elif o.kind == "attn" and o.name == "dea_qk" and not o.stream:
+            # Reconstructed K/V are activations of the up-projections, not a prefix already in kv_read.
+            # Decode and prefill both re-read them when they miss SRAM (v_dim != k; memplan.act_stream).
             o = replace(o, stream=True, kv_pre=0.0)
         out.append(o)
     return out

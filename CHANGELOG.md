@@ -6,6 +6,14 @@
 
 
 
+## [0.362.0] — 2026-10-24
+
+### DeepEmbedAttention 重建的 K/V 超出 SRAM 后要重新读入
+
+- **Bug：** RWKV-8 hybrid 的 `kkup` / `vvup` 把整段 K（256 维）和 V（768 维）写成激活。放不进 SRAM 的激活半区时，GEMM 会计一次写出，解码注意力却不读回来：flash 流式只开在 prefill，而且按 K/V 等宽，把 V 当成另一个 256 维。长上下文解码是 DRAM 瓶颈，少算了这一半激活流量。TP>1 时 `dea_qk` / `dea_pv` 没有标成复制，请求 FLOPs 按卡数乘了这两次 matmul。
+- **修复：** `v_dim != k` 时流式分别计 Q/O 与 K/V；解码和 prefill 在放不下时都重读。这两个 matmul 与其余 DEA 算子一样 `replicated = tp`。短上下文仍放在片上，DRAM 激活字节不变。
+- **未改：** fp16 的 kk/vv 低秩缓存、整栈一份 int32 token id、DeepEmbed 查表、时间混合的 WKV-7。
+
 ## [0.361.0] — 2026-10-24
 
 ### RWKV-8 Heron pile rc00（纯循环 + hybrid DeepEmbedAttention）
