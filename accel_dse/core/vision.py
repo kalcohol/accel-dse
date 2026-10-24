@@ -30,6 +30,17 @@ docs/MODEL.md §20):
          start / end).  The aligner sits outside ``vision`` in the release role table (``aligner.*`` → other); its
          73.41 M params are added here.
 
+  gemma4 Gemma-4 ViT (gemma4_vision): Linear patch embed (3·16² → h, no bias), factorised position table
+         (2, position_embedding_size, h), depth pre-norm blocks (separate q / k / v / o, q / k RMSNorm,
+         gated MLP). The processor pads to max_soft_tokens · pooling² patches; those rows are what the
+         tower GEMMs and the bidirectional attention see. Average-pool (no parameters) then strips the
+         pad; the projector Linear(h → text, no bias) runs on the remaining soft tokens. std_bias and
+         std_scale are stored buffers when standardize is set. use_clipped_linears is refused.
+  gemma4u Gemma-4 12B encoder-free embedder (gemma4_unified_vision): LN → Linear(48²·3 → mm) → LN →
+         factorised position table → LN → RMSNorm (no scale) → Linear(mm → text). Both GEMMs see the
+         padded max_soft_tokens rows; the LLM prompt keeps only the real soft tokens. The unified audio
+         path is one Linear(audio_embed_dim → text) when audio_config.model_type is gemma4_unified_audio.
+
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
 residual element-ops 3 per GEMM output 「假设」, softmax 5 per score.  Image tokens into the LLM = merged positions
@@ -415,6 +426,16 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
         # 0.336 OmniASR LLM / CTC (bezzam/*-v2 HF ports of facebook/omniASR): Wav2Vec2-style audio_tower +
         # multi_modal_projector (LLM) or CTC lm_head (CTC — encoder only; language decode not modelled as asr)
         return _omniasr_audio_spec(cfg, ac)
+    if ac.get("model_type") == "gemma4_unified_audio":
+        # One projection. A conformer (gemma4_audio on E2B / E4B) is not this module.
+        d_in = ac.get("output_proj_dims")
+        if not d_in or d_in != ac.get("audio_embed_dim"):
+            return None
+        spt = ac.get("audio_samples_per_token") or 0
+        text_h = (cfg.get("text_config") or {}).get("hidden_size")
+        if spt <= 0 or not text_h:
+            return None
+        return AudioSpec(16000, (spt,), (d_in,), (0,), 1, 1.0, text_h, d_in * text_h, kind="g4lin")
     if ac.get("model_type") != "muse_spark_audio":
         return None
     pt, dm, dp, k, r = tuple(ac["patch_sizes"]), tuple(ac["hidden_sizes"]), tuple(ac["depths"]), ac["conv_kernel_size"], ac["mlp_ratio"]
@@ -757,6 +778,12 @@ def _whisper_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -
 def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> list[Op]:
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
+    if a.kind == "g4lin":
+        # Gemma4UnifiedMultimodalEmbedder: one Linear(audio_embed_dim → text), no bias. RMSNorm has no scale.
+        t = a.tokens(seconds) * clips
+        k, n = a.dims[0], a.out
+        return [Op("aud.proj", "gemm", 0, m=t, k=k, n=n, role="vision", w_params=k * n, w_bits=a.w_bits,
+                   w_fmt=a.w_fmt, a_fmt=af, act_bytes=t * (k + n) * ab, stream=True, vec=t * n * VEC_PER_OUT)]
     if a.kind == "whisper":
         return _whisper_ops(a, seconds, clips, ab, af)
     if a.kind == "aut":
@@ -787,6 +814,127 @@ def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> lis
 
 def _lin(i: int, o: int, b: bool = True) -> int:
     return i * o + (o if b else 0)
+
+
+def _gemma4_resize(height: int, width: int, patch: int, max_patches: int, pool: int) -> tuple[int, int]:
+    """transformers get_aspect_ratio_preserving_size (gemma4 and gemma4_unified image processors)."""
+    total_px = height * width
+    target_px = max_patches * (patch ** 2)
+    factor = math.sqrt(target_px / total_px)
+    side = pool * patch
+    th = int(math.floor(factor * height / side)) * side
+    tw = int(math.floor(factor * width / side)) * side
+    max_side = (max_patches // (pool * pool)) * side
+    if th == 0 and tw == 0:
+        return side, side
+    if th == 0:
+        th = side
+        tw = min(int(math.floor(width / height)) * side, max_side) or side
+    elif tw == 0:
+        tw = side
+        th = min(int(math.floor(height / width)) * side, max_side) or side
+    return th, tw
+
+
+def _gemma4_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
+    """Gemma-4 ViT or the 12B encoder-free embedder. None when a weight has no accounting path."""
+    text_h = (cfg.get("text_config") or {}).get("hidden_size") or cfg.get("hidden_size")
+    if not text_h:
+        return None
+    mt = vc.get("model_type")
+    if mt == "gemma4_unified_vision":
+        patch = vc.get("patch_size") or 0
+        pool = vc.get("pooling_kernel_size") or 0
+        soft = vc.get("num_soft_tokens") or vc.get("default_output_length") or 0
+        mm = vc.get("mm_embed_dim") or 0
+        pos = vc.get("mm_posemb_size") or 0
+        side = vc.get("model_patch_size") or 0
+        if not (patch and pool and soft and mm and pos and side == patch * pool):
+            return None
+        # LN1 (w+b) → Linear+bias → LN2 (w+b) → pos table (pos, 2, mm) → LN3 (w+b) → Linear(mm → text, no bias).
+        patch_dim = side * side * 3
+        params = (2 * patch_dim + patch_dim * mm + mm + 2 * mm + pos * 2 * mm + 2 * mm + mm * text_h)
+        au = audio_spec(cfg)
+        if au is not None:
+            params += au.params
+        pre = {"patch": patch, "pool": pool, "max_soft": soft, "mm": mm, "patch_dim": patch_dim, "text_h": text_h}
+        return VisionSpec("gemma4u", "Gemma-4 unified embedder (no vision tower)", patch, 1, mm, 0, 0, 1, mm,
+                          False, pool, ((mm, text_h),), params, tuple(sorted(pre.items())), audio=au)
+    if mt != "gemma4_vision":
+        return None
+    if vc.get("use_clipped_linears"):
+        return None
+    hv = vc.get("hidden_size") or 0
+    inter = vc.get("intermediate_size") or 0
+    depth = vc.get("num_hidden_layers") or 0
+    nh = vc.get("num_attention_heads") or 0
+    nkv = vc.get("num_key_value_heads") or nh
+    hd = vc.get("head_dim") or (hv // nh if nh else 0)
+    patch = vc.get("patch_size") or 0
+    pool = vc.get("pooling_kernel_size") or 0
+    pos = vc.get("position_embedding_size") or 0
+    soft = vc.get("default_output_length") or cfg.get("vision_soft_tokens_per_image") or 0
+    if not (hv and inter and depth and nh and hd and patch and pool and pos and soft):
+        return None
+    if nh * hd != hv:
+        return None
+    qd, kvd = nh * hd, nkv * hd
+    # input proj (no bias) + position table (2, pos, h) + per-layer q/k/v/o, q/k RMSNorm, 4 norms, gated MLP
+    params = (3 * patch * patch * hv + 2 * pos * hv
+              + depth * (hv * qd + 2 * hv * kvd + qd * hv + 2 * hd + 4 * hv + 3 * hv * inter))
+    if vc.get("standardize", False):
+        params += 2 * hv
+    mm = vc.get("output_proj_dims") or hv
+    params += mm * text_h
+    pre = {"patch": patch, "pool": pool, "max_soft": soft, "qd": qd, "kvd": kvd, "text_h": text_h,
+           "std": 1 if vc.get("standardize", False) else 0}
+    return VisionSpec("gemma4", "Gemma-4 ViT + pool + projector", patch, 1, hv, inter, depth, nh, qd, True, pool,
+                      ((mm, text_h),), params, tuple(sorted(pre.items())))
+
+
+def _gemma4_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> list[Op]:
+    """Padded tower (or unified) GEMMs, then the projector on the rows the reference actually projects."""
+    from .dtypes import fmt as _fmt
+    ab = _fmt(af).bytes
+    pr = v.rz
+    pool, soft = pr["pool"], pr["max_soft"]
+    wf, wb = "bf16", 16.0
+
+    def gemm(name: str, m: int, k: int, n: int, layer: int = 0) -> Op:
+        return Op("vis." + name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=wb, w_fmt=wf,
+                  a_fmt=af, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+
+    if v.family == "gemma4u":
+        # Both linears see the padded soft-token rows. The LLM keeps g.llm_tokens of them.
+        rows = images * soft
+        k_patch = pr["patch_dim"]
+        mm, text_h = pr["mm"], pr["text_h"]
+        return [gemm("patch_dense", rows, k_patch, mm), gemm("proj", rows, mm, text_h)]
+    n_pad = soft * pool * pool
+    rows = images * n_pad
+    h = v.hidden
+    ops = [gemm("patch_embed", rows, 3 * v.patch * v.patch, h)]
+    qd, kvd = pr["qd"], pr["kvd"]
+    cnt = images * v.heads
+    dh = v.head_dim
+    keys = n_pad * n_pad
+    for li in range(v.depth):
+        ops += [gemm(f"{li}.q", rows, h, qd, li), gemm(f"{li}.k", rows, h, kvd, li),
+                gemm(f"{li}.v", rows, h, kvd, li), gemm(f"{li}.o", rows, qd, h, li)]
+        ops += [gemm(f"{li}.mlp_in", rows, h, 2 * v.inter, li), gemm(f"{li}.mlp_out", rows, v.inter, h, li)]
+        ops += [Op(f"vis.{li}.qk", "attn", li, m=n_pad, k=dh, n=n_pad, count=cnt, causal=1.0,
+                   act_bytes=cnt * n_pad * dh * ab, stream=True, orient=True),
+                Op(f"vis.{li}.pv", "attn", li, m=n_pad, k=n_pad, n=dh, count=cnt, causal=1.0,
+                   act_bytes=cnt * n_pad * dh * ab, orient=True),
+                Op(f"vis.{li}.softmax", "vector", li, vec=cnt * keys * 5.0)]
+    # Pool is a position-weighted average (no parameters), then the projector on the unpadded soft tokens.
+    ops.append(Op("vis.pool", "vector", v.depth, vec=rows * h, act_bytes=rows * h * ab))
+    m_proj = images * g.llm_tokens
+    k_proj, n_proj = v.post[0]
+    ops.append(gemm("proj", m_proj, k_proj, n_proj, v.depth))
+    if pr.get("std"):
+        ops.append(Op("vis.std", "vector", v.depth, vec=m_proj * h * 2, act_bytes=m_proj * h * ab))
+    return ops
 
 
 def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
@@ -833,6 +981,8 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                               approx=("输入离散语义 token：GLM-4-Voice tokenizer（THUDM/glm-4-voice-tokenizer，Whisper-v3 "
                                       "前 16 层 + 4× 池化 + VQ 16384，另一仓库）未计入音频编码耗时" if au.stack else ""))
         return None
+    if vc.get("model_type") in ("gemma4_vision", "gemma4_unified_vision"):
+        return _gemma4_vision_spec(cfg, vc)
     if hf_id not in _PREPROC:
         return None
     pre = dict(_PREPROC[hf_id])
@@ -1173,6 +1323,13 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
     if v.family == "audio":                       # 0.268 audio-only encoder: no image path
         return ImageGrid(0, 0, 0, 0, (0, 0))
     pr = v.rz
+    if v.family in ("gemma4", "gemma4u"):
+        # LLM tokens = real soft tokens after the pad is stripped. Tower GEMMs use the pad (vision_ops).
+        max_patches = pr["max_soft"] * pr["pool"] * pr["pool"]
+        th, tw = _gemma4_resize(height, width, pr["patch"], max_patches, pr["pool"])
+        ph, pw = th // pr["patch"], tw // pr["patch"]
+        soft = ph * pw // (pr["pool"] * pr["pool"])
+        return ImageGrid(ph, pw, soft, soft, (tw, th))
     if v.family == "qwen" and "muse_tok" in pr:
         # 0.255 MuseSparkProcessor.replace_image_token: <|image_start|> + merged <|patch|> tokens + <|image_end|>
         hb, wb = _muse_resize(height, width, pr["factor"], pr["muse_tok"])
@@ -1275,6 +1432,8 @@ def vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str = "bf16") -> li
     MiMo windowed blocks charge only the band's keys (``band_keys``)."""
     if images <= 0:
         return []
+    if v.family in ("gemma4", "gemma4u"):
+        return _gemma4_vision_ops(v, g, images, af)
     if g.tframes > 1:
         # 0.166 Kimi chunk (modeling_kimi_k25): patch-embed + tower over every frame's patches with one cu_seqlens
         # span of t·h·w (spatial_temporal); tpool_patch_merger means over t, then the merger runs on h/2·w/2 rows

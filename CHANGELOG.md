@@ -6,6 +6,24 @@
 
 
 
+## [0.368.0] — 2026-10-24
+
+### 目录：Gemma-4（混合滑窗 / 全注意力，不是 Gemma-3 的薄封装）
+
+- **新增 6 个发布**（2026-10-24 读取 `config.json` 与 safetensors header）。`param_check().rel_err == 0`，视觉 `extra == 0`，权重 bf16。文本是新的 `gemma4_text` / `gemma4_unified_text` builder，不走 Gemma-3、Qwen 或通用 GQA。
+  - **31B / 31B-it**（`google/gemma-4-31B`、`google/gemma-4-31B-it`，`gemma4`）：60 层、hidden 5376、词表 262144、tied。50 层滑窗（window 1024，head 256，16 KV，有 v_proj）+ 10 层全注意力（head 512，4 KV，`attention_k_eq_v`，无 v_proj）。语言参数 30,697,345,340。视觉塔 `gemma4_vision`（patch 16、27 层、hidden 1152、pooling 3、soft token 默认 280）+ 投影。视觉参数 575,743,536（含 `std_bias` / `std_scale`）。
+  - **26B-A4B / 26B-A4B-it**（`gemma4`，MoE）：30 层、hidden 2816。25 层滑窗（head 256，8 KV）+ 5 层全注意力（head 512，2 KV，无 v_proj）。每层同时有稠密 MLP（intermediate 2112）和 128 专家 top-8（`moe_intermediate_size` 704）。`router.scale` [hidden] 与 `router.per_expert_scale` [128] 是 `nn.Parameter`。语言参数 25,233,141,790。视觉塔与 31B 同宽，投影到 2816。视觉参数 572,794,416。
+  - **12B / 12B-it**（`gemma4_unified`）：48 层、hidden 3840。40 层滑窗 + 8 层全注意力（全注意力 KV 头 1、head 512，无 v_proj）。语言参数 11,907,350,320。没有视觉塔：`gemma4_unified_vision` 是 LN → Linear(6912 → 3840) → 位置表 → Linear(3840 → 3840)。音频是一条 Linear(640 → 3840)（16 kHz，640 sample/token），`audio_s > 0` 才算计算。视觉+音频参数 52,379,904。
+- **KV：** 滑窗层只保留 `sliding_window` 个 token；全注意力层保留整段上下文，且 K/V 宽度按该层的 head dim 与 KV 头数计。全注意力没有 v_proj 时，V 仍是无 scale 的 RMSNorm(K)，cache 里 K 和 V 都存。不是「每一层都按全注意力计」。
+- **图像：** `get_aspect_ratio_preserving_size`（边长对齐 `pooling * patch` = 48）。1024² → 768² → 2304 个 patch → 256 个 soft token。ViT 的 GEMM 与双向注意力按 pad 到 `max_soft_tokens * 9`（默认 2520）的序列计；投影与 LLM token 用去掉 pad 之后的 soft token。12B 两条 GEMM 按 pad 到 280 的行计，LLM 仍用真实 soft token。`vision_act_peak` 只看 GEMM。
+- **scale 归类：** `SCALE_RE` 会丢掉以 `scale` 结尾的名字。`NOT_SCALE_RE` 增加锚定的 `router.scale`、`router.per_expert_scale`、`vision_tower.std_scale`（参数或 standardize buffer，不是量化 scale）。只重汇总了这 6 份 Gemma-4。`experts.*_scale_inv` 的剥离不变。
+- **未纳入：**
+  - **E2B / E4B**（四个 id）：`num_kv_shared_layers` 要在滑窗 cache 之外再存一份全长 `shared_kv_states`，现有 `kv_shared` 没有这条；另有 per-layer embedding（PLE）、E2B 的 double-wide MLP，以及 `gemma4_audio` conformer。没有可对上的机制，不入库，也不编造语音 KPI。
+  - **Assistant draft / DiffusionGemma：** 未核对到与上述 text+vision builder 相同且 `param_check().rel_err == 0`，不单列。
+  - **视频：** processor 有 `max_soft_tokens` 70、32 帧，时间打包没有接到现有 video grid。图像路径是完整的；视频不建。
+  - **final_logit_softcapping 30、full attention 的 `partial_rotary_factor` 0.25、滑窗层上 vision block 的双向 mask：** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期，覆盖仍是 full。
+  - **gelu_pytorch_tanh：** 形状与门控 MLP 相同，激活元素数沿用现有 gated act，不单建一套 GELU 周期。
+
 ## [0.367.0] — 2026-10-24
 
 ### Qwen3-VL deepstack 的 prefill RMW 计入编码器 DRAM
