@@ -315,6 +315,11 @@ class Ffn:
     groups: tuple[int, ...] = ()
     # Identity experts scored by the router and applied as a copy of the token. They have no parameters.
     zero_experts: int = 0
+    # 0.384 second routed pool (ERNIE-4.5-VL). Same top-k, different expert width.
+    # A text token reads pool A only. A multimodal token reads pool B only.
+    # Both are zero on every earlier MoE.
+    n_experts_b: int = 0
+    d_expert_b: int = 0
 
     @property
     def mats(self) -> int:
@@ -372,7 +377,10 @@ class Layer:
         f = self.ffn
         if f.kind != "moe":
             return 0
-        return f.n_experts * f.mats * f.expert_in(hidden) * f.d_expert
+        p = f.n_experts * f.mats * f.expert_in(hidden) * f.d_expert
+        if f.n_experts_b and f.d_expert_b:
+            p += f.n_experts_b * f.mats * f.expert_in(hidden) * f.d_expert_b
+        return p
 
     def params(self, hidden: int) -> int:
         if self.loop:
@@ -601,6 +609,9 @@ class ModelSpec:
                 else:
                     k_hit = f.top_k
                 p -= (f.n_experts - k_hit) * f.mats * f.expert_in(self.hidden) * f.d_expert
+                if f.n_experts_b and f.d_expert_b:
+                    # Text token: pool B is stored and not read.
+                    p -= f.n_experts_b * f.mats * f.expert_in(self.hidden) * f.d_expert_b
             if l.core.v_experts:          # 0.292 MoVA: top v_topk of the routed value experts per token
                 p -= (l.core.v_experts - l.core.v_topk) * self.hidden * l.core.n_kv * l.core.v_dim
         return p
@@ -732,8 +743,11 @@ def _ffn_dense(h: int, d: int, gated: bool = True) -> tuple[Ffn, tuple[Linear, .
 
 
 def _ffn_moe(h: int, E: int, k: int, de: int, n_sh: int = 0, d_sh: int = 0, *, gated: bool = True,
-             latent: int = 0, shared_gate: bool = False) -> tuple[Ffn, tuple[Linear, ...]]:
+             latent: int = 0, shared_gate: bool = False, n_experts_b: int = 0,
+             d_expert_b: int = 0) -> tuple[Ffn, tuple[Linear, ...]]:
     lin = [Linear("router", h, E, "rep")]
+    if n_experts_b and d_expert_b:
+        lin.append(Linear("router_b", h, n_experts_b, "rep"))
     if n_sh and d_sh:
         lin += [Linear("shared_gate_up", h, 2 * n_sh * d_sh if gated else n_sh * d_sh, "col"),
                 Linear("shared_down", n_sh * d_sh, h, "row")]
@@ -742,7 +756,7 @@ def _ffn_moe(h: int, E: int, k: int, de: int, n_sh: int = 0, d_sh: int = 0, *, g
     if latent:
         lin += [Linear("latent_up", h, latent, "rep"), Linear("latent_down", latent, h, "rep")]
     return Ffn("moe", gated=gated, n_experts=E, top_k=k, d_expert=de, n_shared=n_sh, d_shared=d_sh,
-               latent=latent), tuple(lin)
+               latent=latent, n_experts_b=n_experts_b, d_expert_b=d_expert_b), tuple(lin)
 
 
 def _gqa(h: int, H: int, KV: int, hd: int, *, vd: int | None = None, out_gate: bool = False,
@@ -2668,6 +2682,116 @@ def _build_ernie4_5_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str], s
     return layers, mtp, notes, "full"
 
 
+def _pair_index(v, n: int, name: str) -> list[int]:
+    if isinstance(v, (list, tuple)):
+        if len(v) != n:
+            raise ValueError(f"ernie4_5_moe_vl {name} must have {n} entries")
+        return [int(x) for x in v]
+    return [int(v)] * n
+
+
+def _build_ernie4_5_moe_vl(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """ERNIE-4.5-VL MoE (ernie4_5_moe_vl).
+
+    Public class ``Ernie4_5_VLMoeForConditionalGeneration`` (modeling_ernie4_5_vl.py on the
+    28B-A3B-PT repo). Two routed SwiGLU pools share one layer. ``moe_intermediate_size[0]``
+    is the text-expert width and ``[1]`` is the vision-expert width. ``moe_num_experts`` is
+    a pair of equal group sizes (MoEStatics asserts that). A layer is MoE when
+    ``(i + 1) % moe_layer_interval == 0`` and ``i`` is inside ``[min(start), max(end)]``.
+    Other layers are a dense SwiGLU of ``intermediate_size``. A modality whose own
+    ``[start, end]`` misses that layer is ``nn.Identity`` in the class; that shape is refused.
+
+    The multimodal kernel (``MOEAllGatherLayerV2``, ``use_padding`` false) concatenates
+    ``gate.weight`` and ``gate.weight_1`` and runs both on every token when any token type
+    is non-zero, then keeps the text choice only where the type is 0. A text-only step is
+    the class's ``mlp_text`` path: the first router and the first pool. ``Ernie4_5_VLMoEConfig``
+    defaults ``moe_use_hard_gate`` to true and then ``Ernie4_5_MoEConfig`` overwrites it to
+    false when the JSON key is absent, which leaves ``lm_gate`` as None. The weights and the
+    multimodal forward still describe the split above. This builder bills that split. It does
+    not bill the capacity-padded zeros of the text-only ``MOELayer`` kernel.
+
+    Shared SwiGLU exists only when ``moe_num_shared_experts > 0``. Its width is the text
+    expert width times that count. ``e_score_correction_bias`` is fp32 ``[2, E]`` when
+    ``moe_use_aux_free`` is true (selection only). Attention is bias-free GQA with
+    ``head_dim = hidden // heads``. The class builds no MTP module. RoPE frequency split
+    and 3-D positions do not change GEMM shapes or the KV width.
+    """
+    if c.get("use_bias"):
+        raise ValueError("ernie4_5_moe_vl use_bias is not modeled")
+    if c.get("num_nextn_predict_layers"):
+        raise ValueError("ernie4_5_moe_vl has no MTP module")
+    h = int(c["hidden_size"])
+    H = int(c["num_attention_heads"])
+    KV = int(c.get("num_key_value_heads") or H)
+    if H < 1 or h % H:
+        raise ValueError("ernie4_5_moe_vl hidden_size is not divisible by num_attention_heads")
+    hd = h // H
+    if c.get("head_dim") not in (None, hd):
+        raise ValueError("ernie4_5_moe_vl head_dim is hidden // num_attention_heads")
+    L = int(c["num_hidden_layers"])
+    experts = _pair_index(c.get("moe_num_experts"), 2, "moe_num_experts")
+    widths = _pair_index(c.get("moe_intermediate_size"), 2, "moe_intermediate_size")
+    if experts[0] != experts[1] or experts[0] < 1 or widths[0] < 1 or widths[1] < 1:
+        raise ValueError("ernie4_5_moe_vl expert groups must be equal and non-empty")
+    k = int(c.get("moe_k") or 0)
+    if k < 1:
+        raise ValueError("ernie4_5_moe_vl moe_k must be positive")
+    d_dense = int(c["intermediate_size"])
+    n_cfg = int(c.get("moe_num_shared_experts") or 0)
+    n_sh, d_sh = (1, widths[0] * n_cfg) if n_cfg else (0, 0)
+    interval = int(c.get("moe_layer_interval") or 1)
+    if interval <= 0:
+        raise ValueError("ernie4_5_moe_vl moe_layer_interval must be positive")
+    starts = _pair_index(c.get("moe_layer_start_index"), 2, "moe_layer_start_index")
+    ends = _pair_index(c.get("moe_layer_end_index"), 2, "moe_layer_end_index")
+    moe_lo, moe_hi = min(starts), max(ends)
+    E, Eb = experts[0], experts[1]
+    de, deb = widths[0], widths[1]
+    bias_n = (2 * E) if c.get("moe_use_aux_free") else 0
+
+    def moe_at(i: int) -> bool:
+        return ((i + 1) % interval == 0) and moe_lo <= i <= moe_hi
+
+    layers: list[Layer] = []
+    n_moe = 0
+    for i in range(L):
+        alin, core = _gqa(h, H, KV, hd)
+        if moe_at(i):
+            for pool, (st, en) in enumerate(zip(starts, ends)):
+                if not (st <= i <= en):
+                    raise ValueError("ernie4_5_moe_vl identity expert pool is not modeled")
+            ffn, flin = _ffn_moe(h, E, k, de, n_sh, d_sh, shared_gate=False,
+                                 n_experts_b=Eb, d_expert_b=deb)
+            misc = 2 * h + bias_n
+            n_moe += 1
+        else:
+            ffn, flin = _ffn_dense(h, d_dense)
+            misc = 2 * h
+        layers.append(Layer(alin, core, ffn, flin, misc))
+    if n_moe < 1:
+        raise ValueError("ernie4_5_moe_vl has no MoE layer")
+    mix = (f"共享 SwiGLU 宽 {d_sh}（文本专家宽 × moe_num_shared_experts）。"
+           if n_sh else "没有共享专家。")
+    notes = [
+        f"ERNIE-4.5-VL：{L} 层 GQA（{H}/{KV}，head {hd}）。"
+        f"层号满足 (i+1) 整除 interval {interval} 且落在 [{moe_lo}, {moe_hi}] 的 {n_moe} 层是双池 MoE，"
+        f"其余是稠密 SwiGLU（intermediate {d_dense}）。",
+        f"文本池 {E} 个专家宽 {de}，视觉池 {Eb} 个专家宽 {deb}，都是 top-{k}。"
+        f"{mix}两个 router 都是 hidden×{E}。"
+        "有非文本 token 时两个 router 都对这一步的每个 token 计；文本 token 只走文本池，其余走视觉池。"
+        "纯文本步只计文本 router 和文本池。",
+        "gate.weight、gate.weight_1 与 e_score_correction_bias 按发布是 fp32。"
+        "bias 加在 softmax 之后，只参与选专家。校正 bias 落在层 misc，记忆体计划仍按每参数 2 字节。",
+        "公开 VL config 把 moe_use_hard_gate 默认写成 true，父类在 JSON 没有该键时又写成 false，"
+        "文本路径的 lm_gate 因此是空的。这里按权重和多模态 forward 的分流计，不另造第三种路由。",
+        "文本参考内核按 capacity 补零行，多模态内核 use_padding 为 false，按真实命中行算。"
+        "这里两种步都按 top-k 的期望行数计，不把补零行算进 GEMM，也不计 capacity 周期。",
+        "交错 RoPE 与 3D 位置不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。"
+        "这个类没有 MTP。图像 token 含首尾标记，走视觉专家池。视频的时间合并未进图像网格。",
+    ]
+    return layers, [], notes, "full"
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
     if "LongcatFlashForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash":
@@ -2676,6 +2800,8 @@ def _builder(c: dict):
         return _build_hunyuan_v1_moe, "GQA（q/k RMSNorm）+ 共享 MLP 的 MoE"
     if mt == "ernie4_5":
         return _build_ernie4_5, "GQA 稠密"
+    if mt == "ernie4_5_moe_vl":
+        return _build_ernie4_5_moe_vl, "GQA 双池 MoE（文本 / 视觉专家）"
     if mt == "ernie4_5_moe":
         # Shared MLP exists only when moe_num_shared_experts > 0 (21B). 300B ships 0.
         if int(c.get("moe_num_shared_experts") or 0) > 0:

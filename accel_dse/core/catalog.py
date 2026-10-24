@@ -97,6 +97,10 @@ EXTRA_TAIL = [
     # embedding / residual / logits scalars do not change shapes. 30B and compressed twins stay out.
     ("granite-4.2-8b", "ibm-granite/granite-4.2-8b"),
     ("granite-4.2-3b", "ibm-granite/granite-4.2-3b"),
+    # 0.384: ERNIE-4.5-VL dual-pool MoE. Text experts and vision experts have different widths.
+    # Image tokens (merged patches plus start / end) use the vision pool. Video temporal merge is not this grid.
+    ("ernie-4.5-vl-28b-a3b-pt", "baidu/ERNIE-4.5-VL-28B-A3B-PT"),
+    ("ernie-4.5-vl-424b-a47b-pt", "baidu/ERNIE-4.5-VL-424B-A47B-PT"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
@@ -689,6 +693,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("distil", "Distil-Whisper", ("distil-whisper",)),   # 0.360
     ("meituan", "LongCat-Flash", ("longcat-flash",)),   # 0.375
     ("tencent", "Hunyuan-A13B", ("hunyuan-a13b",)),   # 0.376
+    ("baidu", "ERNIE-4.5-VL", ("ernie-4.5-vl-",)),   # 0.384 (before ERNIE-4.5: that prefix also matches these ids)
     ("baidu", "ERNIE-4.5", ("ernie-4.5-",)),   # 0.377
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}

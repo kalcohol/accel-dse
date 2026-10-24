@@ -1769,6 +1769,25 @@ def _streams(m: ModelSpec) -> int:
     return max((max(l.hc, l.gres_n) for l in m.layers), default=0) or 1
 
 
+def _mm_in_step(sv, q: int, *, cp: int = 1, prompt: int = 0) -> int:
+    """Multimodal tokens among this step's ``q`` new tokens.
+
+    ERNIE-4.5-VL sends token type 0 through the text expert pool and every other
+    type through the vision pool. Image tokens (merged patches plus the start and
+    end markers) are placed at the front of the prompt. ``prefix_cached`` consumes
+    that prefix first. Context-parallel ranks do not hold a prefix slice, so their
+    share is ``image_tokens * q / prompt``. Decode emits a text token. Other models
+    leave ``n_experts_b`` at 0 and ignore ``Phase.mm``.
+    """
+    img = int(getattr(sv, "image_tokens", 0) or 0)
+    if img <= 0 or q <= 0 or getattr(sv, "phase", "") == "decode":
+        return 0
+    if cp > 1 and prompt > 0:
+        return min(q, max(0, int(round(img * q / prompt))))
+    start = int(getattr(sv, "prefix_cached", 0) or 0)
+    return max(0, min(q, min(start + q, img) - start))
+
+
 def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     m = model or get_model(scn.model)
     if scn.formats_override:
@@ -2019,8 +2038,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     else:
         mb = sv.microbatches or min(pp, sv.batch)
         mb = max(1, min(mb, sv.batch))
-        ph = Phase("prefill", _cdiv(sv.batch, mb), sv.prompt - sv.prefix_cached, sv.prefix_cached, skew=rskew,
-                   ep_nodes=ep_nodes, v_p=v_p, skew_l=skew_l, v_pl=v_pl, labels=sv.labels, questions=sv.questions)
+        q_new = sv.prompt - sv.prefix_cached
+        ph = Phase("prefill", _cdiv(sv.batch, mb), q_new, sv.prefix_cached, skew=rskew,
+                   ep_nodes=ep_nodes, v_p=v_p, skew_l=skew_l, v_pl=v_pl, labels=sv.labels, questions=sv.questions,
+                   mm=_mm_in_step(sv, q_new))
         ctx_cap = sv.prompt
     cp_ring = None
     if lay.cp > 1:
@@ -2038,7 +2059,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             # CP silently removed up to half of the bidirectional attention work)
             c_eq = S - q_loc
         ph = Phase("prefill", _cdiv(sv.batch, mb) * cp, q_loc, c_eq, skew=rskew, cp=cp, cp_len=S, ep_nodes=ep_nodes, v_p=v_p, skew_l=skew_l, v_pl=v_pl,
-                   labels=sv.labels, questions=sv.questions)
+                   labels=sv.labels, questions=sv.questions, mm=_mm_in_step(sv, q_loc, cp=cp, prompt=S))
         ctx_cap = q_loc
         cp_ring = (cp, lay.tp, _cdiv(sv.batch, mb) * q_loc / lay.dp)   # tokens of this rank's block per step
         lay = Layout(lay.pp, lay.tp, lay.dp * cp, lay.ep, lay.etp, 1)   # internal: CP ranks as attention replicas

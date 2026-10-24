@@ -57,6 +57,14 @@ docs/MODEL.md §20):
          GEMM. Resize is PixtralProcessor: the image processor is called with patch_size * spatial_merge_size,
          longest edge is vision_config.image_size, and each merged row adds one break token (the last is
          the end token). Attention is one bidirectional block per image.
+  ernievl ERNIE-4.5-VL DFNRope (ernie4_5_moe_vl): Linear patch embed (3·14² → 1280, no bias),
+         32 pre-LN blocks (fused qkv and proj with bias, quick_gelu MLP fc1 / fc2 with bias, not
+         gated). attn_sep is stored and is not read by VisionAttention, so there is no second
+         attention stage. The tower is fp16 and the resampler is bf16; both are 2 bytes per
+         parameter, so the GEMM label stays bf16. Image post-GEMMs see the spatially merged rows:
+         one frame is duplicated and concatenated before the temporal linear. Video pairs frames
+         and is not this grid. Resize is the processor smart_resize (factor 28, min 3136 px,
+         max 6177·28²). LLM positions are the merged patches plus IMAGE_START and IMAGE_END.
 
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
@@ -1179,6 +1187,75 @@ def _gemma4_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> lis
     return ops
 
 
+def _ernie_smart_resize(height: int, width: int, factor: int, min_pixels: int, max_pixels: int) -> tuple[int, int]:
+    """ERNIE-4.5-VL ``smart_resize`` (processing_ernie4_5_vl.py). Factor is patch * spatial merge."""
+    max_ratio = 200
+    if min(height, width) > 0 and max(height, width) / min(height, width) > max_ratio:
+        if height > width:
+            width = max(factor, int(round(width / factor)) * factor)
+            height = int(math.floor(width * max_ratio / factor)) * factor
+        else:
+            height = max(factor, int(round(height / factor)) * factor)
+            width = int(math.floor(height * max_ratio / factor)) * factor
+    hb = max(factor, int(round(height / factor)) * factor)
+    wb = max(factor, int(round(width / factor)) * factor)
+    if hb * wb > max_pixels:
+        beta = math.sqrt((height * width) / max_pixels)
+        hb = int(math.floor(height / beta / factor)) * factor
+        wb = int(math.floor(width / beta / factor)) * factor
+    elif hb * wb < min_pixels:
+        beta = math.sqrt(min_pixels / (height * width))
+        hb = int(math.ceil(height * beta / factor)) * factor
+        wb = int(math.ceil(width * beta / factor)) * factor
+    if hb < factor or wb < factor or hb * wb < min_pixels or hb * wb > max_pixels:
+        raise ValueError(f"ernie4_5_vl smart_resize failed for {height}x{width}")
+    return hb, wb
+
+
+def _ernie_vl_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
+    """DFNRope vision tower plus the variable-resolution resampler.
+
+    Tower weights are fp16 (``_keep_in_fp16_modules``). The resampler is bf16.
+    Both are 2 bytes per parameter, so the tower GEMMs keep the default bf16 label.
+    ``attn_sep`` is stored on the vision config and is not read by ``VisionAttention``.
+    Image post-GEMMs all see the spatially merged rows: a single frame is duplicated
+    and concatenated before the temporal linear, so the row count does not change.
+    Video pairs frames and is not this grid.
+    """
+    h = int(vc.get("embed_dim") or vc.get("hidden_size") or 0)
+    if h < 1 or int(vc.get("hidden_size") or h) != h:
+        return None
+    depth = int(vc["depth"])
+    heads = int(vc["num_heads"])
+    patch = int(vc["patch_size"])
+    merge = int(vc["spatial_merge_size"])
+    ratio = float(vc.get("mlp_ratio") or 0)
+    if depth < 1 or heads < 1 or h % heads or patch < 1 or merge < 1 or ratio <= 0:
+        return None
+    if int(vc.get("in_channels") or 3) != 3:
+        return None
+    text_h = int(cfg["hidden_size"])
+    pix = int(cfg.get("pixel_hidden_size") or 0)
+    sc = int(cfg.get("spatial_conv_size") or 0)
+    tcv = int(cfg.get("temporal_conv_size") or 0)
+    if pix != h or sc != merge or tcv != 2:
+        return None
+    if cfg.get("use_temporal_conv", True) is not True:
+        return None
+    inter = int(h * ratio)
+    block = (4 * h + _lin(h, 3 * h, True) + _lin(h, h, True) + _lin(h, inter, True) + _lin(inter, h, True))
+    tower = _lin(3 * patch * patch, h, False) + depth * block + 2 * h
+    sd = h * sc * sc
+    td = sd * tcv
+    res = 2 * _lin(sd, sd, True) + 2 * sd + _lin(td, sd, True) + _lin(sd, sd, True) + 2 * sd + _lin(sd, text_h, True) + text_h
+    # Processor defaults (Ernie4_5_VLProcessor). preprocessor_config max_pixels is the image processor's
+    # own field; _add_image passes the processor's image_max_pixels into get_smarted_resize.
+    pre = (("factor", patch * merge), ("min_px", 4 * 28 * 28), ("max_px", 6177 * 28 * 28))
+    post = ((sd, sd), (sd, sd), (td, sd), (sd, sd), (sd, text_h))
+    return VisionSpec("ernievl", "ERNIE-4.5-VL DFN ViT + resampler", patch, 1, h, inter, depth, heads, h, False,
+                      merge, post, tower + res, pre)
+
+
 def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
     """VisionSpec from the release's full config (``vision_config`` + text hidden size), or None."""
     vc = cfg.get("vision_config")
@@ -1227,6 +1304,8 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return _gemma4_vision_spec(cfg, vc)
     if cfg.get("model_type") == "mistral3" and vc.get("model_type") == "pixtral":
         return _pixtral_vision_spec(cfg, vc)
+    if cfg.get("model_type") == "ernie4_5_moe_vl":
+        return _ernie_vl_vision_spec(cfg, vc)
     if hf_id not in _PREPROC:
         return None
     pre = dict(_PREPROC[hf_id])
@@ -1568,6 +1647,12 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
     if v.family == "audio":                       # 0.268 audio-only encoder: no image path
         return ImageGrid(0, 0, 0, 0, (0, 0))
     pr = v.rz
+    if v.family == "ernievl":
+        # Merged patches plus IMAGE_START and IMAGE_END. Both markers are token type image.
+        hb, wb = _ernie_smart_resize(height, width, pr["factor"], pr["min_px"], pr["max_px"])
+        ph, pw = hb // v.patch, wb // v.patch
+        m = ph * pw // (v.merge * v.merge)
+        return ImageGrid(ph, pw, m, m + 2, (wb, hb))
     if v.family in ("gemma4", "gemma4u"):
         # LLM tokens = real soft tokens after the pad is stripped. Tower GEMMs use the pad (vision_ops).
         max_patches = pr["max_soft"] * pr["pool"] * pr["pool"]
