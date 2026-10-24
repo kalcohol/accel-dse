@@ -1349,7 +1349,7 @@ def _sweep_inapplicable(path: str, r) -> str | None:
     if path in ("serving.videos", "serving.video_frames"):
         from .core.vision import video_pre
         if video_pre(m) is None:
-            return "该模型没有已建模的视频处理器（Qwen / Kimi / Muse / RADIO / Gemma-4）"
+            return "该模型没有已建模的视频处理器（Qwen / Kimi / Muse / RADIO / Gemma-4 / ERNIE-4.5-VL）"
     if path == "serving.moe_skew" and not m.is_moe:
         return "仅适用于 MoE 模型"
     sc = r.scenario

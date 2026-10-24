@@ -2713,8 +2713,9 @@ def _build_ernie4_5_moe_vl(c: dict) -> tuple[list[Layer], list[Layer], list[str]
     Shared SwiGLU exists only when ``moe_num_shared_experts > 0``. Its width is the text
     expert width times that count. ``e_score_correction_bias`` is fp32 ``[2, E]`` when
     ``moe_use_aux_free`` is true (selection only). Attention is bias-free GQA with
-    ``head_dim = hidden // heads``. The class builds no MTP module. RoPE frequency split
-    and 3-D positions do not change GEMM shapes or the KV width.
+    ``head_dim = hidden // heads``. The class builds no MTP module.     RoPE frequency split
+    and 3-D positions do not change GEMM shapes or the KV width. Video frames are
+    paired in the resampler and use a separate grid. Still images stay on the image grid.
     """
     if c.get("use_bias"):
         raise ValueError("ernie4_5_moe_vl use_bias is not modeled")
@@ -2787,7 +2788,8 @@ def _build_ernie4_5_moe_vl(c: dict) -> tuple[list[Layer], list[Layer], list[str]
         "文本参考内核按 capacity 补零行，多模态内核 use_padding 为 false，按真实命中行算。"
         "这里两种步都按 top-k 的期望行数计，不把补零行算进 GEMM，也不计 capacity 周期。",
         "交错 RoPE 与 3D 位置不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。"
-        "这个类没有 MTP。图像 token 含首尾标记，走视觉专家池。视频的时间合并未进图像网格。",
+        "这个类没有 MTP。图像 token 含首尾标记，走视觉专家池。"
+        "视频帧在 resampler 里两两配对，时间 GEMM 的行数减半，另走视频网格，不写进静止图像网格。",
     ]
     return layers, [], notes, "full"
 

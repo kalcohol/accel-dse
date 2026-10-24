@@ -62,9 +62,13 @@ docs/MODEL.md §20):
          gated). attn_sep is stored and is not read by VisionAttention, so there is no second
          attention stage. The tower is fp16 and the resampler is bf16; both are 2 bytes per
          parameter, so the GEMM label stays bf16. Image post-GEMMs see the spatially merged rows:
-         one frame is duplicated and concatenated before the temporal linear. Video pairs frames
-         and is not this grid. Resize is the processor smart_resize (factor 28, min 3136 px,
-         max 6177·28²). LLM positions are the merged patches plus IMAGE_START and IMAGE_END.
+         one frame is duplicated and concatenated before the temporal linear, so the row count
+         stays put. Video (Ernie4_5_VLProcessor) resizes each frame with the video pixel limits,
+         copies the last frame when the count is odd, and pairs frames: the tower attends inside
+         one frame, spatial GEMMs see every frame, and the temporal GEMMs plus the projector see
+         half the rows. Resize is the processor smart_resize (factor 28). Image limits are min
+         3136 px and max 6177·28². Video limits are min 299·28² and max 1196·28². LLM positions
+         are the rows that enter the language model plus the start and end markers.
 
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
@@ -202,6 +206,14 @@ for _g4 in (
     "google/gemma-4-E2B-it", "google/gemma-4-E2B",
 ):
     _VIDEO[_g4] = dict(_GEMMA4_VIDEO)
+# 0.385 ERNIE-4.5-VL video. processing_ernie4_5_vl.py Ernie4_5_VLProcessor (no processor_config.json):
+# video_min_pixels 299*28*28, video_max_pixels 1196*28*28, temporal_conv_size 2, spatial_conv_size 2.
+# preprocessor_config max_pixels is the image processor's own field; _add_video passes these limits into
+# get_smarted_resize. An odd sampled count copies the last frame so the resampler's pairs have equal rows.
+# fps / min_frames / max_frames only choose samples from a file. Timestamps are drawn into the pixels.
+_ERNIE_VL_VIDEO = {"ernie_temporal": 2, "min_px": 299 * 28 * 28, "max_px": 1196 * 28 * 28}
+for _ev in ("baidu/ERNIE-4.5-VL-28B-A3B-PT", "baidu/ERNIE-4.5-VL-424B-A47B-PT"):
+    _VIDEO[_ev] = dict(_ERNIE_VL_VIDEO)
 # 「来源」 transformers qwen3_vl/video_processing_qwen3_vl.py: fps 2, min_frames 4, max_frames 768, max_video_tokens 768
 VIDEO_FPS, VIDEO_MIN_FRAMES, VIDEO_MAX_FRAMES, VIDEO_MAX_TOK = 2, 4, 768, 768
 
@@ -1220,7 +1232,8 @@ def _ernie_vl_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
     ``attn_sep`` is stored on the vision config and is not read by ``VisionAttention``.
     Image post-GEMMs all see the spatially merged rows: a single frame is duplicated
     and concatenated before the temporal linear, so the row count does not change.
-    Video pairs frames and is not this grid.
+    Video is a separate grid (_ernie_video): frames are paired and the temporal GEMMs
+    see half as many rows.
     """
     h = int(vc.get("embed_dim") or vc.get("hidden_size") or 0)
     if h < 1 or int(vc.get("hidden_size") or h) != h:
@@ -1772,6 +1785,8 @@ def vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str = "bf16") -> li
         return []
     if v.family in ("gemma4", "gemma4u"):
         return _gemma4_vision_ops(v, g, images, af)
+    if v.family == "ernievl" and g.tframes > 1:
+        return _ernie_vl_video_ops(v, g, images, af)
     if g.tframes > 1:
         # 0.166 Kimi chunk (modeling_kimi_k25): patch-embed + tower over every frame's patches with one cu_seqlens
         # span of t·h·w (spatial_temporal); tpool_patch_merger means over t, then the merger runs on h/2·w/2 rows
@@ -1861,6 +1876,38 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     return ops
 
 
+def _ernie_vl_video_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> list[Op]:
+    """ERNIE-4.5-VL video resampler (VariableResolutionResamplerModel).
+
+    ``vision_forward`` expands ``grid_thw`` to one ``(1, h, w)`` row per frame, so
+    attention stays inside a frame and the tower GEMMs see every frame. Spatial
+    linears run on every frame's merged rows. The temporal linear concatenates each
+    pair on the feature axis (K = 2 · spatial) and the GEMMs after that see half as
+    many rows. ``VIDEO_START`` / ``VIDEO_END`` are LLM tokens, not merger rows.
+    The ``index_select`` that builds the pairs is not billed.
+    """
+    if g.tframes < 2 or g.tframes % 2:
+        raise ValueError("ernie4_5_vl video frames must be a positive even count")
+    if not v.post:
+        raise ValueError("ernie4_5_vl video resampler is missing")
+    sd = v.post[0][0]
+    wide = next((i for i, kn in enumerate(v.post) if kn[0] == sd * 2), None)
+    if wide is None:
+        raise ValueError("ernie4_5_vl video temporal linear is missing")
+    ops = _tower_ops(replace(v, post=()), g.ph * g.pw, images * g.tframes, None, "vis.", af)
+    from .dtypes import fmt as _fmt
+    ab = _fmt(af).bytes
+    m_sp = images * g.tframes * g.merged
+    m_tm = images * (g.tframes // 2) * g.merged
+    for i, kn in enumerate(v.post):
+        k, n = kn[:2]
+        m_ = m_sp if i < wide else m_tm
+        ops.append(Op(f"vis.merger.{i}", "gemm", v.depth, m=m_, k=k, n=n, role="vision",
+                      w_params=k * n, w_bits=16.0, w_fmt="bf16", a_fmt=af,
+                      act_bytes=m_ * (k + n) * ab, stream=True, vec=m_ * n * VEC_PER_OUT))
+    return ops
+
+
 def vision_flops(v: VisionSpec, g: ImageGrid, images: int = 1) -> float:
     return sum(o.flops for o in vision_ops(v, g, images))
 
@@ -1896,13 +1943,18 @@ def expand_images(scn, m):
 
 def video_pre(m) -> dict | None:
     """Video processor settings of a model with a modelled video path (Qwen3VLVideoProcessor; 0.166 Kimi chunks;
-    0.255 MuseGlimmerVideoProcessor; 0.382 Gemma4VideoProcessor / Gemma4UnifiedVideoProcessor)."""
+    0.255 MuseGlimmerVideoProcessor; 0.382 Gemma4VideoProcessor / Gemma4UnifiedVideoProcessor;
+    0.385 Ernie4_5_VLProcessor)."""
     v = getattr(m, "vision", None)
     pre = _VIDEO.get(getattr(m, "hf_id", "")) if v is not None else None
     if pre is None:
         return None
     if "gemma4_soft" in pre:
         if v.family not in ("gemma4", "gemma4u"):
+            return None
+        return pre
+    if "ernie_temporal" in pre:
+        if v.family != "ernievl":
             return None
         return pre
     if v.family != ("kimi" if "chunk" in pre else "radio" if "radio_frame" in pre else "qwen"):
@@ -1931,6 +1983,8 @@ def video_grid(v: VisionSpec, pre: dict, frames: int, width: int, height: int, c
         return _radio_video(v, pre, frames, width, height)
     if "gemma4_soft" in pre:
         return _gemma4_video(v, pre, frames, width, height)
+    if "ernie_temporal" in pre:
+        return _ernie_video(v, pre, frames, width, height)
     tp, f = max(1, v.tpatch), v.patch * v.merge
     lo, hi = pre["min_px"], pre["max_px"]
     if frames < tp:
@@ -2055,6 +2109,32 @@ def _gemma4_video(v: VisionSpec, pre: dict, frames: int, width: int, height: int
     return VideoGrid(n, n, one, n * real)
 
 
+def _ernie_video(v: VisionSpec, pre: dict, frames: int, width: int, height: int) -> VideoGrid:
+    """Ernie4_5_VLProcessor video grid.
+
+    Each frame is ``smart_resize``d with the processor's video pixel limits. Those
+    limits are per frame (``_add_video``), not a clip budget. An odd count copies
+    the last frame so ``temporal_conv_size`` 2 has equal rows. LLM tokens are the
+    paired rows plus ``VIDEO_START`` and ``VIDEO_END``. ``fps`` / ``min_frames`` /
+    ``max_frames`` only choose samples from a file; ``serving.video_frames`` is
+    that count and is not clamped. Timestamps are drawn into the pixels. One slice
+    holds every padded frame so the resampler pairs them in a single encoder pass.
+    """
+    if frames < 1:
+        raise ValueError("serving.video_frames must be ≥ 1")
+    temporal = int(pre["ernie_temporal"])
+    factor = v.patch * v.merge
+    if temporal != 2 or factor != 28:
+        raise ValueError("ernie4_5_vl video temporal merge is temporal_conv_size 2 and factor 28")
+    t = frames + (frames % temporal)
+    hb, wb = _ernie_smart_resize(height, width, factor, int(pre["min_px"]), int(pre["max_px"]))
+    ph, pw = hb // v.patch, wb // v.patch
+    per = ph * pw // (v.merge * v.merge)
+    llm = (t // temporal) * per + 2
+    one = ImageGrid(ph, pw, per, llm, (wb, hb), tframes=t)
+    return VideoGrid(t, 1, one, llm)
+
+
 def video_grid_of(m, sv) -> VideoGrid | None:
     if not getattr(sv, "videos", 0):
         return None
@@ -2062,7 +2142,8 @@ def video_grid_of(m, sv) -> VideoGrid | None:
     if pre is None:
         raise ValueError("serving.videos：该模型没有已建模的视频处理器（Qwen3VLVideoProcessor 系：Qwen3.5-397B / "
                          "Qwen3.8 / Intern-S2；0.166 Kimi K2.5 / K2.7-Code 4 帧块；0.255 Muse Spark Open；"
-                         "0.279 Nemotron-3.5-Super-VL RADIO tubelet；0.382 Gemma-4 逐帧 pad）")
+                         "0.279 Nemotron-3.5-Super-VL RADIO tubelet；0.382 Gemma-4 逐帧 pad；"
+                         "0.385 ERNIE-4.5-VL 帧配对）")
     return video_grid(m.vision, pre, sv.video_frames, sv.video_w, sv.video_h, sv.video_cap)
 
 
