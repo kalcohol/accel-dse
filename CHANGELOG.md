@@ -6,6 +6,38 @@
 
 
 
+## [0.386.0] — 2026-10-24
+
+### 复核 ERNIE-4.5-VL 视频帧配对；granite-4.2-30b 按解开的 lm_head 入库
+
+- **0.385 的视频账目复核过，网格不改。** 2026-10-24 重新读取 `baidu/ERNIE-4.5-VL-28B-A3B-PT`（11105 张量）与 `baidu/ERNIE-4.5-VL-424B-A47B-PT`（20475 张量）的 safetensors header，与已入库的发布 JSON 没有差异。两份 `param_check().rel_err == 0`。对照仓库里的 `processing_ernie4_5_vl.py`（`Ernie4_5_VLProcessor`）和 `modeling_ernie4_5_vl.py`（`vision_forward`、`VariableResolutionResamplerModel`）。没有新的目录条目落在这两份 VL 上，视频路径没有需要改的机制错误。
+  - **逐帧缩放。** 每一帧用 `video_min_pixels = 299×28²`、`video_max_pixels = 1196×28²` 做 `smart_resize`（factor 28）。`preprocessor_config` 的 `max_pixels` 不是这条路径。`fps` / `min_frames` / `max_frames` 只决定从文件里抽多少帧。`serving.video_frames` 就是这个帧数，不夹到 16–180。
+  - **奇数帧。** `_load_and_process_video` 在帧数是奇数时复制最后一帧，使 `temporal_conv_size` 2 的两行相等。17 帧补成 18。时间戳画进像素，不另占 token。
+  - **塔。** `vision_forward` 把 `grid_thw` 的时间维展开成每帧一行 `(1, h, w)`。注意力在帧内。空间线性看每一帧的合并行。时间线性把一对帧在特征维拼起来（K = 10240），之后的 GEMM 行数减半。拼行用的 `index_select` 不计。
+  - **首尾标记。** `VIDEO_START` / `VIDEO_END` 的 token 类型是图像。视频 patch 先进去是 video，进 MoE 前改写成 image，和首尾标记一样走视觉专家池，不进 merger 的 M。
+  - **1280×720、32 帧。** 落到 1288×728，52×92 patch，每帧合并 1196。LLM 位置 `16×1196+2 = 19138`。空间 merger 的 M 是 `32×1196`，时间 merger 与投影的 M 是 `16×1196`。
+  - **静止图像。** 1024×1024 仍是 1036×1036：74×74 patch，合并 1369，加上 IMAGE_START / IMAGE_END 共 1371。单帧复制后拼接，行数不变，时间线性的 K 仍是 10240，不走视频配对。
+  - **缓存与 decode。** 视频 token 放在提示前面。`prefix_cached` 盖住这段之后，这一步不再计视觉池。decode 仍是文本 token，不计第二池。权重仍在。
+  - **没有 MTP。** config 没有 `num_nextn_predict_layers`，header 没有 `mtp_*`，`params_mtp == 0`。不把缺省填成 1。
+- **新增 1 个发布**（2026-10-24 读取 safetensors header）。`param_check().rel_err == 0`。覆盖 full。权重 bf16，`quantization_config` 为空。激活 bf16。无视觉塔。config 没有 `num_nextn_predict_layers`，header 没有 `mtp_*`，`params_mtp == 0`。
+  - **granite-4.2-30b**（`ibm-granite/granite-4.2-30b`，579 张量）。`GraniteForCausalLM`。64 层 GQA（32/8）。config 没有 `head_dim`，head 是 128。`q` / `o` 是 bf16 `[4096, 4096]`，`k` / `v` 是 `[1024, 4096]`。SwiGLU intermediate 32768，`gate_proj` / `up_proj` `[32768, 4096]`，`down_proj` `[4096, 32768]`。没有 q/k RMSNorm，`attention_bias` 与 `mlp_bias` 都是 false，header 没有 bias。词表 100352。`tie_word_embeddings` 为 false。`embed_tokens` 与 `lm_head` 都是 bf16 `[100352, 4096]`。最终 RMSNorm `[4096]`。语言参数 29,276,770,304。`bytes_total` 58,553,540,608。GEMM 形状与已入库的 4.1-30b 相同。4.1-30b 把 lm_head 绑在 embedding 上，参数 28,865,728,512。差额就是这一份 `100352 × 4096`。
+  - **标量。** `attention_multiplier` 是 0.0078125，与 4.1-30b 相同。`embedding_multiplier`、`residual_multiplier`、`logits_scaling` 都是 1.0（4.1-30b 是 12 / 0.175 / 16）。这些数不改变 GEMM 形状，也不改变 KV 宽度。不计额外周期。
+- **未纳入：**
+  - **granite-4.2 的 fp8 / mxfp4 / nvfp4。** 本轮没有读这些仓库的 config 或 header。
+  - **LFM2.5-2.6B-Base。** 没有和 2.6B 对过 header。GGUF / MLX / ONNX 分支不单列。
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不跑这份权重。不另写递推。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。没有读 config 或 header。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 与已入库的 3.2 同 header。不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **Gemma-4 assistant / QAT。** 与已入库的十个发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.385.0] — 2026-10-24
 
 ### 复核 ERNIE-4.5-VL 双池；视频按公开 processor 做帧配对

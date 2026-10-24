@@ -250,3 +250,5 @@ ibm-granite/granite-4.2-3b
 # 0.384 ERNIE-4.5-VL-28B-A3B-PT / 424B-A47B-PT. Dual expert pools (text width, vision width).
 baidu/ERNIE-4.5-VL-28B-A3B-PT
 baidu/ERNIE-4.5-VL-424B-A47B-PT
+# 0.386 granite-4.2-30b. Untied dense GQA. Same GEMM shapes as 4.1-30b.
+ibm-granite/granite-4.2-30b
