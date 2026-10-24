@@ -235,3 +235,6 @@ tencent/Hunyuan-A13B-Instruct
 baidu/ERNIE-4.5-21B-A3B-PT
 # 0.378 ERNIE-4.5-21B-A3B-Base-PT. Same language geometry; no num_nextn_predict_layers and no MTP tensors.
 baidu/ERNIE-4.5-21B-A3B-Base-PT
+# 0.379 ERNIE-4.5-300B-A47B-PT / Base-PT. 54-layer ernie4_5_moe, no shared experts, MoE from layer 3.
+baidu/ERNIE-4.5-300B-A47B-PT
+baidu/ERNIE-4.5-300B-A47B-Base-PT

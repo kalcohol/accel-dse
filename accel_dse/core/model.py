@@ -2559,9 +2559,11 @@ def _build_ernie4_5_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str], s
     Decoder layers whose index satisfies the published interval test are ``Ernie4_5_MoeSparseMoeBlock``:
     fp32 ``gate.weight`` [E, hidden], fp32 ``moe_statics.e_score_correction_bias`` [1, E] added after softmax
     (selection only; gathered expert weights are the pre-bias softmax scores), routed SwiGLU experts of width
-    ``moe_intermediate_size``, and one shared SwiGLU of width
-    ``moe_intermediate_size * moe_num_shared_experts``. There is no ``shared_expert_gate``. Other layers are a
-    dense SwiGLU of ``intermediate_size``. Attention is bias-free GQA. ``use_bias`` is false on the shipped
+    ``moe_intermediate_size``, and, when ``moe_num_shared_experts > 0``, one shared SwiGLU of width
+    ``moe_intermediate_size * moe_num_shared_experts``. A zero count builds no shared MLP
+    (ERNIE-4.5-300B-A47B). There is no ``shared_expert_gate``. Other layers are a dense SwiGLU of
+    ``intermediate_size``. The published interval test leaves layers before ``moe_layer_start_index`` dense
+    (300B: layers 0-2, MoE from layer 3). Attention is bias-free GQA. ``use_bias`` is false on the shipped
     releases; a true flag is refused rather than guessed.
 
     ``_keys_to_ignore_on_load_unexpected = ["mtp"]`` and the class does not build an MTP module. When
@@ -2644,7 +2646,10 @@ def _builder(c: dict):
     if mt == "hunyuan_v1_moe":
         return _build_hunyuan_v1_moe, "GQA（q/k RMSNorm）+ 共享 MLP 的 MoE"
     if mt == "ernie4_5_moe":
-        return _build_ernie4_5_moe, "GQA + 共享 MLP 的 MoE"
+        # Shared MLP exists only when moe_num_shared_experts > 0 (21B). 300B ships 0.
+        if int(c.get("moe_num_shared_experts") or 0) > 0:
+            return _build_ernie4_5_moe, "GQA + 共享 MLP 的 MoE"
+        return _build_ernie4_5_moe, "GQA MoE（无共享专家）"
     if mt in ("gemma4_text", "gemma4_unified_text"):
         moe = " MoE" if c.get("enable_moe_block") else ""
         return _build_gemma4, "Gemma-4 混合注意力（滑窗 + 全注意力）" + moe
