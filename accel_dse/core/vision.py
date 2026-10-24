@@ -45,6 +45,14 @@ docs/MODEL.md §20):
          then Linear into the text embedder. Each block's content scores use the chunk context;
          every padded query also dots the context//2+1 relative keys. Prompt tokens follow the
          processor formula; the tower GEMMs see the waveform padded to a multiple of 128.
+  pixtral Pixtral ViT (Mistral3 vision_config, model_type pixtral): Conv2d patch embed (kernel = stride =
+         patch, no bias), RMSNorm, depth pre-norm blocks (separate q / k / v / o, all width hidden, SwiGLU).
+         The projector RMSNorms the patch sequence, unfolds spatial_merge_size**2, then Linear(4h -> h),
+         Linear(h -> text), GELU, Linear(text -> text). vision_feature_layer as an int selects one hidden
+         state (the tower still runs every block); a list concatenates those states on the first projector
+         GEMM. Resize is PixtralProcessor: the image processor is called with patch_size * spatial_merge_size,
+         longest edge is vision_config.image_size, and each merged row adds one break token (the last is
+         the end token). Attention is one bidirectional block per image.
 
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
@@ -975,6 +983,55 @@ def _lin(i: int, o: int, b: bool = True) -> int:
     return i * o + (o if b else 0)
 
 
+def _pixtral_resize(height: int, width: int, longest: int, factor: int) -> tuple[int, int]:
+    """PixtralImageProcessor.get_resize_output_image_size, with the processor patch set to
+    ``patch_size * spatial_merge_size`` (PixtralProcessor._process_images)."""
+    ratio = max(height / longest, width / longest)
+    if ratio > 1:
+        height = int(math.floor(height / ratio))
+        width = int(math.floor(width / ratio))
+    nh = (height - 1) // factor + 1
+    nw = (width - 1) // factor + 1
+    return nh * factor, nw * factor
+
+
+def _pixtral_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
+    """PixtralVisionModel + Mistral3MultiModalProjector. All linears in the tower are bias-free.
+    The merger linear is bias-free. The two projector linears follow ``multimodal_projector_bias``."""
+    h = vc.get("hidden_size")
+    inter = vc.get("intermediate_size")
+    depth = vc.get("num_hidden_layers")
+    heads = vc.get("num_attention_heads")
+    patch = vc.get("patch_size")
+    channels = vc.get("num_channels")
+    image_size = vc.get("image_size")
+    text_h = (cfg.get("text_config") or {}).get("hidden_size")
+    merge = cfg.get("spatial_merge_size")
+    vfl = cfg.get("vision_feature_layer", -1)
+    if not all(isinstance(x, int) and not isinstance(x, bool) and x > 0
+               for x in (h, inter, depth, heads, patch, channels, text_h, merge)):
+        return None
+    if h % heads:
+        return None
+    if not isinstance(image_size, int) or isinstance(image_size, bool) or image_size <= 0:
+        return None
+    if isinstance(vfl, bool) or isinstance(vfl, int):
+        n_feat = 1
+    elif isinstance(vfl, list) and vfl and all(isinstance(i, int) and not isinstance(i, bool) for i in vfl):
+        n_feat = len(vfl)
+    else:
+        return None
+    bias = bool(cfg.get("multimodal_projector_bias"))
+    params = (channels * patch * patch * h + h
+              + depth * (2 * h + 4 * h * h + 3 * h * inter)
+              + h + (merge * merge * h) * h
+              + _lin(h * n_feat, text_h, bias) + _lin(text_h, text_h, bias))
+    pre = tuple(sorted({"longest": image_size, "factor": patch * merge}.items()))
+    post = ((merge * merge * h, h), (h * n_feat, text_h), (text_h, text_h))
+    return VisionSpec("pixtral", "Pixtral ViT + 2x2 patch merger", patch, 1, h, inter, depth, heads, h,
+                      True, merge, post, params, pre, False)
+
+
 def _gemma4_resize(height: int, width: int, patch: int, max_patches: int, pool: int) -> tuple[int, int]:
     """transformers get_aspect_ratio_preserving_size (gemma4 and gemma4_unified image processors)."""
     total_px = height * width
@@ -1149,6 +1206,8 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return None
     if vc.get("model_type") in ("gemma4_vision", "gemma4_unified_vision"):
         return _gemma4_vision_spec(cfg, vc)
+    if cfg.get("model_type") == "mistral3" and vc.get("model_type") == "pixtral":
+        return _pixtral_vision_spec(cfg, vc)
     if hf_id not in _PREPROC:
         return None
     pre = dict(_PREPROC[hf_id])
@@ -1552,6 +1611,14 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
         wp, hp = radio_patches(width, height, pr["patch"], pr["ratio"], pr["min_patches"], pr["max_patches"], pr["max_len"])
         m = hp * wp // (pr["ratio"] ** 2)
         return ImageGrid(hp, wp, m, m + 2, (wp * pr["patch"], hp * pr["patch"]))
+    if v.family == "pixtral":
+        # PixtralProcessor.replace_image_token: one break/end token per merged row.
+        factor = pr["factor"]
+        hb, wb = _pixtral_resize(height, width, pr["longest"], factor)
+        ph, pw = hb // v.patch, wb // v.patch
+        rows, cols = ph // v.merge, pw // v.merge
+        m = rows * cols
+        return ImageGrid(ph, pw, m, (cols + 1) * rows, (wb, hb))
     ph, pw, gh, gw = _ds_grid(height, width, v.patch, pr["ratio"], pr["min_pixels"], pr["max_tok"])
     return ImageGrid(ph, pw, gh * gw, gh * (gw + 1) + 2, (pw * v.patch, ph * v.patch))
 

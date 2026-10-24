@@ -6,6 +6,36 @@
 
 
 
+## [0.380.0] — 2026-10-24
+
+### 复核 ERNIE-4.5-300B-A47B；目录补上 Mistral-Small-3.2
+
+- **0.379 的账目复核过，参数路径不改。** 2026-10-24 重新读取 ERNIE-4.5-300B-A47B-PT（123 个分片，10242 张量）与 Base-PT（122 个分片，10230 张量）的全部 safetensors header，并对照公开 transformers `Ernie4_5_MoeForCausalLM`：
+  - **语言几何。** 54 层 GQA（64/8，head 128）。`q_proj` / `o_proj` 是 bf16 `[8192, 8192]`，`k_proj` / `v_proj` 是 bf16 `[1024, 8192]`。第 0–2 层稠密 SwiGLU（intermediate 28672）。第 3–53 层 MoE：64 个专家、top-8，专家宽 3584，`moe_num_shared_experts == 0`，没有共享专家。`lm_head` 与 embedding 都是 bf16 `[103424, 8192]`，untied。最终 RMSNorm `[8192]`。语言参数 299,484,163,264。`bytes_llm` 599,021,810,432。`param_check().rel_err == 0`。
+  - **Router。** 51 层 fp32 `gate.weight` `[64, 8192]` 加 fp32 `moe_statics.e_score_correction_bias` `[1, 64]`。合计 26,741,952，字节为 4 字节/参数。softmax 之后加 bias，只用于选专家。
+  - **MTP。** Base 的 config 没有 `num_nextn_predict_layers`，header 没有 `mtp_*`，`params_mtp == 0`，`bytes_mtp == 0`，`bytes_total` 等于 `bytes_llm`。PT 另有 12 个 bf16 `mtp_*`：`mtp_block.0` 是与稠密层相同的 GQA + SwiGLU（不是最后一层 MoE），`mtp_linear_proj.0.weight` `[8192, 16384]`，两个 norm 各 `[8192]`。MTP 参数 989,888,512，字节 1,979,777,024。`bytes_total` 601,001,587,456。公开类把 `"mtp"` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不建模块。参数按这条形状记，不另写递推。
+- **新增 1 个发布**（2026-10-24 读取全部 safetensors header）。仓库没有 modeling 文件。文本走既有 Mistral GQA（`text_config.model_type=mistral`，`head_dim` 128）。视觉走公开 transformers `PixtralVisionModel` + `Mistral3MultiModalProjector` + `PixtralProcessor`。`param_check().rel_err == 0`。覆盖 full。权重 bf16，`quantization_config` 为空。激活 bf16。
+  - **Mistral-Small-3.2-24B-Instruct-2506**（`mistralai/Mistral-Small-3.2-24B-Instruct-2506`，585 张量）：40 层 GQA（32/8，head 128），hidden 5120，词表 131072。`q` 是 `[4096, 5120]`，`k` / `v` 是 `[1024, 5120]`，`o` 是 `[5120, 4096]`。SwiGLU intermediate 32768。`sliding_window` 为 null，没有滑窗。没有投影 bias。
+  - **tied lm_head。** 发布 JSON 没有 `tie_word_embeddings`。`Mistral3Config` 的缺省是 true。transformers v4.52.4（这份 `transformers_version`）把 `language_model.lm_head` 映射到 `lm_head`，并与文本 embedding 绑在一起。checkpoint 另存了 bf16 `language_model.lm_head.weight` `[131072, 5120]`。去重后的语言参数 22,901,314,560。`params_llm` 23,572,403,200 含这份副本。显式写成 false 时不去重。
+  - **视觉塔。** Conv2d patch `[1024, 3, 14, 14]`，无 bias。`ln_pre` `[1024]`。24 层：q/k/v/o 各 `[1024, 1024]`，gate/up `[4096, 1024]`，down `[1024, 4096]`，两个 RMSNorm `[1024]`。`hidden_act=silu`，类的 MLP 仍是 gate×up。`vision_feature_layer=-1` 是整数，只选一层隐藏状态，塔仍跑完全部 24 层。Projector：norm `[1024]`，`merging_layer` `[1024, 4096]`（4h→h，无 bias），`linear_1` `[5120, 1024]`，`linear_2` `[5120, 5120]`，`multimodal_projector_bias=false`。视觉参数 438,958,080，全部 bf16。`bytes_total` 48,022,722,560。`params_mtp == 0`。
+  - **图像 token。** `PixtralProcessor` 把图像处理器的 patch 设成 `patch_size * spatial_merge_size` = 28。最长边是 `vision_config.image_size` 1540（与 `params.json` 的 `max_image_size` 相同；本仓库没有 `preprocessor_config.json`）。1024×1024 不缩小，落到 1036×1036：74×74 patch，合并 1369，LLM 位置 1406（每行合并块后再加一个 break，最后一行换成 end）。1920×1080 先缩到 866×1540，再落到 868×1540：62×110 patch，合并 1705，LLM 位置 1736。break / end 留在文本侧，只有 image token 换成特征。注意力按每张图一块双向 N×N 计（flash / block mask 的那条路径）。不把 eager 实现里块外的无效 matmul 算进去。
+  - **存储。** 域仍是 llm 的 stage：tied 头只留一份 embedding，最终 RMSNorm 不进 stage，视觉塔也不进 stage。`n_mtp=0` 时 stage 权重比 `bytes_llm` 少 `2×(131072×5120 + 5120)` = 1,342,187,520 字节。
+- **未纳入：**
+  - **LongCat-Flash MTP forward。** 公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，没有 MTP forward。不另写递推。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 全部分片 header 的名字、dtype、形状与 3.2 相同。不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 404，只有 `params.json` 和 consolidated index。没有按公开类闭合。
+  - **Magistral-Small-2507。** 公开类是纯文本 `MistralForCausalLM`，不是这份视觉塔。不单列。
+  - **ERNIE-4.5-0.3B-PT / Base-PT。** 公开 config 是稠密 `ernie4_5`。本轮 3.2 已经按 header 闭合，没有再读 0.3B 的分片 header，不声称形状或 `rel_err == 0`。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库 401。没有读 config 或 header。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **LTX-2.3。** 仓库根上是 safetensors，没有 `config.json`。
+  - **视频。** `Gemma4VideoProcessor` 仍没有接到现有 video grid 的公开打包配方。不编造。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。本轮 3.2 已经按分片 header 闭合，没有再扫 `scripts/release_repos.txt` 以外的全量仓库。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.379.0] — 2026-10-24
 
 ### 复核 ERNIE-4.5-21B-A3B-Base-PT；目录补上 ERNIE-4.5-300B-A47B
