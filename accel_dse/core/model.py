@@ -2325,6 +2325,57 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
     return tuple(r)
 
 
+_MTP_LO = {"fp8", "nvfp4", "mxfp4", "int8", "int4", "uint8", "iq2_xxs", "q8_0"}
+_MTP_HI = {"bf16", "fp16", "fp32"}
+
+
+def _mtp_extra_format(rel: dict, spec: "ModelSpec") -> RoleFormat | None:
+    """0.364: bill ``mtp.eh_proj`` / ``mtp_extra`` at the unquantized bucket when that bucket is exactly the
+    remainder of the mtp role.
+
+    ``_release_formats`` stores one dominant format and one average bit-width for the whole role. On a block-FP8
+    release the MTP decoder GEMMs are fp8 and ``mtp.fc`` (eh_proj) plus its norms stay bf16
+    (``modules_to_not_convert``). The average (~9 bit, named fp8) was applied to eh_proj and to ``mtp_extra``
+    storage, about half the true bf16 weight traffic. The decoder GEMMs are already costed with the main stack's
+    attn / mlp / expert formats, so they must not be inside this role's bit-width.
+
+    Replace the role only when the low-precision params equal the MTP layers' GEMM params and the high-precision
+    params equal ``mtp_extra`` + layer misc, parameter for parameter. A mixed decoder (DeepSeek-V3 / V4: bf16
+    weights inside the MTP block) keeps the historical average. Activation format is untouched: ``quant_method``
+    fp8 stays a global fp8 input, same as ``lm_head``.
+    """
+    role = (rel.get("roles") or {}).get("mtp") or {}
+    if not spec.mtp_layers or not role:
+        return None
+    lo_p = hi_p = hi_b = 0
+    hi_fmt, hi_best = None, -1
+    for fmt, v in role.items():
+        p, b = int(v.get("params") or 0), int(v.get("bytes") or 0)
+        if not p:
+            continue
+        if fmt in _MTP_LO:
+            lo_p += p
+        elif fmt in _MTP_HI:
+            hi_p += p
+            hi_b += b
+            if p > hi_best:
+                hi_best, hi_fmt = p, fmt
+        else:
+            return None
+    if not lo_p or not hi_p or hi_fmt is None:
+        return None
+    h = spec.hidden
+    gemm = sum(L.params(h) - L.misc_params for L in spec.mtp_layers)
+    misc = sum(L.misc_params for L in spec.mtp_layers)
+    extra = spec.mtp_extra_params * len(spec.mtp_layers)
+    if lo_p != gemm or hi_p != extra + misc:
+        return None
+    name = {"uint8": "int8", "int32": "int4"}.get(hi_fmt, hi_fmt)
+    if name not in ("fp32", "bf16", "fp16"):
+        return None
+    return RoleFormat(name, 8.0 * hi_b / hi_p)
+
+
 def _moe_groups(c: dict) -> tuple[int, ...]:
     """0.255: (n_group, topk_group) when the router is group-limited — transformers DeepseekV3TopkRouter /
     BeamTopKRouter, vLLM grouped_topk (bailing_moe use_grouped_topk = both set) 「来源」: group scores = sum of the top-2
@@ -2437,6 +2488,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             n_eff = max(1, min(len(spec.mtp_layers), round(rmtp / max(per, 1))))
             extra = max(0, (rmtp - n_eff * per) // n_eff)
             spec = replace(spec, mtp_layers=spec.mtp_layers[:n_eff], mtp_extra_params=extra)
+        mf = _mtp_extra_format(rel, spec)
+        if mf is not None:
+            fm = dict(spec.formats)
+            fm["mtp"] = mf
+            spec = replace(spec, formats=tuple(sorted(fm.items())))
         if (c.get("model_type") or "").startswith("qwen4_exp") or (c.get("model_type") or "") == "dory":
             spec = replace(spec, final_norm_params=0)       # 0.253 Dory: nGPT, final state justnorm (no weight)
         if (c.get("model_type") or "") == "dory":
