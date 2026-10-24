@@ -91,6 +91,12 @@ EXTRA_TAIL = [
     # Both checkpoints share tensor names, dtypes, and shapes. No MTP field and no lm_head copy.
     ("ernie-4.5-0.3b-pt", "baidu/ERNIE-4.5-0.3B-PT"),
     ("ernie-4.5-0.3b-base-pt", "baidu/ERNIE-4.5-0.3B-Base-PT"),
+    # 0.383: LFM2.5-2.6B. Dense lfm2 hybrid (22 conv + 8 GQA), not the 24B-A2B MoE.
+    ("lfm2.5-2.6b", "LiquidAI/LFM2.5-2.6B"),
+    # 0.383: Granite-4.2 dense GQA. Same GEMM shapes as 4.1-8b / 4.1-3b, untied lm_head.
+    # embedding / residual / logits scalars do not change shapes. 30B and compressed twins stay out.
+    ("granite-4.2-8b", "ibm-granite/granite-4.2-8b"),
+    ("granite-4.2-3b", "ibm-granite/granite-4.2-3b"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
@@ -637,7 +643,9 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("meta", "OmniASR", ("omniasr",)),
     ("mistral", "Mistral-Small", ("mistral-small",)),
     ("mistral", "Mistral Large", ("mistral-large",)), ("mistral", "Mixtral", ("mixtral",)), ("mistral", "Magistral", ("magistral",)),
-    ("microsoft", "Phi-4", ("phi-4",)), ("ibm", "Granite-4.1", ("granite-4.1-",)),
+    ("microsoft", "Phi-4", ("phi-4",)),
+    ("ibm", "Granite-4.2", ("granite-4.2-",)),   # 0.383: before granite-4.1-
+    ("ibm", "Granite-4.1", ("granite-4.1-",)),
     ("allenai", "Olmo-3", ("olmo-3",)), ("lg", "EXAONE-4", ("exaone-4",)),   # 0.371
     ("bytedance", "Seed-OSS", ("seed-oss",)), ("bytedance", "Protenix", ("protenix",)),
     ("tencent", "HunyuanVideo", ("hunyuanvideo",)), ("lightricks", "LTX-Video", ("ltx-video",)),
