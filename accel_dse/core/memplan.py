@@ -686,6 +686,11 @@ def act_stream(op: Op, ab: float, sram_bytes: float, engines: int = 1) -> tuple[
             return 0.0, 0.0
         br = max(1, int(budget // (op.k * (ab + 4))))
         return qo + kv * (math.ceil(op.m / br) - op.kv_pre), 0.0
+    # 0.367: a streamed vector with an explicit activation byte count (Qwen3-VL deepstack prefill RMW:
+    # read hidden, read feature, write hidden).  The feature is consumed by later LLM layers, so the round
+    # trip is DRAM even when the bytes fit the activation half.  Called only for stream=True ops.
+    if op.kind == "vector":
+        return op.act_bytes, 0.0
     return 0.0, 0.0
 
 

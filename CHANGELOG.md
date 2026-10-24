@@ -6,6 +6,14 @@
 
 
 
+## [0.367.0] — 2026-10-24
+
+### Qwen3-VL deepstack 的 prefill RMW 计入编码器 DRAM
+
+- **Bug：** `vis.deepstack` 把三次访存（读 hidden、读特征、写 hidden）写在 `act_bytes` 上，算子却是未流式向量。`touched()` 不计 `act_bytes`；`act_stream` 只在 `stream` 时调用，且对向量返回 0。组件账本因此丢掉这笔流量，只留下 ALU 的 `vec`。8B、1024²、3 个 merger 是 75,497,472 字节（约 72 MiB），小于 1P 的激活预算（SRAM 256 MiB 的一半）。按 GEMM 的 SRAM 过滤会把它吞掉。最大边图像约 16384 个视觉 token，流量到约 1 GB，与视觉塔权重同一量级。
+- **修复：** 该算子 `stream=True`。`act_stream` 对向量返回 `act_bytes`，不按 SRAM 吸收：特征由后面的 LLM 层消费，不是编码器 epilogue。`vision_act_peak` 仍只看 GEMM，这次加法不抬峰值。字节仍按 bf16（视觉塔与残差都是 ≥ bf16；`_vision_cost` 固定 bf16，FP8 语言模型同样如此）。
+- **核对过、未改：** merger 形状与参数。pre-shuffle LayerNorm(h) 与 post-shuffle LayerNorm(4h) 元素数相同，参数差在 2·h 与 2·hm。目录 `param_check().rel_err == 0`，视觉 `extra == 0`，`w_Bpp == 2`。Qwen3.5 / Qwen3.8 上非空的 `deepstack_visual_indexes` 仍返回空；越界或非 int 索引同样拒绝。MoE FP8 的 `experts.{down,gate_up}_proj_scale_inv`（`SCALE_RE` 的 `_scale_inv$`、128×128 fp32 scale、专家 8.001953125 bit）与 bf16 兄弟的参数一致。GDN `lin_ba` 的 bf16 权重 / 全局 fp8 激活，以及 MTP `eh_proj` 的划分，保持 0.365 / 0.364。
+
 ## [0.366.0] — 2026-10-24
 
 ### 目录：Qwen3-VL / Qwen3-VL-MoE（deepstack 视觉塔）
