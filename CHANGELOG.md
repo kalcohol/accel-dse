@@ -6,6 +6,31 @@
 
 
 
+## [0.387.0] — 2026-10-24
+
+### 复核 granite-4.2-30b；LFM2.5-2.6B-Base 与 Instruct 同形入库
+
+- **0.386 的 granite-4.2-30b 复核过，不改。** 2026-10-24 重新读取 `ibm-granite/granite-4.2-30b`（579 张量，11 个分片，index `total_size` 58,553,540,608）的 safetensors header，与已入库的发布 JSON 没有差异。全部是 bf16。没有 bias，没有 q/k RMSNorm，没有 `mtp_*`。`q` / `o` 是 `[4096, 4096]`，`k` / `v` 是 `[1024, 4096]`。SwiGLU `gate_proj` / `up_proj` `[32768, 4096]`，`down_proj` `[4096, 32768]`。`embed_tokens` 与 `lm_head` 都是 `[100352, 4096]`。最终 RMSNorm `[4096]`。语言参数 29,276,770,304。`bytes_total` 58,553,540,608。`param_check().rel_err == 0`。GEMM 形状与已入库的 4.1-30b 相同。4.1-30b 把 lm_head 绑在 embedding 上，参数 28,865,728,512。差额就是这一份 `100352 × 4096`。
+  - **标量。** 公开类 `GraniteAttention` 把 `attention_multiplier` 0.0078125 用作注意力 scaling（QK 分数乘这个常数），不是另一次 GEMM。`embedding_multiplier`、`residual_multiplier`、`logits_scaling` 都是 1.0，分别乘在 embedding、残差和 logits 上。这些数不改变 GEMM 形状，也不改变 KV 宽度。不计额外周期。config 没有 `head_dim`，head 是 128。没有 `num_nextn_predict_layers`，`params_mtp == 0`。不把缺省填成 1。
+- **新增 1 个发布**（2026-10-24 读取 safetensors header，并与 `LiquidAI/LFM2.5-2.6B` 逐张量对比）。`param_check().rel_err == 0`。覆盖 full。权重 bf16，`quantization_config` 为空。激活 bf16。无视觉塔。config 没有 `num_nextn_predict_layers`，header 没有 `mtp_*`，`params_mtp == 0`。
+  - **LFM2.5-2.6B-Base**（`LiquidAI/LFM2.5-2.6B-Base`，266 张量，单文件）。张量名、dtype、形状与已入库的 2.6B 逐项相同。`model_type=lfm2`，`Lfm2ForCausalLM`。30 层：22 层门控短卷积，8 层 GQA。hidden 2048，intermediate 10752，头 32/8。config 没有 `head_dim`，head 是 64。卷积：`in_proj` bf16 `[6144, 2048]`，`out_proj` `[2048, 2048]`，`conv.weight` `[2048, 1, 3]`，`conv_bias` 为 false。注意力：`q` / `o` `[2048, 2048]`，`k` / `v` `[512, 2048]`，`q_layernorm` / `k_layernorm` 各 `[64]`。SwiGLU `w1` / `w3` `[10752, 2048]`，`w2` `[2048, 10752]`。`tie_word_embeddings` 为 true，没有另存 `lm_head`。`embedding_norm` `[2048]`。没有 `num_experts`。语言参数 2,697,198,592。`bytes_total` 5,394,397,184。`block_auto_adjust_ff_dim` 为 false，中间维仍是 header 里的 10752。
+  - **和 Instruct 的差别。** `max_position_embeddings` 是 128000（2.6B 是 131072）。`transformers_version` 是 5.9.0（2.6B 是 5.2.0）。transformers 5.9 的 `Lfm2ShortConv` / `Lfm2Attention` / `Lfm2MLP` 仍是 in_proj 3h、深度卷积 kernel 3、GQA 加 q/k RMSNorm、SwiGLU。位置上限不改变 GEMM 形状，也不改变 KV 宽度。
+- **未纳入：**
+  - **granite-4.2 的 fp8 / mxfp4 / nvfp4。** 本轮没有读这些仓库的 config 或 header。
+  - **LFM2.5-2.6B 的 GGUF / MLX / ONNX。** Base 的 safetensors 已与 Instruct 对过。这些分支不单列。
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不跑这份权重。不另写递推。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。没有读 config 或 header。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 与已入库的 3.2 同 header。不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **Gemma-4 assistant / QAT。** 与已入库的十个发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.386.0] — 2026-10-24
 
 ### 复核 ERNIE-4.5-VL 视频帧配对；granite-4.2-30b 按解开的 lm_head 入库

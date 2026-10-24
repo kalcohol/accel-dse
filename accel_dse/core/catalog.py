@@ -93,6 +93,9 @@ EXTRA_TAIL = [
     ("ernie-4.5-0.3b-base-pt", "baidu/ERNIE-4.5-0.3B-Base-PT"),
     # 0.383: LFM2.5-2.6B. Dense lfm2 hybrid (22 conv + 8 GQA), not the 24B-A2B MoE.
     ("lfm2.5-2.6b", "LiquidAI/LFM2.5-2.6B"),
+    # 0.387: LFM2.5-2.6B-Base. Same tensor names, dtypes, and shapes as 2.6B.
+    # max_position_embeddings is 128000 (the instruct row is 131072). No extra GEMM.
+    ("lfm2.5-2.6b-base", "LiquidAI/LFM2.5-2.6B-Base"),
     # 0.383: Granite-4.2-8b / 3b. Same GEMM shapes as 4.1, untied lm_head.
     # 0.386: granite-4.2-30b. Same GEMM shapes as 4.1-30b, untied lm_head.
     # embedding / residual / logits scalars do not change shapes. Compressed twins stay out.
