@@ -2376,6 +2376,57 @@ def _mtp_extra_format(rel: dict, spec: "ModelSpec") -> RoleFormat | None:
     return RoleFormat(name, 8.0 * hi_b / hi_p)
 
 
+def _gdn_bf16_attn_split(rel: dict, spec: "ModelSpec") -> tuple[RoleFormat, RoleFormat] | None:
+    """0.365: bill GDN ``in_proj_ba`` at bf16 when that tensor is exactly the GEMM part of the attn role's bf16 bucket.
+
+    ``_release_formats`` stores one dominant format and one average bit-width for the whole attn role. On
+    Qwen3-Coder-Next-FP8 and Qwen3.8-27B-FP8 the block-FP8 GEMMs share that role with the unquantized bf16 pieces
+    (``modules_to_not_convert``: ``linear_attn.conv1d`` and ``linear_attn.in_proj_ba``, plus ``A_log`` / ``dt_bias``).
+    The average (~8.03 bit, still named fp8) was applied to every attention GEMM, so ``lin_ba`` (bf16) was billed
+    near 8 bit. conv / ``A_log`` / ``dt_bias`` are already in ``misc_params`` at 2 bytes, and their bytes also sat
+    in that average. Net overcount on the main stack is about 1.2 MB and 2.0 MB.
+
+    Replace the role only when the published buckets match the builder parameter for parameter:
+    the low-precision params equal every main-stack attention GEMM except ``lin_ba``, and the bf16 params equal
+    ``lin_ba`` + depthwise conv (``conv_channels * conv_kernel``) + ``A_log`` + ``dt_bias`` (``2 * n_state_heads``,
+    the non-norm part of ``_gdn``'s misc). The bf16 bucket must be exactly 2 bytes per param (no scale smear).
+    One low format and one bf16 format only. An MTP layer that still has ``lin_ba`` keeps the historical average,
+    because those weights sit in the mtp role and this split does not describe them. Activation format is
+    untouched: ``quant_method`` fp8 stays a global fp8 input, same as ``lm_head``.
+    """
+    role = (rel.get("roles") or {}).get("attn") or {}
+    if "bf16" not in role or len(role) != 2:
+        return None
+    lo_fmt = next(k for k in role if k != "bf16")
+    if lo_fmt not in _MTP_LO:
+        return None
+    if any(l.name == "lin_ba" for L in spec.mtp_layers for l in L.attn_linears):
+        return None
+    lin_ba = conv = alog = gemm_lo = 0
+    for L in spec.layers:
+        bas = [l for l in L.attn_linears if l.name == "lin_ba"]
+        if L.core.lin == "gdn":
+            if len(bas) != 1:
+                return None
+            lin_ba += bas[0].params
+            conv += L.core.conv_channels * L.core.conv_kernel
+            alog += 2 * L.core.n_state_heads
+        elif bas:
+            return None
+        gemm_lo += sum(l.params for l in L.attn_linears if l.name != "lin_ba")
+    if not lin_ba:
+        return None
+    lo, hi = role[lo_fmt], role["bf16"]
+    lo_p, hi_p = int(lo.get("params") or 0), int(hi.get("params") or 0)
+    lo_b, hi_b = int(lo.get("bytes") or 0), int(hi.get("bytes") or 0)
+    if lo_p != gemm_lo or hi_p != lin_ba + conv + alog or hi_b != 2 * hi_p or not lo_p:
+        return None
+    name = {"uint8": "int8", "int32": "int4"}.get(lo_fmt, lo_fmt)
+    if name not in ("fp32", "bf16", "fp16", "fp8", "mxfp4", "nvfp4", "int8", "int4", "iq2_xxs", "q8_0"):
+        return None
+    return RoleFormat(name, 8.0 * lo_b / lo_p), RoleFormat("bf16", 16.0)
+
+
 def _moe_groups(c: dict) -> tuple[int, ...]:
     """0.255: (n_group, topk_group) when the router is group-limited — transformers DeepseekV3TopkRouter /
     BeamTopKRouter, vLLM grouped_topk (bailing_moe use_grouped_topk = both set) 「来源」: group scores = sum of the top-2
@@ -2493,6 +2544,18 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             fm = dict(spec.formats)
             fm["mtp"] = mf
             spec = replace(spec, formats=tuple(sorted(fm.items())))
+        split = _gdn_bf16_attn_split(rel, spec)
+        if split is not None:
+            lo, hi = split
+            fm = dict(spec.formats)
+            fm["attn"] = lo
+            fm["lin_ba"] = hi
+            layers = tuple(
+                replace(L, attn_linears=tuple(
+                    replace(l, role="lin_ba") if l.name == "lin_ba" else l for l in L.attn_linears))
+                if any(l.name == "lin_ba" for l in L.attn_linears) else L
+                for L in spec.layers)
+            spec = replace(spec, formats=tuple(sorted(fm.items())), layers=layers)
         if (c.get("model_type") or "").startswith("qwen4_exp") or (c.get("model_type") or "") == "dory":
             spec = replace(spec, final_norm_params=0)       # 0.253 Dory: nGPT, final state justnorm (no weight)
         if (c.get("model_type") or "") == "dory":

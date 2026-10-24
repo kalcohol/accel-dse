@@ -27,8 +27,8 @@ def test_qwen38_fp8_eh_proj_is_bf16():
     assert eh.w_fmt == "bf16" and eh.w_bits == 16.0 and eh.a_fmt == "fp8"
     assert eh.w_params == 2 * m.hidden * m.hidden
     assert eh.w_params * eh.w_bits / 8 == 2 * m.hidden * m.hidden * 2
-    # leftover is the main-stack attn scale smear on the MTP attention GEMMs, not the old ~46 MB
-    assert abs(_mtp_bytes(m) - rel["bytes_mtp"]) < 1_000_000
+    # 0.365: attn bits are the fp8 bucket, so the MTP GEMMs no longer carry that smear (was < 1 MB).
+    assert abs(_mtp_bytes(m) - rel["bytes_mtp"]) < 1.0
 
 
 def test_mixed_mtp_decoder_keeps_role_average():

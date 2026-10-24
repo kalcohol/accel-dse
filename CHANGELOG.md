@@ -6,6 +6,14 @@
 
 
 
+## [0.365.0] — 2026-10-24
+
+### FP8 Gated DeltaNet 的 `in_proj_ba` 按 bf16 计，不再摊进 attn 平均
+
+- **Bug：** Qwen3-Coder-Next-FP8 与 Qwen3.8-27B-FP8 的 attn 角色把 fp8 GEMM 和未量化的 bf16 放在一起取平均（约 8.03 bit，名字仍是 fp8）。`linear_attn.conv1d`、`A_log`、`dt_bias` 已在 misc 里按 2 字节计过，它们的字节还留在这个平均里；`in_proj_ba`（`lin_ba`）按平均值计，而不是 bf16。主栈 GEMM 因此多计约 1,177,283 与 1,963,490 字节。调度不变。
+- **修复：** 仅当 attn 角色恰好两档，低精度参数逐项等于除 `lin_ba` 以外的注意力 GEMM，bf16 参数逐项等于 `lin_ba` + depthwise conv + `A_log` + `dt_bias`，且 bf16 桶正好是 2 字节/参数时：attn 改用低精度桶自己的位数，`lin_ba` 单独按 bf16 计。激活仍是全局 fp8（与 `lm_head`、MTP `eh_proj` 相同）。MTP 层上若还有 `lin_ba`，不采用这个划分。线性注意力整段 bf16、或 attn 里还有 fp32 的发布，保持原来的角色平均。
+- **核对过、未改：** 全目录只有这两个发布满足该等式。bf16 的 Qwen3-Next-80B 与 Qwen3.8-27B 的权重差仍只剩最终 RMSNorm（LLM 存储本来不计这一项）；修完之后这两个 FP8 发布与它们的差相同。Qwen3.8-27B-FP8 的 MTP 注意力 GEMM 沿用主栈 attn 位数，`bytes_mtp` 现在对齐。Qwen3-VL 的 `model_type` 是 `qwen3_vl` / `qwen3_vl_moe`，不在现有视觉塔分支里；即便按 Qwen3.5 ViT 走，非空的 `deepstack_visual_indexes` 也会直接返回。没有新机制可挂，未新增。
+
 ## [0.364.0] — 2026-10-24
 
 ### FP8 MTP 的 eh_proj 按发布的 bf16 权重计
