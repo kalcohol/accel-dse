@@ -1,0 +1,100 @@
+{
+ "bytes_llm": 43659726592,
+ "bytes_mtp": 246435840,
+ "bytes_total": 43906162432,
+ "config": {
+  "architectures": [
+   "Ernie4_5_MoeForCausalLM"
+  ],
+  "bos_token_id": 1,
+  "eos_token_id": 2,
+  "hidden_act": "silu",
+  "hidden_size": 2560,
+  "initializer_range": 0.02,
+  "intermediate_size": 12288,
+  "max_position_embeddings": 131072,
+  "model_type": "ernie4_5_moe",
+  "moe_intermediate_size": 1536,
+  "moe_k": 6,
+  "moe_layer_end_index": 27,
+  "moe_layer_interval": 1,
+  "moe_layer_start_index": 1,
+  "moe_norm_min": 1e-12,
+  "moe_num_experts": 64,
+  "moe_num_shared_experts": 2,
+  "num_attention_heads": 20,
+  "num_hidden_layers": 28,
+  "num_key_value_heads": 4,
+  "num_nextn_predict_layers": 1,
+  "output_router_logits": false,
+  "pad_token_id": 0,
+  "rms_norm_eps": 1e-05,
+  "rope_scaling": null,
+  "rope_theta": 500000.0,
+  "router_aux_loss_coef": 0.001,
+  "tie_word_embeddings": true,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.54.0.dev0",
+  "use_bias": false,
+  "use_cache": true,
+  "vocab_size": 103424
+ },
+ "fetched": "2026-10-24",
+ "n_tensors": 5504,
+ "params_llm": 21825437888,
+ "params_mtp": 123217920,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "baidu/ERNIE-4.5-21B-A3B-PT",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 880803840,
+    "params": 440401920
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 529530880,
+    "params": 264765440
+   }
+  },
+  "expert": {
+   "bf16": {
+    "bytes": 40768634880,
+    "params": 20384317440
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 188743680,
+    "params": 94371840
+   }
+  },
+  "mtp": {
+   "bf16": {
+    "bytes": 246435840,
+    "params": 123217920
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 291840,
+    "params": 145920
+   }
+  },
+  "router": {
+   "fp32": {
+    "bytes": 17701632,
+    "params": 4425408
+   }
+  },
+  "shared_expert": {
+   "bf16": {
+    "bytes": 1274019840,
+    "params": 637009920
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

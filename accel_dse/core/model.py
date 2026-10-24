@@ -2549,12 +2549,95 @@ def _build_hunyuan_v1_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str],
     return layers, [], notes, "full"
 
 
+def _build_ernie4_5_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """ERNIE-4.5 MoE (baidu/ERNIE-4.5-21B-A3B-PT).
+
+    The checkpoint repo has no modeling file. The geometry is the public transformers class
+    ``Ernie4_5_MoeForCausalLM`` (modeling_ernie4_5_moe.py) checked against the safetensors headers.
+
+    Decoder layers whose index satisfies the published interval test are ``Ernie4_5_MoeSparseMoeBlock``:
+    fp32 ``gate.weight`` [E, hidden], fp32 ``moe_statics.e_score_correction_bias`` [1, E] added after softmax
+    (selection only), routed SwiGLU experts of width ``moe_intermediate_size``, and one shared SwiGLU of width
+    ``moe_intermediate_size * moe_num_shared_experts``. There is no ``shared_expert_gate``. Other layers are a
+    dense SwiGLU of ``intermediate_size``. Attention is bias-free GQA. ``use_bias`` is false on this release;
+    a true flag is refused rather than guessed.
+
+    ``_keys_to_ignore_on_load_unexpected = ["mtp"]`` and the class does not build an MTP module. The checkpoint
+    still stores one dense block (same GEMMs as a dense decoder layer), ``mtp_linear_proj`` [hidden, 2·hidden],
+    ``mtp_emb_norm`` and ``mtp_hidden_norm``. Those tensors are the existing MTP parameter path (eh_proj is
+    2h→h). This is not a clone of the last MoE layer and not a new recurrence.
+    """
+    if c.get("use_bias"):
+        raise ValueError("ernie4_5_moe use_bias is not modeled")
+    h = int(c["hidden_size"])
+    H = int(c["num_attention_heads"])
+    KV = int(c.get("num_key_value_heads") or H)
+    if h % H:
+        raise ValueError("ernie4_5_moe hidden_size is not divisible by num_attention_heads")
+    hd = h // H
+    L = int(c["num_hidden_layers"])
+    E = int(c.get("moe_num_experts") or c.get("num_experts") or 0)
+    k = int(c.get("moe_k") or c.get("num_experts_per_tok") or 0)
+    de = int(c["moe_intermediate_size"])
+    d_dense = int(c["intermediate_size"])
+    n_cfg = int(c.get("moe_num_shared_experts") or 0)
+    n_sh, d_sh = (1, de * n_cfg) if n_cfg else (0, 0)
+    interval = int(c.get("moe_layer_interval") or 1)
+    if interval <= 0:
+        raise ValueError("ernie4_5_moe moe_layer_interval must be positive")
+    start = int(c.get("moe_layer_start_index") or 0)
+    end_raw = c.get("moe_layer_end_index")
+    end = L - 1 if end_raw is None or int(end_raw) < 0 else int(end_raw)
+
+    def moe_at(i: int) -> bool:
+        return ((i + 1) % interval == 0) and start <= i <= end
+
+    if any(moe_at(i) for i in range(L)) and E < 1:
+        raise ValueError("ernie4_5_moe MoE layer has no experts")
+    layers: list[Layer] = []
+    n_moe = 0
+    for i in range(L):
+        alin, core = _gqa(h, H, KV, hd)
+        if moe_at(i):
+            ffn, flin = _ffn_moe(h, E, k, de, n_sh, d_sh, shared_gate=False)
+            misc = 2 * h + E
+            n_moe += 1
+        else:
+            ffn, flin = _ffn_dense(h, d_dense)
+            misc = 2 * h
+        layers.append(Layer(alin, core, ffn, flin, misc))
+    # Stored MTP block: dense GEMMs, plus the two extra norms. eh_proj stays in mtp_extra (2·h·h).
+    n_mtp = int(c.get("num_nextn_predict_layers") or 0)
+    mtp: list[Layer] = []
+    for _ in range(n_mtp):
+        alin, core = _gqa(h, H, KV, hd)
+        ffn, flin = _ffn_dense(h, d_dense)
+        mtp.append(Layer(alin, core, ffn, flin, 4 * h))
+    mix = (f"共享 SwiGLU 宽 moe_intermediate_size·moe_num_shared_experts = {d_sh}，没有 shared_expert_gate。"
+           if n_sh else "没有共享专家。")
+    notes = [
+        f"ERNIE-4.5 MoE：{L} 层 GQA（{H}/{KV}，head {hd}）。"
+        f"层号满足 (i+1) 整除 interval {interval} 且落在 [{start}, {end}] 的 {n_moe} 层是 MoE，其余是稠密 SwiGLU"
+        f"（intermediate {d_dense}）。",
+        f"MoE：{E} 个专家 top-{k}，专家宽 {de}。{mix}"
+        "gate.weight 与 moe_statics.e_score_correction_bias 按发布是 fp32。"
+        "bias 加在 softmax 之后，只参与选专家。",
+        "选中专家的归一化、moe_norm_min 和 router 的 fp32 matmul 不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。",
+        "发布类把 mtp 列在 _keys_to_ignore_on_load_unexpected，forward 不跑这份权重。"
+        "header 里是一层与稠密层相同的 GQA + SwiGLU、eh_proj [hidden, 2·hidden]、mtp_emb_norm 与 mtp_hidden_norm。"
+        "参数按这条形状记，不克隆最后一层 MoE，也不另写递推。没有视觉塔。",
+    ]
+    return layers, mtp, notes, "full"
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
     if "LongcatFlashForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash":
         return _build_longcat_flash, "LongCat-Flash（展开 KV 的 MLA + 零专家 MoE）"
     if mt == "hunyuan_v1_moe":
         return _build_hunyuan_v1_moe, "GQA（q/k RMSNorm）+ 共享 MLP 的 MoE"
+    if mt == "ernie4_5_moe":
+        return _build_ernie4_5_moe, "GQA + 共享 MLP 的 MoE"
     if mt in ("gemma4_text", "gemma4_unified_text"):
         moe = " MoE" if c.get("enable_moe_block") else ""
         return _build_gemma4, "Gemma-4 混合注意力（滑窗 + 全注意力）" + moe

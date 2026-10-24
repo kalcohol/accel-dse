@@ -6,6 +6,35 @@
 
 
 
+## [0.377.0] — 2026-10-24
+
+### 复核 Hunyuan-A13B 与 LongCat-Flash；目录补上 ERNIE-4.5-21B-A3B
+
+- **0.376 的账目复核过，参数路径不改。** 对照公开 config、modeling 与 safetensors header（2026-10-24）：
+  - **Hunyuan-A13B-Instruct。** 文本 MoE。32 层 GQA（32/8，head 128）。`use_qk_norm` 是 Q 和 K 上各一份 RMSNorm(head_dim)，只有参数。64 个专家、top-8，专家宽 `intermediate_size` 3072。`use_mixed_mlp_moe` 的共享 SwiGLU 宽 `intermediate_size · num_shared_expert[0]` = 3072，没有 `shared_expert_gate`。`use_cla` 与 `use_mla` 关闭。`vit_type`、`vit_path` 为 null，因果类不建视觉塔。语言参数 80,393,183,232。`param_check().rel_err == 0`。`mlp.gate.wg.weight` 是 router，纯 fp32，8,388,608 参数；共享 MLP 角色纯 bf16。激活按发布是 bf16。`num_experts > 1` 时每一层都是 MoE，decoder 不读 `moe_layer_num_skipped`。softmax 的 fp32 上转、动态 NTK、`routed_scaling_factor` 不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。
+  - **LongCat-Flash。** 发布类把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不跑这份权重。未声明 MTP 仍走既有克隆路径，不是「未建模」：克隆最后一层稠密子层（展开后的 KV，不是 latent），`eh_proj` 是 2h→h，余量是私有 embedding + `eh_proj` + `mtp.norm`。`mtp_params` 1,197,899,776，与 `params_mtp` 一致。header 与这条路径一致，不改参数。`mla_scale_q_lora`、`mla_scale_kv_lora`、`routed_scaling_factor` 不计额外周期。不另写发布类没有执行的 MTP forward。
+- **新增 1 个发布**（2026-10-24 读取全部 safetensors header）。仓库没有 modeling 文件。几何来自公开 transformers `Ernie4_5_MoeForCausalLM`（`modeling_ernie4_5_moe.py`），并用 header 闭合。`model_type=ernie4_5_moe` 单独 builder。`param_check().rel_err == 0`。覆盖 full。无视觉塔。权重 bf16，router 为 fp32，`quantization_config` 为空。激活 bf16。
+  - **ERNIE-4.5-21B-A3B-PT**（`baidu/ERNIE-4.5-21B-A3B-PT`）：28 层、hidden 2560、20/4、head 128、词表 103424、tied，没有另存 `lm_head`。层号满足 `(i+1) % interval == 0` 且落在 `[moe_layer_start_index, moe_layer_end_index]`：interval 1、起点 1、终点 27，所以第 0 层是稠密 SwiGLU（intermediate 12288），第 1–27 层是 MoE。语言参数 21,825,437,888。
+  - **MoE。** 64 个专家、top-6，专家宽 `moe_intermediate_size` 1536。共享专家是一个 SwiGLU，宽 `moe_intermediate_size · moe_num_shared_experts` = 3072，没有 `shared_expert_gate`。`use_bias` 为 false；为 true 时拒绝，不猜专家 bias 的摆法。header 里的专家是逐个 `gate_proj` / `up_proj` / `down_proj`；公开类把专家收成 3D Parameter。参数个数相同。
+  - **Router dtype。** `gate.weight` 是 fp32 Parameter `[64, 2560]`。`moe_statics.e_score_correction_bias` 是 fp32 `[1, 64]`，加在 softmax 之后，只参与选专家。名字不是 `gate.e_score_correction_bias`，对不上原来的 router 正则，会掉进 `\.mlp\.`，把 1,728 个 fp32 参数抹进 mlp。修复：`moe_statics.e_score_correction` 归入 router。27 层合计 4,425,408 个参数，纯 fp32。matmul 把激活转成 fp32；激活格式仍按发布的 bf16，不计额外周期。选中专家的归一化与 `moe_norm_min` 同样不计。
+  - **MTP。** 公开类把 `"mtp"` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不建 MTP 模块。header 仍有一份：`model.mtp_block.0` 是与第 0 层相同的稠密 GQA + SwiGLU（不是最后一层 MoE 的克隆）、`mtp_linear_proj` `[2560, 5120]`（2h→h）、`mtp_emb_norm` 与 `mtp_hidden_norm`。没有私有 MTP embedding，也没有 MTP `lm_head`。这些名字没有 `.mtp.`，旧正则会把它们算进 attn / mlp / norm，`params_mtp` 变成 0。修复：`\.mtp_` 归入 mtp。MTP 参数 123,217,920，全部 bf16。`eh_proj` 按既有 2h→h GEMM 计。不另写递推。
+  - **存储。** fp32 bias 在 LLM misc 里按 2 字节计，少 2 字节/参数（27×64）。最终 RMSNorm 不进 stage storage。`n_mtp=0` 时 stage 权重比 `bytes_llm` 少 `27×64×2 + 2560×2` = 8576 字节。活跃参数 3,352,150,208（总参数减去 27 层里未选中的 58 个专家）。模型卡上的「3B」是约数。卡片表格里的 Vision Experts 一行在这份文本 checkpoint 里没有对应张量。
+- **仍未纳入：**
+  - **ERNIE-4.5-21B-A3B-Base-PT。** config 与 PT 的 MoE 字段相同，但没有 `num_nextn_predict_layers`。没有读 header，不外推 PT 的 MTP，也不当成同形条目。
+  - **ERNIE-4.5-21B-A3B-Thinking。** config 没有 `moe_layer_end_index`，也没有 `num_nextn_predict_layers`，另有 `moe_gate` / `moe_capacity` / `moe_use_aux_free`。没有读 header，不猜终点和 router。
+  - **ERNIE-4.5-300B-A47B-PT / Base-PT。** 同属 `ernie4_5_moe`，但是 54 层、hidden 8192、top-8、无共享专家，起点是第 3 层。PT 有 `num_nextn_predict_layers=1`，Base 没有。没有读 header，不声称 `rel_err == 0`。
+  - **ERNIE-4.5-0.3B-PT / Base-PT。** `model_type=ernie4_5`，稠密 18 层，不是这份 MoE。不半套。
+  - **ERNIE-4.5-VL。** `ernie4_5_moe_vl`，带视觉塔，文本 / 视觉专家宽度不同。不把文本单独入库。
+  - **Hy-Nomas-Diffusers。** 2026-10-24 新鲜度扫描里唯一的新模型。`HyNomasTransformer3DModel`（54 层、head 128、16 头、camera attention）加 `PixelUMMDecoder` 与 Qwen2.5-VL 文本塔。仓库没有 modeling 文件，也不是已有的视频 builder。不编造。
+  - **LongCat MTP forward。** 发布类不执行 `model.mtp.*`。不另写递推。
+  - **Mistral-Small-3.2 / Magistral / Pixtral。** 没有 modeling。不把文本单独入库。
+  - **视频。** `Gemma4VideoProcessor` 仍没有接到现有 video grid 的公开打包配方。不编造。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **LTX-2.3。** 仓库根上是 safetensors，没有 `config.json`。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.376.0] — 2026-10-24
 
 ### 复核 LongCat-Flash；目录补上 Hunyuan-A13B
