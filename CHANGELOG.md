@@ -6,6 +6,25 @@
 
 
 
+## [0.369.0] — 2026-10-24
+
+### Gemma-4 E2B / E4B：KV 别名、逐层嵌入、conformer 音频
+
+- **0.368 的六个发布复核过，参数账没有错。** 滑窗 / 全注意力的 KV 宽度、`attention_k_eq_v`（无 v_proj，K 和 V 都进 cache）、26B-A4B 每层稠密 MLP 加 128 专家 top-8、1024² → 256 soft token（ViT pad 2520，投影在真实 token 上）、`router.scale` / `vision_tower.std_scale`、12B 统一嵌入器，以及 `audio_s > 0` 才跑的那条音频 Linear，都与 header 和 `modeling_gemma4.py` 一致。`param_check().rel_err == 0`，视觉 `extra == 0`。
+- **修了一处当时没有打到已发布行的 builder 条件。** 全注意力的 KV 头数只有在 `attention_k_eq_v` 为真时才用 `num_global_key_value_heads`。0.368 的六个发布该标志都是真，所以行上的数字不变。合成配置（标志为假、同时给出 `num_global_key_value_heads`）现在按 `num_key_value_heads` 建，并且保留 v_proj。
+- **新增 4 个发布**（2026-10-24 读取 header）。`param_check().rel_err == 0`，视觉 `extra == 0`，权重 bf16，词表 262144，tied。it 与 base 的张量一致，各记一行。
+  - **E2B / E2B-it**（`google/gemma-4-E2B`、`google/gemma-4-E2B-it`）：35 层、hidden 1536。28 层滑窗（window 512，head 256，1 KV）+ 7 层全注意力（head 512，1 KV，`attention_k_eq_v` 为假，有 v_proj）。后 20 层是 KV 别名。`use_double_wide_mlp` 只加宽这 20 层的 MLP（6144 → 12288）。语言参数 4,647,449,891。
+  - **E4B / E4B-it**（`google/gemma-4-E4B`、`google/gemma-4-E4B-it`）：42 层、hidden 2560。35 层滑窗 + 7 层全注意力（KV 头 2，head 256 / 512）。后 18 层是 KV 别名。`use_double_wide_mlp` 为假，每层 MLP 宽 10240。语言参数 7,518,069,034。
+- **KV 别名（`kv_alias`）。** 共享层读捐赠层 `Cache.update` 返回的那份张量，滑窗层仍然只看 `sliding_window`。不另存一份全长 `shared_kv_states`。这些层没有自己的 cache，`kv_write = 0`，`kv_read` 保留。这和 Dory 的 `kv_shared` 不同：后者仍会写，最后一轮覆盖捐赠槽。checkpoint 里共享层上的 `k_proj` / `v_proj` / `k_norm` 没有被模块加载（`_keys_to_ignore_on_load_unexpected`），记在 `cached_params`（E2B 18,880,512，E4B 55,055,616），不进 GEMM，也不进常驻 KV。
+- **逐层嵌入。** `embed_tokens_per_layer` 是 `Embedding(vocab_ple, layers * ple)`，每个 token 读一行，位数与 embed 相同，所以覆盖仍是 full。`per_layer_model_projection` 是第 0 层的一次 GEMM。每一层有 `per_layer_input_gate` 和 `per_layer_projection`。`per_layer_projection_norm` 加进最终 norm。这不是 Qwen 的 n-gram `ple_rows`。
+- **视觉。** 同一套 1024² → 256 soft token。`use_clipped_linears` 时每个 block 的 q、k、v、o、gate、up、down 各有 4 个 bf16 标量 buffer（16 层共 448）。clamp 不改变 GEMM，不计额外周期。`embed_vision` 是 Linear(768 → 文本宽)。
+- **音频 `gemma4_audio`。** 两个 stride-2 Conv2d、12 层局部注意力 conformer、`output_proj`，再加 `embed_audio`。`per_dim_scale` [head_dim] 是 `nn.Parameter`，`NOT_SCALE_RE` 保留它（四个发布的 `params_vision` 各增加 1536）。塔参数含 480 个 clip 标量，与 header 的 304,825,088 一致。token 数按四个仓库相同的 `processor_config.json`：16 kHz、hop 160、frame 320、上限 750。特征提取把波形补到 128 的倍数并在 480000 样本处截断；塔的 GEMM 用补齐后的长度，LLM 占位用 mask（1.0 秒两者都是 25）。注意力把查询补到 `ceil(T/12)*12`，每个查询看 24 个 key。`relative_k_proj` 的长度是 13。不编造 WER 或其他语音 KPI。
+- **未纳入：**
+  - **视频。** processor 仍是 `max_soft_tokens` 70、最多 32 帧。时间打包没有接到现有 video grid。
+  - **Assistant draft / DiffusionGemma。** 本轮没有重新核对到与 text + vision builder 相同且 `rel_err == 0`，不单列。
+  - **final_logit_softcapping、`partial_rotary_factor` 0.25、视觉块双向 mask、`gelu_pytorch_tanh`、clip clamp、音频 logit cap 50。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+  - **第二份全长 KV。** 0.368 把 E2B / E4B 留在外面，理由是要多存一份全长 `shared_kv_states`。源码里那是捐赠层 cache 的别名，不是第二块缓冲。本版按别名建，不另造一块。
+
 ## [0.368.0] — 2026-10-24
 
 ### 目录：Gemma-4（混合滑窗 / 全注意力，不是 Gemma-3 的薄封装）

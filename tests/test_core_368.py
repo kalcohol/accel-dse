@@ -1,6 +1,7 @@
 """0.368: Gemma-4 hybrid sliding / full attention, ViT or unified embedder, MoE on 26B-A4B.
 
-Counts are the release headers (2026-10-24). E2B / E4B stay out of the catalog.
+Counts are the release headers (2026-10-24). E2B / E4B landed in 0.369 (test_core_369).
+This file keeps the six 0.368 rows as a prefix of the Gemma-4 family.
 """
 from __future__ import annotations
 
@@ -32,7 +33,7 @@ def _kv(layer, ctx: int) -> float:
 
 def test_catalog_order_and_param_check():
     ids = [e["id"] for e in list_models() if e["family"] == "Gemma-4"]
-    assert ids == [r[0] for r in ROWS]
+    assert ids[:len(ROWS)] == [r[0] for r in ROWS]
     for mid, params, vis, layers, hidden, n_s, n_f, slide, full, moe in ROWS:
         m = get_model(mid)
         rel = load_release(m.hf_id)

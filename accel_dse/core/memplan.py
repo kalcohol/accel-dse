@@ -152,7 +152,7 @@ def cache_new_bytes(model: ModelSpec, S: int, p: int) -> float:
     dea_ids = False
     for L in model.layers:
         c = L.core
-        if L.kv_shared:
+        if L.kv_shared or L.kv_alias:
             continue
         if c.kind == "gqa":
             n = min(c.window, new) if (c.window and c.compress == 1) else new
@@ -204,7 +204,7 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         rt += _routed_hot(model, L, sh)
         c = L.core
         ce = min(ctx, c.window) if (c.window and c.compress == 1) else ctx
-        if not model.kv_cache or L.kv_shared:
+        if not model.kv_cache or L.kv_shared or L.kv_alias:
             continue
         if c.kind == "gqa":
             kv += ce * _cdiv(c.n_kv, sh.tp) * (c.qk_dim + c.v_dim) / c.compress * kvb
