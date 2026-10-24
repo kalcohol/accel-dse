@@ -6,6 +6,42 @@
 
 
 
+## [0.389.0] — 2026-10-24
+
+### Nemotron-3.5-Bolt-E4B 走 Gemma-4；LFM2.5 小模型与 8B-A1B；Granite-4.2 FP8；Atria-Dawn
+
+- **0.388 的 WeVisOne-VL 复核过，不改。** 对照已入库的发布 JSON。4B 是 714 张量，语言参数 4,415,233,536，视觉 415,347,712，`bytes_total` 19,322,324,992。2B 是 626 张量，语言参数 2,034,787,328，视觉 406,957,056，`bytes_total` 9,766,977,536。权重仍是 fp32，激活与 KV 仍是 bf16。`param_check().rel_err == 0`。
+- **新增 12 个发布**（2026-10-24 读取 config 与 safetensors header）。每一份 `param_check().rel_err == 0`。覆盖 full。config 没有 `num_nextn_predict_layers` 的文本行，`params_mtp == 0`（Atria 除外，见下）。不把缺省填成 1。
+  - **Nemotron-3.5-Bolt-E4B-BF16**（`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16`，2130 张量）。`Gemma4ForConditionalGeneration`，`model_type=gemma4`。张量名、dtype、形状与已入库的 gemma-4-E4B 逐项相同，全部 bf16，没有 `quantization_config`。语言参数 7,518,069,034。视觉 478,088,384。`bytes_llm` 15,036,138,068。`bytes_total` 15,992,314,836。文本 hidden 2560，42 层，头 8/2，`head_dim` 256，`global_head_dim` 512，intermediate 10240。`num_kv_shared_layers` 18，`sliding_window` 512，`hidden_size_per_layer_input` 256，`attention_k_eq_v` 为 false，`tie_word_embeddings` 为 true。`final_logit_softcapping` 30 不另计周期。和 E4B 的差别只有 `text_config.max_position_embeddings` 65536（E4B 是 131072），以及 `eos_token_id` `[1, 106]`（与 E4B-it 相同，E4B 没写）。视觉塔与音频塔的 config 与 E4B 相同。`processor_config.json` 与 gemma-4-E4B 相同，视频账目沿用已有的 Gemma-4 表。1024×1024 的 LLM token 仍是 256。没有新的 gemma4 机制。
+  - **LFM2.5-8B-A1B**（`LiquidAI/LFM2.5-8B-A1B`，2302 张量）。`Lfm2MoeForCausalLM`，`model_type=lfm2_moe`。全部 bf16。24 层：18 层门控短卷积，6 层 GQA。hidden 2048，头 32/8，config 没有 `head_dim`，head 是 64。前 2 层稠密 SwiGLU，宽 7168。其余 22 层 MoE：32 专家，top-4，`moe_intermediate_size` 1792。`use_expert_bias` 为 true，这 22 层各有 32 个 fp32 expert bias，共 704。语言参数 8,467,856,832。`bytes_total` 16,935,715,072（bf16 权重再加这份 fp32 bias）。`tie_word_embeddings` 为 true。没有 `block_auto_adjust_ff_dim`。`routed_scaling_factor` 1.0 不改变 GEMM 形状，也不改变 KV 宽度。
+  - **LFM2.5-1.2B-Instruct 与 1.2B-Base**（148 张量，全部 bf16）。两边 config 与角色相同。`Lfm2ForCausalLM`。16 层：10 层短卷积，6 层 GQA。hidden 2048，头 32/8，head 64。config 的 `intermediate_size` 是 12288，`block_auto_adjust_ff_dim` 为 true，`block_ffn_dim_multiplier` 1.0，`block_multiple_of` 256。transformers 4.57 的 `Lfm2MLP` 用 `int(2 * intermediate_size / 3)` 再按 `block_multiple_of` 向上取整，header 里的 `w1` / `w3` 是 `[8192, 2048]`。只写了 `tie_embedding=true`，没有 `tie_word_embeddings`，也没有 `lm_head`。`Lfm2Config.__post_init__` 会把这个别名收成绑词嵌入。语言参数 1,170,340,608。`bytes_total` 2,340,681,216。2.6B 的 `block_auto_adjust_ff_dim` 仍是 false，中间维仍是 10752。
+  - **LFM2.5-350M 与 350M-Base**（148 张量，全部 bf16）。张量名、dtype、形状与 config 逐项相同。hidden 1024，16 层：10 层短卷积，6 层 GQA，头 16/8。`intermediate_size` 6656，同一套 auto-adjust 得到 4608。只写 `tie_embedding=true`。语言参数 354,483,968。`bytes_total` 708,967,936。
+  - **LFM2.5-230M**（132 张量，全部 bf16）。hidden 1024，14 层：8 层短卷积，6 层 GQA。`block_auto_adjust_ff_dim` 为 false，SwiGLU 宽就是 2560。`tie_word_embeddings` 为 true，没有 `lm_head`。语言参数 229,693,184。`bytes_total` 459,386,368。
+  - **granite-4.2-3b-fp8 / 8b-fp8 / 30b-fp8**。`GraniteForCausalLM`，`compressed-tensors` 的 `float-quantized`。`input_activations` 是 8 bit float、按 token 动态缩放。权重是 8 bit、按 channel。`ignore` 是 `["lm_head"]`，`kv_cache_scheme` 为空。GEMM 形状和逻辑参数与对应的 bf16 行相同：3b 3,659,737,600（643 张量，`bytes_total` 4,175,754,240），8b 8,791,592,960（643，9,617,203,200），30b 29,276,770,304（1027，30,109,605,888）。激活 fp8，KV bf16。embedding 与 lm_head 的权重仍是 bf16；lm_head 的输入与已入库的 granite-4.1-fp8 一样按 fp8 计。注意力权重平均比特约 8.00625 / 8.003906 / 8.003906，MLP 约 8.004818 / 8.003021 / 8.002767，多出来的是 per-channel scale。`tie_word_embeddings` 为 false。`attention_multiplier` 与 bf16 孪生相同（3b 是 0.015625，8b 与 30b 是 0.0078125）。`embedding_multiplier`、`residual_multiplier`、`logits_scaling` 都是 1.0。这些标量不另计周期。没有新的量化格式。
+  - **Atria-Dawn**（`internlm/Atria-Dawn`，59585 张量）与 **Atria-Dawn-FP8**（118629 张量）。`GlmMoeDsaForCausalLM`。张量名、dtype、形状分别与已入库的 GLM-5.2、GLM-5.3 逐项相同。`total_size` 也相同：1,506,659,919,872 与 755,617,140,416。语言参数都是 743,377,019,904。`params_mtp` 都是 9,952,920,576。MLA 宽是 `qk_nope_head_dim` 192 加 `qk_rope_head_dim` 64，也就是 `qk_head_dim` 256，`v_head_dim` 256。config 的 `head_dim` 64 不参与这条 GEMM。`indexer_types` 是 21 个 full、57 个 shared，与 GLM 相同。`layer_types` 78 层全是 `deepseek_sparse_attention`，现有 `_build_mla` 不读这个字段。bf16 行激活 bf16。FP8 行 `quant_method=fp8`，`activation_scheme=dynamic`，激活 fp8，KV bf16，与 GLM-5.3 的角色 dtype 相同。FP8 config 多了 `scale_fmt=ue8m0`，`modules_to_not_convert` 是 443 项（GLM-5.3 是 541）。已存张量的 dtype 与形状已经对齐，不另写 scale 格式。
+- **机制。** 只加了 LFM2 稠密 FFN：`block_auto_adjust_ff_dim` 为 true 时按 `Lfm2MLP` 收窄中间维；为 false 或字段缺失时仍用 `intermediate_size`。MoE 专家宽仍是 `moe_intermediate_size`。`lfm2` / `lfm2_moe` 在没有 `tie_word_embeddings`、只有 `tie_embedding` 时，按 `Lfm2Config` 的别名绑词嵌入。`layer_types` 长度必须等于层数，且只能是 `conv` 或 `full_attention`。
+- **未纳入：**
+  - **nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB。** `config.json` 是 404。公开树是 GGUF。同名的 GGUF / MLX / DFlash 仓库不按 safetensors header 入库。
+  - **LFM2.5-VL-1.6B / VL-3B / VL-450M，以及 LiquidAI/d1-3B。** `model_type=lfm2_vl`，视觉塔是 `siglip2_vision_model`。没有这条视觉路径。文本骨干是 lfm2，不单独把视觉塔编出来。GGUF / MLX / ONNX 仍不单列。
+  - **LiquidAI/d1-omni-600M。** `model_type=d1_omni`，类是 `D1OmniModel`，dtype float32，视觉塔仍是 siglip2。不是已有的 lfm2 类。
+  - **LiquidAI/LFM2.5-d1。** 仓库是 401。
+  - **granite-4.2 的 mxfp4 / nvfp4。** 读了 8b 的两份 config，并抽查了 3b-mxfp4 与 30b-nvfp4。`quant_method=compressed-tensors`，format 分别是 `mxfp4-pack-quantized` 与 `nvfp4-pack-quantized`。权重和激活都是 4 bit（MX 组 32，NVFP4 组 16）。现有激活账单只把 compressed-tensors 的 8 bit float 输入升成 fp8。按现有路径入库会把 GEMM 输入记成 bf16。不新写 W4A4。GGUF / MLX 不单列。
+  - **ibm-granite/granite-switch-4.1-8b，以及 2026-10-22 的 8b / 30b GGUF。** 仍不是可关闭的 safetensors header。
+  - **2026-10-20 之后的公开扫描。** nvidia 的 InternVideo2-CLIP、LiquidAI 的 LFM2.5 DSpark GGUF、tencent 的 Hy-Nomas / WeVisOne 都不新增机制。google、Qwen、baidu、mistralai 在各自最近 15 个仓库里没有 2026-10-20 之后的新发布。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 上一轮仓库是 401。本轮没有新的可关闭 header。
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`。不另写递推。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 与已入库的 3.2 同 header。不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **Gemma-4 assistant / QAT。** 与已入库的十个发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **omniasr-ctc。** 新的 CTC 头，本轮没有关闭。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.388.0] — 2026-10-24
 
 ### 复核 LFM2.5-2.6B-Base；WeVisOne-VL 按 fp32 的 Qwen3-VL 入库

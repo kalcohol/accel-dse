@@ -1450,12 +1450,37 @@ def _build_dsv4(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     return layers, mtp, notes, "proxy"
 
 
+def _lfm2_dense_ff(c: dict) -> int:
+    """Dense SwiGLU width from ``Lfm2MLP`` (transformers 4.57 ``modeling_lfm2.py``).
+
+    ``block_auto_adjust_ff_dim`` is false on LFM2.5-2.6B, so ``intermediate_size`` is the
+    GEMM width. When the flag is true the class uses ``int(2 * intermediate_size / 3)``,
+    then ``block_ffn_dim_multiplier``, then rounds up to ``block_multiple_of``. MoE expert
+    width stays ``moe_intermediate_size``.
+    """
+    inter = int(c["intermediate_size"])
+    if not c.get("block_auto_adjust_ff_dim"):
+        return inter
+    inter = int(2 * inter / 3)
+    mult = c.get("block_ffn_dim_multiplier")
+    if mult is not None:
+        inter = int(float(mult) * inter)
+        multiple = int(c.get("block_multiple_of") or 0)
+        if multiple <= 0:
+            raise ValueError("lfm2 block_multiple_of must be positive when block_ffn_dim_multiplier is set")
+        inter = multiple * ((inter + multiple - 1) // multiple)
+    if inter <= 0:
+        raise ValueError("lfm2 adjusted intermediate_size must be positive")
+    return inter
+
+
 def _build_lfm2(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """0.114: Liquid LFM2 / LFM2-MoE (transformers Lfm2Moe): ``layer_types`` conv | full_attention.
     conv (Lfm2ShortConv): in_proj h → 3h (B, C, x), B·x, depthwise causal conv (kernel conv_L_cache) over h channels,
     C·(conv), out_proj h → h.  full_attention: GQA with per-head q / k RMSNorm.  FFN: SwiGLU (w1 / w3 / w2); the first
-    ``num_dense_layers`` dense (intermediate_size), the rest MoE (num_experts, top-k, moe_intermediate_size, sigmoid
-    router + per-expert bias, no shared expert).  Norms: operator_norm + ffn_norm per layer; final embedding_norm."""
+    ``num_dense_layers`` dense (intermediate_size, or the Lfm2MLP auto-adjust), the rest MoE (num_experts, top-k,
+    moe_intermediate_size, sigmoid router + per-expert bias, no shared expert).  Norms: operator_norm + ffn_norm per
+    layer; final embedding_norm.  0.389: ``tie_embedding`` is the Lfm2Config alias of ``tie_word_embeddings``."""
     h = c["hidden_size"]
     H = c["num_attention_heads"]
     KV = c.get("num_key_value_heads") or H
@@ -1463,8 +1488,11 @@ def _build_lfm2(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     L = c["num_hidden_layers"]
     kern = c.get("conv_L_cache") or 3
     types = _list(c.get("layer_types")) or ["full_attention"] * L
+    if len(types) != L or any(t not in ("conv", "full_attention") for t in types):
+        raise ValueError("lfm2 requires layer_types of length num_hidden_layers (conv | full_attention)")
     E = c.get("num_experts") or 0
     n_dense = c.get("num_dense_layers") or 0
+    dense_ff = _lfm2_dense_ff(c)
     layers = []
     for i in range(L):
         if types[i] == "conv":
@@ -1479,11 +1507,14 @@ def _build_lfm2(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             ffn, flin = _ffn_moe(h, E, c["num_experts_per_tok"], c["moe_intermediate_size"])
             misc += E if c.get("use_expert_bias") else 0
         else:
-            ffn, flin = _ffn_dense(h, c["intermediate_size"])
+            ffn, flin = _ffn_dense(h, dense_ff)
         layers.append(Layer(alin, core, ffn, flin, misc + 2 * h))
     n_conv = sum(1 for t in types[:L] if t == "conv")
     notes = [f"LFM2 混合：{n_conv}/{L} 层门控短卷积（in_proj 3h、深度卷积 kernel {kern}、两次逐元素门控），"
              f"{L - n_conv} 层 GQA 全注意力（q/k RMSNorm）"]
+    if c.get("block_auto_adjust_ff_dim"):
+        notes.append(f"block_auto_adjust_ff_dim：稠密 SwiGLU 宽 {dense_ff}"
+                     f"（int(2×{c['intermediate_size']}/3) 后再按 block_multiple_of 取整），不是 config 的 intermediate_size")
     return layers, [], notes, "full"
 
 
@@ -3277,6 +3308,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
     if ((cfg.get("model_type") or "") == "mistral3" and "tie_word_embeddings" not in c
             and "tie_word_embeddings" not in cfg):
         tie = True
+    # Lfm2Config.__post_init__ pops tie_embedding into tie_word_embeddings (1.2B ships the alias only).
+    mt_tie = (c.get("model_type") or cfg.get("model_type") or "")
+    if mt_tie in ("lfm2", "lfm2_moe") and "tie_word_embeddings" not in c and "tie_word_embeddings" not in cfg:
+        if "tie_embedding" in c or "tie_embedding" in cfg:
+            tie = bool(c.get("tie_embedding", cfg.get("tie_embedding")))
     spec = ModelSpec(
         id=model_id, hf_id=hf_id, arch=arch, hidden=h, vocab=c["vocab_size"], layers=tuple(layers),
         tie_embeddings=tie, mtp_layers=tuple(mtp), mtp_extra_params=2 * h * h if mtp else 0,
