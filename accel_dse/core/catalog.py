@@ -302,6 +302,18 @@ EXTRA_TAIL = [
     # (128 experts top-6 sigmoid + 1 shared, SiTU-GLU costed as SwiGLU 「近似」); routed experts MXFP8 (E4M3, e8m0 / 32),
     # rest bf16; params 28,783,218,602 = release header exactly
     ("raon-1-mini-preview", "KRAFTON/Raon-1-mini-preview"),
+    # 0.363 catalog gap: public 2025-2026 LLM / MoE releases whose headers map onto existing builders
+    ("qwen3-14b", "Qwen/Qwen3-14B"),
+    ("qwen3-14b-fp8", "Qwen/Qwen3-14B-FP8"),
+    ("qwen3-coder-480b-a35b", "Qwen/Qwen3-Coder-480B-A35B-Instruct"),
+    ("qwen3-coder-480b-a35b-fp8", "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"),
+    ("qwen3-coder-next-fp8", "Qwen/Qwen3-Coder-Next-FP8"),
+    ("qwen3.8-27b-fp8", "Qwen/Qwen3.8-27B-FP8"),
+    ("nemotron-nano-9b-v2", "nvidia/NVIDIA-Nemotron-Nano-9B-v2"),
+    ("nemotron-3-nano-4b-bf16", "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"),
+    ("nemotron-3-ultra-550b-a55b-bf16", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"),
+    ("hy3", "tencent/Hy3"),
+    ("glm-4.7-flash", "zai-org/GLM-4.7-Flash"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -324,6 +336,9 @@ _COG_SRC = ("transformer/config.json：sample_frames 49、潜空间 60×90（×8
             "diffusers CogVideoXPipeline 默认 50 步、guidance_scale 6（CFG）、8 fps")
 _WAN22_SRC = ("Wan2.2 官方 README / generate.py（t2v-A14B）：1280×720、81 帧、16 fps、sample_steps 40、guide_scale (3.0, 4.0)"
               "（CFG）、boundary 0.875（高/低噪声专家切换）、Wan2.1 VAE stride (4, 8, 8)、patch (1, 2, 2)")
+_WAN22_TI2V_SRC = ("Wan2.2 官方 README / wan/configs/wan_ti2v_5B.py（ti2v-5B）：1280×704、121 帧、24 fps、"
+                   "sample_steps 50、sample_guide_scale 5.0（CFG）；Wan2.2-VAE stride (4, 16, 16)、patch (1, 2, 2)、"
+                   "text_len 512")
 _HY_SRC = ("HunyuanVideo 官方 sample_video.py：--video-size 720 1280、--video-length 129、--infer-steps 50、"
            "--embedded-cfg-scale 6.0（guidance 蒸馏，无 CFG）、text_len 256、24 fps；VAE 4×8×8、patch 1×2×2")
 _LTX_SRC = ("diffusers LTXPipeline 默认：704×512、161 帧、frame_rate 25、50 步、guidance_scale 3（CFG）、"
@@ -442,6 +457,10 @@ DOMAIN_RELEASES = [
     ("pixtext-teacher", "ATH-MaaS/PixText", "pixtext",
      NativeWorkload("gen", frames=1, height=1024, width=1024, vae_s=1, steps=25, cfg=2, cfg_interval=(0.1, 1.0),
                     text_tokens=392, source=_PIXTEXT_TEACHER_SRC)),
+    # 0.363 Wan2.2-TI2V-5B (2025-07-28, Apache-2.0): dense Wan DiT. VAE is Wan2.2_VAE (stride 4x16x16), not Wan2.1.
+    ("wan2.2-ti2v-5b", "Wan-AI/Wan2.2-TI2V-5B", "wan",
+     NativeWorkload("gen", frames=121, height=704, width=1280, fps=24, vae_t=4, vae_s=16, vae_frames="wan",
+                    steps=50, cfg=2, source=_WAN22_TI2V_SRC)),
 ]
 # 0.331: release file of a model when one public repo holds several checkpoints.  Key = "<repo>:<subfolder>" → file
 # releases/<repo with / → __>_<subfolder with / → __>.json (model.release_path); every model not listed here reads
@@ -513,13 +532,16 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("alibaba", "Fun-ASR-Nano", ("fun-asr-nano",)), ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2.5-Omni", ("qwen2.5-omni",)),
     ("alibaba", "Fun-CosyVoice3", ("fun-cosyvoice3",)), ("alibaba", "CosyVoice2", ("cosyvoice2",)),
     ("alibaba", "Qwen2-Audio", ("qwen2-audio",)),
-    ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)), ("alibaba", "Qwen3-Next", ("qwen3-next",)),
+    ("alibaba", "Qwen3.8", ("qwen3.8",)), ("alibaba", "Qwen3.5", ("qwen3.5",)),
+    ("alibaba", "Qwen3-Next", ("qwen3-next", "qwen3-coder-next")),   # 0.363: Coder-Next is the Next stack
     ("alibaba", "Qwen3-Omni", ("qwen3-omni",)),   # 0.360: before the qwen3- dense prefix
+    ("alibaba", "Qwen3-Coder", ("qwen3-coder",)),   # 0.363: before the qwen3- dense prefix
     ("alibaba", "Qwen3 MoE", ("qwen3-235b", "qwen3-30b")), ("alibaba", "Qwen3 稠密", ("qwen3-",)),
     ("alibaba", "Qwen2.5", ("qwen2.5",)), ("alibaba", "Wan2.2", ("wan2.2",)), ("alibaba", "Wan2.1", ("wan2.1",)),
     ("deepseek", "DeepSeek-V4", ("deepseek-v4",)), ("deepseek", "DeepSeek-V3", ("deepseek-v3", "deepseek-r1")),
     ("kimi", "Kimi-Audio", ("kimi-audio",)), ("kimi", "Kimi-K3", ("kimi-k3",)), ("kimi", "Kimi-K2", ("kimi-k2",)),
-    ("zhipu", "GLM-5", ("glm-5",)), ("zhipu", "GLM-4.5 / 4.6", ("glm-4",)), ("zhipu", "CogVideoX", ("cogvideox",)),
+    ("zhipu", "GLM-5", ("glm-5",)), ("zhipu", "GLM-4.7", ("glm-4.7",)),
+    ("zhipu", "GLM-4.5 / 4.6", ("glm-4",)), ("zhipu", "CogVideoX", ("cogvideox",)),
     ("minimax", "MiniMax-M1 / Text-01", ("minimax-m1", "minimax-text")), ("minimax", "MiniMax-H", ("minimax-h",)),
     ("meta", "Llama 3", ("llama-3",)), ("meta", "ESM-2", ("esm2",)), ("meta", "ESMFold", ("esmfold",)),
     ("openai", "gpt-oss", ("gpt-oss",)), ("openai", "Whisper", ("whisper",)),
@@ -541,9 +563,12 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("startlux", "StartLux-Decision v1.1", ("startlux-decision-v1.1",)), ("startlux", "StartLux-Decision v1", ("startlux-decision-v1-",)),
     ("microsoft", "Microsoft-Decision", ("microsoft-decision",)),
     ("rwkv", "RWKV-8 Heron", ("rwkv8-",)), ("rwkv", "RWKV-7 G1k", ("rwkv7-",)),
-    ("tencent", "Hy-Memory（Hy3 MoE）", ("hy-memory",)), ("bfl", "FLUX 3", ("flux-3",)),
+    ("tencent", "Hy3", ("hy3",)), ("tencent", "Hy-Memory（Hy3 MoE）", ("hy-memory",)), ("bfl", "FLUX 3", ("flux-3",)),
     ("microsoft", "UserRepGen", ("userrepgen",)),
-    ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)), ("nvidia", "Nemotron-3.5（Super VL · Bolt · Lightning）", ("nemotron-3.5",)), ("nvidia", "Qwen3.8（NVIDIA 量化）", ("qwen3.8",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
+    ("nvidia", "Nemotron-Labs Dory（循环 LM）", ("dory",)),
+    ("nvidia", "Nemotron-3.5（Super VL · Bolt · Lightning）", ("nemotron-3.5",)),
+    ("nvidia", "Nemotron-3", ("nemotron-3-",)), ("nvidia", "Nemotron-Nano", ("nemotron-nano",)),
+    ("nvidia", "Qwen3.8（NVIDIA 量化）", ("qwen3.8",)), ("alibaba", "MAI-Gym", ("mai-gym",)),
     ("reflection", "Beam-1.0", ("beam-",)),
     ("openmoss", "MOSS-Image", ("moss-image",)),
     ("kyutai", "Moshi", ("moshi",)),     # 0.274

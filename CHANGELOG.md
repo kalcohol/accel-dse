@@ -6,6 +6,26 @@
 
 
 
+## [0.363.0] — 2026-10-24
+
+### 目录补齐：现有 builder 能对上的 2025–2026 公开 LLM / MoE / Wan2.2 TI2V-5B
+
+- **新增 12 个发布**。形状和 dtype 来自各仓库 `config.json` 与 safetensors header（2026-10-24 读取），`param_check().rel_err == 0`。LLM / MoE 覆盖完整。没有新的注意力或专家机制。
+  - **Qwen3-14B** 与 **Qwen3-14B-FP8**（`Qwen/Qwen3-14B`、`Qwen/Qwen3-14B-FP8`）：40 层、hidden 5120、40/8 头、head_dim 128、intermediate 17408、词表 151936、untied。参数 14,768,307,200。FP8 为 `quant_method=fp8`、dynamic、128×128。与 Qwen3-32B 不是同一形状。
+  - **Qwen3-Coder-480B-A35B-Instruct** 与 **FP8**（`qwen3_moe`）：62 层、hidden 6144、160 专家 top-8、moe intermediate 2560、无共享专家。参数 480,154,875,392。
+  - **Qwen3-Coder-Next-FP8**：与目录中的 Qwen3-Next-80B-A3B 同一形状（48 层、hidden 2048、512 专家 top-10），权重按发布为 FP8。参数 79,674,391,296。
+  - **Qwen3.8-27B-FP8**：与目录中的 Qwen3.8-27B 同一形状。`preprocessor_config.json` 与 `video_preprocessor_config.json` 逐字段相同，视觉塔按同一 Qwen ViT 建模；视觉权重仍是 bf16（`modules_to_not_convert`）。语言参数 26,895,998,464，MTP 424,699,392，视觉 460,730,096。
+  - **NVIDIA-Nemotron-Nano-9B-v2**、**NVIDIA-Nemotron-3-Nano-4B-BF16**：只发布 `hybrid_override_pattern`。字母表与 Nemotron-3.5 Lightning 的 `layers_block_type` 一致（`M` mamba、`E` moe、`*` attention、`-` mlp；未知字符拒绝）。Nano-9B-v2：56 层（27 Mamba-2 + 25 relu² MLP + 4 GQA），hidden 4480，参数 8,888,227,328。Nano-4B：42 层，hidden 3136，参数 3,973,556,832。全部 bf16。
+  - **NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16**：发布文件已带 `layers_block_type`（108 层、hidden 8192、512 专家 top-22）。参数 549,308,993,536，MTP 11,215,610,368。
+  - **Hy3**（`tencent/Hy3`，`hy_v3`）：80 层、hidden 4096、192 专家 top-8、expert_hidden 1536。参数 295,033,543,488，MTP 3,752,612,288。与 Hy-Memory-30B-A3B 不是同一形状。
+  - **GLM-4.7-Flash**（`zai-org/GLM-4.7-Flash`，`glm4_moe_lite`，MLA）：47 层、hidden 2048、64 专家 top-4、kv_lora 512、q_lora 768，无 indexer。参数 29,943,393,920，MTP 1,278,094,656。bf16。
+  - **Wan2.2-TI2V-5B**（`Wan-AI/Wan2.2-TI2V-5B`，2025-07-28，Apache-2.0）：去噪主干走现有 `build_wan`。`patch_embedding` 为 `[3072, 48, 1, 2, 2]`，30 层、24 头、ffn 14336，权重 fp32，参数 4,999,787,712。工作负载取自 `wan/configs/wan_ti2v_5B.py` 与 README 示例：1280×704、121 帧、24 fps、50 步、guide_scale 5.0；VAE stride (4, 16, 16)。覆盖 partial：仓库里的 umT5-XXL 与 `Wan2.2_VAE.pth` 未建模块（不是目录中的 Wan2.1 VAE，不挂 `_WAN_VAE`）。
+- **未纳入**（同形、闭源、或对不上现有 builder）：
+  - 与已有条目同形：Qwen3-Coder-30B-A3B、Qwen3-30B-A3B-Instruct-2507、Qwen3-235B-A22B-Instruct-2507、Qwen3-4B-Instruct-2507；Qwen3-Next-80B-A3B-Thinking 与 bf16 Qwen3-Coder-Next（builder 参数与 Next-80B instruct 相同；Thinking 的字节比不是 2.0，未做 header 拉取，不合并）；Qwen3.5-4B/2B/0.8B/27B/35B-A3B 与 Qwen3.6-27B/35B-A3B（builder 计数落在已有 StartLux / Qwen3.8 尺寸上）；Qwen3.5-122B-A10B 与已入库的 Ornith-1.5-122B 同形；GLM-4.7 的 config 与 GLM-4.6 相同；GLM-5.1 的 builder 计数等于 GLM-5；DeepSeek-V4-Flash-0731 的 builder 计数等于已入库的 V4-Flash。DeepSeek-V3-0324 / V3.2-Exp、Kimi-K2-Thinking / Kimi-K2-Instruct-0905 只做了 config 级对照，未拉 header，不单列。
+  - Nemotron-3-Nano-30B-A3B-BF16 的 pattern 与 Lightning 的 `layers_block_type` 相同，index `total_size` 等于 Lightning 的 `bytes_llm`。Nemotron-3-Super-120B-A12B-BF16 的文本层与已入库的 Super-VL 相同。
+  - 稠密 GQA 且尺寸已被 Qwen3 / Llama 3 覆盖：Qwen2.5-14B、Qwen2.5-32B、QwQ-32B、SmolLM3-3B、Olmo-3-7B-Think。
+  - 需要新机制或配置不公开：Qwen3-VL（`qwen3_vl` / `qwen3_vl_moe`，deepstack 未建模）；Gemma-4（`gemma4` / `gemma4_unified`）；Gemma-3 仍 401；MiniMax-M2 / M2.5（builder 计数与 M2.7 不一致，未拉 header）；LongCat-Flash、Ling-flash-2.0、Step-3.5-Flash、MiMo-V2-Flash、Hunyuan-A13B、ERNIE-4.5-21B-A3B、granite-4.1-3b、Mistral-Small-3.2 / Magistral-2509 / Ministral-3、EXAONE-4、Olmo-3-32B。LTX-2.3 的 `config.json` 404。CogVideoX1.5-5B 的 index 字节与已入库的 CogVideoX-5b 相差 786,560，不是同一检查点。
+
 ## [0.362.0] — 2026-10-24
 
 ### DeepEmbedAttention 重建的 K/V 超出 SRAM 后要重新读入

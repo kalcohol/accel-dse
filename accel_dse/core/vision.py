@@ -55,6 +55,7 @@ _PREPROC = {
     "Qwen/Qwen3.8-Flash-Next": {"min_px": 65536, "max_px": 16777216},
     "nvidia/Qwen3.8-Flash-Next-FP4-Local": {"min_px": 65536, "max_px": 16777216},   # 0.280: same preprocessor_config
     "Qwen/Qwen3.8-27B": {"min_px": 65536, "max_px": 16777216},
+    "Qwen/Qwen3.8-27B-FP8": {"min_px": 65536, "max_px": 16777216},   # 0.363: preprocessor_config.json identical
     "Qwen/Qwen3.5-397B-A17B": {"min_px": 65536, "max_px": 16777216},
     "ornith-ai/Ornith-1.5-122B": {"min_px": 65536, "max_px": 16777216},   # 0.287: preprocessor_config.json (Qwen2VLImageProcessorFast)
     # 0.288: the other Ornith repos — each preprocessor_config.json checked (same size / patch 16 / merge 2)
@@ -104,7 +105,7 @@ _PREPROC = {
 # 0.165 — video input.  「来源」 each repo's video_preprocessor_config.json (Qwen3VLVideoProcessor): size shortest_edge
 # 4096 / longest_edge 25165824 (a pixel budget over t_bar·h·w of the whole clip), patch 16, temporal_patch 2, merge 2.
 _VIDEO = {k: {"min_px": 4096, "max_px": 25165824} for k in (
-    "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-Flash-Next", "internlm/Intern-S2-397B",
+    "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-27B-FP8", "Qwen/Qwen3.8-Flash-Next", "internlm/Intern-S2-397B",
     "nvidia/Qwen3.8-Flash-Next-FP4-Local",
     "ornith-ai/Ornith-1.5-122B") + tuple(f"ornith-ai/Ornith-{v}" for v in ORNITH_REPOS)}   # 0.287: video_preprocessor_config.json (Qwen3VLVideoProcessor, same size / patch / merge)
 # 0.166 — Kimi K2.5 / K2.7-Code video chunks.  「来源」 preprocessor_config.json media_proc_cfg: temporal_merge_kernel_size 4,

@@ -1,0 +1,319 @@
+{
+ "bytes_llm": 19999150848,
+ "bytes_mtp": 0,
+ "bytes_total": 19999150848,
+ "config": {
+  "_class_name": "WanModel",
+  "_diffusers_version": "0.33.0",
+  "dim": 3072,
+  "eps": 1e-06,
+  "ffn_dim": 14336,
+  "freq_dim": 256,
+  "in_dim": 48,
+  "model_type": "ti2v",
+  "num_heads": 24,
+  "num_layers": 30,
+  "out_dim": 48,
+  "text_len": 512
+ },
+ "domain": "video",
+ "fetched": "2026-10-24",
+ "n_tensors": 825,
+ "params_llm": 4999787712,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "Wan-AI/Wan2.2-TI2V-5B",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 9062645760,
+    "params": 2265661440
+   }
+  },
+  "cond": {
+   "fp32": {
+    "bytes": 357826560,
+    "params": 89456640
+   }
+  },
+  "io": {
+   "fp32": {
+    "bytes": 4731648,
+    "params": 1182912
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 10571735040,
+    "params": 2642933760
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 2211840,
+    "params": 552960
+   }
+  }
+ },
+ "shapes": {
+  "blocks.0.cross_attn.k.bias": [
+   3072
+  ],
+  "blocks.0.cross_attn.k.weight": [
+   3072,
+   3072
+  ],
+  "blocks.0.cross_attn.norm_k.weight": [
+   3072
+  ],
+  "blocks.0.cross_attn.norm_q.weight": [
+   3072
+  ],
+  "blocks.0.cross_attn.o.bias": [
+   3072
+  ],
+  "blocks.0.cross_attn.o.weight": [
+   3072,
+   3072
+  ],
+  "blocks.0.cross_attn.q.bias": [
+   3072
+  ],
+  "blocks.0.cross_attn.q.weight": [
+   3072,
+   3072
+  ],
+  "blocks.0.cross_attn.v.bias": [
+   3072
+  ],
+  "blocks.0.cross_attn.v.weight": [
+   3072,
+   3072
+  ],
+  "blocks.0.ffn.0.bias": [
+   14336
+  ],
+  "blocks.0.ffn.0.weight": [
+   14336,
+   3072
+  ],
+  "blocks.0.ffn.2.bias": [
+   3072
+  ],
+  "blocks.0.ffn.2.weight": [
+   3072,
+   14336
+  ],
+  "blocks.0.modulation": [
+   1,
+   6,
+   3072
+  ],
+  "blocks.0.norm3.bias": [
+   3072
+  ],
+  "blocks.0.norm3.weight": [
+   3072
+  ],
+  "blocks.0.self_attn.k.bias": [
+   3072
+  ],
+  "blocks.0.self_attn.k.weight": [
+   3072,
+   3072
+  ],
+  "blocks.0.self_attn.norm_k.weight": [
+   3072
+  ],
+  "blocks.0.self_attn.norm_q.weight": [
+   3072
+  ],
+  "blocks.0.self_attn.o.bias": [
+   3072
+  ],
+  "blocks.0.self_attn.o.weight": [
+   3072,
+   3072
+  ],
+  "blocks.0.self_attn.q.bias": [
+   3072
+  ],
+  "blocks.0.self_attn.q.weight": [
+   3072,
+   3072
+  ],
+  "blocks.0.self_attn.v.bias": [
+   3072
+  ],
+  "blocks.0.self_attn.v.weight": [
+   3072,
+   3072
+  ],
+  "blocks.29.cross_attn.k.bias": [
+   3072
+  ],
+  "blocks.29.cross_attn.k.weight": [
+   3072,
+   3072
+  ],
+  "blocks.29.cross_attn.norm_k.weight": [
+   3072
+  ],
+  "blocks.29.cross_attn.norm_q.weight": [
+   3072
+  ],
+  "blocks.29.cross_attn.o.bias": [
+   3072
+  ],
+  "blocks.29.cross_attn.o.weight": [
+   3072,
+   3072
+  ],
+  "blocks.29.cross_attn.q.bias": [
+   3072
+  ],
+  "blocks.29.cross_attn.q.weight": [
+   3072,
+   3072
+  ],
+  "blocks.29.cross_attn.v.bias": [
+   3072
+  ],
+  "blocks.29.cross_attn.v.weight": [
+   3072,
+   3072
+  ],
+  "blocks.29.ffn.0.bias": [
+   14336
+  ],
+  "blocks.29.ffn.0.weight": [
+   14336,
+   3072
+  ],
+  "blocks.29.ffn.2.bias": [
+   3072
+  ],
+  "blocks.29.ffn.2.weight": [
+   3072,
+   14336
+  ],
+  "blocks.29.modulation": [
+   1,
+   6,
+   3072
+  ],
+  "blocks.29.norm3.bias": [
+   3072
+  ],
+  "blocks.29.norm3.weight": [
+   3072
+  ],
+  "blocks.29.self_attn.k.bias": [
+   3072
+  ],
+  "blocks.29.self_attn.k.weight": [
+   3072,
+   3072
+  ],
+  "blocks.29.self_attn.norm_k.weight": [
+   3072
+  ],
+  "blocks.29.self_attn.norm_q.weight": [
+   3072
+  ],
+  "blocks.29.self_attn.o.bias": [
+   3072
+  ],
+  "blocks.29.self_attn.o.weight": [
+   3072,
+   3072
+  ],
+  "blocks.29.self_attn.q.bias": [
+   3072
+  ],
+  "blocks.29.self_attn.q.weight": [
+   3072,
+   3072
+  ],
+  "blocks.29.self_attn.v.bias": [
+   3072
+  ],
+  "blocks.29.self_attn.v.weight": [
+   3072,
+   3072
+  ],
+  "head.head.bias": [
+   192
+  ],
+  "head.head.weight": [
+   192,
+   3072
+  ],
+  "head.modulation": [
+   1,
+   2,
+   3072
+  ],
+  "patch_embedding.bias": [
+   3072
+  ],
+  "patch_embedding.weight": [
+   3072,
+   48,
+   1,
+   2,
+   2
+  ],
+  "text_embedding.0.bias": [
+   3072
+  ],
+  "text_embedding.0.weight": [
+   3072,
+   4096
+  ],
+  "text_embedding.2.bias": [
+   3072
+  ],
+  "text_embedding.2.weight": [
+   3072,
+   3072
+  ],
+  "time_embedding.0.bias": [
+   3072
+  ],
+  "time_embedding.0.weight": [
+   3072,
+   256
+  ],
+  "time_embedding.2.bias": [
+   3072
+  ],
+  "time_embedding.2.weight": [
+   3072,
+   3072
+  ],
+  "time_projection.1.bias": [
+   18432
+  ],
+  "time_projection.1.weight": [
+   18432,
+   3072
+  ]
+ },
+ "source": {
+  "main_bin_total_size": null,
+  "repo_files": {
+   "Wan2.2_VAE.pth": 2818839170,
+   "diffusion_pytorch_model-00001-of-00003.safetensors": 9825014472,
+   "diffusion_pytorch_model-00002-of-00003.safetensors": 9995661736,
+   "diffusion_pytorch_model-00003-of-00003.safetensors": 178558176,
+   "models_t5_umt5-xxl-enc-bf16.pth": 11361920418
+  },
+  "revision": "main",
+  "spec": "Wan-AI/Wan2.2-TI2V-5B",
+  "subfolder": "",
+  "subfolders": null
+ },
+ "torch_dtype": null
+}
