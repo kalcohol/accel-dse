@@ -6,6 +6,19 @@
 
 
 
+## [0.366.0] — 2026-10-24
+
+### 目录：Qwen3-VL / Qwen3-VL-MoE（deepstack 视觉塔）
+
+- **新增 12 个发布**。形状和 dtype 来自各仓库 `config.json` 与 safetensors header（2026-10-24 读取），`param_check().rel_err == 0`，视觉 `extra == 0`。文本走现有 Qwen3 GQA / Qwen3-MoE（`qwen3_vl_text` / `qwen3_vl_moe_text`：q/k RMSNorm、无 attention bias、SwiGLU）。MRoPE（`mrope_section` [24, 20, 20]，`rope_theta` 5e6）没有额外参数，旋转 FLOPs 与 RoPE 相同。没有新的注意力或专家机制。
+  - **2B / 4B Instruct**（tied，词表 151936）：28 层 hidden 2048、16/8 头、intermediate 6144，语言参数 1,720,574,976；36 层 hidden 2560、32/8 头、intermediate 9728，语言参数 4,022,468,096。视觉塔 depth 24、hidden 1024、intermediate 4096、16 头，`deepstack_visual_indexes` [5, 11, 17]，输出 2048 / 2560。视觉参数 406,957,056 / 415,347,712。
+  - **8B / 32B Instruct**（untied）：36 层 hidden 4096、32/8 头、intermediate 12288，语言参数 8,190,735,360；64 层 hidden 5120、64/8 头、intermediate 25600，语言参数 32,762,123,264。视觉塔 depth 27、hidden 1152、intermediate 4304，索引 [8, 16, 24]，输出 4096 / 5120。视觉参数 576,388,336 / 595,266,800。
+  - **30B-A3B / 235B-A22B Instruct**（`qwen3_vl_moe`，untied，128 专家 top-8，无共享专家，无 `first_k_dense_replace`，全部层是 MoE）：48 层 hidden 2048、32/4 头、moe intermediate 768，语言参数 30,532,122,624；94 层 hidden 4096、64/4 头、moe intermediate 1536，语言参数 235,093,634,560。视觉塔与 8B 同宽（输出 2048 / 4096）。视觉参数 538,631,408 / 576,388,336。
+  - 六个 **FP8**（`quant_method=fp8`、dynamic、e4m3、128×128）语言 GEMM 为 fp8（含 block scale 后 8.001953 bit），embed / router / norm / lm_head 为 bf16，激活 fp8。`modules_to_not_convert` 含整个视觉塔，视觉权重仍是 bf16（`w_Bpp == 2`）。2B / 4B 的 FP8 文件另存一份 tied `lm_head`，`from_release` 按既有规则去重。
+- **deepstack**（transformers `Qwen3VLVisionModel` / `Qwen3VLTextModel._deepstack_process`，header 对过）：每个 `deepstack_visual_indexes` 一项是一个 `Qwen3VLVisionPatchMerger(use_postshuffle_norm=True)`，即 LayerNorm(hm) + Linear(hm, hm) + Linear(hm, out)，hm = hidden × spatial_merge_size²。最终 merger 仍是 pre-shuffle LayerNorm(hidden)。索引只决定哪一层的输出送进对应 merger，每一层 ViT block 都跑。注意力按时间片切（`cu_seqlens`），与现有 `video_grid` 一致。LLM 侧是在解码层 `0 .. len(indexes)-1` 之后，把对应特征加到视觉 token 行上（读 hidden、读特征、写 hidden）。解码 token 不是视觉 token，所以只在 prefill。这次把这三次向量加记在编码器那一趟上（视觉是 DP、全宽、在 LLM prefill 之前串行跑一次）。merger GEMM 已经在 `post` 里。`vision_act_peak` 只看 GEMM 的激活字节，这次加法不抬峰值。Qwen3.5 / Qwen3.8 上非空的 `deepstack_visual_indexes` 仍返回空（那些模块没有 `deepstack_merger_list`）；越界或非 int 的索引同样拒绝。
+- **专家 scale 归类：** Qwen3-VL-MoE FP8 的 block scale 叫 `experts.{down,gate_up}_proj_scale_inv`（没有 `.weight`，也不是 `.scale_inv`）。`SCALE_RE` 增加 `_scale_inv$`，只重汇总了 30B-A3B-FP8 与 235B-A22B-FP8。原先这两份把 1,769,472 与 13,860,864 个 fp32 scale 算进了专家参数；现在字节仍挂在专家角色上，有效位数与注意力一样是 8.001953125。其余发布未重汇总。
+- **未纳入：** Thinking 六个尺寸的 config（文本 + 视觉，忽略 quant / dtype / token id）与对应 Instruct 相同，未拉 header，不单列。Embedding-2B/8B 与 Reranker-2B/8B 骨干同形但任务不同，未拉权重。GGUF 不入库。
+
 ## [0.365.0] — 2026-10-24
 
 ### FP8 Gated DeltaNet 的 `in_proj_ba` 按 bf16 计，不再摊进 attn 平均

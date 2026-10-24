@@ -32,10 +32,13 @@ ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / "local" / "hf_cache"
 OUT = ROOT / "accel_dse" / "data" / "releases"
 
-SCALE_RE = re.compile(r"(_(weight|input)_scale(_2)?$|\.weight_scale_inv$|\.scale_inv$|\.weight_scale(_2)?$|\.scale$|_scales$|\.scales$|"
+SCALE_RE = re.compile(r"(_(weight|input)_scale(_2)?$|\.weight_scale_inv$|\.scale_inv$|_scale_inv$|\.weight_scale(_2)?$|\.scale$|_scales$|\.scales$|"
                       r"\.qzeros$|\.g_idx$|\.weight_shape$|\.input_scale$|\.weight_global_scale$|"
                       r"\.input_global_scale$|\.weight_zero_point$|_scale$|"
                       r"\.weight_scale\.nvfp4_csf_(fixed|exceptions)$)")   # 0.280 ModelOpt NVFP4 compressed scale format
+# 0.366: Qwen3-VL-MoE FP8 expert block scales are experts.{down,gate_up}_proj_scale_inv (no ".weight" infix and no
+# dot before scale_inv).  _scale_inv$ strips that suffix onto the fused expert tensor.  Names that already end in
+# .weight_scale_inv still match the earlier alternative (leftmost match).
 # 0.281: the first alternative catches fused 3-D expert scales (ModelOpt NVFP4 on Muse Spark: experts.gate_up_proj +
 # experts.gate_up_proj_weight_scale / _weight_scale_2 / _input_scale) and strips the whole suffix so they attach to the
 # expert tensor; ≤ 0.280 "_weight_scale_2" (fp32, one per expert) was counted as a weight and the per-16 e4m3 scales were

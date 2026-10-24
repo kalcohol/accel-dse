@@ -1,7 +1,8 @@
 """0.365: GDN in_proj_ba is the bf16 GEMM inside the attn role, not the role average.
 
 The split is applied only when the release buckets match the builder parameter for
-parameter. Qwen3-VL deepstack is still outside the vision builder.
+parameter. A non-empty deepstack list on a Qwen3.5 tower is still refused (0.366
+models that list only on qwen3_vl / qwen3_vl_moe).
 """
 from __future__ import annotations
 
@@ -67,12 +68,18 @@ def test_catalog_split_is_only_those_two():
     assert got == ["qwen3-coder-next-fp8", "qwen3.8-27b-fp8"]
 
 
-def test_qwen3_vl_still_outside_the_vision_builder():
-    """Qwen3-VL is qwen3_vl plus deepstack mergers. Neither is a path the Qwen ViT builder accepts."""
+def test_qwen3_5_deepstack_stays_refused():
+    """Non-empty deepstack_visual_indexes on a Qwen3.5 tower is not Qwen3VLVisionModel."""
     m = get_model("qwen3.8-27b-fp8")
     cfg = load_release(m.hf_id)["config"]
-    assert vision_spec(m.hf_id, cfg) is not None
+    base = vision_spec(m.hf_id, cfg)
+    assert base is not None and base.deepstack == 0 and len(base.post) == 2
+    # same tower, empty deepstack: qwen3_vl is the Qwen ViT path with no extra merger
     vl = {**cfg, "vision_config": {**cfg["vision_config"], "model_type": "qwen3_vl"}}
-    assert vision_spec(m.hf_id, vl) is None
+    got = vision_spec(m.hf_id, vl)
+    assert got is not None and got.params == base.params and got.deepstack == 0 and got.label == "Qwen ViT"
     deep = {**cfg, "vision_config": {**cfg["vision_config"], "deepstack_visual_indexes": [8, 16, 24]}}
     assert vision_spec(m.hf_id, deep) is None
+    bad = {**cfg, "vision_config": {**cfg["vision_config"], "model_type": "qwen3_vl",
+                                    "deepstack_visual_indexes": [8, 16, 99]}}
+    assert vision_spec(m.hf_id, bad) is None
