@@ -6,6 +6,35 @@
 
 
 
+## [0.388.0] — 2026-10-24
+
+### 复核 LFM2.5-2.6B-Base；WeVisOne-VL 按 fp32 的 Qwen3-VL 入库
+
+- **0.387 的 LFM2.5-2.6B-Base 复核过，不改。** 2026-10-24 重新读取 `LiquidAI/LFM2.5-2.6B-Base` 与 `LiquidAI/LFM2.5-2.6B` 的 safetensors header。两边都是 266 张量，全部 bf16。张量名、dtype、形状没有差异。语言参数 2,697,198,592。`bytes_total` 5,394,397,184。`tie_word_embeddings` 为 true，没有另存 `lm_head`。30 层：22 层门控短卷积，8 层 GQA。`param_check().rel_err == 0`。config 只有两处不同：`max_position_embeddings` 是 128000（Instruct 是 131072），`transformers_version` 是 5.9.0（Instruct 是 5.2.0）。位置上限不改变 GEMM 形状，也不改变 KV 宽度。没有 `num_experts`，没有 `head_dim`，没有 `num_nextn_predict_layers`。`conv_bias` 与 `block_auto_adjust_ff_dim` 都是 false。
+- **新增 2 个发布**（`tencent/WeVisOne-VL-4B`、`tencent/WeVisOne-VL-2B`，2026-10-22；2026-10-24 读取 safetensors header）。类是 `Qwen3VLForConditionalGeneration`，`model_type=qwen3_vl`。config 的 dtype 是 bfloat16，header 里每一张量都是 fp32，`quantization_config` 为空。语言 GEMM 与视觉塔权重按 fp32 计，激活仍是 bf16，KV 是 bf16。`param_check().rel_err == 0`。覆盖 full。词表 152680。`tie_word_embeddings` 为 false，`embed_tokens` 与 `lm_head` 各存一份。config 没有 `num_nextn_predict_layers`，header 没有 `mtp_*`，`params_mtp == 0`。不把缺省填成 1。
+  - **WeVisOne-VL-4B**（714 张量，单文件）。文本 hidden 2560，36 层，头 32/8，`head_dim` 128，intermediate 9728，`max_position_embeddings` 262144。`q` 是 fp32 `[4096, 2560]`，`k` / `v` 是 `[1024, 2560]`，`o` 是 `[2560, 4096]`。SwiGLU `gate_proj` / `up_proj` `[9728, 2560]`，`down_proj` `[2560, 9728]`。q/k RMSNorm 各 `[128]`。语言参数 4,415,233,536。`bytes_llm` 17,660,934,144。视觉塔 `model_type=qwen3_vl_vision`（transformers 5.12 的名字；更早的检查点仍写 `qwen3_vl`，`Qwen3VLConfig` 会改写成同一个模块）。depth 24，hidden 1024，intermediate 4096，16 头，`out_hidden_size` 2560，patch 16，temporal 2，merge 2，`deepstack_visual_indexes` 是 `[5, 11, 17]`，位置编码 2304。视觉参数 415,347,712，与已入库的 Qwen3-VL-4B 相同，按每参数 4 字节计。`bytes_total` 19,322,324,992。语言线性与层 misc 和 Qwen3-VL-4B 逐层相同。差额是词表 152680 对 151936，以及解开的 `lm_head`。
+  - **WeVisOne-VL-2B**（626 张量，单文件）。hidden 2048，28 层，头 16/8，intermediate 6144。`q` / `o` 是 fp32 `[2048, 2048]`，`k` / `v` 是 `[1024, 2048]`。视觉 `model_type` 仍是 `qwen3_vl`（transformers 5.5.3），`out_hidden_size` 2048。语言参数 2,034,787,328。`bytes_llm` 8,139,149,312。视觉参数 406,957,056，与 Qwen3-VL-2B 相同。`bytes_total` 9,766,977,536。
+  - **图像与视频。** 两份仓库只有 `processor_config.json`。图像处理器是 `Qwen2VLImageProcessor`，最短 65536，最长 16777216。视频处理器是 `Qwen3VLVideoProcessor`，最短 4096，最长 25165824，fps 2，最少 4 帧，最多 768 帧。2B 写了 `max_video_tokens` 768；4B 没写，类默认也是 768。1024×1024 仍是 64×64 patch，合并 1024，LLM token 1024。1280×720、4 帧：时间片 2，每片 44×80，合并 880，LLM token 1760。两处都与对应的 Qwen3-VL 相同。`max_position_embeddings` 与 mRoPE 分段不改变 GEMM 形状，也不改变 KV 宽度。
+- **未纳入：**
+  - **granite-4.2 的 fp8 / mxfp4 / nvfp4。** 本轮没有读这些仓库的 config 或 header。
+  - **LFM2.5 的 GGUF / MLX / ONNX，以及 LFM2.5-VL / LFM2.5-8B-A1B / 1.2B / d1。** Base 的 safetensors 已与 Instruct 对过。这些分支不单列，也没有按新类关闭。
+  - **internlm/Atria-Dawn 与 Atria-Dawn-FP8。** index `total_size` 与张量个数分别和已入库的 GLM-5.2、GLM-5.3 相同。config 的 `head_dim` 是 64（GLM-5.2 是 192）。没有逐张量对比，不单列。
+  - **nvidia/Nemotron-3.5-Bolt-E4B。** config 是 `gemma4`，带音频。本轮没有读 header。
+  - **ibm-granite/granite-switch-4.1-8b。** `model_type=granite_switch`，只有 config，mamba 与 adapter 没有按 header 关闭。
+  - **omniasr-ctc。** 新的 CTC 头，本轮没有关闭。
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不跑这份权重。不另写递推。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。没有读 config 或 header。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 与已入库的 3.2 同 header。不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **Gemma-4 assistant / QAT。** 与已入库的十个发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.387.0] — 2026-10-24
 
 ### 复核 granite-4.2-30b；LFM2.5-2.6B-Base 与 Instruct 同形入库

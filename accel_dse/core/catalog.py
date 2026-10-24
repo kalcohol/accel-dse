@@ -107,6 +107,10 @@ EXTRA_TAIL = [
     # 0.385: video frames are paired on a separate grid; temporal GEMMs see half the rows.
     ("ernie-4.5-vl-28b-a3b-pt", "baidu/ERNIE-4.5-VL-28B-A3B-PT"),
     ("ernie-4.5-vl-424b-a47b-pt", "baidu/ERNIE-4.5-VL-424B-A47B-PT"),
+    # 0.388: WeVisOne-VL-4B / 2B. Qwen3VLForConditionalGeneration. Safetensors are fp32
+    # (config dtype bfloat16). Untied lm_head, vocab 152680. Vision is the Qwen3-VL tower.
+    ("wevisone-vl-4b", "tencent/WeVisOne-VL-4B"),
+    ("wevisone-vl-2b", "tencent/WeVisOne-VL-2B"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
@@ -699,6 +703,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("distil", "Distil-Whisper", ("distil-whisper",)),   # 0.360
     ("meituan", "LongCat-Flash", ("longcat-flash",)),   # 0.375
     ("tencent", "Hunyuan-A13B", ("hunyuan-a13b",)),   # 0.376
+    ("tencent", "WeVisOne", ("wevisone-",)),   # 0.388
     ("baidu", "ERNIE-4.5-VL", ("ernie-4.5-vl-",)),   # 0.384 (before ERNIE-4.5: that prefix also matches these ids)
     ("baidu", "ERNIE-4.5", ("ernie-4.5-",)),   # 0.377
 ]
