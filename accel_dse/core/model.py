@@ -2420,7 +2420,10 @@ def _build_longcat_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], 
     fp32 buffer of that width, stored in the MoE sublayer's misc. ``classifier.weight`` is fp32 as released.
     ``mla_scale_*`` and ``routed_scaling_factor`` are Python floats. They do not change GEMM or KV shape,
     so they add no cycles. The published class lists ``model.mtp.*`` in ``_keys_to_ignore_on_load_unexpected``
-    and does not construct an MTP module. Those tensors are not modeled.
+    and does not run that module. The checkpoint still stores one dense sublayer (same GEMMs as the last
+    sublayer), ``eh_proj`` [hidden, 2·hidden], enorm / hnorm, ``mtp.norm`` and a private embedding.
+    ``from_release`` keeps the existing undeclared-MTP path: clone that last sublayer and leave the private
+    embedding in the remainder. There is no separate lookup table and no LongCat MTP forward.
     """
     h = int(c["hidden_size"])
     n_blocks = int(c.get("num_layers") or c["num_hidden_layers"])
@@ -2466,10 +2469,92 @@ def _build_longcat_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], 
     return layers, [], notes, "full"
 
 
+def _seq0(v, default: int = 0) -> int:
+    """First entry of a per-layer list, or the int itself. Hunyuan's forward indexes ``[0]`` for every layer."""
+    if isinstance(v, (list, tuple)):
+        return int(v[0]) if v else default
+    if v is None:
+        return default
+    return int(v)
+
+
+def _build_hunyuan_v1_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """Hunyuan-A13B text MoE (tencent/Hunyuan-A13B-Instruct, hunyuan.py + modeling_hunyuan.py).
+
+    ``HunYuanMoEV1ForCausalLM`` does not build a vision tower. ``vit_type`` / ``vit_path`` on this release are null.
+    ``use_cla`` and ``use_mla`` are off: every layer is GQA with its own K and V. CLA cross-layer KV and MLA are
+    not implemented here.
+
+    ``HunYuanAttention.head_dim`` is ``hidden // num_attention_heads`` (this release also stores ``head_dim`` and
+    ``attention_head_dim``, both equal to that). ``use_qk_norm`` adds one RMSNorm(head_dim) on Q and one on K.
+    Those weights are parameters only; the norm is not an extra cycle, same as Qwen3.
+
+    Every layer is ``HunYuanMoE`` when ``num_experts > 1``. The decoder does not read ``moe_layer_num_skipped``.
+    Each expert is ``HunYuanMLP(is_shared_mlp=False)``, whose width is ``intermediate_size``, not
+    ``moe_intermediate_size``. ``use_mixed_mlp_moe`` adds one shared MLP of width
+    ``intermediate_size * num_shared_expert[0]`` (the module indexes ``[0]`` for every layer) and adds it to the
+    routed sum. There is no ``shared_expert_gate``. ``HunYuanTopKGate.wg`` is an fp32 Linear with no bias.
+    ``topkgating`` reads ``moe_topk[0]`` on every layer. The selected-gate renormalization, dynamic NTK RoPE,
+    eval-time dropout and ``routed_scaling_factor`` do not change GEMM or KV shape.
+    """
+    if c.get("use_cla"):
+        raise ValueError("hunyuan_v1_moe use_cla is not modeled")
+    if c.get("use_mla"):
+        raise ValueError("hunyuan_v1_moe use_mla is not modeled")
+    h = int(c["hidden_size"])
+    H = int(c["num_attention_heads"])
+    KV = int(c.get("num_key_value_heads") or H)
+    hd = h // H
+    L = int(c["num_hidden_layers"])
+    E = int(c.get("num_experts") or 0)
+    k = _seq0(c.get("moe_topk"), 1)
+    de = int(c["intermediate_size"])
+    moe_w = c.get("moe_intermediate_size")
+    if isinstance(moe_w, (list, tuple)):
+        if any(int(x) != de for x in moe_w):
+            raise ValueError("hunyuan_v1_moe expert GEMM uses intermediate_size; moe_intermediate_size differs")
+    elif moe_w is not None and int(moe_w) != de:
+        raise ValueError("hunyuan_v1_moe expert GEMM uses intermediate_size; moe_intermediate_size differs")
+    factor = _seq0(c.get("num_shared_expert"), 0)
+    if c.get("use_mixed_mlp_moe") and factor:
+        n_sh, d_sh = 1, de * factor
+    else:
+        n_sh, d_sh = 0, 0
+    qk = 2 * hd if c.get("use_qk_norm") else 0
+    layers: list[Layer] = []
+    for _ in range(L):
+        alin, core = _gqa(h, H, KV, hd)
+        if E > 1:
+            ffn, flin = _ffn_moe(h, E, k, de, n_sh, d_sh, shared_gate=False)
+        else:
+            ffn, flin = _ffn_dense(h, de)
+        layers.append(Layer(alin, core, ffn, flin, 2 * h + qk))
+    qk_note = ("q / k 为 RMSNorm(head_dim)，只进参数，不另计周期。" if qk
+               else "use_qk_norm 关闭，没有 q/k norm。")
+    if n_sh:
+        mix = (f"use_mixed_mlp_moe：另有一份共享 SwiGLU，宽 intermediate_size·num_shared_expert[0] = {d_sh}，"
+               "没有 shared_expert_gate。")
+    else:
+        mix = "use_mixed_mlp_moe 关闭，没有共享 MLP。"
+    notes = [
+        f"Hunyuan-A13B：{L} 层 GQA（{H}/{KV}，head {hd}）。{qk_note}",
+        f"每层 {E} 个专家 top-{k}，专家宽 intermediate_size {de}"
+        "（HunYuanMLP 不读 moe_intermediate_size）。" + mix,
+        "router 是 gate.wg，按发布是 fp32，没有 bias。topkgating 对选中专家做一次归一化。"
+        "use_cla 与 use_mla 关闭，每一层都写自己的 K/V。"
+        "动态 NTK、eval dropout 和 routed_scaling_factor 不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。",
+        "num_experts > 1 时每一层都是 MoE，decoder 不读 moe_layer_num_skipped。没有 MTP 张量。"
+        "vit_type 与 vit_path 为空，因果类不建视觉塔。",
+    ]
+    return layers, [], notes, "full"
+
+
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
     if "LongcatFlashForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash":
         return _build_longcat_flash, "LongCat-Flash（展开 KV 的 MLA + 零专家 MoE）"
+    if mt == "hunyuan_v1_moe":
+        return _build_hunyuan_v1_moe, "GQA（q/k RMSNorm）+ 共享 MLP 的 MoE"
     if mt in ("gemma4_text", "gemma4_unified_text"):
         moe = " MoE" if c.get("enable_moe_block") else ""
         return _build_gemma4, "Gemma-4 混合注意力（滑窗 + 全注意力）" + moe

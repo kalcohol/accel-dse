@@ -6,6 +6,32 @@
 
 
 
+## [0.376.0] — 2026-10-24
+
+### 复核 LongCat-Flash；目录补上 Hunyuan-A13B
+
+- **0.375 的 LongCat-Flash 复核过，账目不改。** 对照公开 `config.json`、`modeling_longcat_flash.py` 和 safetensors header（2026-10-24）：
+  - **主栈。** 28 个 block，每个 block 两套注意力 + 两套稠密 SwiGLU（intermediate 12288）。第 0 子层的 MoE 与该子层稠密 MLP 读同一条 post-attention 流，MoE 输出加在第 1 子层残差之后。`kv_b_proj` 在 `past_key_values.update` 之前展开成多头 K/V：64 头，K 192，V 128。不是 latent（`kv_lora + rope` = 576）。512 个有权重的专家（intermediate 2048）+ 256 个恒等 zero-expert（没有权重）。router 对 768 类打分，`classifier.weight` 与 `e_score_correction_bias` 都是 fp32。均匀路由下每个 token 期望打中 8 个有权重的专家。语言参数 560,664,980,480。`param_check().rel_err == 0`。
+  - **未声明 MTP。** 发布的类把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，forward 不跑这份权重。header 里只有一层：展开 KV 注意力和稠密 MLP 的形状与主栈最后一层子层相同；`eh_proj` 是 `[6144, 12288]`（2h→h）；`enorm.m` / `hnorm.m` / `input_layernorm` / `post_attention_layernorm` 都是 `[6144]`，`q_a_layernorm` `[1536]`，`kv_a_layernorm` `[512]`；`mtp.norm` `[6144]`；私有 embedding `[131072, 6144]`。没有单独的 MTP `lm_head`。既有未声明 MTP 路径克隆最后一层子层，`eh_proj` 按 2h→h，余量是私有 embedding + `eh_proj` + `mtp.norm`。`mtp_params` 1,197,899,776，与 `params_mtp` 一致。`lookup_params == 0`，私有 embedding 不另做查表。不另写一套发布类没有执行的 MTP forward。
+  - **标量。** `mla_scale_q_lora`、`mla_scale_kv_lora`、`routed_scaling_factor` 不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。fp32 `e_score_correction_bias` 仍在 LLM misc 里按 2 字节计（少 2 字节/参数）。最终 RMSNorm 仍不进 stage storage。
+- **新增 1 个发布**（2026-10-24 读取 header）。`model_type=hunyuan_v1_moe` 单独 builder，不走 latent MLA。`param_check().rel_err == 0`。覆盖 full。无视觉塔。权重 bf16，router 为 fp32，`quantization_config` 为空。
+  - **Hunyuan-A13B-Instruct**（`tencent/Hunyuan-A13B-Instruct`，`HunYuanMoEV1ForCausalLM`）：32 层、hidden 4096、32/8、head 128（`hidden // num_attention_heads`，与 `head_dim` / `attention_head_dim` 相同）、词表 128167、tied，没有另存 `lm_head`。`use_qk_norm` 是 Q 和 K 上各一份 RMSNorm(head_dim)。`use_cla` 与 `use_mla` 关闭，每一层都有自己的 K/V。语言参数 80,393,183,232。
+  - **MoE。** `num_experts > 1` 时每一层都是 MoE；decoder 不读 `moe_layer_num_skipped`（本发布为 0）。64 个专家、top-8。专家宽是 `intermediate_size` 3072（`HunYuanMLP(is_shared_mlp=False)`），不是一份单独读取的 `moe_intermediate_size`；这份列表的每一项也是 3072。`use_mixed_mlp_moe` 打开：另有一份共享 SwiGLU，宽 `intermediate_size · num_shared_expert[0]` = 3072，没有 `shared_expert_gate`。`topkgating` 对每一层都读 `moe_topk[0]`（8）。
+  - **Router dtype。** `gate.wg` 是 `nn.Linear(..., dtype=float32)`，header 为 F32 `[64, 4096]`，没有 bias。名字是 `mlp.gate.wg.weight`，对不上原来的 `\.gate\.weight$`，会掉进 mlp，把 8,388,608 个 fp32 参数抹进共享 MLP 的平均位宽，router GEMM 再退回 attn 的 bf16。修复：这个名字归入 router。router 角色是纯 fp32（32 bit），mlp 角色是纯 bf16 的共享 MLP。matmul 会把激活转成 fp32；激活格式仍按发布的 bf16，与已入库的 fp32 router 相同，不另开激活角色。
+  - **标量。** 选中专家的归一化、动态 NTK（`rope_scaling.type=dynamic`，`alpha` 1000）、eval 时 dropout 为 0、`routed_scaling_factor` 1，都不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。`topkgating` 还有一个专家容量 `max(topk, topk · tokens // num_experts)`。均匀路由下这个容量等于平均分配，目录仍按每个 token 的 top-8 计 pair，不另写丢 token 的模型。
+  - **视觉。** `vit_type`、`vit_path`、`anyres_vit_max_image_size` 都是 null。因果类不建视觉塔。`params_vision == 0`。
+  - **存储。** 层内 norm（含 q/k norm）是 bf16，与 LLM misc 的 2 字节一致。最终 RMSNorm 不进 stage storage。`n_mtp=0` 时 stage 权重比 `bytes_llm` 少 `4096×2` 字节。没有 MTP。
+- **未纳入：**
+  - **ERNIE-4.5-21B-A3B-PT。** 仓库有 `config.json` 和 safetensors，没有 modeling 文件。Hunyuan 已经按公开 modeling 和 header 对齐，不从缺文件的仓库猜共享专家、router bias 或 MTP。不新增。
+  - **LongCat MTP forward。** 发布类不执行 `model.mtp.*`。不另写递推。
+  - **Mistral-Small-3.2 / Magistral。** 没有 modeling。不把文本单独入库。
+  - **视频。** `Gemma4VideoProcessor` 仍没有接到现有 video grid 的公开打包配方。不编造。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **LTX-2.3。** 仓库根上是 safetensors，没有 `config.json`。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.375.0] — 2026-10-24
 
 ### 复核 Step-3.5-Flash 与只命中 MTP 的 o_proj 拆分；目录补上 LongCat-Flash

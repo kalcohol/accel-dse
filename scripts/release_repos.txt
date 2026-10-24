@@ -229,3 +229,5 @@ inclusionAI/Ling-flash-2.0
 stepfun-ai/Step-3.5-Flash
 # 0.375 LongCat-Flash-Chat. Expanded KV before the cache; identity zero-experts have no weights.
 meituan-longcat/LongCat-Flash-Chat
+# 0.376 Hunyuan-A13B-Instruct (hunyuan_v1_moe text MoE). ViT fields are null.
+tencent/Hunyuan-A13B-Instruct
