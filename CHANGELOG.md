@@ -6,6 +6,33 @@
 
 
 
+## [0.378.0] — 2026-10-24
+
+### 复核 ERNIE-4.5-21B-A3B-PT；目录补上 ERNIE-4.5-21B-A3B-Base-PT
+
+- **0.377 的账目复核过，参数路径不改。** 对照公开 transformers v5.12.0 `Ernie4_5_MoeForCausalLM`（`modeling_ernie4_5_moe.py`）与 2026-10-24 重新读取的全部 safetensors header：
+  - **语言栈。** 28 层 GQA（20/4，head 128）。`q_proj` / `o_proj` 是 bf16 `[2560, 2560]`，`k_proj` / `v_proj` 是 bf16 `[512, 2560]`。第 0 层稠密 SwiGLU，`gate_proj` / `up_proj` `[12288, 2560]`，`down_proj` `[2560, 12288]`。第 1–27 层 MoE：64 个专家、top-6，专家 `gate_proj` / `up_proj` `[1536, 2560]`、`down_proj` `[2560, 1536]`，全部 bf16。共享专家是一份 SwiGLU，宽 `moe_intermediate_size · moe_num_shared_experts` = 3072（`gate_proj` / `up_proj` `[3072, 2560]`），没有 `shared_expert_gate`。语言参数 21,825,437,888。`param_check().rel_err == 0`。
+  - **Router。** 27 层 `gate.weight` 是 fp32 `[64, 2560]`，`moe_statics.e_score_correction_bias` 是 fp32 `[1, 64]`。合计 4,425,408，角色纯 fp32，字节是 4 字节/参数。`Ernie4_5_MoeTopKRouter.forward` 在 softmax 之后把 bias 加进去，只用于 `topk` 选专家；写回专家的权重是加 bias 之前的 softmax 分数，再做一次归一化。激活按发布是 bf16。matmul 内部的 fp32 上转不另计周期。
+  - **类不用的 MTP。** `_keys_to_ignore_on_load_unexpected = ["mtp"]`，forward 不建模块。header 有 12 个张量，全部 bf16：`model.mtp_block.0` 与第 0 层相同的稠密 GQA + SwiGLU（不是最后一层 MoE），`mtp_linear_proj.0.weight` `[2560, 5120]`（2h→h），`mtp_emb_norm` 与 `mtp_hidden_norm` 各 `[2560]`。MTP 参数 123,217,920。`model.mtp_*` 没有 `.mtp.`，仍归入 mtp。`use_bias=true` 拒绝。header 里没有投影 bias。
+  - **存储。** `n_mtp=0` 时 stage 权重比 `bytes_llm` 少 8576 字节：fp32 bias 在 LLM misc 里按 2 字节计（少 `27×64×2`），最终 RMSNorm 不进 stage（再少 `2560×2`）。
+  - **不改。** 选中专家的归一化、`moe_norm_min`、softcap、标量门、`mla_scale_*`、`routed_scaling_factor` 不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。
+- **新增 1 个发布**（2026-10-24 读取全部 safetensors header）。同一 `ernie4_5_moe` builder。`param_check().rel_err == 0`。覆盖 full。无视觉塔。权重 bf16，router 为 fp32，`quantization_config` 为空。激活 bf16。
+  - **ERNIE-4.5-21B-A3B-Base-PT**（`baidu/ERNIE-4.5-21B-A3B-Base-PT`）：config 与 PT 的 MoE 字段相同，但没有 `num_nextn_predict_layers`。header 5492 张量，没有 `mtp_*`。语言张量的形状和 dtype 与 PT 的非 MTP 张量相同。语言参数 21,825,437,888，`params_mtp` 0。`bytes_total` 43,659,726,592，等于 PT 的 `bytes_llm`（PT 的 `bytes_mtp` 246,435,840 不在这份检查点里）。不把缺省字段填成 1。若把该字段写成 1，发布摘要的 `params_mtp == 0` 会把这份模块去掉，不会留下一个克隆出来的 MoE MTP。`n_mtp=0` 的 stage 缺口同样是 8576 字节。活跃参数 3,352,150,208。
+- **未纳入：**
+  - **ERNIE-4.5-21B-A3B-Thinking。** config 没有 `moe_layer_end_index`，也没有 `num_nextn_predict_layers`，另有 `moe_gate=top2_fused`、`moe_capacity=[64, 64, 64]`、`moe_use_aux_free=true`。公开类的 router 是 softmax 之后加 bias，不读这三项。权重 index 是 5492 张量、`total_size` 43,659,726,592、没有 `mtp_*`，层名上第 0 层稠密、第 1–27 层 MoE，与 Base-PT 的 index 相同。没有读分片 header 的形状和 dtype，不把它当成公开类已经闭合。
+  - **ERNIE-4.5-300B-A47B-PT / Base-PT。** 同属 `ernie4_5_moe`。config 是 54 层、hidden 8192、64/8、稠密宽 28672、专家宽 3584、top-8、无共享专家、起点第 3 层、终点第 53 层、untied。PT 有 `num_nextn_predict_layers=1`，Base 没有。index 上第 0–2 层稠密、第 3–53 层 MoE；PT 有与 21B 相同的 12 个 `mtp_*` 名字，Base 没有。PT 10242 张量、123 个分片；Base 10230 张量、122 个分片。没有读分片 header，不声称 `rel_err == 0`。
+  - **ERNIE-4.5-0.3B-PT。** `model_type=ernie4_5`，稠密 18 层，`head_dim` 128。不是这份 MoE。不另开稠密路径。
+  - **ERNIE-4.5-VL。** `ernie4_5_moe_vl`，带视觉塔，文本 / 视觉专家宽度不同。不把文本单独入库。
+  - **LongCat MTP forward。** 发布类不执行 `model.mtp.*`。不另写递推。
+  - **Mistral-Small-3.2 / Magistral / Pixtral。** 没有 modeling。不把文本单独入库。
+  - **视频。** `Gemma4VideoProcessor` 仍没有接到现有 video grid 的公开打包配方。不编造。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **LTX-2.3。** 仓库根上是 safetensors，没有 `config.json`。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 上一轮新鲜度扫描里的新模型。仓库没有 modeling 文件。本轮 Base-PT 已经按 header 闭合，没有再扫一遍 `scripts/release_repos.txt` 以外的仓库。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.377.0] — 2026-10-24
 
 ### 复核 Hunyuan-A13B 与 LongCat-Flash；目录补上 ERNIE-4.5-21B-A3B

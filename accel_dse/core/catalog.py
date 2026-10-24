@@ -77,6 +77,9 @@ EXTRA_TAIL = [
     ("hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"),
     # 0.377: ERNIE-4.5-21B-A3B-PT. Text MoE. Repo has no modeling file; transformers class + headers close rel_err.
     ("ernie-4.5-21b-a3b-pt", "baidu/ERNIE-4.5-21B-A3B-PT"),
+    # 0.378: ERNIE-4.5-21B-A3B-Base-PT. Same language stack. Config omits num_nextn_predict_layers and the
+    # headers have no mtp tensors, so this row does not invent an MTP module.
+    ("ernie-4.5-21b-a3b-base-pt", "baidu/ERNIE-4.5-21B-A3B-Base-PT"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
