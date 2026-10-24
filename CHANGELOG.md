@@ -6,6 +6,19 @@
 
 
 
+## [0.364.0] — 2026-10-24
+
+### FP8 MTP 的 eh_proj 按发布的 bf16 权重计
+
+- **Bug：** block-FP8 发布把 MTP 解码层的 fp8 权重，和未量化的 `mtp.fc`（eh_proj）以及 norm，放进同一个 mtp 角色。角色有效位数按全部参数加权（Qwen3.8-27B-FP8 为 8.99 bit，格式名 fp8）。`mtp.eh_proj` 和 `mtp_extra` 存储都走这个角色，于是一份 bf16 GEMM（2·h·h，52,428,800 参数）被当成 fp8，权重字节约少一半（58.9 MB，发布为 104.9 MB）。该发布的划分是齐的：fp8 参数 = MTP 层 GEMM，bf16 参数 = extra + 层内 misc；`modules_to_not_convert` 含 `mtp.fc`。
+- **修复：** 仅当低精度参数逐项等于 MTP 层 GEMM、高精度参数逐项等于 extra + misc 时，mtp 角色改用高精度那一档（此处 bf16、16 bit）。解码层 GEMM 仍用主栈的 attn / mlp / expert 格式。激活格式不改：`quant_method=fp8` 仍是全局 fp8 输入，与 lm_head 相同。DeepSeek-V3 / V4 等 mtp 角色里 bf16 权重混在解码层内部，划分不成立，继续用原来的角色平均。
+- **核对过、未改：**
+  - Qwen3-Coder-480B / FP8、Hy3、Nemotron-3-Ultra 的 MoE 宽度、top-k、共享专家与发布角色参数一致；Hy3 用 `expert_hidden_dim`，Ultra 用 latent 2048、非门控。
+  - GLM-4.7-Flash 无 indexer（`idx_heads == 0`），MLA 的 nope 192 与 v_dim 256 分开吸收；权重字节与 bf16 发布一致。
+  - Nemotron Nano 的 `hybrid_override_pattern` 字母表与层计数、chunk、参数一致。
+  - Wan2.2-TI2V-5B 工作负载：121 帧 → 31×44×80 潜空间，grid 31×22×40，27280 token，cfg 两次前向；权重 fp32、激活 bf16。
+  - Qwen3-14B-FP8、Coder-480B-FP8 的权重字节与发布一致（差一个 hidden 向量量级）。Coder-Next-FP8 与 Qwen3.8-27B-FP8 主栈里，bf16 的 linear-attn conv / `in_proj_ba` 仍摊进 attn 角色平均，再按 2 字节计入 misc，多计约 1–2 MB；不改变调度。
+
 ## [0.363.0] — 2026-10-24
 
 ### 目录补齐：现有 builder 能对上的 2025–2026 公开 LLM / MoE / Wan2.2 TI2V-5B
