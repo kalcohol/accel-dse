@@ -6,6 +6,30 @@
 
 
 
+## [0.375.0] — 2026-10-24
+
+### 复核 Step-3.5-Flash 与只命中 MTP 的 o_proj 拆分；目录补上 LongCat-Flash
+
+- **0.374 的结构复核过，没有要改的账。** 对照已入库 header 与 `modeling` 路径：
+  - **Step-3.5-Flash。** 45 层里 12 层全注意力（64/8，`partial_rotary_factors` 0.5，旋转 64 维）+ 33 层滑窗 512（`attention_other_setting` 96/8，因子 1.0）。`layer_types` 长 48，多出来的 3 层是 MTP 滑窗。MoE 42 层（288/top-8，共享专家宽 1280）。`router` 角色全是 bf16；`other` 是 fp32，12096 = 42×288，即 `router_bias`。语言参数 196,956,130,368，MTP 2,428,171,008。`rel_err == 0`。softcap、标量门、YaRN、`zero_centered`、`swiglu_limits`、`moe_router_scaling_factor` 仍不另计周期。
+  - **只命中 MTP 的 o peel。** 主栈 `_o_proj_bf16_attn_split` 对不上、MTP bf16 身份成立时，只把 MTP 的 `o` 改记 role `o_proj`（bf16）。主栈 `o` 留在 attn。MiMo-V2-Flash / V2.6-Flash / V2.6-Pro 两边都命中，每层 `o` 仍是 `o_proj`。Step-3.5-Flash 没有 `o_proj` 角色。
+- **新增 1 个发布**（2026-10-24 读取 header）。`LongcatFlashForCausalLM` 在 `kv_lora_rank` 分支之前单独 builder，不走 latent MLA。`param_check().rel_err == 0`。覆盖 full。无视觉塔。
+  - **LongCat-Flash-Chat**（`meituan-longcat/LongCat-Flash-Chat`）：28 个 block、hidden 6144、词表 131072、untied。每个 block 两套子层，目录里是 56 层，奇偶交替为 MoE 子层 / 稠密子层。两套都是注意力 + 稠密 SwiGLU（intermediate 12288）。第 0 子层另有 MoE，和该子层稠密 MLP 读同一条 post-attention 流；MoE 输出加在第 1 子层残差之后（`LongcatFlashDecoderLayer.forward`）。语言参数 560,664,980,480。
+  - **展开后的 KV。** `kv_b_proj` 是 `[16384, 512]` = `kv_lora 512 → 64×(qk_nope 128 + v_head 128)`，在 `past_key_values.update` 之前把 K（nope）和 V 拆开，再把单条 RoPE（64）扩到每个头。cache 是 GQA/MHA 形状：64 头，K 192，V 128，bf16。不是 latent（`kv_lora + rope` = 576）。`q_a` `[1536, 6144]`、`q_b` `[12288, 1536]`、`kv_a` `[576, 6144]`、`o` `[6144, 8192]`。q/k RMSNorm 的权重在 `q_lora` / `kv_lora` 上。prefill 的 `kv_up` 只跑新 token，不把缓存前缀再解压一遍。
+  - **零专家。** 512 个有权重的专家（intermediate 2048，SwiGLU）+ 256 个恒等 zero-expert（`zero_expert_type=identity`，没有权重）。router 对 768 类打分。`classifier.weight` 是 fp32 `[768, 6144]`，`e_score_correction_bias` 是 fp32 buffer `[768]`，放进 MoE 子层 misc。均匀路由下，每个 token 期望打中 8 个有权重的专家（12 × 512/768），身份专家不产生 GEMM。
+  - **标量。** `mla_scale_q_lora`、`mla_scale_kv_lora`、`routed_scaling_factor`（6）是 Python 浮点，不在权重里。不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。`norm_topk_prob` 配置缺省为 false。
+  - **存储残差。** fp32 bias 在 LLM misc 里按 2 字节计，少 2 字节/参数（28×768）。最终 RMSNorm 不进 stage storage。`n_mtp=0` 时 stage 权重比 `bytes_llm` 少 `6144×2 + 28×768×2` 字节。
+- **未纳入：**
+  - **LongCat MTP。** header 里有一份 `model.mtp.*`：一层与主栈子层相同的展开 KV 注意力、一份稠密 MLP（12288）、`eh_proj` `[6144, 12288]`（2h→h）、`enorm` / `hnorm`、`mtp.norm`、私有 embedding `[131072, 6144]`。没有单独的 MTP `lm_head`。发布的类把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`，没有 MTP forward。参数走未声明 MTP 的既有路径：克隆最后一层子层（GEMM 与这份权重相同），`eh_proj` 按 2h→h，余量 880,809,984 = 私有 embedding + `eh_proj` + `mtp.norm`。`mtp_params` 1,197,899,776，与 `params_mtp` 一致。不另写一套递推，也不把私有 embedding 做成单独的查表。
+  - **Hunyuan-A13B-Instruct。** LongCat 已经按公开 config 和 header 对齐，这一版不再改 `hunyuan_v1_moe`。ViT 字段仍是 null，不编造视觉塔。
+  - **ERNIE-4.5-21B-A3B-PT。** 仓库里没有 modeling 文件。不新增。
+  - **Mistral-Small-3.2 / Magistral。** 没有 modeling。不把文本单独入库。
+  - **视频。** `Gemma4VideoProcessor` 仍没有接到现有 video grid 的公开打包配方。不编造。
+  - **MiniMax-M2 / M2.1 / M2.5。** 与已入库的 M2.7 同形，不单列。
+  - **LTX-2.3。** 仓库根上是 safetensors，没有 `config.json`。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **NPU。** 不编造形状、周期或面积。
+
 ## [0.374.0] — 2026-10-24
 
 ### 复核 0.373 的 o_proj 拆分；目录补上 Step-3.5-Flash

@@ -227,3 +227,5 @@ XiaomiMiMo/MiMo-V2-Flash
 inclusionAI/Ling-flash-2.0
 # 0.374 Step-3.5-Flash (step3p5). Sliding and full layers use different head counts.
 stepfun-ai/Step-3.5-Flash
+# 0.375 LongCat-Flash-Chat. Expanded KV before the cache; identity zero-experts have no weights.
+meituan-longcat/LongCat-Flash-Chat

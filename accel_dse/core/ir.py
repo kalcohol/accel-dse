@@ -455,6 +455,38 @@ def moe_routing(n_experts: int, top_k: int, tokens: int, ep: int, skew=1.0, grou
     return Routing(tokens, pairs_local, hit, m_e, n_local, pairs_mean)
 
 
+def identity_zero_routing(n_experts: int, zero: int, top_k: int, tokens: int, ep: int, skew=1.0) -> Routing:
+    """Uniform top-k over weighted experts plus identity zero-experts (LongCat-Flash).
+
+    The router scores ``n_experts + zero`` classes. An identity expert copies the token and has no GEMM.
+    Under the same uniform assumption as ``moe_routing``, each class is equally likely, so a token's
+    expected weighted selections are ``top_k * n_experts / pool`` and each weighted expert's inclusion
+    probability is ``top_k / pool``. Scalar skew scales the busiest rank's weighted pairs the same way
+    ``moe_routing`` scales pairs. A ``SkewSpec`` is not a measured LongCat load, so it falls back to
+    ``moe_routing`` on the weighted experts only.
+    """
+    if zero <= 0 or isinstance(skew, SkewSpec):
+        return moe_routing(n_experts, top_k, tokens, ep, skew)
+    pool = n_experts + zero
+    sk = float(skew)
+    n_local = _cdiv(n_experts, ep)
+    if tokens <= 0:
+        return Routing(0, 0.0, 0, 0, n_local)
+    p = min(1.0, top_k / pool)
+    e_hit_local = n_local * (1.0 - (1.0 - p) ** tokens)
+    e_hit_glob = n_experts * (1.0 - (1.0 - p) ** tokens)
+    hit = max(math.ceil(e_hit_local - 1e-9), math.ceil(e_hit_glob / ep - 1e-9), 1)
+    hit = min(hit, n_local)
+    frac = n_experts / pool
+    pairs_mean = tokens * top_k * frac / ep
+    pairs_local = pairs_mean
+    if sk > 1.0 and ep > 1:
+        pairs_local = min(pairs_mean * sk, float(tokens * top_k * frac), float(n_local * tokens))
+        hit = min(n_local, max(1, hit, math.ceil(pairs_local / tokens - 1e-9)))
+    m_e = max(1, math.ceil(pairs_local / hit))
+    return Routing(tokens, pairs_local, hit, m_e, n_local, pairs_mean)
+
+
 def _emax_normal(ms: tuple) -> float:
     """E[max] of independent normals N(mu, sd^2): Blom's order-statistic constant for identical ranks, else
     numeric integration E[max] = lo + ∫ (1 − Π Φ((x − mu)/sd)) dx."""
@@ -580,7 +612,7 @@ def _group_rank_moments(E: int, k: int, T: int, ep: int, groups: tuple):
     return (round(dist[0], 9), round(dist[1], 9)), (round(pairs[0], 9), round(pairs[1], 9))
 
 
-def node_dedup_factor(n_experts: int, top_k: int, nodes: int, groups: tuple = ()) -> float:
+def node_dedup_factor(n_experts: int, top_k: int, nodes: int, groups: tuple = (), pool: int = 0) -> float:
     """0.134: network bytes of a node-deduplicating EP all-to-all (DeepEP normal kernels, DeepSeek-V3 report §3.2: a
     token crosses the scale-out network once per destination node, then NVLink forwards it to the node's experts) /
     those of per-pair sends.  With k distinct experts drawn uniformly from E, spread evenly over N nodes:
@@ -600,10 +632,11 @@ def node_dedup_factor(n_experts: int, top_k: int, nodes: int, groups: tuple = ()
                 return min(1.0, nodes * hit / top_k)
             if nodes % G == 0 and n_experts % nodes == 0:   # a node holds n = E / N experts of one group
                 return min(1.0, nodes * (g / G) * (1.0 - miss(n_experts // nodes)) / top_k)
+    pop = pool if pool > n_experts else n_experts
     per = n_experts / nodes
     miss = 1.0
     for i in range(top_k):
-        miss *= max(0.0, (n_experts - per - i) / (n_experts - i))
+        miss *= max(0.0, (pop - per - i) / (pop - i))
     return min(1.0, nodes * (1.0 - miss) / top_k)
 
 
@@ -1418,7 +1451,16 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             role = l.role or ("router" if l.name.startswith(("router", "shared_expert_gate")) else (
                 "shared_expert" if l.name.startswith("shared") else "mlp"))
             ops.append(gemm(model, f"moe.{l.name}", li, t, k, n, role, replicated=_repl(l, tp)))
-        r = moe_routing(f.n_experts, f.top_k, T, sh.ep, layer_skew(ph, li), f.groups)
+        if f.d_ff:
+            # Parallel dense SwiGLU (LongCat-Flash sublayer 0): every token, not a shared expert.
+            ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4, sfu=t * _cdiv(f.d_ff, tp) * 2))
+            if tp > 1:
+                ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp,
+                              comm_bytes=t * h * rb))
+        if f.zero_experts and not f.groups:
+            r = identity_zero_routing(f.n_experts, f.zero_experts, f.top_k, T, sh.ep, layer_skew(ph, li))
+        else:
+            r = moe_routing(f.n_experts, f.top_k, T, sh.ep, layer_skew(ph, li), f.groups)
         d_loc = _cdiv(f.d_expert, sh.etp)
         ein = f.expert_in(h)
         if r.hit:
@@ -1431,7 +1473,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(Op("expert_act", "vector", li, vec=r.pairs_local * d_loc * 4, sfu=r.pairs_local * d_loc * 2))
         if sh.ep > 1:
             pay = r.pairs_local * ein * ab
-            fn = node_dedup_factor(f.n_experts, f.top_k, ph.ep_nodes, f.groups)
+            fn = node_dedup_factor(f.n_experts, f.top_k, ph.ep_nodes, f.groups,
+                                   f.n_experts + f.zero_experts)
             ops.append(Op("moe_dispatch", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay,
                           comm_stride=sh.etp, comm_net=fn))
             ops.append(Op("moe_combine", "comm", li, comm_kind="alltoall", comm_group=sh.ep, comm_bytes=pay * rb / ab,
@@ -2183,7 +2226,10 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         for l in L.ffn_linears:
             role = "router" if l.name.startswith("router") else ("shared_expert" if l.name.startswith("shared") else "mlp")
             ops.append(lin("moe", l, role))
-        r = moe_routing(f.n_experts, f.top_k, t, 1)
+        if f.zero_experts and not f.groups:
+            r = identity_zero_routing(f.n_experts, f.zero_experts, f.top_k, t, 1)
+        else:
+            r = moe_routing(f.n_experts, f.top_k, t, 1)
         d_loc, ein = _cdiv(f.d_expert, tp), f.expert_in(h)
         if r.hit:
             u = min(1.0, r.pairs_local / (r.hit * r.m_e))
@@ -2191,9 +2237,11 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
                                     "expert", count=r.hit, stream=True), share=u))
             ops.append(replace(gemm(model, "expert.down", li, r.m_e, d_loc, ein, "expert", count=r.hit, stream=True),
                                share=u))
+        dense_ff = _cdiv(f.d_ff, tp) if f.d_ff else 0
         ops.append(Op("act", "vector", li, vec=(r.pairs_local * d_loc + (t * _cdiv(f.n_shared * f.d_shared, tp)))
-                      * 4 + t * f.n_experts * 6, sfu=(r.pairs_local * d_loc + t * _cdiv(f.n_shared * f.d_shared, tp)) * 2
-                      + t * f.n_experts))   # SiLU·mul (4 / elem, exp + rcp on SFU); sigmoid router + top-k (6 / expert)
+                      * 4 + t * (f.n_experts + f.zero_experts) * 6 + t * dense_ff * 4,
+                      sfu=(r.pairs_local * d_loc + t * _cdiv(f.n_shared * f.d_shared, tp)) * 2
+                      + t * (f.n_experts + f.zero_experts) + t * dense_ff * 2))   # SiLU; sigmoid router + top-k (6 / class)
     else:
         ops += [lin("mlp", l, "mlp") for l in L.ffn_linears]
         ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))     # GELU (tanh) / SwiGLU 「假设」 8 ops / element

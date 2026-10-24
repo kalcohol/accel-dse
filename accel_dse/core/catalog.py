@@ -71,6 +71,8 @@ EXTRA_TAIL = [
     # 0.374: Step-3.5-Flash (public config + safetensors headers, 2026-10-24). step3p5 GQA with
     # different sliding / full head counts, head-wise gates, per-layer partial RoPE, shared expert, MTP x3.
     ("step-3.5-flash", "stepfun-ai/Step-3.5-Flash"),
+    # 0.375: LongCat-Flash-Chat. Dual attention sublayers, MoE shortcut, expanded KV, identity zero-experts.
+    ("longcat-flash-chat", "meituan-longcat/LongCat-Flash-Chat"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
@@ -592,6 +594,7 @@ PROVIDERS = [   # key, label, orgs (HF org, or gh:<owner>/ for GitHub-only relea
     ("recursive", "Recursive（Flint）", ("RecursiveSI/",)),     # 0.315
     ("krafton", "KRAFTON（Raon）", ("KRAFTON/",)),     # 0.320
     ("athmaas", "ATH-MaaS（PixText）", ("ATH-MaaS/",)),     # 0.330
+    ("meituan", "美团（LongCat）", ("meituan-longcat/",)),     # 0.375
 ]
 FAMILIES = [    # provider, family, id prefixes — newest family first; within a family: size ↓, base → FP8 → AWQ
     ("alibaba", "Fun-ASR-Nano", ("fun-asr-nano",)), ("alibaba", "Qwen3-ASR", ("qwen3-asr",)), ("alibaba", "Qwen2.5-Omni", ("qwen2.5-omni",)),
@@ -655,6 +658,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("krafton", "Raon-1-mini", ("raon-1-mini",)),     # 0.320
     ("athmaas", "PixText", ("pixtext",)),     # 0.330
     ("distil", "Distil-Whisper", ("distil-whisper",)),   # 0.360
+    ("meituan", "LongCat-Flash", ("longcat-flash",)),   # 0.375
 ]
 _PROV_RANK = {k: i for i, (k, _, _) in enumerate(PROVIDERS)}
 # Same architecture as a listed entry → resolvable by id and validated (V1), but not listed separately.
