@@ -252,3 +252,5 @@ baidu/ERNIE-4.5-VL-28B-A3B-PT
 baidu/ERNIE-4.5-VL-424B-A47B-PT
 # 0.386 granite-4.2-30b. Untied dense GQA. Same GEMM shapes as 4.1-30b.
 ibm-granite/granite-4.2-30b
+# 0.387 LFM2.5-2.6B-Base. Same safetensors shapes as LFM2.5-2.6B. max_position_embeddings 128000.
+LiquidAI/LFM2.5-2.6B-Base
