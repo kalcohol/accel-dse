@@ -223,3 +223,5 @@ Qwen/Qwen3-Omni-30B-A3B-Captioner
 moonshotai/Kimi-Audio-7B
 # 0.372 MiMo-V2-Flash (text). Flash-Base is the same tensors with a different shard count.
 XiaomiMiMo/MiMo-V2-Flash
+# 0.373 Ling-flash-2.0 (bailing_moe). Ling-flash-base-2.0 is a different checkpoint.
+inclusionAI/Ling-flash-2.0

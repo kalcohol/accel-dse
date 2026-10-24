@@ -99,9 +99,15 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
     a = model.fmt("attn").bits / 8
     for l in L.attn_linears + L.cross_linears:
         k, n = _lin_local(l, sh.tp, L.core if l in L.attn_linears else None)
-        # 0.365: GDN in_proj_ba stays bf16 when the attn role splits exactly (role lin_ba). Other attn-linear
-        # role tags keep this attn byte width; storage has always billed them that way.
-        bpp = model.fmt("lin_ba").bits / 8 if l.role == "lin_ba" else a
+        # 0.365: GDN in_proj_ba stays bf16 when the attn role splits exactly (role lin_ba).
+        # 0.373: MiMo o_proj is the same kind of split (role o_proj). Other attn-linear role tags keep this
+        # attn byte width; storage has always billed them that way.
+        if l.role == "lin_ba":
+            bpp = model.fmt("lin_ba").bits / 8
+        elif l.role == "o_proj":
+            bpp = model.fmt("o_proj").bits / 8
+        else:
+            bpp = a
         hot += k * n * (groups_local(l, sh.tp)[0] if l.groups > 1 else 1) * bpp
     f = L.ffn
     for l in L.ffn_linears:
