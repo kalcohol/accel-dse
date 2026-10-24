@@ -66,7 +66,9 @@ def test_decode_kv_read_matches_memplan():
         stored = ss.kv_per_seq + ss.idx_per_seq + ss.state_per_seq
         assert abs(cache_new_bytes(m, C, 0) / stored - 1) < 1e-9, e["id"]
         ph = Phase("decode", 1, 1, C)
-        read = sum(o.kv_read + o.state_rw / 2 for li in range(m.n_layers) for o in build_rank_ops(m, li, ph))
+        # Lookup rows (DeepEmbed / n-gram / engram) are table traffic, not the resident cache.
+        read = sum(o.kv_read + o.state_rw / 2 for li in range(m.n_layers) for o in build_rank_ops(m, li, ph)
+                   if o.kind != "lookup")
         sparse = any(L.core.topk or L.core.compress > 1 or L.core.kv_owner or L.core.idx_heads for L in m.layers)
         if not sparse:           # dense: the whole cache once (+ the new token's entry)
             assert stored * (1 - 1e-9) <= read <= stored * (C + 1) / C * (1 + 1e-9), (e["id"], read, stored)

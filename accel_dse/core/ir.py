@@ -1239,6 +1239,10 @@ def _dea_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard, b_loc: i
     ops[1] = replace(ops[1], kv_write=t * c.dea_k * cache_b)
     ops[2] = replace(ops[2], kv_write=t * c.dea_v * cache_b)
     ops.append(Op("dea_lnq", "vector", li, vec=t * c.dea_q * 4, sfu=t, replicated=tp))
+    # One int32 token-id history for the stack (demo state[n_layer * 3], torch.int).  Appended each step and
+    # read once to index ennk / emm.  Resident with the fp16 cache; not a lookup table, so it stays on kv_read.
+    if not any(model.layers[j].core.dea_q for j in range(min(li, len(model.layers)))):
+        ops.append(Op("dea_ids", "vector", li, kv_read=rows * 4.0, vec=rows, replicated=tp))
     kk = replace(proj("dea_kkup", rows), in_elems=1, kv_read=rows * c.dea_k * cache_b)
     vv = replace(proj("dea_vvup", rows), in_elems=1, kv_read=rows * c.dea_v * cache_b)
     ops.append(kk)

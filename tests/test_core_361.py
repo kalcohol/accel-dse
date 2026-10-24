@@ -105,6 +105,8 @@ def test_hybrid_cache_and_schedule():
     assert de.kv_read == b * q * H * 2
     qk = next(o for o in ops if o.name == "dea_qk")
     assert qk.m == q and qk.k == 256 and qk.n == ctx + q and qk.count == b and qk.causal == 1.0
+    ids = [o for li in range(m.n_layers) for o in build_rank_ops(m, li, ph) if o.name == "dea_ids"]
+    assert len(ids) == 1 and ids[0].kind == "vector" and ids[0].kv_read == b * (ctx + q) * 4
     pre = build_rank_ops(m, 1, Phase("prefill", 1, 8, 0))
     assert next(o for o in pre if o.name == "attn.dea_kkup").m == 8
     assert abs(next(o for o in pre if o.name == "dea_qk").causal - 0.5) < 1e-12
