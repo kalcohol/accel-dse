@@ -69,6 +69,17 @@ def test_decode_kv_read_matches_memplan():
         # Lookup rows (DeepEmbed / n-gram / engram) are table traffic, not the resident cache.
         read = sum(o.kv_read + o.state_rw / 2 for li in range(m.n_layers) for o in build_rank_ops(m, li, ph)
                    if o.kind != "lookup")
+        if any(L.kv_alias for L in m.layers):
+            # 0.369 Gemma-4: each alias layer re-reads the donor cache. Storage stays one copy.
+            from accel_dse.core.dtypes import fmt as _fmt
+            kvb = _fmt(m.kv_fmt).bytes
+            for L in m.layers:
+                if not L.kv_alias:
+                    continue
+                c = L.core
+                assert c.kind == "gqa" and c.compress == 1 and not c.win_bytes, e["id"]
+                ce = min(C, c.window) if c.window else C
+                stored += ce * c.n_kv * (c.qk_dim + c.v_dim) * kvb
         sparse = any(L.core.topk or L.core.compress > 1 or L.core.kv_owner or L.core.idx_heads for L in m.layers)
         if not sparse:           # dense: the whole cache once (+ the new token's entry)
             assert stored * (1 - 1e-9) <= read <= stored * (C + 1) / C * (1 + 1e-9), (e["id"], read, stored)
