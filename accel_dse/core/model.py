@@ -3113,6 +3113,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         layers = list(layers) + tower_layers(fish, Layer, Linear, _gqa, _ffn_dense)
     h = c["hidden_size"]
     tie = bool(c.get("tie_word_embeddings", cfg.get("tie_word_embeddings", False)))
+    # Mistral3Config.tie_word_embeddings defaults to True. The released JSON omits the key.
+    # v4.52.4 maps language_model.lm_head onto lm_head and ties it to the text embedding.
+    if ((cfg.get("model_type") or "") == "mistral3" and "tie_word_embeddings" not in c
+            and "tie_word_embeddings" not in cfg):
+        tie = True
     spec = ModelSpec(
         id=model_id, hf_id=hf_id, arch=arch, hidden=h, vocab=c["vocab_size"], layers=tuple(layers),
         tie_embeddings=tie, mtp_layers=tuple(mtp), mtp_extra_params=2 * h * h if mtp else 0,

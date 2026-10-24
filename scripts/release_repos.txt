@@ -238,3 +238,5 @@ baidu/ERNIE-4.5-21B-A3B-Base-PT
 # 0.379 ERNIE-4.5-300B-A47B-PT / Base-PT. 54-layer ernie4_5_moe, no shared experts, MoE from layer 3.
 baidu/ERNIE-4.5-300B-A47B-PT
 baidu/ERNIE-4.5-300B-A47B-Base-PT
+# 0.380 Mistral-Small-3.2 (mistral3 text + Pixtral vision). Magistral-Small-2509 and 3.1 match these headers.
+mistralai/Mistral-Small-3.2-24B-Instruct-2506

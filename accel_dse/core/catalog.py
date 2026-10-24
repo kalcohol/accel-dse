@@ -84,6 +84,9 @@ EXTRA_TAIL = [
     # MoE from layer 3, untied lm_head. Full shard headers close rel_err. Base has no MTP tensors.
     ("ernie-4.5-300b-a47b-pt", "baidu/ERNIE-4.5-300B-A47B-PT"),
     ("ernie-4.5-300b-a47b-base-pt", "baidu/ERNIE-4.5-300B-A47B-Base-PT"),
+    # 0.380: Mistral-Small-3.2. Text is Mistral GQA (head_dim 128). Vision is the public Pixtral
+    # tower plus the Mistral3 projector. Magistral-Small-2509 and Mistral-Small-3.1 match these headers.
+    ("mistral-small-3.2-24b-instruct-2506", "mistralai/Mistral-Small-3.2-24B-Instruct-2506"),
     ("ling-3.0-flash-vl", "inclusionAI/Ling-3.0-flash-VL"),
     # 0.170 genomics: Arc Institute Evo 2 (StripedHyena 2, single-nucleotide byte tokens, causal DNA LM); PyTorch zip
     # checkpoints read over HTTP range + the evo2 repo inference configs (scripts/build_evo2_release.py)
@@ -627,6 +630,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("meta", "Llama 3", ("llama-3",)), ("meta", "ESM-2", ("esm2",)), ("meta", "ESMFold", ("esmfold",)),
     ("openai", "gpt-oss", ("gpt-oss",)), ("openai", "Whisper", ("whisper",)),
     ("meta", "OmniASR", ("omniasr",)),
+    ("mistral", "Mistral-Small", ("mistral-small",)),
     ("mistral", "Mistral Large", ("mistral-large",)), ("mistral", "Mixtral", ("mixtral",)), ("mistral", "Magistral", ("magistral",)),
     ("microsoft", "Phi-4", ("phi-4",)), ("ibm", "Granite-4.1", ("granite-4.1-",)),
     ("allenai", "Olmo-3", ("olmo-3",)), ("lg", "EXAONE-4", ("exaone-4",)),   # 0.371
