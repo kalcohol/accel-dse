@@ -22,8 +22,9 @@ ROWS = (
     ("qwen3-14b-fp8", 14_768_307_200, 0, 40, 5120, 151_936, "fp8", 8.000977, "fp8", "llm", "Qwen3 稠密", False),
     ("qwen3-coder-480b-a35b", 480_154_875_392, 0, 62, 6144, 151_936, "bf16", 16.0, "bf16", "llm", "Qwen3-Coder", True),
     ("qwen3-coder-480b-a35b-fp8", 480_154_875_392, 0, 62, 6144, 151_936, "fp8", 8.000977, "fp8", "llm", "Qwen3-Coder", True),
-    ("qwen3-coder-next-fp8", 79_674_391_296, 0, 48, 2048, 151_936, "fp8", 8.031605, "fp8", "llm", "Qwen3-Next", True),
-    ("qwen3.8-27b-fp8", 26_895_998_464, 424_699_392, 64, 5120, 248_320, "fp8", 8.029221, "fp8", "vlm", "Qwen3.8", False),
+    # 0.365: attn bits are the fp8 bucket alone (block scales), not the bf16 conv / in_proj_ba smear
+    ("qwen3-coder-next-fp8", 79_674_391_296, 0, 48, 2048, 151_936, "fp8", 8.000977, "fp8", "llm", "Qwen3-Next", True),
+    ("qwen3.8-27b-fp8", 26_895_998_464, 424_699_392, 64, 5120, 248_320, "fp8", 8.000977, "fp8", "vlm", "Qwen3.8", False),
     ("nemotron-nano-9b-v2", 8_888_227_328, 0, 56, 4480, 131_072, "bf16", 16.0, "bf16", "llm", "Nemotron-Nano", False),
     ("nemotron-3-nano-4b-bf16", 3_973_556_832, 0, 42, 3136, 131_072, "bf16", 16.0, "bf16", "llm", "Nemotron-3", False),
     ("nemotron-3-ultra-550b-a55b-bf16", 549_308_993_536, 11_215_610_368, 108, 8192, 131_072, "bf16", 16.0, "bf16",
