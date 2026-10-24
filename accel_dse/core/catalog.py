@@ -314,6 +314,22 @@ EXTRA_TAIL = [
     ("nemotron-3-ultra-550b-a55b-bf16", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"),
     ("hy3", "tencent/Hy3"),
     ("glm-4.7-flash", "zai-org/GLM-4.7-Flash"),
+    # 0.366 Qwen3-VL / Qwen3-VL-MoE Instruct + FP8 (Apache-2.0). Text is Qwen3 GQA / Qwen3-MoE (qwen3_vl_text /
+    # qwen3_vl_moe_text: q/k RMSNorm, no attention bias, MRoPE has no extra parameters). Vision is the Qwen ViT
+    # plus one post-shuffle merger per deepstack_visual_indexes entry. Thinking checkpoints match these configs;
+    # they are not listed separately.
+    ("qwen3-vl-235b-a22b", "Qwen/Qwen3-VL-235B-A22B-Instruct"),
+    ("qwen3-vl-235b-a22b-fp8", "Qwen/Qwen3-VL-235B-A22B-Instruct-FP8"),
+    ("qwen3-vl-32b", "Qwen/Qwen3-VL-32B-Instruct"),
+    ("qwen3-vl-32b-fp8", "Qwen/Qwen3-VL-32B-Instruct-FP8"),
+    ("qwen3-vl-30b-a3b", "Qwen/Qwen3-VL-30B-A3B-Instruct"),
+    ("qwen3-vl-30b-a3b-fp8", "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"),
+    ("qwen3-vl-8b", "Qwen/Qwen3-VL-8B-Instruct"),
+    ("qwen3-vl-8b-fp8", "Qwen/Qwen3-VL-8B-Instruct-FP8"),
+    ("qwen3-vl-4b", "Qwen/Qwen3-VL-4B-Instruct"),
+    ("qwen3-vl-4b-fp8", "Qwen/Qwen3-VL-4B-Instruct-FP8"),
+    ("qwen3-vl-2b", "Qwen/Qwen3-VL-2B-Instruct"),
+    ("qwen3-vl-2b-fp8", "Qwen/Qwen3-VL-2B-Instruct-FP8"),
 ]
 # 0.191 architecture proxies: closed weights, architecture stated by the vendor → evaluated on the named public config
 # (id, config release, provider key, label, note)
@@ -536,6 +552,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("alibaba", "Qwen3-Next", ("qwen3-next", "qwen3-coder-next")),   # 0.363: Coder-Next is the Next stack
     ("alibaba", "Qwen3-Omni", ("qwen3-omni",)),   # 0.360: before the qwen3- dense prefix
     ("alibaba", "Qwen3-Coder", ("qwen3-coder",)),   # 0.363: before the qwen3- dense prefix
+    ("alibaba", "Qwen3-VL", ("qwen3-vl-",)),   # 0.366: before the qwen3- dense prefix
     ("alibaba", "Qwen3 MoE", ("qwen3-235b", "qwen3-30b")), ("alibaba", "Qwen3 稠密", ("qwen3-",)),
     ("alibaba", "Qwen2.5", ("qwen2.5",)), ("alibaba", "Wan2.2", ("wan2.2",)), ("alibaba", "Wan2.1", ("wan2.1",)),
     ("deepseek", "DeepSeek-V4", ("deepseek-v4",)), ("deepseek", "DeepSeek-V3", ("deepseek-v3", "deepseek-r1")),
