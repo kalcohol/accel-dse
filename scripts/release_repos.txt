@@ -271,3 +271,18 @@ ibm-granite/granite-4.2-3b-fp8
 ibm-granite/granite-4.2-30b-fp8
 internlm/Atria-Dawn
 internlm/Atria-Dawn-FP8
+# 0.390 LFM2.5-VL / d1-3B (lfm2 text + SigLIP2 NaFlex). Magistral-Small-2509 and
+# Mistral-Small-3.1 match Mistral-Small-3.2. MiniMax-M2 / M2.1 / M2.5 match M2.7 shapes.
+# Intern-Decision matches StartLux-Decision-v1 of the same size, without mtp.*.
+LiquidAI/LFM2.5-VL-1.6B
+LiquidAI/LFM2.5-VL-3B
+LiquidAI/LFM2.5-VL-450M
+LiquidAI/d1-3B
+mistralai/Magistral-Small-2509
+mistralai/Mistral-Small-3.1-24B-Instruct-2503
+MiniMaxAI/MiniMax-M2
+MiniMaxAI/MiniMax-M2.1
+MiniMaxAI/MiniMax-M2.5
+internlm/Intern-Decision-4B
+internlm/Intern-Decision-2B
+internlm/Intern-Decision-0.8B

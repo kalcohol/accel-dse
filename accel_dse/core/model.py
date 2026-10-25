@@ -1107,6 +1107,13 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         # plain q/k/v/o — the output_gate belongs to the lightning layers, see lin_attn)
         gate = c.get("attn_output_gate")
         alin, core = _gqa(h, H, KV, hd, out_gate=bool(mt == "qwen3_next" if gate is None else gate))
+        # MiniMaxM2Attention: when use_qk_norm, q_norm is RMSNorm(num_attention_heads * head_dim)
+        # and k_norm is RMSNorm(num_key_value_heads * head_dim). The class does not read
+        # qk_norm_type. A shared head_dim vector is the Qwen3-style bill, not this class.
+        # With the flag off the module has no q/k norm. rotary_dim only slices the head.
+        if mt == "minimax_m2":
+            qk = (H * hd + KV * hd) if c.get("use_qk_norm") else 0
+            return alin, core, qk
         return alin, core, 2 * hd
 
     def lin_attn(i: int):
@@ -1129,6 +1136,10 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
         ffn, flin = ffn_for(i)
         if ffn.kind == "moe" and mt in ("kimi_linear", "raon1_mini") + _LING or (ffn.kind == "moe" and c.get("n_routed_experts")):
             misc += E
+        # MiniMaxM2SparseMoeBlock always registers e_score_correction_bias [num_local_experts].
+        # The published class does not read use_routing_bias. The gate GEMM is the router linear.
+        if mt == "minimax_m2" and ffn.kind == "moe" and E:
+            misc += E
         hc = c.get("hc_mult") or 0
         if mt == "raon1_mini" and c.get("raon_mhc_streams"):
             # 0.320 Raon_mHC ×2 per layer (attention + MLP site): selector [2N + (N−1)², N·h] (phi_pre / phi_post / phi_z),
@@ -1147,6 +1158,12 @@ def _build_hybrid(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     n_lin = sum(1 for l in layers if l.core.kind == "linear")
     notes.append(f"混合注意力：{n_lin}/{L} 层线性注意力（chunk 形式按参考实现上阵列，递归状态 fp32 按参考），"
                  f"{L - n_lin} 层全注意力")
+    if mt == "minimax_m2":
+        notes.append("MiniMax-M2：use_qk_norm 为 true 时 q / k RMSNorm 按整段投影宽度计（头数乘 head_dim），"
+                     "不是每个 head 一条。e_score_correction_bias 每层都有，类不读 use_routing_bias。"
+                     "rotary_dim 只旋转 head 的前一段，KV 仍是整段 head，不另计周期。"
+                     + ("没有 mtp_num_hidden_layers / num_nextn_predict_layers，不另建 MTP 层。"
+                        if not (c.get("mtp_num_hidden_layers") or c.get("num_nextn_predict_layers")) else ""))
     n_mtp = c.get("mtp_num_hidden_layers") or c.get("num_nextn_predict_layers") or 0
     mtp = []
     for _ in range(n_mtp):
@@ -3313,6 +3330,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
     if mt_tie in ("lfm2", "lfm2_moe") and "tie_word_embeddings" not in c and "tie_word_embeddings" not in cfg:
         if "tie_embedding" in c or "tie_embedding" in cfg:
             tie = bool(c.get("tie_embedding", cfg.get("tie_embedding")))
+    # Lfm2Vl text_config is an Lfm2Config. tie_word_embeddings defaults to True.
+    # LFM2.5-VL-1.6B and VL-450M omit the key and omit tie_embedding.
+    if ((cfg.get("model_type") or "") == "lfm2_vl" and mt_tie == "lfm2"
+            and "tie_word_embeddings" not in c and "tie_embedding" not in c
+            and "tie_word_embeddings" not in cfg):
+        tie = True
     spec = ModelSpec(
         id=model_id, hf_id=hf_id, arch=arch, hidden=h, vocab=c["vocab_size"], layers=tuple(layers),
         tie_embeddings=tie, mtp_layers=tuple(mtp), mtp_extra_params=2 * h * h if mtp else 0,

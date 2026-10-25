@@ -6,6 +6,38 @@
 
 
 
+## [0.390.0] — 2026-10-24
+
+### LFM2.5-VL 走 SigLIP2；Mistral-Small 孪生；MiniMax-M2 的 q/k norm 按整段宽度计；Intern-Decision 没有 MTP
+
+- **新增 12 个发布**（2026-10-24 读取 config 与 safetensors header）。每一份 `param_check().rel_err == 0`。覆盖 full。不把缺省 MTP 层数填成 1。
+  - **LFM2.5-VL-1.6B / VL-3B / VL-450M，以及 LiquidAI/d1-3B。** `Lfm2VlForConditionalGeneration`，`model_type=lfm2_vl`。文本是 `lfm2`，视觉塔是 `siglip2_vision_model`，`vision_use_head` 为 false。没有多头池化头。1.6B 语言参数 1,170,340,608，视觉 426,285,296，589 张量，`bytes_total` 3,193,251,808，上下文 128000。语言层与已入库的 LFM2.5-1.2B 相同（10 层短卷积、6 层 GQA，auto-adjust 后 FFN 宽 8192）。config 没写 `tie_word_embeddings`，也没写 `tie_embedding`。`Lfm2Config` 的缺省是绑词嵌入，只对 `lfm2_vl` 的文本生效。3B 与 d1-3B 语言参数都是 2,697,198,592，视觉都是 426,285,296，707 张量，`bytes_total` 6,246,967,776，上下文 32768。语言层与 LFM2.5-2.6B 相同（FFN 宽 10752，不 auto-adjust）。d1-3B 的 `auto_map` 指向 `D1Model`，但 `architectures` 仍是 `Lfm2VlForConditionalGeneration`，张量角色与 VL-3B 相同。多出来的是训练和编译开关，不改变 GEMM 形状，也不改变 KV 宽度。450M 语言参数 354,483,968，视觉 94,234,880，349 张量，`bytes_total` 897,437,696。语言层与 LFM2.5-350M 相同。视觉塔 hidden 768、12 层、12 头。权重全部 bf16。
+  - **视觉账。** `Siglip2VisionEmbeddings` 是带 bias 的线性 patch（`3 * patch * patch`）加一张 `num_patches` 行的位置表。位置表按空间形状双线性缩放，不是 GEMM，只计参数。每一层是 pre-LN、分开的 q/k/v/o（都带 bias）、GELU MLP（`fc1` / `fc2`，都带 bias），再加 post LayerNorm。投影器按 `downsample_factor` 做 pixel-unshuffle（只是 reshape），然后两层线性。`projector_use_layernorm` 为 false，没有投影 LayerNorm。`vision_use_head` 不是 false 时不走这条路径。图像按 `Lfm2VlImageProcessor`：边长对齐到 `patch * downsample_factor`，token 落在 `[64, 256]`。过大则切成 512 的 tile（2 到 10 块），并加一张缩略图。塔的输入补到 `max_num_patches` 1024，注意力是这一整块方阵。投影器和 LLM 特征 token 只用 unshuffle 之后的有效格。特殊 token 只加在 LLM 位置上。1024×1024 是 2×2 tile 加缩略图，合并 1280，LLM token 1287。512×512 不切，合并 256，LLM token 258。256×256 与 32×32 都放大到 256，塔的 GEMM 行数仍是 1024，投影器行数是 64。1280×720 是两组视野，合并 764，LLM token 769。
+  - **Magistral-Small-2509 与 Mistral-Small-3.1-24B-Instruct-2503。** 与已入库的 Mistral-Small-3.2 张量名、dtype、形状相同。585 张量。语言参数 22,901,314,560。视觉 438,958,080。`bytes_total` 48,022,722,560。Pixtral 塔加 Mistral3 投影器，没有新的视觉栈。3.1 的 config 与 3.2 相同（不计 `transformers_version`）。Magistral 只是把 `torch_dtype` 写成了 `dtype`，值仍是 bfloat16。`tie_word_embeddings` 仍缺省为 true。
+  - **MiniMax-M2 / M2.1 / M2.5，并修正已入库的 M2.7。** 四份都是 96103 张量，语言参数 228,689,764,864，`bytes_total` 230,121,630,720。角色 dtype 相同。M2 / M2.1 / M2.5 的 `max_position_embeddings` 是 196608，M2.7 是 204800。M2 与 M2.1 的索引外还有五个 40 字节空分片，不进权重账。`MiniMaxM2Attention` 在 `use_qk_norm` 为 true 时，`q_norm` 的宽度是 `num_attention_heads * head_dim`（48×128），`k_norm` 是 `num_key_value_heads * head_dim`（8×128）。类不读 `qk_norm_type`。以前按每个 head 一条 `head_dim` 计，62 层少了 444,416。`MiniMaxM2SparseMoeBlock` 无条件注册 `e_score_correction_bias`（256，fp32）。类不读 `use_routing_bias`。这两项只进参数，不加 GEMM。q/k/v/o 与 router 的形状不变。`rotary_dim` 64 只旋转 head 的前一段，KV 仍是整段 128，不另计周期。`use_mtp` 为 true，但 header 的 `params_mtp` 是 0，没有 `mtp_num_hidden_layers`，不另建 MTP 层。激活 fp8，KV bf16。M2 多出来的 `mlp_intermediate_size`、`shared_moe_mode`、`layernorm_*_beta` 不改变 GEMM 形状。
+  - **Intern-Decision-4B / 2B / 0.8B。** `Qwen3_5ForConditionalGeneration`。config 与已入库的 StartLux-Decision-v1-4B / 2B / 0.8B 相同（不计 `transformers_version`）。语言参数与视觉参数也相同：4B 是 4,205,751,296 加视觉 333,514,240（723 张量，`bytes_total` 9,078,538,752）；2B 是 1,881,825,088 加 331,416,576（617，4,426,488,512）；0.8B 是 752,393,024 加 100,592,896（473，1,705,977,024）。索引里没有 StartLux 那 15 个 `mtp.*` 张量，`params_mtp == 0`，不建模 MTP。图像处理器与 StartLux 相同（最短 65536，最长 16777216，patch 16，merge 2）。1024×1024 的格子与对应的 StartLux 相同。`video_preprocessor_config.json` 是 `Qwen3VLVideoProcessor`，最短 4096，最长 25165824。4 帧 1280×720 是 2 个时间片，LLM token 1760。不标成决策模型。
+- **机制。** 只加了 `lfm2vl`：SigLIP2 NaFlex 塔（pad 到 `max_num_patches`，q/k/v/o 分开）和 pixel-unshuffle 之后的两层投影。`lfm2_vl` 文本在两个 tie 键都缺省时按 `Lfm2Config` 绑词嵌入；普通 `lfm2` 缺省这两个键时仍不绑。`minimax_m2` 的全注意力 q/k RMSNorm 在 `use_qk_norm` 为 true 时按整段投影宽度计，为 false 时不计；MoE 层加上 `e_score_correction_bias`。Qwen3-Next 与 MiniMax-Text-01 仍按原来的 `2 * head_dim` 计。
+- **未纳入：**
+  - **LiquidAI/LFM2.5-d1。** 本轮 `config.json` 仍是 401。
+  - **LiquidAI/d1-omni-600M。** 本轮重读了 config。`model_type=d1_omni`，类是 `D1OmniModel`，dtype float32。`text_config` 没有 `model_type`。`audio_config` 不是已有的音频类。不新写音频塔或 head 栈。
+  - **granite-4.2 的 mxfp4 / nvfp4。** 本轮重读了 8b 的两份 config。`quant_method=compressed-tensors`。format 分别是 `mxfp4-pack-quantized` 与 `nvfp4-pack-quantized`。权重和激活都是 4 bit。MX 组 32，NVFP4 组 16，NVFP4 的 scale 是 `float8_e4m3fn`。现有路径只把 compressed-tensors 的 8 bit float 输入升成 fp8。按现有路径入库会把 GEMM 输入记成 bf16。不新写 W4A4。
+  - **ibm-granite/granite-speech-5.0-2b、granite-speech-5.0-470m-turboctc、granite-speech-4.1-2b-plus。** `model_type` 分别是 `granite_speech`、`granite_speech5_ctc`、`granite_speech_plus`。没有已有的语音塔可套。不新写。
+  - **ibm-granite/granite-switch-4.1-8b 与 30b 的 GGUF。** 仍不是 safetensors header。
+  - **nvidia Cosmos3 / Cosmos-H-Dreams。** `model_type=cosmos3_omni`。不是已有的视觉或视频类。
+  - **nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB 与 InternVideo2-CLIP。** 4GB 仍是 GGUF。CLIP 异常检测不新增机制。
+  - **2026-10-20 之后的公开扫描。** google、Qwen、baidu、mistralai 最近的仓库都早于 2026-10-20。LiquidAI 最近的是已入库的 LFM2.5-2.6B / 24B-A2B，以及 DSpark GGUF。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`。不另写递推。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **Gemma-4 assistant / QAT。** 与已入库的十个发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **omniasr-ctc。** 新的 CTC 头，本轮没有关闭。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.389.0] — 2026-10-24
 
 ### Nemotron-3.5-Bolt-E4B 走 Gemma-4；LFM2.5 小模型与 8B-A1B；Granite-4.2 FP8；Atria-Dawn

@@ -106,6 +106,26 @@ EXTRA_TAIL = [
     ("lfm2.5-350m", "LiquidAI/LFM2.5-350M"),
     ("lfm2.5-350m-base", "LiquidAI/LFM2.5-350M-Base"),
     ("lfm2.5-230m", "LiquidAI/LFM2.5-230M"),
+    # 0.390: LFM2.5-VL and d1-3B. Text is lfm2. Vision is SigLIP2 NaFlex
+    # (vision_use_head false) plus the pixel-unshuffle projector.
+    ("lfm2.5-vl-1.6b", "LiquidAI/LFM2.5-VL-1.6B"),
+    ("lfm2.5-vl-3b", "LiquidAI/LFM2.5-VL-3B"),
+    ("lfm2.5-vl-450m", "LiquidAI/LFM2.5-VL-450M"),
+    ("d1-3b", "LiquidAI/d1-3B"),
+    # 0.390: Magistral-Small-2509 and Mistral-Small-3.1 share tensor names, dtypes,
+    # and shapes with Mistral-Small-3.2. Pixtral tower plus the Mistral3 projector.
+    ("magistral-small-2509", "mistralai/Magistral-Small-2509"),
+    ("mistral-small-3.1-24b-instruct-2503", "mistralai/Mistral-Small-3.1-24B-Instruct-2503"),
+    # 0.390: MiniMax-M2 / M2.1 / M2.5 share M2.7 tensor shapes. max_position_embeddings
+    # is 196608 (M2.7 is 204800). Five 40-byte shards on M2 / M2.1 are outside the index.
+    ("minimax-m2", "MiniMaxAI/MiniMax-M2"),
+    ("minimax-m2.1", "MiniMaxAI/MiniMax-M2.1"),
+    ("minimax-m2.5", "MiniMaxAI/MiniMax-M2.5"),
+    # 0.390: Intern-Decision. qwen3_5 text and vision match StartLux-Decision-v1
+    # of the same size. The index has no mtp.* tensors, so MTP is not billed.
+    ("intern-decision-4b", "internlm/Intern-Decision-4B"),
+    ("intern-decision-2b", "internlm/Intern-Decision-2B"),
+    ("intern-decision-0.8b", "internlm/Intern-Decision-0.8B"),
     # 0.383: Granite-4.2-8b / 3b. Same GEMM shapes as 4.1, untied lm_head.
     # 0.386: granite-4.2-30b. Same GEMM shapes as 4.1-30b, untied lm_head.
     # embedding / residual / logits scalars do not change shapes.
@@ -676,6 +696,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("kimi", "Kimi-Audio", ("kimi-audio",)), ("kimi", "Kimi-K3", ("kimi-k3",)), ("kimi", "Kimi-K2", ("kimi-k2",)),
     ("zhipu", "GLM-5", ("glm-5",)), ("zhipu", "GLM-4.7", ("glm-4.7",)),
     ("zhipu", "GLM-4.5 / 4.6", ("glm-4",)), ("zhipu", "CogVideoX", ("cogvideox",)),
+    ("minimax", "MiniMax-M2", ("minimax-m2",)),
     ("minimax", "MiniMax-M1 / Text-01", ("minimax-m1", "minimax-text")), ("minimax", "MiniMax-H", ("minimax-h",)),
     ("meta", "Llama 3", ("llama-3",)), ("meta", "ESM-2", ("esm2",)), ("meta", "ESMFold", ("esmfold",)),
     ("openai", "gpt-oss", ("gpt-oss",)), ("openai", "Whisper", ("whisper",)),
@@ -694,7 +715,8 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("hfbio", "Carbon-A（基因注释编码器）", ("carbon-a",)), ("hfbio", "Carbon（DNA 因果语言模型）", ("carbon-",)),
     ("arc", "Evo 2（StripedHyena 2 DNA 语言模型）", ("evo2-",)),
     ("meta", "Muse Spark Open", ("muse-spark",)),
-    ("liquid", "LFM2.5", ("lfm2.5",)), ("ant", "Ling-flash-2.0", ("ling-flash-2.0",)),
+    ("liquid", "LFM2.5", ("lfm2.5",)), ("liquid", "d1", ("d1-",)),
+    ("ant", "Ling-flash-2.0", ("ling-flash-2.0",)),
     ("ant", "Ling-3.1", ("ling-3.1",)), ("ant", "Ling-3.0-VL", ("ling-3.0-flash-vl",)),
     ("ant", "Ling-3.0", ("ling-3.0",)),   # 0.311: Ling-3.0-tiny / -flash text + the tiny UBTree pair
     ("ant", "Ming-3.0-ASR", ("ming-3.0-asr",)), ("ant", "Ming-3.0-TTS", ("ming-3.0-tts",)),
@@ -702,6 +724,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("stepfun", "Step-Audio-2", ("step-audio-2",)), ("stepfun", "Step-3.5", ("step-3.5",)),
     ("stepfun", "Step-5", ("step-5",)),
     ("xiaomi", "MiMo-V2-Flash", ("mimo-v2-flash",)), ("xiaomi", "MiMo-V2.6", ("mimo-v2.6",)),
+    ("internlm", "Intern-Decision", ("intern-decision-",)),   # 0.390: before Atria
     ("internlm", "Atria", ("atria-",)),   # 0.389: before Intern-S2
     ("internlm", "Intern-S2", ("intern-s2",)),
     ("openbmb", "MiniCPM-V 4.7", ("minicpm-v-4.7",)), ("robbyant", "LingBot-Video", ("lingbot-video",)),
