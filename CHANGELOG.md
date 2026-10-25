@@ -6,6 +6,29 @@
 
 
 
+## [0.405.0] — 2026-10-25
+
+### LongCat 视觉 SwiGLU 补上已执行的内层 RMSNorm
+
+- **修正。** `SwiGLU.forward`（`encoders/vision_adaptor.py`）是 `fc2(RMSNorm(silu(fc1(x)) * fc3(x)))`。`RMSNorm.forward` 先升到 fp32，做 `pow(2).mean`，再一次 `rsqrt`，乘 weight，然后 cast 回去。内宽是 `int(5184*2/3)=3456`。权重已在塔参数公式里（每一层 `+ inner`）。0.402 的通用塔只发 `mlp_in` / `mlp_out`，`VEC_PER_OUT` 盖不住这次跨内宽的归约，`sfu` 是 0。现按 patch token（`ph * pw`，在宽度拼接投影之前）补 `vis.{层}.mlp_norm`：`vec = tokens * 3456 * 4`，`sfu = tokens`，`a_fmt` 是 fp32，`w_params` 是 0。行数不是投影后的 `ph * pw / 2`。Omni 与 Omni-FP8 的 `param_check().rel_err` 仍是 0。请求 fp8 时塔 GEMM 仍是 bf16，这次归约仍是 fp32。
+- **对抗核对（没有新的账单错误）。** 主栈 V 仍是 128（缓存和 PV）；draft 仍把 V 补到 192，`o_proj` 的 k 仍是 128。Lite ngram 仍是每个新 token 63 次，按 HF `_get_ngram_ids` 计，不按窗口长度放大，也不改成 CUDA kernel 的逐项取模。Chat / Thinking-FP8 仍按 `ignored_layers` 把 9 个 block 的专家和稠密 MLP 留在 bf16；Thinking-2601-FP8 的忽略名单仍没有专家或稠密名，28 个 block 仍全是 fp8，注意力仍是 bf16；Omni-FP8 仍是 block 0–22 fp8、23–27 bf16，没有 MTP。24k 解码器的 tanh、Snake、因果核等于 stride、GLSTM `groups=1`、`in_proj` 不读，仍与 0.404 一致。音频 FSMN 核仍是 11 / 12。Granite-4.2 mxfp4 / nvfp4、OmniASR CTC、d1-omni 双向编码器、Paddle U16 融合拆分，对照已有锁定测试，没有新的少计或多计。
+- **q/k 与残差 RMSNorm。** 类里也有，参数已经计入。它们和其他 ViT（含 Gemma-4）一样留在 GEMM 尾项里，这次不单列。LayerScale 的乘加同样不单列。
+- **未纳入：**
+  - **LongCat-Flash-Lite-Sparse。** 2026-10-25 再读：sha `35de83a18b5838ec1657edb3f885a59bbdd7888f`，`lastModified` 2026-08-04。根目录仍没有 modeling 文件。`architectures` 是 `LongcatCausalLM`，`attention_method` 仍是 LSA。没有已合并的 LSA 前向。不套 MLA，也不套 DSA。
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 仍是 404。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 与 `tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401。
+  - **nvidia Cosmos3。** 仍是扩散栈，不是已有的条件生成路径。
+  - **Gemma-4 assistant / QAT。** 没有新的可对上的 header。不单列。
+  - **Omni 编码器。** `LongCatAudioCodec_encoder.pt` 不在 Omni / Omni-FP8 根目录。
+  - **Omni 视频多帧 post-squeeze。** 单张图仍是恒等。多帧压缩不进默认图像网格。
+  - **2026-10-20 及之后的公开扫描。** 0.404 已扫过，没有能套上现有机制的新 safetensors 或 PT。这次没有新的可入库发布。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.404.0] — 2026-10-25
 
 ### LongCat 24k 解码器补上已执行的 nn.Tanh；没有新的可入库发布

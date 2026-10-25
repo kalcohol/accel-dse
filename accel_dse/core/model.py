@@ -4135,6 +4135,9 @@ def _attach_longcat_omni(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
         "shift_codec_back 只改下标，不增加 GEMM。"
         "24k MemDecoder 的 Sequential 以 nn.Tanh 结束，每个输出采样一次，没有参数。",
         "视觉是 Conv3d（时间 2、空间 14）加 32 层双向注意力。SwiGLU 内宽是 int(5184*2/3)。"
+        "每一层在 gate 乘积和 fc2 之间做一次内层 RMSNorm：forward 升到 fp32，"
+        "按 patch token（不是投影后的宽度对）计，vec 是 4 乘内宽，每行一次 rsqrt。"
+        "权重已在塔参数里，不再记 w_params。q/k RMSNorm 和两层残差 RMSNorm 仍跟其他 ViT 一样留在 GEMM 尾项里。"
         "投影器把宽度相邻两列拼成 2h，再走 LayerNorm 和三层 Linear。rope2d 的 inv_freq 不是 persistent。"
         "单张图的 post-squeeze 在 token 数不超过 max_tokens_video 时是恒等。视频多帧压缩不进默认图像网格。",
     )
