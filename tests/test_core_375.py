@@ -55,7 +55,8 @@ def test_longcat_flash_expanded_kv_and_zero_experts():
     assert m.mtp_params() == rel["params_mtp"] == 1_197_899_776
     assert m.mtp_extra_params == m.vocab * m.hidden + 2 * m.hidden * m.hidden + m.hidden
     mt = m.mtp_layers[0]
-    assert mt.core.kind == "gqa" and mt.core.kv_elems_per_token() == 64 * (192 + 128)
+    # 0.398: vLLM LongCatFlashMTP stores V padded to qk_head_dim. The main stack stays at v_head_dim.
+    assert mt.core.kind == "gqa" and mt.core.kv_elems_per_token() == 64 * (192 + 192)
     assert mt.ffn.kind == "dense" and mt.ffn.d_ff == 12288 and mt.misc_params == 26624
     mtp_ops = _mtp_ops(m, Phase("decode", 1, 1, 16), Shard())
     eh = next(op for op in mtp_ops if op.name == "mtp.eh_proj")

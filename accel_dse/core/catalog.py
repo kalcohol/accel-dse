@@ -73,6 +73,10 @@ EXTRA_TAIL = [
     ("step-3.5-flash", "stepfun-ai/Step-3.5-Flash"),
     # 0.375: LongCat-Flash-Chat. Dual attention sublayers, MoE shortcut, expanded KV, identity zero-experts.
     ("longcat-flash-chat", "meituan-longcat/LongCat-Flash-Chat"),
+    # 0.398: LongCat-Flash-Thinking. Same class, tensor names, dtypes, and shapes as Chat, including
+    # model.mtp.* (one dense block, eh_proj, private embed). The vLLM draft pads V to qk_head_dim.
+    # The index total_size is not the stored byte total, same as Chat.
+    ("longcat-flash-thinking", "meituan-longcat/LongCat-Flash-Thinking"),
     # 0.376: Hunyuan-A13B-Instruct. Text MoE only (vit fields are null). Mixed shared MLP + q/k RMSNorm.
     ("hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"),
     # 0.377: ERNIE-4.5-21B-A3B-PT. Text MoE. Repo has no modeling file; transformers class + headers close rel_err.

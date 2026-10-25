@@ -1,7 +1,7 @@
 """0.377: Hunyuan-A13B and LongCat review holds; ERNIE-4.5-21B-A3B closes.
 
 Hunyuan stays a text MoE with an fp32 gate.wg router and a bf16 shared SwiGLU.
-LongCat's undeclared MTP stays on the clone path. ERNIE layer 0 is dense, layers
+LongCat MTP is the released dense block with V padded to qk_head_dim. ERNIE layer 0 is dense, layers
 1-27 are MoE with one shared SwiGLU, and the stored MTP block is that dense
 shape rather than a clone of the last MoE layer.
 """
