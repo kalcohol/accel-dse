@@ -473,6 +473,9 @@ class ModelSpec:
     ngram_order: int = 0
     ngram_splits: int = 0
     ngram_dim: int = 0
+    # 0.402 LongCat-Flash-Omni: (input codebooks, residual codebooks, vocab).
+    # () means this checkpoint has no audio codebook tables.
+    audio_codebooks: tuple[int, int, int] = ()
     ple_packed: int = 0                      # 0.369 Gemma-4 PLE row width (layers * ple). 0 = none. One row per token.
     sidecar_params: int = 0                  # 0.347 same-card extras outside params_llm (MOSS audio heads, Moshi depth); storage only, not in params()
     sidecar_bits: float = 0.0                # 0 = attn format bits (used only when sidecar_bytes == 0)
@@ -2493,7 +2496,7 @@ def _longcat_attn(h: int, nh: int, q_lora: int, kv_lora: int, nope: int, rope: i
     return lin, core
 
 
-def _build_longcat_flash(c: dict, *, draft: bool = True) -> tuple[list[Layer], list[Layer], list[str], str]:
+def _build_longcat_flash(c: dict, *, draft: bool = True, variant: str = "") -> tuple[list[Layer], list[Layer], list[str], str]:
     """LongCat-Flash (meituan-longcat/LongCat-Flash-Chat, modeling_longcat_flash.py).
 
     Each of ``num_layers`` blocks runs two sub-layers. Both have MLA attention and a dense SwiGLU
@@ -2527,6 +2530,10 @@ def _build_longcat_flash(c: dict, *, draft: bool = True) -> tuple[list[Layer], l
 
     ``draft=False`` is the n-gram subclass (``LongcatFlashNgramForCausalLM``). That class and public vLLM
     both drop ``model.mtp.*``, so this builder emits no MTP layer and does not pad V.
+
+    ``variant="omni"`` is ``LongcatFlashOmniForCausalLM``. The text stack is the same Flash
+    decoder. The checkpoint has no ``model.mtp.*``, so the builder emits no MTP layer and
+    does not pad V. Audio and vision towers are attached later from their own headers.
     """
     h = int(c["hidden_size"])
     n_blocks = int(c.get("num_layers") or c["num_hidden_layers"])
@@ -2559,7 +2566,15 @@ def _build_longcat_flash(c: dict, *, draft: bool = True) -> tuple[list[Layer], l
         layers.append(Layer(lin1, core1, ffn1, flin1, attn_misc))
     qk = nope + rope
     mtp: list[Layer] = []
-    if draft:
+    if variant == "omni":
+        if draft:
+            raise ValueError("longcat omni does not run MTP")
+        mtp_note = (
+            "类是 LongcatFlashOmniForCausalLM。文本栈是 LongcatFlashForCausalLM。"
+            "checkpoint 没有 model.mtp.*。不建 draft，也不把 V 补到 qk_head_dim。"
+            "主栈仍按 HF 类把未填充的 V 写入 cache。"
+        )
+    elif draft:
         if qk < vdim:
             raise ValueError("longcat_flash MTP pads V up to qk_head_dim")
         mtp_lin, mtp_core = _longcat_attn(h, nh, q_lora, kv_lora, nope, rope, vdim)
@@ -2602,6 +2617,20 @@ _LONGCAT_CAUSAL_EXTRA = (
     "ngram_vocab_size_ratio", "emb_neighbor_num", "emb_split_num", "dsa_mtp_cli",
     "cli_factor",
 )
+
+
+def _is_longcat_omni(c: dict) -> bool:
+    """``LongcatFlashOmniForCausalLM``. The text class is Flash. Towers live beside it."""
+    archs = c.get("architectures") or []
+    mt = c.get("model_type") or ""
+    return "LongcatFlashOmniForCausalLM" in archs or mt == "longcat_flash_omni"
+
+
+def _build_longcat_omni(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """LongCat-Flash-Omni text stack. Same dual-sublayer decoder as Flash, no MTP."""
+    if c.get("num_layers") is None:
+        raise ValueError("longcat omni block count is num_layers")
+    return _build_longcat_flash(c, draft=False, variant="omni")
 
 
 def _is_longcat_causal(c: dict) -> bool:
@@ -3022,6 +3051,8 @@ def _build_ernie4_5_moe_vl(c: dict) -> tuple[list[Layer], list[Layer], list[str]
 
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if _is_longcat_omni(c):
+        return _build_longcat_omni, "LongCat-Flash-Omni（主栈展开 KV；无 MTP；视听塔与音频码本另计）"
     if "LongcatFlashNgramForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash_ngram":
         return _build_longcat_ngram, "LongCat-Flash-Lite（n-gram 嵌入；不跑 MTP）"
     if _is_longcat_causal(c):
@@ -3314,7 +3345,7 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
             and mt not in ("whisper", "moshi", "moss_tts_delay", "rwkv8") and not c.get("cosyvoice") and spec.fish is None
             and getattr(spec, "qwen3_tts", None) is None
             and getattr(spec, "moss_tts", None) is None
-            and not spec.ple_packed and not spec.ngram_dim):  # 0.274 Moshi / 0.338 Qwen3-TTS / 0.346 MOSS / 0.361 RWKV-8 / 0.369 Gemma-4 PLE / 0.400 LongCat n-gram
+            and not spec.ple_packed and not spec.ngram_dim and not spec.audio_codebooks):  # 0.274 Moshi / 0.338 Qwen3-TTS / 0.346 MOSS / 0.361 RWKV-8 / 0.369 Gemma-4 PLE / 0.400 LongCat n-gram / 0.402 LongCat Omni codebooks
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
     if getattr(spec, "moss_tts", None) is not None:
         r.append("外置 audio tokenizer / vocoder 不在本权重：波形解码未计「来源」")
@@ -3770,7 +3801,7 @@ def _apply_longcat_fp8(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
     # 0.401: LongcatForCausalLM FP8 uses the same ignored_layers partition. Zero skipped
     # blocks (Thinking-2601-FP8) is the all-fp8 expert and dense case, not a new rule.
     if ("LongcatFlashForCausalLM" not in archs and mt != "longcat_flash"
-            and not _is_longcat_causal(c)):
+            and not _is_longcat_causal(c) and not _is_longcat_omni(c)):
         return spec
     qc = c.get("quantization_config")
     if not isinstance(qc, dict):
@@ -3787,8 +3818,14 @@ def _apply_longcat_fp8(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
     ignored = qc.get("ignored_layers")
     if not isinstance(ignored, list) or not ignored:
         raise ValueError("longcat_flash fp8 ignored_layers is missing")
-    if not spec.layers or len(spec.layers) % 2 or len(spec.mtp_layers) != 1:
-        raise ValueError("longcat_flash fp8 builder did not emit paired blocks and one MTP layer")
+    omni = _is_longcat_omni(c)
+    if not spec.layers or len(spec.layers) % 2:
+        raise ValueError("longcat_flash fp8 builder did not emit paired blocks")
+    if omni:
+        if spec.mtp_layers or (rel.get("params_mtp") or 0) or _role_cells(rel, "mtp"):
+            raise ValueError("longcat omni fp8 has no MTP module")
+    elif len(spec.mtp_layers) != 1:
+        raise ValueError("longcat_flash fp8 builder did not emit one MTP layer")
     n_blocks = len(spec.layers) // 2
     moe0 = spec.layers[0]
     dense1 = spec.layers[1]
@@ -3907,69 +3944,73 @@ def _apply_longcat_fp8(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
     np_, nb = _cell_pb(got_n, "bf16")
     if np_ != norm_p or nb != 2 * np_:
         raise ValueError("longcat_flash norm bytes are not the main-stack norms")
-    mt_layer = spec.mtp_layers[0]
-    if mt_layer.ffn.kind != "dense" or mt_layer.ffn.n_experts:
-        raise ValueError("longcat_flash MTP MLP is not the dense SwiGLU")
-    mtp_bf_p = spec.vocab * h + h + mt_layer.misc_params
-    got_mtp = _role_cells(rel, "mtp")
-    if set(got_mtp) - {"bf16", "fp8"}:
-        raise ValueError("longcat_flash MTP role has an unexpected format")
-    if _cell_pb(got_mtp, "bf16") != (mtp_bf_p, 2 * mtp_bf_p):
-        raise ValueError("longcat_flash MTP bf16 bucket is not the embedding, mtp.norm, and layer norms")
-    named = {l.name: l for l in mt_layer.attn_linears}
-    ff = {l.name: l for l in mt_layer.ffn_linears}
-    if set(named) != {"q_a", "q", "kv_a", "kv_up", "o"} or set(ff) != {"gate_up", "down"}:
-        raise ValueError("longcat_flash MTP GEMMs are not the dense draft block")
-    if (ff["gate_up"].k, ff["gate_up"].n) != (h, 2 * d_ff):
-        raise ValueError("longcat_flash MTP gate_up is not the fused dense SwiGLU")
-    gemms = (
-        ("eh", 2 * h, h),
-        ("q_a", named["q_a"].k, named["q_a"].n),
-        ("q", named["q"].k, named["q"].n),
-        ("kv_a", named["kv_a"].k, named["kv_a"].n),
-        ("kv_up", named["kv_up"].k, named["kv_up"].n),
-        ("o", named["o"].k, named["o"].n),
-        ("gate_up", ff["gate_up"].k, ff["gate_up"].n),
-        ("down", ff["down"].k, ff["down"].n),
-    )
-    rows = tuple((name, k * n, _fp8_block_bytes(k, n, block)) for name, k, n in gemms)
-    fp_p = sum(p for _, p, _b in rows)
-    fp_b = sum(b for _, _p, b in rows)
-    if _cell_pb(got_mtp, "fp8") != (fp_p, fp_b):
-        raise ValueError("longcat_flash MTP fp8 bytes do not match per-GEMM 128x128 scales")
-    if spec.mtp_extra_params < 2 * h * h:
-        raise ValueError("longcat_flash mtp remainder is smaller than eh_proj")
-    groups: dict[tuple[int, int], list[tuple[str, int, int]]] = {}
-    for name, p, b in rows:
-        g = math.gcd(b, p)
-        groups.setdefault((b // g, p // g), []).append((name, p, b))
-    ranked = sorted(groups.items(), key=lambda kv: (-sum(p for _, p, _b in kv[1]), kv[0]))
-    top = sum(p for _, p, _b in ranked[0][1])
-    if sum(1 for _k, items in ranked if sum(p for _, p, _b in items) == top) != 1:
-        raise ValueError("longcat_flash MTP fp8 ratio clusters tie for most parameters")
-    role_of: dict[str, str] = {}
     extra_fm: dict[str, RoleFormat] = {}
-    for i, (_key, items) in enumerate(ranked):
-        gnames = [nm for nm, _p, _b in items]
-        if i == 0:
-            role = "mtp_fp8"
-        elif len(gnames) == 1:
-            role = "mtp_" + gnames[0]
-        else:
-            role = "mtp_" + "_".join(sorted(gnames))
-        pb = sum(p for _, p, _b in items)
-        bb = sum(b for _, _p, b in items)
-        extra_fm[role] = RoleFormat("fp8", 8.0 * bb / pb)
-        for nm in gnames:
-            role_of[nm] = role
+    role_of: dict[str, str] = {}
+    tagged_mtp: tuple = ()
+    if not omni:
+        mt_layer = spec.mtp_layers[0]
+        if mt_layer.ffn.kind != "dense" or mt_layer.ffn.n_experts:
+            raise ValueError("longcat_flash MTP MLP is not the dense SwiGLU")
+        mtp_bf_p = spec.vocab * h + h + mt_layer.misc_params
+        got_mtp = _role_cells(rel, "mtp")
+        if set(got_mtp) - {"bf16", "fp8"}:
+            raise ValueError("longcat_flash MTP role has an unexpected format")
+        if _cell_pb(got_mtp, "bf16") != (mtp_bf_p, 2 * mtp_bf_p):
+            raise ValueError("longcat_flash MTP bf16 bucket is not the embedding, mtp.norm, and layer norms")
+        named = {l.name: l for l in mt_layer.attn_linears}
+        ff = {l.name: l for l in mt_layer.ffn_linears}
+        if set(named) != {"q_a", "q", "kv_a", "kv_up", "o"} or set(ff) != {"gate_up", "down"}:
+            raise ValueError("longcat_flash MTP GEMMs are not the dense draft block")
+        if (ff["gate_up"].k, ff["gate_up"].n) != (h, 2 * d_ff):
+            raise ValueError("longcat_flash MTP gate_up is not the fused dense SwiGLU")
+        gemms = (
+            ("eh", 2 * h, h),
+            ("q_a", named["q_a"].k, named["q_a"].n),
+            ("q", named["q"].k, named["q"].n),
+            ("kv_a", named["kv_a"].k, named["kv_a"].n),
+            ("kv_up", named["kv_up"].k, named["kv_up"].n),
+            ("o", named["o"].k, named["o"].n),
+            ("gate_up", ff["gate_up"].k, ff["gate_up"].n),
+            ("down", ff["down"].k, ff["down"].n),
+        )
+        rows = tuple((name, k * n, _fp8_block_bytes(k, n, block)) for name, k, n in gemms)
+        fp_p = sum(p for _, p, _b in rows)
+        fp_b = sum(b for _, _p, b in rows)
+        if _cell_pb(got_mtp, "fp8") != (fp_p, fp_b):
+            raise ValueError("longcat_flash MTP fp8 bytes do not match per-GEMM 128x128 scales")
+        if spec.mtp_extra_params < 2 * h * h:
+            raise ValueError("longcat_flash mtp remainder is smaller than eh_proj")
+        groups: dict[tuple[int, int], list[tuple[str, int, int]]] = {}
+        for name, p, b in rows:
+            g = math.gcd(b, p)
+            groups.setdefault((b // g, p // g), []).append((name, p, b))
+        ranked = sorted(groups.items(), key=lambda kv: (-sum(p for _, p, _b in kv[1]), kv[0]))
+        top = sum(p for _, p, _b in ranked[0][1])
+        if sum(1 for _k, items in ranked if sum(p for _, p, _b in items) == top) != 1:
+            raise ValueError("longcat_flash MTP fp8 ratio clusters tie for most parameters")
+        for i, (_key, items) in enumerate(ranked):
+            gnames = [nm for nm, _p, _b in items]
+            if i == 0:
+                role = "mtp_fp8"
+            elif len(gnames) == 1:
+                role = "mtp_" + gnames[0]
+            else:
+                role = "mtp_" + "_".join(sorted(gnames))
+            pb = sum(p for _, p, _b in items)
+            bb = sum(b for _, _p, b in items)
+            extra_fm[role] = RoleFormat("fp8", 8.0 * bb / pb)
+            for nm in gnames:
+                role_of[nm] = role
 
-    def _tag(lins: tuple) -> tuple:
-        out = []
-        for lin in lins:
-            if lin.name not in role_of:
-                raise ValueError(f"longcat_flash MTP linear {lin.name} has no fp8 role")
-            out.append(replace(lin, role=role_of[lin.name]))
-        return tuple(out)
+        def _tag(lins: tuple) -> tuple:
+            out = []
+            for lin in lins:
+                if lin.name not in role_of:
+                    raise ValueError(f"longcat_flash MTP linear {lin.name} has no fp8 role")
+                out.append(replace(lin, role=role_of[lin.name]))
+            return tuple(out)
+
+        tagged_mtp = (_tag_layer(mt_layer, _tag),)
 
     new_layers = []
     for i, L in enumerate(spec.layers):
@@ -4002,12 +4043,26 @@ def _apply_longcat_fp8(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
         fm["act_mlp_bf16"] = RoleFormat("bf16", 16.0)
     fm["attn"] = RoleFormat("bf16", 16.0)
     fm["act_attn"] = RoleFormat("bf16", 16.0)
-    fm["mtp"] = RoleFormat("bf16", 16.0)
+    if not omni:
+        fm["mtp"] = RoleFormat("bf16", 16.0)
     fm.update(extra_fm)
 
     def _lst(xs: set[int]) -> str:
         return "、".join(str(i) for i in sorted(xs)) or "（无）"
 
+    if omni:
+        note = (
+            f"FP8（e4m3，动态激活，128×128 的 fp32 scale）：专家只在 block {_lst(expert_skip)} 保持 bf16，"
+            f"稠密 MLP 只在 block {_lst(dense_skip)} 保持 bf16。其余专家和稠密 MLP 按各自的 fp8 桶计，"
+            "不把 bf16 和 fp8 平均成一个角色。",
+            "注意力在 disable_quant_module 的 self_attn 里，权重和激活都是 bf16。",
+            "量化过的专家和稠密 MLP 的激活仍是动态 fp8。未量化的专家和稠密 MLP 激活是 bf16。",
+            "router 权重是 fp32。它的激活仍是全局 fp8 输入；forward 里把两边 cast 到 fp32 不另记一种激活。",
+            "embedding、lm_head 和 norm 是 bf16。没有 MTP 模块，也不把 V 补到 qk_head_dim。",
+            "视觉塔和音频塔的 .pt 与 bf16 仓库相同，不在这份 fp8 名单里，权重和激活仍是 bf16。",
+        )
+        return replace(spec, layers=tuple(new_layers), formats=tuple(sorted(fm.items())),
+                       notes=spec.notes + note)
     eh_role = role_of["eh"]
     kv_role = role_of["kv_a"]
     note = (
@@ -4022,9 +4077,67 @@ def _apply_longcat_fp8(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
         "主栈 V 仍不填充。draft 的 V 仍补到 qk_head_dim。",
     )
     return replace(
-        spec, layers=tuple(new_layers), mtp_layers=(_tag_layer(mt_layer, _tag),),
+        spec, layers=tuple(new_layers), mtp_layers=tagged_mtp,
         mtp_eh_params=2 * h * h, mtp_eh_role=eh_role,
         formats=tuple(sorted(fm.items())), notes=spec.notes + note)
+
+
+def _attach_longcat_omni(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
+    """Bill Omni audio codebook tables and output heads. Towers stay on the vision spec.
+
+    Input embeddings are summed into the next decode token (``AudioEmbedding.fused_lookup``).
+    Residual embeddings are read between audio heads inside ``sample``. The four output
+    linears have no bias and no extra projection (``has_proj`` is false). Prefill does not
+    read these tables. ``language_model_embedding.pt`` duplicates ``embed_tokens`` and is
+    not added again.
+    """
+    if not _is_longcat_omni(c):
+        return spec
+    meta = rel.get("longcat_omni")
+    if not isinstance(meta, dict):
+        raise ValueError("longcat omni tower header is missing")
+    from .vision import longcat_omni_counts
+    counts = longcat_omni_counts(meta)
+    if counts["text_hidden"] != spec.hidden:
+        raise ValueError("longcat omni text hidden does not match the language stack")
+    if spec.mtp_layers or (rel.get("params_mtp") or 0):
+        raise ValueError("longcat omni language stack has no MTP")
+    n_in = counts["codebooks"]
+    n_res = counts["residual"]
+    vocab = counts["code_vocab"]
+    h = spec.hidden
+    heads = tuple(
+        Linear(f"audio_head.{i}", h, vocab, "col", rows="seq", role="audio_head")
+        for i in range(n_in))
+    lookup = (n_in + n_res) * vocab * h
+    linear = sum(lin.params for lin in heads)
+    if lookup != counts["audio_emb"] + counts["audio_residual"]:
+        raise ValueError("longcat omni codebook lookup params do not match the header")
+    if linear != counts["audio_heads"]:
+        raise ValueError("longcat omni audio heads do not match the header")
+    io = int(rel.get("params_audio_io") or 0)
+    if io != lookup + linear:
+        raise ValueError("longcat omni params_audio_io does not match the codebook files")
+    note = (
+        f"音频输入码本 {n_in} 张 Embedding({vocab}, {h}) 在 decode 的下一拍查表并加到词嵌入。"
+        "prefill 不读这几张表。",
+        f"音频输出是 {n_in} 个无 bias 的 Linear({h}, {vocab})，在 sample 的行上各跑一次。"
+        f"head_idx > 0 时先查 {n_res} 张残差 Embedding({vocab}, {h}) 再加到隐状态。"
+        "has_proj 为 false，没有额外投影。重复惩罚不改变 GEMM 形状，不计额外周期。",
+        "language_model_embedding.pt 的 word_embeddings 与 safetensors 的 embed_tokens 同形，不重复计入。",
+        "波形 codec 的类在 LongCat-Audio-Codec 子模块里，不在这份 HF 根目录，不计入。",
+        "视觉是 Conv3d（时间 2、空间 14）加 32 层双向注意力。SwiGLU 内宽是 int(5184*2/3)。"
+        "投影器把宽度相邻两列拼成 2h，再走 LayerNorm 和三层 Linear。rope2d 的 inv_freq 不是 persistent。"
+        "单张图的 post-squeeze 在 token 数不超过 max_tokens_video 时是恒等。视频多帧压缩不进默认图像网格。",
+    )
+    fm = dict(spec.formats)
+    fm["audio_head"] = RoleFormat("bf16", 16.0)
+    fm["act_audio_head"] = RoleFormat("bf16", 16.0)
+    return replace(
+        spec, lookup_params=lookup, lookup_bits=16.0, audio_codebooks=(n_in, n_res, vocab),
+        io_post=spec.io_post + heads, formats=tuple(sorted(fm.items())),
+        release_params=(spec.release_params or 0) + lookup + linear,
+        notes=spec.notes + note)
 
 
 def _tag_layer(layer: Layer, tag) -> Layer:
@@ -4346,6 +4459,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                "MTP 的 bf16 桶恰好是 o_proj + eh_proj + 层内 misc，"
                                "eh_proj 与 MTP 的 o_proj 按 bf16 计。",))
         spec = _apply_longcat_fp8(spec, rel, c)
+        spec = _attach_longcat_omni(spec, rel, c)
         if (c.get("model_type") or "").startswith("qwen4_exp") or (c.get("model_type") or "") == "dory":
             spec = replace(spec, final_norm_params=0)       # 0.253 Dory: nGPT, final state justnorm (no weight)
         if (c.get("model_type") or "") == "dory":
@@ -4566,9 +4680,17 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         if cfg.get("model_type") == "index_echo_s2st":      # 0.279: connector shapes (stlm_ckpt) for the audio spec
             cfg = {**cfg, "_echo_connector": {n[len("connector."):]: v for n, v in (rel.get("echo_tensors") or {}).items()
                                               if n.startswith("connector.")}}
-        vs = vision_spec(hf_id, {**cfg, "_kimi_whisper": rel["kimi_audio"]["whisper"]}
-                         if _is_kimi(cfg) and rel.get("kimi_audio") else cfg)     # 0.273: Kimi-Audio whisper config
+        vs_cfg = ({**cfg, "_kimi_whisper": rel["kimi_audio"]["whisper"]}
+                  if _is_kimi(cfg) and rel.get("kimi_audio") else cfg)     # 0.273: Kimi-Audio whisper config
+        if _is_longcat_omni(c):
+            meta = rel.get("longcat_omni")
+            if not isinstance(meta, dict):
+                raise ValueError("longcat omni tower header is missing")
+            vs_cfg = {**vs_cfg, "longcat_omni": meta}
+        vs = vision_spec(hf_id, vs_cfg)
         rv = (rel.get("params_vision") or 0) if ts is None else 0
+        if vs is not None and vs.family == "longcatvit" and rv != vs.params:
+            raise ValueError(f"longcat omni towers {vs.params} != release vision {rv}")
         if vs is not None and rv > vs.params:
             # 0.144: multimodal parts stored with the release but not run for images (MiMo audio encoder + speech
             # embeddings) → storage only

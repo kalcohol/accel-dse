@@ -547,7 +547,23 @@ class AudioSpec:
         lengths.append(t)
         return tuple(lengths)
 
+    def _lcafsmn_frames(self, seconds: float) -> int:
+        """LongCat ``AudioFrameLengthCalculator``: kaldi snip_edges, then ceil-divide by the splice stride.
+
+        ``frame`` is the window in samples, ``patches[0]`` is the hop, ``chunk`` is the splice stride.
+        Left and right context pad the feature width. They do not change this length.
+        """
+        if seconds <= 0 or self.rate <= 0 or self.frame <= 0 or not self.patches or self.patches[0] <= 0 or self.chunk <= 0:
+            return 0
+        n = round(seconds * self.rate)
+        fb = (n - self.frame) // self.patches[0] + 1
+        if fb <= 0:
+            return 0
+        return (fb + self.chunk - 1) // self.chunk
+
     def tokens(self, seconds: float) -> int:
+        if self.kind == "lcafsmn":
+            return self._lcafsmn_frames(seconds)
         if self.kind == "d1fc":
             return _d1_audio_lens(seconds)[1]
         if self.kind == "gsctc":
@@ -1594,9 +1610,48 @@ def _d1_audio_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
     return ops
 
 
+def _lcafsmn_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
+    """LongCatAudioEncoder plus the two-linear projector. Weights and activations stay bf16.
+
+    The output linear is executed and then multiplied by zero (``hidden + 0.0 * output.sum()``).
+    Its GEMM is billed. ReLU6, GELU, LayerNorm, and the mask multiply are not GEMMs.
+    """
+    from .dtypes import fmt as _fmt
+    af = "bf16"
+    ab = _fmt(af).bytes
+    t = a.tokens(seconds) * clips
+    if t <= 0:
+        return []
+    proj, hidden, inp = a.dims
+    nlayer, n_right, ndnn = a.depths
+    if ndnn < 1:
+        raise ValueError("longcat audio ndnn is not positive")
+
+    def gemm(name: str, k: int, n: int, layer: int = 0) -> Op:
+        return Op(name, "gemm", layer, m=t, k=k, n=n, role="vision", w_params=k * n, w_bits=16.0,
+                  w_fmt="bf16", a_fmt=af, act_bytes=t * (k + n) * ab, stream=True, vec=t * n * VEC_PER_OUT)
+
+    ops = [gemm("aud.pre", inp, hidden), gemm("aud.pre_down", hidden, proj)]
+    for i in range(nlayer):
+        right = a.ctx_r if i >= nlayer - n_right else 0
+        ker = a.ctx_l + right + 1
+        ops.append(Op(f"aud.{i}.dw", "vector", i, vec=t * proj * ker, act_bytes=2 * t * proj * ab))
+        ops.append(gemm(f"aud.{i}.ffn_up", proj, hidden, i))
+        ops.append(gemm(f"aud.{i}.ffn_down", hidden, proj, i))
+    ops.append(gemm("aud.dnn.0", proj, hidden))
+    for j in range(1, ndnn):
+        ops.append(gemm(f"aud.dnn.{j}", hidden, hidden))
+    ops.append(gemm("aud.out", hidden, a.out))
+    for j, (k, n) in enumerate(a.lin or ()):
+        ops.append(gemm(f"aud.proj.{j}", k, n))
+    return ops
+
+
 def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> list[Op]:
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
+    if a.kind == "lcafsmn":
+        return _lcafsmn_ops(a, seconds, clips)
     if a.kind == "gspeech":
         return _gspeech_ops(a, seconds, clips, af)
     if a.kind == "gsctc":
@@ -2434,10 +2489,194 @@ def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: 
     return ops
 
 
+def _omni_int(meta: dict, key: str) -> int:
+    v = meta.get(key)
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise ValueError(f"longcat omni field {key} is not an int")
+    return v
+
+
+def longcat_omni_counts(meta: dict) -> dict:
+    """Parameter counts of the published Omni towers and audio heads.
+
+    The formulas are ``LongCatVisionModel``, ``VisionProjector``, ``LongCatAudioEncoder``,
+    ``LongCatOmniAudioAdaptor``, ``AudioEmbedding``, and ``AudioOutputLayer`` (``has_proj`` false).
+    Each count must match the ``.pt`` header stored on the release. A mismatch raises.
+    """
+    if meta.get("qkv_bias") is not False:
+        raise ValueError("longcat omni qkv bias is not false")
+    if meta.get("has_proj") is not False:
+        raise ValueError("longcat omni audio output has_proj is not false")
+    if meta.get("hidden_act") != "SwiGLU":
+        raise ValueError("longcat omni vision activation is not SwiGLU")
+    hv = _omni_int(meta, "vision_hidden")
+    layers = _omni_int(meta, "vision_layers")
+    heads = _omni_int(meta, "vision_heads")
+    inter_cfg = _omni_int(meta, "vision_intermediate")
+    patch = _omni_int(meta, "patch")
+    tpatch = _omni_int(meta, "tpatch")
+    merge = _omni_int(meta, "spatial_merge")
+    resize_factor = _omni_int(meta, "resize_factor")
+    min_tokens = _omni_int(meta, "min_tokens")
+    max_tokens = _omni_int(meta, "max_tokens")
+    adaptor = _omni_int(meta, "adaptor_dim")
+    text_h = _omni_int(meta, "text_hidden")
+    a_in = _omni_int(meta, "audio_input")
+    a_h = _omni_int(meta, "audio_hidden")
+    a_proj = _omni_int(meta, "audio_proj")
+    a_vocab = _omni_int(meta, "audio_vocab")
+    a_layers = _omni_int(meta, "audio_layers")
+    a_right = _omni_int(meta, "audio_right_layers")
+    left_order = _omni_int(meta, "audio_left_order")
+    right_order = _omni_int(meta, "audio_right_order")
+    ndnn = _omni_int(meta, "audio_ndnn")
+    rate = _omni_int(meta, "audio_rate")
+    frame_ms = _omni_int(meta, "audio_frame_ms")
+    shift_ms = _omni_int(meta, "audio_shift_ms")
+    stride = _omni_int(meta, "audio_stride")
+    n_in = _omni_int(meta, "codebooks")
+    n_res = _omni_int(meta, "residual_codebooks")
+    code_vocab = _omni_int(meta, "code_vocab")
+    if hv <= 0 or heads <= 0 or hv % heads or layers <= 0 or patch <= 0 or tpatch <= 0:
+        raise ValueError("longcat omni vision shape is not positive")
+    if merge != 1:
+        raise ValueError("longcat omni spatial_merge_size is not 1")
+    if a_right < 0 or a_right > a_layers or left_order < 0 or right_order < 0 or ndnn < 1:
+        raise ValueError("longcat omni audio layer shape is outside the encoder")
+    if n_in < 1 or n_res < 0 or n_res >= n_in or code_vocab <= 0 or text_h <= 0:
+        raise ValueError("longcat omni audio heads are not the released codebook set")
+    if a_h != text_h:
+        raise ValueError("longcat omni audio hidden size is not the text hidden size")
+    inner = int(inter_cfg * 2 / 3)
+    if inner <= 0:
+        raise ValueError("longcat omni SwiGLU inner width is not positive")
+    # Conv3d bias, qkv without bias, q/k RMSNorm, proj with bias, two RMSNorms, two LayerScales,
+    # fc1 / fc3 / fc2 with bias, and the inner RMSNorm.
+    one = (hv * 3 * hv + 2 * hv + hv * hv + hv + 2 * hv + 2 * hv
+           + 2 * (hv * inner + inner) + inner + (inner * hv + hv))
+    vision = 3 * tpatch * patch * patch * hv + hv + layers * one
+    ed = hv * 2
+    vproj = 2 * ed + (ed * adaptor + adaptor) + (adaptor * adaptor + adaptor) + (adaptor * text_h + text_h)
+    # Pre linear with bias, projection without bias. Each FSMN layer: two LayerNorms, depthwise
+    # conv without bias, and a biased up/down FFN. DNN is ndnn biased linears. Output is biased.
+    pre = a_in * a_h + a_h + a_h * a_proj
+
+    def lyr(k: int) -> int:
+        return 2 * a_proj + a_proj * k + 2 * a_proj + (a_proj * a_h + a_h) + (a_h * a_proj + a_proj)
+
+    enc_layers = (a_layers - a_right) * lyr(left_order + 1) + a_right * lyr(left_order + right_order + 1)
+    dnn = a_proj * a_h + a_h + (ndnn - 1) * (a_h * a_h + a_h)
+    out = a_h * a_vocab + a_vocab
+    encoder = pre + enc_layers + dnn + out
+    aproj = 2 * (a_h * a_h + a_h)
+    emb = n_in * code_vocab * text_h
+    residual = n_res * code_vocab * text_h
+    heads_p = n_in * text_h * code_vocab
+    expect = {
+        "params_vision_model": vision,
+        "params_vision_projector": vproj,
+        "params_audio_encoder": encoder,
+        "params_audio_projector": aproj,
+        "params_audio_emb": emb,
+        "params_audio_out": residual + heads_p,
+    }
+    for key, params in expect.items():
+        if _omni_int(meta, key) != params:
+            raise ValueError(f"longcat omni {key} {meta.get(key)} != class formula {params}")
+        bkey = "bytes_" + key[len("params_"):]
+        if _omni_int(meta, bkey) != 2 * params:
+            raise ValueError(f"longcat omni {bkey} is not 2 bytes per parameter")
+    window = rate * frame_ms // 1000
+    hop = rate * shift_ms // 1000
+    if window <= 0 or hop <= 0 or stride <= 0:
+        raise ValueError("longcat omni audio frame geometry is not positive")
+    return {
+        "vision_model": vision, "vision_projector": vproj, "audio_encoder": encoder,
+        "audio_projector": aproj, "audio_emb": emb, "audio_residual": residual,
+        "audio_heads": heads_p, "towers": vision + vproj + encoder + aproj,
+        "text_hidden": text_h, "vision_hidden": hv, "vision_layers": layers,
+        "vision_heads": heads, "inner": inner, "patch": patch, "tpatch": tpatch,
+        "adaptor": adaptor, "min_tokens": min_tokens, "max_tokens": max_tokens,
+        "resize_factor": resize_factor, "audio_input": a_in, "audio_hidden": a_h,
+        "audio_proj": a_proj, "audio_vocab": a_vocab, "audio_layers": a_layers,
+        "audio_right": a_right, "left_order": left_order, "right_order": right_order,
+        "ndnn": ndnn, "rate": rate, "window": window, "hop": hop, "stride": stride,
+        "codebooks": n_in, "residual": n_res, "code_vocab": code_vocab,
+    }
+
+
+def _longcat_resize(height: int, width: int, factor: int, min_pixels: int, max_pixels: int) -> tuple[int, int]:
+    """``LongCatImageTransform.smart_resize``, including the extra 14 / 28 clamps."""
+    if factor <= 0:
+        raise ValueError("longcat omni resize factor is not positive")
+    if height < factor or width < factor:
+        if height < factor:
+            ratio = factor / height
+            height, width = factor, int(ratio * width) + 1
+        if width < factor:
+            ratio = factor / width
+            width, height = factor, int(ratio * height) + 1
+    h_bar = round(height / factor) * factor
+    w_bar = round(width / factor) * factor
+    if h_bar * w_bar > max_pixels:
+        beta = math.sqrt((height * width) / max_pixels)
+        h_bar = math.floor(height / beta / factor) * factor
+        w_bar = math.floor(width / beta / factor) * factor
+    elif h_bar * w_bar < min_pixels:
+        beta = math.sqrt(min_pixels / (height * width))
+        h_bar = math.ceil(height * beta / factor) * factor
+        w_bar = math.ceil(width * beta / factor) * factor
+    if h_bar < factor:
+        h_bar, w_bar = factor, max_pixels // factor
+    if w_bar < factor:
+        h_bar, w_bar = max_pixels // factor, factor
+    if h_bar % 14 != 0:
+        h_bar = h_bar // 14 * 14
+    if w_bar % 28 != 0:
+        w_bar = w_bar // 28 * 28
+    return h_bar, w_bar
+
+
+def _longcat_omni_vision_spec(cfg: dict) -> VisionSpec:
+    meta = cfg.get("longcat_omni")
+    if not isinstance(meta, dict):
+        raise ValueError("longcat omni tower header is missing")
+    counts = longcat_omni_counts(meta)
+    text_h = cfg.get("hidden_size") or (cfg.get("text_config") or {}).get("hidden_size")
+    if text_h != counts["text_hidden"]:
+        raise ValueError("longcat omni text hidden does not match the language config")
+    hv = counts["vision_hidden"]
+    inner = counts["inner"]
+    adaptor = counts["adaptor"]
+    factor = counts["patch"] * counts["resize_factor"]
+    pre = {
+        "factor": factor,
+        "min_px": counts["min_tokens"] * counts["patch"] * counts["patch"],
+        "max_px": counts["max_tokens"] * counts["patch"] * counts["patch"],
+    }
+    au = AudioSpec(
+        counts["rate"], (counts["hop"],),
+        (counts["audio_proj"], counts["audio_hidden"], counts["audio_input"]),
+        (counts["audio_layers"], counts["audio_right"], counts["ndnn"]),
+        counts["left_order"], 0.0, counts["audio_vocab"],
+        counts["audio_encoder"] + counts["audio_projector"],
+        kind="lcafsmn", chunk=counts["stride"], frame=counts["window"],
+        ctx_l=counts["left_order"], ctx_r=counts["right_order"],
+        lin=((counts["audio_hidden"], text_h), (text_h, text_h)))
+    post = ((hv * 2, adaptor), (adaptor, adaptor), (adaptor, text_h))
+    return VisionSpec(
+        "longcatvit", "LongCat ViT（rope2d，SwiGLU）+ 宽度拼接投影；FSMN 音频编码器",
+        counts["patch"], counts["tpatch"], hv, inner, counts["vision_layers"],
+        counts["vision_heads"], hv, True, 1, post,
+        counts["towers"], tuple(sorted(pre.items())), False, audio=au)
+
+
 def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
     """VisionSpec from the release's full config (``vision_config`` + text hidden size), or None."""
     vc = cfg.get("vision_config")
     hf_id = hf_id.split("+", 1)[0]              # 0.175: "<target>+<draft repo>" entries use the target's processor
+    if "LongcatFlashOmniForCausalLM" in (cfg.get("architectures") or []) or cfg.get("model_type") == "longcat_flash_omni":
+        return _longcat_omni_vision_spec(cfg)
     if cfg.get("model_type") == "qwen2_5_omni":
         # 0.271 Qwen2.5-Omni: the audio tower is modelled; the Qwen2.5-VL ViT (thinker.visual) is stored only (the
         # release params_vision surplus → VisionSpec.extra in from_release) — image / video prompts are not costed
@@ -2919,6 +3158,15 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
         return _lfm2_vl_image_grid(v, width, height)
     if v.family == "d1omni":
         return _d1_image_grid(v, width, height)
+    if v.family == "longcatvit":
+        # Projector pairs width only. merged is ph * pw / 2, not a square merge.
+        factor = pr["factor"]
+        hb, wb = _longcat_resize(height, width, factor, pr["min_px"], pr["max_px"])
+        ph, pw = hb // v.patch, wb // v.patch
+        if pw % 2:
+            raise ValueError("longcat omni patch width is not even")
+        m = ph * pw // 2
+        return ImageGrid(ph, pw, m, m, (wb, hb))
     if v.family == "pixtral":
         # PixtralProcessor.replace_image_token: one break/end token per merged row.
         factor = pr["factor"]
@@ -2973,6 +3221,9 @@ def vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str = "bf16") -> li
     MiMo windowed blocks charge only the band's keys (``band_keys``)."""
     if images <= 0:
         return []
+    if v.family == "longcatvit":
+        # The tower .pt files are bf16 and are not in the language fp8 ignore list.
+        af = "bf16"
     if v.family in ("gemma4", "gemma4u"):
         return _gemma4_vision_ops(v, g, images, af)
     if v.family == "lfm2vl":

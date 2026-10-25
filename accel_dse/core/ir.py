@@ -1659,6 +1659,14 @@ def _embed_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
         w = model.ple_packed
         ops.append(Op("ple_lookup", "lookup", -1, kv_read=t * w * bits / 8, vec=t * w))
         ops.append(Op("ple_norm", "vector", -1, vec=t * w * 4, sfu=t * model.n_layers))
+    books = model.audio_codebooks
+    if books and ph.kind == "decode":
+        # 0.402 LongCat-Flash-Omni. The next decode token sums one row from each input codebook.
+        # Prefill does not read these tables (input_process_forward_decode).
+        n_in = books[0]
+        bits = model.lookup_bits or rf.bits
+        ops.append(Op("audio_code_lookup", "lookup", -1, kv_read=t * n_in * model.hidden * bits / 8,
+                      vec=t * n_in * model.hidden))
     return ops
 
 
@@ -1718,6 +1726,15 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
     if model.kv_cache:
         # 0.273 extra output heads of an autoregressive model (Kimi-Audio mimo_output: the audio-token head, sampled
         # every step next to the text head), vocab-parallel like the lm_head
+        books = model.audio_codebooks
+        if books and books[1]:
+            # 0.402 LongCat-Flash-Omni. Residual codebook rows are read between audio heads
+            # (head_idx > 0) on the same sampled rows as the output linears.
+            n_res = books[1]
+            bits = model.lookup_bits or model.fmt("embed").bits
+            ops.append(Op("audio_residual_lookup", "lookup", model.n_layers,
+                          kv_read=m * n_res * model.hidden * bits / 8,
+                          vec=m * n_res * model.hidden))
         for l in model.io_post:
             nn_ = _cdiv(l.n, sh.tp)
             ops += [gemm(model, "io." + l.name, model.n_layers, m, l.k, nn_, l.role or "lm_head", stream=True),

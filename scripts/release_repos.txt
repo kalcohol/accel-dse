@@ -329,3 +329,7 @@ meituan-longcat/LongCat-Flash-Lite-FP8
 meituan-longcat/LongCat-Flash-Thinking-2601
 meituan-longcat/LongCat-Flash-Prover
 meituan-longcat/LongCat-Flash-Thinking-2601-FP8
+# 0.402 LongCat-Flash-Omni and Omni-FP8. Text stack has no MTP.
+# Vision and audio towers are .pt headers. Codebook heads are outside the language file.
+meituan-longcat/LongCat-Flash-Omni
+meituan-longcat/LongCat-Flash-Omni-FP8
