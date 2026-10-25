@@ -3772,6 +3772,17 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                        max_ctx=int(mp) if isinstance(mp, (int, float)) and not isinstance(mp, bool) and mp > 0 else 0)
         if spec.coverage == "full" and spec.coverage_reasons:
             spec = replace(spec, coverage="partial")
+        if ((cfg.get("model_type") or "") in ("granite_speech", "granite_speech_plus")
+                and vs is not None and getattr(vs, "audio", None) is not None):
+            au = vs.audio
+            note = (f"Granite Speech：Conformer 用 Shaw 分块相对位置（注意力按 context {au.chunk} 补齐），"
+                    f"Q-Former 每窗 {au.gs_q} 个查询，交叉注意力 K 宽 {au.gs_cross}。"
+                    "中间层 CTC 的 out 与 out_mid 各跑一次。0.5 残差、dropout、GLU 和 granite 的"
+                    " attention / embedding / residual / logits 标量不另计 GEMM，也不改变 KV 宽度。没有 MTP。")
+            if cfg.get("model_type") == "granite_speech_plus":
+                note += (" plus 把 cat_hidden_layers 的隐状态拼在最后一层上，只加宽交叉注意力的 K。"
+                         "文本 config dtype 是 float32，safetensors 是 bf16，按 bf16 计。")
+            spec = replace(spec, notes=spec.notes + (note,))
     return spec
 
 

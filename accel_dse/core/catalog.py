@@ -126,6 +126,10 @@ EXTRA_TAIL = [
     ("intern-decision-4b", "internlm/Intern-Decision-4B"),
     ("intern-decision-2b", "internlm/Intern-Decision-2B"),
     ("intern-decision-0.8b", "internlm/Intern-Decision-0.8B"),
+    # 0.392: Granite Speech. Conformer (Shaw block attention) + BLIP-2 Q-Former
+    # onto the granite LM. The CTC-only 470m has no autoregressive backbone.
+    ("granite-speech-5.0-2b", "ibm-granite/granite-speech-5.0-2b"),
+    ("granite-speech-4.1-2b-plus", "ibm-granite/granite-speech-4.1-2b-plus"),
     # 0.383: Granite-4.2-8b / 3b. Same GEMM shapes as 4.1, untied lm_head.
     # 0.386: granite-4.2-30b. Same GEMM shapes as 4.1-30b, untied lm_head.
     # embedding / residual / logits scalars do not change shapes.
@@ -712,6 +716,7 @@ FAMILIES = [    # provider, family, id prefixes — newest family first; within 
     ("mistral", "Mistral-Small", ("mistral-small",)),
     ("mistral", "Mistral Large", ("mistral-large",)), ("mistral", "Mixtral", ("mixtral",)), ("mistral", "Magistral", ("magistral",)),
     ("microsoft", "Phi-4", ("phi-4",)),
+    ("ibm", "Granite-Speech", ("granite-speech-",)),   # 0.392: before granite-4.2-
     ("ibm", "Granite-4.2", ("granite-4.2-",)),   # 0.383: before granite-4.1-
     ("ibm", "Granite-4.1", ("granite-4.1-",)),
     ("allenai", "Olmo-3", ("olmo-3",)), ("lg", "EXAONE-4", ("exaone-4",)),   # 0.371

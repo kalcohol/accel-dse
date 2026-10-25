@@ -49,6 +49,13 @@ docs/MODEL.md §20):
          then Linear into the text embedder. Each block's content scores use the chunk context;
          every padded query also dots the context//2+1 relative keys. Prompt tokens follow the
          processor formula; the tower GEMMs see the waveform padded to a multiple of 128.
+  gspeech Granite Speech (granite_speech / granite_speech_plus): 16 kHz mel, hop 160, pairs stacked
+         to input_dim 160. A conformer (two half-residual FFNs, Shaw block attention, GLU depthwise
+         conv) then a BLIP-2 Q-Former that does not own text embeddings. Query and key projections
+         of the conformer see the context-padded frames; the output projection, FFNs, conv, and the
+         mid CTC linears see the unpadded frames. The Q-Former pads to whole windows and emits
+         window//downsample queries per window. Speech Plus concatenates selected encoder states
+         on the feature axis, which widens only the cross-attention K/V. Weights are bf16 as stored.
   pixtral Pixtral ViT (Mistral3 vision_config, model_type pixtral): Conv2d patch embed (kernel = stride =
          patch, no bias), RMSNorm, depth pre-norm blocks (separate q / k / v / o, all width hidden, SwiGLU).
          The projector RMSNorms the patch sequence, unfolds spatial_merge_size**2, then Linear(4h -> h),
@@ -360,6 +367,23 @@ class AudioSpec:
     frame: int = 0
     ctx_l: int = 0
     ctx_r: int = 0
+    # 0.392 Granite Speech (kind "gspeech"). win is the Q-Former window in encoder frames.
+    # chunk is the Shaw attention context. gs_q is queries per window. gs_cross is the
+    # Q-Former K/V width (encoder hidden, or hidden times one plus each exported state).
+    # gs_mid is the CTC output width. gs_pos is max_pos_emb (the Shaw table has 2*gs_pos+1 rows).
+    # gs_ff / gs_inner are the conformer FFN and conv widths. gs_freq is cross_attention_frequency.
+    # gs_ql / gs_qh / gs_qheads / gs_qff are the Q-Former depth, width, heads, and FFN width.
+    gs_q: int = 0
+    gs_cross: int = 0
+    gs_mid: int = 0
+    gs_pos: int = 0
+    gs_ff: int = 0
+    gs_inner: int = 0
+    gs_freq: int = 0
+    gs_ql: int = 0
+    gs_qh: int = 0
+    gs_qheads: int = 0
+    gs_qff: int = 0
 
     @property
     def samples_per_token(self) -> int:
@@ -408,6 +432,8 @@ class AudioSpec:
 
     def enc_positions(self, seconds: float) -> int:
         """0.270 encoder output positions per clip (Whisper: 1500 per 30 s window — the decoder cross-attention keys)."""
+        if self.kind == "gspeech":
+            return self._gs_lens(seconds)[0]
         if self.kind == "aut":
             return sum(self.aut_len(n) for n in self.chunks(seconds))
         if self.kind == "sanm":
@@ -459,7 +485,26 @@ class AudioSpec:
         padded = ((n + _G4_AUDIO_PAD - 1) // _G4_AUDIO_PAD) * _G4_AUDIO_PAD if n else 0
         return self._g4_conv_len(padded), prompt
 
+    def _gs_lens(self, seconds: float) -> tuple[int, int, int]:
+        """(encoder frames, Shaw-padded frames, LLM prompt tokens).
+
+        GraniteSpeechFeatureExtractor: mel length is samples // hop + 1, an odd frame is
+        dropped, and pairs are stacked. The projector pads to whole windows and emits
+        gs_q queries from every window, including a partial last window.
+        """
+        if self.patches[0] <= 0 or self.win <= 0 or self.gs_q <= 0 or self.chunk <= 0:
+            return 0, 0, 0
+        n = max(0, round(seconds * self.rate))
+        enc = (n // self.patches[0] + 1) // 2
+        if enc <= 0:
+            return 0, 0, 0
+        nblocks = -(-enc // self.win)
+        pad = -(-enc // self.chunk) * self.chunk
+        return enc, pad, nblocks * self.gs_q
+
     def tokens(self, seconds: float) -> int:
+        if self.kind == "gspeech":
+            return self._gs_lens(seconds)[2]
         if self.kind == "g4conf":
             return self._g4_audio_lens(seconds)[1]
         if self.kind == "sanm":
@@ -543,6 +588,83 @@ def _gemma4_audio_spec(cfg: dict, ac: dict) -> AudioSpec | None:
         maxf=_G4_AUDIO_CAP, frame=_G4_AUDIO_FRAME, ctx_l=ctx_l, ctx_r=ctx_r)
 
 
+def _gs_idx(x: object) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool) and x >= 0
+
+
+def _granite_speech_audio_spec(cfg: dict) -> AudioSpec | None:
+    """GraniteSpeechForConditionalGeneration / GraniteSpeechPlusForConditionalGeneration.
+
+    The tower is GraniteSpeechCTCEncoder (or the Plus encoder) plus a BLIP-2 Q-Former
+    that is called with query embeds only. use_qformer_text_input false means the text
+    FFN is not constructed. Shaw relative embeddings are a table; the einsum with the
+    queries is the extra matmul. Returns None when a width has no header path.
+    """
+    mt = cfg.get("model_type")
+    enc = cfg.get("encoder_config") if isinstance(cfg.get("encoder_config"), dict) else {}
+    pc = cfg.get("projector_config") if isinstance(cfg.get("projector_config"), dict) else {}
+    text = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else {}
+    pairs = {"granite_speech": "granite_speech_encoder", "granite_speech_plus": "granite_speech_plus_encoder"}
+    if pairs.get(mt) != enc.get("model_type") or pc.get("model_type") != "blip_2_qformer":
+        return None
+    if cfg.get("has_lora_adapter") is not False or pc.get("use_qformer_text_input") is not False:
+        return None
+    h = enc.get("hidden_dim")
+    layers = enc.get("num_layers")
+    heads = enc.get("num_heads")
+    dim_head = enc.get("dim_head")
+    ff_mult = enc.get("feedforward_mult")
+    exp = enc.get("conv_expansion_factor")
+    kern = enc.get("conv_kernel_size")
+    ind = enc.get("input_dim")
+    mid = enc.get("output_dim")
+    ctx = enc.get("context_size")
+    pos = enc.get("max_pos_emb")
+    win = cfg.get("window_size")
+    down = cfg.get("downsample_rate")
+    qh = pc.get("hidden_size")
+    qheads = pc.get("num_attention_heads")
+    ql = pc.get("num_hidden_layers")
+    qff = pc.get("intermediate_size")
+    freq = pc.get("cross_attention_frequency")
+    cross = pc.get("encoder_hidden_size")
+    text_h = text.get("hidden_size")
+    if not all(_pos_int(x) for x in (
+            h, layers, heads, dim_head, ff_mult, exp, kern, ind, mid, ctx, pos, win, down,
+            qh, qheads, ql, qff, freq, cross, text_h)):
+        return None
+    if ctx > pos or dim_head * heads != h or qh % qheads or win % down:
+        return None
+    cat = enc.get("cat_hidden_layers") or []
+    if not isinstance(cat, list) or any(not _gs_idx(i) or i > layers for i in cat):
+        return None
+    # The speech encoder has no cat path. A non-empty list there is not this module.
+    if enc.get("model_type") == "granite_speech_encoder" and cat:
+        return None
+    exported = set(cat)
+    if cross != h * (1 + len(exported)):
+        return None
+    ff = h * ff_mult
+    inner = h * exp
+    inner_dim = dim_head * heads
+    ff1 = 2 * h + _lin(h, ff) + _lin(ff, h)
+    attn = (2 * h + h * inner_dim + h * (2 * inner_dim) + _lin(inner_dim, h)
+            + (2 * pos + 1) * dim_head)
+    conv = 2 * h + _lin(h, inner * 2) + inner * kern + 2 * inner + _lin(inner, h)
+    block = 2 * ff1 + attn + conv + 2 * h
+    params = layers * block + _lin(ind, h) + _lin(h, mid) + _lin(mid, h)
+    for i in range(ql):
+        params += 4 * _lin(qh, qh) + 2 * qh
+        if i % freq == 0:
+            params += 2 * _lin(qh, qh) + 2 * _lin(cross, qh) + 2 * qh
+        params += _lin(qh, qff) + _lin(qff, qh) + 2 * qh
+    params += 2 * qh + (win // down) * qh + _lin(qh, text_h)
+    return AudioSpec(16000, (160,), (h,), (layers,), kern, float(ff_mult), text_h, params, kind="gspeech",
+                     heads=heads, n_mels=ind, chunk=ctx, win=win, gs_q=win // down, gs_cross=cross, gs_mid=mid,
+                     gs_pos=pos, gs_ff=ff, gs_inner=inner, gs_freq=freq, gs_ql=ql, gs_qh=qh, gs_qheads=qheads,
+                     gs_qff=qff)
+
+
 def audio_spec(cfg: dict) -> AudioSpec | None:
     ac = cfg.get("audio_config") or {}
     mt = cfg.get("model_type")
@@ -598,6 +720,8 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
         return AudioSpec(16000, (spt,), (d_in,), (0,), 1, 1.0, text_h, d_in * text_h, kind="g4lin")
     if ac.get("model_type") == "gemma4_audio":
         return _gemma4_audio_spec(cfg, ac)
+    if mt in ("granite_speech", "granite_speech_plus"):
+        return _granite_speech_audio_spec(cfg)
     if ac.get("model_type") != "muse_spark_audio":
         return None
     pt, dm, dp, k, r = tuple(ac["patch_sizes"]), tuple(ac["hidden_sizes"]), tuple(ac["depths"]), ac["conv_kernel_size"], ac["mlp_ratio"]
@@ -998,9 +1122,85 @@ def _g4conf_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
     return ops
 
 
+def _gspeech_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
+    """Conformer GEMMs at the unpadded frame count. Shaw Q/K and SDPA see the padded blocks.
+
+    The Q-Former attends inside one window. Cross-attention K/V see the padded window,
+    including a partial last window (the projector passes no encoder mask).
+    """
+    from .dtypes import fmt as _fmt
+    ab = _fmt(af).bytes
+    enc, pad, _prompt = a._gs_lens(seconds)
+    if enc <= 0 or clips <= 0:
+        return []
+    h = a.dims[0]
+    hd = h // a.heads
+    qhd = a.gs_qh // a.gs_qheads
+    nblocks = -(-enc // a.win)
+    blocks = pad // a.chunk
+    wf, wb = a.w_fmt, a.w_bits
+    t = enc * clips
+    tp = pad * clips
+    nq = nblocks * a.gs_q * clips
+    nk = nblocks * a.win * clips
+
+    def gemm(name: str, m: int, k: int, n: int, layer: int = 0) -> Op:
+        return Op(name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=wb, w_fmt=wf,
+                  a_fmt=af, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+
+    def attn(name: str, m: int, k: int, n: int, count: int, layer: int) -> Op:
+        return Op(name, "attn", layer, m=m, k=k, n=n, count=count, causal=1.0,
+                  act_bytes=count * m * k * ab, stream=True, orient=True)
+
+    ops = [gemm("aud.in", t, a.n_mels, h)]
+    for li in range(a.depths[0]):
+        ops += [gemm(f"aud.{li}.ff1_up", t, h, a.gs_ff, li), gemm(f"aud.{li}.ff1_down", t, a.gs_ff, h, li),
+                gemm(f"aud.{li}.ff2_up", t, h, a.gs_ff, li), gemm(f"aud.{li}.ff2_down", t, a.gs_ff, h, li)]
+        ops += [gemm(f"aud.{li}.q", tp, h, h, li), gemm(f"aud.{li}.kv", tp, h, 2 * h, li),
+                gemm(f"aud.{li}.o", t, h, h, li)]
+        # rel_pos_emb is a gather of the (context, context) distance buffer. The einsum
+        # with the queries is the matmul. SDPA then runs QK and PV on the same padded block.
+        cnt = a.heads * blocks * clips
+        ops += [attn(f"aud.{li}.shaw", a.chunk, hd, a.chunk, cnt, li),
+                attn(f"aud.{li}.qk", a.chunk, hd, a.chunk, cnt, li),
+                attn(f"aud.{li}.pv", a.chunk, a.chunk, hd, cnt, li),
+                Op(f"aud.{li}.softmax", "vector", li, vec=cnt * a.chunk * a.chunk * 5.0)]
+        ops += [gemm(f"aud.{li}.conv_up", t, h, 2 * a.gs_inner, li),
+                Op(f"aud.{li}.dconv", "vector", li, vec=t * a.gs_inner * a.kernel, act_bytes=2 * t * a.gs_inner * ab),
+                gemm(f"aud.{li}.conv_down", t, a.gs_inner, h, li)]
+    mid_l = a.depths[0] // 2
+    if mid_l >= 1:
+        ops += [gemm("aud.mid.out", t, h, a.gs_mid, mid_l),
+                gemm("aud.mid.back", t, a.gs_mid, h, mid_l),
+                Op("aud.mid.softmax", "vector", mid_l, vec=t * a.gs_mid * 5.0)]
+    for li in range(a.gs_ql):
+        ops += [gemm(f"aud.qf.{li}.q", nq, a.gs_qh, a.gs_qh, li),
+                gemm(f"aud.qf.{li}.k", nq, a.gs_qh, a.gs_qh, li),
+                gemm(f"aud.qf.{li}.v", nq, a.gs_qh, a.gs_qh, li),
+                gemm(f"aud.qf.{li}.o", nq, a.gs_qh, a.gs_qh, li)]
+        cnt = a.gs_qheads * nblocks * clips
+        ops += [attn(f"aud.qf.{li}.qk", a.gs_q, qhd, a.gs_q, cnt, li),
+                attn(f"aud.qf.{li}.pv", a.gs_q, a.gs_q, qhd, cnt, li),
+                Op(f"aud.qf.{li}.softmax", "vector", li, vec=cnt * a.gs_q * a.gs_q * 5.0)]
+        if li % a.gs_freq == 0:
+            ops += [gemm(f"aud.qf.{li}.cq", nq, a.gs_qh, a.gs_qh, li),
+                    gemm(f"aud.qf.{li}.ck", nk, a.gs_cross, a.gs_qh, li),
+                    gemm(f"aud.qf.{li}.cv", nk, a.gs_cross, a.gs_qh, li),
+                    gemm(f"aud.qf.{li}.co", nq, a.gs_qh, a.gs_qh, li)]
+            ops += [attn(f"aud.qf.{li}.cqk", a.gs_q, qhd, a.win, cnt, li),
+                    attn(f"aud.qf.{li}.cpv", a.gs_q, a.win, qhd, cnt, li),
+                    Op(f"aud.qf.{li}.csoftmax", "vector", li, vec=cnt * a.gs_q * a.win * 5.0)]
+        ops += [gemm(f"aud.qf.{li}.fc1", nq, a.gs_qh, a.gs_qff, li),
+                gemm(f"aud.qf.{li}.fc2", nq, a.gs_qff, a.gs_qh, li)]
+    ops.append(gemm("aud.proj", nq, a.gs_qh, a.out))
+    return ops
+
+
 def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> list[Op]:
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
+    if a.kind == "gspeech":
+        return _gspeech_ops(a, seconds, clips, af)
     if a.kind == "g4conf":
         return _g4conf_ops(a, seconds, clips, af)
     if a.kind == "g4lin":
@@ -1584,6 +1784,12 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return None
     if not vc:
         au = audio_spec(cfg)
+        if au is not None and au.kind == "gspeech":
+            lab = ("Granite Speech Plus：Conformer（Shaw 分块相对位置，拼接中间层）+ Q-Former 查询桥" if
+                   cfg.get("model_type") == "granite_speech_plus" else
+                   "Granite Speech：Conformer（Shaw 分块相对位置）+ Q-Former 查询桥")
+            return VisionSpec("audio", lab, 0, 1, au.dims[0], au.gs_ff, au.depths[0], au.heads, au.dims[0],
+                              False, 1, (), au.params, (), audio=au)
         if au is not None and au.kind in ("whisper", "aut", "sanm", "w2v"):
             # 0.268 audio-only release (Ming-3.0-asr-tiny): an encoder container with no image path (family "audio":
             # image_grid_of → None, serving.images ignored with a warning); costed when serving.audio_s > 0
