@@ -79,7 +79,9 @@ docs/MODEL.md §20):
 
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
-residual element-ops 3 per GEMM output 「假设」, softmax 5 per score.  Image tokens into the LLM = merged positions
+residual element-ops 3 per GEMM output 「假设」, softmax 5 per score.  LongCat-ViT also bills the RMSNorm
+modules and LayerScales ``LongCatVisionEncoderLayer`` runs, and the projector LayerNorm. The shared
+3-wide tail stays on every GEMM.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
 """
@@ -1614,7 +1616,8 @@ def _lcafsmn_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
     """LongCatAudioEncoder plus the two-linear projector. Weights and activations stay bf16.
 
     The output linear is executed and then multiplied by zero (``hidden + 0.0 * output.sum()``).
-    Its GEMM is billed. ReLU6, GELU, LayerNorm, and the mask multiply are not GEMMs.
+    Its GEMM is billed. Each FSMN layer runs two ``LayerNorm(proj)`` modules (memory, then the FFN).
+    Those are billed as fp32 reductions. ReLU6, the projector GELU, and the mask multiply are not.
     """
     from .dtypes import fmt as _fmt
     af = "bf16"
@@ -1635,7 +1638,13 @@ def _lcafsmn_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
     for i in range(nlayer):
         right = a.ctx_r if i >= nlayer - n_right else 0
         ker = a.ctx_l + right + 1
+        # LongCatAudioEncoderLayer: LayerNorm(proj) before the depthwise conv, and the
+        # FFN Sequential starts with another LayerNorm(proj). PyTorch layer_norm reduces
+        # in fp32 and applies one rsqrt per frame. The width is proj, not the FFN hidden
+        # size. Weight and bias are already in the encoder parameter total.
+        ops.append(Op(f"aud.{i}.mem_ln", "vector", i, vec=t * proj * 4, sfu=float(t), a_fmt="fp32"))
         ops.append(Op(f"aud.{i}.dw", "vector", i, vec=t * proj * ker, act_bytes=2 * t * proj * ab))
+        ops.append(Op(f"aud.{i}.ffn_ln", "vector", i, vec=t * proj * 4, sfu=float(t), a_fmt="fp32"))
         ops.append(gemm(f"aud.{i}.ffn_up", proj, hidden, i))
         ops.append(gemm(f"aud.{i}.ffn_down", hidden, proj, i))
     ops.append(gemm("aud.dnn.0", proj, hidden))
@@ -3281,6 +3290,13 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     h, q, dh = v.hidden, v.qkv, v.head_dim
     cnt = images * v.heads
     qkv_n = (v.heads + 2 * v.kv_heads) * dh if v.kv_heads else 3 * q
+    longcat = v.family == "longcatvit" and v.gated
+
+    def lc_rms(name: str, li: int, width: int, n_rows: int) -> Op:
+        # RMSNorm.forward / the same 4-elem + 1 rsqrt recipe as attn_norm. fp32 upcast.
+        # The weight is already in the tower parameter total.
+        return Op(pfx + name, "vector", li, vec=n_rows * width * 4, sfu=float(n_rows), a_fmt="fp32")
+
     if v.perm:
         # apply_index gathers (row ↔ merge-unit column order): read + write the hidden states per switch
         ops.append(Op(pfx + "win_perm", "vector", 0, vec=v.perm * rows * h, act_bytes=v.perm * 2 * rows * h * ab))
@@ -3291,29 +3307,50 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
                 ops.append(gemm(f"vit_merger.{i}", images * (N // dv), k, n, li))
             ops += attn("vit_merger", li, N, N * N, False)
             N, rows = N // 4, rows // 4
-        ops += [gemm(f"{li}.qkv", rows, h, qkv_n, li), gemm(f"{li}.o", rows, q, h, li)]
+        if longcat:
+            # LongCatVisionEncoderLayer: norm1, then attention, then ls1, then
+            # norm2, SwiGLU, ls2. All four block RMSNorms reduce embed_dim (hidden),
+            # one rsqrt per patch token. q_norm / k_norm flatten heads before the
+            # norm, so the width is embed_dim, not head_dim, and the rsqrt count is
+            # tokens rather than tokens * heads.
+            ops.append(lc_rms(f"{li}.norm1", li, h, rows))
+        ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
+        if longcat:
+            ops.append(lc_rms(f"{li}.q_norm", li, h, rows))
+            ops.append(lc_rms(f"{li}.k_norm", li, h, rows))
+        ops.append(gemm(f"{li}.o", rows, q, h, li))
+        if longcat:
+            # ls1 / ls2 are Parameter(embed_dim): branch * scale, then the residual add.
+            # The class does not upcast. No rsqrt.
+            ops.append(Op(pfx + f"{li}.ls1", "vector", li, vec=rows * h * 2, a_fmt="bf16"))
+            ops.append(lc_rms(f"{li}.norm2", li, h, rows))
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
-        if v.family == "longcatvit" and v.gated:
-            # SwiGLU.forward is fc2(RMSNorm(silu(fc1(x)) * fc3(x))). The norm upcasts
-            # to fp32, reduces the inner width, and applies one rsqrt per token
-            # (same 4-elem + 1 rsqrt recipe as attn_norm). Rows are patch tokens,
-            # before the width-pair projector. The weight is already in the tower
-            # parameter total. q/k and residual RMSNorm stay in the shared ViT
-            # epilogue, the same as the other towers.
-            ops.append(Op(pfx + f"{li}.mlp_norm", "vector", li, vec=rows * v.inter * 4,
-                          sfu=float(rows), a_fmt="fp32"))
+        if longcat:
+            # SwiGLU.forward is fc2(RMSNorm(silu(fc1(x)) * fc3(x))). The norm reduces
+            # the inner width. Rows are patch tokens, before the width-pair projector.
+            ops.append(lc_rms(f"{li}.mlp_norm", li, v.inter, rows))
         ops.append(gemm(f"{li}.mlp_out", rows, v.inter, h, li))
+        if longcat:
+            ops.append(Op(pfx + f"{li}.ls2", "vector", li, vec=rows * h * 2, a_fmt="bf16"))
         if v.tile and grid is not None and li not in v.full_idx:
             ops += attn(str(li), li, N, tile_keys(grid[0], grid[1], v.tile), False)
             continue
         windowed = bool(v.win) and li not in v.full_idx
         ops += attn(str(li), li, N, band_keys(N, v.win) if windowed else N * N, windowed and v.sink)
+
+    def merger_rows(kn: tuple) -> int:
+        if len(kn) > 2:
+            return images * (N0 // kn[2])
+        return mrows if mrows is not None else images * (N0 // (v.merge * v.merge))
+
+    if longcat and v.post:
+        # VisionProjector.p0 starts with LayerNorm(hidden * 2) on the width-paired rows
+        # (ph * pw / 2), not on patch tokens. fp32 reduction, one rsqrt per row.
+        kn0 = v.post[0]
+        ops.append(lc_rms("proj_ln", v.depth, kn0[0], merger_rows(kn0)))
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
-        if len(kn) > 2:
-            m_ = images * (N0 // kn[2])
-        else:
-            m_ = mrows if mrows is not None else images * (N0 // (v.merge * v.merge))
+        m_ = merger_rows(kn)
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
     if v.deepstack and v.post:
         # Qwen3VLTextModel._deepstack_process: after each of the first len(indexes) decoder layers, add that

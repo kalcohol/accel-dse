@@ -4137,9 +4137,15 @@ def _attach_longcat_omni(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
         "视觉是 Conv3d（时间 2、空间 14）加 32 层双向注意力。SwiGLU 内宽是 int(5184*2/3)。"
         "每一层在 gate 乘积和 fc2 之间做一次内层 RMSNorm：forward 升到 fp32，"
         "按 patch token（不是投影后的宽度对）计，vec 是 4 乘内宽，每行一次 rsqrt。"
-        "权重已在塔参数里，不再记 w_params。q/k RMSNorm 和两层残差 RMSNorm 仍跟其他 ViT 一样留在 GEMM 尾项里。"
-        "投影器把宽度相邻两列拼成 2h，再走 LayerNorm 和三层 Linear。rope2d 的 inv_freq 不是 persistent。"
-        "单张图的 post-squeeze 在 token 数不超过 max_tokens_video 时是恒等。视频多帧压缩不进默认图像网格。",
+        "同一条 RMSNorm.forward 还跑在 norm1、norm2，以及把 head 展平之后的 q_norm / k_norm 上。"
+        "q / k 的宽度是 embed_dim，不是 head_dim，每个 token 一次 rsqrt，不是每个头一次。"
+        "权重已在塔参数里，不再记 w_params。"
+        "LayerScale 是分支乘 ls1 / ls2 再加回残差，宽度是 embed_dim，不升 fp32，没有 rsqrt。"
+        "投影器先把宽度相邻两列拼成 2h，再做 LayerNorm(2h)，行数是 ph*pw/2，然后三层 Linear。"
+        "SiLU、投影器的两处 GELU，以及 rope2d 的 cos/sin 仍留在 GEMM 尾项里。inv_freq 不是 persistent。"
+        "单张图的 post-squeeze 在 token 数不超过 max_tokens_video 时是恒等。视频多帧压缩不进默认图像网格。"
+        "音频 FSMN 每一层有两次 LayerNorm(proj)：memory_ln 在深度卷积前，ffn 的 LayerNorm 在升维前。"
+        "按帧计，fp32，每帧一次 rsqrt。宽度是 proj，不是 FFN 的 hidden。ReLU6、投影器 GELU 和 mask 乘仍不单列。",
     )
     fm = dict(spec.formats)
     fm["audio_head"] = RoleFormat("bf16", 16.0)
